@@ -1,0 +1,176 @@
+# model/multi_horizon_model.py — GBM 멀티 호라이즌 예측 모델
+"""
+6개 호라이즌(1·3·5·10·15·30분)에 대한 GBM 모델 관리.
+
+- 학습: GBM (GradientBoostingClassifier)
+- 저장/로드: joblib (.pkl)
+- 30분마다 배치 재학습 (batch_retrainer가 호출)
+- 예측 시 확률값 반환 → 앙상블에서 가중합
+"""
+import os
+import joblib
+import logging
+import numpy as np
+from typing import Dict, List, Optional, Tuple
+
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.preprocessing import StandardScaler
+
+from config.settings import HORIZONS, HORIZON_DIR, SCALER_DIR
+from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
+
+logger = logging.getLogger("SIGNAL")
+
+
+class MultiHorizonModel:
+    """6개 호라이즌 GBM 모델 묶음"""
+
+    GBM_PARAMS = {
+        "n_estimators":     100,
+        "max_depth":        4,
+        "learning_rate":    0.05,
+        "subsample":        0.8,
+        "random_state":     42,
+        "min_samples_leaf": 10,
+    }
+
+    def __init__(self):
+        self.models:  Dict[str, GradientBoostingClassifier] = {}
+        self.scalers: Dict[str, StandardScaler] = {}
+        self.feature_names: List[str] = []
+        self._is_fitted: Dict[str, bool] = {h: False for h in HORIZONS}
+
+        os.makedirs(HORIZON_DIR, exist_ok=True)
+        os.makedirs(SCALER_DIR, exist_ok=True)
+
+        # 저장된 모델 로드 시도
+        self._load_all()
+
+    # ── 학습 ──────────────────────────────────────────────────
+    def fit(
+        self,
+        X: np.ndarray,
+        targets: Dict[str, np.ndarray],
+        feature_names: List[str],
+    ):
+        """
+        전체 호라이즌 일괄 학습
+
+        Args:
+            X:            피처 행렬 (n_samples × n_features)
+            targets:      {"1m": labels, "3m": labels, ...}
+            feature_names: 피처명 리스트
+        """
+        self.feature_names = feature_names
+
+        for horizon in HORIZONS:
+            y = targets.get(horizon)
+            if y is None:
+                continue
+
+            # NaN 제거
+            mask = ~np.isnan(y)
+            Xm, ym = X[mask], y[mask].astype(int)
+
+            if len(np.unique(ym)) < 2:
+                logger.warning(f"[Model] {horizon}: 클래스 부족, 학습 건너뜀")
+                continue
+
+            # 스케일러
+            scaler = StandardScaler()
+            Xs = scaler.fit_transform(Xm)
+
+            # GBM 학습
+            clf = GradientBoostingClassifier(**self.GBM_PARAMS)
+            clf.fit(Xs, ym)
+
+            self.models[horizon]  = clf
+            self.scalers[horizon] = scaler
+            self._is_fitted[horizon] = True
+
+            logger.info(f"[Model] {horizon} 학습 완료 (n={len(ym)})")
+
+        self._save_all()
+
+    # ── 예측 ──────────────────────────────────────────────────
+    def predict_proba(self, x: np.ndarray) -> Dict[str, Dict]:
+        """
+        단일 샘플 예측
+
+        Args:
+            x: 1D 피처 배열
+
+        Returns:
+            {"1m": {"up": 0.45, "down": 0.35, "flat": 0.20,
+                    "direction": 1, "confidence": 0.45}, ...}
+        """
+        results = {}
+        x2d = x.reshape(1, -1)
+
+        for horizon, clf in self.models.items():
+            if not self._is_fitted.get(horizon):
+                results[horizon] = self._default_result()
+                continue
+
+            scaler = self.scalers.get(horizon)
+            xs = scaler.transform(x2d) if scaler else x2d
+
+            classes = list(clf.classes_)
+            proba   = clf.predict_proba(xs)[0]
+
+            proba_map = {int(c): float(p) for c, p in zip(classes, proba)}
+            up   = proba_map.get(DIRECTION_UP,   0.0)
+            down = proba_map.get(DIRECTION_DOWN, 0.0)
+            flat = proba_map.get(DIRECTION_FLAT, 0.0)
+
+            direction  = max(proba_map, key=proba_map.get)
+            confidence = max(up, down, flat)
+
+            results[horizon] = {
+                "up":         round(up, 4),
+                "down":       round(down, 4),
+                "flat":       round(flat, 4),
+                "direction":  direction,
+                "confidence": round(confidence, 4),
+            }
+
+        return results
+
+    def _default_result(self) -> dict:
+        return {
+            "up": 1/3, "down": 1/3, "flat": 1/3,
+            "direction": DIRECTION_FLAT, "confidence": 1/3,
+        }
+
+    # ── 저장 / 로드 ────────────────────────────────────────────
+    def _model_path(self, horizon: str) -> str:
+        return os.path.join(HORIZON_DIR, f"gbm_{horizon}.pkl")
+
+    def _scaler_path(self, horizon: str) -> str:
+        return os.path.join(SCALER_DIR, f"scaler_{horizon}.pkl")
+
+    def _save_all(self):
+        for h in self.models:
+            joblib.dump(self.models[h],  self._model_path(h))
+            joblib.dump(self.scalers[h], self._scaler_path(h))
+        joblib.dump(self.feature_names,
+                    os.path.join(HORIZON_DIR, "feature_names.pkl"))
+        logger.info("[Model] 전체 모델 저장 완료")
+
+    def _load_all(self):
+        fn_path = os.path.join(HORIZON_DIR, "feature_names.pkl")
+        if os.path.exists(fn_path):
+            self.feature_names = joblib.load(fn_path)
+
+        for h in HORIZONS:
+            mp = self._model_path(h)
+            sp = self._scaler_path(h)
+            if os.path.exists(mp) and os.path.exists(sp):
+                self.models[h]  = joblib.load(mp)
+                self.scalers[h] = joblib.load(sp)
+                self._is_fitted[h] = True
+                logger.info(f"[Model] {h} 로드 성공")
+
+    def is_ready(self) -> bool:
+        """최소 1개 호라이즌 학습 완료 여부"""
+        return any(self._is_fitted.values())

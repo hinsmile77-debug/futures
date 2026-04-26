@@ -1,0 +1,122 @@
+# config/constants.py — 상수 정의
+
+# ── 키움 TR 코드 ──────────────────────────────────────────────
+TR_INVESTOR_FUTURES = "opt10059"    # 선물 투자자별 매매
+TR_INVESTOR_OPTIONS = "opt50014"    # 옵션 투자자별 매매
+TR_PROGRAM_TRADE    = "opt10060"    # 프로그램 매매
+TR_FUTURES_PRICE    = "opt10001"    # 선물 현재가
+TR_FUTURES_1MIN     = "OPT50029"    # 선물분차트요청 (OPT50029)
+
+# 실시간 FID
+FID_FUTURES_PRICE   = 10    # 현재가
+FID_FUTURES_VOL     = 15    # 거래량
+FID_BID_PRICE       = 41    # 매수호가1
+FID_ASK_PRICE       = 51    # 매도호가1
+FID_BID_QTY         = 61    # 매수호가수량1
+FID_ASK_QTY         = 71    # 매도호가수량1
+FID_OI              = 291   # 미결제약정
+
+# 실시간 타입 코드
+RT_FUTURES          = "FC0"     # 선물 체결
+RT_FUTURES_HOGA     = "FH0"     # 선물 호가
+
+# ── 선물 계약 상수 ────────────────────────────────────────────
+FUTURES_TICK_SIZE   = 0.05      # 최소 호가 단위
+FUTURES_TICK_VALUE  = 250_000   # 1틱 = 250,000원
+FUTURES_MULTIPLIER  = 500_000   # 계약 배수 (지수×500,000원)
+
+# ── 고정 CORE 피처명 ──────────────────────────────────────────
+CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_imbalance"]
+
+# ── 전체 피처 목록 ────────────────────────────────────────────
+SUPPLY_DEMAND_FEATURES = [
+    "foreign_futures_net",
+    "foreign_call_net",
+    "foreign_put_net",
+    "retail_futures_net",
+    "institution_futures_net",
+    "program_arb_net",
+    "program_non_arb_net",
+    "foreign_retail_divergence",
+]
+
+OPTION_FEATURES = [
+    "itm_foreign_call",
+    "itm_foreign_put",
+    "atm_foreign_call",
+    "atm_foreign_put",
+    "otm_foreign_call",
+    "otm_foreign_put",
+    "retail_otm_contrarian",
+    "pcr",
+    "basis",
+    "weekly_expiry_weight",
+    "gamma_exposure",
+    "open_interest_change",
+]
+
+MACRO_FEATURES = [
+    "sp500_futures_chg",
+    "nasdaq_futures_chg",
+    "vix",
+    "usd_krw_chg",
+    "us10y_chg",
+    "event_flag",
+]
+
+DYNAMIC_FEATURES_POOL = [
+    "tick_imbalance",
+    "atr_regime",
+    "trend_efficiency",
+    "poc_distance",
+    "support_resistance_distance",
+    "kyle_lambda",
+    "rv_iv_spread",
+    "bollinger_position",
+    "momentum_5m",
+    "volume_surge_ratio",
+    # v5 추가
+    "microprice",
+    "lob_imbalance_decay",
+    # v6.5 추가
+    "multi_timeframe_5m",
+    "multi_timeframe_15m",
+    # v7.0 추가
+    "hurst_exponent",
+    "vpin",
+    "cancel_ratio",
+    "round_number_distance",
+]
+
+# ── 시장 레짐 ─────────────────────────────────────────────────
+REGIME_RISK_ON  = "RISK_ON"
+REGIME_NEUTRAL  = "NEUTRAL"
+REGIME_RISK_OFF = "RISK_OFF"
+
+# 미시 레짐 (v6.5)
+MICRO_REGIME_TREND   = "추세장"
+MICRO_REGIME_RANGE   = "횡보장"
+MICRO_REGIME_VOLATILE = "급변장"
+MICRO_REGIME_MIXED   = "혼합"
+
+# ── 위클리 만기 ───────────────────────────────────────────────
+WEEKLY_EXPIRY_THURSDAY = "THU"
+WEEKLY_EXPIRY_MONDAY   = "MON"
+
+# ── 예측 방향 ─────────────────────────────────────────────────
+DIRECTION_UP    =  1
+DIRECTION_DOWN  = -1
+DIRECTION_FLAT  =  0
+
+# ── 포지션 상태 ───────────────────────────────────────────────
+POSITION_LONG  = "LONG"
+POSITION_SHORT = "SHORT"
+POSITION_FLAT  = "FLAT"
+
+# ── Circuit Breaker 상태 ──────────────────────────────────────
+CB_STATE_NORMAL    = "NORMAL"
+CB_STATE_PAUSED    = "PAUSED"     # 일시 정지
+CB_STATE_HALTED    = "HALTED"     # 당일 정지
+
+# ── 마디가 (v7.0 — 한국 심리적 저항) ─────────────────────────
+ROUND_NUMBER_UNITS = [2.5, 5.0, 10.0, 25.0, 50.0]

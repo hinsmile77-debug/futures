@@ -1,0 +1,42 @@
+# 보안
+config/secrets.py
+
+# Claude Code 세션 데이터
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# 데이터 (용량)
+data/raw/
+data/processed/
+data/db/
+model/horizons/
+model/scaler/
+
+# 로그
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 환경
+.env
+*.env
+venv/
+.venv/
