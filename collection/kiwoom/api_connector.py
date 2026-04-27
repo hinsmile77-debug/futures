@@ -239,14 +239,16 @@ class KiwoomAPI(QAxWidget):
         callback   (code, real_type, real_data) → None
         """
         fids = fid_list or DEFAULT_REAL_FIDS
-        # sOptType "0" = 기존 등록 초기화, "1" = 추가
+        # sOptType "0" = 기존 등록 초기화 후 등록, "1" = 기존 유지 추가
         self.dynamicCall(
             "SetRealReg(QString, QString, QString, QString)",
-            screen_no, code, fids, "1",
+            screen_no, code, fids, "0",
         )
+        print(f"[DBG RT-REG] SetRealReg code={code} type={real_type} screen={screen_no} fids={fids}", flush=True)
         if callback is not None:
             key = (code, real_type)
             self._real_callbacks.setdefault(key, []).append(callback)
+            print(f"[DBG RT-REG] 콜백 등록 key={key}  등록된콜백수={len(self._real_callbacks[key])}", flush=True)
         logger.info("실시간 등록: code=%s type=%s screen=%s", code, real_type, screen_no)
 
     def unregister_realtime(self, code: str, screen_no: str = "3000") -> None:
@@ -287,28 +289,50 @@ class KiwoomAPI(QAxWidget):
         """KOSPI200 선물 근월물 코드 반환.
 
         우선순위:
-          1. GetFutureList()        — 선물 전용 API (KOA 공식)
-          2. GetMasterCodeList("10") — 구형 방식, 모의투자에서 None 가능
-          3. 날짜 계산              — 항상 성공
+          0. GetFutureCodeByIndex(0) — KOA 공식 근월물 직접 반환
+          1. GetFutureList()         — 선물 전용 API (전체 목록)
+          2. GetMasterCodeList("10") — 구형 방식, 모의투자에서 빈값 가능
+          3. 날짜 계산               — 항상 성공 (fallback)
         """
-        # 1순위: 선물 전용 API
+        # 0순위: GetFutureCodeByIndex(0) — 근월물 직접 반환
+        try:
+            code = self.dynamicCall("GetFutureCodeByIndex(int)", 0).strip()
+            print(f"[DBG FC] GetFutureCodeByIndex(0)='{code}'", flush=True)
+            if code:
+                logger.info("근월물 코드 (GetFutureCodeByIndex): %s", code)
+                return code
+        except Exception as e:
+            print(f"[DBG FC] GetFutureCodeByIndex 예외: {e}", flush=True)
+
+        # 1순위: GetFutureList()
         raw = self.dynamicCall("GetFutureList()")
+        raw_preview = (raw[:300] if raw else "")
+        print(f"[DBG FC] GetFutureList() raw='{raw_preview}'", flush=True)
         if raw:
-            codes = sorted(c for c in raw.strip().split(";") if c.startswith("101W"))
-            if codes:
-                logger.info("근월물 코드 (GetFutureList): %s", codes[0])
-                return codes[0]
+            all_codes  = [c for c in raw.strip().split(";") if c]
+            w_codes    = sorted(c for c in all_codes if c.startswith("101W"))
+            first5     = all_codes[:5]
+            print(f"[DBG FC] GetFutureList 전체앞5={first5}  101W*={w_codes}", flush=True)
+            if w_codes:
+                logger.info("근월물 코드 (GetFutureList): %s", w_codes[0])
+                return w_codes[0]
 
-        # 2순위: 구형 종목 목록 API
+        # 2순위: GetMasterCodeList("10")
         raw = self.dynamicCall("GetMasterCodeList(QString)", "10")
+        raw_preview = (raw[:300] if raw else "")
+        print(f"[DBG FC] GetMasterCodeList('10') raw='{raw_preview}'", flush=True)
         if raw:
-            codes = sorted(c for c in raw.strip().split(";") if c.startswith("101W"))
-            if codes:
-                logger.info("근월물 코드 (GetMasterCodeList): %s", codes[0])
-                return codes[0]
+            all_codes = [c for c in raw.strip().split(";") if c]
+            w_codes   = sorted(c for c in all_codes if c.startswith("101W"))
+            first5    = all_codes[:5]
+            print(f"[DBG FC] GetMasterCodeList 전체앞5={first5}  101W*={w_codes}", flush=True)
+            if w_codes:
+                logger.info("근월물 코드 (GetMasterCodeList): %s", w_codes[0])
+                return w_codes[0]
 
-        # 3순위: 날짜 계산 — 항상 성공
+        # 3순위: 날짜 계산 — fallback
         code = self._nearest_futures_code_by_date()
+        print(f"[DBG FC] 날짜계산 fallback code='{code}'", flush=True)
         logger.info("근월물 코드 (날짜계산): %s", code)
         return code
 
