@@ -187,8 +187,9 @@ class TradingSystem:
             bar: {ts, open, high, low, close, volume, buy_vol, sell_vol,
                   bid_price, ask_price, bid_qty, ask_qty}
         """
-        ts    = bar.get("ts", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        close = bar["close"]
+        ts_raw = bar.get("ts", datetime.datetime.now())
+        ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+        close  = bar["close"]
 
         log_manager.signal(f"--- {ts} 분봉 파이프라인 시작 ---")
 
