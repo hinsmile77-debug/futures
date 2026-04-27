@@ -194,10 +194,10 @@ def card(title, widget, color=C['blue']):
 class PredictionPanel(QWidget):
     def __init__(self):
         super().__init__()
-        self._build()
         self._hz_labels = {}
         self._param_bars = {}
         self._param_vals = {}
+        self._build()
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -1309,10 +1309,148 @@ class MireukDashboard(QMainWindow):
 
 
 # ────────────────────────────────────────────────────────────
-# 진입점
+# main.py 인터페이스 어댑터
 # ────────────────────────────────────────────────────────────
+class DashboardAdapter:
+    """
+    main.py 가 사용하는 메서드를 MireukDashboard 에 연결하는 어댑터
+
+    main.py 호출 패턴:
+        self.dashboard = create_dashboard()
+        self.dashboard.show()
+        self.dashboard.append_sys_log(msg)
+        self.dashboard.update_supply_macro(vix, sp500_chg, regime)
+        self.dashboard.update_system_status(cb_state, latency_ms)
+        self.dashboard.btn_kill  (QPushButton 참조)
+    """
+
+    def __init__(self):
+        app = QApplication.instance() or QApplication(sys.argv)
+        app.setStyle("Fusion")
+        self._win = MireukDashboard()
+        # 긴급 정지 버튼을 외부에서 접근할 수 있도록 노출
+        self.btn_kill = self._win._make_kill_btn()
+
+    # ── 필수 메서드 ────────────────────────────────────────────
+    def show(self):
+        self._win.show()
+
+    def append_sys_log(self, msg: str):
+        """창1 시스템 로그에 메시지 추가"""
+        self._win.log_panel.append("all", "SYSTEM", msg)
+
+    def update_supply_macro(
+        self,
+        vix: float = 0.0,
+        sp500_chg: float = 0.0,
+        usd_krw: float = 0.0,
+        regime: str = "NEUTRAL",
+    ):
+        """수급/매크로 섹션 업데이트"""
+        # 헤더 레짐 배지 갱신
+        col_map = {
+            "RISK_ON":  C['green'],
+            "NEUTRAL":  C['orange'],
+            "RISK_OFF": C['red'],
+        }
+        col = col_map.get(regime, C['orange'])
+        self._win.lbl_regime.setText(regime)
+        self._win.lbl_regime.setStyleSheet(
+            f"background:{col};color:#fff;border-radius:3px;"
+            f"font-size:9px;font-weight:bold;padding:1px 6px;"
+        )
+        # 로그에도 기록
+        self._win.log_panel.append(
+            "all", "INFO",
+            f"[Regime] {regime} | VIX={vix:.1f} | SP500={sp500_chg:+.2%} | USD/KRW={usd_krw:+.2f}"
+        )
+
+    def update_system_status(
+        self,
+        cb_state: str = "NORMAL",
+        latency_ms: float = 0.0,
+        accuracy: float = 0.0,
+    ):
+        """시스템 상태 (Circuit Breaker, 지연, 정확도) 업데이트"""
+        col = C['green'] if cb_state == "NORMAL" else C['red']
+        self._win.log_panel.append(
+            "model", "SYSTEM",
+            f"CB={cb_state} | API지연={latency_ms:.0f}ms | 정확도={accuracy:.1%}"
+        )
+
+    def update_position(self, pos_data: dict):
+        """청산 패널 포지션 데이터 업데이트"""
+        self._win.exit_panel.update_data(pos_data)
+
+    def update_prediction(self, price: float, preds: dict, params: dict):
+        """멀티 호라이즌 예측 패널 업데이트"""
+        self._win.pred_panel.update_data(price, preds, params)
+
+    def update_entry(self, signal: str, conf: float, grade: str, checks: dict):
+        """진입 관리 패널 업데이트"""
+        self._win.entry_panel.update_data(signal, conf, grade, checks)
+
+    def update_divergence(self, div_data: dict):
+        """다이버전스 패널 업데이트"""
+        self._win.div_panel.update_data(div_data)
+
+    def update_shap(self, core_vals, dynamic_items, rank_vals):
+        """SHAP 피처 패널 업데이트"""
+        self._win.feat_panel.update_shap(core_vals, dynamic_items, rank_vals)
+
+    def append_trade_log(self, msg: str, val: str = ""):
+        """창3 주문/체결 로그"""
+        self._win.log_panel.append("order", "TRADE", msg, val)
+
+    def append_pnl_log(self, msg: str, val: str = ""):
+        """창4 손익 로그"""
+        self._win.log_panel.append("pnl", "PNL", msg, val)
+
+    def append_model_log(self, msg: str):
+        """창5 모델 로그"""
+        self._win.log_panel.append("model", "MODEL", msg)
+
+    def append_warn_log(self, msg: str):
+        """창2 경보 로그"""
+        self._win.log_panel.append("all", "WARN", msg)
+
+
+# ────────────────────────────────────────────────────────────
+# MireukDashboard 에 긴급 정지 버튼 생성 메서드 추가
+# ────────────────────────────────────────────────────────────
+def _make_kill_btn(self):
+    """외부(main.py)가 clicked 시그널을 연결할 수 있는 버튼 반환"""
+    if not hasattr(self, '_kill_btn'):
+        self._kill_btn = QPushButton("⛔ 긴급 정지 (Ctrl+Alt+K)")
+        self._kill_btn.setStyleSheet(
+            f"QPushButton{{background:#A32D2D;color:#fff;"
+            f"border:none;border-radius:4px;padding:8px;"
+            f"font-size:11px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:#C0392B;}}"
+        )
+    return self._kill_btn
+
+MireukDashboard._make_kill_btn = _make_kill_btn
+
+
+# ────────────────────────────────────────────────────────────
+# 진입점 함수들
+# ────────────────────────────────────────────────────────────
+def create_dashboard() -> DashboardAdapter:
+    """
+    main.py 에서 호출하는 팩토리 함수
+
+    사용법 (main.py):
+        self.dashboard = create_dashboard()
+        self.dashboard.show()
+        self.dashboard.append_sys_log("시스템 시작")
+        self.dashboard.btn_kill.clicked.connect(...)
+    """
+    return DashboardAdapter()
+
+
 def launch_dashboard(kiwoom=None):
-    """키움 API 객체를 받아 대시보드 실행"""
+    """단독 실행 또는 테스트용"""
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
     win = MireukDashboard(kiwoom=kiwoom)
