@@ -16,9 +16,9 @@ FID_BID_QTY         = 61    # 매수호가수량1
 FID_ASK_QTY         = 71    # 매도호가수량1
 FID_OI              = 291   # 미결제약정
 
-# 실시간 타입 코드
-RT_FUTURES          = "FC0"     # 선물 체결
-RT_FUTURES_HOGA     = "FH0"     # 선물 호가
+# 실시간 타입 코드 — OnReceiveRealData sRealType 파라미터는 한국어 명칭
+RT_FUTURES      = "선물시세"      # 선물 체결 틱 (FC0 해당)
+RT_FUTURES_HOGA = "선물호가잔량"   # 선물 호가 (FH0 해당)
 
 # ── 선물 계약 상수 ────────────────────────────────────────────
 FUTURES_TICK_SIZE   = 0.05      # 최소 호가 단위

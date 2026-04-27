@@ -205,7 +205,7 @@ class KiwoomAPI(QAxWidget):
         # GetRepeatCnt(sTrCode, sRecordName) — record_name은 콜백에서 수신한 값
         # GetCommData(sTrCode, sRQName, nIndex, sItem) — rq_name 사용
         actual_tr     = meta.get("tr_code", tr_code)
-        actual_record = meta.get("record_name") or rq_name  # 빈 문자열 → rq_name fallback
+        actual_record = meta.get("record_name", "")   # 빈 문자열 그대로 전달 (OPT50029 등)
         n_rows = self.get_repeat_cnt(actual_tr, actual_record)
         print(f"[DBG TR-5] GetRepeatCnt={n_rows} tr={actual_tr} record={actual_record!r}", flush=True)
         rows = [self._parse_tr_row(actual_tr, rq_name, i) for i in range(n_rows)]
