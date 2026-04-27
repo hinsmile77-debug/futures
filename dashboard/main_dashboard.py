@@ -256,12 +256,15 @@ def card(title, widget, color=C['blue']):
 class PredictionPanel(QWidget):
     def __init__(self):
         super().__init__()
+        self._build()
         self._hz_labels = {}
         self._param_bars = {}
         self._param_vals = {}
-        self._build()
 
     def _build(self):
+        self._hz_labels = {}
+        self._param_bars = {}
+        self._param_vals = {}
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
