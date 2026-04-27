@@ -2,16 +2,27 @@
 import datetime
 from typing import Optional
 
+from config.krx_holidays import is_krx_holiday
 
-# ── 시장 시간 판단 ─────────────────────────────────────────────
+
+# ── 거래일 / 시장 시간 판단 ────────────────────────────────────
+
+def is_trading_day(dt: Optional[datetime.datetime] = None) -> bool:
+    """KRX 거래일 여부 (평일 AND 공휴일 아님)."""
+    if dt is None:
+        dt = datetime.datetime.now()
+    d = dt.date() if isinstance(dt, datetime.datetime) else dt
+    return d.weekday() < 5 and not is_krx_holiday(d)
+
+
 def is_market_open(dt: Optional[datetime.datetime] = None) -> bool:
-    """현재 시각이 장 중인지 판단"""
+    """장 중 여부 (09:00~15:30, KRX 거래일)."""
     if dt is None:
         dt = datetime.datetime.now()
     t = dt.time()
     return (
         datetime.time(9, 0) <= t <= datetime.time(15, 30)
-        and dt.weekday() < 5   # 월~금
+        and is_trading_day(dt)
     )
 
 

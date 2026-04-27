@@ -156,6 +156,14 @@ class RealtimeData:
             return
 
         rows = result.get("rows", [])[:INIT_CANDLES]
+        if not rows:
+            logger.warning(
+                "[RealtimeData] OPT50029 응답 rows=0 — "
+                "장외 시간이거나 시뮬레이션 서버 미지원. "
+                "초기 분봉 없이 실시간 틱부터 자동 축적합니다."
+            )
+            return
+
         rows.reverse()   # API는 최신순 → 과거→최신으로 정렬
 
         for row in rows:

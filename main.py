@@ -58,7 +58,7 @@ from safety.kill_switch import KillSwitch
 from safety.emergency_exit import EmergencyExit
 from logging_system.log_manager import log_manager
 from utils.time_utils import (
-    is_market_open, get_time_zone, is_force_exit_time, is_new_entry_allowed,
+    is_market_open, is_trading_day, get_time_zone, is_force_exit_time, is_new_entry_allowed,
 )
 from utils.notify import notify
 from dashboard.main_dashboard import create_dashboard
@@ -426,6 +426,9 @@ class TradingSystem:
         self.dashboard.append_sys_log(f"시스템 시작 | 모드={self.mode} | 코드={self.realtime_data.code if self.realtime_data else '—'}")
         self.dashboard.update_system_status(cb_state="NORMAL", latency_ms=0.0)
 
+        # 이벤트 루프 진입 2초 후 초기 대기 상태 즉시 출력
+        QTimer.singleShot(2000, lambda: self._log_waiting_status(datetime.datetime.now()))
+
         logger.info("[System] Qt 이벤트 루프 진입")
         _qt_app.exec_()
 
@@ -439,18 +442,18 @@ class TradingSystem:
         if self._heartbeat_count % 10 == 0:
             self._log_waiting_status(now)
 
-        # 장 전 준비 (08:45~)
-        if not self._pre_market_done and now.time() >= datetime.time(8, 45):
+        # 장 전 준비 (08:45~, KRX 거래일만)
+        if not self._pre_market_done and now.time() >= datetime.time(8, 45) and is_trading_day(now):
             self.pre_market_setup()
             self.latency_sync.reset_daily()
             self._pre_market_done  = True
             self._daily_close_done = False
 
-        # 일일 마감 (15:40~)
+        # 일일 마감 (15:40~, KRX 거래일만)
         if (
             not self._daily_close_done
             and now.time() >= datetime.time(15, 40)
-            and now.weekday() < 5
+            and is_trading_day(now)
         ):
             if self.realtime_data:
                 self.realtime_data.stop()
@@ -468,12 +471,15 @@ class TradingSystem:
         t = now.time()
         if is_market_open(now):
             reason = "장중 — FC0 실시간 틱 대기 중 (분봉 파이프라인은 틱 수신 시 자동 실행)"
+        elif not is_trading_day(now):
+            if now.weekday() >= 5:
+                reason = "주말 — 다음 KRX 거래일 08:45 재개"
+            else:
+                reason = "공휴일·휴장일 — 다음 KRX 거래일 08:45 재개"
         elif t < datetime.time(8, 45):
             reason = "장 전 — 매크로 수집 대기 (08:45 자동 시작)"
         elif t < datetime.time(9, 0):
             reason = "장 개시 대기 — 09:00 분봉 파이프라인 시작 예정"
-        elif now.weekday() >= 5:
-            reason = "주말 — 다음 거래일 08:45 재개"
         else:
             reason = "장 마감 후 — 내일 08:45 매크로 수집 재개"
 
