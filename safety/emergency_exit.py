@@ -32,6 +32,7 @@ class EmergencyExit:
         self._position_tracker = position_tracker
         self._order_manager    = order_manager
         self._executed: bool   = False
+        self._futures_code: str = ""
 
     # ── 공개 인터페이스 ────────────────────────────────────────
 
@@ -94,6 +95,10 @@ class EmergencyExit:
     def set_order_manager(self, manager) -> None:
         self._order_manager = manager
 
+    def set_futures_code(self, code: str) -> None:
+        """청산 주문에 사용할 선물 종목 코드 설정."""
+        self._futures_code = code
+
     def reset(self):
         """장 시작 시 일간 리셋."""
         self._executed = False
@@ -110,7 +115,13 @@ class EmergencyExit:
             logger.warning("[EmergencyExit] PositionTracker 미설정 — 포지션 조회 불가")
             return None
         try:
-            return self._position_tracker.get_position()
+            pt = self._position_tracker
+            return {
+                "side":      pt.status,
+                "qty":       pt.quantity,
+                "avg_price": pt.entry_price,
+                "code":      self._futures_code,
+            }
         except Exception:
             logger.exception("[EmergencyExit] 포지션 조회 오류")
             return None

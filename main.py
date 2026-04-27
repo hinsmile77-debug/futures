@@ -119,6 +119,7 @@ class TradingSystem:
 
         code = self.kiwoom.get_nearest_futures_code()
         print(f"[DBG CK-3] 근월물 코드={code}", flush=True)
+        self.emergency_exit.set_futures_code(code)
 
         self.realtime_data = RealtimeData(
             api              = self.kiwoom,
