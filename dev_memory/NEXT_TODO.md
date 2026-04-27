@@ -10,15 +10,18 @@
 
 ## 즉시 확인 필요
 
-### [V1] GetRepeatCnt = 0 원인 최종 확인
-- **내용**: record_name 수정 후에도 0이 반환되는지 확인
-- **방법**: `meta["record_name"]` 출력 → 콜백 수신값 직접 확인
-- **기준**: GetRepeatCnt 반환값 > 0 (정상 분봉 데이터 수신)
-- **파일**: `collection/kiwoom/api_connector.py`
+### [V1] OPT50029 초기 분봉 로드 확인 (A0166000 적용 후)
+- **내용**: `GetRepeatCnt > 0` 확인 — 장 시작 직후 초기 분봉 수신 여부
+- **방법**: 09:00 직후 재시작 → `[DBG TR-5] GetRepeatCnt=N` 로그 확인
+- **기준**: rows > 0 (분봉 히스토리 정상 로드)
+- **파일**: `collection/kiwoom/realtime_data.py`, `api_connector.py`
 
-### [V2] 모의계좌 실시간 분봉 수신 동작 확인
-- **내용**: Phase 1 완료 기준 — 키움 API 1분봉 수신 + 파이프라인 end-to-end 동작
-- **기준**: `on_candle_closed` → `run_minute_pipeline` → 예측값 로그 출력
+### [V2] run_minute_pipeline 완전 검증 [DONE 2026-04-27]
+- `on_candle_closed` 호출 확인됨, 파이프라인 진입 확인됨
+
+### [V3] run_minute_pipeline 예측값 출력까지 완전 검증
+- **내용**: 특성 추출 → 모델 예측 → DB 저장 → 로그 출력 전 과정
+- **기준**: `[Signal] 방향=UP/DOWN conf=xx%` 로그 확인
 
 ---
 
@@ -53,9 +56,13 @@
 
 ## 알려진 잠재 이슈
 
-### [P1] GetCommData 응답 지연 — 모의투자 서버
-- GetMasterCodeList("10")이 모의투자 서버에서 None 반환 가능
-- 근월물 fallback: 날짜 계산 (3·6·9·12월 두 번째 목요일) 동작 확인 필요
+### [P0] [DBG] 출력문 정리 예정
+- `api_connector.py`, `realtime_data.py`, `main.py`에 디버그 print 잔존
+- 파이프라인 안정 확인 후 일괄 제거 (시스템 안정 전 제거 금지)
+
+### [P1] GetMasterCodeList("10") — 모의투자 서버 빈값
+- 모의투자 서버에서 None/빈값 반환 가능 (실 서버에서는 정상)
+- `GetFutureCodeByIndex(0)` 추가로 우선순위 보완됨 — 해결됨
 
 ### [P2] py37_32 패키지 호환성
 - scipy 1.5.4 고정 필수 (1.7.x DLL 충돌)

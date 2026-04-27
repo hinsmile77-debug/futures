@@ -4,7 +4,34 @@
 
 ---
 
-## 2026-04-27
+## 2026-04-27 (오전~오후 세션)
+
+**작업**: 실시간 분봉 파이프라인 end-to-end 정상 동작 달성
+
+### 핵심 버그 수정 (7건)
+
+| # | 파일 | 버그 | 수정 |
+|---|---|---|---|
+| B06 | api_connector.py | 근월물 코드 포맷 오류 (`101W06` 날짜계산 fallback) | `GetFutureCodeByIndex(0)` = `A0166000` 0순위 추가 |
+| B07 | constants.py | `RT_FUTURES="FC0"` — Kiwoom sRealType은 한국어 명칭 | `"FC0"` → `"선물시세"`, `"FH0"` → `"선물호가잔량"` |
+| B08 | api_connector.py | GetRepeatCnt record_name fallback 오류 (`or rq_name`) | `meta.get("record_name","")` — 빈 문자열 그대로 전달 |
+| B09 | emergency_exit.py | `PositionTracker.get_position()` 없음 (AttributeError) | 속성(`status`/`quantity`/`entry_price`) 직접 읽기 + `set_futures_code()` 추가 |
+| B10 | main.py | `run_minute_pipeline` — candle `ts`가 datetime 객체인데 str 취급 | `ts_raw.strftime(...)` 변환 추가 |
+| B11 | main_dashboard.py | `PredictionPanel._build()`에서 `_hz_labels` 미초기화 | `_build()` 맨 앞에서 dict 초기화 |
+| B12 | main_dashboard.py | `mk_val_label(align=...)` 파라미터 없음 (TypeError) | `align=None` 파라미터 추가 |
+
+### 기능 추가
+- 대시보드 헤더 우측: 해상도 아래에 커밋 해시(`#4a00e5e`) 표시
+
+### 검증 결과
+- `GetFutureCodeByIndex(0)='A0166000'` — 근월물 코드 확정
+- `type=선물시세` 틱 정상 수신 확인
+- `on_candle_closed` → `run_minute_pipeline` 호출 확인 (파이프라인 동작)
+- 대시보드 정상 기동 확인
+
+---
+
+## 2026-04-27 (새벽 세션)
 
 **작업**: dev_memory 구조 신설 + CLAUDE.md 작성
 - Claude 프로젝트 메모리(`project_futures.md`, `feedback_kiwoom_com.md`)를 dev_memory로 이전

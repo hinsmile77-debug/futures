@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-04-27
+> 마지막 업데이트: 2026-04-27 (오후 세션)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -29,13 +29,26 @@
 
 ---
 
+## 2026-04-27 세션 주요 수정
+
+| 항목 | 수정 내용 |
+|---|---|
+| 근월물 코드 | `GetFutureCodeByIndex(0)` 0순위 추가 → `A0166000` 확정 (구: 날짜계산 fallback `101W06`) |
+| 실시간 타입명 | `RT_FUTURES="FC0"` → `"선물시세"`, `RT_FUTURES_HOGA="FH0"` → `"선물호가잔량"` |
+| GetRepeatCnt | `or rq_name` fallback 제거 → `""` 빈 문자열 그대로 전달 |
+| EmergencyExit | `get_position()` 없음 → 속성 직접 읽기 + `set_futures_code()` 추가 |
+| run_minute_pipeline | candle `ts`(datetime) → `strftime` 문자열 변환 |
+| 대시보드 | PredictionPanel `_build()` 맨 앞에서 dict 초기화 (IDE 순서 복구 방지) |
+| 대시보드 | `mk_val_label` `align` 파라미터 추가 |
+| 대시보드 | 헤더 우측 커밋 해시 표시 (해상도 아래) |
+
 ## 2026-04-26 세션 주요 수정
 
 | 항목 | 수정 내용 |
 |---|---|
 | TR 코드 | OPT10080 → **OPT50029** (`config/constants.py`) |
 | COM 콜백 | 메타데이터만 저장 + QEventLoop.quit(), 실제 API 호출은 exec_() 복귀 후 |
-| GetRepeatCnt | 2번째 파라미터: rq_name → **record_name** (fallback: `meta.get("record_name") or rq_name`) |
+| GetRepeatCnt | 2번째 파라미터: rq_name → **record_name** |
 | 근월물 조회 | GetFutureList() 우선 → GetMasterCodeList("10") → 날짜 계산 fallback |
 | GetCommDataEx | → **GetCommData** (서명 오류 수정) |
 | 대시보드 | `create_dashboard()` 시작 시 show(), 5분마다 대기 상태 로그 |
@@ -46,8 +59,9 @@
 
 | 이슈 | 원인 | 상태 |
 |---|---|---|
-| GetRepeatCnt = 0 | record_name 수정 후 최종 확인 필요 | ⚠️ 검증 대기 |
-| 모의투자 미실행 | 실시간 분봉 수신 → 파이프라인 동작 미확인 | ⏳ |
+| OPT50029 초기 분봉 rows=0 | `A0166000` 코드 적용 후 최종 확인 필요 | ⚠️ 검증 대기 |
+| run_minute_pipeline 완전 검증 | 예측값 DB 저장 + 로그 출력까지 확인 필요 | ⏳ |
+| [DBG] 출력문 정리 | 디버그 print 잔존 | 🔧 안정화 후 제거 |
 | Walk-Forward 26주 | 실거래 데이터 미확보 | ⏳ 장기 과제 |
 
 ---
