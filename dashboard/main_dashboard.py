@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QProgressBar, QTabWidget,
     QTextEdit, QFrame, QSplitter, QScrollArea, QGroupBox,
-    QComboBox, QSlider, QCheckBox, QSizePolicy
+    QComboBox, QSlider, QCheckBox, QSizePolicy, QDesktopWidget
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
@@ -30,6 +30,57 @@ from PyQt5.QtGui import (
     QFont, QColor, QPalette, QPainter, QBrush, QPen,
     QLinearGradient, QFontDatabase, QIcon
 )
+
+
+# ────────────────────────────────────────────────────────────
+# 해상도 감지 + 동적 폰트·여백 스케일링
+# ────────────────────────────────────────────────────────────
+class ScreenScale:
+    """
+    화면 해상도를 감지해 폰트/여백을 자동 조정
+
+    기준 해상도: 1920×1080 (FHD)
+      HD  ( 768p): scale 0.85 → 15% 축소
+      FHD (1080p): scale 1.00 → 기본
+      QHD (1440p): scale 1.30 → 30% 확대
+      4K  (2160p): scale 1.80 → 80% 확대
+    """
+    _scale: float = 1.0
+    _sw: int = 1920
+    _sh: int = 1080
+
+    @classmethod
+    def init(cls):
+        app = QApplication.instance()
+        if app is None:
+            return
+        screen = app.primaryScreen()
+        if screen is None:
+            return
+        geo     = screen.availableGeometry()
+        cls._sw = geo.width()
+        cls._sh = geo.height()
+        # 세로 해상도 기준 스케일 (울트라와이드 오작동 방지)
+        raw     = cls._sh / 1080.0
+        cls._scale = max(0.80, min(2.20, raw))
+        print(f"[Dashboard] 화면 해상도 {cls._sw}×{cls._sh} — 스케일 {cls._scale:.2f}×")
+
+    @classmethod
+    def f(cls, size: int) -> int:
+        """폰트 사이즈 스케일 적용 (최소 8px)"""
+        return max(8, round(size * cls._scale))
+
+    @classmethod
+    def p(cls, px: int) -> int:
+        """여백·위젯 크기 스케일 적용 (최소 2px)"""
+        return max(2, round(px * cls._scale))
+
+    @classmethod
+    def info(cls) -> str:
+        return f"{cls._sw}×{cls._sh} (scale={cls._scale:.2f})"
+
+
+S = ScreenScale   # 짧은 별칭으로 사용
 
 # ── 색상 팔레트 (다크 테마) ──────────────────────────────────
 C = {
@@ -48,28 +99,30 @@ C = {
     "yellow":   "#E3B341",
 }
 
-# ── 공통 스타일 ──────────────────────────────────────────────
-STYLE_BASE = f"""
+
+def make_style() -> str:
+    """해상도 감지 후 동적 폰트 사이즈 적용 스타일시트 생성"""
+    return f"""
     QMainWindow, QWidget {{
         background-color: {C['bg']};
         color: {C['text']};
-        font-family: 'Consolas', 'D2Coding', monospace;
-        font-size: 11px;
+        font-family: 'D2Coding', 'Consolas', 'Malgun Gothic', monospace;
+        font-size: {S.f(12)}px;
     }}
     QGroupBox {{
         border: 1px solid {C['border']};
-        border-radius: 6px;
-        margin-top: 8px;
-        padding: 6px;
+        border-radius: {S.p(6)}px;
+        margin-top: {S.p(8)}px;
+        padding: {S.p(6)}px;
         font-weight: bold;
         color: {C['text2']};
-        font-size: 10px;
+        font-size: {S.f(11)}px;
         letter-spacing: 1px;
     }}
     QGroupBox::title {{
         subcontrol-origin: margin;
-        left: 8px;
-        padding: 0 4px;
+        left: {S.p(8)}px;
+        padding: 0 {S.p(4)}px;
     }}
     QTabWidget::pane {{
         border: 1px solid {C['border']};
@@ -78,9 +131,9 @@ STYLE_BASE = f"""
     QTabBar::tab {{
         background: {C['bg3']};
         color: {C['text2']};
-        padding: 6px 14px;
+        padding: {S.p(7)}px {S.p(16)}px;
         border: none;
-        font-size: 10px;
+        font-size: {S.f(11)}px;
         letter-spacing: 0.5px;
     }}
     QTabBar::tab:selected {{
@@ -92,17 +145,17 @@ STYLE_BASE = f"""
         background: {C['bg']};
         color: {C['text']};
         border: 1px solid {C['border']};
-        border-radius: 4px;
-        font-family: 'Consolas', monospace;
-        font-size: 10px;
+        border-radius: {S.p(4)}px;
+        font-family: 'D2Coding', 'Consolas', monospace;
+        font-size: {S.f(11)}px;
     }}
     QPushButton {{
         background: {C['bg3']};
         color: {C['text']};
         border: 1px solid {C['border']};
-        border-radius: 4px;
-        padding: 5px 12px;
-        font-size: 10px;
+        border-radius: {S.p(4)}px;
+        padding: {S.p(6)}px {S.p(14)}px;
+        font-size: {S.f(11)}px;
     }}
     QPushButton:hover {{
         background: {C['border']};
@@ -110,30 +163,33 @@ STYLE_BASE = f"""
     QProgressBar {{
         background: {C['bg3']};
         border: none;
-        border-radius: 3px;
-        height: 6px;
+        border-radius: {S.p(3)}px;
+        height: {S.p(6)}px;
     }}
     QProgressBar::chunk {{
-        border-radius: 3px;
+        border-radius: {S.p(3)}px;
     }}
     QScrollBar:vertical {{
         background: {C['bg']};
-        width: 6px;
+        width: {S.p(7)}px;
     }}
     QScrollBar::handle:vertical {{
         background: {C['border']};
-        border-radius: 3px;
+        border-radius: {S.p(3)}px;
+    }}
+    QLabel {{
+        font-size: {S.f(12)}px;
     }}
 """
 
 
 # ────────────────────────────────────────────────────────────
-# 공통 위젯 헬퍼
+# 공통 위젯 헬퍼 (모두 S.f() 로 동적 스케일)
 # ────────────────────────────────────────────────────────────
-def mk_label(text, color=None, size=11, bold=False, align=Qt.AlignLeft):
+def mk_label(text, color=None, size=12, bold=False, align=Qt.AlignLeft):
     lb = QLabel(text)
     lb.setAlignment(align)
-    style = f"font-size:{size}px;"
+    style = f"font-size:{S.f(size)}px;"
     if color:
         style += f"color:{color};"
     if bold:
@@ -142,18 +198,23 @@ def mk_label(text, color=None, size=11, bold=False, align=Qt.AlignLeft):
     return lb
 
 
-def mk_val_label(text="——", color=C['text'], size=14, bold=True, align=None):
+def mk_val_label(text="——", color=C['text'], size=15, bold=True, align=None):
     lb = QLabel(text)
-    lb.setAlignment((align | Qt.AlignVCenter) if align is not None else Qt.AlignRight | Qt.AlignVCenter)
-    lb.setStyleSheet(f"font-size:{size}px;color:{color};font-weight:{'bold' if bold else 'normal'};")
+    a  = align if align else (Qt.AlignRight | Qt.AlignVCenter)
+    lb.setAlignment(a)
+    lb.setStyleSheet(
+        f"font-size:{S.f(size)}px;color:{color};"
+        f"font-weight:{'bold' if bold else 'normal'};"
+    )
     return lb
 
 
-def mk_badge(text, bg, fg="#ffffff", size=9):
+def mk_badge(text, bg, fg="#ffffff", size=10):
     lb = QLabel(f"  {text}  ")
     lb.setStyleSheet(
-        f"background:{bg};color:{fg};border-radius:3px;"
-        f"font-size:{size}px;font-weight:bold;padding:1px 2px;"
+        f"background:{bg};color:{fg};border-radius:{S.p(3)}px;"
+        f"font-size:{S.f(size)}px;font-weight:bold;"
+        f"padding:{S.p(1)}px {S.p(3)}px;"
     )
     return lb
 
@@ -165,9 +226,9 @@ def mk_sep():
     return line
 
 
-def mk_prog(color=C['green'], h=5):
+def mk_prog(color=C['green'], h=6):
     pb = QProgressBar()
-    pb.setFixedHeight(h)
+    pb.setFixedHeight(S.p(h))
     pb.setTextVisible(False)
     pb.setStyleSheet(f"QProgressBar::chunk{{background:{color};}}")
     return pb
@@ -176,14 +237,15 @@ def mk_prog(color=C['green'], h=5):
 def card(title, widget, color=C['blue']):
     gb = QGroupBox(f"● {title}")
     gb.setStyleSheet(
-        f"QGroupBox{{border:1px solid {C['border']};border-radius:6px;"
-        f"margin-top:8px;padding:8px;color:{color};"
-        f"font-size:10px;font-weight:bold;letter-spacing:1px;}}"
-        f"QGroupBox::title{{subcontrol-origin:margin;left:8px;padding:0 4px;}}"
+        f"QGroupBox{{border:1px solid {C['border']};border-radius:{S.p(6)}px;"
+        f"margin-top:{S.p(8)}px;padding:{S.p(8)}px;color:{color};"
+        f"font-size:{S.f(11)}px;font-weight:bold;letter-spacing:1px;}}"
+        f"QGroupBox::title{{subcontrol-origin:margin;"
+        f"left:{S.p(8)}px;padding:0 {S.p(4)}px;}}"
     )
     lay = QVBoxLayout(gb)
-    lay.setContentsMargins(4, 12, 4, 4)
-    lay.setSpacing(4)
+    lay.setContentsMargins(S.p(4), S.p(14), S.p(4), S.p(4))
+    lay.setSpacing(S.p(4))
     lay.addWidget(widget)
     return gb
 
@@ -1114,9 +1176,11 @@ class MireukDashboard(QMainWindow):
     def __init__(self, kiwoom=None):
         super().__init__()
         self.kiwoom = kiwoom
+        # ── 해상도 감지 (UI 빌드 전에 반드시 먼저) ──────────────
+        S.init()
         self.setWindowTitle("미륵이 v7.0  |  KOSPI 200 선물 예측 시스템")
-        self.resize(1680, 1000)
-        self.setStyleSheet(STYLE_BASE)
+        self.resize(S.p(1680), S.p(1000))
+        self.setStyleSheet(make_style())
         self._build_ui()
         self._start_sim_timer()
 
@@ -1129,16 +1193,31 @@ class MireukDashboard(QMainWindow):
 
         # ── 상단 헤더 ──────────────────────────────────────────
         header = QHBoxLayout()
-        title = mk_label("⚡ 미륵이  v7.0", C['text'], 15, True)
-        self.lbl_time   = mk_label("——:——:——", C['text2'], 11)
-        self.lbl_regime = mk_badge("NEUTRAL", C['orange'], "#fff", 9)
-        self.lbl_cycle  = mk_badge("목위클리 D-2", C['purple'], "#fff", 9)
-        self.lbl_gamma  = mk_badge("감마스퀴즈", C['orange'], "#fff", 9)
-        self.lbl_pos    = mk_badge("FLAT", C['text2'], "#fff", 9)
+        title = mk_label("⚡ 미륵이  v7.0", C['text'], 16, True)
+
+        # ── 실시간 현재가 (키움 API 연동 핵심) ──────────────────
+        self.lbl_realtime_price = mk_label("——.——", C['cyan'], 22, True)
+        self.lbl_price_change   = mk_label("——", C['text2'], 14, True)
+        self.lbl_futures_code   = mk_label("F202606", C['text2'], 11)
+
+        price_box = QHBoxLayout()
+        price_box.setSpacing(S.p(6))
+        price_box.addWidget(self.lbl_futures_code)
+        price_box.addWidget(self.lbl_realtime_price)
+        price_box.addWidget(self.lbl_price_change)
+
+        self.lbl_time   = mk_label("——:——:——", C['text2'], 12)
+        self.lbl_regime = mk_badge("NEUTRAL", C['orange'], "#fff", 11)
+        self.lbl_cycle  = mk_badge("목위클리 D-2", C['purple'], "#fff", 11)
+        self.lbl_gamma  = mk_badge("감마스퀴즈", C['orange'], "#fff", 11)
+        self.lbl_pos    = mk_badge("FLAT", C['text2'], "#fff", 11)
+        self.lbl_scale  = mk_label(S.info(), C['text2'], 9)  # 해상도 디버그
 
         header.addWidget(title)
+        header.addLayout(price_box)
         header.addStretch()
-        for w in [self.lbl_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_time]:
+        for w in [self.lbl_regime, self.lbl_cycle, self.lbl_gamma,
+                  self.lbl_pos, self.lbl_scale, self.lbl_time]:
             header.addWidget(w)
         root.addLayout(header)
         root.addWidget(mk_sep())
@@ -1196,8 +1275,36 @@ class MireukDashboard(QMainWindow):
         sc.setWidget(widget)
         sc.setWidgetResizable(True)
         sc.setFrameShape(QFrame.NoFrame)
-        widget.setMinimumWidth(500)
+        widget.setMinimumWidth(S.p(500))
         return sc
+
+    def update_price(self, price: float, change: float = 0.0,
+                     code: str = "F202606"):
+        """
+        키움 API 실시간 현재가 반영
+        main.py 의 _on_candle_closed 콜백에서 호출
+
+        Args:
+            price:  현재가 (예: 1003.30)
+            change: 전일 대비 등락 (예: +3.10)
+            code:   선물 코드 (예: F202606, A0166000)
+        """
+        self.lbl_realtime_price.setText(f"{price:,.2f}")
+        col = C['green'] if change >= 0 else C['red']
+        sign = "▲" if change >= 0 else "▼"
+        self.lbl_price_change.setText(f"{sign} {abs(change):.2f}")
+        self.lbl_price_change.setStyleSheet(
+            f"font-size:{S.f(14)}px;color:{col};font-weight:bold;"
+        )
+        self.lbl_realtime_price.setStyleSheet(
+            f"font-size:{S.f(22)}px;color:{col};font-weight:bold;"
+        )
+        self.lbl_futures_code.setText(code)
+        # 예측 패널 현재가도 동기화
+        self.pred_panel.lbl_price.setText(f"{price:,.2f}")
+        self.pred_panel.lbl_price.setStyleSheet(
+            f"font-size:{S.f(20)}px;color:{col};font-weight:bold;"
+        )
 
     # ── 시뮬레이션 타이머 ──────────────────────────────────────
     def _start_sim_timer(self):
@@ -1381,6 +1488,20 @@ class DashboardAdapter:
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""
         self._win.exit_panel.update_data(pos_data)
+
+    def update_price(self, price: float, change: float = 0.0,
+                     code: str = "F202606"):
+        """
+        키움 실시간 현재가 → 헤더 + 예측 패널 동시 반영
+
+        main.py _on_candle_closed 콜백에서 호출:
+            self.dashboard.update_price(
+                price  = bar['close'],
+                change = bar['close'] - bar.get('prev_close', bar['close']),
+                code   = self.realtime_data.code,
+            )
+        """
+        self._win.update_price(price, change, code)
 
     def update_prediction(self, price: float, preds: dict, params: dict):
         """멀티 호라이즌 예측 패널 업데이트"""
