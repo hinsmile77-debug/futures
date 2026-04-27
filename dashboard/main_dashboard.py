@@ -142,9 +142,9 @@ def mk_label(text, color=None, size=11, bold=False, align=Qt.AlignLeft):
     return lb
 
 
-def mk_val_label(text="——", color=C['text'], size=14, bold=True):
+def mk_val_label(text="——", color=C['text'], size=14, bold=True, align=None):
     lb = QLabel(text)
-    lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    lb.setAlignment((align | Qt.AlignVCenter) if align is not None else Qt.AlignRight | Qt.AlignVCenter)
     lb.setStyleSheet(f"font-size:{size}px;color:{color};font-weight:{'bold' if bold else 'normal'};")
     return lb
 
