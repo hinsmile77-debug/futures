@@ -1,523 +1,1325 @@
-# dashboard/main_dashboard.py — 5창 실시간 모니터링 대시보드
+# dashboard/main_dashboard.py
+# 미륵이 v7.0 — 풀 통합 대시보드
+# PyQt5 기반 7개 패널 완전 구현
 """
-PyQt5 기반 5개 패널 통합 대시보드
-
-패널 구성:
-  Panel 1 (좌상) — 실시간 시세 + 포지션 현황
-  Panel 2 (우상) — 앙상블 신호 + 신뢰도 + 체크리스트
-  Panel 3 (중앙) — 분봉 캔들 + 지표 차트
-  Panel 4 (좌하) — 거래 로그 (진입/청산/손익)
-  Panel 5 (우하) — 시스템 상태 (CB·레짐·수급·매크로)
-
-Python 3.7 32-bit + PyQt5 호환
-키움 OpenAPI+와 동일 프로세스에서 실행
+구현 패널:
+  1. 멀티 호라이즌 예측 + 파라미터 분석
+  2. 다이버전스 지수 + 포지션 매트릭스
+  3. 동적 피처 관리 패널 (SHAP)
+  4. 청산 관리 패널
+  5. 진입 관리 패널
+  6. 알파 리서치 봇 패널
+  7. 5층 로그 시스템
 """
+
 import sys
-import logging
-import datetime
-from typing import Optional, Dict, List
-from collections import deque
+import random
+import math
+from datetime import datetime
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QLabel, QPushButton, QProgressBar, QTabWidget,
+    QTextEdit, QFrame, QSplitter, QScrollArea, QGroupBox,
+    QComboBox, QSlider, QCheckBox, QSizePolicy
+)
+from PyQt5.QtCore import (
+    Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
+    QEasingCurve, QRect
+)
+from PyQt5.QtGui import (
+    QFont, QColor, QPalette, QPainter, QBrush, QPen,
+    QLinearGradient, QFontDatabase, QIcon
+)
 
-try:
-    from PyQt5.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QGridLayout,
-        QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QFrame,
-        QSplitter, QPushButton, QGroupBox,
-    )
-    from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-    from PyQt5.QtGui import QColor, QPalette, QFont
-    _QT_OK = True
-except ImportError:
-    _QT_OK = False
+# ── 색상 팔레트 (다크 테마) ──────────────────────────────────
+C = {
+    "bg":       "#0D1117",
+    "bg2":      "#161B22",
+    "bg3":      "#21262D",
+    "border":   "#30363D",
+    "text":     "#E6EDF3",
+    "text2":    "#8B949E",
+    "green":    "#3FB950",
+    "red":      "#F85149",
+    "blue":     "#58A6FF",
+    "orange":   "#D29922",
+    "purple":   "#A371F7",
+    "cyan":     "#39D3BB",
+    "yellow":   "#E3B341",
+}
 
-logger = logging.getLogger("DASHBOARD")
-
-# ── 색상 팔레트 (다크 테마) ──────────────────────────────────────
-_BG     = "#1a1a2e"
-_BG2    = "#16213e"
-_BG3    = "#0f3460"
-_GREEN  = "#00ff87"
-_RED    = "#ff4757"
-_YELLOW = "#ffa502"
-_WHITE  = "#e8e8e8"
-_GRAY   = "#808080"
-_BLUE   = "#2196f3"
-
-_BASE_STYLE = f"""
-    QMainWindow, QWidget {{ background-color: {_BG}; color: {_WHITE}; }}
-    QGroupBox {{
-        border: 1px solid {_BG3};
-        border-radius: 4px;
-        margin-top: 8px;
-        font-weight: bold;
-        color: {_YELLOW};
-    }}
-    QGroupBox::title {{ subcontrol-origin: margin; left: 8px; }}
-    QLabel {{ color: {_WHITE}; }}
-    QTextEdit {{
-        background-color: {_BG2};
-        color: {_WHITE};
-        border: 1px solid {_BG3};
-        font-family: Consolas, monospace;
+# ── 공통 스타일 ──────────────────────────────────────────────
+STYLE_BASE = f"""
+    QMainWindow, QWidget {{
+        background-color: {C['bg']};
+        color: {C['text']};
+        font-family: 'Consolas', 'D2Coding', monospace;
         font-size: 11px;
     }}
-    QPushButton {{
-        background-color: {_BG3};
-        color: {_WHITE};
-        border: 1px solid {_BLUE};
-        border-radius: 3px;
-        padding: 4px 10px;
+    QGroupBox {{
+        border: 1px solid {C['border']};
+        border-radius: 6px;
+        margin-top: 8px;
+        padding: 6px;
+        font-weight: bold;
+        color: {C['text2']};
+        font-size: 10px;
+        letter-spacing: 1px;
     }}
-    QPushButton:hover {{ background-color: {_BLUE}; }}
+    QGroupBox::title {{
+        subcontrol-origin: margin;
+        left: 8px;
+        padding: 0 4px;
+    }}
+    QTabWidget::pane {{
+        border: 1px solid {C['border']};
+        background: {C['bg2']};
+    }}
+    QTabBar::tab {{
+        background: {C['bg3']};
+        color: {C['text2']};
+        padding: 6px 14px;
+        border: none;
+        font-size: 10px;
+        letter-spacing: 0.5px;
+    }}
+    QTabBar::tab:selected {{
+        background: {C['bg2']};
+        color: {C['text']};
+        border-bottom: 2px solid {C['blue']};
+    }}
+    QTextEdit {{
+        background: {C['bg']};
+        color: {C['text']};
+        border: 1px solid {C['border']};
+        border-radius: 4px;
+        font-family: 'Consolas', monospace;
+        font-size: 10px;
+    }}
+    QPushButton {{
+        background: {C['bg3']};
+        color: {C['text']};
+        border: 1px solid {C['border']};
+        border-radius: 4px;
+        padding: 5px 12px;
+        font-size: 10px;
+    }}
+    QPushButton:hover {{
+        background: {C['border']};
+    }}
+    QProgressBar {{
+        background: {C['bg3']};
+        border: none;
+        border-radius: 3px;
+        height: 6px;
+    }}
+    QProgressBar::chunk {{
+        border-radius: 3px;
+    }}
+    QScrollBar:vertical {{
+        background: {C['bg']};
+        width: 6px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {C['border']};
+        border-radius: 3px;
+    }}
 """
 
 
-class _ValueLabel(QLabel if _QT_OK else object):
-    """수치 표시 레이블 — 색상 자동 변환"""
-    def set_value(self, text: str, color: str = _WHITE):
-        if _QT_OK:
-            self.setText(text)
-            self.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 13px;")
+# ────────────────────────────────────────────────────────────
+# 공통 위젯 헬퍼
+# ────────────────────────────────────────────────────────────
+def mk_label(text, color=None, size=11, bold=False, align=Qt.AlignLeft):
+    lb = QLabel(text)
+    lb.setAlignment(align)
+    style = f"font-size:{size}px;"
+    if color:
+        style += f"color:{color};"
+    if bold:
+        style += "font-weight:bold;"
+    lb.setStyleSheet(style)
+    return lb
 
-    def set_pnl(self, value: float, suffix: str = "pt"):
-        color = _GREEN if value > 0 else (_RED if value < 0 else _WHITE)
-        self.set_value(f"{value:+.2f}{suffix}", color)
+
+def mk_val_label(text="——", color=C['text'], size=14, bold=True):
+    lb = QLabel(text)
+    lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    lb.setStyleSheet(f"font-size:{size}px;color:{color};font-weight:{'bold' if bold else 'normal'};")
+    return lb
 
 
-class MainDashboard(QMainWindow if _QT_OK else object):
-    """
-    5창 통합 대시보드
+def mk_badge(text, bg, fg="#ffffff", size=9):
+    lb = QLabel(f"  {text}  ")
+    lb.setStyleSheet(
+        f"background:{bg};color:{fg};border-radius:3px;"
+        f"font-size:{size}px;font-weight:bold;padding:1px 2px;"
+    )
+    return lb
 
-    사용:
-        app  = QApplication(sys.argv)
-        dash = MainDashboard()
-        dash.show()
 
-    업데이트:
-        dash.update_price(380.0, volume=1500)
-        dash.update_signal(direction=1, confidence=0.72, grade="B")
-        dash.update_position(status="LONG", qty=2, entry=379.5, pnl=0.5)
-        dash.append_trade_log("14:02 [LONG] 2계약 @ 379.50 진입")
-        dash.update_system_status(cb_state="NORMAL", regime="추세장", ...)
-    """
+def mk_sep():
+    line = QFrame()
+    line.setFrameShape(QFrame.HLine)
+    line.setStyleSheet(f"color:{C['border']};")
+    return line
 
-    def __init__(self, parent=None):
-        if not _QT_OK:
-            logger.warning("[Dashboard] PyQt5 미설치 — 텍스트 모드로 동작")
+
+def mk_prog(color=C['green'], h=5):
+    pb = QProgressBar()
+    pb.setFixedHeight(h)
+    pb.setTextVisible(False)
+    pb.setStyleSheet(f"QProgressBar::chunk{{background:{color};}}")
+    return pb
+
+
+def card(title, widget, color=C['blue']):
+    gb = QGroupBox(f"● {title}")
+    gb.setStyleSheet(
+        f"QGroupBox{{border:1px solid {C['border']};border-radius:6px;"
+        f"margin-top:8px;padding:8px;color:{color};"
+        f"font-size:10px;font-weight:bold;letter-spacing:1px;}}"
+        f"QGroupBox::title{{subcontrol-origin:margin;left:8px;padding:0 4px;}}"
+    )
+    lay = QVBoxLayout(gb)
+    lay.setContentsMargins(4, 12, 4, 4)
+    lay.setSpacing(4)
+    lay.addWidget(widget)
+    return gb
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 1: 멀티 호라이즌 예측 + 파라미터 분석
+# ────────────────────────────────────────────────────────────
+class PredictionPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._build()
+        self._hz_labels = {}
+        self._param_bars = {}
+        self._param_vals = {}
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        # 상단: 현재가 + 신호
+        top = QHBoxLayout()
+        self.lbl_price   = mk_val_label("——.——", C['text'], 20)
+        self.lbl_signal  = mk_val_label("대기중", C['text2'], 16)
+        self.lbl_conf    = mk_label("신뢰도 — %", C['text2'])
+        top.addWidget(mk_label("현재가", C['text2']))
+        top.addWidget(self.lbl_price, 2)
+        top.addWidget(self.lbl_signal, 2)
+        top.addWidget(self.lbl_conf, 1)
+        lay.addLayout(top)
+        lay.addWidget(mk_sep())
+
+        # 멀티 호라이즌 카드 6개
+        hz_title = mk_label("멀티 호라이즌 예측 ( 1 · 3 · 5 · 10 · 15 · 30분 )", C['blue'], 10, True)
+        lay.addWidget(hz_title)
+        hgrid = QGridLayout()
+        hgrid.setSpacing(4)
+        for i, hname in enumerate(["1분","3분","5분","10분","15분","30분"]):
+            frame = QFrame()
+            frame.setFixedHeight(72)
+            frame.setStyleSheet(
+                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
+                f"border-radius:6px;}}"
+            )
+            fl = QVBoxLayout(frame)
+            fl.setContentsMargins(6, 4, 6, 4)
+            hl = mk_label(hname, C['text2'], 10, align=Qt.AlignCenter)
+            arr = mk_label("—", C['text2'], 22, True, Qt.AlignCenter)
+            pct = mk_label("—%", C['text2'], 10, align=Qt.AlignCenter)
+            fl.addWidget(hl)
+            fl.addWidget(arr)
+            fl.addWidget(pct)
+            self._hz_labels[hname] = (frame, arr, pct)
+            hgrid.addWidget(frame, 0, i)
+        lay.addLayout(hgrid)
+        lay.addWidget(mk_sep())
+
+        # 파라미터 SHAP 중요도
+        param_title = mk_label("파라미터 중요도 (SHAP 실시간)", C['purple'], 10, True)
+        lay.addWidget(param_title)
+        params = [
+            ("CVD 다이버전스", "CORE", C['cyan']),
+            ("VWAP 위치",      "CORE", C['cyan']),
+            ("OFI 불균형",     "CORE", C['cyan']),
+            ("외인 콜순매수",  "SHAP", C['purple']),
+            ("다이버전스 지수","SHAP", C['purple']),
+            ("프로그램 비차익","SHAP", C['purple']),
+        ]
+        pgrid = QGridLayout()
+        pgrid.setSpacing(3)
+        for i, (name, tag, col) in enumerate(params):
+            badge = mk_badge(tag, col if tag=="CORE" else C['bg3'],
+                             C['bg'] if tag=="CORE" else C['purple'])
+            nlab  = mk_label(name, C['text'], 10)
+            bar   = mk_prog(col, 8)
+            vlab  = mk_val_label("—%", col, 11)
+            pgrid.addWidget(badge, i, 0)
+            pgrid.addWidget(nlab,  i, 1)
+            pgrid.addWidget(bar,   i, 2)
+            pgrid.addWidget(vlab,  i, 3)
+            self._param_bars[name] = bar
+            self._param_vals[name] = vlab
+        lay.addLayout(pgrid)
+
+        # 상관계수
+        lay.addWidget(mk_sep())
+        lay.addWidget(mk_label("파라미터 상관계수", C['orange'], 10, True))
+        self.corr_label = mk_label("외인콜+0.74  다이버전스+0.68  프로그램+0.66  OFI+0.62", C['text2'], 9)
+        lay.addWidget(self.corr_label)
+
+    def update_data(self, price, preds, params):
+        self.lbl_price.setText(f"{price:.2f}")
+
+        # 앙상블 방향
+        ups = sum(1 for v in preds.values() if v['signal'] == 1)
+        dns = sum(1 for v in preds.values() if v['signal'] == -1)
+        if ups >= 4:
+            self.lbl_signal.setText("▲ 매수")
+            self.lbl_signal.setStyleSheet(f"color:{C['green']};font-size:16px;font-weight:bold;")
+        elif dns >= 4:
+            self.lbl_signal.setText("▼ 매도")
+            self.lbl_signal.setStyleSheet(f"color:{C['red']};font-size:16px;font-weight:bold;")
+        else:
+            self.lbl_signal.setText("— 관망")
+            self.lbl_signal.setStyleSheet(f"color:{C['text2']};font-size:16px;font-weight:bold;")
+
+        # 호라이즌 카드
+        for hname, pred in preds.items():
+            if hname not in self._hz_labels:
+                continue
+            frame, arr, pct = self._hz_labels[hname]
+            if pred['signal'] == 1:
+                col = C['green']
+                arr.setText("▲")
+                pct.setText(f"{pred['up']*100:.1f}%")
+                frame.setStyleSheet(
+                    f"QFrame{{background:#0D2818;border:1px solid {C['green']};border-radius:6px;}}")
+            elif pred['signal'] == -1:
+                col = C['red']
+                arr.setText("▼")
+                pct.setText(f"{pred['dn']*100:.1f}%")
+                frame.setStyleSheet(
+                    f"QFrame{{background:#2D0D0D;border:1px solid {C['red']};border-radius:6px;}}")
+            else:
+                col = C['text2']
+                arr.setText("—")
+                pct.setText("횡보")
+                frame.setStyleSheet(
+                    f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};border-radius:6px;}}")
+            arr.setStyleSheet(f"color:{col};font-size:22px;font-weight:bold;")
+            pct.setStyleSheet(f"color:{col};font-size:10px;")
+
+        # SHAP 바
+        for name, val in params.items():
+            if name in self._param_bars:
+                self._param_bars[name].setValue(int(val * 100))
+                self._param_vals[name].setText(f"{val*100:.1f}%")
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 2: 다이버전스 지수 + 포지션 매트릭스
+# ────────────────────────────────────────────────────────────
+class DivergencePanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        lay.addWidget(mk_label("외인-개인 다이버전스 지수 (역발상 핵심 신호)", C['orange'], 10, True))
+
+        # 바이어스 미터
+        for label, attr_prefix, lcol, rcol, ltext, rtext in [
+            ("개인 방향", "rt", C['green'], C['red'], "풋↑", "콜↑"),
+            ("외인 방향", "fi", C['red'],   C['green'], "풋↑", "콜↑"),
+        ]:
+            row = QHBoxLayout()
+            row.addWidget(mk_label(label, C['text2'], 9))
+            row.addWidget(mk_label(ltext, lcol, 9))
+            bar_l = mk_prog(lcol, 12)
+            bar_r = mk_prog(rcol, 12)
+            setattr(self, f"{attr_prefix}_put_bar", bar_l)
+            setattr(self, f"{attr_prefix}_call_bar", bar_r)
+            mid_frame = QFrame()
+            mid_lay = QHBoxLayout(mid_frame)
+            mid_lay.setContentsMargins(0, 0, 0, 0)
+            mid_lay.setSpacing(1)
+            mid_lay.addWidget(bar_l)
+            mid_lay.addWidget(bar_r)
+            row.addWidget(mid_frame, 3)
+            row.addWidget(mk_label(rtext, rcol, 9))
+            lay.addLayout(row)
+
+        lay.addWidget(mk_sep())
+
+        # 포지션 카드 (2×4 그리드)
+        lay.addWidget(mk_label("투자자 포지션 매트릭스", C['blue'], 10, True))
+        pos_grid = QGridLayout()
+        pos_grid.setSpacing(4)
+        positions = [
+            ("개인 콜매수",   "rt_call",   C['red']),
+            ("개인 풋매수",   "rt_put",    C['green']),
+            ("개인 양매수",   "rt_strd",   C['text2']),
+            ("역발상 신호",   "contrarian",C['orange']),
+            ("외인 콜순매수", "fi_call",   C['green']),
+            ("외인 풋순매수", "fi_put",    C['red']),
+            ("외인 양매도",   "fi_strangle",C['text2']),
+            ("다이버전스",    "div_score", C['orange']),
+        ]
+        for i, (title, attr, col) in enumerate(positions):
+            f = QFrame()
+            f.setStyleSheet(
+                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
+                f"border-radius:5px;padding:4px;}}"
+            )
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(6, 4, 6, 4)
+            fl.setSpacing(1)
+            t = mk_label(title, C['text2'], 9)
+            v = mk_val_label("——", col, 13)
+            fl.addWidget(t)
+            fl.addWidget(v)
+            setattr(self, f"pos_{attr}_val", v)
+            pos_grid.addWidget(f, i // 4, i % 4)
+        lay.addLayout(pos_grid)
+
+        lay.addWidget(mk_sep())
+        # 옵션 구간별 거래량
+        lay.addWidget(mk_label("옵션 구간별 거래량 — 외인/개인/기관 분리 (ITM·ATM·OTM)", C['cyan'], 10, True))
+        zone_lay = QHBoxLayout()
+        for zone in ["ITM", "ATM", "OTM"]:
+            zf = QFrame()
+            zf.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;")
+            zfl = QVBoxLayout(zf)
+            zfl.setContentsMargins(6, 6, 6, 6)
+            zfl.addWidget(mk_label(zone, C['text'], 11, True, Qt.AlignCenter))
+            for inv, col in [("외인",C['blue']),("개인",C['red']),("기관",C['purple'])]:
+                hr = QHBoxLayout()
+                hr.addWidget(mk_label(inv, C['text2'], 9))
+                b = mk_prog(col, 7)
+                b.setValue(random.randint(20, 80))
+                hr.addWidget(b, 2)
+                vl = mk_label("—%", col, 9)
+                setattr(self, f"oz_{zone}_{inv}", (b, vl))
+                hr.addWidget(vl)
+                zfl.addLayout(hr)
+            zone_lay.addWidget(zf)
+        lay.addLayout(zone_lay)
+
+    def update_data(self, div):
+        self.rt_put_bar.setValue(int(max(0, -div['rt_bias']) * 50))
+        self.rt_call_bar.setValue(int(max(0, div['rt_bias']) * 50))
+        self.fi_put_bar.setValue(int(max(0, -div['fi_bias']) * 50))
+        self.fi_call_bar.setValue(int(max(0, div['fi_bias']) * 50))
+
+        self.pos_rt_call_val.setText(f"{div.get('rt_call',0):,}")
+        self.pos_rt_put_val.setText(f"{div.get('rt_put',0):,}")
+        self.pos_rt_strd_val.setText(f"{div.get('rt_strd',0):,}")
+        contrarian = div.get('contrarian','중립')
+        col = C['red'] if '하락' in contrarian else C['green'] if '상승' in contrarian else C['text2']
+        self.pos_contrarian_val.setText(contrarian)
+        self.pos_contrarian_val.setStyleSheet(f"color:{col};font-size:12px;font-weight:bold;")
+
+        score = div.get('div_score', 0)
+        col2  = C['green'] if score > 10 else C['red'] if score < -10 else C['text2']
+        self.pos_div_score_val.setText(f"{score:+.0f}")
+        self.pos_div_score_val.setStyleSheet(f"color:{col2};font-size:13px;font-weight:bold;")
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 3: 동적 피처 관리 (SHAP)
+# ────────────────────────────────────────────────────────────
+class FeaturePanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        lay.addWidget(mk_label("채용 파라미터 TOP 6 — SHAP 기여도 실시간", C['purple'], 10, True))
+
+        # 고정 CORE
+        lay.addWidget(mk_label("▐ 고정 CORE 3개 — 절대 교체 불가", C['cyan'], 9, True))
+        self.core_rows = []
+        for i, name in enumerate(["CVD 다이버전스", "VWAP 위치", "OFI 불균형"]):
+            row = QHBoxLayout()
+            medal_colors = [C['orange'], "#888", "#639922"]
+            rank = mk_badge(str(i+1), medal_colors[i], "#fff", 9)
+            badge = mk_badge("CORE", C['cyan'], C['bg'], 8)
+            nlab  = mk_label(name, C['text'], 10)
+            bar   = mk_prog(C['cyan'], 10)
+            bar.setValue(random.randint(55, 90))
+            vlab  = mk_val_label("—%", C['cyan'], 10)
+            slab  = mk_label("안정", C['green'], 9)
+            row.addWidget(rank)
+            row.addWidget(badge)
+            row.addWidget(nlab, 2)
+            row.addWidget(bar, 3)
+            row.addWidget(vlab)
+            row.addWidget(slab)
+            lay.addLayout(row)
+            self.core_rows.append((bar, vlab))
+
+        lay.addWidget(mk_sep())
+
+        # 동적 SHAP
+        lay.addWidget(mk_label("▐ 동적 SHAP TOP 3 — 매일 심사", C['purple'], 9, True))
+        # 쿨다운
+        cdlay = QHBoxLayout()
+        cdlay.addWidget(mk_label("쿨다운:", C['text2'], 9))
+        self.cooldown_bar = mk_prog(C['orange'], 6)
+        self.cooldown_bar.setValue(0)
+        cdlay.addWidget(self.cooldown_bar, 3)
+        self.cooldown_lbl = mk_label("없음", C['text2'], 9)
+        cdlay.addWidget(self.cooldown_lbl)
+        lay.addLayout(cdlay)
+
+        self.dynamic_rows = []
+        for i in range(3):
+            row = QHBoxLayout()
+            rank = mk_badge("—", C['bg3'], C['purple'], 9)
+            badge = mk_badge("SHAP", C['bg3'], C['purple'], 8)
+            nlab  = mk_label("——", C['text'], 10)
+            bar   = mk_prog(C['purple'], 10)
+            vlab  = mk_val_label("—%", C['purple'], 10)
+            slab  = mk_label("——", C['text2'], 9)
+            row.addWidget(rank)
+            row.addWidget(badge)
+            row.addWidget(nlab, 2)
+            row.addWidget(bar, 3)
+            row.addWidget(vlab)
+            row.addWidget(slab)
+            lay.addLayout(row)
+            self.dynamic_rows.append((rank, nlab, bar, vlab, slab))
+
+        lay.addWidget(mk_sep())
+
+        # SHAP 전체 가로 차트 (간이)
+        lay.addWidget(mk_label("전체 피처 순위 (SHAP 200분 누적)", C['blue'], 9, True))
+        self.rank_labels = []
+        all_params = [
+            ("외인 콜순매수", C['green']),("CVD 다이버전스", C['cyan']),
+            ("다이버전스",    C['orange']),("VWAP 위치",      C['cyan']),
+            ("프로그램 비차익",C['purple']),("OFI 불균형",    C['cyan']),
+        ]
+        for name, col in all_params:
+            r = QHBoxLayout()
+            nl = mk_label(name[:8], C['text2'], 9)
+            nl.setFixedWidth(70)
+            b  = mk_prog(col, 8)
+            b.setValue(random.randint(20, 85))
+            vl = mk_val_label("—%", col, 9)
+            vl.setFixedWidth(34)
+            r.addWidget(nl)
+            r.addWidget(b, 3)
+            r.addWidget(vl)
+            lay.addLayout(r)
+            self.rank_labels.append((b, vl))
+
+        lay.addWidget(mk_sep())
+        # 교체 이력
+        lay.addWidget(mk_label("교체 이력", C['text2'], 9, True))
+        self.change_log = QTextEdit()
+        self.change_log.setReadOnly(True)
+        self.change_log.setFixedHeight(55)
+        self.change_log.setStyleSheet(
+            f"background:{C['bg']};color:{C['text2']};border:1px solid {C['border']};"
+            f"font-size:9px;font-family:Consolas;"
+        )
+        self.change_log.setText(
+            "01-12  교체  베이시스 → 프로그램비차익  +1.4%  [성공]\n"
+            "01-09  교체  PCR → 다이버전스지수        +2.1%  [성공]\n"
+            "01-05  교체  원달러 → 외인콜순매수       +0.8%  [성공]"
+        )
+        lay.addWidget(self.change_log)
+
+    def update_shap(self, core_vals, dynamic_items, rank_vals):
+        for (bar, vlab), val in zip(self.core_rows, core_vals):
+            bar.setValue(int(val*100))
+            vlab.setText(f"{val*100:.1f}%")
+
+        for i, (rank, nlab, bar, vlab, slab) in enumerate(self.dynamic_rows):
+            if i < len(dynamic_items):
+                d = dynamic_items[i]
+                rank.setText(str(d.get('rank', i+1)))
+                nlab.setText(d.get('name','——'))
+                bar.setValue(int(d.get('shap',0)*100))
+                vlab.setText(f"{d.get('shap',0)*100:.1f}%")
+                slab.setText(d.get('status','유지'))
+
+        for (b, vl), val in zip(self.rank_labels, rank_vals):
+            b.setValue(int(val*100))
+            vl.setText(f"{val*100:.0f}%")
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 4: 청산 관리 패널
+# ────────────────────────────────────────────────────────────
+class ExitPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        # 상단: 포지션 상태
+        lay.addWidget(mk_label("포지션 청산 관리", C['red'], 10, True))
+        top = QGridLayout()
+        top.setSpacing(6)
+        info = [
+            ("진입가", "entry_price", "——"),
+            ("현재가", "cur_price", "——"),
+            ("미실현 손익", "unreal_pnl", "——"),
+            ("보유 시간", "hold_time", "——"),
+        ]
+        for i, (lbl, attr, init) in enumerate(info):
+            col = i % 2
+            row_i = i // 2
+            f = QFrame()
+            f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(6, 3, 6, 3)
+            fl.addWidget(mk_label(lbl, C['text2'], 9))
+            vl = mk_val_label(init, C['text'], 13)
+            setattr(self, attr, vl)
+            fl.addWidget(vl)
+            top.addWidget(f, row_i, col)
+        lay.addLayout(top)
+
+        lay.addWidget(mk_sep())
+
+        # 가격 레벨
+        lay.addWidget(mk_label("가격 구조 (손절 → 목표)", C['text2'], 9, True))
+        levels = [
+            ("하드 손절",    "hard_stop",  C['red'],    "●"),
+            ("구조적 손절",  "struct_stop",C['red'],    "●"),
+            ("트레일링 스톱","trail_stop", C['orange'], "●"),
+            ("본전 (진입가)","breakeven",  C['text2'],  "●"),
+            ("1차 목표 33%","target1",    C['green'],  "●"),
+            ("2차 목표 33%","target2",    C['green'],  "●"),
+            ("3차 목표 34%","target3",    "#085041",   "●"),
+        ]
+        for lbl, attr, col, dot in levels:
+            r = QHBoxLayout()
+            r.addWidget(mk_label(f"{dot} {lbl}", col, 9))
+            vl = mk_val_label("——.——", col, 10)
+            setattr(self, f"lv_{attr}", vl)
+            r.addWidget(vl)
+            lay.addLayout(r)
+
+        lay.addWidget(mk_sep())
+
+        # 청산 트리거 모니터
+        lay.addWidget(mk_label("청산 트리거 모니터 (우선순위 감시)", C['orange'], 9, True))
+        triggers = [
+            ("1", "하드 스톱 초과",     "hard_trig"),
+            ("1", "앙상블 반대 신호",   "signal_trig"),
+            ("1", "CVD+VWAP 동시 역전", "cvd_trig"),
+            ("2", "SHAP 피처 붕괴",     "shap_trig"),
+            ("2", "옵션 플로우 역전",   "opt_trig"),
+            ("2", "트레일링 스톱",      "trail_trig"),
+            ("3", "1차 목표 도달",      "t1_trig"),
+            ("3", "시간 청산 (15:10)", "time_trig"),
+        ]
+        for pri, name, attr in triggers:
+            r = QHBoxLayout()
+            pri_col = C['red'] if pri == "1" else C['orange'] if pri == "2" else C['blue']
+            r.addWidget(mk_badge(pri, pri_col, "#fff", 8))
+            r.addWidget(mk_label(name, C['text'], 9), 2)
+            st = mk_badge("감시중", C['bg3'], C['text2'], 8)
+            setattr(self, f"st_{attr}", st)
+            r.addWidget(st)
+            lay.addLayout(r)
+
+        lay.addWidget(mk_sep())
+
+        # 부분 청산 진행
+        lay.addWidget(mk_label("부분 청산 (33% · 33% · 34%)", C['green'], 9, True))
+        self.partial_bars = []
+        for i, (lbl, pct) in enumerate([("1차", 33), ("2차", 33), ("3차", 34)]):
+            r = QHBoxLayout()
+            r.addWidget(mk_label(f"{lbl} ({pct}%)", C['text2'], 9))
+            b = mk_prog(C['green'], 8)
+            r.addWidget(b, 3)
+            st = mk_label("대기", C['text2'], 9)
+            r.addWidget(st)
+            lay.addLayout(r)
+            self.partial_bars.append((b, st))
+
+        # 수동 청산 버튼
+        btn_lay = QHBoxLayout()
+        for label, pct, col in [("33% 청산", 33, C['green']),
+                                  ("50% 청산", 50, C['orange']),
+                                  ("전량 청산", 100, C['red'])]:
+            btn = QPushButton(label)
+            btn.setStyleSheet(
+                f"QPushButton{{background:{C['bg3']};color:{col};"
+                f"border:1px solid {col};border-radius:4px;padding:4px 8px;}}"
+                f"QPushButton:hover{{background:{col};color:#000;}}"
+            )
+            btn_lay.addWidget(btn)
+        lay.addLayout(btn_lay)
+
+    def update_data(self, pos_data):
+        if not pos_data:
             return
+        entry = pos_data.get('entry', 388.50)
+        cur   = pos_data.get('current', 388.50)
+        pnl   = (cur - entry) * pos_data.get('qty', 5)
+        atr   = pos_data.get('atr', 1.8)
 
-        super().__init__(parent)
-        self.setWindowTitle("미륵이 — KOSPI 200 선물 자동매매 v7.0")
-        self.setMinimumSize(1400, 900)
-        self.setStyleSheet(_BASE_STYLE)
+        self.entry_price.setText(f"{entry:.2f}")
+        self.cur_price.setText(f"{cur:.2f}")
 
+        col = C['green'] if pnl >= 0 else C['red']
+        self.unreal_pnl.setText(f"{pnl:+,.0f}원")
+        self.unreal_pnl.setStyleSheet(f"color:{col};font-size:13px;font-weight:bold;")
+
+        # 가격 레벨 업데이트
+        self.lv_hard_stop.setText(f"{entry - atr*1.5:.2f}")
+        self.lv_struct_stop.setText(f"{entry - atr*1.2:.2f}")
+        self.lv_trail_stop.setText(f"{entry:.2f}")
+        self.lv_breakeven.setText(f"{entry:.2f}")
+        self.lv_target1.setText(f"{entry + atr*1.0:.2f}")
+        self.lv_target2.setText(f"{entry + atr*1.5:.2f}")
+        self.lv_target3.setText(f"{entry + atr*2.5:.2f}")
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 5: 진입 관리 패널
+# ────────────────────────────────────────────────────────────
+class EntryPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        lay.addWidget(mk_label("진입 관리 패널 — 하이브리드 시스템", C['green'], 10, True))
+
+        # 모드 선택
+        mode_lay = QHBoxLayout()
+        self.mode_btns = {}
+        for mode, label in [("auto","자동 진입"), ("hybrid","하이브리드 (권장)"), ("manual","수동 진입")]:
+            btn = QPushButton(label)
+            col = C['green'] if mode == "hybrid" else C['text2']
+            btn.setStyleSheet(
+                f"QPushButton{{background:{C['bg2'] if mode=='hybrid' else C['bg3']};"
+                f"color:{col};border:{'2' if mode=='hybrid' else '1'}px solid {col};"
+                f"border-radius:4px;padding:5px 8px;font-size:10px;}}"
+            )
+            btn.clicked.connect(lambda checked, m=mode: self._set_mode(m))
+            self.mode_btns[mode] = btn
+            mode_lay.addWidget(btn)
+        lay.addLayout(mode_lay)
+
+        self.mode_desc = mk_label(
+            "하이브리드: 신뢰도 70%+ + 외인 일치 → 자동 / 58~70% → 알림 후 수동",
+            C['blue'], 9
+        )
+        lay.addWidget(self.mode_desc)
+        lay.addWidget(mk_sep())
+
+        # 앙상블 + 신뢰도
+        info_lay = QGridLayout()
+        info_lay.setSpacing(4)
+        kv = [("앙상블 신호","signal","——"),("신뢰도","conf","——"),
+              ("진입 등급","grade","——"),("산출 수량","qty","——")]
+        for i, (lbl, attr, init) in enumerate(kv):
+            f = QFrame()
+            f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(6,3,6,3)
+            fl.addWidget(mk_label(lbl, C['text2'], 9))
+            vl = mk_val_label(init, C['text'], 13)
+            setattr(self, f"e_{attr}", vl)
+            fl.addWidget(vl)
+            info_lay.addWidget(f, i//2, i%2)
+        lay.addLayout(info_lay)
+        lay.addWidget(mk_sep())
+
+        # 9개 체크리스트
+        lay.addWidget(mk_label("진입 전 체크리스트 (Pre-flight 9개)", C['orange'], 9, True))
+        checks = [
+            ("앙상블 신호 방향","signal_chk"),
+            ("신뢰도 ≥ 58%",   "conf_chk"),
+            ("VWAP 위치 확인", "vwap_chk"),
+            ("CVD 방향 일치",  "cvd_chk"),
+            ("OFI 압력 확인",  "ofi_chk"),
+            ("외인 방향 일치", "fi_chk"),
+            ("직전 봉 확인",   "candle_chk"),
+            ("시간 필터 통과", "time_chk"),
+            ("리스크 한도 여유","risk_chk"),
+        ]
+        self.check_labels = {}
+        for i, (name, attr) in enumerate(checks):
+            r = QHBoxLayout()
+            icon = mk_badge("—", C['bg3'], C['text2'], 8)
+            icon.setFixedWidth(20)
+            nl   = mk_label(name, C['text'], 9)
+            vl   = mk_val_label("——", C['text2'], 9)
+            r.addWidget(icon)
+            r.addWidget(nl, 2)
+            r.addWidget(vl)
+            self.check_labels[attr] = (icon, vl)
+            lay.addLayout(r)
+
+        lay.addWidget(mk_sep())
+
+        # 진입 버튼
+        lay.addWidget(mk_label("진입 실행", C['text2'], 9, True))
+        self.entry_alert = mk_label("신호 대기 중...", C['text2'], 10)
+        self.entry_alert.setStyleSheet(
+            f"background:{C['bg3']};border:1px solid {C['border']};"
+            f"border-radius:4px;padding:5px;color:{C['text2']};font-size:10px;"
+        )
+        lay.addWidget(self.entry_alert)
+
+        btn_lay = QHBoxLayout()
+        self.buy_btn  = QPushButton("▲ 매수 진입 (Long)")
+        self.sell_btn = QPushButton("▼ 매도 진입 (Short)")
+        self.skip_btn = QPushButton("신호 스킵")
+
+        self.buy_btn.setStyleSheet(
+            f"QPushButton{{background:#0D2818;color:{C['green']};"
+            f"border:1px solid {C['green']};border-radius:4px;padding:7px;"
+            f"font-size:11px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:{C['green']};color:#000;}}"
+        )
+        self.sell_btn.setStyleSheet(
+            f"QPushButton{{background:#2D0D0D;color:{C['red']};"
+            f"border:1px solid {C['red']};border-radius:4px;padding:7px;"
+            f"font-size:11px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:{C['red']};color:#000;}}"
+        )
+        self.skip_btn.setStyleSheet(
+            f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
+            f"border:1px solid {C['border']};border-radius:4px;padding:7px;}}"
+        )
+        btn_lay.addWidget(self.buy_btn, 2)
+        btn_lay.addWidget(self.sell_btn, 2)
+        btn_lay.addWidget(self.skip_btn, 1)
+        lay.addLayout(btn_lay)
+
+        # 당일 통계
+        lay.addWidget(mk_sep())
+        lay.addWidget(mk_label("당일 진입 통계", C['text2'], 9, True))
+        self.stat_label = mk_label("진입 0회 | 자동 0 | 수동 0 | 승률 —% | 손익 ——pt", C['text2'], 9)
+        lay.addWidget(self.stat_label)
+
+    def _set_mode(self, mode):
+        for m, btn in self.mode_btns.items():
+            col = C['green'] if m == mode else C['text2']
+            bw  = "2px" if m == mode else "1px"
+            btn.setStyleSheet(
+                f"QPushButton{{background:{C['bg2'] if m==mode else C['bg3']};"
+                f"color:{col};border:{bw} solid {col};"
+                f"border-radius:4px;padding:5px 8px;font-size:10px;}}"
+            )
+
+    def update_data(self, signal, conf, grade, checks):
+        col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
+        self.e_signal.setText(signal)
+        self.e_signal.setStyleSheet(f"color:{col};font-size:13px;font-weight:bold;")
+        self.e_conf.setText(f"{conf*100:.1f}%")
+        self.e_conf.setStyleSheet(
+            f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=0.58 else C['red']};"
+            f"font-size:13px;font-weight:bold;"
+        )
+
+        grade_colors = {"A": C['cyan'], "B": C['blue'], "C": C['orange'], "X": C['red']}
+        self.e_grade.setText(f"{grade}급")
+        self.e_grade.setStyleSheet(f"color:{grade_colors.get(grade,C['text'])};"
+                                    f"font-size:13px;font-weight:bold;")
+
+        for attr, (icon, vl) in self.check_labels.items():
+            passed = checks.get(attr, False)
+            icon.setText("V" if passed else "X")
+            icon.setStyleSheet(
+                f"background:{C['green'] if passed else C['red']};color:#fff;"
+                f"border-radius:3px;font-size:8px;font-weight:bold;padding:1px 4px;"
+            )
+
+        if signal == "매수":
+            self.entry_alert.setStyleSheet(
+                f"background:#0D2818;border:1px solid {C['green']};"
+                f"border-radius:4px;padding:5px;color:{C['green']};font-size:10px;"
+            )
+            self.entry_alert.setText(f"▲ 매수 신호 {grade}급 — {conf*100:.1f}% 신뢰도")
+        elif signal == "매도":
+            self.entry_alert.setStyleSheet(
+                f"background:#2D0D0D;border:1px solid {C['red']};"
+                f"border-radius:4px;padding:5px;color:{C['red']};font-size:10px;"
+            )
+            self.entry_alert.setText(f"▼ 매도 신호 {grade}급 — {conf*100:.1f}% 신뢰도")
+        else:
+            self.entry_alert.setStyleSheet(
+                f"background:{C['bg3']};border:1px solid {C['border']};"
+                f"border-radius:4px;padding:5px;color:{C['text2']};font-size:10px;"
+            )
+            self.entry_alert.setText("— 관망 | 신호 대기 중")
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 6: 알파 리서치 봇
+# ────────────────────────────────────────────────────────────
+class AlphaPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        lay.addWidget(mk_label("알파 리서치 봇 — 자율 진화 시스템", C['yellow'], 10, True))
+
+        # 카운터
+        ctr = QHBoxLayout()
+        for lbl, val, col in [("검색 논문",147,C['text']),
+                               ("고품질 후보",8,C['green']),
+                               ("검토 중",3,C['orange']),
+                               ("통합 완료",12,C['blue'])]:
+            f = QFrame()
+            f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(6,3,6,3)
+            fl.addWidget(mk_label(lbl, C['text2'], 9, align=Qt.AlignCenter))
+            fl.addWidget(mk_val_label(str(val), col, 16, align=Qt.AlignCenter))
+            ctr.addWidget(f)
+        lay.addLayout(ctr)
+        lay.addWidget(mk_sep())
+
+        # 신규 알림 배너
+        self.alert_box = QLabel("🔬 [대기] 알파 리서치 봇 활성 — 신규 발견 시 알림")
+        self.alert_box.setWordWrap(True)
+        self.alert_box.setStyleSheet(
+            f"background:{C['bg3']};color:{C['text2']};border:1px solid {C['border']};"
+            f"border-radius:4px;padding:6px;font-size:10px;"
+        )
+        lay.addWidget(self.alert_box)
+        lay.addWidget(mk_sep())
+
+        # 논문 TOP 5
+        lay.addWidget(mk_label("신규 알파 후보 TOP (AI 평가 순위)", C['blue'], 9, True))
+        papers = [
+            ("Liquidity-Adjusted OFI for KOSPI",     "JoF",  95, "즉시"),
+            ("Transformer Multi-Horizon Forecasting", "arXiv",87, "즉시"),
+            ("Retail Investor Herding in Options",    "한국", 82, "즉시"),
+            ("PPO Reinforcement Learning Sizing",     "SSRN", 78, "보통"),
+            ("Volatility Surface Weekly Expiry",      "arXiv",71, "보통"),
+        ]
+        for i, (title, src, score, pri) in enumerate(papers):
+            f = QFrame()
+            f.setStyleSheet(
+                f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;"
+            )
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(8, 5, 8, 5)
+            fl.setSpacing(3)
+            head = QHBoxLayout()
+            rank_col = ["#BA7517","#888","#639922",C['text2'],C['text2']][i]
+            head.addWidget(mk_badge(str(i+1), rank_col, "#fff", 8))
+            src_map = {"JoF":C['green'],"arXiv":C['orange'],"한국":C['red'],"SSRN":C['purple']}
+            head.addWidget(mk_badge(src, src_map.get(src,C['blue']), "#fff", 8))
+            head.addWidget(mk_label(title, C['text'], 10), 2)
+            sc_col = C['green'] if score >= 90 else C['orange'] if score >= 80 else C['text2']
+            head.addWidget(mk_label(f"{score}점", sc_col, 9))
+            pri_col = C['red'] if pri == "즉시" else C['orange']
+            head.addWidget(mk_badge(pri, pri_col, "#fff", 8))
+            fl.addLayout(head)
+
+            sb = mk_prog(sc_col, 5)
+            sb.setValue(score)
+            fl.addWidget(sb)
+
+            btn_row = QHBoxLayout()
+            for blbl, bcol in [("코드생성",C['cyan']),("백테스트",C['blue']),("기각",C['red'])]:
+                b = QPushButton(blbl)
+                b.setStyleSheet(
+                    f"background:{C['bg3']};color:{bcol};border:1px solid {bcol};"
+                    f"border-radius:3px;padding:2px 8px;font-size:9px;"
+                )
+                btn_row.addWidget(b)
+            btn_row.addStretch()
+            fl.addLayout(btn_row)
+            lay.addWidget(f)
+
+        lay.addWidget(mk_sep())
+
+        # 검색 일정
+        lay.addWidget(mk_label("검색 일정", C['text2'], 9, True))
+        for cycle, time_s, src in [
+            ("일간","09:00","헤지펀드 블로그·뉴스"),
+            ("주간","월 08:30","arXiv·SSRN"),
+            ("월간","1일 08:00","전체 학술지 정밀 평가"),
+        ]:
+            r = QHBoxLayout()
+            r.addWidget(mk_badge(cycle, C['blue'], "#fff", 8))
+            r.addWidget(mk_label(time_s, C['text2'], 9))
+            r.addWidget(mk_label(src, C['text'], 9), 2)
+            lay.addLayout(r)
+
+    def show_alert(self, title, score):
+        self.alert_box.setText(
+            f"⚡ 긴급 — ★★★★★ 신규 알파 발견 ({score}점)\n"
+            f"「{title}」 → 코드 자동 생성 권장"
+        )
+        self.alert_box.setStyleSheet(
+            f"background:#2D0D0D;color:{C['red']};border:1px solid {C['red']};"
+            f"border-radius:4px;padding:6px;font-size:10px;font-weight:bold;"
+        )
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 7: 5층 로그 시스템
+# ────────────────────────────────────────────────────────────
+class LogPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        self.tabs = QTabWidget()
+        log_configs = [
+            ("1 시스템",  C['blue'],   "all"),
+            ("2 경보 ⚠",  C['orange'], "warn"),
+            ("3 주문/체결",C['green'],  "order"),
+            ("4 손익 PnL", C['cyan'],   "pnl"),
+            ("5 모델 AI",  C['purple'], "model"),
+        ]
+        self.log_boxes = {}
+        for title, col, key in log_configs:
+            page = QWidget()
+            pl   = QVBoxLayout(page)
+            pl.setContentsMargins(4, 4, 4, 4)
+
+            # 상단 메트릭 (창3, 4, 5 전용)
+            if key == "order":
+                mrow = QHBoxLayout()
+                for mk_lbl, mk_val in [("평균 슬리피지","1.3틱"),("최대 슬리피지","3.8틱"),
+                                        ("체결률","85.7%"),("평균 지연","142ms")]:
+                    mf = QFrame()
+                    mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
+                    mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,2,5,2)
+                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 8, align=Qt.AlignCenter))
+                    mfl.addWidget(mk_val_label(mk_val, col, 11, align=Qt.AlignCenter))
+                    mrow.addWidget(mf)
+                pl.addLayout(mrow)
+
+            elif key == "pnl":
+                mrow = QHBoxLayout()
+                for mk_lbl, mk_val, mc in [("미실현 손익","+12,000원",C['green']),
+                                             ("일일 누적","+87,500원",C['green']),
+                                             ("VaR 95%","-87,500원",C['orange'])]:
+                    mf = QFrame()
+                    mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
+                    mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,2,5,2)
+                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 8, align=Qt.AlignCenter))
+                    pb = mk_prog(mc, 4)
+                    pb.setValue(60)
+                    mfl.addWidget(mk_val_label(mk_val, mc, 11, align=Qt.AlignCenter))
+                    mfl.addWidget(pb)
+                    mrow.addWidget(mf)
+                pl.addLayout(mrow)
+
+            elif key == "model":
+                mrow = QHBoxLayout()
+                for mk_lbl, mk_val, mc in [("정확도(50분)","61.4%",C['green']),
+                                             ("SGD 비중","34%",C['purple']),
+                                             ("자가학습","● 활성",C['green'])]:
+                    mf = QFrame()
+                    mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
+                    mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,2,5,2)
+                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 8, align=Qt.AlignCenter))
+                    mfl.addWidget(mk_val_label(mk_val, mc, 11, align=Qt.AlignCenter))
+                    mrow.addWidget(mf)
+                pl.addLayout(mrow)
+
+            tb = QTextEdit()
+            tb.setReadOnly(True)
+            tb.setStyleSheet(
+                f"background:{C['bg']};color:{C['text']};border:none;"
+                f"font-family:Consolas,D2Coding,monospace;font-size:10px;"
+            )
+            pl.addWidget(tb)
+            self.log_boxes[key] = tb
+            self.tabs.addTab(page, title)
+            # 탭 색상
+            self.tabs.tabBar().setTabTextColor(
+                self.tabs.count()-1, QColor(col)
+            )
+
+        lay.addWidget(self.tabs)
+
+    def append(self, key, tag, msg, val=""):
+        tb = self.log_boxes.get(key)
+        if not tb:
+            return
+        ts  = datetime.now().strftime("%H:%M:%S")
+        TAG_COLORS = {
+            "INFO":   C['blue'],   "DEBUG": C['text2'], "SYSTEM": C['purple'],
+            "WARN":   C['orange'], "ERROR": C['red'],   "CRITICAL": C['red'],
+            "TRADE":  C['green'],  "FILL":  C['green'], "PENDING": C['orange'],
+            "CANCEL": C['red'],    "PNL":   C['cyan'],  "MODEL":  C['purple'],
+            "SHAP":   C['yellow'],
+        }
+        col = TAG_COLORS.get(tag, C['text2'])
+        line = (
+            f'<span style="color:{C["text2"]}">[{ts}]</span> '
+            f'<span style="color:{col};font-weight:bold">[{tag}]</span> '
+            f'<span style="color:{C["text"]}">{msg}</span>'
+        )
+        if val:
+            line += f' <span style="color:{C["text2"]};font-size:9px;">{val}</span>'
+
+        # 경보창에도 WARNING 이상 복사
+        if key == "all" and tag in ("WARN", "ERROR", "CRITICAL"):
+            self.append("warn", tag, msg, val)
+
+        tb.append(line)
+        tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
+
+
+# ────────────────────────────────────────────────────────────
+# 메인 윈도우
+# ────────────────────────────────────────────────────────────
+class MireukDashboard(QMainWindow):
+    """미륵이 v7.0 풀 대시보드"""
+
+    def __init__(self, kiwoom=None):
+        super().__init__()
+        self.kiwoom = kiwoom
+        self.setWindowTitle("미륵이 v7.0  |  KOSPI 200 선물 예측 시스템")
+        self.resize(1680, 1000)
+        self.setStyleSheet(STYLE_BASE)
         self._build_ui()
-        self._start_clock()
+        self._start_sim_timer()
 
-    # ── UI 구성 ───────────────────────────────────────────────────
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        layout  = QGridLayout(central)
-        layout.setSpacing(6)
-        layout.setContentsMargins(6, 6, 6, 6)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(6)
 
-        # Panel 1: 시세 + 포지션
-        self._panel_price    = self._build_panel1()
-        # Panel 2: 신호
-        self._panel_signal   = self._build_panel2()
-        # Panel 3: 로그
-        self._panel_trade    = self._build_panel3()
-        # Panel 4: 시스템 상태
-        self._panel_system   = self._build_panel4()
-        # Panel 5: 수급 + 매크로
-        self._panel_macro    = self._build_panel5()
+        # ── 상단 헤더 ──────────────────────────────────────────
+        header = QHBoxLayout()
+        title = mk_label("⚡ 미륵이  v7.0", C['text'], 15, True)
+        self.lbl_time   = mk_label("——:——:——", C['text2'], 11)
+        self.lbl_regime = mk_badge("NEUTRAL", C['orange'], "#fff", 9)
+        self.lbl_cycle  = mk_badge("목위클리 D-2", C['purple'], "#fff", 9)
+        self.lbl_gamma  = mk_badge("감마스퀴즈", C['orange'], "#fff", 9)
+        self.lbl_pos    = mk_badge("FLAT", C['text2'], "#fff", 9)
 
-        layout.addWidget(self._panel_price,  0, 0, 1, 1)
-        layout.addWidget(self._panel_signal, 0, 1, 1, 1)
-        layout.addWidget(self._panel_macro,  0, 2, 1, 1)
-        layout.addWidget(self._panel_trade,  1, 0, 1, 2)
-        layout.addWidget(self._panel_system, 1, 2, 1, 1)
+        header.addWidget(title)
+        header.addStretch()
+        for w in [self.lbl_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_time]:
+            header.addWidget(w)
+        root.addLayout(header)
+        root.addWidget(mk_sep())
 
-        layout.setColumnStretch(0, 2)
-        layout.setColumnStretch(1, 2)
-        layout.setColumnStretch(2, 1)
-        layout.setRowStretch(0, 1)
-        layout.setRowStretch(1, 1)
+        # ── 3열 메인 레이아웃 ──────────────────────────────────
+        main_split = QSplitter(Qt.Horizontal)
+        main_split.setHandleWidth(3)
+        main_split.setStyleSheet(f"QSplitter::handle{{background:{C['border']};}}")
 
-    # ── Panel 1: 시세 + 포지션 ────────────────────────────────────
-    def _build_panel1(self) -> QGroupBox:
-        box = QGroupBox("📊 실시간 시세 / 포지션")
-        v   = QVBoxLayout(box)
+        # 좌측 컬럼
+        left = QWidget()
+        ll   = QVBoxLayout(left)
+        ll.setContentsMargins(0,0,0,0)
+        ll.setSpacing(6)
+        self.pred_panel = PredictionPanel()
+        ll.addWidget(card("멀티 호라이즌 예측 + 파라미터 분석",
+                          self.pred_panel, C['blue']))
 
-        # 현재가
-        row = QHBoxLayout()
-        row.addWidget(QLabel("현재가"))
-        self.lbl_price = _ValueLabel("—")
-        self.lbl_price.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {_WHITE};")
-        row.addWidget(self.lbl_price)
-        row.addStretch()
-        v.addLayout(row)
+        # 중앙 컬럼 (탭)
+        mid  = QWidget()
+        ml   = QVBoxLayout(mid)
+        ml.setContentsMargins(0,0,0,0)
+        ml.setSpacing(6)
+        mid_tabs = QTabWidget()
+        mid_tabs.setStyleSheet(f"QTabBar::tab:selected{{border-bottom:2px solid {C['orange']};}}")
 
-        # 거래량
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("거래량"))
-        self.lbl_volume = _ValueLabel("—")
-        row2.addWidget(self.lbl_volume)
-        row2.addStretch()
-        v.addLayout(row2)
+        self.div_panel  = DivergencePanel()
+        self.feat_panel = FeaturePanel()
+        self.exit_panel = ExitPanel()
+        self.entry_panel= EntryPanel()
+        self.alpha_panel= AlphaPanel()
 
-        v.addWidget(self._hline())
+        mid_tabs.addTab(self._wrap(self.div_panel),  "다이버전스 + 포지션")
+        mid_tabs.addTab(self._wrap(self.feat_panel), "동적 피처 (SHAP)")
+        mid_tabs.addTab(self._wrap(self.exit_panel), "청산 관리")
+        mid_tabs.addTab(self._wrap(self.entry_panel),"진입 관리")
+        mid_tabs.addTab(self._wrap(self.alpha_panel),"알파 리서치 봇")
+        ml.addWidget(mid_tabs)
+
+        # 우측: 5층 로그
+        right = QWidget()
+        rl    = QVBoxLayout(right)
+        rl.setContentsMargins(0,0,0,0)
+        self.log_panel = LogPanel()
+        rl.addWidget(card("5층 모니터링 로그", self.log_panel, C['text2']))
+
+        main_split.addWidget(left)
+        main_split.addWidget(mid)
+        main_split.addWidget(right)
+        main_split.setSizes([520, 680, 440])
+        root.addWidget(main_split, 1)
+
+    def _wrap(self, widget):
+        sc = QScrollArea()
+        sc.setWidget(widget)
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.NoFrame)
+        widget.setMinimumWidth(500)
+        return sc
+
+    # ── 시뮬레이션 타이머 ──────────────────────────────────────
+    def _start_sim_timer(self):
+        self._tick = 0
+        self._price = 388.50
+        timer = QTimer(self)
+        timer.timeout.connect(self._sim_tick)
+        timer.start(3000)
+        self._sim_tick()
+
+    def _sim_tick(self):
+        self._tick += 1
+        self._price += random.gauss(0, 0.15)
+        trend = random.choice([0.4, -0.4])
+
+        # 시계
+        now = datetime.now().strftime("%H:%M:%S")
+        self.lbl_time.setText(now)
+
+        # 예측 데이터
+        HORIZONS = ["1분","3분","5분","10분","15분","30분"]
+        preds = {}
+        for h in HORIZONS:
+            up = max(0.05, min(0.92, 0.30 + trend*0.22 + random.gauss(0,0.1)))
+            dn = max(0.05, min(0.92, 1-up-0.15+random.gauss(0,0.05)))
+            hd = max(0.03, 1-up-dn)
+            sig = 1 if up>dn and up>hd else -1 if dn>up and dn>hd else 0
+            preds[h] = {"up":up,"dn":dn,"hold":hd,"signal":sig}
+
+        params = {
+            "CVD 다이버전스": min(0.99, max(0.1, 0.183 + random.gauss(0,0.02))),
+            "VWAP 위치":      min(0.99, max(0.1, 0.167 + random.gauss(0,0.02))),
+            "OFI 불균형":     min(0.99, max(0.1, 0.142 + random.gauss(0,0.02))),
+            "외인 콜순매수":  min(0.99, max(0.1, 0.128 + random.gauss(0,0.02))),
+            "다이버전스 지수":min(0.99, max(0.1, 0.117 + random.gauss(0,0.02))),
+            "프로그램 비차익":min(0.99, max(0.1, 0.108 + random.gauss(0,0.02))),
+        }
+        self.pred_panel.update_data(self._price, preds, params)
+
+        # 다이버전스
+        rt_bias = trend * 0.3 + random.gauss(0, 0.1)
+        fi_bias = trend * 0.35 + random.gauss(0, 0.08)
+        ct = "역발상 하락" if rt_bias > 0.4 else "역발상 상승" if rt_bias < -0.4 else "중립"
+        div_data = {
+            "rt_bias": rt_bias, "fi_bias": fi_bias,
+            "rt_call": random.randint(2000,5000), "rt_put": random.randint(1500,4000),
+            "rt_strd": random.randint(200,600),
+            "contrarian": ct,
+            "div_score":  (fi_bias - rt_bias) * 50,
+        }
+        self.div_panel.update_data(div_data)
+
+        # 피처 관리
+        cv = [random.uniform(0.55, 0.90) for _ in range(3)]
+        dy = [
+            {"rank":1,"name":"외인 콜순매수","shap":random.uniform(0.10,0.15),"status":"유지"},
+            {"rank":2,"name":"다이버전스",   "shap":random.uniform(0.08,0.12),"status":"유지"},
+            {"rank":3,"name":"프로그램 비차익","shap":random.uniform(0.07,0.11),"status":"유지"},
+        ]
+        rv = [random.uniform(0.20, 0.85) for _ in range(6)]
+        self.feat_panel.update_shap(cv, dy, rv)
 
         # 포지션
-        for attr, label in [
-            ("lbl_pos_status", "포지션"),
-            ("lbl_pos_qty",    "계약 수"),
-            ("lbl_pos_entry",  "진입가"),
-            ("lbl_pos_pnl",    "미실현 손익"),
-            ("lbl_pos_stop",   "손절가"),
-        ]:
-            row = QHBoxLayout()
-            row.addWidget(QLabel(label))
-            lbl = _ValueLabel("—")
-            setattr(self, attr, lbl)
-            row.addWidget(lbl)
-            row.addStretch()
-            v.addLayout(row)
+        self.exit_panel.update_data({
+            "entry": 388.50, "current": self._price,
+            "qty": 5, "atr": 1.8
+        })
 
-        v.addStretch()
-        return box
+        # 진입
+        sig_map = {1:"매수", -1:"매도", 0:"관망"}
+        ups = sum(1 for v in preds.values() if v['signal']==1)
+        dns = sum(1 for v in preds.values() if v['signal']==-1)
+        ens_sig = "매수" if ups>=4 else "매도" if dns>=4 else "관망"
+        conf = random.uniform(0.55, 0.82)
+        grade = "A" if conf>=0.78 else "B" if conf>=0.65 else "C" if conf>=0.58 else "X"
+        checks = {attr: random.random()>0.25 for attr in
+                  ["signal_chk","conf_chk","vwap_chk","cvd_chk","ofi_chk",
+                   "fi_chk","candle_chk","time_chk","risk_chk"]}
+        self.entry_panel.update_data(ens_sig, conf, grade, checks)
 
-    # ── Panel 2: 신호 + 체크리스트 ───────────────────────────────
-    def _build_panel2(self) -> QGroupBox:
-        box = QGroupBox("🎯 앙상블 신호 / 체크리스트")
-        v   = QVBoxLayout(box)
+        # 로그
+        tags = ["INFO","DEBUG","SYSTEM","INFO","INFO"]
+        msgs = [
+            f"1분봉 수신 — 종가 {self._price:.2f}, 거래량 {random.randint(8000,15000):,}",
+            f"CVD 다이버전스: {'정상' if trend>0 else '역전'} | OFI: {random.randint(-150,150):+d}",
+            f"앙상블 예측: {ens_sig} | 신뢰도 {conf*100:.1f}%",
+            f"레짐=NEUTRAL | 포지션=FLAT | 미시레짐=추세장",
+            f"피처 생성 완료 25개 | 처리 {random.randint(18,35)}ms",
+        ]
+        tag = random.choice(tags)
+        msg = random.choice(msgs)
+        self.log_panel.append("all", tag, msg)
 
-        for attr, label in [
-            ("lbl_direction",   "방향"),
-            ("lbl_confidence",  "신뢰도"),
-            ("lbl_grade",       "등급"),
-            ("lbl_zone",        "시간대"),
-            ("lbl_hurst",       "Hurst"),
-            ("lbl_micro",       "미시 레짐"),
-        ]:
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"{label:<10}"))
-            lbl = _ValueLabel("—")
-            setattr(self, attr, lbl)
-            row.addWidget(lbl)
-            row.addStretch()
-            v.addLayout(row)
+        if random.random() < 0.15:
+            wmsg = f"슬리피지 {random.uniform(2,4):.1f}틱 초과 — 변동성 높음"
+            self.log_panel.append("all", "WARN", wmsg)
 
-        v.addWidget(self._hline())
-        v.addWidget(QLabel("체크리스트"))
-        self.lbl_checklist = QLabel("—")
-        self.lbl_checklist.setWordWrap(True)
-        self.lbl_checklist.setStyleSheet(f"color: {_GRAY}; font-size: 10px;")
-        v.addWidget(self.lbl_checklist)
-        v.addStretch()
-        return box
-
-    # ── Panel 3: 거래 로그 ────────────────────────────────────────
-    def _build_panel3(self) -> QGroupBox:
-        box = QGroupBox("📋 거래 로그")
-        v   = QVBoxLayout(box)
-        self.txt_trade_log = QTextEdit()
-        self.txt_trade_log.setReadOnly(True)
-        self.txt_trade_log.setMaximumHeight(300)
-        v.addWidget(self.txt_trade_log)
-
-        # 일일 통계
-        row = QHBoxLayout()
-        for attr, label in [
-            ("lbl_stat_trades", "거래"),
-            ("lbl_stat_wr",     "승률"),
-            ("lbl_stat_pnl",    "일 손익"),
-        ]:
-            row.addWidget(QLabel(label))
-            lbl = _ValueLabel("—")
-            setattr(self, attr, lbl)
-            row.addWidget(lbl)
-            row.addSpacing(20)
-        v.addLayout(row)
-        return box
-
-    # ── Panel 4: 시스템 상태 ──────────────────────────────────────
-    def _build_panel4(self) -> QGroupBox:
-        box = QGroupBox("⚙️ 시스템 상태")
-        v   = QVBoxLayout(box)
-
-        for attr, label in [
-            ("lbl_cb_state",   "Circuit Breaker"),
-            ("lbl_latency",    "API 지연"),
-            ("lbl_cb_count",   "CB 트리거 횟수"),
-            ("lbl_model_acc",  "30분 모델 정확도"),
-            ("lbl_last_train", "최근 재학습"),
-        ]:
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"{label:<15}"))
-            lbl = _ValueLabel("—")
-            setattr(self, attr, lbl)
-            row.addWidget(lbl)
-            row.addStretch()
-            v.addLayout(row)
-
-        v.addWidget(self._hline())
-
-        # 긴급 정지 버튼
-        self.btn_kill = QPushButton("🛑  긴급 정지  (Ctrl+Alt+K)")
-        self.btn_kill.setStyleSheet(
-            f"background-color: {_RED}; color: white; "
-            f"font-weight: bold; font-size: 13px; padding: 8px;"
-        )
-        v.addWidget(self.btn_kill)
-
-        # 시스템 로그
-        self.txt_sys_log = QTextEdit()
-        self.txt_sys_log.setReadOnly(True)
-        v.addWidget(self.txt_sys_log)
-        return box
-
-    # ── Panel 5: 수급 + 매크로 ────────────────────────────────────
-    def _build_panel5(self) -> QGroupBox:
-        box = QGroupBox("🌐 수급 / 매크로")
-        v   = QVBoxLayout(box)
-
-        for attr, label in [
-            ("lbl_foreign_fut",  "외인 선물"),
-            ("lbl_retail_fut",   "개인 선물"),
-            ("lbl_inst_fut",     "기관 선물"),
-            ("lbl_vix",          "VIX"),
-            ("lbl_usdkrw",       "USD/KRW"),
-            ("lbl_sp500",        "S&P500"),
-            ("lbl_pcr",          "P/C Ratio"),
-            ("lbl_regime",       "매크로 레짐"),
-        ]:
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"{label:<12}"))
-            lbl = _ValueLabel("—")
-            setattr(self, attr, lbl)
-            row.addWidget(lbl)
-            row.addStretch()
-            v.addLayout(row)
-
-        v.addStretch()
-        return box
-
-    # ── 업데이트 메서드 ───────────────────────────────────────────
-    def update_price(self, price: float, volume: int = 0, chg: float = 0.0):
-        if not _QT_OK:
-            return
-        color = _GREEN if chg >= 0 else _RED
-        self.lbl_price.set_value(f"{price:.2f}", color)
-        self.lbl_volume.set_value(f"{volume:,}", _GRAY)
-
-    def update_signal(
-        self,
-        direction:  int,
-        confidence: float,
-        grade:      str,
-        zone:       str = "",
-        hurst:      float = 0.5,
-        micro:      str = "",
-        checks:     dict = None,
-    ):
-        if not _QT_OK:
-            return
-        dir_str   = "▲ 상승" if direction > 0 else ("▼ 하락" if direction < 0 else "━ 중립")
-        dir_color = _GREEN  if direction > 0 else (_RED    if direction < 0 else _GRAY)
-        self.lbl_direction.set_value(dir_str, dir_color)
-        self.lbl_confidence.set_value(f"{confidence:.1%}", _YELLOW if confidence > 0.65 else _WHITE)
-        grade_color = {
-            "A": _GREEN, "B": _YELLOW, "C": _GRAY, "X": _RED
-        }.get(grade, _WHITE)
-        self.lbl_grade.set_value(f"  {grade}급", grade_color)
-        self.lbl_zone.set_value(zone, _GRAY)
-        hurst_color = _GREEN if hurst > 0.55 else (_RED if hurst < 0.45 else _YELLOW)
-        self.lbl_hurst.set_value(f"{hurst:.3f}", hurst_color)
-        self.lbl_micro.set_value(micro, _YELLOW)
-
-        if checks:
-            passed = [k for k, v in checks.items() if v]
-            failed = [k for k, v in checks.items() if not v]
-            self.lbl_checklist.setText(
-                f"✅ {', '.join(passed)}\n"
-                f"❌ {', '.join(failed)}"
-            )
-
-    def update_position(
-        self,
-        status:     str,
-        qty:        int,
-        entry:      float,
-        pnl:        float,
-        stop:       float,
-    ):
-        if not _QT_OK:
-            return
-        status_color = _GREEN if status == "LONG" else (_RED if status == "SHORT" else _GRAY)
-        self.lbl_pos_status.set_value(status, status_color)
-        self.lbl_pos_qty.set_value(f"{qty}계약", _WHITE)
-        self.lbl_pos_entry.set_value(f"{entry:.2f}", _WHITE)
-        self.lbl_pos_pnl.set_pnl(pnl)
-        self.lbl_pos_stop.set_value(f"{stop:.2f}", _RED)
-
-    def append_trade_log(self, line: str, color: str = _WHITE):
-        if not _QT_OK:
-            logger.info(f"[TRADE LOG] {line}")
-            return
-        ts  = datetime.datetime.now().strftime("%H:%M:%S")
-        self.txt_trade_log.append(f'<span style="color:{color}">[{ts}] {line}</span>')
-        self.txt_trade_log.verticalScrollBar().setValue(
-            self.txt_trade_log.verticalScrollBar().maximum()
-        )
-
-    def update_system_status(
-        self,
-        cb_state:   str  = "NORMAL",
-        latency_ms: float = 0.0,
-        cb_count:   int  = 0,
-        model_acc:  float = 0.0,
-        last_train: str  = "",
-    ):
-        if not _QT_OK:
-            return
-        cb_color = _GREEN if cb_state == "NORMAL" else (_YELLOW if cb_state == "PAUSED" else _RED)
-        self.lbl_cb_state.set_value(cb_state, cb_color)
-        lat_color = _GREEN if latency_ms < 300 else (_YELLOW if latency_ms < 1000 else _RED)
-        self.lbl_latency.set_value(f"{latency_ms:.0f}ms", lat_color)
-        self.lbl_cb_count.set_value(str(cb_count), _YELLOW if cb_count > 0 else _WHITE)
-        self.lbl_model_acc.set_value(f"{model_acc:.1%}", _GREEN if model_acc > 0.6 else _WHITE)
-        self.lbl_last_train.set_value(last_train, _GRAY)
-
-    def update_supply_macro(
-        self,
-        foreign_fut: int = 0,
-        retail_fut:  int = 0,
-        inst_fut:    int = 0,
-        vix:         float = 20.0,
-        usd_krw:     float = 1380.0,
-        sp500_chg:   float = 0.0,
-        pcr:         float = 1.0,
-        regime:      str   = "NEUTRAL",
-    ):
-        if not _QT_OK:
-            return
-        for lbl, val in [
-            (self.lbl_foreign_fut, foreign_fut),
-            (self.lbl_retail_fut,  retail_fut),
-            (self.lbl_inst_fut,    inst_fut),
-        ]:
-            color = _GREEN if val > 0 else (_RED if val < 0 else _GRAY)
-            lbl.set_value(f"{val:+,}계약", color)
-        vix_color = _GREEN if vix < 20 else (_YELLOW if vix < 30 else _RED)
-        self.lbl_vix.set_value(f"{vix:.1f}", vix_color)
-        self.lbl_usdkrw.set_value(f"{usd_krw:,.1f}", _WHITE)
-        sp_color = _GREEN if sp500_chg >= 0 else _RED
-        self.lbl_sp500.set_value(f"{sp500_chg:+.2%}", sp_color)
-        self.lbl_pcr.set_value(f"{pcr:.2f}", _YELLOW if pcr > 1.2 else _WHITE)
-        regime_color = {"RISK_ON": _GREEN, "NEUTRAL": _WHITE, "RISK_OFF": _RED}.get(regime, _WHITE)
-        self.lbl_regime.set_value(regime, regime_color)
-
-    def append_sys_log(self, line: str):
-        if not _QT_OK:
-            logger.info(f"[SYS] {line}")
-            return
-        ts = datetime.datetime.now().strftime("%H:%M:%S")
-        self.txt_sys_log.append(f"[{ts}] {line}")
-        self.txt_sys_log.verticalScrollBar().setValue(
-            self.txt_sys_log.verticalScrollBar().maximum()
-        )
-
-    def update_daily_stats(self, trades: int, win_rate: float, pnl_pts: float):
-        if not _QT_OK:
-            return
-        self.lbl_stat_trades.set_value(f"{trades}건", _WHITE)
-        wr_color = _GREEN if win_rate >= 0.55 else (_YELLOW if win_rate >= 0.45 else _RED)
-        self.lbl_stat_wr.set_value(f"{win_rate:.1%}", wr_color)
-        self.lbl_stat_pnl.set_pnl(pnl_pts)
-
-    # ── 헬퍼 ─────────────────────────────────────────────────────
-    def _hline(self) -> QFrame:
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet(f"color: {_BG3};")
-        return line
-
-    def _start_clock(self):
-        self._clock_timer = QTimer(self)
-        self._clock_timer.timeout.connect(self._tick_clock)
-        self._clock_timer.start(1000)
-
-    def _tick_clock(self):
-        now = datetime.datetime.now()
-        self.setWindowTitle(
-            f"미륵이 v7.0  |  {now.strftime('%Y-%m-%d %H:%M:%S')}"
-        )
+        if self._tick % 3 == 0:
+            omsg = (f"{'FILL' if random.random()>0.3 else 'PENDING'} "
+                    f"{ens_sig} 5계약 @{self._price:.2f}")
+            tag2 = "FILL" if "FILL" in omsg else "PENDING"
+            self.log_panel.append("order", tag2, omsg,
+                                  f"슬리피지 {random.uniform(0.3,1.5):.1f}틱")
+            self.log_panel.append("pnl", "PNL",
+                                  f"미실현 {(self._price-388.5)*5*250000:+,.0f}원",
+                                  f"{(self._price-388.5):+.2f}pt × 5계약")
+            self.log_panel.append("model", "MODEL",
+                                  f"SGD 온라인 학습 완료 | 정확도 {random.uniform(58,66):.1f}%")
 
 
-# ── 텍스트 전용 대시보드 (PyQt5 없을 때) ─────────────────────────
-class TextDashboard:
-    """PyQt5 없을 때 로그 기반 간이 대시보드"""
-
-    def __init__(self):
-        logger.info("[Dashboard] 텍스트 모드 (PyQt5 미설치)")
-
-    def update_price(self, price, volume=0, chg=0.0):
-        logger.info(f"[PRICE] {price:.2f} vol={volume} chg={chg:+.4f}")
-
-    def update_signal(self, direction, confidence, grade, **kwargs):
-        dir_s = "UP" if direction > 0 else ("DOWN" if direction < 0 else "FLAT")
-        logger.info(f"[SIGNAL] {dir_s} conf={confidence:.2f} grade={grade}")
-
-    def update_position(self, status, qty, entry, pnl, stop):
-        logger.info(f"[POS] {status} {qty}계약 @ {entry:.2f} PnL={pnl:+.2f}pt stop={stop:.2f}")
-
-    def append_trade_log(self, line, color=None):
-        logger.info(f"[TRADE] {line}")
-
-    def update_system_status(self, **kwargs):
-        logger.info(f"[SYS] {kwargs}")
-
-    def update_supply_macro(self, **kwargs):
-        logger.info(f"[MACRO] {kwargs}")
-
-    def append_sys_log(self, line):
-        logger.info(f"[SYS] {line}")
-
-    def update_daily_stats(self, trades, win_rate, pnl_pts):
-        logger.info(f"[STATS] 거래={trades} 승률={win_rate:.1%} PnL={pnl_pts:+.2f}pt")
-
-    def show(self):
-        pass
-
-
-def create_dashboard():
-    """환경에 따라 적절한 대시보드 반환"""
-    if _QT_OK:
-        return MainDashboard()
-    return TextDashboard()
+# ────────────────────────────────────────────────────────────
+# 진입점
+# ────────────────────────────────────────────────────────────
+def launch_dashboard(kiwoom=None):
+    """키움 API 객체를 받아 대시보드 실행"""
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setStyle("Fusion")
+    win = MireukDashboard(kiwoom=kiwoom)
+    win.show()
+    return app, win
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    if _QT_OK:
-        app  = QApplication(sys.argv)
-        dash = MainDashboard()
-        dash.update_price(380.25, volume=1523, chg=0.0025)
-        dash.update_signal(direction=1, confidence=0.72, grade="B",
-                           zone="STABLE_TREND", hurst=0.58, micro="추세장")
-        dash.update_position(status="LONG", qty=2, entry=379.50, pnl=0.75, stop=378.75)
-        dash.update_system_status(cb_state="NORMAL", latency_ms=45.0,
-                                   cb_count=0, model_acc=0.67)
-        dash.update_supply_macro(foreign_fut=350, retail_fut=-200,
-                                  vix=18.5, usd_krw=1375.0, sp500_chg=0.003, pcr=0.85)
-        dash.append_trade_log("LONG 2계약 @ 379.50 진입 (B급, 1차)", color=_GREEN)
-        dash.show()
-        sys.exit(app.exec_())
-    else:
-        dash = TextDashboard()
-        dash.update_price(380.25, volume=1523)
-        dash.update_signal(1, 0.72, "B")
-        print("PyQt5 없음 — 텍스트 대시보드 동작 확인")
+    app, win = launch_dashboard()
+    sys.exit(app.exec_())
