@@ -12,6 +12,8 @@
   7. 5층 로그 시스템
 """
 
+import os
+import subprocess
 import sys
 import random
 import math
@@ -81,6 +83,21 @@ class ScreenScale:
 
 
 S = ScreenScale   # 짧은 별칭으로 사용
+
+
+def _get_commit_hash() -> str:
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        h = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=root, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return f"#{h}"
+    except Exception:
+        return "#??????"
+
+
+COMMIT_HASH: str = _get_commit_hash()
 
 # ── 색상 팔레트 (다크 테마) ──────────────────────────────────
 C = {
@@ -1214,14 +1231,21 @@ class MireukDashboard(QMainWindow):
         self.lbl_cycle  = mk_badge("목위클리 D-2", C['purple'], "#fff", 11)
         self.lbl_gamma  = mk_badge("감마스퀴즈", C['orange'], "#fff", 11)
         self.lbl_pos    = mk_badge("FLAT", C['text2'], "#fff", 11)
-        self.lbl_scale  = mk_label(S.info(), C['text2'], 9)  # 해상도 디버그
+        self.lbl_scale  = mk_label(S.info(),    C['text2'], 9, align=Qt.AlignRight)
+        self.lbl_commit = mk_label(COMMIT_HASH, C['text2'], 9, align=Qt.AlignRight)
+        res_box = QVBoxLayout()
+        res_box.setSpacing(0)
+        res_box.setContentsMargins(0, 0, 0, 0)
+        res_box.addWidget(self.lbl_scale)
+        res_box.addWidget(self.lbl_commit)
 
         header.addWidget(title)
         header.addLayout(price_box)
         header.addStretch()
-        for w in [self.lbl_regime, self.lbl_cycle, self.lbl_gamma,
-                  self.lbl_pos, self.lbl_scale, self.lbl_time]:
+        for w in [self.lbl_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos]:
             header.addWidget(w)
+        header.addLayout(res_box)
+        header.addWidget(self.lbl_time)
         root.addLayout(header)
         root.addWidget(mk_sep())
 
