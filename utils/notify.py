@@ -1,56 +1,57 @@
-# utils/notify.py — 알림 발송 (카카오 알림톡)
+# utils/notify.py — Slack 알림 발송
 """
-카카오 알림톡 API를 통해 중요 이벤트 알림을 발송합니다.
-KAKAO_TOKEN이 설정되지 않으면 로그만 기록합니다.
+Slack Bot API (#maitreya 채널) 로 중요 이벤트를 비동기 발송한다.
+PC 출처 [MW0601] 가 모든 메시지에 자동 첨부된다.
+
+토큰·채널·PC명은 config/settings.py 또는 환경변수로 관리한다.
 """
-import requests
 import logging
 
-from config.settings import KAKAO_TOKEN
+from config.settings import SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_PC_NAME
+from utils.slack_queue import get_slack_queue
 
 logger = logging.getLogger("SYSTEM")
 
-KAKAO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+_PREFIX = f"[{SLACK_PC_NAME}]" if SLACK_PC_NAME else ""
 
 
-def _send_kakao(message: str) -> bool:
-    if not KAKAO_TOKEN:
-        return False
+# ── 내부 전송 ─────────────────────────────────────────────────
+
+def _send(message: str, channel: str = None) -> None:
+    """Slack 큐에 메시지 추가 (비동기, 워커 스레드가 순차 처리)."""
     try:
-        payload = {
-            "object_type": "text",
-            "text": message,
-            "link": {"web_url": "", "mobile_web_url": ""},
-        }
-        resp = requests.post(
-            KAKAO_URL,
-            headers={"Authorization": f"Bearer {KAKAO_TOKEN}"},
-            json={"template_object": payload},
-            timeout=5,
-        )
-        return resp.status_code == 200
+        q = get_slack_queue(token=SLACK_BOT_TOKEN, default_channel=SLACK_CHANNEL_ID)
+        full = f"{_PREFIX} {message}" if _PREFIX else message
+        q.enqueue(full, channel=channel)
     except Exception as e:
-        logger.warning(f"[Notify] 카카오 전송 실패: {e}")
-        return False
+        logger.warning("[Notify] Slack 큐 추가 실패: %s", e)
 
 
-def notify(message: str, level: str = "INFO"):
+# ── 공개 API ──────────────────────────────────────────────────
+
+def notify(message: str, level: str = "INFO") -> None:
     """
-    알림 발송
-    level: INFO | WARNING | CRITICAL
+    이벤트 알림 발송.
+
+    Parameters
+    ----------
+    message : 알림 본문
+    level   : "INFO" | "WARNING" | "CRITICAL"
     """
-    icon = {"INFO": "ℹ️", "WARNING": "⚠️", "CRITICAL": "🚨"}.get(level, "")
+    icon     = {"INFO": "ℹ️", "WARNING": "⚠️", "CRITICAL": "🚨"}.get(level, "")
     full_msg = f"{icon} [미륵이] {message}"
-
-    logger.info(f"[Notify] {full_msg}")
-    _send_kakao(full_msg)
-
-
-def notify_circuit_breaker(trigger: str, action: str):
-    notify(f"Circuit Breaker 발동!\n트리거: {trigger}\n조치: {action}", "CRITICAL")
+    logger.info("[Notify] %s", full_msg)
+    _send(full_msg)
 
 
-def notify_force_exit(reason: str, pnl_krw: float):
+def notify_circuit_breaker(trigger: str, action: str) -> None:
+    notify(
+        f"Circuit Breaker 발동!\n트리거: {trigger}\n조치: {action}",
+        "CRITICAL",
+    )
+
+
+def notify_force_exit(reason: str, pnl_krw: float) -> None:
     sign = "+" if pnl_krw >= 0 else ""
     notify(
         f"강제 청산 실행\n사유: {reason}\n손익: {sign}{pnl_krw:,.0f}원",
@@ -58,9 +59,8 @@ def notify_force_exit(reason: str, pnl_krw: float):
     )
 
 
-def notify_daily_summary(win: int, lose: int, total_pnl: float):
+def notify_daily_summary(win: int, lose: int, total_pnl: float) -> None:
     notify(
-        f"일일 마감 리포트\n승: {win}회 / 패: {lose}회\n"
-        f"총 손익: {total_pnl:+,.0f}원",
+        f"일일 마감 리포트\n승: {win}회 / 패: {lose}회\n총 손익: {total_pnl:+,.0f}원",
         "INFO",
     )

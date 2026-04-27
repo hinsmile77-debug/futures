@@ -27,14 +27,16 @@ TRADES_DB      = os.path.join(DB_DIR, "trades.db")
 try:
     from config.secrets import ACCOUNT_NO, ACCOUNT_PWD, APP_KEY, APP_SECRET
     from config.secrets import KAKAO_TOKEN, BOK_API_KEY, FRED_API_KEY
+    from config.secrets import SLACK_BOT_TOKEN as _SECRET_SLACK_TOKEN
 except ImportError:
-    ACCOUNT_NO  = ""
-    ACCOUNT_PWD = ""
-    APP_KEY     = ""
-    APP_SECRET  = ""
-    KAKAO_TOKEN = ""
-    BOK_API_KEY = ""
-    FRED_API_KEY = ""
+    ACCOUNT_NO          = ""
+    ACCOUNT_PWD         = ""
+    APP_KEY             = ""
+    APP_SECRET          = ""
+    KAKAO_TOKEN         = ""
+    BOK_API_KEY         = ""
+    FRED_API_KEY        = ""
+    _SECRET_SLACK_TOKEN = ""
 
 # ── 거래 설정 ──────────────────────────────────────────────────
 TRADE_MODE = "SIMULATION"   # "SIMULATION" | "LIVE"
@@ -130,6 +132,12 @@ SHAP_COOLDOWN_DAYS     = 3     # 교체 후 재교체 금지
 SHAP_MAX_REPLACE_DAILY = 1     # 하루 최대 교체 수
 SHAP_RANK_IMPROVE_MIN  = 3     # 최소 순위 개선폭
 SHAP_MIN_DATA_POINTS   = 100   # 최소 누적 데이터
+
+# ── Slack 알림 ─────────────────────────────────────────────────
+# 우선순위: secrets.py > 환경변수 SLACK_BOT_TOKEN (Git 미포함)
+SLACK_BOT_TOKEN  = _SECRET_SLACK_TOKEN or os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "C0AUYD4RHHD")   # #maitreya
+SLACK_PC_NAME    = os.getenv("SLACK_PC_NAME",    "MW0601")
 
 # ── 로깅 설정 ──────────────────────────────────────────────────
 LOG_LEVEL = logging.INFO
