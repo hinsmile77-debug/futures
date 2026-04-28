@@ -105,6 +105,13 @@ class TradingSystem:
         self.current_regime       = "NEUTRAL"
         self.current_micro_regime = "혼합"
 
+        # 재시작 시 이전 포지션 복원 (당일 데이터만)
+        if self.position.load_state():
+            log_manager.system(
+                f"이전 포지션 복원: {self.position.status} "
+                f"{self.position.quantity}계약 @ {self.position.entry_price}"
+            )
+
         # 대시보드
         self.dashboard = create_dashboard()
         self._heartbeat_count: int = 0
@@ -230,7 +237,8 @@ class TradingSystem:
 
         # ── STEP 4: 피처 생성 ──────────────────────────────────
         features = self.feature_builder.build(bar)
-        atr      = features.get("atr", 0.5)
+        # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
+        atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
 
         # 미시 레짐 업데이트 (v6.5)

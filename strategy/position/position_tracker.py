@@ -4,13 +4,20 @@
 진입 → 보유 → 청산의 전체 생명주기를 추적.
 """
 import datetime
+import json
 import logging
+import os
 from typing import Optional, Dict
 
 from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT
 from config.settings import ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT
 
 logger = logging.getLogger("TRADE")
+
+_STATE_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "position_state.json",
+)
 
 
 class PositionTracker:
@@ -77,6 +84,7 @@ class PositionTracker:
             f"[Position] 진입 {direction} {quantity}계약 @ {price} "
             f"| 손절={self.stop_price:.2f} 1차={self.tp1_price:.2f} 2차={self.tp2_price:.2f}"
         )
+        self._save_state()
 
     def close_position(self, exit_price: float, reason: str) -> Dict:
         """포지션 청산 후 손익 반환"""
@@ -118,6 +126,7 @@ class PositionTracker:
         self.entry_price = 0.0
         self.quantity    = 0
         self.entry_time  = None
+        self._save_state()
         return result
 
     def update_trailing_stop(self, current_price: float, atr: float):
@@ -192,3 +201,69 @@ class PositionTracker:
         self._daily_pnl_pts = 0.0
         self._daily_trades  = 0
         self._daily_wins    = 0
+
+    # ── 포지션 상태 퍼시스턴스 ────────────────────────────────────
+
+    def _save_state(self) -> None:
+        """포지션 상태를 JSON 파일에 저장 — 재시작 시 복원용."""
+        try:
+            state = {
+                "status":       self.status,
+                "entry_price":  self.entry_price,
+                "quantity":     self.quantity,
+                "entry_time":   (self.entry_time.isoformat()
+                                 if self.entry_time else None),
+                "grade":        self.grade,
+                "regime":       self.regime,
+                "stop_price":   self.stop_price,
+                "tp1_price":    self.tp1_price,
+                "tp2_price":    self.tp2_price,
+                "partial_1_done": self.partial_1_done,
+                "partial_2_done": self.partial_2_done,
+                "saved_at":     datetime.datetime.now().isoformat(),
+            }
+            os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
+            with open(_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"[Position] 상태 저장 실패: {e}")
+
+    def load_state(self) -> bool:
+        """저장된 포지션 상태 복원. 반환값: 복원 성공 여부."""
+        if not os.path.exists(_STATE_FILE):
+            return False
+        try:
+            with open(_STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+
+            # 당일 데이터만 복원 (날짜 다르면 무시)
+            saved_at = datetime.datetime.fromisoformat(state.get("saved_at", ""))
+            if saved_at.date() != datetime.date.today():
+                logger.info("[Position] 저장 상태가 어제 데이터 — 무시")
+                return False
+
+            # FLAT이면 복원 불필요
+            if state.get("status") == POSITION_FLAT:
+                return False
+
+            self.status      = state["status"]
+            self.entry_price = float(state["entry_price"])
+            self.quantity    = int(state["quantity"])
+            self.entry_time  = (datetime.datetime.fromisoformat(state["entry_time"])
+                                if state.get("entry_time") else None)
+            self.grade        = state.get("grade", "")
+            self.regime       = state.get("regime", "")
+            self.stop_price   = float(state.get("stop_price", 0))
+            self.tp1_price    = float(state.get("tp1_price", 0))
+            self.tp2_price    = float(state.get("tp2_price", 0))
+            self.partial_1_done = bool(state.get("partial_1_done", False))
+            self.partial_2_done = bool(state.get("partial_2_done", False))
+
+            logger.warning(
+                f"[Position] 이전 포지션 복원: {self.status} {self.quantity}계약 "
+                f"@ {self.entry_price} (손절={self.stop_price:.2f})"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"[Position] 상태 복원 실패: {e}")
+            return False
