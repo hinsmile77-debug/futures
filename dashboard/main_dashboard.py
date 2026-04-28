@@ -273,15 +273,12 @@ def card(title, widget, color=C['blue']):
 class PredictionPanel(QWidget):
     def __init__(self):
         super().__init__()
-        self._build()
         self._hz_labels = {}
         self._param_bars = {}
         self._param_vals = {}
+        self._build()
 
     def _build(self):
-        self._hz_labels = {}
-        self._param_bars = {}
-        self._param_vals = {}
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -1202,7 +1199,9 @@ class MireukDashboard(QMainWindow):
         self.resize(S.p(1680), S.p(1000))
         self.setStyleSheet(make_style())
         self._build_ui()
-        self._start_sim_timer()
+        self._sim_timer = None
+        if kiwoom is None:
+            self._start_sim_timer()
 
     def _build_ui(self):
         central = QWidget()
@@ -1316,6 +1315,7 @@ class MireukDashboard(QMainWindow):
             change: 전일 대비 등락 (예: +3.10)
             code:   선물 코드 (예: F202606, A0166000)
         """
+        self._stop_sim_timer()
         self.lbl_realtime_price.setText(f"{price:,.2f}")
         col = C['green'] if change >= 0 else C['red']
         sign = "▲" if change >= 0 else "▼"
@@ -1337,10 +1337,14 @@ class MireukDashboard(QMainWindow):
     def _start_sim_timer(self):
         self._tick = 0
         self._price = 388.50
-        timer = QTimer(self)
-        timer.timeout.connect(self._sim_tick)
-        timer.start(3000)
+        self._sim_timer = QTimer(self)
+        self._sim_timer.timeout.connect(self._sim_tick)
+        self._sim_timer.start(3000)
         self._sim_tick()
+
+    def _stop_sim_timer(self):
+        if self._sim_timer and self._sim_timer.isActive():
+            self._sim_timer.stop()
 
     def _sim_tick(self):
         self._tick += 1
