@@ -440,6 +440,9 @@ class TradingSystem:
             logger.critical("[System] 키움 연결 실패 — 종료")
             return
 
+        # 연결 즉시 시뮬레이션 타이머 중지 (가짜 388.xx 로그 차단)
+        self.dashboard.stop_sim_timer()
+
         # SIMULATION: 모델 미학습 시 더미 주입 — 파이프라인 통과 검증용
         if self.mode == "SIMULATION" and not self.model.is_ready():
             logger.warning("[System] SIMULATION — 더미 모델 주입 (파이프라인 통과 검증)")

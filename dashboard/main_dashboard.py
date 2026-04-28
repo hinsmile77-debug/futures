@@ -1534,6 +1534,10 @@ class DashboardAdapter:
         """
         self._win.update_price(price, change, code)
 
+    def stop_sim_timer(self):
+        """키움 연결 즉시 시뮬레이션 타이머 중지 — connect_kiwoom() 성공 직후 호출"""
+        self._win._stop_sim_timer()
+
     def update_prediction(self, price: float, preds: dict, params: dict):
         """멀티 호라이즌 예측 패널 업데이트"""
         self._win.pred_panel.update_data(price, preds, params)
