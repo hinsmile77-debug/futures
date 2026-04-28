@@ -24,15 +24,26 @@
 - [Ensemble] dir=+1 conf=76.8% grade=A / [Checklist] 6/9 통과 자동진입 확인
 - 더미 모델 기반 — 예측값은 무의미, 파이프라인 연결만 확인
 
-### [V4] STEP 8 청산 트리거 + trades.db 저장 확인
-- **내용**: LONG 진입 후 청산 로그 + trades.db INSERT 확인
-- **기준**: `[청산 완료] PnL=±X.XX pt` 로그 AND `SELECT COUNT(*) FROM trades` > 0
-- **수정됨 (2026-04-28)**: `_post_exit()`에 trades.db INSERT 추가 (기존엔 저장 누락)
-  - `position_tracker.close_position()` result dict에 `entry_ts`, `grade` 추가
-- **파일**: `main.py:_post_exit`, `strategy/position/position_tracker.py`
+### [V4] STEP 8 청산 트리거 + trades.db 저장 확인 [DONE 2026-04-28]
+- trades.db 2건: 12:44 -0.10pt 하드스톱, 12:46 -0.70pt 하드스톱 확인
+- `[Position] 청산 LONG @ 1009.45 | PnL=-0.10pt` 로그 확인
 
 ### [V5] STEP 9 predictions.db 저장 확인 [DONE 2026-04-28]
 - predictions.db 30행 확인 (12:29·12:30 각 6 호라이즌)
+
+---
+
+---
+
+## 즉시 확인 필요 (추가됨 2026-04-28)
+
+### [V6] ATR 플로어 적용 후 진입 품질 확인
+- **내용**: 재시작 직후 첫 분봉에서 손절 범위 ≥ 0.75pt 확인
+- **기준**: `[Position] 진입 LONG @ XXXX | 손절=XXXX` 로그에서 (entry - 손절) ≥ 0.75pt
+
+### [V7] 포지션 복원 로그 확인
+- **내용**: LONG 중 재시작 → `[Position] 이전 포지션 복원: LONG 1계약 @ XXXX` 로그
+- **기준**: 재시작 후 FLAT 상태가 아닌 기존 포지션 유지
 
 ---
 
