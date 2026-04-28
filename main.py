@@ -127,6 +127,7 @@ class TradingSystem:
             code             = code,
             screen_no        = "3000",
             on_candle_closed = self._on_candle_closed,
+            on_tick          = self._on_tick_price_update,
         )
         print("[DBG CK-4] RealtimeData 생성 완료", flush=True)
 
@@ -135,6 +136,16 @@ class TradingSystem:
 
         logger.info("[System] 키움 실시간 수신 시작 — %s", code)
         return True
+
+    def _on_tick_price_update(self, bar: dict) -> None:
+        """틱 수신마다 대시보드 헤더·패널 현재가 갱신."""
+        if self.realtime_data is None:
+            return
+        self.dashboard.update_price(
+            price  = bar["close"],
+            change = bar["close"] - bar.get("open", bar["close"]),
+            code   = self.realtime_data.code,
+        )
 
     def _on_candle_closed(self, candle: dict) -> None:
         """분봉 완성 콜백 — Qt 이벤트 스레드에서 호출됨."""
