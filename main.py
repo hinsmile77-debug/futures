@@ -275,7 +275,8 @@ class TradingSystem:
         # [DBG-F4] ATR floor 적용 전후 + 핵심 피처 원시값 확인
         debug_log.debug(
             "[DBG-F4] ts=%s close=%.2f | ATR raw=%.4fpt → floor=%.4fpt"
-            " | cvd_dir=%+d ofi=%+d vwap_pos=%.4f hurst=%.3f vol=%d",
+            " | cvd_dir=%+d ofi=%+d vwap_pos=%.4f hurst=%.3f vol=%d"
+            " | bid=%.2f ask=%.2f buyvol=%d sllvol=%d",
             ts, close,
             features.get("atr", 0.0), atr,
             int(features.get("cvd_direction", 0)),
@@ -283,6 +284,8 @@ class TradingSystem:
             features.get("vwap_position", 0.0),
             features.get("hurst", 0.5),
             bar.get("volume", 0),
+            bar.get("bid1", 0.0), bar.get("ask1", 0.0),
+            bar.get("buy_vol", 0), bar.get("sell_vol", 0),
         )
 
         # 미시 레짐 업데이트 (v6.5)
