@@ -19,9 +19,20 @@
 ### [V2] run_minute_pipeline 완전 검증 [DONE 2026-04-27]
 - `on_candle_closed` 호출 확인됨, 파이프라인 진입 확인됨
 
-### [V3] run_minute_pipeline 예측값 출력까지 완전 검증
-- **내용**: 특성 추출 → 모델 예측 → DB 저장 → 로그 출력 전 과정
-- **기준**: `[Signal] 방향=UP/DOWN conf=xx%` 로그 확인
+### [V3] run_minute_pipeline 예측값 출력까지 완전 검증 [DONE 2026-04-28]
+- tick→분봉→on_candle_closed→pipeline→LONG 1계약 @ 1008.2 확인
+- [Ensemble] dir=+1 conf=76.8% grade=A / [Checklist] 6/9 통과 자동진입 확인
+- 더미 모델 기반 — 예측값은 무의미, 파이프라인 연결만 확인
+
+### [V4] STEP 8 청산 트리거 + trades.db 저장 확인
+- **내용**: LONG 진입 후 청산 로그 + trades.db INSERT 확인
+- **기준**: `[청산 완료] PnL=±X.XX pt` 로그 AND `SELECT COUNT(*) FROM trades` > 0
+- **수정됨 (2026-04-28)**: `_post_exit()`에 trades.db INSERT 추가 (기존엔 저장 누락)
+  - `position_tracker.close_position()` result dict에 `entry_ts`, `grade` 추가
+- **파일**: `main.py:_post_exit`, `strategy/position/position_tracker.py`
+
+### [V5] STEP 9 predictions.db 저장 확인 [DONE 2026-04-28]
+- predictions.db 30행 확인 (12:29·12:30 각 6 호라이즌)
 
 ---
 

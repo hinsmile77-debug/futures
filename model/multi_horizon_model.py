@@ -174,3 +174,32 @@ class MultiHorizonModel:
     def is_ready(self) -> bool:
         """최소 1개 호라이즌 학습 완료 여부"""
         return any(self._is_fitted.values())
+
+    def force_ready_for_test(self) -> None:
+        """
+        파이프라인 통과 테스트 전용 더미 모델 주입.
+        SIMULATION 모드에서 진입/청산 로직 연결 확인 목적.
+        실전(LIVE) 절대 사용 금지.
+        """
+        _FEAT = [
+            "cvd_divergence", "cvd_direction",
+            "vwap_position", "vwap", "above_vwap",
+            "ofi_norm", "ofi_pressure", "ofi_imbalance",
+            "atr", "atr_ratio",
+        ]
+        n = len(_FEAT)
+        rng = np.random.RandomState(42)
+        X = rng.randn(300, n)
+        y = rng.choice([-1, 0, 1], 300)
+
+        for h in HORIZONS:
+            scaler = StandardScaler()
+            Xs = scaler.fit_transform(X)
+            clf = GradientBoostingClassifier(**self.GBM_PARAMS)
+            clf.fit(Xs, y)
+            self.models[h]   = clf
+            self.scalers[h]  = scaler
+            self._is_fitted[h] = True
+
+        self.feature_names = _FEAT
+        logger.warning("[Model] force_ready_for_test 적용 — 더미 모델, 예측 무의미")

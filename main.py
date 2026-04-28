@@ -37,7 +37,8 @@ setup_logging()
 logger = logging.getLogger("SYSTEM")
 
 # ── DB 초기화 ──────────────────────────────────────────────────
-from utils.db_utils import init_all_dbs
+from utils.db_utils import init_all_dbs, execute
+from config.settings import TRADES_DB
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
 from config.settings import TRADE_MODE
@@ -190,6 +191,13 @@ class TradingSystem:
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
         close  = bar["close"]
+
+        # 대시보드 실시간 가격 동기화
+        self.dashboard.update_price(
+            price  = close,
+            change = close - bar.get("open", close),
+            code   = self.realtime_data.code if self.realtime_data else "",
+        )
 
         log_manager.signal(f"--- {ts} 분봉 파이프라인 시작 ---")
 
@@ -368,6 +376,28 @@ class TradingSystem:
             f"[청산 완료] PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원)"
         )
 
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        execute(
+            TRADES_DB,
+            """INSERT INTO trades
+               (entry_ts, exit_ts, direction, entry_price, exit_price,
+                quantity, pnl_pts, pnl_krw, exit_reason, grade, regime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                result.get("entry_ts", now_str),
+                now_str,
+                result["direction"],
+                result["entry_price"],
+                result["exit_price"],
+                result["quantity"],
+                result["pnl_pts"],
+                result["pnl_krw"],
+                result["exit_reason"],
+                result.get("grade", ""),
+                self.current_regime,
+            ),
+        )
+
     def activate_kill_switch(self, reason: str = "수동 발동") -> None:
         """Ctrl+Alt+K 단축키 또는 외부 호출용."""
         self.kill_switch.activate(reason)
@@ -409,6 +439,12 @@ class TradingSystem:
         if not self.connect_kiwoom():
             logger.critical("[System] 키움 연결 실패 — 종료")
             return
+
+        # SIMULATION: 모델 미학습 시 더미 주입 — 파이프라인 통과 검증용
+        if self.mode == "SIMULATION" and not self.model.is_ready():
+            logger.warning("[System] SIMULATION — 더미 모델 주입 (파이프라인 통과 검증)")
+            log_manager.system("더미 모델 주입 — STEP5 이후 진입/청산 로직 검증 시작")
+            self.model.force_ready_for_test()
 
         self._pre_market_done   = False
         self._daily_close_done  = False

@@ -183,7 +183,7 @@ class RealtimeData:
         self._last_tick_recv_ns = time.perf_counter_ns()
 
         try:
-            price  = float(self.api.get_real_data(code, FID_FUTURES_PRICE).replace("+", "").replace("-", "-"))
+            price  = abs(float(self.api.get_real_data(code, FID_FUTURES_PRICE).replace("+", "").replace("-", "")))
             volume = abs(int(self.api.get_real_data(code, FID_FUTURES_VOL)))
             bid1   = self._safe_float(self.api.get_real_data(code, FID_BID_PRICE))
             ask1   = self._safe_float(self.api.get_real_data(code, FID_ASK_PRICE))

@@ -91,15 +91,21 @@ class PositionTracker:
         if pnl_pts > 0:
             self._daily_wins += 1
 
+        entry_ts_str = (
+            self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+            if self.entry_time else ""
+        )
         result = {
-            "direction":   self.status,
-            "entry_price": self.entry_price,
-            "exit_price":  exit_price,
-            "quantity":    self.quantity,
-            "pnl_pts":     round(pnl_pts, 4),
-            "pnl_krw":     round(pnl_krw, 0),
-            "exit_reason": reason,
+            "direction":    self.status,
+            "entry_price":  self.entry_price,
+            "exit_price":   exit_price,
+            "quantity":     self.quantity,
+            "pnl_pts":      round(pnl_pts, 4),
+            "pnl_krw":      round(pnl_krw, 0),
+            "exit_reason":  reason,
             "hold_minutes": self._hold_minutes(),
+            "entry_ts":     entry_ts_str,
+            "grade":        self.grade,
         }
 
         logger.info(
