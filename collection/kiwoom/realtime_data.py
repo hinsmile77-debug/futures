@@ -85,6 +85,9 @@ class RealtimeData:
         # 틱 수신 시 latency 측정용 (latency_sync 연동)
         self._last_tick_recv_ns: int = 0
 
+        # 틱 방향 판단용 직전 가격 (tick test — FC0 부호는 전일대비 방향, 틱 방향 아님)
+        self._prev_tick_price: float = 0.0
+
         self._running: bool = False
 
     # ── 시작 / 중지 ───────────────────────────────────────────
@@ -184,9 +187,10 @@ class RealtimeData:
 
         try:
             raw_price = self.api.get_real_data(code, FID_FUTURES_PRICE)
-            # 키움 선물 현재가 부호: '+' 또는 숫자 시작 → 매수 체결, '-' → 매도 체결
-            is_buy_tick = not raw_price.strip().startswith('-')
             price  = abs(float(raw_price.replace("+", "").replace("-", "")))
+            # tick test: 전 틱 대비 가격 상승 → 매수압력, 하락 → 매도압력 (Lee-Ready 근사)
+            is_buy_tick = price >= self._prev_tick_price if self._prev_tick_price else True
+            self._prev_tick_price = price
             volume = abs(int(self.api.get_real_data(code, FID_FUTURES_VOL)))
             bid1   = self._safe_float(self.api.get_real_data(code, FID_BID_PRICE))
             ask1   = self._safe_float(self.api.get_real_data(code, FID_ASK_PRICE))

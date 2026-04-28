@@ -447,7 +447,7 @@ class TradingSystem:
 
         # ── STEP 8: 청산 트리거 감시 ───────────────────────────
         if self.position.status != "FLAT":
-            self._check_exit_triggers(close, features, decision)
+            self._check_exit_triggers(close, features, decision, bar)
 
         # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
         _daily   = self.position.daily_stats()
@@ -483,7 +483,7 @@ class TradingSystem:
             f"등급={grade} 레짐={self.current_regime}"
         )
 
-    def _check_exit_triggers(self, price: float, features: dict, decision: dict):
+    def _check_exit_triggers(self, price: float, features: dict, decision: dict, bar: dict = None):
         """청산 트리거 감시 (우선순위 1~4)"""
         atr = features.get("atr", 0.5)
 
@@ -508,9 +508,20 @@ class TradingSystem:
         # 트레일링 스톱 업데이트
         self.position.update_trailing_stop(price, atr)
 
-        # 1순위: 하드 스톱
+        # 1순위: 하드 스톱 — bar의 고저가 기준으로 체크, exit은 손절가 사용 (close가 개선)
         if self.position.is_stop_hit(price):
-            result = self.position.close_position(price, "하드스톱")
+            # bar low/high가 stop을 뚫은 경우 stop_price로 청산 (close가보다 유리 또는 동등)
+            bar_low  = bar["low"]  if bar else price
+            bar_high = bar["high"] if bar else price
+            if self.position.status == "LONG":
+                exit_price = max(self.position.stop_price, bar_low)   # 손절가 이상 보장
+            else:
+                exit_price = min(self.position.stop_price, bar_high)  # 손절가 이하 보장
+            debug_log.debug(
+                "[DBG-STOP] 하드스톱 발동: close=%.2f bar_low=%.2f stop=%.2f → exit=%.2f",
+                price, bar_low, self.position.stop_price, exit_price,
+            )
+            result = self.position.close_position(exit_price, "하드스톱")
             self._post_exit(result)
             return
 
