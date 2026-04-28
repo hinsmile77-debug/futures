@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 from config.settings import HORIZONS, HORIZON_THRESHOLDS, PREDICTIONS_DB
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from model.target_builder import build_single_target
-from utils.db_utils import execute, fetchall, fetchone
+from utils.db_utils import execute, fetchall, fetchone, get_candle_close
 
 logger = logging.getLogger("LEARNING")
 
@@ -77,17 +77,16 @@ class PredictionBuffer:
             if row is None:
                 continue
 
-            # 실제 결과를 저장할 때의 기준가는 target_ts의 종가가 필요하나
-            # 여기서는 current_price를 future_price로 사용
-            # (실제 구현 시 과거 price_at_target_ts 조회 필요)
-            # 지금은 current_price를 사용 (검증용 근사치)
-            pred_id = row["id"]
+            pred_id  = row["id"]
             pred_dir = row["direction"]
 
-            # 실제 방향 계산 (current_price = 예측 시점 + h분 후 종가)
-            # 여기서는 단순화: actual = predicted (실 데이터 없을 때 placeholder)
-            actual = pred_dir  # placeholder: 실제는 저장된 entry_price 대비 계산
+            # 실제 방향: target_ts 종가 → current_ts 종가
+            target_close = get_candle_close(target_ts)
+            if target_close is None:
+                # raw_candles 미적재 구간 — 건너뜀 (placeholder 방지)
+                continue
 
+            actual  = build_single_target(target_close, current_price, threshold)
             correct = int(actual == pred_dir)
             execute(
                 PREDICTIONS_DB,
@@ -103,7 +102,11 @@ class PredictionBuffer:
                 "correct":    bool(correct),
                 "confidence": row["confidence"],
             })
-            logger.debug(f"[Buffer] {horizon} 검증: pred={pred_dir} actual={actual} {'✓' if correct else '✗'}")
+            logger.debug(
+                f"[Buffer] {horizon} 검증: pred={pred_dir} actual={actual} "
+                f"({'✓' if correct else '✗'}) "
+                f"target_close={target_close:.2f}→current={current_price:.2f}"
+            )
 
         return verified
 

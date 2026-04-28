@@ -34,14 +34,14 @@ _qt_app = QApplication.instance() or QApplication(sys.argv)
 # ── 로깅 초기화 (가장 먼저) ────────────────────────────────────
 from utils.logger import setup_logging
 setup_logging()
-logger = logging.getLogger("SYSTEM")
+logger    = logging.getLogger("SYSTEM")
+debug_log = logging.getLogger("DEBUG")
 
 # ── DB 초기화 ──────────────────────────────────────────────────
-from utils.db_utils import init_all_dbs, execute
+from utils.db_utils import init_all_dbs, execute, save_candle, save_features, count_raw_candles
 from config.settings import TRADES_DB
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
-from config.settings import TRADE_MODE
 from collection.kiwoom import KiwoomAPI, RealtimeData, LatencySync
 from collection.macro.regime_classifier import RegimeClassifier
 from features.feature_builder import FeatureBuilder
@@ -244,6 +244,23 @@ class TradingSystem:
         atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
 
+        # 분봉·피처 원본 저장 (경로 B 학습 데이터 축적)
+        save_candle(bar)
+        save_features(ts, features)
+
+        # [DBG-F4] ATR floor 적용 전후 + 핵심 피처 원시값 확인
+        debug_log.debug(
+            "[DBG-F4] ts=%s close=%.2f | ATR raw=%.4fpt → floor=%.4fpt"
+            " | cvd_dir=%+d ofi=%+d vwap_pos=%.4f hurst=%.3f vol=%d",
+            ts, close,
+            features.get("atr", 0.0), atr,
+            int(features.get("cvd_direction", 0)),
+            int(features.get("ofi_pressure", 0)),
+            features.get("vwap_position", 0.0),
+            features.get("hurst", 0.5),
+            bar.get("volume", 0),
+        )
+
         # 미시 레짐 업데이트 (v6.5)
         # TODO: ADX 계산 추가
         adx_dummy = 22.0
@@ -275,8 +292,32 @@ class TradingSystem:
             f"grade={grade} micro={self.current_micro_regime}"
         )
 
+        # [DBG-F6] 호라이즌별 예측 확률 + CB 상태 스냅샷
+        _h_summary = " | ".join(
+            f"{h}:{r['direction']:+d}@{r['confidence']:.0%}"
+            for h, r in horizon_proba.items()
+        )
+        debug_log.debug("[DBG-F6] horizons: %s", _h_summary)
+        _cb = self.circuit_breaker.status_dict()
+        debug_log.debug(
+            "[DBG-CB] state=%s consec_stops=%d acc30m=%.1f%% latency=%.3fs%s",
+            _cb["state"], _cb["consec_stops"],
+            _cb["accuracy_30m"] * 100, _cb["last_latency"],
+            f" pause_until={_cb['pause_until']}" if _cb["pause_until"] else "",
+        )
+
         # ── STEP 7: 진입 실행 ──────────────────────────────────
         time_zone = get_time_zone()
+
+        # [DBG-F7] 진입 4개 조건 평가 — 차단 이유 파악용
+        debug_log.debug(
+            "[DBG-F7] 진입조건: pos=%s CB=%s new_entry=%s grade=%s time_zone=%s",
+            self.position.status,
+            self.circuit_breaker.state,
+            is_new_entry_allowed(),
+            grade,
+            time_zone,
+        )
 
         if (
             self.position.status == "FLAT"
@@ -298,6 +339,23 @@ class TradingSystem:
                 min_confidence    = decision["min_conf"],
             )
 
+            # [DBG-F7a] 체크리스트 항목별 ✓/✗
+            _chk = checklist_result["checks"]
+            debug_log.debug(
+                "[DBG-F7a] checklist %d/9 → %s | "
+                "sig=%s conf=%s vwap=%s cvd=%s ofi=%s foreign=%s prev=%s time=%s risk=%s",
+                checklist_result["pass_count"], checklist_result["grade"],
+                "✓" if _chk.get("1_signal")     else "✗",
+                "✓" if _chk.get("2_confidence") else "✗",
+                "✓" if _chk.get("3_vwap")       else "✗",
+                "✓" if _chk.get("4_cvd")        else "✗",
+                "✓" if _chk.get("5_ofi")        else "✗",
+                "✓" if _chk.get("6_foreign")    else "✗",
+                "✓" if _chk.get("7_prev_bar")   else "✗",
+                "✓" if _chk.get("8_time")       else "✗",
+                "✓" if _chk.get("9_risk")       else "✗",
+            )
+
             final_grade = checklist_result["grade"]
             if final_grade != "X":
                 kelly_result = self.kelly.compute_fraction()
@@ -307,6 +365,16 @@ class TradingSystem:
                     regime              = self.current_regime,
                     grade_mult          = checklist_result["size_mult"],
                     adaptive_kelly_mult = kelly_result["multiplier"],
+                )
+
+                # [DBG-F7b] 사이저 입력/출력 확인
+                debug_log.debug(
+                    "[DBG-F7b] sizer: conf=%.1f%% ATR=%.4f regime=%s "
+                    "grade_mult=%.2f kelly_mult=%.2f → qty=%d",
+                    confidence * 100, atr, self.current_regime,
+                    checklist_result["size_mult"],
+                    kelly_result.get("multiplier", 1.0),
+                    size_result["quantity"],
                 )
 
                 qty = size_result["quantity"]
@@ -360,6 +428,24 @@ class TradingSystem:
     def _check_exit_triggers(self, price: float, features: dict, decision: dict):
         """청산 트리거 감시 (우선순위 1~4)"""
         atr = features.get("atr", 0.5)
+
+        # [DBG-F8] 매분 포지션 현황 스냅샷 — 손절·TP 거리 + 미실현 손익
+        if self.position.status != "FLAT":
+            _mult     = 1 if self.position.status == "LONG" else -1
+            _upnl     = self.position.unrealized_pnl_pts(price)
+            _stop_dist = (price - self.position.stop_price) * _mult
+            _tp1_dist  = (self.position.tp1_price  - price) * _mult
+            _tp2_dist  = (self.position.tp2_price  - price) * _mult
+            debug_log.debug(
+                "[DBG-F8] %s %dct @%.2f cur=%.2f upnl=%+.2fpt"
+                " | stop_dist=%.2f tp1=%.2f tp2=%.2f | stop=%.2f | p1=%s p2=%s",
+                self.position.status, self.position.quantity,
+                self.position.entry_price, price, _upnl,
+                _stop_dist, _tp1_dist, _tp2_dist,
+                self.position.stop_price,
+                "✓" if self.position.partial_1_done else "○",
+                "✓" if self.position.partial_2_done else "○",
+            )
 
         # 트레일링 스톱 업데이트
         self.position.update_trailing_stop(price, atr)

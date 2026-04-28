@@ -44,7 +44,8 @@ def setup_logging():
 
     for layer in layers:
         logger = logging.getLogger(layer)
-        logger.setLevel(LOG_LEVEL)
+        # DEBUG 레이어는 항상 DEBUG 레벨 — 다른 레이어는 settings.LOG_LEVEL 사용
+        logger.setLevel(logging.DEBUG if layer == LAYER_DEBUG else LOG_LEVEL)
         logger.propagate = False
 
         # 파일 핸들러 (자정에 롤오버)

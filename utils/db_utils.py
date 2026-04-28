@@ -5,7 +5,8 @@ import threading
 from contextlib import contextmanager
 from typing import List, Tuple, Any, Optional
 
-from config.settings import PREDICTIONS_DB, SHAP_DB, TRADES_DB, DB_DIR
+import json
+from config.settings import PREDICTIONS_DB, SHAP_DB, TRADES_DB, RAW_DATA_DB, DB_DIR
 
 _lock = threading.Lock()
 
@@ -121,8 +122,78 @@ def init_shap_db():
             "CREATE INDEX IF NOT EXISTS idx_feature ON shap_scores(feature)")
 
 
+def init_raw_data_db():
+    """분봉 원본 + 피처 저장 테이블 — 경로 B 학습 데이터 축적용"""
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS raw_candles (
+            ts         TEXT PRIMARY KEY,
+            open       REAL NOT NULL,
+            high       REAL NOT NULL,
+            low        REAL NOT NULL,
+            close      REAL NOT NULL,
+            volume     INTEGER NOT NULL,
+            bid1       REAL,
+            ask1       REAL,
+            oi         INTEGER,
+            created_at TEXT DEFAULT (datetime('now', 'localtime'))
+        )
+    """)
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS raw_features (
+            ts         TEXT PRIMARY KEY,
+            features   TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime'))
+        )
+    """)
+
+
+def save_candle(candle: dict) -> None:
+    """분봉 확정 시 raw_candles에 저장."""
+    ts_raw = candle.get("ts")
+    ts = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+    execute(
+        RAW_DATA_DB,
+        """INSERT OR REPLACE INTO raw_candles
+           (ts, open, high, low, close, volume, bid1, ask1, oi)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            ts,
+            candle.get("open",   0.0),
+            candle.get("high",   0.0),
+            candle.get("low",    0.0),
+            candle.get("close",  0.0),
+            candle.get("volume", 0),
+            candle.get("bid1"),
+            candle.get("ask1"),
+            candle.get("oi"),
+        ),
+    )
+
+
+def save_features(ts: str, features: dict) -> None:
+    """피처 벡터를 raw_features에 저장."""
+    execute(
+        RAW_DATA_DB,
+        "INSERT OR REPLACE INTO raw_features (ts, features) VALUES (?, ?)",
+        (ts, json.dumps(features, ensure_ascii=False)),
+    )
+
+
+def get_candle_close(ts: str) -> Optional[float]:
+    """ts 시각의 종가 반환 — actual 라벨 계산용."""
+    row = fetchone(RAW_DATA_DB, "SELECT close FROM raw_candles WHERE ts = ?", (ts,))
+    return float(row["close"]) if row else None
+
+
+def count_raw_candles() -> int:
+    """누적 분봉 수 반환."""
+    row = fetchone(RAW_DATA_DB, "SELECT COUNT(*) AS cnt FROM raw_candles")
+    return row["cnt"] if row else 0
+
+
 def init_all_dbs():
     """전체 DB 초기화 (main.py에서 1회 호출)"""
     init_predictions_db()
     init_trades_db()
     init_shap_db()
+    init_raw_data_db()

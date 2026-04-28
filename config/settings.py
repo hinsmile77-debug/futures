@@ -22,6 +22,7 @@ SCALER_DIR    = os.path.join(MODEL_DIR, "scaler")
 PREDICTIONS_DB = os.path.join(DB_DIR, "predictions.db")
 SHAP_DB        = os.path.join(DB_DIR, "shap_tracker.db")
 TRADES_DB      = os.path.join(DB_DIR, "trades.db")
+RAW_DATA_DB    = os.path.join(DB_DIR, "raw_data.db")   # 경로 B 학습 데이터
 
 # ── 비밀 설정 로드 (secrets.py가 없으면 빈 값으로 대체) ───────
 try:
