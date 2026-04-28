@@ -119,6 +119,20 @@ class TradingSystem:
         self.dashboard = create_dashboard()
         self._heartbeat_count: int = 0
 
+        # log_manager → 대시보드 5개 탭 배선 (subscribe 없으면 탭에 아무것도 안 보임)
+        log_manager.subscribe(
+            "SYSTEM",
+            lambda e: self.dashboard.append_sys_log_tagged(e.message, e.level),
+        )
+        log_manager.subscribe(
+            "TRADE",
+            lambda e: self.dashboard.append_trade_log(e.message),
+        )
+        log_manager.subscribe(
+            "LEARNING",
+            lambda e: self.dashboard.append_model_log(e.message),
+        )
+
     # ── 키움 API 연결 ─────────────────────────────────────────
     def connect_kiwoom(self) -> bool:
         """로그인 + 근월물 실시간 수신 등록."""
@@ -148,9 +162,19 @@ class TradingSystem:
         return True
 
     def _on_tick_price_update(self, bar: dict) -> None:
-        """틱 수신마다 대시보드 헤더·패널 현재가 갱신."""
+        """틱 수신마다 대시보드 헤더·패널 현재가 갱신 + OFI 호가 누적."""
         if self.realtime_data is None:
             return
+        # OFI: 틱마다 호가 변화 누적 (분봉 확정 시 flush_minute() 에서 집계)
+        bid1 = bar.get("bid1", 0.0)
+        ask1 = bar.get("ask1", 0.0)
+        if bid1 and ask1:
+            self.feature_builder.ofi.update_hoga(
+                bid_price = bid1,
+                bid_qty   = bar.get("bid_qty", 0),
+                ask_price = ask1,
+                ask_qty   = bar.get("ask_qty", 0),
+            )
         self.dashboard.update_price(
             price  = bar["close"],
             change = bar["close"] - bar.get("open", bar["close"]),
@@ -292,6 +316,20 @@ class TradingSystem:
             f"grade={grade} micro={self.current_micro_regime}"
         )
 
+        # 대시보드 호라이즌 카드 + 신뢰도 헤더 업데이트 (매분)
+        _H_MAP = {"1m":"1분","3m":"3분","5m":"5분","10m":"10분","15m":"15분","30m":"30분"}
+        _preds_ui = {
+            _H_MAP.get(h, h): {
+                "signal": r["direction"],
+                "up": r["confidence"] if r["direction"] == 1 else (1 - r["confidence"]),
+                "dn": r["confidence"] if r["direction"] == -1 else (1 - r["confidence"]),
+            }
+            for h, r in horizon_proba.items()
+        }
+        _dir_ko = "매수" if direction > 0 else ("매도" if direction < 0 else "관망")
+        self.dashboard.update_prediction(close, _preds_ui, {}, confidence)
+        self.dashboard.update_entry(_dir_ko, confidence, grade, {})
+
         # [DBG-F6] 호라이즌별 예측 확률 + CB 상태 스냅샷
         _h_summary = " | ".join(
             f"{h}:{r['direction']:+d}@{r['confidence']:.0%}"
@@ -338,6 +376,17 @@ class TradingSystem:
                 daily_loss_pct    = abs(self.position.daily_stats()["pnl_pts"]) / 1_000,
                 min_confidence    = decision["min_conf"],
             )
+
+            # 체크리스트 결과 → 대시보드 진입 패널 업데이트 (체크마크 포함)
+            _CHK_MAP = {
+                "1_signal":"signal_chk", "2_confidence":"conf_chk",
+                "3_vwap":"vwap_chk",    "4_cvd":"cvd_chk",
+                "5_ofi":"ofi_chk",      "6_foreign":"fi_chk",
+                "7_prev_bar":"candle_chk","8_time":"time_chk",
+                "9_risk":"risk_chk",
+            }
+            _checks_ui = {_CHK_MAP.get(k, k): v for k, v in checklist_result["checks"].items()}
+            self.dashboard.update_entry(_dir_ko, confidence, checklist_result["grade"], _checks_ui)
 
             # [DBG-F7a] 체크리스트 항목별 ✓/✗
             _chk = checklist_result["checks"]
@@ -396,6 +445,12 @@ class TradingSystem:
         # ── STEP 8: 청산 트리거 감시 ───────────────────────────
         if self.position.status != "FLAT":
             self._check_exit_triggers(close, features, decision)
+
+        # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
+        _daily   = self.position.daily_stats()
+        _unreal  = self.position.unrealized_pnl_pts(close) * 500_000  # KRW
+        _var_krw = -(atr * 1.65 * self.position.quantity * 500_000) if self.position.quantity else 0.0
+        self.dashboard.update_pnl_metrics(_unreal, _daily["pnl_krw"], _var_krw)
 
         # ── STEP 9: 예측 DB 저장 ───────────────────────────────
         for h_name, h_res in horizon_proba.items():

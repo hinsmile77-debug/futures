@@ -353,8 +353,16 @@ class PredictionPanel(QWidget):
         self.corr_label = mk_label("외인콜+0.74  다이버전스+0.68  프로그램+0.66  OFI+0.62", C['text2'], 9)
         lay.addWidget(self.corr_label)
 
-    def update_data(self, price, preds, params):
+    def update_data(self, price, preds, params, conf=None):
         self.lbl_price.setText(f"{price:.2f}")
+
+        # 앙상블 신뢰도 (실거래 데이터가 들어올 때만 갱신)
+        if conf is not None:
+            self.lbl_conf.setText(f"신뢰도 {conf*100:.1f}%")
+            self.lbl_conf.setStyleSheet(
+                f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=0.58 else C['red']};"
+                f"font-size:12px;font-weight:bold;"
+            )
 
         # 앙상블 방향
         ups = sum(1 for v in preds.values() if v['signal'] == 1)
@@ -1112,18 +1120,25 @@ class LogPanel(QWidget):
 
             elif key == "pnl":
                 mrow = QHBoxLayout()
-                for mk_lbl, mk_val, mc in [("미실현 손익","+12,000원",C['green']),
-                                             ("일일 누적","+87,500원",C['green']),
-                                             ("VaR 95%","-87,500원",C['orange'])]:
+                self._pnl_vals = {}   # 업데이트용 라벨 참조
+                self._pnl_bars = {}
+                for mk_lbl, attr, mc in [
+                    ("미실현 손익", "unrealized", C['cyan']),
+                    ("일일 누적",   "daily",      C['green']),
+                    ("VaR 95%",    "var",         C['orange']),
+                ]:
                     mf = QFrame()
                     mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
                     mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,2,5,2)
                     mfl.addWidget(mk_label(mk_lbl, C['text2'], 8, align=Qt.AlignCenter))
                     pb = mk_prog(mc, 4)
-                    pb.setValue(60)
-                    mfl.addWidget(mk_val_label(mk_val, mc, 11, align=Qt.AlignCenter))
+                    pb.setValue(0)
+                    vl = mk_val_label("——원", mc, 11, align=Qt.AlignCenter)
+                    mfl.addWidget(vl)
                     mfl.addWidget(pb)
                     mrow.addWidget(mf)
+                    self._pnl_vals[attr] = vl
+                    self._pnl_bars[attr] = pb
                 pl.addLayout(mrow)
 
             elif key == "model":
@@ -1154,6 +1169,24 @@ class LogPanel(QWidget):
             )
 
         lay.addWidget(self.tabs)
+
+    def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float):
+        """미실현 손익·일일 누적·VaR 95% 수치 갱신"""
+        data = {
+            "unrealized": (unrealized_krw, C['green'] if unrealized_krw >= 0 else C['red']),
+            "daily":      (daily_pnl_krw,  C['green'] if daily_pnl_krw  >= 0 else C['red']),
+            "var":        (var_krw,         C['orange']),
+        }
+        for attr, (val, col) in data.items():
+            lbl = self._pnl_vals.get(attr)
+            pb  = self._pnl_bars.get(attr)
+            if lbl:
+                lbl.setText(f"{val:+,.0f}원")
+                lbl.setStyleSheet(f"color:{col};font-size:11px;font-weight:bold;")
+            if pb and attr != "var":
+                # 진행바: 0 기준 ±5만원 = 50% 눈금 (최대 100%)
+                pct = min(100, max(0, int(abs(val) / 50_000 * 50 + 50)))
+                pb.setValue(pct)
 
     def append(self, key, tag, msg, val=""):
         tb = self.log_boxes.get(key)
@@ -1538,9 +1571,9 @@ class DashboardAdapter:
         """키움 연결 즉시 시뮬레이션 타이머 중지 — connect_kiwoom() 성공 직후 호출"""
         self._win._stop_sim_timer()
 
-    def update_prediction(self, price: float, preds: dict, params: dict):
+    def update_prediction(self, price: float, preds: dict, params: dict, conf: float = None):
         """멀티 호라이즌 예측 패널 업데이트"""
-        self._win.pred_panel.update_data(price, preds, params)
+        self._win.pred_panel.update_data(price, preds, params, conf)
 
     def update_entry(self, signal: str, conf: float, grade: str, checks: dict):
         """진입 관리 패널 업데이트"""
@@ -1558,6 +1591,10 @@ class DashboardAdapter:
         """창3 주문/체결 로그"""
         self._win.log_panel.append("order", "TRADE", msg, val)
 
+    def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float = 0.0):
+        """창4 손익 PnL 수치 패널 갱신"""
+        self._win.log_panel.update_pnl_metrics(unrealized_krw, daily_pnl_krw, var_krw)
+
     def append_pnl_log(self, msg: str, val: str = ""):
         """창4 손익 로그"""
         self._win.log_panel.append("pnl", "PNL", msg, val)
@@ -1567,8 +1604,13 @@ class DashboardAdapter:
         self._win.log_panel.append("model", "MODEL", msg)
 
     def append_warn_log(self, msg: str):
-        """창2 경보 로그"""
+        """창2 경보 로그 (WARN 태그 → 1 시스템 + 2 경보 탭 동시 기록)"""
         self._win.log_panel.append("all", "WARN", msg)
+
+    def append_sys_log_tagged(self, msg: str, level: str = "INFO"):
+        """레벨 명시 시스템 로그 — WARN/ERROR/CRITICAL 은 2 경보 탭에도 복사"""
+        tag = level if level in ("WARN", "ERROR", "CRITICAL") else "SYSTEM"
+        self._win.log_panel.append("all", tag, msg)
 
 
 # ────────────────────────────────────────────────────────────

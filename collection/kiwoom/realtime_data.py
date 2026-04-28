@@ -183,7 +183,10 @@ class RealtimeData:
         self._last_tick_recv_ns = time.perf_counter_ns()
 
         try:
-            price  = abs(float(self.api.get_real_data(code, FID_FUTURES_PRICE).replace("+", "").replace("-", "")))
+            raw_price = self.api.get_real_data(code, FID_FUTURES_PRICE)
+            # 키움 선물 현재가 부호: '+' 또는 숫자 시작 → 매수 체결, '-' → 매도 체결
+            is_buy_tick = not raw_price.strip().startswith('-')
+            price  = abs(float(raw_price.replace("+", "").replace("-", "")))
             volume = abs(int(self.api.get_real_data(code, FID_FUTURES_VOL)))
             bid1   = self._safe_float(self.api.get_real_data(code, FID_BID_PRICE))
             ask1   = self._safe_float(self.api.get_real_data(code, FID_ASK_PRICE))
@@ -198,7 +201,7 @@ class RealtimeData:
         bar_ts = now.replace(second=0, microsecond=0)
         bar_min = now.hour * 60 + now.minute
 
-        self._update_bar(bar_ts, bar_min, price, volume, bid1, ask1, bid_q, ask_q, oi)
+        self._update_bar(bar_ts, bar_min, price, volume, bid1, ask1, bid_q, ask_q, oi, is_buy_tick)
 
     def _update_bar(
         self,
@@ -211,39 +214,47 @@ class RealtimeData:
         bid_q: int,
         ask_q: int,
         oi: int,
+        is_buy_tick: bool = True,
     ) -> None:
         # 분이 바뀌었으면 이전 bar 확정
         if self._current_min is not None and bar_min != self._current_min:
             self._close_current_bar()
 
+        buy_v  = volume if is_buy_tick else 0
+        sell_v = 0      if is_buy_tick else volume
+
         if self._current_bar is None:
             # 새 bar 시작
             self._current_bar = {
-                "ts":      bar_ts,
-                "open":    price,
-                "high":    price,
-                "low":     price,
-                "close":   price,
-                "volume":  volume,
-                "bid1":    bid1,
-                "ask1":    ask1,
-                "bid_qty": bid_q,
-                "ask_qty": ask_q,
-                "oi":      oi,
+                "ts":       bar_ts,
+                "open":     price,
+                "high":     price,
+                "low":      price,
+                "close":    price,
+                "volume":   volume,
+                "buy_vol":  buy_v,
+                "sell_vol": sell_v,
+                "bid1":     bid1,
+                "ask1":     ask1,
+                "bid_qty":  bid_q,
+                "ask_qty":  ask_q,
+                "oi":       oi,
             }
             self._current_min = bar_min
         else:
             # 기존 bar 업데이트
             bar = self._current_bar
-            bar["high"]    = max(bar["high"], price)
-            bar["low"]     = min(bar["low"], price)
-            bar["close"]   = price
-            bar["volume"] += volume
-            bar["bid1"]    = bid1
-            bar["ask1"]    = ask1
-            bar["bid_qty"] = bid_q
-            bar["ask_qty"] = ask_q
-            bar["oi"]      = oi
+            bar["high"]     = max(bar["high"], price)
+            bar["low"]      = min(bar["low"], price)
+            bar["close"]    = price
+            bar["volume"]  += volume
+            bar["buy_vol"]  = bar.get("buy_vol",  0) + buy_v
+            bar["sell_vol"] = bar.get("sell_vol", 0) + sell_v
+            bar["bid1"]     = bid1
+            bar["ask1"]     = ask1
+            bar["bid_qty"]  = bid_q
+            bar["ask_qty"]  = ask_q
+            bar["oi"]       = oi
 
         if self._on_tick is not None:
             try:
