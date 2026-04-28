@@ -107,10 +107,13 @@ class TradingSystem:
 
         # 재시작 시 이전 포지션 복원 (당일 데이터만)
         if self.position.load_state():
-            log_manager.system(
-                f"이전 포지션 복원: {self.position.status} "
-                f"{self.position.quantity}계약 @ {self.position.entry_price}"
+            msg = (
+                f"[Position] 이전 포지션 복원: {self.position.status} "
+                f"{self.position.quantity}계약 @ {self.position.entry_price} "
+                f"(손절={self.position.stop_price:.2f})"
             )
+            logger.warning(msg)           # SYSTEM 로그 파일 + 콘솔
+            log_manager.system(msg, "WARNING")   # 대시보드 1 시스템 탭
 
         # 대시보드
         self.dashboard = create_dashboard()
