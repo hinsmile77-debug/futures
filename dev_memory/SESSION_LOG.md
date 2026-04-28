@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-04-28 (오후 세션)
+
+**작업**: 모의투자 실거래 검증 + 이상점 진단·수정 + 대시보드 데이터 배선 완성
+
+### Path B 인프라 구축 (커밋 60233d6)
+| 파일 | 내용 |
+|---|---|
+| `config/settings.py` | `RAW_DATA_DB` 경로 추가 |
+| `utils/db_utils.py` | `raw_candles` + `raw_features` 테이블, save/get 함수 4개 추가 |
+| `main.py` STEP 4 | `save_candle(bar)` + `save_features(ts, features)` 호출 → 13거래일 데이터 축적 시작 |
+| `learning/prediction_buffer.py` | actual 라벨: `raw_candles` 실종가 기반 계산으로 교체 (placeholder 제거) |
+| `utils/logger.py` | DEBUG 레이어 `logging.DEBUG` 고정 (INFO 레벨이 debug() 출력 차단하던 버그 수정) |
+
+### 디버그 로그 추가 (커밋 60233d6)
+`[DBG-F4]` ATR floor + 핵심 피처 / `[DBG-F6]` 호라이즌별 예측 / `[DBG-CB]` CB 상태 /
+`[DBG-F7]` 진입 4조건 / `[DBG-F7a]` 체크리스트 9항목 / `[DBG-F7b]` 사이저 입출력 /
+`[DBG-F8]` 포지션 손절·TP·미실현 PnL / `[DBG-STOP]` 하드스톱 발동 정보
+
+### 대시보드 데이터 배선 완성 (커밋 c8018ed)
+| 버그 | 수정 |
+|---|---|
+| 신뢰도 `lbl_conf` 항상 "— %" | `PredictionPanel.update_data(conf=)` 파라미터 추가 |
+| 호라이즌 카드·체크리스트 갱신 안됨 | `run_minute_pipeline` 에서 `update_prediction()` + `update_entry()` 매분 호출 |
+| 5층 로그 탭 1·2·3 빈 화면 | `log_manager.subscribe()` SYSTEM/TRADE/LEARNING 배선 연결 (`__init__`에서) |
+| PnL 수치 "+12,000원" 하드코딩 | `LogPanel.update_pnl_metrics()` 추가, 매분 실시간 전송 |
+
+### 실거래 이상점 수정 (커밋 5db134e)
+| # | 이상점 | 수정 |
+|---|---|---|
+| B13 | CVD buyvol=100% — FC0 FID10 부호가 틱 방향 아님 | tick test (prev_price 비교 Lee-Ready 근사)로 교체 |
+| B15 | 손절가 아닌 close가로 청산 (항상 불리) | `_check_exit_triggers(bar=)` 전달, exit_price = stop_price 보정 |
+
+### 미해결 이슈
+| # | 내용 |
+|---|---|
+| B14 | bid/ask=0 — FC0에 FID41/51 미포함, FH0(선물호가잔량) 별도 등록 필요 → OFI 영구 0 |
+
+### 실거래 실행 결과 (로그 기반)
+- ATR floor 0.75pt 완전 검증 (`stop_dist=0.75pt` 정확히 확인)
+- 체크리스트 8/9 정상 평가 (foreign 미구현 1개만 ✗)
+- 진입 LONG @1008.40, stop=1007.65 정상 진입
+- stop_dist=-0.15pt → 손절 발동 예상 (TRADE 로그 별도 확인)
+- CVD/OFI 0값: CVD는 3분 이상 누적 후 계산되므로 초기 0 정상
+
+---
+
 ## 2026-04-27 (오전~오후 세션)
 
 **작업**: 실시간 분봉 파이프라인 end-to-end 정상 동작 달성

@@ -2,6 +2,77 @@
 
 ---
 
+## 2026-04-28 버그 수정 (오후 세션)
+
+### [B13] CVD direction 항상 0 — FC0 FID10 부호 오해
+**파일**: `collection/kiwoom/realtime_data.py`
+**증상**: `[DBG-F4]` buyvol=161 sllvol=0 (100% buy), CVD delta=0
+**원인**: FC0 FID10(`현재가`) 앞 부호(+/-)는 전일대비 방향이지 틱 방향이 아님. 처음에 `raw_price.startswith('-')` 방식으로 틱 방향 판단 시도 → 모든 틱이 buy로 분류
+**Fix**: tick test 방식 채용 — `is_buy_tick = price >= self._prev_tick_price` (Lee-Ready 근사). `_prev_tick_price` 인스턴스 변수 추가, bar dict에 `buy_vol`/`sell_vol` 누적
+
+### [B14] OFI 영구 0 — bid/ask FH0 전용 FID 미수신 (미해결)
+**파일**: `collection/kiwoom/realtime_data.py`, `main.py`
+**증상**: `[DBG-F4]` bid=0.00 ask=0.00, OFI=0
+**원인**: FC0(선물시세)는 체결 데이터 전용 — FID41(매도1호가)/FID51(매수1호가)를 포함하지 않음. bid/ask는 FH0(선물호가잔량) 실시간 타입에서만 수신 가능
+**현재 상태**: `_on_tick_price_update()`에 `ofi.update_hoga()` 호출 추가했으나 `if bid1 and ask1` 조건이 항상 False → OFI 여전히 0
+**근본 해결**: FH0 별도 `register_realtime()` + 호가 전용 콜백 필요 (모의투자 서버 지원 여부 미확인)
+
+### [B15] 손절 exit price = close가 (항상 불리)
+**파일**: `main.py`
+**증상**: LONG 손절 시 `close_position(close, "하드스톱")` — close가가 stop_price보다 낮아도 close가로 청산 → PnL 과소계산
+**원인**: `_check_exit_triggers()` 호출 시 bar dict를 전달하지 않아 bar low와 stop_price 비교 불가
+**Fix**: `_check_exit_triggers(price, features, decision, bar)` 파라미터 추가. LONG 손절: `exit_price = max(stop_price, bar_low)`, SHORT 손절: `exit_price = min(stop_price, bar_high)`
+
+### [B16] 5층 로그 탭 1·3·5 빈 화면
+**파일**: `main.py`
+**증상**: 대시보드 로그 탭 1(시스템)/3(주문체결)/5(모델AI) 항상 빈 화면
+**원인**: `log_manager.subscribe()` 어디에도 등록 없음 — LogManager 버퍼에만 쌓이고 대시보드 미전달
+**Fix**: `__init__`에 배선 추가:
+```python
+log_manager.subscribe("SYSTEM",   lambda e: self.dashboard.append_sys_log_tagged(e.message, e.level))
+log_manager.subscribe("TRADE",    lambda e: self.dashboard.append_trade_log(e.message))
+log_manager.subscribe("LEARNING", lambda e: self.dashboard.append_model_log(e.message))
+```
+
+### [B17] PnL 수치 하드코딩 — "+12,000원" 고정
+**파일**: `dashboard/main_dashboard.py`
+**증상**: 미실현손익/일일누적/VaR 수치가 고정값으로 표시
+**원인**: `LogPanel._build()`에서 라벨(`QLabel`)을 로컬 변수로만 생성 → `self`에 참조 없음 → `update_pnl_metrics()` 메서드 추가해도 라벨 접근 불가
+**Fix**: `self._pnl_vals = {}`, `self._pnl_bars = {}` dict에 라벨 참조 저장. `update_pnl_metrics(unrealized_krw, daily_pnl_krw, var_krw)` 메서드 추가
+
+### [B18] 신뢰도 "신뢰도 — %" 고정
+**파일**: `dashboard/main_dashboard.py`
+**증상**: 현재가 우측 신뢰도 레이블이 항상 "신뢰도 — %"
+**원인**: `PredictionPanel.update_data()`에 `conf` 파라미터 없음 → `lbl_conf` 미갱신
+**Fix**: `update_data(conf=None)` 파라미터 추가, `lbl_conf.setText(f"신뢰도 {conf*100:.1f}%")`
+
+### [B19] 호라이즌 카드·체크리스트 갱신 안됨
+**파일**: `main.py`
+**증상**: 대시보드 예측 패널 호라이즌별 신호/확률 및 체크리스트 9항목 갱신 없음
+**원인**: `main.py`의 `run_minute_pipeline`에서 `dashboard.update_prediction()` / `update_entry()` 호출 없음
+**Fix**: STEP 6 이후 호라이즌 키 매핑(`{"1m":"1분",...}`) + 매분 `update_prediction()` / `update_entry(checks_ui)` 호출 추가
+
+---
+
+## 설계 결정 (2026-04-28 오후)
+
+### [D09] 손절 exit price = stop_price (bar low 기반 보정)
+**결정**: 하드스톱 발동 시 `exit_price = max(stop_price, bar_low)` (LONG 기준)
+**이유**: close가로 청산하면 bar 내에서 손절선을 이미 통과한 케이스에서도 close가 기준으로 PnL이 계산되어 손실 과소계산. 실제 체결은 손절선 도달 시점에 이루어지므로 stop_price 기준이 현실적
+**주의**: bar_low > stop_price인 경우(갭 상황)도 있으므로 max()로 방어
+
+### [D10] CVD 틱 방향 — tick test (Lee-Ready 근사)
+**결정**: `is_buy_tick = (price >= prev_price)` — 전 틱 대비 가격 상승 → buy tick
+**이유**: FC0 FID10 부호는 전일대비 방향이지 틱 방향이 아님. Kiwoom API에는 틱 방향 직접 제공 FID 없음. Lee-Ready 근사가 bid/ask 부재 시 표준적 대안
+**한계**: 동가(price == prev_price) → buy로 처리 (보수적). OFI bid/ask 없이는 한계 존재
+
+### [D11] Path B raw_data.db 13거래일 축적 계획
+**결정**: `raw_candles`(OHLCV) + `raw_features`(JSON) DB에 매분 저장. 13거래일 후 `batch_retrainer.py`로 첫 실제 모델 학습
+**이유**: 더미 GBM 모델 → 랜덤 예측. 실제 시장 데이터로 학습된 모델 없이는 Phase 3 신호 품질 검증 불가
+**시작일**: 2026-04-28. 목표: 약 2026-05-15 (13거래일 후)
+
+---
+
 ## 2026-04-27 버그 수정
 
 ### [B06] 근월물 코드 포맷 오류 — 날짜계산 fallback "101W06"

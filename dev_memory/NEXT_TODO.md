@@ -37,13 +37,18 @@
 
 ## 즉시 확인 필요 (추가됨 2026-04-28)
 
-### [V6] ATR 플로어 적용 후 진입 품질 확인
-- **내용**: 재시작 직후 첫 분봉에서 손절 범위 ≥ 0.75pt 확인
-- **기준**: `[Position] 진입 LONG @ XXXX | 손절=XXXX` 로그에서 (entry - 손절) ≥ 0.75pt
+### [V6] ATR 플로어 적용 후 진입 품질 확인 [DONE 2026-04-28]
+- stop_dist=0.75pt 로그에서 정확히 확인됨
+- `[DBG-F4]` ATR floor + `[DBG-STOP]` 하드스톱 발동 경로 모두 검증
 
 ### [V7] 포지션 복원 로그 확인
 - **내용**: LONG 중 재시작 → `[Position] 이전 포지션 복원: LONG 1계약 @ XXXX` 로그
 - **기준**: 재시작 후 FLAT 상태가 아닌 기존 포지션 유지
+
+### [V8] CVD tick test 효과 검증
+- **내용**: buyvol/sllvol이 실제로 분리되는지 확인 (이전엔 항상 buyvol=100%)
+- **방법**: `[DBG-F4]` 로그에서 `buyvol`/`sllvol` 값이 다양하게 분포하는지 확인
+- **기준**: 상승 틱에서 buy_vol > 0, 하락 틱에서 sell_vol > 0으로 분리됨
 
 ---
 
@@ -96,3 +101,9 @@
 
 ### [P4] 알파 풀 JSON 파일 증가
 - `research_bot/alpha_pool.py`: MAX_ACTIVE=50 제한 있으나 퇴역 알파 파일 관리 정책 미확정
+
+### [P5] bid/ask = 0 — OFI 영구 0 (FH0 등록 필요)
+- **원인**: FC0(선물시세)에 FID41(매도호가)/FID51(매수호가) 미포함. bid/ask는 FH0(선물호가잔량) 전용
+- **영향**: `ofi.update_hoga()` 조건 `if bid1 and ask1` 항상 False → OFI=0, CVD 방향 보정 불가
+- **해결 방향**: `register_realtime(RT_FUTURES_HOGA, screen="3001")` + `_on_hoga_data()` 콜백 추가
+- **전제 조건**: 모의투자 서버에서 FH0 지원 여부 먼저 확인 필요

@@ -29,7 +29,7 @@
 
 ---
 
-## 2026-04-28 세션 주요 수정
+## 2026-04-28 세션 주요 수정 (오전)
 
 | 항목 | 수정 내용 |
 |---|---|
@@ -41,6 +41,21 @@
 | predictions.db 저장 확인 [V5] | 12:29·12:30 각 6 호라이즌 = 30행 확인 |
 | trades.db 저장 누락 수정 | `_post_exit()`에 trades.db INSERT 추가. `position_tracker.close_position()` result에 `entry_ts`·`grade` 추가 |
 | 대시보드 가격 동기화 | `run_minute_pipeline()` 진입 시 `dashboard.update_price(bar['close'])` 호출 추가 (기존엔 시뮬 타이머 ~388만 표시됨) |
+
+## 2026-04-28 세션 주요 수정 (오후)
+
+| 항목 | 수정 내용 |
+|---|---|
+| Path B DB 인프라 구축 | `utils/db_utils.py`에 `raw_candles`/`raw_features` 테이블 + save/get 함수 4개 추가. `config/settings.py`에 `RAW_DATA_DB` 경로 추가. STEP 4에서 매분 분봉·피처 저장 시작 — 13거래일 후 실제 모델 학습 가능 |
+| CVD 틱 방향 수정 [B13] | FC0 FID10 부호(전일대비 방향)를 틱 방향으로 오해 → tick test(prev_price 비교, Lee-Ready 근사)로 교체. `realtime_data.py`에 `_prev_tick_price` 추가, bar dict에 `buy_vol`/`sell_vol` 누적 |
+| 손절 exit price 보정 [B15] | `_check_exit_triggers(bar=)`에 bar 파라미터 추가. LONG 손절 시 `exit_price = max(stop_price, bar_low)` — close가가 아닌 손절가 기준 |
+| 디버그 로그 8포인트 추가 | [DBG-F4] ATR+핵심피처 / [DBG-F6] 호라이즌예측 / [DBG-CB] CB상태 / [DBG-F7] 진입조건 / [DBG-F7a] 체크리스트 / [DBG-F7b] 사이저 / [DBG-F8] 포지션PnL / [DBG-STOP] 하드스톱 |
+| DEBUG 레이어 레벨 수정 | `utils/logger.py`: LOG_LEVEL=INFO여서 DEBUG 레이어도 INFO → debug() 차단. `logging.DEBUG` 고정으로 수정 |
+| 대시보드 신뢰도 갱신 | `PredictionPanel.update_data(conf=)` 파라미터 추가 → `lbl_conf` "신뢰도 76.8%" 표시 |
+| 대시보드 호라이즌/체크리스트 갱신 | `run_minute_pipeline`에서 `update_prediction()` + `update_entry()` 매분 호출 추가 |
+| 대시보드 5층 로그 배선 | `main.py __init__`에서 `log_manager.subscribe()` SYSTEM/TRADE/LEARNING 콜백 등록 |
+| 대시보드 PnL 실시간 갱신 | `LogPanel.update_pnl_metrics()` 추가 + `_pnl_vals`/`_pnl_bars` dict 저장 (이전엔 로컬 변수 → 업데이트 불가) |
+| 실거래 검증 결과 | LONG @1008.40 stop=1007.65, ATR floor stop_dist=0.75pt 확인 [V6 DONE], 체크리스트 8/9 통과 |
 
 ## 2026-04-27 세션 주요 수정
 
@@ -72,10 +87,12 @@
 
 | 이슈 | 원인 | 상태 |
 |---|---|---|
+| OFI 영구 0 (B14) | FC0에 FID41/51(bid/ask) 미포함 — FH0(선물호가잔량) 별도 등록 필요. 모의투자 서버 FH0 지원 여부 미확인 | ⚠️ 미해결 |
+| CVD tick test 효과 | 다음 실행에서 buy_vol/sell_vol이 실제 분리되는지 [V8] 확인 필요 | ⏳ 검증 대기 |
 | OPT50029 초기 분봉 rows=0 | `A0166000` 코드 적용 후 최종 확인 필요 | ⚠️ 검증 대기 |
-| run_minute_pipeline 완전 검증 | 예측값 DB 저장 + 로그 출력까지 확인 필요 | ⏳ |
 | [DBG] 출력문 정리 | 디버그 print 잔존 | 🔧 안정화 후 제거 |
 | Walk-Forward 26주 | 실거래 데이터 미확보 | ⏳ 장기 과제 |
+| Path B 모델 학습 | 13거래일 raw_candles 축적 후 가능 (2026-04-28 축적 시작) | ⏳ 약 2.5주 후 |
 
 ---
 
