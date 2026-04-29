@@ -356,8 +356,9 @@ class TradingSystem:
         _preds_ui = {
             _H_MAP.get(h, h): {
                 "signal": r["direction"],
-                "up": r["confidence"] if r["direction"] == 1 else (1 - r["confidence"]),
-                "dn": r["confidence"] if r["direction"] == -1 else (1 - r["confidence"]),
+                "up":     r["up"],
+                "dn":     r["down"],
+                "flat":   r["flat"],
             }
             for h, r in horizon_proba.items()
         }

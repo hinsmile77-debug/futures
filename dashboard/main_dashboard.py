@@ -1550,15 +1550,17 @@ class MireukDashboard(QMainWindow):
         now = datetime.now().strftime("%H:%M:%S")
         self.lbl_time.setText(now)
 
-        # 예측 데이터
+        # 예측 데이터 — 호라이즌별 독립 노이즈 (장기일수록 불확실성 증가)
         HORIZONS = ["1분","3분","5분","10분","15분","30분"]
+        _H_SIGMA = [0.06, 0.08, 0.10, 0.13, 0.16, 0.20]
         preds = {}
-        for h in HORIZONS:
-            up = max(0.05, min(0.92, 0.30 + trend*0.22 + random.gauss(0,0.1)))
-            dn = max(0.05, min(0.92, 1-up-0.15+random.gauss(0,0.05)))
-            hd = max(0.03, 1-up-dn)
-            sig = 1 if up>dn and up>hd else -1 if dn>up and dn>hd else 0
-            preds[h] = {"up":up,"dn":dn,"hold":hd,"signal":sig}
+        for h, sigma in zip(HORIZONS, _H_SIGMA):
+            t = trend + random.gauss(0, sigma)
+            up = max(0.05, min(0.88, 0.30 + t*0.22 + random.gauss(0, 0.05)))
+            dn = max(0.05, min(0.88, 1 - up - 0.12 + random.gauss(0, 0.04)))
+            hd = max(0.03, 1 - up - dn)
+            sig = 1 if up > dn and up > hd else -1 if dn > up and dn > hd else 0
+            preds[h] = {"up": up, "dn": dn, "flat": hd, "signal": sig}
 
         params = {
             "CVD 다이버전스": min(0.99, max(0.1, 0.183 + random.gauss(0,0.02))),
