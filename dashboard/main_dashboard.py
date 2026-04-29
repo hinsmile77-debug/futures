@@ -22,7 +22,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QProgressBar, QTabWidget,
     QTextEdit, QFrame, QSplitter, QScrollArea, QGroupBox,
-    QComboBox, QSlider, QCheckBox, QSizePolicy, QDesktopWidget
+    QComboBox, QSlider, QCheckBox, QSizePolicy, QDesktopWidget,
+    QToolTip,
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
@@ -117,6 +118,58 @@ C = {
 }
 
 
+# ── 주문/체결 탭 툴팁 — 진입·청산 전체 흐름 ─────────────────
+_ORDER_TAB_TIP = (
+    "<div style='font-family:Consolas,monospace;font-size:10px;line-height:1.6'>"
+
+    "<b style='color:#58A6FF'>▶ 진입 흐름 (매분 실행)</b><br>"
+
+    "<b>①&nbsp;시간 필터</b>&nbsp;"
+    "OPEN_VOLATILE(09:05~10:30)&nbsp;/&nbsp;STABLE_TREND(10:30~11:50)"
+    "&nbsp;/&nbsp;LUNCH_RECOVERY(13:00~14:00)&nbsp;/&nbsp;CLOSE_VOLATILE(14:00~15:00)"
+    "&nbsp;— 이외 구간 진입 금지<br>"
+
+    "<b>②&nbsp;레짐 최소 신뢰도</b>&nbsp;"
+    "RISK_ON&nbsp;52%&nbsp;/&nbsp;NEUTRAL&nbsp;58%&nbsp;/&nbsp;RISK_OFF&nbsp;65%<br>"
+
+    "<b>③&nbsp;9개 체크리스트 → 등급</b><br>"
+    "&nbsp;&nbsp;✔&nbsp;앙상블 방향 non-FLAT<br>"
+    "&nbsp;&nbsp;✔&nbsp;신뢰도 ≥ 레짐 기준<br>"
+    "&nbsp;&nbsp;✔&nbsp;VWAP 위치 (LONG=가격&gt;VWAP)<br>"
+    "&nbsp;&nbsp;✔&nbsp;CVD 방향 일치<br>"
+    "&nbsp;&nbsp;✔&nbsp;OFI 압력 일치<br>"
+    "&nbsp;&nbsp;✔&nbsp;외인 방향 일치 (콜/풋 순매수)<br>"
+    "&nbsp;&nbsp;✔&nbsp;직전 봉 방향 일치<br>"
+    "&nbsp;&nbsp;✔&nbsp;시간대 EXIT_ONLY 아님<br>"
+    "&nbsp;&nbsp;✔&nbsp;일일 누적 손실 &lt; 2%<br>"
+    "&nbsp;&nbsp;&nbsp;&nbsp;"
+    "<b style='color:#39D3BB'>A급</b>(6↑) ×1.5 100% 즉시&nbsp;|&nbsp;"
+    "<b style='color:#58A6FF'>B급</b>(4~5) ×1.0 50%→1분후50%&nbsp;|&nbsp;"
+    "<b style='color:#D29922'>C급</b>(2~3) ×0.6 50%만&nbsp;|&nbsp;"
+    "<b style='color:#F85149'>X급</b>(1↓) 금지<br>"
+
+    "<b>④&nbsp;켈리 사이즈</b>&nbsp;"
+    "= 계좌×1% × 신뢰도배수(0.6~1.5) × 레짐배수(0.5~1.0) × 등급배수"
+    "&nbsp;÷&nbsp;(ATR×1.5×250,000×20)<br>"
+    "&nbsp;&nbsp;→ max(1, min(결과, 10계약))<br>"
+
+    "<b>⑤&nbsp;시장가 주문</b>&nbsp;신규매수/신규매도 hoga_gb=03<br>"
+
+    "<hr style='border:0;border-top:1px solid #30363D;margin:5px 0'>"
+
+    "<b style='color:#F85149'>▶ 청산 흐름 (우선순위 순, 매분 점검)</b><br>"
+
+    "<b style='color:#F85149'>P1</b>&nbsp;15:10 강제청산 — 오버나이트 절대금지<br>"
+    "<b style='color:#F85149'>P2</b>&nbsp;하드스톱&nbsp;ATR×1.5 도달 → 전량<br>"
+    "<b style='color:#3FB950'>P3</b>&nbsp;TP1&nbsp;ATR×1.0 → 33% 부분청산<br>"
+    "<b style='color:#3FB950'>P4</b>&nbsp;TP2&nbsp;ATR×1.5 → 33% 부분청산<br>"
+    "<b style='color:#D29922'>P5</b>&nbsp;트레일링스톱 업데이트 후 히트 → 잔여 전량<br>"
+    "<b style='color:#A371F7'>P6</b>&nbsp;CB/KillSwitch 긴급청산 (외부 직접 호출)"
+
+    "</div>"
+)
+
+
 def make_style() -> str:
     """해상도 감지 후 동적 폰트 사이즈 적용 스타일시트 생성"""
     return f"""
@@ -196,6 +249,15 @@ def make_style() -> str:
     }}
     QLabel {{
         font-size: {S.f(12)}px;
+    }}
+    QToolTip {{
+        background: {C['bg2']};
+        color: {C['text']};
+        border: 1px solid {C['blue']};
+        border-radius: {S.p(4)}px;
+        padding: {S.p(8)}px;
+        font-family: 'D2Coding', 'Consolas', monospace;
+        font-size: {S.f(10)}px;
     }}
 """
 
@@ -512,6 +574,9 @@ class DivergencePanel(QWidget):
         self.pos_rt_call_val.setText(f"{div.get('rt_call',0):,}")
         self.pos_rt_put_val.setText(f"{div.get('rt_put',0):,}")
         self.pos_rt_strd_val.setText(f"{div.get('rt_strd',0):,}")
+        self.pos_fi_call_val.setText(f"{div.get('fi_call',0):+,}")
+        self.pos_fi_put_val.setText(f"{div.get('fi_put',0):+,}")
+        self.pos_fi_strangle_val.setText(f"{div.get('fi_strangle',0):+,}")
         contrarian = div.get('contrarian','중립')
         col = C['red'] if '하락' in contrarian else C['green'] if '상승' in contrarian else C['text2']
         self.pos_contrarian_val.setText(contrarian)
@@ -913,6 +978,16 @@ class EntryPanel(QWidget):
         self.stat_label = mk_label("진입 0회 | 자동 0 | 수동 0 | 승률 —% | 손익 ——pt", C['text2'], 9)
         lay.addWidget(self.stat_label)
 
+    def update_stats(self, trades: int, wins: int, pnl_pts: float):
+        """당일 진입 통계 라벨 갱신"""
+        losses   = trades - wins
+        win_rate = f"{wins/max(trades,1)*100:.0f}%" if trades > 0 else "—%"
+        pnl_col  = C['green'] if pnl_pts >= 0 else C['red']
+        self.stat_label.setText(
+            f"진입 {trades}회 | 자동 {trades} | 수동 0 | 승률 {win_rate} | 손익 {pnl_pts:+.2f}pt"
+        )
+        self.stat_label.setStyleSheet(f"color:{pnl_col};font-size:9px;")
+
     def _set_mode(self, mode):
         for m, btn in self.mode_btns.items():
             col = C['green'] if m == mode else C['text2']
@@ -923,7 +998,7 @@ class EntryPanel(QWidget):
                 f"border-radius:4px;padding:5px 8px;font-size:10px;}}"
             )
 
-    def update_data(self, signal, conf, grade, checks):
+    def update_data(self, signal, conf, grade, checks, qty=0):
         col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
         self.e_signal.setText(signal)
         self.e_signal.setStyleSheet(f"color:{col};font-size:13px;font-weight:bold;")
@@ -938,13 +1013,36 @@ class EntryPanel(QWidget):
         self.e_grade.setStyleSheet(f"color:{grade_colors.get(grade,C['text'])};"
                                     f"font-size:13px;font-weight:bold;")
 
+        # 산출 수량
+        if qty > 0:
+            self.e_qty.setText(f"{qty}계약")
+            self.e_qty.setStyleSheet(f"color:{C['cyan']};font-size:13px;font-weight:bold;")
+        else:
+            self.e_qty.setText("——")
+            self.e_qty.setStyleSheet(f"color:{C['text2']};font-size:13px;font-weight:bold;")
+
+        # 체크리스트 아이콘
+        # checks={} → 미평가(—), True → V(green), False → X(red)
         for attr, (icon, vl) in self.check_labels.items():
-            passed = checks.get(attr, False)
-            icon.setText("V" if passed else "X")
-            icon.setStyleSheet(
-                f"background:{C['green'] if passed else C['red']};color:#fff;"
-                f"border-radius:3px;font-size:8px;font-weight:bold;padding:1px 4px;"
-            )
+            val = checks.get(attr, None)
+            if val is None:
+                icon.setText("—")
+                icon.setStyleSheet(
+                    f"background:{C['bg3']};color:{C['text2']};"
+                    f"border-radius:3px;font-size:8px;font-weight:bold;padding:1px 4px;"
+                )
+            elif val:
+                icon.setText("V")
+                icon.setStyleSheet(
+                    f"background:{C['green']};color:#fff;"
+                    f"border-radius:3px;font-size:8px;font-weight:bold;padding:1px 4px;"
+                )
+            else:
+                icon.setText("X")
+                icon.setStyleSheet(
+                    f"background:{C['red']};color:#fff;"
+                    f"border-radius:3px;font-size:8px;font-weight:bold;padding:1px 4px;"
+                )
 
         if signal == "매수":
             self.entry_alert.setStyleSheet(
@@ -1167,6 +1265,8 @@ class LogPanel(QWidget):
             self.tabs.tabBar().setTabTextColor(
                 self.tabs.count()-1, QColor(col)
             )
+            if key == "order":
+                self.tabs.setTabToolTip(self.tabs.count()-1, _ORDER_TAB_TIP)
 
         lay.addWidget(self.tabs)
 
@@ -1575,9 +1675,14 @@ class DashboardAdapter:
         """멀티 호라이즌 예측 패널 업데이트"""
         self._win.pred_panel.update_data(price, preds, params, conf)
 
-    def update_entry(self, signal: str, conf: float, grade: str, checks: dict):
+    def update_entry(self, signal: str, conf: float, grade: str, checks: dict,
+                     qty: int = 0):
         """진입 관리 패널 업데이트"""
-        self._win.entry_panel.update_data(signal, conf, grade, checks)
+        self._win.entry_panel.update_data(signal, conf, grade, checks, qty=qty)
+
+    def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
+        """당일 진입 통계 갱신"""
+        self._win.entry_panel.update_stats(trades, wins, pnl_pts)
 
     def update_divergence(self, div_data: dict):
         """다이버전스 패널 업데이트"""

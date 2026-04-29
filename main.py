@@ -55,6 +55,7 @@ from strategy.exit.time_exit import TimeExitManager
 from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
 from safety.circuit_breaker import CircuitBreaker
+from collection.kiwoom.investor_data import InvestorData
 from safety.kill_switch import KillSwitch
 from safety.emergency_exit import EmergencyExit
 from logging_system.log_manager import log_manager
@@ -90,6 +91,7 @@ class TradingSystem:
         self.time_exit         = TimeExitManager()
         self.online_learner    = OnlineLearner()
         self.pred_buffer       = PredictionBuffer()
+        self.investor_data     = InvestorData(kiwoom_api=None)  # connect_kiwoom 후 api 주입
         # ── Phase 2 안전장치 ───────────────────────────────────
         self.emergency_exit  = EmergencyExit(
             position_tracker = self.position,
@@ -158,6 +160,7 @@ class TradingSystem:
         self.realtime_data.start(load_history=True)
         print("[DBG CK-5] RealtimeData.start() 완료", flush=True)
 
+        self.investor_data._api = self.kiwoom  # 실거래 시 TR 폴링 활성화
         logger.info("[System] 키움 실시간 수신 시작 — %s", code)
         return True
 
@@ -263,7 +266,9 @@ class TradingSystem:
         # TODO Phase 1 Week 3: batch_retrainer 구현
 
         # ── STEP 4: 피처 생성 ──────────────────────────────────
-        features = self.feature_builder.build(bar)
+        self.investor_data.fetch_all()                          # 시뮬: 더미, 실거래: TR 요청
+        supply_feats = self.investor_data.get_features()
+        features = self.feature_builder.build(bar, supply_demand=supply_feats)
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
         atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
@@ -271,6 +276,33 @@ class TradingSystem:
         # 분봉·피처 원본 저장 (경로 B 학습 데이터 축적)
         save_candle(bar)
         save_features(ts, features)
+
+        # 다이버전스 패널 갱신 (외인·개인 수급)
+        _inv = self.investor_data
+        _fi_call = _inv._call.get("foreign", 0)
+        _fi_put  = _inv._put.get("foreign", 0)
+        _rt_call = _inv._call.get("individual", 0)
+        _rt_put  = _inv._put.get("individual", 0)
+        _fi_fut  = _inv._futures.get("foreign", 0)
+        _rt_fut  = _inv._futures.get("individual", 0)
+        _rt_opt_total = max(abs(_rt_call) + abs(_rt_put), 1)
+        _fi_opt_total = max(abs(_fi_call) + abs(_fi_put), 1)
+        _rt_bias = (_rt_call - _rt_put) / _rt_opt_total
+        _fi_bias = (_fi_call - _fi_put) / _fi_opt_total
+        _contrarian = ("역발상 하락" if _rt_bias > 0.3 else
+                       "역발상 상승" if _rt_bias < -0.3 else "중립")
+        self.dashboard.update_divergence({
+            "rt_bias":     _rt_bias,
+            "fi_bias":     _fi_bias,
+            "rt_call":     _rt_call,
+            "rt_put":      _rt_put,
+            "rt_strd":     0,
+            "fi_call":     _fi_call,
+            "fi_put":      _fi_put,
+            "fi_strangle": 0,
+            "contrarian":  _contrarian,
+            "div_score":   float(_fi_fut - _rt_fut),
+        })
 
         # [DBG-F4] ATR floor 적용 전후 + 핵심 피처 원시값 확인
         debug_log.debug(
@@ -331,7 +363,7 @@ class TradingSystem:
         }
         _dir_ko = "매수" if direction > 0 else ("매도" if direction < 0 else "관망")
         self.dashboard.update_prediction(close, _preds_ui, {}, confidence)
-        self.dashboard.update_entry(_dir_ko, confidence, grade, {})
+        # update_entry 는 STEP 7에서 체크리스트 결과 포함해 한 번만 호출
 
         # [DBG-F6] 호라이즌별 예측 확률 + CB 상태 스냅샷
         _h_summary = " | ".join(
@@ -349,24 +381,23 @@ class TradingSystem:
 
         # ── STEP 7: 진입 실행 ──────────────────────────────────
         time_zone = get_time_zone()
+        _CHK_MAP = {
+            "1_signal":"signal_chk", "2_confidence":"conf_chk",
+            "3_vwap":"vwap_chk",    "4_cvd":"cvd_chk",
+            "5_ofi":"ofi_chk",      "6_foreign":"fi_chk",
+            "7_prev_bar":"candle_chk","8_time":"time_chk",
+            "9_risk":"risk_chk",
+        }
 
-        # [DBG-F7] 진입 4개 조건 평가 — 차단 이유 파악용
-        debug_log.debug(
-            "[DBG-F7] 진입조건: pos=%s CB=%s new_entry=%s grade=%s time_zone=%s",
-            self.position.status,
-            self.circuit_breaker.state,
-            is_new_entry_allowed(),
-            grade,
-            time_zone,
-        )
+        # 체크리스트: FLAT + 방향 있을 때 항상 평가 (CB·시간 조건 무관)
+        # → 대시보드가 조건 차단 시에도 올바른 체크 결과를 표시할 수 있도록
+        _final_grade = grade
+        _checks_ui   = {}   # 빈 dict → 대시보드에서 "—" 표시
+        _qty_display = 0
+        _cr          = None
 
-        if (
-            self.position.status == "FLAT"
-            and self.circuit_breaker.is_entry_allowed()
-            and is_new_entry_allowed()
-            and grade not in ("X",)
-        ):
-            checklist_result = self.checklist.evaluate(
+        if direction != 0 and self.position.status == "FLAT":
+            _cr = self.checklist.evaluate(
                 direction         = direction,
                 confidence        = confidence,
                 vwap_position     = features.get("vwap_position", 0),
@@ -379,24 +410,15 @@ class TradingSystem:
                 daily_loss_pct    = abs(self.position.daily_stats()["pnl_pts"]) / 1_000,
                 min_confidence    = decision["min_conf"],
             )
-
-            # 체크리스트 결과 → 대시보드 진입 패널 업데이트 (체크마크 포함)
-            _CHK_MAP = {
-                "1_signal":"signal_chk", "2_confidence":"conf_chk",
-                "3_vwap":"vwap_chk",    "4_cvd":"cvd_chk",
-                "5_ofi":"ofi_chk",      "6_foreign":"fi_chk",
-                "7_prev_bar":"candle_chk","8_time":"time_chk",
-                "9_risk":"risk_chk",
-            }
-            _checks_ui = {_CHK_MAP.get(k, k): v for k, v in checklist_result["checks"].items()}
-            self.dashboard.update_entry(_dir_ko, confidence, checklist_result["grade"], _checks_ui)
+            _final_grade = _cr["grade"]
+            _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
 
             # [DBG-F7a] 체크리스트 항목별 ✓/✗
-            _chk = checklist_result["checks"]
+            _chk = _cr["checks"]
             debug_log.debug(
                 "[DBG-F7a] checklist %d/9 → %s | "
                 "sig=%s conf=%s vwap=%s cvd=%s ofi=%s foreign=%s prev=%s time=%s risk=%s",
-                checklist_result["pass_count"], checklist_result["grade"],
+                _cr["pass_count"], _cr["grade"],
                 "✓" if _chk.get("1_signal")     else "✗",
                 "✓" if _chk.get("2_confidence") else "✗",
                 "✓" if _chk.get("3_vwap")       else "✗",
@@ -408,42 +430,58 @@ class TradingSystem:
                 "✓" if _chk.get("9_risk")       else "✗",
             )
 
-            final_grade = checklist_result["grade"]
-            if final_grade != "X":
+            if _final_grade != "X":
                 kelly_result = self.kelly.compute_fraction()
                 size_result  = self.sizer.compute(
                     confidence          = confidence,
                     atr                 = atr,
                     regime              = self.current_regime,
-                    grade_mult          = checklist_result["size_mult"],
+                    grade_mult          = _cr["size_mult"],
                     adaptive_kelly_mult = kelly_result["multiplier"],
                 )
+                _qty_display = size_result["quantity"]
 
                 # [DBG-F7b] 사이저 입력/출력 확인
                 debug_log.debug(
                     "[DBG-F7b] sizer: conf=%.1f%% ATR=%.4f regime=%s "
                     "grade_mult=%.2f kelly_mult=%.2f → qty=%d",
                     confidence * 100, atr, self.current_regime,
-                    checklist_result["size_mult"],
-                    kelly_result.get("multiplier", 1.0),
-                    size_result["quantity"],
+                    _cr["size_mult"], kelly_result.get("multiplier", 1.0),
+                    _qty_display,
                 )
 
-                qty = size_result["quantity"]
-                dir_str = "LONG" if direction > 0 else "SHORT"
+        # 진입 패널 갱신 — 체크리스트 결과 + 산출 수량 (항상)
+        self.dashboard.update_entry(_dir_ko, confidence, _final_grade, _checks_ui,
+                                    qty=_qty_display)
 
-                if checklist_result["auto_entry"] or self.mode == "SIMULATION":
-                    self._execute_entry(dir_str, close, qty, atr, final_grade)
-                else:
-                    log_manager.trade(
-                        f"[수동 확인 필요] {dir_str} {qty}계약 @ {close} "
-                        f"등급={final_grade}"
-                    )
-                    notify(
-                        f"진입 확인 요청: {dir_str} {qty}계약\n"
-                        f"등급={final_grade} 신뢰도={confidence:.1%}",
-                        "WARNING",
-                    )
+        # [DBG-F7] 진입 실행 조건 평가
+        debug_log.debug(
+            "[DBG-F7] 진입조건: pos=%s CB=%s new_entry=%s grade=%s time_zone=%s",
+            self.position.status, self.circuit_breaker.state,
+            is_new_entry_allowed(), _final_grade, time_zone,
+        )
+
+        # 실제 진입: CB + 시간 조건까지 모두 충족해야 실행
+        if (
+            _cr is not None
+            and self.circuit_breaker.is_entry_allowed()
+            and is_new_entry_allowed()
+            and _final_grade not in ("X",)
+            and _qty_display > 0
+        ):
+            dir_str = "LONG" if direction > 0 else "SHORT"
+            if _cr["auto_entry"] or self.mode == "SIMULATION":
+                self._execute_entry(dir_str, close, _qty_display, atr, _final_grade)
+            else:
+                log_manager.trade(
+                    f"[수동 확인 필요] {dir_str} {_qty_display}계약 @ {close} "
+                    f"등급={_final_grade}"
+                )
+                notify(
+                    f"진입 확인 요청: {dir_str} {_qty_display}계약\n"
+                    f"등급={_final_grade} 신뢰도={confidence:.1%}",
+                    "WARNING",
+                )
 
         # ── STEP 8: 청산 트리거 감시 ───────────────────────────
         if self.position.status != "FLAT":
@@ -464,6 +502,10 @@ class TradingSystem:
                 confidence = h_res["confidence"],
                 features   = {k: round(v, 4) for k, v in list(features.items())[:20]},
             )
+
+        # 당일 진입 통계 갱신
+        _ds = self.position.daily_stats()
+        self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
 
     def _execute_entry(
         self, direction: str, price: float,
@@ -592,6 +634,7 @@ class TradingSystem:
 
         # 일일 리셋
         self.feature_builder.reset_daily()
+        self.investor_data.reset_daily()
         self.position.reset_daily()
         self.circuit_breaker.reset_daily()
         self.online_learner.reset_daily()

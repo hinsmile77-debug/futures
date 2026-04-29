@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-04-29 (오후 세션)
+
+**작업**: 대시보드 3개 탭 데이터 배선 완성 + 버그 7종 수정
+
+### 주문/체결 탭 툴팁
+- `_ORDER_TAB_TIP` 상수: 진입 흐름(①~⑤) + 청산 흐름(P1~P6) HTML 요약
+- `QToolTip` CSS 다크테마, `setTabToolTip()` 적용
+
+### 외인 데이터 "-" 원인 진단 및 수정 [B16~B18]
+- **근본 원인**: `InvestorData` 임포트·인스턴스화 없음 → `feature_builder.build(supply_demand=None)` 고정
+- `main.py`: `InvestorData` import + `__init__` 인스턴스화 + STEP 4 `fetch_all()` + `supply_demand` 전달
+- `main.py` STEP 4 후: `update_divergence()` 매분 호출 (rt_bias/fi_bias/contrarian/div_score 계산)
+- `DivergencePanel.update_data()`: fi_call/fi_put/fi_strangle 카드 setText 누락 추가
+- `connect_kiwoom()`: `investor_data._api = self.kiwoom` 주입
+- `daily_close()`: `investor_data.reset_daily()` 추가
+
+### 진입 관리 탭 버그 4종 수정 [B19~B22]
+- **B19**: 체크리스트 평가를 CB·시간 조건 블록 밖으로 분리 → FLAT+방향 있으면 항상 평가
+- **B20**: `checks.get(attr, None)` — None이면 회색 "—" (기존: 빈 dict → 빨간 X)
+- **B21**: `update_entry(qty=0)` 파라미터 + `e_qty` 라벨 갱신
+- **B22**: `EntryPanel.update_stats()` + `DashboardAdapter.update_entry_stats()` 추가, STEP 9 후 매분 호출
+
+---
+
 ## 2026-04-28 (오후 세션)
 
 **작업**: 모의투자 실거래 검증 + 이상점 진단·수정 + 대시보드 데이터 배선 완성
