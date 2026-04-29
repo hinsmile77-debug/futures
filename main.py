@@ -487,6 +487,22 @@ class TradingSystem:
         if self.position.status != "FLAT":
             self._check_exit_triggers(close, features, decision, bar)
 
+        # ── 청산 패널 갱신 (매분 — 실제 PositionTracker 값 전달) ──
+        _pos = self.position
+        self.dashboard.update_position({
+            "status":     _pos.status,
+            "entry":      _pos.entry_price,
+            "current":    close,
+            "qty":        _pos.quantity,
+            "atr":        atr,
+            "stop":       _pos.stop_price,
+            "tp1":        _pos.tp1_price,
+            "tp2":        _pos.tp2_price,
+            "partial1":   _pos.partial_1_done,
+            "partial2":   _pos.partial_2_done,
+            "entry_time": _pos.entry_time,
+        })
+
         # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
         _daily   = self.position.daily_stats()
         _unreal  = self.position.unrealized_pnl_pts(close) * 500_000  # KRW

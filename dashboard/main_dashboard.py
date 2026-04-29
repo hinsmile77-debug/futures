@@ -828,29 +828,91 @@ class ExitPanel(QWidget):
             btn_lay.addWidget(btn)
         lay.addLayout(btn_lay)
 
+    def _reset_display(self):
+        """포지션 FLAT 상태: 모든 필드를 '——' 로 초기화"""
+        for w in (self.entry_price, self.cur_price, self.unreal_pnl, self.hold_time):
+            w.setText("——")
+        self.unreal_pnl.setStyleSheet(
+            f"color:{C['text2']};font-size:13px;font-weight:bold;"
+        )
+        for attr in ("hard_stop", "struct_stop", "trail_stop",
+                     "breakeven", "target1", "target2", "target3"):
+            getattr(self, f"lv_{attr}").setText("——.——")
+        _badge_reset_ss = (
+            f"background:{C['bg3']};color:{C['text2']};"
+            f"border-radius:3px;font-size:8px;padding:1px 5px;"
+        )
+        for attr in ("hard_trig", "signal_trig", "cvd_trig",
+                     "shap_trig", "opt_trig", "trail_trig", "t1_trig", "time_trig"):
+            b = getattr(self, f"st_{attr}")
+            b.setText("감시중")
+            b.setStyleSheet(_badge_reset_ss)
+        for bar_w, lbl_w in self.partial_bars:
+            bar_w.setValue(0)
+            lbl_w.setText("대기")
+            lbl_w.setStyleSheet(f"color:{C['text2']};font-size:9px;")
+
     def update_data(self, pos_data):
         if not pos_data:
+            self._reset_display()
             return
-        entry = pos_data.get('entry', 388.50)
-        cur   = pos_data.get('current', 388.50)
-        pnl   = (cur - entry) * pos_data.get('qty', 5)
-        atr   = pos_data.get('atr', 1.8)
 
+        status = pos_data.get('status', 'FLAT')
+        if status == 'FLAT':
+            self._reset_display()
+            return
+
+        entry  = pos_data.get('entry', 0.0)
+        cur    = pos_data.get('current', entry)
+        qty    = pos_data.get('qty', 0)
+        atr    = pos_data.get('atr', 1.0)
+        # stop = 현재 트레일링 스톱 (PositionTracker.stop_price)
+        mult   = 1 if status == 'LONG' else -1
+        stop   = pos_data.get('stop',  entry - mult * atr * 1.5)
+        tp1    = pos_data.get('tp1',   entry + mult * atr * 1.0)
+        tp2    = pos_data.get('tp2',   entry + mult * atr * 1.5)
+
+        # 진입가 / 현재가
         self.entry_price.setText(f"{entry:.2f}")
         self.cur_price.setText(f"{cur:.2f}")
 
-        col = C['green'] if pnl >= 0 else C['red']
-        self.unreal_pnl.setText(f"{pnl:+,.0f}원")
+        # 미실현 손익 (선물 1pt = 500,000원)
+        pnl_pts = (cur - entry) * mult
+        pnl_krw = pnl_pts * qty * 500_000
+        col = C['green'] if pnl_krw >= 0 else C['red']
+        self.unreal_pnl.setText(f"{pnl_krw:+,.0f}원")
         self.unreal_pnl.setStyleSheet(f"color:{col};font-size:13px;font-weight:bold;")
 
-        # 가격 레벨 업데이트
-        self.lv_hard_stop.setText(f"{entry - atr*1.5:.2f}")
-        self.lv_struct_stop.setText(f"{entry - atr*1.2:.2f}")
-        self.lv_trail_stop.setText(f"{entry:.2f}")
+        # 보유 시간
+        entry_time = pos_data.get('entry_time')
+        if entry_time:
+            mins = int((datetime.now() - entry_time).total_seconds() // 60)
+            self.hold_time.setText(f"{mins}분")
+        else:
+            self.hold_time.setText("——")
+
+        # 가격 구조 (실제 PositionTracker 값 기반)
+        hard_stop   = entry - mult * atr * 1.5   # 최초 설정 하드스톱
+        struct_stop = entry - mult * atr * 1.2   # 구조적 손절 (소프트)
+        tp3         = entry + mult * atr * 2.5
+        self.lv_hard_stop.setText(f"{hard_stop:.2f}")
+        self.lv_struct_stop.setText(f"{struct_stop:.2f}")
+        self.lv_trail_stop.setText(f"{stop:.2f}")   # 트레일링으로 이동된 현재 스톱
         self.lv_breakeven.setText(f"{entry:.2f}")
-        self.lv_target1.setText(f"{entry + atr*1.0:.2f}")
-        self.lv_target2.setText(f"{entry + atr*1.5:.2f}")
-        self.lv_target3.setText(f"{entry + atr*2.5:.2f}")
+        self.lv_target1.setText(f"{tp1:.2f}")
+        self.lv_target2.setText(f"{tp2:.2f}")
+        self.lv_target3.setText(f"{tp3:.2f}")
+
+        # 부분 청산 진행
+        p1 = pos_data.get('partial1', False)
+        p2 = pos_data.get('partial2', False)
+        for i, (bar_w, lbl_w) in enumerate(self.partial_bars):
+            done = (i == 0 and p1) or (i == 1 and p2)
+            bar_w.setValue(100 if done else 0)
+            lbl_w.setText("완료" if done else "대기")
+            lbl_w.setStyleSheet(
+                f"color:{C['green'] if done else C['text2']};font-size:9px;"
+            )
 
 
 # ────────────────────────────────────────────────────────────
@@ -1531,10 +1593,21 @@ class MireukDashboard(QMainWindow):
         rv = [random.uniform(0.20, 0.85) for _ in range(6)]
         self.feat_panel.update_shap(cv, dy, rv)
 
-        # 포지션
+        # 포지션 (시뮬: LONG 고정 — 실거래 시 main.py update_position() 로 교체됨)
+        _sim_entry = 388.50
+        _sim_atr   = 1.8
         self.exit_panel.update_data({
-            "entry": 388.50, "current": self._price,
-            "qty": 5, "atr": 1.8
+            "status":     "LONG",
+            "entry":      _sim_entry,
+            "current":    self._price,
+            "qty":        5,
+            "atr":        _sim_atr,
+            "stop":       _sim_entry - _sim_atr * 1.5,
+            "tp1":        _sim_entry + _sim_atr * 1.0,
+            "tp2":        _sim_entry + _sim_atr * 1.5,
+            "partial1":   self._tick % 10 >= 5,
+            "partial2":   self._tick % 10 >= 8,
+            "entry_time": None,
         })
 
         # 진입

@@ -20,6 +20,17 @@
 - `connect_kiwoom()`: `investor_data._api = self.kiwoom` 주입
 - `daily_close()`: `investor_data.reset_daily()` 추가
 
+### 청산 관리 탭 데이터 배선 [B23~B25]
+- **근본 원인**: `main.py`에 `update_position()` 호출 없음 → 청산 패널에 실제 포지션 데이터 미전달
+- **B23** (`main.py`): STEP 8 직후 `update_position()` 추가 — `PositionTracker` 실제 값(`stop_price`=트레일링 스톱, `tp1_price`, `tp2_price`, `entry_time`, `partial_1/2_done`) 전달
+- **B24** (`ExitPanel.update_data()` 재작성):
+  - `status='FLAT'` → `_reset_display()` — 모든 필드 "——" 초기화
+  - `trail_stop` = 현재 `stop_price` (트레일링 이동 반영), `hard_stop` = entry±ATR×1.5 (최초값)
+  - 미실현 손익: `(cur−entry) × mult × qty × 500,000원` (LONG/SHORT 방향 반영)
+  - 보유 시간: `entry_time`에서 경과 분 계산
+  - 부분청산 바: `partial1`/`partial2` 플래그 → "완료/대기" + 프로그레스바 100/0
+- **B25** (시뮬 루프): `status='LONG'` 키 추가, `stop`/`tp1`/`tp2` 구조화, `partial1`/`partial2` 틱 기반 시뮬
+
 ### 진입 관리 탭 버그 4종 수정 [B19~B22]
 - **B19**: 체크리스트 평가를 CB·시간 조건 블록 밖으로 분리 → FLAT+방향 있으면 항상 평가
 - **B20**: `checks.get(attr, None)` — None이면 회색 "—" (기존: 빈 dict → 빨간 X)
