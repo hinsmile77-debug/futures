@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-04-30 (파이프라인 감시 경보 버그 2종 수정 + 분봉 툴팁)
+> 마지막 업데이트: 2026-04-30 (SIMULATION 제거 + 자동 종료 + 성장 추이 대시보드)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,45 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-04-30 세션 주요 수정 (SIMULATION 제거 + 자동 종료 + 성장 추이 대시보드)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **SIMULATION 코드 전면 제거** | `--mode` argparse / `self.mode` / 더미 모델 주입 / `_sim_timer` / `force_ready_for_test()` / `TRADE_MODE` 상수 제거. 단일 실전 경로만 유지 |
+| **일일 마감 자동 종료** | `daily_close()` 완료 → 슬랙 종료 알림(거래수·승률·PnL·재학습·다음시작) → 15초 후 `_qt_app.quit()`. `_auto_shutdown()` 신설 |
+| **패널 이전 데이터 지속** | `_restore_panels_from_history()` — 시작 500ms 후 DB 이력으로 자가학습·효과검증·추이 패널 선조회. 파이프라인 첫 실행 전 빈값 방지 |
+| **daily_stats 스냅샷 저장** | `daily_close()` 내 `save_daily_stats()` — SGD정확도·검증건수·PnL을 `daily_stats` 테이블에 영속 |
+| **📈 성장 추이 탭 신설** | `TrendPanel` — 일별(30일)/주별(12주)/월별(12개월)/연간 4탭. 스파크라인(PnL·승률·SGD정확도) + 스크롤 테이블. 탭 순서: …자가학습/효과검증/**성장추이**/알파봇 |
+| **DB 집계 쿼리 4종** | `fetch_trend_daily/weekly/monthly/yearly()` + `daily_stats` 테이블 + `save_daily_stats()` |
+
+---
+
+## 현재 대시보드 탭 구조
+
+### 중앙 탭 (mid_tabs) — 8개
+| 번호 | 탭 이름 | 클래스 |
+|---|---|---|
+| 1 | 다이버전스 + 포지션 | `DivergencePanel` |
+| 2 | 동적 피처 (SHAP) | `FeaturePanel` |
+| 3 | 청산 관리 | `ExitPanel` |
+| 4 | 진입 관리 | `EntryPanel` |
+| 5 | 🧠 자가학습 | `LearningPanel` |
+| 6 | 🎯 효과 검증 | `EfficacyPanel` |
+| **7** | **📈 성장 추이** | **`TrendPanel`** (신규) |
+| 8 | 알파 리서치 봇 | `AlphaPanel` |
+
+### 우측 5층 로그 탭 — 6개
+| 탭 | 내용 |
+|---|---|
+| 1 시스템/경보 | SYSTEM/WARNING 레벨 통합 (2 경보탭 공유) |
+| 2 경보 | WARN/ERROR/CRITICAL 전용 |
+| 3 주문/체결 | TRADE 레이어 + FILL/PENDING 태그 |
+| 4 손익 | PnL 로그 + 미실현·일일·VaR 수치 |
+| 5 모델 AI | LEARNING/MODEL 레이어 |
+| 6 📊 손익 추이 | 일별·주별·월별 누적 P&L 테이블 (기존 PnlHistoryPanel) |
 
 ---
 

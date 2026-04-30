@@ -4,6 +4,83 @@
 
 ---
 
+## 2026-04-30 (이번 세션)
+
+**작업**: SIMULATION 코드 전면 제거 + 자동 종료 + 패널 이전 데이터 지속 + 성장 추이 대시보드
+
+### 커밋 3건
+
+| 커밋 | 내용 |
+|---|---|
+| `4ae73ae` | refactor: SIMULATION/더미 모드 코드 전면 제거 |
+| `5f1919b` | feat: 일일 마감 후 자동 프로그램 종료 + 슬랙 알림 |
+| `8ae19eb` | feat: 자가학습·효과검증 이전 데이터 지속 + 성장 추이 대시보드 |
+
+---
+
+### [1] SIMULATION 코드 전면 제거 (commit: 4ae73ae)
+
+**배경**: 로그에 "더미 모델 주입", "모드=SIMULATION"이 출력 → 미륵이는 실전 시스템이므로 SIMULATION 분기 자체가 불필요. 모의투자는 키움 API 계좌 레벨에서만 제어.
+
+**제거된 코드:**
+
+| 파일 | 제거 내용 |
+|---|---|
+| `main.py` | `--mode` argparse, `self.mode`, 더미 모델 주입 블록, `stop_sim_timer()` 호출, `argparse` 임포트 |
+| `dashboard/main_dashboard.py` | `sim_mode` 파라미터, `_sim_timer`, `_start/_stop_sim_timer()`, `_sim_tick()` 130줄 |
+| `model/multi_horizon_model.py` | `force_ready_for_test()` 더미 모델 주입 메서드 |
+| `config/settings.py` | `TRADE_MODE = "SIMULATION"` 상수 |
+
+**결과**: `python main.py` 단일 경로. 모의/실전 구분은 키움 계좌 레벨 전용.
+
+---
+
+### [2] 일일 마감 후 자동 종료 + 슬랙 알림 (commit: 5f1919b)
+
+**흐름**: 15:40 `_scheduler_tick` → `daily_close()` 완료 → 슬랙 종료 알림 → `QTimer.singleShot(15_000, _auto_shutdown)` → `_qt_app.quit()`
+
+**슬랙 종료 알림 내용**: 거래수 / 승패 / 승률 / PnL / 재학습 결과 / 다음 시작 안내 (내일 08:45)
+
+**15초 대기 이유**: Slack 큐 워커가 HTTP 전송(최대 5초) + rate-limit 1초/건 처리 대기. Qt 이벤트 루프는 계속 돌아 UI 반응 유지.
+
+**신규 메서드**: `_auto_shutdown()` — `logger.info` + `log_manager.system` + `_qt_app.quit()`
+
+---
+
+### [3] 자가학습·효과검증·추이 패널 이전 데이터 지속 (commit: 8ae19eb)
+
+**문제**: 재시작 후 08:45~09:00 사이 파이프라인 미실행 구간에 자가학습/효과검증 패널이 빈값 표시.
+
+**해결**: `_restore_panels_from_history()` 신설 — 로그인 후 500ms 뒤 DB 이력으로 세 패널 선조회.
+- EfficacyPanel: trades.db/predictions.db 쿼리 → 어제까지 누적 데이터 즉시 표시
+- LearningPanel: GBM 상태·raw candle 수 등 DB 기반 값 즉시 표시
+- TrendPanel: 일/주/월/연간 집계 즉시 표시
+
+**스냅샷 저장**: `daily_close()` 내 `save_daily_stats()` — SGD정확도·검증건수를 `daily_stats` 테이블에 영속. 다음날 SGD 정확도 표시에 사용.
+
+---
+
+### [4] 📈 성장 추이 대시보드 신설 (commit: 8ae19eb)
+
+**신규 클래스**: `TrendPanel` (~200줄) — 중앙 탭 7번째 `"📈 성장 추이"`
+
+**구성**:
+- 상단 스파크라인 3줄: PnL `▁▂▃▄▅▆▇█` / 승률 / SGD정확도 (최근 20일)
+- 4탭: 일별(30일) / 주별(12주) / 월별(12개월) / 연간
+- 각 탭: 기간·거래·승/패·승률·PnL(원)·SGD정확도(일별만) 스크롤 테이블
+- 색상: 승률 기준(≥60%초록/≥53%청록/≥45%주황/<45%빨강), PnL(양수초록/음수빨강)
+
+**갱신 시점**: 시작 선조회 + 15:40 일일 마감 후 자동 갱신
+
+**신규 DB 기능** (`utils/db_utils.py`):
+- `daily_stats` 테이블: date/trades/wins/pnl_krw/sgd_accuracy/verified_count
+- `save_daily_stats()` / `fetch_trend_daily/weekly/monthly/yearly()`
+- 집계 쿼리는 trades.db 직접 GROUP BY (별도 테이블 불필요)
+
+**탭 순서 변경**: 다이버전스/SHAP/청산/진입/🧠자가학습/🎯효과검증/**📈성장추이**/알파봇
+
+---
+
 ## 2026-04-30 (심야 세션)
 
 **작업**: 🎯 학습 효과 검증기 패널 신설 — 자가학습이 실제로 수익에 기여하는가 시각화
