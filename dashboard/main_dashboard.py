@@ -74,14 +74,15 @@ class ScreenScale:
         if screen is None:
             return
 
-        geo      = screen.availableGeometry()
+        geo      = screen.availableGeometry()   # 태스크바 제외 — 창 크기 계산용
         cls._sw  = geo.width()
         cls._sh  = geo.height()
         cls._dpr = screen.devicePixelRatio()
 
-        # 물리 해상도 = 논리 × DPI 배율
-        cls._phys_w = round(cls._sw * cls._dpr)
-        cls._phys_h = round(cls._sh * cls._dpr)
+        # 물리 해상도 = 전체 스크린(태스크바 포함) × DPI 배율
+        full = screen.geometry()               # 전체 스크린 논리 픽셀
+        cls._phys_w = round(full.width()  * cls._dpr)
+        cls._phys_h = round(full.height() * cls._dpr)
 
         # ① 창이 논리 화면에 꽉 차는 최대 배율
         fit_scale = min(cls._sw / cls._BASE_W, cls._sh / cls._BASE_H)
@@ -133,6 +134,40 @@ def _get_commit_hash() -> str:
 
 
 COMMIT_HASH: str = _get_commit_hash()
+
+
+def _calc_cycle_badge() -> tuple:
+    """다음 목요일 만기(KOSPI200 위클리/월간)까지 D-days 계산 → (text, color).
+
+    - 만기일: 매주 목요일
+    - 월간 만기: 이달의 두 번째 목요일 (2nd Thursday)
+    - 오늘이 목요일이면 D-0 (만기일)
+    """
+    import datetime as _dt
+    today = _dt.date.today()
+    wd    = today.weekday()            # 0=Mon, 3=Thu, 4=Fri …
+    days  = (3 - wd) % 7              # 오늘→다음 목요일 일수 (0 = 오늘이 목요일)
+    target = today + _dt.timedelta(days=days)
+
+    # 해당 목요일이 이달 몇 번째 목요일인지 (1~5)
+    nth = (target.day - 1) // 7 + 1
+    is_monthly = (nth == 2)            # 2nd Thursday = 월간 만기
+
+    tag   = "월간" if is_monthly else "위클리"
+    if days == 0:
+        text  = f"● {tag} 만기일"
+        col   = "#FF5252"              # 빨강 — 오늘 만기
+    elif days == 1:
+        text  = f"{tag} D-1"
+        col   = "#FFB74D"              # 주황 — 내일 만기
+    elif days <= 3:
+        text  = f"{tag} D-{days}"
+        col   = "#FFD54F"              # 노랑 — 이번 주 내
+    else:
+        text  = f"{tag} D-{days}"
+        col   = "#CE93D8"              # 연보라 — 여유
+    return text, col
+
 
 # ── 색상 팔레트 (다크 테마) ──────────────────────────────────
 C = {
@@ -1963,14 +1998,28 @@ class MireukDashboard(QMainWindow):
 
     def __init__(self, kiwoom=None, sim_mode: bool = True):
         super().__init__()
-        self.kiwoom = kiwoom
+        self.kiwoom    = kiwoom
         self._sim_mode = sim_mode
+        self._start_dt = datetime.now()        # 프로그램 시작 시각 (불변)
         # ── 해상도 감지 (UI 빌드 전에 반드시 먼저) ──────────────
         S.init()
         self.setWindowTitle("미륵이 v7.0  |  KOSPI 200 선물 예측 시스템")
         self.resize(S.p(1680), S.p(1000))
         self.setStyleSheet(make_style())
         self._build_ui()
+
+        # ── 헤더 시계 (1초 갱신) ─────────────────────────────────
+        self._header_timer = QTimer(self)
+        self._header_timer.setInterval(1000)
+        self._header_timer.timeout.connect(self._tick_header)
+        self._header_timer.start()
+
+        # ── 위클리 배지 (1분 갱신 — 날짜 전환 대비) ─────────────
+        self._cycle_timer = QTimer(self)
+        self._cycle_timer.setInterval(60_000)
+        self._cycle_timer.timeout.connect(self._refresh_cycle_badge)
+        self._cycle_timer.start()
+
         self._sim_timer = None
         if sim_mode and kiwoom is None:
             self._start_sim_timer()
@@ -1997,11 +2046,54 @@ class MireukDashboard(QMainWindow):
         price_box.addWidget(self.lbl_realtime_price)
         price_box.addWidget(self.lbl_price_change)
 
-        self.lbl_time   = mk_label("——:——:——", C['text2'], 12)
+        # 상태 배지
         self.lbl_regime = mk_badge("NEUTRAL", C['orange'], "#fff", 11)
-        self.lbl_cycle  = mk_badge("목위클리 D-2", C['purple'], "#fff", 11)
+        _cyc_text, _cyc_col = _calc_cycle_badge()
+        self.lbl_cycle  = mk_badge(_cyc_text, _cyc_col, "#fff", 11)
         self.lbl_gamma  = mk_badge("감마스퀴즈", C['orange'], "#fff", 11)
         self.lbl_pos    = mk_badge("FLAT", C['text2'], "#fff", 11)
+
+        # ── 우측 시계 블록 ─────────────────────────────────────
+        clk_frame = QFrame()
+        clk_frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};"
+            f"border-radius:5px;padding:2px 6px;"
+        )
+        clk_lay = QVBoxLayout(clk_frame)
+        clk_lay.setContentsMargins(6, 2, 6, 2)
+        clk_lay.setSpacing(1)
+
+        # 시작 시각 (소형, 고정)
+        start_row = QHBoxLayout()
+        start_row.setSpacing(4)
+        start_row.addWidget(mk_label("시작", C['text2'], 9))
+        self.lbl_start = mk_label(
+            self._start_dt.strftime("%H:%M:%S"), C['text2'], 10,
+            align=Qt.AlignRight
+        )
+        start_row.addWidget(self.lbl_start)
+        clk_lay.addLayout(start_row)
+
+        # 현재 시각 (대형, 실시간 갱신)
+        now_row = QHBoxLayout()
+        now_row.setSpacing(4)
+        now_row.addWidget(mk_label("현재", C['cyan'], 9))
+        self.lbl_clock = mk_label(
+            datetime.now().strftime("%H:%M:%S"),
+            C['text'], S.f(14), bold=True, align=Qt.AlignRight
+        )
+        self.lbl_clock.setStyleSheet(
+            f"color:{C['text']};font-size:{S.f(14)}px;"
+            f"font-weight:bold;font-family:Consolas,monospace;"
+        )
+        now_row.addWidget(self.lbl_clock)
+        clk_lay.addLayout(now_row)
+
+        # 가동 경과 (가장 소형)
+        self.lbl_elapsed_run = mk_label("가동 0분", C['text2'], 8, align=Qt.AlignRight)
+        clk_lay.addWidget(self.lbl_elapsed_run)
+
+        # ── 해상도·커밋 블록 ───────────────────────────────────
         self.lbl_scale  = mk_label(S.info(),    C['text2'], 9, align=Qt.AlignRight)
         self.lbl_commit = mk_label(COMMIT_HASH, C['text2'], 9, align=Qt.AlignRight)
         res_box = QVBoxLayout()
@@ -2015,8 +2107,8 @@ class MireukDashboard(QMainWindow):
         header.addStretch()
         for w in [self.lbl_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos]:
             header.addWidget(w)
+        header.addWidget(clk_frame)
         header.addLayout(res_box)
-        header.addWidget(self.lbl_time)
         root.addLayout(header)
         root.addWidget(mk_sep())
 
@@ -2106,6 +2198,33 @@ class MireukDashboard(QMainWindow):
         )
 
     # ── 시뮬레이션 타이머 ──────────────────────────────────────
+    # ── 헤더 시계·위클리 배지 갱신 ────────────────────────────
+
+    def _tick_header(self):
+        """1초마다 헤더 우측 시계 + 가동 경과시간 갱신."""
+        now     = datetime.now()
+        elapsed = now - self._start_dt
+        total_s = int(elapsed.total_seconds())
+        h, rem  = divmod(total_s, 3600)
+        m, s    = divmod(rem, 60)
+
+        self.lbl_clock.setText(now.strftime("%H:%M:%S"))
+
+        if h > 0:
+            elapsed_str = f"가동 {h}h {m:02d}m"
+        else:
+            elapsed_str = f"가동 {m}m {s:02d}s"
+        self.lbl_elapsed_run.setText(elapsed_str)
+
+    def _refresh_cycle_badge(self):
+        """위클리/월간 D-days 배지를 날짜 변화에 맞춰 갱신."""
+        text, col = _calc_cycle_badge()
+        self.lbl_cycle.setText(text)
+        self.lbl_cycle.setStyleSheet(
+            f"background:{col};color:#fff;border-radius:3px;"
+            f"padding:1px {S.p(5)}px;font-size:{S.f(11)}px;font-weight:bold;"
+        )
+
     def _start_sim_timer(self):
         self._tick = 0
         self._price = 388.50
@@ -2122,10 +2241,6 @@ class MireukDashboard(QMainWindow):
         self._tick += 1
         self._price += random.gauss(0, 0.15)
         trend = random.choice([0.4, -0.4])
-
-        # 시계
-        now = datetime.now().strftime("%H:%M:%S")
-        self.lbl_time.setText(now)
 
         # 예측 데이터 — 호라이즌별 독립 노이즈 (장기일수록 불확실성 증가)
         HORIZONS = ["1분","3분","5분","10분","15분","30분"]
