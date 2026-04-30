@@ -2115,24 +2115,21 @@ class MireukDashboard(QMainWindow):
         start_row.addWidget(self.lbl_start)
         clk_lay.addLayout(start_row)
 
-        # 현재 시각 (대형, 실시간 갱신)
-        now_row = QHBoxLayout()
-        now_row.setSpacing(4)
-        now_row.addWidget(mk_label("현재", C['cyan'], 9))
-        self.lbl_clock = mk_label(
-            datetime.now().strftime("%H:%M:%S"),
-            C['text'], S.f(14), bold=True, align=Qt.AlignRight
+        # 가동 경과 (중형, 실시간 갱신 — 현재시각은 하단 상태 바와 중복이므로 제거)
+        run_row = QHBoxLayout()
+        run_row.setSpacing(4)
+        run_row.addWidget(mk_label("가동", C['cyan'], 9))
+        self.lbl_elapsed_run = mk_label(
+            "0m 00s", C['text'], S.f(13), bold=True, align=Qt.AlignRight
         )
-        self.lbl_clock.setStyleSheet(
-            f"color:{C['text']};font-size:{S.f(14)}px;"
+        self.lbl_elapsed_run.setStyleSheet(
+            f"color:{C['text']};font-size:{S.f(13)}px;"
             f"font-weight:bold;font-family:Consolas,monospace;"
         )
-        now_row.addWidget(self.lbl_clock)
-        clk_lay.addLayout(now_row)
+        run_row.addWidget(self.lbl_elapsed_run)
+        clk_lay.addLayout(run_row)
 
-        # 가동 경과 (가장 소형)
-        self.lbl_elapsed_run = mk_label("가동 0분", C['text2'], 8, align=Qt.AlignRight)
-        clk_lay.addWidget(self.lbl_elapsed_run)
+        self.lbl_clock = None   # 제거됨 — _tick_header() 참조용 유지
 
         # ── 해상도·커밋 블록 ───────────────────────────────────
         self.lbl_scale  = mk_label(S.info(),    C['text2'], 9, align=Qt.AlignRight)
@@ -2242,19 +2239,16 @@ class MireukDashboard(QMainWindow):
     # ── 헤더 시계·위클리 배지 갱신 ────────────────────────────
 
     def _tick_header(self):
-        """1초마다 헤더 우측 시계 + 가동 경과시간 갱신."""
+        """1초마다 헤더 가동 경과시간 갱신 (현재 시각은 하단 상태 바에서 표시)."""
         now     = datetime.now()
-        elapsed = now - self._start_dt
-        total_s = int(elapsed.total_seconds())
+        total_s = int((now - self._start_dt).total_seconds())
         h, rem  = divmod(total_s, 3600)
         m, s    = divmod(rem, 60)
 
-        self.lbl_clock.setText(now.strftime("%H:%M:%S"))
-
         if h > 0:
-            elapsed_str = f"가동 {h}h {m:02d}m"
+            elapsed_str = f"{h}h {m:02d}m {s:02d}s"
         else:
-            elapsed_str = f"가동 {m}m {s:02d}s"
+            elapsed_str = f"{m}m {s:02d}s"
         self.lbl_elapsed_run.setText(elapsed_str)
 
     def _refresh_cycle_badge(self):
