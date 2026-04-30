@@ -111,6 +111,7 @@ class TradingSystem:
         self.current_micro_regime = "혼합"
         self._verified_today: int = 0        # 당일 SGD 검증 누적 건수
         self._efficacy_tick:  int = 0        # 5분마다 효과 검증 패널 갱신용
+        self._last_block_reason: str = ""    # 직전 진입 차단 이유 (중복 로그 방지)
 
         # 재시작 시 이전 포지션 복원 (당일 데이터만)
         if self.position.load_state():
@@ -259,7 +260,9 @@ class TradingSystem:
         verified = self.pred_buffer.verify_and_update(ts, close)
         self._verified_today += len(verified)
         for v in verified:
-            self.circuit_breaker.record_accuracy(v["correct"])
+            # SIMULATION: 더미 모델 정확도로 CB③(30분 35% 미만) 조기 발동 방지
+            if self.mode != "SIMULATION":
+                self.circuit_breaker.record_accuracy(v["correct"])
             if v["correct"]:
                 log_manager.learning(f"✓ {v['horizon']} 예측 적중 (conf={v['confidence']:.1%})")
             else:
@@ -529,6 +532,31 @@ class TradingSystem:
                     f"등급={_final_grade} 신뢰도={confidence:.1%}",
                     "WARNING",
                 )
+
+        # ── 진입 차단 이유 로그 (이유가 바뀔 때만 1회 출력) ──────
+        if direction != 0 and self.position.status == "FLAT":
+            _cb_state = self.circuit_breaker.state
+            if _cb_state != "NORMAL":
+                _reason = f"[차단] Circuit Breaker {_cb_state} — 진입 불가 (CB 해제까지 대기)"
+            elif not is_new_entry_allowed():
+                _reason = "[차단] 15:00 이후 — 신규 진입 금지 구간"
+            elif _cr is None:
+                _reason = ""
+            elif _final_grade == "X":
+                _failed = [k for k, v in _cr["checks"].items() if not v]
+                if "8_time" in _failed and time_zone == "OTHER":
+                    _reason = f"[차단] 점심 휴식 구간 (11:50~13:00 OTHER) — 체크리스트 8_time 실패"
+                elif "8_time" in _failed:
+                    _reason = f"[차단] 진입 금지 시간대 ({time_zone}) — 체크리스트 8_time 실패"
+                else:
+                    _reason = f"[차단] 등급X — 미통과 항목: {', '.join(_failed)}"
+            else:
+                _reason = ""
+            if _reason and _reason != self._last_block_reason:
+                log_manager.signal(_reason)
+                self._last_block_reason = _reason
+        elif direction == 0 or self.position.status != "FLAT":
+            self._last_block_reason = ""
 
         # ── STEP 8: 청산 트리거 감시 ───────────────────────────
         if self.position.status != "FLAT":

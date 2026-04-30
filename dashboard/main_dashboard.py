@@ -2950,6 +2950,27 @@ class MireukDashboard(QMainWindow):
         run_row.addWidget(self.lbl_elapsed_run)
         clk_lay.addLayout(run_row)
 
+        # ── 파이프라인 생존 표시 (1초 갱신) ──────────────────────
+        pipe_row = QHBoxLayout()
+        pipe_row.setSpacing(4)
+        pipe_row.addWidget(mk_label("분봉", C['text2'], 9))
+        self._pipe_bar = QProgressBar()
+        self._pipe_bar.setRange(0, 120)          # 최대 2분 표시
+        self._pipe_bar.setValue(0)
+        self._pipe_bar.setTextVisible(False)
+        self._pipe_bar.setFixedHeight(S.p(6))
+        self._pipe_bar.setFixedWidth(S.p(56))
+        self._pipe_bar.setStyleSheet(
+            f"QProgressBar{{background:{C['bg']};border:none;border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{C['cyan']};border-radius:3px;}}"
+        )
+        pipe_row.addWidget(self._pipe_bar)
+        self._lbl_pipe_ago = mk_label("── 대기", C['text2'], 9, align=Qt.AlignRight)
+        pipe_row.addWidget(self._lbl_pipe_ago)
+        clk_lay.addLayout(pipe_row)
+
+        self._pipe_elapsed_s: int = 0            # 마지막 파이프라인 이후 경과초
+
         self.lbl_clock = None   # 제거됨 — _tick_header() 참조용 유지
 
         # ── 해상도·커밋 블록 ───────────────────────────────────
@@ -3064,7 +3085,7 @@ class MireukDashboard(QMainWindow):
     # ── 헤더 시계·위클리 배지 갱신 ────────────────────────────
 
     def _tick_header(self):
-        """1초마다 헤더 가동 경과시간 갱신 (현재 시각은 하단 상태 바에서 표시)."""
+        """1초마다 헤더 가동 경과시간 + 파이프라인 생존 바 갱신."""
         now     = datetime.now()
         total_s = int((now - self._start_dt).total_seconds())
         h, rem  = divmod(total_s, 3600)
@@ -3075,6 +3096,40 @@ class MireukDashboard(QMainWindow):
         else:
             elapsed_str = f"{m}m {s:02d}s"
         self.lbl_elapsed_run.setText(elapsed_str)
+
+        # ── 파이프라인 생존 바 ──────────────────────────────────
+        self._pipe_elapsed_s += 1
+        ps = self._pipe_elapsed_s
+
+        # 색상: 60초 이내=cyan, 60~120초=orange, 120초 초과=red
+        if ps <= 60:
+            chunk_col = C['cyan']
+        elif ps <= 120:
+            chunk_col = C['orange']
+        else:
+            chunk_col = C['red']
+
+        self._pipe_bar.setStyleSheet(
+            f"QProgressBar{{background:{C['bg']};border:none;border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{chunk_col};border-radius:3px;}}"
+        )
+        self._pipe_bar.setValue(min(ps, 120))
+
+        # 텍스트: "Xs 전" or "Xm Ys 전"
+        if ps < 60:
+            ago_str = f"{ps}s 전"
+            ago_col = C['cyan']
+        elif ps < 3600:
+            ago_str = f"{ps // 60}m {ps % 60:02d}s 전"
+            ago_col = C['orange'] if ps < 120 else C['red']
+        else:
+            ago_str = "1h+ 전"
+            ago_col = C['red']
+
+        self._lbl_pipe_ago.setText(ago_str)
+        self._lbl_pipe_ago.setStyleSheet(
+            f"color:{ago_col};font-size:{S.f(9)}px;"
+        )
 
     def _refresh_cycle_badge(self):
         """위클리/월간 D-days 배지를 날짜 변화에 맞춰 갱신."""
@@ -3336,8 +3391,9 @@ class DashboardAdapter:
         self._win.log_panel.refresh_pnl_history(rows)
 
     def notify_pipeline_ran(self):
-        """분봉 파이프라인 완료 시 상태 바 '마지막 갱신' 타이머 리셋."""
+        """분봉 파이프라인 완료 시 상태 바 + 헤더 생존 바 동시 리셋."""
         self._win.log_panel.notify_update()
+        self._win._pipe_elapsed_s = 0
 
     def append_restore_trade(self, msg: str, ts: str = "", val: str = ""):
         """재시작 복원: 창3 주문/체결 탭에 이탤릭·회색으로 표시"""

@@ -201,8 +201,10 @@ class InvestorData:
 
     def _fill_dummy_options(self) -> bool:
         import random
-        self._call["foreign"] = random.randint(-200, 200)
-        self._put["foreign"]  = random.randint(-200, 200)
+        self._call["foreign"]    = random.randint(-200, 200)
+        self._put["foreign"]     = random.randint(-200, 200)
+        self._call["individual"] = random.randint(-300, 300)
+        self._put["individual"]  = random.randint(-300, 300)
         return True
 
     def reset_daily(self):
