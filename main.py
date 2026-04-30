@@ -854,13 +854,16 @@ class TradingSystem:
 
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
         retrain_result = self.batch_retrainer.retrain_now(weeks_back=8)
-        if retrain_result.get("ok"):
+        retrain_ok = retrain_result.get("ok", False)
+        if retrain_ok:
             self.model._load_all()
+            retrain_str = f"재학습 완료 ({retrain_result['elapsed_sec']}초, {retrain_result['data_size']}행)"
             log_manager.learning(
                 f"[GBM] 일일 마감 재학습 완료 | {retrain_result['elapsed_sec']}초 "
                 f"데이터={retrain_result['data_size']}행"
             )
         else:
+            retrain_str = f"재학습 건너뜀 ({retrain_result.get('error', '')})"
             log_manager.learning(
                 f"[GBM] 일일 마감 재학습 건너뜀: {retrain_result.get('error','')}"
             )
@@ -881,6 +884,30 @@ class TradingSystem:
             "INFO",
         )
         self._refresh_pnl_history()
+
+        # ── 자동 종료 예약 ────────────────────────────────────────
+        win_rate = stats["wins"] / max(stats["trades"], 1)
+        pnl_sign = "+" if stats["pnl_krw"] >= 0 else ""
+        notify(
+            f"🏁 미륵이 일일 마감 완료 — 자동 종료 예정\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"거래: {stats['trades']}회 (승 {stats['wins']} / 패 {stats['losses']})\n"
+            f"승률: {win_rate:.0%}  PnL: {pnl_sign}{stats['pnl_krw']:,.0f}원\n"
+            f"{retrain_str}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"15초 후 프로그램 자동 종료\n"
+            f"다음 시작: 내일 08:45 이후",
+            "INFO",
+        )
+        log_manager.system("자동 종료 예약 — 15초 후 Qt 이벤트 루프 종료")
+        self.dashboard.append_sys_log("자동 종료 예약 — 15초 후 프로그램 종료")
+        QTimer.singleShot(15_000, self._auto_shutdown)
+
+    def _auto_shutdown(self) -> None:
+        """일일 마감 완료 후 자동 프로그램 종료 — Qt 이벤트 루프 종료."""
+        logger.info("[System] 자동 종료 실행")
+        log_manager.system("미륵이 자동 종료")
+        _qt_app.quit()
 
     # ── 파이프라인 생존 감시 ──────────────────────────────────────
 
