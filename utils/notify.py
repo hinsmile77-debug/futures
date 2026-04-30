@@ -5,6 +5,7 @@ PC 출처 [MW0601] 가 모든 메시지에 자동 첨부된다.
 
 토큰·채널·PC명은 config/settings.py 또는 환경변수로 관리한다.
 """
+import datetime
 import logging
 
 from config.settings import SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_PC_NAME
@@ -38,8 +39,9 @@ def notify(message: str, level: str = "INFO") -> None:
     message : 알림 본문
     level   : "INFO" | "WARNING" | "CRITICAL"
     """
+    ts       = datetime.datetime.now().strftime("%H:%M:%S")
     icon     = {"INFO": "ℹ️", "WARNING": "⚠️", "CRITICAL": "🚨"}.get(level, "")
-    full_msg = f"{icon} [미륵이] {message}"
+    full_msg = f"{icon} [{ts}] [미륵이] {message}"
     logger.info("[Notify] %s", full_msg)
     _send(full_msg)
 
@@ -48,6 +50,24 @@ def notify_circuit_breaker(trigger: str, action: str) -> None:
     notify(
         f"Circuit Breaker 발동!\n트리거: {trigger}\n조치: {action}",
         "CRITICAL",
+    )
+
+
+def notify_order(side: str, quantity: int, price: float, order_id: str = "") -> None:
+    """주문 제출 알림"""
+    oid = f" (주문번호: {order_id})" if order_id else ""
+    notify(
+        f"주문{oid}\n방향: {side}  수량: {quantity}계약  가격: {price:,.2f}",
+        "INFO",
+    )
+
+
+def notify_execution(side: str, quantity: int, price: float, pnl_krw: float = None) -> None:
+    """체결 알림"""
+    pnl_str = f"\n손익: {pnl_krw:+,.0f}원" if pnl_krw is not None else ""
+    notify(
+        f"체결\n방향: {side}  수량: {quantity}계약  가격: {price:,.2f}{pnl_str}",
+        "INFO",
     )
 
 

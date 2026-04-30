@@ -105,6 +105,8 @@
 ### [T2] Circuit Breaker 5종 트리거 테스트
 - 각 트리거를 의도적으로 발동시켜 정지·청산 동작 확인
 - `safety/circuit_breaker.py` + `safety/emergency_exit.py`
+- **주의**: 중복발동 버그 수정됨 (2026-04-30) — 이제 PAUSED/HALTED 상태에서 재발동 없음
+- **확인 포인트**: 발동 1회만 슬랙 전송되는지 + 대시보드 SYSTEM탭/경보탭에 표시되는지
 
 ### [T3] Walk-Forward 검증 (26주 데이터 필요)
 - **기준**: Sharpe ≥ 1.5, MDD ≤ 15%, 승률 ≥ 53%

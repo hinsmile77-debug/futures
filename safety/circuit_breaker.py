@@ -23,6 +23,7 @@ from config.settings import (
 )
 from config.constants import CB_STATE_NORMAL, CB_STATE_PAUSED, CB_STATE_HALTED
 from utils.notify import notify_circuit_breaker
+from logging_system.log_manager import log_manager
 
 logger = logging.getLogger("SYSTEM")
 
@@ -70,6 +71,7 @@ class CircuitBreaker:
                 self._state = CB_STATE_NORMAL
                 self._pause_until = None
                 logger.info("[CB] 일시 정지 해제 — 정상 복귀")
+                log_manager.system("[CB] 일시 정지 해제 — 정상 복귀", "INFO")
 
     # ── 트리거 ① 신호 반전 ────────────────────────────────────
     def record_signal(self, direction: int):
@@ -119,13 +121,17 @@ class CircuitBreaker:
     def record_api_latency(self, latency_sec: float):
         self._last_latency = latency_sec
         if latency_sec >= CB_API_LATENCY_LIMIT:
-            logger.critical(f"[CB] API 지연 {latency_sec:.1f}초 — 즉시 청산")
-            notify_circuit_breaker(
-                f"API 지연 {latency_sec:.1f}초",
-                "전 포지션 즉시 청산",
-            )
-            if self._emergency_exit:
-                self._emergency_exit()
+            # PAUSED·HALTED 상태에서는 슬랙·청산 콜백 중복 호출 방지
+            if self._state not in (CB_STATE_PAUSED, CB_STATE_HALTED):
+                msg = f"[CB] API 지연 {latency_sec:.1f}초 — 즉시 청산"
+                logger.critical(msg)
+                log_manager.system(msg, "CRITICAL")
+                notify_circuit_breaker(
+                    f"API 지연 {latency_sec:.1f}초",
+                    "전 포지션 즉시 청산",
+                )
+                if self._emergency_exit:
+                    self._emergency_exit()
             self._trigger_pause(
                 CB_API_LATENCY_PAUSE // 60,
                 f"API 지연 {latency_sec:.1f}초",
@@ -133,17 +139,25 @@ class CircuitBreaker:
 
     # ── 내부 트리거 ────────────────────────────────────────────
     def _trigger_pause(self, minutes: int, reason: str):
-        if self._state == CB_STATE_HALTED:
+        # PAUSED·HALTED 상태에서는 재발동 금지 (중복 슬랙 전송 방지)
+        if self._state in (CB_STATE_PAUSED, CB_STATE_HALTED):
             return
         self._state = CB_STATE_PAUSED
         self._pause_until = datetime.datetime.now() + datetime.timedelta(minutes=minutes)
-        logger.warning(f"[CB] {minutes}분 진입 정지 | {reason}")
+        msg = f"[CB] {minutes}분 진입 정지 | {reason}"
+        logger.warning(msg)
+        log_manager.system(msg, "WARNING")
         notify_circuit_breaker(reason, f"{minutes}분 진입 정지")
 
     def _trigger_halt(self, reason: str):
+        # HALTED 상태에서는 재발동 금지 (중복 슬랙 전송 방지)
+        if self._state == CB_STATE_HALTED:
+            return
         self._state = CB_STATE_HALTED
         self._pause_until = None
-        logger.critical(f"[CB] 당일 시스템 정지 | {reason}")
+        msg = f"[CB] 당일 시스템 정지 | {reason}"
+        logger.critical(msg)
+        log_manager.system(msg, "CRITICAL")
         notify_circuit_breaker(reason, "당일 시스템 정지")
 
     def reset_daily(self):
@@ -155,6 +169,7 @@ class CircuitBreaker:
         self._accuracy_buf.clear()
         self._atr_buf.clear()
         logger.info("[CB] 일간 리셋 완료")
+        log_manager.system("[CB] 일간 리셋 완료", "INFO")
 
     def status_dict(self) -> dict:
         return {
