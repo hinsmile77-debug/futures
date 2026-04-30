@@ -1629,11 +1629,100 @@ class LogPanel(QWidget):
         super().__init__()
         self._build()
 
+    # ── 수직 구분선 헬퍼 ────────────────────────────────────────
+    @staticmethod
+    def _vsep():
+        s = QLabel("│")
+        s.setStyleSheet(f"color:{C['border']};font-size:13px;padding:0 2px;")
+        return s
+
     def _build(self):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
+        lay.setSpacing(0)
 
+        # ── 라이브 상태 바 ──────────────────────────────────────
+        sb = QFrame()
+        sb.setStyleSheet(
+            f"background:{C['bg2']};border-bottom:1px solid {C['border']};"
+        )
+        sb.setFixedHeight(S.p(28))
+        sl = QHBoxLayout(sb)
+        sl.setContentsMargins(S.p(8), 0, S.p(8), 0)
+        sl.setSpacing(S.p(5))
+
+        # ● 라이브 도트 + LIVE 텍스트
+        self._dot = QLabel("●")
+        self._dot.setStyleSheet(
+            f"color:{C['green']};font-size:{S.f(12)}px;"
+            f"font-family:Consolas,monospace;"
+        )
+        sl.addWidget(self._dot)
+        lbl_live = QLabel("LIVE")
+        lbl_live.setStyleSheet(
+            f"color:{C['green']};font-size:{S.f(9)}px;"
+            f"font-weight:bold;letter-spacing:1px;"
+        )
+        sl.addWidget(lbl_live)
+        sl.addWidget(self._vsep())
+
+        # 현재 시각
+        self._lbl_time = QLabel("--:--:--")
+        self._lbl_time.setStyleSheet(
+            f"color:{C['text']};font-size:{S.f(12)}px;font-weight:bold;"
+            f"font-family:Consolas,monospace;"
+        )
+        sl.addWidget(self._lbl_time)
+        sl.addWidget(self._vsep())
+
+        # 다음 분봉 카운트다운
+        sl.addWidget(mk_label("다음 분봉 ▷", C['text2'], 9))
+
+        self._cd_bar = QProgressBar()
+        self._cd_bar.setRange(0, 60)
+        self._cd_bar.setValue(60)
+        self._cd_bar.setFixedHeight(S.p(7))
+        self._cd_bar.setFixedWidth(S.p(60))
+        self._cd_bar.setTextVisible(False)
+        self._cd_bar.setStyleSheet(
+            f"QProgressBar{{background:{C['bg3']};border:none;border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{C['cyan']};border-radius:3px;}}"
+        )
+        sl.addWidget(self._cd_bar)
+
+        self._lbl_cd = QLabel("60초")
+        self._lbl_cd.setFixedWidth(S.p(38))
+        self._lbl_cd.setStyleSheet(
+            f"color:{C['cyan']};font-size:{S.f(12)}px;font-weight:bold;"
+            f"font-family:Consolas,monospace;"
+        )
+        sl.addWidget(self._lbl_cd)
+        sl.addWidget(self._vsep())
+
+        # 마지막 갱신 경과
+        sl.addWidget(mk_label("↑ 마지막 갱신", C['text2'], 9))
+
+        self._lbl_elapsed = QLabel("—")
+        self._lbl_elapsed.setFixedWidth(S.p(70))
+        self._lbl_elapsed.setStyleSheet(
+            f"color:{C['text2']};font-size:{S.f(12)}px;font-weight:bold;"
+            f"font-family:Consolas,monospace;"
+        )
+        sl.addWidget(self._lbl_elapsed)
+
+        sl.addStretch()
+        lay.addWidget(sb)
+        lay.addSpacing(S.p(3))
+
+        # ── 상태 바 타이머 (500ms) ──────────────────────────────
+        self._last_update_time = None
+        self._dot_phase        = 0
+        self._status_timer     = QTimer()
+        self._status_timer.setInterval(500)
+        self._status_timer.timeout.connect(self._tick_status)
+        self._status_timer.start()
+
+        # ── 탭 ─────────────────────────────────────────────────
         self.tabs = QTabWidget()
         log_configs = [
             ("1 시스템",  C['blue'],   "all"),
@@ -1743,10 +1832,11 @@ class LogPanel(QWidget):
                 pb.setValue(pct)
 
     def append(self, key, tag, msg, val=""):
+        self._last_update_time = datetime.now()
         tb = self.log_boxes.get(key)
         if not tb:
             return
-        ts  = datetime.now().strftime("%H:%M:%S")
+        ts  = self._last_update_time.strftime("%H:%M:%S")
         TAG_COLORS = {
             "INFO":   C['blue'],   "DEBUG": C['text2'], "SYSTEM": C['purple'],
             "WARN":   C['orange'], "ERROR": C['red'],   "CRITICAL": C['red'],
@@ -1802,6 +1892,67 @@ class LogPanel(QWidget):
             f'font-style:italic;text-align:center;">{msg}</div>'
         )
         tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
+
+    # ── 상태 바 틱 (500ms) ─────────────────────────────────────
+
+    def _tick_status(self):
+        now = datetime.now()
+
+        # ● 도트 깜빡임
+        self._dot_phase ^= 1
+        dot_col = C['green'] if self._dot_phase == 0 else C['bg3']
+        self._dot.setStyleSheet(
+            f"color:{dot_col};font-size:{S.f(12)}px;font-family:Consolas,monospace;"
+        )
+
+        # 현재 시각
+        self._lbl_time.setText(now.strftime("%H:%M:%S"))
+
+        # 카운트다운 — 다음 분봉까지 남은 초
+        remaining = 60 - now.second
+        self._cd_bar.setValue(remaining)
+        self._lbl_cd.setText(f"{remaining:2d}초")
+
+        if remaining <= 5:
+            cd_col = C['red']
+        elif remaining <= 15:
+            cd_col = C['yellow']
+        else:
+            cd_col = C['cyan']
+        self._lbl_cd.setStyleSheet(
+            f"color:{cd_col};font-size:{S.f(12)}px;font-weight:bold;"
+            f"font-family:Consolas,monospace;"
+        )
+        self._cd_bar.setStyleSheet(
+            f"QProgressBar{{background:{C['bg3']};border:none;border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{cd_col};border-radius:3px;}}"
+        )
+
+        # 마지막 갱신 경과
+        if self._last_update_time:
+            elapsed = int((now - self._last_update_time).total_seconds())
+            if elapsed < 60:
+                elapsed_str = f"{elapsed}초 전"
+            elif elapsed < 3600:
+                m, s = divmod(elapsed, 60)
+                elapsed_str = f"{m}분 {s:02d}초"
+            else:
+                elapsed_str = f"{elapsed // 3600}시간+"
+            if elapsed < 90:
+                el_col = C['green']
+            elif elapsed < 300:
+                el_col = C['yellow']
+            else:
+                el_col = C['red']
+            self._lbl_elapsed.setText(elapsed_str)
+            self._lbl_elapsed.setStyleSheet(
+                f"color:{el_col};font-size:{S.f(12)}px;font-weight:bold;"
+                f"font-family:Consolas,monospace;"
+            )
+
+    def notify_update(self):
+        """파이프라인 실행 완료 시 마지막 갱신 시각을 명시적으로 리셋."""
+        self._last_update_time = datetime.now()
 
 
 # ────────────────────────────────────────────────────────────
@@ -2208,6 +2359,10 @@ class DashboardAdapter:
     def update_pnl_history(self, rows):
         """📊 손익 추이 탭 갱신 (trades.db rows)."""
         self._win.log_panel.refresh_pnl_history(rows)
+
+    def notify_pipeline_ran(self):
+        """분봉 파이프라인 완료 시 상태 바 '마지막 갱신' 타이머 리셋."""
+        self._win.log_panel.notify_update()
 
     def append_restore_trade(self, msg: str, ts: str = "", val: str = ""):
         """재시작 복원: 창3 주문/체결 탭에 이탤릭·회색으로 표시"""

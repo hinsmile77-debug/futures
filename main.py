@@ -525,6 +525,9 @@ class TradingSystem:
         _ds = self.position.daily_stats()
         self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
 
+        # 상태 바 '마지막 갱신' 타이머 리셋
+        self.dashboard.notify_pipeline_ran()
+
     def _execute_entry(
         self, direction: str, price: float,
         quantity: int, atr: float, grade: str,
