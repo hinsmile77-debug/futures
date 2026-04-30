@@ -3206,22 +3206,9 @@ class MireukDashboard(QMainWindow):
         rv = [random.uniform(0.20, 0.85) for _ in range(6)]
         self.feat_panel.update_shap(cv, dy, rv)
 
-        # 포지션 (시뮬: LONG 고정 — 실거래 시 main.py update_position() 로 교체됨)
-        _sim_entry = 388.50
-        _sim_atr   = 1.8
-        self.exit_panel.update_data({
-            "status":     "LONG",
-            "entry":      _sim_entry,
-            "current":    self._price,
-            "qty":        5,
-            "atr":        _sim_atr,
-            "stop":       _sim_entry - _sim_atr * 1.5,
-            "tp1":        _sim_entry + _sim_atr * 1.0,
-            "tp2":        _sim_entry + _sim_atr * 1.5,
-            "partial1":   self._tick % 10 >= 5,
-            "partial2":   self._tick % 10 >= 8,
-            "entry_time": None,
-        })
+        # 포지션 — 시뮬 타이머에서는 exit_panel 미갱신
+        # 실데이터는 main.py update_position() 이, FLAT 리셋은 _reset_display() 가 담당
+        # (과거 가짜 LONG 388.xx 데이터가 실 파이프라인 데이터를 덮어쓰는 문제 방지)
 
         # 진입
         sig_map = {1:"매수", -1:"매도", 0:"관망"}
@@ -3290,7 +3277,7 @@ class DashboardAdapter:
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
-        self._win.show()
+        self._win.showMaximized()
 
     def append_sys_log(self, msg: str):
         """창1 시스템 로그에 메시지 추가"""
