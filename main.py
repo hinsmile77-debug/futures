@@ -541,6 +541,11 @@ class TradingSystem:
             f"[진입] {direction} {quantity}계약 @ {price} "
             f"등급={grade} 레짐={self.current_regime}"
         )
+        # PnL 탭 진입 이벤트 기록 [B28]
+        self.dashboard.append_pnl_log(
+            f"진입 | {direction} {quantity}계약 @ {price}  등급={grade}",
+            f"손절 {self.position.stop_price:.2f}  1차 {self.position.tp1_price:.2f}",
+        )
 
     def _check_exit_triggers(self, price: float, features: dict, decision: dict, bar: dict = None):
         """청산 트리거 감시 (우선순위 1~4)"""
@@ -610,6 +615,15 @@ class TradingSystem:
 
         log_manager.trade(
             f"[청산 완료] PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원)"
+        )
+
+        # PnL 패널 즉시 갱신 — 다음 분봉까지 기다리지 않음 [B27]
+        _daily = self.position.daily_stats()
+        self.dashboard.update_pnl_metrics(0.0, _daily["pnl_krw"], 0.0)
+        self.dashboard.append_pnl_log(
+            f"청산 | {result['direction']} {result['quantity']}계약 "
+            f"@ {result['exit_price']} ({result['exit_reason']})",
+            f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원",
         )
 
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
