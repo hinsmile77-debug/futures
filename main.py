@@ -38,7 +38,7 @@ logger    = logging.getLogger("SYSTEM")
 debug_log = logging.getLogger("DEBUG")
 
 # ── DB 초기화 ──────────────────────────────────────────────────
-from utils.db_utils import init_all_dbs, execute, save_candle, save_features, count_raw_candles, fetch_today_trades
+from utils.db_utils import init_all_dbs, execute, save_candle, save_features, count_raw_candles, fetch_today_trades, fetch_pnl_history
 from config.settings import TRADES_DB
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -648,6 +648,7 @@ class TradingSystem:
                 self.current_regime,
             ),
         )
+        self._refresh_pnl_history()
 
     def activate_kill_switch(self, reason: str = "수동 발동") -> None:
         """Ctrl+Alt+K 단축키 또는 외부 호출용."""
@@ -678,6 +679,7 @@ class TradingSystem:
             f"PnL:{stats['pnl_krw']:+,.0f}원",
             "INFO",
         )
+        self._refresh_pnl_history()
 
     # ── 재시작 복원 ───────────────────────────────────────────────
 
@@ -765,6 +767,15 @@ class TradingSystem:
         log_manager.system(
             f"재시작 복원 완료 | 거래 {len(rows)}건 | 누적 PnL={cumulative_pnl_krw:+,.0f}원"
         )
+        self._refresh_pnl_history()
+
+    def _refresh_pnl_history(self) -> None:
+        """trades.db 최근 90일 조회 → 손익 추이 패널 갱신."""
+        try:
+            rows = fetch_pnl_history(limit_days=90)
+            self.dashboard.update_pnl_history(rows)
+        except Exception as e:
+            logger.debug(f"[PnL History] 갱신 실패: {e}")
 
     # ── 메인 루프 (Qt 이벤트 루프 기반) ──────────────────────────
     def run(self):

@@ -191,6 +191,24 @@ def count_raw_candles() -> int:
     return row["cnt"] if row else 0
 
 
+def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
+    """최근 N일 체결 완료 거래 전체 반환 — 손익 추이 패널용.
+    반환 컬럼: direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,
+               exit_reason, grade, entry_ts, exit_ts
+    """
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=limit_days)).isoformat()
+    return fetchall(
+        TRADES_DB,
+        """SELECT direction, entry_price, exit_price, quantity,
+                  pnl_pts, pnl_krw, exit_reason, grade, entry_ts, exit_ts
+           FROM trades
+           WHERE exit_ts IS NOT NULL AND entry_ts >= ?
+           ORDER BY entry_ts ASC""",
+        (cutoff + " 00:00:00",),
+    )
+
+
 def fetch_today_trades(today_str: str) -> List[sqlite3.Row]:
     """당일 체결 완료 거래 목록 (entry_ts LIKE today_str%).
     반환 컬럼: direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,

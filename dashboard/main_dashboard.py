@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QLabel, QPushButton, QProgressBar, QTabWidget,
     QTextEdit, QFrame, QSplitter, QScrollArea, QGroupBox,
     QComboBox, QSlider, QCheckBox, QSizePolicy, QDesktopWidget,
-    QToolTip,
+    QToolTip, QTableWidget, QTableWidgetItem, QHeaderView,
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
@@ -1275,6 +1275,355 @@ class AlphaPanel(QWidget):
 # ────────────────────────────────────────────────────────────
 # 패널 7: 5층 로그 시스템
 # ────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
+# 손익 추이 패널 — 일별·주별·월별 누적 P&L 테이블
+# ────────────────────────────────────────────────────────────
+class PnlHistoryPanel(QWidget):
+    """전문 트레이더용 손익 추이 — 일별·주별·월별 누적 테이블"""
+
+    _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원"]
+    _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "MDD 원"]
+    _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "샤프"]
+
+    def __init__(self):
+        super().__init__()
+        self._rows = []
+        self._build()
+
+    # ── UI 구성 ────────────────────────────────────────────────
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        # 요약 카드 행
+        sf = QFrame()
+        sf.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;"
+        )
+        sf_lay = QHBoxLayout(sf)
+        sf_lay.setContentsMargins(6, 4, 6, 4)
+        sf_lay.setSpacing(4)
+        self._sum = {}
+        for key, label, col in [
+            ("days",    "거래일",    C['blue']),
+            ("trades",  "총 거래",   C['text']),
+            ("winrate", "총 승률",   C['cyan']),
+            ("total",   "총 손익",   C['green']),
+            ("mdd",     "최대 MDD",  C['orange']),
+            ("streak",  "최장 연승", C['yellow']),
+        ]:
+            f = QFrame()
+            f.setStyleSheet(
+                f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;"
+            )
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(6, 3, 6, 3)
+            fl.setSpacing(1)
+            fl.addWidget(mk_label(label, C['text2'], 9, align=Qt.AlignCenter))
+            vl = mk_val_label("—", col, 12, align=Qt.AlignCenter)
+            fl.addWidget(vl)
+            sf_lay.addWidget(f)
+            self._sum[key] = vl
+        lay.addWidget(sf)
+
+        # 일별·주별·월별 내부 탭
+        inner = QTabWidget()
+        inner.setStyleSheet(
+            f"QTabWidget::pane{{background:{C['bg']};border:none;}}"
+            f"QTabBar::tab{{background:{C['bg2']};color:{C['text2']};"
+            f"padding:3px 12px;font-size:{S.f(10)}px;border:none;}}"
+            f"QTabBar::tab:selected{{color:{C['cyan']};"
+            f"border-bottom:2px solid {C['cyan']};}}"
+            f"QTabBar::tab:hover{{color:{C['text']};}}"
+        )
+
+        self.tbl_daily   = self._make_tbl(self._DAILY_HEADERS)
+        self.tbl_weekly  = self._make_tbl(self._WEEKLY_HEADERS)
+        self.tbl_monthly = self._make_tbl(self._MONTHLY_HEADERS)
+
+        inner.addTab(self.tbl_daily,   "일별 (60일)")
+        inner.addTab(self.tbl_weekly,  "주별 (13주)")
+        inner.addTab(self.tbl_monthly, "월별")
+        lay.addWidget(inner, 1)
+
+    def _make_tbl(self, headers):
+        tbl = QTableWidget()
+        tbl.setColumnCount(len(headers))
+        tbl.setHorizontalHeaderLabels(headers)
+        tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        tbl.setSelectionBehavior(QTableWidget.SelectRows)
+        tbl.verticalHeader().setVisible(False)
+        tbl.setShowGrid(True)
+        tbl.setSortingEnabled(False)
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tbl.horizontalHeader().setHighlightSections(False)
+        tbl.setStyleSheet(
+            f"QTableWidget{{background:{C['bg']};color:{C['text']};border:none;"
+            f"gridline-color:{C['border']};font-size:{S.f(11)}px;outline:none;}}"
+            f"QTableWidget::item{{padding:2px 5px;}}"
+            f"QHeaderView::section{{background:{C['bg2']};color:{C['text2']};"
+            f"border:none;border-bottom:1px solid {C['border']};"
+            f"border-right:1px solid {C['border']};"
+            f"font-size:{S.f(10)}px;font-weight:bold;padding:3px 5px;}}"
+            f"QTableWidget::item:selected{{background:{C['bg3']};color:{C['text']};}}"
+        )
+        return tbl
+
+    # ── 셀 팩토리 ──────────────────────────────────────────────
+
+    def _item(self, text, fg=None, bg=None, bold=False, align=Qt.AlignCenter):
+        it = QTableWidgetItem(str(text))
+        it.setTextAlignment(align | Qt.AlignVCenter)
+        it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        if fg:
+            it.setForeground(QColor(fg))
+        if bg:
+            it.setBackground(bg)
+        if bold:
+            ft = it.font()
+            ft.setBold(True)
+            it.setFont(ft)
+        return it
+
+    def _row_bg(self, pnl_krw):
+        if pnl_krw > 0:
+            return QColor(15, 45, 25)
+        if pnl_krw < 0:
+            return QColor(50, 18, 18)
+        return QColor(C['bg'])
+
+    def _pcol(self, val):
+        return C['green'] if val > 0 else (C['red'] if val < 0 else C['text2'])
+
+    # ── 갱신 진입점 ────────────────────────────────────────────
+
+    def refresh(self, rows):
+        """trades.db 행 목록으로 전체 갱신. rows: sqlite3.Row list."""
+        self._rows = []
+        for r in rows:
+            try:
+                self._rows.append({
+                    "entry_ts": r["entry_ts"] or "",
+                    "pnl_pts":  float(r["pnl_pts"]  or 0),
+                    "pnl_krw":  float(r["pnl_krw"]  or 0),
+                    "quantity": int(r["quantity"]    or 1),
+                })
+            except Exception:
+                pass
+        self._build_daily()
+        self._build_weekly()
+        self._build_monthly()
+        self._build_summary()
+
+    # ── 그룹화 유틸 ────────────────────────────────────────────
+
+    def _group(self, key_fn):
+        from collections import defaultdict
+        d = defaultdict(list)
+        for r in self._rows:
+            k = key_fn(r["entry_ts"])
+            if k:
+                d[k].append(r)
+        return sorted(d.items())
+
+    @staticmethod
+    def _week_key(ts):
+        try:
+            import datetime as _dt
+            d   = _dt.date.fromisoformat(ts[:10])
+            iso = d.isocalendar()
+            return f"{iso[0]}-W{iso[1]:02d}"
+        except Exception:
+            return ""
+
+    def _stats(self, rows):
+        n     = len(rows)
+        wins  = sum(1 for r in rows if r["pnl_pts"] > 0)
+        ppts  = sum(r["pnl_pts"] * r["quantity"] for r in rows)
+        pkrw  = sum(r["pnl_krw"] for r in rows)
+        return n, wins, n - wins, round(ppts, 2), round(pkrw, 0)
+
+    def _mdd(self, rows):
+        eq, peak, mdd = 0.0, 0.0, 0.0
+        for r in sorted(rows, key=lambda x: x["entry_ts"]):
+            eq  += r["pnl_krw"]
+            peak = max(peak, eq)
+            mdd  = min(mdd, eq - peak)
+        return round(mdd, 0)
+
+    def _sharpe(self, daily_pnls):
+        n = len(daily_pnls)
+        if n < 2:
+            return 0.0
+        mean = sum(daily_pnls) / n
+        var  = sum((x - mean) ** 2 for x in daily_pnls) / (n - 1)
+        std  = var ** 0.5 if var > 0 else 0.0
+        return round(mean / std * (252 ** 0.5), 2) if std else 0.0
+
+    # ── 일별 테이블 ────────────────────────────────────────────
+
+    def _build_daily(self):
+        today  = datetime.now().strftime("%Y-%m-%d")
+        groups = self._group(lambda ts: ts[:10])[-60:]
+        # 누적 맵 (오름차순 기준)
+        cum_map, c = {}, 0.0
+        for date_str, grp in groups:
+            _, _, _, _, pkrw = self._stats(grp)
+            c += pkrw
+            cum_map[date_str] = c
+
+        tbl = self.tbl_daily
+        tbl.setRowCount(len(groups))
+        for r_idx, (date_str, grp) in enumerate(reversed(groups)):
+            n, wins, losses, ppts, pkrw = self._stats(grp)
+            cum  = cum_map[date_str]
+            wr   = f"{wins/n*100:.0f}%" if n else "—"
+            bg   = self._row_bg(pkrw)
+            pc   = self._pcol(pkrw)
+            cc   = self._pcol(cum)
+            is_t = (date_str == today)
+            cells = [
+                self._item(date_str,         fg=C['yellow'] if is_t else None, bg=bg, bold=is_t),
+                self._item(str(n),           bg=bg, align=Qt.AlignRight),
+                self._item(str(wins),        fg=C['green'], bg=bg, align=Qt.AlignRight),
+                self._item(str(losses),      fg=C['red'],   bg=bg, align=Qt.AlignRight),
+                self._item(wr,               fg=C['cyan'],  bg=bg),
+                self._item(f"{ppts:+.2f}",   fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(f"{pkrw:+,.0f}",  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(f"{cum:+,.0f}",   fg=cc, bg=bg, align=Qt.AlignRight),
+            ]
+            for c_idx, it in enumerate(cells):
+                tbl.setItem(r_idx, c_idx, it)
+
+    # ── 주별 테이블 ────────────────────────────────────────────
+
+    def _build_weekly(self):
+        groups  = self._group(self._week_key)[-13:]
+        cum_map, c = {}, 0.0
+        for wk, grp in groups:
+            _, _, _, _, pkrw = self._stats(grp)
+            c += pkrw
+            cum_map[wk] = c
+
+        tbl = self.tbl_weekly
+        tbl.setRowCount(len(groups))
+        for r_idx, (wk, grp) in enumerate(reversed(groups)):
+            n, wins, losses, ppts, pkrw = self._stats(grp)
+            mdd  = self._mdd(grp)
+            cum  = cum_map[wk]
+            wr   = f"{wins/n*100:.0f}%" if n else "—"
+            bg   = self._row_bg(pkrw)
+            pc   = self._pcol(pkrw)
+            cc   = self._pcol(cum)
+            mc   = self._pcol(mdd)
+            cells = [
+                self._item(wk,               bg=bg, bold=True),
+                self._item(str(n),           bg=bg, align=Qt.AlignRight),
+                self._item(str(wins),        fg=C['green'], bg=bg, align=Qt.AlignRight),
+                self._item(str(losses),      fg=C['red'],   bg=bg, align=Qt.AlignRight),
+                self._item(wr,               fg=C['cyan'],  bg=bg),
+                self._item(f"{ppts:+.2f}",   fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(f"{pkrw:+,.0f}",  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(f"{cum:+,.0f}",   fg=cc, bg=bg, align=Qt.AlignRight),
+                self._item(f"{mdd:+,.0f}",   fg=mc, bg=bg, align=Qt.AlignRight),
+            ]
+            for c_idx, it in enumerate(cells):
+                tbl.setItem(r_idx, c_idx, it)
+
+    # ── 월별 테이블 ────────────────────────────────────────────
+
+    def _build_monthly(self):
+        groups  = self._group(lambda ts: ts[:7])
+        cum_map, c = {}, 0.0
+        for mon, grp in groups:
+            _, _, _, _, pkrw = self._stats(grp)
+            c += pkrw
+            cum_map[mon] = c
+
+        tbl = self.tbl_monthly
+        tbl.setRowCount(len(groups))
+        for r_idx, (mon, grp) in enumerate(reversed(groups)):
+            n, wins, losses, ppts, pkrw = self._stats(grp)
+            cum  = cum_map[mon]
+            # 월 내 일별 PnL → 샤프
+            dp = {}
+            for r in grp:
+                d = r["entry_ts"][:10]
+                dp[d] = dp.get(d, 0) + r["pnl_krw"]
+            sharpe = self._sharpe(list(dp.values()))
+            wr   = f"{wins/n*100:.0f}%" if n else "—"
+            bg   = self._row_bg(pkrw)
+            pc   = self._pcol(pkrw)
+            cc   = self._pcol(cum)
+            sc   = (C['green'] if sharpe >= 1.0
+                    else C['yellow'] if sharpe >= 0.5
+                    else C['red']    if sharpe < 0
+                    else C['text2'])
+            sstr = f"{sharpe:.2f}" if sharpe != 0 else "—"
+            cells = [
+                self._item(mon,              bg=bg, bold=True),
+                self._item(str(n),           bg=bg, align=Qt.AlignRight),
+                self._item(str(wins),        fg=C['green'], bg=bg, align=Qt.AlignRight),
+                self._item(str(losses),      fg=C['red'],   bg=bg, align=Qt.AlignRight),
+                self._item(wr,               fg=C['cyan'],  bg=bg),
+                self._item(f"{ppts:+.2f}",   fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(f"{pkrw:+,.0f}",  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(f"{cum:+,.0f}",   fg=cc, bg=bg, align=Qt.AlignRight),
+                self._item(sstr,             fg=sc, bg=bg),
+            ]
+            for c_idx, it in enumerate(cells):
+                tbl.setItem(r_idx, c_idx, it)
+
+    # ── 요약 카드 갱신 ─────────────────────────────────────────
+
+    def _build_summary(self):
+        if not self._rows:
+            for v in self._sum.values():
+                v.setText("—")
+            return
+
+        days   = len(set(r["entry_ts"][:10] for r in self._rows if r["entry_ts"]))
+        trades = len(self._rows)
+        wins   = sum(1 for r in self._rows if r["pnl_pts"] > 0)
+        wr     = wins / trades * 100 if trades else 0
+        total  = sum(r["pnl_krw"] for r in self._rows)
+
+        # 전체 MDD
+        eq, peak, mdd = 0.0, 0.0, 0.0
+        for r in sorted(self._rows, key=lambda x: x["entry_ts"]):
+            eq  += r["pnl_krw"]
+            peak = max(peak, eq)
+            mdd  = min(mdd, eq - peak)
+
+        # 최장 연승
+        best, cur = 0, 0
+        for r in sorted(self._rows, key=lambda x: x["entry_ts"]):
+            if r["pnl_pts"] > 0:
+                cur  += 1
+                best  = max(best, cur)
+            else:
+                cur = 0
+
+        pc = C['green'] if total >= 0 else C['red']
+        wc = '#4CAF50' if wr >= 55 else (C['yellow'] if wr >= 50 else C['red'])
+
+        def _set(key, text, col):
+            lbl = self._sum[key]
+            lbl.setText(text)
+            lbl.setStyleSheet(
+                f"color:{col};font-size:{S.f(12)}px;font-weight:bold;"
+            )
+
+        _set("days",    f"{days}일",          C['blue'])
+        _set("trades",  f"{trades}건",         C['text'])
+        _set("winrate", f"{wr:.1f}%",          wc)
+        _set("total",   f"{total:+,.0f}원",    pc)
+        _set("mdd",     f"{mdd:+,.0f}원",      C['orange'])
+        _set("streak",  f"{best}연승",         C['yellow'])
+
+
 class LogPanel(QWidget):
     def __init__(self):
         super().__init__()
@@ -1364,7 +1713,16 @@ class LogPanel(QWidget):
             if key == "order":
                 self.tabs.setTabToolTip(self.tabs.count()-1, _ORDER_TAB_TIP)
 
+        # 6번째 탭: 손익 추이 (일별·주별·월별 누적 테이블)
+        self.pnl_history = PnlHistoryPanel()
+        self.tabs.addTab(self.pnl_history, "📊 손익 추이")
+        self.tabs.tabBar().setTabTextColor(self.tabs.count() - 1, QColor(C['cyan']))
+
         lay.addWidget(self.tabs)
+
+    def refresh_pnl_history(self, rows):
+        """손익 추이 탭 전체 갱신 (trades.db rows)."""
+        self.pnl_history.refresh(rows)
 
     def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float):
         """미실현 손익·일일 누적·VaR 95% 수치 갱신"""
@@ -1846,6 +2204,10 @@ class DashboardAdapter:
     def append_pnl_log(self, msg: str, val: str = ""):
         """창4 손익 로그"""
         self._win.log_panel.append("pnl", "PNL", msg, val)
+
+    def update_pnl_history(self, rows):
+        """📊 손익 추이 탭 갱신 (trades.db rows)."""
+        self._win.log_panel.refresh_pnl_history(rows)
 
     def append_restore_trade(self, msg: str, ts: str = "", val: str = ""):
         """재시작 복원: 창3 주문/체결 탭에 이탤릭·회색으로 표시"""
