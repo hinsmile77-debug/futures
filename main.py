@@ -18,7 +18,6 @@ import sys
 import os
 import datetime
 import time
-import argparse
 import logging
 import math
 import numpy as np
@@ -72,10 +71,9 @@ from dashboard.main_dashboard import create_dashboard
 class TradingSystem:
     """미륵이 메인 트레이딩 시스템"""
 
-    def __init__(self, mode: str = "SIMULATION"):
-        self.mode = mode
-        logger.info(f"[System] 미륵이 초기화 | 모드={mode}")
-        log_manager.system(f"미륵이 초기화 | 모드={mode}")
+    def __init__(self):
+        logger.info("[System] 미륵이 초기화")
+        log_manager.system("미륵이 초기화")
 
         # ── 키움 API 컴포넌트 ──────────────────────────────────
         self.kiwoom        = KiwoomAPI()
@@ -125,7 +123,7 @@ class TradingSystem:
             log_manager.system(msg, "WARNING")   # 대시보드 1 시스템 탭
 
         # 대시보드
-        self.dashboard = create_dashboard(sim_mode=(self.mode == "SIMULATION"))
+        self.dashboard = create_dashboard()
         self._heartbeat_count: int = 0
         self._session_no: int = 0
 
@@ -290,9 +288,7 @@ class TradingSystem:
         verified = self.pred_buffer.verify_and_update(ts, close)
         self._verified_today += len(verified)
         for v in verified:
-            # SIMULATION: 더미 모델 정확도로 CB③(30분 35% 미만) 조기 발동 방지
-            if self.mode != "SIMULATION":
-                self.circuit_breaker.record_accuracy(v["correct"])
+            self.circuit_breaker.record_accuracy(v["correct"])
             if v["correct"]:
                 log_manager.learning(f"✓ {v['horizon']} 예측 적중 (conf={v['confidence']:.1%})")
             else:
@@ -561,7 +557,7 @@ class TradingSystem:
             and not _bar_volume_zero          # Guard-C3: volume=0 분봉 진입 차단
         ):
             dir_str = "LONG" if direction > 0 else "SHORT"
-            if _cr["auto_entry"] or self.mode == "SIMULATION":
+            if _cr["auto_entry"]:
                 self._execute_entry(dir_str, close, _qty_display, atr, _final_grade)
             else:
                 log_manager.trade(
@@ -1078,23 +1074,12 @@ class TradingSystem:
         """메인 실행 — Qt 이벤트 루프 기반."""
         logger.info("=" * 60)
         logger.info("미륵이 — KOSPI 200 선물 방향 예측 시스템 시작")
-        logger.info(f"모드: {self.mode}")
         logger.info("=" * 60)
 
         # 키움 로그인 (블로킹)
         if not self.connect_kiwoom():
             logger.critical("[System] 키움 연결 실패 — 종료")
             return
-
-        # SIMULATION 모드: 키움 연결 후 시뮬 타이머 중지 (가짜 388.xx 로그 차단)
-        if self.mode == "SIMULATION":
-            self.dashboard.stop_sim_timer()
-
-        # SIMULATION: 모델 미학습 시 더미 주입 — 파이프라인 통과 검증용
-        if self.mode == "SIMULATION" and not self.model.is_ready():
-            logger.warning("[System] SIMULATION — 더미 모델 주입 (파이프라인 통과 검증)")
-            log_manager.system("더미 모델 주입 — STEP5 이후 진입/청산 로직 검증 시작")
-            self.model.force_ready_for_test()
 
         self._pre_market_done   = False
         self._daily_close_done  = False
@@ -1111,7 +1096,7 @@ class TradingSystem:
             self.dashboard.btn_kill.clicked.connect(
                 lambda: self.activate_kill_switch("대시보드 긴급정지")
             )
-        self.dashboard.append_sys_log(f"시스템 시작 | 모드={self.mode} | 코드={self.realtime_data.code if self.realtime_data else '—'}")
+        self.dashboard.append_sys_log(f"시스템 시작 | 코드={self.realtime_data.code if self.realtime_data else '—'}")
         self.dashboard.update_system_status(cb_state="NORMAL", latency_ms=0.0)
 
         # 파이프라인 감시 콜백 등록
@@ -1187,26 +1172,11 @@ class TradingSystem:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="미륵이 선물 트레이딩 시스템")
-    parser.add_argument(
-        "--mode",
-        choices=["simulation", "live"],
-        default="simulation",
-        help="실행 모드 (기본: simulation)",
-    )
-    args = parser.parse_args()
-
     # DB 초기화
     init_all_dbs()
     logger.info("[System] DB 초기화 완료")
 
-    mode = args.mode.upper()
-    if mode == "LIVE":
-        logger.warning("=" * 60)
-        logger.warning("⚠️  실전 매매 모드 — 실제 계좌가 사용됩니다!")
-        logger.warning("=" * 60)
-
-    system = TradingSystem(mode=mode)
+    system = TradingSystem()
     system.run()
 
 

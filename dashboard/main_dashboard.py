@@ -2963,10 +2963,9 @@ class LogPanel(QWidget):
 class MireukDashboard(QMainWindow):
     """미륵이 v7.0 풀 대시보드"""
 
-    def __init__(self, kiwoom=None, sim_mode: bool = True):
+    def __init__(self, kiwoom=None):
         super().__init__()
         self.kiwoom    = kiwoom
-        self._sim_mode = sim_mode
         self._start_dt = datetime.now()        # 프로그램 시작 시각 (불변)
         # ── 해상도 감지 (UI 빌드 전에 반드시 먼저) ──────────────
         S.init()
@@ -2990,10 +2989,6 @@ class MireukDashboard(QMainWindow):
         self._cycle_timer.setInterval(60_000)
         self._cycle_timer.timeout.connect(self._refresh_cycle_badge)
         self._cycle_timer.start()
-
-        self._sim_timer = None
-        if sim_mode and kiwoom is None:
-            self._start_sim_timer()
 
     def _build_ui(self):
         central = QWidget()
@@ -3181,7 +3176,6 @@ class MireukDashboard(QMainWindow):
             change: 전일 대비 등락 (예: +3.10)
             code:   선물 코드 (예: F202606, A0166000)
         """
-        self._stop_sim_timer()
         self.lbl_realtime_price.setText(f"{price:,.2f}")
         col = C['green'] if change >= 0 else C['red']
         sign = "▲" if change >= 0 else "▼"
@@ -3268,112 +3262,6 @@ class MireukDashboard(QMainWindow):
             f"padding:1px {S.p(5)}px;font-size:{S.f(11)}px;font-weight:bold;"
         )
 
-    def _start_sim_timer(self):
-        self._tick = 0
-        self._price = 388.50
-        self._sim_timer = QTimer(self)
-        self._sim_timer.timeout.connect(self._sim_tick)
-        self._sim_timer.start(3000)
-        self._sim_tick()
-
-    def _stop_sim_timer(self):
-        if self._sim_timer and self._sim_timer.isActive():
-            self._sim_timer.stop()
-
-    def _sim_tick(self):
-        self._tick += 1
-        self._price += random.gauss(0, 0.15)
-        trend = random.choice([0.4, -0.4])
-
-        # 예측 데이터 — 호라이즌별 독립 노이즈 (장기일수록 불확실성 증가)
-        HORIZONS = ["1분","3분","5분","10분","15분","30분"]
-        _H_SIGMA = [0.06, 0.08, 0.10, 0.13, 0.16, 0.20]
-        preds = {}
-        for h, sigma in zip(HORIZONS, _H_SIGMA):
-            t = trend + random.gauss(0, sigma)
-            up = max(0.05, min(0.88, 0.30 + t*0.22 + random.gauss(0, 0.05)))
-            dn = max(0.05, min(0.88, 1 - up - 0.12 + random.gauss(0, 0.04)))
-            hd = max(0.03, 1 - up - dn)
-            sig = 1 if up > dn and up > hd else -1 if dn > up and dn > hd else 0
-            preds[h] = {"up": up, "dn": dn, "flat": hd, "signal": sig}
-
-        params = {
-            "CVD 다이버전스": min(0.99, max(0.1, 0.183 + random.gauss(0,0.02))),
-            "VWAP 위치":      min(0.99, max(0.1, 0.167 + random.gauss(0,0.02))),
-            "OFI 불균형":     min(0.99, max(0.1, 0.142 + random.gauss(0,0.02))),
-            "외인 콜순매수":  min(0.99, max(0.1, 0.128 + random.gauss(0,0.02))),
-            "다이버전스 지수":min(0.99, max(0.1, 0.117 + random.gauss(0,0.02))),
-            "프로그램 비차익":min(0.99, max(0.1, 0.108 + random.gauss(0,0.02))),
-        }
-        self.pred_panel.update_data(self._price, preds, params)
-
-        # 다이버전스
-        rt_bias = trend * 0.3 + random.gauss(0, 0.1)
-        fi_bias = trend * 0.35 + random.gauss(0, 0.08)
-        ct = "역발상 하락" if rt_bias > 0.4 else "역발상 상승" if rt_bias < -0.4 else "중립"
-        div_data = {
-            "rt_bias": rt_bias, "fi_bias": fi_bias,
-            "rt_call": random.randint(2000,5000), "rt_put": random.randint(1500,4000),
-            "rt_strd": random.randint(200,600),
-            "contrarian": ct,
-            "div_score":  (fi_bias - rt_bias) * 50,
-        }
-        self.div_panel.update_data(div_data)
-
-        # 피처 관리
-        cv = [random.uniform(0.55, 0.90) for _ in range(3)]
-        dy = [
-            {"rank":1,"name":"외인 콜순매수","shap":random.uniform(0.10,0.15),"status":"유지"},
-            {"rank":2,"name":"다이버전스",   "shap":random.uniform(0.08,0.12),"status":"유지"},
-            {"rank":3,"name":"프로그램 비차익","shap":random.uniform(0.07,0.11),"status":"유지"},
-        ]
-        rv = [random.uniform(0.20, 0.85) for _ in range(6)]
-        self.feat_panel.update_shap(cv, dy, rv)
-
-        # 포지션 — 시뮬 타이머에서는 exit_panel 미갱신
-        # 실데이터는 main.py update_position() 이, FLAT 리셋은 _reset_display() 가 담당
-        # (과거 가짜 LONG 388.xx 데이터가 실 파이프라인 데이터를 덮어쓰는 문제 방지)
-
-        # 진입
-        sig_map = {1:"매수", -1:"매도", 0:"관망"}
-        ups = sum(1 for v in preds.values() if v['signal']==1)
-        dns = sum(1 for v in preds.values() if v['signal']==-1)
-        ens_sig = "매수" if ups>=4 else "매도" if dns>=4 else "관망"
-        conf = random.uniform(0.55, 0.82)
-        grade = "A" if conf>=0.78 else "B" if conf>=0.65 else "C" if conf>=0.58 else "X"
-        checks = {attr: random.random()>0.25 for attr in
-                  ["signal_chk","conf_chk","vwap_chk","cvd_chk","ofi_chk",
-                   "fi_chk","candle_chk","time_chk","risk_chk"]}
-        self.entry_panel.update_data(ens_sig, conf, grade, checks)
-
-        # 로그
-        tags = ["INFO","DEBUG","SYSTEM","INFO","INFO"]
-        msgs = [
-            f"1분봉 수신 — 종가 {self._price:.2f}, 거래량 {random.randint(8000,15000):,}",
-            f"CVD 다이버전스: {'정상' if trend>0 else '역전'} | OFI: {random.randint(-150,150):+d}",
-            f"앙상블 예측: {ens_sig} | 신뢰도 {conf*100:.1f}%",
-            f"레짐=NEUTRAL | 포지션=FLAT | 미시레짐=추세장",
-            f"피처 생성 완료 25개 | 처리 {random.randint(18,35)}ms",
-        ]
-        tag = random.choice(tags)
-        msg = random.choice(msgs)
-        self.log_panel.append("all", tag, msg)
-
-        if random.random() < 0.15:
-            wmsg = f"슬리피지 {random.uniform(2,4):.1f}틱 초과 — 변동성 높음"
-            self.log_panel.append("all", "WARN", wmsg)
-
-        if self._tick % 3 == 0:
-            omsg = (f"[SIM] {'FILL' if random.random()>0.3 else 'PENDING'} "
-                    f"{ens_sig} 5계약 @{self._price:.2f}")
-            tag2 = "FILL" if "FILL" in omsg else "PENDING"
-            self.log_panel.append("order", tag2, omsg,
-                                  f"슬리피지 {random.uniform(0.3,1.5):.1f}틱")
-            self.log_panel.append("pnl", "PNL",
-                                  f"미실현 {(self._price-388.5)*5*250000:+,.0f}원",
-                                  f"{(self._price-388.5):+.2f}pt × 5계약")
-            self.log_panel.append("model", "MODEL",
-                                  f"SGD 온라인 학습 완료 | 정확도 {random.uniform(58,66):.1f}%")
 
 
 # ────────────────────────────────────────────────────────────
@@ -3392,10 +3280,10 @@ class DashboardAdapter:
         self.dashboard.btn_kill  (QPushButton 참조)
     """
 
-    def __init__(self, sim_mode: bool = True):
+    def __init__(self):
         app = QApplication.instance() or QApplication(sys.argv)
         app.setStyle("Fusion")
-        self._win = MireukDashboard(sim_mode=sim_mode)
+        self._win = MireukDashboard()
         # 긴급 정지 버튼을 외부에서 접근할 수 있도록 노출
         self.btn_kill = self._win._make_kill_btn()
 
@@ -3448,7 +3336,6 @@ class DashboardAdapter:
 
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""
-        self._win._stop_sim_timer()   # 실 파이프라인 데이터 수신 시 시뮬 타이머 확실히 중지
         self._win.exit_panel.update_data(pos_data)
 
     def update_price(self, price: float, change: float = 0.0,
@@ -3465,13 +3352,8 @@ class DashboardAdapter:
         """
         self._win.update_price(price, change, code)
 
-    def stop_sim_timer(self):
-        """키움 연결 즉시 시뮬레이션 타이머 중지 — connect_kiwoom() 성공 직후 호출"""
-        self._win._stop_sim_timer()
-
     def update_prediction(self, price: float, preds: dict, params: dict, conf: float = None):
         """멀티 호라이즌 예측 패널 업데이트"""
-        self._win._stop_sim_timer()   # 실 파이프라인 예측 수신 시 시뮬 타이머 확실히 중지
         self._win.pred_panel.update_data(price, preds, params, conf)
 
     def update_entry(self, signal: str, conf: float, grade: str, checks: dict,
@@ -3601,17 +3483,17 @@ MireukDashboard._make_kill_btn = _make_kill_btn
 # ────────────────────────────────────────────────────────────
 # 진입점 함수들
 # ────────────────────────────────────────────────────────────
-def create_dashboard(sim_mode: bool = True) -> DashboardAdapter:
+def create_dashboard() -> DashboardAdapter:
     """
     main.py 에서 호출하는 팩토리 함수
 
     사용법 (main.py):
-        self.dashboard = create_dashboard(sim_mode=(self.mode == "SIMULATION"))
+        self.dashboard = create_dashboard()
         self.dashboard.show()
         self.dashboard.append_sys_log("시스템 시작")
         self.dashboard.btn_kill.clicked.connect(...)
     """
-    return DashboardAdapter(sim_mode=sim_mode)
+    return DashboardAdapter()
 
 
 def launch_dashboard(kiwoom=None):

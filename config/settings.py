@@ -40,7 +40,6 @@ except ImportError:
     _SECRET_SLACK_TOKEN = ""
 
 # ── 거래 설정 ──────────────────────────────────────────────────
-TRADE_MODE = "SIMULATION"   # "SIMULATION" | "LIVE"
 MAX_CONTRACTS = 10          # 최대 계약 수
 
 DAILY_LOSS_LIMIT_PCT = 0.02   # 일일 최대 손실 2%
