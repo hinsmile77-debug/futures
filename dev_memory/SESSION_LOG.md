@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-04-30 (오후 세션)
+
+**작업**: 재시작 연속성 — 당일 거래 이력 대시보드 복원 + 세션 카운터 + UI 개선
+
+### PnL 탭 갱신 누락 수정 [B27/B28]
+- `_post_exit()`: 청산 직후 `update_pnl_metrics()` + `append_pnl_log()` 즉시 호출
+- `_execute_entry()`: 진입 시 `append_pnl_log()`로 진입 이벤트 PnL 탭 기록
+
+### UI 폰트 시인성 개선
+- 전체 하드코딩 `font-size:Xpx` → `S.f(X)` 교체 (특히 5층 모니터링 로그 QTextEdit)
+- `ScreenScale` 전면 재작성: `fit_scale = min(sw/1680, sh/1000)` + `dpi_bonus=(dpr-1)×0.10`
+  - 3840×2160 @ 150% DPI → 자동 1.45× 적용 (기존 1.30× 고정)
+  - `S.info()` 헤더에 `3840×2160 (DPI 1.50× UI 1.45×)` 표시
+
+### 재시작 연속성 [B29]
+- **`PositionTracker.restore_daily_stats(rows)`**: trades.db 당일 행으로 일일 PnL·승패 통계 재적산
+- **`LogPanel.append_restore(key, msg, ts, val)`**: 이탤릭·회색 `[복원]` 태그 항목 표시
+- **`LogPanel.append_separator(key, msg)`**: 탭 내 `<hr>` 구분선
+- **`DashboardAdapter`**: `append_restore_trade/pnl()`, `append_trade/pnl_separator()` 추가
+- **`db_utils.fetch_today_trades(today_str)`**: 당일 체결 거래 SELECT 헬퍼
+- **`main._increment_session()`**: `data/session_state.json`에 당일 세션 번호 누적
+- **`main._restore_daily_state()`**: `run()` 내 `dashboard.show()` 직후 호출
+  - trades.db 당일 행 재생 → 주문/체결·손익 탭에 [복원] 이탤릭 항목
+  - 세션 구분선 `── 세션 #N 시작 — X건 복원 ──`
+  - `position_tracker.restore_daily_stats()` 연동
+
+---
+
 ## 2026-04-30 (오전 세션)
 
 **작업**: 대시보드 시뮬 FILL 이상가격 이상점 진단 + 시뮬/실거래 분리 수정
