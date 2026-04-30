@@ -191,6 +191,22 @@ def count_raw_candles() -> int:
     return row["cnt"] if row else 0
 
 
+def fetch_today_trades(today_str: str) -> List[sqlite3.Row]:
+    """당일 체결 완료 거래 목록 (entry_ts LIKE today_str%).
+    반환 컬럼: direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,
+               exit_reason, grade, entry_ts, exit_ts
+    """
+    return fetchall(
+        TRADES_DB,
+        """SELECT direction, entry_price, exit_price, quantity,
+                  pnl_pts, pnl_krw, exit_reason, grade, entry_ts, exit_ts
+           FROM trades
+           WHERE entry_ts LIKE ?
+           ORDER BY entry_ts ASC""",
+        (today_str + "%",),
+    )
+
+
 def init_all_dbs():
     """전체 DB 초기화 (main.py에서 1회 호출)"""
     init_predictions_db()

@@ -1412,6 +1412,39 @@ class LogPanel(QWidget):
         tb.append(line)
         tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
 
+    def append_restore(self, key: str, msg: str, ts: str = "", val: str = ""):
+        """재시작 복원 항목 — 이탤릭·회색으로 실시간 항목과 시각 구분."""
+        tb = self.log_boxes.get(key)
+        if not tb:
+            return
+        ts_disp = ts if ts else datetime.now().strftime("%H:%M:%S")
+        val_html = (
+            f' <span style="color:{C["text2"]};font-size:{S.f(11)}px;">{val}</span>'
+            if val else ""
+        )
+        line = (
+            f'<span style="color:{C["text2"]};font-style:italic;">'
+            f'[{ts_disp}]'
+            f' <span style="color:{C["yellow"]};font-weight:bold;">[복원]</span>'
+            f' {msg}'
+            f'{val_html}'
+            f'</span>'
+        )
+        tb.append(line)
+        tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
+
+    def append_separator(self, key: str, msg: str = ""):
+        """탭 내 수평선 구분자 (복원 이력 / 신규 세션 경계 등)."""
+        tb = self.log_boxes.get(key)
+        if not tb:
+            return
+        tb.append(
+            f'<hr style="border:0;border-top:1px solid {C["border"]};margin:3px 0;">'
+            f'<div style="color:{C["text2"]};font-size:{S.f(10)}px;'
+            f'font-style:italic;text-align:center;">{msg}</div>'
+        )
+        tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
+
 
 # ────────────────────────────────────────────────────────────
 # 메인 윈도우
@@ -1813,6 +1846,22 @@ class DashboardAdapter:
     def append_pnl_log(self, msg: str, val: str = ""):
         """창4 손익 로그"""
         self._win.log_panel.append("pnl", "PNL", msg, val)
+
+    def append_restore_trade(self, msg: str, ts: str = "", val: str = ""):
+        """재시작 복원: 창3 주문/체결 탭에 이탤릭·회색으로 표시"""
+        self._win.log_panel.append_restore("order", msg, ts, val)
+
+    def append_restore_pnl(self, msg: str, ts: str = "", val: str = ""):
+        """재시작 복원: 창4 손익 탭에 이탤릭·회색으로 표시"""
+        self._win.log_panel.append_restore("pnl", msg, ts, val)
+
+    def append_trade_separator(self, msg: str = ""):
+        """창3 주문/체결 탭 구분선"""
+        self._win.log_panel.append_separator("order", msg)
+
+    def append_pnl_separator(self, msg: str = ""):
+        """창4 손익 탭 구분선"""
+        self._win.log_panel.append_separator("pnl", msg)
 
     def append_model_log(self, msg: str):
         """창5 모델 로그"""

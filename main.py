@@ -38,7 +38,7 @@ logger    = logging.getLogger("SYSTEM")
 debug_log = logging.getLogger("DEBUG")
 
 # ── DB 초기화 ──────────────────────────────────────────────────
-from utils.db_utils import init_all_dbs, execute, save_candle, save_features, count_raw_candles
+from utils.db_utils import init_all_dbs, execute, save_candle, save_features, count_raw_candles, fetch_today_trades
 from config.settings import TRADES_DB
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -120,6 +120,7 @@ class TradingSystem:
         # 대시보드
         self.dashboard = create_dashboard(sim_mode=(self.mode == "SIMULATION"))
         self._heartbeat_count: int = 0
+        self._session_no: int = 0
 
         # log_manager → 대시보드 5개 탭 배선 (subscribe 없으면 탭에 아무것도 안 보임)
         log_manager.subscribe(
@@ -678,6 +679,93 @@ class TradingSystem:
             "INFO",
         )
 
+    # ── 재시작 복원 ───────────────────────────────────────────────
+
+    def _increment_session(self) -> int:
+        """data/session_state.json 에 세션 카운터를 1 증가하고 현재 번호를 반환."""
+        import json
+        state_path = os.path.join(BASE_DIR, "data", "session_state.json")
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        try:
+            if os.path.exists(state_path):
+                with open(state_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                today = datetime.date.today().isoformat()
+                if data.get("date") != today:
+                    data = {"date": today, "count": 0}
+            else:
+                data = {"date": datetime.date.today().isoformat(), "count": 0}
+        except Exception:
+            data = {"date": datetime.date.today().isoformat(), "count": 0}
+
+        data["count"] = data.get("count", 0) + 1
+        try:
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass
+        return data["count"]
+
+    def _restore_daily_state(self) -> None:
+        """재시작 시 당일 거래 이력을 trades.db 에서 읽어 대시보드 로그에 복원."""
+        today_str = datetime.date.today().isoformat()
+        rows = fetch_today_trades(today_str)
+        if not rows:
+            return
+
+        session_no = self._session_no
+        self.dashboard.append_trade_separator(
+            f"── 세션 #{session_no} 시작 — 이전 거래 {len(rows)}건 복원 ({today_str}) ──"
+        )
+        self.dashboard.append_pnl_separator(
+            f"── 세션 #{session_no} 시작 — 이전 거래 {len(rows)}건 복원 ({today_str}) ──"
+        )
+
+        cumulative_pnl_krw = 0.0
+        for row in rows:
+            direction  = row["direction"] or "?"
+            entry_p    = row["entry_price"] or 0.0
+            exit_p     = row["exit_price"]
+            qty        = row["quantity"] or 1
+            pnl_pts    = row["pnl_pts"] or 0.0
+            pnl_krw    = row["pnl_krw"] or 0.0
+            reason     = row["exit_reason"] or ""
+            grade      = row["grade"] or ""
+            entry_ts   = (row["entry_ts"] or "")[:16]   # "YYYY-MM-DD HH:MM"
+            exit_ts    = (row["exit_ts"]  or "")[:16]
+
+            if exit_p is not None:
+                # 청산 완료 거래
+                cumulative_pnl_krw += pnl_krw
+                self.dashboard.append_restore_trade(
+                    msg=f"진입 {direction} {qty}계약 @ {entry_p}  등급={grade}",
+                    ts=entry_ts[11:] if len(entry_ts) > 11 else entry_ts,
+                )
+                self.dashboard.append_restore_trade(
+                    msg=f"청산 {direction} {qty}계약 @ {exit_p}  ({reason})",
+                    ts=exit_ts[11:] if len(exit_ts) > 11 else exit_ts,
+                    val=f"PnL {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원",
+                )
+                self.dashboard.append_restore_pnl(
+                    msg=f"청산 | {direction} {qty}계약 @ {exit_p}  ({reason})",
+                    ts=exit_ts[11:] if len(exit_ts) > 11 else exit_ts,
+                    val=f"PnL {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원  (누적 {cumulative_pnl_krw:+,.0f}원)",
+                )
+            else:
+                # 진입만 있고 청산 미완료 (비정상 종료)
+                self.dashboard.append_restore_trade(
+                    msg=f"[미청산] 진입 {direction} {qty}계약 @ {entry_p}  등급={grade}",
+                    ts=entry_ts[11:] if len(entry_ts) > 11 else entry_ts,
+                )
+
+        # position_tracker 일일 통계 복원
+        self.position.restore_daily_stats(rows)
+
+        logger.info(f"[Restore] 당일 거래 {len(rows)}건 복원 완료 | 누적 PnL={cumulative_pnl_krw:+,.0f}원")
+        log_manager.system(
+            f"재시작 복원 완료 | 거래 {len(rows)}건 | 누적 PnL={cumulative_pnl_krw:+,.0f}원"
+        )
+
     # ── 메인 루프 (Qt 이벤트 루프 기반) ──────────────────────────
     def run(self):
         """메인 실행 — Qt 이벤트 루프 기반."""
@@ -718,6 +806,10 @@ class TradingSystem:
             )
         self.dashboard.append_sys_log(f"시스템 시작 | 모드={self.mode} | 코드={self.realtime_data.code if self.realtime_data else '—'}")
         self.dashboard.update_system_status(cb_state="NORMAL", latency_ms=0.0)
+
+        # 세션 카운터 증가 + 당일 거래 이력 복원
+        self._session_no = self._increment_session()
+        self._restore_daily_state()
 
         # 이벤트 루프 진입 2초 후 초기 대기 상태 즉시 출력
         QTimer.singleShot(2000, lambda: self._log_waiting_status(datetime.datetime.now()))

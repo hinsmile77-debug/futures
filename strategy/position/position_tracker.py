@@ -197,6 +197,20 @@ class PositionTracker:
             "pnl_krw":  round(self._daily_pnl_pts * 500_000, 0),
         }
 
+    def restore_daily_stats(self, rows) -> None:
+        """재시작 시 trades.db 당일 행으로 일일 통계 복원.
+
+        trades.db 컬럼: pnl_pts(계약당), quantity, pnl_krw(합계)
+        close_position()과 동일한 집계 방식 사용.
+        """
+        for row in rows:
+            pnl_pts = float(row["pnl_pts"] or 0.0)
+            qty     = int(row["quantity"] or 1)
+            self._daily_pnl_pts += pnl_pts * qty
+            self._daily_trades  += 1
+            if pnl_pts > 0:
+                self._daily_wins += 1
+
     def reset_daily(self):
         self._daily_pnl_pts = 0.0
         self._daily_trades  = 0
