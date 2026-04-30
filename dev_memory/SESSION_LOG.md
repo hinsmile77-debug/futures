@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-04-30 (오전 세션)
+
+**작업**: 대시보드 시뮬 FILL 이상가격 이상점 진단 + 시뮬/실거래 분리 수정
+
+### 이상점 진단
+- 로그: `[FILL] FILL 매도 5계약 @388.48 슬리피지 1.4틱` — 실거래 가격(~1007pt)과 대비 비정상 가격
+- **원인**: `MireukDashboard`가 `kiwoom=None`으로 생성되면 무조건 `_start_sim_timer()` 호출. 타이머의 초기 가격이 `388.50` 하드코딩 → 키움 연결 전 약 수초~수십초 동안 시뮬 FILL 로그(388.xx)가 주문/체결 탭에 출력됨
+- 실제 거래 영향: 없음 (UI 패널 출력만, `position_tracker` 미영향)
+
+### 수정 (`dashboard/main_dashboard.py`, `main.py`)
+- `MireukDashboard.__init__(sim_mode=True)` 파라미터 추가 → `sim_mode=False`이면 타이머 미생성
+- `DashboardAdapter.__init__(sim_mode=True)` + `create_dashboard(sim_mode=True)` 동일하게 전파
+- `main.py`: `create_dashboard(sim_mode=(self.mode == "SIMULATION"))` — live 모드는 시뮬 타이머 자체 없음
+- `main.py`: `stop_sim_timer()` 호출을 `if self.mode == "SIMULATION":` 조건 내부로 이동
+- `_sim_tick()` FILL/PENDING 로그 앞에 `[SIM]` 접두사 추가
+
+---
+
 ## 2026-04-29 (야간 세션)
 
 **작업**: 멀티 호라이즌 예측 데이터 흐름 점검 + 2개 버그 수정

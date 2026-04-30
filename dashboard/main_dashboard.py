@@ -1385,9 +1385,10 @@ class LogPanel(QWidget):
 class MireukDashboard(QMainWindow):
     """미륵이 v7.0 풀 대시보드"""
 
-    def __init__(self, kiwoom=None):
+    def __init__(self, kiwoom=None, sim_mode: bool = True):
         super().__init__()
         self.kiwoom = kiwoom
+        self._sim_mode = sim_mode
         # ── 해상도 감지 (UI 빌드 전에 반드시 먼저) ──────────────
         S.init()
         self.setWindowTitle("미륵이 v7.0  |  KOSPI 200 선물 예측 시스템")
@@ -1395,7 +1396,7 @@ class MireukDashboard(QMainWindow):
         self.setStyleSheet(make_style())
         self._build_ui()
         self._sim_timer = None
-        if kiwoom is None:
+        if sim_mode and kiwoom is None:
             self._start_sim_timer()
 
     def _build_ui(self):
@@ -1642,7 +1643,7 @@ class MireukDashboard(QMainWindow):
             self.log_panel.append("all", "WARN", wmsg)
 
         if self._tick % 3 == 0:
-            omsg = (f"{'FILL' if random.random()>0.3 else 'PENDING'} "
+            omsg = (f"[SIM] {'FILL' if random.random()>0.3 else 'PENDING'} "
                     f"{ens_sig} 5계약 @{self._price:.2f}")
             tag2 = "FILL" if "FILL" in omsg else "PENDING"
             self.log_panel.append("order", tag2, omsg,
@@ -1670,10 +1671,10 @@ class DashboardAdapter:
         self.dashboard.btn_kill  (QPushButton 참조)
     """
 
-    def __init__(self):
+    def __init__(self, sim_mode: bool = True):
         app = QApplication.instance() or QApplication(sys.argv)
         app.setStyle("Fusion")
-        self._win = MireukDashboard()
+        self._win = MireukDashboard(sim_mode=sim_mode)
         # 긴급 정지 버튼을 외부에서 접근할 수 있도록 노출
         self.btn_kill = self._win._make_kill_btn()
 
@@ -1814,17 +1815,17 @@ MireukDashboard._make_kill_btn = _make_kill_btn
 # ────────────────────────────────────────────────────────────
 # 진입점 함수들
 # ────────────────────────────────────────────────────────────
-def create_dashboard() -> DashboardAdapter:
+def create_dashboard(sim_mode: bool = True) -> DashboardAdapter:
     """
     main.py 에서 호출하는 팩토리 함수
 
     사용법 (main.py):
-        self.dashboard = create_dashboard()
+        self.dashboard = create_dashboard(sim_mode=(self.mode == "SIMULATION"))
         self.dashboard.show()
         self.dashboard.append_sys_log("시스템 시작")
         self.dashboard.btn_kill.clicked.connect(...)
     """
-    return DashboardAdapter()
+    return DashboardAdapter(sim_mode=sim_mode)
 
 
 def launch_dashboard(kiwoom=None):

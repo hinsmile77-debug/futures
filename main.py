@@ -118,7 +118,7 @@ class TradingSystem:
             log_manager.system(msg, "WARNING")   # 대시보드 1 시스템 탭
 
         # 대시보드
-        self.dashboard = create_dashboard()
+        self.dashboard = create_dashboard(sim_mode=(self.mode == "SIMULATION"))
         self._heartbeat_count: int = 0
 
         # log_manager → 대시보드 5개 탭 배선 (subscribe 없으면 탭에 아무것도 안 보임)
@@ -677,8 +677,9 @@ class TradingSystem:
             logger.critical("[System] 키움 연결 실패 — 종료")
             return
 
-        # 연결 즉시 시뮬레이션 타이머 중지 (가짜 388.xx 로그 차단)
-        self.dashboard.stop_sim_timer()
+        # SIMULATION 모드: 키움 연결 후 시뮬 타이머 중지 (가짜 388.xx 로그 차단)
+        if self.mode == "SIMULATION":
+            self.dashboard.stop_sim_timer()
 
         # SIMULATION: 모델 미학습 시 더미 주입 — 파이프라인 통과 검증용
         if self.mode == "SIMULATION" and not self.model.is_ready():
