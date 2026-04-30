@@ -238,6 +238,38 @@ _ORDER_TAB_TIP = (
     "</div>"
 )
 
+_VAR_TIP = (
+    "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.7;"
+    "min-width:360px;'>"
+
+    "<b style='color:#FFB74D;font-size:13px;'>VaR 95%&nbsp;&nbsp;위험가치 (Value at Risk)</b>"
+    "<hr style='border:0;border-top:1px solid #30363D;margin:4px 0 6px 0'>"
+
+    "<b style='color:#58A6FF'>① 의미</b><br>"
+    "&nbsp;&nbsp;오늘 하루 기준 <b>95% 신뢰구간 최대 손실 추정치</b><br>"
+    "&nbsp;&nbsp;→ 하루 중 95%의 날은 손실이 이 금액 이내로 그친다<br>"
+    "&nbsp;&nbsp;→ 나머지 <b style='color:#F85149'>5%</b>의 날은 이보다 큰 손실"
+    "&nbsp;(<b>꼬리 리스크</b>)이 발생할 수 있음<br><br>"
+
+    "<b style='color:#58A6FF'>② 계산 공식</b><br>"
+    "&nbsp;&nbsp;<b style='color:#39D3BB'>VaR 95%</b>"
+    "&nbsp;=&nbsp;ATR × 1.65σ × 계약수 × 500,000원<br><br>"
+
+    "<b style='color:#58A6FF'>③ 공식 해설</b><br>"
+    "&nbsp;&nbsp;<b>ATR</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;최근 1분봉 평균 변동폭 — 하루 변동성 대리지표<br>"
+    "&nbsp;&nbsp;<b>1.65σ</b>&nbsp;&nbsp;&nbsp;&nbsp;95% 신뢰수준 z-score (정규분포 단측)<br>"
+    "&nbsp;&nbsp;<b style='color:#A371F7'>참고</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+    "VaR 99% 라면 z = 2.33σ (더 보수적, 더 큰 숫자)<br>"
+    "&nbsp;&nbsp;<b>500,000원</b>&nbsp;KOSPI 200 선물 1pt = 50만원<br><br>"
+
+    "<b style='color:#F85149'>④ 한계</b><br>"
+    "&nbsp;&nbsp;ATR은 1분봉 기준 → <b>하루 전체 VaR 과소추정</b> 가능성 있음<br>"
+    "&nbsp;&nbsp;정확한 산출은 일별 수익률 표준편차(σ_daily) 사용 권장<br>"
+    "&nbsp;&nbsp;실시간 단일 포지션 모니터링 용도로는 ATR 기반도 실용적"
+
+    "</div>"
+)
+
 
 def make_style() -> str:
     """해상도 감지 후 동적 폰트 사이즈 적용 스타일시트 생성"""
@@ -1797,7 +1829,16 @@ class LogPanel(QWidget):
                     mf = QFrame()
                     mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
                     mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,3,5,3)
-                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 10, align=Qt.AlignCenter))
+                    title_lbl = mk_label(mk_lbl, C['text2'], 10, align=Qt.AlignCenter)
+                    if attr == "var":
+                        mf.setToolTip(_VAR_TIP)
+                        title_lbl.setToolTip(_VAR_TIP)
+                        title_lbl.setStyleSheet(
+                            f"color:{C['text2']};font-size:{S.f(10)}px;"
+                            f"text-decoration:underline dotted;"
+                            f"cursor:help;"
+                        )
+                    mfl.addWidget(title_lbl)
                     pb = mk_prog(mc, 4)
                     pb.setValue(0)
                     vl = mk_val_label("——원", mc, 13, align=Qt.AlignCenter)
