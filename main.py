@@ -20,6 +20,7 @@ import datetime
 import time
 import argparse
 import logging
+import math
 import numpy as np
 
 # ── 프로젝트 루트를 PYTHONPATH에 추가 ─────────────────────────
@@ -245,7 +246,36 @@ class TradingSystem:
         """
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
-        close  = bar["close"]
+
+        # ── 분봉 데이터 유효성 가드 ───────────────────────────────
+        # 비정상 분봉이 피처/진입/청산 오발동을 일으키지 않도록 파이프라인 앞단 차단
+        _c = float(bar.get("close", 0))
+        _h = float(bar.get("high",  0))
+        _l = float(bar.get("low",   0))
+        _v = int(bar.get("volume",  0))
+
+        if _c <= 0 or _h <= 0 or _l <= 0:
+            log_manager.system(
+                f"[Guard-C1] 비정상 가격 분봉 차단 — close={_c} high={_h} low={_l} ({ts})",
+                "WARNING",
+            )
+            return
+
+        if _h < _l:
+            log_manager.system(
+                f"[Guard-C2] 고가<저가 역전 분봉 차단 — high={_h} low={_l} ({ts})",
+                "WARNING",
+            )
+            return
+
+        _bar_volume_zero = (_v == 0)
+        if _bar_volume_zero:
+            log_manager.system(
+                f"[Guard-C3] volume=0 분봉 — VWAP/CVD 신호 신뢰도 저하, 진입 보류 ({ts})",
+                "WARNING",
+            )
+
+        close  = _c
 
         # 대시보드 실시간 가격 동기화
         self.dashboard.update_price(
@@ -310,6 +340,16 @@ class TradingSystem:
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
         atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
+
+        # ── CORE 3종 피처 NaN/Inf 가드 ──────────────────────────
+        # 진입 체크리스트가 직접 사용하는 피처만 방어 (다른 피처는 앙상블에서 0으로 처리됨)
+        for _fk in ("vwap_position", "cvd_direction", "ofi_pressure"):
+            _fv = features.get(_fk)
+            if _fv is None or (isinstance(_fv, float) and (math.isnan(_fv) or math.isinf(_fv))):
+                log_manager.system(
+                    f"[Guard-F1] {_fk} 비정상값({_fv}) → 0 교정 ({ts})", "WARNING"
+                )
+                features[_fk] = 0
 
         # 분봉·피처 원본 저장 (경로 B 학습 데이터 축적)
         save_candle(bar)
@@ -457,7 +497,7 @@ class TradingSystem:
                 foreign_put_net   = features.get("foreign_put_net", 0),
                 prev_bar_bullish  = bar.get("close", 0) >= bar.get("open", 0),
                 time_zone         = time_zone,
-                daily_loss_pct    = abs(self.position.daily_stats()["pnl_pts"]) / 1_000,
+                daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / 50_000_000,
                 min_confidence    = decision["min_conf"],
             )
             _final_grade = _cr["grade"]
@@ -511,13 +551,14 @@ class TradingSystem:
             is_new_entry_allowed(), _final_grade, time_zone,
         )
 
-        # 실제 진입: CB + 시간 조건까지 모두 충족해야 실행
+        # 실제 진입: CB + 시간 조건 + 분봉 품질 모두 충족해야 실행
         if (
             _cr is not None
             and self.circuit_breaker.is_entry_allowed()
             and is_new_entry_allowed()
             and _final_grade not in ("X",)
             and _qty_display > 0
+            and not _bar_volume_zero          # Guard-C3: volume=0 분봉 진입 차단
         ):
             dir_str = "LONG" if direction > 0 else "SHORT"
             if _cr["auto_entry"] or self.mode == "SIMULATION":

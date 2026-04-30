@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-04-30 (파이프라인 생존 감시 + 자동 복구)
+> 마지막 업데이트: 2026-04-30 (비정상 분봉 가드 + 진입 신뢰성 강화)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,37 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-04-30 세션 주요 수정 (비정상 분봉 가드 + 진입 신뢰성 강화)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **Guard-C1 가격 0 차단** | `run_minute_pipeline()` 앞단 — close/high/low ≤ 0 이면 경보 로그 후 즉시 return. ATR 음수·손절가 오작동 원천 차단 |
+| **Guard-C2 고가<저가 차단** | high < low 역전 분봉 경보 후 즉시 return. 음의 TR → ATR 오염 방지 |
+| **Guard-C3 volume=0 진입 차단** | volume=0 경보 로그 + `_bar_volume_zero` 플래그 설정. STEP 7 진입 조건에 `and not _bar_volume_zero` 추가. 청산은 차단 안 함(가격 기반) |
+| **Guard-F1 CORE 피처 NaN/Inf 교정** | STEP 4 후 vwap_position / cvd_direction / ofi_pressure 에 NaN·Inf 검출 시 0으로 교정 + 경보 로그 |
+| **daily_loss_pct 계산 수정** | 기존: `abs(pnl_pts) / 1_000` (실질적으로 항상 통과) → 수정: `max(-pnl_krw, 0) / 50_000_000` (5천만원 기준 실손실률). 체크리스트 9번 리스크 한도 실질화 |
+| **`import math` 추가** | main.py 최상단 — Guard-F1 NaN/Inf 검사용 |
+
+### 가드 점검 결과 요약 (조사 기반)
+
+| 구간 | 수정 전 | 수정 후 |
+|---|---|---|
+| 분봉 수신 (realtime_data) | abs() 변환만 | 변경 없음 (수신 레이어는 OK) |
+| 파이프라인 앞단 (main.py) | **없음** | **C1/C2/C3 가드 추가** |
+| CORE 피처 (STEP 4 후) | **없음** | **F1 NaN/Inf 교정** |
+| 진입 조건 (STEP 7) | CB+시간+등급+수량 | **volume=0 차단 추가** |
+| 청산 조건 (STEP 8) | 완전 (변경 없음) | 변경 없음 |
+| 리스크 한도 (체크리스트 9) | **pts/1000 — 항상 통과** | **KRW/5천만 — 실질 2% 한도** |
+| Circuit Breaker | 완전 (변경 없음) | 변경 없음 |
+
+### 남은 한계 (개선 불가·저우선)
+
+- OFI/CVD 극단값 제한 없음 — signal_strength 과대 가능 (CB④ ATR 3배 트리거로 간접 방어)
+- account_balance 하드코딩(5천만) — 실제 잔고 연동 시 개선 필요
+- ATR floor(0.5pt)로 비정상 소ATR 방어는 유지
 
 ---
 
