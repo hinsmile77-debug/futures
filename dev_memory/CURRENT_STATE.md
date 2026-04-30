@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-04-30
+> 마지막 업데이트: 2026-04-30 (효과 검증기 세션)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,85 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-04-30 세션 주요 수정 (자가학습 연결)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **STEP 2 SGD 연결** | `main.py` STEP 2 — STEP 1 검증 결과(verified)의 피처 dict로 `OnlineLearner.learn()` 호출. 매 검증건마다 즉시 `partial_fit` |
+| **STEP 3 GBM 연결** | `main.py` STEP 3 — `should_retrain_weekly()` / `should_retrain_monthly()` 조건 충족 시 `batch_retrainer.retrain_now()` 호출 후 `model._load_all()`로 즉시 반영 |
+| **SGD 블렌딩 적용** | `main.py` STEP 5 — GBM `predict_proba()` 직후 호라이즌별 `online_learner.blend_with_gbm()` 적용. SGD 미학습(fitted=False) 시엔 GBM 단독 사용 |
+| **features 전체 저장** | `main.py` STEP 9 — `list(features.items())[:20]` → 전체 피처 저장 (SGD 학습 입력 완전성 확보) |
+| **daily_close 재학습** | `main.py` 15:40 마감 시 `batch_retrainer.retrain_now(weeks_back=8)` 호출 후 모델 reload |
+| **BatchRetrainer 초기화** | `main.py __init__` — `self.batch_retrainer = BatchRetrainer()` 추가 |
+| **_load_from_db 재작성** | `batch_retrainer.py` — pandas 의존 제거, `raw_features`/`raw_candles` 테이블 직접 읽기. numpy 기반 X 행렬 + `build_single_target()` 라벨 생성 |
+| **prediction_buffer features** | `prediction_buffer.py` `verify_and_update()` — SELECT에 `features` 컬럼 추가, 반환 dict에 JSON 파싱된 `features` 포함 |
+
+---
+
+## 🎯 학습 효과 검증기 패널 (신규 — 2026-04-30)
+
+| 항목 | 내용 |
+|---|---|
+| **위치** | 중앙 탭 6번째 "🎯 효과 검증" (🧠자가학습 탭 오른쪽) |
+| **EfficacyPanel** | `dashboard/main_dashboard.py` `class EfficacyPanel` |
+| **update_efficacy()** | `DashboardAdapter.update_efficacy(data)` → `efficacy_panel.update_data(data)` |
+| **_gather_efficacy_stats()** | `main.py` — DB 쿼리 후 5분마다 호출 (`_efficacy_tick % 5 == 1`) |
+| **DB 쿼리 4종** | `utils/db_utils.py` — `fetch_calibration_bins` / `fetch_grade_stats` / `fetch_regime_stats` / `fetch_accuracy_history` |
+
+### 패널 4-Section 구성
+1. **신뢰도 캘리브레이션** — confidence 구간별 실제 적중률 테이블 (✓ 우수 / ▲ 과소신뢰 / ▼ 과신)
+2. **등급별 매매 성과** — A/B/C/X/? 등급별 건수·승률·평균pts·합계pts
+3. **학습 성장 곡선** — `▁▂▃▄▅▆▇█` 스파크라인 + 초기 50회 vs 최근 50회 Δ
+4. **레짐별 성과** — RISK_ON/NEUTRAL/RISK_OFF 승률 게이지 바 + 평균pts
+
+### KPI 상단 배지 4개
+- 전체 승률 / A등급 승률 / 캘리브레이션 점수 / 학습 효과 Δ
+
+### 종합 평가 배너 기준
+- A등급 승률 ≥60% + 전체 ≥53% → ✅ 학습 효과 확인
+- 전체 ≥50% → ⚡ 개선 중
+- 전체 <50% → ⚠️ 모델 재점검 권장
+
+---
+
+## 🧠 자가학습 모니터 패널 (신규)
+
+| 항목 | 내용 |
+|---|---|
+| **위치** | 중앙 탭 5번째 "🧠 자가학습" |
+| **LearningPanel** | `dashboard/main_dashboard.py` `class LearningPanel` |
+| **update_learning()** | `DashboardAdapter.update_learning(data)` → `learn_panel.update_data(data)` |
+| **_gather_learning_stats()** | `main.py` — SGD/GBM/버퍼 통계 수집 후 매분 호출 |
+| **_verified_today** | 당일 검증 건수 누적 카운터 (15:40 리셋) |
+| **_horizon_counts** | `OnlineLearner._horizon_counts` — 호라이즌별 학습 건수 |
+
+### 패널 구성
+1. **요약 카드 4개** — 오늘 검증 건수 / SGD 50분 정확도(색상) / GBM 마지막 재학습 / 데이터 축적%
+2. **SGD 섹션** — GBM↔SGD 블렌딩 그라데이션 바 + 6개 호라이즌 카드(정확도/학습건수/배지)
+3. **GBM 섹션** — 마지막 재학습 / 재학습 횟수 / 다음 스케줄 + 5000행 축적 진행 바
+4. **예측 버퍼 테이블** — 6 호라이즌 × (정확도 / 게이지 / 추세▲▼━)
+
+### 정확도 색상 기준
+- ≥62%: 초록 (SGD 비중 증가 중)
+- 55~62%: 청록
+- 48~55%: 주황
+- <48%: 빨강 (SGD 비중 감소 중)
+
+---
+
+## 자가학습 파이프라인 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| SGD 온라인 학습 (STEP 2) | ✅ **연결 완료** |
+| GBM 배치 재학습 (STEP 3) | ✅ **연결 완료** (주간/월간 + 일일 마감) |
+| SGD 블렌딩 (STEP 5) | ✅ **연결 완료** |
+| features 전체 저장 (STEP 9) | ✅ **수정 완료** |
+| BatchRetrainer DB 로드 | ✅ **raw_features 연동 완료** |
+| 실제 학습 가동 조건 | ⏳ raw_candles 5000행 축적 필요 (2026-04-28 시작, 약 2.5주) |
 
 ---
 

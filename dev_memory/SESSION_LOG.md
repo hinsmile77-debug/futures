@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-04-30 (심야 세션)
+
+**작업**: 🎯 학습 효과 검증기 패널 신설 — 자가학습이 실제로 수익에 기여하는가 시각화
+
+### EfficacyPanel 구현
+
+**핵심 질문**: "높은 신뢰도 예측이 실제로 돈을 버는가?"
+
+#### 신규 파일·함수
+
+- `utils/db_utils.py`: 검증 쿼리 4종 추가
+  - `fetch_calibration_bins(days_back=30)` — confidence 구간별(5단위) 실제 적중률
+  - `fetch_grade_stats()` — 등급별 건수/승률/평균pts/합계pts
+  - `fetch_regime_stats()` — 레짐별 건수/승률/평균pts
+  - `fetch_accuracy_history(limit=200)` — 최근 N개 예측 correct 이력
+- `dashboard/main_dashboard.py`: `class EfficacyPanel` (~250줄) 신설
+  - Section 1: 신뢰도 캘리브레이션 테이블 (✓우수/≈양호/▲과소신뢰/▼과신)
+  - Section 2: 등급별 매매 성과 테이블 (A/B/C/X/?)
+  - Section 3: 학습 성장 곡선 스파크라인 `▁▂▃▄▅▆▇█` + 초기 vs 최근 Δ
+  - Section 4: 레짐별 성과 게이지 바 (RISK_ON/NEUTRAL/RISK_OFF)
+  - 상단 KPI 배지 4개: 전체승률/A등급승률/캘리브레이션점수/학습효과Δ
+  - 종합 평가 배너: ✅/⚡/⚠️ 자동 판정
+- `DashboardAdapter.update_efficacy(data)` — 위임 메서드 추가
+- `main.py`:
+  - `_gather_efficacy_stats()` 메서드 추가 (DB 쿼리 → dict 반환)
+  - `_efficacy_tick` 카운터 추가
+  - 5분마다(`_efficacy_tick % 5 == 1`) `update_efficacy()` 호출
+
+#### 탭 순서 변경
+- 기존: 다이버전스/SHAP/청산/진입/🧠자가학습/알파봇
+- 변경: 다이버전스/SHAP/청산/진입/🧠자가학습/**🎯효과검증**/알파봇
+
+---
+
 ## 2026-04-30 (저녁 세션)
 
 **작업**: 손익 추이 패널 신설 — 일별·주별·월별 누적 P&L 테이블

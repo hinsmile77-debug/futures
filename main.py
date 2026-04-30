@@ -20,6 +20,7 @@ import datetime
 import time
 import argparse
 import logging
+import numpy as np
 
 # ── 프로젝트 루트를 PYTHONPATH에 추가 ─────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,6 +55,7 @@ from strategy.entry.adaptive_kelly import AdaptiveKelly
 from strategy.exit.time_exit import TimeExitManager
 from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
+from learning.batch_retrainer import BatchRetrainer
 from safety.circuit_breaker import CircuitBreaker
 from collection.kiwoom.investor_data import InvestorData
 from safety.kill_switch import KillSwitch
@@ -91,6 +93,7 @@ class TradingSystem:
         self.time_exit         = TimeExitManager()
         self.online_learner    = OnlineLearner()
         self.pred_buffer       = PredictionBuffer()
+        self.batch_retrainer   = BatchRetrainer()
         self.investor_data     = InvestorData(kiwoom_api=None)  # connect_kiwoom 후 api 주입
         # ── Phase 2 안전장치 ───────────────────────────────────
         self.emergency_exit  = EmergencyExit(
@@ -106,6 +109,8 @@ class TradingSystem:
         # 현재 레짐
         self.current_regime       = "NEUTRAL"
         self.current_micro_regime = "혼합"
+        self._verified_today: int = 0        # 당일 SGD 검증 누적 건수
+        self._efficacy_tick:  int = 0        # 5분마다 효과 검증 패널 갱신용
 
         # 재시작 시 이전 포지션 복원 (당일 데이터만)
         if self.position.load_state():
@@ -252,6 +257,7 @@ class TradingSystem:
 
         # ── STEP 1: 과거 예측 검증 ─────────────────────────────
         verified = self.pred_buffer.verify_and_update(ts, close)
+        self._verified_today += len(verified)
         for v in verified:
             self.circuit_breaker.record_accuracy(v["correct"])
             if v["correct"]:
@@ -260,11 +266,39 @@ class TradingSystem:
                 log_manager.learning(f"✗ {v['horizon']} 예측 실패")
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
-        # (STEP 1 검증 결과로 즉시 학습 — OnlineLearner.learn())
-        # TODO: 피처 벡터 + actual_label 연동
+        # STEP 1 검증된 예측마다 해당 시점 피처로 즉시 partial_fit
+        if self.model.feature_names and verified:
+            for v in verified:
+                feat_dict = v.get("features") or {}
+                x = np.array(
+                    [feat_dict.get(f, 0.0) for f in self.model.feature_names],
+                    dtype=np.float32,
+                )
+                self.online_learner.learn(
+                    horizon         = v["horizon"],
+                    x               = x,
+                    actual_label    = v["actual"],
+                    predicted_label = v["predicted"],
+                )
+            log_manager.learning(
+                f"[SGD] {len(verified)}건 학습 | "
+                f"SGD비중={self.online_learner.sgd_weight:.0%} "
+                f"50분정확도={self.online_learner.recent_accuracy():.1%}"
+            )
 
-        # ── STEP 3: GBM 배치 재학습 (30분마다) ─────────────────
-        # TODO Phase 1 Week 3: batch_retrainer 구현
+        # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 확인) ────
+        if (self.batch_retrainer.should_retrain_weekly()
+                or self.batch_retrainer.should_retrain_monthly()):
+            result = self.batch_retrainer.retrain_now()
+            if result.get("ok"):
+                self.model._load_all()   # 새 모델 즉시 반영
+                log_manager.learning(
+                    f"[GBM] 배치 재학습 완료 | {result['elapsed_sec']}초 "
+                    f"데이터={result['data_size']}행"
+                )
+                notify("GBM 배치 재학습 완료", "INFO")
+            else:
+                log_manager.learning(f"[GBM] 재학습 건너뜀: {result.get('error','')}")
 
         # ── STEP 4: 피처 생성 ──────────────────────────────────
         self.investor_data.fetch_all()                          # 시뮬: 더미, 실거래: TR 요청
@@ -338,6 +372,17 @@ class TradingSystem:
 
         feat_vec = self.feature_builder.get_feature_vector(self.model.feature_names)
         horizon_proba = self.model.predict_proba(feat_vec)
+
+        # SGD 블렌딩: 호라이즌별로 GBM + SGD 확률 혼합
+        for h_name in list(horizon_proba.keys()):
+            sgd_p   = self.online_learner.predict_proba(h_name, feat_vec)
+            blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p)
+            up, dn, fl = blended["up"], blended["down"], blended["flat"]
+            best = max([(up, 1), (dn, -1), (fl, 0)], key=lambda t: t[0])
+            horizon_proba[h_name] = {
+                "up": round(up, 4), "down": round(dn, 4), "flat": round(fl, 4),
+                "direction": best[1], "confidence": round(best[0], 4),
+            }
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
         decision = self.ensemble.compute(horizon_proba, self.current_regime)
@@ -518,12 +563,20 @@ class TradingSystem:
                 horizon    = h_name,
                 direction  = h_res["direction"],
                 confidence = h_res["confidence"],
-                features   = {k: round(v, 4) for k, v in list(features.items())[:20]},
+                features   = {k: round(float(v), 4) for k, v in features.items()},
             )
 
         # 당일 진입 통계 갱신
         _ds = self.position.daily_stats()
         self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
+
+        # 🧠 자가학습 모니터 패널 갱신 (매분)
+        self.dashboard.update_learning(self._gather_learning_stats())
+
+        # 🎯 학습 효과 검증기 패널 갱신 (5분마다 — DB 쿼리 비용 분산)
+        self._efficacy_tick += 1
+        if self._efficacy_tick % 5 == 1:   # 첫 분 + 이후 5분마다
+            self.dashboard.update_efficacy(self._gather_efficacy_stats())
 
         # 상태 바 '마지막 갱신' 타이머 리셋
         self.dashboard.notify_pipeline_ran()
@@ -658,6 +711,68 @@ class TradingSystem:
         self.kill_switch.activate(reason)
         log_manager.system("KillSwitch 발동: " + reason, "CRITICAL")
 
+    # ── 자가학습 통계 수집 ────────────────────────────────────
+    def _gather_learning_stats(self) -> dict:
+        """LearningPanel 업데이트용 통계 딕셔너리 반환"""
+        ol   = self.online_learner
+        gbm  = self.batch_retrainer.get_stats()
+        raw  = count_raw_candles()
+
+        # 예측 버퍼 기반 호라이즌별 최근 정확도
+        buf_acc = {hz: self.pred_buffer.recent_accuracy(hz, 50)
+                   for hz in ["1m", "3m", "5m", "10m", "15m", "30m"]}
+
+        # SGD 내부 정확도 = 전체 정확도 버퍼 (호라이즌 구분 없이 동일)
+        h_acc = {hz: ol.recent_accuracy() for hz in ol._fitted}
+
+        last_ev = ""
+        if self._verified_today > 0:
+            acc = ol.recent_accuracy()
+            last_ev = (
+                f"{datetime.datetime.now().strftime('%H:%M')} | "
+                f"검증 {self._verified_today}건 누적 · "
+                f"SGD {ol.sgd_weight:.0%} · 정확도 {acc:.1%}"
+            )
+
+        return {
+            "verified_today":    self._verified_today,
+            "sgd_accuracy_50m":  ol.recent_accuracy(),
+            "sgd_weight":        ol.sgd_weight,
+            "gbm_weight":        ol.gbm_weight,
+            "sgd_fitted":        dict(ol._fitted),
+            "sgd_sample_counts": dict(ol._horizon_counts),
+            "horizon_accuracy":  h_acc,
+            "buffer_accuracy":   buf_acc,
+            "gbm_last_retrain":  gbm["last_retrain"],
+            "gbm_retrain_count": gbm["retrain_count"],
+            "raw_candles_count": raw,
+            "last_event":        last_ev,
+        }
+
+    # ── 효과 검증 통계 수집 ──────────────────────────────────
+    def _gather_efficacy_stats(self) -> dict:
+        """EfficacyPanel 업데이트용 DB 쿼리 결과 반환 (5분마다 호출)"""
+        from utils.db_utils import (
+            fetch_calibration_bins, fetch_grade_stats,
+            fetch_regime_stats, fetch_accuracy_history,
+        )
+        try:
+            calib  = [dict(r) for r in fetch_calibration_bins(days_back=30)]
+            grades = [dict(r) for r in fetch_grade_stats()]
+            regime = [dict(r) for r in fetch_regime_stats()]
+            hist_rows = fetch_accuracy_history(limit=200)
+            hist = [int(r["correct"]) for r in hist_rows if r["correct"] is not None]
+        except Exception as e:
+            logger.warning(f"[Efficacy] 쿼리 실패: {e}")
+            calib, grades, regime, hist = [], [], [], []
+        return {
+            "calibration_bins": calib,
+            "grade_stats":      grades,
+            "regime_stats":     regime,
+            "accuracy_history": hist,
+            "updated_at":       datetime.datetime.now().strftime("%H:%M"),
+        }
+
     # ── 일일 마감 (15:40) ─────────────────────────────────────
     def daily_close(self):
         """자가학습 일일 마감"""
@@ -668,12 +783,26 @@ class TradingSystem:
             f"PnL={stats['pnl_krw']:+,.0f}원"
         )
 
+        # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
+        retrain_result = self.batch_retrainer.retrain_now(weeks_back=8)
+        if retrain_result.get("ok"):
+            self.model._load_all()
+            log_manager.learning(
+                f"[GBM] 일일 마감 재학습 완료 | {retrain_result['elapsed_sec']}초 "
+                f"데이터={retrain_result['data_size']}행"
+            )
+        else:
+            log_manager.learning(
+                f"[GBM] 일일 마감 재학습 건너뜀: {retrain_result.get('error','')}"
+            )
+
         # 일일 리셋
         self.feature_builder.reset_daily()
         self.investor_data.reset_daily()
         self.position.reset_daily()
         self.circuit_breaker.reset_daily()
         self.online_learner.reset_daily()
+        self._verified_today = 0
         self.emergency_exit.reset()
         self.kill_switch.deactivate()
 

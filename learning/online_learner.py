@@ -40,6 +40,7 @@ class OnlineLearner:
 
         self._accuracy_buf: deque = deque(maxlen=self.ACCURACY_WINDOW)
         self._sample_count: int = 0
+        self._horizon_counts: Dict[str, int] = {h: 0 for h in HORIZONS}
 
         for h in HORIZONS:
             self.models[h] = SGDClassifier(
@@ -92,6 +93,7 @@ class OnlineLearner:
         correct = (actual_label == predicted_label)
         self._accuracy_buf.append(1.0 if correct else 0.0)
         self._sample_count += 1
+        self._horizon_counts[horizon] = self._horizon_counts.get(horizon, 0) + 1
 
         self._adjust_weights()
 

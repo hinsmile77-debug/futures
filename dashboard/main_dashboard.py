@@ -1228,7 +1228,828 @@ class EntryPanel(QWidget):
 
 
 # ────────────────────────────────────────────────────────────
-# 패널 6: 알파 리서치 봇
+# 패널 6: 🧠 자가학습 모니터
+# ────────────────────────────────────────────────────────────
+class LearningPanel(QWidget):
+    """SGD 온라인 / GBM 배치 / 예측 버퍼 자가학습 현황 통합 뷰"""
+
+    HORIZONS  = ["1m", "3m", "5m", "10m", "15m", "30m"]
+    H_LABELS  = ["1분", "3분", "5분", "10분", "15분", "30분"]
+    RAW_NEEDED = 5_000
+
+    def __init__(self):
+        super().__init__()
+        self._prev_accs = {hz: 0.5 for hz in self.HORIZONS}
+        self._build()
+
+    @staticmethod
+    def _acc_col(acc: float) -> str:
+        if acc >= 0.62:  return C['green']
+        if acc >= 0.55:  return C['cyan']
+        if acc >= 0.48:  return C['orange']
+        return C['red']
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(S.p(8), S.p(8), S.p(8), S.p(8))
+        root.setSpacing(S.p(8))
+
+        # ── 타이틀 + 최근 이벤트 ─────────────────────────────
+        hdr = QHBoxLayout()
+        hdr.addWidget(mk_label("🧠  자가학습 모니터", C['purple'], 11, True))
+        hdr.addStretch()
+        self._lbl_last_ev = mk_label("최근 이벤트 없음", C['text2'], 8)
+        hdr.addWidget(self._lbl_last_ev)
+        root.addLayout(hdr)
+
+        # ── 요약 카드 4개 ─────────────────────────────────────
+        top_row = QHBoxLayout()
+        top_row.setSpacing(S.p(6))
+        summary_defs = [
+            ("오늘 검증 건수",     "0",       C['cyan'],   "verified"),
+            ("SGD 50분 정확도",   "——",      C['green'],  "sgd_acc"),
+            ("GBM 마지막 재학습", "미실행",   C['blue'],   "retrain"),
+            ("데이터 축적",        "0%",      C['yellow'], "raw_pct"),
+        ]
+        self._sum_lbls = {}
+        for title, init_val, col, key in summary_defs:
+            f = QFrame()
+            f.setStyleSheet(
+                f"QFrame{{background:{C['bg2']};border:1px solid {col}44;"
+                f"border-top:2px solid {col};border-radius:5px;}}"
+            )
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(S.p(8), S.p(5), S.p(8), S.p(6))
+            fl.setSpacing(S.p(2))
+            fl.addWidget(mk_label(title, col, 8, align=Qt.AlignCenter))
+            sz = 12 if key == "retrain" else 18
+            v = mk_val_label(init_val, col, sz, True, Qt.AlignCenter)
+            fl.addWidget(v)
+            self._sum_lbls[key] = v
+            top_row.addWidget(f)
+        root.addLayout(top_row)
+        root.addWidget(mk_sep())
+
+        # ── SGD 온라인 학습 섹션 ──────────────────────────────
+        root.addWidget(mk_label(
+            "⚡  SGD 온라인 자가학습  ·  매 검증건 즉시 partial_fit",
+            C['purple'], 9, True,
+        ))
+
+        # GBM ←→ SGD 블렌딩 비율 바
+        bf = QFrame()
+        bf.setStyleSheet(
+            f"background:{C['bg3']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        bl = QHBoxLayout(bf)
+        bl.setContentsMargins(S.p(10), S.p(7), S.p(10), S.p(7))
+        bl.setSpacing(S.p(10))
+        bl.addWidget(mk_label("GBM", C['blue'], 9, True))
+        self._blend_bar = QProgressBar()
+        self._blend_bar.setRange(0, 100)
+        self._blend_bar.setValue(70)
+        self._blend_bar.setTextVisible(False)
+        self._blend_bar.setFixedHeight(S.p(14))
+        self._blend_bar.setStyleSheet(
+            f"QProgressBar{{background:{C['bg']};border:none;border-radius:4px;}}"
+            f"QProgressBar::chunk{{background:qlineargradient("
+            f"x1:0,y1:0,x2:1,y2:0,"
+            f"stop:0 {C['blue']},stop:0.5 #7057F5,stop:1 {C['purple']});}}"
+        )
+        bl.addWidget(self._blend_bar, 1)
+        self._lbl_blend = mk_label(
+            "GBM 70%    SGD 30%", C['text2'], 9, align=Qt.AlignCenter,
+        )
+        bl.addWidget(self._lbl_blend)
+        bl.addWidget(mk_label("SGD", C['purple'], 9, True))
+        root.addWidget(bf)
+
+        # 호라이즌 카드 2행 × 3열
+        grid = QGridLayout()
+        grid.setSpacing(S.p(5))
+        self._hz_cards = {}
+        for i, (hz, hlbl) in enumerate(zip(self.HORIZONS, self.H_LABELS)):
+            f = QFrame()
+            f.setStyleSheet(
+                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
+                f"border-radius:6px;}}"
+            )
+            vl = QVBoxLayout(f)
+            vl.setContentsMargins(S.p(8), S.p(6), S.p(8), S.p(7))
+            vl.setSpacing(S.p(3))
+            hr = QHBoxLayout()
+            hr.addWidget(mk_label(hlbl, C['text'], 9, True))
+            hr.addStretch()
+            badge = mk_badge("미학습", C['bg3'], C['text2'], 7)
+            hr.addWidget(badge)
+            vl.addLayout(hr)
+            acc_lbl = mk_val_label("—.—%", C['text2'], 16, True, Qt.AlignCenter)
+            vl.addWidget(acc_lbl)
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setTextVisible(False)
+            bar.setFixedHeight(S.p(5))
+            bar.setStyleSheet(
+                f"QProgressBar{{background:{C['bg']};border:none;border-radius:2px;}}"
+                f"QProgressBar::chunk{{background:{C['text2']};}}"
+            )
+            vl.addWidget(bar)
+            cnt_lbl = mk_label("학습 0건", C['text2'], 8, align=Qt.AlignCenter)
+            vl.addWidget(cnt_lbl)
+            self._hz_cards[hz] = (acc_lbl, cnt_lbl, badge, bar)
+            grid.addWidget(f, i // 3, i % 3)
+        root.addLayout(grid)
+        root.addWidget(mk_sep())
+
+        # ── GBM 배치 재학습 섹션 ──────────────────────────────
+        root.addWidget(mk_label(
+            "🔄  GBM 배치 재학습  ·  주간 월요일 08:50  /  일일 15:40 마감",
+            C['blue'], 9, True,
+        ))
+        gbm_row = QHBoxLayout()
+        gbm_row.setSpacing(S.p(6))
+        for title, init, col, attr in [
+            ("마지막 재학습",  "미실행",   C['blue'],   "_gbm_last"),
+            ("재학습 횟수",    "0회",      C['cyan'],   "_gbm_cnt"),
+            ("다음 스케줄",    "월 08:50", C['text2'],  "_gbm_next"),
+        ]:
+            f = QFrame()
+            f.setStyleSheet(
+                f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;"
+            )
+            vl = QVBoxLayout(f)
+            vl.setContentsMargins(S.p(8), S.p(5), S.p(8), S.p(6))
+            vl.setSpacing(S.p(2))
+            vl.addWidget(mk_label(title, C['text2'], 8, align=Qt.AlignCenter))
+            lbl = mk_val_label(init, col, 13, True, Qt.AlignCenter)
+            vl.addWidget(lbl)
+            setattr(self, attr, lbl)
+            gbm_row.addWidget(f)
+        root.addLayout(gbm_row)
+
+        # 데이터 축적 진행 바
+        rawf = QFrame()
+        rawf.setStyleSheet(
+            f"background:{C['bg3']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        rawl = QHBoxLayout(rawf)
+        rawl.setContentsMargins(S.p(10), S.p(7), S.p(10), S.p(7))
+        rawl.setSpacing(S.p(10))
+        rawl.addWidget(mk_label("학습 데이터 축적", C['yellow'], 9, True))
+        self._raw_bar = QProgressBar()
+        self._raw_bar.setRange(0, self.RAW_NEEDED)
+        self._raw_bar.setValue(0)
+        self._raw_bar.setTextVisible(False)
+        self._raw_bar.setFixedHeight(S.p(14))
+        self._raw_bar.setStyleSheet(
+            f"QProgressBar{{background:{C['bg']};border:none;border-radius:4px;}}"
+            f"QProgressBar::chunk{{background:qlineargradient("
+            f"x1:0,y1:0,x2:1,y2:0,"
+            f"stop:0 {C['yellow']},stop:1 {C['green']});}}"
+        )
+        rawl.addWidget(self._raw_bar, 1)
+        self._lbl_raw_cnt = mk_label(f"0 / {self.RAW_NEEDED:,}", C['text2'], 9)
+        rawl.addWidget(self._lbl_raw_cnt)
+        root.addWidget(rawf)
+        root.addWidget(mk_sep())
+
+        # ── 예측 버퍼 정확도 테이블 ──────────────────────────
+        root.addWidget(mk_label(
+            "📊  호라이즌별 예측 정확도  ·  최근 50회 검증 기준",
+            C['cyan'], 9, True,
+        ))
+        acc_frame = QFrame()
+        acc_frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        acc_grid = QGridLayout(acc_frame)
+        acc_grid.setContentsMargins(S.p(8), S.p(6), S.p(8), S.p(6))
+        acc_grid.setSpacing(S.p(5))
+        for j, htxt in enumerate(["호라이즌", "정확도", "게이지", "추세"]):
+            acc_grid.addWidget(mk_label(htxt, C['text2'], 8, True), 0, j)
+        acc_grid.setColumnStretch(2, 1)
+        self._buf_rows = {}
+        for i, (hz, hlbl) in enumerate(zip(self.HORIZONS, self.H_LABELS)):
+            row = i + 1
+            acc_grid.addWidget(mk_badge(hlbl, C['bg3'], C['text'], 8), row, 0)
+            acc_lbl = mk_val_label("——", C['text2'], 11, True)
+            acc_grid.addWidget(acc_lbl, row, 1)
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setTextVisible(False)
+            bar.setFixedHeight(S.p(7))
+            bar.setStyleSheet(
+                f"QProgressBar{{background:{C['bg']};border:none;border-radius:2px;}}"
+                f"QProgressBar::chunk{{background:{C['text2']};}}"
+            )
+            acc_grid.addWidget(bar, row, 2)
+            trend = mk_label("━", C['text2'], 12)
+            trend.setAlignment(Qt.AlignCenter)
+            acc_grid.addWidget(trend, row, 3)
+            self._buf_rows[hz] = (acc_lbl, bar, trend)
+        root.addWidget(acc_frame)
+        root.addStretch()
+
+    # ── 업데이트 ──────────────────────────────────────────────
+    def update_data(self, data: dict):
+        import datetime as _dt
+
+        # 요약 카드
+        self._sum_lbls["verified"].setText(str(data.get("verified_today", 0)))
+
+        sgd_acc = float(data.get("sgd_accuracy_50m", 0.5))
+        col_sgd = self._acc_col(sgd_acc)
+        self._sum_lbls["sgd_acc"].setText(f"{sgd_acc:.1%}")
+        self._sum_lbls["sgd_acc"].setStyleSheet(
+            f"color:{col_sgd};font-size:{S.f(18)}px;font-weight:bold;"
+        )
+
+        retrain_ts = str(data.get("gbm_last_retrain", "——") or "——")
+        rt_disp = "미실행"
+        if retrain_ts not in ("——", "없음", ""):
+            try:
+                rt_disp = _dt.datetime.strptime(
+                    retrain_ts, "%Y-%m-%d %H:%M"
+                ).strftime("%m/%d %H:%M")
+            except Exception:
+                rt_disp = retrain_ts[:11]
+        self._sum_lbls["retrain"].setText(rt_disp)
+
+        raw_cnt = max(int(data.get("raw_candles_count", 0)), 0)
+        raw_pct = min(raw_cnt / self.RAW_NEEDED, 1.0)
+        col_raw = C['green'] if raw_pct >= 1.0 else C['yellow']
+        self._sum_lbls["raw_pct"].setText(f"{raw_pct:.0%}")
+        self._sum_lbls["raw_pct"].setStyleSheet(
+            f"color:{col_raw};font-size:{S.f(18)}px;font-weight:bold;"
+        )
+
+        # SGD 블렌딩 비율
+        gbm_w = max(0.0, min(1.0, float(data.get("gbm_weight", 0.70))))
+        sgd_w = 1.0 - gbm_w
+        self._blend_bar.setValue(int(gbm_w * 100))
+        self._lbl_blend.setText(f"GBM {gbm_w:.0%}    SGD {sgd_w:.0%}")
+
+        # SGD 호라이즌 카드
+        fitted = data.get("sgd_fitted", {})
+        h_accs = data.get("horizon_accuracy", {})
+        h_cnts = data.get("sgd_sample_counts", {})
+        for hz, (acc_lbl, cnt_lbl, badge, bar) in self._hz_cards.items():
+            is_fit = fitted.get(hz, False)
+            acc = float(h_accs.get(hz, 0.5))
+            cnt = int(h_cnts.get(hz, 0))
+            col = self._acc_col(acc) if is_fit else C['text2']
+            acc_lbl.setText(f"{acc:.1%}" if is_fit else "—.—%")
+            acc_lbl.setStyleSheet(
+                f"color:{col};font-size:{S.f(16)}px;font-weight:bold;"
+            )
+            bar.setValue(int(acc * 100) if is_fit else 0)
+            bar.setStyleSheet(
+                f"QProgressBar{{background:{C['bg']};border:none;border-radius:2px;}}"
+                f"QProgressBar::chunk{{background:{col};}}"
+            )
+            cnt_lbl.setText(f"학습 {cnt}건")
+            cnt_lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(8)}px;")
+            if is_fit:
+                badge.setText("학습됨")
+                badge.setStyleSheet(
+                    f"background:{col}33;color:{col};border-radius:3px;"
+                    f"font-size:{S.f(7)}px;font-weight:bold;padding:1px 5px;"
+                )
+            else:
+                badge.setText("미학습")
+                badge.setStyleSheet(
+                    f"background:{C['bg3']};color:{C['text2']};border-radius:3px;"
+                    f"font-size:{S.f(7)}px;padding:1px 5px;"
+                )
+
+        # GBM 재학습 상태
+        self._gbm_last.setText(rt_disp)
+        self._gbm_cnt.setText(f"{int(data.get('gbm_retrain_count', 0))}회")
+        now = _dt.datetime.now()
+        days_to_mon = (7 - now.weekday()) % 7
+        if days_to_mon == 0 and now.hour >= 9:
+            days_to_mon = 7
+        self._gbm_next.setText(
+            (now + _dt.timedelta(days=days_to_mon)).strftime("%m/%d") + " 08:50"
+        )
+
+        # 데이터 축적 바
+        self._raw_bar.setValue(min(raw_cnt, self.RAW_NEEDED))
+        col_rb = C['green'] if raw_cnt >= self.RAW_NEEDED else C['yellow']
+        self._lbl_raw_cnt.setText(f"{raw_cnt:,} / {self.RAW_NEEDED:,} 행")
+        self._lbl_raw_cnt.setStyleSheet(f"color:{col_rb};font-size:{S.f(9)}px;")
+
+        # 예측 버퍼 정확도 테이블
+        buf_accs = data.get("buffer_accuracy", {})
+        for hz, (acc_lbl, bar, trend) in self._buf_rows.items():
+            acc  = float(buf_accs.get(hz, 0.5))
+            prev = self._prev_accs.get(hz, 0.5)
+            col  = self._acc_col(acc)
+            acc_lbl.setText(f"{acc:.1%}")
+            acc_lbl.setStyleSheet(
+                f"color:{col};font-size:{S.f(11)}px;font-weight:bold;"
+            )
+            bar.setValue(int(acc * 100))
+            bar.setStyleSheet(
+                f"QProgressBar{{background:{C['bg']};border:none;border-radius:2px;}}"
+                f"QProgressBar::chunk{{background:{col};}}"
+            )
+            if acc > prev + 0.005:
+                trend.setText("▲")
+                trend.setStyleSheet(f"color:{C['green']};font-size:{S.f(12)}px;")
+            elif acc < prev - 0.005:
+                trend.setText("▼")
+                trend.setStyleSheet(f"color:{C['red']};font-size:{S.f(12)}px;")
+            else:
+                trend.setText("━")
+                trend.setStyleSheet(f"color:{C['text2']};font-size:{S.f(12)}px;")
+            self._prev_accs[hz] = acc
+
+        ev = str(data.get("last_event", "") or "")
+        if ev:
+            self._lbl_last_ev.setText(ev[-70:] if len(ev) > 70 else ev)
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 7: 🎯 학습 효과 검증기
+# ────────────────────────────────────────────────────────────
+class EfficacyPanel(QWidget):
+    """자가학습이 실제로 돈을 버는가? — 4-section 효과 검증 패널
+
+    Section 1: 신뢰도 캘리브레이션   — 70% 예측이 진짜 70% 적중하는가?
+    Section 2: 등급별 매매 성과       — 등급 A가 등급 C보다 실제로 수익?
+    Section 3: 학습 성장 곡선         — 시간이 갈수록 정확도가 올라가는가?
+    Section 4: 레짐별 성과            — 어떤 시장 환경이 가장 효과적?
+    """
+
+    _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+    _GRADE_ORDER  = ["A", "B", "C", "X", "?"]
+    _REGIME_ORDER = ["RISK_ON", "NEUTRAL", "RISK_OFF"]
+
+    def __init__(self):
+        super().__init__()
+        self._build()
+
+    # ── helper: confidence quality badge ─────────────────────
+    @staticmethod
+    def _calib_badge(conf_f: float, acc_f: float) -> tuple:
+        """(text, color) — 신뢰도 대비 실제 정확도 품질"""
+        gap = acc_f - conf_f
+        if abs(gap) <= 0.04:
+            return "✓ 우수", C['green']
+        if gap > 0.04:
+            return "▲ 과소신뢰", C['cyan']
+        if gap < -0.08:
+            return "▼ 과신", C['red']
+        return "≈ 양호", C['orange']
+
+    @staticmethod
+    def _win_col(wr: float) -> str:
+        if wr >= 0.60: return C['green']
+        if wr >= 0.53: return C['cyan']
+        if wr >= 0.45: return C['orange']
+        return C['red']
+
+    @staticmethod
+    def _pnl_col(pnl: float) -> str:
+        return C['green'] if pnl > 0 else (C['red'] if pnl < 0 else C['text2'])
+
+    @staticmethod
+    def _spark(values, width: int = 18) -> str:
+        """0~1 float 리스트 → 유니코드 스파크라인 (고정 width)"""
+        if not values:
+            return "─" * width
+        blk = "▁▂▃▄▅▆▇█"
+        mn, mx = min(values), max(values)
+        span = mx - mn if mx != mn else 1.0
+        chars = [blk[min(7, int((v - mn) / span * 7.99))] for v in values]
+        # 다운샘플 or 패딩
+        while len(chars) > width:
+            step = len(chars) / width
+            chars = [chars[int(i * step)] for i in range(width)]
+        while len(chars) < width:
+            chars.append("─")
+        return "".join(chars)
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(S.p(8), S.p(8), S.p(8), S.p(8))
+        root.setSpacing(S.p(8))
+
+        # ── 헤더 ─────────────────────────────────────────────
+        hdr = QHBoxLayout()
+        hdr.addWidget(mk_label("🎯  학습 효과 검증기", C['yellow'], 11, True))
+        hdr.addStretch()
+        self._lbl_updated = mk_label("마지막 갱신: ——", C['text2'], 8)
+        hdr.addWidget(self._lbl_updated)
+        root.addLayout(hdr)
+
+        # ── 핵심 지표 배지 4개 ───────────────────────────────
+        kpi_row = QHBoxLayout()
+        kpi_row.setSpacing(S.p(6))
+        kpi_defs = [
+            ("전체 승률",      "——",  C['cyan'],   "_kpi_total_wr"),
+            ("A등급 승률",     "——",  C['green'],  "_kpi_a_wr"),
+            ("캘리브레이션",   "——",  C['blue'],   "_kpi_calib"),
+            ("학습 효과 Δ",    "——",  C['purple'], "_kpi_delta"),
+        ]
+        for title, init, col, attr in kpi_defs:
+            f = QFrame()
+            f.setStyleSheet(
+                f"QFrame{{background:{C['bg2']};border:1px solid {col}44;"
+                f"border-top:2px solid {col};border-radius:5px;}}"
+            )
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(S.p(8), S.p(5), S.p(8), S.p(6))
+            fl.setSpacing(S.p(2))
+            fl.addWidget(mk_label(title, col, 8, align=Qt.AlignCenter))
+            lbl = mk_val_label(init, col, 18, True, Qt.AlignCenter)
+            fl.addWidget(lbl)
+            setattr(self, attr, lbl)
+            kpi_row.addWidget(f)
+        root.addLayout(kpi_row)
+        root.addWidget(mk_sep())
+
+        # ── 2열 레이아웃 (섹션 1+2 | 섹션 3+4) ─────────────
+        cols = QHBoxLayout()
+        cols.setSpacing(S.p(8))
+        left_col  = QVBoxLayout()
+        right_col = QVBoxLayout()
+        left_col.setSpacing(S.p(8))
+        right_col.setSpacing(S.p(8))
+
+        # ── Section 1: 신뢰도 캘리브레이션 ──────────────────
+        left_col.addWidget(mk_label(
+            "① 신뢰도 캘리브레이션  ·  예측 신뢰도 vs 실제 적중률",
+            C['blue'], 9, True,
+        ))
+        calib_frame = QFrame()
+        calib_frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        calib_grid = QGridLayout(calib_frame)
+        calib_grid.setContentsMargins(S.p(8), S.p(6), S.p(8), S.p(6))
+        calib_grid.setSpacing(S.p(4))
+        for j, hdr_txt in enumerate(["신뢰도", "건수", "실적중률", "품질"]):
+            calib_grid.addWidget(mk_label(hdr_txt, C['text2'], 8, True), 0, j)
+        calib_grid.setColumnStretch(0, 1)
+        calib_grid.setColumnStretch(1, 1)
+        calib_grid.setColumnStretch(2, 1)
+        calib_grid.setColumnStretch(3, 2)
+
+        self._calib_rows = []
+        for i in range(10):    # 최대 10개 구간 (50~95% 등)
+            conf_lbl = mk_label("——", C['text2'], 9, align=Qt.AlignCenter)
+            cnt_lbl  = mk_label("——", C['text2'], 9, align=Qt.AlignCenter)
+            acc_lbl  = mk_label("——", C['text2'], 9, True, Qt.AlignCenter)
+            qual_lbl = mk_label("——", C['text2'], 9, True, Qt.AlignCenter)
+            for col_idx, w in enumerate([conf_lbl, cnt_lbl, acc_lbl, qual_lbl]):
+                calib_grid.addWidget(w, i + 1, col_idx)
+            self._calib_rows.append((conf_lbl, cnt_lbl, acc_lbl, qual_lbl))
+        left_col.addWidget(calib_frame)
+
+        # ── Section 2: 등급별 성과 ──────────────────────────
+        left_col.addWidget(mk_label(
+            "② 등급별 매매 성과  ·  A등급이 실제로 더 수익적인가?",
+            C['green'], 9, True,
+        ))
+        grade_frame = QFrame()
+        grade_frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        grade_grid = QGridLayout(grade_frame)
+        grade_grid.setContentsMargins(S.p(8), S.p(6), S.p(8), S.p(6))
+        grade_grid.setSpacing(S.p(4))
+        for j, hdr_txt in enumerate(["등급", "건수", "승률", "평균pts", "합계pts"]):
+            grade_grid.addWidget(mk_label(hdr_txt, C['text2'], 8, True), 0, j)
+
+        self._grade_rows = {}
+        for i, g in enumerate(self._GRADE_ORDER):
+            col_map = {"A": C['green'], "B": C['cyan'], "C": C['orange'],
+                       "X": C['red'], "?": C['text2']}
+            gcol = col_map.get(g, C['text2'])
+            badge = mk_badge(g, C['bg3'], gcol, 9)
+            cnt_l = mk_label("—", C['text2'], 9, align=Qt.AlignCenter)
+            wr_l  = mk_label("—", C['text2'], 9, True, Qt.AlignCenter)
+            ap_l  = mk_label("—", C['text2'], 9, True, Qt.AlignCenter)
+            tp_l  = mk_label("—", C['text2'], 9, True, Qt.AlignCenter)
+            for col_idx, w in enumerate([badge, cnt_l, wr_l, ap_l, tp_l]):
+                grade_grid.addWidget(w, i + 1, col_idx)
+            self._grade_rows[g] = (cnt_l, wr_l, ap_l, tp_l)
+        left_col.addWidget(grade_frame)
+        left_col.addStretch()
+
+        # ── Section 3: 학습 성장 곡선 ────────────────────────
+        right_col.addWidget(mk_label(
+            "③ 학습 성장 곡선  ·  시간에 따라 예측이 개선되는가?",
+            C['purple'], 9, True,
+        ))
+        spark_frame = QFrame()
+        spark_frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        spark_lay = QVBoxLayout(spark_frame)
+        spark_lay.setContentsMargins(S.p(12), S.p(10), S.p(12), S.p(10))
+        spark_lay.setSpacing(S.p(6))
+
+        self._lbl_spark = QLabel("─" * 18)
+        self._lbl_spark.setStyleSheet(
+            f"color:{C['purple']};font-family:Consolas,monospace;"
+            f"font-size:{S.f(18)}px;letter-spacing:1px;"
+        )
+        self._lbl_spark.setAlignment(Qt.AlignCenter)
+        spark_lay.addWidget(self._lbl_spark)
+
+        spark_stats = QHBoxLayout()
+        spark_stats.setSpacing(S.p(12))
+        for title, attr, col in [
+            ("초기 50회 정확도",  "_lbl_spark_early",  C['text2']),
+            ("최근 50회 정확도",  "_lbl_spark_recent", C['cyan']),
+            ("학습 개선 Δ",       "_lbl_spark_delta",  C['purple']),
+        ]:
+            vb = QVBoxLayout()
+            vb.addWidget(mk_label(title, C['text2'], 8, align=Qt.AlignCenter))
+            lbl = mk_val_label("——", col, 15, True, Qt.AlignCenter)
+            vb.addWidget(lbl)
+            setattr(self, attr, lbl)
+            spark_stats.addLayout(vb)
+        spark_lay.addLayout(spark_stats)
+
+        # 50개 구간 이동 정확도 미니 차트 (롤링)
+        self._lbl_spark_sub = mk_label(
+            "← 오래된 예측  ─────────────────  최신 예측 →",
+            C['text2'], 7, align=Qt.AlignCenter,
+        )
+        spark_lay.addWidget(self._lbl_spark_sub)
+        right_col.addWidget(spark_frame)
+
+        # ── Section 4: 레짐별 성과 ──────────────────────────
+        right_col.addWidget(mk_label(
+            "④ 시장 레짐별 성과  ·  어떤 환경에서 전략이 통하는가?",
+            C['orange'], 9, True,
+        ))
+        regime_frame = QFrame()
+        regime_frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        regime_lay = QVBoxLayout(regime_frame)
+        regime_lay.setContentsMargins(S.p(10), S.p(8), S.p(10), S.p(8))
+        regime_lay.setSpacing(S.p(6))
+
+        self._regime_rows = {}
+        regime_colors = {
+            "RISK_ON":   C['green'],
+            "NEUTRAL":   C['orange'],
+            "RISK_OFF":  C['red'],
+        }
+        for r in self._REGIME_ORDER:
+            rcol = regime_colors[r]
+            rf = QFrame()
+            rf.setStyleSheet(
+                f"background:{C['bg3']};border:1px solid {rcol}44;border-radius:4px;"
+            )
+            rl = QHBoxLayout(rf)
+            rl.setContentsMargins(S.p(8), S.p(5), S.p(8), S.p(5))
+            rl.setSpacing(S.p(8))
+            badge = mk_badge(r, C['bg'], rcol, 8)
+            rl.addWidget(badge)
+            cnt_l = mk_label("0건", C['text2'], 8)
+            rl.addWidget(cnt_l)
+            rl.addStretch()
+            wr_l  = mk_val_label("——", rcol, 14, True)
+            rl.addWidget(wr_l)
+            rl.addWidget(mk_label("승률", C['text2'], 8))
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setTextVisible(False)
+            bar.setFixedHeight(S.p(10))
+            bar.setFixedWidth(S.p(80))
+            bar.setStyleSheet(
+                f"QProgressBar{{background:{C['bg']};border:none;border-radius:3px;}}"
+                f"QProgressBar::chunk{{background:{rcol};}}"
+            )
+            rl.addWidget(bar)
+            ap_l = mk_label("avg ——pt", C['text2'], 8)
+            rl.addWidget(ap_l)
+            regime_lay.addWidget(rf)
+            self._regime_rows[r] = (cnt_l, wr_l, bar, ap_l)
+        right_col.addWidget(regime_frame)
+
+        # ── 종합 평가 배너 ──────────────────────────────────
+        self._lbl_verdict = QLabel("데이터 수집 중 — 체결 완료 거래 10건 이상 시 분석 시작")
+        self._lbl_verdict.setWordWrap(True)
+        self._lbl_verdict.setStyleSheet(
+            f"background:{C['bg3']};color:{C['text2']};border:1px solid {C['border']};"
+            f"border-left:3px solid {C['yellow']};border-radius:4px;"
+            f"padding:6px 10px;font-size:{S.f(10)}px;"
+        )
+        right_col.addWidget(self._lbl_verdict)
+        right_col.addStretch()
+
+        left_w  = QWidget(); left_w.setLayout(left_col)
+        right_w = QWidget(); right_w.setLayout(right_col)
+        cols.addWidget(left_w,  45)
+        cols.addWidget(right_w, 55)
+        root.addLayout(cols)
+
+    # ── 업데이트 ──────────────────────────────────────────────
+    def update_data(self, data: dict):
+        """
+        data 키:
+            calibration_bins  list[dict]  conf_bin/cnt/accuracy
+            grade_stats       list[dict]  grade/cnt/win_rate/avg_pnl/total_pnl
+            regime_stats      list[dict]  regime/cnt/win_rate/avg_pnl
+            accuracy_history  list[int]   0/1 리스트 (최신→오래된 순)
+            updated_at        str         "HH:MM"
+        """
+        import datetime as _dt
+
+        now_str = data.get("updated_at") or _dt.datetime.now().strftime("%H:%M")
+        self._lbl_updated.setText(f"마지막 갱신: {now_str}")
+
+        # ── 섹션 1: 캘리브레이션 ─────────────────────────────
+        bins = data.get("calibration_bins") or []
+        for i, row_w in enumerate(self._calib_rows):
+            conf_lbl, cnt_lbl, acc_lbl, qual_lbl = row_w
+            if i < len(bins):
+                b = bins[i]
+                cf  = float(b.get("conf_bin", 0)) / 100.0
+                cnt = int(b.get("cnt", 0))
+                acc = float(b.get("accuracy") or 0)
+                qtxt, qcol = self._calib_badge(cf, acc)
+                conf_lbl.setText(f"{cf:.0%}")
+                conf_lbl.setStyleSheet(f"color:{C['text']};font-size:{S.f(9)}px;")
+                cnt_lbl.setText(str(cnt))
+                acc_lbl.setText(f"{acc:.1%}")
+                acc_col = self._win_col(acc)
+                acc_lbl.setStyleSheet(f"color:{acc_col};font-size:{S.f(9)}px;font-weight:bold;")
+                qual_lbl.setText(qtxt)
+                qual_lbl.setStyleSheet(f"color:{qcol};font-size:{S.f(9)}px;font-weight:bold;")
+            else:
+                for w in row_w:
+                    w.setText("——")
+                    w.setStyleSheet(f"color:{C['text2']};font-size:{S.f(9)}px;")
+
+        # ── 섹션 2: 등급별 성과 ──────────────────────────────
+        grade_map = {r.get("grade", "?"): r for r in (data.get("grade_stats") or [])}
+        total_cnt = sum(int(r.get("cnt", 0)) for r in (data.get("grade_stats") or []))
+        total_wins = sum(
+            int(r.get("cnt", 0)) * float(r.get("win_rate") or 0)
+            for r in (data.get("grade_stats") or [])
+        )
+        overall_wr = (total_wins / total_cnt) if total_cnt > 0 else 0.0
+        self._kpi_total_wr.setText(f"{overall_wr:.1%}")
+        self._kpi_total_wr.setStyleSheet(
+            f"color:{self._win_col(overall_wr)};font-size:{S.f(18)}px;font-weight:bold;"
+        )
+
+        for g, (cnt_l, wr_l, ap_l, tp_l) in self._grade_rows.items():
+            r = grade_map.get(g)
+            if r:
+                cnt  = int(r.get("cnt", 0))
+                wr   = float(r.get("win_rate") or 0)
+                apnl = float(r.get("avg_pnl") or 0)
+                tpnl = float(r.get("total_pnl") or 0)
+                wrcol  = self._win_col(wr)
+                pnlcol = self._pnl_col(apnl)
+                cnt_l.setText(str(cnt))
+                wr_l.setText(f"{wr:.1%}")
+                wr_l.setStyleSheet(f"color:{wrcol};font-size:{S.f(9)}px;font-weight:bold;")
+                ap_l.setText(f"{apnl:+.2f}")
+                ap_l.setStyleSheet(f"color:{pnlcol};font-size:{S.f(9)}px;font-weight:bold;")
+                tp_l.setText(f"{tpnl:+.1f}")
+                tp_l.setStyleSheet(f"color:{self._pnl_col(tpnl)};font-size:{S.f(9)}px;font-weight:bold;")
+                # A등급 KPI
+                if g == "A":
+                    self._kpi_a_wr.setText(f"{wr:.1%}")
+                    self._kpi_a_wr.setStyleSheet(
+                        f"color:{wrcol};font-size:{S.f(18)}px;font-weight:bold;"
+                    )
+            else:
+                cnt_l.setText("—");  wr_l.setText("—");  ap_l.setText("—");  tp_l.setText("—")
+                for w in [cnt_l, wr_l, ap_l, tp_l]:
+                    w.setStyleSheet(f"color:{C['text2']};font-size:{S.f(9)}px;")
+
+        # ── 섹션 3: 학습 성장 곡선 ───────────────────────────
+        hist = list(data.get("accuracy_history") or [])  # 최신→오래된 순
+        if hist:
+            hist_rev = list(reversed(hist))   # 오래된→최신 순
+            n = len(hist_rev)
+            early_n  = min(50, n // 2)
+            recent_n = min(50, n // 2)
+            early_acc  = (sum(hist_rev[:early_n])  / early_n)  if early_n  else 0.5
+            recent_acc = (sum(hist_rev[-recent_n:]) / recent_n) if recent_n else 0.5
+            delta = recent_acc - early_acc
+
+            # 롤링 20구간 스파크라인
+            chunk = max(1, n // 20)
+            roll_accs = []
+            for i in range(0, n, chunk):
+                sl = hist_rev[i: i + chunk]
+                roll_accs.append(sum(sl) / len(sl))
+            spark_str = self._spark(roll_accs, 18)
+
+            self._lbl_spark.setText(spark_str)
+            early_col  = self._win_col(early_acc)
+            recent_col = self._win_col(recent_acc)
+            self._lbl_spark_early.setText(f"{early_acc:.1%}")
+            self._lbl_spark_early.setStyleSheet(
+                f"color:{early_col};font-size:{S.f(15)}px;font-weight:bold;"
+            )
+            self._lbl_spark_recent.setText(f"{recent_acc:.1%}")
+            self._lbl_spark_recent.setStyleSheet(
+                f"color:{recent_col};font-size:{S.f(15)}px;font-weight:bold;"
+            )
+            delta_col = C['green'] if delta >= 0 else C['red']
+            self._lbl_spark_delta.setText(f"{delta:+.1%}")
+            self._lbl_spark_delta.setStyleSheet(
+                f"color:{delta_col};font-size:{S.f(15)}px;font-weight:bold;"
+            )
+            self._lbl_spark_sub.setText(
+                f"← 오래된 예측  {spark_str}  최신 예측 →"
+            )
+
+            # 캘리브레이션 KPI
+            if bins:
+                valid = [b for b in bins if int(b.get("cnt", 0)) >= 5]
+                if valid:
+                    avg_gap = sum(
+                        abs(float(b.get("accuracy") or 0) - float(b.get("conf_bin", 0)) / 100.0)
+                        for b in valid
+                    ) / len(valid)
+                    calib_score = max(0.0, 1.0 - avg_gap * 5)
+                    calib_col = C['green'] if calib_score >= 0.7 else (
+                        C['orange'] if calib_score >= 0.4 else C['red']
+                    )
+                    self._kpi_calib.setText(f"{calib_score:.0%}")
+                    self._kpi_calib.setStyleSheet(
+                        f"color:{calib_col};font-size:{S.f(18)}px;font-weight:bold;"
+                    )
+
+            # 학습 효과 KPI
+            self._kpi_delta.setText(f"{delta:+.1%}")
+            self._kpi_delta.setStyleSheet(
+                f"color:{delta_col};font-size:{S.f(18)}px;font-weight:bold;"
+            )
+
+        # ── 섹션 4: 레짐별 성과 ──────────────────────────────
+        regime_map = {r.get("regime", "NEUTRAL"): r
+                      for r in (data.get("regime_stats") or [])}
+        for regime, (cnt_l, wr_l, bar, ap_l) in self._regime_rows.items():
+            r = regime_map.get(regime)
+            if r:
+                cnt  = int(r.get("cnt", 0))
+                wr   = float(r.get("win_rate") or 0)
+                apnl = float(r.get("avg_pnl") or 0)
+                wrcol = self._win_col(wr)
+                cnt_l.setText(f"{cnt}건")
+                wr_l.setText(f"{wr:.1%}")
+                wr_l.setStyleSheet(f"color:{wrcol};font-size:{S.f(14)}px;font-weight:bold;")
+                bar.setValue(int(wr * 100))
+                ap_l.setText(f"avg {apnl:+.2f}pt")
+                ap_l.setStyleSheet(f"color:{self._pnl_col(apnl)};font-size:{S.f(8)}px;")
+            else:
+                cnt_l.setText("0건")
+                wr_l.setText("——")
+                bar.setValue(0)
+                ap_l.setText("avg ——pt")
+
+        # ── 종합 평가 배너 ────────────────────────────────────
+        if total_cnt < 10:
+            self._lbl_verdict.setText(
+                f"데이터 수집 중 ({total_cnt}건 체결) — 10건 이상 시 분석 시작"
+            )
+            self._lbl_verdict.setStyleSheet(
+                f"background:{C['bg3']};color:{C['text2']};border:1px solid {C['border']};"
+                f"border-left:3px solid {C['text2']};border-radius:4px;"
+                f"padding:6px 10px;font-size:{S.f(10)}px;"
+            )
+        else:
+            # 종합 판단
+            grade_a = grade_map.get("A")
+            a_wr = float(grade_a.get("win_rate", 0) if grade_a else 0)
+            if a_wr >= 0.60 and overall_wr >= 0.53:
+                verdict = f"✅  학습 효과 확인 — A등급 승률 {a_wr:.1%} / 전체 승률 {overall_wr:.1%}"
+                v_col = C['green']
+            elif overall_wr >= 0.50:
+                verdict = f"⚡  개선 중 — 전체 승률 {overall_wr:.1%} | A등급 추가 데이터 필요"
+                v_col = C['cyan']
+            else:
+                verdict = f"⚠️  학습 효과 미확인 — 전체 승률 {overall_wr:.1%} | 모델 재점검 권장"
+                v_col = C['orange']
+            self._lbl_verdict.setText(verdict)
+            self._lbl_verdict.setStyleSheet(
+                f"background:{C['bg3']};color:{C['text']};border:1px solid {v_col}44;"
+                f"border-left:3px solid {v_col};border-radius:4px;"
+                f"padding:6px 10px;font-size:{S.f(10)}px;font-weight:bold;"
+            )
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 8: 알파 리서치 봇
 # ────────────────────────────────────────────────────────────
 class AlphaPanel(QWidget):
     def __init__(self):
@@ -2172,17 +2993,21 @@ class MireukDashboard(QMainWindow):
         mid_tabs = QTabWidget()
         mid_tabs.setStyleSheet(f"QTabBar::tab:selected{{border-bottom:2px solid {C['orange']};}}")
 
-        self.div_panel  = DivergencePanel()
-        self.feat_panel = FeaturePanel()
-        self.exit_panel = ExitPanel()
-        self.entry_panel= EntryPanel()
-        self.alpha_panel= AlphaPanel()
+        self.div_panel      = DivergencePanel()
+        self.feat_panel     = FeaturePanel()
+        self.exit_panel     = ExitPanel()
+        self.entry_panel    = EntryPanel()
+        self.learn_panel    = LearningPanel()
+        self.efficacy_panel = EfficacyPanel()
+        self.alpha_panel    = AlphaPanel()
 
-        mid_tabs.addTab(self._wrap(self.div_panel),  "다이버전스 + 포지션")
-        mid_tabs.addTab(self._wrap(self.feat_panel), "동적 피처 (SHAP)")
-        mid_tabs.addTab(self._wrap(self.exit_panel), "청산 관리")
-        mid_tabs.addTab(self._wrap(self.entry_panel),"진입 관리")
-        mid_tabs.addTab(self._wrap(self.alpha_panel),"알파 리서치 봇")
+        mid_tabs.addTab(self._wrap(self.div_panel),      "다이버전스 + 포지션")
+        mid_tabs.addTab(self._wrap(self.feat_panel),     "동적 피처 (SHAP)")
+        mid_tabs.addTab(self._wrap(self.exit_panel),     "청산 관리")
+        mid_tabs.addTab(self._wrap(self.entry_panel),    "진입 관리")
+        mid_tabs.addTab(self._wrap(self.learn_panel),    "🧠 자가학습")
+        mid_tabs.addTab(self._wrap(self.efficacy_panel), "🎯 효과 검증")
+        mid_tabs.addTab(self._wrap(self.alpha_panel),    "알파 리서치 봇")
         ml.addWidget(mid_tabs)
 
         # 우측: 5층 로그
@@ -2529,6 +3354,37 @@ class DashboardAdapter:
     def append_pnl_separator(self, msg: str = ""):
         """창4 손익 탭 구분선"""
         self._win.log_panel.append_separator("pnl", msg)
+
+    def update_learning(self, data: dict):
+        """🧠 자가학습 모니터 패널 업데이트
+
+        data 키:
+            verified_today      int    오늘 검증 건수
+            sgd_accuracy_50m    float  SGD 50분 이동 정확도
+            sgd_weight          float  현재 SGD 블렌딩 비중
+            gbm_weight          float  현재 GBM 블렌딩 비중
+            sgd_fitted          dict   {horizon: bool}
+            sgd_sample_counts   dict   {horizon: int}
+            horizon_accuracy    dict   {horizon: float}  — SGD 내부
+            buffer_accuracy     dict   {horizon: float}  — 예측 버퍼 기준
+            gbm_last_retrain    str    "YYYY-MM-DD HH:MM" 또는 "없음"
+            gbm_retrain_count   int
+            raw_candles_count   int
+            last_event          str    최근 자가학습 이벤트 요약
+        """
+        self._win.learn_panel.update_data(data)
+
+    def update_efficacy(self, data: dict):
+        """🎯 학습 효과 검증기 패널 업데이트
+
+        data 키:
+            calibration_bins  list[dict]  conf_bin/cnt/accuracy
+            grade_stats       list[dict]  grade/cnt/win_rate/avg_pnl/total_pnl
+            regime_stats      list[dict]  regime/cnt/win_rate/avg_pnl
+            accuracy_history  list[int]   0/1 리스트 (최신→오래된 순)
+            updated_at        str         "HH:MM"
+        """
+        self._win.efficacy_panel.update_data(data)
 
     def append_model_log(self, msg: str):
         """창5 모델 로그"""

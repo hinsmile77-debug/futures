@@ -225,6 +225,75 @@ def fetch_today_trades(today_str: str) -> List[sqlite3.Row]:
     )
 
 
+def fetch_calibration_bins(days_back: int = 30) -> List[sqlite3.Row]:
+    """신뢰도 캘리브레이션 — confidence 구간별 실제 적중률.
+    반환: conf_bin(5단위), cnt, accuracy
+    """
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days_back)).isoformat()
+    return fetchall(
+        PREDICTIONS_DB,
+        """SELECT (CAST(confidence * 20 AS INTEGER) * 5) AS conf_bin,
+                  COUNT(*) AS cnt,
+                  ROUND(AVG(CAST(correct AS FLOAT)), 4) AS accuracy
+           FROM predictions
+           WHERE actual IS NOT NULL AND ts >= ?
+           GROUP BY conf_bin
+           ORDER BY conf_bin""",
+        (cutoff + " 00:00:00",),
+    )
+
+
+def fetch_grade_stats() -> List[sqlite3.Row]:
+    """등급별 매매 성과 — A/B/C/? 등급 vs 건수/승률/평균PnL/합계PnL.
+    반환: grade, cnt, win_rate, avg_pnl, total_pnl
+    """
+    return fetchall(
+        TRADES_DB,
+        """SELECT COALESCE(NULLIF(grade, ''), '?') AS grade,
+                  COUNT(*) AS cnt,
+                  ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+                  ROUND(AVG(pnl_pts), 4) AS avg_pnl,
+                  ROUND(SUM(pnl_pts), 4) AS total_pnl
+           FROM trades
+           WHERE exit_ts IS NOT NULL
+           GROUP BY grade
+           ORDER BY grade""",
+    )
+
+
+def fetch_regime_stats() -> List[sqlite3.Row]:
+    """레짐별 매매 성과 — RISK_ON/NEUTRAL/RISK_OFF vs 승률/평균PnL.
+    반환: regime, cnt, win_rate, avg_pnl
+    """
+    return fetchall(
+        TRADES_DB,
+        """SELECT COALESCE(NULLIF(regime, ''), 'NEUTRAL') AS regime,
+                  COUNT(*) AS cnt,
+                  ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+                  ROUND(AVG(pnl_pts), 4) AS avg_pnl
+           FROM trades
+           WHERE exit_ts IS NOT NULL
+           GROUP BY regime
+           ORDER BY regime""",
+    )
+
+
+def fetch_accuracy_history(limit: int = 100) -> List[sqlite3.Row]:
+    """최근 N개 예측의 정확도 이력 — 학습 성장 곡선용.
+    반환: ts, correct (0/1)
+    """
+    return fetchall(
+        PREDICTIONS_DB,
+        """SELECT ts, correct
+           FROM predictions
+           WHERE actual IS NOT NULL AND correct IS NOT NULL
+           ORDER BY ts DESC
+           LIMIT ?""",
+        (limit,),
+    )
+
+
 def init_all_dbs():
     """전체 DB 초기화 (main.py에서 1회 호출)"""
     init_predictions_db()

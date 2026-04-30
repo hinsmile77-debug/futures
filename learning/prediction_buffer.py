@@ -69,7 +69,7 @@ class PredictionBuffer:
             # 아직 actual이 없는 예측 조회
             row = fetchone(
                 PREDICTIONS_DB,
-                """SELECT id, direction, confidence
+                """SELECT id, direction, confidence, features
                    FROM predictions
                    WHERE ts = ? AND horizon = ? AND actual IS NULL""",
                 (target_ts, horizon),
@@ -94,6 +94,11 @@ class PredictionBuffer:
                 (actual, correct, pred_id),
             )
 
+            try:
+                feat_dict = json.loads(row["features"]) if row["features"] else {}
+            except (ValueError, TypeError):
+                feat_dict = {}
+
             verified.append({
                 "id":         pred_id,
                 "horizon":    horizon,
@@ -101,6 +106,7 @@ class PredictionBuffer:
                 "actual":     actual,
                 "correct":    bool(correct),
                 "confidence": row["confidence"],
+                "features":   feat_dict,
             })
             logger.debug(
                 f"[Buffer] {horizon} 검증: pred={pred_dir} actual={actual} "

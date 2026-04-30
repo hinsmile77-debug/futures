@@ -237,48 +237,96 @@ class BatchRetrainer:
         with open(path, "rb") as f:
             return pickle.load(f)
 
-    # ── DB 로드 (더미 구현 — 실거래 데이터 확보 후 완성) ─────────
+    # ── DB 로드 (raw_features + raw_candles 기반) ────────────────
     def _load_from_db(self, weeks_back: int):
         """
-        SQLite DB에서 과거 분봉 피처/라벨 로드
+        raw_data.db 의 raw_features / raw_candles 테이블에서 학습 데이터 로드.
 
-        TODO: utils/db_utils.py 와 연동하여 실제 데이터 로드
-        현재는 데이터 없으면 None 반환
+        raw_features: ts, features(JSON)
+        raw_candles:  ts, close
+        라벨: 각 호라이즌 N분 후 수익률 방향 (+1/0/-1)
         """
-        db_path = os.path.join(DB_DIR, "predictions.db")
-        if not os.path.exists(db_path):
-            logger.warning("[Retrain] DB 없음 — 학습 데이터 확보 필요")
+        import json as _json
+        import sqlite3
+
+        from config.settings import RAW_DATA_DB, HORIZON_THRESHOLDS
+        from model.target_builder import build_single_target
+
+        raw_db = RAW_DATA_DB
+        if not os.path.exists(raw_db):
+            logger.warning("[Retrain] raw_data.db 없음 — 학습 데이터 축적 대기")
             return None, None
 
         try:
-            import sqlite3
-            conn  = sqlite3.connect(db_path)
-            cutoff = (datetime.datetime.now() - datetime.timedelta(weeks=weeks_back)).strftime("%Y-%m-%d")
-            df = None
-            try:
-                import importlib
-                if importlib.util.find_spec("pandas"):
-                    import pandas as pd
-                    df = pd.read_sql(
-                        f"SELECT * FROM features WHERE datetime >= '{cutoff}' ORDER BY datetime",
-                        conn
-                    )
-            finally:
-                conn.close()
+            cutoff = (
+                datetime.datetime.now() - datetime.timedelta(weeks=weeks_back)
+            ).strftime("%Y-%m-%d %H:%M:%S")
 
-            if df is None or len(df) < MIN_TRAIN_BARS:
+            with sqlite3.connect(raw_db, timeout=10) as conn:
+                conn.row_factory = sqlite3.Row
+
+                feat_rows = conn.execute(
+                    "SELECT ts, features FROM raw_features WHERE ts >= ? ORDER BY ts",
+                    (cutoff,),
+                ).fetchall()
+
+                candle_rows = conn.execute(
+                    "SELECT ts, close FROM raw_candles WHERE ts >= ? ORDER BY ts",
+                    (cutoff,),
+                ).fetchall()
+
+            if len(feat_rows) < MIN_TRAIN_BARS:
+                logger.warning(
+                    f"[Retrain] 피처 데이터 부족 ({len(feat_rows)} < {MIN_TRAIN_BARS})"
+                )
                 return None, None
 
-            # 피처/라벨 분리 (columns 구조는 feature_builder 출력에 맞게)
-            feature_cols = [c for c in df.columns if c not in ("datetime", "label_1m", "label_3m",
-                                                                  "label_5m", "label_10m", "label_15m", "label_30m")]
-            X = df[feature_cols].values.astype(np.float32)
-            y_dict = {}
-            for hz in HORIZONS:
-                col = f"label_{hz}"
-                if col in df.columns:
-                    y_dict[hz] = df[col].values.astype(int)
+            # close 맵 (ts → close)
+            close_map = {r["ts"]: float(r["close"]) for r in candle_rows}
 
+            # X 행렬 구성
+            records = []
+            feat_names = None
+            for r in feat_rows:
+                try:
+                    fd = _json.loads(r["features"])
+                except (ValueError, TypeError):
+                    continue
+                if feat_names is None:
+                    feat_names = list(fd.keys())
+                records.append((r["ts"], fd))
+
+            if not records or feat_names is None:
+                return None, None
+
+            X = np.array(
+                [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],
+                dtype=np.float32,
+            )
+
+            # y 라벨 (호라이즌별 미래 수익률 방향)
+            y_dict = {}
+            for hz, h_min in HORIZONS.items():
+                threshold = HORIZON_THRESHOLDS.get(hz, 0.0003)
+                y = []
+                for ts, _ in records:
+                    future_ts = (
+                        datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                        + datetime.timedelta(minutes=h_min)
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                    curr_close   = close_map.get(ts)
+                    future_close = close_map.get(future_ts)
+                    if curr_close and future_close:
+                        label = build_single_target(curr_close, future_close, threshold)
+                    else:
+                        label = 0   # 미래 데이터 없는 경계 구간 → FLAT
+                    y.append(label)
+                y_dict[hz] = np.array(y, dtype=int)
+
+            logger.info(
+                f"[Retrain] DB 로드 완료: {len(X)}행 × {len(feat_names)}피처 "
+                f"(cutoff={cutoff[:10]})"
+            )
             return X, y_dict
 
         except Exception as e:
