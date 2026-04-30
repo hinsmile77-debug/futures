@@ -2866,7 +2866,11 @@ class MireukDashboard(QMainWindow):
         # ── 해상도 감지 (UI 빌드 전에 반드시 먼저) ──────────────
         S.init()
         self.setWindowTitle("미륵이 v7.0  |  KOSPI 200 선물 예측 시스템")
-        self.resize(S.p(1680), S.p(1000))
+        # availableGeometry 기준으로 창 크기/위치 고정 — 태스크바 잘림 방지
+        _avail = QApplication.instance().primaryScreen().availableGeometry()
+        _win_w = min(S.p(1680), _avail.width())
+        _win_h = min(S.p(1000), _avail.height())
+        self.setGeometry(_avail.x(), _avail.y(), _win_w, _win_h)
         self.setStyleSheet(make_style())
         self._build_ui()
 
@@ -3333,6 +3337,7 @@ class DashboardAdapter:
 
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""
+        self._win._stop_sim_timer()   # 실 파이프라인 데이터 수신 시 시뮬 타이머 확실히 중지
         self._win.exit_panel.update_data(pos_data)
 
     def update_price(self, price: float, change: float = 0.0,
@@ -3355,6 +3360,7 @@ class DashboardAdapter:
 
     def update_prediction(self, price: float, preds: dict, params: dict, conf: float = None):
         """멀티 호라이즌 예측 패널 업데이트"""
+        self._win._stop_sim_timer()   # 실 파이프라인 예측 수신 시 시뮬 타이머 확실히 중지
         self._win.pred_panel.update_data(price, preds, params, conf)
 
     def update_entry(self, signal: str, conf: float, grade: str, checks: dict,
