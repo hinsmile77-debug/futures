@@ -120,7 +120,7 @@ C = {
 
 # ── 주문/체결 탭 툴팁 — 진입·청산 전체 흐름 ─────────────────
 _ORDER_TAB_TIP = (
-    "<div style='font-family:Consolas,monospace;font-size:10px;line-height:1.6'>"
+    "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.6'>"
 
     "<b style='color:#58A6FF'>▶ 진입 흐름 (매분 실행)</b><br>"
 
@@ -423,7 +423,7 @@ class PredictionPanel(QWidget):
             self.lbl_conf.setText(f"신뢰도 {conf*100:.1f}%")
             self.lbl_conf.setStyleSheet(
                 f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=0.58 else C['red']};"
-                f"font-size:12px;font-weight:bold;"
+                f"font-size:{S.f(13)}px;font-weight:bold;"
             )
 
         # 앙상블 방향
@@ -431,13 +431,13 @@ class PredictionPanel(QWidget):
         dns = sum(1 for v in preds.values() if v['signal'] == -1)
         if ups >= 4:
             self.lbl_signal.setText("▲ 매수")
-            self.lbl_signal.setStyleSheet(f"color:{C['green']};font-size:16px;font-weight:bold;")
+            self.lbl_signal.setStyleSheet(f"color:{C['green']};font-size:{S.f(16)}px;font-weight:bold;")
         elif dns >= 4:
             self.lbl_signal.setText("▼ 매도")
-            self.lbl_signal.setStyleSheet(f"color:{C['red']};font-size:16px;font-weight:bold;")
+            self.lbl_signal.setStyleSheet(f"color:{C['red']};font-size:{S.f(16)}px;font-weight:bold;")
         else:
             self.lbl_signal.setText("— 관망")
-            self.lbl_signal.setStyleSheet(f"color:{C['text2']};font-size:16px;font-weight:bold;")
+            self.lbl_signal.setStyleSheet(f"color:{C['text2']};font-size:{S.f(16)}px;font-weight:bold;")
 
         # 호라이즌 카드
         for hname, pred in preds.items():
@@ -462,8 +462,8 @@ class PredictionPanel(QWidget):
                 pct.setText("횡보")
                 frame.setStyleSheet(
                     f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};border-radius:6px;}}")
-            arr.setStyleSheet(f"color:{col};font-size:22px;font-weight:bold;")
-            pct.setStyleSheet(f"color:{col};font-size:10px;")
+            arr.setStyleSheet(f"color:{col};font-size:{S.f(22)}px;font-weight:bold;")
+            pct.setStyleSheet(f"color:{col};font-size:{S.f(12)}px;")
 
         # SHAP 바
         for name, val in params.items():
@@ -580,12 +580,12 @@ class DivergencePanel(QWidget):
         contrarian = div.get('contrarian','중립')
         col = C['red'] if '하락' in contrarian else C['green'] if '상승' in contrarian else C['text2']
         self.pos_contrarian_val.setText(contrarian)
-        self.pos_contrarian_val.setStyleSheet(f"color:{col};font-size:12px;font-weight:bold;")
+        self.pos_contrarian_val.setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
 
         score = div.get('div_score', 0)
         col2  = C['green'] if score > 10 else C['red'] if score < -10 else C['text2']
         self.pos_div_score_val.setText(f"{score:+.0f}")
-        self.pos_div_score_val.setStyleSheet(f"color:{col2};font-size:13px;font-weight:bold;")
+        self.pos_div_score_val.setStyleSheet(f"color:{col2};font-size:{S.f(14)}px;font-weight:bold;")
 
 
 # ────────────────────────────────────────────────────────────
@@ -689,7 +689,7 @@ class FeaturePanel(QWidget):
         self.change_log.setFixedHeight(55)
         self.change_log.setStyleSheet(
             f"background:{C['bg']};color:{C['text2']};border:1px solid {C['border']};"
-            f"font-size:9px;font-family:Consolas;"
+            f"font-size:{S.f(11)}px;font-family:Consolas;"
         )
         self.change_log.setText(
             "01-12  교체  베이시스 → 프로그램비차익  +1.4%  [성공]\n"
@@ -833,14 +833,14 @@ class ExitPanel(QWidget):
         for w in (self.entry_price, self.cur_price, self.unreal_pnl, self.hold_time):
             w.setText("——")
         self.unreal_pnl.setStyleSheet(
-            f"color:{C['text2']};font-size:13px;font-weight:bold;"
+            f"color:{C['text2']};font-size:{S.f(14)}px;font-weight:bold;"
         )
         for attr in ("hard_stop", "struct_stop", "trail_stop",
                      "breakeven", "target1", "target2", "target3"):
             getattr(self, f"lv_{attr}").setText("——.——")
         _badge_reset_ss = (
             f"background:{C['bg3']};color:{C['text2']};"
-            f"border-radius:3px;font-size:8px;padding:1px 5px;"
+            f"border-radius:3px;font-size:{S.f(10)}px;padding:1px 5px;"
         )
         for attr in ("hard_trig", "signal_trig", "cvd_trig",
                      "shap_trig", "opt_trig", "trail_trig", "t1_trig", "time_trig"):
@@ -850,7 +850,7 @@ class ExitPanel(QWidget):
         for bar_w, lbl_w in self.partial_bars:
             bar_w.setValue(0)
             lbl_w.setText("대기")
-            lbl_w.setStyleSheet(f"color:{C['text2']};font-size:9px;")
+            lbl_w.setStyleSheet(f"color:{C['text2']};font-size:{S.f(11)}px;")
 
     def update_data(self, pos_data):
         if not pos_data:
@@ -881,7 +881,7 @@ class ExitPanel(QWidget):
         pnl_krw = pnl_pts * qty * 500_000
         col = C['green'] if pnl_krw >= 0 else C['red']
         self.unreal_pnl.setText(f"{pnl_krw:+,.0f}원")
-        self.unreal_pnl.setStyleSheet(f"color:{col};font-size:13px;font-weight:bold;")
+        self.unreal_pnl.setStyleSheet(f"color:{col};font-size:{S.f(14)}px;font-weight:bold;")
 
         # 보유 시간
         entry_time = pos_data.get('entry_time')
@@ -911,7 +911,7 @@ class ExitPanel(QWidget):
             bar_w.setValue(100 if done else 0)
             lbl_w.setText("완료" if done else "대기")
             lbl_w.setStyleSheet(
-                f"color:{C['green'] if done else C['text2']};font-size:9px;"
+                f"color:{C['green'] if done else C['text2']};font-size:{S.f(11)}px;"
             )
 
 
@@ -939,7 +939,7 @@ class EntryPanel(QWidget):
             btn.setStyleSheet(
                 f"QPushButton{{background:{C['bg2'] if mode=='hybrid' else C['bg3']};"
                 f"color:{col};border:{'2' if mode=='hybrid' else '1'}px solid {col};"
-                f"border-radius:4px;padding:5px 8px;font-size:10px;}}"
+                f"border-radius:4px;padding:5px 8px;font-size:{S.f(12)}px;}}"
             )
             btn.clicked.connect(lambda checked, m=mode: self._set_mode(m))
             self.mode_btns[mode] = btn
@@ -987,10 +987,10 @@ class EntryPanel(QWidget):
         self.check_labels = {}
         for i, (name, attr) in enumerate(checks):
             r = QHBoxLayout()
-            icon = mk_badge("—", C['bg3'], C['text2'], 8)
-            icon.setFixedWidth(20)
-            nl   = mk_label(name, C['text'], 9)
-            vl   = mk_val_label("——", C['text2'], 9)
+            icon = mk_badge("—", C['bg3'], C['text2'], 10)
+            icon.setFixedWidth(22)
+            nl   = mk_label(name, C['text'], 11)
+            vl   = mk_val_label("——", C['text2'], 11)
             r.addWidget(icon)
             r.addWidget(nl, 2)
             r.addWidget(vl)
@@ -1000,11 +1000,11 @@ class EntryPanel(QWidget):
         lay.addWidget(mk_sep())
 
         # 진입 버튼
-        lay.addWidget(mk_label("진입 실행", C['text2'], 9, True))
-        self.entry_alert = mk_label("신호 대기 중...", C['text2'], 10)
+        lay.addWidget(mk_label("진입 실행", C['text2'], 11, True))
+        self.entry_alert = mk_label("신호 대기 중...", C['text2'], 12)
         self.entry_alert.setStyleSheet(
             f"background:{C['bg3']};border:1px solid {C['border']};"
-            f"border-radius:4px;padding:5px;color:{C['text2']};font-size:10px;"
+            f"border-radius:4px;padding:5px;color:{C['text2']};font-size:{S.f(12)}px;"
         )
         lay.addWidget(self.entry_alert)
 
@@ -1016,13 +1016,13 @@ class EntryPanel(QWidget):
         self.buy_btn.setStyleSheet(
             f"QPushButton{{background:#0D2818;color:{C['green']};"
             f"border:1px solid {C['green']};border-radius:4px;padding:7px;"
-            f"font-size:11px;font-weight:bold;}}"
+            f"font-size:{S.f(13)}px;font-weight:bold;}}"
             f"QPushButton:hover{{background:{C['green']};color:#000;}}"
         )
         self.sell_btn.setStyleSheet(
             f"QPushButton{{background:#2D0D0D;color:{C['red']};"
             f"border:1px solid {C['red']};border-radius:4px;padding:7px;"
-            f"font-size:11px;font-weight:bold;}}"
+            f"font-size:{S.f(13)}px;font-weight:bold;}}"
             f"QPushButton:hover{{background:{C['red']};color:#000;}}"
         )
         self.skip_btn.setStyleSheet(
@@ -1036,8 +1036,8 @@ class EntryPanel(QWidget):
 
         # 당일 통계
         lay.addWidget(mk_sep())
-        lay.addWidget(mk_label("당일 진입 통계", C['text2'], 9, True))
-        self.stat_label = mk_label("진입 0회 | 자동 0 | 수동 0 | 승률 —% | 손익 ——pt", C['text2'], 9)
+        lay.addWidget(mk_label("당일 진입 통계", C['text2'], 11, True))
+        self.stat_label = mk_label("진입 0회 | 자동 0 | 수동 0 | 승률 —% | 손익 ——pt", C['text2'], 11)
         lay.addWidget(self.stat_label)
 
     def update_stats(self, trades: int, wins: int, pnl_pts: float):
@@ -1048,7 +1048,7 @@ class EntryPanel(QWidget):
         self.stat_label.setText(
             f"진입 {trades}회 | 자동 {trades} | 수동 0 | 승률 {win_rate} | 손익 {pnl_pts:+.2f}pt"
         )
-        self.stat_label.setStyleSheet(f"color:{pnl_col};font-size:9px;")
+        self.stat_label.setStyleSheet(f"color:{pnl_col};font-size:{S.f(11)}px;")
 
     def _set_mode(self, mode):
         for m, btn in self.mode_btns.items():
@@ -1057,31 +1057,31 @@ class EntryPanel(QWidget):
             btn.setStyleSheet(
                 f"QPushButton{{background:{C['bg2'] if m==mode else C['bg3']};"
                 f"color:{col};border:{bw} solid {col};"
-                f"border-radius:4px;padding:5px 8px;font-size:10px;}}"
+                f"border-radius:4px;padding:5px 8px;font-size:{S.f(12)}px;}}"
             )
 
     def update_data(self, signal, conf, grade, checks, qty=0):
         col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
         self.e_signal.setText(signal)
-        self.e_signal.setStyleSheet(f"color:{col};font-size:13px;font-weight:bold;")
+        self.e_signal.setStyleSheet(f"color:{col};font-size:{S.f(14)}px;font-weight:bold;")
         self.e_conf.setText(f"{conf*100:.1f}%")
         self.e_conf.setStyleSheet(
             f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=0.58 else C['red']};"
-            f"font-size:13px;font-weight:bold;"
+            f"font-size:{S.f(14)}px;font-weight:bold;"
         )
 
         grade_colors = {"A": C['cyan'], "B": C['blue'], "C": C['orange'], "X": C['red']}
         self.e_grade.setText(f"{grade}급")
         self.e_grade.setStyleSheet(f"color:{grade_colors.get(grade,C['text'])};"
-                                    f"font-size:13px;font-weight:bold;")
+                                    f"font-size:{S.f(14)}px;font-weight:bold;")
 
         # 산출 수량
         if qty > 0:
             self.e_qty.setText(f"{qty}계약")
-            self.e_qty.setStyleSheet(f"color:{C['cyan']};font-size:13px;font-weight:bold;")
+            self.e_qty.setStyleSheet(f"color:{C['cyan']};font-size:{S.f(14)}px;font-weight:bold;")
         else:
             self.e_qty.setText("——")
-            self.e_qty.setStyleSheet(f"color:{C['text2']};font-size:13px;font-weight:bold;")
+            self.e_qty.setStyleSheet(f"color:{C['text2']};font-size:{S.f(14)}px;font-weight:bold;")
 
         # 체크리스트 아이콘
         # checks={} → 미평가(—), True → V(green), False → X(red)
@@ -1091,37 +1091,37 @@ class EntryPanel(QWidget):
                 icon.setText("—")
                 icon.setStyleSheet(
                     f"background:{C['bg3']};color:{C['text2']};"
-                    f"border-radius:3px;font-size:8px;font-weight:bold;padding:1px 4px;"
+                    f"border-radius:3px;font-size:{S.f(10)}px;font-weight:bold;padding:1px 4px;"
                 )
             elif val:
                 icon.setText("V")
                 icon.setStyleSheet(
                     f"background:{C['green']};color:#fff;"
-                    f"border-radius:3px;font-size:8px;font-weight:bold;padding:1px 4px;"
+                    f"border-radius:3px;font-size:{S.f(10)}px;font-weight:bold;padding:1px 4px;"
                 )
             else:
                 icon.setText("X")
                 icon.setStyleSheet(
                     f"background:{C['red']};color:#fff;"
-                    f"border-radius:3px;font-size:8px;font-weight:bold;padding:1px 4px;"
+                    f"border-radius:3px;font-size:{S.f(10)}px;font-weight:bold;padding:1px 4px;"
                 )
 
         if signal == "매수":
             self.entry_alert.setStyleSheet(
                 f"background:#0D2818;border:1px solid {C['green']};"
-                f"border-radius:4px;padding:5px;color:{C['green']};font-size:10px;"
+                f"border-radius:4px;padding:5px;color:{C['green']};font-size:{S.f(12)}px;"
             )
             self.entry_alert.setText(f"▲ 매수 신호 {grade}급 — {conf*100:.1f}% 신뢰도")
         elif signal == "매도":
             self.entry_alert.setStyleSheet(
                 f"background:#2D0D0D;border:1px solid {C['red']};"
-                f"border-radius:4px;padding:5px;color:{C['red']};font-size:10px;"
+                f"border-radius:4px;padding:5px;color:{C['red']};font-size:{S.f(12)}px;"
             )
             self.entry_alert.setText(f"▼ 매도 신호 {grade}급 — {conf*100:.1f}% 신뢰도")
         else:
             self.entry_alert.setStyleSheet(
                 f"background:{C['bg3']};border:1px solid {C['border']};"
-                f"border-radius:4px;padding:5px;color:{C['text2']};font-size:10px;"
+                f"border-radius:4px;padding:5px;color:{C['text2']};font-size:{S.f(12)}px;"
             )
             self.entry_alert.setText("— 관망 | 신호 대기 중")
 
@@ -1162,7 +1162,7 @@ class AlphaPanel(QWidget):
         self.alert_box.setWordWrap(True)
         self.alert_box.setStyleSheet(
             f"background:{C['bg3']};color:{C['text2']};border:1px solid {C['border']};"
-            f"border-radius:4px;padding:6px;font-size:10px;"
+            f"border-radius:4px;padding:6px;font-size:{S.f(12)}px;"
         )
         lay.addWidget(self.alert_box)
         lay.addWidget(mk_sep())
@@ -1205,7 +1205,7 @@ class AlphaPanel(QWidget):
                 b = QPushButton(blbl)
                 b.setStyleSheet(
                     f"background:{C['bg3']};color:{bcol};border:1px solid {bcol};"
-                    f"border-radius:3px;padding:2px 8px;font-size:9px;"
+                    f"border-radius:3px;padding:2px 8px;font-size:{S.f(11)}px;"
                 )
                 btn_row.addWidget(b)
             btn_row.addStretch()
@@ -1234,7 +1234,7 @@ class AlphaPanel(QWidget):
         )
         self.alert_box.setStyleSheet(
             f"background:#2D0D0D;color:{C['red']};border:1px solid {C['red']};"
-            f"border-radius:4px;padding:6px;font-size:10px;font-weight:bold;"
+            f"border-radius:4px;padding:6px;font-size:{S.f(12)}px;font-weight:bold;"
         )
 
 
@@ -1272,9 +1272,9 @@ class LogPanel(QWidget):
                                         ("체결률","85.7%"),("평균 지연","142ms")]:
                     mf = QFrame()
                     mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
-                    mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,2,5,2)
-                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 8, align=Qt.AlignCenter))
-                    mfl.addWidget(mk_val_label(mk_val, col, 11, align=Qt.AlignCenter))
+                    mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,3,5,3)
+                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 10, align=Qt.AlignCenter))
+                    mfl.addWidget(mk_val_label(mk_val, col, 13, align=Qt.AlignCenter))
                     mrow.addWidget(mf)
                 pl.addLayout(mrow)
 
@@ -1289,11 +1289,11 @@ class LogPanel(QWidget):
                 ]:
                     mf = QFrame()
                     mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
-                    mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,2,5,2)
-                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 8, align=Qt.AlignCenter))
+                    mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,3,5,3)
+                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 10, align=Qt.AlignCenter))
                     pb = mk_prog(mc, 4)
                     pb.setValue(0)
-                    vl = mk_val_label("——원", mc, 11, align=Qt.AlignCenter)
+                    vl = mk_val_label("——원", mc, 13, align=Qt.AlignCenter)
                     mfl.addWidget(vl)
                     mfl.addWidget(pb)
                     mrow.addWidget(mf)
@@ -1308,9 +1308,9 @@ class LogPanel(QWidget):
                                              ("자가학습","● 활성",C['green'])]:
                     mf = QFrame()
                     mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
-                    mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,2,5,2)
-                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 8, align=Qt.AlignCenter))
-                    mfl.addWidget(mk_val_label(mk_val, mc, 11, align=Qt.AlignCenter))
+                    mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,3,5,3)
+                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 10, align=Qt.AlignCenter))
+                    mfl.addWidget(mk_val_label(mk_val, mc, 13, align=Qt.AlignCenter))
                     mrow.addWidget(mf)
                 pl.addLayout(mrow)
 
@@ -1318,7 +1318,7 @@ class LogPanel(QWidget):
             tb.setReadOnly(True)
             tb.setStyleSheet(
                 f"background:{C['bg']};color:{C['text']};border:none;"
-                f"font-family:Consolas,D2Coding,monospace;font-size:10px;"
+                f"font-family:Consolas,D2Coding,monospace;font-size:{S.f(12)}px;"
             )
             pl.addWidget(tb)
             self.log_boxes[key] = tb
@@ -1344,7 +1344,7 @@ class LogPanel(QWidget):
             pb  = self._pnl_bars.get(attr)
             if lbl:
                 lbl.setText(f"{val:+,.0f}원")
-                lbl.setStyleSheet(f"color:{col};font-size:11px;font-weight:bold;")
+                lbl.setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
             if pb and attr != "var":
                 # 진행바: 0 기준 ±5만원 = 50% 눈금 (최대 100%)
                 pct = min(100, max(0, int(abs(val) / 50_000 * 50 + 50)))
@@ -1369,7 +1369,7 @@ class LogPanel(QWidget):
             f'<span style="color:{C["text"]}">{msg}</span>'
         )
         if val:
-            line += f' <span style="color:{C["text2"]};font-size:9px;">{val}</span>'
+            line += f' <span style="color:{C["text2"]};font-size:{S.f(11)}px;">{val}</span>'
 
         # 경보창에도 WARNING 이상 복사
         if key == "all" and tag in ("WARN", "ERROR", "CRITICAL"):
@@ -1704,7 +1704,7 @@ class DashboardAdapter:
         self._win.lbl_regime.setText(regime)
         self._win.lbl_regime.setStyleSheet(
             f"background:{col};color:#fff;border-radius:3px;"
-            f"font-size:9px;font-weight:bold;padding:1px 6px;"
+            f"font-size:{S.f(11)}px;font-weight:bold;padding:1px 6px;"
         )
         # 로그에도 기록
         self._win.log_panel.append(
@@ -1804,7 +1804,7 @@ def _make_kill_btn(self):
         self._kill_btn.setStyleSheet(
             f"QPushButton{{background:#A32D2D;color:#fff;"
             f"border:none;border-radius:4px;padding:8px;"
-            f"font-size:11px;font-weight:bold;}}"
+            f"font-size:{S.f(13)}px;font-weight:bold;}}"
             f"QPushButton:hover{{background:#C0392B;}}"
         )
     return self._kill_btn
