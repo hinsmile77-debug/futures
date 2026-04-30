@@ -40,17 +40,30 @@ from PyQt5.QtGui import (
 # ────────────────────────────────────────────────────────────
 class ScreenScale:
     """
-    화면 해상도를 감지해 폰트/여백을 자동 조정
+    화면 해상도와 OS DPI 배율을 감지해 폰트/여백을 자동 조정
 
-    기준 해상도: 1920×1080 (FHD)
-      HD  ( 768p): scale 0.85 → 15% 축소
-      FHD (1080p): scale 1.00 → 기본
-      QHD (1440p): scale 1.30 → 30% 확대
-      4K  (2160p): scale 1.80 → 80% 확대
+    스케일 산정 방식:
+      1. fit_scale  = min(논리W / 1680, 논리H / 1000)
+                      창(1680×1000 기준)이 논리 화면에 꽉 차는 최대 배율
+      2. dpi_bonus  = (devicePixelRatio - 1.0) × 0.10
+                      고DPI 환경에서 물리 픽셀 여유만큼 소폭 추가 확대
+      3. scale      = clamp(fit_scale + dpi_bonus, 0.80, 2.20)
+
+    해상도별 예상 스케일 (OS DPI 배율 포함):
+      FHD  1920×1080  DPI 100% (dpr=1.0) → scale ≈ 1.04
+      QHD  2560×1440  DPI 100% (dpr=1.0) → scale ≈ 1.40
+      4K   3840×2160  DPI 150% (dpr=1.5) → scale ≈ 1.45  ← 논리 2560×1440
+      4K   3840×2160  DPI 100% (dpr=1.0) → scale ≈ 2.16
     """
-    _scale: float = 1.0
-    _sw: int = 1920
-    _sh: int = 1080
+    _scale:  float = 1.0
+    _sw:     int   = 1920   # 논리 가용 폭  (OS DPI 반영)
+    _sh:     int   = 1080   # 논리 가용 높이
+    _phys_w: int   = 1920   # 물리 픽셀 폭
+    _phys_h: int   = 1080   # 물리 픽셀 높이
+    _dpr:    float = 1.0    # OS DPI 배율 (100%→1.0, 150%→1.5, 200%→2.0)
+
+    _BASE_W: int = 1680     # 창 기준 폭  (resize(S.p(1680), ...) 와 일치)
+    _BASE_H: int = 1000     # 창 기준 높이
 
     @classmethod
     def init(cls):
@@ -60,13 +73,31 @@ class ScreenScale:
         screen = app.primaryScreen()
         if screen is None:
             return
-        geo     = screen.availableGeometry()
-        cls._sw = geo.width()
-        cls._sh = geo.height()
-        # 세로 해상도 기준 스케일 (울트라와이드 오작동 방지)
-        raw     = cls._sh / 1080.0
+
+        geo      = screen.availableGeometry()
+        cls._sw  = geo.width()
+        cls._sh  = geo.height()
+        cls._dpr = screen.devicePixelRatio()
+
+        # 물리 해상도 = 논리 × DPI 배율
+        cls._phys_w = round(cls._sw * cls._dpr)
+        cls._phys_h = round(cls._sh * cls._dpr)
+
+        # ① 창이 논리 화면에 꽉 차는 최대 배율
+        fit_scale = min(cls._sw / cls._BASE_W, cls._sh / cls._BASE_H)
+
+        # ② 고DPI 보너스: dpr=1.0→+0.00, dpr=1.5→+0.05, dpr=2.0→+0.10
+        dpi_bonus = (cls._dpr - 1.0) * 0.10
+
+        raw = fit_scale + dpi_bonus
         cls._scale = max(0.80, min(2.20, raw))
-        print(f"[Dashboard] 화면 해상도 {cls._sw}×{cls._sh} — 스케일 {cls._scale:.2f}×")
+
+        print(
+            f"[Dashboard] 물리={cls._phys_w}×{cls._phys_h}"
+            f"  논리={cls._sw}×{cls._sh}"
+            f"  DPI={cls._dpr:.2f}×"
+            f"  UI스케일={cls._scale:.2f}×"
+        )
 
     @classmethod
     def f(cls, size: int) -> int:
@@ -80,7 +111,10 @@ class ScreenScale:
 
     @classmethod
     def info(cls) -> str:
-        return f"{cls._sw}×{cls._sh} (scale={cls._scale:.2f})"
+        return (
+            f"{cls._phys_w}×{cls._phys_h}"
+            f" (DPI {cls._dpr:.2f}×  UI {cls._scale:.2f}×)"
+        )
 
 
 S = ScreenScale   # 짧은 별칭으로 사용
