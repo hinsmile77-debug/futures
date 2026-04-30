@@ -845,6 +845,93 @@ class TradingSystem:
         )
         self._refresh_pnl_history()
 
+    # ── 파이프라인 생존 감시 ──────────────────────────────────────
+
+    def _on_pipeline_watchdog(self, elapsed_s: int) -> None:
+        """분봉 파이프라인 지연 감지 시 경보 탭 로그 + 단계별 복구 조치.
+
+        임계값:
+          60s  — 경보 로그 (1분봉 수신 지연)
+         120s  — 경보 로그 + 슬랙 (심각)
+         180s  — 경보 로그 + 슬랙 + raw_candles 강제 재실행
+        """
+        m, s = divmod(elapsed_s, 60)
+        elapsed_str = f"{m}분 {s:02d}초"
+
+        if elapsed_s >= 180:
+            msg = (f"⛔ 파이프라인 {elapsed_str} 미실행 — 원인 불명. 긴급 복구 시도 중  "
+                   f"가능한 원인: ① API 무응답 ② on_candle_closed 미호출 "
+                   f"③ STEP 내 예외 누락 ④ 장외 시간")
+            log_manager.system(msg, "WARNING")
+            notify(f"🚨 미륵이 파이프라인 {elapsed_str} 정지 — 긴급 복구 시도")
+            QTimer.singleShot(300, self._try_pipeline_recovery)
+
+        elif elapsed_s >= 120:
+            msg = (f"⚠ 파이프라인 {elapsed_str} 미실행 — 분봉 수신 또는 API 상태 이상  "
+                   f"다음 60초 내 미복구 시 긴급 복구 자동 실행")
+            log_manager.system(msg, "WARNING")
+            notify(f"⚠ 미륵이 파이프라인 {elapsed_str} 지연 — 60초 내 미복구 시 자동 조치")
+
+        else:  # 60s
+            msg = (f"⚠ 파이프라인 {elapsed_str} 미실행 — 분봉 수신 지연 의심  "
+                   f"장 시간({is_market_open()}) 확인. 다음 분봉에서 자동 회복 기대")
+            log_manager.system(msg, "WARNING")
+
+    def _try_pipeline_recovery(self) -> None:
+        """raw_candles 최신 분봉으로 파이프라인 강제 재실행."""
+        from utils.db_utils import fetchone
+        from config.settings import RAW_DATA_DB
+
+        try:
+            row = fetchone(
+                RAW_DATA_DB,
+                "SELECT * FROM raw_candles ORDER BY ts DESC LIMIT 1",
+            )
+        except Exception as e:
+            log_manager.system(f"[복구 실패] DB 조회 오류: {e}", "WARNING")
+            return
+
+        if not row:
+            log_manager.system("[복구 실패] raw_candles 비어 있음 — 분봉 데이터 없음", "WARNING")
+            if self.position.status != "FLAT":
+                log_manager.system("[포지션 경보] 파이프라인 정지 중 포지션 보유 — 수동 확인 필요", "WARNING")
+            return
+
+        ts_str = row["ts"]  # "YYYY-MM-DD HH:MM:SS"
+        try:
+            ts = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            log_manager.system(f"[복구 실패] ts 파싱 오류: {ts_str}", "WARNING")
+            return
+
+        age_s = int((datetime.datetime.now() - ts).total_seconds())
+        if age_s > 600:
+            log_manager.system(
+                f"[복구 포기] 최신 분봉이 {age_s}초 전 데이터 — 재처리 무의미 (장외 시간?)", "WARNING"
+            )
+            if self.position.status != "FLAT":
+                log_manager.system(
+                    "[포지션 경보] 파이프라인 장기 정지 + 포지션 보유 — 수동 청산 검토 필요", "WARNING"
+                )
+            return
+
+        bar = {
+            "ts":       ts,
+            "open":     float(row["open"]),
+            "high":     float(row["high"]),
+            "low":      float(row["low"]),
+            "close":    float(row["close"]),
+            "volume":   int(row["volume"] or 0),
+            "buy_vol":  0,
+            "sell_vol": 0,
+        }
+        log_manager.system(f"[복구 시도] {ts_str} 분봉 강제 재처리...")
+        try:
+            self.run_minute_pipeline(bar)
+            log_manager.system("[복구 완료] 파이프라인 재실행 성공 — 정상 감시 재개")
+        except Exception as e:
+            log_manager.system(f"[복구 실패] 파이프라인 예외: {e}", "WARNING")
+
     # ── 재시작 복원 ───────────────────────────────────────────────
 
     def _increment_session(self) -> int:
@@ -985,6 +1072,9 @@ class TradingSystem:
             )
         self.dashboard.append_sys_log(f"시스템 시작 | 모드={self.mode} | 코드={self.realtime_data.code if self.realtime_data else '—'}")
         self.dashboard.update_system_status(cb_state="NORMAL", latency_ms=0.0)
+
+        # 파이프라인 감시 콜백 등록
+        self.dashboard.set_pipeline_watchdog_cb(self._on_pipeline_watchdog)
 
         # 세션 카운터 증가 + 당일 거래 이력 복원
         self._session_no = self._increment_session()

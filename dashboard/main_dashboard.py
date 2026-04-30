@@ -3029,6 +3029,8 @@ class MireukDashboard(QMainWindow):
         clk_lay.addLayout(pipe_row)
 
         self._pipe_elapsed_s: int = 0            # 마지막 파이프라인 이후 경과초
+        self._watchdog_alerted: set = set()    # 이미 발동한 임계값 (60/120/180s)
+        self._pipeline_recovery_cb = None      # main.py가 등록하는 복구 콜백
 
         self.lbl_clock = None   # 제거됨 — _tick_header() 참조용 유지
 
@@ -3189,6 +3191,14 @@ class MireukDashboard(QMainWindow):
         self._lbl_pipe_ago.setStyleSheet(
             f"color:{ago_col};font-size:{S.f(9)}px;"
         )
+
+        # ── 파이프라인 감시 — 임계값 초과 시 복구 콜백 발동 (1회씩) ──
+        for threshold in (60, 120, 180):
+            if ps >= threshold and threshold not in self._watchdog_alerted:
+                self._watchdog_alerted.add(threshold)
+                if self._pipeline_recovery_cb:
+                    self._pipeline_recovery_cb(ps)
+                break
 
     def _refresh_cycle_badge(self):
         """위클리/월간 D-days 배지를 날짜 변화에 맞춰 갱신."""
@@ -3442,6 +3452,11 @@ class DashboardAdapter:
         """분봉 파이프라인 완료 시 상태 바 + 헤더 생존 바 동시 리셋."""
         self._win.log_panel.notify_update()
         self._win._pipe_elapsed_s = 0
+        self._win._watchdog_alerted.clear()  # 복구 시 경보 플래그 초기화
+
+    def set_pipeline_watchdog_cb(self, cb):
+        """파이프라인 지연 감지 시 호출될 콜백 등록 (main.py → dashboard)."""
+        self._win._pipeline_recovery_cb = cb
 
     def append_restore_trade(self, msg: str, ts: str = "", val: str = ""):
         """재시작 복원: 창3 주문/체결 탭에 이탤릭·회색으로 표시"""

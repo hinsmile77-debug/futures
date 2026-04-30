@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-04-30 (PnL 재시작 복원 수정 + 분봉 모니터 툴팁)
+> 마지막 업데이트: 2026-04-30 (파이프라인 생존 감시 + 자동 복구)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,32 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-04-30 세션 주요 수정 (파이프라인 생존 감시 + 자동 복구)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **파이프라인 감시 콜백** | `main_dashboard.py` — `MireukDashboard._watchdog_alerted` (set) + `_pipeline_recovery_cb` 추가. `_tick_header()`에서 60/120/180초 임계값 초과 시 1회만 콜백 발동. `notify_pipeline_ran()` 시 플래그 초기화 |
+| **`set_pipeline_watchdog_cb()`** | `DashboardAdapter`에 추가 — main.py → dashboard 역방향 콜백 등록 인터페이스 |
+| **`_on_pipeline_watchdog()`** | `main.py` — 60s: 경보 로그(WARNING), 120s: 경보 + 슬랙, 180s: 경보 + 슬랙 + 강제 복구 |
+| **`_try_pipeline_recovery()`** | `main.py` — `raw_candles` DB 최신 분봉(10분 이내) 읽어 `run_minute_pipeline()` 강제 재실행. 포지션 보유 중 장기 정지 시 추가 경보 |
+| **`log_manager.warn` 오류 수정** | `warn()` 메서드 없음 → 전체 `log_manager.system(msg, "WARNING")` 으로 교체. SYSTEM layer + WARNING level → `append_sys_log_tagged` → 1 시스템·2 경보 탭 동시 기록 |
+
+### 파이프라인 감시 3단계 동작
+
+| 경과 | 동작 |
+|---|---|
+| **60초** | 경보 탭 경고 — 분봉 수신 지연, 장 시간 확인 안내 |
+| **120초** | 경보 탭 경고 + 슬랙 알림 — 60초 내 미복구 시 자동 조치 예고 |
+| **180초** | 경보 탭 + 슬랙 + `_try_pipeline_recovery()` 자동 실행 |
+
+### 복구 루틴 조건 분기
+
+- `raw_candles` 없음 → 경보 로그 후 종료 (포지션 있으면 추가 경보)
+- 최신 분봉 > 10분 전 → 복구 포기 (장외 시간 판단)
+- 최신 분봉 ≤ 10분 → `run_minute_pipeline(bar)` 강제 실행 → `notify_pipeline_ran()` 자동 호출 → 감시 플래그 리셋
 
 ---
 
