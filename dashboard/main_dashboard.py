@@ -309,6 +309,56 @@ _CANDLE_MONITOR_TIP = (
     "</div>"
 )
 
+_PIPE_HEALTH_TIP = (
+    "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.75;"
+    "min-width:420px;'>"
+
+    "<b style='color:#39D3BB;font-size:13px;'>분봉 파이프라인 심박</b>"
+    "<hr style='border:0;border-top:1px solid #30363D;margin:5px 0 7px 0'>"
+
+    "<b style='color:#58A6FF'>① 막대 의미</b><br>"
+    "&nbsp;&nbsp;마지막 1분봉이 <b>9단계 파이프라인을 통과한 시각</b>으로부터 경과한 시간<br>"
+    "&nbsp;&nbsp;파이프라인 정상 완료 시 막대가 왼쪽으로 리셋됨<br><br>"
+
+    "<b style='color:#58A6FF'>② 막대 색상</b><br>"
+    "<table style='margin-left:14px;border-collapse:collapse;'>"
+    "<tr><td style='color:#39D3BB;font-weight:bold;padding-right:8px;'>■ 청록</td>"
+    "<td>60초 이내&nbsp;&nbsp;—&nbsp;&nbsp;<b>정상</b> (매분 파이프라인 동작 중)</td></tr>"
+    "<tr><td style='color:#FFB74D;font-weight:bold;padding-right:8px;'>■ 주황</td>"
+    "<td>60 ~ 120초&nbsp;&nbsp;—&nbsp;&nbsp;<b>경보</b> 발송됨</td></tr>"
+    "<tr><td style='color:#F85149;font-weight:bold;padding-right:8px;'>■ 빨강</td>"
+    "<td>120초 초과&nbsp;&nbsp;—&nbsp;&nbsp;<b>슬랙 + 긴급복구</b> 실행됨</td></tr>"
+    "</table><br>"
+
+    "<b style='color:#58A6FF'>③ 미실행 경과 시 자동 조치</b><br>"
+    "<table style='margin-left:14px;border-collapse:collapse;line-height:1.9;'>"
+    "<tr><td style='color:#FFB74D;padding-right:8px;'>60초</td>"
+    "<td>⚠ <b>2 경보 탭</b> 로그 — 분봉 수신 지연 의심, 장 시간 확인 안내</td></tr>"
+    "<tr><td style='color:#FFB74D;padding-right:8px;'>120초</td>"
+    "<td>⚠ <b>경보 탭 + 슬랙</b> 알림 — 60초 내 미복구 시 자동 조치 예고</td></tr>"
+    "<tr><td style='color:#F85149;padding-right:8px;'>180초</td>"
+    "<td>⛔ <b>경보 탭 + 슬랙 + 긴급 복구</b> 자동 실행</td></tr>"
+    "</table><br>"
+
+    "<b style='color:#58A6FF'>④ 긴급 복구 루틴 (180초 초과)</b><br>"
+    "<table style='margin-left:14px;border-collapse:collapse;line-height:1.9;'>"
+    "<tr><td style='color:#39D3BB;padding-right:8px;'>DB 분봉 없음</td>"
+    "<td>경보 로그 후 종료</td></tr>"
+    "<tr><td style='color:#39D3BB;padding-right:8px;'>&gt; 10분 전 데이터</td>"
+    "<td>복구 포기 — 장외 시간 판단</td></tr>"
+    "<tr><td style='color:#39D3BB;padding-right:8px;'>≤ 10분 전 데이터</td>"
+    "<td>raw_candles 최신 분봉으로 파이프라인 강제 재실행</td></tr>"
+    "</table><br>"
+
+    "<b style='color:#F85149'>⑤ 가능한 원인</b><br>"
+    "&nbsp;&nbsp;① 키움 API 무응답&nbsp;&nbsp;"
+    "② on_candle_closed 미호출&nbsp;&nbsp;"
+    "③ STEP 내 예외&nbsp;&nbsp;"
+    "④ 장외 시간"
+
+    "</div>"
+)
+
 
 def make_style() -> str:
     """해상도 감지 후 동적 폰트 사이즈 적용 스타일시트 생성"""
@@ -3012,7 +3062,12 @@ class MireukDashboard(QMainWindow):
         # ── 파이프라인 생존 표시 (1초 갱신) ──────────────────────
         pipe_row = QHBoxLayout()
         pipe_row.setSpacing(4)
-        pipe_row.addWidget(mk_label("분봉", C['text2'], 9))
+        lbl_pipe = mk_label("분봉", C['text2'], 9)
+        lbl_pipe.setToolTip(_PIPE_HEALTH_TIP)
+        lbl_pipe.setStyleSheet(
+            lbl_pipe.styleSheet() + "text-decoration:underline dotted;cursor:help;"
+        )
+        pipe_row.addWidget(lbl_pipe)
         self._pipe_bar = QProgressBar()
         self._pipe_bar.setRange(0, 120)          # 최대 2분 표시
         self._pipe_bar.setValue(0)
@@ -3023,8 +3078,10 @@ class MireukDashboard(QMainWindow):
             f"QProgressBar{{background:{C['bg']};border:none;border-radius:3px;}}"
             f"QProgressBar::chunk{{background:{C['cyan']};border-radius:3px;}}"
         )
+        self._pipe_bar.setToolTip(_PIPE_HEALTH_TIP)
         pipe_row.addWidget(self._pipe_bar)
         self._lbl_pipe_ago = mk_label("── 대기", C['text2'], 9, align=Qt.AlignRight)
+        self._lbl_pipe_ago.setToolTip(_PIPE_HEALTH_TIP)
         pipe_row.addWidget(self._lbl_pipe_ago)
         clk_lay.addLayout(pipe_row)
 
@@ -3193,12 +3250,14 @@ class MireukDashboard(QMainWindow):
         )
 
         # ── 파이프라인 감시 — 임계값 초과 시 복구 콜백 발동 (1회씩) ──
+        # 콜백 실행 후에만 임계값 소비 — 콜백 미등록 시 threshold를 소비하면
+        # 나중에 콜백이 등록돼도 해당 임계값이 영구 누락되는 버그 방지
         for threshold in (60, 120, 180):
             if ps >= threshold and threshold not in self._watchdog_alerted:
-                self._watchdog_alerted.add(threshold)
                 if self._pipeline_recovery_cb:
                     self._pipeline_recovery_cb(ps)
-                break
+                    self._watchdog_alerted.add(threshold)  # 실행 확인 후 소비
+                break  # 한 틱에 하나씩만 처리
 
     def _refresh_cycle_badge(self):
         """위클리/월간 D-days 배지를 날짜 변화에 맞춰 갱신."""
@@ -3514,8 +3573,10 @@ class DashboardAdapter:
         self._win.log_panel.append("all", "WARN", msg)
 
     def append_sys_log_tagged(self, msg: str, level: str = "INFO"):
-        """레벨 명시 시스템 로그 — WARN/ERROR/CRITICAL 은 2 경보 탭에도 복사"""
-        tag = level if level in ("WARN", "ERROR", "CRITICAL") else "SYSTEM"
+        """레벨 명시 시스템 로그 — WARN/WARNING/ERROR/CRITICAL 은 2 경보 탭에도 복사"""
+        # Python logging 표준("WARNING")과 단축형("WARN") 모두 허용
+        tag = {"WARNING": "WARN"}.get(level, level)
+        tag = tag if tag in ("WARN", "ERROR", "CRITICAL") else "SYSTEM"
         self._win.log_panel.append("all", tag, msg)
 
 

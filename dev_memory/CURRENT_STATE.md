@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-04-30 (비정상 분봉 가드 + 진입 신뢰성 강화)
+> 마지막 업데이트: 2026-04-30 (파이프라인 감시 경보 버그 2종 수정 + 분봉 툴팁)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,29 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-04-30 세션 주요 수정 (파이프라인 감시 경보 버그 2종 수정 + 분봉 툴팁)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **경보 누락 버그 1** | `_tick_header()` — `_watchdog_alerted.add(threshold)` 가 콜백 체크 **이전**에 실행되어, 콜백 미등록 시 임계값을 소비하고 나중에 콜백 등록 후에도 영구 누락. **수정**: 콜백 실행 후에만 소비(`add` 위치 교체) |
+| **경보 누락 버그 2** | `append_sys_log_tagged()` — `level="WARNING"` 체크 조건이 `("WARN", "ERROR", "CRITICAL")` 이라 `"WARNING"` 이 불일치 → SYSTEM 태그로 처리되어 경보 탭 미표시. **수정**: `{"WARNING": "WARN"}.get(level, level)` 정규화 추가 |
+| **분봉 라벨 툴팁** | `_PIPE_HEALTH_TIP` 상수 추가 — 파이프라인 심박 막대 기능 + 3단계 자동 조치(60/120/180초) + 긴급복구 루틴 + 원인 목록. 분봉 라벨·진행 바·경과 라벨 3개 위젯 연결 |
+
+### 버그 발생 경위 (실제 시퀀스)
+
+```
+1. __init__: _header_timer 시작 → _pipe_elapsed_s 증가 시작
+2. connect_kiwoom() 진행 중 (수십 초 소요)
+   → 60/120초 도달 시 threshold 소비되나 callback=None → 알림 없음
+3. set_pipeline_watchdog_cb() 호출 → callback 등록
+4. pipeline 정상 실행 → notify_pipeline_ran() → _watchdog_alerted.clear()
+5. pipeline 재정지 → 60초 후 threshold 60 재진입
+   → 이때 callback 존재해야 발동되는데...
+   → _pipe_elapsed_s += 1 로직에서 threshold 60을 콜백 없이 소비했다면 영구 누락!
+```
 
 ---
 
