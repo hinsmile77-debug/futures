@@ -927,6 +927,10 @@ class TradingSystem:
         # position_tracker 일일 통계 복원
         self.position.restore_daily_stats(rows)
 
+        # 손익 PnL 패널 즉시 갱신 — 재시작 후 "——원" 방지
+        _daily = self.position.daily_stats()
+        self.dashboard.update_pnl_metrics(0.0, _daily["pnl_krw"], 0.0)
+
         logger.info(f"[Restore] 당일 거래 {len(rows)}건 복원 완료 | 누적 PnL={cumulative_pnl_krw:+,.0f}원")
         log_manager.system(
             f"재시작 복원 완료 | 거래 {len(rows)}건 | 누적 PnL={cumulative_pnl_krw:+,.0f}원"

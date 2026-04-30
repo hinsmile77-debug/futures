@@ -270,6 +270,45 @@ _VAR_TIP = (
     "</div>"
 )
 
+_CANDLE_MONITOR_TIP = (
+    "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.75;"
+    "min-width:400px;'>"
+
+    "<b style='color:#39D3BB;font-size:13px;'>분봉 모니터&nbsp;&nbsp;캔들 진행 타이머</b>"
+    "<hr style='border:0;border-top:1px solid #30363D;margin:5px 0 7px 0'>"
+
+    "<b style='color:#58A6FF'>① 다음 분봉 ▷ [바] N초</b><br>"
+    "&nbsp;&nbsp;현재 1분봉이 <b>마감될 때까지 남은 초</b><br>"
+    "&nbsp;&nbsp;= <b style='color:#39D3BB'>60 − 현재 시각의 초(second)</b>"
+    "&nbsp;&nbsp;(시계 기준, 500ms 주기 갱신)<br>"
+    "&nbsp;&nbsp;분봉이 확정되는 순간 9단계 파이프라인이 즉시 실행됨<br><br>"
+
+    "<b style='color:#58A6FF'>② 막대 색상 기준</b><br>"
+    "<table style='margin-left:14px;border-collapse:collapse;'>"
+    "<tr><td style='color:#39D3BB;font-weight:bold;padding-right:8px;'>■ 초록</td>"
+    "<td>20초 이상&nbsp;&nbsp;—&nbsp;&nbsp;여유 있음</td></tr>"
+    "<tr><td style='color:#FFB74D;font-weight:bold;padding-right:8px;'>■ 황색</td>"
+    "<td>10 ~ 19초&nbsp;&nbsp;—&nbsp;&nbsp;분봉 마감 임박</td></tr>"
+    "<tr><td style='color:#F85149;font-weight:bold;padding-right:8px;'>■ 빨강</td>"
+    "<td>5초 이하&nbsp;&nbsp;—&nbsp;&nbsp;파이프라인 진입 직전</td></tr>"
+    "</table><br>"
+
+    "<b style='color:#58A6FF'>③ ↑ 마지막 갱신 N초 전</b><br>"
+    "&nbsp;&nbsp;<b>9단계 파이프라인이 마지막으로 완료된 시각</b>으로부터 경과한 시간<br>"
+    "&nbsp;&nbsp;로그 패널에 메시지가 마지막으로 기록된 시각을 기준으로 함<br><br>"
+
+    "<b style='color:#58A6FF'>④ 두 값이 비슷한 이유</b><br>"
+    "&nbsp;&nbsp;파이프라인은 분봉 시작 직후(~0초)에 실행됨<br>"
+    "&nbsp;&nbsp;→ 분봉 중반(33초)에는 마지막 갱신도 약 33초 전으로 나타남<br><br>"
+
+    "<b style='color:#F85149'>⑤ 이상 신호 감지</b><br>"
+    "&nbsp;&nbsp;다음 분봉까지 <b>5초</b> 남았는데 마지막 갱신이 <b>120초 전</b>이면<br>"
+    "&nbsp;&nbsp;→ 직전 분봉에서 파이프라인이 <b>누락</b>된 것<br>"
+    "&nbsp;&nbsp;→ <b>2 경보 ⚠</b> 탭에서 STEP 오류 확인 권장"
+
+    "</div>"
+)
+
 
 def make_style() -> str:
     """해상도 감지 후 동적 폰트 사이즈 적용 스타일시트 생성"""
@@ -2565,7 +2604,13 @@ class LogPanel(QWidget):
         sl.addWidget(self._vsep())
 
         # 다음 분봉 카운트다운
-        sl.addWidget(mk_label("다음 분봉 ▷", C['text2'], 9))
+        lbl_next_candle = mk_label("다음 분봉 ▷", C['text2'], 9)
+        lbl_next_candle.setToolTip(_CANDLE_MONITOR_TIP)
+        lbl_next_candle.setStyleSheet(
+            lbl_next_candle.styleSheet()
+            + "text-decoration:underline dotted;cursor:help;"
+        )
+        sl.addWidget(lbl_next_candle)
 
         self._cd_bar = QProgressBar()
         self._cd_bar.setRange(0, 60)
@@ -2577,6 +2622,7 @@ class LogPanel(QWidget):
             f"QProgressBar{{background:{C['bg3']};border:none;border-radius:3px;}}"
             f"QProgressBar::chunk{{background:{C['cyan']};border-radius:3px;}}"
         )
+        self._cd_bar.setToolTip(_CANDLE_MONITOR_TIP)
         sl.addWidget(self._cd_bar)
 
         self._lbl_cd = QLabel("60초")
@@ -2585,11 +2631,18 @@ class LogPanel(QWidget):
             f"color:{C['cyan']};font-size:{S.f(12)}px;font-weight:bold;"
             f"font-family:Consolas,monospace;"
         )
+        self._lbl_cd.setToolTip(_CANDLE_MONITOR_TIP)
         sl.addWidget(self._lbl_cd)
         sl.addWidget(self._vsep())
 
         # 마지막 갱신 경과
-        sl.addWidget(mk_label("↑ 마지막 갱신", C['text2'], 9))
+        lbl_last_update = mk_label("↑ 마지막 갱신", C['text2'], 9)
+        lbl_last_update.setToolTip(_CANDLE_MONITOR_TIP)
+        lbl_last_update.setStyleSheet(
+            lbl_last_update.styleSheet()
+            + "text-decoration:underline dotted;cursor:help;"
+        )
+        sl.addWidget(lbl_last_update)
 
         self._lbl_elapsed = QLabel("—")
         self._lbl_elapsed.setFixedWidth(S.p(70))
@@ -2597,6 +2650,7 @@ class LogPanel(QWidget):
             f"color:{C['text2']};font-size:{S.f(12)}px;font-weight:bold;"
             f"font-family:Consolas,monospace;"
         )
+        self._lbl_elapsed.setToolTip(_CANDLE_MONITOR_TIP)
         sl.addWidget(self._lbl_elapsed)
 
         sl.addStretch()

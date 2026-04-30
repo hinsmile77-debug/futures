@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-04-30 (CB 중복발동 수정 + 슬랙 타임스탬프)
+> 마지막 업데이트: 2026-04-30 (PnL 재시작 복원 수정 + 분봉 모니터 툴팁)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,20 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-04-30 세션 주요 수정 (PnL 재시작 복원 수정 + 분봉 모니터 툴팁)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **PnL 재시작 복원 [B30]** | `main.py` `_restore_daily_state()` — `restore_daily_stats()` 호출 후 `dashboard.update_pnl_metrics(0.0, daily_pnl_krw, 0.0)` 추가. 재시작 후 미실현손익·일일누적·VaR 패널이 "——원" 로 리셋되던 버그 수정 |
+| **분봉 모니터 툴팁** | `dashboard/main_dashboard.py` — `_CANDLE_MONITOR_TIP` 상수 추가. "다음 분봉 ▷" 라벨·진행 바·초 라벨, "↑ 마지막 갱신" 라벨·경과 라벨 5개 위젯에 동일 툴팁 연결. 라벨에 점선 밑줄(cursor:help) 표시 |
+
+### PnL 복원 버그 근본 원인 (B30)
+- `_restore_daily_state()`에서 `position.restore_daily_stats(rows)` 로 내부 통계(`_daily_pnl_pts` 등)는 정상 복원
+- 그러나 UI 패널에 `dashboard.update_pnl_metrics()` 호출이 없어 화면은 초기값 "——원" 유지
+- 수정: `daily_stats()` 로 복원된 값을 읽어 즉시 패널 반영. 미실현/VaR는 0 (첫 분봉 수신 후 갱신됨)
 
 ---
 
