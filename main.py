@@ -39,7 +39,12 @@ logger    = logging.getLogger("SYSTEM")
 debug_log = logging.getLogger("DEBUG")
 
 # ── DB 초기화 ──────────────────────────────────────────────────
-from utils.db_utils import init_all_dbs, execute, save_candle, save_features, count_raw_candles, fetch_today_trades, fetch_pnl_history
+from utils.db_utils import (
+    init_all_dbs, execute, save_candle, save_features, count_raw_candles,
+    fetch_today_trades, fetch_pnl_history,
+    save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
+    fetch_trend_monthly, fetch_trend_yearly,
+)
 from config.settings import TRADES_DB
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -842,6 +847,21 @@ class TradingSystem:
             "updated_at":       datetime.datetime.now().strftime("%H:%M"),
         }
 
+    # ── 추이 통계 수집 ───────────────────────────────────────────
+    def _gather_trend_stats(self) -> dict:
+        """TrendPanel 업데이트용 일/주/월/연간 집계 반환."""
+        try:
+            return {
+                "일별": fetch_trend_daily(30),
+                "주별": fetch_trend_weekly(12),
+                "월별": fetch_trend_monthly(12),
+                "연간": fetch_trend_yearly(),
+                "updated_at": datetime.datetime.now().strftime("%H:%M"),
+            }
+        except Exception as e:
+            logger.warning(f"[Trend] 집계 실패: {e}")
+            return {"일별": [], "주별": [], "월별": [], "연간": [], "updated_at": "—"}
+
     # ── 일일 마감 (15:40) ─────────────────────────────────────
     def daily_close(self):
         """자가학습 일일 마감"""
@@ -883,7 +903,20 @@ class TradingSystem:
             f"PnL:{stats['pnl_krw']:+,.0f}원",
             "INFO",
         )
+
+        # 일일 스냅샷 저장 → 내일 시작 시 자가학습·추이 패널에 어제 데이터 표시
+        today_str = datetime.date.today().isoformat()
+        save_daily_stats(today_str, {
+            "trades":         stats["trades"],
+            "wins":           stats["wins"],
+            "pnl_pts":        stats["pnl_pts"],
+            "pnl_krw":        stats["pnl_krw"],
+            "sgd_accuracy":   self.online_learner.recent_accuracy(),
+            "verified_count": self._verified_today,
+        })
+
         self._refresh_pnl_history()
+        self.dashboard.update_trend(self._gather_trend_stats())
 
         # ── 자동 종료 예약 ────────────────────────────────────────
         win_rate = stats["wins"] / max(stats["trades"], 1)
@@ -1088,6 +1121,23 @@ class TradingSystem:
         )
         self._refresh_pnl_history()
 
+    def _restore_panels_from_history(self) -> None:
+        """시작 시 DB 이력으로 자가학습·효과검증·추이 패널 선조회.
+        파이프라인이 처음 실행되기 전까지 이전 데이터를 표시한다.
+        """
+        try:
+            self.dashboard.update_learning(self._gather_learning_stats())
+        except Exception as e:
+            logger.debug(f"[Restore] 자가학습 패널 선조회 실패: {e}")
+        try:
+            self.dashboard.update_efficacy(self._gather_efficacy_stats())
+        except Exception as e:
+            logger.debug(f"[Restore] 효과검증 패널 선조회 실패: {e}")
+        try:
+            self.dashboard.update_trend(self._gather_trend_stats())
+        except Exception as e:
+            logger.debug(f"[Restore] 추이 패널 선조회 실패: {e}")
+
     def _refresh_pnl_history(self) -> None:
         """trades.db 최근 90일 조회 → 손익 추이 패널 갱신."""
         try:
@@ -1132,6 +1182,9 @@ class TradingSystem:
         # 세션 카운터 증가 + 당일 거래 이력 복원
         self._session_no = self._increment_session()
         self._restore_daily_state()
+
+        # 자가학습·효과검증·추이 패널: DB 이력으로 선조회 (파이프라인 첫 실행 전까지 이전 데이터 표시)
+        QTimer.singleShot(500, self._restore_panels_from_history)
 
         # 이벤트 루프 진입 2초 후 초기 대기 상태 즉시 출력
         QTimer.singleShot(2000, lambda: self._log_waiting_status(datetime.datetime.now()))

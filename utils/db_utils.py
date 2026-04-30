@@ -294,9 +294,130 @@ def fetch_accuracy_history(limit: int = 100) -> List[sqlite3.Row]:
     )
 
 
+def init_daily_stats_db():
+    """일일 스냅샷 테이블 생성 (trades.db 에 함께 저장)"""
+    execute(TRADES_DB, """
+        CREATE TABLE IF NOT EXISTS daily_stats (
+            date           TEXT PRIMARY KEY,
+            trades         INTEGER DEFAULT 0,
+            wins           INTEGER DEFAULT 0,
+            pnl_pts        REAL    DEFAULT 0.0,
+            pnl_krw        REAL    DEFAULT 0.0,
+            sgd_accuracy   REAL    DEFAULT 0.5,
+            verified_count INTEGER DEFAULT 0,
+            created_at     TEXT    DEFAULT (datetime('now', 'localtime'))
+        )
+    """)
+
+
+def save_daily_stats(date_str: str, stats: dict) -> None:
+    """일일 마감 통계 저장 — daily_close() 에서 호출."""
+    execute(TRADES_DB, """
+        INSERT OR REPLACE INTO daily_stats
+            (date, trades, wins, pnl_pts, pnl_krw, sgd_accuracy, verified_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        date_str,
+        int(stats.get("trades",        0)),
+        int(stats.get("wins",          0)),
+        float(stats.get("pnl_pts",     0.0)),
+        float(stats.get("pnl_krw",     0.0)),
+        float(stats.get("sgd_accuracy",0.5)),
+        int(stats.get("verified_count",0)),
+    ))
+
+
+def fetch_trend_daily(days_back: int = 30) -> List[dict]:
+    """일별 집계 (최대 30일). trades.db 체결 + daily_stats 정확도 병합."""
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days_back)).isoformat()
+    rows = fetchall(TRADES_DB, """
+        SELECT date(entry_ts)  AS date,
+               COUNT(*)        AS trades,
+               SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS wins,
+               COUNT(*) - SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS losses,
+               ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+               ROUND(SUM(pnl_krw), 0) AS pnl_krw
+        FROM trades
+        WHERE exit_ts IS NOT NULL AND entry_ts >= ?
+        GROUP BY date(entry_ts)
+        ORDER BY date(entry_ts) DESC
+        LIMIT 30
+    """, (cutoff,))
+    acc_map = {
+        r["date"]: (r["sgd_accuracy"], r["verified_count"])
+        for r in fetchall(TRADES_DB,
+            "SELECT date, sgd_accuracy, verified_count FROM daily_stats WHERE date >= ?",
+            (cutoff,))
+    }
+    result = []
+    for row in rows:
+        d = dict(row)
+        acc, vc = acc_map.get(d["date"], (None, 0))
+        d["sgd_accuracy"]   = acc
+        d["verified_count"] = vc
+        result.append(d)
+    return result
+
+
+def fetch_trend_weekly(weeks_back: int = 12) -> List[dict]:
+    """주별 집계 (최대 12주)."""
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(weeks=weeks_back)).isoformat()
+    return [dict(r) for r in fetchall(TRADES_DB, """
+        SELECT strftime('%Y-W%W', entry_ts) AS week,
+               COUNT(*)        AS trades,
+               SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS wins,
+               COUNT(*) - SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS losses,
+               ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+               ROUND(SUM(pnl_krw), 0) AS pnl_krw
+        FROM trades
+        WHERE exit_ts IS NOT NULL AND entry_ts >= ?
+        GROUP BY strftime('%Y-W%W', entry_ts)
+        ORDER BY week DESC
+        LIMIT 12
+    """, (cutoff,))]
+
+
+def fetch_trend_monthly(months_back: int = 12) -> List[dict]:
+    """월별 집계 (최대 12개월)."""
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=months_back * 31)).isoformat()
+    return [dict(r) for r in fetchall(TRADES_DB, """
+        SELECT strftime('%Y-%m', entry_ts) AS month,
+               COUNT(*)        AS trades,
+               SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS wins,
+               COUNT(*) - SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS losses,
+               ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+               ROUND(SUM(pnl_krw), 0) AS pnl_krw
+        FROM trades
+        WHERE exit_ts IS NOT NULL AND entry_ts >= ?
+        GROUP BY strftime('%Y-%m', entry_ts)
+        ORDER BY month DESC
+        LIMIT 12
+    """, (cutoff,))]
+
+
+def fetch_trend_yearly() -> List[dict]:
+    """연간 집계 (전체)."""
+    return [dict(r) for r in fetchall(TRADES_DB, """
+        SELECT strftime('%Y', entry_ts) AS year,
+               COUNT(*)        AS trades,
+               SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS wins,
+               COUNT(*) - SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS losses,
+               ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+               ROUND(SUM(pnl_krw), 0) AS pnl_krw
+        FROM trades
+        WHERE exit_ts IS NOT NULL
+        GROUP BY strftime('%Y', entry_ts)
+        ORDER BY year DESC
+    """)]
+
+
 def init_all_dbs():
     """전체 DB 초기화 (main.py에서 1회 호출)"""
     init_predictions_db()
     init_trades_db()
+    init_daily_stats_db()
     init_shap_db()
     init_raw_data_db()

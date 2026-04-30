@@ -2139,7 +2139,254 @@ class EfficacyPanel(QWidget):
 
 
 # ────────────────────────────────────────────────────────────
-# 패널 8: 알파 리서치 봇
+# 패널 8: 📈 학습 성장 추이 (일/주/월/연간)
+# ────────────────────────────────────────────────────────────
+class TrendPanel(QWidget):
+    """자가학습 성과의 일/주/월/연간 추이 대시보드"""
+
+    _SPARK = "▁▂▃▄▅▆▇█"
+
+    # ── 컬럼 정의 ──────────────────────────────────────────
+    _DAILY_COLS   = ["날짜",  "거래", "승/패", "승률", "PnL (원)",   "SGD정확도"]
+    _WEEKLY_COLS  = ["주차",  "거래", "승/패", "승률", "PnL (원)"]
+    _MONTHLY_COLS = ["월",    "거래", "승/패", "승률", "PnL (원)"]
+    _YEARLY_COLS  = ["연도",  "거래", "승/패", "승률", "PnL (원)"]
+
+    _PERIOD_COLS = {
+        "일별": _DAILY_COLS,
+        "주별": _WEEKLY_COLS,
+        "월별": _MONTHLY_COLS,
+        "연간": _YEARLY_COLS,
+    }
+
+    def __init__(self):
+        super().__init__()
+        self._row_widgets: dict = {"일별": [], "주별": [], "월별": [], "연간": []}
+        self._build()
+
+    # ── 스파크라인 유틸 ────────────────────────────────────
+    @staticmethod
+    def _spark_line(values, width: int = 20) -> str:
+        blk = "▁▂▃▄▅▆▇█"
+        if not values:
+            return "─" * width
+        mn, mx = min(values), max(values)
+        span = (mx - mn) or 1.0
+        chars = [blk[min(7, int((v - mn) / span * 7.99))] for v in values]
+        while len(chars) > width:
+            step = len(chars) / width
+            chars = [chars[int(i * step)] for i in range(width)]
+        while len(chars) < width:
+            chars.append("─")
+        return "".join(chars)
+
+    @staticmethod
+    def _wr_col(wr: float) -> str:
+        if wr >= 0.60: return C['green']
+        if wr >= 0.53: return C['cyan']
+        if wr >= 0.45: return C['orange']
+        return C['red']
+
+    @staticmethod
+    def _pnl_col(pnl: float) -> str:
+        return C['green'] if pnl > 0 else (C['red'] if pnl < 0 else C['text2'])
+
+    @staticmethod
+    def _acc_col(acc) -> str:
+        if acc is None: return C['text2']
+        if acc >= 0.62: return C['green']
+        if acc >= 0.55: return C['cyan']
+        if acc >= 0.48: return C['orange']
+        return C['red']
+
+    # ── UI 빌드 ──────────────────────────────────────────
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(S.p(8), S.p(8), S.p(8), S.p(8))
+        root.setSpacing(S.p(8))
+
+        # 헤더
+        hdr = QHBoxLayout()
+        hdr.addWidget(mk_label("📈  학습 성장 추이", C['cyan'], 11, True))
+        hdr.addStretch()
+        self._lbl_updated = mk_label("마지막 갱신: ——", C['text2'], 8)
+        hdr.addWidget(self._lbl_updated)
+        root.addLayout(hdr)
+
+        # 스파크라인 요약 바
+        spark_frame = QFrame()
+        spark_frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        sl = QHBoxLayout(spark_frame)
+        sl.setContentsMargins(S.p(10), S.p(7), S.p(10), S.p(7))
+        sl.setSpacing(S.p(16))
+        self._lbl_pnl_spark = mk_label("PnL  ─────────────────────", C['cyan'],  9)
+        self._lbl_wr_spark  = mk_label("승률  ─────────────────────", C['green'], 9)
+        self._lbl_acc_spark = mk_label("SGD  ─────────────────────", C['purple'],9)
+        for lbl in (self._lbl_pnl_spark, self._lbl_wr_spark, self._lbl_acc_spark):
+            lbl.setFont(__import__('PyQt5.QtGui', fromlist=['QFont']).QFont("Consolas", S.f(9)))
+            sl.addWidget(lbl)
+        sl.addStretch()
+        root.addWidget(spark_frame)
+        root.addWidget(mk_sep())
+
+        # 4-탭 (일별/주별/월별/연간)
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet(
+            f"QTabBar::tab{{background:{C['bg2']};color:{C['text2']};"
+            f"padding:{S.p(4)}px {S.p(10)}px;font-size:{S.f(9)}px;}}"
+            f"QTabBar::tab:selected{{background:{C['bg3']};color:{C['cyan']};"
+            f"border-bottom:2px solid {C['cyan']};}}"
+        )
+        self._content_widgets: dict = {}
+        for period in ("일별", "주별", "월별", "연간"):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setStyleSheet(
+                "QScrollArea{border:none;background:transparent;}"
+                f"QScrollBar:vertical{{background:{C['bg2']};width:6px;}}"
+                f"QScrollBar::handle:vertical{{background:{C['border']};border-radius:3px;}}"
+            )
+            inner = QWidget()
+            inner.setStyleSheet("background:transparent;")
+            vl = QVBoxLayout(inner)
+            vl.setContentsMargins(0, 0, S.p(4), 0)
+            vl.setSpacing(0)
+            vl.addStretch()
+            scroll.setWidget(inner)
+            self._content_widgets[period] = vl
+            self._tabs.addTab(scroll, period)
+
+        root.addWidget(self._tabs, 1)
+
+    # ── 헤더 행 생성 ────────────────────────────────────────
+    def _make_header(self, cols: list) -> QFrame:
+        f = QFrame()
+        f.setStyleSheet(
+            f"background:{C['bg3']};border-bottom:1px solid {C['border']};"
+        )
+        hl = QHBoxLayout(f)
+        hl.setContentsMargins(S.p(8), S.p(4), S.p(8), S.p(4))
+        hl.setSpacing(0)
+        for i, col in enumerate(cols):
+            lbl = mk_label(col, C['text2'], 8, True)
+            stretch = 2 if col in ("PnL (원)", "날짜", "월", "주차", "연도") else 1
+            hl.addWidget(lbl, stretch)
+        return f
+
+    # ── 데이터 행 생성 ──────────────────────────────────────
+    def _make_row(self, cells: list, cols: list, is_alt: bool) -> QFrame:
+        f = QFrame()
+        bg = C['bg2'] if is_alt else C['bg']
+        f.setStyleSheet(
+            f"QFrame{{background:{bg};border-bottom:1px solid {C['border']}33;}}"
+        )
+        hl = QHBoxLayout(f)
+        hl.setContentsMargins(S.p(8), S.p(4), S.p(8), S.p(4))
+        hl.setSpacing(0)
+        for i, (text, col) in enumerate(cells):
+            stretch = 2 if cols[i] in ("PnL (원)", "날짜", "월", "주차", "연도") else 1
+            lbl = mk_label(text, col, 9, align=Qt.AlignLeft if i == 0 else Qt.AlignCenter)
+            hl.addWidget(lbl, stretch)
+        return f
+
+    # ── 탭 내용 갱신 ────────────────────────────────────────
+    def _refresh_tab(self, period: str, rows: list):
+        cols = self._PERIOD_COLS[period]
+        vl = self._content_widgets[period]
+
+        # 기존 위젯 제거 (stretch 유지)
+        while vl.count() > 1:
+            item = vl.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not rows:
+            empty = mk_label("데이터 없음 (체결 완료 거래가 없습니다)", C['text2'], 9,
+                             align=Qt.AlignCenter)
+            vl.insertWidget(0, empty)
+            return
+
+        vl.insertWidget(0, self._make_header(cols))
+
+        for idx, row in enumerate(rows):
+            cells = self._row_cells(row, period, cols)
+            vl.insertWidget(idx + 1, self._make_row(cells, cols, idx % 2 == 0))
+
+    def _row_cells(self, row: dict, period: str, cols: list) -> list:
+        trades   = int(row.get("trades",   0))
+        wins     = int(row.get("wins",     0))
+        losses   = int(row.get("losses",   0))
+        win_rate = float(row.get("win_rate", 0.0))
+        pnl_krw  = float(row.get("pnl_krw", 0.0))
+        sgd_acc  = row.get("sgd_accuracy")  # None if not available
+
+        # 기간 키
+        if period == "일별":
+            date_raw = str(row.get("date", ""))
+            label = date_raw[5:] if len(date_raw) >= 7 else date_raw   # MM-DD
+        elif period == "주별":
+            label = str(row.get("week", ""))
+        elif period == "월별":
+            label = str(row.get("month", ""))
+        else:
+            label = str(row.get("year", ""))
+
+        wr_col  = self._wr_col(win_rate)
+        pnl_col = self._pnl_col(pnl_krw)
+        pnl_str = f"{'+' if pnl_krw > 0 else ''}{pnl_krw:,.0f}"
+
+        cells = [
+            (label,                      C['text']),
+            (str(trades),                C['text2']),
+            (f"{wins}/{losses}",         wr_col),
+            (f"{win_rate:.0%}",          wr_col),
+            (pnl_str,                    pnl_col),
+        ]
+        if period == "일별":
+            if sgd_acc is not None:
+                acc_str = f"{sgd_acc:.1%}"
+            else:
+                acc_str = "——"
+            cells.append((acc_str, self._acc_col(sgd_acc)))
+        return cells
+
+    # ── 전체 갱신 (외부 호출) ───────────────────────────────
+    def update_data(self, data: dict):
+        import datetime as _dt
+        self._lbl_updated.setText(
+            f"마지막 갱신: {data.get('updated_at', _dt.datetime.now().strftime('%H:%M'))}"
+        )
+
+        for period in ("일별", "주별", "월별", "연간"):
+            self._refresh_tab(period, data.get(period, []))
+
+        # 스파크라인 (일별 최근 20일, 오래된→최신 순)
+        daily = list(reversed(data.get("일별", [])))
+        if daily:
+            pnl_vals = [float(r.get("pnl_krw", 0)) for r in daily]
+            wr_vals  = [float(r.get("win_rate", 0.5)) for r in daily]
+            acc_vals = [float(r["sgd_accuracy"]) for r in daily
+                        if r.get("sgd_accuracy") is not None]
+            self._lbl_pnl_spark.setText(
+                f"PnL  {self._spark_line(pnl_vals, 20)}"
+                f"  {pnl_vals[-1]:+,.0f}원"
+            )
+            self._lbl_wr_spark.setText(
+                f"승률  {self._spark_line(wr_vals, 20)}"
+                f"  {wr_vals[-1]:.0%}"
+            )
+            if acc_vals:
+                self._lbl_acc_spark.setText(
+                    f"SGD   {self._spark_line(acc_vals, 20)}"
+                    f"  {acc_vals[-1]:.1%}"
+                )
+
+
+# ────────────────────────────────────────────────────────────
+# 패널 9: 알파 리서치 봇
 # ────────────────────────────────────────────────────────────
 class AlphaPanel(QWidget):
     def __init__(self):
@@ -3133,6 +3380,7 @@ class MireukDashboard(QMainWindow):
         self.entry_panel    = EntryPanel()
         self.learn_panel    = LearningPanel()
         self.efficacy_panel = EfficacyPanel()
+        self.trend_panel    = TrendPanel()
         self.alpha_panel    = AlphaPanel()
 
         mid_tabs.addTab(self._wrap(self.div_panel),      "다이버전스 + 포지션")
@@ -3141,6 +3389,7 @@ class MireukDashboard(QMainWindow):
         mid_tabs.addTab(self._wrap(self.entry_panel),    "진입 관리")
         mid_tabs.addTab(self._wrap(self.learn_panel),    "🧠 자가학습")
         mid_tabs.addTab(self._wrap(self.efficacy_panel), "🎯 효과 검증")
+        mid_tabs.addTab(self._wrap(self.trend_panel),    "📈 성장 추이")
         mid_tabs.addTab(self._wrap(self.alpha_panel),    "알파 리서치 봇")
         ml.addWidget(mid_tabs)
 
@@ -3445,6 +3694,18 @@ class DashboardAdapter:
             updated_at        str         "HH:MM"
         """
         self._win.efficacy_panel.update_data(data)
+
+    def update_trend(self, data: dict):
+        """📈 학습 성장 추이 패널 업데이트
+
+        data 키:
+            일별  list[dict]  date/trades/wins/losses/win_rate/pnl_krw/sgd_accuracy
+            주별  list[dict]  week/trades/wins/losses/win_rate/pnl_krw
+            월별  list[dict]  month/trades/wins/losses/win_rate/pnl_krw
+            연간  list[dict]  year/trades/wins/losses/win_rate/pnl_krw
+            updated_at  str  "HH:MM"
+        """
+        self._win.trend_panel.update_data(data)
 
     def append_model_log(self, msg: str):
         """창5 모델 로그"""
