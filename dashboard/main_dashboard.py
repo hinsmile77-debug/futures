@@ -1146,8 +1146,9 @@ class EntryPanel(QWidget):
         losses   = trades - wins
         win_rate = f"{wins/max(trades,1)*100:.0f}%" if trades > 0 else "—%"
         pnl_col  = C['green'] if pnl_pts >= 0 else C['red']
+        pnl_str = f"{pnl_pts:+.2f}pt" if trades > 0 else "——pt"
         self.stat_label.setText(
-            f"진입 {trades}회 | 자동 {trades} | 수동 0 | 승률 {win_rate} | 손익 {pnl_pts:+.2f}pt"
+            f"진입 {trades}회 | 승 {wins} 패 {losses} | 승률 {win_rate} | 손익 {pnl_str}"
         )
         self.stat_label.setStyleSheet(f"color:{pnl_col};font-size:{S.f(11)}px;")
 

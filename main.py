@@ -584,19 +584,23 @@ class TradingSystem:
         _var_krw = -(atr * 1.65 * self.position.quantity * 500_000) if self.position.quantity else 0.0
         self.dashboard.update_pnl_metrics(_unreal, _daily["pnl_krw"], _var_krw)
 
-        # ── STEP 9: 예측 DB 저장 ───────────────────────────────
-        for h_name, h_res in horizon_proba.items():
-            self.pred_buffer.save_prediction(
-                ts         = ts,
-                horizon    = h_name,
-                direction  = h_res["direction"],
-                confidence = h_res["confidence"],
-                features   = {k: round(float(v), 4) for k, v in features.items()},
-            )
-
-        # 당일 진입 통계 갱신
+        # 당일 진입 통계 갱신 — STEP 9 예외와 무관하게 항상 실행
         _ds = self.position.daily_stats()
         self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
+
+        # ── STEP 9: 예측 DB 저장 ───────────────────────────────
+        try:
+            for h_name, h_res in horizon_proba.items():
+                self.pred_buffer.save_prediction(
+                    ts         = ts,
+                    horizon    = h_name,
+                    direction  = h_res["direction"],
+                    confidence = h_res["confidence"],
+                    features   = {k: round(float(v), 4) for k, v in features.items()
+                                  if v is not None and v == v},  # NaN/None 제외
+                )
+        except Exception as e:
+            logger.warning("[STEP9] save_prediction 오류 (스킵): %s", e)
 
         # 🧠 자가학습 모니터 패널 갱신 (매분)
         self.dashboard.update_learning(self._gather_learning_stats())
