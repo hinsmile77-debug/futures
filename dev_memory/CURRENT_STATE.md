@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-04 (야간) — FID 탐색·PROBE 진단·수급 TR 수정
+> 마지막 업데이트: 2026-05-04 (야간 2세션) — Kiwoom API 주문 연결 + 부분 청산 완성 + 대시보드 개선
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,40 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-05-04 세션 주요 수정 (야간 2세션 — Kiwoom API 주문 연결 + 부분 청산 완성)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **[B42] Kiwoom 주문 전달 누락 수정** | `api_connector.py` `send_order()` 신설. `entry_manager.py`/`exit_manager.py` `acc_no=""` → `_secrets.ACCOUNT_NO`. main.py에 `_send_kiwoom_entry_order()` / `_send_kiwoom_exit_order()` 헬퍼 추가 → 진입/청산 모든 경로에서 실 API 호출 |
+| **부분 청산 완성 (TP1/TP2)** | `PositionTracker.partial_close(exit_price, qty, reason)` 신설. `_execute_partial_exit(price, stage)` + `_post_partial_exit(result, stage)` — PARTIAL_EXIT_RATIOS 기반 API→DB→대시보드 전체 연결 |
+| **`_KiwoomOrderAdapter` 신설** | main.py 모듈레벨 어댑터 클래스. `EmergencyExit.set_order_manager()` 에 주입 — CB/KillSwitch 긴급청산도 실 API로 연결 |
+| **주문/체결 탭 실데이터 메트릭** | LatencySync.summary() → `update_order_metrics(trades, avg_lat_ms, peak_lat_ms, samples)` 매분 갱신. 하드코딩 더미값 제거 |
+| **로그 좌측 정렬** | `QTextCursor` + `QTextBlockFormat.setAlignment(Qt.AlignLeft)` 기반 `_insert_html_left()` / `_insert_html_center()` static 메서드. append()/append_restore()/append_separator() 전부 교체 |
+
+### 수정 후 주문 흐름
+
+```
+run_minute_pipeline()
+→ STEP 7 진입: _send_kiwoom_entry_order(direction, qty) → SendOrder COM API
+→                position.open_position(...)
+→ STEP 8 청산:
+    손절/15:10/트레일: _send_kiwoom_exit_order(qty) → SendOrder COM API
+                       position.close_position(...)
+    TP1/TP2:           _execute_partial_exit(price, stage)
+                       → _send_kiwoom_exit_order(partial_qty) → SendOrder COM API
+                       → position.partial_close(...)
+                       → _post_partial_exit(result, stage)
+CB/KillSwitch:     _KiwoomOrderAdapter.send_market_order() → SendOrder COM API
+```
+
+### 미완성 (OnReceiveChejanData 콜백)
+
+- 실체결가(체결통보) 콜백 미구현 → 현재 주문가격=현재가로 가정
+- 실제 슬리피지 측정 불가 → 지연(latency) 지표로 간접 모니터링
+- 체결 확인 후 포지션 상태 갱신 로직 없음 → SendOrder ret=0이면 즉시 포지션 반영
 
 ---
 

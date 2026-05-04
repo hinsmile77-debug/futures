@@ -31,7 +31,8 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import (
     QFont, QColor, QPalette, QPainter, QBrush, QPen,
-    QLinearGradient, QFontDatabase, QIcon
+    QLinearGradient, QFontDatabase, QIcon,
+    QTextCursor, QTextBlockFormat,
 )
 
 
@@ -3101,14 +3102,21 @@ class LogPanel(QWidget):
             # 상단 메트릭 (창3, 4, 5 전용)
             if key == "order":
                 mrow = QHBoxLayout()
-                for mk_lbl, mk_val in [("평균 슬리피지","1.3틱"),("최대 슬리피지","3.8틱"),
-                                        ("체결률","85.7%"),("평균 지연","142ms")]:
+                self._order_vals = {}
+                for om_lbl, om_attr, om_init in [
+                    ("당일 거래",  "trades",   "0건"),
+                    ("평균 지연",  "avg_lat",  "——ms"),
+                    ("최대 지연",  "peak_lat", "——ms"),
+                    ("수신 횟수",  "samples",  "0회"),
+                ]:
                     mf = QFrame()
                     mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
                     mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,3,5,3)
-                    mfl.addWidget(mk_label(mk_lbl, C['text2'], 10, align=Qt.AlignCenter))
-                    mfl.addWidget(mk_val_label(mk_val, col, 13, align=Qt.AlignCenter))
+                    mfl.addWidget(mk_label(om_lbl, C['text2'], 10, align=Qt.AlignCenter))
+                    vl = mk_val_label(om_init, col, 13, align=Qt.AlignCenter)
+                    mfl.addWidget(vl)
                     mrow.addWidget(mf)
+                    self._order_vals[om_attr] = vl
                 pl.addLayout(mrow)
 
             elif key == "pnl":
@@ -3182,6 +3190,26 @@ class LogPanel(QWidget):
         """손익 추이 탭 전체 갱신 (trades.db rows)."""
         self.pnl_history.refresh(rows)
 
+    def update_order_metrics(self, trades: int, avg_lat_ms: float, peak_lat_ms: float, samples: int):
+        """창3 주문/체결 탭 상단 지표 갱신."""
+        if not hasattr(self, "_order_vals"):
+            return
+        self._order_vals["trades"].setText(f"{trades}건")
+        for attr, val_ms, warn_ms in [
+            ("avg_lat",  avg_lat_ms,  500),
+            ("peak_lat", peak_lat_ms, 1000),
+        ]:
+            lbl = self._order_vals[attr]
+            if val_ms > 0:
+                text = f"{val_ms:.0f}ms"
+                c = C['green'] if val_ms < warn_ms else C['orange']
+            else:
+                text = "——ms"
+                c = C['text2']
+            lbl.setText(text)
+            lbl.setStyleSheet(f"color:{c};font-size:{S.f(13)}px;font-weight:bold;")
+        self._order_vals["samples"].setText(f"{samples}회")
+
     def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float):
         """미실현 손익·일일 누적·VaR 95% 수치 갱신"""
         data = {
@@ -3200,11 +3228,49 @@ class LogPanel(QWidget):
                 pct = min(100, max(0, int(abs(val) / 50_000 * 50 + 50)))
                 pb.setValue(pct)
 
+    @staticmethod
+    def _insert_html_left(tb: QTextEdit, html: str) -> None:
+        """QTextEdit에 HTML을 좌측 정렬 블록으로 삽입.
+
+        tb.append()는 이전 블록의 alignment를 상속하므로
+        QTextCursor로 블록 포맷을 명시적으로 Qt.AlignLeft로 지정한다.
+        """
+        fmt = QTextBlockFormat()
+        fmt.setAlignment(Qt.AlignLeft)
+
+        cursor = tb.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertBlock(fmt)
+        cursor.insertHtml(html)
+
+        tb.setTextCursor(cursor)
+        tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
+
+    @staticmethod
+    def _insert_html_center(tb: QTextEdit, html: str) -> None:
+        """HTML을 가운데 정렬 블록으로 삽입 (구분선용)."""
+        fmt = QTextBlockFormat()
+        fmt.setAlignment(Qt.AlignCenter)
+
+        cursor = tb.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertBlock(fmt)
+        cursor.insertHtml(html)
+
+        tb.setTextCursor(cursor)
+        tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
+
     def append(self, key, tag, msg, val=""):
         self._last_update_time = datetime.now()
         tb = self.log_boxes.get(key)
         if not tb:
             return
+
+        # WARN/ERROR/CRITICAL → 경보탭 전용 (1 시스템 탭에는 기록하지 않음)
+        if key == "all" and tag in ("WARN", "ERROR", "CRITICAL"):
+            self.append("warn", tag, msg, val)
+            return
+
         ts  = self._last_update_time.strftime("%H:%M:%S")
         TAG_COLORS = {
             "INFO":   C['blue'],   "DEBUG": C['text2'], "SYSTEM": C['purple'],
@@ -3214,21 +3280,15 @@ class LogPanel(QWidget):
             "SHAP":   C['yellow'],
         }
         col = TAG_COLORS.get(tag, C['text2'])
-        line = (
+        html = (
             f'<span style="color:{C["text2"]}">[{ts}]</span> '
             f'<span style="color:{col};font-weight:bold">[{tag}]</span> '
             f'<span style="color:{C["text"]}">{msg}</span>'
         )
         if val:
-            line += f' <span style="color:{C["text2"]};font-size:{S.f(11)}px;">{val}</span>'
+            html += f' <span style="color:{C["text2"]};font-size:{S.f(11)}px;">{val}</span>'
 
-        # WARN/ERROR/CRITICAL → 경보탭 전용 (1 시스템 탭에는 기록하지 않음)
-        if key == "all" and tag in ("WARN", "ERROR", "CRITICAL"):
-            self.append("warn", tag, msg, val)
-            return
-
-        tb.append(line)
-        tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
+        self._insert_html_left(tb, html)
 
     def append_restore(self, key: str, msg: str, ts: str = "", val: str = ""):
         """재시작 복원 항목 — 이탤릭·회색으로 실시간 항목과 시각 구분."""
@@ -3240,7 +3300,7 @@ class LogPanel(QWidget):
             f' <span style="color:{C["text2"]};font-size:{S.f(11)}px;">{val}</span>'
             if val else ""
         )
-        line = (
+        html = (
             f'<span style="color:{C["text2"]};font-style:italic;">'
             f'[{ts_disp}]'
             f' <span style="color:{C["yellow"]};font-weight:bold;">[복원]</span>'
@@ -3248,20 +3308,19 @@ class LogPanel(QWidget):
             f'{val_html}'
             f'</span>'
         )
-        tb.append(line)
-        tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
+        self._insert_html_left(tb, html)
 
     def append_separator(self, key: str, msg: str = ""):
         """탭 내 수평선 구분자 (복원 이력 / 신규 세션 경계 등)."""
         tb = self.log_boxes.get(key)
         if not tb:
             return
-        tb.append(
-            f'<hr style="border:0;border-top:1px solid {C["border"]};margin:3px 0;">'
-            f'<div style="color:{C["text2"]};font-size:{S.f(10)}px;'
-            f'font-style:italic;text-align:center;">{msg}</div>'
+        html = (
+            f'<span style="color:{C["border"]};">───────────────────────────────────────</span>'
+            f'<br><span style="color:{C["text2"]};font-size:{S.f(10)}px;font-style:italic;">'
+            f'{msg}</span>'
         )
-        tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
+        self._insert_html_center(tb, html)
 
     # ── 상태 바 틱 (500ms) ─────────────────────────────────────
 
@@ -3755,6 +3814,10 @@ class DashboardAdapter:
     def append_trade_log(self, msg: str, val: str = ""):
         """창3 주문/체결 로그"""
         self._win.log_panel.append("order", "TRADE", msg, val)
+
+    def update_order_metrics(self, trades: int, avg_lat_ms: float, peak_lat_ms: float, samples: int):
+        """창3 주문/체결 탭 상단 지표 갱신"""
+        self._win.log_panel.update_order_metrics(trades, avg_lat_ms, peak_lat_ms, samples)
 
     def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float = 0.0):
         """창4 손익 PnL 수치 패널 갱신"""

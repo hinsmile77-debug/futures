@@ -2,6 +2,55 @@
 
 ---
 
+## 2026-05-04 버그 수정 (야간 2세션)
+
+### [B42] Kiwoom 주문 전달 누락 — 4회 거래 로그, Kiwoom 0건
+**파일**: `collection/kiwoom/api_connector.py`, `strategy/entry/entry_manager.py`, `strategy/exit/exit_manager.py`, `main.py`
+**증상**: TRADE 로그에 4회 진입/청산 기록 있으나 Kiwoom 모의계좌 잔고에 체결 내역 전혀 없음
+**원인 (3중 복합)**:
+1. `api_connector.py`에 `send_order()` 메서드 없음 → `EntryManager._send_order()` / `ExitManager._send_close_order()`가 `self._api.send_order()` 호출 시 `AttributeError`
+2. `entry_manager.py`/`exit_manager.py` `acc_no = ""` — 빈 계좌번호 (발견되었으나 1번 오류로 도달 불가)
+3. `main.py`에서 `EntryManager`/`ExitManager` 미사용 — `position.open_position()` / `close_position()` 직접 호출 → API 주문 경로 자체 없었음
+**Fix**:
+- `api_connector.py`: `send_order(rqname, screen_no, acc_no, order_type, code, qty, price, hoga_gb, org_order) -> int` 추가
+- `entry_manager.py`/`exit_manager.py`: `acc_no = _secrets.ACCOUNT_NO`
+- `main.py`: `_send_kiwoom_entry_order()` / `_send_kiwoom_exit_order()` 헬퍼 추가. 진입/청산 직전 호출
+
+### [B43] 부분 청산 미완성 — flag 세우기만, 실제 청산 없음
+**파일**: `strategy/exit/exit_manager.py`, `strategy/position/position_tracker.py`, `main.py`
+**증상**: `is_tp1_hit()` 조건 충족 시 `partial_1_done = True` 만 기록, 주문 미전송 + 수량 미감소
+**원인**: `exit_manager._execute_partial_exit()`가 수량 감소(`self._tracker.quantity -= partial_qty`)는 했으나 `partial_close()` 메서드가 `PositionTracker`에 없었음. trades.db INSERT / dashboard 갱신 경로도 없었음
+**Fix**:
+- `PositionTracker.partial_close(exit_price, qty, reason) -> Dict` 추가 (pnl 계산 + quantity 감소 + _save_state)
+- `main.py._execute_partial_exit(price, stage)`: API 주문 → `position.partial_close()` → `partial_N_done=True` → `_post_partial_exit()`
+- `_post_partial_exit(result, stage)`: CB/Kelly 기록 + trades.db INSERT + 대시보드 PnL 갱신
+
+### [B44] QTextEdit 로그 가운데 정렬 — HTML div 미적용
+**파일**: `dashboard/main_dashboard.py`
+**증상**: `<div style="text-align:left;">` HTML 추가 후에도 로그가 가운데 정렬 유지
+**원인**: `QTextEdit.append(html)` 메서드가 이전 블록의 Qt document alignment를 상속. `append_separator()`의 `text-align:center` CSS가 Qt document level 정렬 변경 → 이후 모든 `append()` 블록에 center alignment 전파. HTML CSS는 Qt 렌더링에서 Qt 수준 alignment보다 우선순위 낮음
+**Fix**: `QTextCursor` + `QTextBlockFormat.setAlignment(Qt.AlignLeft)` — Qt document 수준에서 명시적 지정. `_insert_html_left()` / `_insert_html_center()` static 메서드로 분리
+
+---
+
+## 2026-05-04 설계 결정 (야간 2세션)
+
+### [D18] send_order() → ret=0 즉시 포지션 반영 (OnReceiveChejanData 미구현)
+**결정**: `SendOrder` ret=0(접수 성공) 시 즉시 `position.open_position()` / `close_position()` 호출. 실제 체결 확인(OnReceiveChejanData 콜백) 없이 진행.
+**이유**: OnReceiveChejanData 콜백 구현은 체결가/슬리피지 측정에 필요하나, 시장가 주문(`hoga_gb="03"`)은 접수=체결로 간주해도 무방. 모의투자 단계에서 정확한 체결가보다 흐름 검증이 우선.
+**미래 작업**: [T6] OnReceiveChejanData 구현 → 실체결가·슬리피지·지연 시간 정확 측정
+
+### [D19] _KiwoomOrderAdapter — EmergencyExit 역방향 의존 해소
+**결정**: main.py 모듈레벨에 `_KiwoomOrderAdapter(kiwoom_api, futures_code, acc_no)` 어댑터 정의. `EmergencyExit.set_order_manager(adapter)` 주입.
+**이유**: `EmergencyExit`가 `KiwoomAPI`를 직접 참조하면 순환 의존 + 테스트 불가. 어댑터 패턴으로 인터페이스 격리. CB/KillSwitch 긴급청산도 동일 `send_order()` 경로 사용 가능.
+
+### [D20] 슬리피지 지표 → 지연 지표로 대체 (임시)
+**결정**: 주문/체결 탭 상단 메트릭을 슬리피지(실체결가-주문가) 대신 API 지연(LatencySync avg/peak ms)으로 표시.
+**이유**: OnReceiveChejanData 없이 실체결가 알 수 없음. API 지연은 LatencySync로 이미 측정 중이며 슬리피지와 간접 상관 있음.
+**복원 조건**: OnReceiveChejanData 구현 후 실체결가 vs 주문가 차이로 슬리피지 계산 → 메트릭 교체.
+
+---
+
 ## 2026-05-04 버그 수정 (야간 세션)
 
 ### [B40] FID_OI = 291 치명적 오류 — 예상체결가를 미결제약정으로 사용

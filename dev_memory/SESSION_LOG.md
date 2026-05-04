@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-05-04 (야간 2세션 — Kiwoom API 주문 연결 + 부분 청산 완성 + 대시보드 개선)
+
+**작업**: 로그에 4회 거래 기록이 있으나 Kiwoom 모의계좌 잔고에 거래 내역 없음 → 원인 분석 + 구조적 수정
+
+### 근본 원인 분석
+
+Kiwoom 주문이 전달되지 않은 이유 3가지:
+1. `api_connector.py`에 `send_order()` 메서드 자체가 없었음 — EntryManager/ExitManager의 `_send_*_order()`가 `self._api`가 None인 경우만 시뮬 처리하고, None이 아닌 경우 존재하지 않는 메서드를 호출해 오류
+2. `entry_manager.py` / `exit_manager.py`의 `acc_no = ""` — 계좌번호 빈 문자열로 주문 전송 시도
+3. `main.py`에서 `EntryManager` / `ExitManager`를 사용하지 않고 직접 `position.open_position()` / `close_position()` 호출 → API 주문 전송 경로 전혀 없었음
+
+### 핵심 수정 5건
+
+| 항목 | 파일 | 내용 |
+|---|---|---|
+| **send_order() 신설** | `collection/kiwoom/api_connector.py` | `SendOrder` COM API 래핑. order_type 1=신규매수·2=신규매도, hoga_gb="03"=시장가, ret=0=성공 |
+| **acc_no="" 수정** | `entry_manager.py`, `exit_manager.py` | `acc_no = ""` → `acc_no = _secrets.ACCOUNT_NO` |
+| **main.py 진입 주문 헬퍼** | `main.py` | `_send_kiwoom_entry_order(direction, qty)` — LONG→type1, SHORT→type2. `_execute_entry()` 내 포지션 진입 전 API 호출 |
+| **main.py 청산 주문 헬퍼** | `main.py` | `_send_kiwoom_exit_order(qty)` — LONG청산→type2매도, SHORT청산→type1매수. `_check_exit_triggers()` 각 청산 전 API 호출 |
+| **부분 청산 완성** | `position_tracker.py`, `main.py` | `PositionTracker.partial_close(exit_price, qty, reason)` 신설. `_execute_partial_exit(price, stage)` + `_post_partial_exit(result, stage)` — TP1(33%)/TP2(33%) 부분청산 API → DB → 대시보드 전체 연결 |
+
+### 대시보드 주문/체결 탭 개선 2건
+
+| 항목 | 내용 |
+|---|---|
+| **실데이터 메트릭** | 상단 슬리피지 지표를 하드코딩 → LatencySync 실데이터로 교체. `update_order_metrics(trades, avg_lat_ms, peak_lat_ms, samples)` 추가. 매분 파이프라인 후 `latency_sync.summary()` → 대시보드 전송 |
+| **로그 좌측 정렬** | `QTextEdit.append()` 이전 블록 Qt alignment 상속 문제 → `QTextCursor` + `QTextBlockFormat.setAlignment(Qt.AlignLeft)` 기반 `_insert_html_left()` / `_insert_html_center()` static 메서드로 완전 해결 |
+
+### 수정 파일 목록
+
+- `collection/kiwoom/api_connector.py` — `send_order()` 추가
+- `main.py` — 진입/청산 헬퍼, `_execute_partial_exit`, `_post_partial_exit`, `_KiwoomOrderAdapter`
+- `strategy/entry/entry_manager.py` — acc_no 수정
+- `strategy/exit/exit_manager.py` — acc_no 수정
+- `strategy/position/position_tracker.py` — `partial_close()` 추가
+- `dashboard/main_dashboard.py` — 실데이터 메트릭 + QTextCursor 정렬
+
+---
+
 ## 2026-05-04 (야간 세션 — FID 탐색·PROBE 진단·수급 TR 수정)
 
 **작업**: PROBE 진단 로그 분석 → FID 오류 확정 수정 + 신규 FID 상수 추가 + 수급 TR 코드 수정

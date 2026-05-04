@@ -45,7 +45,8 @@ from utils.db_utils import (
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
     fetch_trend_monthly, fetch_trend_yearly,
 )
-from config.settings import TRADES_DB, HORIZONS
+from config.settings import TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS
+from config import secrets as _secrets
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
 from collection.kiwoom import KiwoomAPI, RealtimeData, LatencySync
@@ -177,7 +178,11 @@ class TradingSystem:
         # (모의투자 서버에서도 A0166000으로 SetRealReg 등록 시 틱 수신 확인됨)
         code = self.kiwoom.get_nearest_futures_code()
         print(f"[DBG CK-3] 근월물 코드={code} 서버={server_label}", flush=True)
+        self._futures_code = code
         self.emergency_exit.set_futures_code(code)
+        self.emergency_exit.set_order_manager(
+            _KiwoomOrderAdapter(self.kiwoom, code, _secrets.ACCOUNT_NO)
+        )
 
         self.realtime_data = RealtimeData(
             api              = self.kiwoom,
@@ -749,6 +754,15 @@ class TradingSystem:
         _ds = self.position.daily_stats()
         self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
 
+        # 주문/체결 탭 메트릭 갱신 (LatencySync 실데이터)
+        _ls = self.latency_sync.summary()
+        self.dashboard.update_order_metrics(
+            trades      = _ds["trades"],
+            avg_lat_ms  = _ls["offset_ms"],
+            peak_lat_ms = _ls["peak_ms"],
+            samples     = _ls["sample_count"],
+        )
+
         # ── STEP 9: 예측 DB 저장 ───────────────────────────────
         try:
             for h_name, h_res in horizon_proba.items():
@@ -774,11 +788,113 @@ class TradingSystem:
         # 상태 바 '마지막 갱신' 타이머 리셋
         self.dashboard.notify_pipeline_ran()
 
+    def _execute_partial_exit(self, price: float, stage: int) -> None:
+        """TP{stage} 부분 청산 — 수량 계산 → API 주문 → 수량 감소 → PnL 기록."""
+        total_qty   = self.position.quantity
+        ratio       = PARTIAL_EXIT_RATIOS[stage - 1]
+        partial_qty = max(1, round(total_qty * ratio))
+        reason      = f"TP{stage} 부분청산 {ratio:.0%}"
+
+        if partial_qty >= total_qty:
+            # 잔여가 부분 청산 불가 (1계약 포지션 등) → 전량 청산으로 전환
+            self._send_kiwoom_exit_order(total_qty)
+            result = self.position.close_position(price, f"TP{stage}(전량)")
+            self._post_exit(result)
+            return
+
+        self._send_kiwoom_exit_order(partial_qty)
+        result = self.position.partial_close(price, partial_qty, reason)
+
+        if stage == 1:
+            self.position.partial_1_done = True
+        else:
+            self.position.partial_2_done = True
+
+        self._post_partial_exit(result, stage)
+
+    def _post_partial_exit(self, result: dict, stage: int) -> None:
+        """부분 청산 후처리 — CB/Kelly 통계, 대시보드, DB 기록."""
+        pnl = result["pnl_pts"]
+        qty = result["quantity"]
+
+        if pnl > 0:
+            self.circuit_breaker.record_win()
+            self.kelly.record(win=True, pnl_pts=pnl)
+        else:
+            self.circuit_breaker.record_stop_loss()
+            self.kelly.record(win=False, pnl_pts=pnl)
+
+        log_manager.trade(
+            f"[TP{stage} 부분청산] {qty}계약 @ {result['exit_price']:.2f} "
+            f"PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원) "
+            f"잔여={result['remaining']}계약"
+        )
+        self.dashboard.append_pnl_log(
+            f"부분청산TP{stage} | {result['direction']} {qty}계약 @ {result['exit_price']}",
+            f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  잔여 {result['remaining']}계약",
+        )
+        _daily = self.position.daily_stats()
+        self.dashboard.update_pnl_metrics(
+            self.position.unrealized_pnl_pts(result["exit_price"]) * 500_000,
+            _daily["pnl_krw"],
+            0.0,
+        )
+
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        execute(
+            TRADES_DB,
+            """INSERT INTO trades
+               (entry_ts, exit_ts, direction, entry_price, exit_price,
+                quantity, pnl_pts, pnl_krw, exit_reason, grade, regime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                result.get("entry_ts", now_str),
+                now_str,
+                result["direction"],
+                result["entry_price"],
+                result["exit_price"],
+                result["quantity"],
+                result["pnl_pts"],
+                result["pnl_krw"],
+                result["exit_reason"],
+                result.get("grade", ""),
+                self.current_regime,
+            ),
+        )
+        self._refresh_pnl_history()
+
+    def _send_kiwoom_entry_order(self, direction: str, qty: int) -> int:
+        """키움 진입 주문 전송. 반환값: 0=성공, 음수=오류"""
+        code = getattr(self, "_futures_code", "")
+        if not code:
+            return -1
+        order_type = 1 if direction == "LONG" else 2  # 1=신규매수, 2=신규매도
+        return self.kiwoom.send_order(
+            rqname="진입", screen_no="1000",
+            acc_no=_secrets.ACCOUNT_NO,
+            order_type=order_type,
+            code=code, qty=qty, price=0, hoga_gb="03", org_order="",
+        )
+
+    def _send_kiwoom_exit_order(self, qty: int) -> int:
+        """키움 청산 주문 전송. 반환값: 0=성공, 음수=오류"""
+        code = getattr(self, "_futures_code", "")
+        if not code or self.position.status == "FLAT":
+            return -1
+        order_type = 2 if self.position.status == "LONG" else 1  # LONG→매도(2), SHORT→매수(1)
+        return self.kiwoom.send_order(
+            rqname="청산", screen_no="1001",
+            acc_no=_secrets.ACCOUNT_NO,
+            order_type=order_type,
+            code=code, qty=qty, price=0, hoga_gb="03", org_order="",
+        )
+
     def _execute_entry(
         self, direction: str, price: float,
         quantity: int, atr: float, grade: str,
     ):
         """진입 실행"""
+        self._send_kiwoom_entry_order(direction, quantity)
         self.position.open_position(
             direction = direction,
             price     = price,
@@ -835,21 +951,22 @@ class TradingSystem:
                 "[DBG-STOP] 하드스톱 발동: close=%.2f bar_low=%.2f stop=%.2f → exit=%.2f",
                 price, bar_low, self.position.stop_price, exit_price,
             )
+            self._send_kiwoom_exit_order(self.position.quantity)
             result = self.position.close_position(exit_price, "하드스톱")
             self._post_exit(result)
             return
 
-        # 3순위: 부분 청산
-        if self.position.is_tp1_hit(price) and not self.position.partial_1_done:
-            log_manager.trade(f"[1차 부분청산] @ {price}")
-            self.position.partial_1_done = True
+        # 3순위: 부분 청산 (is_tp1_hit/is_tp2_hit 내부에서 partial_done 이중 체크)
+        if self.position.is_tp1_hit(price):
+            self._execute_partial_exit(price, stage=1)
 
-        if self.position.is_tp2_hit(price) and not self.position.partial_2_done:
-            log_manager.trade(f"[2차 부분청산] @ {price}")
-            self.position.partial_2_done = True
+        # TP1이 전량청산으로 전환된 경우 포지션이 FLAT → TP2 스킵
+        if self.position.status != "FLAT" and self.position.is_tp2_hit(price):
+            self._execute_partial_exit(price, stage=2)
 
         # 4순위: 시간 강제 청산
         if self.time_exit.should_force_exit():
+            self._send_kiwoom_exit_order(self.position.quantity)
             result = self.position.close_position(price, "15:10 강제청산")
             self._post_exit(result)
 
@@ -1387,6 +1504,27 @@ class TradingSystem:
             self.position.status, now.strftime("%H:%M:%S"),
         )
         self.dashboard.append_sys_log(f"[{now.strftime('%H:%M')}] {reason}")
+
+
+class _KiwoomOrderAdapter:
+    """EmergencyExit.set_order_manager()용 어댑터 — KiwoomAPI를 OrderManager 인터페이스로 래핑."""
+
+    def __init__(self, kiwoom_api, futures_code: str, acc_no: str):
+        self._api   = kiwoom_api
+        self._code  = futures_code
+        self._acc   = acc_no
+
+    def send_market_order(self, code: str, side: str, qty: int, reason: str = "") -> int:
+        order_type = 2 if side == "SELL" else 1   # SELL=신규매도(2), BUY=신규매수(1)
+        ret = self._api.send_order(
+            rqname=reason or "긴급청산",
+            screen_no="1002",
+            acc_no=self._acc,
+            order_type=order_type,
+            code=code or self._code,
+            qty=qty, price=0, hoga_gb="03", org_order="",
+        )
+        return ret if ret == 0 else None
 
 
 def main():

@@ -629,6 +629,44 @@ class KiwoomAPI(QAxWidget):
             )
         return result
 
+    # ── 주문 전송 ─────────────────────────────────────────────
+
+    def send_order(
+        self,
+        rqname: str,
+        screen_no: str,
+        acc_no: str,
+        order_type: int,
+        code: str,
+        qty: int,
+        price: int,
+        hoga_gb: str,
+        org_order: str,
+    ) -> int:
+        """
+        키움 주문 전송 (SendOrder).
+
+        order_type: 1=신규매수, 2=신규매도
+        hoga_gb:    "03"=시장가
+        반환값:     0=접수 성공, 음수=오류코드
+        실제 체결번호는 OnReceiveChejanData 콜백에서 수신
+        """
+        ret = int(self.dynamicCall(
+            "SendOrder(QString, QString, QString, int, QString, int, int, QString, QString)",
+            rqname, screen_no, acc_no, order_type, code, qty, price, hoga_gb, org_order,
+        ))
+        if ret == 0:
+            logger.info(
+                "SendOrder 접수 rq=%s type=%d code=%s qty=%d acc=%s",
+                rqname, order_type, code, qty, acc_no,
+            )
+        else:
+            logger.error(
+                "SendOrder 실패 ret=%d rq=%s type=%d code=%s qty=%d",
+                ret, rqname, order_type, code, qty,
+            )
+        return ret
+
     # ── 연결 상태 ─────────────────────────────────────────────
 
     @property

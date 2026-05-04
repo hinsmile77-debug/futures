@@ -16,6 +16,8 @@ import datetime
 import logging
 from typing import Optional, Dict, TYPE_CHECKING
 
+from config import secrets as _secrets
+
 from config.constants import (
     DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT,
     POSITION_LONG, POSITION_SHORT,
@@ -229,7 +231,7 @@ class EntryManager:
             order_no = self._api.send_order(
                 rqname     = "진입",
                 screen_no  = "1000",
-                acc_no     = "",   # secrets에서 주입
+                acc_no     = _secrets.ACCOUNT_NO,
                 order_type = 1,    # 신규매수
                 code       = "101Q9000",   # 코스피200 선물 근월물
                 qty        = instr["qty"],

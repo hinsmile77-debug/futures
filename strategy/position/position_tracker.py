@@ -129,6 +129,49 @@ class PositionTracker:
         self._save_state()
         return result
 
+    def partial_close(self, exit_price: float, qty: int, reason: str) -> Dict:
+        """부분 청산 — qty 계약만 청산하고 잔여 포지션 유지.
+
+        _daily_trades는 증가시키지 않음 (최종 close_position에서만 카운트).
+        """
+        assert self.status != POSITION_FLAT, "포지션 없음"
+        assert 0 < qty < self.quantity, (
+            f"부분청산 수량 오류: qty={qty} total={self.quantity}"
+        )
+
+        mult    = 1 if self.status == POSITION_LONG else -1
+        pnl_pts = (exit_price - self.entry_price) * mult
+        pnl_krw = pnl_pts * 500_000 * qty
+
+        self._daily_pnl_pts += pnl_pts * qty
+        self.quantity        -= qty
+
+        entry_ts_str = (
+            self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+            if self.entry_time else ""
+        )
+        result = {
+            "direction":    self.status,
+            "entry_price":  self.entry_price,
+            "exit_price":   exit_price,
+            "quantity":     qty,
+            "remaining":    self.quantity,
+            "pnl_pts":      round(pnl_pts, 4),
+            "pnl_krw":      round(pnl_krw, 0),
+            "exit_reason":  reason,
+            "hold_minutes": self._hold_minutes(),
+            "entry_ts":     entry_ts_str,
+            "grade":        self.grade,
+        }
+
+        logger.info(
+            f"[Position] 부분청산 {qty}계약 @ {exit_price} "
+            f"| 잔여={self.quantity}계약 "
+            f"| PnL={pnl_pts:+.2f}pt ({pnl_krw:+,.0f}원) | {reason}"
+        )
+        self._save_state()
+        return result
+
     def update_trailing_stop(self, current_price: float, atr: float):
         """트레일링 스톱 업데이트"""
         if self.status == POSITION_FLAT:

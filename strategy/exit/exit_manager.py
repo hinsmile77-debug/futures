@@ -16,6 +16,8 @@ import datetime
 import logging
 from typing import Optional, Dict, TYPE_CHECKING
 
+from config import secrets as _secrets
+
 from config.constants import (
     POSITION_LONG, POSITION_SHORT, POSITION_FLAT,
     FUTURES_MULTIPLIER,
@@ -203,7 +205,7 @@ class ExitManager:
             order_no   = self._api.send_order(
                 rqname     = "청산",
                 screen_no  = "1001",
-                acc_no     = "",
+                acc_no     = _secrets.ACCOUNT_NO,
                 order_type = order_type,
                 code       = "101Q9000",
                 qty        = qty,
