@@ -36,7 +36,7 @@ from config.constants import (
     FID_FUTURES_PRICE, FID_FUTURES_VOL,
     FID_BID_PRICE, FID_ASK_PRICE,
     FID_BID_QTY, FID_ASK_QTY, FID_OI,
-    RT_FUTURES, TR_FUTURES_1MIN,
+    RT_FUTURES, RT_FUTURES_HOGA, TR_FUTURES_1MIN,
 )
 from collection.kiwoom.api_connector import KiwoomAPI
 
@@ -64,10 +64,12 @@ class RealtimeData:
     screen_no       : 실시간 등록 화면 번호
     on_candle_closed : 분봉 완성 시 호출되는 콜백(candle: dict) → None
     on_tick         : 틱 수신마다 호출 (candle: dict — 현재 미완성 bar) → None
-    realtime_code   : SetRealReg 실시간 구독용 코드 (예: "101W06").
+    on_hoga         : 호가 변경마다 호출 (bid1, ask1, bid_qty, ask_qty) → None
+                      OFI 업데이트용 — 선물호가잔량 이벤트마다 직접 호출됨
+    realtime_code   : SetRealReg 실시간 구독용 코드.
                       None이면 code와 동일하게 사용.
-    is_mock_server  : True = 모의투자 서버 → SetRealReg 실시간 미지원,
-                      OPT50029 30초 폴링으로 분봉 수집.
+    is_mock_server  : True = 모의투자 서버 → OPT50029 30초 폴링으로 분봉 수집.
+                      False = SetRealReg 실시간 수신 (모의/실전 모두 사용 가능).
     """
 
     # 모의투자 폴링 간격 (ms)
@@ -80,6 +82,7 @@ class RealtimeData:
         screen_no: str = "3000",
         on_candle_closed: Optional[Callable] = None,
         on_tick: Optional[Callable] = None,
+        on_hoga: Optional[Callable] = None,
         realtime_code: Optional[str] = None,
         is_mock_server: bool = False,
     ):
@@ -91,6 +94,7 @@ class RealtimeData:
 
         self._on_candle_closed = on_candle_closed
         self._on_tick = on_tick
+        self._on_hoga = on_hoga
 
         self._candles: Deque[Dict] = deque(maxlen=MAX_CANDLES)
         self._current_bar: Optional[Dict] = None   # 미완성 현재 bar
@@ -101,6 +105,12 @@ class RealtimeData:
 
         # 틱 방향 판단용 직전 가격 (tick test — FC0 부호는 전일대비 방향, 틱 방향 아님)
         self._prev_tick_price: float = 0.0
+
+        # 최신 호가 (선물호가잔량에서 갱신 — 선물시세에는 bid/ask FID 없음)
+        self._last_bid1: float = 0.0
+        self._last_ask1: float = 0.0
+        self._last_bid_qty: int = 0
+        self._last_ask_qty: int = 0
 
         # 모의투자 폴링 상태
         self._poll_timer: Optional[QTimer] = None
@@ -115,20 +125,29 @@ class RealtimeData:
         if self._running:
             return
 
-        # 실시간 구독 (모의투자에서도 등록 — 실서버 전환 즉시 활성화)
-        # SetRealReg는 101W 형식(_rt_code), OPT50029는 A-형식(self.code) 사용
+        # 선물시세(체결) 실시간 등록
         print(f"[DBG RD-START] register_realtime 직전 rt_code={self._rt_code!r} tr_code={self.code!r} mock={self._is_mock}", flush=True)
         self.api.register_realtime(
             code=self._rt_code,
             real_type=RT_FUTURES,
             screen_no=self.screen_no,
             callback=self._on_real_data,
+            sopt_type="0",
+        )
+        # 선물호가잔량 실시간 등록 — 기존 선물시세 등록 유지(sopt_type="1")
+        # bid/ask FID는 선물시세에 없고 선물호가잔량 전용 → OFI 정상화
+        self.api.register_realtime(
+            code=self._rt_code,
+            real_type=RT_FUTURES_HOGA,
+            screen_no=self.screen_no,
+            callback=self._on_hoga_data,
+            sopt_type="1",
         )
         self._running = True
         self._tick_count = 0
         logger.info("[RealtimeData] 실시간 수신 시작 — TR코드=%s RT코드=%s mock=%s",
                     self.code, self._rt_code, self._is_mock)
-        print(f"[DBG RD-START] register_realtime 완료", flush=True)
+        print(f"[DBG RD-START] register_realtime 완료 (선물시세 + 선물호가잔량)", flush=True)
 
         if load_history:
             self._load_initial_candles()
@@ -303,11 +322,12 @@ class RealtimeData:
             is_buy_tick = price >= self._prev_tick_price if self._prev_tick_price else True
             self._prev_tick_price = price
             volume = abs(int(raw_vol)) if raw_vol.strip() else 0
-            bid1   = self._safe_float(self.api.get_real_data(code, FID_BID_PRICE))
-            ask1   = self._safe_float(self.api.get_real_data(code, FID_ASK_PRICE))
-            bid_q  = self._safe_int(self.api.get_real_data(code, FID_BID_QTY))
-            ask_q  = self._safe_int(self.api.get_real_data(code, FID_ASK_QTY))
-            oi     = self._safe_int(self.api.get_real_data(code, FID_OI))
+            # bid/ask는 선물시세에 없음 — 선물호가잔량(_on_hoga_data)에서 갱신된 최신값 사용
+            bid1  = self._last_bid1
+            ask1  = self._last_ask1
+            bid_q = self._last_bid_qty
+            ask_q = self._last_ask_qty
+            oi    = self._safe_int(self.api.get_real_data(code, FID_OI))
         except (ValueError, TypeError) as e:
             sys_log.warning("[RT-PARSE] #%d 틱 파싱 오류: %s | raw_price=%r",
                             self._tick_count, e,
@@ -323,6 +343,34 @@ class RealtimeData:
                          self._tick_count, price, volume, bar_min, self._current_min)
 
         self._update_bar(bar_ts, bar_min, price, volume, bid1, ask1, bid_q, ask_q, oi, is_buy_tick)
+
+    def _on_hoga_data(self, code: str, real_type: str, real_data: str) -> None:
+        """선물호가잔량 콜백 — bid/ask 저장 + OFI 누적."""
+        try:
+            bid1  = self._safe_float(self.api.get_real_data(code, FID_BID_PRICE))
+            ask1  = self._safe_float(self.api.get_real_data(code, FID_ASK_PRICE))
+            bid_q = self._safe_int(self.api.get_real_data(code, FID_BID_QTY))
+            ask_q = self._safe_int(self.api.get_real_data(code, FID_ASK_QTY))
+        except Exception:
+            return
+        if bid1 <= 0 or ask1 <= 0:
+            return
+
+        self._last_bid1    = bid1
+        self._last_ask1    = ask1
+        self._last_bid_qty = bid_q
+        self._last_ask_qty = ask_q
+
+        # 현재 진행 중인 bar에도 최신 호가 반영
+        if self._current_bar is not None:
+            self._current_bar["bid1"]    = bid1
+            self._current_bar["ask1"]    = ask1
+            self._current_bar["bid_qty"] = bid_q
+            self._current_bar["ask_qty"] = ask_q
+
+        # OFI 누적 (분봉 확정 시 flush_minute()에서 집계)
+        if self._on_hoga is not None:
+            self._on_hoga(bid1, ask1, bid_q, ask_q)
 
     def _update_bar(
         self,

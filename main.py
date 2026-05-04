@@ -174,8 +174,9 @@ class TradingSystem:
             screen_no        = "3000",
             on_candle_closed = self._on_candle_closed,
             on_tick          = self._on_tick_price_update,
-            realtime_code    = code,   # SetRealReg도 A0166000 사용 (101W06 불필요)
-            is_mock_server   = False,  # A0166000 SetRealReg 실시간 수신 활성화
+            on_hoga          = self._on_hoga_update,
+            realtime_code    = code,
+            is_mock_server   = False,
         )
         print("[DBG CK-4] RealtimeData 생성 완료", flush=True)
 
@@ -187,23 +188,22 @@ class TradingSystem:
         return True
 
     def _on_tick_price_update(self, bar: dict) -> None:
-        """틱 수신마다 대시보드 헤더·패널 현재가 갱신 + OFI 호가 누적."""
+        """틱 수신마다 대시보드 헤더 현재가 갱신."""
         if self.realtime_data is None:
             return
-        # OFI: 틱마다 호가 변화 누적 (분봉 확정 시 flush_minute() 에서 집계)
-        bid1 = bar.get("bid1", 0.0)
-        ask1 = bar.get("ask1", 0.0)
-        if bid1 and ask1:
-            self.feature_builder.ofi.update_hoga(
-                bid_price = bid1,
-                bid_qty   = bar.get("bid_qty", 0),
-                ask_price = ask1,
-                ask_qty   = bar.get("ask_qty", 0),
-            )
         self.dashboard.update_price(
             price  = bar["close"],
             change = bar["close"] - bar.get("open", bar["close"]),
             code   = self.realtime_data.code,
+        )
+
+    def _on_hoga_update(self, bid1: float, ask1: float, bid_qty: int, ask_qty: int) -> None:
+        """선물호가잔량 이벤트마다 OFI 누적 (분봉 확정 시 flush_minute()에서 집계)."""
+        self.feature_builder.ofi.update_hoga(
+            bid_price = bid1,
+            bid_qty   = bid_qty,
+            ask_price = ask1,
+            ask_qty   = ask_qty,
         )
 
     def _on_candle_closed(self, candle: dict) -> None:

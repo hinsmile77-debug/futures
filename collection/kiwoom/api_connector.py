@@ -231,23 +231,24 @@ class KiwoomAPI(QAxWidget):
         screen_no: str = "3000",
         fid_list: Optional[str] = None,
         callback: Optional[Callable] = None,
+        sopt_type: str = "0",
     ) -> None:
         """
         실시간 데이터 수신 등록.
 
         Parameters
         ----------
-        code       종목 코드 (예: "101W06")
-        real_type  실시간 타입 (예: RT_FUTURES = "FC0")
+        code       종목 코드 (예: "A0166000")
+        real_type  실시간 타입 (예: RT_FUTURES = "선물시세")
         screen_no  화면 번호 (4자리)
         fid_list   FID 문자열 (기본값: DEFAULT_REAL_FIDS)
         callback   (code, real_type, real_data) → None
+        sopt_type  "0" = 기존 등록 초기화 후 등록, "1" = 기존 유지 추가
         """
         fids = fid_list or DEFAULT_REAL_FIDS
-        # sOptType "0" = 기존 등록 초기화 후 등록, "1" = 기존 유지 추가
         ret = self.dynamicCall(
             "SetRealReg(QString, QString, QString, QString)",
-            screen_no, code, fids, "0",
+            screen_no, code, fids, sopt_type,
         )
         print(f"[DBG RT-REG] SetRealReg ret={ret} code={code!r} type={real_type!r} screen={screen_no!r} fids={fids}", flush=True)
         if callback is not None:
