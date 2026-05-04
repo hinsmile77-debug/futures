@@ -1,12 +1,16 @@
 # config/constants.py — 상수 정의
 
 # ── 키움 TR 코드 ──────────────────────────────────────────────
-TR_INVESTOR_FUTURES = "opt10059"    # 선물 투자자별 매매
-TR_INVESTOR_OPTIONS = "opt50008"    # 옵션 투자자별 매매 후보 — KOA Studio에서 필드명 확인 필요
-                                    # (opt50014는 선물가격대별비중차트요청으로 잘못 사용됨)
-TR_PROGRAM_TRADE    = "opt10060"    # 프로그램 매매
-TR_FUTURES_PRICE    = "opt10001"    # 선물 현재가
-TR_FUTURES_1MIN     = "OPT50029"    # 선물분차트요청 (OPT50029)
+TR_INVESTOR_FUTURES         = "opt10059"  # 선물 투자자별 매매 (순매수 수량)
+# TR_INVESTOR_OPTIONS: KOA Studio 전체 탐색 결과 콜/풋 순매수를 투자자별로 제공하는 TR 없음
+#   opt50014 = 선물가격대별비중차트요청 (무관)
+#   opt50008 = 프로그램매매추이차트요청 (투자자별 프로그램매매 KRW — 옵션 아님)
+TR_PROGRAM_TRADE            = "opt10060"  # 프로그램 매매 합계 (차익/비차익 순매수 수량)
+TR_PROGRAM_TRADE_INVESTOR   = "opt50008"  # 프로그램매매 투자자별 순매수금액(KRW)
+                                          # INPUT: 종목코드=P0010I(코스피), 시간구분=1, 거래소구분=1
+                                          # OUTPUT: 투자자별순매수금액 (체결시간별 멀티행)
+TR_FUTURES_PRICE            = "opt10001"  # 선물 현재가
+TR_FUTURES_1MIN             = "OPT50029"  # 선물분차트요청 (OPT50029)
 
 # 실시간 FID
 FID_FUTURES_PRICE   = 10    # 현재가
