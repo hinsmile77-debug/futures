@@ -40,12 +40,30 @@
 
 ---
 
+### [B36] OFI 영구 0 — 선물시세에 bid/ask FID 없음 (B14 해결)
+**파일**: `collection/kiwoom/realtime_data.py`, `main.py`, `collection/kiwoom/api_connector.py`
+**증상**: `[DBG-F4]` bid=0.00 ask=0.00, OFI pressure=0 영구 고정
+**원인**: `선물시세`(FC0) 콜백에는 FID 41/51/61/71(bid/ask) 미포함. `_on_real_data()`에서 읽어도 빈 문자열 반환 → bid1=ask1=0 → `if bid1 and ask1:` 조건 항상 False → `ofi.update_hoga()` 미호출
+**발견 계기**: SetRealReg 등록 후 SYSTEM.log에 `[RT-CB] type='선물호가잔량'`이 찍히는 것 확인 → 이미 수신 중이었으나 콜백 없어 버려지고 있었음
+**Fix**:
+- `api_connector.register_realtime()` — `sopt_type` 파라미터 추가 (`"1"` = 기존 등록 유지 추가)
+- `realtime_data`: `on_hoga` 콜백 파라미터 추가, `_on_hoga_data()` 신설. `start()`에서 `sopt_type="1"`로 선물호가잔량 추가 등록
+- `_on_real_data()`에서 bid/ask 읽기 제거 → `_last_bid1/ask1` 사용
+- `main._on_hoga_update()` 신설 → `ofi.update_hoga()` 직접 호출
+- `_on_tick_price_update()`에서 OFI 코드 제거 (전담 경로 분리)
+
+---
+
 ## 2026-05-04 설계 결정
 
 ### [D12] SetRealReg(A0166000) — 모의투자 실시간 분봉 수신 표준 경로
 **결정**: 모의투자 서버에서도 OPT50029 폴링 사용 금지. SetRealReg + `RT_FUTURES="선물시세"` + code=`A0166000` 단일 경로로 통일.
 **이유**: OPT50029는 실 서버에서만 라이브 데이터 제공. 모의투자에서는 rows=0. SetRealReg A0166000은 모의/실전 양쪽에서 동작 확인됨.
 **영향**: `is_mock_server` 파라미터 사실상 불필요 (실전 서버 전환 시에도 동일 경로 사용).
+
+### [D14] 선물호가잔량 — sopt_type="1" 추가 등록 패턴
+**결정**: `선물시세` 등록(`sopt_type="0"`) 직후 `선물호가잔량`을 `sopt_type="1"`로 추가 등록. 기존 선물시세 등록이 초기화되지 않음.
+**이유**: SetRealReg는 `"0"` 전달 시 같은 화면·코드의 기존 등록 전체 초기화. `"1"` 전달 시 기존 유지하고 추가만 함. 호가 데이터는 이미 수신 중이었으므로 SetRealReg 재호출 없이 콜백만 추가해도 되지만, 명시적 등록으로 의도를 명확히 함.
 
 ### [D13] WARN/SYSTEM 로그 이중 분리
 **결정**: INFO 이하 → SYSTEM.log + 시스템 탭. WARNING 이상 → WARN.log + 경보 탭. 두 채널은 완전 분리.

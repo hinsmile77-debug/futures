@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-04 (모의투자 SetRealReg + WARN 로그 분리 + 파이프라인 watchdog 수정)
+> 마지막 업데이트: 2026-05-04 (B14 OFI 영구 0 수정 — 선물호가잔량 콜백)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,25 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-05-04 세션 주요 수정 (B14 OFI 수정 — 선물호가잔량 콜백)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **B14 OFI 영구 0 수정** | `선물호가잔량` 콜백 `_on_hoga_data()` 신설. bid/ask를 `_last_bid1/ask1`에 저장, `_current_bar` 동기화, `on_hoga` 콜백으로 OFI 누적 |
+| **`sopt_type` 파라미터 추가** | `api_connector.register_realtime()` — `"1"` 전달 시 기존 등록 유지하고 추가 등록 (선물호가잔량 등록에 사용) |
+| **OFI 경로 분리** | `_on_tick_price_update`에서 OFI 제거 → `_on_hoga_update()` 전담. 선물시세 틱이 아닌 실제 호가 이벤트마다 OFI 누적 |
+
+### 수정 후 데이터 흐름
+
+```
+선물시세    → _on_real_data()  → price/vol 조립 → bar 업데이트
+선물호가잔량 → _on_hoga_data() → bid/ask 읽기  → _last_bid1/ask1 저장
+                                              → _current_bar bid/ask 동기화
+                                              → _on_hoga_update() → ofi.update_hoga()
+```
 
 ---
 
@@ -391,7 +410,7 @@
 
 | 이슈 | 원인 | 상태 |
 |---|---|---|
-| OFI 영구 0 (B14) | FC0에 FID41/51(bid/ask) 미포함 — FH0(선물호가잔량) 별도 등록 필요. 모의투자 서버 FH0 지원 여부 미확인 | ⚠️ 미해결 |
+| OFI 영구 0 (B14) | 선물호가잔량 콜백 신설 + `sopt_type="1"` 추가 등록으로 해결 | ✅ 해결 |
 | CVD tick test 효과 | 다음 실행에서 buy_vol/sell_vol이 실제 분리되는지 [V8] 확인 필요 | ⏳ 검증 대기 |
 | OPT50029 초기 분봉 rows=0 | 모의투자 서버에서 OPT50029 미지원 확인. SetRealReg(A0166000)으로 전환 완료 | ✅ 해결 |
 | [DBG] 출력문 정리 | 디버그 print 잔존 | 🔧 안정화 후 제거 |

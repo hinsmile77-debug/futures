@@ -14,6 +14,12 @@
 - 모의투자 서버에서 OPT50029 rows=0 확인됨 — SetRealReg(A0166000) 전환으로 대체
 - 실 서버 전환 시 OPT50029 초기 히스토리 로드 재확인 필요
 
+### [V19] OFI bid/ask 정상 수신 확인
+- **내용**: `[DBG-F4]` 로그에서 `bid=XXX.XX ask=XXX.XX` 가 0이 아닌 값으로 표시되는지
+- **방법**: 재시작 후 첫 분봉 확정 후 DEBUG 로그 확인
+- **기준**: bid > 0 AND ask > 0 → `ofi.update_hoga()` 정상 호출됨
+- **파일**: `collection/kiwoom/realtime_data.py` `_on_hoga_data()`
+
 ### [V18] 파이프라인 watchdog 정상 해제 확인
 - **내용**: 재시작 후 `[Notify] ⚠ 파이프라인 2분 지연` 경보가 더 이상 뜨지 않는지
 - **방법**: 재시작 → 분봉 1회 확정 후 watchdog 경보 미발동 확인
@@ -170,8 +176,7 @@
 ### [P4] 알파 풀 JSON 파일 증가
 - `research_bot/alpha_pool.py`: MAX_ACTIVE=50 제한 있으나 퇴역 알파 파일 관리 정책 미확정
 
-### [P5] bid/ask = 0 — OFI 영구 0 (FH0 등록 필요)
-- **원인**: FC0(선물시세)에 FID41(매도호가)/FID51(매수호가) 미포함. bid/ask는 FH0(선물호가잔량) 전용
-- **영향**: `ofi.update_hoga()` 조건 `if bid1 and ask1` 항상 False → OFI=0, CVD 방향 보정 불가
-- **해결 방향**: `register_realtime(RT_FUTURES_HOGA, screen="3001")` + `_on_hoga_data()` 콜백 추가
-- **전제 조건**: 모의투자 서버에서 FH0 지원 여부 먼저 확인 필요
+### [P5] bid/ask = 0 — OFI 영구 0 [DONE 2026-05-04]
+- 선물호가잔량 콜백 `_on_hoga_data()` 신설 + `sopt_type="1"` 추가 등록으로 해결
+- 모의투자 서버에서 선물호가잔량 수신 확인됨 (로그에서 확인)
+- **검증 필요**: [V19] 재시작 후 `[DBG-F4]` 에서 bid/ask 값 확인

@@ -86,6 +86,19 @@ if not self.model.is_ready():
 
 ---
 
+### [6] B14 OFI 영구 0 수정 — 선물호가잔량 콜백 신설
+
+**발견 계기**: 로그에서 `[RT-CB] type='선물호가잔량'`이 이미 도착 중인 것을 확인 → 콜백만 없어서 버려지고 있었음.
+
+**원인**: `선물시세`(FC0) FID에는 bid/ask(41/51/61/71)가 없음. `_on_real_data()`에서 읽어도 항상 0 → `ofi.update_hoga()` 미호출 → OFI=0 고정.
+
+**수정**:
+- `api_connector.py`: `register_realtime(sopt_type=)` 파라미터 추가 (`"1"` = 기존 유지 추가)
+- `realtime_data.py`: `on_hoga` 콜백 파라미터 + `_on_hoga_data()` 신설. `start()`에서 선물호가잔량 추가 등록. `_on_real_data()`에서 bid/ask 읽기 제거 → `_last_bid1/ask1` 사용
+- `main.py`: `_on_hoga_update()` 신설, `_on_tick_price_update`에서 OFI 코드 제거
+
+---
+
 ## 2026-04-30 (이번 세션)
 
 **작업**: SIMULATION 코드 전면 제거 + 자동 종료 + 패널 이전 데이터 지속 + 성장 추이 대시보드
