@@ -23,7 +23,8 @@ from config.constants import (
     RT_FUTURES, RT_FUTURES_HOGA,
 )
 
-logger = logging.getLogger(__name__)
+logger  = logging.getLogger(__name__)
+sys_log = logging.getLogger("SYSTEM")   # 실시간 콜백 추적 → SYSTEM.log
 
 # ── 키움 OCX ProgID ────────────────────────────────────────────
 KIWOOM_OCX = "KHOPENAPI.KHOpenAPICtrl.1"
@@ -51,7 +52,7 @@ class KiwoomAPI(QAxWidget):
         data = api.request_tr(
             tr_code="OPT50029",
             rq_name="1min_candle",
-            inputs={"종목코드": "101W06", "틱범위": "1"},
+            inputs={"종목코드": "A0166000", "시간단위": "1"},
             screen_no="2000",
         )
     """
@@ -115,8 +116,12 @@ class KiwoomAPI(QAxWidget):
         if self._connected:
             user   = self.get_login_info("USER_NAME")
             server = self.get_login_info("GetServerGubun")
-            logger.info("로그인 성공 — 사용자: %s  서버: %s", user,
-                        "모의투자" if server == "1" else "실서버")
+            server_label = "모의투자" if server == "1" else "실서버"
+            logger.info("로그인 성공 — 사용자: %s  서버: %s", user, server_label)
+            print(f"[DBG LOGIN] user={user!r} server_gubun={server!r} ({server_label})", flush=True)
+            if server == "1":
+                print("[DBG LOGIN] ★★★ 모의투자 서버 — 선물 SetRealReg 실시간 틱 수신 불가 ★★★", flush=True)
+                logger.warning("[서버] 모의투자 서버 접속 — 선물 실시간 틱(SetRealReg) 미지원. OPT50029 폴링 필요")
         else:
             err = getattr(self, "_login_err_code", -1)
             if err == -1:
@@ -240,16 +245,16 @@ class KiwoomAPI(QAxWidget):
         """
         fids = fid_list or DEFAULT_REAL_FIDS
         # sOptType "0" = 기존 등록 초기화 후 등록, "1" = 기존 유지 추가
-        self.dynamicCall(
+        ret = self.dynamicCall(
             "SetRealReg(QString, QString, QString, QString)",
             screen_no, code, fids, "0",
         )
-        print(f"[DBG RT-REG] SetRealReg code={code} type={real_type} screen={screen_no} fids={fids}", flush=True)
+        print(f"[DBG RT-REG] SetRealReg ret={ret} code={code!r} type={real_type!r} screen={screen_no!r} fids={fids}", flush=True)
         if callback is not None:
-            key = (code, real_type)
+            key = (code.strip(), real_type.strip())
             self._real_callbacks.setdefault(key, []).append(callback)
-            print(f"[DBG RT-REG] 콜백 등록 key={key}  등록된콜백수={len(self._real_callbacks[key])}", flush=True)
-        logger.info("실시간 등록: code=%s type=%s screen=%s", code, real_type, screen_no)
+            print(f"[DBG RT-REG] 콜백 등록 key={key!r}  전체등록키={list(self._real_callbacks.keys())}", flush=True)
+        logger.info("실시간 등록: code=%s type=%s screen=%s ret=%s", code, real_type, screen_no, ret)
 
     def unregister_realtime(self, code: str, screen_no: str = "3000") -> None:
         """특정 종목 실시간 해제."""
@@ -336,6 +341,17 @@ class KiwoomAPI(QAxWidget):
         logger.info("근월물 코드 (날짜계산): %s", code)
         return code
 
+    def get_realtime_futures_code(self) -> str:
+        """SetRealReg 실시간 구독용 101W 형식 코드.
+
+        OPT50029(분봉 TR)는 A0166000 형식, SetRealReg는 101W 형식이 필요하다.
+        날짜 계산으로 항상 101W 형식을 반환한다.
+        """
+        code = self._nearest_futures_code_by_date()
+        print(f"[DBG FC] 실시간코드(101W 형식)='{code}'", flush=True)
+        logger.info("실시간 구독 코드: %s", code)
+        return code
+
     def _nearest_futures_code_by_date(self) -> str:
         """현재 날짜 기준 KOSPI200 선물 근월물 코드.
 
@@ -397,14 +413,23 @@ class KiwoomAPI(QAxWidget):
     def _on_receive_real_data(
         self, code: str, real_type: str, real_data: str
     ) -> None:
-        print(f"[DBG CB-RT] _on_receive_real_data 진입 code={code} type={real_type}", flush=True)
-        key = (code, real_type)
-        for cb in self._real_callbacks.get(key, []):
+        # 처음 수신되는 (code, real_type) 조합을 SYSTEM.log에 1회 기록
+        key_stripped = (code.strip(), real_type.strip())
+        if not hasattr(self, "_logged_rt_keys"):
+            self._logged_rt_keys = set()
+        if key_stripped not in self._logged_rt_keys:
+            sys_log.info("[RT-CB] 새 실시간 키 수신 code=%r type=%r | 등록키=%s",
+                         code, real_type, list(self._real_callbacks.keys()))
+            self._logged_rt_keys.add(key_stripped)
+
+        key_raw = (code, real_type)
+        cbs = self._real_callbacks.get(key_raw) or self._real_callbacks.get(key_stripped, [])
+        for cb in cbs:
             try:
                 cb(code, real_type, real_data)
             except Exception:
                 logger.exception("실시간 콜백 오류 [%s/%s]", code, real_type)
-        print(f"[DBG CB-RT] _on_receive_real_data 완료", flush=True)
+        print(f"[DBG CB-RT] 완료", flush=True)
 
     def _on_receive_msg(
         self, _screen_no: str, rq_name: str, tr_code: str, msg: str

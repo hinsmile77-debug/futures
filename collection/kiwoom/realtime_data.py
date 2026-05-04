@@ -30,6 +30,8 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import Callable, Deque, Dict, List, Optional
 
+from PyQt5.QtCore import QTimer
+
 from config.constants import (
     FID_FUTURES_PRICE, FID_FUTURES_VOL,
     FID_BID_PRICE, FID_ASK_PRICE,
@@ -38,7 +40,8 @@ from config.constants import (
 )
 from collection.kiwoom.api_connector import KiwoomAPI
 
-logger = logging.getLogger(__name__)
+logger    = logging.getLogger(__name__)
+sys_log   = logging.getLogger("SYSTEM")   # 폴링 추적 → SYSTEM.log + WARN.log
 
 # 보관할 최대 분봉 수 (약 1거래일 + 여유)
 MAX_CANDLES = 500
@@ -56,12 +59,19 @@ class RealtimeData:
 
     Parameters
     ----------
-    api         : KiwoomAPI 인스턴스
-    code        : 선물 종목 코드 (예: "101W06")
-    screen_no   : 실시간 등록 화면 번호
+    api             : KiwoomAPI 인스턴스
+    code            : OPT50029 분봉 TR용 코드 (예: "A0166000")
+    screen_no       : 실시간 등록 화면 번호
     on_candle_closed : 분봉 완성 시 호출되는 콜백(candle: dict) → None
-    on_tick     : 틱 수신마다 호출 (candle: dict — 현재 미완성 bar) → None
+    on_tick         : 틱 수신마다 호출 (candle: dict — 현재 미완성 bar) → None
+    realtime_code   : SetRealReg 실시간 구독용 코드 (예: "101W06").
+                      None이면 code와 동일하게 사용.
+    is_mock_server  : True = 모의투자 서버 → SetRealReg 실시간 미지원,
+                      OPT50029 30초 폴링으로 분봉 수집.
     """
+
+    # 모의투자 폴링 간격 (ms)
+    _POLL_INTERVAL_MS = 30_000
 
     def __init__(
         self,
@@ -70,10 +80,14 @@ class RealtimeData:
         screen_no: str = "3000",
         on_candle_closed: Optional[Callable] = None,
         on_tick: Optional[Callable] = None,
+        realtime_code: Optional[str] = None,
+        is_mock_server: bool = False,
     ):
         self.api = api
-        self.code = code
+        self.code = code                              # OPT50029 분봉 TR용
+        self._rt_code = realtime_code or code         # SetRealReg 실시간용
         self.screen_no = screen_no
+        self._is_mock = is_mock_server
 
         self._on_candle_closed = on_candle_closed
         self._on_tick = on_tick
@@ -88,34 +102,119 @@ class RealtimeData:
         # 틱 방향 판단용 직전 가격 (tick test — FC0 부호는 전일대비 방향, 틱 방향 아님)
         self._prev_tick_price: float = 0.0
 
+        # 모의투자 폴링 상태
+        self._poll_timer: Optional[QTimer] = None
+        self._last_polled_ts: Optional[datetime] = None  # 마지막으로 처리한 분봉 ts
+
         self._running: bool = False
 
     # ── 시작 / 중지 ───────────────────────────────────────────
 
     def start(self, load_history: bool = True) -> None:
-        """초기 분봉 로드 후 실시간 등록."""
+        """실시간 등록 후 초기 분봉 로드."""
         if self._running:
             return
 
-        if load_history:
-            self._load_initial_candles()
-
+        # 실시간 구독 (모의투자에서도 등록 — 실서버 전환 즉시 활성화)
+        # SetRealReg는 101W 형식(_rt_code), OPT50029는 A-형식(self.code) 사용
+        print(f"[DBG RD-START] register_realtime 직전 rt_code={self._rt_code!r} tr_code={self.code!r} mock={self._is_mock}", flush=True)
         self.api.register_realtime(
-            code=self.code,
+            code=self._rt_code,
             real_type=RT_FUTURES,
             screen_no=self.screen_no,
             callback=self._on_real_data,
         )
         self._running = True
-        logger.info("[RealtimeData] 실시간 수신 시작 — %s", self.code)
+        self._tick_count = 0
+        logger.info("[RealtimeData] 실시간 수신 시작 — TR코드=%s RT코드=%s mock=%s",
+                    self.code, self._rt_code, self._is_mock)
+        print(f"[DBG RD-START] register_realtime 완료", flush=True)
+
+        if load_history:
+            self._load_initial_candles()
+
+        # 모의투자: SetRealReg 틱 미지원 → OPT50029 폴링으로 분봉 수집
+        if self._is_mock:
+            self._start_polling()
 
     def stop(self) -> None:
         """실시간 등록 해제."""
         if not self._running:
             return
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+            self._poll_timer = None
         self.api.unregister_realtime(self.code, self.screen_no)
         self._running = False
         logger.info("[RealtimeData] 실시간 수신 중지 — %s", self.code)
+
+    # ── 모의투자 폴링 ──────────────────────────────────────────
+
+    def _start_polling(self) -> None:
+        """OPT50029 30초 폴링 타이머 시작 (모의투자 전용)."""
+        # 모의투자 서버는 체결시간이 고정값 반환 → wall clock 기준으로 분봉 감지
+        # (캔들 deque의 ts를 쓰면 항상 같은 값이어서 비교가 영원히 True가 됨)
+        self._last_polled_ts = None
+        self._poll_timer = QTimer()
+        self._poll_timer.timeout.connect(self._poll_opt50029)
+        self._poll_timer.start(self._POLL_INTERVAL_MS)
+        sys_log.info("[POLL] 모의투자 OPT50029 폴링 시작 (%ds 간격) code=%s",
+                     self._POLL_INTERVAL_MS // 1000, self.code)
+
+    def _poll_opt50029(self) -> None:
+        """OPT50029 조회 → wall clock 기준 새 완성 분봉 감지 시 on_candle_closed 호출."""
+        from utils.time_utils import is_market_open
+        now = datetime.now()
+        if not is_market_open(now):
+            return
+
+        # 모의투자는 체결시간이 고정값 → wall clock으로 방금 완성된 분봉 시각 계산
+        completed_min = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+
+        sys_log.info("[POLL] tick %s | completed=%s | last=%s",
+                     now.strftime("%H:%M:%S"),
+                     completed_min.strftime("%H:%M"),
+                     self._last_polled_ts.strftime("%H:%M") if self._last_polled_ts else "None")
+
+        if self._last_polled_ts is not None and completed_min <= self._last_polled_ts:
+            return  # 이미 처리한 분봉
+
+        # 새 분봉 — OPT50029 TR 조회
+        sys_log.info("[POLL] ★ 새 분봉 감지 completed=%s — TR 조회", completed_min.strftime("%H:%M"))
+        result = self.api.request_tr(
+            tr_code=TR_FUTURES_1MIN,
+            rq_name="poll_1min",
+            inputs={"종목코드": self.code, "시간단위": "1"},
+            screen_no="2002",
+        )
+        if result is None:
+            sys_log.warning("[POLL] OPT50029 결과 None — TR 타임아웃 또는 실패")
+            return
+
+        rows = result.get("rows", [])
+        sys_log.info("[POLL] TR 수신 rows=%d", len(rows))
+        if not rows:
+            sys_log.warning("[POLL] rows=0 — 빈 응답")
+            return
+
+        # API 응답은 최신순 — rows[0]이 가장 최근 완성 분봉
+        latest = self._parse_tr_candle(rows[0])
+        if latest is None:
+            sys_log.warning("[POLL] rows[0] 파싱 실패: %s", rows[0])
+            return
+
+        # ts를 wall clock 기준으로 오버라이드 (mock 서버의 고정 ts 무시)
+        latest["ts"] = completed_min
+        self._last_polled_ts = completed_min
+
+        sys_log.info("[POLL] ★ 분봉 확정 ts=%s close=%.2f", completed_min, latest.get("close", 0))
+        self._candles.append(latest)
+
+        if self._on_candle_closed:
+            try:
+                self._on_candle_closed(latest)
+            except Exception:
+                logger.exception("[POLL] on_candle_closed 오류")
 
     # ── 데이터 접근 ───────────────────────────────────────────
 
@@ -149,7 +248,7 @@ class RealtimeData:
             rq_name="init_1min",
             inputs={
                 "종목코드": self.code,
-                "틱범위": "1",
+                "시간단위": "1",
                 "수정주가구분": "0",
             },
             screen_no="2001",
@@ -180,30 +279,48 @@ class RealtimeData:
 
     def _on_real_data(self, code: str, real_type: str, real_data: str) -> None:
         """KiwoomAPI.real_data_event 콜백 — FC0 선물 체결."""
-        if code != self.code or real_type != RT_FUTURES:
+        self._tick_count = getattr(self, "_tick_count", 0) + 1
+        # 처음 5틱 + 100틱마다 SYSTEM.log에 기록
+        if self._tick_count <= 5 or self._tick_count % 100 == 0:
+            sys_log.info("[RT-DATA] #%d code=%r type=%r rt_code=%r RT_FUTURES=%r",
+                         self._tick_count, code, real_type, self._rt_code, RT_FUTURES)
+        if code.strip() != self._rt_code.strip() or real_type.strip() != RT_FUTURES.strip():
+            if self._tick_count <= 5:
+                sys_log.warning("[RT-DATA] 필터제외 code=%r rt_code=%r type=%r RT_FUTURES=%r",
+                                code, self._rt_code, real_type, RT_FUTURES)
             return
 
         self._last_tick_recv_ns = time.perf_counter_ns()
 
         try:
             raw_price = self.api.get_real_data(code, FID_FUTURES_PRICE)
+            raw_vol   = self.api.get_real_data(code, FID_FUTURES_VOL)
+            # 처음 5틱은 raw 값을 SYSTEM.log에 기록해 파싱 이슈 즉시 확인
+            if self._tick_count <= 5:
+                sys_log.info("[RT-RAW] #%d raw_price=%r raw_vol=%r",
+                             self._tick_count, raw_price, raw_vol)
             price  = abs(float(raw_price.replace("+", "").replace("-", "")))
-            # tick test: 전 틱 대비 가격 상승 → 매수압력, 하락 → 매도압력 (Lee-Ready 근사)
             is_buy_tick = price >= self._prev_tick_price if self._prev_tick_price else True
             self._prev_tick_price = price
-            volume = abs(int(self.api.get_real_data(code, FID_FUTURES_VOL)))
+            volume = abs(int(raw_vol)) if raw_vol.strip() else 0
             bid1   = self._safe_float(self.api.get_real_data(code, FID_BID_PRICE))
             ask1   = self._safe_float(self.api.get_real_data(code, FID_ASK_PRICE))
             bid_q  = self._safe_int(self.api.get_real_data(code, FID_BID_QTY))
             ask_q  = self._safe_int(self.api.get_real_data(code, FID_ASK_QTY))
             oi     = self._safe_int(self.api.get_real_data(code, FID_OI))
         except (ValueError, TypeError) as e:
-            logger.debug("틱 파싱 오류: %s", e)
+            sys_log.warning("[RT-PARSE] #%d 틱 파싱 오류: %s | raw_price=%r",
+                            self._tick_count, e,
+                            locals().get("raw_price", "?"))
             return
 
         now = datetime.now()
         bar_ts = now.replace(second=0, microsecond=0)
         bar_min = now.hour * 60 + now.minute
+
+        if self._tick_count <= 5:
+            sys_log.info("[RT-BAR] #%d price=%.2f vol=%d bar_min=%d cur_min=%s",
+                         self._tick_count, price, volume, bar_min, self._current_min)
 
         self._update_bar(bar_ts, bar_min, price, volume, bid1, ask1, bid_q, ask_q, oi, is_buy_tick)
 
@@ -272,16 +389,15 @@ class RealtimeData:
             return
         closed = dict(self._current_bar)
         self._candles.append(closed)
-        logger.debug(
-            "분봉 확정: %s  O=%.2f H=%.2f L=%.2f C=%.2f V=%d",
-            closed["ts"].strftime("%H:%M"),
-            closed["open"], closed["high"], closed["low"], closed["close"], closed["volume"],
-        )
+        sys_log.info("[BAR-CLOSE] ts=%s O=%.2f H=%.2f L=%.2f C=%.2f V=%d",
+                     closed["ts"].strftime("%H:%M"),
+                     closed["open"], closed["high"], closed["low"],
+                     closed["close"], closed["volume"])
         if self._on_candle_closed is not None:
             try:
                 self._on_candle_closed(closed)
             except Exception:
-                logger.exception("on_candle_closed 콜백 오류")
+                sys_log.exception("[BAR-CLOSE] on_candle_closed 예외")
 
         self._current_bar = None
         self._current_min = None

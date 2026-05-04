@@ -10,11 +10,15 @@
 
 ## 즉시 확인 필요
 
-### [V1] OPT50029 초기 분봉 로드 확인 (A0166000 적용 후)
-- **내용**: `GetRepeatCnt > 0` 확인 — 장 시작 직후 초기 분봉 수신 여부
-- **방법**: 09:00 직후 재시작 → `[DBG TR-5] GetRepeatCnt=N` 로그 확인
-- **기준**: rows > 0 (분봉 히스토리 정상 로드)
-- **파일**: `collection/kiwoom/realtime_data.py`, `api_connector.py`
+### [V1] OPT50029 초기 분봉 로드 확인 [SUPERSEDED 2026-05-04]
+- 모의투자 서버에서 OPT50029 rows=0 확인됨 — SetRealReg(A0166000) 전환으로 대체
+- 실 서버 전환 시 OPT50029 초기 히스토리 로드 재확인 필요
+
+### [V18] 파이프라인 watchdog 정상 해제 확인
+- **내용**: 재시작 후 `[Notify] ⚠ 파이프라인 2분 지연` 경보가 더 이상 뜨지 않는지
+- **방법**: 재시작 → 분봉 1회 확정 후 watchdog 경보 미발동 확인
+- **기준**: `[BAR-CLOSE]` 로그 후 60초 이내에 경보 없음 (이전: 모델 미학습 → 항상 2분 경보)
+- **파일**: `main.py` line 424-427
 
 ### [V2] run_minute_pipeline 완전 검증 [DONE 2026-04-27]
 - `on_candle_closed` 호출 확인됨, 파이프라인 진입 확인됨

@@ -155,8 +155,17 @@ class TradingSystem:
             return False
         print("[DBG CK-2] login() 성공", flush=True)
 
+        # 서버 종류 확인 (정보 로그용)
+        server = self.kiwoom.get_login_info("GetServerGubun")
+        server_label = "모의투자" if server == "1" else "실서버"
+        print(f"[DBG CK-2b] 서버종류={server!r} ({server_label})", flush=True)
+        if server == "1":
+            logger.info("[System] 모의투자 서버 접속 — A0166000 SetRealReg 실시간 수신 사용")
+
+        # A0166000: OPT50029 TR 및 SetRealReg 모두 동일 코드 사용
+        # (모의투자 서버에서도 A0166000으로 SetRealReg 등록 시 틱 수신 확인됨)
         code = self.kiwoom.get_nearest_futures_code()
-        print(f"[DBG CK-3] 근월물 코드={code}", flush=True)
+        print(f"[DBG CK-3] 근월물 코드={code} 서버={server_label}", flush=True)
         self.emergency_exit.set_futures_code(code)
 
         self.realtime_data = RealtimeData(
@@ -165,6 +174,8 @@ class TradingSystem:
             screen_no        = "3000",
             on_candle_closed = self._on_candle_closed,
             on_tick          = self._on_tick_price_update,
+            realtime_code    = code,   # SetRealReg도 A0166000 사용 (101W06 불필요)
+            is_mock_server   = False,  # A0166000 SetRealReg 실시간 수신 활성화
         )
         print("[DBG CK-4] RealtimeData 생성 완료", flush=True)
 
@@ -412,6 +423,7 @@ class TradingSystem:
         # ── STEP 5: 멀티 호라이즌 예측 ─────────────────────────
         if not self.model.is_ready():
             log_manager.signal("모델 미학습 상태 — 예측 건너뜀")
+            self.dashboard.notify_pipeline_ran()
             return
 
         feat_vec = self.feature_builder.get_feature_vector(self.model.feature_names)
@@ -1173,7 +1185,14 @@ class TradingSystem:
             self.dashboard.btn_kill.clicked.connect(
                 lambda: self.activate_kill_switch("대시보드 긴급정지")
             )
-        self.dashboard.append_sys_log(f"시스템 시작 | 코드={self.realtime_data.code if self.realtime_data else '—'}")
+        if self.realtime_data:
+            server       = self.kiwoom.get_login_info("GetServerGubun")
+            server_label = "모의투자" if server == "1" else "실서버"
+            self.dashboard.append_sys_log(
+                f"시스템 시작 | TR={self.realtime_data.code} [{server_label}] 분봉수집=실시간(SetRealReg)"
+            )
+        else:
+            self.dashboard.append_sys_log("시스템 시작 | 코드=—")
         self.dashboard.update_system_status(cb_state="NORMAL", latency_ms=0.0)
 
         # 파이프라인 감시 콜백 등록

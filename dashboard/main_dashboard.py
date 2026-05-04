@@ -2905,7 +2905,7 @@ class LogPanel(QWidget):
         lbl_next_candle.setToolTip(_CANDLE_MONITOR_TIP)
         lbl_next_candle.setStyleSheet(
             lbl_next_candle.styleSheet()
-            + "text-decoration:underline dotted;cursor:help;"
+            + "text-decoration:underline dotted;"
         )
         sl.addWidget(lbl_next_candle)
 
@@ -2937,7 +2937,7 @@ class LogPanel(QWidget):
         lbl_last_update.setToolTip(_CANDLE_MONITOR_TIP)
         lbl_last_update.setStyleSheet(
             lbl_last_update.styleSheet()
-            + "text-decoration:underline dotted;cursor:help;"
+            + "text-decoration:underline dotted;"
         )
         sl.addWidget(lbl_last_update)
 
@@ -3009,7 +3009,6 @@ class LogPanel(QWidget):
                         title_lbl.setStyleSheet(
                             f"color:{C['text2']};font-size:{S.f(10)}px;"
                             f"text-decoration:underline dotted;"
-                            f"cursor:help;"
                         )
                     mfl.addWidget(title_lbl)
                     pb = mk_prog(mc, 4)
@@ -3102,9 +3101,10 @@ class LogPanel(QWidget):
         if val:
             line += f' <span style="color:{C["text2"]};font-size:{S.f(11)}px;">{val}</span>'
 
-        # 경보창에도 WARNING 이상 복사
+        # WARN/ERROR/CRITICAL → 경보탭 전용 (1 시스템 탭에는 기록하지 않음)
         if key == "all" and tag in ("WARN", "ERROR", "CRITICAL"):
             self.append("warn", tag, msg, val)
+            return
 
         tb.append(line)
         tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
@@ -3307,7 +3307,7 @@ class MireukDashboard(QMainWindow):
         lbl_pipe = mk_label("분봉", C['text2'], 9)
         lbl_pipe.setToolTip(_PIPE_HEALTH_TIP)
         lbl_pipe.setStyleSheet(
-            lbl_pipe.styleSheet() + "text-decoration:underline dotted;cursor:help;"
+            lbl_pipe.styleSheet() + "text-decoration:underline dotted;"
         )
         pipe_row.addWidget(lbl_pipe)
         self._pipe_bar = QProgressBar()

@@ -2,6 +2,58 @@
 
 ---
 
+## 2026-05-04 버그 수정
+
+### [B31] WARN 메시지 SYSTEM.log 혼재
+**파일**: `utils/logger.py`, `dashboard/main_dashboard.py`
+**증상**: WARNING 로그가 SYSTEM.log와 경보 탭 양쪽에 출력. 시스템 탭 노이즈.
+**원인**: SYSTEM 파일핸들러에 레벨 상한 없음 → WARNING+ 모두 수신. 대시보드도 WARN 태그를 "all" + "warn" 양쪽에 기록.
+**Fix**:
+- `_MaxLevelFilter(max_level)` 클래스 추가. SYSTEM 핸들러에 `_MaxLevelFilter(logging.WARNING)` → INFO만 통과
+- `warn_fh` TimedRotatingFileHandler 추가 (`YYYYMMDD_WARN.log`) WARNING+
+- 대시보드 `append()`: WARN/ERROR/CRITICAL → `self.append("warn", ...)` 후 즉시 return (시스템 탭 미기록)
+
+### [B32] OPT50029 모의투자 서버 rows=0
+**파일**: `collection/kiwoom/realtime_data.py`, `main.py`
+**증상**: 폴링 30초마다 `[POLL] rows=0 — 빈 응답` — 분봉 미수신
+**원인**: 키움 모의투자 서버는 OPT50029(선물분차트요청) 응답 데이터 미제공. 실 서버 전용.
+**Fix**: 폴링 방식 포기 → SetRealReg 실시간 구독 방식으로 전환 (`is_mock_server=False`). 모의투자에서도 SetRealReg A0166000은 정상 동작 확인.
+
+### [B33] SetRealReg 코드 불일치 — 101W06 등록 vs A0166000 수신
+**파일**: `main.py`, `collection/kiwoom/realtime_data.py`
+**증상**: 틱 수신 로그 없음 — `_on_real_data()` 콜백 진입 자체가 없음
+**원인**: `get_realtime_futures_code()` → `101W06` 반환. SetRealReg에 `101W06` 등록. 실제 콜백은 `A0166000`으로 수신 → 필터 `code.strip() != self._rt_code.strip()` 조건 → 전량 차단
+**Fix**: `main.py`에서 `code = get_nearest_futures_code()` (A0166000) 로 통일. `realtime_code=code` 전달.
+
+### [B34] 폴링 _last_polled_ts 스테일 타임스탬프 초기화
+**파일**: `collection/kiwoom/realtime_data.py`
+**증상**: 폴링 첫 실행에서 `completed_min <= _last_polled_ts` 항상 True → 새 분봉 미감지
+**원인**: `_start_polling()`이 기존 candle 덱의 `ts` (모의투자 고정값 e.g. 10:14)로 `_last_polled_ts` 초기화 → 벽시계 `completed_min`(11:xx)과 비교 시 항상 ≤
+**Fix**: `_start_polling()`에서 `self._last_polled_ts = None` 설정. `_poll_opt50029()`에서 `None` 체크 후 첫 실행 허용.
+
+### [B35] run_minute_pipeline early return — notify_pipeline_ran() 미호출
+**파일**: `main.py`
+**증상**: `[BAR-CLOSE]` 매 분 정상 → `[Notify] ⚠ 파이프라인 2분 지연` 경보 영구 발동
+**원인**: `if not self.model.is_ready(): return` (line 426) — STEP 5 직전 조기 종료. `notify_pipeline_ran()` (line 667) 영구 미호출 → `_pipe_elapsed_s` 누적 → watchdog 발동
+**Fix**: return 직전에 `self.dashboard.notify_pipeline_ran()` 추가.
+**교훈**: early return이 있는 파이프라인 함수는 모든 return 경로에서 상태 리셋 필수. Guard-C1/C2 return도 동일 패턴 검토 필요.
+
+---
+
+## 2026-05-04 설계 결정
+
+### [D12] SetRealReg(A0166000) — 모의투자 실시간 분봉 수신 표준 경로
+**결정**: 모의투자 서버에서도 OPT50029 폴링 사용 금지. SetRealReg + `RT_FUTURES="선물시세"` + code=`A0166000` 단일 경로로 통일.
+**이유**: OPT50029는 실 서버에서만 라이브 데이터 제공. 모의투자에서는 rows=0. SetRealReg A0166000은 모의/실전 양쪽에서 동작 확인됨.
+**영향**: `is_mock_server` 파라미터 사실상 불필요 (실전 서버 전환 시에도 동일 경로 사용).
+
+### [D13] WARN/SYSTEM 로그 이중 분리
+**결정**: INFO 이하 → SYSTEM.log + 시스템 탭. WARNING 이상 → WARN.log + 경보 탭. 두 채널은 완전 분리.
+**이유**: 운영 중 시스템 탭이 WARNING 메시지로 가득 차면 INFO 흐름 파악 어려움. 경보는 별도 탭으로 집중 확인.
+**구현**: `_MaxLevelFilter` + `warn_fh` + 대시보드 append 분기.
+
+---
+
 ## 2026-04-30 설계 결정 (이번 세션)
 
 ### [D1] SIMULATION 모드 완전 제거 — 코드 레벨 분기 폐기

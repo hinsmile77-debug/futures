@@ -4,6 +4,88 @@
 
 ---
 
+## 2026-05-04 (이번 세션)
+
+**작업**: 모의투자 실시간 분봉 수신 경로 확립 + 파이프라인 watchdog 오작동 근본 수정
+
+### 커밋 1건 (이번 세션)
+
+| 커밋 | 내용 |
+|---|---|
+| (이번 세션) | fix: 모의투자 SetRealReg A0166000 + WARN 로그 분리 + 파이프라인 watchdog 수정 |
+
+---
+
+### [1] WARN 로그 분리 — SYSTEM.log는 INFO만, 경보는 WARN.log + 경보 탭
+
+**문제**: WARNING 이상 메시지가 SYSTEM.log와 경보 탭 양쪽에 혼재.
+
+**수정** (`utils/logger.py`):
+- `_MaxLevelFilter(max_level)` 클래스 추가 — `levelno < max_level` 만 통과
+- SYSTEM 파일 핸들러에 `_MaxLevelFilter(logging.WARNING)` 부착 → INFO 전용
+- `warn_fh` (TimedRotatingFileHandler `YYYYMMDD_WARN.log`) 추가 — WARNING+ 전용
+
+**수정** (`dashboard/main_dashboard.py`):
+- `log_panel.append()`: `tag in ("WARN", "ERROR", "CRITICAL")` → 경보 탭만 기록 (`return`)
+
+---
+
+### [2] OPT50029 → SetRealReg 전환 (모의투자 서버 폴링 불가)
+
+**발견**: 모의투자 서버에서 OPT50029(선물분차트요청) rows=0 — 라이브 데이터 미제공.
+
+**수정** (`main.py`):
+- 기존: `rt_code = get_realtime_futures_code()` (→ `101W06`) + `is_mock_server=True`
+- 변경: `code = get_nearest_futures_code()` (→ `A0166000`) + `realtime_code=code` + `is_mock_server=False`
+- 결과: SetRealReg로 A0166000 실시간 틱 구독 → 모의투자 서버에서 정상 수신 확인
+
+---
+
+### [3] SetRealReg 코드 불일치 버그 수정 (101W06 vs A0166000)
+
+**원인**: 이전에 `rt_code = get_realtime_futures_code()` → `101W06` 반환. 실제 틱은 `A0166000`으로 수신 → 콜백 필터에서 전량 차단.
+
+**수정** (`realtime_data.py`):
+- `_rt_code` 필드: `101W06` → `A0166000`
+- `_on_real_data()` 필터: `code.strip() != self._rt_code.strip()` 조건으로 차단 없어짐
+
+---
+
+### [4] 진단 로깅 추가 (sys_log — SYSTEM 레이어)
+
+**추가 로그 포인트** (`realtime_data.py`, `api_connector.py`):
+- `[RT-CB]` — 새 실시간 키 첫 수신 시 (code/type/등록키)
+- `[RT-DATA]` — 틱 수신 #1~5, 이후 100회마다
+- `[RT-RAW]` — raw_price/raw_vol (첫 5틱)
+- `[RT-BAR]` — price/vol/bar_min/cur_min (첫 5틱)
+- `[BAR-CLOSE]` — 매 분봉 확정 시 OHLCV
+- `[RT-DATA] 필터제외` — 코드·타입 불일치 틱 (첫 5틱)
+
+**검증된 동작** (2026-05-04 로그):
+```
+[RT-CB] code='A0166000' type='선물시세' 등록키=[('A0166000', '선물시세')]  ✅
+[RT-RAW] raw_price='+1038.55' raw_vol='+1'                                  ✅
+[BAR-CLOSE] ts=11:22 O=1038.55 C=1038.80 V=25  (매분 정상 확정)            ✅
+```
+
+---
+
+### [5] run_minute_pipeline watchdog 영구 미해제 버그 수정 (B35)
+
+**증상**: `[BAR-CLOSE]` 매 분 정상 → `[Notify] ⚠ 파이프라인 2분 지연` 여전히 발동.
+
+**원인** (`main.py` line 424-426):
+```python
+if not self.model.is_ready():
+    log_manager.signal("모델 미학습 상태 — 예측 건너뜀")
+    return  # ← notify_pipeline_ran() 호출 없이 종료
+```
+모델 미학습 상태에서 STEP 5 직전 early return → `notify_pipeline_ran()` (line 667) 영구 미호출 → watchdog 2분 경보 지속.
+
+**수정**: `return` 전에 `self.dashboard.notify_pipeline_ran()` 추가.
+
+---
+
 ## 2026-04-30 (이번 세션)
 
 **작업**: SIMULATION 코드 전면 제거 + 자동 종료 + 패널 이전 데이터 지속 + 성장 추이 대시보드

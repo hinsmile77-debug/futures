@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-04-30 (SIMULATION 제거 + 자동 종료 + 성장 추이 대시보드)
+> 마지막 업데이트: 2026-05-04 (모의투자 SetRealReg + WARN 로그 분리 + 파이프라인 watchdog 수정)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,26 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-05-04 세션 주요 수정 (모의투자 SetRealReg + WARN 로그 분리 + 파이프라인 watchdog 수정)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **WARN 로그 분리** | `utils/logger.py` — `_MaxLevelFilter(WARNING)` 추가. SYSTEM 파일핸들러는 INFO만 기록. `YYYYMMDD_WARN.log` 별도 핸들러 추가. 대시보드 경보탭만 WARN+ 표시 |
+| **OPT50029 → SetRealReg 전환** | 모의투자 서버에서 OPT50029 rows=0 — 실시간 데이터 미제공. `is_mock_server=False` + `realtime_code=A0166000`으로 SetRealReg 활성화 |
+| **SetRealReg 코드 수정 (B33)** | 기존 `rt_code=101W06` → `realtime_code=A0166000`. 콜백 필터 code 불일치 해결 |
+| **파이프라인 watchdog 수정 (B35)** | `run_minute_pipeline()` 모델 미학습 early return 전에 `notify_pipeline_ran()` 추가. 기존: line 426 return → line 667 미도달 → watchdog 영구 발동 |
+| **진단 로깅 추가** | `[RT-CB]` `[RT-DATA]` `[RT-RAW]` `[RT-BAR]` `[BAR-CLOSE]` SYSTEM.log 기록. 실시간 분봉 수신 경로 end-to-end 확인 가능 |
+
+### 모의투자 실시간 분봉 수신 확인 결과 (2026-05-04 로그)
+
+```
+[RT-CB] code='A0166000' type='선물시세' 등록키=[('A0166000', '선물시세')]
+[RT-RAW] raw_price='+1038.55' raw_vol='+1'
+[BAR-CLOSE] ts=11:22 O=1038.55 H=1038.80 L=1038.45 C=1038.80 V=25  ✅ 매 분 정상
+```
 
 ---
 
@@ -373,7 +393,7 @@
 |---|---|---|
 | OFI 영구 0 (B14) | FC0에 FID41/51(bid/ask) 미포함 — FH0(선물호가잔량) 별도 등록 필요. 모의투자 서버 FH0 지원 여부 미확인 | ⚠️ 미해결 |
 | CVD tick test 효과 | 다음 실행에서 buy_vol/sell_vol이 실제 분리되는지 [V8] 확인 필요 | ⏳ 검증 대기 |
-| OPT50029 초기 분봉 rows=0 | `A0166000` 코드 적용 후 최종 확인 필요 | ⚠️ 검증 대기 |
+| OPT50029 초기 분봉 rows=0 | 모의투자 서버에서 OPT50029 미지원 확인. SetRealReg(A0166000)으로 전환 완료 | ✅ 해결 |
 | [DBG] 출력문 정리 | 디버그 print 잔존 | 🔧 안정화 후 제거 |
 | Walk-Forward 26주 | 실거래 데이터 미확보 | ⏳ 장기 과제 |
 | Path B 모델 학습 | 13거래일 raw_candles 축적 후 가능 (2026-04-28 축적 시작) | ⏳ 약 2.5주 후 |
