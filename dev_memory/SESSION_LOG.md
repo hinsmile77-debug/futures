@@ -4,7 +4,43 @@
 
 ---
 
-## 2026-05-04 (이번 세션)
+## 2026-05-04 (오후 세션 — 부트스트랩·SGD·UI)
+
+**작업**: SGD 치킨에그 부트스트랩 해결 + log_loss 호환성 수정 + watchdog 개선 + 대시보드 UI
+
+### 핵심 수정 6건
+
+| 항목 | 내용 |
+|---|---|
+| **[B37] SGD log_loss 크래시** | `learning/online_learner.py` `loss="log_loss"` → `"log"`. sklearn 1.0.2는 "log_loss" 미지원 → 매분 ValueError 크래시 |
+| **부트스트랩 치킨에그 해결** | STEP 5 앞 early return 제거 → GBM/SGD 미학습 시 1/3 균등 예측으로 STEP 9까지 진행 → DB 저장 → 다음 분 STEP1 검증 → STEP2 learn() 호출 → SGD 학습 시작 |
+| **watchdog 임계값 상향** | 60/120/180s → 90/150/240s. 1분봉 주기=60s 기준 30s 버퍼 확보로 race condition 방지 |
+| **`_last_recovery_ts` 중복 복구 방지** | 동일 ts 분봉이 watchdog 복구를 반복 실행하던 버그 수정. 복구 완료 ts 기록 + `run_minute_pipeline` 진입 시 초기화 |
+| **Guard-C1/C2 `notify_pipeline_ran()`** | 비정상 분봉 차단 return 전 watchdog 카운터 리셋 추가 |
+| **`_dir_ko` NameError** | early return 제거 후 STEP 7 도달 가능 → `_dir_ko = "상승"/"하락"/"관망"` 정의 추가 |
+
+### 대시보드 UI 개선 3건
+
+| 항목 | 내용 |
+|---|---|
+| **파라미터 중요도 툴팁** | SHAP 개념 설명 + 업데이트 조건 (GBM 미학습 → 0.0%, 월요일 08:50 재학습 시 자동 갱신) |
+| **파라미터 상관계수 툴팁** | 표시 형식 설명 + 업데이트 조건 |
+| **섹션 간격 조정** | 모델상태행↔호라이즌 +8px, 섹션 구분선 앞 +16px · 뒤 +12px |
+
+### 검증 확인
+
+```
+2026-05-04 13:44:00 [INFO] LEARNING: [OnlineLearner] 1m 초기 학습 완료
+2026-05-04 13:44:00 [INFO] LEARNING: [OnlineLearner] 3m 초기 학습 완료
+2026-05-04 13:44:00 [INFO] LEARNING: [OnlineLearner] 5m 초기 학습 완료
+2026-05-04 13:44:00 [INFO] LEARNING: [OnlineLearner] 15m 초기 학습 완료
+← log_loss 수정 + 부트스트랩 fix 후 정상 학습 확인
+← 2분 만에 15m 학습 = 이전 세션 DB 15분 전 예측 활용 (정상 동작)
+```
+
+---
+
+## 2026-05-04 (오전 세션)
 
 **작업**: 모의투자 실시간 분봉 수신 경로 확립 + 파이프라인 watchdog 오작동 근본 수정
 

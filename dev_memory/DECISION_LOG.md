@@ -54,6 +54,30 @@
 
 ---
 
+## 2026-05-04 버그 수정 (오후 세션)
+
+### [B37] SGD `loss="log_loss"` — scikit-learn 1.0.2 불호환
+**파일**: `learning/online_learner.py`
+**증상**: `ValueError: The loss log_loss is not supported` — 매분 파이프라인 크래시. on_candle_closed 예외로 pipeline 미완료 → watchdog 연속 발동
+**원인**: scikit-learn 1.1+ 에서 `"log_loss"` alias 추가. py37_32 환경은 1.0.2 → `"log_loss"` 미인식
+**Fix**: `loss="log_loss"` → `loss="log"` (1.0.2 공식 이름)
+**교훈**: CLAUDE.md 운영환경에 scikit-learn 1.0.2 명시됨 — 버전 의존 API는 환경표 대조 필요
+
+### [B38] SGD 부트스트랩 치킨에그 — early return이 DB 저장 차단
+**파일**: `main.py`
+**증상**: 장 시작 후 시그널 로그가 33.3% 고정, SGD 영구 미학습
+**원인**: `if not _gbm_ready and not _sgd_ready: return` (STEP 5 직전) → STEP 9 미실행 → predictions DB 미저장 → 다음 분 STEP 1 검증 없음 → STEP 2 learn() 미호출 → SGD 영구 unfit 상태
+**Fix**: early return 제거. GBM/SGD 미학습 시 1/3 균등 예측으로 STEP 9까지 진행 (DB 저장 → 다음 분 SGD 학습 트리거)
+**교훈**: 파이프라인 early return은 "하위 스텝이 필요로 하는 상태"를 함께 막는지 항상 확인
+
+### [B39] `_last_recovery_ts` 미초기화 — 동일 ts 반복 복구
+**파일**: `main.py`
+**증상**: watchdog 복구가 같은 분봉(ts=13:08)을 13:13과 13:17 두 번 처리
+**원인**: 복구 완료 후 `notify_pipeline_ran()`으로 watchdog 리셋 → 240s 후 재발동 → 동일 ts로 재복구
+**Fix**: `_last_recovery_ts` 필드로 마지막 복구 ts 기록. 동일 ts면 스킵 + `notify_pipeline_ran()`. `run_minute_pipeline` 진입 시 `""` 초기화
+
+---
+
 ## 2026-05-04 설계 결정
 
 ### [D12] SetRealReg(A0166000) — 모의투자 실시간 분봉 수신 표준 경로

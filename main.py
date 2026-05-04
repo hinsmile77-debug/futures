@@ -45,7 +45,7 @@ from utils.db_utils import (
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
     fetch_trend_monthly, fetch_trend_yearly,
 )
-from config.settings import TRADES_DB
+from config.settings import TRADES_DB, HORIZONS
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
 from collection.kiwoom import KiwoomAPI, RealtimeData, LatencySync
@@ -60,7 +60,7 @@ from strategy.entry.adaptive_kelly import AdaptiveKelly
 from strategy.exit.time_exit import TimeExitManager
 from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
-from learning.batch_retrainer import BatchRetrainer
+from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAIN_BARS
 from safety.circuit_breaker import CircuitBreaker
 from collection.kiwoom.investor_data import InvestorData
 from safety.kill_switch import KillSwitch
@@ -71,6 +71,16 @@ from utils.time_utils import (
 )
 from utils.notify import notify
 from dashboard.main_dashboard import create_dashboard
+
+# 대시보드 파라미터 바 이름 → 피처 키 매핑 (Fix2/3)
+_PARAM_FEAT_MAP = {
+    "CVD 다이버전스":  "cvd_divergence",
+    "VWAP 위치":       "vwap_position",
+    "OFI 불균형":      "ofi_norm",
+    "외인 콜순매수":   "foreign_call_net",
+    "다이버전스 지수": "foreign_retail_divergence",
+    "프로그램 비차익": "program_non_arb_net",
+}
 
 
 class TradingSystem:
@@ -116,6 +126,7 @@ class TradingSystem:
         self._verified_today: int = 0        # 당일 SGD 검증 누적 건수
         self._efficacy_tick:  int = 0        # 5분마다 효과 검증 패널 갱신용
         self._last_block_reason: str = ""    # 직전 진입 차단 이유 (중복 로그 방지)
+        self._last_recovery_ts:  str = ""    # 마지막 복구 처리 분봉 ts (동일 분봉 반복 방지)
 
         # 재시작 시 이전 포지션 복원 (당일 데이터만)
         if self.position.load_state():
@@ -260,6 +271,7 @@ class TradingSystem:
         """
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+        self._last_recovery_ts = ""   # 실제 분봉 수신 → 복구 ts 초기화
 
         # ── 분봉 데이터 유효성 가드 ───────────────────────────────
         # 비정상 분봉이 피처/진입/청산 오발동을 일으키지 않도록 파이프라인 앞단 차단
@@ -273,6 +285,7 @@ class TradingSystem:
                 f"[Guard-C1] 비정상 가격 분봉 차단 — close={_c} high={_h} low={_l} ({ts})",
                 "WARNING",
             )
+            self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
             return
 
         if _h < _l:
@@ -280,6 +293,7 @@ class TradingSystem:
                 f"[Guard-C2] 고가<저가 역전 분봉 차단 — high={_h} low={_l} ({ts})",
                 "WARNING",
             )
+            self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
             return
 
         _bar_volume_zero = (_v == 0)
@@ -334,6 +348,7 @@ class TradingSystem:
         # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 확인) ────
         if (self.batch_retrainer.should_retrain_weekly()
                 or self.batch_retrainer.should_retrain_monthly()):
+            self.dashboard.set_model_status("GBM 재학습중...")
             result = self.batch_retrainer.retrain_now()
             if result.get("ok"):
                 self.model._load_all()   # 새 모델 즉시 반영
@@ -342,6 +357,9 @@ class TradingSystem:
                     f"데이터={result['data_size']}행"
                 )
                 notify("GBM 배치 재학습 완료", "INFO")
+                self.dashboard.set_model_status(
+                    "GBM 재학습 완료", f"데이터 {result['data_size']}행"
+                )
             else:
                 log_manager.learning(f"[GBM] 재학습 건너뜀: {result.get('error','')}")
 
@@ -366,6 +384,10 @@ class TradingSystem:
         # 분봉·피처 원본 저장 (경로 B 학습 데이터 축적)
         save_candle(bar)
         save_features(ts, features)
+
+        # GBM 미학습 시 피처명 부트스트랩 → SGD 학습 활성화
+        if not self.model.feature_names and features:
+            self.model.set_feature_names(sorted(features.keys()))
 
         # 다이버전스 패널 갱신 (외인·개인 수급)
         _inv = self.investor_data
@@ -421,24 +443,45 @@ class TradingSystem:
         self.circuit_breaker.record_atr(atr_ratio)
 
         # ── STEP 5: 멀티 호라이즌 예측 ─────────────────────────
-        if not self.model.is_ready():
-            log_manager.signal("모델 미학습 상태 — 예측 건너뜀")
-            self.dashboard.notify_pipeline_ran()
-            return
+        _gbm_ready = self.model.is_ready()
+        _sgd_ready = self.online_learner.is_ready()
+
+        if not _gbm_ready and not _sgd_ready:
+            # 아무 모델도 미학습 — 1/3 기본값으로 예측 진행하여 DB 저장
+            # (다음 분 STEP1 검증 → STEP2 learn() 호출 → SGD 부트스트랩)
+            log_manager.signal("[bootstrap] 모델 미학습 — 1/3 기본값 예측 진행 (SGD 부트스트랩 대기)")
 
         feat_vec = self.feature_builder.get_feature_vector(self.model.feature_names)
-        horizon_proba = self.model.predict_proba(feat_vec)
 
-        # SGD 블렌딩: 호라이즌별로 GBM + SGD 확률 혼합
-        for h_name in list(horizon_proba.keys()):
-            sgd_p   = self.online_learner.predict_proba(h_name, feat_vec)
-            blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p)
-            up, dn, fl = blended["up"], blended["down"], blended["flat"]
-            best = max([(up, 1), (dn, -1), (fl, 0)], key=lambda t: t[0])
-            horizon_proba[h_name] = {
-                "up": round(up, 4), "down": round(dn, 4), "flat": round(fl, 4),
-                "direction": best[1], "confidence": round(best[0], 4),
-            }
+        if _gbm_ready:
+            # ─ GBM + SGD 블렌딩 (정상 경로) ─
+            horizon_proba = self.model.predict_proba(feat_vec)
+            for h_name in list(horizon_proba.keys()):
+                sgd_p   = self.online_learner.predict_proba(h_name, feat_vec)
+                blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p)
+                up, dn, fl = blended["up"], blended["down"], blended["flat"]
+                best = max([(up, 1), (dn, -1), (fl, 0)], key=lambda t: t[0])
+                horizon_proba[h_name] = {
+                    "up": round(up, 4), "down": round(dn, 4), "flat": round(fl, 4),
+                    "direction": best[1], "confidence": round(best[0], 4),
+                }
+        else:
+            # ─ SGD-only 또는 bootstrap 경로 (GBM 미학습) ─
+            horizon_proba = {}
+            for h in HORIZONS:
+                sgd_p = self.online_learner.predict_proba(h, feat_vec)
+                if sgd_p is None:
+                    sgd_p = {"up": 1/3, "down": 1/3, "flat": 1/3}
+                up, dn, fl = sgd_p["up"], sgd_p["down"], sgd_p["flat"]
+                best = max([(up, 1), (dn, -1), (fl, 0)], key=lambda t: t[0])
+                horizon_proba[h] = {
+                    "up": round(up, 4), "down": round(dn, 4), "flat": round(fl, 4),
+                    "direction": best[1], "confidence": round(best[0], 4),
+                }
+            if _sgd_ready:
+                log_manager.signal("[SGD-only] 예측 진행 (GBM 학습 대기)")
+            else:
+                log_manager.signal("[default] 1/3 균등 예측 → DB 저장 → SGD 부트스트랩")
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
         decision = self.ensemble.compute(horizon_proba, self.current_regime)
@@ -464,8 +507,46 @@ class TradingSystem:
             }
             for h, r in horizon_proba.items()
         }
-        _dir_ko = "매수" if direction > 0 else ("매도" if direction < 0 else "관망")
-        self.dashboard.update_prediction(close, _preds_ui, {}, confidence)
+
+        # Fix2: GBM 피처 중요도 → 파라미터 중요도 바
+        _importance = self.model.get_feature_importance() if _gbm_ready else {}
+        _params_ui  = {
+            pname: _importance.get(fname, 0.0)
+            for pname, fname in _PARAM_FEAT_MAP.items()
+        }
+
+        # Fix3: 상관계수 레이블 문자열 (중요도 상위 4개)
+        _CORR_SHORT = {
+            "CVD 다이버전스": "CVD", "VWAP 위치": "VWAP", "OFI 불균형": "OFI",
+            "외인 콜순매수": "외인콜", "다이버전스 지수": "다이버전스",
+            "프로그램 비차익": "프로그램",
+        }
+        _corr_items = sorted(_params_ui.items(), key=lambda t: -t[1])
+        _corr_str   = "  ".join(
+            f"{_CORR_SHORT.get(p, p)}+{v:.2f}"
+            for p, v in _corr_items if v > 0
+        )[:60]  # 레이블 넘침 방지
+
+        self.dashboard.update_prediction(close, _preds_ui, _params_ui, confidence,
+                                         corr=_corr_str)
+
+        # GBM 미학습 시 모델 상태 행 재표시 (update_prediction이 행을 숨겼으므로)
+        if not _gbm_ready:
+            n   = count_raw_candles()
+            pct = min(n * 100 // _MIN_TRAIN_BARS, 99)
+            if _sgd_ready:
+                self.dashboard.set_model_status(
+                    "SGD 예측중",
+                    f"GBM 대기 {n}/{_MIN_TRAIN_BARS}행",
+                    pct,
+                    update_signal=False,
+                )
+            else:
+                self.dashboard.set_model_status(
+                    "모델 학습 대기",
+                    f"데이터 {n}/{_MIN_TRAIN_BARS}행 ({pct}%)",
+                    pct,
+                )
         # update_entry 는 STEP 7에서 체크리스트 결과 포함해 한 번만 호출
 
         # [DBG-F6] 호라이즌별 예측 확률 + CB 상태 스냅샷
@@ -483,6 +564,7 @@ class TradingSystem:
         )
 
         # ── STEP 7: 진입 실행 ──────────────────────────────────
+        _dir_ko = "상승" if direction > 0 else "하락" if direction < 0 else "관망"
         time_zone = get_time_zone()
         _CHK_MAP = {
             "1_signal":"signal_chk", "2_confidence":"conf_chk",
@@ -959,15 +1041,15 @@ class TradingSystem:
     def _on_pipeline_watchdog(self, elapsed_s: int) -> None:
         """분봉 파이프라인 지연 감지 시 경보 탭 로그 + 단계별 복구 조치.
 
-        임계값:
-          60s  — 경보 로그 (1분봉 수신 지연)
-         120s  — 경보 로그 + 슬랙 (심각)
-         180s  — 경보 로그 + 슬랙 + raw_candles 강제 재실행
+        임계값 (1분봉 주기=60s 기준 — 30s 버퍼 확보):
+          90s  — 경보 로그 (분봉 30초 지연)
+         150s  — 경보 로그 + 알림 (심각)
+         240s  — 경보 로그 + 알림 + raw_candles 강제 재실행
         """
         m, s = divmod(elapsed_s, 60)
         elapsed_str = f"{m}분 {s:02d}초"
 
-        if elapsed_s >= 180:
+        if elapsed_s >= 240:
             msg = (f"⛔ 파이프라인 {elapsed_str} 미실행 — 원인 불명. 긴급 복구 시도 중  "
                    f"가능한 원인: ① API 무응답 ② on_candle_closed 미호출 "
                    f"③ STEP 내 예외 누락 ④ 장외 시간")
@@ -975,13 +1057,13 @@ class TradingSystem:
             notify(f"🚨 미륵이 파이프라인 {elapsed_str} 정지 — 긴급 복구 시도")
             QTimer.singleShot(300, self._try_pipeline_recovery)
 
-        elif elapsed_s >= 120:
+        elif elapsed_s >= 150:
             msg = (f"⚠ 파이프라인 {elapsed_str} 미실행 — 분봉 수신 또는 API 상태 이상  "
-                   f"다음 60초 내 미복구 시 긴급 복구 자동 실행")
+                   f"다음 90초 내 미복구 시 긴급 복구 자동 실행")
             log_manager.system(msg, "WARNING")
-            notify(f"⚠ 미륵이 파이프라인 {elapsed_str} 지연 — 60초 내 미복구 시 자동 조치")
+            notify(f"⚠ 미륵이 파이프라인 {elapsed_str} 지연 — 90초 내 미복구 시 자동 조치")
 
-        else:  # 60s
+        else:  # 90s
             msg = (f"⚠ 파이프라인 {elapsed_str} 미실행 — 분봉 수신 지연 의심  "
                    f"장 시간({is_market_open()}) 확인. 다음 분봉에서 자동 회복 기대")
             log_manager.system(msg, "WARNING")
@@ -1007,6 +1089,15 @@ class TradingSystem:
             return
 
         ts_str = row["ts"]  # "YYYY-MM-DD HH:MM:SS"
+
+        # 동일 분봉 반복 재처리 방지 — 이미 복구한 ts면 스킵 후 감시 리셋
+        if ts_str == self._last_recovery_ts:
+            log_manager.system(
+                f"[복구 스킵] {ts_str} 이미 재처리 완료 — 새 분봉 대기 중",
+            )
+            self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
+            return
+
         try:
             ts = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
         except ValueError:
@@ -1034,6 +1125,7 @@ class TradingSystem:
             "buy_vol":  0,
             "sell_vol": 0,
         }
+        self._last_recovery_ts = ts_str   # 이 ts를 처리 완료로 기록
         log_manager.system(f"[복구 시도] {ts_str} 분봉 강제 재처리...")
         try:
             self.run_minute_pipeline(bar)

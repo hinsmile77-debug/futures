@@ -547,7 +547,23 @@ class PredictionPanel(QWidget):
         lay.addLayout(top)
         lay.addWidget(mk_sep())
 
-        # 멀티 호라이즌 카드 6개
+        # 모델 상태 행 (학습 대기 / 재학습중) — model.is_ready() 시 숨김
+        self._model_row = QWidget()
+        _mrow = QHBoxLayout(self._model_row)
+        _mrow.setContentsMargins(0, 2, 0, 2)
+        _mrow.setSpacing(6)
+        self._lbl_model_state  = mk_label("모델 학습 대기", C['orange'], 10, True)
+        self._model_prog       = mk_prog(C['orange'], 8)
+        self._model_prog.setRange(0, 100)
+        self._model_prog.setValue(0)
+        self._lbl_model_detail = mk_label("", C['text2'], 9)
+        _mrow.addWidget(self._lbl_model_state)
+        _mrow.addWidget(self._model_prog, 2)
+        _mrow.addWidget(self._lbl_model_detail, 1)
+        lay.addWidget(self._model_row)
+        lay.addSpacing(8)   # 모델 상태 행 ↔ 섹션 타이틀 여백
+
+        # ── 섹션: 멀티 호라이즌 예측 ─────────────────────────────
         hz_title = mk_label("멀티 호라이즌 예측 ( 1 · 3 · 5 · 10 · 15 · 30분 )", C['blue'], 10, True)
         lay.addWidget(hz_title)
         hgrid = QGridLayout()
@@ -570,10 +586,31 @@ class PredictionPanel(QWidget):
             self._hz_labels[hname] = (frame, arr, pct)
             hgrid.addWidget(frame, 0, i)
         lay.addLayout(hgrid)
-        lay.addWidget(mk_sep())
 
-        # 파라미터 SHAP 중요도
+        # ── 섹션 구분 ─────────────────────────────────────────────
+        lay.addSpacing(16)
+        lay.addWidget(mk_sep())
+        lay.addSpacing(12)
+
+        # ── 섹션: 파라미터 중요도 ────────────────────────────────
         param_title = mk_label("파라미터 중요도 (SHAP 실시간)", C['purple'], 10, True)
+        param_title.setToolTip(
+            "각 피처가 현재 GBM 예측에 얼마나 기여하는지 나타내는 중요도 지표입니다.\n"
+            "\n"
+            "【SHAP 실시간의 의미】\n"
+            "  • SHAP = SHapley Additive exPlanations\n"
+            "    '이번 예측이 왜 이 방향인지'를 피처별 기여도로 분해한 값입니다.\n"
+            "  • '실시간' = GBM 배치 재학습 직후 최신 모델 가중치로 자동 갱신됩니다.\n"
+            "    매 분봉마다 화면이 새로 그려지지만, 재학습 전까지는 같은 값이 유지됩니다.\n"
+            "\n"
+            "【업데이트 조건】\n"
+            "  • GBM 최초 학습 전: 모든 항목 0.0% (GBM 미학습 상태)\n"
+            "  • GBM 배치 재학습 완료 시 자동 갱신\n"
+            "    - 주간: 매주 월요일 08:50~09:00\n"
+            "    - 월간: 매월 재학습 스케줄 도래 시\n"
+            "    - 학습 최소 데이터: 5,000분봉 (약 13거래일)\n"
+            "  • CORE 3종(CVD·VWAP·OFI)은 절대 교체 불가 피처입니다."
+        )
         lay.addWidget(param_title)
         params = [
             ("CVD 다이버전스", "CORE", C['cyan']),
@@ -599,13 +636,34 @@ class PredictionPanel(QWidget):
             self._param_vals[name] = vlab
         lay.addLayout(pgrid)
 
-        # 상관계수
+        # ── 섹션 구분 ─────────────────────────────────────────────
+        lay.addSpacing(16)
         lay.addWidget(mk_sep())
-        lay.addWidget(mk_label("파라미터 상관계수", C['orange'], 10, True))
-        self.corr_label = mk_label("외인콜+0.74  다이버전스+0.68  프로그램+0.66  OFI+0.62", C['text2'], 9)
-        lay.addWidget(self.corr_label)
+        lay.addSpacing(12)
 
-    def update_data(self, price, preds, params, conf=None):
+        # ── 섹션: 파라미터 상관계수 ──────────────────────────────
+        corr_title = mk_label("파라미터 상관계수", C['orange'], 10, True)
+        corr_title.setToolTip(
+            "GBM 피처 중요도 상위 항목을 요약한 레이블입니다.\n"
+            "\n"
+            "【표시 형식】\n"
+            "  중요도가 높은 순으로 '피처이름+기여도' 형태로 나열합니다.\n"
+            "  예) CVD+0.31  VWAP+0.22  OFI+0.18\n"
+            "\n"
+            "【업데이트 조건】\n"
+            "  • GBM 최초 학습 전: '—' (데이터 부족 또는 미학습)\n"
+            "  • GBM 배치 재학습 완료 시 자동 갱신\n"
+            "    - 주간: 매주 월요일 08:50~09:00\n"
+            "    - 학습 최소 데이터: 5,000분봉 (약 13거래일)\n"
+            "  • 기여도 0인 항목은 표시되지 않습니다."
+        )
+        lay.addWidget(corr_title)
+        self.corr_label = mk_label("—", C['text2'], 9)
+        lay.addWidget(self.corr_label)
+        lay.addStretch(1)
+
+    def update_data(self, price, preds, params, conf=None, corr=""):
+        self._model_row.setVisible(False)
         self.lbl_price.setText(f"{price:.2f}")
 
         # 앙상블 신뢰도 (실거래 데이터가 들어올 때만 갱신)
@@ -660,6 +718,55 @@ class PredictionPanel(QWidget):
             if name in self._param_bars:
                 self._param_bars[name].setValue(int(val * 100))
                 self._param_vals[name].setText(f"{val*100:.1f}%")
+
+        # 상관계수 레이블 (GBM 중요도 기반, 없으면 —)
+        self.corr_label.setText(corr if corr else "—")
+
+    def set_model_status(self, state, detail="", progress=-1, price=None,
+                         update_signal=True):
+        """모델 상태 행 업데이트 (학습 대기 / 재학습중 / 완료).
+
+        Args:
+            state:    표시할 상태 문자열
+            detail:   우측 보조 텍스트 (예: "데이터 416/5000행 (8%)")
+            progress: 0~100 진행률, -1이면 프로그레스바 숨김
+            price:    현재가 (None이면 미갱신)
+        """
+        _COL = {
+            "모델 학습 대기":  C['orange'],
+            "GBM 재학습중":   C['yellow'],
+            "GBM 재학습 완료": C['green'],
+            "데이터 축적중":   C['orange'],
+            "SGD 예측중":     C['blue'],
+        }
+        col = _COL.get(state, C['text2'])
+
+        if price is not None:
+            self.lbl_price.setText(f"{price:.2f}")
+
+        # lbl_signal에 상태 표시 (SGD-only 모드에서는 예측 신호 유지)
+        if update_signal:
+            self.lbl_signal.setText(state)
+            self.lbl_signal.setStyleSheet(
+                f"color:{col};font-size:{S.f(13)}px;font-weight:bold;"
+            )
+
+        # 모델 상태 행
+        self._model_row.setVisible(True)
+        self._lbl_model_state.setText(state)
+        self._lbl_model_state.setStyleSheet(
+            f"color:{col};font-size:{S.f(10)}px;font-weight:bold;"
+        )
+        self._lbl_model_detail.setText(detail)
+
+        if progress >= 0:
+            self._model_prog.setVisible(True)
+            self._model_prog.setValue(progress)
+            self._model_prog.setStyleSheet(
+                f"QProgressBar::chunk{{background:{col};}}"
+            )
+        else:
+            self._model_prog.setVisible(False)
 
 
 # ────────────────────────────────────────────────────────────
@@ -3493,9 +3600,10 @@ class MireukDashboard(QMainWindow):
         )
 
         # ── 파이프라인 감시 — 임계값 초과 시 복구 콜백 발동 (1회씩) ──
+        # 1분봉 주기=60s이므로 첫 경보 임계값을 90s로 설정 (race condition 방지)
         # 콜백 실행 후에만 임계값 소비 — 콜백 미등록 시 threshold를 소비하면
         # 나중에 콜백이 등록돼도 해당 임계값이 영구 누락되는 버그 방지
-        for threshold in (60, 120, 180):
+        for threshold in (90, 150, 240):
             if ps >= threshold and threshold not in self._watchdog_alerted:
                 if self._pipeline_recovery_cb:
                     self._pipeline_recovery_cb(ps)
@@ -3601,9 +3709,10 @@ class DashboardAdapter:
         """
         self._win.update_price(price, change, code)
 
-    def update_prediction(self, price: float, preds: dict, params: dict, conf: float = None):
+    def update_prediction(self, price: float, preds: dict, params: dict,
+                          conf: float = None, corr: str = ""):
         """멀티 호라이즌 예측 패널 업데이트"""
-        self._win.pred_panel.update_data(price, preds, params, conf)
+        self._win.pred_panel.update_data(price, preds, params, conf, corr)
 
     def update_entry(self, signal: str, conf: float, grade: str, checks: dict,
                      qty: int = 0):
@@ -3621,6 +3730,13 @@ class DashboardAdapter:
     def update_shap(self, core_vals, dynamic_items, rank_vals):
         """SHAP 피처 패널 업데이트"""
         self._win.feat_panel.update_shap(core_vals, dynamic_items, rank_vals)
+
+    def set_model_status(self, state, detail="", progress=-1, price=None,
+                         update_signal=True):
+        """모델 학습 상태를 예측 패널에 표시."""
+        self._win.pred_panel.set_model_status(
+            state, detail, progress, price, update_signal
+        )
 
     def append_trade_log(self, msg: str, val: str = ""):
         """창3 주문/체결 로그"""

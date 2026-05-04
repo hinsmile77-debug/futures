@@ -44,7 +44,7 @@ class OnlineLearner:
 
         for h in HORIZONS:
             self.models[h] = SGDClassifier(
-                loss="log_loss",
+                loss="log",
                 learning_rate="optimal",
                 alpha=0.001,
                 max_iter=1,
@@ -159,6 +159,10 @@ class OnlineLearner:
                 f"SGD={self.sgd_weight:.0%} GBM={self.gbm_weight:.0%} "
                 f"(50분 정확도={acc:.1%})"
             )
+
+    def is_ready(self) -> bool:
+        """최소 1개 호라이즌 SGD 학습 완료 여부"""
+        return any(self._fitted.values())
 
     def recent_accuracy(self) -> float:
         if not self._accuracy_buf:

@@ -175,3 +175,33 @@ class MultiHorizonModel:
         """최소 1개 호라이즌 학습 완료 여부"""
         return any(self._is_fitted.values())
 
+    def set_feature_names(self, names: List[str]) -> None:
+        """GBM 미학습 상태에서 SGD 활성화를 위한 피처명 부트스트랩."""
+        if not self.feature_names:
+            self.feature_names = list(names)
+
+    def get_feature_importance(self) -> Dict[str, float]:
+        """GBM 전체 호라이즌 평균 피처 중요도 반환.
+
+        Returns:
+            {feature_name: 0~1 float} — 모델 미학습 시 빈 dict
+        """
+        if not self.feature_names:
+            return {}
+
+        acc = np.zeros(len(self.feature_names))
+        n   = 0
+        for h, clf in self.models.items():
+            if not self._is_fitted.get(h):
+                continue
+            imp = getattr(clf, "feature_importances_", None)
+            if imp is not None and len(imp) == len(self.feature_names):
+                acc += imp
+                n   += 1
+
+        if n == 0:
+            return {}
+
+        avg = acc / n
+        return {name: float(v) for name, v in zip(self.feature_names, avg)}
+
