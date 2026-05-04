@@ -2,7 +2,8 @@
 
 # ── 키움 TR 코드 ──────────────────────────────────────────────
 TR_INVESTOR_FUTURES = "opt10059"    # 선물 투자자별 매매
-TR_INVESTOR_OPTIONS = "opt50014"    # 옵션 투자자별 매매
+TR_INVESTOR_OPTIONS = "opt50008"    # 옵션 투자자별 매매 후보 — KOA Studio에서 필드명 확인 필요
+                                    # (opt50014는 선물가격대별비중차트요청으로 잘못 사용됨)
 TR_PROGRAM_TRADE    = "opt10060"    # 프로그램 매매
 TR_FUTURES_PRICE    = "opt10001"    # 선물 현재가
 TR_FUTURES_1MIN     = "OPT50029"    # 선물분차트요청 (OPT50029)
@@ -14,7 +15,12 @@ FID_BID_PRICE       = 41    # 매수호가1
 FID_ASK_PRICE       = 51    # 매도호가1
 FID_BID_QTY         = 61    # 매수호가수량1
 FID_ASK_QTY         = 71    # 매도호가수량1
-FID_OI              = 291   # 미결제약정
+FID_OI              = 195   # 미결제약정 (선물시세 기준 — FID 291은 예상체결가이므로 사용 금지)
+FID_EXPECTED_PRICE  = 291   # 예상체결가 (선물호가잔량에서 수신 — OI 아님)
+FID_KOSPI200_IDX    = 197   # KOSPI200 지수 현재가 (선물시세)
+FID_BASIS           = 183   # 시장베이시스 (선물시세, 키움 자체 계산)
+FID_UPPER_LIMIT     = 305   # 선물 당일 상한가 (파생실시간상하한)
+FID_LOWER_LIMIT     = 306   # 선물 당일 하한가 (파생실시간상하한)
 
 # 실시간 타입 코드 — OnReceiveRealData sRealType 파라미터는 한국어 명칭
 RT_FUTURES      = "선물시세"      # 선물 체결 틱 (FC0 해당)

@@ -7,6 +7,7 @@
   Layer 4 (LEARNING) — 자가학습·SHAP 교체
   Layer 5 (DEBUG)    — 피처·모델 상세 디버그
   Layer 6 (WARN)     — WARNING 이상 전용 경보 로그
+  Layer 7 (DATA)     — 수급·투자자 TR 수집 로그
 """
 import logging
 import logging.handlers
@@ -23,6 +24,8 @@ LAYER_TRADE    = "TRADE"
 LAYER_LEARNING = "LEARNING"
 LAYER_DEBUG    = "DEBUG"
 LAYER_WARN     = "WARN"     # WARNING 이상 전용 경보 파일
+LAYER_DATA     = "DATA"     # 수급·투자자 TR 수집 로그
+LAYER_PROBE    = "PROBE"    # 실시간 FID 탐색 진단 (투자자ticker 등)
 
 _initialized = False
 
@@ -52,12 +55,13 @@ def setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
     formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
 
-    layers = [LAYER_SYSTEM, LAYER_SIGNAL, LAYER_TRADE, LAYER_LEARNING, LAYER_DEBUG]
+    layers = [LAYER_SYSTEM, LAYER_SIGNAL, LAYER_TRADE, LAYER_LEARNING, LAYER_DEBUG,
+              LAYER_DATA, LAYER_PROBE]
 
     for layer in layers:
         logger = logging.getLogger(layer)
-        # DEBUG 레이어는 항상 DEBUG 레벨 — 다른 레이어는 settings.LOG_LEVEL 사용
-        logger.setLevel(logging.DEBUG if layer == LAYER_DEBUG else LOG_LEVEL)
+        # DEBUG·PROBE 레이어는 항상 DEBUG 레벨 — 다른 레이어는 settings.LOG_LEVEL 사용
+        logger.setLevel(logging.DEBUG if layer in (LAYER_DEBUG, LAYER_PROBE) else LOG_LEVEL)
         logger.propagate = False
 
         # 파일 핸들러 (자정에 롤오버)
@@ -84,6 +88,12 @@ def setup_logging():
     console.setLevel(logging.INFO)
     for layer in [LAYER_SYSTEM, LAYER_SIGNAL, LAYER_TRADE]:
         logging.getLogger(layer).addHandler(console)
+
+    # PROBE 전용 콘솔 핸들러 — DEBUG 레벨 전부 출력 (진단 시 즉시 확인용)
+    probe_console = logging.StreamHandler()
+    probe_console.setFormatter(formatter)
+    probe_console.setLevel(logging.DEBUG)
+    logging.getLogger(LAYER_PROBE).addHandler(probe_console)
 
 
 def get_logger(layer: str = LAYER_DEBUG) -> logging.Logger:

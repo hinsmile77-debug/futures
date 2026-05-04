@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-04 (오후) — SGD 부트스트랩 + log_loss 호환 + watchdog 개선 + UI
+> 마지막 업데이트: 2026-05-04 (야간) — FID 탐색·PROBE 진단·수급 TR 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,69 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-05-04 세션 주요 수정 (야간 — FID 탐색·PROBE 진단·수급 TR 수정)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **[B40] FID_OI = 291 → 195 수정** | `config/constants.py` + `option_data.py` 하드코딩 2곳. FID 291 = 예상체결가(선물호가잔량), FID 195 = 미결제약정(선물시세). PROBE 스캔으로 확정 |
+| **신규 FID 상수 5개 추가** | `FID_EXPECTED_PRICE=291`, `FID_KOSPI200_IDX=197`, `FID_BASIS=183`, `FID_UPPER_LIMIT=305`, `FID_LOWER_LIMIT=306` |
+| **TR_INVESTOR_OPTIONS 수정** | opt50014(선물가격대별비중차트요청·잘못 사용) → opt50008(투자자별매도수금액요청) |
+| **PROBE 진단 인프라** | LAYER_PROBE 추가, PROBE-ALLRT 전수 FID 스캔, probe_investor_ticker(). 스캔 범위 1~99로 확장 |
+| **투자자ticker 모의투자 미지원 확인** | 8가지 코드/타입 조합 전부 ret=0이나 데이터 수신 없음 → 실서버 전환 시 재테스트 필요 |
+
+### 확정된 FID 매핑 (선물시세 기준)
+
+| FID | 값 | 의미 |
+|---|---|---|
+| 10 | +1049.65 | 현재가 |
+| 15 | 거래량 | 거래량 |
+| 41 | 매도1호가 | (선물호가잔량에서 수신) |
+| 51 | 매수1호가 | (선물호가잔량에서 수신) |
+| 195 | 207357 | **미결제약정** (진짜 OI) |
+| 197 | +1049.66 | KOSPI200 지수 현재가 |
+| 183 | +1.04 | 시장베이시스 |
+| 291 | +1020.60 | 예상체결가 (OI 아님! — 선물호가잔량 기준) |
+| 305 | +1078.35 | 선물 당일 상한가 |
+| 306 | -918.65 | 선물 당일 하한가 |
+
+---
+
+## 2026-05-04 세션 주요 수정 (저녁 — 다이버전스 패널 수급 데이터 흐름)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **수급 TR 수집 구조 전환** | `investor_data.fetch_all()` → COM 콜백 체인(run_minute_pipeline) 외부로 이동. `_investor_timer` QTimer 60s 신설. STEP4에서 직접 호출 시 0xC0000409 스택 오버런 위험 해소 |
+| **investor_data.fetch_*() 수정** | `self._api.set_input_value()`+`comm_rq_data()` (존재하지 않는 메서드) → `self._api.request_tr()` 전환. TR 응답 rows를 인라인으로 직접 파싱 |
+| **api_connector._parse_tr_row 확장** | OPT50029만 지원 → opt10059(`순매수`), opt50014(`콜순매수`/`풋순매수`), opt10060(`차익순매수`/`비차익순매수`) 필드 추가 |
+| **logger.py DATA 레이어 추가** | `LAYER_DATA="DATA"` 신설. investor_data 오류가 파일 핸들러 없이 사라지던 문제 해결 |
+| **투자자 포지션 매트릭스 개선** | `rt_strd`/`fi_strangle` 하드코딩 0 → 실제 `abs(콜)+abs(풋)` 총합 표시 |
+| **옵션 구간별 거래량 UI 연결** | `DivergencePanel.update_data()` oz_* 위젯 갱신 구현. `get_zone_data()` 신설 — ATM=현재 전체 수집 데이터 기반 투자자별 %, ITM/OTM=0 (추후 개선) |
+| **_fill_dummy_options 기관 추가** | `institution` 더미 추가 → zone % 합계 정상화 |
+
+### 수정 후 수급 데이터 흐름
+
+```
+[QTimer 60s]
+→ _fetch_investor_data()
+→ investor_data.fetch_all()
+→   fetch_futures(): request_tr(opt10059) → rows 파싱 → _futures 캐시 갱신
+→   fetch_options(): request_tr(opt50014) → rows 파싱 → _call/_put 캐시 갱신
+→   fetch_program(): request_tr(opt10060) → rows 파싱 → _program_* 캐시 갱신
+→ DATA.log 기록
+
+[run_minute_pipeline - COM 콜백 체인 내]
+STEP4: get_features() → 캐시 읽기만 (TR 호출 없음)
+       get_zone_data() → 캐시 기반 zone % 계산
+→ update_divergence({..., "zones": {...}})
+→ DivergencePanel.update_data() → 바이어스 바 + 포지션 카드 + oz_* zone 바 갱신
+```
+
+### 남은 한계
+- ITM/OTM 구간: opt50014는 전체 합산만 제공 → ATM에 전체 표시, ITM/OTM=0
+  - 정확한 구분은 행사가별 개별 TR 조회(여러 번) 필요 (추후 구현)
 
 ---
 

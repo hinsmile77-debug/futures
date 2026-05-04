@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-05-04 (야간 세션 — FID 탐색·PROBE 진단·수급 TR 수정)
+
+**작업**: PROBE 진단 로그 분석 → FID 오류 확정 수정 + 신규 FID 상수 추가 + 수급 TR 코드 수정
+
+### 핵심 수정 6건
+
+| 항목 | 내용 |
+|---|---|
+| **[B40] FID_OI = 291 치명적 오류 수정** | `config/constants.py` FID_OI 291 → 195. FID 291은 예상체결가(선물호가잔량 기준)이며 미결제약정이 아님. PROBE-ALLRT-FIDS 스캔으로 FID 195=207357(미결제약정) 확정 |
+| **option_data.py 하드코딩 291 수정** | `collection/kiwoom/option_data.py` 하드코딩 291 두 곳 → `FID_OI` 임포트로 교체 |
+| **신규 FID 상수 추가** | `FID_EXPECTED_PRICE=291`, `FID_KOSPI200_IDX=197`(KOSPI200지수), `FID_BASIS=183`(시장베이시스), `FID_UPPER_LIMIT=305`(선물상한가), `FID_LOWER_LIMIT=306`(선물하한가) |
+| **TR_INVESTOR_OPTIONS 수정** | `config/constants.py` opt50014 → opt50008. opt50014는 선물가격대별비중차트요청으로 잘못 사용됨 확인 |
+| **PROBE 진단 인프라 신설** | `utils/logger.py` LAYER_PROBE 추가(DEBUG+콘솔). `api_connector.py` PROBE-ALLRT(신규 실시간 타입 전수 FID 스캔), probe_investor_ticker() 신설 |
+| **PROBE 스캔 범위 확장** | PROBE-ALLRT FID 스캔: 1~50 → 1~99 (bid/ask qty FID 51~99 구간 추가) |
+
+### PROBE-ALLRT 실행 결과 (2026-05-04)
+
+**선물시세 FID 주요 발견:**
+```
+FID 195 = '207357'    → 미결제약정 (진짜 OI) ← FID_OI 수정 근거
+FID 197 = '+1049.66'  → KOSPI200 지수 현재가 (신규)
+FID 183 = '+1.04'     → 시장베이시스 (신규)
+```
+
+**선물호가잔량 FID 발견:**
+```
+FID 291 = '+1020.60'  → 예상체결가 (기존 FID_OI=291이 이것을 읽고 있었음 ← 버그)
+FID 41, 51, 61, 71    → 호가/잔량 (확인)
+```
+
+**신규 실시간 타입 발견:**
+```
+파생실시간상하한: FID 305=+1078.35(상한가), FID 306=-918.65(하한가)
+주식예상체결: FID 10(예상가), 11(전일비), 12(등락률%) — 선물코드로 장마감후 수신
+프로그램매매: code='P00101' — FID 스캔 미완료 (다음 장중 재시도 필요)
+투자자ticker: 모의투자 서버 미지원 확인 (8가지 코드 조합 모두 ret=0이나 데이터 없음)
+```
+
+---
+
 ## 2026-05-04 (오후 세션 — 부트스트랩·SGD·UI)
 
 **작업**: SGD 치킨에그 부트스트랩 해결 + log_loss 호환성 수정 + watchdog 개선 + 대시보드 UI

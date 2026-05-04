@@ -20,6 +20,8 @@ import datetime
 import math
 from typing import Optional, Dict, List, TYPE_CHECKING
 
+from config.constants import FID_OI
+
 if TYPE_CHECKING:
     from collection.kiwoom.api_connector import KiwoomAPI
 
@@ -88,8 +90,8 @@ class OptionData:
             call_code = self._get_option_code("C", strike)
             put_code  = self._get_option_code("P", strike)
 
-            call_oi  = self._api.get_comm_real_data(call_code, 291)  # FID_OI
-            put_oi   = self._api.get_comm_real_data(put_code,  291)
+            call_oi  = self._api.get_comm_real_data(call_code, FID_OI)
+            put_oi   = self._api.get_comm_real_data(put_code,  FID_OI)
 
             self._strikes[strike] = {
                 "call_oi":  int(call_oi)  if call_oi  else 0,

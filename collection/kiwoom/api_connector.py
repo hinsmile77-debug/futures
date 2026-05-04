@@ -23,8 +23,9 @@ from config.constants import (
     RT_FUTURES, RT_FUTURES_HOGA,
 )
 
-logger  = logging.getLogger(__name__)
-sys_log = logging.getLogger("SYSTEM")   # 실시간 콜백 추적 → SYSTEM.log
+logger    = logging.getLogger(__name__)
+sys_log   = logging.getLogger("SYSTEM")   # 실시간 콜백 추적 → SYSTEM.log
+probe_log = logging.getLogger("PROBE")    # 투자자ticker 진단 전용
 
 # ── 키움 OCX ProgID ────────────────────────────────────────────
 KIWOOM_OCX = "KHOPENAPI.KHOpenAPICtrl.1"
@@ -353,6 +354,98 @@ class KiwoomAPI(QAxWidget):
         logger.info("실시간 구독 코드: %s", code)
         return code
 
+    # ── 투자자ticker 진단 ─────────────────────────────────────
+    def probe_investor_ticker(self, extra_codes: Optional[List[str]] = None) -> None:
+        """투자자ticker 실시간 타입 FID·코드 탐색 (진단용).
+
+        SetRealReg로 후보 코드 전부 등록 → 콜백에서 FID 값 상세 로그.
+        PROBE.log 및 콘솔에서 결과 확인.
+        KOA Studio에서 '투자자ticker' 실시간 목록 화면과 대조할 것.
+
+        개발가이드 8.18절 표기 기준으로 공백 포함("투자자 ticker")·없는 버전
+        두 가지를 모두 등록.
+        """
+        # 후보 RT 타입명: 공백 없는 버전과 공백 있는 버전 모두 시도
+        RT_TYPES = ["투자자ticker", "투자자 ticker"]
+
+        # 시장 전체 데이터형 후보 코드
+        # "0" = KOSPI 전체(장시작시간 등록에 사용되는 코드)
+        # "001" = 코스피지수코드
+        # "K200" = KOSPI200
+        # extra_codes 선물 근월물 등 호출 측 추가
+        base_codes = ["0", "001", "K200"]
+        if extra_codes:
+            base_codes = list(extra_codes) + base_codes
+
+        seen = set()
+        candidate_codes = []
+        for c in base_codes:
+            if c not in seen:
+                seen.add(c)
+                candidate_codes.append(c)
+
+        probe_log.info(
+            "[PROBE] probe_investor_ticker 시작 — 후보코드=%s RT타입=%s",
+            candidate_codes, RT_TYPES,
+        )
+
+        screen_idx = 0
+        for rt_type in RT_TYPES:
+            for code in candidate_codes:
+                screen = "99%02d" % screen_idx
+                screen_idx += 1
+                ret = self.dynamicCall(
+                    "SetRealReg(QString, QString, QString, QString)",
+                    screen, code, "216", "0",
+                )
+                probe_log.info(
+                    "[PROBE] SetRealReg rt=%r code=%r screen=%s ret=%d",
+                    rt_type, code, screen, ret,
+                )
+                print(
+                    f"[PROBE] SetRealReg rt={rt_type!r} code={code!r} screen={screen} ret={ret}",
+                    flush=True,
+                )
+                self._real_callbacks.setdefault((code, rt_type), []).append(
+                    self._on_probe_ticker_cb
+                )
+
+        probe_log.info(
+            "[PROBE] 등록 완료. 데이터 수신 시 [PROBE-TICKER] 라인 출력됨. "
+            "수신 없으면 모의투자 미지원 가능성 → [PROBE-ALLRT] 로 수신 타입 전수 확인"
+        )
+
+    def _on_probe_ticker_cb(self, code: str, real_type: str, real_data: str) -> None:
+        """투자자ticker 콜백 — 진단용.
+
+        COM 콜백 내부: GetCommRealData(단순 읽기)만 허용.
+        QEventLoop·CommRqData·dynamicCall 블로킹 호출 금지.
+        """
+        fid216 = self.dynamicCall("GetCommRealData(QString, int)", code, 216).strip()
+
+        # FID 200~230 전수 조사 (비공백 값만 수집)
+        discovered = {}
+        for fid in range(200, 231):
+            v = self.dynamicCall("GetCommRealData(QString, int)", code, fid).strip()
+            if v:
+                discovered[fid] = v
+        # 추가로 10·11·12·13·15·20·216도 체크
+        for fid in (10, 11, 12, 13, 15, 20):
+            v = self.dynamicCall("GetCommRealData(QString, int)", code, fid).strip()
+            if v:
+                discovered[fid] = v
+
+        probe_log.warning(
+            "[PROBE-TICKER] code=%r type=%r | FID216=%r | real_data=%r | 비공백FID=%s",
+            code, real_type, fid216, real_data[:300], discovered,
+        )
+        print(
+            f"[PROBE-TICKER] code={code!r} type={real_type!r} "
+            f"FID216={fid216!r} real_data={real_data[:200]!r} "
+            f"비공백FID={discovered}",
+            flush=True,
+        )
+
     def _nearest_futures_code_by_date(self) -> str:
         """현재 날짜 기준 KOSPI200 선물 근월물 코드.
 
@@ -423,6 +516,49 @@ class KiwoomAPI(QAxWidget):
                          code, real_type, list(self._real_callbacks.keys()))
             self._logged_rt_keys.add(key_stripped)
 
+        # ── [PROBE-ALLRT] 수신 타입 전수 감시 + 신규 타입 FID 스캔 ──
+        if not hasattr(self, "_probe_allrt_seen"):
+            self._probe_allrt_seen = set()
+        rt_stripped = real_type.strip()
+        if rt_stripped not in self._probe_allrt_seen:
+            self._probe_allrt_seen.add(rt_stripped)
+            probe_log.info(
+                "[PROBE-ALLRT] 신규타입 code=%r type=%r → FID 스캔 시작",
+                code, real_type,
+            )
+            print(f"[PROBE-ALLRT] 신규타입 code={code!r} type={real_type!r}", flush=True)
+
+            # FID 전수 스캔 — 신규 타입 첫 수신 시 1회만 실행
+            # GetCommRealData는 단순 동기 읽기 → COM 콜백 내 호출 안전
+            discovered = {}
+            # 주요 범위: 1~99 (공통·호가), 100~400 (수급·프로그램?), 900~960 (주문)
+            _scan = (
+                list(range(1, 100))
+                + list(range(100, 201))
+                + list(range(201, 401))
+                + list(range(900, 961))
+            )
+            for fid in _scan:
+                v = self.dynamicCall(
+                    "GetCommRealData(QString, int)", code, fid
+                ).strip()
+                if v:
+                    discovered[fid] = v
+            probe_log.warning(
+                "[PROBE-ALLRT-FIDS] type=%r code=%r 비공백FID=%s",
+                rt_stripped, code, discovered,
+            )
+            print(
+                f"[PROBE-ALLRT-FIDS] type={rt_stripped!r} code={code!r} FIDs={discovered}",
+                flush=True,
+            )
+
+        # ── 투자자ticker 전용 캐치 ─────────────────────────────
+        # probe_investor_ticker()의 콜백 등록 코드와 실제 수신 코드가
+        # 다를 수 있으므로, real_type 기준으로 직접 탐지
+        if rt_stripped in ("투자자ticker", "투자자 ticker"):
+            self._on_probe_ticker_cb(code, real_type, real_data)
+
         key_raw = (code, real_type)
         cbs = self._real_callbacks.get(key_raw) or self._real_callbacks.get(key_stripped, [])
         for cb in cbs:
@@ -449,18 +585,48 @@ class KiwoomAPI(QAxWidget):
 
     def _parse_tr_row(self, tr_code: str, rq_name: str, index: int) -> Dict[str, str]:
         """TR 응답 한 행을 {항목명: 값} dict로 반환."""
-        if tr_code.upper() == "OPT50029":
-            # 선물분차트요청 출력 필드
+        tc = tr_code.upper()
+        if tc == "OPT50029":
             fields = ["체결시간", "현재가", "시가", "고가", "저가", "거래량"]
+        elif tc == "OPT10059":
+            # 선물 투자자별 매매 — 행별 투자자 그룹 순매수
+            fields = ["순매수"]
+        elif tc == "OPT50008":
+            # 투자자별매도수금액요청 — 옵션 투자자별 콜/풋 순매수 후보
+            # 실제 필드명은 KOA Studio에서 확인 필요 (discovery 로그 참조)
+            fields = ["콜순매수", "풋순매수"]
+        elif tc == "OPT10060":
+            # 프로그램 매매 — 차익/비차익 순매수 (단일 행)
+            fields = ["차익순매수", "비차익순매수"]
         else:
             fields = []
-        return {
+        result = {
             f: self.dynamicCall(
                 "GetCommData(QString, QString, int, QString)",
                 tr_code, rq_name, index, f,
             ).strip()
             for f in fields
         }
+        # 알 수 없는 TR이거나 모든 필드가 비어 있으면 discovery 로그 출력
+        if not fields or all(v == "" for v in result.values()):
+            _DISCOVERY_FIELDS = [
+                "콜순매수", "풋순매수", "콜순매수수량", "풋순매수수량",
+                "콜매수금액", "콜매도금액", "풋매수금액", "풋매도금액",
+                "순매수", "순매수수량", "매수금액", "매도금액",
+            ]
+            discovered = {
+                f: self.dynamicCall(
+                    "GetCommData(QString, QString, int, QString)",
+                    tr_code, rq_name, index, f,
+                ).strip()
+                for f in _DISCOVERY_FIELDS
+            }
+            non_empty = {k: v for k, v in discovered.items() if v}
+            logger.warning(
+                "[TR-DISCOVER] tr=%s rq=%s row=%d 비어있는 필드셋 → 후보 비공백: %s",
+                tr_code, rq_name, index, non_empty or "(전부 공백)",
+            )
+        return result
 
     # ── 연결 상태 ─────────────────────────────────────────────
 

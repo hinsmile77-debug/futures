@@ -853,7 +853,7 @@ class DivergencePanel(QWidget):
                 hr = QHBoxLayout()
                 hr.addWidget(mk_label(inv, C['text2'], 9))
                 b = mk_prog(col, 7)
-                b.setValue(random.randint(20, 80))
+                b.setValue(0)
                 hr.addWidget(b, 2)
                 vl = mk_label("—%", col, 9)
                 setattr(self, f"oz_{zone}_{inv}", (b, vl))
@@ -883,6 +883,20 @@ class DivergencePanel(QWidget):
         col2  = C['green'] if score > 10 else C['red'] if score < -10 else C['text2']
         self.pos_div_score_val.setText(f"{score:+.0f}")
         self.pos_div_score_val.setStyleSheet(f"color:{col2};font-size:{S.f(14)}px;font-weight:bold;")
+
+        # 옵션 구간별 거래량 갱신
+        # zones = {"ITM": {"외인": pct, "개인": pct, "기관": pct}, "ATM": {...}, "OTM": {...}}
+        zones = div.get("zones", {})
+        for zone in ["ITM", "ATM", "OTM"]:
+            zd = zones.get(zone, {})
+            for inv in ["외인", "개인", "기관"]:
+                widget = getattr(self, f"oz_{zone}_{inv}", None)
+                if widget is None:
+                    continue
+                b, vl = widget
+                pct = zd.get(inv, 0)
+                b.setValue(pct)
+                vl.setText(f"{pct}%")
 
 
 # ────────────────────────────────────────────────────────────

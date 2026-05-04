@@ -195,8 +195,29 @@ class TradingSystem:
         print("[DBG CK-5] RealtimeData.start() 완료", flush=True)
 
         self.investor_data._api = self.kiwoom  # 실거래 시 TR 폴링 활성화
-        logger.info("[System] 키움 실시간 수신 시작 — %s", code)
+
+        # 투자자ticker 실시간 타입 FID·코드 탐색 (진단용)
+        # 결과는 PROBE.log 및 콘솔에 [PROBE-TICKER] 라인으로 출력됨
+        # 확인 후 불필요하면 이 줄을 제거해도 됨
+        self.kiwoom.probe_investor_ticker(extra_codes=[code])
+
+        # 수급 TR은 COM 콜백 체인(run_minute_pipeline) 밖에서 수집해야 스택 오버런 방지
+        # QTimer 60초마다 독립 실행 — 파이프라인은 캐시(get_features)만 읽음
+        self._investor_timer = QTimer()
+        self._investor_timer.timeout.connect(self._fetch_investor_data)
+        self._investor_timer.start(60_000)
+
+        logger.info("[System] 키움 실시간 수신 시작 — %s | 수급 타이머 60s 시작", code)
         return True
+
+    def _fetch_investor_data(self) -> None:
+        """수급 TR 수집 — QTimer에서 호출 (COM 콜백 체인 외부)."""
+        if not is_market_open(datetime.datetime.now()):
+            return
+        try:
+            self.investor_data.fetch_all()
+        except Exception as e:
+            logger.warning("[Investor] 타이머 수집 오류: %s", e)
 
     def _on_tick_price_update(self, bar: dict) -> None:
         """틱 수신마다 대시보드 헤더 현재가 갱신."""
@@ -364,7 +385,8 @@ class TradingSystem:
                 log_manager.learning(f"[GBM] 재학습 건너뜀: {result.get('error','')}")
 
         # ── STEP 4: 피처 생성 ──────────────────────────────────
-        self.investor_data.fetch_all()                          # 시뮬: 더미, 실거래: TR 요청
+        # fetch_all()은 _investor_timer(60s QTimer)에서 COM 콜백 외부로 실행
+        # 파이프라인은 이전 분봉에서 수집된 캐시를 읽음 (당일 누적 수급 — 1분 지연 허용)
         supply_feats = self.investor_data.get_features()
         features = self.feature_builder.build(bar, supply_demand=supply_feats)
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
@@ -391,12 +413,14 @@ class TradingSystem:
 
         # 다이버전스 패널 갱신 (외인·개인 수급)
         _inv = self.investor_data
-        _fi_call = _inv._call.get("foreign", 0)
-        _fi_put  = _inv._put.get("foreign", 0)
-        _rt_call = _inv._call.get("individual", 0)
-        _rt_put  = _inv._put.get("individual", 0)
-        _fi_fut  = _inv._futures.get("foreign", 0)
-        _rt_fut  = _inv._futures.get("individual", 0)
+        _fi_call  = _inv._call.get("foreign", 0)
+        _fi_put   = _inv._put.get("foreign", 0)
+        _rt_call  = _inv._call.get("individual", 0)
+        _rt_put   = _inv._put.get("individual", 0)
+        _fi_fut   = _inv._futures.get("foreign", 0)
+        _rt_fut   = _inv._futures.get("individual", 0)
+        _inst_call = _inv._call.get("institution", 0)
+        _inst_put  = _inv._put.get("institution", 0)
         _rt_opt_total = max(abs(_rt_call) + abs(_rt_put), 1)
         _fi_opt_total = max(abs(_fi_call) + abs(_fi_put), 1)
         _rt_bias = (_rt_call - _rt_put) / _rt_opt_total
@@ -408,12 +432,13 @@ class TradingSystem:
             "fi_bias":     _fi_bias,
             "rt_call":     _rt_call,
             "rt_put":      _rt_put,
-            "rt_strd":     0,
+            "rt_strd":     abs(_rt_call) + abs(_rt_put),
             "fi_call":     _fi_call,
             "fi_put":      _fi_put,
-            "fi_strangle": 0,
+            "fi_strangle": abs(_fi_call) + abs(_fi_put),
             "contrarian":  _contrarian,
             "div_score":   float(_fi_fut - _rt_fut),
+            "zones":       _inv.get_zone_data(),
         })
 
         # [DBG-F4] ATR floor 적용 전후 + 핵심 피처 원시값 확인
@@ -983,6 +1008,8 @@ class TradingSystem:
             )
 
         # 일일 리셋
+        if hasattr(self, "_investor_timer"):
+            self._investor_timer.stop()
         self.feature_builder.reset_daily()
         self.investor_data.reset_daily()
         self.position.reset_daily()
