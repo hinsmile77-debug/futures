@@ -18,11 +18,20 @@ PROBE-ALLRT-FIDS 스캔으로 확정:
 - `option_data.py`: 하드코딩 291 두 곳 → `FID_OI` import 사용.
 **교훈**: FID 번호는 실시간 타입(선물시세 vs 선물호가잔량)에 종속됨. 동일 FID가 타입마다 다른 데이터를 반환할 수 있음. PROBE 스캔 없이 FID 번호를 가정하면 안 됨.
 
-### [B41] TR_INVESTOR_OPTIONS = "opt50014" 잘못된 TR 코드
+### [B41] TR_INVESTOR_OPTIONS 잘못된 TR 연속 오류 → 옵션 수급 수집 포기
 **파일**: `config/constants.py`, `collection/kiwoom/investor_data.py`
-**증상**: 옵션 투자자별 수급 데이터 항상 빈값
-**원인**: opt50014는 선물가격대별비중차트요청 — 옵션 투자자 매매와 무관한 TR
-**Fix**: `TR_INVESTOR_OPTIONS = "opt50008"` (투자자별매도수금액요청, 옵션 관련 최선 후보). 필드명은 KOA Studio 확인 필요 [V22].
+**증상**: 옵션 투자자별 콜/풋 순매수 데이터 항상 0 또는 빈값
+**원인 탐색 과정**:
+- 1차 시도 `opt50014` → KOA Studio 확인: 선물가격대별비중차트요청 (무관)
+- 2차 시도 `opt50008` → KOA Studio 확인: 프로그램매매추이차트요청 (옵션 아님)
+  - INPUT: 종목코드=P0010I(코스피), 시간구분=1, 거래소구분=1
+  - OUTPUT: 투자자별순매수금액(KRW) — 콜/풋 구분 없음
+- KOA Studio 전체 탐색 결과: 콜/풋 순매수를 투자자별로 제공하는 TR 없음
+**최종 Fix**:
+- `TR_INVESTOR_OPTIONS` 상수 삭제
+- `fetch_options()` → 더미 고정, 코드에 "TR 없음" 명시
+- opt50008은 `TR_PROGRAM_TRADE_INVESTOR`로 용도 변경 → 프로그램매매 투자자별 KRW 수집에 활용
+**교훈**: KOA TR 명칭·용도는 번호로 추정하지 말고 KOA Studio에서 INPUT/OUTPUT 필드 직접 확인 필수.
 
 ---
 
@@ -41,6 +50,15 @@ PROBE-ALLRT-FIDS 스캔으로 확정:
 | FID_LOWER_LIMIT | 306 | 파생실시간상하한 | -918.65 (당일 하한가) |
 
 **이유**: PROBE-ALLRT-FIDS 실시간 스캔으로 실측 확인된 값. 기존 KOA 문서 번호와 다를 수 있으므로 실측 우선.
+
+### [D17] 옵션 투자자별 TR 없음 확정 → opt50008 용도 전환
+**결정**:
+- 옵션 투자자별 콜/풋 순매수 TR은 KOA에 존재하지 않음. `fetch_options()`는 더미 고정.
+- opt50008(프로그램매매추이차트요청)은 `TR_PROGRAM_TRADE_INVESTOR`로 전환:
+  - `fetch_program_investor()` 신설 — 투자자별 프로그램매매 순매수금액(KRW) 수집
+  - 피처 3개 추가: `program_foreign/institution/individual_net_krw`
+**이유**: opt50008이 투자자 유형별 프로그램매매 KRW를 제공하므로, 옵션 대신 프로그램매매 수급 신호로 활용 가능. 외인 프로그램매매 순매수 방향은 단기 선물 방향과 상관관계 있음.
+**미확인**: opt50008 행 구조(투자자별 순서 vs 시간별 시계열) — [V22] 다음 장중 TR-DISCOVER 로그로 확인 예정.
 
 ### [D16] PROBE-ALLRT 범용 실시간 타입 모니터링 패턴
 **결정**: `api_connector._on_receive_real_data()`에서 신규 실시간 타입 첫 수신 시 FID 1~99, 100~400, 900~960 전수 스캔 후 PROBE.log에 기록.
