@@ -1100,7 +1100,7 @@ class TradingSystem:
         code = getattr(self, "_futures_code", "")
         if not code or self.position.status == "FLAT":
             return -1
-        trade_type = 2 if self.position.status == "LONG" else 1  # LONG→매도(2), SHORT→매수(1)
+        trade_type = 4 if self.position.status == "LONG" else 3  # LONG→매도청산(4), SHORT→매수청산(3)
         return self.kiwoom.send_order_fo(
             rqname="청산", screen_no="1001",
             acc_no=_secrets.ACCOUNT_NO,
@@ -2300,6 +2300,9 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
 
 
 def _ts_on_chejan_event(self, payload: dict) -> None:
+    _gubun = str(payload.get("gubun", "")).strip()
+    if _gubun not in ("0", "1"):
+        return
     event_key = (
         payload.get("gubun"),
         payload.get("order_no"),
@@ -2709,7 +2712,7 @@ class _KiwoomOrderAdapter:
         self._acc   = acc_no
 
     def send_market_order(self, code: str, side: str, qty: int, reason: str = "") -> int:
-        trade_type = 2 if side == "SELL" else 1   # SELL=신규매도(2), BUY=신규매수(1)
+        trade_type = 4 if side == "SELL" else 3   # SELL=매도청산(4), BUY=매수청산(3)
         ret = self._api.send_order_fo(
             rqname=reason or "긴급청산",
             screen_no="1002",

@@ -28,6 +28,23 @@
 - `main.py`: `_send_kiwoom_entry_order()` / `_send_kiwoom_exit_order()` / `_KiwoomOrderAdapter.send_market_order()` 전부 `send_order_fo()` 전환
 **교훈**: `SendOrder` = 주식 전용. 선물/옵션은 반드시 `SendOrderFO` 사용.
 
+### [B47] SendOrderFO trade_type 오류 — 청산 주문이 60분간 체결되지 않음
+**파일**: `main.py`
+**증상**: 14:28 LONG 진입 후 TP1/하드스톱/15:10 청산 주문이 2분마다 재발행됐으나 15:24:58에야 체결됨. 매분 청산 주문(ret=0)이 나가는데 Chejan 체결(fill_qty>0) 미수신.
+**원인**: `_send_kiwoom_exit_order()`에서 `trade_type = 2 if LONG else 1` 사용 → 이는 **신규 매도/매수 개시(신규 포지션)** 타입. 선물 청산에 필요한 값은:
+- LONG 청산: `trade_type=4` (매도 청산)
+- SHORT 청산: `trade_type=3` (매수 청산)
+모의투자 서버에서 신규 매도(2)를 내면 기존 LONG에 SHORT를 추가하는 형태로 해석, 청산 처리 안 됨.
+**같은 오류**: `_KiwoomOrderAdapter.send_market_order()`도 `trade_type=2/1` 사용 → `trade_type=4/3` 수정.
+**Fix**: `trade_type = 4 if LONG else 3` (청산 타입)
+**ENTRY 주문**은 `trade_type=1(LONG)/2(SHORT)` 신규 개시 — 변경 없음.
+
+### [B48] gubun='4' 미지 이벤트 — Chejan 핸들러 노이즈
+**파일**: `main.py`
+**증상**: 키움 모의투자에서 매 주문마다 `gubun='4'` 이벤트가 `order_no=''`, `fill_qty=0`, `status=''`로 도착. `pending_matched=False`로 아무 처리 없으나 ChejanFlow/ChejanMatch 로그 오염.
+**원인**: 키움 모의투자 OnReceiveChejanData가 표준 sGubun("0"=주문, "1"=잔고) 외에 "4" 이벤트를 추가 전송. 내용 없는 노이즈성 이벤트.
+**Fix**: `_ts_on_chejan_event` 진입부에 `if _gubun not in ("0", "1"): return` early return 추가.
+
 ---
 
 ## 2026-05-06 설계 결정
