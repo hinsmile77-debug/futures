@@ -638,3 +638,24 @@ if not self.model.is_ready():
 - v6.5 보완 검토 (시간대·분할진입·멀티타임프레임·미시레짐 채용)
 - v7.0 Gemini 제안 검토 후 6/6 전량 채용
 - Hurst Exponent 공식 오류 수정 (reg[0]×2.0 → reg[0])
+## 2026-05-06 (세션 마감 정리)
+
+**작업**
+- `BrokerSync` startup 차단 원인을 추적했고, `OPW20006` 응답이 실제 미보유가 아니라도 blank placeholder row만 오는 경우가 있음을 확인했다.
+- `2026-05-06 10:48:19` 전후 불일치 구간을 로그 기준으로 재구성했고, 과거 로그만으로는 "주문 실패 후 로컬 포지션이 어떤 경로로 저장됐는지"를 즉시 증명하기 어렵다는 관측 공백을 확인했다.
+- `collection/kiwoom/api_connector.py`, `main.py`, `strategy/position/position_tracker.py`에 주문/메시지/체결/잔고/복원 경로 디버그를 촘촘히 추가했다.
+- `python -m py_compile main.py collection\kiwoom\api_connector.py strategy\position\position_tracker.py` 검증을 통과했다.
+
+**핵심 반영**
+- `OPW20006` 요청에 계좌 비밀번호를 함께 주입하고, 응답을 `nonempty_rows` / `blank_row_count` / `all_blank_rows`로 분리해 기록하도록 수정.
+- startup broker sync에서 blank row-only 응답은 hard mismatch가 아니라 "무포지션(FLAT) 후보"로 해석하도록 보정.
+- 주문 경로에 `EntryAttempt`, `EntrySendOrderResult`, `PendingOrder`, `OrderMsgDiag` 추가.
+- Chejan 경로에 `ChejanDiag`, `ChejanFlow`, `ChejanMatch`, `EntryFillFlow`, `ExitFillFlow`, `BalanceChejanFlow` 추가.
+- `position_state.json` 저장 시 `last_update_reason`, `last_update_ts`를 함께 남기고 복원 시 `PositionDiag`로 노출.
+
+**다음 시작 직후 확인 순서**
+1. `OPW20006-REQ`, `OPW20006-RESP`, `OPW20006-DIAG`
+2. `BrokerSyncFlatPlaceholder` 및 `BrokerSync` status 전이
+3. `EntryAttempt -> EntrySendOrderResult -> PendingOrder -> OrderMsgDiag -> ChejanFlow`
+4. `PositionDiag`
+5. 불일치가 재발하면 `PendingOrder`, `ChejanDiag`, `BalanceChejanFlow`, `PositionDiag`를 같은 타임라인으로 대조

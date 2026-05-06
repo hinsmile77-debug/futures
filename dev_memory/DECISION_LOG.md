@@ -486,3 +486,22 @@ hurst_idx = reg[0]
 | Circuit Breaker | Phase 2에서 반드시 구현, 건너뛰기 금지 |
 | CORE 3개 | CVD·VWAP·OFI 절대 교체 불가 |
 | COM 콜백 | dynamicCall·emit 콜백 내부 금지 |
+## 2026-05-06
+
+### [D12] startup `OPW20006` blank placeholder 응답은 hard mismatch가 아니라 FLAT 후보로 해석
+**결정**: startup broker sync에서 nonempty row가 하나도 없고 blank row만 있는 응답은 "미체결/미보유 placeholder 가능성"을 우선 고려해 FLAT 후보 처리
+**이유**: 기존 로직은 matching row 부재를 곧바로 mismatch로 간주해 `block_new_entries=True`를 걸었고, 실제 무포지션 재시작도 차단할 수 있었다.
+
+### [D13] 포지션 복원 provenance를 state file에 저장
+**결정**: `position_state.json`에 `last_update_reason`, `last_update_ts`를 저장하고 restore 시 `PositionDiag`로 노출
+**이유**: 과거 로그만으로는 "entry fill 기반 저장"인지 "broker sync 기반 저장"인지 즉시 구별이 어려워 원인 규명이 지연됐다.
+
+### [B43] startup broker sync가 blank placeholder row를 매칭 잔고행 없음으로 오판
+**파일**: `main.py`
+**증상**: startup 직후 브로커 미보유 상태에서도 `verified=False`, `block_new_entries=True`로 고정될 수 있음
+**Fix**: `nonempty_rows` 기준으로 판정하고 blank row-only 응답은 FLAT 후보로 별도 처리
+
+### [B44] startup futures balance 요청에서 계좌 비밀번호 미주입
+**파일**: `collection/kiwoom/api_connector.py`
+**증상**: `OPW20006` 응답 신뢰도가 낮고 placeholder/빈 응답 해석이 더 어려워짐
+**Fix**: 저장된 `ACCOUNT_PWD`를 `비밀번호` 입력값으로 함께 주입하고 응답 진단 로그를 추가

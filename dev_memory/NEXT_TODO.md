@@ -262,3 +262,18 @@
 - 선물호가잔량 콜백 `_on_hoga_data()` 신설 + `sopt_type="1"` 추가 등록으로 해결
 - 모의투자 서버에서 선물호가잔량 수신 확인됨 (로그에서 확인)
 - **검증 필요**: [V19] 재시작 후 `[DBG-F4]` 에서 bid/ask 값 확인
+## 2026-05-06 세션 후속
+
+### DONE 처리
+- [DONE 2026-05-06] BrokerSync startup 차단 원인 1차 규명
+- [DONE 2026-05-06] 주문/체결/복원 디버그 관측점 대폭 추가
+- [DONE 2026-05-06] 포지션 state 저장 메타(`last_update_reason`, `last_update_ts`) 추가
+
+### 다음 실행 최우선 검증
+- [V30] blank placeholder `OPW20006` 응답이 실제로 FLAT 판정으로 해석되는지 검증
+- [V31] `ret=-302` 또는 주문 실패 상황에서 로컬 LONG 오픈/복원 불일치가 재발하는지 검증
+- [V32] `EntryAttempt -> PendingOrder -> OrderMsgDiag -> ChejanFlow -> PositionDiag` end-to-end 인과관계 검증
+
+### 새 작업
+- [T6] startup sync 이후 신규 진입 gate 정책 재검토 (`verified=False`와 `blank row`를 분리)
+- [T7] 디버그 로그 정리 단계 준비 (유효 관측점 유지, 과도한 로그는 다음 안정화 후 축소)
