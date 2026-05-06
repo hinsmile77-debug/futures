@@ -894,6 +894,7 @@ def _kiwoom_request_futures_balance(
     _FIELDS = [
         "종목코드", "종목명", "매매일자", "매매구분",  # 매매구분: "매수"→LONG, "매도"→SHORT
         "잔고수량",                                    # offset 66, len 9 (enc 확인)
+        "주문가능수량",
         "매입단가", "매매금액",
         "현재가", "평가손익", "손익율", "평가금액",
     ]
@@ -916,6 +917,29 @@ def _kiwoom_request_futures_balance(
     if result is None:
         logger.warning("[BalanceTR] OPW20006 조회 실패 account=%s", account_no)
         return None
+
+    single_probe = {}
+
+    def _read_single(*candidates: str) -> str:
+        for item in candidates:
+            try:
+                val = self.get_comm_data("OPW20006", "futures_balance", 0, item).strip()
+            except Exception:
+                val = ""
+            single_probe[item] = val
+            if val:
+                return val
+        return ""
+
+    result["summary"] = {
+        "총매매": _read_single("약정합계", "총약정금액", "총매매금액", "총매매"),
+        "총평가손익": _read_single("손익합계", "평가손익합계", "총평가손익"),
+        "실현손익": _read_single("청산손익합계", "실현손익", "당일실현손익", "당일실현손익(유가)"),
+        "총평가": _read_single("평가금액합계", "총평가금액", "총평가"),
+        "총평가수익률": _read_single("총평가손익률", "총수익률", "수익률", "손익율"),
+        "추정자산": _read_single("추정예탁자산", "추정자산", "예탁총액", "예탁자산"),
+    }
+    result["summary_probe"] = single_probe
 
     # 싱글 데이터에서 조회건수 읽기 (멀티 행 수 교차검증)
     query_count_text = self.get_comm_data("OPW20006", "futures_balance", 0, "조회건수").strip()
@@ -954,6 +978,8 @@ def _kiwoom_request_futures_balance(
         len(multi_rows), len(nonempty_rows), query_count,
         result.get("record_name", ""), result.get("prev_next", ""),
     )
+    if not any(str(v).strip() for v in result["summary"].values()):
+        logger.warning("[OPW20006-SUMMARY-BLANK] probe=%s", single_probe)
     logger.info("[BalanceTR] OPW20006 응답 rows=%d", len(multi_rows))
     return result
 

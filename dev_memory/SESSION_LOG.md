@@ -749,3 +749,37 @@ if not self.model.is_ready():
 3. `EntryAttempt -> EntrySendOrderResult -> PendingOrder -> OrderMsgDiag -> ChejanFlow`
 4. `PositionDiag`
 5. 불일치가 재발하면 `PendingOrder`, `ChejanDiag`, `BalanceChejanFlow`, `PositionDiag`를 같은 타임라인으로 대조
+
+---
+
+## 2026-05-06 (세션 마무리 - 실시간 잔고 패널 연결/보정/UI 정리)
+
+**작업**
+- 좌측 상단 헤더에 `계좌번호`, `전략명` 콤보와 저장 버튼을 재배치하고 폭/간격을 정렬했다.
+- 좌측 컬럼을 2단 구조로 재편해 상단 `실시간 잔고`, 하단 `멀티 호라이즌 예측 + 파라미터 분석` 패널로 분리했다.
+- `실시간 잔고` 카드에 라이브 게이지, 합계 6개, 종목별 잔고 테이블을 추가했다.
+- `OPW20006` 응답을 상단 패널에 연결하고 startup sync 및 잔고 Chejan 이후 자동 갱신되도록 연결했다.
+- 카드 내부 보조 라벨을 제거하고 폰트/간격/톤을 하단 패널과 맞췄다.
+- 합계칸 플레이스홀더 대괄호(`[ ]`)를 제거했다.
+
+**진단**
+- `2026-05-06 18:51:29 [BalanceUIFallback]` 로그로 확인한 결과, 장후/무포지션 상태에서 `OPW20006`이 `rows=0` + summary 전부 공란으로 내려오는 케이스가 존재했다.
+- 따라서 상단 패널이 비는 직접 원인은 UI 자체보다 `OPW20006` 단독 응답 신뢰도 부족이었다.
+- `총매매/총평가손익/실현손익/총평가/총평가수익률/추정자산` 6개를 전부 `OPW20006` 원문만으로 항상 채우는 것은 불안정하다고 판단했다.
+
+**반영**
+- `collection/kiwoom/api_connector.py`
+  - `주문가능수량` 필드 추가.
+  - summary single-field probe를 수집하고 전부 blank일 경우 `[OPW20006-SUMMARY-BLANK]` 로그를 남기도록 보강.
+- `main.py`
+  - `_push_balance_to_dashboard()` / `_refresh_dashboard_balance()` 추가.
+  - startup sync 직후와 잔고 Chejan 이후 잔고 패널 자동 갱신.
+  - summary blank일 때 `총매매/총평가손익/총평가`는 잔고행 합산, `실현손익`은 `daily_stats().pnl_krw`, `총평가수익률/추정자산`은 계산값/0 기반 fallback 적용.
+  - fallback 적용 시 `[BalanceUIFallback]` 로그 출력.
+- `dashboard/main_dashboard.py`
+  - `AccountInfoPanel` 추가 및 좌측 상단 카드화.
+  - 합계칸 기본 표시를 공란으로 변경하고 `[ ]` 제거.
+
+**검증**
+- `python -m py_compile dashboard/main_dashboard.py main.py collection/kiwoom/api_connector.py` 통과.
+- 실제 키움 라이브 값과 화면값의 완전 일치 검증은 다음 세션에서 추가 확인 필요.

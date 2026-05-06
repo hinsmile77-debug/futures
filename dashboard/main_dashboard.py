@@ -504,8 +504,8 @@ def mk_prog(color=C['green'], h=6):
     return pb
 
 
-def card(title, widget, color=C['blue']):
-    gb = QGroupBox(f"● {title}")
+def card(title, widget, color=C['blue'], header_widget=None):
+    gb = QGroupBox("" if header_widget else f"● {title}")
     gb.setStyleSheet(
         f"QGroupBox{{border:1px solid {C['border']};border-radius:{S.p(6)}px;"
         f"margin-top:{S.p(8)}px;padding:{S.p(8)}px;color:{color};"
@@ -514,8 +514,19 @@ def card(title, widget, color=C['blue']):
         f"left:{S.p(8)}px;padding:0 {S.p(4)}px;}}"
     )
     lay = QVBoxLayout(gb)
-    lay.setContentsMargins(S.p(4), S.p(14), S.p(4), S.p(4))
-    lay.setSpacing(S.p(4))
+    if header_widget:
+        lay.setContentsMargins(S.p(8), S.p(8), S.p(8), S.p(6))
+        lay.setSpacing(S.p(6))
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(S.p(8))
+        header.addWidget(mk_label(f"● {title}", color, 11, True))
+        header.addStretch()
+        header.addWidget(header_widget)
+        lay.addLayout(header)
+    else:
+        lay.setContentsMargins(S.p(4), S.p(14), S.p(4), S.p(4))
+        lay.setSpacing(S.p(4))
     lay.addWidget(widget)
     return gb
 
@@ -768,6 +779,153 @@ class PredictionPanel(QWidget):
             )
         else:
             self._model_prog.setVisible(False)
+
+
+class AccountInfoPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._summary_values = {}
+        self._live_tick = 0
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(S.p(8), S.p(4), S.p(8), S.p(8))
+        lay.setSpacing(S.p(8))
+
+        live_box = QWidget()
+        live_row = QHBoxLayout(live_box)
+        live_row.setContentsMargins(0, 0, 0, 0)
+        live_row.setSpacing(S.p(6))
+        self.lbl_balance_live = mk_label("LIVE", C['cyan'], 9, True, Qt.AlignRight)
+        self.pb_balance_live = mk_prog(C['cyan'], 7)
+        self.pb_balance_live.setFixedWidth(S.p(108))
+        self.pb_balance_live.setRange(0, 100)
+        self.pb_balance_live.setValue(0)
+        live_row.addWidget(self.lbl_balance_live)
+        live_row.addWidget(self.pb_balance_live)
+        self.live_header_widget = live_box
+
+        lay.addWidget(mk_sep())
+
+        summary_grid = QGridLayout()
+        summary_grid.setContentsMargins(0, 0, 0, 0)
+        summary_grid.setHorizontalSpacing(S.p(18))
+        summary_grid.setVerticalSpacing(S.p(10))
+        for text, row, col in [
+            ("총매매", 0, 0),
+            ("총평가손익", 0, 1),
+            ("실현손익", 0, 2),
+            ("총평가", 1, 0),
+            ("총평가수익률", 1, 1),
+            ("추정자산", 1, 2),
+        ]:
+            cell = QHBoxLayout()
+            cell.setContentsMargins(0, 0, 0, 0)
+            cell.setSpacing(S.p(6))
+            label = mk_label(f"{text}:", C['text'], 10, True)
+            value = mk_label("", C['text2'], 10, align=Qt.AlignLeft)
+            value.setMinimumWidth(S.p(104))
+            value.setStyleSheet(
+                f"font-size:{S.f(10)}px;color:{C['text2']};"
+                f"padding:{S.p(4)}px {S.p(8)}px;"
+                f"background:{C['bg3']};border:1px solid {C['border']};"
+                f"border-radius:{S.p(4)}px;"
+            )
+            cell.addWidget(label)
+            cell.addWidget(value, 1)
+            summary_grid.addLayout(cell, row, col)
+            self._summary_values[text] = value
+        lay.addLayout(summary_grid)
+        lay.addWidget(mk_sep())
+
+        self.tbl_balance = QTableWidget(0, 9)
+        self.tbl_balance.setHorizontalHeaderLabels([
+            "종목코드", "구분", "보유량", "청산가능", "평가손익",
+            "평가수익률", "매입가", "현재가", "평가금액"
+        ])
+        self.tbl_balance.setMinimumHeight(S.p(250))
+        self.tbl_balance.verticalHeader().setVisible(False)
+        self.tbl_balance.setAlternatingRowColors(False)
+        self.tbl_balance.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tbl_balance.setSelectionMode(QTableWidget.NoSelection)
+        self.tbl_balance.setFocusPolicy(Qt.NoFocus)
+        self.tbl_balance.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_balance.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
+        self.tbl_balance.setStyleSheet(
+            f"QTableWidget{{background:{C['bg']};border:1px solid {C['border']};"
+            f"border-radius:{S.p(4)}px;gridline-color:{C['border']};}}"
+            f"QHeaderView::section{{background:{C['bg2']};color:{C['text']};"
+            f"padding:{S.p(6)}px;border:none;border-bottom:1px solid {C['blue']};"
+            f"font-size:{S.f(9)}px;font-weight:bold;}}"
+            f"QTableWidget::item{{padding:{S.p(4)}px;color:{C['text2']};"
+            f"font-size:{S.f(9)}px;}}"
+        )
+        lay.addWidget(self.tbl_balance, 1)
+
+    def tick_live(self):
+        self._live_tick = (self._live_tick + 13) % 100
+        pulse = self._live_tick if self._live_tick <= 50 else 100 - self._live_tick
+        pulse = max(14, pulse * 2)
+        self.pb_balance_live.setValue(pulse)
+        self.lbl_balance_live.setText(f"LIVE {pulse:02d}%")
+
+    @staticmethod
+    def _to_number(value):
+        text = str(value or "").replace(",", "").replace("%", "").strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _format_value(value, is_percent=False):
+        if value is None or str(value).strip() == "":
+            return ""
+        num = AccountInfoPanel._to_number(value)
+        if num is None:
+            return str(value).strip()
+        if is_percent:
+            return f"{num:,.2f}%"
+        if abs(num) >= 1000:
+            return f"{num:,.0f}"
+        return f"{num:,.2f}"
+
+    def update_summary(self, summary: dict):
+        summary = dict(summary or {})
+        total_eval = self._to_number(summary.get("총평가"))
+        total_pnl = self._to_number(summary.get("총평가손익"))
+        total_rate = summary.get("총평가수익률")
+        if (total_rate is None or str(total_rate).strip() == "") and total_eval not in (None, 0) and total_pnl is not None:
+            total_rate = (total_pnl / max(abs(total_eval - total_pnl), 1e-9)) * 100.0
+        for key, label in self._summary_values.items():
+            label.setText(self._format_value(summary.get(key), is_percent=(key == "총평가수익률")))
+        if total_rate is not None:
+            self._summary_values["총평가수익률"].setText(self._format_value(total_rate, is_percent=True))
+
+    def update_rows(self, rows):
+        rows = list(rows or [])
+        self.tbl_balance.setRowCount(len(rows))
+        columns = [
+            ("종목코드", False),
+            ("매매구분", False),
+            ("잔고수량", False),
+            ("주문가능수량", False),
+            ("평가손익", False),
+            ("손익율", True),
+            ("매입단가", False),
+            ("현재가", False),
+            ("평가금액", False),
+        ]
+        for r, row in enumerate(rows):
+            for c, (field, is_percent) in enumerate(columns):
+                raw = row.get(field, "")
+                text = self._format_value(raw, is_percent=is_percent) if c >= 2 else str(raw or "").strip()
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.tbl_balance.setItem(r, c, item)
 
 
 # ────────────────────────────────────────────────────────────
@@ -3427,6 +3585,9 @@ class MireukDashboard(QMainWindow):
         # ── 상단 헤더 ──────────────────────────────────────────
         header = QHBoxLayout()
         title = mk_label("⚡ 미륵이  v7.0", C['text'], 16, True)
+        title_box = QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(S.p(4))
 
         # ── 실시간 현재가 (키움 API 연동 핵심) ──────────────────
         self.lbl_realtime_price = mk_label("——.——", C['cyan'], 22, True)
@@ -3516,11 +3677,16 @@ class MireukDashboard(QMainWindow):
         # ── 해상도·커밋 블록 ───────────────────────────────────
         self.lbl_scale  = mk_label(S.info(),    C['text2'], 9, align=Qt.AlignRight)
         self.lbl_commit = mk_label(COMMIT_HASH, C['text2'], 9, align=Qt.AlignRight)
+        header_label_w = S.p(58)
+        header_combo_w = S.p(188)
+        header_btn_w = S.p(54)
         acct_row = QHBoxLayout()
+        acct_row.setContentsMargins(0, 0, 0, 0)
         acct_row.setSpacing(S.p(4))
         self.lbl_account = mk_label("계좌번호:", C['text2'], 9, align=Qt.AlignRight)
+        self.lbl_account.setFixedWidth(header_label_w)
         self.cmb_account = QComboBox()
-        self.cmb_account.setMinimumWidth(S.p(120))
+        self.cmb_account.setFixedWidth(header_combo_w)
         self.cmb_account.setStyleSheet(
             f"QComboBox{{background:{C['bg2']};color:{C['text']};"
             f"border:1px solid {C['border']};border-radius:4px;"
@@ -3529,6 +3695,7 @@ class MireukDashboard(QMainWindow):
             f"selection-background-color:{C['blue']};}}"
         )
         self.btn_save_account = QPushButton("저장")
+        self.btn_save_account.setFixedWidth(header_btn_w)
         self.btn_save_account.setCursor(Qt.PointingHandCursor)
         self.btn_save_account.setStyleSheet(
             f"QPushButton{{background:{C['blue']};color:#fff;border:none;"
@@ -3538,14 +3705,44 @@ class MireukDashboard(QMainWindow):
         acct_row.addWidget(self.lbl_account)
         acct_row.addWidget(self.cmb_account)
         acct_row.addWidget(self.btn_save_account)
+        acct_row.addStretch()
+        strat_row = QHBoxLayout()
+        strat_row.setContentsMargins(0, 0, 0, 0)
+        strat_row.setSpacing(S.p(4))
+        self.lbl_strategy = mk_label("전략명:", C['text2'], 9, align=Qt.AlignRight)
+        self.lbl_strategy.setFixedWidth(header_label_w)
+        self.cmb_strategy = QComboBox()
+        self.cmb_strategy.setFixedWidth(header_combo_w)
+        self.cmb_strategy.setStyleSheet(
+            f"QComboBox{{background:{C['bg2']};color:{C['text']};"
+            f"border:1px solid {C['border']};border-radius:4px;"
+            f"padding:2px 6px;font-size:{S.f(9)}px;}}"
+            f"QComboBox QAbstractItemView{{background:{C['bg2']};color:{C['text']};"
+            f"selection-background-color:{C['blue']};}}"
+        )
+        self.cmb_strategy.addItem("")
+        self.btn_save_strategy = QPushButton("저장")
+        self.btn_save_strategy.setFixedWidth(header_btn_w)
+        self.btn_save_strategy.setCursor(Qt.PointingHandCursor)
+        self.btn_save_strategy.setStyleSheet(
+            f"QPushButton{{background:{C['blue']};color:#fff;border:none;"
+            f"border-radius:4px;padding:3px 8px;font-size:{S.f(9)}px;font-weight:bold;}}"
+            f"QPushButton:disabled{{background:{C['bg']};color:{C['text2']};}}"
+        )
+        strat_row.addWidget(self.lbl_strategy)
+        strat_row.addWidget(self.cmb_strategy)
+        strat_row.addWidget(self.btn_save_strategy)
+        strat_row.addStretch()
+        title_box.addWidget(title)
+        title_box.addLayout(acct_row)
+        title_box.addLayout(strat_row)
         res_box = QVBoxLayout()
         res_box.setSpacing(0)
         res_box.setContentsMargins(0, 0, 0, 0)
         res_box.addWidget(self.lbl_scale)
         res_box.addWidget(self.lbl_commit)
-        res_box.addLayout(acct_row)
 
-        header.addWidget(title)
+        header.addLayout(title_box)
         header.addLayout(price_box)
         header.addStretch()
         for w in [self.lbl_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos]:
@@ -3565,9 +3762,18 @@ class MireukDashboard(QMainWindow):
         ll   = QVBoxLayout(left)
         ll.setContentsMargins(0,0,0,0)
         ll.setSpacing(6)
+        left_split = QSplitter(Qt.Vertical)
+        left_split.setHandleWidth(3)
+        left_split.setStyleSheet(f"QSplitter::handle{{background:{C['border']};}}")
+        self.account_info_panel = AccountInfoPanel()
         self.pred_panel = PredictionPanel()
-        ll.addWidget(card("멀티 호라이즌 예측 + 파라미터 분석",
-                          self.pred_panel, C['blue']))
+        left_split.addWidget(card("실시간 잔고",
+                                  self.account_info_panel, C['cyan'],
+                                  header_widget=self.account_info_panel.live_header_widget))
+        left_split.addWidget(card("멀티 호라이즌 예측 + 파라미터 분석",
+                                  self.pred_panel, C['blue']))
+        left_split.setSizes([420, 520])
+        ll.addWidget(left_split, 1)
 
         # 중앙 컬럼 (탭)
         mid  = QWidget()
@@ -3650,6 +3856,8 @@ class MireukDashboard(QMainWindow):
 
     def _tick_header(self):
         """1초마다 헤더 가동 경과시간 + 파이프라인 생존 바 갱신."""
+        if hasattr(self, "account_info_panel"):
+            self.account_info_panel.tick_live()
         now     = datetime.now()
         total_s = int((now - self._start_dt).total_seconds())
         h, rem  = divmod(total_s, 3600)
@@ -3769,6 +3977,10 @@ class DashboardAdapter:
 
     def get_selected_account(self) -> str:
         return self._win.cmb_account.currentText().strip()
+
+    def update_account_balance(self, summary: dict, rows):
+        self._win.account_info_panel.update_summary(summary)
+        self._win.account_info_panel.update_rows(rows)
 
     def update_supply_macro(
         self,

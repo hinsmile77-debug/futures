@@ -2421,6 +2421,72 @@ def _ts_set_broker_sync_status(self, verified: bool, reason: str, block_new_entr
     )
 
 
+def _ts_push_balance_to_dashboard(self, result: dict) -> None:
+    if not result:
+        return
+
+    rows = list(result.get("nonempty_rows") or result.get("rows") or [])
+    summary = dict(result.get("summary") or {})
+    probe = dict(result.get("summary_probe") or {})
+
+    def _num(value):
+        try:
+            return float(str(value or "").replace(",", "").replace("%", "").strip() or "0")
+        except ValueError:
+            return 0.0
+
+    eval_sum = 0.0
+    pnl_sum = 0.0
+    trade_sum = 0.0
+    for row in rows:
+        eval_sum += _num(row.get("평가금액", "0"))
+        pnl_sum += _num(row.get("평가손익", "0"))
+        trade_sum += _num(row.get("매매금액", "0"))
+
+    if (not summary.get("총매매")) and (trade_sum or not rows):
+        summary["총매매"] = f"{trade_sum:.0f}"
+    if (not summary.get("총평가손익")) and (pnl_sum or not rows):
+        summary["총평가손익"] = f"{pnl_sum:.0f}"
+    if (not summary.get("총평가")) and (eval_sum or not rows):
+        summary["총평가"] = f"{eval_sum:.0f}"
+
+    realized_krw = 0.0
+    try:
+        realized_krw = float(self.position.daily_stats().get("pnl_krw", 0.0) or 0.0)
+    except Exception:
+        realized_krw = 0.0
+    if not summary.get("실현손익"):
+        summary["실현손익"] = f"{realized_krw:.0f}"
+
+    trade_base = trade_sum or _num(summary.get("총매매"))
+    pnl_base = _num(summary.get("총평가손익"))
+    if not summary.get("총평가수익률"):
+        rate = (pnl_base / trade_base * 100.0) if trade_base else 0.0
+        summary["총평가수익률"] = f"{rate:.2f}"
+
+    if not summary.get("추정자산"):
+        summary["추정자산"] = f"{_num(summary.get('총평가')):.0f}"
+
+    if not any(str(v).strip() for v in result.get("summary", {}).values()):
+        logger.warning(
+            "[BalanceUIFallback] summary blank from OPW20006; rows=%d probe=%s applied=%s",
+            len(rows),
+            probe,
+            summary,
+        )
+
+    self.dashboard.update_account_balance(summary, rows)
+
+
+def _ts_refresh_dashboard_balance(self) -> None:
+    account_no = str(_secrets.ACCOUNT_NO or "").strip()
+    if not account_no:
+        return
+    result = self.kiwoom.request_futures_balance(account_no)
+    if result:
+        _ts_push_balance_to_dashboard(self, result)
+
+
 def _ts_sync_position_from_broker(self) -> None:
     account_no = str(_secrets.ACCOUNT_NO or "").strip()
     code = self._normalize_broker_code(getattr(self, "_futures_code", ""))
@@ -2438,6 +2504,7 @@ def _ts_sync_position_from_broker(self) -> None:
         _ts_set_broker_sync_status(self, False, "OPW20006 returned None", True)
         log_manager.system("[BrokerSync] OPW20006 조회 실패로 startup sync를 건너뜁니다.", "WARNING")
         return
+    _ts_push_balance_to_dashboard(self, result)
 
     rows = result.get("rows") or []
     nonempty_rows = result.get("nonempty_rows") or []
@@ -2578,6 +2645,7 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
             f"[BrokerSync] 잔고 Chejan 반영: {before} -> FLAT",
             "CRITICAL",
         )
+        _ts_refresh_dashboard_balance(self)
         return
 
     if side not in ("LONG", "SHORT") or avg_price <= 0:
@@ -2608,6 +2676,7 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         f"[BrokerSync] 잔고 Chejan 반영: {before} -> {after}",
         "CRITICAL" if before != after else "INFO",
     )
+    _ts_refresh_dashboard_balance(self)
 
 
 def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: float, grade: str):
@@ -2697,6 +2766,8 @@ def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: fl
 TradingSystem._on_order_message = _ts_on_order_message
 TradingSystem._on_chejan_event = _ts_on_chejan_event
 TradingSystem._set_broker_sync_status = _ts_set_broker_sync_status
+TradingSystem._push_balance_to_dashboard = _ts_push_balance_to_dashboard
+TradingSystem._refresh_dashboard_balance = _ts_refresh_dashboard_balance
 TradingSystem._sync_position_from_broker = _ts_sync_position_from_broker
 TradingSystem._execute_entry = _ts_execute_entry
 TradingSystem._execute_partial_exit = _ts_execute_partial_exit

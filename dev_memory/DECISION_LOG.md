@@ -535,3 +535,20 @@ hurst_idx = reg[0]
 **파일**: `collection/kiwoom/api_connector.py`
 **증상**: `OPW20006` 응답 신뢰도가 낮고 placeholder/빈 응답 해석이 더 어려워짐
 **Fix**: 저장된 `ACCOUNT_PWD`를 `비밀번호` 입력값으로 함께 주입하고 응답 진단 로그를 추가
+# 2026-05-06 추가 결정
+
+### [B49] `OPW20006` summary/rows 전부 blank일 때 상단 잔고 패널이 공란으로 남음
+**파일**: `collection/kiwoom/api_connector.py`, `main.py`, `dashboard/main_dashboard.py`
+**증상**: 장후/무포지션 상태에서 `OPW20006`이 `rows=0`, summary 전부 `''` 로 내려와 상단 `실시간 잔고` 패널이 빈칸만 표시됨.
+**확인 로그**: `2026-05-06 18:51:29 [BalanceUIFallback] summary blank from OPW20006 ...`
+**원인**: `OPW20006`은 종목별 잔고행 중심 TR이며, 계좌 합계 6개를 모든 시간대에 안정적으로 보장하지 않음.
+**Fix**:
+- `api_connector.py`: summary single-field probe 로깅 추가 (`[OPW20006-SUMMARY-BLANK]`).
+- `main.py`: summary blank 시 잔고행 합산 + `daily_stats().pnl_krw` + 계산값/0 기반 fallback 적용.
+- `main_dashboard.py`: 합계칸 `[ ]` 제거.
+**교훈**: UI 공란 문제를 볼 때는 화면 렌더링보다 먼저 TR 원문값 존재 여부를 확인해야 함.
+
+### [D23] 잔고행 TR과 계좌합계 표시를 논리적으로 분리
+**결정**: 현재는 `OPW20006`을 잔고행의 1차 원본으로 유지하되, 합계 summary는 "원문값 우선 + fallback 보정"으로 표시한다.
+**이유**: `OPW20006` 단독으로는 장후/무포지션에서 summary가 공란이 될 수 있으므로, 화면을 항상 비지 않게 유지하는 것이 우선.
+**후속 조건**: 장중에도 summary blank가 반복되면 합계 6개는 전용 계좌합계 TR로 분리 구현한다.
