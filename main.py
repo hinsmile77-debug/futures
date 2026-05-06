@@ -1083,29 +1083,29 @@ class TradingSystem:
         self._refresh_pnl_history()
 
     def _send_kiwoom_entry_order(self, direction: str, qty: int) -> int:
-        """키움 진입 주문 전송. 반환값: 0=성공, 음수=오류"""
+        """키움 선물 진입 주문 전송 (SendOrderFO). 반환값: 0=성공, 음수=오류"""
         code = getattr(self, "_futures_code", "")
         if not code:
             return -1
-        order_type = 1 if direction == "LONG" else 2  # 1=신규매수, 2=신규매도
-        return self.kiwoom.send_order(
+        trade_type = 1 if direction == "LONG" else 2  # 1=신규매수, 2=신규매도
+        return self.kiwoom.send_order_fo(
             rqname="진입", screen_no="1000",
             acc_no=_secrets.ACCOUNT_NO,
-            order_type=order_type,
-            code=code, qty=qty, price=0, hoga_gb="03", org_order="",
+            code=code, trade_type=trade_type,
+            qty=qty, price=0.0, hoga_gb="3",
         )
 
     def _send_kiwoom_exit_order(self, qty: int) -> int:
-        """키움 청산 주문 전송. 반환값: 0=성공, 음수=오류"""
+        """키움 선물 청산 주문 전송 (SendOrderFO). 반환값: 0=성공, 음수=오류"""
         code = getattr(self, "_futures_code", "")
         if not code or self.position.status == "FLAT":
             return -1
-        order_type = 2 if self.position.status == "LONG" else 1  # LONG→매도(2), SHORT→매수(1)
-        return self.kiwoom.send_order(
+        trade_type = 2 if self.position.status == "LONG" else 1  # LONG→매도(2), SHORT→매수(1)
+        return self.kiwoom.send_order_fo(
             rqname="청산", screen_no="1001",
             acc_no=_secrets.ACCOUNT_NO,
-            order_type=order_type,
-            code=code, qty=qty, price=0, hoga_gb="03", org_order="",
+            code=code, trade_type=trade_type,
+            qty=qty, price=0.0, hoga_gb="3",
         )
 
     def _execute_entry(
@@ -2668,8 +2668,18 @@ def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: fl
     )
     # Fix B: 모의투자에서 Chejan 없음 → 낙관적 오픈으로 이중진입 방지
     # Chejan 체결 시 apply_entry_fill() 가격 보정 경로로 합쳐짐 (_optimistic=True)
-    self.position.open_position(direction, price, quantity, atr, grade, self.current_regime)
-    self.position._optimistic = True
+    try:
+        self.position.open_position(direction, price, quantity, atr, grade, self.current_regime)
+        self.position._optimistic = True
+        logger.warning(
+            "[FixB] 낙관적 오픈 완료 direction=%s status=%s qty=%s optimistic=%s",
+            direction, self.position.status, self.position.quantity, self.position._optimistic,
+        )
+    except Exception as _fixb_err:
+        logger.error(
+            "[FixB] open_position 실패 direction=%s status_before=%s err=%s",
+            direction, self.position.status, _fixb_err,
+        )
     _ts_log_diag(
         self,
         "EntryPendingCreated",
@@ -2699,14 +2709,14 @@ class _KiwoomOrderAdapter:
         self._acc   = acc_no
 
     def send_market_order(self, code: str, side: str, qty: int, reason: str = "") -> int:
-        order_type = 2 if side == "SELL" else 1   # SELL=신규매도(2), BUY=신규매수(1)
-        ret = self._api.send_order(
+        trade_type = 2 if side == "SELL" else 1   # SELL=신규매도(2), BUY=신규매수(1)
+        ret = self._api.send_order_fo(
             rqname=reason or "긴급청산",
             screen_no="1002",
             acc_no=self._acc,
-            order_type=order_type,
             code=code or self._code,
-            qty=qty, price=0, hoga_gb="03", org_order="",
+            trade_type=trade_type,
+            qty=qty, price=0.0, hoga_gb="3",
         )
         return ret if ret == 0 else None
 

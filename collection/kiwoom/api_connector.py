@@ -696,6 +696,51 @@ class KiwoomAPI(QAxWidget):
             )
         return ret
 
+    def send_order_fo(
+        self,
+        rqname: str,
+        screen_no: str,
+        acc_no: str,
+        code: str,
+        trade_type: int,    # 1=신규매수, 2=신규매도
+        qty: int,
+        price: float = 0.0,
+        hoga_gb: str = "3",  # "1"=지정가, "3"=시장가
+        org_order_no: int = 0,
+    ) -> int:
+        """선물/옵션 주문 전송 (SendOrderFO). 선물 주문은 반드시 이 메서드 사용."""
+        args = [
+            rqname,
+            screen_no,
+            acc_no,
+            code,
+            int(trade_type),
+            "",              # sTradeType2: 공란
+            hoga_gb,
+            int(qty),
+            float(price),
+            int(org_order_no),
+        ]
+        logger.warning(
+            "[OrderDiag] SendOrderFO request rq=%s screen=%s acc=%s code=%s type=%s qty=%s price=%s hoga=%s connected=%s",
+            rqname, screen_no, acc_no, code, trade_type, qty, price, hoga_gb, self.is_connected,
+        )
+        ret = int(self.dynamicCall(
+            "SendOrderFO(QString, QString, QString, QString, int, QString, QString, int, double, int)",
+            args,
+        ))
+        if ret == 0:
+            logger.info(
+                "SendOrderFO 접수 rq=%s type=%d code=%s qty=%d acc=%s",
+                rqname, trade_type, code, qty, acc_no,
+            )
+        else:
+            logger.error(
+                "SendOrderFO 실패 ret=%d rq=%s type=%d code=%s qty=%d",
+                ret, rqname, trade_type, code, qty,
+            )
+        return ret
+
     # ── 연결 상태 ─────────────────────────────────────────────
 
     @property
