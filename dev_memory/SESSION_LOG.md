@@ -48,7 +48,36 @@ SendOrder ret=0
 - `dev_memory/kiwoom_api_tr_investigation.md` 신설 — enc 파일 읽기 절차·코드·GetRepeatCnt/GetCommData 패턴·OPW20006 함정 표
 - `reference_kiwoom_tr_enc.md` claude memory 저장 — 진실 원천·조사 순서·교훈 영구 보존
 
-### 수정 파일 목록
+### [추가 세션] SendOrderFO 전환 + Fix B 진단
+
+실제 실행 후 `[RC4109] 모의투자 종목코드가 존재하지 않습니다` 오류 발생 → 원인 분석 및 추가 수정.
+
+**[B46] SendOrder → SendOrderFO**
+
+| 항목 | 내용 |
+|---|---|
+| **증상** | `[RC4109] 모의투자 종목코드가 존재하지 않습니다` + TR=`KOA_NORMAL_SELL_KP_ORD`(주식 매도) |
+| **원인** | `SendOrder`는 주식 주문 함수 — 선물에 사용 불가. `KOA_NORMAL_SELL_KP_ORD` TR이 발생하며 코드 거부 |
+| **Fix** | `api_connector.py` `send_order_fo()` 신설 (COM `SendOrderFO`), `hoga_gb="3"`(선물시장가) |
+| **main.py** | `_send_kiwoom_entry/exit_order()` + `_KiwoomOrderAdapter.send_market_order()` → `send_order_fo()` 전환 |
+
+**Fix B 진단 로그 추가**
+
+`[EntryPendingCreated] position='FLAT'` — `open_position()` silent 실패 의심. 원인 파악을 위해 try/except + `[FixB]` WARNING 로그 추가.
+- 성공 시: `[FixB] 낙관적 오픈 완료 direction=SHORT status=SHORT ...`
+- 실패 시: `[FixB] open_position 실패 ... err=<원인>`
+
+**프로그램매매 FID 발견 (PROBE)**
+
+```
+code='P00101' type='프로그램매매'
+FID 202=200850, 204=14145360 (매수누적금액류)
+FID 210=-7828, 212=+354793   (순매수 관련)
+FID 928=-2275318, 929=-10544  (누적 프로그램 순매수)
+```
+→ V23 검증 항목 FID 확정 가능성 높음 (장중 재확인 필요)
+
+### 수정 파일 목록 (전체 세션)
 
 - `strategy/position/position_tracker.py`
 - `main.py`

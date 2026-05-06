@@ -8,6 +8,27 @@
 
 ---
 
+## 즉시 확인 필요 (추가됨 2026-05-06 추가 세션)
+
+### [V32] SendOrderFO 실제 체결 확인 [다음 장중]
+- **내용**: `SendOrderFO` 전환 후 모의투자 계좌에 실제 주문이 접수되는지
+- **방법**: SYSTEM.log `[OrderDiag] SendOrderFO request ...` + `SendOrderFO 접수 rq=진입 ...` 확인. HTS 모의계좌 체결 내역 확인
+- **기준**: `KOA_NORMAL_FUT_ORD` TR 이름으로 콜백 수신 (기존 `KOA_NORMAL_SELL_KP_ORD` 아님). [RC4109] 오류 미발생
+- **실패 시**: hoga_gb="3" → "1"(지정가+price 입력) 시도 또는 code 형식 변경
+
+### [V33] Fix B 낙관적 오픈 진단 확인 [다음 장중]
+- **내용**: 진입 후 `[FixB] 낙관적 오픈 완료 direction=... status=SHORT ...` 로그 확인
+- **방법**: SYSTEM.log에서 `[FixB]` 태그 검색
+- **기준**: status=SHORT/LONG, optimistic=True → 이중진입 방지 동작 확인
+- **실패 시**: `[FixB] open_position 실패 ... err=<원인>` 로그에서 실패 원인 파악
+
+### [V34] 프로그램매매 FID 확정 [다음 장중]
+- **내용**: `P00101` 타입='프로그램매매' FID 202/204/210/212/928/929 의미 확인
+- **방법**: PROBE.log `[PROBE-ALLRT-FIDS] type='프로그램매매'` 재확인. FID 928/929는 프로그램 매수/매도 누적 순매수금액 추정
+- **활용**: FID 확정 시 `_on_receive_real_data()`에 프로그램매매 실시간 파싱 경로 추가 가능
+
+---
+
 ## 즉시 확인 필요 (추가됨 2026-05-06)
 
 ### [V30] OPW20006 BrokerSync 정상 동작 확인 [다음 장중]
@@ -26,11 +47,8 @@
 
 ## 즉시 확인 필요 (추가됨 2026-05-04 야간 2세션)
 
-### [V26] Kiwoom SendOrder 실제 체결 확인 [다음 장중]
-- **내용**: 진입/청산 시 Kiwoom 모의계좌 잔고에 실제 거래 내역이 표시되는지
-- **방법**: 장중 포지션 진입 후 Kiwoom HTS 또는 `잔고및거래내역` TR에서 확인
-- **기준**: TRADE 로그의 `SendOrder 접수 rq=진입 type=1 qty=N acc=XXXXXXXX` + HTS 체결 내역 일치
-- **실패 시**: screen_no 중복(1000/1001/1002) 또는 code 오류 — 각 로그 확인
+### [V26] Kiwoom SendOrder 실제 체결 확인 [SUPERSEDED → V32]
+- SendOrder가 SendOrderFO로 교체됨 (2026-05-06). V32로 대체됨.
 
 ### [V27] TP1/TP2 부분 청산 API 동작 확인 [다음 장중 포지션 보유 후]
 - **내용**: TP1 도달 시 `_execute_partial_exit(price, stage=1)` 호출 → 33% 청산 주문 전송

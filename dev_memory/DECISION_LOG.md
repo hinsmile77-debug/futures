@@ -17,6 +17,19 @@
 
 ---
 
+## 2026-05-06 버그 수정 (추가 세션 — 실행 후 발견)
+
+### [B46] SendOrder → SendOrderFO 미전환 — [RC4109] 모의투자 종목코드 없음
+**파일**: `collection/kiwoom/api_connector.py`, `main.py`
+**증상**: `[RC4109] 모의투자 종목코드가 존재하지 않습니다` + TR=`KOA_NORMAL_SELL_KP_ORD`
+**원인**: `SendOrder()`는 주식 주문 COM 함수. 선물 코드 `A0166000`을 주식 주문으로 제출 → 서버 거부. `ret=0`은 API 호출 성공을 의미하며 서버 수락과 무관 — 실제 오류는 `_on_receive_msg` 콜백으로 수신.
+**Fix**:
+- `api_connector.py`: `send_order_fo()` 추가 — COM `SendOrderFO(sRQName, sScreenNo, sAccNo, sCode, nTradeType, sTradeType2, sHogaGb, lQty, dPrice, lOrgOrderNo)`. `hoga_gb="3"` (선물 시장가)
+- `main.py`: `_send_kiwoom_entry_order()` / `_send_kiwoom_exit_order()` / `_KiwoomOrderAdapter.send_market_order()` 전부 `send_order_fo()` 전환
+**교훈**: `SendOrder` = 주식 전용. 선물/옵션은 반드시 `SendOrderFO` 사용.
+
+---
+
 ## 2026-05-06 설계 결정
 
 ### [D21] 키움 TR 조사 표준: enc 파일 우선

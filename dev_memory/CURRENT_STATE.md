@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-06 — Fix B 이중진입 방지 + OPW20006 enc 분석 + TR 조사 절차 수립
+> 마지막 업데이트: 2026-05-06 (추가) — SendOrderFO 전환 + Fix B 진단 로그
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -38,11 +38,22 @@
 | **Fix B — 낙관적 포지션 오픈** | `position_tracker.py`에 `_optimistic` 플래그 + `apply_entry_fill()` 보정 경로 추가. `main.py` line 2660(production)에 `position.open_position()` + `_optimistic=True` 삽입. 모의투자 이중진입 방지 |
 | **TR 조사 절차 수립** | `dev_memory/kiwoom_api_tr_investigation.md` 신설. enc 파일(ZIP+CP949) 읽기 절차, GetRepeatCnt/GetCommData 패턴, OPW20006 함정 표 포함 |
 
-### 현재 주문 흐름 (Fix B 적용 후)
+### [B46] SendOrderFO 전환 (추가 수정)
+
+| 항목 | 내용 |
+|---|---|
+| **증상** | `[RC4109] 모의투자 종목코드가 존재하지 않습니다` — `KOA_NORMAL_SELL_KP_ORD` 발생 |
+| **원인** | `SendOrder`는 주식 전용. 선물은 `SendOrderFO` 사용 필수 |
+| **Fix** | `api_connector.py` `send_order_fo()` 신설. main.py 진입/청산/긴급청산 헬퍼 전환 |
+| **`send_order_fo` 파라미터** | `hoga_gb="3"` (선물시장가) / `trade_type` 1=매수, 2=매도 |
+
+**Fix B 진단 로그**: `open_position()` silent 실패 조사 중. try/except + `[FixB]` WARNING 추가.
+
+### 현재 주문 흐름 (SendOrderFO + Fix B 적용 후)
 
 ```
 _execute_entry()
-→ SendOrder COM API (ret=0)
+→ SendOrderFO COM API (ret=0)   ← [B46] 선물 주문 함수
 → _set_pending_order(ENTRY)
 → position.open_position(direction, price, qty)   ← 낙관적 오픈 (Fix B)
 → position._optimistic = True
