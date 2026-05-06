@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-05-06 버그 수정
+
+### [B45] OPW20006 GetCommData 전부 blank — 레코드명 오타 2자
+**파일**: `collection/kiwoom/api_connector.py`
+**증상**: `GetRepeatCnt("OPW20006", "선옵잔고상세현황")` = 0, `GetCommData` 전부 빈 문자열 반환
+**원인 (2중 오타)**:
+- 멀티 레코드명 `선옭잔고상세현활` — `옵`(→`옭`) + `황`(況→`활`活) 두 글자 모두 틀림
+- GetRepeatCnt 2번째 파라미터가 잘못된 레코드명이면 0 반환 → 전체 루프 미실행
+**확인 방법**: `C:\OpenAPI\data\opw20006.enc` (ZIP → `OPW20006.dat` CP949) 직접 조회 → `@START_선옵잔고상세현황` 확인
+**Fix**: `_MULTI_RECORD = "선옵잔고상세현황"`, `_SINGLE_RECORD = "선옵잔고상세현황합계"` enc 파일 기준으로 교체
+**추가 수정**: `보유수량` 삭제(OPW20006에 없음), `잔고수량` 복원(enc offset 66 확인), `조회건수` 교차검증 추가
+**교훈**: 한글 오타는 육안으로 구별 불가 → 레코드명 문제 의심 시 즉시 enc 파일 확인.
+
+---
+
+## 2026-05-06 설계 결정
+
+### [D21] 키움 TR 조사 표준: enc 파일 우선
+**결정**: TR 필드/레코드명 문제 발생 시 키움 CS 문의나 Q&A 검색보다 `C:\OpenAPI\data\<tr코드소문자>.enc` 파일을 먼저 조회.
+**이유**: 2026-05-06 OPW20006 조사에서 CS 답변("잔고수량 없음")이 틀렸고 enc 파일이 정확함을 확인. enc 파일은 KOA SDK 설치 시 포함되며 실제 API 동작의 진실 원천.
+**절차**: enc=ZIP → 내부 `.dat`(CP949) → `@START_레코드명` → 필드명 탭구조. 전체 절차: `dev_memory/kiwoom_api_tr_investigation.md`.
+
+### [D22] 낙관적 포지션 오픈 패턴 (`_optimistic` 플래그)
+**결정**: `SendOrder ret=0` 직후 `position.open_position()` 호출 + `_optimistic=True` 설정. Chejan 체결 콜백이 수신되면 `apply_entry_fill()`의 보정 경로로 가격만 업데이트(수량 증가 없음). Chejan 미수신(모의투자) 시엔 낙관적 오픈 그대로 유지.
+**이유**: 모의투자 서버는 Chejan 없이 진입 후 같은 방향 신호가 다음 분봉에 재발생하면 이중 오픈 가능. `_optimistic` 플래그로 두 경로(Chejan 있음/없음)를 단일 포지션으로 수렴.
+**한계**: 실서버에서 Chejan이 다른 가격으로 오면 entry_price가 보정됨 — 슬리피지 측정에 유리. 단, 주문 거부(ret≠0) 시 `open_position()` 호출 전 return되므로 오픈 안 됨.
+
+---
+
 ## 2026-05-04 버그 수정 (야간 2세션)
 
 ### [B42] Kiwoom 주문 전달 누락 — 4회 거래 로그, Kiwoom 0건

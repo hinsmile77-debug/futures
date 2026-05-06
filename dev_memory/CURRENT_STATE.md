@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-04 (야간 2세션) — Kiwoom API 주문 연결 + 부분 청산 완성 + 대시보드 개선
+> 마지막 업데이트: 2026-05-06 — Fix B 이중진입 방지 + OPW20006 enc 분석 + TR 조사 절차 수립
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,43 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-05-06 세션 주요 수정 (Fix B + OPW20006 enc 분석)
+
+| 항목 | 수정 내용 |
+|---|---|
+| **[B45] OPW20006 레코드명 오타 수정** | `api_connector.py` `_MULTI_RECORD = "선옵잔고상세현황"` (現況·황). 기존 `현활`(活) 오타로 모든 GetCommData 반환값이 blank였음. enc 파일 직접 분석으로 확정 |
+| **OPW20006 필드 목록 수정** | `보유수량` 삭제 (OPW20006에 없음), `잔고수량` 유지 (enc offset 66 확인). CS "잔고수량 없음" 오답으로 제거했던 것을 복원. `조회건수` 교차검증 추가 |
+| **Fix B — 낙관적 포지션 오픈** | `position_tracker.py`에 `_optimistic` 플래그 + `apply_entry_fill()` 보정 경로 추가. `main.py` line 2660(production)에 `position.open_position()` + `_optimistic=True` 삽입. 모의투자 이중진입 방지 |
+| **TR 조사 절차 수립** | `dev_memory/kiwoom_api_tr_investigation.md` 신설. enc 파일(ZIP+CP949) 읽기 절차, GetRepeatCnt/GetCommData 패턴, OPW20006 함정 표 포함 |
+
+### 현재 주문 흐름 (Fix B 적용 후)
+
+```
+_execute_entry()
+→ SendOrder COM API (ret=0)
+→ _set_pending_order(ENTRY)
+→ position.open_position(direction, price, qty)   ← 낙관적 오픈 (Fix B)
+→ position._optimistic = True
+
+[Chejan 수신 시]
+→ apply_entry_fill() → _optimistic=True + 방향 일치 → 가격 보정만 (수량 불변)
+
+[Chejan 미수신(모의투자)]
+→ 낙관적 포지션 그대로 유지 → 이중진입 없음
+```
+
+### OPW20006 교훈
+
+```
+enc 파일: C:\OpenAPI\data\opw20006.enc (ZIP → OPW20006.dat CP949)
+올바른 레코드명: 선옵잔고상세현황 / 선옵잔고상세현황합계
+확인된 필드: 종목코드, 종목명, 매매일자, 매매구분("매수"=LONG/"매도"=SHORT),
+             잔고수량(offset 66), 매입단가, 매매금액, 현재가, 평가손익, 손익율, 평가금액
+키움 CS 오답: "잔고수량 없음" → enc 파일로 반증. CS 답변 맹신 금지.
+```
 
 ---
 

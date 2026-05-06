@@ -38,9 +38,13 @@ class PositionTracker:
         self.partial_1_done: bool = False
         self.partial_2_done: bool = False
 
+        self._optimistic: bool = False  # True = open_position() called speculatively; Chejan will correct price
+
         self._daily_pnl_pts: float = 0.0
         self._daily_trades:  int   = 0
         self._daily_wins:    int   = 0
+        self.last_update_reason: str = "init"
+        self.last_update_ts: Optional[datetime.datetime] = None
 
     def open_position(
         self,
@@ -79,6 +83,8 @@ class PositionTracker:
 
         self.partial_1_done = False
         self.partial_2_done = False
+        self.last_update_reason = f"open_position:{direction}"
+        self.last_update_ts = datetime.datetime.now()
 
         logger.info(
             f"[Position] 진입 {direction} {quantity}계약 @ {price} "
@@ -129,6 +135,197 @@ class PositionTracker:
         self._save_state()
         return result
 
+    def apply_entry_fill(
+        self,
+        direction: str,
+        price: float,
+        quantity: int,
+        atr: float,
+        grade: str = "B",
+        regime: str = "NEUTRAL",
+        filled_at: Optional[datetime.datetime] = None,
+    ) -> Dict:
+        """Chejan 체결 기준으로 포지션을 오픈하거나 증액한다."""
+        assert direction in (POSITION_LONG, POSITION_SHORT), f"Invalid direction: {direction}"
+        assert quantity > 0, f"Invalid fill quantity: {quantity}"
+
+        if self._optimistic and self.status == direction:
+            # 투기적 오픈(open_position) 후 Chejan이 실제 체결가로 보정
+            self.entry_price = price
+            if filled_at:
+                self.entry_time = filled_at
+            self._optimistic = False
+            self._recalculate_levels(atr)
+            self.last_update_reason = f"apply_entry_fill_correction:{direction}"
+            self.last_update_ts = filled_at or datetime.datetime.now()
+            self._save_state()
+            logger.info(
+                f"[Position] 체결보정 {direction} {quantity}계약 @ {price} "
+                f"| 평균={self.entry_price:.2f} 보유={self.quantity}계약"
+            )
+            return {
+                "direction": self.status,
+                "fill_price": round(price, 4),
+                "filled_qty": quantity,
+                "avg_entry_price": round(self.entry_price, 4),
+                "position_qty": self.quantity,
+                "entry_ts": (
+                    self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                    if self.entry_time else ""
+                ),
+                "grade": self.grade,
+                "regime": self.regime,
+            }
+
+        if self.status == POSITION_FLAT:
+            self.status = direction
+            self.entry_price = price
+            self.quantity = quantity
+            self.entry_time = filled_at or datetime.datetime.now()
+            self.grade = grade
+            self.regime = regime
+        else:
+            assert self.status == direction, (
+                f"Opposite fill mismatch: status={self.status} fill={direction}"
+            )
+            total_qty = self.quantity + quantity
+            self.entry_price = (
+                (self.entry_price * self.quantity) + (price * quantity)
+            ) / total_qty
+            self.quantity = total_qty
+            self.grade = grade or self.grade
+            self.regime = regime or self.regime
+            if self.entry_time is None:
+                self.entry_time = filled_at or datetime.datetime.now()
+
+        self._recalculate_levels(atr)
+        self.partial_1_done = False
+        self.partial_2_done = False
+        self.last_update_reason = f"apply_entry_fill:{direction}"
+        self.last_update_ts = filled_at or datetime.datetime.now()
+        self._save_state()
+
+        logger.info(
+            f"[Position] 체결진입 {direction} {quantity}계약 @ {price} "
+            f"| 평균={self.entry_price:.2f} 보유={self.quantity}계약"
+        )
+        return {
+            "direction": self.status,
+            "fill_price": round(price, 4),
+            "filled_qty": quantity,
+            "avg_entry_price": round(self.entry_price, 4),
+            "position_qty": self.quantity,
+            "entry_ts": (
+                self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                if self.entry_time else ""
+            ),
+            "grade": self.grade,
+            "regime": self.regime,
+        }
+
+    def apply_exit_fill(
+        self,
+        exit_price: float,
+        quantity: int,
+        reason: str,
+        filled_at: Optional[datetime.datetime] = None,
+    ) -> Dict:
+        """Chejan 체결 기준으로 포지션을 부분/전량 청산한다."""
+        assert self.status != POSITION_FLAT, "?ъ????놁쓬"
+        assert 0 < quantity <= self.quantity, (
+            f"Invalid exit fill quantity: fill={quantity} total={self.quantity}"
+        )
+
+        mult = 1 if self.status == POSITION_LONG else -1
+        pnl_pts = (exit_price - self.entry_price) * mult
+        pnl_krw = pnl_pts * 500_000 * quantity
+        self._daily_pnl_pts += pnl_pts * quantity
+
+        is_final = quantity == self.quantity
+        if is_final:
+            self._daily_trades += 1
+            if pnl_pts > 0:
+                self._daily_wins += 1
+
+        result = self._build_exit_result(
+            exit_price=exit_price,
+            quantity=quantity,
+            pnl_pts=pnl_pts,
+            pnl_krw=pnl_krw,
+            reason=reason,
+            filled_at=filled_at,
+        )
+
+        if is_final:
+            logger.info(
+                f"[Position] 체결청산 {self.status} @ {exit_price} "
+                f"| PnL={pnl_pts:+.2f}pt ({pnl_krw:+,.0f}원) | {reason}"
+            )
+            self.last_update_reason = f"apply_exit_fill_final:{reason}"
+            self.last_update_ts = filled_at or datetime.datetime.now()
+            self._reset_position()
+        else:
+            self.quantity -= quantity
+            self.last_update_reason = f"apply_exit_fill_partial:{reason}"
+            self.last_update_ts = filled_at or datetime.datetime.now()
+            self._save_state()
+            result["remaining"] = self.quantity
+            logger.info(
+                f"[Position] 체결부분청산 {quantity}계약 @ {exit_price} "
+                f"| 잔여={self.quantity}계약 | PnL={pnl_pts:+.2f}pt ({pnl_krw:+,.0f}원) | {reason}"
+            )
+
+        return result
+
+    def sync_from_broker(
+        self,
+        direction: str,
+        price: float,
+        quantity: int,
+        atr: float,
+        *,
+        synced_at: Optional[datetime.datetime] = None,
+        grade: str = "BROKER",
+        regime: str = "BROKER_SYNC",
+    ) -> Dict:
+        """브로커 잔고 스냅샷을 기준으로 포지션 상태를 강제 동기화한다."""
+        assert direction in (POSITION_LONG, POSITION_SHORT), f"Invalid direction: {direction}"
+        assert quantity > 0, f"Invalid broker quantity: {quantity}"
+
+        self.status = direction
+        self.entry_price = price
+        self.quantity = quantity
+        self.entry_time = synced_at or datetime.datetime.now()
+        self.grade = grade
+        self.regime = regime
+        self.partial_1_done = False
+        self.partial_2_done = False
+        self.last_update_reason = f"sync_from_broker:{direction}"
+        self.last_update_ts = synced_at or datetime.datetime.now()
+        self._recalculate_levels(atr)
+        self._save_state()
+
+        logger.warning(
+            f"[Position] 브로커 기준 동기화: {direction} {quantity}계약 @ {price} "
+            f"| 손절={self.stop_price:.2f}"
+        )
+        return {
+            "direction": self.status,
+            "entry_price": round(self.entry_price, 4),
+            "quantity": self.quantity,
+            "entry_ts": (
+                self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                if self.entry_time else ""
+            ),
+        }
+
+    def sync_flat_from_broker(self) -> None:
+        """브로커 기준 무포지션 상태로 강제 동기화한다."""
+        self.last_update_reason = "sync_flat_from_broker"
+        self.last_update_ts = datetime.datetime.now()
+        self._reset_position()
+        logger.warning("[Position] 브로커 기준 동기화: FLAT")
+
     def partial_close(self, exit_price: float, qty: int, reason: str) -> Dict:
         """부분 청산 — qty 계약만 청산하고 잔여 포지션 유지.
 
@@ -145,6 +342,8 @@ class PositionTracker:
 
         self._daily_pnl_pts += pnl_pts * qty
         self.quantity        -= qty
+        self.last_update_reason = f"partial_close:{reason}"
+        self.last_update_ts = datetime.datetime.now()
 
         entry_ts_str = (
             self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -229,6 +428,57 @@ class PositionTracker:
         delta = datetime.datetime.now() - self.entry_time
         return int(delta.total_seconds() // 60)
 
+    def _recalculate_levels(self, atr: float) -> None:
+        mult = 1 if self.status == POSITION_LONG else -1
+        self.stop_price = self.entry_price - mult * atr * ATR_STOP_MULT
+        self.tp1_price = self.entry_price + mult * atr * ATR_TP1_MULT
+        self.tp2_price = self.entry_price + mult * atr * ATR_TP2_MULT
+
+    def _build_exit_result(
+        self,
+        exit_price: float,
+        quantity: int,
+        pnl_pts: float,
+        pnl_krw: float,
+        reason: str,
+        filled_at: Optional[datetime.datetime] = None,
+    ) -> Dict:
+        entry_ts_str = (
+            self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+            if self.entry_time else ""
+        )
+        return {
+            "direction": self.status,
+            "entry_price": self.entry_price,
+            "exit_price": exit_price,
+            "quantity": quantity,
+            "pnl_pts": round(pnl_pts, 4),
+            "pnl_krw": round(pnl_krw, 0),
+            "exit_reason": reason,
+            "hold_minutes": self._hold_minutes(),
+            "entry_ts": entry_ts_str,
+            "exit_ts": (
+                (filled_at or datetime.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+            ),
+            "grade": self.grade,
+        }
+
+    def _reset_position(self) -> None:
+        self.status = POSITION_FLAT
+        self.entry_price = 0.0
+        self.quantity = 0
+        self.entry_time = None
+        self.grade = ""
+        self.regime = ""
+        self.stop_price = 0.0
+        self.tp1_price = 0.0
+        self.tp2_price = 0.0
+        self.partial_1_done = False
+        self.partial_2_done = False
+        self._optimistic = False
+        self.last_update_ts = self.last_update_ts or datetime.datetime.now()
+        self._save_state()
+
     # ── 일일 통계 ──────────────────────────────────────────────
     def daily_stats(self) -> dict:
         return {
@@ -277,6 +527,10 @@ class PositionTracker:
                 "tp2_price":    self.tp2_price,
                 "partial_1_done": self.partial_1_done,
                 "partial_2_done": self.partial_2_done,
+                "last_update_reason": self.last_update_reason,
+                "last_update_ts": (
+                    self.last_update_ts.isoformat() if self.last_update_ts else None
+                ),
                 "saved_at":     datetime.datetime.now().isoformat(),
             }
             os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
@@ -315,10 +569,21 @@ class PositionTracker:
             self.tp2_price    = float(state.get("tp2_price", 0))
             self.partial_1_done = bool(state.get("partial_1_done", False))
             self.partial_2_done = bool(state.get("partial_2_done", False))
+            self.last_update_reason = state.get("last_update_reason", "unknown")
+            self.last_update_ts = (
+                datetime.datetime.fromisoformat(state["last_update_ts"])
+                if state.get("last_update_ts") else None
+            )
 
             logger.warning(
                 f"[Position] 이전 포지션 복원: {self.status} {self.quantity}계약 "
                 f"@ {self.entry_price} (손절={self.stop_price:.2f})"
+            )
+            logger.warning(
+                "[PositionDiag] restore source=%s saved_at=%s last_update_ts=%s",
+                self.last_update_reason,
+                state.get("saved_at", ""),
+                state.get("last_update_ts", ""),
             )
             return True
         except Exception as e:

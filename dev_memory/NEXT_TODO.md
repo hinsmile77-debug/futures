@@ -8,6 +8,22 @@
 
 ---
 
+## 즉시 확인 필요 (추가됨 2026-05-06)
+
+### [V30] OPW20006 BrokerSync 정상 동작 확인 [다음 장중]
+- **내용**: `_sync_position_from_broker()` 호출 시 `선옵잔고상세현황` 레코드에서 잔고 행이 실제로 파싱되는지
+- **방법**: SYSTEM.log `[BrokerSync] OPW20006 rows=N` 확인. N > 0이면 레코드명 수정 성공
+- **기준**: 포지션 보유 중 rows=포지션 수량, FLAT 상태 rows=0
+- **실패 시**: `_MULTI_RECORD` / `_SINGLE_RECORD` 이름을 enc 파일 재조회해 재확인
+
+### [V31] Fix B 이중진입 방지 확인 [다음 장중]
+- **내용**: 진입 주문 후 `position.status == 'LONG'`(또는 SHORT)이 즉시 설정되는지, 같은 방향 재진입이 차단되는지
+- **방법**: SYSTEM.log `[Position] 낙관적 오픈 LONG N계약 @ XXXX` 로그 확인. 이후 같은 방향 체크리스트 진입 조건이 "포지션 보유 중" 차단되는지 확인
+- **기준**: `SendOrder ret=0` 직후 `position.status != 'FLAT'` → 다음 분봉에서 체크리스트 진입 차단
+- **Chejan 있을 경우**: `apply_entry_fill()` 로그 `체결보정 LONG N계약 @ XXXX | 평균=XXXX 보유=N계약` 확인 (수량 불변)
+
+---
+
 ## 즉시 확인 필요 (추가됨 2026-05-04 야간 2세션)
 
 ### [V26] Kiwoom SendOrder 실제 체결 확인 [다음 장중]

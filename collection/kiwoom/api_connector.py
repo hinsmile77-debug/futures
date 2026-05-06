@@ -9,13 +9,14 @@
 import datetime
 import logging
 import time
-from typing import Dict, Optional, Callable, List
+from typing import Dict, Optional, Callable, List, Any
 
 from PyQt5.QAxContainer import QAxWidget
 from PyQt5.QtCore import QEventLoop, pyqtSignal, pyqtSlot, QTimer
 from PyQt5.QtWidgets import QApplication
 
 from config import settings
+from config import secrets as _secrets
 from config.constants import (
     FID_FUTURES_PRICE, FID_FUTURES_VOL,
     FID_BID_PRICE, FID_ASK_PRICE,
@@ -77,10 +78,13 @@ class KiwoomAPI(QAxWidget):
         self._tr_loop: Optional[QEventLoop] = None
         self._login_loop: Optional[QEventLoop] = None
         self._real_callbacks: Dict[tuple, List[Callable]] = {}
+        self._chejan_callbacks: List[Callable[[Dict[str, Any]], None]] = []
+        self._msg_callbacks: List[Callable[[Dict[str, str]], None]] = []
 
         self.OnEventConnect.connect(self._on_event_connect)
         self.OnReceiveTrData.connect(self._on_receive_tr_data)
         self.OnReceiveRealData.connect(self._on_receive_real_data)
+        self.OnReceiveChejanData.connect(self._on_receive_chejan_data)
         self.OnReceiveMsg.connect(self._on_receive_msg)
 
         logger.info("KiwoomAPI 초기화 완료")
@@ -219,6 +223,7 @@ class KiwoomAPI(QAxWidget):
             "rows":      rows,
             "prev_next": meta.get("prev_next", "0"),
             "tr_code":   actual_tr,
+            "record_name": actual_record,
         }
         print(f"[DBG TR-6] request_tr 완료 rows={len(rows)}", flush=True)
         return result
@@ -599,6 +604,12 @@ class KiwoomAPI(QAxWidget):
         elif tc == "OPT10060":
             # 프로그램 매매 합계 — 차익/비차익 순매수 (단일 행)
             fields = ["차익순매수", "비차익순매수"]
+        elif tc == "OPW20006":
+            fields = [
+                "종목코드", "종목명", "매매일자", "매매구분",
+                "잔고수량", "매입단가", "매매금액",
+                "현재가", "평가손익", "손익율", "평가금액",
+            ]
         else:
             fields = []
         result = {
@@ -608,6 +619,9 @@ class KiwoomAPI(QAxWidget):
             ).strip()
             for f in fields
         }
+        # OPW20006 싱글행(합계)은 여기서 처리 불필요 — 멀티레코드는 request_futures_balance에서 별도 조회
+        if tc == "OPW20006":
+            return result
         # 알 수 없는 TR이거나 모든 필드가 비어 있으면 discovery 로그 출력
         if not fields or all(v == "" for v in result.values()):
             _DISCOVERY_FIELDS = [
@@ -651,9 +665,24 @@ class KiwoomAPI(QAxWidget):
         반환값:     0=접수 성공, 음수=오류코드
         실제 체결번호는 OnReceiveChejanData 콜백에서 수신
         """
+        args = [
+            rqname,
+            screen_no,
+            acc_no,
+            int(order_type),
+            code,
+            int(qty),
+            int(price),
+            hoga_gb,
+            org_order,
+        ]
+        logger.warning(
+            "[OrderDiag] SendOrder request rq=%s screen=%s acc=%s type=%s code=%s qty=%s price=%s hoga=%s org=%s connected=%s",
+            rqname, screen_no, acc_no, order_type, code, qty, price, hoga_gb, org_order, self.is_connected,
+        )
         ret = int(self.dynamicCall(
             "SendOrder(QString, QString, QString, int, QString, int, int, QString, QString)",
-            rqname, screen_no, acc_no, order_type, code, qty, price, hoga_gb, org_order,
+            args,
         ))
         if ret == 0:
             logger.info(
@@ -673,3 +702,221 @@ class KiwoomAPI(QAxWidget):
     def is_connected(self) -> bool:
         state = int(self.dynamicCall("GetConnectState()"))
         return state == 1
+
+
+def _kiwoom_register_chejan_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+    if callback not in self._chejan_callbacks:
+        self._chejan_callbacks.append(callback)
+
+
+def _kiwoom_register_msg_callback(self, callback: Callable[[Dict[str, str]], None]) -> None:
+    if callback not in self._msg_callbacks:
+        self._msg_callbacks.append(callback)
+
+
+def _kiwoom_get_chejan_data(self, fid: int) -> str:
+    return self.dynamicCall("GetChejanData(int)", fid).strip()
+
+
+def _kiwoom_build_chejan_payload(self, gubun: str, item_cnt: int, fid_list: str) -> Dict[str, Any]:
+    def _to_int(text: str) -> int:
+        s = str(text or "").strip().replace(",", "")
+        if not s:
+            return 0
+        s = s.lstrip("+")
+        try:
+            return int(s)
+        except ValueError:
+            return 0
+
+    def _to_float(text: str) -> float:
+        s = str(text or "").strip().replace(",", "")
+        if not s:
+            return 0.0
+        s = s.lstrip("+")
+        try:
+            return float(s)
+        except ValueError:
+            return 0.0
+
+    fids = [int(fid) for fid in fid_list.split(";") if fid.strip().isdigit()]
+    raw = {fid: self.get_chejan_data(fid) for fid in fids}
+    code = raw.get(9001, "").strip()
+    if code.startswith(("A", "J")) and len(code) > 1:
+        code = code[1:]
+
+    return {
+        "gubun": str(gubun).strip(),
+        "item_cnt": int(item_cnt),
+        "fid_list": fids,
+        "raw": raw,
+        "account_no": raw.get(9201, "").strip(),
+        "order_no": raw.get(9203, "").strip(),
+        "original_order_no": raw.get(904, "").strip(),
+        "code": code,
+        "name": raw.get(302, "").strip(),
+        "order_status": raw.get(913, "").strip(),
+        "order_gubun": raw.get(905, "").strip(),
+        "trade_gubun": raw.get(907, "").strip(),
+        "order_qty": _to_int(raw.get(900, "")),
+        "order_price": _to_float(raw.get(901, "")),
+        "unfilled_qty": _to_int(raw.get(902, "")),
+        "filled_qty": _to_int(raw.get(911, "") or raw.get(915, "")),
+        "fill_price": _to_float(raw.get(910, "") or raw.get(914, "")),
+        "order_time": raw.get(908, "").strip(),
+        "fill_no": raw.get(909, "").strip(),
+        "current_price": _to_float(raw.get(10, "")),
+        "best_ask": _to_float(raw.get(27, "")),
+        "best_bid": _to_float(raw.get(28, "")),
+        "holding_qty": _to_int(raw.get(930, "")),
+        "avg_price": _to_float(raw.get(931, "")),
+        "available_qty": _to_int(raw.get(933, "")),
+        "balance_side": raw.get(946, "").strip(),
+    }
+
+
+def _kiwoom_on_receive_chejan_data(self, gubun: str, item_cnt: int, fid_list: str) -> None:
+    payload = self._build_chejan_payload(gubun, item_cnt, fid_list)
+    logger.info(
+        "[Chejan] gubun=%s order_no=%s status=%s code=%s filled=%s@%s unfilled=%s",
+        payload.get("gubun"),
+        payload.get("order_no"),
+        payload.get("order_status"),
+        payload.get("code"),
+        payload.get("filled_qty"),
+        payload.get("fill_price"),
+        payload.get("unfilled_qty"),
+    )
+    logger.warning(
+        "[ChejanDiag] gubun=%s account=%s order_no=%s original=%s code=%s order_side=%s trade_side=%s balance_side=%s order_qty=%s filled_qty=%s holding_qty=%s available_qty=%s order_price=%s fill_price=%s avg_price=%s raw=%s",
+        payload.get("gubun"),
+        payload.get("account_no"),
+        payload.get("order_no"),
+        payload.get("original_order_no"),
+        payload.get("code"),
+        payload.get("order_gubun"),
+        payload.get("trade_gubun"),
+        payload.get("balance_side"),
+        payload.get("order_qty"),
+        payload.get("filled_qty"),
+        payload.get("holding_qty"),
+        payload.get("available_qty"),
+        payload.get("order_price"),
+        payload.get("fill_price"),
+        payload.get("avg_price"),
+        payload.get("raw"),
+    )
+    for cb in self._chejan_callbacks:
+        try:
+            cb(payload)
+        except Exception:
+            logger.exception("chejan callback error order_no=%s", payload.get("order_no"))
+
+
+def _kiwoom_on_receive_msg(self, screen_no: str, rq_name: str, tr_code: str, msg: str) -> None:
+    print(f"[DBG CB-MSG] _on_receive_msg tr={tr_code} msg={msg[:40]}", flush=True)
+    logger.debug("TR 硫붿떆吏 [%s/%s]: %s", tr_code, rq_name, msg)
+    logger.warning(
+        "[OrderMsgDiag] screen=%s rq=%s tr=%s msg=%s",
+        screen_no, rq_name, tr_code, msg,
+    )
+    payload = {
+        "screen_no": screen_no,
+        "rq_name": rq_name,
+        "tr_code": tr_code,
+        "msg": msg,
+    }
+    for cb in self._msg_callbacks:
+        try:
+            cb(payload)
+        except Exception:
+            logger.exception("msg callback error [%s/%s]", tr_code, rq_name)
+
+
+def _kiwoom_request_futures_balance(
+    self,
+    account_no: str,
+    screen_no: str = "2010",
+) -> Optional[Dict]:
+    # OPW20006: 선옵잔고상세현황요청  (opw20006.enc 기준 — TDB3065_Q01)
+    # 싱글데이터 [선옵잔고상세현황합계] — 선물/콜/풋 매도수량·금액, 약정합계, 손익합계, 조회건수
+    # 멀티데이터 [선옵잔고상세현황]   — 종목별 잔고 행 (record 이름 끝이 "황(況)"임 — "활"이 아님!)
+    #
+    # enc 파일 확인 결과(2026-07-14): 잔고수량·매매구분 모두 존재.
+    # 키움 CS의 "잔고수량 없음" 답변은 오류. 방향=매매구분("매수"/"매도").
+    _MULTI_RECORD = "선옵잔고상세현황"   # ← 현황(況): "활"이 아니라 "황"
+    _SINGLE_RECORD = "선옵잔고상세현황합계"
+    _FIELDS = [
+        "종목코드", "종목명", "매매일자", "매매구분",  # 매매구분: "매수"→LONG, "매도"→SHORT
+        "잔고수량",                                    # offset 66, len 9 (enc 확인)
+        "매입단가", "매매금액",
+        "현재가", "평가손익", "손익율", "평가금액",
+    ]
+
+    account_pwd = getattr(_secrets, "ACCOUNT_PWD", "")
+    inputs = {
+        "계좌번호": account_no,
+        "비밀번호": account_pwd,
+        "조회일자": datetime.datetime.now().strftime("%Y%m%d"),
+        "비밀번호입력매체구분": "00",
+    }
+    logger.warning("[OPW20006-REQ] account=%s screen=%s", account_no, screen_no)
+    result = self.request_tr(
+        tr_code="OPW20006",
+        rq_name="futures_balance",
+        inputs=inputs,
+        screen_no=screen_no,
+        timeout_sec=10,
+    )
+    if result is None:
+        logger.warning("[BalanceTR] OPW20006 조회 실패 account=%s", account_no)
+        return None
+
+    # 싱글 데이터에서 조회건수 읽기 (멀티 행 수 교차검증)
+    query_count_text = self.get_comm_data("OPW20006", "futures_balance", 0, "조회건수").strip()
+    try:
+        query_count = int(query_count_text or "0")
+    except ValueError:
+        query_count = -1
+    logger.warning("[OPW20006-SINGLE] 조회건수=%r parsed=%d", query_count_text, query_count)
+
+    n_multi = self.get_repeat_cnt("OPW20006", _MULTI_RECORD)
+    logger.warning("[OPW20006-MULTI] record=%r GetRepeatCnt=%d 조회건수=%d", _MULTI_RECORD, n_multi, query_count)
+
+    if n_multi > 0:
+        multi_rows = []
+        for i in range(n_multi):
+            row = {
+                f: self.get_comm_data("OPW20006", "futures_balance", i, f)
+                for f in _FIELDS
+            }
+            logger.warning("[OPW20006-MULTI-ROW] i=%d row=%s", i, row)
+            multi_rows.append(row)
+        nonempty_rows = [r for r in multi_rows if any(str(v).strip() for v in r.values())]
+        result["rows"] = multi_rows
+        result["record_name"] = _MULTI_RECORD
+    else:
+        multi_rows = []
+        nonempty_rows = []
+
+    result["query_count"] = query_count
+    result["nonempty_rows"] = nonempty_rows
+    result["blank_row_count"] = len(multi_rows) - len(nonempty_rows)
+    result["all_blank_rows"] = bool(multi_rows) and not nonempty_rows
+
+    logger.warning(
+        "[OPW20006-RESP] multi_rows=%d nonempty=%d query_count=%d record=%r prev_next=%r",
+        len(multi_rows), len(nonempty_rows), query_count,
+        result.get("record_name", ""), result.get("prev_next", ""),
+    )
+    logger.info("[BalanceTR] OPW20006 응답 rows=%d", len(multi_rows))
+    return result
+
+
+KiwoomAPI.register_chejan_callback = _kiwoom_register_chejan_callback
+KiwoomAPI.register_msg_callback = _kiwoom_register_msg_callback
+KiwoomAPI.get_chejan_data = _kiwoom_get_chejan_data
+KiwoomAPI._build_chejan_payload = _kiwoom_build_chejan_payload
+KiwoomAPI._on_receive_chejan_data = _kiwoom_on_receive_chejan_data
+KiwoomAPI._on_receive_msg = _kiwoom_on_receive_msg
+KiwoomAPI.request_futures_balance = _kiwoom_request_futures_balance

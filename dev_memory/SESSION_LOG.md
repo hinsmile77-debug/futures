@@ -4,6 +4,59 @@
 
 ---
 
+## 2026-05-06 (Fix B 이중진입 방지 + OPW20006 enc 파일 분석 + TR 조사 절차 수립)
+
+**작업**:
+1. Fix B (낙관적 포지션 오픈) — `position_tracker.py` + `main.py` 적용
+2. OPW20006 enc 파일 직접 분석 → 키움 CS 오답 발견 + api_connector.py 전면 수정
+3. TR 조사 절차 문서화 (dev_memory + claude memory)
+
+### Fix B — 모의투자 이중진입 방지
+
+Kiwoom 모의투자에서 Chejan 콜백 없이 포지션이 이중 오픈되던 구조적 문제를 `_optimistic` 플래그 패턴으로 해결.
+
+| 파일 | 수정 내용 |
+|---|---|
+| `strategy/position/position_tracker.py` | `_optimistic: bool = False` 필드 추가. `apply_entry_fill()`에 보정 경로 추가 (방향 일치 시 가격만 업데이트, 수량 미증가). `_reset_position()`에 `_optimistic = False` 추가 |
+| `main.py` (line 2660) | `_set_pending_order()` 직후 `position.open_position()` + `_optimistic = True` 삽입 — **production 버전** (line 2684 monkeypatch 대상) |
+
+**흐름**:
+```
+SendOrder ret=0
+→ _set_pending_order()
+→ position.open_position(direction, price, qty)  ← 낙관적 오픈
+→ position._optimistic = True
+[Chejan 있을 경우]
+→ apply_entry_fill() → _optimistic=True + direction 일치 → 가격 보정만 (수량 증가 없음)
+[Chejan 없을 경우(모의투자)]
+→ 이미 오픈된 포지션으로 매매 계속
+```
+
+### OPW20006 enc 파일 분석
+
+| 발견 | 내용 |
+|---|---|
+| **레코드명 오타 확정** | `현활`(活) → `현황`(況). 기존 blank 반환 근본 원인 |
+| **키움 CS 오답** | "잔고수량 없음" → enc 파일상 존재 (offset 66, len 9). CS 답변 불신 교훈 |
+| **보유수량 제거** | OPW20006에 존재하지 않는 필드 (CS 안내 기반 잘못 추가). `_FIELDS`에서 삭제 |
+| **조회건수 교차검증** | 단일 레코드 `선옵잔고상세현황합계.조회건수` → 멀티 cnt 크로스체크 추가 |
+
+**수정 파일**: `collection/kiwoom/api_connector.py` — `_MULTI_RECORD`, `_SINGLE_RECORD`, `_FIELDS` 전면 교체
+
+### TR 조사 절차 수립
+
+- `dev_memory/kiwoom_api_tr_investigation.md` 신설 — enc 파일 읽기 절차·코드·GetRepeatCnt/GetCommData 패턴·OPW20006 함정 표
+- `reference_kiwoom_tr_enc.md` claude memory 저장 — 진실 원천·조사 순서·교훈 영구 보존
+
+### 수정 파일 목록
+
+- `strategy/position/position_tracker.py`
+- `main.py`
+- `collection/kiwoom/api_connector.py`
+- `dev_memory/kiwoom_api_tr_investigation.md` (신규)
+
+---
+
 ## 2026-05-04 (야간 2세션 — Kiwoom API 주문 연결 + 부분 청산 완성 + 대시보드 개선)
 
 **작업**: 로그에 4회 거래 기록이 있으나 Kiwoom 모의계좌 잔고에 거래 내역 없음 → 원인 분석 + 구조적 수정
