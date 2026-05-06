@@ -4,6 +4,67 @@
 
 ---
 
+## 2026-05-06 (2차) — WARN.log 분석 + trade_type 청산 오류(B47) + gubun='4' 차단(B48)
+
+**작업**: 20260506 TRADE·SYSTEM·WARN 로그 분석 → 코드 개선안 유효성 검토 → B47·B48 수정
+
+### 로그 분석 결과 요약
+
+| 시각 | 이벤트 |
+|---|---|
+| 10:48~10:52 | LONG 진입×2 → TP1 청산 각 +0.95pt, +1.10pt (정상 체결) |
+| 11:07 이후 | 하드스톱 2회 (-1.99pt, -2.16pt) |
+| 11:35:31 | [체결진입] LONG @ 1128.8 — Chejan fill_qty>0 정상 수신 확인 |
+| 14:28:00 | LONG @ 1133.9 진입 → TP1 EXIT 주문 전송 |
+| 14:28~15:24 | EXIT 주문 60초마다 타임아웃→재발행 무한 반복 (Chejan 체결 미수신) |
+| 14:38:00 | CB③ 발동 (30분 정확도 33.3% < 35%) → 당일 HALTED |
+| 15:24:58 | 최초 체결 Chejan (fill_qty=1) → 포지션 종료 @ 1128.7 (-5.20pt) |
+
+### 원인 진단
+
+**WARN.log에서 발견한 패턴**:
+- `[PendingOrder] set EXIT_FULL TP1` → 60초 후 `[PendingOrder] clear` 반복 (체결 없음)
+- 매 60초마다 새 TP1/하드스톱 EXIT 주문 발행 → Chejan fill 없음 → 타임아웃
+- `[ChejanFlow] gubun='4' order_no='' status='' fill_qty=0` — 매 주문마다 노이즈 이벤트
+
+**근본 원인**: `_send_kiwoom_exit_order`에서 `trade_type=2`(매도 개시=신규 SHORT) 사용. 선물 LONG 포지션 청산은 `trade_type=4`(매도 청산)이어야 함. 모의투자 서버가 신규매도 주문으로 해석 → 선물종목 코드가 없는 신규매도로 처리 → 체결 불가.
+
+**개선안 A(unfilled_qty fallback)·B(FID 추가) 무효화**: WARN.log 분석 결과 FID 파싱 실패가 아님 확인 → 두 개선안 모두 불필요.
+
+### 수정 2건
+
+**[B47] trade_type 청산 오류 (main.py)**:
+```python
+# _send_kiwoom_exit_order (line 1103)
+# Before: trade_type = 2 if LONG else 1  (신규개시 — 오류)
+# After:  trade_type = 4 if LONG else 3  (청산 — 올바름)
+
+# _KiwoomOrderAdapter.send_market_order (line 2715)
+# Before: trade_type = 2 if SELL else 1
+# After:  trade_type = 4 if SELL else 3
+```
+
+**[B48] gubun='4' 노이즈 차단 (main.py `_ts_on_chejan_event`)**:
+```python
+_gubun = str(payload.get("gubun", "")).strip()
+if _gubun not in ("0", "1"):
+    return  # 모의투자 특유의 gubun='4' 노이즈 이벤트 차단
+```
+
+### 부수 효과 해결
+
+- **15:10 강제청산 누락**: `_has_pending_order()=True`로 인해 모든 exit trigger가 차단되던 구조도 B47 수정으로 함께 해결됨. trade_type=4 수정 후 EXIT 체결이 즉시 이루어지면 pending이 해소 → 강제청산 경로 정상화.
+
+### 수정 파일
+
+- `main.py` — 3곳 수정
+
+### Git commit
+
+- `3cd9677` — fix: SendOrderFO trade_type 청산 오류 수정 + gubun='4' early return
+
+---
+
 ## 2026-05-06 (Fix B 이중진입 방지 + OPW20006 enc 파일 분석 + TR 조사 절차 수립)
 
 **작업**:

@@ -10,17 +10,17 @@
 
 ## 즉시 확인 필요 (추가됨 2026-05-06 추가 세션)
 
-### [V32] SendOrderFO 실제 체결 확인 [다음 장중]
-- **내용**: `SendOrderFO` 전환 후 모의투자 계좌에 실제 주문이 접수되는지
-- **방법**: SYSTEM.log `[OrderDiag] SendOrderFO request ...` + `SendOrderFO 접수 rq=진입 ...` 확인. HTS 모의계좌 체결 내역 확인
-- **기준**: `KOA_NORMAL_FUT_ORD` TR 이름으로 콜백 수신 (기존 `KOA_NORMAL_SELL_KP_ORD` 아님). [RC4109] 오류 미발생
-- **실패 시**: hoga_gb="3" → "1"(지정가+price 입력) 시도 또는 code 형식 변경
+### [V35] trade_type=4 수정 후 EXIT 체결 Chejan 즉시 수신 확인 [다음 장중]
+- **내용**: B47 수정(trade_type 4/3) 후 EXIT 주문 전송 → Chejan fill_qty>0 즉시 수신되는지
+- **방법**: WARN.log `[ChejanFlow] gubun='0' fill_qty=N status='체결'` 확인. EXIT_FULL/EXIT_PARTIAL pending이 60초 타임아웃 없이 즉시 해소되는지 확인
+- **기준**: `[PendingOrder] clear` 이 60초 이내 자연 해소 (타임아웃 clear가 아닌 체결 clear)
+- **실패 시**: 모의투자 서버에서 시장가 선물청산 체결방식 추가 조사 필요
 
-### [V33] Fix B 낙관적 오픈 진단 확인 [다음 장중]
-- **내용**: 진입 후 `[FixB] 낙관적 오픈 완료 direction=... status=SHORT ...` 로그 확인
-- **방법**: SYSTEM.log에서 `[FixB]` 태그 검색
-- **기준**: status=SHORT/LONG, optimistic=True → 이중진입 방지 동작 확인
-- **실패 시**: `[FixB] open_position 실패 ... err=<원인>` 로그에서 실패 원인 파악
+### [V32] SendOrderFO 실제 체결 확인 [DONE 2026-05-06]
+- 진입 주문은 정상 체결됨 확인 (10:48, 10:50, 11:35 체결 로그). EXIT 주문 미체결은 trade_type=2(신규매도) 오류 때문. B47 수정으로 해결 (trade_type=4 매도청산 전환).
+
+### [V33] Fix B 낙관적 오픈 진단 확인 [DONE 2026-05-06]
+- 14:28:00 `[FixB] 낙관적 오픈 완료 direction=LONG status=LONG qty=1 optimistic=True` 로그 WARN.log에서 확인됨.
 
 ### [V34] 프로그램매매 FID 확정 [다음 장중]
 - **내용**: `P00101` 타입='프로그램매매' FID 202/204/210/212/928/929 의미 확인
@@ -31,17 +31,11 @@
 
 ## 즉시 확인 필요 (추가됨 2026-05-06)
 
-### [V30] OPW20006 BrokerSync 정상 동작 확인 [다음 장중]
-- **내용**: `_sync_position_from_broker()` 호출 시 `선옵잔고상세현황` 레코드에서 잔고 행이 실제로 파싱되는지
-- **방법**: SYSTEM.log `[BrokerSync] OPW20006 rows=N` 확인. N > 0이면 레코드명 수정 성공
-- **기준**: 포지션 보유 중 rows=포지션 수량, FLAT 상태 rows=0
-- **실패 시**: `_MULTI_RECORD` / `_SINGLE_RECORD` 이름을 enc 파일 재조회해 재확인
+### [V30] OPW20006 BrokerSync 정상 동작 확인 [DONE 2026-05-06]
+- SYSTEM.log에서 `[BrokerSync] OPW20006 rows=1` 확인됨. 레코드명 `선옵잔고상세현황` 수정 성공.
 
-### [V31] Fix B 이중진입 방지 확인 [다음 장중]
-- **내용**: 진입 주문 후 `position.status == 'LONG'`(또는 SHORT)이 즉시 설정되는지, 같은 방향 재진입이 차단되는지
-- **방법**: SYSTEM.log `[Position] 낙관적 오픈 LONG N계약 @ XXXX` 로그 확인. 이후 같은 방향 체크리스트 진입 조건이 "포지션 보유 중" 차단되는지 확인
-- **기준**: `SendOrder ret=0` 직후 `position.status != 'FLAT'` → 다음 분봉에서 체크리스트 진입 차단
-- **Chejan 있을 경우**: `apply_entry_fill()` 로그 `체결보정 LONG N계약 @ XXXX | 평균=XXXX 보유=N계약` 확인 (수량 불변)
+### [V31] Fix B 이중진입 방지 확인 [DONE 2026-05-06]
+- 14:28:00 `[FixB] 낙관적 오픈 완료` 로그 확인됨. 이후 분봉에서 이중진입 없음 (LONG 상태 유지 중 재진입 차단 동작).
 
 ---
 

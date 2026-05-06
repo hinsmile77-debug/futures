@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-06 (추가) — SendOrderFO 전환 + Fix B 진단 로그
+> 마지막 업데이트: 2026-05-06 (추가2) — trade_type 청산 오류(B47) + gubun='4' 차단(B48)
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -47,21 +47,44 @@
 | **Fix** | `api_connector.py` `send_order_fo()` 신설. main.py 진입/청산/긴급청산 헬퍼 전환 |
 | **`send_order_fo` 파라미터** | `hoga_gb="3"` (선물시장가) / `trade_type` 1=매수, 2=매도 |
 
-**Fix B 진단 로그**: `open_position()` silent 실패 조사 중. try/except + `[FixB]` WARNING 추가.
+**Fix B 진단 로그**: `[FixB] 낙관적 오픈 완료 direction=LONG status=LONG qty=1 optimistic=True` — 2026-05-06 WARN.log에서 정상 확인됨.
 
-### 현재 주문 흐름 (SendOrderFO + Fix B 적용 후)
+### [B47] SendOrderFO trade_type 청산 오류 수정 (2026-05-06 추가)
+
+| 항목 | 내용 |
+|---|---|
+| **증상** | 14:28 LONG 진입 후 TP1/하드스톱/15:10 강제청산 주문이 60분간 체결 안 됨. EXIT pending 60초마다 set/clear 반복 |
+| **원인** | `_send_kiwoom_exit_order`에서 `trade_type=2`(매도 개시=신규 SHORT) 사용. 선물 LONG 청산은 `trade_type=4`(매도 청산) 필수. 모의투자 서버에서 신규매도로 해석 → 체결 처리 안 됨 |
+| **Fix** | `trade_type = 4 if LONG else 3` (매도청산/매수청산). `_KiwoomOrderAdapter.send_market_order()`도 동일하게 수정 |
+
+### [B48] gubun='4' 노이즈 이벤트 차단 (2026-05-06 추가)
+
+| 항목 | 내용 |
+|---|---|
+| **증상** | 매 주문마다 `gubun='4'`, `order_no=''`, `fill_qty=0`, `status=''` 이벤트 추가 도착. ChejanFlow/ChejanMatch 로그 오염 |
+| **Fix** | `_ts_on_chejan_event` 진입부에 `if _gubun not in ("0", "1"): return` 추가 |
+
+### 현재 주문 흐름 (B46·B47·Fix B 모두 적용 후)
 
 ```
 _execute_entry()
-→ SendOrderFO COM API (ret=0)   ← [B46] 선물 주문 함수
+→ SendOrderFO COM API, trade_type=1(LONG)/2(SHORT)   ← [B46] 선물 주문 함수
 → _set_pending_order(ENTRY)
-→ position.open_position(direction, price, qty)   ← 낙관적 오픈 (Fix B)
+→ position.open_position(direction, price, qty)        ← 낙관적 오픈 (Fix B)
 → position._optimistic = True
 
-[Chejan 수신 시]
+_send_kiwoom_exit_order()
+→ SendOrderFO COM API, trade_type=4(LONG청산)/3(SHORT청산)   ← [B47] 청산 타입 수정
+
+OnReceiveChejanData 콜백
+→ gubun='4' → early return (노이즈 차단) [B48]
+→ gubun='0' fill_qty=0 → 접수 이벤트 (pending 유지)
+→ gubun='0' fill_qty>0 → 체결 이벤트 → apply_entry_fill()/apply_exit_fill()
+
+[Chejan 진입 체결 시]
 → apply_entry_fill() → _optimistic=True + 방향 일치 → 가격 보정만 (수량 불변)
 
-[Chejan 미수신(모의투자)]
+[Chejan 미수신(모의투자 일부)]
 → 낙관적 포지션 그대로 유지 → 이중진입 없음
 ```
 
@@ -103,11 +126,12 @@ run_minute_pipeline()
 CB/KillSwitch:     _KiwoomOrderAdapter.send_market_order() → SendOrder COM API
 ```
 
-### 미완성 (OnReceiveChejanData 콜백)
+### OnReceiveChejanData 콜백 현황
 
-- 실체결가(체결통보) 콜백 미구현 → 현재 주문가격=현재가로 가정
-- 실제 슬리피지 측정 불가 → 지연(latency) 지표로 간접 모니터링
-- 체결 확인 후 포지션 상태 갱신 로직 없음 → SendOrder ret=0이면 즉시 포지션 반영
+- ✅ **구현 완료**: `_ts_on_chejan_event()` — gubun='0'(주문/체결) 처리. fill_qty>0 체결 이벤트로 포지션 보정
+- ✅ **B47 수정**: trade_type 청산 타입 오류 수정 → EXIT 체결 정상화 (다음 장중 [V35] 확인 필요)
+- ✅ **B48 수정**: gubun='4' 노이즈 이벤트 early return 차단
+- ⏳ **미확인**: trade_type=4 수정 후 EXIT 체결 Chejan 즉시 수신 → [V35] 다음 장중 확인
 
 ---
 

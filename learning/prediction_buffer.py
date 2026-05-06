@@ -10,6 +10,7 @@
 import json
 import datetime
 import logging
+import math
 from typing import Dict, List, Optional, Tuple
 
 from config.settings import HORIZONS, HORIZON_THRESHOLDS, PREDICTIONS_DB
@@ -32,6 +33,13 @@ class PredictionBuffer:
         features: Optional[Dict] = None,
     ):
         """예측 저장"""
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 1 / 3
+        if not math.isfinite(confidence):
+            confidence = 1 / 3
+
         feat_json = json.dumps(features, ensure_ascii=False) if features else "{}"
         execute(
             PREDICTIONS_DB,

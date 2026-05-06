@@ -3516,11 +3516,34 @@ class MireukDashboard(QMainWindow):
         # ── 해상도·커밋 블록 ───────────────────────────────────
         self.lbl_scale  = mk_label(S.info(),    C['text2'], 9, align=Qt.AlignRight)
         self.lbl_commit = mk_label(COMMIT_HASH, C['text2'], 9, align=Qt.AlignRight)
+        acct_row = QHBoxLayout()
+        acct_row.setSpacing(S.p(4))
+        self.lbl_account = mk_label("계좌번호:", C['text2'], 9, align=Qt.AlignRight)
+        self.cmb_account = QComboBox()
+        self.cmb_account.setMinimumWidth(S.p(120))
+        self.cmb_account.setStyleSheet(
+            f"QComboBox{{background:{C['bg2']};color:{C['text']};"
+            f"border:1px solid {C['border']};border-radius:4px;"
+            f"padding:2px 6px;font-size:{S.f(9)}px;}}"
+            f"QComboBox QAbstractItemView{{background:{C['bg2']};color:{C['text']};"
+            f"selection-background-color:{C['blue']};}}"
+        )
+        self.btn_save_account = QPushButton("저장")
+        self.btn_save_account.setCursor(Qt.PointingHandCursor)
+        self.btn_save_account.setStyleSheet(
+            f"QPushButton{{background:{C['blue']};color:#fff;border:none;"
+            f"border-radius:4px;padding:3px 8px;font-size:{S.f(9)}px;font-weight:bold;}}"
+            f"QPushButton:disabled{{background:{C['bg']};color:{C['text2']};}}"
+        )
+        acct_row.addWidget(self.lbl_account)
+        acct_row.addWidget(self.cmb_account)
+        acct_row.addWidget(self.btn_save_account)
         res_box = QVBoxLayout()
         res_box.setSpacing(0)
         res_box.setContentsMargins(0, 0, 0, 0)
         res_box.addWidget(self.lbl_scale)
         res_box.addWidget(self.lbl_commit)
+        res_box.addLayout(acct_row)
 
         header.addWidget(title)
         header.addLayout(price_box)
@@ -3716,6 +3739,7 @@ class DashboardAdapter:
         self._win = MireukDashboard()
         # 긴급 정지 버튼을 외부에서 접근할 수 있도록 노출
         self.btn_kill = self._win._make_kill_btn()
+        self.btn_save_account = self._win.btn_save_account
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
@@ -3724,6 +3748,27 @@ class DashboardAdapter:
     def append_sys_log(self, msg: str):
         """창1 시스템 로그에 메시지 추가"""
         self._win.log_panel.append("all", "SYSTEM", msg)
+
+    def set_account_options(self, accounts, selected: str = ""):
+        combo = self._win.cmb_account
+        cur = selected or combo.currentText().strip()
+        vals = [str(a).strip() for a in accounts if str(a).strip()]
+        if cur and cur not in vals and not vals:
+            vals.insert(0, cur)
+        combo.blockSignals(True)
+        combo.clear()
+        if vals:
+            combo.addItems(vals)
+            if selected and selected in vals:
+                combo.setCurrentText(selected)
+            else:
+                combo.setCurrentIndex(0)
+        else:
+            combo.addItem(cur or "")
+        combo.blockSignals(False)
+
+    def get_selected_account(self) -> str:
+        return self._win.cmb_account.currentText().strip()
 
     def update_supply_macro(
         self,
