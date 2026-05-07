@@ -702,11 +702,12 @@ class KiwoomAPI(QAxWidget):
         screen_no: str,
         acc_no: str,
         code: str,
-        trade_type: int,    # 1=신규매수, 2=신규매도
+        trade_type: int,    # lOrdKind: 1=신규매매, 2=정정, 3=취소
         qty: int,
         price: float = 0.0,
         hoga_gb: str = "3",  # "1"=지정가, "3"=시장가
         org_order_no: int = 0,
+        slby_tp: str = "",   # sSlbyTp: "1"=매도, "2"=매수, ""=미지정(lOrdKind에 종속)
     ) -> int:
         """선물/옵션 주문 전송 (SendOrderFO). 선물 주문은 반드시 이 메서드 사용."""
         args = [
@@ -715,7 +716,7 @@ class KiwoomAPI(QAxWidget):
             acc_no,
             code,
             int(trade_type),
-            "",              # sTradeType2: 공란
+            slby_tp,         # sSlbyTp: 매도/매수 방향 (신규매매 시 필수)
             hoga_gb,
             int(qty),
             float(price),
@@ -883,104 +884,378 @@ def _kiwoom_request_futures_balance(
     account_no: str,
     screen_no: str = "2010",
 ) -> Optional[Dict]:
-    # OPW20006: 선옵잔고상세현황요청  (opw20006.enc 기준 — TDB3065_Q01)
-    # 싱글데이터 [선옵잔고상세현황합계] — 선물/콜/풋 매도수량·금액, 약정합계, 손익합계, 조회건수
-    # 멀티데이터 [선옵잔고상세현황]   — 종목별 잔고 행 (record 이름 끝이 "황(況)"임 — "활"이 아님!)
-    #
-    # enc 파일 확인 결과(2026-07-14): 잔고수량·매매구분 모두 존재.
-    # 키움 CS의 "잔고수량 없음" 답변은 오류. 방향=매매구분("매수"/"매도").
-    _MULTI_RECORD = "선옵잔고상세현황"   # ← 현황(況): "활"이 아니라 "황"
-    _SINGLE_RECORD = "선옵잔고상세현황합계"
-    _FIELDS = [
-        "종목코드", "종목명", "매매일자", "매매구분",  # 매매구분: "매수"→LONG, "매도"→SHORT
-        "잔고수량",                                    # offset 66, len 9 (enc 확인)
-        "주문가능수량",
-        "매입단가", "매매금액",
-        "현재가", "평가손익", "손익율", "평가금액",
+    # Keep OPW20006 as the canonical row source and enrich summary values
+    # with auxiliary futures TRs that match the HTS balance panel behavior.
+    K_CODE = "종목코드"
+    K_NAME = "종목명"
+    K_DATE = "매매일자"
+    K_SIDE = "매매구분"
+    K_QTY = "잔고수량"
+    K_ORDERABLE_QTY = "주문가능수량"
+    K_BUY_PRICE = "매입단가"
+    K_TRADE_AMT = "매매금액"
+    K_CUR_PRICE = "현재가"
+    K_PNL = "평가손익"
+    K_PNL_RATE = "손익율"
+    K_EVAL_AMT = "평가금액"
+
+    K_SUM_TRADE = "총매매"
+    K_SUM_PNL = "총평가손익"
+    K_SUM_REALIZED = "실현손익"
+    K_SUM_EVAL = "총평가"
+    K_SUM_RATE = "총평가수익률"
+    K_SUM_ASSET = "추정자산"
+
+    primary_multi_record = "선옵잔고상세현황"
+    primary_fields = [
+        K_CODE,
+        K_NAME,
+        K_DATE,
+        K_SIDE,
+        K_QTY,
+        K_BUY_PRICE,
+        K_TRADE_AMT,
+        K_CUR_PRICE,
+        K_PNL,
+        K_PNL_RATE,
+        K_EVAL_AMT,
     ]
 
     account_pwd = getattr(_secrets, "ACCOUNT_PWD", "")
-    inputs = {
-        "계좌번호": account_no,
-        "비밀번호": account_pwd,
-        "조회일자": datetime.datetime.now().strftime("%Y%m%d"),
-        "비밀번호입력매체구분": "00",
-    }
-    logger.warning("[OPW20006-REQ] account=%s screen=%s", account_no, screen_no)
+    today = datetime.datetime.now().strftime("%Y%m%d")
+
+    def _nonblank_map(data: Dict) -> Dict:
+        return {k: v for k, v in (data or {}).items() if str(v).strip()}
+
+    def _preview_rows(rows, limit: int = 3):
+        return [_nonblank_map(row) for row in list(rows or [])[:limit]]
+
+    def _normalize_code(value: str) -> str:
+        return str(value or "").strip().lstrip("A")
+
+    def _read_comm(tr_code: str, rq_name: str, index: int, item: str) -> str:
+        try:
+            return self.get_comm_data(tr_code, rq_name, index, item).strip()
+        except Exception:
+            return ""
+
+    def _request_aux(
+        tr_code: str,
+        rq_name: str,
+        inputs: Dict[str, str],
+        single_fields,
+        *,
+        multi_record: str = "",
+        multi_fields=None,
+        aux_screen_no: str = "2011",
+    ) -> Optional[Dict]:
+        logger.warning(
+            "[%s-REQ] account=%s screen=%s rq=%s inputs=%s single_fields=%s multi_record=%r multi_fields=%s",
+            tr_code,
+            account_no,
+            aux_screen_no,
+            rq_name,
+            inputs,
+            list(single_fields or []),
+            multi_record,
+            list(multi_fields or []),
+        )
+        aux_result = self.request_tr(
+            tr_code=tr_code,
+            rq_name=rq_name,
+            inputs=inputs,
+            screen_no=aux_screen_no,
+            timeout_sec=10,
+        )
+        if aux_result is None:
+            logger.warning("[BalanceTR] %s query failed account=%s", tr_code, account_no)
+            return None
+
+        single = {field: _read_comm(tr_code, rq_name, 0, field) for field in (single_fields or [])}
+        rows = []
+        repeat_cnt = 0
+        if multi_record and multi_fields:
+            try:
+                repeat_cnt = self.get_repeat_cnt(tr_code, multi_record)
+            except Exception:
+                repeat_cnt = 0
+            for i in range(repeat_cnt):
+                rows.append({field: _read_comm(tr_code, rq_name, i, field) for field in multi_fields})
+
+        logger.warning(
+            "[%s-RESP] rows=%d repeat_cnt=%d record=%r prev_next=%r single=%s nonblank_single=%s row_preview=%s",
+            tr_code,
+            len(rows),
+            repeat_cnt,
+            multi_record or aux_result.get("record_name", ""),
+            aux_result.get("prev_next", ""),
+            single,
+            _nonblank_map(single),
+            _preview_rows(rows),
+        )
+        return {
+            "result": aux_result,
+            "single": single,
+            "rows": rows,
+            "repeat_cnt": repeat_cnt,
+        }
+
+    def _pick_first(tr_code: str, rq_name: str, probe: Dict[str, str], *candidates: str) -> str:
+        for item in candidates:
+            value = _read_comm(tr_code, rq_name, 0, item)
+            probe[item] = value
+            if value:
+                logger.warning(
+                    "[BalanceTR-PICK] tr=%s rq=%s selected=%r value=%r candidates=%s",
+                    tr_code,
+                    rq_name,
+                    item,
+                    value,
+                    list(candidates),
+                )
+                return value
+        logger.warning(
+            "[BalanceTR-PICK] tr=%s rq=%s selected=None candidates=%s",
+            tr_code,
+            rq_name,
+            list(candidates),
+        )
+        return ""
+
+    def _ensure_row(row_map: Dict[str, Dict], raw_code: str) -> Dict:
+        key = _normalize_code(raw_code)
+        row = row_map.get(key)
+        if row is None:
+            row = {
+                K_CODE: raw_code,
+                K_NAME: "",
+                K_DATE: "",
+                K_SIDE: "",
+                K_QTY: "",
+                K_ORDERABLE_QTY: "",
+                K_BUY_PRICE: "",
+                K_TRADE_AMT: "",
+                K_CUR_PRICE: "",
+                K_PNL: "",
+                K_PNL_RATE: "",
+                K_EVAL_AMT: "",
+            }
+            row_map[key] = row
+        return row
+
     result = self.request_tr(
         tr_code="OPW20006",
         rq_name="futures_balance",
-        inputs=inputs,
+        inputs={
+            "계좌번호": account_no,
+            "비밀번호": account_pwd,
+            "조회일자": today,
+            "비밀번호입력매체구분": "00",
+        },
         screen_no=screen_no,
         timeout_sec=10,
     )
     if result is None:
-        logger.warning("[BalanceTR] OPW20006 조회 실패 account=%s", account_no)
+        logger.warning("[BalanceTR] OPW20006 query failed account=%s", account_no)
         return None
+    logger.warning(
+        "[BalanceTR-BASE] OPW20006 meta record=%r prev_next=%r raw_rows=%d",
+        result.get("record_name", ""),
+        result.get("prev_next", ""),
+        len(result.get("rows") or []),
+    )
 
-    single_probe = {}
-
-    def _read_single(*candidates: str) -> str:
-        for item in candidates:
-            try:
-                val = self.get_comm_data("OPW20006", "futures_balance", 0, item).strip()
-            except Exception:
-                val = ""
-            single_probe[item] = val
-            if val:
-                return val
-        return ""
-
-    result["summary"] = {
-        "총매매": _read_single("약정합계", "총약정금액", "총매매금액", "총매매"),
-        "총평가손익": _read_single("손익합계", "평가손익합계", "총평가손익"),
-        "실현손익": _read_single("청산손익합계", "실현손익", "당일실현손익", "당일실현손익(유가)"),
-        "총평가": _read_single("평가금액합계", "총평가금액", "총평가"),
-        "총평가수익률": _read_single("총평가손익률", "총수익률", "수익률", "손익율"),
-        "추정자산": _read_single("추정예탁자산", "추정자산", "예탁총액", "예탁자산"),
+    summary_probe = {}
+    summary = {
+        K_SUM_TRADE: _pick_first("OPW20006", "futures_balance", summary_probe, "약정합계", "총약정금액", "총매매금액", "총매매"),
+        K_SUM_PNL: _pick_first("OPW20006", "futures_balance", summary_probe, "손익합계", "평가손익합계", "총평가손익"),
+        K_SUM_REALIZED: _pick_first("OPW20006", "futures_balance", summary_probe, "청산손익합계", "실현손익", "당일실현손익", "당일실현손익(유가)"),
+        K_SUM_EVAL: _pick_first("OPW20006", "futures_balance", summary_probe, "평가금액합계", "총평가금액", "총평가"),
+        K_SUM_RATE: _pick_first("OPW20006", "futures_balance", summary_probe, "총평가손익률", "총수익률", "수익률", "손익율"),
+        K_SUM_ASSET: _pick_first("OPW20006", "futures_balance", summary_probe, "추정예탁자산", "추정자산", "예탁총액", "예탁자산"),
     }
-    result["summary_probe"] = single_probe
 
-    # 싱글 데이터에서 조회건수 읽기 (멀티 행 수 교차검증)
-    query_count_text = self.get_comm_data("OPW20006", "futures_balance", 0, "조회건수").strip()
+    query_count_text = _read_comm("OPW20006", "futures_balance", 0, "조회건수")
     try:
         query_count = int(query_count_text or "0")
     except ValueError:
         query_count = -1
-    logger.warning("[OPW20006-SINGLE] 조회건수=%r parsed=%d", query_count_text, query_count)
+    logger.warning(
+        "[BalanceTR-BASE-SUMMARY] summary=%s nonblank=%s probe=%s",
+        summary,
+        _nonblank_map(summary),
+        _nonblank_map(summary_probe),
+    )
+    logger.warning("[BalanceTR-QUERYCOUNT] text=%r parsed=%s", query_count_text, query_count)
 
-    n_multi = self.get_repeat_cnt("OPW20006", _MULTI_RECORD)
-    logger.warning("[OPW20006-MULTI] record=%r GetRepeatCnt=%d 조회건수=%d", _MULTI_RECORD, n_multi, query_count)
+    rows = []
+    row_map = {}
+    try:
+        repeat_cnt = self.get_repeat_cnt("OPW20006", primary_multi_record)
+    except Exception:
+        repeat_cnt = 0
+    logger.warning("[BalanceTR-ROWS] primary_record=%r repeat_cnt=%d", primary_multi_record, repeat_cnt)
+    for i in range(repeat_cnt):
+        row = {field: _read_comm("OPW20006", "futures_balance", i, field) for field in primary_fields}
+        row[K_ORDERABLE_QTY] = row.get(K_ORDERABLE_QTY, "")
+        rows.append(row)
+        row_map[_normalize_code(row.get(K_CODE, ""))] = row
+        logger.warning(
+            "[BalanceTR-ROW] source=OPW20006 idx=%d normalized_code=%s nonblank=%s",
+            i,
+            _normalize_code(row.get(K_CODE, "")),
+            _nonblank_map(row),
+        )
 
-    if n_multi > 0:
-        multi_rows = []
-        for i in range(n_multi):
-            row = {
-                f: self.get_comm_data("OPW20006", "futures_balance", i, f)
-                for f in _FIELDS
-            }
-            logger.warning("[OPW20006-MULTI-ROW] i=%d row=%s", i, row)
-            multi_rows.append(row)
-        nonempty_rows = [r for r in multi_rows if any(str(v).strip() for v in r.values())]
-        result["rows"] = multi_rows
-        result["record_name"] = _MULTI_RECORD
-    else:
-        multi_rows = []
-        nonempty_rows = []
+    opw20007 = _request_aux(
+        "OPW20007",
+        "futures_balance_settle",
+        {
+            "계좌번호": account_no,
+            "비밀번호": account_pwd,
+            "비밀번호입력매체구분": "00",
+        },
+        ["약정금액합계", "평가손익합계", "출력건수"],
+        multi_record="선옵잔고현황정산가기준",
+        multi_fields=[
+            K_CODE,
+            K_NAME,
+            "매도매수구분",
+            "수량",
+            K_BUY_PRICE,
+            K_CUR_PRICE,
+            K_PNL,
+            "청산가능수량",
+            "약정금액",
+            K_EVAL_AMT,
+        ],
+        aux_screen_no="2011",
+    )
+    if opw20007:
+        single = opw20007["single"]
+        summary_probe.update({f"OPW20007.{k}": v for k, v in single.items()})
+        if not summary.get(K_SUM_TRADE):
+            summary[K_SUM_TRADE] = single.get("약정금액합계", "")
+        if not summary.get(K_SUM_PNL):
+            summary[K_SUM_PNL] = single.get("평가손익합계", "")
 
+        for aux_row in opw20007["rows"]:
+            row = _ensure_row(row_map, aux_row.get(K_CODE, ""))
+            before_merge = dict(row)
+            row[K_CODE] = row.get(K_CODE) or aux_row.get(K_CODE, "")
+            row[K_NAME] = row.get(K_NAME) or aux_row.get(K_NAME, "")
+            raw_side = aux_row.get("매도매수구분", "")
+            if not row.get(K_SIDE):
+                if raw_side == "1":
+                    row[K_SIDE] = "매도"
+                elif raw_side == "2":
+                    row[K_SIDE] = "매수"
+                else:
+                    row[K_SIDE] = raw_side
+            row[K_QTY] = row.get(K_QTY) or aux_row.get("수량", "")
+            row[K_ORDERABLE_QTY] = row.get(K_ORDERABLE_QTY) or aux_row.get("청산가능수량", "")
+            row[K_BUY_PRICE] = row.get(K_BUY_PRICE) or aux_row.get(K_BUY_PRICE, "")
+            row[K_CUR_PRICE] = row.get(K_CUR_PRICE) or aux_row.get(K_CUR_PRICE, "")
+            row[K_PNL] = row.get(K_PNL) or aux_row.get(K_PNL, "")
+            row[K_TRADE_AMT] = row.get(K_TRADE_AMT) or aux_row.get("약정금액", "")
+            row[K_EVAL_AMT] = row.get(K_EVAL_AMT) or aux_row.get(K_EVAL_AMT, "")
+            logger.warning(
+                "[BalanceTR-MERGE] source=OPW20007 code=%s before=%s aux=%s after=%s",
+                _normalize_code(aux_row.get(K_CODE, "")),
+                _nonblank_map(before_merge),
+                _nonblank_map(aux_row),
+                _nonblank_map(row),
+            )
+        rows = list(row_map.values())
+
+    opw20008 = _request_aux(
+        "OPW20008",
+        "futures_balance_deposit",
+        {
+            "계좌번호": account_no,
+            "비밀번호": account_pwd,
+            "비밀번호입력매체구분": "00",
+        },
+        [
+            "계좌명",
+            "예탁총액",
+            "추정예탁총액",
+            "예탁현금",
+            "추정예탁현금",
+            "유지증거금총액",
+            "옵션잔고평가손익",
+        ],
+        aux_screen_no="2012",
+    )
+    if opw20008:
+        single = opw20008["single"]
+        summary_probe.update({f"OPW20008.{k}": v for k, v in single.items()})
+        logger.warning(
+            "[BalanceTR-AUX-RAW] source=OPW20008 single=%s",
+            _nonblank_map(single),
+        )
+        if not summary.get(K_SUM_ASSET):
+            summary[K_SUM_ASSET] = single.get("추정예탁총액") or single.get("예탁총액", "")
+
+    opw20003 = _request_aux(
+        "OPW20003",
+        "futures_balance_realized",
+        {
+            "계좌번호": account_no,
+            "시장구분": "0",
+            "비밀번호": account_pwd,
+            "시작일자": today,
+            "종료일자": today,
+            "비밀번호입력매체구분": "00",
+        },
+        ["총손익", "예탁총액", "수익율", "조회건수"],
+        aux_screen_no="2013",
+    )
+    if opw20003:
+        single = opw20003["single"]
+        summary_probe.update({f"OPW20003.{k}": v for k, v in single.items()})
+        logger.warning(
+            "[BalanceTR-AUX-RAW] source=OPW20003 single=%s",
+            _nonblank_map(single),
+        )
+        if not summary.get(K_SUM_REALIZED):
+            summary[K_SUM_REALIZED] = single.get("총손익", "")
+        if not summary.get(K_SUM_RATE):
+            summary[K_SUM_RATE] = single.get("수익율", "")
+        if not summary.get(K_SUM_ASSET):
+            summary[K_SUM_ASSET] = single.get("예탁총액", "")
+
+    nonempty_rows = [row for row in rows if any(str(v).strip() for v in row.values())]
+    result["summary"] = summary
+    result["summary_probe"] = summary_probe
+    result["rows"] = rows
+    result["record_name"] = primary_multi_record
     result["query_count"] = query_count
     result["nonempty_rows"] = nonempty_rows
-    result["blank_row_count"] = len(multi_rows) - len(nonempty_rows)
-    result["all_blank_rows"] = bool(multi_rows) and not nonempty_rows
+    result["blank_row_count"] = len(rows) - len(nonempty_rows)
+    result["all_blank_rows"] = bool(rows) and not nonempty_rows
 
     logger.warning(
-        "[OPW20006-RESP] multi_rows=%d nonempty=%d query_count=%d record=%r prev_next=%r",
-        len(multi_rows), len(nonempty_rows), query_count,
-        result.get("record_name", ""), result.get("prev_next", ""),
+        "[BalanceTR-RESP] rows=%d nonempty=%d query_count=%d record=%r prev_next=%r summary=%s nonblank_summary=%s row_preview=%s",
+        len(rows),
+        len(nonempty_rows),
+        query_count,
+        result.get("record_name", ""),
+        result.get("prev_next", ""),
+        summary,
+        _nonblank_map(summary),
+        _preview_rows(nonempty_rows or rows),
     )
-    if not any(str(v).strip() for v in result["summary"].values()):
-        logger.warning("[OPW20006-SUMMARY-BLANK] probe=%s", single_probe)
-    logger.info("[BalanceTR] OPW20006 응답 rows=%d", len(multi_rows))
+    logger.warning(
+        "[BalanceTR-FINAL] blank_row_count=%d all_blank_rows=%s summary_blank=%s probe_nonblank=%s",
+        result.get("blank_row_count", 0),
+        result.get("all_blank_rows", False),
+        not any(str(v).strip() for v in summary.values()),
+        _nonblank_map(summary_probe),
+    )
+    if not any(str(v).strip() for v in summary.values()):
+        logger.warning("[BalanceTR-SUMMARY-BLANK] probe=%s", summary_probe)
+    logger.info("[BalanceTR] futures balance rows=%d", len(rows))
     return result
 
 

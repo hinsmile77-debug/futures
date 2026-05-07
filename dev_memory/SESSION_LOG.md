@@ -4,6 +4,125 @@
 
 ---
 
+## 2026-05-07 (4차) — 실시간 잔고 UI 합성 행 수정 + 모의투자 startup sync 버그 수정 + 포지션 수동 복원 버튼
+
+**작업**: 대시보드 실시간 잔고 패널 데이터 부정확 문제 3종 연속 진단 및 수정
+
+### 로그/스크린샷 기반 진단 결과
+
+| 현상 | 원인 | Fix |
+|---|---|---|
+| 총매매 576,500 (HTS 288,250,000) | 승수 오류: `entry × qty × 500,000/1,000 = 576,500` | `entry × qty × 250,000` (KOSPI200 선물 계약 승수) |
+| 총평가손익 blank | 합계 집계 가드 `(pnl_sum or not rows)` — pnl=0이면 blank | 가드 제거 → 항상 값 설정 |
+| 평가손익(행) 0.00 | 합성 행 조건 `not rows` — blank rows=[{...}] 케이스 통과 못함 | `_has_real_row` 의미론적 검사로 교체 |
+| 청산가능 blank | 합성 행에 `주문가능수량` 필드 없음 | `"주문가능수량": str(qty)` 추가 |
+| 손익율 0.00% | pt 기준 계산: `pnl_pts/entry` → 의미 없음 | won 기준: `pnl_krw/eval_krw` |
+| 대시보드 전부 0.00 (재시작 후) | startup sync가 모의투자 blank rows를 "무포지션"으로 해석 → `sync_flat_from_broker()` 호출 → position_state.json 덮어씀 | 모의투자 서버 감지 후 FLAT 강제 차단 |
+
+### 수정 3건
+
+**[B60/B61] 합성 행 + 합계 집계 버그 수정 (`main.py` `_ts_push_balance_to_dashboard`)**:
+```python
+# 1. 의미론적 blank 검사
+_has_real_row = any(any(str(v).strip() for v in r.values()) for r in rows)
+if not _has_real_row and self.position.status != "FLAT":
+
+# 2. 승수 수정
+_pnl_krw = _pnl_pts * 250_000   # 기존: 500_000
+_eval_krw = _entry * _qty * 250_000  # 기존: entry × qty × 500,000/1,000
+
+# 3. 필드 추가
+"주문가능수량": str(_qty),   # 대시보드 col-3 매핑
+
+# 4. 손익율 won 기준
+"손익율": f"{(_pnl_krw / _eval_krw * 100.0):.2f}" if _eval_krw else "0.00"
+
+# 5. 합계 가드 — pnl_sum=0 케이스도 설정
+if not str(summary.get("총평가손익") or "").strip():
+    summary["총평가손익"] = f"{pnl_sum:.0f}"
+```
+
+**[B62] 모의투자 startup sync FLAT 덮어쓰기 방지 (`main.py` `_ts_sync_position_from_broker`)**:
+```python
+# blank rows AND 모의투자 서버 AND 저장 포지션 있음 → FLAT 강제 금지
+_server_gubun = self.kiwoom.get_login_info("GetServerGubun")
+_is_mock = (_server_gubun == "1")
+if _is_mock and self.position.status != "FLAT":
+    log_manager.system("[BrokerSync] 모의투자 blank-rows → 저장 포지션 유지", "WARNING")
+    _ts_push_balance_to_dashboard(self, result)
+    return
+```
+
+**[B63] 포지션 수동 복원 버튼 (`dashboard/main_dashboard.py`, `main.py`)**:
+- `PositionRestoreDialog`: 방향/진입가/수량/ATR 입력 다이얼로그
+- `AccountInfoPanel.btn_position_restore`: 주황색 버튼 (실시간 잔고 패널 우상단)
+- `AccountInfoPanel.sig_position_restore(str, float, int, float)` 시그널
+- `_ts_manual_position_restore()`: `sync_from_broker()` 호출 → 손절/TP 자동 재계산 → 300ms 후 잔고 UI 갱신
+- **HTML 툴팁 3섹션**: 사용목적 / 사용방법(진입가 환산법 포함) / ATR 참조(`[DBG-F4] ATR floor=`)
+
+### 오늘 확인된 중요 사실
+
+- **15:10 강제청산 정상 동작 확인**: `position_state.json` `last_update_reason="apply_exit_fill_final:15:10 강제청산"` at 15:25:59 → 강제청산 경로 정상
+- **KOSPI200 선물 계약 승수**: 250,000원/pt (2017년 이후 기준). HTS 매입금액 = entry × qty × 250,000
+- **버그 체인 확정**: `load_state()` LONG 복원 → `sync_from_broker()` blank rows → `sync_flat_from_broker()` → JSON 덮어씀 → 다음 재시작 FLAT → 대시보드 0.00
+
+### 수정 파일
+
+- `main.py` — `_ts_push_balance_to_dashboard`, `_ts_sync_position_from_broker`, `_ts_manual_position_restore` (신규)
+- `dashboard/main_dashboard.py` — `PositionRestoreDialog` (신규), `AccountInfoPanel` 버튼/시그널/핸들러/툴팁 추가
+
+---
+
+## 2026-05-07 (3차) — B56 쿨다운 중앙화 + B52/B53 재진입 루프 근본 수정
+
+**작업**: 09:56~10:07 ENTRY 8회 반복 진입 원인 분석 → `_clear_pending_order()` 중앙화로 수정
+
+### 로그 분석 결과
+
+| 시각 | 이벤트 |
+|---|---|
+| 09:56~10:07 | SHORT·LONG 교대로 2분마다 ENTRY 8회 반복 |
+| 10:14:00 | LONG 1계약 진입 → 즉시 체결 (B54 확인) |
+| 10:34:01 | 하드스톱 청산 @ 1114.95 (-7.35pt / -3,675,000원) |
+| 10:38 이후 | Sizer만 호출, 진입 없음 (CB③ 발동으로 당일 HALTED 추정) |
+
+### 원인 진단
+
+B53 쿨다운 변수(`_entry_cooldown_until`)가 실제로 설정되지 않는 케이스 3가지:
+1. B52 쿨다운 코드가 `if _optimistic:` 블록 내부 → `_optimistic=False`이면 쿨다운 없이 pending만 해제
+2. `_ts_on_order_message` 거부 경로 → `_clear_pending_order()` 호출하나 쿨다운 미설정
+3. balance Chejan FLAT 경로 → 동일
+
+WARN.log 분석: 09:56~10:09 구간에 gubun='1' 잔고 Chejan 이벤트 없음 확인 → `_ts_sync_from_balance_payload`는 원인 아님.
+`order_no!=''`인 주문도 2분 후 clear됨 → `_ts_on_order_message` 거부 경로가 일부 작동한 것으로 추정.
+
+### 수정 3건
+
+**[B56] `_clear_pending_order()` 쿨다운 중앙화 (main.py L258-272)**:
+```python
+def _clear_pending_order(self) -> None:
+    if self._pending_order is not None:
+        logger.warning("[PendingOrder] clear %s", self._pending_order)
+        if (self._pending_order.get("kind") == "ENTRY"
+                and self._pending_order.get("filled_qty", 0) == 0):
+            self._entry_cooldown_until = datetime.datetime.now() + datetime.timedelta(minutes=2)
+            logger.warning("[EntryCooldown] ENTRY 미체결 소멸 → 2분 재진입 금지 until %s", ...)
+    self._pending_order = None
+```
+
+**[B52] `_optimistic` 의존 분리 (main.py L555-585)**:
+- `_reset_position()`은 `_optimistic==True`일 때만 (기존 유지)
+- 쿨다운 설정은 ENTRY 타임아웃이면 항상 (`_optimistic` 무관)
+
+**[B56] balance Chejan FLAT 주석 추가 (main.py L2712)**:
+- qty<=0 분기에 "`_clear_pending_order()` 내에서 B56 자동 처리" 주석
+
+### 수정 파일
+
+- `main.py` — 3곳 수정 (`_clear_pending_order`, B52 블록, balance Chejan 주석)
+
+---
+
 ## 2026-05-06 (2차) — WARN.log 분석 + trade_type 청산 오류(B47) + gubun='4' 차단(B48)
 
 **작업**: 20260506 TRADE·SYSTEM·WARN 로그 분석 → 코드 개선안 유효성 검토 → B47·B48 수정

@@ -13,6 +13,7 @@
 """
 
 import os
+import logging
 import subprocess
 import sys
 import random
@@ -24,6 +25,7 @@ from PyQt5.QtWidgets import (
     QTextEdit, QFrame, QSplitter, QScrollArea, QGroupBox,
     QComboBox, QSlider, QCheckBox, QSizePolicy, QDesktopWidget,
     QToolTip, QTableWidget, QTableWidgetItem, QHeaderView,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QSpinBox, QFormLayout,
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
@@ -34,6 +36,8 @@ from PyQt5.QtGui import (
     QLinearGradient, QFontDatabase, QIcon,
     QTextCursor, QTextBlockFormat,
 )
+
+logger = logging.getLogger("SYSTEM")
 
 
 # ────────────────────────────────────────────────────────────
@@ -356,6 +360,80 @@ _PIPE_HEALTH_TIP = (
     "② on_candle_closed 미호출&nbsp;&nbsp;"
     "③ STEP 내 예외&nbsp;&nbsp;"
     "④ 장외 시간"
+
+    "</div>"
+)
+
+_CB_TIP = (
+    "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.75;"
+    "min-width:440px;'>"
+
+    "<b style='color:#F85149;font-size:13px;'>⛔ Circuit Breaker — 5종 비상 정지</b>"
+    "<hr style='border:0;border-top:1px solid #30363D;margin:5px 0 7px 0'>"
+
+    # ── 상태 3종 ──────────────────────────────────────────────────────
+    "<b style='color:#58A6FF'>① 3가지 상태</b><br>"
+    "<table style='margin-left:10px;border-collapse:collapse;line-height:2.0;'>"
+    "<tr>"
+    "<td style='color:#3FB950;font-weight:bold;padding-right:10px;'>NORMAL</td>"
+    "<td>진입 허용 — 파이프라인 정상 동작</td>"
+    "</tr><tr>"
+    "<td style='color:#D29922;font-weight:bold;padding-right:10px;'>PAUSED</td>"
+    "<td>시간 제한 진입 정지 → <b>시간 경과 시 자동 NORMAL 복귀</b></td>"
+    "</tr><tr>"
+    "<td style='color:#F85149;font-weight:bold;padding-right:10px;'>HALTED</td>"
+    "<td>당일 영구 정지 → <b>재시작 또는 15:40 이후에만 해제</b></td>"
+    "</tr>"
+    "</table>"
+    "<br>"
+
+    # ── 발동 조건 5종 ─────────────────────────────────────────────────
+    "<b style='color:#58A6FF'>② 발동 조건 5종</b><br>"
+    "<table style='margin-left:10px;border-collapse:collapse;line-height:1.9;'>"
+    "<tr>"
+    "<td style='color:#A371F7;font-weight:bold;padding-right:8px;'>①</td>"
+    "<td>1분 내 신호 <b>5번 이상 반전</b></td>"
+    "<td style='padding-left:12px;color:#D29922;'>→ PAUSED 15분</td>"
+    "</tr><tr>"
+    "<td style='color:#F85149;font-weight:bold;padding-right:8px;'>②</td>"
+    "<td>5분 내 <b>손절 3연속</b></td>"
+    "<td style='padding-left:12px;color:#F85149;'>→ HALTED 당일 정지</td>"
+    "</tr><tr>"
+    "<td style='color:#F85149;font-weight:bold;padding-right:8px;'>③</td>"
+    "<td>30분 이동정확도 <b>&lt; 35%</b></td>"
+    "<td style='padding-left:12px;color:#F85149;'>→ HALTED 당일 정지</td>"
+    "</tr><tr>"
+    "<td style='color:#D29922;font-weight:bold;padding-right:8px;'>④</td>"
+    "<td>현재 ATR ≥ 30분 평균 × <b>3배</b></td>"
+    "<td style='padding-left:12px;color:#D29922;'>→ PAUSED 5분</td>"
+    "</tr><tr>"
+    "<td style='color:#F85149;font-weight:bold;padding-right:8px;'>⑤</td>"
+    "<td>API 응답 지연 <b>≥ 5초</b></td>"
+    "<td style='padding-left:12px;color:#F85149;'>→ 즉시 청산 + PAUSED</td>"
+    "</tr>"
+    "</table>"
+    "<br>"
+
+    # ── 해제 방법 ─────────────────────────────────────────────────────
+    "<b style='color:#58A6FF'>③ 해제 방법 및 조건</b><br>"
+    "<table style='margin-left:10px;border-collapse:collapse;line-height:1.9;'>"
+    "<tr>"
+    "<td style='color:#D29922;font-weight:bold;padding-right:10px;'>PAUSED</td>"
+    "<td>설정된 정지 시간 자동 만료 → <b>별도 조작 불필요</b></td>"
+    "</tr><tr>"
+    "<td style='color:#F85149;font-weight:bold;padding-right:10px;'>HALTED</td>"
+    "<td>"
+    "<b style='color:#39D3BB'>프로그램 재시작</b>&nbsp;(상태 파일 없음 — 메모리 초기화)<br>"
+    "&nbsp;&nbsp;&nbsp;또는&nbsp;&nbsp;"
+    "<b style='color:#39D3BB'>15:40 자동 리셋</b>&nbsp;(daily_close → reset_daily)"
+    "</td>"
+    "</tr>"
+    "</table>"
+    "<hr style='border:0;border-top:1px solid #30363D;margin:7px 0 5px 0'>"
+    "<span style='color:#8B949E;font-size:11px;'>"
+    "▸ 상태는 매분 [DBG-CB] 로그로 확인 가능 &nbsp;|&nbsp; "
+    "당일 HALTED 상태에서 재시작하면 즉시 NORMAL 복귀"
+    "</span>"
 
     "</div>"
 )
@@ -781,7 +859,85 @@ class PredictionPanel(QWidget):
             self._model_prog.setVisible(False)
 
 
+class PositionRestoreDialog(QDialog):
+    """포지션 수동 복원 다이얼로그 (모의투자 TR blank 대응)"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("포지션 수동 복원")
+        self.setModal(True)
+        self.setFixedWidth(S.p(320))
+        self.setStyleSheet(
+            f"QDialog{{background:{C['bg2']};color:{C['text']};}}"
+            f"QLabel{{color:{C['text']};font-size:{S.f(10)}px;}}"
+            f"QDoubleSpinBox,QSpinBox{{background:{C['bg3']};color:{C['text']};"
+            f"border:1px solid {C['border']};border-radius:3px;padding:2px 6px;"
+            f"font-size:{S.f(10)}px;}}"
+            f"QComboBox{{background:{C['bg3']};color:{C['text']};"
+            f"border:1px solid {C['border']};border-radius:3px;padding:2px 6px;"
+            f"font-size:{S.f(10)}px;}}"
+            f"QComboBox QAbstractItemView{{background:{C['bg2']};color:{C['text']};"
+            f"selection-background-color:{C['blue']};}}"
+            f"QPushButton{{background:{C['blue']};color:#fff;border:none;"
+            f"border-radius:4px;padding:4px 12px;font-size:{S.f(10)}px;font-weight:bold;}}"
+            f"QPushButton[text='취소']{{background:{C['bg3']};color:{C['text2']};}}"
+        )
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(S.p(16), S.p(12), S.p(16), S.p(12))
+        lay.setSpacing(S.p(10))
+
+        warn = mk_label(
+            "⚠ 모의투자 서버 TR blank 시 사용. 실제 HTS 잔고를 직접 입력하세요.",
+            C['orange'], 9,
+        )
+        warn.setWordWrap(True)
+        lay.addWidget(warn)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(S.p(8))
+        form.setLabelAlignment(Qt.AlignRight)
+
+        self.cmb_direction = QComboBox()
+        self.cmb_direction.addItems(["LONG (매수)", "SHORT (매도)"])
+        form.addRow("방향:", self.cmb_direction)
+
+        self.spn_price = QDoubleSpinBox()
+        self.spn_price.setRange(100.0, 9999.99)
+        self.spn_price.setDecimals(2)
+        self.spn_price.setSingleStep(0.05)
+        self.spn_price.setValue(0.0)
+        form.addRow("진입가(pt):", self.spn_price)
+
+        self.spn_qty = QSpinBox()
+        self.spn_qty.setRange(1, 99)
+        self.spn_qty.setValue(1)
+        form.addRow("수량(계약):", self.spn_qty)
+
+        self.spn_atr = QDoubleSpinBox()
+        self.spn_atr.setRange(0.5, 50.0)
+        self.spn_atr.setDecimals(2)
+        self.spn_atr.setSingleStep(0.1)
+        self.spn_atr.setValue(5.0)
+        form.addRow("ATR(pt):", self.spn_atr)
+
+        lay.addLayout(form)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Ok).setText("복원")
+        btns.button(QDialogButtonBox.Cancel).setText("취소")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def get_values(self):
+        direction = "LONG" if self.cmb_direction.currentIndex() == 0 else "SHORT"
+        return direction, self.spn_price.value(), self.spn_qty.value(), self.spn_atr.value()
+
+
 class AccountInfoPanel(QWidget):
+    sig_position_restore = pyqtSignal(str, float, int, float)  # direction, price, qty, atr
+
     def __init__(self):
         super().__init__()
         self._summary_values = {}
@@ -802,8 +958,62 @@ class AccountInfoPanel(QWidget):
         self.pb_balance_live.setFixedWidth(S.p(108))
         self.pb_balance_live.setRange(0, 100)
         self.pb_balance_live.setValue(0)
+        self.btn_position_restore = QPushButton("포지션 복원")
+        self.btn_position_restore.setFixedWidth(S.p(80))
+        self.btn_position_restore.setCursor(Qt.PointingHandCursor)
+        self.btn_position_restore.setStyleSheet(
+            f"QPushButton{{background:{C['orange']};color:#fff;border:none;"
+            f"border-radius:3px;padding:2px 6px;font-size:{S.f(8)}px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:#d4890a;}}"
+        )
+        self.btn_position_restore.setToolTip(
+            "<html><body style='background:#1e1e2e;color:#cdd6f4;"
+            "font-size:12px;padding:6px;min-width:340px;'>"
+            "<p style='color:#fab387;font-weight:bold;margin:0 0 6px 0;'>"
+            "&#9888; 포지션 수동 복원</p>"
+
+            "<p style='color:#89b4fa;font-weight:bold;margin:0 0 3px 0;'>"
+            "&#9654; 사용 목적</p>"
+            "<p style='margin:0 0 8px 8px;'>"
+            "모의투자 서버에서 <b>OPW20006 TR이 공란</b>을 반환할 때,<br>"
+            "또는 미륵이 <b>재시작 후 실제 보유 포지션이 대시보드에 표시되지 않을 때</b><br>"
+            "HTS 실제 잔고를 직접 입력해 UI를 동기화합니다.<br>"
+            "<span style='color:#f38ba8;'>&#8251; 실서버 정상 가동 중에는 사용하지 마세요.</span>"
+            "</p>"
+
+            "<p style='color:#89b4fa;font-weight:bold;margin:0 0 3px 0;'>"
+            "&#9654; 사용 방법</p>"
+            "<ol style='margin:0 0 8px 16px;padding:0;'>"
+            "<li>HTS 실시간잔고 화면 확인</li>"
+            "<li>방향(매수=LONG / 매도=SHORT) 선택</li>"
+            "<li>진입가: HTS <b>매입가(원)</b>를 <b>1,000으로 나눈 값</b> 입력<br>"
+            "<span style='color:#a6e3a1;'>"
+            "예) HTS 1,153,000원 &rarr; 1153.00pt 입력</span></li>"
+            "<li>수량: HTS 보유량(계약수) 입력</li>"
+            "<li>ATR 입력 후 <b>[복원]</b> 클릭</li>"
+            "<li>잔고 UI 자동 갱신 + position_state.json 저장</li>"
+            "</ol>"
+
+            "<p style='color:#89b4fa;font-weight:bold;margin:0 0 3px 0;'>"
+            "&#9654; ATR 수치 참조 방법</p>"
+            "<p style='margin:0 0 4px 8px;'>"
+            "ATR = 최근 1분봉 평균 변동폭 (포인트 단위)<br>"
+            "손절라인 = 진입가 &plusmn; ATR&times;1.5 &nbsp;|&nbsp; "
+            "TP1 = &plusmn; ATR&times;1.0</p>"
+            "<ul style='margin:0 0 4px 16px;padding:0;'>"
+            "<li>로그 탭 검색: <code>[DBG-F4]</code> &rarr; <code>ATR floor=X.XXpt</code></li>"
+            "<li>WARN 로그 파일: <code>logs/YYYYMMDD_WARN.log</code> 에서 <code>atr=</code> 검색</li>"
+            "<li>ATR 모를 경우 <b>기본값 5.0pt 사용</b> 권장<br>"
+            "<span style='color:#cba6f7;'>"
+            "(평온한 장 2~4pt | 보통 4~7pt | 고변동 7~15pt)</span></li>"
+            "</ul>"
+            "</body></html>"
+        )
+        self.btn_position_restore.clicked.connect(self._on_position_restore_clicked)
         live_row.addWidget(self.lbl_balance_live)
         live_row.addWidget(self.pb_balance_live)
+        live_row.addStretch()
+        live_row.addWidget(self.btn_position_restore)
         self.live_header_widget = live_box
 
         lay.addWidget(mk_sep())
@@ -926,6 +1136,13 @@ class AccountInfoPanel(QWidget):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter)
                 self.tbl_balance.setItem(r, c, item)
+
+    def _on_position_restore_clicked(self):
+        dlg = PositionRestoreDialog(self)
+        if dlg.exec_() == QDialog.Accepted:
+            direction, price, qty, atr = dlg.get_values()
+            if price > 0 and qty > 0:
+                self.sig_position_restore.emit(direction, price, qty, atr)
 
 
 # ────────────────────────────────────────────────────────────
@@ -3796,6 +4013,7 @@ class MireukDashboard(QMainWindow):
         mid_tabs.addTab(self._wrap(self.feat_panel),     "동적 피처 (SHAP)")
         mid_tabs.addTab(self._wrap(self.exit_panel),     "청산 관리")
         mid_tabs.addTab(self._wrap(self.entry_panel),    "진입 관리")
+        mid_tabs.setTabToolTip(mid_tabs.count() - 1, _CB_TIP)
         mid_tabs.addTab(self._wrap(self.learn_panel),    "🧠 자가학습")
         mid_tabs.addTab(self._wrap(self.efficacy_panel), "🎯 효과 검증")
         mid_tabs.addTab(self._wrap(self.trend_panel),    "📈 성장 추이")
@@ -3948,6 +4166,7 @@ class DashboardAdapter:
         # 긴급 정지 버튼을 외부에서 접근할 수 있도록 노출
         self.btn_kill = self._win._make_kill_btn()
         self.btn_save_account = self._win.btn_save_account
+        self.sig_position_restore = self._win.account_info_panel.sig_position_restore
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
@@ -3979,6 +4198,13 @@ class DashboardAdapter:
         return self._win.cmb_account.currentText().strip()
 
     def update_account_balance(self, summary: dict, rows):
+        logger.warning(
+            "[BalanceUI] dashboard receive rows=%d summary_nonblank=%s preview=%s summary=%s",
+            len(rows or []),
+            any(str(v).strip() for v in (summary or {}).values()),
+            list(rows or [])[:3],
+            summary or {},
+        )
         self._win.account_info_panel.update_summary(summary)
         self._win.account_info_panel.update_rows(rows)
 

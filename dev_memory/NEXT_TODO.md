@@ -8,13 +8,59 @@
 
 ---
 
+## 즉시 확인 필요 (추가됨 2026-05-07 4차 세션)
+
+### [V47] 포지션 복원 버튼 동작 확인 [다음 모의투자 장중]
+- **내용**: "포지션 복원" 버튼 클릭 → `PositionRestoreDialog` 표시 → 값 입력 후 복원 → 잔고 패널 갱신
+- **방법**:
+  1. 재시작 후 포지션 0.00 상태에서 버튼 클릭
+  2. LONG / 진입가(pt) / 수량 / ATR 입력 후 "복원" 클릭
+  3. WARN.log `[PositionRestore] 완료: ...  손절=X.XX  TP1=X.XX  TP2=X.XX` 확인
+  4. 잔고 패널: 방향·진입가·평가손익 갱신 확인
+- **기준**: WARN 로그 출력 + 패널 비FLAT 표시 + 쿨다운 미작동
+
+### [V48] B60 수정 후 잔고 패널 수치 HTS 대조 확인 [다음 포지션 보유 중]
+- **내용**: 합성 잔고행의 `총매매 / 평가손익 / 손익율` 이 HTS 수치와 ±5% 이내인지 확인
+- **방법**: LONG 포지션 보유 중 HTS "선물 실시간 잔고" 패널 vs 미륵이 대시보드 잔고 패널 스크린샷 비교
+- **기준**: 총매매 = entry_pt × qty × 250,000. 손익율(%) = pnl_krw / eval_krw × 100
+
+### [V44/B62] 모의서버 startup sync FLAT 오염 해소 확인 [다음 재시작]
+- **내용**: LONG 포지션 중 재시작 → `[BrokerSync] 모의투자 blank-rows → 저장 포지션 유지` WARN.log 확인
+- **기준**: position_state.json `"status": "LONG"` 그대로 유지 (FLAT으로 덮어쓰지 않음)
+- **실패 시**: GetServerGubun 호출 오류 여부 확인 (try/except → `_is_mock=False`로 fallback)
+
+---
+
+## 즉시 확인 필요 (추가됨 2026-05-07 3차 세션)
+
+### [V42] SHORT 진입 Chejan 체결 확인 [다음 장중]
+- **배경**: CB③(30분 정확도 <35%) 발동으로 이번 세션에서 SHORT 진입 없었음
+- **내용**: SHORT ENTRY 주문 → Chejan 접수 → Chejan 체결 end-to-end 확인
+- **방법**: WARN.log `[ChejanFlow] fill_qty>0 status=체결 kind=ENTRY SHORT` 확인
+- **기준**: `[PendingOrder] clear` 가 타임아웃이 아닌 체결로 발생 (filled_qty>0 경로)
+
+### [V43] B56 쿨다운 실제 차단 확인 [다음 ENTRY 미체결 시]
+- **내용**: ENTRY 주문 미체결 소멸 후 `[EntryCooldown] ENTRY 미체결 소멸 → 2분 재진입 금지 until HH:MM:SS` WARN.log 출력 + 2분간 STEP 7 진입 차단
+- **방법**: WARN.log에서 `[EntryCooldown]` 로그 확인 후 2분 이내 `[EntryAttempt]` 없음 확인
+- **기준**: 이전처럼 매 2분마다 반복 진입 없음
+
+### [B56 / BalanceChejanFlow] 조사 완료 [DONE 2026-05-07]
+- 09:56~10:09 구간 gubun='1' 잔고 Chejan 이벤트 없음 확인 (WARN.log 전수 분석)
+- balance Chejan FLAT 경로는 당시 미작동 → 비이슈 종료
+- B56 적용으로 해당 경로도 이제 자동 쿨다운 처리됨
+
+---
+
 ## 즉시 확인 필요 (추가됨 2026-05-06 추가 세션)
 
-### [V35] trade_type=4 수정 후 EXIT 체결 Chejan 즉시 수신 확인 [다음 장중]
-- **내용**: B47 수정(trade_type 4/3) 후 EXIT 주문 전송 → Chejan fill_qty>0 즉시 수신되는지
-- **방법**: WARN.log `[ChejanFlow] gubun='0' fill_qty=N status='체결'` 확인. EXIT_FULL/EXIT_PARTIAL pending이 60초 타임아웃 없이 즉시 해소되는지 확인
-- **기준**: `[PendingOrder] clear` 이 60초 이내 자연 해소 (타임아웃 clear가 아닌 체결 clear)
-- **실패 시**: 모의투자 서버에서 시장가 선물청산 체결방식 추가 조사 필요
+### [V35] B54 통합 파라미터 후 ENTRY/EXIT Chejan 체결 확인 [DONE 2026-05-07] (구: trade_type=4)
+- **변경**: B47(trade_type=4)·B54(lOrdKind=1+slby_tp)로 두 번 수정됨. 현재 코드는 B54 기준
+- **방법**: WARN.log `[ChejanFlow] fill_qty>0 status=체결` + `[PendingOrder] clear` 확인 (타임아웃 아닌 체결 clear)
+- **확인 포인트**:
+  - LONG 진입: `[주문요청] LONG` → Chejan 접수 → Chejan 체결 → `[PendingOrder] clear` (300s 이내)
+  - SHORT 진입: `[주문요청] SHORT` → Chejan 접수(order_no 확인) → Chejan 체결 (B54 효과)
+  - LONG EXIT: `[ExitAttempt]` → `[ExitSendOrderResult] ret=0` → Chejan 체결 → position FLAT
+- **실패 시**: `[OrderDiag] SendOrderFO` 로그에서 slby_tp 값 확인 후 enc 파일 재조사
 
 ### [V32] SendOrderFO 실제 체결 확인 [DONE 2026-05-06]
 - 진입 주문은 정상 체결됨 확인 (10:48, 10:50, 11:35 체결 로그). EXIT 주문 미체결은 trade_type=2(신규매도) 오류 때문. B47 수정으로 해결 (trade_type=4 매도청산 전환).
@@ -274,6 +320,35 @@
 - 선물호가잔량 콜백 `_on_hoga_data()` 신설 + `sopt_type="1"` 추가 등록으로 해결
 - 모의투자 서버에서 선물호가잔량 수신 확인됨 (로그에서 확인)
 - **검증 필요**: [V19] 재시작 후 `[DBG-F4]` 에서 bid/ask 값 확인
+## 2026-05-07 세션 후속
+
+### DONE 처리
+- [DONE 2026-05-07] **[B52]** ENTRY 타임아웃 시 낙관적 포지션 FLAT 복원 구현 (`main.py` L544). **[V39] 장중 동작 확인** ✅
+- [DONE 2026-05-07] **[V35/V41]** B54(lOrdKind=1+slby_tp) 완전 검증 — LONG 진입/EXIT 즉시 체결. PnL 배수 500,000원/pt 확인
+- [DONE 2026-05-07] **[B49]** EXIT 경로 진단 로그 추가 — 하드스톱/시간청산 앞뒤에 `[ExitAttempt]` + `[ExitSendOrderResult]` 추가
+- [DONE 2026-05-07] **[B50]** price_hint float 오차 수정 — `round(exit_price, 2)` 적용 (하드스톱/시간청산)
+- [DONE 2026-05-07] **[B53]** ENTRY 타임아웃 후 2분 쿨다운 구현 — `_entry_cooldown_until` 설정 + STEP 7 진입 조건 차단 + `[EntryCooldown]` 차단 로그 + `[차단] ENTRY 타임아웃 쿨다운` 이유 로그
+- [DONE 2026-05-07] **BrokerSync CRITICAL → WARNING** — position_state.json 잔여로 매 시작 시 CRITICAL 출력되던 것 WARNING으로 완화 (blank rows FLAT 처리는 정상 동작)
+- [DONE 2026-05-07] **[B54]** SendOrderFO 파라미터 통일 — `api_connector.send_order_fo(slby_tp="")`추가. 모든 진입/청산/긴급청산을 `lOrdKind=1(신규매매) + sSlbyTp` 방향 명시로 변경. trade_type=2(SHORT)가 new convention에서 "정정"으로 해석되어 서버 조용히 거부되는 원인 해결
+- [DONE 2026-05-07] **[EntrySendResult]** `log_manager.system()` 추가 — `_ts_execute_entry` 내 ret 값이 대시보드 SYSTEM 탭에 표시됨 (기존: file logger만)
+
+### [V41] B54 SHORT/EXIT Chejan 정상 수신 확인 [DONE 2026-05-07]
+- LONG 진입 즉시 체결 (접수+체결 10:14:00 동시) ✅
+- LONG EXIT 즉시 체결 (접수+체결 10:34:01 동시), `[ExitAttempt]`/`[ExitSendOrderResult]` 정상 ✅
+- SHORT 진입은 이번 세션에서 미발생 (CB ③ 발동으로 당일 정지). SHORT Chejan 검증은 다음 세션
+
+### 다음 실행 최우선 검증
+
+### [V39] B52 ENTRY 타임아웃 복원 동작 확인 [다음 장중]
+- **내용**: ENTRY 체결 안 됨 → 60s 타임아웃 → `[FixB] ENTRY 타임아웃 → 낙관적 포지션 FLAT 복원` 로그 확인
+- **기준**: WARN.log에 `[FixB] ENTRY 타임아웃` 로그 + 이후 position.status=FLAT + EXIT 루프 미발생
+- **실패 시**: `_optimistic` 플래그 설정 시점 (`position_tracker.py`) 재확인 필요
+
+### [V40] EXIT 경로 진단 로그 확인 [다음 포지션 청산 시]
+- **내용**: 하드스톱/시간청산 발동 시 `[ExitAttempt]` → `[ExitSendOrderResult] ret=0` 로그 순서 확인
+- **기준**: ret=0이면 `[PendingOrder] set EXIT_FULL`, ret≠0이면 `[Exit] ... 주문 실패` 로그
+- **활용**: EXIT 무응답 시 ret 값으로 키움 API 오류 코드 즉시 특정 가능
+
 ## 2026-05-06 세션 후속
 
 ### DONE 처리
@@ -304,3 +379,155 @@
 - **내용**: `OPW20006`이 장후/무포지션에서 summary/rows를 모두 비우는 케이스가 확인되었으므로, 합계 6개를 전용 계좌합계 TR로 분리할지 검토.
 - **방법**: 장중/장후 각각에서 `OPW20006-SUMMARY-BLANK`, `BalanceUIFallback` 로그와 화면값 비교.
 - **기준**: 장중에도 summary blank가 반복되면 `총매매/총평가손익/실현손익/총평가/총평가수익률/추정자산` 전용 TR 추가 구현.
+---
+
+## 2026-05-07 Log Review Update (after 2026-05-06 10:14)
+
+### DONE / outcome reflected
+
+- [DONE 2026-05-07] **[V30] BrokerSync blank placeholder handling verified**
+  - Evidence:
+    - `2026-05-06 14:11:20 [BrokerSync] raw rows=1 nonempty_rows=0 all_blank_rows=True`
+    - `2026-05-06 14:11:20 [BrokerSyncFlatPlaceholder] ... before='FLAT'`
+    - `2026-05-06 14:11:20 [BrokerSync] status verified=True block_new_entries=False reason=blank/no holdings response interpreted as flat`
+  - Conclusion:
+    - blank placeholder row is no longer treated as hard mismatch
+    - startup no longer blocks new entries in this case
+
+- [DONE 2026-05-07] **[V32] Entry -> pending -> Chejan acceptance chain verified for live path**
+  - Evidence:
+    - `2026-05-06 14:28:00 [EntryAttempt]`
+    - `2026-05-06 14:28:00 [EntrySendOrderResult] ret=0`
+    - `2026-05-06 14:28:00 [PendingOrder] set kind='ENTRY'`
+    - `2026-05-06 14:28:00 [ChejanFlow] ... status='접수' order_no='0076887'`
+    - `2026-05-06 14:28:00 [ChejanMatch] pending_matched=True`
+  - Conclusion:
+    - request -> pending -> Chejan order acceptance path is now observable end-to-end
+    - remaining gap is not "no Chejan at all" but delayed/missing fill on some orders
+
+### Still open / narrowed by log review
+
+- [OPEN 2026-05-07] **[V31] historical local/broker mismatch around 10:48:19 still not fully explained**
+  - Evidence:
+    - `2026-05-06 10:48:19 [WARN] [Entry] ... ret=-302`
+    - `2026-05-06 10:48:19 [TRADE] [Position] 진입 LONG 1계약 @ 1124.1`
+    - `2026-05-06 10:48:31 [Position] 이전 포지션 복원`
+  - Current judgment:
+    - this mismatch is historical and predates the later diagnostics/fixes
+    - do not treat it as reproduced after the 14:11 restart
+
+- [OPEN 2026-05-07] **[V41] SHORT entry and EXIT Chejan fill still need dedicated proof**
+  - What is verified now:
+    - LONG entry acceptance Chejan exists
+    - LONG exit final fill Chejan exists at `2026-05-06 15:24:58`
+  - What is still missing:
+    - clean SHORT entry case with `status='접수'` and matched order number
+    - clean SHORT exit fill case
+
+- [OPEN 2026-05-07] **[V42] EXIT pending timeout loop root cause narrowed to fill latency / no immediate fill**
+  - Evidence:
+    - from `2026-05-06 14:29:00` to `15:24:01`, repeated:
+      - `PartialExitAttempt` / `PartialExitSendOrderResult ret=0`
+      - `PendingOrder set`
+      - timeout clear after about 1-2 minutes
+    - first actual exit acceptance/fill only appears at `2026-05-06 15:24:58`
+  - Conclusion:
+    - this is no longer pointing first at `trade_type` mismatch
+    - likely remaining issue is one of:
+      - mock-server fill/accept delay
+      - wrong/ambiguous FO parameter combination on some exit paths
+      - pending timeout policy being too aggressive before broker response
+
+- [OPEN 2026-05-07] **[V43] ENTRY timeout clear still releases retry too early when only Chejan acceptance exists**
+  - Evidence:
+    - `2026-05-06 14:28:00` entry receives Chejan `status='접수'` with order number
+    - but pending is cleared at `14:29:00` with `filled_qty=0`
+    - system then moves on immediately into exit logic because optimistic LONG remains open
+  - Risk:
+    - acceptance without fill can still leave local state ahead of broker reality
+  - Next check:
+    - distinguish `accepted(order_no assigned)` from `filled(fill_qty > 0)` in timeout handling
+
+- [OPEN 2026-05-07] **[V38] balance summary fallback still operationally necessary**
+  - Evidence:
+    - `2026-05-06 18:51:29 [BalanceUIFallback] summary blank from OPW20006; rows=0`
+  - Conclusion:
+    - startup flat interpretation is fixed
+    - summary fields from `OPW20006` are still not reliable enough to retire fallback
+
+### Immediate next tasks
+
+- [T8] split pending order state into `accepted` vs `filled`
+  - Goal:
+    - when `order_no` is assigned by Chejan, mark accepted and do not recycle the order as if nothing happened
+  - Priority:
+    - highest
+
+- [T9] review ENTRY/EXIT timeout policy
+  - Goal:
+    - stop 1-minute timeout clears from causing repeated resend loops while broker-side order is still live
+  - Check against:
+    - `14:28:00 -> 14:29:00` ENTRY
+    - `14:29:00 -> 15:24:58` EXIT loop
+
+- [T10] verify one clean SHORT scenario end-to-end
+  - Need logs for:
+    - `EntryAttempt`
+    - `EntrySendOrderResult ret=0`
+    - `ChejanFlow status='접수'`
+    - `ChejanFlow status='체결'` or explicit non-fill evidence
+
+- [T11] verify whether `gubun='4'` is now safely ignorable in active code path
+  - Historical log still shows `gubun='4'` noise on 2026-05-06
+  - Need next-run proof that logic ignores it without side effects
+
+### 2026-05-07 balance UI wiring update
+
+- [DONE 2026-05-07] **[B57] broker balance summary now uses auxiliary Kiwoom futures TRs**
+  - `request_futures_balance()` now keeps `OPW20006` as canonical row source
+  - added auxiliary summary enrichment from:
+    - `OPW20007`: `약정금액합계`, `평가손익합계`, `청산가능수량`
+    - `OPW20008`: `추정예탁총액` / `예탁총액`
+    - `OPW20003`: `총손익`, `수익율`, `예탁총액`
+  - goal:
+    - HTS 상단 요약값이 비어도 미륵이 실시간잔고 UI summary가 따라오게 연결
+
+- [NEXT 2026-05-07] **[V44] live verification on account balance panel**
+  - confirm dashboard summary updates from broker values:
+    - `실현손익`
+    - `추정자산`
+    - `총매매`
+    - `총평가손익`
+  - confirm position row still maps correctly for startup broker sync:
+    - `종목코드`
+    - `매매구분`
+    - `잔고수량`
+    - `주문가능수량`
+
+- [NEXT 2026-05-07] **[V45] validate OPW20003 input convention in live/mock environment**
+  - current assumption:
+    - `시장구분="0"` with same-day `시작일자/종료일자`
+  - if `OPW20003` returns blank/None in practice:
+    - capture request/response log
+    - verify exact Kiwoom convention from local enc / guide notes
+    - adjust without breaking `OPW20006/20007/20008` path
+
+- [CHECK 2026-05-07] **12:13 restart log verdict**
+  - `2026-05-07 12:13:48` proves the new auxiliary probes are wired:
+    - `OPW20007.*`
+    - `OPW20008.*`
+    - `OPW20003.*`
+  - but all values are still blank at restart, so startup-only balance UI improvement is not yet confirmed
+
+- [DONE 2026-05-07] **[B58] refresh balance UI immediately after normal fill flows**
+  - added `_ts_refresh_dashboard_balance(self)` after:
+    - `EntryFillFlow`
+    - `ExitFillFlow` final
+    - `ExitFillFlow` partial/remaining
+  - reason:
+    - 12:15~12:18 logs show fills are normal, but no balance refresh is triggered because `gubun='1'` balance Chejan is absent
+
+- [NEXT 2026-05-07] **[V46] verify post-fill balance refresh logs after next run**
+  - expected after next fill:
+    - balance TR request/response logs right after `EntryFillFlow` or `ExitFillFlow`
+    - dashboard summary no longer stuck at startup zeros

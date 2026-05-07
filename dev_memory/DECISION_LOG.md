@@ -2,6 +2,87 @@
 
 ---
 
+## 2026-05-07 버그 수정 (4차 세션 — 잔고 패널 수치 오류 + 포지션 복원)
+
+### [B60] 합성 잔고행 PnL 배수 오류 — 500원/pt vs 250,000원/pt
+**파일**: `main.py` `_ts_push_balance_to_dashboard`
+**증상**: 대시보드 총매매 576,500원 vs HTS 288,250,000원 (약 500배 차이)
+**원인**:
+- `_eval_krw = _entry * _qty * 500_000 / 1000` → 1153 × 1 × 500 = 576,500 (틀림)
+- KOSPI200 선물 계약 승수 = **250,000원/pt** (2017년 이후 고정). 코드가 500,000원/pt을 1000으로 나누는 잘못된 계산식 사용
+- `_pnl_krw = _pnl_pts * 500_000` 도 동일 문제 (평가손익도 2배 오류)
+**Fix**:
+- `_eval_krw = _entry * _qty * 250_000`
+- `_pnl_krw = _pnl_pts * 250_000`
+- `"손익율": f"{(_pnl_krw / _eval_krw * 100.0):.2f}"` — KRW 기반 손익율
+**교훈**: KOSPI200 선물 승수=250,000원/pt (2017년 이후). 과거 500,000원/pt (2014년 이전) 또는 /1000 패턴을 혼용하면 안 됨.
+
+### [B61] 총평가손익 blank — pnl_sum=0 + rows 존재 시 guard 실패
+**파일**: `main.py` `_ts_push_balance_to_dashboard`
+**증상**: 포지션 보유 중 대시보드 `총평가손익`이 공란으로 표시됨 (pnl=0인 경우)
+**원인**:
+```python
+# 기존 guard
+if (not summary.get("총평가손익")) and (pnl_sum or not rows):
+```
+- `pnl_sum=0` 이면 `(0 or not rows)` → `not rows` 가 평가됨
+- rows가 비어있지 않으면 → `(False)` → 전체 조건 False → 값 미설정 → 공란
+**Fix**:
+```python
+if not str(summary.get("총평가손익") or "").strip():
+    summary["총평가손익"] = f"{pnl_sum:.0f}"
+```
+- 두 번째 조건 완전 제거. 값이 없거나 빈 문자열이면 항상 설정.
+- 동일 패턴을 `총매매`, `총평가`, `실현손익`, `총평가수익률`, `추정자산` 6개 전부 적용.
+
+### [B61-2] 청산가능 컬럼 blank — 합성행 key 불일치
+**파일**: `main.py` `_ts_push_balance_to_dashboard`
+**증상**: 대시보드 잔고 테이블 "청산가능" 열이 공란
+**원인**: 합성 잔고행에 `"청산가능": str(_qty)` 를 사용했으나, `update_rows()`는 컬럼 3을 `"주문가능수량"` key로 매핑 (`main_dashboard.py:992`)
+**Fix**: `"주문가능수량": str(_qty)` 로 교체
+
+### [B62] 모의서버 startup sync FLAT 오염 — GetServerGubun 미체크
+**파일**: `main.py` `_ts_sync_position_from_broker`
+**증상**: 재시작 직후 position_state.json이 LONG임에도 대시보드 전체 0.00 표시. 다음 재시작 시에도 반복.
+**원인 (체인)**:
+1. startup sync → OPW20006 blank rows → `nonempty_rows=[]`
+2. `position.status == "LONG"` 이므로 `sync_flat_from_broker()` 호출 → FLAT 강제
+3. `_save_state()` → position_state.json 에 `"status": "FLAT"` 덮어씀
+4. 다음 재시작: `load_state()` → FLAT → 합성행 생성 조건(`status != "FLAT"`) 미충족 → 0.00
+- 모의투자 서버 OPW20006은 항상 blank 응답 반환 — 이는 Kiwoom 정상 동작
+**Fix**:
+```python
+_server_gubun = self.kiwoom.get_login_info("GetServerGubun")
+_is_mock = (_server_gubun == "1")
+if _is_mock and self.position.status != "FLAT":
+    # blank rows → 저장 포지션 유지 (FLAT 강제 불가)
+    log_manager.system("모의투자 blank-rows → 저장 포지션 유지", "WARNING")
+    _ts_push_balance_to_dashboard(self, result)
+    return
+```
+**교훈**: 모의서버에서 OPW20006 blank는 "포지션 없음"이 아니라 "데이터 미제공". 실서버와 동일 로직 적용 불가. `GetServerGubun=="1"` 분기 필수.
+
+---
+
+## 2026-05-07 설계 결정 (4차 세션)
+
+### [D24] KOSPI200 선물 계약 승수 = 250,000원/pt (UI 잔고 합성행 기준)
+**결정**: 대시보드 합성 잔고행의 평가금액·평가손익 계산에 **250,000원/pt** 적용.
+**이유**: KOSPI200 선물 계약 승수는 2017년 이후 250,000원/pt (구: 500,000원/pt). HTS 비교 결과로 확정.
+**적용 위치**: `main.py` `_ts_push_balance_to_dashboard` `_eval_krw`, `_pnl_krw` 계산.
+**검증 방법**: LONG 1계약 진입가 1153pt → `총매매 = 1153 × 1 × 250,000 = 288,250,000원` → HTS 일치.
+
+### [D25] 포지션 수동 복원 버튼 (`PositionRestoreDialog`) — 모의투자 전용 복구 수단
+**결정**: `AccountInfoPanel`에 "포지션 복원" 버튼 추가. 클릭 시 방향/가격/수량/ATR 입력 dialog → `position.sync_from_broker()` 호출 → `_recalculate_levels(atr)`.
+**이유**: 모의서버 OPW20006이 항상 blank이므로 B62 수정(FLAT skip)으로 재시작 후 포지션 유지는 되지만, cold-start 또는 수동 복원이 필요한 엣지 케이스를 위한 최후 수단.
+**제약**:
+- 실서버 사용 금지 경고를 tooltip에 명시 (실서버에서는 OPW20006에 실제 잔고 존재)
+- 다이얼로그에서 `ATR floor=max(입력값, 0.5)` 강제
+- 복원 완료 후 300ms QTimer → `_ts_refresh_dashboard_balance()` 호출 (COM 콜백 내 emit 금지 준수)
+**ATR 참조**: `[DBG-F4]` WARN.log `ATR floor=` 값 또는 `features.get("atr")` 로 확인. 기본값 5.0pt 권장.
+
+---
+
 ## 2026-05-06 버그 수정
 
 ### [B45] OPW20006 GetCommData 전부 blank — 레코드명 오타 2자

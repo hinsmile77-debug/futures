@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-06 (추가2) — trade_type 청산 오류(B47) + gubun='4' 차단(B48)
+> 마지막 업데이트: 2026-05-07 (4차) — B60~B63 잔고 패널 수치 수정 + 모의서버 포지션 복원 버튼
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,137 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-05-07 세션 주요 수정 (4차) — B60~B63 잔고 패널 수치 수정 + 모의서버 포지션 복원 버튼
+
+### 오늘 세션 요약
+
+**계기**: HTS 실시간 잔고와 미륵이 대시보드 잔고 패널 수치 불일치 (총매매 576,500원 vs HTS 288,250,000원).
+재시작 후 대시보드 전체 0.00 표시 문제도 동시에 진단.
+
+| 버그 | 원인 | 수정 |
+|---|---|---|
+| **[B60] 합성 잔고행 PnL 배수 오류** | `_eval_krw = entry × qty × 500_000/1000 = 500원/pt`  KOSPI200 승수=250,000원/pt | `× 250_000` 직접 계산. `_pnl_krw`도 동일 수정 |
+| **[B61] 총평가손익 blank (pnl=0 시)** | guard `if pnl_sum or not rows`가 pnl=0+rows=비어있지않음 → False → 미설정 | `if not str(summary.get(...) or "").strip():` — 조건 단순화 |
+| **[B61-2] 청산가능 컬럼 blank** | 합성행 key `"청산가능"` ≠ dashboard col-3 key `"주문가능수량"` | key → `"주문가능수량": str(_qty)` |
+| **[B62] 모의서버 startup sync FLAT 오염** | 재시작 시 OPW20006 blank rows → FLAT 강제 기록 → position_state.json 덮어씀 → 다음 재시작 FLAT 시작 | `GetServerGubun=="1"` 판정 추가. 모의+blank+비FLAT → FLAT 결정 skip |
+| **[B63] 포지션 수동 복원 버튼 설계** | 재시작 후 모의서버 blank로 포지션 정보 소실 시 복구 수단 없음 | `PositionRestoreDialog` + `AccountInfoPanel.btn_position_restore` 신설 |
+
+### 핵심 확인 사항 (오늘 세션)
+
+- **KOSPI200 선물 계약 승수 = 250,000원/pt** (2017년 이후). 기존 코드가 `500_000/1000=500`으로 500배 틀렸음.
+- **모의투자 서버 OPW20006 응답 = 항상 blank**. row 구조는 있지만 모든 필드가 빈 문자열. 정상 동작.
+- **15:10 강제청산 정상 작동 확인**: `position_state.json` `last_update_reason="apply_exit_fill_final:15:10 강제청산"` 2026-05-07 15:25:59 기록.
+
+### 수정 후 잔고 패널 동작 흐름
+
+```
+startup sync → OPW20006 blank rows
+  → GetServerGubun == "1" (모의서버) AND position != FLAT
+    → FLAT 결정 skip → 저장 포지션 유지 [B62]
+  → _ts_push_balance_to_dashboard():
+      _has_real_row = False → 합성 잔고행 생성 [B60]
+      _eval_krw = entry × qty × 250_000 (pt→KRW)
+      _pnl_krw = pnl_pts × 250_000
+      "주문가능수량": str(_qty)  [B61-2]
+  → summary guard: str(v or "").strip() 체크 [B61]
+  → 대시보드 잔고 패널 갱신
+
+수동 복원 버튼 [B63]:
+  "포지션 복원" 버튼 클릭 → PositionRestoreDialog (방향/가격/수량/ATR)
+  → sig_position_restore.emit() → _manual_position_restore()
+  → position.sync_from_broker() → _recalculate_levels(atr)
+  → QTimer.singleShot(300ms) → _ts_refresh_dashboard_balance()
+```
+
+### 수정된 파일
+
+| 파일 | 수정 내용 |
+|---|---|
+| `main.py` | `_ts_push_balance_to_dashboard`: B60/B61 수정. `_ts_sync_position_from_broker`: B62 모의서버 분기. `_ts_manual_position_restore`: B63 신설. monkey-patch 추가 |
+| `dashboard/main_dashboard.py` | `PositionRestoreDialog` 신설. `AccountInfoPanel`: `sig_position_restore` signal + `btn_position_restore` + tooltip. `DashboardFacade`: signal 노출 |
+
+---
+
+## 2026-05-07 세션 주요 수정 (3) — B56: ENTRY 재진입 루프 쿨다운 중앙화
+
+### 오늘 세션 요약 (오후)
+
+**발생 현상**: 09:56~10:07 구간에서 ENTRY 주문이 2분마다 8회 반복 발생.
+B52·B53(쿨다운 설정) 코드가 이미 있었지만 `_entry_cooldown_until`이 실제로 설정되지 않는 케이스가 존재했음:
+1. B52 쿨다운이 `_optimistic==True` 조건에만 종속 → `_optimistic=False`이면 쿨다운 미설정
+2. `_ts_on_order_message` 거부 경로에서 `_clear_pending_order()` 호출 시 쿨다운 없음
+3. balance Chejan FLAT 경로(`_ts_sync_from_balance_payload`)도 쿨다운 없음
+
+**근본 수정 [B56]**: 쿨다운 설정 로직을 `_clear_pending_order()`에 중앙화.
+ENTRY 미체결(`filled_qty=0`) 소멸이면 **어떤 경로든** 2분 쿨다운 자동 설정.
+
+| 항목 | 수정 내용 |
+|---|---|
+| **[B56] `_clear_pending_order()` 중앙화** | `kind=="ENTRY" and filled_qty==0`이면 `_entry_cooldown_until = now+2min`. B52/order_reject/balance_FLAT 등 모든 경로 커버 |
+| **[B52] `_optimistic` 의존 분리** | `_reset_position()`은 여전히 `_optimistic==True` 조건. 쿨다운은 무조건 설정 (B56 중앙화로 이중 설정이지만 무해) |
+| **[B56] balance Chejan FLAT 경로 주석 추가** | `_ts_sync_from_balance_payload` qty<=0 분기에 B56 자동 적용 설명 추가 |
+
+### 수정 후 `_clear_pending_order()` 흐름
+
+```python
+def _clear_pending_order(self) -> None:
+    if self._pending_order is not None:
+        logger.warning("[PendingOrder] clear %s", self._pending_order)
+        # [B56] ENTRY 미체결 소멸 → 어떤 경로든 2분 재진입 금지
+        if (self._pending_order.get("kind") == "ENTRY"
+                and self._pending_order.get("filled_qty", 0) == 0):
+            self._entry_cooldown_until = now + 2min
+            logger.warning("[EntryCooldown] ... until HH:MM:SS")
+    self._pending_order = None
+```
+
+### 추가 확인 사항
+
+- **[V42] SHORT 진입 Chejan 수신 확인**: CB③ 발동으로 이번 세션에서 SHORT 미발생. 다음 세션 확인
+- **[V39] ENTRY 타임아웃 복원 로그**: `[FixB] ENTRY 타임아웃 → 낙관적 포지션 FLAT 복원` 대시보드 SYSTEM 탭 확인
+- **[BalanceChejanFlow] 조사 완료**: 09:56~10:09 구간에 gubun='1' 잔고 Chejan 이벤트 없음 확인 → 비이슈 종료
+
+---
+
+## 2026-05-07 세션 주요 수정 (B52·B49·B50 — EXIT 루프 근본 원인 수정)
+
+### 오늘 세션 요약
+
+**발생 현상**: ENTRY 주문(09:01, trade_type=1) 접수만 되고 체결 없음 (모의투자 서버 09:00 고변동성 구간).
+낙관적 오픈으로 로컬 position=LONG → 60s ENTRY 타임아웃 → pending 해제만 되고 position 유지 →
+하드스톱 반복 발동 → EXIT trade_type=4 → Kiwoom 측 포지션 없으므로 Chejan 무응답 → 2분 루프.
+
+| 항목 | 수정 내용 |
+|---|---|
+| **[B49] EXIT 진단 로그 추가** | `_ts_check_exit_triggers()` — 하드스톱/시간청산 `[ExitAttempt]` + `[ExitSendOrderResult]` |
+| **[B50] price_hint float 오차** | `price_hint=round(exit_price, 2)` 적용 |
+| **[B52] ENTRY 타임아웃 포지션 복원** | 60s 타임아웃 + `_optimistic==True` → `_reset_position()` + `[FixB]` 경보 |
+| **[B53] 타임아웃 후 2분 쿨다운** | `_entry_cooldown_until = now+2min` → STEP 7 진입 차단 |
+| **[B54] SendOrderFO 파라미터 통일** | `lOrdKind=1(신규매매) + sSlbyTp` 방향 명시. trade_type=2(SHORT)가 new convention에서 "정정"으로 해석되어 서버 거부되던 문제 수정. 진입/청산/긴급청산 모두 적용 |
+| **[B55] accepted vs filled 타임아웃 분리** | `order_no==""` → 60s (미접수), `order_no!=""` → 300s (접수 대기). `pending["accepted_at"]` 타임스탬프 기록 추가 |
+| **BrokerSync CRITICAL→WARNING** | position_state.json 잔여 FLAT 처리는 정상 동작이므로 WARNING으로 완화 |
+| **[EntrySendResult]** | `log_manager.system()` 추가 → dashboard에서 ret 즉시 확인 가능 |
+
+### 수정 후 ENTRY 타임아웃 흐름
+
+```
+낙관적 오픈 → position=LONG, _optimistic=True
+ENTRY 60s 타임아웃 체크
+→ kind=="ENTRY" AND _optimistic==True:
+    [FixB] ENTRY 타임아웃 → 낙관적 포지션 FLAT 복원 (WARN)
+    position._reset_position()  ← position=FLAT, entry_price=0
+    _clear_pending_order()
+→ 이후 하드스톱 발동 안 됨 (position=FLAT)
+```
+
+### 추가 확인 사항 (미해결)
+
+- **[V41] B54 SHORT 진입 + EXIT Chejan 수신 확인**: 재시작 후 SHORT 진입 Chejan 수신 여부, LONG 진입 후 EXIT Chejan 수신 여부 확인
+- **ENTRY 미체결 원인**: 모의투자 서버 장 초반(09:00~10:10) 고변동성 구간 + 틱 간헐적 수신 문제. 실서버 전환 시 재확인
+- **HTS 미처리 주문**: 30907(LONG, 미체결)는 HTS에서 수동 취소 필요 (재시작 전)
 
 ---
 

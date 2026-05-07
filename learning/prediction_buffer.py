@@ -109,6 +109,7 @@ class PredictionBuffer:
 
             verified.append({
                 "id":         pred_id,
+                "ts":         target_ts,   # 예측이 만들어진 시각 (CB③ 세션 필터용)
                 "horizon":    horizon,
                 "predicted":  pred_dir,
                 "actual":     actual,
