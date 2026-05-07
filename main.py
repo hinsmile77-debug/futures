@@ -160,6 +160,7 @@ class TradingSystem:
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
+        self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
 
         # log_manager → 대시보드 5개 탭 배선 (subscribe 없으면 탭에 아무것도 안 보임)
         log_manager.subscribe(
@@ -669,6 +670,32 @@ class TradingSystem:
         save_candle(bar)
         save_features(ts, features)
 
+        # [§19] RegimeFingerprint — PSI 기반 피처 분포 드리프트 감지 (STEP 4 직후)
+        try:
+            from strategy.regime_fingerprint import get_fingerprint as _get_fp
+            _fp      = _get_fp()
+            _fp_psi  = _fp.update_live(features)
+            _fp_lv   = _fp.get_level()
+            if _fp_psi > 0.30:
+                log_manager.system(
+                    f"[RegimeFingerprint] PSI={_fp_psi:.3f} CRITICAL — "
+                    f"시장 구조 변화 감지, 신규 진입 차단 검토",
+                    "WARNING",
+                )
+            elif _fp_psi > 0.20:
+                log_manager.system(
+                    f"[RegimeFingerprint] PSI={_fp_psi:.3f} ALARM — "
+                    f"param_optimizer 예약 권장",
+                    "WARNING",
+                )
+            # 대시보드 strategy_ops 탭에 PSI 수준 실시간 반영
+            self.dashboard.update_strategy_ops({
+                "psi_val":   _fp_psi,
+                "psi_level": _fp_lv,
+            })
+        except Exception as _fp_e:
+            logger.debug("[RegimeFingerprint] 스킵: %s", _fp_e)
+
         # GBM 미학습 시 피처명 부트스트랩 → SGD 학습 활성화
         if not self.model.feature_names and features:
             self.model.set_feature_names(sorted(features.keys()))
@@ -777,6 +804,42 @@ class TradingSystem:
         grade      = decision["grade"]
 
         self.circuit_breaker.record_signal(direction)
+
+        # [§14] 레짐-파라미터 오버라이드 — STEP 6에서 매분 적용
+        try:
+            from config.strategy_params import (
+                apply_regime_overrides as _aro,
+                is_entry_blocked as _ieb,
+                PARAM_CURRENT as _PC,
+            )
+            _MICRO_EN = {
+                "추세장": "TREND", "횡보장": "RANGE",
+                "급변장": "VOLATILE", "혼합": "TREND",
+            }
+            _micro_en = _MICRO_EN.get(self.current_micro_regime, "TREND")
+            _regime_params = _aro(_PC, self.current_regime, _micro_en)
+            if _ieb(_regime_params):
+                direction = 0
+                grade     = "X"
+                log_manager.signal(
+                    f"[RegimeOverride] 진입 금지 "
+                    f"— {self.current_regime}×{self.current_micro_regime}"
+                )
+        except Exception as _ro_e:
+            logger.debug("[RegimeOverride] 적용 실패 (스킵): %s", _ro_e)
+
+        # [§19] RegimeFingerprint CRITICAL — 피처 분포 심각 변화 시 진입 차단
+        try:
+            from strategy.regime_fingerprint import get_fingerprint as _get_fp2
+            if _get_fp2().get_level() >= 3:  # DriftLevel.CRITICAL = 3
+                direction = 0
+                grade     = "X"
+                log_manager.signal(
+                    f"[RegimeFingerprint] PSI={_get_fp2().get_psi():.3f} CRITICAL "
+                    f"— 시장 구조 변화로 진입 차단"
+                )
+        except Exception as _fp2_e:
+            logger.debug("[RegimeFingerprint] STEP6 스킵: %s", _fp2_e)
 
         log_manager.signal(
             f"앙상블: dir={direction:+d} conf={confidence:.1%} "
@@ -1055,6 +1118,47 @@ class TradingSystem:
 
         # 상태 바 '마지막 갱신' 타이머 리셋
         self.dashboard.notify_pipeline_ran()
+
+        # [Phase2] Shadow Evaluator — 신버전 가상 실행 (실주문 없음)
+        if self._shadow_ev is not None:
+            try:
+                _dir_str = "LONG" if direction == 1 else ("SHORT" if direction == -1 else "FLAT")
+                self._shadow_ev.process_tick(
+                    bar,
+                    {
+                        "confidence": confidence,
+                        "direction":  _dir_str,
+                        "grade":      grade,
+                        "hurst":      float(features.get("hurst", 0.5)),
+                    },
+                )
+            except Exception as _se:
+                logger.debug("[Shadow] process_tick 오류: %s", _se)
+
+            # [§20 / Phase5] Hot-Swap 게이트 — 2주마다 자동 조건 검사
+            try:
+                _sv_days = getattr(self._shadow_ev, "_uptime_days", 0)
+                if _sv_days > 0 and _sv_days % 10 == 0:   # 10분마다 체크 (실제로는 일 단위)
+                    from strategy.ops.hotswap_gate import get_hotswap_gate
+                    from utils.db_utils import fetch_pnl_history
+                    _live_pnls = [r.get("pnl_krw", 0) for r in (fetch_pnl_history(20) or [])]
+                    if len(_live_pnls) >= 10:
+                        _gate = get_hotswap_gate()
+                        _ok, _reason = _gate.attempt(
+                            shadow_ev       = self._shadow_ev,
+                            live_daily_pnls = _live_pnls,
+                            best_params     = getattr(self._shadow_ev, "params", {}),
+                            note            = "Hot-Swap 자동 게이트 검사",
+                        )
+                        if _ok:
+                            log_manager.system(
+                                f"[HotSwapGate] ✅ Hot-Swap 승인 — {_reason}", "INFO"
+                            )
+                            self._shadow_ev = None   # 승인 후 shadow 종료
+                        else:
+                            logger.info("[HotSwapGate] 보류 — %s", _reason)
+            except Exception as _hg_e:
+                logger.debug("[HotSwapGate] 스킵: %s", _hg_e)
 
     def _execute_partial_exit(self, price: float, stage: int) -> None:
         """TP{stage} 부분 청산 — 수량 계산 → API 주문 → 수량 감소 → PnL 기록."""
@@ -1364,6 +1468,19 @@ class TradingSystem:
             "updated_at":       datetime.datetime.now().strftime("%H:%M"),
         }
 
+    # ── 당일 Profit Factor 계산 ────────────────────────────────
+    def _daily_profit_factor(self) -> float:
+        """당일 거래 기록에서 Profit Factor(총이익/총손실) 계산. 손실 0이면 999.0."""
+        try:
+            rows = fetch_today_trades()
+        except Exception:
+            return 1.0
+        gross_win  = sum(r["pnl_krw"] for r in rows if r["pnl_krw"] > 0)
+        gross_loss = sum(abs(r["pnl_krw"]) for r in rows if r["pnl_krw"] < 0)
+        if gross_loss == 0:
+            return 999.0 if gross_win > 0 else 1.0
+        return gross_win / gross_loss
+
     # ── 추이 통계 수집 ───────────────────────────────────────────
     def _gather_trend_stats(self) -> dict:
         """TrendPanel 업데이트용 일/주/월/연간 집계 반환."""
@@ -1378,6 +1495,60 @@ class TradingSystem:
         except Exception as e:
             logger.warning(f"[Trend] 집계 실패: {e}")
             return {"일별": [], "주별": [], "월별": [], "연간": [], "updated_at": "—"}
+
+    # ── 섀도우 평가 모드 ────────────────────────────────────────
+    def start_shadow_mode(
+        self,
+        candidate_params:  dict,
+        wfa_sharpe:        float,
+        candidate_version: str,
+    ) -> None:
+        """
+        섀도우 평가기 초기화 (PARAM_CURRENT 미변경).
+
+        param_optimizer.propose_for_shadow() 가 data/shadow_candidate.json을
+        생성한 뒤 daily_close() 또는 startup 에서 이 메서드를 호출한다.
+        """
+        from strategy.shadow_evaluator import ShadowEvaluator
+        self._shadow_ev = ShadowEvaluator(
+            candidate_version = candidate_version,
+            candidate_params  = candidate_params,
+            wfa_sharpe        = wfa_sharpe,
+        )
+        logger.info("[Shadow] 섀도우 모드 시작 — %s (WFA Sharpe=%.2f)",
+                    candidate_version, wfa_sharpe)
+        try:
+            from config.strategy_registry import get_registry as _get_reg
+            _get_reg().log_event(
+                event_type = "SHADOW_START",
+                message    = "섀도우 평가 활성화 (WFA Sharpe=%.2f)" % wfa_sharpe,
+                version    = candidate_version,
+            )
+        except Exception as _le:
+            logger.warning("[Shadow] registry log_event 실패: %s", _le)
+
+    def _load_shadow_candidate(self) -> None:
+        """
+        data/shadow_candidate.json 이 존재하면 섀도우 모드를 자동 시작.
+        이미 shadow_ev 가 활성화된 경우에는 스킵.
+        """
+        if self._shadow_ev is not None:
+            return
+        import json as _json
+        _path = os.path.join("data", "shadow_candidate.json")
+        if not os.path.exists(_path):
+            return
+        try:
+            with open(_path, "r", encoding="utf-8") as _f:
+                _sc = _json.load(_f)
+            self.start_shadow_mode(
+                candidate_params  = _sc.get("candidate_params", {}),
+                wfa_sharpe        = float(_sc.get("wfa_sharpe", 0.0)),
+                candidate_version = _sc.get("candidate_version", "shadow-unknown"),
+            )
+            logger.info("[Shadow] shadow_candidate.json 자동 로드 완료")
+        except Exception as _e:
+            logger.warning("[Shadow] shadow_candidate.json 로드 실패: %s", _e)
 
     # ── 일일 마감 (15:40) ─────────────────────────────────────
     def daily_close(self):
@@ -1434,8 +1605,91 @@ class TradingSystem:
             "verified_count": self._verified_today,
         })
 
+        # [Phase2] 드리프트 감지 — CUSUM 일별 업데이트
+        try:
+            from strategy.param_drift_detector import get_drift_detector as _get_dd
+            _drift_level, _drift_msg = _get_dd().update(
+                daily_pnl = stats["pnl_krw"],
+                daily_wr  = stats["wins"] / max(stats["trades"], 1),
+                daily_pf  = self._daily_profit_factor(),
+            )
+            logger.info("[DriftDetector] %s", _drift_msg)
+            from strategy.param_drift_detector import DriftLevel as _DL
+            if _drift_level >= _DL.WATCHLIST:
+                log_manager.system("[경보] DriftDetector: " + _drift_msg)
+            # 전략 운용현황 탭에 CUSUM 드리프트 수준 반영
+            self.dashboard.update_strategy_ops({"drift_level": _drift_level})
+        except Exception as _de:
+            logger.warning("[DriftDetector] 업데이트 실패 (스킵): %s", _de)
+
+        # [Phase2] StrategyRegistry — 라이브 일별 스냅샷 기록
+        try:
+            from config.strategy_registry import get_registry as _get_reg
+            from config.strategy_params import PARAM_HISTORY as _PH
+            _active_ver = _PH[-1]["version"] if _PH else "v1.0"
+            _get_reg().record_live_snapshot(
+                version = _active_ver,
+                metrics = {
+                    "win_rate":      stats["wins"] / max(stats["trades"], 1),
+                    "total_trades":  stats["trades"],
+                    "daily_pnl":     stats["pnl_krw"],
+                    "profit_factor": self._daily_profit_factor(),
+                },
+            )
+        except Exception as _re:
+            logger.warning("[Registry] live_snapshot 기록 실패 (스킵): %s", _re)
+
         self._refresh_pnl_history()
         self.dashboard.update_trend(self._gather_trend_stats())
+
+        # [Phase5] 일일 전략 상태 요약 export + 경보 판정
+        try:
+            from strategy.ops.daily_exporter import get_exporter as _get_exp
+            from strategy.ops.verdict_engine import (
+                compute_action, rollback_alert_message,
+                ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE,
+            )
+            from config.strategy_registry import get_registry as _get_reg
+            from strategy.param_drift_detector import get_drift_detector as _get_dd2
+            from strategy.regime_fingerprint import get_fingerprint as _get_fp3
+
+            _curr_v   = _get_reg().get_current_version()
+            _verd     = _curr_v.get("verdict", "INSUFFICIENT") if _curr_v else "INSUFFICIENT"
+            _ldays    = _curr_v.get("live_days", 0) if _curr_v else 0
+            _dd2_lvs  = _get_dd2().get_levels() if hasattr(_get_dd2(), "get_levels") else {}
+            _dlv2     = max(_dd2_lvs.values()) if _dd2_lvs else 0
+            _plv2     = _get_fp3().get_level()
+            _action, _reason = compute_action(_verd, _dlv2, _ldays, _plv2)
+
+            # 경보 수준 로그 + registry 이벤트 기록
+            _ver_str = _curr_v.get("version", "—") if _curr_v else "—"
+            if _action in (ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE):
+                _alert = rollback_alert_message(
+                    _ver_str, _verd, _dlv2, _action, _reason,
+                    pnl_today=stats.get("pnl_krw", 0),
+                )
+                log_manager.system(_alert, "WARNING")
+            try:
+                _get_reg().log_event(
+                    event_type = _action,
+                    message    = _reason[:120],
+                    note       = "PnL %+.0f원  verdict=%s  drift=%d" % (
+                        stats.get("pnl_krw", 0), _verd, _dlv2),
+                    version    = _ver_str if _ver_str != "—" else None,
+                )
+            except Exception as _ev_e:
+                logger.warning("[Phase5] log_event 실패: %s", _ev_e)
+
+            # 일일 리포트 파일 저장
+            _exp    = _get_exp()
+            _report = _exp.build_report()
+            _exp.save(_report)
+            logger.info("[Phase5] 일일 전략 리포트 저장 완료")
+        except Exception as _ph5_e:
+            logger.warning("[Phase5] 일일 export 실패 (스킵): %s", _ph5_e)
+
+        # [Shadow] shadow_candidate.json 체크 → 섀도우 자동 시작
+        self._load_shadow_candidate()
 
         # ── 자동 종료 예약 ────────────────────────────────────────
         win_rate = stats["wins"] / max(stats["trades"], 1)

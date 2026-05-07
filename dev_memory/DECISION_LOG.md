@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-05-07 버그 수정 (5차 세션 — Phase 5 QA + STRATEGY_PARAMS_GUIDE 준수)
+
+### [B64] `%+,.0f` Python 3.7 `%` 연산자 미지원
+**파일**: `strategy/ops/daily_exporter.py` L67, `dashboard/strategy_dashboard_tab.py` L887
+**증상**: `qa_strategy_seeder.py --all` 실행 시 `ValueError: unsupported format character ','`
+**원인**: Python 3.7의 `%`-스타일 포매팅은 `%+,.0f` (콤마 구분자) 미지원. `f-string` 또는 `.format()`에서만 `,` 지원.
+**Fix**: `%+,.0f` → `%+.0f` (콤마 구분자 제거)
+**교훈**: Python 3.7 `%` 포매팅에서 콤마는 지원 안 됨. f-string(`f"{val:+,.0f}"`)이나 `.format()`을 써야 한다.
+
+### [B65] `MultiMetricDriftDetector.get_level()` AttributeError — 단수/복수 메서드 혼동
+**파일**: `strategy/ops/daily_exporter.py` L93, `dashboard/strategy_dashboard_tab.py` L~1295, `main.py` daily_close
+**증상**: `AttributeError: 'MultiMetricDriftDetector' object has no attribute 'get_level'`
+**원인**: 단일 메트릭 `DriftDetector`는 `get_level() → int` 를 가지나, `MultiMetricDriftDetector`는 메트릭별 dict를 반환하는 `get_levels() → Dict[str, int]` 를 가짐. `RegimeFingerprint.get_level()`은 단수가 맞음.
+**Fix**: `det.get_level()` → `max(det.get_levels().values()) if det.get_levels() else 0`
+**교훈**: 코드에서 `DriftDetector` 인스턴스가 single vs multi인지 타입을 확인하고 메서드명을 사용해야 함.
+
+### [B66] QA 세더 cp949 UnicodeEncodeError — Windows 콘솔 한글/이모지 인코딩 실패
+**파일**: `scripts/qa_strategy_seeder.py` `run_report()`
+**증상**: Windows cmd/PowerShell 기본 cp949 인코딩에서 리포트 출력 시 `UnicodeEncodeError: 'cp949' codec can't encode character`
+**원인**: 리포트에 포함된 이모지(✅, ❌ 등) 또는 cp949 미지원 유니코드 문자
+**Fix**: `try: print(report) except UnicodeEncodeError: sys.stdout.buffer.write((report+"\n").encode("utf-8", errors="replace"))`
+**워크어라운드**: CLI 실행 전 `$env:PYTHONIOENCODING="utf-8"` 설정
+
+---
+
+## 2026-05-07 설계 결정 (5차 세션)
+
+### [D26] shadow_candidate.json — CLI 최적화 → 트레이딩 루프 IPC 패턴
+**결정**: `param_optimizer.propose_for_shadow()` 는 `data/shadow_candidate.json` 에만 후보 파라미터를 기록하고 `PARAM_CURRENT`를 즉시 변경하지 않는다. `main.py`의 `daily_close()` 가 이 파일을 읽어 `ShadowEvaluator`를 초기화한다.
+**이유**: 두 프로세스(CLI 최적화 + 트레이딩 루프)가 별도로 실행되므로, IPC는 파일 기반이 가장 단순하고 신뢰성 있음. `apply_best()`가 `PARAM_CURRENT`를 즉시 변경하면 라이브 파라미터가 shadow 검증 없이 바뀌는 위험이 있음.
+**파일 경로**: `OPT_RESULT_DIR(data/db/param_opt)/../../shadow_candidate.json` → `data/shadow_candidate.json`
+**주의**: `apply_best()`와 `propose_for_shadow()` 는 완전히 다른 경로임. `apply_best()`는 즉시 적용(라이브 파라미터 변경), `propose_for_shadow()`는 2주 shadow 후 HotSwap을 위한 제안.
+
+### [D27] strategy_events 테이블 — StrategyRegistry 운영 이벤트 감사 로그
+**결정**: `strategy_registry.db`에 `strategy_events` 테이블 추가. 모든 주요 운영 이벤트(`VERSION_REGISTERED`, `SHADOW_START`, `HOTSWAP_APPROVED`, `HOTSWAP_DENIED`, `ROLLBACK`, `REPLACE_CANDIDATE`, `WATCH`)를 기록.
+**이유**: 버전 이력(`strategy_versions`)은 등록 시점 스냅샷이지만 운영 중 이벤트(shadow 시작, hot-swap 거부 사유 등)를 추적하는 별도 감사 로그가 없었음.
+**스키마**: `(id INTEGER PK, version TEXT, event_type TEXT NOT NULL, event_at TEXT, message TEXT, note TEXT)`
+**대시보드 표시**: `_StrategyLog.refresh(event_log=)` — 최신 40개 이벤트를 한국어로 표시. 이벤트 로그 없으면 기존 버전 목록 fallback.
+
+---
+
 ## 2026-05-07 버그 수정 (4차 세션 — 잔고 패널 수치 오류 + 포지션 복원)
 
 ### [B60] 합성 잔고행 PnL 배수 오류 — 500원/pt vs 250,000원/pt

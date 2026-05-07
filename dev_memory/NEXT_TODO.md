@@ -8,6 +8,32 @@
 
 ---
 
+## 즉시 확인 필요 (추가됨 2026-05-07 5차 세션)
+
+### [DONE 2026-05-07] STRATEGY_PARAMS_GUIDE.md §1~§20 전체 준수 점검
+- 93% 구현 확인. 실제 미구현 2건(strategy_events, shadow_ev) 이번 세션에서 구현 완료.
+- VolatilityTargeter / DynamicSizer: 가이드 지시에 따라 "shadow test 후 적용" 의도적 보류 — 정상.
+
+### [V49] shadow_candidate.json IPC 흐름 end-to-end 확인 [다음 장외 최적화 실행 후]
+- **내용**: `param_optimizer.propose_for_shadow()` 실행 → `data/shadow_candidate.json` 생성 → 다음날 `daily_close()` → `_load_shadow_candidate()` → `ShadowEvaluator` 인스턴스화 로그 확인
+- **방법**:
+  1. CLI에서 `python backtest/param_optimizer.py --shadow` 실행
+  2. `data/shadow_candidate.json` 파일 존재 확인 (candidate_version, candidate_params, wfa_sharpe 포함)
+  3. 다음 일일 마감 후 WARN.log `[ShadowMode] ShadowEvaluator 초기화 완료` 확인
+- **기준**: JSON 파일 생성 + 마감 로그에 shadow 초기화 출력
+
+### [V50] strategy_events 테이블 기록 확인 [다음 버전 등록 또는 shadow 시작 시]
+- **내용**: `strategy_registry.db`의 `strategy_events` 테이블에 `VERSION_REGISTERED`, `SHADOW_START`, `HOTSWAP_APPROVED/DENIED` 이벤트가 기록되는지 확인
+- **방법**: `SELECT * FROM strategy_events ORDER BY id DESC LIMIT 10`
+- **기준**: `event_type`, `event_at`, `message` 컬럼이 채워진 행 존재
+
+### [V51] 전략 대시보드 이벤트 로그 표시 확인 [다음 실행]
+- **내용**: `strategy_dashboard_tab.py` `_StrategyLog` 패널이 `strategy_events` 기반으로 갱신되는지
+- **방법**: 대시보드 → 전략 탭 → 로그 패널에 한국어 이벤트 표시 확인
+- **기준**: `버전 등록 | v1.0 | 2026-05-07 ...` 형태로 표시 (fallback: 버전 목록)
+
+---
+
 ## 즉시 확인 필요 (추가됨 2026-05-07 4차 세션)
 
 ### [V47] 포지션 복원 버튼 동작 확인 [다음 모의투자 장중]

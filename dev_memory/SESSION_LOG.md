@@ -4,6 +4,62 @@
 
 ---
 
+## 2026-05-07 (5차) — Phase 5 QA 수정 + STRATEGY_PARAMS_GUIDE 준수 점검 + strategy_events 테이블 + shadow_ev 초기화
+
+**작업**: QA 세더 실행 후 발견된 버그 수정 → STRATEGY_PARAMS_GUIDE.md §1~§20 전체 준수 점검 → 두 미구현 항목 실제 코드로 구현
+
+### QA 수정 (qa_strategy_seeder.py 16/16 PASS 달성)
+
+| 버그 | 위치 | 수정 내용 |
+|---|---|---|
+| `%+,.0f` Python 3.7 미지원 | `strategy/ops/daily_exporter.py` L67, `dashboard/strategy_dashboard_tab.py` L887 | `%+,.0f` → `%+.0f` (comma 구분자 미지원) |
+| `det.get_level()` AttributeError | `strategy/ops/daily_exporter.py` L93, `dashboard/strategy_dashboard_tab.py` L~1295, `main.py` daily_close | `MultiMetricDriftDetector.get_levels()` 반환값이 dict → `max(det.get_levels().values())` |
+| cp949 콘솔 UnicodeEncodeError | `scripts/qa_strategy_seeder.py` `run_report()` | UnicodeEncodeError fallback: `sys.stdout.buffer.write(report.encode("utf-8", errors="replace"))` |
+
+### STRATEGY_PARAMS_GUIDE.md 준수 점검 결과 (§1~§20)
+
+전체 93% 구현 완료. 실제 미구현 2건 확인:
+
+| 항목 | 섹션 | 상태 |
+|---|---|---|
+| `strategy_events` 테이블 | §8 StrategyRegistry | 미구현 → **이번 세션 구현** |
+| `shadow_ev` 초기화 경로 | §20 Hot-Swap 게이트 | `self._shadow_ev = None` 선언만 → **이번 세션 구현** |
+| `VolatilityTargeter` | §13 | 의도적 보류 (가이드: "shadow test 통과 후 적용") |
+| `DynamicSizer` | §13 | 의도적 보류 (동일 이유) |
+
+### 구현된 항목
+
+**`config/strategy_registry.py`**:
+- `strategy_events` 테이블 (`_init_db()`): `id, version, event_type, event_at, message, note`
+- `log_event(event_type, message, note, version)` 메서드 추가
+- `get_event_log(version, limit)` 메서드 추가
+- `register_version()` 완료 시 `log_event("VERSION_REGISTERED", ...)` 자동 기록
+
+**`backtest/param_optimizer.py`**:
+- `propose_for_shadow(best_params, wfa_result, note)` 메서드 추가
+- `apply_best()` 대신 `data/shadow_candidate.json` 에 후보 파라미터 기록 (라이브 파라미터 즉시 변경 금지)
+- Shadow candidate IPC 패턴: `OPT_RESULT_DIR/../../shadow_candidate.json` → `data/shadow_candidate.json`
+
+**`main.py`**:
+- `start_shadow_mode(candidate_params, wfa_sharpe, candidate_version)` 메서드: `ShadowEvaluator` 인스턴스화
+- `_load_shadow_candidate()` 메서드: `data/shadow_candidate.json` 읽기 → `start_shadow_mode()` 호출
+- `daily_close()`: verdict 계산 후 `log_event(event_type=_action, ...)` 기록. 마지막에 `_load_shadow_candidate()` 호출
+
+**`dashboard/strategy_dashboard_tab.py`**:
+- `_StrategyLog.refresh(all_versions, event_log=None)` 재작성: `event_log` 있으면 이벤트 로그 표시, 없으면 버전 목록 fallback
+- `_EVENT_KOR` dict: 한국어 이벤트 타입 이름
+- `StrategyPanel._refresh_ui()`: `get_event_log(limit=40)` 호출 후 `log_panel.refresh()` 전달
+
+**`strategy/ops/hotswap_gate.py`**:
+- reject 경로: `log_event("HOTSWAP_DENIED", reason, version=shadow_ev.version)` 추가
+- approve 경로: `log_event("HOTSWAP_APPROVED", ...)` + `shadow_candidate.json` 삭제
+
+### 수정된 파일
+
+`strategy/ops/daily_exporter.py`, `dashboard/strategy_dashboard_tab.py`, `scripts/qa_strategy_seeder.py`, `config/strategy_registry.py`, `backtest/param_optimizer.py`, `main.py`, `strategy/ops/hotswap_gate.py`
+
+---
+
 ## 2026-05-07 (4차) — 실시간 잔고 UI 합성 행 수정 + 모의투자 startup sync 버그 수정 + 포지션 수동 복원 버튼
 
 **작업**: 대시보드 실시간 잔고 패널 데이터 부정확 문제 3종 연속 진단 및 수정

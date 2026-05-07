@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-07 (4차) — B60~B63 잔고 패널 수치 수정 + 모의서버 포지션 복원 버튼
+> 마지막 업데이트: 2026-05-07 (5차) — Phase 5 QA + STRATEGY_PARAMS_GUIDE 전체 준수 + strategy_events 테이블 + shadow IPC 구현
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,38 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-05-07 세션 주요 수정 (5차) — Phase 5 QA + strategy_events + shadow IPC
+
+### 핵심 변경 사항
+
+**Phase 5 컴포넌트 구조 (STRATEGY_PARAMS_GUIDE §1~§20 93% 구현 완료)**
+
+| 컴포넌트 | 파일 | 상태 |
+|---|---|---|
+| StrategyRegistry + strategy_events 테이블 | `config/strategy_registry.py` | ✅ 완료 |
+| Shadow candidate IPC (JSON 파일) | `data/shadow_candidate.json` | ✅ 완료 |
+| ShadowEvaluator 초기화 (`start_shadow_mode`) | `main.py` | ✅ 완료 |
+| HotSwapGate 이벤트 기록 | `strategy/ops/hotswap_gate.py` | ✅ 완료 |
+| 전략 대시보드 이벤트 로그 표시 | `dashboard/strategy_dashboard_tab.py` | ✅ 완료 |
+
+**Shadow candidate 흐름**:
+```
+param_optimizer.propose_for_shadow()
+  → data/shadow_candidate.json 기록 (live 파라미터 변경 없음)
+    → daily_close() → _load_shadow_candidate()
+      → start_shadow_mode() → ShadowEvaluator 인스턴스화
+        → (2주 후) HotSwapGate.attempt()
+          → 통과: _execute_hotswap() → PARAM_CURRENT 업데이트 + JSON 삭제
+          → 거부: log_event("HOTSWAP_DENIED") + 1주 추가 관찰
+```
+
+**QA 버그 3종 수정**:
+- `%+,.0f` → `%+.0f` (Python 3.7 `%` 포매팅 comma 미지원)
+- `det.get_level()` → `max(det.get_levels().values())` (`MultiMetricDriftDetector` API)
+- QA 세더 cp949 콘솔 UnicodeEncodeError fallback 추가
 
 ---
 
