@@ -1,0 +1,83 @@
+{
+  "source": "meta_labels",
+  "count": 3,
+  "realized_actions": {
+    "skip": 3
+  },
+  "avg_meta_confidence": 0.6667,
+  "grid_search": [
+    {
+      "take_threshold": 0.65,
+      "reduce_threshold": 0.54,
+      "match_rate": 0.6667,
+      "take_count": 1,
+      "reduce_count": 0,
+      "skip_count": 2
+    },
+    {
+      "take_threshold": 0.67,
+      "reduce_threshold": 0.56,
+      "match_rate": 0.6667,
+      "take_count": 1,
+      "reduce_count": 0,
+      "skip_count": 2
+    },
+    {
+      "take_threshold": 0.69,
+      "reduce_threshold": 0.58,
+      "match_rate": 0.6667,
+      "take_count": 1,
+      "reduce_count": 0,
+      "skip_count": 2
+    },
+    {
+      "take_threshold": 0.71,
+      "reduce_threshold": 0.6,
+      "match_rate": 0.6667,
+      "take_count": 1,
+      "reduce_count": 0,
+      "skip_count": 2
+    }
+  ],
+  "best_grid": {
+    "take_threshold": 0.65,
+    "reduce_threshold": 0.54,
+    "match_rate": 0.6667,
+    "take_count": 1,
+    "reduce_count": 0,
+    "skip_count": 2
+  },
+  "latest_samples": [
+    {
+      "ts": "2026-05-08 14:25:00",
+      "meta_confidence": 1.0,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": -0.0299,
+      "microprice_bias": -0.0031,
+      "queue_signal": 0.0436,
+      "cancel_add_ratio": 0.0094
+    },
+    {
+      "ts": "2026-05-08 14:26:00",
+      "meta_confidence": 0.5,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": -0.0234,
+      "microprice_bias": 0.0004,
+      "queue_signal": -0.0376,
+      "cancel_add_ratio": 0.0096
+    },
+    {
+      "ts": "2026-05-08 14:27:00",
+      "meta_confidence": 0.5,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": -0.0467,
+      "microprice_bias": -0.0001,
+      "queue_signal": -0.0176,
+      "cancel_add_ratio": 0.0139
+    }
+  ],
+  "generated_at": "2026-05-08 14:34:00"
+}

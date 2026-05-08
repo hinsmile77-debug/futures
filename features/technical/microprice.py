@@ -1,122 +1,96 @@
-# features/technical/microprice.py — Microprice (호가 가중 중간가)
-"""
-Microprice = (Ask * BidQty + Bid * AskQty) / (BidQty + AskQty)
-
-단순 중간가(midprice)보다 실제 체결 방향을 더 정확히 예측.
-- Bid qty가 크면 → 매수 압력 → microprice > midprice
-- Ask qty가 크면 → 매도 압력 → microprice < midprice
-
-기대 효과: 정확도 +3~5%
-참고: Stoikov (2018), "The micro-price: a high-frequency estimator of future prices"
-"""
-import numpy as np
 from collections import deque
-from typing import Optional
+from typing import Dict, List, Optional
+
+import numpy as np
 
 
 class MicropriceCalculator:
-    """실시간 Microprice 계산기"""
+    """Track best-level and depth-aware microprice statistics."""
 
-    def __init__(self, window: int = 5):
+    def __init__(self, window: int = 5, max_levels: int = 5):
         self.window = window
-        self._mp_buf  = deque(maxlen=window)   # 분봉 microprice
-        self._mid_buf = deque(maxlen=window)   # 분봉 midprice
-
-        self._tick_mp  = []   # 분 내 틱 microprice 수집
-        self._tick_mid = []
+        self.max_levels = max_levels
+        self._mp_buf = deque(maxlen=window)
+        self._mid_buf = deque(maxlen=window)
+        self._tick_mp: List[float] = []
+        self._tick_mid: List[float] = []
+        self._tick_depth_bias: List[float] = []
 
     def update_hoga(
         self,
-        bid_price: float, bid_qty: int,
-        ask_price: float, ask_qty: int,
-    ) -> Optional[float]:
-        """
-        호가 틱마다 호출 — 분봉 마감 전 실시간 microprice 추적
-
-        Returns:
-            현재 틱 microprice (float) or None
-        """
-        total_qty = bid_qty + ask_qty
-        if total_qty == 0:
+        bid_prices: List[float],
+        bid_qtys: List[int],
+        ask_prices: List[float],
+        ask_qtys: List[int],
+    ) -> Optional[Dict[str, float]]:
+        n = min(len(bid_prices), len(bid_qtys), len(ask_prices), len(ask_qtys), self.max_levels)
+        if n <= 0:
             return None
 
-        midprice   = (bid_price + ask_price) / 2.0
-        microprice = (ask_price * bid_qty + bid_price * ask_qty) / total_qty
+        bid1 = float(bid_prices[0] or 0.0)
+        ask1 = float(ask_prices[0] or 0.0)
+        bid1_qty = float(bid_qtys[0] or 0.0)
+        ask1_qty = float(ask_qtys[0] or 0.0)
+        total_top = bid1_qty + ask1_qty
+        if bid1 <= 0 or ask1 <= 0 or total_top <= 0:
+            return None
+
+        midprice = (bid1 + ask1) / 2.0
+        microprice = (ask1 * bid1_qty + bid1 * ask1_qty) / total_top
+
+        weights = np.array([1.0 / (i + 1) for i in range(n)], dtype=float)
+        bid_depth = float(np.dot(np.array(bid_qtys[:n], dtype=float), weights))
+        ask_depth = float(np.dot(np.array(ask_qtys[:n], dtype=float), weights))
+        depth_bias = (bid_depth - ask_depth) / (bid_depth + ask_depth + 1e-9)
 
         self._tick_mp.append(microprice)
         self._tick_mid.append(midprice)
+        self._tick_depth_bias.append(depth_bias)
 
-        return microprice
+        return {
+            "microprice_tick": round(microprice, 4),
+            "midprice_tick": round(midprice, 4),
+            "depth_bias_tick": round(depth_bias, 4),
+        }
 
-    def flush_minute(self) -> dict:
-        """
-        1분봉 마감 시 집계
-
-        Returns:
-            {microprice, midprice, mp_bias, mp_ma, mp_slope, direction}
-        """
-        if self._tick_mp:
-            mp  = float(np.mean(self._tick_mp))
-            mid = float(np.mean(self._tick_mid))
-        else:
-            mp  = 0.0
-            mid = 0.0
+    def flush_minute(self) -> Dict[str, float]:
+        mp = float(np.mean(self._tick_mp)) if self._tick_mp else 0.0
+        mid = float(np.mean(self._tick_mid)) if self._tick_mid else 0.0
+        depth_bias = float(np.mean(self._tick_depth_bias)) if self._tick_depth_bias else 0.0
 
         self._mp_buf.append(mp)
         self._mid_buf.append(mid)
 
-        result = self._compute(mp, mid)
+        mp_bias = mp - mid
+        mp_ma = float(np.mean(self._mp_buf)) if self._mp_buf else mp
+        mp_slope = self._calc_slope(list(self._mp_buf))
+        direction = 1 if mp_bias > 0 and mp_slope >= 0 else -1 if mp_bias < 0 and mp_slope <= 0 else 0
 
         self._tick_mp.clear()
         self._tick_mid.clear()
-
-        return result
-
-    def _compute(self, mp: float, mid: float) -> dict:
-        """현재 분봉 지표 계산"""
-        # Microprice bias: 중간가 대비 편향 (양수 = 매수 우위)
-        mp_bias = mp - mid
-
-        # 이동평균
-        mp_ma = float(np.mean(list(self._mp_buf))) if self._mp_buf else mp
-
-        # 기울기 (추세 선행)
-        mp_slope = 0.0
-        if len(self._mp_buf) >= 3:
-            arr = np.array(list(self._mp_buf)[-5:])
-            if len(arr) >= 2:
-                reg = np.polyfit(range(len(arr)), arr, 1)
-                mp_slope = float(reg[0])
-
-        # 방향: bias와 slope 결합
-        direction = 0
-        if mp_bias > 0 and mp_slope > 0:
-            direction = 1
-        elif mp_bias < 0 and mp_slope < 0:
-            direction = -1
+        self._tick_depth_bias.clear()
 
         return {
-            "microprice":  round(mp, 2),
-            "midprice":    round(mid, 2),
-            "mp_bias":     round(mp_bias, 4),      # CORE 피처값
-            "mp_ma":       round(mp_ma, 2),
-            "mp_slope":    round(mp_slope, 4),     # CORE 피처값
-            "direction":   direction,
+            "microprice": round(mp, 4),
+            "midprice": round(mid, 4),
+            "mp_bias": round(mp_bias, 6),
+            "mp_ma": round(mp_ma, 4),
+            "mp_slope": round(mp_slope, 6),
+            "depth_bias": round(depth_bias, 4),
+            "direction": direction,
         }
 
-    def reset_daily(self):
+    @staticmethod
+    def _calc_slope(values: List[float]) -> float:
+        if len(values) < 3:
+            return 0.0
+        arr = np.array(values[-5:], dtype=float)
+        reg = np.polyfit(range(len(arr)), arr, 1)
+        return float(reg[0])
+
+    def reset_daily(self) -> None:
         self._mp_buf.clear()
         self._mid_buf.clear()
         self._tick_mp.clear()
         self._tick_mid.clear()
-
-
-if __name__ == "__main__":
-    calc = MicropriceCalculator(window=5)
-
-    # 매수 우위 시나리오: bid qty > ask qty → microprice > mid
-    for i in range(3):
-        for _ in range(10):
-            calc.update_hoga(bid_price=390.0, bid_qty=200, ask_price=390.25, ask_qty=50)
-        r = calc.flush_minute()
-        print(f"[분 {i+1}] microprice={r['microprice']}, bias={r['mp_bias']:+.4f}, dir={r['direction']:+d}")
+        self._tick_depth_bias.clear()

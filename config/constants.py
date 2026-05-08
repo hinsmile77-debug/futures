@@ -15,10 +15,10 @@ TR_FUTURES_1MIN             = "OPT50029"  # 선물분차트요청 (OPT50029)
 # 실시간 FID
 FID_FUTURES_PRICE   = 10    # 현재가
 FID_FUTURES_VOL     = 15    # 거래량
-FID_BID_PRICE       = 41    # 매수호가1
-FID_ASK_PRICE       = 51    # 매도호가1
-FID_BID_QTY         = 61    # 매수호가수량1
-FID_ASK_QTY         = 71    # 매도호가수량1
+FID_ASK_PRICE       = 41    # 매도호가1
+FID_BID_PRICE       = 51    # 매수호가1
+FID_ASK_QTY         = 61    # 매도호가수량1
+FID_BID_QTY         = 71    # 매수호가수량1
 FID_OI              = 195   # 미결제약정 (선물시세 기준 — FID 291은 예상체결가이므로 사용 금지)
 FID_EXPECTED_PRICE  = 291   # 예상체결가 (선물호가잔량에서 수신 — OI 아님)
 FID_KOSPI200_IDX    = 197   # KOSPI200 지수 현재가 (선물시세)
@@ -29,6 +29,15 @@ FID_LOWER_LIMIT     = 306   # 선물 당일 하한가 (파생실시간상하한)
 # 실시간 타입 코드 — OnReceiveRealData sRealType 파라미터는 한국어 명칭
 RT_FUTURES      = "선물시세"      # 선물 체결 틱 (FC0 해당)
 RT_FUTURES_HOGA = "선물호가잔량"   # 선물 호가 (FH0 해당)
+
+# 선물호가잔량 1~5레벨 FID.
+# Kiwoom 선물 호가 FID는 1호가 기준으로 연속 증가하는 패턴을 사용한다고 가정한다.
+# 예: 매수호가 41~45, 매도호가 51~55, 매수호가수량 61~65, 매도호가수량 71~75.
+FUTURES_HOGA_LEVELS = 5
+FUTURES_BID_PRICE_FIDS = [FID_BID_PRICE + i for i in range(FUTURES_HOGA_LEVELS)]
+FUTURES_ASK_PRICE_FIDS = [FID_ASK_PRICE + i for i in range(FUTURES_HOGA_LEVELS)]
+FUTURES_BID_QTY_FIDS = [FID_BID_QTY + i for i in range(FUTURES_HOGA_LEVELS)]
+FUTURES_ASK_QTY_FIDS = [FID_ASK_QTY + i for i in range(FUTURES_HOGA_LEVELS)]
 
 # ── 선물 계약 상수 ────────────────────────────────────────────
 FUTURES_TICK_SIZE   = 0.05      # 최소 호가 단위 (0.05pt)
@@ -88,6 +97,17 @@ DYNAMIC_FEATURES_POOL = [
     "volume_surge_ratio",
     # v5 추가
     "microprice",
+    "microprice_bias",
+    "microprice_slope",
+    "microprice_depth_bias",
+    "mlofi_norm",
+    "mlofi_slope",
+    "queue_signal",
+    "queue_momentum",
+    "queue_depletion_speed",
+    "queue_refill_rate",
+    "imbalance_slope",
+    "cancel_add_ratio",
     "lob_imbalance_decay",
     # v6.5 추가
     "multi_timeframe_5m",

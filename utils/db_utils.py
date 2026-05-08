@@ -66,6 +66,9 @@ def init_predictions_db():
         horizon     TEXT NOT NULL,
         direction   INTEGER NOT NULL,
         confidence  REAL NOT NULL,
+        up_prob     REAL,
+        down_prob   REAL,
+        flat_prob   REAL,
         actual      INTEGER,
         correct     INTEGER,
         features    TEXT,
@@ -73,12 +76,135 @@ def init_predictions_db():
     )
     """
     execute(PREDICTIONS_DB, sql)
+    _migrate_predictions_db()
 
     # 인덱스
     execute(PREDICTIONS_DB,
             "CREATE INDEX IF NOT EXISTS idx_ts ON predictions(ts)")
     execute(PREDICTIONS_DB,
             "CREATE INDEX IF NOT EXISTS idx_horizon ON predictions(horizon)")
+    execute(
+        PREDICTIONS_DB,
+        """
+        CREATE TABLE IF NOT EXISTS ensemble_decisions (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts             TEXT NOT NULL,
+            regime         TEXT,
+            micro_regime   TEXT,
+            direction      INTEGER NOT NULL,
+            confidence     REAL NOT NULL,
+            up_score       REAL,
+            down_score     REAL,
+            flat_score     REAL,
+            grade          TEXT,
+            auto_entry     INTEGER,
+            regime_ok      INTEGER,
+            min_conf       REAL,
+            gate_reason    TEXT,
+            gate_strength  REAL,
+            gate_delta     REAL,
+            gate_blocked   INTEGER,
+            gate_signals   TEXT,
+            detail         TEXT,
+            features       TEXT,
+            created_at     TEXT DEFAULT (datetime('now', 'localtime'))
+        )
+        """,
+    )
+    _migrate_ensemble_decisions_db()
+    execute(PREDICTIONS_DB,
+            "CREATE INDEX IF NOT EXISTS idx_ensemble_ts ON ensemble_decisions(ts)")
+    execute(
+        PREDICTIONS_DB,
+        """
+        CREATE TABLE IF NOT EXISTS meta_labels (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts               TEXT NOT NULL,
+            horizon          TEXT NOT NULL,
+            predicted        INTEGER NOT NULL,
+            actual           INTEGER NOT NULL,
+            confidence       REAL NOT NULL,
+            up_prob          REAL,
+            down_prob        REAL,
+            flat_prob        REAL,
+            target_close     REAL,
+            future_close     REAL,
+            realized_move    REAL,
+            threshold_move   REAL,
+            meta_action      TEXT NOT NULL,
+            meta_score       REAL NOT NULL,
+            features         TEXT,
+            created_at       TEXT DEFAULT (datetime('now', 'localtime'))
+        )
+        """,
+    )
+    execute(PREDICTIONS_DB,
+            "CREATE INDEX IF NOT EXISTS idx_meta_ts ON meta_labels(ts)")
+    execute(PREDICTIONS_DB,
+            "CREATE INDEX IF NOT EXISTS idx_meta_horizon ON meta_labels(horizon)")
+
+
+def _migrate_predictions_db():
+    """Backfill newly introduced probability columns on existing DBs."""
+    with _lock:
+        with get_conn(PREDICTIONS_DB) as conn:
+            cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(predictions)").fetchall()
+            }
+            for name in ("up_prob", "down_prob", "flat_prob"):
+                if name not in cols:
+                    conn.execute(f"ALTER TABLE predictions ADD COLUMN {name} REAL")
+            conn.execute(
+                """
+                UPDATE predictions
+                SET
+                    up_prob = CASE
+                        WHEN up_prob IS NOT NULL THEN up_prob
+                        WHEN direction = 1 THEN confidence
+                        WHEN direction = -1 THEN (1.0 - confidence) / 2.0
+                        ELSE (1.0 - confidence) / 2.0
+                    END,
+                    down_prob = CASE
+                        WHEN down_prob IS NOT NULL THEN down_prob
+                        WHEN direction = -1 THEN confidence
+                        WHEN direction = 1 THEN (1.0 - confidence) / 2.0
+                        ELSE (1.0 - confidence) / 2.0
+                    END,
+                    flat_prob = CASE
+                        WHEN flat_prob IS NOT NULL THEN flat_prob
+                        WHEN direction = 0 THEN confidence
+                        ELSE (1.0 - confidence) / 2.0
+                    END
+                WHERE up_prob IS NULL OR down_prob IS NULL OR flat_prob IS NULL
+                """
+            )
+
+
+def _migrate_ensemble_decisions_db():
+    """Ensure adaptive/meta gate telemetry columns exist on older DBs."""
+    with _lock:
+        with get_conn(PREDICTIONS_DB) as conn:
+            cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(ensemble_decisions)").fetchall()
+            }
+            additions = {
+                "meta_action": "TEXT",
+                "meta_confidence": "REAL",
+                "meta_size_mult": "REAL",
+                "meta_reason": "TEXT",
+                "toxicity_action": "TEXT",
+                "toxicity_score": "REAL",
+                "toxicity_score_ma": "REAL",
+                "toxicity_size_mult": "REAL",
+                "toxicity_reason": "TEXT",
+            }
+            for name, dtype in additions.items():
+                if name not in cols:
+                    conn.execute(
+                        f"ALTER TABLE ensemble_decisions ADD COLUMN {name} {dtype}"
+                    )
 
 
 def init_trades_db():

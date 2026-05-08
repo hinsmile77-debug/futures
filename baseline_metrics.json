@@ -1,0 +1,431 @@
+{
+  "generated_at": "2026-05-08 13:16:36",
+  "trade_summary": {
+    "count": 20,
+    "wins": 8,
+    "win_rate": 0.4,
+    "avg_pnl_pts": -0.4575,
+    "total_pnl_pts": -9.15,
+    "total_pnl_krw": -1895348.0,
+    "profit_factor": 0.6866,
+    "max_drawdown_pts": -15.1,
+    "time_zone_stats": {
+      "LUNCH_RECOVERY": {
+        "count": 1,
+        "win_rate": 0.0,
+        "avg_pnl_pts": -3.5
+      },
+      "OTHER": {
+        "count": 8,
+        "win_rate": 0.375,
+        "avg_pnl_pts": -0.175
+      },
+      "STABLE_TREND": {
+        "count": 6,
+        "win_rate": 0.5,
+        "avg_pnl_pts": -0.2167
+      },
+      "OPEN_VOLATILE": {
+        "count": 4,
+        "win_rate": 0.5,
+        "avg_pnl_pts": -0.1625
+      },
+      "CLOSE_VOLATILE": {
+        "count": 1,
+        "win_rate": 0.0,
+        "avg_pnl_pts": -2.3
+      }
+    }
+  },
+  "prediction_summary": {
+    "count": 8075,
+    "per_horizon": {
+      "10m": {
+        "count": 1336,
+        "accuracy": 0.4087,
+        "avg_confidence": 0.7902
+      },
+      "15m": {
+        "count": 1309,
+        "accuracy": 0.4118,
+        "avg_confidence": 0.7759
+      },
+      "1m": {
+        "count": 1429,
+        "accuracy": 0.3765,
+        "avg_confidence": 0.7355
+      },
+      "30m": {
+        "count": 1218,
+        "accuracy": 0.3851,
+        "avg_confidence": 0.7817
+      },
+      "3m": {
+        "count": 1402,
+        "accuracy": 0.413,
+        "avg_confidence": 0.763
+      },
+      "5m": {
+        "count": 1381,
+        "accuracy": 0.4026,
+        "avg_confidence": 0.7867
+      }
+    },
+    "calibration": [
+      {
+        "conf_bin": 30,
+        "count": 739,
+        "accuracy": 0.4452
+      },
+      {
+        "conf_bin": 35,
+        "count": 2,
+        "accuracy": 0.5
+      },
+      {
+        "conf_bin": 40,
+        "count": 1,
+        "accuracy": 0
+      },
+      {
+        "conf_bin": 45,
+        "count": 66,
+        "accuracy": 0.4242
+      },
+      {
+        "conf_bin": 50,
+        "count": 1602,
+        "accuracy": 0.4263
+      },
+      {
+        "conf_bin": 55,
+        "count": 93,
+        "accuracy": 0.6559
+      },
+      {
+        "conf_bin": 60,
+        "count": 220,
+        "accuracy": 0.4091
+      },
+      {
+        "conf_bin": 65,
+        "count": 390,
+        "accuracy": 0.3821
+      },
+      {
+        "conf_bin": 70,
+        "count": 417,
+        "accuracy": 0.4628
+      },
+      {
+        "conf_bin": 75,
+        "count": 223,
+        "accuracy": 0.417
+      },
+      {
+        "conf_bin": 80,
+        "count": 373,
+        "accuracy": 0.4209
+      },
+      {
+        "conf_bin": 85,
+        "count": 310,
+        "accuracy": 0.2871
+      },
+      {
+        "conf_bin": 90,
+        "count": 35,
+        "accuracy": 0.3429
+      },
+      {
+        "conf_bin": 95,
+        "count": 261,
+        "accuracy": 0.3372
+      },
+      {
+        "conf_bin": 100,
+        "count": 3343,
+        "accuracy": 0.3751
+      }
+    ]
+  },
+  "checklist_summary": {
+    "pass_count_distribution": {
+      "2": 4,
+      "3": 36,
+      "4": 86,
+      "5": 149,
+      "6": 154,
+      "7": 135,
+      "8": 48,
+      "9": 13
+    },
+    "grade_distribution": {
+      "A": 350,
+      "B": 235,
+      "C": 40
+    }
+  },
+  "last_20_trades": [
+    {
+      "entry_ts": "2026-05-08 13:12:01",
+      "exit_ts": "2026-05-08 13:16:00",
+      "direction": "LONG",
+      "entry_price": 1143.95,
+      "exit_price": 1140.45,
+      "quantity": 1,
+      "pnl_pts": -3.5,
+      "pnl_krw": -883580.0,
+      "exit_reason": "하드스톱",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 12:59:02",
+      "exit_ts": "2026-05-08 13:09:01",
+      "direction": "LONG",
+      "entry_price": 1142.35,
+      "exit_price": 1144.1,
+      "quantity": 1,
+      "pnl_pts": 1.75,
+      "pnl_krw": 428932.0,
+      "exit_reason": "TP1(전량)",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 12:55:00",
+      "exit_ts": "2026-05-08 12:56:00",
+      "direction": "SHORT",
+      "entry_price": 1138.5,
+      "exit_price": 1140.4,
+      "quantity": 1,
+      "pnl_pts": -1.9,
+      "pnl_krw": -483539.0,
+      "exit_reason": "하드스톱",
+      "grade": "B",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 12:32:00",
+      "exit_ts": "2026-05-08 12:51:03",
+      "direction": "LONG",
+      "entry_price": 1141.55,
+      "exit_price": 1138.25,
+      "quantity": 1,
+      "pnl_pts": -3.3,
+      "pnl_krw": -833562.0,
+      "exit_reason": "하드스톱",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 12:24:00",
+      "exit_ts": "2026-05-08 12:28:01",
+      "direction": "SHORT",
+      "entry_price": 1137.95,
+      "exit_price": 1139.5,
+      "quantity": 1,
+      "pnl_pts": -1.55,
+      "pnl_krw": -396035.0,
+      "exit_reason": "하드스톱",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 12:06:00",
+      "exit_ts": "2026-05-08 12:11:01",
+      "direction": "LONG",
+      "entry_price": 1139.8,
+      "exit_price": 1141.5,
+      "quantity": 1,
+      "pnl_pts": 1.7,
+      "pnl_krw": 416452.0,
+      "exit_reason": "TP1(전량)",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 11:50:00",
+      "exit_ts": "2026-05-08 12:01:00",
+      "direction": "LONG",
+      "entry_price": 1139.85,
+      "exit_price": 1137.3,
+      "quantity": 1,
+      "pnl_pts": -2.55,
+      "pnl_krw": -646049.0,
+      "exit_reason": "하드스톱",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 11:16:00",
+      "exit_ts": "2026-05-08 11:18:01",
+      "direction": "SHORT",
+      "entry_price": 1133.75,
+      "exit_price": 1131.85,
+      "quantity": 1,
+      "pnl_pts": 1.9,
+      "pnl_krw": 466497.0,
+      "exit_reason": "TP1(전량)",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 11:03:00",
+      "exit_ts": "2026-05-08 11:10:00",
+      "direction": "SHORT",
+      "entry_price": 1133.35,
+      "exit_price": 1137.3,
+      "quantity": 1,
+      "pnl_pts": -3.95,
+      "pnl_krw": -996000.0,
+      "exit_reason": "하드스톱",
+      "grade": "B",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 10:56:00",
+      "exit_ts": "2026-05-08 11:02:00",
+      "direction": "SHORT",
+      "entry_price": 1135.3,
+      "exit_price": 1131.85,
+      "quantity": 1,
+      "pnl_pts": 3.45,
+      "pnl_krw": 853985.0,
+      "exit_reason": "TP1(전량)",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 10:48:00",
+      "exit_ts": "2026-05-08 10:52:00",
+      "direction": "LONG",
+      "entry_price": 1141.75,
+      "exit_price": 1139.05,
+      "quantity": 1,
+      "pnl_pts": -2.7,
+      "pnl_krw": -683563.0,
+      "exit_reason": "하드스톱",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 10:36:00",
+      "exit_ts": "2026-05-08 10:44:01",
+      "direction": "SHORT",
+      "entry_price": 1136.7,
+      "exit_price": 1139.1,
+      "quantity": 1,
+      "pnl_pts": -2.4,
+      "pnl_krw": -608525.0,
+      "exit_reason": "하드스톱",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 10:31:00",
+      "exit_ts": "2026-05-08 10:35:01",
+      "direction": "SHORT",
+      "entry_price": 1140.85,
+      "exit_price": 1138.45,
+      "quantity": 1,
+      "pnl_pts": 2.4,
+      "pnl_krw": 591444.0,
+      "exit_reason": "TP1(전량)",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 10:25:00",
+      "exit_ts": "2026-05-08 10:30:00",
+      "direction": "LONG",
+      "entry_price": 1143.25,
+      "exit_price": 1140.85,
+      "quantity": 1,
+      "pnl_pts": -2.4,
+      "pnl_krw": -608574.0,
+      "exit_reason": "하드스톱",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 10:19:00",
+      "exit_ts": "2026-05-08 10:24:01",
+      "direction": "LONG",
+      "entry_price": 1145.65,
+      "exit_price": 1143.6,
+      "quantity": 1,
+      "pnl_pts": -2.05,
+      "pnl_krw": -521092.0,
+      "exit_reason": "하드스톱",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 10:14:00",
+      "exit_ts": "2026-05-08 10:18:01",
+      "direction": "LONG",
+      "entry_price": 1142.85,
+      "exit_price": 1144.6,
+      "quantity": 1,
+      "pnl_pts": 1.75,
+      "pnl_krw": 428929.0,
+      "exit_reason": "TP1(전량)",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 10:04:01",
+      "exit_ts": "2026-05-08 10:13:00",
+      "direction": "LONG",
+      "entry_price": 1142.4,
+      "exit_price": 1144.45,
+      "quantity": 1,
+      "pnl_pts": 2.05,
+      "pnl_krw": 503932.0,
+      "exit_reason": "TP1(전량)",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-08 09:01:04",
+      "exit_ts": "2026-05-08 09:33:00",
+      "direction": "LONG",
+      "entry_price": 1127.5,
+      "exit_price": 1132.55,
+      "quantity": 1,
+      "pnl_pts": 5.05,
+      "pnl_krw": 2525000.0,
+      "exit_reason": "TP1(전량)",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-07 15:25:40",
+      "exit_ts": "2026-05-07 15:26:00",
+      "direction": "LONG",
+      "entry_price": 1153.0,
+      "exit_price": 1152.4,
+      "quantity": 1,
+      "pnl_pts": -0.6,
+      "pnl_krw": -300000.0,
+      "exit_reason": "15:10 강제청산",
+      "grade": "MANUAL",
+      "regime": "NEUTRAL"
+    },
+    {
+      "entry_ts": "2026-05-07 14:53:00",
+      "exit_ts": "2026-05-07 14:56:00",
+      "direction": "LONG",
+      "entry_price": 1155.9,
+      "exit_price": 1153.6,
+      "quantity": 1,
+      "pnl_pts": -2.3,
+      "pnl_krw": -1150000.0,
+      "exit_reason": "하드스톱",
+      "grade": "A",
+      "regime": "NEUTRAL"
+    }
+  ]
+}

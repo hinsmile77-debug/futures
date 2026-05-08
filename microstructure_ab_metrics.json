@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-05-08 14:05:27",
+  "eval_horizon": "5m",
+  "baseline": {
+    "samples": 1165,
+    "entries": 996,
+    "coverage": 0.8549,
+    "directional_accuracy": 0.4227,
+    "win_rate": 0.503,
+    "avg_pnl_pts": -0.0196,
+    "total_pnl_pts": -19.5,
+    "avg_confidence": 0.6317
+  },
+  "enhanced": {
+    "samples": 1165,
+    "entries": 996,
+    "coverage": 0.8549,
+    "directional_accuracy": 0.4227,
+    "win_rate": 0.503,
+    "avg_pnl_pts": -0.0196,
+    "total_pnl_pts": -19.5,
+    "avg_confidence": 0.6317
+  },
+  "changed_count": 1,
+  "flat_conversions": 0,
+  "blocked_count": 0,
+  "changed_examples": [
+    {
+      "ts": "2026-05-08 13:34:00",
+      "baseline_direction": 1,
+      "baseline_confidence": 0.425,
+      "enhanced_direction": 1,
+      "enhanced_confidence": 0.4272,
+      "actual": -1,
+      "enhanced_pnl_pts": -2.5,
+      "gate_reason": "soft_adjust",
+      "gate_strength": 0.053934
+    }
+  ]
+}

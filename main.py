@@ -63,8 +63,11 @@ from model.ensemble_decision import EnsembleDecision
 from strategy.position.position_tracker import PositionTracker
 from strategy.entry.checklist import EntryChecklist
 from strategy.entry.position_sizer import PositionSizer
+from strategy.entry.meta_gate import MetaGate
 from strategy.entry.adaptive_kelly import AdaptiveKelly
 from strategy.exit.time_exit import TimeExitManager
+from strategy.risk.toxicity_gate import ToxicityGate
+from learning.calibration import MultiHorizonCalibrator
 from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
 from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAIN_BARS
@@ -113,7 +116,10 @@ class TradingSystem:
         self.kelly             = AdaptiveKelly()
         self.time_exit         = TimeExitManager()
         self.online_learner    = OnlineLearner()
+        self.horizon_calibrator = MultiHorizonCalibrator(list(HORIZONS.keys()))
         self.pred_buffer       = PredictionBuffer()
+        self.meta_gate         = MetaGate()
+        self.toxicity_gate     = ToxicityGate()
         self.batch_retrainer   = BatchRetrainer()
         self.investor_data     = InvestorData(kiwoom_api=None)  # connect_kiwoom 후 api 주입
         # ── Phase 2 안전장치 ───────────────────────────────────
@@ -373,6 +379,44 @@ class TradingSystem:
             "CRITICAL" if before != after else "INFO",
         )
 
+    def _apply_horizon_calibration(self, horizon_proba: dict) -> dict:
+        calibrated = {}
+        for horizon, probs in horizon_proba.items():
+            res = dict(probs)
+            direction = int(res.get("direction", 0))
+            raw_conf = float(res.get("confidence", 1 / 3) or 1 / 3)
+            cal_conf = float(self.horizon_calibrator.calibrate(horizon, raw_conf))
+
+            up = float(res.get("up", 1 / 3) or 1 / 3)
+            down = float(res.get("down", 1 / 3) or 1 / 3)
+            flat = float(res.get("flat", 1 / 3) or 1 / 3)
+
+            if direction == 1:
+                other_total = max(down + flat, 1e-9)
+                up = cal_conf
+                down = (down / other_total) * max(0.0, 1.0 - cal_conf)
+                flat = (flat / other_total) * max(0.0, 1.0 - cal_conf)
+            elif direction == -1:
+                other_total = max(up + flat, 1e-9)
+                down = cal_conf
+                up = (up / other_total) * max(0.0, 1.0 - cal_conf)
+                flat = (flat / other_total) * max(0.0, 1.0 - cal_conf)
+            else:
+                other_total = max(up + down, 1e-9)
+                flat = cal_conf
+                up = (up / other_total) * max(0.0, 1.0 - cal_conf)
+                down = (down / other_total) * max(0.0, 1.0 - cal_conf)
+
+            best = max([(up, 1), (down, -1), (flat, 0)], key=lambda item: item[0])
+            calibrated[horizon] = {
+                "up": round(up, 4),
+                "down": round(down, 4),
+                "flat": round(flat, 4),
+                "direction": best[1],
+                "confidence": round(best[0], 4),
+            }
+        return calibrated
+
     def connect_kiwoom(self) -> bool:
         """로그인 + 근월물 실시간 수신 등록."""
         print("[DBG CK-1] login() 호출 직전", flush=True)
@@ -459,13 +503,21 @@ class TradingSystem:
             code   = self.realtime_data.code,
         )
 
-    def _on_hoga_update(self, bid1: float, ask1: float, bid_qty: int, ask_qty: int) -> None:
-        """선물호가잔량 이벤트마다 OFI 누적 (분봉 확정 시 flush_minute()에서 집계)."""
-        self.feature_builder.ofi.update_hoga(
-            bid_price = bid1,
-            bid_qty   = bid_qty,
-            ask_price = ask1,
-            ask_qty   = ask_qty,
+    def _on_hoga_update(
+        self,
+        bid1: float,
+        ask1: float,
+        bid_qty: int,
+        ask_qty: int,
+        snapshot: Optional[dict] = None,
+    ) -> None:
+        """선물호가잔량 이벤트마다 미세구조 feature 누적."""
+        self.feature_builder.update_hoga(
+            bid1=bid1,
+            ask1=ask1,
+            bid_qty=bid_qty,
+            ask_qty=ask_qty,
+            snapshot=snapshot,
         )
 
     def _on_candle_closed(self, candle: dict) -> None:
@@ -618,6 +670,7 @@ class TradingSystem:
                     and _conf > 0.38
                     and _pred_ts >= self._session_start_ts):
                 self.circuit_breaker.record_accuracy(v["correct"])
+            self.horizon_calibrator.record(v["horizon"], _conf, v["correct"])
             if v["correct"]:
                 log_manager.learning(f"✓ {v['horizon']} 예측 적중 (conf={_conf:.1%})")
             else:
@@ -625,6 +678,25 @@ class TradingSystem:
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
         # STEP 1 검증된 예측마다 해당 시점 피처로 즉시 partial_fit
+        for v in verified:
+            _meta_feats = v.get("features") or {}
+            try:
+                _meta_eval = self.meta_gate.evaluate(
+                    direction=v["predicted"],
+                    confidence=float(v.get("confidence", 0.0) or 0.0),
+                    regime=self.current_regime,
+                    micro_regime=self.current_micro_regime,
+                    features=_meta_feats,
+                    now=datetime.datetime.strptime(v["ts"], "%Y-%m-%d %H:%M:%S"),
+                    recent_accuracy=self.online_learner.recent_accuracy(),
+                )
+                self.meta_gate.record_outcome(
+                    _meta_eval.get("meta_features", []),
+                    bool(v["correct"]),
+                )
+            except Exception as _meta_record_err:
+                logger.debug("[MetaGate] verify record skip: %s", _meta_record_err)
+
         if self.model.feature_names and verified:
             for v in verified:
                 feat_dict = v.get("features") or {}
@@ -813,10 +885,26 @@ class TradingSystem:
                 log_manager.signal("[default] 1/3 균등 예측 → DB 저장 → SGD 부트스트랩")
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
-        decision = self.ensemble.compute(horizon_proba, self.current_regime)
+        horizon_proba = self._apply_horizon_calibration(horizon_proba)
+        decision = self.ensemble.compute(
+            horizon_proba,
+            self.current_regime,
+            features=features,
+            adaptive_gating=True,
+        )
         direction  = decision["direction"]
         confidence = decision["confidence"]
         grade      = decision["grade"]
+        decision["meta_gate"] = self.meta_gate.evaluate(
+            direction=direction,
+            confidence=confidence,
+            regime=self.current_regime,
+            micro_regime=self.current_micro_regime,
+            features=features,
+            now=datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S"),
+            recent_accuracy=self.online_learner.recent_accuracy(),
+        )
+        decision["toxicity_gate"] = self.toxicity_gate.evaluate(features)
 
         self.circuit_breaker.record_signal(direction)
 
@@ -1001,6 +1089,35 @@ class TradingSystem:
                 )
 
         # 진입 패널 갱신 — 체크리스트 결과 + 산출 수량 (항상)
+        _meta_gate = decision.get("meta_gate") or {}
+        _meta_action = _meta_gate.get("action", "")
+        _meta_size = float(_meta_gate.get("size_multiplier", 1.0) or 1.0)
+        _tox_gate = decision.get("toxicity_gate") or {}
+        _tox_action = _tox_gate.get("action", "pass")
+        _tox_size = float(_tox_gate.get("size_multiplier", 1.0) or 1.0)
+        if direction != 0 and self.position.status == "FLAT":
+            if _meta_action == "skip":
+                _final_grade = "X"
+                _qty_display = 0
+            elif _qty_display > 0:
+                _qty_display = max(1, int(round(_qty_display * _meta_size)))
+            if _meta_action:
+                log_manager.signal(
+                    f"[MetaGate] action={_meta_action} meta_conf={_meta_gate.get('meta_confidence', 0.0):.1%} "
+                    f"size_mult={_meta_size:.2f} reason={_meta_gate.get('reason', '')}"
+                )
+            if _tox_action == "block":
+                _final_grade = "X"
+                _qty_display = 0
+            elif _qty_display > 0 and _tox_action == "reduce":
+                _qty_display = max(1, int(round(_qty_display * _tox_size)))
+            if _tox_action != "pass":
+                log_manager.signal(
+                    f"[ToxicityGate] action={_tox_action} score={_tox_gate.get('score', 0.0):.2f} "
+                    f"ma={_tox_gate.get('score_ma', 0.0):.2f} size_mult={_tox_size:.2f} "
+                    f"reason={_tox_gate.get('reason', '')}"
+                )
+
         self.dashboard.update_entry(_dir_ko, confidence, _final_grade, _checks_ui,
                                     qty=_qty_display)
 
@@ -1134,9 +1251,20 @@ class TradingSystem:
                     horizon    = h_name,
                     direction  = h_res["direction"],
                     confidence = h_res["confidence"],
+                    up_prob    = h_res.get("up"),
+                    down_prob  = h_res.get("down"),
+                    flat_prob  = h_res.get("flat"),
                     features   = {k: round(float(v), 4) for k, v in features.items()
                                   if v is not None and v == v},  # NaN/None 제외
                 )
+            self.pred_buffer.save_ensemble_decision(
+                ts=ts,
+                regime=self.current_regime,
+                micro_regime=self.current_micro_regime,
+                decision=decision,
+                features={k: round(float(v), 4) for k, v in features.items()
+                          if v is not None and v == v},
+            )
         except Exception as e:
             logger.warning("[STEP9] save_prediction 오류 (스킵): %s", e)
 

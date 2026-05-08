@@ -6,12 +6,13 @@
   1분 10% / 3분 15% / 5분 20% / 10분 20% / 15분 20% / 30분 15%
 """
 import logging
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from config.settings import (
     ENSEMBLE_WEIGHTS, REGIME_MIN_CONFIDENCE, ENTRY_GRADE,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
+from model.ensemble_gater import AdaptiveEnsembleGater
 
 logger = logging.getLogger("SIGNAL")
 
@@ -19,10 +20,15 @@ logger = logging.getLogger("SIGNAL")
 class EnsembleDecision:
     """앙상블 신호 생성 + 진입 등급 판정"""
 
+    def __init__(self):
+        self.gater = AdaptiveEnsembleGater()
+
     def compute(
         self,
         horizon_proba: Dict[str, Dict],
         regime: str = "NEUTRAL",
+        features: Optional[Dict[str, float]] = None,
+        adaptive_gating: bool = True,
     ) -> Dict:
         """
         Args:
@@ -69,6 +75,35 @@ class EnsembleDecision:
             direction  = DIRECTION_FLAT
             confidence = flat_score
 
+        gating = {
+            "reason": "disabled",
+            "blocked": False,
+            "delta": 0.0,
+            "gate_strength": 0.0,
+            "signals": {},
+        }
+        if adaptive_gating:
+            gating = self.gater.apply(
+                direction=direction,
+                up_score=up_score,
+                down_score=down_score,
+                flat_score=flat_score,
+                confidence=confidence,
+                features=features,
+            )
+            up_score = float(gating["up_score"])
+            down_score = float(gating["down_score"])
+            flat_score = float(gating["flat_score"])
+            if up_score >= down_score and up_score >= flat_score:
+                direction  = DIRECTION_UP
+                confidence = up_score
+            elif down_score > up_score and down_score >= flat_score:
+                direction  = DIRECTION_DOWN
+                confidence = down_score
+            else:
+                direction  = DIRECTION_FLAT
+                confidence = flat_score
+
         # ── 레짐별 최소 신뢰도 기준 ──────────────────────────
         min_conf  = REGIME_MIN_CONFIDENCE.get(regime, 0.58)
         regime_ok = (confidence >= min_conf) and (direction != DIRECTION_FLAT)
@@ -99,6 +134,7 @@ class EnsembleDecision:
             "regime_ok":  regime_ok,
             "min_conf":   min_conf,
             "detail":     detail,
+            "gating":     gating,
         }
 
         logger.info(

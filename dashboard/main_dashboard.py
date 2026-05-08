@@ -1851,6 +1851,55 @@ class EntryPanel(QWidget):
             ("시간 필터 통과", "time_chk"),
             ("리스크 한도 여유","risk_chk"),
         ]
+        check_tooltips = {
+            "signal_chk": (
+                "목적: 시스템이 현재 LONG, SHORT, FLAT 중 어느 방향인지 먼저 확정합니다.\n"
+                "의의: 이후 VWAP, CVD, OFI, 외인, 직전 봉 해석의 기준축이 되는 출발점입니다.\n"
+                "진입 조건: 1·3·5·10·15·30분 호라이즌의 상승/하락 확률을 가중합한 결과가 "
+                "LONG(+1) 또는 SHORT(-1)로 확정되어야 합니다. FLAT(0)이면 실패합니다."
+            ),
+            "conf_chk": (
+                "목적: 예측 신호의 최소 품질을 확보해 애매한 진입을 걸러냅니다.\n"
+                "의의: 낮은 신뢰도 구간에서 발생하는 헛진입을 초기에 차단하는 핵심 방어선입니다.\n"
+                "진입 조건: 앙상블 신뢰도(confidence)가 현재 시간대·레짐 기준 최소 신뢰도 이상이어야 합니다."
+            ),
+            "vwap_chk": (
+                "목적: 현재가가 기관 평균 체결 기준선(VWAP) 대비 어느 편에 있는지 확인합니다.\n"
+                "의의: 롱은 평균보다 강해야 하고 숏은 평균보다 약해야 한다는 추세 확인 필터입니다.\n"
+                "진입 조건: LONG이면 현재가가 VWAP 위(vwap_position > 0), SHORT이면 VWAP 아래(vwap_position < 0)여야 합니다."
+            ),
+            "cvd_chk": (
+                "목적: 누적 체결량 델타(CVD)가 진입 방향과 같은지 확인합니다.\n"
+                "의의: 가격만 움직이고 실제 체결 주도권이 반대인 허수 돌파를 걸러냅니다.\n"
+                "진입 조건: LONG이면 CVD 방향이 상승(cvd_direction >= 0), SHORT이면 하락(cvd_direction <= 0)이어야 합니다."
+            ),
+            "ofi_chk": (
+                "목적: 호가창의 매수/매도 압력 불균형(OFI)이 어느 쪽인지 확인합니다.\n"
+                "의의: 체결 결과인 CVD보다 한발 앞선 주문 압력을 확인하는 선행 필터입니다.\n"
+                "진입 조건: LONG이면 OFI 압력이 양수 또는 중립(ofi_pressure >= 0), SHORT이면 음수 또는 중립(ofi_pressure <= 0)이어야 합니다."
+            ),
+            "fi_chk": (
+                "목적: 외국인 옵션 흐름이 진입 방향과 같은지 확인합니다.\n"
+                "의의: 단기 방향성의 강한 확인 신호이며 자동 진입 판단에도 중요한 보조축입니다.\n"
+                "진입 조건: LONG이면 외인 콜 순매수가 양수이거나 콜 순매수가 풋 순매수보다 커야 합니다. "
+                "SHORT이면 외인 풋 순매수가 양수이거나 풋 순매수가 콜 순매수보다 커야 합니다."
+            ),
+            "candle_chk": (
+                "목적: 직전 1개 봉이 진입 방향과 같은 마감인지 확인합니다.\n"
+                "의의: 막 역행하는 순간의 진입을 줄이고 최소한의 단기 모멘텀 동조를 봅니다.\n"
+                "진입 조건: LONG이면 직전 봉이 양봉, SHORT이면 직전 봉이 음봉이어야 합니다."
+            ),
+            "time_chk": (
+                "목적: 신규 진입이 허용되는 시간대인지 확인합니다.\n"
+                "의의: 신호가 좋아도 시간대가 나쁘면 성과가 급격히 저하될 수 있어 시간 자체를 필터링합니다.\n"
+                "진입 조건: 현재 time_zone이 EXIT_ONLY나 OTHER가 아니어야 합니다."
+            ),
+            "risk_chk": (
+                "목적: 당일 손실이 커진 상태에서의 추가 진입을 차단합니다.\n"
+                "의의: 전략 판단과 별개로 계좌를 보호하는 최종 브레이크 역할입니다.\n"
+                "진입 조건: 일일 손실률(daily_loss_pct)이 2% 미만이어야 합니다."
+            ),
+        }
         self.check_labels = {}
         for i, (name, attr) in enumerate(checks):
             r = QHBoxLayout()
@@ -1858,6 +1907,9 @@ class EntryPanel(QWidget):
             icon.setFixedWidth(22)
             nl   = mk_label(name, C['text'], 11)
             vl   = mk_val_label("——", C['text2'], 11)
+            tooltip = check_tooltips.get(attr)
+            if tooltip:
+                nl.setToolTip(tooltip)
             r.addWidget(icon)
             r.addWidget(nl, 2)
             r.addWidget(vl)

@@ -26,6 +26,8 @@ LAYER_DEBUG    = "DEBUG"
 LAYER_WARN     = "WARN"     # WARNING 이상 전용 경보 파일
 LAYER_DATA     = "DATA"     # 수급·투자자 TR 수집 로그
 LAYER_PROBE    = "PROBE"    # 실시간 FID 탐색 진단 (투자자ticker 등)
+LAYER_HOGA     = "HOGA"     # 선물호가잔량 1~5레벨 전용 디버그 로그
+LAYER_MICRO    = "MICRO"    # microprice / MLOFI / queue dynamics 전용 디버그 로그
 
 _initialized = False
 
@@ -56,12 +58,12 @@ def setup_logging():
     formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
 
     layers = [LAYER_SYSTEM, LAYER_SIGNAL, LAYER_TRADE, LAYER_LEARNING, LAYER_DEBUG,
-              LAYER_DATA, LAYER_PROBE]
+              LAYER_DATA, LAYER_PROBE, LAYER_HOGA, LAYER_MICRO]
 
     for layer in layers:
         logger = logging.getLogger(layer)
         # DEBUG·PROBE 레이어는 항상 DEBUG 레벨 — 다른 레이어는 settings.LOG_LEVEL 사용
-        logger.setLevel(logging.DEBUG if layer in (LAYER_DEBUG, LAYER_PROBE) else LOG_LEVEL)
+        logger.setLevel(logging.DEBUG if layer in (LAYER_DEBUG, LAYER_PROBE, LAYER_HOGA, LAYER_MICRO) else LOG_LEVEL)
         logger.propagate = False
 
         # 파일 핸들러 (자정에 롤오버)

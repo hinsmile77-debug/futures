@@ -36,12 +36,15 @@ from config.constants import (
     FID_FUTURES_PRICE, FID_FUTURES_VOL,
     FID_BID_PRICE, FID_ASK_PRICE,
     FID_BID_QTY, FID_ASK_QTY, FID_OI,
+    FUTURES_BID_PRICE_FIDS, FUTURES_ASK_PRICE_FIDS,
+    FUTURES_BID_QTY_FIDS, FUTURES_ASK_QTY_FIDS,
     RT_FUTURES, RT_FUTURES_HOGA, TR_FUTURES_1MIN,
 )
 from collection.kiwoom.api_connector import KiwoomAPI
 
 logger    = logging.getLogger(__name__)
 sys_log   = logging.getLogger("SYSTEM")   # 폴링 추적 → SYSTEM.log + WARN.log
+hoga_log  = logging.getLogger("HOGA")
 
 # 보관할 최대 분봉 수 (약 1거래일 + 여유)
 MAX_CANDLES = 500
@@ -111,6 +114,12 @@ class RealtimeData:
         self._last_ask1: float = 0.0
         self._last_bid_qty: int = 0
         self._last_ask_qty: int = 0
+        self._last_hoga_snapshot: Dict[str, List[float]] = {
+            "bid_prices": [],
+            "ask_prices": [],
+            "bid_qtys": [],
+            "ask_qtys": [],
+        }
 
         # 모의투자 폴링 상태
         self._poll_timer: Optional[QTimer] = None
@@ -145,8 +154,17 @@ class RealtimeData:
         )
         self._running = True
         self._tick_count = 0
+        self._hoga_count = 0
         logger.info("[RealtimeData] 실시간 수신 시작 — TR코드=%s RT코드=%s mock=%s",
                     self.code, self._rt_code, self._is_mock)
+        hoga_log.info(
+            "[HOGA-CONFIG] code=%s bid_price_fids=%s ask_price_fids=%s bid_qty_fids=%s ask_qty_fids=%s",
+            self._rt_code,
+            FUTURES_BID_PRICE_FIDS,
+            FUTURES_ASK_PRICE_FIDS,
+            FUTURES_BID_QTY_FIDS,
+            FUTURES_ASK_QTY_FIDS,
+        )
         print(f"[DBG RD-START] register_realtime 완료 (선물시세 + 선물호가잔량)", flush=True)
 
         if load_history:
@@ -257,6 +275,32 @@ class RealtimeData:
         candles = list(self._candles)
         return candles[-n:] if len(candles) >= n else candles
 
+    @staticmethod
+    def _format_hoga_snapshot(snapshot: Dict[str, List[float]]) -> str:
+        bid_prices = snapshot.get("bid_prices", [])
+        ask_prices = snapshot.get("ask_prices", [])
+        bid_qtys = snapshot.get("bid_qtys", [])
+        ask_qtys = snapshot.get("ask_qtys", [])
+        parts = []
+        for idx in range(min(len(bid_prices), len(ask_prices), len(bid_qtys), len(ask_qtys))):
+            parts.append(
+                f"L{idx + 1}: bid={bid_prices[idx]:.2f}/{bid_qtys[idx]} ask={ask_prices[idx]:.2f}/{ask_qtys[idx]}"
+            )
+        return " | ".join(parts)
+
+    @staticmethod
+    def _detect_active_hoga_levels(snapshot: Dict[str, List[float]]) -> int:
+        levels = 0
+        for bid_p, ask_p, bid_q, ask_q in zip(
+            snapshot.get("bid_prices", []),
+            snapshot.get("ask_prices", []),
+            snapshot.get("bid_qtys", []),
+            snapshot.get("ask_qtys", []),
+        ):
+            if any(float(v or 0) > 0 for v in (bid_p, ask_p, bid_q, ask_q)):
+                levels += 1
+        return levels
+
     # ── 초기 분봉 로드 ────────────────────────────────────────
 
     def _load_initial_candles(self) -> None:
@@ -345,14 +389,18 @@ class RealtimeData:
         self._update_bar(bar_ts, bar_min, price, volume, bid1, ask1, bid_q, ask_q, oi, is_buy_tick)
 
     def _on_hoga_data(self, code: str, real_type: str, real_data: str) -> None:
-        """선물호가잔량 콜백 — bid/ask 저장 + OFI 누적."""
+        """선물호가잔량 콜백 — 1~5호가 스냅샷 저장 + feature 누적."""
         try:
-            bid1  = self._safe_float(self.api.get_real_data(code, FID_BID_PRICE))
-            ask1  = self._safe_float(self.api.get_real_data(code, FID_ASK_PRICE))
-            bid_q = self._safe_int(self.api.get_real_data(code, FID_BID_QTY))
-            ask_q = self._safe_int(self.api.get_real_data(code, FID_ASK_QTY))
+            bid_prices = [self._safe_float(self.api.get_real_data(code, fid)) for fid in FUTURES_BID_PRICE_FIDS]
+            ask_prices = [self._safe_float(self.api.get_real_data(code, fid)) for fid in FUTURES_ASK_PRICE_FIDS]
+            bid_qtys = [self._safe_int(self.api.get_real_data(code, fid)) for fid in FUTURES_BID_QTY_FIDS]
+            ask_qtys = [self._safe_int(self.api.get_real_data(code, fid)) for fid in FUTURES_ASK_QTY_FIDS]
         except Exception:
             return
+        bid1 = bid_prices[0] if bid_prices else 0.0
+        ask1 = ask_prices[0] if ask_prices else 0.0
+        bid_q = bid_qtys[0] if bid_qtys else 0
+        ask_q = ask_qtys[0] if ask_qtys else 0
         if bid1 <= 0 or ask1 <= 0:
             return
 
@@ -360,6 +408,23 @@ class RealtimeData:
         self._last_ask1    = ask1
         self._last_bid_qty = bid_q
         self._last_ask_qty = ask_q
+        self._last_hoga_snapshot = {
+            "bid_prices": bid_prices,
+            "ask_prices": ask_prices,
+            "bid_qtys": bid_qtys,
+            "ask_qtys": ask_qtys,
+        }
+        self._hoga_count = getattr(self, "_hoga_count", 0) + 1
+        active_levels = self._detect_active_hoga_levels(self._last_hoga_snapshot)
+        if self._hoga_count <= 20 or self._hoga_count % 100 == 0 or active_levels < len(bid_prices):
+            hoga_log.debug(
+                "[HOGA] #%d code=%s active_levels=%d/%d %s",
+                self._hoga_count,
+                code,
+                active_levels,
+                len(bid_prices),
+                self._format_hoga_snapshot(self._last_hoga_snapshot),
+            )
 
         # 현재 진행 중인 bar에도 최신 호가 반영
         if self._current_bar is not None:
@@ -367,10 +432,13 @@ class RealtimeData:
             self._current_bar["ask1"]    = ask1
             self._current_bar["bid_qty"] = bid_q
             self._current_bar["ask_qty"] = ask_q
+            self._current_bar["hoga_levels"] = dict(self._last_hoga_snapshot)
 
-        # OFI 누적 (분봉 확정 시 flush_minute()에서 집계)
         if self._on_hoga is not None:
-            self._on_hoga(bid1, ask1, bid_q, ask_q)
+            try:
+                self._on_hoga(bid1, ask1, bid_q, ask_q, dict(self._last_hoga_snapshot))
+            except TypeError:
+                self._on_hoga(bid1, ask1, bid_q, ask_q)
 
     def _update_bar(
         self,
@@ -407,6 +475,7 @@ class RealtimeData:
                 "ask1":     ask1,
                 "bid_qty":  bid_q,
                 "ask_qty":  ask_q,
+                "hoga_levels": dict(self._last_hoga_snapshot),
                 "oi":       oi,
             }
             self._current_min = bar_min
@@ -423,6 +492,7 @@ class RealtimeData:
             bar["ask1"]     = ask1
             bar["bid_qty"]  = bid_q
             bar["ask_qty"]  = ask_q
+            bar["hoga_levels"] = dict(self._last_hoga_snapshot)
             bar["oi"]       = oi
 
         if self._on_tick is not None:
@@ -491,7 +561,7 @@ class RealtimeData:
     @staticmethod
     def _safe_float(s: str) -> float:
         try:
-            return float(s.replace("+", "")) if s else 0.0
+            return abs(float(s.replace("+", ""))) if s else 0.0
         except ValueError:
             return 0.0
 
