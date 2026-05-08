@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-05-08 (9차) - 1계약 TP1 보호전환 선택화 + 청산관리 탭 수동청산 연결
+
+**작업**
+- `main.py`, `strategy/position/position_tracker.py`에서 1계약 TP1 도달 시 전량청산 대신 보호전환으로 바꾸는 경로를 유지하되, 보호방식을 `본절보호 / 본절+alpha / ATR 기반 보호이익` 3개 모드로 선택 가능하게 확장했다.
+- 선택된 TP1 보호전환 모드는 `data/session_state.json`에 `tp1_single_contract_mode`로 저장/복원되도록 연결했다.
+- `dashboard/main_dashboard.py` 청산관리 탭에 TP1 보호전환 버튼 3개와 설명 툴팁을 추가했다.
+- 같은 탭의 `33% / 50% / 전량 청산` 버튼을 실제 수동청산 주문 버튼으로 연결했다.
+- 1계약 포지션에서 `33%` 또는 `50%`를 눌렀을 때는 주문 직전 자동으로 `전량청산`으로 승격되도록 처리했다.
+- 수동 부분청산은 `EXIT_MANUAL_PARTIAL` pending kind로 분리해 자동 TP1/TP2 플래그와 후처리 경로가 섞이지 않도록 구성했다.
+- TP1 보호전환 UI 추가 중 발생한 한글 깨짐은 새 문자열을 유니코드 이스케이프 문자열로 치환해 안정화했다.
+
+**반영**
+- `dashboard/main_dashboard.py`
+  - `ExitPanel.sig_tp1_protect_mode_changed`, `sig_manual_exit_requested` 추가
+  - TP1 보호전환 버튼 3종 + 툴팁 + 선택 스타일 추가
+  - 수동청산 버튼 3종을 실제 시그널로 연결하고, 포지션 없을 때 비활성화
+- `main.py`
+  - `_on_tp1_protect_mode_changed()` / `_restore_tp1_protect_mode_setting()` 추가
+  - `_on_manual_exit_requested()` 추가
+  - `_ts_handle_exit_fill()`에 `EXIT_MANUAL_PARTIAL` 분기 추가
+  - 1계약 TP1 보호전환 실행 시 선택 모드와 보호폭을 로그에 남기도록 보강
+- `strategy/position/position_tracker.py`
+  - `arm_tp1_single_contract_with_mode()` 추가
+
+**검증**
+- `python -m py_compile main.py dashboard/main_dashboard.py strategy/position/position_tracker.py` 통과
+- UI 한글 깨짐 수정 후 `dashboard/main_dashboard.py` 단독 `py_compile` 재검증 통과
+
+**다음 장중 확인 포인트**
+- WARN.log `[ExitConfig] 1계약 TP1 보호전환 모드 -> ...`
+- WARN.log `[SingleContractTP1] ... mode=breakeven|breakeven_plus|atr_profit`
+- WARN.log `[ManualExit] 요청 pct=... send_qty=... kind=...`
+- TRADE.log `[주문요청] 수동 ... 청산 ... 체결대기`
+
+---
+
 ## 2026-05-08 (9차 - 역방향진입 실행 오버레이 + 순방향/실행 손익 분리 + 학습/통계 방화벽)
 
 **작업**

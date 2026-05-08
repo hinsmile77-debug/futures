@@ -39,8 +39,10 @@ from PyQt5.QtGui import (
 
 from config.constants import FUTURES_PT_VALUE
 
-logger = logging.getLogger("SYSTEM")
+TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
+TP1_PROTECT_ATR_LOCK_MULT = 0.25
 
+logger = logging.getLogger("SYSTEM")
 
 class UiAutoTabController(QObject):
     """운영 상태에 맞춰 우측/가운데 탭 포커스를 자동 복귀시킨다."""
@@ -1619,8 +1621,12 @@ class FeaturePanel(QWidget):
 # 패널 4: 청산 관리 패널
 # ────────────────────────────────────────────────────────────
 class ExitPanel(QWidget):
+    sig_tp1_protect_mode_changed = pyqtSignal(str)
+    sig_manual_exit_requested = pyqtSignal(int)
+
     def __init__(self):
         super().__init__()
+        self._tp1_protect_mode = "breakeven"
         self._build()
 
     def _build(self):
@@ -1713,16 +1719,66 @@ class ExitPanel(QWidget):
             self.partial_bars.append((b, st))
 
         # 수동 청산 버튼
+        lay.addWidget(mk_sep())
+
+        lay.addWidget(mk_label("TP1 1\uacc4\uc57d \ubcf4\ud638\uc804\ud658 \uc124\uc815", C['cyan'], 9, True))
+        self.tp1_mode_tips = {
+            "breakeven": (
+                "TP1 \ubcf8\uc808\ubcf4\ud638",
+                "TP1 \ub3c4\ub2ec \uc2dc \uc2a4\ud1b1\uc744 \uc9c4\uc785\uac00\ub85c \uc62c\ub9bd\ub2c8\ub2e4.\n"
+                "\uc190\uc2e4 \ud655\uc7a5\uc744 \ub9c9\ub294 \uac00\uc7a5 \ubcf4\uc218\uc801\uc778 1\uacc4\uc57d \ubcf4\ud638\ubaa8\ub4dc\uc785\ub2c8\ub2e4.",
+            ),
+            "breakeven_plus": (
+                "\ubcf8\uc808+alpha",
+                f"TP1 \ub3c4\ub2ec \uc2dc \uc2a4\ud1b1\uc744 \uc9c4\uc785\uac00\ubcf4\ub2e4 {TP1_PROTECT_PLUS_ALPHA_PTS:.2f}pt \uc720\ub9ac\ud558\uac8c \uc62c\ub9bd\ub2c8\ub2e4.\n"
+                "\uc9e7\uc740 \uc774\uc775\uc774\ub77c\ub3c4 \uc7a0\uadf8\uace0 \uc2f6\uc744 \ub54c \uc4f0\ub294 \uc635\uc158\uc785\ub2c8\ub2e4.",
+            ),
+            "atr_profit": (
+                "ATR \uae30\ubc18 \ubcf4\ud638\uc774\uc775",
+                f"TP1 \ub3c4\ub2ec \uc2dc \uc2a4\ud1b1\uc744 ATR x {TP1_PROTECT_ATR_LOCK_MULT:.2f} \ub9cc\ud07c \uc720\ub9ac\ud558\uac8c \uc62c\ub9bd\ub2c8\ub2e4.\n"
+                "\ubcc0\ub3d9\uc131\uc5d0 \ub9de\ucdb0 \ubcf4\ud638\ud3ed\uc744 \uc790\ub3d9 \uc870\uc815\ud558\ub294 \uc635\uc158\uc785\ub2c8\ub2e4.",
+            ),
+        }
+        mode_title = mk_label("\uc120\ud0dd \uc635\uc158", C['text2'], 8)
+        mode_title.setToolTip(
+            "1\uacc4\uc57d \uc6b4\uc6a9\uc5d0\uc11c TP1 \ub3c4\ub2ec \ud6c4 \uc989\uc2dc \uc804\ub7c9\uccad\uc0b0\ud558\uc9c0 \uc54a\uace0,\n"
+            "\ubcf4\ud638\uc804\ud658 \ubc29\uc2dd\ub9cc \ubc14\uafd4 \ud544\uc694\ud560 \ub54c \ud074\ub9ad\ud574\uc11c \uc0ac\uc6a9\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4."
+        )
+        lay.addWidget(mode_title)
+        self.tp1_mode_btns = {}
+        mode_lay = QHBoxLayout()
+        for mode, (label, tooltip) in self.tp1_mode_tips.items():
+            btn = QPushButton(label)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(lambda checked, m=mode: self.set_tp1_protect_mode(m))
+            self.tp1_mode_btns[mode] = btn
+            mode_lay.addWidget(btn)
+        lay.addLayout(mode_lay)
+        self._sync_tp1_mode_buttons()
+
+
         btn_lay = QHBoxLayout()
+        self.manual_exit_btns = {}
+        self.manual_exit_tooltips = {
+            33: "\ud604\uc7ac \ubcf4\uc720 \ud3ec\uc9c0\uc158\uc758 33%\ub97c \uc2dc\uc7a5\uac00\ub85c \uccad\uc0b0\ud569\ub2c8\ub2e4.\n1\uacc4\uc57d \ubcf4\uc720 \uc2dc\uc5d0\ub294 \uc804\ub7c9 \uccad\uc0b0\uc73c\ub85c \ucc98\ub9ac\ub429\ub2c8\ub2e4.",
+            50: "\ud604\uc7ac \ubcf4\uc720 \ud3ec\uc9c0\uc158\uc758 50%\ub97c \uc2dc\uc7a5\uac00\ub85c \uccad\uc0b0\ud569\ub2c8\ub2e4.\n1\uacc4\uc57d \ubcf4\uc720 \uc2dc\uc5d0\ub294 \uc804\ub7c9 \uccad\uc0b0\uc73c\ub85c \ucc98\ub9ac\ub429\ub2c8\ub2e4.",
+            100: "\ud604\uc7ac \ubcf4\uc720 \ud3ec\uc9c0\uc158\uc744 \uc804\ub7c9 \uc2dc\uc7a5\uac00\ub85c \uccad\uc0b0\ud569\ub2c8\ub2e4.",
+        }
         for label, pct, col in [("33% 청산", 33, C['green']),
                                   ("50% 청산", 50, C['orange']),
                                   ("전량 청산", 100, C['red'])]:
             btn = QPushButton(label)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setEnabled(False)
+            btn.setToolTip(self.manual_exit_tooltips.get(pct, ""))
+            btn.clicked.connect(lambda checked, p=pct: self.sig_manual_exit_requested.emit(p))
             btn.setStyleSheet(
                 f"QPushButton{{background:{C['bg3']};color:{col};"
                 f"border:1px solid {col};border-radius:4px;padding:4px 8px;}}"
                 f"QPushButton:hover{{background:{col};color:#000;}}"
             )
+            self.manual_exit_btns[pct] = btn
             btn_lay.addWidget(btn)
         lay.addLayout(btn_lay)
 
@@ -1749,6 +1805,38 @@ class ExitPanel(QWidget):
             bar_w.setValue(0)
             lbl_w.setText("대기")
             lbl_w.setStyleSheet(f"color:{C['text2']};font-size:{S.f(11)}px;")
+
+        for btn in getattr(self, "manual_exit_btns", {}).values():
+            btn.setEnabled(False)
+
+    def _sync_tp1_mode_buttons(self):
+        for mode, btn in self.tp1_mode_btns.items():
+            selected = mode == self._tp1_protect_mode
+            col = C['cyan'] if selected else C['text2']
+            bw = "2px" if selected else "1px"
+            bg = C['bg2'] if selected else C['bg3']
+            btn.setStyleSheet(
+                f"QPushButton{{background:{bg};color:{col};"
+                f"border:{bw} solid {col};border-radius:4px;padding:5px 8px;"
+                f"font-size:{S.f(11)}px;}}"
+                f"QPushButton:hover{{border:2px solid {C['cyan']};}}"
+            )
+
+        tip = self.tp1_mode_tips.get(self._tp1_protect_mode, ("", ""))[1]
+        for btn in self.tp1_mode_btns.values():
+            btn.setStatusTip(tip)
+
+    def set_tp1_protect_mode(self, mode: str, emit_signal: bool = True):
+        mode = str(mode or "breakeven").strip().lower()
+        if mode not in getattr(self, "tp1_mode_btns", {}):
+            mode = "breakeven"
+        self._tp1_protect_mode = mode
+        self._sync_tp1_mode_buttons()
+        if emit_signal:
+            self.sig_tp1_protect_mode_changed.emit(self._tp1_protect_mode)
+
+    def get_tp1_protect_mode(self) -> str:
+        return self._tp1_protect_mode
 
     def update_data(self, pos_data):
         if not pos_data:
@@ -1810,6 +1898,8 @@ class ExitPanel(QWidget):
             lbl_w.setStyleSheet(
                 f"color:{C['green'] if done else C['text2']};font-size:{S.f(11)}px;"
             )
+        for btn in getattr(self, "manual_exit_btns", {}).values():
+            btn.setEnabled(True)
 
 
 # ────────────────────────────────────────────────────────────
@@ -4730,6 +4820,8 @@ class DashboardAdapter:
         self.btn_save_account = self._win.btn_save_account
         self.sig_position_restore = self._win.account_info_panel.sig_position_restore
         self.sig_reverse_entry_toggled = self._win.entry_panel.sig_reverse_entry_toggled
+        self.sig_tp1_protect_mode_changed = self._win.exit_panel.sig_tp1_protect_mode_changed
+        self.sig_manual_exit_requested = self._win.exit_panel.sig_manual_exit_requested
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
@@ -4860,6 +4952,12 @@ class DashboardAdapter:
 
     def is_reverse_entry_enabled(self) -> bool:
         return self._win.entry_panel.is_reverse_entry_enabled()
+
+    def set_tp1_protect_mode(self, mode: str, emit_signal: bool = False) -> None:
+        self._win.exit_panel.set_tp1_protect_mode(mode, emit_signal=emit_signal)
+
+    def get_tp1_protect_mode(self) -> str:
+        return self._win.exit_panel.get_tp1_protect_mode()
 
     def get_entry_mode(self) -> str:
         return self._win.entry_panel.get_entry_mode()

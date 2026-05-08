@@ -441,6 +441,91 @@ class PositionTracker:
         self._save_state()
         return result
 
+    def arm_tp1_single_contract(self, current_price: float, atr: float = 0.0) -> Dict:
+        """For single-contract positions, convert TP1 into protection instead of full exit."""
+        assert self.status != POSITION_FLAT, "?ъ????놁쓬"
+        assert self.quantity == 1, f"single-contract only: qty={self.quantity}"
+
+        mult = 1 if self.status == POSITION_LONG else -1
+        prev_stop = self.stop_price
+        protected_stop = self.entry_price
+        if mult * (prev_stop - protected_stop) > 0:
+            protected_stop = prev_stop
+
+        if mult * (protected_stop - self.stop_price) > 0:
+            self.stop_price = protected_stop
+
+        self.partial_1_done = True
+        self.last_update_reason = "arm_tp1_single_contract"
+        self.last_update_ts = datetime.datetime.now()
+        self._save_state()
+
+        logger.info(
+            f"[Position] 1怨꾩빟 TP1 蹂댄샇?꾪솚 @ {current_price:.2f} "
+            f"| stop {prev_stop:.2f} -> {self.stop_price:.2f}"
+        )
+        return {
+            "direction": self.status,
+            "entry_price": round(self.entry_price, 4),
+            "current_price": round(current_price, 4),
+            "prev_stop_price": round(prev_stop, 4),
+            "new_stop_price": round(self.stop_price, 4),
+            "tp1_price": round(self.tp1_price, 4),
+            "tp2_price": round(self.tp2_price, 4),
+            "quantity": self.quantity,
+        }
+
+    def arm_tp1_single_contract_with_mode(
+        self,
+        current_price: float,
+        atr: float = 0.0,
+        mode: str = "breakeven",
+        alpha_pts: float = 0.20,
+        atr_lock_mult: float = 0.25,
+    ) -> Dict:
+        """For single-contract positions, convert TP1 into protection instead of full exit."""
+        assert self.status != POSITION_FLAT, "???????곸벉"
+        assert self.quantity == 1, f"single-contract only: qty={self.quantity}"
+
+        mult = 1 if self.status == POSITION_LONG else -1
+        prev_stop = self.stop_price
+        mode = str(mode or "breakeven").strip().lower()
+
+        protect_offset_pts = 0.0
+        if mode == "breakeven_plus":
+            protect_offset_pts = max(float(alpha_pts or 0.0), 0.0)
+        elif mode == "atr_profit":
+            protect_offset_pts = max(float(atr or 0.0) * float(atr_lock_mult or 0.0), 0.0)
+
+        protected_stop = self.entry_price + mult * protect_offset_pts
+        if mult * (prev_stop - protected_stop) > 0:
+            protected_stop = prev_stop
+
+        if mult * (protected_stop - self.stop_price) > 0:
+            self.stop_price = protected_stop
+
+        self.partial_1_done = True
+        self.last_update_reason = f"arm_tp1_single_contract:{mode}"
+        self.last_update_ts = datetime.datetime.now()
+        self._save_state()
+
+        logger.info(
+            f"[Position] 1?④쑴鍮?TP1 癰귣똾??袁れ넎 @ {current_price:.2f} "
+            f"| mode={mode} | stop {prev_stop:.2f} -> {self.stop_price:.2f}"
+        )
+        return {
+            "direction": self.status,
+            "entry_price": round(self.entry_price, 4),
+            "current_price": round(current_price, 4),
+            "prev_stop_price": round(prev_stop, 4),
+            "new_stop_price": round(self.stop_price, 4),
+            "mode": mode,
+            "protect_offset_pts": round(protect_offset_pts, 4),
+            "tp1_price": round(self.tp1_price, 4),
+            "tp2_price": round(self.tp2_price, 4),
+            "quantity": self.quantity,
+        }
+
     def update_trailing_stop(self, current_price: float, atr: float):
         """트레일링 스톱 업데이트"""
         if self.status == POSITION_FLAT:

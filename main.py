@@ -95,6 +95,8 @@ _PARAM_FEAT_MAP = {
 }
 
 EFFECT_MONITOR_HISTORY_PATH = os.path.join(BASE_DIR, "effect_monitor_history.json")
+TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
+TP1_PROTECT_ATR_LOCK_MULT = 0.25
 
 
 class TradingSystem:
@@ -168,9 +170,13 @@ class TradingSystem:
         )
         self.dashboard.sig_position_restore.connect(self._manual_position_restore)
         self.dashboard.sig_reverse_entry_toggled.connect(self._on_reverse_entry_toggled)
+        self.dashboard.sig_tp1_protect_mode_changed.connect(self._on_tp1_protect_mode_changed)
+        self.dashboard.sig_manual_exit_requested.connect(self._on_manual_exit_requested)
         self.dashboard.set_ui_startup_mode()
         self._reverse_entry_enabled: bool = False
+        self._tp1_protect_mode: str = "breakeven"
         self._restore_reverse_entry_setting()
+        self._restore_tp1_protect_mode_setting()
         self._heartbeat_count: int = 0
         self._session_no: int = 0
         self._pending_order = None
@@ -276,6 +282,14 @@ class TradingSystem:
         self._reverse_entry_enabled = enabled
         self.dashboard.set_reverse_entry_enabled(enabled, emit_signal=False)
 
+    def _restore_tp1_protect_mode_setting(self) -> None:
+        state = self._read_session_state()
+        mode = str(state.get("tp1_single_contract_mode", "breakeven") or "breakeven").strip().lower()
+        if mode not in {"breakeven", "breakeven_plus", "atr_profit"}:
+            mode = "breakeven"
+        self._tp1_protect_mode = mode
+        self.dashboard.set_tp1_protect_mode(mode, emit_signal=False)
+
     def _on_reverse_entry_toggled(self, enabled: bool) -> None:
         enabled = bool(enabled)
         self._reverse_entry_enabled = enabled
@@ -285,6 +299,73 @@ class TradingSystem:
         log_manager.system(
             f"[EntryConfig] 역방향진입={'ON' if enabled else 'OFF'}",
             "WARNING" if enabled else "INFO",
+        )
+
+    def _on_tp1_protect_mode_changed(self, mode: str) -> None:
+        mode = str(mode or "breakeven").strip().lower()
+        if mode not in {"breakeven", "breakeven_plus", "atr_profit"}:
+            mode = "breakeven"
+        self._tp1_protect_mode = mode
+        state = self._read_session_state()
+        state["tp1_single_contract_mode"] = mode
+        self._write_session_state(state)
+        labels = {
+            "breakeven": "TP1 본절보호",
+            "breakeven_plus": "본절+alpha",
+            "atr_profit": "ATR 기반 보호이익",
+        }
+        log_manager.system(
+            f"[ExitConfig] 1계약 TP1 보호전환 모드 -> {labels.get(mode, mode)}",
+            "WARNING",
+        )
+
+    def _on_manual_exit_requested(self, percent: int) -> None:
+        percent = int(percent or 0)
+        if self.position.status == "FLAT" or self.position.quantity <= 0:
+            log_manager.system("[ManualExit] 포지션이 없어 수동 청산을 무시했습니다.", "WARNING")
+            return
+        if self._has_pending_order():
+            log_manager.system("[ManualExit] 미체결 주문이 있어 수동 청산을 보류했습니다.", "WARNING")
+            return
+
+        total_qty = int(self.position.quantity or 0)
+        is_full_close = percent >= 100 or total_qty <= 1
+        send_qty = total_qty
+        if not is_full_close:
+            send_qty = max(1, round(total_qty * (percent / 100.0)))
+            if send_qty >= total_qty:
+                is_full_close = True
+                send_qty = total_qty
+
+        price_hint = float(getattr(self, "_last_pipeline_price", 0.0) or self.position.entry_price or 0.0)
+        if is_full_close:
+            reason = "수동 전량청산" if percent >= 100 else f"수동 청산 {percent}%→전량"
+            kind = "EXIT_FULL"
+        else:
+            reason = f"수동 부분청산 {percent}%"
+            kind = "EXIT_MANUAL_PARTIAL"
+
+        ret = self._send_kiwoom_exit_order(send_qty)
+        if ret != 0:
+            log_manager.system(
+                f"[ManualExit] 주문 실패 ret={ret} pct={percent} qty={send_qty}",
+                "ERROR",
+            )
+            return
+
+        self._set_pending_order(
+            kind=kind,
+            direction=self.position.status,
+            qty=send_qty,
+            price_hint=round(price_hint, 2),
+            reason=reason,
+        )
+        log_manager.system(
+            f"[ManualExit] 요청 pct={percent} send_qty={send_qty} kind={kind} position={self.position.status}",
+            "WARNING",
+        )
+        log_manager.trade(
+            f"[주문요청] {reason} {self.position.status} {send_qty}계약 @ {price_hint:.2f} 체결대기"
         )
 
     def _resolve_entry_direction(self, raw_direction: str) -> tuple:
@@ -1679,6 +1760,7 @@ class TradingSystem:
             f"[ExitCooldown] {result['exit_reason']} 후 {_cooldown_min}분 재진입 금지 "
             f"(until {self._exit_cooldown_until.strftime('%H:%M:%S')})"
         )
+        _ts_apply_exit_cooldown(self, result)
 
         log_manager.trade(
             f"[청산 완료] PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원)"
@@ -2218,9 +2300,15 @@ class TradingSystem:
                 "date": today,
                 "count": 0,
                 "reverse_entry_enabled": bool(data.get("reverse_entry_enabled", False)),
+                "tp1_single_contract_mode": str(
+                    data.get("tp1_single_contract_mode", "breakeven") or "breakeven"
+                ).strip().lower(),
             }
         data["count"] = data.get("count", 0) + 1
         data["reverse_entry_enabled"] = bool(self._reverse_entry_enabled)
+        data["tp1_single_contract_mode"] = str(
+            getattr(self, "_tp1_protect_mode", "breakeven") or "breakeven"
+        ).strip().lower()
         self._write_session_state(data)
         return data["count"]
 
@@ -2531,6 +2619,38 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
     if self._has_pending_order():
         return
     total_qty = self.position.quantity
+    if total_qty == 1 and stage == 1:
+        atr = _ts_get_reference_atr(self)
+        protect_mode = str(getattr(self, "_tp1_protect_mode", "breakeven") or "breakeven").strip().lower()
+        protect = self.position.arm_tp1_single_contract_with_mode(
+            price,
+            atr,
+            mode=protect_mode,
+            alpha_pts=TP1_PROTECT_PLUS_ALPHA_PTS,
+            atr_lock_mult=TP1_PROTECT_ATR_LOCK_MULT,
+        )
+        _ts_log_diag(
+            self,
+            "SingleContractTP1Arm",
+            stage=stage,
+            price=price,
+            atr=atr,
+            mode=protect_mode,
+            protect_offset_pts=protect.get("protect_offset_pts", 0.0),
+            stop_before=protect["prev_stop_price"],
+            stop_after=protect["new_stop_price"],
+            position=_ts_get_position_snapshot(self),
+        )
+        log_manager.system(
+            f"[SingleContractTP1] 1계약 TP1 도달 -> 보호전환 {self.position.status} "
+            f"mode={protect_mode} price={price:.2f} stop={protect['prev_stop_price']:.2f}->{protect['new_stop_price']:.2f}",
+            "WARNING",
+        )
+        self.dashboard.append_pnl_log(
+            f"TP1 보호전환 | {self.position.status} 1계약 @ {price:.2f}",
+            f"{protect_mode} | stop {protect['prev_stop_price']:.2f} -> {protect['new_stop_price']:.2f}",
+        )
+        return
     ratio = PARTIAL_EXIT_RATIOS[stage - 1]
     partial_qty = max(1, round(total_qty * ratio))
     is_full_close = partial_qty >= total_qty
@@ -2658,6 +2778,32 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             )
         else:
             log_manager.system(f"[Exit] 시간청산 주문 실패 ret={ret}", "ERROR")
+
+
+def _ts_in_exit_cooldown(self, now: datetime.datetime = None):
+    now = now or datetime.datetime.now()
+    until = getattr(self, "_exit_cooldown_until", None)
+    if until is None:
+        return False, 0
+    remain = (until - now).total_seconds()
+    if remain <= 0:
+        return False, 0
+    return True, int(remain)
+
+
+def _ts_apply_exit_cooldown(self, result: dict, filled_at: datetime.datetime = None) -> None:
+    now = filled_at or datetime.datetime.now()
+    pnl = float(result.get("pnl_pts", 0.0) or 0.0)
+    cooldown_min = 2 if pnl > 0 else 3
+    self._exit_cooldown_until = now + datetime.timedelta(minutes=cooldown_min)
+    self._last_exit_reason = result.get("exit_reason", "")
+    self._last_exit_ts = now
+    msg = (
+        f"[ExitCooldown] {result.get('exit_reason', '청산')} 후 {cooldown_min}분 재진입 금지 "
+        f"(until {self._exit_cooldown_until.strftime('%H:%M:%S')})"
+    )
+    logger.warning(msg)
+    log_manager.system(msg, "WARNING")
 
 
 def _ts_order_side_to_direction(payload_or_order_gubun) -> str:
@@ -2844,6 +2990,23 @@ def _ts_handle_exit_fill(
         QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
         return
 
+    if pending["kind"] == "EXIT_MANUAL_PARTIAL":
+        _ts_record_nonfinal_exit(self, result, pending["reason"])
+        _ts_log_diag(
+            self,
+            "ExitFillFlow",
+            before=before,
+            after=_ts_get_position_snapshot(self),
+            pending=_ts_get_pending_snapshot(self),
+            fill_qty=fill_qty,
+            fill_price=fill_price,
+            mode="manual_partial",
+            reason=pending["reason"],
+        )
+        log_manager.system("[BalanceRefresh] trigger=ExitFillFlow mode=manual_partial", "WARNING")
+        QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
+        return
+
     if "remaining" in result:
         _ts_record_nonfinal_exit(self, result, pending["reason"])
         _ts_log_diag(
@@ -2861,6 +3024,7 @@ def _ts_handle_exit_fill(
         QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
         return
 
+    _ts_apply_exit_cooldown(self, result, filled_at)
     self._post_exit(result)
     _ts_log_diag(
         self,
@@ -2911,6 +3075,7 @@ def _ts_handle_external_fill(
         if "remaining" in result:
             _ts_record_nonfinal_exit(self, result, reason_label)
         else:
+            _ts_apply_exit_cooldown(self, result, filled_at)
             self._post_exit(result)
 
     if remaining_fill > 0:
@@ -3511,6 +3676,7 @@ def _ts_execute_entry(
     raw_direction: str = None,
     reverse_enabled: bool = False,
 ):
+    cooldown_active, cooldown_remain = _ts_in_exit_cooldown(self)
     raw_direction = raw_direction or direction
     _ts_log_diag(
         self,
@@ -3525,6 +3691,8 @@ def _ts_execute_entry(
         broker_sync_verified=self._broker_sync_verified,
         block_new_entries=self._broker_sync_block_new_entries,
         broker_sync_reason=self._broker_sync_last_error,
+        exit_cooldown_active=cooldown_active,
+        exit_cooldown_remain=cooldown_remain,
         pending=_ts_get_pending_snapshot(self),
         position=_ts_get_position_snapshot(self),
     )
@@ -3539,6 +3707,14 @@ def _ts_execute_entry(
             "[EntryBlock] broker sync gate raw=%s final=%s qty=%s reverse=%s reason=%s",
             raw_direction, direction, quantity, reverse_enabled, self._broker_sync_last_error,
         )
+        return
+    if cooldown_active:
+        msg = (
+            f"[EntryBlock] 청산 후 쿨다운 active -> 진입 차단 raw={raw_direction} final={direction} "
+            f"qty={quantity} remain={cooldown_remain}s last_exit={getattr(self, '_last_exit_reason', '')}"
+        )
+        logger.warning(msg)
+        log_manager.system(msg, "WARNING")
         return
     if self._has_pending_order():
         logger.info("[Entry] pending order exists -> skip new entry %s %s", direction, quantity)

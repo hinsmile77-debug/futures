@@ -2,6 +2,27 @@
 
 ---
 
+## 2026-05-08 청산관리 설계 결정
+
+### [D29] 1계약 TP1은 전량청산이 아니라 선택형 보호전환으로 처리
+**결정**: 1계약 포지션에서 TP1 도달 시 `TP1(전량)`으로 종료하지 않고, `본절보호 / 본절+alpha / ATR 기반 보호이익` 중 선택한 모드로 스톱을 재배치한다.  
+**이유**: 기존 구조는 `1ATR 익절 / 1.5ATR 손절` 기대값 문제를 강화해 승률 50%대에서 손익비 열세를 고착했다. 1계약에서는 부분청산 자체가 불가능하므로 TP1을 "보호전환"으로 해석하는 편이 일관적이다.  
+**구현**: `strategy/position/position_tracker.py::arm_tp1_single_contract_with_mode()`, `main.py::_on_tp1_protect_mode_changed()`, `main.py::_ts_execute_partial_exit()`, `dashboard/main_dashboard.py::ExitPanel`
+
+### [D30] 청산관리 탭 수동청산 버튼은 실제 시장가 주문으로 연결
+**결정**: 청산관리 탭의 `33% / 50% / 전량 청산` 버튼을 읽기 전용 UI가 아니라 실제 수동청산 주문 버튼으로 연결한다. 부분청산 체결 후처리는 `EXIT_MANUAL_PARTIAL` pending kind로 별도 분기한다.  
+**이유**: 장중 운영 개입이 필요한 상황에서 청산관리 탭이 상태 표시만 하고 실행 기능이 없으면 패널 의미가 약하다. 또한 수동 부분청산이 자동 TP1/TP2 처리와 뒤섞이면 `partial_1_done`, `partial_2_done`의 의미가 흐려질 수 있어 별도 kind 분리가 필요했다.  
+**예외 규칙**: 1계약 보유 시 `33%`, `50%` 클릭은 자동으로 `전량청산`으로 승격한다.  
+**구현**: `dashboard/main_dashboard.py::ExitPanel.sig_manual_exit_requested`, `main.py::_on_manual_exit_requested()`, `main.py::_ts_handle_exit_fill()`
+
+### [B51] 청산관리 탭 신규 한글 문자열이 파일 인코딩 영향으로 깨질 수 있음
+**파일**: `dashboard/main_dashboard.py`  
+**증상**: TP1 보호전환 버튼/툴팁을 한글 리터럴로 직접 추가했을 때 일부 환경에서 `??` 또는 깨진 문자열로 표시됨.  
+**원인**: 기존 파일 인코딩과 새 문자열 삽입 경로가 섞이면서 한글 리터럴 안정성이 낮아짐.  
+**Fix**: 신규 문자열을 유니코드 이스케이프 문자열로 치환해 렌더링을 안정화했다.
+
+---
+
 ## 2026-05-08 역방향진입 / 순방향 학습 방화벽
 
 ### [D28] 역방향진입은 전략 변경이 아니라 실행 오버레이로 취급
