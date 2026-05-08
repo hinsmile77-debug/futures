@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-05-08 장마감 자동종료 / 봉차트 UX
+
+### [D31] 당일 자동종료는 수동 재시작 후에도 재실행하지 않는다
+**결정**: `auto_shutdown_done_date == today` 이고 장마감 이후라면 세션 복원 시 `_daily_close_done = True`까지 함께 세팅하고, `daily_close()` 초입에서도 같은 날짜 재실행을 즉시 차단한다.  
+**이유**: 자동종료는 "장마감 후 당일 1회" 성격의 작업인데, 수동 재시작이 이를 다시 트리거하면 운영자가 로그 확인이나 재점검을 위해 프로그램을 열어도 강제 종료를 다시 맞게 된다. 복구 단계와 실행 단계 양쪽에서 막아야 재발 가능성이 낮다.  
+**구현**: `main.py::_restore_auto_shutdown_state()`, `main.py::daily_close()`
+
+### [D32] 봉차트 마커 우선순위는 LONG 위쪽, SL 아래쪽으로 고정한다
+**결정**: 차트 마커가 같은 봉/근접 가격대에서 겹칠 때 `LONG` 진입 라벨은 위쪽, `SL` 라벨칩은 아래쪽으로 고정하고, 추가 충돌은 오프셋 회피 로직으로 푼다.  
+**이유**: 진입 직후 손절이 난 구간에서는 `LONG`과 `SL`이 가장 자주 겹친다. 이때 두 라벨이 같은 높이에서 맞물리면 장중 판독 속도가 크게 떨어지므로, 의미가 다른 두 마커를 레이어 규칙으로 먼저 분리하는 편이 운영성이 좋다.  
+**구현**: `dashboard/main_dashboard.py::MinuteChartCanvas._draw_one_marker()`, `dashboard/main_dashboard.py::MinuteChartCanvas._draw_exit_marker()`, `dashboard/main_dashboard.py::MinuteChartCanvas._resolve_marker_overlap()`
+
+### [B71] 당일 자동종료 후 수동 재시작 시 프로그램이 다시 자동 종료될 수 있음
+**파일**: `main.py`  
+**증상**: 같은 날짜 장마감 이후 자동종료가 끝난 뒤 프로그램을 수동 재시작하면, 자동 종료 안내 문구와 함께 프로그램이 다시 종료될 수 있음.  
+**원인**: `auto_shutdown_done_date`는 복원되지만 `_daily_close_done`이 함께 복원되지 않으면 스케줄러가 당일 장마감 분기를 다시 탈 수 있음.  
+**Fix**: 세션 복원 시 `_daily_close_done`까지 함께 세팅하고, `daily_close()` 초입에서 같은 날짜 자동종료 완료 이력을 재확인해 이중 차단.
+
 ## 2026-05-08 청산관리 설계 결정
 
 ### [D29] 1계약 TP1은 전량청산이 아니라 선택형 보호전환으로 처리

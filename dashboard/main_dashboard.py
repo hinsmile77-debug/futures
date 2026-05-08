@@ -24,20 +24,22 @@ from PyQt5.QtWidgets import (
     QGridLayout, QLabel, QPushButton, QProgressBar, QTabWidget,
     QTextEdit, QFrame, QSplitter, QScrollArea, QGroupBox,
     QComboBox, QSlider, QCheckBox, QSizePolicy, QDesktopWidget,
-    QToolTip, QTableWidget, QTableWidgetItem, QHeaderView,
+    QToolTip, QTableWidget, QTableWidgetItem, QHeaderView, QShortcut,
     QDialog, QDialogButtonBox, QDoubleSpinBox, QSpinBox, QFormLayout,
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
-    QEasingCurve, QRect, QObject
+    QEasingCurve, QRect, QRectF, QPointF, QObject
 )
 from PyQt5.QtGui import (
     QFont, QColor, QPalette, QPainter, QBrush, QPen,
-    QLinearGradient, QFontDatabase, QIcon,
+    QLinearGradient, QFontDatabase, QIcon, QKeySequence, QPainterPath, QPolygonF,
     QTextCursor, QTextBlockFormat,
 )
 
 from config.constants import FUTURES_PT_VALUE
+from config.settings import RAW_DATA_DB
+from utils.db_utils import fetch_today_trades, fetchall
 
 TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
 TP1_PROTECT_ATR_LOCK_MULT = 0.25
@@ -4401,6 +4403,850 @@ class LogPanel(QWidget):
 # ────────────────────────────────────────────────────────────
 # 메인 윈도우
 # ────────────────────────────────────────────────────────────
+class MinuteChartCanvas(QWidget):
+    RIGHT_PADDING_BARS = 10
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._closed_candles = []
+        self._live_candle = None
+        self._completed_trades = []
+        self._active_trade = None
+        self._exit_markers = []
+        self._visible_count = 0
+        self._min_visible_count = 20
+        self._view_offset = 0
+        self._hover_pos = None
+        self._dragging = False
+        self._drag_start_pos = None
+        self._drag_start_offset = 0
+        self._last_step_px = 0.0
+        self._last_plot_rect = QRectF()
+        self.setMinimumHeight(S.p(420))
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setMouseTracking(True)
+        self.setStyleSheet(f"background:{C['bg']};border:1px solid {C['border']};border-radius:6px;")
+
+    def reset_session(self, candles, completed_trades):
+        normalized = []
+        for candle in candles:
+            row = self._normalize_candle(candle)
+            if row:
+                normalized.append(row)
+        self._closed_candles = normalized
+        self._completed_trades = [dict(t) for t in completed_trades]
+        self._live_candle = None
+        self._active_trade = None
+        self._exit_markers = []
+        total = len(self._closed_candles)
+        self._visible_count = max(total, self._min_visible_count)
+        self._view_offset = 0
+        self._hover_pos = None
+        self._dragging = False
+        self.update()
+
+    def update_tick(self, price: float, ts=None):
+        price = float(price or 0.0)
+        if price <= 0:
+            return
+        dt = self._coerce_dt(ts) or datetime.now()
+        minute_dt = dt.replace(second=0, microsecond=0)
+        key = minute_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        if self._closed_candles and self._closed_candles[-1]["ts"] == key:
+            self._closed_candles[-1]["close"] = price
+            self._closed_candles[-1]["high"] = max(self._closed_candles[-1]["high"], price)
+            self._closed_candles[-1]["low"] = min(self._closed_candles[-1]["low"], price)
+            self.update()
+            return
+
+        if self._live_candle and self._live_candle["ts"] == key:
+            self._live_candle["close"] = price
+            self._live_candle["high"] = max(self._live_candle["high"], price)
+            self._live_candle["low"] = min(self._live_candle["low"], price)
+        else:
+            self._live_candle = {
+                "ts": key,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": 0,
+            }
+        self.update()
+
+    def on_candle_closed(self, candle: dict):
+        normalized = self._normalize_candle(candle)
+        if not normalized:
+            return
+        if self._closed_candles and self._closed_candles[-1]["ts"] == normalized["ts"]:
+            self._closed_candles[-1] = normalized
+        else:
+            self._closed_candles.append(normalized)
+        if self._live_candle and self._live_candle["ts"] == normalized["ts"]:
+            self._live_candle = None
+        self.update()
+
+    def sync_active_trade(self, direction: str, price: float, ts=None):
+        direction = str(direction or "").upper()
+        price = float(price or 0.0)
+        if direction not in ("LONG", "SHORT") or price <= 0:
+            return
+        dt = self._coerce_dt(ts) or datetime.now()
+        self._active_trade = {
+            "direction": direction,
+            "entry_price": price,
+            "entry_ts": dt,
+        }
+        self.update()
+
+    def clear_active_trade(self):
+        self._active_trade = None
+        self.update()
+
+    def record_entry(self, direction: str, price: float, ts=None):
+        self.sync_active_trade(direction, price, ts=ts)
+
+    def record_exit(
+        self,
+        price: float,
+        ts=None,
+        finalize: bool = True,
+        pnl_pts: float = None,
+        reason: str = "",
+        direction: str = "",
+    ):
+        price = float(price or 0.0)
+        dt = self._coerce_dt(ts) or datetime.now()
+        if price <= 0:
+            return
+
+        outcome = self._infer_exit_outcome(finalize, pnl_pts, reason)
+        self._exit_markers.append({
+            "price": price,
+            "ts": dt,
+            "kind": "EXIT",
+            "finalize": bool(finalize),
+            "pnl_pts": pnl_pts,
+            "reason": str(reason or ""),
+            "direction": str(direction or (self._active_trade or {}).get("direction") or "").upper(),
+            "outcome": outcome,
+        })
+        if finalize and self._active_trade:
+            trade = dict(self._active_trade)
+            trade["exit_price"] = price
+            trade["exit_ts"] = dt
+            trade["exit_reason"] = str(reason or "")
+            trade["pnl_pts"] = pnl_pts
+            trade["outcome"] = outcome
+            self._completed_trades.append(trade)
+            self._active_trade = None
+        self.update()
+
+    def paintEvent(self, event):
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor(C["bg"]))
+
+        candles = list(self._closed_candles)
+        if self._live_candle:
+            candles.append(dict(self._live_candle))
+
+        if not candles:
+            painter.setPen(QColor(C["text2"]))
+            painter.drawText(self.rect(), Qt.AlignCenter, "당일 1분봉 데이터가 아직 없습니다.")
+            return
+
+        total_count = len(candles)
+        visible_count = min(max(self._visible_count or total_count, self._min_visible_count), total_count)
+        self._view_offset = self._clamp_view_offset(self._view_offset, total_count, visible_count)
+        end_idx = total_count - self._view_offset
+        start_idx = max(0, end_idx - visible_count)
+        candles = candles[start_idx:end_idx]
+        padded_count = max(len(candles) + self.RIGHT_PADDING_BARS, 1)
+
+        left = S.p(58)
+        top = S.p(22)
+        right = S.p(18)
+        bottom = S.p(34)
+        plot = QRectF(left, top, max(10, self.width() - left - right), max(10, self.height() - top - bottom))
+        self._last_plot_rect = plot
+
+        prices = []
+        for candle in candles:
+            prices.extend([candle["open"], candle["high"], candle["low"], candle["close"]])
+        for trade in self._completed_trades:
+            prices.append(float(trade.get("entry_price") or 0.0))
+            prices.append(float(trade.get("exit_price") or 0.0))
+        if self._active_trade:
+            prices.append(float(self._active_trade.get("entry_price") or 0.0))
+        for marker in self._exit_markers:
+            prices.append(float(marker.get("price") or 0.0))
+        prices = [p for p in prices if p > 0]
+        lo = min(prices)
+        hi = max(prices)
+        if hi <= lo:
+            hi = lo + 1.0
+        pad = max((hi - lo) * 0.08, 0.2)
+        lo -= pad
+        hi += pad
+
+        self._draw_grid(painter, plot, lo, hi)
+        index_map = {c["ts"]: i for i, c in enumerate(candles)}
+        self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
+        self._draw_candles(painter, plot, candles, lo, hi, padded_count)
+        self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
+        self._draw_axes(painter, plot, candles, lo, hi, padded_count)
+        self._draw_crosshair_and_tooltip(painter, plot, candles, lo, hi)
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        total = len(self._closed_candles) + (1 if self._live_candle else 0)
+        if total <= 0 or delta == 0:
+            event.ignore()
+            return
+
+        current = min(max(self._visible_count or total, self._min_visible_count), max(total, self._min_visible_count))
+        if delta > 0:
+            new_count = max(self._min_visible_count, int(current * 0.82))
+        else:
+            new_count = min(total, int(current * 1.22) + 1)
+
+        self._visible_count = max(self._min_visible_count, min(new_count, total))
+        self._view_offset = self._clamp_view_offset(self._view_offset, total, self._visible_count)
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = True
+            self._drag_start_pos = event.pos()
+            self._drag_start_offset = self._view_offset
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        pos = event.pos()
+        self._hover_pos = pos
+        if self._dragging and self._drag_start_pos is not None and self._last_step_px > 0:
+            dx = pos.x() - self._drag_start_pos.x()
+            candle_shift = int(round(dx / self._last_step_px))
+            total = len(self._closed_candles) + (1 if self._live_candle else 0)
+            visible_count = min(max(self._visible_count or total, self._min_visible_count), max(total, 1))
+            self._view_offset = self._clamp_view_offset(self._drag_start_offset - candle_shift, total, visible_count)
+        self.update()
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = False
+            self._drag_start_pos = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            total = len(self._closed_candles) + (1 if self._live_candle else 0)
+            self._visible_count = max(total, self._min_visible_count)
+            self._view_offset = 0
+            self.update()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_pos = None
+        self._dragging = False
+        self._drag_start_pos = None
+        self.update()
+        super().leaveEvent(event)
+
+    def _draw_grid(self, painter: QPainter, plot: QRectF, lo: float, hi: float):
+        grid_pen = QPen(QColor(C["border"]))
+        grid_pen.setStyle(Qt.DotLine)
+        painter.setPen(grid_pen)
+        for idx in range(5):
+            y = plot.top() + (plot.height() * idx / 4.0)
+            painter.drawLine(int(plot.left()), int(y), int(plot.right()), int(y))
+        for idx in range(6):
+            x = plot.left() + (plot.width() * idx / 5.0)
+            painter.drawLine(int(x), int(plot.top()), int(x), int(plot.bottom()))
+
+        painter.setPen(QColor(C["text2"]))
+        for idx in range(5):
+            price = hi - ((hi - lo) * idx / 4.0)
+            y = plot.top() + (plot.height() * idx / 4.0)
+            painter.drawText(QRectF(0, y - 10, plot.left() - 8, 20), Qt.AlignRight | Qt.AlignVCenter, f"{price:.2f}")
+
+    def _draw_candles(self, painter: QPainter, plot: QRectF, candles, lo: float, hi: float, padded_count: int):
+        count = max(padded_count, 1)
+        step = plot.width() / count
+        self._last_step_px = step
+        body_w = max(4.0, min(14.0, step * 0.62))
+
+        for idx, candle in enumerate(candles):
+            x = plot.left() + step * (idx + 0.5)
+            high_y = self._price_to_y(candle["high"], plot, lo, hi)
+            low_y = self._price_to_y(candle["low"], plot, lo, hi)
+            open_y = self._price_to_y(candle["open"], plot, lo, hi)
+            close_y = self._price_to_y(candle["close"], plot, lo, hi)
+            rising = candle["close"] >= candle["open"]
+            color = QColor(C["green"] if rising else C["red"])
+
+            pen = QPen(color)
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.drawLine(int(x), int(high_y), int(x), int(low_y))
+
+            top_y = min(open_y, close_y)
+            height = max(abs(close_y - open_y), 1.5)
+            rect = QRectF(x - body_w / 2.0, top_y, body_w, height)
+            if rising:
+                painter.setBrush(QColor(24, 90, 54))
+            else:
+                painter.setBrush(QColor(119, 37, 37))
+            painter.drawRect(rect)
+
+    def _draw_trade_spans(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
+        count = max(padded_count, 1)
+        step = plot.width() / count
+        for trade in self._completed_trades:
+            entry_dt = self._coerce_dt(trade.get("entry_ts"))
+            exit_dt = self._coerce_dt(trade.get("exit_ts"))
+            if not entry_dt or not exit_dt:
+                continue
+            start_idx = self._resolve_index(index_map, candles, entry_dt)
+            end_idx = self._resolve_index(index_map, candles, exit_dt)
+            if start_idx is None or end_idx is None:
+                continue
+            y = self._price_to_y(float(trade.get("entry_price") or 0.0), plot, lo, hi)
+            x1 = plot.left() + step * (start_idx + 0.5)
+            x2 = plot.left() + step * (end_idx + 0.5)
+            pnl_pts = float(trade.get("pnl_pts") or 0.0)
+            if pnl_pts > 0:
+                pen = QPen(QColor("#2FBF71"))
+            elif pnl_pts < 0:
+                pen = QPen(QColor("#FF5D73"))
+            else:
+                pen = QPen(QColor("#8B949E"))
+            pen.setWidth(2)
+            pen.setStyle(Qt.DashLine)
+            painter.setPen(pen)
+            painter.drawLine(int(x1), int(y), int(x2), int(y))
+
+        if self._active_trade:
+            entry_dt = self._coerce_dt(self._active_trade.get("entry_ts"))
+            start_idx = self._resolve_index(index_map, candles, entry_dt)
+            end_idx = len(candles) - 1 if candles else None
+            if start_idx is not None and end_idx is not None:
+                y = self._price_to_y(float(self._active_trade.get("entry_price") or 0.0), plot, lo, hi)
+                x1 = plot.left() + step * (start_idx + 0.5)
+                x2 = plot.left() + step * (end_idx + 0.5)
+                color = C["green"] if self._active_trade.get("direction") == "LONG" else C["red"]
+                pen = QPen(QColor(color))
+                pen.setWidth(2)
+                pen.setStyle(Qt.DashLine)
+                painter.setPen(pen)
+                painter.drawLine(int(x1), int(y), int(x2), int(y))
+
+    def _draw_markers(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
+        count = max(padded_count, 1)
+        step = plot.width() / count
+        occupied = []
+
+        if self._active_trade:
+            marker = {
+                "ts": self._active_trade.get("entry_ts"),
+                "price": self._active_trade.get("entry_price"),
+                "kind": self._active_trade.get("direction"),
+            }
+            self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, marker, occupied)
+
+        for trade in self._completed_trades:
+            entry_marker = {
+                "ts": trade.get("entry_ts"),
+                "price": trade.get("entry_price"),
+                "kind": trade.get("direction"),
+            }
+            exit_marker = {
+                "ts": trade.get("exit_ts"),
+                "price": trade.get("exit_price"),
+                "kind": "EXIT",
+                "pnl_pts": trade.get("pnl_pts"),
+                "reason": trade.get("exit_reason", ""),
+                "direction": trade.get("direction", ""),
+                "outcome": trade.get("outcome", "EXIT"),
+            }
+            self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, entry_marker, occupied)
+            self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, exit_marker, occupied)
+
+        for marker in self._exit_markers:
+            if not marker.get("finalize"):
+                self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, marker, occupied)
+
+    def _draw_one_marker(self, painter, plot, candles, index_map, lo, hi, step, marker, occupied):
+        dt = self._coerce_dt(marker.get("ts"))
+        price = float(marker.get("price") or 0.0)
+        kind = str(marker.get("kind") or "")
+        if not dt or price <= 0 or not candles:
+            return
+        idx = self._resolve_index(index_map, candles, dt)
+        if idx is None:
+            return
+
+        x = plot.left() + step * (idx + 0.5)
+        y = self._price_to_y(price, plot, lo, hi)
+        x, y = self._resolve_marker_overlap(x, y, occupied, kind)
+        if kind == "LONG":
+            color = QColor(C["green"])
+            label = dt.strftime("L %H:%M")
+            dy = -S.p(26)
+            self._draw_entry_marker(painter, x, y, color, up=True)
+        elif kind == "SHORT":
+            color = QColor(C["red"])
+            label = dt.strftime("S %H:%M")
+            dy = S.p(26)
+            self._draw_entry_marker(painter, x, y, color, up=False)
+        else:
+            pnl_pts = marker.get("pnl_pts")
+            reason = str(marker.get("reason") or "")
+            outcome = str(marker.get("outcome") or "EXIT")
+            self._draw_exit_marker(painter, x, y, dt, outcome, pnl_pts, reason)
+            return
+
+        painter.setPen(color)
+        text_rect = QRectF(x - S.p(28), y + dy, S.p(72), S.p(14))
+        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, label)
+
+    def _resolve_marker_overlap(self, x: float, y: float, occupied, kind: str):
+        min_dx = S.p(18)
+        min_dy = S.p(18)
+        vertical_step = S.p(16)
+        horizontal_step = S.p(8)
+        prefer_up = kind == "LONG"
+        slot = 0
+
+        while True:
+            if slot == 0:
+                cand_x, cand_y = x, y
+            else:
+                direction = -1 if prefer_up else 1
+                cand_y = y + direction * vertical_step * slot
+                cand_x = x + horizontal_step * slot
+
+            overlapped = False
+            for ox, oy in occupied:
+                if abs(cand_x - ox) < min_dx and abs(cand_y - oy) < min_dy:
+                    overlapped = True
+                    break
+            if not overlapped:
+                occupied.append((cand_x, cand_y))
+                return cand_x, cand_y
+            slot += 1
+
+    def _draw_entry_marker(self, painter: QPainter, x: float, y: float, color: QColor, up: bool):
+        glow = QColor(color)
+        glow.setAlpha(70)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(QRectF(x - 10.0, y - 10.0, 20.0, 20.0))
+
+        painter.setBrush(QColor(15, 23, 32, 230))
+        painter.setPen(QPen(color.lighter(130), 1.8))
+        painter.drawRoundedRect(QRectF(x - 8.0, y - 8.0, 16.0, 16.0), 5, 5)
+
+        painter.setPen(QPen(QColor("#F8FAFC"), 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        if up:
+            painter.drawLine(QPointF(x, y + 4.8), QPointF(x, y - 2.0))
+        else:
+            painter.drawLine(QPointF(x, y - 4.8), QPointF(x, y + 2.0))
+
+        painter.setBrush(color)
+        painter.setPen(QPen(QColor("#F8FAFC"), 1.1, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        if up:
+            poly = QPolygonF([
+                QPointF(x, y - 6.2),
+                QPointF(x - 5.0, y + 0.8),
+                QPointF(x + 5.0, y + 0.8),
+            ])
+        else:
+            poly = QPolygonF([
+                QPointF(x, y + 6.2),
+                QPointF(x - 5.0, y - 0.8),
+                QPointF(x + 5.0, y - 0.8),
+            ])
+        painter.drawPolygon(poly)
+
+    def _draw_exit_marker(
+        self,
+        painter: QPainter,
+        x: float,
+        y: float,
+        dt: datetime,
+        outcome: str,
+        pnl_pts,
+        reason: str,
+    ):
+        pnl_val = None if pnl_pts is None else float(pnl_pts)
+        if outcome == "WIN":
+            fill = QColor("#0F9D58")
+            stroke = QColor("#F4C542")
+            tag = "TP"
+            sign = "+" if pnl_val is not None else ""
+            pnl_text = f"{sign}{pnl_val:.2f}pt" if pnl_val is not None else "WIN"
+            label = f"{tag} {pnl_text}  {dt.strftime('%H:%M')}"
+            offset = -S.p(20)
+            self._draw_diamond_badge(painter, x, y, fill, stroke, "G")
+            self._draw_label_chip(painter, x + S.p(10), y + offset, label, fill, stroke, upward=True)
+            return
+
+        if outcome == "LOSS":
+            fill = QColor("#8E1B3A")
+            stroke = QColor("#FF8A65")
+            tag = "SL"
+            pnl_text = f"{pnl_val:.2f}pt" if pnl_val is not None else "LOSS"
+            label = f"{tag} {pnl_text}  {dt.strftime('%H:%M')}"
+            offset = S.p(18)
+            self._draw_cut_badge(painter, x, y, fill, stroke)
+            self._draw_label_chip(painter, x + S.p(10), y + offset, label, fill, stroke, upward=False)
+            return
+
+        fill = QColor("#6B7280")
+        stroke = QColor("#CBD5E1")
+        tag = "PX"
+        short_reason = reason[:4] if reason else "PART"
+        label = f"{tag} {short_reason}  {dt.strftime('%H:%M')}"
+        offset = -S.p(18)
+        self._draw_partial_badge(painter, x, y, fill, stroke)
+        self._draw_label_chip(painter, x + S.p(10), y + offset, label, fill, stroke, upward=True)
+
+    def _draw_diamond_badge(self, painter: QPainter, x: float, y: float, fill: QColor, stroke: QColor, glyph: str):
+        glow = QColor(fill)
+        glow.setAlpha(70)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(QRectF(x - 8.0, y - 8.0, 16.0, 16.0))
+
+        poly = QPolygonF([
+            QPointF(x, y - 5.5),
+            QPointF(x + 5.5, y),
+            QPointF(x, y + 5.5),
+            QPointF(x - 5.5, y),
+        ])
+        painter.setBrush(fill)
+        painter.setPen(QPen(stroke, 1.5))
+        painter.drawPolygon(poly)
+        painter.setPen(QColor("#F9FAFB"))
+        painter.drawText(QRectF(x - 5, y - 6, 10, 12), Qt.AlignCenter, glyph)
+
+    def _draw_cut_badge(self, painter: QPainter, x: float, y: float, fill: QColor, stroke: QColor):
+        glow = QColor(stroke)
+        glow.setAlpha(60)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(QRectF(x - 8.0, y - 8.0, 16.0, 16.0))
+
+        painter.setBrush(fill)
+        painter.setPen(QPen(stroke, 1.5))
+        painter.drawRoundedRect(QRectF(x - 5.5, y - 5.5, 11.0, 11.0), 3, 3)
+        painter.setPen(QPen(QColor("#F9FAFB"), 1.6))
+        painter.drawLine(QPointF(x - 2.8, y - 2.8), QPointF(x + 2.8, y + 2.8))
+        painter.drawLine(QPointF(x - 2.8, y + 2.8), QPointF(x + 2.8, y - 2.8))
+
+    def _draw_partial_badge(self, painter: QPainter, x: float, y: float, fill: QColor, stroke: QColor):
+        painter.setBrush(fill)
+        painter.setPen(QPen(stroke, 1.5))
+        painter.drawRoundedRect(QRectF(x - 5.5, y - 4.5, 11.0, 9.0), 3, 3)
+        painter.setPen(QColor("#F9FAFB"))
+        painter.drawText(QRectF(x - 5.5, y - 4.5, 11.0, 9.0), Qt.AlignCenter, "P")
+
+    def _draw_label_chip(
+        self,
+        painter: QPainter,
+        x: float,
+        y: float,
+        text: str,
+        fill: QColor,
+        stroke: QColor,
+        upward: bool,
+    ):
+        metrics = painter.fontMetrics()
+        width = max(S.p(84), metrics.horizontalAdvance(text) + S.p(12))
+        height = S.p(18)
+        rect = QRectF(x, y, width, height)
+
+        bg = QColor(fill)
+        bg.setAlpha(205)
+        painter.setPen(QPen(stroke, 1.2))
+        painter.setBrush(bg)
+        painter.drawRoundedRect(rect, 6, 6)
+
+        painter.setPen(QColor("#F8FAFC"))
+        painter.drawText(rect.adjusted(S.p(6), 0, -S.p(6), 0), Qt.AlignVCenter | Qt.AlignLeft, text)
+
+        painter.setPen(QPen(stroke, 1.2))
+        anchor_y = rect.bottom() if upward else rect.top()
+        anchor_tip = anchor_y + (S.p(5) if upward else -S.p(5))
+        painter.drawLine(QPointF(x, anchor_y), QPointF(x - S.p(5), anchor_tip))
+
+    def _infer_exit_outcome(self, finalize: bool, pnl_pts, reason: str) -> str:
+        if not finalize:
+            return "PARTIAL"
+        if pnl_pts is not None:
+            pnl_val = float(pnl_pts)
+            if pnl_val > 0:
+                return "WIN"
+            if pnl_val < 0:
+                return "LOSS"
+        reason_l = str(reason or "").lower()
+        if "tp" in reason_l or "익절" in reason_l:
+            return "WIN"
+        if "stop" in reason_l or "손절" in reason_l:
+            return "LOSS"
+        return "EXIT"
+
+    def _draw_crosshair_and_tooltip(self, painter: QPainter, plot: QRectF, candles, lo: float, hi: float):
+        if self._hover_pos is None or not plot.contains(QPointF(self._hover_pos)):
+            return
+        if not candles:
+            return
+
+        count = len(candles)
+        padded_count = max(count + self.RIGHT_PADDING_BARS, 1)
+        step = plot.width() / padded_count
+        candle_right = plot.left() + step * count
+        if self._hover_pos.x() > candle_right:
+            return
+        idx = int((self._hover_pos.x() - plot.left()) / max(step, 1e-6))
+        idx = max(0, min(idx, len(candles) - 1))
+        candle = candles[idx]
+        x = plot.left() + step * (idx + 0.5)
+        price = hi - ((self._hover_pos.y() - plot.top()) / max(plot.height(), 1e-6)) * (hi - lo)
+        y = self._price_to_y(price, plot, lo, hi)
+
+        pen = QPen(QColor("#8B949E"))
+        pen.setStyle(Qt.DotLine)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+        painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+
+        dt = self._coerce_dt(candle.get("ts"))
+        tooltip_lines = [
+            dt.strftime("%H:%M") if dt else str(candle.get("ts", "")),
+            f"O {candle['open']:.2f}  H {candle['high']:.2f}",
+            f"L {candle['low']:.2f}  C {candle['close']:.2f}",
+            f"Y {price:.2f}",
+        ]
+        self._draw_hover_tooltip(painter, plot, QPointF(x, y), tooltip_lines)
+
+    def _draw_hover_tooltip(self, painter: QPainter, plot: QRectF, anchor: QPointF, lines):
+        metrics = painter.fontMetrics()
+        width = max(metrics.horizontalAdvance(line) for line in lines) + S.p(14)
+        line_h = metrics.height()
+        height = len(lines) * line_h + S.p(10)
+        x = anchor.x() + S.p(12)
+        y = anchor.y() - height - S.p(8)
+
+        if x + width > plot.right():
+            x = anchor.x() - width - S.p(12)
+        if y < plot.top():
+            y = anchor.y() + S.p(8)
+
+        rect = QRectF(x, y, width, height)
+        painter.setPen(QPen(QColor("#AAB4C3"), 1))
+        painter.setBrush(QColor(12, 17, 24, 228))
+        painter.drawRoundedRect(rect, 6, 6)
+        painter.setPen(QColor("#F8FAFC"))
+
+        text_y = rect.top() + S.p(6) + metrics.ascent()
+        for line in lines:
+            painter.drawText(QPointF(rect.left() + S.p(7), text_y), line)
+            text_y += line_h
+
+    def _clamp_view_offset(self, offset: int, total_count: int, visible_count: int) -> int:
+        max_offset = max(0, total_count - visible_count)
+        return max(0, min(int(offset or 0), max_offset))
+
+    def _draw_axes(self, painter: QPainter, plot: QRectF, candles, lo: float, hi: float, padded_count: int):
+        del lo, hi
+        painter.setPen(QColor(C["text2"]))
+        count = len(candles)
+        if count == 0:
+            return
+        step = plot.width() / max(padded_count, 1)
+        stride = max(1, count // 8)
+        for idx, candle in enumerate(candles):
+            if idx % stride != 0 and idx != count - 1:
+                continue
+            dt = self._coerce_dt(candle["ts"])
+            if not dt:
+                continue
+            x = plot.left() + step * (idx + 0.5)
+            text = dt.strftime("%H:%M")
+            painter.drawText(QRectF(x - 24, plot.bottom() + 6, 48, 18), Qt.AlignHCenter | Qt.AlignTop, text)
+
+    def _normalize_candle(self, candle):
+        if not candle:
+            return None
+        try:
+            dt = self._coerce_dt(candle.get("ts"))
+            if dt is None:
+                return None
+            return {
+                "ts": dt.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S"),
+                "open": float(candle.get("open") or 0.0),
+                "high": float(candle.get("high") or 0.0),
+                "low": float(candle.get("low") or 0.0),
+                "close": float(candle.get("close") or 0.0),
+                "volume": int(candle.get("volume") or 0),
+            }
+        except Exception:
+            return None
+
+    def _coerce_dt(self, value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        text = str(value).strip()
+        if not text:
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
+
+    def _resolve_index(self, index_map, candles, dt):
+        if dt is None:
+            return None
+        key = dt.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        if key in index_map:
+            return index_map[key]
+        if not candles:
+            return None
+        if key < candles[0]["ts"]:
+            return 0
+        return len(candles) - 1
+
+    def _price_to_y(self, price: float, plot: QRectF, lo: float, hi: float) -> float:
+        ratio = 0.5 if hi <= lo else (price - lo) / (hi - lo)
+        ratio = min(max(ratio, 0.0), 1.0)
+        return plot.bottom() - (plot.height() * ratio)
+
+
+class MinuteChartDialog(QDialog):
+    SHORTCUT_TEXT = "Ctrl+Shift+X"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setModal(False)
+        self.setWindowTitle(f"당일 1분봉 차트 ({self.SHORTCUT_TEXT})")
+        self.resize(S.p(1180), S.p(700))
+        self._session_date = datetime.now().date().isoformat()
+
+        self._chart = MinuteChartCanvas(self)
+        self._status = QLabel(
+            f"{self.SHORTCUT_TEXT}  |  휠 줌  |  진입 ▲/▼  |  익절 G  |  손절 X  |  부분청산 P"
+        )
+        self._status.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+        self._status.setText(
+            f"{self.SHORTCUT_TEXT}  |  휠 줌  |  드래그 이동  |  더블클릭 전체보기  |  크로스헤어"
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(S.p(12), S.p(12), S.p(12), S.p(12))
+        root.setSpacing(S.p(8))
+        root.addWidget(self._status)
+        root.addWidget(self._chart, 1)
+
+        self.reload_today()
+
+    def reload_today(self):
+        self._session_date = datetime.now().date().isoformat()
+        candle_rows = fetchall(
+            RAW_DATA_DB,
+            """SELECT ts, open, high, low, close, volume
+               FROM raw_candles
+               WHERE ts LIKE ?
+               ORDER BY ts ASC""",
+            (f"{self._session_date}%",),
+        )
+        candles = [dict(row) for row in candle_rows]
+
+        completed_trades = []
+        for row in fetch_today_trades(self._session_date):
+            entry_ts = self._coerce_dt(row["entry_ts"])
+            exit_ts = self._coerce_dt(row["exit_ts"])
+            if not entry_ts or not exit_ts:
+                continue
+            completed_trades.append({
+                "direction": str(row["direction"] or "").upper(),
+                "entry_price": float(row["entry_price"] or 0.0),
+                "exit_price": float(row["exit_price"] or 0.0),
+                "entry_ts": entry_ts,
+                "exit_ts": exit_ts,
+                "exit_reason": str(row["exit_reason"] or ""),
+                "pnl_pts": float(row["pnl_pts"] or 0.0),
+                "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"]),
+            })
+        self._chart.reset_session(candles, completed_trades)
+
+    def maybe_roll_session(self):
+        today = datetime.now().date().isoformat()
+        if today != self._session_date:
+            self.reload_today()
+
+    def update_tick(self, price: float, ts=None):
+        self.maybe_roll_session()
+        self._chart.update_tick(price, ts=ts)
+
+    def on_candle_closed(self, candle: dict):
+        self.maybe_roll_session()
+        self._chart.on_candle_closed(candle)
+
+    def record_entry(self, direction: str, price: float, ts=None):
+        self.maybe_roll_session()
+        self._chart.record_entry(direction, price, ts=ts)
+
+    def record_exit(
+        self,
+        price: float,
+        ts=None,
+        finalize: bool = True,
+        pnl_pts: float = None,
+        reason: str = "",
+        direction: str = "",
+    ):
+        self.maybe_roll_session()
+        self._chart.record_exit(
+            price,
+            ts=ts,
+            finalize=finalize,
+            pnl_pts=pnl_pts,
+            reason=reason,
+            direction=direction,
+        )
+
+    def sync_active_position(self, direction: str, price: float, ts=None):
+        self.maybe_roll_session()
+        self._chart.sync_active_trade(direction, price, ts=ts)
+
+    def clear_active_position(self):
+        self._chart.clear_active_trade()
+
+    def _coerce_dt(self, value):
+        return self._chart._coerce_dt(value)
+
+
 class MireukDashboard(QMainWindow):
     """미륵이 v7.0 풀 대시보드"""
 
@@ -4430,6 +5276,10 @@ class MireukDashboard(QMainWindow):
         self._cycle_timer.setInterval(60_000)
         self._cycle_timer.timeout.connect(self._refresh_cycle_badge)
         self._cycle_timer.start()
+
+        self._minute_chart_dialog = MinuteChartDialog(self)
+        self._minute_chart_shortcut = QShortcut(QKeySequence(MinuteChartDialog.SHORTCUT_TEXT), self)
+        self._minute_chart_shortcut.activated.connect(self.toggle_minute_chart_dialog)
 
     def _build_ui(self):
         central = QWidget()
@@ -4684,6 +5534,48 @@ class MireukDashboard(QMainWindow):
 
         self.ui_auto_tabs = UiAutoTabController(self.log_panel.tabs, self.mid_tabs)
         self.ui_auto_tabs.set_startup_mode()
+
+    def toggle_minute_chart_dialog(self):
+        self._minute_chart_dialog.maybe_roll_session()
+        if self._minute_chart_dialog.isVisible():
+            self._minute_chart_dialog.close()
+            return
+        self._minute_chart_dialog.show()
+        self._minute_chart_dialog.raise_()
+        self._minute_chart_dialog.activateWindow()
+
+    def minute_chart_tick(self, price: float, ts=None):
+        self._minute_chart_dialog.update_tick(price, ts=ts)
+
+    def minute_chart_candle_closed(self, candle: dict):
+        self._minute_chart_dialog.on_candle_closed(candle)
+
+    def minute_chart_record_entry(self, direction: str, price: float, ts=None):
+        self._minute_chart_dialog.record_entry(direction, price, ts=ts)
+
+    def minute_chart_record_exit(
+        self,
+        price: float,
+        ts=None,
+        finalize: bool = True,
+        pnl_pts: float = None,
+        reason: str = "",
+        direction: str = "",
+    ):
+        self._minute_chart_dialog.record_exit(
+            price,
+            ts=ts,
+            finalize=finalize,
+            pnl_pts=pnl_pts,
+            reason=reason,
+            direction=direction,
+        )
+
+    def minute_chart_sync_active_position(self, direction: str, price: float, ts=None):
+        self._minute_chart_dialog.sync_active_position(direction, price, ts=ts)
+
+    def minute_chart_clear_active_position(self):
+        self._minute_chart_dialog.clear_active_position()
 
     def _wrap(self, widget):
         sc = QScrollArea()
@@ -5130,6 +6022,58 @@ def _make_kill_btn(self):
     return self._kill_btn
 
 MireukDashboard._make_kill_btn = _make_kill_btn
+
+
+def _adapter_toggle_minute_chart_dialog(self):
+    self._win.toggle_minute_chart_dialog()
+
+
+def _adapter_minute_chart_tick(self, price: float, ts=None):
+    self._win.minute_chart_tick(price, ts=ts)
+
+
+def _adapter_minute_chart_candle_closed(self, candle: dict):
+    self._win.minute_chart_candle_closed(candle)
+
+
+def _adapter_minute_chart_record_entry(self, direction: str, price: float, ts=None):
+    self._win.minute_chart_record_entry(direction, price, ts=ts)
+
+
+def _adapter_minute_chart_record_exit(
+    self,
+    price: float,
+    ts=None,
+    finalize: bool = True,
+    pnl_pts: float = None,
+    reason: str = "",
+    direction: str = "",
+):
+    self._win.minute_chart_record_exit(
+        price,
+        ts=ts,
+        finalize=finalize,
+        pnl_pts=pnl_pts,
+        reason=reason,
+        direction=direction,
+    )
+
+
+def _adapter_minute_chart_sync_active_position(self, direction: str, price: float, ts=None):
+    self._win.minute_chart_sync_active_position(direction, price, ts=ts)
+
+
+def _adapter_minute_chart_clear_active_position(self):
+    self._win.minute_chart_clear_active_position()
+
+
+DashboardAdapter.toggle_minute_chart_dialog = _adapter_toggle_minute_chart_dialog
+DashboardAdapter.minute_chart_tick = _adapter_minute_chart_tick
+DashboardAdapter.minute_chart_candle_closed = _adapter_minute_chart_candle_closed
+DashboardAdapter.minute_chart_record_entry = _adapter_minute_chart_record_entry
+DashboardAdapter.minute_chart_record_exit = _adapter_minute_chart_record_exit
+DashboardAdapter.minute_chart_sync_active_position = _adapter_minute_chart_sync_active_position
+DashboardAdapter.minute_chart_clear_active_position = _adapter_minute_chart_clear_active_position
 
 
 # ────────────────────────────────────────────────────────────

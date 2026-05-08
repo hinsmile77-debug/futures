@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-05-08 (10차) - 자동종료 재실행 방지 + 봉차트 시인성/토글 개선
+
+**작업**
+- `main.py`에서 당일 자동종료가 이미 끝난 뒤 수동 재시작해도 다시 `daily_close()`와 `_auto_shutdown()`이 실행되지 않도록 복구/가드 로직을 보강했다.
+- 세션 복원 시 `auto_shutdown_done_date == today` 이고 장마감 이후면 `_daily_close_done = True`까지 함께 세팅하도록 수정했다.
+- `daily_close()` 초입에도 같은 날짜 재실행 방지 가드를 추가해, 복구 상태가 흔들려도 당일 장마감 후 중복 종료가 다시 실행되지 않도록 이중 방어를 넣었다.
+- `dashboard/main_dashboard.py` 분봉/봉차트에 우측 10봉 여백을 추가해 마지막 봉과 진입/청산 마커가 가장자리와 붙지 않도록 개선했다.
+- 진입 LONG/SHORT 마커를 더 큰 배지형 스타일로 바꾸고, 마커 겹침 회피 로직을 넣어 같은 봉/근접 가격대에서도 시인성을 높였다.
+- `SL` 라벨칩은 항상 아래쪽, `LONG` 라벨은 항상 위쪽으로 더 강하게 분리되도록 오프셋 규칙을 고정했다.
+- 봉차트 단축키는 이제 토글 방식으로 동작해, 다시 누르면 윈도우가 닫히도록 바꿨다.
+
+**반영**
+- `main.py`
+  - `_restore_auto_shutdown_state()`에 당일 장마감 이후 `_daily_close_done` 복구 추가
+  - `daily_close()` 초입에 `auto_shutdown_done_date == today` 재실행 차단 가드 추가
+- `dashboard/main_dashboard.py`
+  - `MinuteChartCanvas.RIGHT_PADDING_BARS = 10` 추가
+  - 캔들/축/마커/트레이드 스팬 렌더링을 `실제 봉 수 + 우측 패딩` 기준으로 정렬
+  - 진입 마커 스타일 개편, 마커 충돌 회피 로직 추가
+  - `LONG` 라벨 위쪽 고정, `SL` 라벨칩 아래쪽 고정
+  - `toggle_minute_chart_dialog()`를 열기/닫기 토글 동작으로 변경
+
+**검증**
+- `python -m py_compile main.py`
+- `python -m py_compile dashboard/main_dashboard.py`
+
+**다음 실운영 확인 포인트**
+- 같은 날짜 장마감 이후 수동 재시작 시 자동 종료 알림과 프로그램 종료가 다시 실행되지 않는지 확인
+- 봉차트에서 마지막 봉 우측 여백이 10봉 수준으로 유지되는지 확인
+- `LONG` 진입 마커와 `SL` 칩이 같은 봉에서 겹칠 때 위/아래 분리가 충분한지 확인
+- 봉차트 단축키 재입력 시 창이 즉시 닫히는지 확인
+
 ## 2026-05-08 (9차) - 1계약 TP1 보호전환 선택화 + 청산관리 탭 수동청산 연결
 
 **작업**

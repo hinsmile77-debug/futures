@@ -173,10 +173,19 @@ class TradingSystem:
         self.dashboard.sig_tp1_protect_mode_changed.connect(self._on_tp1_protect_mode_changed)
         self.dashboard.sig_manual_exit_requested.connect(self._on_manual_exit_requested)
         self.dashboard.set_ui_startup_mode()
+        if self.position.status != "FLAT":
+            self.dashboard.minute_chart_sync_active_position(
+                self.position.status,
+                self.position.entry_price,
+                self.position.entry_time,
+            )
         self._reverse_entry_enabled: bool = False
         self._tp1_protect_mode: str = "breakeven"
+        self._auto_shutdown_done_today: bool = False
+        self._skip_post_close_cycle_today: bool = False
         self._restore_reverse_entry_setting()
         self._restore_tp1_protect_mode_setting()
+        self._restore_auto_shutdown_state()
         self._heartbeat_count: int = 0
         self._session_no: int = 0
         self._pending_order = None
@@ -275,6 +284,26 @@ class TradingSystem:
                 json.dump(data, f, ensure_ascii=False)
         except Exception as exc:
             logger.warning("[SessionState] save failed: %s", exc)
+
+    def _restore_auto_shutdown_state(self) -> None:
+        state = self._read_session_state()
+        today = datetime.date.today().isoformat()
+        self._auto_shutdown_done_today = (state.get("auto_shutdown_done_date") == today)
+        self._skip_post_close_cycle_today = False
+        now = datetime.datetime.now()
+        if now.time() >= datetime.time(15, 40):
+            state = self._read_session_state()
+            if state.get("auto_shutdown_done_date") == now.date().isoformat():
+                self._auto_shutdown_done_today = True
+                self._skip_post_close_cycle_today = True
+                self._daily_close_done = True
+        if self._auto_shutdown_done_today and now.time() >= datetime.time(15, 40):
+            self._skip_post_close_cycle_today = True
+            self._daily_close_done = True
+            log_manager.system(
+                "[System] 오늘 자동 종료 이력이 있어 재시작 후 자동 종료/일일 마감 재실행을 건너뜁니다.",
+                "WARNING",
+            )
 
     def _restore_reverse_entry_setting(self) -> None:
         state = self._read_session_state()
@@ -530,6 +559,7 @@ class TradingSystem:
         if not broker_row:
             if self.position.status != "FLAT":
                 self.position.sync_flat_from_broker()
+                self.dashboard.minute_chart_clear_active_position()
                 self._clear_pending_order()
                 log_manager.system(
                     f"[BrokerSync] startup sync: 브로커 잔고 없음 -> {before} => FLAT",
@@ -575,6 +605,11 @@ class TradingSystem:
             atr=max(_ts_get_reference_atr(self), 0.5),
             grade="BROKER",
             regime=self.current_regime or "BROKER_SYNC",
+        )
+        self.dashboard.minute_chart_sync_active_position(
+            side,
+            avg_price,
+            self.position.entry_time,
         )
         self._clear_pending_order()
         after = f"{self.position.status} {self.position.quantity}계약 @ {self.position.entry_price:.2f}"
@@ -701,6 +736,7 @@ class TradingSystem:
         close = float(bar.get("close", 0) or 0.0)
         if close > 0:
             self._last_pipeline_price = close
+            self.dashboard.minute_chart_tick(close, bar.get("ts"))
         self.dashboard.update_price(
             price  = bar["close"],
             change = bar["close"] - bar.get("open", bar["close"]),
@@ -732,7 +768,7 @@ class TradingSystem:
 
         # latency → Circuit Breaker 연동
         self.circuit_breaker.record_api_latency(self.latency_sync.offset_sec)
-
+        self.dashboard.minute_chart_candle_closed(candle)
         self.run_minute_pipeline(candle)
 
     # ── 장 전 준비 (08:50) ─────────────────────────────────────
@@ -1609,6 +1645,14 @@ class TradingSystem:
             f"부분청산TP{stage} | {result['direction']} {qty}계약 @ {result['exit_price']}",
             f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  잔여 {result['remaining']}계약",
         )
+        self.dashboard.minute_chart_record_exit(
+            result["exit_price"],
+            datetime.datetime.now(),
+            finalize=False,
+            pnl_pts=result.get("pnl_pts"),
+            reason=f"TP{stage} partial",
+            direction=result.get("direction", ""),
+        )
         _daily = self.position.daily_stats()
         _forward_daily = self.position.daily_forward_stats()
         self.dashboard.update_pnl_metrics(
@@ -1780,6 +1824,14 @@ class TradingSystem:
             f"청산 | {result['direction']} {result['quantity']}계약 "
             f"@ {result['exit_price']} ({result['exit_reason']})",
             f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원",
+        )
+        self.dashboard.minute_chart_record_exit(
+            result["exit_price"],
+            datetime.datetime.now(),
+            finalize=True,
+            pnl_pts=result.get("pnl_pts"),
+            reason=result.get("exit_reason", ""),
+            direction=result.get("direction", ""),
         )
         self.dashboard.set_ui_ready_mode()
 
@@ -2029,6 +2081,22 @@ class TradingSystem:
     # ── 일일 마감 (15:40) ─────────────────────────────────────
     def daily_close(self):
         """자가학습 일일 마감"""
+        now = datetime.datetime.now()
+        state = self._read_session_state()
+        auto_shutdown_done_today = (
+            state.get("auto_shutdown_done_date") == now.date().isoformat()
+        )
+        if auto_shutdown_done_today and now.time() >= datetime.time(15, 40):
+            self._auto_shutdown_done_today = True
+            self._skip_post_close_cycle_today = True
+            self._daily_close_done = True
+            logger.info("[System] skip daily_close: auto-shutdown already completed today")
+            log_manager.system(
+                "[System] 오늘 자동 종료 이력이 있어 일일 마감/자동 종료 재실행을 건너뜁니다.",
+                "WARNING",
+            )
+            return
+
         stats = self.position.daily_stats()
         forward_stats = self.position.daily_forward_stats()
         logger.info(f"[Daily] 마감 통계: {stats}")
@@ -2182,12 +2250,22 @@ class TradingSystem:
             f"다음 시작: 내일 08:45 이후",
             "INFO",
         )
+        if self._auto_shutdown_done_today:
+            log_manager.system("오늘 자동 종료가 이미 실행되어 자동 종료 예약을 생략합니다.", "WARNING")
+            self.dashboard.append_sys_log("오늘 자동 종료 이력 감지 — 자동 종료 예약 생략")
+            return
         log_manager.system("자동 종료 예약 — 15초 후 Qt 이벤트 루프 종료")
         self.dashboard.append_sys_log("자동 종료 예약 — 15초 후 프로그램 종료")
         QTimer.singleShot(15_000, self._auto_shutdown)
 
     def _auto_shutdown(self) -> None:
         """일일 마감 완료 후 자동 프로그램 종료 — Qt 이벤트 루프 종료."""
+        state = self._read_session_state()
+        state["date"] = datetime.date.today().isoformat()
+        state["auto_shutdown_done_date"] = datetime.date.today().isoformat()
+        self._write_session_state(state)
+        self._auto_shutdown_done_today = True
+        self._skip_post_close_cycle_today = True
         logger.info("[System] 자동 종료 실행")
         log_manager.system("미륵이 자동 종료")
         _qt_app.quit()
@@ -2303,6 +2381,7 @@ class TradingSystem:
                 "tp1_single_contract_mode": str(
                     data.get("tp1_single_contract_mode", "breakeven") or "breakeven"
                 ).strip().lower(),
+                "auto_shutdown_done_date": "",
             }
         data["count"] = data.get("count", 0) + 1
         data["reverse_entry_enabled"] = bool(self._reverse_entry_enabled)
@@ -2502,6 +2581,10 @@ class TradingSystem:
             and now.time() >= datetime.time(15, 40)
             and is_trading_day(now)
         ):
+            if self._skip_post_close_cycle_today:
+                self._daily_close_done = True
+                logger.info("[System] today auto-shutdown already executed; skip daily_close on manual restart")
+                return
             if self.realtime_data:
                 self.realtime_data.stop()
             self.daily_close()
@@ -2938,6 +3021,12 @@ def _ts_handle_entry_fill(
         raw_direction=pending.get("raw_direction") or pending["direction"],
         reverse_entry_enabled=bool(pending.get("reverse_entry_enabled", False)),
     )
+    if before.get("status") == "FLAT":
+        self.dashboard.minute_chart_record_entry(
+            entry_direction,
+            fill_price,
+            filled_at,
+        )
     log_manager.trade(
         f"[체결진입] {entry_direction} {fill_qty}계약 @ {fill_price} "
         f"| 평균={result['avg_entry_price']} 보유={result['position_qty']}계약"
@@ -2992,6 +3081,14 @@ def _ts_handle_exit_fill(
 
     if pending["kind"] == "EXIT_MANUAL_PARTIAL":
         _ts_record_nonfinal_exit(self, result, pending["reason"])
+        self.dashboard.minute_chart_record_exit(
+            fill_price,
+            filled_at,
+            finalize=False,
+            pnl_pts=result.get("pnl_pts"),
+            reason=pending["reason"],
+            direction=result.get("direction", ""),
+        )
         _ts_log_diag(
             self,
             "ExitFillFlow",
@@ -3009,6 +3106,14 @@ def _ts_handle_exit_fill(
 
     if "remaining" in result:
         _ts_record_nonfinal_exit(self, result, pending["reason"])
+        self.dashboard.minute_chart_record_exit(
+            fill_price,
+            filled_at,
+            finalize=False,
+            pnl_pts=result.get("pnl_pts"),
+            reason=pending["reason"],
+            direction=result.get("direction", ""),
+        )
         _ts_log_diag(
             self,
             "ExitFillFlow",
@@ -3074,6 +3179,14 @@ def _ts_handle_external_fill(
         remaining_fill -= exit_qty
         if "remaining" in result:
             _ts_record_nonfinal_exit(self, result, reason_label)
+            self.dashboard.minute_chart_record_exit(
+                fill_price,
+                filled_at,
+                finalize=False,
+                pnl_pts=result.get("pnl_pts"),
+                reason=reason_label,
+                direction=result.get("direction", ""),
+            )
         else:
             _ts_apply_exit_cooldown(self, result, filled_at)
             self._post_exit(result)
@@ -3087,6 +3200,11 @@ def _ts_handle_external_fill(
             grade="MANUAL",
             regime=self.current_regime,
             filled_at=filled_at,
+        )
+        self.dashboard.minute_chart_sync_active_position(
+            side,
+            self.position.entry_price,
+            self.position.entry_time,
         )
         log_manager.trade(
             f"[체결동기화] 외부진입 {side} {remaining_fill}계약 @ {fill_price} "
@@ -3506,6 +3624,7 @@ def _ts_sync_position_from_broker(self) -> None:
                 return
             if self.position.status != "FLAT":
                 self.position.sync_flat_from_broker()
+                self.dashboard.minute_chart_clear_active_position()
             self._clear_pending_order()
             _ts_set_broker_sync_status(self, True, "blank/no holdings response interpreted as flat", False)
             log_manager.system(
@@ -3585,6 +3704,11 @@ def _ts_sync_position_from_broker(self) -> None:
         grade="BROKER",
         regime=self.current_regime or "BROKER_SYNC",
     )
+    self.dashboard.minute_chart_sync_active_position(
+        side,
+        avg_price,
+        self.position.entry_time,
+    )
     self._clear_pending_order()
     _ts_set_broker_sync_status(self, True, f"synced {side} {qty} @ {avg_price}", False)
     after = _ts_get_position_snapshot(self)
@@ -3626,6 +3750,7 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
 
     if qty <= 0:
         self.position.sync_flat_from_broker()
+        self.dashboard.minute_chart_clear_active_position()
         self._clear_pending_order()   # [B56] 내부에서 ENTRY 미체결이면 cooldown 자동 설정
         _ts_set_broker_sync_status(self, True, "balance chejan confirmed flat", False)
         log_manager.system(
@@ -3655,6 +3780,11 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         atr=max(_ts_get_reference_atr(self), 0.5),
         grade="BROKER",
         regime=self.current_regime or "BROKER_SYNC",
+    )
+    self.dashboard.minute_chart_sync_active_position(
+        side,
+        avg_price,
+        self.position.entry_time,
     )
     self._clear_pending_order()
     _ts_set_broker_sync_status(self, True, f"balance chejan synced {side} {qty} @ {avg_price}", False)
@@ -3775,6 +3905,11 @@ def _ts_execute_entry(
             reverse_entry_enabled=reverse_enabled,
         )
         self.position._optimistic = True
+        self.dashboard.minute_chart_record_entry(
+            direction,
+            price,
+            self.position.entry_time,
+        )
         logger.warning(
             "[FixB] 낙관적 오픈 완료 direction=%s status=%s qty=%s optimistic=%s",
             direction, self.position.status, self.position.quantity, self.position._optimistic,
@@ -3819,6 +3954,11 @@ def _ts_manual_position_restore(self, direction: str, price: float, qty: int, at
             atr=atr,
             grade="MANUAL",
             regime="MANUAL_RESTORE",
+        )
+        self.dashboard.minute_chart_sync_active_position(
+            direction,
+            price,
+            self.position.entry_time,
         )
         self._broker_sync_verified = True
         self._broker_sync_block_new_entries = False
