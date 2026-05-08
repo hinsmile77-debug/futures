@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
-    QEasingCurve, QRect
+    QEasingCurve, QRect, QObject
 )
 from PyQt5.QtGui import (
     QFont, QColor, QPalette, QPainter, QBrush, QPen,
@@ -40,6 +40,95 @@ from PyQt5.QtGui import (
 from config.constants import FUTURES_PT_VALUE
 
 logger = logging.getLogger("SYSTEM")
+
+
+class UiAutoTabController(QObject):
+    """운영 상태에 맞춰 우측/가운데 탭 포커스를 자동 복귀시킨다."""
+
+    MANUAL_RETURN_MS = 20_000
+
+    def __init__(self, right_tabs: QTabWidget, mid_tabs: QTabWidget):
+        super().__init__(right_tabs)
+        self.right_tabs = right_tabs
+        self.mid_tabs = mid_tabs
+        self._desired_right = 0
+        self._desired_mid = 0
+        self._suspend_manual_detect = False
+        self._manual_override = False
+        self._manual_idle_since = None
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick_manual_override)
+        self._timer.start()
+
+        self.right_tabs.currentChanged.connect(lambda _: self._on_user_tab_changed())
+        self.mid_tabs.currentChanged.connect(lambda _: self._on_user_tab_changed())
+
+    def set_startup_mode(self) -> None:
+        self._desired_right = 0
+        self._desired_mid = self._find_tab_index(self.mid_tabs, "진입 관리")
+        self._apply_tabs(force=True)
+
+    def set_ready_mode(self) -> None:
+        self._desired_right = self._find_tab_index(self.right_tabs, "3 ")
+        self._desired_mid = self._find_tab_index(self.mid_tabs, "진입 관리")
+        self._apply_tabs(force=True)
+
+    def set_position_mode(self) -> None:
+        self._desired_right = self._find_tab_index(self.right_tabs, "3 ")
+        self._desired_mid = self._find_tab_index(self.mid_tabs, "청산 관리")
+        self._apply_tabs(force=True)
+
+    def _find_tab_index(self, tabs: QTabWidget, keyword: str) -> int:
+        for idx in range(tabs.count()):
+            if keyword in tabs.tabText(idx):
+                return idx
+        return 0
+
+    def _set_current_index(self, tabs: QTabWidget, index: int) -> None:
+        index = max(0, min(index, tabs.count() - 1))
+        self._suspend_manual_detect = True
+        try:
+            tabs.setCurrentIndex(index)
+        finally:
+            self._suspend_manual_detect = False
+
+    def _apply_tabs(self, force: bool = False) -> None:
+        if self._manual_override and not force:
+            return
+        self._manual_override = False
+        self._manual_idle_since = None
+        self._set_current_index(self.right_tabs, self._desired_right)
+        self._set_current_index(self.mid_tabs, self._desired_mid)
+
+    def _on_user_tab_changed(self) -> None:
+        if self._suspend_manual_detect:
+            return
+        self._manual_override = True
+        self._manual_idle_since = None
+
+    def _managed_widgets_under_mouse(self) -> bool:
+        widgets = [
+            self.right_tabs,
+            self.right_tabs.tabBar(),
+            self.mid_tabs,
+            self.mid_tabs.tabBar(),
+        ]
+        return any(w.underMouse() for w in widgets if w is not None)
+
+    def _tick_manual_override(self) -> None:
+        if not self._manual_override:
+            return
+        if self._managed_widgets_under_mouse():
+            self._manual_idle_since = None
+            return
+        now_ms = int(datetime.now().timestamp() * 1000)
+        if self._manual_idle_since is None:
+            self._manual_idle_since = now_ms
+            return
+        if now_ms - self._manual_idle_since >= self.MANUAL_RETURN_MS:
+            self._apply_tabs(force=True)
 
 
 # ────────────────────────────────────────────────────────────
@@ -944,6 +1033,9 @@ class AccountInfoPanel(QWidget):
         super().__init__()
         self._summary_values = {}
         self._live_tick = 0
+        self._balance_last_update_dt = None
+        self._balance_last_source = ""
+        self._balance_active = False
         self._build()
 
     def _build(self):
@@ -960,6 +1052,12 @@ class AccountInfoPanel(QWidget):
         self.pb_balance_live.setFixedWidth(S.p(108))
         self.pb_balance_live.setRange(0, 100)
         self.pb_balance_live.setValue(0)
+        self.lbl_balance_stamp = mk_label("awaiting balance", C['text2'], 8, False, Qt.AlignLeft)
+        self.lbl_balance_stamp.setMinimumWidth(S.p(124))
+        self.lbl_balance_stamp.setStyleSheet(
+            f"color:{C['text2']};font-size:{S.f(8)}px;"
+            f"font-family:Consolas,D2Coding,monospace;"
+        )
         self.btn_position_restore = QPushButton("포지션 복원")
         self.btn_position_restore.setFixedWidth(S.p(80))
         self.btn_position_restore.setCursor(Qt.PointingHandCursor)
@@ -1014,6 +1112,7 @@ class AccountInfoPanel(QWidget):
         self.btn_position_restore.clicked.connect(self._on_position_restore_clicked)
         live_row.addWidget(self.lbl_balance_live)
         live_row.addWidget(self.pb_balance_live)
+        live_row.addWidget(self.lbl_balance_stamp)
         live_row.addStretch()
         live_row.addWidget(self.btn_position_restore)
         self.live_header_widget = live_box
@@ -1076,11 +1175,91 @@ class AccountInfoPanel(QWidget):
         lay.addWidget(self.tbl_balance, 1)
 
     def tick_live(self):
-        self._live_tick = (self._live_tick + 13) % 100
-        pulse = self._live_tick if self._live_tick <= 50 else 100 - self._live_tick
-        pulse = max(14, pulse * 2)
-        self.pb_balance_live.setValue(pulse)
-        self.lbl_balance_live.setText(f"LIVE {pulse:02d}%")
+        self._refresh_live_status()
+
+    def notify_balance_update(self, source: str = "broker", active: bool = True):
+        self._balance_last_update_dt = datetime.now()
+        self._balance_last_source = str(source or "broker").strip()
+        self._balance_active = bool(active)
+        self._live_tick = 0
+        self._refresh_live_status(just_updated=True)
+
+    def _refresh_live_status(self, just_updated: bool = False):
+        now = datetime.now()
+        if not self._balance_last_update_dt:
+            self.lbl_balance_live.setText("WAIT --:--")
+            self.lbl_balance_live.setStyleSheet(
+                f"color:{C['orange']};font-size:{S.f(9)}px;font-weight:bold;"
+            )
+            self.lbl_balance_stamp.setText("awaiting first sync")
+            self.lbl_balance_stamp.setStyleSheet(
+                f"color:{C['text2']};font-size:{S.f(8)}px;"
+                f"font-family:Consolas,D2Coding,monospace;"
+            )
+            self.pb_balance_live.setStyleSheet(
+                f"QProgressBar{{background:{C['bg3']};border:none;border-radius:3px;}}"
+                f"QProgressBar::chunk{{background:{C['orange']};border-radius:3px;}}"
+            )
+            self.pb_balance_live.setValue(8)
+            return
+
+        if not self._balance_active:
+            self.lbl_balance_live.setText("SLEEP")
+            self.lbl_balance_live.setStyleSheet(
+                f"color:{C['text2']};font-size:{S.f(9)}px;font-weight:bold;"
+            )
+            self.lbl_balance_stamp.setText(
+                f"flat {self._balance_last_update_dt.strftime('%H:%M:%S')}"
+            )
+            self.lbl_balance_stamp.setStyleSheet(
+                f"color:{C['text2']};font-size:{S.f(8)}px;"
+                f"font-family:Consolas,D2Coding,monospace;"
+            )
+            self.pb_balance_live.setStyleSheet(
+                f"QProgressBar{{background:{C['bg3']};border:none;border-radius:3px;}}"
+                f"QProgressBar::chunk{{background:{C['border']};border-radius:3px;}}"
+            )
+            self.pb_balance_live.setValue(0)
+            return
+
+        elapsed_s = max(0, int((now - self._balance_last_update_dt).total_seconds()))
+        mm, ss = divmod(elapsed_s, 60)
+        lap = f"{mm:02d}:{ss:02d}"
+        source = self._balance_last_source.upper() if self._balance_last_source else "SYNC"
+
+        if elapsed_s <= 3:
+            state = "LIVE"
+            col = C['cyan']
+            bar = 100 if just_updated else 92 - (elapsed_s * 4)
+        elif elapsed_s <= 10:
+            state = "FRESH"
+            col = C['green']
+            bar = 78 - ((elapsed_s - 3) * 4)
+        elif elapsed_s <= 30:
+            state = "WARM"
+            col = C['orange']
+            bar = 48 - int((elapsed_s - 10) * 1.2)
+        else:
+            state = "STALE"
+            col = C['red']
+            bar = max(10, 24 - min(14, (elapsed_s - 30) // 10))
+
+        self.lbl_balance_live.setText(f"{state} {lap}")
+        self.lbl_balance_live.setStyleSheet(
+            f"color:{col};font-size:{S.f(9)}px;font-weight:bold;"
+        )
+        self.lbl_balance_stamp.setText(
+            f"{source} {self._balance_last_update_dt.strftime('%H:%M:%S')}"
+        )
+        self.lbl_balance_stamp.setStyleSheet(
+            f"color:{col if elapsed_s <= 30 else C['text2']};font-size:{S.f(8)}px;"
+            f"font-family:Consolas,D2Coding,monospace;"
+        )
+        self.pb_balance_live.setStyleSheet(
+            f"QProgressBar{{background:{C['bg3']};border:none;border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{col};border-radius:3px;}}"
+        )
+        self.pb_balance_live.setValue(max(8, min(100, int(bar))))
 
     @staticmethod
     def _to_number(value):
@@ -3998,8 +4177,8 @@ class MireukDashboard(QMainWindow):
         ml   = QVBoxLayout(mid)
         ml.setContentsMargins(0,0,0,0)
         ml.setSpacing(6)
-        mid_tabs = QTabWidget()
-        mid_tabs.setStyleSheet(f"QTabBar::tab:selected{{border-bottom:2px solid {C['orange']};}}")
+        self.mid_tabs = QTabWidget()
+        self.mid_tabs.setStyleSheet(f"QTabBar::tab:selected{{border-bottom:2px solid {C['orange']};}}")
 
         self.div_panel      = DivergencePanel()
         self.feat_panel     = FeaturePanel()
@@ -4018,18 +4197,18 @@ class MireukDashboard(QMainWindow):
             logger.warning("[Dashboard] StrategyPanel 로드 실패: %s", _e)
             self.strategy_panel = None
 
-        mid_tabs.addTab(self._wrap(self.div_panel),      "다이버전스 + 포지션")
-        mid_tabs.addTab(self._wrap(self.feat_panel),     "동적 피처 (SHAP)")
-        mid_tabs.addTab(self._wrap(self.exit_panel),     "청산 관리")
-        mid_tabs.addTab(self._wrap(self.entry_panel),    "진입 관리")
-        mid_tabs.setTabToolTip(mid_tabs.count() - 1, _CB_TIP)
-        mid_tabs.addTab(self._wrap(self.learn_panel),    "🧠 자가학습")
-        mid_tabs.addTab(self._wrap(self.efficacy_panel), "🎯 효과 검증")
-        mid_tabs.addTab(self._wrap(self.trend_panel),    "📈 성장 추이")
-        mid_tabs.addTab(self._wrap(self.alpha_panel),    "알파 리서치 봇")
+        self.mid_tabs.addTab(self._wrap(self.div_panel),      "다이버전스 + 포지션")
+        self.mid_tabs.addTab(self._wrap(self.feat_panel),     "동적 피처 (SHAP)")
+        self.mid_tabs.addTab(self._wrap(self.exit_panel),     "청산 관리")
+        self.mid_tabs.addTab(self._wrap(self.entry_panel),    "진입 관리")
+        self.mid_tabs.setTabToolTip(self.mid_tabs.count() - 1, _CB_TIP)
+        self.mid_tabs.addTab(self._wrap(self.learn_panel),    "🧠 자가학습")
+        self.mid_tabs.addTab(self._wrap(self.efficacy_panel), "🎯 효과 검증")
+        self.mid_tabs.addTab(self._wrap(self.trend_panel),    "📈 성장 추이")
+        self.mid_tabs.addTab(self._wrap(self.alpha_panel),    "알파 리서치 봇")
         if self.strategy_panel is not None:
-            mid_tabs.addTab(self._wrap(self.strategy_panel), "🧭 전략 운용현황")
-        ml.addWidget(mid_tabs)
+            self.mid_tabs.addTab(self._wrap(self.strategy_panel), "🧭 전략 운용현황")
+        ml.addWidget(self.mid_tabs)
 
         # 우측: 5층 로그
         right = QWidget()
@@ -4043,6 +4222,9 @@ class MireukDashboard(QMainWindow):
         main_split.addWidget(right)
         main_split.setSizes([520, 680, 440])
         root.addWidget(main_split, 1)
+
+        self.ui_auto_tabs = UiAutoTabController(self.log_panel.tabs, self.mid_tabs)
+        self.ui_auto_tabs.set_startup_mode()
 
     def _wrap(self, widget):
         sc = QScrollArea()
@@ -4187,6 +4369,15 @@ class DashboardAdapter:
         """창1 시스템 로그에 메시지 추가"""
         self._win.log_panel.append("all", "SYSTEM", msg)
 
+    def set_ui_startup_mode(self) -> None:
+        self._win.ui_auto_tabs.set_startup_mode()
+
+    def set_ui_ready_mode(self) -> None:
+        self._win.ui_auto_tabs.set_ready_mode()
+
+    def set_ui_position_mode(self) -> None:
+        self._win.ui_auto_tabs.set_position_mode()
+
     def set_account_options(self, accounts, selected: str = ""):
         combo = self._win.cmb_account
         cur = selected or combo.currentText().strip()
@@ -4208,16 +4399,19 @@ class DashboardAdapter:
     def get_selected_account(self) -> str:
         return self._win.cmb_account.currentText().strip()
 
-    def update_account_balance(self, summary: dict, rows):
-        logger.warning(
-            "[BalanceUI] dashboard receive rows=%d summary_nonblank=%s preview=%s summary=%s",
-            len(rows or []),
-            any(str(v).strip() for v in (summary or {}).values()),
-            list(rows or [])[:3],
-            summary or {},
-        )
+    def update_account_balance(self, summary: dict, rows, quiet: bool = False, mark_fresh: bool = True, source: str = "broker", balance_active: bool = True):
+        if not quiet:
+            logger.warning(
+                "[BalanceUI] dashboard receive rows=%d summary_nonblank=%s preview=%s summary=%s",
+                len(rows or []),
+                any(str(v).strip() for v in (summary or {}).values()),
+                list(rows or [])[:3],
+                summary or {},
+            )
         self._win.account_info_panel.update_summary(summary)
         self._win.account_info_panel.update_rows(rows)
+        if mark_fresh:
+            self._win.account_info_panel.notify_balance_update(source=source, active=balance_active)
 
     def update_supply_macro(
         self,

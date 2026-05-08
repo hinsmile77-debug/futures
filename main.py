@@ -16,6 +16,7 @@ KOSPI 200 선물 방향 예측 시스템 — 미륵이 (Futures Edition)
 """
 import sys
 import os
+import copy
 import datetime
 import time
 import logging
@@ -156,6 +157,7 @@ class TradingSystem:
             self._save_account_from_dashboard
         )
         self.dashboard.sig_position_restore.connect(self._manual_position_restore)
+        self.dashboard.set_ui_startup_mode()
         self._heartbeat_count: int = 0
         self._session_no: int = 0
         self._pending_order = None
@@ -163,6 +165,7 @@ class TradingSystem:
         self._broker_sync_verified: bool = False
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
+        self._last_balance_result: dict = {}
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
         self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
@@ -447,6 +450,9 @@ class TradingSystem:
         """틱 수신마다 대시보드 헤더 현재가 갱신."""
         if self.realtime_data is None:
             return
+        close = float(bar.get("close", 0) or 0.0)
+        if close > 0:
+            self._last_pipeline_price = close
         self.dashboard.update_price(
             price  = bar["close"],
             change = bar["close"] - bar.get("open", bar["close"]),
@@ -504,6 +510,7 @@ class TradingSystem:
         self.dashboard.append_sys_log(
             f"레짐 확정: {self.current_regime} | {result['description']}"
         )
+        self.dashboard.set_ui_ready_mode()
 
     # ── 매분 파이프라인 ────────────────────────────────────────
     def run_minute_pipeline(self, bar: dict):
@@ -1412,6 +1419,7 @@ class TradingSystem:
             f"@ {result['exit_price']} ({result['exit_reason']})",
             f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원",
         )
+        self.dashboard.set_ui_ready_mode()
 
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         execute(
@@ -1985,6 +1993,11 @@ class TradingSystem:
         self._scheduler.timeout.connect(self._scheduler_tick)
         self._scheduler.start()
 
+        self._balance_ui_timer = QTimer()
+        self._balance_ui_timer.setInterval(2_000)
+        self._balance_ui_timer.timeout.connect(self._refresh_dashboard_balance_ui_only)
+        self._balance_ui_timer.start()
+
         # 대시보드 표시 + 긴급정지 버튼 연결
         self.dashboard.show()
         if hasattr(self.dashboard, "btn_kill"):
@@ -2442,6 +2455,7 @@ def _ts_handle_entry_fill(
         f"체결진입 | {entry_direction} {fill_qty}계약 @ {fill_price}",
         f"평균 {self.position.entry_price:.2f} 손절 {self.position.stop_price:.2f} 1차 {self.position.tp1_price:.2f}",
     )
+    self.dashboard.set_ui_position_mode()
     _ts_log_diag(
         self,
         "EntryFillFlow",
@@ -2572,6 +2586,7 @@ def _ts_handle_external_fill(
             f"외부진입 동기화 | {side} {remaining_fill}계약 @ {fill_price}",
             f"평균 {self.position.entry_price:.2f} 손절 {self.position.stop_price:.2f}",
         )
+        self.dashboard.set_ui_position_mode()
 
     after = _ts_get_position_snapshot(self)
     log_manager.system(
@@ -2704,20 +2719,23 @@ def _ts_set_broker_sync_status(self, verified: bool, reason: str, block_new_entr
     )
 
 
-def _ts_push_balance_to_dashboard(self, result: dict) -> None:
+def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) -> None:
     if not result:
         log_manager.system("[BalanceUI] skipped: empty result", "WARNING")
         return
 
+    self._last_balance_result = copy.deepcopy(result)
+
     rows = list(result.get("nonempty_rows") or result.get("rows") or [])
     summary = dict(result.get("summary") or {})
     probe = dict(result.get("summary_probe") or {})
-    log_manager.system(
-        f"[BalanceUI] raw rows={len(result.get('rows') or [])} nonempty={len(result.get('nonempty_rows') or [])} "
-        f"summary_nonblank={any(str(v).strip() for v in summary.values())} "
-        f"record={result.get('record_name', '')} query_count={result.get('query_count', '')}",
-        "WARNING",
-    )
+    if not quiet:
+        log_manager.system(
+            f"[BalanceUI] raw rows={len(result.get('rows') or [])} nonempty={len(result.get('nonempty_rows') or [])} "
+            f"summary_nonblank={any(str(v).strip() for v in summary.values())} "
+            f"record={result.get('record_name', '')} query_count={result.get('query_count', '')}",
+            "WARNING",
+        )
 
     # TR blank + 포지션 보유 중 → position_tracker 기반 합성 행 (모의투자 OPW20006 공란 대응)
     # nonempty_rows=[] 이지만 rows=[{blank}] 케이스도 포함
@@ -2746,10 +2764,24 @@ def _ts_push_balance_to_dashboard(self, result: dict) -> None:
             "손익율": f"{(_pnl_krw / _eval_krw * 100.0):.2f}" if _eval_krw else "0.00",
             "평가금액": f"{_eval_krw + _pnl_krw:.0f}",
         }]
-        logger.warning(
-            "[BalanceUIFallback-Position] TR blank + 포지션 보유 → 합성 행 생성 side=%s qty=%s entry=%s cur=%s pnl_krw=%s",
-            _side_label, _qty, _entry, _last_price, _pnl_krw,
-        )
+        if not quiet:
+            logger.warning(
+                "[BalanceUIFallback-Position] TR blank + 포지션 보유 → 합성 행 생성 side=%s qty=%s entry=%s cur=%s pnl_krw=%s",
+                _side_label, _qty, _entry, _last_price, _pnl_krw,
+            )
+
+    def _parse_qty(row):
+        for key in ("잔고수량", "주문가능수량", "?붽퀬?섎웾", "二쇰Ц媛?μ닔??"):
+            try:
+                return int(str(row.get(key, "")).replace(",", "").strip() or "0")
+            except (ValueError, AttributeError):
+                continue
+        return 0
+
+    balance_active = (
+        self.position.status != "FLAT"
+        or any(_parse_qty(row) > 0 for row in rows)
+    )
 
     def _num(value):
         try:
@@ -2790,14 +2822,15 @@ def _ts_push_balance_to_dashboard(self, result: dict) -> None:
     if not str(summary.get("추정자산") or "").strip():
         summary["추정자산"] = f"{_num(summary.get('총평가')):.0f}"
 
-    log_manager.system(
-        f"[BalanceUI] computed trade_sum={trade_sum:.4f} pnl_sum={pnl_sum:.4f} eval_sum={eval_sum:.4f} "
-        f"realized_krw={realized_krw:.4f} final_summary_nonblank={any(str(v).strip() for v in summary.values())} "
-        f"probe_nonblank={any(str(v).strip() for v in probe.values())}",
-        "WARNING",
-    )
+    if not quiet:
+        log_manager.system(
+            f"[BalanceUI] computed trade_sum={trade_sum:.4f} pnl_sum={pnl_sum:.4f} eval_sum={eval_sum:.4f} "
+            f"realized_krw={realized_krw:.4f} final_summary_nonblank={any(str(v).strip() for v in summary.values())} "
+            f"probe_nonblank={any(str(v).strip() for v in probe.values())}",
+            "WARNING",
+        )
 
-    if not any(str(v).strip() for v in result.get("summary", {}).values()):
+    if not quiet and not any(str(v).strip() for v in result.get("summary", {}).values()):
         logger.warning(
             "[BalanceUIFallback] summary blank from OPW20006; rows=%d probe=%s applied=%s",
             len(rows),
@@ -2805,13 +2838,21 @@ def _ts_push_balance_to_dashboard(self, result: dict) -> None:
             summary,
         )
 
-    logger.warning(
-        "[BalanceUI] push rows=%d preview=%s summary=%s",
-        len(rows),
-        rows[:3],
+    if not quiet:
+        logger.warning(
+            "[BalanceUI] push rows=%d preview=%s summary=%s",
+            len(rows),
+            rows[:3],
+            summary,
+        )
+    self.dashboard.update_account_balance(
         summary,
+        rows,
+        quiet=quiet,
+        mark_fresh=(not quiet),
+        source="broker",
+        balance_active=balance_active,
     )
-    self.dashboard.update_account_balance(summary, rows)
 
 
 def _ts_refresh_dashboard_balance(self) -> None:
@@ -2843,6 +2884,20 @@ def _ts_refresh_dashboard_balance(self) -> None:
         result.get("summary") or {},
     )
     _ts_push_balance_to_dashboard(self, result)
+
+
+def _ts_refresh_dashboard_balance_ui_only(self) -> None:
+    if not getattr(self, "dashboard", None):
+        return
+    cached = getattr(self, "_last_balance_result", None) or {}
+    if not cached:
+        cached = {
+            "rows": [],
+            "nonempty_rows": [],
+            "summary": {},
+            "summary_probe": {},
+        }
+    _ts_push_balance_to_dashboard(self, cached, quiet=True)
 
 
 def _ts_sync_position_from_broker(self) -> None:
@@ -3193,6 +3248,7 @@ def _ts_manual_position_restore(self, direction: str, price: float, qty: int, at
             f"TP1={self.position.tp1_price:.2f}  TP2={self.position.tp2_price:.2f}",
             "WARNING",
         )
+        self.dashboard.set_ui_position_mode()
     except Exception as _e:
         log_manager.system(f"[PositionRestore] sync_from_broker 실패: {_e}", "CRITICAL")
         return
@@ -3204,6 +3260,7 @@ TradingSystem._on_chejan_event = _ts_on_chejan_event
 TradingSystem._set_broker_sync_status = _ts_set_broker_sync_status
 TradingSystem._push_balance_to_dashboard = _ts_push_balance_to_dashboard
 TradingSystem._refresh_dashboard_balance = _ts_refresh_dashboard_balance
+TradingSystem._refresh_dashboard_balance_ui_only = _ts_refresh_dashboard_balance_ui_only
 TradingSystem._sync_position_from_broker = _ts_sync_position_from_broker
 TradingSystem._manual_position_restore = _ts_manual_position_restore
 TradingSystem._execute_entry = _ts_execute_entry
