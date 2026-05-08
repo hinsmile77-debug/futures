@@ -1014,3 +1014,41 @@ if not self.model.is_ready():
 **판단**
 - 구현 범위는 상당 부분 완료됐지만 운영 승격 관점에서는 여전히 `shadow` 유지가 타당.
 - 가장 큰 후속 과제는 calibration 개선(temperature scaling 등)과 A/B 열위 구간 원인 분석.
+
+---
+
+## 2026-05-08 (8차) - PnL 기준 통일 + trades.db 정규화 + 잔고/손익 추이 일치화
+
+**작업**
+- 키움 HTS `실현손익`, 미륵이 잔고 패널 `실현손익`, `손익 추이` 오늘 손익이 서로 다르게 보이는 원인을 역추적했다.
+- `logs/20260508_WARN.log`, `trades.db`, `PositionTracker.daily_stats()`를 대조해 세 값이 서로 다른 원천과 다른 계산식에 묶여 있음을 확인했다.
+- `utils/db_utils.py`에 정규화 손익 계산 함수와 `trades` 테이블 마이그레이션을 추가했다.
+- `main.py`의 3개 거래 저장 경로를 모두 `250,000원/pt - 왕복 수수료` 기준 저장으로 통일했다.
+- `실현손익` fallback 로직을 `오늘 정규화 거래합계 -> 마지막 정상 브로커 값 -> 내부 daily_stats` 순으로 안정화했다.
+- `손익 추이` 패널은 `entry_ts`가 아니라 `exit_ts` 기준으로 일자 집계를 하도록 조정했다.
+- 재시작 복원 시 `position.restore_daily_stats()` 전에 `reset_daily()`를 호출하도록 수정했고, `reset_daily()`가 수수료도 함께 초기화하도록 보강했다.
+
+**핵심 진단**
+- 기존 `손익 추이`는 `trades.db.pnl_krw`를 그대로 사용했는데, 오늘 거래 안에 과거 `500,000원/pt` 계산값과 신규 `250,000원/pt - 수수료` 계산값이 혼재해 있었다.
+- 기존 잔고 패널 fallback `실현손익`은 `PositionTracker.daily_stats()`를 기준으로 현재 공식으로 재산출했기 때문에 DB 집계와 즉시 어긋났다.
+- `OPW20006` summary blank 응답 시 fallback이 `0` 또는 내부값으로 번갈아 덮어써져, 같은 세션 안에서도 `실현손익`이 `-1,985,122 -> 0 -> -1,618,767 -> 0`처럼 흔들릴 수 있었다.
+
+**반영**
+- `utils/db_utils.py`
+  - `normalize_trade_pnl()` 추가
+  - `trades` 테이블에 `gross_pnl_krw`, `commission_krw`, `net_pnl_krw`, `formula_version` 추가
+  - 기존 거래행 자동 정규화 migration 추가
+  - `fetch_today_trades()` / `fetch_pnl_history()`를 `exit_ts` 기준 + `COALESCE(net_pnl_krw, pnl_krw)` 반환으로 수정
+- `main.py`
+  - 3개 거래 INSERT 경로 모두 정규화 손익 저장으로 통일
+  - `_restore_daily_state()` 복원 전 `self.position.reset_daily()` 호출
+  - `_ts_push_balance_to_dashboard()` fallback `실현손익` 우선순위 보정
+- `strategy/position/position_tracker.py`
+  - `reset_daily()`에 `_daily_commission = 0.0` 추가
+- `dashboard/main_dashboard.py`
+  - `PnlHistoryPanel.refresh()` 집계 기준 시각을 `exit_ts` 우선으로 변경
+
+**검증**
+- `py_compile`로 `main.py`, `utils/db_utils.py`, `strategy/position/position_tracker.py`, `dashboard/main_dashboard.py` 문법 검증 통과.
+- DB migration 실행 후 `fetch_today_trades('2026-05-08')` 합계가 `-1,618,766원`으로 정규화 기준에 맞게 통일됨을 확인.
+- `trades` 테이블 조회 결과 `formula_version = 2`로 오늘 거래 27건이 모두 갱신되었고 마지막 거래 예시는 `gross=375,000`, `commission=8,645`, `net=366,355`로 정상 확인.

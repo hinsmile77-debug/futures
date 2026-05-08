@@ -2,6 +2,64 @@
 
 ---
 
+## 2026-05-08 버그 수정 (8차 세션 — PnL 기준 통일 + trades.db 정규화)
+
+### [B67] `trades.db` 손익 계산식 혼합 저장
+**파일**: `main.py`, `utils/db_utils.py`
+**증상**: 같은 날짜의 `손익 추이` 일별 합계와 잔고 패널 `실현손익`이 크게 다름. 예: `손익 추이=-347,810원`, fallback `실현손익=-1,618,767원`
+**원인**:
+- 일부 과거 거래행은 `500,000원/pt` 기준 값이 `pnl_krw`에 저장
+- 이후 거래행은 `250,000원/pt - 왕복 수수료` 기준 값이 저장
+- `손익 추이`는 저장된 `pnl_krw`를 그대로 합산했기 때문에 동일 날짜 안에서도 혼합 기준이 누적됨
+**Fix**:
+- `normalize_trade_pnl()` 추가
+- `trades` 테이블에 `gross_pnl_krw`, `commission_krw`, `net_pnl_krw`, `formula_version` 추가
+- migration으로 기존 `pnl_krw`를 현재 공식(`250,000원/pt - 수수료`)으로 재계산
+**교훈**: PnL 계산식을 바꿀 때는 DB에 versioning과 원가/수수료 분리 컬럼이 반드시 필요하다.
+
+### [B68] `실현손익` fallback이 TR blank 때 `0` 또는 내부값으로 흔들림
+**파일**: `main.py` `_ts_push_balance_to_dashboard`
+**증상**: `OPW20006` summary blank 상황에서 같은 세션 안에도 잔고 패널 `실현손익`이 `-1,985,122 -> 0 -> -1,618,767 -> 0`처럼 흔들릴 수 있음
+**원인**:
+- 기존 로직은 summary blank면 즉시 `PositionTracker.daily_stats().pnl_krw` 또는 계산 실패 시 `0`으로 채움
+- 브로커 원문이 들어왔던 마지막 정상값을 보존하지 않아, blank 응답마다 UI가 다시 덮어써짐
+**Fix**:
+- 우선순위를 `오늘 정규화 거래합계 -> 마지막 정상 브로커 실현손익 캐시 -> daily_stats()` 로 변경
+- 당일 브로커 `실현손익` 원문이 들어오면 `_last_balance_realized_krw`로 캐시
+**교훈**: 브로커 TR blank는 "값 0"이 아니라 "이번 샘플 부재"로 다뤄야 한다. 마지막 정상 스냅샷 유지 전략이 필요하다.
+
+### [B69] 재시작 복원 시 일일 손익/수수료 중복 누적 위험
+**파일**: `main.py`, `strategy/position/position_tracker.py`
+**증상**: `_restore_daily_state()`가 같은 날 여러 번 호출되면 `restore_daily_stats()`가 누적값 위에 다시 더해 일일 PnL이 과대 집계될 수 있음
+**원인**:
+- `restore_daily_stats()`는 누적형 함수인데 복원 전에 `_daily_pnl_pts`, `_daily_commission`을 리셋하지 않았음
+- `reset_daily()`도 `_daily_commission`을 초기화하지 않음
+**Fix**:
+- `_restore_daily_state()`에서 `self.position.reset_daily()` 선호출
+- `PositionTracker.reset_daily()`에 `_daily_commission = 0.0` 추가
+**교훈**: 복원 함수가 additive면 호출 전 상태 초기화가 보장돼야 한다.
+
+---
+
+## 2026-05-08 설계 결정 (8차 세션)
+
+### [D27] `trades`는 순손익 기준을 단일 소스 오브 트루스로 유지
+**결정**: `trades.pnl_krw`는 앞으로 항상 `net_pnl_krw`와 같은 값, 즉 `250,000원/pt - 왕복 수수료` 순손익으로 유지한다.
+**이유**: 기존 화면/리포트/SQL이 `pnl_krw` 단일 컬럼을 이미 넓게 사용하고 있으므로, 우선은 하위호환을 유지하면서 의미를 순손익으로 고정하는 편이 안정적이다.
+**보완**: 상세 분석용으로 `gross_pnl_krw`, `commission_krw`, `formula_version`을 별도 저장한다.
+
+### [D28] 손익 추이의 날짜 기준은 `entry_ts`가 아니라 `exit_ts`
+**결정**: 일별/주별/월별 `손익 추이` 집계는 `exit_ts`를 기준 시각으로 사용한다.
+**이유**: `실현손익`은 청산 시점에 확정된다. 진입일 기준으로 집계하면 오버나이트가 없더라도 의미상 어색하고, 부분청산/복수 청산 경로에서도 해석이 불안정해진다.
+**적용**: `fetch_today_trades()`, `fetch_pnl_history()`, `PnlHistoryPanel.refresh()`
+
+### [D29] 잔고 패널 `실현손익` fallback 우선순위
+**결정**: 브로커 summary 공란 시 `오늘 정규화 거래합계 -> 마지막 정상 브로커 실현손익 캐시 -> PositionTracker.daily_stats()` 순으로 표시한다.
+**이유**: 같은 세션 안에서 UI끼리 숫자가 갈라지는 문제를 최소화하려면, 잔고 패널도 `손익 추이`와 동일한 정규화 거래합계를 최우선으로 봐야 한다.
+**주의**: 브로커 원문이 있는 시점에는 브로커 값을 덮어쓰지 않고 캐시만 갱신한다.
+
+---
+
 ## 2026-05-07 버그 수정 (5차 세션 — Phase 5 QA + STRATEGY_PARAMS_GUIDE 준수)
 
 ### [B64] `%+,.0f` Python 3.7 `%` 연산자 미지원

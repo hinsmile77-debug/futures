@@ -530,6 +530,7 @@ class PositionTracker:
         self._daily_pnl_pts = 0.0
         self._daily_trades  = 0
         self._daily_wins    = 0
+        self._daily_commission = 0.0
 
     # ── 포지션 상태 퍼시스턴스 ────────────────────────────────────
 

@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-08 (6차) — PnL 승수 수정 + CB③ 개선 + Hurst/ATR/ExitCooldown 진입 게이트 보강
+> 마지막 업데이트: 2026-05-08 (8차) — PnL 기준 통일 + trades.db 정규화 + 잔고/손익 추이 일치화
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -62,6 +62,51 @@
 | 09:34 | CB③ HALT (3샘플, 전 호라이즌 혼합) | 시스템 정지 → 오전 기회 손실 | **방어됨** — 30m 필터 + 20샘플 최소 |
 | 10:14 | TP1(10:13) 후 1분 재진입 | 진입 실행 | **차단** — ExitCooldown 2분 |
 | 10:24 | 스톱 후 10:25 즉시 재진입 | 진입 실행 → CB② 2/3 도달 | **차단** — ExitCooldown 3분 |
+
+---
+
+## 2026-05-08 세션 주요 수정 (8차) — PnL 기준 통일 + trades.db 정규화 + 잔고/손익 추이 일치화
+
+### 핵심 변경 사항
+
+**PnL 정규화 4건**
+
+| 항목 | 원인 | 수정 |
+|---|---|---|
+| **`trades.db` 혼합 손익 정규화** | 같은 날짜 거래 안에 `500,000원/pt` 구식 값과 `250,000원/pt - 수수료` 신규 값이 혼재 | `utils/db_utils.py` migration 추가. 기존 `trades.pnl_krw`를 현재 공식으로 일괄 재계산 |
+| **정규화 컬럼 추가** | `pnl_krw` 단일 컬럼만으로는 계산 버전/수수료 분리 불가 | `gross_pnl_krw`, `commission_krw`, `net_pnl_krw`, `formula_version` 추가 |
+| **거래 저장 경로 통일** | 일부 경로는 구식 저장값을 그대로 INSERT할 위험 | `main.py` 3개 `INSERT INTO trades` 경로 모두 `normalize_trade_pnl()` 사용 |
+| **손익 추이 날짜 기준 수정** | 실현손익인데 `entry_ts` 기준 일자 집계 사용 | `fetch_today_trades()`, `fetch_pnl_history()`, `PnlHistoryPanel.refresh()`를 `exit_ts` 기준으로 보정 |
+
+**잔고 패널 안정화 3건**
+
+| 항목 | 수정 |
+|---|---|
+| **실현손익 fallback 우선순위 보정** | `오늘 정규화 거래합계 -> 마지막 정상 브로커 실현손익 캐시 -> PositionTracker.daily_stats()` 순으로 적용 |
+| **TR blank 시 0 덮어쓰기 완화** | `OPW20006` summary blank일 때 직전 정상 브로커 `실현손익`을 당일 캐시로 유지 |
+| **재시작 복원 중복 누적 방지** | `_restore_daily_state()`에서 `restore_daily_stats()` 호출 전에 `self.position.reset_daily()` 실행 |
+
+**일일 통계 보정 1건**
+
+| 항목 | 수정 |
+|---|---|
+| **수수료 리셋 누락** | `PositionTracker.reset_daily()`에 `_daily_commission = 0.0` 추가 |
+
+### 현재 운영 기준
+
+- `손익 추이`의 오늘 값은 이제 `trades.db`의 `net_pnl_krw` 합계와 일치해야 한다.
+- 잔고 패널 `실현손익` fallback도 같은 정규화 기준을 사용하므로, 브로커 원문 공란 시 내부 UI끼리 값이 갈라지지 않아야 한다.
+- `trades` 테이블의 손익 계산 기준 버전은 `formula_version = 2` 이다.
+
+### 세션 검증 결과
+
+- `fetch_today_trades('2026-05-08')` 합계: `-1,618,766원`
+- `trades` 오늘 27건 전체 `formula_version = 2` 정규화 완료
+- 정규화 샘플:
+  - `pnl_pts=+1.50`
+  - `gross_pnl_krw=375,000`
+  - `commission_krw=8,645`
+  - `net_pnl_krw=366,355`
 
 ---
 

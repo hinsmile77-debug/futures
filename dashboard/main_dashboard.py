@@ -3569,8 +3569,9 @@ class PnlHistoryPanel(QWidget):
         self._rows = []
         for r in rows:
             try:
+                trade_ts = r["exit_ts"] or r["entry_ts"] or ""
                 self._rows.append({
-                    "entry_ts": r["entry_ts"] or "",
+                    "entry_ts": trade_ts,
                     "pnl_pts":  float(r["pnl_pts"]  or 0),
                     "pnl_krw":  float(r["pnl_krw"]  or 0),
                     "quantity": int(r["quantity"]    or 1),

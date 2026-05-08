@@ -45,7 +45,7 @@ debug_log = logging.getLogger("DEBUG")
 # ── DB 초기화 ──────────────────────────────────────────────────
 from utils.db_utils import (
     init_all_dbs, execute, save_candle, save_features, count_raw_candles,
-    fetch_today_trades, fetch_pnl_history,
+    fetch_today_trades, fetch_pnl_history, normalize_trade_pnl,
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
     fetch_trend_monthly, fetch_trend_yearly,
 )
@@ -1388,12 +1388,18 @@ class TradingSystem:
         )
 
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        trade_metrics = normalize_trade_pnl(
+            entry_price=result["entry_price"],
+            quantity=result["quantity"],
+            pnl_pts=result["pnl_pts"],
+        )
         execute(
             TRADES_DB,
             """INSERT INTO trades
                (entry_ts, exit_ts, direction, entry_price, exit_price,
-                quantity, pnl_pts, pnl_krw, exit_reason, grade, regime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                quantity, pnl_pts, pnl_krw, gross_pnl_krw, commission_krw,
+                net_pnl_krw, formula_version, exit_reason, grade, regime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 now_str,
@@ -1402,7 +1408,11 @@ class TradingSystem:
                 result["exit_price"],
                 result["quantity"],
                 result["pnl_pts"],
-                result["pnl_krw"],
+                trade_metrics["net_pnl_krw"],
+                trade_metrics["gross_pnl_krw"],
+                trade_metrics["commission_krw"],
+                trade_metrics["net_pnl_krw"],
+                trade_metrics["formula_version"],
                 result["exit_reason"],
                 result.get("grade", ""),
                 self.current_regime,
@@ -1565,12 +1575,18 @@ class TradingSystem:
         self.dashboard.set_ui_ready_mode()
 
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        trade_metrics = normalize_trade_pnl(
+            entry_price=result["entry_price"],
+            quantity=result["quantity"],
+            pnl_pts=result["pnl_pts"],
+        )
         execute(
             TRADES_DB,
             """INSERT INTO trades
                (entry_ts, exit_ts, direction, entry_price, exit_price,
-                quantity, pnl_pts, pnl_krw, exit_reason, grade, regime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                quantity, pnl_pts, pnl_krw, gross_pnl_krw, commission_krw,
+                net_pnl_krw, formula_version, exit_reason, grade, regime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 now_str,
@@ -1579,7 +1595,11 @@ class TradingSystem:
                 result["exit_price"],
                 result["quantity"],
                 result["pnl_pts"],
-                result["pnl_krw"],
+                trade_metrics["net_pnl_krw"],
+                trade_metrics["gross_pnl_krw"],
+                trade_metrics["commission_krw"],
+                trade_metrics["net_pnl_krw"],
+                trade_metrics["formula_version"],
                 result["exit_reason"],
                 result.get("grade", ""),
                 self.current_regime,
@@ -2169,6 +2189,7 @@ class TradingSystem:
                 )
 
         # position_tracker 일일 통계 복원
+        self.position.reset_daily()
         self.position.restore_daily_stats(rows)
 
         # 손익 PnL 패널 즉시 갱신 — 재시작 후 "——원" 방지
@@ -2622,12 +2643,18 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
     )
 
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    trade_metrics = normalize_trade_pnl(
+        entry_price=result["entry_price"],
+        quantity=result["quantity"],
+        pnl_pts=result["pnl_pts"],
+    )
     execute(
         TRADES_DB,
         """INSERT INTO trades
            (entry_ts, exit_ts, direction, entry_price, exit_price,
-            quantity, pnl_pts, pnl_krw, exit_reason, grade, regime)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            quantity, pnl_pts, pnl_krw, gross_pnl_krw, commission_krw,
+            net_pnl_krw, formula_version, exit_reason, grade, regime)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             result.get("entry_ts", now_str),
             result.get("exit_ts", now_str),
@@ -2636,7 +2663,11 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
             result["exit_price"],
             result["quantity"],
             result["pnl_pts"],
-            result["pnl_krw"],
+            trade_metrics["net_pnl_krw"],
+            trade_metrics["gross_pnl_krw"],
+            trade_metrics["commission_krw"],
+            trade_metrics["net_pnl_krw"],
+            trade_metrics["formula_version"],
             result["exit_reason"],
             result.get("grade", ""),
             self.current_regime,
@@ -3039,13 +3070,34 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
     if not str(summary.get("총평가") or "").strip():
         summary["총평가"] = f"{eval_sum:.0f}"
 
-    realized_krw = 0.0
+    today_str = datetime.date.today().isoformat()
+    realized_krw = None
+    broker_realized_text = str(summary.get("실현손익") or "").strip()
+    if broker_realized_text:
+        try:
+            self._last_balance_realized_krw = float(_num(broker_realized_text))
+            self._last_balance_realized_date = today_str
+        except Exception:
+            pass
     try:
-        realized_krw = float(self.position.daily_stats().get("pnl_krw", 0.0) or 0.0)
+        today_rows = fetch_today_trades(today_str)
+        if today_rows:
+            realized_krw = float(sum(float(r["pnl_krw"] or 0.0) for r in today_rows))
     except Exception:
-        realized_krw = 0.0
+        realized_krw = None
     if not str(summary.get("실현손익") or "").strip():
-        summary["실현손익"] = f"{realized_krw:.0f}"
+        cached_realized_krw = None
+        if getattr(self, "_last_balance_realized_date", "") == today_str:
+            cached_realized_krw = getattr(self, "_last_balance_realized_krw", None)
+        if cached_realized_krw is not None:
+            summary["실현손익"] = f"{cached_realized_krw:.0f}"
+        else:
+            if realized_krw is None:
+                try:
+                    realized_krw = float(self.position.daily_stats().get("pnl_krw", 0.0) or 0.0)
+                except Exception:
+                    realized_krw = 0.0
+            summary["실현손익"] = f"{realized_krw:.0f}"
 
     trade_base = trade_sum or _num(summary.get("총매매"))
     pnl_base = _num(summary.get("총평가손익"))

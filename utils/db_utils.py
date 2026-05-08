@@ -3,12 +3,15 @@ import sqlite3
 import os
 import threading
 from contextlib import contextmanager
-from typing import List, Tuple, Any, Optional
+from typing import List, Tuple, Any, Optional, Dict
 
 import json
+from config.constants import FUTURES_PT_VALUE
 from config.settings import PREDICTIONS_DB, SHAP_DB, TRADES_DB, RAW_DATA_DB, DB_DIR
+from config.settings import FUTURES_COMMISSION_RATE
 
 _lock = threading.Lock()
+TRADE_PNL_FORMULA_VERSION = 2
 
 
 @contextmanager
@@ -54,6 +57,22 @@ def fetchone(db_path: str, sql: str, params: Tuple = ()) -> Optional[sqlite3.Row
     with get_conn(db_path) as conn:
         cur = conn.execute(sql, params)
         return cur.fetchone()
+
+
+def normalize_trade_pnl(entry_price: float, quantity: int, pnl_pts: float) -> Dict[str, float]:
+    """현재 기준(250,000원/pt - 왕복 수수료)으로 거래 손익을 정규화한다."""
+    entry_price_f = float(entry_price or 0.0)
+    quantity_i = max(int(quantity or 0), 0)
+    pnl_pts_f = float(pnl_pts or 0.0)
+    gross_pnl_krw = pnl_pts_f * FUTURES_PT_VALUE * quantity_i
+    commission_krw = entry_price_f * quantity_i * FUTURES_PT_VALUE * FUTURES_COMMISSION_RATE * 2
+    net_pnl_krw = gross_pnl_krw - commission_krw
+    return {
+        "gross_pnl_krw": round(gross_pnl_krw, 0),
+        "commission_krw": round(commission_krw, 0),
+        "net_pnl_krw": round(net_pnl_krw, 0),
+        "formula_version": TRADE_PNL_FORMULA_VERSION,
+    }
 
 
 # ── 테이블 초기화 ──────────────────────────────────────────────
@@ -227,8 +246,62 @@ def init_trades_db():
     )
     """
     execute(TRADES_DB, sql)
+    _migrate_trades_db()
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_exit_ts ON trades(exit_ts)")
+
+
+def _migrate_trades_db():
+    """거래 테이블에 정규화 PnL 컬럼을 보강하고 기존 혼합 데이터를 현재 공식으로 통일."""
+    with _lock:
+        with get_conn(TRADES_DB) as conn:
+            cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+            }
+            additions = {
+                "gross_pnl_krw": "REAL",
+                "commission_krw": "REAL",
+                "net_pnl_krw": "REAL",
+                "formula_version": "INTEGER",
+            }
+            for name, dtype in additions.items():
+                if name not in cols:
+                    conn.execute(f"ALTER TABLE trades ADD COLUMN {name} {dtype}")
+
+            rows = conn.execute(
+                """SELECT id, entry_price, quantity, pnl_pts, formula_version
+                   FROM trades
+                   WHERE pnl_pts IS NOT NULL"""
+            ).fetchall()
+            for row in rows:
+                metrics = normalize_trade_pnl(
+                    entry_price=row["entry_price"],
+                    quantity=row["quantity"],
+                    pnl_pts=row["pnl_pts"],
+                )
+                current_version = int(row["formula_version"] or 0)
+                if current_version == TRADE_PNL_FORMULA_VERSION:
+                    continue
+                conn.execute(
+                    """UPDATE trades
+                       SET gross_pnl_krw = ?,
+                           commission_krw = ?,
+                           net_pnl_krw = ?,
+                           pnl_krw = ?,
+                           formula_version = ?
+                       WHERE id = ?""",
+                    (
+                        metrics["gross_pnl_krw"],
+                        metrics["commission_krw"],
+                        metrics["net_pnl_krw"],
+                        metrics["net_pnl_krw"],
+                        metrics["formula_version"],
+                        row["id"],
+                    ),
+                )
 
 
 def init_shap_db():
@@ -327,10 +400,13 @@ def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
     return fetchall(
         TRADES_DB,
         """SELECT direction, entry_price, exit_price, quantity,
-                  pnl_pts, pnl_krw, exit_reason, grade, entry_ts, exit_ts
+                  pnl_pts,
+                  COALESCE(net_pnl_krw, pnl_krw) AS pnl_krw,
+                  gross_pnl_krw, commission_krw, formula_version,
+                  exit_reason, grade, entry_ts, exit_ts
            FROM trades
-           WHERE exit_ts IS NOT NULL AND entry_ts >= ?
-           ORDER BY entry_ts ASC""",
+           WHERE exit_ts IS NOT NULL AND exit_ts >= ?
+           ORDER BY exit_ts ASC""",
         (cutoff + " 00:00:00",),
     )
 
@@ -343,10 +419,13 @@ def fetch_today_trades(today_str: str) -> List[sqlite3.Row]:
     return fetchall(
         TRADES_DB,
         """SELECT direction, entry_price, exit_price, quantity,
-                  pnl_pts, pnl_krw, exit_reason, grade, entry_ts, exit_ts
+                  pnl_pts,
+                  COALESCE(net_pnl_krw, pnl_krw) AS pnl_krw,
+                  gross_pnl_krw, commission_krw, formula_version,
+                  exit_reason, grade, entry_ts, exit_ts
            FROM trades
-           WHERE entry_ts LIKE ?
-           ORDER BY entry_ts ASC""",
+           WHERE exit_ts LIKE ?
+           ORDER BY exit_ts ASC""",
         (today_str + "%",),
     )
 
