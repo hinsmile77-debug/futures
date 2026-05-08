@@ -35,6 +35,8 @@ class PositionTracker:
         self.entry_time:   Optional[datetime.datetime] = None
         self.grade:        str   = ""
         self.regime:       str   = ""
+        self.signal_direction: str = ""
+        self.reverse_entry_enabled: bool = False
 
         self.stop_price:   float = 0.0
         self.tp1_price:    float = 0.0
@@ -49,6 +51,10 @@ class PositionTracker:
         self._daily_trades:    int   = 0
         self._daily_wins:      int   = 0
         self._daily_commission: float = 0.0
+        self._daily_forward_pnl_pts: float = 0.0
+        self._daily_forward_trades: int = 0
+        self._daily_forward_wins: int = 0
+        self._daily_forward_commission: float = 0.0
         self.last_update_reason: str = "init"
         self.last_update_ts: Optional[datetime.datetime] = None
 
@@ -60,6 +66,8 @@ class PositionTracker:
         atr: float,
         grade: str = "B",
         regime: str = "NEUTRAL",
+        raw_direction: Optional[str] = None,
+        reverse_entry_enabled: bool = False,
     ):
         """
         포지션 진입
@@ -81,6 +89,8 @@ class PositionTracker:
         self.entry_time  = datetime.datetime.now()
         self.grade       = grade
         self.regime      = regime
+        self.signal_direction = raw_direction or direction
+        self.reverse_entry_enabled = bool(reverse_entry_enabled)
 
         mult = 1 if direction == POSITION_LONG else -1
         self.stop_price = price - mult * atr * ATR_STOP_MULT
@@ -106,12 +116,21 @@ class PositionTracker:
         pnl_pts = (exit_price - self.entry_price) * mult
         commission = _calc_commission(self.entry_price, self.quantity) * 2  # 왕복
         pnl_krw = pnl_pts * FUTURES_PT_VALUE * self.quantity - commission
+        forward_direction = self.signal_direction or self.status
+        forward_pnl_pts = self._calc_directional_pnl_pts(forward_direction, exit_price)
+        forward_commission = _calc_commission(self.entry_price, self.quantity) * 2
+        forward_pnl_krw = forward_pnl_pts * FUTURES_PT_VALUE * self.quantity - forward_commission
 
         self._daily_pnl_pts += pnl_pts * self.quantity
         self._daily_commission += commission
         self._daily_trades  += 1
         if pnl_pts > 0:
             self._daily_wins += 1
+        self._daily_forward_pnl_pts += forward_pnl_pts * self.quantity
+        self._daily_forward_commission += forward_commission
+        self._daily_forward_trades += 1
+        if forward_pnl_pts > 0:
+            self._daily_forward_wins += 1
 
         entry_ts_str = (
             self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -119,16 +138,22 @@ class PositionTracker:
         )
         result = {
             "direction":    self.status,
+            "executed_direction": self.status,
+            "raw_direction": forward_direction,
             "entry_price":  self.entry_price,
             "exit_price":   exit_price,
             "quantity":     self.quantity,
             "pnl_pts":      round(pnl_pts, 4),
             "pnl_krw":      round(pnl_krw, 0),
+            "forward_pnl_pts": round(forward_pnl_pts, 4),
+            "forward_pnl_krw": round(forward_pnl_krw, 0),
             "commission":   round(commission, 0),
+            "forward_commission": round(forward_commission, 0),
             "exit_reason":  reason,
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,
+            "reverse_entry_enabled": self.reverse_entry_enabled,
         }
 
         logger.info(
@@ -137,11 +162,9 @@ class PositionTracker:
         )
 
         # 초기화
-        self.status      = POSITION_FLAT
-        self.entry_price = 0.0
-        self.quantity    = 0
-        self.entry_time  = None
-        self._save_state()
+        self.last_update_reason = f"close_position:{reason}"
+        self.last_update_ts = datetime.datetime.now()
+        self._reset_position()
         return result
 
     def apply_entry_fill(
@@ -153,6 +176,8 @@ class PositionTracker:
         grade: str = "B",
         regime: str = "NEUTRAL",
         filled_at: Optional[datetime.datetime] = None,
+        raw_direction: Optional[str] = None,
+        reverse_entry_enabled: bool = False,
     ) -> Dict:
         """Chejan 체결 기준으로 포지션을 오픈하거나 증액한다."""
         assert direction in (POSITION_LONG, POSITION_SHORT), f"Invalid direction: {direction}"
@@ -164,6 +189,8 @@ class PositionTracker:
             if filled_at:
                 self.entry_time = filled_at
             self._optimistic = False
+            self.signal_direction = raw_direction or self.signal_direction or direction
+            self.reverse_entry_enabled = bool(reverse_entry_enabled or self.reverse_entry_enabled)
             self._recalculate_levels(atr)
             self.last_update_reason = f"apply_entry_fill_correction:{direction}"
             self.last_update_ts = filled_at or datetime.datetime.now()
@@ -193,6 +220,8 @@ class PositionTracker:
             self.entry_time = filled_at or datetime.datetime.now()
             self.grade = grade
             self.regime = regime
+            self.signal_direction = raw_direction or direction
+            self.reverse_entry_enabled = bool(reverse_entry_enabled)
         else:
             assert self.status == direction, (
                 f"Opposite fill mismatch: status={self.status} fill={direction}"
@@ -204,6 +233,8 @@ class PositionTracker:
             self.quantity = total_qty
             self.grade = grade or self.grade
             self.regime = regime or self.regime
+            self.signal_direction = raw_direction or self.signal_direction or direction
+            self.reverse_entry_enabled = bool(reverse_entry_enabled or self.reverse_entry_enabled)
             if self.entry_time is None:
                 self.entry_time = filled_at or datetime.datetime.now()
 
@@ -249,14 +280,23 @@ class PositionTracker:
         pnl_pts = (exit_price - self.entry_price) * mult
         commission = _calc_commission(self.entry_price, quantity) * 2  # 왕복
         pnl_krw = pnl_pts * FUTURES_PT_VALUE * quantity - commission
+        forward_direction = self.signal_direction or self.status
+        forward_pnl_pts = self._calc_directional_pnl_pts(forward_direction, exit_price)
+        forward_commission = _calc_commission(self.entry_price, quantity) * 2
+        forward_pnl_krw = forward_pnl_pts * FUTURES_PT_VALUE * quantity - forward_commission
         self._daily_pnl_pts += pnl_pts * quantity
         self._daily_commission += commission
+        self._daily_forward_pnl_pts += forward_pnl_pts * quantity
+        self._daily_forward_commission += forward_commission
 
         is_final = quantity == self.quantity
         if is_final:
             self._daily_trades += 1
             if pnl_pts > 0:
                 self._daily_wins += 1
+            self._daily_forward_trades += 1
+            if forward_pnl_pts > 0:
+                self._daily_forward_wins += 1
 
         result = self._build_exit_result(
             exit_price=exit_price,
@@ -266,6 +306,9 @@ class PositionTracker:
             reason=reason,
             filled_at=filled_at,
         )
+        result["forward_pnl_pts"] = round(forward_pnl_pts, 4)
+        result["forward_pnl_krw"] = round(forward_pnl_krw, 0)
+        result["forward_commission"] = round(forward_commission, 0)
 
         if is_final:
             logger.info(
@@ -309,6 +352,8 @@ class PositionTracker:
         self.entry_time = synced_at or datetime.datetime.now()
         self.grade = grade
         self.regime = regime
+        self.signal_direction = direction
+        self.reverse_entry_enabled = False
         self.partial_1_done = False
         self.partial_2_done = False
         self.last_update_reason = f"sync_from_broker:{direction}"
@@ -351,9 +396,15 @@ class PositionTracker:
         pnl_pts = (exit_price - self.entry_price) * mult
         commission = _calc_commission(self.entry_price, qty) * 2  # 왕복
         pnl_krw = pnl_pts * FUTURES_PT_VALUE * qty - commission
+        forward_direction = self.signal_direction or self.status
+        forward_pnl_pts = self._calc_directional_pnl_pts(forward_direction, exit_price)
+        forward_commission = _calc_commission(self.entry_price, qty) * 2
+        forward_pnl_krw = forward_pnl_pts * FUTURES_PT_VALUE * qty - forward_commission
 
         self._daily_pnl_pts += pnl_pts * qty
         self._daily_commission += commission
+        self._daily_forward_pnl_pts += forward_pnl_pts * qty
+        self._daily_forward_commission += forward_commission
         self.quantity        -= qty
         self.last_update_reason = f"partial_close:{reason}"
         self.last_update_ts = datetime.datetime.now()
@@ -364,16 +415,22 @@ class PositionTracker:
         )
         result = {
             "direction":    self.status,
+            "executed_direction": self.status,
+            "raw_direction": forward_direction,
             "entry_price":  self.entry_price,
             "exit_price":   exit_price,
             "quantity":     qty,
             "remaining":    self.quantity,
             "pnl_pts":      round(pnl_pts, 4),
             "pnl_krw":      round(pnl_krw, 0),
+            "forward_pnl_pts": round(forward_pnl_pts, 4),
+            "forward_pnl_krw": round(forward_pnl_krw, 0),
             "exit_reason":  reason,
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,
+            "forward_commission": round(forward_commission, 0),
+            "reverse_entry_enabled": self.reverse_entry_enabled,
         }
 
         logger.info(
@@ -435,6 +492,14 @@ class PositionTracker:
         mult = 1 if self.status == POSITION_LONG else -1
         return (current_price - self.entry_price) * mult * self.quantity
 
+    def unrealized_forward_pnl_pts(self, current_price: float) -> float:
+        if self.status == POSITION_FLAT:
+            return 0.0
+        return self._calc_directional_pnl_pts(
+            self.signal_direction or self.status,
+            current_price,
+        ) * self.quantity
+
     def _hold_minutes(self) -> int:
         if not self.entry_time:
             return 0
@@ -462,6 +527,8 @@ class PositionTracker:
         )
         return {
             "direction": self.status,
+            "executed_direction": self.status,
+            "raw_direction": self.signal_direction or self.status,
             "entry_price": self.entry_price,
             "exit_price": exit_price,
             "quantity": quantity,
@@ -474,6 +541,7 @@ class PositionTracker:
                 (filled_at or datetime.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
             ),
             "grade": self.grade,
+            "reverse_entry_enabled": self.reverse_entry_enabled,
         }
 
     def _reset_position(self) -> None:
@@ -483,6 +551,8 @@ class PositionTracker:
         self.entry_time = None
         self.grade = ""
         self.regime = ""
+        self.signal_direction = ""
+        self.reverse_entry_enabled = False
         self.stop_price = 0.0
         self.tp1_price = 0.0
         self.tp2_price = 0.0
@@ -506,6 +576,19 @@ class PositionTracker:
             "commission": round(self._daily_commission, 0),
         }
 
+    def daily_forward_stats(self) -> dict:
+        gross_krw = round(self._daily_forward_pnl_pts * FUTURES_PT_VALUE, 0)
+        return {
+            "trades": self._daily_forward_trades,
+            "wins": self._daily_forward_wins,
+            "losses": self._daily_forward_trades - self._daily_forward_wins,
+            "win_rate": self._daily_forward_wins / max(self._daily_forward_trades, 1),
+            "pnl_pts": round(self._daily_forward_pnl_pts, 4),
+            "pnl_krw": round(gross_krw - self._daily_forward_commission, 0),
+            "gross_krw": gross_krw,
+            "commission": round(self._daily_forward_commission, 0),
+        }
+
     def restore_daily_stats(self, rows) -> None:
         """재시작 시 trades.db 당일 행으로 일일 통계 복원.
 
@@ -519,18 +602,37 @@ class PositionTracker:
             self._daily_trades  += 1
             if pnl_pts > 0:
                 self._daily_wins += 1
+            forward_pnl_pts = float(
+                row["forward_pnl_pts"]
+                if "forward_pnl_pts" in row.keys() and row["forward_pnl_pts"] is not None
+                else pnl_pts
+            )
+            self._daily_forward_pnl_pts += forward_pnl_pts * qty
+            self._daily_forward_trades += 1
+            if forward_pnl_pts > 0:
+                self._daily_forward_wins += 1
             # trades.db에 commission 컬럼이 있으면 복원, 없으면 재계산
             commission = float(row["commission"] if "commission" in row.keys() else 0.0)
             if commission == 0.0 and "entry_price" in row.keys():
                 ep = float(row["entry_price"] or 0.0)
                 commission = _calc_commission(ep, qty) * 2
             self._daily_commission += commission
+            forward_commission = float(
+                row["forward_commission_krw"]
+                if "forward_commission_krw" in row.keys() and row["forward_commission_krw"] is not None
+                else commission
+            )
+            self._daily_forward_commission += forward_commission
 
     def reset_daily(self):
         self._daily_pnl_pts = 0.0
         self._daily_trades  = 0
         self._daily_wins    = 0
         self._daily_commission = 0.0
+        self._daily_forward_pnl_pts = 0.0
+        self._daily_forward_trades = 0
+        self._daily_forward_wins = 0
+        self._daily_forward_commission = 0.0
 
     # ── 포지션 상태 퍼시스턴스 ────────────────────────────────────
 
@@ -545,6 +647,8 @@ class PositionTracker:
                                  if self.entry_time else None),
                 "grade":        self.grade,
                 "regime":       self.regime,
+                "signal_direction": self.signal_direction,
+                "reverse_entry_enabled": self.reverse_entry_enabled,
                 "stop_price":   self.stop_price,
                 "tp1_price":    self.tp1_price,
                 "tp2_price":    self.tp2_price,
@@ -587,6 +691,8 @@ class PositionTracker:
                                 if state.get("entry_time") else None)
             self.grade        = state.get("grade", "")
             self.regime       = state.get("regime", "")
+            self.signal_direction = state.get("signal_direction", self.status)
+            self.reverse_entry_enabled = bool(state.get("reverse_entry_enabled", False))
             self.stop_price   = float(state.get("stop_price", 0))
             self.tp1_price    = float(state.get("tp1_price", 0))
             self.tp2_price    = float(state.get("tp2_price", 0))
@@ -612,3 +718,7 @@ class PositionTracker:
         except Exception as e:
             logger.warning(f"[Position] 상태 복원 실패: {e}")
             return False
+
+    def _calc_directional_pnl_pts(self, direction: str, exit_price: float) -> float:
+        mult = 1 if direction == POSITION_LONG else -1
+        return (exit_price - self.entry_price) * mult

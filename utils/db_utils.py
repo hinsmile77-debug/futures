@@ -266,6 +266,14 @@ def _migrate_trades_db():
                 "commission_krw": "REAL",
                 "net_pnl_krw": "REAL",
                 "formula_version": "INTEGER",
+                "raw_direction": "TEXT",
+                "executed_direction": "TEXT",
+                "reverse_entry_enabled": "INTEGER",
+                "forward_pnl_pts": "REAL",
+                "forward_pnl_krw": "REAL",
+                "forward_gross_pnl_krw": "REAL",
+                "forward_commission_krw": "REAL",
+                "forward_net_pnl_krw": "REAL",
             }
             for name, dtype in additions.items():
                 if name not in cols:
@@ -291,7 +299,15 @@ def _migrate_trades_db():
                            commission_krw = ?,
                            net_pnl_krw = ?,
                            pnl_krw = ?,
-                           formula_version = ?
+                           formula_version = ?,
+                           raw_direction = COALESCE(raw_direction, direction),
+                           executed_direction = COALESCE(executed_direction, direction),
+                           reverse_entry_enabled = COALESCE(reverse_entry_enabled, 0),
+                           forward_pnl_pts = COALESCE(forward_pnl_pts, pnl_pts),
+                           forward_pnl_krw = COALESCE(forward_pnl_krw, ?),
+                           forward_gross_pnl_krw = COALESCE(forward_gross_pnl_krw, ?),
+                           forward_commission_krw = COALESCE(forward_commission_krw, ?),
+                           forward_net_pnl_krw = COALESCE(forward_net_pnl_krw, ?)
                        WHERE id = ?""",
                     (
                         metrics["gross_pnl_krw"],
@@ -299,6 +315,10 @@ def _migrate_trades_db():
                         metrics["net_pnl_krw"],
                         metrics["net_pnl_krw"],
                         metrics["formula_version"],
+                        metrics["net_pnl_krw"],
+                        metrics["gross_pnl_krw"],
+                        metrics["commission_krw"],
+                        metrics["net_pnl_krw"],
                         row["id"],
                     ),
                 )
@@ -399,10 +419,15 @@ def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
     cutoff = (_dt.date.today() - _dt.timedelta(days=limit_days)).isoformat()
     return fetchall(
         TRADES_DB,
-        """SELECT direction, entry_price, exit_price, quantity,
+        """SELECT COALESCE(raw_direction, direction) AS raw_direction,
+                  COALESCE(executed_direction, direction) AS executed_direction,
+                  direction, entry_price, exit_price, quantity,
                   pnl_pts,
                   COALESCE(net_pnl_krw, pnl_krw) AS pnl_krw,
+                  COALESCE(forward_pnl_pts, pnl_pts) AS forward_pnl_pts,
+                  COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw) AS forward_pnl_krw,
                   gross_pnl_krw, commission_krw, formula_version,
+                  forward_gross_pnl_krw, forward_commission_krw,
                   exit_reason, grade, entry_ts, exit_ts
            FROM trades
            WHERE exit_ts IS NOT NULL AND exit_ts >= ?
@@ -411,17 +436,25 @@ def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
     )
 
 
-def fetch_today_trades(today_str: str) -> List[sqlite3.Row]:
+def fetch_today_trades(today_str: str = None) -> List[sqlite3.Row]:
     """당일 체결 완료 거래 목록 (entry_ts LIKE today_str%).
     반환 컬럼: direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,
                exit_reason, grade, entry_ts, exit_ts
     """
+    import datetime as _dt
+    if today_str is None:
+        today_str = _dt.date.today().isoformat()
     return fetchall(
         TRADES_DB,
-        """SELECT direction, entry_price, exit_price, quantity,
+        """SELECT COALESCE(raw_direction, direction) AS raw_direction,
+                  COALESCE(executed_direction, direction) AS executed_direction,
+                  direction, entry_price, exit_price, quantity,
                   pnl_pts,
                   COALESCE(net_pnl_krw, pnl_krw) AS pnl_krw,
+                  COALESCE(forward_pnl_pts, pnl_pts) AS forward_pnl_pts,
+                  COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw) AS forward_pnl_krw,
                   gross_pnl_krw, commission_krw, formula_version,
+                  forward_gross_pnl_krw, forward_commission_krw,
                   exit_reason, grade, entry_ts, exit_ts
            FROM trades
            WHERE exit_ts LIKE ?
@@ -457,9 +490,9 @@ def fetch_grade_stats() -> List[sqlite3.Row]:
         TRADES_DB,
         """SELECT COALESCE(NULLIF(grade, ''), '?') AS grade,
                   COUNT(*) AS cnt,
-                  ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-                  ROUND(AVG(pnl_pts), 4) AS avg_pnl,
-                  ROUND(SUM(pnl_pts), 4) AS total_pnl
+                  ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+                  ROUND(AVG(COALESCE(forward_pnl_pts, pnl_pts)), 4) AS avg_pnl,
+                  ROUND(SUM(COALESCE(forward_pnl_pts, pnl_pts)), 4) AS total_pnl
            FROM trades
            WHERE exit_ts IS NOT NULL
            GROUP BY grade
@@ -475,8 +508,8 @@ def fetch_regime_stats() -> List[sqlite3.Row]:
         TRADES_DB,
         """SELECT COALESCE(NULLIF(regime, ''), 'NEUTRAL') AS regime,
                   COUNT(*) AS cnt,
-                  ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-                  ROUND(AVG(pnl_pts), 4) AS avg_pnl
+                  ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+                  ROUND(AVG(COALESCE(forward_pnl_pts, pnl_pts)), 4) AS avg_pnl
            FROM trades
            WHERE exit_ts IS NOT NULL
            GROUP BY regime
@@ -539,10 +572,10 @@ def fetch_trend_daily(days_back: int = 30) -> List[dict]:
     rows = fetchall(TRADES_DB, """
         SELECT date(entry_ts)  AS date,
                COUNT(*)        AS trades,
-               SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS wins,
-               COUNT(*) - SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS losses,
-               ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-               ROUND(SUM(pnl_krw), 0) AS pnl_krw
+               SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS wins,
+               COUNT(*) - SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS losses,
+               ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+               ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
         FROM trades
         WHERE exit_ts IS NOT NULL AND entry_ts >= ?
         GROUP BY date(entry_ts)
@@ -572,10 +605,10 @@ def fetch_trend_weekly(weeks_back: int = 12) -> List[dict]:
     return [dict(r) for r in fetchall(TRADES_DB, """
         SELECT strftime('%Y-W%W', entry_ts) AS week,
                COUNT(*)        AS trades,
-               SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS wins,
-               COUNT(*) - SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS losses,
-               ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-               ROUND(SUM(pnl_krw), 0) AS pnl_krw
+               SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS wins,
+               COUNT(*) - SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS losses,
+               ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+               ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
         FROM trades
         WHERE exit_ts IS NOT NULL AND entry_ts >= ?
         GROUP BY strftime('%Y-W%W', entry_ts)
@@ -591,10 +624,10 @@ def fetch_trend_monthly(months_back: int = 12) -> List[dict]:
     return [dict(r) for r in fetchall(TRADES_DB, """
         SELECT strftime('%Y-%m', entry_ts) AS month,
                COUNT(*)        AS trades,
-               SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS wins,
-               COUNT(*) - SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS losses,
-               ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-               ROUND(SUM(pnl_krw), 0) AS pnl_krw
+               SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS wins,
+               COUNT(*) - SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS losses,
+               ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+               ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
         FROM trades
         WHERE exit_ts IS NOT NULL AND entry_ts >= ?
         GROUP BY strftime('%Y-%m', entry_ts)
@@ -608,10 +641,10 @@ def fetch_trend_yearly() -> List[dict]:
     return [dict(r) for r in fetchall(TRADES_DB, """
         SELECT strftime('%Y', entry_ts) AS year,
                COUNT(*)        AS trades,
-               SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS wins,
-               COUNT(*) - SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS losses,
-               ROUND(AVG(CASE WHEN pnl_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-               ROUND(SUM(pnl_krw), 0) AS pnl_krw
+               SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS wins,
+               COUNT(*) - SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS losses,
+               ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+               ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
         FROM trades
         WHERE exit_ts IS NOT NULL
         GROUP BY strftime('%Y', entry_ts)

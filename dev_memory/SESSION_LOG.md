@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-05-08 (9차 - 역방향진입 실행 오버레이 + 순방향/실행 손익 분리 + 학습/통계 방화벽)
+
+**작업**
+- `dashboard/main_dashboard.py`
+  - 진입관리 패널에 `역방향 진입` 토글 추가.
+  - `원신호 / 실행신호` 동시 표시 추가.
+  - 손익 PnL 카드에 `실행 / 순방향` 손익 동시 표시 추가.
+  - 손익 추이 탭 일별/주별/월별 표와 요약 카드에 `실행 / 순` 병기 추가.
+- `main.py`
+  - 자동진입 전용 방향 반전 로직 연결.
+  - `TRADE` / `SIGNAL` 로그에 `원신호`, `실행신호`, `역방향진입=ON/OFF` 반영.
+  - `data/session_state.json`에 `reverse_entry_enabled` 저장/복원 연결.
+  - 체결 저장 경로를 `_record_trade_result()`로 통합해 실행 손익과 순방향 손익을 함께 적재.
+  - 일일 PF, daily_close, registry snapshot 등 학습/통계 경로는 순방향 손익 기준으로 전환.
+- `strategy/position/position_tracker.py`
+  - 포지션이 `raw_direction`, `reverse_entry_enabled`를 추적하도록 확장.
+  - 실현/미실현 모두 `executed`와 `forward` 손익을 별도로 계산하도록 보강.
+- `utils/db_utils.py`
+  - `trades` 마이그레이션에 `raw_direction`, `executed_direction`, `reverse_entry_enabled`, `forward_*` 컬럼 추가.
+  - `fetch_grade_stats()`, `fetch_regime_stats()`, `fetch_trend_*()`가 순방향 컬럼 기준으로 집계하도록 수정.
+
+**검증**
+- `python -m py_compile main.py dashboard/main_dashboard.py strategy/position/position_tracker.py utils/db_utils.py` 통과.
+- 운영 검증은 다음 세션에서 실제 UI로 확인 필요:
+  - `역방향진입` ON/OFF 시 진입관리 패널 `원신호 / 실행신호` 반영 여부
+  - 손익 PnL 카드와 손익 추이 탭 `실행 / 순방향` 병기 여부
+  - 효과검증/학습/추이 패널이 순방향 손익 기준으로 유지되는지 여부
+
 ## 2026-05-08 (6차) — PnL 승수 수정 + CB③ 개선 + 진입 게이트 보강 (Hurst/ATR/ExitCooldown)
 
 **계기**: 20260508 WARN.log에서 두 가지 버그 + 세 가지 코드 갭 발견

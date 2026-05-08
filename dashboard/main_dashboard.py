@@ -1816,8 +1816,12 @@ class ExitPanel(QWidget):
 # 패널 5: 진입 관리 패널
 # ────────────────────────────────────────────────────────────
 class EntryPanel(QWidget):
+    sig_reverse_entry_toggled = pyqtSignal(bool)
+
     def __init__(self):
         super().__init__()
+        self.current_mode = "hybrid"
+        self._reverse_entry_enabled = False
         self._build()
 
     def _build(self):
@@ -1841,6 +1845,15 @@ class EntryPanel(QWidget):
             btn.clicked.connect(lambda checked, m=mode: self._set_mode(m))
             self.mode_btns[mode] = btn
             mode_lay.addWidget(btn)
+        self.reverse_btn = QPushButton("역방향 진입")
+        self.reverse_btn.setCheckable(True)
+        self.reverse_btn.setToolTip(
+            "미륵이 자동 판단 신호를 반대로 실행합니다.\n"
+            "수동 진입 버튼에는 적용되지 않습니다."
+        )
+        self.reverse_btn.toggled.connect(self._set_reverse_entry_enabled)
+        self._sync_reverse_button_style()
+        mode_lay.addWidget(self.reverse_btn)
         lay.addLayout(mode_lay)
 
         self.mode_desc = mk_label(
@@ -1853,8 +1866,9 @@ class EntryPanel(QWidget):
         # 앙상블 + 신뢰도
         info_lay = QGridLayout()
         info_lay.setSpacing(4)
-        kv = [("앙상블 신호","signal","——"),("신뢰도","conf","——"),
-              ("진입 등급","grade","——"),("산출 수량","qty","——")]
+        kv = [("원신호","signal","대기"),("실행 신호","final_signal","대기"),
+              ("신뢰도","conf","대기"),("진입 등급","grade","대기"),
+              ("산출 수량","qty","대기")]
         for i, (lbl, attr, init) in enumerate(kv):
             f = QFrame()
             f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
@@ -2000,7 +2014,20 @@ class EntryPanel(QWidget):
         )
         self.stat_label.setStyleSheet(f"color:{pnl_col};font-size:{S.f(11)}px;")
 
+    def _sync_reverse_button_style(self):
+        col = C['orange'] if self._reverse_entry_enabled else C['text2']
+        bg = "#2B1A07" if self._reverse_entry_enabled else C['bg3']
+        self.reverse_btn.setStyleSheet(
+            f"QPushButton{{background:{bg};color:{col};border:"
+            f"{'2px' if self._reverse_entry_enabled else '1px'} solid {col};"
+            f"border-radius:4px;padding:5px 8px;font-size:{S.f(12)}px;font-weight:bold;}}"
+        )
+        self.reverse_btn.setText(
+            "역방향 진입 ON" if self._reverse_entry_enabled else "역방향 진입"
+        )
+
     def _set_mode(self, mode):
+        self.current_mode = mode
         for m, btn in self.mode_btns.items():
             col = C['green'] if m == mode else C['text2']
             bw  = "2px" if m == mode else "1px"
@@ -2010,10 +2037,38 @@ class EntryPanel(QWidget):
                 f"border-radius:4px;padding:5px 8px;font-size:{S.f(12)}px;}}"
             )
 
-    def update_data(self, signal, conf, grade, checks, qty=0):
+    def _set_reverse_entry_enabled(self, enabled: bool):
+        self._reverse_entry_enabled = bool(enabled)
+        self._sync_reverse_button_style()
+        self.sig_reverse_entry_toggled.emit(self._reverse_entry_enabled)
+
+    def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False):
+        enabled = bool(enabled)
+        self._reverse_entry_enabled = enabled
+        self.reverse_btn.blockSignals(True)
+        try:
+            self.reverse_btn.setChecked(enabled)
+        finally:
+            self.reverse_btn.blockSignals(False)
+        self._sync_reverse_button_style()
+        if emit_signal:
+            self.sig_reverse_entry_toggled.emit(self._reverse_entry_enabled)
+
+    def is_reverse_entry_enabled(self) -> bool:
+        return self._reverse_entry_enabled
+
+    def get_entry_mode(self) -> str:
+        return self.current_mode
+
+    def update_data(self, signal, conf, grade, checks, qty=0, final_signal=None,
+                    reverse_enabled=False):
+        final_signal = final_signal or signal
         col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
+        final_col = C['green'] if final_signal == "매수" else C['red'] if final_signal == "매도" else C['text2']
         self.e_signal.setText(signal)
         self.e_signal.setStyleSheet(f"color:{col};font-size:{S.f(14)}px;font-weight:bold;")
+        self.e_final_signal.setText(final_signal)
+        self.e_final_signal.setStyleSheet(f"color:{final_col};font-size:{S.f(14)}px;font-weight:bold;")
         self.e_conf.setText(f"{conf*100:.1f}%")
         self.e_conf.setStyleSheet(
             f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=0.58 else C['red']};"
@@ -2061,13 +2116,19 @@ class EntryPanel(QWidget):
                 f"background:#0D2818;border:1px solid {C['green']};"
                 f"border-radius:4px;padding:5px;color:{C['green']};font-size:{S.f(12)}px;"
             )
-            self.entry_alert.setText(f"▲ 매수 신호 {grade}급 — {conf*100:.1f}% 신뢰도")
+            reverse_tag = " | 역방향진입=ON" if reverse_enabled else ""
+            self.entry_alert.setText(
+                f"▲ 원신호: {signal} / 실행신호: {final_signal} | {grade}급 — {conf*100:.1f}% 신뢰도{reverse_tag}"
+            )
         elif signal == "매도":
             self.entry_alert.setStyleSheet(
                 f"background:#2D0D0D;border:1px solid {C['red']};"
                 f"border-radius:4px;padding:5px;color:{C['red']};font-size:{S.f(12)}px;"
             )
-            self.entry_alert.setText(f"▼ 매도 신호 {grade}급 — {conf*100:.1f}% 신뢰도")
+            reverse_tag = " | 역방향진입=ON" if reverse_enabled else ""
+            self.entry_alert.setText(
+                f"▼ 원신호: {signal} / 실행신호: {final_signal} | {grade}급 — {conf*100:.1f}% 신뢰도{reverse_tag}"
+            )
         else:
             self.entry_alert.setStyleSheet(
                 f"background:{C['bg3']};border:1px solid {C['border']};"
@@ -3446,9 +3507,9 @@ class AlphaPanel(QWidget):
 class PnlHistoryPanel(QWidget):
     """전문 트레이더용 손익 추이 — 일별·주별·월별 누적 테이블"""
 
-    _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원"]
-    _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "MDD 원"]
-    _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "샤프"]
+    _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt(실행/순)", "P/L 원(실행/순)",   "누적 원(실행/순)"]
+    _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt(실행/순)", "P/L 원(실행/순)",   "누적 원(실행/순)", "MDD 원(실행/순)"]
+    _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt(실행/순)", "P/L 원(실행/순)",   "누적 원(실행/순)", "샤프(실행/순)"]
 
     def __init__(self):
         super().__init__()
@@ -3574,6 +3635,8 @@ class PnlHistoryPanel(QWidget):
                     "entry_ts": trade_ts,
                     "pnl_pts":  float(r["pnl_pts"]  or 0),
                     "pnl_krw":  float(r["pnl_krw"]  or 0),
+                    "forward_pnl_pts": float(r["forward_pnl_pts"] or r["pnl_pts"] or 0),
+                    "forward_pnl_krw": float(r["forward_pnl_krw"] or r["pnl_krw"] or 0),
                     "quantity": int(r["quantity"]    or 1),
                 })
             except Exception:
@@ -3604,20 +3667,30 @@ class PnlHistoryPanel(QWidget):
         except Exception:
             return ""
 
-    def _stats(self, rows):
+    def _stats(self, rows, pts_key="pnl_pts", krw_key="pnl_krw"):
         n     = len(rows)
-        wins  = sum(1 for r in rows if r["pnl_pts"] > 0)
-        ppts  = sum(r["pnl_pts"] * r["quantity"] for r in rows)
-        pkrw  = sum(r["pnl_krw"] for r in rows)
+        wins  = sum(1 for r in rows if r[pts_key] > 0)
+        ppts  = sum(r[pts_key] * r["quantity"] for r in rows)
+        pkrw  = sum(r[krw_key] for r in rows)
         return n, wins, n - wins, round(ppts, 2), round(pkrw, 0)
 
-    def _mdd(self, rows):
+    def _mdd(self, rows, krw_key="pnl_krw"):
         eq, peak, mdd = 0.0, 0.0, 0.0
         for r in sorted(rows, key=lambda x: x["entry_ts"]):
-            eq  += r["pnl_krw"]
+            eq  += r[krw_key]
             peak = max(peak, eq)
             mdd  = min(mdd, eq - peak)
         return round(mdd, 0)
+
+    @staticmethod
+    def _dual_text(executed, forward, decimals=0, suffix=""):
+        if decimals == 0:
+            exec_txt = f"{executed:+,.0f}{suffix}"
+            fwd_txt = f"{forward:+,.0f}{suffix}"
+        else:
+            exec_txt = f"{executed:+,.{decimals}f}{suffix}"
+            fwd_txt = f"{forward:+,.{decimals}f}{suffix}"
+        return f"실행 {exec_txt} / 순 {fwd_txt}"
 
     def _sharpe(self, daily_pnls):
         n = len(daily_pnls)
@@ -3635,16 +3708,22 @@ class PnlHistoryPanel(QWidget):
         groups = self._group(lambda ts: ts[:10])[-60:]
         # 누적 맵 (오름차순 기준)
         cum_map, c = {}, 0.0
+        forward_cum_map, fc = {}, 0.0
         for date_str, grp in groups:
             _, _, _, _, pkrw = self._stats(grp)
+            _, _, _, _, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
             c += pkrw
+            fc += forward_pkrw
             cum_map[date_str] = c
+            forward_cum_map[date_str] = fc
 
         tbl = self.tbl_daily
         tbl.setRowCount(len(groups))
         for r_idx, (date_str, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
+            _, _, _, forward_ppts, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
             cum  = cum_map[date_str]
+            forward_cum = forward_cum_map[date_str]
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(pkrw)
             pc   = self._pcol(pkrw)
@@ -3656,9 +3735,9 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(wins),        fg=C['green'], bg=bg, align=Qt.AlignRight),
                 self._item(str(losses),      fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,               fg=C['cyan'],  bg=bg),
-                self._item(f"{ppts:+.2f}",   fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(f"{pkrw:+,.0f}",  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
-                self._item(f"{cum:+,.0f}",   fg=cc, bg=bg, align=Qt.AlignRight),
+                self._item(self._dual_text(ppts, forward_ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(self._dual_text(pkrw, forward_pkrw, suffix="원"),  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._dual_text(cum, forward_cum, suffix="원"),   fg=cc, bg=bg, align=Qt.AlignRight),
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -3668,17 +3747,24 @@ class PnlHistoryPanel(QWidget):
     def _build_weekly(self):
         groups  = self._group(self._week_key)[-13:]
         cum_map, c = {}, 0.0
+        forward_cum_map, fc = {}, 0.0
         for wk, grp in groups:
             _, _, _, _, pkrw = self._stats(grp)
+            _, _, _, _, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
             c += pkrw
+            fc += forward_pkrw
             cum_map[wk] = c
+            forward_cum_map[wk] = fc
 
         tbl = self.tbl_weekly
         tbl.setRowCount(len(groups))
         for r_idx, (wk, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
+            _, _, _, forward_ppts, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
             mdd  = self._mdd(grp)
+            forward_mdd = self._mdd(grp, "forward_pnl_krw")
             cum  = cum_map[wk]
+            forward_cum = forward_cum_map[wk]
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(pkrw)
             pc   = self._pcol(pkrw)
@@ -3690,10 +3776,10 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(wins),        fg=C['green'], bg=bg, align=Qt.AlignRight),
                 self._item(str(losses),      fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,               fg=C['cyan'],  bg=bg),
-                self._item(f"{ppts:+.2f}",   fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(f"{pkrw:+,.0f}",  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
-                self._item(f"{cum:+,.0f}",   fg=cc, bg=bg, align=Qt.AlignRight),
-                self._item(f"{mdd:+,.0f}",   fg=mc, bg=bg, align=Qt.AlignRight),
+                self._item(self._dual_text(ppts, forward_ppts, decimals=2, suffix="pt"),   fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(self._dual_text(pkrw, forward_pkrw, suffix="원"),  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._dual_text(cum, forward_cum, suffix="원"),   fg=cc, bg=bg, align=Qt.AlignRight),
+                self._item(self._dual_text(mdd, forward_mdd, suffix="원"),   fg=mc, bg=bg, align=Qt.AlignRight),
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -3703,22 +3789,31 @@ class PnlHistoryPanel(QWidget):
     def _build_monthly(self):
         groups  = self._group(lambda ts: ts[:7])
         cum_map, c = {}, 0.0
+        forward_cum_map, fc = {}, 0.0
         for mon, grp in groups:
             _, _, _, _, pkrw = self._stats(grp)
+            _, _, _, _, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
             c += pkrw
+            fc += forward_pkrw
             cum_map[mon] = c
+            forward_cum_map[mon] = fc
 
         tbl = self.tbl_monthly
         tbl.setRowCount(len(groups))
         for r_idx, (mon, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
+            _, _, _, forward_ppts, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
             cum  = cum_map[mon]
+            forward_cum = forward_cum_map[mon]
             # 월 내 일별 PnL → 샤프
             dp = {}
+            forward_dp = {}
             for r in grp:
                 d = r["entry_ts"][:10]
                 dp[d] = dp.get(d, 0) + r["pnl_krw"]
+                forward_dp[d] = forward_dp.get(d, 0) + r["forward_pnl_krw"]
             sharpe = self._sharpe(list(dp.values()))
+            forward_sharpe = self._sharpe(list(forward_dp.values()))
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(pkrw)
             pc   = self._pcol(pkrw)
@@ -3727,16 +3822,16 @@ class PnlHistoryPanel(QWidget):
                     else C['yellow'] if sharpe >= 0.5
                     else C['red']    if sharpe < 0
                     else C['text2'])
-            sstr = f"{sharpe:.2f}" if sharpe != 0 else "—"
+            sstr = self._dual_text(sharpe, forward_sharpe, decimals=2)
             cells = [
                 self._item(mon,              bg=bg, bold=True),
                 self._item(str(n),           bg=bg, align=Qt.AlignRight),
                 self._item(str(wins),        fg=C['green'], bg=bg, align=Qt.AlignRight),
                 self._item(str(losses),      fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,               fg=C['cyan'],  bg=bg),
-                self._item(f"{ppts:+.2f}",   fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(f"{pkrw:+,.0f}",  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
-                self._item(f"{cum:+,.0f}",   fg=cc, bg=bg, align=Qt.AlignRight),
+                self._item(self._dual_text(ppts, forward_ppts, decimals=2, suffix="pt"),   fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(self._dual_text(pkrw, forward_pkrw, suffix="원"),  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._dual_text(cum, forward_cum, suffix="원"),   fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(sstr,             fg=sc, bg=bg),
             ]
             for c_idx, it in enumerate(cells):
@@ -3755,13 +3850,18 @@ class PnlHistoryPanel(QWidget):
         wins   = sum(1 for r in self._rows if r["pnl_pts"] > 0)
         wr     = wins / trades * 100 if trades else 0
         total  = sum(r["pnl_krw"] for r in self._rows)
+        forward_total = sum(r["forward_pnl_krw"] for r in self._rows)
 
         # 전체 MDD
         eq, peak, mdd = 0.0, 0.0, 0.0
+        forward_eq, forward_peak, forward_mdd = 0.0, 0.0, 0.0
         for r in sorted(self._rows, key=lambda x: x["entry_ts"]):
             eq  += r["pnl_krw"]
             peak = max(peak, eq)
             mdd  = min(mdd, eq - peak)
+            forward_eq += r["forward_pnl_krw"]
+            forward_peak = max(forward_peak, forward_eq)
+            forward_mdd = min(forward_mdd, forward_eq - forward_peak)
 
         # 최장 연승
         best, cur = 0, 0
@@ -3785,8 +3885,8 @@ class PnlHistoryPanel(QWidget):
         _set("days",    f"{days}일",          C['blue'])
         _set("trades",  f"{trades}건",         C['text'])
         _set("winrate", f"{wr:.1f}%",          wc)
-        _set("total",   f"{total:+,.0f}원",    pc)
-        _set("mdd",     f"{mdd:+,.0f}원",      C['orange'])
+        _set("total",   self._dual_text(total, forward_total, suffix="원"),    pc)
+        _set("mdd",     self._dual_text(mdd, forward_mdd, suffix="원"),      C['orange'])
         _set("streak",  f"{best}연승",         C['yellow'])
 
 
@@ -4029,22 +4129,27 @@ class LogPanel(QWidget):
             lbl.setStyleSheet(f"color:{c};font-size:{S.f(13)}px;font-weight:bold;")
         self._order_vals["samples"].setText(f"{samples}회")
 
-    def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float):
-        """미실현 손익·일일 누적·VaR 95% 수치 갱신"""
+    def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float,
+                           forward_unrealized_krw: float = None, forward_daily_pnl_krw: float = None):
+        """미실현 손익·일일 누적·VaR 95% 수치 갱신."""
+        forward_unrealized_krw = unrealized_krw if forward_unrealized_krw is None else forward_unrealized_krw
+        forward_daily_pnl_krw = daily_pnl_krw if forward_daily_pnl_krw is None else forward_daily_pnl_krw
         data = {
-            "unrealized": (unrealized_krw, C['green'] if unrealized_krw >= 0 else C['red']),
-            "daily":      (daily_pnl_krw,  C['green'] if daily_pnl_krw  >= 0 else C['red']),
-            "var":        (var_krw,         C['orange']),
+            "unrealized": ((unrealized_krw, forward_unrealized_krw), C['green'] if unrealized_krw >= 0 else C['red']),
+            "daily": ((daily_pnl_krw, forward_daily_pnl_krw), C['green'] if daily_pnl_krw >= 0 else C['red']),
+            "var": (var_krw, C['orange']),
         }
         for attr, (val, col) in data.items():
             lbl = self._pnl_vals.get(attr)
-            pb  = self._pnl_bars.get(attr)
+            pb = self._pnl_bars.get(attr)
             if lbl:
-                lbl.setText(f"{val:+,.0f}원")
+                if attr == "var":
+                    lbl.setText(f"{val:+,.0f}원")
+                else:
+                    lbl.setText(f"실행 {val[0]:+,.0f}원\n순방향 {val[1]:+,.0f}원")
                 lbl.setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
             if pb and attr != "var":
-                # 진행바: 0 기준 ±5만원 = 50% 눈금 (최대 100%)
-                pct = min(100, max(0, int(abs(val) / 50_000 * 50 + 50)))
+                pct = min(100, max(0, int(abs(val[0]) / 50_000 * 50 + 50)))
                 pb.setValue(pct)
 
     @staticmethod
@@ -4624,6 +4729,7 @@ class DashboardAdapter:
         self.btn_kill = self._win._make_kill_btn()
         self.btn_save_account = self._win.btn_save_account
         self.sig_position_restore = self._win.account_info_panel.sig_position_restore
+        self.sig_reverse_entry_toggled = self._win.entry_panel.sig_reverse_entry_toggled
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
@@ -4740,9 +4846,23 @@ class DashboardAdapter:
         self._win.pred_panel.update_data(price, preds, params, conf, corr)
 
     def update_entry(self, signal: str, conf: float, grade: str, checks: dict,
-                     qty: int = 0):
+                     qty: int = 0, final_signal: str = None,
+                     reverse_enabled: bool = False):
         """진입 관리 패널 업데이트"""
-        self._win.entry_panel.update_data(signal, conf, grade, checks, qty=qty)
+        self._win.entry_panel.update_data(
+            signal, conf, grade, checks, qty=qty,
+            final_signal=final_signal,
+            reverse_enabled=reverse_enabled,
+        )
+
+    def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False) -> None:
+        self._win.entry_panel.set_reverse_entry_enabled(enabled, emit_signal=emit_signal)
+
+    def is_reverse_entry_enabled(self) -> bool:
+        return self._win.entry_panel.is_reverse_entry_enabled()
+
+    def get_entry_mode(self) -> str:
+        return self._win.entry_panel.get_entry_mode()
 
     def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 갱신"""
@@ -4792,9 +4912,16 @@ class DashboardAdapter:
         """창3 주문/체결 탭 상단 지표 갱신"""
         self._win.log_panel.update_order_metrics(trades, avg_lat_ms, peak_lat_ms, samples)
 
-    def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float = 0.0):
+    def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float = 0.0,
+                           forward_unrealized_krw: float = None, forward_daily_pnl_krw: float = None):
         """창4 손익 PnL 수치 패널 갱신"""
-        self._win.log_panel.update_pnl_metrics(unrealized_krw, daily_pnl_krw, var_krw)
+        self._win.log_panel.update_pnl_metrics(
+            unrealized_krw,
+            daily_pnl_krw,
+            var_krw,
+            forward_unrealized_krw=forward_unrealized_krw,
+            forward_daily_pnl_krw=forward_daily_pnl_krw,
+        )
 
     def append_pnl_log(self, msg: str, val: str = ""):
         """창4 손익 로그"""

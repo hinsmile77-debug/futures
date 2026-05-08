@@ -167,7 +167,10 @@ class TradingSystem:
             self._save_account_from_dashboard
         )
         self.dashboard.sig_position_restore.connect(self._manual_position_restore)
+        self.dashboard.sig_reverse_entry_toggled.connect(self._on_reverse_entry_toggled)
         self.dashboard.set_ui_startup_mode()
+        self._reverse_entry_enabled: bool = False
+        self._restore_reverse_entry_setting()
         self._heartbeat_count: int = 0
         self._session_no: int = 0
         self._pending_order = None
@@ -244,6 +247,117 @@ class TradingSystem:
         logger.info(msg)
         log_manager.system(msg)
 
+    def _session_state_path(self) -> str:
+        return os.path.join(BASE_DIR, "data", "session_state.json")
+
+    def _read_session_state(self) -> dict:
+        state_path = self._session_state_path()
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        try:
+            if os.path.exists(state_path):
+                with open(state_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as exc:
+            logger.warning("[SessionState] load failed: %s", exc)
+        return {"date": datetime.date.today().isoformat(), "count": 0}
+
+    def _write_session_state(self, data: dict) -> None:
+        state_path = self._session_state_path()
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        try:
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception as exc:
+            logger.warning("[SessionState] save failed: %s", exc)
+
+    def _restore_reverse_entry_setting(self) -> None:
+        state = self._read_session_state()
+        enabled = bool(state.get("reverse_entry_enabled", False))
+        self._reverse_entry_enabled = enabled
+        self.dashboard.set_reverse_entry_enabled(enabled, emit_signal=False)
+
+    def _on_reverse_entry_toggled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        self._reverse_entry_enabled = enabled
+        state = self._read_session_state()
+        state["reverse_entry_enabled"] = enabled
+        self._write_session_state(state)
+        log_manager.system(
+            f"[EntryConfig] 역방향진입={'ON' if enabled else 'OFF'}",
+            "WARNING" if enabled else "INFO",
+        )
+
+    def _resolve_entry_direction(self, raw_direction: str) -> tuple:
+        reverse_enabled = bool(self._reverse_entry_enabled)
+        final_direction = raw_direction
+        if reverse_enabled:
+            if raw_direction == "LONG":
+                final_direction = "SHORT"
+            elif raw_direction == "SHORT":
+                final_direction = "LONG"
+        return raw_direction, final_direction, reverse_enabled
+
+    @staticmethod
+    def _direction_to_korean(direction: str) -> str:
+        if direction == "LONG":
+            return "매수"
+        if direction == "SHORT":
+            return "매도"
+        return "관망"
+
+    def _trade_metrics_pair(self, result: dict) -> tuple:
+        executed_metrics = normalize_trade_pnl(
+            entry_price=result["entry_price"],
+            quantity=result["quantity"],
+            pnl_pts=result["pnl_pts"],
+        )
+        forward_metrics = normalize_trade_pnl(
+            entry_price=result["entry_price"],
+            quantity=result["quantity"],
+            pnl_pts=result.get("forward_pnl_pts", result["pnl_pts"]),
+        )
+        return executed_metrics, forward_metrics
+
+    def _record_trade_result(self, result: dict, exit_ts: str = None) -> None:
+        now_str = exit_ts or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        executed_metrics, forward_metrics = self._trade_metrics_pair(result)
+        execute(
+            TRADES_DB,
+            """INSERT INTO trades
+               (entry_ts, exit_ts, direction, raw_direction, executed_direction,
+                reverse_entry_enabled, entry_price, exit_price, quantity,
+                pnl_pts, pnl_krw, gross_pnl_krw, commission_krw, net_pnl_krw,
+                forward_pnl_pts, forward_pnl_krw, forward_gross_pnl_krw,
+                forward_commission_krw, forward_net_pnl_krw,
+                formula_version, exit_reason, grade, regime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                result.get("entry_ts", now_str),
+                result.get("exit_ts", now_str),
+                result["direction"],
+                result.get("raw_direction", result["direction"]),
+                result.get("executed_direction", result["direction"]),
+                1 if result.get("reverse_entry_enabled", False) else 0,
+                result["entry_price"],
+                result["exit_price"],
+                result["quantity"],
+                result["pnl_pts"],
+                executed_metrics["net_pnl_krw"],
+                executed_metrics["gross_pnl_krw"],
+                executed_metrics["commission_krw"],
+                executed_metrics["net_pnl_krw"],
+                result.get("forward_pnl_pts", result["pnl_pts"]),
+                forward_metrics["net_pnl_krw"],
+                forward_metrics["gross_pnl_krw"],
+                forward_metrics["commission_krw"],
+                forward_metrics["net_pnl_krw"],
+                executed_metrics["formula_version"],
+                result["exit_reason"],
+                result.get("grade", ""),
+                self.current_regime,
+            ),
+        )
+
     def _set_pending_order(
         self,
         kind: str,
@@ -255,10 +369,14 @@ class TradingSystem:
         atr: float = 0.0,
         grade: str = "",
         stage=None,
+        raw_direction: str = None,
+        reverse_entry_enabled: bool = False,
     ) -> None:
         self._pending_order = {
             "kind": kind,
             "direction": direction,
+            "raw_direction": raw_direction or direction,
+            "reverse_entry_enabled": bool(reverse_entry_enabled),
             "qty": qty,
             "price_hint": price_hint,
             "reason": reason,
@@ -1123,8 +1241,19 @@ class TradingSystem:
                     f"reason={_tox_gate.get('reason', '')}"
                 )
 
-        self.dashboard.update_entry(_dir_ko, confidence, _final_grade, _checks_ui,
-                                    qty=_qty_display)
+        _raw_entry_dir = "LONG" if direction > 0 else "SHORT" if direction < 0 else ""
+        _resolved_raw_dir, _resolved_final_dir, _reverse_on = self._resolve_entry_direction(_raw_entry_dir)
+        _raw_signal_ko = self._direction_to_korean(_resolved_raw_dir)
+        _final_signal_ko = self._direction_to_korean(_resolved_final_dir)
+        self.dashboard.update_entry(
+            _raw_signal_ko,
+            confidence,
+            _final_grade,
+            _checks_ui,
+            qty=_qty_display,
+            final_signal=_final_signal_ko,
+            reverse_enabled=_reverse_on,
+        )
 
         # [DBG-F7] 진입 실행 조건 평가
         debug_log.debug(
@@ -1158,16 +1287,27 @@ class TradingSystem:
             and not _bar_volume_zero          # Guard-C3: volume=0 분봉 진입 차단
         ):
             dir_str = "LONG" if direction > 0 else "SHORT"
+            raw_dir_str, final_dir_str, reverse_on = self._resolve_entry_direction(dir_str)
+            raw_signal_ko = self._direction_to_korean(raw_dir_str)
+            final_signal_ko = self._direction_to_korean(final_dir_str)
             if _cr["auto_entry"]:
-                self._execute_entry(dir_str, close, _qty_display, atr, _final_grade)
+                self._execute_entry(
+                    final_dir_str, close, _qty_display, atr, _final_grade,
+                    raw_direction=raw_dir_str,
+                    reverse_enabled=reverse_on,
+                )
             else:
+                log_manager.signal(
+                    f"[EntrySignal] 원신호={raw_dir_str} 실행신호={final_dir_str} "
+                    f"역방향진입={'ON' if reverse_on else 'OFF'} 등급={_final_grade} 상태=MANUAL_CONFIRM"
+                )
                 log_manager.trade(
-                    f"[수동 확인 필요] {dir_str} {_qty_display}계약 @ {close} "
-                    f"등급={_final_grade}"
+                    f"[수동 확인 필요] {raw_dir_str}->{final_dir_str} {_qty_display}계약 @ {close} "
+                    f"등급={_final_grade} | 역방향진입={'ON' if reverse_on else 'OFF'}"
                 )
                 notify(
-                    f"진입 확인 요청: {dir_str} {_qty_display}계약\n"
-                    f"등급={_final_grade} 신뢰도={confidence:.1%}",
+                    f"진입 확인 요청: {raw_signal_ko} -> {final_signal_ko} {_qty_display}계약\n"
+                    f"등급={_final_grade} 신뢰도={confidence:.1%} | 역방향진입={'ON' if reverse_on else 'OFF'}",
                     "WARNING",
                 )
 
@@ -1231,9 +1371,17 @@ class TradingSystem:
 
         # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
         _daily   = self.position.daily_stats()
+        _forward_daily = self.position.daily_forward_stats()
         _unreal  = self.position.unrealized_pnl_pts(close) * FUTURES_PT_VALUE
+        _forward_unreal = self.position.unrealized_forward_pnl_pts(close) * FUTURES_PT_VALUE
         _var_krw = -(atr * 1.65 * self.position.quantity * FUTURES_PT_VALUE) if self.position.quantity else 0.0
-        self.dashboard.update_pnl_metrics(_unreal, _daily["pnl_krw"], _var_krw)
+        self.dashboard.update_pnl_metrics(
+            _unreal,
+            _daily["pnl_krw"],
+            _var_krw,
+            forward_unrealized_krw=_forward_unreal,
+            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+        )
 
         # 당일 진입 통계 갱신 — STEP 9 예외와 무관하게 항상 실행
         _ds = self.position.daily_stats()
@@ -1381,43 +1529,15 @@ class TradingSystem:
             f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  잔여 {result['remaining']}계약",
         )
         _daily = self.position.daily_stats()
+        _forward_daily = self.position.daily_forward_stats()
         self.dashboard.update_pnl_metrics(
             self.position.unrealized_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
             _daily["pnl_krw"],
             0.0,
+            forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
+            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
         )
-
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        trade_metrics = normalize_trade_pnl(
-            entry_price=result["entry_price"],
-            quantity=result["quantity"],
-            pnl_pts=result["pnl_pts"],
-        )
-        execute(
-            TRADES_DB,
-            """INSERT INTO trades
-               (entry_ts, exit_ts, direction, entry_price, exit_price,
-                quantity, pnl_pts, pnl_krw, gross_pnl_krw, commission_krw,
-                net_pnl_krw, formula_version, exit_reason, grade, regime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                result.get("entry_ts", now_str),
-                now_str,
-                result["direction"],
-                result["entry_price"],
-                result["exit_price"],
-                result["quantity"],
-                result["pnl_pts"],
-                trade_metrics["net_pnl_krw"],
-                trade_metrics["gross_pnl_krw"],
-                trade_metrics["commission_krw"],
-                trade_metrics["net_pnl_krw"],
-                trade_metrics["formula_version"],
-                result["exit_reason"],
-                result.get("grade", ""),
-                self.current_regime,
-            ),
-        )
+        self._record_trade_result(result)
         self._refresh_pnl_history()
 
     def _send_kiwoom_entry_order(self, direction: str, qty: int) -> int:
@@ -1566,7 +1686,14 @@ class TradingSystem:
 
         # PnL 패널 즉시 갱신 — 다음 분봉까지 기다리지 않음 [B27]
         _daily = self.position.daily_stats()
-        self.dashboard.update_pnl_metrics(0.0, _daily["pnl_krw"], 0.0)
+        _forward_daily = self.position.daily_forward_stats()
+        self.dashboard.update_pnl_metrics(
+            0.0,
+            _daily["pnl_krw"],
+            0.0,
+            forward_unrealized_krw=0.0,
+            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+        )
         self.dashboard.append_pnl_log(
             f"청산 | {result['direction']} {result['quantity']}계약 "
             f"@ {result['exit_price']} ({result['exit_reason']})",
@@ -1574,37 +1701,7 @@ class TradingSystem:
         )
         self.dashboard.set_ui_ready_mode()
 
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        trade_metrics = normalize_trade_pnl(
-            entry_price=result["entry_price"],
-            quantity=result["quantity"],
-            pnl_pts=result["pnl_pts"],
-        )
-        execute(
-            TRADES_DB,
-            """INSERT INTO trades
-               (entry_ts, exit_ts, direction, entry_price, exit_price,
-                quantity, pnl_pts, pnl_krw, gross_pnl_krw, commission_krw,
-                net_pnl_krw, formula_version, exit_reason, grade, regime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                result.get("entry_ts", now_str),
-                now_str,
-                result["direction"],
-                result["entry_price"],
-                result["exit_price"],
-                result["quantity"],
-                result["pnl_pts"],
-                trade_metrics["net_pnl_krw"],
-                trade_metrics["gross_pnl_krw"],
-                trade_metrics["commission_krw"],
-                trade_metrics["net_pnl_krw"],
-                trade_metrics["formula_version"],
-                result["exit_reason"],
-                result.get("grade", ""),
-                self.current_regime,
-            ),
-        )
+        self._record_trade_result(result)
         self._refresh_pnl_history()
 
     def activate_kill_switch(self, reason: str = "수동 발동") -> None:
@@ -1772,8 +1869,8 @@ class TradingSystem:
             rows = fetch_today_trades()
         except Exception:
             return 1.0
-        gross_win  = sum(r["pnl_krw"] for r in rows if r["pnl_krw"] > 0)
-        gross_loss = sum(abs(r["pnl_krw"]) for r in rows if r["pnl_krw"] < 0)
+        gross_win  = sum(r["forward_pnl_krw"] for r in rows if r["forward_pnl_krw"] > 0)
+        gross_loss = sum(abs(r["forward_pnl_krw"]) for r in rows if r["forward_pnl_krw"] < 0)
         if gross_loss == 0:
             return 999.0 if gross_win > 0 else 1.0
         return gross_win / gross_loss
@@ -1851,6 +1948,7 @@ class TradingSystem:
     def daily_close(self):
         """자가학습 일일 마감"""
         stats = self.position.daily_stats()
+        forward_stats = self.position.daily_forward_stats()
         logger.info(f"[Daily] 마감 통계: {stats}")
         log_manager.system(
             f"일일 마감 | 승={stats['wins']} 패={stats['losses']} "
@@ -1894,10 +1992,10 @@ class TradingSystem:
         # 일일 스냅샷 저장 → 내일 시작 시 자가학습·추이 패널에 어제 데이터 표시
         today_str = datetime.date.today().isoformat()
         save_daily_stats(today_str, {
-            "trades":         stats["trades"],
-            "wins":           stats["wins"],
-            "pnl_pts":        stats["pnl_pts"],
-            "pnl_krw":        stats["pnl_krw"],
+            "trades":         forward_stats["trades"],
+            "wins":           forward_stats["wins"],
+            "pnl_pts":        forward_stats["pnl_pts"],
+            "pnl_krw":        forward_stats["pnl_krw"],
             "sgd_accuracy":   self.online_learner.recent_accuracy(),
             "verified_count": self._verified_today,
         })
@@ -1906,8 +2004,8 @@ class TradingSystem:
         try:
             from strategy.param_drift_detector import get_drift_detector as _get_dd
             _drift_level, _drift_msg = _get_dd().update(
-                daily_pnl = stats["pnl_krw"],
-                daily_wr  = stats["wins"] / max(stats["trades"], 1),
+                daily_pnl = forward_stats["pnl_krw"],
+                daily_wr  = forward_stats["wins"] / max(forward_stats["trades"], 1),
                 daily_pf  = self._daily_profit_factor(),
             )
             logger.info("[DriftDetector] %s", _drift_msg)
@@ -1927,9 +2025,9 @@ class TradingSystem:
             _get_reg().record_live_snapshot(
                 version = _active_ver,
                 metrics = {
-                    "win_rate":      stats["wins"] / max(stats["trades"], 1),
-                    "total_trades":  stats["trades"],
-                    "daily_pnl":     stats["pnl_krw"],
+                    "win_rate":      forward_stats["wins"] / max(forward_stats["trades"], 1),
+                    "total_trades":  forward_stats["trades"],
+                    "daily_pnl":     forward_stats["pnl_krw"],
                     "profit_factor": self._daily_profit_factor(),
                 },
             )
@@ -2113,27 +2211,17 @@ class TradingSystem:
 
     def _increment_session(self) -> int:
         """data/session_state.json 에 세션 카운터를 1 증가하고 현재 번호를 반환."""
-        import json
-        state_path = os.path.join(BASE_DIR, "data", "session_state.json")
-        os.makedirs(os.path.dirname(state_path), exist_ok=True)
-        try:
-            if os.path.exists(state_path):
-                with open(state_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                today = datetime.date.today().isoformat()
-                if data.get("date") != today:
-                    data = {"date": today, "count": 0}
-            else:
-                data = {"date": datetime.date.today().isoformat(), "count": 0}
-        except Exception:
-            data = {"date": datetime.date.today().isoformat(), "count": 0}
-
+        data = self._read_session_state()
+        today = datetime.date.today().isoformat()
+        if data.get("date") != today:
+            data = {
+                "date": today,
+                "count": 0,
+                "reverse_entry_enabled": bool(data.get("reverse_entry_enabled", False)),
+            }
         data["count"] = data.get("count", 0) + 1
-        try:
-            with open(state_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-        except Exception:
-            pass
+        data["reverse_entry_enabled"] = bool(self._reverse_entry_enabled)
+        self._write_session_state(data)
         return data["count"]
 
     def _restore_daily_state(self) -> None:
@@ -2152,6 +2240,7 @@ class TradingSystem:
         )
 
         cumulative_pnl_krw = 0.0
+        cumulative_forward_pnl_krw = 0.0
         for row in rows:
             direction  = row["direction"] or "?"
             entry_p    = row["entry_price"] or 0.0
@@ -2159,6 +2248,8 @@ class TradingSystem:
             qty        = row["quantity"] or 1
             pnl_pts    = row["pnl_pts"] or 0.0
             pnl_krw    = row["pnl_krw"] or 0.0
+            forward_pnl_pts = row["forward_pnl_pts"] or pnl_pts
+            forward_pnl_krw = row["forward_pnl_krw"] or pnl_krw
             reason     = row["exit_reason"] or ""
             grade      = row["grade"] or ""
             entry_ts   = (row["entry_ts"] or "")[:16]   # "YYYY-MM-DD HH:MM"
@@ -2167,6 +2258,7 @@ class TradingSystem:
             if exit_p is not None:
                 # 청산 완료 거래
                 cumulative_pnl_krw += pnl_krw
+                cumulative_forward_pnl_krw += forward_pnl_krw
                 self.dashboard.append_restore_trade(
                     msg=f"진입 {direction} {qty}계약 @ {entry_p}  등급={grade}",
                     ts=entry_ts[11:] if len(entry_ts) > 11 else entry_ts,
@@ -2174,12 +2266,19 @@ class TradingSystem:
                 self.dashboard.append_restore_trade(
                     msg=f"청산 {direction} {qty}계약 @ {exit_p}  ({reason})",
                     ts=exit_ts[11:] if len(exit_ts) > 11 else exit_ts,
-                    val=f"PnL {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원",
+                    val=(
+                        f"실행 {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원 | "
+                        f"순방향 {forward_pnl_pts:+.2f}pt  {forward_pnl_krw:+,.0f}원"
+                    ),
                 )
                 self.dashboard.append_restore_pnl(
                     msg=f"청산 | {direction} {qty}계약 @ {exit_p}  ({reason})",
                     ts=exit_ts[11:] if len(exit_ts) > 11 else exit_ts,
-                    val=f"PnL {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원  (누적 {cumulative_pnl_krw:+,.0f}원)",
+                    val=(
+                        f"실행 {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원 (누적 {cumulative_pnl_krw:+,.0f}원) | "
+                        f"순방향 {forward_pnl_pts:+.2f}pt  {forward_pnl_krw:+,.0f}원 "
+                        f"(누적 {cumulative_forward_pnl_krw:+,.0f}원)"
+                    ),
                 )
             else:
                 # 진입만 있고 청산 미완료 (비정상 종료)
@@ -2194,7 +2293,14 @@ class TradingSystem:
 
         # 손익 PnL 패널 즉시 갱신 — 재시작 후 "——원" 방지
         _daily = self.position.daily_stats()
-        self.dashboard.update_pnl_metrics(0.0, _daily["pnl_krw"], 0.0)
+        _forward_daily = self.position.daily_forward_stats()
+        self.dashboard.update_pnl_metrics(
+            0.0,
+            _daily["pnl_krw"],
+            0.0,
+            forward_unrealized_krw=0.0,
+            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+        )
 
         logger.info(f"[Restore] 당일 거래 {len(rows)}건 복원 완료 | 누적 PnL={cumulative_pnl_krw:+,.0f}원")
         log_manager.system(
@@ -2636,43 +2742,15 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
     )
 
     _daily = self.position.daily_stats()
+    _forward_daily = self.position.daily_forward_stats()
     self.dashboard.update_pnl_metrics(
         self.position.unrealized_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
         _daily["pnl_krw"],
         0.0,
+        forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
+        forward_daily_pnl_krw=_forward_daily["pnl_krw"],
     )
-
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    trade_metrics = normalize_trade_pnl(
-        entry_price=result["entry_price"],
-        quantity=result["quantity"],
-        pnl_pts=result["pnl_pts"],
-    )
-    execute(
-        TRADES_DB,
-        """INSERT INTO trades
-           (entry_ts, exit_ts, direction, entry_price, exit_price,
-            quantity, pnl_pts, pnl_krw, gross_pnl_krw, commission_krw,
-            net_pnl_krw, formula_version, exit_reason, grade, regime)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            result.get("entry_ts", now_str),
-            result.get("exit_ts", now_str),
-            result["direction"],
-            result["entry_price"],
-            result["exit_price"],
-            result["quantity"],
-            result["pnl_pts"],
-            trade_metrics["net_pnl_krw"],
-            trade_metrics["gross_pnl_krw"],
-            trade_metrics["commission_krw"],
-            trade_metrics["net_pnl_krw"],
-            trade_metrics["formula_version"],
-            result["exit_reason"],
-            result.get("grade", ""),
-            self.current_regime,
-        ),
-    )
+    self._record_trade_result(result)
     self._refresh_pnl_history()
 
 
@@ -2711,6 +2789,8 @@ def _ts_handle_entry_fill(
         grade=pending["grade"],
         regime=self.current_regime,
         filled_at=filled_at,
+        raw_direction=pending.get("raw_direction") or pending["direction"],
+        reverse_entry_enabled=bool(pending.get("reverse_entry_enabled", False)),
     )
     log_manager.trade(
         f"[체결진입] {entry_direction} {fill_qty}계약 @ {fill_price} "
@@ -3421,15 +3501,27 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
     QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
 
 
-def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: float, grade: str):
+def _ts_execute_entry(
+    self,
+    direction: str,
+    price: float,
+    quantity: int,
+    atr: float,
+    grade: str,
+    raw_direction: str = None,
+    reverse_enabled: bool = False,
+):
+    raw_direction = raw_direction or direction
     _ts_log_diag(
         self,
         "EntryAttempt",
+        raw_direction=raw_direction,
         direction=direction,
         price=price,
         quantity=quantity,
         atr=atr,
         grade=grade,
+        reverse_entry_enabled=reverse_enabled,
         broker_sync_verified=self._broker_sync_verified,
         block_new_entries=self._broker_sync_block_new_entries,
         broker_sync_reason=self._broker_sync_last_error,
@@ -3438,12 +3530,14 @@ def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: fl
     )
     if self._broker_sync_block_new_entries:
         log_manager.system(
-            f"[EntryBlock] broker sync 미검증으로 진입 차단 dir={direction} qty={quantity} reason={self._broker_sync_last_error}",
+            f"[EntryBlock] broker sync 미검증으로 진입 차단 raw={raw_direction} final={direction} "
+            f"qty={quantity} reverse_entry={'ON' if reverse_enabled else 'OFF'} "
+            f"reason={self._broker_sync_last_error}",
             "CRITICAL",
         )
         logger.warning(
-            "[EntryBlock] broker sync gate dir=%s qty=%s reason=%s",
-            direction, quantity, self._broker_sync_last_error,
+            "[EntryBlock] broker sync gate raw=%s final=%s qty=%s reverse=%s reason=%s",
+            raw_direction, direction, quantity, reverse_enabled, self._broker_sync_last_error,
         )
         return
     if self._has_pending_order():
@@ -3451,20 +3545,23 @@ def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: fl
         return
     ret = self._send_kiwoom_entry_order(direction, quantity)
     logger.info(
-        "[Entry] send_order result ret=%s dir=%s qty=%s code=%s broker_sync_verified=%s",
-        ret, direction, quantity, getattr(self, "_futures_code", ""), self._broker_sync_verified,
+        "[Entry] send_order result ret=%s raw=%s final=%s qty=%s reverse=%s code=%s broker_sync_verified=%s",
+        ret, raw_direction, direction, quantity, reverse_enabled,
+        getattr(self, "_futures_code", ""), self._broker_sync_verified,
     )
     log_manager.system(
-        f"[EntrySendResult] ret={ret} direction={direction} qty={quantity} "
-        f"code={getattr(self, '_futures_code', '')}",
+        f"[EntrySendResult] ret={ret} raw={raw_direction} final={direction} qty={quantity} "
+        f"reverse_entry={'ON' if reverse_enabled else 'OFF'} code={getattr(self, '_futures_code', '')}",
         "WARNING" if ret != 0 else "INFO",
     )
     _ts_log_diag(
         self,
         "EntrySendOrderResult",
         ret=ret,
+        raw_direction=raw_direction,
         direction=direction,
         quantity=quantity,
+        reverse_entry_enabled=reverse_enabled,
         code=getattr(self, "_futures_code", ""),
         pending=_ts_get_pending_snapshot(self),
         position=_ts_get_position_snapshot(self),
@@ -3472,7 +3569,8 @@ def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: fl
     if ret != 0:
         logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s", ret)
         log_manager.system(
-            f"[Entry] 주문 실패로 포지션 미오픈 ret={ret} dir={direction} qty={quantity}",
+            f"[Entry] 주문 실패로 포지션 미오픈 ret={ret} raw={raw_direction} final={direction} "
+            f"qty={quantity} reverse_entry={'ON' if reverse_enabled else 'OFF'}",
             "ERROR",
         )
         return
@@ -3484,11 +3582,22 @@ def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: fl
         reason="진입",
         atr=atr,
         grade=grade,
+        raw_direction=raw_direction,
+        reverse_entry_enabled=reverse_enabled,
     )
     # Fix B: 모의투자에서 Chejan 없음 → 낙관적 오픈으로 이중진입 방지
     # Chejan 체결 시 apply_entry_fill() 가격 보정 경로로 합쳐짐 (_optimistic=True)
     try:
-        self.position.open_position(direction, price, quantity, atr, grade, self.current_regime)
+        self.position.open_position(
+            direction,
+            price,
+            quantity,
+            atr,
+            grade,
+            self.current_regime,
+            raw_direction=raw_direction,
+            reverse_entry_enabled=reverse_enabled,
+        )
         self.position._optimistic = True
         logger.warning(
             "[FixB] 낙관적 오픈 완료 direction=%s status=%s qty=%s optimistic=%s",
@@ -3502,11 +3611,19 @@ def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: fl
     _ts_log_diag(
         self,
         "EntryPendingCreated",
+        raw_direction=raw_direction,
+        direction=direction,
+        reverse_entry_enabled=reverse_enabled,
         pending=_ts_get_pending_snapshot(self),
         position=_ts_get_position_snapshot(self),
     )
+    log_manager.signal(
+        f"[EntrySignal] 원신호={raw_direction} 실행신호={direction} "
+        f"역방향진입={'ON' if reverse_enabled else 'OFF'} 등급={grade}"
+    )
     log_manager.trade(
-        f"[주문요청] {direction} {quantity}계약 @ {price} 등급={grade} 체결대기"
+        f"[주문요청] {raw_direction}->{direction} {quantity}계약 @ {price} "
+        f"등급={grade} 역방향진입={'ON' if reverse_enabled else 'OFF'} 체결대기"
     )
 
 
