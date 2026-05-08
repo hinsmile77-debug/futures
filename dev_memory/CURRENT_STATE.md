@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-07 (5차) — Phase 5 QA + STRATEGY_PARAMS_GUIDE 전체 준수 + strategy_events 테이블 + shadow IPC 구현
+> 마지막 업데이트: 2026-05-08 (6차) — PnL 승수 수정 + CB③ 개선 + Hurst/ATR/ExitCooldown 진입 게이트 보강
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -26,6 +26,42 @@
 | Phase 4 — 차별화 (RL·베이지안·뉴스) | ✅ | ⏳ 실거래 데이터 검증 필요 |
 | Phase 5 — 실전 운영 | — | 미진입 |
 | Phase 6 — 알파 리서치 봇 | ✅ (유전자 진화 완료) | ⏳ main.py 연결 미완 |
+
+---
+
+## 2026-05-08 세션 주요 수정 (6차) — PnL 승수 수정 + CB③ 개선 + 진입 게이트 보강
+
+### 핵심 변경 사항
+
+**버그 수정 2건 (수익률 직결)**
+
+| 버그 | 원인 | 수정 파일 |
+|---|---|---|
+| **[B64] PnL 2× 과대 계산** | `FUTURES_MULTIPLIER = 500_000` — KOSPI200 선물 승수는 250,000원/pt | `config/constants.py` FUTURES_MULTIPLIER·FUTURES_TICK_VALUE 수정, `FUTURES_PT_VALUE` 신설. `main.py` 전수 교체 |
+| **[B65] 수수료 미반영** | `close_position()` / `partial_close()` / `apply_exit_fill()`에서 pnl_krw 계산 시 수수료(왕복 ~79,500원/계약) 미차감 | `position_tracker.py` — `_calc_commission()` 추가, 3개 청산 경로 모두 적용. `FUTURES_COMMISSION_RATE = 0.000015` settings.py에 추가 |
+
+**CB③ 개선 2건**
+
+| 항목 | 수정 |
+|---|---|
+| **30m 전용 정확도 피드** | `main.py` STEP 1 `record_accuracy()` 호출에 `v["horizon"] == "30m"` 필터 추가. 기존: 6개 호라이즌 혼합 → 3샘플에서 HALT 발동 |
+| **2회 연속 미달 시 HALT** | `circuit_breaker.py` — 1회 미달: WARNING+Slack만, 2회 연속 미달: HALT. 최소 20샘플 확보 후 발동 |
+
+**진입 게이트 보강 3건 (20260508 WARN.log 분석 결과)**
+
+| 조건 | 설명 | 효과 |
+|---|---|---|
+| **Hurst < 0.45 차단** | `main.py` STEP 7에 `features.get("hurst") >= HURST_RANGE_THRESHOLD` 추가. settings.py에 이미 있던 상수가 실제 게이트에 미연결이었음 | 횡보 레짐 진입 차단 |
+| **청산 후 쿨다운** | `_post_exit()` — TP청산 후 2분, 손절청산 후 3분 재진입 금지 (`_exit_cooldown_until`) | 10:13 TP→10:14 즉시재진입, 10:24 스톱→10:25 재진입 패턴 차단 |
+| **ATR < 1.0pt 차단** | `ATR_MIN_ENTRY = 1.0` settings.py 추가, STEP 7에 `atr >= ATR_MIN_ENTRY` 조건 추가 | 변동성 부족 구간(ATR=1.37pt) 진입으로 인한 휩쏘 손절 방지 |
+
+### 20260508 WARN.log 분석 요약
+
+| 시각 | 이벤트 | 수정 전 | 수정 후 |
+|---|---|---|---|
+| 09:34 | CB③ HALT (3샘플, 전 호라이즌 혼합) | 시스템 정지 → 오전 기회 손실 | **방어됨** — 30m 필터 + 20샘플 최소 |
+| 10:14 | TP1(10:13) 후 1분 재진입 | 진입 실행 | **차단** — ExitCooldown 2분 |
+| 10:24 | 스톱 후 10:25 즉시 재진입 | 진입 실행 → CB② 2/3 도달 | **차단** — ExitCooldown 3분 |
 
 ---
 

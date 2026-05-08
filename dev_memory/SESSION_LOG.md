@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-05-08 (6차) — PnL 승수 수정 + CB③ 개선 + 진입 게이트 보강 (Hurst/ATR/ExitCooldown)
+
+**계기**: 20260508 WARN.log에서 두 가지 버그 + 세 가지 코드 갭 발견
+
+### 핵심 수정 6건
+
+| # | 파일 | 내용 |
+|---|---|---|
+| B64 | `config/constants.py`, `main.py` | `FUTURES_MULTIPLIER` 500k→250k 전수 교체. `FUTURES_PT_VALUE=250_000` 신설. `FUTURES_TICK_VALUE`=12,500원으로 정정 |
+| B65 | `strategy/position/position_tracker.py`, `config/settings.py` | 수수료 반영: `_calc_commission()` 추가, 3개 청산 경로(close/partial/apply_exit_fill) 적용. 왕복 ~79,500원/계약 |
+| CB③-1 | `main.py` STEP 1 | `record_accuracy()` 호출에 `v["horizon"] == "30m"` 필터 추가 (기존: 6개 혼합 → 3샘플 HALT) |
+| CB③-2 | `safety/circuit_breaker.py` | 2회 연속 미달 시 HALT (1회는 WARNING+Slack). 최소 20샘플 보호 |
+| Gate-1 | `main.py` STEP 7 | `hurst >= HURST_RANGE_THRESHOLD(0.45)` 진입 게이트 연결 (settings.py 상수는 있었으나 게이트 미연결) |
+| Gate-2 | `main.py` `_post_exit()` | `_exit_cooldown_until` 추가: TP청산→2분, 손절청산→3분 재진입 차단 |
+| Gate-3 | `config/settings.py`, `main.py` | `ATR_MIN_ENTRY = 1.0pt` 추가. STEP 7에 `atr >= ATR_MIN_ENTRY` 조건 추가 |
+
+### 오늘 로그에서 발견한 패턴 (수정 후 방어 가능)
+- 09:34 CB③ 오발동: 3샘플(전 호라이즌 혼합)로 HALT → B64·CB③-1 수정으로 방어
+- 10:13 TP청산 → 10:14 즉시재진입: Gate-2 쿨다운 2분으로 차단
+- 10:24 손절 → 10:25 즉시재진입 → CB② 2/3 도달: Gate-2 쿨다운 3분으로 차단
+
+---
+
 ## 2026-05-07 (5차) — Phase 5 QA 수정 + STRATEGY_PARAMS_GUIDE 준수 점검 + strategy_events 테이블 + shadow_ev 초기화
 
 **작업**: QA 세더 실행 후 발견된 버그 수정 → STRATEGY_PARAMS_GUIDE.md §1~§20 전체 준수 점검 → 두 미구현 항목 실제 코드로 구현

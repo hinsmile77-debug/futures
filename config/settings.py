@@ -132,6 +132,10 @@ CB_API_LATENCY_PAUSE   = 300   # 지연 후 정지 (초)
 HURST_TREND_THRESHOLD  = 0.55  # 이상: 추세장
 HURST_RANGE_THRESHOLD  = 0.45  # 이하: 횡보장 (진입 차단)
 
+# ── ATR 진입 최소 임계값 ───────────────────────────────────────
+# 1분봉 노이즈가 ATR_STOP_MULT × ATR 손절거리를 초과 → 휩쏘 손절 급증 방지
+ATR_MIN_ENTRY = 1.0   # pt 미만이면 진입 차단 (변동성 너무 낮음)
+
 # ── SHAP 동적 피처 관리 ────────────────────────────────────────
 SHAP_COOLDOWN_DAYS     = 3     # 교체 후 재교체 금지
 SHAP_MAX_REPLACE_DAILY = 1     # 하루 최대 교체 수

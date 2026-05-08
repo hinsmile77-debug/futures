@@ -46,7 +46,10 @@ from utils.db_utils import (
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
     fetch_trend_monthly, fetch_trend_yearly,
 )
-from config.settings import TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS
+from config.settings import (
+    TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS,
+    HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY,
+)
 from config.constants import FUTURES_PT_VALUE
 from config import secrets as _secrets
 
@@ -161,6 +164,7 @@ class TradingSystem:
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
+        self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
 
         # log_manager → 대시보드 5개 탭 배선 (subscribe 없으면 탭에 아무것도 안 보임)
@@ -1005,12 +1009,21 @@ class TradingSystem:
             self._entry_cooldown_until is not None
             and datetime.datetime.now() < self._entry_cooldown_until
         )
+        _in_exit_cooldown = (
+            self._exit_cooldown_until is not None
+            and datetime.datetime.now() < self._exit_cooldown_until
+        )
+        _hurst_ok = features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
+        _atr_ok   = atr >= ATR_MIN_ENTRY   # ATR 너무 낮으면 노이즈 > 손절거리 → 휩쏘
         if (
             _cr is not None
             and self.circuit_breaker.is_entry_allowed()
             and is_new_entry_allowed()
             and not self._broker_sync_block_new_entries
             and not _in_cooldown                   # [B53] ENTRY 타임아웃 후 쿨다운
+            and not _in_exit_cooldown              # 청산 후 즉각 재진입 차단
+            and _hurst_ok                          # 횡보 레짐 진입 차단 (Hurst < 0.45)
+            and _atr_ok                            # 변동성 너무 낮음 진입 차단
             and _final_grade not in ("X",)
             and _qty_display > 0
             and not _bar_volume_zero          # Guard-C3: volume=0 분봉 진입 차단
@@ -1039,6 +1052,14 @@ class TradingSystem:
             elif _in_cooldown:
                 _remain = (self._entry_cooldown_until - datetime.datetime.now()).seconds
                 _reason = f"[차단] ENTRY 타임아웃 쿨다운 — {_remain}초 후 재진입 가능"
+            elif _in_exit_cooldown:
+                _remain = (self._exit_cooldown_until - datetime.datetime.now()).seconds
+                _reason = f"[차단] 청산 후 쿨다운 — {_remain}초 후 재진입 가능"
+            elif not _hurst_ok:
+                _hurst_val = features.get("hurst", 0.5)
+                _reason = f"[차단] Hurst {_hurst_val:.3f} < {HURST_RANGE_THRESHOLD} — 횡보 레짐 진입 차단"
+            elif not _atr_ok:
+                _reason = f"[차단] ATR {atr:.2f}pt < {ATR_MIN_ENTRY}pt — 변동성 부족 (휩쏘 위험)"
             elif not is_new_entry_allowed():
                 _reason = "[차단] 15:00 이후 — 신규 진입 금지 구간"
             elif _cr is None:
@@ -1365,9 +1386,19 @@ class TradingSystem:
         if pnl > 0:
             self.circuit_breaker.record_win()
             self.kelly.record(win=True, pnl_pts=pnl)
+            _cooldown_min = 2   # TP 청산 후 2분 — 고점 추격 재진입 방지
         else:
             self.circuit_breaker.record_stop_loss()
             self.kelly.record(win=False, pnl_pts=pnl)
+            _cooldown_min = 3   # 손절 후 3분 — 동일 방향 재진입 충동 차단
+
+        self._exit_cooldown_until = (
+            datetime.datetime.now() + datetime.timedelta(minutes=_cooldown_min)
+        )
+        log_manager.signal(
+            f"[ExitCooldown] {result['exit_reason']} 후 {_cooldown_min}분 재진입 금지 "
+            f"(until {self._exit_cooldown_until.strftime('%H:%M:%S')})"
+        )
 
         log_manager.trade(
             f"[청산 완료] PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원)"
