@@ -981,3 +981,36 @@ if not self.model.is_ready():
 **검증**
 - `python -m py_compile dashboard/main_dashboard.py main.py collection/kiwoom/api_connector.py` 통과.
 - 실제 키움 라이브 값과 화면값의 완전 일치 검증은 다음 세션에서 추가 확인 필요.
+## 2026-05-08 (7차) - Ensemble upgrade 검증 체계 정리 + 효과검증 UI 탭 + 자동 리포트/툴팁 보강
+
+**작업**
+- `ENSEMBLE_SIGNAL_UPGRADE_PLAN.md` 기준으로 Sprint 1~4 구현 상태를 재점검하고 문서 상단에 현재 상태, 향후 과제, 효과 검증 체크리스트를 반영.
+- `predictions` 원확률(`up_prob/down_prob/flat_prob`) 저장 경로와 `ensemble_decisions` gating/`toxicity_*` 저장 컬럼을 점검하고 장중 저장분까지 확인.
+- `A/B`, `Calibration`, `Meta Gate`, `Rollout` 4종 리포트를 주기 실행하도록 `main.py`에 연결.
+  - calibration/meta/rollout: 15분 주기
+  - A/B backtest: 30분 주기
+- 리포트 스냅샷을 `effect_monitor_history.json`에 누적 저장하고, `dashboard/main_dashboard.py`의 `효과 검증` 패널에 내부 탭 4개(`A/B`, `Calibration`, `Meta Gate`, `Rollout`) 추가.
+- 각 탭에 현재 값 + detail + 간단 스파크라인을 표시하고, 각 탭 의미를 툴팁으로 부착.
+
+**검증**
+- `py_compile`로 `main.py`, `dashboard/main_dashboard.py` 문법 검증 통과.
+- `EfficacyPanel` 생성 시 내부 리포트 탭 4개가 실제로 만들어지는지 확인.
+- 리포트 4종 재생성 확인:
+  - `microstructure_ab_metrics.json`
+  - `calibration_metrics.json`
+  - `meta_gate_tuning_metrics.json`
+  - `rollout_readiness_metrics.json`
+- `effect_monitor_history.json` 초기 스냅샷 생성 확인.
+- 탭 툴팁 누락 원인 점검:
+  - 최초에는 `EfficacyPanel`이 아닌 다른 패널 쪽에 설정되어 실제 탭엔 미반영
+  - 이후 `EfficacyPanel._report_tabs.tabBar().setTabToolTip(...)` 경로로 수정 후 런타임 객체에서 문자열 존재 확인
+
+**현재 관찰값**
+- A/B 최근 스냅샷: `ab_pnl_delta=-3.60pt`, `ab_accuracy_delta=-0.10%p`
+- Calibration 최근 스냅샷: `overall_ece=0.399783`
+- Meta Gate 최근 스냅샷: `meta_labels=34`, `best_grid.match_rate=41.18%`
+- Rollout 최근 스냅샷: `recommended_stage=shadow`
+
+**판단**
+- 구현 범위는 상당 부분 완료됐지만 운영 승격 관점에서는 여전히 `shadow` 유지가 타당.
+- 가장 큰 후속 과제는 calibration 개선(temperature scaling 등)과 A/B 열위 구간 원인 분석.

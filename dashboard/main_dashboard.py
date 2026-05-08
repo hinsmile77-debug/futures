@@ -711,6 +711,36 @@ class PredictionPanel(QWidget):
         self._param_vals = {}
         self._build()
 
+    def _make_report_tab(self, title: str, accent: str):
+        frame = QFrame()
+        frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(S.p(10), S.p(8), S.p(10), S.p(8))
+        lay.setSpacing(S.p(4))
+        lay.addWidget(mk_label(title, accent, 9, True))
+        value = mk_val_label("--", accent, 18, True)
+        detail = mk_label("--", C['text2'], 8)
+        spark = mk_label("?" * 16, accent, 8)
+        spark.setFont(__import__('PyQt5.QtGui', fromlist=['QFont']).QFont("Consolas", S.f(8)))
+        lay.addWidget(value)
+        lay.addWidget(detail)
+        lay.addWidget(spark)
+        lay.addStretch()
+        return frame, value, detail, spark
+
+    def _history_series(self, history: list, key: str) -> list:
+        vals = []
+        for item in history[-24:]:
+            try:
+                if key not in item or item[key] is None:
+                    continue
+                vals.append(float(item[key]))
+            except Exception:
+                continue
+        return vals
+
     def _build(self):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -2068,6 +2098,24 @@ class LearningPanel(QWidget):
         if acc >= 0.48:  return C['orange']
         return C['red']
 
+    def _make_report_tab(self, title: str, accent: str):
+        frame = QFrame()
+        frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(S.p(10), S.p(8), S.p(10), S.p(8))
+        lay.setSpacing(S.p(4))
+        lay.addWidget(mk_label(title, accent, 9, True))
+        value = mk_val_label("--", accent, 18, True)
+        detail = mk_label("--", C['text2'], 8)
+        spark = mk_label("--", accent, 8)
+        lay.addWidget(value)
+        lay.addWidget(detail)
+        lay.addWidget(spark)
+        lay.addStretch()
+        return frame, value, detail, spark
+
     def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(S.p(8), S.p(8), S.p(8), S.p(8))
@@ -2107,6 +2155,49 @@ class LearningPanel(QWidget):
             self._sum_lbls[key] = v
             top_row.addWidget(f)
         root.addLayout(top_row)
+        root.addWidget(mk_sep())
+
+        self._report_tabs = QTabWidget()
+        self._report_tabs.setStyleSheet(
+            f"QTabBar::tab{{background:{C['bg2']};color:{C['text2']};"
+            f"padding:{S.p(4)}px {S.p(10)}px;font-size:{S.f(8)}px;}}"
+            f"QTabBar::tab:selected{{background:{C['bg3']};color:{C['yellow']};"
+            f"border-bottom:2px solid {C['yellow']};}}"
+        )
+        tab_tooltips = {
+            "ab": (
+                "Baseline ensemble(A)와 microstructure-enhanced ensemble(B)를 같은 구간에서 비교합니다.\n"
+                "표시값은 enhanced - baseline 총손익 차이이며, detail에는 정확도 차이와 변경 건수가 표시됩니다."
+            ),
+            "calibration": (
+                "모델 confidence가 실제 적중률과 얼마나 일치하는지 보는 탭입니다.\n"
+                "ECE는 confidence와 실제 정확도의 평균 차이이며, 0에 가까울수록 좋습니다."
+            ),
+            "meta": (
+                "방향 예측 위에 take / reduce / skip을 결정하는 2차 필터 성능입니다.\n"
+                "표시값은 현재 best grid의 match rate이며, labels는 누적 meta 표본 수입니다."
+            ),
+            "rollout": (
+                "업그레이드 시스템을 실전에 어느 단계까지 올릴 수 있는지 보여주는 운영 승인 상태입니다.\n"
+                "shadow -> alert_only -> small_size -> full 순서로 승격하며, meta 표본과 calibration 상태를 함께 봅니다."
+            ),
+        }
+        self._report_widgets = {}
+        for key, title, accent in [
+            ("ab", "A/B", C['cyan']),
+            ("calibration", "Calibration", C['blue']),
+            ("meta", "Meta Gate", C['purple']),
+            ("rollout", "Rollout", C['orange']),
+        ]:
+            frame, value, detail, spark = self._make_report_tab(title, accent)
+            self._report_widgets[key] = {"value": value, "detail": detail, "spark": spark}
+            idx = self._report_tabs.addTab(frame, title)
+            self._report_tabs.tabBar().setTabToolTip(idx, tab_tooltips.get(key, ""))
+            frame.setToolTip(tab_tooltips.get(key, ""))
+            value.setToolTip(tab_tooltips.get(key, ""))
+            detail.setToolTip(tab_tooltips.get(key, ""))
+            spark.setToolTip(tab_tooltips.get(key, ""))
+        root.addWidget(self._report_tabs)
         root.addWidget(mk_sep())
 
         # ── SGD 온라인 학습 섹션 ──────────────────────────────
@@ -2275,6 +2366,12 @@ class LearningPanel(QWidget):
     def update_data(self, data: dict):
         import datetime as _dt
 
+        report_history = data.get("report_history") or []
+        ab_metrics = data.get("ab_metrics") or {}
+        calibration_metrics = data.get("calibration_metrics") or {}
+        meta_metrics = data.get("meta_metrics") or {}
+        rollout_metrics = data.get("rollout_metrics") or {}
+
         # 요약 카드
         self._sum_lbls["verified"].setText(str(data.get("verified_today", 0)))
 
@@ -2411,6 +2508,36 @@ class EfficacyPanel(QWidget):
         super().__init__()
         self._build()
 
+    def _make_report_tab(self, title: str, accent: str):
+        frame = QFrame()
+        frame.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(S.p(10), S.p(8), S.p(10), S.p(8))
+        lay.setSpacing(S.p(4))
+        lay.addWidget(mk_label(title, accent, 9, True))
+        value = mk_val_label("--", accent, 18, True)
+        detail = mk_label("--", C['text2'], 8)
+        spark = mk_label("?" * 16, accent, 8)
+        spark.setFont(__import__('PyQt5.QtGui', fromlist=['QFont']).QFont("Consolas", S.f(8)))
+        lay.addWidget(value)
+        lay.addWidget(detail)
+        lay.addWidget(spark)
+        lay.addStretch()
+        return frame, value, detail, spark
+
+    def _history_series(self, history: list, key: str) -> list:
+        vals = []
+        for item in history[-24:]:
+            try:
+                if key not in item or item[key] is None:
+                    continue
+                vals.append(float(item[key]))
+            except Exception:
+                continue
+        return vals
+
     # ── helper: confidence quality badge ─────────────────────
     @staticmethod
     def _calib_badge(conf_f: float, acc_f: float) -> tuple:
@@ -2492,6 +2619,49 @@ class EfficacyPanel(QWidget):
         root.addWidget(mk_sep())
 
         # ── 2열 레이아웃 (섹션 1+2 | 섹션 3+4) ─────────────
+        self._report_tabs = QTabWidget()
+        self._report_tabs.setStyleSheet(
+            f"QTabBar::tab{{background:{C['bg2']};color:{C['text2']};"
+            f"padding:{S.p(4)}px {S.p(10)}px;font-size:{S.f(8)}px;}}"
+            f"QTabBar::tab:selected{{background:{C['bg3']};color:{C['yellow']};"
+            f"border-bottom:2px solid {C['yellow']};}}"
+        )
+        tab_tooltips = {
+            "ab": (
+                "Baseline ensemble(A)와 microstructure-enhanced ensemble(B)를 같은 구간에서 비교합니다.\n"
+                "표시값은 enhanced - baseline 총손익 차이이며, detail에는 정확도 차이와 변경 건수가 표시됩니다."
+            ),
+            "calibration": (
+                "모델 confidence가 실제 적중률과 얼마나 일치하는지 보는 탭입니다.\n"
+                "ECE는 confidence와 실제 정확도의 평균 차이이며, 0에 가까울수록 좋습니다."
+            ),
+            "meta": (
+                "방향 예측 위에 take / reduce / skip을 결정하는 2차 필터 성능입니다.\n"
+                "표시값은 현재 best grid의 match rate이며, labels는 누적 meta 표본 수입니다."
+            ),
+            "rollout": (
+                "업그레이드 시스템을 실전에 어느 단계까지 올릴 수 있는지 보여주는 운영 승인 상태입니다.\n"
+                "shadow -> alert_only -> small_size -> full 순서로 승격하며, meta 표본과 calibration 상태를 함께 봅니다."
+            ),
+        }
+        self._report_widgets = {}
+        for key, title, accent in [
+            ("ab", "A/B", C['cyan']),
+            ("calibration", "Calibration", C['blue']),
+            ("meta", "Meta Gate", C['purple']),
+            ("rollout", "Rollout", C['orange']),
+        ]:
+            frame, value, detail, spark = self._make_report_tab(title, accent)
+            self._report_widgets[key] = {"value": value, "detail": detail, "spark": spark}
+            idx = self._report_tabs.addTab(frame, title)
+            self._report_tabs.tabBar().setTabToolTip(idx, tab_tooltips.get(key, ""))
+            frame.setToolTip(tab_tooltips.get(key, ""))
+            value.setToolTip(tab_tooltips.get(key, ""))
+            detail.setToolTip(tab_tooltips.get(key, ""))
+            spark.setToolTip(tab_tooltips.get(key, ""))
+        root.addWidget(self._report_tabs)
+        root.addWidget(mk_sep())
+
         cols = QHBoxLayout()
         cols.setSpacing(S.p(8))
         left_col  = QVBoxLayout()
@@ -2690,6 +2860,47 @@ class EfficacyPanel(QWidget):
         self._lbl_updated.setText(f"마지막 갱신: {now_str}")
 
         # ── 섹션 1: 캘리브레이션 ─────────────────────────────
+        report_history = data.get("report_history") or []
+        ab_metrics = data.get("ab_metrics") or {}
+        calibration_metrics = data.get("calibration_metrics") or {}
+        meta_metrics = data.get("meta_metrics") or {}
+        rollout_metrics = data.get("rollout_metrics") or {}
+
+        baseline = ab_metrics.get("baseline", {})
+        enhanced = ab_metrics.get("enhanced", {})
+        ab_delta = float(enhanced.get("total_pnl_pts", 0.0) or 0.0) - float(baseline.get("total_pnl_pts", 0.0) or 0.0)
+        ab_acc_delta = float(enhanced.get("directional_accuracy", 0.0) or 0.0) - float(baseline.get("directional_accuracy", 0.0) or 0.0)
+        self._report_widgets["ab"]["value"].setText(f"{ab_delta:+.2f}pt")
+        self._report_widgets["ab"]["detail"].setText(
+            f"acc {ab_acc_delta:+.2%} | changed {int(ab_metrics.get('changed_count', 0) or 0)}"
+        )
+        self._report_widgets["ab"]["spark"].setText(self._spark(self._history_series(report_history, "ab_pnl_delta"), 16))
+
+        overall_cal = calibration_metrics.get("overall", {})
+        calib_ece = float(overall_cal.get("ece", 0.0) or 0.0)
+        self._report_widgets["calibration"]["value"].setText(f"ECE {calib_ece:.3f}")
+        self._report_widgets["calibration"]["detail"].setText(
+            f"brier {float(overall_cal.get('brier', 0.0) or 0.0):.3f} | n {int(overall_cal.get('count', 0) or 0)}"
+        )
+        self._report_widgets["calibration"]["spark"].setText(self._spark(self._history_series(report_history, "calibration_ece"), 16))
+
+        best_grid = meta_metrics.get("best_grid", {})
+        meta_count = int(meta_metrics.get("count", 0) or 0)
+        meta_match = float(best_grid.get("match_rate", 0.0) or 0.0)
+        self._report_widgets["meta"]["value"].setText(f"{meta_match:.1%}")
+        self._report_widgets["meta"]["detail"].setText(
+            f"labels {meta_count} | take>={float(best_grid.get('take_threshold', 0.0) or 0.0):.2f}"
+        )
+        self._report_widgets["meta"]["spark"].setText(self._spark(self._history_series(report_history, "meta_match_rate"), 16))
+
+        rollout_stage = str(rollout_metrics.get("recommended_stage", "shadow") or "shadow")
+        self._report_widgets["rollout"]["value"].setText(rollout_stage.upper())
+        self._report_widgets["rollout"]["detail"].setText(
+            f"meta {int((rollout_metrics.get('gate_stats') or {}).get('meta_labels', 0) or 0)} | ece {float(rollout_metrics.get('ece', 0.0) or 0.0):.3f}"
+        )
+        rollout_hist = [1.0 if str(item.get("rollout_stage", "shadow")) != "shadow" else 0.0 for item in report_history[-24:]]
+        self._report_widgets["rollout"]["spark"].setText(self._spark(rollout_hist, 16))
+
         bins = data.get("calibration_bins") or []
         for i, row_w in enumerate(self._calib_rows):
             conf_lbl, cnt_lbl, acc_lbl, qual_lbl = row_w

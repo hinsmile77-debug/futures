@@ -1,5 +1,98 @@
 # Ensemble Signal Upgrade Plan
 
+## Effect Validation Checklist
+
+### Daily Check
+
+- `microstructure_ab_report.md`?먯꽌 baseline vs enhanced `accuracy`, `win_rate`, `avg pnl`, `total pnl` 蹂?붾?瑜?留먼?먮낫怨?湲곕줉?쒕떎.
+- `calibration_report.md`?먯꽌 overall `ECE`, `Brier`, `log-loss`媛 媛쒖꽑?섎뒗吏 ?뺤씤?쒕떎.
+- `meta_gate_tuning_report.md`?먯꽌 `meta_labels` ?쒕낯 ??`best_grid` 媛깆떊 ?щ?瑜?蹂몃떎.
+- `rollout_readiness_report.md`?먯꽌 `recommended_stage`媛 `shadow`??紐⑥쓣??`alert_only`濡?寃⑸궗?섎뒗吏 ?뺤씤?쒕떎.
+
+### Gate Quality Check
+
+- `ensemble_decisions`?먯꽌 `gate_reason`, `gate_strength`, `meta_action`, `toxicity_action` 而щ읆???좉퇋 row?좎?泥댄겕?쒕떎.
+- `toxicity_reduce / toxicity_block`媛 ?뺤깋?섍쾶 ?꾨룞?섏? ?딄퀬, ?뺤긽 ?μ꽭?먯꽌 怨쇰룄 李⑤떒???놁뒗吏 蹂몃떎.
+- `meta skip / reduce`媛 ?ㅼ젣 ?먯떎 ?뚯쓣 以꾩씠?붾뒗吏, `take`媛 ?곗씠??湲곗뿬?섎뒗吏 ?곗냼 蹂몃떎.
+
+### Promotion Criteria
+
+- A/B 媛쒖꽑 吏?쒕? 2媛??댁긽 ?쒖궗?섎뒗吏 ?뺤씤?쒕떎.
+- calibration ?낅솕媛 ?놁뒗?댁? ?뺤씤?쒕떎.
+- `meta_labels >= 20` ?댁긽 ??`alert_only` ?ы룊媛, `meta_labels >= 100` ?댁긽 ??`small_size` 寃?좊? ?쒖옉?쒕떎.
+- rollout ?④퀎 ?듭? `shadow -> alert_only -> small_size -> full` ?쒖꽌瑜?吏?ㅻ떎.
+
+## Update Status (2026-05-08)
+
+### 구현 완료
+
+- Sprint 1 완료
+  - baseline 저장
+  - 5레벨 호가(FID) 확인 및 실시간 로깅 검증
+  - `MLOFI / microprice / queue dynamics` 구현
+- Sprint 2 완료
+  - feature builder 연결
+  - baseline vs microstructure-enhanced A/B 백테스트 구현
+  - adaptive gating 프로토타입 구현
+- Sprint 3 대부분 완료
+  - meta-labeling 데이터셋 적재(`meta_labels`)
+  - meta gate 연결(`take / reduce / skip`)
+  - calibration 리포트 자동 생성
+- Sprint 4 부분 완료
+  - toxicity proxy 계산
+  - toxicity gate(`pass / reduce / block`) 구현
+  - rollout readiness 리포트 자동 생성
+
+### 현재 생성된 주요 산출물
+
+- `baseline_ensemble_report.md`
+- `baseline_metrics.json`
+- `microstructure_ab_report.md`
+- `microstructure_ab_metrics.json`
+- `calibration_report.md`
+- `calibration_metrics.json`
+- `meta_gate_tuning_report.md`
+- `meta_gate_tuning_metrics.json`
+- `rollout_readiness_report.md`
+- `rollout_readiness_metrics.json`
+
+### 현재 판단
+
+- 문서 전체 목표 상태가 100% 완료된 것은 아님
+- 실전 적용 단계는 아직 `shadow` 유지가 타당
+- `alert_only -> small size -> full`로 올리기 전에 추가 검증 필요
+
+## Next Work
+
+### 우선순위 높음
+
+1. `meta_labels` 추가 누적 확인
+   - 최소 20건 이상 누적 후 `alert_only` 재평가
+   - 가능하면 100건 이상 누적 후 meta gate threshold 재튜닝
+2. toxicity gate 실전 검증
+   - 실제 장중 `toxicity_reduce` 또는 `toxicity_block` 발생 사례 확보
+   - 정상 장세에서 과도 차단 없는지 확인
+3. calibration 개선
+   - 현재 ECE가 아직 높아 보수적 운영 필요
+   - 표본 추가 후 `calibration_report.md` 재생성 및 개선 여부 비교
+
+### 아직 남은 구현
+
+- abstention threshold / confidence-gap 기반 보류 로직 명시적 구현
+- reliability dashboard 확장
+- toxicity gate 전용 backtest / stress-day 검증
+- feature flag 기반 rollout 제어
+- `alert_only` 모드 구현
+- `small_size live` 모드 구현
+- `full rollout` 자동 승격 기준과 운영 자동화
+
+### 다음 점검 포인트
+
+- `ensemble_decisions`에 `meta_*`, `toxicity_*` 컬럼이 장중 신규 row에 정상 저장되는지 확인
+- `scripts/summarize_ensemble_gating.py`로 `toxicity pass/reduce/block` 집계 확인
+- `scripts/generate_meta_gate_tuning_report.py` 재실행 후 threshold 추천 갱신
+- `scripts/generate_rollout_readiness_report.py` 재실행 후 `shadow -> alert_only` 승격 가능 여부 재판정
+
 ## 목적
 
 현재 `앙상블 신호 방향`은 6개 호라이즌 확률을 고정 가중치로 합산해 `LONG / SHORT / FLAT`을 결정한다. 이 방식은 단순하고 해석 가능하다는 장점이 있지만, 장중 상태 변화에 둔감하고, 깊은 호가창 정보와 실행 가치 판단이 부족하다.

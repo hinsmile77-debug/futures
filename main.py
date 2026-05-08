@@ -21,6 +21,8 @@ import datetime
 import time
 import logging
 import math
+import json
+import subprocess
 import numpy as np
 from typing import Optional
 
@@ -91,6 +93,8 @@ _PARAM_FEAT_MAP = {
     "다이버전스 지수": "foreign_retail_divergence",
     "프로그램 비차익": "program_non_arb_net",
 }
+
+EFFECT_MONITOR_HISTORY_PATH = os.path.join(BASE_DIR, "effect_monitor_history.json")
 
 
 class TradingSystem:
@@ -172,6 +176,7 @@ class TradingSystem:
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._last_balance_result: dict = {}
+        self._effect_report_tick: int = 0
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
         self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
@@ -1271,6 +1276,16 @@ class TradingSystem:
         # 🧠 자가학습 모니터 패널 갱신 (매분)
         self.dashboard.update_learning(self._gather_learning_stats())
 
+        # 🎯 효과 검증 리포트 자동 갱신
+        self._effect_report_tick += 1
+        if self._effect_report_tick == 1 or self._effect_report_tick % 15 == 1:
+            self._run_effect_report_script("generate_calibration_report.py")
+            self._run_effect_report_script("generate_meta_gate_tuning_report.py", "5m")
+            self._run_effect_report_script("generate_rollout_readiness_report.py")
+            if self._effect_report_tick == 1 or self._effect_report_tick % 30 == 1:
+                self._run_effect_report_script("run_microstructure_ab_backtest.py")
+            self._append_effect_monitor_history()
+
         # 🎯 학습 효과 검증기 패널 갱신 (5분마다 — DB 쿼리 비용 분산)
         self._efficacy_tick += 1
         if self._efficacy_tick % 5 == 1:   # 첫 분 + 이후 5분마다
@@ -1615,6 +1630,85 @@ class TradingSystem:
             "last_event":        last_ev,
         }
 
+    def _load_json_file(self, path: str) -> dict:
+        try:
+            if not os.path.exists(path):
+                return {}
+            with open(path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception as exc:
+            logger.warning("[EffectReports] json load failed %s: %s", path, exc)
+            return {}
+
+    def _run_effect_report_script(self, script_name: str, *args: str) -> bool:
+        script_path = os.path.join(BASE_DIR, "scripts", script_name)
+        try:
+            result = subprocess.run(
+                [sys.executable, script_path, *args],
+                cwd=BASE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+        except Exception as exc:
+            logger.warning("[EffectReports] run failed %s: %s", script_name, exc)
+            return False
+
+        if result.returncode != 0:
+            logger.warning(
+                "[EffectReports] %s rc=%s stderr=%s",
+                script_name,
+                result.returncode,
+                (result.stderr or "").strip()[-300:],
+            )
+            return False
+        return True
+
+    def _append_effect_monitor_history(self) -> None:
+        ab = self._load_json_file(os.path.join(BASE_DIR, "microstructure_ab_metrics.json"))
+        calib = self._load_json_file(os.path.join(BASE_DIR, "calibration_metrics.json"))
+        meta = self._load_json_file(os.path.join(BASE_DIR, "meta_gate_tuning_metrics.json"))
+        rollout = self._load_json_file(os.path.join(BASE_DIR, "rollout_readiness_metrics.json"))
+        if not any([ab, calib, meta, rollout]):
+            return
+
+        baseline = ab.get("baseline", {})
+        enhanced = ab.get("enhanced", {})
+        best_grid = meta.get("best_grid", {})
+        snapshot = {
+            "ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ab_pnl_delta": round(
+                float(enhanced.get("total_pnl_pts", 0.0) or 0.0)
+                - float(baseline.get("total_pnl_pts", 0.0) or 0.0),
+                6,
+            ),
+            "ab_accuracy_delta": round(
+                float(enhanced.get("directional_accuracy", 0.0) or 0.0)
+                - float(baseline.get("directional_accuracy", 0.0) or 0.0),
+                6,
+            ),
+            "calibration_ece": round(float(calib.get("overall", {}).get("ece", 0.0) or 0.0), 6),
+            "meta_count": int(meta.get("count", 0) or 0),
+            "meta_match_rate": round(float(best_grid.get("match_rate", 0.0) or 0.0), 6),
+            "rollout_stage": str(rollout.get("recommended_stage", "shadow") or "shadow"),
+        }
+
+        history = []
+        if os.path.exists(EFFECT_MONITOR_HISTORY_PATH):
+            history = self._load_json_file(EFFECT_MONITOR_HISTORY_PATH)
+            if not isinstance(history, list):
+                history = []
+        if history and history[-1] == snapshot:
+            return
+        history.append(snapshot)
+        history = history[-120:]
+        try:
+            with open(EFFECT_MONITOR_HISTORY_PATH, "w", encoding="utf-8") as fh:
+                json.dump(history, fh, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("[EffectReports] history save failed: %s", exc)
+
     # ── 효과 검증 통계 수집 ──────────────────────────────────
     def _gather_efficacy_stats(self) -> dict:
         """EfficacyPanel 업데이트용 DB 쿼리 결과 반환 (5분마다 호출)"""
@@ -1631,12 +1725,24 @@ class TradingSystem:
         except Exception as e:
             logger.warning(f"[Efficacy] 쿼리 실패: {e}")
             calib, grades, regime, hist = [], [], [], []
+        ab_metrics = self._load_json_file(os.path.join(BASE_DIR, "microstructure_ab_metrics.json"))
+        calibration_metrics = self._load_json_file(os.path.join(BASE_DIR, "calibration_metrics.json"))
+        meta_metrics = self._load_json_file(os.path.join(BASE_DIR, "meta_gate_tuning_metrics.json"))
+        rollout_metrics = self._load_json_file(os.path.join(BASE_DIR, "rollout_readiness_metrics.json"))
+        report_history = self._load_json_file(EFFECT_MONITOR_HISTORY_PATH)
+        if not isinstance(report_history, list):
+            report_history = []
         return {
             "calibration_bins": calib,
-            "grade_stats":      grades,
-            "regime_stats":     regime,
+            "grade_stats": grades,
+            "regime_stats": regime,
             "accuracy_history": hist,
-            "updated_at":       datetime.datetime.now().strftime("%H:%M"),
+            "ab_metrics": ab_metrics,
+            "calibration_metrics": calibration_metrics,
+            "meta_metrics": meta_metrics,
+            "rollout_metrics": rollout_metrics,
+            "report_history": report_history,
+            "updated_at": datetime.datetime.now().strftime("%H:%M"),
         }
 
     # ── 당일 Profit Factor 계산 ────────────────────────────────

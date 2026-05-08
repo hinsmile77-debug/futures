@@ -585,3 +585,38 @@
   - expected after next fill:
     - balance TR request/response logs right after `EntryFillFlow` or `ExitFillFlow`
     - dashboard summary no longer stuck at startup zeros
+## 2026-05-08 Ensemble Upgrade session close-out
+
+### DONE reflected today
+
+- [DONE 2026-05-08] `ENSEMBLE_SIGNAL_UPGRADE_PLAN.md` 에 `Update Status`, `Next Work`, `Effect Validation Checklist` 반영
+- [DONE 2026-05-08] 대시보드 중간 패널에 `A/B / Calibration / Meta Gate / Rollout` 효과 검증 탭 추가
+- [DONE 2026-05-08] 네 리포트 자동 주기 실행 연결
+  - `Calibration / Meta Gate / Rollout`: 15분
+  - `A/B`: 30분
+- [DONE 2026-05-08] `effect_monitor_history.json` 추이 스냅샷 저장 시작
+- [DONE 2026-05-08] `EfficacyPanel` 탭 툴팁 오배선 버그 수정 및 실제 툴팁 표시 검증 완료
+- [DONE 2026-05-08] `predictions` 원확률 저장, `ensemble_decisions` gating/toxicity/meta 저장, `MICRO-MINUTE <-> raw_features` 대조 경로까지 검증 완료
+
+### NEXT priority
+
+- [NEXT 2026-05-09] horizon별 `temperature scaling` 도입
+  - 목표: `ECE 0.399783` 개선
+  - 결과물: calibration before/after 비교 리포트
+
+- [NEXT 2026-05-09] A/B negative delta 원인 분석
+  - 현재: `pnl delta=-3.60pt`, `accuracy delta=-0.10%p`, `changed sample=53`
+  - 목표: 어떤 gating / microstructure 신호가 손익 악화에 기여했는지 구간별 분석
+
+- [NEXT 2026-05-09] `meta_labels` 추가 축적 후 threshold 재튜닝
+  - 현재 표본: `34`
+  - 목표: `take/reduce/skip` 임계값 재추천 및 실제 손실 회피 효과 검증
+
+- [NEXT 2026-05-09] rollout 승격 재평가
+  - 현재 추천 단계: `shadow`
+  - 승격 조건: calibration 개선 + meta 표본 증가 + A/B 재개선 확인
+
+- [NEXT 2026-05-09] toxicity gate 장중 발동률 집계
+  - `pass/reduce/block` 저장분이 다음 장중부터 누적되므로 실제 분포 확인 필요
+
+---

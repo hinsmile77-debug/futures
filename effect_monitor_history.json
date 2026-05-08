@@ -1,0 +1,47 @@
+[
+  {
+    "ts": "2026-05-08 15:04:36",
+    "ab_pnl_delta": -3.6,
+    "ab_accuracy_delta": -0.001,
+    "calibration_ece": 0.399783,
+    "meta_count": 34,
+    "meta_match_rate": 0.4118,
+    "rollout_stage": "shadow"
+  },
+  {
+    "ts": "2026-05-08 15:06:02",
+    "ab_pnl_delta": -3.6,
+    "ab_accuracy_delta": -0.001,
+    "calibration_ece": 0.399806,
+    "meta_count": 36,
+    "meta_match_rate": 0.4167,
+    "rollout_stage": "shadow"
+  },
+  {
+    "ts": "2026-05-08 15:21:01",
+    "ab_pnl_delta": -3.6,
+    "ab_accuracy_delta": -0.001,
+    "calibration_ece": 0.401329,
+    "meta_count": 51,
+    "meta_match_rate": 0.3333,
+    "rollout_stage": "shadow"
+  },
+  {
+    "ts": "2026-05-08 15:27:02",
+    "ab_pnl_delta": -3.6,
+    "ab_accuracy_delta": -0.0009,
+    "calibration_ece": 0.402677,
+    "meta_count": 56,
+    "meta_match_rate": 0.3036,
+    "rollout_stage": "shadow"
+  },
+  {
+    "ts": "2026-05-08 15:33:02",
+    "ab_pnl_delta": -3.6,
+    "ab_accuracy_delta": -0.0009,
+    "calibration_ece": 0.402442,
+    "meta_count": 57,
+    "meta_match_rate": 0.2982,
+    "rollout_stage": "shadow"
+  }
+]

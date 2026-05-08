@@ -851,3 +851,34 @@ STEP4: get_features() → 캐시 읽기만 (TR 호출 없음)
 
 - `2026-05-06 18:51:29 [BalanceUIFallback] summary blank from OPW20006 ... applied={'총매매': '0', '총평가손익': '0', '실현손익': '0', '총평가': '0', '총평가수익률': '0.00', '추정자산': '0'}`
 - 현재 상단 패널은 더 이상 빈 대괄호를 표시하지 않고, 값이 없으면 공란/0 fallback으로 유지됨.
+## 2026-05-08 최신 반영 - Ensemble Upgrade / Effect Validation
+
+| 항목 | 현재 상태 |
+|---|---|
+| Sprint 1 | 완료. baseline 저장, 5레벨 호가 수신 검증, `MLOFI / microprice / queue dynamics` 구현 및 실시간 로그 검증 완료 |
+| Sprint 2 | 완료. `FeatureBuilder` 연결, `adaptive gating` 프로토타입 반영, baseline vs enhanced A/B 백테스트 스크립트/리포트 생성 완료 |
+| Sprint 3 | 대부분 완료. `meta_labels`, `meta gate`, calibration 리포트 자동 생성, `ensemble_decisions` 저장 강화 완료 |
+| Sprint 4 | 부분 완료. `toxicity gate`, rollout readiness 리포트, shadow 운영 기준 추가 완료 |
+| 원확률 저장 | `predictions` 테이블에 `up_prob/down_prob/flat_prob` 저장 경로 및 migration 완료. 재시작 이후 신규 예측은 원확률 저장 확인 |
+| 효과 검증 UI | 대시보드 중간 패널에 `A/B / Calibration / Meta Gate / Rollout` 탭 추가 완료 |
+| 자동 리포트 주기 실행 | `main.py`에서 `Calibration/Meta/Rollout=15분`, `A/B=30분` 주기로 리포트 자동 재생성 및 스냅샷 누적 |
+| 이력 저장 | `effect_monitor_history.json` 에 효과 검증 추이 스냅샷 누적 시작 |
+| 탭 툴팁 | `EfficacyPanel` 탭바에 직접 툴팁 부착하도록 수정 완료. 초기 오배선 버그 수정됨 |
+| 현재 운영 판단 | rollout 추천 단계는 아직 `shadow` |
+
+### 현재 관측 지표 (2026-05-08 세션 마감 기준)
+
+- `A/B pnl delta`: `-3.60pt`
+- `A/B accuracy delta`: `-0.10%p`
+- `Calibration ECE`: `0.399783`
+- `Meta labels`: `34`
+- `Meta best match rate`: `41.18%`
+- `Rollout stage`: `shadow`
+
+### 현재 판단
+
+- 기능 구현/배선 자체는 큰 축에서 완료됨
+- 다만 실전 승격 관점에서는 `Calibration` 과 `A/B delta` 가 아직 약점
+- 다음 우선순위는 `temperature scaling 기반 calibration 개선`, `changed sample 53건 분석`, `meta label 추가 축적 후 rollout 재평가`
+
+---

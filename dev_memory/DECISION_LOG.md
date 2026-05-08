@@ -674,3 +674,29 @@ hurst_idx = reg[0]
 **결정**: 현재는 `OPW20006`을 잔고행의 1차 원본으로 유지하되, 합계 summary는 "원문값 우선 + fallback 보정"으로 표시한다.
 **이유**: `OPW20006` 단독으로는 장후/무포지션에서 summary가 공란이 될 수 있으므로, 화면을 항상 비지 않게 유지하는 것이 우선.
 **후속 조건**: 장중에도 summary blank가 반복되면 합계 6개는 전용 계좌합계 TR로 분리 구현한다.
+## 2026-05-08 Ensemble Upgrade / Effect Validation decisions
+
+### [D24] 효과 검증은 별도 화면이 아니라 기존 대시보드 중간 패널 탭으로 노출
+**결정**: `A/B`, `Calibration`, `Meta Gate`, `Rollout` 을 별도 창으로 분리하지 않고 `EfficacyPanel` 내부 탭으로 표시한다.  
+**이유**: 장중 운영자는 예측/진입/학습 상태와 효과 검증 상태를 한 화면에서 이어서 봐야 판단이 빠르다.  
+**구현**: `dashboard/main_dashboard.py`
+
+### [D25] 효과 검증 리포트는 비대칭 주기로 자동 생성
+**결정**:
+- `Calibration / Meta Gate / Rollout`: 15분 주기
+- `A/B`: 30분 주기
+**이유**: `A/B` 백테스트는 상대적으로 비용이 높고 즉시성 요구가 낮다. 반면 calibration / meta / rollout 상태는 장중 추세 확인이 더 중요하다.  
+**구현**: `main.py`, `effect_monitor_history.json`
+
+### [D26] 효과 검증 추이는 JSON snapshot 기반으로 UI에 공급
+**결정**: UI가 각 md/json 리포트를 매번 직접 재파싱하지 않고, 핵심 지표를 `effect_monitor_history.json` 에 스냅샷으로 누적해 간단히 시각화한다.  
+**이유**: 추세 표시를 단순화하고, 탭별 스파크라인/최근 변화량 계산을 안정적으로 유지하기 위함.  
+**구현**: `main.py::_gather_efficacy_stats()`, `dashboard/main_dashboard.py`
+
+### [B50] 효과 검증 탭 툴팁 초기 부착 위치 오류
+**파일**: `dashboard/main_dashboard.py`  
+**증상**: 탭 툴팁을 추가했지만 실제 `A/B / Calibration / Meta Gate / Rollout` 탭에 툴팁이 표시되지 않음  
+**원인**: 툴팁 부착이 실제 `EfficacyPanel._report_tabs` 가 아니라 잘못된 패널/탭 객체에 들어가 있었음  
+**Fix**: `EfficacyPanel` 생성 시 `self._report_tabs.tabBar().setTabToolTip(...)` 로 직접 부착하도록 수정
+
+---
