@@ -56,6 +56,9 @@ class CircuitBreaker:
         # 트리거 ⑤ 최근 API 지연
         self._last_latency: float = 0.0
 
+        # 트리거 ③ 연속 경고 카운터 — 2회 연속 미달 시 HALT
+        self._cb3_warn_count: int = 0
+
     # ── 상태 조회 ──────────────────────────────────────────────
     @property
     def state(self) -> str:
@@ -103,13 +106,33 @@ class CircuitBreaker:
     def record_win(self):
         self._consec_stops = 0   # 수익 시 카운터 초기화
 
-    # ── 트리거 ③ 정확도 저하 ──────────────────────────────────
+    # ── 트리거 ③ 정확도 저하 (30분 호라이즌 전용) ───────────────
     def record_accuracy(self, correct: bool):
         self._accuracy_buf.append(1.0 if correct else 0.0)
-        if len(self._accuracy_buf) >= 30:
+        if len(self._accuracy_buf) >= 20:
             acc = sum(self._accuracy_buf) / len(self._accuracy_buf)
             if acc < CB_ACCURACY_MIN_30M:
-                self._trigger_halt(f"30분 정확도 {acc:.1%} < {CB_ACCURACY_MIN_30M:.0%}")
+                self._cb3_warn_count += 1
+                if self._cb3_warn_count >= 2:
+                    self._trigger_halt(
+                        f"30분 정확도 {acc:.1%} < {CB_ACCURACY_MIN_30M:.0%} "
+                        f"(2회 연속 미달)"
+                    )
+                else:
+                    msg = (
+                        f"[CB③ 경고 {self._cb3_warn_count}/2] "
+                        f"30분 정확도 {acc:.1%} < {CB_ACCURACY_MIN_30M:.0%} "
+                        f"— 다음 확인 시 당일 정지"
+                    )
+                    logger.warning(msg)
+                    log_manager.system(msg, "WARNING")
+                    from utils.notify import notify_circuit_breaker
+                    notify_circuit_breaker(
+                        f"30분 정확도 {acc:.1%} 경고 ({self._cb3_warn_count}/2)",
+                        "다음 미달 시 당일 정지",
+                    )
+            else:
+                self._cb3_warn_count = 0  # 회복 시 카운터 초기화
 
     # ── 트리거 ④ ATR 급등 ─────────────────────────────────────
     def record_atr(self, atr_ratio: float):
@@ -168,6 +191,7 @@ class CircuitBreaker:
         self._consec_stops = 0
         self._accuracy_buf.clear()
         self._atr_buf.clear()
+        self._cb3_warn_count = 0
         logger.info("[CB] 일간 리셋 완료")
         log_manager.system("[CB] 일간 리셋 완료", "INFO")
 
@@ -178,4 +202,6 @@ class CircuitBreaker:
             "consec_stops":   self._consec_stops,
             "last_latency":   self._last_latency,
             "accuracy_30m":   round(sum(self._accuracy_buf) / max(len(self._accuracy_buf), 1), 3),
+            "cb3_warn_count": self._cb3_warn_count,
+            "cb3_samples":    len(self._accuracy_buf),
         }

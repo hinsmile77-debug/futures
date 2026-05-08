@@ -1,7 +1,7 @@
-# KOSPI 200 선물 방향 예측 시스템 — 한량이 (Futures Edition)
+# KOSPI 200 선물 방향 예측, 자동 진입/청산 시스템 — 미륵이 (Futures Edition)
 
 > **프로젝트 경로**: `C:\Users\82108\PycharmProjects\futures`  
-> **기반 기술**: Python 3.8 (32-bit) + 키움증권 OpenAPI+  
+> **기반 기술**: Python 3.7 (32-bit) + 키움증권 OpenAPI+  
 > **최종 업데이트**: 2026-04
 
 ---

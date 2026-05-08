@@ -31,9 +31,10 @@ RT_FUTURES      = "선물시세"      # 선물 체결 틱 (FC0 해당)
 RT_FUTURES_HOGA = "선물호가잔량"   # 선물 호가 (FH0 해당)
 
 # ── 선물 계약 상수 ────────────────────────────────────────────
-FUTURES_TICK_SIZE   = 0.05      # 최소 호가 단위
-FUTURES_TICK_VALUE  = 250_000   # 1틱 = 250,000원
-FUTURES_MULTIPLIER  = 500_000   # 계약 배수 (지수×500,000원)
+FUTURES_TICK_SIZE   = 0.05      # 최소 호가 단위 (0.05pt)
+FUTURES_TICK_VALUE  = 12_500    # 1틱 = 0.05pt × 250,000원 = 12,500원
+FUTURES_PT_VALUE    = 250_000   # 1pt = 250,000원 (KOSPI200 선물 2017~ 기준)
+FUTURES_MULTIPLIER  = 250_000   # FUTURES_PT_VALUE alias — 하위 호환용
 
 # ── 고정 CORE 피처명 ──────────────────────────────────────────
 CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_imbalance"]

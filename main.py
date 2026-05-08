@@ -47,6 +47,7 @@ from utils.db_utils import (
     fetch_trend_monthly, fetch_trend_yearly,
 )
 from config.settings import TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS
+from config.constants import FUTURES_PT_VALUE
 from config import secrets as _secrets
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -595,13 +596,16 @@ class TradingSystem:
         verified = self.pred_buffer.verify_and_update(ts, close)
         self._verified_today += len(verified)
         for v in verified:
-            # CB③ 정확도 집계 조건:
-            #  1) bootstrap 1/3 균등 예측(confidence≈0.333) 제외
-            #  2) [B57] 이번 세션 시작 이전 예측 제외 — 재시작 시 이전 세션 예측이
+            # CB③ 정확도 집계 조건 (30분 호라이즌 전용):
+            #  1) 30분 호라이즌만 — CB③ 정의가 "30분 정확도"이므로 전 호라이즌 혼입 금지
+            #  2) bootstrap 1/3 균등 예측(confidence≈0.333) 제외
+            #  3) [B57] 이번 세션 시작 이전 예측 제외 — 재시작 시 이전 세션 예측이
             #     대량 검증되어 accuracy_buf 즉시 충전 → CB③ 오발동 방지
             _conf = v.get("confidence", 0.0) or 0.0
             _pred_ts = v.get("ts", "") or ""
-            if _conf > 0.38 and _pred_ts >= self._session_start_ts:
+            if (v["horizon"] == "30m"
+                    and _conf > 0.38
+                    and _pred_ts >= self._session_start_ts):
                 self.circuit_breaker.record_accuracy(v["correct"])
             if v["correct"]:
                 log_manager.learning(f"✓ {v['horizon']} 예측 적중 (conf={_conf:.1%})")
@@ -1077,8 +1081,8 @@ class TradingSystem:
 
         # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
         _daily   = self.position.daily_stats()
-        _unreal  = self.position.unrealized_pnl_pts(close) * 500_000  # KRW
-        _var_krw = -(atr * 1.65 * self.position.quantity * 500_000) if self.position.quantity else 0.0
+        _unreal  = self.position.unrealized_pnl_pts(close) * FUTURES_PT_VALUE
+        _var_krw = -(atr * 1.65 * self.position.quantity * FUTURES_PT_VALUE) if self.position.quantity else 0.0
         self.dashboard.update_pnl_metrics(_unreal, _daily["pnl_krw"], _var_krw)
 
         # 당일 진입 통계 갱신 — STEP 9 예외와 무관하게 항상 실행
@@ -1207,7 +1211,7 @@ class TradingSystem:
         )
         _daily = self.position.daily_stats()
         self.dashboard.update_pnl_metrics(
-            self.position.unrealized_pnl_pts(result["exit_price"]) * 500_000,
+            self.position.unrealized_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
             _daily["pnl_krw"],
             0.0,
         )
@@ -2334,7 +2338,7 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
 
     _daily = self.position.daily_stats()
     self.dashboard.update_pnl_metrics(
-        self.position.unrealized_pnl_pts(result["exit_price"]) * 500_000,
+        self.position.unrealized_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
         _daily["pnl_krw"],
         0.0,
     )

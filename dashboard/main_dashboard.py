@@ -37,6 +37,8 @@ from PyQt5.QtGui import (
     QTextCursor, QTextBlockFormat,
 )
 
+from config.constants import FUTURES_PT_VALUE
+
 logger = logging.getLogger("SYSTEM")
 
 
@@ -1563,9 +1565,8 @@ class ExitPanel(QWidget):
         self.entry_price.setText(f"{entry:.2f}")
         self.cur_price.setText(f"{cur:.2f}")
 
-        # 미실현 손익 (선물 1pt = 500,000원)
         pnl_pts = (cur - entry) * mult
-        pnl_krw = pnl_pts * qty * 500_000
+        pnl_krw = pnl_pts * qty * FUTURES_PT_VALUE
         col = C['green'] if pnl_krw >= 0 else C['red']
         self.unreal_pnl.setText(f"{pnl_krw:+,.0f}원")
         self.unreal_pnl.setStyleSheet(f"color:{col};font-size:{S.f(14)}px;font-weight:bold;")
@@ -4009,6 +4010,14 @@ class MireukDashboard(QMainWindow):
         self.trend_panel    = TrendPanel()
         self.alpha_panel    = AlphaPanel()
 
+        # 🧭 전략 운용현황 패널 (strategy_registry + drift_detector 연동)
+        try:
+            from dashboard.strategy_dashboard_tab import StrategyPanel
+            self.strategy_panel = StrategyPanel()
+        except Exception as _e:
+            logger.warning("[Dashboard] StrategyPanel 로드 실패: %s", _e)
+            self.strategy_panel = None
+
         mid_tabs.addTab(self._wrap(self.div_panel),      "다이버전스 + 포지션")
         mid_tabs.addTab(self._wrap(self.feat_panel),     "동적 피처 (SHAP)")
         mid_tabs.addTab(self._wrap(self.exit_panel),     "청산 관리")
@@ -4018,6 +4027,8 @@ class MireukDashboard(QMainWindow):
         mid_tabs.addTab(self._wrap(self.efficacy_panel), "🎯 효과 검증")
         mid_tabs.addTab(self._wrap(self.trend_panel),    "📈 성장 추이")
         mid_tabs.addTab(self._wrap(self.alpha_panel),    "알파 리서치 봇")
+        if self.strategy_panel is not None:
+            mid_tabs.addTab(self._wrap(self.strategy_panel), "🧭 전략 운용현황")
         ml.addWidget(mid_tabs)
 
         # 우측: 5층 로그
@@ -4282,6 +4293,27 @@ class DashboardAdapter:
     def update_divergence(self, div_data: dict):
         """다이버전스 패널 업데이트"""
         self._win.div_panel.update_data(div_data)
+
+    def update_strategy_ops(self, data: dict) -> None:
+        """
+        🧭 전략 운용현황 탭 데이터 주입 (§11 Phase 4 adapter).
+
+        data keys:
+          drift_level : int   — CUSUM DriftLevel (0~3)
+          psi_val     : float — RegimeFingerprint PSI 값
+          psi_level   : int   — RegimeFingerprint DriftLevel (0~3)
+        """
+        sp = getattr(self._win, "strategy_panel", None)
+        if sp is None:
+            return
+        try:
+            sp.set_drift_level(data.get("drift_level", 0))
+            sp.set_fingerprint_level(
+                float(data.get("psi_val", 0.0)),
+                int(data.get("psi_level", 0)),
+            )
+        except Exception:
+            pass
 
     def update_shap(self, core_vals, dynamic_items, rank_vals):
         """SHAP 피처 패널 업데이트"""

@@ -9,8 +9,13 @@ import logging
 import os
 from typing import Optional, Dict
 
-from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT
-from config.settings import ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT
+from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT, FUTURES_PT_VALUE
+from config.settings import ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, FUTURES_COMMISSION_RATE
+
+
+def _calc_commission(price: float, quantity: int) -> float:
+    """편도 수수료 계산 (왕복은 호출부에서 × 2)"""
+    return price * quantity * FUTURES_PT_VALUE * FUTURES_COMMISSION_RATE
 
 logger = logging.getLogger("TRADE")
 
@@ -40,9 +45,10 @@ class PositionTracker:
 
         self._optimistic: bool = False  # True = open_position() called speculatively; Chejan will correct price
 
-        self._daily_pnl_pts: float = 0.0
-        self._daily_trades:  int   = 0
-        self._daily_wins:    int   = 0
+        self._daily_pnl_pts:   float = 0.0
+        self._daily_trades:    int   = 0
+        self._daily_wins:      int   = 0
+        self._daily_commission: float = 0.0
         self.last_update_reason: str = "init"
         self.last_update_ts: Optional[datetime.datetime] = None
 
@@ -98,9 +104,11 @@ class PositionTracker:
 
         mult = 1 if self.status == POSITION_LONG else -1
         pnl_pts = (exit_price - self.entry_price) * mult
-        pnl_krw = pnl_pts * 500_000 * self.quantity   # 선물 1pt = 500,000원
+        commission = _calc_commission(self.entry_price, self.quantity) * 2  # 왕복
+        pnl_krw = pnl_pts * FUTURES_PT_VALUE * self.quantity - commission
 
         self._daily_pnl_pts += pnl_pts * self.quantity
+        self._daily_commission += commission
         self._daily_trades  += 1
         if pnl_pts > 0:
             self._daily_wins += 1
@@ -116,6 +124,7 @@ class PositionTracker:
             "quantity":     self.quantity,
             "pnl_pts":      round(pnl_pts, 4),
             "pnl_krw":      round(pnl_krw, 0),
+            "commission":   round(commission, 0),
             "exit_reason":  reason,
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
@@ -124,7 +133,7 @@ class PositionTracker:
 
         logger.info(
             f"[Position] 청산 {self.status} @ {exit_price} "
-            f"| PnL={pnl_pts:+.2f}pt ({pnl_krw:+,.0f}원) | {reason}"
+            f"| PnL={pnl_pts:+.2f}pt ({pnl_krw:+,.0f}원) 수수료={commission:,.0f}원 | {reason}"
         )
 
         # 초기화
@@ -238,8 +247,10 @@ class PositionTracker:
 
         mult = 1 if self.status == POSITION_LONG else -1
         pnl_pts = (exit_price - self.entry_price) * mult
-        pnl_krw = pnl_pts * 500_000 * quantity
+        commission = _calc_commission(self.entry_price, quantity) * 2  # 왕복
+        pnl_krw = pnl_pts * FUTURES_PT_VALUE * quantity - commission
         self._daily_pnl_pts += pnl_pts * quantity
+        self._daily_commission += commission
 
         is_final = quantity == self.quantity
         if is_final:
@@ -338,9 +349,11 @@ class PositionTracker:
 
         mult    = 1 if self.status == POSITION_LONG else -1
         pnl_pts = (exit_price - self.entry_price) * mult
-        pnl_krw = pnl_pts * 500_000 * qty
+        commission = _calc_commission(self.entry_price, qty) * 2  # 왕복
+        pnl_krw = pnl_pts * FUTURES_PT_VALUE * qty - commission
 
         self._daily_pnl_pts += pnl_pts * qty
+        self._daily_commission += commission
         self.quantity        -= qty
         self.last_update_reason = f"partial_close:{reason}"
         self.last_update_ts = datetime.datetime.now()
@@ -481,13 +494,16 @@ class PositionTracker:
 
     # ── 일일 통계 ──────────────────────────────────────────────
     def daily_stats(self) -> dict:
+        gross_krw = round(self._daily_pnl_pts * FUTURES_PT_VALUE, 0)
         return {
-            "trades":   self._daily_trades,
-            "wins":     self._daily_wins,
-            "losses":   self._daily_trades - self._daily_wins,
-            "win_rate": self._daily_wins / max(self._daily_trades, 1),
-            "pnl_pts":  round(self._daily_pnl_pts, 4),
-            "pnl_krw":  round(self._daily_pnl_pts * 500_000, 0),
+            "trades":     self._daily_trades,
+            "wins":       self._daily_wins,
+            "losses":     self._daily_trades - self._daily_wins,
+            "win_rate":   self._daily_wins / max(self._daily_trades, 1),
+            "pnl_pts":    round(self._daily_pnl_pts, 4),
+            "pnl_krw":    round(gross_krw - self._daily_commission, 0),  # 수수료 차감 순손익
+            "gross_krw":  gross_krw,
+            "commission": round(self._daily_commission, 0),
         }
 
     def restore_daily_stats(self, rows) -> None:
@@ -503,6 +519,12 @@ class PositionTracker:
             self._daily_trades  += 1
             if pnl_pts > 0:
                 self._daily_wins += 1
+            # trades.db에 commission 컬럼이 있으면 복원, 없으면 재계산
+            commission = float(row["commission"] if "commission" in row.keys() else 0.0)
+            if commission == 0.0 and "entry_price" in row.keys():
+                ep = float(row["entry_price"] or 0.0)
+                commission = _calc_commission(ep, qty) * 2
+            self._daily_commission += commission
 
     def reset_daily(self):
         self._daily_pnl_pts = 0.0

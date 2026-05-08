@@ -20,8 +20,9 @@ from config import secrets as _secrets
 
 from config.constants import (
     POSITION_LONG, POSITION_SHORT, POSITION_FLAT,
-    FUTURES_MULTIPLIER,
+    FUTURES_PT_VALUE,
 )
+FUTURES_MULTIPLIER = FUTURES_PT_VALUE   # 하위 호환 alias
 from config.settings import PARTIAL_EXIT_RATIOS
 
 from strategy.exit.time_exit import TimeExitManager
