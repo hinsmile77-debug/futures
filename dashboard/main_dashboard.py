@@ -5168,6 +5168,9 @@ class MinuteChartDialog(QDialog):
         root.addWidget(self._status)
         root.addWidget(self._chart, 1)
 
+        self._toggle_shortcut = QShortcut(QKeySequence(self.SHORTCUT_TEXT), self)
+        self._toggle_shortcut.activated.connect(self.close)
+
         self.reload_today()
 
     def reload_today(self):
