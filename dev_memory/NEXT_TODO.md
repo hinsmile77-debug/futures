@@ -8,6 +8,58 @@
 
 ---
 
+## 2026-05-10 Cybos Plus follow-up
+
+### DONE today
+
+- [DONE 2026-05-10] implement concrete `collection/cybos/` runtime path for connection, balance, snapshot, realtime, and fill wiring
+- [DONE 2026-05-10] add `scripts/check_cybos_session.py` for admin 32-bit Cybos smoke testing
+- [DONE 2026-05-10] add `start_mireuk_cybos_test.bat` for safe Cybos-only startup without changing default Kiwoom execution
+- [DONE 2026-05-10] correct `FutureMst` field indices after live snapshot validation
+- [DONE 2026-05-10] fix Cybos startup account mismatch by auto-switching runtime account to the signed-on broker account when `secrets.py` account is not present in session
+- [DONE 2026-05-10] verify `main.py` can boot UI and enter Qt event loop through Cybos backend
+
+### NEXT priority
+
+- [NEXT 2026-05-12] verify live market realtime flow during KRX hours
+  - confirm `FutureCurOnly` tick events increase
+  - confirm `FutureJpBid` hoga events increase
+  - confirm dashboard price panel updates from Cybos stream
+
+- [NEXT 2026-05-12] run one mock futures order through `CpTd6831`
+  - expected:
+    - order request success
+    - `CpFConclusion` event arrives
+    - pending order / position / dashboard reflect fill correctly
+
+- [NEXT 2026-05-12] validate Cybos fill payload against active `main.py` order state machine
+  - check:
+    - `trade_gubun`
+    - `order_gubun`
+    - `order_status`
+    - `position_qty`
+    - `closable_qty`
+
+- [NEXT 2026-05-12] replace Cybos investor-data placeholder with real Cybos investor/program TR mapping
+  - current status:
+    - no-op / zeros only
+  - risk:
+    - strategy and UI are not yet Cybos-native for investor flow
+
+- [NEXT 2026-05-12] fix dashboard stylesheet parse warnings
+  - scope:
+    - `_HeaderCard`
+    - `QFrame`
+    - `QTableWidget`
+  - goal:
+    - separate UI stylesheet noise from broker-runtime diagnostics
+
+- [NEXT 2026-05-12] replace temporary Kiwoom-compatible Cybos server label handling
+  - current workaround:
+    - Cybos returns `"0"` into `GetServerGubun` path to avoid false mock branches
+  - goal:
+    - explicit broker-aware server-mode handling in `main.py`
+
 ## 2026-05-08 역방향진입 / PnL 분리 / 학습 방화벽 후속
 
 ### [DONE 2026-05-08] 당일 자동종료 후 수동 재시작 시 중복 종료 재실행 방지

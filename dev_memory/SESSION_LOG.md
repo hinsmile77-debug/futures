@@ -4,6 +4,53 @@
 
 ---
 
+## 2026-05-10 (Cybos Plus refactor validation / session close-out)
+
+**Work**
+- Implemented real `CybosAPI` runtime path under `collection/cybos/`:
+  - `CpUtil.CpCybos` connection check
+  - `CpTdUtil.TradeInit`
+  - `CpTd0723` futures balance
+  - `CpTd6831` futures market order path
+  - `CpFConclusion` fill subscription
+  - `FutureCurOnly` / `FutureJpBid` realtime subscription wrapper
+- Added `scripts/check_cybos_session.py` to verify Cybos session, account, balance, snapshot, realtime, and optional order/fill flow from an admin 32-bit Python prompt.
+- Added `start_mireuk_cybos_test.bat` so Cybos can be test-driven without changing the default Kiwoom launcher or global broker setting.
+- Verified Cybos session manually on 32-bit Python:
+  - `IsConnect=1`
+  - `ServerType=1`
+  - `TradeInit=0`
+  - account list includes `333042073`
+- Verified Cybos mock balance behavior:
+  - `CpTd0723` returns `Count=0` with `97007` no-data message when the mock account has no futures position
+  - startup sync now safely interprets this as `FLAT`
+- Corrected `FutureMst` header index mapping after live snapshot check:
+  - `price/open/high/low` now use `71/72/73/74`
+  - `cum_volume` now uses `75`
+  - ask/bid top levels now use `37/54`
+  - ask/bid qty1 now use `42/59`
+- Fixed runtime account mismatch on `main.py` Cybos startup:
+  - if `config/secrets.py` account is not present in the active Cybos SignOn account list, runtime now switches to the logged-in Cybos account automatically
+  - this resolved `CpTd0723 InputCheck Type:0 account number error`
+- Ran `main.py` through the Cybos test launcher and confirmed:
+  - UI boot completes
+  - broker startup sync completes
+  - Cybos balance sync reaches `FLAT`
+  - realtime object starts
+  - Qt event loop enters normally
+
+**Observed issues**
+- `Could not parse stylesheet ...` warnings appear during dashboard startup. These are UI stylesheet parsing warnings, not Cybos COM connection failures.
+- Cybos investor-data path is still a zero/no-op scaffold, so strategy/UI values that depend on investor flow are not yet broker-native on Cybos.
+- Realtime tick/hoga and order/fill loops are still only partially validated because current verification was done on `2026-05-10` (Sunday, market closed).
+
+**Validation summary**
+- Connection: verified
+- Balance TR (`CpTd0723`): verified
+- Snapshot (`FutureMst`): verified after field-index correction
+- Realtime subscription wiring: startup verified, live market event flow still pending
+- Order/fill (`CpTd6831` + `CpFConclusion`): wiring implemented, live mock order validation still pending
+
 ## 2026-05-08 (10차) - 자동종료 재실행 방지 + 봉차트 시인성/토글 개선
 
 **작업**

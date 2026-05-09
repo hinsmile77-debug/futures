@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-05-10
+
+### [D27] keep Kiwoom as default launcher while adding a Cybos-only test launcher
+**Decision**: do not flip the global default broker yet; use `start_mireuk_cybos_test.bat` to force `BROKER_BACKEND=cybos` for one process only.  
+**Reason**: Cybos runtime is now connectable, but live market realtime and order/fill paths are not fully validated yet. This reduces regression risk while allowing full test driving.
+
+### [D28] runtime account fallback should prefer signed-on broker account over stale `secrets.py` account
+**Decision**: when broker session accounts are available and configured account is missing, switch runtime account to the first signed-on broker account.  
+**Reason**: Cybos mock session used account `333042073` while `config/secrets.py` still contained old Kiwoom account `7034809431`; startup balance sync must use broker-session-valid account values or TRs fail immediately.
+
+### [D29] treat Cybos mock `CpTd0723` no-data response as a valid flat-state startup result
+**Decision**: `Count=0` with `97007` no-data response from Cybos mock balance should not block startup or be treated as a mismatch.  
+**Reason**: live verification showed this is the expected empty-position behavior for the mock account.
+
+### [B51] wrong `FutureMst` field indices produced invalid snapshot values
+**File**: `collection/cybos/api_connector.py`, `scripts/check_cybos_session.py`  
+**Symptom**: snapshot returned values like `price=0.412885...` while open/high/low were in the `1100+` range.  
+**Cause**: initial implementation reused incorrect header indices (`11/13/14/15/...`) that map to theoretical/base fields, not current session quote fields.  
+**Fix**:
+- `price/open/high/low` -> `71/72/73/74`
+- `cum_volume` -> `75`
+- `ask1/bid1` -> `37/54`
+- `ask_qty1/bid_qty1` -> `42/59`
+
+### [B52] Cybos COM session visibility can differ by privilege level
+**Symptom**: assistant-side checks repeatedly saw `IsConnect=0` while user-side admin prompt saw `IsConnect=1`.  
+**Conclusion**: Cybos API connectivity checks must be validated from the same privilege/session context that launched CybosPlus.  
+**Operational rule**: use admin 32-bit Python prompt or admin launcher for Cybos verification.
+
 ## 2026-05-08 장마감 자동종료 / 봉차트 UX
 
 ### [D31] 당일 자동종료는 수동 재시작 후에도 재실행하지 않는다

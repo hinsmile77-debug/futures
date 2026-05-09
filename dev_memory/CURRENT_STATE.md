@@ -5,6 +5,27 @@
 
 ---
 
+## 2026-05-10 Cybos Plus status update
+
+| Item | Current status |
+|---|---|
+| Broker abstraction | `main.py` now runs through `create_broker()` and can launch either Kiwoom or Cybos broker backends |
+| Cybos connection | `CybosAPI` can connect successfully on 32-bit Python + pywin32 with active CybosPlus SignOn |
+| Cybos balance sync | `CpTd0723` startup sync works; empty mock balance is interpreted as `FLAT` |
+| Cybos snapshot | `FutureMst` field mapping has been corrected against live snapshot output |
+| Cybos realtime wiring | `FutureCurOnly` and `FutureJpBid` subscription wrappers are implemented and startup successfully |
+| Cybos order/fill wiring | `CpTd6831` order path and `CpFConclusion` fill event path are implemented, but full live mock validation is still pending |
+| Cybos account selection | runtime now falls back to the currently signed-on Cybos account if `config/secrets.py` contains an account not present in the active broker session |
+| Investor flow on Cybos | still placeholder / zero-data implementation |
+| Test launcher | `start_mireuk_cybos_test.bat` available for safe Cybos-only trial runs without changing default Kiwoom startup |
+| Session checker | `scripts/check_cybos_session.py` available for connection/balance/snapshot/realtime/order smoke tests |
+
+### Cybos-specific known gaps
+
+- Live market verification is still incomplete because the latest trial run was performed on `2026-05-10`, a Sunday, with market state `99`.
+- Dashboard stylesheet parsing warnings are still present during startup and should be separated from broker/runtime debugging.
+- Server label compatibility currently returns a Kiwoom-compatible `"0"` into main flow to avoid false mock-only branches; this should be replaced with a Cybos-native label strategy later.
+
 ## 2026-05-08 최신 반영 - 장마감 자동종료/봉차트 UX 보강
 | 항목 | 현재 상태 |
 |---|---|

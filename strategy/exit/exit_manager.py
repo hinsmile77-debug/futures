@@ -29,7 +29,7 @@ from strategy.exit.time_exit import TimeExitManager
 
 if TYPE_CHECKING:
     from strategy.position.position_tracker import PositionTracker
-    from collection.kiwoom.api_connector import KiwoomAPI
+    from collection.broker.base import BrokerAPI
 
 logger = logging.getLogger("TRADE")
 

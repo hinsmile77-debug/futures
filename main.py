@@ -57,7 +57,7 @@ from config.constants import FUTURES_PT_VALUE
 from config import secrets as _secrets
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
-from collection.kiwoom import KiwoomAPI, RealtimeData, LatencySync
+from collection.broker import create_broker
 from collection.macro.regime_classifier import RegimeClassifier
 from features.feature_builder import FeatureBuilder
 from model.multi_horizon_model import MultiHorizonModel
@@ -74,7 +74,6 @@ from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
 from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAIN_BARS
 from safety.circuit_breaker import CircuitBreaker
-from collection.kiwoom.investor_data import InvestorData
 from safety.kill_switch import KillSwitch
 from safety.emergency_exit import EmergencyExit
 from logging_system.log_manager import log_manager
@@ -107,9 +106,10 @@ class TradingSystem:
         log_manager.system("미륵이 초기화")
 
         # ── 키움 API 컴포넌트 ──────────────────────────────────
-        self.kiwoom        = KiwoomAPI()
-        self.latency_sync  = LatencySync()
-        self.realtime_data: Optional[RealtimeData] = None  # login 후 초기화
+        self.broker        = create_broker()
+        self.kiwoom        = self.broker.api  # legacy alias kept during migration
+        self.latency_sync  = self.broker.create_latency_sync()
+        self.realtime_data = None  # login 후 초기화
 
         # 핵심 컴포넌트
         self.regime_classifier = RegimeClassifier()
@@ -127,7 +127,7 @@ class TradingSystem:
         self.meta_gate         = MetaGate()
         self.toxicity_gate     = ToxicityGate()
         self.batch_retrainer   = BatchRetrainer()
-        self.investor_data     = InvestorData(kiwoom_api=None)  # connect_kiwoom 후 api 주입
+        self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
         # ── Phase 2 안전장치 ───────────────────────────────────
         self.emergency_exit  = EmergencyExit(
             position_tracker = self.position,
@@ -219,7 +219,7 @@ class TradingSystem:
         _secrets.ACCOUNT_NO = account_no
         if getattr(self, "_futures_code", ""):
             self.emergency_exit.set_order_manager(
-                _KiwoomOrderAdapter(self.kiwoom, self._futures_code, account_no)
+                _BrokerOrderAdapter(self.broker, self._futures_code, account_no)
             )
 
     def _write_account_no_to_secrets(self, account_no: str) -> None:
@@ -541,7 +541,7 @@ class TradingSystem:
             "FLAT" if self.position.status == "FLAT"
             else f"{self.position.status} {self.position.quantity}계약 @ {self.position.entry_price:.2f}"
         )
-        result = self.kiwoom.request_futures_balance(account_no)
+        result = self.broker.request_futures_balance(account_no)
         if result is None:
             log_manager.system("[BrokerSync] OPW20006 조회 실패로 startup sync를 건너뜁니다.", "WARNING")
             return
@@ -656,23 +656,35 @@ class TradingSystem:
             }
         return calibrated
 
-    def connect_kiwoom(self) -> bool:
+    def connect_broker(self) -> bool:
         """로그인 + 근월물 실시간 수신 등록."""
         print("[DBG CK-1] login() 호출 직전", flush=True)
-        if not self.kiwoom.login():
+        if not self.broker.connect():
             logger.error("[System] 키움 로그인 실패")
             return False
-        self.kiwoom.register_chejan_callback(self._on_chejan_event)
-        self.kiwoom.register_msg_callback(self._on_order_message)
-        acc_raw = self.kiwoom.get_login_info("ACCNO")
-        accounts = self.kiwoom.get_account_list()
+        self.broker.register_fill_callback(self._on_chejan_event)
+        self.broker.register_msg_callback(self._on_order_message)
+        self.kiwoom = self.broker.api
+        acc_raw = self.broker.get_login_info("ACCNO")
+        accounts = self.broker.get_account_list()
+        selected_account = str(_secrets.ACCOUNT_NO or "").strip()
+        if accounts and selected_account not in accounts:
+            fallback_account = str(accounts[0]).strip()
+            logger.warning(
+                "[Account] configured account %s not in broker session accounts=%s; using %s",
+                selected_account,
+                accounts,
+                fallback_account,
+            )
+            selected_account = fallback_account
+            self._apply_account_no(selected_account)
         logger.info("[Account] ACCNO raw=%s", acc_raw)
         logger.info("[Account] parsed accounts=%s", accounts)
-        self.dashboard.set_account_options(accounts, _secrets.ACCOUNT_NO)
+        self.dashboard.set_account_options(accounts, selected_account)
         print("[DBG CK-2] login() 성공", flush=True)
 
         # 서버 종류 확인 (정보 로그용)
-        server = self.kiwoom.get_login_info("GetServerGubun")
+        server = self.broker.get_login_info("GetServerGubun")
         server_label = "모의투자" if server == "1" else "실서버"
         print(f"[DBG CK-2b] 서버종류={server!r} ({server_label})", flush=True)
         if server == "1":
@@ -680,17 +692,16 @@ class TradingSystem:
 
         # A0166000: OPT50029 TR 및 SetRealReg 모두 동일 코드 사용
         # (모의투자 서버에서도 A0166000으로 SetRealReg 등록 시 틱 수신 확인됨)
-        code = self.kiwoom.get_nearest_futures_code()
+        code = self.broker.get_nearest_futures_code()
         print(f"[DBG CK-3] 근월물 코드={code} 서버={server_label}", flush=True)
         self._futures_code = code
         self.emergency_exit.set_futures_code(code)
         self.emergency_exit.set_order_manager(
-            _KiwoomOrderAdapter(self.kiwoom, code, _secrets.ACCOUNT_NO)
+            _BrokerOrderAdapter(self.broker, code, selected_account)
         )
         self._sync_position_from_broker()
 
-        self.realtime_data = RealtimeData(
-            api              = self.kiwoom,
+        self.realtime_data = self.broker.create_realtime_data(
             code             = code,
             screen_no        = "3000",
             on_candle_closed = self._on_candle_closed,
@@ -704,12 +715,12 @@ class TradingSystem:
         self.realtime_data.start(load_history=True)
         print("[DBG CK-5] RealtimeData.start() 완료", flush=True)
 
-        self.investor_data._api = self.kiwoom  # 실거래 시 TR 폴링 활성화
+        self.investor_data._api = self.broker.api  # 실거래 시 TR 폴링 활성화
 
         # 투자자ticker 실시간 타입 FID·코드 탐색 (진단용)
         # 결과는 PROBE.log 및 콘솔에 [PROBE-TICKER] 라인으로 출력됨
         # 확인 후 불필요하면 이 줄을 제거해도 됨
-        self.kiwoom.probe_investor_ticker(extra_codes=[code])
+        self.broker.probe_investor_ticker(extra_codes=[code])
 
         # 수급 TR은 COM 콜백 체인(run_minute_pipeline) 밖에서 수집해야 스택 오버런 방지
         # QTimer 60초마다 독립 실행 — 파이프라인은 캐시(get_features)만 읽음
@@ -717,8 +728,11 @@ class TradingSystem:
         self._investor_timer.timeout.connect(self._fetch_investor_data)
         self._investor_timer.start(60_000)
 
-        logger.info("[System] 키움 실시간 수신 시작 — %s | 수급 타이머 60s 시작", code)
+        logger.info("[System] %s 실시간 수신 시작 — %s | 수급 타이머 60s 시작", self.broker.name, code)
         return True
+
+    def connect_kiwoom(self) -> bool:
+        return self.connect_broker()
 
     def _fetch_investor_data(self) -> None:
         """수급 TR 수집 — QTimer에서 호출 (COM 콜백 체인 외부)."""
@@ -1673,12 +1687,14 @@ class TradingSystem:
         # [B54] lOrdKind=1(신규매매) + sSlbyTp 방향 명시
         # trade_type=2는 new convention에서 "정정"으로 해석되어 Kiwoom 서버에서 조용히 거부됨
         slby_tp = "2" if direction == "LONG" else "1"  # "2"=매수, "1"=매도
-        return self.kiwoom.send_order_fo(
-            rqname="진입", screen_no="1000",
-            acc_no=_secrets.ACCOUNT_NO,
-            code=code, trade_type=1,  # 1=신규매매 (항상)
-            qty=qty, price=0.0, hoga_gb="3",
-            slby_tp=slby_tp,
+        side = "BUY" if direction == "LONG" else "SELL"
+        return self.broker.send_market_order(
+            account_no=_secrets.ACCOUNT_NO,
+            code=code,
+            side=side,
+            qty=qty,
+            rqname="진입",
+            screen_no="1000",
         )
 
     def _send_kiwoom_exit_order(self, qty: int) -> int:
@@ -1689,12 +1705,14 @@ class TradingSystem:
         # [B54] lOrdKind=1(신규매매) + sSlbyTp 방향: 거래소 측 자동 네팅으로 청산 처리
         # trade_type=4(구: 청산매도)는 new convention에서 미정의, trade_type=3은 취소로 해석됨
         slby_tp = "1" if self.position.status == "LONG" else "2"  # LONG→매도(1), SHORT→매수(2)
-        return self.kiwoom.send_order_fo(
-            rqname="청산", screen_no="1001",
-            acc_no=_secrets.ACCOUNT_NO,
-            code=code, trade_type=1,  # 1=신규매매 (항상)
-            qty=qty, price=0.0, hoga_gb="3",
-            slby_tp=slby_tp,
+        side = "SELL" if self.position.status == "LONG" else "BUY"
+        return self.broker.send_market_order(
+            account_no=_secrets.ACCOUNT_NO,
+            code=code,
+            side=side,
+            qty=qty,
+            rqname="청산",
+            screen_no="1001",
         )
 
     def _execute_entry(
@@ -2533,7 +2551,7 @@ class TradingSystem:
                 lambda: self.activate_kill_switch("대시보드 긴급정지")
             )
         if self.realtime_data:
-            server       = self.kiwoom.get_login_info("GetServerGubun")
+            server       = self.broker.get_login_info("GetServerGubun")
             server_label = "모의투자" if server == "1" else "실서버"
             self.dashboard.append_sys_log(
                 f"시스템 시작 | TR={self.realtime_data.code} [{server_label}] 분봉수집=실시간(SetRealReg)"
@@ -2592,9 +2610,9 @@ class TradingSystem:
             self._daily_close_done = True
 
         # 키움 연결 감시
-        if not self.kiwoom.is_connected:
+        if not self.broker.is_connected:
             logger.error("[System] 키움 연결 끊김 — 재연결 시도")
-            self.connect_kiwoom()
+            self.connect_broker()
 
     def _log_waiting_status(self, now: datetime.datetime) -> None:
         """현재 대기 이유를 로그 + 대시보드에 표시."""
@@ -3513,7 +3531,7 @@ def _ts_refresh_dashboard_balance(self) -> None:
         f"[BalanceRefresh] request start account={account_no} position={_ts_get_position_snapshot(self)}",
         "WARNING",
     )
-    result = self.kiwoom.request_futures_balance(account_no)
+    result = self.broker.request_futures_balance(account_no)
     if result is None:
         log_manager.system("[BalanceRefresh] request returned None", "WARNING")
         return
@@ -3561,7 +3579,7 @@ def _ts_sync_position_from_broker(self) -> None:
         "[BrokerSync] startup sync begin account=%s code=%s before=%s",
         account_no, code, before,
     )
-    result = self.kiwoom.request_futures_balance(account_no)
+    result = self.broker.request_futures_balance(account_no)
     if result is None:
         _ts_set_broker_sync_status(self, False, "OPW20006 returned None", True)
         log_manager.system("[BrokerSync] OPW20006 조회 실패로 startup sync를 건너뜁니다.", "WARNING")
@@ -3609,7 +3627,7 @@ def _ts_sync_position_from_broker(self) -> None:
             )
             # 모의투자 서버는 OPW20006이 항상 blank — 저장된 포지션이 있으면 유지
             try:
-                _server_gubun = self.kiwoom.get_login_info("GetServerGubun")
+                _server_gubun = self.broker.get_login_info("GetServerGubun")
             except Exception:
                 _server_gubun = ""
             _is_mock = (_server_gubun == "1")
@@ -3987,25 +4005,22 @@ TradingSystem._execute_partial_exit = _ts_execute_partial_exit
 TradingSystem._check_exit_triggers = _ts_check_exit_triggers
 
 
-class _KiwoomOrderAdapter:
-    """EmergencyExit.set_order_manager()용 어댑터 — KiwoomAPI를 OrderManager 인터페이스로 래핑."""
+class _BrokerOrderAdapter:
+    """EmergencyExit.set_order_manager()용 어댑터."""
 
-    def __init__(self, kiwoom_api, futures_code: str, acc_no: str):
-        self._api   = kiwoom_api
+    def __init__(self, broker, futures_code: str, acc_no: str):
+        self._broker = broker
         self._code  = futures_code
         self._acc   = acc_no
 
     def send_market_order(self, code: str, side: str, qty: int, reason: str = "") -> int:
-        # [B54] lOrdKind=1(신규매매) + sSlbyTp 방향 명시 (trade_type=4/3는 새 규약에서 미정의/취소)
-        slby_tp = "1" if side == "SELL" else "2"  # SELL=매도(1), BUY=매수(2)
-        ret = self._api.send_order_fo(
+        ret = self._broker.send_market_order(
+            account_no=self._acc,
+            code=code or self._code,
+            side=side,
+            qty=qty,
             rqname=reason or "긴급청산",
             screen_no="1002",
-            acc_no=self._acc,
-            code=code or self._code,
-            trade_type=1,  # 1=신규매매 (항상)
-            qty=qty, price=0.0, hoga_gb="3",
-            slby_tp=slby_tp,
         )
         return ret if ret == 0 else None
 

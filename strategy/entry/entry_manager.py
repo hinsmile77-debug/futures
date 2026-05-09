@@ -30,7 +30,7 @@ from strategy.entry.staged_entry import StagedEntryManager
 from strategy.entry.position_sizer import PositionSizer
 
 if TYPE_CHECKING:
-    from collection.kiwoom.api_connector import KiwoomAPI
+    from collection.broker.base import BrokerAPI
     from strategy.position.position_tracker import PositionTracker
 
 logger = logging.getLogger("TRADE")
