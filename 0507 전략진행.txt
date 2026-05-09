@@ -1,0 +1,52 @@
+  부분 반영 또는 미구현 항목
+
+  1. strategy_events 테이블 미존재
+
+  가이드 §11-11 P1 TODO: "strategy_events 테이블 스키마 정의"
+  - strategy_registry.py에 5개 테이블 있으나 strategy_events는 없음
+  - _StrategyLog 위젯은 all_versions 데이터로 텍스트 렌더링 중 (폴백 동작)
+  - 영향: 운영 로그 (승격/반려/롤백 결정, 승인 메모, 리스크 메모) 저장 불가
+
+  2. self._shadow_ev 초기화 로직 없음
+
+  가이드 §17-1: Shadow Evaluator는 "신규 파라미터 후보 발생 시" 인스턴스화해야 함
+  - main.py:163 — self._shadow_ev = None으로 선언만 되고 실제 초기화 코드 없음
+  - process_tick/HotSwap gate 코드는 if self._shadow_ev is not None: 가드로 실행 안 됨
+  - 영향: Shadow 평가 + Hot-Swap 자동화 전체 비활성 상태
+
+  3. VolatilityTargeter / DynamicSizer main.py 미연결
+
+  가이드 §8-1: 코드 존재, 메인 미연결 — shadow test 권장 (의도적 보류)
+  - strategy/entry/vol_targeting.py, strategy/entry/dynamic_sizing.py 코드 존재
+  - main.py에 import 없음
+  - 가이드 자체가 "검증 후 연결"을 권장하므로 의도적 미구현
+
+  4. snapshot_collector.py 미생성
+
+  가이드 §11-6: 권장 신규 모듈 strategy/ops/snapshot_collector.py
+  - registry.record_live_snapshot() 직접 호출로 기능 대체 중
+  - 별도 모듈 없어도 동작은 함 — 가이드 권장 구조와 다름
+
+  ---
+  🔴 실제 문제가 되는 미구현: 2개
+
+  1. strategy_events 테이블 — _StrategyLog에 승격/롤백/리스크 메모가 기록되지 않음. 의사결정 근거 추적 불가.
+  2. shadow_ev 초기화 누락 — Hot-Swap 자동화가 완전히 비활성 상태. param_optimizer가 새 파라미터를 찾았을 때 ShadowEvaluator
+  인스턴스를 생성해 self._shadow_ev에 할당하는 로직이 없음.
+
+  ---
+  결론
+
+  §1~§20 전체 기획의 약 93%가 구현됨. 미구현 중 실제로 문제가 되는 것은 strategy_events 테이블과 shadow_ev 초기화 두
+  가지입니다. VolatilityTargeter/DynamicSizer는 가이드 자체가 검증 후 연결을 권고하므로 현재 미연결이 의도된 상태입니다.
+
+
+  운용 흐름 (완성된 Shadow → HotSwap 사이클):
+  param_optimizer.propose_for_shadow()   # 후보 JSON 저장, SHADOW_START 이벤트
+    → daily_close() _load_shadow_candidate()   # 다음날 장 마감 시 자동 감지
+      → start_shadow_mode() → self._shadow_ev = ShadowEvaluator(...)
+        → 매분 process_tick() 호출 (기존 코드 활성)
+          → HotSwapGate.attempt() (14일 후)
+            → 승인: PARAM_CURRENT 업데이트 + HOTSWAP_APPROVED + JSON 삭제
+            → 거부: HOTSWAP_DENIED + 1주 추가 관찰
+

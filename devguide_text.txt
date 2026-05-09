@@ -1,0 +1,2313 @@
+ OpenAPI+ 
+
+
+1.    1.1  1.2 
+2.  2.1    2.2  
+3. KOA Studio  3.1 KOA Studio    3.2 KOA Studio  3.3 KOA Studio   
+4.   4.1   4.2    4.3   
+5. OpenAPI  5.1 OpenAPI  5.2 OpenAPI 5.3 OpenAPI  5.4 OpenAPI   5.5 Event 
+6.    6.1 (Method) 6.2 (Event)
+7. 
+8.  FID 8.1  8.2  8.3  8.4 
+
+8.5  8.6  8.7  8.8  8.9  8.10  8.11  8.12  8.13  8.14  8.15  8.16  8.17  8.18 ticker 8.19  8.20  8.21  8.22  8.23 
+9.  Open API+    9.1    9.2  /   9.3  DATA() 
+10.  10.1  
+
+1.   
+1.1 
+   >>Open API> Open API+> >' Open API+  '     
+        . OpenAPI   OCX  ,    OCX  . (      .)  OpenAPI      OCX            . 4
+
+1.2 
+-  Open API      OCX   . -    VB, , , MFC    . -     TR    OCX   API   
+.
+2. 
+2.1   
+ Open API+  .()         . -     (Open API OCX  )    
+   .
+5
+
+-         . -   KOA >ID/PW/PW      >  
+>       KOA  API     >       -    ` '      .
+2.2  
+-          ID  PW   .
+-   >/>  . 6
+
+3. KOA Studio 
+3.1 KOA Studio   
+KOA Studio     TR       ,           .   -    -     KOA Studio     -  TR input    -   FID  
+3.2 KOA Studio     
+ >>Open API> Open API+> >' Open API+  '     
+7
+
+  - KOA Studio >(F)>Open API     . - KOA Studio  .( )
+3.3 KOA Studio   
+ ///  .
+8
+
+ TR  - TR   TR  (C++ ) .
+- INPUT       .
+9
+
+-  TR       . -          .
+10
+
+4.   
+4.1   
+-  : [SYSTEM DRIVE:]/Program Root/
+
+
+
+
+
+
+
+
+
+KHOpenAPI.ocx OpenApi  
+
+OPCommApi.dll  
+
+OPComms.dll
+
+ TCP/IP  
+
+DLL
+
+OPSecurity.dll   
+
+librsadlx.dll
+
+nsldap32v11.dll
+
+ZIPDLL.DLL
+
+ 
+
+4.2   
+-  : [SYSTEM DRIVE:]/Program Root/Data
+
+
+
+
+
+
+
+
+
+
+
+OPTxxxxx.enc OPWxxxxx.enc
+
+   ( 100)     
+
+4.3   
+-  : [SYSTEM DRIVE:]/Program Root/System
+
+
+
+
+
+
+
+
+
+
+
+jongacc.dat OPComms.ini
+
+        
+
+11
+
+5. OpenAPI 
+5.1 OpenAPI 
+- OpenApi ActiveX Control (OCX)  OLE     .  OCX          .
+
+
+
+
+
+ 
+
+KHOpenApi.OCX
+
+ 
+
+OCX ­ OLE Control Extension, DLL
+
+
+
+Microsoft Windows XP SP3 
+
+ 
+
+Mocrosoft Visual C++ 2010
+
+
+
+5.2 OpenAPI 
+- OpenAPI   (Interface ID : GUID) (Unique)     .
+- OpenAPI            .
+
+ Control Dispatch Event Module
+
+ A1574A0D-6BFA-4BD7-9020-DED88711818D CF20FBB6-EDD4-4BE5-A473-FEF91977DEB6 7335F12D-8973-4BD5-B7F0-12DF03D175B7 6D8C2B4D-EF41-4750-8AD4-C299033833FB
+
+   /     
+
+5.3 OpenAPI 
+
+- OpenAPI      (Interface Method)   .
+
+ID
+
+
+
+
+
+1
+
+LONG CommConnect
+
+2
+
+void CommTerminate
+
+3
+
+LONG CommRqData
+
+4
+
+BSTR GetLoginInfo
+
+5
+
+LONG SendOrder
+
+6
+
+LONG SendOrderCredit
+
+7
+
+void SetInputValue
+
+8
+
+LONG SetOutputFID
+
+   .        .   .  Tran .   Tran .
+
+12 / 53
+
+       
+
+9
+
+BSTR CommGetData
+
+   : GetCommData()   : GetCommRealData()
+
+  : GetChejanData()
+
+10
+
+void DisconnectRealData
+
+  .
+
+11 LONG GetRepeatCnt
+
+     .
+
+12 LONG CommKwRqData
+
+  .
+
+13 BSTR GetAPIModulePath
+
+OpenApi      .
+
+14 BSTR GetCodeListByMarket
+
+   .
+
+15 LONG GetConnectState
+
+   .
+
+16 BSTR GetMasterCodeName
+
+  .
+
+17 LONG GetMasterListedStockCnt   .
+
+18 BSTR GetMasterConstruction
+
+  .
+
+19 BSTR GetMasterListedStockDate   .
+
+20 BSTR GetMasterLastPrice
+
+  .
+
+21 BSTR GetMasterStockState
+
+  .
+
+22 LONG GetDataCount
+
+  .
+
+23 BSTR GetOutputValue
+
+  .
+
+24 BSTR GetCommData
+
+  .
+
+25 BSTR GetCommRealData
+
+  .
+
+26 BSTR GetChejanData
+
+  .
+
+27 BSTR GetThemeGroupList
+
+    .
+
+28 BSTR GetThemeGroupCode
+
+   .
+
+29 BSTR GetFutureList
+
+   .
+
+30 BSTR GetFutureCodeByIndex
+
+  .
+
+31 BSTR GetActPriceList
+
+   .
+
+32 BSTR GetMonthList
+
+   .
+
+33 BSTR GetOptionCode
+
+  .
+
+34 BSTR GetOptionCodeByMonth      .
+
+35 BSTR GetOptionCodeByActPrice      .
+
+36 BSTR GetSFutureList
+
+   .
+
+37 BSTR GetSFutureCodeByIndex   .
+
+38 BSTR GetSActPriceList
+
+  .
+
+39 BSTR GetSMonthList
+
+  .
+
+40 BSTR GetSOptionCode
+
+  .
+
+41 BSTR GetSOptionCodeByMonth     .
+
+GetSOptionCodeByActPric
+
+42 BSTR
+
+    .
+
+e
+
+43 BSTR GetSFOBasisAssetList
+
+   .
+
+44 BSTR GetOptionATM
+
+ ATM .
+
+45 BSTR GetSOptionATM
+
+ ATM .
+
+13 / 53
+
+46 BSTR GetBranchCodeName 47 BSTR CommInvestRqData 48 LONG SetInfoData 49 LONG SetRealReg
+
+50
+
+Void SetRealRemove
+
+51
+
+long GetConditionLoad
+
+52 BSTR GetConditionNameList
+
+53
+
+void SendCondition
+
+54
+
+void SendConditionStop
+
+55 Variant GetCommDataEx
+
+   .   .      .   .    (SetRealReg    )     .     .  TR .   .      .
+
+5.4 OpenAPI 
+
+-        .
+
+ID
+
+
+
+
+
+
+
+1
+
+Void OnReceiveTrData
+
+Tran  
+
+2
+
+Void OnReceiveRealData
+
+  
+
+3
+
+Void OnReceiveMsg
+
+  
+
+4
+
+Void OnReceiveChejanData  /  
+
+5
+
+Void OnEventConnect
+
+    
+
+6
+
+void OnReceiveRealCondition   , 
+
+7
+
+void OnReceiveTrCondition   
+
+8
+
+Void OnReceiveConditionVer      
+
+14 / 53
+
+6.    
+- OpenAPI Active X  (property)  (method)        .          .
+-      ID  .
+6.1 (Method)
+1) CommConnect  LONG CommConnect()    .    0 - ,       OnEventConnect            .
+2) CommTerminate  void CommTerminate()               GetConnectState    .
+3) CommRqData  LONG CommRqData(BSTR sRQName, BSTR sTrCode, long nPrevNext, BSTR sScreenNo)  Tran  . BSTR sRQName BSTR sTrCode  long nPrevNext BSTR sScreenNo OP_ERR_SISE_OVERFLOW ­     OP_ERR_RQ_STRUCT_FAIL ­      OP_ERR_RQ_STRING_FAIL ­    OP_ERR_NONE ­  sRQName ­   sTrCode - Tran   nPrevNext - 0:, 2: sScreenNo - 4  Ex) openApi.CommRqData( "RQ_1", "OPT00001", 0, "0101");
+4) GetLoginInfo  BSTR GetLoginInfo(BSTR sTag)     .  BSTR sTag :    TAG ()
+15 / 53
+
+ 
+
+TAG    BSTR sTag        "ACCOUNT_CNT" ­    . "ACCNO" ­   .   `;'. "USER_ID" -  ID . "USER_NAME" ­  . "KEY_BSECGB" ­  . 0:, 1: "FIREW_SECGB" ­   . 0:, 1:, 2: Ex) openApi.GetLoginInfo("ACCOUNT_CNT");
+
+5) SendOrder
+
+LONG SendOrder( BSTR sRQName,
+
+BSTR sScreenNo,
+
+BSTR sAccNo,
+
+LONG nOrderType,
+
+
+
+BSTR sCode,
+
+LONG nQty,
+
+LONG nPrice,
+
+BSTR sHogaGb,
+
+BSTR sOrgOrderNo)
+
+    .
+
+sRQName -    
+
+sScreenNo - [4]
+
+sAccNo - [10]
+
+nOrderType -  (1:, 2:, 3:, 4:, 5:, 6:
+
+)
+
+ sCode, - 
+
+nQty ­ 
+
+nPrice ­ 
+
+sHogaGb - 
+
+sOrgOrderNo ­ 
+
+ 
+
+ <4. > sHogaGb ­ 00:, 03:, 05:, 06:, 07:, 10: IOC, 13:IOC, 16:IOC, 20:FOK, 23:FOK, 26:FOK, 61: , 62:, 81:  , , , IOC, IOC, FOK, FOK,  ,     . ex)   - openApi.SendOrder("RQ_1", "0101", "5015123410", 1, "000660", 10, 48500, "00", "");   - openApi.SendOrder("RQ_1", "0101", "5015123410", 1, "000660", 10, 0, "03", "");   - openApi.SendOrder("RQ_1","0101", "5015123410", 5, "000660", 10, 49500,
+"00", "1");   - openApi.SendOrder("RQ_1", "0101", "5015123410", 3, "000660", 10, 0, "00",
+"2");
+
+16 / 53
+
+6) SendOrderCredit
+
+LONG
+
+SendOrderCredit( LPCTSTR sRQName , LPCTSTR sScreenNo
+
+, LPCTSTR sAccNo
+
+, LONG nOrderType
+
+, LPCTSTR sCode
+
+
+
+, LONG nQty
+
+, LONG nPrice
+
+, LPCTSTR sHogaGb , LPCTSTR sCreditGb , LPCTSTR sLoanDate , LPCTSTR sOrgOrderNo )
+
+    .
+
+sRQName -     sScreenNo - [4] sAccNo - [10] nOrderType -  (1:, 2:, 3:, 4:, 5:, 6:
+
+
+
+) sCode, -  nQty ­  nPrice ­  sHogaGb ­ 
+
+sCreditGb ­  sLoanDate ­  sOrgOrderNo ­ 
+
+  <4. >
+
+sCreditGb ­  (:03,  :33, :99)  
+
+-  "03",  ""   
+
+-  "33",    
+
+
+
+- OPW00005/OPW00004 TR  
+
+  
+
+-  "99",  "99991231"
+
+-   5  
+
+  SendOrder() 
+
+7) SetInputValue  void SetInputValue(BSTR sID, BSTR sValue)  Tran     . sID ­   sValue ­     Ex) openApi.SetInputValue("", "000660");  openApi.SetInputValue("", "5015123401");
+17 / 53
+
+8) SetOutputFID  LONG SetOutputFID(BSTR sID)  1.0.0.1    .   
+
+9) CommGetData  BSTR CommGetData(...)            ()
+
+ 
+
+
+   - openApi.GetCommData("OPT00001", RQName, 0, "");   - openApi.GetCommRealData("000660", 10);   - openApi.GetChejanData(9203);
+
+10) DisconnectRealData  void DisconnectRealData(LPCTSTR sScnNo)       .  sScnNo ­ [4]          .  Ex) openApi.DisconnectRealData("0101");
+
+11) GetRepeatCnt
+
+
+
+LONG GetRepeatCnt(LPCTSTR sTrCode, LPCTSTR sRecordName)
+
+   .
+
+sTrCode ­ Tran  
+sRecordName ­  
+
+  
+
+ Ex) openApi.GetRepeatCnt("OPT00001", "");
+
+12) CommKwRqData LONG CommKwRqData(LPCTSTR sArrCode, BOOL bNext, int nCodeCount, int nTypeFlag,
+ LPCTSTR sRQName, LPCTSTR sScreenNo)
+  Tran  . sArrCode ­  bNext ­  nCodeCount ­ 
+ nTypeFlag ­  sRQName ­   sScreenNo ­ [4] OP_ERR_RQ_STRING ­    
+ OP_ERR_NONE - 
+ sArrCode ­   `;'.
+18 / 53
+
+nTypeFlag ­ 0:, 3: ex) openApi.CommKwRqData("000660;005930", 0, 2, 0, "RQ_1", "0101");
+
+13) GetAPIModulePath  BSTR GetAPIModulePath()  OpenAPI  .     
+
+14) GetCodeListByMarket  BSTR GetCodeListByMarket(LPCTSTR sMarket)     .  sMarket ­    ,   ';'. sMarket ­ 0:, 3:ELW, 4:, 5:, 6:,  8:ETF, 9:, 10:, 30:K-OTC, 50:(KONEX)
+
+15) GetConnectState
+
+
+
+LONG GetConnectState()
+
+  .
+
+ 
+
+ 
+
+ 0:, 1:
+
+16) GetMasterCodeName  BSTR GetMarsterCodeName(LPCTSTR strCode)    .  strCode ­     , ,   .
+
+17) GetMasterListedStockCnt  LONG GetMasterListedStockCnt(LPCTSTR strCode)    .  strCode ­    
+
+18) GetMasterConstruction  BSTR GetMasterConstruction(LPCTSTR strCode)
+19 / 53
+
+   
+
+  . strCode ­    ­ , , , , 
+
+19) GetMasterListedStockDate  BSTR GetMasterListedStockDate(LPCTSTR strCode)    .  strCode ­       ­ xxxxxxxx[8]
+
+20) GetMasterLastPrice  BSTR GetMasterLastPrice(LPCTSTR strCode)    .  strCode ­    
+
+21) GetMasterStockState  BSTR GetMasterStockState(LPCTSTR strCode)    .  strCode ­     ­ , 100%, , , , ,  , , 
+
+22) GetDataCount  LONG GetDataCount(LPCTSTR strRecordName)    .  strRecordName ­      Ex) openApi.GetDataCount("");
+
+23) GetOutputValue  BSTR GetOutputValue(LPCTSTR strRecordName, long nRepeatIdx, long nItemIdx)        . nRepeatIdx ­   nItemIdx ­       Ex)  - openApi.GetOutputValue("", 0, 36);
+
+20 / 53
+
+24) GetCommData BSTR GetCommData(LPCTSTR strTrCode, LPCTSTR strRecordName, long nIndex,
+ LPCTSTR strItemName)
+   . strTrCode ­ Tran  strRecordName ­ 
+ nIndex ­   strItemName ­ 
+    Ex) - openApi.GetCommData("OPT00001", "", 0, "");
+25) GetCommRealData  BSTR GetCommRealData(LPCTSTR strCode, long nFid)     . strCode ­   nFid ­      Ex)  - openApi.GetCommRealData("039490", 10);  ) strCode OnReceiveRealData   
+26) GetChejanData  BSTR GetChjanData(long nFid)    .  nFid ­       Ex)  ­ openApi.GetChejanData(10);
+27) GetThemeGroupList  BSTR GetThemeGroupList(long nType)    .  nType ­  (0:, 1:)         `|'   `;'  Ex) 100|_;152|
+28) GetThemeGroupCode  BSTR GetThemeGroupCode(LPCTSTR strThemeCode)     .  strThemeCode ­        `;'  Ex) A000660;A005930
+21 / 53
+
+29) GetFutureList  BSTR GetFutrueList()    .        `;'  Ex) 101J9000;101JC000
+30) GetFutureCodeByIndex  BSTR GetFutreCodeByIndex(int nIndex)    .  nIndex ­ 0~3 , 4~7    Ex)  - openApi.GetFutureCodeByInex(0);   - openApi.GetFutureCodeByInex(4);
+31) GetActPriceList  BSTR GetActPriceList()     .       `;'  Ex) 265.00;262.50;260.00
+32) GetMonthList  BSTR GetMonthList()     .       `;'  Ex) 201412;201409;201408;201407;201407;201408;201409;201412
+33) GetOptionCode  BSTR GetOptionCode(LPCTSTR strActPrice, int nCp, LPCTSTR strMonth)      . strActPrice ­ ()  nCp ­  2:, 3: strMonth ­ (6)    Ex) openApi.GetOptionCode("260.00", 2, "201407");
+22 / 53
+
+34) GetOptionCodeByMonth  BSTR GetOptionCodeByMonth(LPCTSTR strCode, int nCp, LPCTSTR strMonth)          . strCode ­   nCp ­  2:, 3: strMonth ­ (6)   Ex) openApi.GetOptionCodeByMonth("201J7260", 2, "201412");   = 201JC260
+35) GetOptionCodeByActPrice  BSTR GetOptionCodeByActPrice(LPCTSTR strCode, int nCp, int Tick)           . strCode ­   nCp ­  2:, 3: nTick ­     Ex) openApi.GetOptionCodeByActPrice("201J7260", 2, -1);   = 201J7262
+36) GetSFutureList  BSTR GetSFutureList(LPCTSTR strBaseAssetCode)     .  strBaseAssetCode ­         `;'.
+37) GetSFutureCodeByIndex  BSTR GetSFutureCodeByIndex(LPCTSTR strBaseAssetCode, int nIndex)    . strBaseAssetCode ­   nIndex ­ 0~3 , 4~7 , 8~11  , 12~      Ex) openApi.GetSFutureCodeByIndex("11", 0);
+38) GetSActPriceList  BSTR GetSActPriceList(LPCTSTR strBaseAssetGb)     .  strBaseAssetGb ­    ,   `;'  Ex) openApi.GetSActPriceList("11");
+23 / 53
+
+39) GetSMonthList  BSTR GetSMonthList(LPCTSTR strBaseAssetGb)     .  strBaseAssetGb ­    ,   `;'  Ex) openApi.GetSActPriceList("11");
+40) GetSOptionCode BSTR GetSOptionCode(LPCTSTR strBaseAssetGb, LPCTSTR strActPrice, int nCp,
+ LPCTSTR strMonth)
+   . strBaseAssetGb ­  strActPrice ­ 
+ nCp ­  strMonth ­ 
+    Ex) openApi.GetSOptionCode("11", "1300000", 2, "1412");
+41) GetSOptionCodeByMonth BSTR GetSOptionCodeByMonth(LPCTSTR strBaseAssetGb, LPCTSTR strCode, int nCp,
+ LPCTSTR strMonth)
+      . strBaseAssetGb ­  strCode ­ 
+ nCp ­  strMonth ­ 
+    Ex) openApi.GetSOptionCodeByMonth("11", "211J8045", 2, "1412");
+42) GetSOptionCodeByActPrice BSTR GetSOptionCodeByActPrice(LPCTSTR strBaseAssetGb, LPCTSTR strCode, int nCp,
+ int nTick)
+      . strBaseAssetGb ­  strCode ­ 
+ nCp ­  nTick­ 
+    Ex) openApi.GetSOptionCodeByActPrice("11", "211J8045", 2, 4);
+43) GetSFOBasisAssetList  BSTR GetSFOBasisAssetList()   / .
+24 / 53
+
+  
+
+/,    `|'  ';' Ex) 211J8045| C 201408;212J8009|SK C 201408 Ex) openApi.GetSFOBasisAssetList();
+
+44) GetOptionATM  BSTR GetOptionATM()   ATM .   ATM  Ex) openApi.GetOptionATM();
+
+45) GetSOptionATM  BSTR GetSOptionATM(LPCTSTR strBaseAssetGb)   ATM .   ATM  Ex) openApi.GetSOptionATM("11");
+
+46) GetBranchCodeName  BSTR GetBranchCodeName()     .   |;|;...  Ex) openApi.GetBranchCodeName();
+
+47) CommInvestRqData BSTR CommINvestRqData(LPCTSTR sMarketGb, LPCTSTR sRQName, LPCTSTR
+ sScreenNo)
+    sMarketGb ­  001:, 002:, 003:, 004:, 005:, 006: 007:, 008:3, 009:5, 010:10, 011:, 012:
+ 013:, 014:, 015:, 016:, 017:, 018: sRQName ­  sScreenNo ­ 
+   Ex) openApi.CommInvestRqData("T00108;T00109", 0, 2, "RQ_1", "0101");
+
+48) SetInfoData  LONG SetInfoData(LPCTSTR sInfoData)       .
+25 / 53
+
+  
+
+sInfoData ­   Ex) openApi.SetInfoData("UserID");
+
+49) SetRealReg SetRealReg(LPCTSTR strScreenNo, LPCTSTR strCodeList, LPCTSTR strFidList, LPCTSTR
+ strRealType)
+   . strScreenNo ­     strCodeList ­   ( ­ "1;2;3;....")
+ strFidList ­   FID("FID1;FID2;FID3;.....") strRealType ­ "0", "1" 
+  strRealType "0"                      .
+ "1"                .        "0"   "1" .
+
+50) SetRealRemove  Void SetRealRemove(LPCTSTR strScrNo, LPCTSTR strDelCode)    . strScrNo ­      strDelCode ­   .    SetRealReg()         .
+
+51) GetConditionLoad  long GetConditionLoad()         .       . System  _NewSaveIndex.dat . Ocx  .          .               .
+
+52) GetConditionNameList  BSTR GetConditionNameList()     .    (^)    (";") . Ex) 1^1;2^2;3^3;...
+26 / 53
+
+53) SendCondition
+
+BOOL SendCondition(LPCTSTR strScrNo, LPCTSTR strConditionName, int nIndex, int 
+nSearch)
+
+  TR.
+
+LPCTSTR strScrNo
+
+: 
+
+LPCTSTR strConditionName : 
+
+
+
+int nIndex
+
+: 
+
+int nSearch
+
+: (0:, 1:, 2:)
+
+  1,  0
+
+       0 ,
+
+     1 . 
+OnReceiveTrCondition  .
+
+         .
+
+54) SendConditionStop
+
+ Void SendConditionStop(LPCTSTR strScrNo, LPCTSTR strConditionName, int nIndex)
+
+   TR .
+
+LPCTSTR strScrNo
+
+: 
+
+ LPCTSTR strConditionName : 
+
+int nIndex
+
+: 
+
+
+
+    ,
+
+          .
+
+        .
+
+55) GetCommDataEx
+
+ VARIANT GetCommDataEx(LPCTSTR strTrCode, LPCTSTR strRecordName)
+
+     .
+
+LPCTSTR strTrCode
+
+: TR
+
+
+
+LPCTSTR strRecordName:  TR
+
+
+
+     GetCommData()      
+         .
+
+6.2   
+1) OnReceiveTrData void OnReceiveTrData(LPCTSTR sScrNo, LPCTSTR sRQName, LPCTSTR sTrCode,
+ LPCTSTR sRecordName, LPCTSTR sPreNext, LONG nDataLength, LPCTSTR sErrorCode, LPCTSTR sMessage, LPCTSTR sSplmMsg)
+      . sScrNo ­  sRQName ­  
+ sTrCode ­ Tran  sRecordName ­ Record 
+27 / 53
+
+ 
+
+sPreNext ­   nDataLength ­ 1.0.0.1    . sErrorCode ­ 1.0.0.1    . sMessage ­ 1.0.0.1    . sSplmMsg - 1.0.0.1    .  sRQName ­ CommRqData sRQName  . sTrCode ­ CommRqData sTrCode  .
+
+2) OnReceiveRealData void OnReceiveRealData(LPCTSTR sJongmokCode, LPCTSTR sRealType, LPCTSTR
+ sRealData)
+    . sJongmokCode ­ 
+ sRealType ­  sRealData ­  
+  
+
+3) OnReceiveMsg void OnReceiveMsg(LPCTSTR sScrNo, LPCTSTR sRQName, LPCTSTR sTrCode, LPCTSTR
+ sMsg)
+      . sScrNo ­  sRQName ­  
+ sTrCode ­ Tran  sMsg ­ 
+  sScrNo ­ CommRqData sScrNo .
+ sRQName ­ CommRqData sRQName  . sTrCode ­ CommRqData sTrCode  .
+
+4) OnReceiveChejanData  void OnReceiveChejanData(LPCTSTR sGubun, LONG nItemCnt, LPCTSTR sFidList);     . sGubun ­   nItemCnt -  sFidList ­    sGubun ­ 0:, 1:, 3:  sFidList ­   `;' .
+
+28 / 53
+
+5) OnEventConnect
+
+
+
+void OnEventConnect(LONG nErrCode);
+
+
+
+   
+
+ LONG nErrCode :  
+
+ 
+
+nErrCode 0  ,   
+    
+
+6) OnReceiveCondition
+
+void OnReceiveRealCondition(LPCTSTR strCode, LPCTSTR strType, LPCTSTR strConditionName, 
+LPCTSTR strConditionIndex)
+
+
+
+  ,    .
+
+LPCTSTR strCode
+
+: 
+
+
+
+LPCTSTR strType
+
+: ("I"), ("D")
+
+LPCTSTR strConditionName : 
+
+LPCTSTR strConditionIndex :  
+
+ 
+
+strConditionName    . 
+strType     .
+
+7) OnReceiveTrCondition
+
+void OnReceiveTrCondition(LPCTSTR sScrNo, LPCTSTR strCodeList, LPCTSTR strConditionName, int 
+nIndex, int nNext)
+
+
+
+   (";")   .
+
+LPCTSTR sScrNo
+
+: 
+
+LPCTSTR strCodeList
+
+: (";" )
+
+ LPCTSTR strConditionName : 
+
+int nIndex
+
+:  
+
+int nNext
+
+: (2:, 0:)
+
+ 
+
+
+
+8) OnReceiveConditionVer  void OnReceiveConditionVer(long lRet, LPCTSTR sMsg)           long lRet :     (1: ,  )   
+
+29 / 53
+
+7. 
+
+ 0
+-10 -100 -101 -102 -103 -104 -105 -106 -200 -201 -202 -203 -204 -205 -206 -207 -300 -301 -302 -303 -304 -305 -306 -307 -308 -309 -310 -340 -500
+
+OP_ERR_NONE OP_ERR_FAIL OP_ERR_LOGIN OP_ERR_CONNECT OP_ERR_VERSION OP_ERR_FIREWALL OP_ERR_MEMORY OP_ERR_INPUT OP_ERR_SOCKET_CLOSED OP_ERR_SISE_OVERFLOW OP_ERR_RQ_STRUCT_FAIL OP_ERR_RQ_STRING_FAIL OP_ERR_NO_DATA OP_ERR_OVER_MAX_DATA OP_ERR_DATA_RCV_FAIL OP_ERR_OVER_MAX_FID OP_ERR_REAL_CANCEL OP_ERR_ORD_WRONG_INPUT OP_ERR_ORD_WRONG_ACCTNO OP_ERR_OTHER_ACC_USE OP_ERR_MIS_2BILL_EXC OP_ERR_MIS_5BILL_EXC OP_ERR_MIS_1PER_EXC OP_ERR_MIS_3PER_EXC OP_ERR_SEND_FAIL OP_ERR_ORD_OVERFLOW OP_ERR_MIS_300CNT_EXC OP_ERR_MIS_500CNT_EXC OP_ERR_ORD_WRONG_ACCTINFO OP_ERR_ORD_SYMCODE_EMPTY
+
+             .   FID     20 50 1% 3%   300 500  
+
+30 / 53
+
+8.  FID
+8.1 
+FID 10 11 12 27 28 13 14 16 17 18 25 26 29 30 31 32 311
+8.2 
+FID 20 10 11 12 27 28 15 13 14 16 17 18 25 26 29 30 31 32 228 311 290 691
+
+ , ,     () () ,        (,)    ()   ()
+  (HHMMSS) , ,     () () ,  ,         (, )    ()    ()  K,O  (ELW , )
+31 / 53
+
+8.3 
+FID 27 28
+8.4 
+FID 21 41 61 81 51 71 91 42 62 82 52 72 92 43 63 83 53 73 93 44 64 84 54 74 94 45 65 85 55 75 95 46 66 86 56 76 96 47
+
+ () ()
+  1  1  1 1  1  1 1  2  2 2  2  2 3  3  3 3  3  3 4  4  4 4  4  4 5  5  5 5  5  5 6  6  6 6  6  6 7
+32 / 53
+
+67
+
+ 7
+
+87
+
+ 7
+
+57
+
+7
+
+77
+
+ 7
+
+97
+
+ 7
+
+48
+
+8
+
+68
+
+ 8
+
+88
+
+ 8
+
+58
+
+8
+
+78
+
+ 8
+
+98
+
+ 8
+
+49
+
+9
+
+69
+
+ 9
+
+89
+
+ 9
+
+59
+
+9
+
+79
+
+ 9
+
+99
+
+ 9
+
+50
+
+10
+
+70
+
+ 10
+
+90
+
+ 10
+
+60
+
+10
+
+80
+
+ 10
+
+100
+
+ 10
+
+121
+
+ 
+
+122
+
+  
+
+125
+
+ 
+
+126
+
+  
+
+23
+
+
+
+24
+
+ 
+
+128
+
+(-)
+
+129
+
+
+
+138
+
+(-)
+
+139
+
+
+
+200
+
+  
+
+201
+
+   
+
+238
+
+  
+
+291
+
+
+
+292
+
+
+
+293
+
+ 
+
+294
+
+ 
+
+295
+
+ 
+
+621
+
+LP 1
+
+631
+
+LP 1
+
+622
+
+LP 2
+
+632
+
+LP 2
+
+623
+
+LP 3
+
+633
+
+LP 3
+
+33 / 53
+
+624 634 625 635 626 636 627 637 628 638 629 639 630 640 13 299 215 216
+8.5 
+FID 20 10 11 12 27 28 15 13 14 16 17 18 195 182 184 183 186 181 185 25 197 26 246 247 248
+
+LP 4 LP 4 LP 5 LP 5 LP 6 LP 6 LP 7 LP 7 LP 8 LP 8 LP 9 LP 9 LP 10 LP 10 ,     ticker
+ (HHMMSS) , ,     () () ,  ,                 KOSPI200  (, )         
+34 / 53
+
+30 196
+8.6 
+FID 21 27 28 41 61 81 101 51 71 91 111 42 62 82 102 52 72 92 112 43 63 83 103 53 73 93 113 44 64 84 104 54 74 94 114 45 65 85 105 55 75
+
+ ()  
+ (HHMMSS) () () 1  1  1  1 1  1  1  1 2  1  2  2 2  2  2  2 3  3  3  3 3  3  3  3 4  4  4  4 4  4  4  4 5  5  5  5 5  5
+35 / 53
+
+95 115 121 122 123 125 126 127 137 128 13 23 238 200 201 291 293 294 295
+8.7 
+FID 195 182 184 183 186 181 185 246 247 248
+8.8 
+FID 20 10 11 12 27 28 15 13 14 16 17
+
+ 5  5                   (-) ,                  
+                   
+ (HHMMSS) , ,     () () ,  ,    
+36 / 53
+
+18 195 182 186 190 191 193 192 194 181 25 26 137 187 197 246 247 248 219 196 188 189 30 391 392 393
+8.9 
+FID 21 27 28 41 61 81 101 51 71 91 111 42 62 82 102 52 72
+
+                (, )    KOSPI200                (I.V.)  ()      
+ (HHMMSS) () () 1  1  1  1 1  1  1  1 2  1  2  2 2  2
+37 / 53
+
+92
+
+ 2
+
+112
+
+ 2
+
+43
+
+3
+
+63
+
+ 3
+
+83
+
+ 3
+
+103
+
+ 3
+
+53
+
+3
+
+73
+
+ 3
+
+93
+
+ 3
+
+113
+
+ 3
+
+44
+
+4
+
+64
+
+ 4
+
+84
+
+ 4
+
+104
+
+ 4
+
+54
+
+4
+
+74
+
+ 4
+
+94
+
+ 4
+
+114
+
+ 4
+
+45
+
+5
+
+65
+
+ 5
+
+85
+
+ 5
+
+105
+
+ 5
+
+55
+
+5
+
+75
+
+ 5
+
+95
+
+ 5
+
+115
+
+ 5
+
+121
+
+ 
+
+122
+
+  
+
+123
+
+  
+
+125
+
+ 
+
+126
+
+  
+
+127
+
+  
+
+137
+
+ 
+
+128
+
+(-)
+
+13
+
+, 
+
+23
+
+
+
+238
+
+  
+
+200
+
+  
+
+201
+
+  
+
+291
+
+
+
+293
+
+ 
+
+294
+
+ 
+
+295
+
+ 
+
+38 / 53
+
+8.10 
+
+FID
+
+
+
+195
+
+ 
+
+182
+
+
+
+186
+
+
+
+190
+
+
+
+191
+
+
+
+193
+
+
+
+192
+
+
+
+194
+
+
+
+181
+
+  
+
+246
+
+  
+
+247
+
+  
+
+248
+
+  
+
+187
+
+
+
+188
+
+
+
+189
+
+(I.V.)
+
+8.11 
+
+FID
+
+
+
+20
+
+(HHMMS)
+
+10
+
+, , 
+
+11
+
+ 
+
+12
+
+
+
+27
+
+()
+
+28
+
+()
+
+15
+
+, 
+
+13
+
+, 
+
+14
+
+
+
+16
+
+
+
+17
+
+
+
+18
+
+
+
+195
+
+
+
+182
+
+
+
+186
+
+
+
+190
+
+
+
+191
+
+
+
+193
+
+
+
+192
+
+
+
+194
+
+
+
+181
+
+  
+
+25
+
+ 
+
+26
+
+ (, )
+
+39 / 53
+
+8.12 
+
+FID
+
+
+
+21
+
+(YYYYMMDD)
+
+27
+
+()
+
+28
+
+()
+
+41
+
+1
+
+42
+
+2
+
+43
+
+3
+
+44
+
+4
+
+45
+
+5
+
+61
+
+ 1
+
+62
+
+ 2
+
+63
+
+ 3
+
+64
+
+ 4
+
+65
+
+ 5
+
+101
+
+ 1
+
+102
+
+ 2
+
+103
+
+ 3
+
+104
+
+ 4
+
+105
+
+ 5
+
+51
+
+1
+
+52
+
+2
+
+53
+
+3
+
+54
+
+4
+
+55
+
+5
+
+71
+
+ 1
+
+72
+
+ 2
+
+73
+
+ 3
+
+74
+
+ 4
+
+75
+
+ 5
+
+111
+
+ 1
+
+112
+
+ 2
+
+113
+
+ 3
+
+114
+
+ 4
+
+115
+
+ 5
+
+121
+
+ 
+
+123
+
+  
+
+125
+
+ 
+
+127
+
+  
+
+23
+
+
+
+238
+
+  
+
+200
+
+  
+
+201
+
+   
+
+291
+
+
+
+293
+
+  
+
+294
+
+ 
+
+40 / 53
+
+295
+
+  
+
+8.13 
+
+FID
+
+
+
+195
+
+ 
+
+182
+
+
+
+186
+
+
+
+190
+
+
+
+191
+
+
+
+193
+
+
+
+192
+
+
+
+194
+
+
+
+181
+
+  
+
+8.14 
+
+FID
+
+
+
+10
+
+, , 
+
+27
+
+()
+
+28
+
+()
+
+8.15 
+
+FID
+
+
+
+20
+
+(HHMMSS)
+
+10
+
+, , 
+
+11
+
+ 
+
+12
+
+
+
+15
+
+, 
+
+13
+
+, 
+
+14
+
+
+
+16
+
+
+
+17
+
+
+
+18
+
+
+
+25
+
+ 
+
+26
+
+ (, )
+
+8.16 
+FID 20 252 251 253 255 254 13 14 10
+
+ (HHMMSS)      ,   , , 
+41 / 53
+
+11
+
+ 
+
+12
+
+
+
+256
+
+ 
+
+257
+
+ 
+
+25
+
+ 
+
+8.17 
+FID 215 20 214
+8.18  ticker
+FID 216
+8.19 
+FID 9201 9203 9205 9001 912 913 302 900 901 902 903 904 905 906 907 908 909 910 911
+10 27 28 914 915 938 939
+
+ (0:, 2:, 3:, 4,8:, 9:) (HHMMSS)  
+  ticker
+    ,  (JJ:, FJ:, JG:, FG:) (, , )       (+,-...) (,...)  (1:,2:) /(HHMMSSMS)    , ,  () ()     
+
+42 / 53
+
+8.20 
+FID 9201 9001 302
+10 930 931 932 933 945 946 950 951 27 28 307 8019 397
+8.21 
+FID 9201 9001 917 916 302
+10 930 931 932 933 945 946 950 951 27 28 307 8019 957 958 918 990 991
+
+  ,   , ,       /      () ()   
+  ,     , ,       /       () ()      () ()
+43 / 53
+
+992
+
+()
+
+993
+
+()
+
+959
+
+
+
+8.22 
+
+FID
+
+
+
+21
+
+(HHMMSS)
+
+131
+
+  
+
+132
+
+   
+
+135
+
+  
+
+136
+
+   
+
+8.23 
+
+FID
+
+
+
+141
+
+ 1
+
+161
+
+  1
+
+166
+
+  1
+
+146
+
+  1
+
+271
+
+  1
+
+151
+
+ 1
+
+171
+
+  1
+
+176
+
+  1
+
+156
+
+  1
+
+281
+
+  1
+
+142
+
+ 2
+
+162
+
+  2
+
+167
+
+  2
+
+147
+
+  2
+
+272
+
+  2
+
+152
+
+ 2
+
+172
+
+  2
+
+177
+
+  2
+
+157
+
+  2
+
+282
+
+  2
+
+143
+
+ 3
+
+163
+
+  3
+
+168
+
+  3
+
+148
+
+  3
+
+273
+
+  3
+
+153
+
+ 
+
+173
+
+  3
+
+178
+
+  3
+
+158
+
+  3
+
+183
+
+  3
+
+144
+
+ 4
+
+164
+
+  4
+
+44 / 53
+
+169
+
+  4
+
+149
+
+  4
+
+274
+
+  4
+
+154
+
+ 4
+
+174
+
+  4
+
+179
+
+  4
+
+159
+
+  4
+
+284
+
+  4
+
+145
+
+ 5
+
+165
+
+  5
+
+170
+
+  5
+
+150
+
+  5
+
+275
+
+  5
+
+155
+
+ 5
+
+175
+
+  5
+
+180
+
+  5
+
+160
+
+  5
+
+285
+
+  5
+
+261
+
+ 
+
+262
+
+  
+
+263
+
+ 
+
+264
+
+  
+
+267
+
+ 
+
+268
+
+  
+
+ (1, KOSPI, 2:KOSDAQ, 3:OTCCBB, 4:KOSPI200, 5:KOSPI200, 6: 337
+, 7:)
+
+45 / 53
+
+9.  Open API+   
+9.1 () 
+1) (HTS) [0150]   . -   HTS   ,    API   .
+2)        . - : long GetConditionLoad(); - : 0(), 1() OpenAPI    . OnReceiveConditionVer      (TRUE), (FALSE)     .        . OnReceiveConditionVer(BOOL bRet, LPCTSTR sMsg)   bRet :   (TRUE, FALSE) sMsg :  46 / 53
+
+3)        .
+- : CString GetConditionNameList(); - : ex: 1^1;2^2;...; -"^"    . -";"()   .
+4) ()   .
+- :BOOL SendCondition(LPCTSTR strScrNo, LPCTSTR strConditionName, int nIndex, int nSearch); - : FALSE(), TRUE() -  strScrNo :  strConditionName :GetConditionNameList()    . nIndex : GetCondionNameList()  . nSearch : (0), (1), (2) nSearch  0    ()     . 1   ()      ,       . -1        10 . -2 OnReceiveTrCondition     nNext "2"          OnReceiveTrCondition    . - OnReceiveTrCondition(LPCTSTR sScrNo, LPCTSTR strCodeList, LPCTSTR strConditionName, int nIndex, int nNext)    . -  sScrNo : 
+47 / 53
+
+strCodeList :  (ex:039490;005930;036570;...;) strConditionName :   nIndex :    nNext :  (0:, 2: ) -    OnReceiveRealCondition(LPCTSTR strCode, LPCTSTR strType, LPCTSTR strConditionName, LPCTSTR strConditionIndex)   ,    . -  strCode :  strType : ("I"), ("D") strConditionName :  strConditionIndex :  
+5)   .      10             . - Void SendConditionStop(LPCTSTR strScrNo, LPCTSTR strConditionName, int nIndex); -  strScrNo :  strConditionName :  nIndex :  
+48 / 53
+
+9.2  /  
+
+ DATA    ,   ,     .
+
+1)   
+
+LONG SetRealReg(LPCTSTR strScreenNo, LPCTSTR strCodeList, LPCTSTR strFidList, LPCTSTR strOptType) -  
+
+strScreenNo
+
+: 
+
+strCodeList
+
+: (ex: 039490;005930;...)
+
+strFidList : FID(ex:9001;10;13;...)
+
+9001 ­ 
+
+10 - 
+
+13 - 
+
+ FID KOA Studio    .
+
+strOptType
+
+: ("0", "1")
+
+ "0"      .
+
+ "1"       
+
+     .
+
+ , FID         100 .
+
+Ex)
+
+strScreenNo = "0001" ()
+
+strCodeList = "039490;005930;..." ( )
+
+strFidList = "9001;10;13;..." (FID  )
+
+strOptType = "0" ()
+
+SetRealReg(strScreenNo, strCodeList, strFidList, strOptType);
+
+2)            . 49 / 53
+
+Void SetRealRemove(LPCTSTR strScrNo, LPCTSTR strDelCode)
+
+SetRealReg()       .
+
+- 
+
+strScrNo
+
+: 
+
+strDelCode :   
+
+ex) -          "ALL"   . SetRealRemove("ALL", "ALL");          "ALL"  . SetRealRemove("0001", "ALL"); -            . SetRealRemove("0001", "039490");
+
+9.3  DATA( ) 
+ GetCommData()                 .            . 1)  -  : VARIANT GetCommDataEx(LPCTSTR strTrCode, LPCTSTR strRecordName); -   strTrCode :  TR(ex: "OPT10080") strRecordName :     
+50 / 53
+
+OPT10080 :    "", "" 2    GetCommDataEx() strRecordName ""         .
+
+2)   ­       
+
+// (OPT10081)   
+
+//   .
+
+int nMaxRow = theApp.m_khOpenApi.GetRepeatCnt(strTRCode, strRQName);
+
+  KOA Studio TR   .
+
+ OPT10080  OUTPUT   , , ,
+
+, , ,      0 1 .
+
+// OPT10080   , ,   13
+
+Int nMaxCol = 13; //  TR   , TR 
+
+    .
+
+int nIndex[2];
+
+VARIANT
+
+vReturn
+
+=
+
+theApp.m_khOpenApi.GetCommDataEx(strTrCode,
+
+"");
+
+COleSafeArray saMatrix(vReturn);
+
+VARIANT vTemp;
+
+VariantInit(&vTemp);
+
+CString strOneData;
+
+for(int nRow = 0; nRow < nMaxRow; nRow ++)
+
+{
+
+for(int nCol = 0; nCol < nMaxCol; nCol ++)
+
+{
+
+nIndex[0] = nRow;
+
+nIndex[1] = nCol;
+
+saMatrix.GetElement(nIndex, &vTemp);
+
+51 / 53
+
+strOneData = (CString)vTemp.bstrVal; ::SysFreeString(vTemp.bstrVal); } } saMatrix.Clear(); VariantClear(&vReturn);
+10. 
+10.1  
+1.  -   "" , ""  . - (HTS) [4989]  ­   .
+2.  -   SendOrderCredit() - KOA         
+     -  ,  , /   
+3.   -       ""   . -    . - 2 12     2 16 . - (9 ) (10 ) (  )
+4. KOA   -   "03"  ,  
+52 / 53
+
+5. KOA   -    "33"  - OPW00005()TR OPW00004()TR   
+. OPW00005()TR   . -    "99"   "99991231" . -    5   . -  7 2     .
+
+<   >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+03
+
+
+
+
+
+33
+
+
+
+
+
+
+
+99
+
+99991231
+
+ :     
+
+5  
+
+53 / 53
+
+

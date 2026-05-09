@@ -1,0 +1,13 @@
+========================================================
+  미륵이 일일 전략 상태 리포트  2026-05-07 18:22
+========================================================
+  버전    : v1.2  (1일차)
+  판정    : INSUFFICIENT
+  [Registry 조회 실패: unsupported format character ',' (0x2c) at index 14]
+--------------------------------------------------------
+  CUSUM   : [조회 실패: 'MultiMetricDriftDetector' object has no attribute 'get_level']
+  PSI     : 0.000 (CLEAR)
+  PSI/feat: cvd=0.000  vwap_position=0.000  ofi=0.000
+--------------------------------------------------------
+  권고    : [계산 실패: 'MultiMetricDriftDetector' object has no attribute 'get_level']
+========================================================

@@ -1,0 +1,16 @@
+{
+  "status": "FLAT",
+  "entry_price": 0.0,
+  "quantity": 0,
+  "entry_time": null,
+  "grade": "",
+  "regime": "",
+  "stop_price": 0.0,
+  "tp1_price": 0.0,
+  "tp2_price": 0.0,
+  "partial_1_done": false,
+  "partial_2_done": false,
+  "last_update_reason": "apply_exit_fill_final:TP1(전량)",
+  "last_update_ts": "2026-05-08T15:07:02",
+  "saved_at": "2026-05-08T15:07:03.361849"
+}

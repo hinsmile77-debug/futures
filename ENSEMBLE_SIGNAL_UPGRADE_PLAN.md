@@ -4,23 +4,23 @@
 
 ### Daily Check
 
-- `microstructure_ab_report.md`?먯꽌 baseline vs enhanced `accuracy`, `win_rate`, `avg pnl`, `total pnl` 蹂?붾?瑜?留먼?먮낫怨?湲곕줉?쒕떎.
-- `calibration_report.md`?먯꽌 overall `ECE`, `Brier`, `log-loss`媛 媛쒖꽑?섎뒗吏 ?뺤씤?쒕떎.
-- `meta_gate_tuning_report.md`?먯꽌 `meta_labels` ?쒕낯 ??`best_grid` 媛깆떊 ?щ?瑜?蹂몃떎.
-- `rollout_readiness_report.md`?먯꽌 `recommended_stage`媛 `shadow`??紐⑥쓣??`alert_only`濡?寃⑸궗?섎뒗吏 ?뺤씤?쒕떎.
+- `microstructure_ab_report.md`에서 baseline vs enhanced `accuracy`, `win_rate`, `avg pnl`, `total pnl` 변화를 매일 비교하고 기록한다.
+- `calibration_report.md`에서 overall `ECE`, `Brier`, `log-loss`가 개선되는지 확인한다.
+- `meta_gate_tuning_report.md`에서 `meta_labels` 샘플 수와 `best_grid` 갱신 여부를 본다.
+- `rollout_readiness_report.md`에서 `recommended_stage`가 `shadow`에 머무는지, `alert_only`로 격상 가능한지 확인한다.
 
 ### Gate Quality Check
 
-- `ensemble_decisions`?먯꽌 `gate_reason`, `gate_strength`, `meta_action`, `toxicity_action` 而щ읆???좉퇋 row?좎?泥댄겕?쒕떎.
-- `toxicity_reduce / toxicity_block`媛 ?뺤깋?섍쾶 ?꾨룞?섏? ?딄퀬, ?뺤긽 ?μ꽭?먯꽌 怨쇰룄 李⑤떒???놁뒗吏 蹂몃떎.
-- `meta skip / reduce`媛 ?ㅼ젣 ?먯떎 ?뚯쓣 以꾩씠?붾뒗吏, `take`媛 ?곗씠??湲곗뿬?섎뒗吏 ?곗냼 蹂몃떎.
+- `ensemble_decisions`에서 `gate_reason`, `gate_strength`, `meta_action`, `toxicity_action` 컬럼이 최근 row에 정상 기록되는지 체크한다.
+- `toxicity_reduce / toxicity_block`가 정확하게 작동하는지 보고, 정상 장세에서 과도한 차단이 없는지 본다.
+- `meta skip / reduce`가 실제 손실 구간을 줄이는지, `take`가 수익에 기여하는지 계속 본다.
 
 ### Promotion Criteria
 
-- A/B 媛쒖꽑 吏?쒕? 2媛??댁긽 ?쒖궗?섎뒗吏 ?뺤씤?쒕떎.
-- calibration ?낅솕媛 ?놁뒗?댁? ?뺤씤?쒕떎.
-- `meta_labels >= 20` ?댁긽 ??`alert_only` ?ы룊媛, `meta_labels >= 100` ?댁긽 ??`small_size` 寃?좊? ?쒖옉?쒕떎.
-- rollout ?④퀎 ?듭? `shadow -> alert_only -> small_size -> full` ?쒖꽌瑜?吏?ㅻ떎.
+- A/B 개선 지표가 2개 이상 유의하게 좋아졌는지 확인한다.
+- calibration 악화가 없는지도 확인한다.
+- `meta_labels >= 20` 이상 시 `alert_only` 재평가, `meta_labels >= 100` 이상 시 `small_size` 검토를 시작한다.
+- rollout 단계는 `shadow -> alert_only -> small_size -> full` 순서를 지킨다.
 
 ## Update Status (2026-05-08)
 
