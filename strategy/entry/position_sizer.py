@@ -39,6 +39,14 @@ class PositionSizer:
     def __init__(self, account_balance: float = 0):
         self.account_balance = account_balance
 
+    def set_account_balance(self, account_balance: Optional[float]) -> None:
+        try:
+            balance = float(account_balance or 0.0)
+        except Exception:
+            return
+        if balance > 0:
+            self.account_balance = balance
+
     def compute(
         self,
         confidence: float,
@@ -62,7 +70,7 @@ class PositionSizer:
         Returns:
             {quantity, base_risk, conf_mult, regime_mult, kelly_mult, stop_distance}
         """
-        balance = account_balance or self.account_balance
+        balance = self.account_balance if account_balance is None else account_balance
         if balance <= 0:
             return {
                 "quantity": 1,

@@ -70,6 +70,25 @@ class MetaConfidenceLearner:
             self._model  = SGDClassifier(loss="log_loss", max_iter=1, warm_start=True, alpha=0.001)
             self._scaler = StandardScaler()
 
+    def _coerce_feature_vector(self, meta_features) -> Optional[List[float]]:
+        if not isinstance(meta_features, (list, tuple, np.ndarray)):
+            return None
+
+        flat: List[float] = []
+        try:
+            for value in list(meta_features):
+                if isinstance(value, (list, tuple, np.ndarray)):
+                    if np.size(value) != 1:
+                        return None
+                    value = np.asarray(value).reshape(-1)[0]
+                flat.append(float(value))
+        except Exception:
+            return None
+
+        if len(flat) != 9:
+            return None
+        return flat
+
     def build_meta_features(
         self,
         regime:        str,     # "추세장" / "횡보장" / "급변장" / "혼합"
@@ -127,7 +146,11 @@ class MetaConfidenceLearner:
         Returns:
             {confidence_score, size_multiplier, model_source}
         """
-        if self._fitted and _SKLEARN_OK:
+        meta_features = self._coerce_feature_vector(meta_features)
+        if meta_features is None:
+            conf = 0.5
+            source = "rule(input_invalid)"
+        elif self._fitted and _SKLEARN_OK:
             try:
                 X = self._scaler.transform([meta_features])
                 prob = self._model.predict_proba(X)[0]
@@ -198,6 +221,11 @@ class MetaConfidenceLearner:
             meta_features: predict_confidence 에 쓴 것과 동일한 피처
             correct:       예측 정답 여부
         """
+        meta_features = self._coerce_feature_vector(meta_features)
+        if meta_features is None:
+            logger.debug("[MetaConf] skip invalid meta_features=%r", meta_features)
+            return
+
         label = 1 if correct else 0
         self._accuracy_buf.append(float(label))
         self._X_buf.append(meta_features)
@@ -211,8 +239,17 @@ class MetaConfidenceLearner:
     def _partial_fit(self):
         """SGD 부분 학습"""
         try:
-            X = np.array(self._X_buf[-100:])
-            y = np.array(self._y_buf[-100:])
+            pairs = []
+            for feats, label in zip(self._X_buf[-100:], self._y_buf[-100:]):
+                clean = self._coerce_feature_vector(feats)
+                if clean is not None:
+                    pairs.append((clean, label))
+
+            if len(pairs) < self.MIN_SAMPLES:
+                return
+
+            X = np.array([item[0] for item in pairs], dtype=np.float32)
+            y = np.array([item[1] for item in pairs], dtype=np.int32)
 
             if not self._fitted:
                 self._scaler.fit(X)

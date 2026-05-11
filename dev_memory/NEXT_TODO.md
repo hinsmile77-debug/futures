@@ -10,6 +10,99 @@
 
 ## 2026-05-10 Cybos Plus follow-up
 
+### 2026-05-11 log review update
+
+- [DONE 2026-05-11] review latest `start_mireuk_cybos_test.bat` run logs for Cybos startup and realtime evidence
+  - confirmed:
+    - Cybos account fallback worked: configured `7034809431` -> runtime `333042073`
+    - `CpTd0723` mock no-data (`97007`) was interpreted as flat without blocking startup
+    - UI boot + Qt event loop entry completed through Cybos path
+    - realtime-derived `MICRO` ticks were still being produced after `09:03`
+  - caution:
+    - `SYSTEM` log still said `FC0 실시간 틱 대기 중`, which is a Kiwoom-specific waiting message and can be misleading on Cybos
+    - `MICRO-MINUTE` log kept repeating `ts=2026-05-11 09:03:00`, so Cybos minute-close / handoff behavior still needs explicit validation
+
+### NEXT after 2026-05-11 review
+
+- [DONE 2026-05-11] fix startup crash caused by `None` formatting in Cybos balance logging
+- [DONE 2026-05-11] harden `MetaConf` training input normalization so ragged feature vectors do not reach fit/buffer
+- [DONE 2026-05-11] switch sizer balance source from fixed fallback to latest Cybos summary
+- [DONE 2026-05-11] route `CpTd6197` validation output into `SYSTEM.log`
+- [DONE 2026-05-11] document Cybos daily-pnl source-of-truth rule (`CpTd6197` first, HTS reference-only)
+- [DONE 2026-05-11] replace account-panel `포지션 복원` path with `잔고 새로고침` + `F5`
+- [DONE 2026-05-11] force dashboard balance rows to clear immediately on final exit to `FLAT`
+
+- [NEXT 2026-05-12] verify final-exit balance UI clears immediately on the next TP2 / full-close case
+  - check:
+    - `[BalanceUI] force flat rows reason=final_exit:...`
+    - `[BalanceRefresh] trigger=ExitFillFlow mode=final retries=250ms,1200ms`
+    - subsequent `BalanceUI ... rows=0`
+
+- [NEXT 2026-05-12] confirm no stale cached balance row reappears after post-exit refresh retries
+  - goal:
+    - ensure `_last_balance_result` and dashboard rendering stay aligned after `FLAT`
+
+- [NEXT 2026-05-12] verify whether Cybos realtime is truly flowing end-to-end or only partially flowing into micro/hoga paths
+  - check:
+    - `collection/cybos/realtime_data.py` tick callback count during market hours
+    - dashboard current price panel changes from Cybos stream
+    - whether minute bars are actually closing with advancing timestamps
+
+- [DONE 2026-05-11] verify Cybos realtime receipt outside main UI with `scripts/check_cybos_realtime.py`
+  - command:
+    - `python scripts/check_cybos_realtime.py --listen-sec 20`
+  - result:
+    - `IsConnect=1`
+    - `TradeInit=0`
+    - realtime code `A0166`
+    - tick count `71`
+    - hoga count `228`
+    - script returned `PASS`
+  - interpretation:
+    - `FutureCurOnly` / `FutureJpBid` broker receipt is confirmed
+    - remaining issue scope moves to main runtime integration, minute-close progression, or status/log interpretation
+
+- [NEXT 2026-05-12] replace Kiwoom-specific waiting/status wording in `main.py`
+  - current issue:
+    - `장중 — FC0 실시간 틱 대기 중` is shown even on Cybos runs
+  - goal:
+    - broker-aware waiting message so Cybos runs are not diagnosed with the wrong mental model
+
+- [DONE 2026-05-11] make waiting-status wording broker-aware in `main.py`
+  - result:
+    - Kiwoom: `Kiwoom FC0 실시간 틱 대기 중`
+    - Cybos: `Cybos 실시간 분봉 대기 중 (FutureCurOnly/FutureJpBid 수신 시 자동 진행)`
+
+- [NEXT 2026-05-12] inspect Cybos minute pipeline timestamp / bar-close path
+  - symptom from logs:
+    - `MICRO-MINUTE` kept repeating `ts=2026-05-11 09:03:00`
+  - goal:
+    - confirm whether closed candles are not advancing, or only the micro log view is stuck on the first closed bar
+  - likely scope:
+    - `collection/cybos/realtime_data.py`
+    - `main.py` candle callback / minute pipeline handoff
+
+- [NEXT 2026-05-12] run one Cybos-focused realtime probe script outside main UI
+  - goal:
+    - separate broker realtime receipt from main-loop / dashboard-state interpretation
+  - expected:
+    - `FutureCurOnly` ticks increase
+    - `FutureJpBid` hoga events increase
+    - last tick time and price continue advancing during KRX hours
+
+- [DONE 2026-05-11] add `scripts/check_cybos_realtime.py` for Cybos-only realtime verification
+  - scope:
+    - `FutureCurOnly` tick count
+    - `FutureJpBid` hoga count
+    - progress prints during listen window
+    - PASS/WARN/FAIL exit result for quick operator judgment
+
+- [DONE 2026-05-11] add Cybos `BAR-CLOSE` system log emission
+  - goal:
+    - make minute close progression observable like Kiwoom path
+  - file:
+    - `collection/cybos/realtime_data.py`
+
 ### DONE today
 
 - [DONE 2026-05-10] implement concrete `collection/cybos/` runtime path for connection, balance, snapshot, realtime, and fill wiring

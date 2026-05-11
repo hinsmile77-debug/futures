@@ -4,6 +4,7 @@ import logging
 import platform
 import time
 from typing import Any, Callable, Dict, List, Optional
+from logging_system.log_manager import log_manager
 
 try:
     import pythoncom
@@ -19,6 +20,7 @@ except ImportError:  # pragma: no cover - GUI/runtime dependency
     QTimer = None
 
 logger = logging.getLogger(__name__)
+system_logger = logging.getLogger("SYSTEM")
 
 
 CYBOS_RUNTIME_HINT = (
@@ -29,6 +31,7 @@ CYBOS_RUNTIME_HINT = (
 CYBOS_GOODS_CODE_FUTURES = "50"
 CYBOS_CONCLUSION_PROGID = "Dscbo1.CpFConclusion"
 CYBOS_FUTURES_BALANCE_PROGID = "CpTrade.CpTd0723"
+CYBOS_FUTURES_DAILY_PNL_PROGID = "CpTrade.CpTd6197"
 CYBOS_FUTURES_ORDER_PROGID = "CpTrade.CpTd6831"
 
 BALANCE_SIDE_MAP = {
@@ -51,6 +54,38 @@ ORDER_STATUS_MAP = {
 
 ORDER_HOGA_MARKET = "2"
 ORDER_CONDITION_DEFAULT = "0"
+
+# CpTd6197 header mapping is validated against raw Cybos logs in SYSTEM.log.
+# HTS is a visual cross-check only and does not override this mapping.
+# Current validated mapping from the 2026-05-11 session:
+# - 1: deposit cash
+# - 2: next-day deposit cash
+# - 5: previous-day pnl
+# - 6: today's realized pnl
+# - 9: liquidation evaluation amount
+# In the current mock environment, headers 2 and 9 are identical and header 5
+# is returned as zero; both are treated as broker facts, not parser failures.
+DAILY_PNL_HEADER_DEPOSIT_CASH = 1
+DAILY_PNL_HEADER_NEXT_DAY_DEPOSIT_CASH = 2
+DAILY_PNL_HEADER_PREV_DAY_PNL = 5
+DAILY_PNL_HEADER_TODAY_PNL = 6
+DAILY_PNL_HEADER_LIQUIDATION_EVAL = 9
+
+
+def _system_info(message: str) -> None:
+    system_logger.info(message)
+    try:
+        log_manager.system(message, "INFO")
+    except Exception:
+        pass
+
+
+def _system_warning(message: str) -> None:
+    system_logger.warning(message)
+    try:
+        log_manager.system(message, "WARNING")
+    except Exception:
+        pass
 
 
 def _require_cybos_runtime() -> None:
@@ -308,11 +343,13 @@ class CybosAPI:
             }
             rows.append(row)
 
+        summary = self._request_futures_daily_pnl_summary(account_no)
+
         nonempty_rows = [row for row in rows if _bool_nonblank(list(row.values()))]
         result = {
             "rows": rows,
             "nonempty_rows": nonempty_rows,
-            "summary": {},
+            "summary": summary,
             "summary_probe": {
                 "dib_status": str(status),
                 "dib_msg": msg,
@@ -324,6 +361,71 @@ class CybosAPI:
         }
         logger.info("[CybosBalance] account=%s rows=%d nonempty=%d", account_no, len(rows), len(nonempty_rows))
         return result
+
+    def _request_futures_daily_pnl_summary(self, account_no: str) -> Dict[str, str]:
+        today_yyMMdd = time.strftime("%y%m%d")
+        try:
+            obj = Dispatch(CYBOS_FUTURES_DAILY_PNL_PROGID)
+            obj.SetInputValue(0, account_no)
+            obj.SetInputValue(1, today_yyMMdd)
+            obj.SetInputValue(2, CYBOS_GOODS_CODE_FUTURES)
+            obj.SetInputValue(3, 10)
+
+            ret = obj.BlockRequest()
+            status = _safe_int(obj.GetDibStatus())
+            msg = _safe_str(obj.GetDibMsg1())
+            if ret not in (0, None) or status != 0:
+                _system_warning(
+                    f"[CybosDailyPnl] request failed account={account_no} "
+                    f"ret={ret} status={status} msg={msg}"
+                )
+                return {}
+
+            raw_headers = {idx: _safe_str(obj.GetHeaderValue(idx)) for idx in range(0, 21)}
+            deposit_cash = _safe_float(raw_headers.get(DAILY_PNL_HEADER_DEPOSIT_CASH))
+            next_day_deposit_cash = _safe_float(raw_headers.get(DAILY_PNL_HEADER_NEXT_DAY_DEPOSIT_CASH))
+            prev_day_pnl = _safe_float(raw_headers.get(DAILY_PNL_HEADER_PREV_DAY_PNL))
+            today_pnl = _safe_float(raw_headers.get(DAILY_PNL_HEADER_TODAY_PNL))
+            liquidation_eval = _safe_float(raw_headers.get(DAILY_PNL_HEADER_LIQUIDATION_EVAL))
+            if liquidation_eval <= 0.0 and next_day_deposit_cash > 0.0:
+                liquidation_eval = next_day_deposit_cash
+            profit_rate = (next_day_deposit_cash / deposit_cash * 100.0) if deposit_cash else 0.0
+
+            header_validation = {
+                "deposit_cash_idx": DAILY_PNL_HEADER_DEPOSIT_CASH,
+                "next_day_deposit_cash_idx": DAILY_PNL_HEADER_NEXT_DAY_DEPOSIT_CASH,
+                "prev_day_pnl_idx": DAILY_PNL_HEADER_PREV_DAY_PNL,
+                "today_pnl_idx": DAILY_PNL_HEADER_TODAY_PNL,
+                "liquidation_eval_idx": DAILY_PNL_HEADER_LIQUIDATION_EVAL,
+                "liquidation_equals_next_day": liquidation_eval == next_day_deposit_cash,
+                "prev_day_pnl_zero": prev_day_pnl == 0.0,
+            }
+
+            summary = {
+                "총매매": f"{deposit_cash:.0f}",
+                "총평가손익": f"{liquidation_eval:.0f}",
+                "실현손익": f"{today_pnl:.0f}",
+                "총평가": f"{profit_rate:.2f}",
+                "총평가수익률": f"{next_day_deposit_cash:.0f}",
+                "추정자산": f"{prev_day_pnl:.0f}",
+            }
+            _system_info(
+                f"[CybosDailyPnl] account={account_no} "
+                f"validate={header_validation} summary={summary}"
+            )
+            system_logger.info(
+                "[CybosDailyPnlHeaders] account=%s headers=%s",
+                account_no,
+                raw_headers,
+            )
+            return summary
+        except Exception:
+            system_logger.exception("[CybosDailyPnl] request failed with exception account=%s", account_no)
+            try:
+                log_manager.system(f"[CybosDailyPnl] exception account={account_no}", "WARNING")
+            except Exception:
+                pass
+            return {}
 
     def send_market_order(
         self,

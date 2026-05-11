@@ -2,6 +2,30 @@
 
 ---
 
+## 2026-05-11
+
+### [D30] treat raw Cybos `CpTd6197` headers as the source of truth for daily pnl/account summary mapping
+**Decision**: when Cybos summary values and HTS display appear different, the implementation should follow the raw `CpTd6197` payload captured in `SYSTEM.log`, not the HTS screen.  
+**Reason**: the broker payload is the programmatic contract used by this app, while HTS can present labels or derived values that do not map 1:1 to the TR headers. Current validation on 2026-05-11 confirmed:
+- `1=예탁현금`
+- `2=익일가예탁현금`
+- `5=전일손익`
+- `6=금일손익`
+- `9=청산후총평가금액`
+and also showed `2 == 9`, `5 == 0` in the current mock environment.
+
+### [D31] clear dashboard balance rows immediately when final exit confirms `FLAT`
+**Decision**: on final exit fill, do not wait for a later broker balance poll before clearing the visible balance row; clear the UI immediately and then retry balance refresh in the background.  
+**Reason**: internal position state can already be `FLAT` while Cybos balance refresh is delayed or skipped, which leaves a misleading stale holding row on screen.
+
+### [B53] final-exit path could leave stale balance rows visible even after confirmed fill
+**File**: `main.py`  
+**Symptom**: TP2/full-close logs showed successful order acceptance, fill, and `[청산 완료] ...` while the dashboard still displayed the old long holding row.  
+**Cause**: the final-exit flow depended on a delayed balance refresh, and in some runs the expected refresh/push did not occur immediately after `ExitFillFlow`. Cached balance rows therefore remained visible.  
+**Fix**:
+- added forced flat-row UI clear on confirmed final exit
+- added post-exit broker balance refresh retries at `250ms` and `1200ms`
+
 ## 2026-05-10
 
 ### [D27] keep Kiwoom as default launcher while adding a Cybos-only test launcher

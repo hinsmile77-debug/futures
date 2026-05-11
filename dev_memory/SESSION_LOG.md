@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-05-11 (Cybos balance / learning / UI sync stabilization)
+
+**Work**
+- Fixed the Cybos startup crash in `main.py` caused by formatting a `None` realized-pnl value during balance logging.
+- Hardened `learning/meta_confidence.py` so invalid or ragged meta feature vectors are normalized or rejected before buffering/fitting.
+- Updated `strategy/entry/position_sizer.py` and `main.py` so sizing now uses the latest Cybos balance summary instead of a fixed `100,000,000` fallback.
+- Added `CpTd6197` daily pnl/account-summary fetch in `collection/cybos/api_connector.py` and routed validation logs into `SYSTEM.log`.
+- Verified and documented the current Cybos daily-pnl mapping rule: raw `CpTd6197` headers are the source of truth; HTS is reference-only.
+- Replaced the dashboard `포지션 복원` control with `잔고 새로고침` and bound `F5` to the balance-only refresh path.
+- Fixed final-exit UI lag by clearing dashboard balance rows immediately on confirmed `FLAT` and retrying broker refresh after exit.
+
+**Validated results**
+- `MetaConf` repeated training error (`setting an array element with a sequence`) disappeared after restart.
+- `[Sizer] 잔고=` now reflects broker values such as `500,000,000`.
+- `SYSTEM.log` now records:
+  - `[CybosDailyPnl] ...`
+  - `[CybosDailyPnlHeaders] ...`
+- Verified current `CpTd6197` mapping on 2026-05-11:
+  - `header 1` = deposit cash
+  - `header 2` = next-day deposit cash
+  - `header 5` = previous-day pnl
+  - `header 6` = today's realized pnl
+  - `header 9` = liquidation evaluation amount
+- Confirmed current mock-environment behavior:
+  - `header 2 == header 9`
+  - `header 5 == 0`
+
+**Remaining follow-up**
+- Re-run one TP2/full-exit case and confirm the new `force flat rows` path removes stale balance rows immediately.
+
 ## 2026-05-10 (Cybos Plus refactor validation / session close-out)
 
 **Work**
@@ -50,6 +80,89 @@
 - Snapshot (`FutureMst`): verified after field-index correction
 - Realtime subscription wiring: startup verified, live market event flow still pending
 - Order/fill (`CpTd6831` + `CpFConclusion`): wiring implemented, live mock order validation still pending
+
+## 2026-05-11 (Cybos test launcher log review)
+
+**Work**
+- Reviewed the latest run results around `start_mireuk_cybos_test.bat` and compared them against the existing Cybos follow-up memo.
+- Confirmed that the Cybos launcher path entered the main UI and Qt loop successfully again.
+- Confirmed runtime account fallback worked as intended:
+  - configured account `7034809431`
+  - active Cybos session account `333042073`
+- Confirmed Cybos startup balance sync behaved as expected for mock no-position state:
+  - `CpTd0723`
+  - `DibStatus=0`
+  - `97007` no-data message
+  - interpreted as `FLAT`
+
+**Observed evidence**
+- `SYSTEM` showed:
+  - `[System] cybos 실시간 수신 시작 — A0166`
+  - repeated waiting status lines saying `FC0 실시간 틱 대기 중`
+- `MICRO` log still produced tick-derived updates after `09:03`, including:
+  - `MICRO-TICK #1` at `09:03:45`
+  - `MICRO-TICK #100` at `09:03:52`
+  - `MICRO-TICK #13300` at `09:23:58`
+- This means today's Cybos run does **not** look like a clean "no realtime at all" failure.
+
+**Open inconsistency**
+- The UI/system status message is still Kiwoom-specific (`FC0`) and is misleading during Cybos runs.
+- `MICRO-MINUTE` repeatedly logged `ts=2026-05-11 09:03:00` deep into the session, so minute-close progression or downstream handoff still needs focused validation.
+- `HOGA.log` only contained the earlier Kiwoom-run block from `08:42~08:54`, so Cybos hoga visibility is still not cleanly separated in current logging.
+
+**Interpretation**
+- Current best reading is:
+  - Cybos realtime likely reached at least part of the runtime graph
+  - but broker-aware status messaging and/or minute-pipeline observability are still incomplete
+  - therefore "complete realtime verification" should remain open, but the risk has narrowed from "no data" to "partial flow / incorrect interpretation"
+
+## 2026-05-11 (Cybos follow-up implementation)
+
+**Work**
+- Updated `main.py` waiting-status text to be broker-aware instead of always referring to Kiwoom `FC0`.
+- Added Cybos `BAR-CLOSE` system logging in `collection/cybos/realtime_data.py` so minute-close progression can be observed directly in `SYSTEM.log`.
+- Added `scripts/check_cybos_realtime.py` for UI-independent Cybos realtime verification.
+
+**Why this matters**
+- Previous Cybos runs could look like "no realtime" from `SYSTEM` alone because the waiting text still referenced Kiwoom FC0 semantics.
+- Cybos also lacked a direct `BAR-CLOSE` system log, which made it harder to distinguish:
+  - no realtime
+  - realtime without minute close
+  - minute close happening but downstream interpretation failing
+
+**Verification**
+- `python -m py_compile main.py collection/cybos/realtime_data.py scripts/check_cybos_realtime.py`
+
+**Next**
+- Run `scripts/check_cybos_realtime.py` during KRX hours.
+- Compare:
+  - script tick/hoga counts
+  - `SYSTEM.log` Cybos `BAR-CLOSE`
+  - `MICRO-MINUTE` timestamp progression
+
+## 2026-05-11 (Cybos realtime script validation)
+
+**Work**
+- Ran `python scripts/check_cybos_realtime.py --listen-sec 20` from the project root during market hours.
+
+**Observed result**
+- `IsConnect = 1`
+- `TradeInit = 0`
+- realtime code resolved to `A0166`
+- snapshot query succeeded
+- tick count `71`
+- hoga count `228`
+- final status `PASS`
+
+**Interpretation**
+- Cybos broker-level realtime receipt is now directly verified for both:
+  - `FutureCurOnly`
+  - `FutureJpBid`
+- This materially reduces uncertainty around the Cybos COM/session layer.
+- Remaining debugging focus should move to:
+  - `main.py` runtime interpretation
+  - Cybos minute-close progression
+  - `MICRO-MINUTE` timestamp behavior
 
 ## 2026-05-08 (10차) - 자동종료 재실행 방지 + 봉차트 시인성/토글 개선
 
@@ -1195,3 +1308,19 @@ if not self.model.is_ready():
 - `py_compile`로 `main.py`, `utils/db_utils.py`, `strategy/position/position_tracker.py`, `dashboard/main_dashboard.py` 문법 검증 통과.
 - DB migration 실행 후 `fetch_today_trades('2026-05-08')` 합계가 `-1,618,766원`으로 정규화 기준에 맞게 통일됨을 확인.
 - `trades` 테이블 조회 결과 `formula_version = 2`로 오늘 거래 27건이 모두 갱신되었고 마지막 거래 예시는 `gross=375,000`, `commission=8,645`, `net=366,355`로 정상 확인.
+## 2026-05-11 Cybos order/fill diagnostics follow-up
+
+- Cybos realtime itself was healthy, but live order/fill verification exposed two integration bugs:
+  - `접수` (`order_status=1`) events were arriving with `filled_qty=1`, and the shared Chejan handler treated them as final fills. That caused false entry/exit application at `0.0` or fallback `price_hint=4.88`.
+  - minute rollover callback could re-enter the Qt event loop before `current_bar/current_min` were cleared, so the same minute close was emitted repeatedly (`[CybosRT-ROLLOVER]` / `[BAR-CLOSE][CYBOS]` spam).
+- Fixes applied:
+  - `collection/cybos/realtime_data.py`
+    - clear `_current_bar` / `_current_min` before invoking the candle-closed callback to stop duplicate minute-close emissions during re-entrancy.
+  - `main.py`
+    - extend Cybos no-order-number pending timeout from `60s` to `180s` to tolerate delayed mock acceptance callbacks.
+    - add `*_cybos_safe` overrides for Chejan handling so only `status == "체결"` mutates position state; `접수/정정확인/취소확인` now only mark acceptance/pending metadata.
+    - entry-fill helper override now treats the pre-fill snapshot as the string form returned by `_ts_get_position_snapshot()` instead of assuming a dict.
+- Next validation needed after restart:
+  - one Cybos entry should no longer create a fake `@ 0.0` or `@ 4.88` fill before the actual `체결`.
+  - repeated `[CybosRT-ROLLOVER] from=09:58 to=09:59` spam should stop.
+  - `BalanceRefresh` / broker sync should no longer drift into phantom multi-contract residuals after a single-contract trade.

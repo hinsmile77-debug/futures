@@ -5,6 +5,25 @@
 
 ---
 
+## 2026-05-11 Cybos balance / daily pnl / exit UI state
+
+| Item | Current status |
+|---|---|
+| Meta confidence training | invalid/ragged feature vectors are filtered before fit/buffer; repeated `MetaConf` shape error is no longer observed in restart logs |
+| Position sizing balance source | `PositionSizer` now consumes the latest broker balance summary instead of relying on the old fixed `100,000,000` KRW fallback |
+| Cybos daily pnl summary | `CpTd6197` is wired into broker balance flow and logs validation details into `SYSTEM.log` |
+| Source of truth for Cybos summary mapping | raw `SYSTEM.log` / `CpTd6197` headers are authoritative; HTS is reference-only |
+| Current validated Cybos header mapping | `1=예탁현금`, `2=익일가예탁현금`, `5=전일손익`, `6=금일손익`, `9=청산후총평가금액` |
+| Current mock-environment observation | `header 2 == header 9`, `header 5 == 0` |
+| Dashboard balance refresh UX | account panel now uses `잔고 새로고침` and `F5` for balance-only refresh |
+| Final exit UI sync | on confirmed final exit to `FLAT`, dashboard balance rows are now cleared immediately before broker refresh retries |
+
+### Current operational interpretation
+
+- If HTS and Cybos raw summary look different, trust the logged `CpTd6197` payload first.
+- A stale balance row after exit is treated as a UI sync defect, not as proof that the position is still open.
+- Broker refresh after final exit is intentionally retried because Cybos COM timing can lag immediately after fill confirmation.
+
 ## 2026-05-10 Cybos Plus status update
 
 | Item | Current status |

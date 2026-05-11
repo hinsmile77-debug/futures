@@ -1062,6 +1062,7 @@ class PositionRestoreDialog(QDialog):
 
 class AccountInfoPanel(QWidget):
     sig_position_restore = pyqtSignal(str, float, int, float)  # direction, price, qty, atr
+    sig_balance_refresh_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -1092,63 +1093,39 @@ class AccountInfoPanel(QWidget):
             f"color:{C['text2']};font-size:{S.f(8)}px;"
             f"font-family:Consolas,D2Coding,monospace;"
         )
-        self.btn_position_restore = QPushButton("포지션 복원")
-        self.btn_position_restore.setFixedWidth(S.p(80))
-        self.btn_position_restore.setCursor(Qt.PointingHandCursor)
-        self.btn_position_restore.setStyleSheet(
+        self.btn_balance_refresh = QPushButton("잔고 새로고침")
+        self.btn_balance_refresh.setFixedWidth(S.p(92))
+        self.btn_balance_refresh.setCursor(Qt.PointingHandCursor)
+        self.btn_balance_refresh.setStyleSheet(
             f"QPushButton{{background:{C['orange']};color:#fff;border:none;"
             f"border-radius:3px;padding:2px 6px;font-size:{S.f(8)}px;font-weight:bold;}}"
             f"QPushButton:hover{{background:#d4890a;}}"
         )
-        self.btn_position_restore.setToolTip(
+        self.btn_balance_refresh.setToolTip(
             "<html><body style='background:#1e1e2e;color:#cdd6f4;"
-            "font-size:12px;padding:6px;min-width:340px;'>"
+            "font-size:12px;padding:6px;min-width:280px;'>"
             "<p style='color:#fab387;font-weight:bold;margin:0 0 6px 0;'>"
-            "&#9888; 포지션 수동 복원</p>"
-
+            "&#8635; 잔고 재조회</p>"
             "<p style='color:#89b4fa;font-weight:bold;margin:0 0 3px 0;'>"
             "&#9654; 사용 목적</p>"
             "<p style='margin:0 0 8px 8px;'>"
-            "모의투자 서버에서 <b>OPW20006 TR이 공란</b>을 반환할 때,<br>"
-            "또는 미륵이 <b>재시작 후 실제 보유 포지션이 대시보드에 표시되지 않을 때</b><br>"
-            "HTS 실제 잔고를 직접 입력해 UI를 동기화합니다.<br>"
-            "<span style='color:#f38ba8;'>&#8251; 실서버 정상 가동 중에는 사용하지 마세요.</span>"
+            "사이보스 잔고 TR을 다시 호출해<br>"
+            "<b>메인 대시보드 잔고/요약 카드만</b> 즉시 갱신합니다."
             "</p>"
-
             "<p style='color:#89b4fa;font-weight:bold;margin:0 0 3px 0;'>"
             "&#9654; 사용 방법</p>"
-            "<ol style='margin:0 0 8px 16px;padding:0;'>"
-            "<li>HTS 실시간잔고 화면 확인</li>"
-            "<li>방향(매수=LONG / 매도=SHORT) 선택</li>"
-            "<li>진입가: HTS <b>매입가(원)</b>를 <b>1,000으로 나눈 값</b> 입력<br>"
-            "<span style='color:#a6e3a1;'>"
-            "예) HTS 1,153,000원 &rarr; 1153.00pt 입력</span></li>"
-            "<li>수량: HTS 보유량(계약수) 입력</li>"
-            "<li>ATR 입력 후 <b>[복원]</b> 클릭</li>"
-            "<li>잔고 UI 자동 갱신 + position_state.json 저장</li>"
-            "</ol>"
-
-            "<p style='color:#89b4fa;font-weight:bold;margin:0 0 3px 0;'>"
-            "&#9654; ATR 수치 참조 방법</p>"
-            "<p style='margin:0 0 4px 8px;'>"
-            "ATR = 최근 1분봉 평균 변동폭 (포인트 단위)<br>"
-            "손절라인 = 진입가 &plusmn; ATR&times;1.5 &nbsp;|&nbsp; "
-            "TP1 = &plusmn; ATR&times;1.0</p>"
             "<ul style='margin:0 0 4px 16px;padding:0;'>"
-            "<li>로그 탭 검색: <code>[DBG-F4]</code> &rarr; <code>ATR floor=X.XXpt</code></li>"
-            "<li>WARN 로그 파일: <code>logs/YYYYMMDD_WARN.log</code> 에서 <code>atr=</code> 검색</li>"
-            "<li>ATR 모를 경우 <b>기본값 5.0pt 사용</b> 권장<br>"
-            "<span style='color:#cba6f7;'>"
-            "(평온한 장 2~4pt | 보통 4~7pt | 고변동 7~15pt)</span></li>"
+            "<li>버튼 클릭 또는 <b>F5</b> 입력</li>"
+            "<li>차트/포지션 상태는 건드리지 않고 잔고 패널만 갱신</li>"
             "</ul>"
             "</body></html>"
         )
-        self.btn_position_restore.clicked.connect(self._on_position_restore_clicked)
+        self.btn_balance_refresh.clicked.connect(self._on_balance_refresh_clicked)
         live_row.addWidget(self.lbl_balance_live)
         live_row.addWidget(self.pb_balance_live)
         live_row.addWidget(self.lbl_balance_stamp)
         live_row.addStretch()
-        live_row.addWidget(self.btn_position_restore)
+        live_row.addWidget(self.btn_balance_refresh)
         self.live_header_widget = live_box
 
         lay.addWidget(mk_sep())
@@ -1157,18 +1134,18 @@ class AccountInfoPanel(QWidget):
         summary_grid.setContentsMargins(0, 0, 0, 0)
         summary_grid.setHorizontalSpacing(S.p(18))
         summary_grid.setVerticalSpacing(S.p(10))
-        for text, row, col in [
-            ("총매매", 0, 0),
-            ("총평가손익", 0, 1),
-            ("실현손익", 0, 2),
-            ("총평가", 1, 0),
-            ("총평가수익률", 1, 1),
-            ("추정자산", 1, 2),
+        for key, title, row, col in [
+            ("총매매", "예탁현금", 0, 0),
+            ("총평가손익", "청산후총평가금액", 0, 1),
+            ("실현손익", "금일손익", 0, 2),
+            ("총평가", "수익율(%)", 1, 0),
+            ("총평가수익률", "익일가예탁현금", 1, 1),
+            ("추정자산", "전일손익", 1, 2),
         ]:
             cell = QHBoxLayout()
             cell.setContentsMargins(0, 0, 0, 0)
             cell.setSpacing(S.p(6))
-            label = mk_label(f"{text}:", C['text'], 10, True)
+            label = mk_label(f"{title}:", C['text'], 10, True)
             value = mk_label("", C['text2'], 10, align=Qt.AlignLeft)
             value.setMinimumWidth(S.p(104))
             value.setStyleSheet(
@@ -1180,7 +1157,7 @@ class AccountInfoPanel(QWidget):
             cell.addWidget(label)
             cell.addWidget(value, 1)
             summary_grid.addLayout(cell, row, col)
-            self._summary_values[text] = value
+            self._summary_values[key] = value
         lay.addLayout(summary_grid)
         lay.addWidget(mk_sep())
 
@@ -1320,33 +1297,30 @@ class AccountInfoPanel(QWidget):
 
     def update_summary(self, summary: dict):
         summary = dict(summary or {})
-        total_eval = self._to_number(summary.get("총평가"))
-        total_pnl = self._to_number(summary.get("총평가손익"))
-        total_rate = summary.get("총평가수익률")
-        if (total_rate is None or str(total_rate).strip() == "") and total_eval not in (None, 0) and total_pnl is not None:
-            total_rate = (total_pnl / max(abs(total_eval - total_pnl), 1e-9)) * 100.0
         for key, label in self._summary_values.items():
-            label.setText(self._format_value(summary.get(key), is_percent=(key == "총평가수익률")))
-        if total_rate is not None:
-            self._summary_values["총평가수익률"].setText(self._format_value(total_rate, is_percent=True))
+            label.setText(self._format_value(summary.get(key), is_percent=(key == "총평가")))
 
     def update_rows(self, rows):
         rows = list(rows or [])
         self.tbl_balance.setRowCount(len(rows))
         columns = [
-            ("종목코드", False),
-            ("매매구분", False),
-            ("잔고수량", False),
-            ("주문가능수량", False),
-            ("평가손익", False),
-            ("손익율", True),
-            ("매입단가", False),
-            ("현재가", False),
-            ("평가금액", False),
+            (("종목코드",), False),
+            (("매매구분", "구분"), False),
+            (("잔고수량", "보유수량"), False),
+            (("청산가능", "주문가능수량", "청산가능수량"), False),
+            (("평가손익(원)", "평가손익"), False),
+            (("수익률(%)", "손익율"), True),
+            (("매입단가", "평균가"), False),
+            (("현재가",), False),
+            (("평가금액",), False),
         ]
         for r, row in enumerate(rows):
-            for c, (field, is_percent) in enumerate(columns):
-                raw = row.get(field, "")
+            for c, (fields, is_percent) in enumerate(columns):
+                raw = ""
+                for field in fields:
+                    raw = row.get(field, "")
+                    if str(raw or "").strip():
+                        break
                 text = self._format_value(raw, is_percent=is_percent) if c >= 2 else str(raw or "").strip()
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter)
@@ -1358,6 +1332,9 @@ class AccountInfoPanel(QWidget):
             direction, price, qty, atr = dlg.get_values()
             if price > 0 and qty > 0:
                 self.sig_position_restore.emit(direction, price, qty, atr)
+
+    def _on_balance_refresh_clicked(self):
+        self.sig_balance_refresh_requested.emit()
 
 
 # ────────────────────────────────────────────────────────────
@@ -5135,7 +5112,13 @@ class MinuteChartCanvas(QWidget):
             return None
         if key < candles[0]["ts"]:
             return 0
-        return len(candles) - 1
+        # Anchor markers to the nearest closed minute at-or-before the trade
+        # timestamp instead of drifting to the latest candle when the exact
+        # minute key is absent from the visible series.
+        for idx in range(len(candles) - 1, -1, -1):
+            if candles[idx]["ts"] <= key:
+                return idx
+        return 0
 
     def _price_to_y(self, price: float, plot: QRectF, lo: float, hi: float) -> float:
         ratio = 0.5 if hi <= lo else (price - lo) / (hi - lo)
@@ -5283,6 +5266,10 @@ class MireukDashboard(QMainWindow):
         self._minute_chart_dialog = MinuteChartDialog(self)
         self._minute_chart_shortcut = QShortcut(QKeySequence(MinuteChartDialog.SHORTCUT_TEXT), self)
         self._minute_chart_shortcut.activated.connect(self.toggle_minute_chart_dialog)
+        self._balance_refresh_shortcut = QShortcut(QKeySequence("F5"), self)
+        self._balance_refresh_shortcut.activated.connect(
+            self.account_info_panel.sig_balance_refresh_requested.emit
+        )
 
     def _build_ui(self):
         central = QWidget()
@@ -5714,6 +5701,7 @@ class DashboardAdapter:
         self.btn_kill = self._win._make_kill_btn()
         self.btn_save_account = self._win.btn_save_account
         self.sig_position_restore = self._win.account_info_panel.sig_position_restore
+        self.sig_balance_refresh_requested = self._win.account_info_panel.sig_balance_refresh_requested
         self.sig_reverse_entry_toggled = self._win.entry_panel.sig_reverse_entry_toggled
         self.sig_tp1_protect_mode_changed = self._win.exit_panel.sig_tp1_protect_mode_changed
         self.sig_manual_exit_requested = self._win.exit_panel.sig_manual_exit_requested

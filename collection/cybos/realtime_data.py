@@ -8,6 +8,7 @@ from typing import Callable, Deque, Dict, List, Optional
 from collection.cybos.api_connector import CybosAPI, _safe_float, _safe_int, _safe_str
 
 logger = logging.getLogger(__name__)
+sys_log = logging.getLogger("SYSTEM")
 
 MAX_CANDLES = 500
 
@@ -56,6 +57,8 @@ class CybosRealtimeData:
             "bid_qtys": [],
             "ask_qtys": [],
         }
+        self._tick_event_count = 0
+        self._hoga_event_count = 0
 
     @property
     def candles(self) -> Deque[Dict]:
@@ -130,7 +133,8 @@ class CybosRealtimeData:
         price = _safe_float(obj.GetHeaderValue(1))
         cum_volume = _safe_int(obj.GetHeaderValue(13))
         oi = _safe_int(obj.GetHeaderValue(14))
-        tick_time = self._parse_tick_time(_safe_str(obj.GetHeaderValue(15)))
+        raw_tick_time = _safe_str(obj.GetHeaderValue(15))
+        tick_time = self._parse_tick_time(raw_tick_time)
         ask1 = _safe_float(obj.GetHeaderValue(18))
         bid1 = _safe_float(obj.GetHeaderValue(19))
         ask_qty1 = _safe_int(obj.GetHeaderValue(20))
@@ -158,6 +162,20 @@ class CybosRealtimeData:
         self._last_price = price
         bar_ts = tick_time.replace(second=0, microsecond=0)
         bar_min = bar_ts.hour * 60 + bar_ts.minute
+        self._tick_event_count += 1
+        if self._tick_event_count <= 5 or self._tick_event_count % 100 == 0:
+            sys_log.info(
+                "[CybosRT-TICK] #%d code=%s raw_time=%s parsed=%s price=%.2f vol=%d bid1=%.2f ask1=%.2f flag=%s",
+                self._tick_event_count,
+                self._rt_code,
+                raw_tick_time,
+                tick_time.strftime("%H:%M:%S"),
+                price,
+                volume,
+                self._last_bid1,
+                self._last_ask1,
+                buy_sell_flag,
+            )
 
         self._update_bar(
             bar_ts=bar_ts,
@@ -198,6 +216,17 @@ class CybosRealtimeData:
             "bid_qtys": bid_qtys,
             "ask_qtys": ask_qtys,
         }
+        self._hoga_event_count += 1
+        if self._hoga_event_count <= 5 or self._hoga_event_count % 200 == 0:
+            sys_log.info(
+                "[CybosRT-HOGA] #%d code=%s bid1=%.2f/%d ask1=%.2f/%d",
+                self._hoga_event_count,
+                self._rt_code,
+                self._last_bid1,
+                self._last_bid_qty,
+                self._last_ask1,
+                self._last_ask_qty,
+            )
 
         if self._current_bar is not None:
             self._current_bar["bid1"] = self._last_bid1
@@ -238,6 +267,12 @@ class CybosRealtimeData:
         is_buy_tick: bool,
     ) -> None:
         if self._current_min is not None and bar_min != self._current_min:
+            sys_log.info(
+                "[CybosRT-ROLLOVER] code=%s from=%s to=%s",
+                self._rt_code,
+                self._current_bar["ts"].strftime("%H:%M") if self._current_bar else "?",
+                bar_ts.strftime("%H:%M"),
+            )
             self._close_current_bar()
 
         buy_v = volume if is_buy_tick else 0
@@ -283,16 +318,32 @@ class CybosRealtimeData:
         if self._current_bar is None:
             return
         closed = dict(self._current_bar)
-        self._candles.append(closed)
-        if self._on_candle_closed is not None:
-            self._on_candle_closed(closed)
+        # Clear rollover state before invoking callbacks because the minute
+        # pipeline can re-enter the Qt event loop and trigger nested ticks.
         self._current_bar = None
         self._current_min = None
+        self._candles.append(closed)
+        sys_log.info(
+            "[BAR-CLOSE][CYBOS] ts=%s O=%.2f H=%.2f L=%.2f C=%.2f V=%d",
+            closed["ts"].strftime("%H:%M"),
+            closed["open"],
+            closed["high"],
+            closed["low"],
+            closed["close"],
+            closed["volume"],
+        )
+        if self._on_candle_closed is not None:
+            try:
+                self._on_candle_closed(closed)
+            except Exception:
+                sys_log.exception("[BAR-CLOSE][CYBOS] on_candle_closed callback failed")
 
     @staticmethod
     def _parse_tick_time(raw_time: str) -> datetime:
         now = datetime.now()
         digits = "".join(ch for ch in _safe_str(raw_time) if ch.isdigit())
+        if len(digits) in (5, 6):
+            digits = digits.zfill(6)
         if len(digits) >= 6:
             try:
                 hh = int(digits[0:2])
