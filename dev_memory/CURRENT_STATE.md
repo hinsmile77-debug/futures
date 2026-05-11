@@ -1090,3 +1090,18 @@ STEP4: get_features() → 캐시 읽기만 (TR 호출 없음)
 - 다음 우선순위는 `temperature scaling 기반 calibration 개선`, `changed sample 53건 분석`, `meta label 추가 축적 후 rollout 재평가`
 
 ---
+
+## 2026-05-11 Cybos 자동 로그인 확정
+
+| 항목 | 값 |
+|---|---|
+| 스크립트 | `scripts/cybos_autologin.py` |
+| 실행 파일 | `C:\DAISHIN\STARTER\ncStarter.exe /prj:cp` |
+| 비밀번호 | `PASSWORD_OVERRIDE = "amazin16"` (하드코딩) |
+| 비밀번호 입력 좌표 | `(971, 695)` |
+| 모의투자 접속 버튼 | `(1416, 645)` |
+| 팝업 최소 대기 | 10초 |
+| Enter 후 처리 | 3초 후 `sys.exit(0)` (창 탐지 → 버튼 클릭 → 소멸 시 즉시 종료) |
+| **상태** | ✅ 정상 동작 확인 (2026-05-11) |
+
+---

@@ -1,11 +1,13 @@
 @ECHO OFF
 SETLOCAL EnableDelayedExpansion
-TITLE Mireuk (Futures Auto Trader) Universal Launcher
+TITLE Mireuk Cybos Plus Launcher
 
 ECHO.
 ECHO ============================================================
-ECHO   Mireuk (KOSPI 200 Futures Auto Trader) Universal Start
+ECHO   Mireuk (KOSPI 200 Futures Auto Trader) - Cybos Plus
 ECHO ============================================================
+ECHO.
+ECHO [INFO] Please log in to CybosPlus HTS first.
 ECHO.
 
 REM 1. Workspace Detection
@@ -66,7 +68,7 @@ IF DEFINED ACTIVATE_SCRIPT (
     ECHO [INFO] Found activate script: !ACTIVATE_SCRIPT!
     call "!ACTIVATE_SCRIPT!" py37_32
 ) ELSE (
-    ECHO [WARNING] Activate script not found in common paths. Trying 'call activate'...
+    ECHO [WARNING] Activate script not found. Trying 'call activate'...
     call activate py37_32
 )
 
@@ -82,19 +84,15 @@ REM 3. Dynamic Qt Path Configuration
 IF DEFINED CONDA_PREFIX (
     ECHO [INFO] CONDA_PREFIX: !CONDA_PREFIX!
 
-    REM ============================================================
-    REM [FIX] Qt Plugin Path Priority Logic (PyQt5 vs Anaconda)
-    REM ============================================================
-
     SET "PYQT5_PLUGIN_PATH=!CONDA_PREFIX!\Lib\site-packages\PyQt5\Qt5\plugins"
     SET "ANACONDA_PLUGIN_PATH=!CONDA_PREFIX!\Library\plugins"
 
     IF EXIST "!PYQT5_PLUGIN_PATH!" (
-        ECHO [INFO] Detected PyQt5 specific plugins. Prioritizing over Anaconda Library.
+        ECHO [INFO] Using PyQt5 plugins.
         SET "QT_PLUGIN_PATH=!PYQT5_PLUGIN_PATH!"
         SET "QT_QPA_PLATFORM_PLUGIN_PATH=!PYQT5_PLUGIN_PATH!\platforms"
     ) ELSE (
-        ECHO [INFO] PyQt5 specific plugins not found. Fallback to Anaconda Library.
+        ECHO [INFO] Fallback to Anaconda plugins.
         SET "QT_PLUGIN_PATH=!ANACONDA_PLUGIN_PATH!"
         SET "QT_QPA_PLATFORM_PLUGIN_PATH=!ANACONDA_PLUGIN_PATH!\platforms"
     )
@@ -102,15 +100,39 @@ IF DEFINED CONDA_PREFIX (
     SET "PATH=!CONDA_PREFIX!\Library\bin;!PATH!"
     SET "QT_QPA_PLATFORM=windows"
 
-    ECHO [INFO] Updated PATH and QT_PLUGIN_PATH variables.
     ECHO [INFO] QT_PLUGIN_PATH: !QT_PLUGIN_PATH!
-    ECHO [INFO] QT_QPA_PLATFORM_PLUGIN_PATH: !QT_QPA_PLATFORM_PLUGIN_PATH!
 ) ELSE (
     ECHO [WARNING] CONDA_PREFIX not defined. Qt plugins might fail.
 )
 
+REM 4. Auto-login if not connected
+python -c "import win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); exit(0 if c.IsConnect==1 else 1)" >NUL 2>&1
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO [INFO] CybosPlus not connected - attempting auto-login...
+    python scripts\cybos_autologin.py
+    IF %ERRORLEVEL% NEQ 0 (
+        ECHO [ERROR] Auto-login failed. Please log in to CybosPlus manually and rerun.
+        TIMEOUT /T 15
+        EXIT /B 1
+    )
+) ELSE (
+    ECHO [INFO] CybosPlus already connected.
+)
+
+REM 5. Preflight check: Cybos session / TradeInit
 ECHO.
-ECHO Running main.py...
+ECHO [INFO] Checking Cybos Plus session...
+python -c "import sys,win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); print('[CHECK] IsConnect=', c.IsConnect); print('[CHECK] ServerType=', c.ServerType); t=w.Dispatch('CpTrade.CpTdUtil'); ret=t.TradeInit(0); print('[CHECK] TradeInit=', ret); sys.exit(0 if c.IsConnect==1 and ret in (0,None) else 1)"
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO.
+    ECHO [ERROR] Cybos Plus API session is not ready.
+    ECHO [ERROR] Please log in to CybosPlus HTS and rerun.
+    TIMEOUT /T 15
+    EXIT /B 1
+)
+
+ECHO.
+ECHO [INFO] Starting main.py with Cybos backend...
 ECHO.
 
 python main.py

@@ -893,6 +893,20 @@ hurst_idx = reg[0]
 **이유**: 추세 표시를 단순화하고, 탭별 스파크라인/최근 변화량 계산을 안정적으로 유지하기 위함.  
 **구현**: `main.py::_gather_efficacy_stats()`, `dashboard/main_dashboard.py`
 
+## 2026-05-11 자동 로그인
+
+### [D34] cybos_autologin.py — 실행 파일 `ncStarter.exe /prj:cp` 확정
+**결정**: `_ncStarter_.exe` 대신 `ncStarter.exe /prj:cp` 사용.  
+**이유**: CybosPlus 바로 가기 속성 대상(T) 확인 결과 실제 실행 경로가 `C:\DAISHIN\STARTER\ncStarter.exe /prj:cp`임. 기존 `_ncStarter_.exe`는 로그인 창이 정상 표시되지 않는 경우 발생.  
+**구현**: `CYBOS_EXE`, `CYBOS_ARGS` 분리 (`scripts/cybos_autologin.py`)
+
+### [D35] autologin — Enter 후 3초 대기 → sys.exit(0) 종료 정책
+**결정**: 10초 팝업 대기 → Enter 입력 → 3초 후 스크립트 무조건 종료.  
+**이유**: autologin 스크립트는 Cybos 세션을 여는 역할만 담당하며, 연결 완료 확인은 메인 시스템이 수행한다. 스크립트가 연결 완료를 기다리면 타이밍 경쟁이 발생할 수 있으므로 빠르게 종료하는 것이 안전.  
+**중간 폴백**: 창이 탐지되면 `(1416, 645)` 버튼 클릭 후 창 소멸 시 즉시 종료.
+
+---
+
 ### [B50] 효과 검증 탭 툴팁 초기 부착 위치 오류
 **파일**: `dashboard/main_dashboard.py`  
 **증상**: 탭 툴팁을 추가했지만 실제 `A/B / Calibration / Meta Gate / Rollout` 탭에 툴팁이 표시되지 않음  

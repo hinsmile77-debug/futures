@@ -219,20 +219,6 @@ class CybosAPI:
         self._cp_cybos_event.set_context(self)
 
         if not self.is_connected:
-            try:
-                if hasattr(self._cp_cybos, "CybosPlusConnect"):
-                    self._cp_cybos.CybosPlusConnect()
-                elif hasattr(self._cp_cybos, "CreonPlusConnect"):
-                    self._cp_cybos.CreonPlusConnect()
-            except Exception:
-                logger.exception("[Cybos] connect request failed")
-
-            deadline = time.time() + 5.0
-            while time.time() < deadline and not self.is_connected:
-                self._pump_messages()
-                time.sleep(0.1)
-
-        if not self.is_connected:
             raise RuntimeError("U-CYBOS/CYBOS Plus is not connected. " + CYBOS_RUNTIME_HINT)
 
         ret = self._cp_trade_util.TradeInit(0)

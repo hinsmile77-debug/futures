@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-05-11 (13차 — cybos_autologin.py 완성 + 정상 동작 확인)
+
+**Work**
+- `scripts/cybos_autologin.py` 실행 파일 변경: `_ncStarter_.exe` → `ncStarter.exe /prj:cp` (바로 가기 속성 기준)
+  - `CYBOS_EXE = r"C:\DAISHIN\STARTER\ncStarter.exe"`, `CYBOS_ARGS = "/prj:cp"` 분리
+- 모의투자 팝업 대기 `MOCK_POPUP_MIN_WAIT`: 20s → **10s**
+- 10초 대기 완료 후 흐름 확정:
+  1. `send_keys("{ENTER}")` — Enter 입력
+  2. 3초 대기
+  3. `sys.exit(0)` — 스크립트 종료
+  - 중간에 창 탐지되면 `(1416, 645)` 버튼 클릭 → 연결/창 소멸 시 즉시 종료 (기존 로직 유지)
+- **정상 동작 확인** — `python scripts/cybos_autologin.py` 실행 후 모의투자 로그인 완료
+
+**Key coordinates (확정)**
+- 비밀번호 입력 좌표: `(971, 695)`
+- 모의투자 접속 버튼: `(1416, 645)`
+
+**Remaining**
+- `start_mireuk.bat` 에서 autologin 호출 연결 확인
+
+---
+
 ## 2026-05-11 (12차 — 투자자 수급 TR 확정 + 다이버전스 패널 UI 정합성)
 
 **Work**

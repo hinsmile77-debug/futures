@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-05-11 자동 로그인
+
+- [DONE 2026-05-11] `scripts/cybos_autologin.py` — `ncStarter.exe /prj:cp` 기반 모의투자 자동 로그인 정상 동작 확인
+  - 실행파일 `_ncStarter_.exe` → `ncStarter.exe /prj:cp` 변경
+  - 팝업 대기 10s → Enter → 3초 후 스크립트 종료 흐름 확정
+  - 모의투자 접속 버튼 좌표 `(1416, 645)` 확정
+
+- [NEXT 2026-05-12] `start_mireuk.bat` 에서 autologin 스크립트 선행 호출 연결 검증
+  - autologin 완료 후 메인 시스템이 이미 연결된 Cybos에 접속하는 타이밍 확인
+
+---
+
 ## 2026-05-10 Cybos Plus follow-up
 
 ### 2026-05-11 log review update
