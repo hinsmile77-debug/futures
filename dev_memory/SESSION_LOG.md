@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-05-11 (12차 — 투자자 수급 TR 확정 + 다이버전스 패널 UI 정합성)
+
+**Work**
+- TR 탐색: `scripts/run_cybos_investor_discovery.py` (43개 후보 일괄 프로브) 실행 → `CpSysDib.CpSvrNew7212` 확정 (score=428, likely_investor_grid). 레지스트리 555개 ProgID 열거 포함.
+- `scripts/_probe_7212_dates.py` 실행 → idx0=N이 N개월 기간 코드임 확인. idx0=1(최근 1개월) 채택.
+- `collection/cybos/api_connector.py`:
+  - `_FUTURES_INVESTOR_NAME_MAP` 추가 (한글 투자자명 → INVESTOR_KEYS)
+  - `request_investor_futures()` candidates 1순위: `("CpSysDib.CpSvrNew7212", [(0, 1)])`
+  - New7212 전용 파싱 분기: row[0]=투자자명, row[3]=선물, row[6]=콜, row[9]=풋
+  - `request_program_investor()` candidates: `Dscbo1.CpSvr8119`, `Dscbo1.CpSvrNew8119` (레지스트리 검증) 추가. 전체 0 헤더 시 skip.
+- `collection/cybos/investor_data.py`:
+  - `fetch_futures_investor()`: call_nets/put_nets → `_call/_put` 반영, `option_flow_supported` 자동 활성화
+  - `get_panel_data()`: rt_call/rt_put/fi_call/fi_put/rt_bias/fi_bias 하드코딩 0 → 실제값 연결 [B54]
+  - 상태 텍스트: option_flow_supported 시 "futures/option flow live" 자동 반영
+  - reset_daily(): `_option_flow_reason` 초기값 복원
+- `dashboard/main_dashboard.py`:
+  - 역발상 신호 색상 완전 수정: `'매수'`→빨간색(하락신호), `'매도'`→초록색 [D33]
+- `config/constants.py`: `CORE_FEATURES` `"ofi_imbalance"` → `"ofi_norm"` 통일 [B55]
+- 신규 스크립트: `scripts/_probe_8119_fields.py` (장 중 Dscbo1.CpSvr8119 필드 레이아웃 확인용)
+
+**Validated results (장 중 실데이터)**
+- 외인 선물 순매수: -131,592 / 개인: +43,521 / 기관: +77,015 (계약수, 1개월 누적)
+- 다이버전스: -175,113 = -131,592 - 43,521 계산 일치
+- ATM 구간비: 외인 17%, 개인 43%, 기관 41% (콜/풋 절대값 기반)
+- 미결제약정: 195,996 (FutureCurOnly 헤더 14번)
+- 프로그램 차익/비차익: 0 (장 마감 후 정상)
+- SHAP 파라미터 중요도 0.0%: GBM 미학습 상태, 정상
+
+**Remaining follow-up**
+- `_probe_8119_fields.py` 장 중(09:00~15:30) 실행 → h[0~5] 레이아웃 검증
+- 실제 파이프라인 매분 업데이트에서 투자자 수급 데이터 흐름 확인 (대기→실수치 전환)
+
 ## 2026-05-11 (Cybos balance / learning / UI sync stabilization)
 
 **Work**

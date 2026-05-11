@@ -46,7 +46,7 @@ FUTURES_PT_VALUE    = 250_000   # 1pt = 250,000원 (KOSPI200 선물 2017~ 기준
 FUTURES_MULTIPLIER  = 250_000   # FUTURES_PT_VALUE alias — 하위 호환용
 
 # ── 고정 CORE 피처명 ──────────────────────────────────────────
-CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_imbalance"]
+CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_norm"]
 
 # ── 전체 피처 목록 ────────────────────────────────────────────
 SUPPLY_DEMAND_FEATURES = [

@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-11 (11차) — **Cybos Plus 리팩토링 완료 선언 + 투자자 수급/다이버전스 UI 연결**
+> 마지막 업데이트: 2026-05-11 (12차) — **투자자 수급 TR 확정(CpSvrNew7212) + 다이버전스 패널 정합성 수정**
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -17,11 +17,11 @@
 | 일일손익 | `OPW20003/7/8` TR | `CpTrade.CpTd6197` BlockRequest |
 | 주문 | `SendOrderFO` | `CpTrade.CpTd6831` BlockRequest |
 | 체결 이벤트 | `OnReceiveChejanData` | `Dscbo1.CpFConclusion` Subscribe |
-| 투자자 수급 | `opt10059`, `opt50008` | 후보 프로브 중 (`check_cybos_investor_candidates.py`) |
+| 투자자 수급 | `opt10059`, `opt50008` | **`CpSysDib.CpSvrNew7212` (idx0=1) 확정** — 선물/콜/풋 투자자별 순매수 제공 |
 | 선물 스냅샷 | `OPT10001` | `Dscbo1.FutureMst` BlockRequest |
 | 브로커 팩토리 | `KiwoomBroker` 하드코딩 | `create_broker()` → 기본 `cybos` |
 
-### 이번 세션에서 추가된 것 (2026-05-11)
+### 11차 세션에서 추가된 것 (2026-05-11)
 
 - `collection/cybos/api_connector.py`: `_probe_investor_tr()` 헬퍼 + `request_investor_futures()` / `request_program_investor()` 다중 후보 실구현
 - `collection/cybos/investor_data.py`: `_open_interest`, `program_arb`, `program_nonarb` 필드 추가 및 `get_panel_data()` 확장
@@ -29,12 +29,27 @@
 - `dashboard/main_dashboard.py`: `DivergencePanel`에 **선물 투자자 수급** 섹션 추가 (외인/개인/기관 순매수 + 프로그램 차익/비차익 + 미결제약정 2×3 그리드)
 - `main.py`: `_fetch_investor_data()`에서 `realtime_data._last_oi` → `investor_data._open_interest` 동기화
 
+### 12차 세션에서 추가된 것 (2026-05-11)
+
+- `collection/cybos/api_connector.py`:
+  - `_FUTURES_INVESTOR_NAME_MAP` 추가 (한글 투자자명 → INVESTOR_KEYS)
+  - `request_investor_futures()` candidates 1순위: `CpSysDib.CpSvrNew7212 [(0,1)]`
+  - New7212 전용 파싱 분기: row[3]=선물, row[6]=콜, row[9]=풋 순매수
+  - `request_program_investor()` candidates: `Dscbo1.CpSvr8119`, `Dscbo1.CpSvrNew8119` 추가. 전체 0 시 skip.
+- `collection/cybos/investor_data.py`:
+  - `fetch_futures_investor()`: call_nets/put_nets → `_call/_put` 반영, `option_flow_supported` 자동 활성화
+  - `get_panel_data()`: rt_call/rt_put/fi_call/fi_put/rt_bias/fi_bias **하드코딩 0 → 실제값** [B54 수정]
+  - 상태 텍스트: option_flow_supported 시 자동 갱신
+- `dashboard/main_dashboard.py`: 역발상 신호 색상 반전 (`'매수'`→빨간색, `'매도'`→초록색) [D33]
+- `config/constants.py`: `CORE_FEATURES` `"ofi_imbalance"` → `"ofi_norm"` [B55 수정]
+- 신규 스크립트: `scripts/run_cybos_investor_discovery.py`, `scripts/_probe_7212_dates.py`, `scripts/_probe_8119_fields.py`
+
 ### 잔여 검증 항목
 
+- `_probe_8119_fields.py` 장 중(09:00~15:30) 실행 → `Dscbo1.CpSvr8119` h[0~5] 레이아웃 확인
+- 실제 파이프라인 매분 업데이트 시 투자자 수급 데이터 흐름 확인 ("대기" → 실수치 전환)
 - 장중 `FutureCurOnly` 분봉 timestamp 진행 확인 (2026-05-12 장중 필요)
 - `CpTd6831` 모의 주문 체결 end-to-end 검증
-- 선물 투자자 TR 후보 sweep 결과 확인 (`Dscbo1.FutureTrader` 등)
-- 다이버전스 패널 "대기" → 실데이터 전환 확인
 
 ---
 

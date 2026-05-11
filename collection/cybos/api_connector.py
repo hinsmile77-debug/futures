@@ -554,6 +554,23 @@ class CybosAPI:
         9: "nation",
     }
 
+    # CpSysDib.CpSvrNew7212 한글 투자자명 → INVESTOR_KEYS 매핑
+    # (레지스트리 검증 2026-05-11: row[0]=투자자명, row[3]=선물순매수,
+    #  row[6]=콜순매수, row[9]=풋순매수)
+    _FUTURES_INVESTOR_NAME_MAP: Dict[str, str] = {
+        "개인":     "individual",
+        "외국인":   "foreign",
+        "기관계":   "institution",
+        "금융투자": "financial",
+        "보험":     "insurance",
+        "투신":     "trust",
+        "은행":     "bank",
+        "기타금융": "etc_corp",
+        "연기금":   "pension",
+        "국가지자체": "nation",
+        "기타법인": "etc_corp",
+    }
+
     def _probe_investor_tr(
         self,
         progid: str,
@@ -610,12 +627,20 @@ class CybosAPI:
 
     def request_investor_futures(self) -> Dict[str, Any]:
         """
-        선물 투자자별 순매수 계약수를 반환한다.
-        Cybos Plus 후보 ProgID를 순서대로 시도하고, 모두 실패 시
-        FutureMst 미결제약정을 raw["open_interest"] 에 담아 반환한다.
+        선물/콜/풋 투자자별 순매수를 반환한다.
+
+        CpSysDib.CpSvrNew7212 (레지스트리 검증 2026-05-11):
+          입력 없음, row[0]=투자자명(한글), row[3]=선물순매수,
+          row[6]=콜순매수, row[9]=풋순매수.
+          단위는 백만원(MKR) 추정 — 방향(부호)이 핵심.
         """
         code = self.get_nearest_futures_code()
         candidates = [
+            # P0: 레지스트리 검증 완료 — 선물+콜+풋 투자자별 누적 매매통계
+            # idx0=1 → 최근 1개월(30거래일) 누적, 단기 방향 신호에 적합
+            # (idx0=0→빈값, 기본값→YTD 누적, idx0=N→N개월 누적)
+            ("CpSysDib.CpSvrNew7212", [(0, 1)]),
+            # fallback: 기존 추측 후보 (실제로는 미등록, 탐색용 유지)
             ("Dscbo1.FutureTrader",    [(0, code)]),
             ("CpSysDib.FutureTrader",  [(0, code)]),
             ("Dscbo1.FutureTrade",     [(0, code)]),
@@ -625,20 +650,38 @@ class CybosAPI:
             probe = self._probe_investor_tr(progid, inputs)
             if probe is None:
                 continue
+
             nets: Dict[str, int] = {}
-            for ri, row in enumerate(probe["rows"]):
-                try:
-                    # 필드 0 = 투자자 구분 코드, 필드 3 = 순매수 수량
-                    type_raw = row.get(0, "")
-                    net_raw  = row.get(3, "")
-                    type_code = _safe_int(type_raw) if type_raw else ri
-                    net_val   = _safe_int(net_raw)
-                    key = self._FUTURES_INVESTOR_TYPE_MAP.get(type_code)
-                    if key:
-                        nets[key] = net_val
-                except Exception:
-                    pass
-            supported = bool(probe["rows"])
+            call_nets: Dict[str, int] = {}
+            put_nets: Dict[str, int] = {}
+
+            if progid == "CpSysDib.CpSvrNew7212":
+                # 한글 투자자명 기반 파싱
+                # row[0]=투자자명, row[3]=선물순매수, row[6]=콜순매수, row[9]=풋순매수
+                for row in probe["rows"]:
+                    name = _safe_str(row.get(0, "")).strip()
+                    key = self._FUTURES_INVESTOR_NAME_MAP.get(name)
+                    if not key:
+                        continue
+                    nets[key]      = _safe_int(row.get(3, 0))
+                    call_nets[key] = _safe_int(row.get(6, 0))
+                    put_nets[key]  = _safe_int(row.get(9, 0))
+                supported = bool(nets)
+            else:
+                # 숫자 투자자코드 기반 파싱 (기존 로직)
+                for ri, row in enumerate(probe["rows"]):
+                    try:
+                        type_raw  = row.get(0, "")
+                        net_raw   = row.get(3, "")
+                        type_code = _safe_int(type_raw) if type_raw else ri
+                        net_val   = _safe_int(net_raw)
+                        key = self._FUTURES_INVESTOR_TYPE_MAP.get(type_code)
+                        if key:
+                            nets[key] = net_val
+                    except Exception:
+                        pass
+                supported = bool(probe["rows"])
+
             _system_info(
                 f"[CybosInvestorRaw] futures via {progid} supported={supported} "
                 f"nets={{{','.join(f'{k}:{v:+d}' for k, v in nets.items() if v != 0)}}}"
@@ -648,6 +691,8 @@ class CybosAPI:
                 "source": progid,
                 "reason": f"probe ok via {progid}",
                 "nets": nets,
+                "call_nets": call_nets,
+                "put_nets": put_nets,
                 "raw": {"open_interest": 0, "row_count": len(probe["rows"])},
             }
 
@@ -663,6 +708,8 @@ class CybosAPI:
             "source": "FutureMst_oi",
             "reason": "Cybos 선물 투자자 TR 미발견; 미결제약정만 제공",
             "nets": {},
+            "call_nets": {},
+            "put_nets": {},
             "raw": {"open_interest": oi},
         }
 
@@ -670,25 +717,42 @@ class CybosAPI:
         """
         프로그램 매매(차익/비차익) 순매수 데이터를 반환한다.
         Cybos Plus 후보 ProgID를 순서대로 시도한다.
+
+        Dscbo1.CpSvr8119 (레지스트리 검증 2026-05-11):
+          입력 없음, pgm.bid 응답, 장 중 누적 프로그램 매매 동향.
+          헤더 레이아웃 추정 (장 중 _probe_8119_fields.py로 확인 요망):
+            h[0]=차익매수, h[1]=차익매도, h[2]=차익순매수,
+            h[3]=비차익매수, h[4]=비차익매도, h[5]=비차익순매수,
+            h[6]=전체매수, h[7]=전체매도, h[8]=전체순매수 (단위: 백만원 추정)
         """
         candidates = [
-            ("CpSysDib.ProgramTrade",   []),
-            ("Dscbo1.ProgramTrade",      []),
-            ("CpSysDib.MarketProgram",   []),
+            # P0: 레지스트리 검증 완료 — 장 중 누적 프로그램 매매 동향
+            ("Dscbo1.CpSvr8119",         []),
+            ("Dscbo1.CpSvrNew8119",      []),
+            # fallback: 미등록 확인, 탐색용 유지
+            ("CpSysDib.ProgramTrade",    []),
+            ("Dscbo1.ProgramTrade",       []),
         ]
         for progid, inputs in candidates:
             probe = self._probe_investor_tr(progid, inputs)
             if probe is None:
                 continue
             h = probe["headers"]
-            # 헤더 레이아웃 추정: 0=차익매수, 1=차익매도, 2=차익순매수,
-            #                    3=비차익매수, 4=비차익매도, 5=비차익순매수
+            # 헤더 레이아웃 추정: h[0~2]=차익(매수/매도/순), h[3~5]=비차익, h[6~8]=전체
             arb_buy    = _safe_int(h.get(0, "0"))
             arb_sell   = _safe_int(h.get(1, "0"))
             arb_net    = _safe_int(h.get(2, "0")) or (arb_buy - arb_sell)
             nonarb_buy  = _safe_int(h.get(3, "0"))
             nonarb_sell = _safe_int(h.get(4, "0"))
             nonarb_net  = _safe_int(h.get(5, "0")) or (nonarb_buy - nonarb_sell)
+
+            # 헤더가 모두 0인 경우 (장 마감 후 or 미입력) → 데이터 없음으로 처리
+            if arb_net == 0 and nonarb_net == 0 and arb_buy == 0 and nonarb_buy == 0:
+                logger.debug(
+                    "[CybosInvestorRaw] %s all-zero headers — market closed or no data", progid
+                )
+                continue
+
             _system_info(
                 f"[CybosInvestorRaw] program via {progid} "
                 f"arb={arb_net:+d} nonarb={nonarb_net:+d}"

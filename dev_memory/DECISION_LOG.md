@@ -2,6 +2,32 @@
 
 ---
 
+## 2026-05-11 (12차 — 투자자 수급 TR 확정 + UI 정합성)
+
+### [D32] `CpSysDib.CpSvrNew7212` — 선물/콜/풋 투자자별 수급 TR 확정
+**Decision**: Cybos Plus 선물 투자자 수급 TR로 `CpSysDib.CpSvrNew7212`를 사용한다. idx0=1 (최근 1개월).  
+**Reason**: 레지스트리 555개 ProgID 열거 탐색 후 `run_cybos_investor_discovery.py` 프로브로 score=428, likely_investor_grid 판정. row[0]=한글 투자자명, row[3]=선물순매수, row[6]=콜순매수, row[9]=풋순매수. idx0=1이 최근 1개월 누적 데이터(단기 방향 신호에 적합). idx0=0→빈값, 기본값→YTD 누적.
+
+### [D33] 역발상 신호 색상은 개인 방향의 반대로 표시한다
+**Decision**: 역발상 신호 카드에서 "개인 매수 우위"→빨간색, "개인 매도 우위"→초록색.  
+**Reason**: 역발상 전략은 개인과 반대 방향으로 진입한다. 개인 매수 우위는 역발상으로 하락(매도) 신호이므로 빨간색이 맞다. 이전 코드는 개인 방향 그대로 색상화하여 의미 반전.
+
+### [D34] `constants.py` CORE_FEATURES를 `ofi_norm`으로 통일한다
+**Decision**: `CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_norm"]`.  
+**Reason**: `ofi_imbalance`(0~1 크기값) 대신 방향성 포함 `ofi_norm`(-3~+3)을 CORE로 보호해야 GBM 예측에 직접 기여. `_PARAM_FEAT_MAP`, `regime_fingerprint.py`도 모두 `ofi_norm` 사용 중이었으므로 통일.
+
+### [B54] `get_panel_data()`에서 콜/풋 순매수와 바이어스가 하드코딩 0이었음
+**File**: `collection/cybos/investor_data.py`  
+**Symptom**: CpSvrNew7212에서 콜/풋 데이터를 정상 수신해도 다이버전스 패널의 개인/외인 콜·풋매수 카드가 항상 0 표시. 방향 바(풋↑/콜↑)도 항상 비어 있음.  
+**Cause**: `get_panel_data()`가 `rt_call/rt_put/fi_call/fi_put/rt_bias/fi_bias`를 `0.0`으로 하드코딩 반환. `_call/_put` dict에 실제 값이 있어도 패널에 전달 안됨. ATM 구간비 17/43/41%는 `get_zone_data()`가 직접 `_call/_put`을 읽어 정상 계산됨 — 둘의 불일치로 문제 발견.  
+**Fix**: `fi_call = self._call["foreign"]`, `rt_call = self._call["individual"]` 등을 직접 참조. `fi_bias/rt_bias = (call-put)/abs_total`로 계산.
+
+### [B55] `constants.py` CORE_FEATURES에서 `ofi_imbalance` vs `ofi_norm` 불일치
+**File**: `config/constants.py`  
+**Symptom**: GBM 학습 완료 후 SHAP 심사에서 OFI 피처가 CORE 뱃지로 보호받지 못할 위험.  
+**Cause**: `CORE_FEATURES`에는 `"ofi_imbalance"` 사용, `_PARAM_FEAT_MAP`·`regime_fingerprint.py`는 `"ofi_norm"` 사용. GBM `feature_names`에는 두 키 모두 존재하나 방향 신호를 제공하는 `ofi_norm`이 CORE여야 함.  
+**Fix**: `CORE_FEATURES`를 `"ofi_norm"`으로 교체.
+
 ## 2026-05-11
 
 ### [D30] treat raw Cybos `CpTd6197` headers as the source of truth for daily pnl/account summary mapping

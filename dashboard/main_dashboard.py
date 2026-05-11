@@ -1536,7 +1536,8 @@ class DivergencePanel(QWidget):
             self.pos_fi_put_val.setText("--")
             self.pos_fi_strangle_val.setText("--")
         contrarian = div.get('contrarian','중립')
-        col = C['red'] if '하락' in contrarian else C['green'] if '상승' in contrarian else C['text2']
+        # 역발상: 개인 매수 우위 → 하락신호(빨간), 개인 매도 우위 → 상승신호(초록)
+        col = C['green'] if '매도' in contrarian else C['red'] if '매수' in contrarian else C['text2']
         self.pos_contrarian_val.setText(contrarian)
         self.pos_contrarian_val.setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
 

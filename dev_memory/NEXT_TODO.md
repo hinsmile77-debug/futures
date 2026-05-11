@@ -142,11 +142,19 @@
     - `position_qty`
     - `closable_qty`
 
-- [NEXT 2026-05-12] replace Cybos investor-data placeholder with real Cybos investor/program TR mapping
-  - current status:
-    - no-op / zeros only
-  - risk:
-    - strategy and UI are not yet Cybos-native for investor flow
+- [DONE 2026-05-11] replace Cybos investor-data placeholder with real Cybos investor/program TR mapping
+  - `CpSysDib.CpSvrNew7212` (idx0=1, 1개월 누적): 선물/콜/풋 투자자별 순매수 확정
+  - `get_panel_data()` rt_call/rt_put/fi_call/fi_put/rt_bias/fi_bias 실제값 연결
+  - option_flow_supported 자동 활성화
+
+- [NEXT 2026-05-12] run `_probe_8119_fields.py` during market hours (09:00~15:30)
+  - goal: confirm h[0]=차익매수, h[2]=차익순매수, h[3]=비차익매수, h[5]=비차익순매수
+  - command: `py37_32\python.exe -X utf8 scripts/_probe_8119_fields.py`
+  - if layout differs: update arb_net/nonarb_net index in `request_program_investor()`
+
+- [NEXT 2026-05-12] verify investor-flow pipeline update every minute
+  - confirm: "대기" → actual values in divergence panel after first `fetch_all()`
+  - check: `[CybosInvestorRaw] futures via CpSysDib.CpSvrNew7212` in SYSTEM.log
 
 - [DONE 2026-05-11] fix dashboard stylesheet parse warnings
   - root cause:

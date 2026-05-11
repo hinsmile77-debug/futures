@@ -101,6 +101,17 @@ class CybosInvestorData:
         for key in INVESTOR_KEYS:
             self._futures[key] = _to_int(nets.get(key, self._futures.get(key, 0)))
 
+        # call_nets / put_nets — CpSyrNew7212 제공 시 option_flow도 갱신
+        call_nets = result.get("call_nets") or {}
+        put_nets  = result.get("put_nets")  or {}
+        if call_nets or put_nets:
+            for key in INVESTOR_KEYS:
+                self._call[key] = _to_int(call_nets.get(key, self._call.get(key, 0)))
+                self._put[key]  = _to_int(put_nets.get(key,  self._put.get(key, 0)))
+            self._option_flow_supported = True
+            self._option_flow_source    = result.get("source", "unknown")
+            self._option_flow_reason    = "콜/풋 순매수 제공 (CpSvrNew7212)"
+
         # 미결제약정: TR 미발견 시 FutureMst fallback 값 수신
         raw = result.get("raw") or {}
         oi = _to_int(raw.get("open_interest", 0))
@@ -112,13 +123,17 @@ class CybosInvestorData:
         self._futures_reason = str(result.get("reason", ""))
         logger.info(
             "[CybosInvestor] futures supported=%s source=%s "
-            "foreign=%+d individual=%+d institution=%+d oi=%d reason=%s",
+            "foreign=%+d individual=%+d institution=%+d oi=%d "
+            "call_foreign=%+d put_foreign=%+d option_supported=%s reason=%s",
             self._futures_supported,
             self._futures_source,
             self._futures.get("foreign", 0),
             self._futures.get("individual", 0),
             self._futures.get("institution", 0),
             self._open_interest,
+            self._call.get("foreign", 0),
+            self._put.get("foreign", 0),
+            self._option_flow_supported,
             self._futures_reason,
         )
         return self._futures_supported
@@ -226,21 +241,41 @@ class CybosInvestorData:
         else:
             contrarian = "대기"
 
+        # 콜/풋 순매수 — CpSvrNew7212 제공 시 실제값, 미제공 시 0
+        fi_call = self._call.get("foreign", 0)
+        fi_put  = self._put.get("foreign", 0)
+        rt_call = self._call.get("individual", 0)
+        rt_put  = self._put.get("individual", 0)
+
+        fi_abs = abs(fi_call) + abs(fi_put)
+        rt_abs = abs(rt_call) + abs(rt_put)
+        fi_bias = float(fi_call - fi_put) / max(fi_abs, 1) if fi_abs else 0.0
+        rt_bias = float(rt_call - rt_put) / max(rt_abs, 1) if rt_abs else 0.0
+
+        # 상태 텍스트: option_flow_supported 반영
+        if self._option_flow_supported:
+            if self._futures_supported and self._program_supported:
+                status_text = "Cybos futures/program/option investor flow live"
+            elif self._futures_supported:
+                status_text = "Cybos futures/option investor flow live; program flow pending"
+            else:
+                status_text = "Cybos option investor flow live; futures/program flow pending"
+
         panel = {
             "panel_status": panel_status,
             "panel_status_text": status_text,
             "futures_supported": self._futures_supported,
             "program_supported": self._program_supported,
             "option_flow_supported": self._option_flow_supported,
-            "option_flow_status": "pending_mapping",
+            "option_flow_status": "pending_mapping" if not self._option_flow_supported else "live",
             "option_flow_reason": self._option_flow_reason,
-            "rt_bias": 0.0,
-            "fi_bias": 0.0,
-            "rt_call": 0,
-            "rt_put": 0,
+            "rt_bias": rt_bias,
+            "fi_bias": fi_bias,
+            "rt_call": rt_call,
+            "rt_put": rt_put,
             "rt_strd": 0,
-            "fi_call": 0,
-            "fi_put": 0,
+            "fi_call": fi_call,
+            "fi_put": fi_put,
             "fi_strangle": 0,
             "contrarian": contrarian,
             "div_score": float(divergence),
@@ -259,13 +294,16 @@ class CybosInvestorData:
             "open_interest": self._open_interest,
         }
         logger.info(
-            "[DivergencePanel] source=cybos status=%s div=%+d futures(fi=%+d rt=%+d inst=%+d) "
-            "program(fi=%+d rt=%+d inst=%+d)",
+            "[DivergencePanel] source=cybos status=%s div=%+d "
+            "futures(fi=%+d rt=%+d inst=%+d) "
+            "call(fi=%+d rt=%+d) put(fi=%+d rt=%+d) "
+            "bias(fi=%.2f rt=%.2f) program(fi=%+d rt=%+d inst=%+d)",
             panel_status,
             divergence,
-            foreign_fut,
-            retail_fut,
-            inst_fut,
+            foreign_fut, retail_fut, inst_fut,
+            fi_call, rt_call,
+            fi_put, rt_put,
+            fi_bias, rt_bias,
             panel["program_foreign_net_krw"],
             panel["program_individual_net_krw"],
             panel["program_institution_net_krw"],
@@ -290,7 +328,7 @@ class CybosInvestorData:
         self._option_flow_source = "unavailable"
         self._futures_reason = "reset"
         self._program_reason = "reset"
-        self._option_flow_reason = "reset"
+        self._option_flow_reason = "Cybos option investor-flow mapping pending"
 
     def get_stats(self) -> dict:
         return {
