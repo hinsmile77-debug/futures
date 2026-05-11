@@ -1349,8 +1349,11 @@ class DivergencePanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
+        self.panel_status_label = mk_label("", C['text2'], 8)
+        self.option_status_label = mk_label("", C['text2'], 8)
 
         lay.addWidget(mk_label("외인-개인 다이버전스 지수 (역발상 핵심 신호)", C['orange'], 10, True))
+        lay.addWidget(self.panel_status_label)
 
         # 바이어스 미터
         for label, attr_prefix, lcol, rcol, ltext, rtext in [
@@ -1373,6 +1376,36 @@ class DivergencePanel(QWidget):
             row.addWidget(mid_frame, 3)
             row.addWidget(mk_label(rtext, rcol, 9))
             lay.addLayout(row)
+
+        lay.addWidget(mk_sep())
+
+        # 선물 투자자 수급 섹션 (Cybos Plus 네이티브 — 계약수/미결제)
+        lay.addWidget(mk_label("선물 투자자 수급 (계약수)", C['cyan'], 10, True))
+        fut_grid = QGridLayout()
+        fut_grid.setSpacing(4)
+        _fut_cards = [
+            ("외인 선물 순매수", "fut_fi",   C['blue']),
+            ("개인 선물 순매수", "fut_rt",   C['red']),
+            ("기관 선물 순매수", "fut_inst", C['purple']),
+            ("프로그램 차익",    "prog_arb",    C['green']),
+            ("프로그램 비차익",  "prog_nonarb", C['orange']),
+            ("미결제약정",       "open_int",    C['cyan']),
+        ]
+        for i, (title, attr, col) in enumerate(_fut_cards):
+            ff = QFrame()
+            ff.setStyleSheet(
+                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
+                f"border-radius:5px;padding:4px;}}"
+            )
+            ffl = QVBoxLayout(ff)
+            ffl.setContentsMargins(6, 4, 6, 4)
+            ffl.setSpacing(1)
+            ffl.addWidget(mk_label(title, C['text2'], 9))
+            fv = mk_val_label("——", col, 13)
+            ffl.addWidget(fv)
+            setattr(self, f"fut_{attr}_val", fv)
+            fut_grid.addWidget(ff, i // 3, i % 3)
+        lay.addLayout(fut_grid)
 
         lay.addWidget(mk_sep())
 
@@ -1410,6 +1443,7 @@ class DivergencePanel(QWidget):
         lay.addWidget(mk_sep())
         # 옵션 구간별 거래량
         lay.addWidget(mk_label("옵션 구간별 거래량 — 외인/개인/기관 분리 (ITM·ATM·OTM)", C['cyan'], 10, True))
+        lay.addWidget(self.option_status_label)
         zone_lay = QHBoxLayout()
         for zone in ["ITM", "ATM", "OTM"]:
             zf = QFrame()
@@ -1431,17 +1465,76 @@ class DivergencePanel(QWidget):
         lay.addLayout(zone_lay)
 
     def update_data(self, div):
+        self.panel_status_label.setText(div.get("panel_status_text", ""))
+        option_supported = bool(div.get("option_flow_supported", True))
+        self.option_status_label.setText(
+            "" if option_supported else div.get("option_flow_reason", "Option flow unavailable")
+        )
         self.rt_put_bar.setValue(int(max(0, -div['rt_bias']) * 50))
         self.rt_call_bar.setValue(int(max(0, div['rt_bias']) * 50))
         self.fi_put_bar.setValue(int(max(0, -div['fi_bias']) * 50))
         self.fi_call_bar.setValue(int(max(0, div['fi_bias']) * 50))
 
-        self.pos_rt_call_val.setText(f"{div.get('rt_call',0):,}")
-        self.pos_rt_put_val.setText(f"{div.get('rt_put',0):,}")
-        self.pos_rt_strd_val.setText(f"{div.get('rt_strd',0):,}")
-        self.pos_fi_call_val.setText(f"{div.get('fi_call',0):+,}")
-        self.pos_fi_put_val.setText(f"{div.get('fi_put',0):+,}")
-        self.pos_fi_strangle_val.setText(f"{div.get('fi_strangle',0):+,}")
+        # ── 선물 투자자 수급 갱신 ────────────────────────────────
+        def _fmt_contracts(v):
+            if v is None:
+                return "——"
+            return f"{int(v):+,}" if v != 0 else "0"
+
+        fi_fut   = div.get("foreign_futures_net")
+        rt_fut   = div.get("retail_futures_net")
+        inst_fut = div.get("institution_futures_net")
+        arb      = div.get("program_arb_net")
+        nonarb   = div.get("program_nonarb_net")
+        oi       = div.get("open_interest")
+
+        fut_supported = div.get("futures_supported", False)
+
+        if fut_supported or fi_fut or rt_fut or inst_fut:
+            self.fut_fut_fi_val.setText(_fmt_contracts(fi_fut))
+            self.fut_fut_rt_val.setText(_fmt_contracts(rt_fut))
+            self.fut_fut_inst_val.setText(_fmt_contracts(inst_fut))
+            fi_col  = C['green'] if (fi_fut or 0) > 0 else C['red'] if (fi_fut or 0) < 0 else C['text2']
+            rt_col  = C['green'] if (rt_fut or 0) > 0 else C['red'] if (rt_fut or 0) < 0 else C['text2']
+            self.fut_fut_fi_val.setStyleSheet(
+                f"color:{fi_col};font-size:{S.f(13)}px;font-weight:bold;"
+            )
+            self.fut_fut_rt_val.setStyleSheet(
+                f"color:{rt_col};font-size:{S.f(13)}px;font-weight:bold;"
+            )
+        else:
+            self.fut_fut_fi_val.setText("대기")
+            self.fut_fut_rt_val.setText("대기")
+            self.fut_fut_inst_val.setText("대기")
+
+        prog_supported = div.get("program_supported", False)
+        if prog_supported or arb is not None:
+            self.fut_prog_arb_val.setText(_fmt_contracts(arb))
+            self.fut_prog_nonarb_val.setText(_fmt_contracts(nonarb))
+        else:
+            self.fut_prog_arb_val.setText("대기")
+            self.fut_prog_nonarb_val.setText("대기")
+
+        if oi:
+            self.fut_open_int_val.setText(f"{int(oi):,}")
+        else:
+            self.fut_open_int_val.setText("——")
+
+        # ── 옵션 기반 포지션 매트릭스 ────────────────────────────
+        if option_supported:
+            self.pos_rt_call_val.setText(f"{div.get('rt_call',0):,}")
+            self.pos_rt_put_val.setText(f"{div.get('rt_put',0):,}")
+            self.pos_rt_strd_val.setText(f"{div.get('rt_strd',0):,}")
+            self.pos_fi_call_val.setText(f"{div.get('fi_call',0):+,}")
+            self.pos_fi_put_val.setText(f"{div.get('fi_put',0):+,}")
+            self.pos_fi_strangle_val.setText(f"{div.get('fi_strangle',0):+,}")
+        else:
+            self.pos_rt_call_val.setText("--")
+            self.pos_rt_put_val.setText("--")
+            self.pos_rt_strd_val.setText("--")
+            self.pos_fi_call_val.setText("--")
+            self.pos_fi_put_val.setText("--")
+            self.pos_fi_strangle_val.setText("--")
         contrarian = div.get('contrarian','중립')
         col = C['red'] if '하락' in contrarian else C['green'] if '상승' in contrarian else C['text2']
         self.pos_contrarian_val.setText(contrarian)
@@ -1462,9 +1555,13 @@ class DivergencePanel(QWidget):
                 if widget is None:
                     continue
                 b, vl = widget
-                pct = zd.get(inv, 0)
-                b.setValue(pct)
-                vl.setText(f"{pct}%")
+                if option_supported:
+                    pct = zd.get(inv, 0)
+                    b.setValue(pct)
+                    vl.setText(f"{pct}%")
+                else:
+                    b.setValue(0)
+                    vl.setText("--")
 
 
 # ────────────────────────────────────────────────────────────

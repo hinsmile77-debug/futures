@@ -22,6 +22,15 @@
     - `SYSTEM` log still said `FC0 실시간 틱 대기 중`, which is a Kiwoom-specific waiting message and can be misleading on Cybos
     - `MICRO-MINUTE` log kept repeating `ts=2026-05-11 09:03:00`, so Cybos minute-close / handoff behavior still needs explicit validation
 
+### 2026-05-11 리팩토링 완료 선언
+
+미륵이 브로커 백엔드가 **키움 OpenAPI+ → Cybos Plus** 로 전면 리팩토링 완료됐다.
+키움 관련 TR/FID 코드는 이제 레거시이며, 신규 작업은 모두 Cybos Plus 기준으로 수행한다.
+
+- [DONE 2026-05-11] 선물 투자자 수급 수집 (`request_investor_futures` / `request_program_investor`) 다중 후보 실구현
+- [DONE 2026-05-11] 미결제약정(OI) `FutureCurOnly` 실시간 저장 (`realtime_data._last_oi`)
+- [DONE 2026-05-11] `DivergencePanel` 선물 수급 섹션 추가 (외인/개인/기관/차익/비차익/OI 2×3 그리드)
+
 ### NEXT after 2026-05-11 review
 
 - [DONE 2026-05-11] fix startup crash caused by `None` formatting in Cybos balance logging
@@ -73,14 +82,14 @@
     - Kiwoom: `Kiwoom FC0 실시간 틱 대기 중`
     - Cybos: `Cybos 실시간 분봉 대기 중 (FutureCurOnly/FutureJpBid 수신 시 자동 진행)`
 
-- [NEXT 2026-05-12] inspect Cybos minute pipeline timestamp / bar-close path
-  - symptom from logs:
-    - `MICRO-MINUTE` kept repeating `ts=2026-05-11 09:03:00`
-  - goal:
-    - confirm whether closed candles are not advancing, or only the micro log view is stuck on the first closed bar
-  - likely scope:
-    - `collection/cybos/realtime_data.py`
-    - `main.py` candle callback / minute pipeline handoff
+- [DONE 2026-05-11] fix Cybos minute pipeline timestamp repetition bug (MICRO-MINUTE ts=09:03:00)
+  - root cause:
+    - `run_minute_pipeline()` reset `_last_recovery_ts = ""` at line 871 on every call
+    - recovery path (`_try_pipeline_recovery`) set guard → called pipeline → guard erased → could re-fire after 4 min
+    - result: same 09:03 bar re-processed every ~4 min indefinitely
+  - fix:
+    - moved `_last_recovery_ts = ""` reset from `run_minute_pipeline()` to `_on_candle_closed()`
+    - now only real bar-close events clear the guard; recovery calls leave it intact
 
 - [NEXT 2026-05-12] run one Cybos-focused realtime probe script outside main UI
   - goal:
@@ -139,19 +148,24 @@
   - risk:
     - strategy and UI are not yet Cybos-native for investor flow
 
-- [NEXT 2026-05-12] fix dashboard stylesheet parse warnings
-  - scope:
-    - `_HeaderCard`
-    - `QFrame`
-    - `QTableWidget`
-  - goal:
-    - separate UI stylesheet noise from broker-runtime diagnostics
+- [DONE 2026-05-11] fix dashboard stylesheet parse warnings
+  - root cause:
+    - `}}` at end of non-f-string in Python = literal two `}` chars, not f-string escape
+    - Qt stylesheet parser received `QFrame{...;}}` (extra `}`) → parse warning
+  - fixed locations in `dashboard/strategy_dashboard_tab.py`:
+    - `_card()` function
+    - `_HeaderCard.__init__()`
+    - `_StageTable` `QTableWidget` stylesheet (×2 tables)
+  - fix: removed extra `}` from the closing of each `QHeaderView::section{...}` and `QFrame{...}` block
 
-- [NEXT 2026-05-12] replace temporary Kiwoom-compatible Cybos server label handling
-  - current workaround:
-    - Cybos returns `"0"` into `GetServerGubun` path to avoid false mock branches
-  - goal:
-    - explicit broker-aware server-mode handling in `main.py`
+- [DONE 2026-05-11] fix Cybos server label / realtime method wording in `main.py`
+  - scope:
+    - login info log (line ~720)
+    - system startup log (line ~2608)
+  - fix:
+    - broker name checked via `broker.name == "cybos"`
+    - Cybos: server label = `"Cybos 실서버"`, rt method = `"FutureCurOnly/Subscribe"`
+    - Kiwoom: original `GetServerGubun` path retained
 
 ## 2026-05-08 역방향진입 / PnL 분리 / 학습 방화벽 후속
 

@@ -717,11 +717,15 @@ class TradingSystem:
         print("[DBG CK-2] login() 성공", flush=True)
 
         # 서버 종류 확인 (정보 로그용)
-        server = self.broker.get_login_info("GetServerGubun")
-        server_label = "모의투자" if server == "1" else "실서버"
-        print(f"[DBG CK-2b] 서버종류={server!r} ({server_label})", flush=True)
-        if server == "1":
-            logger.info("[System] 모의투자 서버 접속 — A0166000 SetRealReg 실시간 수신 사용")
+        _broker_name = getattr(self.broker, "name", "")
+        if _broker_name == "cybos":
+            server_label = "Cybos 실서버"
+        else:
+            server = self.broker.get_login_info("GetServerGubun")
+            server_label = "모의투자" if server == "1" else "실서버"
+            if server == "1":
+                logger.info("[System] 모의투자 서버 접속 — A0166000 SetRealReg 실시간 수신 사용")
+        print(f"[DBG CK-2b] broker={_broker_name!r} 서버종류={server_label}", flush=True)
 
         # A0166000: OPT50029 TR 및 SetRealReg 모두 동일 코드 사용
         # (모의투자 서버에서도 A0166000으로 SetRealReg 등록 시 틱 수신 확인됨)
@@ -773,6 +777,12 @@ class TradingSystem:
             return
         try:
             self.investor_data.fetch_all()
+            # FutureCurOnly 틱에서 실시간으로 수집된 미결제약정 동기화
+            rt = getattr(self, "realtime_data", None)
+            if rt is not None:
+                oi = getattr(rt, "_last_oi", 0)
+                if oi > 0:
+                    self.investor_data._open_interest = oi
         except Exception as e:
             logger.warning("[Investor] 타이머 수집 오류: %s", e)
 
@@ -813,6 +823,7 @@ class TradingSystem:
         if not is_market_open(now):
             return
 
+        self._last_recovery_ts = ""   # 실분봉 수신 시에만 복구 ts 초기화
         # latency → Circuit Breaker 연동
         self.circuit_breaker.record_api_latency(self.latency_sync.offset_sec)
         self.dashboard.minute_chart_candle_closed(candle)
@@ -862,7 +873,6 @@ class TradingSystem:
         """
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
-        self._last_recovery_ts = ""   # 실제 분봉 수신 → 복구 ts 초기화
 
         # ── 분봉 데이터 유효성 가드 ───────────────────────────────
         # 비정상 분봉이 피처/진입/청산 오발동을 일으키지 않도록 파이프라인 앞단 차단
@@ -1107,6 +1117,8 @@ class TradingSystem:
             "div_score":   float(_fi_fut - _rt_fut),
             "zones":       _inv.get_zone_data(),
         })
+        if hasattr(_inv, "get_panel_data"):
+            self.dashboard.update_divergence(_inv.get_panel_data())
 
         # [DBG-F4] ATR floor 적용 전후 + 핵심 피처 원시값 확인
         debug_log.debug(
@@ -2595,10 +2607,16 @@ class TradingSystem:
                 lambda: self.activate_kill_switch("대시보드 긴급정지")
             )
         if self.realtime_data:
-            server       = self.broker.get_login_info("GetServerGubun")
-            server_label = "모의투자" if server == "1" else "실서버"
+            _bn = getattr(self.broker, "name", "")
+            if _bn == "cybos":
+                _srv_lbl = "Cybos 실서버"
+                _rt_method = "FutureCurOnly/Subscribe"
+            else:
+                _srv = self.broker.get_login_info("GetServerGubun")
+                _srv_lbl = "모의투자" if _srv == "1" else "실서버"
+                _rt_method = "SetRealReg"
             self.dashboard.append_sys_log(
-                f"시스템 시작 | TR={self.realtime_data.code} [{server_label}] 분봉수집=실시간(SetRealReg)"
+                f"시스템 시작 | TR={self.realtime_data.code} [{_srv_lbl}] 분봉수집=실시간({_rt_method})"
             )
         else:
             self.dashboard.append_sys_log("시스템 시작 | 코드=—")

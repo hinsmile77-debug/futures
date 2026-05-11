@@ -43,6 +43,8 @@ IF NOT EXIST "%WORKDIR%" (
 
 ECHO [INFO] WorkDir set to: %WORKDIR%
 cd /d "%WORKDIR%"
+SET "BROKER_BACKEND=cybos"
+ECHO [INFO] BROKER_BACKEND=%BROKER_BACKEND%
 
 REM 2. Anaconda Detection & Activation
 ECHO.

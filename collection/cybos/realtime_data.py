@@ -51,6 +51,7 @@ class CybosRealtimeData:
         self._last_ask1 = 0.0
         self._last_bid_qty = 0
         self._last_ask_qty = 0
+        self._last_oi = 0
         self._last_hoga_snapshot = {
             "bid_prices": [],
             "ask_prices": [],
@@ -128,6 +129,9 @@ class CybosRealtimeData:
         self._last_ask1 = _safe_float(snapshot.get("ask1"))
         self._last_bid_qty = _safe_int(snapshot.get("bid_qty1"))
         self._last_ask_qty = _safe_int(snapshot.get("ask_qty1"))
+        oi_init = _safe_int(snapshot.get("open_interest", 0))
+        if oi_init > 0:
+            self._last_oi = oi_init
 
     def _handle_tick(self, obj) -> None:
         price = _safe_float(obj.GetHeaderValue(1))
@@ -143,6 +147,8 @@ class CybosRealtimeData:
 
         volume = max(0, cum_volume - self._last_cum_volume) if self._last_cum_volume else 0
         self._last_cum_volume = cum_volume
+        if oi > 0:
+            self._last_oi = oi
 
         if bid1 > 0:
             self._last_bid1 = bid1

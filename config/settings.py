@@ -19,7 +19,7 @@ HORIZON_DIR   = os.path.join(MODEL_DIR, "horizons")
 SCALER_DIR    = os.path.join(MODEL_DIR, "scaler")
 
 # broker backend selector
-BROKER_BACKEND = os.getenv("BROKER_BACKEND", "kiwoom").strip().lower()
+BROKER_BACKEND = os.getenv("BROKER_BACKEND", "cybos").strip().lower()
 
 # DB 파일 경로
 PREDICTIONS_DB = os.path.join(DB_DIR, "predictions.db")

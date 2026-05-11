@@ -129,7 +129,7 @@ def _card(title: str, child: QWidget, title_color: str = C["text2"]) -> QFrame:
     outer = QFrame()
     outer.setStyleSheet(
         f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
-        "border-radius:6px;}}"
+        "border-radius:6px;}"
     )
     lay = QVBoxLayout(outer)
     lay.setContentsMargins(_S(8), _S(6), _S(8), _S(8))
@@ -166,7 +166,7 @@ class _HeaderCard(QFrame):
         super().__init__(parent)
         self.setStyleSheet(
             f"QFrame{{background:{C['bg3']};border:1px solid {C['border']};"
-            "border-radius:8px;}}"
+            "border-radius:8px;}"
         )
         lay = QHBoxLayout(self)
         lay.setContentsMargins(_S(12), _S(10), _S(12), _S(10))
@@ -390,7 +390,7 @@ class _StageMatrix(QWidget):
             f"gridline-color:{C['border']};border:none;font-size:11px;"
             "font-family:Consolas,D2Coding,monospace;}"
             f"QHeaderView::section{{background:{C['bg3']};color:{C['text2']};"
-            "font-size:10px;padding:3px;border:none;}}"
+            "font-size:10px;padding:3px;border:none;}"
         )
         self._tbl.setFixedHeight(_S(140))
 
@@ -666,7 +666,7 @@ class _ParamChangeTable(QWidget):
             f"gridline-color:{C['border']};border:none;font-size:10px;"
             "font-family:Consolas,D2Coding,monospace;}"
             f"QHeaderView::section{{background:{C['bg3']};color:{C['text2']};"
-            "font-size:10px;padding:2px;border:none;}}"
+            "font-size:10px;padding:2px;border:none;}"
             f"QTableWidget::item:selected{{background:{C['bg3']};}}"
         )
         self._tbl.setFixedHeight(_S(180))

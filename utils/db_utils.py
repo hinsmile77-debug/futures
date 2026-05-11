@@ -12,6 +12,9 @@ from config.settings import FUTURES_COMMISSION_RATE
 
 _lock = threading.Lock()
 TRADE_PNL_FORMULA_VERSION = 2
+MIN_VALID_FUTURES_PRICE = 100.0
+MAX_VALID_FUTURES_PRICE = 10000.0
+MAX_REASONABLE_TRADE_PNL_PTS = 200.0
 
 
 @contextmanager
@@ -73,6 +76,45 @@ def normalize_trade_pnl(entry_price: float, quantity: int, pnl_pts: float) -> Di
         "net_pnl_krw": round(net_pnl_krw, 0),
         "formula_version": TRADE_PNL_FORMULA_VERSION,
     }
+
+
+def is_plausible_futures_trade(
+    *,
+    entry_price: Any,
+    exit_price: Any,
+    quantity: Any,
+    pnl_pts: Any,
+) -> bool:
+    """Filter obviously corrupted futures trade rows from restore/PnL views."""
+    try:
+        entry_price_f = float(entry_price or 0.0)
+        exit_price_f = float(exit_price or 0.0)
+        quantity_i = int(quantity or 0)
+        pnl_pts_f = abs(float(pnl_pts or 0.0))
+    except Exception:
+        return False
+
+    if quantity_i <= 0:
+        return False
+    if not (MIN_VALID_FUTURES_PRICE <= entry_price_f <= MAX_VALID_FUTURES_PRICE):
+        return False
+    if not (MIN_VALID_FUTURES_PRICE <= exit_price_f <= MAX_VALID_FUTURES_PRICE):
+        return False
+    if pnl_pts_f > MAX_REASONABLE_TRADE_PNL_PTS:
+        return False
+    return True
+
+
+def filter_plausible_trade_rows(rows: List[sqlite3.Row]) -> List[sqlite3.Row]:
+    return [
+        row for row in rows
+        if is_plausible_futures_trade(
+            entry_price=row["entry_price"] if "entry_price" in row.keys() else 0.0,
+            exit_price=row["exit_price"] if "exit_price" in row.keys() else 0.0,
+            quantity=row["quantity"] if "quantity" in row.keys() else 0,
+            pnl_pts=row["pnl_pts"] if "pnl_pts" in row.keys() else 0.0,
+        )
+    ]
 
 
 # ── 테이블 초기화 ──────────────────────────────────────────────
@@ -417,7 +459,7 @@ def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
     """
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(days=limit_days)).isoformat()
-    return fetchall(
+    rows = fetchall(
         TRADES_DB,
         """SELECT COALESCE(raw_direction, direction) AS raw_direction,
                   COALESCE(executed_direction, direction) AS executed_direction,
@@ -434,6 +476,7 @@ def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
            ORDER BY exit_ts ASC""",
         (cutoff + " 00:00:00",),
     )
+    return filter_plausible_trade_rows(rows)
 
 
 def fetch_today_trades(today_str: str = None) -> List[sqlite3.Row]:
@@ -444,7 +487,7 @@ def fetch_today_trades(today_str: str = None) -> List[sqlite3.Row]:
     import datetime as _dt
     if today_str is None:
         today_str = _dt.date.today().isoformat()
-    return fetchall(
+    rows = fetchall(
         TRADES_DB,
         """SELECT COALESCE(raw_direction, direction) AS raw_direction,
                   COALESCE(executed_direction, direction) AS executed_direction,
@@ -461,6 +504,7 @@ def fetch_today_trades(today_str: str = None) -> List[sqlite3.Row]:
            ORDER BY exit_ts ASC""",
         (today_str + "%",),
     )
+    return filter_plausible_trade_rows(rows)
 
 
 def fetch_calibration_bins(days_back: int = 30) -> List[sqlite3.Row]:

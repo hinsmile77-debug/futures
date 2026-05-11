@@ -10,7 +10,7 @@ from collection.broker.kiwoom_broker import KiwoomBroker
 
 
 def create_broker(name: Optional[str] = None) -> BrokerAPI:
-    backend = (name or BROKER_BACKEND or "kiwoom").strip().lower()
+    backend = (name or BROKER_BACKEND or "cybos").strip().lower()
     if backend == "kiwoom":
         return KiwoomBroker()
     if backend == "cybos":

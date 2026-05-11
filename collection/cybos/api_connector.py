@@ -199,6 +199,7 @@ class CybosAPI:
 
         self._fill_callbacks = []
         self._msg_callbacks = []
+        self._investor_mapping_warned = set()
 
     @property
     def is_connected(self) -> bool:
@@ -533,6 +534,182 @@ class CybosAPI:
     def probe_investor_ticker(self, extra_codes: Optional[List[str]] = None) -> None:
         logger.info("[CybosInvestorProbe] not implemented; extra_codes=%s", extra_codes or [])
 
+    # ──────────────────────────────────────────────────────────────
+    # 투자자 수급 / 프로그램 매매 데이터 수집
+    # QTimer 스레드에서만 호출 (COM 콜백 체인 외부).
+    # 각 후보 ProgID를 순서대로 시도하여 응답하는 첫 번째를 사용한다.
+    # ──────────────────────────────────────────────────────────────
+
+    # 선물 투자자 구분 코드 → INVESTOR_KEYS 매핑 (Cybos Plus 공통 순서)
+    _FUTURES_INVESTOR_TYPE_MAP: Dict[int, str] = {
+        0: "individual",
+        1: "foreign",
+        2: "institution",
+        3: "financial",
+        4: "insurance",
+        5: "trust",
+        6: "bank",
+        7: "etc_corp",
+        8: "pension",
+        9: "nation",
+    }
+
+    def _probe_investor_tr(
+        self,
+        progid: str,
+        inputs: List[tuple],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        COM 오브젝트를 Dispatch 하여 BlockRequest 후 헤더/행 데이터를 반환한다.
+        실패(연결 불가, status ≠ 0) 시 None 반환.
+        """
+        try:
+            obj = Dispatch(progid)
+            for idx, val in inputs:
+                obj.SetInputValue(idx, val)
+            ret = obj.BlockRequest()
+            status = _safe_int(obj.GetDibStatus())
+            if ret not in (0, None) or status != 0:
+                logger.debug(
+                    "[CybosProbe] %s blocked ret=%s status=%s msg=%s",
+                    progid, ret, status, _safe_str(obj.GetDibMsg1()),
+                )
+                return None
+            headers: Dict[int, str] = {}
+            for i in range(24):
+                try:
+                    headers[i] = _safe_str(obj.GetHeaderValue(i))
+                except Exception:
+                    break
+            rows: List[Dict[int, str]] = []
+            for ri in range(20):
+                row: Dict[int, str] = {}
+                any_val = False
+                for fi in range(10):
+                    try:
+                        v = _safe_str(obj.GetDataValue(fi, ri))
+                        row[fi] = v
+                        if v:
+                            any_val = True
+                    except Exception:
+                        pass
+                if not any_val and ri > 0:
+                    break
+                if row:
+                    rows.append(row)
+            logger.info(
+                "[CybosProbe] %s ok status=%s nonempty_headers=%d rows=%d",
+                progid, status,
+                sum(1 for v in headers.values() if v),
+                len(rows),
+            )
+            return {"progid": progid, "headers": headers, "rows": rows}
+        except Exception as exc:
+            logger.debug("[CybosProbe] %s dispatch/request failed: %s", progid, exc)
+            return None
+
+    def request_investor_futures(self) -> Dict[str, Any]:
+        """
+        선물 투자자별 순매수 계약수를 반환한다.
+        Cybos Plus 후보 ProgID를 순서대로 시도하고, 모두 실패 시
+        FutureMst 미결제약정을 raw["open_interest"] 에 담아 반환한다.
+        """
+        code = self.get_nearest_futures_code()
+        candidates = [
+            ("Dscbo1.FutureTrader",    [(0, code)]),
+            ("CpSysDib.FutureTrader",  [(0, code)]),
+            ("Dscbo1.FutureTrade",     [(0, code)]),
+            ("CpSysDib.FutureTrade",   [(0, code)]),
+        ]
+        for progid, inputs in candidates:
+            probe = self._probe_investor_tr(progid, inputs)
+            if probe is None:
+                continue
+            nets: Dict[str, int] = {}
+            for ri, row in enumerate(probe["rows"]):
+                try:
+                    # 필드 0 = 투자자 구분 코드, 필드 3 = 순매수 수량
+                    type_raw = row.get(0, "")
+                    net_raw  = row.get(3, "")
+                    type_code = _safe_int(type_raw) if type_raw else ri
+                    net_val   = _safe_int(net_raw)
+                    key = self._FUTURES_INVESTOR_TYPE_MAP.get(type_code)
+                    if key:
+                        nets[key] = net_val
+                except Exception:
+                    pass
+            supported = bool(probe["rows"])
+            _system_info(
+                f"[CybosInvestorRaw] futures via {progid} supported={supported} "
+                f"nets={{{','.join(f'{k}:{v:+d}' for k, v in nets.items() if v != 0)}}}"
+            )
+            return {
+                "supported": supported,
+                "source": progid,
+                "reason": f"probe ok via {progid}",
+                "nets": nets,
+                "raw": {"open_interest": 0, "row_count": len(probe["rows"])},
+            }
+
+        # 모든 후보 실패 → FutureMst 미결제약정 fallback
+        snap = self.request_futures_snapshot(code) if code else {}
+        oi = _safe_int(snap.get("open_interest", 0)) if snap else 0
+        _system_warning(
+            f"[CybosInvestorRaw] futures investor TR 후보 없음 "
+            f"open_interest={oi} (FutureMst fallback)"
+        )
+        return {
+            "supported": False,
+            "source": "FutureMst_oi",
+            "reason": "Cybos 선물 투자자 TR 미발견; 미결제약정만 제공",
+            "nets": {},
+            "raw": {"open_interest": oi},
+        }
+
+    def request_program_investor(self) -> Dict[str, Any]:
+        """
+        프로그램 매매(차익/비차익) 순매수 데이터를 반환한다.
+        Cybos Plus 후보 ProgID를 순서대로 시도한다.
+        """
+        candidates = [
+            ("CpSysDib.ProgramTrade",   []),
+            ("Dscbo1.ProgramTrade",      []),
+            ("CpSysDib.MarketProgram",   []),
+        ]
+        for progid, inputs in candidates:
+            probe = self._probe_investor_tr(progid, inputs)
+            if probe is None:
+                continue
+            h = probe["headers"]
+            # 헤더 레이아웃 추정: 0=차익매수, 1=차익매도, 2=차익순매수,
+            #                    3=비차익매수, 4=비차익매도, 5=비차익순매수
+            arb_buy    = _safe_int(h.get(0, "0"))
+            arb_sell   = _safe_int(h.get(1, "0"))
+            arb_net    = _safe_int(h.get(2, "0")) or (arb_buy - arb_sell)
+            nonarb_buy  = _safe_int(h.get(3, "0"))
+            nonarb_sell = _safe_int(h.get(4, "0"))
+            nonarb_net  = _safe_int(h.get(5, "0")) or (nonarb_buy - nonarb_sell)
+            _system_info(
+                f"[CybosInvestorRaw] program via {progid} "
+                f"arb={arb_net:+d} nonarb={nonarb_net:+d}"
+            )
+            return {
+                "supported": True,
+                "source": progid,
+                "reason": f"probe ok via {progid}",
+                "nets": {"foreign": arb_net + nonarb_net},
+                "raw": {"arb_net": arb_net, "nonarb_net": nonarb_net},
+            }
+
+        _system_warning("[CybosInvestorRaw] program investor TR 후보 없음")
+        return {
+            "supported": False,
+            "source": "mapping_pending",
+            "reason": "Cybos 프로그램 매매 TR 미발견",
+            "nets": {},
+            "raw": {"arb_net": 0, "nonarb_net": 0},
+        }
+
     def _ensure_message_pump(self) -> None:
         if QTimer is None or self._message_pump_timer is not None:
             return
@@ -635,3 +812,9 @@ class CybosAPI:
                 callback(dict(payload))
             except Exception:
                 logger.exception("[Cybos] msg callback failed")
+
+    def _warn_investor_mapping_once(self, key: str, message: str) -> None:
+        if key in self._investor_mapping_warned:
+            return
+        self._investor_mapping_warned.add(key)
+        _system_warning(message)

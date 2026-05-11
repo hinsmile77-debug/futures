@@ -1,7 +1,40 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-08 (10차) — 자동종료 재실행 방지 + 봉차트 시인성/토글 개선
+> 마지막 업데이트: 2026-05-11 (11차) — **Cybos Plus 리팩토링 완료 선언 + 투자자 수급/다이버전스 UI 연결**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-11 Cybos Plus 리팩토링 완료 (브로커 전환 마일스톤)
+
+미륵이의 데이터 수집·자동매매 백엔드가 **키움 OpenAPI+ → Cybos Plus(대신증권)** 으로 전면 리팩토링됐다.
+
+| 구분 | 이전 (키움) | 현재 (Cybos Plus) |
+|---|---|---|
+| 실시간 틱 | `OPT50029` SetRealReg | `Dscbo1.FutureCurOnly` Subscribe |
+| 호가 | `FID` 기반 실시간 | `CpSysDib.FutureJpBid` Subscribe |
+| 잔고 | `OPW20006` TR | `CpTrade.CpTd0723` BlockRequest |
+| 일일손익 | `OPW20003/7/8` TR | `CpTrade.CpTd6197` BlockRequest |
+| 주문 | `SendOrderFO` | `CpTrade.CpTd6831` BlockRequest |
+| 체결 이벤트 | `OnReceiveChejanData` | `Dscbo1.CpFConclusion` Subscribe |
+| 투자자 수급 | `opt10059`, `opt50008` | 후보 프로브 중 (`check_cybos_investor_candidates.py`) |
+| 선물 스냅샷 | `OPT10001` | `Dscbo1.FutureMst` BlockRequest |
+| 브로커 팩토리 | `KiwoomBroker` 하드코딩 | `create_broker()` → 기본 `cybos` |
+
+### 이번 세션에서 추가된 것 (2026-05-11)
+
+- `collection/cybos/api_connector.py`: `_probe_investor_tr()` 헬퍼 + `request_investor_futures()` / `request_program_investor()` 다중 후보 실구현
+- `collection/cybos/investor_data.py`: `_open_interest`, `program_arb`, `program_nonarb` 필드 추가 및 `get_panel_data()` 확장
+- `collection/cybos/realtime_data.py`: `_last_oi` — `FutureCurOnly` 헤더 14번 미결제약정 실시간 저장
+- `dashboard/main_dashboard.py`: `DivergencePanel`에 **선물 투자자 수급** 섹션 추가 (외인/개인/기관 순매수 + 프로그램 차익/비차익 + 미결제약정 2×3 그리드)
+- `main.py`: `_fetch_investor_data()`에서 `realtime_data._last_oi` → `investor_data._open_interest` 동기화
+
+### 잔여 검증 항목
+
+- 장중 `FutureCurOnly` 분봉 timestamp 진행 확인 (2026-05-12 장중 필요)
+- `CpTd6831` 모의 주문 체결 end-to-end 검증
+- 선물 투자자 TR 후보 sweep 결과 확인 (`Dscbo1.FutureTrader` 등)
+- 다이버전스 패널 "대기" → 실데이터 전환 확인
 
 ---
 
