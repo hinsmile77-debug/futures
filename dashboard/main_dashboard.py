@@ -5395,7 +5395,8 @@ class MireukDashboard(QMainWindow):
         price_box.addWidget(self.lbl_price_change)
 
         # 상태 배지
-        self.lbl_regime = mk_badge("NEUTRAL", C['orange'], "#fff", 11)
+        self.lbl_regime       = mk_badge("NEUTRAL", C['orange'], "#fff", 11)
+        self.lbl_micro_regime = mk_badge("혼합",    C['blue'],   "#fff", 11)
         _cyc_text, _cyc_col = _calc_cycle_badge()
         self.lbl_cycle  = mk_badge(_cyc_text, _cyc_col, "#fff", 11)
         self.lbl_gamma  = mk_badge("감마스퀴즈", C['orange'], "#fff", 11)
@@ -5539,7 +5540,7 @@ class MireukDashboard(QMainWindow):
         header.addLayout(title_box)
         header.addLayout(price_box)
         header.addStretch()
-        for w in [self.lbl_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos]:
+        for w in [self.lbl_regime, self.lbl_micro_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos]:
             header.addWidget(w)
         header.addWidget(clk_frame)
         header.addLayout(res_box)
@@ -5605,6 +5606,17 @@ class MireukDashboard(QMainWindow):
         self.mid_tabs.addTab(self._wrap(self.alpha_panel),    "알파 리서치 봇")
         if self.strategy_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.strategy_panel), "🧭 전략 운용현황")
+
+        # 챔피언-도전자 모니터 패널
+        try:
+            from dashboard.panels.challenger_panel import ChallengerPanel as _CP
+            self.challenger_panel = _CP()  # engine은 나중에 set_challenger_engine()으로 주입
+        except Exception as _ce:
+            logger.warning("[Dashboard] ChallengerPanel 로드 실패: %s", _ce)
+            self.challenger_panel = None
+        if self.challenger_panel is not None:
+            self.mid_tabs.addTab(self._wrap(self.challenger_panel), "⚔ 도전자 모니터")
+
         ml.addWidget(self.mid_tabs)
 
         # 우측: 5층 로그
@@ -5882,6 +5894,30 @@ class DashboardAdapter:
             f"[Regime] {regime} | VIX={vix:.1f} | SP500={sp500_chg:+.2%} | USD/KRW={usd_krw:+.2f}"
         )
 
+    def update_micro_regime(self, micro_regime: str, adx: float = 0.0,
+                            atr_ratio: float = 1.0, duration: int = 0):
+        """미시 레짐 헤더 배지 + 챌린저 패널 갱신"""
+        _col_map = {
+            "추세장": C['green'],
+            "횡보장": C['blue'],
+            "급변장": C['red'],
+            "혼합":   C['orange'],
+            "탈진":   "#9C27B0",   # 보라색 — 탈진 레짐 전용
+        }
+        col = _col_map.get(micro_regime, C['orange'])
+        self._win.lbl_micro_regime.setText(micro_regime)
+        self._win.lbl_micro_regime.setStyleSheet(
+            f"background:{col};color:#fff;border-radius:3px;"
+            f"font-size:{S.f(11)}px;font-weight:bold;padding:1px 6px;"
+        )
+        # 챌린저 패널에도 전달
+        cp = getattr(self._win, "challenger_panel", None)
+        if cp is not None:
+            try:
+                cp.update_micro_regime(micro_regime, adx, atr_ratio, duration)
+            except Exception:
+                pass
+
     def update_system_status(
         self,
         cb_state: str = "NORMAL",
@@ -6093,6 +6129,15 @@ class DashboardAdapter:
         tag = {"WARNING": "WARN"}.get(level, level)
         tag = tag if tag in ("WARN", "ERROR", "CRITICAL") else "SYSTEM"
         self._win.log_panel.append("all", tag, msg)
+
+    def set_challenger_engine(self, engine, promotion_manager=None):
+        """챔피언-도전자 엔진 주입 (main.py에서 초기화 후 호출)"""
+        panel = getattr(self._win, "challenger_panel", None)
+        if panel is not None:
+            panel._engine = engine
+            if promotion_manager is not None:
+                panel._promo = promotion_manager
+            panel.refresh()
 
 
 # ────────────────────────────────────────────────────────────

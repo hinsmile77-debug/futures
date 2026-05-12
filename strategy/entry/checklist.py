@@ -33,6 +33,8 @@ class EntryChecklist:
         time_zone: str,
         daily_loss_pct: float,
         min_confidence: float = 0.58,
+        cvd_exhaustion: float = 0.0,
+        micro_regime: str = "혼합",
     ) -> Dict:
         """
         Args:
@@ -47,25 +49,40 @@ class EntryChecklist:
             time_zone:       현재 시간대 코드
             daily_loss_pct:  당일 누적 손실률 (양수=손실)
             min_confidence:  레짐별 최소 신뢰도
+            cvd_exhaustion:  CVD 탈진 강도 (0.0~1.0, 방안 C/D 분기용)
+            micro_regime:    현재 미시 레짐 (탈진 레짐 시 Hurst 차단 무효화)
 
         Returns:
-            {pass_count, grade, checks, size_mult, auto_entry}
+            {pass_count, grade, checks, size_mult, auto_entry, entry_mode}
         """
+        from collection.macro.micro_regime import REGIME_EXHAUSTION
         is_long = direction == DIRECTION_UP
+        is_exhaustion_regime = (micro_regime == REGIME_EXHAUSTION)
 
         checks = {}
 
         # 1. 앙상블 신호 방향 확인
         checks["1_signal"] = direction in (DIRECTION_UP, DIRECTION_DOWN)
 
-        # 2. 최소 신뢰도
-        checks["2_confidence"] = confidence >= min_confidence
+        # 2. 최소 신뢰도 (탈진 레짐은 0.56으로 완화)
+        min_conf_effective = 0.56 if is_exhaustion_regime else min_confidence
+        checks["2_confidence"] = confidence >= min_conf_effective
 
         # 3. VWAP 위치
+        # 방안 C/D: VWAP 하방 1.5σ 초과 + CVD 탈진 → 역추세 모드로 체크 통과
+        entry_mode = "TREND_FOLLOW"
         if is_long:
-            checks["3_vwap"] = vwap_position > 0
+            if vwap_position < -1.5 and cvd_exhaustion > 0.0:
+                checks["3_vwap"] = True
+                entry_mode = "MEAN_REVERSION"
+            else:
+                checks["3_vwap"] = vwap_position > 0
         else:
-            checks["3_vwap"] = vwap_position < 0
+            if vwap_position > 1.5 and cvd_exhaustion > 0.0:
+                checks["3_vwap"] = True
+                entry_mode = "MEAN_REVERSION"
+            else:
+                checks["3_vwap"] = vwap_position < 0
 
         # 4. CVD 방향
         if is_long:
@@ -115,8 +132,8 @@ class EntryChecklist:
         auto_entry = ENTRY_GRADE[grade]["auto"]
 
         logger.info(
-            f"[Checklist] 통과 {pass_count}/9 → 등급 {grade} "
-            f"(자동={auto_entry}, 배수×{size_mult})"
+            "[Checklist] 통과 %d/9 → 등급 %s (자동=%s, 배수×%s, 모드=%s)",
+            pass_count, grade, auto_entry, size_mult, entry_mode,
         )
 
         return {
@@ -125,4 +142,5 @@ class EntryChecklist:
             "checks":     checks,
             "size_mult":  size_mult,
             "auto_entry": auto_entry,
+            "entry_mode": entry_mode,
         }

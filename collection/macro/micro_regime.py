@@ -25,10 +25,20 @@ import logging
 logger = logging.getLogger("SYSTEM")
 
 # 레짐 상수
-REGIME_TREND   = "추세장"
-REGIME_RANGE   = "횡보장"
-REGIME_VOLATILE= "급변장"
-REGIME_MIXED   = "혼합"
+REGIME_TREND      = "추세장"
+REGIME_RANGE      = "횡보장"
+REGIME_VOLATILE   = "급변장"
+REGIME_MIXED      = "혼합"
+REGIME_EXHAUSTION = "탈진"   # 방안 D: CVD 탈진 + OFI 급반전 + VWAP 이탈
+
+# 탈진 레짐 전략 파라미터
+REGIME_EXHAUSTION_PARAMS = {
+    "strategy_mode":  "mean_reversion",
+    "min_confidence":  0.56,
+    "size_mult":       0.70,
+    "entry_direction": "TOWARD_VWAP",
+    "hurst_override":  True,   # H < 0.45 차단 무효화
+}
 
 
 class MicroRegimeClassifier:
@@ -38,10 +48,12 @@ class MicroRegimeClassifier:
     Phase 3에서 regime_specific.py, meta_confidence.py 등에 레짐 신호 공급.
     """
 
-    ADX_TREND_THRESHOLD = 25.0   # ADX > 25 → 추세
-    ADX_RANGE_THRESHOLD = 20.0   # ADX < 20 → 횡보
-    ATR_VOLATILE_MULT   = 2.0    # ATR > 평균 2배 → 급변
-    ATR_TREND_MULT      = 1.5    # ATR < 평균 1.5배 조건 (추세장 필터)
+    ADX_TREND_THRESHOLD  = 25.0   # ADX > 25 → 추세
+    ADX_RANGE_THRESHOLD  = 20.0   # ADX < 20 → 횡보
+    ATR_VOLATILE_MULT    = 2.0    # ATR > 평균 2배 → 급변
+    ATR_TREND_MULT       = 1.5    # ATR < 평균 1.5배 조건 (추세장 필터)
+    ATR_EXHAUSTION_MULT  = 1.5    # 탈진 레짐: ATR 확대 임계값
+    VWAP_EXHAUSTION_MIN  = 1.5    # 탈진 레짐: VWAP 이탈 최소 σ
 
     def __init__(self, atr_window: int = 20, adx_window: int = 14):
         """
@@ -68,7 +80,10 @@ class MicroRegimeClassifier:
         # 레짐 이력 (전략 매핑용)
         self._regime_history   = deque(maxlen=60)
 
-    def push_1m_candle(self, high: float, low: float, close: float) -> dict:
+    def push_1m_candle(self, high, low, close,
+                       cvd_exhaustion=0.0, ofi_reversal_speed=0.0,
+                       vwap_position=0.0):
+        # type: (float, float, float, float, float, float) -> dict
         """
         1분봉 캔들 입력 → 미시 레짐 계산
 
@@ -92,8 +107,10 @@ class MicroRegimeClassifier:
         # ADX 계산
         adx = self._compute_adx()
 
-        # 레짐 분류
-        new_regime = self._classify(adx, atr, atr_avg, atr_ratio)
+        # 레짐 분류 (탈진 레짐 피처 전달)
+        new_regime = self._classify(adx, atr, atr_avg, atr_ratio,
+                                    cvd_exhaustion, ofi_reversal_speed,
+                                    vwap_position)
 
         # 레짐 변경 감지
         regime_changed = (new_regime != self._current_regime)
@@ -120,13 +137,26 @@ class MicroRegimeClassifier:
             "regime_duration": self._regime_duration,
             "regime_changed":  regime_changed,
             "trend_strength":  round(trend_strength, 3),
+            "hurst_override":  new_regime == REGIME_EXHAUSTION,
         }
 
-    def _classify(self, adx: float, atr: float, atr_avg: float, atr_ratio: float) -> str:
+    def _classify(self, adx, atr, atr_avg, atr_ratio,
+                  cvd_exhaustion=0.0, ofi_reversal_speed=0.0, vwap_position=0.0):
+        # type: (float, float, float, float, float, float, float) -> str
         """레짐 분류 규칙"""
         # 급변장: ATR 2배 이상 → 최우선 차단
         if atr_ratio >= self.ATR_VOLATILE_MULT:
             return REGIME_VOLATILE
+
+        # 탈진 레짐 (방안 D): 4가지 조건 동시 충족
+        exhaustion_conds = (
+            atr_ratio >= self.ATR_EXHAUSTION_MULT          # 변동성 확대
+            and cvd_exhaustion > 0                          # CVD 탈진
+            and abs(ofi_reversal_speed) > 0                 # OFI 급반전 (0 초과면 통과)
+            and abs(vwap_position) >= self.VWAP_EXHAUSTION_MIN  # VWAP 밴드 이탈
+        )
+        if exhaustion_conds:
+            return REGIME_EXHAUSTION
 
         # 추세장: ADX 강세 + ATR 과도하지 않음
         if adx >= self.ADX_TREND_THRESHOLD and atr_ratio < self.ATR_TREND_MULT:

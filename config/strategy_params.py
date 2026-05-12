@@ -667,6 +667,26 @@ REGIME_PARAM_OVERRIDES: Dict[Tuple[str, str], Dict[str, float]] = {
         "entry_conf_neutral": 9999.0,  # 강제 청산 + 신규 진입 금지
         "kelly_max_mult":     0.0,
     },
+
+    # ── EXHAUSTION (탈진 레짐) ─────────────────────────────────────────────
+    # 역추세 평균회귀 전략. 진입 허용 여부는 RegimeChampGate(champion 설정 여부)가 결정.
+    # 신뢰도 기준 완화(0.56) + 사이즈 축소(0.70) + 빠른 익절/손절 폭
+    ("RISK_ON",  "EXHAUSTION"): {
+        "entry_conf_neutral": -0.04,   # 0.56 수준으로 완화
+        "kelly_max_mult":     -0.30,   # 사이즈 축소
+        "atr_tp1_mult":       -0.50,   # 빠른 1차 익절 (역추세 특성)
+        "atr_stop_mult":      -0.25,
+    },
+    ("NEUTRAL",  "EXHAUSTION"): {
+        "entry_conf_neutral": -0.02,
+        "kelly_max_mult":     -0.30,
+        "atr_tp1_mult":       -0.50,
+        "atr_stop_mult":      -0.25,
+    },
+    ("RISK_OFF", "EXHAUSTION"): {
+        "entry_conf_neutral": 9999.0,  # RISK_OFF × 탈진 → 진입 금지
+        "kelly_max_mult":     0.0,
+    },
 }
 
 

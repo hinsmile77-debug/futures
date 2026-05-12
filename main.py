@@ -60,6 +60,7 @@ from config import secrets as _secrets
 # ── 핵심 모듈 ──────────────────────────────────────────────────
 from collection.broker import create_broker
 from collection.macro.regime_classifier import RegimeClassifier
+from collection.macro.micro_regime import MicroRegimeClassifier
 from features.feature_builder import FeatureBuilder
 from model.multi_horizon_model import MultiHorizonModel
 from model.ensemble_decision import EnsembleDecision
@@ -113,8 +114,9 @@ class TradingSystem:
         self.realtime_data = None  # login 후 초기화
 
         # 핵심 컴포넌트
-        self.regime_classifier = RegimeClassifier()
-        self.feature_builder   = FeatureBuilder()
+        self.regime_classifier  = RegimeClassifier()
+        self.micro_regime_clf   = MicroRegimeClassifier()
+        self.feature_builder    = FeatureBuilder()
         self.model             = MultiHorizonModel()
         self.ensemble          = EnsembleDecision()
         self.position          = PositionTracker()
@@ -175,6 +177,13 @@ class TradingSystem:
         self.dashboard.sig_tp1_protect_mode_changed.connect(self._on_tp1_protect_mode_changed)
         self.dashboard.sig_manual_exit_requested.connect(self._on_manual_exit_requested)
         self.dashboard.set_ui_startup_mode()
+        if self.challenger_engine is not None:
+            try:
+                self.dashboard.set_challenger_engine(
+                    self.challenger_engine, self.promotion_manager
+                )
+            except Exception as _ce3:
+                logger.warning("[Challenger] 대시보드 엔진 주입 실패: %s", _ce3)
         if self.position.status != "FLAT":
             self.dashboard.minute_chart_sync_active_position(
                 self.position.status,
@@ -201,6 +210,20 @@ class TradingSystem:
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
         self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
+
+        # ── 챔피언-도전자 Shadow 엔진 ──────────────────────────
+        try:
+            from challenger.challenger_engine import ChallengerEngine
+            from challenger.promotion_manager import PromotionManager
+            self.challenger_engine  = ChallengerEngine()
+            self.promotion_manager  = PromotionManager(
+                db       = self.challenger_engine.db,
+                registry = self.challenger_engine.registry,
+            )
+        except Exception as _ce:
+            logger.warning("[Challenger] ChallengerEngine 초기화 실패 (비활성화): %s", _ce)
+            self.challenger_engine = None
+            self.promotion_manager = None
 
         # log_manager → 대시보드 5개 탭 배선 (subscribe 없으면 탭에 아무것도 안 보임)
         log_manager.subscribe(
@@ -1136,12 +1159,25 @@ class TradingSystem:
             bar.get("buy_vol", 0), bar.get("sell_vol", 0),
         )
 
-        # 미시 레짐 업데이트 (v6.5)
-        # TODO: ADX 계산 추가
-        adx_dummy = 22.0
-        self.current_micro_regime = self.regime_classifier.classify_micro(
-            adx_dummy, atr_ratio
+        # 미시 레짐 업데이트 (v6.5) — MicroRegimeClassifier: ADX 자체 계산
+        _mr = self.micro_regime_clf.push_1m_candle(
+            high             = float(bar.get("high", close) or close),
+            low              = float(bar.get("low",  close) or close),
+            close            = close,
+            cvd_exhaustion   = float(features.get("cvd_exhaustion",  0.0) or 0.0),
+            ofi_reversal_speed = float(features.get("ofi_reversal_speed", 0.0) or 0.0),
+            vwap_position    = float(features.get("vwap_position",   0.0) or 0.0),
         )
+        self.current_micro_regime = _mr["regime"]
+        self.dashboard.update_micro_regime(
+            _mr["regime"], _mr["adx"], _mr["atr_ratio"], _mr["regime_duration"]
+        )
+        if _mr.get("regime_changed"):
+            log_manager.signal(
+                f"[MicroRegime] 레짐 변경 → {_mr['regime']} "
+                f"(ADX={_mr['adx']:.1f} ATR비={_mr['atr_ratio']:.2f} "
+                f"지속={_mr['regime_duration']}분)"
+            )
 
         # ATR Circuit Breaker
         self.circuit_breaker.record_atr(atr_ratio)
@@ -1221,6 +1257,7 @@ class TradingSystem:
             _MICRO_EN = {
                 "추세장": "TREND", "횡보장": "RANGE",
                 "급변장": "VOLATILE", "혼합": "TREND",
+                "탈진":   "EXHAUSTION",   # 레짐 챔피언 게이트가 실제 차단 담당
             }
             _micro_en = _MICRO_EN.get(self.current_micro_regime, "TREND")
             _regime_params = _aro(_PC, self.current_regime, _micro_en)
@@ -1246,6 +1283,31 @@ class TradingSystem:
                 )
         except Exception as _fp2_e:
             logger.debug("[RegimeFingerprint] STEP6 스킵: %s", _fp2_e)
+
+        # [§20] 레짐 챔피언 게이트 — 챔피언 미설정 레짐 진입 차단
+        # 탈진 레짐: 수동 승격 전까지 champion=None → 진입 0
+        # CHAMPION_BASELINE: 앙상블 신호 그대로 사용
+        # 특정 전문가 챔피언: 앙상블 신호 + 보강 로그
+        if self.challenger_engine is not None and direction != 0:
+            try:
+                from challenger.challenger_registry import CHAMPION_BASELINE_ID as _CB_ID
+                _reg_champ = self.challenger_engine.registry.get_regime_champion(
+                    self.current_micro_regime
+                )
+                if _reg_champ is None:
+                    direction = 0
+                    grade     = "X"
+                    log_manager.signal(
+                        f"[RegimeChampGate] {self.current_micro_regime} 레짐 "
+                        f"전문가 챔피언 미설정 — 진입 차단 (수동 승격 필요)"
+                    )
+                elif _reg_champ != _CB_ID:
+                    log_manager.signal(
+                        f"[RegimeChampGate] {self.current_micro_regime} 레짐 "
+                        f"전문가 챔피언 [{_reg_champ}] 활성 — 앙상블 신호 보강"
+                    )
+            except Exception as _cg_e:
+                logger.debug("[RegimeChampGate] 스킵: %s", _cg_e)
 
         log_manager.signal(
             f"앙상블: dir={direction:+d} conf={confidence:.1%} "
@@ -1601,6 +1663,16 @@ class TradingSystem:
             )
         except Exception as e:
             logger.warning("[STEP9] save_prediction 오류 (스킵): %s", e)
+
+        # ── 챔피언-도전자 Shadow 실행 (STEP 9 이후 훅) ─────────
+        if self.challenger_engine is not None:
+            _ctx = {
+                "ts":     ts,
+                "atr":    features.get("atr", 1.0),
+                "regime": self.current_micro_regime,
+                "candle": candle if isinstance(candle, dict) else {},
+            }
+            self.challenger_engine.run_shadow(features, _ctx.get("candle", {}), _ctx)
 
         # 🧠 자가학습 모니터 패널 갱신 (매분)
         self.dashboard.update_learning(self._gather_learning_stats())
@@ -2174,6 +2246,13 @@ class TradingSystem:
             f"PnL={stats['pnl_krw']:+,.0f}원"
         )
 
+        # ── 챔피언-도전자 일별 집계 ─────────────────────────────
+        if self.challenger_engine is not None:
+            try:
+                self.challenger_engine.update_daily_metrics(now.date().isoformat())
+            except Exception as _ce2:
+                logger.warning("[Challenger] update_daily_metrics 실패 (스킵): %s", _ce2)
+
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
         retrain_result = self.batch_retrainer.retrain_now(weeks_back=8)
         retrain_ok = retrain_result.get("ok", False)
@@ -2194,6 +2273,7 @@ class TradingSystem:
         if hasattr(self, "_investor_timer"):
             self._investor_timer.stop()
         self.feature_builder.reset_daily()
+        self.micro_regime_clf.reset_daily()
         self.investor_data.reset_daily()
         self.position.reset_daily()
         self.circuit_breaker.reset_daily()

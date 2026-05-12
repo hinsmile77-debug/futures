@@ -22,10 +22,11 @@ SCALER_DIR    = os.path.join(MODEL_DIR, "scaler")
 BROKER_BACKEND = os.getenv("BROKER_BACKEND", "cybos").strip().lower()
 
 # DB 파일 경로
-PREDICTIONS_DB = os.path.join(DB_DIR, "predictions.db")
-SHAP_DB        = os.path.join(DB_DIR, "shap_tracker.db")
-TRADES_DB      = os.path.join(DB_DIR, "trades.db")
-RAW_DATA_DB    = os.path.join(DB_DIR, "raw_data.db")   # 경로 B 학습 데이터
+PREDICTIONS_DB  = os.path.join(DB_DIR, "predictions.db")
+SHAP_DB         = os.path.join(DB_DIR, "shap_tracker.db")
+TRADES_DB       = os.path.join(DB_DIR, "trades.db")
+RAW_DATA_DB     = os.path.join(DB_DIR, "raw_data.db")   # 경로 B 학습 데이터
+CHALLENGER_DB   = os.path.join(DB_DIR, "challenger.db")  # 챔피언-도전자 전용 DB
 
 # ── 비밀 설정 로드 (secrets.py가 없으면 빈 값으로 대체) ───────
 try:
@@ -150,6 +151,24 @@ SHAP_MIN_DATA_POINTS   = 100   # 최소 누적 데이터
 SLACK_BOT_TOKEN  = _SECRET_SLACK_TOKEN or os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "C0AUYD4RHHD")   # #maitreya
 SLACK_PC_NAME    = os.getenv("SLACK_PC_NAME",    "MW0601")
+
+# ── 챔피언-도전자 시스템 ───────────────────────────────────────
+PROMOTION_CRITERIA = {
+    "min_obs_days":    20,    # 최소 관찰 기간 (20 거래일 = 4주)
+    "min_trades":      30,    # 최소 거래 횟수
+    "win_rate_delta": +2.0,   # 챔피언 승률 + 2% 이상 (% 단위)
+    "mdd_ratio":       0.90,  # 챔피언 MDD의 90% 이하
+    "sharpe_min":      1.50,  # Sharpe ≥ 1.5
+    "return_delta":   +0.00,  # 수익 챔피언 이상
+}
+
+REGIME_EXHAUSTION_PARAMS = {
+    "strategy_mode":  "mean_reversion",
+    "min_confidence":  0.56,
+    "size_mult":       0.70,
+    "entry_direction": "TOWARD_VWAP",
+    "hurst_override":  True,
+}
 
 # ── 로깅 설정 ──────────────────────────────────────────────────
 LOG_LEVEL = logging.INFO

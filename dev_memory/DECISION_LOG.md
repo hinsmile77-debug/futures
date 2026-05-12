@@ -2,6 +2,32 @@
 
 ---
 
+## 2026-05-12 (15차 — 챔피언-도전자 시스템 + MicroRegimeClassifier 연결)
+
+### [D36] MicroRegimeClassifier를 main.py에 연결 (adx_dummy 제거)
+**Decision**: `regime_classifier.classify_micro(adx_dummy=22.0, atr_ratio)` 호출을 제거하고 `MicroRegimeClassifier.push_1m_candle(high, low, close, cvd_exhaustion, ofi_reversal_speed, vwap_position)` 로 교체한다.  
+**Root cause**: `adx_dummy=22.0` 고정값으로 인해 ADX 계산 없이 항상 "혼합" 레짐 판정. `MicroRegimeClassifier`(ADX 실계산 + 탈진 감지)가 `micro_regime.py`에 완성돼 있었으나 미연결.  
+**Impact**: 탈진(EXHAUSTION) 레짐이 한 번도 발동하지 않았다. RegimeChampGate, EXHAUSTION strategy_params 오버라이드 모두 사실상 사문화돼 있었음.
+
+### [D37] 레짐 전문가 시스템 설계 — REGIME_POOLS·챔피언 슬롯·min_regime_trades
+**Decision**: 각 마이크로 레짐(추세장·횡보장·급변장·혼합·탈진)에 별도 챔피언 슬롯을 부여한다. `REGIME_POOLS`는 어떤 전략 버전이 어느 레짐에 출전 가능한지 정의한다. 탈진 레짐은 기본 `champion=None`으로 챔피언 미설정 상태에서 시작한다.  
+**Reason**: 레짐별 최적 전략이 다르다 (추세장: 모멘텀 강세 전략 유리, 탈진: 평균회귀). 동일 챔피언이 모든 레짐을 커버하면 최적 성능 불가.  
+**How**: `min_regime_trades=30` 미만이면 해당 레짐 챔피언 승격 불가 (표본 부족 시 차단).
+
+### [D38] RegimeChampGate [§20] — 챔피언=None 레짐 진입 차단 (자동 통합 금지 이중 잠금)
+**Decision**: `main.py` STEP 6 앙상블 판단 직후, 실행 직전에 RegimeChampGate를 삽입한다. `challenger_engine.registry.get_regime_champion(micro_regime)` 반환값이 `None`이면 `direction=0, grade="X"` 강제 적용 후 진입 차단한다.  
+**Reason**: 탈진 레짐은 실증 데이터 없이 챔피언 선정이 불가능하다. 검증 없는 진입은 CLAUDE.md 절대 원칙 "자동 통합 금지"에 해당한다. 게이트가 코드 레벨에서 자동 진입을 원천 차단한다.  
+**Exception**: 기본 챔피언(`CHAMPION_BASELINE_ID`)이 설정된 레짐에서는 앙상블 신호 그대로 통과. 전문가 챔피언이 승격된 레짐에서는 로그만 추가 출력.
+
+### [D39] EXHAUSTION 레짐 strategy_params — RISK_OFF×탈진=9999, 나머지 완화+사이즈 축소
+**Decision**: `config/strategy_params.py`에 EXHAUSTION 레짐 오버라이드를 추가한다.
+- `RISK_ON×EXHAUSTION`: `entry_conf_neutral=-0.04` (진입 임계 완화, 평균회귀 특성 반영), `kelly_max_mult=-0.30`, `atr_tp1_mult=-0.50` (빠른 TP1)
+- `NEUTRAL×EXHAUSTION`: 동일하나 완화 폭 `-0.02`로 축소
+- `RISK_OFF×EXHAUSTION`: `entry_conf_neutral=9999.0` (진입 완전 차단), `kelly_max_mult=0.0`
+**Reason**: 탈진 레짐은 강한 방향성이 없어 작은 목표값을 빠르게 취하는 전략이 유효하다. 그러나 거시 리스크(RISK_OFF)와 미시 탈진이 겹치면 청산 유동성도 부족하므로 절대 진입 금지.
+
+---
+
 ## 2026-05-12 (14차 — 로그 분석 기반 버그 수정)
 
 ### [B56] MetaConf `SGDClassifier(loss="log_loss")` — sklearn 1.0.2 미지원

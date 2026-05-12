@@ -1,7 +1,66 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-12 (14차) — **로그 분석 기반 6종 버그 수정 (MetaConf·ExitCooldown·CB gate·한글깨짐·잔고sanity)**
+> 마지막 업데이트: 2026-05-12 (15차) — **챔피언-도전자 시스템 전면 구현 (Shadow 엔진·레짐 전문가·대시보드 WARNING·진입 게이트)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-12 챔피언-도전자 시스템 (Phase C-1 ~ C-8 + 레짐 전문가 확장)
+
+### 신규 파일 목록
+
+| 파일 | 역할 |
+|---|---|
+| `challenger/__init__.py` | 패키지 init |
+| `challenger/variants/__init__.py` | 패키지 init |
+| `challenger/variants/base_challenger.py` | 추상 기저: `ChallengerSignal`, `ChallengerTrade`, `BaseChallenger` |
+| `challenger/challenger_db.py` | SQLite CRUD (`challenger.db`) — 6개 테이블 |
+| `challenger/challenger_registry.py` | 도전자 풀 + 레짐별 챔피언 포인터 관리 |
+| `challenger/challenger_engine.py` | Shadow 실행 오케스트레이터 (매분 훅, <5ms 목표) |
+| `challenger/promotion_manager.py` | 전역 승격 + 레짐 전문가 승격 (수동 승인 필수) |
+| `challenger/variants/cvd_exhaustion.py` | CVD 탈진 도전자 (A) |
+| `challenger/variants/ofi_reversal.py` | OFI 반전 도전자 (B) |
+| `challenger/variants/vwap_reversal.py` | VWAP 반전 도전자 (C) |
+| `challenger/variants/exhaustion_regime.py` | 탈진 레짐 특화 도전자 (D) |
+| `challenger/variants/absorption.py` | 흡수 감지 도전자 (E, FutureJpBid 필요) |
+| `features/technical/cvd_exhaustion.py` | CVD 탈진 피처 계산기 |
+| `features/technical/ofi_reversal.py` | OFI 반전 피처 계산기 |
+| `dashboard/panels/__init__.py` | 패키지 init |
+| `dashboard/panels/challenger_panel.py` | 도전자 모니터 패널 (레짐 전문가 승위표 + 전체 성과) |
+
+### 핵심 설계 결정
+
+- **레짐 전문가 풀**: `탈진 → [A_CVD, C_VWAP, D_EXHAUSTION]` / `추세·횡보·혼합 → CHAMPION_BASELINE` / `급변장 → []`
+- **승격 기준**: 레짐 내 거래 수 기반 (`min_regime_trades: 20`) — 달력일 무관
+- **자동 승격 금지**: Shadow 1위 변경 시 대시보드 WARNING만 발송, 실거래 전환은 수동 승인
+- **레짐 챔피언 게이트** (`main.py [§20]`): `탈진` 레짐에서 챔피언=None이면 진입 차단
+
+### DB 스키마 (`challenger.db`)
+
+```
+challenger_signals       — 매분 신호 (regime 컬럼 포함)
+challenger_trades        — 가상 거래 (regime 컬럼 포함)
+challenger_daily_metrics — 전체 일별 집계
+challenger_regime_metrics— 레짐별 누적 집계 (trade_count 기반 승격 판단)
+regime_rank_history      — 레짐별 1위 변경 이력
+champion_history         — 챔피언 교체 이력
+```
+
+### main.py 연결 포인트
+
+| 위치 | 동작 |
+|---|---|
+| `__init__()` | `ChallengerEngine` + `PromotionManager` 초기화 (실패 시 None) |
+| STEP 9 이후 | `challenger_engine.run_shadow()` — 5ms 가드 포함 |
+| STEP 6 [§20] | 레짐 챔피언 게이트 — 챔피언=None 레짐 진입 차단 |
+| `daily_close()` | `update_daily_metrics()` — 레짐별 순위 계산 + WARNING 발송 |
+| `DashboardAdapter` | `set_challenger_engine()` — 패널에 엔진 주입 |
+
+### 잔여 연결 작업
+
+- `탈진` 레짐 챔피언이 특정 도전자로 승격됐을 때, 해당 도전자의 신호를 앙상블 `direction`으로 오버라이드하는 로직 (현재: 앙상블 신호 유지 + 로그만)
+- `AbsorptionChallenger` — `FutureJpBid` 호가 구독 연결 (`update_hoga()` 훅)
+- `탈진` 레짐 피처 (`cvd_exhaustion`, `ofi_reversal_speed`) feature_builder 실데이터 검증
 
 ---
 

@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-05-12 챔피언-도전자 시스템 + MicroRegimeClassifier 연결
+
+- [DONE 2026-05-12] `MicroRegimeClassifier` → `main.py` 연결 (ADX 실계산, 5-레짐, 탈진 감지)
+- [DONE 2026-05-12] RegimeChampGate [§20] 구현 — 챔피언=None 레짐 진입 차단 (`main.py` STEP 6)
+- [DONE 2026-05-12] `_MICRO_EN` 탈진 추가 + `strategy_params.py` EXHAUSTION 오버라이드 3종
+- [DONE 2026-05-12] `dashboard/main_dashboard.py` `lbl_micro_regime` 헤더 배지 + `update_micro_regime()` 어댑터
+- [DONE 2026-05-12] `challenger_panel.py` `_lbl_cur_regime` 상태바 + `update_micro_regime()` 메서드
+- [DONE 2026-05-12] `CHALLENGER_SYSTEM_PLAN.md` 전면 재작성 (완료 체크·설계 상세·검증 계획)
+
+### 챔피언-도전자 검증 항목 (실 데이터 필요)
+
+- [V-C1] 탈진 레짐 실발동 확인 (장 중 SIGNAL.log `[MicroRegime] 레짐 변경 → 탈진` 확인)
+- [V-C2] RegimeChampGate 차단 동작 확인 (탈진 레짐에서 진입 시도 시 `grade=X·[RegimeChampGate]` 로그 확인)
+- [V-C3] Shadow WARNING 발송 확인 (일별 마감 후 경보 탭 WARNING 표시)
+- [V-C4] 미시 레짐 헤더 배지 갱신 확인 (헤더 `lbl_micro_regime`가 매분 정확히 갱신되는지)
+
+---
+
 ## 2026-05-12 로그 분석 기반 버그 수정
 
 - [DONE 2026-05-12] MetaConf `loss="log_loss"` → `loss="log"` 수정 (`learning/meta_confidence.py`) — sklearn 1.0.2 호환

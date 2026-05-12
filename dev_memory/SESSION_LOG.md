@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-05-12 (15차 — 챔피언-도전자 시스템 전면 구현 + MicroRegimeClassifier 연결)
+
+**Work**
+
+Champion-Challenger 시스템의 핵심 미완성 부분을 발견·수정했다.
+
+### 핵심 발견: MicroRegimeClassifier 미연결
+
+`main.py`는 `regime_classifier.classify_micro(adx_dummy=22.0, ...)` 로 4-레짐 단순 분류기를 쓰고 있었다. `MicroRegimeClassifier` (5-레짐, ADX 실계산, 탈진 감지)가 `collection/macro/micro_regime.py`에 완성돼 있었지만 연결되지 않았다. ADX=22.0 고정값으로 인해 항상 "혼합" 레짐만 판정되었고, 탈진 레짐은 한 번도 발동하지 않았다.
+
+### 구현 목록
+
+| # | 파일 | 내용 |
+|---|---|---|
+| C1 | `main.py` | `MicroRegimeClassifier` import + `__init__` 인스턴스화 |
+| C2 | `main.py` STEP 4 | `adx_dummy=22.0` 제거 → `push_1m_candle()` 실호출 (ADX 실계산·5-레짐) |
+| C3 | `main.py` STEP 4 | `dashboard.update_micro_regime()` + 레짐 변경 시 SIGNAL 로그 |
+| C4 | `main.py` `_MICRO_EN` | `"탈진": "EXHAUSTION"` 추가 (strategy_params 조회 누락 해결) |
+| C5 | `main.py` daily_close | `micro_regime_clf.reset_daily()` 추가 |
+| C6 | `main.py` STEP 6 §20 | RegimeChampGate — 챔피언=None 레짐 진입 차단 게이트 |
+| C7 | `config/strategy_params.py` | EXHAUSTION 레짐 오버라이드 3종 (RISK_ON·NEUTRAL·RISK_OFF×탈진=9999) |
+| C8 | `dashboard/main_dashboard.py` | `lbl_micro_regime` 헤더 배지 + `update_micro_regime()` 어댑터 메서드 |
+| C9 | `dashboard/panels/challenger_panel.py` | `_lbl_cur_regime` 상태바 + `update_micro_regime()` 메서드 |
+| C10 | `dev_memory/CHALLENGER_SYSTEM_PLAN.md` | 전면 재작성 — 완료 체크리스트·설계 상세·검증 계획 |
+| C11 | `dev_memory/CURRENT_STATE.md` | 15차 헤더 + 챔피언-도전자 시스템 섹션 추가 |
+
+### RegimeChampGate [§20] 설계
+
+- `challenger_engine.registry.get_regime_champion(micro_regime)` 반환값 분기:
+  - `None` → `direction=0, grade="X"` (진입 차단) + SIGNAL 로그
+  - `CHAMPION_BASELINE_ID` → 기본 챔피언 사용 (앙상블 신호 그대로)
+  - 기타 ID → 전문가 챔피언 활성 (앙상블 신호 보강 로그)
+- 탈진(EXHAUSTION) 레짐은 기본 champion=None이라 진입 불가 (수동 승격 필요)
+
+### 미해결 항목
+
+- V-C1~V-C4: 탈진 실발동·Gate 차단·Shadow WARNING·배지 갱신 확인 (실데이터 필요)
+
+---
+
 ## 2026-05-12 (14차 — 로그 분석 + 6종 버그 수정)
 
 **Work**

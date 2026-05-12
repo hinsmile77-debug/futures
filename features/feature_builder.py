@@ -5,9 +5,11 @@ import numpy as np
 
 from features.technical.atr import ATRCalculator
 from features.technical.cvd import CVDCalculator
+from features.technical.cvd_exhaustion import CvdExhaustionCalculator
 from features.technical.microprice import MicropriceCalculator
 from features.technical.mlofi import MLOFICalculator
 from features.technical.ofi import OFICalculator
+from features.technical.ofi_reversal import OfiReversalCalculator
 from features.technical.queue_dynamics import QueueDynamicsCalculator
 from features.technical.toxicity import ToxicityCalculator
 from features.technical.vwap import VWAPCalculator
@@ -21,8 +23,10 @@ class FeatureBuilder:
 
     def __init__(self):
         self.cvd = CVDCalculator(window=10)
+        self.cvd_exhaustion_calc = CvdExhaustionCalculator()
         self.vwap = VWAPCalculator()
         self.ofi = OFICalculator(window=5)
+        self.ofi_reversal_calc = OfiReversalCalculator()
         self.atr = ATRCalculator(period=14)
         self.microprice = MicropriceCalculator(window=5, max_levels=5)
         self.mlofi = MLOFICalculator(levels=5, window=5)
@@ -90,6 +94,16 @@ class FeatureBuilder:
             cvd_result["signal_strength"] * (-1 if cvd_result["divergence"] else 1)
         )
         features["cvd_direction"] = float(cvd_result["direction"])
+        features["cvd"]           = float(cvd_result.get("cvd", 0.0))
+        features["cvd_slope"]     = float(cvd_result.get("cvd_slope", 0.0))
+
+        exh_result = self.cvd_exhaustion_calc.compute(
+            cvd_raw   = features["cvd"],
+            cvd_slope = features["cvd_slope"],
+            volume    = float(bar.get("volume", 0) or 0),
+        )
+        features["cvd_exhaustion"]        = float(exh_result["exhaustion"])
+        features["cvd_exhaustion_signal"] = float(exh_result["exhaustion_signal"])
 
         vwap_result = self.vwap.update(
             high=bar["high"],
@@ -102,9 +116,18 @@ class FeatureBuilder:
         features["above_vwap"] = float(vwap_result["above_vwap"])
 
         ofi_result = self.ofi.flush_minute()
-        features["ofi_norm"] = float(ofi_result["ofi_norm"])
+        features["ofi_norm"]     = float(ofi_result["ofi_norm"])
         features["ofi_pressure"] = float(ofi_result["pressure"])
         features["ofi_imbalance"] = float(ofi_result["imbalance_ratio"])
+        features["ofi_raw"]      = float(ofi_result["ofi_raw"])
+
+        ofi_rev = self.ofi_reversal_calc.compute(
+            ofi_raw    = features["ofi_raw"],
+            avg_volume = float(bar.get("volume", 1) or 1),
+        )
+        features["ofi_reversal_speed"]  = float(ofi_rev["reversal_speed"])
+        features["ofi_reversal_signal"] = float(ofi_rev["signal"])
+        features["avg_volume"]          = float(bar.get("volume", 0) or 0)
 
         microprice_result = self.microprice.flush_minute()
         features["microprice"] = float(microprice_result["microprice"])
@@ -206,8 +229,10 @@ class FeatureBuilder:
 
     def reset_daily(self) -> None:
         self.cvd.reset_daily()
+        self.cvd_exhaustion_calc.reset_daily()
         self.vwap.reset_daily()
         self.ofi.reset_daily()
+        self.ofi_reversal_calc.reset_daily()
         self.atr.reset_daily()
         self.microprice.reset_daily()
         self.mlofi.reset_daily()
