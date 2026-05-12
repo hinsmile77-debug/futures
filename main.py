@@ -162,6 +162,20 @@ class TradingSystem:
             logger.warning(msg)           # SYSTEM 로그 파일 + 콘솔
             log_manager.system(msg, "WARNING")   # 대시보드 1 시스템 탭
 
+        # ── 챔피언-도전자 Shadow 엔진 (대시보드 주입 전 먼저 초기화) ───
+        self.challenger_engine = None  # type: ignore
+        self.promotion_manager = None  # type: ignore
+        try:
+            from challenger.challenger_engine import ChallengerEngine
+            from challenger.promotion_manager import PromotionManager
+            self.challenger_engine  = ChallengerEngine()
+            self.promotion_manager  = PromotionManager(
+                db       = self.challenger_engine.db,
+                registry = self.challenger_engine.registry,
+            )
+        except Exception as _ce:
+            logger.warning("[Challenger] ChallengerEngine 초기화 실패 (비활성화): %s", _ce)
+
         # 대시보드
         self.dashboard = create_dashboard()
         self.dashboard.set_account_options(
@@ -210,20 +224,6 @@ class TradingSystem:
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
         self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
-
-        # ── 챔피언-도전자 Shadow 엔진 ──────────────────────────
-        try:
-            from challenger.challenger_engine import ChallengerEngine
-            from challenger.promotion_manager import PromotionManager
-            self.challenger_engine  = ChallengerEngine()
-            self.promotion_manager  = PromotionManager(
-                db       = self.challenger_engine.db,
-                registry = self.challenger_engine.registry,
-            )
-        except Exception as _ce:
-            logger.warning("[Challenger] ChallengerEngine 초기화 실패 (비활성화): %s", _ce)
-            self.challenger_engine = None
-            self.promotion_manager = None
 
         # log_manager → 대시보드 5개 탭 배선 (subscribe 없으면 탭에 아무것도 안 보임)
         log_manager.subscribe(
