@@ -4,6 +4,67 @@
 
 ---
 
+## 2026-05-12 (17차 — 4-Layer 수익 보존 가드 (ProfitGuard) 구현 + 💰 대시보드 탭)
+
+**Work**
+
+금일 장중 최대 누적 손익 +337만원이 마감 시 -166만원으로 반전된 문제를 분석하고, 확보된 이익을 보존하는 4-Layer ProfitGuard 시스템을 구현했다.
+
+### 오늘 손익 분석 (20260512_TRADE.log)
+
+| 청산 시각 | 방향 | 손익 | 이유 |
+|---|---|---|---|
+| 10:13~10:22 | LONG×4 | +약 337만 (누적 최고점) | TP2 연속 |
+| 10:28~12:46 | 혼합 | 급격 하락 | 하드스톱 연속 |
+| 15:10 | 잔여 포지션 | 강제 청산 | 오버나이트 금지 |
+| 최종 | — | **-166만원** | 추세 반전 대응 실패 |
+
+**핵심 문제**: 고점 달성 후에도 진입 기준이 동일하게 유지되어 손실 연속 구간에서 하드스톱 3연발로 이익 전부 반납.
+
+### 구현: ProfitGuard 4-Layer 설계
+
+| 레이어 | 이름 | 발동 조건 | 효과 |
+|---|---|---|---|
+| L1 | DailyPnlTrailingGuard | peak ≥ 200만 + 현재 ≤ peak × (1-35%) | 당일 진입 완전 정지 |
+| L2 | ProfitTierGate | 구간별 최소 등급 요구 (0→C, 100→C, 200→B, 300→A, 400만+ 진입 정지) | 이익 구간별 보수적 진입 |
+| L3 | AfternoonRiskMode | 150만+ 수익 + 13시 이후 3회 초과 진입 시도 | 오후 진입 횟수 제한 |
+| L4 | ProfitProtectionCB | 150만+ 수익 중 2연속 손실 | 즉시 진입 정지 |
+
+**시뮬레이션 결과 (금일 데이터)**:
+- 챔피언(가드 없음): **-1,664,257원**
+- 챌린저(L1+L4 적용): **약 +456,651원** (12:46 이후 진입 차단으로 손실 방어)
+
+### 신규 파일
+
+| 파일 | 역할 |
+|---|---|
+| `strategy/profit_guard.py` | 4-Layer ProfitGuard 핵심 로직 + `ProfitGuardConfig` + `simulate()` |
+| `dashboard/panels/profit_guard_panel.py` | 💰 수익 보존 탭: PnL DNA 시각화 + 설정 슬라이더 + 챔피언/챌린저 비교 테이블 + 승급 제안 |
+
+### 수정 파일
+
+| 파일 | 변경 |
+|---|---|
+| `main.py` | STEP 7 진입 전 `profit_guard.is_entry_allowed()` 게이트 삽입 |
+| `main.py` | `_post_exit()`: `profit_guard.on_trade_close()` 호출 |
+| `main.py` | `_execute_entry()`: `profit_guard.on_entry()` 호출 |
+| `main.py` | `daily_close()`: `profit_guard.reset_daily()` 호출 |
+| `main.py` | `_refresh_pnl_history()`: `dashboard.refresh_profit_guard()` 호출 |
+| `dashboard/main_dashboard.py` | "💰 수익 보존" 탭 추가 + `set_profit_guard()` / `refresh_profit_guard()` 어댑터 |
+
+### 대시보드 탭 구성
+
+1. **상태 섹션**: L1~L4 배지(초록/빨강) + 5개 핵심 지표 + PnL DNA 막대 (PnL 추이선·피크·하락 바닥선)
+2. **설정 섹션**: 트레일 비율 슬라이더 (15~60%), 모든 파라미터 스핀박스, Apply/Reset 버튼
+3. **비교 섹션**: 챔피언 vs 챌린저 6행 테이블 (총손익·거래수·승률·최대피크·MDD·차단거래) + 차단 거래 목록
+4. **제안 섹션**: 3가지 챌린저 변형 (공격적40%·표준35%·보수적25%) + 황금 시간대 막대 차트 + 차단 로그
+
+### 남은 검증
+
+- V-PG1~V-PG5: 장중 L1~L4 실제 발동 확인 + UI 데이터 반영
+
+---
+
 ## 2026-05-12 (15차 — 챔피언-도전자 시스템 전면 구현 + MicroRegimeClassifier 연결)
 
 ## 2026-05-12 (16차 — WARN 노이즈 2단계 감축: Cybos + BalanceUI/Refresh 레이트리밋 INFO)

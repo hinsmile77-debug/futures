@@ -1,7 +1,49 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-12 (16차) — **WARN 노이즈 2단계 감축 (Cybos + BalanceUI/BalanceRefresh 레이트리밋 INFO)**
+> 마지막 업데이트: 2026-05-12 (17차) — **4-Layer 수익 보존 가드 (ProfitGuard) 구현 + 💰 대시보드 탭**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-12 수익 보존 가드 시스템 (ProfitGuard 4-Layer)
+
+### 신규 파일
+
+| 파일 | 역할 |
+|---|---|
+| `strategy/profit_guard.py` | 4-Layer 수익 보존 핵심 로직 |
+| `dashboard/panels/profit_guard_panel.py` | "💰 수익 보존" 대시보드 탭 |
+
+### 4-Layer 설계
+
+| 레이어 | 클래스 | 발동 조건 | 파라미터 기본값 |
+|---|---|---|---|
+| L1 | `_TrailingGuard` | peak ≥ trail_activation_krw(200만) + 현재 < peak × (1-trail_ratio(35%)) | trail_activation=2_000_000, trail_ratio=0.35 |
+| L2 | `_TierGate` | 구간별 최소 size_mult 미달 시 차단, 400만+ = max_qty=0 (완전 정지) | tiers: 0/100/200/300/400만 |
+| L3 | `_AfternoonMode` | 오후 기준 시간 이후 + 수익 발생 + 진입 횟수 초과 | cutoff_hour=13, max_trades=3 |
+| L4 | `_ProfitCB` | 수익 중 N연속 손실 | profit_cb_consec_loss=2, trigger_threshold=150만 |
+
+### main.py 연결 포인트
+
+| 위치 | 동작 |
+|---|---|
+| `__init__()` | `self.profit_guard = ProfitGuard()` 초기화 |
+| STEP 7 진입 전 | `is_entry_allowed(daily_pnl, size_mult)` → grade=X 강제 적용 |
+| `_post_exit()` | `on_trade_close(pnl_krw, daily_pnl)` → L4 CB 갱신 |
+| `_execute_entry()` | `on_entry()` → L3 오후 카운터 갱신 |
+| `daily_close()` | `reset_daily()` → 전체 상태 초기화 |
+| `_refresh_pnl_history()` | `dashboard.refresh_profit_guard(pnl, trades)` |
+
+### 대시보드 탭 구성 ("💰 수익 보존")
+
+- **상태 섹션**: L1~L4 레이어 배지 + 핵심 지표 5개 + PnL DNA 시각화 (pyqtSignal 연동)
+- **설정 섹션**: QSlider(trail_ratio) + QSpinBox(임계값·기준) + Apply/Reset 버튼
+- **비교 섹션**: 챔피언 vs 챌린저 6행 테이블 + 차단 거래 목록
+- **제안 섹션**: 3-variant 챌린저 제안표 + 황금 시간대 막대 차트 + 차단 로그
+
+### simulate() 활용
+
+`ProfitGuard.simulate(trades, cfg)` 정적 메서드로 과거 거래 리스트를 대입해 챔피언(가드 없음) vs 챌린저(가드 적용) 총손익·MDD·차단수를 비교할 수 있다.
 
 ---
 

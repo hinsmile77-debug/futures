@@ -71,6 +71,7 @@ from strategy.entry.meta_gate import MetaGate
 from strategy.entry.adaptive_kelly import AdaptiveKelly
 from strategy.exit.time_exit import TimeExitManager
 from strategy.risk.toxicity_gate import ToxicityGate
+from strategy.profit_guard import ProfitGuard, ProfitGuardConfig
 from learning.calibration import MultiHorizonCalibrator
 from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
@@ -141,6 +142,7 @@ class TradingSystem:
         self.circuit_breaker = CircuitBreaker(
             emergency_exit_callback = self.emergency_exit.execute
         )
+        self.profit_guard    = ProfitGuard()
 
         # 현재 레짐
         self.current_regime       = "NEUTRAL"
@@ -188,6 +190,9 @@ class TradingSystem:
         self.dashboard.sig_position_restore.connect(self._manual_position_restore)
         self.dashboard.sig_balance_refresh_requested.connect(self._refresh_dashboard_balance)
         self.dashboard.sig_reverse_entry_toggled.connect(self._on_reverse_entry_toggled)
+        self.dashboard.sig_manual_entry_requested.connect(self._on_manual_entry_requested)
+        self.dashboard.sig_instant_exit_requested.connect(self._on_instant_exit_requested)
+        self.dashboard.sig_auto_mode_changed.connect(self._on_auto_mode_changed)
         self.dashboard.sig_tp1_protect_mode_changed.connect(self._on_tp1_protect_mode_changed)
         self.dashboard.sig_manual_exit_requested.connect(self._on_manual_exit_requested)
         self.dashboard.set_ui_startup_mode()
@@ -198,6 +203,10 @@ class TradingSystem:
                 )
             except Exception as _ce3:
                 logger.warning("[Challenger] 대시보드 엔진 주입 실패: %s", _ce3)
+        try:
+            self.dashboard.set_profit_guard(self.profit_guard)
+        except Exception as _pge:
+            logger.warning("[ProfitGuard] 대시보드 주입 실패: %s", _pge)
         if self.position.status != "FLAT":
             self.dashboard.minute_chart_sync_active_position(
                 self.position.status,
@@ -214,6 +223,8 @@ class TradingSystem:
         self._heartbeat_count: int = 0
         self._session_no: int = 0
         self._pending_order = None
+        self._auto_entry_enabled: bool = True   # Auto On/Off 토글 상태
+        self._manual_entry_ctx: dict = {}        # 마지막 파이프라인 산출값 (수동 진입 버튼용)
         self._last_order_event_key = None
         self._broker_sync_verified: bool = False
         self._broker_sync_block_new_entries: bool = True
@@ -361,6 +372,42 @@ class TradingSystem:
             mode = "breakeven"
         self._tp1_protect_mode = mode
         self.dashboard.set_tp1_protect_mode(mode, emit_signal=False)
+
+    def _on_manual_entry_requested(self, direction: str) -> None:
+        """수동 진입 버튼(매수/매도) 클릭 처리."""
+        ctx = self._manual_entry_ctx
+        if not ctx:
+            notify("수동 진입 불가: 파이프라인 데이터 없음 (첫 분봉 대기)", "WARNING")
+            return
+        if self.position.status != "FLAT":
+            notify("수동 진입 불가: 이미 포지션 보유 중", "WARNING")
+            return
+        qty = ctx.get("qty", 0)
+        if qty <= 0:
+            notify("수동 진입 불가: 산출 수량 0 (등급 X 또는 신호 없음)", "WARNING")
+            return
+        if not self.circuit_breaker.is_entry_allowed():
+            notify(f"수동 진입 불가: Circuit Breaker {self.circuit_breaker.state}", "WARNING")
+            return
+        price = ctx.get("price", 0.0)
+        atr   = ctx.get("atr", 0.0)
+        grade = ctx.get("grade", "C")
+        log_manager.trade(
+            f"[수동진입] 버튼 클릭 → {direction} {qty}계약 @ {price} 등급={grade}"
+        )
+        self._execute_entry(direction, price, qty, atr, grade)
+
+    def _on_instant_exit_requested(self) -> None:
+        """즉시청산 버튼 클릭 — 보유 포지션 전량 즉시 청산."""
+        self._on_manual_exit_requested(100)
+
+    def _on_auto_mode_changed(self, enabled: bool) -> None:
+        """Auto On/Off 토글 — 자동 진입 활성화 여부 전환."""
+        self._auto_entry_enabled = bool(enabled)
+        log_manager.system(
+            f"[EntryConfig] 자동진입={'ON' if enabled else 'OFF (수동 전환)'}",
+            "WARNING" if not enabled else "INFO",
+        )
 
     def _on_reverse_entry_toggled(self, enabled: bool) -> None:
         enabled = bool(enabled)
@@ -1497,6 +1544,12 @@ class TradingSystem:
             final_signal=_final_signal_ko,
             reverse_enabled=_reverse_on,
         )
+        self._manual_entry_ctx = {
+            "price": close,
+            "qty":   _qty_display,
+            "atr":   atr,
+            "grade": _final_grade,
+        }
 
         # [DBG-F7] 진입 실행 조건 평가
         debug_log.debug(
@@ -1516,6 +1569,17 @@ class TradingSystem:
         )
         _hurst_ok = features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
         _atr_ok   = atr >= ATR_MIN_ENTRY   # ATR 너무 낮으면 노이즈 > 손절거리 → 휩쏘
+
+        # 수익 보존 가드 체크 (STEP 7 진입 직전)
+        _daily_pnl_now = self.position.daily_stats()["pnl_krw"]
+        _size_mult_now = _cr["size_mult"] if _cr else 1.0
+        _pg_allowed, _pg_reason = self.profit_guard.is_entry_allowed(
+            _daily_pnl_now, _size_mult_now
+        )
+        if not _pg_allowed and _final_grade not in ("X",):
+            _final_grade = "X"
+            log_manager.signal(f"[ProfitGuard] 진입 차단: {_pg_reason}")
+
         if (
             _cr is not None
             and self.circuit_breaker.is_entry_allowed()
@@ -1533,7 +1597,7 @@ class TradingSystem:
             raw_dir_str, final_dir_str, reverse_on = self._resolve_entry_direction(dir_str)
             raw_signal_ko = self._direction_to_korean(raw_dir_str)
             final_signal_ko = self._direction_to_korean(final_dir_str)
-            if _cr["auto_entry"]:
+            if _cr["auto_entry"] and self._auto_entry_enabled:
                 self._execute_entry(
                     final_dir_str, close, _qty_display, atr, _final_grade,
                     raw_direction=raw_dir_str,
@@ -1777,9 +1841,10 @@ class TradingSystem:
             f"PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원) "
             f"잔여={result['remaining']}계약"
         )
+        _cum_pnl = self.position.daily_stats()["pnl_krw"]
         self.dashboard.append_pnl_log(
             f"부분청산TP{stage} | {result['direction']} {qty}계약 @ {result['exit_price']}",
-            f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  잔여 {result['remaining']}계약",
+            f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  잔여 {result['remaining']}계약  │ 금일 {_cum_pnl:+,.0f}원",
         )
         self.dashboard.minute_chart_record_exit(
             result["exit_price"],
@@ -1868,6 +1933,8 @@ class TradingSystem:
             f"[진입] {direction} {quantity}계약 @ {price} "
             f"등급={grade} 레짐={self.current_regime}"
         )
+        # 수익 보존 가드 — 오후 진입 카운터 업데이트
+        self.profit_guard.on_entry()
         # PnL 탭 진입 이벤트 기록 [B28]
         self.dashboard.append_pnl_log(
             f"진입 | {direction} {quantity}계약 @ {price}  등급={grade}",
@@ -1940,6 +2007,9 @@ class TradingSystem:
         else:
             self.circuit_breaker.record_stop_loss()
             self.kelly.record(win=False, pnl_pts=pnl)
+        # 수익 보존 가드 — 체결 후 연속 손실 카운터 업데이트
+        _daily_after = self.position.daily_stats()["pnl_krw"]
+        self.profit_guard.on_trade_close(result["pnl_krw"], _daily_after)
 
         # 쿨다운 설정 — Cybos 비동기 경로(_ts_on_exit_fill)에서는 이미 호출되지 않으므로
         # 여기서 단일 진입점으로 처리 (레거시 동기 경로 포함 모두 통합)
@@ -1964,7 +2034,7 @@ class TradingSystem:
         self.dashboard.append_pnl_log(
             f"청산 | {result['direction']} {result['quantity']}계약 "
             f"@ {result['exit_price']} ({result['exit_reason']})",
-            f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원",
+            f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  │ 금일 {_daily['pnl_krw']:+,.0f}원",
         )
         self.dashboard.minute_chart_record_exit(
             result["exit_price"],
@@ -2277,6 +2347,7 @@ class TradingSystem:
         self.investor_data.reset_daily()
         self.position.reset_daily()
         self.circuit_breaker.reset_daily()
+        self.profit_guard.reset_daily()
         self.online_learner.reset_daily()
         self._verified_today = 0
         self.emergency_exit.reset()
@@ -2648,6 +2719,13 @@ class TradingSystem:
             self.dashboard.update_pnl_history(rows)
         except Exception as e:
             logger.debug(f"[PnL History] 갱신 실패: {e}")
+        # 수익 보존 가드 패널 갱신 (청산 직후 최신 트레이드 반영)
+        try:
+            today_trades = fetch_today_trades() or []
+            daily_pnl = self.position.daily_stats()["pnl_krw"]
+            self.dashboard.refresh_profit_guard(daily_pnl, today_trades)
+        except Exception as _pge2:
+            pass
 
     # ── 메인 루프 (Qt 이벤트 루프 기반) ──────────────────────────
     def run(self):
@@ -3158,13 +3236,12 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
         f"| PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원) "
         f"| 잔여={result['remaining']}계약 | 사유={reason_label}"
     )
-    self.dashboard.append_pnl_log(
-        f"체결청산-부분 | {result['direction']} {qty}계약 @ {result['exit_price']:.2f}",
-        f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  잔여 {result['remaining']}계약",
-    )
-
     _daily = self.position.daily_stats()
     _forward_daily = self.position.daily_forward_stats()
+    self.dashboard.append_pnl_log(
+        f"체결청산-부분 | {result['direction']} {qty}계약 @ {result['exit_price']:.2f}",
+        f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  잔여 {result['remaining']}계약  │ 금일 {_daily['pnl_krw']:+,.0f}원",
+    )
     self.dashboard.update_pnl_metrics(
         self.position.unrealized_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
         _daily["pnl_krw"],

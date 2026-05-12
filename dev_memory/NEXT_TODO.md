@@ -8,6 +8,40 @@
 
 ---
 
+## 2026-05-12 수익 보존 가드 (ProfitGuard) — 검증 항목
+
+### 구현 완료 (17차)
+
+- [DONE 2026-05-12] `strategy/profit_guard.py` — 4-Layer ProfitGuard 핵심 로직 + `ProfitGuardConfig` + `simulate()` 정적 메서드
+- [DONE 2026-05-12] `dashboard/panels/profit_guard_panel.py` — "💰 수익 보존" 탭 (PnL DNA · 설정 · 챔피언-챌린저 비교 · 승급 제안)
+- [DONE 2026-05-12] `main.py` — STEP 7 진입 전 `is_entry_allowed()` 게이트 + `on_trade_close()` + `on_entry()` + `reset_daily()` 연결
+- [DONE 2026-05-12] `dashboard/main_dashboard.py` — "💰 수익 보존" 탭 추가 + `set_profit_guard()` / `refresh_profit_guard()` 어댑터
+
+### ProfitGuard 검증 항목 (실 장 중 필요)
+
+- [V-PG1] L1 Trail 발동 장중 확인
+  - 발동 조건: peak ≥ 200만 + 현재 PnL ≤ peak × (1-0.35)
+  - 확인: SIGNAL.log `[ProfitGuard] 진입 차단: L1-Trail` 로그 + 해당 분 진입 없음
+
+- [V-PG2] L2 등급 게이트 차단 확인
+  - 발동 조건: 수익 구간별 최소 size_mult 미달 (예: 200만+ 구간에서 B등급 시도 시 차단)
+  - 확인: SIGNAL.log `[ProfitGuard] 진입 차단: L2-TierGate` + grade=X 강제 적용
+
+- [V-PG3] L3 오후 리스크 압축 확인
+  - 발동 조건: 13시 이후 + 수익 양수 + 3회 초과 진입 시도
+  - 확인: SIGNAL.log `[ProfitGuard] 진입 차단: L3-AfternoonMode` + 이후 오후 진입 없음
+
+- [V-PG4] L4 수익 보존 CB 2연속 손실 확인
+  - 발동 조건: 일누적 ≥ 150만 + 연속 2회 손실 청산
+  - 확인: SIGNAL.log `[ProfitGuard] 진입 차단: L4-ProfitCB` + 이후 당일 진입 없음
+
+- [V-PG5] 💰 수익 보존 탭 UI 데이터 반영 확인
+  - PnL DNA 막대에 금일 누적 PnL 선이 그려지는지
+  - 챔피언 vs 챌린저 비교 테이블이 `simulate()` 결과로 갱신되는지
+  - 설정 변경(Apply) 후 `config_changed` 신호로 ProfitGuard 파라미터 즉시 반영되는지
+
+---
+
 ## 2026-05-12 챔피언-도전자 시스템 + MicroRegimeClassifier 연결
 
 - [DONE 2026-05-12] `MicroRegimeClassifier` → `main.py` 연결 (ADX 실계산, 5-레짐, 탈진 감지)

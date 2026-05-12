@@ -1983,12 +1983,16 @@ class ExitPanel(QWidget):
 # 패널 5: 진입 관리 패널
 # ────────────────────────────────────────────────────────────
 class EntryPanel(QWidget):
-    sig_reverse_entry_toggled = pyqtSignal(bool)
+    sig_reverse_entry_toggled    = pyqtSignal(bool)
+    sig_manual_entry_requested   = pyqtSignal(str)   # "LONG" or "SHORT"
+    sig_instant_exit_requested   = pyqtSignal()      # 즉시 전량청산
+    sig_auto_mode_changed        = pyqtSignal(bool)  # True=Auto ON, False=Auto OFF
 
     def __init__(self):
         super().__init__()
         self.current_mode = "hybrid"
         self._reverse_entry_enabled = False
+        self._auto_enabled = True
         self._build()
 
     def _build(self):
@@ -1996,12 +2000,20 @@ class EntryPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
 
-        lay.addWidget(mk_label("진입 관리 패널 — 하이브리드 시스템", C['green'], 10, True))
+        lay.addWidget(mk_label("자동 진입관리 패널", C['green'], 10, True))
 
-        # 모드 선택
+        # Auto On/Off + 모드 선택
         mode_lay = QHBoxLayout()
+
+        self.auto_toggle_btn = QPushButton("Auto ON")
+        self.auto_toggle_btn.setCheckable(True)
+        self.auto_toggle_btn.setChecked(True)
+        self.auto_toggle_btn.toggled.connect(self._set_auto_enabled)
+        self._sync_auto_toggle_style()
+        mode_lay.addWidget(self.auto_toggle_btn)
+
         self.mode_btns = {}
-        for mode, label in [("auto","자동 진입"), ("hybrid","하이브리드 (권장)"), ("manual","수동 진입")]:
+        for mode, label in [("auto","A 등급진입"), ("hybrid","B 등급진입"), ("manual","C 등급진입")]:
             btn = QPushButton(label)
             col = C['green'] if mode == "hybrid" else C['text2']
             btn.setStyleSheet(
@@ -2012,6 +2024,7 @@ class EntryPanel(QWidget):
             btn.clicked.connect(lambda checked, m=mode: self._set_mode(m))
             self.mode_btns[mode] = btn
             mode_lay.addWidget(btn)
+
         self.reverse_btn = QPushButton("역방향 진입")
         self.reverse_btn.setCheckable(True)
         self.reverse_btn.setToolTip(
@@ -2024,7 +2037,7 @@ class EntryPanel(QWidget):
         lay.addLayout(mode_lay)
 
         self.mode_desc = mk_label(
-            "하이브리드: 신뢰도 70%+ + 외인 일치 → 자동 / 58~70% → 알림 후 수동",
+            "등급 A(6+개 통과) · B(4~5개) · C(2~3개) · X → 진입 차단",
             C['blue'], 9
         )
         lay.addWidget(self.mode_desc)
@@ -2130,7 +2143,7 @@ class EntryPanel(QWidget):
         lay.addWidget(mk_sep())
 
         # 진입 버튼
-        lay.addWidget(mk_label("진입 실행", C['text2'], 11, True))
+        lay.addWidget(mk_label("수동 진입관리 패널", C['text2'], 11, True))
         self.entry_alert = mk_label("신호 대기 중...", C['text2'], 12)
         self.entry_alert.setStyleSheet(
             f"background:{C['bg3']};border:1px solid {C['border']};"
@@ -2141,7 +2154,7 @@ class EntryPanel(QWidget):
         btn_lay = QHBoxLayout()
         self.buy_btn  = QPushButton("▲ 매수 진입 (Long)")
         self.sell_btn = QPushButton("▼ 매도 진입 (Short)")
-        self.skip_btn = QPushButton("신호 스킵")
+        self.skip_btn = QPushButton("즉시청산")
 
         self.buy_btn.setStyleSheet(
             f"QPushButton{{background:#0D2818;color:{C['green']};"
@@ -2156,9 +2169,13 @@ class EntryPanel(QWidget):
             f"QPushButton:hover{{background:{C['red']};color:#000;}}"
         )
         self.skip_btn.setStyleSheet(
-            f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
-            f"border:1px solid {C['border']};border-radius:4px;padding:7px;}}"
+            f"QPushButton{{background:#2B1A07;color:{C['orange']};"
+            f"border:1px solid {C['orange']};border-radius:4px;padding:7px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:{C['orange']};color:#000;}}"
         )
+        self.buy_btn.clicked.connect(lambda: self.sig_manual_entry_requested.emit("LONG"))
+        self.sell_btn.clicked.connect(lambda: self.sig_manual_entry_requested.emit("SHORT"))
+        self.skip_btn.clicked.connect(self.sig_instant_exit_requested)
         btn_lay.addWidget(self.buy_btn, 2)
         btn_lay.addWidget(self.sell_btn, 2)
         btn_lay.addWidget(self.skip_btn, 1)
@@ -2180,6 +2197,30 @@ class EntryPanel(QWidget):
             f"진입 {trades}회 | 승 {wins} 패 {losses} | 승률 {win_rate} | 손익 {pnl_str}"
         )
         self.stat_label.setStyleSheet(f"color:{pnl_col};font-size:{S.f(11)}px;")
+
+    def _sync_auto_toggle_style(self):
+        on = self._auto_enabled
+        col = C['green'] if on else C['text2']
+        bg  = C['bg2']   if on else C['bg3']
+        bw  = "2px"      if on else "1px"
+        self.auto_toggle_btn.setText("Auto ON" if on else "Auto OFF")
+        self.auto_toggle_btn.setStyleSheet(
+            f"QPushButton{{background:{bg};color:{col};"
+            f"border:{bw} solid {col};border-radius:4px;"
+            f"padding:5px 8px;font-size:{S.f(12)}px;font-weight:bold;}}"
+        )
+
+    def _set_auto_enabled(self, enabled: bool):
+        self._auto_enabled = bool(enabled)
+        self._sync_auto_toggle_style()
+        # 자동 진입관리 버튼 전체 enable/disable
+        for btn in self.mode_btns.values():
+            btn.setEnabled(self._auto_enabled)
+        self.reverse_btn.setEnabled(self._auto_enabled)
+        self.sig_auto_mode_changed.emit(self._auto_enabled)
+
+    def is_auto_enabled(self) -> bool:
+        return self._auto_enabled
 
     def _sync_reverse_button_style(self):
         col = C['orange'] if self._reverse_entry_enabled else C['text2']
@@ -3741,6 +3782,10 @@ class PnlHistoryPanel(QWidget):
         inner.addTab(self.tbl_monthly, "월별")
         lay.addWidget(inner, 1)
 
+    # 날짜/주간/월(0) · 거래(1) · 승(2) · 패(3) · 승률(4) → Fixed 고정폭
+    # 나머지 값 열(5+) → Stretch
+    _NARROW_WIDTHS = {0: 72, 1: 36, 2: 30, 3: 30, 4: 44}
+
     def _make_tbl(self, headers):
         tbl = QTableWidget()
         tbl.setColumnCount(len(headers))
@@ -3750,7 +3795,6 @@ class PnlHistoryPanel(QWidget):
         tbl.verticalHeader().setVisible(False)
         tbl.setShowGrid(True)
         tbl.setSortingEnabled(False)
-        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tbl.horizontalHeader().setHighlightSections(False)
         tbl.setStyleSheet(
             f"QTableWidget{{background:{C['bg']};color:{C['text']};border:none;"
@@ -3762,6 +3806,14 @@ class PnlHistoryPanel(QWidget):
             f"font-size:{S.f(10)}px;font-weight:bold;padding:3px 5px;}}"
             f"QTableWidget::item:selected{{background:{C['bg3']};color:{C['text']};}}"
         )
+        hdr = tbl.horizontalHeader()
+        # 값 열 기본 모드: Stretch
+        hdr.setSectionResizeMode(QHeaderView.Stretch)
+        # 좁은 열(날짜·거래·승·패·승률)은 Fixed 고정폭
+        for col, w in self._NARROW_WIDTHS.items():
+            if col < len(headers):
+                hdr.setSectionResizeMode(col, QHeaderView.Fixed)
+                tbl.setColumnWidth(col, S.p(w))
         return tbl
 
     # ── 셀 팩토리 ──────────────────────────────────────────────
@@ -5396,11 +5448,43 @@ class MireukDashboard(QMainWindow):
 
         # 상태 배지
         self.lbl_regime       = mk_badge("NEUTRAL", C['orange'], "#fff", 11)
+        self.lbl_regime.setToolTip(
+            "매크로 레짐 — 08:50 수집 후 매분 갱신\n"
+            "  RISK_ON  : 위험선호 · 공격적 진입 가능\n"
+            "  NEUTRAL  : 중립 · 기본 전략 유지\n"
+            "  RISK_OFF : 위험회피 · 보수적 운용"
+        )
         self.lbl_micro_regime = mk_badge("혼합",    C['blue'],   "#fff", 11)
+        self.lbl_micro_regime.setToolTip(
+            "미시 레짐 — 1분봉 기반 단기 시장 구조\n"
+            "  추세장 : 방향성 뚜렷 · 모멘텀 전략 유리\n"
+            "  횡보장 : 박스권 · 역추세 전략 유리\n"
+            "  변동장 : ATR 급등 · 포지션 축소\n"
+            "  혼합   : 구조 불명확 · 관망"
+        )
         _cyc_text, _cyc_col = _calc_cycle_badge()
         self.lbl_cycle  = mk_badge(_cyc_text, _cyc_col, "#fff", 11)
+        self.lbl_cycle.setToolTip(
+            "옵션 만기 카운트다운\n"
+            "  위클리 : 매주 목요일 만기\n"
+            "  월간   : 매월 두 번째 목요일 만기\n"
+            "  D-0~D-2 : 만기 근접 → 감마·핀리스크 주의"
+        )
         self.lbl_gamma  = mk_badge("감마스퀴즈", C['orange'], "#fff", 11)
+        self.lbl_gamma.setToolTip(
+            "옵션 감마 포지션 — 마켓메이커 헷지 방향 추정\n"
+            "  감마스퀴즈 : MM 숏감마 · 추세 가속 구간\n"
+            "  감마플립   : 중립선 돌파 · 방향 전환 주의\n"
+            "  중립       : 감마 노출 미미"
+        )
         self.lbl_pos    = mk_badge("FLAT", C['text2'], "#fff", 11)
+        self.lbl_pos.setToolTip(
+            "현재 포지션\n"
+            "  LONG  : 매수 보유 중\n"
+            "  SHORT : 매도 보유 중\n"
+            "  FLAT  : 미보유 (현금)\n"
+            "  15:10 강제 청산 후 FLAT 복귀"
+        )
 
         # ── 우측 시계 블록 ─────────────────────────────────────
         clk_frame = QFrame()
@@ -5463,7 +5547,7 @@ class MireukDashboard(QMainWindow):
         pipe_row.addWidget(self._lbl_pipe_ago)
         clk_lay.addLayout(pipe_row)
 
-        self._pipe_elapsed_s: int = 0            # 마지막 파이프라인 이후 경과초
+        self._pipe_elapsed_s: int = -1           # -1=미실행(대기), 0+=마지막 실행 후 경과초
         self._watchdog_alerted: set = set()    # 이미 발동한 임계값 (60/120/180s)
         self._pipeline_recovery_cb = None      # main.py가 등록하는 복구 콜백
 
@@ -5617,6 +5701,16 @@ class MireukDashboard(QMainWindow):
         if self.challenger_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.challenger_panel), "⚔ 도전자 모니터")
 
+        # 수익 보존 가드 패널
+        try:
+            from dashboard.panels.profit_guard_panel import ProfitGuardPanel as _PGP
+            self.profit_guard_panel = _PGP()
+        except Exception as _pge:
+            logger.warning("[Dashboard] ProfitGuardPanel 로드 실패: %s", _pge)
+            self.profit_guard_panel = None
+        if self.profit_guard_panel is not None:
+            self.mid_tabs.addTab(self._wrap(self.profit_guard_panel), "💰 수익 보존")
+
         ml.addWidget(self.mid_tabs)
 
         # 우측: 5층 로그
@@ -5732,6 +5826,10 @@ class MireukDashboard(QMainWindow):
         self.lbl_elapsed_run.setText(elapsed_str)
 
         # ── 파이프라인 생존 바 ──────────────────────────────────
+        # _pipe_elapsed_s == -1 : 아직 한 번도 실행되지 않은 상태 (대기)
+        if self._pipe_elapsed_s < 0:
+            return  # "── 대기" 텍스트·빈 바 유지, 워치독 미발동
+
         self._pipe_elapsed_s += 1
         ps = self._pipe_elapsed_s
 
@@ -5812,9 +5910,12 @@ class DashboardAdapter:
         self.btn_save_account = self._win.btn_save_account
         self.sig_position_restore = self._win.account_info_panel.sig_position_restore
         self.sig_balance_refresh_requested = self._win.account_info_panel.sig_balance_refresh_requested
-        self.sig_reverse_entry_toggled = self._win.entry_panel.sig_reverse_entry_toggled
+        self.sig_reverse_entry_toggled    = self._win.entry_panel.sig_reverse_entry_toggled
+        self.sig_manual_entry_requested   = self._win.entry_panel.sig_manual_entry_requested
+        self.sig_instant_exit_requested   = self._win.entry_panel.sig_instant_exit_requested
+        self.sig_auto_mode_changed        = self._win.entry_panel.sig_auto_mode_changed
         self.sig_tp1_protect_mode_changed = self._win.exit_panel.sig_tp1_protect_mode_changed
-        self.sig_manual_exit_requested = self._win.exit_panel.sig_manual_exit_requested
+        self.sig_manual_exit_requested    = self._win.exit_panel.sig_manual_exit_requested
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
@@ -5979,6 +6080,9 @@ class DashboardAdapter:
     def get_entry_mode(self) -> str:
         return self._win.entry_panel.get_entry_mode()
 
+    def is_auto_enabled(self) -> bool:
+        return self._win.entry_panel.is_auto_enabled()
+
     def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 갱신"""
         self._win.entry_panel.update_stats(trades, wins, pnl_pts)
@@ -6138,6 +6242,21 @@ class DashboardAdapter:
             if promotion_manager is not None:
                 panel._promo = promotion_manager
             panel.refresh()
+
+    def set_profit_guard(self, guard):
+        """수익 보존 가드 인스턴스 주입 (main.py 초기화 후 호출)"""
+        panel = getattr(self._win, "profit_guard_panel", None)
+        if panel is not None:
+            panel.set_profit_guard(guard)
+
+    def refresh_profit_guard(self, daily_pnl_krw: float, today_trades: list):
+        """매분 파이프라인 완료 후 수익 가드 패널 갱신."""
+        panel = getattr(self._win, "profit_guard_panel", None)
+        if panel is not None:
+            try:
+                panel.refresh(daily_pnl_krw, today_trades)
+            except Exception:
+                pass
 
 
 # ────────────────────────────────────────────────────────────

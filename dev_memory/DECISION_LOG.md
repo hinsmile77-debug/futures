@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-05-12 (17차 — 4-Layer 수익 보존 가드 구현)
+
+### [D42] 수익 보존을 위한 4-Layer 독립 가드 아키텍처 채택
+**Decision**: 기존 Circuit Breaker와 별도로 `ProfitGuard` 클래스를 신설한다. L1(트레일링 가드)·L2(등급 게이트)·L3(오후 모드)·L4(수익 보존 CB) 4개 레이어가 독립적으로 작동하며 AND 조건으로 모두 통과해야 진입을 허용한다.  
+**Reason**: 기존 CB는 손실 방어 목적으로 설계되어 이익 보존 개념이 없다. 이익이 확보된 상태에서는 새로운 기준(피크 대비 하락율, 오후 진입 횟수, 연속 손실)으로 포지션 운영을 전환해야 한다.  
+**Key design**: `is_entry_allowed(daily_pnl_krw, size_mult, now)` → `(bool, reason)` 단일 인터페이스. 레이어별 내부 상태(`peak_pnl`, `is_halted`, `_afternoon_count`, `_consec_loss`)는 각 _Layer 객체에 캡슐화.
+
+### [D43] 챔피언-챌린저 비교에 정적 시뮬레이션(simulate()) 활용
+**Decision**: `ProfitGuard.simulate(trades, cfg)` 정적 메서드를 통해 실제 거래 내역을 재시뮬레이션한다. 챔피언(가드 없음)과 챌린저(가드 적용)의 총손익·MDD·차단 거래를 동일 데이터로 비교한다.  
+**Reason**: 실시간 Shadow 실행 없이도 오늘 하루치 거래로 즉시 개선 효과를 정량화할 수 있다. 파라미터(trail_ratio·활성화 임계) 변경 시 시뮬레이션을 재실행하면 설정의 민감도를 직관적으로 비교 가능.  
+**Caveat**: 시뮬레이션은 차단된 이후 거래가 발생하지 않는다고 가정 (단순 누적 PnL 비교). 실제 시장 반응(차단 후 추세 지속 여부)은 반영 불가.
+
+### [D44] PnL DNA 시각화 위젯 — 커스텀 paintEvent 기반
+**Decision**: `PnlDnaBar(QWidget)`를 신설하여 `paintEvent()`에서 직접 그린다. 피크 라인(금색 점선)·트레일 바닥선(주황 점선)·누적 PnL 선(청록)·제로 기준선·양/음 배경 영역을 레이어드 렌더링한다.  
+**Reason**: PyQtChart 없이 Python 3.7 32-bit 환경에서 실행 가능해야 한다. 표준 `QPainter` 만으로 충분하며 외부 의존성 0.  
+**Rendering order**: 배경(양/음 zone) → 제로선 → 트레일 바닥선 → 피크 라인 → PnL 선 → 레이블(현재·피크·바닥)
+
+---
+
 ## 2026-05-12 (16차 — 경고 등급 재분류 2단계)
 
 ### [D40] 반복성 진단 로그는 WARNING이 아니라 레이트리밋 INFO로 관리한다
