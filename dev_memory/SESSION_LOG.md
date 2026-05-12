@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-05-12 (19차 — 수익보존 탭 설정값 재시작 영속화)
+
+**Work**
+
+수익보존 탭 하단 설정값을 변경 후 `적용`해도 재시작 시 기본값으로 리셋되던 문제를 수정했다.
+
+### 버그: ProfitGuard 설정이 런타임만 반영되고 디스크 저장이 없었음
+
+**파일**: `dashboard/panels/profit_guard_panel.py`
+
+**증상**: `✅ 적용` 클릭 직후에는 값이 반영되지만, 프로그램 재시작 시 L1~L4 값이 기본값으로 복귀.
+
+**원인**:
+- `_on_config_changed()`가 `guard.update_config(cfg)`만 호출하고 영속 저장을 하지 않음
+- 시작 시 guard 주입(`set_profit_guard`)은 메모리 기본 config를 그대로 사용
+
+**수정**:
+- 저장 파일 경로 상수 추가: `data/profit_guard_prefs.json`
+- `Apply` 시 `_save_cfg_to_disk(cfg)` 호출
+- 패널 초기화 시 `_restore_settings_ui_from_disk()` 호출로 UI 선반영
+- `set_profit_guard()`에서 디스크 설정 우선 로드 후 guard에 `update_config()` 적용
+- 로드 실패/파일 없음은 기존 기본값으로 안전 폴백
+
+### 구현 상세
+
+- `import json`, `import os` 추가
+- `_save_cfg_to_disk()` / `_load_cfg_from_disk()` / `_restore_settings_ui_from_disk()` 메서드 신설
+- `ProfitGuardConfig.to_dict()` 포맷을 그대로 사용해 버전 포함 JSON 저장 (`version: 1`)
+- `profit_tiers`는 list/tuple 길이 검증 후 `(threshold, min_mult, max_qty)`로 파싱
+
+### 검증
+
+- `get_errors` 기준 `dashboard/panels/profit_guard_panel.py` 에 새 오류 없음
+
+---
+
 ## 2026-05-12 (18차 — 자동 로그인 버그 3종 수정 + UI 종목 영속성 + 미니선물 계약 스펙 동기화 + ProfitGuard 크래시 수정)
 
 **Work**

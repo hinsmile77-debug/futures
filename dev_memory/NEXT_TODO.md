@@ -39,6 +39,15 @@
   - 현재는 저장된 `symbol_code` 가 목록에 없으면 해당 시장 첫 종목으로 fallback
   - 근월/차월 의미 유지 정책이 필요한지 결정
 
+### 19차 구현 완료 / 후속
+
+- [DONE 2026-05-12] `dashboard/panels/profit_guard_panel.py` — 수익보존 탭 Apply 설정값 영속화 (`data/profit_guard_prefs.json` 저장/복원)
+- [NEXT 2026-05-13] 수익보존 탭 재시작 복원 실운영 검증
+  - 절차: L1/L2/L3/L4 값 변경 → `적용` → 프로그램 완전 종료/재실행
+  - 확인: 모든 값이 직전 저장값으로 복원되고 기본값으로 리셋되지 않는지 확인
+- [NEXT 2026-05-13] `data/profit_guard_prefs.json` 운영 정책 확정
+  - 항목: 저장 파일 Git 추적 제외 여부(.gitignore)와 초기값 재생성 정책
+
 ---
 
 ## 2026-05-12 수익 보존 가드 (ProfitGuard) — 검증 항목

@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-05-12 (19차 — 수익보존 탭 설정값 재시작 영속화)
+
+### [D47] ProfitGuard 파라미터는 UI 상태와 분리된 전용 prefs 파일로 영속화한다
+**Decision**: 수익보존 탭 L1~L4 파라미터는 `data/profit_guard_prefs.json` 에 별도 저장한다. 저장 시점은 `Apply` 이벤트로 고정하고, 런타임 guard 주입 시 디스크 설정을 우선 적용한다.  
+**Reason**: ProfitGuard 설정은 거래 리스크 정책이므로, 세션 재시작마다 기본값으로 복원되면 운영 일관성이 무너진다. 또한 `session_state.json`은 런타임 상태 중심 파일이라 UI/리스크 파라미터를 혼합하면 관심사가 흐려진다.
+
+### [B69] 수익보존 탭 Apply 설정이 재시작 후 기본값으로 리셋됨
+**File**: `dashboard/panels/profit_guard_panel.py`  
+**Symptom**: 사용자가 수익보존 탭 하단 값을 변경 후 `✅ 적용`해도 재시작 시 기본값으로 복귀.  
+**Root cause**: `_on_config_changed()`에서 `guard.update_config(cfg)`만 수행하고 파일 저장 로직이 없어 런타임 메모리 값만 변경됨. 다음 시작 시 `set_profit_guard()`는 `ProfitGuard()` 기본 config를 그대로 로드.  
+**Fix**: `_save_cfg_to_disk()` / `_load_cfg_from_disk()` / `_restore_settings_ui_from_disk()` 추가, Apply 시 저장, 패널 초기화 및 guard 주입 시 저장값 우선 복원.
+
+---
+
 ## 2026-05-12 (18차 — 자동 로그인 버그 수정 + UI 영속성 + ProfitGuard 크래시)
 
 ### [D46] 계약 스펙 판정은 최종 UI 선택 종목코드에서 단일 소스로 결정한다

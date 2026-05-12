@@ -13,7 +13,9 @@
 └────────────────────────┴────────────────────────────────────────┘
 """
 import datetime
+import json
 import logging
+import os
 from typing import Optional, List, TYPE_CHECKING
 
 from PyQt5.QtWidgets import (
@@ -30,6 +32,10 @@ if TYPE_CHECKING:
     from strategy.profit_guard import ProfitGuard, ProfitGuardConfig
 
 logger = logging.getLogger("SYSTEM")
+
+_PROFIT_GUARD_PREFS_FILE = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "data", "profit_guard_prefs.json")
+)
 
 # ── 색상 팔레트 ───────────────────────────────────────────────────
 C = {
@@ -787,6 +793,7 @@ class ProfitGuardPanel(QWidget):
         self._guard: Optional["ProfitGuard"] = None
         self._today_trades: list = []
         self._setup()
+        self._restore_settings_ui_from_disk()
         self._start_timer()
 
     def _setup(self):
@@ -841,8 +848,16 @@ class ProfitGuardPanel(QWidget):
     # ── 외부 연결 ─────────────────────────────────────────────────
     def set_profit_guard(self, guard):
         self._guard = guard
-        if guard:
-            self._settings.load_config(guard.cfg)
+        if not guard:
+            return
+
+        cfg = self._load_cfg_from_disk()
+        if cfg is None:
+            cfg = guard.cfg
+        else:
+            guard.update_config(cfg)
+
+        self._settings.load_config(cfg)
 
     @staticmethod
     def _rows_to_dicts(rows) -> list:
@@ -886,9 +901,66 @@ class ProfitGuardPanel(QWidget):
         try:
             if self._guard:
                 self._guard.update_config(cfg)
+            self._save_cfg_to_disk(cfg)
             self._run_simulation()
         except Exception as e:
             logger.warning("[ProfitGuardPanel] 설정 적용 오류: %s", e)
+
+    def _save_cfg_to_disk(self, cfg):
+        try:
+            os.makedirs(os.path.dirname(_PROFIT_GUARD_PREFS_FILE), exist_ok=True)
+            payload = {
+                "version": 1,
+                "config": cfg.to_dict(),
+            }
+            with open(_PROFIT_GUARD_PREFS_FILE, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning("[ProfitGuardPanel] 설정 저장 실패: %s", e)
+
+    def _load_cfg_from_disk(self):
+        try:
+            if not os.path.exists(_PROFIT_GUARD_PREFS_FILE):
+                return None
+
+            with open(_PROFIT_GUARD_PREFS_FILE, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+            raw_cfg = payload.get("config", payload)
+            from strategy.profit_guard import ProfitGuardConfig
+
+            cfg = ProfitGuardConfig()
+            cfg.trail_activation_krw = float(raw_cfg.get("trail_activation_krw", cfg.trail_activation_krw))
+            cfg.trail_ratio = float(raw_cfg.get("trail_ratio", cfg.trail_ratio))
+            cfg.afternoon_enabled = bool(raw_cfg.get("afternoon_enabled", cfg.afternoon_enabled))
+            cfg.afternoon_cutoff_hour = int(raw_cfg.get("afternoon_cutoff_hour", cfg.afternoon_cutoff_hour))
+            cfg.afternoon_min_pnl_krw = float(raw_cfg.get("afternoon_min_pnl_krw", cfg.afternoon_min_pnl_krw))
+            cfg.afternoon_max_trades = int(raw_cfg.get("afternoon_max_trades", cfg.afternoon_max_trades))
+            cfg.afternoon_min_rr = float(raw_cfg.get("afternoon_min_rr", cfg.afternoon_min_rr))
+            cfg.profit_cb_enabled = bool(raw_cfg.get("profit_cb_enabled", cfg.profit_cb_enabled))
+            cfg.profit_cb_min_pnl_krw = float(raw_cfg.get("profit_cb_min_pnl_krw", cfg.profit_cb_min_pnl_krw))
+            cfg.profit_cb_consec_loss = int(raw_cfg.get("profit_cb_consec_loss", cfg.profit_cb_consec_loss))
+
+            parsed_tiers = []
+            for tier in raw_cfg.get("profit_tiers", []):
+                if not isinstance(tier, (list, tuple)) or len(tier) < 3:
+                    continue
+                threshold = float(tier[0])
+                min_mult = None if tier[1] is None else float(tier[1])
+                max_qty = None if tier[2] is None else int(tier[2])
+                parsed_tiers.append((threshold, min_mult, max_qty))
+            if parsed_tiers:
+                cfg.profit_tiers = parsed_tiers
+
+            return cfg
+        except Exception as e:
+            logger.warning("[ProfitGuardPanel] 설정 복원 실패: %s", e)
+            return None
+
+    def _restore_settings_ui_from_disk(self):
+        cfg = self._load_cfg_from_disk()
+        if cfg is not None:
+            self._settings.load_config(cfg)
 
     def _run_simulation(self):
         """금일 거래에 현재 설정을 소급 시뮬레이션."""
