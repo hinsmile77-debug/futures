@@ -72,6 +72,10 @@ class CybosInvestorData:
         self._program_reason = "not fetched"
         self._option_flow_reason = "Cybos option investor-flow mapping pending"
 
+    def set_futures_code(self, code: str) -> None:
+        """매매 종목코드 갱신 — Cybos는 API 내부에서 코드를 관리하므로 현재 no-op."""
+        pass
+
     def fetch_all(self) -> bool:
         futures_ok = self.fetch_futures_investor()
         program_ok = self.fetch_program_investor()

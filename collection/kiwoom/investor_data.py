@@ -60,6 +60,7 @@ class InvestorData:
 
     def __init__(self, kiwoom_api=None):
         self._api = kiwoom_api
+        self._futures_code: str = "101Q9000"  # connect_broker에서 set_futures_code()로 갱신
 
         # 당일 누적 수급 캐시
         self._futures: Dict[str, int] = {k: 0 for k in INVESTOR_KEYS}
@@ -75,6 +76,10 @@ class InvestorData:
         self._last_fetch: Optional[datetime.datetime] = None
         self._fetch_count = 0
         self._program_investor_discovered = False
+
+    def set_futures_code(self, code: str) -> None:
+        """매매 종목코드 갱신 — connect_broker에서 호출."""
+        self._futures_code = str(code).strip()
 
     # ── 데이터 수집 ───────────────────────────────────────────────
     def fetch_all(self) -> bool:
@@ -107,7 +112,7 @@ class InvestorData:
                 rq_name="investor_futures",
                 inputs={
                     "일자":   datetime.date.today().strftime("%Y%m%d"),
-                    "종목코드": "101Q9000",
+                    "종목코드": self._futures_code,
                 },
                 screen_no="2010",
             )

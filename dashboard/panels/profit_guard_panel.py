@@ -844,10 +844,21 @@ class ProfitGuardPanel(QWidget):
         if guard:
             self._settings.load_config(guard.cfg)
 
+    @staticmethod
+    def _rows_to_dicts(rows) -> list:
+        """sqlite3.Row / 혼합 리스트를 dict 리스트로 변환."""
+        result = []
+        for r in (rows or []):
+            try:
+                result.append(dict(r) if not isinstance(r, dict) else r)
+            except Exception:
+                pass
+        return result
+
     # ── 갱신 ─────────────────────────────────────────────────────
     def refresh(self, daily_pnl_krw: float, today_trades: list):
         """매분 파이프라인 완료 후 호출."""
-        self._today_trades = today_trades or []
+        self._today_trades = self._rows_to_dicts(today_trades)
         if self._guard is None:
             return
         status = self._guard.status_dict(daily_pnl_krw)
@@ -865,24 +876,34 @@ class ProfitGuardPanel(QWidget):
             return
         try:
             from utils.db_utils import fetch_today_trades
-            trades = fetch_today_trades() or []
+            trades = self._rows_to_dicts(fetch_today_trades())
             daily_pnl = sum(t.get("pnl_krw", 0) for t in trades)
             self.refresh(daily_pnl, trades)
         except Exception:
             pass
 
     def _on_config_changed(self, cfg):
-        if self._guard:
-            self._guard.update_config(cfg)
-        self._run_simulation()
+        try:
+            if self._guard:
+                self._guard.update_config(cfg)
+            self._run_simulation()
+        except Exception as e:
+            logger.warning("[ProfitGuardPanel] 설정 적용 오류: %s", e)
 
     def _run_simulation(self):
         """금일 거래에 현재 설정을 소급 시뮬레이션."""
+        try:
+            self._run_simulation_inner()
+        except Exception as e:
+            logger.warning("[ProfitGuardPanel] 시뮬레이션 오류: %s", e)
+            self._compare.show_no_data()
+
+    def _run_simulation_inner(self):
         from strategy.profit_guard import ProfitGuard
         if not self._today_trades:
             try:
                 from utils.db_utils import fetch_today_trades
-                self._today_trades = fetch_today_trades() or []
+                self._today_trades = self._rows_to_dicts(fetch_today_trades())
             except Exception:
                 self._compare.show_no_data()
                 return

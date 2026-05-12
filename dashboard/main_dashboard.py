@@ -12,6 +12,7 @@
   7. 5층 로그 시스템
 """
 
+import json
 import os
 import logging
 import subprocess
@@ -38,7 +39,7 @@ from PyQt5.QtGui import (
 )
 
 from config.constants import FUTURES_PT_VALUE
-from config.settings import RAW_DATA_DB
+from config.settings import RAW_DATA_DB, DATA_DIR
 from utils.db_utils import fetch_today_trades, fetchall
 
 TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
@@ -5383,6 +5384,42 @@ class MinuteChartDialog(QDialog):
         return self._chart._coerce_dt(value)
 
 
+_MARKET_SYMBOLS = {
+    "KOSPI200 선물": [
+        "A0166000  F 202606  (근월)",   # 2026년 6월 만기 — 근월물
+        "A0169000  F 202609  (차월)",   # 2026년 9월 만기 — 차월물
+    ],
+    "KOSPI200 미니선물": [
+        "A0565000  미니 F 202606  (근월)",  # 2026년 6월 만기 — 근월물
+        "A0566000  미니 F 202609  (차월)",  # 2026년 9월 만기 — 차월물
+    ],
+}
+
+_UI_PREFS_FILE = os.path.join(DATA_DIR, "ui_prefs.json")
+
+
+def _extract_symbol_code(symbol_text: str) -> str:
+    text = str(symbol_text or "").strip()
+    parts = text.split(None, 1)
+    return parts[0] if parts else ""
+
+
+def _find_symbol_text(market: str, *, symbol_code: str = "", symbol_text: str = "") -> str:
+    symbols = _MARKET_SYMBOLS.get(market, [])
+    normalized_code = str(symbol_code or "").strip()
+    normalized_text = str(symbol_text or "").strip()
+
+    if normalized_code:
+        for item in symbols:
+            if _extract_symbol_code(item) == normalized_code:
+                return item
+
+    if normalized_text and normalized_text in symbols:
+        return normalized_text
+
+    return symbols[0] if symbols else ""
+
+
 class MireukDashboard(QMainWindow):
     """미륵이 v7.0 풀 대시보드"""
 
@@ -5621,8 +5658,57 @@ class MireukDashboard(QMainWindow):
         res_box.addWidget(self.lbl_scale)
         res_box.addWidget(self.lbl_commit)
 
+        # ── 오른쪽 컬럼: 현재가(상단) + 종목코드 + 시장구분 ─────────
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(S.p(8), 0, 0, 0)
+        right_col.setSpacing(S.p(4))
+        price_box.addStretch()
+        right_col.addLayout(price_box)
+        sym_row = QHBoxLayout()
+        sym_row.setContentsMargins(0, 0, 0, 0)
+        sym_row.setSpacing(S.p(4))
+        lbl_sym = mk_label("종목코드:", C['text2'], 9, align=Qt.AlignRight)
+        lbl_sym.setFixedWidth(header_label_w)
+        self.cmb_symbol = QComboBox()
+        self.cmb_symbol.setFixedWidth(header_combo_w)
+        self.cmb_symbol.setStyleSheet(
+            f"QComboBox{{background:{C['bg2']};color:{C['text']};"
+            f"border:1px solid {C['border']};border-radius:4px;"
+            f"padding:2px 6px;font-size:{S.f(9)}px;}}"
+            f"QComboBox QAbstractItemView{{background:{C['bg2']};color:{C['text']};"
+            f"selection-background-color:{C['blue']};}}"
+        )
+        self.cmb_symbol.addItems(_MARKET_SYMBOLS["KOSPI200 선물"])
+        self.cmb_symbol.currentTextChanged.connect(self._on_symbol_changed)
+        sym_row.addWidget(lbl_sym)
+        sym_row.addWidget(self.cmb_symbol)
+        sym_row.addStretch()
+        right_col.addLayout(sym_row)
+        mkt_row = QHBoxLayout()
+        mkt_row.setContentsMargins(0, 0, 0, 0)
+        mkt_row.setSpacing(S.p(4))
+        lbl_mkt = mk_label("시장구분:", C['text2'], 9, align=Qt.AlignRight)
+        lbl_mkt.setFixedWidth(header_label_w)
+        self.cmb_market = QComboBox()
+        self.cmb_market.setFixedWidth(header_combo_w)
+        self.cmb_market.setStyleSheet(
+            f"QComboBox{{background:{C['bg2']};color:{C['text']};"
+            f"border:1px solid {C['border']};border-radius:4px;"
+            f"padding:2px 6px;font-size:{S.f(9)}px;}}"
+            f"QComboBox QAbstractItemView{{background:{C['bg2']};color:{C['text']};"
+            f"selection-background-color:{C['blue']};}}"
+        )
+        self.cmb_market.addItems(list(_MARKET_SYMBOLS.keys()))
+        self.cmb_market.currentTextChanged.connect(self._on_market_changed)
+        mkt_row.addWidget(lbl_mkt)
+        mkt_row.addWidget(self.cmb_market)
+        mkt_row.addStretch()
+        right_col.addLayout(mkt_row)
+        self._update_symbol_label(self.cmb_symbol.currentText())
+        self._restore_ui_prefs()
+
         header.addLayout(title_box)
-        header.addLayout(price_box)
+        header.addLayout(right_col)
         header.addStretch()
         for w in [self.lbl_regime, self.lbl_micro_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos]:
             header.addWidget(w)
@@ -5810,6 +5896,78 @@ class MireukDashboard(QMainWindow):
     # ── 시뮬레이션 타이머 ──────────────────────────────────────
     # ── 헤더 시계·위클리 배지 갱신 ────────────────────────────
 
+    def _update_symbol_label(self, text: str) -> None:
+        parts = text.strip().split(None, 1)
+        name = parts[1] if len(parts) > 1 else text
+        self.lbl_futures_code.setText(name)
+
+    def _on_symbol_changed(self, text: str):
+        """종목코드 선택 변경 → 상단 종목명 라벨 갱신."""
+        self._update_symbol_label(text)
+        self._save_ui_prefs()
+
+    def _on_market_changed(self, market: str):
+        """시장구분 선택 변경 → 종목코드 콤보 갱신 + 첫 종목명 반영."""
+        symbols = _MARKET_SYMBOLS.get(market, [])
+        self.cmb_symbol.blockSignals(True)
+        self.cmb_symbol.clear()
+        self.cmb_symbol.addItems(symbols)
+        self.cmb_symbol.blockSignals(False)
+        if symbols:
+            self._on_symbol_changed(symbols[0])
+
+    def _save_ui_prefs(self):
+        """현재 종목코드·시장구분을 ui_prefs.json에 저장."""
+        try:
+            symbol_text = self.cmb_symbol.currentText()
+            prefs = {
+                "version": 2,
+                "market": self.cmb_market.currentText(),
+                "symbol_code": _extract_symbol_code(symbol_text),
+                "symbol_text": symbol_text,
+            }
+            with open(_UI_PREFS_FILE, "w", encoding="utf-8") as f:
+                json.dump(prefs, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _restore_ui_prefs(self):
+        """ui_prefs.json에서 마지막 선택값을 복원."""
+        try:
+            if not os.path.exists(_UI_PREFS_FILE):
+                return
+            with open(_UI_PREFS_FILE, "r", encoding="utf-8") as f:
+                prefs = json.load(f)
+            market = prefs.get("market", "")
+            symbol_code = prefs.get("symbol_code", "")
+            symbol_text = prefs.get("symbol_text", prefs.get("symbol", ""))
+            if market not in _MARKET_SYMBOLS:
+                market = self.cmb_market.currentText()
+
+            symbols = _MARKET_SYMBOLS.get(market, [])
+            selected_symbol = _find_symbol_text(
+                market,
+                symbol_code=symbol_code,
+                symbol_text=symbol_text,
+            )
+
+            self.cmb_market.blockSignals(True)
+            self.cmb_market.setCurrentText(market)
+            self.cmb_market.blockSignals(False)
+
+            self.cmb_symbol.blockSignals(True)
+            self.cmb_symbol.clear()
+            self.cmb_symbol.addItems(symbols)
+            if selected_symbol:
+                self.cmb_symbol.blockSignals(True)
+                self.cmb_symbol.setCurrentText(selected_symbol)
+            self.cmb_symbol.blockSignals(False)
+
+            if selected_symbol:
+                self._on_symbol_changed(selected_symbol)
+        except Exception:
+            pass
+
     def _tick_header(self):
         """1초마다 헤더 가동 경과시간 + 파이프라인 생존 바 갱신."""
         if hasattr(self, "account_info_panel"):
@@ -5954,6 +6112,14 @@ class DashboardAdapter:
 
     def get_selected_account(self) -> str:
         return self._win.cmb_account.currentText().strip()
+
+    def get_selected_symbol(self) -> str:
+        """선택된 종목코드 반환 (예: 'A0166000  F 202606' → 'A0166000')."""
+        return _extract_symbol_code(self._win.cmb_symbol.currentText())
+
+    def get_selected_market(self) -> str:
+        """선택된 시장구분 반환 (예: '한국장')."""
+        return self._win.cmb_market.currentText().strip()
 
     def update_account_balance(self, summary: dict, rows, quiet: bool = False, mark_fresh: bool = True, source: str = "broker", balance_active: bool = True):
         if not quiet:

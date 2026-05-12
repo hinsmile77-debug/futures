@@ -49,10 +49,12 @@ class EntryManager:
         position_tracker,  # PositionTracker
         kiwoom_api=None,   # KiwoomAPI (None = 시뮬레이션)
         account_balance: float = 50_000_000.0,
+        futures_code: str = "",
     ):
         self._tracker       = position_tracker
         self._api           = kiwoom_api
         self._balance       = account_balance
+        self._futures_code  = futures_code
 
         self._checklist     = EntryChecklist()
         self._router        = TimeStrategyRouter()
@@ -61,6 +63,10 @@ class EntryManager:
 
         # 일일 통계
         self._daily_entries = 0
+
+    def set_futures_code(self, code: str) -> None:
+        """매매 종목코드 갱신."""
+        self._futures_code = str(code).strip()
 
     # ── 매 분봉 메인 호출 ─────────────────────────────────────────
     def try_entry(
@@ -233,7 +239,7 @@ class EntryManager:
                 screen_no  = "1000",
                 acc_no     = _secrets.ACCOUNT_NO,
                 order_type = 1,    # 신규매수
-                code       = "101Q9000",   # 코스피200 선물 근월물
+                code       = self._futures_code or "101Q9000",
                 qty        = instr["qty"],
                 price      = 0,    # 시장가
                 hoga_gb    = "03", # 시장가

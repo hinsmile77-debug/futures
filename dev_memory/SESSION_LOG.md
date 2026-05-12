@@ -4,6 +4,61 @@
 
 ---
 
+## 2026-05-12 (18차 — 자동 로그인 버그 3종 수정 + UI 종목 영속성 + ProfitGuard 크래시 수정)
+
+**Work**
+
+오늘 장 운영 후 발견된 버그 4건을 수정하고 세션 마무리했다.
+
+### 버그 1: `cybos_autologin.py` — `sys.exit(0)` 조기 종료
+
+**파일**: `scripts/cybos_autologin.py` line 635
+
+**증상**: `_handle_mock_select_dialog()` 내 모의투자 팝업 처리 후 `sys.exit(0)` 호출로 STEP 5(연결 대기 루프)가 실행되지 않아 BAT 파일에서 `[ERROR] Auto-login failed.` 출력.
+
+**수정**: `sys.exit(0)` → `return True` 로 변경. STEP 5가 정상 실행되어 `[OK] CybosPlus 연결 성공 (ServerType=1)` 출력.
+
+### 버그 2: `start_mireuk.bat` — `%ERRORLEVEL%` 지연 확장 버그
+
+**파일**: `start_mireuk.bat` line 113
+
+**증상**: Python 자동 로그인 성공 후에도 `[ERROR] Auto-login failed.` 가 계속 출력됨.
+
+**원인**: Windows CMD `IF (...) IF %ERRORLEVEL% NEQ 0` 구조에서 `%`는 파싱 시점에 확장되어 외부 `IF`의 조건값(1)이 내부 `IF`에 고정됨. `IsConnect=0` 분기에서 autologin을 실행해도 내부 `IF`는 항상 `1 NEQ 0 = true`.
+
+**수정**: `IF %ERRORLEVEL% NEQ 0` → `IF !ERRORLEVEL! NEQ 0` (지연 확장, `SETLOCAL EnableDelayedExpansion` 이미 선언됨).
+
+### 버그 3: Dashboard 종목코드·시장구분 선택 미영속
+
+**파일**: `dashboard/main_dashboard.py`
+
+**증상**: 프로그램 재시작 시 종목코드 콤보박스가 기본값으로 초기화됨.
+
+**수정**: `data/ui_prefs.json`에 선택값 저장/복원. `_save_ui_prefs()` / `_restore_ui_prefs()` 메서드 추가. `blockSignals(True/False)`로 복원 중 피드백 루프 방지.
+
+**세부 변경**:
+- `import json` 추가
+- `from config.settings import DATA_DIR` 추가
+- `_UI_PREFS_FILE = os.path.join(DATA_DIR, "ui_prefs.json")` 상수 추가
+- `_on_symbol_changed()` 끝에 `self._save_ui_prefs()` 호출
+- `_build_ui()` 콤보 설정 완료 후 `self._restore_ui_prefs()` 호출
+
+### 버그 4: ProfitGuard "적용" 버튼 클릭 시 프로그램 종료
+
+**파일**: `dashboard/panels/profit_guard_panel.py`
+
+**증상**: Apply 버튼 클릭 후 프로그램이 즉시 종료됨.
+
+**원인**: `fetch_today_trades()`가 `sqlite3.Row` 객체를 반환하는데, Python 3.7의 `sqlite3.Row`는 `.get()` 메서드를 지원하지 않음. `_run_simulation()` 내부에서 `AttributeError` 발생 → PyQt5 signal-slot 예외 전파 → `QApplication` 종료.
+
+**수정**:
+- `_rows_to_dicts()` static method 추가 — `sqlite3.Row` → `dict` 변환 (행별 try/except)
+- `refresh()`, `_auto_refresh()` 에서 `self._today_trades` 저장 전 변환
+- `_run_simulation()` → `_run_simulation_inner()` 분리, 외부 try/except로 래핑
+- `_on_config_changed()` 전체 try/except로 래핑
+
+---
+
 ## 2026-05-12 (17차 — 4-Layer 수익 보존 가드 (ProfitGuard) 구현 + 💰 대시보드 탭)
 
 **Work**

@@ -45,7 +45,7 @@ CYBOS_ARGS       = "/prj:cp"
 CRED_TARGET      = "cybosplus"   # cmdkey /add: 에서 지정한 이름
 MOCK_MODE        = True          # True=모의투자, False=실투자
 CONNECT_TIMEOUT  = 90            # 로그인 후 연결 대기 최대 초
-MOCK_POPUP_MIN_WAIT = 10         # 로그인 클릭 후 모의투자 선택 팝업 최소 대기 초
+MOCK_POPUP_MIN_WAIT = 20         # 로그인 클릭 후 모의투자 선택 팝업 최소 대기 초
 # 로그인 자동화 순서:
 # 1. 비밀번호 입력칸 클릭
 # 2. 비밀번호 입력
@@ -631,8 +631,8 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
         send_keys("{ENTER}")
         print("[INFO] 모의투자 팝업 최소 대기 후 Enter 입력")
         time.sleep(3)
-        print("[INFO] 3초 대기 완료 — 스크립트 종료")
-        sys.exit(0)
+        print("[INFO] 3초 대기 완료 — 연결 대기로 진행")
+        return True
 
     for tick in range(timeout):
         if _is_connected():

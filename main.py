@@ -54,7 +54,7 @@ from config.settings import (
     TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
 )
-from config.constants import FUTURES_PT_VALUE
+from config.constants import FUTURES_PT_VALUE, get_contract_spec
 from config import secrets as _secrets
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -120,7 +120,8 @@ class TradingSystem:
         self.feature_builder    = FeatureBuilder()
         self.model             = MultiHorizonModel()
         self.ensemble          = EnsembleDecision()
-        self.position          = PositionTracker()
+        self._pt_value         = FUTURES_PT_VALUE   # connect_broker에서 종목코드 확정 후 갱신
+        self.position          = PositionTracker(pt_value=self._pt_value)
         self.checklist         = EntryChecklist()
         self.sizer             = PositionSizer(account_balance=100_000_000)  # 기본 1억
         self.kelly             = AdaptiveKelly()
@@ -799,9 +800,24 @@ class TradingSystem:
 
         # A0166000: OPT50029 TR 및 SetRealReg 모두 동일 코드 사용
         # (모의투자 서버에서도 A0166000으로 SetRealReg 등록 시 틱 수신 확인됨)
-        code = self.broker.get_nearest_futures_code()
-        print(f"[DBG CK-3] 근월물 코드={code} 서버={server_label}", flush=True)
+        broker_code = self.broker.get_nearest_futures_code()
+        try:
+            ui_code = str(self.dashboard.get_selected_symbol() or "").strip()
+        except Exception:
+            ui_code = ""
+        code = ui_code if ui_code else broker_code
+        print(f"[DBG CK-3] 근월물 코드={code} (broker={broker_code} ui={ui_code!r}) 서버={server_label}", flush=True)
         self._futures_code = code
+        # 계약 스펙 확정 (일반선물 250,000 / 미니선물 50,000)
+        _spec = get_contract_spec(code)
+        self._pt_value = _spec["pt_value"]
+        self.position.set_pt_value(self._pt_value)
+        if hasattr(self, "exit_manager"):
+            self.exit_manager.set_pt_value(self._pt_value)
+        if hasattr(self, "entry_manager"):
+            self.entry_manager._sizer.set_pt_value(self._pt_value)
+        self.sizer.set_pt_value(self._pt_value)
+        print(f"[DBG CK-3b] 계약스펙={_spec['label']} pt_value={self._pt_value:,}", flush=True)
         self.emergency_exit.set_futures_code(code)
         self.emergency_exit.set_order_manager(
             _BrokerOrderAdapter(self.broker, code, selected_account)
@@ -823,6 +839,7 @@ class TradingSystem:
         print("[DBG CK-5] RealtimeData.start() 완료", flush=True)
 
         self.investor_data._api = self.broker.api  # 실거래 시 TR 폴링 활성화
+        self.investor_data.set_futures_code(code)   # UI 선택 종목코드 반영
 
         # 투자자ticker 실시간 타입 FID·코드 탐색 (진단용)
         # 결과는 PROBE.log 및 콘솔에 [PROBE-TICKER] 라인으로 출력됨
@@ -1679,9 +1696,9 @@ class TradingSystem:
         # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
         _daily   = self.position.daily_stats()
         _forward_daily = self.position.daily_forward_stats()
-        _unreal  = self.position.unrealized_pnl_pts(close) * FUTURES_PT_VALUE
-        _forward_unreal = self.position.unrealized_forward_pnl_pts(close) * FUTURES_PT_VALUE
-        _var_krw = -(atr * 1.65 * self.position.quantity * FUTURES_PT_VALUE) if self.position.quantity else 0.0
+        _unreal  = self.position.unrealized_pnl_pts(close) * self._pt_value
+        _forward_unreal = self.position.unrealized_forward_pnl_pts(close) * self._pt_value
+        _var_krw = -(atr * 1.65 * self.position.quantity * self._pt_value) if self.position.quantity else 0.0
         self.dashboard.update_pnl_metrics(
             _unreal,
             _daily["pnl_krw"],
@@ -1857,10 +1874,10 @@ class TradingSystem:
         _daily = self.position.daily_stats()
         _forward_daily = self.position.daily_forward_stats()
         self.dashboard.update_pnl_metrics(
-            self.position.unrealized_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
+            self.position.unrealized_pnl_pts(result["exit_price"]) * self._pt_value,
             _daily["pnl_krw"],
             0.0,
-            forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
+            forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * self._pt_value,
             forward_daily_pnl_krw=_forward_daily["pnl_krw"],
         )
         self._record_trade_result(result)
@@ -1984,12 +2001,15 @@ class TradingSystem:
             self._post_exit(result)
             return
 
-        # 3순위: 부분 청산 (is_tp1_hit/is_tp2_hit 내부에서 partial_done 이중 체크)
-        if self.position.is_tp1_hit(price):
+        # 3순위: 부분 청산 (pending 가드 + is_tp1_hit/is_tp2_hit 내부 partial_done 이중 체크)
+        if (not self._has_pending_order()
+                and self.position.status != "FLAT"
+                and self.position.is_tp1_hit(price)):
             self._execute_partial_exit(price, stage=1)
 
-        # TP1이 전량청산으로 전환된 경우 포지션이 FLAT → TP2 스킵
-        if self.position.status != "FLAT" and self.position.is_tp2_hit(price):
+        if (not self._has_pending_order()
+                and self.position.status != "FLAT"
+                and self.position.is_tp2_hit(price)):
             self._execute_partial_exit(price, stage=2)
 
         # 4순위: 시간 강제 청산
@@ -3074,7 +3094,9 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             log_manager.system(f"[Exit] 하드스톱 주문 실패 ret={ret}", "ERROR")
         return
 
-    if self.position.is_tp1_hit(price):
+    if (not self._has_pending_order()
+            and self.position.status != "FLAT"
+            and self.position.is_tp1_hit(price)):
         self._execute_partial_exit(price, stage=1)
 
     if (not self._has_pending_order()
@@ -3243,10 +3265,10 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
         f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  잔여 {result['remaining']}계약  │ 금일 {_daily['pnl_krw']:+,.0f}원",
     )
     self.dashboard.update_pnl_metrics(
-        self.position.unrealized_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
+        self.position.unrealized_pnl_pts(result["exit_price"]) * self._pt_value,
         _daily["pnl_krw"],
         0.0,
-        forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * FUTURES_PT_VALUE,
+        forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * self._pt_value,
         forward_daily_pnl_krw=_forward_daily["pnl_krw"],
     )
     self._record_trade_result(result)
@@ -3769,9 +3791,9 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
             if _qty > 0 and _avg_price > 0 and _current_price > 0:
                 _side_text = str(row.get("매매구분") or row.get("구분") or "").replace(" ", "").strip()
                 _mult = -1 if "매도" in _side_text else 1
-                _trade_base_krw = _avg_price * _qty * FUTURES_PT_VALUE
+                _trade_base_krw = _avg_price * _qty * self._pt_value
                 _pnl_pts = (_current_price - _avg_price) * _mult
-                _pnl_krw = _pnl_pts * FUTURES_PT_VALUE * _qty
+                _pnl_krw = _pnl_pts * self._pt_value * _qty
                 _eval_amount_krw = _trade_base_krw + _pnl_krw
                 _rate = (_pnl_krw / _trade_base_krw * 100.0) if _trade_base_krw else 0.0
 

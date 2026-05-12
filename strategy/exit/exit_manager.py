@@ -22,7 +22,6 @@ from config.constants import (
     POSITION_LONG, POSITION_SHORT, POSITION_FLAT,
     FUTURES_PT_VALUE,
 )
-FUTURES_MULTIPLIER = FUTURES_PT_VALUE   # 하위 호환 alias
 from config.settings import PARTIAL_EXIT_RATIOS
 
 from strategy.exit.time_exit import TimeExitManager
@@ -46,10 +45,14 @@ class ExitManager:
         self,
         position_tracker,   # PositionTracker
         kiwoom_api=None,    # KiwoomAPI (None = 시뮬레이션)
+        futures_code: str = "",
+        pt_value: float = FUTURES_PT_VALUE,
     ):
-        self._tracker   = position_tracker
-        self._api       = kiwoom_api
-        self._time_exit = TimeExitManager()
+        self._tracker       = position_tracker
+        self._api           = kiwoom_api
+        self._futures_code  = futures_code
+        self._pt_value      = float(pt_value)
+        self._time_exit     = TimeExitManager()
 
         # 부분 청산 상태
         self._partial1_done = False
@@ -57,6 +60,14 @@ class ExitManager:
 
         # 일일 청산 통계
         self._daily_exits: list = []
+
+    def set_futures_code(self, code: str) -> None:
+        """매매 종목코드 갱신."""
+        self._futures_code = str(code).strip()
+
+    def set_pt_value(self, pt_value: float) -> None:
+        """계약 종류 변경 시 pt_value 갱신."""
+        self._pt_value = float(pt_value)
 
     # ── 매 분봉 메인 호출 ─────────────────────────────────────────
     def check_and_exit(
@@ -146,30 +157,29 @@ class ExitManager:
         """
         1차/2차 목표가 부분 청산 (각 33%)
 
-        남은 33%는 트레일링 스톱으로 관리
+        남은 33%는 트레일링 스톱으로 관리.
+        - partial_close()를 통해 tracker 일별 통계 반영
+        - partial_N_done 플래그를 tracker와 self 양쪽에 설정
         """
-        total_qty = self._tracker.quantity
-        partial_ratio = PARTIAL_EXIT_RATIOS[stage - 1] if stage <= len(PARTIAL_EXIT_RATIOS) else 0.33
-        partial_qty   = max(1, round(total_qty * partial_ratio))
-
         if stage == 1 and self._partial1_done:
             return None
         if stage == 2 and self._partial2_done:
             return None
+
+        total_qty     = self._tracker.quantity
+        partial_ratio = PARTIAL_EXIT_RATIOS[stage - 1] if stage <= len(PARTIAL_EXIT_RATIOS) else 0.33
+        partial_qty   = max(1, round(total_qty * partial_ratio))
+
         if partial_qty >= total_qty:
-            # 전량 청산으로 처리
             return self._execute_exit(price, reason=f"TP{stage}(전량)", priority=3 if stage == 1 else 4)
 
-        direction = self._tracker.status
+        direction    = self._tracker.status
         order_result = self._send_close_order(direction, partial_qty, price)
         if not order_result.get("ok"):
             return None
 
-        mult = 1 if direction == POSITION_LONG else -1
-        pnl_pts = (price - self._tracker.entry_price) * mult * partial_qty
-
-        # 포지션 수량 감소
-        self._tracker.quantity -= partial_qty
+        reason          = f"TP{stage} 부분청산 {partial_ratio:.0%}"
+        tracker_result  = self._tracker.partial_close(price, partial_qty, reason)
 
         if stage == 1:
             self._tracker.partial_1_done = True
@@ -178,15 +188,16 @@ class ExitManager:
             self._tracker.partial_2_done = True
             self._partial2_done          = True
 
+        pnl_pts = tracker_result["pnl_pts"]   # per-contract (tracker 기준)
         result = {
             "action":      f"PARTIAL_EXIT_TP{stage}",
             "direction":   direction,
             "qty":         partial_qty,
             "remaining":   self._tracker.quantity,
             "price":       price,
-            "pnl_pts":     round(pnl_pts, 4),
-            "pnl_krw":     round(pnl_pts * FUTURES_MULTIPLIER, 0),
-            "exit_reason": f"TP{stage} 부분청산 {partial_ratio:.0%}",
+            "pnl_pts":     pnl_pts,
+            "pnl_krw":     tracker_result["pnl_krw"],
+            "exit_reason": reason,
         }
         logger.info(
             f"[Exit] 🟡 TP{stage} 부분청산 {partial_qty}계약 @ {price:.2f} "
@@ -208,7 +219,7 @@ class ExitManager:
                 screen_no  = "1001",
                 acc_no     = _secrets.ACCOUNT_NO,
                 order_type = order_type,
-                code       = "101Q9000",
+                code       = self._futures_code or "101Q9000",
                 qty        = qty,
                 price      = 0,
                 hoga_gb    = "03",
@@ -233,6 +244,6 @@ class ExitManager:
             "wins":       wins,
             "win_rate":   round(wins / max(exits, 1), 3),
             "total_pnl_pts": round(pnl_sum, 4),
-            "total_pnl_krw": round(pnl_sum * FUTURES_MULTIPLIER, 0),
+            "total_pnl_krw": round(pnl_sum * self._pt_value, 0),
             "exit_reasons": [e.get("exit_reason") for e in self._daily_exits],
         }

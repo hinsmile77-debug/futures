@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-05-12 버그 수정 (18차) — 검증 항목
+
+- [DONE 2026-05-12] `scripts/cybos_autologin.py` — `sys.exit(0)` → `return True` (STEP 5 연결 대기 루프 활성화)
+- [DONE 2026-05-12] `start_mireuk.bat` — `%ERRORLEVEL%` → `!ERRORLEVEL!` (CMD 지연 확장 버그 수정)
+- [DONE 2026-05-12] `dashboard/main_dashboard.py` — 종목코드·시장구분 선택값 `ui_prefs.json` 영속화
+- [DONE 2026-05-12] `dashboard/panels/profit_guard_panel.py` — `sqlite3.Row.get()` 크래시 수정 + `_rows_to_dicts()` + try/except 래핑
+
+### 18차 후속 검증
+
+- [V-18-1] 자동 로그인 재시작 후 확인
+  - `start_mireuk.bat` 실행 시 `[OK] CybosPlus 연결 성공 (ServerType=1)` + `[INFO] CybosPlus already connected.` (preflight) 순서로 정상 진행되는지 확인
+  - `[ERROR] Auto-login failed.` 오류 완전 소멸 확인
+
+- [V-18-2] UI 영속성 확인
+  - 프로그램 재시작 후 이전 종목코드 (예: `A0166000 F 202606 (근월)`)와 시장구분 (`KOSPI200 선물`) 복원 확인
+  - `data/ui_prefs.json` 파일 생성 여부 확인
+
+- [V-18-3] ProfitGuard 적용 버튼 정상 동작 확인
+  - 설정 변경 후 Apply 클릭 → 프로그램 종료 없이 챔피언/챌린저 비교 갱신 확인
+  - WARN 로그에 `[ProfitGuard] 시뮬레이션 오류` 미출력 확인
+
+---
+
 ## 2026-05-12 수익 보존 가드 (ProfitGuard) — 검증 항목
 
 ### 구현 완료 (17차)
@@ -98,8 +121,7 @@
   - 팝업 대기 10s → Enter → 3초 후 스크립트 종료 흐름 확정
   - 모의투자 접속 버튼 좌표 `(1416, 645)` 확정
 
-- [NEXT 2026-05-12] `start_mireuk.bat` 에서 autologin 스크립트 선행 호출 연결 검증
-  - autologin 완료 후 메인 시스템이 이미 연결된 Cybos에 접속하는 타이밍 확인
+- [DONE 2026-05-12] `start_mireuk.bat` 에서 autologin 스크립트 선행 호출 연결 검증 — `!ERRORLEVEL!` 지연 확장 수정으로 완료
 
 ---
 

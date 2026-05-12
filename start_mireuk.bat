@@ -110,7 +110,7 @@ python -c "import win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); exit(0 i
 IF %ERRORLEVEL% NEQ 0 (
     ECHO [INFO] CybosPlus not connected - attempting auto-login...
     python scripts\cybos_autologin.py
-    IF %ERRORLEVEL% NEQ 0 (
+    IF !ERRORLEVEL! NEQ 0 (
         ECHO [ERROR] Auto-login failed. Please log in to CybosPlus manually and rerun.
         TIMEOUT /T 15
         EXIT /B 1

@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-05-12 (18차 — 자동 로그인 버그 수정 + UI 영속성 + ProfitGuard 크래시)
+
+### [B65] `cybos_autologin.py` — `sys.exit(0)` 조기 종료로 연결 대기 건너뜀
+**File**: `scripts/cybos_autologin.py`  
+**Symptom**: BAT에서 `[OK] CybosPlus 연결 성공 (ServerType=1)` 출력 이전에 스크립트 종료 → Python exit code 0 이더라도 STEP 5 루프 미실행.  
+**Root cause**: `_handle_mock_select_dialog()` 의 `min_wait > 0` 분기 마지막에 `sys.exit(0)` 가 있어, 팝업 대기 완료 직후 전체 프로세스 종료. STEP 5(`while elapsed < CONNECT_TIMEOUT`) 연결 대기 루프는 이 함수 반환 후 실행되어야 하는데, `sys.exit(0)` 가 먼저 실행되어 skip.  
+**Fix**: `sys.exit(0)` → `return True`. 함수 정상 반환 → STEP 5 루프 진입 → 연결 확인 → `sys.exit(0)` 호출 (STEP 5 최하단).
+
+### [B66] `start_mireuk.bat` — 중첩 `IF` 블록 내 `%ERRORLEVEL%` 파싱 시점 고정
+**File**: `start_mireuk.bat` line 113  
+**Symptom**: 자동 로그인 Python 스크립트 성공(exit code 0)인데도 `[ERROR] Auto-login failed.` 출력.  
+**Root cause**: Windows CMD에서 `%VAR%` 는 해당 `IF (...)` 블록 파싱 시점에 단일 확장됨. 외부 `IF %ERRORLEVEL% NEQ 0 (` 가 참일 때 내부 `IF %ERRORLEVEL% NEQ 0` 의 `%ERRORLEVEL%` 도 동일 시점의 값(=1)으로 고정 대입. 이후 Python autologin이 exit 0을 반환해도 내부 IF는 이미 `IF 1 NEQ 0`으로 고정.  
+**Fix**: `IF !ERRORLEVEL! NEQ 0` (delayed expansion). `SETLOCAL EnableDelayedExpansion` 은 파일 line 2에 이미 선언되어 있음.  
+**재발 방지**: CMD 중첩 IF 내에서는 항상 `!ERRORLEVEL!` 사용. `%ERRORLEVEL%` 는 블록 외부 단독 IF에서만 안전.
+
+### [B67] `profit_guard_panel.py` — `sqlite3.Row.get()` Python 3.7 미지원 크래시
+**File**: `dashboard/panels/profit_guard_panel.py`  
+**Symptom**: ProfitGuard 설정 탭 "적용" 버튼 클릭 즉시 프로그램 종료.  
+**Root cause**: `fetch_today_trades()` → `filter_plausible_trade_rows()` 가 `sqlite3.Row` 객체 리스트 반환. Python 3.7의 `sqlite3.Row` 는 `row["key"]` 인덱싱 지원, `.get(key, default)` 미지원. `_run_simulation()` 내부에서 `.get()` 호출 시 `AttributeError` 발생 → PyQt5 signal-slot 예외 전파 → `QApplication` 종료.  
+**Fix**: `_rows_to_dicts()` static method로 `dict(r)` 변환. `refresh()` / `_auto_refresh()` 에서 저장 전 변환. `_run_simulation()` → `_run_simulation_inner()` 분리 + 외부 try/except. `_on_config_changed()` try/except 래핑.  
+**패턴**: `get_conn()` 에서 `conn.row_factory = sqlite3.Row` 설정이 전역 적용되므로, DB 조회 결과를 `.get()` 으로 접근하는 모든 코드는 `dict()` 변환 필요.
+
+### [D45] UI 선택 영속성 — `ui_prefs.json` 별도 파일 패턴 채택
+**Decision**: 종목코드·시장구분 같은 UI 상태는 `data/ui_prefs.json` 에 별도 저장한다. `session_state.json` 에 합치지 않는다.  
+**Reason**: `session_state.json` 은 거래 세션 카운터·모드 플래그 등 런타임 상태를 관리하는 파일이며 구조 변경 시 기존 코드 영향이 크다. UI 선호도는 독립 파일로 관리해야 관심사 분리가 명확하고 실패해도 안전하게 무시(`except: pass`)할 수 있다.
+
+---
+
 ## 2026-05-12 (17차 — 4-Layer 수익 보존 가드 구현)
 
 ### [D42] 수익 보존을 위한 4-Layer 독립 가드 아키텍처 채택

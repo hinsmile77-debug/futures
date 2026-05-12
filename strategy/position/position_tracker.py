@@ -12,10 +12,10 @@ from typing import Optional, Dict
 from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT, FUTURES_PT_VALUE
 from config.settings import ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, FUTURES_COMMISSION_RATE
 
-
-def _calc_commission(price: float, quantity: int) -> float:
+# 인스턴스별 pt_value를 주입받기 전 module-level fallback 으로만 사용
+def _calc_commission(price: float, quantity: int, pt_value: float = FUTURES_PT_VALUE) -> float:
     """편도 수수료 계산 (왕복은 호출부에서 × 2)"""
-    return price * quantity * FUTURES_PT_VALUE * FUTURES_COMMISSION_RATE
+    return price * quantity * pt_value * FUTURES_COMMISSION_RATE
 
 logger = logging.getLogger("TRADE")
 
@@ -28,7 +28,8 @@ _STATE_FILE = os.path.join(
 class PositionTracker:
     """단일 포지션 상태 관리"""
 
-    def __init__(self):
+    def __init__(self, pt_value: float = FUTURES_PT_VALUE):
+        self._pt_value: float = float(pt_value)
         self.status:       str   = POSITION_FLAT
         self.entry_price:  float = 0.0
         self.quantity:     int   = 0
@@ -57,6 +58,10 @@ class PositionTracker:
         self._daily_forward_commission: float = 0.0
         self.last_update_reason: str = "init"
         self.last_update_ts: Optional[datetime.datetime] = None
+
+    def set_pt_value(self, pt_value: float) -> None:
+        """계약 종류 변경 시 pt_value 갱신 (FLAT 상태에서만 유효)."""
+        self._pt_value = float(pt_value)
 
     def open_position(
         self,
@@ -114,12 +119,12 @@ class PositionTracker:
 
         mult = 1 if self.status == POSITION_LONG else -1
         pnl_pts = (exit_price - self.entry_price) * mult
-        commission = _calc_commission(self.entry_price, self.quantity) * 2  # 왕복
-        pnl_krw = pnl_pts * FUTURES_PT_VALUE * self.quantity - commission
+        commission = _calc_commission(self.entry_price, self.quantity, self._pt_value) * 2  # 왕복
+        pnl_krw = pnl_pts * self._pt_value * self.quantity - commission
         forward_direction = self.signal_direction or self.status
         forward_pnl_pts = self._calc_directional_pnl_pts(forward_direction, exit_price)
-        forward_commission = _calc_commission(self.entry_price, self.quantity) * 2
-        forward_pnl_krw = forward_pnl_pts * FUTURES_PT_VALUE * self.quantity - forward_commission
+        forward_commission = _calc_commission(self.entry_price, self.quantity, self._pt_value) * 2
+        forward_pnl_krw = forward_pnl_pts * self._pt_value * self.quantity - forward_commission
 
         self._daily_pnl_pts += pnl_pts * self.quantity
         self._daily_commission += commission
@@ -278,12 +283,12 @@ class PositionTracker:
 
         mult = 1 if self.status == POSITION_LONG else -1
         pnl_pts = (exit_price - self.entry_price) * mult
-        commission = _calc_commission(self.entry_price, quantity) * 2  # 왕복
-        pnl_krw = pnl_pts * FUTURES_PT_VALUE * quantity - commission
+        commission = _calc_commission(self.entry_price, quantity, self._pt_value) * 2  # 왕복
+        pnl_krw = pnl_pts * self._pt_value * quantity - commission
         forward_direction = self.signal_direction or self.status
         forward_pnl_pts = self._calc_directional_pnl_pts(forward_direction, exit_price)
-        forward_commission = _calc_commission(self.entry_price, quantity) * 2
-        forward_pnl_krw = forward_pnl_pts * FUTURES_PT_VALUE * quantity - forward_commission
+        forward_commission = _calc_commission(self.entry_price, quantity, self._pt_value) * 2
+        forward_pnl_krw = forward_pnl_pts * self._pt_value * quantity - forward_commission
         self._daily_pnl_pts += pnl_pts * quantity
         self._daily_commission += commission
         self._daily_forward_pnl_pts += forward_pnl_pts * quantity
@@ -394,12 +399,12 @@ class PositionTracker:
 
         mult    = 1 if self.status == POSITION_LONG else -1
         pnl_pts = (exit_price - self.entry_price) * mult
-        commission = _calc_commission(self.entry_price, qty) * 2  # 왕복
-        pnl_krw = pnl_pts * FUTURES_PT_VALUE * qty - commission
+        commission = _calc_commission(self.entry_price, qty, self._pt_value) * 2  # 왕복
+        pnl_krw = pnl_pts * self._pt_value * qty - commission
         forward_direction = self.signal_direction or self.status
         forward_pnl_pts = self._calc_directional_pnl_pts(forward_direction, exit_price)
-        forward_commission = _calc_commission(self.entry_price, qty) * 2
-        forward_pnl_krw = forward_pnl_pts * FUTURES_PT_VALUE * qty - forward_commission
+        forward_commission = _calc_commission(self.entry_price, qty, self._pt_value) * 2
+        forward_pnl_krw = forward_pnl_pts * self._pt_value * qty - forward_commission
 
         self._daily_pnl_pts += pnl_pts * qty
         self._daily_commission += commission
@@ -649,7 +654,7 @@ class PositionTracker:
 
     # ── 일일 통계 ──────────────────────────────────────────────
     def daily_stats(self) -> dict:
-        gross_krw = round(self._daily_pnl_pts * FUTURES_PT_VALUE, 0)
+        gross_krw = round(self._daily_pnl_pts * self._pt_value, 0)
         return {
             "trades":     self._daily_trades,
             "wins":       self._daily_wins,
@@ -662,7 +667,7 @@ class PositionTracker:
         }
 
     def daily_forward_stats(self) -> dict:
-        gross_krw = round(self._daily_forward_pnl_pts * FUTURES_PT_VALUE, 0)
+        gross_krw = round(self._daily_forward_pnl_pts * self._pt_value, 0)
         return {
             "trades": self._daily_forward_trades,
             "wins": self._daily_forward_wins,

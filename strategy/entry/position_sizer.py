@@ -1,15 +1,17 @@
 # strategy/entry/position_sizer.py — 켈리 포지션 사이즈 계산
 """
 설계 명세 8-4:
-  최종 수량 = 기본리스크 × 신뢰도배수 × 레짐배수 / (ATR × 1.5 × 250,000)
+  최종 수량 = 기본리스크 × 신뢰도배수 × 레짐배수 / (ATR × 1.5 × pt_value)
 
   기본 리스크: 계좌의 1%
   신뢰도 배수: 0.6 ~ 1.5
   레짐 배수:   RISK_ON=1.0 / NEUTRAL=0.8 / RISK_OFF=0.5
+  미니선물:    켈리 산출값이 3 미만이면 3으로 올림 (최소 3계약)
 """
 import logging
 from typing import Optional
 
+from config.constants import FUTURES_PT_VALUE, MINI_FUTURES_PT_VALUE
 from config.settings import (
     ACCOUNT_BASE_RISK, ATR_STOP_MULT, REGIME_SIZE_MULT, MAX_CONTRACTS,
 )
@@ -33,11 +35,18 @@ def _confidence_mult(confidence: float) -> float:
     return 0.6
 
 
+MINI_MIN_CONTRACTS = 3   # 미니선물 최소 진입 계약 수
+
+
 class PositionSizer:
     """켈리 기반 포지션 사이즈 계산기"""
 
-    def __init__(self, account_balance: float = 0):
+    def __init__(self, account_balance: float = 0, pt_value: float = FUTURES_PT_VALUE):
         self.account_balance = account_balance
+        self._pt_value = float(pt_value)
+
+    def set_pt_value(self, pt_value: float) -> None:
+        self._pt_value = float(pt_value)
 
     def set_account_balance(self, account_balance: Optional[float]) -> None:
         try:
@@ -87,21 +96,23 @@ class PositionSizer:
         regime_mult     = REGIME_SIZE_MULT.get(regime, 0.8)
         stop_distance   = atr * ATR_STOP_MULT
 
-        # 선물 1틱 = 250,000원, stop_distance는 포인트 기준
-        tick_value = 250_000  # 0.05pt × 5,000,000 / 계약
-        stop_risk  = stop_distance * tick_value * 20  # 20틱/pt 환산
+        # stop_risk: pt당 손익(pt_value) × stop 거리(pt)
+        stop_risk = stop_distance * self._pt_value
+
+        is_mini = (self._pt_value <= MINI_FUTURES_PT_VALUE)
+        min_qty = MINI_MIN_CONTRACTS if is_mini else 1
 
         if stop_risk <= 0:
-            quantity = 1
+            quantity = min_qty
         else:
             raw_qty = (base_risk * conf_mult * regime_mult * grade_mult
                        * adaptive_kelly_mult) / stop_risk
-            quantity = max(1, min(int(raw_qty), MAX_CONTRACTS))
+            quantity = max(min_qty, min(int(raw_qty), MAX_CONTRACTS))
 
         logger.info(
-            f"[Sizer] 잔고={balance:,.0f} 기본리스크={base_risk:,.0f} "
-            f"신뢰도배수={conf_mult} 레짐배수={regime_mult} "
-            f"→ {quantity}계약"
+            f"[Sizer] {'미니' if is_mini else '일반'}선물 잔고={balance:,.0f} "
+            f"기본리스크={base_risk:,.0f} 신뢰도배수={conf_mult} 레짐배수={regime_mult} "
+            f"→ {quantity}계약 (최소={min_qty})"
         )
 
         return {
@@ -112,3 +123,22 @@ class PositionSizer:
             "kelly_mult":    adaptive_kelly_mult,
             "stop_distance": round(stop_distance, 4),
         }
+
+    def calc_size(
+        self,
+        balance: float,
+        price: float,
+        atr: float,
+        size_mult: float = 1.0,
+        regime: str = "NEUTRAL",
+        confidence: float = 0.5,
+    ) -> int:
+        """entry_manager 호출용 래퍼 — 계약 수(int)만 반환."""
+        result = self.compute(
+            confidence=confidence,
+            atr=atr,
+            regime=regime,
+            grade_mult=size_mult,
+            account_balance=balance,
+        )
+        return result["quantity"]

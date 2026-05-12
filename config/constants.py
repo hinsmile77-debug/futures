@@ -45,6 +45,37 @@ FUTURES_TICK_VALUE  = 12_500    # 1틱 = 0.05pt × 250,000원 = 12,500원
 FUTURES_PT_VALUE    = 250_000   # 1pt = 250,000원 (KOSPI200 선물 2017~ 기준)
 FUTURES_MULTIPLIER  = 250_000   # FUTURES_PT_VALUE alias — 하위 호환용
 
+# ── KOSPI200 미니선물 계약 상수 ───────────────────────────────
+MINI_FUTURES_TICK_SIZE  = 0.02     # 최소 호가 단위 (0.02pt)
+MINI_FUTURES_TICK_VALUE = 1_000    # 1틱 = 0.02pt × 50,000원 = 1,000원
+MINI_FUTURES_PT_VALUE   = 50_000   # 1pt = 50,000원
+
+# 종목코드 접두사: A01... = 일반선물, A05... = 미니선물 (Cybos)
+_MINI_CODE_PREFIX = ("A05", "05")   # normalize 후 "05"도 매칭
+
+
+def get_contract_spec(code: str) -> dict:
+    """종목코드로 계약 스펙(pt_value, tick_size, tick_value)을 반환한다.
+
+    Cybos 코드 형식: 일반선물 = "A01XXXXX", 미니선물 = "A05XXXXX"
+    'A' 접두사를 제거한 뒤에도 "05"로 시작하면 미니선물로 판단.
+    """
+    c = str(code or "").strip()
+    normalized = c[1:] if c.startswith("A") else c
+    if normalized.startswith("05"):
+        return {
+            "pt_value":  MINI_FUTURES_PT_VALUE,
+            "tick_size": MINI_FUTURES_TICK_SIZE,
+            "tick_value": MINI_FUTURES_TICK_VALUE,
+            "label": "미니선물",
+        }
+    return {
+        "pt_value":  FUTURES_PT_VALUE,
+        "tick_size": FUTURES_TICK_SIZE,
+        "tick_value": FUTURES_TICK_VALUE,
+        "label": "일반선물",
+    }
+
 # ── 고정 CORE 피처명 ──────────────────────────────────────────
 CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_norm"]
 
