@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-12 (18차) — **자동 로그인 버그 수정 + UI 영속성 + ProfitGuard 크래시 수정**
+> 마지막 업데이트: 2026-05-12 (18차) — **자동 로그인 버그 수정 + UI 영속성 + 미니선물 계약 스펙 동기화 + ProfitGuard 크래시 수정**
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -14,6 +14,14 @@
 | `scripts/cybos_autologin.py` | `_handle_mock_select_dialog()` 내 `sys.exit(0)` → `return True` — STEP 5 연결 대기 루프 실행되도록 수정 |
 | `start_mireuk.bat` | 자동 로그인 성공 후에도 에러 출력되는 `%ERRORLEVEL%` 지연 확장 버그 → `!ERRORLEVEL!` 로 수정 |
 | `dashboard/main_dashboard.py` | 종목코드·시장구분 선택값을 `data/ui_prefs.json` 에 저장/복원 (`_save_ui_prefs`, `_restore_ui_prefs`) |
+| `config/constants.py` | `get_contract_spec()` 추가 — 일반선물/미니선물 계약 스펙(`pt_value`, `tick_size`, `tick_value`) 반환 |
+| `main.py` | UI 선택 종목코드 기준으로 계약 스펙 확정 후 `_pt_value` 를 런타임 전역에 전파 |
+| `strategy/position/position_tracker.py` | 인스턴스별 `pt_value` 기반 손익/수수료 계산 |
+| `strategy/entry/position_sizer.py` | `pt_value` 기반 리스크 계산 + 미니선물 최소 3계약 규칙 |
+| `strategy/entry/entry_manager.py` | 주문 코드 하드코딩 제거, 현재 선택 종목코드 사용 |
+| `strategy/exit/exit_manager.py` | 청산 주문 코드/손익 KRW 계산을 현재 계약 스펙 기준으로 통일 |
+| `collection/kiwoom/investor_data.py` | 수급 TR 조회 종목코드를 현재 선택 코드와 동기화 |
+| `collection/cybos/investor_data.py` | 브로커 인터페이스 호환용 `set_futures_code()` 추가 |
 | `dashboard/panels/profit_guard_panel.py` | `sqlite3.Row.get()` Python 3.7 미지원 → `_rows_to_dicts()` 변환 + `_run_simulation_inner()` 분리 + try/except 래핑 |
 
 ### 주요 패턴 (재사용 가능)
@@ -21,6 +29,14 @@
 - **`sqlite3.Row` → `dict` 변환**: Python 3.7에서 `row.get()` 미지원. `dict(row)` 로 변환 후 사용. `_rows_to_dicts()` helper 참고.
 - **Windows CMD 지연 확장**: 중첩 `IF` 블록 내 `%ERRORLEVEL%` 는 파싱 시점 고정. 반드시 `!ERRORLEVEL!` 사용 (`SETLOCAL EnableDelayedExpansion` 전제).
 - **Qt blockSignals**: 콤보 복원 중 save-during-restore 피드백 루프 방지에 필수.
+- **계약 스펙 단일 소스**: 일반/미니선물 구분은 브로커 기본 근월물이 아니라 최종 UI 선택 종목코드에서 한 번만 결정해야 함.
+
+### 현재 운영 상태
+
+- `data/ui_prefs.json` 은 `version`, `market`, `symbol_code`, `symbol_text` 구조로 저장된다.
+- 시작 직후 기본 콤보값이 저장 파일을 덮어쓰던 버그는 `_update_symbol_label()` 분리로 해결됐다.
+- 현재 저장 파일 기준 마지막 선택값은 `KOSPI200 미니선물 / A0565000` 이다.
+- 미니선물 선택 시 손익/사이징/주문 코드/수급 조회 코드가 모두 동일 선택 코드 기준으로 동기화된다.
 
 ---
 

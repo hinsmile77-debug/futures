@@ -12,7 +12,7 @@
   "tp2_price": 0.0,
   "partial_1_done": false,
   "partial_2_done": false,
-  "last_update_reason": "apply_exit_fill_final:하드스톱",
-  "last_update_ts": "2026-05-12T13:59:59.173987",
-  "saved_at": "2026-05-12T13:59:59.174986"
+  "last_update_reason": "apply_exit_fill_final:15:10 강제청산",
+  "last_update_ts": "2026-05-12T15:12:59.356332",
+  "saved_at": "2026-05-12T15:12:59.357332"
 }

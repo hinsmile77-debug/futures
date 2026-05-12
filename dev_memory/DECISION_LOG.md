@@ -4,6 +4,10 @@
 
 ## 2026-05-12 (18차 — 자동 로그인 버그 수정 + UI 영속성 + ProfitGuard 크래시)
 
+### [D46] 계약 스펙 판정은 최종 UI 선택 종목코드에서 단일 소스로 결정한다
+**Decision**: 일반선물/미니선물 구분은 브로커 기본 근월물 코드가 아니라, 실제로 매매에 사용할 UI 선택 종목코드에서 `get_contract_spec(code)` 로 판정한다. `pt_value`, 주문 코드, 청산 KRW, 수급 TR 코드 모두 이 선택 코드에 종속시킨다.  
+**Reason**: UI는 미니선물을 선택했는데 런타임 내부는 일반선물 `pt_value=250,000` 과 기본 코드 가정을 유지하면 손익·사이징·주문·수급 조회가 서로 다른 계약을 가리키게 된다. 계약 종류는 가장 마지막 사용자 선택값에서 한 번만 결정돼야 한다.
+
 ### [B65] `cybos_autologin.py` — `sys.exit(0)` 조기 종료로 연결 대기 건너뜀
 **File**: `scripts/cybos_autologin.py`  
 **Symptom**: BAT에서 `[OK] CybosPlus 연결 성공 (ServerType=1)` 출력 이전에 스크립트 종료 → Python exit code 0 이더라도 STEP 5 루프 미실행.  
@@ -27,6 +31,12 @@
 ### [D45] UI 선택 영속성 — `ui_prefs.json` 별도 파일 패턴 채택
 **Decision**: 종목코드·시장구분 같은 UI 상태는 `data/ui_prefs.json` 에 별도 저장한다. `session_state.json` 에 합치지 않는다.  
 **Reason**: `session_state.json` 은 거래 세션 카운터·모드 플래그 등 런타임 상태를 관리하는 파일이며 구조 변경 시 기존 코드 영향이 크다. UI 선호도는 독립 파일로 관리해야 관심사 분리가 명확하고 실패해도 안전하게 무시(`except: pass`)할 수 있다.
+
+### [B68] 시작 직후 기본 심볼 저장이 복원 전 `ui_prefs.json` 을 덮어쓰던 버그
+**File**: `dashboard/main_dashboard.py`  
+**Symptom**: 사용자가 `시장구분/종목코드` 를 바꾸고 정상 종료해도 다음 실행 때 항상 기본값으로 다시 올라오며, `ui_prefs.json` 도 시작 직후 기본값으로 재기록됨.  
+**Root cause**: 대시보드 초기화에서 `self._on_symbol_changed(self.cmb_symbol.currentText())` 가 `self._restore_ui_prefs()` 보다 먼저 실행되고, `_on_symbol_changed()` 내부 `self._save_ui_prefs()` 가 저장 파일을 복원 전에 기본값으로 덮어씀.  
+**Fix**: 라벨 갱신과 저장을 분리한 `_update_symbol_label()` 추가. 시작 시에는 라벨만 갱신하고, 실제 사용자 변경/복원 완료 시점에만 `_save_ui_prefs()` 실행.
 
 ---
 

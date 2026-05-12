@@ -4,11 +4,23 @@
 
 ---
 
-## 2026-05-12 (18차 — 자동 로그인 버그 3종 수정 + UI 종목 영속성 + ProfitGuard 크래시 수정)
+## 2026-05-12 (18차 — 자동 로그인 버그 3종 수정 + UI 종목 영속성 + 미니선물 계약 스펙 동기화 + ProfitGuard 크래시 수정)
 
 **Work**
 
-오늘 장 운영 후 발견된 버그 4건을 수정하고 세션 마무리했다.
+오늘 장 운영 후 발견된 버그 4건을 수정하고, 일반선물/미니선물 전환 시 런타임 계약 스펙이 UI 선택을 따라가도록 정리한 뒤 세션 마무리했다.
+
+### 구현 0: UI 선택 종목코드 기준 계약 스펙 동기화
+
+**파일**: `config/constants.py`, `main.py`, `strategy/position/position_tracker.py`, `strategy/entry/position_sizer.py`, `strategy/entry/entry_manager.py`, `strategy/exit/exit_manager.py`, `collection/kiwoom/investor_data.py`, `collection/cybos/investor_data.py`
+
+**증상**: UI에서 `KOSPI200 미니선물`을 선택해도 런타임 내부는 일반선물 `pt_value=250,000` 및 기본 주문 코드 가정을 유지할 수 있어, 손익·사이징·주문·수급 조회가 서로 다른 계약을 가리킬 위험이 있었음.
+
+**수정**:
+- `config/constants.py` 에 `get_contract_spec(code)` 추가
+- `main.py::connect_broker()` 에서 UI 선택 종목코드를 우선 적용하고, 해당 코드로 `pt_value`/계약 라벨 확정
+- `PositionTracker`, `PositionSizer`, `EntryManager`, `ExitManager`, `InvestorData` 에 현재 계약 스펙/종목코드 전파
+- 미니선물은 `pt_value=50,000`, 최소 진입 수량 3계약 규칙 반영
 
 ### 버그 1: `cybos_autologin.py` — `sys.exit(0)` 조기 종료
 
@@ -40,8 +52,13 @@
 - `import json` 추가
 - `from config.settings import DATA_DIR` 추가
 - `_UI_PREFS_FILE = os.path.join(DATA_DIR, "ui_prefs.json")` 상수 추가
+- `symbol_code` 기반 저장 포맷(`version`, `market`, `symbol_code`, `symbol_text`) 도입
 - `_on_symbol_changed()` 끝에 `self._save_ui_prefs()` 호출
 - `_build_ui()` 콤보 설정 완료 후 `self._restore_ui_prefs()` 호출
+
+**추가 원인 수정**:
+- 시작 시 `self._on_symbol_changed(self.cmb_symbol.currentText())` 가 복원 전에 실행되며 기본값을 `ui_prefs.json`에 먼저 저장하던 문제 확인
+- `_update_symbol_label()` 로 라벨 갱신과 저장을 분리해, 시작 직후 기본값 덮어쓰기 제거
 
 ### 버그 4: ProfitGuard "적용" 버튼 클릭 시 프로그램 종료
 
@@ -56,6 +73,12 @@
 - `refresh()`, `_auto_refresh()` 에서 `self._today_trades` 저장 전 변환
 - `_run_simulation()` → `_run_simulation_inner()` 분리, 외부 try/except로 래핑
 - `_on_config_changed()` 전체 try/except로 래핑
+
+### 검증
+
+- `python -m py_compile dashboard/main_dashboard.py` 통과
+- PyQt 대시보드 재생성 스니펫으로 `시장구분/종목코드` 저장 후 동일 값 복원 확인
+- 현재 `data/ui_prefs.json` 에 마지막 선택값 저장 동작 확인
 
 ---
 

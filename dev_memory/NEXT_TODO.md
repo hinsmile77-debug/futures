@@ -13,6 +13,8 @@
 - [DONE 2026-05-12] `scripts/cybos_autologin.py` — `sys.exit(0)` → `return True` (STEP 5 연결 대기 루프 활성화)
 - [DONE 2026-05-12] `start_mireuk.bat` — `%ERRORLEVEL%` → `!ERRORLEVEL!` (CMD 지연 확장 버그 수정)
 - [DONE 2026-05-12] `dashboard/main_dashboard.py` — 종목코드·시장구분 선택값 `ui_prefs.json` 영속화
+- [DONE 2026-05-12] `dashboard/main_dashboard.py` — 시작 직후 기본값이 `ui_prefs.json` 을 덮어쓰던 복원 순서 버그 수정
+- [DONE 2026-05-12] `config/constants.py` / `main.py` / `strategy/*` — 일반/미니선물 계약 스펙(`pt_value`, 주문 코드, 손익 계산) 런타임 동기화
 - [DONE 2026-05-12] `dashboard/panels/profit_guard_panel.py` — `sqlite3.Row.get()` 크래시 수정 + `_rows_to_dicts()` + try/except 래핑
 
 ### 18차 후속 검증
@@ -22,12 +24,20 @@
   - `[ERROR] Auto-login failed.` 오류 완전 소멸 확인
 
 - [V-18-2] UI 영속성 확인
-  - 프로그램 재시작 후 이전 종목코드 (예: `A0166000 F 202606 (근월)`)와 시장구분 (`KOSPI200 선물`) 복원 확인
-  - `data/ui_prefs.json` 파일 생성 여부 확인
+  - [DONE 2026-05-12] 인메모리 대시보드 재생성 스니펫으로 저장/복원 동작 확인
+  - [NEXT 2026-05-13] 전체 런처 경로(`start_mireuk.bat`)에서 실제 UI 조작 후 재시작 복원 재확인
 
 - [V-18-3] ProfitGuard 적용 버튼 정상 동작 확인
   - 설정 변경 후 Apply 클릭 → 프로그램 종료 없이 챔피언/챌린저 비교 갱신 확인
   - WARN 로그에 `[ProfitGuard] 시뮬레이션 오류` 미출력 확인
+
+- [NEXT 2026-05-13] 미니선물 end-to-end 운영 검증
+  - 확인: `A05...` 선택 시 주문 코드, 수급 TR 코드, 평가손익, 청산손익, 일일 손익이 모두 `pt_value=50,000` 기준으로 일치하는지
+  - 확인: 미니선물 최소 진입 수량 3계약 규칙이 실제 전략 의도와 맞는지
+
+- [NEXT 2026-05-13] `ui_prefs.json` 롤오버 정책 확정
+  - 현재는 저장된 `symbol_code` 가 목록에 없으면 해당 시장 첫 종목으로 fallback
+  - 근월/차월 의미 유지 정책이 필요한지 결정
 
 ---
 
