@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-12 (15차) — **챔피언-도전자 시스템 전면 구현 (Shadow 엔진·레짐 전문가·대시보드 WARNING·진입 게이트)**
+> 마지막 업데이트: 2026-05-12 (16차) — **WARN 노이즈 2단계 감축 (Cybos + BalanceUI/BalanceRefresh 레이트리밋 INFO)**
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -123,6 +123,21 @@ champion_history         — 챔피언 교체 이력
 | CB HALTED 이후 Sizer 계속 실행 | `main.py` | ✅ 수정 완료 |
 | TRADE.log 한글 깨짐 3곳 | `strategy/position/position_tracker.py` | ✅ 수정 완료 |
 | `liquidation_eval=0` 대체 시 경고 없음 | `collection/cybos/api_connector.py` | ✅ 수정 완료 |
+| `CybosInvestorRaw 후보 없음` 분당 WARNING 폭주 | `collection/cybos/api_connector.py` | ✅ 수정 완료 (레이트리밋 INFO, 10분 간격) |
+| `profit_rate 이상값` 반복 WARNING 폭주 | `collection/cybos/api_connector.py` | ✅ 수정 완료 (`>200%`만 WARNING, 나머지 레이트리밋 INFO) |
+| `BalanceUI/BalanceRefresh` 진단 로그 WARNING 과다 | `main.py` | ✅ 수정 완료 (반복성 로그 레이트리밋 INFO) |
+
+### 2026-05-12 경고 재분류 운영 원칙
+
+- 반복성 진단 로그는 INFO(레이트리밋)로 유지하고, 장애성/조치 필요 이벤트만 WARNING 이상으로 유지한다.
+- 현재 적용 범위:
+  - `CybosInvestorRaw ... 후보 없음`
+  - `CybosDailyPnl profit_rate 이상값`
+  - `BalanceUI/BalanceRefresh`의 주기성 상태 로그
+- WARNING 유지 항목 예시:
+  - 브로커 요청 실패(`request returned None`)
+  - 필수 입력 누락(`empty account number`)
+  - CB/주문 불일치/강제 리스크 이벤트
 
 ### MetaConf 오류 인과관계 (2026-05-12 장 중 확인)
 

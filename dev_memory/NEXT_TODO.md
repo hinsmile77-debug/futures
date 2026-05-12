@@ -34,6 +34,9 @@
 - [DONE 2026-05-12] CB HALTED 상태 Sizer 억제 (`main.py` `is_entry_allowed()` 게이트)
 - [DONE 2026-05-12] TRADE.log 한글 깨짐 3곳 수정 (`strategy/position/position_tracker.py` line 464/487/513)
 - [DONE 2026-05-12] `api_connector.py` 잔고 sanity check — liquidation_eval=0 대체 시 WARNING, profit_rate 이상값 경고
+- [DONE 2026-05-12] 경고 등급 재분류 1차 — `CybosInvestorRaw 후보 없음` 반복 WARNING → 레이트리밋 INFO (`collection/cybos/api_connector.py`)
+- [DONE 2026-05-12] 경고 등급 재분류 1차 — `profit_rate 이상값` 재등급 (`>200%`만 WARNING, 50~200%는 레이트리밋 INFO)
+- [DONE 2026-05-12] 경고 등급 재분류 2차 — `BalanceUI/BalanceRefresh` 반복 WARNING → 레이트리밋 INFO (`main.py`)
 
 - [NEXT 2026-05-13] `CybosInvestorRaw 후보 없음` 09:00~10:44 갭 원인 조사
   - 7건 거래가 모두 수급 데이터 없는 구간에서 발생
@@ -43,6 +46,14 @@
 - [NEXT 2026-05-13] 2026-05-12 CB 발동 후 재시작 첫 장에서 MetaConf 정상 학습 확인
   - LEARNING.log에서 `MetaConf 학습 오류` 메시지 완전 소멸 확인
   - MetaConf `model_fitted=True` 및 `confidence_score` 범위 정상 확인
+
+- [NEXT 2026-05-13] WARN/INFO 재분류 후 로그 품질 검증
+  - 목표: WARN.log에서 분당 반복성 메시지 비중 50% 이상 감소
+  - 확인: 장애성 이벤트(CB, 주문실패, 동기화 실패)가 WARN에서 누락되지 않는지 샘플링 점검
+
+- [NEXT 2026-05-13] 레이트리밋 정책 상수화
+  - 현재 산재한 간격값(30/60/120초, 10분)을 `config` 또는 공통 상수로 통합
+  - 운영 모드(모의/실전)별 간격 프로파일 분리 검토
 
 ---
 

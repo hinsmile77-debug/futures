@@ -3098,6 +3098,31 @@ def _ts_log_diag(self, tag: str, **fields) -> None:
     logger.warning("[%s] %s", tag, " | ".join(parts))
 
 
+def _ts_should_emit_throttled(self, key: str, min_interval_sec: float = 60.0) -> bool:
+    state = getattr(self, "_throttled_info_ts", None)
+    if state is None:
+        state = {}
+        setattr(self, "_throttled_info_ts", state)
+    now = time.time()
+    last = float(state.get(key, 0.0) or 0.0)
+    if (now - last) < float(min_interval_sec):
+        return False
+    state[key] = now
+    return True
+
+
+def _ts_system_info_throttled(self, key: str, message: str, min_interval_sec: float = 60.0) -> None:
+    if not _ts_should_emit_throttled(self, key, min_interval_sec=min_interval_sec):
+        return
+    log_manager.system(message, "INFO")
+
+
+def _ts_logger_info_throttled(self, key: str, message: str, *args, min_interval_sec: float = 60.0) -> None:
+    if not _ts_should_emit_throttled(self, key, min_interval_sec=min_interval_sec):
+        return
+    logger.info(message, *args)
+
+
 def _ts_get_reference_atr(self, pending: Optional[dict] = None) -> float:
     if pending and float(pending.get("atr") or 0.0) > 0:
         return float(pending["atr"])
@@ -3221,7 +3246,7 @@ def _ts_handle_entry_fill(
         order_no=payload.get("order_no", ""),
         fill_no=payload.get("fill_no", ""),
     )
-    log_manager.system("[BalanceRefresh] trigger=EntryFillFlow", "WARNING")
+    _ts_system_info_throttled(self, "balance_refresh_trigger_entry", "[BalanceRefresh] trigger=EntryFillFlow", min_interval_sec=30.0)
     QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
 
 
@@ -3272,7 +3297,7 @@ def _ts_handle_exit_fill(
             mode="manual_partial",
             reason=pending["reason"],
         )
-        log_manager.system("[BalanceRefresh] trigger=ExitFillFlow mode=manual_partial", "WARNING")
+        _ts_system_info_throttled(self, "balance_refresh_trigger_exit_manual_partial", "[BalanceRefresh] trigger=ExitFillFlow mode=manual_partial", min_interval_sec=30.0)
         QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
         return
 
@@ -3297,7 +3322,7 @@ def _ts_handle_exit_fill(
             mode="partial_or_remaining",
             reason=pending["reason"],
         )
-        log_manager.system("[BalanceRefresh] trigger=ExitFillFlow mode=partial_or_remaining", "WARNING")
+        _ts_system_info_throttled(self, "balance_refresh_trigger_exit_partial", "[BalanceRefresh] trigger=ExitFillFlow mode=partial_or_remaining", min_interval_sec=30.0)
         QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
         return
 
@@ -3318,7 +3343,7 @@ def _ts_handle_exit_fill(
     if self.position.status == "FLAT":
         self.dashboard.minute_chart_clear_active_position()
         _ts_force_balance_flat_ui(self, f"final_exit:{pending['reason']}")
-    log_manager.system("[BalanceRefresh] trigger=ExitFillFlow mode=final retries=250ms,1200ms", "WARNING")
+    _ts_system_info_throttled(self, "balance_refresh_trigger_exit_final", "[BalanceRefresh] trigger=ExitFillFlow mode=final retries=250ms,1200ms", min_interval_sec=30.0)
     QTimer.singleShot(250, lambda: _ts_refresh_dashboard_balance(self))
     QTimer.singleShot(1200, lambda: _ts_refresh_dashboard_balance(self))
 
@@ -3569,17 +3594,19 @@ def _ts_force_balance_flat_ui(self, reason: str) -> None:
         "summary": dict(cached.get("summary") or {}),
         "summary_probe": dict(cached.get("summary_probe") or {}),
     }
-    log_manager.system(
+    _ts_system_info_throttled(
+        self,
+        "balance_ui_force_flat",
         f"[BalanceUI] force flat rows reason={reason} "
         f"cached_summary_nonblank={any(str(v).strip() for v in forced['summary'].values())}",
-        "WARNING",
+        min_interval_sec=60.0,
     )
     _ts_push_balance_to_dashboard(self, forced)
 
 
 def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) -> None:
     if not result:
-        log_manager.system("[BalanceUI] skipped: empty result", "WARNING")
+        _ts_system_info_throttled(self, "balance_ui_skipped_empty", "[BalanceUI] skipped: empty result", min_interval_sec=120.0)
         return
 
     self._last_balance_result = copy.deepcopy(result)
@@ -3588,11 +3615,13 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
     summary = dict(result.get("summary") or {})
     probe = dict(result.get("summary_probe") or {})
     if not quiet:
-        log_manager.system(
+        _ts_system_info_throttled(
+            self,
+            "balance_ui_raw",
             f"[BalanceUI] raw rows={len(result.get('rows') or [])} nonempty={len(result.get('nonempty_rows') or [])} "
             f"summary_nonblank={any(str(v).strip() for v in summary.values())} "
             f"record={result.get('record_name', '')} query_count={result.get('query_count', '')}",
-            "WARNING",
+            min_interval_sec=120.0,
         )
 
     # TR blank + 포지션 보유 중 → position_tracker 기반 합성 행 (모의투자 OPW20006 공란 대응)
@@ -3771,11 +3800,13 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
     realized_krw_log = float(realized_krw) if realized_krw is not None else 0.0
 
     if not quiet:
-        log_manager.system(
+        _ts_system_info_throttled(
+            self,
+            "balance_ui_computed",
             f"[BalanceUI] computed trade_sum={trade_sum:.4f} pnl_sum={pnl_sum:.4f} eval_sum={eval_sum:.4f} "
             f"realized_krw={realized_krw_log:.4f} final_summary_nonblank={any(str(v).strip() for v in summary.values())} "
             f"probe_nonblank={any(str(v).strip() for v in probe.values())}",
-            "WARNING",
+            min_interval_sec=120.0,
         )
 
     if not quiet and not any(str(v).strip() for v in result.get("summary", {}).values()):
@@ -3787,11 +3818,14 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
         )
 
     if not quiet:
-        logger.warning(
+        _ts_logger_info_throttled(
+            self,
+            "balance_ui_push",
             "[BalanceUI] push rows=%d preview=%s summary=%s",
             len(rows),
             rows[:3],
             summary,
+            min_interval_sec=120.0,
         )
     self.dashboard.update_account_balance(
         summary,
@@ -3808,28 +3842,35 @@ def _ts_refresh_dashboard_balance(self) -> None:
     if not account_no:
         log_manager.system("[BalanceRefresh] skipped: empty account number", "WARNING")
         return
-    log_manager.system(
+    _ts_system_info_throttled(
+        self,
+        "balance_refresh_request_start",
         f"[BalanceRefresh] request start account={account_no} position={_ts_get_position_snapshot(self)}",
-        "WARNING",
+        min_interval_sec=60.0,
     )
     result = self.broker.request_futures_balance(account_no)
     if result is None:
         log_manager.system("[BalanceRefresh] request returned None", "WARNING")
         return
-    log_manager.system(
+    _ts_system_info_throttled(
+        self,
+        "balance_refresh_request_ok",
         f"[BalanceRefresh] request ok rows={len(result.get('rows') or [])} "
         f"nonempty={len(result.get('nonempty_rows') or [])} "
         f"summary_nonblank={any(str(v).strip() for v in (result.get('summary') or {}).values())} "
         f"probe_nonblank={any(str(v).strip() for v in (result.get('summary_probe') or {}).values())}",
-        "WARNING",
+        min_interval_sec=60.0,
     )
-    logger.warning(
+    _ts_logger_info_throttled(
+        self,
+        "balance_refresh_result",
         "[BalanceRefresh] balance result rows=%d nonempty=%d summary_nonblank=%s probe_nonblank=%s summary=%s",
         len(result.get("rows") or []),
         len(result.get("nonempty_rows") or []),
         any(str(v).strip() for v in (result.get("summary") or {}).values()),
         any(str(v).strip() for v in (result.get("summary_probe") or {}).values()),
         result.get("summary") or {},
+        min_interval_sec=60.0,
     )
     _ts_push_balance_to_dashboard(self, result)
 
@@ -4330,7 +4371,7 @@ def _ts_handle_entry_fill_cybos_safe(
         order_no=payload.get("order_no", ""),
         fill_no=payload.get("fill_no", ""),
     )
-    log_manager.system("[BalanceRefresh] trigger=EntryFillFlow", "WARNING")
+    _ts_system_info_throttled(self, "balance_refresh_trigger_entry", "[BalanceRefresh] trigger=EntryFillFlow", min_interval_sec=30.0)
     QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
 
 

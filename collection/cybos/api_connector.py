@@ -22,6 +22,9 @@ except ImportError:  # pragma: no cover - GUI/runtime dependency
 logger = logging.getLogger(__name__)
 system_logger = logging.getLogger("SYSTEM")
 
+# Per-key last emission timestamp for throttled diagnostic logs.
+_THROTTLED_INFO_TS: Dict[str, float] = {}
+
 
 CYBOS_RUNTIME_HINT = (
     "Cybos Plus broker requires 32-bit Windows Python with pywin32, "
@@ -86,6 +89,15 @@ def _system_warning(message: str) -> None:
         log_manager.system(message, "WARNING")
     except Exception:
         pass
+
+
+def _system_info_throttled(message: str, key: str, min_interval_sec: float = 600.0) -> None:
+    now = time.time()
+    last = _THROTTLED_INFO_TS.get(key, 0.0)
+    if (now - last) < float(min_interval_sec):
+        return
+    _THROTTLED_INFO_TS[key] = now
+    _system_info(message)
 
 
 def _require_cybos_runtime() -> None:
@@ -378,12 +390,20 @@ class CybosAPI:
             liquidation_eval = next_day_deposit_cash if liquidation_substituted else liquidation_eval_raw
             profit_rate = (next_day_deposit_cash / deposit_cash * 100.0) if deposit_cash else 0.0
 
-            # sanity: profit_rate 이 비정상 범위면 header idx 오매핑 가능성
-            if abs(profit_rate) > 50.0:
-                _system_warning(
-                    f"[CybosDailyPnl] profit_rate 이상값 {profit_rate:.2f}% — "
-                    f"deposit={deposit_cash:.0f} next_day={next_day_deposit_cash:.0f} "
-                    f"header_idx_check={{1:{raw_headers.get(1)}, 2:{raw_headers.get(2)}}}"
+            # profit_rate는 운영 중 반복 관측되는 진단값이라 기본 INFO(레이트리밋),
+            # 과도한 이상치만 WARNING으로 올린다.
+            profit_rate_msg = (
+                f"[CybosDailyPnl] profit_rate 이상값 {profit_rate:.2f}% — "
+                f"deposit={deposit_cash:.0f} next_day={next_day_deposit_cash:.0f} "
+                f"header_idx_check={{1:{raw_headers.get(1)}, 2:{raw_headers.get(2)}}}"
+            )
+            if abs(profit_rate) > 200.0:
+                _system_warning(profit_rate_msg)
+            elif abs(profit_rate) > 50.0:
+                _system_info_throttled(
+                    profit_rate_msg,
+                    key="cybos_daily_pnl_profit_rate_diag",
+                    min_interval_sec=600.0,
                 )
 
             # liquidation_eval 이 장 시작 전 0 → 익일예탁금으로 대체된 경우 WARNING
@@ -705,9 +725,11 @@ class CybosAPI:
         # 모든 후보 실패 → FutureMst 미결제약정 fallback
         snap = self.request_futures_snapshot(code) if code else {}
         oi = _safe_int(snap.get("open_interest", 0)) if snap else 0
-        _system_warning(
+        _system_info_throttled(
             f"[CybosInvestorRaw] futures investor TR 후보 없음 "
-            f"open_interest={oi} (FutureMst fallback)"
+            f"open_interest={oi} (FutureMst fallback)",
+            key="cybos_investor_raw_futures_missing",
+            min_interval_sec=600.0,
         )
         return {
             "supported": False,
@@ -771,7 +793,11 @@ class CybosAPI:
                 "raw": {"arb_net": arb_net, "nonarb_net": nonarb_net},
             }
 
-        _system_warning("[CybosInvestorRaw] program investor TR 후보 없음")
+        _system_info_throttled(
+            "[CybosInvestorRaw] program investor TR 후보 없음",
+            key="cybos_investor_raw_program_missing",
+            min_interval_sec=600.0,
+        )
         return {
             "supported": False,
             "source": "mapping_pending",

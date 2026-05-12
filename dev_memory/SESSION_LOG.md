@@ -6,6 +6,43 @@
 
 ## 2026-05-12 (15차 — 챔피언-도전자 시스템 전면 구현 + MicroRegimeClassifier 연결)
 
+## 2026-05-12 (16차 — WARN 노이즈 2단계 감축: Cybos + BalanceUI/Refresh 레이트리밋 INFO)
+
+**Work**
+
+오늘 장중 로그 분석 후 반복성 WARNING 폭주 구간을 코드 레벨에서 2단계로 재분류했다.
+
+### 1차 (Cybos API 계층)
+
+| 파일 | 변경 |
+|---|---|
+| `collection/cybos/api_connector.py` | `_system_info_throttled()` 추가 (키별 최소 간격) |
+| `collection/cybos/api_connector.py` | `[CybosInvestorRaw] ... TR 후보 없음` WARNING → 10분 레이트리밋 INFO |
+| `collection/cybos/api_connector.py` | `[CybosDailyPnl] profit_rate 이상값` 재등급: `>200%`만 WARNING, `50~200%`는 10분 레이트리밋 INFO |
+
+### 2차 (메인 런타임 Balance 계층)
+
+| 파일 | 변경 |
+|---|---|
+| `main.py` | `_ts_should_emit_throttled`, `_ts_system_info_throttled`, `_ts_logger_info_throttled` 추가 |
+| `main.py` | `[BalanceRefresh] trigger/request/result` 계열 WARNING → 레이트리밋 INFO |
+| `main.py` | `[BalanceUI] raw/computed/push/force flat/skipped empty` 반복 WARNING → 레이트리밋 INFO |
+| `main.py` | 실제 장애성 경고(`request returned None`, empty account 등)는 WARNING 유지 |
+
+### 효과
+
+- `WARN.log`에서 분당 반복 진단성 메시지의 비중을 낮추고, 실제 대응 필요 이벤트(CRITICAL/실장애 WARNING) 가시성을 높였다.
+- 경고 피로를 줄이면서도 진단 정보는 INFO 채널로 유지했다.
+
+### 남은 후속
+
+- 레이트리밋 간격(30/60/120초, 10분) 운영 표준값 확정
+- 장중 재가동 시 CB HALTED 상태 영속 복원 누락 여부와의 상호작용 점검
+
+---
+
+## 2026-05-12 (15차 — 챔피언-도전자 시스템 전면 구현 + MicroRegimeClassifier 연결)
+
 **Work**
 
 Champion-Challenger 시스템의 핵심 미완성 부분을 발견·수정했다.

@@ -2,6 +2,30 @@
 
 ---
 
+## 2026-05-12 (16차 — 경고 등급 재분류 2단계)
+
+### [D40] 반복성 진단 로그는 WARNING이 아니라 레이트리밋 INFO로 관리한다
+**Decision**: 분 단위/체결 단위로 반복되는 운영 진단 로그는 기본 INFO로 낮추고, 키별 레이트리밋을 적용한다. 장애성 이벤트(요청 실패, 상태 불일치, 리스크 트리거)만 WARNING 이상 유지한다.  
+**Reason**: WARN.log의 반복 노이즈가 실제 리스크 이벤트(CB, 주문 불일치, 동기화 실패)를 가린다. 신호 품질을 높이기 위해 경고 채널을 "조치 필요 이벤트"로 보존해야 한다.
+
+### [D41] `profit_rate 이상값`은 2단계 임계로 재등급한다
+**Decision**: `abs(profit_rate) > 200%`만 WARNING, `50~200%`는 INFO(레이트리밋)로 기록한다.  
+**Reason**: Cybos mock/헤더 특성상 99~101% 부근 값이 반복 관측되며, 이를 매분 WARNING으로 올리면 운영 경보 피로를 유발한다. 극단 이상치만 경고로 격상한다.
+
+### [B61] `CybosInvestorRaw ... 후보 없음` 반복 경고 폭주
+**File**: `collection/cybos/api_connector.py`  
+**Symptom**: 장중 분당 WARNING으로 누적되어 WARN.log 대부분을 점유.  
+**Cause**: 데이터 공백/후보 부재 상태가 정상적일 수 있는 구간에서도 매 호출 WARNING 발행.  
+**Fix**: `_system_info_throttled()` 도입, 해당 메시지를 10분 레이트리밋 INFO로 재분류.
+
+### [B62] `BalanceUI/BalanceRefresh` 상태 로그가 WARNING 채널을 과점
+**File**: `main.py`  
+**Symptom**: 체결/리프레시 루프마다 `[BalanceRefresh] trigger/request/result`, `[BalanceUI] raw/computed/push`가 WARNING으로 누적.  
+**Cause**: 진단용 텔레메트리 로그가 경고 레벨로 설계되어 반복 출력.  
+**Fix**: `_ts_system_info_throttled()`, `_ts_logger_info_throttled()` 추가 후 반복성 메시지를 INFO(30/60/120초 레이트리밋)로 재분류. `request returned None`, `empty account` 등 장애성 경고는 유지.
+
+---
+
 ## 2026-05-12 (15차 — 챔피언-도전자 시스템 + MicroRegimeClassifier 연결)
 
 ### [D36] MicroRegimeClassifier를 main.py에 연결 (adx_dummy 제거)
