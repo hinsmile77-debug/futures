@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-05-08 15:33:01",
+  "generated_at": "2026-05-12 12:53:59",
   "recommended_stage": "shadow",
   "recommended_reason": "실거래 확대 전 shadow/alert 단계 유지 권장",
   "gate_stats": {
-    "ensemble_decisions": 76,
-    "meta_labels": 341,
-    "verified_predictions": 8847
+    "ensemble_decisions": 653,
+    "meta_labels": 3469,
+    "verified_predictions": 11975
   },
-  "ece": 0.402442,
-  "pnl_delta": -3.6,
+  "ece": 0.404116,
+  "pnl_delta": -7.8,
   "has_calibration": true,
   "has_meta_tuning": true
 }

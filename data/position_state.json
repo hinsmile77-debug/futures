@@ -5,12 +5,14 @@
   "entry_time": null,
   "grade": "",
   "regime": "",
+  "signal_direction": "",
+  "reverse_entry_enabled": false,
   "stop_price": 0.0,
   "tp1_price": 0.0,
   "tp2_price": 0.0,
   "partial_1_done": false,
   "partial_2_done": false,
-  "last_update_reason": "apply_exit_fill_final:TP1(전량)",
-  "last_update_ts": "2026-05-08T15:07:02",
-  "saved_at": "2026-05-08T15:07:03.361849"
+  "last_update_reason": "apply_exit_fill_final:하드스톱",
+  "last_update_ts": "2026-05-12T13:59:59.173987",
+  "saved_at": "2026-05-12T13:59:59.174986"
 }

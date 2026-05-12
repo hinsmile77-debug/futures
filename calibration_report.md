@@ -1,71 +1,71 @@
 # Calibration Report
 
-- Generated at: 2026-05-08 15:33:01
-- Total verified predictions: 8847
+- Generated at: 2026-05-12 12:53:59
+- Total verified predictions: 11975
 
 ## Overall
 
-- Accuracy: 39.69%
-- Brier score: 0.329781
-- Log-loss: 6.473998
-- ECE: 0.402442
+- Accuracy: 40.08%
+- Brier score: 0.330826
+- Log-loss: 6.858783
+- ECE: 0.404116
 
 ## By Horizon
 
 ### 10m
 
-- Count: 1465
-- Accuracy: 40.61%
-- Brier score: 0.332665
-- Log-loss: 6.843515
-- ECE: 0.406504
+- Count: 1982
+- Accuracy: 41.32%
+- Brier score: 0.331912
+- Log-loss: 7.050614
+- ECE: 0.402980
 
 ### 15m
 
-- Count: 1438
-- Accuracy: 41.31%
-- Brier score: 0.320714
-- Log-loss: 6.369722
-- ECE: 0.383313
+- Count: 1947
+- Accuracy: 40.93%
+- Brier score: 0.328040
+- Log-loss: 6.919712
+- ECE: 0.401682
 
 ### 1m
 
-- Count: 1557
-- Accuracy: 37.64%
-- Brier score: 0.319937
-- Log-loss: 5.560433
-- ECE: 0.376669
+- Count: 2104
+- Accuracy: 39.07%
+- Brier score: 0.324864
+- Log-loss: 6.357744
+- ECE: 0.390151
 
 ### 30m
 
-- Count: 1346
-- Accuracy: 38.19%
-- Brier score: 0.356693
-- Log-loss: 7.521784
-- ECE: 0.446076
+- Count: 1831
+- Accuracy: 38.61%
+- Brier score: 0.349361
+- Log-loss: 7.646193
+- ECE: 0.430335
 
 ### 3m
 
-- Count: 1531
-- Accuracy: 40.63%
-- Brier score: 0.320856
-- Log-loss: 6.045972
-- ECE: 0.389020
+- Count: 2070
+- Accuracy: 40.29%
+- Brier score: 0.322352
+- Log-loss: 6.340611
+- ECE: 0.384713
 
 ### 5m
 
-- Count: 1510
-- Accuracy: 39.74%
-- Brier score: 0.330830
-- Log-loss: 6.656787
-- ECE: 0.418875
+- Count: 2041
+- Accuracy: 40.18%
+- Brier score: 0.330540
+- Log-loss: 6.950020
+- ECE: 0.421829
 
 ## Worst Confidence Bins
 
-- 0.9~1.0: n=4163 avg_conf=0.9986 acc=0.3714 gap=0.6273
-- 0.8~0.9: n=733 avg_conf=0.8572 acc=0.3533 gap=0.5039
-- 0.7~0.8: n=640 avg_conf=0.7445 acc=0.4469 gap=0.2976
-- 0.6~0.7: n=610 avg_conf=0.6552 acc=0.3918 gap=0.2634
-- 0.3~0.4: n=821 avg_conf=0.3334 acc=0.4470 gap=0.1136
-- 0.5~0.6: n=1813 avg_conf=0.5057 acc=0.4335 gap=0.0722
-- 0.4~0.5: n=67 avg_conf=0.4850 acc=0.4179 gap=0.0671
+- 0.9~1.0: n=6085 avg_conf=0.9990 acc=0.3826 gap=0.6164
+- 0.8~0.9: n=823 avg_conf=0.8610 acc=0.3524 gap=0.5086
+- 0.7~0.8: n=641 avg_conf=0.7445 acc=0.4462 gap=0.2983
+- 0.6~0.7: n=683 avg_conf=0.6548 acc=0.4012 gap=0.2537
+- 0.3~0.4: n=1088 avg_conf=0.3334 acc=0.4357 gap=0.1023
+- 0.5~0.6: n=2547 avg_conf=0.5050 acc=0.4291 gap=0.0758
+- 0.4~0.5: n=108 avg_conf=0.4903 acc=0.5000 gap=0.0097
