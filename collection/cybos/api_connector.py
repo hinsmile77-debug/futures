@@ -373,10 +373,25 @@ class CybosAPI:
             next_day_deposit_cash = _safe_float(raw_headers.get(DAILY_PNL_HEADER_NEXT_DAY_DEPOSIT_CASH))
             prev_day_pnl = _safe_float(raw_headers.get(DAILY_PNL_HEADER_PREV_DAY_PNL))
             today_pnl = _safe_float(raw_headers.get(DAILY_PNL_HEADER_TODAY_PNL))
-            liquidation_eval = _safe_float(raw_headers.get(DAILY_PNL_HEADER_LIQUIDATION_EVAL))
-            if liquidation_eval <= 0.0 and next_day_deposit_cash > 0.0:
-                liquidation_eval = next_day_deposit_cash
+            liquidation_eval_raw = _safe_float(raw_headers.get(DAILY_PNL_HEADER_LIQUIDATION_EVAL))
+            liquidation_substituted = liquidation_eval_raw <= 0.0 and next_day_deposit_cash > 0.0
+            liquidation_eval = next_day_deposit_cash if liquidation_substituted else liquidation_eval_raw
             profit_rate = (next_day_deposit_cash / deposit_cash * 100.0) if deposit_cash else 0.0
+
+            # sanity: profit_rate 이 비정상 범위면 header idx 오매핑 가능성
+            if abs(profit_rate) > 50.0:
+                _system_warning(
+                    f"[CybosDailyPnl] profit_rate 이상값 {profit_rate:.2f}% — "
+                    f"deposit={deposit_cash:.0f} next_day={next_day_deposit_cash:.0f} "
+                    f"header_idx_check={{1:{raw_headers.get(1)}, 2:{raw_headers.get(2)}}}"
+                )
+
+            # liquidation_eval 이 장 시작 전 0 → 익일예탁금으로 대체된 경우 WARNING
+            if liquidation_substituted:
+                _system_warning(
+                    f"[CybosDailyPnl] 청산평가액=0 → 익일예탁금({next_day_deposit_cash:.0f})으로 대체 "
+                    f"(장 시작 전 타이밍 또는 미결제약정 없음) account={account_no}"
+                )
 
             header_validation = {
                 "deposit_cash_idx": DAILY_PNL_HEADER_DEPOSIT_CASH,
@@ -384,10 +399,15 @@ class CybosAPI:
                 "prev_day_pnl_idx": DAILY_PNL_HEADER_PREV_DAY_PNL,
                 "today_pnl_idx": DAILY_PNL_HEADER_TODAY_PNL,
                 "liquidation_eval_idx": DAILY_PNL_HEADER_LIQUIDATION_EVAL,
-                "liquidation_equals_next_day": liquidation_eval == next_day_deposit_cash,
+                "liquidation_substituted": liquidation_substituted,
                 "prev_day_pnl_zero": prev_day_pnl == 0.0,
             }
 
+            # 필드 의미 (대시보드 라벨 기준):
+            #   총매매        = 예탁금 (KRW)
+            #   총평가손익    = 청산평가손익 (KRW, 포지션 없으면 익일예탁금 대체)
+            #   총평가수익률  = 익일가예탁현금 (KRW) — _ts_extract_sizer_balance 잔고 소스
+            #   추정자산      = 전일손익 (KRW)
             summary = {
                 "총매매": f"{deposit_cash:.0f}",
                 "총평가손익": f"{liquidation_eval:.0f}",

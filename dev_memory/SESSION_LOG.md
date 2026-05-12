@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-05-12 (14차 — 로그 분석 + 6종 버그 수정)
+
+**Work**
+
+로그 분석 (`logs/20260512_*.log`) 기반으로 6종 버그를 발견·수정했다.
+
+### 수정 목록
+
+| # | 파일 | 수정 내용 |
+|---|---|---|
+| B56 | `learning/meta_confidence.py` | `SGDClassifier(loss="log_loss")` → `loss="log"` (sklearn 1.0.2 호환) |
+| D35 | `config/secrets.py` | `ACCOUNT_NO = "7034809431"` → `"333042073"` (Kiwoom 잔여값 제거) |
+| B57 | `main.py` | ExitCooldown 중복 로그 제거 (`_exit_cooldown_applied_this_fill` 플래그로 중복 경로 차단) |
+| B58 | `main.py` | CB HALTED 상태에서 Sizer/Checklist 계산이 억제되지 않던 문제 수정 (`is_entry_allowed()` 게이트 추가) |
+| B58b | `main.py` | 대기 heartbeat에 CB 상태 표시 추가 (`_log_waiting_status`) |
+| B59 | `strategy/position/position_tracker.py` | TRADE.log 한글 깨짐 3곳 수정 (line 464: TP1 arm, line 487: assert 메시지, line 513: TP1 보호전환) |
+| B60 | `collection/cybos/api_connector.py` | 잔고 sanity check — `liquidation_eval=0 → 익일예탁금 대체 시 WARNING`, `profit_rate > ±50%` 이상값 경고 추가 |
+
+### 로그 진단 요약
+
+- **LEARNING.log**: 09:17~장마감 내내 `The loss log_loss is not supported` — MetaConf 메타 레이어 전무력화. B56으로 해결.
+- **WARN.log**: 계좌번호 불일치 (`7034809431 not in session`), CybosInvestorRaw 105회 연속 후보 없음(09:00~10:44), ExitCooldown 중복(진입·청산마다 2회), CB ③ HALT 10:20:59 발동.
+- **TRADE.log**: Sizer가 CB HALT 이후에도 계속 계산·로그 출력, 잔고 480,707,716 고정(하루 종일), 한글 깨짐.
+- **SIGNAL.log**: CB HALT 이후에도 `conf=100.0%` 신호 생성 지속 (진입은 없었으나 로그 노이즈).
+- **주요 관찰**: MetaConf 오류 → SGD 온라인학습 미동작 → 30분 정확도 19% → CB ③ 당일 정지 인과관계 확인.
+
+### 미해결 항목
+
+- `CybosInvestorRaw 후보 없음` 1시간45분 갭 (09:00~10:44): `CpSysDib.CpSvrNew7212`가 장 시작 직후 미응답. 7건 거래가 이 갭 안에서 발생. 원인 미확정 → 다음 세션 추가 조사.
+- `총평가수익률` 필드가 KRW(익일예탁현금)를 담고 있어 필드명과 의미 불일치 — 의도적 설계이나 WARNING 로그 추가(B60) 완료.
+
+---
+
 ## 2026-05-11 (13차 — cybos_autologin.py 완성 + 정상 동작 확인)
 
 **Work**

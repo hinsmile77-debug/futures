@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-05-12 로그 분석 기반 버그 수정
+
+- [DONE 2026-05-12] MetaConf `loss="log_loss"` → `loss="log"` 수정 (`learning/meta_confidence.py`) — sklearn 1.0.2 호환
+- [DONE 2026-05-12] `config/secrets.py` 계좌번호 `7034809431` → `333042073` 수정
+- [DONE 2026-05-12] ExitCooldown 중복 로그 제거 (`main.py` `_exit_cooldown_applied_this_fill` 플래그)
+- [DONE 2026-05-12] CB HALTED 상태 Sizer 억제 (`main.py` `is_entry_allowed()` 게이트)
+- [DONE 2026-05-12] TRADE.log 한글 깨짐 3곳 수정 (`strategy/position/position_tracker.py` line 464/487/513)
+- [DONE 2026-05-12] `api_connector.py` 잔고 sanity check — liquidation_eval=0 대체 시 WARNING, profit_rate 이상값 경고
+
+- [NEXT 2026-05-13] `CybosInvestorRaw 후보 없음` 09:00~10:44 갭 원인 조사
+  - 7건 거래가 모두 수급 데이터 없는 구간에서 발생
+  - `CpSysDib.CpSvrNew7212`가 장 시작 직후 미응답하는 조건 확인
+  - 필요 시 warmup 대기(장 시작 후 N분 수급 신호 차단) 도입 검토
+
+- [NEXT 2026-05-13] 2026-05-12 CB 발동 후 재시작 첫 장에서 MetaConf 정상 학습 확인
+  - LEARNING.log에서 `MetaConf 학습 오류` 메시지 완전 소멸 확인
+  - MetaConf `model_fitted=True` 및 `confidence_score` 범위 정상 확인
+
+---
+
 ## 2026-05-11 자동 로그인
 
 - [DONE 2026-05-11] `scripts/cybos_autologin.py` — `ncStarter.exe /prj:cp` 기반 모의투자 자동 로그인 정상 동작 확인

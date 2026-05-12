@@ -1371,7 +1371,7 @@ class TradingSystem:
                 "✓" if _chk.get("9_risk")       else "✗",
             )
 
-            if _final_grade != "X":
+            if _final_grade != "X" and self.circuit_breaker.is_entry_allowed():
                 kelly_result = self.kelly.compute_fraction()
                 size_result  = self.sizer.compute(
                     confidence          = confidence,
@@ -1865,20 +1865,15 @@ class TradingSystem:
         if pnl > 0:
             self.circuit_breaker.record_win()
             self.kelly.record(win=True, pnl_pts=pnl)
-            _cooldown_min = 2   # TP 청산 후 2분 — 고점 추격 재진입 방지
         else:
             self.circuit_breaker.record_stop_loss()
             self.kelly.record(win=False, pnl_pts=pnl)
-            _cooldown_min = 3   # 손절 후 3분 — 동일 방향 재진입 충동 차단
 
-        self._exit_cooldown_until = (
-            datetime.datetime.now() + datetime.timedelta(minutes=_cooldown_min)
-        )
-        log_manager.signal(
-            f"[ExitCooldown] {result['exit_reason']} 후 {_cooldown_min}분 재진입 금지 "
-            f"(until {self._exit_cooldown_until.strftime('%H:%M:%S')})"
-        )
-        _ts_apply_exit_cooldown(self, result)
+        # 쿨다운 설정 — Cybos 비동기 경로(_ts_on_exit_fill)에서는 이미 호출되지 않으므로
+        # 여기서 단일 진입점으로 처리 (레거시 동기 경로 포함 모두 통합)
+        if not getattr(self, "_exit_cooldown_applied_this_fill", False):
+            _ts_apply_exit_cooldown(self, result)
+        self._exit_cooldown_applied_this_fill = False
 
         log_manager.trade(
             f"[청산 완료] PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원)"
@@ -2697,6 +2692,9 @@ class TradingSystem:
         else:
             reason = "장 마감 후 — 내일 08:45 매크로 수집 재개"
 
+        _cb_state = self.circuit_breaker.state
+        if _cb_state != "NORMAL" and is_market_open(now):
+            reason = f"CB {_cb_state} — 신규 진입 정지 | {reason}"
         logger.info(
             "[System] 대기 중 | %s | 레짐=%s | 포지션=%s | %s",
             reason, self.current_regime,
@@ -3224,6 +3222,7 @@ def _ts_handle_exit_fill(
         return
 
     _ts_apply_exit_cooldown(self, result, filled_at)
+    self._exit_cooldown_applied_this_fill = True
     self._post_exit(result)
     _ts_log_diag(
         self,
@@ -3287,6 +3286,7 @@ def _ts_handle_external_fill(
             )
         else:
             _ts_apply_exit_cooldown(self, result, filled_at)
+            self._exit_cooldown_applied_this_fill = True
             self._post_exit(result)
 
     if remaining_fill > 0:

@@ -2,6 +2,50 @@
 
 ---
 
+## 2026-05-12 (14차 — 로그 분석 기반 버그 수정)
+
+### [B56] MetaConf `SGDClassifier(loss="log_loss")` — sklearn 1.0.2 미지원
+**File**: `learning/meta_confidence.py`  
+**Symptom**: LEARNING.log 전체(09:17~15:10)에 `The loss log_loss is not supported` 오류 반복. 6개 호라이즌 × 모든 분봉 학습 실패. SGD 비중 44%→10%→30% 진동.  
+**Root cause**: `loss="log_loss"`는 sklearn 1.1+에서 추가됨. 프로젝트 환경은 sklearn 1.0.2이므로 `loss="log"` 사용해야 함. MetaConf 전무력화 → 앙상블 메타 보정 없음 → 30분 정확도 19% → CB ③ HALT 인과관계.  
+**Fix**: `SGDClassifier(loss="log", ...)` 으로 변경.
+
+### [D35] Kiwoom 잔여 계좌번호를 secrets.py에서 즉시 수정한다
+**Decision**: Cybos 마이그레이션 후에도 `secrets.py`에 `ACCOUNT_NO = "7034809431"` (Kiwoom 계좌)가 남아 있었음. 오늘 `333042073` (Cybos)으로 수정.  
+**Reason**: 런타임 fallback이 있어도 매번 WARN.log에 불일치 경고가 발생해 노이즈 증가. secrets.py는 .gitignore이므로 커밋 없이 수정.
+
+### [B57] ExitCooldown이 청산 1건당 2회 로그되던 문제
+**File**: `main.py` (`_ts_on_exit_fill`, `_post_exit`, `_ts_apply_exit_cooldown`)  
+**Symptom**: WARN.log에 `[ExitCooldown]` 메시지가 매 청산마다 2회 연속 출력.  
+**Root cause**: Cybos 비동기 fill 콜백 `_ts_on_exit_fill`에서 `_ts_apply_exit_cooldown` 직접 호출 후 `_post_exit` 재호출 → `_post_exit` 내부에서 다시 `_ts_apply_exit_cooldown` 호출. 두 경로 모두 쿨다운 설정+로그 실행.  
+**Fix**: `_exit_cooldown_applied_this_fill` 플래그 추가. `_ts_on_exit_fill`에서 쿨다운 적용 후 플래그=True 세팅, `_post_exit`에서 플래그가 False일 때만 쿨다운 재적용.
+
+### [B58] CB HALTED 상태에서 Sizer가 계속 계산·로그 출력하던 문제
+**File**: `main.py` (`run_minute_pipeline` STEP 6~7 분기)  
+**Symptom**: TRADE.log에서 CB HALT(10:20:59) 이후에도 `[Sizer] 잔고=..., 신뢰도배수=1.5 → 1계약` 로그가 계속 출력. Sizer는 로그만 내고 실제 진입은 없었으나 노이즈·오해 소지.  
+**Root cause**: Sizer 계산이 `if _final_grade != "X"` 블록 안에 있었고 CB 상태 체크 없음.  
+**Fix**: `if _final_grade != "X" and self.circuit_breaker.is_entry_allowed():`로 변경.
+
+### [B59] TRADE.log 한글 깨짐 — 소스 파일 인코딩 손상
+**File**: `strategy/position/position_tracker.py` (line 464, 487, 513)  
+**Symptom**: TRADE.log에 `[Position] 1?④쑴鍮?TP1 癰귣똾??袁れ넎 @ ...`, `assert: "???????곸벉"` 형태로 깨진 한글 출력.  
+**Root cause**: 파일을 잘못된 인코딩으로 저장할 때 소스 바이트 자체가 손상됨. 런타임 인코딩 문제가 아님 (handlers는 모두 `encoding="utf-8"` 정상). 다른 파일들은 정상인 것으로 보아 이 파일만 부분 손상.  
+**Fix**: 해당 3행의 문자열 리터럴을 올바른 한글로 직접 교체:  
+- line 464: `1계약 TP1 암(arm)` (arm_tp1_single_contract)  
+- line 487: `FLAT 상태에서 TP1 암 호출 불가` (assert)  
+- line 513: `1계약 TP1 보호전환` (arm_tp1_single_contract_with_mode)
+
+### [B60] CpTd6197 잔고 응답에서 liquidation_eval=0 대체 및 profit_rate 이상값 경고 없음
+**File**: `collection/cybos/api_connector.py` (`_request_futures_daily_pnl_summary`)  
+**Symptom**: WARN.log 시작 부분에 `총평가손익=총매매=480707716` — 두 필드가 같은 값. 장 중 내내 Sizer 잔고 480,707,716 고정 (업데이트 미반영은 별도 문제).  
+**Root cause**: 장 시작 전 또는 미결제약정 없을 때 `liquidation_eval=0` → 코드가 `next_day_deposit_cash`로 대체. 대체 사실이 WARNING 없이 INFO로만 기록되어 이상 감지 불가. 추가로 `총평가수익률` 필드가 KRW(익일가예탁현금)를 담고 있어 % 의미를 기대하는 독자에게 오해 유발.  
+**Fix**:  
+- `liquidation_substituted=True` 시 `_system_warning` 명시적 경고 출력  
+- `abs(profit_rate) > 50%` 시 header idx 오매핑 가능성 경고  
+- 필드 의미 주석 추가 (`총평가수익률` = 익일가예탁현금 KRW, `추정자산` = 전일손익)
+
+---
+
 ## 2026-05-11 (12차 — 투자자 수급 TR 확정 + UI 정합성)
 
 ### [D32] `CpSysDib.CpSvrNew7212` — 선물/콜/풋 투자자별 수급 TR 확정

@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-11 (12차) — **투자자 수급 TR 확정(CpSvrNew7212) + 다이버전스 패널 정합성 수정**
+> 마지막 업데이트: 2026-05-12 (14차) — **로그 분석 기반 6종 버그 수정 (MetaConf·ExitCooldown·CB gate·한글깨짐·잔고sanity)**
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -48,8 +48,33 @@
 
 - `_probe_8119_fields.py` 장 중(09:00~15:30) 실행 → `Dscbo1.CpSvr8119` h[0~5] 레이아웃 확인
 - 실제 파이프라인 매분 업데이트 시 투자자 수급 데이터 흐름 확인 ("대기" → 실수치 전환)
-- 장중 `FutureCurOnly` 분봉 timestamp 진행 확인 (2026-05-12 장중 필요)
+- 장중 `FutureCurOnly` 분봉 timestamp 진행 확인
 - `CpTd6831` 모의 주문 체결 end-to-end 검증
+- `CybosInvestorRaw 후보 없음` 09:00~10:44 갭 원인 조사 (7건 거래가 모두 이 구간에서 발생)
+
+---
+
+## 2026-05-12 버그 수정 현황
+
+| 버그 | 파일 | 상태 |
+|---|---|---|
+| MetaConf `loss="log_loss"` (sklearn 1.0.2 호환성) | `learning/meta_confidence.py` | ✅ 수정 완료 |
+| 계좌번호 Kiwoom 잔여값 `7034809431` | `config/secrets.py` | ✅ 수정 완료 (gitignore, 미커밋) |
+| ExitCooldown 중복 로그 (2회/청산) | `main.py` | ✅ 수정 완료 |
+| CB HALTED 이후 Sizer 계속 실행 | `main.py` | ✅ 수정 완료 |
+| TRADE.log 한글 깨짐 3곳 | `strategy/position/position_tracker.py` | ✅ 수정 완료 |
+| `liquidation_eval=0` 대체 시 경고 없음 | `collection/cybos/api_connector.py` | ✅ 수정 완료 |
+
+### MetaConf 오류 인과관계 (2026-05-12 장 중 확인)
+
+```
+MetaConf loss="log_loss" 미지원 오류 (sklearn 1.0.2)
+→ 6개 호라이즌 × 모든 분봉 학습 실패
+→ SGD 온라인학습 미동작 (weight 44%→10%→30% 진동)
+→ 메타 신뢰도 보정 없는 앙상블
+→ 30분 정확도 19% (CB 임계 35% 미달)
+→ CB ③ 10:20:59 당일 정지
+```
 
 ---
 

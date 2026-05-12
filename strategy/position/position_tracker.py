@@ -461,7 +461,7 @@ class PositionTracker:
         self._save_state()
 
         logger.info(
-            f"[Position] 1怨꾩빟 TP1 蹂댄샇?꾪솚 @ {current_price:.2f} "
+            f"[Position] 1계약 TP1 암(arm) @ {current_price:.2f} "
             f"| stop {prev_stop:.2f} -> {self.stop_price:.2f}"
         )
         return {
@@ -484,7 +484,7 @@ class PositionTracker:
         atr_lock_mult: float = 0.25,
     ) -> Dict:
         """For single-contract positions, convert TP1 into protection instead of full exit."""
-        assert self.status != POSITION_FLAT, "???????곸벉"
+        assert self.status != POSITION_FLAT, "FLAT 상태에서 TP1 암 호출 불가"
         assert self.quantity == 1, f"single-contract only: qty={self.quantity}"
 
         mult = 1 if self.status == POSITION_LONG else -1
@@ -510,7 +510,7 @@ class PositionTracker:
         self._save_state()
 
         logger.info(
-            f"[Position] 1?④쑴鍮?TP1 癰귣똾??袁れ넎 @ {current_price:.2f} "
+            f"[Position] 1계약 TP1 보호전환 @ {current_price:.2f} "
             f"| mode={mode} | stop {prev_stop:.2f} -> {self.stop_price:.2f}"
         )
         return {

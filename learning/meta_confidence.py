@@ -67,7 +67,7 @@ class MetaConfidenceLearner:
         self._conf_history = deque(maxlen=200)
 
         if _SKLEARN_OK:
-            self._model  = SGDClassifier(loss="log_loss", max_iter=1, warm_start=True, alpha=0.001)
+            self._model  = SGDClassifier(loss="log", max_iter=1, warm_start=True, alpha=0.001)
             self._scaler = StandardScaler()
 
     def _coerce_feature_vector(self, meta_features) -> Optional[List[float]]:
