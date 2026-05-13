@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-05-13 (21차) — 수정 후 검증 항목
+
+- [DONE 2026-05-13] B72: `run_minute_pipeline` `candle` → `bar` NameError 수정 → status bar 정상화
+- [DONE 2026-05-13] B73: position_state.json에 futures_code 저장/복원 + 재시작 코드 불일치 감지 + 체결 코드 이중 검증
+- [DONE 2026-05-13] B74: 봉차트 이종 종목 혼재 — `code` 전환 감지 초기화 + `_trim_to_last_price_group()`
+
+- [NEXT 2026-05-14] **HTS 잔고 수동 처리** (모의투자)
+  - A0666 SHORT @ 1922.80 — 수동 청산
+  - A0565 LONG @ 1177.3 — 수동 청산
+
+- [NEXT 2026-05-14] **재시작 후 B73 방지책 동작 검증**
+  - 미니선물 선택 상태로 재시작 → `[PositionCodeMismatch] CRITICAL` 로그 확인
+  - position_state.json에 `"futures_code"` 항목 정상 저장 확인
+  - 이후 정상 재시작(코드 일치) 시 CRITICAL 로그 미출력 확인
+
+- [NEXT 2026-05-14] **봉차트 코드 전환 실동작 검증**
+  - 재시작 후 A0565 첫 봉 수신 시 기존 캔들 초기화 → 단일 종목 Y축으로 정상 표시 확인
+  - `reload_today()` `_trim_to_last_price_group()`: 혼재 DB 상태에서 최신 그룹만 로드 확인
+
+- [NEXT 2026-05-14] **`_ts_on_chejan_event` (Kiwoom 구버전 함수, 3563번)**
+  - 현재 미사용(4652번에서 `_cybos_safe` 버전으로 교체됨)이지만 체결 코드 검증 미적용 상태
+  - 완전 제거 또는 동일 패치 적용 여부 결정
+
+---
+
 ## 2026-05-12 버그 수정 (18차) — 검증 항목
 
 - [DONE 2026-05-12] `scripts/cybos_autologin.py` — `sys.exit(0)` → `return True` (STEP 5 연결 대기 루프 활성화)

@@ -4550,6 +4550,7 @@ class MinuteChartCanvas(QWidget):
         self._drag_start_offset = 0
         self._last_step_px = 0.0
         self._last_plot_rect = QRectF()
+        self._instrument_code = ""   # 현재 표시 중인 종목코드
         self.setMinimumHeight(S.p(420))
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
@@ -4607,6 +4608,17 @@ class MinuteChartCanvas(QWidget):
         normalized = self._normalize_candle(candle)
         if not normalized:
             return
+
+        # 종목코드 전환 감지 — 코드가 바뀌면 차트 전체 초기화
+        incoming_code = str(candle.get("code") or "").strip()
+        if incoming_code and self._instrument_code and incoming_code != self._instrument_code:
+            self._closed_candles = []
+            self._live_candle = None
+            self._exit_markers = []
+            self._active_trade = None
+        if incoming_code:
+            self._instrument_code = incoming_code
+
         if self._closed_candles and self._closed_candles[-1]["ts"] == normalized["ts"]:
             self._closed_candles[-1] = normalized
         else:
@@ -5307,6 +5319,23 @@ class MinuteChartDialog(QDialog):
 
         self.reload_today()
 
+    @staticmethod
+    def _trim_to_last_price_group(candles: list, threshold: float = 0.04) -> list:
+        """연속된 최신 가격 그룹만 반환.
+
+        종목 전환(예: A0666 → A0565) 시 이전 종목 캔들을 제거.
+        연속 봉 간 close→open 가격 차이가 threshold(4%) 초과 시 그 이전 데이터 버림.
+        """
+        if len(candles) < 2:
+            return candles
+        for i in range(len(candles) - 1, 0, -1):
+            prev_close = float(candles[i - 1].get("close") or 0)
+            cur_open = float(candles[i].get("open") or 0)
+            if prev_close > 0 and cur_open > 0:
+                if abs(cur_open - prev_close) / prev_close > threshold:
+                    return candles[i:]
+        return candles
+
     def reload_today(self):
         self._session_date = datetime.now().date().isoformat()
         candle_rows = fetchall(
@@ -5317,7 +5346,7 @@ class MinuteChartDialog(QDialog):
                ORDER BY ts ASC""",
             (f"{self._session_date}%",),
         )
-        candles = [dict(row) for row in candle_rows]
+        candles = self._trim_to_last_price_group([dict(row) for row in candle_rows])
 
         completed_trades = []
         for row in fetch_today_trades(self._session_date):

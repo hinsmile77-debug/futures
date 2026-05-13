@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-05-13 (21차 — 종목코드 불일치 방지책 + 봉차트 이종 가격 혼재)
+
+### [D50] position_state.json에 futures_code 저장 — 재시작 코드 검증 게이트
+**Decision**: `_save_state()`에 `"futures_code"` 항목 추가. 재시작 시 `connect_broker()`에서 저장 코드와 `_futures_code`를 비교하여 불일치 시 포지션 강제 FLAT + CRITICAL 로그.  
+**Reason**: ui_prefs.json 종목과 실제 보유 포지션 종목이 다를 때(예: 미니선물 선택 후 재시작, 실제 잔고는 선물) 잘못된 코드로 청산 주문이 나가는 사태 방지. 오늘 A0565/A0666 불일치로 실제 사고 발생.  
+**How to apply**: 불일치 감지 시 자동 복구 없이 강제 FLAT + 경보. 사용자가 HTS에서 해당 종목 잔고를 수동 확인/처리해야 한다. 이 게이트가 발동하면 봇은 FLAT 상태로 대기하므로 추가 손실은 없다.
+
+### [D51] MinuteChartCanvas — 종목코드 전환 시 캔들 즉시 초기화
+**Decision**: 캔들 dict에 `code` 필드 추가(`realtime_data.py`). `on_candle_closed()`에서 수신 코드가 `_instrument_code`와 다르면 `_closed_candles`, `_live_candle`, `_exit_markers`, `_active_trade` 전체 초기화 후 새 코드로 재시작.  
+**Reason**: 종목 전환 시 이종 가격(예: 1177, 1922)이 혼재하면 Y축 스케일이 ~750pt로 확대되어 개별 봉이 1픽셀 미만이 됨. 차트가 사실상 사용 불가 상태.  
+**How to apply**: `reload_today()`에도 `_trim_to_last_price_group()` 적용(4% 가격 점프 감지). DB에 code 컬럼이 없어 가격 연속성으로 이종 캔들 판별.
+
+### [B72] `run_minute_pipeline` — 파라미터명 `bar` vs 지역변수 `candle` 오타
+**File**: `main.py:1776`  
+**Symptom**: 분봉 status bar 대기, WARN 로그에 `NameError: name 'candle' is not defined` 매분 반복.  
+**Root cause**: 함수 시그니처 `run_minute_pipeline(self, bar: dict)` 인데 챔피언-도전자 Shadow 블록(1776번째 줄)에서 `candle`을 참조. 해당 스코프에 `candle` 변수 없음.  
+**Fix**: `candle if isinstance(candle, dict)` → `bar if isinstance(bar, dict)`.  
+**재발 방지**: 파이프라인 함수 파라미터명은 `bar`로 통일. `_on_candle_closed(self, candle)`의 `candle`은 콜백 전용 이름.
+
+### [B73] 재시작 코드 불일치 → 청산 주문 A0565로 발송 / A0666 SHORT 미청산 잔류
+**File**: `main.py`, `strategy/position/position_tracker.py`  
+**Symptom**: 10:12:02 A0565 LONG @ 1177.3 체결. A0666 SHORT @ 1922.80 브로커 잔고에 미청산 잔류. 시스템은 FLAT 오인식.  
+**Root cause**: (1) position_state.json에 종목코드 없어 재시작 코드 불일치 감지 불가. (2) `block_new_entries=True`지만 청산은 허용 — 청산 주문이 잘못된 코드(A0565)로 발송. (3) `_ts_on_chejan_event_cybos_safe`에서 체결 코드 미검증 → A0565 체결을 EXIT_FULL로 처리.  
+**Fix**: D50 참조(position_state 코드 저장/검증) + chejan 이벤트 코드 검증 추가.  
+**재발 방지**: 재시작 시 저장 코드 ≠ `_futures_code`이면 포지션 강제 FLAT. 체결 이벤트는 반드시 종목코드 일치 확인 후 포지션 반영.
+
+### [B74] 봉차트 이종 종목 가격 혼재 — Y축 스케일 붕괴
+**File**: `dashboard/main_dashboard.py`, `collection/cybos/realtime_data.py`  
+**Symptom**: 봉이 상단(~1922레벨)과 하단(~1177레벨) 두 행에 분산. 봉 몸통이 수평 대시로만 표시.  
+**Root cause**: `_closed_candles`에 A0666(~1922)과 A0565(~1177) 캔들이 혼재. `paintEvent`의 Y축 범위가 ~750pt로 확대되어 개별 움직임(2~5pt)이 픽셀 미만. `reload_today()`도 DB에서 이종 캔들 구분 없이 로드.  
+**Fix**: D51 참조.
+
+---
+
 ## 2026-05-13 (20차 — Cybos 미니선물 실시간 파이프라인 확립)
 
 ### [D48] Cybos COM 선물 코드 열거 객체별 반환 상품 — 2026-05-13 실증 확정

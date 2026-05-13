@@ -834,12 +834,25 @@ class TradingSystem:
         _spec = get_contract_spec(code)
         self._pt_value = _spec["pt_value"]
         self.position.set_pt_value(self._pt_value)
+        self.position.set_futures_code(code)
         if hasattr(self, "exit_manager"):
             self.exit_manager.set_pt_value(self._pt_value)
         if hasattr(self, "entry_manager"):
             self.entry_manager._sizer.set_pt_value(self._pt_value)
         self.sizer.set_pt_value(self._pt_value)
         print(f"[DBG CK-3b] 계약스펙={_spec['label']} pt_value={self._pt_value:,}", flush=True)
+
+        # [안전] 재시작 시 저장 포지션 종목코드 검증 — 불일치 시 강제 FLAT
+        _saved_pos_code = getattr(self.position, "_loaded_futures_code", "")
+        if _saved_pos_code and _saved_pos_code != code and self.position.status != "FLAT":
+            _mismatch_msg = (
+                f"[PositionCodeMismatch] CRITICAL: 저장 포지션 코드({_saved_pos_code}) ≠ "
+                f"현재 코드({code}) — 포지션 강제 FLAT. HTS에서 {_saved_pos_code} 잔고 수동 확인 필요."
+            )
+            logger.critical(_mismatch_msg)
+            log_manager.system(_mismatch_msg, "CRITICAL")
+            self.position.force_flat("code_mismatch_on_restart")
+
         self.emergency_exit.set_futures_code(code)
         self.emergency_exit.set_order_manager(
             _BrokerOrderAdapter(self.broker, code, selected_account)
@@ -1773,7 +1786,7 @@ class TradingSystem:
                 "ts":     ts,
                 "atr":    features.get("atr", 1.0),
                 "regime": self.current_micro_regime,
-                "candle": candle if isinstance(candle, dict) else {},
+                "candle": bar if isinstance(bar, dict) else {},
             }
             self.challenger_engine.run_shadow(features, _ctx.get("candle", {}), _ctx)
 
@@ -4552,6 +4565,25 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
 
     if _gubun == "1":
         _ts_sync_from_balance_payload(self, payload)
+        return
+
+    # 체결 종목코드 검증 — 거래 코드와 다른 종목 체결은 포지션에 반영하지 않음
+    _event_code = self._normalize_broker_code(code)
+    _trade_code = self._normalize_broker_code(getattr(self, "_futures_code", ""))
+    if _event_code and _trade_code and _event_code != _trade_code:
+        _ts_log_diag(
+            self,
+            "ChejanCodeMismatch",
+            event_code=_event_code,
+            trade_code=_trade_code,
+            order_no=order_no,
+            status=status,
+        )
+        log_manager.system(
+            f"[ChejanCodeMismatch] WARNING: 체결 코드({_event_code}) ≠ 거래 코드({_trade_code}) "
+            f"— 주문번호={order_no} 포지션 반영 거부. HTS 잔고 직접 확인 필요.",
+            "WARNING",
+        )
         return
 
     log_manager.trade(

@@ -1,7 +1,36 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-13 (20차) — **Cybos 미니선물 실시간 파이프라인 확립 + Cybos COM 코드 체계 실증**
+> 마지막 업데이트: 2026-05-13 (21차) — **분봉 파이프라인 NameError + 종목코드 불일치 방지책 + 봉차트 수정**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-13 (21차)
+
+### 수정된 파일
+
+| 파일 | 수정 내용 |
+|---|---|
+| `main.py:1776` | `candle` → `bar` NameError 수정 (B72) |
+| `main.py:connect_broker()` | `_futures_code` 확정 후 `position._loaded_futures_code`와 비교 — 불일치 시 강제 FLAT + CRITICAL 로그 (B73) |
+| `main.py:_ts_on_chejan_event_cybos_safe` | 체결 이벤트 code ≠ `_futures_code` 시 WARNING + 포지션 반영 거부 (B73) |
+| `strategy/position/position_tracker.py` | `_futures_code`/`_loaded_futures_code` 필드, `set_futures_code()`, `force_flat()` 추가. `_save_state()`에 `futures_code` 저장, `load_state()`에서 복원 (B73/D50) |
+| `collection/cybos/realtime_data.py` | 캔들 dict에 `"code": self.code` 추가 (B74) |
+| `dashboard/main_dashboard.py` | `MinuteChartCanvas._instrument_code` 추가. `on_candle_closed()` — 코드 전환 시 차트 초기화. `_trim_to_last_price_group()` + `reload_today()` 필터 (B74/D51) |
+
+### 핵심 안전 규칙 (21차 추가)
+
+- **재시작 시 코드 불일치 → 강제 FLAT**: `connect_broker()` 완료 후 저장 포지션 코드와 `_futures_code` 비교. 불일치면 포지션 CRITICAL 초기화. HTS에서 해당 종목 수동 확인 필수
+- **체결 코드 이중 검증**: `_ts_on_chejan_event_cybos_safe`에서 payload code ≠ `_futures_code` 시 포지션 반영 거부
+- **봉차트 코드 전환 감지**: 실시간 캔들에 `code` 포함. `on_candle_closed()`에서 코드 변경 감지 시 기존 캔들 초기화
+
+### 현재 운영 상태
+
+- 오늘 발생한 A0666/A0565 불일치 사고: HTS에서 두 포지션 수동 처리 필요 (모의투자)
+  - A0666 SHORT @ 1922.80 — 미청산 상태
+  - A0565 LONG @ 1177.3 — 실수로 생성됨
+- 미니선물(A0565) 선택 후 재시작 → `[PositionCodeMismatch]` 로그 + 강제 FLAT으로 추가 사고 방지
+- 봉차트: 다음 정상 세션부터 단일 종목 캔들만 표시됨
 
 ---
 
@@ -26,10 +55,9 @@
 - 코드 규칙: `A05 + 연도끝자리 + 월(hex)` — 2026-05=A0565, 2026-06=A0566, 2026-12=A056C
 - Cybos COM 실시간 구독(FutureCurOnly)은 **5자리 코드만 수락**. 8자리 코드(A0565000)는 무음 실패
 
-### 현재 운영 상태
+### 현재 운영 상태 (20차 시점 기록)
 
-- 미니선물 실시간 구독: 재시작 후 `A0565` 5자리 코드로 정상 구독 예정
-- 오늘(2026-05-13) 09:33 진입한 KOSDAQ150 SHORT 1계약 @ 1922.8 — 15:10 강제 청산 또는 수동 정리 필요
+- 미니선물 실시간 구독: `A0565` 5자리 코드로 정상 구독
 - 봇 재시작 후 `[DBG CK-3] 근월물 코드=A0565 is_mini=True` 확인 필수
 
 ---

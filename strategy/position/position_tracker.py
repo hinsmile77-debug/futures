@@ -59,9 +59,32 @@ class PositionTracker:
         self.last_update_reason: str = "init"
         self.last_update_ts: Optional[datetime.datetime] = None
 
+        self._futures_code: str = ""          # 현재 거래 종목코드 (connect_broker 후 주입)
+        self._loaded_futures_code: str = ""   # load_state() 에서 복원된 저장 코드
+
     def set_pt_value(self, pt_value: float) -> None:
         """계약 종류 변경 시 pt_value 갱신 (FLAT 상태에서만 유효)."""
         self._pt_value = float(pt_value)
+
+    def set_futures_code(self, code: str) -> None:
+        """거래 종목코드 주입 — connect_broker() 완료 후 호출."""
+        self._futures_code = str(code or "").strip()
+
+    def force_flat(self, reason: str = "forced") -> None:
+        """포지션 강제 초기화 — 코드 불일치 등 비정상 상태 복구용."""
+        self.status = POSITION_FLAT
+        self.entry_price = 0.0
+        self.quantity = 0
+        self.entry_time = None
+        self.stop_price = 0.0
+        self.tp1_price = 0.0
+        self.tp2_price = 0.0
+        self.partial_1_done = False
+        self.partial_2_done = False
+        self._optimistic = False
+        self.last_update_reason = reason
+        self.last_update_ts = datetime.datetime.now()
+        self._save_state()
 
     def open_position(
         self,
@@ -748,6 +771,7 @@ class PositionTracker:
                 "last_update_ts": (
                     self.last_update_ts.isoformat() if self.last_update_ts else None
                 ),
+                "futures_code": self._futures_code,
                 "saved_at":     datetime.datetime.now().isoformat(),
             }
             os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
@@ -774,6 +798,7 @@ class PositionTracker:
             if state.get("status") == POSITION_FLAT:
                 return False
 
+            self._loaded_futures_code = str(state.get("futures_code") or "").strip()
             self.status      = state["status"]
             self.entry_price = float(state["entry_price"])
             self.quantity    = int(state["quantity"])

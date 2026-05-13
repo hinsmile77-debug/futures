@@ -4,6 +4,59 @@
 
 ---
 
+## 2026-05-13 (21차 — 분봉 파이프라인 NameError + 종목코드 불일치 사고 분석·방지책)
+
+**Work**
+
+장중 status bar 대기 → NameError 원인 규명, 10:11:27 재시작으로 A0565/A0666 종목코드 불일치 사고 전체 경위 분석 후 방지책 3종 구현. 봉차트 이종 가격 혼재 문제 수정.
+
+### 버그 B72: `run_minute_pipeline` — `candle` NameError로 매분 파이프라인 크래시
+
+**파일**: `main.py:1776`
+
+**증상**: 분봉 status bar가 계속 "대기" 상태. WARN 로그에 `NameError: name 'candle' is not defined` 매분 반복.
+
+**원인**: 챔피언-도전자 Shadow 실행 블록에서 파라미터명 `bar`가 맞지만 `candle`을 참조. `run_minute_pipeline(self, bar: dict)` 시그니처인데 1776번째 줄 `candle if isinstance(candle, dict)` 오타.
+
+**수정**: `candle` → `bar` 단일 라인 수정.
+
+---
+
+### 사고 분석 — 10:11:27 재시작으로 인한 종목코드 불일치 (A0565 vs A0666)
+
+**경위**:
+1. 10:11:27 DB 재초기화 후 시스템 재시작 발생
+2. `ui_prefs.json`에 `"symbol_code": "A0565000"` (미니선물) 저장 → 재시작 시 `_futures_code = A0565`
+3. 브로커 잔고에는 A0666(KOSPI200 선물) SHORT @ 1922.80 존재
+4. `BrokerSync verified=False, block_new_entries=True` — 진입 차단되었으나 청산은 허용
+5. A0565 현재가(~1177)를 A0666 포지션(1922.80) 기준 현재가로 사용 → TP2 조건 충족(+745pt)
+6. 10:12:00 TP2 청산 주문이 A0565 코드로 발송 → A0565 LONG @ 1177.3 체결
+7. 시스템 내부 상태: FLAT(오인식). 실제 브로커: A0666 SHORT 미청산 + A0565 LONG 신규 생성
+
+### 버그 B73: 재시작 코드 불일치 시 잘못된 종목으로 청산 주문 발송
+
+**파일**: `strategy/position/position_tracker.py`, `main.py`
+
+**원인**: `position_state.json`에 종목코드가 없어 재시작 시 저장 포지션(A0666)과 `_futures_code`(A0565) 불일치를 감지 불가. `block_new_entries`는 진입만 차단하므로 청산은 잘못된 코드로 진행됨. `_ts_on_chejan_event_cybos_safe`에서 체결 코드 미검증 → A0565 체결을 포지션 업데이트로 처리.
+
+**수정 3개**:
+- `position_tracker.py`: `_futures_code`/`_loaded_futures_code` 필드 + `set_futures_code()` + `force_flat()` + `_save_state()`에 `futures_code` 항목 추가 + `load_state()`에서 복원
+- `main.py:connect_broker()`: `_futures_code` 확정 후 `_loaded_futures_code`와 비교 — 불일치 시 포지션 강제 FLAT + CRITICAL 로그
+- `main.py:_ts_on_chejan_event_cybos_safe`: 체결 코드 ≠ `_futures_code` 시 WARNING + 포지션 반영 거부
+
+### 버그 B74: 봉차트 이종 종목 가격 혼재 — Y축 스케일 붕괴
+
+**파일**: `collection/cybos/realtime_data.py`, `dashboard/main_dashboard.py`
+
+**원인**: 재시작 전 A0666 캔들(~1922)과 재시작 후 A0565 캔들(~1177)이 `_closed_candles`에 혼재. `paintEvent`가 전체 캔들 가격 범위(lo≈1177, hi≈1930)로 Y축을 그려 개별 봉 움직임(2~5pt)이 1픽셀 미만으로 표시됨. `reload_today()`도 DB에서 이종 캔들을 구분 없이 로드.
+
+**수정 3개**:
+- `realtime_data.py`: 캔들 dict에 `"code": self.code` 추가
+- `main_dashboard.py:on_candle_closed()`: 수신 코드 ≠ `_instrument_code` 시 `_closed_candles` 전체 초기화
+- `main_dashboard.py:reload_today()`: `_trim_to_last_price_group()` 추가 — 연속 봉 간 4% 초과 가격 점프 감지 시 이전 데이터 버림
+
+---
+
 ## 2026-05-13 (20차 — Cybos 미니선물 실시간 파이프라인 확립 + 코드 체계 실증)
 
 **Work**

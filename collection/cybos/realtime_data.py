@@ -287,6 +287,7 @@ class CybosRealtimeData:
         if self._current_bar is None:
             self._current_bar = {
                 "ts": bar_ts,
+                "code": self.code,
                 "open": price,
                 "high": price,
                 "low": price,
