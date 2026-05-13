@@ -5212,37 +5212,75 @@ class MinuteChartCanvas(QWidget):
         reason: str,
     ):
         pnl_val = None if pnl_pts is None else float(pnl_pts)
+        # 청산 시인성 개선: 아이콘 배지를 제거하고 텍스트 정보만 표시.
+        # TP는 녹색, SL은 적색으로 통일해 한눈에 구분되도록 한다.
         if outcome == "WIN":
-            fill = QColor("#0F9D58")
-            stroke = QColor("#F4C542")
+            col = QColor("#43C17A")
+            marker_bg = QColor("#0F2F1F")
+            marker_border = QColor("#6BE3A1")
+            marker_glyph = "T"
             tag = "TP"
             sign = "+" if pnl_val is not None else ""
             pnl_text = f"{sign}{pnl_val:.2f}pt" if pnl_val is not None else "WIN"
             label = f"{tag} {pnl_text}  {dt.strftime('%H:%M')}"
-            offset = -S.p(20)
-            self._draw_diamond_badge(painter, x, y, fill, stroke, "G")
-            self._draw_label_chip(painter, x + S.p(10), y + offset, label, fill, stroke, upward=True)
-            return
-
-        if outcome == "LOSS":
-            fill = QColor("#8E1B3A")
-            stroke = QColor("#FF8A65")
+            text_y = y - S.p(16)
+        elif outcome == "LOSS":
+            col = QColor("#E35D6A")
+            marker_bg = QColor("#3B141A")
+            marker_border = QColor("#FF8A98")
+            marker_glyph = "S"
             tag = "SL"
             pnl_text = f"{pnl_val:.2f}pt" if pnl_val is not None else "LOSS"
             label = f"{tag} {pnl_text}  {dt.strftime('%H:%M')}"
-            offset = S.p(18)
-            self._draw_cut_badge(painter, x, y, fill, stroke)
-            self._draw_label_chip(painter, x + S.p(10), y + offset, label, fill, stroke, upward=False)
-            return
+            text_y = y + S.p(18)
+        else:
+            col = QColor("#8B949E")
+            marker_bg = QColor("#1F2937")
+            marker_border = QColor("#C0CAD5")
+            marker_glyph = "P"
+            tag = "PX"
+            short_reason = reason[:4] if reason else "PART"
+            label = f"{tag} {short_reason}  {dt.strftime('%H:%M')}"
+            text_y = y - S.p(14)
 
-        fill = QColor("#6B7280")
-        stroke = QColor("#CBD5E1")
-        tag = "PX"
-        short_reason = reason[:4] if reason else "PART"
-        label = f"{tag} {short_reason}  {dt.strftime('%H:%M')}"
-        offset = -S.p(18)
-        self._draw_partial_badge(painter, x, y, fill, stroke)
-        self._draw_label_chip(painter, x + S.p(10), y + offset, label, fill, stroke, upward=True)
+        self._draw_exit_stamp(
+            painter,
+            x,
+            y,
+            marker_bg,
+            marker_border,
+            marker_glyph,
+            col,
+        )
+
+        # 다크 배경에서 가독성을 높이기 위한 얇은 그림자 레이어
+        painter.setPen(QColor(0, 0, 0, 170))
+        painter.drawText(QPointF(x + S.p(19), text_y + 1), label)
+        painter.setPen(col)
+        painter.drawText(QPointF(x + S.p(18), text_y), label)
+
+    def _draw_exit_stamp(
+        self,
+        painter: QPainter,
+        x: float,
+        y: float,
+        bg: QColor,
+        border: QColor,
+        glyph: str,
+        glow_col: QColor,
+    ):
+        glow = QColor(glow_col)
+        glow.setAlpha(75)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(QRectF(x - 8.0, y - 8.0, 16.0, 16.0))
+
+        painter.setBrush(bg)
+        painter.setPen(QPen(border, 1.4))
+        painter.drawRoundedRect(QRectF(x - 6.0, y - 6.0, 12.0, 12.0), 3, 3)
+
+        painter.setPen(QColor("#F8FAFC"))
+        painter.drawText(QRectF(x - 6.0, y - 6.0, 12.0, 12.0), Qt.AlignCenter, glyph)
 
     def _draw_diamond_badge(self, painter: QPainter, x: float, y: float, fill: QColor, stroke: QColor, glyph: str):
         glow = QColor(fill)

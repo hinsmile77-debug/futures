@@ -1,7 +1,24 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-13 (23차) — **청산관리 상태 동기화/오표시 개선 + 자동 탭 복귀 로직 보강**
+> 마지막 업데이트: 2026-05-13 (24차) — **봉차트 청산 마커 시인성 개선 + TP/SL 컬러 정리**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-13 (24차)
+
+### 수정된 파일
+
+| 파일 | 수정 내용 |
+|---|---|
+| `dashboard/main_dashboard.py` (`MinuteChartCanvas._draw_exit_marker`) | 청산 아이콘 배지 중심 렌더링에서 텍스트 중심 렌더링으로 단순화 |
+| `dashboard/main_dashboard.py` (`MinuteChartCanvas._draw_exit_stamp` 신설) | 청산봉 위치 식별용 소형 스탬프(T/S/P) 마커 추가 |
+| `dashboard/main_dashboard.py` (`MinuteChartCanvas._draw_exit_marker`) | TP/SL/PX 색상 팔레트 재정의 + 텍스트 오프셋 조정 |
+
+### 핵심 안전 규칙 (24차 추가)
+
+- **청산 시각정보 우선순위**: 봉 위치 식별(스탬프) + 텍스트 정보(태그/손익/시각)를 함께 제공한다.
+- **색상 의미 고정**: TP는 녹색 계열, SL은 적색 계열, PARTIAL/PX는 중성 회색 계열로 고정한다.
 
 ---
 
