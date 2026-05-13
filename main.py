@@ -798,15 +798,37 @@ class TradingSystem:
                 logger.info("[System] 모의투자 서버 접속 — A0166000 SetRealReg 실시간 수신 사용")
         print(f"[DBG CK-2b] broker={_broker_name!r} 서버종류={server_label}", flush=True)
 
-        # A0166000: OPT50029 TR 및 SetRealReg 모두 동일 코드 사용
-        # (모의투자 서버에서도 A0166000으로 SetRealReg 등록 시 틱 수신 확인됨)
+        # 종목코드 결정: Cybos 실제 코드는 5자 (예: A0166, A0565)
+        # 대시보드 UI 코드는 8자 (예: A0166000, A0565000) — 끝 3자리 "000" 제거로 정규화
         broker_code = self.broker.get_nearest_futures_code()
         try:
-            ui_code = str(self.dashboard.get_selected_symbol() or "").strip()
+            ui_code_raw = str(self.dashboard.get_selected_symbol() or "").strip()
         except Exception:
-            ui_code = ""
-        code = ui_code if ui_code else broker_code
-        print(f"[DBG CK-3] 근월물 코드={code} (broker={broker_code} ui={ui_code!r}) 서버={server_label}", flush=True)
+            ui_code_raw = ""
+        # 8자 코드(Axxxx000) → 5자 Cybos 코드(Axxxx)로 정규화
+        if len(ui_code_raw) == 8 and ui_code_raw.endswith("000"):
+            ui_code = ui_code_raw[:-3]
+        else:
+            ui_code = ui_code_raw
+
+        # 미니선물 여부: A05... 또는 05... 접두사로 판단
+        _ui_norm = ui_code[1:] if ui_code.startswith("A") else ui_code
+        is_mini_selected = _ui_norm.startswith("05")
+
+        if is_mini_selected:
+            # 미니선물: UI 코드 우선, 없으면 FutureMst 프로브 근월물
+            # broker_code는 CpFutureCode 기반 일반선물(A01xxx) 전용이므로 사용 불가
+            if not ui_code:
+                ui_code = self.broker.get_nearest_mini_futures_code()
+            code = ui_code
+        else:
+            # 일반선물: CpFutureCode 반환 5자 코드 우선
+            code = broker_code or ui_code
+        print(
+            f"[DBG CK-3] 근월물 코드={code} (broker={broker_code} ui_raw={ui_code_raw!r} "
+            f"ui={ui_code!r} is_mini={is_mini_selected}) 서버={server_label}",
+            flush=True,
+        )
         self._futures_code = code
         # 계약 스펙 확정 (일반선물 250,000 / 미니선물 50,000)
         _spec = get_contract_spec(code)

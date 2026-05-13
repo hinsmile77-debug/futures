@@ -226,6 +226,8 @@ class CybosAPI:
         self._cp_cybos = Dispatch("CpUtil.CpCybos")
         self._cp_trade_util = Dispatch("CpTrade.CpTdUtil")
         self._cp_future_code = Dispatch("CpUtil.CpFutureCode")
+        # CpUtil.CpKFutureCode는 KOSDAQ 150 선물 코드를 반환하므로
+        # KOSPI200 미니선물 식별에 사용하지 않는다. (2026-05-13 실증)
 
         self._cp_cybos_event = WithEvents(self._cp_cybos, _CybosConnectionEvent)
         self._cp_cybos_event.set_context(self)
@@ -277,6 +279,42 @@ class CybosAPI:
             if code.startswith("A") and "F" in name:
                 return code
         return _safe_str(self._cp_future_code.GetData(0, 0)) if count > 0 else ""
+
+    def get_nearest_mini_futures_code(self) -> str:
+        """FutureMst BlockRequest 프로브로 KOSPI200 미니선물 근월물 코드(A05xxx) 반환.
+
+        CpFutureCode — KOSPI200 일반선물(A01xxx)만 포함, A05xxx 없음.
+        CpKFutureCode — 코스닥150 선물(A06xxx, ~1900pt)만 포함, A05xxx 없음.
+        (2026-05-13 실증 확인 — 두 COM 객체 모두 미니선물 열거 불가)
+
+        코드 규칙: A05 + 연도끝자리 + 월(hex uppercase)
+        예) 2026-05 = A0565, 2026-06 = A0566, 2026-12 = A056C
+        근월물 = 오늘 기준 가장 가까운 유효 만기(DibStatus=0, price>0).
+        """
+        import datetime
+        if Dispatch is None:
+            return ""
+        today = datetime.date.today()
+        candidates = []
+        for delta in range(7):
+            month = today.month + delta
+            year = today.year + (month - 1) // 12
+            month = ((month - 1) % 12) + 1
+            code = "A05{0}{1}".format(str(year)[-1], format(month, "X"))
+            candidates.append(code)
+
+        try:
+            snapshot = Dispatch("Dscbo1.FutureMst")
+            for code in candidates:
+                snapshot.SetInputValue(0, code)
+                snapshot.BlockRequest()
+                if _safe_int(snapshot.GetDibStatus()) == 0:
+                    price = _safe_float(snapshot.GetHeaderValue(71))
+                    if price > 0:
+                        return code
+        except Exception:
+            pass
+        return ""
 
     def register_fill_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         if callback not in self._fill_callbacks:

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 CybosPlus 자동 로그인 스크립트
 - Windows Credential Manager에서 비밀번호를 읽어 로그인 창을 자동 조작
@@ -270,7 +270,7 @@ def _dismiss_error_dialogs():
     """CpStart/CPUTIL 에러 다이얼로그 자동 닫기"""
     import win32gui, win32con
     dismissed = 0
-    for title in ["CpStart", "CPUTIL"]:
+    for title in ["CpStart", "CPUTIL", "공지사항"]:
         hwnd = win32gui.FindWindow(None, title)
         if not hwnd or not win32gui.IsWindowVisible(hwnd):
             continue
@@ -365,100 +365,7 @@ def _try_click_security(hwnd):
     return True
 
 
-def _handle_mock_select_dialog(timeout=45, min_wait=0):
-    """모의투자 선택 창을 제목 변형까지 포함해 찾아 '모의투자 접속'을 누른다."""
-    import win32gui
-    import win32con
 
-    btn_texts = {"紐⑥쓽?ъ옄\r\n?묒냽", "紐⑥쓽?ъ옄\n?묒냽", "紐⑥쓽?ъ옄?묒냽", "紐⑥쓽?ъ옄 ?묒냽", "?묒냽"}
-    dialog_keywords = ["紐⑥쓽?ъ옄 ?좏깮", "紐⑥쓽?ъ옄?좏깮", "紐⑥쓽?ъ옄", "?묒냽"]
-
-    print("[INFO] 모의투자 선택 창 대기 중...")
-    if min_wait > 0:
-        print("[INFO] 모의투자 선택 팝업 대기 보장... %d초" % min_wait)
-        for waited in range(min_wait):
-            if _is_connected():
-                print("[INFO] 이미 연결되어 있어 모의투자 선택 창 처리를 생략합니다.")
-                return True
-            time.sleep(1)
-            if (waited + 1) % 5 == 0:
-                print("[INFO] 모의투자 팝업 최소 대기... %d/%d초" % (waited + 1, min_wait))
-        send_keys("{ENTER}")
-        print("[INFO] 모의투자 팝업 대기 후 Enter 입력")
-        time.sleep(0.8)
-        if _is_connected():
-            return True
-
-    for tick in range(timeout):
-        if _is_connected():
-            print("[INFO] 이미 연결되어 있어 모의투자 선택 창 처리를 생략합니다.")
-            return True
-
-        candidates = _find_window_by_keywords(dialog_keywords, require_visible=True)
-        for hwnd, title in candidates:
-            if not win32gui.IsWindowVisible(hwnd):
-                continue
-
-            time.sleep(0.5)
-            try:
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                win32gui.SetForegroundWindow(hwnd)
-            except Exception:
-                pass
-            time.sleep(0.3)
-
-            try:
-                _force_foreground(hwnd)
-            except Exception:
-                pass
-            time.sleep(0.2)
-            send_keys("{ENTER}")
-            print("[INFO] 모의투자 선택 창에서 Enter 입력 title='%s'" % title)
-            time.sleep(0.8)
-            if _is_connected():
-                return True
-
-            btn_rect = [None]
-
-            def _find_btn(child, _):
-                if btn_rect[0]:
-                    return
-                try:
-                    text = win32gui.GetWindowText(child).strip()
-                    if text in btn_texts:
-                        btn_rect[0] = _get_window_rect_safe(child) or win32gui.GetWindowRect(child)
-                except Exception:
-                    pass
-
-            try:
-                win32gui.EnumChildWindows(hwnd, _find_btn, None)
-            except Exception:
-                pass
-
-            if btn_rect[0]:
-                l, t, r, b = btn_rect[0]
-                cx, cy = (l + r) // 2, (t + b) // 2
-                _physical_click(cx, cy)
-                print("[INFO] '모의투자 접속' 클릭 완료 (%d,%d) title='%s'" % (cx, cy, title))
-            else:
-                rect = _get_window_rect_safe(hwnd)
-                if not _is_valid_rect(rect):
-                    continue
-                l, t, r, b = rect
-                cx = l + int((r - l) * 0.80)
-                cy = t + int((b - t) * 0.38)
-                _physical_click(cx, cy)
-                print("[INFO] '모의투자 접속' 좌표 fallback 클릭 (%d,%d) title='%s'" % (cx, cy, title))
-
-            return True
-
-        if tick % 5 == 4:
-            titles = [title for _, title in candidates[:6]]
-            print("[INFO] 모의투자 선택 창 대기... %d/%d초 candidates=%s" % (tick + 1, timeout, titles))
-        time.sleep(1)
-
-    print("[WARN] 모의투자 선택 창이 나타나지 않음 — 건너뜀")
-    return False
 
 
 def _get_all_monitor_rects():
@@ -631,8 +538,7 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
         send_keys("{ENTER}")
         print("[INFO] 모의투자 팝업 최소 대기 후 Enter 입력")
         time.sleep(3)
-        print("[INFO] 3초 대기 완료 — 연결 대기로 진행")
-        return True
+        print("[INFO] 3초 대기 완료 — 연결 대기 확인 진행")
 
     for tick in range(timeout):
         if _is_connected():
@@ -765,6 +671,9 @@ def autologin():
         time.sleep(0.3)
         send_keys("{ENTER}")
         print("[INFO] Enter 입력으로 로그인 진행 (%s)" % ("모의투자" if MOCK_MODE else "실투자"))
+
+        # 비밀번호 갱신 확인 다이얼로그 등 팝업 닫기 (발생할 경우 대응)
+        _handle_password_confirm_dialog(timeout=5)
 
     except Exception as e:
         print("[ERROR] UI 자동화 실패: %s" % e)

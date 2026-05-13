@@ -26,6 +26,11 @@ def build_parser():
         default="",
         help="Explicit futures realtime code (default: nearest futures code from CpFutureCode)",
     )
+    parser.add_argument(
+        "--mini",
+        action="store_true",
+        help="Use CpUtil.CpKFutureCode to resolve mini futures code instead of regular futures",
+    )
     return parser
 
 
@@ -120,6 +125,39 @@ def resolve_nearest_code(future_code):
     return nearest_code, nearest_name
 
 
+def probe_mini_futures_code(win32com_client):
+    """FutureMst BlockRequest로 후보 코드를 프로브해 KOSPI200 미니선물 근월물 반환.
+
+    Cybos COM 열거 객체(CpFutureCode, CpKFutureCode) 어디에도 A05xxx가 없다.
+    (CpFutureCode=KOSPI200 일반선물 A01xxx, CpKFutureCode=코스닥150 A06xxx — 2026-05-13 실증)
+    코드 규칙: A05 + 연도끝자리 + 월(hex uppercase) — 예) 2026년5월=A0565, 6월=A0566, 12월=A056C
+    """
+    import datetime
+    today = datetime.date.today()
+    candidates = []
+    for delta in range(7):
+        month = today.month + delta
+        year = today.year + (month - 1) // 12
+        month = ((month - 1) % 12) + 1
+        year_digit = str(year)[-1]
+        month_hex = format(month, "X")
+        candidates.append("A05{0}{1}".format(year_digit, month_hex))
+
+    print("[MINI] Probing FutureMst for mini futures codes:", candidates)
+    snapshot = win32com_client.Dispatch("Dscbo1.FutureMst")
+    for code in candidates:
+        snapshot.SetInputValue(0, code)
+        snapshot.BlockRequest()
+        status = safe_int(snapshot.GetDibStatus())
+        price = safe_float(snapshot.GetHeaderValue(71))
+        name = safe_str(snapshot.GetHeaderValue(1)) if status == 0 else ""
+        print("[MINI]   probe code={0!r} DibStatus={1} price={2} name={3!r}".format(
+            code, status, price, name))
+        if status == 0 and price > 0:
+            return code, name or code
+    return "", ""
+
+
 def main():
     args = build_parser().parse_args()
 
@@ -146,14 +184,20 @@ def main():
         print("[FAIL] TradeInit failed.")
         return 4
 
-    future_code = win32com.client.Dispatch("CpUtil.CpFutureCode")
-    nearest_code, nearest_name = resolve_nearest_code(future_code)
+    if args.mini:
+        # CpFutureCode/CpKFutureCode 모두 A05xxx를 포함하지 않으므로 FutureMst 프로브 사용
+        nearest_code, nearest_name = probe_mini_futures_code(win32com.client)
+    else:
+        future_code = win32com.client.Dispatch("CpUtil.CpFutureCode")
+        nearest_code, nearest_name = resolve_nearest_code(future_code)
+
     code = safe_str(args.code) or nearest_code
     if not code:
         print("[FAIL] Could not resolve a futures code.")
         return 5
 
-    print("[CHECK] Realtime code =", code, nearest_name)
+    print("[CHECK] Realtime code =", code, nearest_name,
+          "(미니선물)" if args.mini else "(일반선물)")
 
     snapshot = win32com.client.Dispatch("Dscbo1.FutureMst")
     snapshot.SetInputValue(0, code)

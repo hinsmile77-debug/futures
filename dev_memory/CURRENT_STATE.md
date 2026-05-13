@@ -1,7 +1,36 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-12 (19차) — **수익보존 탭 설정값 재시작 영속화**
+> 마지막 업데이트: 2026-05-13 (20차) — **Cybos 미니선물 실시간 파이프라인 확립 + Cybos COM 코드 체계 실증**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-13 (20차)
+
+### 수정된 파일
+
+| 파일 | 수정 내용 |
+|---|---|
+| `main.py` | 8자리 UI 코드 정규화 (`A0565000→A0565`, 끝 "000" 제거). 미니선물 fallback을 `get_nearest_mini_futures_code()`(FutureMst 프로브)로 교체 |
+| `collection/cybos/api_connector.py` | `CpUtil.CpKFutureCode` 사용 완전 제거. `get_nearest_mini_futures_code()` FutureMst 프로브 방식으로 재구현 |
+| `collection/broker/cybos_broker.py` | `get_nearest_mini_futures_code()` 위임 메서드 추가 |
+| `scripts/check_cybos_realtime.py` | `--mini` 플래그를 FutureMst 프로브 방식으로 교체. FutureMst name 표시 추가 |
+| `dashboard/main_dashboard.py` | `WindowStaysOnTopHint` 추가 — 미륵이 UI를 항상 최상위 창으로 유지 |
+| `scripts/cybos_autologin.py` | "공지사항" 다이얼로그 자동 닫기 추가. `_handle_mock_select_dialog()` 레거시 함수 제거 |
+
+### 핵심 지식 (Cybos COM 코드 체계 — 2026-05-13 실증)
+
+- `CpUtil.CpFutureCode`: KOSPI200 **일반선물(A01xxx)** 만 열거
+- `CpUtil.CpKFutureCode`: **코스닥150 선물(A06xxx)** 만 열거 — 절대 미니선물 탐색에 사용 금지
+- **KOSPI200 미니선물(A05xxx)**: 열거 COM 없음. `Dscbo1.FutureMst` 프로브만 가능
+- 코드 규칙: `A05 + 연도끝자리 + 월(hex)` — 2026-05=A0565, 2026-06=A0566, 2026-12=A056C
+- Cybos COM 실시간 구독(FutureCurOnly)은 **5자리 코드만 수락**. 8자리 코드(A0565000)는 무음 실패
+
+### 현재 운영 상태
+
+- 미니선물 실시간 구독: 재시작 후 `A0565` 5자리 코드로 정상 구독 예정
+- 오늘(2026-05-13) 09:33 진입한 KOSDAQ150 SHORT 1계약 @ 1922.8 — 15:10 강제 청산 또는 수동 정리 필요
+- 봇 재시작 후 `[DBG CK-3] 근월물 코드=A0565 is_mini=True` 확인 필수
 
 ---
 

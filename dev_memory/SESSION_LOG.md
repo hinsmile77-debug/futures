@@ -4,6 +4,57 @@
 
 ---
 
+## 2026-05-13 (20차 — Cybos 미니선물 실시간 파이프라인 확립 + 코드 체계 실증)
+
+**Work**
+
+장 개시 후 봇이 09:00 이후 전혀 작동하지 않은 원인을 조사하고, Cybos COM 선물 코드 체계를 실증적으로 확인했다. 미니선물 실시간 구독이 무음 실패하던 근본 원인을 수정하고, KOSPI200 미니선물 근월물 코드 탐색 방법을 확립했다.
+
+### 버그 B70: Cybos FutureCurOnly — 8자 코드 무음 실패
+
+**파일**: `main.py`, `collection/cybos/api_connector.py`
+
+**증상**: 장 개시 후 09:00~09:23 동안 SIGNAL·TRADE 로그가 완전히 비어 있었음. `[System] 대기 중 | 장중 — Cybos 실시간 분봉 대기 중` 루프가 계속 반복되며 파이프라인 진입 없음.
+
+**원인**: `data/ui_prefs.json` 에 저장된 종목코드가 `A0565000` (8자리) 형식이었고, 이것을 그대로 `Dscbo1.FutureCurOnly.SetInputValue(0, code)` 에 전달. Cybos COM 실시간 구독 객체는 8자리 코드를 에러 없이 수락하지만 틱 이벤트를 전혀 발생시키지 않는 무음 실패. 5자리 코드(`A0565`)만 정상 작동.
+
+**수정**: `main.py::connect_broker()`에서 UI 코드 정규화 — 8자리 + 끝 "000" 이면 마지막 3자리 제거. `A0565000 → A0565`, `A0166000 → A0166`.
+
+### 실증 D48: Cybos COM 선물 코드 열거 객체별 반환 품목
+
+**경위**: `CpUtil.CpKFutureCode`가 KOSPI200 미니선물 코드를 반환할 것으로 가정하고 중간 수정에서 사용했다가, 수신된 가격이 ~1938pt로 KOSPI200(~380pt) 수준과 전혀 달라 조사함.
+
+**결론**:
+
+| COM 객체 | 반환 상품 | 코드 예 | A05xxx 포함 |
+|---|---|---|---|
+| `CpUtil.CpFutureCode` | KOSPI200 일반선물만 | A0166, A0169... | ❌ |
+| `CpUtil.CpKFutureCode` | **코스닥150 선물만** | A0666, A0669... | ❌ |
+| `Dscbo1.FutureMst` 프로브 | 개별 코드 유효성 확인 | — | ✅ (직접 프로브) |
+
+KOSPI200 미니선물(A05xxx)을 열거하는 전용 Cybos COM 객체는 존재하지 않는다. FutureMst 프로브만 사용 가능.
+
+### 실증 D49: KOSPI200 미니선물 코드 규칙
+
+`A05 + 연도끝자리 + 월(hex uppercase)`: 2026-05=A0565, 2026-06=A0566, 2026-12=A056C. `CpFutureCode` 열거 목록에 없으며 FutureMst BlockRequest DibStatus=0 + price>0으로 유효성 판정.
+
+### 구현: FutureMst 프로브 기반 미니선물 근월물 탐색
+
+**파일**: `collection/cybos/api_connector.py`, `collection/broker/cybos_broker.py`, `scripts/check_cybos_realtime.py`
+
+- `api_connector.get_nearest_mini_futures_code()`: 오늘부터 7개월 후보 코드를 FutureMst BlockRequest로 프로브해 첫 유효 코드 반환
+- `cybos_broker.get_nearest_mini_futures_code()`: 위임 메서드 추가
+- `main.py`: 미니선물 선택 시 UI 코드 우선, 없으면 FutureMst 프로브 결과 사용. `broker_code`(일반선물 전용 A01xxx)는 미니선물 fallback으로 절대 사용 불가
+- `check_cybos_realtime.py --mini`: CpKFutureCode 사용 제거, FutureMst 프로브로 교체 + 결과 name 표시 개선
+
+### 버그 B71: 오늘 KOSDAQ150 선물 1계약 잘못 진입
+
+**경위**: 중간 잘못된 수정(CpKFutureCode → A0666 코드 사용) 상태로 봇이 실행됨. `get_contract_spec("A0666")`: "0666".startswith("05") = False → `pt_value=250,000` → `is_mini=False` → `min_qty=1`. 09:33에 SHORT 1계약 @ 1922.8 진입. 종목 자체도 KOSPI200 미니선물이 아닌 코스닥150 선물.
+
+**상태**: 최종 수정(정규화) 완료됨. 봇 재시작 후 A0565 구독으로 정상화 예정.
+
+---
+
 ## 2026-05-12 (19차 — 수익보존 탭 설정값 재시작 영속화)
 
 **Work**

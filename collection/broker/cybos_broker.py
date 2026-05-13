@@ -35,6 +35,9 @@ class CybosBroker(BrokerAPI):
     def get_nearest_futures_code(self) -> str:
         return self._api.get_nearest_futures_code()
 
+    def get_nearest_mini_futures_code(self) -> str:
+        return self._api.get_nearest_mini_futures_code()
+
     def register_fill_callback(self, callback) -> None:
         self._api.register_fill_callback(callback)
 

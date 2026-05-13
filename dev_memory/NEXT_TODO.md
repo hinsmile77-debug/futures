@@ -31,9 +31,17 @@
   - 설정 변경 후 Apply 클릭 → 프로그램 종료 없이 챔피언/챌린저 비교 갱신 확인
   - WARN 로그에 `[ProfitGuard] 시뮬레이션 오류` 미출력 확인
 
-- [NEXT 2026-05-13] 미니선물 end-to-end 운영 검증
+- [DONE 2026-05-13] 미니선물 실시간 구독 파이프라인 확립
+  - Cybos COM 코드 체계 실증: CpFutureCode(일반선물 A01xxx), CpKFutureCode(코스닥150 A06xxx), 미니선물(A05xxx)은 FutureMst 프로브만 가능
+  - 8자리 코드(A0565000) 무음 실패 수정 → 5자리 정규화(A0565)
+  - `get_nearest_mini_futures_code()` FutureMst 프로브 방식 구현
+  - `check_cybos_realtime.py --mini` 동작 검증 완료 (A0565 틱/호가 수신 확인)
+
+- [NEXT 2026-05-14] 재시작 후 미니선물 end-to-end 운영 검증
+  - 확인: 재시작 후 `[DBG CK-3] 근월물 코드=A0565 is_mini=True` 출력
+  - 확인: `[Sizer] 미니선물 ... → N계약 (최소=3)` (일반선물 판정 아닌지)
+  - 확인: 진입 신호 발생 시 최소 3계약 주문
   - 확인: `A05...` 선택 시 주문 코드, 수급 TR 코드, 평가손익, 청산손익, 일일 손익이 모두 `pt_value=50,000` 기준으로 일치하는지
-  - 확인: 미니선물 최소 진입 수량 3계약 규칙이 실제 전략 의도와 맞는지
 
 - [NEXT 2026-05-13] `ui_prefs.json` 롤오버 정책 확정
   - 현재는 저장된 `symbol_code` 가 목록에 없으면 해당 시장 첫 종목으로 fallback

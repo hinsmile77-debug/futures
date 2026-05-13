@@ -2,6 +2,37 @@
 
 ---
 
+## 2026-05-13 (20차 — Cybos 미니선물 실시간 파이프라인 확립)
+
+### [D48] Cybos COM 선물 코드 열거 객체별 반환 상품 — 2026-05-13 실증 확정
+**Decision**: 각 COM 객체가 반환하는 선물 코드를 실증적으로 확인했으며 이를 영구 기준으로 삼는다.
+- `CpUtil.CpFutureCode`: KOSPI200 **일반선물(A01xxx)** 만 포함. 미니선물 없음.
+- `CpUtil.CpKFutureCode`: **코스닥150 선물(A06xxx)** 만 포함. 이름과 달리 KOSPI200 미니선물이 아님.
+- KOSPI200 **미니선물(A05xxx)**: 어떤 열거 객체에도 없음. `Dscbo1.FutureMst` BlockRequest 프로브만 가능.
+- 미니선물 코드 규칙: `A05 + 연도끝자리(str(year)[-1]) + 월(hex uppercase)` — 예) 2026-05=A0565, 2026-06=A0566, 2026-12=A056C  
+**Reason**: CpKFutureCode를 KOSPI200 미니선물 열거 객체로 오해하면 코스닥150 선물을 잘못 구독하게 된다. 2026-05-13 장중 A0666(코스닥150, ~1938pt)으로 실제 진입이 발생해 실증 확인됨.
+
+### [D49] KOSPI200 미니선물 근월물 코드 탐색 — FutureMst 프로브 방식 채택
+**Decision**: `get_nearest_mini_futures_code()`는 오늘 기준 7개월 후보 코드를 FutureMst BlockRequest로 순서대로 프로브해 DibStatus=0 + price>0인 첫 코드를 반환한다. CpKFutureCode는 절대 사용하지 않는다.  
+**Reason**: 미니선물 코드 열거 COM 객체가 없으므로 날짜 기반 코드 생성 + 유효성 확인이 유일한 방법.  
+**How to apply**: UI에서 미니선물을 선택하면 항상 UI 코드(`A0565000→A0565 정규화`)를 우선 사용하고, UI 코드가 없을 때만 프로브 fallback을 사용한다.
+
+### [B70] Cybos FutureCurOnly — 8자리 코드 무음 실패
+**File**: `main.py`, `collection/cybos/api_connector.py`  
+**Symptom**: 장 개시 후 09:00~09:23 동안 실시간 틱 이벤트 전혀 없음. `[System] 대기 중 | 장중 — Cybos 실시간 분봉 대기 중` 루프가 계속 반복되며 SIGNAL/TRADE 로그 공백.  
+**Root cause**: `data/ui_prefs.json` 저장 코드가 8자리(`A0565000`)였고 이를 `Dscbo1.FutureCurOnly.SetInputValue(0, code)`에 그대로 전달. Cybos COM은 오류 없이 수락하지만 8자리 코드에 대한 틱 이벤트를 발생시키지 않는 무음 실패. 5자리 코드만 정상 작동.  
+**Fix**: `main.py::connect_broker()`에서 UI 코드 정규화 — `len(code)==8 and code.endswith("000")` 이면 마지막 3자리 제거.  
+**재발 방지**: Cybos COM 실시간 구독에는 항상 5자리 코드(예: A0565, A0166) 사용. 8자리 코드는 대시보드 표시 전용.
+
+### [B71] 잘못된 중간 수정으로 KOSDAQ150 선물 1계약 진입 (2026-05-13)
+**File**: `main.py`, `collection/cybos/api_connector.py`  
+**Symptom**: Sizer 로그 `[Sizer] 일반선물 ... → 1계약 (최소=1)`. 미니선물 선택에도 불구하고 일반선물 판정.  
+**Root cause**: B70 수정 과정의 중간 단계에서 `CpKFutureCode → A0666`(코스닥150)을 구독 코드로 사용. `get_contract_spec("A0666")`: "0666".startswith("05")=False → `pt_value=250,000` → `is_mini=False` → `min_qty=1` → 1계약 진입. 종목도 KOSPI200 미니선물이 아닌 코스닥150 선물.  
+**Fix**: CpKFutureCode 사용 완전 제거. UI 코드 정규화(A0565000→A0565)로 교체.  
+**재발 방지**: CpKFutureCode는 코드베이스에서 영구 금지. api_connector.py에 주석으로 기록됨.
+
+---
+
 ## 2026-05-12 (19차 — 수익보존 탭 설정값 재시작 영속화)
 
 ### [D47] ProfitGuard 파라미터는 UI 상태와 분리된 전용 prefs 파일로 영속화한다
