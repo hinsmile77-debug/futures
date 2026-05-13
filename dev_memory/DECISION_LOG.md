@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-05-13 (23차 — 청산관리 상태표시 개선 + 자동 탭 복귀 보강)
+
+### [D53] 청산 상태 배지의 소스오브트루스 확장 — `pending_*` + `time_exit_countdown_sec`
+**Decision**: 청산관리 배지는 분봉 계산값만 보지 않고 주문/체결 진행상태(`pending_*`)와 시간청산 남은 시간(`time_exit_countdown_sec`)을 함께 사용한다.  
+**Reason**: 매분 갱신만으로는 Chejan 체결 직후 `주문중` 잔상, 시간청산 상태 무표시 문제가 발생한다. 체결 이벤트와 UI 상태를 같은 시계열로 맞춰야 운영 오해를 줄일 수 있다.
+
+### [D54] ENTRY pending 동안 목표 배지 표시 정책 — `산정중` 고정
+**Decision**: ENTRY pending 상태에서는 1/2/3차 목표 배지를 `산정중`으로 표시하고 도달 판정을 잠근다.  
+**Reason**: 분할체결/평균가 보정 경계에서 TP 계산값이 일시적으로 불안정해 `도달` 오표시(false positive)가 발생한다. 사용자 해석 오류 방지를 위해 pending 구간은 명시적 중간상태를 노출한다.
+
+### [D55] 자동 탭 복귀 유휴판정은 마우스+포커스 활동을 모두 본다
+**Decision**: `UiAutoTabController` 유휴 판정은 `underMouse`뿐 아니라 `hasFocus`와 `focusWidget` 하위 여부를 포함한다.  
+**Reason**: 키보드 중심 사용자(탭 이동/단축키) 활동은 마우스만으로 감지되지 않아 의도치 않은 자동 복귀가 발생할 수 있다.
+
+### [B79] 부분청산 체결 후 `주문중` 배지 잔상
+**File**: `main.py`, `dashboard/main_dashboard.py`  
+**Symptom**: TP/하드스톱 분할체결 완료 후에도 청산관리 배지가 다음 분봉까지 `주문중`으로 유지.  
+**Root cause**: UI 상태 갱신이 분봉 파이프라인 중심이라 Chejan 직후 pending 변경이 즉시 반영되지 않음.  
+**Fix**: `_ts_push_exit_panel_now()` 추가, Chejan 처리 직후 및 `_clear_pending_order()` 시점 즉시 `update_position` 호출.
+
+### [B80] ENTRY 직후 `3차 목표 도달` 오표시
+**File**: `dashboard/main_dashboard.py`  
+**Symptom**: 진입 직후 3차 목표가 `도달`로 표시되는 false positive.  
+**Root cause**: TP 값 비정상(예: `tp3=0`) 또는 ENTRY pending 경계의 순간값으로 도달 판정식이 참이 됨.  
+**Fix**: `tp1/tp2/tp3 <= 0` 방어 정규화 + ENTRY pending 도달판정 잠금 + 목표 배지 `산정중` 표시.
+
+### [B81] 시작 직후 보유포지션인데 진입관리 탭 유지되는 공백
+**File**: `main.py`  
+**Symptom**: startup 모드 강제로 진입관리 탭이 먼저 보이고, 브로커 동기화 직후에도 탭이 즉시 전환되지 않는 경우가 있음.  
+**Root cause**: `_sync_position_from_broker()` 이후 탭 모드 재정렬 호출 누락.  
+**Fix**: `connect_broker()`에서 동기화 직후 `position.status`에 따라 `set_ui_position_mode()/set_ui_ready_mode()` 즉시 호출.
+
+---
+
 ## 2026-05-13 (22차 — Cybos 체결 파이프라인 버그 수정)
 
 ### [B75] Cybos unfilled_qty 상수 0 — pending 조기 소멸로 포지션 수량 폭증

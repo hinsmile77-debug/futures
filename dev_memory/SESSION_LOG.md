@@ -4,6 +4,69 @@
 
 ---
 
+## 2026-05-13 (23차 — 청산관리 UX/상태 동기화 개선 + 자동 탭 복귀 로직 보강)
+
+**Work**
+
+청산관리 탭의 상태 배지와 실체결 파이프라인 간 지연/오표시를 줄이기 위한 최소수정 7건 적용. ENTRY 직후 목표 도달 오탐을 차단하고, 수동 탭 전환 후 유휴 복귀 로직을 포커스 활동까지 확장.
+
+### 개선 C01: 청산 배지 상태 enum 도입 + pending/카운트다운 데이터 연결
+
+**파일**: `dashboard/main_dashboard.py`, `main.py`
+
+**내용**:
+- `TriggerBadgeState` enum 추가 (`감시중/대기/산정중/도달/완료/주의/주문중/보호전환`)
+- `run_minute_pipeline`의 `dashboard.update_position(...)` payload에 아래 추가:
+  - `pending_active`, `pending_kind`, `pending_reason`, `pending_stage`, `pending_filled`, `pending_qty`
+  - `time_exit_countdown_sec`
+- 시간청산 배지를 `T-mm:ss` / `임박 mm:ss` / `발동`으로 표시
+
+### 버그 B79: 부분청산 완료 후 `주문중` 배지 잔상 (체감 지연)
+
+**파일**: `main.py`
+
+**증상**: Chejan 체결이 완료됐는데 청산관리 탭은 다음 분봉까지 `주문중` 상태가 남는 현상.
+
+**원인**: 청산 패널 상태 갱신이 매분 파이프라인 중심으로 동작. Chejan fill 직후 pending 변경/소멸이 즉시 반영되지 않음.
+
+**수정**:
+- `_ts_push_exit_panel_now()` 헬퍼 추가 (Chejan 직후 즉시 `update_position`)
+- `_clear_pending_order()`에서 pending 소멸 직후 즉시 패널 갱신 호출
+- `_ts_on_chejan_event_cybos_safe()`에서 체결 처리 직후 즉시 패널 갱신 호출
+
+### 버그 B80: ENTRY 직후 `3차 목표 34% 도달` 오표시
+
+**파일**: `dashboard/main_dashboard.py`
+
+**증상**: 방금 진입한 직후인데 3차 목표가 `도달`로 표시되는 false positive.
+
+**원인**: ENTRY 분할체결 경계에서 tp 값(특히 `tp3`)이 0/비정상으로 들어오면 비교식이 항상 참이 될 수 있음.
+
+**수정**:
+- `tp1/tp2/tp3 <= 0` 방어 정규화 (`entry ± ATR 배수`로 즉시 보정)
+- `pending_kind == "ENTRY"` 동안 목표 도달 판정 잠금
+- 1/2/3차 목표 배지 상태를 `산정중`으로 명시 표시
+
+### 개선 C02: 시작 직후 잔고-탭 정렬 공백 제거
+
+**파일**: `main.py`
+
+**내용**: `connect_broker()`에서 `_sync_position_from_broker()` 직후
+- 보유 포지션이면 `set_ui_position_mode()`
+- FLAT이면 `set_ui_ready_mode()`
+를 즉시 호출해 startup 모드 공백 제거.
+
+### 개선 C03: 수동 탭 전환 유휴 복귀 판정 강화
+
+**파일**: `dashboard/main_dashboard.py`
+
+**내용**: `UiAutoTabController` 유휴 판정(`_managed_widgets_under_mouse`)에
+- `hasFocus()`
+- `QApplication.focusWidget()` 기준 하위 위젯 포커스
+를 추가해 마우스 외 키보드 활동도 유휴 리셋으로 간주.
+
+---
+
 ## 2026-05-13 (22차 — Cybos 주문/체결 파이프라인 버그 수정 + 즉시청산 UI 불일치 해결)
 
 **Work**

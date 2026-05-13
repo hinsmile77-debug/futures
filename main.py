@@ -458,6 +458,7 @@ class TradingSystem:
                 send_qty = total_qty
 
         price_hint = float(getattr(self, "_last_pipeline_price", 0.0) or self.position.entry_price or 0.0)
+        stage = self.position.resolve_stage_for_exit_qty(send_qty, full_close=is_full_close)
         if is_full_close:
             reason = "수동 전량청산" if percent >= 100 else f"수동 청산 {percent}%→전량"
             kind = "EXIT_FULL"
@@ -473,6 +474,7 @@ class TradingSystem:
             qty=send_qty,
             price_hint=round(price_hint, 2),
             reason=reason,
+            stage=stage or None,
         )
         ret = self._send_kiwoom_exit_order(send_qty)
         if ret != 0:
@@ -484,7 +486,7 @@ class TradingSystem:
             return
 
         log_manager.system(
-            f"[ManualExit] 요청 pct={percent} send_qty={send_qty} kind={kind} position={self.position.status}",
+            f"[ManualExit] 요청 pct={percent} send_qty={send_qty} kind={kind} stage={stage} position={self.position.status}",
             "WARNING",
         )
         log_manager.trade(
@@ -628,6 +630,10 @@ class TradingSystem:
                     self._entry_cooldown_until.strftime("%H:%M:%S"),
                 )
         self._pending_order = None
+        try:
+            _ts_push_exit_panel_now(self)
+        except Exception:
+            pass
 
     def _has_pending_order(self) -> bool:
         return self._pending_order is not None
@@ -705,11 +711,13 @@ class TradingSystem:
             )
             return
 
+        entry_time_hint = self.position.entry_time or self.position.peek_saved_entry_time(side)
         self.position.sync_from_broker(
             direction=side,
             price=avg_price,
             quantity=qty,
             atr=max(_ts_get_reference_atr(self), 0.5),
+            synced_at=entry_time_hint,
             grade="BROKER",
             regime=self.current_regime or "BROKER_SYNC",
         )
@@ -861,6 +869,10 @@ class TradingSystem:
             _BrokerOrderAdapter(self.broker, code, selected_account)
         )
         self._sync_position_from_broker()
+        if self.position.status != "FLAT":
+            self.dashboard.set_ui_position_mode()
+        else:
+            self.dashboard.set_ui_ready_mode()
 
         self.realtime_data = self.broker.create_realtime_data(
             code             = code,
@@ -1051,7 +1063,9 @@ class TradingSystem:
                 # Cybos mock can delay the first acceptance callback well beyond
                 # the Kiwoom-oriented 60s timeout.
                 _timeout_s = 180
-            if _pending_age > _timeout_s and self._pending_order.get("filled_qty", 0) == 0:
+            _pending_filled = self._pending_order.get("filled_qty", 0)
+            _pending_total = self._pending_order.get("qty", 0)
+            if _pending_age > _timeout_s and _pending_filled == 0:
                 _accepted_label = f"접수확인(order_no={self._pending_order['order_no']})" if _has_order_no else "미접수"
                 # [B52] ENTRY 타임아웃: 낙관적 포지션 복원 + 쿨다운
                 if self._pending_order.get("kind") == "ENTRY":
@@ -1079,6 +1093,37 @@ class TradingSystem:
                 )
                 self._clear_pending_order()
             elif (
+                self._pending_order.get("kind") == "ENTRY"
+                and 0 < _pending_filled < _pending_total
+            ):
+                # [Fix-EntryStuck] ENTRY 부분체결 후 잔량 미체결 stuck
+                # 브로커 Chejan 이벤트 유실 vs 실제 미체결을 구분하기 위해
+                # EXIT stuck 처리와 동일하게 브로커 잔고 TR 조회 후 실제 수량으로 sync.
+                # 주의: 브로커 확인 없이 position.quantity를 낮추면
+                #   이벤트 유실 케이스에서 실잔량 > 청산수량 → 잔여 포지션 발생.
+                _last_fill_at = self._pending_order.get("last_fill_at")
+                _since_last_fill = (
+                    (datetime.datetime.now() - _last_fill_at).total_seconds()
+                    if _last_fill_at else _pending_age
+                )
+                if _since_last_fill > 60:
+                    _unfilled = _pending_total - _pending_filled
+                    log_manager.system(
+                        f"[PendingOrder] ENTRY 부분체결 stuck {_since_last_fill:.0f}s — "
+                        f"filled={_pending_filled}/{_pending_total} (미체결={_unfilled}계약) "
+                        f"→ 브로커 잔고 조회로 실수량 확인",
+                        "WARNING",
+                    )
+                    if not _ts_resolve_stuck_entry_pending(self):
+                        # 브로커 조회 실패 시: 수량 하향 보정 없이 pending만 소멸
+                        # (잔여 포지션 발생 위험보다 임의 수량 축소 위험이 더 큼)
+                        log_manager.system(
+                            f"[PendingOrder] ENTRY stuck 브로커 조회 실패 — "
+                            f"pending 소멸, position.qty={self.position.quantity} 유지",
+                            "WARNING",
+                        )
+                        self._clear_pending_order()
+            elif (
                 self._pending_order.get("kind", "").startswith("EXIT")
                 and 0 < self._pending_order.get("filled_qty", 0) < self._pending_order.get("qty", 0)
             ):
@@ -1097,7 +1142,8 @@ class TradingSystem:
                         f"→ pending 소멸, 잔여 포지션 하드스톱 재발동 대기",
                         "WARNING",
                     )
-                    self._clear_pending_order()
+                    if not _ts_resolve_stuck_exit_pending(self):
+                        self._clear_pending_order()
 
         log_manager.signal(f"--- {ts} 분봉 파이프라인 시작 ---")
 
@@ -1737,18 +1783,38 @@ class TradingSystem:
 
         # ── 청산 패널 갱신 (매분 — 실제 PositionTracker 값 전달) ──
         _pos = self.position
+        _pending = self._pending_order or {}
+        _pending_kind = str(_pending.get("kind") or "")
+        _pending_reason = str(_pending.get("reason") or "")
+        _now = datetime.datetime.now()
+        _force_dt = datetime.datetime.combine(_now.date(), self.time_exit.FORCE_EXIT)
+        _time_left_s = int((_force_dt - _now).total_seconds())
+        if _time_left_s < 0:
+            _time_left_s = 0
         self.dashboard.update_position({
             "status":     _pos.status,
             "entry":      _pos.entry_price,
             "current":    close,
             "qty":        _pos.quantity,
+            "pt_value":   self._pt_value,
             "atr":        atr,
             "stop":       _pos.stop_price,
+            "trail_basis": _pos.get_trailing_reference_price(close, atr),
             "tp1":        _pos.tp1_price,
             "tp2":        _pos.tp2_price,
+            "tp3":        _pos.tp3_price,
             "partial1":   _pos.partial_1_done,
             "partial2":   _pos.partial_2_done,
+            "partial3":   _pos.partial_3_done,
+            "stage_plan": _pos.get_stage_plan(),
             "entry_time": _pos.entry_time,
+            "pending_active": bool(_pending),
+            "pending_kind": _pending_kind,
+            "pending_reason": _pending_reason,
+            "pending_stage": int(_pending.get("stage") or 0),
+            "pending_filled": int(_pending.get("filled_qty") or 0),
+            "pending_qty": int(_pending.get("qty") or 0),
+            "time_exit_countdown_sec": _time_left_s,
         })
 
         # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
@@ -1812,6 +1878,15 @@ class TradingSystem:
                 "candle": bar if isinstance(bar, dict) else {},
             }
             self.challenger_engine.run_shadow(features, _ctx.get("candle", {}), _ctx)
+
+        # ── CB 배지 매분 갱신 ──────────────────────────────────
+        try:
+            self.dashboard.update_system_status(
+                cb_state=self.circuit_breaker.state,
+                latency_ms=0.0,
+            )
+        except Exception:
+            pass
 
         # 🧠 자가학습 모니터 패널 갱신 (매분)
         self.dashboard.update_learning(self._gather_learning_stats())
@@ -3059,9 +3134,20 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
         )
         return
     ratio = PARTIAL_EXIT_RATIOS[stage - 1]
-    partial_qty = max(1, round(total_qty * ratio))
-    is_full_close = partial_qty >= total_qty
-    send_qty = total_qty if is_full_close else partial_qty
+    target_qty = self.position.get_stage_exit_qty(stage)
+    if target_qty <= 0:
+        _ts_log_diag(
+            self,
+            "PartialExitSkipped",
+            stage=stage,
+            ratio=ratio,
+            target_qty=target_qty,
+            stage_plan=self.position.get_stage_plan(),
+            position=_ts_get_position_snapshot(self),
+        )
+        return
+    is_full_close = target_qty >= total_qty or stage >= 3
+    send_qty = total_qty if is_full_close else target_qty
     reason = f"TP{stage}(전량)" if is_full_close else f"TP{stage} 부분청산 {ratio:.0%}"
 
     ret = self._send_kiwoom_exit_order(send_qty)
@@ -3070,13 +3156,16 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
         "PartialExitSendOrderResult",
         stage=stage,
         ret=ret,
+        target_qty=target_qty,
         send_qty=send_qty,
         reason=reason,
+        stage_plan=self.position.get_stage_plan(),
         position=_ts_get_position_snapshot(self),
     )
     if ret != 0:
         log_manager.system(
-            f"[Exit] 청산 주문 실패 ret={ret} stage={stage} qty={send_qty}",
+            f"[Exit] 청산 주문 실패 ret={ret} stage={stage} qty={send_qty} "
+            f"— 다음 분봉에서 하드스톱 재평가 예정",
             "ERROR",
         )
         return
@@ -3103,15 +3192,17 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
         _stop_dist = (price - self.position.stop_price) * _mult
         _tp1_dist = (self.position.tp1_price - price) * _mult
         _tp2_dist = (self.position.tp2_price - price) * _mult
+        _tp3_dist = (self.position.tp3_price - price) * _mult
         debug_log.debug(
             "[DBG-F8] %s %dct @%.2f cur=%.2f upnl=%+.2fpt"
-            " | stop_dist=%.2f tp1=%.2f tp2=%.2f | stop=%.2f | p1=%s p2=%s",
+            " | stop_dist=%.2f tp1=%.2f tp2=%.2f tp3=%.2f | stop=%.2f | p1=%s p2=%s p3=%s",
             self.position.status, self.position.quantity,
             self.position.entry_price, price, _upnl,
-            _stop_dist, _tp1_dist, _tp2_dist,
+            _stop_dist, _tp1_dist, _tp2_dist, _tp3_dist,
             self.position.stop_price,
             "O" if self.position.partial_1_done else "X",
             "O" if self.position.partial_2_done else "X",
+            "O" if self.position.partial_3_done else "X",
         )
 
     self.position.update_trailing_stop(price, atr)
@@ -3161,6 +3252,11 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             and self.position.status != "FLAT"
             and self.position.is_tp2_hit(price)):
         self._execute_partial_exit(price, stage=2)
+
+    if (not self._has_pending_order()
+            and self.position.status != "FLAT"
+            and self.position.is_tp3_hit(price)):
+        self._execute_partial_exit(price, stage=3)
 
     if not self._has_pending_order() and self.time_exit.should_force_exit():
         log_manager.system(
@@ -3223,7 +3319,11 @@ def _ts_order_side_to_direction(payload_or_order_gubun) -> str:
             return "LONG"
         if trade_gubun in ("1", "-1", "매도", "-매도"):
             return "SHORT"
-        text = str(payload.get("order_gubun", "")).strip()
+        text = ""
+        for key in ("balance_side", "order_gubun", "side", "balance_side_code", "side_code"):
+            text = str(payload.get(key, "")).strip()
+            if text:
+                break
     else:
         text = str(payload_or_order_gubun or "").strip()
 
@@ -3249,6 +3349,57 @@ def _ts_get_pending_snapshot(self) -> str:
         f"filled={pending.get('filled_qty', 0)} order_no={pending.get('order_no') or '?'} "
         f"reason={pending.get('reason', '')} req_at={pending.get('requested_at', '?')}"
     )
+
+
+def _ts_push_exit_panel_now(self, current_price: float = None) -> None:
+    """Chejan 체결 직후 청산 패널을 즉시 갱신해 '주문중' 잔상을 줄인다."""
+    if not hasattr(self, "dashboard"):
+        return
+
+    _pos = self.position
+    _pending = self._pending_order or {}
+    _pending_kind = str(_pending.get("kind") or "")
+    _pending_reason = str(_pending.get("reason") or "")
+
+    if current_price is None:
+        current_price = float(
+            getattr(self, "_last_pipeline_price", 0.0)
+            or _pos.entry_price
+            or 0.0
+        )
+
+    _now = datetime.datetime.now()
+    _force_dt = datetime.datetime.combine(_now.date(), self.time_exit.FORCE_EXIT)
+    _time_left_s = int((_force_dt - _now).total_seconds())
+    if _time_left_s < 0:
+        _time_left_s = 0
+
+    atr = _ts_get_reference_atr(self, _pending if _pending else None)
+    self.dashboard.update_position({
+        "status": _pos.status,
+        "entry": _pos.entry_price,
+        "current": current_price,
+        "qty": _pos.quantity,
+        "pt_value": self._pt_value,
+        "atr": atr,
+        "stop": _pos.stop_price,
+        "trail_basis": _pos.get_trailing_reference_price(current_price, atr),
+        "tp1": _pos.tp1_price,
+        "tp2": _pos.tp2_price,
+        "tp3": _pos.tp3_price,
+        "partial1": _pos.partial_1_done,
+        "partial2": _pos.partial_2_done,
+        "partial3": _pos.partial_3_done,
+        "stage_plan": _pos.get_stage_plan(),
+        "entry_time": _pos.entry_time,
+        "pending_active": bool(_pending),
+        "pending_kind": _pending_kind,
+        "pending_reason": _pending_reason,
+        "pending_stage": int(_pending.get("stage") or 0),
+        "pending_filled": int(_pending.get("filled_qty") or 0),
+        "pending_qty": int(_pending.get("qty") or 0),
+        "time_exit_countdown_sec": _time_left_s,
+    })
 
 
 def _ts_log_diag(self, tag: str, **fields) -> None:
@@ -3464,6 +3615,8 @@ def _ts_handle_exit_fill(
             self.position.partial_1_done = True
         elif pending.get("stage") == 2:
             self.position.partial_2_done = True
+        elif pending.get("stage") == 3:
+            self.position.partial_3_done = True
         if not is_last_fill:
             log_manager.trade(
                 f"[TP{pending.get('stage')} 분할체결] {result.get('direction','')} {fill_qty}계약 @ {fill_price:.2f} "
@@ -3477,6 +3630,12 @@ def _ts_handle_exit_fill(
         return
 
     if pending["kind"] == "EXIT_MANUAL_PARTIAL":
+        if pending.get("stage") == 1:
+            self.position.partial_1_done = True
+        elif pending.get("stage") == 2:
+            self.position.partial_2_done = True
+        elif pending.get("stage") == 3:
+            self.position.partial_3_done = True
         if not is_last_fill:
             log_manager.trade(
                 f"[수동청산 분할체결] {result.get('direction','')} {fill_qty}계약 @ {fill_price:.2f} "
@@ -3631,12 +3790,217 @@ def _ts_handle_external_fill(
             f"평균 {self.position.entry_price:.2f} 손절 {self.position.stop_price:.2f}",
         )
         self.dashboard.set_ui_position_mode()
+        _ts_system_info_throttled(
+            self,
+            "balance_refresh_trigger_external_entry",
+            "[BalanceRefresh] trigger=ExternalFill entry retries=250ms,1200ms",
+            min_interval_sec=30.0,
+        )
+        QTimer.singleShot(250, lambda: _ts_refresh_dashboard_balance(self))
+        QTimer.singleShot(1200, lambda: _ts_refresh_dashboard_balance(self))
 
     after = _ts_get_position_snapshot(self)
     log_manager.system(
         f"[OrderSync] 외부 체결 반영 완료 order_no={payload.get('order_no') or '?'} after={after}",
         "WARNING",
     )
+
+
+def _ts_resolve_stuck_entry_pending(self) -> bool:
+    """ENTRY 부분체결 stuck 시 브로커 잔고 TR 조회 → 실제 수량으로 포지션 보정.
+
+    반환:
+        True  — 브로커 조회 성공, 포지션 sync 완료 (pending은 내부 처리)
+        False — 브로커 조회 실패 또는 잔고 행 해석 불가
+    """
+    pending = self._pending_order or {}
+    if pending.get("kind") != "ENTRY":
+        return False
+
+    account_no = str(_secrets.ACCOUNT_NO or "").strip()
+    target_code = self._normalize_broker_code(getattr(self, "_futures_code", ""))
+    if not account_no or not target_code:
+        return False
+
+    result = self.broker.request_futures_balance(account_no)
+    if result is None:
+        log_manager.system(
+            "[EntryStuck] ENTRY stuck 브로커 잔고 TR 실패 — pending 유지",
+            "WARNING",
+        )
+        return False
+
+    _ts_push_balance_to_dashboard(self, result)
+
+    rows = result.get("nonempty_rows") or result.get("rows") or []
+    broker_row = None
+    for row in rows:
+        row_code = self._normalize_broker_code(row.get("종목코드") or row.get("code") or "")
+        if row_code == target_code:
+            broker_row = row
+            break
+
+    def _num(value):
+        try:
+            return float(str(value or "").replace(",", "").strip())
+        except Exception:
+            return 0.0
+
+    if broker_row is None:
+        # 브로커 무포지션 → 체결이 실제로 안 됐거나 취소됨
+        before = _ts_get_position_snapshot(self)
+        self.position.sync_flat_from_broker()
+        self.dashboard.minute_chart_clear_active_position()
+        self._clear_pending_order()
+        _ts_set_broker_sync_status(self, True, "entry stuck: broker confirms flat", False)
+        log_manager.system(
+            f"[EntryStuck] 브로커 무포지션 확인 → {before} => FLAT (진입 미체결 처리)",
+            "WARNING",
+        )
+        return True
+
+    broker_qty = int(_num(broker_row.get("잔고수량") or broker_row.get("position_qty") or broker_row.get("qty")))
+    broker_avg = _num(
+        broker_row.get("평균가") or broker_row.get("매입단가")
+        or broker_row.get("avg_price") or broker_row.get("buy_avg_price")
+        or broker_row.get("sell_avg_price")
+    )
+    broker_side = _ts_order_side_to_direction({
+        "balance_side": broker_row.get("구분") or broker_row.get("매매구분"),
+        "balance_side_code": broker_row.get("side_code"),
+    })
+
+    if broker_qty <= 0 or broker_avg <= 0 or broker_side not in ("LONG", "SHORT"):
+        log_manager.system(
+            f"[EntryStuck] 브로커 행 해석 실패 row={broker_row} — pending 유지",
+            "WARNING",
+        )
+        return False
+
+    before_qty = self.position.quantity
+    # 브로커 실수량으로 포지션 sync (이벤트 유실로 인한 수량 불일치 해소)
+    self.position.sync_from_broker(
+        direction=broker_side,
+        price=broker_avg,
+        quantity=broker_qty,
+        atr=max(_ts_get_reference_atr(self), 0.5),
+        grade=pending.get("grade") or "BROKER",
+        regime=self.current_regime or "BROKER_SYNC",
+    )
+    self.dashboard.minute_chart_sync_active_position(
+        broker_side, broker_avg, self.position.entry_time,
+    )
+    _ts_set_broker_sync_status(
+        self, True,
+        f"entry stuck resolved broker {broker_side} {broker_qty} @ {broker_avg}",
+        False,
+    )
+    self._clear_pending_order()
+    log_manager.system(
+        f"[EntryStuck] 브로커 잔량 확인 → position.qty {before_qty} → {broker_qty}계약 @ {broker_avg:.2f} sync 완료",
+        "WARNING",
+    )
+    return True
+
+
+def _ts_resolve_stuck_exit_pending(self) -> bool:
+    pending = self._pending_order or {}
+    if pending.get("kind") not in ("EXIT_FULL", "EXIT_PARTIAL", "EXIT_MANUAL_PARTIAL"):
+        return False
+
+    account_no = str(_secrets.ACCOUNT_NO or "").strip()
+    target_code = self._normalize_broker_code(getattr(self, "_futures_code", ""))
+    if not account_no or not target_code:
+        return False
+
+    result = self.broker.request_futures_balance(account_no)
+    if result is None:
+        log_manager.system(
+            "[PendingOrder] EXIT partial fill timeout but broker balance TR failed; pending 유지",
+            "WARNING",
+        )
+        return False
+
+    _ts_push_balance_to_dashboard(self, result)
+
+    rows = result.get("nonempty_rows") or result.get("rows") or []
+    broker_row = None
+    for row in rows:
+        row_code = self._normalize_broker_code(row.get("종목코드") or row.get("code") or "")
+        if row_code == target_code:
+            broker_row = row
+            break
+
+    if broker_row is None:
+        before = _ts_get_position_snapshot(self)
+        self.position.sync_flat_from_broker()
+        self.dashboard.minute_chart_clear_active_position()
+        self._clear_pending_order()
+        _ts_set_broker_sync_status(self, True, "stuck exit resolved flat by broker balance", False)
+        log_manager.system(
+            f"[PendingOrder] EXIT partial fill timeout -> 브로커 무포지션 확인, {before} => FLAT",
+            "WARNING",
+        )
+        return True
+
+    def _num(value) -> float:
+        try:
+            return float(str(value or "").replace(",", "").strip())
+        except Exception:
+            return 0.0
+
+    qty = int(_num(broker_row.get("잔고수량") or broker_row.get("position_qty") or broker_row.get("qty")))
+    avg_price = _num(
+        broker_row.get("평균가")
+        or broker_row.get("매입단가")
+        or broker_row.get("avg_price")
+        or broker_row.get("buy_avg_price")
+        or broker_row.get("sell_avg_price")
+    )
+    side = _ts_order_side_to_direction({
+        "balance_side": broker_row.get("구분") or broker_row.get("매매구분"),
+        "balance_side_code": broker_row.get("side_code"),
+    })
+
+    if qty <= 0 or avg_price <= 0 or side not in ("LONG", "SHORT"):
+        log_manager.system(
+            f"[PendingOrder] EXIT partial fill timeout -> 브로커 행 해석 실패, pending 유지 row={broker_row}",
+            "WARNING",
+        )
+        return False
+
+    entry_time_hint = self.position.entry_time or self.position.peek_saved_entry_time(side)
+    self.position.sync_from_broker(
+        direction=side,
+        price=avg_price,
+        quantity=qty,
+        atr=max(_ts_get_reference_atr(self), 0.5),
+        synced_at=entry_time_hint,
+        grade="BROKER",
+        regime=self.current_regime or "BROKER_SYNC",
+    )
+    self.dashboard.minute_chart_sync_active_position(
+        side,
+        avg_price,
+        self.position.entry_time,
+    )
+
+    if side == pending.get("direction"):
+        pending["last_fill_at"] = datetime.datetime.now()
+        _ts_set_broker_sync_status(self, True, f"stuck exit still holding {side} {qty} @ {avg_price}", False)
+        log_manager.system(
+            f"[PendingOrder] EXIT partial fill timeout -> 브로커 잔량 확인 {side} {qty} @ {avg_price:.2f}, pending 유지",
+            "WARNING",
+        )
+        return True
+
+    self._clear_pending_order()
+    _ts_set_broker_sync_status(self, True, f"stuck exit resolved broker side {side} {qty} @ {avg_price}", False)
+    log_manager.system(
+        f"[PendingOrder] EXIT partial fill timeout -> 브로커 반대포지션 동기화 {side} {qty} @ {avg_price:.2f}",
+        "CRITICAL",
+    )
+    return True
 
 
 def _ts_on_chejan_event(self, payload: dict) -> None:
@@ -3748,6 +4112,9 @@ def _ts_on_chejan_event(self, payload: dict) -> None:
             fill_price or pending["price_hint"],
             filled_at,
         )
+
+    if payload.get("position_qty") is not None or payload.get("closable_qty") is not None:
+        _ts_sync_from_balance_payload(self, payload)
 
     if pending["filled_qty"] >= pending["qty"]:
         self._clear_pending_order()
@@ -3884,6 +4251,14 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
                 continue
         return 0
 
+    def _parse_closable_qty(row):
+        for key in ("청산가능", "주문가능수량", "청산가능수량"):
+            try:
+                return int(str(row.get(key, "")).replace(",", "").strip() or "0")
+            except (ValueError, AttributeError):
+                continue
+        return 0
+
     def _parse_price(row, *keys):
         for key in keys:
             try:
@@ -3926,6 +4301,27 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
                     row["평가금액"] = _format_krw(_eval_amount_krw)
                 if not str(row.get("매매금액") or "").strip():
                     row["매매금액"] = _format_krw(_trade_base_krw)
+
+    _pending_exists = getattr(self, "_pending_order", None) is not None
+    if rows and self.position.status == "FLAT" and not _pending_exists:
+        filtered_rows = []
+        suppressed_rows = []
+        for row in rows:
+            qty = _parse_qty(row)
+            closable_qty = _parse_closable_qty(row)
+            if qty > 0 and closable_qty <= 0:
+                suppressed_rows.append(row)
+                continue
+            filtered_rows.append(row)
+        if suppressed_rows:
+            rows = filtered_rows
+            logger.warning(
+                "[BalanceUIGhostRow] suppressed stale broker rows flat=%s pending=%s suppressed=%s kept=%s",
+                self.position.status,
+                _pending_exists,
+                suppressed_rows,
+                rows,
+            )
 
     balance_active = (
         self.position.status != "FLAT"
@@ -4286,13 +4682,36 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         )
         return
 
-    qty = int(payload.get("holding_qty") or 0)
-    avg_price = float(payload.get("avg_price") or 0.0)
-    side = _ts_order_side_to_direction(payload.get("balance_side", ""))
+    def _to_int(value) -> int:
+        try:
+            return int(str(value or "").replace(",", "").strip() or "0")
+        except (ValueError, TypeError):
+            return 0
+
+    def _to_float(value) -> float:
+        try:
+            return float(str(value or "").replace(",", "").strip() or "0")
+        except (ValueError, TypeError):
+            return 0.0
+
+    qty = _to_int(
+        payload.get("holding_qty")
+        or payload.get("position_qty")
+        or payload.get("buy_balance")
+        or payload.get("sell_balance")
+    )
+    closable_qty = _to_int(payload.get("available_qty") or payload.get("closable_qty"))
+    avg_price = _to_float(
+        payload.get("avg_price")
+        or payload.get("buy_avg_price")
+        or payload.get("sell_avg_price")
+        or payload.get("fill_price")
+    )
+    side = _ts_order_side_to_direction(payload)
     before = _ts_get_position_snapshot(self)
     logger.warning(
-        "[BrokerSync] balance chejan payload before=%s qty=%s avg=%s side=%s raw=%s",
-        before, qty, avg_price, side, payload,
+        "[BrokerSync] balance chejan payload before=%s qty=%s closable=%s avg=%s side=%s raw=%s",
+        before, qty, closable_qty, avg_price, side, payload,
     )
     _ts_log_diag(
         self,
@@ -4301,6 +4720,7 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         code=code,
         target_code=target_code,
         qty=qty,
+        closable_qty=closable_qty,
         avg_price=avg_price,
         side=side,
         pending=_ts_get_pending_snapshot(self),
@@ -4322,11 +4742,11 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         _ts_set_broker_sync_status(
             self,
             False,
-            f"balance chejan parse failure side={payload.get('balance_side')} qty={qty} avg={avg_price}",
+            f"balance chejan parse failure side={payload.get('balance_side')} qty={qty} closable={closable_qty} avg={avg_price}",
             True,
         )
         log_manager.system(
-            f"[BrokerSync] 잔고 Chejan 해석 실패 code={code} side={payload.get('balance_side')} qty={qty} avg={avg_price}",
+            f"[BrokerSync] 잔고 Chejan 해석 실패 code={code} side={payload.get('balance_side')} qty={qty} closable={closable_qty} avg={avg_price}",
             "WARNING",
         )
         return
@@ -4407,6 +4827,23 @@ def _ts_execute_entry(
     if self._has_pending_order():
         logger.info("[Entry] pending order exists -> skip new entry %s %s", direction, quantity)
         return
+    # [Fix-PendingFirst] CYBOS BlockRequest()는 COM 이벤트 루프를 pump하므로
+    # send_market_order() 반환 전에 Chejan 콜백이 먼저 실행될 수 있음.
+    # pending을 SendOrder 이전에 등록해 pending_matched=False 및 ret=1 오판 방지.
+    self._set_pending_order(
+        kind="ENTRY",
+        direction=direction,
+        qty=quantity,
+        price_hint=price,
+        reason="진입",
+        atr=atr,
+        grade=grade,
+        raw_direction=raw_direction,
+        reverse_entry_enabled=reverse_enabled,
+    )
+    # 낙관적 오픈 후 분할체결 VWAP 보정을 위한 플래그
+    self._pending_order["optimistic_opened"] = True
+    self._pending_order["partial_fill_count"] = 0
     ret = self._send_kiwoom_entry_order(direction, quantity)
     logger.info(
         "[Entry] send_order result ret=%s raw=%s final=%s qty=%s reverse=%s code=%s broker_sync_verified=%s",
@@ -4431,27 +4868,26 @@ def _ts_execute_entry(
         position=_ts_get_position_snapshot(self),
     )
     if ret != 0:
-        logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s", ret)
-        log_manager.system(
-            f"[Entry] 주문 실패로 포지션 미오픈 ret={ret} raw={raw_direction} final={direction} "
-            f"qty={quantity} reverse_entry={'ON' if reverse_enabled else 'OFF'}",
-            "ERROR",
-        )
-        return
-    self._set_pending_order(
-        kind="ENTRY",
-        direction=direction,
-        qty=quantity,
-        price_hint=price,
-        reason="진입",
-        atr=atr,
-        grade=grade,
-        raw_direction=raw_direction,
-        reverse_entry_enabled=reverse_enabled,
-    )
-    # 낙관적 오픈 후 분할체결 VWAP 보정을 위한 플래그
-    self._pending_order["optimistic_opened"] = True
-    self._pending_order["partial_fill_count"] = 0
+        _already_filled = (self._pending_order or {}).get("filled_qty", 0)
+        if _already_filled > 0:
+            # BlockRequest() 중 Chejan이 선행 도착해 이미 일부 체결됨 → 주문 실제 접수된 것으로 처리
+            logger.warning(
+                "[Entry] ret=%s but filled_qty=%s 이미 체결 → 주문 접수된 것으로 처리 (CYBOS BlockRequest 선행 콜백)",
+                ret, _already_filled,
+            )
+            log_manager.system(
+                f"[Entry] ret={ret} 오류코드이나 filled_qty={_already_filled} 확인 → pending 유지",
+                "WARNING",
+            )
+        else:
+            logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s", ret)
+            log_manager.system(
+                f"[Entry] 주문 실패로 포지션 미오픈 ret={ret} raw={raw_direction} final={direction} "
+                f"qty={quantity} reverse_entry={'ON' if reverse_enabled else 'OFF'}",
+                "ERROR",
+            )
+            self._clear_pending_order()  # pending 롤백
+            return
     # Fix B: 모의투자에서 Chejan 없음 → 낙관적 오픈으로 이중진입 방지
     # Chejan 체결 시 apply_entry_fill() 가격 보정 경로로 합쳐짐 (_optimistic=True)
     try:
@@ -4766,6 +5202,8 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
             fill_price or pending["price_hint"],
             filled_at,
         )
+
+    _ts_push_exit_panel_now(self, current_price=(fill_price or pending.get("price_hint") or 0.0))
 
     if pending["filled_qty"] >= pending["qty"]:
         self._clear_pending_order()

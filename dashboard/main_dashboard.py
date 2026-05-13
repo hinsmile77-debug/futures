@@ -19,6 +19,7 @@ import subprocess
 import sys
 import random
 import math
+from enum import Enum
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -46,6 +47,17 @@ TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
 TP1_PROTECT_ATR_LOCK_MULT = 0.25
 
 logger = logging.getLogger("SYSTEM")
+
+
+class TriggerBadgeState(str, Enum):
+    MONITORING = "감시중"
+    WAIT = "대기"
+    CALCULATING = "산정중"
+    HIT = "도달"
+    DONE = "완료"
+    WARNING = "주의"
+    EXECUTING = "주문중"
+    PROTECT = "보호전환"
 
 class UiAutoTabController(QObject):
     """운영 상태에 맞춰 우측/가운데 탭 포커스를 자동 복귀시킨다."""
@@ -120,7 +132,21 @@ class UiAutoTabController(QObject):
             self.mid_tabs,
             self.mid_tabs.tabBar(),
         ]
-        return any(w.underMouse() for w in widgets if w is not None)
+        if any(w.underMouse() for w in widgets if w is not None):
+            return True
+
+        # 키보드 포커스 활동도 유휴 리셋으로 간주
+        if any(w.hasFocus() for w in widgets if w is not None):
+            return True
+
+        app = QApplication.instance()
+        fw = app.focusWidget() if app is not None else None
+        if fw is None:
+            return False
+        return any(
+            (w is not None) and (fw is w or w.isAncestorOf(fw))
+            for w in widgets
+        )
 
     def _tick_manual_override(self) -> None:
         if not self._manual_override:
@@ -1739,11 +1765,28 @@ class ExitPanel(QWidget):
         lay.addWidget(mk_sep())
 
         # 가격 레벨
-        lay.addWidget(mk_label("가격 구조 (손절 → 목표)", C['text2'], 9, True))
+        lay.addWidget(mk_label("가격 구조 (실행 스톱 → 목표)", C['text2'], 9, True))
+        level_tooltips = {
+            "hard_stop": (
+                "초기 하드 스톱\n"
+                "진입 직후 최초로 설정되는 기본 손절선입니다.\n"
+                "현재 기준: 진입가 ± ATR x 1.5"
+            ),
+            "struct_stop": (
+                "현재 실행 스톱\n"
+                "지금 실제 청산 판단에 사용하는 스톱 가격입니다.\n"
+                "트레일링이 발동하면 이 값이 함께 이동합니다."
+            ),
+            "trail_stop": (
+                "트레일링 기준\n"
+                "현재 실행 스톱을 끌어올리는 이익 구간 기준입니다.\n"
+                "이익이 1.0 / 1.5 / 2.0 ATR 구간에 도달하면 스톱이 단계적으로 조정됩니다."
+            ),
+        }
         levels = [
-            ("하드 손절",    "hard_stop",  C['red'],    "●"),
-            ("구조적 손절",  "struct_stop",C['red'],    "●"),
-            ("트레일링 스톱","trail_stop", C['orange'], "●"),
+            ("초기 하드 스톱", "hard_stop",  C['red'],    "●"),
+            ("현재 실행 스톱", "struct_stop",C['red'],    "●"),
+            ("트레일링 기준",  "trail_stop", C['orange'], "●"),
             ("본전 (진입가)","breakeven",  C['text2'],  "●"),
             ("1차 목표 33%","target1",    C['green'],  "●"),
             ("2차 목표 33%","target2",    C['green'],  "●"),
@@ -1751,24 +1794,29 @@ class ExitPanel(QWidget):
         ]
         for lbl, attr, col, dot in levels:
             r = QHBoxLayout()
-            r.addWidget(mk_label(f"{dot} {lbl}", col, 9))
+            name_w = mk_label(f"{dot} {lbl}", col, 9)
             vl = mk_val_label("——.——", col, 10)
+            tooltip = level_tooltips.get(attr, "")
+            if tooltip:
+                name_w.setToolTip(tooltip)
+                vl.setToolTip(tooltip)
             setattr(self, f"lv_{attr}", vl)
+            r.addWidget(name_w)
             r.addWidget(vl)
             lay.addLayout(r)
 
         lay.addWidget(mk_sep())
 
         # 청산 트리거 모니터
-        lay.addWidget(mk_label("청산 트리거 모니터 (우선순위 감시)", C['orange'], 9, True))
+        lay.addWidget(mk_label("청산 실행 상태 모니터", C['orange'], 9, True))
         triggers = [
-            ("1", "하드 스톱 초과",     "hard_trig"),
-            ("1", "앙상블 반대 신호",   "signal_trig"),
-            ("1", "CVD+VWAP 동시 역전", "cvd_trig"),
-            ("2", "SHAP 피처 붕괴",     "shap_trig"),
-            ("2", "옵션 플로우 역전",   "opt_trig"),
-            ("2", "트레일링 스톱",      "trail_trig"),
-            ("3", "1차 목표 도달",      "t1_trig"),
+            ("1", "실행 스톱 감시",      "hard_trig"),
+            ("2", "1계약 TP1 보호전환", "signal_trig"),
+            ("3", "1차 목표 33%",       "cvd_trig"),
+            ("3", "2차 목표 33%",       "shap_trig"),
+            ("3", "3차 목표 34%",       "opt_trig"),
+            ("2", "현재 스톱 가격",     "trail_trig"),
+            ("3", "부분청산 진행",      "t1_trig"),
             ("3", "시간 청산 (15:10)", "time_trig"),
         ]
         for pri, name, attr in triggers:
@@ -1921,46 +1969,85 @@ class ExitPanel(QWidget):
             self._reset_display()
             return
 
-        status = pos_data.get('status', 'FLAT')
+        def _as_float(value, default=0.0):
+            try:
+                text = str(value).replace(",", "").strip()
+                if not text:
+                    return float(default)
+                return float(text)
+            except Exception:
+                return float(default)
+
+        def _as_int(value, default=0):
+            try:
+                text = str(value).replace(",", "").strip()
+                if not text:
+                    return int(default)
+                return int(float(text))
+            except Exception:
+                return int(default)
+
+        def _as_datetime(value):
+            if value is None or value == "":
+                return None
+            if isinstance(value, datetime):
+                return value
+            try:
+                return datetime.fromisoformat(str(value).strip())
+            except Exception:
+                return None
+
+        status = str(pos_data.get('status', 'FLAT') or 'FLAT').strip().upper()
         if status == 'FLAT':
             self._reset_display()
             return
 
-        entry  = pos_data.get('entry', 0.0)
-        cur    = pos_data.get('current', entry)
-        qty    = pos_data.get('qty', 0)
-        atr    = pos_data.get('atr', 1.0)
+        entry  = _as_float(pos_data.get('entry', 0.0), 0.0)
+        cur    = _as_float(pos_data.get('current', entry), entry)
+        qty    = max(0, _as_int(pos_data.get('qty', 0), 0))
+        atr    = max(0.0, _as_float(pos_data.get('atr', 1.0), 1.0))
+        pt_value = max(0.0, _as_float(pos_data.get('pt_value', FUTURES_PT_VALUE), FUTURES_PT_VALUE))
         # stop = 현재 트레일링 스톱 (PositionTracker.stop_price)
         mult   = 1 if status == 'LONG' else -1
-        stop   = pos_data.get('stop',  entry - mult * atr * 1.5)
-        tp1    = pos_data.get('tp1',   entry + mult * atr * 1.0)
-        tp2    = pos_data.get('tp2',   entry + mult * atr * 1.5)
+        stop   = _as_float(pos_data.get('stop',  entry - mult * atr * 1.5), entry - mult * atr * 1.5)
+        trail_basis = _as_float(pos_data.get('trail_basis', stop), stop)
+        tp1    = _as_float(pos_data.get('tp1',   entry + mult * atr * 1.0), entry + mult * atr * 1.0)
+        tp2    = _as_float(pos_data.get('tp2',   entry + mult * atr * 1.5), entry + mult * atr * 1.5)
+        tp3    = _as_float(pos_data.get('tp3',   entry + mult * atr * 2.5), entry + mult * atr * 2.5)
+        # 방어로직: 체결 직후/동기화 경계에서 tp 값이 0으로 들어오면 오표시를 유발한다.
+        # (예: LONG에서 cur>=0.0 이 항상 참이 되어 "3차 목표 도달"로 보임)
+        if tp1 <= 0:
+            tp1 = entry + mult * atr * 1.0
+        if tp2 <= 0:
+            tp2 = entry + mult * atr * 1.5
+        if tp3 <= 0:
+            tp3 = entry + mult * atr * 2.5
+        stage_plan = tuple(pos_data.get('stage_plan', (0, 0, 0)) or (0, 0, 0))
 
         # 진입가 / 현재가
         self.entry_price.setText(f"{entry:.2f}")
         self.cur_price.setText(f"{cur:.2f}")
 
         pnl_pts = (cur - entry) * mult
-        pnl_krw = pnl_pts * qty * FUTURES_PT_VALUE
+        pnl_krw = pnl_pts * qty * pt_value
         col = C['green'] if pnl_krw >= 0 else C['red']
         self.unreal_pnl.setText(f"{pnl_krw:+,.0f}원")
         self.unreal_pnl.setStyleSheet(f"color:{col};font-size:{S.f(14)}px;font-weight:bold;")
 
         # 보유 시간
-        entry_time = pos_data.get('entry_time')
+        entry_time = _as_datetime(pos_data.get('entry_time'))
         if entry_time:
-            mins = int((datetime.now() - entry_time).total_seconds() // 60)
+            mins = max(0, int((datetime.now() - entry_time).total_seconds() // 60))
             self.hold_time.setText(f"{mins}분")
         else:
             self.hold_time.setText("——")
 
         # 가격 구조 (실제 PositionTracker 값 기반)
         hard_stop   = entry - mult * atr * 1.5   # 최초 설정 하드스톱
-        struct_stop = entry - mult * atr * 1.2   # 구조적 손절 (소프트)
-        tp3         = entry + mult * atr * 2.5
+        struct_stop = stop
         self.lv_hard_stop.setText(f"{hard_stop:.2f}")
         self.lv_struct_stop.setText(f"{struct_stop:.2f}")
-        self.lv_trail_stop.setText(f"{stop:.2f}")   # 트레일링으로 이동된 현재 스톱
+        self.lv_trail_stop.setText(f"{trail_basis:.2f}")
         self.lv_breakeven.setText(f"{entry:.2f}")
         self.lv_target1.setText(f"{tp1:.2f}")
         self.lv_target2.setText(f"{tp2:.2f}")
@@ -1969,13 +2056,96 @@ class ExitPanel(QWidget):
         # 부분 청산 진행
         p1 = pos_data.get('partial1', False)
         p2 = pos_data.get('partial2', False)
+        p3 = pos_data.get('partial3', False)
         for i, (bar_w, lbl_w) in enumerate(self.partial_bars):
-            done = (i == 0 and p1) or (i == 1 and p2)
+            done = (i == 0 and p1) or (i == 1 and p2) or (i == 2 and p3)
             bar_w.setValue(100 if done else 0)
-            lbl_w.setText("완료" if done else "대기")
+            planned_qty = stage_plan[i] if i < len(stage_plan) else 0
+            base_text = "완료" if done else "대기"
+            lbl_w.setText(f"{base_text} ({planned_qty}계약)" if planned_qty > 0 else base_text)
             lbl_w.setStyleSheet(
                 f"color:{C['green'] if done else C['text2']};font-size:{S.f(11)}px;"
             )
+
+        def _set_trigger_badge(widget, text, bg, fg):
+            widget.setText(text)
+            widget.setStyleSheet(
+                f"background:{bg};color:{fg};border-radius:3px;font-size:{S.f(10)}px;padding:1px 5px;"
+            )
+
+        def _set_trigger_state(widget, state: TriggerBadgeState, text: str = ""):
+            label = text or state.value
+            if state == TriggerBadgeState.DONE:
+                _set_trigger_badge(widget, label, C['green'], "#000")
+            elif state == TriggerBadgeState.CALCULATING:
+                _set_trigger_badge(widget, label, C['blue'], "#000")
+            elif state == TriggerBadgeState.HIT:
+                _set_trigger_badge(widget, label, C['green'], "#000")
+            elif state == TriggerBadgeState.WARNING:
+                _set_trigger_badge(widget, label, C['red'], "#fff")
+            elif state == TriggerBadgeState.EXECUTING:
+                _set_trigger_badge(widget, label, C['orange'], "#000")
+            elif state == TriggerBadgeState.PROTECT:
+                _set_trigger_badge(widget, label, C['cyan'], "#000")
+            elif state == TriggerBadgeState.WAIT:
+                _set_trigger_badge(widget, label, C['bg3'], C['text2'])
+            else:
+                _set_trigger_badge(widget, label, C['bg3'], C['text2'])
+
+        hit_stop = (cur <= stop) if status == 'LONG' else (cur >= stop)
+        hit_tp1 = (cur >= tp1) if status == 'LONG' else (cur <= tp1)
+        hit_tp2 = (cur >= tp2) if status == 'LONG' else (cur <= tp2)
+        hit_tp3 = (cur >= tp3) if status == 'LONG' else (cur <= tp3)
+
+        pending_active = bool(pos_data.get('pending_active', False))
+        pending_kind = str(pos_data.get('pending_kind', '') or '').upper()
+        pending_reason = str(pos_data.get('pending_reason', '') or '')
+        pending_filled = _as_int(pos_data.get('pending_filled', 0), 0)
+        pending_qty = _as_int(pos_data.get('pending_qty', 0), 0)
+        pending_progress = f" {pending_filled}/{pending_qty}" if pending_qty > 0 else ""
+
+        # ENTRY 체결 진행중에는 목표 도달 판정을 잠가 오표시를 방지한다.
+        # (분할체결 중 평균가/TP가 재계산되는 경계에서 일시적인 false positive 방지)
+        if pending_active and pending_kind == "ENTRY":
+            hit_tp1 = False
+            hit_tp2 = False
+            hit_tp3 = False
+
+        # 기본 상태
+        _set_trigger_state(self.st_hard_trig, TriggerBadgeState.WARNING if hit_stop else TriggerBadgeState.MONITORING)
+        _set_trigger_state(self.st_signal_trig, TriggerBadgeState.PROTECT if (qty == 1 and p1) else TriggerBadgeState.WAIT)
+        if pending_active and pending_kind == "ENTRY":
+            _set_trigger_state(self.st_cvd_trig, TriggerBadgeState.CALCULATING)
+            _set_trigger_state(self.st_shap_trig, TriggerBadgeState.CALCULATING)
+            _set_trigger_state(self.st_opt_trig, TriggerBadgeState.CALCULATING)
+        else:
+            _set_trigger_state(self.st_cvd_trig, TriggerBadgeState.DONE if p1 else (TriggerBadgeState.HIT if hit_tp1 else TriggerBadgeState.MONITORING))
+            _set_trigger_state(self.st_shap_trig, TriggerBadgeState.DONE if p2 else (TriggerBadgeState.HIT if hit_tp2 else TriggerBadgeState.MONITORING))
+            _set_trigger_state(self.st_opt_trig, TriggerBadgeState.DONE if p3 else (TriggerBadgeState.HIT if hit_tp3 else TriggerBadgeState.MONITORING))
+        _set_trigger_badge(self.st_trail_trig, f"{stop:.2f}", C['orange'], "#000")
+        _set_trigger_state(self.st_t1_trig, TriggerBadgeState.DONE if p1 else TriggerBadgeState.WAIT)
+
+        # 시간청산 카운트다운
+        time_left_sec = _as_int(pos_data.get('time_exit_countdown_sec', -1), -1)
+        if time_left_sec < 0:
+            _set_trigger_state(self.st_time_trig, TriggerBadgeState.MONITORING)
+        elif time_left_sec == 0:
+            _set_trigger_state(self.st_time_trig, TriggerBadgeState.WARNING, "발동")
+        else:
+            mm, ss = divmod(time_left_sec, 60)
+            if time_left_sec <= 300:
+                _set_trigger_state(self.st_time_trig, TriggerBadgeState.WARNING, f"임박 {mm:02d}:{ss:02d}")
+            else:
+                _set_trigger_state(self.st_time_trig, TriggerBadgeState.MONITORING, f"T-{mm:02d}:{ss:02d}")
+
+        # pending 주문중 상태를 우선 반영
+        if pending_active and pending_kind.startswith("EXIT"):
+            _set_trigger_state(self.st_hard_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
+            if pending_kind in ("EXIT_PARTIAL", "EXIT_MANUAL_PARTIAL"):
+                _set_trigger_state(self.st_t1_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
+            if "15:10" in pending_reason or "시간청산" in pending_reason:
+                _set_trigger_state(self.st_time_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
+
         for btn in getattr(self, "manual_exit_btns", {}).values():
             btn.setEnabled(True)
 
@@ -4633,11 +4803,22 @@ class MinuteChartCanvas(QWidget):
         if direction not in ("LONG", "SHORT") or price <= 0:
             return
         dt = self._coerce_dt(ts) or datetime.now()
-        self._active_trade = {
-            "direction": direction,
-            "entry_price": price,
-            "entry_ts": dt,
-        }
+        existing = self._active_trade or {}
+        if existing and str(existing.get("direction") or "").upper() == direction:
+            entry_ts = self._coerce_dt(existing.get("entry_ts")) or dt
+            if dt and entry_ts:
+                entry_ts = min(entry_ts, dt)
+            self._active_trade = {
+                "direction": direction,
+                "entry_price": price,
+                "entry_ts": entry_ts,
+            }
+        else:
+            self._active_trade = {
+                "direction": direction,
+                "entry_price": price,
+                "entry_ts": dt,
+            }
         self.update()
 
     def clear_active_trade(self):
@@ -5552,6 +5733,8 @@ class MireukDashboard(QMainWindow):
             "  FLAT  : 미보유 (현금)\n"
             "  15:10 강제 청산 후 FLAT 복귀"
         )
+        self.lbl_cb = mk_badge("CB NORMAL", C['bg3'], C['text2'], 11)
+        self.lbl_cb.setToolTip(_CB_TIP)
 
         # ── 우측 시계 블록 ─────────────────────────────────────
         clk_frame = QFrame()
@@ -5740,7 +5923,7 @@ class MireukDashboard(QMainWindow):
         header.addLayout(title_box)
         header.addLayout(right_col)
         header.addStretch()
-        for w in [self.lbl_regime, self.lbl_micro_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos]:
+        for w in [self.lbl_regime, self.lbl_micro_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_cb]:
             header.addWidget(w)
         header.addWidget(clk_frame)
         header.addLayout(res_box)
@@ -6222,11 +6405,40 @@ class DashboardAdapter:
         accuracy: float = 0.0,
     ):
         """시스템 상태 (Circuit Breaker, 지연, 정확도) 업데이트"""
-        col = C['green'] if cb_state == "NORMAL" else C['red']
         self._win.log_panel.append(
             "model", "SYSTEM",
             f"CB={cb_state} | API지연={latency_ms:.0f}ms | 정확도={accuracy:.1%}"
         )
+        # 헤더 CB 배지 갱신
+        lbl = getattr(self._win, "lbl_cb", None)
+        if lbl is None:
+            return
+        if cb_state == "HALTED":
+            lbl.setText("  ⛔ CB HALT  ")
+            lbl.setStyleSheet(
+                f"background:#B71C1C;color:#fff;"
+                f"border:2px solid #FF5252;"
+                f"border-radius:{S.p(3)}px;"
+                f"font-size:{S.f(11)}px;font-weight:bold;"
+                f"padding:{S.p(1)}px {S.p(3)}px;"
+            )
+        elif cb_state == "PAUSED":
+            lbl.setText("  ⏸ CB PAUSE  ")
+            lbl.setStyleSheet(
+                f"background:#E65100;color:#fff;"
+                f"border:1px solid #FFB74D;"
+                f"border-radius:{S.p(3)}px;"
+                f"font-size:{S.f(11)}px;font-weight:bold;"
+                f"padding:{S.p(1)}px {S.p(3)}px;"
+            )
+        else:
+            lbl.setText("CB NORMAL")
+            lbl.setStyleSheet(
+                f"background:{C['bg3']};color:{C['text2']};"
+                f"border-radius:{S.p(3)}px;"
+                f"font-size:{S.f(11)}px;font-weight:bold;"
+                f"padding:{S.p(1)}px {S.p(3)}px;"
+            )
 
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""

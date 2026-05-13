@@ -1,7 +1,30 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-13 (22차) — **Cybos 주문/체결 파이프라인 버그 4종 + 즉시청산 UI 불일치 수정**
+> 마지막 업데이트: 2026-05-13 (23차) — **청산관리 상태 동기화/오표시 개선 + 자동 탭 복귀 로직 보강**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-13 (23차)
+
+### 수정된 파일
+
+| 파일 | 수정 내용 |
+|---|---|
+| `main.py` (`run_minute_pipeline`) | 청산 패널 payload 확장: `pending_*`, `time_exit_countdown_sec` 전달 |
+| `main.py` (`_ts_push_exit_panel_now` 신설) | Chejan 체결 직후 청산 패널 즉시 갱신 (매분 갱신 대기 제거) |
+| `main.py` (`_clear_pending_order`, `_ts_on_chejan_event_cybos_safe`) | pending 소멸/체결 처리 직후 즉시 패널 갱신 호출 |
+| `dashboard/main_dashboard.py` (`ExitPanel.update_data`) | 배지 enum 기반 상태 렌더링 + 시간청산 카운트다운 표시 + pending EXIT `주문중 n/m` 표시 |
+| `dashboard/main_dashboard.py` (`ExitPanel.update_data`) | ENTRY pending 시 1/2/3차 목표 배지 `산정중` 강제, 목표 도달 판정 잠금 |
+| `dashboard/main_dashboard.py` (`ExitPanel.update_data`) | tp1/tp2/tp3 비정상값(<=0) 방어 정규화 |
+| `main.py` (`connect_broker`) | 브로커 동기화 직후 포지션 상태 기반 탭 모드 즉시 정렬 |
+| `dashboard/main_dashboard.py` (`UiAutoTabController`) | 수동 탭 전환 유휴 판정에 `hasFocus`/`focusWidget` 반영 |
+
+### 핵심 안전 규칙 (23차 추가)
+
+- **청산 패널 실시간성**: Chejan 체결 이벤트 후 상태 배지는 즉시 갱신한다. 분봉 주기 갱신만으로 주문상태를 표현하지 않는다.
+- **ENTRY pending 목표 배지 정책**: ENTRY pending 동안 1/2/3차 목표 배지는 `산정중`만 허용. `도달/완료` 표시는 금지.
+- **탭 모드 정렬**: 브로커 동기화 직후 포지션 상태와 탭 모드(청산/진입)는 즉시 일치시킨다.
 
 ---
 
