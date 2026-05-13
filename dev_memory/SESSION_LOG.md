@@ -4,6 +4,73 @@
 
 ---
 
+## 2026-05-13 (22차 — Cybos 주문/체결 파이프라인 버그 수정 + 즉시청산 UI 불일치 해결)
+
+**Work**
+
+Cybos 미니선물 주문·체결 로그 분석으로 버그 4종 발견·수정. 즉시청산 후 UI 잔고가 1계약 고착되는 문제의 3중 복합 원인 분석 및 수정. 미륵이 창 최상위 고정 해제.
+
+### 버그 B75: `or unfilled_qty == 0` — 부분체결 첫 콜백 후 pending 조기 소멸
+
+**파일**: `main.py` (Cybos 핸들러 및 Kiwoom 레거시 핸들러)
+
+**증상**: 9계약 진입 주문이 15계약으로 부풀었고, 각 분봉마다 하드스톱 주문 재발동.
+
+**원인**: Cybos `unfilled_qty`는 항상 0 반환. `filled_qty >= qty or unfilled_qty == 0` 조건에서 첫 체결 콜백에 pending이 소멸 → 이후 체결이 `_ts_handle_external_fill` 경로로 흘러 수량을 잘못 추가.
+
+**수정**: 두 핸들러 모두 `or unfilled_qty == 0` 조건 제거.
+
+---
+
+### 버그 B76: 낙관적 오픈 후 분할체결 수량 중복 적산
+
+**파일**: `main.py`
+
+**증상**: B75 수정 후에도 포지션 수량 초과. 9계약 주문 → 첫 체결에 VWAP 보정(수량 불변) → 이후 체결마다 `apply_entry_fill(add=True)` → 수량 중복.
+
+**원인**: 낙관적 오픈 주문의 첫 체결 완료(optimistic 보정) 이후 추가 체결이 진입 추가 경로로 흘러 `quantity += fill_qty` 중복 적산.
+
+**수정**: `_set_pending_order` 직후 `pending["optimistic_opened"] = True` + `partial_fill_count` 플래그. 두 번째 이후 체결 시 VWAP만 보정, 수량은 불변.
+
+---
+
+### 버그 B77: EXIT 분할체결 — CB/Kelly 중복 기록 + 집계 미흡
+
+**파일**: `main.py`
+
+**증상**: 2회 분할체결 시 CB/Kelly가 2회 기록. 통계 수익률 왜곡.
+
+**원인**: 체결 콜백마다 `_post_partial_exit` / `_ts_record_nonfinal_exit` 호출.
+
+**수정**: `_ts_agg_exit_fill` / `_ts_build_agg_exit_result` 헬퍼 추가. 마지막 체결(is_last_fill)에서만 집계 결과로 통계 반영. 중간 체결은 로그만.
+
+---
+
+### 버그 B78 (복합): 즉시청산 후 UI 잔고 1계약 고착
+
+**파일**: `main.py`, `dashboard/main_dashboard.py`
+
+**증상**: 즉시청산 버튼 클릭 후 Cybos HTS는 0계약인데 미륵이 UI "실시간 잔고"는 보유량 1 지속.
+
+**원인 3종**:
+1. **Race condition**: `BlockRequest()` 내부 메시지 펌프로 체결 콜백이 `_set_pending_order` 보다 먼저 도착 → `pending=None` → `_ts_handle_external_fill` 처리 → `_ts_force_balance_flat_ui` 미호출
+2. **외부체결 경로 누락**: `_ts_handle_external_fill` 최종 청산 시 `_ts_force_balance_flat_ui` + QTimer 미호출 → 잔고 패널 즉시 미갱신
+3. **Cybos status 블랭크**: `GetHeaderValue(44)/(15)` 모두 `""` 반환 시 `status=""` → `is_final_fill=False` → 체결 콜백 영구 무시 → `position.status` LONG 고착 → 합성 행 1계약 생성
+
+**수정 4건**:
+- `_on_manual_exit_requested`: `_set_pending_order`를 `_send_kiwoom_exit_order` 전으로 이동, 실패 시 롤백
+- `_ts_handle_external_fill`: 최종 청산 후 `_ts_force_balance_flat_ui` + QTimer(250ms, 1200ms) 추가
+- `_ts_on_chejan_event_cybos_safe`: `is_final_fill` 폴백 — `status=""` + `fill_qty > 0` + `fill_price > 0` 시 체결로 간주
+- `_ts_push_balance_to_dashboard`: pending EXIT 존재 시 합성 1계약 행 생성 억제
+
+---
+
+### 기타
+
+- `dashboard/main_dashboard.py`: `WindowStaysOnTopHint` 제거 — 미륵이 창 최상위 고정 해제
+
+---
+
 ## 2026-05-13 (21차 — 분봉 파이프라인 NameError + 종목코드 불일치 사고 분석·방지책)
 
 **Work**

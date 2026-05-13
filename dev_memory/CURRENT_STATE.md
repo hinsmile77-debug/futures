@@ -1,7 +1,30 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-13 (21차) — **분봉 파이프라인 NameError + 종목코드 불일치 방지책 + 봉차트 수정**
+> 마지막 업데이트: 2026-05-13 (22차) — **Cybos 주문/체결 파이프라인 버그 4종 + 즉시청산 UI 불일치 수정**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-13 (22차)
+
+### 수정된 파일
+
+| 파일 | 수정 내용 |
+|---|---|
+| `main.py` (Cybos/Kiwoom 핸들러) | `or unfilled_qty == 0` 제거 — 부분체결 pending 조기 소멸 방지 (B75) |
+| `main.py` (`_set_pending_order` 후) | `optimistic_opened`/`partial_fill_count` 플래그 추가 — 낙관적 오픈 분할체결 VWAP 보정 (B76) |
+| `main.py` (`_ts_handle_exit_fill`) | `_ts_agg_exit_fill` / `_ts_build_agg_exit_result` 헬퍼 + `is_last_fill` 분기 — EXIT 분할체결 CB/Kelly 단1회 기록 (B77) |
+| `main.py` (`_on_manual_exit_requested`) | `_set_pending_order`를 `_send_kiwoom_exit_order` 전으로 이동, 실패 시 `_clear_pending_order` 롤백 (B78-race) |
+| `main.py` (`_ts_on_chejan_event_cybos_safe`) | `is_final_fill` 폴백: `status=""` + `fill_qty>0` + `fill_price>0` → 체결로 간주 (B78-status) |
+| `main.py` (`_ts_handle_external_fill`) | 최종 청산 후 `_ts_force_balance_flat_ui` + `QTimer(250ms, 1200ms)` 추가 (B78-external) |
+| `main.py` (`_ts_push_balance_to_dashboard`) | pending EXIT 존재 시 합성 1계약 행 생성 억제 (B78-synthetic) |
+| `dashboard/main_dashboard.py` | `WindowStaysOnTopHint` 제거 — 미륵이 창 최상위 고정 해제 |
+
+### 핵심 안전 규칙 (22차 추가)
+
+- **pending 등록 순서**: 청산 주문 `_set_pending_order` → `_send_order` 순서 (역전 금지). 실패 시 즉시 `_clear_pending_order`
+- **Cybos unfilled_qty**: 항상 0 반환 → `or unfilled_qty == 0` 조건 사용 금지. `filled_qty >= qty`만으로 완결 판정
+- **EXIT 분할체결 통계**: `is_last_fill`에서만 CB/Kelly 기록. 중간 체결은 로그만
 
 ---
 

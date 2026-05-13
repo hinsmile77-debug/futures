@@ -5459,8 +5459,7 @@ class MireukDashboard(QMainWindow):
         # ── 해상도 감지 (UI 빌드 전에 반드시 먼저) ──────────────
         S.init()
         self.setWindowTitle("미륵이 v7.0  |  KOSPI 200 선물 예측 시스템")
-        # 미륵이 메인 UI를 항상 최상위 창으로 유지
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        # WindowStaysOnTopHint 해제 — 일반 창으로 동작
         # availableGeometry 기준으로 창 크기/위치 고정 — 태스크바 잘림 방지
         _avail = QApplication.instance().primaryScreen().availableGeometry()
         _win_w = min(S.p(1680), _avail.width())

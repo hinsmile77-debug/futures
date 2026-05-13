@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "config": {
+    "trail_activation_krw": 2000000,
+    "trail_ratio": 0.2,
+    "profit_tiers": [
+      [
+        0,
+        0.6,
+        null
+      ],
+      [
+        1000000,
+        0.6,
+        null
+      ],
+      [
+        2000000,
+        1.0,
+        null
+      ],
+      [
+        3000000,
+        1.2,
+        null
+      ],
+      [
+        3000000,
+        1.5,
+        0
+      ]
+    ],
+    "afternoon_enabled": true,
+    "afternoon_cutoff_hour": 13,
+    "afternoon_min_pnl_krw": 1000000,
+    "afternoon_max_trades": 2,
+    "afternoon_min_rr": 2.5,
+    "profit_cb_enabled": true,
+    "profit_cb_min_pnl_krw": 1500000,
+    "profit_cb_consec_loss": 2
+  }
+}

@@ -2,6 +2,39 @@
 
 ---
 
+## 2026-05-13 (22차 — Cybos 체결 파이프라인 버그 수정)
+
+### [B75] Cybos unfilled_qty 상수 0 — pending 조기 소멸로 포지션 수량 폭증
+**File**: `main.py` Cybos/Kiwoom 핸들러  
+**Root cause**: Cybos CpFConclusion는 `unfilled_qty` 항상 0 반환. `filled_qty >= qty or unfilled_qty == 0` 조건에서 첫 체결 후 즉시 `_clear_pending_order()` → 이후 체결이 external fill 경로로 처리되어 수량 중복 적산(9계약 → 15계약).  
+**Fix**: 두 핸들러에서 `or unfilled_qty == 0` 제거.  
+**규칙**: Cybos 환경에서 `unfilled_qty` 기반 완결 판정 영구 금지. `filled_qty >= qty`만 사용.
+
+### [B76] 낙관적 오픈 분할체결 VWAP 보정 누락 — 두 번째 체결부터 수량 추가
+**File**: `main.py`  
+**Root cause**: B75 수정 후 pending 유지는 됐으나, 두 번째 체결이 `apply_entry_fill(add=True)` 경로 → `quantity += fill_qty` 중복. 낙관적 오픈 = 주문 제출 시 이미 포지션이 열려 있으므로 이후 체결은 VWAP 보정만 해야 함.  
+**Fix**: `pending["optimistic_opened"] = True` 플래그. `position._optimistic == False && pending.optimistic_opened` 시 수량 불변, VWAP 가중평균 보정만.
+
+### [B77] EXIT 분할체결 — CB/Kelly 체결 횟수만큼 중복 기록
+**File**: `main.py`  
+**Root cause**: `_ts_handle_exit_fill`이 체결 콜백마다 `_post_partial_exit`/`_ts_record_nonfinal_exit` 호출 → N회 체결 시 CB N회 기록.  
+**Fix**: `_ts_agg_exit_fill()` + `_ts_build_agg_exit_result()` 헬퍼. `is_last_fill` 시에만 집계 결과로 통계 반영.
+
+### [B78] 즉시청산 후 UI 잔고 1계약 고착 — 3중 복합 버그
+**File**: `main.py`, `dashboard/main_dashboard.py`  
+**Root cause**:  
+(A) `BlockRequest()` 내부 메시지 펌프 → 체결 콜백이 `_set_pending_order` 전에 도착 → `pending=None` → external fill → `_ts_force_balance_flat_ui` 미호출  
+(B) `_ts_handle_external_fill` 최종 청산 후 `_ts_force_balance_flat_ui` 코드 없음  
+(C) Cybos `GetHeaderValue(44)/(15)` 모두 `""` 반환 가능 → `status=""` → `is_final_fill=False` → 체결 이벤트 영구 무시 → `position.status` LONG 고착 → 합성 행 생성  
+**Fix 4건**: pending 선등록/주문후 롤백, external 경로 force_flat 추가, is_final_fill 폴백, pending_is_exit 합성행 억제.  
+**규칙**: `_set_pending_order`는 항상 `_send_order` 전에 호출. 실패 시 즉시 롤백.
+
+### [D52] 미륵이 창 WindowStaysOnTopHint 제거
+**Decision**: `main_dashboard.py`에서 `setWindowFlag(Qt.WindowStaysOnTopHint, True)` 제거.  
+**Reason**: 다른 창 작업 시 미륵이가 항상 최상위에 있어 불편. 모의투자 운영 단계에서 사용자가 명시적으로 해제 요청.
+
+---
+
 ## 2026-05-13 (21차 — 종목코드 불일치 방지책 + 봉차트 이종 가격 혼재)
 
 ### [D50] position_state.json에 futures_code 저장 — 재시작 코드 검증 게이트

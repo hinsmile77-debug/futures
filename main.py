@@ -465,14 +465,8 @@ class TradingSystem:
             reason = f"수동 부분청산 {percent}%"
             kind = "EXIT_MANUAL_PARTIAL"
 
-        ret = self._send_kiwoom_exit_order(send_qty)
-        if ret != 0:
-            log_manager.system(
-                f"[ManualExit] 주문 실패 ret={ret} pct={percent} qty={send_qty}",
-                "ERROR",
-            )
-            return
-
+        # BlockRequest() 내부 메시지 펌프로 체결 콜백이 먼저 도착하는 race condition 방지:
+        # pending을 주문 전송 전에 먼저 등록하고, 실패 시 롤백
         self._set_pending_order(
             kind=kind,
             direction=self.position.status,
@@ -480,6 +474,15 @@ class TradingSystem:
             price_hint=round(price_hint, 2),
             reason=reason,
         )
+        ret = self._send_kiwoom_exit_order(send_qty)
+        if ret != 0:
+            self._clear_pending_order()
+            log_manager.system(
+                f"[ManualExit] 주문 실패 ret={ret} pct={percent} qty={send_qty}",
+                "ERROR",
+            )
+            return
+
         log_manager.system(
             f"[ManualExit] 요청 pct={percent} send_qty={send_qty} kind={kind} position={self.position.status}",
             "WARNING",
@@ -1075,6 +1078,26 @@ class TradingSystem:
                     "WARNING",
                 )
                 self._clear_pending_order()
+            elif (
+                self._pending_order.get("kind", "").startswith("EXIT")
+                and 0 < self._pending_order.get("filled_qty", 0) < self._pending_order.get("qty", 0)
+            ):
+                # EXIT 부분체결 stuck: 브로커가 나머지 수량을 취소했거나 이벤트 유실
+                # last_fill_at 기준 30초 경과 시 pending 소멸 → 하드스톱 재발동 허용
+                _last_fill_at = self._pending_order.get("last_fill_at")
+                _since_last_fill = (
+                    (datetime.datetime.now() - _last_fill_at).total_seconds()
+                    if _last_fill_at else _pending_age
+                )
+                if _since_last_fill > 30:
+                    log_manager.system(
+                        f"[PendingOrder] EXIT 부분체결 stuck {_since_last_fill:.0f}s — "
+                        f"filled={self._pending_order['filled_qty']}/{self._pending_order['qty']} "
+                        f"kind={self._pending_order['kind']} order_no={self._pending_order.get('order_no','?')} "
+                        f"→ pending 소멸, 잔여 포지션 하드스톱 재발동 대기",
+                        "WARNING",
+                    )
+                    self._clear_pending_order()
 
         log_manager.signal(f"--- {ts} 분봉 파이프라인 시작 ---")
 
@@ -3384,6 +3407,38 @@ def _ts_handle_entry_fill(
     QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
 
 
+def _ts_agg_exit_fill(pending: dict, result: dict, fill_price: float, fill_qty: int) -> None:
+    """분할체결 집계 누적 — 마지막 체결에서 agg_result 생성에 사용."""
+    pending.setdefault("agg_exit_qty", 0)
+    pending.setdefault("agg_exit_pnl_pts", 0.0)
+    pending.setdefault("agg_exit_pnl_krw", 0.0)
+    pending.setdefault("agg_exit_fwd_pts", 0.0)
+    pending.setdefault("agg_exit_fwd_krw", 0.0)
+    pending.setdefault("agg_exit_price_x_qty", 0.0)
+    pending["agg_exit_qty"] += fill_qty
+    pending["agg_exit_pnl_pts"] += float(result.get("pnl_pts", 0.0) or 0.0)
+    pending["agg_exit_pnl_krw"] += float(result.get("pnl_krw", 0.0) or 0.0)
+    pending["agg_exit_fwd_pts"] += float(result.get("forward_pnl_pts", 0.0) or 0.0)
+    pending["agg_exit_fwd_krw"] += float(result.get("forward_pnl_krw", 0.0) or 0.0)
+    pending["agg_exit_price_x_qty"] += fill_price * fill_qty
+
+
+def _ts_build_agg_exit_result(last_result: dict, pending: dict) -> dict:
+    """분할체결 집계값을 단일 체결 result로 합산 반환."""
+    agg_qty = pending.get("agg_exit_qty", 1)
+    price_x_qty = pending.get("agg_exit_price_x_qty", 0.0)
+    vwap = price_x_qty / agg_qty if agg_qty > 0 else last_result.get("exit_price", 0.0)
+    return {
+        **last_result,
+        "quantity": agg_qty,
+        "exit_price": round(vwap, 4),
+        "pnl_pts": round(pending.get("agg_exit_pnl_pts", last_result.get("pnl_pts", 0.0)), 4),
+        "pnl_krw": round(pending.get("agg_exit_pnl_krw", last_result.get("pnl_krw", 0.0)), 0),
+        "forward_pnl_pts": round(pending.get("agg_exit_fwd_pts", last_result.get("forward_pnl_pts", 0.0)), 4),
+        "forward_pnl_krw": round(pending.get("agg_exit_fwd_krw", last_result.get("forward_pnl_krw", 0.0)), 0),
+    }
+
+
 def _ts_handle_exit_fill(
     self,
     pending: dict,
@@ -3400,23 +3455,42 @@ def _ts_handle_exit_fill(
         filled_at=filled_at,
     )
 
+    # 분할체결 집계 (CB/Kelly 통계 중복 방지: 마지막 체결에서만 반영)
+    _ts_agg_exit_fill(pending, result, fill_price, fill_qty)
+    is_last_fill = pending["filled_qty"] >= pending["qty"]
+
     if pending["kind"] == "EXIT_PARTIAL":
         if pending.get("stage") == 1:
             self.position.partial_1_done = True
         elif pending.get("stage") == 2:
             self.position.partial_2_done = True
-        self._post_partial_exit(result, pending.get("stage") or 1)
-        # COM 콜백 복귀 후 잔고 갱신 (dynamicCall 재진입 방지)
+        if not is_last_fill:
+            log_manager.trade(
+                f"[TP{pending.get('stage')} 분할체결] {result.get('direction','')} {fill_qty}계약 @ {fill_price:.2f} "
+                f"| 잔여포지션={result.get('remaining', '?')}계약"
+            )
+            QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
+            return
+        agg_result = _ts_build_agg_exit_result(result, pending)
+        self._post_partial_exit(agg_result, pending.get("stage") or 1)
         QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
         return
 
     if pending["kind"] == "EXIT_MANUAL_PARTIAL":
-        _ts_record_nonfinal_exit(self, result, pending["reason"])
+        if not is_last_fill:
+            log_manager.trade(
+                f"[수동청산 분할체결] {result.get('direction','')} {fill_qty}계약 @ {fill_price:.2f} "
+                f"| 잔여포지션={result.get('remaining', '?')}계약"
+            )
+            QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
+            return
+        agg_result = _ts_build_agg_exit_result(result, pending)
+        _ts_record_nonfinal_exit(self, agg_result, pending["reason"])
         self.dashboard.minute_chart_record_exit(
-            fill_price,
+            agg_result["exit_price"],
             filled_at,
             finalize=False,
-            pnl_pts=result.get("pnl_pts"),
+            pnl_pts=agg_result.get("pnl_pts"),
             reason=pending["reason"],
             direction=result.get("direction", ""),
         )
@@ -3435,15 +3509,12 @@ def _ts_handle_exit_fill(
         QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
         return
 
-    if "remaining" in result:
-        _ts_record_nonfinal_exit(self, result, pending["reason"])
-        self.dashboard.minute_chart_record_exit(
-            fill_price,
-            filled_at,
-            finalize=False,
-            pnl_pts=result.get("pnl_pts"),
-            reason=pending["reason"],
-            direction=result.get("direction", ""),
+    # EXIT_FULL 분할체결 — 중간 체결은 로그만, 통계 없음
+    if not is_last_fill:
+        log_manager.trade(
+            f"[체결청산-부분] {result.get('direction','')} {fill_qty}계약 @ {fill_price:.2f} "
+            f"| PnL={result.get('pnl_pts',0):+.2f}pt ({result.get('pnl_krw',0):+,.0f}원) "
+            f"| 잔여={result.get('remaining', '?')}계약 | 사유={pending['reason']}"
         )
         _ts_log_diag(
             self,
@@ -3460,9 +3531,11 @@ def _ts_handle_exit_fill(
         QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
         return
 
-    _ts_apply_exit_cooldown(self, result, filled_at)
+    # 최종 체결 (전량 또는 주문 완결) — 집계 결과로 통계 반영
+    agg_result = _ts_build_agg_exit_result(result, pending)
+    _ts_apply_exit_cooldown(self, agg_result, filled_at)
     self._exit_cooldown_applied_this_fill = True
-    self._post_exit(result)
+    self._post_exit(agg_result)
     _ts_log_diag(
         self,
         "ExitFillFlow",
@@ -3527,6 +3600,12 @@ def _ts_handle_external_fill(
             _ts_apply_exit_cooldown(self, result, filled_at)
             self._exit_cooldown_applied_this_fill = True
             self._post_exit(result)
+            if self.position.status == "FLAT":
+                self.dashboard.minute_chart_clear_active_position()
+                _ts_force_balance_flat_ui(self, f"external_exit:{reason_label}")
+            _ts_system_info_throttled(self, "balance_refresh_trigger_external_exit", "[BalanceRefresh] trigger=ExternalFill final_exit retries=250ms,1200ms", min_interval_sec=30.0)
+            QTimer.singleShot(250, lambda: _ts_refresh_dashboard_balance(self))
+            QTimer.singleShot(1200, lambda: _ts_refresh_dashboard_balance(self))
 
     if remaining_fill > 0:
         result = self.position.apply_entry_fill(
@@ -3670,7 +3749,7 @@ def _ts_on_chejan_event(self, payload: dict) -> None:
             filled_at,
         )
 
-    if pending["filled_qty"] >= pending["qty"] or unfilled_qty == 0:
+    if pending["filled_qty"] >= pending["qty"]:
         self._clear_pending_order()
 
 
@@ -3761,7 +3840,12 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
     # TR blank + 포지션 보유 중 → position_tracker 기반 합성 행 (모의투자 OPW20006 공란 대응)
     # nonempty_rows=[] 이지만 rows=[{blank}] 케이스도 포함
     _has_real_row = any(any(str(v).strip() for v in r.values()) for r in rows)
-    if not _has_real_row and self.position.status != "FLAT":
+    # pending EXIT 주문 대기 중이면 합성 행 생성 억제 (체결 콜백 도착 전 깜빡임 방지)
+    _pending_is_exit = (
+        getattr(self, "_pending_order", None) is not None
+        and str(self._pending_order.get("kind", "")).startswith("EXIT")
+    )
+    if not _has_real_row and self.position.status != "FLAT" and not _pending_is_exit:
         _side_label = "매수" if self.position.status == "LONG" else "매도"
         _entry = self.position.entry_price
         _qty = self.position.quantity
@@ -4365,6 +4449,9 @@ def _ts_execute_entry(
         raw_direction=raw_direction,
         reverse_entry_enabled=reverse_enabled,
     )
+    # 낙관적 오픈 후 분할체결 VWAP 보정을 위한 플래그
+    self._pending_order["optimistic_opened"] = True
+    self._pending_order["partial_fill_count"] = 0
     # Fix B: 모의투자에서 Chejan 없음 → 낙관적 오픈으로 이중진입 방지
     # Chejan 체결 시 apply_entry_fill() 가격 보정 경로로 합쳐짐 (_optimistic=True)
     try:
@@ -4466,27 +4553,59 @@ def _ts_handle_entry_fill_cybos_safe(
             "CRITICAL",
         )
 
-    result = self.position.apply_entry_fill(
-        direction=entry_direction,
-        price=fill_price,
-        quantity=fill_qty,
-        atr=_ts_get_reference_atr(self, pending),
-        grade=pending["grade"],
-        regime=self.current_regime,
-        filled_at=filled_at,
-        raw_direction=pending.get("raw_direction") or pending["direction"],
-        reverse_entry_enabled=bool(pending.get("reverse_entry_enabled", False)),
-    )
-    if before == "FLAT":
-        self.dashboard.minute_chart_record_entry(
-            entry_direction,
-            fill_price,
-            filled_at,
+    # 낙관적 오픈 주문의 두 번째 이후 분할체결: 수량 증가 없이 VWAP 가격 보정
+    # _optimistic=False이면 첫 보정은 이미 완료됨 → 이후 체결은 평균가 업데이트만
+    if (
+        pending.get("optimistic_opened")
+        and self.position.status == entry_direction
+        and not self.position._optimistic
+    ):
+        prev_count = pending.get("partial_fill_count", 0)
+        total_count = prev_count + fill_qty
+        if total_count > 0:
+            vwap = (self.position.entry_price * prev_count + fill_price * fill_qty) / total_count
+        else:
+            vwap = fill_price
+        self.position.entry_price = vwap
+        pending["partial_fill_count"] = total_count
+        if filled_at:
+            self.position.entry_time = filled_at
+        self.position._recalculate_levels(_ts_get_reference_atr(self, pending))
+        self.position._save_state()
+        result = {
+            "avg_entry_price": round(vwap, 4),
+            "position_qty": self.position.quantity,
+        }
+        log_manager.trade(
+            f"[체결진입보정] {entry_direction} {fill_qty}계약 @ {fill_price} "
+            f"| 평균={result['avg_entry_price']} 보유={result['position_qty']}계약"
         )
-    log_manager.trade(
-        f"[체결진입] {entry_direction} {fill_qty}계약 @ {fill_price} "
-        f"| 평균={result['avg_entry_price']} 보유={result['position_qty']}계약"
-    )
+    else:
+        result = self.position.apply_entry_fill(
+            direction=entry_direction,
+            price=fill_price,
+            quantity=fill_qty,
+            atr=_ts_get_reference_atr(self, pending),
+            grade=pending["grade"],
+            regime=self.current_regime,
+            filled_at=filled_at,
+            raw_direction=pending.get("raw_direction") or pending["direction"],
+            reverse_entry_enabled=bool(pending.get("reverse_entry_enabled", False)),
+        )
+        # 첫 체결 완료: partial_fill_count 초기화 (이후 분할체결 VWAP 기준점)
+        if pending.get("optimistic_opened"):
+            pending["partial_fill_count"] = fill_qty
+        if before == "FLAT":
+            self.dashboard.minute_chart_record_entry(
+                entry_direction,
+                fill_price,
+                filled_at,
+            )
+        log_manager.trade(
+            f"[체결진입] {entry_direction} {fill_qty}계약 @ {fill_price} "
+            f"| 평균={result['avg_entry_price']} 보유={result['position_qty']}계약"
+        )
+
     self.dashboard.append_pnl_log(
         f"체결진입 | {entry_direction} {fill_qty}계약 @ {fill_price}",
         f"평균 {self.position.entry_price:.2f} 손절 {self.position.stop_price:.2f} 1차 {self.position.tp1_price:.2f}",
@@ -4535,7 +4654,10 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
     fill_price = float(payload.get("fill_price") or 0.0) or float(payload.get("current_price") or 0.0)
     unfilled_qty = int(payload.get("unfilled_qty") or 0)
     side = _ts_order_side_to_direction(payload)
-    is_final_fill = (status == "체결")
+    # status 블랭크 + fill_qty > 0 → Cybos GetHeaderValue 인덱스 불일치 대응 폴백
+    is_final_fill = (status == "체결") or (
+        not status and fill_qty > 0 and fill_price > 0
+    )
 
     _ts_log_diag(
         self,
@@ -4625,6 +4747,7 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
         return
 
     pending["filled_qty"] += fill_qty
+    pending["last_fill_at"] = datetime.datetime.now()
     if pending["kind"] == "ENTRY":
         _ts_handle_entry_fill_cybos_safe(
             self,
@@ -4644,7 +4767,7 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
             filled_at,
         )
 
-    if pending["filled_qty"] >= pending["qty"] or unfilled_qty == 0:
+    if pending["filled_qty"] >= pending["qty"]:
         self._clear_pending_order()
 
 
