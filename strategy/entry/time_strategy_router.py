@@ -1,8 +1,9 @@
 # strategy/entry/time_strategy_router.py — 시간대별 전략 라우터 ⭐v6.5
 """
-장 중 시간대를 5구간으로 분류하고 구간별 전략 파라미터 반환
+장 중 시간대를 6구간으로 분류하고 구간별 전략 파라미터 반환
 
 시간대 구간:
+  GAP_OPEN       09:00~09:05 — 시초가 급변, 고신뢰·소규모 진입만 허용
   OPEN_VOLATILE  09:05~10:30 — 변동성 高, 추세추종, 신뢰도 기준 상향
   STABLE_TREND   10:30~11:50 — 안정 추세, 표준 앙상블
   LUNCH_RECOVERY 13:00~14:00 — 외인 재진입 감지, 신호 가중
@@ -21,11 +22,19 @@ import logging
 from typing import Dict, Optional
 
 from config.settings import TIME_ZONES
+from utils.time_utils import now_kst, days_to_monthly_expiry, is_fomc_day
 
 logger = logging.getLogger("SIGNAL")
 
 # ── 시간대별 파라미터 ─────────────────────────────────────────────
 _ZONE_PARAMS: Dict[str, dict] = {
+    "GAP_OPEN": {
+        "min_confidence":  0.67,      # 시초가 급변 → 고신뢰 신호만 허용
+        "size_mult":       0.5,        # 슬리피지·갭 리스크 대비 소규모
+        "strategy_mode":  "trend_follow",
+        "allow_new_entry": True,
+        "desc":            "시초가 급변 — 고신뢰·소규모 진입만 허용",
+    },
     "OPEN_VOLATILE": {
         "min_confidence":  0.63,      # 신뢰도 기준 상향 (변동성 큰 구간)
         "size_mult":       0.8,        # 사이즈 보수적
@@ -89,7 +98,7 @@ class TimeStrategyRouter:
 
     사용:
         router = TimeStrategyRouter()
-        params = router.route(datetime.datetime.now())
+        params = router.route(now_kst())
         if not params["allow_new_entry"]:
             return  # 신규 진입 금지
         min_conf = params["min_confidence"]
@@ -107,7 +116,7 @@ class TimeStrategyRouter:
             "CLOSE_VOLATILE" | "EXIT_ONLY" | "OTHER"
         """
         if dt is None:
-            dt = datetime.datetime.now()
+            dt = now_kst()
         t = dt.time()
 
         for zone_key, (start, end) in _ZONE_BOUNDS.items():
@@ -177,6 +186,43 @@ class TimeStrategyRouter:
             params["size_mult"]       = 0.0
 
         params["_micro_regime"] = micro_regime
+        return params
+
+    def apply_expiry_override(self, params: dict, dt: Optional[datetime.datetime] = None) -> dict:
+        """
+        월물 만기일 접근 시 리스크 파라미터 보정
+
+        만기 당일  → 신뢰도 기준 +5%, 사이즈 ×0.6 (롤오버 변동·유동성 왜곡)
+        만기 전날  → 신뢰도 기준 +2%, 사이즈 ×0.8 (사전 포지션 조정 영향)
+        그 외       → 변경 없음
+        """
+        d2e = days_to_monthly_expiry(dt.date() if dt else None)
+        if d2e == 0:
+            params = dict(params)
+            params["min_confidence"] = min(params["min_confidence"] + 0.05, 0.90)
+            params["size_mult"]      = params["size_mult"] * 0.6
+            params["_expiry_override"] = "EXPIRY_DAY"
+            logger.info("[TimeRouter] 월물 만기 당일 — 신뢰도↑ 사이즈×0.6")
+        elif d2e == 1:
+            params = dict(params)
+            params["min_confidence"] = min(params["min_confidence"] + 0.02, 0.90)
+            params["size_mult"]      = params["size_mult"] * 0.8
+            params["_expiry_override"] = "PRE_EXPIRY"
+            logger.info("[TimeRouter] 월물 만기 전날 — 신뢰도↑ 사이즈×0.8")
+        return params
+
+    def apply_fomc_override(self, params: dict, dt: Optional[datetime.datetime] = None) -> dict:
+        """
+        FOMC 발표 당일(한국 기준) 리스크 파라미터 보정
+
+        FOMC 당일 → 신뢰도 기준 +5%, 사이즈 ×0.7 (글로벌 변동성 급등 대비)
+        """
+        if is_fomc_day(dt):
+            params = dict(params)
+            params["min_confidence"] = min(params["min_confidence"] + 0.05, 0.90)
+            params["size_mult"]      = params["size_mult"] * 0.7
+            params["_fomc_override"] = True
+            logger.info("[TimeRouter] FOMC 발표일 — 신뢰도↑ 사이즈×0.7")
         return params
 
 

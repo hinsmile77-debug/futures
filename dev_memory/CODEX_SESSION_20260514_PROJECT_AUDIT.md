@@ -547,10 +547,10 @@ block_entry = True  # 방향 구분 없음
 | **P2** | 호라이즌 상관관계 이중 가중 (M2) | 앙상블 왜곡 |
 | **P2** | RegimeSpecificModel FLAT 무시 (M3) | 예측 오차 |
 | **P2** | Shadow Evaluator 무의미 비교 (M4) | 도전자 평가 무효 |
-| **P3** | Dynamic Sizing 0 수렴 (M5) | 과소 베팅 |
-| **P3** | 09:00-09:05 미분류 (M6) | 알파 손실 |
-| **P3** | StandardScaler 노후화 (M7) | 피처 왜곡 |
-| **P3** | 만기일/휴일/FOMC 대응 부재 | 극단 리스크 |
+| **P3** ✅ | Dynamic Sizing 0 수렴 (M5) | `dynamic_sizing.py` MIN_COMBINED_FRACTION=0.12 차단 추가 |
+| **P3** ✅ | 09:00-09:05 미분류 (M6) | `settings.py`·`time_utils.py`·`time_strategy_router.py` GAP_OPEN 구간 추가 |
+| **P3** ✅ | StandardScaler 노후화 (M7) | `multi_horizon_model.py` scaler 나이 경고 + 극단 z-score 감지 추가 |
+| **P3** ✅ | 만기일/휴일/FOMC 대응 부재 | `time_utils.py` 월물 만기일·FOMC 함수 + `time_strategy_router.py` 오버라이드 메서드 추가 |
 
 ---
 

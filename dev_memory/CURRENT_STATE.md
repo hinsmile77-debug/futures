@@ -1,7 +1,68 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-14 (30차) — **전체 감사 + P0~P3 버그 수정 10건 + 스텁 모듈 5개 구현 + main.py 연결**
+> 마지막 업데이트: 2026-05-14 (32차) — **2차 감사 P3 4종 수정: Dynamic Sizing 과소 차단 / GAP_OPEN 구간 신설 / StandardScaler 노후화 경고 / 만기일·FOMC 리스크 조정**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-14 (32차) — 2차 감사 P3 구현
+
+### 수정된 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `strategy/entry/dynamic_sizing.py` | M5: `MIN_COMBINED_FRACTION=0.12` — 7팩터 곱 0.12 미만 시 `_blocked()` 반환 |
+| `config/settings.py` | M6: `TIME_ZONES`에 `GAP_OPEN("09:00","09:05")` 추가 (v6.6) |
+| `utils/time_utils.py` | M6: `get_time_zone()` GAP_OPEN 분기 추가 / 만기일: `get_monthly_expiry_date()` · `days_to_monthly_expiry()` · `is_expiry_day()` · FOMC 목록 · `is_fomc_day()` 추가 |
+| `strategy/entry/time_strategy_router.py` | M6: `GAP_OPEN` 파라미터 추가 / 만기일: `apply_expiry_override()` · `apply_fomc_override()` 추가 |
+| `model/multi_horizon_model.py` | M7: `_scaler_fitted_at` 기록 + `predict_proba()` 내 90분 경과 경고 + |z|>4 극단 피처 경고 |
+
+### P3 완료 현황 (2차 감사 기준)
+
+| 항목 | 상태 |
+|---|---|
+| M5 Dynamic Sizing 0 수렴 | ✅ 완료 — MIN_COMBINED_FRACTION=0.12 차단 |
+| M6 09:00-09:05 미분류 | ✅ 완료 — GAP_OPEN 구간 신설 (min_conf=0.67, size×0.5) |
+| M7 StandardScaler 노후화 | ✅ 완료 — 90분 경과 WARNING + 극단 z-score 경고 |
+| 만기일/FOMC 대응 부재 | ✅ 완료 — 월물 만기일 함수 + FOMC 목록 + TimeRouter 오버라이드 |
+
+---
+
+## 2026-05-14 (31차) — 2차 감사 P1 구현
+
+### 수정된 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `utils/time_utils.py` | C3: `KST` 타임존 상수 + `now_kst()` 헬퍼 추가, 모든 내부 `datetime.now()` 교체 |
+| `safety/circuit_breaker.py` | C3: `now_kst()` 사용 |
+| `strategy/exit/time_exit.py` | C3: `now_kst()` — 15:10 강제청산 KST 보장 |
+| `safety/kill_switch.py` | C3: `now_kst()` |
+| `strategy/entry/meta_gate.py` | C3: `now_kst()` |
+| `strategy/profit_guard.py` | C3: `now_kst()` |
+| `strategy/entry/time_strategy_router.py` | C3: `now_kst()` |
+| `strategy/exit/exit_manager.py` | C3: `now_kst()` |
+| `strategy/position/position_tracker.py` | C3: `now_kst()` (20곳) |
+| `strategy/entry/staged_entry.py` | C3: `now_kst()` |
+| `config/settings.py` | M1: `GBM_MIN_SAMPLES_LEAF = 10` 상수 추가 |
+| `model/multi_horizon_model.py` | M1: `GBM_MIN_SAMPLES_LEAF` 임포트 → 파라미터 통일 |
+| `learning/batch_retrainer.py` | M1: `GBM_MIN_SAMPLES_LEAF` 임포트 → 10으로 통일 (기존 20 → 10) |
+| `main.py` | H1: silent except 8곳 → logger.debug/warning 추가 |
+| `main.py` | H4: `_last_gate_signals`, `_last_gate_direction` 저장 + `_on_core_feature_fail` 메서드 |
+| `main.py` | H4: `_post_exit()` → EnsembleGater 피드백 연결 |
+| `features/feature_builder.py` | H2: CVD/VWAP/OFI 연속 실패 카운터 + 3회 시 ERROR 경보 + `_on_core_fail` 콜백 |
+| `model/ensemble_gater.py` | H4: `record_outcome()` + `_load_weights()` + `_save_weights()` — 온라인 학습 |
+| `model/ensemble_decision.py` | H4: `record_trade_outcome()` 위임 메서드 추가 |
+
+### P1 완료 현황 (2차 감사 기준)
+
+| 우선순위 | 항목 | 상태 |
+|---|---|---|
+| P1 (C3) | KST 타임존 전체 적용 | ✅ 완료 — 10개 핵심 모듈 `now_kst()` 교체 |
+| P1 (H1) | `except Exception: pass` 장애 은폐 제거 | ✅ 완료 — 8곳 logger 추가 |
+| P1 (H2) | CORE 피처 0 폴백 → ERROR 경보 | ✅ 완료 — 3회 연속 실패 시 ERROR + Slack |
+| P1 (M1) | GBM 파라미터 불일치 | ✅ 완료 — `GBM_MIN_SAMPLES_LEAF=10` 공유 상수 |
+| P1 (H4) | EnsembleGater 고정 가중치 | ✅ 완료 — 거래 결과 기반 온라인 학습 (lr=0.005) |
 
 ---
 

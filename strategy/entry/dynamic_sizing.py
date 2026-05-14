@@ -37,6 +37,12 @@ class DynamicSizer:
       - 일일 손실 한도 도달 → 사이즈 0
     """
 
+    # combined_fraction 최소 임계값 — 이 이하면 계약 수 계산 없이 차단
+    # 7개 팩터 곱셈 연쇄 시 각자 "약간 낮음"이 지수적으로 수렴하는 현상 방지.
+    # 0.15 = kelly 0.4 × vol 0.9 × conf 0.7 × B등급 0.5 × NEUTRAL 1.0 × 혼합 0.9 × ATR 1.0 ≈ 0.11
+    # → C등급·횡보장·저신뢰도 복합 상황에서 소수 계약 강제 진입을 차단한다.
+    MIN_COMBINED_FRACTION = 0.12
+
     # 체크리스트 등급 배율
     GRADE_MULT = {
         "A": 1.0,   # 6개 통과 → 100% 즉시
@@ -121,19 +127,28 @@ class DynamicSizer:
             * atr_mult
         )
 
-        # 5. 계약 수 변환
+        # 5. 사이즈 과소 차단 — 7팩터 곱이 임계값 미만이면 진입 의미 없음
+        if combined_fraction < self.MIN_COMBINED_FRACTION:
+            logger.warning(
+                f"[DynSize] fraction={combined_fraction:.4f} < {self.MIN_COMBINED_FRACTION} "
+                f"(kelly={kelly_fraction:.2f}, vol={vol_multiplier:.2f}, conf={confidence_mult:.2f}, "
+                f"{grade}/{micro_regime}) → 사이즈 과소 차단"
+            )
+            return self._blocked(f"사이즈 과소 (fraction={combined_fraction:.4f}) — 진입 의미 없음")
+
+        # 6. 계약 수 변환
         raw_contracts = self.base_contracts * combined_fraction
         contracts     = int(np.clip(round(raw_contracts), 1, self.max_contracts))
 
         breakdown = {
-            "kelly":      round(kelly_fraction, 3),
-            "vol_mult":   round(vol_multiplier, 3),
-            "conf_mult":  round(confidence_mult, 3),
-            "grade_mult": round(grade_mult, 3),
-            "regime_mult":round(regime_mult, 3),
-            "micro_mult": round(micro_mult, 3),
-            "atr_mult":   round(atr_mult, 3),
-            "combined":   round(combined_fraction, 4),
+            "kelly":       round(kelly_fraction, 3),
+            "vol_mult":    round(vol_multiplier, 3),
+            "conf_mult":   round(confidence_mult, 3),
+            "grade_mult":  round(grade_mult, 3),
+            "regime_mult": round(regime_mult, 3),
+            "micro_mult":  round(micro_mult, 3),
+            "atr_mult":    round(atr_mult, 3),
+            "combined":    round(combined_fraction, 4),
         }
 
         logger.info(f"[DynSize] {grade}등급 → {contracts}계약 "

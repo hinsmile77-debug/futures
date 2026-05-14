@@ -4,6 +4,37 @@
 
 ---
 
+## 2026-05-14 (32차 — 2차 감사 P3 4종 수정)
+
+**Work**: 2차 감사 보고서(`CODEX_SESSION_20260514_PROJECT_AUDIT.md`) P3 항목 4종 개선.
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| M5: Dynamic Sizing 0 수렴 | `strategy/entry/dynamic_sizing.py` | `MIN_COMBINED_FRACTION=0.12` 추가 — 7팩터 곱이 임계값 미만이면 `_blocked()` 반환 (과소 강제 진입 차단) |
+| M6: 09:00~09:05 미분류 | `config/settings.py` / `utils/time_utils.py` / `strategy/entry/time_strategy_router.py` | `GAP_OPEN("09:00","09:05")` 구간 신설. `min_confidence=0.67, size_mult=0.5, allow_new_entry=True` |
+| M7: StandardScaler 노후화 | `model/multi_horizon_model.py` | `_scaler_fitted_at` 타임스탬프 기록 → `predict_proba()`에서 90분 초과 시 WARNING + |z|>4 극단 피처 경고 |
+| 만기일/FOMC 부재 | `utils/time_utils.py` / `strategy/entry/time_strategy_router.py` | 월물 만기일 계산(`get_monthly_expiry_date`) + FOMC 날짜 목록 + `apply_expiry_override()` / `apply_fomc_override()` 추가 |
+
+---
+
+## 2026-05-14 (31차 — 2차 감사 P1 5종 수정)
+
+**Work**: 2차 감사 P1 항목 5종 구현 (KST 타임존 · GBM 파라미터 · silent except · CORE 경보 · EnsembleGater 온라인 학습).
+
+### 수정 내역
+
+| 우선순위 | 항목 | 파일 | 변경 |
+|---|---|---|---|
+| P1 (C3) | KST 타임존 전체 적용 | `utils/time_utils.py` 외 10개 모듈 | `KST = timezone(+9)` 상수 + `now_kst()` 헬퍼. 모든 `datetime.now()` 교체 |
+| P1 (H1) | silent except 장애 은폐 제거 | `main.py` | 8곳 `except Exception: pass` → `logger.warning/debug` |
+| P1 (H2) | CORE 피처 0 폴백 → ERROR 경보 | `features/feature_builder.py` | CVD/VWAP/OFI 연속 실패 3회 시 ERROR 로그 + Slack 경보 |
+| P1 (M1) | GBM 파라미터 불일치 | `config/settings.py` / `model/multi_horizon_model.py` / `learning/batch_retrainer.py` | `GBM_MIN_SAMPLES_LEAF=10` 공유 상수 — 두 학습기 동일 파라미터 |
+| P1 (H4) | EnsembleGater 고정 가중치 | `model/ensemble_gater.py` / `model/ensemble_decision.py` / `main.py` | `record_outcome()` 온라인 학습 (lr=0.005) + 파일 영속 |
+
+---
+
 ## 2026-05-14 (30차 — 전체 감사 + 버그 수정 + 스텁 모듈 구현)
 
 **Work**: 감사 보고서(`CODEX_SESSION_20260514_PROJECT_AUDIT.md`) 기반 시스템 전체 코드 감사 → 우선순위별 버그 수정 → 핵심 스텁 모듈 3개 구현 + main.py 연결.

@@ -8,6 +8,7 @@
 - 예측 시 확률값 반환 → 앙상블에서 가중합
 """
 import os
+import datetime
 import joblib
 import logging
 import numpy as np
@@ -16,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
 
-from config.settings import HORIZONS, HORIZON_DIR, SCALER_DIR
+from config.settings import HORIZONS, HORIZON_DIR, SCALER_DIR, GBM_MIN_SAMPLES_LEAF
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 
 logger = logging.getLogger("SIGNAL")
@@ -29,13 +30,18 @@ class MultiHorizonModel:
     # 학습 범위를 벗어난 피처 입력 시 GBM이 0/1 극단 확률을 반환하는 현상 완화
     CONF_CLIP = 0.92
 
+    # 스케일러 노후화 경고 임계값 (분) — 변동성 레짐 시프트 감지
+    SCALER_WARN_MINUTES = 90
+    # 극단 z-score 임계값 — 스케일러 기준통계와 현재 피처가 심하게 벗어남을 감지
+    EXTREME_ZSCORE_THRESHOLD = 4.0
+
     GBM_PARAMS = {
         "n_estimators":     100,
         "max_depth":        4,
         "learning_rate":    0.05,
         "subsample":        0.8,
         "random_state":     42,
-        "min_samples_leaf": 10,
+        "min_samples_leaf": GBM_MIN_SAMPLES_LEAF,
     }
 
     def __init__(self):
@@ -43,6 +49,7 @@ class MultiHorizonModel:
         self.scalers: Dict[str, StandardScaler] = {}
         self.feature_names: List[str] = []
         self._is_fitted: Dict[str, bool] = {h: False for h in HORIZONS}
+        self._scaler_fitted_at: Dict[str, datetime.datetime] = {}
 
         os.makedirs(HORIZON_DIR, exist_ok=True)
         os.makedirs(SCALER_DIR, exist_ok=True)
@@ -91,6 +98,7 @@ class MultiHorizonModel:
             self.models[horizon]  = clf
             self.scalers[horizon] = scaler
             self._is_fitted[horizon] = True
+            self._scaler_fitted_at[horizon] = datetime.datetime.now()
 
             logger.info(f"[Model] {horizon} 학습 완료 (n={len(ym)})")
 
@@ -117,7 +125,26 @@ class MultiHorizonModel:
                 continue
 
             scaler = self.scalers.get(horizon)
+
+            # 스케일러 노후화 경고: 마지막 fit 이후 SCALER_WARN_MINUTES 경과 시 WARN
+            fitted_at = self._scaler_fitted_at.get(horizon)
+            if fitted_at is not None:
+                age_min = (datetime.datetime.now() - fitted_at).total_seconds() / 60.0
+                if age_min > self.SCALER_WARN_MINUTES:
+                    logger.warning(
+                        f"[Model] {horizon} 스케일러 {age_min:.0f}분 미갱신 "
+                        f"(≥{self.SCALER_WARN_MINUTES}분) — 변동성 레짐 시프트 시 z-score 왜곡 가능"
+                    )
+
             xs = scaler.transform(x2d) if scaler else x2d
+
+            # 극단 z-score 감지: |z| > EXTREME_ZSCORE_THRESHOLD 피처 수 로깅
+            extreme_count = int(np.sum(np.abs(xs[0]) > self.EXTREME_ZSCORE_THRESHOLD))
+            if extreme_count > 0:
+                logger.warning(
+                    f"[Model] {horizon} 극단 z-score {extreme_count}개 피처 감지 "
+                    f"(|z|>{self.EXTREME_ZSCORE_THRESHOLD:.0f}) — 스케일러 노후화 또는 이상 데이터 의심"
+                )
 
             classes = list(clf.classes_)
             proba   = clf.predict_proba(xs)[0]

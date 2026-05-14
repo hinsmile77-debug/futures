@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-05-14 (32차 — 2차 감사 P3 수정)
+
+### [D72] DynamicSizer — MIN_COMBINED_FRACTION=0.12로 7팩터 곱 하한 보장
+**Decision**: `combined_fraction < 0.12`이면 계약 수 계산 없이 `_blocked()` 반환.  
+**Why**: 7개 팩터 각자 "약간 낮음"이 곱셈 연쇄로 지수적으로 수렴하면, 준수한 신호라도 0.01~0.05 수준 fraction이 나온다. `np.clip(round(0.05), 1, max)` = 1계약으로 강제 진입되나 size_fraction이 무의미하다. 임계값 미만이면 아예 진입하지 않는 것이 기대값 관점에서 우월하다.  
+**How to apply**: 임계값 조정 필요 시 `DynamicSizer.MIN_COMBINED_FRACTION`만 수정. 장중 `[DynSize] fraction=... 사이즈 과소 차단` 로그 빈도로 적정성 확인.
+
+### [D73] TIME_ZONES — GAP_OPEN(09:00~09:05) 별도 구간 신설
+**Decision**: 장 시작 직후 5분을 `GAP_OPEN` 구간으로 분리. `min_confidence=0.67, size_mult=0.5, allow_new_entry=True`.  
+**Why**: 09:00~09:05는 일중 최대 거래량·최대 슬리피지 구간. 기존에는 `OTHER`로 분류되어 `allow_new_entry=False`였다(알파 손실). 별도 구간으로 관리하여 조건부 허용하되 신뢰도 기준을 올려 낮은 품질 진입을 걸러낸다.  
+**How to apply**: 장중 관찰 후 min_confidence 조정 가능 (`settings.py` TIME_ZONES가 아닌 `time_strategy_router.py`의 `_ZONE_PARAMS` 직접 수정). `apply_expiry_override` / `apply_fomc_override`는 GAP_OPEN에도 적용됨.
+
+### [D74] TimeStrategyRouter — 만기일·FOMC 동적 리스크 조정 분리
+**Decision**: `apply_expiry_override()` / `apply_fomc_override()`를 메서드로 분리. 호출부(main.py STEP 6)에서 `route()` 이후 체인으로 적용.  
+**Why**: 만기일·FOMC는 구간 종류(GAP_OPEN 등)와 독립적인 이벤트 리스크. 구간 파라미터와 이벤트 오버라이드를 분리해야 단독 비활성화·테스트가 가능하다. 만기 당일 신뢰도+5%·사이즈×0.6, FOMC 당일 +5%·×0.7 수준은 경험적 추정치 — 실계좌 데이터 쌓이면 재조정.  
+**How to apply**: main.py STEP 6에서 `router.route()` 결과를 `apply_expiry_override()` → `apply_fomc_override()` 순으로 통과시킨다. 연결이 아직 누락 상태임(`NEXT_TODO` 확인).
+
+---
+
 ## 2026-05-14 (30차 — 감사 기반 버그 수정 + 스텁 모듈 구현)
 
 ### [B87] FLAT 방향이 SHORT으로 평가되어 AUTO 진입 가능

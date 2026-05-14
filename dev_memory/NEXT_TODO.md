@@ -8,6 +8,36 @@
 
 ---
 
+## 2026-05-14 (32차) — 2차 감사 P3 4종 수정
+
+### 한일 요약
+
+- [DONE 2026-05-14] **M5: Dynamic Sizing 0 수렴 차단** — `MIN_COMBINED_FRACTION=0.12`. 7팩터 곱 임계값 미만 시 _blocked() 반환.
+- [DONE 2026-05-14] **M6: GAP_OPEN(09:00~09:05) 구간 신설** — `settings.py` · `time_utils.py` · `time_strategy_router.py` 동시 반영. min_conf=0.67, size=0.5, allow_entry=True.
+- [DONE 2026-05-14] **M7: StandardScaler 노후화 감지** — fit 타임스탬프 기록, 90분 초과 WARNING, |z|>4 극단 피처 경고.
+- [DONE 2026-05-14] **만기일/FOMC 대응** — `utils/time_utils.py` 월물 만기일·FOMC 함수 신설. `TimeStrategyRouter.apply_expiry_override()` / `apply_fomc_override()` 추가.
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-15] **apply_expiry_override / apply_fomc_override — main.py 호출 연결**
+  - STEP 6 또는 STEP 7에서 `TimeStrategyRouter`가 만기일/FOMC 오버라이드를 실제로 호출하는지 확인
+  - 연결 누락 시 `router.apply_expiry_override(params)` 호출 추가 (route() 이후)
+
+- [NEXT 2026-05-15] **MIN_COMBINED_FRACTION 임계값 장중 관찰**
+  - 0.12 기준으로 B등급 횡보장 신호가 너무 많이 차단되는지 확인
+  - 로그 `[DynSize] fraction=... < 0.12 → 사이즈 과소 차단` 발생 빈도 체크
+  - 과차단 시 0.08~0.10 범위로 하향 조정 검토
+
+- [NEXT 2026-05-15] **GAP_OPEN 구간 장중 실사용 검증**
+  - 09:00~09:05 분봉에서 TimeRouter가 `zone=GAP_OPEN` 로그 출력하는지 확인
+  - `min_confidence=0.67` 기준이 적절한지 관찰 (너무 빡빡하면 0.65로 완화)
+
+- [NEXT 2026-05-15] **FOMC 날짜 목록 정확성 확인**
+  - `utils/time_utils.py`의 `_FOMC_DATES_KST` 2026·2027년 날짜를 공식 Fed 캘린더와 대조
+  - URL: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+---
+
 ## 2026-05-14 (30차) — 감사 + 버그 수정 + 스텁 구현
 
 ### 한일 요약
