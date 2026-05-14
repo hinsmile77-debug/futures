@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-05-14 (34차 — 진입관리 탭 시간대 가이드 UI 강화 + 권장 등급/오버라이드 배지)
+
+**Work**: `dashboard/main_dashboard.py`의 진입관리 탭을 시간대 기반 운용 가이드 패널로 확장했다. 현재 zone 범위, 최소 신뢰도, 사이즈 배율, 진입 허용 여부를 실시간으로 노출하고, 권장 등급 버튼 강조와 만기일/FOMC 오버라이드 배지도 추가했다.
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| 시간대 설명줄 실시간화 | `dashboard/main_dashboard.py` | KST 기준 현재 `zone`, 시간 범위, `conf≥`, `size×`, `진입허용/신규진입금지`를 30초 주기로 갱신 |
+| 시간대 칩 UI 추가 | `dashboard/main_dashboard.py` | `GAP_OPEN`~`EXIT_ONLY` 6개 zone 버튼 칩 추가, 현재 zone 색상 강조 |
+| 권장 등급 버튼 연동 | `dashboard/main_dashboard.py` | 현재 zone의 `size_mult`를 `ENTRY_GRADE`와 매핑해 A/B/C 진입 버튼에 `권장` 표시, 사용자 수동 선택은 `선택` 표시로 별도 유지 |
+| 만기일/FOMC 오버라이드 배지 | `dashboard/main_dashboard.py` | `TimeStrategyRouter.apply_expiry_override()` / `apply_fomc_override()`를 UI 표시 경로에 연결해 `만기일 적용중`, `만기 전일 적용중`, `FOMC 적용중` 배지 노출 |
+| 세션 문서 정리 | `dev_memory/*.md` | 오늘 UI 강화 작업 기준으로 세션 핸드오프 갱신 |
+
+### 설계/동작 요약
+
+- 설명줄은 정적 문구가 아니라 `TimeStrategyRouter` 결과를 직접 읽는다
+- 시간대 칩에는 `09:00-09:05` 같은 범위를 함께 표시해 운영자가 즉시 구간을 식별할 수 있다
+- 권장 등급은 zone 기반 `size_mult`를 가장 가까운 `ENTRY_GRADE[A/B/C].size_mult`와 매핑한다
+- 권장 상태와 수동 선택 상태는 동시에 보이게 해, 운영자가 현재 수동 오버라이드를 했는지 한눈에 구분할 수 있다
+
+### 검증 상태
+
+- `dashboard/main_dashboard.py` 정적 분석 오류 없음
+- 실제 PyQt 런타임 화면 확인은 아직 미실시
+- `data/session_state.json` 변경은 런타임 카운터 증가에 따른 자동 갱신으로 보이며, 이번 세션 커밋 대상에는 포함하지 않음
+
 ## 2026-05-14 (33차 — Cybos 장외 startup crash 완화 + 세션 마감 정리)
 
 **Work**: `2026-05-14 20:26` KST 재기동 로그 기준으로 Cybos 장외 startup crash를 추적하고, 장외 실시간 구독 경로를 1차 차단했다. 세션 종료 전 `SESSION_LOG`, `CURRENT_STATE`, `NEXT_TODO`, `DECISION_LOG`도 함께 정리했다.

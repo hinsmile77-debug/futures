@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-05-14 (34차) — 진입관리 탭 시간대 가이드 UI 강화 후속
+
+### 한일 요약
+
+- [DONE 2026-05-14] **진입관리 설명줄 실시간 시간대 가이드화** — zone/range/conf/size/entry 상태 실시간 표시
+- [DONE 2026-05-14] **시간대 칩 UI 추가** — `GAP_OPEN`~`EXIT_ONLY` 6구간 버튼 칩 및 현재 구간 강조
+- [DONE 2026-05-14] **A/B/C 등급 버튼 권장 표시 연동** — 현재 zone `size_mult` 기준 최근접 등급 추천, `권장`/`선택` 동시 표기
+- [DONE 2026-05-14] **만기일/FOMC 오버라이드 배지 표시** — UI 설명줄에 적용중 배지 노출
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-15] **진입관리 탭 PyQt 실제 렌더링 확인**
+  - zone 칩 6개가 해상도별로 줄바꿈/잘림 없이 보이는지 확인
+  - `권장`/`선택` 동시 표시가 과밀하지 않은지 확인
+
+- [NEXT 2026-05-15] **권장 등급 매핑 규칙 장중 관찰**
+  - `size_mult=0.8`이 B 권장으로 보이는 것이 운영 체감과 맞는지 확인
+  - 필요 시 최근접 매핑 대신 명시 임계값 규칙으로 변경 검토
+
+- [NEXT 2026-05-15] **오버라이드 배지 툴팁 추가 여부 결정**
+  - `만기일 적용중` / `FOMC 적용중` 배지에 `conf 상향`, `size 축소` 수치를 툴팁으로 노출할지 판단
+
+- [NEXT 2026-05-15] **UI 표시 경로와 실진입 경로 일치성 점검**
+  - 현재 UI는 `TimeStrategyRouter` override 결과를 표시하지만, 실제 main.py STEP 6/7의 진입 파라미터에도 동일 체인이 연결되는지 재확인
+
 ## 2026-05-14 (33차) — Cybos 장외 startup crash 완화 후속
 
 ### 처리 요약
@@ -32,8 +57,8 @@
 - [NEXT 2026-05-15] **`QTableWidget` stylesheet parse warning 잔존 여부 확인**
   - 같은 경고가 계속 나면 balance table 외 다른 `QTableWidget` stylesheet 후보를 순차 비활성화해 원인 테이블 특정
 
-- [NEXT 2026-05-15] **`apply_expiry_override()` / `apply_fomc_override()` main.py 연결**
-  - `TimeStrategyRouter`의 만기일/FOMC override가 실제 진입 파라미터에 적용되는지 확인
+- [NEXT 2026-05-15] **`apply_expiry_override()` / `apply_fomc_override()` main.py 실진입 경로 연결**
+  - UI 표시 경로는 연결 완료. `TimeStrategyRouter`의 만기일/FOMC override가 실제 진입 파라미터에 적용되는지 확인
 
 ---
 
@@ -50,7 +75,7 @@
 
 - [NEXT 2026-05-15] **apply_expiry_override / apply_fomc_override — main.py 호출 연결**
   - STEP 6 또는 STEP 7에서 `TimeStrategyRouter`가 만기일/FOMC 오버라이드를 실제로 호출하는지 확인
-  - 연결 누락 시 `router.apply_expiry_override(params)` 호출 추가 (route() 이후)
+  - 현재 대시보드 UI 표시 경로에는 연결 완료, 실진입 경로 누락 여부만 점검하면 됨
 
 - [NEXT 2026-05-15] **MIN_COMBINED_FRACTION 임계값 장중 관찰**
   - 0.12 기준으로 B등급 횡보장 신호가 너무 많이 차단되는지 확인

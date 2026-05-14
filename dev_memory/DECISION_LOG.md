@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-05-14 (34차 — 진입관리 탭 시간대 가이드 UI 강화)
+
+### [D75] 진입관리 UI의 시간대 정보는 TimeStrategyRouter를 직접 표시한다
+**Decision**: 진입관리 탭 설명줄과 zone 칩은 별도 UI 상수로 중복 관리하지 않고, `TimeStrategyRouter.route()` 결과와 `apply_expiry_override()` / `apply_fomc_override()` 결과를 직접 표시한다.  
+**Why**: 시간대 정책이 바뀔 때 UI 문구와 실운용 파라미터가 쉽게 어긋난다. 특히 `min_confidence`, `size_mult`, `allow_new_entry`는 운영자가 UI를 보고 판단하는 값이므로, 표시용 복사본이 아니라 실제 의사결정 소스를 그대로 써야 drift가 없다.  
+**How to apply**: 진입관리 관련 새 UI가 필요하면 `TIME_ZONES`나 UI 전용 dict를 늘리기보다 `TimeStrategyRouter` 반환 dict를 1차 소스로 두고 렌더링만 추가한다.
+
+### [D76] 권장 등급과 수동 선택은 동시에 보여야 한다
+**Decision**: A/B/C 등급 버튼은 현재 zone 기준 권장 등급을 자동 강조하되, 사용자가 클릭한 수동 선택 상태는 별도로 유지하고 두 상태를 `권장` / `선택`으로 동시에 노출한다.  
+**Why**: 자동 추천만 보여주면 운영자가 수동 오버라이드를 한 사실이 가려지고, 수동 선택만 보여주면 시스템이 현재 어떤 등급을 권장하는지 사라진다. 운용 UI에서는 추천과 operator override를 분리 표기해야 사고 분석이 가능하다.  
+**How to apply**: 권장 상태는 zone `size_mult`와 `ENTRY_GRADE`의 최근접 매핑으로 계산하고, 선택 상태는 `current_mode`를 별도 상태로 유지한다.
+
+### [B92] 만기일/FOMC 오버라이드가 대시보드에서는 안 보였다
+**File**: `dashboard/main_dashboard.py`  
+**Symptom**: `TimeStrategyRouter`에는 `apply_expiry_override()` / `apply_fomc_override()`가 이미 있었지만, 진입관리 탭 설명줄은 정적 문구여서 운영자가 해당 이벤트 리스크가 적용 중인지 화면에서 확인할 수 없었다.  
+**Fix**: 설명줄 렌더링 경로에서 override 체인을 적용하고, `만기일 적용중` / `만기 전일 적용중` / `FOMC 적용중` 배지를 RichText로 표시한다.  
+**Note**: 이번 수정은 UI 표시 경로다. 실제 main.py 실진입 경로 연결 여부는 별도 점검이 필요하다.
+
 ## 2026-05-14 (32차 — 2차 감사 P3 수정)
 
 ### [D72] DynamicSizer — MIN_COMBINED_FRACTION=0.12로 7팩터 곱 하한 보장

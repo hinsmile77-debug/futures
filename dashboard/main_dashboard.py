@@ -40,7 +40,9 @@ from PyQt5.QtGui import (
 )
 
 from config.constants import FUTURES_PT_VALUE
-from config.settings import RAW_DATA_DB, DATA_DIR
+from config.settings import RAW_DATA_DB, DATA_DIR, TIME_ZONES, ENTRY_GRADE
+from strategy.entry.time_strategy_router import TimeStrategyRouter
+from utils.time_utils import get_time_zone, now_kst
 from utils.db_utils import fetch_today_trades, fetchall
 
 TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
@@ -2157,12 +2159,54 @@ class EntryPanel(QWidget):
     sig_instant_exit_requested   = pyqtSignal()      # 즉시 전량청산
     sig_auto_mode_changed        = pyqtSignal(bool)  # True=Auto ON, False=Auto OFF
 
+    _TIME_ZONE_DESC = {
+        "GAP_OPEN": "시초가 급변 - 고신뢰·소규모 진입만 허용",
+        "OPEN_VOLATILE": "변동성 高 - 추세추종, 신뢰도 상향",
+        "STABLE_TREND": "안정 추세 - 표준 앙상블",
+        "LUNCH_RECOVERY": "외인 재진입 감지",
+        "CLOSE_VOLATILE": "마감 가속/청산 구간",
+        "EXIT_ONLY": "신규 진입 금지",
+        "OTHER": "장외/비허용 구간 - 신규 진입 차단",
+    }
+    _TIME_ZONE_LABEL = {
+        "GAP_OPEN": "GAP OPEN",
+        "OPEN_VOLATILE": "OPEN VOL",
+        "STABLE_TREND": "STABLE",
+        "LUNCH_RECOVERY": "LUNCH",
+        "CLOSE_VOLATILE": "CLOSE VOL",
+        "EXIT_ONLY": "EXIT ONLY",
+    }
+    _TIME_ZONE_ORDER = [
+        "GAP_OPEN",
+        "OPEN_VOLATILE",
+        "STABLE_TREND",
+        "LUNCH_RECOVERY",
+        "CLOSE_VOLATILE",
+        "EXIT_ONLY",
+    ]
+    _TIME_ZONE_COLOR = {
+        "GAP_OPEN": "#E6C15A",
+        "OPEN_VOLATILE": "#F39C12",
+        "STABLE_TREND": "#2ECC71",
+        "LUNCH_RECOVERY": "#58A6FF",
+        "CLOSE_VOLATILE": "#FF8C42",
+        "EXIT_ONLY": "#FF6B6B",
+        "OTHER": "#7F8C8D",
+    }
+
     def __init__(self):
         super().__init__()
         self.current_mode = "hybrid"
         self._reverse_entry_enabled = False
         self._auto_enabled = True
+        self._time_router = TimeStrategyRouter()
+        self._mode_button_labels = {
+            "auto": "A 등급진입",
+            "hybrid": "B 등급진입",
+            "manual": "C 등급진입",
+        }
         self._build()
+        self._setup_time_zone_timer()
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -2182,7 +2226,7 @@ class EntryPanel(QWidget):
         mode_lay.addWidget(self.auto_toggle_btn)
 
         self.mode_btns = {}
-        for mode, label in [("auto","A 등급진입"), ("hybrid","B 등급진입"), ("manual","C 등급진입")]:
+        for mode, label in self._mode_button_labels.items():
             btn = QPushButton(label)
             col = C['green'] if mode == "hybrid" else C['text2']
             btn.setStyleSheet(
@@ -2193,6 +2237,7 @@ class EntryPanel(QWidget):
             btn.clicked.connect(lambda checked, m=mode: self._set_mode(m))
             self.mode_btns[mode] = btn
             mode_lay.addWidget(btn)
+        self._sync_mode_button_styles()
 
         self.reverse_btn = QPushButton("역방향 진입")
         self.reverse_btn.setCheckable(True)
@@ -2206,10 +2251,26 @@ class EntryPanel(QWidget):
         lay.addLayout(mode_lay)
 
         self.mode_desc = mk_label(
-            "등급 A(6+개 통과) · B(4~5개) · C(2~3개) · X → 진입 차단",
+            "",
             C['blue'], 9
         )
+        self.mode_desc.setWordWrap(True)
         lay.addWidget(self.mode_desc)
+
+        zone_grid = QGridLayout()
+        zone_grid.setHorizontalSpacing(6)
+        zone_grid.setVerticalSpacing(4)
+        self.time_zone_btns = {}
+        for idx, zone in enumerate(self._TIME_ZONE_ORDER):
+            btn = QPushButton()
+            btn.setEnabled(False)
+            btn.setMinimumHeight(30)
+            btn.setCursor(Qt.ArrowCursor)
+            self.time_zone_btns[zone] = btn
+            zone_grid.addWidget(btn, idx // 3, idx % 3)
+        lay.addLayout(zone_grid)
+
+        self._update_mode_desc()
         lay.addWidget(mk_sep())
 
         # 앙상블 + 신뢰도
@@ -2367,6 +2428,115 @@ class EntryPanel(QWidget):
         )
         self.stat_label.setStyleSheet(f"color:{pnl_col};font-size:{S.f(11)}px;")
 
+    def _setup_time_zone_timer(self):
+        self._mode_desc_timer = QTimer(self)
+        self._mode_desc_timer.setInterval(30_000)
+        self._mode_desc_timer.timeout.connect(self._update_mode_desc)
+        self._mode_desc_timer.start()
+
+    def _get_time_zone_guide(self):
+        now = now_kst()
+        zone = get_time_zone(now)
+        start, end = TIME_ZONES.get(zone, ("--:--", "--:--"))
+        params = self._time_router.route(now)
+        params = self._time_router.apply_expiry_override(params, now)
+        params = self._time_router.apply_fomc_override(params, now)
+        desc = params.get("desc") or self._TIME_ZONE_DESC.get(zone, self._TIME_ZONE_DESC["OTHER"])
+        override_badges = []
+        if params.get("_expiry_override") == "EXPIRY_DAY":
+            override_badges.append(("만기일 적용중", "#FF8C42"))
+        elif params.get("_expiry_override") == "PRE_EXPIRY":
+            override_badges.append(("만기 전일 적용중", "#E6C15A"))
+        if params.get("_fomc_override"):
+            override_badges.append(("FOMC 적용중", "#58A6FF"))
+        return zone, start, end, desc, params, override_badges
+
+    def _update_mode_desc(self):
+        zone, start, end, desc, params, override_badges = self._get_time_zone_guide()
+        legend = "등급 A(6+개 통과) · B(4~5개) · C(2~3개) · X → 진입 차단"
+        conf_pct = int(round(float(params.get("min_confidence", 0.0)) * 100.0))
+        size_mult = float(params.get("size_mult", 0.0))
+        entry_text = "진입허용" if params.get("allow_new_entry", False) else "신규진입금지"
+        if zone == "OTHER":
+            zone_line = (
+                f"현재 시간대: {zone} · conf≥{conf_pct}% · size×{size_mult:.2f} · "
+                f"{entry_text} · {desc}"
+            )
+        else:
+            zone_line = (
+                f"현재 시간대: {zone} ({start}-{end}) · conf≥{conf_pct}% · "
+                f"size×{size_mult:.2f} · {entry_text} · {desc}"
+            )
+        if override_badges:
+            badge_html = " ".join(
+                "<span style='background:%s;color:#0B1118;border-radius:4px;padding:1px 6px;font-weight:bold;'>%s</span>"
+                % (color, text)
+                for text, color in override_badges
+            )
+            zone_line = "%s &nbsp; %s" % (zone_line, badge_html)
+        self.mode_desc.setTextFormat(Qt.RichText)
+        self.mode_desc.setText("%s<br>%s" % (legend, zone_line))
+        self._sync_time_zone_buttons(zone)
+        self._sync_mode_button_styles(self._infer_recommended_mode(params))
+
+    def _infer_recommended_mode(self, params):
+        if not params.get("allow_new_entry", False):
+            return None
+        target = float(params.get("size_mult", 0.0) or 0.0)
+        grade_map = {"A": "auto", "B": "hybrid", "C": "manual"}
+        grade = min(
+            (g for g in ("A", "B", "C")),
+            key=lambda g: abs(float(ENTRY_GRADE[g]["size_mult"]) - target)
+        )
+        return grade_map.get(grade)
+
+    def _sync_mode_button_styles(self, recommended_mode=None):
+        accent_map = {
+            "auto": "#58A6FF",
+            "hybrid": C['green'],
+            "manual": C['orange'],
+        }
+        for mode, btn in self.mode_btns.items():
+            is_selected = mode == self.current_mode
+            is_recommended = mode == recommended_mode
+            accent = accent_map.get(mode, C['text2'])
+            base_bg = C['bg2'] if is_selected else C['bg3']
+            bg = accent if is_recommended and not is_selected else base_bg
+            fg = "#0B1118" if is_recommended else (accent if is_selected else C['text2'])
+            border_col = accent if (is_selected or is_recommended) else C['border']
+            border_w = "3px" if is_selected and is_recommended else "2px" if (is_selected or is_recommended) else "1px"
+            suffix = []
+            if is_recommended:
+                suffix.append("권장")
+            if is_selected:
+                suffix.append("선택")
+            label = self._mode_button_labels.get(mode, mode)
+            if suffix:
+                label = "%s [%s]" % (label, "/".join(suffix))
+            btn.setText(label)
+            btn.setStyleSheet(
+                f"QPushButton{{background:{bg};color:{fg};border:{border_w} solid {border_col};"
+                f"border-radius:4px;padding:5px 8px;font-size:{S.f(12)}px;font-weight:bold;}}"
+                f"QPushButton:disabled{{background:{bg};color:{fg};border:{border_w} solid {border_col};opacity:0.72;}}"
+            )
+
+    def _sync_time_zone_buttons(self, active_zone):
+        for zone, btn in self.time_zone_btns.items():
+            start, end = TIME_ZONES.get(zone, ("--:--", "--:--"))
+            btn.setText("%s\n%s-%s" % (self._TIME_ZONE_LABEL.get(zone, zone), start, end))
+            color = self._TIME_ZONE_COLOR.get(zone, self._TIME_ZONE_COLOR["OTHER"])
+            is_active = zone == active_zone
+            bg = color if is_active else C['bg3']
+            fg = "#0B1118" if is_active else color
+            border = "2px" if is_active else "1px"
+            weight = "bold" if is_active else "normal"
+            opacity = "1.0" if is_active else "0.88"
+            btn.setStyleSheet(
+                f"QPushButton{{background:{bg};color:{fg};border:{border} solid {color};"
+                f"border-radius:5px;padding:4px 6px;font-size:{S.f(9)}px;font-weight:{weight};"
+                f"opacity:{opacity};}}"
+            )
+
     def _sync_auto_toggle_style(self):
         on = self._auto_enabled
         col = C['green'] if on else C['text2']
@@ -2385,6 +2555,7 @@ class EntryPanel(QWidget):
         # 자동 진입관리 버튼 전체 enable/disable
         for btn in self.mode_btns.values():
             btn.setEnabled(self._auto_enabled)
+        self._sync_mode_button_styles(self._infer_recommended_mode(self._time_router.apply_fomc_override(self._time_router.apply_expiry_override(self._time_router.route(now_kst()), now_kst()), now_kst())))
         self.reverse_btn.setEnabled(self._auto_enabled)
         self.sig_auto_mode_changed.emit(self._auto_enabled)
 
@@ -2405,14 +2576,7 @@ class EntryPanel(QWidget):
 
     def _set_mode(self, mode):
         self.current_mode = mode
-        for m, btn in self.mode_btns.items():
-            col = C['green'] if m == mode else C['text2']
-            bw  = "2px" if m == mode else "1px"
-            btn.setStyleSheet(
-                f"QPushButton{{background:{C['bg2'] if m==mode else C['bg3']};"
-                f"color:{col};border:{bw} solid {col};"
-                f"border-radius:4px;padding:5px 8px;font-size:{S.f(12)}px;}}"
-            )
+        self._update_mode_desc()
 
     def _set_reverse_entry_enabled(self, enabled: bool):
         self._reverse_entry_enabled = bool(enabled)
