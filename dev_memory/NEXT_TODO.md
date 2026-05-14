@@ -8,6 +8,48 @@
 
 ---
 
+## 2026-05-15 (35차) — Day10-2/Day11 반영 후 마감
+
+### 한일 요약
+
+- [DONE 2026-05-15] **Degraded auto/manual 차단 정책 분리 구현**
+  - `HEALTH_DEGRADED_BLOCK_AUTO_ENTRY`, `HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY` 반영
+  - 수동 진입/자동 진입 각각 독립 차단 동작 연결
+
+- [DONE 2026-05-15] **헬스 설정 핫리로드 구현**
+  - `settings.py` mtime 감시 + `importlib.reload`로 무중단 반영
+  - SYSTEM 로그에 핫리로드 반영 메시지 출력
+
+- [DONE 2026-05-15] **헬스 탭 스파크라인 확장**
+  - Health Score 단일 라인에서 지연/품질 2개 라인 추가(총 3라인)
+
+- [DONE 2026-05-15] **핫리로드/차단 검증 하네스 실행 PASS**
+  - `scripts/validate_health_policy_hotreload.py`
+  - hotreload log 1회, auto/manual 차단 분리 확인, 45틱 시뮬레이션 통과
+
+- [DONE 2026-05-15] **감사문서 ##10 하루 운용 체크리스트/사전점검 결과 반영**
+  - 사전점검(07:38) 근거 로그 + 설정 스냅샷 + 운영 전 주의사항 기록
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-15] **브로커 startup sync 정상화 재확인**
+  - `verified=True`, `block_new_entries=False` 전환 시점 로그 확인
+  - 전환 실패 시 balance TR timeout 원인(권한/계좌/장상태) 분리
+
+- [NEXT 2026-05-15] **헬스 탭 수동 UI 체크 완료 처리**
+  - 운영자가 대시보드 6 탭 진입/표시 정상 여부 확인 후 ##10 10.1 항목 체크
+
+- [NEXT 2026-05-15] **장중 30~60분 실관찰로 ##10.2~10.5 체크 채우기**
+  - HEALTH 상태 로그 주기성
+  - Degraded enter/exit 전이
+  - 자동/수동 차단 로그 실제 발생
+
+- [NEXT 2026-05-15] **핫리로드 실운영 재검증(재시작 금지)**
+  - 장중 `HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY` 토글 후 5~10초 반영 로그 확인
+
+- [NEXT 2026-05-16] **하루 운용 종료판정(10.6) 확정 및 5줄 요약 기록**
+  - 필수 8개 이상 체크 + 치명 오류 0건 여부 최종 판정
+
 ## 2026-05-14 (34차) — 진입관리 탭 시간대 가이드 UI 강화 후속
 
 ### 한일 요약

@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-05-15 (35차 — 운영 헬스 정책 고도화)
+
+### [D77] Degraded 진입 차단은 auto/manual을 분리 제어한다
+**Decision**: Degraded 모드 진입 차단 정책을 단일 bool에서 `자동진입 차단`/`수동진입 차단` 2축으로 분리한다.  
+**Why**: 실제 운영에서는 시스템 자동진입만 차단하고 운영자 수동진입은 허용해야 할 상황이 존재한다. 반대로 사고 대응 시 수동까지 전면 차단해야 할 상황도 있다. 단일 스위치로는 이 두 요구를 동시에 충족할 수 없다.  
+**How to apply**: `HEALTH_DEGRADED_BLOCK_AUTO_ENTRY`, `HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY`를 런타임 정책으로 로드해 `_is_degraded_entry_blocked(confidence, is_manual)`에서 공통 판정한다.
+
+### [D78] 헬스 임계값은 런타임 핫리로드를 기본 경로로 둔다
+**Decision**: 운영 헬스 임계값(지연/품질/차단 정책)은 재시작 없이 `settings.py` 변경 반영을 허용한다.  
+**Why**: 장중 정책 튜닝 시 프로세스 재시작은 리스크가 크고, `startup sync` 재수행으로 오히려 운용 공백이 길어진다. 임계값 성격의 설정은 안전한 주기 폴링 + 변경 감지 방식이 적합하다.  
+**How to apply**: `settings.py` mtime 감시, 주기 도달 시 `importlib.reload(settings)` 후 health policy dict 재구성. reload 실패 시 기존 정책 유지(안전 우선).
+
+### [D79] 헬스 탭 시각화는 Score/Latency/Quality 3라인을 동시에 유지한다
+**Decision**: 운영 헬스 스파크라인은 단일 score line이 아니라 score/latency/quality를 분리해 동시 표시한다.  
+**Why**: score 하락 원인이 지연 급증인지 품질 악화인지 단일 선으로는 분해가 어렵다. 운영자는 원인 축을 즉시 분리해 대응해야 하므로 3라인이 필요하다.  
+**How to apply**: `update_health_metrics(..., thresholds=...)`에 threshold 전달을 유지하고, 각 트렌드 버퍼를 동일 윈도우 길이로 관리한다.
+
+### [B93] 검증 스크립트 regex 치환에서 invalid group reference 발생
+**File**: `scripts/validate_health_policy_hotreload.py`  
+**Symptom**: settings 토글 치환 과정에서 정규식 대체 문자열이 group reference 에러를 발생시켜 검증 스크립트가 중단됨.  
+**Root cause**: replacement 문자열에서 `\1` 방식 사용 시 숫자/문자 결합 형태가 생겨 의도치 않은 group index로 해석됨.  
+**Fix**: 대체 문자열을 `\g<1>` 형태로 변경해 그룹 경계를 명시적으로 고정.
+
 ## 2026-05-14 (34차 — 진입관리 탭 시간대 가이드 UI 강화)
 
 ### [D75] 진입관리 UI의 시간대 정보는 TimeStrategyRouter를 직접 표시한다

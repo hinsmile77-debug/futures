@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-05-15 (35차 — 운영 헬스 고도화 + 사전점검 + 감사문서 반영)
+
+**Work**: Day10-2/Day11 후속 요구사항(Degraded auto/manual 정책 분리, 헬스 3라인 스파크라인, 설정 핫리로드)을 구현했고, 검증 하네스 실행 및 장시작 전 사전점검 결과를 감사문서 ##10에 반영했다.
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| Degraded 정책 분리 | `config/settings.py`, `main.py` | `HEALTH_DEGRADED_BLOCK_AUTO_ENTRY`, `HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY` 추가. 자동/수동 진입 차단 분리 |
+| 설정 핫리로드 | `config/settings.py`, `main.py` | `HEALTH_POLICY_HOT_RELOAD_ENABLED`, `HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC` 추가. `settings.py` mtime 감시 + `importlib.reload` 반영 |
+| 헬스 탭 3라인 트렌드 | `dashboard/main_dashboard.py` | Health Score + 지연 + 품질 스파크라인 동시 표시, 런타임 threshold 주입 지원 |
+| 검증 하네스 | `scripts/validate_health_policy_hotreload.py` | 핫리로드 로그/auto-manual 차단/45틱(약 45분) 시뮬레이션 검증 스크립트 추가 |
+| 감사문서 체크리스트 확장 | `dev_memory/audit/GPT-5_3-Codex_260515_poject_Audit.md` | ##10 하루 운용 검증 체크리스트 추가 + 07:38 사전점검 결과 반영 |
+
+### 검증 결과
+
+- `scripts/validate_health_policy_hotreload.py` 실행 결과: **PASS**
+  - `hotreload_log_count: 1`
+  - auto/manual 차단 분리 동작 확인
+  - 45틱 시뮬레이션에서 auto/manual 차단 카운트 각각 발생
+- 장시작 전 사전점검 로그 반영:
+  - startup sync `verified=False`, `block_new_entries=True`
+  - Capability 일부 미검증 상태 확인
+
+### 세션 마감 메모
+
+- 코드/정적 진단 기준 신규 오류는 확인되지 않음
+- 사전점검 기준 아직 수동 UI 확인 항목(헬스 탭 진입 가능)은 미체크 상태로 유지
+
 ## 2026-05-14 (34차 — 진입관리 탭 시간대 가이드 UI 강화 + 권장 등급/오버라이드 배지)
 
 **Work**: `dashboard/main_dashboard.py`의 진입관리 탭을 시간대 기반 운용 가이드 패널로 확장했다. 현재 zone 범위, 최소 신뢰도, 사이즈 배율, 진입 허용 여부를 실시간으로 노출하고, 권장 등급 버튼 강조와 만기일/FOMC 오버라이드 배지도 추가했다.
