@@ -53,6 +53,7 @@ from utils.db_utils import (
 from config.settings import (
     TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
+    FRED_API_KEY,
 )
 from config.constants import FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED
 from config import secrets as _secrets
@@ -61,6 +62,12 @@ from config import secrets as _secrets
 from collection.broker import create_broker
 from collection.macro.regime_classifier import RegimeClassifier
 from collection.macro.micro_regime import MicroRegimeClassifier
+from collection.macro.macro_fetcher import MacroFetcher
+from collection.options.pcr_store import PCRStore
+from features.macro.macro_feature_transformer import MacroFeatureTransformer
+from features.options.option_features import OptionFeatureCalculator
+from learning.self_learning.daily_consolidator import DailyConsolidator
+from learning.self_learning.drift_adjuster import DriftAdjuster
 from features.feature_builder import FeatureBuilder
 from model.multi_horizon_model import MultiHorizonModel
 from model.ensemble_decision import EnsembleDecision
@@ -117,6 +124,8 @@ class TradingSystem:
         # 핵심 컴포넌트
         self.regime_classifier  = RegimeClassifier()
         self.micro_regime_clf   = MicroRegimeClassifier()
+        self.macro_fetcher      = MacroFetcher(api_key_fred=FRED_API_KEY)
+        self.macro_fetcher.start()
         self.feature_builder    = FeatureBuilder()
         self.model             = MultiHorizonModel()
         self.ensemble          = EnsembleDecision()
@@ -133,6 +142,11 @@ class TradingSystem:
         self.toxicity_gate     = ToxicityGate()
         self.batch_retrainer   = BatchRetrainer()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
+        self.pcr_store         = PCRStore()
+        self.macro_transformer = MacroFeatureTransformer()
+        self.option_feat_calc  = OptionFeatureCalculator()
+        self.daily_consolidator = DailyConsolidator()
+        self.drift_adjuster    = DriftAdjuster()
         # ── Phase 2 안전장치 ───────────────────────────────────
         self.emergency_exit  = EmergencyExit(
             position_tracker = self.position,
@@ -486,7 +500,7 @@ class TradingSystem:
             reason=reason,
             stage=stage or None,
         )
-        ret = self._send_kiwoom_exit_order(send_qty)
+        ret = self._send_broker_exit_order(send_qty)
         if ret != 0:
             self._clear_pending_order()
             log_manager.system(
@@ -856,10 +870,6 @@ class TradingSystem:
         self._pt_value = _spec["pt_value"]
         self.position.set_pt_value(self._pt_value)
         self.position.set_futures_code(code)
-        if hasattr(self, "exit_manager"):
-            self.exit_manager.set_pt_value(self._pt_value)
-        if hasattr(self, "entry_manager"):
-            self.entry_manager._sizer.set_pt_value(self._pt_value)
         self.sizer.set_pt_value(self._pt_value)
         print(f"[DBG CK-3b] 계약스펙={_spec['label']} pt_value={self._pt_value:,}", flush=True)
 
@@ -984,17 +994,20 @@ class TradingSystem:
         logger.info("[System] 장 전 매크로 수집 시작")
         log_manager.system("장 전 매크로 수집 시작")
 
-        # TODO Phase 1 Week 1: 실제 매크로 데이터 수집 구현
-        # 현재는 더미 데이터로 초기화
-        macro_dummy = {
-            "vix": 18.5,
-            "sp500_chg_pct": 0.3,
-            "nasdaq_chg_pct": 0.4,
-            "usd_krw_chg_pct": -0.1,
-            "us10y_chg": 2.0,
+        _fetched = self.macro_fetcher.get_features()
+        # MacroFetcher는 변동률을 소수 형태(0.005 = 0.5%)로 반환하고
+        # RegimeClassifier는 퍼센트 단위(0.5 = 0.5%)를 기대하므로 ×100 변환한다.
+        macro_data = {
+            "vix":             _fetched.get("vix", 20.0),
+            "sp500_chg_pct":   round(_fetched.get("sp500_chg", 0.0) * 100, 4),
+            "nasdaq_chg_pct":  round(_fetched.get("nasdaq_chg", 0.0) * 100, 4),
+            "usd_krw_chg_pct": round(_fetched.get("usd_krw_chg", 0.0) * 100, 4),
+            "us10y_chg":       _fetched.get("us10y_chg", 0.0),
         }
+        logger.info("[System] 매크로 수집 완료 | VIX=%.1f SP500=%+.2f%% KRW=%+.2f%%",
+                    macro_data["vix"], macro_data["sp500_chg_pct"], macro_data["usd_krw_chg_pct"])
 
-        result = self.regime_classifier.classify(**macro_dummy)
+        result = self.regime_classifier.classify(**macro_data)
         self.current_regime = result["regime"]
 
         logger.info(f"[System] 레짐 확정: {self.current_regime} | {result['description']}")
@@ -1002,8 +1015,8 @@ class TradingSystem:
         notify(f"장 전 레짐: {self.current_regime}", "INFO")
 
         self.dashboard.update_supply_macro(
-            vix=macro_dummy["vix"],
-            sp500_chg=macro_dummy["sp500_chg_pct"] / 100,
+            vix=macro_data["vix"],
+            sp500_chg=macro_data["sp500_chg_pct"] / 100,
             regime=self.current_regime,
         )
         self.dashboard.append_sys_log(
@@ -1175,6 +1188,10 @@ class TradingSystem:
                     and _pred_ts >= self._session_start_ts):
                 self.circuit_breaker.record_accuracy(v["correct"], confidence=_conf)
             self.horizon_calibrator.record(v["horizon"], _conf, v["correct"])
+            # 시간대별 정확도 기록 (15:40 DailyConsolidator.consolidate()에서 집계)
+            if v["horizon"] == "5m":
+                _zone = get_time_zone(datetime.datetime.strptime(v["ts"], "%Y-%m-%d %H:%M:%S"))
+                self.daily_consolidator.record(_zone, bool(v["correct"]))
             if v["correct"]:
                 log_manager.learning(f"✓ {v['horizon']} 예측 적중 (conf={_conf:.1%})")
             else:
@@ -1249,7 +1266,16 @@ class TradingSystem:
         # fetch_all()은 _investor_timer(60s QTimer)에서 COM 콜백 외부로 실행
         # 파이프라인은 이전 분봉에서 수집된 캐시를 읽음 (당일 누적 수급 — 1분 지연 허용)
         supply_feats = self.investor_data.get_features()
-        features = self.feature_builder.build(bar, supply_demand=supply_feats)
+        self.pcr_store.update(supply_feats)
+        _raw_macro   = self.macro_fetcher.get_features()
+        _macro_feats = self.macro_transformer.transform(_raw_macro)
+        _option_feats = self.option_feat_calc.transform(self.pcr_store.get_features())
+        features = self.feature_builder.build(
+            bar,
+            supply_demand = supply_feats,
+            macro_data    = _macro_feats,
+            option_data   = _option_feats,
+        )
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
         atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
@@ -1711,7 +1737,22 @@ class TradingSystem:
         _atr_ok   = atr >= ATR_MIN_ENTRY   # ATR 너무 낮으면 노이즈 > 손절거리 → 휩쏘
 
         # 수익 보존 가드 체크 (STEP 7 진입 직전)
-        _daily_pnl_now = self.position.daily_stats()["pnl_krw"]
+        _engine_daily_pnl_now = float(self.position.daily_stats().get("pnl_krw", 0.0) or 0.0)
+        _broker_daily_pnl_now = None
+        _daily_pnl_now = _engine_daily_pnl_now
+        _daily_pnl_source = "engine"
+        # Cybos는 브로커 요약(실현손익)과 엔진 누적값이 어긋날 수 있어, 당일 캐시가 있으면 우선 사용한다.
+        if str(getattr(getattr(self, "broker", None), "name", "") or "").strip().lower() == "cybos":
+            _today_key = datetime.date.today().isoformat()
+            _cached_date = str(getattr(self, "_last_balance_realized_date", "") or "")
+            _cached_realized = getattr(self, "_last_balance_realized_krw", None)
+            if _cached_date == _today_key and _cached_realized is not None:
+                try:
+                    _broker_daily_pnl_now = float(_cached_realized)
+                    _daily_pnl_now = _broker_daily_pnl_now
+                    _daily_pnl_source = "broker"
+                except Exception:
+                    pass
         _size_mult_now = _cr["size_mult"] if _cr else 1.0
         _pg_allowed, _pg_reason = self.profit_guard.is_entry_allowed(
             _daily_pnl_now, _size_mult_now
@@ -1719,6 +1760,11 @@ class TradingSystem:
         if not _pg_allowed and _final_grade not in ("X",):
             _final_grade = "X"
             log_manager.signal(f"[ProfitGuard] 진입 차단: {_pg_reason}")
+            _broker_str = "n/a" if _broker_daily_pnl_now is None else f"{_broker_daily_pnl_now:+,.0f}"
+            log_manager.signal(
+                f"[ProfitGuard][DebugPnL] source={_daily_pnl_source} used={_daily_pnl_now:+,.0f}원 "
+                f"engine={_engine_daily_pnl_now:+,.0f}원 broker={_broker_str}원"
+            )
 
         if (
             _cr is not None
@@ -1930,7 +1976,7 @@ class TradingSystem:
 
         # ── L2 Tier Gate 영구중단 배지 갱신 ────────────────────
         try:
-            l2_info = self.profit_guard.get_l2_halt_info()
+            l2_info = self.profit_guard.get_l2_halt_info(_daily_pnl_now)
             self.dashboard.update_l2_halt_badge(
                 is_halted=l2_info['is_halted'],
                 threshold=l2_info['halt_threshold']
@@ -2009,12 +2055,12 @@ class TradingSystem:
 
         if partial_qty >= total_qty:
             # 잔여가 부분 청산 불가 (1계약 포지션 등) → 전량 청산으로 전환
-            self._send_kiwoom_exit_order(total_qty)
+            self._send_broker_exit_order(total_qty)
             result = self.position.close_position(price, f"TP{stage}(전량)")
             self._post_exit(result)
             return
 
-        self._send_kiwoom_exit_order(partial_qty)
+        self._send_broker_exit_order(partial_qty)
         result = self.position.partial_close(price, partial_qty, reason)
 
         if stage == 1:
@@ -2066,17 +2112,14 @@ class TradingSystem:
         self._record_trade_result(result)
         self._refresh_pnl_history()
 
-    def _send_kiwoom_entry_order(self, direction: str, qty: int) -> int:
-        """키움 선물 진입 주문 전송 (SendOrderFO). 반환값: 0=성공, 음수=오류"""
+    def _send_broker_entry_order(self, direction: str, qty: int) -> int:
+        """선물 진입 시장가 주문. 0=성공, 음수=오류"""
         code = getattr(self, "_futures_code", "")
         if not code:
             return -1
         account_no = self._get_active_account_no()
         if not account_no:
             return -1
-        # [B54] lOrdKind=1(신규매매) + sSlbyTp 방향 명시
-        # trade_type=2는 new convention에서 "정정"으로 해석되어 Kiwoom 서버에서 조용히 거부됨
-        slby_tp = "2" if direction == "LONG" else "1"  # "2"=매수, "1"=매도
         side = "BUY" if direction == "LONG" else "SELL"
         return self.broker.send_market_order(
             account_no=account_no,
@@ -2087,17 +2130,14 @@ class TradingSystem:
             screen_no="1000",
         )
 
-    def _send_kiwoom_exit_order(self, qty: int) -> int:
-        """키움 선물 청산 주문 전송 (SendOrderFO). 반환값: 0=성공, 음수=오류"""
+    def _send_broker_exit_order(self, qty: int) -> int:
+        """선물 청산 시장가 주문. 0=성공, 음수=오류"""
         code = getattr(self, "_futures_code", "")
         if not code or self.position.status == "FLAT":
             return -1
         account_no = self._get_active_account_no()
         if not account_no:
             return -1
-        # [B54] lOrdKind=1(신규매매) + sSlbyTp 방향: 거래소 측 자동 네팅으로 청산 처리
-        # trade_type=4(구: 청산매도)는 new convention에서 미정의, trade_type=3은 취소로 해석됨
-        slby_tp = "1" if self.position.status == "LONG" else "2"  # LONG→매도(1), SHORT→매수(2)
         side = "SELL" if self.position.status == "LONG" else "BUY"
         return self.broker.send_market_order(
             account_no=account_no,
@@ -2113,7 +2153,7 @@ class TradingSystem:
         quantity: int, atr: float, grade: str,
     ):
         """진입 실행"""
-        ret = self._send_kiwoom_entry_order(direction, quantity)
+        ret = self._send_broker_entry_order(direction, quantity)
         if ret != 0:
             logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s", ret)
             log_manager.system(
@@ -2179,7 +2219,7 @@ class TradingSystem:
                 "[DBG-STOP] 하드스톱 발동: close=%.2f bar_low=%.2f stop=%.2f → exit=%.2f",
                 price, bar_low, self.position.stop_price, exit_price,
             )
-            self._send_kiwoom_exit_order(self.position.quantity)
+            self._send_broker_exit_order(self.position.quantity)
             result = self.position.close_position(exit_price, "하드스톱")
             self._post_exit(result)
             return
@@ -2197,7 +2237,7 @@ class TradingSystem:
 
         # 4순위: 시간 강제 청산
         if self.time_exit.should_force_exit():
-            self._send_kiwoom_exit_order(self.position.quantity)
+            self._send_broker_exit_order(self.position.quantity)
             result = self.position.close_position(price, "15:10 강제청산")
             self._post_exit(result)
 
@@ -2542,12 +2582,28 @@ class TradingSystem:
                 f"[GBM] 일일 마감 재학습 건너뜀: {retrain_result.get('error','')}"
             )
 
+        # ── 자가학습 일일 마감 집계 ──────────────────────────────
+        _today_accuracy = self.online_learner.recent_accuracy()
+        try:
+            self.daily_consolidator.consolidate()
+        except Exception as _dce:
+            logger.warning("[DailyConsolidator] 집계 실패 (스킵): %s", _dce)
+        try:
+            _drift_result = self.drift_adjuster.record_accuracy(_today_accuracy)
+            _new_alpha = _drift_result.get("alpha", 0.001)
+            if hasattr(self.online_learner, "set_alpha"):
+                self.online_learner.set_alpha(_new_alpha)
+                logger.info("[DriftAdjuster] SGD alpha 갱신: %.5f (%s)", _new_alpha, _drift_result.get("action"))
+        except Exception as _dae:
+            logger.warning("[DriftAdjuster] 갱신 실패 (스킵): %s", _dae)
+
         # 일일 리셋
         if hasattr(self, "_investor_timer"):
             self._investor_timer.stop()
         self.feature_builder.reset_daily()
         self.micro_regime_clf.reset_daily()
         self.investor_data.reset_daily()
+        self.pcr_store.reset_daily()
         self.position.reset_daily()
         self.circuit_breaker.reset_daily()
         self.profit_guard.reset_daily()
@@ -3112,7 +3168,7 @@ def _ts_on_order_message(self, payload: dict) -> None:
 def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: float, grade: str):
     if self._has_pending_order():
         return
-    ret = self._send_kiwoom_entry_order(direction, quantity)
+    ret = self._send_broker_entry_order(direction, quantity)
     if ret != 0:
         logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s", ret)
         log_manager.system(
@@ -3200,7 +3256,7 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
     send_qty = total_qty if is_full_close else target_qty
     reason = f"TP{stage}(전량)" if is_full_close else f"TP{stage} 부분청산 {ratio:.0%}"
 
-    ret = self._send_kiwoom_exit_order(send_qty)
+    ret = self._send_broker_exit_order(send_qty)
     _ts_log_diag(
         self,
         "PartialExitSendOrderResult",
@@ -3272,7 +3328,7 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             f"exit_price={exit_price:.2f} stop={self.position.stop_price:.2f} cur={price:.2f}",
             "WARNING",
         )
-        ret = self._send_kiwoom_exit_order(self.position.quantity)
+        ret = self._send_broker_exit_order(self.position.quantity)
         log_manager.system(
             f"[ExitSendOrderResult] ret={ret} kind=하드스톱 "
             f"direction={self.position.status} qty={self.position.quantity}",
@@ -3314,7 +3370,7 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             f"price={price:.2f}",
             "WARNING",
         )
-        ret = self._send_kiwoom_exit_order(self.position.quantity)
+        ret = self._send_broker_exit_order(self.position.quantity)
         log_manager.system(
             f"[ExitSendOrderResult] ret={ret} kind=시간청산 "
             f"direction={self.position.status} qty={self.position.quantity}",
@@ -4914,7 +4970,7 @@ def _ts_execute_entry(
     # 낙관적 오픈 후 분할체결 VWAP 보정을 위한 플래그
     self._pending_order["optimistic_opened"] = True
     self._pending_order["partial_fill_count"] = 0
-    ret = self._send_kiwoom_entry_order(direction, quantity)
+    ret = self._send_broker_entry_order(direction, quantity)
     logger.info(
         "[Entry] send_order result ret=%s raw=%s final=%s qty=%s reverse=%s code=%s broker_sync_verified=%s",
         ret, raw_direction, direction, quantity, reverse_enabled,

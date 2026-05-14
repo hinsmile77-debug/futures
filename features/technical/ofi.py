@@ -88,6 +88,12 @@ class OFICalculator:
         # 분 초기화
         self._minute_ofi = 0.0
         self._minute_vol = 0.0
+        # 분봉 경계에서 _prev_* 리셋: 틱 없는 분봉 이후 첫 틱이
+        # 이전 분의 stale 호가 대비 잘못된 delta를 누적하는 것을 방지한다.
+        self._prev_bid_price = None
+        self._prev_ask_price = None
+        self._prev_bid_qty   = None
+        self._prev_ask_qty   = None
 
         return result
 

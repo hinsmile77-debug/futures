@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-05-14 (30차 — 감사 기반 버그 수정 + 스텁 모듈 구현)
+
+### [B87] FLAT 방향이 SHORT으로 평가되어 AUTO 진입 가능
+**File**: `strategy/entry/checklist.py` — `evaluate()`  
+**Symptom**: direction=FLAT(0) 입력 시 최대 A급 AUTO SHORT 진입 가능.  
+**Root cause**: `is_long = direction == DIRECTION_UP` → FLAT(0)은 False → 8개 방향 체크가 모두 SHORT 기준으로 평가됨. 약세 레짐에서 8/9 통과 → Grade A → auto_entry=True 가능.  
+**Fix**: `evaluate()` 진입부에 `if direction == DIRECTION_FLAT: return X등급 즉시` 조기 반환 추가.  
+**Note**: main.py:1589에 `direction != 0` 가드가 있으나 `evaluate()` 자체가 무방어 상태였음. 함수 내부 방어가 필수.
+
+### [B88] MacroFetcher 단위 불일치 (소수 vs 퍼센트)
+**File**: `main.py` — `pre_market_setup()`  
+**Symptom**: 더미 매크로 코드가 실제 MacroFetcher를 가리고 있어 단위 불일치가 숨겨져 있었음.  
+**Root cause**: MacroFetcher는 소수(sp500_chg=0.005 = 0.5%)를 반환. RegimeClassifier는 퍼센트(sp500_chg_pct=0.5)를 기대. ×100 변환 없이 그대로 주입하면 0.5%를 0.005%로 오해석.  
+**Fix**: `sp500_chg_pct: round(_fetched.get("sp500_chg", 0.0) * 100, 4)` 등 ×100 변환 명시.
+
+### [B89] OFI stale delta — tick-silent 분봉 후 첫 틱 오류
+**File**: `features/technical/ofi.py` — `flush_minute()`  
+**Root cause**: `flush_minute()`이 분봉 집계 후 `_prev_*`를 None으로 리셋하지 않아, 틱이 없던 분봉 다음에 이전 분봉의 마지막 호가 값이 기준점으로 유지됨. 첫 틱 delta가 분봉 간 호가 변화를 포함해 오염됨.  
+**Fix**: `flush_minute()` 말미에 `_prev_bid_price=None`, `_prev_ask_price=None`, `_prev_bid_qty=None`, `_prev_ask_qty=None` 리셋.
+
+### [D66] FLAT 방향은 checklist.evaluate() 내부에서 즉시 차단
+**Decision**: 방향 판단의 최종 방어선은 `evaluate()` 함수 자체. 호출부 가드에만 의존하지 않는다.  
+**Reason**: 호출부 가드는 변경될 수 있고, 신규 호출 경로에서 누락될 수 있다. 함수 내부에서 자체 방어해야 계약(contract)이 성립한다.  
+**How to apply**: 새 진입 판단 함수 작성 시 동일 원칙 적용. 유효하지 않은 입력은 함수 첫 줄에서 명확한 실패값 반환.
+
+### [D67] MacroFeatureTransformer — MacroFetcher와 feature_builder 사이 변환 레이어 분리
+**Decision**: `MacroFetcher.get_features()`(소수 단위) → `MacroFeatureTransformer.transform()`(0~1 정규화) → `feature_builder.build(macro_data=)` 경로로 분리.  
+**Reason**: MacroFetcher 출력은 원본값 보존이 목적. ML 모델 입력 정규화는 별도 관심사. 두 책임을 하나의 함수에 섞으면 단위 불일치 버그가 재발한다.  
+**How to apply**: 매크로 소스 변경(yfinance → 다른 API) 시 MacroFetcher만 수정. 정규화 기준 변경 시 MacroFeatureTransformer만 수정.
+
+### [D68] DriftAdjuster — SGD alpha는 5일 추이 기반 자동 조정, 단발 노이즈 무시
+**Decision**: alpha 조정 트리거는 N일(기본 3일) 연속 DRIFT_THRESHOLD(0.50) 미만 또는 RECOVERY_DAYS(2일) 연속 RECOVERY_THRESHOLD(0.58) 이상.  
+**Reason**: 하루 저성능은 시장 특이일(연휴 전날, 지수 이벤트) 노이즈일 수 있다. 연속 기준을 두어 구조적 드리프트와 일시적 노이즈를 구분.  
+**How to apply**: `record_accuracy()`는 daily_close() 에서만 호출. 장중 SGD partial_fit alpha는 이 값으로 고정되고 장중에는 변경하지 않는다.
+
+### [D69] PCRStore — option_flow_supported=False 시 중립값(PCR=1.0) 반환, 피처 available=0.0 플래그
+**Decision**: 옵션 수급 미지원 브로커 환경에서도 OptionFeatureCalculator를 안전하게 호출 가능. `opt_available=0.0` 피처로 ML 모델이 데이터 가용성을 학습 가능.  
+**Reason**: Cybos Plus의 옵션 investor flow TR 매핑이 아직 진행 중. 미지원 상태에서도 파이프라인이 정상 작동해야 한다. ML 모델은 available=0 구간을 자동으로 무시하거나 가중치 감소 가능.
+
+---
+
 ## 2026-05-14 (29차 — CB HALT 사후 조사 + 모델 신뢰도 개선)
 
 ### [B84] EXIT pending 오더가 체잔 이벤트 유실로 고착

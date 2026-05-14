@@ -315,7 +315,7 @@ class PositionTracker:
         filled_at: Optional[datetime.datetime] = None,
     ) -> Dict:
         """Chejan 체결 기준으로 포지션을 부분/전량 청산한다."""
-        assert self.status != POSITION_FLAT, "?ъ????놁쓬"
+        assert self.status != POSITION_FLAT, "포지션 없음"
         assert 0 < quantity <= self.quantity, (
             f"Invalid exit fill quantity: fill={quantity} total={self.quantity}"
         )
@@ -517,7 +517,7 @@ class PositionTracker:
 
     def arm_tp1_single_contract(self, current_price: float, atr: float = 0.0) -> Dict:
         """For single-contract positions, convert TP1 into protection instead of full exit."""
-        assert self.status != POSITION_FLAT, "?ъ????놁쓬"
+        assert self.status != POSITION_FLAT, "포지션 없음"
         assert self.quantity == 1, f"single-contract only: qty={self.quantity}"
 
         mult = 1 if self.status == POSITION_LONG else -1

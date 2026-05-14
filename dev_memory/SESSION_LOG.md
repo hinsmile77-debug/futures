@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-05-14 (30차 — 전체 감사 + 버그 수정 + 스텁 모듈 구현)
+
+**Work**: 감사 보고서(`CODEX_SESSION_20260514_PROJECT_AUDIT.md`) 기반 시스템 전체 코드 감사 → 우선순위별 버그 수정 → 핵심 스텁 모듈 3개 구현 + main.py 연결.
+
+### 버그 수정 (P0~P3)
+
+| 우선순위 | ID | 파일 | 원인 | 수정 |
+|---|---|---|---|---|
+| P0 | — | `strategy/entry/checklist.py` | FLAT(0) 방향이 `is_long=False`로 평가되어 최대 8/9 SHORT 체크 통과 → A급 AUTO SHORT 가능 | FLAT 조기 반환(X등급, auto_entry=False) |
+| P1 | B75 | `features/feature_builder.py` | `bar["close"]` 직접 접근 → KeyError / ZeroDivision. 9개 계산 블록 예외 전파 | safe `bar.get()` + 9개 블록 개별 try/except + 기본값 fallback |
+| P1 | B76 | `features/technical/ofi.py` | `flush_minute()` 후 `_prev_*` 미초기화 → 다음 분봉 첫 틱 stale delta | `flush_minute()` 말미에 `_prev_*=None` 4개 리셋 |
+| P1 | B77 | `safety/circuit_breaker.py` | ATR 버퍼 선언만 있고 중앙값 평활 없음 → 순간 급등 오발동 | 즉시 발동 + 버퍼 중앙값 0.7배 기준 지속 급등 감지 추가 |
+| P2 | B78 | `main.py` | `pre_market_setup()`에 더미 매크로 하드코딩, `MacroFetcher` 미연결 | 실 API 연동 (`macro_fetcher.get_features()` + ×100 단위 변환) |
+| P2 | — | `collection/broker/kiwoom_broker.py` | `InvestorData(kiwoom_api=None)` → API 미주입 | `InvestorData(kiwoom_api=self._api)` |
+| P2 | — | `strategy/position/position_tracker.py` | 인코딩 깨진 문자열 `"?ъ????놁쓬"` 4개소 | `"포지션 없음"` 정정 |
+| P3 | — | `strategy/entry/entry_manager.py` | main.py에서 한 번도 인스턴스화되지 않은 Dead Code (Kiwoom 전용 API 서명) | 파일 삭제 |
+| P3 | — | `main.py` | `_send_kiwoom_entry/exit_order` 함수명 잔존 (Cybos 마이그레이션 미완) | `_send_broker_entry/exit_order` rename (13개소) |
+| P3 | — | `features/technical/cvd.py` | `update()` 보합 틱(price==prev) `delta=qty`로 Long 바이어스 누적 | `delta=0` (중립) 처리 |
+
+### 스텁 모듈 구현
+
+| 파일 | 내용 |
+|---|---|
+| `features/macro/macro_feature_transformer.py` | VIX/SP500/나스닥 등 9개 정규화 피처. MacroFetcher → ML 입력 변환. |
+| `learning/self_learning/daily_consolidator.py` | 시간대별 정확도 집계 → 저성능 구간 confidence 패널티. `data/zone_penalty.json` 영속. |
+| `learning/self_learning/drift_adjuster.py` | 5일 롤링 정확도 추이 → SGD alpha 동적 조정. 드리프트 감지 시 alpha×1.5, 회복 시 alpha×0.8. `data/drift_adjuster_state.json` 영속. |
+| `collection/options/pcr_store.py` | 외인 콜/풋 순매수로 PCR 계산. 20분 롤링. 미지원 시 중립(1.0) 반환. |
+| `features/options/option_features.py` | PCR → 6개 정규화 피처 (pcr_norm, bearish/bullish/extreme 바이너리, slope_norm, available). |
+
+### main.py 연결
+
+- import 5개 추가
+- `__init__`: 5개 인스턴스 추가
+- STEP 4: `pcr_store.update()` → `macro_transformer.transform()` → `option_feat_calc.transform()` → `feature_builder.build(macro_data=, option_data=)`
+- STEP 1: 5m 호라이즌 결과를 `daily_consolidator.record(zone, correct)` 연결
+- `daily_close()`: `consolidate()` + `drift_adjuster.record_accuracy()` + SGD alpha 갱신 + `pcr_store.reset_daily()`
+
+### 보류 항목
+
+- `research_bot/code_generators/` 스케줄러 연결 — ROADMAP.md Phase 6 섹션에 보류 이유·선행조건 기록
+
+### 핵심 발견 사항
+
+- **FLAT→AUTO SHORT 잠재 버그**: 가장 중요한 발견. FLAT(0)이 Boolean False로 평가 → is_long=False → SHORT 체크 8/9 통과 가능. 감사 보고서에 없던 신규 P0 버그.
+- **감사 보고서 재분류**: `entry_manager.py:237` P0(Cybos 오더 불가) → P3(Dead Code). main.py에서 인스턴스화된 적 없음.
+- **MacroFetcher 단위 불일치**: MacroFetcher 반환은 소수(0.005=0.5%), RegimeClassifier 입력은 퍼센트(0.5=0.5%) → ×100 변환 필요. 더미 코드가 이 버그를 숨기고 있었음.
+- **인코딩 깨짐 실제 4개소**: 감사 보고서는 2개 보고, 실제 grep으로 4개소(152·318·463·520행) 발견.
+
+---
+
 ## 2026-05-14 (29차 — CB HALT 사후 조사 + 모델 신뢰도 3종 개선)
 
 **Work**

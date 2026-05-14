@@ -13,6 +13,7 @@ Circuit Breaker (설계 명세 A2):
 """
 import datetime
 import logging
+import statistics
 from collections import deque
 from typing import Callable, Optional
 
@@ -168,8 +169,16 @@ class CircuitBreaker:
     # ── 트리거 ④ ATR 급등 ─────────────────────────────────────
     def record_atr(self, atr_ratio: float):
         self._atr_buf.append(atr_ratio)
+        # 즉시 스파이크: 단일 시점 3배 초과
         if atr_ratio >= CB_ATR_MULT_LIMIT:
-            self._trigger_pause(5, f"ATR {atr_ratio:.1f}배 급등")
+            self._trigger_pause(5, f"ATR {atr_ratio:.1f}배 급등 (순간)")
+            return
+        # 지속 급등: 버퍼 중앙값이 임계치의 70% 이상으로 3분 이상 유지
+        # 단일 스파이크가 아닌 지속 고변동성 장세에서도 CB를 발동한다.
+        if len(self._atr_buf) >= 3:
+            med = statistics.median(self._atr_buf)
+            if med >= CB_ATR_MULT_LIMIT * 0.7:
+                self._trigger_pause(3, f"ATR {med:.1f}배 지속 급등 (중앙값, 버퍼={len(self._atr_buf)})")
 
     # ── 트리거 ⑤ API 지연 ─────────────────────────────────────
     def record_api_latency(self, latency_sec: float):

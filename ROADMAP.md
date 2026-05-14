@@ -548,6 +548,20 @@ Reward: 다음 1분 PnL - 거래 비용 - 리스크 페널티
 자동 통합: OFF (절대 금지 - 망하지 않기 위해)
 ```
 
+### [보류] research_bot/code_generators/ 스케줄러 연결
+
+> **현재 상태**: `code_synthesizer.py`, `formula_extractor.py`, `test_generator.py` 스텁 존재.
+> **보류 이유**:
+> 1. Phase 6 alpha_scout.py 장외 스케줄러 미연결 — 코드 생성 트리거가 없음
+> 2. `exec()` / `eval()` 기반 코드 합성은 샌드박스 없이 프로덕션 프로세스에서 실행 불가
+>    (OS 명령 주입·모듈 오염 위험)
+> 3. 생성된 코드의 타입 안전성·로직 검증 자동화가 선행되어야 함
+>
+> **선행 조건 완료 후 구현**:
+> - [ ] Phase 6 alpha_scout 장외 스케줄러 연결 (cron or QTimer 장외)
+> - [ ] 격리 샌드박스(subprocess / Docker) 설계
+> - [ ] 코드 합성 결과 자동 린트 + 단위테스트 생성 검증 파이프라인
+
 ---
 
 | 날짜 | 버전 | 변경 내용 |

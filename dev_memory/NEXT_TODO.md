@@ -8,6 +8,53 @@
 
 ---
 
+## 2026-05-14 (30차) — 감사 + 버그 수정 + 스텁 구현
+
+### 한일 요약
+
+- [DONE 2026-05-14] **P0: FLAT→AUTO SHORT 잠재 버그** — `checklist.py` FLAT 조기 반환 추가
+- [DONE 2026-05-14] **P1: feature_builder 예외처리** — 9개 계산 블록 try/except + safe bar.get()
+- [DONE 2026-05-14] **P1: OFI stale state** — `flush_minute()` 말미 `_prev_*=None` 리셋
+- [DONE 2026-05-14] **P1: ATR 버퍼 중앙값 평활** — circuit_breaker 지속 급등 감지 추가
+- [DONE 2026-05-14] **P2: 더미 매크로 → 실 API 연동** — `MacroFetcher.get_features()` + ×100 단위 변환
+- [DONE 2026-05-14] **P2: InvestorData api 미주입** — `kiwoom_broker.py` 수정
+- [DONE 2026-05-14] **P2: 인코딩 깨짐 4개소** — `position_tracker.py` 정정
+- [DONE 2026-05-14] **P3: EntryManager Dead Code** — `entry_manager.py` 삭제
+- [DONE 2026-05-14] **P3: `_send_kiwoom_*` rename** — `_send_broker_*` (13개소)
+- [DONE 2026-05-14] **P3: CVD 보합 틱 바이어스** — delta=0 (중립) 처리
+- [DONE 2026-05-14] **MacroFeatureTransformer 구현** — `features/macro/macro_feature_transformer.py`
+- [DONE 2026-05-14] **DailyConsolidator 구현** — `learning/self_learning/daily_consolidator.py`
+- [DONE 2026-05-14] **DriftAdjuster 구현** — `learning/self_learning/drift_adjuster.py`
+- [DONE 2026-05-14] **PCRStore 구현** — `collection/options/pcr_store.py`
+- [DONE 2026-05-14] **OptionFeatureCalculator 구현** — `features/options/option_features.py`
+- [DONE 2026-05-14] **main.py 연결** — STEP 4 피처 파이프라인 + STEP 1 record + daily_close() 갱신
+- [DONE 2026-05-14] **ROADMAP.md 보류 기록** — research_bot/code_generators/ 선행조건·이유 명시
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-15] **MacroFeatureTransformer → feature_builder 실제 반영 검증**
+  - `feature_builder.build()` 내에서 `macro_data` / `option_data` 키워드가 실제로 수신·처리되는지 확인
+  - `features.get("macro_vix")` 등 피처가 ML 입력 벡터에 포함되는지 확인
+
+- [NEXT 2026-05-15] **DailyConsolidator 시간대(zone) 코드 확인**
+  - `get_time_zone()` 반환값과 `DailyConsolidator.record(zone=...)` 호환 확인
+  - zone="OPENING"/"LUNCH"/"CLOSING" 등 실제 상수 확인 (`utils/time_utils.py`)
+
+- [NEXT 2026-05-15] **OnlineLearner.set_alpha() 인터페이스 존재 여부 확인**
+  - `learning/online_learner.py`에 `set_alpha(alpha)` 미구현 시 추가 필요
+
+- [NEXT 2026-05-15] **CB HALT 시나리오 장중 검증**
+  - CB③ 발동 조건(30분 정확도 < 35% 2회 연속) 시뮬레이션
+  - emergency_exit 콜백 → 포지션 즉시 청산 확인
+  - CB HALT 중 수동 청산 버튼 동작 확인
+
+- [NEXT 2026-05-15] **세션 재시작 후 GBM 재학습 로그 확인**
+  - 재시작 후 첫 분봉 STEP 3에서 `[WarmupRetrain]` 로그 확인
+
+- [NEXT 2026-05-15] **profit_guard_prefs.json 중복 임계값 정리** — [500000] 2개 중복 제거. 의도 재확인.
+
+---
+
 ## 2026-05-14 (29차) — CB HALT 사후 조사 + 모델 신뢰도 개선
 
 ### 한일 요약

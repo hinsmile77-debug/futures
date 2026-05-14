@@ -65,7 +65,7 @@ class KiwoomBroker(BrokerAPI):
         )
 
     def create_investor_data(self) -> InvestorData:
-        return InvestorData(kiwoom_api=None)
+        return InvestorData(kiwoom_api=self._api)
 
     def request_futures_balance(self, account_no: str) -> dict:
         return self._api.request_futures_balance(account_no)

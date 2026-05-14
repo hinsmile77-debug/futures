@@ -85,98 +85,155 @@ class FeatureBuilder:
     ) -> Dict[str, float]:
         features: Dict[str, float] = {}
 
-        cvd_result = self.cvd.update_from_bar(
-            close=bar["close"],
-            buy_vol=bar.get("buy_vol", bar.get("volume", 0) / 2),
-            sell_vol=bar.get("sell_vol", bar.get("volume", 0) / 2),
-        )
-        features["cvd_divergence"] = float(
-            cvd_result["signal_strength"] * (-1 if cvd_result["divergence"] else 1)
-        )
-        features["cvd_direction"] = float(cvd_result["direction"])
-        features["cvd"]           = float(cvd_result.get("cvd", 0.0))
-        features["cvd_slope"]     = float(cvd_result.get("cvd_slope", 0.0))
+        # bar 필드 안전 추출 — 직접 키 접근 시 KeyError 방지, None 전파 방지
+        close = float(bar.get("close") or 0.0)
+        high  = float(bar.get("high")  or close)
+        low   = float(bar.get("low")   or close)
+        vol   = float(bar.get("volume") or 0.0)
+        # buy_vol/sell_vol: key 존재하지만 값이 None인 경우 get() fallback이 무시되므로
+        # 명시적 None 체크로 처리한다.
+        _bv = bar.get("buy_vol")
+        _sv = bar.get("sell_vol")
+        buy_vol  = float(_bv) if _bv is not None else vol / 2.0
+        sell_vol = float(_sv) if _sv is not None else vol / 2.0
 
-        exh_result = self.cvd_exhaustion_calc.compute(
-            cvd_raw   = features["cvd"],
-            cvd_slope = features["cvd_slope"],
-            volume    = float(bar.get("volume", 0) or 0),
-        )
-        features["cvd_exhaustion"]        = float(exh_result["exhaustion"])
-        features["cvd_exhaustion_signal"] = float(exh_result["exhaustion_signal"])
+        try:
+            cvd_result = self.cvd.update_from_bar(
+                close=close, buy_vol=buy_vol, sell_vol=sell_vol,
+            )
+            features["cvd_divergence"] = float(
+                cvd_result["signal_strength"] * (-1 if cvd_result["divergence"] else 1)
+            )
+            features["cvd_direction"] = float(cvd_result["direction"])
+            features["cvd"]           = float(cvd_result.get("cvd", 0.0))
+            features["cvd_slope"]     = float(cvd_result.get("cvd_slope", 0.0))
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] CVD 오류 — 기본값 사용: %s", _exc)
+            features.update({"cvd_divergence": 0.0, "cvd_direction": 0.0,
+                             "cvd": 0.0, "cvd_slope": 0.0})
 
-        vwap_result = self.vwap.update(
-            high=bar["high"],
-            low=bar["low"],
-            close=bar["close"],
-            volume=bar.get("volume", 1),
-        )
-        features["vwap_position"] = float(vwap_result["position"])
-        features["vwap"] = float(vwap_result["vwap"])
-        features["above_vwap"] = float(vwap_result["above_vwap"])
+        try:
+            exh_result = self.cvd_exhaustion_calc.compute(
+                cvd_raw   = features.get("cvd", 0.0),
+                cvd_slope = features.get("cvd_slope", 0.0),
+                volume    = vol,
+            )
+            features["cvd_exhaustion"]        = float(exh_result["exhaustion"])
+            features["cvd_exhaustion_signal"] = float(exh_result["exhaustion_signal"])
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] CVD exhaustion 오류 — 기본값 사용: %s", _exc)
+            features.update({"cvd_exhaustion": 0.0, "cvd_exhaustion_signal": 0.0})
 
-        ofi_result = self.ofi.flush_minute()
-        features["ofi_norm"]     = float(ofi_result["ofi_norm"])
-        features["ofi_pressure"] = float(ofi_result["pressure"])
-        features["ofi_imbalance"] = float(ofi_result["imbalance_ratio"])
-        features["ofi_raw"]      = float(ofi_result["ofi_raw"])
+        try:
+            vwap_result = self.vwap.update(
+                high=high, low=low, close=close, volume=vol or 1,
+            )
+            features["vwap_position"] = float(vwap_result["position"])
+            features["vwap"]          = float(vwap_result["vwap"])
+            features["above_vwap"]    = float(vwap_result["above_vwap"])
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] VWAP 오류 — 기본값 사용: %s", _exc)
+            features.update({"vwap_position": 0.0, "vwap": 0.0, "above_vwap": 0.0})
 
-        ofi_rev = self.ofi_reversal_calc.compute(
-            ofi_raw    = features["ofi_raw"],
-            avg_volume = float(bar.get("volume", 1) or 1),
-        )
-        features["ofi_reversal_speed"]  = float(ofi_rev["reversal_speed"])
-        features["ofi_reversal_signal"] = float(ofi_rev["signal"])
-        features["avg_volume"]          = float(bar.get("volume", 0) or 0)
+        try:
+            ofi_result = self.ofi.flush_minute()
+            features["ofi_norm"]      = float(ofi_result["ofi_norm"])
+            features["ofi_pressure"]  = float(ofi_result["pressure"])
+            features["ofi_imbalance"] = float(ofi_result["imbalance_ratio"])
+            features["ofi_raw"]       = float(ofi_result["ofi_raw"])
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] OFI 오류 — 기본값 사용: %s", _exc)
+            features.update({"ofi_norm": 0.0, "ofi_pressure": 0.0,
+                             "ofi_imbalance": 0.0, "ofi_raw": 0.0})
 
-        microprice_result = self.microprice.flush_minute()
-        features["microprice"] = float(microprice_result["microprice"])
-        features["microprice_bias"] = float(microprice_result["mp_bias"])
-        features["microprice_slope"] = float(microprice_result["mp_slope"])
-        features["microprice_depth_bias"] = float(microprice_result["depth_bias"])
+        try:
+            ofi_rev = self.ofi_reversal_calc.compute(
+                ofi_raw    = features.get("ofi_raw", 0.0),
+                avg_volume = vol or 1.0,
+            )
+            features["ofi_reversal_speed"]  = float(ofi_rev["reversal_speed"])
+            features["ofi_reversal_signal"] = float(ofi_rev["signal"])
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] OFI reversal 오류 — 기본값 사용: %s", _exc)
+            features.update({"ofi_reversal_speed": 0.0, "ofi_reversal_signal": 0.0})
+        features["avg_volume"] = vol
 
-        mlofi_result = self.mlofi.flush_minute()
-        features["mlofi_norm"] = float(mlofi_result["mlofi_norm"])
-        features["mlofi_pressure"] = float(mlofi_result["mlofi_pressure"])
-        features["mlofi_slope"] = float(mlofi_result["mlofi_slope"])
+        try:
+            microprice_result = self.microprice.flush_minute()
+            features["microprice"]            = float(microprice_result["microprice"])
+            features["microprice_bias"]       = float(microprice_result["mp_bias"])
+            features["microprice_slope"]      = float(microprice_result["mp_slope"])
+            features["microprice_depth_bias"] = float(microprice_result["depth_bias"])
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] Microprice 오류 — 기본값 사용: %s", _exc)
+            features.update({"microprice": 0.0, "microprice_bias": 0.0,
+                             "microprice_slope": 0.0, "microprice_depth_bias": 0.0})
 
-        queue_result = self.queue.flush_minute()
-        features["queue_signal"] = float(queue_result["queue_signal_mean"])
-        features["queue_signal_ma"] = float(queue_result["queue_signal_ma"])
-        features["queue_momentum"] = float(queue_result["queue_momentum"])
-        features["queue_depletion_speed"] = float(queue_result["queue_depletion_speed"])
-        features["queue_refill_rate"] = float(queue_result["queue_refill_rate"])
-        features["imbalance_slope"] = float(queue_result["imbalance_slope"])
-        features["cancel_add_ratio"] = float(queue_result["cancel_add_ratio"])
+        try:
+            mlofi_result = self.mlofi.flush_minute()
+            features["mlofi_norm"]     = float(mlofi_result["mlofi_norm"])
+            features["mlofi_pressure"] = float(mlofi_result["mlofi_pressure"])
+            features["mlofi_slope"]    = float(mlofi_result["mlofi_slope"])
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] MLOFI 오류 — 기본값 사용: %s", _exc)
+            features.update({"mlofi_norm": 0.0, "mlofi_pressure": 0.0, "mlofi_slope": 0.0})
 
-        atr_result = self.atr.update(high=bar["high"], low=bar["low"], close=bar["close"])
-        features["atr"] = float(atr_result["atr"])
-        features["atr_ratio"] = float(atr_result["atr_ratio"])
+        try:
+            queue_result = self.queue.flush_minute()
+            features["queue_signal"]          = float(queue_result["queue_signal_mean"])
+            features["queue_signal_ma"]       = float(queue_result["queue_signal_ma"])
+            features["queue_momentum"]        = float(queue_result["queue_momentum"])
+            features["queue_depletion_speed"] = float(queue_result["queue_depletion_speed"])
+            features["queue_refill_rate"]     = float(queue_result["queue_refill_rate"])
+            features["imbalance_slope"]       = float(queue_result["imbalance_slope"])
+            features["cancel_add_ratio"]      = float(queue_result["cancel_add_ratio"])
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] QueueDynamics 오류 — 기본값 사용: %s", _exc)
+            features.update({"queue_signal": 0.0, "queue_signal_ma": 0.0,
+                             "queue_momentum": 0.0, "queue_depletion_speed": 0.0,
+                             "queue_refill_rate": 0.0, "imbalance_slope": 0.0,
+                             "cancel_add_ratio": 0.0})
 
-        bid1 = float(bar.get("bid1", 0.0) or 0.0)
-        ask1 = float(bar.get("ask1", 0.0) or 0.0)
-        tick_size = 0.05
-        spread_ticks = max((ask1 - bid1) / tick_size, 0.0) if bid1 > 0 and ask1 > 0 else 0.0
-        toxicity_result = self.toxicity.update(
-            atr_ratio=features["atr_ratio"],
-            spread_ticks=spread_ticks,
-            mlofi_norm=features["mlofi_norm"],
-            queue_depletion_speed=features["queue_depletion_speed"],
-            cancel_add_ratio=features["cancel_add_ratio"],
-        )
-        features["spread_ticks"] = float(spread_ticks)
-        features["toxicity_score"] = float(toxicity_result["toxicity_score"])
-        features["toxicity_score_ma"] = float(toxicity_result["toxicity_score_ma"])
-        features["toxicity_atr_stress"] = float(toxicity_result["atr_stress"])
-        features["toxicity_spread_stress"] = float(toxicity_result["spread_stress"])
-        features["toxicity_flow_stress"] = float(toxicity_result["flow_stress"])
-        features["toxicity_queue_stress"] = float(toxicity_result["queue_stress"])
-        features["toxicity_cancel_stress"] = float(toxicity_result["cancel_stress"])
-        features["toxicity_regime_code"] = float(
-            2 if toxicity_result["toxicity_regime"] == "toxic"
-            else 1 if toxicity_result["toxicity_regime"] == "warning"
-            else 0
-        )
+        try:
+            atr_result = self.atr.update(high=high, low=low, close=close)
+            features["atr"]       = float(atr_result["atr"])
+            features["atr_ratio"] = float(atr_result["atr_ratio"])
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] ATR 오류 — 기본값 사용: %s", _exc)
+            features.update({"atr": 0.0, "atr_ratio": 1.0})
+
+        try:
+            bid1 = float(bar.get("bid1") or 0.0)
+            ask1 = float(bar.get("ask1") or 0.0)
+            tick_size = 0.05
+            spread_ticks = max((ask1 - bid1) / tick_size, 0.0) if bid1 > 0 and ask1 > 0 else 0.0
+            toxicity_result = self.toxicity.update(
+                atr_ratio=features.get("atr_ratio", 1.0),
+                spread_ticks=spread_ticks,
+                mlofi_norm=features.get("mlofi_norm", 0.0),
+                queue_depletion_speed=features.get("queue_depletion_speed", 0.0),
+                cancel_add_ratio=features.get("cancel_add_ratio", 0.0),
+            )
+            features["spread_ticks"]          = float(spread_ticks)
+            features["toxicity_score"]        = float(toxicity_result["toxicity_score"])
+            features["toxicity_score_ma"]     = float(toxicity_result["toxicity_score_ma"])
+            features["toxicity_atr_stress"]   = float(toxicity_result["atr_stress"])
+            features["toxicity_spread_stress"] = float(toxicity_result["spread_stress"])
+            features["toxicity_flow_stress"]  = float(toxicity_result["flow_stress"])
+            features["toxicity_queue_stress"] = float(toxicity_result["queue_stress"])
+            features["toxicity_cancel_stress"] = float(toxicity_result["cancel_stress"])
+            features["toxicity_regime_code"]  = float(
+                2 if toxicity_result["toxicity_regime"] == "toxic"
+                else 1 if toxicity_result["toxicity_regime"] == "warning"
+                else 0
+            )
+        except Exception as _exc:
+            logger.warning("[FeatureBuilder] Toxicity 오류 — 기본값 사용: %s", _exc)
+            features.update({"spread_ticks": 0.0, "toxicity_score": 0.0,
+                             "toxicity_score_ma": 0.0, "toxicity_atr_stress": 0.0,
+                             "toxicity_spread_stress": 0.0, "toxicity_flow_stress": 0.0,
+                             "toxicity_queue_stress": 0.0, "toxicity_cancel_stress": 0.0,
+                             "toxicity_regime_code": 0.0})
 
         if supply_demand:
             for k, v in supply_demand.items():

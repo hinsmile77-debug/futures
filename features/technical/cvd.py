@@ -7,7 +7,9 @@ CVD (Cumulative Volume Delta) 다이버전스
 → 단기 최강 방향 신호
 
 계산:
-  tick_delta = qty if 체결가 >= 직전가 else -qty
+  tick_delta = +qty if 체결가 > 직전가
+             = -qty if 체결가 < 직전가
+             =   0  if 체결가 == 직전가 (보합 — 중립 처리)
   CVD_t = CVD_{t-1} + tick_delta
   divergence = price_direction != cvd_direction (최근 N분)
 """
@@ -41,7 +43,14 @@ class CVDCalculator:
         Returns:
             {cvd, delta, divergence, signal_strength}
         """
-        delta = qty if price >= prev_price else -qty
+        # 보합(price == prev_price)을 매수로 분류하면 시스템적 롱 바이어스가 누적된다.
+        # 체결가 변화가 없는 틱은 방향 불명이므로 delta=0(중립) 처리한다.
+        if price > prev_price:
+            delta = qty
+        elif price < prev_price:
+            delta = -qty
+        else:
+            delta = 0
         self._cumulative_cvd += delta
 
         self._cvd_buf.append(self._cumulative_cvd)

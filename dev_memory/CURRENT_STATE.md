@@ -1,7 +1,59 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-14 (29차) — **CB HALT 사후 조사 + 버그 3종 수정 + 모델 신뢰도 개선 3종**
+> 마지막 업데이트: 2026-05-14 (30차) — **전체 감사 + P0~P3 버그 수정 10건 + 스텁 모듈 5개 구현 + main.py 연결**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-14 (30차) — 감사 기반 전체 버그 수정 + 스텁 모듈 구현
+
+### 수정된 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `strategy/entry/checklist.py` | P0: FLAT 방향 조기 반환 (X등급, auto_entry=False) — FLAT→AUTO SHORT 잠재 버그 차단 |
+| `features/feature_builder.py` | P1: safe bar.get() + 9개 계산 블록 try/except + 기본값 fallback |
+| `features/technical/ofi.py` | P1: `flush_minute()` 말미 `_prev_*=None` 리셋 — stale delta 방지 |
+| `safety/circuit_breaker.py` | P1: ATR 버퍼 중앙값 기반 지속 급등 감지 추가 (`import statistics`) |
+| `main.py` | P2: 더미 매크로→실 API 연동, `_send_kiwoom_*`→`_send_broker_*` rename 13개소, Dead Code 제거, 스텁 5개 연결 |
+| `collection/broker/kiwoom_broker.py` | P2: InvestorData에 api 주입 |
+| `strategy/position/position_tracker.py` | P2: 인코딩 깨짐 4개소 수정 |
+| `features/technical/cvd.py` | P3: 보합 틱 delta=0 (Long 바이어스 제거) |
+
+### 신규 생성 파일
+
+| 파일 | 내용 |
+|---|---|
+| `features/macro/macro_feature_transformer.py` | VIX·SP500 등 9개 정규화 피처 |
+| `learning/self_learning/daily_consolidator.py` | 시간대별 정확도 → confidence 패널티 |
+| `learning/self_learning/drift_adjuster.py` | SGD alpha 동적 조정 (드리프트 감지) |
+| `collection/options/pcr_store.py` | 외인 PCR 20분 롤링 저장소 |
+| `features/options/option_features.py` | PCR → 6개 ML 피처 |
+
+### 삭제된 파일
+
+| 파일 | 이유 |
+|---|---|
+| `strategy/entry/entry_manager.py` | Dead Code — main.py에서 한 번도 인스턴스화 안 됨. Kiwoom 전용 API 서명으로 Cybos 미호환. |
+
+### 현재 피처 파이프라인 (STEP 4 갱신 후)
+
+```
+investor_data.get_features()  → supply_feats
+pcr_store.update(supply_feats)
+macro_fetcher.get_features()  → macro_transformer.transform() → _macro_feats
+option_feat_calc.transform(pcr_store.get_features()) → _option_feats
+feature_builder.build(bar, supply_demand=supply_feats, macro_data=_macro_feats, option_data=_option_feats)
+```
+
+### 현재 일일 마감 (15:40) 파이프라인 갱신 후
+
+```
+daily_consolidator.consolidate()          ← 시간대별 패널티 계산
+drift_adjuster.record_accuracy(acc)       ← SGD alpha 갱신
+online_learner.set_alpha(new_alpha)       ← 즉시 반영
+pcr_store.reset_daily()                   ← 신규 추가
+```
 
 ---
 

@@ -56,6 +56,20 @@ class EntryChecklist:
             {pass_count, grade, checks, size_mult, auto_entry, entry_mode}
         """
         from collection.macro.micro_regime import REGIME_EXHAUSTION
+
+        # FLAT 신호는 방향 없음 → SHORT로 오분류되어 8/9 통과 후 A등급 AUTO진입이
+        # 발생하는 버그를 차단한다. 반드시 즉시 X등급 반환해야 한다.
+        if direction == DIRECTION_FLAT:
+            logger.debug("[Checklist] FLAT 방향 → 즉시 X등급 (진입 금지)")
+            return {
+                "pass_count": 0,
+                "grade":      "X",
+                "checks":     {"1_signal": False},
+                "size_mult":  0,
+                "auto_entry": False,
+                "entry_mode": "NO_ENTRY",
+            }
+
         is_long = direction == DIRECTION_UP
         is_exhaustion_regime = (micro_regime == REGIME_EXHAUSTION)
 
