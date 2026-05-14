@@ -25,6 +25,10 @@ logger = logging.getLogger("SIGNAL")
 class MultiHorizonModel:
     """6개 호라이즌 GBM 모델 묶음"""
 
+    # GBM predict_proba 극단 확률 상한 (conf=1.000 과신 방지)
+    # 학습 범위를 벗어난 피처 입력 시 GBM이 0/1 극단 확률을 반환하는 현상 완화
+    CONF_CLIP = 0.92
+
     GBM_PARAMS = {
         "n_estimators":     100,
         "max_depth":        4,
@@ -125,6 +129,24 @@ class MultiHorizonModel:
 
             direction  = max(proba_map, key=proba_map.get)
             confidence = max(up, down, flat)
+
+            # 극단 확률 클리핑: 학습 외 입력 시 GBM이 0/1 극단값을 반환하는 현상 완화
+            # 초과분을 나머지 두 클래스에 균등 분배해 합=1 유지
+            if confidence > self.CONF_CLIP:
+                excess = confidence - self.CONF_CLIP
+                if direction == DIRECTION_UP:
+                    up    = self.CONF_CLIP
+                    down += excess / 2.0
+                    flat += excess / 2.0
+                elif direction == DIRECTION_DOWN:
+                    down  = self.CONF_CLIP
+                    up   += excess / 2.0
+                    flat += excess / 2.0
+                else:
+                    flat  = self.CONF_CLIP
+                    up   += excess / 2.0
+                    down += excess / 2.0
+                confidence = self.CONF_CLIP
 
             results[horizon] = {
                 "up":         round(up, 4),

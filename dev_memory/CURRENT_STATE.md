@@ -1,7 +1,41 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-14 (28차) — **L2 영구중단 배지 UI + 진입관리 모드 필터 2순위 구현 완료**
+> 마지막 업데이트: 2026-05-14 (29차) — **CB HALT 사후 조사 + 버그 3종 수정 + 모델 신뢰도 개선 3종**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-14 (29차) — CB HALT 사후 조사 + 모델 신뢰도 개선
+
+### 수정된 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | B84: EXIT pending stuck Chejan 유실 대응 (`expected_remaining` 비교) |
+| `main.py` | B86: CB HALT 중 수동 청산 불가 수정 (pending 강제 소멸 분기) |
+| `main.py` | C10: `record_accuracy(confidence=_conf)` 전달 |
+| `main.py` | C11: `_warmup_retrain_pending` 플래그 + STEP 3 `force=True` 재학습 트리거 |
+| `safety/circuit_breaker.py` | B85: `_trigger_halt()` → `emergency_exit` 콜백 호출 추가 |
+| `safety/circuit_breaker.py` | C10: `_high_conf_wrong_streak` 카운터 + 동적 임계값 (0.35→0.50) |
+| `model/multi_horizon_model.py` | C09: `CONF_CLIP = 0.92` 극단 확률 클리핑 |
+| `config/settings.py` | C10 상수 3개: `CB_HIGH_CONF_WRONG_LIMIT`, `CB_HIGH_CONF_THRESHOLD`, `CB_ACCURACY_MIN_30M_STRICT` |
+
+### 현재 안전장치 상태
+
+| 항목 | 상태 |
+|---|---|
+| CB② 연속 손절 → emergency_exit | ✅ 정상 (이번 회차 B85 수정) |
+| CB③ 정확도 저하 → emergency_exit | ✅ 정상 (이번 회차 B85 수정) |
+| CB③ 과신 오류 동적 임계값 | ✅ 신규 구현 (C10) |
+| GBM 극단 확률 클리핑 (0.92) | ✅ 신규 구현 (C09) |
+| 세션 재시작 후 GBM 즉시 재학습 | ✅ 신규 구현 (C11) |
+| EXIT pending stuck 자동 복구 | ✅ 정상 (이번 회차 B84 수정) |
+
+### 주요 설계 변경
+
+- **CB HALT 발동 범위 확대**: CB⑤(API 지연)만 emergency_exit 호출하던 것을 CB②/③ 발동 시에도 즉시 청산 (B85)
+- **세션 재시작 보호**: 재시작 직후 구식 GBM으로 인한 방향 고착 방지. `_broker_sync_block_new_entries=True` 유지 중에 재학습 수행 → 완료 후 진입 허용 (C11)
+- **conf 상한선**: GBM이 학습 분포 외 입력에서 conf=1.000 반환하는 현상 → 0.92로 클리핑, 초과분 나머지 클래스 균등 분배 (C09)
 
 ---
 

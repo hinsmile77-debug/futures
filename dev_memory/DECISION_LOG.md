@@ -2,6 +2,43 @@
 
 ---
 
+## 2026-05-14 (29차 — CB HALT 사후 조사 + 모델 신뢰도 개선)
+
+### [B84] EXIT pending 오더가 체잔 이벤트 유실로 고착
+**File**: `main.py` — `_ts_resolve_stuck_exit_pending()`  
+**Symptom**: 11:08 발주한 3계약 분할 청산 오더 중 filled=3/4 고착. 15분 이상 PENDING 상태 유지.  
+**Root cause**: Cybos 브로커에서 마지막 1계약 체결 이벤트가 유실됨. 타임아웃 후 브로커 잔고 TR 조회 시 qty == expected_remaining (= 0)이 아닌 경우를 판별하지 못함. qty > 0 조건만 체크해 정상 잔량과 이벤트 유실 잔량을 구분하지 못함.  
+**Fix**: `prev_pos_qty = self.position.quantity` 저장 → `sync_from_broker()` 후 `expected_remaining = prev_pos_qty - pending.qty` 계산 → `qty == expected_remaining`이면 Chejan 유실로 판단, pending 소멸 처리.
+
+### [B85] CB HALT 발동 시 기존 포지션 미청산
+**File**: `safety/circuit_breaker.py` — `_trigger_halt()`  
+**Symptom**: CB③ 발동(11:22/11:36) 후 포지션이 열린 채 HALTED 상태 진입. emergency_exit이 호출되지 않음.  
+**Root cause**: `_trigger_halt()`가 CB⑤(`record_api_latency`)에서만 emergency_exit를 호출하고 CB②/③ 경로에서는 호출하지 않았음. 설계 의도(CB② 연속 손절 → 즉시 청산)와 불일치.  
+**Fix**: `_trigger_halt()` 말미에 `if self._emergency_exit: self._emergency_exit()` 추가. CB②/③ 공통 처리.
+
+### [B86] CB HALT 상태에서 수동 청산 버튼 무효
+**File**: `main.py` — `_on_manual_exit_requested()`  
+**Symptom**: B84의 stuck pending이 있는 상태에서 CB HALT 발동 → 수동 청산 버튼 클릭 무반응.  
+**Root cause**: `_has_pending_order()` 체크 시 HALT 여부와 무관하게 return. B85로 emergency_exit이 불려도 pending 상태가 잔존해 수동 청산도 차단됨.  
+**Fix**: CB HALT 상태일 때 `_has_pending_order()`가 True여도 pending 강제 소멸(`_clear_pending_order()`) 후 청산 진행.
+
+### [D63] CB②/③ 발동 시 emergency_exit 호출 의무화
+**Decision**: `_trigger_halt()`는 발동 사유에 무관하게 항상 `_emergency_exit` 콜백을 호출한다.  
+**Reason**: Circuit Breaker가 HALT 상태가 되면 당일 거래 불가. 이미 열린 포지션은 그 즉시 청산해야 손실이 확정되지 않는다. "HALT = 포지션 청산" 원칙은 설계 명세(A2)에서 명시하고 있으나 구현 누락.  
+**How to apply**: `_trigger_halt()` 수정 완료. 향후 새 HALT 조건 추가 시 동일 위치에서 자동 처리됨.
+
+### [D64] GBM 극단 확률(conf ≥ 0.92) 클리핑 기준 고정
+**Decision**: `MultiHorizonModel.CONF_CLIP = 0.92`. conf > 0.92 초과분은 나머지 두 클래스에 균등 분배해 합=1 보존.  
+**Reason**: GBM은 학습 분포 외 입력 시 predict_proba가 0 또는 1에 수렴한다. 오늘 10:32~10:42에 conf=1.000 LONG이 11회 연속 발생해 CB③ 트리거. 0.92는 "강한 신호" 상한이며 사실상 불가능한 확률을 차단.  
+**How to apply**: 클리핑은 모델 출력 단계에서만 적용. 학습 데이터/라벨에는 영향 없음. `CONF_CLIP` 값은 클래스 상수로 한 곳에서만 변경 가능.
+
+### [D65] 세션 재시작 후 첫 파이프라인에서 GBM 강제 재학습
+**Decision**: `connect_broker()` 완료 후 `_warmup_retrain_pending = True`를 세팅, 첫 분봉 파이프라인 STEP 3에서 `retrain_now(force=True)` 수행.  
+**Reason**: 오늘 10:31 재시작 후 GBM은 전날/이전 주 데이터로 학습된 상태였고, 시장 레짐 변화를 반영하지 못해 방향 오판 11연속. 재시작 시점의 최신 DB 데이터로 즉시 재학습하면 이 패턴을 방지.  
+**How to apply**: `_broker_sync_block_new_entries=True` 상태가 재학습 중 진입을 차단하므로 별도 잠금 불필요. 재학습 완료 후 `_load_all()`로 새 모델 즉시 반영.
+
+---
+
 ## 2026-05-14 (28차 — L2 배지 UI + 진입관리 모드 필터)
 
 ### [D59] L2 Tier Gate 영구중단 상태는 대시보드 배지(상단 CB 오른쪽)로 시각화

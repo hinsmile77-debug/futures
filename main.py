@@ -230,6 +230,7 @@ class TradingSystem:
         self._broker_sync_verified: bool = False
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
+        self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
         self._last_balance_result: dict = {}
         self._last_sizer_balance: float = 100_000_000.0
         self._effect_report_tick: int = 0
@@ -878,6 +879,8 @@ class TradingSystem:
             _BrokerOrderAdapter(self.broker, code, selected_account)
         )
         self._sync_position_from_broker()
+        self._warmup_retrain_pending = True
+        log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
         if self.position.status != "FLAT":
             self.dashboard.set_ui_position_mode()
         else:
@@ -1170,7 +1173,7 @@ class TradingSystem:
             if (v["horizon"] == "30m"
                     and _conf > 0.38
                     and _pred_ts >= self._session_start_ts):
-                self.circuit_breaker.record_accuracy(v["correct"])
+                self.circuit_breaker.record_accuracy(v["correct"], confidence=_conf)
             self.horizon_calibrator.record(v["horizon"], _conf, v["correct"])
             if v["correct"]:
                 log_manager.learning(f"✓ {v['horizon']} 예측 적중 (conf={_conf:.1%})")
@@ -1217,16 +1220,23 @@ class TradingSystem:
                 f"50분정확도={self.online_learner.recent_accuracy():.1%}"
             )
 
-        # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 확인) ────
-        if (self.batch_retrainer.should_retrain_weekly()
+        # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 또는 세션 재시작 즉시) ────
+        _warmup_forced = self._warmup_retrain_pending
+        if (_warmup_forced
+                or self.batch_retrainer.should_retrain_weekly()
                 or self.batch_retrainer.should_retrain_monthly()):
+            if _warmup_forced:
+                self._warmup_retrain_pending = False
+                log_manager.system(
+                    "[WarmupRetrain] 세션 재시작 후 첫 GBM 즉시 재학습 시작", "INFO"
+                )
             self.dashboard.set_model_status("GBM 재학습중...")
-            result = self.batch_retrainer.retrain_now()
+            result = self.batch_retrainer.retrain_now(force=_warmup_forced)
             if result.get("ok"):
                 self.model._load_all()   # 새 모델 즉시 반영
                 log_manager.learning(
-                    f"[GBM] 배치 재학습 완료 | {result['elapsed_sec']}초 "
-                    f"데이터={result['data_size']}행"
+                    f"[GBM] {'웜업 ' if _warmup_forced else ''}배치 재학습 완료 | "
+                    f"{result['elapsed_sec']}초 데이터={result['data_size']}행"
                 )
                 notify("GBM 배치 재학습 완료", "INFO")
                 self.dashboard.set_model_status(

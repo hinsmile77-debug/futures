@@ -20,6 +20,7 @@ from config.settings import (
     CB_SIGNAL_FLIP_LIMIT, CB_SIGNAL_FLIP_PAUSE,
     CB_CONSEC_STOP_LIMIT, CB_ACCURACY_MIN_30M,
     CB_ATR_MULT_LIMIT, CB_API_LATENCY_LIMIT, CB_API_LATENCY_PAUSE,
+    CB_HIGH_CONF_WRONG_LIMIT, CB_HIGH_CONF_THRESHOLD, CB_ACCURACY_MIN_30M_STRICT,
 )
 from config.constants import CB_STATE_NORMAL, CB_STATE_PAUSED, CB_STATE_HALTED
 from utils.notify import notify_circuit_breaker
@@ -58,6 +59,10 @@ class CircuitBreaker:
 
         # 트리거 ③ 연속 경고 카운터 — 2회 연속 미달 시 HALT
         self._cb3_warn_count: int = 0
+
+        # 과신(conf >= CB_HIGH_CONF_THRESHOLD) 오류 연속 카운터
+        # 연속 N회 이상이면 CB③ 임계값을 0.35 → 0.50으로 상향 (더 빨리 발동)
+        self._high_conf_wrong_streak: int = 0
 
     # ── 상태 조회 ──────────────────────────────────────────────
     @property
@@ -107,21 +112,47 @@ class CircuitBreaker:
         self._consec_stops = 0   # 수익 시 카운터 초기화
 
     # ── 트리거 ③ 정확도 저하 (30분 호라이즌 전용) ───────────────
-    def record_accuracy(self, correct: bool):
+    def record_accuracy(self, correct: bool, confidence: float = 1.0):
+        """
+        Args:
+            correct:    예측 적중 여부
+            confidence: 예측 신뢰도 (과신 오류 감지에 사용)
+        """
         self._accuracy_buf.append(1.0 if correct else 0.0)
+
+        # 과신 오류 연속 카운터 갱신
+        # conf >= 0.85 이면서 틀린 경우 → streak 증가, 그 외 → 리셋
+        if not correct and confidence >= CB_HIGH_CONF_THRESHOLD:
+            self._high_conf_wrong_streak += 1
+        else:
+            self._high_conf_wrong_streak = 0
+
         if len(self._accuracy_buf) >= 20:
             acc = sum(self._accuracy_buf) / len(self._accuracy_buf)
-            if acc < CB_ACCURACY_MIN_30M:
+
+            # 과신 오류가 N회 연속이면 임계값 강화 (더 빨리 HALT)
+            effective_min = (
+                CB_ACCURACY_MIN_30M_STRICT
+                if self._high_conf_wrong_streak >= CB_HIGH_CONF_WRONG_LIMIT
+                else CB_ACCURACY_MIN_30M
+            )
+
+            if acc < effective_min:
                 self._cb3_warn_count += 1
                 if self._cb3_warn_count >= 2:
+                    streak_note = (
+                        f" | 과신 오류 {self._high_conf_wrong_streak}연속"
+                        if self._high_conf_wrong_streak >= CB_HIGH_CONF_WRONG_LIMIT
+                        else ""
+                    )
                     self._trigger_halt(
-                        f"30분 정확도 {acc:.1%} < {CB_ACCURACY_MIN_30M:.0%} "
-                        f"(2회 연속 미달)"
+                        f"30분 정확도 {acc:.1%} < {effective_min:.0%} "
+                        f"(2회 연속 미달{streak_note})"
                     )
                 else:
                     msg = (
                         f"[CB③ 경고 {self._cb3_warn_count}/2] "
-                        f"30분 정확도 {acc:.1%} < {CB_ACCURACY_MIN_30M:.0%} "
+                        f"30분 정확도 {acc:.1%} < {effective_min:.0%} "
                         f"— 다음 확인 시 당일 정지"
                     )
                     logger.warning(msg)
@@ -196,16 +227,18 @@ class CircuitBreaker:
         self._accuracy_buf.clear()
         self._atr_buf.clear()
         self._cb3_warn_count = 0
+        self._high_conf_wrong_streak = 0
         logger.info("[CB] 일간 리셋 완료")
         log_manager.system("[CB] 일간 리셋 완료", "INFO")
 
     def status_dict(self) -> dict:
         return {
-            "state":          self.state,
-            "pause_until":    self._pause_until.strftime("%H:%M:%S") if self._pause_until else None,
-            "consec_stops":   self._consec_stops,
-            "last_latency":   self._last_latency,
-            "accuracy_30m":   round(sum(self._accuracy_buf) / max(len(self._accuracy_buf), 1), 3),
-            "cb3_warn_count": self._cb3_warn_count,
-            "cb3_samples":    len(self._accuracy_buf),
+            "state":                   self.state,
+            "pause_until":             self._pause_until.strftime("%H:%M:%S") if self._pause_until else None,
+            "consec_stops":            self._consec_stops,
+            "last_latency":            self._last_latency,
+            "accuracy_30m":            round(sum(self._accuracy_buf) / max(len(self._accuracy_buf), 1), 3),
+            "cb3_warn_count":          self._cb3_warn_count,
+            "cb3_samples":             len(self._accuracy_buf),
+            "high_conf_wrong_streak":  self._high_conf_wrong_streak,
         }

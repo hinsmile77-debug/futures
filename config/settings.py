@@ -132,6 +132,10 @@ CB_ACCURACY_MIN_30M    = 0.35  # 30분 이동평균 최소 정확도
 CB_ATR_MULT_LIMIT      = 3.0   # 변동성 ATR 배수 한계
 CB_API_LATENCY_LIMIT   = 5.0   # API 지연 한계 (초)
 CB_API_LATENCY_PAUSE   = 300   # 지연 후 정지 (초)
+# 과신(conf>=0.85) 오류 N회 연속 시 CB③ 임계값을 0.35→0.50으로 상향
+CB_HIGH_CONF_WRONG_LIMIT   = 5    # 연속 과신 오류 횟수
+CB_HIGH_CONF_THRESHOLD     = 0.85 # 과신 판정 confidence 하한
+CB_ACCURACY_MIN_30M_STRICT = 0.50 # 과신 연속 시 강화된 임계값
 
 # ── Hurst Exponent ─────────────────────────────────────────────
 HURST_TREND_THRESHOLD  = 0.55  # 이상: 추세장

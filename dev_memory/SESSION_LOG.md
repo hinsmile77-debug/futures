@@ -4,6 +4,50 @@
 
 ---
 
+## 2026-05-14 (29차 — CB HALT 사후 조사 + 모델 신뢰도 3종 개선)
+
+**Work**
+
+오늘(2026-05-14) 11:22~11:36 발생한 CB HALT 사건을 사후 조사하고, 버그 3종 즉시 수정 + 재발 방지 개선 3종 구현.
+
+### 사건 개요
+
+- 11:22 CB③(30분 정확도 부족) 발동으로 `CB_STATE_HALTED`
+- 이후 미청산 포지션 잔존, 수동 청산 버튼 무효 현상 발생
+- 10:32~10:42 GBM이 conf=1.000 LONG 신호 11회 연속 오판(실제: DOWN) → CB③ 트리거
+
+### 버그 수정 (B84~B86)
+
+| 버그 | 파일 | 원인 | 수정 |
+|---|---|---|---|
+| **B84** EXIT pending stuck (Chejan 이벤트 유실) | `main.py` | 체결 체잔이 유실되면 filled=3/4 고착, `_ts_resolve_stuck_exit_pending`이 `expected_remaining` 비교 없이 qty≠0 로 오판 | `prev_pos_qty` 저장 → `expected_remaining = prev_pos_qty - pending.qty` 비교 추가 |
+| **B85** CB HALT 후 포지션 미청산 | `safety/circuit_breaker.py` | `_trigger_halt()`가 CB②/③ 발동 시 `_emergency_exit` 콜백을 호출하지 않음 | `_trigger_halt()` 말미에 `if self._emergency_exit: self._emergency_exit()` 추가 |
+| **B86** CB HALT 중 수동 청산 불가 | `main.py` | `_on_manual_exit_requested`에서 pending 주문 존재 시 CB HALT 여부 불문하고 return | CB HALT 상태면 pending 강제 소멸 후 청산 진행하도록 분기 추가 |
+
+### 모델 신뢰도 개선 (C09~C11)
+
+| 개선 | 파일 | 내용 |
+|---|---|---|
+| **C09** GBM 과신 클리핑 | `model/multi_horizon_model.py` | `CONF_CLIP = 0.92`. conf > 0.92 초과분을 나머지 두 클래스에 균등 분배. 합=1 보존. |
+| **C10** CB③ 동적 임계값 | `safety/circuit_breaker.py` + `main.py` | conf ≥ 0.85 오류 5회 연속 → 정확도 임계값 0.35 → 0.50 자동 상향. `record_accuracy(confidence=)` 전달 |
+| **C11** 세션 재시작 GBM 즉시 재학습 | `main.py` | `_warmup_retrain_pending` 플래그: `connect_broker()` 후 set → 첫 파이프라인 STEP 3에서 `retrain_now(force=True)` 호출 |
+
+### CB③ 발동 정당성 검증
+
+- DB 쿼리로 당일 30분 호라이즌 예측 전수 확인
+- `_session_start_ts = 10:31:10` (복원 완료 시각) 이후 샘플 20건 기준 정확도:
+  - 11:22 확인 기준 → acc ≈ 5% (경고 1/2), 11:36 확인 → acc ≈ 9.5% (경고 2/2 → HALT)
+- **결론: 오발동 아님. 10:32~10:42 모델 갱신 없는 재시작 직후 구식 GBM이 연속 과신 오판한 것이 정당한 트리거.**
+
+### 수정 파일 목록
+
+- `main.py` — B84·B86·C10·C11 (4건)
+- `safety/circuit_breaker.py` — B85·C10 (2건)
+- `model/multi_horizon_model.py` — C09 (1건)
+- `config/settings.py` — C10 상수 3개 추가
+
+---
+
 ## 2026-05-14 (28차 — L2 영구중단 배지 UI + 진입관리 모드 필터 2순위 구현)
 
 **Work**

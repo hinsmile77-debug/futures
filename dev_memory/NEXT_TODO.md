@@ -8,6 +8,32 @@
 
 ---
 
+## 2026-05-14 (29차) — CB HALT 사후 조사 + 모델 신뢰도 개선
+
+### 한일 요약
+
+- [DONE 2026-05-14] **B84: EXIT pending stuck 체잔 이벤트 유실 대응** — `_ts_resolve_stuck_exit_pending`에 `expected_remaining` 비교 추가. Chejan 유실로 filled=3/4 고착 시 자동 소멸.
+- [DONE 2026-05-14] **B85: CB HALT 후 포지션 미청산 수정** — `circuit_breaker._trigger_halt()`에 `emergency_exit` 콜백 호출 추가. CB②/③도 즉시 청산.
+- [DONE 2026-05-14] **B86: CB HALT 중 수동 청산 불가 수정** — pending 체크 시 CB HALT면 강제 소멸 후 청산 진행 분기 추가.
+- [DONE 2026-05-14] **C09: GBM conf 극단값 클리핑** — `CONF_CLIP = 0.92`. 초과분 나머지 두 클래스 균등 분배. conf=1.000 과신 방지.
+- [DONE 2026-05-14] **C10: CB③ 동적 임계값** — conf ≥ 0.85 오류 5연속 시 임계값 0.35→0.50 자동 상향. `record_accuracy(confidence=)` 전달 경로 연결.
+- [DONE 2026-05-14] **C11: 세션 재시작 GBM 즉시 재학습** — `_warmup_retrain_pending` 플래그. `connect_broker()` 후 set → STEP 3에서 `force=True` 재학습. 재학습 완료까지 진입 차단 유지.
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-15] **CB HALT 시나리오 장중 검증**
+  - CB③ 발동 조건(30분 정확도 < 35% 2회 연속) 시뮬레이션
+  - emergency_exit 콜백 → 포지션 즉시 청산 확인
+  - CB HALT 중 수동 청산 버튼 동작 확인
+
+- [NEXT 2026-05-15] **세션 재시작 후 GBM 재학습 로그 확인**
+  - 재시작 후 첫 분봉 STEP 3에서 `[WarmupRetrain]` 로그 확인
+  - 재학습 완료 후 `_broker_sync_block_new_entries=False` 전환 시점과 `_warmup_retrain_pending=False` 시점 확인
+
+- [NEXT 2026-05-15] **profit_guard_prefs.json 중복 임계값 정리** — [500000] 2개 중복 제거. 의도 재확인.
+
+---
+
 ## 2026-05-14 (28차) — L2 배지 + 모드 필터
 
 ### 한일 요약
