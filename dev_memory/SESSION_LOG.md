@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-05-15 (36차 — Cybos 자동 로그인 모의투자 선택 창 탐지 버그 수정)
+
+**Work**: `scripts/cybos_autologin.py`의 모의투자 선택 창 탐지 실패(`candidates=[]`) 버그를 수정했다. "모의투자 선택" 다이얼로그가 Cybos 메인 프레임의 자식 창으로 생성되는 경우 `EnumWindows`/`FindWindow` 모두 탐지하지 못하는 근본 원인을 해결했다. 공지사항 팝업 처리 함수도 신설했다.
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| `_find_mock_dialog_hwnd()` 신설 | `scripts/cybos_autologin.py` | 1차 FindWindow → 2차 EnumWindows → 3차 #32770 클래스 → 4차 `EnumChildWindows` 전수 탐색(버튼 발견 후 `GetParent`로 다이얼로그 복원) |
+| min_wait 중 즉시 탐지 | `scripts/cybos_autologin.py` | 20초 맹목적 대기 → 매초 탐지, 감지 즉시 클릭으로 개선 |
+| `_click_mock_access_in_window()` 신설 | `scripts/cybos_autologin.py` | 버튼 탐지/클릭 로직 분리. 정확 텍스트 → 부분 텍스트 → 가장 아래 버튼 → Enter 순서 fallback |
+| `_close_dialog_window()` 신설 | `scripts/cybos_autologin.py` | 닫기/확인 BM_CLICK, 없으면 WM_CLOSE |
+| `_dismiss_notice_popups(timeout=10)` 신설 | `scripts/cybos_autologin.py` | 모의투자 접속 직후 공지사항 팝업 탐지 + 닫기 (FindWindow + EnumWindows 이중화) |
+| 4차 탐색 조건 정밀화 | `scripts/cybos_autologin.py` | ACCESS_KW 단순 OR → "모의투자" AND "접속" 동시 조건으로 오탐 방지. top-level 창이 아닌 버튼 직접 부모(다이얼로그)를 반환하도록 수정 |
+| 로그인 흐름 문서화 | `docs/CYBOS_AUTOLOGIN_FLOW.md` | 전체 흐름 다이어그램 + 단계별 상세 + 설정 상수 + 오류 대응 표 작성 |
+
+### 버그 핵심 원인
+
+`EnumWindows`는 데스크톱 직계 자식(top-level)만 열거한다. Cybos Plus가 "모의투자 선택" 다이얼로그를 메인 프레임의 자식 창(`CreateWindowEx(parent=frame_hwnd)`)으로 생성하면 `EnumWindows`와 `FindWindow` 모두 탐지에 실패한다. 4차 탐색(전체 창의 `EnumChildWindows` + 버튼 텍스트 검색 + `GetParent`)이 이 케이스를 커버한다.
+
+### 세션 마감 메모
+
+- 코드 수정 완료, 실제 실행으로 4차 탐색 진입 여부 확인 필요
+- 공지사항 팝업 제목이 "공지사항" 외 다른 패턴이면 `NOTICE_KEYWORDS` 상수 확장 필요
+
+---
+
 ## 2026-05-15 (35차 — 운영 헬스 고도화 + 사전점검 + 감사문서 반영)
 
 **Work**: Day10-2/Day11 후속 요구사항(Degraded auto/manual 정책 분리, 헬스 3라인 스파크라인, 설정 핫리로드)을 구현했고, 검증 하네스 실행 및 장시작 전 사전점검 결과를 감사문서 ##10에 반영했다.

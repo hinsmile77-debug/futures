@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-05-15 (36차 — Cybos 자동 로그인 버그 수정)
+
+### [B94] 모의투자 선택 창이 EnumWindows/FindWindow 모두에서 탐지 실패
+**File**: `scripts/cybos_autologin.py`  
+**Symptom**: 로그에 `모의투자 선택 창 대기... N/45초 candidates=[]`가 반복되며 창이 화면에 보임에도 불구하고 탐지하지 못하고 타임아웃.  
+**Root cause**: `EnumWindows`는 데스크톱의 직계 자식(top-level)만 열거한다. Cybos Plus가 "모의투자 선택" 다이얼로그를 메인 프레임 hwnd를 부모로 지정해 생성하면, 해당 창은 `EnumWindows`에도 `FindWindow(None, title)`에도 나타나지 않는다.  
+**Fix**: `_find_mock_dialog_hwnd()` 4차 탐색 신설. 모든 top-level 창에 대해 `EnumChildWindows` 재귀 적용 → "모의투자 접속" 버튼 텍스트 탐색 → `GetParent(button)` = 다이얼로그 창 복원.  
+**Note**: 4차 탐색 진입 여부는 다음 로그인 실행 시 `[INFO] 4차 탐지:` 로그로 확인 가능.
+
+### [D80] 모의투자 선택 창 탐지는 4단계 폴백 체인으로 다중화한다
+**Decision**: `FindWindow` → `EnumWindows` 키워드 → `#32770` 클래스 → `EnumChildWindows` 전수 탐색 순으로 시도한다.  
+**Why**: Cybos 버전/설치 환경에 따라 다이얼로그 생성 방식이 다르다. top-level로 생성되면 1~3차에서 잡히고, 자식 창으로 생성되면 4차에서 잡힌다. 단일 방법에 의존하면 환경이 바뀔 때 전체 자동 로그인이 실패한다.  
+**How to apply**: 탐지 단계를 로그로 남긴다. 실운영에서 어떤 단계에서 탐지되는지 파악해 불필요한 상위 단계가 있으면 제거 가능.
+
+### [D81] min_wait 구간도 매초 다이얼로그를 탐지한다
+**Decision**: `MOCK_POPUP_MIN_WAIT=20` 구간을 무조건 대기하지 않고, 1초마다 `_find_mock_dialog_hwnd()`를 호출해 감지 즉시 클릭한다.  
+**Why**: 다이얼로그가 5초 만에 나타나도 기존 코드는 20초를 전부 기다렸다. 감지 즉시 클릭하면 로그인 소요 시간이 평균 10~15초 단축된다. min_wait 완료 후에도 창이 없으면 기존대로 Enter를 전송한다(기본 선택 강제, 안전망 유지).
+
+---
+
 ## 2026-05-15 (35차 — 운영 헬스 정책 고도화)
 
 ### [D77] Degraded 진입 차단은 auto/manual을 분리 제어한다

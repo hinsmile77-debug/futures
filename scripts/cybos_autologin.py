@@ -216,7 +216,7 @@ def _find_password_edit(parent_hwnd):
                         if win32gui.IsWindowVisible(c)]
         for c in custom_edits:
             try:
-                cn = win32gui.GetClassName(c)
+                cn = win32gui.GetClassName(c) or ""
                 if any(kw in cn.upper() for kw in ("EDIT", "RICHEDIT", "TEXTBOX")):
                     edits.append(c)
             except Exception:
@@ -760,70 +760,234 @@ def _handle_password_confirm_dialog(timeout=10):
 
 # -- 모의투자 선택 창 -----------------------------------------------------------
 
+def _find_mock_dialog_hwnd():
+    """모의투자 선택 창을 여러 방법으로 탐지해 (hwnd, title) 반환.
+
+    탐지 우선순위:
+      1. FindWindow — 정확한 제목, 최상위 창 직접 탐색
+      2. EnumWindows — 키워드 매칭
+      3. #32770 다이얼로그 클래스 키워드 매칭
+      4. 모든 창의 자식 Button에서 '모의투자 접속' 텍스트 탐색 (자식 창일 때 보완)
+    """
+    # 1차: 정확한 제목 FindWindow
+    for exact_title in [u"모의투자 선택", u"모의투자선택"]:
+        hwnd = win32gui.FindWindow(None, exact_title)
+        if hwnd and win32gui.IsWindowVisible(hwnd):
+            return hwnd, exact_title
+
+    # 2차: EnumWindows + 키워드 매칭
+    candidates = _find_window_by_keywords(MOCK_DIALOG_KEYWORDS, require_visible=True)
+    if candidates:
+        return candidates[0]
+
+    # 3차: #32770(표준 다이얼로그) 클래스 + 키워드 매칭
+    normalized_kws = [_normalize_title(kw) for kw in MOCK_DIALOG_KEYWORDS]
+    found_hwnd = [0]
+    found_title = [u""]
+
+    def _enum_dlg(hwnd, _):
+        if found_hwnd[0]:
+            return
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            if win32gui.GetClassName(hwnd) != "#32770":
+                return
+            title = win32gui.GetWindowText(hwnd).strip()
+            if title and any(kw in _normalize_title(title) for kw in normalized_kws):
+                found_hwnd[0] = hwnd
+                found_title[0] = title
+        except Exception:
+            pass
+
+    try:
+        win32gui.EnumWindows(_enum_dlg, None)
+    except Exception:
+        pass
+
+    if found_hwnd[0]:
+        return found_hwnd[0], found_title[0]
+
+    # 4차: 모든 최상위 창의 자식 전수 탐색 (EnumChildWindows 재귀)
+    # Cybos가 다이얼로그를 자식 창으로 생성할 때를 대비.
+    # '모의투자 접속' 버튼을 발견하면 그 직접 부모(다이얼로그)를 반환.
+    btn_found = [0]
+
+    def _find_access_btn(child, _):
+        if btn_found[0]:
+            return
+        try:
+            child_text = win32gui.GetWindowText(child).strip()
+            # 정확한 텍스트 세트에 포함되거나, '모의투자'+'접속' 둘 다 포함된 버튼
+            if child_text in MOCK_ACCESS_BUTTON_TEXTS or (
+                u"모의투자" in child_text and u"접속" in child_text and
+                win32gui.GetClassName(child) in ("Button", "AfxWnd42", "AfxWnd42u")
+            ):
+                btn_found[0] = child
+        except Exception:
+            pass
+
+    def _scan_top_level(tlwnd, _):
+        if btn_found[0]:
+            return
+        try:
+            if not win32gui.IsWindowVisible(tlwnd):
+                return
+            win32gui.EnumChildWindows(tlwnd, _find_access_btn, None)
+        except Exception:
+            pass
+
+    try:
+        win32gui.EnumWindows(_scan_top_level, None)
+    except Exception:
+        pass
+
+    if btn_found[0]:
+        # 버튼의 직접 부모 = 다이얼로그 창
+        dlg = ctypes.windll.user32.GetParent(btn_found[0])
+        if dlg and win32gui.IsWindowVisible(dlg):
+            dlg_title = win32gui.GetWindowText(dlg).strip()
+            print("[INFO] 4차 탐지: 자식 창에서 '모의투자 접속' 버튼 발견 "
+                  "dlg=%d title='%s'" % (dlg, dlg_title))
+            return dlg, dlg_title or u"모의투자 선택"
+
+    return None, None
+
+
+def _close_dialog_window(hwnd):
+    """다이얼로그 창을 닫기 버튼(BM_CLICK) 또는 WM_CLOSE로 닫는다."""
+    CLOSE_TEXTS = {u"닫기", u"확인", u"OK", u"예", u"Yes", u"Close", u"close"}
+    close_btns = _find_child_by_exact_text(hwnd, CLOSE_TEXTS, class_name="Button")
+    if close_btns:
+        btn_hwnd, btn_text = close_btns[0]
+        print("[INFO] 닫기 버튼: '%s' hwnd=%d → BM_CLICK" % (btn_text, btn_hwnd))
+        _post_button_click(btn_hwnd)
+    else:
+        win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+        print("[INFO] WM_CLOSE → hwnd=%d '%s'" % (hwnd, win32gui.GetWindowText(hwnd)))
+    time.sleep(0.5)
+
+
+def _click_mock_access_in_window(hwnd, title):
+    """주어진 hwnd에서 '모의투자 접속' 버튼을 클릭. 성공 시 True 반환."""
+    _activate_and_wait_for_window(hwnd, title)
+    _dump_children(hwnd, u"모의투자 선택 '%s'" % title)
+
+    # 1차: 정확한 텍스트의 Button 컨트롤
+    found_btns = _find_child_by_exact_text(hwnd, MOCK_ACCESS_BUTTON_TEXTS, class_name="Button")
+    if not found_btns:
+        # 2차: 부분 텍스트 매치
+        found_btns = _find_child_by_text_contains(hwnd, [u"접속", u"모의"])
+    if not found_btns:
+        # 3차: 모든 Button 중 가장 아래쪽 버튼
+        all_btns = _find_child_by_class(hwnd, "Button")
+        if all_btns:
+            btn = max(all_btns,
+                      key=lambda b: (_get_window_rect_safe(b) or (0, 9999, 0, 0))[1])
+            found_btns = [(btn, win32gui.GetWindowText(btn))]
+
+    if found_btns:
+        btn_hwnd, btn_text = found_btns[0]
+        print("[INFO] '모의투자 접속' 버튼: '%s' hwnd=%d → BM_CLICK" % (btn_text, btn_hwnd))
+        _post_button_click(btn_hwnd)
+        time.sleep(0.5)
+        return True
+
+    # 버튼 미발견 → 포그라운드로 올리고 Enter 전송
+    print("[INFO] 접속 버튼 컨트롤 미발견 → 포그라운드 + Enter 시도")
+    _dump_children(hwnd, u"모의투자 창 (버튼 못찾음)")
+    _force_foreground(hwnd)
+    time.sleep(0.3)
+    send_keys("{ENTER}")
+    time.sleep(0.5)
+    return True
+
+
+def _dismiss_notice_popups(timeout=10):
+    """모의투자 접속 후 뜨는 공지사항 팝업을 닫는다.
+
+    '공지사항', '알림', 'Cybos공지' 등 키워드로 창을 탐지하고
+    닫기/확인 버튼 클릭 또는 WM_CLOSE로 처리한다.
+    """
+    NOTICE_KEYWORDS = [u"공지사항", u"오늘의공지", u"Cybos공지", u"공지"]
+    # 메인 창 제목 패턴 — 공지 팝업과 혼동 방지
+    MAIN_WIN_SKIP = {u"CYBOS Starter", u"CYBOS Plus", u"CybosPlus",
+                     u"대신증권", u"Daishin"}
+
+    print("[INFO] 공지사항 팝업 확인 중 (최대 %d초)..." % timeout)
+    for tick in range(timeout):
+        dismissed = 0
+
+        # FindWindow 직접 탐색
+        for kw in NOTICE_KEYWORDS:
+            hwnd = win32gui.FindWindow(None, kw)
+            if hwnd and win32gui.IsWindowVisible(hwnd):
+                print("[INFO] 공지사항 팝업 발견 '%s' hwnd=%d → 닫기" % (kw, hwnd))
+                _close_dialog_window(hwnd)
+                dismissed += 1
+
+        # EnumWindows 키워드 탐색
+        candidates = _find_window_by_keywords(NOTICE_KEYWORDS, require_visible=True)
+        for hwnd, title in candidates:
+            if any(skip in title for skip in MAIN_WIN_SKIP):
+                continue
+            print("[INFO] 공지사항 팝업 감지: '%s' hwnd=%d → 닫기" % (title, hwnd))
+            _close_dialog_window(hwnd)
+            dismissed += 1
+
+        if dismissed:
+            print("[INFO] 공지사항 팝업 %d건 닫음" % dismissed)
+            return dismissed
+
+        time.sleep(1)
+
+    print("[INFO] 공지사항 팝업 없음 — 계속 진행")
+    return 0
+
+
 def _handle_mock_select_dialog(timeout=45, min_wait=0):
     """모의투자 선택 창을 찾아 '모의투자 접속' 버튼을 BM_CLICK"""
     print("[INFO] 모의투자 선택 창 대기 중...")
 
+    # min_wait 구간: 매초 다이얼로그를 탐지해 나타나는 즉시 클릭
     if min_wait > 0:
         print("[INFO] 모의투자 선택 팝업 대기 보장... %d초" % min_wait)
         for waited in range(min_wait):
             if _is_connected():
                 print("[INFO] 이미 연결되어 있어 모의투자 선택 창 처리를 생략합니다.")
                 return True
+
+            hwnd, title = _find_mock_dialog_hwnd()
+            if hwnd:
+                print("[INFO] min_wait 중 모의투자 선택 창 감지: '%s' hwnd=%d (%d초 경과)"
+                      % (title, hwnd, waited))
+                _click_mock_access_in_window(hwnd, title)
+                return True
+
             time.sleep(1)
             if (waited + 1) % 5 == 0:
                 print("[INFO] 모의투자 팝업 최소 대기... %d/%d초" % (waited + 1, min_wait))
-        # min_wait 후 Enter → 팝업이 안 보일 경우 기본 선택 강제
+
+        # min_wait 경과 후에도 창이 없으면 Enter로 기본 선택 강제
         send_keys("{ENTER}")
         print("[INFO] 모의투자 팝업 최소 대기 후 Enter 입력")
         time.sleep(3)
         print("[INFO] 3초 대기 완료 — 연결 대기 확인 진행")
 
+    # 이후 폴링 루프
     for tick in range(timeout):
         if _is_connected():
             print("[INFO] 이미 연결되어 있어 모의투자 선택 창 처리를 생략합니다.")
             return True
 
-        candidates = _find_window_by_keywords(MOCK_DIALOG_KEYWORDS, require_visible=True)
-        for hwnd, title in candidates:
-            if not win32gui.IsWindowVisible(hwnd):
-                continue
-
+        hwnd, title = _find_mock_dialog_hwnd()
+        if hwnd:
             print("[INFO] 모의투자 선택 창 발견: '%s' hwnd=%d" % (title, hwnd))
-            _activate_and_wait_for_window(hwnd, title)
-            _dump_children(hwnd, "모의투자 선택 '%s'" % title)
-
-            # 1차: 정확한 텍스트의 Button 컨트롤
-            found_btns = _find_child_by_exact_text(hwnd, MOCK_ACCESS_BUTTON_TEXTS, class_name="Button")
-            if not found_btns:
-                # 2차: 부분 텍스트 매치
-                found_btns = _find_child_by_text_contains(hwnd, [u"접속", u"모의"])
-            if not found_btns:
-                # 3차: 모든 Button 중 마지막(가장 아래/오른쪽) 버튼
-                all_btns = _find_child_by_class(hwnd, "Button")
-                if all_btns:
-                    # 가장 아래쪽 버튼
-                    btn = max(all_btns,
-                              key=lambda b: (_get_window_rect_safe(b) or (0, 9999, 0, 0))[1],
-                              )
-                    found_btns = [(btn, win32gui.GetWindowText(btn))]
-
-            if found_btns:
-                btn_hwnd, btn_text = found_btns[0]
-                print("[INFO] '모의투자 접속' 버튼: '%s' hwnd=%d → BM_CLICK"
-                      % (btn_text, btn_hwnd))
-                _post_button_click(btn_hwnd)
-                return True
-            else:
-                # 정말 못 찾으면 Enter로 기본 동작 시도
-                print("[INFO] 접속 버튼 컨트롤 미발견 → Enter 시도")
-                _dump_children(hwnd, "모의투자 창 (버튼 못찾음)")
-                send_keys("{ENTER}")
-                return True
+            _click_mock_access_in_window(hwnd, title)
+            return True
 
         if tick % 5 == 4:
-            titles = [title for _, title in candidates[:6]]
-            print("[INFO] 모의투자 선택 창 대기... %d/%d초 candidates=%s" % (tick + 1, timeout, titles))
+            print("[INFO] 모의투자 선택 창 대기... %d/%d초" % (tick + 1, timeout))
         time.sleep(1)
 
     print("[WARN] 모의투자 선택 창이 나타나지 않음 -- 건너뜀")
@@ -888,6 +1052,8 @@ def autologin():
     # STEP 4: 모의투자 선택 창
     if MOCK_MODE:
         _handle_mock_select_dialog(timeout=45, min_wait=MOCK_POPUP_MIN_WAIT)
+        # 모의투자 접속 후 공지사항 팝업 처리
+        _dismiss_notice_popups(timeout=10)
 
     # STEP 5: 연결 완료 대기
     print("[INFO] 연결 대기 중 (최대 %d초)..." % CONNECT_TIMEOUT)
