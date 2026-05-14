@@ -498,6 +498,69 @@ Reward: 다음 1분 PnL - 거래 비용 - 리스크 페널티
 - [ ] 강화학습 정책 정적 규칙 대비 Sharpe +0.4 이상 (실거래 데이터 검증 필요)
 - [ ] 뉴스 감성 분석 알파 검증 (실거래 데이터 검증 필요)
 
+---
+
+## Phase 5 진입 후 — 앙상블 고도화 (M2 챌린저 로드맵)
+
+> 실전 운영 진입 후 실데이터가 충분히 쌓이면 아래 두 단계를 순서대로 진행한다.
+> 현재 배포된 `HorizonDecorrelator` (상관관계 역수 적응형 가중치)가 1단계 완화책이다.
+
+### 1단계 — 실데이터 4주 축적 후: 잔차 타겟 A/B 테스트
+
+```
+조건: Phase 5 진입 후 실데이터 4주(~5,000 분봉) 이상 축적
+목적: 계층적 잔차 타겟이 현행 직접 타겟보다 실제로 유리한지 검증
+
+방법:
+  A 모델 (현행): 6개 GBM — 각 호라이즌 방향 라벨 직접 예측
+  B 모델 (챌린저): 6개 GBM — 잔차 타겟 학습
+    r_1m_residual = r_1m  (기준, 변경 없음)
+    r_3m_residual = r_3m - GBM_1m 예측 설명분
+    r_5m_residual = r_5m - (1m+3m 예측 설명분)
+    ...
+
+판정 기준:
+  2주 Shadow 평가: B 모델 Sharpe > A 모델 Sharpe × 1.10
+  ShadowEvaluator.is_hotswap_ready() 통과 시 Hot-Swap 승인
+
+파일 변경 범위:
+  - model/target_builder.py    — 잔차 타겟 생성 함수 추가
+  - learning/batch_retrainer.py — 잔차 타겟 학습 분기 추가
+  - model/multi_horizon_model.py — 변경 없음 (타겟만 달라짐)
+```
+
+- [ ] 실데이터 4주 축적 확인 (`raw_data.db raw_candles ≥ 5,000행`)
+- [ ] `model/target_builder.py` 잔차 타겟 생성 함수 구현
+- [ ] `learning/batch_retrainer.py` 잔차 타겟 학습 분기 추가
+- [ ] 2주 Shadow 평가 통과 확인
+- [ ] Hot-Swap 승인 후 챌린저 → 챔피언 전환
+
+### 2단계 — Phase 5 안정화 후: 계층적 앙상블 (M2 원안)
+
+```
+조건: 1단계 잔차 타겟 Hot-Swap 완료 + 실전 운영 2개월 이상
+목적: 6개 호라이즌 앙상블을 계층적 직교 신호 구조로 전환 (이중 가중 근본 해소)
+
+설계:
+  Level 0: GBM_1m(raw) — 순수 단기 신호
+  Level 1: GBM_3m(residual) — 1m 정보 제거 후 순수 3m 추가 정보
+  Level 2: GBM_5m(residual) — (1m+3m) 정보 제거 후 순수 5m 추가 정보
+  ...
+  앙상블: orthogonal 신호의 독립적 합산 → double-counting 원천 차단
+
+이론 기대 효과: Sharpe +0.15~0.25 (HorizonDecorrelator 대비 추가 +0.10~0.15)
+
+선행 조건:
+  - 1단계 완료 (잔차 타겟이 유효함을 실증)
+  - Walk-Forward 재검증 (26주 이상)
+```
+
+- [ ] 1단계 완료 확인
+- [ ] `model/ensemble_decision.py` 계층적 합산 로직 설계
+- [ ] Walk-Forward 26주 재검증 통과
+- [ ] 챌린저 ShadowEvaluator 2주 평가 통과
+- [ ] Hot-Swap 승인 후 배포
+
 ## Phase 6 — 알파 리서치 봇 (자율 진화) ⭐ NEW
 
 > 시스템이 스스로 새 알파를 발견하는 자가 진화 모듈
@@ -572,6 +635,7 @@ Reward: 다음 1분 PnL - 거래 비용 - 리스크 페널티
 | 2026-04 | v0.4 | 5층 모니터링 로그 시스템 추가 (Phase 1 통합) |
 | 2026-04 | v0.5 | 미륵이 보완 검토 v6.5 통합 (시간대·분할진입·멀티타임프레임·미시레짐) |
 | 2026-04 | v0.6 | Gemini 제안 v7.0 통합 (Latency·Hurst·적응형켈리·VPIN·마디가·Cancel Ratio) |
+| 2026-05 | v0.7 | 2차 감사 P2 수정 4종 + M2 상관관계 역수 가중치(HorizonDecorrelator) + Phase 5 챌린저 로드맵 추가 |
 
 ---
 

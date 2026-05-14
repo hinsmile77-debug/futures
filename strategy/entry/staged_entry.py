@@ -18,6 +18,7 @@ import logging
 from typing import Optional, Dict
 
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, POSITION_LONG, POSITION_SHORT
+from utils.time_utils import now_kst
 
 logger = logging.getLogger("TRADE")
 
@@ -101,7 +102,7 @@ class StagedEntryManager:
             self.stage1_qty   = self.base_qty
             self.stage2_qty   = 0
             self.stage1_price = price
-            self.stage1_time  = datetime.datetime.now()
+            self.stage1_time  = now_kst()
             self.state        = STATE_FULL
             instr = {
                 "action":        "ENTER_FULL",
@@ -116,7 +117,7 @@ class StagedEntryManager:
             self.stage1_qty   = max(1, self.base_qty // 2)
             self.stage2_qty   = self.base_qty - self.stage1_qty
             self.stage1_price = price
-            self.stage1_time  = datetime.datetime.now()
+            self.stage1_time  = now_kst()
             self.state        = STATE_STAGE1
             instr = {
                 "action":        "ENTER_STAGE1",
@@ -131,7 +132,7 @@ class StagedEntryManager:
             self.stage1_qty   = max(1, self.base_qty // 2)
             self.stage2_qty   = 0   # C급은 2차 없음
             self.stage1_price = price
-            self.stage1_time  = datetime.datetime.now()
+            self.stage1_time  = now_kst()
             self.state        = STATE_STAGE1
             instr = {
                 "action":        "ENTER_STAGE1",
@@ -142,7 +143,7 @@ class StagedEntryManager:
             }
 
         logger.info(f"[StagedEntry] {instr['note']}")
-        self._history.append({**instr, "price": price, "time": datetime.datetime.now()})
+        self._history.append({**instr, "price": price, "time": now_kst()})
         return instr
 
     # ── 분봉 업데이트 ─────────────────────────────────────────────
@@ -158,7 +159,7 @@ class StagedEntryManager:
             진입 지시 딕셔너리 or None (아직 대기 중 or 완료)
         """
         if current_time is None:
-            current_time = datetime.datetime.now()
+            current_time = now_kst()
 
         if self.state != STATE_STAGE1:
             return None
@@ -256,7 +257,7 @@ if __name__ == "__main__":
     i = sem.request_entry("B", DIRECTION_UP, 380.0, 4, atr=0.5)
     print(f"1차: {i}")
     # 1분 경과 시뮬레이션
-    sem.stage1_time = datetime.datetime.now() - datetime.timedelta(minutes=2)
+    sem.stage1_time = now_kst() - datetime.timedelta(minutes=2)
     i2 = sem.update(380.2)
     print(f"2차: {i2}")
 

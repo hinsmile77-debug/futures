@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-05-14 (33차) — Cybos 장외 startup crash 완화 후속
+
+### 처리 요약
+
+- [DONE 2026-05-14] **MacroFeatureTransformer / feature_builder 실제 반영 검증**
+  - `feature_builder.build()`에 `option_data`, `macro_data` 머지 경로 존재 확인 (`features/feature_builder.py:274-279`)
+- [DONE 2026-05-14] **장외 Cybos 실시간 구독 1차 차단**
+  - `main.py`에서 장외에는 `RealtimeData.start()`와 수급 `QTimer`를 시작하지 않도록 가드 추가
+- [DONE 2026-05-14] **MacroFetcher yfinance rate-limit 노이즈 완화**
+  - `collection/macro/macro_fetcher.py`에 stdout/stderr 억제, `threads=False`, 15분 cooldown, fallback key 정렬 반영
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-15] **장외 launcher 재실행으로 access violation 재현 여부 확인**
+  - 기대 로그: `[DBG CK-5] RealtimeData.start() skipped (market closed)`
+  - 실패 기준: `-1073741819` 재발생 또는 Qt loop 진입 직후 비정상 종료
+
+- [NEXT 2026-05-15] **`CpTd0723` / `FutureMst` 30초 timeout 근본 원인 분리**
+  - 장중/장외/프리마켓별로 timeout 발생 조건 비교
+  - `api_connector.py`에서 timeout 시점의 서버 상태/시장상태 추가 로깅 검토
+
+- [NEXT 2026-05-15] **`QTableWidget` stylesheet parse warning 잔존 여부 확인**
+  - 같은 경고가 계속 나면 balance table 외 다른 `QTableWidget` stylesheet 후보를 순차 비활성화해 원인 테이블 특정
+
+- [NEXT 2026-05-15] **`apply_expiry_override()` / `apply_fomc_override()` main.py 연결**
+  - `TimeStrategyRouter`의 만기일/FOMC override가 실제 진입 파라미터에 적용되는지 확인
+
+---
+
 ## 2026-05-14 (32차) — 2차 감사 P3 4종 수정
 
 ### 한일 요약

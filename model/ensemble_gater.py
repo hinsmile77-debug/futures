@@ -1,27 +1,50 @@
+import json
+import logging
 import math
+import os
 from typing import Dict, Optional
 
 import numpy as np
 
 from config.constants import DIRECTION_DOWN, DIRECTION_UP
 
+logger = logging.getLogger("SIGNAL")
+
+# 온라인 학습 파라미터
+_LEARNING_RATE = 0.005       # 거래당 가중치 이동 폭 (너무 크면 발산)
+_WEIGHT_MIN    = 0.02        # 최소 가중치 (0이 되면 영구 소멸 방지)
+_WEIGHT_MAX    = 0.60        # 최대 가중치 (과점유 방지)
+_SAVE_PATH     = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "ensemble_gater_weights.json",
+)
+
+# 초기 KOSPI200 미시구조 분석 기반 기본 가중치
+_DEFAULT_WEIGHTS = {
+    "micro_bias":      0.28,
+    "mlofi_norm":      0.28,
+    "queue_signal":    0.16,
+    "cancel_add_ratio": 0.10,
+    "depth_bias":      0.10,
+    "mlofi_slope":     0.08,
+}
+
 
 class AdaptiveEnsembleGater:
-    """Microstructure-aware score adjuster for ensemble outputs."""
+    """Microstructure-aware score adjuster with online weight adaptation.
+
+    가중치는 거래 결과 피드백으로 점진적으로 갱신된다.
+    각 신호가 방향 예측에 얼마나 기여했는지를 학습률 0.005로 EMA 업데이트.
+    """
 
     def __init__(self):
-        self._weights = {
-            "micro_bias": 0.28,
-            "mlofi_norm": 0.28,
-            "queue_signal": 0.16,
-            "cancel_add_ratio": 0.10,
-            "depth_bias": 0.10,
-            "mlofi_slope": 0.08,
-        }
+        self._weights = dict(_DEFAULT_WEIGHTS)
+        self._load_weights()          # 이전 세션 가중치 복원 (없으면 기본값 유지)
         self._confirm_threshold = 0.22
         self._reject_threshold = -0.28
         self._boost_max = 0.08
         self._penalty_max = 0.12
+        self._outcome_count = 0       # 피드백 수신 누적 건수 (진단용)
 
     def apply(
         self,
@@ -167,3 +190,85 @@ class AdaptiveEnsembleGater:
         except (TypeError, ValueError):
             return 0.0
         return value if math.isfinite(value) else 0.0
+
+    # ── 온라인 가중치 학습 ─────────────────────────────────────────
+
+    def record_outcome(
+        self,
+        *,
+        was_correct: bool,
+        signals: Dict[str, float],
+        direction: int,
+    ) -> None:
+        """거래 결과 피드백으로 신호 가중치를 점진적으로 갱신.
+
+        Args:
+            was_correct: 이 거래가 수익이었으면 True, 손실이었으면 False.
+            signals:     apply()가 반환한 "signals" 딕셔너리 (aligned signal 값).
+            direction:   진입 방향 (DIRECTION_UP / DIRECTION_DOWN).
+        """
+        if not signals or direction not in (DIRECTION_UP, DIRECTION_DOWN):
+            return
+
+        sign = 1.0 if direction == DIRECTION_UP else -1.0
+        # 신호가 방향과 일치했으면 aligned_val > 0, 반대였으면 < 0
+        # was_correct=True  → aligned 신호 비중 ↑ (정확히 예측)
+        # was_correct=False → aligned 신호 비중 ↓ (잘못 예측)
+        feedback = 1.0 if was_correct else -1.0
+
+        updated = False
+        for key in self._weights:
+            if key not in signals:
+                continue
+            aligned_val = float(signals[key]) * sign  # apply()에서 sign이 이미 적용됨
+            grad = feedback * abs(aligned_val) * _LEARNING_RATE
+            self._weights[key] = float(np.clip(
+                self._weights[key] + grad,
+                _WEIGHT_MIN, _WEIGHT_MAX,
+            ))
+            updated = True
+
+        if updated:
+            # 가중치 합이 1이 되도록 정규화
+            total = sum(self._weights.values())
+            if total > 0:
+                self._weights = {k: v / total for k, v in self._weights.items()}
+            self._outcome_count += 1
+            # 10건마다 디스크 저장 (매 거래마다 저장하면 I/O 과다)
+            if self._outcome_count % 10 == 0:
+                self._save_weights()
+                logger.debug(
+                    "[EnsembleGater] 가중치 갱신 %d건: %s",
+                    self._outcome_count,
+                    {k: round(v, 4) for k, v in self._weights.items()},
+                )
+
+    def _load_weights(self) -> None:
+        try:
+            if os.path.exists(_SAVE_PATH):
+                with open(_SAVE_PATH, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                # 저장된 키가 현재 키와 일치하는 것만 복원 (새 피처 추가 시 안전)
+                for k in self._weights:
+                    if k in saved and isinstance(saved[k], (int, float)):
+                        self._weights[k] = float(saved[k])
+                # 정규화
+                total = sum(self._weights.values())
+                if total > 0:
+                    self._weights = {k: v / total for k, v in self._weights.items()}
+                logger.info("[EnsembleGater] 저장된 가중치 복원: %s", _SAVE_PATH)
+        except Exception as _e:
+            logger.warning("[EnsembleGater] 가중치 로드 실패 — 기본값 사용: %s", _e)
+            self._weights = dict(_DEFAULT_WEIGHTS)
+
+    def _save_weights(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(_SAVE_PATH), exist_ok=True)
+            with open(_SAVE_PATH, "w", encoding="utf-8") as f:
+                json.dump(self._weights, f, ensure_ascii=False, indent=2)
+        except Exception as _e:
+            logger.warning("[EnsembleGater] 가중치 저장 실패: %s", _e)
+
+    def get_weight_summary(self) -> Dict[str, float]:
+        """현재 가중치 조회 (대시보드/진단용)."""
+        return {k: round(v, 4) for k, v in self._weights.items()}

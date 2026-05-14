@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-05-14 (33차 — Cybos 장외 startup crash 완화 + 세션 마감 정리)
+
+**Work**: `2026-05-14 20:26` KST 재기동 로그 기준으로 Cybos 장외 startup crash를 추적하고, 장외 실시간 구독 경로를 1차 차단했다. 세션 종료 전 `SESSION_LOG`, `CURRENT_STATE`, `NEXT_TODO`, `DECISION_LOG`도 함께 정리했다.
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| 장외 실시간 구독 차단 | `main.py` | `connect_broker()`에서 `is_market_open()` 확인 후 장외에는 `RealtimeData.start()`와 수급 `QTimer` 시작을 보류. 장외 대기 모드 로그 추가 |
+| 매크로 fetch 노이즈 완화 | `collection/macro/macro_fetcher.py` | yfinance 다중 다운로드를 `threads=False`로 고정, stdout/stderr 억제, 15분 cooldown 추가, fallback key를 `main.py` 기대 포맷과 일치화 |
+| 스타일 경고 완화 | `dashboard/main_dashboard.py` | 잔고 `QTableWidget` stylesheet를 단순화해 parse warning 원인 범위를 축소 |
+| 세션 핸드오프 정리 | `dev_memory/*.md` | 오늘 작업 요약, 현재 상태, 후속 TODO, 설계결정/버그 기록 업데이트 |
+
+### 로그 기반 진단 결론
+
+- 정상 장중 재기동(`2026-05-14 14:09:23`)은 `startup sync -> realtime start -> tick/hoga 수신`까지 진행됨
+- 야간 재기동(`2026-05-14 20:18:19`, `20:20:15`, `20:26:13`)은 공통적으로 `CpTd0723` 잔고 TR timeout, `FutureMst` snapshot timeout 후 곧바로 실시간 시작 경로로 진입
+- 마지막 사례(`2026-05-14 20:26:13` 시작)는 `20:26:43 balance timeout -> 20:27:13 snapshot timeout -> 20:27:17 Qt loop -> -1073741819` 패턴으로 종료
+- 따라서 이번 세션의 1차 결론은 "장외 timeout 상태에서 실시간 구독을 강행하는 경로가 COM access violation을 유발할 가능성이 높다"는 것
+
+### 검증 상태
+
+- `python -m py_compile main.py dashboard\main_dashboard.py collection\macro\macro_fetcher.py` 통과
+- 최신 장외 launcher 재실행 검증은 아직 미실시
+- `Could not parse stylesheet of object QTableWidget(...)` 경고는 원인 범위를 줄였지만 완전 해소 여부는 재실행 확인 필요
+
 ## 2026-05-14 (32차 — 2차 감사 P3 4종 수정)
 
 **Work**: 2차 감사 보고서(`CODEX_SESSION_20260514_PROJECT_AUDIT.md`) P3 항목 4종 개선.

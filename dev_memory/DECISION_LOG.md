@@ -21,6 +21,31 @@
 
 ---
 
+## 2026-05-14 (33차 — Cybos 장외 startup crash 완화)
+
+### [B90] 장외 Cybos startup timeout 뒤 access violation 종료
+**File**: `main.py`, `collection/cybos/realtime_data.py`, `collection/cybos/api_connector.py`  
+**Symptom**: `2026-05-14 20:26:13` 재기동에서 `CpTd0723` 잔고 TR timeout, `Dscbo1.FutureMst` snapshot timeout 뒤 Qt loop 진입 직후 `-1073741819`로 종료.  
+**Evidence**: 같은 날 장중 재기동(`2026-05-14 14:09:23`)은 `startup sync -> realtime start -> tick/hoga 수신`까지 정상. 야간 재기동(`20:18`, `20:20`, `20:26`)만 동일 패턴으로 실패.  
+**Fix**: 장외에는 `RealtimeData.start()`와 수급 `QTimer`를 시작하지 않도록 `connect_broker()`에 시간대 가드 추가.  
+**Note**: 근본 원인은 timeout을 유발한 COM/TR 상태일 가능성이 높고, 이번 세션 수정은 crash 경로 차단용 1차 완화다.
+
+### [D70] 장외에는 Cybos 실시간 구독을 열지 않는다
+**Decision**: `is_market_open()`이 false이면 Cybos startup에서 realtime subscription과 investor polling timer를 시작하지 않고 대기 모드로 둔다.  
+**Reason**: 장외에는 분봉 파이프라인이 돌지 않고, `FutureMst` / `CpTd0723` timeout 뒤 실시간 COM subscription까지 강행할 이유가 없다. 운영상 필요한 것은 계정/상태 확인과 안전한 대기이며, 실시간 구독은 시장 개장 후에만 가치가 있다.  
+**How to apply**: `connect_broker()`에서 `_market_open_now`를 계산해 `self.realtime_data.start()` / `self._investor_timer.start(60_000)`를 조건부 실행.
+
+### [B91] yfinance failed downloads가 startup 노이즈와 재요청 압력을 키움
+**File**: `collection/macro/macro_fetcher.py`  
+**Symptom**: Yahoo rate limit 상황에서 `5 Failed downloads:` 블록이 콘솔에 직접 출력되어 프로그램이 멈춘 것처럼 보임. startup 직후 background fetch와 immediate fetch가 겹치면 같은 실패를 짧은 간격으로 반복할 수 있음.  
+**Fix**: yfinance 호출을 stdout/stderr redirect로 감싸고, `threads=False`로 단순화하며, 실패 후 15분 cooldown을 둬 반복 요청을 피함.  
+**Inference**: 직접적인 프로세스 crash 원인은 아니지만, operator-facing noise와 startup 혼선을 키우는 보조 요인이었다.
+
+### [D71] Macro fetch 실패는 조용히 cache/dummy로 degrade해야 한다
+**Decision**: 매크로 fetch 실패는 시스템 시작 실패로 취급하지 않고 cache 또는 dummy values로 조용히 degrade한다.  
+**Reason**: MacroFetcher는 regime 참고 입력이지 broker session의 필수 handshake가 아니다. 외부 rate limit이나 네트워크 불안정이 trading app startup UX를 깨지 않도록 분리해야 한다.  
+**How to apply**: fallback key 형식을 `main.py` 기대 포맷(`sp500_chg`, `nasdaq_chg`, `usd_krw_chg`, `us10y_chg`)과 일치시키고, 재시도는 cooldown으로 제한.
+
 ## 2026-05-14 (30차 — 감사 기반 버그 수정 + 스텁 모듈 구현)
 
 ### [B87] FLAT 방향이 SHORT으로 평가되어 AUTO 진입 가능

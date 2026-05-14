@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-05-14 12:31:03",
+  "generated_at": "2026-05-14 14:10:02",
   "recommended_stage": "alert_only",
   "recommended_reason": "A/B 개선 확인, 다만 calibration 또는 meta 표본 추가 필요",
   "gate_stats": {
-    "ensemble_decisions": 1353,
-    "meta_labels": 7391,
-    "verified_predictions": 15887
+    "ensemble_decisions": 1431,
+    "meta_labels": 7825,
+    "verified_predictions": 16321
   },
-  "ece": 0.411682,
-  "pnl_delta": 16.4,
+  "ece": 0.412688,
+  "pnl_delta": 26.76,
   "has_calibration": true,
   "has_meta_tuning": true
 }

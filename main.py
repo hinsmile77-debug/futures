@@ -22,6 +22,7 @@ import time
 import logging
 import math
 import json
+import queue as _queue
 import subprocess
 import numpy as np
 from typing import Optional
@@ -127,6 +128,7 @@ class TradingSystem:
         self.macro_fetcher      = MacroFetcher(api_key_fred=FRED_API_KEY)
         self.macro_fetcher.start()
         self.feature_builder    = FeatureBuilder()
+        self.feature_builder._on_core_fail = self._on_core_feature_fail
         self.model             = MultiHorizonModel()
         self.ensemble          = EnsembleDecision()
         self._pt_value         = FUTURES_PT_VALUE   # connect_broker에서 종목코드 확정 후 갱신
@@ -166,6 +168,9 @@ class TradingSystem:
         self._efficacy_tick:  int = 0        # 5분마다 효과 검증 패널 갱신용
         self._last_block_reason: str = ""    # 직전 진입 차단 이유 (중복 로그 방지)
         self._last_recovery_ts:  str = ""    # 마지막 복구 처리 분봉 ts (동일 분봉 반복 방지)
+        # EnsembleGater 온라인 학습: 마지막 진입의 gate signals / direction 저장
+        self._last_gate_signals: dict = {}
+        self._last_gate_direction: int = 0
         # [B57] CB③ 재시작 오발동 방지 — 이번 세션 시작 시각 (이전 세션 예측은 정확도 집계 제외)
         self._session_start_ts: str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -238,6 +243,9 @@ class TradingSystem:
         self._heartbeat_count: int = 0
         self._session_no: int = 0
         self._pending_order = None
+        # Chejan 이벤트 큐: COM 콜백에서 push, 파이프라인 틱에서 drain
+        # → BlockRequest() 메시지 펌프 도중 _pending_order 동시 접근 차단
+        self._chejan_event_queue = _queue.Queue()
         self._auto_entry_enabled: bool = True   # Auto On/Off 토글 상태
         self._manual_entry_ctx: dict = {}        # 마지막 파이프라인 산출값 (수동 진입 버튼용)
         self._last_order_event_key = None
@@ -279,13 +287,15 @@ class TradingSystem:
         account_no = str(_secrets.ACCOUNT_NO or "").strip()
         try:
             selected = str(self.dashboard.get_selected_account() or "").strip()
-        except Exception:
+        except Exception as _acc_e:
+            logger.debug("[Account] get_selected_account 실패: %s", _acc_e)
             selected = ""
         if selected:
             account_no = selected
         try:
             accounts = [str(x).strip() for x in (self.broker.get_account_list() or []) if str(x).strip()]
-        except Exception:
+        except Exception as _acl_e:
+            logger.debug("[Account] get_account_list 실패: %s", _acl_e)
             accounts = []
         if accounts and account_no not in accounts:
             account_no = accounts[0]
@@ -639,6 +649,15 @@ class TradingSystem:
         }
         logger.warning("[PendingOrder] set %s", self._pending_order)
 
+    def _on_core_feature_fail(self, feature_name: str, streak: int) -> None:
+        """CORE 피처(CVD/VWAP/OFI) 연속 실패 시 호출 — Slack 알림 + CB 진입 차단 여부 판단."""
+        from utils.notify import notify
+        notify(
+            f"[CORE 경보] {feature_name} {streak}회 연속 실패",
+            f"STEP 4 피처 계산 불능 — 기본값(0) 대체 중. 모델 신호 품질 저하.",
+            level="ERROR",
+        )
+
     def _clear_pending_order(self) -> None:
         if self._pending_order is not None:
             logger.warning("[PendingOrder] clear %s", self._pending_order)
@@ -656,8 +675,8 @@ class TradingSystem:
         self._pending_order = None
         try:
             _ts_push_exit_panel_now(self)
-        except Exception:
-            pass
+        except Exception as _ep_e:
+            logger.debug("[ExitPanel] push 실패 (UI 무시): %s", _ep_e)
 
     def _has_pending_order(self) -> bool:
         return self._pending_order is not None
@@ -838,7 +857,8 @@ class TradingSystem:
         broker_code = self.broker.get_nearest_futures_code()
         try:
             ui_code_raw = str(self.dashboard.get_selected_symbol() or "").strip()
-        except Exception:
+        except Exception as _sym_e:
+            logger.debug("[Symbol] get_selected_symbol 실패: %s", _sym_e)
             ui_code_raw = ""
         # 8자 코드(Axxxx000) → 5자 Cybos 코드(Axxxx)로 정규화
         if len(ui_code_raw) == 8 and ui_code_raw.endswith("000"):
@@ -907,8 +927,17 @@ class TradingSystem:
         )
         print("[DBG CK-4] RealtimeData 생성 완료", flush=True)
 
-        self.realtime_data.start(load_history=True)
-        print("[DBG CK-5] RealtimeData.start() 완료", flush=True)
+        _now = datetime.datetime.now()
+        _market_open_now = is_market_open(_now)
+        if _market_open_now:
+            self.realtime_data.start(load_history=True)
+            print("[DBG CK-5] RealtimeData.start() 완료", flush=True)
+        else:
+            log_manager.system(
+                f"[System] 장외 시간({_now.strftime('%H:%M:%S')})에는 Cybos 실시간 구독을 시작하지 않음",
+                "INFO",
+            )
+            print("[DBG CK-5] RealtimeData.start() skipped (market closed)", flush=True)
 
         self.investor_data._api = self.broker.api  # 실거래 시 TR 폴링 활성화
         self.investor_data.set_futures_code(code)   # UI 선택 종목코드 반영
@@ -922,9 +951,11 @@ class TradingSystem:
         # QTimer 60초마다 독립 실행 — 파이프라인은 캐시(get_features)만 읽음
         self._investor_timer = QTimer()
         self._investor_timer.timeout.connect(self._fetch_investor_data)
-        self._investor_timer.start(60_000)
-
-        logger.info("[System] %s 실시간 수신 시작 — %s | 수급 타이머 60s 시작", self.broker.name, code)
+        if _market_open_now:
+            self._investor_timer.start(60_000)
+            logger.info("[System] %s 실시간 수신 시작 — %s | 수급 타이머 60s 시작", self.broker.name, code)
+        else:
+            logger.info("[System] %s 장외 대기 모드 — %s | 실시간/수급 타이머 시작 보류", self.broker.name, code)
         return True
 
     def connect_kiwoom(self) -> bool:
@@ -1038,10 +1069,18 @@ class TradingSystem:
 
         # ── 분봉 데이터 유효성 가드 ───────────────────────────────
         # 비정상 분봉이 피처/진입/청산 오발동을 일으키지 않도록 파이프라인 앞단 차단
-        _c = float(bar.get("close", 0))
-        _h = float(bar.get("high",  0))
-        _l = float(bar.get("low",   0))
-        _v = int(bar.get("volume",  0))
+        try:
+            _c = float(bar.get("close", 0))
+            _h = float(bar.get("high",  0))
+            _l = float(bar.get("low",   0))
+            _v = int(float(bar.get("volume", 0)))
+        except (ValueError, TypeError) as _e:
+            log_manager.system(
+                f"[Guard-C0] bar 타입 변환 오류 차단 — 브로커 데이터 이상: {_e} ({ts})",
+                "WARNING",
+            )
+            self.dashboard.notify_pipeline_ran()
+            return
 
         if _c <= 0 or _h <= 0 or _l <= 0:
             log_manager.system(
@@ -1080,20 +1119,23 @@ class TradingSystem:
         # [B55] 접수 상태(order_no 확인) vs 미접수(order_no="")를 분리:
         #   미접수: 60s → Kiwoom 서버에 주문 자체가 없는 것으로 간주 (빠른 폐기)
         #   접수됨: 300s → 모의투자 지연 체결 허용, 장시간 미체결 시에만 폐기
-        if self._pending_order is not None:
-            _pending_age = (datetime.datetime.now() - self._pending_order["created_at"]).total_seconds()
-            _has_order_no = bool(self._pending_order.get("order_no", ""))
+        # [C1] 로컬 레퍼런스 선점 — 이후 접근에서 _pending_order가 None으로 바뀌더라도
+        #       _po는 원래 dict를 유지하므로 AttributeError 없이 안전하게 읽을 수 있다.
+        _po = self._pending_order
+        if _po is not None:
+            _pending_age = (datetime.datetime.now() - _po["created_at"]).total_seconds()
+            _has_order_no = bool(_po.get("order_no", ""))
             _timeout_s = 300 if _has_order_no else 60
             if getattr(getattr(self, "broker", None), "name", "") == "cybos" and not _has_order_no:
                 # Cybos mock can delay the first acceptance callback well beyond
                 # the Kiwoom-oriented 60s timeout.
                 _timeout_s = 180
-            _pending_filled = self._pending_order.get("filled_qty", 0)
-            _pending_total = self._pending_order.get("qty", 0)
+            _pending_filled = _po.get("filled_qty", 0)
+            _pending_total = _po.get("qty", 0)
             if _pending_age > _timeout_s and _pending_filled == 0:
-                _accepted_label = f"접수확인(order_no={self._pending_order['order_no']})" if _has_order_no else "미접수"
+                _accepted_label = f"접수확인(order_no={_po['order_no']})" if _has_order_no else "미접수"
                 # [B52] ENTRY 타임아웃: 낙관적 포지션 복원 + 쿨다운
-                if self._pending_order.get("kind") == "ENTRY":
+                if _po.get("kind") == "ENTRY":
                     if getattr(self.position, "_optimistic", False):
                         # 낙관적 오픈 상태면 포지션을 FLAT으로 복원
                         log_manager.system(
@@ -1112,13 +1154,13 @@ class TradingSystem:
                     )
                 log_manager.system(
                     f"[PendingOrder] 타임아웃 {_pending_age:.0f}s ({_accepted_label}) — "
-                    f"kind={self._pending_order['kind']} dir={self._pending_order['direction']} "
-                    f"order_no={self._pending_order.get('order_no','?') or '?'} → 주문 소멸 처리",
+                    f"kind={_po['kind']} dir={_po['direction']} "
+                    f"order_no={_po.get('order_no','?') or '?'} → 주문 소멸 처리",
                     "WARNING",
                 )
                 self._clear_pending_order()
             elif (
-                self._pending_order.get("kind") == "ENTRY"
+                _po.get("kind") == "ENTRY"
                 and 0 < _pending_filled < _pending_total
             ):
                 # [Fix-EntryStuck] ENTRY 부분체결 후 잔량 미체결 stuck
@@ -1126,7 +1168,7 @@ class TradingSystem:
                 # EXIT stuck 처리와 동일하게 브로커 잔고 TR 조회 후 실제 수량으로 sync.
                 # 주의: 브로커 확인 없이 position.quantity를 낮추면
                 #   이벤트 유실 케이스에서 실잔량 > 청산수량 → 잔여 포지션 발생.
-                _last_fill_at = self._pending_order.get("last_fill_at")
+                _last_fill_at = _po.get("last_fill_at")
                 _since_last_fill = (
                     (datetime.datetime.now() - _last_fill_at).total_seconds()
                     if _last_fill_at else _pending_age
@@ -1149,12 +1191,12 @@ class TradingSystem:
                         )
                         self._clear_pending_order()
             elif (
-                self._pending_order.get("kind", "").startswith("EXIT")
-                and 0 < self._pending_order.get("filled_qty", 0) < self._pending_order.get("qty", 0)
+                _po.get("kind", "").startswith("EXIT")
+                and 0 < _po.get("filled_qty", 0) < _po.get("qty", 0)
             ):
                 # EXIT 부분체결 stuck: 브로커가 나머지 수량을 취소했거나 이벤트 유실
                 # last_fill_at 기준 30초 경과 시 pending 소멸 → 하드스톱 재발동 허용
-                _last_fill_at = self._pending_order.get("last_fill_at")
+                _last_fill_at = _po.get("last_fill_at")
                 _since_last_fill = (
                     (datetime.datetime.now() - _last_fill_at).total_seconds()
                     if _last_fill_at else _pending_age
@@ -1162,8 +1204,8 @@ class TradingSystem:
                 if _since_last_fill > 30:
                     log_manager.system(
                         f"[PendingOrder] EXIT 부분체결 stuck {_since_last_fill:.0f}s — "
-                        f"filled={self._pending_order['filled_qty']}/{self._pending_order['qty']} "
-                        f"kind={self._pending_order['kind']} order_no={self._pending_order.get('order_no','?')} "
+                        f"filled={_po['filled_qty']}/{_po['qty']} "
+                        f"kind={_po['kind']} order_no={_po.get('order_no','?')} "
                         f"→ pending 소멸, 잔여 포지션 하드스톱 재발동 대기",
                         "WARNING",
                     )
@@ -1751,8 +1793,8 @@ class TradingSystem:
                     _broker_daily_pnl_now = float(_cached_realized)
                     _daily_pnl_now = _broker_daily_pnl_now
                     _daily_pnl_source = "broker"
-                except Exception:
-                    pass
+                except Exception as _pnl_e:
+                    logger.warning("[PnL] 브로커 일일손익 float 변환 실패 — 내부 추정값 사용: %s", _pnl_e)
         _size_mult_now = _cr["size_mult"] if _cr else 1.0
         _pg_allowed, _pg_reason = self.profit_guard.is_entry_allowed(
             _daily_pnl_now, _size_mult_now
@@ -1795,6 +1837,9 @@ class TradingSystem:
             
             if _cr["auto_entry"] and self._auto_entry_enabled:
                 if mode_filter_passed:
+                    # EnsembleGater 온라인 학습을 위해 진입 시점 signals/direction 저장
+                    self._last_gate_signals   = decision.get("gating", {}).get("signals", {})
+                    self._last_gate_direction = direction
                     # L2 통과 && 모드 필터 통과 → 진입
                     self._execute_entry(
                         final_dir_str, close, _qty_display, atr, _final_grade,
@@ -1971,8 +2016,8 @@ class TradingSystem:
                 cb_state=self.circuit_breaker.state,
                 latency_ms=0.0,
             )
-        except Exception:
-            pass
+        except Exception as _ds_e:
+            logger.debug("[Dashboard] update_system_status 실패: %s", _ds_e)
 
         # ── L2 Tier Gate 영구중단 배지 갱신 ────────────────────
         try:
@@ -1981,8 +2026,8 @@ class TradingSystem:
                 is_halted=l2_info['is_halted'],
                 threshold=l2_info['halt_threshold']
             )
-        except Exception:
-            pass
+        except Exception as _l2_e:
+            logger.debug("[Dashboard] L2 배지 갱신 실패: %s", _l2_e)
 
         # 🧠 자가학습 모니터 패널 갱신 (매분)
         self.dashboard.update_learning(self._gather_learning_stats())
@@ -2131,7 +2176,7 @@ class TradingSystem:
         )
 
     def _send_broker_exit_order(self, qty: int) -> int:
-        """선물 청산 시장가 주문. 0=성공, 음수=오류"""
+        """선물 청산 시장가 주문. 0=성공, 음수=오류, -99=BlockRequest 타임아웃"""
         code = getattr(self, "_futures_code", "")
         if not code or self.position.status == "FLAT":
             return -1
@@ -2139,7 +2184,7 @@ class TradingSystem:
         if not account_no:
             return -1
         side = "SELL" if self.position.status == "LONG" else "BUY"
-        return self.broker.send_market_order(
+        ret = self.broker.send_market_order(
             account_no=account_no,
             code=code,
             side=side,
@@ -2147,6 +2192,18 @@ class TradingSystem:
             rqname="청산",
             screen_no="1001",
         )
+        # -99: BlockRequest 타임아웃 — 청산 주문 상태 불명, CB API지연 트리거 발동
+        if ret == -99:
+            log_manager.system(
+                f"[ExitOrder] BlockRequest 타임아웃(-99) — 청산 주문 상태 불명! "
+                f"CB API지연 트리거 발동. code={code} qty={qty} side={side}",
+                "ERROR",
+            )
+            try:
+                self.circuit_breaker.check_api_delay(10.0)  # CB 트리거 ⑤
+            except Exception as _cb_delay_e:
+                logger.warning("[CB] check_api_delay 예외 (스킵): %s", _cb_delay_e)
+        return ret
 
     def _execute_entry(
         self, direction: str, price: float,
@@ -2244,12 +2301,25 @@ class TradingSystem:
     def _post_exit(self, result: dict):
         """청산 후 처리"""
         pnl = result["pnl_pts"]
-        if pnl > 0:
+        was_correct = pnl > 0
+        if was_correct:
             self.circuit_breaker.record_win()
             self.kelly.record(win=True, pnl_pts=pnl)
         else:
             self.circuit_breaker.record_stop_loss()
             self.kelly.record(win=False, pnl_pts=pnl)
+        # EnsembleGater 온라인 가중치 갱신 — 진입 시 저장된 gate signals 사용
+        if self._last_gate_signals and self._last_gate_direction != 0:
+            try:
+                self.ensemble.record_trade_outcome(
+                    was_correct=was_correct,
+                    signals=self._last_gate_signals,
+                    direction=self._last_gate_direction,
+                )
+            except Exception as _ge:
+                logger.debug("[EnsembleGater] record_outcome 오류: %s", _ge)
+            self._last_gate_signals = {}
+            self._last_gate_direction = 0
         # 수익 보존 가드 — 체결 후 연속 손실 카운터 업데이트
         _daily_after = self.position.daily_stats()["pnl_krw"]
         self.profit_guard.on_trade_close(result["pnl_krw"], _daily_after)
@@ -3551,8 +3621,8 @@ def _ts_get_reference_atr(self, pending: Optional[dict] = None) -> float:
     if atr_buf:
         try:
             return max(float(atr_buf[-1]), 0.5)
-        except Exception:
-            pass
+        except Exception as _atr_e:
+            logger.debug("[ATR] 버퍼 읽기 실패 — 기본값 사용: %s", _atr_e)
 
     return 0.5
 
@@ -4492,8 +4562,8 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
         try:
             self._last_balance_realized_krw = float(_num(broker_realized_text))
             self._last_balance_realized_date = today_str
-        except Exception:
-            pass
+        except Exception as _brk_e:
+            logger.warning("[Balance] 실현손익 파싱 실패 — ProfitGuard 기준값 부정확 가능성: %s", _brk_e)
     if not is_cybos_balance:
         try:
             today_rows = fetch_today_trades(today_str)
@@ -4690,7 +4760,8 @@ def _ts_sync_position_from_broker(self) -> None:
             # Cybos 모의투자 서버는 잔고 TR summary/rows가 blank일 수 있으므로 저장 포지션이 있으면 유지
             try:
                 _server_gubun = self.broker.get_login_info("GetServerGubun")
-            except Exception:
+            except Exception as _sg_e:
+                logger.debug("[Balance] GetServerGubun 조회 실패: %s", _sg_e)
                 _server_gubun = ""
             _is_mock = (_server_gubun == "1")
             if _is_mock and self.position.status != "FLAT":
@@ -4993,12 +5064,25 @@ def _ts_execute_entry(
         pending=_ts_get_pending_snapshot(self),
         position=_ts_get_position_snapshot(self),
     )
+    # [C1] BlockRequest가 백그라운드 스레드에서 완료된 후 _pending_order가
+    # None으로 변경되었을 경우 방어: 큐에 쌓인 Chejan이 이미 체결 처리를 완료했을 수 있음.
+    if self._pending_order is None:
+        logger.warning("[Entry] _pending_order가 BlockRequest 완료 후 None — Chejan 선행 체결 처리로 추정, 진입 완료로 간주")
+        return
     if ret != 0:
+        # -99는 BlockRequest 타임아웃. CB API지연 트리거 발동 후 롤백.
+        if ret == -99:
+            log_manager.system(
+                f"[Entry] BlockRequest 타임아웃(-99) — 주문 상태 불명. CB 발동 + pending 롤백.",
+                "ERROR",
+            )
+            self.circuit_breaker.check_api_delay(10.0)  # CB 트리거 ⑤ 강제 발동
+            self._clear_pending_order()
+            return
         _already_filled = (self._pending_order or {}).get("filled_qty", 0)
         if _already_filled > 0:
-            # BlockRequest() 중 Chejan이 선행 도착해 이미 일부 체결됨 → 주문 실제 접수된 것으로 처리
             logger.warning(
-                "[Entry] ret=%s but filled_qty=%s 이미 체결 → 주문 접수된 것으로 처리 (CYBOS BlockRequest 선행 콜백)",
+                "[Entry] ret=%s but filled_qty=%s 이미 체결 → 주문 접수된 것으로 처리",
                 ret, _already_filled,
             )
             log_manager.system(

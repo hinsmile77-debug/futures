@@ -1,16 +1,16 @@
 # Rollout Readiness Report
 
-- Generated at: 2026-05-14 12:31:03
+- Generated at: 2026-05-14 14:10:02
 - Recommended stage: alert_only
 - Reason: A/B 개선 확인, 다만 calibration 또는 meta 표본 추가 필요
 
 ## Metrics
 
-- Verified predictions: 15887
-- Ensemble decisions: 1353
-- Meta labels: 7391
-- Overall ECE: 0.411682
-- Enhanced vs baseline total PnL delta: +16.4000 pt
+- Verified predictions: 16321
+- Ensemble decisions: 1431
+- Meta labels: 7825
+- Overall ECE: 0.412688
+- Enhanced vs baseline total PnL delta: +26.7600 pt
 
 ## Checklist
 

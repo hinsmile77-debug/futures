@@ -14,6 +14,7 @@ from typing import Optional, Callable
 
 from config.settings import DATA_DIR
 from utils.notify import notify
+from utils.time_utils import now_kst
 
 logger = logging.getLogger("SYSTEM")
 
@@ -50,7 +51,7 @@ class KillSwitch:
             return
         self._active = True
         self._reason = reason
-        self._activated_at = datetime.datetime.now()
+        self._activated_at = now_kst()
 
         logger.critical("[KillSwitch] ★★★ 비상 정지 활성화 ★★★ 사유: %s", reason)
         notify(f"KillSwitch 발동!\n사유: {reason}", "CRITICAL")

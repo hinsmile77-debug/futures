@@ -110,26 +110,37 @@ class RegimeSpecificModel:
 
         # 레짐 모델이 준비되었는지 확인
         if self._fitted.get(regime) and _SKLEARN_OK:
-            prob = self._predict_with(features, regime)
+            prob_up, prob_down, prob_flat = self._predict_with(features, regime)
         elif self._fallback_fitted and _SKLEARN_OK:
-            prob = self._predict_with(features, None)   # fallback
+            prob_up, prob_down, prob_flat = self._predict_with(features, None)
             model_used = "혼합(fallback)"
         else:
-            prob = self._rule_based(features, regime)
+            prob_up, prob_down, prob_flat = self._rule_based(features, regime)
             model_used = "규칙기반"
 
-        direction = DIRECTION_UP if prob > 0.55 else (DIRECTION_DOWN if prob < 0.45 else DIRECTION_FLAT)
-        confidence = abs(prob - 0.5) * 2.0   # 0 ~ 1.0
+        # UP/DOWN 상대 비율로 방향 결정 (FLAT 확률은 신뢰도 감쇄에 반영)
+        ud_sum = prob_up + prob_down
+        rel_up = prob_up / ud_sum if ud_sum > 0 else 0.5
+
+        direction = DIRECTION_UP if rel_up > 0.55 else (DIRECTION_DOWN if rel_up < 0.45 else DIRECTION_FLAT)
+        # FLAT 확률이 높을수록 신뢰도 감쇄: 불확실성을 신호 강도에 반영
+        confidence = abs(rel_up - 0.5) * 2.0 * (1.0 - prob_flat)
 
         return {
             "direction":    direction,
-            "prob_up":      round(prob, 4),
-            "prob_down":    round(1 - prob, 4),
+            "prob_up":      round(prob_up, 4),
+            "prob_down":    round(prob_down, 4),
+            "prob_flat":    round(prob_flat, 4),
             "model_regime": model_used,
             "confidence":   round(confidence, 4),
         }
 
-    def _predict_with(self, features: List[float], regime: Optional[str]) -> float:
+    def _predict_with(self, features: List[float], regime: Optional[str]):
+        """
+        Returns:
+            (prob_up, prob_down, prob_flat) — 3-class 확률 튜플.
+            분류기가 FLAT 클래스를 학습하지 않은 경우 prob_flat=0으로 반환.
+        """
         try:
             if regime is None:
                 scaler = self._fallback_scaler
@@ -138,22 +149,20 @@ class RegimeSpecificModel:
                 scaler = self._scalers[regime]
                 model  = self._models[regime]
 
-            X     = scaler.transform([features])
-            probs = model.predict_proba(X)[0]
-            # 클래스 1 (UP) 확률
+            X      = scaler.transform([features])
+            probs  = model.predict_proba(X)[0]
             classes = list(model.classes_)
-            if DIRECTION_UP in classes:
-                idx = classes.index(DIRECTION_UP)
-                return float(probs[idx])
-            return 0.5
-        except Exception:
-            return 0.5
 
-    def _rule_based(self, features: List[float], regime: str) -> float:
+            def _p(cls):
+                return float(probs[classes.index(cls)]) if cls in classes else 0.0
+
+            return _p(DIRECTION_UP), _p(DIRECTION_DOWN), _p(DIRECTION_FLAT)
+        except Exception:
+            return 0.5, 0.5, 0.0
+
+    def _rule_based(self, features: List[float], regime: str):
         """학습 전 기본 규칙 (피처 없이 레짐만으로 편향)"""
-        if regime == "횡보장":
-            return 0.5   # 방향 불명
-        return 0.5
+        return 0.5, 0.5, 0.0
 
     def partial_fit(
         self,

@@ -1,27 +1,18 @@
-# collection/macro/macro_fetcher.py — 매크로 지표 수집
+# collection/macro/macro_fetcher.py
 """
-글로벌 매크로 지표 실시간 수집
+Global macro feature fetcher.
 
-수집 항목:
-  S&P 500 선물 변동률 (sp500_futures_chg)
-  나스닥 선물 변동률 (nasdaq_futures_chg)
-  VIX 공포 지수     (vix)
-  USD/KRW 환율 변동 (usd_krw_chg)
-  미국 10년 금리 변동 (us10y_chg)
-  이벤트 플래그     (event_flag: FOMC/CPI 등)
-
-수집 방법:
-  1. 국내 API: 네이버 금융 (환율·VIX)
-  2. 해외 API: yfinance (^GSPC, ^VIX, DX-Y.NYB)
-     → Python 3.7 32-bit에서 yfinance 설치 가능 여부 확인 필요
-  3. fallback: 캐시 값 유지 (최대 5분)
-
-Python 3.7 32-bit 호환
+Returns raw values used by the regime classifier and the macro feature
+transformer. This module must stay lightweight and safe to call during
+startup because it runs before the live minute pipeline is fully active.
 """
-import logging
+
+import contextlib
 import datetime
+import io
+import logging
 import threading
-from typing import Optional, Dict
+from typing import Dict, Optional
 
 logger = logging.getLogger("MACRO")
 
@@ -37,24 +28,14 @@ try:
 except ImportError:
     _YFINANCE_OK = False
 
-# 캐시 유효 시간 (초)
-CACHE_TTL_SEC = 300   # 5분
+
+CACHE_TTL_SEC = 300
+YF_RETRY_COOLDOWN_SEC = 900
 
 
 class MacroFetcher:
-    """
-    글로벌 매크로 지표 수집기
+    FETCH_INTERVAL_SEC = 180
 
-    사용:
-        macro = MacroFetcher()
-        macro.start()                 # 백그라운드 수집 시작
-        feats = macro.get_features()  # 최신 피처 반환
-    """
-
-    FETCH_INTERVAL_SEC = 180   # 3분마다 갱신
-
-    # 경제 이벤트 캘린더 (YYYYMMDD 형식)
-    # 실제 운영 시 별도 파일/API로 관리
     EVENT_DATES: Dict[str, str] = {
         # "20260501": "FOMC",
         # "20260612": "CPI",
@@ -62,29 +43,23 @@ class MacroFetcher:
 
     def __init__(self, api_key_fred: str = ""):
         self._fred_key = api_key_fred
-
-        # 캐시
         self._cache: Dict[str, float] = {}
         self._cache_time: Optional[datetime.datetime] = None
-
-        # 이전 값 (변동률 계산용)
         self._prev: Dict[str, float] = {}
-
-        # 백그라운드 스레드
         self._thread: Optional[threading.Thread] = None
-        self._stop   = threading.Event()
-
+        self._stop = threading.Event()
+        self._fetch_lock = threading.Lock()
+        self._last_yf_fail_time: Optional[datetime.datetime] = None
         self.fetch_count = 0
-        self.last_error  = ""
+        self.last_error = ""
 
-    # ── 시작 / 정지 ───────────────────────────────────────────────
     def start(self):
         if not _REQUESTS_OK and not _YFINANCE_OK:
-            logger.warning("[Macro] requests/yfinance 미설치 — 더미 모드")
+            logger.warning("[Macro] requests/yfinance unavailable; using fallback values")
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        logger.info("[Macro] 수집 시작")
+        logger.info("[Macro] fetch thread started")
 
     def stop(self):
         self._stop.set()
@@ -97,76 +72,96 @@ class MacroFetcher:
                 self._fetch_all()
             except Exception as e:
                 self.last_error = str(e)
-                logger.debug(f"[Macro] 수집 오류: {e}")
+                logger.debug("[Macro] fetch error: %s", e)
             self._stop.wait(timeout=self.FETCH_INTERVAL_SEC)
 
-    # ── 수집 ─────────────────────────────────────────────────────
     def _fetch_all(self):
-        data = {}
+        with self._fetch_lock:
+            data: Dict[str, float] = {}
 
-        if _YFINANCE_OK:
-            data.update(self._fetch_yfinance())
-        if _REQUESTS_OK:
-            data.update(self._fetch_naver_fx())
+            if _YFINANCE_OK:
+                data.update(self._fetch_yfinance())
+            if _REQUESTS_OK:
+                data.update(self._fetch_naver_fx())
 
-        if not data:
-            data = self._dummy_values()
+            if not data:
+                data = self._dummy_values()
 
-        # 변동률 계산
-        result = {}
-        for key in ("sp500", "nasdaq", "vix", "usd_krw", "us10y"):
-            curr = data.get(key, 0.0)
-            prev = self._prev.get(key, curr)
-            if prev and prev != 0:
-                result[f"{key}_chg"] = round((curr - prev) / abs(prev), 6)
-            else:
-                result[f"{key}_chg"] = 0.0
-            self._prev[key] = curr
+            result: Dict[str, float] = {}
+            for key in ("sp500", "nasdaq", "vix", "usd_krw", "us10y"):
+                curr = data.get(key, 0.0)
+                prev = self._prev.get(key, curr)
+                if prev and prev != 0:
+                    result["%s_chg" % key] = round((curr - prev) / abs(prev), 6)
+                else:
+                    result["%s_chg" % key] = 0.0
+                self._prev[key] = curr
 
-        # VIX 절대값도 보관
-        result["vix"] = round(data.get("vix", 20.0), 2)
+            result["vix"] = round(data.get("vix", 20.0), 2)
+            result["event_flag"] = self._check_event_flag()
 
-        # 이벤트 플래그
-        result["event_flag"] = self._check_event_flag()
-
-        self._cache      = result
-        self._cache_time = datetime.datetime.now()
-        self.fetch_count += 1
-        logger.debug(f"[Macro] 갱신 | VIX={result['vix']:.1f} KRW={result.get('usd_krw_chg', 0):.4f}")
-
-    def _fetch_yfinance(self) -> dict:
-        """yfinance로 글로벌 지수 수집"""
-        try:
-            tickers = _yf.download(
-                "^GSPC ^IXIC ^VIX DX-Y.NYB ^TNX",
-                period="2d", interval="1m",
-                progress=False, auto_adjust=True
+            self._cache = result
+            self._cache_time = datetime.datetime.now()
+            self.fetch_count += 1
+            logger.debug(
+                "[Macro] refreshed | VIX=%.1f KRW=%+.4f",
+                result["vix"],
+                result.get("usd_krw_chg", 0.0),
             )
-            result = {}
-            for sym, key in [("^GSPC", "sp500"), ("^IXIC", "nasdaq"),
-                              ("^VIX", "vix"), ("DX-Y.NYB", "usd_dxy"),
-                              ("^TNX", "us10y")]:
+
+    def _fetch_yfinance(self) -> Dict[str, float]:
+        now = datetime.datetime.now()
+        if self._last_yf_fail_time:
+            elapsed = (now - self._last_yf_fail_time).total_seconds()
+            if elapsed < YF_RETRY_COOLDOWN_SEC:
+                logger.debug(
+                    "[Macro] yfinance cooldown active (%.0fs remaining)",
+                    YF_RETRY_COOLDOWN_SEC - elapsed,
+                )
+                return {}
+
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                tickers = _yf.download(
+                    "^GSPC ^IXIC ^VIX DX-Y.NYB ^TNX",
+                    period="2d",
+                    interval="1m",
+                    progress=False,
+                    auto_adjust=True,
+                    threads=False,
+                )
+
+            result: Dict[str, float] = {}
+            for sym, key in [
+                ("^GSPC", "sp500"),
+                ("^IXIC", "nasdaq"),
+                ("^VIX", "vix"),
+                ("DX-Y.NYB", "usd_dxy"),
+                ("^TNX", "us10y"),
+            ]:
                 try:
                     close = tickers["Close"][sym].dropna()
                     if len(close):
                         result[key] = float(close.iloc[-1])
                 except Exception:
                     pass
+
+            if not result:
+                self._last_yf_fail_time = now
             return result
         except Exception as e:
-            logger.debug(f"[Macro] yfinance 오류: {e}")
+            self._last_yf_fail_time = now
+            logger.debug("[Macro] yfinance error: %s", e)
             return {}
 
-    def _fetch_naver_fx(self) -> dict:
-        """네이버 금융 환율 수집 (USD/KRW)"""
+    def _fetch_naver_fx(self) -> Dict[str, float]:
         if not _REQUESTS_OK:
             return {}
         try:
-            url  = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
-            resp = _req.get(url, timeout=5,
-                            headers={"User-Agent": "Mozilla/5.0"})
-            # 간단 텍스트 파싱
+            url = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
+            resp = _req.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
             import re
+
             m = re.search(r'"basePrice"\s*:\s*"([\d,.]+)"', resp.text)
             if m:
                 krw = float(m.group(1).replace(",", ""))
@@ -175,64 +170,53 @@ class MacroFetcher:
             pass
         return {}
 
-    def _dummy_values(self) -> dict:
-        """더미 값 반환 (API 불가 시)"""
+    def _dummy_values(self) -> Dict[str, float]:
         return {
-            "sp500":   5500.0,
-            "nasdaq":  18000.0,
-            "vix":     20.0,
+            "sp500": 5500.0,
+            "nasdaq": 18000.0,
+            "vix": 20.0,
             "usd_krw": 1380.0,
-            "us10y":   4.5,
+            "us10y": 4.5,
         }
 
     def _check_event_flag(self) -> float:
-        """오늘이 이벤트 날짜인지 확인 — 1.0이면 이벤트 당일"""
         today = datetime.date.today().strftime("%Y%m%d")
         return 1.0 if today in self.EVENT_DATES else 0.0
 
-    # ── 피처 반환 ─────────────────────────────────────────────────
     def get_features(self) -> Dict[str, float]:
-        """
-        최신 매크로 피처 반환 (캐시 5분 이내)
-
-        Returns:
-            constants.py MACRO_FEATURES 형식의 딕셔너리
-        """
-        # 캐시 신선도 확인
         if self._cache_time:
             age = (datetime.datetime.now() - self._cache_time).total_seconds()
             if age > CACHE_TTL_SEC:
-                logger.debug(f"[Macro] 캐시 만료 ({age:.0f}초)")
+                logger.debug("[Macro] cache expired (%.0fs)", age)
 
         if self._cache:
             return dict(self._cache)
 
-        # 캐시 없으면 즉시 수집
         self._fetch_all()
         return dict(self._cache) if self._cache else self._empty_features()
 
     def manual_fetch(self):
-        """수동 즉시 갱신"""
         self._fetch_all()
 
     @staticmethod
     def _empty_features() -> Dict[str, float]:
         return {
-            "sp500_futures_chg":  0.0,
-            "nasdaq_futures_chg": 0.0,
-            "vix":                20.0,
-            "usd_krw_chg":        0.0,
-            "us10y_chg":          0.0,
-            "event_flag":         0.0,
+            "sp500_chg": 0.0,
+            "nasdaq_chg": 0.0,
+            "vix": 20.0,
+            "usd_krw_chg": 0.0,
+            "us10y_chg": 0.0,
+            "event_flag": 0.0,
         }
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> Dict[str, float]:
         return {
-            "fetch_count":  self.fetch_count,
-            "cache_age":    round((datetime.datetime.now() - self._cache_time).total_seconds(), 0)
-                            if self._cache_time else -1,
-            "last_error":   self.last_error,
-            "yfinance":     _YFINANCE_OK,
+            "fetch_count": self.fetch_count,
+            "cache_age": round((datetime.datetime.now() - self._cache_time).total_seconds(), 0)
+            if self._cache_time
+            else -1,
+            "last_error": self.last_error,
+            "yfinance": _YFINANCE_OK,
         }
 
 

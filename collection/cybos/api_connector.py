@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 from logging_system.log_manager import log_manager
@@ -107,6 +108,76 @@ def _require_cybos_runtime() -> None:
         raise RuntimeError("pywin32 is not available. " + CYBOS_RUNTIME_HINT)
     if platform.architecture()[0] != "32bit":
         raise RuntimeError("Cybos Plus COM objects require 32-bit Python. " + CYBOS_RUNTIME_HINT)
+
+
+# BlockRequest() 타임아웃 (초). COM 데드락 시 청산 불가를 방지.
+BLOCK_REQUEST_TIMEOUT_SEC = 30
+
+
+def _run_block_request(progid, input_pairs, data_reader=None,
+                       timeout_sec=BLOCK_REQUEST_TIMEOUT_SEC):
+    """COM BlockRequest를 백그라운드 스레드에서 타임아웃과 함께 실행한다.
+
+    COM STA 규칙: Dispatch + SetInputValue + BlockRequest + 데이터 읽기를 모두
+    같은 백그라운드 스레드에서 수행한다. 메인 스레드는 done.wait()으로 블록되므로
+    Qt 메시지 루프도 중단 → BlockRequest 중 Chejan 콜백 재진입이 발생하지 않는다.
+
+    Args:
+        progid: COM ProgID 문자열
+        input_pairs: [(idx, val), ...] — SetInputValue 호출 목록
+        data_reader: fn(obj) -> Any — COM obj에서 데이터를 읽는 콜백
+                     (스레드 내에서 실행되므로 STA-safe)
+        timeout_sec: 타임아웃 초
+
+    Returns:
+        (ret, status, msg, data)
+
+    Raises:
+        TimeoutError: timeout_sec 초 안에 완료되지 않은 경우
+        RuntimeError / COM 예외: 내부 오류
+    """
+    result = {"ret": None, "status": None, "msg": None, "data": None, "exc": None}
+    done = threading.Event()
+
+    def _worker():
+        try:
+            pythoncom.CoInitialize()
+        except Exception as e:  # CoInitialize 실패 시에도 계속 시도
+            logger.debug("[BlockReq] CoInitialize warn: %s", e)
+        try:
+            obj = Dispatch(progid)
+            for idx, val in input_pairs:
+                obj.SetInputValue(idx, val)
+            result["ret"] = obj.BlockRequest()
+            result["status"] = _safe_int(obj.GetDibStatus())
+            result["msg"] = _safe_str(obj.GetDibMsg1())
+            if data_reader is not None:
+                result["data"] = data_reader(obj)
+        except Exception as exc:
+            result["exc"] = exc
+        finally:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+            done.set()
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+    if not done.wait(timeout_sec):
+        logger.critical(
+            "[BlockReq] TIMEOUT %ss progid=%s — 비상 청산이 필요할 수 있음",
+            timeout_sec, progid,
+        )
+        raise TimeoutError(
+            "Cybos BlockRequest timeout ({0}s) progid={1}".format(timeout_sec, progid)
+        )
+
+    if result["exc"] is not None:
+        raise result["exc"]
+
+    return result["ret"], result["status"], result["msg"], result["data"]
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -329,59 +400,63 @@ class CybosAPI:
             return None
         self._ensure_trade_init()
 
-        obj = Dispatch(CYBOS_FUTURES_BALANCE_PROGID)
-        obj.SetInputValue(0, account_no)
-        obj.SetInputValue(1, CYBOS_GOODS_CODE_FUTURES)
-        obj.SetInputValue(2, "1")
-        obj.SetInputValue(3, "")
-        obj.SetInputValue(4, 20)
+        def _read_rows(obj):
+            count = _safe_int(obj.GetHeaderValue(2))
+            rows = []
+            for idx in range(count):
+                code = _safe_str(obj.GetDataValue(0, idx))
+                name = _safe_str(obj.GetDataValue(1, idx))
+                side_code = _safe_str(obj.GetDataValue(2, idx))
+                qty = _safe_int(obj.GetDataValue(3, idx))
+                avg_price = _safe_float(obj.GetDataValue(5, idx))
+                closable_qty = _safe_int(obj.GetDataValue(9, idx))
+                traded_qty = _safe_int(obj.GetDataValue(10, idx))
+                rows.append({
+                    "종목코드": _normalize_code(code),
+                    "종목명": name,
+                    "구분": BALANCE_SIDE_MAP.get(side_code, side_code),
+                    "매매구분": BALANCE_SIDE_MAP.get(side_code, side_code),
+                    "잔고수량": str(qty),
+                    "청산가능": str(closable_qty),
+                    "평균가": str(avg_price),
+                    "매입단가": str(avg_price),
+                    "현재가": "",
+                    "평가손익(원)": "",
+                    "수익률(%)": "",
+                    "체결수량": str(traded_qty),
+                    "side_code": side_code,
+                })
+            return rows
 
-        ret = obj.BlockRequest()
-        status = _safe_int(obj.GetDibStatus())
-        msg = _safe_str(obj.GetDibMsg1())
-        if ret not in (0, None) or status != 0:
-            logger.warning("[CybosBalance] request failed ret=%s status=%s msg=%s", ret, status, msg)
-            self._emit_msg(
-                {
-                    "source": "CpTd0723",
-                    "status": "ERROR",
-                    "status_code": status or ret,
-                    "message": msg,
-                    "account_no": account_no,
-                }
+        try:
+            ret, status, msg, rows = _run_block_request(
+                progid=CYBOS_FUTURES_BALANCE_PROGID,
+                input_pairs=[
+                    (0, account_no),
+                    (1, CYBOS_GOODS_CODE_FUTURES),
+                    (2, "1"),
+                    (3, ""),
+                    (4, 20),
+                ],
+                data_reader=_read_rows,
             )
+        except TimeoutError as exc:
+            logger.error("[CybosBalance] %s account=%s", exc, account_no)
             return None
 
-        count = _safe_int(obj.GetHeaderValue(2))
-        rows = []
-        for idx in range(count):
-            code = _safe_str(obj.GetDataValue(0, idx))
-            name = _safe_str(obj.GetDataValue(1, idx))
-            side_code = _safe_str(obj.GetDataValue(2, idx))
-            qty = _safe_int(obj.GetDataValue(3, idx))
-            avg_price = _safe_float(obj.GetDataValue(5, idx))
-            closable_qty = _safe_int(obj.GetDataValue(9, idx))
-            traded_qty = _safe_int(obj.GetDataValue(10, idx))
+        if ret not in (0, None) or status != 0:
+            logger.warning("[CybosBalance] request failed ret=%s status=%s msg=%s", ret, status, msg)
+            self._emit_msg({
+                "source": "CpTd0723",
+                "status": "ERROR",
+                "status_code": status or ret,
+                "message": msg,
+                "account_no": account_no,
+            })
+            return None
 
-            row = {
-                "종목코드": _normalize_code(code),
-                "종목명": name,
-                "구분": BALANCE_SIDE_MAP.get(side_code, side_code),
-                "매매구분": BALANCE_SIDE_MAP.get(side_code, side_code),
-                "잔고수량": str(qty),
-                "청산가능": str(closable_qty),
-                "평균가": str(avg_price),
-                "매입단가": str(avg_price),
-                "현재가": "",
-                "평가손익(원)": "",
-                "수익률(%)": "",
-                "체결수량": str(traded_qty),
-                "side_code": side_code,
-            }
-            rows.append(row)
-
+        rows = rows or []
         summary = self._request_futures_daily_pnl_summary(account_no)
-
         nonempty_rows = [row for row in rows if _bool_nonblank(list(row.values()))]
         result = {
             "rows": rows,
@@ -390,7 +465,7 @@ class CybosAPI:
             "summary_probe": {
                 "dib_status": str(status),
                 "dib_msg": msg,
-                "count": str(count),
+                "count": str(len(rows)),
             },
             "record_name": "CpTd0723",
             "prev_next": "",
@@ -401,89 +476,24 @@ class CybosAPI:
 
     def _request_futures_daily_pnl_summary(self, account_no: str) -> Dict[str, str]:
         today_yyMMdd = time.strftime("%y%m%d")
+
+        def _read_pnl(obj):
+            return {idx: _safe_str(obj.GetHeaderValue(idx)) for idx in range(0, 21)}
+
         try:
-            obj = Dispatch(CYBOS_FUTURES_DAILY_PNL_PROGID)
-            obj.SetInputValue(0, account_no)
-            obj.SetInputValue(1, today_yyMMdd)
-            obj.SetInputValue(2, CYBOS_GOODS_CODE_FUTURES)
-            obj.SetInputValue(3, 10)
-
-            ret = obj.BlockRequest()
-            status = _safe_int(obj.GetDibStatus())
-            msg = _safe_str(obj.GetDibMsg1())
-            if ret not in (0, None) or status != 0:
-                _system_warning(
-                    f"[CybosDailyPnl] request failed account={account_no} "
-                    f"ret={ret} status={status} msg={msg}"
-                )
-                return {}
-
-            raw_headers = {idx: _safe_str(obj.GetHeaderValue(idx)) for idx in range(0, 21)}
-            deposit_cash = _safe_float(raw_headers.get(DAILY_PNL_HEADER_DEPOSIT_CASH))
-            next_day_deposit_cash = _safe_float(raw_headers.get(DAILY_PNL_HEADER_NEXT_DAY_DEPOSIT_CASH))
-            prev_day_pnl = _safe_float(raw_headers.get(DAILY_PNL_HEADER_PREV_DAY_PNL))
-            today_pnl = _safe_float(raw_headers.get(DAILY_PNL_HEADER_TODAY_PNL))
-            liquidation_eval_raw = _safe_float(raw_headers.get(DAILY_PNL_HEADER_LIQUIDATION_EVAL))
-            liquidation_substituted = liquidation_eval_raw <= 0.0 and next_day_deposit_cash > 0.0
-            liquidation_eval = next_day_deposit_cash if liquidation_substituted else liquidation_eval_raw
-            profit_rate = (next_day_deposit_cash / deposit_cash * 100.0) if deposit_cash else 0.0
-
-            # profit_rate는 운영 중 반복 관측되는 진단값이라 기본 INFO(레이트리밋),
-            # 과도한 이상치만 WARNING으로 올린다.
-            profit_rate_msg = (
-                f"[CybosDailyPnl] profit_rate 이상값 {profit_rate:.2f}% — "
-                f"deposit={deposit_cash:.0f} next_day={next_day_deposit_cash:.0f} "
-                f"header_idx_check={{1:{raw_headers.get(1)}, 2:{raw_headers.get(2)}}}"
+            ret, status, msg, raw_headers = _run_block_request(
+                progid=CYBOS_FUTURES_DAILY_PNL_PROGID,
+                input_pairs=[
+                    (0, account_no),
+                    (1, today_yyMMdd),
+                    (2, CYBOS_GOODS_CODE_FUTURES),
+                    (3, 10),
+                ],
+                data_reader=_read_pnl,
             )
-            if abs(profit_rate) > 200.0:
-                _system_warning(profit_rate_msg)
-            elif abs(profit_rate) > 50.0:
-                _system_info_throttled(
-                    profit_rate_msg,
-                    key="cybos_daily_pnl_profit_rate_diag",
-                    min_interval_sec=600.0,
-                )
-
-            # liquidation_eval 이 장 시작 전 0 → 익일예탁금으로 대체된 경우 WARNING
-            if liquidation_substituted:
-                _system_warning(
-                    f"[CybosDailyPnl] 청산평가액=0 → 익일예탁금({next_day_deposit_cash:.0f})으로 대체 "
-                    f"(장 시작 전 타이밍 또는 미결제약정 없음) account={account_no}"
-                )
-
-            header_validation = {
-                "deposit_cash_idx": DAILY_PNL_HEADER_DEPOSIT_CASH,
-                "next_day_deposit_cash_idx": DAILY_PNL_HEADER_NEXT_DAY_DEPOSIT_CASH,
-                "prev_day_pnl_idx": DAILY_PNL_HEADER_PREV_DAY_PNL,
-                "today_pnl_idx": DAILY_PNL_HEADER_TODAY_PNL,
-                "liquidation_eval_idx": DAILY_PNL_HEADER_LIQUIDATION_EVAL,
-                "liquidation_substituted": liquidation_substituted,
-                "prev_day_pnl_zero": prev_day_pnl == 0.0,
-            }
-
-            # 필드 의미 (대시보드 라벨 기준):
-            #   총매매        = 예탁금 (KRW)
-            #   총평가손익    = 청산평가손익 (KRW, 포지션 없으면 익일예탁금 대체)
-            #   총평가수익률  = 익일가예탁현금 (KRW) — _ts_extract_sizer_balance 잔고 소스
-            #   추정자산      = 전일손익 (KRW)
-            summary = {
-                "총매매": f"{deposit_cash:.0f}",
-                "총평가손익": f"{liquidation_eval:.0f}",
-                "실현손익": f"{today_pnl:.0f}",
-                "총평가": f"{profit_rate:.2f}",
-                "총평가수익률": f"{next_day_deposit_cash:.0f}",
-                "추정자산": f"{prev_day_pnl:.0f}",
-            }
-            _system_info(
-                f"[CybosDailyPnl] account={account_no} "
-                f"validate={header_validation} summary={summary}"
-            )
-            system_logger.info(
-                "[CybosDailyPnlHeaders] account=%s headers=%s",
-                account_no,
-                raw_headers,
-            )
-            return summary
+        except TimeoutError as exc:
+            system_logger.error("[CybosDailyPnl] %s account=%s", exc, account_no)
+            return {}
         except Exception:
             system_logger.exception("[CybosDailyPnl] request failed with exception account=%s", account_no)
             try:
@@ -491,6 +501,79 @@ class CybosAPI:
             except Exception:
                 pass
             return {}
+
+        if ret not in (0, None) or status != 0:
+            _system_warning(
+                f"[CybosDailyPnl] request failed account={account_no} "
+                f"ret={ret} status={status} msg={msg}"
+            )
+            return {}
+
+        raw_headers = raw_headers or {}
+        deposit_cash = _safe_float(raw_headers.get(DAILY_PNL_HEADER_DEPOSIT_CASH))
+        next_day_deposit_cash = _safe_float(raw_headers.get(DAILY_PNL_HEADER_NEXT_DAY_DEPOSIT_CASH))
+        prev_day_pnl = _safe_float(raw_headers.get(DAILY_PNL_HEADER_PREV_DAY_PNL))
+        today_pnl = _safe_float(raw_headers.get(DAILY_PNL_HEADER_TODAY_PNL))
+        liquidation_eval_raw = _safe_float(raw_headers.get(DAILY_PNL_HEADER_LIQUIDATION_EVAL))
+        liquidation_substituted = liquidation_eval_raw <= 0.0 and next_day_deposit_cash > 0.0
+        liquidation_eval = next_day_deposit_cash if liquidation_substituted else liquidation_eval_raw
+        profit_rate = (next_day_deposit_cash / deposit_cash * 100.0) if deposit_cash else 0.0
+
+        # profit_rate는 운영 중 반복 관측되는 진단값이라 기본 INFO(레이트리밋),
+        # 과도한 이상치만 WARNING으로 올린다.
+        profit_rate_msg = (
+            f"[CybosDailyPnl] profit_rate 이상값 {profit_rate:.2f}% — "
+            f"deposit={deposit_cash:.0f} next_day={next_day_deposit_cash:.0f} "
+            f"header_idx_check={{1:{raw_headers.get(1)}, 2:{raw_headers.get(2)}}}"
+        )
+        if abs(profit_rate) > 200.0:
+            _system_warning(profit_rate_msg)
+        elif abs(profit_rate) > 50.0:
+            _system_info_throttled(
+                profit_rate_msg,
+                key="cybos_daily_pnl_profit_rate_diag",
+                min_interval_sec=600.0,
+            )
+
+        if liquidation_substituted:
+            _system_warning(
+                f"[CybosDailyPnl] 청산평가액=0 → 익일예탁금({next_day_deposit_cash:.0f})으로 대체 "
+                f"(장 시작 전 타이밍 또는 미결제약정 없음) account={account_no}"
+            )
+
+        header_validation = {
+            "deposit_cash_idx": DAILY_PNL_HEADER_DEPOSIT_CASH,
+            "next_day_deposit_cash_idx": DAILY_PNL_HEADER_NEXT_DAY_DEPOSIT_CASH,
+            "prev_day_pnl_idx": DAILY_PNL_HEADER_PREV_DAY_PNL,
+            "today_pnl_idx": DAILY_PNL_HEADER_TODAY_PNL,
+            "liquidation_eval_idx": DAILY_PNL_HEADER_LIQUIDATION_EVAL,
+            "liquidation_substituted": liquidation_substituted,
+            "prev_day_pnl_zero": prev_day_pnl == 0.0,
+        }
+
+        # 필드 의미 (대시보드 라벨 기준):
+        #   총매매        = 예탁금 (KRW)
+        #   총평가손익    = 청산평가손익 (KRW, 포지션 없으면 익일예탁금 대체)
+        #   총평가수익률  = 익일가예탁현금 (KRW) — _ts_extract_sizer_balance 잔고 소스
+        #   추정자산      = 전일손익 (KRW)
+        summary = {
+            "총매매": f"{deposit_cash:.0f}",
+            "총평가손익": f"{liquidation_eval:.0f}",
+            "실현손익": f"{today_pnl:.0f}",
+            "총평가": f"{profit_rate:.2f}",
+            "총평가수익률": f"{next_day_deposit_cash:.0f}",
+            "추정자산": f"{prev_day_pnl:.0f}",
+        }
+        _system_info(
+            f"[CybosDailyPnl] account={account_no} "
+            f"validate={header_validation} summary={summary}"
+        )
+        system_logger.info(
+            "[CybosDailyPnlHeaders] account=%s headers=%s",
+            account_no,
+            raw_headers,
+        )
+        return summary
 
     def send_market_order(
         self,
@@ -512,30 +595,54 @@ class CybosAPI:
         if not side_code:
             return -1
 
-        obj = Dispatch(CYBOS_FUTURES_ORDER_PROGID)
-        obj.SetInputValue(1, account_no)
-        obj.SetInputValue(2, _normalize_code(code))
-        obj.SetInputValue(3, int(qty))
-        obj.SetInputValue(4, 0)
-        obj.SetInputValue(5, side_code)
-        obj.SetInputValue(6, ORDER_HOGA_MARKET)
-        obj.SetInputValue(7, ORDER_CONDITION_DEFAULT)
-        obj.SetInputValue(8, CYBOS_GOODS_CODE_FUTURES)
+        _code = _normalize_code(code)
+        _qty = int(qty)
 
-        ret = obj.BlockRequest()
-        status = _safe_int(obj.GetDibStatus())
-        msg = _safe_str(obj.GetDibMsg1())
+        try:
+            ret, status, msg, _ = _run_block_request(
+                progid=CYBOS_FUTURES_ORDER_PROGID,
+                input_pairs=[
+                    (1, account_no),
+                    (2, _code),
+                    (3, _qty),
+                    (4, 0),
+                    (5, side_code),
+                    (6, ORDER_HOGA_MARKET),
+                    (7, ORDER_CONDITION_DEFAULT),
+                    (8, CYBOS_GOODS_CODE_FUTURES),
+                ],
+            )
+        except TimeoutError as exc:
+            logger.critical(
+                "[CybosOrder] %s account=%s code=%s side=%s qty=%s",
+                exc, account_no, _code, side_code, _qty,
+            )
+            self._emit_msg({
+                "source": "CpTd6831",
+                "status": "TIMEOUT",
+                "status_code": -99,
+                "message": str(exc),
+                "account_no": account_no,
+                "code": _code,
+                "side": "매수" if side_code == "2" else "매도",
+                "order_gubun": "매수" if side_code == "2" else "매도",
+                "trade_gubun": side_code,
+                "qty": _qty,
+            })
+            # -99: 타임아웃 전용 오류 코드 — 호출자가 CB 트리거 여부 판단
+            return -99
+
         payload = {
             "source": "CpTd6831",
             "status": "OK" if ret in (0, None) and status == 0 else "ERROR",
             "status_code": status if status else _safe_int(ret, 0),
             "message": msg,
             "account_no": account_no,
-            "code": _normalize_code(code),
+            "code": _code,
             "side": "매수" if side_code == "2" else "매도",
             "order_gubun": "매수" if side_code == "2" else "매도",
             "trade_gubun": side_code,
-            "qty": int(qty),
+            "qty": _qty,
         }
         self._emit_msg(payload)
         logger.info("[CybosOrder] ret=%s status=%s msg=%s payload=%s", ret, status, msg, payload)
@@ -564,36 +671,43 @@ class CybosAPI:
         return subscription
 
     def request_futures_snapshot(self, code: str) -> Dict[str, Any]:
-        obj = Dispatch("Dscbo1.FutureMst")
-        obj.SetInputValue(0, _normalize_code(code))
-        ret = obj.BlockRequest()
-        status = _safe_int(obj.GetDibStatus())
+        _code = _normalize_code(code)
+
+        def _read_snapshot(obj):
+            return {
+                "code": _safe_str(obj.GetHeaderValue(0)),
+                "price": _safe_float(obj.GetHeaderValue(71)),
+                "open": _safe_float(obj.GetHeaderValue(72)),
+                "high": _safe_float(obj.GetHeaderValue(73)),
+                "low": _safe_float(obj.GetHeaderValue(74)),
+                "cum_volume": _safe_int(obj.GetHeaderValue(75)),
+                "open_interest": _safe_int(obj.GetHeaderValue(80)),
+                "ask1": _safe_float(obj.GetHeaderValue(37)),
+                "bid1": _safe_float(obj.GetHeaderValue(54)),
+                "ask_qty1": _safe_int(obj.GetHeaderValue(42)),
+                "bid_qty1": _safe_int(obj.GetHeaderValue(59)),
+                "trade_time": _safe_int(obj.GetHeaderValue(82)),
+                "process_time": _safe_int(obj.GetHeaderValue(83)),
+                "market_state": _safe_int(obj.GetHeaderValue(115)),
+            }
+
+        try:
+            ret, status, msg, data = _run_block_request(
+                progid="Dscbo1.FutureMst",
+                input_pairs=[(0, _code)],
+                data_reader=_read_snapshot,
+            )
+        except TimeoutError as exc:
+            logger.error("[CybosSnapshot] %s code=%s", exc, code)
+            return {}
+
         if ret not in (0, None) or status != 0:
             logger.warning(
                 "[CybosSnapshot] request failed ret=%s status=%s msg=%s code=%s",
-                ret,
-                status,
-                _safe_str(obj.GetDibMsg1()),
-                code,
+                ret, status, msg, code,
             )
             return {}
-
-        return {
-            "code": _safe_str(obj.GetHeaderValue(0)),
-            "price": _safe_float(obj.GetHeaderValue(71)),
-            "open": _safe_float(obj.GetHeaderValue(72)),
-            "high": _safe_float(obj.GetHeaderValue(73)),
-            "low": _safe_float(obj.GetHeaderValue(74)),
-            "cum_volume": _safe_int(obj.GetHeaderValue(75)),
-            "open_interest": _safe_int(obj.GetHeaderValue(80)),
-            "ask1": _safe_float(obj.GetHeaderValue(37)),
-            "bid1": _safe_float(obj.GetHeaderValue(54)),
-            "ask_qty1": _safe_int(obj.GetHeaderValue(42)),
-            "bid_qty1": _safe_int(obj.GetHeaderValue(59)),
-            "trade_time": _safe_int(obj.GetHeaderValue(82)),
-            "process_time": _safe_int(obj.GetHeaderValue(83)),
-            "market_state": _safe_int(obj.GetHeaderValue(115)),
-        }
+        return data or {}
 
     def probe_investor_ticker(self, extra_codes: Optional[List[str]] = None) -> None:
         logger.info("[CybosInvestorProbe] not implemented; extra_codes=%s", extra_codes or [])

@@ -36,6 +36,11 @@ class FeatureBuilder:
         self._last_hoga_snapshot: Dict[str, Any] = {}
         self._micro_tick_count = 0
         self._micro_minute_count = 0
+        # CORE 3종(CVD/VWAP/OFI) 연속 실패 카운터 — 3회 연속 시 ERROR 로그
+        # 0으로 복구되면 이전 실패 구간이 끝났음을 의미한다.
+        self._core_fail_streak: Dict[str, int] = {"cvd": 0, "vwap": 0, "ofi": 0}
+        self._core_fail_notified: Dict[str, bool] = {"cvd": False, "vwap": False, "ofi": False}
+        self._on_core_fail: Optional[Any] = None  # 외부 CB 경보 콜백 (main.py에서 주입)
 
     def update_hoga(
         self,
@@ -107,8 +112,17 @@ class FeatureBuilder:
             features["cvd_direction"] = float(cvd_result["direction"])
             features["cvd"]           = float(cvd_result.get("cvd", 0.0))
             features["cvd_slope"]     = float(cvd_result.get("cvd_slope", 0.0))
+            self._core_fail_streak["cvd"] = 0
+            self._core_fail_notified["cvd"] = False
         except Exception as _exc:
-            logger.warning("[FeatureBuilder] CVD 오류 — 기본값 사용: %s", _exc)
+            self._core_fail_streak["cvd"] += 1
+            streak = self._core_fail_streak["cvd"]
+            logger.warning("[FeatureBuilder] CVD 오류 (연속 %d회) — 기본값 사용: %s", streak, _exc)
+            if streak >= 3 and not self._core_fail_notified["cvd"]:
+                logger.error("[CORE 경보] CVD %d회 연속 실패 — 신호 소멸 위험. 파이프라인 점검 필요.", streak)
+                self._core_fail_notified["cvd"] = True
+                if callable(self._on_core_fail):
+                    self._on_core_fail("CVD", streak)
             features.update({"cvd_divergence": 0.0, "cvd_direction": 0.0,
                              "cvd": 0.0, "cvd_slope": 0.0})
 
@@ -131,8 +145,17 @@ class FeatureBuilder:
             features["vwap_position"] = float(vwap_result["position"])
             features["vwap"]          = float(vwap_result["vwap"])
             features["above_vwap"]    = float(vwap_result["above_vwap"])
+            self._core_fail_streak["vwap"] = 0
+            self._core_fail_notified["vwap"] = False
         except Exception as _exc:
-            logger.warning("[FeatureBuilder] VWAP 오류 — 기본값 사용: %s", _exc)
+            self._core_fail_streak["vwap"] += 1
+            streak = self._core_fail_streak["vwap"]
+            logger.warning("[FeatureBuilder] VWAP 오류 (연속 %d회) — 기본값 사용: %s", streak, _exc)
+            if streak >= 3 and not self._core_fail_notified["vwap"]:
+                logger.error("[CORE 경보] VWAP %d회 연속 실패 — 기관 알고리즘 기준선 소멸 위험.", streak)
+                self._core_fail_notified["vwap"] = True
+                if callable(self._on_core_fail):
+                    self._on_core_fail("VWAP", streak)
             features.update({"vwap_position": 0.0, "vwap": 0.0, "above_vwap": 0.0})
 
         try:
@@ -141,8 +164,17 @@ class FeatureBuilder:
             features["ofi_pressure"]  = float(ofi_result["pressure"])
             features["ofi_imbalance"] = float(ofi_result["imbalance_ratio"])
             features["ofi_raw"]       = float(ofi_result["ofi_raw"])
+            self._core_fail_streak["ofi"] = 0
+            self._core_fail_notified["ofi"] = False
         except Exception as _exc:
-            logger.warning("[FeatureBuilder] OFI 오류 — 기본값 사용: %s", _exc)
+            self._core_fail_streak["ofi"] += 1
+            streak = self._core_fail_streak["ofi"]
+            logger.warning("[FeatureBuilder] OFI 오류 (연속 %d회) — 기본값 사용: %s", streak, _exc)
+            if streak >= 3 and not self._core_fail_notified["ofi"]:
+                logger.error("[CORE 경보] OFI %d회 연속 실패 — 1~3분 선행신호 소멸 위험.", streak)
+                self._core_fail_notified["ofi"] = True
+                if callable(self._on_core_fail):
+                    self._on_core_fail("OFI", streak)
             features.update({"ofi_norm": 0.0, "ofi_pressure": 0.0,
                              "ofi_imbalance": 0.0, "ofi_raw": 0.0})
 

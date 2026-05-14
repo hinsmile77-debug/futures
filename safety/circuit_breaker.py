@@ -17,6 +17,8 @@ import statistics
 from collections import deque
 from typing import Callable, Optional
 
+from utils.time_utils import now_kst
+
 from config.settings import (
     CB_SIGNAL_FLIP_LIMIT, CB_SIGNAL_FLIP_PAUSE,
     CB_CONSEC_STOP_LIMIT, CB_ACCURACY_MIN_30M,
@@ -76,7 +78,7 @@ class CircuitBreaker:
 
     def _check_pause_expiry(self):
         if self._state == CB_STATE_PAUSED and self._pause_until:
-            if datetime.datetime.now() >= self._pause_until:
+            if now_kst() >= self._pause_until:
                 self._state = CB_STATE_NORMAL
                 self._pause_until = None
                 logger.info("[CB] 일시 정지 해제 — 정상 복귀")
@@ -84,7 +86,7 @@ class CircuitBreaker:
 
     # ── 트리거 ① 신호 반전 ────────────────────────────────────
     def record_signal(self, direction: int):
-        now = datetime.datetime.now()
+        now = now_kst()
         self._signal_history.append((now, direction))
 
         # 1분 이전 제거
@@ -206,7 +208,7 @@ class CircuitBreaker:
         if self._state in (CB_STATE_PAUSED, CB_STATE_HALTED):
             return
         self._state = CB_STATE_PAUSED
-        self._pause_until = datetime.datetime.now() + datetime.timedelta(minutes=minutes)
+        self._pause_until = now_kst() + datetime.timedelta(minutes=minutes)
         msg = f"[CB] {minutes}분 진입 정지 | {reason}"
         logger.warning(msg)
         log_manager.system(msg, "WARNING")

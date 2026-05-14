@@ -9,6 +9,8 @@ import logging
 import os
 from typing import Optional, Dict, Tuple
 
+from utils.time_utils import now_kst
+
 from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT, FUTURES_PT_VALUE
 from config.settings import ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT, FUTURES_COMMISSION_RATE
 
@@ -91,7 +93,7 @@ class PositionTracker:
         self.initial_quantity = 0
         self._optimistic = False
         self.last_update_reason = reason
-        self.last_update_ts = datetime.datetime.now()
+        self.last_update_ts = now_kst()
         self._save_state()
 
     def open_position(
@@ -122,7 +124,7 @@ class PositionTracker:
         self.status      = direction
         self.entry_price = price
         self.quantity    = quantity
-        self.entry_time  = datetime.datetime.now()
+        self.entry_time  = now_kst()
         self.grade       = grade
         self.regime      = regime
         self.signal_direction = raw_direction or direction
@@ -139,7 +141,7 @@ class PositionTracker:
         self.partial_2_done = False
         self.partial_3_done = False
         self.last_update_reason = f"open_position:{direction}"
-        self.last_update_ts = datetime.datetime.now()
+        self.last_update_ts = now_kst()
 
         logger.info(
             f"[Position] 진입 {direction} {quantity}계약 @ {price} "
@@ -202,7 +204,7 @@ class PositionTracker:
 
         # 초기화
         self.last_update_reason = f"close_position:{reason}"
-        self.last_update_ts = datetime.datetime.now()
+        self.last_update_ts = now_kst()
         self._reset_position()
         return result
 
@@ -233,7 +235,7 @@ class PositionTracker:
             self.trailing_anchor_price = price
             self._recalculate_levels(atr)
             self.last_update_reason = f"apply_entry_fill_correction:{direction}"
-            self.last_update_ts = filled_at or datetime.datetime.now()
+            self.last_update_ts = filled_at or now_kst()
             self._save_state()
             logger.info(
                 f"[Position] 체결보정 {direction} {quantity}계약 @ {price} "
@@ -259,7 +261,7 @@ class PositionTracker:
             self.quantity = quantity
             self.initial_quantity = quantity
             self.trailing_anchor_price = price
-            self.entry_time = filled_at or datetime.datetime.now()
+            self.entry_time = filled_at or now_kst()
             self.grade = grade
             self.regime = regime
             self.signal_direction = raw_direction or direction
@@ -279,14 +281,14 @@ class PositionTracker:
             self.signal_direction = raw_direction or self.signal_direction or direction
             self.reverse_entry_enabled = bool(reverse_entry_enabled or self.reverse_entry_enabled)
             if self.entry_time is None:
-                self.entry_time = filled_at or datetime.datetime.now()
+                self.entry_time = filled_at or now_kst()
 
         self._recalculate_levels(atr)
         self.partial_1_done = False
         self.partial_2_done = False
         self.partial_3_done = False
         self.last_update_reason = f"apply_entry_fill:{direction}"
-        self.last_update_ts = filled_at or datetime.datetime.now()
+        self.last_update_ts = filled_at or now_kst()
         self._save_state()
 
         logger.info(
@@ -360,13 +362,13 @@ class PositionTracker:
                 f"| PnL={pnl_pts:+.2f}pt ({pnl_krw:+,.0f}원) | {reason}"
             )
             self.last_update_reason = f"apply_exit_fill_final:{reason}"
-            self.last_update_ts = filled_at or datetime.datetime.now()
+            self.last_update_ts = filled_at or now_kst()
             self._reset_position()
         else:
             self.quantity -= quantity
             self._sync_partial_progress()
             self.last_update_reason = f"apply_exit_fill_partial:{reason}"
-            self.last_update_ts = filled_at or datetime.datetime.now()
+            self.last_update_ts = filled_at or now_kst()
             self._save_state()
             result["remaining"] = self.quantity
             logger.info(
@@ -401,7 +403,7 @@ class PositionTracker:
         self.status = direction
         self.entry_price = price
         self.quantity = quantity
-        self.entry_time = prev_entry_time if same_side_sync and prev_entry_time else (synced_at or datetime.datetime.now())
+        self.entry_time = prev_entry_time if same_side_sync and prev_entry_time else (synced_at or now_kst())
         self.grade = grade
         self.regime = regime
         self.signal_direction = direction
@@ -414,7 +416,7 @@ class PositionTracker:
         self.partial_2_done = False
         self.partial_3_done = False
         self.last_update_reason = f"sync_from_broker:{direction}"
-        self.last_update_ts = synced_at or datetime.datetime.now()
+        self.last_update_ts = synced_at or now_kst()
         self._recalculate_levels(atr)
         if same_side_sync:
             if prev_stop > 0:
@@ -451,7 +453,7 @@ class PositionTracker:
     def sync_flat_from_broker(self) -> None:
         """브로커 기준 무포지션 상태로 강제 동기화한다."""
         self.last_update_reason = "sync_flat_from_broker"
-        self.last_update_ts = datetime.datetime.now()
+        self.last_update_ts = now_kst()
         self._reset_position()
         logger.warning("[Position] 브로커 기준 동기화: FLAT")
 
@@ -481,7 +483,7 @@ class PositionTracker:
         self.quantity        -= qty
         self._sync_partial_progress()
         self.last_update_reason = f"partial_close:{reason}"
-        self.last_update_ts = datetime.datetime.now()
+        self.last_update_ts = now_kst()
 
         entry_ts_str = (
             self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -532,7 +534,7 @@ class PositionTracker:
         self.partial_1_done = True
         self._sync_partial_progress()
         self.last_update_reason = "arm_tp1_single_contract"
-        self.last_update_ts = datetime.datetime.now()
+        self.last_update_ts = now_kst()
         self._save_state()
 
         logger.info(
@@ -582,7 +584,7 @@ class PositionTracker:
         self.partial_1_done = True
         self._sync_partial_progress()
         self.last_update_reason = f"arm_tp1_single_contract:{mode}"
-        self.last_update_ts = datetime.datetime.now()
+        self.last_update_ts = now_kst()
         self._save_state()
 
         logger.info(
@@ -741,7 +743,7 @@ class PositionTracker:
     def _hold_minutes(self) -> int:
         if not self.entry_time:
             return 0
-        delta = datetime.datetime.now() - self.entry_time
+        delta = now_kst() - self.entry_time
         return int(delta.total_seconds() // 60)
 
     def _recalculate_levels(self, atr: float) -> None:
@@ -797,7 +799,7 @@ class PositionTracker:
             "hold_minutes": self._hold_minutes(),
             "entry_ts": entry_ts_str,
             "exit_ts": (
-                (filled_at or datetime.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+                (filled_at or now_kst()).strftime("%Y-%m-%d %H:%M:%S")
             ),
             "grade": self.grade,
             "reverse_entry_enabled": self.reverse_entry_enabled,
@@ -822,7 +824,7 @@ class PositionTracker:
         self.partial_3_done = False
         self.initial_quantity = 0
         self._optimistic = False
-        self.last_update_ts = self.last_update_ts or datetime.datetime.now()
+        self.last_update_ts = self.last_update_ts or now_kst()
         self._save_state()
 
     # ── 일일 통계 ──────────────────────────────────────────────
@@ -926,7 +928,7 @@ class PositionTracker:
                     self.last_update_ts.isoformat() if self.last_update_ts else None
                 ),
                 "futures_code": self._futures_code,
-                "saved_at":     datetime.datetime.now().isoformat(),
+                "saved_at":     now_kst().isoformat(),
             }
             os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
             with open(_STATE_FILE, "w", encoding="utf-8") as f:

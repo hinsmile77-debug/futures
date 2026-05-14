@@ -46,20 +46,27 @@ CRED_TARGET      = "cybosplus"   # cmdkey /add: 에서 지정한 이름
 MOCK_MODE        = True          # True=모의투자, False=실투자
 CONNECT_TIMEOUT  = 90            # 로그인 후 연결 대기 최대 초
 MOCK_POPUP_MIN_WAIT = 20         # 로그인 클릭 후 모의투자 선택 팝업 최소 대기 초
-PASSWORD_OVERRIDE = u"amazin16"  # 임시 비밀번호 우선 사용
+PASSWORD_OVERRIDE = None         # 배포형에서는 Credential Manager만 사용
+WAIT_RESULT_CONNECTED = 0        # 기존 연결 재사용으로 로그인 창 없이 연결 완료된 경우
+WAIT_RESULT_STARTED = -1         # CYBOS Starter는 떴지만 아직 로그인 입력 전인 경우
+WAIT_RESULT_NOTICE = -2          # 공지사항 창이 떠서 API 연결 성공으로 볼 수 있는 경우
 
 # kill 대상 (ncStarter 먼저, CpStart 나중 -- 순서 중요)
 CYBOS_PROC_NAMES = ["_ncstarter_.exe", "cpstart.exe"]
 SECURITY_BUTTON_TEXTS = {u"사용안함", u"사용 안함"}
 LOGIN_WINDOW_TITLES   = {u"CYBOS Starter", u"CYBOS Plus"}
+LOGIN_WINDOW_EXCLUDE_KEYWORDS = [u"MIREUK", u"LAUNCHER", u"PYCHARM", u"VISUAL STUDIO CODE", u"VSCODE"]
 LOGIN_BUTTON_TEXTS    = {u"로그인", u"확 인", u"확인", u"ENTER", u"enter"}
 PASSWORD_DIALOG_CONFIRM_TEXTS = {u"확인", u"예", u"Yes", u"OK"}
+EXISTING_CONNECTION_DIALOG_KEYWORDS = [u"기존 연결 선택", u"기존연결선택", u"기존 연결"]
+EXISTING_CONNECTION_BUTTON_TEXTS = {u"기존 연결로 접속", u"기존연결로접속"}
 MOCK_ACCESS_BUTTON_TEXTS = {
     u"모의투자\r\n접속", u"모의투자\n접속", u"모의투자접속",
     u"모의투자 접속", u"접속",
 }
 MOCK_DIALOG_KEYWORDS = [u"모의투자 선택", u"모의투자선택", u"모의투자", u"접속"]
 SECURITY_DIALOG_EXACT = u"CYBOS"
+CYBOS_WINDOW_DEBUG_KEYWORDS = [u"CYBOS", u"DAISHIN", u"STARTER", u"NOTICE", u"모의투자", u"공지사항"]
 # -------------------------------------------------------------------------------
 
 # WinEventHook 타입 정의 (콜백 GC 방지용 모듈 레벨 유지)
@@ -199,19 +206,12 @@ def _focus_control(hwnd):
 _PASSWORD_HEURISTIC_CACHE = {}  # {window_title_hash: edit_index}
 
 
-def _find_password_edit(parent_hwnd):
-    """로그인 창에서 비밀번호 입력 Edit 컨트롤을 찾는다.
-
-    휴리스틱 (우선순위):
-      1. 자식 중 가장 큰 Edit (높이 기준) — Cybos Starter 전형적 패턴
-      2. 마지막에 위치한 Edit (y 좌표 기준) — ID 필드 다음에 비밀번호 필드
-      3. Edit 클래스 중 하나 — fallback
-    """
+def _find_login_edits(parent_hwnd):
+    """로그인 창의 가시 Edit 후보들을 위에서 아래 순으로 반환"""
     edits = [c for c in _enum_children(parent_hwnd)
              if win32gui.GetClassName(c) == "Edit" and win32gui.IsWindowVisible(c)]
 
     if not edits:
-        # Cybos 로그인 창은 커스텀 윈도우일 수 있음 — AfxWnd/PopupEdit 등 다양한 클래스 탐색
         custom_edits = [c for c in _enum_children(parent_hwnd)
                         if win32gui.IsWindowVisible(c)]
         for c in custom_edits:
@@ -221,6 +221,35 @@ def _find_password_edit(parent_hwnd):
                     edits.append(c)
             except Exception:
                 pass
+
+    unique = []
+    seen = set()
+    for edit in edits:
+        if edit not in seen:
+            unique.append(edit)
+            seen.add(edit)
+
+    unique.sort(key=lambda h: _get_window_rect_safe(h) or (0, 999999, 0, 0))
+    return unique
+
+
+def _find_id_edit(parent_hwnd):
+    """로그인 창의 ID Edit 컨트롤을 찾는다."""
+    edits = _find_login_edits(parent_hwnd)
+    if len(edits) >= 2:
+        return edits[0]
+    return edits[0] if edits else None
+
+
+def _find_password_edit(parent_hwnd):
+    """로그인 창에서 비밀번호 입력 Edit 컨트롤을 찾는다.
+
+    휴리스틱 (우선순위):
+      1. 자식 중 가장 큰 Edit (높이 기준) — Cybos Starter 전형적 패턴
+      2. 마지막에 위치한 Edit (y 좌표 기준) — ID 필드 다음에 비밀번호 필드
+      3. Edit 클래스 중 하나 — fallback
+    """
+    edits = _find_login_edits(parent_hwnd)
 
     if not edits:
         return None
@@ -244,6 +273,35 @@ def _find_password_edit(parent_hwnd):
 
     # 우선순위 3: 아무 Edit나 반환
     return edits[0]
+
+
+def _is_login_window_ready(hwnd):
+    """실제 로그인 입력이 가능한 창인지 확인"""
+    if not hwnd:
+        return False
+
+    try:
+        if not win32gui.IsWindow(hwnd):
+            return False
+        if win32gui.GetWindowText(hwnd) not in LOGIN_WINDOW_TITLES:
+            return False
+    except Exception:
+        return False
+
+    try:
+        if _find_password_edit(hwnd):
+            return True
+    except Exception:
+        pass
+
+    try:
+        login_btns = _find_child_by_exact_text(hwnd, LOGIN_BUTTON_TEXTS, class_name="Button")
+        if login_btns:
+            return True
+        login_btns = _find_child_by_text_contains(hwnd, list(LOGIN_BUTTON_TEXTS))
+        return bool(login_btns)
+    except Exception:
+        return False
 
 
 def _activate_and_wait_for_window(hwnd, title_hint=""):
@@ -272,6 +330,24 @@ def _force_foreground(hwnd):
         return False
 
 
+def _is_foreground_window(hwnd):
+    try:
+        return win32gui.GetForegroundWindow() == hwnd
+    except Exception:
+        return False
+
+
+def _send_keys_to_window(hwnd, keys, label):
+    _activate_and_wait_for_window(hwnd)
+    if not _is_foreground_window(hwnd):
+        print("[WARN] %s 실패 -- 대상 창을 foreground로 만들지 못함" % label)
+        return False
+
+    send_keys(keys)
+    print("[INFO] %s 전송: %s" % (label, keys))
+    return True
+
+
 # -- 기본 유틸 ------------------------------------------------------------------
 
 def _is_connected():
@@ -285,6 +361,7 @@ def _is_connected():
 def _load_credential():
     """Windows Credential Manager에서 ID/PW 읽기"""
     if PASSWORD_OVERRIDE:
+        print("[WARN] PASSWORD_OVERRIDE가 설정되어 Credential Manager를 건너뜁니다.")
         return "", PASSWORD_OVERRIDE
 
     try:
@@ -298,6 +375,59 @@ def _load_credential():
     except Exception as e:
         print("[DEBUG] CredEnumerate 오류: %s" % e)
     print("[ERROR] 자격증명 없음 -- PowerShell에서 아래 명령 실행 후 재시도:")
+    print("  cmdkey /add:%s /user:아이디 /pass:비밀번호" % CRED_TARGET)
+    sys.exit(1)
+
+
+def _load_credential_checked():
+    """Credential Manager에서 ID/PW를 안정적으로 읽고 비어 있으면 실패 처리."""
+
+    def _decode_credential_blob(blob):
+        if blob is None:
+            return ""
+        if isinstance(blob, str):
+            return blob.strip("\x00").strip()
+        if not blob:
+            return ""
+        for encoding in ("utf-16-le", "utf-8", "cp949"):
+            try:
+                return blob.decode(encoding).rstrip("\x00").strip()
+            except Exception:
+                pass
+        return ""
+
+    def _extract_credential(cred):
+        user_id = (cred.get("UserName") or "").strip()
+        password = _decode_credential_blob(cred.get("CredentialBlob"))
+        return user_id, password
+
+    if PASSWORD_OVERRIDE:
+        return "", PASSWORD_OVERRIDE
+
+    try:
+        cred = win32cred.CredRead(CRED_TARGET, win32cred.CRED_TYPE_GENERIC, 0)
+        user_id, password = _extract_credential(cred)
+        print("[INFO] Credential loaded via CredRead: target=%s user_len=%d password_len=%d"
+              % (CRED_TARGET, len(user_id), len(password)))
+        if user_id and password:
+            return user_id, password
+    except Exception as e:
+        print("[DEBUG] CredRead 오류: %s" % e)
+
+    try:
+        all_creds = win32cred.CredEnumerate(None, 0) or []
+        for cred in all_creds:
+            target_name = (cred.get("TargetName") or "").strip()
+            if target_name.lower() == CRED_TARGET.lower():
+                user_id, password = _extract_credential(cred)
+                print("[INFO] Credential loaded via CredEnumerate: target=%s user_len=%d password_len=%d"
+                      % (target_name, len(user_id), len(password)))
+                if user_id and password:
+                    return user_id, password
+    except Exception as e:
+        print("[DEBUG] CredEnumerate fallback 오류: %s" % e)
+
+    print("[ERROR] 자격 증명을 찾았지만 ID 또는 비밀번호가 비어 있습니다.")
     print("  cmdkey /add:%s /user:아이디 /pass:비밀번호" % CRED_TARGET)
     sys.exit(1)
 
@@ -330,6 +460,48 @@ def _find_window_by_keywords(keywords, require_visible=True):
     return found
 
 
+def _find_window_by_title_contains(keywords, require_visible=True):
+    normalized_keywords = tuple(_normalize_title(kw) for kw in keywords)
+    found = []
+
+    def _enum(hwnd, _):
+        try:
+            if require_visible and not win32gui.IsWindowVisible(hwnd):
+                return
+            title = win32gui.GetWindowText(hwnd).strip()
+            if not title:
+                return
+            normalized = _normalize_title(title)
+            if any(kw in normalized for kw in normalized_keywords):
+                found.append((hwnd, title))
+        except Exception:
+            pass
+
+    try:
+        win32gui.EnumWindows(_enum, None)
+    except Exception:
+        pass
+    return found
+
+
+def _log_cybos_window_candidates(label):
+    candidates = _find_window_by_title_contains(CYBOS_WINDOW_DEBUG_KEYWORDS, require_visible=True)
+    if not candidates:
+        print("[INFO] %s: CYBOS 계열 창 후보 없음" % label)
+        return
+
+    rows = []
+    for hwnd, title in candidates[:10]:
+        try:
+            cls = win32gui.GetClassName(hwnd)
+            child_count = len(_enum_children(hwnd))
+        except Exception:
+            cls = "?"
+            child_count = -1
+        rows.append("%s(hwnd=%d cls=%s children=%d)" % (title, hwnd, cls, child_count))
+    print("[INFO] %s: CYBOS 계열 창 후보=%s" % (label, rows))
+
+
 def _dump_children(parent_hwnd, label=""):
     """디버그용: 자식 컨트롤 덤프"""
     rows = []
@@ -352,6 +524,18 @@ def _dump_children(parent_hwnd, label=""):
         print("  hwnd=%-8d %s%s cls=%-22s %s %dx%d" % (
             child_hwnd, "V" if vis else " ", "E" if ena else " ",
             cls, text, w, h))
+
+
+def _collect_child_texts(parent_hwnd):
+    texts = []
+    for child in _enum_children(parent_hwnd):
+        try:
+            text = win32gui.GetWindowText(child).strip()
+            if text:
+                texts.append(text)
+        except Exception:
+            pass
+    return texts
 
 
 # -- 프로세스 관리 --------------------------------------------------------------
@@ -423,23 +607,47 @@ def _dismiss_error_dialogs():
     return dismissed
 
 
+def _close_notice_windows():
+    """연결 후 뒤늦게 뜨는 공지사항 창을 닫기"""
+    dismissed = 0
+    candidates = _find_window_by_keywords([u"공지사항"], require_visible=True)
+    for hwnd, title in candidates:
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                continue
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+            dismissed += 1
+            print("[INFO] 공지사항 창 닫음: '%s' hwnd=%d" % (title, hwnd))
+            time.sleep(0.3)
+        except Exception as e:
+            print("[WARN] 공지사항 창 닫기 실패 '%s' hwnd=%d: %s" % (title, hwnd, e))
+    return dismissed
+
+
+def _has_notice_window():
+    """공지사항 창이 떠 있는지 확인"""
+    candidates = _find_window_by_keywords([u"공지사항"], require_visible=True)
+    return bool(candidates)
+
+
 # -- 창 탐지 --------------------------------------------------------------------
 
 def _find_login_window_once():
     """정확한 제목 일치로 로그인 창 탐지"""
     SKIP_CLASSES = {"Shell_TrayWnd", "CabinetWClass", "ExploreWClass", "ShellTabWindowClass"}
-    result = [None]
+    found = []
 
     def _enum(hwnd, _):
-        if result[0]:
-            return
         try:
             if not win32gui.IsWindowVisible(hwnd):
                 return
             if win32gui.GetClassName(hwnd) in SKIP_CLASSES:
                 return
-            if win32gui.GetWindowText(hwnd) in LOGIN_WINDOW_TITLES:
-                result[0] = hwnd
+            title = win32gui.GetWindowText(hwnd).strip()
+            if title in LOGIN_WINDOW_TITLES:
+                child_count = len(_enum_children(hwnd))
+                score = child_count + 1000
+                found.append((score, hwnd))
         except Exception:
             pass
 
@@ -447,7 +655,46 @@ def _find_login_window_once():
         win32gui.EnumWindows(_enum, None)
     except Exception:
         pass
-    return result[0]
+    if not found:
+        return None
+    found.sort(key=lambda item: item[0], reverse=True)
+    return found[0][1]
+
+
+def _resolve_login_window(hwnd, timeout=8.0):
+    """로그인 창 핸들을 재검증하고, 컨트롤이 붙은 새 hwnd가 있으면 교체"""
+    deadline = time.time() + timeout
+    last_seen = hwnd
+
+    while time.time() < deadline:
+        candidates = []
+        current = _find_login_window_once()
+        if current:
+            candidates.append(current)
+        if hwnd and hwnd not in candidates:
+            candidates.append(hwnd)
+        if last_seen and last_seen not in candidates:
+            candidates.append(last_seen)
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                if not win32gui.IsWindow(candidate):
+                    continue
+                title = win32gui.GetWindowText(candidate)
+                children = _enum_children(candidate)
+                if title in LOGIN_WINDOW_TITLES and _is_login_window_ready(candidate):
+                    print("[INFO] 로그인 창 재확인: hwnd=%d title='%s' children=%d ready=True"
+                          % (candidate, title, len(children)))
+                    return candidate
+                last_seen = candidate
+            except Exception:
+                pass
+
+        time.sleep(0.3)
+
+    return last_seen
 
 
 # -- 보안 다이얼로그 클릭 -------------------------------------------------------
@@ -494,52 +741,66 @@ def _try_click_security(hwnd):
         return False
 
 
-def _get_all_monitor_rects():
-    """EnumDisplayMonitors로 모든 모니터 rect 반환 (left x 기준 정렬)"""
-    monitors = []
-    MonitorEnumProc = ctypes.WINFUNCTYPE(
-        ctypes.c_bool,
-        ctypes.wintypes.HMONITOR,
-        ctypes.wintypes.HDC,
-        ctypes.POINTER(ctypes.wintypes.RECT),
-        ctypes.wintypes.LPARAM,
-    )
-
-    def _cb(hMon, hDC, lpRect, lParam):
-        r = lpRect.contents
-        monitors.append((r.left, r.top, r.right, r.bottom))
-        return True
-
-    cb = MonitorEnumProc(_cb)
-    ctypes.windll.user32.EnumDisplayMonitors(None, None, cb, 0)
-    monitors.sort(key=lambda m: m[0])
-    return monitors
+def _find_security_dialog_once():
+    candidates = _find_window_by_title_contains([SECURITY_DIALOG_EXACT], require_visible=True)
+    for hwnd, title in candidates:
+        try:
+            child_buttons = _find_child_by_exact_text(hwnd, SECURITY_BUTTON_TEXTS, class_name="Button")
+            if child_buttons:
+                return hwnd
+            all_buttons = _find_child_by_class(hwnd, "Button", visible_only=True)
+            if all_buttons and len(all_buttons) >= 2:
+                return hwnd
+        except Exception:
+            pass
+    return None
 
 
-def _blind_click_security_dialog():
-    """
-    최후의 수단: 타이밍 기반 블라인드 클릭.
-    가장 왼쪽 모니터(보안 다이얼로그 위치) 하단부 우측 클릭.
-    """
-    monitors = _get_all_monitor_rects()
-    print("[DBG] 모니터 목록: %s" % monitors)
-    if not monitors:
-        print("[WARN] 모니터 열거 실패 -- 블라인드 클릭 불가")
+def _handle_existing_connection_dialog():
+    """'기존 연결 선택' 팝업이 있으면 처리하고, 없으면 즉시 False 반환"""
+    candidates = _find_window_by_keywords(EXISTING_CONNECTION_DIALOG_KEYWORDS, require_visible=True)
+    if not candidates:
         return False
 
-    l, t, r, b = monitors[0]
-    cx = (l + r) // 2 + (r - l) // 8
-    cy = t + int((b - t) * 0.55)
-    print("[INFO] 블라인드 클릭 -> 모니터(x:%d~%d, y:%d~%d) 지점 (%d,%d)"
-          % (l, r, t, b, cx, cy))
+    print("[INFO] 기존 연결 선택 팝업 발견")
 
-    win32api.SetCursorPos((cx, cy))
-    time.sleep(0.15)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.08)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-    time.sleep(0.2)
-    return True
+    for hwnd, title in candidates:
+        if not win32gui.IsWindowVisible(hwnd):
+            continue
+
+        print("[INFO] 기존 연결 선택 창 발견: '%s' hwnd=%d" % (title, hwnd))
+        _activate_and_wait_for_window(hwnd, title)
+        _dump_children(hwnd, "기존 연결 선택 '%s'" % title)
+
+        # 리스트가 있으면 첫 행이 선택되도록 대상 창에만 키 입력 보조
+        list_views = _find_child_by_class(hwnd, "SysListView32", visible_only=True)
+        if list_views:
+            list_hwnd = list_views[0]
+            _focus_control(list_hwnd)
+            time.sleep(0.1)
+            _send_keys_to_window(hwnd, "{HOME}", "기존 연결 목록 첫 행 선택")
+
+        btns = _find_child_by_exact_text(hwnd, EXISTING_CONNECTION_BUTTON_TEXTS, class_name="Button")
+        if not btns:
+            btns = _find_child_by_text_contains(hwnd, [u"기존 연결"], class_name="Button")
+
+        if btns:
+            for btn_hwnd, btn_text in btns:
+                if _is_control_enabled(btn_hwnd):
+                    print("[INFO] 기존 연결 버튼 클릭: '%s' hwnd=%d" % (btn_text, btn_hwnd))
+                    _post_button_click(btn_hwnd)
+                    return True
+
+            btn_hwnd, btn_text = btns[0]
+            print("[INFO] 기존 연결 버튼(비활성 추정) 클릭 시도: '%s' hwnd=%d" % (btn_text, btn_hwnd))
+            _post_button_click(btn_hwnd)
+            return True
+
+        print("[WARN] 기존 연결 버튼을 찾지 못함")
+        _dump_children(hwnd, "기존 연결 선택(버튼 못찾음)")
+        return False
+
+    return False
 
 
 # -- 핵심 대기 루프 -------------------------------------------------------------
@@ -551,12 +812,12 @@ def _wait_for_login_clicking_security(timeout=120):
     탐지 전략 (우선순위 순):
       1. SetWinEventHook(EVENT_OBJECT_SHOW) -- 창이 나타나는 순간 즉시 캐치
       2. FindWindowW / FindWindow 폴링
-      3. 12~17초 구간 블라인드 클릭 (보안 다이얼로그 최후 수단)
-
-    로그인 창 발견 시 hwnd 반환, timeout 초과 시 None 반환.
+    로그인 창이 실제 입력 가능한 상태로 준비되면 hwnd 반환.
+    기존 연결 재사용으로 이미 연결되면 WAIT_RESULT_CONNECTED 반환.
+    공지사항 창이 뜨면 WAIT_RESULT_NOTICE 반환.
+    timeout 초과 시 None 반환.
     """
     security_clicked = False
-    blind_clicked = False
     hook_handle = None
     hook_found = [None]
 
@@ -584,6 +845,8 @@ def _wait_for_login_clicking_security(timeout=120):
     print("[INFO] ncStarter 초기화 대기 중 (보안 다이얼로그 + 로그인 창 탐지)...")
     start = time.time()
     msg = ctypes.wintypes.MSG()
+    existing_connection_handled = False
+    last_login_wait_log = 0.0
 
     try:
         iterations = timeout * 5
@@ -594,6 +857,20 @@ def _wait_for_login_clicking_security(timeout=120):
                 ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
                 ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
 
+            if not existing_connection_handled:
+                if _handle_existing_connection_dialog():
+                    existing_connection_handled = True
+                    time.sleep(1.0)
+                    continue
+
+            if existing_connection_handled and _is_connected():
+                print("[INFO] 기존 연결 재사용으로 CybosPlus 연결 확인 (%.1fs)" % elapsed)
+                return WAIT_RESULT_CONNECTED
+
+            if _has_notice_window():
+                print("[INFO] 공지사항 창 감지 -- API 연결 성공으로 간주 (%.1fs)" % elapsed)
+                return WAIT_RESULT_NOTICE
+
             if not security_clicked:
                 sec_hwnd = hook_found[0]
                 if not sec_hwnd:
@@ -602,6 +879,8 @@ def _wait_for_login_clicking_security(timeout=120):
                     sec_hwnd = win32gui.FindWindow(None, SECURITY_DIALOG_EXACT)
                 if not sec_hwnd:
                     sec_hwnd = win32gui.FindWindow("#32770", SECURITY_DIALOG_EXACT)
+                if not sec_hwnd:
+                    sec_hwnd = _find_security_dialog_once()
 
                 if sec_hwnd:
                     try:
@@ -613,24 +892,32 @@ def _wait_for_login_clicking_security(timeout=120):
                     _try_click_security(sec_hwnd)
                     security_clicked = True
 
-                elif 12.0 <= elapsed <= 17.0 and not blind_clicked:
-                    print("[INFO] 보안창 미탐지 -- 블라인드 클릭 시도 (%.1fs)" % elapsed)
-                    _blind_click_security_dialog()
-                    blind_clicked = True
 
             login_hwnd = _find_login_window_once()
             if login_hwnd:
                 try:
                     title = win32gui.GetWindowText(login_hwnd)
+                    ready = _is_login_window_ready(login_hwnd)
+                    child_count = len(_enum_children(login_hwnd))
                 except Exception:
                     title = "?"
-                print("[INFO] 로그인 창 발견: '%s' hwnd=%d (%.1fs)"
-                      % (title, login_hwnd, elapsed))
-                return login_hwnd
+                    ready = False
+                    child_count = -1
+
+                if ready:
+                    print("[INFO] 로그인 창 발견: '%s' hwnd=%d children=%d ready=True (%.1fs)"
+                          % (title, login_hwnd, child_count, elapsed))
+                    return login_hwnd
+
+                if elapsed - last_login_wait_log >= 3.0:
+                    print("[INFO] 로그인 창 발견, 아직 입력 준비 안됨: '%s' hwnd=%d children=%d (%.1fs)"
+                          % (title, login_hwnd, child_count, elapsed))
+                    last_login_wait_log = elapsed
 
             if tick % 50 == 49:
-                print("[INFO] 대기 중... %.0f/%ds  보안클릭=%s 블라인드=%s"
-                      % (elapsed, timeout, security_clicked, blind_clicked))
+                _log_cybos_window_candidates("대기 중 창 스캔")
+                print("[INFO] 대기 중... %.0f/%ds  보안클릭=%s 기존연결처리=%s starter_seen=%s notice=%s"
+                      % (elapsed, timeout, security_clicked, existing_connection_handled, bool(login_hwnd), _has_notice_window()))
 
             time.sleep(0.2)
 
@@ -644,59 +931,69 @@ def _wait_for_login_clicking_security(timeout=120):
 
 # -- 로그인 수행 ----------------------------------------------------------------
 
-def _perform_login(hwnd, password):
+def _perform_login(hwnd, user_id, password):
     """
     로그인 창에서 컨트롤 기반으로:
-      1. 비밀번호 Edit 컨트롤을 찾아 WM_SETTEXT + send_keys 입력
-      2. 로그인 Button 컨트롤을 찾아 BM_CLICK
+      1. ID / 비밀번호 Edit 컨트롤을 찾아 WM_SETTEXT 입력
+      2. 로그인 Button 컨트롤을 찾아 BM_CLICK 또는 Enter
 
     절대 좌표 전혀 사용하지 않음.
     """
+    hwnd = _resolve_login_window(hwnd, timeout=10.0)
+    if not hwnd or not win32gui.IsWindow(hwnd):
+        print("[ERROR] 로그인 창 hwnd 재확인 실패")
+        return False
+
     _activate_and_wait_for_window(hwnd, "CYBOS Starter")
+    time.sleep(0.5)
+
+    # 자식 컨트롤이 늦게 붙는 환경을 고려해 짧게 한 번 더 재확인
+    if not _enum_children(hwnd):
+        hwnd = _resolve_login_window(hwnd, timeout=5.0)
+        _activate_and_wait_for_window(hwnd, "CYBOS Starter")
 
     # 디버그: 컨트롤 덤프
     title = win32gui.GetWindowText(hwnd)
+    children = _enum_children(hwnd)
+    print("[INFO] 로그인 창 최종 확인: hwnd=%d title='%s' children=%d"
+          % (hwnd, title, len(children)))
     _dump_children(hwnd, "로그인 창 '%s'" % title)
 
-    # ── STEP 1: 비밀번호 Edit 찾아 텍스트 입력 ──
+    # ── STEP 1: ID / 비밀번호 Edit 찾아 텍스트 입력 ──
+    id_edit = _find_id_edit(hwnd)
     pw_edit = _find_password_edit(hwnd)
-    if pw_edit:
+    if id_edit and pw_edit:
+        print("[INFO] 아이디 Edit 컨트롤 발견: hwnd=%d" % id_edit)
         print("[INFO] 비밀번호 Edit 컨트롤 발견: hwnd=%d" % pw_edit)
+        if user_id:
+            if not _set_edit_text(id_edit, user_id):
+                _focus_control(id_edit)
+                time.sleep(0.15)
+                if not _send_keys_to_window(hwnd, "^a{BACKSPACE}" + user_id, "아이디 send_keys fallback"):
+                    print("[ERROR] 아이디 입력 실패 -- 안전하지 않은 전역 입력은 중단합니다.")
+                    return False
+        else:
+            print("[ERROR] 로그인용 아이디가 비어 있습니다.")
+            return False
+
         # 먼저 WM_SETTEXT로 시도 (백그라운드에서도 동작)
         if _set_edit_text(pw_edit, password):
             # WM_SETTEXT 성공 시 바로 확인
             pass
         else:
-            # WM_SETTEXT 실패: 포커스 + send_keys fallback
+            # WM_SETTEXT 실패: 대상 창이 foreground일 때만 제한적으로 fallback
             _focus_control(pw_edit)
             time.sleep(0.15)
-            send_keys("^a")
-            send_keys("{BACKSPACE}")
-            time.sleep(0.1)
-            send_keys(password)
-            print("[INFO] send_keys로 비밀번호 입력 완료")
+            if not _send_keys_to_window(hwnd, "^a{BACKSPACE}" + password, "비밀번호 send_keys fallback"):
+                print("[ERROR] 비밀번호 입력 실패 -- 안전하지 않은 전역 입력은 중단합니다.")
+                return False
     else:
-        # Edit 못 찾음 → 활성화 후 Tab으로 포커스 이동 시도
-        print("[WARN] 비밀번호 Edit 컨트롤 미발견 — Tab 탐색 시도")
-        send_keys("{TAB}")
-        time.sleep(0.15)
-        send_keys("{TAB}")
-        time.sleep(0.15)
-        send_keys("^a")
-        send_keys("{BACKSPACE}")
-        time.sleep(0.1)
-        send_keys(password)
-        print("[INFO] Tab 탐색으로 비밀번호 입력 시도 완료")
+        print("[ERROR] 아이디/비밀번호 Edit 컨트롤 미발견 -- 배포형에서는 Tab 탐색을 사용하지 않습니다.")
+        return False
 
     time.sleep(0.3)
 
-    # ── STEP 2: Enter 전송 (TextCtrl에 Enter가 login 역할 할 수 있음) ──
-    send_keys("{ENTER}")
-    print("[INFO] Enter 전송 → 로그인 시도 (%s)" % ("모의투자" if MOCK_MODE else "실투자"))
-    time.sleep(0.5)
-
-    # ── STEP 3: 로그인 버튼 찾아 BM_CLICK ──
-    # Enter가 실패했을 수도 있으므로 버튼 클릭도 시도
+    # ── STEP 2: 로그인 버튼 찾아 BM_CLICK ──
     login_btns = _find_child_by_exact_text(hwnd, LOGIN_BUTTON_TEXTS, class_name="Button")
     if not login_btns:
         # Button 클래스가 아닌 경우도 탐색 (AfxWnd 등)
@@ -715,39 +1012,80 @@ def _perform_login(hwnd, password):
                 print("[INFO] 로그인 버튼 (disabled?) '%s' hwnd=%d → BM_CLICK" % (btn_text, btn_hwnd))
                 _post_button_click(btn_hwnd)
     else:
-        print("[INFO] 로그인 버튼 컨트롤 없음 — Enter로 충분할 수 있음")
+        print("[WARN] 로그인 버튼 컨트롤 미발견 -- 대상 로그인창에 Enter fallback 시도")
+        if not _send_keys_to_window(hwnd, "{ENTER}", "로그인 Enter fallback"):
+            print("[ERROR] 로그인 버튼 컨트롤 미발견 및 Enter fallback 실패")
+            return False
 
     return True
 
 
 # -- 비밀번호 확인 팝업 ---------------------------------------------------------
 
+def _find_password_confirm_dialog():
+    """실제 CYBOS 로그인 실패 팝업 1개를 찾는다."""
+    message_keywords = [u"아이디", u"비밀번호", u"확인해 주시기 바랍니다", u"확인해주시기 바랍니다"]
+    matches = []
+
+    def _enum(hwnd, _):
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            title = win32gui.GetWindowText(hwnd).strip()
+            if title != u"CYBOS":
+                return
+            child_texts = _collect_child_texts(hwnd)
+            joined = u" ".join(child_texts)
+            if any(kw in joined for kw in message_keywords):
+                matches.append((hwnd, title, child_texts))
+        except Exception:
+            pass
+
+    try:
+        win32gui.EnumWindows(_enum, None)
+    except Exception:
+        pass
+    return matches[0] if matches else None
+
+
 def _handle_password_confirm_dialog(timeout=10):
-    """비밀번호 확인 팝업이 뜨면 컨트롤 기반으로 확인 버튼 클릭"""
-    keywords = [u"비밀번호", u"확인", u"주시기 바랍니다", u"CYBOS"]
+    """실제 CYBOS 로그인 실패/확인 팝업만 탐지해서 닫는다."""
+    message_keywords = [u"아이디", u"비밀번호", u"확인해 주시기 바랍니다", u"확인해주시기 바랍니다"]
     print("[INFO] 비밀번호 확인 팝업 대기 중...")
 
     for tick in range(timeout):
-        candidates = _find_window_by_keywords(keywords, require_visible=True)
-        for hwnd, title in candidates:
-            text = (title or u"").strip()
-            if not text:
-                continue
+        matches = []
 
-            # 확인 버튼 찾기
+        def _enum(hwnd, _):
+            try:
+                if not win32gui.IsWindowVisible(hwnd):
+                    return
+                title = win32gui.GetWindowText(hwnd).strip()
+                if title != u"CYBOS":
+                    return
+                child_texts = _collect_child_texts(hwnd)
+                joined = u" ".join(child_texts)
+                if any(kw in joined for kw in message_keywords):
+                    matches.append((hwnd, title, child_texts))
+            except Exception:
+                pass
+
+        try:
+            win32gui.EnumWindows(_enum, None)
+        except Exception:
+            pass
+
+        for hwnd, title, child_texts in matches:
             ok_btns = _find_child_by_exact_text(hwnd, PASSWORD_DIALOG_CONFIRM_TEXTS, class_name="Button")
             if ok_btns:
                 for btn_hwnd, btn_text in ok_btns:
                     if _is_control_enabled(btn_hwnd):
-                        print("[INFO] 비밀번호 팝업 '%s': '%s' BM_CLICK" % (text, btn_text))
+                        print("[ERROR] 로그인 실패 팝업 감지: '%s' text=%s" % (title, child_texts))
                         _post_button_click(btn_hwnd)
                         return True
 
-            # 버튼 컨트롤을 못 찾았지만 창이 있으면 Enter 시도
-            _force_foreground(hwnd)
-            time.sleep(0.2)
-            send_keys("{ENTER}")
-            print("[INFO] 비밀번호 팝업 '%s': Enter 전송" % text)
+            print("[ERROR] 로그인 실패 팝업 감지됐지만 확인 버튼을 찾지 못함: '%s' text=%s" % (title, child_texts))
+            _dump_children(hwnd, "비밀번호 확인 팝업")
             return True
 
         time.sleep(1)
@@ -767,19 +1105,21 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
     if min_wait > 0:
         print("[INFO] 모의투자 선택 팝업 대기 보장... %d초" % min_wait)
         for waited in range(min_wait):
+            if _find_password_confirm_dialog():
+                print("[ERROR] 로그인 실패 팝업 감지 -- 모의투자 선택 대기를 중단합니다.")
+                _handle_password_confirm_dialog(timeout=1)
+                return "login_failed"
             if _is_connected():
                 print("[INFO] 이미 연결되어 있어 모의투자 선택 창 처리를 생략합니다.")
                 return True
             time.sleep(1)
             if (waited + 1) % 5 == 0:
                 print("[INFO] 모의투자 팝업 최소 대기... %d/%d초" % (waited + 1, min_wait))
-        # min_wait 후 Enter → 팝업이 안 보일 경우 기본 선택 강제
-        send_keys("{ENTER}")
-        print("[INFO] 모의투자 팝업 최소 대기 후 Enter 입력")
-        time.sleep(3)
-        print("[INFO] 3초 대기 완료 — 연결 대기 확인 진행")
-
     for tick in range(timeout):
+        if _find_password_confirm_dialog():
+            print("[ERROR] 로그인 실패 팝업 감지 -- 모의투자 선택 대기를 중단합니다.")
+            _handle_password_confirm_dialog(timeout=1)
+            return "login_failed"
         if _is_connected():
             print("[INFO] 이미 연결되어 있어 모의투자 선택 창 처리를 생략합니다.")
             return True
@@ -793,20 +1133,32 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
             _activate_and_wait_for_window(hwnd, title)
             _dump_children(hwnd, "모의투자 선택 '%s'" % title)
 
+            # 0차: 실제 UI 형태 확인 (콤보박스 + '모의투자 접속' 버튼)
+            combo_boxes = _find_child_by_class(hwnd, "ComboBox", visible_only=True)
+            direct_btns = _find_child_by_exact_text(
+                hwnd,
+                {u"모의투자\r\n접속", u"모의투자\n접속", u"모의투자 접속", u"모의투자접속"},
+                class_name="Button",
+            )
+            if combo_boxes and direct_btns:
+                btn_hwnd, btn_text = direct_btns[0]
+                print("[INFO] 모의투자 선택 UI 확인: combo=%d, 접속버튼='%s' hwnd=%d"
+                      % (len(combo_boxes), btn_text, btn_hwnd))
+                _post_button_click(btn_hwnd)
+                return True
+
             # 1차: 정확한 텍스트의 Button 컨트롤
             found_btns = _find_child_by_exact_text(hwnd, MOCK_ACCESS_BUTTON_TEXTS, class_name="Button")
             if not found_btns:
                 # 2차: 부분 텍스트 매치
                 found_btns = _find_child_by_text_contains(hwnd, [u"접속", u"모의"])
             if not found_btns:
-                # 3차: 모든 Button 중 마지막(가장 아래/오른쪽) 버튼
                 all_btns = _find_child_by_class(hwnd, "Button")
-                if all_btns:
-                    # 가장 아래쪽 버튼
-                    btn = max(all_btns,
-                              key=lambda b: (_get_window_rect_safe(b) or (0, 9999, 0, 0))[1],
-                              )
-                    found_btns = [(btn, win32gui.GetWindowText(btn))]
+                found_btns = [
+                    (btn, win32gui.GetWindowText(btn))
+                    for btn in all_btns
+                    if _is_control_enabled(btn) and u"접속" in win32gui.GetWindowText(btn)
+                ]
 
             if found_btns:
                 btn_hwnd, btn_text = found_btns[0]
@@ -815,11 +1167,9 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
                 _post_button_click(btn_hwnd)
                 return True
             else:
-                # 정말 못 찾으면 Enter로 기본 동작 시도
-                print("[INFO] 접속 버튼 컨트롤 미발견 → Enter 시도")
+                print("[WARN] 접속 버튼 컨트롤 미발견 -- 대상 창 Enter fallback 시도")
                 _dump_children(hwnd, "모의투자 창 (버튼 못찾음)")
-                send_keys("{ENTER}")
-                return True
+                return _send_keys_to_window(hwnd, "{ENTER}", "모의투자 선택 Enter fallback")
 
         if tick % 5 == 4:
             titles = [title for _, title in candidates[:6]]
@@ -837,7 +1187,11 @@ def autologin():
         print("[INFO] CybosPlus 이미 연결됨 -- 로그인 생략")
         return True
 
-    user_id, password = _load_credential()
+    user_id, password = _load_credential_checked()
+    if not user_id or not password:
+        print("[ERROR] 로그인용 자격 증명이 비어 있습니다. user_len=%d password_len=%d"
+              % (len(user_id or ""), len(password or "")))
+        return False
 
     if not os.path.exists(CYBOS_EXE):
         print("[ERROR] HTS 실행 파일 없음: %s" % CYBOS_EXE)
@@ -877,23 +1231,54 @@ def autologin():
     time.sleep(1.5)
 
     # STEP 3: 컨트롤 기반 비밀번호 입력 + 로그인
-    try:
-        _perform_login(hwnd, password)
-        # 비밀번호 갱신 확인 다이얼로그 등 팝업 처리
-        _handle_password_confirm_dialog(timeout=5)
-    except Exception as e:
-        print("[ERROR] UI 자동화 실패: %s" % e)
-        sys.exit(1)
+    login_attempted = False
+    mock_select_handled = False
+    if hwnd not in (WAIT_RESULT_CONNECTED, WAIT_RESULT_NOTICE):
+        try:
+            if not _perform_login(hwnd, user_id, password):
+                print("[ERROR] 로그인 컨트롤 기반 자동화 실패 -- 배포형 안전 모드로 중단합니다.")
+                sys.exit(1)
+            login_attempted = True
+            # 비밀번호 갱신 확인 다이얼로그 등 팝업 처리
+            if _handle_password_confirm_dialog(timeout=5):
+                print("[ERROR] CYBOS 로그인 실패 팝업 감지 -- 아이디/비밀번호를 확인하세요.")
+                sys.exit(1)
+        except Exception as e:
+            print("[ERROR] UI 자동화 실패: %s" % e)
+            sys.exit(1)
+    elif hwnd == WAIT_RESULT_NOTICE:
+        print("[INFO] 공지사항 창이 떠서 API 연결 성공으로 판단했습니다.")
+    else:
+        print("[INFO] 로그인 창 없이 기존 연결 재사용 경로로 진행합니다.")
 
     # STEP 4: 모의투자 선택 창
-    if MOCK_MODE:
-        _handle_mock_select_dialog(timeout=45, min_wait=MOCK_POPUP_MIN_WAIT)
+    if MOCK_MODE and (login_attempted or hwnd in (WAIT_RESULT_CONNECTED, WAIT_RESULT_NOTICE)):
+        mock_result = _handle_mock_select_dialog(timeout=45, min_wait=MOCK_POPUP_MIN_WAIT)
+        mock_select_handled = True
+        if mock_result == "login_failed":
+            print("[ERROR] CYBOS 로그인 실패 팝업 감지 -- 아이디/비밀번호를 확인하세요.")
+            return False
 
     # STEP 5: 연결 완료 대기
     print("[INFO] 연결 대기 중 (최대 %d초)..." % CONNECT_TIMEOUT)
     for i in range(CONNECT_TIMEOUT):
         _dismiss_error_dialogs()
+        if _find_password_confirm_dialog():
+            _handle_password_confirm_dialog(timeout=1)
+            print("[ERROR] CYBOS 로그인 실패 팝업 감지 -- 연결 대기를 중단합니다.")
+            return False
+        if _has_notice_window():
+            for _ in range(5):
+                if _close_notice_windows() == 0:
+                    break
+                time.sleep(0.5)
+            print("[INFO] 공지사항 창 처리 완료 -- 미륵이 로딩 진행")
+            return True
         if _is_connected():
+            for _ in range(5):
+                if _close_notice_windows() == 0:
+                    break
+                time.sleep(0.5)
             cp = win32com.client.Dispatch("CpUtil.CpCybos")
             print("[OK] CybosPlus 연결 성공 (ServerType=%s)" % cp.ServerType)
             return True

@@ -37,18 +37,19 @@ except ImportError:
 
 from config.settings import (
     MODEL_DIR, HORIZON_DIR, HORIZONS, DB_DIR,
-    GBM_WEIGHT_DEFAULT,
+    GBM_WEIGHT_DEFAULT, GBM_MIN_SAMPLES_LEAF,
 )
 
 logger = logging.getLogger("LEARNING")
 
-# GBM 하이퍼파라미터
+# GBM 하이퍼파라미터 — n_estimators는 배치 재학습 시 200으로 더 정밀하게 사용
+# min_samples_leaf는 MultiHorizonModel과 동일한 상수를 공유 (비결정성 방지)
 GBM_PARAMS = {
     "n_estimators":     200,
     "max_depth":        4,
     "learning_rate":    0.05,
     "subsample":        0.8,
-    "min_samples_leaf": 20,
+    "min_samples_leaf": GBM_MIN_SAMPLES_LEAF,
     "random_state":     42,
 }
 

@@ -16,6 +16,8 @@ import datetime
 import logging
 from typing import Optional, List, Tuple
 
+from utils.time_utils import now_kst
+
 from logging_system.log_manager import log_manager
 
 logger = logging.getLogger("TRADE")
@@ -326,7 +328,7 @@ class ProfitGuard:
             (allowed: bool, reason: str)
         """
         if now is None:
-            now = datetime.datetime.now()
+            now = now_kst()
 
         # Layer 1
         if self._trail.update(daily_pnl_krw, self.cfg):
@@ -350,7 +352,7 @@ class ProfitGuard:
 
     def _block(self, layer: str, reason: str) -> Tuple[bool, str]:
         self._blocked_today += 1
-        ts = datetime.datetime.now().strftime("%H:%M")
+        ts = now_kst().strftime("%H:%M")
         self._block_log.append((ts, layer, reason))
         if len(self._block_log) > 200:
             self._block_log = self._block_log[-200:]
@@ -363,7 +365,7 @@ class ProfitGuard:
 
     def on_entry(self, now: Optional[datetime.datetime] = None):
         if now is None:
-            now = datetime.datetime.now()
+            now = now_kst()
         self._arisk.on_entry(now, self.cfg)
 
     # ── 일일 리셋 ─────────────────────────────────────────────────
@@ -395,7 +397,7 @@ class ProfitGuard:
             "block_log":      list(self._block_log[-20:]),
         }
 
-    def get_l2_halt_info(self) -> dict:
+    def get_l2_halt_info(self, daily_pnl_krw: Optional[float] = None) -> dict:
         """L2 Tier Gate 영구중단 상태 반환
         Returns:
             {
@@ -404,6 +406,14 @@ class ProfitGuard:
                 'halt_tier': int
             }
         """
+        if daily_pnl_krw is not None and not self._tier.is_halted:
+            for i, (threshold, _, max_qty) in enumerate(self.cfg.profit_tiers):
+                if max_qty == 0 and daily_pnl_krw >= threshold:
+                    self._tier._halted = True
+                    self._tier._halt_tier = i
+                    self._tier._halt_threshold = float(threshold)
+                    break
+
         return {
             'is_halted': self._tier.is_halted,
             'halt_threshold': self._tier.halt_threshold,
@@ -448,7 +458,7 @@ class ProfitGuard:
             mult      = t.get("size_mult", 1.0)
             hour      = t.get("hour", 10)
             exit_time = t.get("exit_time", "10:00")
-            now_dt    = datetime.datetime.now().replace(
+            now_dt    = now_kst().replace(
                 hour=hour, minute=int(t.get("minute", 0))
             )
 

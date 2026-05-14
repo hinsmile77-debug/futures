@@ -10,6 +10,7 @@ import datetime
 import logging
 
 from config.settings import FORCE_EXIT_TIME, NEW_ENTRY_CUTOFF
+from utils.time_utils import now_kst
 
 logger = logging.getLogger("TRADE")
 
@@ -27,7 +28,7 @@ class TimeExitManager:
     def should_force_exit(self, dt: datetime.datetime = None) -> bool:
         """강제 청산 시각 도달 여부"""
         if dt is None:
-            dt = datetime.datetime.now()
+            dt = now_kst()
         result = dt.time() >= self.FORCE_EXIT
         if result:
             logger.warning(f"[TimeExit] 15:10 강제 청산 트리거 @ {dt.strftime('%H:%M:%S')}")
@@ -36,13 +37,13 @@ class TimeExitManager:
     def should_block_entry(self, dt: datetime.datetime = None) -> bool:
         """신규 진입 금지 시각 도달 여부"""
         if dt is None:
-            dt = datetime.datetime.now()
+            dt = now_kst()
         return dt.time() >= self.NO_ENTRY
 
     def minutes_to_force_exit(self, dt: datetime.datetime = None) -> int:
         """강제 청산까지 남은 분 수"""
         if dt is None:
-            dt = datetime.datetime.now()
+            dt = now_kst()
         today = dt.date()
         force_dt = datetime.datetime.combine(today, self.FORCE_EXIT)
         delta = force_dt - dt

@@ -1207,8 +1207,6 @@ class AccountInfoPanel(QWidget):
             f"QHeaderView::section{{background:{C['bg2']};color:{C['text']};"
             f"padding:{S.p(6)}px;border:none;border-bottom:1px solid {C['blue']};"
             f"font-size:{S.f(9)}px;font-weight:bold;}}"
-            f"QTableWidget::item{{padding:{S.p(4)}px;color:{C['text2']};"
-            f"font-size:{S.f(9)}px;}}"
         )
         lay.addWidget(self.tbl_balance, 1)
 
@@ -5798,9 +5796,10 @@ class MireukDashboard(QMainWindow):
         self.lbl_cb.setToolTip(_CB_TIP)
         
         # L2 영구중단 배지
-        self.lbl_l2_halt = mk_badge("", C['bg3'], C['text2'], 10)
+        self.lbl_l2_halt = mk_badge("L2 —", C['bg3'], C['text2'], 10)
         self.lbl_l2_halt.setToolTip("거래중단 임계 도달 시 금일 거래 영구 중단")
-        self.lbl_l2_halt.setText("")  # 초기 상태: 숨김
+        self.lbl_l2_halt.setMinimumWidth(80)  # 크기 고정으로 항상 보임
+        self.lbl_l2_halt.setAlignment(Qt.AlignCenter)
 
         # ── 우측 시계 블록 ─────────────────────────────────────
         clk_frame = QFrame()
@@ -6343,6 +6342,7 @@ class DashboardAdapter:
         app = QApplication.instance() or QApplication(sys.argv)
         app.setStyle("Fusion")
         self._win = MireukDashboard()
+        self._profit_guard = None  # L2 배지 초기화용
         # 긴급 정지 버튼을 외부에서 접근할 수 있도록 노출
         self.btn_kill = self._win._make_kill_btn()
         self.btn_save_account = self._win.btn_save_account
@@ -6358,6 +6358,9 @@ class DashboardAdapter:
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
         self._win.showMaximized()
+        # 항상 위는 아니지만 시작 직후에는 일반 창들 위로 자연스럽게 올린다.
+        self._win.raise_()
+        self._win.activateWindow()
 
     def append_sys_log(self, msg: str):
         """창1 시스템 로그에 메시지 추가"""
@@ -6523,8 +6526,15 @@ class DashboardAdapter:
                 f"padding:{S.p(1)}px {S.p(3)}px;"
             )
         else:
-            lbl.setText("")
-            lbl.setStyleSheet("")
+            # 비활성 상태: 텍스트 유지, 색상만 회색으로
+            lbl.setText("L2 —")
+            lbl.setStyleSheet(
+                f"background:{C['bg3']};color:{C['text2']};"
+                f"border:1px solid {C['border']};"
+                f"border-radius:{S.p(3)}px;"
+                f"font-size:{S.f(10)}px;"
+                f"padding:{S.p(1)}px {S.p(3)}px;"
+            )
 
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""
@@ -6742,6 +6752,22 @@ class DashboardAdapter:
         panel = getattr(self._win, "profit_guard_panel", None)
         if panel is not None:
             panel.set_profit_guard(guard)
+        
+        # L2 배지 초기화
+        self._profit_guard = guard
+        self._init_l2_halt_badge()
+
+    def _init_l2_halt_badge(self):
+        """L2 배지 초기화 (최초 한 번만)"""
+        if hasattr(self, '_profit_guard') and self._profit_guard is not None:
+            try:
+                l2_info = self._profit_guard.get_l2_halt_info()
+                self.update_l2_halt_badge(
+                    is_halted=l2_info['is_halted'],
+                    threshold=l2_info['halt_threshold']
+                )
+            except Exception:
+                pass
 
     def refresh_profit_guard(self, daily_pnl_krw: float, today_trades: list):
         """매분 파이프라인 완료 후 수익 가드 패널 갱신."""

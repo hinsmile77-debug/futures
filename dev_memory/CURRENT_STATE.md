@@ -1,7 +1,32 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-14 (32차) — **2차 감사 P3 4종 수정: Dynamic Sizing 과소 차단 / GAP_OPEN 구간 신설 / StandardScaler 노후화 경고 / 만기일·FOMC 리스크 조정**
+> 마지막 업데이트: 2026-05-14 (33차) — **Cybos 장외 startup crash 완화: 장외 realtime/timer 보류 / MacroFetcher cooldown / 세션 핸드오프 갱신**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-14 (33차) — Cybos 장외 startup crash 완화
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| 장외 Cybos startup crash | **1차 완화 적용 완료** — 장외에는 `RealtimeData.start()`와 수급 `QTimer`를 시작하지 않도록 가드 추가 |
+| MacroFetcher startup noise | **완화 완료** — yfinance 실패 콘솔 노이즈 억제, 15분 cooldown, fallback key 정렬 |
+| 잔고 `QTableWidget` stylesheet warning | **부분 완화** — 문제 구간 stylesheet 단순화. 재실행으로 완전 해소 여부 확인 필요 |
+| 장외 launcher 재검증 | **미완료** — 최신 패치 후 `start_mireuk.bat` 야간 재실행 확인 필요 |
+
+### 로그 기준 결론
+
+- 장중 재기동(`2026-05-14 14:09:23`)은 `startup sync -> realtime start -> tick/hoga 수신`까지 정상 진행
+- 야간 재기동(`2026-05-14 20:18:19`, `20:20:15`, `20:26:13`)은 공통적으로 `CpTd0723`와 `FutureMst` timeout 뒤 `-1073741819` 종료
+- 따라서 현재 판단은 **장외 timeout 상태에서 실시간 구독까지 강행하던 경로가 가장 위험한 지점**이라는 것
+
+### 남은 리스크
+
+- `CpTd0723` / `FutureMst` timeout 자체의 근본 원인은 아직 미해결
+- 장외 guard로 crash는 막을 가능성이 높지만, 장중 reconnect나 pre-open 구간에서 같은 패턴이 재현되는지는 아직 미검증
+- `QTableWidget` parse warning이 다른 테이블 stylesheet에서 계속 날 수 있음
 
 ---
 

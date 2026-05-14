@@ -16,6 +16,8 @@ import datetime
 import logging
 from typing import Optional, Dict, TYPE_CHECKING
 
+from utils.time_utils import now_kst
+
 from config import secrets as _secrets
 
 from config.constants import (
@@ -88,7 +90,7 @@ class ExitManager:
             청산 결과 딕셔너리 or None (청산 없음)
         """
         if now is None:
-            now = datetime.datetime.now()
+            now = now_kst()
 
         if self._tracker.status == POSITION_FLAT:
             return None

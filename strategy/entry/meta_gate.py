@@ -2,6 +2,8 @@ import datetime
 import logging
 from typing import Dict, Optional
 
+from utils.time_utils import now_kst
+
 from config.constants import DIRECTION_FLAT
 from learning.meta_confidence import MetaConfidenceLearner
 
@@ -31,7 +33,7 @@ class MetaGate:
         recent_accuracy: float = 0.5,
     ) -> Dict:
         if now is None:
-            now = datetime.datetime.now()
+            now = now_kst()
         features = features or {}
 
         if direction == DIRECTION_FLAT:

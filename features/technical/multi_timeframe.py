@@ -39,7 +39,11 @@ class MultiTimeframeAnalyzer:
         1분봉 확정 시 호출 — 5분봉·15분봉 자동 집계
 
         Returns:
-            {trend_1m, trend_5m, trend_15m, multiplier, block_entry, reason}
+            {trend_1m, trend_5m, trend_15m, multiplier,
+             block_long_entry, block_short_entry, reason}
+
+        block_long_entry : 5분봉↓ 시 True — 롱 진입만 차단 (숏은 허용)
+        block_short_entry: 5분봉↑ 시 True — 숏 진입만 차단 (롱은 허용)
         """
         self._close_1m.append(close)
         self._high_1m.append(high)
@@ -109,17 +113,19 @@ class MultiTimeframeAnalyzer:
         1분봉 기준 현재 추세 + 상위 타임프레임 필터 평가
 
         Returns:
-            {trend_1m, trend_5m, trend_15m, multiplier, block_entry, reason}
+            {trend_1m, trend_5m, trend_15m, multiplier,
+             block_long_entry, block_short_entry, reason}
         """
         trend_1m  = self._trend_from_closes(list(self._close_1m)[-5:])
         trend_5m  = self._candle_trend(self._buf_5m,  periods=3)
         trend_15m = self._candle_trend(self._buf_15m, periods=2)
 
-        multiplier  = 1.0
-        block_entry = False
-        reason      = ""
+        multiplier         = 1.0
+        block_long_entry   = False
+        block_short_entry  = False
+        reason             = ""
 
-        # --- v6.5 규칙 ---
+        # --- v6.5 규칙 (방향 대칭으로 개선) ---
         if trend_5m == 1 and trend_15m == 1:
             multiplier = 1.3
             reason     = "5분↑+15분↑ 동조 → 신호 ×1.3"
@@ -129,26 +135,35 @@ class MultiTimeframeAnalyzer:
             reason     = "5분↓+15분↓ 역행 → 신호 ×0.7"
 
         elif trend_5m == -1:
-            # 5분봉 하락 → 매수 신호 차단
-            block_entry = True
-            multiplier  = 0.0
-            reason      = "5분봉↓ → 매수 진입 차단"
+            # 5분봉 하락 → 롱만 차단 (숏은 5m 추세 동조이므로 허용)
+            block_long_entry = True
+            multiplier       = 0.0
+            reason           = "5분봉↓ → 매수 진입 차단"
 
         elif trend_5m == 1 and trend_15m == -1:
-            multiplier = 0.8
-            reason     = "5분↑/15분↓ 불일치 → 신호 ×0.8"
+            # 5분봉 상승이지만 15분봉 하락 불일치 → 숏만 차단, 롱 약화
+            block_short_entry = True
+            multiplier        = 0.8
+            reason            = "5분↑/15분↓ 불일치 → 신호 ×0.8 (숏 차단)"
+
+        elif trend_5m == 1:
+            # 5분봉 상승 (15분봉 중립) → 숏 차단
+            block_short_entry = True
+            multiplier        = 0.0
+            reason            = "5분봉↑ → 매도 진입 차단"
 
         elif trend_5m == 0:
             multiplier = 0.9
             reason     = "5분봉 횡보 → 신호 ×0.9"
 
         return {
-            "trend_1m":    trend_1m,
-            "trend_5m":    trend_5m,
-            "trend_15m":   trend_15m,
-            "multiplier":  round(multiplier, 2),   # 신호 가중치
-            "block_entry": block_entry,
-            "reason":      reason,
+            "trend_1m":          trend_1m,
+            "trend_5m":          trend_5m,
+            "trend_15m":         trend_15m,
+            "multiplier":        round(multiplier, 2),
+            "block_long_entry":  block_long_entry,
+            "block_short_entry": block_short_entry,
+            "reason":            reason,
         }
 
     @staticmethod
@@ -190,4 +205,4 @@ if __name__ == "__main__":
         price += random.gauss(0.1, 0.2)
         r = mtf.push_1m_candle(price - 0.1, price + 0.1, price - 0.15, price, 1000)
         print(f"[{i+1:02d}분] 1m={r['trend_1m']:+d} 5m={r['trend_5m']:+d} 15m={r['trend_15m']:+d} "
-              f"mult={r['multiplier']} block={r['block_entry']} | {r['reason']}")
+              f"mult={r['multiplier']} blk_L={r['block_long_entry']} blk_S={r['block_short_entry']} | {r['reason']}")

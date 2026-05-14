@@ -385,23 +385,33 @@ class ShadowEvaluator:
         live_wfa_sharpe: float = 0.0,
         pnl_advantage:   float = 1.10,   # Shadow가 Live 대비 최소 10% 우세
         sync_threshold:  float = 0.70,   # Sync Score 최소 기준
+        live_avg_qty:    float = 1.0,    # 라이브 평균 계약수 (Shadow qty=1 정규화용)
     ) -> Tuple[bool, str]:
         """
         Hot-Swap 승인 여부 판정.
 
+        Args:
+            live_avg_qty: 라이브 전략의 평균 포지션 계약수.
+                          Shadow는 항상 1계약이므로 Live PnL을 이 값으로 나눠
+                          1계약 기준으로 정규화한 뒤 비교한다.
+                          기본값 1.0 → 기존 동작 유지 (라이브도 1계약 운용 시).
+
         Returns:
             (승인_여부, 판정_이유_문자열)
         """
-        live_total  = sum(live_daily_pnls) if live_daily_pnls else 0.0
-        shadow_total = self.get_total_pnl()
-        score        = self.sync_score(live_daily_pnls)
-        shadow_sharpe = self.get_summary()["sharpe"]
+        live_total    = sum(live_daily_pnls) if live_daily_pnls else 0.0
+        shadow_total  = self.get_total_pnl()
+        score         = self.sync_score(live_daily_pnls)
 
-        # ① 수익 우세 조건
-        if live_total > 0:
-            cond1 = shadow_total >= live_total * pnl_advantage
+        # qty 스케일 정규화: Live PnL을 1계약 기준으로 환산
+        # Shadow는 항상 qty=1이므로 동일 기준에서 비교 가능해진다.
+        norm_qty = max(live_avg_qty, 1.0)
+        live_total_per_contract = live_total / norm_qty
+
+        # ① 수익 우세 조건 (1계약 기준 비교)
+        if live_total_per_contract > 0:
+            cond1 = shadow_total >= live_total_per_contract * pnl_advantage
         else:
-            # Live가 손실이면 Shadow가 흑자이면 조건 충족
             cond1 = shadow_total > 0
 
         # ② Sync Score 조건
@@ -412,17 +422,17 @@ class ShadowEvaluator:
 
         if cond1 and cond2 and cond3:
             reason = (
-                "Hot-Swap 승인 | Shadow {0:+,.0f} > Live {1:+,.0f} × {2:.0f}%"
+                "Hot-Swap 승인 | Shadow {0:+,.0f} > Live/계약 {1:+,.0f} × {2:.0f}%"
                 " | Sync={3:.2f} | Sharpe {4:.2f}≥{5:.2f}"
-            ).format(shadow_total, live_total, pnl_advantage * 100,
+            ).format(shadow_total, live_total_per_contract, pnl_advantage * 100,
                      score, self.wfa_sharpe, live_wfa_sharpe)
             return True, reason
 
         reasons = []
         if not cond1:
             reasons.append(
-                "수익 우세 미달 (Shadow {0:+,.0f} / Live {1:+,.0f} × {2:.0f}%)".format(
-                    shadow_total, live_total, pnl_advantage * 100)
+                "수익 우세 미달 (Shadow {0:+,.0f} / Live/계약 {1:+,.0f} × {2:.0f}%)".format(
+                    shadow_total, live_total_per_contract, pnl_advantage * 100)
             )
         if not cond2:
             reasons.append("Sync Score %.2f < %.2f" % (score, sync_threshold))
