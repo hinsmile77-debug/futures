@@ -112,6 +112,12 @@ class _TrailingGuard:
 
 # ── Layer 2: 수익 구간별 등급 게이트 ────────────────────────────
 class _TierGate:
+    def __init__(self):
+        # 거래중단 임계 도달 시 당일 영구 차단(latch)
+        self._halted: bool = False
+        self._halt_tier: int = 0
+        self._halt_threshold: float = 0.0
+
     def check(
         self,
         current_pnl: float,
@@ -122,15 +128,34 @@ class _TierGate:
         Returns:
             (blocked, tier_index, reason)
         """
+        if self._halted:
+            return (
+                True,
+                self._halt_tier,
+                f"Tier {self._halt_tier}: 중단 임계 {self._halt_threshold:,.0f}원 도달로 당일 영구 중단",
+            )
+
         active_tier = 0
         min_mult = 0.6
         max_qty  = None
+        stop_tier_hit: Optional[Tuple[int, float]] = None
 
         for i, (threshold, t_min_mult, t_max_qty) in enumerate(cfg.profit_tiers):
             if current_pnl >= threshold:
                 active_tier = i
                 min_mult    = t_min_mult
                 max_qty     = t_max_qty
+                if t_max_qty == 0 and stop_tier_hit is None:
+                    stop_tier_hit = (i, float(threshold))
+
+        if stop_tier_hit is not None:
+            self._halted = True
+            self._halt_tier, self._halt_threshold = stop_tier_hit
+            return (
+                True,
+                self._halt_tier,
+                f"Tier {self._halt_tier}: 중단 임계 {self._halt_threshold:,.0f}원 도달 → 당일 영구 중단",
+            )
 
         if max_qty == 0:
             return True, active_tier, f"Tier {active_tier}: {current_pnl:+,.0f}원 → 거래 완전 중단"
@@ -156,6 +181,21 @@ class _TierGate:
             if current_pnl >= threshold:
                 min_mult = t_min_mult
         return min_mult
+
+    def reset(self):
+        self._halted = False
+        self._halt_tier = 0
+        self._halt_threshold = 0.0
+
+    @property
+    def halt_threshold(self) -> float:
+        """거래중단 임계값 (0 = 미활성)"""
+        return self._halt_threshold
+
+    @property
+    def halt_tier(self) -> int:
+        """거래중단 티어 인덱스"""
+        return self._halt_tier
 
 
 # ── Layer 3: 오후 리스크 압축 ────────────────────────────────────
@@ -329,6 +369,7 @@ class ProfitGuard:
     # ── 일일 리셋 ─────────────────────────────────────────────────
     def reset_daily(self):
         self._trail.reset()
+        self._tier.reset()
         self._arisk.reset()
         self._pcb.reset()
         self._blocked_today = 0
@@ -348,8 +389,25 @@ class ProfitGuard:
             "afternoon_count": self._arisk.afternoon_count,
             "pcb_consec":     self._pcb.consec_loss,
             "pcb_halted":     self._pcb.is_halted,
+            "tier_halted":    self._tier.is_halted,
+            "tier_halt_threshold": self._tier.halt_threshold,
             "blocked_today":  self._blocked_today,
             "block_log":      list(self._block_log[-20:]),
+        }
+
+    def get_l2_halt_info(self) -> dict:
+        """L2 Tier Gate 영구중단 상태 반환
+        Returns:
+            {
+                'is_halted': bool,
+                'halt_threshold': float,
+                'halt_tier': int
+            }
+        """
+        return {
+            'is_halted': self._tier.is_halted,
+            'halt_threshold': self._tier.halt_threshold,
+            'halt_tier': self._tier.halt_tier,
         }
 
     def update_config(self, new_cfg: ProfitGuardConfig):

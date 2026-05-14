@@ -1,9 +1,164 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-13 (24차) — **봉차트 청산 마커 시인성 개선 + TP/SL 컬러 정리**
+> 마지막 업데이트: 2026-05-14 (28차) — **L2 영구중단 배지 UI + 진입관리 모드 필터 2순위 구현 완료**
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
+
+## 2026-05-14 (28차) — L2 배지 UI + 모드 필터
+
+### 신규 구현
+
+| 파일 | 내용 |
+|---|---|
+| `strategy/profit_guard.py` | `_TierGate.halt_threshold`, `_TierGate.halt_tier` 프로퍼티 + `ProfitGuard.get_l2_halt_info()` 메서드 |
+| `dashboard/main_dashboard.py` | `self.lbl_l2_halt` 배지 + `update_l2_halt_badge()` 메서드 |
+| `main.py` | STEP 9 후 L2 halt 매분 동기화 + STEP 7 모드필터 2순위 추가 |
+
+### 진입 로직 우선순위 (최종 정의)
+
+```
+신호 발생 (STEP 6)
+    ↓
+[1순위] L2 ProfitGuard 체크 ← 수익 보존 (시스템)
+    ├─ 1-1: Trail Stop (L1)
+    ├─ 1-2: Tier Gate (L2) ← L2 halt latch
+    ├─ 1-3: Afternoon Mode (L3)
+    └─ 1-4: Profit CB (L4)
+    ↓
+    통과했다면 ↓
+[2순위] 모드 필터 체크 ← 신호 강도 (사용자)
+    ├─ "auto": A급만
+    ├─ "hybrid": A, B급 (기본값)
+    └─ "manual": A, B, C급
+    ↓
+    둘 다 통과 → 진입 ✅
+    L2 차단 → 진입 불가 (원인: [차단] L2 ...)
+    모드필터 차단 → 진입 불가 (원인: [모드필터] ... 불일치)
+```
+
+### 현재 진입관리 탭 상태
+
+| UI 요소 | 구현 상태 | 기능 |
+|---|---|---|
+| Auto ON/OFF | ✅ 완벽 | 자동/수동 진입 전환, 로그 기록 |
+| A/B/C 등급진입 버튼 | ✅ 이번 회차 완성 | 모드별 등급 필터링 (L2 다음) |
+| 역방향 진입 | ✅ 완벽 | 신호 반대로 진입 |
+
+### L2 Tier Gate 최종 설정 이해
+
+```
+금일 수익 < 50만원
+  → L2 적용 안 함 (기본 min_mult 미정)
+  → 진입관리 탭 모드 필터만 작용
+
+금일 수익 50~100만원
+  → L2: min_mult=0.6 (C급 이상)
+  → 진입관리 탭: 모드 필터 적용
+  → 예: C급+B모드 → L2 통과 → 모드 차단 ❌
+
+금일 수익 100~200만원
+  → L2: min_mult=1.0 (A급만)
+  → 진입관리 탭: 모드 필터 적용
+  → 예: B급+B모드 → L2 차단 ❌
+
+금일 수익 ≥ 200만원
+  → L2: max_qty=0 (거래 완전 중단)
+  → 대시보드: 🔒 L2 중단 (N.NM원) 배지 표시
+  → 진입 불가능 (L1~L4 모두)
+```
+
+### 배지 표시 규칙
+
+| 배지 | 위치 | 조건 | 표시 내용 |
+|---|---|---|---|
+| CB 배지 | 상단 중앙 | CB 상태 | "CB NORMAL" / "⛔ CB HALT" / "⏸ CB PAUSE" |
+| **L2 배지** | **CB 오른쪽** | **L2 halt 활성** | **🔒 L2 중단 (N.NM원)** |
+| L2 배지 | CB 오른쪽 | L2 halt 비활성 | (숨김) |
+
+---
+
+## 2026-05-14 (27차) — Cybos 옵션 지표 수집
+
+### 신규 파일
+
+| 파일 | 내용 |
+|---|---|
+| `scripts/probe_cp_option_code.py` | CpOptionCode 체인 조회 (4,624종목) |
+| `scripts/probe_cp_calc_opt_greeks.py` | CpCalcOptGreeks 그릭스 계산 (속성 할당 + Calculate 방식) |
+| `scripts/probe_cp_option_mo.py` | OptionMo 실시간 OI 구독 (장중 필요) |
+| `scripts/verify_option_mst_fieldmap.py` | OptionMst HeaderValue 필드맵 교차 검증 |
+| `scripts/collect_option_metrics.py` | PCR/GEX/ATM OI 통합 수집 (48종목 2.9초) |
+| `AGENTS.md` | 한글판 에이전트 가이드 |
+
+### 핵심 결과 (2026-05-13 장후, 2606월물)
+
+| 지표 | 값 | 해석 |
+|---|---|---|
+| PCR (OI) | 0.54 | 콜 우위, 강세 |
+| ATM PCR | 1.04 | 중립 |
+| Total GEX | +35.3B원 | 감마 롱 |
+
+### 확정 필드맵
+
+HV(6)=행사가, HV(13)=잔존일수, HV(93)=현재가, HV(97)=체결량, HV(99)=OI, HV(37)=전일OI, HV(109)=Delta, HV(110)=Gamma, HV(111)=Theta, HV(113)=Rho. HV(17)≠spot(날짜), HV(15)≠ATM(콜/풋코드).
+
+### 다음
+
+1. OptionMo 장중 검증 (4단계)
+2. collection/options/ + features/options/ 신설 → Mireuk 피처 통합
+3. PCR/GEX 시계열 안정성 검증
+4. OptionMst 폴링 최적화
+
+---
+
+## 2026-05-13 (26차)
+
+### 수정된 파일
+
+| 파일 | 수정 내용 |
+|---|---|
+| `dev_memory/SESSION_LOG.md` | 작업스케줄러 순서의존 로그인 충돌(B83) 원인/개선안 기록 |
+| `dev_memory/CURRENT_STATE.md` | 26차 상태 반영 |
+| `dev_memory/NEXT_TODO.md` | 외부 키움 리포지토리 구현/검증 TODO 추가 |
+| `dev_memory/DECISION_LOG.md` | D58/B83 설계결정/버그 기록 |
+
+### 핵심 운영 상태
+
+- `futures` 리포지토리 내부 코드는 이번 턴에서 변경하지 않았고, 개선안은 외부 키움 프로젝트 적용 항목으로 정리했다.
+- 실행순서 충돌의 실질 해법은 절대좌표/클립보드 매크로 제거 및 창 객체 기반 자동화 전환이다.
+- 보안상 키움 계정정보는 스크립트 하드코딩 금지, 환경변수/보안 저장소 주입 방식으로 관리해야 한다.
+
+---
+
+## 2026-05-13 (25차)
+
+### 수정된 파일
+
+| 파일 | 수정 내용 |
+|---|---|
+| `strategy/position/position_tracker.py` | TP3/3단계 부분청산, `initial_quantity`, `partial_3_done`, stage plan/target helpers, `trailing_anchor_price`, `peek_saved_entry_time()` 추가 |
+| `strategy/position/position_tracker.py` (`sync_from_broker`) | same-side broker sync 시 `entry_time`, `stop_price`, `trailing_anchor_price`, 원진입 수량 보존 |
+| `strategy/position/position_tracker.py` (`update_trailing_stop`) | 2ATR 구간 trailing stop을 `current_price`가 아니라 `trailing_anchor_price` 기준으로 추적 |
+| `dashboard/main_dashboard.py` | 청산관리 패널 `트레일링 기준`/`현재 실행 스톱` 분리, 3차 목표 34% 및 원진입 수량 기준 stage 게이지 반영 |
+| `dashboard/main_dashboard.py` (`sync_active_trade`) | 진입마커 sync 시 기존 `entry_ts` 보존, 새 진입/방향전환 때만 신규 마커 생성 |
+| `main.py` | 청산관리 패널 payload에 `trail_basis`, `stage_plan`, `pt_value` 전달 |
+| `main.py` | stuck exit timeout 시 브로커 잔고 우선 재검증 후 pending 유지/해제 |
+| `main.py` | 외부진입 동기화 직후 `250ms / 1200ms` 잔고 재조회 트리거 추가 |
+
+### 설계/운영 규칙
+
+- same-side broker sync는 trailing stop을 되돌리지 않는다.
+- 청산관리 패널의 `트레일링 기준`은 `현재 실행 스톱` 복제값이 아니라 별도 기준값이다.
+- 진입마커는 진입시각 고정이다. active position sync나 startup restore가 들어와도 기존 `entry_ts`를 우선 보존한다.
+- 외부체결은 Chejan만 신뢰하지 않고, 다계약 외부진입/청산 뒤에는 브로커 잔고 재조회로 최종 수량을 보정한다.
+
+### 현재 운영 상태
+
+- 청산관리 탭은 `TP1/TP2/TP3 = 33/33/34`를 원진입 수량 기준으로 유지하며, 수동 부분청산 후에도 stage 완료 상태를 유지한다.
+- `PositionTracker.stop_price`는 trailing update로 유리한 방향으로만 이동해야 하며, same-side broker sync 시 초기 하드스톱으로 되돌아가지 않도록 보강돼 있다.
+- 분봉차트 active trade는 진입 분봉에 마커가 고정되고, 점선 span만 현재 분봉까지 연장되는 모델을 사용한다.
+- 외부체결(HTS/수동) 다계약 사례는 로컬 체결 누락 가능성이 있어, 후속 잔고 refresh 로그로 브로커 수량 일치 여부를 확인해야 한다.
 
 ## 2026-05-13 (24차)
 

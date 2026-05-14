@@ -182,6 +182,10 @@ class CircuitBreaker:
         logger.critical(msg)
         log_manager.system(msg, "CRITICAL")
         notify_circuit_breaker(reason, "당일 시스템 정지")
+        # CB② · CB③ 발동 시에도 기존 포지션 즉시 청산
+        # (CB⑤는 record_api_latency에서 별도 호출, 여기서는 ②·③ 공통 처리)
+        if self._emergency_exit:
+            self._emergency_exit()
 
     def reset_daily(self):
         """장 시작 시 일간 리셋"""

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "provider": {
+    "nvidia": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "NVIDIA",
+      "options": {
+        "baseURL": "https://integrate.api.nvidia.com/v1"
+      },
+      "models": {
+        "deepseek-ai/deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro"
+        }
+      }
+    }
+  },
+
+  "model": "nvidia/deepseek-ai/deepseek-v4-pro"
+}

@@ -2,6 +2,51 @@
 
 ---
 
+## 2026-05-14 (28차 — L2 배지 UI + 진입관리 모드 필터)
+
+### [D59] L2 Tier Gate 영구중단 상태는 대시보드 배지(상단 CB 오른쪽)로 시각화
+**Decision**: L2 halt 활성 상태를 대시보드 상단에 **🔒 L2 중단 (N.NM원)** 배지로 표시한다. 색상 C62828(깊은 빨강), 글자 흰색, 배경-텍스트 간 명확한 대비.  
+**Reason**: 거래중단 임계 도달 시 당일 모든 신규 진입이 차단되는 시스템 상태를 사용자가 즉시 인지해야 한다. CB 배지 옆에 배치하면 운영 상황(Circuit Breaker 상태)과 함께 한눈에 파악 가능.  
+**How**: `get_l2_halt_info()`로 매분 조회 → `update_l2_halt_badge(is_halted, threshold)` 호출 → 배지 텍스트/색상 업데이트. 비활성 시 배지 숨김.
+
+### [D60] 진입 필터링은 L2(시스템) → 모드(사용자) 2단계로 엄격화
+**Decision**: STEP 7 진입 판정에서 L2 ProfitGuard 체크를 1순위(수익 보존), 모드 필터를 2순위(신호 강도)로 순서 고정한다.  
+**Reason**: 
+- L2는 계좌 리스크 관리(당일 손실 누적 등)를 담당하므로 시스템 정책이 절대 우선.
+- 모드(Auto/Hybrid/Manual)는 사용자 신호 선호도이므로 L2 통과 후에만 적용.
+- 반대 순서면 사용자가 A급만 원해도 50만원 구간에서 C급이 진입될 수 있음(위험).  
+**How**: `profit_guard.is_entry_allowed()` 통과 → `mode_filter_passed = _final_grade in allowed_grades[mode]` 체크. 각 단계 차단 시 로그 구분: "[ProfitGuard]" vs "[모드필터]".
+
+### [D61] 모드 필터 등급 허용 기준은 변경 불가 정책(UI 선택만 가능)
+**Decision**: 모드 필터의 등급 맵핑은 하드코딩:
+- `"auto"`: ["A"] (6개 통과 only)
+- `"hybrid"`: ["A", "B"] (4~5개 통과)
+- `"manual"`: ["A", "B", "C"] (2~3개 통과)  
+**Reason**: 사용자가 대시보드에서 버튼으로 선택하는 것이고, L2와는 별도의 신호 필터이므로 정확한 기준이 필수. 실시간 가중치 조정 대상이 아님.  
+**How**: 진입관리 탭의 mode_btns 클릭 → `dashboard.get_entry_mode()` 반환 → `allowed_grades[mode]` 맵 참조.
+
+### [D62] L2 halt는 당일 영구 래치 상태 (사용자가 되돌릴 수 없음)
+**Decision**: L2 halt 임계(max_qty=0)에 도달하면 `_TierGate._halted = True`로 세팅되고, 같은 날 내에는 절대 False로 돌아가지 않는다. 일일 `reset_daily()`에서만 해제.  
+**Reason**: 거래중단 임계는 일종의 "한계" 기준이므로, 도달 직후 몇십 분 사이에 손실이 줄었다고 즉시 해제하면 의도가 무너진다. 하루 전체 관점에서 봐야 함.  
+**How**: `_TierGate.check()`에서 `if self._halted: return (True, ...)`. 매시간/매분마다 new check를 안 하고 래치 상태 유지. `reset_daily()`에서 `self._halted = False`.
+
+---
+
+## 2026-05-13 (26차 — 작업스케줄러 순서의존 로그인 충돌)
+
+### [D58] 다중 HTS 자동로그인은 절대좌표 매크로가 아니라 창 객체 기반 자동화로 표준화
+**Decision**: 키움 자동로그인은 절대좌표 클릭 + SendKeys + 클립보드 붙여넣기 방식 대신, 창 핸들/컨트롤 객체 기반 자동화(pywinauto 계열)로 전환한다.  
+**Reason**: 작업스케줄러에서 `mireuk -> kiwoom` 순서일 때 Z-order, 포커스, 보안모듈 후킹, 클립보드 경합으로 매크로 실패 확률이 급증한다. 객체 기반 접근이 순서 독립성 및 운영 안정성을 높인다.  
+**How to apply**: 외부 키움 리포지토리의 `start_kiwoom.bat`는 Python autologin 스크립트를 호출하고, 스크립트는 로그인 창 포커싱 후 컨트롤 직접입력을 수행한다. 자격정보는 하드코딩 금지.
+
+### [B83] `start_mireuk.bat` 이후 `start_kiwoom.bat` 자동로그인 실패
+**File**: 외부 프로젝트 `auto_trader_kiwoom` (현 리포지토리 외부)  
+**Symptom**: `kiwoom -> mireuk` 순서는 정상이나 `mireuk -> kiwoom` 순서에서 키움 자동로그인이 불안정/실패.  
+**Root cause**: 절대좌표/클립보드 의존 자동화가 Cybos 실행 후 창 배치/입력환경 변화에 취약.  
+**Fix plan**: pywinauto 기반 창 객체 자동화로 교체 + 작업스케줄러 2방향 반복 검증.
+
+---
+
 ## 2026-05-13 (24차 — 봉차트 청산 마커 시인성 개선)
 
 ### [D56] 청산 표시는 텍스트 중심 + 소형 스탬프 앵커 조합으로 유지

@@ -1,16 +1,16 @@
 # Rollout Readiness Report
 
-- Generated at: 2026-05-12 12:53:59
-- Recommended stage: shadow
-- Reason: 실거래 확대 전 shadow/alert 단계 유지 권장
+- Generated at: 2026-05-14 12:31:03
+- Recommended stage: alert_only
+- Reason: A/B 개선 확인, 다만 calibration 또는 meta 표본 추가 필요
 
 ## Metrics
 
-- Verified predictions: 11975
-- Ensemble decisions: 653
-- Meta labels: 3469
-- Overall ECE: 0.404116
-- Enhanced vs baseline total PnL delta: -7.8000 pt
+- Verified predictions: 15887
+- Ensemble decisions: 1353
+- Meta labels: 7391
+- Overall ECE: 0.411682
+- Enhanced vs baseline total PnL delta: +16.4000 pt
 
 ## Checklist
 

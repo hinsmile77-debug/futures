@@ -8,6 +8,145 @@
 
 ---
 
+## 2026-05-14 (28차) — L2 배지 + 모드 필터
+
+### 한일 요약
+
+- [DONE 2026-05-14] **L2 영구중단 배지 시각화** — `strategy/profit_guard.py`에 `get_l2_halt_info()` 메서드, `dashboard/main_dashboard.py`에 `lbl_l2_halt` 배지 + `update_l2_halt_badge()` 메서드 추가. CB 배지 오른쪽에 🔒 L2 중단 (N.NM원) 배지 표시.
+- [DONE 2026-05-14] **모드 필터 2순위 구현** — `main.py` STEP 7에 모드필터 로직 추가. L2 통과 후 모드별 등급 필터링 (Auto=A급, Hybrid=A,B급, Manual=A,B,C급). 모드필터 차단 시 로그 기록.
+- [DONE 2026-05-14] **진입 로직 우선순위 재정의** — L2(시스템 수익 보존) → 모드필터(사용자 신호 강도) 순서 확정. 각 단계 차단 사유 명확화.
+- [DONE 2026-05-14] **Auto ON/OFF 배지 검증** — 완벽하게 구현/작동 중 (신호 연결, 상태 관리, 진입 로직 제어, 로그 기록 모두 ✅).
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-14] **profit_guard_prefs.json 정리**
+  - 중복 임계값 [500000] 제거 (현재 [500000, 0.6, null] / [500000, 1.5, 0] 두 개)
+  - 의도 검토: 50만원에서 영구중단할 것인가, 아니면 200만원까지 거래할 것인가 → 사용자 확인 후 설정
+
+- [NEXT 2026-05-14] **모드 필터 장중 검증 (1~2시간)**
+  - 시나리오 A: 50만원 상태에서 C급+B모드 신호 → 진입 차단 확인
+  - 시나리오 B: 50만원 상태에서 C급+C모드 신호 → 진입 성공 확인
+  - 시나리오 C: 100만원 상태에서 B급+B모드 신호 → L2 차단 확인
+
+- [NEXT 2026-05-14] **L2 halt 배지 실시간 검증**
+  - 200만원 도달 시 배지 즉시 표시 (🔒 L2 중단)
+  - 일일 리셋(reset_daily) 시 배지 사라지는지 확인
+
+- [NEXT 2026-05-15] **OptionMo 실시간 OI 검증 (4단계)** — 장중(09:00~15:30)에만 유효
+  ```powershell
+  python scripts/probe_cp_option_mo.py --ensure-login --code B0166A89 --watch-sec 15
+  ```
+  OI 실시간 갱신 Subscribe 동작 확인.
+
+- [NEXT 2026-05-15] **지표를 Mireuk 피처로 통합**
+  - `collection/options/`에 `option_chain_snapshot.py` 신설 — 정기 폴링 기반 수집
+  - `features/options/`에 `option_features.py` 신설 — PCR·GEX·ATM OI 피처화
+  - `feature_builder.py`에 옵션 피처 연결
+  - STEP 4 피처 생성 단계에 옵션 지표 주입
+
+- [NEXT 2026-05-15] **장중 PCR/GEX 시계열 검증**
+  - 09:00~15:30 1분 간격 수집으로 시계열 안정성 확인
+  - OI 잠정/확정 구분에 따른 노이즈 평가
+
+- [NEXT 2026-05-15] **OptionMst 폴링 성능 최적화** — ATM ±30pt(48종목) = 2.9초. 매분 파이프라인(60초)에 적합. 배치 비동기 또는 5분 주기 완화 검토.
+
+- [NEXT 2026-05-15] **외부 키움 리포지토리 구현: pywinauto autologin 스크립트 도입**
+  - 대상: `auto_trader_kiwoom/start_kiwoom.bat`, `auto_trader_kiwoom/kiwoom_autologin.py`(신규)
+  - 요구: 로그인 창 객체 탐색, foreground 보장, 컨트롤 직접 입력, 실패 시 명확한 exit code
+
+- [NEXT 2026-05-15] **작업스케줄러 순서 독립 검증 (2방향 5회 반복)**
+  - 시나리오 A: `start_mireuk.bat` 후 `start_kiwoom.bat`
+  - 시나리오 B: `start_kiwoom.bat` 후 `start_mireuk.bat`
+  - 기준: 10회 중 로그인 실패 0회, 재시도 없이 정상 진입
+
+---
+
+## 2026-05-14 (27차) — Cybos 옵션 지표 수집 (PCR/GEX/ATM OI) 구현
+
+### 한일 요약
+
+- [DONE 2026-05-14] **CpOptionCode 검증** — `scripts/probe_cp_option_code.py` 작성, 체인 4,624종목 수집 확인. `data/option_chain.json` 캐시 생성. 코드 형식=`B0166A89`(콜)/`C0166A89`(풋), `call_put`="콜"/"풋"(한글).
+- [DONE 2026-05-14] **CpCalcOptGreeks 검증** — `scripts/probe_cp_calc_opt_greeks.py` 작성. `SetInputValue`/`BlockRequest` 아님 → **속성 할당 + `Calculate()`** 방식 확정. Delta/Gamma/Theta/Vega/Rho/IV 계산 정상.
+- [DONE 2026-05-14] **OptionMst 필드맵 교차 검증** — `scripts/verify_option_mst_fieldmap.py` 작성. 10종목 × 2회 검증으로 HeaderValue 인덱스 확정.
+- [DONE 2026-05-14] **통합 지표 수집** — `scripts/collect_option_metrics.py` 작성. PCR(OI)=0.54, ATM PCR=1.04, Total GEX=+35.3B. 48종목 2.9초.
+- [DONE 2026-05-14] **AGENTS.md** — 한글판 작성 (실행 환경, 런처, 브로커 백엔드, 절대 원칙, 아키텍처, 세션 연속성)
+
+### OptionMst 확정 필드맵
+
+| HV | 의미 | 비고 |
+|---|---|---|
+| 6 | 행사가(strike) | 검증 완료 |
+| 13 | 잔존일수 | ✅ |
+| 15 | 콜/풋 구분코드 (51=콜, 50=풋) | ATM 구분 아님 |
+| 37 | 전일 미결제약정 | ✅ |
+| 93 | 현재가 | ✅ |
+| 97 | 누적체결수량 | ✅ |
+| 99 | 현재 미결제약정 | ✅ |
+| 100 | OI 구분 | 미검증 |
+| 108 | 내재변동성 (종목별) | 유력 |
+| 109 | Delta (백분율, ÷100) | ✅ |
+| 110 | Gamma (백분율, ÷100) | ✅ |
+| 111 | Theta | ✅ |
+| 113 | Rho | ✅ |
+| 114 | 이론가 (추정) | 유력 |
+| 115 | 변동성 (고정 참조값) | 모든 종목 동일 |
+
+### 폐기된 문서 주장
+
+- HV(17) ≠ 기초자산가 → 날짜값. spot은 외부 주입 필요.
+- HV(15) ≠ ATM 구분 → 콜/풋 구분코드.
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-14] **OptionMo 실시간 OI 검증 (4단계)** — 장중(09:00~15:30)에만 유효
+  ```powershell
+  python scripts/probe_cp_option_mo.py --ensure-login --code B0166A89 --watch-sec 15
+  ```
+  OI 실시간 갱신 Subscribe 동작 확인.
+
+- [NEXT 2026-05-14] **지표를 Mireuk 피처로 통합**
+  - `collection/options/`에 `option_chain_snapshot.py` 신설 — 정기 폴링 기반 수집
+  - `features/options/`에 `option_features.py` 신설 — PCR·GEX·ATM OI 피처화
+  - `feature_builder.py`에 옵션 피처 연결 (현재 `option_data` 더미 파이프 존재)
+  - STEP 4 피처 생성 단계에 옵션 지표 주입
+
+- [NEXT 2026-05-14] **장중 PCR/GEX 시계열 검증**
+  - 09:00~15:30 1분 간격 수집으로 시계열 안정성 확인
+  - OI 잠정/확정 구분에 따른 노이즈 평가
+
+- [NEXT 2026-05-14] **OptionMst 폴링 성능 최적화** — ATM ±30pt(48종목) = 2.9초. 매분 파이프라인(60초)에 적합. 배치 비동기 또는 5분 주기 완화 검토.
+
+### 작성된 스크립트
+
+| 스크립트 | 용도 |
+|---|---|
+| `scripts/probe_cp_option_code.py` | CpOptionCode 체인 조회 |
+| `scripts/probe_cp_calc_opt_greeks.py` | CpCalcOptGreeks 그릭스 계산 |
+| `scripts/probe_cp_option_mo.py` | OptionMo 실시간 OI 구독 |
+| `scripts/verify_option_mst_fieldmap.py` | OptionMst 필드맵 교차 검증 |
+| `scripts/collect_option_metrics.py` | PCR/GEX/ATM OI 통합 수집 |
+
+---
+
+
+- [DONE 2026-05-13] **키움/미륵이 실행순서 충돌 원인분석 및 개선안 문서화 (B83)**
+  - `mireuk -> kiwoom` 실패 / `kiwoom -> mireuk` 성공 패턴을 Z-order/보안모듈/클립보드 경합 관점으로 정리
+  - 절대좌표/SendKeys/클립보드 의존 제거, 창 객체 기반 자동화 전환안 확정
+
+- [NEXT 2026-05-14] **외부 키움 리포지토리 구현: pywinauto autologin 스크립트 도입**
+  - 대상: `auto_trader_kiwoom/start_kiwoom.bat`, `auto_trader_kiwoom/kiwoom_autologin.py`(신규)
+  - 요구: 로그인 창 객체 탐색, foreground 보장, 컨트롤 직접 입력, 실패 시 명확한 exit code
+
+- [NEXT 2026-05-14] **작업스케줄러 순서 독립 검증 (2방향 5회 반복)**
+  - 시나리오 A: `start_mireuk.bat` 후 `start_kiwoom.bat`
+  - 시나리오 B: `start_kiwoom.bat` 후 `start_mireuk.bat`
+  - 기준: 10회 중 로그인 실패 0회, 재시도 없이 정상 진입
+
+- [NEXT 2026-05-14] **비밀정보 주입 방식 전환 확인**
+  - 자격정보 하드코딩 금지, 환경변수/보안저장소 기반으로 입력되는지 점검
+
+---
+
 ## 2026-05-13 (22차) — 수정 후 검증 항목
 
 - [DONE 2026-05-13] **B75~B78 통합 검증** — 장중 미니선물 분할체결 시나리오

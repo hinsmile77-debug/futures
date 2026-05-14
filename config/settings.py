@@ -115,6 +115,7 @@ REGIME_SIZE_MULT = {
 ATR_STOP_MULT   = 1.5   # 하드 스톱: ATR × 1.5
 ATR_TP1_MULT    = 1.0   # 1차 목표: ATR × 1.0
 ATR_TP2_MULT    = 1.5   # 2차 목표: ATR × 1.5
+ATR_TP3_MULT    = 2.5   # 3차 목표: ATR × 2.5
 
 PARTIAL_EXIT_RATIOS = [0.33, 0.33, 0.34]   # 부분 청산 3단계
 

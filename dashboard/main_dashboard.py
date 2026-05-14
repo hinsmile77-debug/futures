@@ -4726,7 +4726,7 @@ class MinuteChartCanvas(QWidget):
         self.setMouseTracking(True)
         self.setStyleSheet(f"background:{C['bg']};border:1px solid {C['border']};border-radius:6px;")
 
-    def reset_session(self, candles, completed_trades):
+    def reset_session(self, candles, completed_trades, exit_markers=None):
         normalized = []
         for candle in candles:
             row = self._normalize_candle(candle)
@@ -4736,7 +4736,7 @@ class MinuteChartCanvas(QWidget):
         self._completed_trades = [dict(t) for t in completed_trades]
         self._live_candle = None
         self._active_trade = None
-        self._exit_markers = []
+        self._exit_markers = list(exit_markers) if exit_markers else []
         total = len(self._closed_candles)
         self._visible_count = max(total, self._min_visible_count)
         self._view_offset = 0
@@ -5555,6 +5555,14 @@ class MinuteChartDialog(QDialog):
                     return candles[i:]
         return candles
 
+    @staticmethod
+    def _is_partial_exit_reason(exit_reason: str) -> bool:
+        """부분 청산 여부를 exit_reason 텍스트로 판단."""
+        _r = str(exit_reason or "").lower()
+        if not _r:
+            return False
+        return any(kw in _r for kw in ("부분청산", "partial", "부분 익절"))
+
     def reload_today(self):
         self._session_date = datetime.now().date().isoformat()
         candle_rows = fetchall(
@@ -5568,22 +5576,37 @@ class MinuteChartDialog(QDialog):
         candles = self._trim_to_last_price_group([dict(row) for row in candle_rows])
 
         completed_trades = []
+        exit_markers = []
         for row in fetch_today_trades(self._session_date):
             entry_ts = self._coerce_dt(row["entry_ts"])
             exit_ts = self._coerce_dt(row["exit_ts"])
             if not entry_ts or not exit_ts:
                 continue
-            completed_trades.append({
-                "direction": str(row["direction"] or "").upper(),
-                "entry_price": float(row["entry_price"] or 0.0),
-                "exit_price": float(row["exit_price"] or 0.0),
-                "entry_ts": entry_ts,
-                "exit_ts": exit_ts,
-                "exit_reason": str(row["exit_reason"] or ""),
-                "pnl_pts": float(row["pnl_pts"] or 0.0),
-                "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"]),
-            })
-        self._chart.reset_session(candles, completed_trades)
+            is_partial = self._is_partial_exit_reason(row["exit_reason"])
+
+            if is_partial:
+                exit_markers.append({
+                    "price": float(row["exit_price"] or 0.0),
+                    "ts": exit_ts,
+                    "kind": "EXIT",
+                    "finalize": False,
+                    "pnl_pts": float(row["pnl_pts"] or 0.0),
+                    "reason": str(row["exit_reason"] or ""),
+                    "direction": str(row["direction"] or "").upper(),
+                    "outcome": "PARTIAL",
+                })
+            else:
+                completed_trades.append({
+                    "direction": str(row["direction"] or "").upper(),
+                    "entry_price": float(row["entry_price"] or 0.0),
+                    "exit_price": float(row["exit_price"] or 0.0),
+                    "entry_ts": entry_ts,
+                    "exit_ts": exit_ts,
+                    "exit_reason": str(row["exit_reason"] or ""),
+                    "pnl_pts": float(row["pnl_pts"] or 0.0),
+                    "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"]),
+                })
+        self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers)
 
     def maybe_roll_session(self):
         today = datetime.now().date().isoformat()
@@ -5773,6 +5796,11 @@ class MireukDashboard(QMainWindow):
         )
         self.lbl_cb = mk_badge("CB NORMAL", C['bg3'], C['text2'], 11)
         self.lbl_cb.setToolTip(_CB_TIP)
+        
+        # L2 영구중단 배지
+        self.lbl_l2_halt = mk_badge("", C['bg3'], C['text2'], 10)
+        self.lbl_l2_halt.setToolTip("거래중단 임계 도달 시 금일 거래 영구 중단")
+        self.lbl_l2_halt.setText("")  # 초기 상태: 숨김
 
         # ── 우측 시계 블록 ─────────────────────────────────────
         clk_frame = QFrame()
@@ -5963,6 +5991,7 @@ class MireukDashboard(QMainWindow):
         header.addStretch()
         for w in [self.lbl_regime, self.lbl_micro_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_cb]:
             header.addWidget(w)
+        header.addWidget(self.lbl_l2_halt)  # L2 halt badge (CB 오른쪽)
         header.addWidget(clk_frame)
         header.addLayout(res_box)
         root.addLayout(header)
@@ -6477,6 +6506,25 @@ class DashboardAdapter:
                 f"font-size:{S.f(11)}px;font-weight:bold;"
                 f"padding:{S.p(1)}px {S.p(3)}px;"
             )
+
+    def update_l2_halt_badge(self, is_halted: bool, threshold: float = 0.0):
+        """L2 Tier Gate 영구중단 상태 배지 업데이트"""
+        lbl = getattr(self._win, "lbl_l2_halt", None)
+        if lbl is None:
+            return
+        
+        if is_halted:
+            lbl.setText(f"  🔒 L2 중단  ({threshold/1e6:.1f}M원)")
+            lbl.setStyleSheet(
+                f"background:#C62828;color:#fff;"
+                f"border:2px solid #FF5252;"
+                f"border-radius:{S.p(3)}px;"
+                f"font-size:{S.f(10)}px;font-weight:bold;"
+                f"padding:{S.p(1)}px {S.p(3)}px;"
+            )
+        else:
+            lbl.setText("")
+            lbl.setStyleSheet("")
 
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""

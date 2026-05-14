@@ -4,6 +4,119 @@
 
 ---
 
+## 2026-05-14 (28차 — L2 영구중단 배지 UI + 진입관리 모드 필터 2순위 구현)
+
+**Work**
+
+ProfitGuard L2 Tier Gate 영구중단 상태를 대시보드에 시각화하고, 진입관리 탭의 등급별 배지를 실제 필터링으로 연결했다.
+
+### 개선 C07: L2 영구중단 배지 시각화
+
+**파일**: `dashboard/main_dashboard.py`, `strategy/profit_guard.py`, `main.py`
+
+**내용**:
+- `profit_guard.py`:
+  - `_TierGate.halt_threshold`, `_TierGate.halt_tier` 프로퍼티 추가
+  - `ProfitGuard.get_l2_halt_info()` 메서드 추가 → `{'is_halted': bool, 'halt_threshold': float, 'halt_tier': int}` 반환
+- `dashboard/main_dashboard.py`:
+  - `self.lbl_l2_halt` 배지 생성 (CB 배지 오른쪽)
+  - `update_l2_halt_badge(is_halted, threshold)` 메서드 추가
+  - 활성 상태: **🔒 L2 중단 (N.NM원)** 빨강 배지 (C62828)
+  - 비활성: 배지 숨김
+- `main.py`:
+  - STEP 9 직후 매분 L2 halt 상태 조회 및 대시보드 갱신
+
+**배지 표시 규칙**:
+- L2 halt 활성 → 빨강 배지 + 임계값 표시 (백만 원 단위)
+- L2 halt 비활성 → 배지 숨김
+- 호버: "거래중단 임계 도달 시 금일 거래 영구 중단" 툴팁
+
+### 개선 C08: 진입관리 모드 필터 2순위 구현
+
+**파일**: `main.py`
+
+**내용**:
+- STEP 7 진입 직전에 모드별 등급 필터 추가
+- 우선순위:
+  1. **L2 ProfitGuard 체크** (수익 보존 전략, 시스템 차원)
+  2. **모드 필터 체크** (신호 강도 선호도, 사용자 선택)
+- 모드별 허용 등급:
+  - `"auto"` (A 등급진입): A급만
+  - `"hybrid"` (B 등급진입, 기본값): A, B급
+  - `"manual"` (C 등급진입): A, B, C급
+- 필터 차단 시 로그:
+  - 모드필터 차단: `"[모드필터] C급 신호 → hybrid 모드(['A', 'B']) 불일치 — 진입 차단"`
+  - 자동 진입 시 진입 실행 또는 모드필터 차단
+
+**설계 검증 사례**:
+```
+금일 수익 50만원 + C급 신호 + B 등급진입 모드
+→ L2 체크: min_mult=0.6, 0.6 >= 0.6 ✅ 통과
+→ 모드필터: C in [A,B] → ❌ 차단 (L2 통과했으나 모드에서 필터됨)
+→ 결과: 진입 불가 (원인: 모드필터)
+```
+
+### 설계 결정
+
+- L2 우선순위 1순위: 시스템 수익 보존 정책은 사용자 모드 선택보다 우선
+- 모드 우선순위 2순위: L2 통과 후 사용자 신호 강도 필터링 (Auto/Hybrid/Manual)
+- 차단 사유 명확화: 로그에 L2 또는 모드필터 중 무엇이 차단했는지 표시
+
+### 검증 결과
+
+- ✅ Auto ON/OFF 배지: 완벽하게 구현/작동 중
+  - 신호 연결: ✅
+  - 상태 관리: ✅
+  - 진입 로직 제어: ✅
+  - 로그 기록: ✅
+- ✅ L2 halt 배지: 매분 동기화, 정상 표시
+- ✅ 모드 필터: L2 다음 2순위로 작동 확인
+
+### 알려진 문제
+
+- 진입관리 탭의 A/B/C 등급진입 버튼 UI는 존재하지만 실제 모드 동작은 완전히 미구현 → **이번 회차에서 개선 C08로 완성**
+- profit_guard_prefs.json의 profit_tiers 중복 임계값 ([500000] 2개) 정리 필요 (기능상 문제 없음, 가독성 개선)
+
+---
+
+## 2026-05-13 (26차 — 작업스케줄러 순서의존 로그인 충돌 분석 + 키움 자동로그인 개선안 정리)
+
+**Work**
+
+Windows 작업스케줄러에서 `start_mireuk.bat` 이후 `start_kiwoom.bat` 실행 시 키움 자동로그인이 실패하는 순서 의존 문제를 원인 분석하고, 순서와 무관하게 동작하도록 개선안을 설계했다.
+
+### 버그 B83: `mireuk -> kiwoom` 순서에서 키움 자동로그인 실패
+
+**관측**:
+- `kiwoom -> mireuk`: 둘 다 정상
+- `mireuk -> kiwoom`: 키움 자동로그인 실패
+
+**원인 분석 요약**:
+1. **절대좌표 기반 GUI 매크로 취약성**
+  - 키움 로그인 자동화가 절대좌표 클릭/붙여넣기 방식일 때, Cybos/미륵이 창의 Z-order 변화로 클릭 대상이 흔들림.
+2. **보안 모듈 키입력 후킹 충돌 가능성**
+  - Cybos 계열 실행 후 전역 키입력 훅 환경에서 구형 SendKeys 계열이 더 불안정해짐.
+3. **클립보드 의존 입력 경합**
+  - `Ctrl+V` 중심 입력은 타 프로세스 동시동작/클립보드 점유에 취약.
+
+### 개선 C06: 키움 자동로그인 경로를 창 객체 기반(pywinauto)으로 전환 제안
+
+**적용 대상(외부 프로젝트)**:
+- `C:/Users/82108/PycharmProjects/auto_trader_kiwoom/start_kiwoom.bat`
+- `C:/Users/82108/PycharmProjects/auto_trader_kiwoom/kiwoom_autologin.py` (신규 제안)
+
+**핵심 방향**:
+- PowerShell 절대좌표/클립보드 방식 대신 pywinauto로 로그인 창 객체를 직접 찾아 포커스 + 컨트롤 입력
+- `start_kiwoom.bat`에서 py37_32 환경 활성화 후 Python autologin 호출
+- 입력값은 스크립트 하드코딩 금지(환경변수/보안 저장소 사용)
+
+**기대 효과**:
+- 실행 순서 무관 (`mireuk -> kiwoom`, `kiwoom -> mireuk` 모두 안정)
+- 해상도/창 위치/Z-order 변화 내성 향상
+- 클립보드 경합 감소
+
+---
+
 ## 2026-05-13 (24차 — 봉차트 청산 마커 시인성 개선 + TP/SL 컬러 정리)
 
 **Work**
@@ -1935,5 +2048,40 @@ if not self.model.is_ready():
     - entry-fill helper override now treats the pre-fill snapshot as the string form returned by `_ts_get_position_snapshot()` instead of assuming a dict.
 - Next validation needed after restart:
   - one Cybos entry should no longer create a fake `@ 0.0` or `@ 4.88` fill before the actual `체결`.
-  - repeated `[CybosRT-ROLLOVER] from=09:58 to=09:59` spam should stop.
-  - `BalanceRefresh` / broker sync should no longer drift into phantom multi-contract residuals after a single-contract trade.
+- repeated `[CybosRT-ROLLOVER] from=09:58 to=09:59` spam should stop.
+- `BalanceRefresh` / broker sync should no longer drift into phantom multi-contract residuals after a single-contract trade.
+
+---
+
+## 2026-05-13 (25차 - 청산관리/분할청산/트레일링/차트 마커/외부체결 동기화 보강)
+
+**작업**
+- `strategy/position/position_tracker.py`
+  - TP3/3단계 부분청산 계획(`33% / 33% / 34%`)과 `initial_quantity` 기준 stage 계산을 추가했다.
+  - 수동 `33% / 50% / 전량` 청산 이후에도 stage 진행률이 원진입 수량 기준으로 유지되도록 `_sync_partial_progress()`를 도입했다.
+  - `sync_from_broker()`가 같은 방향 포지션 재동기화 시 `initial_quantity`, `entry_time`, `stop_price`, `trailing_anchor_price`를 보존하도록 보강했다.
+  - `update_trailing_stop()`의 2ATR 구간을 `current_price` 기준이 아니라 `trailing_anchor_price` 기준 추적으로 바꿨다.
+  - `peek_saved_entry_time()`를 추가해 재시작 후 startup sync 시에도 저장된 진입시각을 복원 힌트로 사용할 수 있게 했다.
+- `dashboard/main_dashboard.py`
+  - 청산관리 탭의 `3차 목표 34%`를 실제 TP3와 연결했고, 부분청산 게이지를 원진입 수량 기준 계약수로 표기하도록 정리했다.
+  - `트레일링 기준`, `현재 실행 스톱`, `초기 하드 스톱` 툴팁을 추가했다.
+  - 진입마커가 sync 시 최신 분봉으로 따라가지 않도록 `sync_active_trade()`에서 기존 `entry_ts`를 보존하도록 수정했다.
+- `main.py`
+  - 청산관리 패널에 `pt_value`, `stage_plan`, `trail_basis`를 전달하도록 정리했다.
+  - stuck exit timeout 시 브로커 잔고로 먼저 재검증하는 `_ts_resolve_stuck_exit_pending()` 경로를 추가했다.
+  - 외부진입 체결 동기화 후 `250ms / 1200ms` 잔고 재조회 트리거를 넣어 Chejan 일부 누락 시 UI 잔고를 브로커 기준으로 보정하게 했다.
+
+**원인 분석 요약**
+- 청산관리 탭의 `트레일링 기준`은 실제 기준값이 아니라 `현재 실행 스톱` 복제값이라 두 라인이 함께 흔들려 보였다.
+- 실제 엔진 쪽에서도 same-side broker sync가 들어오면 `_recalculate_levels()`가 이미 끌어올린 스톱을 초기 하드스톱 쪽으로 되돌릴 수 있었다.
+- 진입마커는 `sync_active_trade()`가 호출될 때마다 `entry_ts`를 새로 덮어써서 “진입 시점 고정 + 점선 추적”이 아니라 “동기화 시점 재배치”로 보였다.
+- 외부진입 `order_no=3970` 사례는 로컬이 체결 4건만 받았고 브로커 잔고는 5계약이어서, 마지막 1계약 체결 누락을 브로커 잔고 재조회로 보정할 필요가 확인됐다.
+
+**검증**
+- `python -m py_compile strategy\position\position_tracker.py main.py dashboard\main_dashboard.py config\settings.py`
+- `python -m py_compile dashboard\main_dashboard.py`
+- `python -m py_compile main.py`
+
+**남은 확인 포인트**
+- 실제 장중에서 same-side broker sync가 들어온 뒤에도 `stop_price`가 뒤로 물러나지 않는지 로그로 확인 필요
+- 외부진입 다계약 체결에서 `[BalanceRefresh] trigger=ExternalFill entry retries=250ms,1200ms` 후 UI 잔고가 브로커 수량과 일치하는지 재검증 필요

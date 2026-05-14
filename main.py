@@ -54,7 +54,7 @@ from config.settings import (
     TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
 )
-from config.constants import FUTURES_PT_VALUE, get_contract_spec
+from config.constants import FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED
 from config import secrets as _secrets
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -445,8 +445,17 @@ class TradingSystem:
             log_manager.system("[ManualExit] 포지션이 없어 수동 청산을 무시했습니다.", "WARNING")
             return
         if self._has_pending_order():
-            log_manager.system("[ManualExit] 미체결 주문이 있어 수동 청산을 보류했습니다.", "WARNING")
-            return
+            # CB HALT 상태에서는 pending을 강제 소멸 후 청산 진행
+            # — stuck pending 때문에 운영자가 수동 청산조차 불가능한 상태 방지
+            if self.circuit_breaker.state == CB_STATE_HALTED:
+                log_manager.system(
+                    "[ManualExit] CB HALT 상태 — stuck pending 강제 소멸 후 수동 청산 진행",
+                    "WARNING",
+                )
+                self._clear_pending_order()
+            else:
+                log_manager.system("[ManualExit] 미체결 주문이 있어 수동 청산을 보류했습니다.", "WARNING")
+                return
 
         total_qty = int(self.position.quantity or 0)
         is_full_close = percent >= 100 or total_qty <= 1
@@ -1718,12 +1727,33 @@ class TradingSystem:
             raw_dir_str, final_dir_str, reverse_on = self._resolve_entry_direction(dir_str)
             raw_signal_ko = self._direction_to_korean(raw_dir_str)
             final_signal_ko = self._direction_to_korean(final_dir_str)
+            
+            # ── 2순위: 진입 모드 필터 (1순위 L2 체크 후) ──────────────────────────
+            entry_mode = self.dashboard.get_entry_mode()
+            allowed_grades = {
+                "auto":   ["A"],           # A급만
+                "hybrid": ["A", "B"],      # A, B급 (기본값)
+                "manual": ["A", "B", "C"]  # A, B, C급
+            }
+            mode_filter_passed = _final_grade in allowed_grades.get(entry_mode, ["A", "B", "C"])
+            
             if _cr["auto_entry"] and self._auto_entry_enabled:
-                self._execute_entry(
-                    final_dir_str, close, _qty_display, atr, _final_grade,
-                    raw_direction=raw_dir_str,
-                    reverse_enabled=reverse_on,
-                )
+                if mode_filter_passed:
+                    # L2 통과 && 모드 필터 통과 → 진입
+                    self._execute_entry(
+                        final_dir_str, close, _qty_display, atr, _final_grade,
+                        raw_direction=raw_dir_str,
+                        reverse_enabled=reverse_on,
+                    )
+                else:
+                    # 모드 필터 차단
+                    log_manager.signal(
+                        f"[모드필터] {_final_grade}급 신호 → {entry_mode} 모드({allowed_grades.get(entry_mode, ['A','B','C'])}) 불일치 — 진입 차단"
+                    )
+                    log_manager.trade(
+                        f"[모드필터 차단] {raw_dir_str}->{final_dir_str} {_qty_display}계약 {_final_grade}급 "
+                        f"(모드={entry_mode}, 허용={allowed_grades.get(entry_mode, ['A','B','C'])})"
+                    )
             else:
                 log_manager.signal(
                     f"[EntrySignal] 원신호={raw_dir_str} 실행신호={final_dir_str} "
@@ -1884,6 +1914,16 @@ class TradingSystem:
             self.dashboard.update_system_status(
                 cb_state=self.circuit_breaker.state,
                 latency_ms=0.0,
+            )
+        except Exception:
+            pass
+
+        # ── L2 Tier Gate 영구중단 배지 갱신 ────────────────────
+        try:
+            l2_info = self.profit_guard.get_l2_halt_info()
+            self.dashboard.update_l2_halt_badge(
+                is_halted=l2_info['is_halted'],
+                threshold=l2_info['halt_threshold']
             )
         except Exception:
             pass
@@ -3969,6 +4009,9 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
         )
         return False
 
+    # sync 전 포지션 수량 저장 — expected_remaining 비교에 사용
+    prev_pos_qty = self.position.quantity
+
     entry_time_hint = self.position.entry_time or self.position.peek_saved_entry_time(side)
     self.position.sync_from_broker(
         direction=side,
@@ -3986,6 +4029,23 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
     )
 
     if side == pending.get("direction"):
+        # Chejan 이벤트 유실 감지: 브로커 잔량이 (진입수량 - 주문수량)과 일치하면
+        # 실제로는 전량 체결됐음에도 이벤트 누락으로 부분체결로 오판한 것 → pending 소멸
+        expected_remaining = prev_pos_qty - pending.get("qty", 0)
+        if qty == expected_remaining:
+            self._clear_pending_order()
+            _ts_set_broker_sync_status(
+                self, True,
+                f"stuck exit resolved via broker qty match {side} {qty} @ {avg_price}",
+                False,
+            )
+            log_manager.system(
+                f"[PendingOrder] EXIT partial fill timeout -> "
+                f"브로커 잔량 {qty}계약 = 예상잔량 {expected_remaining}계약 일치 "
+                f"→ Chejan 이벤트 유실로 인한 오판, pending 소멸",
+                "WARNING",
+            )
+            return True
         pending["last_fill_at"] = datetime.datetime.now()
         _ts_set_broker_sync_status(self, True, f"stuck exit still holding {side} {qty} @ {avg_price}", False)
         log_manager.system(

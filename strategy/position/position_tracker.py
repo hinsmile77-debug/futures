@@ -7,10 +7,10 @@ import datetime
 import json
 import logging
 import os
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 
 from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT, FUTURES_PT_VALUE
-from config.settings import ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, FUTURES_COMMISSION_RATE
+from config.settings import ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT, FUTURES_COMMISSION_RATE
 
 # 인스턴스별 pt_value를 주입받기 전 module-level fallback 으로만 사용
 def _calc_commission(price: float, quantity: int, pt_value: float = FUTURES_PT_VALUE) -> float:
@@ -42,9 +42,13 @@ class PositionTracker:
         self.stop_price:   float = 0.0
         self.tp1_price:    float = 0.0
         self.tp2_price:    float = 0.0
+        self.tp3_price:    float = 0.0
+        self.trailing_anchor_price: float = 0.0
 
         self.partial_1_done: bool = False
         self.partial_2_done: bool = False
+        self.partial_3_done: bool = False
+        self.initial_quantity: int = 0
 
         self._optimistic: bool = False  # True = open_position() called speculatively; Chejan will correct price
 
@@ -79,8 +83,12 @@ class PositionTracker:
         self.stop_price = 0.0
         self.tp1_price = 0.0
         self.tp2_price = 0.0
+        self.tp3_price = 0.0
+        self.trailing_anchor_price = 0.0
         self.partial_1_done = False
         self.partial_2_done = False
+        self.partial_3_done = False
+        self.initial_quantity = 0
         self._optimistic = False
         self.last_update_reason = reason
         self.last_update_ts = datetime.datetime.now()
@@ -119,6 +127,8 @@ class PositionTracker:
         self.regime      = regime
         self.signal_direction = raw_direction or direction
         self.reverse_entry_enabled = bool(reverse_entry_enabled)
+        self.initial_quantity = quantity
+        self.trailing_anchor_price = price
 
         mult = 1 if direction == POSITION_LONG else -1
         self.stop_price = price - mult * atr * ATR_STOP_MULT
@@ -127,6 +137,7 @@ class PositionTracker:
 
         self.partial_1_done = False
         self.partial_2_done = False
+        self.partial_3_done = False
         self.last_update_reason = f"open_position:{direction}"
         self.last_update_ts = datetime.datetime.now()
 
@@ -219,6 +230,7 @@ class PositionTracker:
             self._optimistic = False
             self.signal_direction = raw_direction or self.signal_direction or direction
             self.reverse_entry_enabled = bool(reverse_entry_enabled or self.reverse_entry_enabled)
+            self.trailing_anchor_price = price
             self._recalculate_levels(atr)
             self.last_update_reason = f"apply_entry_fill_correction:{direction}"
             self.last_update_ts = filled_at or datetime.datetime.now()
@@ -245,6 +257,8 @@ class PositionTracker:
             self.status = direction
             self.entry_price = price
             self.quantity = quantity
+            self.initial_quantity = quantity
+            self.trailing_anchor_price = price
             self.entry_time = filled_at or datetime.datetime.now()
             self.grade = grade
             self.regime = regime
@@ -259,6 +273,7 @@ class PositionTracker:
                 (self.entry_price * self.quantity) + (price * quantity)
             ) / total_qty
             self.quantity = total_qty
+            self.initial_quantity = max(int(self.initial_quantity or 0), total_qty)
             self.grade = grade or self.grade
             self.regime = regime or self.regime
             self.signal_direction = raw_direction or self.signal_direction or direction
@@ -269,6 +284,7 @@ class PositionTracker:
         self._recalculate_levels(atr)
         self.partial_1_done = False
         self.partial_2_done = False
+        self.partial_3_done = False
         self.last_update_reason = f"apply_entry_fill:{direction}"
         self.last_update_ts = filled_at or datetime.datetime.now()
         self._save_state()
@@ -348,6 +364,7 @@ class PositionTracker:
             self._reset_position()
         else:
             self.quantity -= quantity
+            self._sync_partial_progress()
             self.last_update_reason = f"apply_exit_fill_partial:{reason}"
             self.last_update_ts = filled_at or datetime.datetime.now()
             self._save_state()
@@ -374,19 +391,47 @@ class PositionTracker:
         assert direction in (POSITION_LONG, POSITION_SHORT), f"Invalid direction: {direction}"
         assert quantity > 0, f"Invalid broker quantity: {quantity}"
 
+        prev_status = self.status
+        prev_initial = max(int(self.initial_quantity or 0), int(self.quantity or 0))
+        prev_entry_time = self.entry_time
+        prev_stop = float(self.stop_price or 0.0)
+        prev_anchor = float(self.trailing_anchor_price or 0.0)
+        same_side_sync = prev_status == direction
+
         self.status = direction
         self.entry_price = price
         self.quantity = quantity
-        self.entry_time = synced_at or datetime.datetime.now()
+        self.entry_time = prev_entry_time if same_side_sync and prev_entry_time else (synced_at or datetime.datetime.now())
         self.grade = grade
         self.regime = regime
         self.signal_direction = direction
         self.reverse_entry_enabled = False
+        if same_side_sync and prev_initial > 0:
+            self.initial_quantity = max(prev_initial, quantity)
+        else:
+            self.initial_quantity = quantity
         self.partial_1_done = False
         self.partial_2_done = False
+        self.partial_3_done = False
         self.last_update_reason = f"sync_from_broker:{direction}"
         self.last_update_ts = synced_at or datetime.datetime.now()
         self._recalculate_levels(atr)
+        if same_side_sync:
+            if prev_stop > 0:
+                if direction == POSITION_LONG:
+                    self.stop_price = max(self.stop_price, prev_stop)
+                else:
+                    self.stop_price = min(self.stop_price, prev_stop)
+            if prev_anchor > 0:
+                if direction == POSITION_LONG:
+                    self.trailing_anchor_price = max(prev_anchor, price)
+                else:
+                    self.trailing_anchor_price = min(prev_anchor, price)
+            else:
+                self.trailing_anchor_price = price
+        else:
+            self.trailing_anchor_price = price
+        self._sync_partial_progress()
         self._save_state()
 
         logger.warning(
@@ -434,6 +479,7 @@ class PositionTracker:
         self._daily_forward_pnl_pts += forward_pnl_pts * qty
         self._daily_forward_commission += forward_commission
         self.quantity        -= qty
+        self._sync_partial_progress()
         self.last_update_reason = f"partial_close:{reason}"
         self.last_update_ts = datetime.datetime.now()
 
@@ -484,6 +530,7 @@ class PositionTracker:
             self.stop_price = protected_stop
 
         self.partial_1_done = True
+        self._sync_partial_progress()
         self.last_update_reason = "arm_tp1_single_contract"
         self.last_update_ts = datetime.datetime.now()
         self._save_state()
@@ -533,6 +580,7 @@ class PositionTracker:
             self.stop_price = protected_stop
 
         self.partial_1_done = True
+        self._sync_partial_progress()
         self.last_update_reason = f"arm_tp1_single_contract:{mode}"
         self.last_update_ts = datetime.datetime.now()
         self._save_state()
@@ -561,10 +609,16 @@ class PositionTracker:
 
         mult = 1 if self.status == POSITION_LONG else -1
         unrealized_pts = (current_price - self.entry_price) * mult
+        if self.trailing_anchor_price <= 0:
+            self.trailing_anchor_price = self.entry_price
+        if self.status == POSITION_LONG:
+            self.trailing_anchor_price = max(self.trailing_anchor_price, current_price)
+        else:
+            self.trailing_anchor_price = min(self.trailing_anchor_price, current_price)
 
         if unrealized_pts >= atr * 2.0:
             # 2ATR 이상 수익 → 최고점 추적 (1ATR 간격)
-            new_stop = current_price - mult * atr
+            new_stop = self.trailing_anchor_price - mult * atr
             if mult * (new_stop - self.stop_price) > 0:
                 self.stop_price = new_stop
         elif unrealized_pts >= atr * 1.5:
@@ -599,6 +653,77 @@ class PositionTracker:
             return price >= self.tp2_price
         return price <= self.tp2_price
 
+    def is_tp3_hit(self, price: float) -> bool:
+        if self.status == POSITION_FLAT or self.partial_3_done:
+            return False
+        if self.status == POSITION_LONG:
+            return price >= self.tp3_price
+        return price <= self.tp3_price
+
+    def get_stage_plan(self) -> Tuple[int, int, int]:
+        total_qty = int(self.initial_quantity or self.quantity or 0)
+        if total_qty <= 0:
+            return (0, 0, 0)
+        if total_qty == 1:
+            return (1, 0, 0)
+        if total_qty == 2:
+            return (1, 1, 0)
+
+        raw = [
+            total_qty * 0.33,
+            total_qty * 0.33,
+            total_qty * 0.34,
+        ]
+        plan = [int(value) for value in raw]
+        remainder = total_qty - sum(plan)
+        order = sorted(
+            range(3),
+            key=lambda idx: (raw[idx] - plan[idx], idx == 2, -idx),
+            reverse=True,
+        )
+        for idx in order:
+            if remainder <= 0:
+                break
+            plan[idx] += 1
+            remainder -= 1
+        return tuple(plan)
+
+    def get_stage_targets(self) -> Tuple[int, int, int]:
+        q1, q2, q3 = self.get_stage_plan()
+        return (q1, q1 + q2, q1 + q2 + q3)
+
+    def get_closed_quantity(self) -> int:
+        if self.status == POSITION_FLAT and self.initial_quantity <= 0:
+            return 0
+        current_qty = max(int(self.quantity or 0), 0)
+        initial_qty = max(int(self.initial_quantity or 0), current_qty)
+        return max(0, initial_qty - current_qty)
+
+    def get_stage_exit_qty(self, stage: int) -> int:
+        stage = int(stage or 0)
+        if stage < 1 or stage > 3:
+            return 0
+        targets = self.get_stage_targets()
+        closed_qty = self.get_closed_quantity()
+        needed = max(0, targets[stage - 1] - closed_qty)
+        return min(max(int(self.quantity or 0), 0), needed)
+
+    def resolve_stage_for_exit_qty(self, exit_qty: int, *, full_close: bool = False) -> int:
+        exit_qty = max(int(exit_qty or 0), 0)
+        if exit_qty <= 0:
+            return 0
+        if full_close:
+            return 3
+        targets = self.get_stage_targets()
+        closed_after = self.get_closed_quantity() + exit_qty
+        if closed_after >= targets[2]:
+            return 3
+        if closed_after >= targets[1]:
+            return 2
+        if closed_after >= targets[0]:
+            return 1
+        return 0
+
     def unrealized_pnl_pts(self, current_price: float) -> float:
         if self.status == POSITION_FLAT:
             return 0.0
@@ -624,6 +749,27 @@ class PositionTracker:
         self.stop_price = self.entry_price - mult * atr * ATR_STOP_MULT
         self.tp1_price = self.entry_price + mult * atr * ATR_TP1_MULT
         self.tp2_price = self.entry_price + mult * atr * ATR_TP2_MULT
+        self.tp3_price = self.entry_price + mult * atr * ATR_TP3_MULT
+
+    def get_trailing_reference_price(self, current_price: float, atr: float) -> float:
+        if self.status == POSITION_FLAT:
+            return 0.0
+        mult = 1 if self.status == POSITION_LONG else -1
+        unrealized_pts = (current_price - self.entry_price) * mult
+        if unrealized_pts >= atr * 2.0:
+            return float(self.trailing_anchor_price or current_price or self.entry_price)
+        if unrealized_pts >= atr * 1.5:
+            return self.entry_price + mult * atr * 0.5
+        if unrealized_pts >= atr * 1.0:
+            return self.entry_price
+        return self.entry_price - mult * atr * ATR_STOP_MULT
+
+    def _sync_partial_progress(self) -> None:
+        target_1, target_2, target_3 = self.get_stage_targets()
+        closed_qty = self.get_closed_quantity()
+        self.partial_1_done = bool(self.partial_1_done or (target_1 > 0 and closed_qty >= target_1))
+        self.partial_2_done = bool(self.partial_2_done or (target_2 > 0 and closed_qty >= target_2))
+        self.partial_3_done = bool(self.partial_3_done or (target_3 > 0 and closed_qty >= target_3))
 
     def _build_exit_result(
         self,
@@ -669,8 +815,12 @@ class PositionTracker:
         self.stop_price = 0.0
         self.tp1_price = 0.0
         self.tp2_price = 0.0
+        self.tp3_price = 0.0
+        self.trailing_anchor_price = 0.0
         self.partial_1_done = False
         self.partial_2_done = False
+        self.partial_3_done = False
+        self.initial_quantity = 0
         self._optimistic = False
         self.last_update_ts = self.last_update_ts or datetime.datetime.now()
         self._save_state()
@@ -765,8 +915,12 @@ class PositionTracker:
                 "stop_price":   self.stop_price,
                 "tp1_price":    self.tp1_price,
                 "tp2_price":    self.tp2_price,
+                "tp3_price":    self.tp3_price,
+                "trailing_anchor_price": self.trailing_anchor_price,
+                "initial_quantity": self.initial_quantity,
                 "partial_1_done": self.partial_1_done,
                 "partial_2_done": self.partial_2_done,
+                "partial_3_done": self.partial_3_done,
                 "last_update_reason": self.last_update_reason,
                 "last_update_ts": (
                     self.last_update_ts.isoformat() if self.last_update_ts else None
@@ -811,8 +965,17 @@ class PositionTracker:
             self.stop_price   = float(state.get("stop_price", 0))
             self.tp1_price    = float(state.get("tp1_price", 0))
             self.tp2_price    = float(state.get("tp2_price", 0))
+            self.tp3_price    = float(state.get("tp3_price", 0))
+            self.trailing_anchor_price = float(state.get("trailing_anchor_price", self.entry_price))
+            self.initial_quantity = int(state.get("initial_quantity", self.quantity))
             self.partial_1_done = bool(state.get("partial_1_done", False))
             self.partial_2_done = bool(state.get("partial_2_done", False))
+            self.partial_3_done = bool(state.get("partial_3_done", False))
+            if self.tp3_price == 0.0 and self.stop_price and self.tp1_price and self.tp2_price:
+                atr = abs(self.entry_price - self.stop_price) / ATR_STOP_MULT if ATR_STOP_MULT else 0.0
+                mult = 1 if self.status == POSITION_LONG else -1
+                self.tp3_price = self.entry_price + mult * max(atr, 0.0) * ATR_TP3_MULT
+            self._sync_partial_progress()
             self.last_update_reason = state.get("last_update_reason", "unknown")
             self.last_update_ts = (
                 datetime.datetime.fromisoformat(state["last_update_ts"])
@@ -833,6 +996,28 @@ class PositionTracker:
         except Exception as e:
             logger.warning(f"[Position] 상태 복원 실패: {e}")
             return False
+
+    def peek_saved_entry_time(self, direction: str = "") -> Optional[datetime.datetime]:
+        """같은 날 저장된 상태 파일에서 진입시각 힌트를 읽는다."""
+        if not os.path.exists(_STATE_FILE):
+            return None
+        try:
+            with open(_STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            saved_at = datetime.datetime.fromisoformat(state.get("saved_at", ""))
+            if saved_at.date() != datetime.date.today():
+                return None
+            status = str(state.get("status") or "").strip().upper()
+            if status == POSITION_FLAT:
+                return None
+            if direction and status != str(direction).strip().upper():
+                return None
+            entry_time_raw = state.get("entry_time")
+            if not entry_time_raw:
+                return None
+            return datetime.datetime.fromisoformat(str(entry_time_raw))
+        except Exception:
+            return None
 
     def _calc_directional_pnl_pts(self, direction: str, exit_price: float) -> float:
         mult = 1 if direction == POSITION_LONG else -1
