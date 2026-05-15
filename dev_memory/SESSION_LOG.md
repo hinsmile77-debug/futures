@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-05-16 (40차 — 장전 시동 흐름 점검 + 슬랙 알림 + UI 체크박스)
+
+**Work**: 08:45 자동 기동 → 09:00 첫 틱 수신까지의 전체 흐름을 감사하고 이상점 6종을 수정했다. 슬랙 알림 전 구간 추가, 대시보드 슬랙 On/Off 체크박스 신설, GBM 재학습 데몬 스레드 전환, BAT 파일 세션 이중 확인을 완료했다.
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| 08:45→08:55 pre_market_setup 타이밍 통합 | `main.py` | 두 타이머 블록을 08:55 단일 블록으로 통합. 실시간 구독 사전 시작(`_rd.start`) 포함 |
+| 08:55 스냅샷 워밍업 추가 | `main.py`, `collection/cybos/realtime_data.py` | `pre_market_setup()` 끝에 `_prime_from_snapshot()` 호출. `start()` 진입 시 `_last_price > 0`이면 중복 BlockRequest skip |
+| GBM 재학습 → 데몬 스레드 | `main.py` | `_on_gbm_retrain_done()` 콜백 추가. `threading.Thread(daemon=True)` + `QTimer.singleShot(0, callback)`으로 메인 스레드 블로킹 제거 |
+| 08:58 broker sync 선실행 | `main.py` | `_scheduler_tick`에 08:58~09:00 구간 broker sync pre-execution. `_pre_sync_attempted` 플래그로 중복 방지 |
+| `start_mireuk.bat` 세션 이중 확인 | `start_mireuk.bat` | preflight 후 3s 대기 + Cybos 세션 재확인. 끊어졌으면 `EXIT /B 1` |
+| CLAUDE.md 타임스탬프 교정 | `CLAUDE.md` | `08:45` → `08:55 매크로 수집 → 레짐 판단 + 실시간 구독 사전 시작` |
+| 슬랙 알림 전 구간 추가 | `utils/notify.py` | `_SLACK_ENABLED` 플래그, `set_slack_enabled()`, `is_slack_enabled()`, `notify_startup`, `notify_premarket_ready`, `notify_first_tick`, `notify_broker_sync_blocked`, `notify_connection_lost`, `notify_pipeline_delayed` |
+| 슬랙 알림 연동 | `main.py` | 기동 성공/실패, 장전 준비, 첫 틱, broker sync 미검증, 연결 끊김, 파이프라인 90s 지연 각각 슬랙 발송 |
+| 대시보드 슬랙 On/Off 체크박스 | `dashboard/main_dashboard.py` | `chk_slack` QCheckBox 추가. `res_box`에 왼쪽 정렬. `ui_prefs.json` 저장·복원 |
+| `run()` 체크박스 → `_SLACK_ENABLED` 연동 | `main.py` | `stateChanged` 시그널로 `set_slack_enabled` + `_save_ui_prefs` 연동 |
+
+### 핵심 설계 원칙 (40차)
+
+- **08:55 단일 진입점**: 프리마켓 준비(매크로·레짐)와 실시간 구독 사전 시작을 08:55 단일 블록으로 통합 → 08:45~09:00 구간 로직 간소화
+- **스냅샷 선워밍**: 08:55 `pre_market_setup()` 직후 `_prime_from_snapshot()` → 09:00 `start()` 진입 시 BlockRequest 없이 즉시 tick 수신 가능
+- **GBM 비차단**: 재학습을 데몬 스레드로 분리 → 09:00 갭 오픈 구간 메인 스레드 점유 방지
+- **broker sync 선실행**: 08:58에 미리 sync → 09:00~09:05 GAP_OPEN 구간에서 block_new_entries=False 확보
+- **슬랙 알림 On/Off**: `_SLACK_ENABLED` 전역 플래그 + 체크박스 → 장중 알림 폭탄 없이 필요 시만 활성화 가능
+
+### 기동 시 예상 슬랙 흐름
+
+```
+08:55  notify_premarket_ready  → "장전 준비 완료 ✅ | 레짐 / 종목"
+09:00  notify_first_tick       → "첫 분봉 수신 ✅ (09:01) O=... H=... L=... C=..."
+(이상 없으면 이후 거래 시작)
+실패 시: notify_broker_sync_blocked / notify_connection_lost / notify_pipeline_delayed
+```
+
+---
+
 ## 2026-05-15 (39차 — 선물 롤오버 자동화 전면 강화)
 
 **Work**: 시장구분 콤보에서 선택된 종목코드가 만기됐을 때 자동으로 근월/근주물로 전환하는 로직을 일반선물·미니선물 모두에 걸쳐 세심하게 완성했다.

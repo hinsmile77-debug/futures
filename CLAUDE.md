@@ -76,7 +76,7 @@ GetCommData(sTrCode, sRQName, ...)   # 2번째: rq_name
 ## 매분 실행 파이프라인 (9단계)
 
 ```
-08:50  매크로 수집 → 시장 레짐 (RISK_ON / NEUTRAL / RISK_OFF)
+08:55  매크로 수집 → 시장 레짐 (RISK_ON / NEUTRAL / RISK_OFF) + 실시간 구독 사전 시작
 09:00  장 시작
 
 [매분]

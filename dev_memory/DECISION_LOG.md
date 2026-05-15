@@ -2,6 +2,36 @@
 
 ---
 
+## 2026-05-16 (40차 — 장전 시동 흐름 점검 + 슬랙 알림 + UI 체크박스)
+
+### [D88] pre_market_setup 타이밍은 08:55 단일 블록으로 통합한다
+**Decision**: 기존 `08:45` + `08:55` 두 개 블록을 `08:55` 단일 블록으로 합쳤다. 프리마켓 준비(매크로·레짐)와 실시간 구독 사전 시작이 함께 수행된다.  
+**Why**: 프리마켓 거래를 하지 않으므로 08:45 조기 실행의 이점이 없다. 두 블록이 분리되어 있으면 로직 추적이 어렵고, 08:45에서 시작된 일부 초기화가 08:55에 중복 실행되는 위험이 있었다.  
+**How to apply**: `_scheduler_tick`에서 08:55 조건 하나만 남긴다. `is_trading_day(now) and time(8,55) <= now.time() < time(9,0)` + `not self._pre_market_done`.
+
+### [D89] 스냅샷 선워밍은 pre_market_setup() 끝에 수행하고, start()는 중복 BlockRequest를 skip한다
+**Decision**: `pre_market_setup()` 마지막에 `_prime_from_snapshot()`을 호출해 08:55에 현재가를 미리 받는다. 이후 `start()`가 호출되면 `_last_price > 0` 조건으로 중복 BlockRequest를 건너뛴다.  
+**Why**: `start()`에서 처음 BlockRequest를 실행하면 09:00 첫 틱 수신 전에 수백 ms가 소요된다. GAP_OPEN 구간(09:00~09:05)에서 첫 캔들을 놓칠 위험이 있다. 선워밍으로 BlockRequest를 08:55에 미리 완료하면 09:00에 즉시 tick 수신 가능.  
+**How to apply**: `CybosRealtimeData.start()` 첫 줄에 `if self._last_price > 0.0: skip` 로직. `pre_market_setup()` 끝의 워밍업 try/except는 실패해도 무시(선택적 최적화).
+
+### [D90] GBM 배치 재학습은 데몬 스레드로 실행하고, 완료 콜백은 QTimer.singleShot(0)으로 메인 스레드에서 처리한다
+**Decision**: `batch_retrainer.retrain_now()`를 `threading.Thread(daemon=True)`에서 실행한다. 완료 시 `QTimer.singleShot(0, lambda: _on_gbm_retrain_done(...))` 으로 메인 스레드에서 처리한다.  
+**Why**: 기존 코드는 `retrain_now()`를 `run_minute_pipeline()` 내부 STEP 3에서 동기 호출했다. GBM 재학습은 5~30초 소요 → 09:00 GAP_OPEN 첫 캔들 수신 시 메인 스레드가 GBM 재학습 중이면 `_on_candle_closed` 콜백 처리가 지연된다.  
+**How to apply**: `_gbm_retrain_running` 플래그로 중복 실행 방지. `_on_gbm_retrain_done`에서 `model._load_all()` → 슬랙 → dashboard 업데이트. QTimer.singleShot(0)은 PyQt5 이벤트 루프에서 안전하게 실행됨.
+
+### [D91] 슬랙 알림은 전역 플래그로 On/Off하며, 대시보드 체크박스가 UI 진입점이다
+**Decision**: `utils/notify.py`에 `_SLACK_ENABLED` 전역 불리언을 두고, 모든 `_send()` 호출 첫 줄에서 가드한다. `set_slack_enabled(bool)` / `is_slack_enabled()` 공개 API. 대시보드 `chk_slack` 체크박스의 `stateChanged` 시그널이 `set_slack_enabled`를 호출한다.  
+**Why**: 장중 슬랙 알림이 과다하면 운영자가 알림을 무시하게 된다. 테스트·개발 중에는 슬랙 없이 실행하고 싶을 수 있다. 체크박스 상태는 `ui_prefs.json`에 저장되어 재기동 시에도 유지된다.  
+**How to apply**: `run()`에서 체크박스 초기값 → `set_slack_enabled()` 설정. `stateChanged` → `set_slack_enabled` + `_save_ui_prefs`. `notify_*` 함수는 `_send()` 경유로 자동으로 플래그를 따름.
+
+### [B99] 08:45 pre_market_setup 타이밍 불일치 — CLAUDE.md와 코드 간 타임스탬프 불일치
+**File**: `main.py`, `CLAUDE.md`  
+**Symptom**: CLAUDE.md는 `08:45 매크로 수집`으로 문서화되어 있지만 실제 코드에 08:45 트리거가 없었거나 08:55로 이동했다.  
+**Root cause**: 타이밍 설계 변경 시 CLAUDE.md 업데이트를 누락했다.  
+**Fix**: `CLAUDE.md` 파이프라인 섹션 `08:45` → `08:55 매크로 수집 → 시장 레짐 + 실시간 구독 사전 시작`으로 수정.
+
+---
+
 ## 2026-05-15 (39차 — 선물 롤오버 자동화 전면 강화)
 
 ### [D85] 선물 심볼 목록(`_MARKET_SYMBOLS`)은 기동 날짜 기준으로 동적 생성한다

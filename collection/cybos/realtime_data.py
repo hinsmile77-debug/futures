@@ -83,16 +83,27 @@ class CybosRealtimeData:
         if self._running:
             return
 
-        sys_log.info("[CybosRT-START] snapshot begin code=%s", self._rt_code)
-        self._prime_from_snapshot()
-        sys_log.info(
-            "[CybosRT-START] snapshot end code=%s price=%.2f oi=%d bid1=%.2f ask1=%.2f",
-            self._rt_code,
-            self._last_price,
-            self._last_oi,
-            self._last_bid1,
-            self._last_ask1,
-        )
+        # pre_market_setup()에서 이미 _prime_from_snapshot()을 실행한 경우 재호출 스킵.
+        # 09:00 정각 BlockRequest 병목을 방지한다 (이상점 2 수정).
+        if self._last_price > 0.0:
+            sys_log.info(
+                "[CybosRT-START] snapshot skipped (pre-warmed) code=%s price=%.2f bid1=%.2f ask1=%.2f",
+                self._rt_code,
+                self._last_price,
+                self._last_bid1,
+                self._last_ask1,
+            )
+        else:
+            sys_log.info("[CybosRT-START] snapshot begin code=%s", self._rt_code)
+            self._prime_from_snapshot()
+            sys_log.info(
+                "[CybosRT-START] snapshot end code=%s price=%.2f oi=%d bid1=%.2f ask1=%.2f",
+                self._rt_code,
+                self._last_price,
+                self._last_oi,
+                self._last_bid1,
+                self._last_ask1,
+            )
         sys_log.info("[CybosRT-START] tick subscribe begin code=%s", self._rt_code)
         self._tick_subscription = self.api.create_subscription(
             progid=FUTURE_CUR_ONLY_PROGID,

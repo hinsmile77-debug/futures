@@ -1,7 +1,37 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-15 (39차) — **선물 롤오버 자동화 전면 강화 (일반·미니 통합)**
+> 마지막 업데이트: 2026-05-16 (40차) — **장전 시동 흐름 점검 + 슬랙 알림 + UI 체크박스**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-16 (40차) — 장전 시동 흐름 + 슬랙 알림 + 대시보드 체크박스
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| `pre_market_setup` 타이밍 | **완료** — 08:55 단일 블록 (기존 08:45+08:55 이중 블록 통합) |
+| 스냅샷 워밍업 (`_prime_from_snapshot`) | **완료** — `pre_market_setup()` 끝에 선워밍, `start()` 진입 시 skip 로직 |
+| GBM 재학습 데몬 스레드 | **완료** — `threading.Thread(daemon=True)` + `QTimer.singleShot(0, _on_gbm_retrain_done)` |
+| 08:58 broker sync 선실행 | **완료** — `_pre_sync_attempted` 플래그로 중복 방지 |
+| `start_mireuk.bat` 세션 이중 확인 | **완료** — preflight → 3s 대기 → 재확인 |
+| 슬랙 알림 (`utils/notify.py`) | **완료** — `_SLACK_ENABLED`, 6개 단계별 함수 추가 |
+| `main.py` 슬랙 연동 | **완료** — 기동·장전·첫틱·sync 미검증·연결끊김·90s 지연 |
+| 대시보드 `chk_slack` 체크박스 | **완료** — `res_box` 왼쪽 정렬, `ui_prefs.json` 저장·복원 |
+| CLAUDE.md 08:55 교정 | **완료** |
+| 40차 수정 실검증 | **미완료** — 다음 기동 시 슬랙 알림 수신 + 첫 틱 슬랙 확인 필요 |
+
+### 수정 파일 (40차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | 08:55 통합 블록, 스냅샷 워밍업, GBM 데몬 스레드, 08:58 broker sync, 슬랙 연동 전체, `chk_slack` 연결 |
+| `collection/cybos/realtime_data.py` | `start()` — `_last_price > 0`이면 `_prime_from_snapshot` skip |
+| `utils/notify.py` | `_SLACK_ENABLED` 플래그 + 제어 함수 + 6개 단계별 알림 함수 |
+| `dashboard/main_dashboard.py` | `chk_slack` QCheckBox 추가, `res_box` 왼쪽 정렬, `_save_ui_prefs`·`_restore_ui_prefs` slack 저장/복원 |
+| `start_mireuk.bat` | preflight 후 3s + Cybos 세션 재확인 구간 추가 |
+| `CLAUDE.md` | 파이프라인 08:45 → 08:55 교정 |
 
 ---
 

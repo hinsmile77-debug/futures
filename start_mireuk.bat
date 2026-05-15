@@ -131,6 +131,17 @@ IF %ERRORLEVEL% NEQ 0 (
     EXIT /B 1
 )
 
+REM 6. main.py 시작 직전 Cybos 세션 재확인 (이상점6 수정)
+REM    preflight 성공 후 HTS 팝업 등으로 세션이 끊어지는 경우를 방지한다.
+TIMEOUT /T 3 /NOBREAK >NUL
+python -c "import win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); exit(0 if c.IsConnect==1 else 1)" >NUL 2>&1
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO.
+    ECHO [ERROR] Cybos 세션이 main.py 시작 직전 끊어졌습니다. HTS 상태를 확인하고 재실행하세요.
+    TIMEOUT /T 15
+    EXIT /B 1
+)
+
 ECHO.
 ECHO [INFO] Starting main.py with Cybos backend...
 ECHO.

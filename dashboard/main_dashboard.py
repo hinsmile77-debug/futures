@@ -6420,9 +6420,22 @@ class MireukDashboard(QMainWindow):
 
         self.lbl_clock = None   # 제거됨 — _tick_header() 참조용 유지
 
-        # ── 해상도·커밋 블록 ───────────────────────────────────
-        self.lbl_scale  = mk_label(S.info(),    C['text2'], 9, align=Qt.AlignRight)
-        self.lbl_commit = mk_label(COMMIT_HASH, C['text2'], 9, align=Qt.AlignRight)
+        # ── 해상도·커밋·슬랙 On/Off 블록 (왼쪽 정렬) ────────────
+        self.lbl_scale  = mk_label(S.info(),    C['text2'], 9, align=Qt.AlignLeft)
+        self.lbl_commit = mk_label(COMMIT_HASH, C['text2'], 9, align=Qt.AlignLeft)
+        self.chk_slack  = QCheckBox("슬랙 알림")
+        self.chk_slack.setChecked(True)
+        self.chk_slack.setCursor(Qt.PointingHandCursor)
+        self.chk_slack.setToolTip("슬랙 알림 On/Off (체크 해제 시 모든 슬랙 발송 중단)")
+        self.chk_slack.setStyleSheet(
+            f"QCheckBox{{color:{C['text2']};font-size:{S.f(9)}px;spacing:{S.p(4)}px;}}"
+            f"QCheckBox::indicator{{width:{S.p(11)}px;height:{S.p(11)}px;"
+            f"border-radius:2px;}}"
+            f"QCheckBox::indicator:checked{{background:{C['green']};"
+            f"border:1px solid {C['green']};}}"
+            f"QCheckBox::indicator:unchecked{{background:{C['bg2']};"
+            f"border:1px solid {C['border']};}}"
+        )
         header_label_w = S.p(58)
         header_combo_w = S.p(188)
         header_btn_w = S.p(54)
@@ -6483,10 +6496,12 @@ class MireukDashboard(QMainWindow):
         title_box.addLayout(acct_row)
         title_box.addLayout(strat_row)
         res_box = QVBoxLayout()
-        res_box.setSpacing(0)
+        res_box.setSpacing(S.p(1))
         res_box.setContentsMargins(0, 0, 0, 0)
+        res_box.setAlignment(Qt.AlignLeft)
         res_box.addWidget(self.lbl_scale)
         res_box.addWidget(self.lbl_commit)
+        res_box.addWidget(self.chk_slack)
 
         # ── 오른쪽 컬럼: 현재가(상단) + 종목코드 + 시장구분 ─────────
         right_col = QVBoxLayout()
@@ -6750,7 +6765,7 @@ class MireukDashboard(QMainWindow):
             self._on_symbol_changed(symbols[0])
 
     def _save_ui_prefs(self):
-        """현재 종목코드·시장구분을 ui_prefs.json에 저장."""
+        """현재 종목코드·시장구분·슬랙 On/Off를 ui_prefs.json에 저장."""
         try:
             symbol_text = self.cmb_symbol.currentText()
             prefs = {
@@ -6758,6 +6773,7 @@ class MireukDashboard(QMainWindow):
                 "market": self.cmb_market.currentText(),
                 "symbol_code": _extract_symbol_code(symbol_text),
                 "symbol_text": symbol_text,
+                "slack_enabled": self.chk_slack.isChecked(),
             }
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as f:
                 json.dump(prefs, f, ensure_ascii=False)
@@ -6798,6 +6814,12 @@ class MireukDashboard(QMainWindow):
 
             if selected_symbol:
                 self._on_symbol_changed(selected_symbol)
+
+            # 슬랙 On/Off 복원 (기본 True)
+            slack_on = bool(prefs.get("slack_enabled", True))
+            self.chk_slack.blockSignals(True)
+            self.chk_slack.setChecked(slack_on)
+            self.chk_slack.blockSignals(False)
         except Exception:
             pass
 

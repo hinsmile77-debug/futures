@@ -3,7 +3,7 @@
 KOSPI 200 선물 방향 예측 시스템 — 미륵이 (Futures Edition)
 
 실행 흐름:
-  08:50  매크로 수집 → 레짐 판단
+  08:55  매크로 수집 → 레짐 판단 + 실시간 구독 사전 시작
   09:00  장 시작 — 매분 파이프라인 시작
   [매분] STEP 1~9 순서대로 실행
   15:10  강제 청산
@@ -25,6 +25,7 @@ import json
 import importlib
 import queue as _queue
 import subprocess
+import threading
 import numpy as np
 from typing import Optional
 
@@ -105,7 +106,17 @@ from logging_system.log_manager import log_manager
 from utils.time_utils import (
     is_market_open, is_trading_day, get_time_zone, is_force_exit_time, is_new_entry_allowed,
 )
-from utils.notify import notify
+from utils.notify import (
+    notify,
+    notify_startup,
+    notify_premarket_ready,
+    notify_first_tick,
+    notify_broker_sync_blocked,
+    notify_connection_lost,
+    notify_pipeline_delayed,
+    set_slack_enabled,
+    is_slack_enabled,
+)
 from utils.error_policy import ErrorLevel, apply_error_policy, classify_exception
 from dashboard.main_dashboard import create_dashboard
 
@@ -1155,6 +1166,12 @@ class TradingSystem:
             return
 
         self._last_recovery_ts = ""   # 실분봉 수신 시에만 복구 ts 초기화
+
+        # 09:00 이후 첫 분봉 수신 — 정상 작동 슬랙 알림 (1회만)
+        if not getattr(self, "_first_tick_notified", False):
+            self._first_tick_notified = True
+            notify_first_tick(candle)
+
         # latency → Circuit Breaker 연동
         self.circuit_breaker.record_api_latency(self.latency_sync.offset_sec)
         self.dashboard.minute_chart_candle_closed(candle)
@@ -1170,7 +1187,25 @@ class TradingSystem:
                 dashboard_logger=log_manager.system,
             )
 
-    # ── 장 전 준비 (08:50) ─────────────────────────────────────
+    def _on_gbm_retrain_done(self, result: dict, is_warmup: bool) -> None:
+        """GBM 재학습 daemon thread 완료 콜백 — 메인 스레드에서 실행."""
+        self._gbm_retrain_running = False
+        prefix = "웜업 " if is_warmup else ""
+        if result.get("ok"):
+            self.model._load_all()
+            log_manager.learning(
+                f"[GBM] {prefix}배치 재학습 완료 | "
+                f"{result.get('elapsed_sec', '?')}초 데이터={result.get('data_size', '?')}행"
+            )
+            notify("GBM 배치 재학습 완료", "INFO")
+            self.dashboard.set_model_status(
+                f"GBM {prefix}재학습 완료", f"데이터 {result.get('data_size', '?')}행"
+            )
+        else:
+            log_manager.learning(f"[GBM] {prefix}재학습 건너뜀: {result.get('error', '')}")
+            self.dashboard.set_model_status("대기")
+
+    # ── 장 전 준비 (08:45) ─────────────────────────────────────
     def pre_market_setup(self):
         """매크로 수집 + 레짐 판단"""
         logger.info("[System] 장 전 매크로 수집 시작")
@@ -1205,6 +1240,20 @@ class TradingSystem:
             f"레짐 확정: {self.current_regime} | {result['description']}"
         )
         self.dashboard.set_ui_ready_mode()
+
+        # [PreOpen-이상점2] 장 시작 전 현재가 스냅샷 사전 조회 — realtime.start() 시 BlockRequest 병목 방지
+        # start() 내부에서 _last_price > 0 이면 _prime_from_snapshot 재실행 스킵
+        _rd = getattr(self, "realtime_data", None)
+        if _rd is not None and not getattr(_rd, "_running", False):
+            try:
+                _rd._prime_from_snapshot()
+                log_manager.system(
+                    "[PreOpen] 현재가 스냅샷 워밍업 완료 "
+                    f"(price={_rd._last_price:.2f} bid={_rd._last_bid1:.2f} ask={_rd._last_ask1:.2f})",
+                    "INFO",
+                )
+            except Exception as _snap_e:
+                logger.warning("[PreOpen] 스냅샷 워밍업 실패 (장 시작 시 재시도): %s", _snap_e)
 
     # [SERVICE-BOUNDARY 2/4] MinutePipelineService
     # 책임: 분봉 단위 의사결정(검증→학습→피처→예측→진입/청산→기록)
@@ -1435,29 +1484,33 @@ class TradingSystem:
             )
 
         # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 또는 세션 재시작 즉시) ────
+        # [이상점3 수정] 재학습을 daemon thread로 분리 — 메인 스레드 블로킹 방지.
+        # 완료 시 QTimer.singleShot(0, ...) 으로 메인 스레드에서 모델 로드.
+        # _gbm_retrain_running 플래그로 중복 실행 차단.
         _warmup_forced = self._warmup_retrain_pending
-        if (_warmup_forced
-                or self.batch_retrainer.should_retrain_weekly()
-                or self.batch_retrainer.should_retrain_monthly()):
+        _need_retrain = (
+            _warmup_forced
+            or self.batch_retrainer.should_retrain_weekly()
+            or self.batch_retrainer.should_retrain_monthly()
+        )
+        if _need_retrain and not getattr(self, "_gbm_retrain_running", False):
             if _warmup_forced:
                 self._warmup_retrain_pending = False
                 log_manager.system(
-                    "[WarmupRetrain] 세션 재시작 후 첫 GBM 즉시 재학습 시작", "INFO"
+                    "[WarmupRetrain] 세션 재시작 후 첫 GBM 즉시 재학습 — 별도 스레드 시작", "INFO"
                 )
+            self._gbm_retrain_running = True
             self.dashboard.set_model_status("GBM 재학습중...")
-            result = self.batch_retrainer.retrain_now(force=_warmup_forced)
-            if result.get("ok"):
-                self.model._load_all()   # 새 모델 즉시 반영
-                log_manager.learning(
-                    f"[GBM] {'웜업 ' if _warmup_forced else ''}배치 재학습 완료 | "
-                    f"{result['elapsed_sec']}초 데이터={result['data_size']}행"
-                )
-                notify("GBM 배치 재학습 완료", "INFO")
-                self.dashboard.set_model_status(
-                    "GBM 재학습 완료", f"데이터 {result['data_size']}행"
-                )
-            else:
-                log_manager.learning(f"[GBM] 재학습 건너뜀: {result.get('error','')}")
+            _is_warmup = bool(_warmup_forced)
+
+            def _retrain_worker():
+                try:
+                    result = self.batch_retrainer.retrain_now(force=_is_warmup)
+                except Exception as _re:
+                    result = {"ok": False, "error": str(_re)}
+                QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, _is_warmup))
+
+            threading.Thread(target=_retrain_worker, daemon=True).start()
 
         # ── STEP 4: 피처 생성 ──────────────────────────────────
         # fetch_all()은 _investor_timer(60s QTimer)에서 COM 콜백 외부로 실행
@@ -3069,6 +3122,7 @@ class TradingSystem:
             msg = (f"⚠ 파이프라인 {elapsed_str} 미실행 — 분봉 수신 지연 의심  "
                    f"장 시간({is_market_open()}) 확인. 다음 분봉에서 자동 회복 기대")
             log_manager.system(msg, "WARNING")
+            notify_pipeline_delayed(elapsed_str)
 
     def _try_pipeline_recovery(self) -> None:
         """raw_candles 최신 분봉으로 파이프라인 강제 재실행."""
@@ -3273,10 +3327,23 @@ class TradingSystem:
         # 키움 로그인 (블로킹)
         if not self.connect_kiwoom():
             logger.critical("[System] 키움 연결 실패 — 종료")
+            notify("🚨 미륵이 기동 실패 — 브로커 연결 불가\n수동 재시작 필요", "CRITICAL")
             return
+
+        # 기동 완료 슬랙 알림
+        _startup_code = getattr(self, "_futures_code", "?")
+        _bn = getattr(self.broker, "name", "")
+        if _bn == "cybos":
+            _startup_srv = "Cybos 실서버"
+        else:
+            _srv = self.broker.get_login_info("GetServerGubun")
+            _startup_srv = "모의투자" if _srv == "1" else "실서버"
+        notify_startup(_startup_code, _startup_srv)
 
         self._pre_market_done   = False
         self._daily_close_done  = False
+        self._first_tick_notified = False      # 첫 분봉 알림 플래그
+        self._broker_sync_critical_notified = False  # broker sync CRITICAL 알림 1회 플래그
 
         # 1분 주기 관리 타이머 (분봉 파이프라인은 on_candle_closed 콜백으로 구동)
         self._scheduler = QTimer()
@@ -3315,6 +3382,16 @@ class TradingSystem:
         # 파이프라인 감시 콜백 등록
         self.dashboard.set_pipeline_watchdog_cb(self._on_pipeline_watchdog)
 
+        # 슬랙 On/Off 체크박스 → notify 모듈 플래그 연결
+        # _restore_ui_prefs()에서 이미 체크박스 초기값이 복원됐으므로, 여기서 초기 동기화
+        set_slack_enabled(self.dashboard.chk_slack.isChecked())
+        self.dashboard.chk_slack.stateChanged.connect(
+            lambda state: set_slack_enabled(bool(state))
+        )
+        self.dashboard.chk_slack.stateChanged.connect(
+            lambda state: self.dashboard._save_ui_prefs()
+        )
+
         # 세션 카운터 증가 + 당일 거래/패널 복원 (Day 3 서비스 단일 호출)
         self.session_recovery_service.restore_on_startup(self)
 
@@ -3334,13 +3411,46 @@ class TradingSystem:
         if self._heartbeat_count % 10 == 0:
             self._log_waiting_status(now)
 
-        # 장 전 준비 (08:45~, KRX 거래일만)
-        if not self._pre_market_done and now.time() >= datetime.time(8, 45) and is_trading_day(now):
+        # 장 전 준비 + 실시간 구독 사전 시작 (08:55~08:59, KRX 거래일만)
+        # - pre_market_setup(): 레짐 결정은 09:00 이전이면 충분; 08:45 고집 불필요
+        # - realtime_data.start(): 09:00 첫 틱부터 누락 없이 수신하기 위해 5분 전 구독
+        #   구독 후 08:55~08:59 틱은 _on_candle_closed의 is_market_open 가드가 차단(안전)
+        if (
+            not self._pre_market_done
+            and is_trading_day(now)
+            and datetime.time(8, 55) <= now.time() < datetime.time(9, 0)
+        ):
             self.pre_market_setup()
             self.latency_sync.reset_daily()
             self._pre_market_done    = True
             self._daily_close_done   = False
-            self._rollover_detected  = False  # 날짜 바뀌면 롤오버 감시 재개
+            self._rollover_detected  = False
+            self._pre_sync_attempted = False
+            _rd = getattr(self, "realtime_data", None)
+            if _rd is not None and not getattr(_rd, "_running", False):
+                _rd.start(load_history=True)
+                log_manager.system("[PreOpen] 09:00 대비 실시간 구독 사전 시작 (08:55~)", "INFO")
+                notify_premarket_ready(
+                    self.current_regime,
+                    getattr(self, "_futures_code", "?"),
+                )
+
+        # [PreOpen-이상점4] 장 시작 직전(08:58~08:59:30) broker sync 선실행
+        # → GAP_OPEN 구간(09:00~09:05) 진입 차단 방지. 장중 재시도(3분 간격)보다 먼저 실행.
+        # _pre_sync_attempted 플래그로 당일 1회만 실행.
+        if (
+            self._broker_sync_block_new_entries
+            and is_trading_day(now)
+            and datetime.time(8, 58) <= now.time() < datetime.time(9, 0)
+            and not getattr(self, "_pre_sync_attempted", False)
+        ):
+            self._pre_sync_attempted = True
+            log_manager.system(
+                "[BrokerSync] 장 시작 전 sync 선실행 (08:58~) "
+                f"reason={self._broker_sync_last_error}",
+                "INFO",
+            )
+            _ts_sync_position_from_broker(self)
 
         # 일일 마감 (15:40~, KRX 거래일만)
         if (
@@ -3358,9 +3468,10 @@ class TradingSystem:
             self._pre_market_done  = False
             self._daily_close_done = True
 
-        # 키움 연결 감시
+        # 연결 감시 — 끊김 시 슬랙 CRITICAL 알림 후 재연결
         if not self.broker.is_connected:
             logger.error("[System] 키움 연결 끊김 — 재연결 시도")
+            notify_connection_lost(getattr(self.broker, "name", "브로커"))
             self.connect_broker()
         elif is_market_open(now):
             self.broker_runtime_service.ensure_market_open_runtime_started(
@@ -3378,6 +3489,10 @@ class TradingSystem:
                         "WARNING",
                     )
                     _ts_sync_position_from_broker(self)
+                # 장 시작 후에도 sync 차단이 지속되면 CRITICAL 슬랙 알림 (1회)
+                if not getattr(self, "_broker_sync_critical_notified", False):
+                    self._broker_sync_critical_notified = True
+                    notify_broker_sync_blocked(self._broker_sync_last_error)
 
             # 장중 롤오버 감시 — 60 tick(30분)마다 근월물 재확인
             # 롤오버가 감지되면 WARNING 로그 + UI 갱신만 수행; 재구독은 재기동 시 자동 처리
