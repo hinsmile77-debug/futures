@@ -40,7 +40,13 @@ from PyQt5.QtGui import (
 )
 
 from config.constants import FUTURES_PT_VALUE
-from config.settings import RAW_DATA_DB, DATA_DIR, TIME_ZONES, ENTRY_GRADE
+from config.settings import (
+    RAW_DATA_DB, DATA_DIR, TIME_ZONES, ENTRY_GRADE,
+    HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
+    HEALTH_QUALITY_WARN, HEALTH_QUALITY_CRIT,
+    HEALTH_CACHE_AGE_WARN_SEC, HEALTH_CACHE_AGE_CRIT_SEC,
+    HEALTH_EXCEPTION_DENSITY_WARN_10M, HEALTH_EXCEPTION_DENSITY_CRIT_10M,
+)
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
 from utils.db_utils import fetch_today_trades, fetchall
@@ -3928,6 +3934,181 @@ class TrendPanel(QWidget):
 
 
 # ────────────────────────────────────────────────────────────
+# 패널 8.5: 운영 헬스
+# ────────────────────────────────────────────────────────────
+class HealthPanel(QWidget):
+    """운영 헬스 모니터링 패널: API 지연, 피처 품질, 캐시 나이, 예외 밀도 추적."""
+
+    def __init__(self):
+        super().__init__()
+        self._health_vals = {}
+        self._health_trend_values = []
+        self._health_latency_trend_values = []
+        self._health_quality_trend_values = []
+        self._thresholds = {
+            "latency_warn_ms": 500,
+            "latency_crit_ms": 1000,
+            "quality_warn": 0.85,
+            "quality_crit": 0.70,
+            "cache_age_warn_sec": 300,
+            "cache_age_crit_sec": 600,
+            "exception_density_warn_10m": 5,
+            "exception_density_crit_10m": 10,
+        }
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(S.p(12), S.p(12), S.p(12), S.p(12))
+        lay.setSpacing(S.p(10))
+
+        # ── 상단: 4개 메트릭 박스 ─────────────────────────────────
+        mrow = QHBoxLayout()
+        mrow.setSpacing(S.p(8))
+        for hk_lbl, hk_attr, hk_val, hk_col in [
+            ("API 지연", "latency", "0ms", C['green']),
+            ("피처 품질", "quality", "1.00", C['green']),
+            ("캐시 나이", "cache_age", "0s", C['blue']),
+            ("예외/10m", "exception", "0", C['text2']),
+        ]:
+            hf = QFrame()
+            hf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:{S.p(3)}px;")
+            hfl = QVBoxLayout(hf)
+            hfl.setContentsMargins(S.p(6), S.p(4), S.p(6), S.p(4))
+            hfl.setSpacing(S.p(2))
+            hfl.addWidget(mk_label(hk_lbl, C['text2'], 10, align=Qt.AlignCenter))
+            hv = mk_val_label(hk_val, hk_col, 13, align=Qt.AlignCenter)
+            hfl.addWidget(hv)
+            mrow.addWidget(hf)
+            self._health_vals[hk_attr] = hv
+        lay.addLayout(mrow)
+
+        # ── 중단: 상태 + 모드 라벨 ────────────────────────────────
+        self._health_mode_lbl = mk_label("상태: INFO | Mode: NORMAL", C['text2'], 10, bold=True)
+        lay.addWidget(self._health_mode_lbl)
+        lay.addWidget(mk_sep())
+
+        # ── 하단: 3라인 스파크라인 ────────────────────────────────
+        self._health_spark_lbl = mk_label("Health Score:  ─────────────────", C['yellow'], 10)
+        self._health_latency_spark_lbl = mk_label("API 지연 추이:    ─────────────────", C['orange'], 10)
+        self._health_quality_spark_lbl = mk_label("피처 품질 추이:    ─────────────────", C['cyan'], 10)
+        self._health_spark_meta = mk_label("최근 30분 추이", C['text2'], 9)
+        
+        self._health_spark_lbl.setStyleSheet(
+            f"color:{C['yellow']};font-size:{S.f(11)}px;font-family:Consolas,monospace;font-weight:bold;"
+        )
+        self._health_latency_spark_lbl.setStyleSheet(
+            f"color:{C['orange']};font-size:{S.f(11)}px;font-family:Consolas,monospace;font-weight:bold;"
+        )
+        self._health_quality_spark_lbl.setStyleSheet(
+            f"color:{C['cyan']};font-size:{S.f(11)}px;font-family:Consolas,monospace;font-weight:bold;"
+        )
+        
+        lay.addWidget(self._health_spark_lbl)
+        lay.addWidget(self._health_latency_spark_lbl)
+        lay.addWidget(self._health_quality_spark_lbl)
+        lay.addWidget(self._health_spark_meta)
+        lay.addStretch()
+
+    def _spark_line(self, values: list, width: int = 20) -> str:
+        """수치 값 배열을 ASCII 스파크라인으로 변환."""
+        if not values or all(v is None for v in values):
+            return "─" * width
+        vals = [v for v in values if v is not None]
+        if len(vals) < 2:
+            return "─" * width
+        minv, maxv = min(vals), max(vals)
+        if minv == maxv:
+            return "━" * width
+        
+        chars = "▁▂▃▄▅▆▇█"
+        line = ""
+        for v in vals[-width:]:
+            idx = max(0, min(7, int((v - minv) / (maxv - minv) * 8)))
+            line += chars[idx]
+        return line if len(line) == width else "─" * width
+
+    def update_health_metrics(self, health_score: float = None, latency_ms: float = None,
+                              quality: float = None, cache_age_sec: float = None,
+                              exception_count_10m: int = None, mode_str: str = None,
+                              thresholds: dict = None):
+        """운영 헬스 메트릭 갱신.
+        
+        Args:
+            health_score: 0~1 범위 헬스 스코어
+            latency_ms: API 지연 (ms)
+            quality: 피처 품질 0~1 (1=최고)
+            cache_age_sec: 캐시 나이 (초)
+            exception_count_10m: 10분당 예외 수
+            mode_str: 상태 문자열 (예: "INFO", "WARN", "CRITICAL")
+            thresholds: 임계값 dict (업데이트할 경우)
+        """
+        if thresholds:
+            self._thresholds.update(thresholds)
+
+        # 메트릭 값 갱신
+        if latency_ms is not None:
+            col = C['green']
+            if latency_ms > self._thresholds.get("latency_crit_ms", 1000):
+                col = C['red']
+            elif latency_ms > self._thresholds.get("latency_warn_ms", 500):
+                col = C['orange']
+            self._health_vals["latency"].setText(f"{latency_ms:.0f}ms")
+            self._health_vals["latency"].setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
+            self._health_latency_trend_values.append(latency_ms)
+            if len(self._health_latency_trend_values) > 30:
+                self._health_latency_trend_values.pop(0)
+
+        if quality is not None:
+            col = C['green']
+            if quality < self._thresholds.get("quality_crit", 0.70):
+                col = C['red']
+            elif quality < self._thresholds.get("quality_warn", 0.85):
+                col = C['orange']
+            self._health_vals["quality"].setText(f"{quality:.2f}")
+            self._health_vals["quality"].setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
+            self._health_quality_trend_values.append(quality)
+            if len(self._health_quality_trend_values) > 30:
+                self._health_quality_trend_values.pop(0)
+
+        if cache_age_sec is not None:
+            col = C['green']
+            if cache_age_sec > self._thresholds.get("cache_age_crit_sec", 600):
+                col = C['red']
+            elif cache_age_sec > self._thresholds.get("cache_age_warn_sec", 300):
+                col = C['orange']
+            self._health_vals["cache_age"].setText(f"{cache_age_sec:.0f}s")
+            self._health_vals["cache_age"].setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
+
+        if exception_count_10m is not None:
+            col = C['text2']
+            if exception_count_10m >= self._thresholds.get("exception_density_crit_10m", 10):
+                col = C['red']
+            elif exception_count_10m >= self._thresholds.get("exception_density_warn_10m", 5):
+                col = C['orange']
+            self._health_vals["exception"].setText(f"{exception_count_10m}")
+            self._health_vals["exception"].setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
+
+        if health_score is not None:
+            self._health_trend_values.append(health_score)
+            if len(self._health_trend_values) > 30:
+                self._health_trend_values.pop(0)
+
+        # 상태 라벨 갱신
+        if mode_str:
+            self._health_mode_lbl.setText(mode_str)
+
+        # 스파크라인 갱신
+        spark_score = self._spark_line(self._health_trend_values, 20)
+        spark_latency = self._spark_line(self._health_latency_trend_values, 20)
+        spark_quality = self._spark_line(self._health_quality_trend_values, 20)
+
+        self._health_spark_lbl.setText(f"Health Score:  {spark_score}")
+        self._health_latency_spark_lbl.setText(f"API 지연 추이:    {spark_latency}")
+        self._health_quality_spark_lbl.setText(f"피처 품질 추이:    {spark_quality}")
+
+
+# ────────────────────────────────────────────────────────────
 # 패널 9: 알파 리서치 봇
 # ────────────────────────────────────────────────────────────
 class AlphaPanel(QWidget):
@@ -4443,6 +4624,8 @@ class PnlHistoryPanel(QWidget):
 
 
 class LogPanel(QWidget):
+    _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+
     def __init__(self):
         super().__init__()
         self._build()
@@ -4563,6 +4746,7 @@ class LogPanel(QWidget):
             ("3 주문/체결",C['green'],  "order"),
             ("4 손익 PnL", C['cyan'],   "pnl"),
             ("5 모델 AI",  C['purple'], "model"),
+            ("6 운영 헬스", C['yellow'], "health"),
         ]
         self.log_boxes = {}
         for title, col, key in log_configs:
@@ -4633,6 +4817,48 @@ class LogPanel(QWidget):
                     mfl.addWidget(mk_val_label(mk_val, mc, 13, align=Qt.AlignCenter))
                     mrow.addWidget(mf)
                 pl.addLayout(mrow)
+
+            elif key == "health":
+                mrow = QHBoxLayout()
+                self._health_vals = {}
+                self._health_trend_values = []
+                self._health_latency_trend_values = []
+                self._health_quality_trend_values = []
+                for hk_lbl, hk_attr, hk_val, hk_col in [
+                    ("API 지연", "latency", "0ms", C['green']),
+                    ("피처 품질", "quality", "1.00", C['green']),
+                    ("캐시 나이", "cache_age", "0s", C['blue']),
+                    ("예외/10m", "exception", "0", C['text2']),
+                ]:
+                    hf = QFrame()
+                    hf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
+                    hfl = QVBoxLayout(hf); hfl.setContentsMargins(5,3,5,3)
+                    hfl.addWidget(mk_label(hk_lbl, C['text2'], 10, align=Qt.AlignCenter))
+                    hv = mk_val_label(hk_val, hk_col, 13, align=Qt.AlignCenter)
+                    hfl.addWidget(hv)
+                    mrow.addWidget(hf)
+                    self._health_vals[hk_attr] = hv
+                pl.addLayout(mrow)
+
+                self._health_mode_lbl = mk_label("상태: INFO | Mode: NORMAL", C['text2'], 10, bold=True)
+                self._health_spark_lbl = mk_label("트렌드: ─────────────────", C['yellow'], 10)
+                self._health_latency_spark_lbl = mk_label("지연:   ─────────────────", C['orange'], 10)
+                self._health_quality_spark_lbl = mk_label("품질:   ─────────────────", C['cyan'], 10)
+                self._health_spark_meta = mk_label("최근 30분 Health Score", C['text2'], 9)
+                self._health_spark_lbl.setStyleSheet(
+                    f"color:{C['yellow']};font-size:{S.f(11)}px;font-family:Consolas,monospace;font-weight:bold;"
+                )
+                self._health_latency_spark_lbl.setStyleSheet(
+                    f"color:{C['orange']};font-size:{S.f(11)}px;font-family:Consolas,monospace;font-weight:bold;"
+                )
+                self._health_quality_spark_lbl.setStyleSheet(
+                    f"color:{C['cyan']};font-size:{S.f(11)}px;font-family:Consolas,monospace;font-weight:bold;"
+                )
+                pl.addWidget(self._health_mode_lbl)
+                pl.addWidget(self._health_spark_lbl)
+                pl.addWidget(self._health_latency_spark_lbl)
+                pl.addWidget(self._health_quality_spark_lbl)
+                pl.addWidget(self._health_spark_meta)
 
             tb = QTextEdit()
             tb.setReadOnly(True)
@@ -4753,7 +4979,7 @@ class LogPanel(QWidget):
             "WARN":   C['orange'], "ERROR": C['red'],   "CRITICAL": C['red'],
             "TRADE":  C['green'],  "FILL":  C['green'], "PENDING": C['orange'],
             "CANCEL": C['red'],    "PNL":   C['cyan'],  "MODEL":  C['purple'],
-            "SHAP":   C['yellow'],
+            "SHAP":   C['yellow'], "HEALTH": C['yellow'],
         }
         col = TAG_COLORS.get(tag, C['text2'])
         html = (
@@ -4858,6 +5084,95 @@ class LogPanel(QWidget):
     def notify_update(self):
         """파이프라인 실행 완료 시 마지막 갱신 시각을 명시적으로 리셋."""
         self._last_update_time = datetime.now()
+
+    def update_health_metrics(
+        self,
+        latency_ms: float,
+        quality_score: float,
+        cache_age_sec: float,
+        exception_density_10m: float,
+        trend_window_min: int = 30,
+        health_level: str = "INFO",
+        degraded_mode: bool = False,
+        thresholds: dict = None,
+    ):
+        """운영 헬스 탭 상단 지표 갱신."""
+        if not hasattr(self, "_health_vals"):
+            return
+
+        th = thresholds or {}
+        latency_warn_ms = float(th.get("latency_warn_ms", HEALTH_LATENCY_WARN_MS))
+        latency_crit_ms = float(th.get("latency_crit_ms", HEALTH_LATENCY_CRIT_MS))
+        quality_warn = float(th.get("quality_warn", HEALTH_QUALITY_WARN))
+        quality_crit = float(th.get("quality_crit", HEALTH_QUALITY_CRIT))
+        cache_warn_sec = float(th.get("cache_age_warn_sec", HEALTH_CACHE_AGE_WARN_SEC))
+        cache_crit_sec = float(th.get("cache_age_crit_sec", HEALTH_CACHE_AGE_CRIT_SEC))
+        exc_warn_10m = float(th.get("exception_warn_10m", HEALTH_EXCEPTION_DENSITY_WARN_10M))
+        exc_crit_10m = float(th.get("exception_crit_10m", HEALTH_EXCEPTION_DENSITY_CRIT_10M))
+
+        lat_col = C['green'] if latency_ms < latency_warn_ms else (C['orange'] if latency_ms < latency_crit_ms else C['red'])
+        self._health_vals["latency"].setText(f"{latency_ms:.0f}ms")
+        self._health_vals["latency"].setStyleSheet(f"color:{lat_col};font-size:{S.f(13)}px;font-weight:bold;")
+
+        q_col = C['green'] if quality_score >= quality_warn else (C['orange'] if quality_score >= quality_crit else C['red'])
+        self._health_vals["quality"].setText(f"{quality_score:.2f}")
+        self._health_vals["quality"].setStyleSheet(f"color:{q_col};font-size:{S.f(13)}px;font-weight:bold;")
+
+        c_col = C['green'] if cache_age_sec < cache_warn_sec else (C['yellow'] if cache_age_sec < cache_crit_sec else C['red'])
+        self._health_vals["cache_age"].setText(f"{cache_age_sec:.0f}s")
+        self._health_vals["cache_age"].setStyleSheet(f"color:{c_col};font-size:{S.f(13)}px;font-weight:bold;")
+
+        e_col = C['green'] if exception_density_10m < exc_warn_10m else (C['orange'] if exception_density_10m < exc_crit_10m else C['red'])
+        self._health_vals["exception"].setText(f"{exception_density_10m:.0f}")
+        self._health_vals["exception"].setStyleSheet(f"color:{e_col};font-size:{S.f(13)}px;font-weight:bold;")
+
+        level_col = C['green'] if health_level == "INFO" else (C['orange'] if health_level == "WARNING" else C['red'])
+        self._health_mode_lbl.setText(
+            f"상태: {health_level} | Mode: {'DEGRADED' if degraded_mode else 'NORMAL'}"
+        )
+        self._health_mode_lbl.setStyleSheet(f"color:{level_col};font-size:{S.f(10)}px;font-weight:bold;")
+
+        max_exc = max(1.0, float(exc_crit_10m))
+        health_score = (
+            quality_score * 0.45
+            + (1.0 - min(max(latency_ms, 0.0) / max(1.0, float(latency_crit_ms)), 1.0)) * 0.25
+            + (1.0 - min(max(cache_age_sec, 0.0) / max(1.0, float(cache_crit_sec)), 1.0)) * 0.15
+            + (1.0 - min(max(exception_density_10m, 0.0) / max_exc, 1.0)) * 0.15
+        )
+        health_score = max(0.0, min(1.0, float(health_score)))
+        self._health_trend_values.append(health_score)
+        self._health_latency_trend_values.append(float(latency_ms))
+        self._health_quality_trend_values.append(float(quality_score))
+        width = max(6, int(trend_window_min))
+        if len(self._health_trend_values) > width:
+            self._health_trend_values = self._health_trend_values[-width:]
+        if len(self._health_latency_trend_values) > width:
+            self._health_latency_trend_values = self._health_latency_trend_values[-width:]
+        if len(self._health_quality_trend_values) > width:
+            self._health_quality_trend_values = self._health_quality_trend_values[-width:]
+        self._health_spark_lbl.setText(f"트렌드: {self._spark_line(self._health_trend_values, width=width)}")
+        self._health_latency_spark_lbl.setText(
+            f"지연:   {self._spark_line(self._health_latency_trend_values, width=width)}"
+        )
+        self._health_quality_spark_lbl.setText(
+            f"품질:   {self._spark_line(self._health_quality_trend_values, width=width)}"
+        )
+        self._health_spark_meta.setText(f"최근 {width}분 Health Score")
+
+    @classmethod
+    def _spark_line(cls, values, width: int = 20) -> str:
+        if not values:
+            return "─" * max(1, int(width))
+        vals = [float(v) for v in values[-width:]]
+        vmin, vmax = min(vals), max(vals)
+        if abs(vmax - vmin) < 1e-9:
+            return cls._SPARK_BLOCKS[-1] * len(vals)
+        out = []
+        for v in vals:
+            idx = int((v - vmin) / (vmax - vmin) * (len(cls._SPARK_BLOCKS) - 1))
+            idx = max(0, min(len(cls._SPARK_BLOCKS) - 1, idx))
+            out.append(cls._SPARK_BLOCKS[idx])
+        return "".join(out)
 
 
 # ────────────────────────────────────────────────────────────
@@ -6198,6 +6513,7 @@ class MireukDashboard(QMainWindow):
         self.learn_panel    = LearningPanel()
         self.efficacy_panel = EfficacyPanel()
         self.trend_panel    = TrendPanel()
+        self.health_panel   = HealthPanel()
         self.alpha_panel    = AlphaPanel()
 
         # 🧭 전략 운용현황 패널 (strategy_registry + drift_detector 연동)
@@ -6216,6 +6532,7 @@ class MireukDashboard(QMainWindow):
         self.mid_tabs.addTab(self._wrap(self.learn_panel),    "🧠 자가학습")
         self.mid_tabs.addTab(self._wrap(self.efficacy_panel), "🎯 효과 검증")
         self.mid_tabs.addTab(self._wrap(self.trend_panel),    "📈 성장 추이")
+        self.mid_tabs.addTab(self._wrap(self.health_panel),   "⚕️ 운영 헬스")
         self.mid_tabs.addTab(self._wrap(self.alpha_panel),    "알파 리서치 봇")
         if self.strategy_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.strategy_panel), "🧭 전략 운용현황")
@@ -6779,6 +7096,41 @@ class DashboardAdapter:
             )
         except Exception:
             pass
+
+    def update_runtime_health(self, data: dict) -> None:
+        """운영 헬스 탭 지표 갱신 + 레벨별 로그 append."""
+        latency_ms = float(data.get("latency_ms", 0.0) or 0.0)
+        quality_score = float(data.get("quality_score", 1.0) or 0.0)
+        cache_age_sec = float(data.get("cache_age_sec", 0.0) or 0.0)
+        exception_density_10m = float(data.get("exception_density_10m", 0.0) or 0.0)
+        trend_window_min = int(data.get("trend_window_min", 30) or 30)
+        health_level = str(data.get("health_level", "INFO") or "INFO")
+        degraded_mode = bool(data.get("degraded_mode", False))
+        thresholds = data.get("thresholds") or {}
+
+        # 로그 패널 업데이트
+        self._win.log_panel.update_health_metrics(
+            latency_ms, quality_score, cache_age_sec, exception_density_10m,
+            trend_window_min, health_level, degraded_mode, thresholds,
+        )
+
+        # 중앙 패널 헬스 탭 업데이트
+        mode_str = f"상태: {health_level} | Mode: {'DEGRADED' if degraded_mode else 'NORMAL'}"
+        self._win.health_panel.update_health_metrics(
+            health_score=0.8,  # 차후 계산 로직 추가 가능
+            latency_ms=latency_ms,
+            quality=quality_score,
+            cache_age_sec=cache_age_sec,
+            exception_count_10m=int(exception_density_10m),
+            mode_str=mode_str,
+            thresholds=thresholds,
+        )
+
+    def append_health_log(self, msg: str, level: str = "INFO"):
+        """창6 운영 헬스 로그."""
+        tag = {"WARNING": "WARN"}.get(level, level)
+        tag = tag if tag in ("WARN", "ERROR", "CRITICAL") else "HEALTH"
+        self._win.log_panel.append("health", tag, msg)
 
     def update_shap(self, core_vals, dynamic_items, rank_vals):
         """SHAP 피처 패널 업데이트"""
