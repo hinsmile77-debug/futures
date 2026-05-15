@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-05-15 (39차 — 선물 롤오버 자동화 전면 강화)
+
+### [D85] 선물 심볼 목록(`_MARKET_SYMBOLS`)은 기동 날짜 기준으로 동적 생성한다
+**Decision**: `_MARKET_SYMBOLS` dict를 소스코드에 하드코딩하지 않고, 기동 시 `_build_market_symbols()`를 호출해 오늘 날짜 기준 근월·차월 코드를 계산한다.  
+**Why**: 하드코딩하면 롤오버 때마다 소스코드 수정이 필요하다. 종목 콤보에 만기된 코드가 표시되면 UI와 실거래 코드가 불일치하고, ui_prefs.json에도 만기 코드가 저장된다.  
+**How to apply**: `_nth_thursday(year, month, 2)`로 만기일을 계산, `expiry >= today` 조건으로 유효한 계약만 포함. 일반선물은 `{3,6,9,12}` 분기 필터, 미니선물은 전월 대상. `format(month, "X")`로 hex 월 코드 생성.
+
+### [D86] 일반선물(A01xxx)도 FutureMst BlockRequest 프로브로 근월물을 확정한다
+**Decision**: 기존에 미니선물만 적용하던 FutureMst 프로브를 일반선물(분기물)까지 확장한다.  
+**Why**: 일반선물도 분기 만기(3·6·9·12월) 후 UI 저장값이 만기 코드로 남아 있을 수 있다. CpFutureCode가 업데이트되더라도 `price > 0` 실거래 검증 없이는 만기 여부를 확신할 수 없다.  
+**How to apply**: `get_nearest_normal_futures_code()` — CpFutureCode 결과를 우선 후보로 하고, 분기 월(3·6·9·12)을 향후 18개월 스캔한 FutureMst 프로브 결과로 검증. 모두 실패 시 CpFutureCode 결과 fallback.
+
+### [D87] 장중 롤오버 감지는 알림+UI 갱신만 하고, 실시간 재구독은 재기동에 위임한다
+**Decision**: `check_rollover()`가 롤오버를 감지하면 WARNING 로그와 `set_selected_symbol()` UI 동기화만 수행한다. 실시간 구독 코드 전환(unsubscribe + re-subscribe)은 하지 않는다.  
+**Why**: 포지션이 열려 있는 상태에서 구독 코드를 전환하면 체결/청산 이벤트 수신이 단절될 수 있다. 15:10 강제청산으로 포지션이 정리된 후 재기동하면 올바른 근월물로 자동 시작된다. 만기일 당일은 15:20 이후 만기가 확정되므로 장중 롤오버는 실질적으로 발생하지 않는다.  
+**How to apply**: `_rollover_detected = True` 플래그로 반복 알림 억제. 08:45 장전 준비(`_pre_market_done = True`) 시점에 `_rollover_detected = False`로 초기화.
+
+### [B98] `_MARKET_SYMBOLS` 하드코딩으로 라벨과 코드가 불일치하는 버그
+**File**: `dashboard/main_dashboard.py`  
+**Symptom**: 미니선물 콤보에 "A0565000  미니 F 202606  (근월)"이 표시되지만 A0565는 5월물, 202606은 6월. 코드와 라벨이 다른 월을 가리켰다.  
+**Root cause**: 매월 수동으로 `_MARKET_SYMBOLS`를 업데이트해야 하는데, 롤오버 후 코드만 바꾸고 라벨은 남겨두거나 반대로 라벨만 바꾸는 실수가 발생했다.  
+**Fix**: `_build_market_symbols()`가 코드와 라벨을 동일한 `(year, month)` 튜플에서 생성하므로 불일치 불가.
+
+---
+
 ## 2026-05-15 (38차 — BlockRequest 데드락 + 선물 롤오버 수정)
 
 ### [B96] `_run_block_request` COM STA 데드락 — 항상 30초 타임아웃

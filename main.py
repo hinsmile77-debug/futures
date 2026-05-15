@@ -3338,8 +3338,9 @@ class TradingSystem:
         if not self._pre_market_done and now.time() >= datetime.time(8, 45) and is_trading_day(now):
             self.pre_market_setup()
             self.latency_sync.reset_daily()
-            self._pre_market_done  = True
-            self._daily_close_done = False
+            self._pre_market_done    = True
+            self._daily_close_done   = False
+            self._rollover_detected  = False  # 날짜 바뀌면 롤오버 감시 재개
 
         # 일일 마감 (15:40~, KRX 거래일만)
         if (
@@ -3377,6 +3378,12 @@ class TradingSystem:
                         "WARNING",
                     )
                     _ts_sync_position_from_broker(self)
+
+            # 장중 롤오버 감시 — 60 tick(30분)마다 근월물 재확인
+            # 롤오버가 감지되면 WARNING 로그 + UI 갱신만 수행; 재구독은 재기동 시 자동 처리
+            if self._heartbeat_count % 60 == 0 and not getattr(self, "_rollover_detected", False):
+                if self.broker_runtime_service.check_rollover(self):
+                    self._rollover_detected = True  # 이후 반복 알림 억제
 
     def _log_waiting_status(self, now: datetime.datetime) -> None:
         """현재 대기 이유를 로그 + 대시보드에 표시."""

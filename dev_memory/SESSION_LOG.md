@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-05-15 (39차 — 선물 롤오버 자동화 전면 강화)
+
+**Work**: 시장구분 콤보에서 선택된 종목코드가 만기됐을 때 자동으로 근월/근주물로 전환하는 로직을 일반선물·미니선물 모두에 걸쳐 세심하게 완성했다.
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| `_build_market_symbols()` 신설 | `dashboard/main_dashboard.py` | 하드코딩 `_MARKET_SYMBOLS` → 기동 날짜 기준 동적 계산으로 교체. `_nth_thursday`, `_next_valid_contracts`, `_futures_code8` 헬퍼 추가 |
+| `set_selected_symbol()` 신설 | `dashboard/main_dashboard.py` | 브로커 프로브 후 콤보 자동 동기화. 콤보에 없는 코드는 동적 삽입. `MireukDashboard` + `DashboardAdapter` 양쪽 추가 |
+| `get_nearest_normal_futures_code()` 신설 | `collection/cybos/api_connector.py` | 일반선물(A01xxx) FutureMst BlockRequest 프로브. `price > 0` 조건으로 만기 코드 자동 skip |
+| `_resolve_trade_code()` 일반선물 프로브 추가 | `strategy/runtime/broker_runtime_service.py` | 일반선물도 FutureMst 프로브로 근월물 확정 + `[CodeRoll]` 경고 + `set_selected_symbol` 호출 |
+| `check_rollover()` 신설 | `strategy/runtime/broker_runtime_service.py` | 장중 롤오버 감시. WARNING 로그 + UI 갱신. 재구독은 재기동에 위임 |
+| `_scheduler_tick()` 롤오버 감시 주기 추가 | `main.py` | 60 tick(30분)마다 `check_rollover()` 호출. `_rollover_detected` 플래그로 반복 알림 억제. 장 시작 시 초기화 |
+
+### 핵심 설계 원칙 (39차)
+
+- **동적 심볼 목록**: `_MARKET_SYMBOLS`는 기동 시점 날짜를 기준으로 생성 → 소스코드 수정 없이 월/분기 롤오버 자동 반영
+- **일반선물 통합**: 기존 미니선물만 프로브하던 구조를 일반선물(분기물)까지 확장. 둘 다 FutureMst `price > 0` 검증으로 동일 방식 적용
+- **UI 동기화**: 프로브 결과로 콤보를 즉시 업데이트 → 운영자가 실제 사용 코드를 UI에서 확인 가능
+- **장중 감시**: 재구독 없이 로그+UI만 갱신 → 열린 포지션 리스크 없음
+
+### 기동 시 예상 로그 흐름 (롤오버 발생 다음날)
+
+```
+[NormalProbe] 근월물 확정 code=A0169 price=327.45  ← 일반선물 근월물
+[CodeRoll] 일반선물 코드 교체: UI=A0166 → 근월물=A0169 (만기 롤오버)
+[MiniProbe]  근월물 확정 code=A0567 price=327.40   ← 미니선물 근월물
+[CodeRoll] 미니선물 코드 교체: UI=A0566 → 근월물=A0567 (만기 롤오버)
+```
+
+---
+
 ## 2026-05-15 (38차 — 장중 점검: BlockRequest 데드락 수정 + 선물 롤오버 처리)
 
 **Work**: 09:18 기동 로그에서 두 가지 치명 버그를 확인하고 수정했다.  

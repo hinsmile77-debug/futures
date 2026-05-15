@@ -148,6 +148,12 @@ class BrokerRuntimeService:
         return ui_code_raw
 
     def _resolve_trade_code(self, system: Any):
+        """선택된 종목코드를 확정한다.
+
+        미니선물(A05xxx)과 일반선물(A01xxx) 모두 FutureMst BlockRequest 프로브로 근월물을 확정한다.
+        UI 저장값(ui_prefs.json)은 만기된 계약코드일 수 있으므로 프로브 결과를 우선한다.
+        확정된 코드로 대시보드 콤보를 동기화한다.
+        """
         broker_code = system.broker.get_nearest_futures_code()
         try:
             ui_code_raw = str(system.dashboard.get_selected_symbol() or "").strip()
@@ -160,8 +166,7 @@ class BrokerRuntimeService:
         is_mini_selected = ui_norm.startswith("05")
 
         if is_mini_selected:
-            # UI 저장값이 만기된 계약일 수 있으므로 항상 근월물을 프로브한다.
-            # 프로브 성공 시 UI 값을 무시하고 실제 근월물 코드를 사용한다.
+            # 미니선물(A05xxx): FutureMst 프로브로 근월물 확정 — UI 저장값 무시
             probed = system.broker.get_nearest_mini_futures_code()
             if probed:
                 if probed != ui_code:
@@ -171,13 +176,72 @@ class BrokerRuntimeService:
                     )
                 code = probed
             else:
-                # 프로브 실패 시 UI 값을 fallback으로 사용
                 logger.warning("[CodeRoll] 미니선물 프로브 실패 — UI 코드 사용: %s", ui_code)
                 code = ui_code
         else:
-            code = broker_code or ui_code
+            # 일반선물(A01xxx): FutureMst 프로브로 근월물 검증 — 만기 롤오버 자동 처리
+            probed = system.broker.get_nearest_normal_futures_code()
+            if probed:
+                if probed != ui_code:
+                    logger.warning(
+                        "[CodeRoll] 일반선물 코드 교체: UI=%s → 근월물=%s (만기 롤오버)",
+                        ui_code, probed,
+                    )
+                code = probed
+            else:
+                logger.warning(
+                    "[CodeRoll] 일반선물 프로브 실패 — CpFutureCode/UI 사용: broker=%s ui=%s",
+                    broker_code, ui_code,
+                )
+                code = broker_code or ui_code
+
+        # 확정된 코드로 대시보드 콤보 동기화
+        if code:
+            try:
+                system.dashboard.set_selected_symbol(code)
+            except Exception as e:
+                logger.debug("[CodeRoll] 대시보드 동기화 실패: %s", e)
 
         return code, broker_code, ui_code_raw, ui_code, is_mini_selected
+
+    def check_rollover(self, system: Any) -> bool:
+        """장중 롤오버 감시 — 현재 코드가 만기됐으면 WARNING 로그 + UI 갱신.
+
+        15:10 강제청산으로 포지션이 이미 정리된 후라도 실시간 구독은 구 코드로 남아 있다.
+        실시간 재구독은 다음 기동 시 자동으로 처리되므로 여기서는 알림만 낸다.
+        Returns True if rollover detected.
+        """
+        current_code = getattr(system, "_futures_code", "")
+        if not current_code:
+            return False
+
+        norm = current_code[1:] if current_code.startswith("A") else current_code
+        is_mini = norm.startswith("05")
+
+        try:
+            if is_mini:
+                probed = system.broker.get_nearest_mini_futures_code()
+            else:
+                probed = system.broker.get_nearest_normal_futures_code()
+        except Exception as exc:
+            logger.debug("[RolloverWatch] 프로브 실패: %s", exc)
+            return False
+
+        if not probed or probed == current_code:
+            return False
+
+        log_manager.system(
+            "[RolloverWatch] 만기 롤오버 감지: 현재={curr} → 신규={new}"
+            " — 15:10 강제청산 후 재기동 시 자동 전환됩니다".format(
+                curr=current_code, new=probed
+            ),
+            "WARNING",
+        )
+        try:
+            system.dashboard.set_selected_symbol(probed)
+        except Exception as e:
+            logger.debug("[RolloverWatch] 대시보드 동기화 실패: %s", e)
+        return True
 
     @staticmethod
     def _select_account(system: Any, accounts: List[str]) -> str:

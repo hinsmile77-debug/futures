@@ -6132,16 +6132,89 @@ class MinuteChartDialog(QDialog):
         return self._chart._coerce_dt(value)
 
 
-_MARKET_SYMBOLS = {
-    "KOSPI200 선물": [
-        "A0166000  F 202606  (근월)",   # 2026년 6월 만기 — 근월물
-        "A0169000  F 202609  (차월)",   # 2026년 9월 만기 — 차월물
-    ],
-    "KOSPI200 미니선물": [
-        "A0565000  미니 F 202606  (근월)",  # 2026년 6월 만기 — 근월물
-        "A0566000  미니 F 202609  (차월)",  # 2026년 9월 만기 — 차월물
-    ],
-}
+import datetime as _dt
+
+
+def _nth_thursday(year, month, n):
+    """해당 월 n번째 목요일 날짜 반환. n=2 → 두 번째 목요일(선물 만기일)."""
+    first = _dt.date(year, month, 1)
+    days_to_thu = (3 - first.weekday()) % 7  # Monday=0 … Thursday=3
+    return first + _dt.timedelta(days=days_to_thu + (n - 1) * 7)
+
+
+def _next_valid_contracts(today, quarterly_months=None, n=2):
+    """today 기준 만기가 지나지 않은 계약월 n개를 [(year, month), ...] 로 반환.
+
+    quarterly_months: frozenset({3,6,9,12}) → 분기물,  None → 월물(모든 월).
+    만기일(2nd Thursday) >= today 인 계약만 포함한다.
+    """
+    result = []
+    year, month = today.year, today.month
+    for _ in range(36):  # 최대 3년 스캔
+        if quarterly_months is None or month in quarterly_months:
+            expiry = _nth_thursday(year, month, 2)
+            if expiry >= today:
+                result.append((year, month))
+                if len(result) >= n:
+                    break
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return result
+
+
+def _futures_code8(prefix, year, month):
+    """8자리 Cybos 코드: prefix + 연도끝자리 + 월hex대문자 + 000.
+
+    예) prefix='A01', year=2026, month=6  → 'A0166000'
+        prefix='A05', year=2026, month=12 → 'A056C000'
+    """
+    return "{0}{1}{2:X}000".format(prefix, str(year)[-1], month)
+
+
+_SYMBOL_TAGS = ["근월", "차월", "원월1", "원월2"]
+
+
+def _build_market_symbols():
+    """기동 날짜 기준으로 근월·차월 종목코드 목록을 동적으로 생성한다.
+
+    - KOSPI200 선물:     분기물 (3·6·9·12월), 두 번째 목요일 만기
+    - KOSPI200 미니선물: 월물 (모든 월),       두 번째 목요일 만기
+
+    반환 예시 (2026-05-15 기준):
+        "KOSPI200 선물":     ["A0166000  F 202606  (근월)", "A0169000  F 202609  (차월)"]
+        "KOSPI200 미니선물": ["A0566000  미니 F 202606  (근월)", "A0567000  미니 F 202607  (차월)"]
+    """
+    today = _dt.date.today()
+
+    normal_contracts = _next_valid_contracts(
+        today, quarterly_months=frozenset([3, 6, 9, 12]), n=2
+    )
+    normal_symbols = []
+    for i, (y, m) in enumerate(normal_contracts):
+        code = _futures_code8("A01", y, m)
+        tag = _SYMBOL_TAGS[i] if i < len(_SYMBOL_TAGS) else "원월"
+        normal_symbols.append(
+            "{code}  F {y:04d}{m:02d}  ({tag})".format(code=code, y=y, m=m, tag=tag)
+        )
+
+    mini_contracts = _next_valid_contracts(today, quarterly_months=None, n=2)
+    mini_symbols = []
+    for i, (y, m) in enumerate(mini_contracts):
+        code = _futures_code8("A05", y, m)
+        tag = _SYMBOL_TAGS[i] if i < len(_SYMBOL_TAGS) else "원월"
+        mini_symbols.append(
+            "{code}  미니 F {y:04d}{m:02d}  ({tag})".format(code=code, y=y, m=m, tag=tag)
+        )
+
+    return {
+        "KOSPI200 선물": normal_symbols,
+        "KOSPI200 미니선물": mini_symbols,
+    }
+
+
+_MARKET_SYMBOLS = _build_market_symbols()
 
 _UI_PREFS_FILE = os.path.join(DATA_DIR, "ui_prefs.json")
 
@@ -6728,6 +6801,66 @@ class MireukDashboard(QMainWindow):
         except Exception:
             pass
 
+    def set_selected_symbol(self, code, market=None):
+        """브로커 프로브 결과로 종목 콤보를 업데이트한다 (롤오버 UI 동기화).
+
+        code: 5자리(A0566) 또는 8자리(A0566000) 코드.
+        market: 시장구분 명칭. None이면 코드에서 자동 판별.
+        콤보에 없는 코드는 동적으로 삽입한다.
+        """
+        c = str(code or "").strip()
+        if len(c) == 5:
+            c8 = c + "000"
+        elif len(c) == 8 and c.endswith("000"):
+            c8 = c
+        else:
+            c8 = c  # 비표준 길이 — 그대로 사용
+
+        if market is None:
+            norm = c[1:] if c.startswith("A") else c
+            market = "KOSPI200 미니선물" if norm.startswith("05") else "KOSPI200 선물"
+
+        # 시장구분 콤보 갱신 (변경이 있을 때만)
+        if self.cmb_market.currentText() != market:
+            symbols = _MARKET_SYMBOLS.get(market, [])
+            self.cmb_market.blockSignals(True)
+            self.cmb_market.setCurrentText(market)
+            self.cmb_market.blockSignals(False)
+            self.cmb_symbol.blockSignals(True)
+            self.cmb_symbol.clear()
+            self.cmb_symbol.addItems(symbols)
+            self.cmb_symbol.blockSignals(False)
+
+        # 매칭 항목 선택
+        for i in range(self.cmb_symbol.count()):
+            item_text = self.cmb_symbol.itemText(i)
+            if _extract_symbol_code(item_text) == c8:
+                self.cmb_symbol.blockSignals(True)
+                self.cmb_symbol.setCurrentIndex(i)
+                self.cmb_symbol.blockSignals(False)
+                self._update_symbol_label(item_text)
+                self._save_ui_prefs()
+                return
+
+        # 콤보에 없는 코드 — 동적으로 맨 앞에 삽입
+        norm = (c[1:] if c.startswith("A") else c)
+        try:
+            year_digit = norm[2]
+            month_n = int(norm[3:], 16)
+            pfx = "미니 F" if market == "KOSPI200 미니선물" else "F"
+            label = "{pfx} 20{y}{m:02d}  (롤오버)".format(
+                pfx=pfx, y=year_digit, m=month_n
+            )
+        except (IndexError, ValueError):
+            label = code + "  (롤오버)"
+        new_text = "{c8}  {label}".format(c8=c8, label=label)
+        self.cmb_symbol.blockSignals(True)
+        self.cmb_symbol.insertItem(0, new_text)
+        self.cmb_symbol.setCurrentIndex(0)
+        self.cmb_symbol.blockSignals(False)
+        self._update_symbol_label(new_text)
+        self._save_ui_prefs()
+
     def _tick_header(self):
         """1초마다 헤더 가동 경과시간 + 파이프라인 생존 바 갱신."""
         if hasattr(self, "account_info_panel"):
@@ -6884,6 +7017,14 @@ class DashboardAdapter:
     def get_selected_market(self) -> str:
         """선택된 시장구분 반환 (예: '한국장')."""
         return self._win.cmb_market.currentText().strip()
+
+    def set_selected_symbol(self, code, market=None):
+        """브로커 프로브 결과로 종목 콤보를 업데이트한다 (롤오버 UI 동기화).
+
+        code: 5자리(A0566) 또는 8자리(A0566000).
+        market: None이면 코드에서 자동 판별.
+        """
+        self._win.set_selected_symbol(code, market=market)
 
     def update_account_balance(self, summary: dict, rows, quiet: bool = False, mark_fresh: bool = True, source: str = "broker", balance_active: bool = True):
         if not quiet:

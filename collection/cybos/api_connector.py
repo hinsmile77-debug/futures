@@ -428,6 +428,59 @@ class CybosAPI:
                 logger.debug("[MiniProbe] skip code=%s exc=%s", code, exc)
         return ""
 
+    def get_nearest_normal_futures_code(self) -> str:
+        """FutureMst BlockRequest 프로브로 KOSPI200 일반선물(A01xxx) 근월물 코드 반환.
+
+        CpFutureCode 결과를 우선 후보로 하되, FutureMst price>0 으로 실거래 여부를 검증한다.
+        코드 규칙: A01 + 연도끝자리 + 월(hex uppercase) — 분기만기(3·6·9·12월).
+        만기된 코드는 price=0 이므로 자동으로 skip된다.
+        """
+        import datetime
+        if Dispatch is None:
+            return ""
+
+        primary = self.get_nearest_futures_code()  # CpFutureCode 우선 후보 (A01xxx)
+
+        today = datetime.date.today()
+        quarterly = (3, 6, 9, 12)
+        candidates = []
+        if primary:
+            candidates.append(primary)
+
+        # 분기 후보 — 향후 18개월 스캔 (최대 2개 분기월 이상 커버)
+        year, month = today.year, today.month
+        for _ in range(18):
+            if month in quarterly:
+                code = "A01{0}{1}".format(str(year)[-1], format(month, "X"))
+                if code not in candidates:
+                    candidates.append(code)
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+
+        def _read_price(obj):
+            return _safe_float(obj.GetHeaderValue(71))
+
+        for code in candidates:
+            try:
+                ret, status, msg, price = _run_block_request(
+                    progid="Dscbo1.FutureMst",
+                    input_pairs=[(0, code)],
+                    data_reader=_read_price,
+                )
+                if ret in (0, None) and status == 0 and price and price > 0:
+                    logger.info("[NormalProbe] 근월물 확정 code=%s price=%.2f", code, price)
+                    return code
+                logger.debug("[NormalProbe] skip code=%s ret=%s status=%s price=%s", code, ret, status, price)
+            except (TimeoutError, Exception) as exc:
+                logger.debug("[NormalProbe] skip code=%s exc=%s", code, exc)
+
+        if primary:
+            logger.warning("[NormalProbe] FutureMst 프로브 전부 실패 — CpFutureCode 결과 사용: %s", primary)
+            return primary
+        return ""
+
     def register_fill_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         if callback not in self._fill_callbacks:
             self._fill_callbacks.append(callback)

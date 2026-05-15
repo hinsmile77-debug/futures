@@ -1,7 +1,38 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-15 (38차) — **BlockRequest 데드락 수정 + 선물 롤오버 자동 처리**
+> 마지막 업데이트: 2026-05-15 (39차) — **선물 롤오버 자동화 전면 강화 (일반·미니 통합)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-15 (39차) — 선물 롤오버 자동화 전면 강화
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| `_MARKET_SYMBOLS` 동적 생성 | **완료** — `_build_market_symbols()` 기동 날짜 기준 자동 계산, 하드코딩 제거 |
+| `set_selected_symbol()` | **완료** — 프로브 후 대시보드 콤보 즉시 동기화 |
+| 일반선물(A01xxx) FutureMst 프로브 | **완료** — `get_nearest_normal_futures_code()` 추가 |
+| `_resolve_trade_code()` 일반선물 지원 | **완료** — 미니선물과 동일 방식으로 근월물 프로브 + UI 동기화 |
+| `check_rollover()` 장중 감시 | **완료** — 60 tick(30분)마다 근월물 재확인, WARNING + UI 갱신 |
+| `_rollover_detected` 반복 알림 억제 | **완료** — 감지 후 재탐지 억제, 장 시작 시 초기화 |
+| 38차 수정 실검증 | **미완료** — `[NormalProbe/MiniProbe]`, `[CodeRoll]`, `verified=True`, tick #1 확인 필요 |
+
+### 수정 파일 (39차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `dashboard/main_dashboard.py` | `_build_market_symbols()`, `_nth_thursday()`, `_next_valid_contracts()`, `_futures_code8()` 추가. `set_selected_symbol()` MireukDashboard + DashboardAdapter |
+| `collection/cybos/api_connector.py` | `get_nearest_normal_futures_code()` 추가 (A01xxx FutureMst 프로브) |
+| `strategy/runtime/broker_runtime_service.py` | `_resolve_trade_code()` 일반선물 프로브 추가 + UI 동기화. `check_rollover()` 신설 |
+| `main.py` | `_scheduler_tick()` 60 tick(30분) 롤오버 감시 + `_rollover_detected` 플래그 |
+
+### 중요 운영 규칙 (39차 추가)
+
+- **심볼 목록은 기동 시 자동 갱신**: `_MARKET_SYMBOLS`는 `_build_market_symbols()` 반환값 → 소스코드 수정 없이 매월/분기 롤오버 반영
+- **일반선물도 FutureMst 프로브**: A01xxx(분기물)도 `price > 0` 검증 → UI 저장값 만기 시 자동 교체
+- **UI 콤보는 항상 실제 거래 코드**: `_resolve_trade_code()` 확정 후 `set_selected_symbol()` 호출로 UI = 실제 거래 코드
 
 ---
 
@@ -16,16 +47,6 @@
 | 미니선물 만기 롤오버 미처리 | **수정 완료** — `_resolve_trade_code`가 항상 프로브, A0565→A0566 자동 전환 |
 | `get_nearest_mini_futures_code` 만기 skip | **수정 완료** — `price > 0` 조건, 만기 코드 자동 건너뜀 |
 | broker sync 장중 재시도 | **추가 완료** — startup 실패 시 3분 간격 자동 재시도 |
-| 다음 기동 실검증 | **미완료** — `[MiniProbe] A0566`, `verified=True`, `[CybosRT-TICK] #1` 확인 필요 |
-
-### 수정 파일
-
-| 파일 | 변경 내용 |
-|---|---|
-| `collection/cybos/api_connector.py` | `_run_block_request` 메시지 펌핑 루프, `get_nearest_mini_futures_code` `_run_block_request` 전환 |
-| `strategy/runtime/broker_runtime_service.py` | `_resolve_trade_code` 항상 근월물 프로브, `[CodeRoll]` 롤오버 경고 |
-| `main.py` | `_scheduler_tick` broker sync 3분 간격 재시도 |
-| `dev_memory/audit/GPT-5_3-Codex_260515_poject_Audit.md` | 09:18 장중 점검 섹션 추가 |
 
 ### 중요 운영 규칙 (Cybos COM)
 
