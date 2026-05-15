@@ -14,13 +14,15 @@ from typing import Dict, List, Callable, Optional
 
 
 class LogEntry:
-    __slots__ = ("ts", "layer", "level", "message")
+    __slots__ = ("ts", "layer", "level", "message", "created_at")
 
     def __init__(self, layer: str, level: str, message: str):
-        self.ts      = datetime.datetime.now().strftime("%H:%M:%S")
+        now = datetime.datetime.now()
+        self.ts      = now.strftime("%H:%M:%S")
         self.layer   = layer
         self.level   = level
         self.message = message
+        self.created_at = now
 
     def __str__(self):
         return f"[{self.ts}] [{self.layer}] {self.message}"
@@ -29,7 +31,7 @@ class LogEntry:
 class LogManager:
     """5층 로그 이벤트 버퍼 (대시보드 연동용)"""
 
-    LAYERS = ["SYSTEM", "SIGNAL", "TRADE", "LEARNING", "DEBUG"]
+    LAYERS = ["SYSTEM", "SIGNAL", "TRADE", "LEARNING", "DEBUG", "HEALTH"]
     MAX_ENTRIES = 200   # 레이어당 최대 보관
 
     def __init__(self):
@@ -65,6 +67,9 @@ class LogManager:
     def debug(self, msg: str):
         self.log("DEBUG", msg)
 
+    def health(self, msg: str, level: str = "INFO"):
+        self.log("HEALTH", msg, level)
+
     # ── 콜백 등록 (대시보드에서 사용) ─────────────────────────
     def subscribe(self, layer: str, callback: Callable):
         if layer in self._callbacks:
@@ -82,6 +87,23 @@ class LogManager:
             all_entries.extend(list(self._buffers[layer]))
         all_entries.sort(key=lambda e: e.ts)
         return all_entries[-n:]
+
+    def get_level_counts(self, since_sec: int = 600, layer: Optional[str] = None) -> Dict[str, int]:
+        """최근 구간 레벨 카운트 집계 (기본 10분)."""
+        cutoff = datetime.datetime.now() - datetime.timedelta(seconds=max(0, int(since_sec)))
+        counts = {"INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+
+        layers = [layer] if layer in self._buffers else list(self._buffers.keys())
+        for lay in layers:
+            for entry in self._buffers.get(lay, []):
+                if getattr(entry, "created_at", cutoff) < cutoff:
+                    continue
+                lv = str(getattr(entry, "level", "INFO") or "INFO").upper()
+                if lv == "WARN":
+                    lv = "WARNING"
+                if lv in counts:
+                    counts[lv] += 1
+        return counts
 
 
 # 전역 싱글톤

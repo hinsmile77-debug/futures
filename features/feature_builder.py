@@ -13,6 +13,7 @@ from features.technical.ofi_reversal import OfiReversalCalculator
 from features.technical.queue_dynamics import QueueDynamicsCalculator
 from features.technical.toxicity import ToxicityCalculator
 from features.technical.vwap import VWAPCalculator
+from utils.error_policy import ErrorLevel, classify_exception
 
 logger = logging.getLogger("SIGNAL")
 micro_log = logging.getLogger("MICRO")
@@ -89,6 +90,18 @@ class FeatureBuilder:
         macro_data: Optional[Dict] = None,
     ) -> Dict[str, float]:
         features: Dict[str, float] = {}
+        recoverable_errors = 0
+        degraded = False
+
+        def _mark_feature_error(exc: Exception, default_level: ErrorLevel = ErrorLevel.RECOVERABLE) -> None:
+            nonlocal recoverable_errors, degraded
+            level = classify_exception(exc, default=default_level)
+            if level == ErrorLevel.FATAL:
+                degraded = True
+            if level in (ErrorLevel.RECOVERABLE, ErrorLevel.DEGRADED):
+                recoverable_errors += 1
+            if level == ErrorLevel.DEGRADED:
+                degraded = True
 
         # bar 필드 안전 추출 — 직접 키 접근 시 KeyError 방지, None 전파 방지
         close = float(bar.get("close") or 0.0)
@@ -115,6 +128,7 @@ class FeatureBuilder:
             self._core_fail_streak["cvd"] = 0
             self._core_fail_notified["cvd"] = False
         except Exception as _exc:
+            _mark_feature_error(_exc)
             self._core_fail_streak["cvd"] += 1
             streak = self._core_fail_streak["cvd"]
             logger.warning("[FeatureBuilder] CVD 오류 (연속 %d회) — 기본값 사용: %s", streak, _exc)
@@ -135,6 +149,7 @@ class FeatureBuilder:
             features["cvd_exhaustion"]        = float(exh_result["exhaustion"])
             features["cvd_exhaustion_signal"] = float(exh_result["exhaustion_signal"])
         except Exception as _exc:
+            _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] CVD exhaustion 오류 — 기본값 사용: %s", _exc)
             features.update({"cvd_exhaustion": 0.0, "cvd_exhaustion_signal": 0.0})
 
@@ -148,6 +163,7 @@ class FeatureBuilder:
             self._core_fail_streak["vwap"] = 0
             self._core_fail_notified["vwap"] = False
         except Exception as _exc:
+            _mark_feature_error(_exc)
             self._core_fail_streak["vwap"] += 1
             streak = self._core_fail_streak["vwap"]
             logger.warning("[FeatureBuilder] VWAP 오류 (연속 %d회) — 기본값 사용: %s", streak, _exc)
@@ -167,6 +183,7 @@ class FeatureBuilder:
             self._core_fail_streak["ofi"] = 0
             self._core_fail_notified["ofi"] = False
         except Exception as _exc:
+            _mark_feature_error(_exc)
             self._core_fail_streak["ofi"] += 1
             streak = self._core_fail_streak["ofi"]
             logger.warning("[FeatureBuilder] OFI 오류 (연속 %d회) — 기본값 사용: %s", streak, _exc)
@@ -186,6 +203,7 @@ class FeatureBuilder:
             features["ofi_reversal_speed"]  = float(ofi_rev["reversal_speed"])
             features["ofi_reversal_signal"] = float(ofi_rev["signal"])
         except Exception as _exc:
+            _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] OFI reversal 오류 — 기본값 사용: %s", _exc)
             features.update({"ofi_reversal_speed": 0.0, "ofi_reversal_signal": 0.0})
         features["avg_volume"] = vol
@@ -197,6 +215,7 @@ class FeatureBuilder:
             features["microprice_slope"]      = float(microprice_result["mp_slope"])
             features["microprice_depth_bias"] = float(microprice_result["depth_bias"])
         except Exception as _exc:
+            _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] Microprice 오류 — 기본값 사용: %s", _exc)
             features.update({"microprice": 0.0, "microprice_bias": 0.0,
                              "microprice_slope": 0.0, "microprice_depth_bias": 0.0})
@@ -207,6 +226,7 @@ class FeatureBuilder:
             features["mlofi_pressure"] = float(mlofi_result["mlofi_pressure"])
             features["mlofi_slope"]    = float(mlofi_result["mlofi_slope"])
         except Exception as _exc:
+            _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] MLOFI 오류 — 기본값 사용: %s", _exc)
             features.update({"mlofi_norm": 0.0, "mlofi_pressure": 0.0, "mlofi_slope": 0.0})
 
@@ -220,6 +240,7 @@ class FeatureBuilder:
             features["imbalance_slope"]       = float(queue_result["imbalance_slope"])
             features["cancel_add_ratio"]      = float(queue_result["cancel_add_ratio"])
         except Exception as _exc:
+            _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] QueueDynamics 오류 — 기본값 사용: %s", _exc)
             features.update({"queue_signal": 0.0, "queue_signal_ma": 0.0,
                              "queue_momentum": 0.0, "queue_depletion_speed": 0.0,
@@ -231,6 +252,7 @@ class FeatureBuilder:
             features["atr"]       = float(atr_result["atr"])
             features["atr_ratio"] = float(atr_result["atr_ratio"])
         except Exception as _exc:
+            _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] ATR 오류 — 기본값 사용: %s", _exc)
             features.update({"atr": 0.0, "atr_ratio": 1.0})
 
@@ -260,6 +282,7 @@ class FeatureBuilder:
                 else 0
             )
         except Exception as _exc:
+            _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] Toxicity 오류 — 기본값 사용: %s", _exc)
             features.update({"spread_ticks": 0.0, "toxicity_score": 0.0,
                              "toxicity_score_ma": 0.0, "toxicity_atr_stress": 0.0,
@@ -278,6 +301,39 @@ class FeatureBuilder:
         if macro_data:
             for k, v in macro_data.items():
                 features[k] = float(v) if v is not None else 0.0
+
+        opt_available = float((option_data or {}).get("opt_available", 0.0) or 0.0)
+        macro_available = float((macro_data or {}).get("macro_quality_available", 1.0 if macro_data else 0.0) or 0.0)
+        supply_available = float((supply_demand or {}).get("quality_investor_supported", 1.0 if supply_demand else 0.0) or 0.0)
+        macro_stale = float((macro_data or {}).get("macro_quality_stale", 0.0) or 0.0)
+        macro_age_sec = float((macro_data or {}).get("macro_quality_age_sec", 0.0) or 0.0)
+        macro_fallback = float((macro_data or {}).get("macro_quality_fallback_used", 0.0) or 0.0)
+        investor_stale = float((supply_demand or {}).get("quality_investor_stale", 0.0) or 0.0)
+        investor_age_sec = float((supply_demand or {}).get("quality_investor_age_sec", 0.0) or 0.0)
+        if recoverable_errors > 0:
+            degraded = True
+        quality_penalty = (
+            recoverable_errors * 0.08
+            + (0.2 if degraded else 0.0)
+            + (0.12 if macro_stale > 0.0 else 0.0)
+            + (0.12 if investor_stale > 0.0 else 0.0)
+            + (0.10 if macro_fallback > 0.0 else 0.0)
+            + (0.08 if macro_available < 1.0 else 0.0)
+            + (0.08 if supply_available < 1.0 else 0.0)
+            + (0.06 if opt_available < 1.0 else 0.0)
+        )
+        quality_penalty = min(0.85, quality_penalty)
+        features["feature_recoverable_errors"] = float(recoverable_errors)
+        features["feature_degraded"] = 1.0 if degraded else 0.0
+        features["feature_quality_score"] = round(max(0.0, 1.0 - quality_penalty), 4)
+        features["quality_option_available"] = opt_available
+        features["quality_macro_available"] = macro_available
+        features["quality_supply_available"] = supply_available
+        features["quality_macro_stale"] = macro_stale
+        features["quality_macro_age_sec"] = macro_age_sec
+        features["quality_macro_fallback_used"] = macro_fallback
+        features["quality_investor_stale"] = investor_stale
+        features["quality_investor_age_sec"] = investor_age_sec
 
         self._micro_minute_count += 1
         micro_log.debug(

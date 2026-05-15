@@ -119,8 +119,9 @@ def _run_block_request(progid, input_pairs, data_reader=None,
     """COM BlockRequest를 백그라운드 스레드에서 타임아웃과 함께 실행한다.
 
     COM STA 규칙: Dispatch + SetInputValue + BlockRequest + 데이터 읽기를 모두
-    같은 백그라운드 스레드에서 수행한다. 메인 스레드는 done.wait()으로 블록되므로
-    Qt 메시지 루프도 중단 → BlockRequest 중 Chejan 콜백 재진입이 발생하지 않는다.
+    같은 백그라운드 스레드에서 수행한다. 메인 스레드는 PumpWaitingMessages를
+    10ms 간격으로 호출하며 완료를 기다린다 — Cybos BlockRequest가 호출 스레드의
+    Windows 메시지 큐로 응답을 보내므로 메시지 펌프가 없으면 데드락이 발생한다.
 
     Args:
         progid: COM ProgID 문자열
@@ -165,14 +166,27 @@ def _run_block_request(progid, input_pairs, data_reader=None,
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
 
-    if not done.wait(timeout_sec):
-        logger.critical(
-            "[BlockReq] TIMEOUT %ss progid=%s — 비상 청산이 필요할 수 있음",
-            timeout_sec, progid,
-        )
-        raise TimeoutError(
-            "Cybos BlockRequest timeout ({0}s) progid={1}".format(timeout_sec, progid)
-        )
+    # Cybos Plus의 BlockRequest는 호출 스레드의 Windows 메시지 큐로 응답을 전달한다.
+    # done.wait()로 메인 스레드를 블록하면 메시지 펌프가 멈춰 백그라운드 스레드의
+    # BlockRequest가 영구 데드락에 빠진다. 10ms 간격으로 PumpWaitingMessages를
+    # 호출해 COM 메시지를 처리하면서 완료를 기다린다.
+    deadline = time.time() + timeout_sec
+    while True:
+        if done.wait(timeout=0.01):
+            break
+        if time.time() >= deadline:
+            logger.critical(
+                "[BlockReq] TIMEOUT %ss progid=%s — 비상 청산이 필요할 수 있음",
+                timeout_sec, progid,
+            )
+            raise TimeoutError(
+                "Cybos BlockRequest timeout ({0}s) progid={1}".format(timeout_sec, progid)
+            )
+        if pythoncom is not None:
+            try:
+                pythoncom.PumpWaitingMessages()
+            except Exception:
+                pass
 
     if result["exc"] is not None:
         raise result["exc"]
@@ -227,7 +241,25 @@ class _CybosSubscriptionEvent:
         owner = getattr(self, "_owner", None)
         if owner is None:
             return
+        try:
+            system_logger.info(
+                "[CybosEvent] recv begin progid=%s event=%s owner=%s",
+                getattr(self, "_progid", ""),
+                getattr(self, "_event_name", ""),
+                type(owner).__name__,
+            )
+        except Exception:
+            pass
         owner._handle_subscription_event(self._event_name, self)
+        try:
+            system_logger.info(
+                "[CybosEvent] recv end progid=%s event=%s owner=%s",
+                getattr(self, "_progid", ""),
+                getattr(self, "_event_name", ""),
+                type(owner).__name__,
+            )
+        except Exception:
+            pass
 
 
 class _CybosConnectionEvent:
@@ -252,11 +284,14 @@ class CybosSubscription:
         return self._com_object
 
     def subscribe(self, latest: bool = False) -> None:
+        method_name = "SubscribeLatest" if latest and hasattr(self._com_object, "SubscribeLatest") else "Subscribe"
+        system_logger.info("[CybosSub] subscribe begin method=%s", method_name)
         if latest and hasattr(self._com_object, "SubscribeLatest"):
             self._com_object.SubscribeLatest()
         else:
             self._com_object.Subscribe()
         self._active = True
+        system_logger.info("[CybosSub] subscribe end method=%s", method_name)
 
     def unsubscribe(self) -> None:
         if not self._active:
@@ -361,6 +396,7 @@ class CybosAPI:
         코드 규칙: A05 + 연도끝자리 + 월(hex uppercase)
         예) 2026-05 = A0565, 2026-06 = A0566, 2026-12 = A056C
         근월물 = 오늘 기준 가장 가까운 유효 만기(DibStatus=0, price>0).
+        만기된 코드는 price=0 이므로 자동으로 skip된다.
         """
         import datetime
         if Dispatch is None:
@@ -374,17 +410,22 @@ class CybosAPI:
             code = "A05{0}{1}".format(str(year)[-1], format(month, "X"))
             candidates.append(code)
 
-        try:
-            snapshot = Dispatch("Dscbo1.FutureMst")
-            for code in candidates:
-                snapshot.SetInputValue(0, code)
-                snapshot.BlockRequest()
-                if _safe_int(snapshot.GetDibStatus()) == 0:
-                    price = _safe_float(snapshot.GetHeaderValue(71))
-                    if price > 0:
-                        return code
-        except Exception:
-            pass
+        def _read_price(obj):
+            return _safe_float(obj.GetHeaderValue(71))
+
+        for code in candidates:
+            try:
+                ret, status, msg, price = _run_block_request(
+                    progid="Dscbo1.FutureMst",
+                    input_pairs=[(0, code)],
+                    data_reader=_read_price,
+                )
+                if ret in (0, None) and status == 0 and price and price > 0:
+                    logger.info("[MiniProbe] 근월물 확정 code=%s price=%.2f", code, price)
+                    return code
+                logger.debug("[MiniProbe] skip code=%s ret=%s status=%s price=%s", code, ret, status, price)
+            except (TimeoutError, Exception) as exc:
+                logger.debug("[MiniProbe] skip code=%s exc=%s", code, exc)
         return ""
 
     def register_fill_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
@@ -661,13 +702,24 @@ class CybosAPI:
         event_name: str,
         latest: bool = False,
     ) -> CybosSubscription:
+        system_logger.info(
+            "[CybosSub] create begin progid=%s event=%s latest=%s inputs=%s",
+            progid,
+            event_name,
+            latest,
+            input_values,
+        )
         obj = Dispatch(progid)
+        system_logger.info("[CybosSub] dispatch ok progid=%s event=%s", progid, event_name)
         for key, value in sorted(input_values.items()):
             obj.SetInputValue(int(key), value)
+        system_logger.info("[CybosSub] input ok progid=%s event=%s", progid, event_name)
         sink = WithEvents(obj, _CybosSubscriptionEvent)
         sink.set_context(owner, event_name, progid)
+        system_logger.info("[CybosSub] with-events ok progid=%s event=%s", progid, event_name)
         subscription = CybosSubscription(obj, sink)
         subscription.subscribe(latest=latest)
+        system_logger.info("[CybosSub] create end progid=%s event=%s", progid, event_name)
         return subscription
 
     def request_futures_snapshot(self, code: str) -> Dict[str, Any]:

@@ -56,6 +56,11 @@ class MacroFeatureTransformer:
         krw    = float(raw.get("usd_krw_chg",   0.0) or 0.0)
         us10y  = float(raw.get("us10y_chg",     0.0) or 0.0)
         event  = float(raw.get("event_flag",    0.0) or 0.0)
+        quality_available = float(raw.get("macro_quality_available", 1.0) or 0.0)
+        quality_stale = float(raw.get("macro_quality_stale", 0.0) or 0.0)
+        quality_age_sec = float(raw.get("macro_quality_age_sec", 0.0) or 0.0)
+        quality_fallback = float(raw.get("macro_quality_fallback_used", 0.0) or 0.0)
+        quality_source_code = float(raw.get("macro_quality_source_code", 0.0) or 0.0)
 
         # VIX: 0(안정) ~ 1(공포)
         vix_norm = float(np.clip(
@@ -80,6 +85,12 @@ class MacroFeatureTransformer:
             "macro_risk_on":    risk_on,
             "macro_risk_off":   risk_off,
             "macro_event_flag": event,
+            # Day 8 quality passthrough
+            "macro_quality_available": quality_available,
+            "macro_quality_stale": quality_stale,
+            "macro_quality_age_sec": quality_age_sec,
+            "macro_quality_fallback_used": quality_fallback,
+            "macro_quality_source_code": quality_source_code,
         }
 
         logger.debug(
@@ -103,4 +114,9 @@ class MacroFeatureTransformer:
             "macro_risk_on":    0.0,
             "macro_risk_off":   0.0,
             "macro_event_flag": 0.0,
+            "macro_quality_available": 0.0,
+            "macro_quality_stale": 1.0,
+            "macro_quality_age_sec": 9999.0,
+            "macro_quality_fallback_used": 1.0,
+            "macro_quality_source_code": 0.0,
         }

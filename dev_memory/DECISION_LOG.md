@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-05-15 (38차 — BlockRequest 데드락 + 선물 롤오버 수정)
+
+### [B96] `_run_block_request` COM STA 데드락 — 항상 30초 타임아웃
+**File**: `collection/cybos/api_connector.py`  
+**Symptom**: 기동 시 `CpTrade.CpTd0723`과 `Dscbo1.FutureMst` BlockRequest가 항상 30초 후 타임아웃. `_broker_sync_block_new_entries=True`로 고착되어 자동매매 불가.  
+**Root cause**: `_run_block_request`는 백그라운드 스레드에서 BlockRequest를 실행하고, 메인 스레드는 `done.wait(30)`으로 완전 차단한다. Cybos Plus의 BlockRequest는 호출 스레드의 Windows 메시지 큐로 응답을 전달하는 구조인데, 백그라운드 스레드는 메시지 펌프가 없고 메인 스레드도 막혀 있어 응답이 영구 대기 → 30초 후 TimeoutError.  
+**비교 근거**: `_probe_investor_tr()`은 메인 스레드에서 직접 호출 → 정상 동작. `CpSysDib.CpSvrNew7212` BlockRequest는 내부적으로 메시지 펌프를 포함하거나 응답 방식이 달라 데드락이 없는 것으로 추정.  
+**Fix**: `done.wait(30)` 대신 `done.wait(0.01)` + `PumpWaitingMessages()` 루프. 메인 스레드가 10ms 간격으로 COM 메시지를 처리하면서 백그라운드 BlockRequest 완료를 기다린다.  
+**Note**: `PumpWaitingMessages()`는 COM STA 메시지를 처리하므로 fill 콜백이 의도치 않게 처리될 수 있으나, fill 핸들러가 또다른 BlockRequest를 트리거하지 않으므로 안전하다.
+
+### [B97] 미니선물 만기 코드 구독으로 틱 미수신
+**File**: `strategy/runtime/broker_runtime_service.py`, `collection/cybos/api_connector.py`  
+**Symptom**: FutureCurOnly/FutureJpBid 구독은 성공하지만 tick=0건, hoga=0건. 분봉 파이프라인 미동작. 로그에 `[Capability] tick=Y/N(0) hoga=Y/N(0)`.  
+**Root cause**: KOSPI200 미니선물은 매월 2차 목요일 만기. 2026-05-14(목) 만기 후 다음날(2026-05-15) 기동 시 UI에 저장된 A0565(5월물)가 검증 없이 그대로 사용됐다. `_resolve_trade_code`는 `ui_code`가 비어 있지 않으면 `get_nearest_mini_futures_code()`를 호출하지 않는 구조. Cybos는 만기 종목에 실시간 tick을 전송하지 않는다.  
+**Fix**: `_resolve_trade_code`를 미니선물 선택 시 항상 프로브하도록 변경. `get_nearest_mini_futures_code()`에 `price > 0` skip 조건 추가해 만기 코드(price=0)를 건너뛰고 근월물(A0566)을 반환.  
+**Note**: 롤오버 발생 시 `[CodeRoll] UI=A0565 → 근월물=A0566` 경고 로그 출력.
+
+### [D83] BlockRequest 대기는 메인 스레드에서 COM 메시지를 펌핑하며 기다린다
+**Decision**: `_run_block_request`의 대기 방식을 `done.wait(timeout)` → `done.wait(0.01)` + `PumpWaitingMessages()` 루프로 변경한다.  
+**Why**: Cybos Plus의 BlockRequest는 Windows 메시지 큐 기반 응답을 사용한다. 메시지 펌프 없이 대기하면 백그라운드 스레드의 BlockRequest가 데드락에 빠진다. 타임아웃 내에서 메시지를 처리하면서 완료를 감지하는 것이 정확한 접근법.  
+**How to apply**: `_run_block_request`는 메인 스레드에서만 호출된다고 가정한다. 별도 스레드에서 호출하는 경우에는 이 패턴을 적용할 수 없다.
+
+### [D84] 미니선물 근월물 코드는 UI 저장값과 무관하게 항상 프로브한다
+**Decision**: 미니선물(A05xxx) 선택 시 `_resolve_trade_code`는 UI 저장값의 유효성을 신뢰하지 않고 항상 `get_nearest_mini_futures_code()`를 호출한다.  
+**Why**: 미니선물은 매월 2차 목요일 만기되어 근월물이 바뀐다. UI에 저장된 코드는 이전 세션 코드이므로 만기 후 자동으로 obsolete가 된다. 프로브가 성공하면 UI 값을 무시하고 실제 근월물을 사용하고, 프로브 실패(Cybos 서버 불응 등) 시에만 UI 값 fallback.  
+**How to apply**: 롤오버 교체 시 `[CodeRoll]` 경고 로그로 운영자에게 알린다. 일반선물(A01xxx)은 롤오버 주기가 다르므로 이 로직 적용 안 함.
+
+---
+
 ## 2026-05-15 (37차 — 운영 헬스 중앙 패널 추가)
 
 ### [D82] 운영 헬스는 로그 패널과 중앙 패널에 역할을 분리해 중복 배치한다

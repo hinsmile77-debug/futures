@@ -1,7 +1,36 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-15 (37차) — **운영 헬스 중앙 패널 추가 + 런타임 헬스 동기화**
+> 마지막 업데이트: 2026-05-15 (38차) — **BlockRequest 데드락 수정 + 선물 롤오버 자동 처리**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-15 (38차) — BlockRequest 데드락 + 롤오버 수정
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| `_run_block_request` COM STA 데드락 | **수정 완료** — `done.wait(0.01)` + `PumpWaitingMessages()` 루프로 교체 |
+| `CpTd0723` / `FutureMst` 30초 타임아웃 | **수정 완료** — 메시지 펌핑 후 ~1초 내 완료 예상 |
+| 미니선물 만기 롤오버 미처리 | **수정 완료** — `_resolve_trade_code`가 항상 프로브, A0565→A0566 자동 전환 |
+| `get_nearest_mini_futures_code` 만기 skip | **수정 완료** — `price > 0` 조건, 만기 코드 자동 건너뜀 |
+| broker sync 장중 재시도 | **추가 완료** — startup 실패 시 3분 간격 자동 재시도 |
+| 다음 기동 실검증 | **미완료** — `[MiniProbe] A0566`, `verified=True`, `[CybosRT-TICK] #1` 확인 필요 |
+
+### 수정 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `collection/cybos/api_connector.py` | `_run_block_request` 메시지 펌핑 루프, `get_nearest_mini_futures_code` `_run_block_request` 전환 |
+| `strategy/runtime/broker_runtime_service.py` | `_resolve_trade_code` 항상 근월물 프로브, `[CodeRoll]` 롤오버 경고 |
+| `main.py` | `_scheduler_tick` broker sync 3분 간격 재시도 |
+| `dev_memory/audit/GPT-5_3-Codex_260515_poject_Audit.md` | 09:18 장중 점검 섹션 추가 |
+
+### 중요 운영 규칙 (Cybos COM)
+
+- **BlockRequest는 메인 스레드 메시지 펌프 필요**: 백그라운드 스레드에서 단독 호출 시 항상 타임아웃. `_run_block_request`가 메인 스레드에서 10ms 간격 펌핑으로 해결.
+- **미니선물 코드는 항상 프로브**: 미니선물(A05xxx)은 월물 만기(2차 목요일) 다음날부터 근월물이 바뀐다. UI 저장값을 신뢰하지 않는다.
 
 ---
 

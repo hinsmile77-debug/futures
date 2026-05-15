@@ -181,6 +181,10 @@ class CybosInvestorData:
         foreign_fut = self._futures.get("foreign", 0)
         retail_fut = self._futures.get("individual", 0)
         inst_fut = self._futures.get("institution", 0)
+        now = datetime.datetime.now()
+        age_sec = (now - self._last_fetch).total_seconds() if self._last_fetch else 9999.0
+        is_stale = age_sec > 180.0
+        runtime_supported = self._futures_supported or self._program_supported
 
         return {
             "foreign_futures_net": float(foreign_fut),
@@ -194,6 +198,16 @@ class CybosInvestorData:
             "program_foreign_net_krw": float(self._program_investor.get("foreign", 0)),
             "program_institution_net_krw": float(self._program_investor.get("institution", 0)),
             "program_individual_net_krw": float(self._program_investor.get("individual", 0)),
+            # Day 8 quality flags (수치형: FeatureBuilder가 float 캐스팅 가능해야 함)
+            "quality_investor_supported": 1.0 if runtime_supported else 0.0,
+            "quality_investor_futures_supported": 1.0 if self._futures_supported else 0.0,
+            "quality_investor_program_supported": 1.0 if self._program_supported else 0.0,
+            "quality_investor_option_supported": 1.0 if self._option_flow_supported else 0.0,
+            "quality_investor_stale": 1.0 if is_stale else 0.0,
+            "quality_investor_age_sec": float(max(age_sec, 0.0)),
+            "quality_investor_fetch_count": float(self._fetch_count),
+            "quality_investor_source_code": float(self._source_code(self._futures_source, self._program_source)),
+            "quality_investor_reason_code": float(self._reason_code(self._futures_reason, self._program_reason)),
         }
 
     def get_zone_data(self) -> Dict[str, Dict[str, int]]:
@@ -335,6 +349,10 @@ class CybosInvestorData:
         self._option_flow_reason = "Cybos option investor-flow mapping pending"
 
     def get_stats(self) -> dict:
+        age_sec = (
+            (datetime.datetime.now() - self._last_fetch).total_seconds()
+            if self._last_fetch else 9999.0
+        )
         return {
             "fetch_count": self._fetch_count,
             "last_fetch": self._last_fetch.strftime("%H:%M:%S") if self._last_fetch else "",
@@ -343,4 +361,26 @@ class CybosInvestorData:
             "futures_supported": self._futures_supported,
             "program_supported": self._program_supported,
             "option_supported": self._option_flow_supported,
+            "quality_age_sec": round(age_sec, 1),
+            "quality_stale": age_sec > 180.0,
+            "quality_source_code": self._source_code(self._futures_source, self._program_source),
+            "quality_reason_code": self._reason_code(self._futures_reason, self._program_reason),
         }
+
+    @staticmethod
+    def _source_code(futures_source: str, program_source: str) -> int:
+        src = f"{futures_source}|{program_source}".lower()
+        if "api_missing" in src or "unavailable" in src:
+            return 0
+        if "cp" in src or "tr" in src or "futuremst" in src:
+            return 2
+        return 1
+
+    @staticmethod
+    def _reason_code(futures_reason: str, program_reason: str) -> int:
+        text = f"{futures_reason}|{program_reason}".lower()
+        if "missing" in text or "pending" in text:
+            return 0
+        if "live" in text or "제공" in text:
+            return 2
+        return 1

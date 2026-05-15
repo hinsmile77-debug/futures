@@ -33,12 +33,15 @@
 - `start_mireuk_cybos_test.bat` 시험운전 배치 추가 완료
 - `main.py` Cybos 시작 시 로그인 계좌와 `secrets.py` 계좌가 다르면 런타임 계좌를 자동 전환하도록 보정 완료
 - Cybos 시험 런처로 `main.py` UI 부팅 / startup sync / realtime start / Qt 루프 진입까지 확인 완료
+- `strategy/runtime/broker_runtime_service.py` 도입 완료 (connect_broker 1차 분리)
+- `strategy/runtime/session_recovery_service.py` 도입 완료 (세션 복원 1차 분리)
+- `utils/error_policy.py` 도입 완료 (recoverable/degraded/fatal 분류형 정책)
 
 ### 아직 남은 항목
 
 - 장중 `FutureCurOnly` 틱 / `FutureJpBid` 호가 실시간 이벤트 실검증
 - `CpTd6831` 주문 후 `CpFConclusion` 체결 payload 실검증
-- Cybos 수급 데이터(`investor_data`) 실TR 구현
+- Cybos 수급 데이터(`investor_data`) 고도화 (실TR 매핑 정밀화, 품질지표 연동)
 - Cybos 서버구분 표시를 Kiwoom 호환값 우회가 아닌 브로커 인지형 로직으로 정리
 - UI stylesheet parse warning 정리
 
@@ -133,11 +136,11 @@ Cybos Plus가 선물 자동매매에 필요한 최소 기능을 제공하는지 
 - [DONE] `register_fill_callback()`
 - [DONE] `register_msg_callback()`
 - [DONE] `create_realtime_data()`
-- [DONE] `create_investor_data()` placeholder
+- [DONE] `create_investor_data()` 구현 (CybosInvestorData 연결)
 
 ### 남은 작업
 
-- [TODO] `investor_data` 실TR 구현
+- [TODO] `investor_data` 실TR 매핑 정밀화 + 품질 플래그 연동
 - [TODO] 주문/체결 payload 실거래 흐름 검증 후 추가 보정
 
 ---
@@ -155,11 +158,15 @@ Cybos Plus가 선물 자동매매에 필요한 최소 기능을 제공하는지 
 - [DONE] Cybos 계좌 목록이 `secrets.py`와 다를 때 자동 fallback
 - [DONE] `EmergencyExit` 주문 어댑터가 Cybos 계좌를 사용하도록 연결
 - [DONE] 시험 런처에서 UI 부팅 및 Qt 루프 진입 확인
+- [DONE] BrokerRuntimeService로 connect/runtime bootstrap 1차 분리
+- [DONE] SessionRecoveryService로 startup 복원 경로 1차 분리
+- [DONE] error_policy 기반 분류형 예외 처리 1차 적용
 
 ### 남은 작업
 
 - [TODO] `GetServerGubun` 호환 우회 제거
 - [TODO] 브로커별 서버 라벨 표시 분리
+- [TODO] main.py 잔여 오케스트레이션 로직 추가 서비스 분리 (order lifecycle, minute pipeline)
 
 ---
 

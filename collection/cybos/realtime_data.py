@@ -83,21 +83,34 @@ class CybosRealtimeData:
         if self._running:
             return
 
+        sys_log.info("[CybosRT-START] snapshot begin code=%s", self._rt_code)
         self._prime_from_snapshot()
+        sys_log.info(
+            "[CybosRT-START] snapshot end code=%s price=%.2f oi=%d bid1=%.2f ask1=%.2f",
+            self._rt_code,
+            self._last_price,
+            self._last_oi,
+            self._last_bid1,
+            self._last_ask1,
+        )
+        sys_log.info("[CybosRT-START] tick subscribe begin code=%s", self._rt_code)
         self._tick_subscription = self.api.create_subscription(
             progid=FUTURE_CUR_ONLY_PROGID,
             input_values={0: self._rt_code},
             owner=self,
             event_name="tick",
-            latest=True,
+            latest=False,
         )
+        sys_log.info("[CybosRT-START] tick subscribe end code=%s", self._rt_code)
+        sys_log.info("[CybosRT-START] hoga subscribe begin code=%s", self._rt_code)
         self._hoga_subscription = self.api.create_subscription(
             progid=FUTURE_JP_BID_PROGID,
             input_values={0: self._rt_code},
             owner=self,
             event_name="hoga",
-            latest=True,
+            latest=False,
         )
+        sys_log.info("[CybosRT-START] hoga subscribe end code=%s", self._rt_code)
         self._running = True
         logger.info("[CybosRT] start code=%s", self._rt_code)
 
@@ -114,6 +127,7 @@ class CybosRealtimeData:
         logger.info("[CybosRT] stop code=%s", self._rt_code)
 
     def _handle_subscription_event(self, event_name: str, sink) -> None:
+        sys_log.info("[CybosRT-EVENT] dispatch event=%s code=%s", event_name, self._rt_code)
         if event_name == "tick" and self._tick_subscription is not None:
             self._handle_tick(self._tick_subscription.com_object)
         elif event_name == "hoga" and self._hoga_subscription is not None:

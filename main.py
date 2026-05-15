@@ -22,6 +22,7 @@ import time
 import logging
 import math
 import json
+import importlib
 import queue as _queue
 import subprocess
 import numpy as np
@@ -55,7 +56,17 @@ from config.settings import (
     TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
     FRED_API_KEY,
+    HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
+    HEALTH_QUALITY_WARN, HEALTH_QUALITY_CRIT,
+    HEALTH_CACHE_AGE_WARN_SEC, HEALTH_CACHE_AGE_CRIT_SEC,
+    HEALTH_EXCEPTION_DENSITY_WARN_10M, HEALTH_EXCEPTION_DENSITY_CRIT_10M,
+    HEALTH_TREND_WINDOW_MIN,
+    HEALTH_DEGRADED_ENABLED, HEALTH_DEGRADED_ENTER_STREAK, HEALTH_DEGRADED_EXIT_STREAK,
+    HEALTH_DEGRADED_SIZE_MULT, HEALTH_DEGRADED_MIN_CONF,
+    HEALTH_DEGRADED_BLOCK_AUTO_ENTRY, HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY,
+    HEALTH_POLICY_HOT_RELOAD_ENABLED, HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC,
 )
+import config.settings as runtime_settings
 from config.constants import FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED
 from config import secrets as _secrets
 
@@ -79,6 +90,9 @@ from strategy.entry.meta_gate import MetaGate
 from strategy.entry.adaptive_kelly import AdaptiveKelly
 from strategy.exit.time_exit import TimeExitManager
 from strategy.risk.toxicity_gate import ToxicityGate
+from strategy.runtime.broker_runtime_service import BrokerRuntimeService
+from strategy.runtime.execution_governor import ExecutionGovernor
+from strategy.runtime.session_recovery_service import SessionRecoveryService
 from strategy.profit_guard import ProfitGuard, ProfitGuardConfig
 from learning.calibration import MultiHorizonCalibrator
 from learning.online_learner import OnlineLearner
@@ -92,6 +106,7 @@ from utils.time_utils import (
     is_market_open, is_trading_day, get_time_zone, is_force_exit_time, is_new_entry_allowed,
 )
 from utils.notify import notify
+from utils.error_policy import ErrorLevel, apply_error_policy, classify_exception
 from dashboard.main_dashboard import create_dashboard
 
 # 대시보드 파라미터 바 이름 → 피처 키 매핑 (Fix2/3)
@@ -121,6 +136,9 @@ class TradingSystem:
         self.kiwoom        = self.broker.api  # legacy alias kept during migration
         self.latency_sync  = self.broker.create_latency_sync()
         self.realtime_data = None  # login 후 초기화
+        self.broker_runtime_service = BrokerRuntimeService()
+        self.execution_governor = ExecutionGovernor()
+        self.session_recovery_service = SessionRecoveryService()
 
         # 핵심 컴포넌트
         self.regime_classifier  = RegimeClassifier()
@@ -259,6 +277,18 @@ class TradingSystem:
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
         self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
+        self._last_health_level: str = "INFO"
+        self._health_degraded_mode: bool = False
+        self._health_warn_streak: int = 0
+        self._health_info_streak: int = 0
+        self._health_policy: dict = self._build_health_policy()
+        self._health_settings_path: str = os.path.join(BASE_DIR, "config", "settings.py")
+        self._health_settings_mtime: float = 0.0
+        self._health_policy_last_reload_check: float = 0.0
+        try:
+            self._health_settings_mtime = float(os.path.getmtime(self._health_settings_path))
+        except Exception:
+            self._health_settings_mtime = 0.0
 
         # log_manager → 대시보드 5개 탭 배선 (subscribe 없으면 탭에 아무것도 안 보임)
         log_manager.subscribe(
@@ -273,6 +303,194 @@ class TradingSystem:
             "LEARNING",
             lambda e: self.dashboard.append_model_log(e.message),
         )
+        log_manager.subscribe(
+            "HEALTH",
+            lambda e: self.dashboard.append_health_log(e.message, e.level),
+        )
+
+    @staticmethod
+    def _build_health_policy(src=None) -> dict:
+        mod = src or runtime_settings
+        return {
+            "latency_warn_ms": float(getattr(mod, "HEALTH_LATENCY_WARN_MS", HEALTH_LATENCY_WARN_MS)),
+            "latency_crit_ms": float(getattr(mod, "HEALTH_LATENCY_CRIT_MS", HEALTH_LATENCY_CRIT_MS)),
+            "quality_warn": float(getattr(mod, "HEALTH_QUALITY_WARN", HEALTH_QUALITY_WARN)),
+            "quality_crit": float(getattr(mod, "HEALTH_QUALITY_CRIT", HEALTH_QUALITY_CRIT)),
+            "cache_age_warn_sec": float(getattr(mod, "HEALTH_CACHE_AGE_WARN_SEC", HEALTH_CACHE_AGE_WARN_SEC)),
+            "cache_age_crit_sec": float(getattr(mod, "HEALTH_CACHE_AGE_CRIT_SEC", HEALTH_CACHE_AGE_CRIT_SEC)),
+            "exception_warn_10m": float(getattr(mod, "HEALTH_EXCEPTION_DENSITY_WARN_10M", HEALTH_EXCEPTION_DENSITY_WARN_10M)),
+            "exception_crit_10m": float(getattr(mod, "HEALTH_EXCEPTION_DENSITY_CRIT_10M", HEALTH_EXCEPTION_DENSITY_CRIT_10M)),
+            "trend_window_min": int(getattr(mod, "HEALTH_TREND_WINDOW_MIN", HEALTH_TREND_WINDOW_MIN)),
+            "degraded_enabled": bool(getattr(mod, "HEALTH_DEGRADED_ENABLED", HEALTH_DEGRADED_ENABLED)),
+            "degraded_enter_streak": int(getattr(mod, "HEALTH_DEGRADED_ENTER_STREAK", HEALTH_DEGRADED_ENTER_STREAK)),
+            "degraded_exit_streak": int(getattr(mod, "HEALTH_DEGRADED_EXIT_STREAK", HEALTH_DEGRADED_EXIT_STREAK)),
+            "degraded_size_mult": float(getattr(mod, "HEALTH_DEGRADED_SIZE_MULT", HEALTH_DEGRADED_SIZE_MULT)),
+            "degraded_min_conf": float(getattr(mod, "HEALTH_DEGRADED_MIN_CONF", HEALTH_DEGRADED_MIN_CONF)),
+            "degraded_block_auto_entry": bool(getattr(mod, "HEALTH_DEGRADED_BLOCK_AUTO_ENTRY", HEALTH_DEGRADED_BLOCK_AUTO_ENTRY)),
+            "degraded_block_manual_entry": bool(getattr(mod, "HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY", HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY)),
+            "hot_reload_enabled": bool(getattr(mod, "HEALTH_POLICY_HOT_RELOAD_ENABLED", HEALTH_POLICY_HOT_RELOAD_ENABLED)),
+            "hot_reload_interval_sec": float(getattr(mod, "HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC", HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC)),
+        }
+
+    def _maybe_reload_health_policy(self) -> None:
+        policy = self._health_policy
+        if not bool(policy.get("hot_reload_enabled", True)):
+            return
+        now_ts = time.time()
+        min_interval = max(1.0, float(policy.get("hot_reload_interval_sec", 5.0) or 5.0))
+        if now_ts - self._health_policy_last_reload_check < min_interval:
+            return
+        self._health_policy_last_reload_check = now_ts
+        try:
+            current_mtime = float(os.path.getmtime(self._health_settings_path))
+        except Exception:
+            return
+        if current_mtime <= float(self._health_settings_mtime):
+            return
+
+        try:
+            reloaded = importlib.reload(runtime_settings)
+            self._health_policy = self._build_health_policy(reloaded)
+            self._health_settings_mtime = current_mtime
+            p = self._health_policy
+            log_manager.system(
+                "[HealthPolicy] settings.py 핫리로드 반영 "
+                f"(lat_warn={p['latency_warn_ms']:.0f}ms, q_warn={p['quality_warn']:.2f}, "
+                f"block_auto={p['degraded_block_auto_entry']}, block_manual={p['degraded_block_manual_entry']})",
+                "INFO",
+            )
+        except Exception as _reload_e:
+            logger.warning("[HealthPolicy] settings.py 핫리로드 실패: %s", _reload_e)
+
+    def _emit_runtime_health(self, features: dict, latency_ms: float) -> None:
+        """Day10: 운영 헬스 스냅샷 생성/전파 (대시보드 + HEALTH 로그)."""
+        try:
+            self._maybe_reload_health_policy()
+            p = self._health_policy
+            quality_score = float(features.get("feature_quality_score", 1.0) or 0.0)
+            macro_stats = self.macro_fetcher.get_stats() if hasattr(self, "macro_fetcher") else {}
+            macro_cache_age = float(macro_stats.get("cache_age", -1) or -1)
+            investor_age = float(features.get("quality_investor_age_sec", -1) or -1)
+            cache_age_sec = max(macro_cache_age, investor_age, 0.0)
+
+            level_counts = log_manager.get_level_counts(since_sec=600, layer="SYSTEM")
+            exception_density_10m = float(
+                level_counts.get("WARNING", 0)
+                + level_counts.get("ERROR", 0)
+                + level_counts.get("CRITICAL", 0)
+            )
+
+            health_level = self._classify_health_level(
+                latency_ms=latency_ms,
+                quality_score=quality_score,
+                cache_age_sec=cache_age_sec,
+                exception_density_10m=exception_density_10m,
+            )
+            self._update_degraded_mode(health_level)
+
+            self.dashboard.update_runtime_health({
+                "latency_ms": latency_ms,
+                "quality_score": quality_score,
+                "cache_age_sec": cache_age_sec,
+                "exception_density_10m": exception_density_10m,
+                "trend_window_min": int(p.get("trend_window_min", HEALTH_TREND_WINDOW_MIN)),
+                "health_level": health_level,
+                "degraded_mode": self._health_degraded_mode,
+                "thresholds": {
+                    "latency_warn_ms": float(p.get("latency_warn_ms", HEALTH_LATENCY_WARN_MS)),
+                    "latency_crit_ms": float(p.get("latency_crit_ms", HEALTH_LATENCY_CRIT_MS)),
+                    "quality_warn": float(p.get("quality_warn", HEALTH_QUALITY_WARN)),
+                    "quality_crit": float(p.get("quality_crit", HEALTH_QUALITY_CRIT)),
+                    "cache_age_warn_sec": float(p.get("cache_age_warn_sec", HEALTH_CACHE_AGE_WARN_SEC)),
+                    "cache_age_crit_sec": float(p.get("cache_age_crit_sec", HEALTH_CACHE_AGE_CRIT_SEC)),
+                    "exception_warn_10m": float(p.get("exception_warn_10m", HEALTH_EXCEPTION_DENSITY_WARN_10M)),
+                    "exception_crit_10m": float(p.get("exception_crit_10m", HEALTH_EXCEPTION_DENSITY_CRIT_10M)),
+                },
+            })
+
+            # HEALTH 로그는 상태 변경 또는 비정상 구간에서만 발행해 노이즈를 줄인다.
+            if health_level != self._last_health_level or health_level != "INFO":
+                log_manager.health(
+                    "[Health] level=%s degraded=%s | latency=%.0fms | quality=%.2f | cache_age=%.0fs | exceptions_10m=%.0f"
+                    % (
+                        health_level,
+                        "ON" if self._health_degraded_mode else "OFF",
+                        latency_ms,
+                        quality_score,
+                        cache_age_sec,
+                        exception_density_10m,
+                    ),
+                    health_level,
+                )
+                self._last_health_level = health_level
+        except Exception as _h_e:
+            logger.debug("[Health] snapshot emit 실패: %s", _h_e)
+
+    def _classify_health_level(
+        self,
+        *,
+        latency_ms: float,
+        quality_score: float,
+        cache_age_sec: float,
+        exception_density_10m: float,
+    ) -> str:
+        p = self._health_policy
+        if (
+            latency_ms >= float(p.get("latency_crit_ms", HEALTH_LATENCY_CRIT_MS))
+            or quality_score < float(p.get("quality_crit", HEALTH_QUALITY_CRIT))
+            or cache_age_sec >= float(p.get("cache_age_crit_sec", HEALTH_CACHE_AGE_CRIT_SEC))
+            or exception_density_10m >= float(p.get("exception_crit_10m", HEALTH_EXCEPTION_DENSITY_CRIT_10M))
+        ):
+            return "CRITICAL"
+        if (
+            latency_ms >= float(p.get("latency_warn_ms", HEALTH_LATENCY_WARN_MS))
+            or quality_score < float(p.get("quality_warn", HEALTH_QUALITY_WARN))
+            or cache_age_sec >= float(p.get("cache_age_warn_sec", HEALTH_CACHE_AGE_WARN_SEC))
+            or exception_density_10m >= float(p.get("exception_warn_10m", HEALTH_EXCEPTION_DENSITY_WARN_10M))
+        ):
+            return "WARNING"
+        return "INFO"
+
+    def _update_degraded_mode(self, health_level: str) -> None:
+        p = self._health_policy
+        if not bool(p.get("degraded_enabled", HEALTH_DEGRADED_ENABLED)):
+            self._health_degraded_mode = False
+            self._health_warn_streak = 0
+            self._health_info_streak = 0
+            return
+
+        if health_level in ("WARNING", "CRITICAL"):
+            self._health_warn_streak += 1
+            self._health_info_streak = 0
+            if (not self._health_degraded_mode) and self._health_warn_streak >= int(p.get("degraded_enter_streak", HEALTH_DEGRADED_ENTER_STREAK)):
+                self._health_degraded_mode = True
+                log_manager.system(
+                    "[HealthPolicy] 자동 Degraded Mode 진입 "
+                    f"(warn_streak={self._health_warn_streak}, threshold={int(p.get('degraded_enter_streak', HEALTH_DEGRADED_ENTER_STREAK))})",
+                    "WARNING",
+                )
+        else:
+            self._health_warn_streak = 0
+            self._health_info_streak += 1
+            if self._health_degraded_mode and self._health_info_streak >= int(p.get("degraded_exit_streak", HEALTH_DEGRADED_EXIT_STREAK)):
+                self._health_degraded_mode = False
+                log_manager.system(
+                    "[HealthPolicy] 자동 Degraded Mode 해제 "
+                    f"(info_streak={self._health_info_streak}, threshold={int(p.get('degraded_exit_streak', HEALTH_DEGRADED_EXIT_STREAK))})",
+                    "INFO",
+                )
+
+    def _is_degraded_entry_blocked(self, confidence: float, is_manual: bool) -> tuple:
+        """현재 Degraded 정책 기준으로 진입 차단 여부를 반환한다."""
+        p = self._health_policy
+        if not self._health_degraded_mode:
+            return False, 0.0
+        min_conf = float(p.get("degraded_min_conf", HEALTH_DEGRADED_MIN_CONF))
+        if is_manual:
+            enabled = bool(p.get("degraded_block_manual_entry", HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY))
+        else:
+            enabled = bool(p.get("degraded_block_auto_entry", HEALTH_DEGRADED_BLOCK_AUTO_ENTRY))
+        return bool(enabled and confidence < min_conf), min_conf
 
     # ── 키움 API 연결 ─────────────────────────────────────────
     def _apply_account_no(self, account_no: str) -> None:
@@ -411,6 +629,15 @@ class TradingSystem:
         qty = ctx.get("qty", 0)
         if qty <= 0:
             notify("수동 진입 불가: 산출 수량 0 (등급 X 또는 신호 없음)", "WARNING")
+            return
+        confidence = float(ctx.get("confidence", 0.0) or 0.0)
+        p = self._health_policy
+        manual_blocked, min_conf = self._is_degraded_entry_blocked(confidence, is_manual=True)
+        if manual_blocked:
+            notify(f"수동 진입 차단: Degraded Mode 최소신뢰도 {min_conf:.1%} 미달", "WARNING")
+            log_manager.signal(
+                f"[차단] 수동진입 Degraded 정책 차단 — conf={confidence:.1%} < {min_conf:.1%}"
+            )
             return
         if not self.circuit_breaker.is_entry_allowed():
             notify(f"수동 진입 불가: Circuit Breaker {self.circuit_breaker.state}", "WARNING")
@@ -814,84 +1041,17 @@ class TradingSystem:
             }
         return calibrated
 
+    # [SERVICE-BOUNDARY 1/4] BrokerRuntimeService
+    # 책임: 로그인/계좌선택/종목결정/실시간+수급 타이머 시작
+    # 입력: secrets 계좌, 대시보드 종목 선택값, broker capability
+    # 출력: _futures_code, realtime_data, investor timer, startup sync 상태
     def connect_broker(self) -> bool:
         """로그인 + 근월물 실시간 수신 등록."""
-        print("[DBG CK-1] login() 호출 직전", flush=True)
-        if not self.broker.connect():
-            logger.error("[System] 키움 로그인 실패")
+        runtime_ctx = self.broker_runtime_service.login_and_prepare(self)
+        if runtime_ctx is None:
             return False
-        self.broker.register_fill_callback(self._on_chejan_event)
-        self.broker.register_msg_callback(self._on_order_message)
-        self.kiwoom = self.broker.api
-        acc_raw = self.broker.get_login_info("ACCNO")
-        accounts = self.broker.get_account_list()
-        selected_account = str(_secrets.ACCOUNT_NO or "").strip()
-        if accounts and selected_account not in accounts:
-            fallback_account = str(accounts[0]).strip()
-            logger.warning(
-                "[Account] configured account %s not in broker session accounts=%s; using %s",
-                selected_account,
-                accounts,
-                fallback_account,
-            )
-            selected_account = fallback_account
-            self._apply_account_no(selected_account)
-        logger.info("[Account] ACCNO raw=%s", acc_raw)
-        logger.info("[Account] parsed accounts=%s", accounts)
-        self.dashboard.set_account_options(accounts, selected_account)
-        print("[DBG CK-2] login() 성공", flush=True)
-
-        # 서버 종류 확인 (정보 로그용)
-        _broker_name = getattr(self.broker, "name", "")
-        if _broker_name == "cybos":
-            server_label = "Cybos 실서버"
-        else:
-            server = self.broker.get_login_info("GetServerGubun")
-            server_label = "모의투자" if server == "1" else "실서버"
-            if server == "1":
-                logger.info("[System] 모의투자 서버 접속 — A0166000 SetRealReg 실시간 수신 사용")
-        print(f"[DBG CK-2b] broker={_broker_name!r} 서버종류={server_label}", flush=True)
-
-        # 종목코드 결정: Cybos 실제 코드는 5자 (예: A0166, A0565)
-        # 대시보드 UI 코드는 8자 (예: A0166000, A0565000) — 끝 3자리 "000" 제거로 정규화
-        broker_code = self.broker.get_nearest_futures_code()
-        try:
-            ui_code_raw = str(self.dashboard.get_selected_symbol() or "").strip()
-        except Exception as _sym_e:
-            logger.debug("[Symbol] get_selected_symbol 실패: %s", _sym_e)
-            ui_code_raw = ""
-        # 8자 코드(Axxxx000) → 5자 Cybos 코드(Axxxx)로 정규화
-        if len(ui_code_raw) == 8 and ui_code_raw.endswith("000"):
-            ui_code = ui_code_raw[:-3]
-        else:
-            ui_code = ui_code_raw
-
-        # 미니선물 여부: A05... 또는 05... 접두사로 판단
-        _ui_norm = ui_code[1:] if ui_code.startswith("A") else ui_code
-        is_mini_selected = _ui_norm.startswith("05")
-
-        if is_mini_selected:
-            # 미니선물: UI 코드 우선, 없으면 FutureMst 프로브 근월물
-            # broker_code는 CpFutureCode 기반 일반선물(A01xxx) 전용이므로 사용 불가
-            if not ui_code:
-                ui_code = self.broker.get_nearest_mini_futures_code()
-            code = ui_code
-        else:
-            # 일반선물: CpFutureCode 반환 5자 코드 우선
-            code = broker_code or ui_code
-        print(
-            f"[DBG CK-3] 근월물 코드={code} (broker={broker_code} ui_raw={ui_code_raw!r} "
-            f"ui={ui_code!r} is_mini={is_mini_selected}) 서버={server_label}",
-            flush=True,
-        )
-        self._futures_code = code
-        # 계약 스펙 확정 (일반선물 250,000 / 미니선물 50,000)
-        _spec = get_contract_spec(code)
-        self._pt_value = _spec["pt_value"]
-        self.position.set_pt_value(self._pt_value)
-        self.position.set_futures_code(code)
-        self.sizer.set_pt_value(self._pt_value)
-        print(f"[DBG CK-3b] 계약스펙={_spec['label']} pt_value={self._pt_value:,}", flush=True)
+        selected_account = runtime_ctx.selected_account
+        code = runtime_ctx.code
 
         # [안전] 재시작 시 저장 포지션 종목코드 검증 — 불일치 시 강제 FLAT
         _saved_pos_code = getattr(self.position, "_loaded_futures_code", "")
@@ -916,46 +1076,11 @@ class TradingSystem:
         else:
             self.dashboard.set_ui_ready_mode()
 
-        self.realtime_data = self.broker.create_realtime_data(
-            code             = code,
-            screen_no        = "3000",
-            on_candle_closed = self._on_candle_closed,
-            on_tick          = self._on_tick_price_update,
-            on_hoga          = self._on_hoga_update,
-            realtime_code    = code,
-            is_mock_server   = False,
+        self.broker_runtime_service.start_realtime_and_investor(
+            self,
+            code=code,
+            market_open_now=runtime_ctx.market_open_now,
         )
-        print("[DBG CK-4] RealtimeData 생성 완료", flush=True)
-
-        _now = datetime.datetime.now()
-        _market_open_now = is_market_open(_now)
-        if _market_open_now:
-            self.realtime_data.start(load_history=True)
-            print("[DBG CK-5] RealtimeData.start() 완료", flush=True)
-        else:
-            log_manager.system(
-                f"[System] 장외 시간({_now.strftime('%H:%M:%S')})에는 Cybos 실시간 구독을 시작하지 않음",
-                "INFO",
-            )
-            print("[DBG CK-5] RealtimeData.start() skipped (market closed)", flush=True)
-
-        self.investor_data._api = self.broker.api  # 실거래 시 TR 폴링 활성화
-        self.investor_data.set_futures_code(code)   # UI 선택 종목코드 반영
-
-        # 투자자ticker 실시간 타입 FID·코드 탐색 (진단용)
-        # 결과는 PROBE.log 및 콘솔에 [PROBE-TICKER] 라인으로 출력됨
-        # 확인 후 불필요하면 이 줄을 제거해도 됨
-        self.broker.probe_investor_ticker(extra_codes=[code])
-
-        # 수급 TR은 COM 콜백 체인(run_minute_pipeline) 밖에서 수집해야 스택 오버런 방지
-        # QTimer 60초마다 독립 실행 — 파이프라인은 캐시(get_features)만 읽음
-        self._investor_timer = QTimer()
-        self._investor_timer.timeout.connect(self._fetch_investor_data)
-        if _market_open_now:
-            self._investor_timer.start(60_000)
-            logger.info("[System] %s 실시간 수신 시작 — %s | 수급 타이머 60s 시작", self.broker.name, code)
-        else:
-            logger.info("[System] %s 장외 대기 모드 — %s | 실시간/수급 타이머 시작 보류", self.broker.name, code)
         return True
 
     def connect_kiwoom(self) -> bool:
@@ -974,21 +1099,37 @@ class TradingSystem:
                 if oi > 0:
                     self.investor_data._open_interest = oi
         except Exception as e:
-            logger.warning("[Investor] 타이머 수집 오류: %s", e)
+            apply_error_policy(
+                system=self,
+                level=ErrorLevel.DEGRADED,
+                context="investor_timer_fetch",
+                exc=e,
+                logger=logger,
+                dashboard_logger=log_manager.system,
+            )
 
     def _on_tick_price_update(self, bar: dict) -> None:
         """틱 수신마다 대시보드 헤더 현재가 갱신."""
         if self.realtime_data is None:
             return
         close = float(bar.get("close", 0) or 0.0)
+        logger.info(
+            "[TickUI] begin code=%s close=%.2f ts=%s",
+            self.realtime_data.code,
+            close,
+            bar.get("ts"),
+        )
         if close > 0:
             self._last_pipeline_price = close
+            logger.info("[TickUI] minute_chart_tick code=%s close=%.2f", self.realtime_data.code, close)
             self.dashboard.minute_chart_tick(close, bar.get("ts"))
+        logger.info("[TickUI] update_price code=%s close=%.2f", self.realtime_data.code, float(bar["close"]))
         self.dashboard.update_price(
             price  = bar["close"],
             change = bar["close"] - bar.get("open", bar["close"]),
             code   = self.realtime_data.code,
         )
+        logger.info("[TickUI] end code=%s close=%.2f", self.realtime_data.code, float(bar["close"]))
 
     def _on_hoga_update(
         self,
@@ -1017,7 +1158,17 @@ class TradingSystem:
         # latency → Circuit Breaker 연동
         self.circuit_breaker.record_api_latency(self.latency_sync.offset_sec)
         self.dashboard.minute_chart_candle_closed(candle)
-        self.run_minute_pipeline(candle)
+        try:
+            self.run_minute_pipeline(candle)
+        except Exception as exc:
+            apply_error_policy(
+                system=self,
+                level=classify_exception(exc, default=ErrorLevel.FATAL),
+                context="minute_pipeline",
+                exc=exc,
+                logger=logger,
+                dashboard_logger=log_manager.system,
+            )
 
     # ── 장 전 준비 (08:50) ─────────────────────────────────────
     def pre_market_setup(self):
@@ -1055,6 +1206,10 @@ class TradingSystem:
         )
         self.dashboard.set_ui_ready_mode()
 
+    # [SERVICE-BOUNDARY 2/4] MinutePipelineService
+    # 책임: 분봉 단위 의사결정(검증→학습→피처→예측→진입/청산→기록)
+    # 입력: bar(분봉), 실시간 누적 피처 상태, 현재 포지션/리스크 상태
+    # 출력: decision, 주문 요청, DB/대시보드 업데이트
     # ── 매분 파이프라인 ────────────────────────────────────────
     def run_minute_pipeline(self, bar: dict):
         """
@@ -1480,6 +1635,22 @@ class TradingSystem:
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
         horizon_proba = self._apply_horizon_calibration(horizon_proba)
+        _h_conf_values = [float(v.get("confidence", 0.0) or 0.0) for v in horizon_proba.values()]
+        _gov_conf = (sum(_h_conf_values) / len(_h_conf_values)) if _h_conf_values else 0.0
+        _gov_quality = float(features.get("feature_quality_score", 1.0) or 0.0)
+        _gov_latency = float(getattr(self.latency_sync, "offset_sec", 0.0) or 0.0)
+        _gov_toxicity = float(features.get("toxicity_score", 0.0) or 0.0)
+        _exec_gate_pre = self.execution_governor.evaluate(
+            confidence=_gov_conf,
+            quality_score=_gov_quality,
+            latency_sec=_gov_latency,
+            toxicity_score=_gov_toxicity,
+            context={
+                "regime": self.current_regime,
+                "micro_regime": self.current_micro_regime,
+                "ts": ts,
+            },
+        )
         decision = self.ensemble.compute(
             horizon_proba,
             self.current_regime,
@@ -1499,6 +1670,7 @@ class TradingSystem:
             recent_accuracy=self.online_learner.recent_accuracy(),
         )
         decision["toxicity_gate"] = self.toxicity_gate.evaluate(features)
+        decision["execution_governor"] = _exec_gate_pre
 
         self.circuit_breaker.record_signal(direction)
 
@@ -1716,7 +1888,32 @@ class TradingSystem:
         _tox_gate = decision.get("toxicity_gate") or {}
         _tox_action = _tox_gate.get("action", "pass")
         _tox_size = float(_tox_gate.get("size_multiplier", 1.0) or 1.0)
+        _exec_gate = decision.get("execution_governor") or {}
+        _exec_action = _exec_gate.get("action", "pass")
+        _exec_size = float(_exec_gate.get("size_multiplier", 1.0) or 1.0)
         if direction != 0 and self.position.status == "FLAT":
+            if self._health_degraded_mode:
+                if confidence < float(HEALTH_DEGRADED_MIN_CONF):
+                    _final_grade = "X"
+                    _qty_display = 0
+                    log_manager.signal(
+                        f"[HealthPolicy] Degraded Mode 차단: conf={confidence:.1%} < {HEALTH_DEGRADED_MIN_CONF:.1%}"
+                    )
+                elif _qty_display > 0:
+                    _qty_display = max(1, int(round(_qty_display * float(HEALTH_DEGRADED_SIZE_MULT))))
+                    log_manager.signal(
+                        f"[HealthPolicy] Degraded Mode 축소: size_mult={float(HEALTH_DEGRADED_SIZE_MULT):.2f}"
+                    )
+            if _exec_action == "block":
+                _final_grade = "X"
+                _qty_display = 0
+            elif _qty_display > 0 and _exec_action == "reduce":
+                _qty_display = max(1, int(round(_qty_display * _exec_size)))
+            if _exec_action != "pass":
+                log_manager.signal(
+                    f"[ExecutionGovernor] action={_exec_action} score={_exec_gate.get('tradability_score', 0.0):.2f} "
+                    f"size_mult={_exec_size:.2f} reason={_exec_gate.get('reason', '')}"
+                )
             if _meta_action == "skip":
                 _final_grade = "X"
                 _qty_display = 0
@@ -1757,6 +1954,7 @@ class TradingSystem:
             "qty":   _qty_display,
             "atr":   atr,
             "grade": _final_grade,
+            "confidence": confidence,
         }
 
         # [DBG-F7] 진입 실행 조건 평가
@@ -1777,6 +1975,11 @@ class TradingSystem:
         )
         _hurst_ok = features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
         _atr_ok   = atr >= ATR_MIN_ENTRY   # ATR 너무 낮으면 노이즈 > 손절거리 → 휩쏘
+        _hp = self._health_policy
+        _auto_blocked, _deg_min_conf = self._is_degraded_entry_blocked(confidence, is_manual=False)
+        _qty_auto = _qty_display
+        if self._health_degraded_mode and _qty_auto > 0:
+            _qty_auto = max(1, int(round(_qty_auto * float(_hp.get("degraded_size_mult", HEALTH_DEGRADED_SIZE_MULT)))))
 
         # 수익 보존 가드 체크 (STEP 7 진입 직전)
         _engine_daily_pnl_now = float(self.position.daily_stats().get("pnl_krw", 0.0) or 0.0)
@@ -1836,13 +2039,21 @@ class TradingSystem:
             mode_filter_passed = _final_grade in allowed_grades.get(entry_mode, ["A", "B", "C"])
             
             if _cr["auto_entry"] and self._auto_entry_enabled:
-                if mode_filter_passed:
+                if _auto_blocked:
+                    log_manager.signal(
+                        f"[차단] 자동진입 Degraded 정책 차단 — conf={confidence:.1%} < {_deg_min_conf:.1%}"
+                    )
+                    log_manager.trade(
+                        f"[자동진입 차단] {raw_dir_str}->{final_dir_str} {_qty_auto}계약 {_final_grade}급 "
+                        f"(degraded_conf={confidence:.1%}, min={_deg_min_conf:.1%})"
+                    )
+                elif mode_filter_passed:
                     # EnsembleGater 온라인 학습을 위해 진입 시점 signals/direction 저장
                     self._last_gate_signals   = decision.get("gating", {}).get("signals", {})
                     self._last_gate_direction = direction
                     # L2 통과 && 모드 필터 통과 → 진입
                     self._execute_entry(
-                        final_dir_str, close, _qty_display, atr, _final_grade,
+                        final_dir_str, close, _qty_auto, atr, _final_grade,
                         raw_direction=raw_dir_str,
                         reverse_enabled=reverse_on,
                     )
@@ -1852,7 +2063,7 @@ class TradingSystem:
                         f"[모드필터] {_final_grade}급 신호 → {entry_mode} 모드({allowed_grades.get(entry_mode, ['A','B','C'])}) 불일치 — 진입 차단"
                     )
                     log_manager.trade(
-                        f"[모드필터 차단] {raw_dir_str}->{final_dir_str} {_qty_display}계약 {_final_grade}급 "
+                        f"[모드필터 차단] {raw_dir_str}->{final_dir_str} {_qty_auto}계약 {_final_grade}급 "
                         f"(모드={entry_mode}, 허용={allowed_grades.get(entry_mode, ['A','B','C'])})"
                     )
             else:
@@ -1890,6 +2101,8 @@ class TradingSystem:
                 _reason = f"[차단] ATR {atr:.2f}pt < {ATR_MIN_ENTRY}pt — 변동성 부족 (휩쏘 위험)"
             elif not is_new_entry_allowed():
                 _reason = "[차단] 15:00 이후 — 신규 진입 금지 구간"
+            elif _auto_blocked:
+                _reason = f"[차단] 자동진입 Degraded 최소신뢰도 {_deg_min_conf:.1%} 미달"
             elif _cr is None:
                 _reason = ""
             elif _final_grade == "X":
@@ -1968,12 +2181,14 @@ class TradingSystem:
 
         # 주문/체결 탭 메트릭 갱신 (LatencySync 실데이터)
         _ls = self.latency_sync.summary()
+        _latency_ms = float(_ls.get("offset_ms", 0.0) or 0.0)
         self.dashboard.update_order_metrics(
             trades      = _ds["trades"],
-            avg_lat_ms  = _ls["offset_ms"],
+            avg_lat_ms  = _latency_ms,
             peak_lat_ms = _ls["peak_ms"],
             samples     = _ls["sample_count"],
         )
+        self._emit_runtime_health(features, _latency_ms)
 
         # ── STEP 9: 예측 DB 저장 ───────────────────────────────
         try:
@@ -2014,7 +2229,7 @@ class TradingSystem:
         try:
             self.dashboard.update_system_status(
                 cb_state=self.circuit_breaker.state,
-                latency_ms=0.0,
+                latency_ms=_latency_ms,
             )
         except Exception as _ds_e:
             logger.debug("[Dashboard] update_system_status 실패: %s", _ds_e)
@@ -2157,6 +2372,10 @@ class TradingSystem:
         self._record_trade_result(result)
         self._refresh_pnl_history()
 
+    # [SERVICE-BOUNDARY 3/4] OrderLifecycleService
+    # 책임: 진입/청산 주문 전송, pending 상태관리, 체결결과 반영
+    # 입력: direction/qty, _futures_code, account_no, broker API
+    # 출력: broker ret code, pending state, 포지션/로그 동기화
     def _send_broker_entry_order(self, direction: str, qty: int) -> int:
         """선물 진입 시장가 주문. 0=성공, 음수=오류"""
         code = getattr(self, "_futures_code", "")
@@ -2916,130 +3135,23 @@ class TradingSystem:
         except Exception as e:
             log_manager.system(f"[복구 실패] 파이프라인 예외: {e}", "WARNING")
 
+    # [SERVICE-BOUNDARY 4/4] SessionRecoveryService
+    # 책임: 재시작 세션 번호 증가, 당일 거래/패널/통계 복원
+    # 입력: trades.db, session_state.json
+    # 출력: dashboard 복원 로그, position 일일통계, pnl panel 초기화
     # ── 재시작 복원 ───────────────────────────────────────────────
 
     def _increment_session(self) -> int:
-        """data/session_state.json 에 세션 카운터를 1 증가하고 현재 번호를 반환."""
-        data = self._read_session_state()
-        today = datetime.date.today().isoformat()
-        if data.get("date") != today:
-            data = {
-                "date": today,
-                "count": 0,
-                "reverse_entry_enabled": bool(data.get("reverse_entry_enabled", False)),
-                "tp1_single_contract_mode": str(
-                    data.get("tp1_single_contract_mode", "breakeven") or "breakeven"
-                ).strip().lower(),
-                "auto_shutdown_done_date": "",
-            }
-        data["count"] = data.get("count", 0) + 1
-        data["reverse_entry_enabled"] = bool(self._reverse_entry_enabled)
-        data["tp1_single_contract_mode"] = str(
-            getattr(self, "_tp1_protect_mode", "breakeven") or "breakeven"
-        ).strip().lower()
-        self._write_session_state(data)
-        return data["count"]
+        """호환 래퍼: SessionRecoveryService.increment_session 위임."""
+        return self.session_recovery_service.increment_session(self)
 
     def _restore_daily_state(self) -> None:
-        """재시작 시 당일 거래 이력을 trades.db 에서 읽어 대시보드 로그에 복원."""
-        today_str = datetime.date.today().isoformat()
-        rows = fetch_today_trades(today_str)
-        if not rows:
-            return
-
-        session_no = self._session_no
-        self.dashboard.append_trade_separator(
-            f"── 세션 #{session_no} 시작 — 이전 거래 {len(rows)}건 복원 ({today_str}) ──"
-        )
-        self.dashboard.append_pnl_separator(
-            f"── 세션 #{session_no} 시작 — 이전 거래 {len(rows)}건 복원 ({today_str}) ──"
-        )
-
-        cumulative_pnl_krw = 0.0
-        cumulative_forward_pnl_krw = 0.0
-        for row in rows:
-            direction  = row["direction"] or "?"
-            entry_p    = row["entry_price"] or 0.0
-            exit_p     = row["exit_price"]
-            qty        = row["quantity"] or 1
-            pnl_pts    = row["pnl_pts"] or 0.0
-            pnl_krw    = row["pnl_krw"] or 0.0
-            forward_pnl_pts = row["forward_pnl_pts"] or pnl_pts
-            forward_pnl_krw = row["forward_pnl_krw"] or pnl_krw
-            reason     = row["exit_reason"] or ""
-            grade      = row["grade"] or ""
-            entry_ts   = (row["entry_ts"] or "")[:16]   # "YYYY-MM-DD HH:MM"
-            exit_ts    = (row["exit_ts"]  or "")[:16]
-
-            if exit_p is not None:
-                # 청산 완료 거래
-                cumulative_pnl_krw += pnl_krw
-                cumulative_forward_pnl_krw += forward_pnl_krw
-                self.dashboard.append_restore_trade(
-                    msg=f"진입 {direction} {qty}계약 @ {entry_p}  등급={grade}",
-                    ts=entry_ts[11:] if len(entry_ts) > 11 else entry_ts,
-                )
-                self.dashboard.append_restore_trade(
-                    msg=f"청산 {direction} {qty}계약 @ {exit_p}  ({reason})",
-                    ts=exit_ts[11:] if len(exit_ts) > 11 else exit_ts,
-                    val=(
-                        f"실행 {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원 | "
-                        f"순방향 {forward_pnl_pts:+.2f}pt  {forward_pnl_krw:+,.0f}원"
-                    ),
-                )
-                self.dashboard.append_restore_pnl(
-                    msg=f"청산 | {direction} {qty}계약 @ {exit_p}  ({reason})",
-                    ts=exit_ts[11:] if len(exit_ts) > 11 else exit_ts,
-                    val=(
-                        f"실행 {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원 (누적 {cumulative_pnl_krw:+,.0f}원) | "
-                        f"순방향 {forward_pnl_pts:+.2f}pt  {forward_pnl_krw:+,.0f}원 "
-                        f"(누적 {cumulative_forward_pnl_krw:+,.0f}원)"
-                    ),
-                )
-            else:
-                # 진입만 있고 청산 미완료 (비정상 종료)
-                self.dashboard.append_restore_trade(
-                    msg=f"[미청산] 진입 {direction} {qty}계약 @ {entry_p}  등급={grade}",
-                    ts=entry_ts[11:] if len(entry_ts) > 11 else entry_ts,
-                )
-
-        # position_tracker 일일 통계 복원
-        self.position.reset_daily()
-        self.position.restore_daily_stats(rows)
-
-        # 손익 PnL 패널 즉시 갱신 — 재시작 후 "——원" 방지
-        _daily = self.position.daily_stats()
-        _forward_daily = self.position.daily_forward_stats()
-        self.dashboard.update_pnl_metrics(
-            0.0,
-            _daily["pnl_krw"],
-            0.0,
-            forward_unrealized_krw=0.0,
-            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
-        )
-
-        logger.info(f"[Restore] 당일 거래 {len(rows)}건 복원 완료 | 누적 PnL={cumulative_pnl_krw:+,.0f}원")
-        log_manager.system(
-            f"재시작 복원 완료 | 거래 {len(rows)}건 | 누적 PnL={cumulative_pnl_krw:+,.0f}원"
-        )
-        self._refresh_pnl_history()
+        """호환 래퍼: SessionRecoveryService.restore_daily_state 위임."""
+        self.session_recovery_service.restore_daily_state(self)
 
     def _restore_panels_from_history(self) -> None:
-        """시작 시 DB 이력으로 자가학습·효과검증·추이 패널 선조회.
-        파이프라인이 처음 실행되기 전까지 이전 데이터를 표시한다.
-        """
-        try:
-            self.dashboard.update_learning(self._gather_learning_stats())
-        except Exception as e:
-            logger.debug(f"[Restore] 자가학습 패널 선조회 실패: {e}")
-        try:
-            self.dashboard.update_efficacy(self._gather_efficacy_stats())
-        except Exception as e:
-            logger.debug(f"[Restore] 효과검증 패널 선조회 실패: {e}")
-        try:
-            self.dashboard.update_trend(self._gather_trend_stats())
-        except Exception as e:
-            logger.debug(f"[Restore] 추이 패널 선조회 실패: {e}")
+        """호환 래퍼: SessionRecoveryService.restore_panels_from_history 위임."""
+        self.session_recovery_service.restore_panels_from_history(self)
 
     def _refresh_pnl_history(self) -> None:
         """trades.db 최근 90일 조회 → 손익 추이 패널 갱신."""
@@ -3047,15 +3159,110 @@ class TradingSystem:
             rows = fetch_pnl_history(limit_days=90)
             self.dashboard.update_pnl_history(rows)
         except Exception as e:
-            logger.debug(f"[PnL History] 갱신 실패: {e}")
+            apply_error_policy(
+                system=self,
+                level=ErrorLevel.RECOVERABLE,
+                context="pnl_history_refresh",
+                exc=e,
+                logger=logger,
+                dashboard_logger=log_manager.system,
+            )
         # 수익 보존 가드 패널 갱신 (청산 직후 최신 트레이드 반영)
         try:
             today_trades = fetch_today_trades() or []
             daily_pnl = self.position.daily_stats()["pnl_krw"]
             self.dashboard.refresh_profit_guard(daily_pnl, today_trades)
         except Exception as _pge2:
-            pass
+            apply_error_policy(
+                system=self,
+                level=ErrorLevel.RECOVERABLE,
+                context="profit_guard_panel_refresh",
+                exc=_pge2,
+                logger=logger,
+                dashboard_logger=log_manager.system,
+            )
 
+    def _collect_broker_capability_summary(self) -> dict:
+        """브로커 기능 지원/현재 세션 검증 상태 요약."""
+        rt = getattr(self, "realtime_data", None)
+        tick_events = int(getattr(rt, "_tick_event_count", 0) or 0)
+        hoga_events = int(getattr(rt, "_hoga_event_count", 0) or 0)
+        investor_fetch_count = int(getattr(self.investor_data, "_fetch_count", 0) or 0)
+        investor_supported = bool(
+            getattr(self.investor_data, "_futures_supported", False)
+            or getattr(self.investor_data, "_program_supported", False)
+        )
+
+        return {
+            "connect": {
+                "supported": True,
+                "verified": bool(getattr(self.broker, "is_connected", False)),
+            },
+            "balance": {
+                "supported": True,
+                "verified": bool(getattr(self, "_broker_sync_verified", False)),
+            },
+            "order": {
+                "supported": True,
+                "verified": bool(getattr(self, "_last_order_event_key", None) is not None),
+            },
+            "fill_callback": {
+                "supported": True,
+                "verified": bool(getattr(self, "_last_order_event_key", None) is not None),
+            },
+            "tick": {
+                "supported": True,
+                "verified": tick_events > 0,
+                "events": tick_events,
+            },
+            "hoga": {
+                "supported": True,
+                "verified": hoga_events > 0,
+                "events": hoga_events,
+            },
+            "investor_tr": {
+                "supported": bool(hasattr(self.broker, "probe_investor_ticker")),
+                "verified": investor_fetch_count > 0,
+                "fetch_count": investor_fetch_count,
+                "runtime_supported": investor_supported,
+            },
+            "server_label": {
+                "supported": True,
+                "verified": True,
+                "value": "Cybos 실서버"
+                if getattr(self.broker, "name", "") == "cybos"
+                else ("모의투자" if self.broker.get_login_info("GetServerGubun") == "1" else "실서버"),
+            },
+        }
+
+    def _log_broker_capability_summary(self) -> None:
+        summary = self._collect_broker_capability_summary()
+
+        def _yn(value: bool) -> str:
+            return "Y" if value else "N"
+
+        msg = (
+            "[Capability] broker=%s "
+            "connect=%s/%s balance=%s/%s order=%s/%s fill=%s/%s "
+            "tick=%s/%s(%s) hoga=%s/%s(%s) investor=%s/%s(fetch=%s,runtime=%s) "
+            "server=%s"
+        ) % (
+            getattr(self.broker, "name", "unknown"),
+            _yn(summary["connect"]["supported"]), _yn(summary["connect"]["verified"]),
+            _yn(summary["balance"]["supported"]), _yn(summary["balance"]["verified"]),
+            _yn(summary["order"]["supported"]), _yn(summary["order"]["verified"]),
+            _yn(summary["fill_callback"]["supported"]), _yn(summary["fill_callback"]["verified"]),
+            _yn(summary["tick"]["supported"]), _yn(summary["tick"]["verified"]), summary["tick"]["events"],
+            _yn(summary["hoga"]["supported"]), _yn(summary["hoga"]["verified"]), summary["hoga"]["events"],
+            _yn(summary["investor_tr"]["supported"]), _yn(summary["investor_tr"]["verified"]),
+            summary["investor_tr"]["fetch_count"],
+            _yn(summary["investor_tr"]["runtime_supported"]),
+            summary["server_label"]["value"],
+        )
+        logger.info(msg)
+        self.dashboard.append_sys_log(msg)
+
+    # 오케스트레이션 진입점: 서비스 경계 호출 순서만 관리
     # ── 메인 루프 (Qt 이벤트 루프 기반) ──────────────────────────
     def run(self):
         """메인 실행 — Qt 이벤트 루프 기반."""
@@ -3084,6 +3291,7 @@ class TradingSystem:
 
         # 대시보드 표시 + 긴급정지 버튼 연결
         self.dashboard.show()
+        self._log_broker_capability_summary()
         if hasattr(self.dashboard, "btn_kill"):
             self.dashboard.btn_kill.clicked.connect(
                 lambda: self.activate_kill_switch("대시보드 긴급정지")
@@ -3107,12 +3315,8 @@ class TradingSystem:
         # 파이프라인 감시 콜백 등록
         self.dashboard.set_pipeline_watchdog_cb(self._on_pipeline_watchdog)
 
-        # 세션 카운터 증가 + 당일 거래 이력 복원
-        self._session_no = self._increment_session()
-        self._restore_daily_state()
-
-        # 자가학습·효과검증·추이 패널: DB 이력으로 선조회 (파이프라인 첫 실행 전까지 이전 데이터 표시)
-        QTimer.singleShot(500, self._restore_panels_from_history)
+        # 세션 카운터 증가 + 당일 거래/패널 복원 (Day 3 서비스 단일 호출)
+        self.session_recovery_service.restore_on_startup(self)
 
         # 이벤트 루프 진입 2초 후 초기 대기 상태 즉시 출력
         QTimer.singleShot(2000, lambda: self._log_waiting_status(datetime.datetime.now()))
@@ -3157,6 +3361,22 @@ class TradingSystem:
         if not self.broker.is_connected:
             logger.error("[System] 키움 연결 끊김 — 재연결 시도")
             self.connect_broker()
+        elif is_market_open(now):
+            self.broker_runtime_service.ensure_market_open_runtime_started(
+                self,
+                reason="scheduler_market_open",
+            )
+            # Startup balance sync 실패 시 장중 재시도 (30초 tick마다 확인, 3분 간격 제한)
+            if self._broker_sync_block_new_entries and is_market_open(now):
+                last_retry = getattr(self, "_broker_sync_retry_at", None)
+                if last_retry is None or (now - last_retry).total_seconds() >= 180:
+                    self._broker_sync_retry_at = now
+                    log_manager.system(
+                        f"[BrokerSync] startup sync 미검증 상태 — 장중 재시도 "
+                        f"(reason={self._broker_sync_last_error})",
+                        "WARNING",
+                    )
+                    _ts_sync_position_from_broker(self)
 
     def _log_waiting_status(self, now: datetime.datetime) -> None:
         """현재 대기 이유를 로그 + 대시보드에 표시."""

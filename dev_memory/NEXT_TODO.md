@@ -137,13 +137,24 @@
 
 ### 다음 할 일 (우선순위 순)
 
+- [DONE 2026-05-15] **`CpTd0723` / `FutureMst` 30초 timeout 근본 원인 분리 + 수정**
+  - 원인 확정: 백그라운드 스레드에서 BlockRequest 실행 + 메인 스레드 done.wait() 완전 차단 → 메시지 펌프 없음 → 데드락
+  - 수정: `_run_block_request`에 `done.wait(0.01)` + `PumpWaitingMessages()` 루프 적용 (`api_connector.py`)
+
+- [DONE 2026-05-15] **미니선물 만기 롤오버 미처리 → 틱 0건 수정**
+  - 원인 확정: UI에 저장된 A0565(2026-05-14 만기)를 검증 없이 그대로 구독
+  - 수정: `_resolve_trade_code` 항상 근월물 프로브, `get_nearest_mini_futures_code`에 `price>0` 조건 skip 추가
+
+- [NEXT 2026-05-15] **38차 수정 사항 다음 기동 실검증**
+  - `[MiniProbe] 근월물 확정 code=A0566` 로그 확인 (만기 skip → 6월물 확정)
+  - `[CodeRoll] UI=A0565 → 근월물=A0566` 롤오버 경고 로그 확인
+  - `[BrokerSync] status verified=True block_new_entries=False` 확인 (타임아웃 없이 sync 완료)
+  - `[CybosRT-START] snapshot end code=A0566 price=XXX.XX` 가격 정상 수신 확인
+  - `[CybosRT-TICK] #1 code=A0566` 분봉 데이터 수신 확인
+
 - [NEXT 2026-05-15] **장외 launcher 재실행으로 access violation 재현 여부 확인**
   - 기대 로그: `[DBG CK-5] RealtimeData.start() skipped (market closed)`
   - 실패 기준: `-1073741819` 재발생 또는 Qt loop 진입 직후 비정상 종료
-
-- [NEXT 2026-05-15] **`CpTd0723` / `FutureMst` 30초 timeout 근본 원인 분리**
-  - 장중/장외/프리마켓별로 timeout 발생 조건 비교
-  - `api_connector.py`에서 timeout 시점의 서버 상태/시장상태 추가 로깅 검토
 
 - [NEXT 2026-05-15] **`QTableWidget` stylesheet parse warning 잔존 여부 확인**
   - 같은 경고가 계속 나면 balance table 외 다른 `QTableWidget` stylesheet 후보를 순차 비활성화해 원인 테이블 특정

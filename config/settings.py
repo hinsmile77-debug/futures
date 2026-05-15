@@ -162,6 +162,33 @@ CB_HIGH_CONF_WRONG_LIMIT   = 5    # 연속 과신 오류 횟수
 CB_HIGH_CONF_THRESHOLD     = 0.85 # 과신 판정 confidence 하한
 CB_ACCURACY_MIN_30M_STRICT = 0.50 # 과신 연속 시 강화된 임계값
 
+# ── Runtime Health / Degraded Mode (Day10-2 / Day11) ─────────────────
+# 운영 중 실시간 튜닝 가능한 헬스 임계값
+HEALTH_LATENCY_WARN_MS = 2500.0
+HEALTH_LATENCY_CRIT_MS = 5000.0
+HEALTH_QUALITY_WARN = 0.70
+HEALTH_QUALITY_CRIT = 0.55
+HEALTH_CACHE_AGE_WARN_SEC = 180.0
+HEALTH_CACHE_AGE_CRIT_SEC = 300.0
+HEALTH_EXCEPTION_DENSITY_WARN_10M = 6.0
+HEALTH_EXCEPTION_DENSITY_CRIT_10M = 12.0
+
+# 헬스 탭 미니 스파크라인 표기 범위 (최근 N분)
+HEALTH_TREND_WINDOW_MIN = 30
+
+# 자동 Degraded Mode 정책
+HEALTH_DEGRADED_ENABLED = True
+HEALTH_DEGRADED_ENTER_STREAK = 2   # WARNING/CRITICAL 연속 N분 시 진입
+HEALTH_DEGRADED_EXIT_STREAK = 3    # INFO 연속 N분 시 해제
+HEALTH_DEGRADED_SIZE_MULT = 0.60   # Degraded 상태에서 수량 축소 배수
+HEALTH_DEGRADED_MIN_CONF = 0.62    # Degraded 상태 최소 진입 신뢰도
+HEALTH_DEGRADED_BLOCK_AUTO_ENTRY = True    # 자동진입 최소신뢰도 미달 시 차단
+HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY = False # 수동진입 최소신뢰도 미달 시 차단 여부
+
+# 설정 핫리로드 (재시작 없이 운영 튜닝 반영)
+HEALTH_POLICY_HOT_RELOAD_ENABLED = True
+HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC = 5
+
 # ── Hurst Exponent ─────────────────────────────────────────────
 HURST_TREND_THRESHOLD  = 0.55  # 이상: 추세장
 HURST_RANGE_THRESHOLD  = 0.45  # 이하: 횡보장 (진입 차단)

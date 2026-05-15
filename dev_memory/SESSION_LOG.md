@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-05-15 (38차 — 장중 점검: BlockRequest 데드락 수정 + 선물 롤오버 처리)
+
+**Work**: 09:18 기동 로그에서 두 가지 치명 버그를 확인하고 수정했다.  
+① `_run_block_request` COM STA 데드락으로 CpTd0723/FutureMst가 항상 30초 타임아웃 → block_new_entries=True 고착  
+② A0565(5월물, 2026-05-14 만기)를 그대로 구독 → 틱 데이터 0건, 파이프라인 미동작
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| FIX-1: BlockRequest 메시지 펌핑 루프 | `collection/cybos/api_connector.py` | `done.wait(30)` → `done.wait(0.01)` + `PumpWaitingMessages()` 루프로 교체 |
+| FIX-2: `get_nearest_mini_futures_code` 재작성 | `collection/cybos/api_connector.py` | 직접 BlockRequest → `_run_block_request` 사용, `price > 0` 조건으로 만기 코드 자동 skip |
+| FIX-3: `_resolve_trade_code` 항상 근월물 프로브 | `strategy/runtime/broker_runtime_service.py` | UI 저장값 무관하게 항상 프로브, 롤오버 시 `[CodeRoll]` 경고 로그 |
+| FIX-4: `_scheduler_tick` broker sync 재시도 | `main.py` | startup sync 실패 시 3분 간격 장중 자동 재시도 |
+| 감사문서 업데이트 | `dev_memory/audit/GPT-5_3-Codex_260515_poject_Audit.md` | 09:18 장중 점검 섹션 추가 (BUG-1/2, FIX-1~4, DoD 체크) |
+
+### 버그 핵심 원인
+
+**BUG-1 — BlockRequest 데드락**:  
+`_run_block_request`가 백그라운드 스레드에서 BlockRequest를 실행하면서 메인 스레드는 `done.wait(30)`으로 완전 차단한다. Cybos의 BlockRequest는 호출 스레드의 Windows 메시지 큐로 응답을 보내는데, 백그라운드 스레드에는 메시지 펌프가 없고 메인 스레드도 막혀 있어 영구 데드락 → 30초 타임아웃.  
+`_probe_investor_tr()`가 메인 스레드 직접 호출로 정상 동작하는 것이 비교 근거.
+
+**BUG-2 — 만기 코드 구독**:  
+2026-05-14(2차 목요일)에 A0565 만기. 다음날(2026-05-15) 기동 시 UI에 저장된 A0565가 그대로 사용된다. `_resolve_trade_code`는 `ui_code`가 비어 있지 않으면 `get_nearest_mini_futures_code()`를 호출하지 않아 만기 코드를 검증하지 않는다. Cybos는 만기 코드에 tick을 전송하지 않아 데이터 0건.
+
+### 현재 상태
+
+- BlockRequest 데드락 수정됨 — 다음 기동에서 CpTd0723/FutureMst가 ~1초 내 완료 예상
+- 롤오버 처리 수정됨 — A0565 skip → A0566 자동 선택
+- broker sync 재시도 추가됨 — startup 실패 시 3분 후 자동 재시도
+
+### 세션 마감 메모
+
+- 다음 기동 시 `[MiniProbe] 근월물 확정 code=A0566`, `[BrokerSync] verified=True`, `[CybosRT-TICK] #1` 세 로그를 순서대로 확인해야 함
+- 개선 사항이 실제로 동작하는지 장중 첫 기동에서 검증 필요
+
+---
+
 ## 2026-05-15 (37차 — 운영 헬스 중앙 패널 추가)
 
 **Work**: `dashboard/main_dashboard.py`의 중앙 패널(mid_tabs)에 `⚕️ 운영 헬스` 탭을 실제 추가했다. 기존에는 하단 로그 패널의 6번 탭에만 있던 헬스 뷰를 운영자가 중앙 영역에서도 바로 볼 수 있게 옮겼다.
