@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-05-16 (42차) — Cybos 잔고 Chejan 버그 수정 4종 후속
+
+### 한일 요약
+
+- [DONE 2026-05-16] **버그 근본 원인 분석** — 잔고 Chejan → EXIT pending 파괴 → 외부체결 → MANUAL 포지션 → CB② 발동 체인 해명
+- [DONE 2026-05-16] **Fix 1: EXIT pending 보호** — main.py `_ts_sync_from_balance_payload`
+- [DONE 2026-05-16] **Fix 2: TP 플래그 보존** — position_tracker.py `sync_from_broker` 동방향 조건
+- [DONE 2026-05-16] **Fix 3: grade 보존** — position_tracker.py `sync_from_broker` 동방향 조건
+- [DONE 2026-05-16] **Fix 4: EmergencyExit pending 선등록** — emergency_exit.py + main.py
+- [DONE 2026-05-16] **복원 로그 가격 포맷 수정** — session_recovery_service.py `:.2f` 3곳
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-19] **42차 Fix 1~4 모의투자 실검증**
+  - 진입 후 잔고 Chejan 처리 로그 확인:
+    - `[BrokerSync] 잔고 Chejan — EXIT pending 진행 중, pending 유지` 메시지 (Fix 1)
+    - grade가 BROKER로 덮어써지지 않고 원래 등급(A/B/C) 유지 (Fix 3)
+    - TP1 체결 후 `외부체결(HTS/수동)` 미발생 (Fix 1·2 통합)
+  - CB④(ATR 3배) 또는 CB②(손절 3연속) 발동 시:
+    - 슬랙 알림 수신 후 `[EmergencyExit] pending 등록` 로그 확인 (Fix 4)
+    - 비상청산 체결이 `외부체결` 아닌 `비상청산` 사유로 기록되는지 확인
+  - 복원 로그: `@ 1239.36` 형식 (소수점 2자리) 표시 확인
+
+- [NEXT 2026-05-19] **Fix 1 엣지케이스 검증**
+  - 잔고 Chejan이 `EXIT_PARTIAL` pending 도중 2회 이상 연속 도착하는 경우
+  - pending `order_no` 없는 상태에서 잔고 Chejan 도착 시 pending 유지 여부
+
+---
+
 ## 2026-05-16 (41차) — CB③ + HORIZON_THRESHOLDS 재보정 후속
 
 ### 한일 요약

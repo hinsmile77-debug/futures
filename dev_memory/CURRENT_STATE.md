@@ -1,7 +1,54 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-16 (41차) — **CB③ 분석 + HORIZON_THRESHOLDS 재보정 + 모니터링·툴팁 강화**
+> 마지막 업데이트: 2026-05-16 (42차) — **Cybos 잔고 Chejan 버그 근본 원인 분석 + 4종 수정**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-16 (42차) — Cybos 잔고 Chejan 버그 수정 4종
+
+### 발견된 버그 근본 원인
+
+```
+[발동 체인]
+진입 → 잔고 Chejan(gubun=1) 도착
+  → sync_from_broker(grade="BROKER") — grade·TP 플래그 덮어씀 [B102, B103]
+  → _clear_pending_order() — EXIT pending 파괴 [B101]
+  → TP1 체결 Chejan → pending=None → _ts_handle_external_fill
+  → remaining_fill > 0 → 반대 방향 MANUAL 포지션 생성
+  → 즉시 하드스탑 → record_stop_loss() → CB② 발동 [B100 연관]
+  → EmergencyExit.execute() → pending 미등록 → 3건 외부체결 [B104]
+```
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| Fix 1: EXIT pending 보호 (`_ts_sync_from_balance_payload`) | **완료** — main.py |
+| Fix 2: TP 플래그 보존 (`sync_from_broker`) | **완료** — position_tracker.py |
+| Fix 3: grade 보존 (`sync_from_broker`) | **완료** — position_tracker.py |
+| Fix 4: EmergencyExit pending 선등록 | **완료** — emergency_exit.py + main.py |
+| 가격 포맷 버그 (`session_recovery_service.py`) | **완료** — `{entry_p:.2f}` / `{exit_p:.2f}` |
+| 4종 수정 모의투자 실검증 | **미완료** — 다음 장(2026-05-19) 확인 필요 |
+
+### 수정 파일 (42차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | `_ts_sync_from_balance_payload`: EXIT pending 진행 중이면 `_clear_pending_order()` 생략 |
+| `main.py` | `EmergencyExit` 초기화: `pending_registrar=self._set_pending_order` 전달 |
+| `strategy/position/position_tracker.py` | `sync_from_broker`: 동방향 sync 시 TP 플래그 보존 + grade 보존 |
+| `safety/emergency_exit.py` | `pending_registrar` 파라미터 추가 + 발주 전 EXIT_FULL pending 등록 |
+| `strategy/runtime/session_recovery_service.py` | 복원 로그 가격 포맷 `{entry_p:.2f}` / `{exit_p:.2f}` 3곳 |
+
+### Fix별 동작 요약
+
+| Fix | 문제 | 해결 |
+|---|---|---|
+| Fix 1 | 잔고 Chejan이 EXIT pending을 즉시 파괴 | EXIT 계열 pending이면 clear 생략, 로그만 남김 |
+| Fix 2 | 동방향 sync가 TP1/2/3_done 플래그 초기화 | `same_side_sync`이면 TP 플래그 유지 |
+| Fix 3 | 동방향 sync가 grade=A를 BROKER로 덮어씀 | `same_side_sync`이면 기존 grade 보존 |
+| Fix 4 | EmergencyExit 발주 전 pending 미등록 → 비상청산 체결이 외부체결로 분류 | 발주 전 `EXIT_FULL` pending 등록 |
 
 ---
 

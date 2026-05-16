@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-05-16 (42차 — Cybos 잔고 Chejan 버그 근본 원인 분석 + 4종 수정)
+
+**Work**: 실거래 로그에서 발견된 `등급=BROKER` / `외부체결(HTS/수동)` 패턴과 5/15 11:54 CB④ 발동의 인과 관계를 코드 수준에서 완전히 추적해 4가지 버그를 수정했다.
+
+### 발견된 버그 요약
+
+| 버그 | 파일 | 증상 |
+|---|---|---|
+| 잔고 Chejan이 EXIT pending 소멸 | `main.py` `_ts_sync_from_balance_payload` | 자동매매 청산이 외부체결로 오분류 |
+| `sync_from_broker` TP 플래그 초기화 | `position_tracker.py` `sync_from_broker` | TP1 중복 발동 → 실주문 반복 전송 |
+| `sync_from_broker` grade 덮어쓰기 | `position_tracker.py` `sync_from_broker` | 신호 등급 A→BROKER 오염 |
+| `EmergencyExit` pending 미등록 | `emergency_exit.py` `execute()` | CB 비상청산 체결이 항상 외부체결로 기록 |
+
+### 인과 사슬 (5/15 실거래)
+
+```
+잔고 Chejan → EXIT pending 소멸 → TP1 체결 Chejan 미매칭
+→ 외부체결 오분류 → remaining_fill > 0 역방향 재진입
+→ 하락장에서 역방향 포지션 즉시 손절 → record_stop_loss()
+→ CB② 또는 CB④(ATR 급등) 발동 → emergency_exit()
+→ pending 미등록 상태로 비상청산 주문 → 외부체결(HTS/수동) 기록
+```
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| Fix 1: EXIT pending 중 잔고 Chejan 소멸 방지 | `main.py` | `_ts_sync_from_balance_payload` — EXIT pending 진행 중이면 `_clear_pending_order` 건너뜀 |
+| Fix 2: 동방향 sync 시 TP 플래그 보존 | `position_tracker.py` | `sync_from_broker` — `same_side_sync` 일 때 `partial_1/2/3_done` 리셋 안 함 |
+| Fix 3: 동방향 sync 시 기존 grade 보존 | `position_tracker.py` | `sync_from_broker` — `same_side_sync` + grade가 BROKER가 아닌 경우 기존 grade 유지 |
+| Fix 4: EmergencyExit pending 선등록 | `emergency_exit.py` + `main.py` | `pending_registrar` 콜백 추가, 비상청산 주문 전 `EXIT_FULL` pending 등록 |
+
+### CB④ 발동 후 표시 변화
+
+```
+# 개선 전
+[10:46] 진입 SHORT 1계약 @ 1228.3355555533333 등급=BROKER  (×3)
+[11:55] 청산 SHORT 1계약 @ 1205.74 (외부체결(HTS/수동))   (×3)
+
+# 개선 후
+[10:46] 진입 SHORT 3계약 @ 1228.34 등급=A
+[11:54] 청산 SHORT 3계약 @ 1205.77 (CB④ 비상청산) +22.57pt
+```
+
+---
+
 ## 2026-05-16 (41차 — CB③ 분석 + HORIZON_THRESHOLDS 재보정 + 모니터링·툴팁 강화)
 
 **Work**: 5/15 CB③(30분 정확도 미달 2회 연속) 발동 원인을 근본적으로 분석하고, HORIZON_THRESHOLDS를 KOSPI200 1200pt 시장 현실에 맞게 재보정했다. 30분 주기 threshold 모니터링을 main.py에 추가하고, 대시보드 CB 배지·파라미터 중요도·멀티 호라이즌 라벨에 상세 툴팁을 붙였다.

@@ -2,6 +2,44 @@
 
 ---
 
+## 2026-05-16 (42차 — Cybos 잔고 Chejan 버그 근본 원인 분석 + 4종 수정)
+
+### [B101] 잔고 Chejan(gubun=1)이 EXIT pending을 파괴하는 버그
+**File**: `main.py` — `_ts_sync_from_balance_payload`  
+**Symptom**: TP1 체결 후 `외부체결(HTS/수동)` 로그 발생. grade=BROKER 직후 외부체결 청산 패턴. 실제로 수동 매매를 하지 않았음에도 `reason="외부체결(HTS/수동)"` 기록.  
+**Root cause**: gubun=1(잔고결과) Chejan이 도착하면 `_ts_sync_from_balance_payload`가 무조건 `_clear_pending_order()`를 호출. EXIT_PARTIAL pending이 살아있는 도중 잔고 Chejan이 오면 pending이 삭제됨. 이후 체결(gubun=0) Chejan이 도착하면 pending=None → `_ts_handle_external_fill` 경로 → 외부체결 처리.  
+**Fix**: `_pending_order.kind`가 `"EXIT"` 계열이면 `_clear_pending_order()` 생략, `[BrokerSync] EXIT pending 진행 중, pending 유지` 로그만 남김.
+
+### [B102] 동방향 잔고 sync가 TP 완료 플래그를 초기화하는 버그
+**File**: `strategy/position/position_tracker.py` — `sync_from_broker`  
+**Symptom**: TP1이 이미 실행된 포지션에서 잔고 Chejan 도착 후 TP1이 재발동.  
+**Root cause**: `sync_from_broker`가 `partial_1_done = partial_2_done = partial_3_done = False`를 무조건 실행. 동방향(같은 방향) sync임에도 TP 완료 플래그를 초기화해 TP가 재발동됨.  
+**Fix**: `same_side_sync = (prev_status == direction)` 조건으로 동방향 sync이면 TP 플래그 초기화 생략.
+
+### [B103] 동방향 잔고 sync가 grade를 BROKER로 덮어쓰는 버그
+**File**: `strategy/position/position_tracker.py` — `sync_from_broker`  
+**Symptom**: grade=A 진입 직후 잔고 Chejan 도착 → grade=BROKER. 세션 복원 로그에 `등급=BROKER` 표시.  
+**Root cause**: `sync_from_broker(grade="BROKER")` 호출 시 `self.grade = grade`가 무조건 BROKER로 덮어씀. 자동매매 시스템 내부 체결이 BROKER 등급으로 기록되어 추적성 저하.  
+**Fix**: `same_side_sync`이면 `grade`가 BROKER이거나 비어있을 때만 새 grade 적용; 기존 A/B/C 등급은 보존.
+
+### [B104] EmergencyExit 발주 전 pending 미등록으로 비상청산 체결이 외부체결로 분류되는 버그
+**File**: `safety/emergency_exit.py`  
+**Symptom**: CB 발동 후 슬랙 알림에는 "비상청산" 표시되지만 DB/로그에는 `reason="외부체결(HTS/수동)"` 기록. 복수 계약 청산 시 외부체결 3건 발생.  
+**Root cause**: `emergency_exit.execute()`가 시장가 주문을 발송하기 전에 `_pending_order`를 등록하지 않음. 체결 Chejan이 도착하면 pending=None → `_ts_handle_external_fill` 경로.  
+**Fix**: `EmergencyExit.__init__`에 `pending_registrar: Optional[Callable]` 파라미터 추가. 발주 전 `pending_registrar(kind="EXIT_FULL", ...)` 호출로 pending 선등록. `main.py` 초기화 시 `pending_registrar=self._set_pending_order` 전달.
+
+### [D95] Cybos gubun=0(체결사실)과 gubun=1(잔고결과)의 처리 원칙을 분리한다
+**Decision**: gubun=0 Chejan은 pending 매칭 + 체결 처리 전담. gubun=1 Chejan은 잔고 현황 동기화 전담. gubun=1에서 pending 상태를 변경하는 행위(`_clear_pending_order()`)는 최소화하며, EXIT 계열 pending이 살아있는 동안은 gubun=1이 pending을 건드리지 않는다.  
+**Why**: gubun=0과 gubun=1은 같은 체결에 대해 순서 불확정으로 도착한다. gubun=1이 먼저 도착해 pending을 삭제하면 gubun=0이 pending을 찾지 못해 외부체결로 분류된다. 이 체인이 MANUAL 포지션 생성 → CB 발동 → 추가 외부체결로 이어진다.  
+**How to apply**: `_ts_sync_from_balance_payload`: `kind.startswith("EXIT")` 조건으로 생략 여부 판단. 잔고 동기화(sync_from_broker)는 그대로 실행; pending clear만 생략.
+
+### [D96] EmergencyExit는 발주 전 반드시 pending을 등록한다
+**Decision**: `EmergencyExit.execute()`가 시장가 주문을 발송하기 전에 `pending_registrar` 콜백으로 `EXIT_FULL` pending을 등록한다. pending_registrar가 없는 경우(테스트 등)는 warning 로그만 남기고 계속 진행한다.  
+**Why**: CB/KillSwitch 경로는 평상시 체결 경로와 다르게 main.py의 pending 등록 코드를 거치지 않는다. 등록 없이 발주하면 모든 비상청산 체결이 외부체결로 분류된다. 비상청산의 사유 기록(DB)과 CB 발동 슬랙 이력 일관성을 위해 pending 등록이 필수.  
+**How to apply**: `emergency_exit.py` `__init__`에 `pending_registrar` 파라미터 추가. `main.py`에서 `EmergencyExit(pending_registrar=self._set_pending_order)` 전달. `set_pending_registrar()` setter도 추가해 사후 주입 가능.
+
+---
+
 ## 2026-05-16 (41차 — CB③ 분석 + HORIZON_THRESHOLDS 재보정 + 모니터링·툴팁)
 
 ### [D92] HORIZON_THRESHOLDS는 KOSPI200 실제 변동성(1200pt 기준)에 맞춰 재보정한다

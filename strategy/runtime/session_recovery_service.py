@@ -76,11 +76,11 @@ class SessionRecoveryService:
                 cumulative_pnl_krw += pnl_krw
                 cumulative_forward_pnl_krw += forward_pnl_krw
                 system.dashboard.append_restore_trade(
-                    msg=f"진입 {direction} {qty}계약 @ {entry_p}  등급={grade}",
+                    msg=f"진입 {direction} {qty}계약 @ {entry_p:.2f}  등급={grade}",
                     ts=entry_ts[11:] if len(entry_ts) > 11 else entry_ts,
                 )
                 system.dashboard.append_restore_trade(
-                    msg=f"청산 {direction} {qty}계약 @ {exit_p}  ({reason})",
+                    msg=f"청산 {direction} {qty}계약 @ {exit_p:.2f}  ({reason})",
                     ts=exit_ts[11:] if len(exit_ts) > 11 else exit_ts,
                     val=(
                         f"실행 {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원 | "
@@ -88,7 +88,7 @@ class SessionRecoveryService:
                     ),
                 )
                 system.dashboard.append_restore_pnl(
-                    msg=f"청산 | {direction} {qty}계약 @ {exit_p}  ({reason})",
+                    msg=f"청산 | {direction} {qty}계약 @ {exit_p:.2f}  ({reason})",
                     ts=exit_ts[11:] if len(exit_ts) > 11 else exit_ts,
                     val=(
                         f"실행 {pnl_pts:+.2f}pt  {pnl_krw:+,.0f}원 (누적 {cumulative_pnl_krw:+,.0f}원) | "
@@ -98,7 +98,7 @@ class SessionRecoveryService:
                 )
             else:
                 system.dashboard.append_restore_trade(
-                    msg=f"[미청산] 진입 {direction} {qty}계약 @ {entry_p}  등급={grade}",
+                    msg=f"[미청산] 진입 {direction} {qty}계약 @ {entry_p:.2f}  등급={grade}",
                     ts=entry_ts[11:] if len(entry_ts) > 11 else entry_ts,
                 )
 
