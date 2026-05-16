@@ -3337,9 +3337,11 @@ class TradingSystem:
             "server_label": {
                 "supported": True,
                 "verified": True,
-                "value": "Cybos 실서버"
-                if getattr(self.broker, "name", "") == "cybos"
-                else ("모의투자" if self.broker.get_login_info("GetServerGubun") == "1" else "실서버"),
+                "value": (
+                    ("Cybos 모의투자" if self.broker.get_login_info("GetServerGubun") == "1" else "Cybos 실서버")
+                    if getattr(self.broker, "name", "") == "cybos"
+                    else ("모의투자" if self.broker.get_login_info("GetServerGubun") == "1" else "실서버")
+                ),
             },
         }
 
@@ -3387,11 +3389,12 @@ class TradingSystem:
         # 기동 완료 슬랙 알림
         _startup_code = getattr(self, "_futures_code", "?")
         _bn = getattr(self.broker, "name", "")
+        _srv = self.broker.get_login_info("GetServerGubun")
+        _is_simul = (_srv == "1")
         if _bn == "cybos":
-            _startup_srv = "Cybos 실서버"
+            _startup_srv = "Cybos 모의투자" if _is_simul else "Cybos 실서버"
         else:
-            _srv = self.broker.get_login_info("GetServerGubun")
-            _startup_srv = "모의투자" if _srv == "1" else "실서버"
+            _startup_srv = "모의투자" if _is_simul else "실서버"
         notify_startup(_startup_code, _startup_srv)
 
         self._pre_market_done   = False
@@ -3419,12 +3422,12 @@ class TradingSystem:
             )
         if self.realtime_data:
             _bn = getattr(self.broker, "name", "")
+            _srv2 = self.broker.get_login_info("GetServerGubun")
             if _bn == "cybos":
-                _srv_lbl = "Cybos 실서버"
+                _srv_lbl = "Cybos 모의투자" if _srv2 == "1" else "Cybos 실서버"
                 _rt_method = "FutureCurOnly/Subscribe"
             else:
-                _srv = self.broker.get_login_info("GetServerGubun")
-                _srv_lbl = "모의투자" if _srv == "1" else "실서버"
+                _srv_lbl = "모의투자" if _srv2 == "1" else "실서버"
                 _rt_method = "SetRealReg"
             self.dashboard.append_sys_log(
                 f"시스템 시작 | TR={self.realtime_data.code} [{_srv_lbl}] 분봉수집=실시간({_rt_method})"

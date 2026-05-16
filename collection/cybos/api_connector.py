@@ -359,10 +359,14 @@ class CybosAPI:
         if tag == "ACCOUNT_CNT":
             return str(len(self.get_account_list()))
         if tag == "GETSERVERGUBUN":
-            # main.py currently interprets "1" as Kiwoom mock server.
-            # Cybos does not share that contract, so we return a
-            # Kiwoom-compatible "real" value to avoid mock-only branches.
-            return "0" if self.is_connected else ""
+            # Cybos ServerType: 1=simulation, 2=real (same "1"=mock contract as Kiwoom)
+            if self._cp_cybos is None:
+                return ""
+            try:
+                server_type = int(self._cp_cybos.ServerType)
+                return "1" if server_type == 1 else "0"
+            except Exception:
+                return "0" if self.is_connected else ""
         return ""
 
     def get_account_list(self) -> List[str]:

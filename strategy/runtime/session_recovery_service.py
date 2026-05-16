@@ -134,3 +134,7 @@ class SessionRecoveryService:
             system.dashboard.update_trend(system._gather_trend_stats())
         except Exception as exc:
             logger.debug("[Restore] 추이 패널 선조회 실패: %s", exc)
+        try:
+            system._refresh_pnl_history()
+        except Exception as exc:
+            logger.debug("[Restore] 손익 추이 패널 선조회 실패: %s", exc)
