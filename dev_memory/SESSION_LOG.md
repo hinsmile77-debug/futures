@@ -2450,3 +2450,40 @@ if not self.model.is_ready():
 **남은 확인 포인트**
 - 실제 장중에서 same-side broker sync가 들어온 뒤에도 `stop_price`가 뒤로 물러나지 않는지 로그로 확인 필요
 - 외부진입 다계약 체결에서 `[BalanceRefresh] trigger=ExternalFill entry retries=250ms,1200ms` 후 UI 잔고가 브로커 수량과 일치하는지 재검증 필요
+
+## 2026-05-16 (41차 — Threshold 재보정 + Dashboard 개선 + B51 핫픽스)
+
+### 개요
+- 5월 초 고변동성 장세 기반으로 `HORIZON_THRESHOLDS` 재보정
+- Dashboard 개선: PnlHistoryPanel 소스 선택 체크박스, 툴팁 리치 HTML 전환
+- Threshold Monitor: GBM 재학습/30분 주기로 ATR 동적 vs Static 비교 모델 AI탭 기록
+- EmergencyExit pending_registrar 추가 → CB 비상청산 Chejan 외부체결 오분류 방지
+- BrokerSync / PositionTracker same-side 동기화 보강
+- [B51] DashboardAdapter.chk_slack 노출 누락 → exit code 1 크래시 핫픽스
+
+### 수정 내역
+
+| 파일 | 변경 |
+|---|---|
+| `config/settings.py` | `HORIZON_THRESHOLDS` 재보정 (1m 0.0002→0.0005, 전체 약 2.5배 상향) |
+| `dashboard/main_dashboard.py` | `_HZ_TIP` 신규, `_CB_TIP` ③슬랙 알림 내용 추가, `PredictionPanel` 툴팁 HTML 리치 포맷, `PnlHistoryPanel` 순방향/역방향 체크박스 + `_sel_val/_fmt_val/_fmt_single/_mdd_sel/_sharpe_sel/_on_source_changed` 추가, `DashboardAdapter.chk_slack` + `_save_ui_prefs` 위임 추가 |
+| `main.py` | `_threshold_monitor_tick` 카운터, `_log_threshold_monitor()` 메서드, GBM 재학습/30분 주기 threshold 기록, EmergencyExit `pending_registrar` 연결, `_ts_sync_from_balance_payload` EXIT pending 진행 중 pending 소멸 방지 |
+| `safety/emergency_exit.py` | `pending_registrar` 파라미터 추가, `set_pending_registrar()` 메서드 추가 |
+| `strategy/position/position_tracker.py` | same-side sync 시 grade 보존 (BROKER 덮어쓰기 방지), partial_done 플래그 보존 |
+
+### 버그 수정: B51 (치명)
+
+**증상**: `start_mireuk.bat` 실행 시 `[Capability]` 로그 직후 `exit code: 1`로 종료. `[System] Qt 이벤트 루프 진입` 미출력.
+
+**원인**: 40차 커밋에서 `MireukDashboard.chk_slack` QCheckBox를 추가하고 `main.py`의 `run()`에서 `self.dashboard.chk_slack.isChecked()` 호출 코드도 추가했으나, `DashboardAdapter.__init__`에 `self.chk_slack = self._win.chk_slack` 노출이 누락됨 → `AttributeError`.
+
+**Fix**: `DashboardAdapter.__init__`에 `self.chk_slack = self._win.chk_slack` + `_save_ui_prefs` 위임 메서드 추가 (`dashboard/main_dashboard.py` L7286, L7303).
+
+### 검증
+- `start_mireuk.bat` 재실행 → Cybos 연결 성공, `[System] Qt 이벤트 루프 진입`까지 진행 확인 (세션 종료 전 재기동 필요)
+- `py_compile` 문법 검증 필요
+
+### 남은 확인 포인트
+- Threshold 상향 후 장중 FLAT 비율 목표 달성 여부 (29~37%) 실제 로그 확인
+- PnlHistoryPanel 체크박스 (순방향/역방향 토글) 동작 확인
+- 비상청산 시 `pending_registrar` → Chejan 체결 매칭 로그 확인

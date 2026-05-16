@@ -1557,3 +1557,36 @@ hurst_idx = reg[0]
 **Fix**: `EfficacyPanel` 생성 시 `self._report_tabs.tabBar().setTabToolTip(...)` 로 직접 부착하도록 수정
 
 ---
+
+## 2026-05-16 결정 기록 (41차)
+
+### [D36] HORIZON_THRESHOLDS 재보정 — static threshold 약 2.5배 상향
+**결정**: 5월 초 고변동성 장세 기준으로 threshold를 전면 상향.
+**이유**: 이전 threshold(1m=0.0002)는 KOSPI200 선물 1200pt 기준 0.24pt(4.8틱)에 불과 — FLAT 비율이 낮고 잡음 방향 예측이 늘어나 승률을 왜곡함. 5월 초 일중 고저폭 ~96pt 기준 σ_1min≈1.47pt → 0.4~0.5σ 수준이 FLAT 비율 29~37% 달성에 적합한 것으로 판단.
+**구현**: `config/settings.py` `HORIZON_THRESHOLDS`
+**후속 검증**: 장중 30분 호라이즌 FLAT 비율이 목표 범위에 들어오는지 로그 확인 필요.
+
+### [D37] EmergencyExit에 pending_registrar 콜백 주입
+**결정**: CB/KillSwitch 발동 시 `_set_pending_order(kind="EXIT_FULL")` 선등록 후 시장가 청산 주문 전송.
+**이유**: 비상청산 주문은 `pending_order` 없이 전송되어 Chejan 체결이 "외부체결(HTS/수동)"로 오분류됨 → 포지션 상태 불일치 발생. pending을 선등록하면 Chejan이 EXIT pending으로 정상 매칭됨.
+**구현**: `safety/emergency_exit.py` + `main.py` (EmergencyExit 생성 시 `pending_registrar=self._set_pending_order` 전달)
+
+### [D38] BrokerSync 잔고 Chejan에서 EXIT pending 소멸 방지
+**결정**: `_ts_sync_from_balance_payload()`에서 잔고 Chejan 수신 시 EXIT pending이 진행 중이면 `_clear_pending_order()` 호출 생략.
+**이유**: 주문 Chejan과 잔고 Chejan이 순서 바뀌어 도착하는 경우, 잔고 Chejan이 먼저 처리되면 EXIT pending이 소멸되고 이후 주문 Chejan이 "외부체결"로 오분류됨.
+**구현**: `main.py` `_ts_sync_from_balance_payload`
+
+### [D39] PositionTracker same-side sync — grade 및 TP 플래그 보존
+**결정**: same-side broker sync 시 기존 grade(A/B/C)를 보존하고, 이미 실행된 partial_done 플래그를 보존.
+**이유**: ① 장중 잔고 Chejan이 들어올 때 grade가 "BROKER"로 덮어써지면 등급 기반 손익 분석이 오염됨. ② partial_done 플래그가 초기화되면 이미 실행한 분할청산이 다시 트리거될 수 있음.
+**구현**: `strategy/position/position_tracker.py` `sync_from_broker()`
+
+---
+
+### [B51] DashboardAdapter.chk_slack 노출 누락 → exit code 1 크래시 (2026-05-16 수정)
+**파일**: `dashboard/main_dashboard.py`
+**증상**: `start_mireuk.bat` 실행 후 `[Capability]` 로그 직후 `exit code: 1`으로 종료. `[System] Qt 이벤트 루프 진입` 미출력.
+**원인**: 40차 커밋(fb412b2)에서 `MireukDashboard.chk_slack` QCheckBox를 추가하고 `main.py`의 `run()`에서 `self.dashboard.chk_slack.isChecked()` 호출 코드를 추가했으나, `DashboardAdapter.__init__`에 `self.chk_slack = self._win.chk_slack` 노출이 누락됨. Python은 `DashboardAdapter`에서 `chk_slack`을 찾지 못하고 `AttributeError`를 발생시켜 event loop 진입 전에 종료됨.
+**진단 방법**: 로그에서 "[Capability]" 이후 "[System] Qt 이벤트 루프 진입"이 없으면 AttributeError.
+**Fix**: `DashboardAdapter.__init__`에 `self.chk_slack = self._win.chk_slack` 추가 (L7286) + `_save_ui_prefs()` 위임 메서드 추가 (L7303).
+**교훈**: `DashboardAdapter`에 새 `MireukDashboard` 속성을 노출할 때는 반드시 `DashboardAdapter.__init__`에도 동일하게 추가해야 함.

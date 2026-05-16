@@ -1909,3 +1909,53 @@ STEP4: get_features() → 캐시 읽기만 (TR 호출 없음)
 | **상태** | ✅ 정상 동작 확인 (2026-05-11) |
 
 ---
+
+---
+
+## 2026-05-16 업데이트 (41차)
+
+### Threshold 재보정
+
+| 항목 | 이전값 | 변경값 | 비고 |
+|---|---|---|---|
+| 1m threshold | 0.0002 (0.02%) | 0.0005 (0.05%) | 12틱 |
+| 3m threshold | 0.0003 (0.03%) | 0.0008 (0.08%) | 19틱 |
+| 5m threshold | 0.0004 (0.04%) | 0.0011 (0.11%) | 26틱 |
+| 10m threshold | 0.0006 (0.06%) | 0.0016 (0.16%) | 38틱 |
+| 15m threshold | 0.0008 (0.08%) | 0.0022 (0.22%) | 53틱 |
+| 30m threshold | 0.0012 (0.12%) | 0.0032 (0.32%) | 77틱 |
+
+근거: 5월 초 일중 고저폭 ~96pt 기준 σ_1min≈1.47pt → 각 threshold ≈ 0.4~0.5σ (FLAT 비율 29~37% 목표)
+
+### Dashboard 상태
+
+| 항목 | 현재 상태 |
+|---|---|
+| PnlHistoryPanel 체크박스 | 순방향/역방향 토글 체크박스 추가 (탭바 우측 코너) |
+| PredictionPanel 툴팁 | HTML 리치 포맷 전환 (SHAP 윈도우 테이블, HZ 설명 전체 재작성) |
+| CB 툴팁 | 슬랙 알림 내용 ③항목 추가 |
+| `DashboardAdapter.chk_slack` | ✅ 노출 수정 완료 (B51 핫픽스) |
+
+### Threshold Monitor
+
+- `_log_threshold_monitor()` 추가 — GBM 재학습 완료 시 + 30분 주기로 ATR 동적 threshold vs Static 비교 기록
+- 모델 AI탭에 `✅ 안정` / `⚠ 초과` 판정 자동 기록
+
+### EmergencyExit pending_registrar
+
+- CB/KillSwitch 비상청산 주문 시 `pending_registrar` 콜백으로 `EXIT_FULL` pending 선등록
+- Chejan 체결이 "외부체결(HTS/수동)"로 오분류되지 않도록 방지
+
+### PositionTracker same-side sync 보강
+
+- same-side broker sync 시 기존 신호 등급(A/B/C) 보존 — BROKER로 덮어쓰기 방지
+- 이미 실행된 TP 플래그(partial_1/2/3_done) 보존 — Chejan이 와도 재발동 방지
+
+### 현재 기동 상태
+
+| 항목 | 상태 |
+|---|---|
+| 자동 로그인 | ✅ 정상 (`start_mireuk.bat`) |
+| Cybos 연결 | ✅ 성공 (ServerType=1 모의투자) |
+| B51 크래시 | ✅ 수정 완료 |
+| Qt 이벤트 루프 | 재기동 후 확인 필요 |

@@ -1,50 +1,50 @@
 # Microstructure A/B Backtest
 
-- Generated at: 2026-05-14 14:10:03
+- Generated at: 2026-05-15 15:09:04
 - Eval horizon: 5m
-- Samples: 2260
+- Samples: 2554
 
 ## Baseline
 
-- Entries: 2005 (88.72%)
-- Directional accuracy: 44.04%
-- Win rate: 51.42%
-- Avg PnL: -0.0169 pt
-- Total PnL: -33.9500 pt
+- Entries: 2309 (90.41%)
+- Directional accuracy: 45.47%
+- Win rate: 52.36%
+- Avg PnL: 0.0962 pt
+- Total PnL: 222.1400 pt
 
 ## Enhanced
 
-- Entries: 1977 (87.48%)
-- Directional accuracy: 44.21%
-- Win rate: 51.59%
-- Avg PnL: -0.0036 pt
-- Total PnL: -7.1900 pt
-- Changed vs baseline: 984
-- Flat conversions: 28
-- Gater blocks: 42
+- Entries: 2283 (89.39%)
+- Directional accuracy: 45.42%
+- Win rate: 52.39%
+- Avg PnL: 0.0912 pt
+- Total PnL: 208.3200 pt
+- Changed vs baseline: 1314
+- Flat conversions: 29
+- Gater blocks: 36
 
 ## Delta
 
-- Entries delta: -28
-- Accuracy delta: +0.0017
-- Win rate delta: +0.0017
-- Avg PnL delta: +0.0133 pt
-- Total PnL delta: +26.7600 pt
+- Entries delta: -26
+- Accuracy delta: -0.0005
+- Win rate delta: +0.0003
+- Avg PnL delta: -0.0050 pt
+- Total PnL delta: -13.8200 pt
 
 ## Sample Changes
 
-- 2026-05-08 13:34:00: base=1(42.50%) -> enhanced=1(42.72%) actual=-1 pnl=-2.5000 gate=soft_adjust strength=0.0539
-- 2026-05-08 13:35:00: base=-1(85.00%) -> enhanced=-1(85.15%) actual=-1 pnl=2.6000 gate=soft_adjust strength=0.0553
-- 2026-05-08 13:36:00: base=-1(53.75%) -> enhanced=-1(53.82%) actual=-1 pnl=2.3500 gate=soft_adjust strength=0.0170
-- 2026-05-08 13:37:00: base=1(45.00%) -> enhanced=1(45.15%) actual=-1 pnl=-1.5000 gate=soft_adjust strength=0.0378
-- 2026-05-08 13:38:00: base=-1(90.00%) -> enhanced=-1(79.47%) actual=-1 pnl=2.1500 gate=blocked_by_microstructure strength=-0.2825
-- 2026-05-08 13:40:00: base=-1(89.27%) -> enhanced=-1(89.21%) actual=0 pnl=0.4500 gate=soft_adjust strength=-0.0145
-- 2026-05-08 13:41:00: base=-1(88.75%) -> enhanced=-1(88.33%) actual=0 pnl=-0.1000 gate=soft_adjust strength=-0.1042
-- 2026-05-08 13:43:00: base=-1(89.27%) -> enhanced=-1(89.57%) actual=1 pnl=-1.4500 gate=soft_adjust strength=0.0749
-- 2026-05-08 13:44:00: base=-1(53.75%) -> enhanced=-1(53.41%) actual=1 pnl=-2.9500 gate=soft_adjust strength=-0.0861
-- 2026-05-08 13:45:00: base=-1(65.00%) -> enhanced=-1(65.65%) actual=1 pnl=-2.2000 gate=soft_adjust strength=0.1624
-- 2026-05-08 13:46:00: base=-1(45.00%) -> enhanced=-1(44.70%) actual=1 pnl=-3.8500 gate=soft_adjust strength=-0.0741
-- 2026-05-08 13:47:00: base=-1(75.00%) -> enhanced=-1(75.05%) actual=1 pnl=-4.5500 gate=soft_adjust strength=0.0131
-- 2026-05-08 13:48:00: base=1(55.00%) -> enhanced=1(55.50%) actual=1 pnl=3.7000 gate=soft_adjust strength=0.1262
-- 2026-05-08 13:49:00: base=1(50.00%) -> enhanced=1(50.31%) actual=1 pnl=2.3000 gate=soft_adjust strength=0.0771
-- 2026-05-08 13:50:00: base=1(43.33%) -> enhanced=1(43.07%) actual=1 pnl=2.4000 gate=soft_adjust strength=-0.0657
+- 2026-05-04 13:56:00: base=0(66.47%) -> enhanced=0(70.28%) actual=-1 pnl=0.0000 gate=inactive strength=0.0000
+- 2026-05-04 14:11:00: base=1(61.58%) -> enhanced=1(62.90%) actual=1 pnl=0.6500 gate=neutral_noop strength=0.0000
+- 2026-05-04 14:26:00: base=-1(42.13%) -> enhanced=-1(41.20%) actual=0 pnl=-0.1500 gate=neutral_noop strength=0.0000
+- 2026-05-04 14:41:00: base=0(70.43%) -> enhanced=0(69.31%) actual=0 pnl=0.0000 gate=inactive strength=0.0000
+- 2026-05-04 14:56:00: base=0(83.03%) -> enhanced=0(82.86%) actual=0 pnl=0.0000 gate=inactive strength=0.0000
+- 2026-05-06 09:49:00: base=-1(38.79%) -> enhanced=-1(38.72%) actual=1 pnl=-2.6500 gate=neutral_noop strength=0.0000
+- 2026-05-06 10:45:00: base=-1(33.34%) -> enhanced=0(33.34%) actual=1 pnl=0.0000 gate=inactive strength=0.0000
+- 2026-05-06 11:00:00: base=1(43.64%) -> enhanced=1(45.10%) actual=0 pnl=-0.0500 gate=neutral_noop strength=0.0000
+- 2026-05-06 11:15:00: base=1(50.12%) -> enhanced=1(49.78%) actual=1 pnl=1.4500 gate=neutral_noop strength=0.0000
+- 2026-05-06 11:30:00: base=-1(42.19%) -> enhanced=-1(41.35%) actual=1 pnl=-2.3500 gate=neutral_noop strength=0.0000
+- 2026-05-06 11:46:00: base=0(61.47%) -> enhanced=0(60.06%) actual=1 pnl=0.0000 gate=inactive strength=0.0000
+- 2026-05-06 12:09:00: base=1(52.45%) -> enhanced=1(53.99%) actual=1 pnl=3.2000 gate=neutral_noop strength=0.0000
+- 2026-05-06 12:29:00: base=1(53.92%) -> enhanced=1(53.04%) actual=1 pnl=1.4500 gate=neutral_noop strength=0.0000
+- 2026-05-06 12:44:00: base=-1(70.45%) -> enhanced=-1(69.81%) actual=-1 pnl=5.4500 gate=neutral_noop strength=0.0000
+- 2026-05-06 12:59:00: base=1(41.84%) -> enhanced=1(41.68%) actual=1 pnl=2.8500 gate=neutral_noop strength=0.0000

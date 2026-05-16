@@ -544,8 +544,51 @@ _CB_TIP = (
     "</table>"
     "<br>"
 
+    # ── 슬랙 알림 내용 ───────────────────────────────────────────────
+    "<b style='color:#58A6FF'>③ 슬랙 알림 내용 (CB 발동 시)</b><br>"
+    "<div style='margin-left:10px;'>"
+    "<div style='background:#161B22;border:1px solid #30363D;border-radius:4px;"
+    "padding:6px 10px;margin:4px 0 8px 0;font-size:11px;color:#E6EDF3;line-height:1.7;'>"
+    "🚨 [HH:MM:SS] [미륵이] Circuit Breaker 발동!<br>"
+    "트리거: &lt;조건&gt;<br>"
+    "조치: &lt;조치&gt;"
+    "</div>"
+    "<table style='border-collapse:collapse;line-height:1.85;font-size:11px;'>"
+    "<tr style='color:#8B949E;'>"
+    "<td style='padding-right:6px;'>#</td>"
+    "<td style='padding-right:14px;'>트리거 텍스트</td>"
+    "<td>조치 텍스트</td>"
+    "</tr>"
+    "<tr>"
+    "<td style='color:#A371F7;font-weight:bold;padding-right:6px;'>①</td>"
+    "<td style='color:#E6EDF3;padding-right:14px;'>신호 반전 N회/분</td>"
+    "<td style='color:#D29922;'>15분 진입 정지</td>"
+    "</tr><tr>"
+    "<td style='color:#F85149;font-weight:bold;padding-right:6px;'>②</td>"
+    "<td style='color:#E6EDF3;padding-right:14px;'>연속 손절 3회 — 당일 정지</td>"
+    "<td style='color:#F85149;'>당일 시스템 정지</td>"
+    "</tr><tr>"
+    "<td style='color:#F85149;font-weight:bold;padding-right:6px;'>③</td>"
+    "<td style='color:#E6EDF3;padding-right:14px;'>30분 정확도 XX% &lt; 35% (2회 연속 미달)</td>"
+    "<td style='color:#F85149;'>당일 시스템 정지</td>"
+    "</tr><tr>"
+    "<td style='color:#D29922;font-weight:bold;padding-right:6px;'>④</td>"
+    "<td style='color:#E6EDF3;padding-right:14px;'>ATR X.X배 급등 (순간/지속)</td>"
+    "<td style='color:#D29922;'>5분 진입 정지</td>"
+    "</tr><tr>"
+    "<td style='color:#F85149;font-weight:bold;padding-right:6px;'>⑤</td>"
+    "<td style='color:#E6EDF3;padding-right:14px;'>API 지연 X.X초</td>"
+    "<td style='color:#F85149;'>전 포지션 즉시 청산</td>"
+    "</tr>"
+    "</table>"
+    "<div style='color:#8B949E;font-size:11px;margin-top:4px;'>"
+    "▸ CB③ 경고(1/2) 시에도 별도 슬랙 경고 메시지 발송"
+    "</div>"
+    "</div>"
+    "<br>"
+
     # ── 해제 방법 ─────────────────────────────────────────────────────
-    "<b style='color:#58A6FF'>③ 해제 방법 및 조건</b><br>"
+    "<b style='color:#58A6FF'>④ 해제 방법 및 조건</b><br>"
     "<table style='margin-left:10px;border-collapse:collapse;line-height:1.9;'>"
     "<tr>"
     "<td style='color:#D29922;font-weight:bold;padding-right:10px;'>PAUSED</td>"
@@ -563,6 +606,140 @@ _CB_TIP = (
     "<span style='color:#8B949E;font-size:11px;'>"
     "▸ 상태는 매분 [DBG-CB] 로그로 확인 가능 &nbsp;|&nbsp; "
     "당일 HALTED 상태에서 재시작하면 즉시 NORMAL 복귀"
+    "</span>"
+
+    "</div>"
+)
+
+_HZ_TIP = (
+    "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.75;min-width:520px;'>"
+
+    "<b style='color:#58A6FF;font-size:13px;'>🔭 멀티 호라이즌 예측 ( 1·3·5·10·15·30분 )</b>"
+    "<hr style='border:0;border-top:1px solid #30363D;margin:5px 0 7px 0'>"
+
+    # ── 호라이즌 의미 ─────────────────────────────────────────────
+    "<b style='color:#58A6FF'>① 호라이즌(Horizon)이란</b><br>"
+    "<div style='margin-left:10px;line-height:1.9;'>"
+    "• <b>지금 이 1분봉 시점에서 N분 뒤 가격 방향을 예측</b>한다는 뜻<br>"
+    "• 매 1분봉마다 6개 예측이 <b>동시에</b> 생성됨<br>"
+    "• 각 예측은 해당 시간이 경과한 뒤 하나씩 자동 검증<br>"
+    "<table style='margin:4px 0 0 0;border-collapse:collapse;font-size:11px;'>"
+    "<tr style='color:#8B949E;'><td style='padding-right:14px;'>호라이즌</td><td>예측 내용</td><td style='padding-left:12px;'>검증 시점</td></tr>"
+    "<tr><td style='color:#58A6FF;'>1분</td><td>1분 뒤 UP/DOWN/FLAT</td><td style='padding-left:12px;color:#8B949E;'>1분 후 분봉 수신 시</td></tr>"
+    "<tr><td style='color:#58A6FF;'>15분</td><td>15분 뒤 UP/DOWN/FLAT</td><td style='padding-left:12px;color:#8B949E;'>15분 후 분봉 수신 시</td></tr>"
+    "<tr><td style='color:#58A6FF;'>30분</td><td>30분 뒤 UP/DOWN/FLAT</td><td style='padding-left:12px;color:#8B949E;'>30분 후 분봉 수신 시</td></tr>"
+    "</table>"
+    "</div><br>"
+
+    # ── 예측 입력 데이터 ──────────────────────────────────────────
+    "<b style='color:#58A6FF'>② 예측에 사용되는 입력 데이터 (4가지 범주)</b><br>"
+    "<table style='margin-left:10px;border-collapse:collapse;line-height:1.85;font-size:11px;'>"
+    "<tr>"
+    "<td style='color:#39D3BB;font-weight:bold;padding-right:12px;vertical-align:top;'>분봉 OHLCV</td>"
+    "<td style='color:#E6EDF3;'>종가·고가·저가·거래량·매수/매도 거래량 (매분 확정)</td>"
+    "</tr><tr>"
+    "<td style='color:#39D3BB;font-weight:bold;padding-right:12px;vertical-align:top;'>미시구조</td>"
+    "<td style='color:#E6EDF3;'>"
+    "CVD(10분봉)·VWAP(당일누적)·OFI(5분봉) — CORE 3종<br>"
+    "<span style='color:#8B949E;'>+ ATR(14분봉)·Microprice·MLOFI·Queue·Toxicity</span>"
+    "</td>"
+    "</tr><tr>"
+    "<td style='color:#D29922;font-weight:bold;padding-right:12px;vertical-align:top;'>수급·옵션</td>"
+    "<td style='color:#E6EDF3;'>외국인·기관 순매수 / 풋콜비율 등</td>"
+    "</tr><tr>"
+    "<td style='color:#D29922;font-weight:bold;padding-right:12px;vertical-align:top;'>매크로</td>"
+    "<td style='color:#E6EDF3;'>환율·국채금리·VIX 등 거시 지표</td>"
+    "</tr>"
+    "</table>"
+    "<br>"
+
+    # ── 예측 방법 ─────────────────────────────────────────────────
+    "<b style='color:#58A6FF'>③ 예측 방법</b><br>"
+    "<div style='margin-left:10px;line-height:1.9;'>"
+    "• <b>GBM</b> (GradientBoostingClassifier) — 호라이즌별 독립 모델 6개<br>"
+    "&nbsp;&nbsp;매주 월요일 08:50 배치 재학습 (최소 5,000분봉 필요)<br>"
+    "• <b>SGD</b> 온라인 학습기 — 매 검증 결과마다 즉시 가중치 업데이트<br>"
+    "• 두 모델 확률을 <b>블렌딩(가중합)</b> → UP/DOWN/FLAT 확률 산출<br>"
+    "• 가장 높은 확률 방향 = 예측 방향,&nbsp; 그 확률값 = confidence<br>"
+    "<div style='background:#161B22;border:1px solid #30363D;border-radius:4px;"
+    "padding:5px 10px;margin:4px 0;font-size:11px;color:#E6EDF3;line-height:1.7;'>"
+    "피처 벡터 → GBM + SGD → 블렌딩<br>"
+    "→ UP 62% / DOWN 25% / FLAT 13%&nbsp; ← 대시보드 카드 표시값<br>"
+    "→ 방향=UP,&nbsp; confidence=62%"
+    "</div>"
+    "</div><br>"
+
+    # ── 검증 기준 (Threshold) ─────────────────────────────────────
+    "<b style='color:#58A6FF'>④ 검증 기준 — Horizon Threshold</b><br>"
+    "<div style='margin-left:10px;line-height:1.9;font-size:11px;'>"
+    "• threshold = 예측 맞고 틀림 채점 기준 (대시보드 카드 숫자와 무관)<br>"
+    "• <b>실제 변화율 &gt; +threshold → UP,&nbsp; &lt; −threshold → DOWN,&nbsp; 그 사이 → FLAT</b><br>"
+    "• 1틱 = 0.05pt &nbsp;|&nbsp; 기준 지수: KOSPI200 선물 ~1200pt"
+    "</div>"
+    "<table style='margin-left:10px;border-collapse:collapse;line-height:1.85;font-size:11px;margin-top:4px;'>"
+    "<tr style='color:#8B949E;'>"
+    "<td style='padding-right:10px;'>호라이즌</td>"
+    "<td style='padding-right:10px;'>비율</td>"
+    "<td style='padding-right:10px;'>pt환산</td>"
+    "<td>틱환산</td>"
+    "</tr>"
+    "<tr><td style='color:#58A6FF;padding-right:10px;'>1분</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>0.05%</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>0.60pt</td>"
+    "<td style='color:#8B949E;'>12틱</td></tr>"
+    "<tr><td style='color:#58A6FF;padding-right:10px;'>3분</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>0.08%</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>0.96pt</td>"
+    "<td style='color:#8B949E;'>19틱</td></tr>"
+    "<tr><td style='color:#58A6FF;padding-right:10px;'>5분</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>0.11%</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>1.32pt</td>"
+    "<td style='color:#8B949E;'>26틱</td></tr>"
+    "<tr><td style='color:#58A6FF;padding-right:10px;'>10분</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>0.16%</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>1.92pt</td>"
+    "<td style='color:#8B949E;'>38틱</td></tr>"
+    "<tr><td style='color:#58A6FF;padding-right:10px;'>15분</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>0.22%</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>2.64pt</td>"
+    "<td style='color:#8B949E;'>53틱</td></tr>"
+    "<tr><td style='color:#58A6FF;padding-right:10px;'>30분</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>0.32%</td>"
+    "<td style='color:#E6EDF3;padding-right:10px;'>3.84pt</td>"
+    "<td style='color:#8B949E;'>77틱</td></tr>"
+    "</table>"
+    "<div style='margin-left:10px;color:#8B949E;font-size:11px;margin-top:3px;'>"
+    "▸ config/settings.py HORIZON_THRESHOLDS 참조&nbsp;|&nbsp;"
+    "2026-05-16 재보정 (기존 대비 약 1.6× 상향)"
+    "</div><br>"
+
+    # ── acc 정확도 ────────────────────────────────────────────────
+    "<b style='color:#58A6FF'>⑤ acc (이동 정확도)</b><br>"
+    "<div style='margin-left:10px;line-height:1.9;font-size:11px;'>"
+    "• 최근 N개 분봉에서 생성된 N분 호라이즌 예측 중 <b>맞힌 비율</b><br>"
+    "• CB③ 감시 대상: <b>30분 호라이즌 전용</b> (버퍼 30개, 최소 20개부터 집계)<br>"
+    "<div style='background:#161B22;border:1px solid #30363D;border-radius:4px;"
+    "padding:5px 10px;margin:4px 0;font-size:11px;color:#E6EDF3;line-height:1.7;'>"
+    "acc = 맞힌 수 / 버퍼 크기&nbsp; (예: 18/30 = 60%)<br>"
+    "기준선: 랜덤 3택 ≈ 33.3%&nbsp;|&nbsp; CB③ 발동 임계값: <b style='color:#F85149;'>35% 미만 2회 연속</b>"
+    "</div>"
+    "</div><br>"
+
+    # ── 모델 AI탭 모니터링 ────────────────────────────────────────
+    "<b style='color:#58A6FF'>⑥ 모델 AI탭 모니터링 (5 모델 AI)</b><br>"
+    "<div style='margin-left:10px;line-height:1.9;font-size:11px;'>"
+    "• <b>GBM 재학습 완료 시</b> + <b>30분 주기</b>로 자동 기록<br>"
+    "• 기록 항목: 현재 ATR·지수·Static threshold·ATR동적 threshold 비교<br>"
+    "• <b style='color:#3FB950;'>✅ 안정</b>: ATR 동적값 ≤ Static (현행 유지)<br>"
+    "• <b style='color:#F85149;'>⚠ 초과</b>: ATR 동적값 &gt; Static → threshold 재조정 또는<br>"
+    "&nbsp;&nbsp;<b>HORIZON_THRESHOLDS_BASE + ATR 동적 방식 전환 검토 권장</b>"
+    "</div>"
+
+    "<hr style='border:0;border-top:1px solid #30363D;margin:7px 0 5px 0'>"
+    "<span style='color:#8B949E;font-size:11px;'>"
+    "▸ 카드 % 수치 = GBM·SGD 확률 출력 (threshold 무관)&nbsp;|&nbsp;"
+    "▸ CORE 3종(CVD·VWAP·OFI) 절대 교체 불가&nbsp;|&nbsp;"
+    "▸ 15:10 이후 신규 진입 없음"
     "</span>"
 
     "</div>"
@@ -815,6 +992,7 @@ class PredictionPanel(QWidget):
 
         # ── 섹션: 멀티 호라이즌 예측 ─────────────────────────────
         hz_title = mk_label("멀티 호라이즌 예측 ( 1 · 3 · 5 · 10 · 15 · 30분 )", C['blue'], 10, True)
+        hz_title.setToolTip(_HZ_TIP)
         lay.addWidget(hz_title)
         hgrid = QGridLayout()
         hgrid.setSpacing(4)
@@ -845,21 +1023,100 @@ class PredictionPanel(QWidget):
         # ── 섹션: 파라미터 중요도 ────────────────────────────────
         param_title = mk_label("파라미터 중요도 (SHAP 실시간)", C['purple'], 10, True)
         param_title.setToolTip(
-            "각 피처가 현재 GBM 예측에 얼마나 기여하는지 나타내는 중요도 지표입니다.\n"
-            "\n"
-            "【SHAP 실시간의 의미】\n"
-            "  • SHAP = SHapley Additive exPlanations\n"
-            "    '이번 예측이 왜 이 방향인지'를 피처별 기여도로 분해한 값입니다.\n"
-            "  • '실시간' = GBM 배치 재학습 직후 최신 모델 가중치로 자동 갱신됩니다.\n"
-            "    매 분봉마다 화면이 새로 그려지지만, 재학습 전까지는 같은 값이 유지됩니다.\n"
-            "\n"
-            "【업데이트 조건】\n"
-            "  • GBM 최초 학습 전: 모든 항목 0.0% (GBM 미학습 상태)\n"
-            "  • GBM 배치 재학습 완료 시 자동 갱신\n"
-            "    - 주간: 매주 월요일 08:50~09:00\n"
-            "    - 월간: 매월 재학습 스케줄 도래 시\n"
-            "    - 학습 최소 데이터: 5,000분봉 (약 13거래일)\n"
-            "  • CORE 3종(CVD·VWAP·OFI)은 절대 교체 불가 피처입니다."
+            "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.75;min-width:480px;'>"
+
+            "<b style='color:#A371F7;font-size:13px;'>📊 파라미터 중요도 (SHAP 실시간)</b>"
+            "<hr style='border:0;border-top:1px solid #30363D;margin:5px 0 7px 0'>"
+
+            "<b style='color:#58A6FF'>① SHAP 실시간의 의미</b><br>"
+            "<div style='margin-left:10px;line-height:1.9;'>"
+            "• SHAP = SHapley Additive exPlanations<br>"
+            "&nbsp;&nbsp;'이번 예측이 왜 이 방향인지'를 피처별 기여도로 분해한 값<br>"
+            "• '실시간' = GBM 배치 재학습 직후 최신 가중치로 자동 갱신<br>"
+            "&nbsp;&nbsp;매 분봉마다 화면이 갱신되지만 재학습 전까지는 같은 값 유지"
+            "</div><br>"
+
+            "<b style='color:#58A6FF'>② 업데이트 조건</b><br>"
+            "<div style='margin-left:10px;line-height:1.9;'>"
+            "• GBM 최초 학습 전: 모든 항목 0.0% (미학습 상태)<br>"
+            "• GBM 배치 재학습 완료 시 자동 갱신<br>"
+            "&nbsp;&nbsp;— 주간: 매주 월요일 08:50~09:00<br>"
+            "&nbsp;&nbsp;— 학습 최소 데이터: 5,000분봉 (약 13거래일)<br>"
+            "• <b style='color:#39D3BB'>CORE 3종(CVD·VWAP·OFI)은 절대 교체 불가</b>"
+            "</div><br>"
+
+            "<b style='color:#58A6FF'>③ 피처별 내부 윈도우</b>"
+            "<div style='margin-left:4px;margin-top:5px;'>"
+            "<table style='border-collapse:collapse;line-height:1.85;font-size:11px;'>"
+            "<tr style='color:#8B949E;border-bottom:1px solid #30363D;'>"
+            "<td style='padding:0 12px 2px 0;font-weight:bold;'>피처</td>"
+            "<td style='padding:0 12px 2px 0;'>윈도우</td>"
+            "<td style='padding:0 0 2px 0;'>의미</td>"
+            "</tr>"
+
+            "<tr>"
+            "<td style='color:#39D3BB;font-weight:bold;padding-right:12px;'>CVD</td>"
+            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>10</b>분봉</td>"
+            "<td style='color:#8B949E;'>매수-매도 누적체결 차이 → 방향 다이버전스</td>"
+            "</tr>"
+
+            "<tr>"
+            "<td style='color:#39D3BB;font-weight:bold;padding-right:12px;'>VWAP</td>"
+            "<td style='color:#E6EDF3;padding-right:12px;'>당일 <b>장 시작</b>부터 누적</td>"
+            "<td style='color:#8B949E;'>거래량 가중 평균가 → 기관 알고리즘 기준선</td>"
+            "</tr>"
+
+            "<tr>"
+            "<td style='color:#39D3BB;font-weight:bold;padding-right:12px;'>OFI</td>"
+            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>5</b>분봉</td>"
+            "<td style='color:#8B949E;'>호가창 잔량 불균형 → 1~3분 선행신호</td>"
+            "</tr>"
+
+            "<tr>"
+            "<td style='color:#D29922;padding-right:12px;'>ATR</td>"
+            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>14</b>분봉</td>"
+            "<td style='color:#8B949E;'>평균 변동폭 → 변동성 기준값</td>"
+            "</tr>"
+
+            "<tr>"
+            "<td style='color:#D29922;padding-right:12px;'>Microprice</td>"
+            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>5</b>분봉 · 5호가</td>"
+            "<td style='color:#8B949E;'>잔량 가중 중간가 → 체결 기대가</td>"
+            "</tr>"
+
+            "<tr>"
+            "<td style='color:#D29922;padding-right:12px;'>MLOFI</td>"
+            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>5</b>분봉 · 5호가</td>"
+            "<td style='color:#8B949E;'>멀티레벨 주문흐름 불균형</td>"
+            "</tr>"
+
+            "<tr>"
+            "<td style='color:#D29922;padding-right:12px;'>Queue</td>"
+            "<td style='color:#E6EDF3;padding-right:12px;'>틱 <b>20</b>개 · 분봉 <b>5</b>개</td>"
+            "<td style='color:#8B949E;'>호가 잔량 소진/보충 속도</td>"
+            "</tr>"
+
+            "<tr>"
+            "<td style='color:#D29922;padding-right:12px;'>Toxicity</td>"
+            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>20</b>분봉</td>"
+            "<td style='color:#8B949E;'>고독성 주문흐름 감지 (ATR·스프레드·잔량 복합)</td>"
+            "</tr>"
+
+            "<tr>"
+            "<td style='color:#8B949E;padding-right:12px;'>수급·옵션·매크로</td>"
+            "<td style='color:#E6EDF3;padding-right:12px;'>주기적 외부 수집</td>"
+            "<td style='color:#8B949E;'>외국인·기관 수급 / 풋콜비율 / 환율·금리</td>"
+            "</tr>"
+
+            "</table>"
+            "</div>"
+
+            "<hr style='border:0;border-top:1px solid #30363D;margin:7px 0 5px 0'>"
+            "<span style='color:#8B949E;font-size:11px;'>"
+            "▸ 윈도우는 피처 계산 내부에서 사용 — 모델 입력은 현재 분봉 1개의 피처 벡터"
+            "</span>"
+
+            "</div>"
         )
         lay.addWidget(param_title)
         params = [
@@ -4229,9 +4486,9 @@ class AlphaPanel(QWidget):
 class PnlHistoryPanel(QWidget):
     """전문 트레이더용 손익 추이 — 일별·주별·월별 누적 테이블"""
 
-    _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt(실행/순)", "P/L 원(실행/순)",   "누적 원(실행/순)"]
-    _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt(실행/순)", "P/L 원(실행/순)",   "누적 원(실행/순)", "MDD 원(실행/순)"]
-    _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt(실행/순)", "P/L 원(실행/순)",   "누적 원(실행/순)", "샤프(실행/순)"]
+    _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원"]
+    _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "MDD 원"]
+    _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "샤프"]
 
     def __init__(self):
         super().__init__()
@@ -4294,6 +4551,32 @@ class PnlHistoryPanel(QWidget):
         inner.addTab(self.tbl_daily,   "일별 (60일)")
         inner.addTab(self.tbl_weekly,  "주별 (13주)")
         inner.addTab(self.tbl_monthly, "월별")
+
+        # 소스 선택 체크박스 (탭바 우측 코너)
+        _cb_style = (
+            f"QCheckBox{{color:{C['text2']};font-size:{S.f(9)}px;spacing:{S.p(3)}px;}}"
+            f"QCheckBox::indicator{{width:{S.p(11)}px;height:{S.p(11)}px;"
+            f"border:1px solid {C['border']};border-radius:2px;}}"
+            f"QCheckBox::indicator:checked{{background:{C['cyan']};"
+            f"border:1px solid {C['cyan']};}}"
+            f"QCheckBox::indicator:unchecked{{background:{C['bg3']};}}"
+        )
+        self._cb_forward = QCheckBox("순방향")
+        self._cb_reverse = QCheckBox("역방향")
+        self._cb_forward.setChecked(True)
+        self._cb_reverse.setChecked(True)
+        self._cb_forward.setStyleSheet(_cb_style)
+        self._cb_reverse.setStyleSheet(_cb_style)
+        self._cb_forward.stateChanged.connect(self._on_source_changed)
+        self._cb_reverse.stateChanged.connect(self._on_source_changed)
+        _corner = QWidget()
+        _cl = QHBoxLayout(_corner)
+        _cl.setContentsMargins(0, 0, 6, 0)
+        _cl.setSpacing(10)
+        _cl.addWidget(self._cb_forward)
+        _cl.addWidget(self._cb_reverse)
+        inner.setCornerWidget(_corner, Qt.TopRightCorner)
+
         lay.addWidget(inner, 1)
 
     # 날짜/주간/월(0) · 거래(1) · 승(2) · 패(3) · 승률(4) → Fixed 고정폭
@@ -4425,6 +4708,51 @@ class PnlHistoryPanel(QWidget):
             fwd_txt = f"{forward:+,.{decimals}f}{suffix}"
         return f"실행 {exec_txt} / 순 {fwd_txt}"
 
+    def _sel_val(self, exec_val, fwd_val):
+        """체크박스 선택에 따라 표시할 값 반환 (순방향=exec, 역방향=forward)."""
+        fwd = self._cb_forward.isChecked()
+        rev = self._cb_reverse.isChecked()
+        if fwd and rev:
+            return exec_val + fwd_val
+        if fwd:
+            return exec_val
+        if rev:
+            return fwd_val
+        return 0.0
+
+    def _fmt_val(self, exec_val, fwd_val, decimals=0, suffix=""):
+        val = self._sel_val(exec_val, fwd_val)
+        if decimals == 0:
+            return f"{val:+,.0f}{suffix}"
+        return f"{val:+,.{decimals}f}{suffix}"
+
+    def _fmt_single(self, val, decimals=0, suffix=""):
+        if decimals == 0:
+            return f"{val:+,.0f}{suffix}"
+        return f"{val:+,.{decimals}f}{suffix}"
+
+    def _mdd_sel(self, rows):
+        eq, peak, mdd = 0.0, 0.0, 0.0
+        for r in sorted(rows, key=lambda x: x["entry_ts"]):
+            eq += self._sel_val(r["pnl_krw"], r["forward_pnl_krw"])
+            peak = max(peak, eq)
+            mdd = min(mdd, eq - peak)
+        return round(mdd, 0)
+
+    def _sharpe_sel(self, grp):
+        dp = {}
+        for r in grp:
+            d = r["entry_ts"][:10]
+            dp[d] = dp.get(d, 0) + self._sel_val(r["pnl_krw"], r["forward_pnl_krw"])
+        return self._sharpe(list(dp.values()))
+
+    def _on_source_changed(self):
+        if self._rows:
+            self._build_daily()
+            self._build_weekly()
+            self._build_monthly()
+            self._build_summary()
+
     def _sharpe(self, daily_pnls):
         n = len(daily_pnls)
         if n < 2:
@@ -4439,38 +4767,34 @@ class PnlHistoryPanel(QWidget):
     def _build_daily(self):
         today  = datetime.now().strftime("%Y-%m-%d")
         groups = self._group(lambda ts: ts[:10])[-60:]
-        # 누적 맵 (오름차순 기준)
         cum_map, c = {}, 0.0
-        forward_cum_map, fc = {}, 0.0
         for date_str, grp in groups:
             _, _, _, _, pkrw = self._stats(grp)
             _, _, _, _, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            c += pkrw
-            fc += forward_pkrw
+            c += self._sel_val(pkrw, forward_pkrw)
             cum_map[date_str] = c
-            forward_cum_map[date_str] = fc
 
         tbl = self.tbl_daily
         tbl.setRowCount(len(groups))
         for r_idx, (date_str, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
             _, _, _, forward_ppts, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            cum  = cum_map[date_str]
-            forward_cum = forward_cum_map[date_str]
+            cum       = cum_map[date_str]
+            disp_krw  = self._sel_val(pkrw, forward_pkrw)
             wr   = f"{wins/n*100:.0f}%" if n else "—"
-            bg   = self._row_bg(pkrw)
-            pc   = self._pcol(pkrw)
+            bg   = self._row_bg(disp_krw)
+            pc   = self._pcol(disp_krw)
             cc   = self._pcol(cum)
             is_t = (date_str == today)
             cells = [
-                self._item(date_str,         fg=C['yellow'] if is_t else None, bg=bg, bold=is_t),
-                self._item(str(n),           bg=bg, align=Qt.AlignRight),
-                self._item(str(wins),        fg=C['green'], bg=bg, align=Qt.AlignRight),
-                self._item(str(losses),      fg=C['red'],   bg=bg, align=Qt.AlignRight),
-                self._item(wr,               fg=C['cyan'],  bg=bg),
-                self._item(self._dual_text(ppts, forward_ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._dual_text(pkrw, forward_pkrw, suffix="원"),  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
-                self._item(self._dual_text(cum, forward_cum, suffix="원"),   fg=cc, bg=bg, align=Qt.AlignRight),
+                self._item(date_str,                                            fg=C['yellow'] if is_t else None, bg=bg, bold=is_t),
+                self._item(str(n),                                              bg=bg, align=Qt.AlignRight),
+                self._item(str(wins),                                           fg=C['green'], bg=bg, align=Qt.AlignRight),
+                self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
+                self._item(wr,                                                  fg=C['cyan'],  bg=bg),
+                self._item(self._fmt_val(ppts, forward_ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(self._fmt_val(pkrw, forward_pkrw, suffix="원"),      fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -4480,39 +4804,35 @@ class PnlHistoryPanel(QWidget):
     def _build_weekly(self):
         groups  = self._group(self._week_key)[-13:]
         cum_map, c = {}, 0.0
-        forward_cum_map, fc = {}, 0.0
         for wk, grp in groups:
             _, _, _, _, pkrw = self._stats(grp)
             _, _, _, _, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            c += pkrw
-            fc += forward_pkrw
+            c += self._sel_val(pkrw, forward_pkrw)
             cum_map[wk] = c
-            forward_cum_map[wk] = fc
 
         tbl = self.tbl_weekly
         tbl.setRowCount(len(groups))
         for r_idx, (wk, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
             _, _, _, forward_ppts, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            mdd  = self._mdd(grp)
-            forward_mdd = self._mdd(grp, "forward_pnl_krw")
-            cum  = cum_map[wk]
-            forward_cum = forward_cum_map[wk]
+            mdd       = self._mdd_sel(grp)
+            cum       = cum_map[wk]
+            disp_krw  = self._sel_val(pkrw, forward_pkrw)
             wr   = f"{wins/n*100:.0f}%" if n else "—"
-            bg   = self._row_bg(pkrw)
-            pc   = self._pcol(pkrw)
+            bg   = self._row_bg(disp_krw)
+            pc   = self._pcol(disp_krw)
             cc   = self._pcol(cum)
             mc   = self._pcol(mdd)
             cells = [
-                self._item(wk,               bg=bg, bold=True),
-                self._item(str(n),           bg=bg, align=Qt.AlignRight),
-                self._item(str(wins),        fg=C['green'], bg=bg, align=Qt.AlignRight),
-                self._item(str(losses),      fg=C['red'],   bg=bg, align=Qt.AlignRight),
-                self._item(wr,               fg=C['cyan'],  bg=bg),
-                self._item(self._dual_text(ppts, forward_ppts, decimals=2, suffix="pt"),   fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._dual_text(pkrw, forward_pkrw, suffix="원"),  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
-                self._item(self._dual_text(cum, forward_cum, suffix="원"),   fg=cc, bg=bg, align=Qt.AlignRight),
-                self._item(self._dual_text(mdd, forward_mdd, suffix="원"),   fg=mc, bg=bg, align=Qt.AlignRight),
+                self._item(wk,                                                  bg=bg, bold=True),
+                self._item(str(n),                                              bg=bg, align=Qt.AlignRight),
+                self._item(str(wins),                                           fg=C['green'], bg=bg, align=Qt.AlignRight),
+                self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
+                self._item(wr,                                                  fg=C['cyan'],  bg=bg),
+                self._item(self._fmt_val(ppts, forward_ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(self._fmt_val(pkrw, forward_pkrw, suffix="원"),      fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
+                self._item(self._fmt_single(mdd, suffix="원"),                  fg=mc, bg=bg, align=Qt.AlignRight),
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -4522,50 +4842,38 @@ class PnlHistoryPanel(QWidget):
     def _build_monthly(self):
         groups  = self._group(lambda ts: ts[:7])
         cum_map, c = {}, 0.0
-        forward_cum_map, fc = {}, 0.0
         for mon, grp in groups:
             _, _, _, _, pkrw = self._stats(grp)
             _, _, _, _, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            c += pkrw
-            fc += forward_pkrw
+            c += self._sel_val(pkrw, forward_pkrw)
             cum_map[mon] = c
-            forward_cum_map[mon] = fc
 
         tbl = self.tbl_monthly
         tbl.setRowCount(len(groups))
         for r_idx, (mon, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
             _, _, _, forward_ppts, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            cum  = cum_map[mon]
-            forward_cum = forward_cum_map[mon]
-            # 월 내 일별 PnL → 샤프
-            dp = {}
-            forward_dp = {}
-            for r in grp:
-                d = r["entry_ts"][:10]
-                dp[d] = dp.get(d, 0) + r["pnl_krw"]
-                forward_dp[d] = forward_dp.get(d, 0) + r["forward_pnl_krw"]
-            sharpe = self._sharpe(list(dp.values()))
-            forward_sharpe = self._sharpe(list(forward_dp.values()))
+            cum       = cum_map[mon]
+            disp_krw  = self._sel_val(pkrw, forward_pkrw)
+            sharpe    = self._sharpe_sel(grp)
             wr   = f"{wins/n*100:.0f}%" if n else "—"
-            bg   = self._row_bg(pkrw)
-            pc   = self._pcol(pkrw)
+            bg   = self._row_bg(disp_krw)
+            pc   = self._pcol(disp_krw)
             cc   = self._pcol(cum)
             sc   = (C['green'] if sharpe >= 1.0
                     else C['yellow'] if sharpe >= 0.5
                     else C['red']    if sharpe < 0
                     else C['text2'])
-            sstr = self._dual_text(sharpe, forward_sharpe, decimals=2)
             cells = [
-                self._item(mon,              bg=bg, bold=True),
-                self._item(str(n),           bg=bg, align=Qt.AlignRight),
-                self._item(str(wins),        fg=C['green'], bg=bg, align=Qt.AlignRight),
-                self._item(str(losses),      fg=C['red'],   bg=bg, align=Qt.AlignRight),
-                self._item(wr,               fg=C['cyan'],  bg=bg),
-                self._item(self._dual_text(ppts, forward_ppts, decimals=2, suffix="pt"),   fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._dual_text(pkrw, forward_pkrw, suffix="원"),  fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
-                self._item(self._dual_text(cum, forward_cum, suffix="원"),   fg=cc, bg=bg, align=Qt.AlignRight),
-                self._item(sstr,             fg=sc, bg=bg),
+                self._item(mon,                                                 bg=bg, bold=True),
+                self._item(str(n),                                              bg=bg, align=Qt.AlignRight),
+                self._item(str(wins),                                           fg=C['green'], bg=bg, align=Qt.AlignRight),
+                self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
+                self._item(wr,                                                  fg=C['cyan'],  bg=bg),
+                self._item(self._fmt_val(ppts, forward_ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(self._fmt_val(pkrw, forward_pkrw, suffix="원"),      fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
+                self._item(self._fmt_single(sharpe, decimals=2),                fg=sc, bg=bg),
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -4584,17 +4892,10 @@ class PnlHistoryPanel(QWidget):
         wr     = wins / trades * 100 if trades else 0
         total  = sum(r["pnl_krw"] for r in self._rows)
         forward_total = sum(r["forward_pnl_krw"] for r in self._rows)
+        disp_total = self._sel_val(total, forward_total)
 
-        # 전체 MDD
-        eq, peak, mdd = 0.0, 0.0, 0.0
-        forward_eq, forward_peak, forward_mdd = 0.0, 0.0, 0.0
-        for r in sorted(self._rows, key=lambda x: x["entry_ts"]):
-            eq  += r["pnl_krw"]
-            peak = max(peak, eq)
-            mdd  = min(mdd, eq - peak)
-            forward_eq += r["forward_pnl_krw"]
-            forward_peak = max(forward_peak, forward_eq)
-            forward_mdd = min(forward_mdd, forward_eq - forward_peak)
+        # 전체 MDD (선택 소스 기준)
+        mdd = self._mdd_sel(self._rows)
 
         # 최장 연승
         best, cur = 0, 0
@@ -4605,7 +4906,7 @@ class PnlHistoryPanel(QWidget):
             else:
                 cur = 0
 
-        pc = C['green'] if total >= 0 else C['red']
+        pc = C['green'] if disp_total >= 0 else C['red']
         wc = '#4CAF50' if wr >= 55 else (C['yellow'] if wr >= 50 else C['red'])
 
         def _set(key, text, col):
@@ -4615,12 +4916,12 @@ class PnlHistoryPanel(QWidget):
                 f"color:{col};font-size:{S.f(12)}px;font-weight:bold;"
             )
 
-        _set("days",    f"{days}일",          C['blue'])
-        _set("trades",  f"{trades}건",         C['text'])
-        _set("winrate", f"{wr:.1f}%",          wc)
-        _set("total",   self._dual_text(total, forward_total, suffix="원"),    pc)
-        _set("mdd",     self._dual_text(mdd, forward_mdd, suffix="원"),      C['orange'])
-        _set("streak",  f"{best}연승",         C['yellow'])
+        _set("days",    f"{days}일",                              C['blue'])
+        _set("trades",  f"{trades}건",                             C['text'])
+        _set("winrate", f"{wr:.1f}%",                              wc)
+        _set("total",   self._fmt_single(disp_total, suffix="원"), pc)
+        _set("mdd",     self._fmt_single(mdd, suffix="원"),        C['orange'])
+        _set("streak",  f"{best}연승",                             C['yellow'])
 
 
 class LogPanel(QWidget):
@@ -6982,6 +7283,7 @@ class DashboardAdapter:
         # 긴급 정지 버튼을 외부에서 접근할 수 있도록 노출
         self.btn_kill = self._win._make_kill_btn()
         self.btn_save_account = self._win.btn_save_account
+        self.chk_slack = self._win.chk_slack
         self.sig_position_restore = self._win.account_info_panel.sig_position_restore
         self.sig_balance_refresh_requested = self._win.account_info_panel.sig_balance_refresh_requested
         self.sig_reverse_entry_toggled    = self._win.entry_panel.sig_reverse_entry_toggled
@@ -6997,6 +7299,9 @@ class DashboardAdapter:
         # 항상 위는 아니지만 시작 직후에는 일반 창들 위로 자연스럽게 올린다.
         self._win.raise_()
         self._win.activateWindow()
+
+    def _save_ui_prefs(self):
+        self._win._save_ui_prefs()
 
     def append_sys_log(self, msg: str):
         """창1 시스템 로그에 메시지 추가"""

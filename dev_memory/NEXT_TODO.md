@@ -1596,3 +1596,46 @@
   - `pass/reduce/block` 저장분이 다음 장중부터 누적되므로 실제 분포 확인 필요
 
 ---
+
+## 2026-05-16 세션 마감 (41차)
+
+### DONE
+
+- [DONE 2026-05-16] **[B51] DashboardAdapter.chk_slack 노출 누락 크래시 수정**
+  - `dashboard/main_dashboard.py` `DashboardAdapter.__init__`에 `self.chk_slack = self._win.chk_slack` 추가
+  - `_save_ui_prefs()` 위임 메서드 추가
+
+- [DONE 2026-05-16] **HORIZON_THRESHOLDS 재보정**
+  - 5월 초 고변동성 장세 기반 (σ_1min≈1.47pt) 기준으로 전체 약 2.5배 상향
+
+- [DONE 2026-05-16] **EmergencyExit pending_registrar 추가**
+  - CB/KillSwitch 비상청산 시 Chejan 오분류 방지 경로 완성
+
+- [DONE 2026-05-16] **PositionTracker same-side sync 보강**
+  - grade 보존, partial_done 플래그 보존
+
+- [DONE 2026-05-16] **Threshold Monitor 추가**
+  - GBM 재학습 완료/30분 주기로 ATR 동적 vs Static 비교 모델 AI탭 기록
+
+### NEXT (2026-05-17 이후)
+
+- [NEXT] **B51 수정 후 재기동 검증**
+  - `start_mireuk.bat` 재실행 → `[System] Qt 이벤트 루프 진입` 확인
+  - `py_compile` 문법 검증: `python -m py_compile dashboard\main_dashboard.py main.py safety\emergency_exit.py strategy\position\position_tracker.py config\settings.py`
+
+- [NEXT] **Threshold 재보정 장중 검증**
+  - 목표: 30분 호라이즌 FLAT 비율 29~37% 범위 달성 여부 로그 확인
+  - `[Threshold Monitor]` 로그에서 ATR 동적값 vs Static 비교 확인
+
+- [NEXT] **PnlHistoryPanel 체크박스 UI 동작 확인**
+  - 순방향/역방향 체크박스 토글 시 일별/주별/월별 테이블 재갱신 확인
+
+- [NEXT] **비상청산 pending_registrar 동작 확인**
+  - CB/KillSwitch 발동 시 `[EmergencyExit] pending 등록` 로그 확인
+  - Chejan 체결이 "외부체결"가 아닌 EXIT pending 매칭으로 처리되는지 확인
+
+- [NEXT] **BrokerSync EXIT pending 보존 동작 확인**
+  - EXIT 주문 진행 중 잔고 Chejan 유입 시 `[BrokerSync] 잔고 Chejan — EXIT pending 진행 중, pending 유지` 로그 확인
+
+- [NEXT] **모의투자 장중 운영 지속**
+  - Phase 5 진입 조건 향해 4주 통산 수익률 + CB 발동 검증 계속

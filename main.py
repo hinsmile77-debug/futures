@@ -180,7 +180,8 @@ class TradingSystem:
         self.drift_adjuster    = DriftAdjuster()
         # ── Phase 2 안전장치 ───────────────────────────────────
         self.emergency_exit  = EmergencyExit(
-            position_tracker = self.position,
+            position_tracker  = self.position,
+            pending_registrar = self._set_pending_order,
         )
         self.kill_switch     = KillSwitch(
             emergency_exit_callback = self.emergency_exit.execute
@@ -282,6 +283,7 @@ class TradingSystem:
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
+        self._threshold_monitor_tick: int = 0        # threshold 모니터 주기 카운터 (30분마다)
         self._last_balance_result: dict = {}
         self._last_sizer_balance: float = 100_000_000.0
         self._effect_report_tick: int = 0
@@ -1201,9 +1203,56 @@ class TradingSystem:
             self.dashboard.set_model_status(
                 f"GBM {prefix}재학습 완료", f"데이터 {result.get('data_size', '?')}행"
             )
+            _atr_now   = self.feature_builder._last_features.get("atr", 0.0)
+            _price_now = float(self._last_pipeline_price or 0.0)
+            self._log_threshold_monitor(_atr_now, _price_now)
         else:
             log_manager.learning(f"[GBM] {prefix}재학습 건너뜀: {result.get('error', '')}")
             self.dashboard.set_model_status("대기")
+
+    def _log_threshold_monitor(self, atr: float, price: float) -> None:
+        """모델 AI탭에 threshold 모니터 스냅샷 기록 + 변동성 안정화 시 ATR 동적 전환 제안."""
+        from config.settings import HORIZON_THRESHOLDS
+        if price <= 0 or atr <= 0:
+            return
+
+        # ATR 동적 threshold 계산 (제안된 multiplier 기준)
+        _vol_mult = {"1m": 0.12, "3m": 0.20, "5m": 0.28, "10m": 0.40, "15m": 0.52, "30m": 0.70}
+        vol_ratio = atr / price
+
+        static_parts  = "  ".join(f"{h}={v*100:.2f}%" for h, v in HORIZON_THRESHOLDS.items())
+        dynamic_parts = "  ".join(
+            f"{h}={vol_ratio * m * 100:.2f}%" for h, m in _vol_mult.items()
+        )
+        log_manager.learning(
+            f"[Threshold Monitor] ATR={atr:.2f}pt  Price={price:.2f}  vol_ratio={vol_ratio*100:.3f}%\n"
+            f"  Static : {static_parts}\n"
+            f"  Dynamic: {dynamic_parts}"
+        )
+
+        # 안정화 판정: ATR 동적값이 현행 static 이하인 호라이즌 수
+        stable_count = sum(
+            1 for h, base in HORIZON_THRESHOLDS.items()
+            if vol_ratio * _vol_mult.get(h, 0.5) <= base
+        )
+        if stable_count >= 4:
+            log_manager.learning(
+                f"[Threshold Monitor] ✅ 변동성 안정 ({stable_count}/6 호라이즌) — "
+                f"현행 static threshold가 ATR 동적값 대비 충분히 높음. 전환 시점 아님."
+            )
+        else:
+            exceed = {
+                h: f"{vol_ratio * _vol_mult[h] * 100:.2f}% > {v*100:.2f}%"
+                for h, v in HORIZON_THRESHOLDS.items()
+                if vol_ratio * _vol_mult.get(h, 0.5) > v
+            }
+            exceed_str = "  ".join(f"{h}({s})" for h, s in exceed.items())
+            log_manager.learning(
+                f"[Threshold Monitor] ⚠ ATR 동적 threshold가 static 초과 ({6 - stable_count}/6 호라이즌)\n"
+                f"  초과 항목: {exceed_str}\n"
+                f"  → config/settings.py HORIZON_THRESHOLDS 상향 조정 또는\n"
+                f"    HORIZON_THRESHOLDS_BASE + ATR 동적 방식으로 전환 검토 권장"
+            )
 
     # ── 장 전 준비 (08:45) ─────────────────────────────────────
     def pre_market_setup(self):
@@ -1529,6 +1578,11 @@ class TradingSystem:
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
         atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
+
+        # ── Threshold 모니터 (30분 주기) ─────────────────────────
+        self._threshold_monitor_tick += 1
+        if self._threshold_monitor_tick % 30 == 0:
+            self._log_threshold_monitor(atr, close)
 
         # ── CORE 3종 피처 NaN/Inf 가드 ──────────────────────────
         # 진입 체크리스트가 직접 사용하는 피처만 방어 (다른 피처는 앙상블에서 0으로 처리됨)
@@ -5303,7 +5357,16 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         avg_price,
         self.position.entry_time,
     )
-    self._clear_pending_order()
+    # EXIT pending이 날아가 있는 중이면 소멸 금지 — Chejan이 돌아올 때 매칭돼야 함
+    _pending = self._pending_order
+    if _pending and _pending.get("kind", "").startswith("EXIT"):
+        log_manager.system(
+            f"[BrokerSync] 잔고 Chejan — EXIT pending 진행 중, pending 유지 "
+            f"(kind={_pending.get('kind')} order_no={_pending.get('order_no') or '?'})",
+            "INFO",
+        )
+    else:
+        self._clear_pending_order()
     _ts_set_broker_sync_status(self, True, f"balance chejan synced {side} {qty} @ {avg_price}", False)
     after = _ts_get_position_snapshot(self)
     log_manager.system(

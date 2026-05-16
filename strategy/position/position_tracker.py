@@ -404,7 +404,8 @@ class PositionTracker:
         self.entry_price = price
         self.quantity = quantity
         self.entry_time = prev_entry_time if same_side_sync and prev_entry_time else (synced_at or now_kst())
-        self.grade = grade
+        # 같은 방향 동기화 시 기존 신호 등급(A/B/C) 보존 — BROKER로 덮어쓰지 않음
+        self.grade = grade if (not same_side_sync or not self.grade or self.grade == "BROKER") else self.grade
         self.regime = regime
         self.signal_direction = direction
         self.reverse_entry_enabled = False
@@ -412,9 +413,11 @@ class PositionTracker:
             self.initial_quantity = max(prev_initial, quantity)
         else:
             self.initial_quantity = quantity
-        self.partial_1_done = False
-        self.partial_2_done = False
-        self.partial_3_done = False
+        # 같은 방향 동기화 시 이미 실행된 TP 플래그 보존 (잔고 Chejan이 와도 재발동 방지)
+        if not same_side_sync:
+            self.partial_1_done = False
+            self.partial_2_done = False
+            self.partial_3_done = False
         self.last_update_reason = f"sync_from_broker:{direction}"
         self.last_update_ts = synced_at or now_kst()
         self._recalculate_levels(atr)
