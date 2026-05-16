@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-05-16 (43차 — 손익 추이 패널 UI 개선)
+
+### [D97] PnlHistoryPanel 소스 선택은 QTabWidget.setCornerWidget으로 구현한다
+**Decision**: "순방향"/"역방향" 체크박스를 탭바와 같은 행 우측에 배치하기 위해 `inner.setCornerWidget(widget, Qt.TopRightCorner)` 사용. 별도 QHBoxLayout 행으로 빼는 대신 탭바 코너를 활용해 공간 절약.  
+**Why**: 체크박스를 탭 아래 별도 행에 두면 높이 낭비. 탭바와 동일 행에 두는 게 UX 상 자연스럽고, Qt 공식 지원 API로 안정적.  
+**How to apply**: `_build()` 에서 내부 탭(`inner`) 생성 후 `inner.setCornerWidget(QWidget, Qt.TopRightCorner)` 호출. `QWidget` 안에 `QHBoxLayout`으로 두 체크박스 배치.
+
+### [D98] PnlHistoryPanel P/L 표시는 체크박스 선택 기준 단일 값만 표시한다
+**Decision**: 기존 `"실행 +xxx / 순 +yyy"` 이중 표시를 제거하고 `_sel_val(exec, fwd)` 기반 단일 값만 표시. 둘 다 선택 시 합산(exec+fwd) 표시.  
+**Why**: 이중 표시는 셀이 좁아 가독성 저하. 사용자가 어느 소스를 보고 싶은지 체크박스로 명확히 선택할 수 있으므로 단일 값 표시가 더 직관적.  
+**How to apply**: `_fmt_val(exec, fwd)` → `_sel_val` 호출 → 단일 포맷. 누적·MDD·샤프도 동일 패턴으로 `_mdd_sel`, `_sharpe_sel` 신규 메서드 적용.
+
+---
+
 ## 2026-05-16 (42차 — Cybos 잔고 Chejan 버그 근본 원인 분석 + 4종 수정)
 
 ### [B101] 잔고 Chejan(gubun=1)이 EXIT pending을 파괴하는 버그
