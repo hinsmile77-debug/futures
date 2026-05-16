@@ -2075,3 +2075,33 @@ STEP4: get_features() → 캐시 읽기만 (TR 호출 없음)
 | Cybos 연결 | ✅ 성공 (ServerType=1 모의투자) |
 | B51 크래시 | ✅ 수정 완료 |
 | Qt 이벤트 루프 | 재기동 후 확인 필요 |
+
+---
+
+## 2026-05-16 업데이트 (46차)
+
+### PnlHistoryPanel 버그 4종 수정
+
+| 항목 | 이전 | 이후 |
+|---|---|---|
+| 역방향 체크박스 | forward_pnl 전체 표시 (의미론 오류) | reverse_entry_enabled=1 행만 필터링 |
+| 순+역 모두 체크 | exec+fwd 합산 (2배) | 전체 행의 pnl_krw (정상) |
+| 총 손익 | broker P&L × 거래 수 중복합산 | 고유 날짜 단위 1회 합산 |
+| 체크박스 재시작 | _save_ui_prefs()가 pnl_cb_* 키 삭제 | 읽고-병합-쓰기로 키 보존 |
+| P/L 원 별표 | "6,267,000원 ★" | "6,267,000원" |
+
+### 미니선물 pt_value 버그 수정 (B53)
+
+| 항목 | 변경 |
+|---|---|
+| TRADE_PNL_FORMULA_VERSION | 3 → 4 (기존 레코드 재마이그레이션 강제) |
+| normalize_trade_pnl | pt_value 파라미터 추가 (기본값 250,000) |
+| _get_pt_value_from_prefs() | ui_prefs.json → symbol_code → get_contract_spec()["pt_value"] |
+| _migrate_trades_db | _get_pt_value_from_prefs()로 pt_value 결정 |
+| main._trade_metrics_pair | self._pt_value 전달 |
+
+재시작 시 v4 마이그레이션 자동 실행 → 5/14 기준 14.5M→2.9M (5배 정상화).
+
+### 잔여 이슈
+
+- 5/14 2.9M vs 실제 ~1.5M: qty 과다 기록 문제 별도 분석 필요

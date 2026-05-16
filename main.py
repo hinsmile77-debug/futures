@@ -52,6 +52,7 @@ from utils.db_utils import (
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
     fetch_trend_monthly, fetch_trend_yearly,
     is_plausible_futures_trade,
+    upsert_daily_broker_pnl,
 )
 from config.settings import (
     TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS,
@@ -790,11 +791,13 @@ class TradingSystem:
             entry_price=result["entry_price"],
             quantity=result["quantity"],
             pnl_pts=result["pnl_pts"],
+            pt_value=self._pt_value,
         )
         forward_metrics = normalize_trade_pnl(
             entry_price=result["entry_price"],
             quantity=result["quantity"],
             pnl_pts=result.get("forward_pnl_pts", result["pnl_pts"]),
+            pt_value=self._pt_value,
         )
         return executed_metrics, forward_metrics
 
@@ -4150,9 +4153,10 @@ def _ts_agg_exit_fill(pending: dict, result: dict, fill_price: float, fill_qty: 
     pending.setdefault("agg_exit_fwd_krw", 0.0)
     pending.setdefault("agg_exit_price_x_qty", 0.0)
     pending["agg_exit_qty"] += fill_qty
-    pending["agg_exit_pnl_pts"] += float(result.get("pnl_pts", 0.0) or 0.0)
+    # pnl_pts는 per-contract이므로 fill_qty로 가중합산 → agg 시 qty로 나눠 per-contract 복원
+    pending["agg_exit_pnl_pts"] += float(result.get("pnl_pts", 0.0) or 0.0) * fill_qty
     pending["agg_exit_pnl_krw"] += float(result.get("pnl_krw", 0.0) or 0.0)
-    pending["agg_exit_fwd_pts"] += float(result.get("forward_pnl_pts", 0.0) or 0.0)
+    pending["agg_exit_fwd_pts"] += float(result.get("forward_pnl_pts", 0.0) or 0.0) * fill_qty
     pending["agg_exit_fwd_krw"] += float(result.get("forward_pnl_krw", 0.0) or 0.0)
     pending["agg_exit_price_x_qty"] += fill_price * fill_qty
 
@@ -4162,13 +4166,16 @@ def _ts_build_agg_exit_result(last_result: dict, pending: dict) -> dict:
     agg_qty = pending.get("agg_exit_qty", 1)
     price_x_qty = pending.get("agg_exit_price_x_qty", 0.0)
     vwap = price_x_qty / agg_qty if agg_qty > 0 else last_result.get("exit_price", 0.0)
+    # agg_exit_pnl_pts는 per-contract × fill_qty의 가중합 → qty로 나눠 per-contract 복원
+    raw_pts = pending.get("agg_exit_pnl_pts", last_result.get("pnl_pts", 0.0) * agg_qty)
+    raw_fwd = pending.get("agg_exit_fwd_pts", last_result.get("forward_pnl_pts", 0.0) * agg_qty)
     return {
         **last_result,
         "quantity": agg_qty,
         "exit_price": round(vwap, 4),
-        "pnl_pts": round(pending.get("agg_exit_pnl_pts", last_result.get("pnl_pts", 0.0)), 4),
+        "pnl_pts": round(raw_pts / agg_qty, 4) if agg_qty > 0 else 0.0,
         "pnl_krw": round(pending.get("agg_exit_pnl_krw", last_result.get("pnl_krw", 0.0)), 0),
-        "forward_pnl_pts": round(pending.get("agg_exit_fwd_pts", last_result.get("forward_pnl_pts", 0.0)), 4),
+        "forward_pnl_pts": round(raw_fwd / agg_qty, 4) if agg_qty > 0 else 0.0,
         "forward_pnl_krw": round(pending.get("agg_exit_fwd_krw", last_result.get("forward_pnl_krw", 0.0)), 0),
     }
 
@@ -5044,6 +5051,19 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
             summary,
             min_interval_sec=120.0,
         )
+    if is_cybos_balance and not quiet:
+        try:
+            import datetime as _dt
+            _today = _dt.date.today()
+            _yesterday = (_today - _dt.timedelta(days=1)).isoformat()
+            _today_str = _today.isoformat()
+            _today_pnl = float(str(summary.get("실현손익") or "0").replace(",", "") or "0")
+            _prev_pnl  = float(str(summary.get("추정자산") or "0").replace(",", "") or "0")
+            upsert_daily_broker_pnl(_today_str, _today_pnl)
+            upsert_daily_broker_pnl(_yesterday, _prev_pnl)
+        except Exception as _bpnl_e:
+            logger.debug("[BrokerPnl] 일별 손익 저장 실패: %s", _bpnl_e)
+
     self.dashboard.update_account_balance(
         summary,
         rows,

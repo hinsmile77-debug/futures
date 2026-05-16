@@ -6,12 +6,12 @@ from contextlib import contextmanager
 from typing import List, Tuple, Any, Optional, Dict
 
 import json
-from config.constants import FUTURES_PT_VALUE
-from config.settings import PREDICTIONS_DB, SHAP_DB, TRADES_DB, RAW_DATA_DB, DB_DIR
+from config.constants import FUTURES_PT_VALUE, get_contract_spec
+from config.settings import PREDICTIONS_DB, SHAP_DB, TRADES_DB, RAW_DATA_DB, DB_DIR, DATA_DIR
 from config.settings import FUTURES_COMMISSION_RATE
 
 _lock = threading.Lock()
-TRADE_PNL_FORMULA_VERSION = 2
+TRADE_PNL_FORMULA_VERSION = 4  # v4: pt_value 종목코드 연동 (미니선물 50k, 일반선물 250k)
 MIN_VALID_FUTURES_PRICE = 100.0
 MAX_VALID_FUTURES_PRICE = 10000.0
 MAX_REASONABLE_TRADE_PNL_PTS = 200.0
@@ -62,13 +62,36 @@ def fetchone(db_path: str, sql: str, params: Tuple = ()) -> Optional[sqlite3.Row
         return cur.fetchone()
 
 
-def normalize_trade_pnl(entry_price: float, quantity: int, pnl_pts: float) -> Dict[str, float]:
-    """현재 기준(250,000원/pt - 왕복 수수료)으로 거래 손익을 정규화한다."""
+def _get_pt_value_from_prefs() -> int:
+    """ui_prefs.json의 symbol_code로 pt_value를 결정한다.
+    읽기 실패 또는 코드 미설정 시 일반선물 기본값(250,000) 반환.
+    """
+    try:
+        prefs_path = os.path.join(DATA_DIR, "ui_prefs.json")
+        with open(prefs_path, "r", encoding="utf-8") as _f:
+            prefs = json.load(_f)
+        code = prefs.get("symbol_code", "")
+        if code:
+            return get_contract_spec(code)["pt_value"]
+    except Exception:
+        pass
+    return FUTURES_PT_VALUE
+
+
+def normalize_trade_pnl(
+    entry_price: float,
+    quantity: int,
+    pnl_pts: float,
+    pt_value: int = FUTURES_PT_VALUE,
+) -> Dict[str, float]:
+    """계약 스펙(pt_value)을 반영해 거래 손익을 정규화한다.
+    미니선물=50,000 / 일반선물=250,000 — 반드시 종목코드 기반 pt_value를 전달할 것.
+    """
     entry_price_f = float(entry_price or 0.0)
     quantity_i = max(int(quantity or 0), 0)
     pnl_pts_f = float(pnl_pts or 0.0)
-    gross_pnl_krw = pnl_pts_f * FUTURES_PT_VALUE * quantity_i
-    commission_krw = entry_price_f * quantity_i * FUTURES_PT_VALUE * FUTURES_COMMISSION_RATE * 2
+    gross_pnl_krw = pnl_pts_f * pt_value * quantity_i
+    commission_krw = entry_price_f * quantity_i * pt_value * FUTURES_COMMISSION_RATE * 2
     net_pnl_krw = gross_pnl_krw - commission_krw
     return {
         "gross_pnl_krw": round(gross_pnl_krw, 0),
@@ -100,7 +123,7 @@ def is_plausible_futures_trade(
         return False
     if not (MIN_VALID_FUTURES_PRICE <= exit_price_f <= MAX_VALID_FUTURES_PRICE):
         return False
-    if pnl_pts_f > MAX_REASONABLE_TRADE_PNL_PTS:
+    if abs(pnl_pts_f) > MAX_REASONABLE_TRADE_PNL_PTS:
         return False
     return True
 
@@ -296,7 +319,10 @@ def init_trades_db():
 
 
 def _migrate_trades_db():
-    """거래 테이블에 정규화 PnL 컬럼을 보강하고 기존 혼합 데이터를 현재 공식으로 통일."""
+    """거래 테이블에 정규화 PnL 컬럼을 보강하고 기존 혼합 데이터를 현재 공식으로 통일.
+    v4: ui_prefs.json의 symbol_code로 pt_value를 결정해 미니/일반선물 구분 적용.
+    """
+    pt_value = _get_pt_value_from_prefs()
     with _lock:
         with get_conn(TRADES_DB) as conn:
             cols = {
@@ -322,22 +348,43 @@ def _migrate_trades_db():
                     conn.execute(f"ALTER TABLE trades ADD COLUMN {name} {dtype}")
 
             rows = conn.execute(
-                """SELECT id, entry_price, quantity, pnl_pts, formula_version
+                """SELECT id, entry_price, exit_price, direction,
+                          COALESCE(raw_direction, direction) AS raw_direction,
+                          quantity, pnl_pts, formula_version
                    FROM trades
-                   WHERE pnl_pts IS NOT NULL"""
+                   WHERE pnl_pts IS NOT NULL AND exit_price IS NOT NULL"""
             ).fetchall()
             for row in rows:
-                metrics = normalize_trade_pnl(
-                    entry_price=row["entry_price"],
-                    quantity=row["quantity"],
-                    pnl_pts=row["pnl_pts"],
-                )
                 current_version = int(row["formula_version"] or 0)
                 if current_version == TRADE_PNL_FORMULA_VERSION:
                     continue
+                # v3: pnl_pts를 진입/청산가 기준 per-contract 값으로 재산출한다.
+                # 이전 버전에서 분할체결 집계 시 per-contract × fill_count가 저장된 버그를 수정.
+                entry_p = float(row["entry_price"] or 0.0)
+                exit_p = float(row["exit_price"] or 0.0)
+                qty = max(int(row["quantity"] or 1), 1)
+                direction = str(row["direction"] or "LONG")
+                raw_dir = str(row["raw_direction"] or direction)
+                exec_mult = 1 if direction == "LONG" else -1
+                fwd_mult = 1 if raw_dir == "LONG" else -1
+                corrected_pnl_pts = (exit_p - entry_p) * exec_mult
+                corrected_fwd_pts = (exit_p - entry_p) * fwd_mult
+                metrics = normalize_trade_pnl(
+                    entry_price=entry_p,
+                    quantity=qty,
+                    pnl_pts=corrected_pnl_pts,
+                    pt_value=pt_value,
+                )
+                fwd_metrics = normalize_trade_pnl(
+                    entry_price=entry_p,
+                    quantity=qty,
+                    pnl_pts=corrected_fwd_pts,
+                    pt_value=pt_value,
+                )
                 conn.execute(
                     """UPDATE trades
-                       SET gross_pnl_krw = ?,
+                       SET pnl_pts = ?,
+                           gross_pnl_krw = ?,
                            commission_krw = ?,
                            net_pnl_krw = ?,
                            pnl_krw = ?,
@@ -345,22 +392,24 @@ def _migrate_trades_db():
                            raw_direction = COALESCE(raw_direction, direction),
                            executed_direction = COALESCE(executed_direction, direction),
                            reverse_entry_enabled = COALESCE(reverse_entry_enabled, 0),
-                           forward_pnl_pts = COALESCE(forward_pnl_pts, pnl_pts),
-                           forward_pnl_krw = COALESCE(forward_pnl_krw, ?),
-                           forward_gross_pnl_krw = COALESCE(forward_gross_pnl_krw, ?),
-                           forward_commission_krw = COALESCE(forward_commission_krw, ?),
-                           forward_net_pnl_krw = COALESCE(forward_net_pnl_krw, ?)
+                           forward_pnl_pts = ?,
+                           forward_pnl_krw = ?,
+                           forward_gross_pnl_krw = ?,
+                           forward_commission_krw = ?,
+                           forward_net_pnl_krw = ?
                        WHERE id = ?""",
                     (
+                        round(corrected_pnl_pts, 4),
                         metrics["gross_pnl_krw"],
                         metrics["commission_krw"],
                         metrics["net_pnl_krw"],
                         metrics["net_pnl_krw"],
                         metrics["formula_version"],
-                        metrics["net_pnl_krw"],
-                        metrics["gross_pnl_krw"],
-                        metrics["commission_krw"],
-                        metrics["net_pnl_krw"],
+                        round(corrected_fwd_pts, 4),
+                        fwd_metrics["net_pnl_krw"],
+                        fwd_metrics["gross_pnl_krw"],
+                        fwd_metrics["commission_krw"],
+                        fwd_metrics["net_pnl_krw"],
                         row["id"],
                     ),
                 )
@@ -470,6 +519,7 @@ def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
                   COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw) AS forward_pnl_krw,
                   gross_pnl_krw, commission_krw, formula_version,
                   forward_gross_pnl_krw, forward_commission_krw,
+                  reverse_entry_enabled,
                   exit_reason, grade, entry_ts, exit_ts
            FROM trades
            WHERE exit_ts IS NOT NULL AND exit_ts >= ?
@@ -696,6 +746,37 @@ def fetch_trend_yearly() -> List[dict]:
     """)]
 
 
+def init_daily_broker_pnl_db():
+    """브로커 일별 실현손익 테이블 생성 (CpTd6197 실제 정산값 보관)"""
+    execute(TRADES_DB, """
+        CREATE TABLE IF NOT EXISTS daily_broker_pnl (
+            date       TEXT PRIMARY KEY,
+            pnl_krw    REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+
+def upsert_daily_broker_pnl(date: str, pnl_krw: float) -> None:
+    """날짜별 브로커 실현손익 저장 (pnl_krw=0 이면 스킵)."""
+    if not date or pnl_krw == 0.0:
+        return
+    import datetime as _dt
+    execute(TRADES_DB,
+            "INSERT OR REPLACE INTO daily_broker_pnl (date, pnl_krw, updated_at) VALUES (?, ?, ?)",
+            (date, float(pnl_krw), _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
+
+def fetch_broker_daily_pnl_map(days: int = 90) -> Dict[str, float]:
+    """날짜 → 브로커 실현손익(원) 딕셔너리 반환."""
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    rows = fetchall(TRADES_DB,
+                    "SELECT date, pnl_krw FROM daily_broker_pnl WHERE date >= ? ORDER BY date",
+                    (cutoff,))
+    return {r["date"]: float(r["pnl_krw"]) for r in rows}
+
+
 def init_all_dbs():
     """전체 DB 초기화 (main.py에서 1회 호출)"""
     init_predictions_db()
@@ -703,3 +784,4 @@ def init_all_dbs():
     init_daily_stats_db()
     init_shap_db()
     init_raw_data_db()
+    init_daily_broker_pnl_db()

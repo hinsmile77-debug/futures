@@ -2571,10 +2571,45 @@ class EntryPanel(QWidget):
         ]
         check_tooltips = {
             "signal_chk": (
-                "목적: 시스템이 현재 LONG, SHORT, FLAT 중 어느 방향인지 먼저 확정합니다.\n"
-                "의의: 이후 VWAP, CVD, OFI, 외인, 직전 봉 해석의 기준축이 되는 출발점입니다.\n"
-                "진입 조건: 1·3·5·10·15·30분 호라이즌의 상승/하락 확률을 가중합한 결과가 "
-                "LONG(+1) 또는 SHORT(-1)로 확정되어야 합니다. FLAT(0)이면 실패합니다."
+                "【앙상블 신호 방향 결정 흐름】\n"
+                "\n"
+                "STEP 1  멀티호라이즌 입력\n"
+                "  MultiHorizonModel → 1·3·5·10·15·30분 호라이즌별 up/down 확률 반환\n"
+                "\n"
+                "STEP 2  적응형 가중합 (HorizonDecorrelator)\n"
+                "  기본 가중치: 1분 10% / 3분 15% / 5분 20% / 10분 20% / 15분 20% / 30분 15%\n"
+                "  60분 롤링 버퍼로 호라이즌 간 Pearson 상관계수 추적 → 15분마다 가중치 갱신\n"
+                "  상관이 높은 호라이즌 가중치를 낮춰 이중 가중 완화 / 샘플 < 30개면 정적값 fallback\n"
+                "\n"
+                "STEP 3  원시 방향 판정\n"
+                "  up_score   = Σ(up_prob[h]   × w[h]) / Σw\n"
+                "  down_score = Σ(down_prob[h] × w[h]) / Σw\n"
+                "  flat_score = max(0, 1 − up − down)\n"
+                "  → 세 점수 중 최댓값이 방향 확정 (UP / DOWN / FLAT)\n"
+                "\n"
+                "STEP 4  미시구조 게이팅 (AdaptiveEnsembleGater)\n"
+                "  6개 신호 (초기 가중치): microprice_bias 28% / mlofi_norm 28% /\n"
+                "    queue_signal 16% / cancel_add_ratio 10% / depth_bias 10% / mlofi_slope 8%\n"
+                "  gate_strength ≤ −0.28 & 역신호 2개↑ → 점수 패널티 (최대 −12%, BLOCKED)\n"
+                "  gate_strength ≥ +0.22 & 순신호 2개↑ → 점수 부스트 (최대 +8%)\n"
+                "  그 외 → ±4% 이내 soft 조정\n"
+                "  → 재정규화 후 방향 재확정 / 거래 결과로 온라인 학습 (lr=0.005, 10건마다 저장)\n"
+                "\n"
+                "STEP 5  레짐별 최소 신뢰도 필터\n"
+                "  REGIME_MIN_CONFIDENCE[regime] 이상 & 방향 ≠ FLAT → regime_ok=True\n"
+                "  미충족 시 즉시 X등급\n"
+                "\n"
+                "STEP 6  사전 등급 판정 (신뢰도 기준)\n"
+                "  confidence ≥ 70% → A예비  /  60~70% → B예비  /  min_conf 이상 → C예비\n"
+                "\n"
+                "STEP 7  체크리스트 9개 통과 수 → 최종 등급\n"
+                "  6개↑ → A (자동, ×1.5)  /  4~5개 → B (자동, ×1.0)\n"
+                "  2~3개 → C (수동 확인, ×0.6)  /  1개↓ → X (진입 금지)\n"
+                "\n"
+                "STEP 8  분할 진입 실행 (StagedEntryManager)\n"
+                "  A: 100% 즉시  /  B: 50% → 1분 확인 → 50%  /  C: 50% (2차 없음)\n"
+                "\n"
+                "※ 이 체크 항목: 방향이 UP(+1) 또는 DOWN(−1)이면 통과, FLAT(0)이면 즉시 X등급"
             ),
             "conf_chk": (
                 "목적: 예측 신호의 최소 품질을 확보해 애매한 진입을 걸러냅니다.\n"
@@ -2765,19 +2800,23 @@ class EntryPanel(QWidget):
             is_recommended = mode == recommended_mode
             accent = accent_map.get(mode, C['text2'])
             base_bg = C['bg2'] if is_selected else C['bg3']
-            bg = accent if is_recommended and not is_selected else base_bg
-            fg = "#0B1118" if is_recommended else (accent if is_selected else C['text2'])
+            bg = accent if (is_recommended and not is_selected) else base_bg
+            if is_recommended and not is_selected:
+                fg = "#0B1118"   # accent 배경 위 어두운 글자
+            elif is_selected:
+                fg = accent      # 어두운 배경 위 accent 글자
+            else:
+                fg = C['text2']
             border_col = accent if (is_selected or is_recommended) else C['border']
             border_w = "3px" if is_selected and is_recommended else "2px" if (is_selected or is_recommended) else "1px"
-            suffix = []
-            if is_recommended:
-                suffix.append("권장")
-            if is_selected:
-                suffix.append("선택")
             label = self._mode_button_labels.get(mode, mode)
-            if suffix:
-                label = "%s [%s]" % (label, "/".join(suffix))
             btn.setText(label)
+            tip = []
+            if is_recommended:
+                tip.append("시간대 권장 모드")
+            if is_selected:
+                tip.append("현재 선택")
+            btn.setToolTip(" · ".join(tip) if tip else "")
             btn.setStyleSheet(
                 f"QPushButton{{background:{bg};color:{fg};border:{border_w} solid {border_col};"
                 f"border-radius:4px;padding:5px 8px;font-size:{S.f(12)}px;font-weight:bold;}}"
@@ -4494,6 +4533,7 @@ class PnlHistoryPanel(QWidget):
     def __init__(self):
         super().__init__()
         self._rows = []
+        self._broker_pnl: dict = {}  # date → broker settled KRW
         self._build()
 
     # ── UI 구성 ────────────────────────────────────────────────
@@ -4564,8 +4604,10 @@ class PnlHistoryPanel(QWidget):
         )
         self._cb_forward = QCheckBox("순방향")
         self._cb_reverse = QCheckBox("역방향")
-        self._cb_forward.setChecked(True)
-        self._cb_reverse.setChecked(True)
+        # 저장된 체크 상태 복원 (기본값: 둘 다 True)
+        _saved_fwd, _saved_rev = self._load_cb_prefs()
+        self._cb_forward.setChecked(_saved_fwd)
+        self._cb_reverse.setChecked(_saved_rev)
         self._cb_forward.setStyleSheet(_cb_style)
         self._cb_reverse.setStyleSheet(_cb_style)
         self._cb_forward.stateChanged.connect(self._on_source_changed)
@@ -4644,6 +4686,11 @@ class PnlHistoryPanel(QWidget):
 
     def refresh(self, rows):
         """trades.db 행 목록으로 전체 갱신. rows: sqlite3.Row list."""
+        try:
+            from utils.db_utils import fetch_broker_daily_pnl_map
+            self._broker_pnl = fetch_broker_daily_pnl_map(90)
+        except Exception:
+            self._broker_pnl = {}
         self._rows = []
         for r in rows:
             try:
@@ -4655,6 +4702,7 @@ class PnlHistoryPanel(QWidget):
                     "forward_pnl_pts": float(r["forward_pnl_pts"] or r["pnl_pts"] or 0),
                     "forward_pnl_krw": float(r["forward_pnl_krw"] or r["pnl_krw"] or 0),
                     "quantity": int(r["quantity"]    or 1),
+                    "reverse_entry_enabled": int(r["reverse_entry_enabled"] or 0),
                 })
             except Exception:
                 pass
@@ -4665,10 +4713,24 @@ class PnlHistoryPanel(QWidget):
 
     # ── 그룹화 유틸 ────────────────────────────────────────────
 
+    def _active_rows(self):
+        """체크박스 상태에 따라 self._rows 필터링.
+        순방향=reverse_entry_enabled==0, 역방향=reverse_entry_enabled==1.
+        """
+        fwd = self._cb_forward.isChecked()
+        rev = self._cb_reverse.isChecked()
+        if fwd and rev:
+            return self._rows
+        if fwd:
+            return [r for r in self._rows if not r["reverse_entry_enabled"]]
+        if rev:
+            return [r for r in self._rows if r["reverse_entry_enabled"]]
+        return []
+
     def _group(self, key_fn):
         from collections import defaultdict
         d = defaultdict(list)
-        for r in self._rows:
+        for r in self._active_rows():
             k = key_fn(r["entry_ts"])
             if k:
                 d[k].append(r)
@@ -4747,7 +4809,42 @@ class PnlHistoryPanel(QWidget):
             dp[d] = dp.get(d, 0) + self._sel_val(r["pnl_krw"], r["forward_pnl_krw"])
         return self._sharpe(list(dp.values()))
 
+    def _sharpe_grp(self, grp):
+        dp = {}
+        for r in grp:
+            d = r["entry_ts"][:10]
+            dp[d] = dp.get(d, 0) + r["pnl_krw"]
+        return self._sharpe(list(dp.values()))
+
+    def _load_cb_prefs(self):
+        """ui_prefs.json에서 순방향/역방향 체크 상태 복원. 기본값: (True, True)."""
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            if not os.path.exists(_f):
+                return True, True
+            with open(_f, "r", encoding="utf-8") as _fp:
+                _p = json.load(_fp)
+            return bool(_p.get("pnl_cb_forward", True)), bool(_p.get("pnl_cb_reverse", True))
+        except Exception:
+            return True, True
+
+    def _save_cb_prefs(self):
+        """현재 체크 상태를 ui_prefs.json에 저장."""
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            _p = {}
+            if os.path.exists(_f):
+                with open(_f, "r", encoding="utf-8") as _fp:
+                    _p = json.load(_fp)
+            _p["pnl_cb_forward"] = self._cb_forward.isChecked()
+            _p["pnl_cb_reverse"] = self._cb_reverse.isChecked()
+            with open(_f, "w", encoding="utf-8") as _fp:
+                json.dump(_p, _fp, ensure_ascii=False)
+        except Exception:
+            pass
+
     def _on_source_changed(self):
+        self._save_cb_prefs()
         if self._rows:
             self._build_daily()
             self._build_weekly()
@@ -4771,17 +4868,23 @@ class PnlHistoryPanel(QWidget):
         cum_map, c = {}, 0.0
         for date_str, grp in groups:
             _, _, _, _, pkrw = self._stats(grp)
-            _, _, _, _, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            c += self._sel_val(pkrw, forward_pkrw)
+            broker_krw = self._broker_pnl.get(date_str)
+            day_krw = broker_krw if broker_krw is not None else pkrw
+            c += day_krw
             cum_map[date_str] = c
 
         tbl = self.tbl_daily
         tbl.setRowCount(len(groups))
         for r_idx, (date_str, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
-            _, _, _, forward_ppts, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
             cum       = cum_map[date_str]
-            disp_krw  = self._sel_val(pkrw, forward_pkrw)
+            broker_krw = self._broker_pnl.get(date_str)
+            if broker_krw is not None:
+                disp_krw = broker_krw
+                krw_text = f"{broker_krw:+,.0f}원"
+            else:
+                disp_krw = pkrw
+                krw_text = self._fmt_single(pkrw, suffix="원")
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
@@ -4793,8 +4896,8 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(wins),                                           fg=C['green'], bg=bg, align=Qt.AlignRight),
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
-                self._item(self._fmt_val(ppts, forward_ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._fmt_val(pkrw, forward_pkrw, suffix="원"),      fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(krw_text,                                            fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
             ]
             for c_idx, it in enumerate(cells):
@@ -4807,18 +4910,16 @@ class PnlHistoryPanel(QWidget):
         cum_map, c = {}, 0.0
         for wk, grp in groups:
             _, _, _, _, pkrw = self._stats(grp)
-            _, _, _, _, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            c += self._sel_val(pkrw, forward_pkrw)
+            c += pkrw
             cum_map[wk] = c
 
         tbl = self.tbl_weekly
         tbl.setRowCount(len(groups))
         for r_idx, (wk, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
-            _, _, _, forward_ppts, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            mdd       = self._mdd_sel(grp)
+            mdd       = self._mdd(grp)
             cum       = cum_map[wk]
-            disp_krw  = self._sel_val(pkrw, forward_pkrw)
+            disp_krw  = pkrw
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
@@ -4830,8 +4931,8 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(wins),                                           fg=C['green'], bg=bg, align=Qt.AlignRight),
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
-                self._item(self._fmt_val(ppts, forward_ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._fmt_val(pkrw, forward_pkrw, suffix="원"),      fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(self._fmt_single(pkrw, suffix="원"),                 fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(mdd, suffix="원"),                  fg=mc, bg=bg, align=Qt.AlignRight),
             ]
@@ -4845,18 +4946,16 @@ class PnlHistoryPanel(QWidget):
         cum_map, c = {}, 0.0
         for mon, grp in groups:
             _, _, _, _, pkrw = self._stats(grp)
-            _, _, _, _, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
-            c += self._sel_val(pkrw, forward_pkrw)
+            c += pkrw
             cum_map[mon] = c
 
         tbl = self.tbl_monthly
         tbl.setRowCount(len(groups))
         for r_idx, (mon, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
-            _, _, _, forward_ppts, forward_pkrw = self._stats(grp, "forward_pnl_pts", "forward_pnl_krw")
             cum       = cum_map[mon]
-            disp_krw  = self._sel_val(pkrw, forward_pkrw)
-            sharpe    = self._sharpe_sel(grp)
+            disp_krw  = pkrw
+            sharpe    = self._sharpe_grp(grp)
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
@@ -4871,8 +4970,8 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(wins),                                           fg=C['green'], bg=bg, align=Qt.AlignRight),
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
-                self._item(self._fmt_val(ppts, forward_ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._fmt_val(pkrw, forward_pkrw, suffix="원"),      fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(self._fmt_single(pkrw, suffix="원"),                 fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(sharpe, decimals=2),                fg=sc, bg=bg),
             ]
@@ -4882,25 +4981,34 @@ class PnlHistoryPanel(QWidget):
     # ── 요약 카드 갱신 ─────────────────────────────────────────
 
     def _build_summary(self):
-        if not self._rows:
+        active = self._active_rows()
+        if not active:
             for v in self._sum.values():
                 v.setText("—")
             return
 
-        days   = len(set(r["entry_ts"][:10] for r in self._rows if r["entry_ts"]))
-        trades = len(self._rows)
-        wins   = sum(1 for r in self._rows if r["pnl_pts"] > 0)
+        days   = len(set(r["entry_ts"][:10] for r in active if r["entry_ts"]))
+        trades = len(active)
+        wins   = sum(1 for r in active if r["pnl_pts"] > 0)
         wr     = wins / trades * 100 if trades else 0
-        total  = sum(r["pnl_krw"] for r in self._rows)
-        forward_total = sum(r["forward_pnl_krw"] for r in self._rows)
-        disp_total = self._sel_val(total, forward_total)
+        total  = sum(r["pnl_krw"] for r in active)
+        # 총 손익: 브로커 정산값이 있는 날은 그 합계 사용
+        # 주의: 행(row) 단위가 아닌 고유 날짜 단위로 합산해야 중복 계산 방지
+        if self._broker_pnl:
+            broker_days = {r["entry_ts"][:10] for r in active
+                           if r["entry_ts"][:10] in self._broker_pnl}
+            broker_total = sum(self._broker_pnl[d] for d in broker_days)
+            missing_total = sum(r["pnl_krw"] for r in active
+                                if r["entry_ts"][:10] not in self._broker_pnl)
+            disp_total = broker_total + missing_total
+        else:
+            disp_total = total
 
-        # 전체 MDD (선택 소스 기준)
-        mdd = self._mdd_sel(self._rows)
+        mdd = self._mdd(active)
 
         # 최장 연승
         best, cur = 0, 0
-        for r in sorted(self._rows, key=lambda x: x["entry_ts"]):
+        for r in sorted(active, key=lambda x: x["entry_ts"]):
             if r["pnl_pts"] > 0:
                 cur  += 1
                 best  = max(best, cur)
@@ -7138,17 +7246,26 @@ class MireukDashboard(QMainWindow):
             self.lbl_server_warn.setVisible(True)
 
     def _save_ui_prefs(self):
-        """현재 종목코드·시장구분·슬랙 On/Off를 ui_prefs.json에 저장."""
+        """현재 종목코드·시장구분·슬랙 On/Off를 ui_prefs.json에 저장.
+        기존 파일의 다른 키(pnl_cb_* 등)는 읽어서 병합 — 덮어쓰기 금지.
+        """
         try:
+            prefs = {}
+            if os.path.exists(_UI_PREFS_FILE):
+                try:
+                    with open(_UI_PREFS_FILE, "r", encoding="utf-8") as _rf:
+                        prefs = json.load(_rf)
+                except Exception:
+                    prefs = {}
             symbol_text = self.cmb_symbol.currentText()
-            prefs = {
+            prefs.update({
                 "version": 2,
                 "market": self.cmb_market.currentText(),
                 "symbol_code": _extract_symbol_code(symbol_text),
                 "symbol_text": symbol_text,
                 "slack_enabled": self.chk_slack.isChecked(),
                 "server_mode": "simul" if self.rdo_simul.isChecked() else "real",
-            }
+            })
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as f:
                 json.dump(prefs, f, ensure_ascii=False)
         except Exception:

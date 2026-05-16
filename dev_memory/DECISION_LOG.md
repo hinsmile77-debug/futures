@@ -1667,3 +1667,35 @@ hurst_idx = reg[0]
 **진단 방법**: 로그에서 "[Capability]" 이후 "[System] Qt 이벤트 루프 진입"이 없으면 AttributeError.
 **Fix**: `DashboardAdapter.__init__`에 `self.chk_slack = self._win.chk_slack` 추가 (L7286) + `_save_ui_prefs()` 위임 메서드 추가 (L7303).
 **교훈**: `DashboardAdapter`에 새 `MireukDashboard` 속성을 노출할 때는 반드시 `DashboardAdapter.__init__`에도 동일하게 추가해야 함.
+
+---
+
+## 2026-05-16 결정 기록 (46차)
+
+### [B52] 역방향 체크박스 의미론 오류 — forward_pnl 전환 방식 폐기
+**파일**: `dashboard/main_dashboard.py`
+**증상**: 역방향 체크박스를 체크하면 거의 전 거래일에 역방향 진입 거래가 있는 것처럼 데이터가 올라옴. 순+역 모두 체크 시 2배.
+**원인**: `_sel_val(exec_val, fwd_val)` — 역방향 체크 = forward_pnl 표시(모든 거래), 순+역 = exec+fwd 합산.
+**Fix**: `_active_rows()`로 `reverse_entry_enabled` 필드 기준 행 필터링. 이후 항상 `pnl_krw` 사용.
+**교훈**: 체크박스 필터는 "어떤 pnl 값을 보여줄지"가 아닌 "어떤 거래 행을 보여줄지" 로직이어야 함.
+
+### [B53] 미니선물 pt_value 하드코딩 — normalize_trade_pnl 250k 고정
+**파일**: `utils/db_utils.py`, `main.py`
+**증상**: 미니선물(50k) 사용 시 DB pnl_krw가 5배 과대계상.
+**원인**: `normalize_trade_pnl`이 `FUTURES_PT_VALUE=250,000` 하드코딩. `main.py`도 `self._pt_value` 미전달.
+**Fix**: `pt_value` 파라미터 추가. `_get_pt_value_from_prefs()`로 `ui_prefs.json`→`symbol_code`→`get_contract_spec()`["pt_value"] 결정. `TRADE_PNL_FORMULA_VERSION` 3→4 bump으로 기존 레코드 재마이그레이션.
+**교훈**: 계약 스펙(pt_value)은 반드시 종목코드 기반으로 동적 결정해야 함. 하드코딩 절대 금지.
+
+### [B54] _save_ui_prefs() 덮어쓰기 — pnl_cb_* 키 손실
+**파일**: `dashboard/main_dashboard.py`
+**증상**: 종목/슬랙/서버모드 변경 시 체크박스 상태가 초기화됨.
+**원인**: `_save_ui_prefs()`가 새 dict 생성 후 파일 전체 덮어씀. pnl_cb_forward/reverse 키 포함 안 됨.
+**Fix**: 기존 파일 읽고 → `prefs.update({...})` → 쓰기 방식으로 변경.
+**교훈**: ui_prefs.json은 여러 컴포넌트가 독립 저장. 저장 전 반드시 기존 내용 읽어서 병합할 것.
+
+### [B55] 총 손익 broker_total 행 단위 중복합산
+**파일**: `dashboard/main_dashboard.py` `_build_summary`
+**증상**: 총 손익 65,138,190원 (실제 2,468,190원의 26배).
+**원인**: `sum(broker_pnl[날짜] for row in active ...)` — 5/15 11건 × 6,267,000 = 68,937,000원.
+**Fix**: `broker_days = {날짜 집합}` → `sum(broker_pnl[d] for d in broker_days)` 고유 날짜 1회.
+**교훈**: broker P&L은 날짜별 단일값 — 거래 행 반복문 안에서 날짜로 조회하면 반드시 중복됨.
