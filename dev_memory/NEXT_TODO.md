@@ -8,6 +8,37 @@
 
 ---
 
+## 2026-05-16 (41차) — CB③ + HORIZON_THRESHOLDS 재보정 후속
+
+### 한일 요약
+
+- [DONE 2026-05-16] **HORIZON_THRESHOLDS 재보정** — 1200pt 기준 전체 약 1.6× 상향, config/settings.py 단일 수정 → 3파일 자동 전파
+- [DONE 2026-05-16] **`_log_threshold_monitor()` 신설** — GBM 재학습 완료 시 + 30분 주기 로그 (static/ATR 비교, 안정화 감지)
+- [DONE 2026-05-16] **`_CB_TIP` 슬랙 알림 섹션 추가** — 5개 트리거 슬랙 대응표 + 다크박스 예시
+- [DONE 2026-05-16] **`param_title` 피처 윈도우 툴팁** — CORE 3종(청록)/선택 피처(황색)/외부 수집(회색) 테이블
+- [DONE 2026-05-16] **`_HZ_TIP` 신규 + `hz_title` 연결** — 멀티 호라이즌 예측 6섹션 툴팁
+- [DONE 2026-05-16] **CB③ 근본 원인 분석** — warn_count 구조적 취약 + threshold 너무 낮음 확인
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-19] **GBM 재학습 적용 확인 (다음 기동 시)**
+  - 다음날 08:45 기동 → warmup retrain 자동 발동 확인
+  - 재학습 완료 후 `_log_threshold_monitor()` 로그 수신 확인
+  - "모델 AI" 탭: `[THRESH] stable_count=N/6 ✅` 또는 `⚠ ATR전환권장` 로그 확인
+
+- [NEXT 2026-05-19] **FLAT 비율 실 데이터 검증**
+  - GBM 재학습 후 첫 장(2026-05-19)에서 30분 호라이즌 예측 중 FLAT 비율 확인
+  - 목표: 29~37% (이전 추정 24% 미만 개선 여부)
+  - `prediction_buffer.py` `verify_and_update` 로그에서 FLAT/UP/DOWN 분포 확인
+
+- [NEXT 향후] **ATR 동적 방식 전환 검토**
+  - 정적 재보정 후 CB③ 미발동 1~2주 확인 후 전환 검토
+  - `threshold = max(base, atr/price × mult)` 방식
+  - 핵심 주의: `batch_retrainer.py`·`prediction_buffer.py` 양쪽 동시 적용 필수 (학습-검증 threshold 일관성)
+  - ATR period=14 이미 `feature_builder.py`에 구현됨 → `_last_features["atr"]` 재사용
+
+---
+
 ## 2026-05-16 (40차) — 장전 시동 흐름 점검 + 슬랙 알림 후속
 
 ### 한일 요약

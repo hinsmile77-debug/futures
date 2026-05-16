@@ -1,7 +1,55 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-16 (40차) — **장전 시동 흐름 점검 + 슬랙 알림 + UI 체크박스**
+> 마지막 업데이트: 2026-05-16 (41차) — **CB③ 분석 + HORIZON_THRESHOLDS 재보정 + 모니터링·툴팁 강화**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-16 (41차) — CB③ 분석 + HORIZON_THRESHOLDS 재보정 + 모니터링·툴팁
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| HORIZON_THRESHOLDS 재보정 | **완료** — 1200pt 시장 기준 전체 약 1.6× 상향 (FLAT 29~37% 목표) |
+| `_log_threshold_monitor()` | **완료** — GBM 재학습 완료 시 + 30분 주기 호출 |
+| `_threshold_monitor_tick` | **완료** — main.py line 286 |
+| `_CB_TIP` 슬랙 알림 섹션 | **완료** — 5개 트리거 대응표 + 다크박스 포함 |
+| `param_title` 피처 윈도우 툴팁 | **완료** — CORE/선택/외부 3색 분류 테이블 |
+| `_HZ_TIP` + `hz_title` 연결 | **완료** — 6섹션 툴팁 (호라이즌 개념·threshold·acc·모니터링) |
+| GBM 재학습 적용 | **미완료** — 다음날 08:45 기동 시 warmup retrain 자동 발동 예정 |
+| ATR 동적 방식 전환 | **미완료** — 정적 재보정 안정화 확인 후 전환 검토 |
+
+### HORIZON_THRESHOLDS 현재값 (2026-05-16 재보정)
+
+| 호라이즌 | 구값 | 신값 | 1200pt 기준 pt |
+|---|---|---|---|
+| 1m  | 0.0002 | **0.0005** | 0.60pt (12틱) |
+| 3m  | 0.0003 | **0.0008** | 0.96pt (19틱) |
+| 5m  | 0.0004 | **0.0011** | 1.32pt (26틱) |
+| 10m | 0.0006 | **0.0016** | 1.92pt (38틱) |
+| 15m | 0.0008 | **0.0022** | 2.64pt (53틱) |
+| 30m | 0.0012 | **0.0032** | 3.84pt (77틱) |
+
+> σ_1min≈1.47pt 기준, threshold≈0.4~0.5σ → FLAT 29~37% (3택 랜덤 33% 근접)
+
+### 수정 파일 (41차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `config/settings.py` | HORIZON_THRESHOLDS 전체 재보정 |
+| `main.py` | `_threshold_monitor_tick`, `_log_threshold_monitor()`, GBM 콜백·파이프라인 30분 주기 호출 |
+| `dashboard/main_dashboard.py` | `_CB_TIP` 슬랙 섹션, `param_title` 피처 윈도우 테이블, `_HZ_TIP` + `hz_title` 연결 |
+
+### threshold 전파 구조
+
+```
+config/settings.py (HORIZON_THRESHOLDS)
+  ├── learning/batch_retrainer.py     (학습 라벨 생성)
+  ├── learning/prediction_buffer.py   (검증 채점)
+  └── learning/target_builder.py      (단독 타겟 계산)
+→ settings.py 1곳 수정으로 전파 완료. GBM 재학습 필수.
+```
 
 ---
 

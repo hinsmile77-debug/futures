@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-05-16 (41차 — CB③ 분석 + HORIZON_THRESHOLDS 재보정 + 모니터링·툴팁 강화)
+
+**Work**: 5/15 CB③(30분 정확도 미달 2회 연속) 발동 원인을 근본적으로 분석하고, HORIZON_THRESHOLDS를 KOSPI200 1200pt 시장 현실에 맞게 재보정했다. 30분 주기 threshold 모니터링을 main.py에 추가하고, 대시보드 CB 배지·파라미터 중요도·멀티 호라이즌 라벨에 상세 툴팁을 붙였다.
+
+### 수정 내역
+
+| 항목 | 파일 | 변경 |
+|---|---|---|
+| HORIZON_THRESHOLDS 재보정 | `config/settings.py` | 1m:0.0002→0.0005, 3m:0.0003→0.0008, 5m:0.0004→0.0011, 10m:0.0006→0.0016, 15m:0.0008→0.0022, 30m:0.0012→0.0032 |
+| `_threshold_monitor_tick` 카운터 추가 | `main.py` | line 286, 30분 주기 호출용 |
+| `_log_threshold_monitor()` 메서드 신설 | `main.py` | line 1213-1255, Static·ATR dynamic 비교 로그, 안정화 감지 시 ATR 전환 제안 |
+| GBM 재학습 완료 시 모니터 호출 | `main.py` | line 1208-1210, `_on_gbm_retrain_done()` 안에서 `_log_threshold_monitor(atr, price)` |
+| 파이프라인 30분 주기 모니터 호출 | `main.py` | line 1583-1585, `_threshold_monitor_tick % 30 == 0` 조건 |
+| `_CB_TIP` 슬랙 알림 섹션 추가 | `dashboard/main_dashboard.py` | ③ 슬랙 알림 내용 섹션 (다크박스 + 5개 트리거 대응표), 기존 ③→④ 재번호 |
+| `param_title` 툴팁 피처 윈도우 테이블 | `dashboard/main_dashboard.py` | line 890-991, ③ 피처별 내부 윈도우 테이블 추가 (CORE 청록/선택 황색/외부 회색) |
+| `_HZ_TIP` 신규 정의 + `hz_title` 연결 | `dashboard/main_dashboard.py` | line 614-710, 멀티 호라이즌 예측 6섹션 툴팁 (생성·검증·threshold·acc·모니터링) |
+
+### 핵심 설계 원칙 (41차)
+
+- **HORIZON_THRESHOLDS 재보정 기준**: 2026-05 일중 고저폭 ~96pt 기반 σ_1min≈1.47pt, threshold ≈ 0.4~0.5σ → FLAT 29~37% 목표 (3택 랜덤 33%에 유의미 근접)
+- **단일 진입점 전파**: `config/settings.py` 1곳 수정 → `batch_retrainer.py`·`prediction_buffer.py`·`target_builder.py` 자동 전파. 적용 후 GBM 재학습 필수
+- **모니터링 구조**: 30분 주기 + GBM 재학습 완료 시 `_log_threshold_monitor()` → 모델 AI탭에 stable_count 기반 안정/초과 판정 + ATR 동적 전환 제안
+- **ATR 동적 방식**: 단기는 정적 재보정으로 처리. 안정화 확인 후 `threshold = max(base, atr/price × mult)` 동적 방식으로 전환 예정
+- **threshold 역할 명확화**: 대시보드 카드 %는 GBM+SGD 출력값이며 threshold 미사용. threshold는 학습 라벨 생성·검증 채점 기준만
+
+### CB③ 근본 원인 (분석 완료, 코드 수정)
+
+- **warn_count 구조적 취약**: 30분 이동평균에서 한 번 35% 미달 시 다음 분도 거의 동일 수준 → 경고 1분 후 즉시 HALT
+- **threshold 너무 낮음**: 1200pt 시장에서 기존 threshold(30m=0.12%)는 FLAT 24%만 → 사실상 2택 문제 → 랜덤 기준선 50%에 근접 → CB③ 35% 기준 무의미
+- **수정**: HORIZON_THRESHOLDS 전체 약 1.6× 상향 → FLAT 29~37%로 복원 → CB③ 35% 기준이 실질적 의미를 가짐
+
+### 기동 시 예상 확인 로그 (41차)
+
+```
+다음날 08:45 기동 → GBM warmup retrain 자동 발동
+→ _log_threshold_monitor() 호출 → "모델 AI" 탭에 로그:
+  [THRESH] 30m threshold=0.0032 | ATR_dynamic=X.XXXX | static✅ (or ⚠ATR전환권장)
+  stable_count=N/6 → 안정: ✅ 전부 정적 내 / 초과: ⚠ ATR 동적 전환 권장
+```
+
+---
+
 ## 2026-05-16 (40차 — 장전 시동 흐름 점검 + 슬랙 알림 + UI 체크박스)
 
 **Work**: 08:45 자동 기동 → 09:00 첫 틱 수신까지의 전체 흐름을 감사하고 이상점 6종을 수정했다. 슬랙 알림 전 구간 추가, 대시보드 슬랙 On/Off 체크박스 신설, GBM 재학습 데몬 스레드 전환, BAT 파일 세션 이중 확인을 완료했다.

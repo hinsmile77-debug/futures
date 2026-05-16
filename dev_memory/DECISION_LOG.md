@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-05-16 (41차 — CB③ 분석 + HORIZON_THRESHOLDS 재보정 + 모니터링·툴팁)
+
+### [D92] HORIZON_THRESHOLDS는 KOSPI200 실제 변동성(1200pt 기준)에 맞춰 재보정한다
+**Decision**: 기존 threshold(1m=0.0002 ~ 30m=0.0012)를 전체 약 1.6× 상향(1m=0.0005 ~ 30m=0.0032)했다. 기준: 2026-05 일중 고저폭 ~96pt → σ_1min≈1.47pt, threshold ≈ 0.4~0.5σ → FLAT 비율 29~37% 목표.  
+**Why**: 기존 threshold가 너무 낮아 1200pt 시장에서 FLAT 비율이 24%에 그쳐 사실상 2택(UP/DOWN) 문제가 됐다. 3택 기준선 33%에 가까운 환경에서 CB③ 35% 기준은 실질적 의미가 없었다. warn_count 구조상 한 번 35% 미달 시 다음 분도 동일 → 1~2분 내 HALT로 이어짐.  
+**How to apply**: `config/settings.py` 1곳 수정 → `batch_retrainer.py`·`prediction_buffer.py`·`target_builder.py` 자동 전파. 수정 후 반드시 GBM 재학습 필요 (학습 라벨과 검증 채점 기준 일관성).
+
+### [D93] threshold 모니터링은 `_log_threshold_monitor()`로 30분 주기 + GBM 재학습 완료 시 실행한다
+**Decision**: `main.py`에 `_log_threshold_monitor(atr, price)` 메서드를 신설. GBM 재학습 완료 시와 파이프라인 30분 주기(`_threshold_monitor_tick % 30 == 0`) 두 곳에서 호출. Static threshold와 ATR 동적 threshold를 비교해 `stable_count >= 4` 조건을 판정. 결과는 `log_manager.learning()` → "5 모델 AI" 탭에 출력.  
+**Why**: HORIZON_THRESHOLDS 재보정이 시장 변동성과 맞는지 운영 중 지속 감시가 필요하다. 안정화 확인 후 ATR 동적 방식으로 전환할 타이밍을 정량적으로 판단하기 위한 기준값으로 활용.  
+**How to apply**: `stable_count >= 4` → `✅ 정적 threshold 안정` 로그. `stable_count < 4` → `⚠ ATR 동적 전환 권장` 로그. ATR은 `feature_builder._last_features["atr"]`, 가격은 `_last_pipeline_price`.
+
+### [D94] ATR 동적 threshold는 학습·검증 양쪽에 동시 적용해야 하며, 단기는 정적 재보정으로 처리한다
+**Decision**: `threshold = max(base, atr/price × horizon_multiplier)` 동적 방식은 `batch_retrainer.py`(학습 라벨 생성)와 `prediction_buffer.py`(검증 채점) 두 곳에 동시 적용해야 한다. 한 쪽만 변경하면 학습-검증 기준이 어긋나 CB③이 오발동/미발동할 수 있다. 단기(2026-05)는 정적 재보정으로 처리하고, 안정화 1~2주 확인 후 동적 전환을 재검토한다.  
+**Why**: ATR 동적 방식의 핵심 위험은 학습 당시 threshold와 검증 시 threshold가 다를 경우 모델이 예측하도록 학습된 기준과 정확도 판정 기준이 달라지는 것. 별도 구현 없이 `_last_features["atr"]`를 재사용하면 구현 범위는 최소화됨.  
+**How to apply**: 전환 시 `settings.py`에 `HORIZON_THRESHOLDS_BASE`와 `_HORIZON_ATR_MULT` 분리 정의. `batch_retrainer`와 `prediction_buffer` 양쪽에 동일 로직 추가. 전환 전 모니터 로그의 stable_count로 적정 시점 판단.
+
+### [B100] CB③ 발동(2026-05-15) — HORIZON_THRESHOLDS가 KOSPI200 1200pt 시장 대비 너무 낮아 FLAT 비율 과소
+**File**: `config/settings.py`, `learning/prediction_buffer.py`, `safety/circuit_breaker.py`  
+**Symptom**: 2026-05-15 11:54 CB③ 경고, 11:55 CB③ 발동(당일 정지). 30분 호라이즌 이동 정확도가 35% 미달 2회 연속.  
+**Root cause**: (1) 기존 threshold가 350pt 시장 기준 설계값이어서 1200pt 시장에서 너무 낮음 → FLAT 비율 24% (목표 29~37%) → 사실상 UP/DOWN 2택 → 랜덤 기준선 50% 인근에서 CB③ 35% 기준 무의미. (2) warn_count 구조: 30분 이동평균이 한 번 35% 미달하면 다음 분도 거의 같은 수준 → 경고 발생 1분 후 즉시 HALT.  
+**Fix**: HORIZON_THRESHOLDS 전체 재보정(D92 참조). 다음날 GBM 재학습으로 반영 완료 예정.
+
+---
+
 ## 2026-05-16 (40차 — 장전 시동 흐름 점검 + 슬랙 알림 + UI 체크박스)
 
 ### [D88] pre_market_setup 타이밍은 08:55 단일 블록으로 통합한다
