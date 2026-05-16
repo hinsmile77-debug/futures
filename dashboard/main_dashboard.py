@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QSlider, QCheckBox, QSizePolicy, QDesktopWidget,
     QToolTip, QTableWidget, QTableWidgetItem, QHeaderView, QShortcut,
     QDialog, QDialogButtonBox, QDoubleSpinBox, QSpinBox, QFormLayout,
+    QRadioButton, QButtonGroup,
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
@@ -6796,6 +6797,39 @@ class MireukDashboard(QMainWindow):
         title_box.addWidget(title)
         title_box.addLayout(acct_row)
         title_box.addLayout(strat_row)
+        # ── 서버 구분 라디오 버튼 ─────────────────────────────────
+        _rb_style = (
+            f"QRadioButton{{color:{C['text2']};font-size:{S.f(9)}px;spacing:{S.p(3)}px;}}"
+            f"QRadioButton::indicator{{width:{S.p(11)}px;height:{S.p(11)}px;"
+            f"border-radius:{S.p(6)}px;}}"
+            f"QRadioButton::indicator:unchecked{{background:{C['bg2']};"
+            f"border:1px solid {C['border']};}}"
+            f"QRadioButton::indicator:checked{{border:3px solid {C['bg2']};}}"
+        )
+        self._actual_server_mode = "unknown"   # 브로커 연결 후 set_server_mode()로 갱신
+        self._server_rb_grp = QButtonGroup(self)
+        self.rdo_simul = QRadioButton("모의투자")
+        self.rdo_real  = QRadioButton("실서버")
+        self.rdo_simul.setChecked(True)
+        self.rdo_simul.setCursor(Qt.PointingHandCursor)
+        self.rdo_real.setCursor(Qt.PointingHandCursor)
+        self.rdo_simul.setToolTip("모의투자 서버에서 거래합니다")
+        self.rdo_real.setToolTip("실서버에서 거래합니다 — 실제 자금 위험")
+        self._server_rb_grp.addButton(self.rdo_simul, 0)
+        self._server_rb_grp.addButton(self.rdo_real,  1)
+        self.rdo_simul.setStyleSheet(_rb_style + f"QRadioButton::indicator:checked{{background:{C['cyan']};}}")
+        self.rdo_real.setStyleSheet(_rb_style  + f"QRadioButton::indicator:checked{{background:{C['orange']};}}")
+        self.lbl_server_warn = mk_label("", C['red'], 8, align=Qt.AlignLeft)
+        self.lbl_server_warn.setVisible(False)
+        _rdo_row = QHBoxLayout()
+        _rdo_row.setSpacing(S.p(8))
+        _rdo_row.setContentsMargins(0, 0, 0, 0)
+        _rdo_row.addWidget(self.rdo_simul)
+        _rdo_row.addWidget(self.rdo_real)
+        _rdo_row.addWidget(self.lbl_server_warn)
+        _rdo_row.addStretch()
+        self.rdo_simul.toggled.connect(self._on_server_mode_changed)
+
         res_box = QVBoxLayout()
         res_box.setSpacing(S.p(1))
         res_box.setContentsMargins(0, 0, 0, 0)
@@ -6803,6 +6837,7 @@ class MireukDashboard(QMainWindow):
         res_box.addWidget(self.lbl_scale)
         res_box.addWidget(self.lbl_commit)
         res_box.addWidget(self.chk_slack)
+        res_box.addLayout(_rdo_row)
 
         # ── 오른쪽 컬럼: 현재가(상단) + 종목코드 + 시장구분 ─────────
         right_col = QVBoxLayout()
@@ -7065,6 +7100,43 @@ class MireukDashboard(QMainWindow):
         if symbols:
             self._on_symbol_changed(symbols[0])
 
+    # ── 서버 모드 관리 ─────────────────────────────────────────
+
+    def set_server_mode(self, mode: str) -> None:
+        """브로커 연결 후 실제 서버 타입 설정 (mode: 'simul' | 'real').
+        main.py connect_broker 성공 후 호출한다.
+        """
+        self._actual_server_mode = mode
+        self._update_server_warn()
+
+    def is_server_match(self) -> bool:
+        """라디오 버튼 선택 == 실제 접속 서버 여부 반환. 불일치 시 진입 차단."""
+        actual = self._actual_server_mode
+        if actual == "unknown":
+            return True   # 연결 전: 제한 없음
+        selected = "simul" if self.rdo_simul.isChecked() else "real"
+        return selected == actual
+
+    def _on_server_mode_changed(self) -> None:
+        self._update_server_warn()
+        self._save_ui_prefs()
+
+    def _update_server_warn(self) -> None:
+        actual = self._actual_server_mode
+        if actual == "unknown":
+            self.lbl_server_warn.setVisible(False)
+            return
+        selected = "simul" if self.rdo_simul.isChecked() else "real"
+        if selected == actual:
+            self.lbl_server_warn.setVisible(False)
+        else:
+            actual_lbl = "모의투자" if actual == "simul" else "실서버"
+            self.lbl_server_warn.setText(f"⚠ 실접속={actual_lbl} · 진입차단")
+            self.lbl_server_warn.setStyleSheet(
+                f"color:{C['red']};font-size:{S.f(8)}px;font-weight:bold;"
+            )
+            self.lbl_server_warn.setVisible(True)
+
     def _save_ui_prefs(self):
         """현재 종목코드·시장구분·슬랙 On/Off를 ui_prefs.json에 저장."""
         try:
@@ -7075,6 +7147,7 @@ class MireukDashboard(QMainWindow):
                 "symbol_code": _extract_symbol_code(symbol_text),
                 "symbol_text": symbol_text,
                 "slack_enabled": self.chk_slack.isChecked(),
+                "server_mode": "simul" if self.rdo_simul.isChecked() else "real",
             }
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as f:
                 json.dump(prefs, f, ensure_ascii=False)
@@ -7121,6 +7194,16 @@ class MireukDashboard(QMainWindow):
             self.chk_slack.blockSignals(True)
             self.chk_slack.setChecked(slack_on)
             self.chk_slack.blockSignals(False)
+
+            # 서버 모드 복원 (기본 모의투자)
+            saved_mode = prefs.get("server_mode", "simul")
+            is_real = (saved_mode == "real")
+            self.rdo_simul.blockSignals(True)
+            self.rdo_real.blockSignals(True)
+            self.rdo_real.setChecked(is_real)
+            self.rdo_simul.setChecked(not is_real)
+            self.rdo_simul.blockSignals(False)
+            self.rdo_real.blockSignals(False)
         except Exception:
             pass
 
@@ -7302,6 +7385,15 @@ class DashboardAdapter:
 
     def _save_ui_prefs(self):
         self._win._save_ui_prefs()
+
+    def set_server_mode(self, mode: str) -> None:
+        """실제 접속 서버 타입 전달 (mode: 'simul' | 'real'). connect_broker 후 호출."""
+        self._win.set_server_mode(mode)
+
+    def is_server_match(self) -> bool:
+        """라디오 선택 == 실제 서버 여부. False 시 진입 차단해야 함."""
+        return self._win.is_server_match()
+
 
     def append_sys_log(self, msg: str):
         """창1 시스템 로그에 메시지 추가"""

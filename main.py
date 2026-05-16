@@ -2536,6 +2536,12 @@ class TradingSystem:
         quantity: int, atr: float, grade: str,
     ):
         """진입 실행"""
+        if not self.dashboard.is_server_match():
+            log_manager.system(
+                "[Entry] 서버 모드 불일치 — 라디오 버튼 선택과 실접속 서버가 다릅니다. 진입 차단.",
+                "WARNING",
+            )
+            return
         ret = self._send_broker_entry_order(direction, quantity)
         if ret != 0:
             logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s", ret)
@@ -3396,6 +3402,8 @@ class TradingSystem:
         else:
             _startup_srv = "모의투자" if _is_simul else "실서버"
         notify_startup(_startup_code, _startup_srv)
+        # 대시보드 서버 모드 동기화 (라디오 버튼 불일치 시 진입 차단)
+        self.dashboard.set_server_mode("simul" if _is_simul else "real")
 
         self._pre_market_done   = False
         self._daily_close_done  = False
