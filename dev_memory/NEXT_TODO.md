@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-05-17 (50차) — 5/15 거래 검토 기반 전략 핵심 수정 후속
+
+### 한일 요약
+
+- [DONE 2026-05-17] **CVD/VWAP/OFI 하드게이트** — checklist.py, CORE 3개 ✗ → Grade X 강제
+- [DONE 2026-05-17] **EXIT 부분체결 즉시 긴급청산** — main.py, stuck 10초+반대 포지션 force_exit
+- [DONE 2026-05-17] **MIN_TRAIN_BARS 3000 한시적 하향** — batch_retrainer.py
+- [DONE 2026-05-17] **Hurst 실계산 연결** — feature_builder.py, 60봉 버퍼 + calculate_hurst 호출
+- [DONE 2026-05-17] **CB② 2회 강화** — settings.py, CB_CONSEC_STOP_LIMIT 3→2
+- [DONE 2026-05-17] **SizerMatch 로그 추가** — main.py, Sizer vs 실제 진입 gap
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-19] **50차 수정사항 5/19 기동 실검증**
+  - Hurst 실값 확인: 09:40 이후 로그에서 `hurst=0.5xx` (0.5 아닌 값) 확인
+  - GBM 재학습 성공 확인: `[Retrain] 완료 | N초 | 성공=M/6 호라이즌` 로그
+  - CVD 하드게이트 동작: `[Checklist] CORE 피처 ✗ [...] → 강제 X등급` 로그 발생 시 확인
+  - CB② 과잉 발동 여부: 정상 트레이드 2회 손절 후 CB 발동 여부 모니터링
+  - [SizerMatch] 로그: Sizer 제안 vs 실제 진입 gap 원인 파악
+
+- [NEXT 2026-05-19] **CB② 2회 기준 2주 모니터링**
+  - 오판 발동(수익 트레이드 중 2회 손절로 시스템 정지)이 주 2회 이상 발생 시
+  - → CB_CONSEC_STOP_LIMIT 재검토 (2→3 복원 또는 쿨다운 연장 방안)
+
+- [NEXT 2026-05-26] **MIN_TRAIN_BARS 5000 복원**
+  - `raw_data.db` 5,000행 달성 예상일 (하루 ~260행 기준)
+  - `learning/batch_retrainer.py` MIN_TRAIN_BARS = 3000 → 5000 원복
+
+- [NEXT 향후] **micro-LOFI toxicity 진입 필터 구현** (5/15 거래 검토 개선안 4번)
+  - `toxicity_score_ma > 0.5`일 때만 진입 허용, 또는 SHORT 진입 시 `mlofi_norm < 0` 조건 추가
+  - 데이터 수집 중 (feature_builder에 이미 toxicity_score, mlofi_norm 포함)
+  - 5/15 09:49 사례: tox_ma=0.1015, mlofi_norm=+0.021 (SHORT에 불리) — 필터 있었으면 차단
+
+---
+
 ## 2026-05-16 (43차) — 손익 추이 패널 UI 개선 후속
 
 ### 한일 요약

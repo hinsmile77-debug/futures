@@ -54,7 +54,8 @@ GBM_PARAMS = {
 }
 
 # 최소 학습 데이터 (분봉 수)
-MIN_TRAIN_BARS = 5000   # 약 13거래일
+# [한시적] 5/18 초기 운영 기간 — raw_data 누적 중, 5000 복원 목표: 약 2026-05-26
+MIN_TRAIN_BARS = 3000   # 약 8거래일 (원래 5000)
 
 
 class BatchRetrainer:

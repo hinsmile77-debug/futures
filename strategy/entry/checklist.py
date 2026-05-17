@@ -132,6 +132,23 @@ class EntryChecklist:
 
         pass_count = sum(1 for v in checks.values() if v)
 
+        # CORE 3개(CVD·VWAP·OFI) 중 하나라도 ✗ → 즉시 X등급 (절대 원칙)
+        core_fail = not checks["4_cvd"] or not checks["3_vwap"] or not checks["5_ofi"]
+        if core_fail:
+            failed = [k for k in ("3_vwap", "4_cvd", "5_ofi") if not checks[k]]
+            logger.warning(
+                "[Checklist] CORE 피처 ✗ %s → 강제 X등급 (pass_count=%d)",
+                failed, pass_count,
+            )
+            return {
+                "pass_count": pass_count,
+                "grade":      "X",
+                "checks":     checks,
+                "size_mult":  0,
+                "auto_entry": False,
+                "entry_mode": entry_mode,
+            }
+
         # 등급 결정
         if pass_count >= ENTRY_GRADE["A"]["min_pass"]:
             grade = "A"

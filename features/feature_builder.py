@@ -1,4 +1,5 @@
 import logging
+from collections import deque
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -13,6 +14,7 @@ from features.technical.ofi_reversal import OfiReversalCalculator
 from features.technical.queue_dynamics import QueueDynamicsCalculator
 from features.technical.toxicity import ToxicityCalculator
 from features.technical.vwap import VWAPCalculator
+from features.technical.hurst_exponent import calculate_hurst
 from utils.error_policy import ErrorLevel, classify_exception
 
 logger = logging.getLogger("SIGNAL")
@@ -42,6 +44,7 @@ class FeatureBuilder:
         self._core_fail_streak: Dict[str, int] = {"cvd": 0, "vwap": 0, "ofi": 0}
         self._core_fail_notified: Dict[str, bool] = {"cvd": False, "vwap": False, "ofi": False}
         self._on_core_fail: Optional[Any] = None  # 외부 CB 경보 콜백 (main.py에서 주입)
+        self._close_history: deque = deque(maxlen=60)  # Hurst 계산용 종가 버퍼
 
     def update_hoga(
         self,
@@ -255,6 +258,16 @@ class FeatureBuilder:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] ATR 오류 — 기본값 사용: %s", _exc)
             features.update({"atr": 0.0, "atr_ratio": 1.0})
+
+        # Hurst Exponent — 종가 버퍼에 추가 후 계산 (40봉 이상 시 실계산, 미만 시 0.5)
+        if close > 0:
+            self._close_history.append(close)
+        try:
+            features["hurst"] = calculate_hurst(list(self._close_history), max_lag=20)
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            logger.warning("[FeatureBuilder] Hurst 오류 — 기본값 0.5 사용: %s", _exc)
+            features["hurst"] = 0.5
 
         try:
             bid1 = float(bar.get("bid1") or 0.0)

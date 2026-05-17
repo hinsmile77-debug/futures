@@ -159,7 +159,7 @@ FUTURES_COMMISSION_RATE = 0.000015   # 0.0015% 편도 (거래대금 기준)
 # ── Circuit Breaker 설정 ───────────────────────────────────────
 CB_SIGNAL_FLIP_LIMIT   = 5     # 1분 내 신호 반전 횟수
 CB_SIGNAL_FLIP_PAUSE   = 15    # 진입 정지 (분)
-CB_CONSEC_STOP_LIMIT   = 3     # 연속 손절 횟수
+CB_CONSEC_STOP_LIMIT   = 2     # 연속 손절 횟수 (5/15: 2회 후 재진입 손실 → 3→2 강화)
 CB_ACCURACY_MIN_30M    = 0.35  # 30분 이동평균 최소 정확도
 CB_ATR_MULT_LIMIT      = 3.0   # 변동성 ATR 배수 한계
 CB_API_LATENCY_LIMIT   = 5.0   # API 지연 한계 (초)

@@ -2,6 +2,37 @@
 
 ---
 
+## 2026-05-17 (50차 — 5/15 거래 검토 기반 전략 핵심 수정 6종)
+
+### [B105] Hurst Exponent가 feature_builder에서 계산되지 않아 항상 0.5 고정
+**File**: `features/feature_builder.py`
+**Symptom**: 5/15 로그 전 구간 `hurst=0.500` 고정. 추세장/횡보장 레짐 분류 완전 무효화.
+**Root cause**: `feature_builder.py`에 `calculate_hurst` 호출이 없었다. `main.py`의 `features.get("hurst", 0.5)`가 항상 기본값 0.5를 반환. Hurst 파일은 존재했지만 파이프라인에 연결되지 않은 dead code 상태.
+**Fix**: `feature_builder.py`에 `_close_history = deque(maxlen=60)` 버퍼 추가, ATR 블록 뒤에 `calculate_hurst(list(self._close_history), max_lag=20)` 호출 삽입. 40봉 미만 시 자동으로 0.5 반환(기존 동작 유지).
+**Note**: 5/19 장 시작 후 약 40분(09:40)부터 실값 계산 시작.
+
+### [D99] CORE 3피처(CVD·VWAP·OFI) 하드게이트 — 하나라도 ✗면 Grade 무관 X등급 강제
+**Decision**: `checklist.py`의 `pass_count` 집계 후, `checks["4_cvd"]`, `checks["3_vwap"]`, `checks["5_ofi"]` 중 하나라도 False이면 즉시 Grade X를 반환한다.
+**Why**: 5/15 09:49 CVD=✗ 상태에서 7/9 통과로 Grade A 자동 진입 → 하드스톱 -45만원. CLAUDE.md 절대 원칙("CORE 3개 절대 교체 불가")은 단순히 피처 제거 금지가 아니라 이 피처들이 실패할 때 진입 자체를 막는 것이 원의. 가중치 방식(개선안 7)으로는 다른 항목이 높으면 CORE ✗를 보상할 수 있어 불충분.
+**How to apply**: `pass_count` 집계 직후, 등급 결정 직전에 `core_fail` 조건 추가. 반환값은 정상 구조를 유지하되 grade="X", size_mult=0, auto_entry=False.
+
+### [D100] EXIT 부분체결 stuck 타임아웃 30초 → 10초 단축 + 반대 포지션 즉시 긴급청산
+**Decision**: `main.py` PendingOrder 타임아웃 루프에서 EXIT stuck 기준을 `_since_last_fill > 30` → `> 10`으로 단축. `_ts_resolve_stuck_exit_pending()`에서 브로커 sync 후 반대 포지션이 잡히면 `_last_pipeline_price`로 `exit_manager.force_exit()`를 즉시 호출한다.
+**Why**: 5/15 이상점 E — TP3 4계약 청산 주문 중 1계약 미체결 → LONG으로 전환 → -32,849원. 기존 로직은 반대 포지션 sync만 하고 다음 분봉의 하드스톱을 기다렸다. 10초 감지 + 즉시 청산으로 최대 손실 구간을 단축.
+**How to apply**: `_ts_resolve_stuck_exit_pending` 마지막 분기(반대 포지션 케이스)에 `force_exit` 추가. `_last_pipeline_price or avg_price`로 현재가 fallback 처리.
+
+### [D101] MIN_TRAIN_BARS 한시적 5000 → 3000 하향 (5/26경 복원)
+**Decision**: `learning/batch_retrainer.py`의 `MIN_TRAIN_BARS`를 5000 → 3000으로 한시적 하향. raw_data.db 누적 분봉이 3,432행 수준으로 기준 미달이었기 때문.
+**Why**: 코드 버그가 아닌 데이터 부족 문제. `raw_data.db`(GBM 학습 소스)와 `trades.db`(거래 기록)는 완전히 별개 파일이라 DB 초기화와 무관하게 보존됨. 3,000행 학습이 5,000행 대비 품질은 낮지만 "전혀 재학습 안 함"보다 낫다. 5/19부터 하루 ~260행 누적, 5/26경 5,000행 돌파 예상 → 그때 복원.
+**How to apply**: 5/26 이후 `MIN_TRAIN_BARS = 5000`으로 원복. 주석에 복원 목표일 명시해 둠.
+
+### [D102] CB② 연속 손절 기준 3회 → 2회 강화
+**Decision**: `config/settings.py`의 `CB_CONSEC_STOP_LIMIT`을 3 → 2로 변경.
+**Why**: 5/15 이상점 C — 2회 하드스톱 후 cooldown 3분 뒤 즉시 재진입 → 2분 만에 3번째 하드스톱(-35만원). 현재 설정(3회)으로는 이 패턴을 차단하지 못했다. 2회 기준이면 10:28 손절 직후 CB② 발동 → 당일 정지 → 10:34 재진입 차단. 5/15 총 손실의 상당 부분을 막을 수 있었다.
+**How to apply**: 모의투자 중 오판 발동 빈도를 5/19 이후 2주 모니터링. 과잉 발동 시 2.5회(3회+30분 이내 조건 복합)로 재검토.
+
+---
+
 ## 2026-05-16 (43차 — 손익 추이 패널 UI 개선)
 
 ### [D97] PnlHistoryPanel 소스 선택은 QTabWidget.setCornerWidget으로 구현한다

@@ -1457,12 +1457,12 @@ class TradingSystem:
                     (datetime.datetime.now() - _last_fill_at).total_seconds()
                     if _last_fill_at else _pending_age
                 )
-                if _since_last_fill > 30:
+                if _since_last_fill > 10:
                     log_manager.system(
                         f"[PendingOrder] EXIT 부분체결 stuck {_since_last_fill:.0f}s — "
                         f"filled={_po['filled_qty']}/{_po['qty']} "
                         f"kind={_po['kind']} order_no={_po.get('order_no','?')} "
-                        f"→ pending 소멸, 잔여 포지션 하드스톱 재발동 대기",
+                        f"→ pending 소멸, 잔여 포지션 긴급청산 시도",
                         "WARNING",
                     )
                     if not _ts_resolve_stuck_exit_pending(self):
@@ -1981,6 +1981,7 @@ class TradingSystem:
                     account_balance     = _ts_current_sizer_balance(self),
                 )
                 _qty_display = size_result["quantity"]
+                _qty_sizer_raw = _qty_display  # 게이트 조정 전 Sizer 원본값 보존
 
                 # [DBG-F7b] 사이저 입력/출력 확인
                 debug_log.debug(
@@ -2161,6 +2162,15 @@ class TradingSystem:
                     # EnsembleGater 온라인 학습을 위해 진입 시점 signals/direction 저장
                     self._last_gate_signals   = decision.get("gating", {}).get("signals", {})
                     self._last_gate_direction = direction
+                    # [SizerMatch] Sizer 제안 vs 실제 진입 수량 불일치 감지
+                    _qty_sizer_raw_val = locals().get("_qty_sizer_raw", _qty_auto)
+                    if _qty_sizer_raw_val != _qty_auto:
+                        log_manager.signal(
+                            f"[SizerMatch] sizer={_qty_sizer_raw_val}계약 → actual={_qty_auto}계약 "
+                            f"(gap={_qty_sizer_raw_val - _qty_auto}) | "
+                            f"kelly={kelly_result.get('multiplier', 1.0):.2f} "
+                            f"meta={_meta_size:.2f} tox={_tox_size:.2f} exec={_exec_size:.2f}"
+                        )
                     # L2 통과 && 모드 필터 통과 → 진입
                     self._execute_entry(
                         final_dir_str, close, _qty_auto, atr, _final_grade,
@@ -4610,6 +4620,14 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
         f"[PendingOrder] EXIT partial fill timeout -> 브로커 반대포지션 동기화 {side} {qty} @ {avg_price:.2f}",
         "CRITICAL",
     )
+    # 의도한 청산 방향과 반대 포지션이 남은 경우 → 즉시 긴급청산 (하드스톱 다음분봉 대기 제거)
+    _force_price = getattr(self, "_last_pipeline_price", 0.0) or avg_price
+    if _force_price > 0 and self.position.status != "FLAT":
+        log_manager.system(
+            f"[PendingOrder] EXIT잔여 반대포지션({side} {qty}계약) → 즉시 긴급청산 @ {_force_price:.2f}",
+            "CRITICAL",
+        )
+        self.exit_manager.force_exit(_force_price, reason="EXIT잔여 반대포지션 긴급청산")
     return True
 
 

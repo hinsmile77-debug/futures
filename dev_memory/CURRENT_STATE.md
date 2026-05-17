@@ -1,7 +1,57 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-16 (43차) — **손익 추이 패널 UI 개선 (소스 체크박스 + 표시 정리)**
+> 마지막 업데이트: 2026-05-17 (50차) — **5/15 거래 검토 기반 전략 핵심 수정 6종**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-17 (50차) — 5/15 거래 검토 기반 전략 핵심 수정 6종
+
+### 배경
+
+5/15 거래 리뷰(Deep 분석)에서 이상점 5종·개선안 7종이 도출됨. 5/16~5/17 커밋(40~49차)은 대시보드·Cybos 연동 위주였고 전략 핵심 파일은 미수정. 50차에서 우선순위 순으로 일괄 구현.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| CVD/VWAP/OFI 하드게이트 (checklist.py) | **완료** — CORE 3개 중 하나라도 ✗ → Grade X 강제 |
+| EXIT 부분체결 즉시 긴급청산 (main.py) | **완료** — stuck 감지 30초→10초 + 반대 포지션 force_exit |
+| Hurst 실계산 연결 (feature_builder.py) | **완료** — 60봉 버퍼, ATR 블록 뒤 삽입 (09:40부터 실값) |
+| MIN_TRAIN_BARS 3000 한시적 하향 (batch_retrainer.py) | **완료** — 복원 목표 2026-05-26 |
+| CB② 2회 강화 (settings.py) | **완료** — CB_CONSEC_STOP_LIMIT 3→2 |
+| SizerMatch 로그 (main.py) | **완료** — Sizer 원본 vs 실제 진입 gap 기록 |
+| 5/19 모의투자 실검증 | **미완료** — 다음 장 확인 필요 |
+| MIN_TRAIN_BARS 5000 복원 | **미완료** — 2026-05-26 이후 |
+| CB② 2회 기준 과잉 발동 모니터링 | **미완료** — 2주 관찰 |
+
+### 수정 파일 (50차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `strategy/entry/checklist.py` | CORE 3개 하드게이트 — pass_count 후 즉시 X등급 반환 |
+| `main.py` | EXIT stuck 타임아웃 30s→10s + 반대 포지션 force_exit |
+| `main.py` | [SizerMatch] 로그 — `_qty_sizer_raw` 저장 후 진입 직전 gap 출력 |
+| `features/feature_builder.py` | `calculate_hurst` import + `_close_history` deque(60) + Hurst 블록 |
+| `learning/batch_retrainer.py` | `MIN_TRAIN_BARS` 5000→3000 (주석에 복원 목표일 명시) |
+| `config/settings.py` | `CB_CONSEC_STOP_LIMIT` 3→2 |
+
+### raw_data.db 현황 (GBM 학습 소스)
+
+| 항목 | 값 |
+|---|---|
+| raw_candles | 3,432행 (2026-04-28 ~ 2026-05-15) |
+| raw_features | 3,432행 |
+| MIN_TRAIN_BARS | **3,000** (한시적, 원래 5,000) |
+| 5/19 이후 재학습 | 가능 (3,432 ≥ 3,000) |
+| 5,000행 달성 예상 | 2026-05-26경 |
+
+### 주의 — 5/19 기동 확인 필요 사항
+
+1. **Hurst 실값 확인**: 09:40 이후 `hurst=0.5xx` (0.5 이외 값) 로그 확인
+2. **GBM 재학습 성공**: `[Retrain] 완료 | N초 | 성공=M/6 호라이즌` 로그 확인
+3. **CB② 과잉 발동 여부**: 정상 트레이드 중 2회 손절로 CB 발동 시 파라미터 재검토
+4. **[SizerMatch] 로그**: Sizer 제안 vs 실제 진입 gap 원인 추적
 
 ---
 

@@ -4,6 +4,32 @@
 
 ---
 
+---
+
+## 2026-05-17 (50차 — 5/15 거래 검토 기반 전략 핵심 수정 6종)
+
+**Work**: 5/15 미륵이 거래 로그를 Deep 분석(openCode)으로 검토한 결과 이상점 5종이 도출됨. 5/16~5/17 커밋(40~49차)이 대시보드/Cybos 연동에 집중되어 전략 핵심 파일이 미수정 상태임을 확인 후 우선순위 순으로 6종을 일괄 구현.
+
+### 주요 발견
+
+| 발견 | 내용 |
+|---|---|
+| Hurst 미계산 (B105) | feature_builder.py에 calculate_hurst 호출 없어 전 기간 hurst=0.5 고정. Hurst 필터 완전 무효화 |
+| CVD=X 진입 허용 | 5/15 09:49 CVD=X에서 Grade A 자동 진입 → -45만원. checklist 단순 카운트 구조가 원인 |
+| GBM Retrain = raw_data.db | trades.db(거래기록)와 raw_data.db(피처데이터)는 별개. DB 초기화는 GBM 학습 데이터에 무영향 |
+| MIN_TRAIN_BARS=5000 병목 | raw_data.db 3,432행으로 기준 미달 → Retrain 계속 실패. 3,000으로 한시적 하향 |
+
+### 수정 내용
+
+| 파일 | 변경 |
+|---|---|
+| strategy/entry/checklist.py | CORE 3개(CVD·VWAP·OFI) 하드게이트 추가 |
+| main.py | EXIT stuck 타임아웃 30s→10s + 반대 포지션 즉시 force_exit |
+| main.py | [SizerMatch] 로그 추가 |
+| features/feature_builder.py | Hurst 실계산 연결 — 60봉 버퍼 + calculate_hurst 호출 |
+| learning/batch_retrainer.py | MIN_TRAIN_BARS 5000→3000 한시적 |
+| config/settings.py | CB_CONSEC_STOP_LIMIT 3→2 |
+
 ## 2026-05-16 (43李????먯씡 異붿씠 ?⑤꼸 UI 媛쒖꽑: ?뚯뒪 泥댄겕諛뺤뒪 + ?쒖떆 ?뺣━)
 
 **Work**: `PnlHistoryPanel` (?먯씡 異붿씠 ?????곗씠???쒖떆 諛⑹떇???꾨㈃ ?뺣━?덈떎. 湲곗〈 "?ㅽ뻾 +xxx / ??+yyy" ?댁쨷 ?쒖떆瑜?泥댄겕諛뺤뒪 ?좏깮 湲곕컲 ?⑥씪 媛??쒖떆濡?援먯껜?섍퀬, ?ㅻ뜑쨌??먯꽌 遺덊븘?뷀븳 ?덉씠釉붿쓣 ?쒓굅?덈떎.
