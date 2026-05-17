@@ -1699,3 +1699,28 @@ hurst_idx = reg[0]
 **원인**: `sum(broker_pnl[날짜] for row in active ...)` — 5/15 11건 × 6,267,000 = 68,937,000원.
 **Fix**: `broker_days = {날짜 집합}` → `sum(broker_pnl[d] for d in broker_days)` 고유 날짜 1회.
 **교훈**: broker P&L은 날짜별 단일값 — 거래 행 반복문 안에서 날짜로 조회하면 반드시 중복됨.
+
+---
+
+## 2026-05-17 결정 기록 (47~48차)
+
+### [D40] 주별/월별 탭 P/L 원: DB 일관 사용 (broker 혼용 금지)
+**결정**: 주별/월별은 pt+원 모두 DB pnl_krw 사용. broker 정산값은 일별 탭에서만 표시.
+**이유**: pt는 DB pnl_pts 기반이고 broker는 KRW만 제공 — 혼용 시 pt(-)원(+) 방향 모순 발생.
+W20 사례: pt=-27.33pt인데 원=+3,446,763원(broker 혼용) → 논리적 불가.
+**구현**: _broker_adj_krw() 제거, _build_weekly/_build_monthly pkrw from _stats() 복원.
+**교훈**: 소스가 다른 pt와 원을 같은 행에 표시하면 반드시 방향 불일치 발생. 탭별 소스 통일 원칙.
+
+### [D41] 주별/월별 MDD: trade 단위 아닌 일별 집계 기준
+**결정**: _mdd_daily(grp) — 거래를 날짜별로 묶어 일일 P&L로 집계 후 MDD 계산.
+**이유**: trade 단위 MDD는 5/13 63건 단타 내부 진동을 모두 반영해 실제 체감 리스크보다 과대계상.
+W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
+**구현**: `_mdd_daily(grp)` — defaultdict로 날짜 집계 후 일별 pnl_krw 기준 MDD.
+**교훈**: MDD는 일별 P&L 흐름 기준이 실제 리스크 관리 관점에서 더 유의미.
+
+### [D42] trades.db 초기화 — 2026-05-17
+**결정**: trades, daily_stats, daily_broker_pnl 전체 삭제. 백업 후 VACUUM.
+**이유**: 4/28~5/15 기간 데이터가 pt_value 버그(5배 과대), qty 과다 기록, phantom 체결 등으로 오염됨.
+오염된 데이터로는 손익추이 유효성 평가 불가 — 5/19부터 클린 데이터로 재시작.
+**백업**: data/db/trades_backup_20260517.db (191건, 92KB)
+**검증 계획**: 5/19 이후 5일간 pt×pt_value=pnl_krw 오차 5% 이내, qty 1건 기록 확인.

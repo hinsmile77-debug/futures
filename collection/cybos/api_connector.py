@@ -615,7 +615,7 @@ class CybosAPI:
         liquidation_eval_raw = _safe_float(raw_headers.get(DAILY_PNL_HEADER_LIQUIDATION_EVAL))
         liquidation_substituted = liquidation_eval_raw <= 0.0 and next_day_deposit_cash > 0.0
         liquidation_eval = next_day_deposit_cash if liquidation_substituted else liquidation_eval_raw
-        profit_rate = (next_day_deposit_cash / deposit_cash * 100.0) if deposit_cash else 0.0
+        profit_rate = ((next_day_deposit_cash - deposit_cash) / deposit_cash * 100.0) if deposit_cash else 0.0
 
         # profit_rate는 운영 중 반복 관측되는 진단값이라 기본 INFO(레이트리밋),
         # 과도한 이상치만 WARNING으로 올린다.

@@ -82,6 +82,8 @@ class UiAutoTabController(QObject):
         self._suspend_manual_detect = False
         self._manual_override = False
         self._manual_idle_since = None
+        self._mid_auto = True
+        self._right_auto = True
 
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
@@ -120,13 +122,21 @@ class UiAutoTabController(QObject):
         finally:
             self._suspend_manual_detect = False
 
+    def set_mid_auto(self, enabled: bool) -> None:
+        self._mid_auto = enabled
+
+    def set_right_auto(self, enabled: bool) -> None:
+        self._right_auto = enabled
+
     def _apply_tabs(self, force: bool = False) -> None:
         if self._manual_override and not force:
             return
         self._manual_override = False
         self._manual_idle_since = None
-        self._set_current_index(self.right_tabs, self._desired_right)
-        self._set_current_index(self.mid_tabs, self._desired_mid)
+        if self._right_auto:
+            self._set_current_index(self.right_tabs, self._desired_right)
+        if self._mid_auto:
+            self._set_current_index(self.mid_tabs, self._desired_mid)
 
     def _on_user_tab_changed(self) -> None:
         if self._suspend_manual_detect:
@@ -6847,11 +6857,7 @@ class MireukDashboard(QMainWindow):
         # ── 해상도·커밋·슬랙 On/Off 블록 (왼쪽 정렬) ────────────
         self.lbl_scale  = mk_label(S.info(),    C['text2'], 9, align=Qt.AlignLeft)
         self.lbl_commit = mk_label(COMMIT_HASH, C['text2'], 9, align=Qt.AlignLeft)
-        self.chk_slack  = QCheckBox("슬랙 알림")
-        self.chk_slack.setChecked(True)
-        self.chk_slack.setCursor(Qt.PointingHandCursor)
-        self.chk_slack.setToolTip("슬랙 알림 On/Off (체크 해제 시 모든 슬랙 발송 중단)")
-        self.chk_slack.setStyleSheet(
+        _chk_style = (
             f"QCheckBox{{color:{C['text2']};font-size:{S.f(9)}px;spacing:{S.p(4)}px;}}"
             f"QCheckBox::indicator{{width:{S.p(11)}px;height:{S.p(11)}px;"
             f"border-radius:2px;}}"
@@ -6860,6 +6866,21 @@ class MireukDashboard(QMainWindow):
             f"QCheckBox::indicator:unchecked{{background:{C['bg2']};"
             f"border:1px solid {C['border']};}}"
         )
+        self.chk_slack  = QCheckBox("슬랙 알림")
+        self.chk_slack.setChecked(True)
+        self.chk_slack.setCursor(Qt.PointingHandCursor)
+        self.chk_slack.setToolTip("슬랙 알림 On/Off (체크 해제 시 모든 슬랙 발송 중단)")
+        self.chk_slack.setStyleSheet(_chk_style)
+        self.chk_mid_auto = QCheckBox("중패널_Auto")
+        self.chk_mid_auto.setChecked(True)
+        self.chk_mid_auto.setCursor(Qt.PointingHandCursor)
+        self.chk_mid_auto.setToolTip("가운데 패널 탭 자동 이동 On/Off")
+        self.chk_mid_auto.setStyleSheet(_chk_style)
+        self.chk_right_auto = QCheckBox("우패널_Auto")
+        self.chk_right_auto.setChecked(True)
+        self.chk_right_auto.setCursor(Qt.PointingHandCursor)
+        self.chk_right_auto.setToolTip("오른쪽 패널 탭 자동 이동 On/Off")
+        self.chk_right_auto.setStyleSheet(_chk_style)
         header_label_w = S.p(58)
         header_combo_w = S.p(188)
         header_btn_w = S.p(54)
@@ -6956,9 +6977,16 @@ class MireukDashboard(QMainWindow):
         res_box.setSpacing(S.p(1))
         res_box.setContentsMargins(0, 0, 0, 0)
         res_box.setAlignment(Qt.AlignLeft)
+        _chk_row = QHBoxLayout()
+        _chk_row.setContentsMargins(0, 0, 0, 0)
+        _chk_row.setSpacing(S.p(8))
+        _chk_row.addWidget(self.chk_slack)
+        _chk_row.addWidget(self.chk_mid_auto)
+        _chk_row.addWidget(self.chk_right_auto)
+        _chk_row.addStretch()
         res_box.addWidget(self.lbl_scale)
         res_box.addWidget(self.lbl_commit)
-        res_box.addWidget(self.chk_slack)
+        res_box.addLayout(_chk_row)
         res_box.addLayout(_rdo_row)
 
         # ── 오른쪽 컬럼: 현재가(상단) + 종목코드 + 시장구분 ─────────
@@ -7119,6 +7147,11 @@ class MireukDashboard(QMainWindow):
         root.addWidget(main_split, 1)
 
         self.ui_auto_tabs = UiAutoTabController(self.log_panel.tabs, self.mid_tabs)
+        self.chk_mid_auto.toggled.connect(self.ui_auto_tabs.set_mid_auto)
+        self.chk_right_auto.toggled.connect(self.ui_auto_tabs.set_right_auto)
+        # _restore_ui_prefs 는 ui_auto_tabs 생성 전 호출 → 복원값을 직접 동기화
+        self.ui_auto_tabs.set_mid_auto(self.chk_mid_auto.isChecked())
+        self.ui_auto_tabs.set_right_auto(self.chk_right_auto.isChecked())
         self.ui_auto_tabs.set_startup_mode()
 
     def toggle_minute_chart_dialog(self):
@@ -7278,6 +7311,8 @@ class MireukDashboard(QMainWindow):
                 "symbol_code": _extract_symbol_code(symbol_text),
                 "symbol_text": symbol_text,
                 "slack_enabled": self.chk_slack.isChecked(),
+                "mid_auto_enabled": self.chk_mid_auto.isChecked(),
+                "right_auto_enabled": self.chk_right_auto.isChecked(),
                 "server_mode": "simul" if self.rdo_simul.isChecked() else "real",
             })
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as f:
@@ -7325,6 +7360,16 @@ class MireukDashboard(QMainWindow):
             self.chk_slack.blockSignals(True)
             self.chk_slack.setChecked(slack_on)
             self.chk_slack.blockSignals(False)
+
+            # 탭 자동 이동 On/Off 복원 (기본 True) — ui_auto_tabs 연결 전이므로 blockSignals
+            mid_auto = bool(prefs.get("mid_auto_enabled", True))
+            right_auto = bool(prefs.get("right_auto_enabled", True))
+            self.chk_mid_auto.blockSignals(True)
+            self.chk_mid_auto.setChecked(mid_auto)
+            self.chk_mid_auto.blockSignals(False)
+            self.chk_right_auto.blockSignals(True)
+            self.chk_right_auto.setChecked(right_auto)
+            self.chk_right_auto.blockSignals(False)
 
             # 서버 모드 복원 (기본 모의투자)
             saved_mode = prefs.get("server_mode", "simul")
