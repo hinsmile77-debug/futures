@@ -4761,6 +4761,43 @@ class PnlHistoryPanel(QWidget):
             mdd  = min(mdd, eq - peak)
         return round(mdd, 0)
 
+    def _broker_adj_krw(self, grp) -> float:
+        """그룹 거래를 날짜별로 묶어 브로커 정산값 우선 적용한 총 P&L KRW.
+        브로커 정산이 있는 날은 broker_pnl[날짜] 1회, 없는 날은 pnl_krw 합산.
+        """
+        from collections import defaultdict
+        day_rows = defaultdict(list)
+        for r in grp:
+            day_rows[r["entry_ts"][:10]].append(r)
+        total = 0.0
+        for date_str, day_grp in sorted(day_rows.items()):
+            broker_krw = self._broker_pnl.get(date_str)
+            if broker_krw is not None:
+                total += broker_krw
+            else:
+                total += sum(r["pnl_krw"] for r in day_grp)
+        return total
+
+    def _mdd_daily(self, grp) -> float:
+        """일별 P&L(브로커 정산 우선) 기준 MDD — 거래 단위 진동 제거."""
+        from collections import defaultdict
+        day_rows = defaultdict(list)
+        for r in grp:
+            day_rows[r["entry_ts"][:10]].append(r)
+        daily_pnls = []
+        for date_str in sorted(day_rows):
+            broker_krw = self._broker_pnl.get(date_str)
+            if broker_krw is not None:
+                daily_pnls.append(broker_krw)
+            else:
+                daily_pnls.append(sum(r["pnl_krw"] for r in day_rows[date_str]))
+        eq, peak, mdd = 0.0, 0.0, 0.0
+        for v in daily_pnls:
+            eq  += v
+            peak = max(peak, eq)
+            mdd  = min(mdd, eq - peak)
+        return round(mdd, 0)
+
     @staticmethod
     def _dual_text(executed, forward, decimals=0, suffix=""):
         if decimals == 0:
@@ -4909,17 +4946,18 @@ class PnlHistoryPanel(QWidget):
         groups  = self._group(self._week_key)[-13:]
         cum_map, c = {}, 0.0
         for wk, grp in groups:
-            _, _, _, _, pkrw = self._stats(grp)
-            c += pkrw
+            adj = self._broker_adj_krw(grp)
+            c += adj
             cum_map[wk] = c
 
         tbl = self.tbl_weekly
         tbl.setRowCount(len(groups))
         for r_idx, (wk, grp) in enumerate(reversed(groups)):
-            n, wins, losses, ppts, pkrw = self._stats(grp)
-            mdd       = self._mdd(grp)
+            n, wins, losses, ppts, _ = self._stats(grp)
+            adj_krw   = self._broker_adj_krw(grp)
+            mdd       = self._mdd_daily(grp)
             cum       = cum_map[wk]
-            disp_krw  = pkrw
+            disp_krw  = adj_krw
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
@@ -4932,7 +4970,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
                 self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._fmt_single(pkrw, suffix="원"),                 fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(adj_krw, suffix="원"),              fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(mdd, suffix="원"),                  fg=mc, bg=bg, align=Qt.AlignRight),
             ]
@@ -4945,16 +4983,17 @@ class PnlHistoryPanel(QWidget):
         groups  = self._group(lambda ts: ts[:7])
         cum_map, c = {}, 0.0
         for mon, grp in groups:
-            _, _, _, _, pkrw = self._stats(grp)
-            c += pkrw
+            adj = self._broker_adj_krw(grp)
+            c += adj
             cum_map[mon] = c
 
         tbl = self.tbl_monthly
         tbl.setRowCount(len(groups))
         for r_idx, (mon, grp) in enumerate(reversed(groups)):
-            n, wins, losses, ppts, pkrw = self._stats(grp)
+            n, wins, losses, ppts, _ = self._stats(grp)
+            adj_krw   = self._broker_adj_krw(grp)
             cum       = cum_map[mon]
-            disp_krw  = pkrw
+            disp_krw  = adj_krw
             sharpe    = self._sharpe_grp(grp)
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
@@ -4971,7 +5010,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
                 self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._fmt_single(pkrw, suffix="원"),                 fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(adj_krw, suffix="원"),              fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(sharpe, decimals=2),                fg=sc, bg=bg),
             ]
