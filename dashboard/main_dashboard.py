@@ -2416,6 +2416,22 @@ class ExitPanel(QWidget):
         if pending_active and pending_kind.startswith("EXIT"):
             _set_trigger_state(self.st_hard_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
             if pending_kind in ("EXIT_PARTIAL", "EXIT_MANUAL_PARTIAL"):
+                _p_stage = int(pos_data.get('pending_stage', 0))
+                # 현재 주문 중인 TP 행에 "주문중" 오버레이
+                if _p_stage == 1:
+                    _set_trigger_state(self.st_cvd_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
+                    # TP1 처리 중 — 상위 TP의 "도달" 오표시를 "대기"로 교체
+                    if not p2:
+                        _set_trigger_state(self.st_shap_trig, TriggerBadgeState.WAIT, "대기")
+                    if not p3:
+                        _set_trigger_state(self.st_opt_trig, TriggerBadgeState.WAIT, "대기")
+                elif _p_stage == 2:
+                    _set_trigger_state(self.st_shap_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
+                    # TP2 처리 중 — TP3의 "도달" 오표시를 "대기"로 교체
+                    if not p3:
+                        _set_trigger_state(self.st_opt_trig, TriggerBadgeState.WAIT, "대기")
+                elif _p_stage == 3:
+                    _set_trigger_state(self.st_opt_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
                 _set_trigger_state(self.st_t1_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
             if "15:10" in pending_reason or "시간청산" in pending_reason:
                 _set_trigger_state(self.st_time_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
@@ -7152,6 +7168,10 @@ class MireukDashboard(QMainWindow):
         # _restore_ui_prefs 는 ui_auto_tabs 생성 전 호출 → 복원값을 직접 동기화
         self.ui_auto_tabs.set_mid_auto(self.chk_mid_auto.isChecked())
         self.ui_auto_tabs.set_right_auto(self.chk_right_auto.isChecked())
+        # 체크박스 토글 시 즉시 저장 (슬랙 포함 — 종목/서버 변경에만 의존하던 문제 해소)
+        self.chk_slack.toggled.connect(lambda _: self._save_ui_prefs())
+        self.chk_mid_auto.toggled.connect(lambda _: self._save_ui_prefs())
+        self.chk_right_auto.toggled.connect(lambda _: self._save_ui_prefs())
         self.ui_auto_tabs.set_startup_mode()
 
     def toggle_minute_chart_dialog(self):

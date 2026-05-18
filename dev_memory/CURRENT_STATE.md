@@ -1,7 +1,46 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-18 (52차) — **손익 패널 4종 불일치 수정 (broker_daily_pnl 오염 차단)**
+> 마지막 업데이트: 2026-05-18 (53차) — **2차 목표 미청산 버그 2종 수정 (intra-bar TP 재점검 + 대시보드 오표시)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-18 (53차) — 2차 목표 도달 후 미청산 버그 2종 수정
+
+### 배경
+
+실세션 중 2차 목표(TP2)가 "도달"로 표시됐음에도 청산이 실행되지 않는 현상 제보. 코드 분석으로 두 가지 독립 버그 확인 및 수정 완료.
+
+### 근본 원인 요약
+
+| 버그 | 원인 |
+|---|---|
+| TP2·TP3 "도달" 오표시 | `pending_stage` 무시 — TP1 주문중임에도 상위 TP에 초록 "도달" 표시 → 운영자 혼동 |
+| Pending 해소 후 TP 1분 지연 | `_clear_pending_order()` 이후 다음 분봉 파이프라인까지 대기 → TP3 위 가격이어도 최대 1분 청산 불가 |
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| Fix 1: `_ts_intrabar_tp_check` 신규 함수 | **완료** — EXIT_PARTIAL 해소 즉시 300ms QTimer로 TP 재점검 |
+| Fix 2: `_clear_pending_order` 수정 | **완료** — `_cleared_kind` 캡처 후 EXIT_PARTIAL·EXIT_MANUAL_PARTIAL 시 intrabar check 스케줄 |
+| Fix 3: 대시보드 pending 표시 개선 | **완료** — `pending_stage` 기반 해당 TP 행에 "주문중", 미발동 상위 TP는 "대기" |
+| 5/19 실세션 동작 확인 | **미완료** — `[IntrabarTPCheck]` 로그 + 대시보드 상태 확인 필요 |
+
+### 수정 파일 (53차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | `_clear_pending_order()`: `_cleared_kind` 캡처 + EXIT_PARTIAL 해소 시 300ms 후 `_ts_intrabar_tp_check` QTimer 스케줄 |
+| `main.py` | `_ts_intrabar_tp_check()` 신규 함수 — pending 없음 확인 후 TP1→TP2→TP3 순차 재점검 |
+| `main.py` | `TradingSystem._intrabar_tp_check = _ts_intrabar_tp_check` 등록 |
+| `dashboard/main_dashboard.py` | 청산 트리거 배지 — `pending_stage` 기반으로 주문중 TP 행 강조 + 상위 미발동 TP "대기" 교체 |
+
+### 5/19 기동 확인 사항
+
+1. **`[IntrabarTPCheck]` 로그**: TP1 체결 완료(pending 클리어) 직후 300ms 내 로그 출력 확인
+2. **대시보드 상태**: TP1 주문중(pending_stage=1) 시 TP2·TP3 행이 "도달"(초록) 아닌 "대기"로 표시되는지
+3. **TP2 즉시 발동**: TP1 완료 후 다음 분봉까지 기다리지 않고 TP2가 바로 발동하는지
 
 ---
 

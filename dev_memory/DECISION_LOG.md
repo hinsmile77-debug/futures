@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-05-18 (53차 — 2차 목표 도달 후 미청산 버그 2종 수정)
+
+### [B110] 대시보드 — EXIT_PARTIAL pending 중 상위 TP "도달" 오표시
+**File**: `dashboard/main_dashboard.py` — `update_position()` 청산 트리거 배지 override 블록 (L2415~2421)
+**Symptom**: TP1 주문중(pending_stage=1, filled=1/2)인 상태에서 TP2·TP3 행에 초록 "도달" 배지 표시. 운영자가 "TP2가 도달했는데 왜 청산이 안 되지?"로 혼동하여 수동 개입 충동 유발.
+**Root cause**: pending EXIT_PARTIAL override 블록이 `st_t1_trig`(보호전환 행)에만 "주문중"을 표시하고, `pending_stage` 값을 참조하지 않아 TP2(`st_shap_trig`)·TP3(`st_opt_trig`)에 적용하지 않음. 기본 배지 렌더링(L2396~2398)은 `p2=False, hit_tp2=True` 조건으로 초록 HIT 상태를 그대로 유지.
+**Fix**: `pending_stage` 기반으로 현재 주문중인 TP 행에 "주문중" 오버레이. 미발동 상위 TP(`not p2`, `not p3`)는 `TriggerBadgeState.WAIT("대기")`로 교체. pending_stage=1이면 TP2·TP3 둘 다 "대기", pending_stage=2이면 TP3만 "대기".
+**Note**: 실제 청산 지연과는 독립적인 UI 버그. 청산 지연은 B111에서 별도 수정.
+
+### [B111] `_clear_pending_order` — EXIT_PARTIAL 해소 후 다음 분봉까지 TP 재점검 없음
+**File**: `main.py` — `_clear_pending_order()` (L904) + `_ts_check_exit_triggers()` (L3782)
+**Symptom**: TP1 완료(pending 클리어) 직후 가격이 TP2·TP3를 이미 초과해 있어도 다음 분봉 파이프라인 실행 전까지 최대 1분 청산 불가.
+**Root cause**: `_ts_check_exit_triggers()`는 `run_minute_pipeline()` 내 STEP 8에서만 호출(분봉 단위). `_clear_pending_order()` 이후에는 UI 패널 갱신(`_ts_push_exit_panel_now`)만 수행하고 TP 재점검을 스케줄하지 않음. 가격이 TP3 위에 있어도 다음 분봉 종가까지 대기.
+**Fix**: `_clear_pending_order()` 시작에서 `_cleared_kind = str(...)` 캡처. pending 클리어 후 `_cleared_kind in ("EXIT_PARTIAL", "EXIT_MANUAL_PARTIAL")` + 포지션 잔존 시 `QTimer.singleShot(300, lambda p=_price: _ts_intrabar_tp_check(self, p))` 스케줄. `_ts_intrabar_tp_check()`는 pending 없음·FLAT 아님·가격 유효 확인 후 TP1→TP2→TP3 순차 점검.
+**Why 300ms**: Chejan 체결 콜백이 완전히 정착하고 `position.quantity`·`partial_N_done`이 업데이트된 뒤 점검하기 위한 버퍼. 너무 짧으면 직전 체결 상태를 읽을 수 있음.
+**Why not EXIT_FULL**: EXIT_FULL 완료 시 포지션은 FLAT → `_ts_intrabar_tp_check` 진입 직후 `position.status == "FLAT"` 가드로 즉시 리턴.
+**Verified**: 미완료 — 2026-05-19 실세션에서 `[IntrabarTPCheck]` 로그 확인 필요.
+
+---
+
 ## 2026-05-18 (52차 — 손익 패널 4종 불일치 수정)
 
 ### [B109] `broker_daily_pnl` 테이블 — 포지션 보유 중 Cybos CpTd6197 today_pnl에 미실현 포함값 저장

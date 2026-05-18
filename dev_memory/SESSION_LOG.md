@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-05-18 (53차 — 2차 목표 도달 후 미청산 버그 2종 수정)
+
+**Work**: 실세션 스크린샷에서 2차 목표(TP2)가 "도달"로 표시됐음에도 청산이 실행되지 않는 흐름을 제보받음. `exit_manager.py`, `position_tracker.py`, `main.py` (`_ts_check_exit_triggers`, `_ts_execute_partial_exit`, `_clear_pending_order`, Chejan 콜백), `dashboard/main_dashboard.py` 전체 흐름을 코드 추적하여 버그 2종을 도출하고 수정 완료.
+
+### 주요 발견
+
+| 발견 | 내용 |
+|---|---|
+| TP2·TP3 "도달" 오표시 (대시보드) | `pending_active=True`이고 `pending_kind="EXIT_PARTIAL"`, `pending_stage=1`인 상태에서도 `st_shap_trig`(TP2)·`st_opt_trig`(TP3)에 초록 "도달" 표시. `pending_stage` 값을 참조하지 않아 운영자가 "TP2가 도달했는데 청산 왜 안 되지?"로 혼동 |
+| Pending 해소 후 최대 1분 TP 지연 | `_clear_pending_order()` 이후 TP 재점검은 다음 분봉 파이프라인 시작 시에만 실행. TP1 완료 직후 가격이 TP3 위에 있어도 다음 분봉 종가까지 대기 |
+| 당일 사례 재구성 | initial_quantity=5, stage_plan=(2,1,2). TP1 2계약 주문 → 1계약 체결(partial fill) → `pending_active=True, filled=1/2` 상태로 TP2·TP3 발동 차단. stuck 감지(10초)로 eventual 해소되지만 그 사이 추가 지연 |
+
+### 수정 내용
+
+| 파일 | 변경 |
+|---|---|
+| `main.py` | `_clear_pending_order()`: `_cleared_kind = str(self._pending_order.get("kind"))` 먼저 캡처. `_cleared_kind in ("EXIT_PARTIAL", "EXIT_MANUAL_PARTIAL")` + 포지션 잔존 시 `QTimer.singleShot(300, _ts_intrabar_tp_check)` 스케줄 |
+| `main.py` | `_ts_intrabar_tp_check()` 신규 함수: pending 없음·포지션 존재·가격 유효 3중 확인 후 TP1→TP2→TP3 순차 `_execute_partial_exit` 호출 (각 단계 후 pending 재확인) |
+| `main.py` | `TradingSystem._intrabar_tp_check = _ts_intrabar_tp_check` 등록 |
+| `dashboard/main_dashboard.py` | 청산 트리거 배지 override 블록: `pending_stage` 기반으로 주문중인 TP 행(`st_cvd_trig`/`st_shap_trig`/`st_opt_trig`)에 "주문중" 오버레이, 미발동 상위 TP는 "대기" 교체 |
+
+---
+
 ## 2026-05-18 (52차 — 손익 패널 4종 불일치 원인 분석 + 수정)
 
 **Work**: 실세션 스크린샷에서 실시간 잔고 금일손익(3,006,750) / 손익 PnL 탭(2,261,018) / 손익 추이 탭(3,555,000) / HTS(2,877,000) 네 패널 값이 제각각인 현상을 요청받음. 각 패널의 데이터 소스·업데이트 흐름을 코드로 추적하여 원인을 규명하고 수정까지 완료.

@@ -8,6 +8,23 @@
 
 ---
 
+## 2026-05-18 (53차) — 2차 목표 미청산 버그 2종 수정
+
+### 한일 요약
+
+- [DONE 2026-05-18] **대시보드 TP 오표시 수정** — `pending_stage` 기반 주문중 TP 행 강조 + 상위 TP "대기" 교체 (main_dashboard.py)
+- [DONE 2026-05-18] **intra-bar TP 재점검 로직 추가** — `_clear_pending_order`에서 EXIT_PARTIAL 해소 시 300ms 후 TP 즉시 재점검 스케줄 (main.py)
+- [DONE 2026-05-18] **`_ts_intrabar_tp_check` 신규 함수** — TP1→TP2→TP3 순차 점검, 각 단계 후 pending 재확인 (main.py)
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-19] **53차 Fix 실세션 확인**
+  - `[IntrabarTPCheck]` 로그 출력 확인 (TP1 체결 완료 직후 300ms 내)
+  - TP1 주문중(pending_stage=1) 상태에서 대시보드 TP2·TP3 행이 "대기"로 표시되는지 확인
+  - TP1 완료 후 가격이 TP2 위이면 다음 분봉 대기 없이 즉시 TP2 발동되는지 확인
+
+---
+
 ## 2026-05-18 (52차) — 손익 패널 불일치 수정
 
 ### 한일 요약
