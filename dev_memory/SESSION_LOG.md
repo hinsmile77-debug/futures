@@ -6,6 +6,50 @@
 
 ---
 
+## 2026-05-18 (54차 — B112/B114 개선 + 실세션 로그 분석)
+
+**Work**: 10:57:19 재시작 이후 로그를 분석하여 ProfitGuard-L4 무력화(B113), stale broker_sync_reason 재발(B112), IntrabarTPCheck 미발동(B114) 3종의 버그를 발견. B113은 시험가동 중 유지 결정. B112·B114 개선 구현 완료.
+
+### 오늘 실세션 흐름 요약
+
+| 시각 | 이벤트 |
+|---|---|
+| 09:24 | LONG 5계약 @ 1131.74 진입 (A등급) |
+| 09:26 | TP1 +7.25pt (+360,902원) |
+| 09:27~09:50 | stuck — 브로커 동기화 매분 경고 (TP2/TP3 미발동) |
+| 09:51~09:56 | 재시작 후 수동 청산으로 해소 |
+| 09:59 | LONG 4계약 @ 1151.52 진입 |
+| 10:00 | TP1 +5.43pt → 10:01 TP2 +8.69pt (1분 간격 정상) |
+| 10:04 | 하드스톱 잔여 2계약 청산 |
+| 10:29 | LONG 4계약 진입 (브로커 잔여 3계약 포함 → 7계약) |
+| 10:33 | TP1 2계약 체결 → 10:38 하드스톱 5계약 전량 청산 |
+| 10:38 | **ProfitGuard-L4 발동** — 2연속 손실 → 당일 진입 중단 선언 |
+| 10:57:19 | **재시작** — ProfitGuard 상태 소멸(B113) |
+| 11:07 | LONG 2계약 @ 1173.02 (ProfitGuard 무력화로 진입 허용) |
+| 11:13 | TP1 +4.64pt → 11:14 TP2(전량) +6.18pt |
+| 11:17 | LONG 6계약 @ 1181.20 진입 |
+| 11:22 | TP1 2계약 → 11:23 TP2 2계약 → 11:25 TP3 2계약 전부 성공 |
+
+### 주요 발견
+
+| 발견 | 내용 |
+|---|---|
+| B113: ProfitGuard 재시작 소멸 | 10:38 L4 발동 후 10:57:19 재시작 → `_profit_guard_blocked` 메모리에만 존재, 파일 미저장 → 11:07 진입 허용. 결과는 수익이나 CB 무력화는 심각한 설계 결함 |
+| B112 재발: stale broker_sync_reason | 11:09 EntryStuck 해소 캐시(`entry stuck resolved broker LONG 2 @ 1173.02`)가 11:14 FLAT 이후에도 클리어되지 않아 11:17 EntryAttempt까지 오염 |
+| B114: IntrabarTPCheck 미발동 | 11:13 TP1 체결 후 `[IntrabarTPSchedule]` 로그도 `[IntrabarTPCheck]` 로그도 없음. 근본 원인 불명확 — 진단 로그 추가로 5/19 파악 예정 |
+| Hurst 실계산 확인 | 10:35부터 `hurst=0.122`, 이후 0.133~0.143 실계산값 출력. 10:34까지는 60봉 버퍼 부족으로 fallback=0.500 정상 |
+| 53차 Fix 미적용 | 세션 시작(08:45) 후 53차 커밋(10:51) → 실행 중 프로세스에 미반영. 5/19 세션이 첫 적용 |
+
+### 수정 내용
+
+| 파일 | 변경 |
+|---|---|
+| `main.py` (L4803~4807) | [B112] `_ts_on_chejan_event` — 청산 완전 체결 후 FLAT이면 `_broker_sync_last_error = "flat after exit"` |
+| `main.py` (L930~943) | [B114 진단] `_clear_pending_order` — QTimer 스케줄 시 `[IntrabarTPSchedule]` WARN 로그 + price=0 시 취소 로그 |
+| `main.py` (L4029~4041) | [B114 진단] `_ts_intrabar_tp_check` — 가드 3케이스(pending 존재/FLAT/price=0) 각각 WARN 로그 |
+
+---
+
 ## 2026-05-18 (53차 — 2차 목표 도달 후 미청산 버그 2종 수정)
 
 **Work**: 실세션 스크린샷에서 2차 목표(TP2)가 "도달"로 표시됐음에도 청산이 실행되지 않는 흐름을 제보받음. `exit_manager.py`, `position_tracker.py`, `main.py` (`_ts_check_exit_triggers`, `_ts_execute_partial_exit`, `_clear_pending_order`, Chejan 콜백), `dashboard/main_dashboard.py` 전체 흐름을 코드 추적하여 버그 2종을 도출하고 수정 완료.

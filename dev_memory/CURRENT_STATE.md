@@ -1,7 +1,36 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-18 (53차) — **2차 목표 미청산 버그 2종 수정 (intra-bar TP 재점검 + 대시보드 오표시)**
+> 마지막 업데이트: 2026-05-18 (54차) — **B112 stale broker_sync_reason 수정 + B114 IntrabarTPCheck 진단 로그 추가**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-18 (54차) — B112/B114 개선
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| B112 Fix: stale broker_sync_reason 클리어 | **완료** — FLAT 전환 시 `_broker_sync_last_error = "flat after exit"` |
+| B114 진단: IntrabarTPSchedule 로그 추가 | **완료** — QTimer 스케줄 시 price/pos/p1p2p3 WARN 출력 |
+| B114 진단: IntrabarTPCheck 가드 로그 추가 | **완료** — pending 존재/FLAT/price=0 각 케이스 WARN 출력 |
+| B114 근본 원인 수정 | **미완료** — 5/19 세션 로그 확인 후 원인 특정 필요 |
+| B113: ProfitGuard 재시작 소멸 | **유지** — 시험가동 중, 모의투자 완료 후 수정 예정 |
+
+### 수정 파일 (54차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` (L4803~4807) | `_ts_on_chejan_event`: 청산 완전 체결 후 FLAT이면 `_broker_sync_last_error = "flat after exit"` |
+| `main.py` (L930~943) | `_clear_pending_order`: QTimer 스케줄 시 `[IntrabarTPSchedule]` WARN 로그 추가 |
+| `main.py` (L4029~4041) | `_ts_intrabar_tp_check`: 가드 실패 케이스별 WARN 로그 추가 |
+
+### 5/19 기동 확인 사항
+
+1. **B112**: 청산 후 EntryAttempt 로그에서 `broker_sync_reason='flat after exit'` 확인
+2. **B114**: TP1 체결 직후 `[IntrabarTPSchedule]` 로그 출력 여부 확인
+3. **B114**: `[IntrabarTPCheck]` 또는 `[IntrabarTPCheck] skip:` 로그로 근본 원인 특정
+4. **53차 Fix**: `[IntrabarTPCheck]` 정상 발동 + TP1 완료 후 TP2 즉시 점검 확인 (5/18 세션 미적용, 5/19 첫 검증)
 
 ---
 

@@ -8,6 +8,23 @@
 
 ---
 
+## 2026-05-18 (54차) — B112/B114 개선
+
+### 한일 요약
+
+- [DONE 2026-05-18] **B112 Fix: stale broker_sync_reason 클리어** — `_ts_on_chejan_event`에서 청산 완전 체결 후 FLAT이면 `_broker_sync_last_error = "flat after exit"` (main.py L4806)
+- [DONE 2026-05-18] **B114 진단: IntrabarTPSchedule 로그 추가** — `_clear_pending_order`에서 QTimer 스케줄 시 price/pos/p1/p2/p3 WARN 출력, price=0 시 취소 로그 (main.py L930)
+- [DONE 2026-05-18] **B114 진단: IntrabarTPCheck 가드 로그 추가** — pending 존재·FLAT·price=0 각 케이스별 WARN 출력 (main.py L4029)
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-19] **54차 Fix 실세션 확인**
+  - B112: 청산 후 EntryAttempt `broker_sync_reason='flat after exit'` 확인
+  - B114: `[IntrabarTPSchedule]` 로그 출력 확인 (TP1 체결 완료 직후)
+  - B114: `[IntrabarTPCheck]` 로그 또는 skip 원인 로그 확인 → 근본 원인 파악 후 수정
+
+---
+
 ## 2026-05-18 (53차) — 2차 목표 미청산 버그 2종 수정
 
 ### 한일 요약
@@ -19,9 +36,7 @@
 ### 다음 할 일 (우선순위 순)
 
 - [NEXT 2026-05-19] **53차 Fix 실세션 확인**
-  - `[IntrabarTPCheck]` 로그 출력 확인 (TP1 체결 완료 직후 300ms 내)
   - TP1 주문중(pending_stage=1) 상태에서 대시보드 TP2·TP3 행이 "대기"로 표시되는지 확인
-  - TP1 완료 후 가격이 TP2 위이면 다음 분봉 대기 없이 즉시 TP2 발동되는지 확인
 
 ---
 

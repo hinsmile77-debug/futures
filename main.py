@@ -57,6 +57,7 @@ from utils.db_utils import (
 from config.settings import (
     TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
+    CB_HIGH_CONF_THRESHOLD,
     FRED_API_KEY,
     HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
     HEALTH_QUALITY_WARN, HEALTH_QUALITY_CRIT,
@@ -926,7 +927,20 @@ class TradingSystem:
         if _cleared_kind in ("EXIT_PARTIAL", "EXIT_MANUAL_PARTIAL") and self.position.status != "FLAT":
             _price = float(getattr(self, "_last_pipeline_price", 0.0) or self.position.entry_price or 0.0)
             if _price > 0:
+                logger.warning(
+                    "[IntrabarTPSchedule] EXIT_PARTIAL 해소 → 300ms 후 TP 재점검 스케줄 price=%.2f pos=%s "
+                    "p1=%s p2=%s p3=%s",
+                    _price, self.position.status,
+                    self.position.partial_1_done,
+                    self.position.partial_2_done,
+                    self.position.partial_3_done,
+                )
                 QTimer.singleShot(300, lambda p=_price: _ts_intrabar_tp_check(self, p))
+            else:
+                logger.warning(
+                    "[IntrabarTPSchedule] price=0 → 스케줄 취소 (entry_price=%.2f)",
+                    self.position.entry_price or 0.0,
+                )
 
     def _has_pending_order(self) -> bool:
         return self._pending_order is not None
@@ -1032,7 +1046,11 @@ class TradingSystem:
             res = dict(probs)
             direction = int(res.get("direction", 0))
             raw_conf = float(res.get("confidence", 1 / 3) or 1 / 3)
-            cal_conf = float(self.horizon_calibrator.calibrate(horizon, raw_conf))
+            # 보정 후에도 과신 방지 — calibrator가 1.0 반환 가능하므로 재클립
+            cal_conf = float(np.clip(
+                self.horizon_calibrator.calibrate(horizon, raw_conf),
+                0.0, 0.85,
+            ))
 
             up = float(res.get("up", 1 / 3) or 1 / 3)
             down = float(res.get("down", 1 / 3) or 1 / 3)
@@ -1221,48 +1239,35 @@ class TradingSystem:
             self.dashboard.set_model_status("대기")
 
     def _log_threshold_monitor(self, atr: float, price: float) -> None:
-        """모델 AI탭에 threshold 모니터 스냅샷 기록 + 변동성 안정화 시 ATR 동적 전환 제안."""
-        from config.settings import HORIZON_THRESHOLDS
+        """ATR 기반 동적 threshold 계산 후 즉시 실적용 + 로그 기록."""
+        import datetime as _dt
+        from config import settings as _cfg
         if price <= 0 or atr <= 0:
             return
 
-        # ATR 동적 threshold 계산 (제안된 multiplier 기준)
-        _vol_mult = {"1m": 0.12, "3m": 0.20, "5m": 0.28, "10m": 0.40, "15m": 0.52, "30m": 0.70}
         vol_ratio = atr / price
+        # 장초반(09:00~09:30) 추가 배율 — 시초반 침묵 강화
+        now_hm = _dt.datetime.now().strftime("%H%M")
+        open_mult = _cfg.HORIZON_THRESHOLD_OPEN_MULT if "0900" <= now_hm <= "0930" else 1.0
 
-        static_parts  = "  ".join(f"{h}={v*100:.2f}%" for h, v in HORIZON_THRESHOLDS.items())
-        dynamic_parts = "  ".join(
-            f"{h}={vol_ratio * m * 100:.2f}%" for h, m in _vol_mult.items()
-        )
+        # 호라이즌별 동적값 = max(base, ATR동적) — base가 하한 보장
+        new_thresholds = {}
+        for h, base in _cfg.HORIZON_THRESHOLDS_BASE.items():
+            mult = _cfg.HORIZON_THRESHOLD_MULT.get(h, 0.5)
+            dynamic = vol_ratio * mult * open_mult
+            new_thresholds[h] = max(base, dynamic)
+
+        # in-place 갱신 — 모든 import 참조에 즉시 반영
+        _cfg.HORIZON_THRESHOLDS.update(new_thresholds)
+
+        base_parts    = "  ".join(f"{h}={v*100:.3f}%" for h, v in _cfg.HORIZON_THRESHOLDS_BASE.items())
+        dynamic_parts = "  ".join(f"{h}={v*100:.3f}%" for h, v in new_thresholds.items())
+        open_tag = f" [장초반×{open_mult}]" if open_mult > 1.0 else ""
         log_manager.learning(
-            f"[Threshold Monitor] ATR={atr:.2f}pt  Price={price:.2f}  vol_ratio={vol_ratio*100:.3f}%\n"
-            f"  Static : {static_parts}\n"
-            f"  Dynamic: {dynamic_parts}"
+            f"[Threshold] ATR={atr:.2f}pt  Price={price:.2f}  vol_ratio={vol_ratio*100:.3f}%{open_tag}\n"
+            f"  Base   : {base_parts}\n"
+            f"  Applied: {dynamic_parts}"
         )
-
-        # 안정화 판정: ATR 동적값이 현행 static 이하인 호라이즌 수
-        stable_count = sum(
-            1 for h, base in HORIZON_THRESHOLDS.items()
-            if vol_ratio * _vol_mult.get(h, 0.5) <= base
-        )
-        if stable_count >= 4:
-            log_manager.learning(
-                f"[Threshold Monitor] ✅ 변동성 안정 ({stable_count}/6 호라이즌) — "
-                f"현행 static threshold가 ATR 동적값 대비 충분히 높음. 전환 시점 아님."
-            )
-        else:
-            exceed = {
-                h: f"{vol_ratio * _vol_mult[h] * 100:.2f}% > {v*100:.2f}%"
-                for h, v in HORIZON_THRESHOLDS.items()
-                if vol_ratio * _vol_mult.get(h, 0.5) > v
-            }
-            exceed_str = "  ".join(f"{h}({s})" for h, s in exceed.items())
-            log_manager.learning(
-                f"[Threshold Monitor] ⚠ ATR 동적 threshold가 static 초과 ({6 - stable_count}/6 호라이즌)\n"
-                f"  초과 항목: {exceed_str}\n"
-                f"  → config/settings.py HORIZON_THRESHOLDS 상향 조정 또는\n"
-                f"    HORIZON_THRESHOLDS_BASE + ATR 동적 방식으로 전환 검토 권장"
-            )
 
     # ── 장 전 준비 (08:45) ─────────────────────────────────────
     def pre_market_setup(self):
@@ -1725,7 +1730,7 @@ class TradingSystem:
             horizon_proba = self.model.predict_proba(feat_vec)
             for h_name in list(horizon_proba.keys()):
                 sgd_p   = self.online_learner.predict_proba(h_name, feat_vec)
-                blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p)
+                blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p, h_name)
                 up, dn, fl = blended["up"], blended["down"], blended["flat"]
                 best = max([(up, 1), (dn, -1), (fl, 0)], key=lambda t: t[0])
                 horizon_proba[h_name] = {
@@ -2129,9 +2134,18 @@ class TradingSystem:
                 f"engine={_engine_daily_pnl_now:+,.0f}원 broker={_broker_str}원"
             )
 
+        _hc_block = self.circuit_breaker.high_conf_entry_block(confidence)
+        if _hc_block:
+            log_manager.signal(
+                f"[보호] 고신뢰 연속오답 {self.circuit_breaker._high_conf_wrong_streak}회 "
+                f"(conf={confidence:.1%} ≥ {CB_HIGH_CONF_THRESHOLD:.0%}) — 신규 진입 차단",
+                "WARNING",
+            )
+
         if (
             _cr is not None
             and self.circuit_breaker.is_entry_allowed()
+            and not _hc_block                      # 고신뢰 연속오답 사전 차단
             and is_new_entry_allowed()
             and not self._broker_sync_block_new_entries
             and not _in_cooldown                   # [B53] ENTRY 타임아웃 후 쿨다운
@@ -4012,7 +4026,18 @@ def _ts_intrabar_tp_check(self, price: float) -> None:
     _clear_pending_order()에서 QTimer.singleShot(300ms)으로 호출된다.
     하드스톱·슬랭스톱은 분봉 파이프라인이 담당하므로 여기서는 TP만 점검한다.
     """
-    if self._has_pending_order() or self.position.status == "FLAT" or price <= 0:
+    # [B114] 가드 실패 케이스별 경고 로그 — 발동 누락 원인 파악용
+    if self._has_pending_order():
+        logger.warning(
+            "[IntrabarTPCheck] skip: pending 존재 kind=%s",
+            (self._pending_order or {}).get("kind", "?"),
+        )
+        return
+    if self.position.status == "FLAT":
+        logger.warning("[IntrabarTPCheck] skip: FLAT (포지션 없음)")
+        return
+    if price <= 0:
+        logger.warning("[IntrabarTPCheck] skip: price=%.2f", price)
         return
     log_manager.system(
         f"[IntrabarTPCheck] pending 해소 후 TP 즉시 재점검 price={price:.2f} "
@@ -4775,6 +4800,11 @@ def _ts_on_chejan_event(self, payload: dict) -> None:
 
     if pending["filled_qty"] >= pending["qty"]:
         self._clear_pending_order()
+        # [B112] 청산 완전 체결 후 FLAT이면 stale broker_sync_reason 클리어
+        # stuck 해소 캐시("entry stuck resolved broker LONG N @ price")가
+        # 다음 EntryAttempt 까지 남아 오염되는 문제 방지
+        if self.position.status == "FLAT":
+            self._broker_sync_last_error = "flat after exit"
 
 
 def _ts_set_broker_sync_status(self, verified: bool, reason: str, block_new_entries: bool) -> None:

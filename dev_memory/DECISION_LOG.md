@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-05-18 (54차 — B112 stale broker_sync_reason + B114 IntrabarTPCheck 진단)
+
+### [B112] `_broker_sync_last_error` — EntryStuck 해소 후 FLAT 전환 시 stale 캐시 오염
+**File**: `main.py` — `_ts_on_chejan_event()` (L4803~4807)
+**Symptom**: EXIT 완전 체결 후 EntryAttempt 로그에 `broker_sync_reason='entry stuck resolved broker LONG N @ price'` 잔류. 다음 진입 시 직전 EntryStuck 해소 이유가 broker_sync_reason으로 표시되어 혼란.
+**Root cause**: `_broker_sync_last_error`는 `_ts_set_broker_sync_status()` 호출 시 갱신되는 인스턴스 변수. EntryStuck 해소 시 `"entry stuck resolved broker LONG N @ price"` 형태로 저장. 이후 청산 완료 → FLAT 전환 시 이 값을 초기화하는 코드가 없어 다음 EntryAttempt까지 잔류.
+**Fix**: `_ts_on_chejan_event()` 내 `pending["filled_qty"] >= pending["qty"]` 조건 이후 `_clear_pending_order()` 호출 직후, `if self.position.status == "FLAT": self._broker_sync_last_error = "flat after exit"` 추가. FLAT 시 명시적으로 중립 값으로 덮어씀.
+**Verified**: 미완료 — 2026-05-19 실세션에서 EntryAttempt broker_sync_reason 확인 필요.
+
+### [B113] ProfitGuard-L4 블록 상태 — 재시작 시 리셋 (의도적 유지 결정)
+**File**: `main.py` — `_ts_profit_guard_check()` (L3530~)
+**Symptom**: 10:38 ProfitGuard-L4 발동(연속 2회 손실) → 10:57:19 재시작 → 이후 11:09 진입 허용. ProfitGuard 상태가 리셋되어 당일 진입 차단 무력화.
+**Root cause**: ProfitGuard-L4 상태(`_profit_guard_day_stop`, `_profit_guard_consecutive_loss`)가 메모리에만 있고 `session_state.json`에 영속화하지 않음. 재시작 시 초기값(day_stop=False, loss=0)으로 리셋.
+**Decision**: **의도적 유지** — 현재 시험가동 중. 재시작=의도적 리셋으로 취급. 시험 종료 후 ProfitGuard 신뢰도 검증 완료 시 `session_state.json` 영속화 구현.
+**How to apply**: 실전 전환 전 반드시 영속화 구현. NEXT_TODO 54차 항목에 기록.
+
+### [B114] `_ts_intrabar_tp_check` — EXIT_PARTIAL 해소 후 발동 누락 (진단 단계)
+**File**: `main.py` — `_clear_pending_order()` (L930~943), `_ts_intrabar_tp_check()` (L4029~4041)
+**Symptom**: 53차에서 IntrabarTPCheck 구현 후, 5/18 세션(53차 코드 미반영)에서는 미확인. 5/19 세션이 첫 실검증 기회.
+**Root cause**: 미확정. 가능한 원인: (a) `_has_pending_order()=True` — 300ms 내 새 pending 생성됨, (b) `position.status=="FLAT"` — Chejan 콜백 정착 시점에 이미 FLAT으로 인식, (c) price=0 — `_last_pipeline_price` 미갱신, (d) Qt 이벤트 루프 타이밍 이슈.
+**Fix (진단)**: `_clear_pending_order()`에 `[IntrabarTPSchedule]` WARN 로그 추가 — 스케줄 성공/실패 조건 출력. `_ts_intrabar_tp_check()`에 가드 실패 케이스별 WARN 로그 추가 — pending/FLAT/price=0 중 어느 가드에서 skip됐는지 특정.
+**Next**: 2026-05-19 실세션에서 `[IntrabarTPSchedule]` → `[IntrabarTPCheck]` 또는 skip 사유 확인 후 실제 수정 구현.
+
+---
+
 ## 2026-05-18 (53차 — 2차 목표 도달 후 미청산 버그 2종 수정)
 
 ### [B110] 대시보드 — EXIT_PARTIAL pending 중 상위 TP "도달" 오표시
