@@ -105,6 +105,27 @@ class SessionRecoveryService:
         system.position.reset_daily()
         system.position.restore_daily_stats(rows)
 
+        # ── ProfitGuard + CircuitBreaker 상태 복원 ────────────────────────────
+        # ui_prefs의 state_persist_enabled 플래그가 True일 때만 복원.
+        # False 이면 개발/디버그 목적 재시작이므로 상태를 초기화한 채로 유지.
+        _state_persist = bool(getattr(system, "_state_persist_enabled", True))
+        if _state_persist:
+            _session_data = system._read_session_state()
+            _today = datetime.date.today().isoformat()
+            if _session_data.get("date") == _today:
+                _pg_state = _session_data.get("profit_guard_state")
+                if _pg_state and hasattr(system, "profit_guard"):
+                    try:
+                        system.profit_guard.from_state_dict(_pg_state)
+                    except Exception as _pge:
+                        logger.warning("[Restore] ProfitGuard 상태 복원 실패: %s", _pge)
+                _cb_state = _session_data.get("circuit_breaker_state")
+                if _cb_state and hasattr(system, "circuit_breaker"):
+                    try:
+                        system.circuit_breaker.from_state_dict(_cb_state)
+                    except Exception as _cbe:
+                        logger.warning("[Restore] CircuitBreaker 상태 복원 실패: %s", _cbe)
+
         daily = system.position.daily_stats()
         forward_daily = system.position.daily_forward_stats()
         system.dashboard.update_pnl_metrics(

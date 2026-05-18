@@ -8,6 +8,39 @@
 
 ---
 
+## 2026-05-18 (58차) — 안전장치 6종 구현
+
+### 한일 요약
+
+- [DONE 2026-05-18] **P0: PG+CB to_state_dict / from_state_dict** — `circuit_breaker.py`, `profit_guard.py`
+- [DONE 2026-05-18] **P0: session_recovery_service — PG+CB 상태 복원** — `restore_daily_state()` 내 복원 블록 추가
+- [DONE 2026-05-18] **P0: main.py — _write_session_state PG/CB 직렬화** — `_load_state_persist_flag()` + 저장 로직
+- [DONE 2026-05-18] **P0: 상태유지 체크박스** — `chk_state_persist` QCheckBox, `_rdo_row` 우측 배치, ui_prefs 연동
+- [DONE 2026-05-18] **P1-a: Restart Armistice** — 90초 + broker_sync ≥2 clean 전까지 진입 차단
+- [DONE 2026-05-18] **P1-b: Position Integrity Checksum** — `_ts_check_position_integrity()` 신규, Slack 경보, 진입 차단
+- [DONE 2026-05-18] **P2-b: trades.db 셋업 태그 5컬럼 마이그레이션** — `_migrate_trades_db()` 확장
+- [DONE 2026-05-18] **P2-b: 진입 컨텍스트 저장 + _record_trade_result 5컬럼 INSERT 확장**
+- [DONE 2026-05-18] **P2-b: setup_expectancy_panel.py 신규 생성** — 4섹션, 시간 필터, 1분 갱신
+- [DONE 2026-05-18] **P2-b: mid_tabs "📊 셋업 기대값" 탭 추가**
+- [DONE 2026-05-18] **P3-a: OnlineLearner 오염 학습 보호** — stuck 분봉 SGD 스킵
+- [DONE 2026-05-18] **P3-b: Reverse Entry Clamp** — 청산 후 180초 반대 방향 차단
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-19] **58차 안전장치 실세션 1차 확인**
+  - Armistice: 기동 후 90초 내 신호 → `[Armistice] 재시작 유예 중` 로그, 90초 후 정상 진입
+  - Integrity: FLAT 상태 진입 전 `[Integrity] OK` 또는 mismatch 감지 로그
+  - ReverseClamp: 청산 직후 반대 방향 시도 시 `[ReverseClamp] 진입 차단` 로그
+  - 상태유지: 재시작 후 `[Restore] ProfitGuard 상태 복원` + `[CB] 상태 복원` 로그
+  - 셋업 기대값 탭: 탭 정상 표시, 거래 후 데이터 반영 여부 확인
+  - SGD stuck 가드: stuck 발생 시 `[SGD] stuck 발생 분봉 — N건 학습 스킵` 로그
+
+- [NEXT 미정] **셋업 기대값 패널 — 데이터 누적 후 인사이트 점검**
+  - 2주 이상 거래 누적 후 meta_action / hurst_bucket별 승률 유의미한지 확인
+  - 유의미한 패턴 발견 시 진입 필터 조건에 반영 검토
+
+---
+
 ## 2026-05-18 (57차) — UI 체크박스 설정 유지 버그 수정
 
 ### 한일 요약

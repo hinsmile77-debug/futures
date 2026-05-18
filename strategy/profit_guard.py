@@ -417,6 +417,36 @@ class ProfitGuard:
             'halt_tier': self._tier.halt_tier,
         }
 
+    def to_state_dict(self) -> dict:
+        """재시작 영속화용 상태 직렬화."""
+        return {
+            "pcb_halted":          self._pcb._halted,
+            "pcb_consec_loss":     self._pcb._consec_loss,
+            "trail_halted":        self._trail.is_halted,
+            "trail_peak_pnl":      self._trail.peak_pnl,
+            "tier_halted":         self._tier._halted,
+            "tier_halt_tier":      self._tier._halt_tier,
+            "tier_halt_threshold": self._tier._halt_threshold,
+            "afternoon_count":     self._arisk._afternoon_count,
+        }
+
+    def from_state_dict(self, d: dict) -> None:
+        """to_state_dict() 반환값으로 상태 복원."""
+        if not d:
+            return
+        self._pcb._halted          = bool(d.get("pcb_halted", False))
+        self._pcb._consec_loss     = int(d.get("pcb_consec_loss", 0) or 0)
+        self._trail.is_halted      = bool(d.get("trail_halted", False))
+        self._trail.peak_pnl       = float(d.get("trail_peak_pnl", 0.0) or 0.0)
+        self._tier._halted         = bool(d.get("tier_halted", False))
+        self._tier._halt_tier      = int(d.get("tier_halt_tier", 0) or 0)
+        self._tier._halt_threshold = float(d.get("tier_halt_threshold", 0.0) or 0.0)
+        self._arisk._afternoon_count = int(d.get("afternoon_count", 0) or 0)
+        logger.info(
+            "[ProfitGuard] 상태 복원: pcb_halted=%s trail_halted=%s tier_halted=%s peak=%.0f",
+            self._pcb._halted, self._trail.is_halted, self._tier._halted, self._trail.peak_pnl,
+        )
+
     def update_config(self, new_cfg: ProfitGuardConfig):
         """대시보드에서 파라미터 변경 시 호출."""
         self.cfg = new_cfg

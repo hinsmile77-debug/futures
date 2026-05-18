@@ -7335,6 +7335,14 @@ class MireukDashboard(QMainWindow):
         self.chk_right_auto.setCursor(Qt.PointingHandCursor)
         self.chk_right_auto.setToolTip("오른쪽 패널 탭 자동 이동 On/Off")
         self.chk_right_auto.setStyleSheet(_chk_style)
+        self.chk_state_persist = QCheckBox("상태유지")
+        self.chk_state_persist.setChecked(True)
+        self.chk_state_persist.setCursor(Qt.PointingHandCursor)
+        self.chk_state_persist.setToolTip(
+            "재시작 시 ProfitGuard·CircuitBreaker 상태 영속화 On/Off\n"
+            "개발/디버그 재시작 시 Off → 상태 초기화"
+        )
+        self.chk_state_persist.setStyleSheet(_chk_style)
         header_label_w = S.p(58)
         header_combo_w = S.p(188)
         header_btn_w = S.p(54)
@@ -7424,6 +7432,7 @@ class MireukDashboard(QMainWindow):
         _rdo_row.addWidget(self.rdo_simul)
         _rdo_row.addWidget(self.rdo_real)
         _rdo_row.addWidget(self.lbl_server_warn)
+        _rdo_row.addWidget(self.chk_state_persist)
         _rdo_row.addStretch()
         self.rdo_simul.toggled.connect(self._on_server_mode_changed)
 
@@ -7585,6 +7594,16 @@ class MireukDashboard(QMainWindow):
         if self.profit_guard_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.profit_guard_panel), "💰 수익 보존")
 
+        # 셋업 기대값 패널
+        try:
+            from dashboard.panels.setup_expectancy_panel import SetupExpectancyPanel as _SEP
+            self.setup_expectancy_panel = _SEP()
+        except Exception as _sepe:
+            logger.warning("[Dashboard] SetupExpectancyPanel 로드 실패: %s", _sepe)
+            self.setup_expectancy_panel = None
+        if self.setup_expectancy_panel is not None:
+            self.mid_tabs.addTab(self._wrap(self.setup_expectancy_panel), "📊 셋업 기대값")
+
         ml.addWidget(self.mid_tabs)
 
         # 우측: 5층 로그
@@ -7610,6 +7629,7 @@ class MireukDashboard(QMainWindow):
         self.chk_slack.toggled.connect(lambda _: self._save_ui_prefs())
         self.chk_mid_auto.toggled.connect(lambda _: self._save_ui_prefs())
         self.chk_right_auto.toggled.connect(lambda _: self._save_ui_prefs())
+        self.chk_state_persist.toggled.connect(lambda _: self._save_ui_prefs())
         self.ui_auto_tabs.set_startup_mode()
 
     def toggle_minute_chart_dialog(self):
@@ -7771,6 +7791,7 @@ class MireukDashboard(QMainWindow):
                 "slack_enabled": self.chk_slack.isChecked(),
                 "mid_auto_enabled": self.chk_mid_auto.isChecked(),
                 "right_auto_enabled": self.chk_right_auto.isChecked(),
+                "state_persist_enabled": self.chk_state_persist.isChecked(),
                 "server_mode": "simul" if self.rdo_simul.isChecked() else "real",
             })
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as f:
@@ -7828,6 +7849,12 @@ class MireukDashboard(QMainWindow):
             self.chk_right_auto.blockSignals(True)
             self.chk_right_auto.setChecked(right_auto)
             self.chk_right_auto.blockSignals(False)
+
+            # 상태유지 On/Off 복원 (기본 True)
+            state_persist = bool(prefs.get("state_persist_enabled", True))
+            self.chk_state_persist.blockSignals(True)
+            self.chk_state_persist.setChecked(state_persist)
+            self.chk_state_persist.blockSignals(False)
 
             # 서버 모드 복원 (기본 모의투자)
             saved_mode = prefs.get("server_mode", "simul")

@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-05-18 (58차 — 5/18 세션 심층분석 기반 안전장치 6종 구현)
+
+**Work**: 5/18 트레이딩 세션 심층 리뷰(수익률 상위 1% 트레이더 2인 분석 종합 + 자체 로그 분석)에서 도출된 우선순위 6개 안전장치 전체 구현. B113 설계 결정 번복(실손 데이터 근거).
+
+### 주요 작업
+
+| 항목 | 내용 |
+|---|---|
+| P0: PG+CB 상태 영속화 | `circuit_breaker.py` / `profit_guard.py` — `to_state_dict()` / `from_state_dict()` 추가. `session_recovery_service.py` — 재시작 시 복원 로직 추가. `main.py` — `_write_session_state()`가 PG+CB 상태 직렬화. `_load_state_persist_flag()` 추가. |
+| P0: 상태유지 체크박스 | `dashboard/main_dashboard.py` — "상태유지" QCheckBox를 모의투자/실서버 동일 행 우측에 추가. `_save_ui_prefs()` / `_restore_ui_prefs()` 연동. `state_persist_enabled` 키 저장. |
+| P1-a: Restart Armistice | `main.py` — `_restart_armistice_until` (90초) + `_restart_armistice_sync_count` (≥2 clean) 양쪽 모두 통과 전까지 신규 진입 차단. 브로커 sync 클리어 구간에서 sync_count 증가. |
+| P1-b: Position Integrity Checksum | `main.py` — `_ts_check_position_integrity()` 신규 함수. engine_qty vs broker_qty vs pending_qty 삼각 검증. 불일치 2회: WARNING + Slack 알림. 3회: 진입 차단. `_integrity_broker_qty`는 balance 이벤트에서 갱신. |
+| P2-b: Setup Expectancy Ledger | `utils/db_utils.py` — trades 테이블에 `meta_action`, `hurst_bucket`, `hour_bucket`, `was_restart_after`, `had_partial_fill` 컬럼 마이그레이션. `main.py` — 진입 시 컨텍스트 저장, `_record_trade_result()`에서 5컬럼 INSERT. |
+| P2-b: 셋업 기대값 패널 | `dashboard/panels/setup_expectancy_panel.py` — 신규 생성. meta_action / hurst_bucket / hour_bucket / grade 4개 섹션, 시간 필터 4종(전체/오늘/이번주/이번달), 1분 자동 갱신, showEvent 즉시 갱신. `dashboard/main_dashboard.py` — "📊 셋업 기대값" 탭 mid_tabs 마지막에 추가. |
+| P3-a: OnlineLearner 오염 학습 보호 | `main.py` — `_stuck_this_minute` 플래그. ENTRY/EXIT stuck(각 60초/10초 임계) 발생 분봉은 STEP 2 SGD 학습 전체 스킵. |
+| P3-b: Reverse Entry Clamp | `main.py` — `_last_exit_direction` 추가. 청산 후 180초 이내 반대 방향 진입 차단. `_last_exit_ts`는 기존 변수 재사용. |
+
+### 수정 파일 (58차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `safety/circuit_breaker.py` | `to_state_dict()` / `from_state_dict()` 추가 |
+| `strategy/profit_guard.py` | `to_state_dict()` / `from_state_dict()` 추가 |
+| `strategy/runtime/session_recovery_service.py` | `restore_daily_state()` — PG+CB 상태 복원 블록 추가 |
+| `utils/db_utils.py` | `_migrate_trades_db()` — 셋업 태그 5컬럼 마이그레이션 추가 |
+| `main.py` | `__init__` 신규 변수 7개, `_load_state_persist_flag()`, `_write_session_state()` PG/CB 직렬화, broker sync 구간 armistice 카운터, `_integrity_broker_qty` 갱신, STEP 2 stuck 학습 가드, STEP 7 Armistice+Integrity+ReverseClamp 조건 추가, `_record_trade_result()` 5컬럼 확장, `_ts_apply_exit_cooldown()` last_exit_direction, `_ts_check_position_integrity()` 신규 함수 |
+| `dashboard/main_dashboard.py` | `chk_state_persist` 체크박스 생성·배치·연결·저장·복원, `setup_expectancy_panel` 탭 추가 |
+| `dashboard/panels/setup_expectancy_panel.py` | 신규 생성 — 셋업 기대값 집계 패널 |
+
+---
+
 ## 2026-05-18 (57차 — UI 체크박스 설정 유지 버그 수정)
 
 **Work**: 슬랙알림·중패널_Auto·우패널_Auto 체크박스 설정이 프로그램 재시작 시 기본값 True로 초기화되는 버그 원인 분석 및 수정.

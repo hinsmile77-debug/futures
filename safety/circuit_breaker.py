@@ -76,6 +76,16 @@ class CircuitBreaker:
     def is_entry_allowed(self) -> bool:
         return self.state == CB_STATE_NORMAL
 
+    def high_conf_entry_block(self, conf: float) -> bool:
+        """
+        고신뢰 연속오답 진입 차단 여부.
+        streak >= CB_HIGH_CONF_WRONG_LIMIT AND 현재 conf >= CB_HIGH_CONF_THRESHOLD 이면 True.
+        CB_STATE와 독립적으로 동작해 진입 전 사전 차단 역할.
+        """
+        if self._high_conf_wrong_streak < CB_HIGH_CONF_WRONG_LIMIT:
+            return False
+        return conf >= CB_HIGH_CONF_THRESHOLD
+
     def _check_pause_expiry(self):
         if self._state == CB_STATE_PAUSED and self._pause_until:
             if now_kst() >= self._pause_until:
@@ -253,3 +263,31 @@ class CircuitBreaker:
             "cb3_samples":             len(self._accuracy_buf),
             "high_conf_wrong_streak":  self._high_conf_wrong_streak,
         }
+
+    def to_state_dict(self) -> dict:
+        """재시작 영속화용 상태 직렬화 (signal_history·accuracy_buf 제외)."""
+        return {
+            "state":                  self._state,
+            "pause_until":            self._pause_until.isoformat() if self._pause_until else None,
+            "consec_stops":           self._consec_stops,
+            "cb3_warn_count":         self._cb3_warn_count,
+            "high_conf_wrong_streak": self._high_conf_wrong_streak,
+        }
+
+    def from_state_dict(self, d: dict) -> None:
+        """to_state_dict() 반환값으로 상태 복원."""
+        if not d:
+            return
+        self._state = str(d.get("state", CB_STATE_NORMAL) or CB_STATE_NORMAL)
+        pu = d.get("pause_until")
+        try:
+            self._pause_until = datetime.datetime.fromisoformat(pu) if pu else None
+        except Exception:
+            self._pause_until = None
+        self._consec_stops           = int(d.get("consec_stops", 0) or 0)
+        self._cb3_warn_count         = int(d.get("cb3_warn_count", 0) or 0)
+        self._high_conf_wrong_streak = int(d.get("high_conf_wrong_streak", 0) or 0)
+        logger.info(
+            "[CB] 상태 복원: state=%s consec_stops=%d cb3_warn=%d",
+            self._state, self._consec_stops, self._cb3_warn_count,
+        )

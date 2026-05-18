@@ -2,6 +2,44 @@
 
 ---
 
+## 2026-05-18 (58차 — 안전장치 6종 구현)
+
+### [설계 번복] B113 — ProfitGuard+CircuitBreaker 상태 영속화 구현 (이전: 의도적 유지)
+**File**: `safety/circuit_breaker.py`, `strategy/profit_guard.py`, `strategy/runtime/session_recovery_service.py`, `main.py`
+**Previous decision (54차)**: "시험가동 중 재시작=의도적 리셋으로 취급. 시험 종료 후 영속화 구현"
+**Why reversed**: 5/18 실세션 데이터에서 10:38 ProfitGuard-L4 발동 → 10:57 재시작 → 11:09 진입 허용으로 실손 발생. 시험가동 중에도 PG/CB 무력화는 실질적 손실로 이어짐. "시험 종료 후" 대기의 편익이 없음.
+**Implementation**: `to_state_dict()` / `from_state_dict()` 직렬화 메서드 양 클래스에 추가. `session_state.json`에 `profit_guard_state` / `circuit_breaker_state` 키로 저장. 재시작 시 `restore_daily_state()` 내 복원.
+**On/Off 배려**: "상태유지" 체크박스(`chk_state_persist`) 추가 — Off 시 PG/CB 상태 저장/복원 생략. 개발 중 의도적 재시작(디버그, 파라미터 변경 등)에서 상태 초기화 허용.
+**How to apply**: 기본값 True(상태유지). 개발 재시작 시에만 Off 체크 후 재시작. 실전 운영 시 항상 On.
+
+### [설계] CB 상태 영속화 범위 — signal_history·accuracy_buf 제외
+**Why**: `signal_history`(deque, 1분 창)와 `accuracy_buf`(deque, 30분 이동평균)는 시계열 연속성이 끊기는 재시작 후에는 오염된 데이터임. 잘못된 신호 반전 카운트나 부정확한 30분 정확도로 오발동 위험. 직렬화 대상은 누적 카운터(`consec_stops`, `cb3_warn_count`, `high_conf_wrong_streak`)와 상태값(`state`, `pause_until`)만.
+**Trade-off**: 재시작 후 1분 창·30분 창이 다시 채워지기 전까지 CB①·③ 민감도 일시 저하. 오발동 방지를 우선.
+
+### [설계] Restart Armistice — 90초 + sync ≥2 이중 조건
+**File**: `main.py` — STEP 7 진입 조건, `_broker_sync_verified` 클리어 구간
+**Why**: 재시작 직후 브로커 잔고 동기화 완료 전 신호가 발생하면 position.quantity=0(엔진 초기화) 상태로 진입 시도 가능. `_broker_sync_block_new_entries=False` 전환이 잔고 수신 완료를 보장하지만 타이밍 경쟁 존재.
+**Two conditions**: (a) 절대 시간 90초 — COM 초기화·TR 완료 대기. (b) sync_count ≥2 — 브로커 잔고 응답이 2회 이상 clean 통과 확인. 둘 다 만족해야 진입 허용.
+**How to apply**: 재시작 빈도가 높은 개발 환경에서 오작동 방지. 실전 운영에서 장 시작 직후 첫 2분은 자동 유예.
+
+### [설계] Position Integrity Checksum — broker_qty 소스는 balance 이벤트
+**File**: `main.py` — `_ts_sync_from_balance_payload()`, `_ts_check_position_integrity()`
+**Why**: Cybos `CpTd0723` balance 이벤트는 체결 후 closable_qty를 정확히 반영. engine_qty는 Chejan 콜백 기반이라 타이밍 차이 가능성 존재. broker_qty=0 + engine_qty>0 조합은 pending_order 처리 중 정상 상태이므로 False Alarm 제외.
+**Fail count logic**: 1회 불일치는 타이밍 노이즈로 허용. 2회 연속 → WARNING + Slack. 3회 이상 → `return False` → STEP 7에서 진입 차단. 정상 회복 시 fail_count 1씩 감소(즉시 초기화 아님).
+
+### [설계] Reverse Entry Clamp — 180초, 방향 반전만 차단
+**File**: `main.py` — STEP 7 진입 조건, `_ts_apply_exit_cooldown()`
+**Why**: 5/18 세션 분석에서 청산 직후 반대 진입이 빈번하고 손실 패턴으로 나타남. 기존 `_exit_cooldown_until`은 동방향 재진입도 차단해 추세 추종 기회 박탈.
+**Design**: 반대 방향(LONG→SHORT, SHORT→LONG)만 180초 차단. 동방향 재진입은 기존 cooldown 로직에 위임. `_last_exit_ts`는 기존 변수 재사용, `_last_exit_direction`만 추가.
+
+### [설계] Setup Expectancy Ledger — 셋업 태그 컬럼 마이그레이션 전략
+**File**: `utils/db_utils.py` — `_migrate_trades_db()`, `main.py` — `_record_trade_result()`
+**Columns**: `meta_action`(take/reduce/skip), `hurst_bucket`(trend/neutral/mean-revert), `hour_bucket`(int, 진입 시간 hour), `was_restart_after`(0/1), `had_partial_fill`(0/1)
+**Migration**: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 방식 — 기존 거래 행은 NULL/0, 신규 거래부터 태깅. 롤백 불필요, 누적 데이터 보존.
+**Panel**: `SetupExpectancyPanel` 4섹션(액션별/허스트별/시간대별/등급별), showEvent 즉시 갱신 + 1분 타이머. meta_action=skip은 STEP 7 veto로 이미 차단되므로 실제로는 take/reduce만 나타남.
+
+---
+
 ## 2026-05-18 (57차 — UI 체크박스 설정 유지 버그 수정)
 
 ### [B120] `_restore_ui_prefs` — 종목 복원 중 체크박스 기본값으로 파일 덮어씀

@@ -1,7 +1,47 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-18 (57차) — **UI 체크박스 설정 유지 버그 수정 (B120)**
+> 마지막 업데이트: 2026-05-18 (58차) — **5/18 세션 심층분석 기반 안전장치 6종 구현**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-18 (58차) — 안전장치 6종 구현
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| P0: PG+CB 상태 영속화 | **완료** — `to/from_state_dict()` 구현, `session_state.json`에 저장/복원 |
+| P0: "상태유지" 체크박스 | **완료** — 모의투자/실서버 동일 행 우측. `ui_prefs.json` 연동 |
+| P1-a: Restart Armistice | **완료** — 재시작 후 90초 + 브로커 sync ≥2회 clean 전까지 진입 차단 |
+| P1-b: Position Integrity Checksum | **완료** — engine/broker/pending 삼각 검증, 불일치 2회 경보, 3회 진입 차단 |
+| P2-b: Setup Expectancy Ledger | **완료** — trades.db 5컬럼 추가, 진입 컨텍스트 저장, INSERT 확장 |
+| P2-b: 셋업 기대값 패널 | **완료** — `setup_expectancy_panel.py` 신규, mid_tabs "📊 셋업 기대값" 탭 추가 |
+| P3-a: OnlineLearner 오염 학습 보호 | **완료** — stuck 분봉 SGD 학습 전체 스킵 |
+| P3-b: Reverse Entry Clamp | **완료** — 청산 후 180초 반대 방향 진입 차단 |
+| 5/19 실세션 동작 확인 | **미완료** — 최초 기동 필요 |
+
+### 수정 파일 (58차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `safety/circuit_breaker.py` | `to_state_dict()` / `from_state_dict()` |
+| `strategy/profit_guard.py` | `to_state_dict()` / `from_state_dict()` |
+| `strategy/runtime/session_recovery_service.py` | PG+CB 상태 복원 블록 |
+| `utils/db_utils.py` | 셋업 태그 5컬럼 마이그레이션 |
+| `main.py` | 안전장치 6종 전체 |
+| `dashboard/main_dashboard.py` | `chk_state_persist` + `setup_expectancy_panel` 탭 |
+| `dashboard/panels/setup_expectancy_panel.py` | 신규 생성 |
+
+### 5/19 기동 확인 사항
+
+1. **상태유지**: ProfitGuard/CB가 HALT 상태인 채로 재시작 → 상태 유지 확인 (`[Restore] ProfitGuard 상태 복원` / `[CB] 상태 복원` 로그)
+2. **상태유지 Off**: 체크박스 해제 후 재시작 → PG/CB 초기화 확인
+3. **Armistice**: 재시작 직후 signal 발생해도 진입 없음. 90초 경과 + sync 2회 후 진입 허용
+4. **Integrity**: FLAT 진입 전 `[Integrity]` 로그 — mismatch=0, integrity_fail=0 확인
+5. **Reverse Clamp**: 청산 직후 반대 신호 시 `[ReverseClamp] 진입 차단` 로그
+6. **셋업 기대값 탭**: mid_tabs 마지막 탭 표시, 거래 데이터 없으면 빈 테이블 표시
+7. **SGD stuck 가드**: ENTRY/EXIT stuck 분봉 STEP 2 로그에 `[SGD] stuck 발생 분봉 — N건 학습 스킵`
 
 ---
 

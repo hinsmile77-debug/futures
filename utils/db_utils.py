@@ -342,6 +342,11 @@ def _migrate_trades_db():
                 "forward_gross_pnl_krw": "REAL",
                 "forward_commission_krw": "REAL",
                 "forward_net_pnl_krw": "REAL",
+                "meta_action":        "TEXT",
+                "hurst_bucket":       "TEXT",
+                "hour_bucket":        "INTEGER",
+                "was_restart_after":  "INTEGER DEFAULT 0",
+                "had_partial_fill":   "INTEGER DEFAULT 0",
             }
             for name, dtype in additions.items():
                 if name not in cols:

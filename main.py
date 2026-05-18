@@ -305,6 +305,35 @@ class TradingSystem:
         self._effect_report_tick: int = 0
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
         self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
+
+        # ── P1-a: Restart Armistice ────────────────────────────────────────────
+        # 재시작 직후 90초간 + broker sync 2회 clean 전까지 신규 진입 차단.
+        # state_persist_enabled=False(개발 모드)일 때도 항상 적용.
+        self._restart_armistice_until: object = (
+            datetime.datetime.now() + datetime.timedelta(seconds=90)
+        )
+        self._restart_armistice_sync_count: int = 0
+
+        # ── P1-b: Position Integrity Checksum ─────────────────────────────────
+        self._integrity_broker_qty:  int  = 0   # 최근 balance chejan/TR에서 갱신
+        self._integrity_fail_count:  int  = 0   # 연속 불일치 횟수
+
+        # ── P3-a: OnlineLearner stuck 학습 오염 가드 ───────────────────────────
+        self._stuck_this_minute: bool = False    # 이번 분봉에 stuck 해소 발생 여부
+
+        # ── P3-b: Reverse Entry Clamp ─────────────────────────────────────────
+        self._last_exit_direction: str = ""      # 마지막 청산 방향 "LONG" or "SHORT"
+
+        # ── P0: 상태 영속화 On/Off ────────────────────────────────────────────
+        # ui_prefs.json의 state_persist_enabled 키. 기본 True.
+        self._state_persist_enabled: bool = self._load_state_persist_flag()
+
+        # ── 진입 컨텍스트 (trade 기록용 셋업 태그) ─────────────────────────────
+        self._entry_meta_action:  str  = ""      # take/reduce/skip
+        self._entry_hurst_bucket: str  = ""      # trend/mean-revert/neutral
+        self._entry_hour_bucket:  int  = 0       # 진입 시각 hour
+        self._entry_was_restart:  int  = 0       # 세션 재시작 직후 진입 여부
+        self._entry_had_partial:  int  = 0       # 해당 포지션에서 partial fill 발생
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
         self._last_health_level: str = "INFO"
         self._health_degraded_mode: bool = False
@@ -1179,9 +1208,30 @@ class TradingSystem:
             logger.warning("[SessionState] load failed: %s", exc)
         return {"date": datetime.date.today().isoformat(), "count": 0}
 
+    def _load_state_persist_flag(self) -> bool:
+        """ui_prefs.json에서 state_persist_enabled 플래그를 읽는다. 기본 True."""
+        try:
+            prefs_path = os.path.join(BASE_DIR, "data", "ui_prefs.json")
+            if os.path.exists(prefs_path):
+                with open(prefs_path, "r", encoding="utf-8") as f:
+                    return bool(json.load(f).get("state_persist_enabled", True))
+        except Exception:
+            pass
+        return True
+
     def _write_session_state(self, data: dict) -> None:
         state_path = self._session_state_path()
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        # P0: state_persist_enabled 시 ProfitGuard + CircuitBreaker 상태 추가 저장
+        if getattr(self, "_state_persist_enabled", True):
+            try:
+                data["profit_guard_state"]    = self.profit_guard.to_state_dict()
+                data["circuit_breaker_state"] = self.circuit_breaker.to_state_dict()
+            except Exception as _se:
+                logger.debug("[SessionState] PG/CB 상태 직렬화 실패: %s", _se)
+        else:
+            data.pop("profit_guard_state", None)
+            data.pop("circuit_breaker_state", None)
         try:
             with open(state_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
@@ -1416,8 +1466,11 @@ class TradingSystem:
                 pnl_pts, pnl_krw, gross_pnl_krw, commission_krw, net_pnl_krw,
                 forward_pnl_pts, forward_pnl_krw, forward_gross_pnl_krw,
                 forward_commission_krw, forward_net_pnl_krw,
-                formula_version, exit_reason, grade, regime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                formula_version, exit_reason, grade, regime,
+                meta_action, hurst_bucket, hour_bucket,
+                was_restart_after, had_partial_fill)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -1442,6 +1495,11 @@ class TradingSystem:
                 result["exit_reason"],
                 result.get("grade", ""),
                 self.current_regime,
+                getattr(self, "_entry_meta_action",  ""),
+                getattr(self, "_entry_hurst_bucket", ""),
+                getattr(self, "_entry_hour_bucket",  0),
+                getattr(self, "_entry_was_restart",  0),
+                getattr(self, "_entry_had_partial",  0),
             ),
         )
 
@@ -2043,6 +2101,7 @@ class TradingSystem:
                 )
                 if _since_last_fill > 60:
                     _unfilled = _pending_total - _pending_filled
+                    self._stuck_this_minute = True   # P3-a: stuck 발생 → 이번 분봉 학습 스킵
                     log_manager.system(
                         f"[PendingOrder] ENTRY 부분체결 stuck {_since_last_fill:.0f}s — "
                         f"filled={_pending_filled}/{_pending_total} (미체결={_unfilled}계약) "
@@ -2070,6 +2129,7 @@ class TradingSystem:
                     if _last_fill_at else _pending_age
                 )
                 if _since_last_fill > 10:
+                    self._stuck_this_minute = True   # P3-a: stuck 발생 → 이번 분봉 학습 스킵
                     log_manager.system(
                         f"[PendingOrder] EXIT 부분체결 stuck {_since_last_fill:.0f}s — "
                         f"filled={_po['filled_qty']}/{_po['qty']} "
@@ -2080,6 +2140,8 @@ class TradingSystem:
                     if not _ts_resolve_stuck_exit_pending(self):
                         self._clear_pending_order()
 
+        # P3-a: 매 분봉 시작 시 stuck 플래그 초기화
+        self._stuck_this_minute = False
         log_manager.signal(f"--- {ts} 분봉 파이프라인 시작 ---")
 
         # ── STEP 1: 과거 예측 검증 ─────────────────────────────
@@ -2129,18 +2191,24 @@ class TradingSystem:
                 logger.debug("[MetaGate] verify record skip: %s", _meta_record_err)
 
         if self.model.feature_names and verified:
-            for v in verified:
-                feat_dict = v.get("features") or {}
-                x = np.array(
-                    [feat_dict.get(f, 0.0) for f in self.model.feature_names],
-                    dtype=np.float32,
+            # P3-a: stuck 발생 분봉의 예측은 결과 레이블이 불확정 → 학습 스킵
+            if self._stuck_this_minute:
+                log_manager.learning(
+                    f"[SGD] stuck 발생 분봉 — {len(verified)}건 학습 스킵 (레이블 오염 방지)"
                 )
-                self.online_learner.learn(
-                    horizon         = v["horizon"],
-                    x               = x,
-                    actual_label    = v["actual"],
-                    predicted_label = v["predicted"],
-                )
+            else:
+                for v in verified:
+                    feat_dict = v.get("features") or {}
+                    x = np.array(
+                        [feat_dict.get(f, 0.0) for f in self.model.feature_names],
+                        dtype=np.float32,
+                    )
+                    self.online_learner.learn(
+                        horizon         = v["horizon"],
+                        x               = x,
+                        actual_label    = v["actual"],
+                        predicted_label = v["predicted"],
+                    )
             log_manager.learning(
                 f"[SGD] {len(verified)}건 학습 | "
                 f"SGD비중={self.online_learner.sgd_weight:.0%} "
@@ -2713,6 +2781,47 @@ class TradingSystem:
             self._exit_cooldown_until is not None
             and datetime.datetime.now() < self._exit_cooldown_until
         )
+
+        # ── P1-a: Restart Armistice ───────────────────────────────────────────
+        _now_dt = datetime.datetime.now()
+        _armistice_time_ok = (
+            self._restart_armistice_until is None
+            or _now_dt >= self._restart_armistice_until
+        )
+        _armistice_sync_ok = self._restart_armistice_sync_count >= 2
+        _in_armistice = not (_armistice_time_ok and _armistice_sync_ok)
+        if _in_armistice and _final_grade not in ("X",):
+            _remain_sec = max(
+                0,
+                int((self._restart_armistice_until - _now_dt).total_seconds())
+                if self._restart_armistice_until and _now_dt < self._restart_armistice_until
+                else 0,
+            )
+            log_manager.signal(
+                f"[Armistice] 재시작 유예 중 — 진입 차단 "
+                f"(time_ok={_armistice_time_ok} sync={self._restart_armistice_sync_count}/2 "
+                f"남은={_remain_sec}s)"
+            )
+
+        # ── P1-b: Position Integrity Checksum ─────────────────────────────────
+        _integrity_ok = _ts_check_position_integrity(self)
+
+        # ── P3-b: Reverse Entry Clamp ─────────────────────────────────────────
+        _last_exit_dir = getattr(self, "_last_exit_direction", "")
+        _last_exit_t   = getattr(self, "_last_exit_ts", None)
+        _entry_dir_str = "LONG" if direction > 0 else "SHORT" if direction < 0 else ""
+        _in_reverse_clamp = (
+            bool(_last_exit_dir)
+            and bool(_last_exit_t)
+            and _entry_dir_str != ""
+            and _entry_dir_str != _last_exit_dir
+            and (_now_dt - _last_exit_t).total_seconds() < 180
+        )
+        if _in_reverse_clamp and _final_grade not in ("X",):
+            _clamp_remain = int(180 - (_now_dt - _last_exit_t).total_seconds())
+            log_manager.signal(
+                f"[ReverseClamp] 청산 후 {_clamp_remain}s 이내 역방향({_last_exit_dir}→{_entry_dir_str}) 진입 금지"
+            )
         _hurst_ok = features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
         _atr_ok   = atr >= ATR_MIN_ENTRY   # ATR 너무 낮으면 노이즈 > 손절거리 → 휩쏘
         _hp = self._health_policy
@@ -2767,6 +2876,9 @@ class TradingSystem:
             and not self._broker_sync_block_new_entries
             and not _in_cooldown                   # [B53] ENTRY 타임아웃 후 쿨다운
             and not _in_exit_cooldown              # 청산 후 즉각 재진입 차단
+            and not _in_armistice                  # P1-a: 재시작 유예
+            and _integrity_ok                      # P1-b: 포지션 무결성
+            and not _in_reverse_clamp              # P3-b: 역방향 클램프
             and _hurst_ok                          # 횡보 레짐 진입 차단 (Hurst < 0.45)
             and _atr_ok                            # 변동성 너무 낮음 진입 차단
             and _final_grade not in ("X",)
@@ -2800,6 +2912,17 @@ class TradingSystem:
                     # EnsembleGater 온라인 학습을 위해 진입 시점 signals/direction 저장
                     self._last_gate_signals   = decision.get("gating", {}).get("signals", {})
                     self._last_gate_direction = direction
+                    # P2-b: 셋업 컨텍스트 저장 (trade 기록 시 태그로 사용)
+                    _hurst_now = float(features.get("hurst", 0.5) or 0.5)
+                    self._entry_meta_action  = str(_meta_action or "")
+                    self._entry_hurst_bucket = (
+                        "trend"       if _hurst_now >= 0.55
+                        else "neutral" if _hurst_now >= 0.45
+                        else "mean-revert"
+                    )
+                    self._entry_hour_bucket  = datetime.datetime.now().hour
+                    self._entry_was_restart  = 1 if self._session_no > 1 else 0
+                    self._entry_had_partial  = 0   # 진입 시 초기화, 체결 후 갱신
                     # [SizerMatch] Sizer 제안 vs 실제 진입 수량 불일치 감지
                     _qty_sizer_raw_val = locals().get("_qty_sizer_raw", _qty_auto)
                     if _qty_sizer_raw_val != _qty_auto:
@@ -4556,12 +4679,67 @@ def _ts_apply_exit_cooldown(self, result: dict, filled_at: datetime.datetime = N
     self._exit_cooldown_until = now + datetime.timedelta(minutes=cooldown_min)
     self._last_exit_reason = result.get("exit_reason", "")
     self._last_exit_ts = now
+    # P3-b: 역방향 클램프용 마지막 청산 방향 저장
+    self._last_exit_direction = str(result.get("executed_direction") or result.get("direction", "") or "")
     msg = (
         f"[ExitCooldown] {result.get('exit_reason', '청산')} 후 {cooldown_min}분 재진입 금지 "
         f"(until {self._exit_cooldown_until.strftime('%H:%M:%S')})"
     )
     logger.warning(msg)
     log_manager.system(msg, "WARNING")
+
+
+def _ts_check_position_integrity(self) -> bool:
+    """P1-b: 엔진·브로커·pending 수량 무결성 검사.
+
+    Returns:
+        True  = 정상 (진입 허용)
+        False = 불일치 2회 이상 누적 (진입 차단, Slack 경보)
+    """
+    engine_qty  = int(getattr(self.position, "quantity", 0) or 0)
+    broker_qty  = int(getattr(self, "_integrity_broker_qty", 0) or 0)
+    pending     = getattr(self, "_pending_order", None)
+    pending_qty = int((pending or {}).get("qty", 0) or 0)
+
+    # 포지션 없고 브로커 잔량도 0이면 무결성 OK
+    if engine_qty == 0 and broker_qty == 0:
+        self._integrity_fail_count = max(0, self._integrity_fail_count - 1)
+        return True
+
+    # 브로커 잔량 미수신 상태이면 검사 스킵 (false alarm 방지)
+    if broker_qty == 0 and engine_qty > 0:
+        return True
+
+    expected_broker = engine_qty + pending_qty
+    mismatch = abs(broker_qty - expected_broker)
+
+    if mismatch > 0:
+        self._integrity_fail_count += 1
+        _msg = (
+            f"[Integrity] 수량 불일치 {self._integrity_fail_count}회 — "
+            f"engine={engine_qty} broker={broker_qty} pending={pending_qty} "
+            f"(expected={expected_broker} diff={mismatch})"
+        )
+        logger.warning(_msg)
+        log_manager.system(_msg, "WARNING")
+        if self._integrity_fail_count >= 2:
+            try:
+                from utils.notify import notify_circuit_breaker
+                notify_circuit_breaker(
+                    f"포지션 수량 불일치 {self._integrity_fail_count}회 누적",
+                    f"engine={engine_qty} broker={broker_qty} pending={pending_qty} — 수동 확인 필요",
+                )
+            except Exception:
+                pass
+        if self._integrity_fail_count >= 3:
+            self._broker_sync_block_new_entries = True
+            log_manager.system(
+                "[Integrity] 3회 누적 → 자동진입 차단 + 수동 정리 요망", "CRITICAL"
+            )
+        return self._integrity_fail_count < 2
+    else:
+        self._integrity_fail_count = max(0, self._integrity_fail_count - 1)
+        return True
 
 
 def _ts_order_side_to_direction(payload_or_order_gubun) -> str:
@@ -6047,6 +6225,8 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         or payload.get("sell_avg_price")
         or payload.get("fill_price")
     )
+    # P1-b: balance 이벤트에서 브로커 보유수량 갱신 (integrity checksum용)
+    self._integrity_broker_qty = closable_qty if closable_qty > 0 else qty
     side = _ts_order_side_to_direction(payload)
     before = _ts_get_position_snapshot(self)
     logger.warning(
@@ -6321,6 +6501,10 @@ def _ts_manual_position_restore(self, direction: str, price: float, qty: int, at
         )
         self._broker_sync_verified = True
         self._broker_sync_block_new_entries = False
+        # P1-a: Armistice sync 카운터 — 2회 누적 후 유예 해제 가능
+        self._restart_armistice_sync_count = getattr(
+            self, "_restart_armistice_sync_count", 0
+        ) + 1
         log_manager.system(
             f"[PositionRestore] 완료: {result}  손절={self.position.stop_price:.2f}  "
             f"TP1={self.position.tp1_price:.2f}  TP2={self.position.tp2_price:.2f}",
