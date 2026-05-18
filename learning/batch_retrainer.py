@@ -31,6 +31,7 @@ try:
     from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import accuracy_score, roc_auc_score
+    from sklearn.preprocessing import StandardScaler
     _SKLEARN_OK = True
 except ImportError:
     _SKLEARN_OK = False
@@ -94,10 +95,11 @@ class BatchRetrainer:
     # ── 재학습 메인 ───────────────────────────────────────────────
     def retrain_now(
         self,
-        X:          Optional[np.ndarray] = None,
-        y_dict:     Optional[Dict[str, np.ndarray]] = None,
-        weeks_back: int = 8,
-        force:      bool = False,
+        X:             Optional[np.ndarray] = None,
+        y_dict:        Optional[Dict[str, np.ndarray]] = None,
+        feature_names: Optional[List[str]] = None,
+        weeks_back:    int = 8,
+        force:         bool = False,
     ) -> Dict:
         """
         GBM 모델 전체 재학습
@@ -119,12 +121,15 @@ class BatchRetrainer:
 
         # 데이터 로드
         if X is None or y_dict is None:
-            X, y_dict = self._load_from_db(weeks_back)
+            X, y_dict, feature_names = self._load_from_db(weeks_back)
 
         if X is None or len(X) < MIN_TRAIN_BARS:
             msg = f"학습 데이터 부족 ({len(X) if X is not None else 0} < {MIN_TRAIN_BARS})"
             logger.warning(f"[Retrain] {msg}")
             return {"ok": False, "error": msg}
+
+        if feature_names is None:
+            feature_names = [f"feature_{i}" for i in range(X.shape[1])]
 
         results = {}
         for horizon_key in HORIZONS:
@@ -134,8 +139,16 @@ class BatchRetrainer:
             if len(y) != len(X):
                 continue
 
-            result = self._train_horizon(horizon_key, X, y, force=force)
+            result = self._train_horizon(
+                horizon_key,
+                X,
+                y,
+                feature_names=feature_names,
+                force=force,
+            )
             results[horizon_key] = result
+
+        self._save_feature_names(feature_names)
 
         elapsed = (datetime.datetime.now() - start_time).total_seconds()
         self._last_retrain  = datetime.datetime.now()
@@ -163,6 +176,7 @@ class BatchRetrainer:
         horizon_key: str,
         X:           np.ndarray,
         y:           np.ndarray,
+        feature_names: List[str],
         force:       bool = False,
     ) -> Dict:
         """
@@ -181,9 +195,13 @@ class BatchRetrainer:
             if len(np.unique(y_tr)) < 2:
                 continue
 
+            scaler = StandardScaler()
+            X_tr_s = scaler.fit_transform(X_tr)
+            X_val_s = scaler.transform(X_val)
+
             model = GradientBoostingClassifier(**GBM_PARAMS)
-            model.fit(X_tr, y_tr)
-            acc = accuracy_score(y_val, model.predict(X_val))
+            model.fit(X_tr_s, y_tr)
+            acc = accuracy_score(y_val, model.predict(X_val_s))
             cv_accs.append(acc)
 
         if not cv_accs:
@@ -192,15 +210,17 @@ class BatchRetrainer:
         cv_acc = float(np.mean(cv_accs))
 
         # 전체 데이터로 최종 학습
+        final_scaler = StandardScaler()
+        X_scaled = final_scaler.fit_transform(X)
         final_model = GradientBoostingClassifier(**GBM_PARAMS)
-        final_model.fit(X, y)
+        final_model.fit(X_scaled, y)
 
         # 기존 모델과 성능 비교
         old_acc   = self._load_model_acc(horizon_key)
         replaced  = False
 
         if force or cv_acc > old_acc - 0.01:   # 기존 대비 1% 이내 하락은 허용
-            self._save_model(horizon_key, final_model, cv_acc)
+            self._save_model(horizon_key, final_model, final_scaler, cv_acc, feature_names)
             replaced = True
             logger.info(f"[Retrain] {horizon_key} 교체 (acc {old_acc:.4f}→{cv_acc:.4f})")
         else:
@@ -215,13 +235,24 @@ class BatchRetrainer:
         }
 
     # ── 모델 저장/로드 ────────────────────────────────────────────
-    def _save_model(self, horizon_key: str, model, acc: float):
+    def _save_model(self, horizon_key: str, model, scaler, acc: float, feature_names: List[str]):
         path     = os.path.join(self.model_dir, f"gbm_{horizon_key}.pkl")
         acc_path = os.path.join(self.model_dir, f"gbm_{horizon_key}_acc.txt")
+        scaler_dir = os.path.join(MODEL_DIR, "scaler")
+        scaler_path = os.path.join(scaler_dir, f"scaler_{horizon_key}.pkl")
+        os.makedirs(scaler_dir, exist_ok=True)
         with open(path, "wb") as f:
             pickle.dump(model, f)
+        with open(scaler_path, "wb") as f:
+            pickle.dump(scaler, f)
         with open(acc_path, "w") as f:
             f.write(str(acc))
+        self._save_feature_names(feature_names)
+
+    def _save_feature_names(self, feature_names: List[str]) -> None:
+        feature_path = os.path.join(self.model_dir, "feature_names.pkl")
+        with open(feature_path, "wb") as f:
+            pickle.dump(list(feature_names), f)
 
     def _load_model_acc(self, horizon_key: str) -> float:
         acc_path = os.path.join(self.model_dir, f"gbm_{horizon_key}_acc.txt")
@@ -257,7 +288,7 @@ class BatchRetrainer:
         raw_db = RAW_DATA_DB
         if not os.path.exists(raw_db):
             logger.warning("[Retrain] raw_data.db 없음 — 학습 데이터 축적 대기")
-            return None, None
+            return None, None, None
 
         try:
             cutoff = (
@@ -281,7 +312,7 @@ class BatchRetrainer:
                 logger.warning(
                     f"[Retrain] 피처 데이터 부족 ({len(feat_rows)} < {MIN_TRAIN_BARS})"
                 )
-                return None, None
+                return None, None, None
 
             # close 맵 (ts → close)
             close_map = {r["ts"]: float(r["close"]) for r in candle_rows}
@@ -289,17 +320,41 @@ class BatchRetrainer:
             # X 행렬 구성
             records = []
             feat_names = None
+            feat_name_count = 0
             for r in feat_rows:
                 try:
                     fd = _json.loads(r["features"])
                 except (ValueError, TypeError):
                     continue
-                if feat_names is None:
-                    feat_names = list(fd.keys())
+                if not isinstance(fd, dict):
+                    continue
+                curr_keys = list(fd.keys())
+                if feat_names is None or len(curr_keys) >= feat_name_count:
+                    feat_name_count = len(curr_keys)
+                    feat_names = curr_keys
                 records.append((r["ts"], fd))
 
             if not records or feat_names is None:
-                return None, None
+                return None, None, None
+
+            registry_path = os.path.join(DB_DIR, "shap_feature_registry.json")
+            try:
+                import json as _json2
+                if os.path.exists(registry_path):
+                    with open(registry_path, "r", encoding="utf-8") as fh:
+                        registry = _json2.load(fh)
+                    active_features = list(registry.get("active_features") or [])
+                    if active_features:
+                        available = set(feat_names)
+                        managed = [name for name in active_features if name in available]
+                        if managed:
+                            feat_names = managed
+                            logger.info(
+                                "[Retrain] managed feature set 적용: %d개",
+                                len(feat_names),
+                            )
+            except Exception as exc:
+                logger.warning("[Retrain] managed feature set load 실패: %s", exc)
 
             X = np.array(
                 [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],
@@ -329,11 +384,11 @@ class BatchRetrainer:
                 f"[Retrain] DB 로드 완료: {len(X)}행 × {len(feat_names)}피처 "
                 f"(cutoff={cutoff[:10]})"
             )
-            return X, y_dict
+            return X, y_dict, feat_names
 
         except Exception as e:
             logger.warning(f"[Retrain] DB 로드 오류: {e}")
-            return None, None
+            return None, None, None
 
     def get_stats(self) -> dict:
         return {
@@ -351,7 +406,12 @@ if __name__ == "__main__":
         np.random.seed(42)
         X_dummy = np.random.randn(6000, 20).astype(np.float32)
         y_dummy = {hz: np.random.randint(0, 2, 6000) for hz in ["1m", "5m", "15m"]}
-        result  = retrainer.retrain_now(X=X_dummy, y_dict=y_dummy, force=True)
+        result  = retrainer.retrain_now(
+            X=X_dummy,
+            y_dict=y_dummy,
+            feature_names=[f"feature_{i}" for i in range(X_dummy.shape[1])],
+            force=True,
+        )
         print(f"재학습 결과: {result}")
     else:
         print("scikit-learn 미설치")

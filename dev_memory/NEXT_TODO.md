@@ -1975,3 +1975,36 @@
 
 - [NEXT] **모의투자 중 운영 지속**
   - Phase 5 진입 조건 향해 4주 수익률 양수 + CB 발동 검증 계속
+## 2026-05-18 세션 마감 업데이트
+
+### DONE
+
+- [DONE 2026-05-18] GBM 배치 재학습 산출물을 `gbm_*.pkl + scaler_*.pkl + feature_names.pkl` 구조로 정렬
+- [DONE 2026-05-18] 좌하단 `파라미터 상관계수`를 실제 recent feature history 기반 계산값으로 교체
+- [DONE 2026-05-18] SHAP tracker / `shap_scores` / 중패널 SHAP 탭 런타임 배선
+- [DONE 2026-05-18] 재시작 직후 restored/live 분석 버퍼 복원 경로 추가
+- [DONE 2026-05-18] 중패널 `동적 피처 (SHAP)` 운영 플로우 카드 추가
+- [DONE 2026-05-18] startup crash 2건 수정
+  - `DB_DIR` import 누락 `NameError`
+  - SHAP history shape mismatch `IndexError`
+
+### NEXT
+
+- [NEXT 2026-05-19] CYBOS Plus 연결 상태 점검
+  - `U-CYBOS/CYBOS Plus is not connected` 런타임 예외 재현/해소
+  - Cybos 로그인 세션, 선물 가능 상태, autologin/preflight 경로 확인
+
+- [NEXT 2026-05-19] managed feature set 운영 검증
+  - `추천 1 적용 + 재학습` 클릭 시 `data/db/shap_feature_registry.json` 반영 여부 확인
+  - retrain 후 `feature_names.pkl`과 runtime `model.feature_names` 일치 확인
+
+- [NEXT 2026-05-19] SHAP 3개 항목 복구 검증
+  - `foreign_call_net`, `foreign_retail_divergence`, `program_non_arb_net`가 실제 active feature set과 `feature_names.pkl`에 포함되는지 확인
+  - 좌하단/중패널에서 0.0% 고정 해소 여부 확인
+
+- [NEXT 2026-05-19] 중패널 운영 플로우 UX 검증
+  - 툴팁, 버튼 enabled/disabled 상태, review summary, cooldown/교체이력 표시가 실운영 시나리오와 맞는지 확인
+
+- [NEXT 2026-05-19] SHAP 탭 코드 정리
+  - `dashboard/main_dashboard.py` 내 중복 `update_shap()` 정의 정리
+  - 인코딩 깨진 문자열과 목업 잔재 제거

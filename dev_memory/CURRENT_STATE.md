@@ -2406,3 +2406,33 @@ STEP4: get_features() → 캐시 읽기만 (TR 호출 없음)
 | 백업 | data/db/trades_backup_20260517.db |
 | 다음 첫 거래 | 2026-05-19(월) 시작 예정 |
 | 검증 모드 | 오염 없는 DB로 손익추이 유효성 평가 |
+## 2026-05-18 상태 업데이트 (GBM/SHAP 운영 패치)
+
+### 1. GBM 재학습 산출물/런타임 정합성
+- `learning/batch_retrainer.py`가 이제 `gbm_*.pkl`, `scaler_*.pkl`, `feature_names.pkl`를 함께 저장한다.
+- `MultiHorizonModel._load_all()`과 배치 재학습 산출물 포맷이 일치하도록 맞춰져, warmup/manual retrain 후 런타임 reload 경로가 정상화됐다.
+
+### 2. 좌하단 멀티 호라이즌 예측 패널
+- `파라미터 상관계수`는 importance 요약 문자열이 아니라 최근 feature history 기반 실제 상관계수 문자열(`rho`)을 사용한다.
+- `파라미터 중요도`는 SHAP cache가 있으면 SHAP 기준으로 덮어쓰도록 배선됐다.
+- 단, 현재 운영 모델의 `feature_names.pkl`에 따라 일부 피처(`foreign_call_net`, `foreign_retail_divergence`, `program_non_arb_net`)가 SHAP 대상에서 빠질 수 있으므로 다음 managed-set 재학습 검증이 필요하다.
+
+### 3. 재시작 직후 restored/live 분리
+- 재시작 시 `raw_features` 기반 복원값과 당일 live 버퍼를 분리하는 로직이 들어갔다.
+- 상관계수와 SHAP는 저장 데이터로 즉시 복원 가능하며, 이후 live buffer가 쌓이면 실시간 계산으로 전환된다.
+
+### 4. 중패널 `동적 피처 (SHAP)` 상태
+- CORE 3개/동적 TOP3/전체 피처 순위/쿨다운/교체 이력 패널이 실제 `ShapTracker` 데이터와 연결됐다.
+- 운영 플로우 카드 추가:
+  - `추천 1 적용 + 재학습`
+  - `현재 세트 재학습`
+  - `세트 원복`
+- managed feature set은 `data/db/shap_feature_registry.json`으로 관리하며, retrain 시 batch retrainer가 이를 읽어 active feature set 기준으로 학습한다.
+
+### 5. 오늘 확인된 startup 이슈와 현재 최종 블로커
+- 수정 완료:
+  - `DB_DIR` import 누락 `NameError`
+  - `shap_tracker_history.json` 과 현재 feature length 불일치로 인한 `IndexError`
+- 현재 최종 블로커:
+  - SHAP/UI 패치가 아니라 `U-CYBOS/CYBOS Plus is not connected` 브로커 세션 미연결
+  - 앱은 SHAP 패치 구간을 통과한 뒤 broker connect 단계에서 종료된다.

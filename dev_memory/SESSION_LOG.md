@@ -2865,3 +2865,37 @@ PnlHistoryPanel의 체크박스 필터링 로직 및 손익 계산 버그 4종 �
 - 일별 탭: broker 정산값 우선 (정확도 최우선)
 - 주별/월별 탭: DB 계산값 일관 (pt↔원 방향 보장)
 - MDD: trade 단위 아닌 일별 집계 (단타 진동 제거)
+## 2026-05-18 세션 마감 (GBM/SHAP 운영 패치 + 중패널 운영화)
+
+### 개요
+GBM 배치 재학습 산출물 형식을 런타임 로더와 맞추고, 좌하단 파라미터 중요도/상관계수와 중패널 `동적 피처 (SHAP)` 탭을 실제 데이터 기반 운영 패널로 연결했다. 재시작 직후 복원 로직, SHAP history 호환성 방어, 운영 버튼 흐름, 툴팁 설명까지 함께 정리했다.
+
+### 수정 내역
+
+| 파일 | 변경 |
+|---|---|
+| `learning/batch_retrainer.py` | scaler 저장, `feature_names.pkl` 저장, DB 기반 feature schema를 가장 풍부한 행 기준으로 선택, `shap_feature_registry.json`의 managed feature set 반영 |
+| `main.py` | 상관계수/SHAP 런타임 배선, restored/live 분리, SHAP dashboard payload 구성, feature registry 로드/저장, 운영 버튼 액션(추천 적용/재학습/원복), retrain 후 pending 변경 정리 |
+| `learning/shap/shap_tracker.py` | current ranking 외에 최근 rank/쿨다운/교체 로그 조회 메서드 추가, history 길이 불일치 방어 |
+| `utils/db_utils.py` | `fetch_recent_raw_features()`, `save_shap_scores()` 추가 |
+| `dashboard/main_dashboard.py` | 중패널 SHAP 탭에 운영 플로우 카드 추가, 실데이터 기반 update_shap 확장, 섹션/버튼 툴팁 추가, adapter kwargs 전달 보강 |
+
+### 핵심 결과
+
+- GBM 배치 재학습 결과가 이제 `gbm_*.pkl + scaler_*.pkl + feature_names.pkl` 형태로 저장되어 런타임 `MultiHorizonModel._load_all()`과 일치한다.
+- 좌하단 `파라미터 상관계수`는 더 이상 중요도 요약 문자열이 아니라 실제 계산값(`rho`)을 사용한다.
+- 재시작 직후 SHAP/상관계수는 저장된 `raw_features`/history를 바탕으로 복원 가능하며, 이후 분봉이 쌓이면 live 상태로 전환된다.
+- 중패널 `동적 피처 (SHAP)`은 SHAP current ranking, weekly review, cooldown, replace_log를 이용하는 운영 패널로 확장되었다.
+- 운영 버튼 플로우(`추천 1 적용 + 재학습`, `현재 세트 재학습`, `세트 원복`)를 추가하고 `data/db/shap_feature_registry.json` 기반 managed feature set으로 재학습을 제어하도록 설계했다.
+
+### 런타임/디버깅 메모
+
+- 14:22 재시작: `DB_DIR` import 누락으로 `NameError` 발생, 수정 완료.
+- 14:27 재시작: `shap_tracker_history.json`의 과거 importance 길이와 현재 feature_names 길이 불일치로 `weekly_review()` / `_find_declining_features()`에서 `IndexError` 발생, history filtering 방어 추가 후 수정 완료.
+- 14:28 재시작: 애플리케이션 자체는 SHAP/UI 패치를 통과했고, 최종 종료 원인은 `U-CYBOS/CYBOS Plus is not connected` 외부 브로커 세션 미연결이었다.
+
+### 검증
+
+- `python -m py_compile main.py learning\batch_retrainer.py learning\shap\shap_tracker.py utils\db_utils.py dashboard\main_dashboard.py`
+- `create_dashboard()` 및 `dashboard.update_shap(..., action_state=...)` 직접 호출 성공
+- 런처 재현으로 SHAP/UI 패치 관련 startup crash 제거 확인 후, 최종 블로커가 CYBOS 미연결 예외임을 확인

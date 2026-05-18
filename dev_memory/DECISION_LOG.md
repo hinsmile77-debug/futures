@@ -1914,3 +1914,31 @@ W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
 오염된 데이터로는 손익추이 유효성 평가 불가 — 5/19부터 클린 데이터로 재시작.
 **백업**: data/db/trades_backup_20260517.db (191건, 92KB)
 **검증 계획**: 5/19 이후 5일간 pt×pt_value=pnl_krw 오차 5% 이내, qty 1건 기록 확인.
+## 2026-05-18 결정/버그 기록
+
+### [D43] GBM 배치 재학습 산출물은 런타임 로더 포맷과 동일해야 한다
+**결정**: 배치 재학습은 `gbm_*.pkl`만 저장하지 않고 `scaler_*.pkl`과 `feature_names.pkl`까지 함께 저장한다.  
+**이유**: `MultiHorizonModel._load_all()`은 모델과 scaler, feature_names가 모두 있어야 운영 상태로 전환된다. 모델만 저장하면 raw bar 수가 충분해도 런타임은 계속 `GBM 대기`로 남는다.  
+**구현**: `learning/batch_retrainer.py`, `model/multi_horizon_model.py` 로더 계약 정렬.
+
+### [D44] 재시작 직후 분석 패널은 restored 값과 live 값을 분리해 보여준다
+**결정**: 상관계수/SHAP는 재시작 직후 저장된 `raw_features`/history로 복원하되, 이후 분봉 누적이 충분해지면 live 계산으로 전환한다.  
+**이유**: 실전 운영에서는 재시작할 때마다 20~30분을 다시 기다릴 수 없다. 다만 복원값과 당일 live 값을 구분하지 않으면 사용자가 stale 상태를 오해할 수 있다.  
+**구현**: `main.py` restored/live buffer 복원, `_restored_corr_str`, `_live_shap_ready`.
+
+### [D45] SHAP 피처 교체는 managed feature registry + 수동 승인 + 재학습 플로우로 운영한다
+**결정**: 자동 교체는 하지 않고 `data/db/shap_feature_registry.json`의 `active_features`를 운영 소스로 삼아, 후보 승인 후 즉시 재학습하는 흐름으로 관리한다.  
+**이유**: CORE 3개 교체 금지, 인간 검토 필수, broker 기반 실전 시스템 특성상 완전 자동 교체는 리스크가 크다. 대신 운영 버튼으로 승인/원복/재학습을 빠르게 수행할 수 있게 한다.  
+**구현**: `main.py` 운영 버튼 핸들러, `learning/batch_retrainer.py` managed feature set 반영, `dashboard/main_dashboard.py` 운영 플로우 카드.
+
+### [B56] startup crash — `DB_DIR` import 누락으로 feature registry 경로 생성 실패
+**파일**: `main.py`  
+**증상**: 재시작 직후 `TradingSystem.__init__`에서 `NameError: name 'DB_DIR' is not defined` 발생.  
+**원인**: `self._feature_registry_path = os.path.join(DB_DIR, ...)` 추가 후 `config.settings` import 목록에 `DB_DIR`를 넣지 않음.  
+**Fix**: `from config.settings import DB_DIR` 추가.
+
+### [B57] startup crash — legacy SHAP history 길이와 현재 feature_names 길이 불일치
+**파일**: `learning/shap/shap_tracker.py`  
+**증상**: 재시작 직후 `weekly_review()` -> `_find_declining_features()`에서 `IndexError`.  
+**원인**: 과거 `shap_tracker_history.json`의 `importance` 길이가 현재 `self._n_features`와 다르지만, history를 그대로 로드하고 순위 계산에 사용함.  
+**Fix**: `_load_history()`와 `_find_declining_features()`에서 현재 feature length와 일치하는 history만 사용하도록 필터링.

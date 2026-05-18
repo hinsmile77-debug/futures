@@ -432,6 +432,24 @@ def init_shap_db():
             "CREATE INDEX IF NOT EXISTS idx_feature ON shap_scores(feature)")
 
 
+def save_shap_scores(ts: str, horizon: str, score_map: Dict[str, float]) -> None:
+    """Persist one SHAP snapshot for multiple features."""
+    if not ts or not score_map:
+        return
+    rows = [
+        (ts, str(feature), float(value), str(horizon))
+        for feature, value in score_map.items()
+    ]
+    executemany(
+        SHAP_DB,
+        """
+        INSERT INTO shap_scores (ts, feature, shap_value, horizon)
+        VALUES (?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
 def init_raw_data_db():
     """분봉 원본 + 피처 저장 테이블 — 경로 B 학습 데이터 축적용"""
     execute(RAW_DATA_DB, """
@@ -499,6 +517,21 @@ def count_raw_candles() -> int:
     """누적 분봉 수 반환."""
     row = fetchone(RAW_DATA_DB, "SELECT COUNT(*) AS cnt FROM raw_candles")
     return row["cnt"] if row else 0
+
+
+def fetch_recent_raw_features(limit: int = 240) -> List[sqlite3.Row]:
+    """Return recent raw feature rows ordered oldest -> newest."""
+    rows = fetchall(
+        RAW_DATA_DB,
+        """
+        SELECT ts, features
+        FROM raw_features
+        ORDER BY ts DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    return list(reversed(rows))
 
 
 def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:

@@ -192,7 +192,14 @@ class ShapTracker:
         if len(self._history) < 4:
             return []
 
-        recent4 = list(self._history)[-4:]
+        recent4 = []
+        for hist in list(self._history)[-8:]:
+            imp = np.array(hist.get("importance") or [])
+            if len(imp) == self._n_features:
+                recent4.append(hist)
+        recent4 = recent4[-4:]
+        if len(recent4) < 4:
+            return []
         declining = []
 
         for i, fname in enumerate(self.feature_names):
@@ -202,11 +209,15 @@ class ShapTracker:
             for h in recent4:
                 imp   = np.array(h["importance"])
                 order = np.argsort(-imp)
-                rank  = int(np.where(order == i)[0][0]) + 1
+                matched = np.where(order == i)[0]
+                if len(matched) == 0:
+                    ranks = []
+                    break
+                rank  = int(matched[0]) + 1
                 ranks.append(rank)
 
             # 4주 연속 순위 하락
-            if all(ranks[j] < ranks[j + 1] for j in range(len(ranks) - 1)):
+            if len(ranks) == 4 and all(ranks[j] < ranks[j + 1] for j in range(len(ranks) - 1)):
                 declining.append(fname)
 
         return declining
@@ -279,7 +290,9 @@ class ShapTracker:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             for h in data.get("history", []):
-                self._history.append(h)
+                imp = np.array(h.get("importance") or [])
+                if len(imp) == self._n_features:
+                    self._history.append(h)
             self._replace_log = data.get("replace_log", [])
             lr = data.get("last_replace")
             if lr:
@@ -298,6 +311,46 @@ class ShapTracker:
              "importance": round(float(self._current_importance[idx[i]]), 6)}
             for i in range(len(idx))
         ]
+
+    def get_recent_ranks(self, feature: str, lookback: int = 4) -> List[int]:
+        if feature not in self.feature_names:
+            return []
+        if not self._history:
+            return []
+
+        feat_idx = self.feature_names.index(feature)
+        ranks = []
+        recent = list(self._history)[-max(int(lookback), 1):]
+        for hist in recent:
+            imp = np.array(hist.get("importance") or [])
+            if len(imp) != self._n_features:
+                continue
+            order = np.argsort(-imp)
+            found = np.where(order == feat_idx)[0]
+            if len(found) == 0:
+                continue
+            ranks.append(int(found[0]) + 1)
+        return ranks
+
+    def get_replace_state(self) -> dict:
+        state = dict(self._check_replace_allowed())
+        today = datetime.date.today()
+        days_since = None
+        cooldown_progress = 0
+        if self._last_replace:
+            days_since = (today - self._last_replace).days
+            cooldown_progress = int(
+                min(100, max(0, (days_since / max(SHAP_COOLDOWN_DAYS, 1)) * 100))
+            )
+        state["last_replace"] = self._last_replace.isoformat() if self._last_replace else None
+        state["days_since_last"] = days_since
+        state["cooldown_progress"] = cooldown_progress
+        return state
+
+    def get_replace_log(self, limit: int = 10) -> List[dict]:
+        if limit <= 0:
+            return []
+        return list(self._replace_log)[-int(limit):]
 
 
 if __name__ == "__main__":
