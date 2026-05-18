@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-05-18 (55차 — 옵션 체인 파이프라인 + B115)
+
+### [B115] `_filter_front_month` — 만기된 앞 달 옵션 선택
+**File**: `collection/options/option_chain_snapshot.py` — `_filter_front_month()` + `_option_expiry()`
+**Symptom**: 15:23 수집 후 UI "수집완료" + PCR=1.000/GEX=0.0B. 데이터가 들어온 것처럼 보이지만 모두 기본값(default).
+**Root cause**: `_filter_front_month`가 chain의 ym(연월 코드)을 알파벳 정렬 후 첫 번째를 front month로 선택. KOSPI200 옵션 5월 만기 = 2026-05-14(2번째 목요일). 오늘(5/18)은 만기 이후이므로 "2605"(5월) 옵션 OI가 모두 0. BlockRequest는 dib_status=0으로 정상 응답하나 OI 필드 0 → call_oi=0 → PCR default 1.0 반환. `opt_chain_available=1.0`인 이유: valid(에러 없는) 스냅샷이 존재하기 때문 — OI=0이어도 오류 처리 대상이 아님.
+**Fix**: `_option_expiry(year, month)` 정적 메서드 추가 — 해당 월 1일에서 2번째 목요일 계산. `_filter_front_month`에서 ym 순회 시 `today <= expiry` 만족하는 첫 번째 ym을 선택, 만기 달 skip.
+**Verified**: 계산 확인 — 2605(만기 5/14) < 오늘(5/18) → SKIP. 2606(만기 6/11) ≥ 오늘 → USE. 6월 체인 ATM(1190-1250) 내 콜25+풋25=50개 확인. 실수치 검증은 2026-05-19.
+
+### [설계] OptionChainSnapshot — Cybos COM 옵션 OI 실시간 구독 불가, BlockRequest 폴링으로 대체
+**Decision**: Cybos COM에 옵션 체인/OI 실시간 구독 경로 없음 → `CpUtil.CpOptionCode`(체인 4,624종목) + `Dscbo1.OptionMst` BlockRequest 5분 폴링으로 PCR/ATM OI/GEX 수집.
+**Why**: `DispatchWithEvents("Dscbo1.OptionMo")` → Python 3.7 32-bit pywin32 metaclass conflict. `CpSvrNew7215A/B`, `7221`, `7222`, `7224` 모두 `niis.stk.*`(주식 계열) 메시지 확인. 공개 COM 오브젝트 중 옵션 OI 실시간 구독 경로 없음으로 탐색 종료.
+**Trade-off**: 5분 딜레이 존재. PCR/GEX는 단기 방향 신호보다 레짐 확인 용도이므로 실용적 허용 범위.
+**How to apply**: `OptionChainSnapshot.refresh(spot=close)` 5분 guard 자동 처리. 갱신 시에만 dashboard 업데이트 (`_chain_refreshed=True`).
+
+---
+
 ## 2026-05-18 (54차 — B112 stale broker_sync_reason + B114 IntrabarTPCheck 진단)
 
 ### [B112] `_broker_sync_last_error` — EntryStuck 해소 후 FLAT 전환 시 stale 캐시 오염

@@ -1,7 +1,36 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-18 (54차) — **B112 stale broker_sync_reason 수정 + B114 IntrabarTPCheck 진단 로그 추가**
+> 마지막 업데이트: 2026-05-18 (55차) — **옵션 체인 스냅샷 파이프라인 완성 + B115 front month 만기 버그 수정**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-18 (55차) — 옵션 체인 스냅샷 파이프라인 완성 + B115 수정
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| OptionChainSnapshot 클래스 구현 | **완료** — `collection/options/option_chain_snapshot.py` |
+| main.py STEP 4 통합 | **완료** — refresh·get_features·dashboard 업데이트 연결 |
+| 대시보드 옵션 섹션 UI | **완료** — freshness bar + PCR/GEX 카드 5개 |
+| B115 Fix: front month 만기 계산 | **완료** — `_filter_front_month` 2번째 목요일 기준 만기 달 skip |
+| 옵션 체인 실데이터 검증 | **미완료** — 5/19 장중 첫 검증 예정 |
+
+### 수정 파일 (55차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `collection/options/option_chain_snapshot.py` | 신규 — OptionChainSnapshot 클래스 (5분 폴링 PCR/ATM OI/GEX) + B115 _filter_front_month 만기 계산 |
+| `main.py` | import 추가, `__init__` 초기화, `connect_broker` initialize(), STEP4 refresh/get_features/dashboard update, `reset_daily()` |
+| `dashboard/main_dashboard.py` | DivergencePanel 옵션 섹션 + freshness bar + update_option_chain() + MainDashboard 위임 메서드 |
+
+### 5/19 기동 확인 사항
+
+1. `[OptionChain] COM 초기화 완료` — connect_broker() 완료 직후 로그
+2. `[OptionChain] front month=2606 (만기=2026-06-11)` — B115 수정 동작 확인
+3. 09:05 이후 `[OptionChain] 갱신 ... avail=True` — 실데이터 수집 확인
+4. 대시보드 하단 옵션 섹션 실수치 표시 (PCR≠1.000, GEX≠0.0B)
 
 ---
 

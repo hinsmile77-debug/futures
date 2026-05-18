@@ -1649,11 +1649,11 @@ class DivergencePanel(QWidget):
     def _build(self):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
+        lay.setSpacing(3)
         self.panel_status_label = mk_label("", C['text2'], 8)
         self.option_status_label = mk_label("", C['text2'], 8)
 
-        lay.addWidget(mk_label("외인-개인 다이버전스 지수 (역발상 핵심 신호)", C['orange'], 10, True))
+        lay.addWidget(mk_label("외인-개인 다이버전스 지수 (역발상 핵심 신호)", C['orange'], 9, True))
         lay.addWidget(self.panel_status_label)
 
         # 바이어스 미터
@@ -1664,8 +1664,8 @@ class DivergencePanel(QWidget):
             row = QHBoxLayout()
             row.addWidget(mk_label(label, C['text2'], 9))
             row.addWidget(mk_label(ltext, lcol, 9))
-            bar_l = mk_prog(lcol, 12)
-            bar_r = mk_prog(rcol, 12)
+            bar_l = mk_prog(lcol, 10)
+            bar_r = mk_prog(rcol, 10)
             setattr(self, f"{attr_prefix}_put_bar", bar_l)
             setattr(self, f"{attr_prefix}_call_bar", bar_r)
             mid_frame = QFrame()
@@ -1681,9 +1681,9 @@ class DivergencePanel(QWidget):
         lay.addWidget(mk_sep())
 
         # 선물 투자자 수급 섹션 (Cybos Plus 네이티브 — 계약수/미결제)
-        lay.addWidget(mk_label("선물 투자자 수급 (계약수)", C['cyan'], 10, True))
+        lay.addWidget(mk_label("선물 투자자 수급 (계약수)", C['cyan'], 9, True))
         fut_grid = QGridLayout()
-        fut_grid.setSpacing(4)
+        fut_grid.setSpacing(2)
         _fut_cards = [
             ("외인 선물 순매수", "fut_fi",   C['blue']),
             ("개인 선물 순매수", "fut_rt",   C['red']),
@@ -1696,13 +1696,13 @@ class DivergencePanel(QWidget):
             ff = QFrame()
             ff.setStyleSheet(
                 f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
-                f"border-radius:5px;padding:4px;}}"
+                f"border-radius:4px;}}"
             )
             ffl = QVBoxLayout(ff)
-            ffl.setContentsMargins(6, 4, 6, 4)
-            ffl.setSpacing(1)
-            ffl.addWidget(mk_label(title, C['text2'], 9))
-            fv = mk_val_label("——", col, 13)
+            ffl.setContentsMargins(4, 2, 4, 2)
+            ffl.setSpacing(0)
+            ffl.addWidget(mk_label(title, C['text2'], 8))
+            fv = mk_val_label("——", col, 12)
             ffl.addWidget(fv)
             setattr(self, f"fut_{attr}_val", fv)
             fut_grid.addWidget(ff, i // 3, i % 3)
@@ -1711,9 +1711,9 @@ class DivergencePanel(QWidget):
         lay.addWidget(mk_sep())
 
         # 포지션 카드 (2×4 그리드)
-        lay.addWidget(mk_label("투자자 포지션 매트릭스", C['blue'], 10, True))
+        lay.addWidget(mk_label("투자자 포지션 매트릭스", C['blue'], 9, True))
         pos_grid = QGridLayout()
-        pos_grid.setSpacing(4)
+        pos_grid.setSpacing(2)
         positions = [
             ("개인 콜매수",   "rt_call",   C['red']),
             ("개인 풋매수",   "rt_put",    C['green']),
@@ -1728,13 +1728,13 @@ class DivergencePanel(QWidget):
             f = QFrame()
             f.setStyleSheet(
                 f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
-                f"border-radius:5px;padding:4px;}}"
+                f"border-radius:4px;}}"
             )
             fl = QVBoxLayout(f)
-            fl.setContentsMargins(6, 4, 6, 4)
-            fl.setSpacing(1)
-            t = mk_label(title, C['text2'], 9)
-            v = mk_val_label("——", col, 13)
+            fl.setContentsMargins(4, 2, 4, 2)
+            fl.setSpacing(0)
+            t = mk_label(title, C['text2'], 8)
+            v = mk_val_label("——", col, 12)
             fl.addWidget(t)
             fl.addWidget(v)
             setattr(self, f"pos_{attr}_val", v)
@@ -1743,27 +1743,109 @@ class DivergencePanel(QWidget):
 
         lay.addWidget(mk_sep())
         # 옵션 구간별 거래량
-        lay.addWidget(mk_label("옵션 구간별 거래량 — 외인/개인/기관 분리 (ITM·ATM·OTM)", C['cyan'], 10, True))
+        lay.addWidget(mk_label("옵션 구간별 거래량 (ITM·ATM·OTM)", C['cyan'], 9, True))
         lay.addWidget(self.option_status_label)
         zone_lay = QHBoxLayout()
+        zone_lay.setSpacing(2)
         for zone in ["ITM", "ATM", "OTM"]:
             zf = QFrame()
-            zf.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;")
+            zf.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
             zfl = QVBoxLayout(zf)
-            zfl.setContentsMargins(6, 6, 6, 6)
-            zfl.addWidget(mk_label(zone, C['text'], 11, True, Qt.AlignCenter))
+            zfl.setContentsMargins(4, 3, 4, 3)
+            zfl.setSpacing(1)
+            zfl.addWidget(mk_label(zone, C['text'], 10, True, Qt.AlignCenter))
             for inv, col in [("외인",C['blue']),("개인",C['red']),("기관",C['purple'])]:
                 hr = QHBoxLayout()
-                hr.addWidget(mk_label(inv, C['text2'], 9))
-                b = mk_prog(col, 7)
+                hr.setSpacing(2)
+                hr.addWidget(mk_label(inv, C['text2'], 8))
+                b = mk_prog(col, 6)
                 b.setValue(0)
                 hr.addWidget(b, 2)
-                vl = mk_label("—%", col, 9)
+                vl = mk_label("—%", col, 8)
                 setattr(self, f"oz_{zone}_{inv}", (b, vl))
                 hr.addWidget(vl)
                 zfl.addLayout(hr)
             zone_lay.addWidget(zf)
         lay.addLayout(zone_lay)
+
+        lay.addWidget(mk_sep())
+
+        # ── 옵션 체인 스냅샷 (OptionMst 5분 폴링) ─────────────────
+        self._chain_refresh_ts = 0.0
+        self._chain_interval_sec = 300  # 5분
+
+        hdr_row = QHBoxLayout()
+        hdr_row.addWidget(mk_label("옵션 체인 스냅샷  (OptionMst 5분 폴링)", C['green'], 9, True))
+        hdr_row.addStretch()
+        self.chain_time_lbl   = mk_label("갱신: ——", C['text2'], 8)
+        self.chain_status_lbl = mk_label("● 미수집", C['text2'], 8)
+        hdr_row.addWidget(self.chain_time_lbl)
+        hdr_row.addWidget(self.chain_status_lbl)
+        lay.addLayout(hdr_row)
+
+        # freshness bar: 5분(300s) 카운트다운 — 가득 찰수록 신선
+        fresh_row = QHBoxLayout()
+        fresh_row.addWidget(mk_label("신선도", C['text2'], 8))
+        self.chain_fresh_bar = QProgressBar()
+        self.chain_fresh_bar.setRange(0, self._chain_interval_sec)
+        self.chain_fresh_bar.setValue(0)
+        self.chain_fresh_bar.setTextVisible(False)
+        self.chain_fresh_bar.setFixedHeight(6)
+        self.chain_fresh_bar.setStyleSheet(
+            f"QProgressBar{{background:{C['bg2']};border:1px solid {C['border']};"
+            f"border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{C['text2']};border-radius:3px;}}"
+        )
+        fresh_row.addWidget(self.chain_fresh_bar, 1)
+        self.chain_fresh_lbl = mk_label("——", C['text2'], 8)
+        fresh_row.addWidget(self.chain_fresh_lbl)
+        lay.addLayout(fresh_row)
+
+        chain_grid = QGridLayout()
+        chain_grid.setSpacing(2)
+
+        # 1행: 체인 PCR | ATM PCR | GEX
+        _row0 = [
+            ("체인 PCR",  "chain_pcr",  C['orange'], "풋/콜 OI"),
+            ("ATM PCR",   "atm_pcr",    C['blue'],   "ATM 행사가"),
+            ("GEX",       "gex_bn",     C['purple'], "딜러 감마"),
+        ]
+        # 2행: ATM 콜 OI | ATM 풋 OI | (빈칸)
+        _row1 = [
+            ("ATM 콜 OI", "atm_call_oi", C['green'], ""),
+            ("ATM 풋 OI", "atm_put_oi",  C['red'],   ""),
+        ]
+        for col_i, (title, attr, col, sub) in enumerate(_row0):
+            cf = QFrame()
+            cf.setStyleSheet(
+                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;}}"
+            )
+            cfl = QVBoxLayout(cf)
+            cfl.setContentsMargins(4, 2, 4, 2)
+            cfl.setSpacing(0)
+            cfl.addWidget(mk_label(title, C['text2'], 8))
+            cv = mk_val_label("——", col, 12)
+            cfl.addWidget(cv)
+            if sub:
+                cfl.addWidget(mk_label(sub, C['text2'], 7))
+            setattr(self, f"chain_{attr}_val", cv)
+            chain_grid.addWidget(cf, 0, col_i)
+
+        for col_i, (title, attr, col, sub) in enumerate(_row1):
+            cf = QFrame()
+            cf.setStyleSheet(
+                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;}}"
+            )
+            cfl = QVBoxLayout(cf)
+            cfl.setContentsMargins(4, 2, 4, 2)
+            cfl.setSpacing(0)
+            cfl.addWidget(mk_label(title, C['text2'], 8))
+            cv = mk_val_label("——", col, 12)
+            cfl.addWidget(cv)
+            setattr(self, f"chain_{attr}_val", cv)
+            chain_grid.addWidget(cf, 1, col_i)
+
+        lay.addLayout(chain_grid)
 
     def update_data(self, div):
         self.panel_status_label.setText(div.get("panel_status_text", ""))
@@ -1865,11 +1947,105 @@ class DivergencePanel(QWidget):
                     b.setValue(0)
                     vl.setText("--")
 
+        # freshness 게이지 매분 갱신
+        self._tick_chain_freshness()
+
+    def _tick_chain_freshness(self) -> None:
+        import time as _time
+        if self._chain_refresh_ts <= 0:
+            return
+        elapsed = _time.time() - self._chain_refresh_ts
+        remaining = max(0.0, self._chain_interval_sec - elapsed)
+        self.chain_fresh_bar.setValue(int(remaining))
+
+        pct = remaining / self._chain_interval_sec
+        if pct > 0.6:
+            chunk_col = C['green']
+        elif pct > 0.25:
+            chunk_col = C['orange']
+        else:
+            chunk_col = C['red']
+        self.chain_fresh_bar.setStyleSheet(
+            f"QProgressBar{{background:{C['bg2']};border:1px solid {C['border']};"
+            f"border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{chunk_col};border-radius:3px;}}"
+        )
+        mins = int(elapsed // 60)
+        secs = int(elapsed % 60)
+        if mins > 0:
+            self.chain_fresh_lbl.setText(f"{mins}분 {secs:02d}초 전")
+        else:
+            self.chain_fresh_lbl.setText(f"{secs}초 전")
+        self.chain_fresh_lbl.setStyleSheet(f"color:{chunk_col};font-size:{S.f(8)}px;")
+
+    def update_option_chain(self, chain_feats: dict) -> None:
+        import time as _time
+        import datetime as _dt
+        avail = bool(chain_feats.get("opt_chain_available", 0))
+
+        if avail:
+            self._chain_refresh_ts = _time.time()
+            now_str = _dt.datetime.now().strftime("%H:%M")
+            self.chain_time_lbl.setText(f"갱신: {now_str}")
+            self.chain_status_lbl.setText("● 수집완료")
+            self.chain_status_lbl.setStyleSheet(
+                f"color:{C['green']};font-size:{S.f(8)}px;font-weight:bold;"
+            )
+            # freshness 바 즉시 풀로 채우기
+            self.chain_fresh_bar.setValue(self._chain_interval_sec)
+            self.chain_fresh_bar.setStyleSheet(
+                f"QProgressBar{{background:{C['bg2']};border:1px solid {C['border']};"
+                f"border-radius:3px;}}"
+                f"QProgressBar::chunk{{background:{C['green']};border-radius:3px;}}"
+            )
+            self.chain_fresh_lbl.setText("방금")
+            self.chain_fresh_lbl.setStyleSheet(
+                f"color:{C['green']};font-size:{S.f(8)}px;"
+            )
+
+            pcr     = float(chain_feats.get("opt_chain_pcr", 0) or 0)
+            atm_pcr = float(chain_feats.get("opt_atm_pcr",   0) or 0)
+            gex_bn  = float(chain_feats.get("opt_gex_bn",    0) or 0)
+            gex_sgn = float(chain_feats.get("opt_gex_sign",  0) or 0)
+            c_oi    = int(chain_feats.get("opt_atm_call_oi", 0) or 0)
+            p_oi    = int(chain_feats.get("opt_atm_put_oi",  0) or 0)
+
+            pcr_col = C['red'] if pcr > 1.2 else (C['green'] if pcr < 0.8 else C['orange'])
+            self.chain_chain_pcr_val.setText(f"{pcr:.3f}")
+            self.chain_chain_pcr_val.setStyleSheet(
+                f"color:{pcr_col};font-size:{S.f(12)}px;font-weight:bold;"
+            )
+
+            atm_col = C['red'] if atm_pcr > 1.2 else (C['green'] if atm_pcr < 0.8 else C['blue'])
+            self.chain_atm_pcr_val.setText(f"{atm_pcr:.3f}")
+            self.chain_atm_pcr_val.setStyleSheet(
+                f"color:{atm_col};font-size:{S.f(12)}px;font-weight:bold;"
+            )
+
+            gex_col = C['green'] if gex_sgn > 0 else (C['red'] if gex_sgn < 0 else C['text2'])
+            gex_txt = f"{gex_bn:+.1f}B"
+            self.chain_gex_bn_val.setText(gex_txt)
+            self.chain_gex_bn_val.setStyleSheet(
+                f"color:{gex_col};font-size:{S.f(12)}px;font-weight:bold;"
+            )
+
+            self.chain_atm_call_oi_val.setText(f"{c_oi:,}")
+            self.chain_atm_put_oi_val.setText(f"{p_oi:,}")
+        else:
+            self.chain_status_lbl.setText("● 미수집")
+            self.chain_status_lbl.setStyleSheet(
+                f"color:{C['text2']};font-size:{S.f(8)}px;"
+            )
+
 
 # ────────────────────────────────────────────────────────────
 # 패널 3: 동적 피처 관리 (SHAP)
 # ────────────────────────────────────────────────────────────
 class FeaturePanel(QWidget):
+    sig_apply_candidate_requested = pyqtSignal()
+    sig_force_retrain_requested = pyqtSignal()
+    sig_reset_feature_set_requested = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self._build()
@@ -1883,6 +2059,19 @@ class FeaturePanel(QWidget):
 
         # 고정 CORE
         lay.addWidget(mk_label("▐ 고정 CORE 3개 — 절대 교체 불가", C['cyan'], 9, True))
+        top6_title = lay.itemAt(lay.count() - 2).widget()
+        if top6_title is not None:
+            top6_title.setToolTip(
+                "현재 모델 feature set 안에서 SHAP 기여도가 높은 피처를 실시간으로 보여줍니다.\n"
+                "CORE 3개, 동적 심사, 운영 액션, 전체 순위, 교체 이력을 한 곳에서 확인하는 패널입니다."
+            )
+        core_title = lay.itemAt(lay.count() - 1).widget()
+        if core_title is not None:
+            core_title.setToolTip(
+                "CVD, VWAP, OFI는 시스템의 절대 CORE 피처입니다.\n"
+                "교체 대상이 아니며, SHAP 값과 상태 라벨은 현재 중요도와 최근 순위 흐름을 요약합니다.\n"
+                "핵심, 안정, 주의, 약화, 모니터 상태를 통해 CORE의 컨디션을 빠르게 확인합니다."
+            )
         self.core_rows = []
         for i, name in enumerate(["CVD 다이버전스", "VWAP 위치", "OFI 불균형"]):
             row = QHBoxLayout()
@@ -1901,13 +2090,20 @@ class FeaturePanel(QWidget):
             row.addWidget(vlab)
             row.addWidget(slab)
             lay.addLayout(row)
-            self.core_rows.append((bar, vlab))
+            self.core_rows.append((nlab, bar, vlab, slab))
 
         lay.addWidget(mk_sep())
 
         # 동적 SHAP
         lay.addWidget(mk_label("▐ 동적 SHAP TOP 3 — 매일 심사", C['purple'], 9, True))
         # 쿨다운
+        dynamic_title = lay.itemAt(lay.count() - 1).widget()
+        if dynamic_title is not None:
+            dynamic_title.setToolTip(
+                "CORE를 제외한 동적 피처 중 현재 SHAP 상위 3개를 보여줍니다.\n"
+                "유지, 복원, 약화, 교체후보 상태는 주간 심사와 최근 랭킹 추세를 반영한 운영 신호입니다.\n"
+                "여기서 보이는 후보가 운영 플로우의 적용 대상이 됩니다."
+            )
         cdlay = QHBoxLayout()
         cdlay.addWidget(mk_label("쿨다운:", C['text2'], 9))
         self.cooldown_bar = mk_prog(C['orange'], 6)
@@ -1915,7 +2111,79 @@ class FeaturePanel(QWidget):
         cdlay.addWidget(self.cooldown_bar, 3)
         self.cooldown_lbl = mk_label("없음", C['text2'], 9)
         cdlay.addWidget(self.cooldown_lbl)
+        cd_title = cdlay.itemAt(0).widget()
+        if cd_title is not None:
+            cd_title.setToolTip(
+                "피처 교체 쿨다운 상태입니다.\n"
+                "최근 교체 이후 재교체 금지 기간, 하루 최대 교체 수 제한, 현재 교체 가능 여부를 요약합니다.\n"
+                "운영 플로우 버튼을 눌러도 쿨다운 조건이 막으면 추천 적용이 비활성화됩니다."
+            )
+            self.cooldown_lbl.setToolTip(cd_title.toolTip())
         lay.addLayout(cdlay)
+
+        action_box = QFrame()
+        action_box.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:8px;"
+        )
+        action_lay = QVBoxLayout(action_box)
+        action_lay.setContentsMargins(8, 8, 8, 8)
+        action_lay.setSpacing(6)
+        action_lay.addWidget(mk_label("운영 플로우", C['yellow'], 9, True))
+        self.review_summary = mk_label("추천 후보를 점검하는 중", C['text2'], 9)
+        self.review_summary.setWordWrap(True)
+        action_lay.addWidget(self.review_summary)
+        action_title = action_lay.itemAt(0).widget()
+        if action_title is not None:
+            action_title.setToolTip(
+                "후보 검토 -> 승인 -> 재학습 -> 반영 -> 이력 기록을 한 번에 수행하는 운영 카드입니다.\n"
+                "추천 1 적용은 첫 번째 적용 가능 후보를 승인하고 즉시 재학습합니다.\n"
+                "현재 세트 재학습은 active feature set을 유지한 채 재학습만 다시 돌리고,\n"
+                "세트 원복은 baseline feature set으로 되돌린 뒤 다시 재학습합니다."
+            )
+        self.review_summary.setToolTip(
+            "현재 추천 후보, 대기 중인 변경, 혹은 추천 불가 사유를 요약합니다.\n"
+            "버튼을 누르기 전에 어떤 교체가 예정되는지 여기서 먼저 확인합니다."
+        )
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        self.btn_apply_candidate = QPushButton("추천 1 적용 + 재학습")
+        self.btn_apply_candidate.setCursor(Qt.PointingHandCursor)
+        self.btn_apply_candidate.setStyleSheet(
+            f"QPushButton{{background:{C['green']};color:#04110C;border:none;border-radius:6px;padding:7px 12px;font-weight:bold;}}"
+            f"QPushButton:disabled{{background:{C['bg3']};color:{C['text2']};}}"
+        )
+        self.btn_apply_candidate.setToolTip(
+            "주간 심사에서 첫 번째 적용 가능 후보를 승인합니다.\n"
+            "active feature set을 갱신하고 교체 이력을 기록한 뒤, 즉시 GBM 재학습을 시작합니다."
+        )
+        self.btn_force_retrain = QPushButton("현재 세트 재학습")
+        self.btn_force_retrain.setCursor(Qt.PointingHandCursor)
+        self.btn_force_retrain.setStyleSheet(
+            f"QPushButton{{background:{C['bg3']};color:{C['text']};border:1px solid {C['border']};border-radius:6px;padding:7px 12px;font-weight:bold;}}"
+            f"QPushButton:disabled{{color:{C['text2']};}}"
+        )
+        self.btn_force_retrain.setToolTip(
+            "현재 active feature set을 유지한 채 GBM 재학습만 다시 실행합니다.\n"
+            "교체 승인 없이 모델 성능과 SHAP 반영만 새로 고치고 싶을 때 사용합니다."
+        )
+        self.btn_reset_feature_set = QPushButton("세트 원복")
+        self.btn_reset_feature_set.setCursor(Qt.PointingHandCursor)
+        self.btn_reset_feature_set.setStyleSheet(
+            f"QPushButton{{background:{C['bg']};color:{C['orange']};border:1px solid {C['orange']};border-radius:6px;padding:7px 12px;font-weight:bold;}}"
+            f"QPushButton:disabled{{color:{C['text2']};border-color:{C['border']};}}"
+        )
+        self.btn_reset_feature_set.setToolTip(
+            "managed feature set을 baseline feature set으로 원복합니다.\n"
+            "이후 즉시 재학습이 실행되어 원래 세트 기준 모델과 SHAP 상태로 되돌립니다."
+        )
+        btn_row.addWidget(self.btn_apply_candidate, 2)
+        btn_row.addWidget(self.btn_force_retrain, 1)
+        btn_row.addWidget(self.btn_reset_feature_set, 1)
+        action_lay.addLayout(btn_row)
+        lay.addWidget(action_box)
+        self.btn_apply_candidate.clicked.connect(self.sig_apply_candidate_requested.emit)
+        self.btn_force_retrain.clicked.connect(self.sig_force_retrain_requested.emit)
+        self.btn_reset_feature_set.clicked.connect(self.sig_reset_feature_set_requested.emit)
 
         self.dynamic_rows = []
         for i in range(3):
@@ -1939,6 +2207,13 @@ class FeaturePanel(QWidget):
 
         # SHAP 전체 가로 차트 (간이)
         lay.addWidget(mk_label("전체 피처 순위 (SHAP 200분 누적)", C['blue'], 9, True))
+        rank_title = lay.itemAt(lay.count() - 1).widget()
+        if rank_title is not None:
+            rank_title.setToolTip(
+                "현재 SHAP ranking 상위 피처들을 순서대로 보여줍니다.\n"
+                "표시 항목은 현재 랭킹 기준 상위 피처로 갱신되며,\n"
+                "각 바는 최근 누적 SHAP 기여도의 상대 크기를 빠르게 비교하기 위한 요약 뷰입니다."
+            )
         self.rank_labels = []
         all_params = [
             ("외인 콜순매수", C['green']),("CVD 다이버전스", C['cyan']),
@@ -1957,11 +2232,17 @@ class FeaturePanel(QWidget):
             r.addWidget(b, 3)
             r.addWidget(vl)
             lay.addLayout(r)
-            self.rank_labels.append((b, vl))
+            self.rank_labels.append((nl, b, vl))
 
         lay.addWidget(mk_sep())
         # 교체 이력
         lay.addWidget(mk_label("교체 이력", C['text2'], 9, True))
+        change_title = lay.itemAt(lay.count() - 1).widget()
+        if change_title is not None:
+            change_title.setToolTip(
+                "승인된 피처 교체와 모델 reload로 실제 feature set이 바뀐 이력을 기록합니다.\n"
+                "날짜, old/new feature, 사유를 남기며, 수동 승인과 모델 반영 추적용으로 사용합니다."
+            )
         self.change_log = QTextEdit()
         self.change_log.setReadOnly(True)
         self.change_log.setFixedHeight(55)
@@ -1969,14 +2250,19 @@ class FeaturePanel(QWidget):
             f"background:{C['bg']};color:{C['text2']};border:1px solid {C['border']};"
             f"font-size:{S.f(11)}px;font-family:Consolas;"
         )
+        self.change_log.setToolTip(
+            "최근 교체 이력 로그입니다.\n"
+            "추천 승인, baseline 원복, 모델 reload 반영 이력을 시간순으로 확인할 수 있습니다."
+        )
         self.change_log.setText(
             "01-12  교체  베이시스 → 프로그램비차익  +1.4%  [성공]\n"
             "01-09  교체  PCR → 다이버전스지수        +2.1%  [성공]\n"
             "01-05  교체  원달러 → 외인콜순매수       +0.8%  [성공]"
         )
         lay.addWidget(self.change_log)
+        self.change_log.setPlainText("기록 없음")
 
-    def update_shap(self, core_vals, dynamic_items, rank_vals):
+    def update_shap(self, *args, **kwargs):
         for (bar, vlab), val in zip(self.core_rows, core_vals):
             bar.setValue(int(val*100))
             vlab.setText(f"{val*100:.1f}%")
@@ -1998,6 +2284,110 @@ class FeaturePanel(QWidget):
 # ────────────────────────────────────────────────────────────
 # 패널 4: 청산 관리 패널
 # ────────────────────────────────────────────────────────────
+    def update_shap(self, core_items, dynamic_items, rank_items, cooldown=None, change_lines=None):
+        for i, (nlab, bar, vlab, slab) in enumerate(self.core_rows):
+            if i < len(core_items):
+                item = core_items[i]
+                nlab.setText(str(item.get("name", nlab.text())))
+                val = float(item.get("shap", 0.0) or 0.0)
+                bar.setValue(int(val * 100))
+                vlab.setText(f"{val*100:.1f}%")
+                slab.setText(str(item.get("status", "대기")))
+            else:
+                bar.setValue(0)
+                vlab.setText("0.0%")
+                slab.setText("대기")
+
+        for i, (rank, nlab, bar, vlab, slab) in enumerate(self.dynamic_rows):
+            if i < len(dynamic_items):
+                item = dynamic_items[i]
+                rank.setText(str(item.get("rank", i + 1)))
+                nlab.setText(str(item.get("name", "-")))
+                val = float(item.get("shap", 0.0) or 0.0)
+                bar.setValue(int(val * 100))
+                vlab.setText(f"{val*100:.1f}%")
+                slab.setText(str(item.get("status", "대기")))
+            else:
+                rank.setText(str(i + 1))
+                nlab.setText("-")
+                bar.setValue(0)
+                vlab.setText("0.0%")
+                slab.setText("대기")
+
+        for i, (nl, bar, vlab) in enumerate(self.rank_labels):
+            if i < len(rank_items):
+                item = rank_items[i]
+                nl.setText(str(item.get("name", "-"))[:10])
+                val = float(item.get("shap", 0.0) or 0.0)
+                bar.setValue(int(val * 100))
+                vlab.setText(f"{val*100:.1f}%")
+            else:
+                nl.setText("-")
+                bar.setValue(0)
+                vlab.setText("0.0%")
+
+        cooldown = cooldown or {}
+        self.cooldown_bar.setValue(int(cooldown.get("progress", 0) or 0))
+        self.cooldown_lbl.setText(str(cooldown.get("label", "기록 없음")))
+
+        lines = list(change_lines or [])
+        self.change_log.setPlainText("\n".join(lines) if lines else "기록 없음")
+
+    def update_shap(self, core_items, dynamic_items, rank_items, cooldown=None, change_lines=None, action_state=None):
+        for i, (nlab, bar, vlab, slab) in enumerate(self.core_rows):
+            if i < len(core_items):
+                item = core_items[i]
+                nlab.setText(str(item.get("name", nlab.text())))
+                val = float(item.get("shap", 0.0) or 0.0)
+                bar.setValue(int(val * 100))
+                vlab.setText(f"{val*100:.1f}%")
+                slab.setText(str(item.get("status", "대기")))
+            else:
+                bar.setValue(0)
+                vlab.setText("0.0%")
+                slab.setText("대기")
+
+        for i, (rank, nlab, bar, vlab, slab) in enumerate(self.dynamic_rows):
+            if i < len(dynamic_items):
+                item = dynamic_items[i]
+                rank.setText(str(item.get("rank", i + 1)))
+                nlab.setText(str(item.get("name", "-")))
+                val = float(item.get("shap", 0.0) or 0.0)
+                bar.setValue(int(val * 100))
+                vlab.setText(f"{val*100:.1f}%")
+                slab.setText(str(item.get("status", "대기")))
+            else:
+                rank.setText(str(i + 1))
+                nlab.setText("-")
+                bar.setValue(0)
+                vlab.setText("0.0%")
+                slab.setText("대기")
+
+        for i, (nl, bar, vlab) in enumerate(self.rank_labels):
+            if i < len(rank_items):
+                item = rank_items[i]
+                nl.setText(str(item.get("name", "-"))[:10])
+                val = float(item.get("shap", 0.0) or 0.0)
+                bar.setValue(int(val * 100))
+                vlab.setText(f"{val*100:.1f}%")
+            else:
+                nl.setText("-")
+                bar.setValue(0)
+                vlab.setText("0.0%")
+
+        cooldown = cooldown or {}
+        self.cooldown_bar.setValue(int(cooldown.get("progress", 0) or 0))
+        self.cooldown_lbl.setText(str(cooldown.get("label", "기록 없음")))
+
+        lines = list(change_lines or [])
+        self.change_log.setPlainText("\n".join(lines) if lines else "기록 없음")
+
+        action_state = action_state or {}
+        self.review_summary.setText(str(action_state.get("summary", "추천 후보를 점검하는 중")))
+        self.btn_apply_candidate.setEnabled(bool(action_state.get("can_apply", False)))
+        self.btn_force_retrain.setEnabled(bool(action_state.get("can_retrain", True)))
+        self.btn_reset_feature_set.setEnabled(bool(action_state.get("can_reset", False)))
+
 class ExitPanel(QWidget):
     sig_tp1_protect_mode_changed = pyqtSignal(str)
     sig_manual_exit_requested = pyqtSignal(int)
@@ -3065,7 +3455,7 @@ class LearningPanel(QWidget):
         top_row.setSpacing(S.p(6))
         summary_defs = [
             ("오늘 검증 건수",     "0",       C['cyan'],   "verified"),
-            ("SGD 50분 정확도",   "——",      C['green'],  "sgd_acc"),
+            ("SGD 정확도 S·L",   "——",      C['green'],  "sgd_acc"),
             ("GBM 마지막 재학습", "미실행",   C['blue'],   "retrain"),
             ("데이터 축적",        "0%",      C['yellow'], "raw_pct"),
         ]
@@ -3084,6 +3474,10 @@ class LearningPanel(QWidget):
             v = mk_val_label(init_val, col, sz, True, Qt.AlignCenter)
             fl.addWidget(v)
             self._sum_lbls[key] = v
+            # SGD 카드: short / long 버킷 정확도 detail 행
+            if key == "sgd_acc":
+                self._lbl_sgd_detail = mk_label("S: ——  L: ——", C['text2'], 8, align=Qt.AlignCenter)
+                fl.addWidget(self._lbl_sgd_detail)
             top_row.addWidget(f)
         root.addLayout(top_row)
         root.addWidget(mk_sep())
@@ -3164,6 +3558,13 @@ class LearningPanel(QWidget):
         bl.addWidget(self._lbl_blend)
         bl.addWidget(mk_label("SGD", C['purple'], 9, True))
         root.addWidget(bf)
+
+        # CB③ 정확도 + 고신뢰 연속오답 streak 표시
+        self._lbl_cb_acc = mk_label(
+            "CB③ 30m 정확도: ——  (샘플 0건)  |  과신 오답 연속: 0회",
+            C['text2'], 8, align=Qt.AlignCenter,
+        )
+        root.addWidget(self._lbl_cb_acc)
 
         # 호라이즌 카드 2행 × 3열
         grid = QGridLayout()
@@ -3312,6 +3713,26 @@ class LearningPanel(QWidget):
         self._sum_lbls["sgd_acc"].setStyleSheet(
             f"color:{col_sgd};font-size:{S.f(18)}px;font-weight:bold;"
         )
+        # short / long 버킷 정확도 detail
+        s_acc = float(data.get("sgd_acc_short", 0.5))
+        l_acc = float(data.get("sgd_acc_long",  0.5))
+        self._lbl_sgd_detail.setText(f"S: {s_acc:.1%}  L: {l_acc:.1%}")
+        self._lbl_sgd_detail.setStyleSheet(
+            f"color:{self._acc_col(s_acc)};font-size:{S.f(8)}px;"
+        )
+
+        # CB③ 정확도
+        cb_acc  = float(data.get("cb_accuracy_30m", 0.0))
+        cb_n    = int(data.get("cb_samples", 0))
+        cb_stk  = int(data.get("cb_streak", 0))
+        cb_col  = self._acc_col(cb_acc) if cb_n >= 5 else C['text2']
+        stk_col = C['red'] if cb_stk >= 3 else C['text2']
+        stk_txt = f"<span style='color:{stk_col};font-weight:bold;'>{cb_stk}회</span>"
+        self._lbl_cb_acc.setText(
+            f"CB③ 30m 정확도: <span style='color:{cb_col};font-weight:bold;'>"
+            f"{cb_acc:.1%}</span>  (샘플 {cb_n}건)  |  과신 오답 연속: {stk_txt}"
+        )
+        self._lbl_cb_acc.setTextFormat(__import__('PyQt5.QtCore', fromlist=['Qt']).Qt.RichText)
 
         retrain_ts = str(data.get("gbm_last_retrain", "——") or "——")
         rt_disp = "미실행"
@@ -7571,6 +7992,9 @@ class DashboardAdapter:
         self.sig_auto_mode_changed        = self._win.entry_panel.sig_auto_mode_changed
         self.sig_tp1_protect_mode_changed = self._win.exit_panel.sig_tp1_protect_mode_changed
         self.sig_manual_exit_requested    = self._win.exit_panel.sig_manual_exit_requested
+        self.sig_apply_candidate_requested = self._win.feat_panel.sig_apply_candidate_requested
+        self.sig_force_retrain_requested = self._win.feat_panel.sig_force_retrain_requested
+        self.sig_reset_feature_set_requested = self._win.feat_panel.sig_reset_feature_set_requested
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
@@ -7832,6 +8256,13 @@ class DashboardAdapter:
         """다이버전스 패널 업데이트"""
         self._win.div_panel.update_data(div_data)
 
+    def update_option_chain(self, chain_feats: dict) -> None:
+        """옵션 체인 스냅샷 패널 업데이트"""
+        try:
+            self._win.div_panel.update_option_chain(chain_feats)
+        except Exception:
+            pass
+
     def update_strategy_ops(self, data: dict) -> None:
         """
         🧭 전략 운용현황 탭 데이터 주입 (§11 Phase 4 adapter).
@@ -7888,9 +8319,9 @@ class DashboardAdapter:
         tag = tag if tag in ("WARN", "ERROR", "CRITICAL") else "HEALTH"
         self._win.log_panel.append("health", tag, msg)
 
-    def update_shap(self, core_vals, dynamic_items, rank_vals):
+    def update_shap(self, *args, **kwargs):
         """SHAP 피처 패널 업데이트"""
-        self._win.feat_panel.update_shap(core_vals, dynamic_items, rank_vals)
+        self._win.feat_panel.update_shap(*args, **kwargs)
 
     def set_model_status(self, state, detail="", progress=-1, price=None,
                          update_signal=True):

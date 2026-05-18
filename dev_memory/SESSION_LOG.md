@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-05-18 (55차 — 옵션 체인 스냅샷 파이프라인 완성 + B115 front month 만기 버그 수정)
+
+**Work**: Cybos 옵션 OI 수집 탐색 결과를 바탕으로 `OptionChainSnapshot` 클래스를 `main.py` STEP 4에 통합하고 대시보드 '다이버전스 + 포지션' 탭 하단에 옵션 체인 시각화 섹션 추가. 실세션 재시작(15:16) 후 UI 점검에서 PCR=1.000/OI=0 이상 발견 → 5월 만기(5/14) 이후 `_filter_front_month`가 여전히 "2605"(5월)를 선택하는 B115 버그 확인 및 수정.
+
+### 주요 작업
+
+| 작업 | 내용 |
+|---|---|
+| `collection/options/option_chain_snapshot.py` 신규 | 5분마다 `CpUtil.CpOptionCode` + `Dscbo1.OptionMst` BlockRequest 폴링 → PCR/ATM OI/GEX 7개 피처 계산 |
+| `main.py` STEP 4 통합 5곳 | import·`__init__`·`connect_broker`·STEP4·`reset_daily`. refresh() 반환값으로 실제 갱신 시에만 dashboard 업데이트 |
+| 대시보드 옵션 섹션 | DivergencePanel 기존 섹션 간격 스퀴즈 후 하단 추가: freshness progress bar (초록→주황→빨강) + 카드 5개(체인 PCR/ATM PCR/GEX/콜 OI/풋 OI) |
+| `MainDashboard.update_option_chain()` | div_panel.update_option_chain() 위임 메서드 + main.py 연결 |
+| B115 수정 | `_option_expiry()` — 해당 월 2번째 목요일 계산. `_filter_front_month` — 만기 지난 달 skip → 현물월 자동 선택 |
+
+### 버그 발견 및 수정 (B115)
+
+| 항목 | 내용 |
+|---|---|
+| 증상 | 15:23 수집 후 UI에 "수집완료" 표시, PCR=1.000·OI=0·GEX=0.0B |
+| 원인 | `_filter_front_month`가 ym 알파벳 정렬 첫 번째("2605") 선택 → 5월 만기(5/14) 이후 모든 OI=0. BlockRequest는 dib_status=0이나 OI 필드 0 반환 → call_oi=0 → PCR default 1.0 |
+| 수정 | `_option_expiry(year, month)` 추가 (2번째 목요일). ym 순회 시 `today ≤ expiry` 첫 달 선택 |
+| 검증 | 2605: 만기 5/14 < 오늘 5/18 → SKIP. 2606: 만기 6/11 ≥ 오늘 → USE. 6월 ATM 범위(1190-1250) 콜25+풋25=50개 확인 |
+
+---
+
 ## 2026-05-18 (54차 — B112/B114 개선 + 실세션 로그 분석)
 
 **Work**: 10:57:19 재시작 이후 로그를 분석하여 ProfitGuard-L4 무력화(B113), stale broker_sync_reason 재발(B112), IntrabarTPCheck 미발동(B114) 3종의 버그를 발견. B113은 시험가동 중 유지 결정. B112·B114 개선 구현 완료.

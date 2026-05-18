@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-05-18 (55차) — 옵션 체인 스냅샷 파이프라인 + B115 수정
+
+### 한일 요약
+
+- [DONE 2026-05-18] **OptionChainSnapshot 클래스 신규** — `collection/options/option_chain_snapshot.py`, 5분 폴링, PCR/ATM OI/GEX 7개 피처 반환
+- [DONE 2026-05-18] **main.py STEP 4 통합** — import·init·connect_broker·STEP4·reset_daily 5곳 수정, _chain_refreshed 시에만 dashboard 업데이트
+- [DONE 2026-05-18] **대시보드 옵션 섹션 추가** — DivergencePanel 하단 freshness progress bar + PCR/ATM PCR/GEX/ATM 콜 OI/ATM 풋 OI 카드 5개 + MainDashboard 위임 메서드
+- [DONE 2026-05-18] **B115 Fix: _filter_front_month 만기 미처리** — KOSPI200 2번째 목요일 만기 계산 (`_option_expiry`), 만기 달 skip → 현물월(6월) 자동 선택
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-19] **옵션 체인 실세션 첫 검증**
+  - 시작 로그: `[OptionChain] COM 초기화 완료` (connect_broker 직후)
+  - `[OptionChain] front month=2606 (만기=2026-06-11)` 로그 확인 (B115 수정 동작)
+  - 09:05 이후: `[OptionChain] 갱신 X.Xs | PCR=N.NNN ATM_PCR=N.NNN GEX=N.NNB avail=True`
+  - 대시보드 "다이버전스 + 포지션" 탭 하단 실수치 (PCR≠1.000, GEX≠0.0B)
+
+---
+
 ## 2026-05-18 (54차) — B112/B114 개선
 
 ### 한일 요약
@@ -621,17 +640,33 @@
 
 ### 다음 할 일 (우선순위 순)
 
-- [NEXT 2026-05-14] **OptionMo 실시간 OI 검증 (4단계)** — 장중(09:00~15:30)에만 유효
-  ```powershell
-  python scripts/probe_cp_option_mo.py --ensure-login --code B0166A89 --watch-sec 15
-  ```
-  OI 실시간 갱신 Subscribe 동작 확인.
+- [DONE 2026-05-18] **CpSysDib.CpSvrNew7222 프로브** — `niis.stk.7222` (주식 계열) 확인, 옵션 무관 → 폐기
+- [DONE 2026-05-18] **CpSysDib.CpSvrNew7224 프로브** — `niis.stk.7224` (주식 계열) 확인, 옵션 무관 → 폐기
+- [DONE 2026-05-18] **정수 ID 랜덤 탐색 공식 종료** — 7215A/B·7221·7222·7224 전부 주식 계열. Cybos COM에서 옵션 체인 OI 공개 경로 없음 확정. `CYBOS_OPTION_PROBE_2026-05-13.md` 종료 기록 완료.
 
-- [NEXT 2026-05-14] **지표를 Mireuk 피처로 통합**
-  - `collection/options/`에 `option_chain_snapshot.py` 신설 — 정기 폴링 기반 수집
-  - `features/options/`에 `option_features.py` 신설 — PCR·GEX·ATM OI 피처화
-  - `feature_builder.py`에 옵션 피처 연결 (현재 `option_data` 더미 파이프 존재)
-  - STEP 4 피처 생성 단계에 옵션 지표 주입
+- [DONE 2026-05-18] **OptionMst 폴링 OI 수집 경로 검증**
+  - `dib_status=0`, `0027 조회 완료(option.mst)` — 정상 작동 확인
+  - `oi_current=97`, `oi_prev=93` — 실제 OI 데이터 정상 반환, 전일 대비 변화 확인
+  - `Dscbo1.OptionMo` Subscribe는 `DispatchWithEvents` metaclass conflict로 사용 불가 → 폴링 방식 확정
+  - 장중 OI 변화 실시간 추적: 다음 영업일 09:00~15:30 재실행으로 변화량 확인
+
+- [NEXT 2026-05-19] **장중 OI 변화 실시간 확인** (선택, 낮은 우선순위)
+  ```powershell
+  python probe_cp_option_mo.py --ensure-login --code B0166A89 --watch-sec 120 --interval 5
+  ```
+  - 폴링 중 OI 값이 바뀌는지 확인 → 폴링 기반 PCR/GEX 수집 완전 검증
+
+- [DONE 2026-05-18] **지표를 Mireuk 피처로 통합**
+  - `collection/options/option_chain_snapshot.py` 신설 — 5분 간격 OptionMst 폴링 클래스
+  - `main.py` 3곳 수정: import + `self.option_chain_snap` 인스턴스 + STEP 4 refresh/merge + reset_daily
+  - 추가된 피처 7개: `opt_chain_pcr`, `opt_atm_pcr`, `opt_atm_call_oi`, `opt_atm_put_oi`, `opt_gex_bn`, `opt_gex_sign`, `opt_chain_available`
+  - `feature_builder.build(option_data=...)` 파이프에 자동 주입 (기존 6개 PCR 피처와 병합)
+
+- [NEXT 2026-05-19] **옵션 체인 통합 실세션 검증**
+  - `[OptionChain] COM 초기화 완료` 로그 확인 (connect_broker 완료 직후)
+  - 09:05 이후 `[OptionChain] 갱신 N.Xs | PCR=x.xxx ATM_PCR=x.xxx GEX=x.xxB` 로그 확인
+  - feature_builder 로그에서 `opt_chain_pcr`, `opt_gex_bn` 피처가 0이 아닌 값으로 주입되는지 확인
+  - `opt_chain_available=1.0` 확인 (0.0이면 수집 실패)
 
 - [NEXT 2026-05-14] **장중 PCR/GEX 시계열 검증**
   - 09:00~15:30 1분 간격 수집으로 시계열 안정성 확인

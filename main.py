@@ -26,6 +26,7 @@ import importlib
 import queue as _queue
 import subprocess
 import threading
+from collections import deque
 import numpy as np
 from typing import Optional
 
@@ -48,14 +49,16 @@ debug_log = logging.getLogger("DEBUG")
 # ── DB 초기화 ──────────────────────────────────────────────────
 from utils.db_utils import (
     init_all_dbs, execute, save_candle, save_features, count_raw_candles,
+    fetch_recent_raw_features,
     fetch_today_trades, fetch_pnl_history, normalize_trade_pnl,
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
     fetch_trend_monthly, fetch_trend_yearly,
     is_plausible_futures_trade,
     upsert_daily_broker_pnl,
+    save_shap_scores,
 )
 from config.settings import (
-    TRADES_DB, HORIZONS, PARTIAL_EXIT_RATIOS,
+    TRADES_DB, DB_DIR, HORIZONS, PARTIAL_EXIT_RATIOS,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
     CB_HIGH_CONF_THRESHOLD,
     FRED_API_KEY,
@@ -79,6 +82,7 @@ from collection.macro.regime_classifier import RegimeClassifier
 from collection.macro.micro_regime import MicroRegimeClassifier
 from collection.macro.macro_fetcher import MacroFetcher
 from collection.options.pcr_store import PCRStore
+from collection.options.option_chain_snapshot import OptionChainSnapshot
 from features.macro.macro_feature_transformer import MacroFeatureTransformer
 from features.options.option_features import OptionFeatureCalculator
 from learning.self_learning.daily_consolidator import DailyConsolidator
@@ -101,6 +105,7 @@ from learning.calibration import MultiHorizonCalibrator
 from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
 from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAIN_BARS
+from learning.shap.shap_tracker import ShapTracker
 from safety.circuit_breaker import CircuitBreaker
 from safety.kill_switch import KillSwitch
 from safety.emergency_exit import EmergencyExit
@@ -175,7 +180,12 @@ class TradingSystem:
         self.toxicity_gate     = ToxicityGate()
         self.batch_retrainer   = BatchRetrainer()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
-        self.pcr_store         = PCRStore()
+        self.pcr_store          = PCRStore()
+        self.option_chain_snap  = OptionChainSnapshot(
+            chain_cache_path="data/option_chain.json",
+            refresh_interval_min=5,
+            atm_window_pt=30.0,
+        )
         self.macro_transformer = MacroFeatureTransformer()
         self.option_feat_calc  = OptionFeatureCalculator()
         self.daily_consolidator = DailyConsolidator()
@@ -247,6 +257,9 @@ class TradingSystem:
         self.dashboard.sig_auto_mode_changed.connect(self._on_auto_mode_changed)
         self.dashboard.sig_tp1_protect_mode_changed.connect(self._on_tp1_protect_mode_changed)
         self.dashboard.sig_manual_exit_requested.connect(self._on_manual_exit_requested)
+        self.dashboard.sig_apply_candidate_requested.connect(self._on_apply_shap_candidate_requested)
+        self.dashboard.sig_force_retrain_requested.connect(self._on_force_feature_retrain_requested)
+        self.dashboard.sig_reset_feature_set_requested.connect(self._on_reset_feature_set_requested)
         self.dashboard.set_ui_startup_mode()
         if self.challenger_engine is not None:
             try:
@@ -269,6 +282,7 @@ class TradingSystem:
         self._tp1_protect_mode: str = "breakeven"
         self._auto_shutdown_done_today: bool = False
         self._skip_post_close_cycle_today: bool = False
+        self._feature_registry_path = os.path.join(DB_DIR, "shap_feature_registry.json")
         self._restore_reverse_entry_setting()
         self._restore_tp1_protect_mode_setting()
         self._restore_auto_shutdown_state()
@@ -300,6 +314,13 @@ class TradingSystem:
         self._health_settings_path: str = os.path.join(BASE_DIR, "config", "settings.py")
         self._health_settings_mtime: float = 0.0
         self._health_policy_last_reload_check: float = 0.0
+        self._param_corr_history = deque(maxlen=120)
+        self._shap_feature_window = deque(maxlen=240)
+        self._shap_tracker = None
+        self._shap_last_update_minute = None
+        self._cached_shap_importance = {}
+        self._restored_corr_str: str = ""
+        self._live_shap_ready: bool = False
         try:
             self._health_settings_mtime = float(os.path.getmtime(self._health_settings_path))
         except Exception:
@@ -322,6 +343,9 @@ class TradingSystem:
             "HEALTH",
             lambda e: self.dashboard.append_health_log(e.message, e.level),
         )
+        self._restore_analysis_buffers()
+        self._ensure_shap_tracker()
+        self._update_shap_dashboard()
 
     @staticmethod
     def _build_health_policy(src=None) -> dict:
@@ -346,6 +370,572 @@ class TradingSystem:
             "hot_reload_enabled": bool(getattr(mod, "HEALTH_POLICY_HOT_RELOAD_ENABLED", HEALTH_POLICY_HOT_RELOAD_ENABLED)),
             "hot_reload_interval_sec": float(getattr(mod, "HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC", HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC)),
         }
+
+    def _ensure_shap_tracker(self) -> None:
+        feature_names = list(self.model.feature_names or [])
+        if not feature_names:
+            return
+        self._sync_feature_registry_with_model()
+        if self._shap_tracker is None:
+            self._shap_tracker = ShapTracker(feature_names)
+            return
+        if list(getattr(self._shap_tracker, "feature_names", [])) != feature_names:
+            self._record_shap_feature_changes(
+                list(getattr(self._shap_tracker, "feature_names", [])),
+                feature_names,
+            )
+            self._shap_tracker = ShapTracker(feature_names)
+
+    def _record_shap_feature_changes(self, old_names, new_names) -> None:
+        if self._shap_tracker is None:
+            return
+        old_only = [name for name in old_names if name not in set(new_names)]
+        new_only = [name for name in new_names if name not in set(old_names)]
+        if not old_only and not new_only:
+            return
+        pair_count = max(len(old_only), len(new_only))
+        for idx in range(pair_count):
+            old_feat = old_only[idx] if idx < len(old_only) else "(removed)"
+            new_feat = new_only[idx] if idx < len(new_only) else "(added)"
+            self._shap_tracker.record_replacement(
+                old_feat,
+                new_feat,
+                reason="[model_reload]",
+            )
+
+    def _load_feature_registry(self) -> dict:
+        try:
+            with open(self._feature_registry_path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        return {}
+
+    def _save_feature_registry(self, data: dict) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._feature_registry_path), exist_ok=True)
+            with open(self._feature_registry_path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("[FeatureRegistry] save failed: %s", exc)
+
+    def _get_active_feature_set(self) -> list:
+        registry = self._load_feature_registry()
+        active = registry.get("active_features") or []
+        if isinstance(active, list) and active:
+            return list(active)
+        return list(self.model.feature_names or [])
+
+    def _sync_feature_registry_with_model(self) -> None:
+        current = list(self.model.feature_names or [])
+        if not current:
+            return
+        registry = self._load_feature_registry()
+        changed = False
+        if not registry.get("active_features"):
+            registry["active_features"] = list(current)
+            changed = True
+        if not registry.get("baseline_features"):
+            registry["baseline_features"] = list(current)
+            changed = True
+        if changed:
+            self._save_feature_registry(registry)
+
+    def _get_recent_available_feature_names(self) -> list:
+        rows = fetch_recent_raw_features(limit=5)
+        available = set()
+        for row in rows:
+            try:
+                feat_dict = json.loads(row["features"])
+            except Exception:
+                continue
+            if isinstance(feat_dict, dict):
+                available.update(feat_dict.keys())
+        return sorted(available)
+
+    def _get_pretty_feature_name(self, feature_name: str) -> str:
+        name_map = {
+            "cvd_divergence": "CVD 다이버전스",
+            "vwap_position": "VWAP 위치",
+            "ofi_norm": "OFI 불균형",
+            "foreign_call_net": "외인 콜순매수",
+            "foreign_retail_divergence": "다이버전스 지수",
+            "program_non_arb_net": "프로그램 비차익",
+            "atr_ratio": "ATR 비율",
+            "atr": "ATR",
+            "vwap": "VWAP",
+            "ofi_imbalance": "OFI 불균형도",
+            "ofi_pressure": "OFI 압력",
+            "cvd_direction": "CVD 방향",
+            "above_vwap": "VWAP 상회",
+        }
+        return name_map.get(feature_name, feature_name)
+
+    def _pick_shap_candidate(self):
+        self._ensure_shap_tracker()
+        if self._shap_tracker is None:
+            return None, "SHAP tracker 없음"
+        review = self._shap_tracker.weekly_review()
+        candidates = list(review.get("candidates") or []) if isinstance(review, dict) else []
+        if not candidates:
+            return None, "추천 후보 없음"
+        replace_allowed = (review.get("replace_allowed") or {}) if isinstance(review, dict) else {}
+        if not bool(replace_allowed.get("allowed", False)):
+            return None, str(replace_allowed.get("reason", "교체 불가"))
+        available = set(self._get_recent_available_feature_names())
+        for candidate in candidates:
+            replacement = candidate.get("replacement")
+            if replacement and replacement in available:
+                return candidate, ""
+        return None, "실데이터에 존재하는 대체 후보 없음"
+
+    def _start_manual_retrain(self, force: bool, reason: str) -> bool:
+        if getattr(self, "_gbm_retrain_running", False):
+            log_manager.system(f"[FeatureOps] 재학습 진행 중 - {reason}", "WARN")
+            return False
+        self._gbm_retrain_running = True
+        log_manager.learning(f"[GBM] 수동 재학습 시작 | {reason}")
+
+        def _retrain_worker():
+            try:
+                result = self.batch_retrainer.retrain_now(force=force)
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+            QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, False))
+
+        threading.Thread(target=_retrain_worker, daemon=True).start()
+        return True
+
+    def _on_apply_shap_candidate_requested(self) -> None:
+        candidate, reason = self._pick_shap_candidate()
+        if candidate is None:
+            log_manager.system(f"[FeatureOps] 추천 적용 불가: {reason}", "WARN")
+            return
+
+        active = self._get_active_feature_set()
+        old_feat = str(candidate.get("feature"))
+        new_feat = str(candidate.get("replacement"))
+        if old_feat not in active:
+            log_manager.system(f"[FeatureOps] 현재 세트에 {old_feat} 없음", "WARN")
+            return
+
+        updated = [new_feat if feat == old_feat else feat for feat in active]
+        registry = self._load_feature_registry()
+        registry["active_features"] = updated
+        registry["baseline_features"] = registry.get("baseline_features") or list(active)
+        registry["pending_change"] = {
+            "old": old_feat,
+            "new": new_feat,
+            "approved_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": "weekly_review",
+        }
+        self._save_feature_registry(registry)
+        if self._shap_tracker is not None:
+            self._shap_tracker.record_replacement(old_feat, new_feat, reason="[approved]")
+        log_manager.system(
+            "[FeatureOps] 추천 승인: {} -> {}".format(
+                self._get_pretty_feature_name(old_feat),
+                self._get_pretty_feature_name(new_feat),
+            ),
+            "INFO",
+        )
+        self._start_manual_retrain(True, f"feature swap {old_feat}->{new_feat}")
+        self._update_shap_dashboard()
+
+    def _on_force_feature_retrain_requested(self) -> None:
+        active = self._get_active_feature_set()
+        registry = self._load_feature_registry()
+        if not registry.get("active_features") and active:
+            registry["active_features"] = list(active)
+            registry["baseline_features"] = list(active)
+            self._save_feature_registry(registry)
+        self._start_manual_retrain(True, "current managed feature set")
+
+    def _on_reset_feature_set_requested(self) -> None:
+        registry = self._load_feature_registry()
+        baseline = list(registry.get("baseline_features") or [])
+        if not baseline:
+            baseline = list(self.model.feature_names or [])
+        if not baseline:
+            log_manager.system("[FeatureOps] 원복할 baseline feature set 없음", "WARN")
+            return
+        registry["active_features"] = list(baseline)
+        registry["pending_change"] = {
+            "old": "*",
+            "new": "baseline",
+            "approved_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": "reset",
+        }
+        self._save_feature_registry(registry)
+        log_manager.system("[FeatureOps] baseline feature set으로 원복", "INFO")
+        self._start_manual_retrain(True, "reset to baseline feature set")
+        self._update_shap_dashboard()
+
+    def _restore_analysis_buffers(self) -> None:
+        """Restore restart-sensitive analysis buffers from persisted state."""
+        try:
+            rows = fetch_recent_raw_features(limit=max(self._param_corr_history.maxlen, self._shap_feature_window.maxlen))
+        except Exception as exc:
+            logger.warning("[AnalysisRestore] raw_features load failed: %s", exc)
+            rows = []
+
+        all_feat_rows = []
+        if rows:
+            for row in rows:
+                try:
+                    feat_dict = json.loads(row["features"])
+                except Exception:
+                    continue
+                if not isinstance(feat_dict, dict):
+                    continue
+
+                all_feat_rows.append(feat_dict)
+
+        self._restored_corr_str = self._build_param_corr_string(all_feat_rows)
+
+        self._ensure_shap_tracker()
+        if self._shap_tracker is not None:
+            try:
+                ranking = self._shap_tracker.get_current_ranking()
+            except Exception as exc:
+                logger.warning("[AnalysisRestore] shap history load failed: %s", exc)
+                ranking = []
+            if ranking:
+                self._cached_shap_importance = {
+                    row["feature"]: float(row["importance"])
+                    for row in ranking
+                }
+
+        self._live_shap_ready = False
+        if (
+            not self._cached_shap_importance
+            and self.model.is_ready()
+            and self._shap_tracker is not None
+            and self.model.feature_names
+            and len(all_feat_rows) >= 30
+        ):
+            horizon_model = self.model.models.get("1m")
+            if horizon_model is None:
+                horizon_model = next(iter(self.model.models.values()), None)
+            if horizon_model is not None:
+                restored_vectors = np.array(
+                    [
+                        [float(feat.get(name, 0.0) or 0.0) for name in self.model.feature_names]
+                        for feat in all_feat_rows[-self._shap_feature_window.maxlen:]
+                    ],
+                    dtype=np.float32,
+                )
+                self._shap_tracker.update(
+                    horizon_model,
+                    restored_vectors,
+                    sample_size=min(120, len(restored_vectors)),
+                )
+                ranking = self._shap_tracker.get_current_ranking()
+                if ranking:
+                    self._cached_shap_importance = {
+                        row["feature"]: float(row["importance"])
+                        for row in ranking
+                    }
+
+        logger.info(
+            "[AnalysisRestore] live_corr=%d restored_corr=%s live_shap=%d live_ready=%s shap_features=%d",
+            len(self._param_corr_history),
+            "yes" if self._restored_corr_str else "no",
+            len(self._shap_feature_window),
+            "yes" if self._live_shap_ready else "no",
+            len(self._cached_shap_importance),
+        )
+
+    def _record_param_corr_snapshot(self, features: dict) -> None:
+        row = {
+            label: float(features.get(fname, 0.0) or 0.0)
+            for label, fname in _PARAM_FEAT_MAP.items()
+        }
+        self._param_corr_history.append(row)
+
+    def _build_param_corr_string(self, history=None) -> str:
+        history = list(self._param_corr_history) if history is None else list(history)
+        if len(history) < 20:
+            return ""
+        labels = list(_PARAM_FEAT_MAP.keys())
+        matrix = np.array(
+            [
+                [
+                    float(
+                        row.get(label, 0.0)
+                        if label in row else row.get(_PARAM_FEAT_MAP[label], 0.0)
+                    ) for label in labels
+                ]
+                for row in history
+            ],
+            dtype=float,
+        )
+        if matrix.shape[0] < 2:
+            return ""
+
+        corr_scores = []
+        for idx, label in enumerate(labels):
+            col = matrix[:, idx]
+            if np.std(col) < 1e-9:
+                continue
+            vals = []
+            for other_idx, other_label in enumerate(labels):
+                if other_idx == idx:
+                    continue
+                other_col = matrix[:, other_idx]
+                if np.std(other_col) < 1e-9:
+                    continue
+                rho = float(np.corrcoef(col, other_col)[0, 1])
+                if np.isnan(rho):
+                    continue
+                vals.append(abs(rho))
+            if vals:
+                corr_scores.append((label, float(sum(vals) / len(vals))))
+
+        if not corr_scores:
+            return ""
+
+        short_names = {
+            "CVD ?ㅼ씠踰꾩쟾??": "CVD",
+            "VWAP ?꾩튂": "VWAP",
+            "OFI 遺덇퇏??": "OFI",
+            "?몄씤 肄쒖닚留ㅼ닔": "?몄씤肄?",
+            "?ㅼ씠踰꾩쟾??吏??": "?ㅼ씠踰꾩쟾",
+            "?꾨줈洹몃옩 鍮꾩감??": "?꾨줈洹몃옩",
+        }
+        corr_scores.sort(key=lambda item: item[1], reverse=True)
+        return "  ".join(
+            f"{short_names.get(label, label)} ρ{score:.2f}"
+            for label, score in corr_scores[:4]
+        )
+
+    def _get_param_corr_display(self) -> str:
+        live_corr = self._build_param_corr_string()
+        if live_corr:
+            return live_corr
+        if self._restored_corr_str:
+            return "[RESTORED] " + self._restored_corr_str
+        return ""
+
+    def _record_shap_feature_window(self, features: dict) -> None:
+        if not self.model.feature_names:
+            return
+        vec = [float(features.get(name, 0.0) or 0.0) for name in self.model.feature_names]
+        self._shap_feature_window.append(vec)
+
+    def _refresh_shap_state(self, ts: str) -> None:
+        self._ensure_shap_tracker()
+        if not self.model.is_ready() or self._shap_tracker is None:
+            return
+        if len(self._shap_feature_window) < 30:
+            return
+
+        minute_key = str(ts or "")[:16]
+        if minute_key and self._shap_last_update_minute == minute_key:
+            return
+        self._shap_last_update_minute = minute_key
+
+        horizon_model = self.model.models.get("1m")
+        if horizon_model is None:
+            horizon_model = next(iter(self.model.models.values()), None)
+        if horizon_model is None:
+            return
+
+        X_recent = np.array(list(self._shap_feature_window), dtype=np.float32)
+        self._shap_tracker.update(horizon_model, X_recent, sample_size=min(120, len(X_recent)))
+
+        ranking = self._shap_tracker.get_current_ranking()
+        if not ranking:
+            return
+
+        score_map = {
+            row["feature"]: float(row["importance"])
+            for row in ranking
+        }
+        self._cached_shap_importance = score_map
+        self._live_shap_ready = True
+        save_shap_scores(ts, "1m", score_map)
+        self._update_shap_dashboard()
+
+    def _update_shap_dashboard(self) -> None:
+        self._ensure_shap_tracker()
+        if self._shap_tracker is None:
+            return
+        ranking = self._shap_tracker.get_current_ranking()
+        if not ranking:
+            return
+
+        score_map = {row["feature"]: float(row["importance"]) for row in ranking}
+        core_vals = [
+            score_map.get("cvd_divergence", 0.0),
+            score_map.get("vwap_position", 0.0),
+            score_map.get("ofi_norm", 0.0),
+        ]
+
+        dynamic_items = []
+        for row in ranking:
+            feat = row["feature"]
+            if feat in ("cvd_divergence", "vwap_position", "ofi_norm"):
+                continue
+            dynamic_items.append({
+                "rank": row["rank"],
+                "name": feat,
+                "shap": score_map.get(feat, 0.0),
+                "status": "?좎?",
+            })
+            if len(dynamic_items) >= 3:
+                break
+
+        for item in dynamic_items:
+            item["status"] = "LIVE" if self._live_shap_ready else "RESTORED"
+
+        rank_feature_order = [
+            "foreign_call_net",
+            "cvd_divergence",
+            "foreign_retail_divergence",
+            "vwap_position",
+            "program_non_arb_net",
+            "ofi_norm",
+        ]
+        rank_vals = [score_map.get(name, 0.0) for name in rank_feature_order]
+        self.dashboard.update_shap(core_vals, dynamic_items, rank_vals)
+
+    def _update_shap_dashboard(self) -> None:
+        self._ensure_shap_tracker()
+        if self._shap_tracker is None:
+            return
+        ranking = self._shap_tracker.get_current_ranking()
+        if not ranking:
+            return
+
+        def _pretty_name(feature_name: str) -> str:
+            name_map = {
+                "cvd_divergence": "CVD 다이버전스",
+                "vwap_position": "VWAP 위치",
+                "ofi_norm": "OFI 불균형",
+                "foreign_call_net": "외인 콜순매수",
+                "foreign_retail_divergence": "다이버전스 지수",
+                "program_non_arb_net": "프로그램 비차익",
+                "atr_ratio": "ATR 비율",
+                "atr": "ATR",
+                "vwap": "VWAP",
+                "ofi_imbalance": "OFI 불균형도",
+                "ofi_pressure": "OFI 압력",
+                "cvd_direction": "CVD 방향",
+                "above_vwap": "VWAP 상회",
+            }
+            return name_map.get(feature_name, feature_name)
+
+        review = self._shap_tracker.weekly_review()
+        score_map = {row["feature"]: float(row["importance"]) for row in ranking}
+        rank_map = {row["feature"]: int(row["rank"]) for row in ranking}
+        candidate_map = {
+            row["feature"]: row
+            for row in review.get("candidates", [])
+        } if isinstance(review, dict) else {}
+        declining = set(review.get("declining", [])) if isinstance(review, dict) else set()
+        core_features = ["cvd_divergence", "vwap_position", "ofi_norm"]
+
+        core_items = []
+        for feat in core_features:
+            feat_rank = rank_map.get(feat, 999)
+            recent_ranks = self._shap_tracker.get_recent_ranks(feat, lookback=4)
+            if feat in declining:
+                status = "약화"
+            elif feat_rank <= 3:
+                status = "핵심"
+            elif feat_rank <= 6:
+                status = "안정"
+            elif recent_ranks and recent_ranks[-1] > min(recent_ranks):
+                status = "주의"
+            else:
+                status = "모니터"
+            core_items.append({
+                "name": _pretty_name(feat),
+                "shap": score_map.get(feat, 0.0),
+                "status": status,
+            })
+
+        dynamic_items = []
+        for row in ranking:
+            feat = row["feature"]
+            if feat in core_features:
+                continue
+            if feat in candidate_map:
+                status = "교체후보"
+            elif feat in declining:
+                status = "약화"
+            elif self._live_shap_ready:
+                status = "유지"
+            else:
+                status = "복원"
+            dynamic_items.append({
+                "rank": row["rank"],
+                "name": _pretty_name(feat),
+                "shap": score_map.get(feat, 0.0),
+                "status": status,
+            })
+            if len(dynamic_items) >= 3:
+                break
+
+        rank_items = [
+            {
+                "name": _pretty_name(row["feature"]),
+                "shap": score_map.get(row["feature"], 0.0),
+            }
+            for row in ranking[:6]
+        ]
+
+        replace_state = self._shap_tracker.get_replace_state()
+        cooldown = {
+            "progress": replace_state.get("cooldown_progress", 0),
+            "label": replace_state.get("reason", "기록 없음"),
+        }
+
+        replace_log = self._shap_tracker.get_replace_log(limit=5)
+        change_lines = []
+        for entry in reversed(replace_log):
+            change_lines.append(
+                "{}  교체  {} -> {}  {}".format(
+                    str(entry.get("date", ""))[5:10],
+                    _pretty_name(str(entry.get("old", "-"))),
+                    _pretty_name(str(entry.get("new", "-"))),
+                    str(entry.get("reason", "")).strip() or "[수동]",
+                )
+            )
+
+        candidate, candidate_reason = self._pick_shap_candidate()
+        registry = self._load_feature_registry()
+        pending = registry.get("pending_change") or {}
+        if candidate is not None:
+            summary = "{} -> {} | 승인 즉시 재학습".format(
+                _pretty_name(str(candidate.get("feature", "-"))),
+                _pretty_name(str(candidate.get("replacement", "-"))),
+            )
+        elif pending:
+            summary = "대기 변경: {} -> {}".format(
+                _pretty_name(str(pending.get("old", "-"))),
+                _pretty_name(str(pending.get("new", "-"))),
+            )
+        else:
+            summary = "추천 없음: {}".format(candidate_reason or "후보 대기")
+        action_state = {
+            "summary": summary,
+            "can_apply": candidate is not None,
+            "can_retrain": not getattr(self, "_gbm_retrain_running", False),
+            "can_reset": bool(registry.get("baseline_features")),
+        }
+
+        self.dashboard.update_shap(
+            core_items,
+            dynamic_items,
+            rank_items,
+            cooldown=cooldown,
+            change_lines=change_lines,
+            action_state=action_state,
+        )
 
     def _maybe_reload_health_policy(self) -> None:
         policy = self._health_policy
@@ -1122,6 +1712,7 @@ class TradingSystem:
             code=code,
             market_open_now=runtime_ctx.market_open_now,
         )
+        self.option_chain_snap.initialize()
         return True
 
     def connect_kiwoom(self) -> bool:
@@ -1223,6 +1814,14 @@ class TradingSystem:
         prefix = "웜업 " if is_warmup else ""
         if result.get("ok"):
             self.model._load_all()
+            self._ensure_shap_tracker()
+            registry = self._load_feature_registry()
+            if registry.get("pending_change"):
+                active = list(registry.get("active_features") or [])
+                if active and active == list(self.model.feature_names or []):
+                    registry["last_applied_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    registry["pending_change"] = {}
+                    self._save_feature_registry(registry)
             log_manager.learning(
                 f"[GBM] {prefix}배치 재학습 완료 | "
                 f"{result.get('elapsed_sec', '?')}초 데이터={result.get('data_size', '?')}행"
@@ -1584,6 +2183,11 @@ class TradingSystem:
         _raw_macro   = self.macro_fetcher.get_features()
         _macro_feats = self.macro_transformer.transform(_raw_macro)
         _option_feats = self.option_feat_calc.transform(self.pcr_store.get_features())
+        _chain_refreshed = self.option_chain_snap.refresh(spot=close)
+        _chain_feats = self.option_chain_snap.get_features()
+        _option_feats.update(_chain_feats)
+        if _chain_refreshed and self.dashboard:
+            self.dashboard.update_option_chain(_chain_feats)
         features = self.feature_builder.build(
             bar,
             supply_demand = supply_feats,
@@ -1642,6 +2246,9 @@ class TradingSystem:
         # GBM 미학습 시 피처명 부트스트랩 → SGD 학습 활성화
         if not self.model.feature_names and features:
             self.model.set_feature_names(sorted(features.keys()))
+        self._ensure_shap_tracker()
+        self._record_param_corr_snapshot(features)
+        self._record_shap_feature_window(features)
 
         # 다이버전스 패널 갱신 (외인·개인 수급)
         _inv = self.investor_data
@@ -1877,6 +2484,7 @@ class TradingSystem:
 
         # Fix2: GBM 피처 중요도 → 파라미터 중요도 바
         _importance = self.model.get_feature_importance() if _gbm_ready else {}
+        _importance = self.model.get_feature_importance() if _gbm_ready else {}
         _params_ui  = {
             pname: _importance.get(fname, 0.0)
             for pname, fname in _PARAM_FEAT_MAP.items()
@@ -1893,6 +2501,14 @@ class TradingSystem:
             f"{_CORR_SHORT.get(p, p)}+{v:.2f}"
             for p, v in _corr_items if v > 0
         )[:60]  # 레이블 넘침 방지
+
+        self._refresh_shap_state(ts)
+        if _gbm_ready and self._cached_shap_importance:
+            _params_ui = {
+                pname: self._cached_shap_importance.get(fname, 0.0)
+                for pname, fname in _PARAM_FEAT_MAP.items()
+            }
+        _corr_str = self._get_param_corr_display()
 
         self.dashboard.update_prediction(close, _preds_ui, _params_ui, confidence,
                                          corr=_corr_str)
@@ -2740,12 +3356,19 @@ class TradingSystem:
         gbm  = self.batch_retrainer.get_stats()
         raw  = count_raw_candles()
 
-        # 예측 버퍼 기반 호라이즌별 최근 정확도
+        # 예측 버퍼 기반 호라이즌별 최근 정확도 (실제 검증 정확도)
         buf_acc = {hz: self.pred_buffer.recent_accuracy(hz, 50)
                    for hz in ["1m", "3m", "5m", "10m", "15m", "30m"]}
 
-        # SGD 내부 정확도 = 전체 정확도 버퍼 (호라이즌 구분 없이 동일)
-        h_acc = {hz: ol.recent_accuracy() for hz in ol._fitted}
+        # SGD 버킷별 정확도 (short: 1/3/5m, long: 10/15/30m)
+        bucket_acc = ol.recent_accuracy_by_bucket()
+        h_acc = {
+            hz: bucket_acc["short"] if hz in ol.BUCKET_SHORT else bucket_acc["long"]
+            for hz in ol._fitted
+        }
+
+        # CB③ 30분 정확도
+        cb_status = self.circuit_breaker.status_dict()
 
         last_ev = ""
         if self._verified_today > 0:
@@ -2753,18 +3376,24 @@ class TradingSystem:
             last_ev = (
                 f"{datetime.datetime.now().strftime('%H:%M')} | "
                 f"검증 {self._verified_today}건 누적 · "
-                f"SGD {ol.sgd_weight:.0%} · 정확도 {acc:.1%}"
+                f"SGD S:{bucket_acc['short']:.1%} L:{bucket_acc['long']:.1%} · "
+                f"CB③ {cb_status['accuracy_30m']:.1%}"
             )
 
         return {
             "verified_today":    self._verified_today,
             "sgd_accuracy_50m":  ol.recent_accuracy(),
+            "sgd_acc_short":     bucket_acc["short"],
+            "sgd_acc_long":      bucket_acc["long"],
             "sgd_weight":        ol.sgd_weight,
             "gbm_weight":        ol.gbm_weight,
             "sgd_fitted":        dict(ol._fitted),
             "sgd_sample_counts": dict(ol._horizon_counts),
             "horizon_accuracy":  h_acc,
             "buffer_accuracy":   buf_acc,
+            "cb_accuracy_30m":   cb_status["accuracy_30m"],
+            "cb_samples":        cb_status["cb3_samples"],
+            "cb_streak":         cb_status["high_conf_wrong_streak"],
             "gbm_last_retrain":  gbm["last_retrain"],
             "gbm_retrain_count": gbm["retrain_count"],
             "raw_candles_count": raw,
@@ -3007,6 +3636,7 @@ class TradingSystem:
         retrain_ok = retrain_result.get("ok", False)
         if retrain_ok:
             self.model._load_all()
+            self._ensure_shap_tracker()
             retrain_str = f"재학습 완료 ({retrain_result['elapsed_sec']}초, {retrain_result['data_size']}행)"
             log_manager.learning(
                 f"[GBM] 일일 마감 재학습 완료 | {retrain_result['elapsed_sec']}초 "
@@ -3040,10 +3670,17 @@ class TradingSystem:
         self.micro_regime_clf.reset_daily()
         self.investor_data.reset_daily()
         self.pcr_store.reset_daily()
+        self.option_chain_snap.reset_daily()
         self.position.reset_daily()
         self.circuit_breaker.reset_daily()
         self.profit_guard.reset_daily()
         self.online_learner.reset_daily()
+        self._param_corr_history.clear()
+        self._shap_feature_window.clear()
+        self._shap_last_update_minute = None
+        self._restored_corr_str = ""
+        self._live_shap_ready = False
+        self._cached_shap_importance = {}
         self._verified_today = 0
         self.emergency_exit.reset()
         self.kill_switch.deactivate()

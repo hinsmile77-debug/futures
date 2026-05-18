@@ -1,3 +1,11 @@
+"""
+OptionMo OI 변화 관측 프로브.
+
+DispatchWithEvents가 Python 3.7 32-bit + pywin32 환경에서 metaclass conflict를
+일으키므로 Subscribe 방식 대신 OptionMst BlockRequest 폴링으로 OI 변화를 관측한다.
+
+장중(09:00~15:30)에만 OI가 변화한다.
+"""
 from __future__ import annotations
 
 import argparse
@@ -6,39 +14,11 @@ import platform
 import struct
 import sys
 import time
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from ensure_cybos_login import ensure_cybos_login
 
-
-def _safe_str(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
-class _OptionMoEvents:
-    """OptionMo 실시간 이벤트 핸들러.
-
-    Cybos OptionMo는 실시간으로 OI 변화를 통지합니다.
-    콜백 시그니처는 Cybos 도움말 기준:
-      OnReceiveData(str code, int oi, int oi_change, int oi_state)
-    """
-    def __init__(self, watch_sec: float = 5.0):
-        self.events: list = []
-        self._watch_sec = watch_sec
-        self._start = time.time()
-
-    def OnReceiveData(self, code: str, oi: int, oi_change: int, oi_state: int):
-        elapsed = time.time() - self._start
-        self.events.append({
-            "elapsed": round(elapsed, 3),
-            "code": _safe_str(code),
-            "oi": oi,
-            "oi_change": oi_change,
-            "oi_state": oi_state,
-        })
-        print(f"  [OptionMo] {elapsed:.1f}s | {code} OI={oi} Δ={oi_change:+d} state={oi_state}")
+PROGID_MST = "Dscbo1.OptionMst"
 
 
 def _ensure_runtime() -> None:
@@ -48,27 +28,57 @@ def _ensure_runtime() -> None:
         raise RuntimeError("32-bit Python required")
 
 
+def _fetch_oi(obj, code: str) -> Dict[str, Any]:
+    obj.SetInputValue(0, code)
+    obj.BlockRequest()
+
+    result: Dict[str, Any] = {
+        "code": code,
+        "ts": round(time.time(), 2),
+    }
+    try:
+        result["dib_status"] = obj.GetDibStatus()
+        result["dib_msg"] = obj.GetDibMsg1()
+    except Exception as exc:
+        result["dib_status"] = -1
+        result["dib_msg"] = str(exc)
+
+    try:
+        result["oi_current"] = obj.GetHeaderValue(99)   # 현재 미결제약정
+        result["oi_prev"] = obj.GetHeaderValue(37)      # 전일 미결제약정
+        result["last"] = obj.GetHeaderValue(93)         # 현재가
+        result["strike"] = obj.GetHeaderValue(6)        # 행사가
+    except Exception as exc:
+        result["fetch_error"] = str(exc)
+
+    return result
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Probe Cybos OptionMo (실시간 OI)")
-    parser.add_argument("--code", required=True,
-                        help="옵션 종목코드 (예: 201VA355)")
-    parser.add_argument("--ensure-login", action="store_true",
-                        help="Cybos 자동 로그인 먼저 실행")
-    parser.add_argument("--watch-sec", type=float, default=10.0,
-                        help="실시간 이벤트 수신 대기 시간 (초, 기본 10)")
+    parser = argparse.ArgumentParser(
+        description="OptionMst 폴링으로 OI 변화 관측 (장중 전용)"
+    )
+    parser.add_argument("--code", required=True, help="옵션 종목코드 (예: B0166A89)")
+    parser.add_argument("--ensure-login", action="store_true")
+    parser.add_argument(
+        "--watch-sec", type=float, default=15.0, help="총 관측 시간(초)"
+    )
+    parser.add_argument(
+        "--interval", type=float, default=3.0, help="폴링 간격(초, 기본 3)"
+    )
     args = parser.parse_args()
 
     _ensure_runtime()
 
     try:
         import pythoncom
-        from win32com.client import Dispatch, DispatchWithEvents
+        from win32com.client import Dispatch
     except ImportError as exc:
         raise RuntimeError("pywin32 import failed") from exc
 
     pythoncom.CoInitialize()
     cp_cybos = None
-    ev = None
+    obj = None
     try:
         if args.ensure_login:
             print("[INFO] ensure_cybos_login() start")
@@ -79,66 +89,57 @@ def main() -> int:
         if not bool(cp_cybos.IsConnect):
             raise RuntimeError("Cybos 미연결")
 
-        # ── OptionMo Dispatch (실시간 이벤트) ─────────────────────
-        try:
-            ev = _OptionMoEvents(watch_sec=args.watch_sec)
-            option_mo = DispatchWithEvents("Dscbo1.OptionMo", ev)
-        except Exception as exc:
-            raise RuntimeError(
-                "Dscbo1.OptionMo DispatchWithEvents 실패.\n"
-                "OptionMo COM 객체가 등록되어 있는지 확인하세요.\n"
-                f"원본 오류: {exc}"
-            ) from exc
+        obj = Dispatch(PROGID_MST)
 
-        # ── Subscribe ─────────────────────────────────────────────
-        try:
-            option_mo.Subscribe(args.code)
-            print(f"[INFO] OptionMo.Subscribe({args.code}) 성공")
-            print(f"[INFO] {args.watch_sec:.0f}초 동안 실시간 OI 이벤트 대기 중...")
-        except Exception as exc:
-            raise RuntimeError(
-                f"OptionMo.Subscribe({args.code}) 실패.\n"
-                f"종목코드 형식이나 COM 인터페이스를 확인하세요.\n"
-                f"원본 오류: {exc}"
-            ) from exc
+        print(f"[INFO] {PROGID_MST} 폴링 OI 관측 시작")
+        print(f"[INFO] 코드={args.code}  관측={args.watch_sec:.0f}초  간격={args.interval:.0f}초")
+        print("[NOTE] Dscbo1.OptionMo Subscribe는 metaclass conflict로 사용 불가 → 폴링 대체")
+        print("[NOTE] 장외에는 OI가 변하지 않습니다 (09:00~15:30 권장)")
+        print()
 
-        # ── 이벤트 루프 (메시지 펌프) ──────────────────────────────
+        snapshots: List[Dict[str, Any]] = []
         deadline = time.time() + args.watch_sec
+
         while time.time() < deadline:
-            pythoncom.PumpWaitingMessages()
-            time.sleep(0.05)
+            snap = _fetch_oi(obj, args.code)
+            snapshots.append(snap)
+            oi = snap.get("oi_current", "?")
+            last = snap.get("last", "?")
+            strike = snap.get("strike", "?")
+            status = snap.get("dib_status", "?")
+            print(
+                f"  [{len(snapshots):02d}] strike={strike}  OI={oi}"
+                f"  현재가={last}  status={status}"
+            )
+            remaining = deadline - time.time()
+            if remaining > 0:
+                time.sleep(min(args.interval, remaining))
 
-        # ── Unsubscribe ───────────────────────────────────────────
-        try:
-            option_mo.Unsubscribe(args.code)
-            print(f"[INFO] OptionMo.Unsubscribe({args.code}) 완료")
-        except Exception as exc:
-            print(f"[WARN] Unsubscribe 실패: {exc}")
+        # ── 결과 분석 ─────────────────────────────────────────────
+        oi_values: List[Any] = [
+            s["oi_current"]
+            for s in snapshots
+            if s.get("oi_current") is not None and s.get("dib_status") == 0
+        ]
+        oi_changed = len(set(oi_values)) > 1 if oi_values else False
 
-        # ── 결과 출력 ─────────────────────────────────────────────
-        print(f"\n=== 실시간 OI 수신 결과 ===")
-        print(f"코드: {args.code}")
-        print(f"수신 이벤트: {len(ev.events)}건")
-
-        if ev.events:
-            # OI 변화 추이
-            oi_values = [e["oi"] for e in ev.events if e["oi"] > 0]
-            oi_changes = [e["oi_change"] for e in ev.events]
-            print(f"OI 값: {oi_values}")
-            print(f"OI 변화: {oi_changes}")
-            print(f"OI 상태: {[e['oi_state'] for e in ev.events]}")
-            print(f"\n=== 상세 로그 ===")
-            print(json.dumps(ev.events, ensure_ascii=False, indent=2, default=str))
+        print(f"\n=== OI 관측 결과 ===")
+        print(f"코드:        {args.code}")
+        print(f"폴링 횟수:   {len(snapshots)}회")
+        print(f"유효 OI 값:  {oi_values}")
+        if oi_changed:
+            print(f"OI 변화 감지: ✅ YES  범위: {min(oi_values)} ~ {max(oi_values)}")
+            print("→ OptionMst 폴링으로 실시간 OI 수집 가능 확인")
         else:
-            print("[WARN] 수신된 OI 이벤트가 없습니다.")
-            print("가능한 원인:")
-            print("  1. 장 마감 시간 (9:00~15:30에 실행 권장)")
-            print("  2. 해당 종목의 OI 변화가 없음")
-            print("  3. OptionMo COM 인터페이스가 다름 (이벤트 시그니처 확인 필요)")
+            print("OI 변화 감지: ❌ NO")
+            print("→ 장외 실행이거나 해당 종목 거래 없음")
 
+        print(f"\n=== 상세 스냅샷 ===")
+        print(json.dumps(snapshots, ensure_ascii=False, indent=2, default=str))
         return 0
+
     finally:
-        ev = None
+        obj = None
         cp_cybos = None
         pythoncom.CoUninitialize()
 

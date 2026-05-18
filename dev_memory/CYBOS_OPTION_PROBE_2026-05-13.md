@@ -131,6 +131,30 @@ As of 2026-05-13:
 - continue probing only for true option chain / OI candidates
 - treat `OptionMst/SoptionMst` as snapshot research sources only
 
+## Follow-up Results (2026-05-18)
+
+### `CpSysDib.CpSvrNew7222`
+
+- registered, Dispatch() works
+- `dib_status=-1`, `dib_msg=조회오류입니다.(niis.stk.7222.data.cbp)`
+- all headers null, no rows
+- **`niis.stk.*` = 주식 계열 확정 → 옵션 무관**
+
+### `CpSysDib.CpSvrNew7224`
+
+- registered, Dispatch() works
+- `dib_status=-1`, `dib_msg=71104 입력값 오류입니다.(niis.stk.7224.data.cbp)`
+- 18행 스켈레톤 반환 (전부 0) — 입력 필요 구조이나 내용 없음
+- **`niis.stk.*` = 주식 계열 확정 → 옵션 무관**
+
+## [탐색종료 2026-05-18]
+
+7222·7224 모두 `niis.stk.*` 패턴 확인. 정수 ID 랜덤 탐색 공식 종료.
+
+옵션 체인/OI 대안 경로:
+- `CpOptionCode` + `OptionMst` 기반 스냅샷 폴링으로 PCR·GEX 구현 완료 (27차, 2026-05-14)
+- 진정한 체인 OI는 Cybos COM에서 공개된 경로 없음 — 스냅샷 방식으로 대체 확정
+
 ## Scripts Added In This Session
 
 - `scripts/ensure_cybos_login.py`
