@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-05-18 (51차) — 부분청산 Race Condition 버그 3종 수정
+
+### 한일 요약
+
+- [DONE 2026-05-18] **B106 Fix: `_ts_execute_partial_exit()` Race Condition** — pending 선등록→주문→실패 롤백으로 수정 (main.py)
+- [DONE 2026-05-18] **B107 Fix: `apply_entry_fill()` partial_done 리셋** — 신규 진입 시에만 리셋, 증량 시 보존 (position_tracker.py)
+- [DONE 2026-05-18] **B108 Fix: Chejan order_no="" 오탐 매칭** — direction 교차 검증 추가 (main.py)
+- [DONE 2026-05-18] **실로그 검증** — 10:00 TP1(+5.43pt) / 10:01 TP2(+8.69pt) 정상 확인
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-19] **51차 Fix 지속 모니터링**
+  - TP1/TP2/TP3 부분청산 흐름에서 `[PendingOrder] set`이 `[ChejanFlow] 접수` 보다 선행 기록되는지 확인
+  - B107(증량 중 partial_done 보존) 실제 발동 케이스 발생 시 로그 확인
+  - B108(direction 검증 차단) 발동 케이스: WARN 로그에서 `pending_matched=False` + 방향 불일치 메시지 확인
+
+---
+
 ## 2026-05-17 (50차) — 5/15 거래 검토 기반 전략 핵심 수정 후속
 
 ### 한일 요약

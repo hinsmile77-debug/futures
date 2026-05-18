@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-05-18 (51차 — 부분청산 Race Condition 버그 3종 수정)
+
+**Work**: 실거래 로그에서 `[PNL] 체결진입`이 반복되고 부분청산 로그가 없는 현상을 발견. 코드 전체 분석(exit_manager, position_tracker, main.py Chejan 흐름)으로 버그 3종을 도출 및 수정. 실로그로 fix 검증 완료.
+
+### 주요 발견
+
+| 발견 | 내용 |
+|---|---|
+| B106 Race Condition | `_ts_execute_partial_exit()`가 주문 후 pending 등록 순서 — 수동청산과 반대. BlockRequest 메시지 펌프 중 Chejan이 pending=None 도착 → external fill 오탐 |
+| B107 partial_done 리셋 | `apply_entry_fill()` 분할체결마다 `partial_N_done=False` 무조건 리셋 — TP 실행 후 추가 체결 오면 이중청산 위험 |
+| B108 Chejan 오탐 매칭 | `order_no=""` pending에 방향 검증 없이 첫 체결이 모두 매칭 — ENTRY/EXIT 혼용 위험 |
+
+### 수정 내용
+
+| 파일 | 변경 |
+|---|---|
+| `main.py` | `_ts_execute_partial_exit()`: `_set_pending_order()` 선등록 → `_send_broker_exit_order()` → `ret≠0` 시 `_clear_pending_order()` 롤백 |
+| `main.py` | `_ts_on_chejan_event_cybos_safe()`: `_dir_ok` 조건 — ENTRY pending은 동방향, EXIT_* pending은 역방향 체결만 매칭 |
+| `strategy/position/position_tracker.py` | `apply_entry_fill()`: `_is_new_position` 플래그로 FLAT→진입 시에만 partial_done 리셋 |
+
+### 검증 결과
+
+- 09:59 LONG 4계약 분할체결 진입 (1+1+1+1, order_no=1598)
+- 10:00 TP1 부분청산 1계약 @ 1156.92 → +5.43pt (+270,023원) ✅
+- 10:01 TP2 부분청산 1계약 @ 1160.18 → +8.69pt (+433,023원) ✅
+- 10:04 하드스톱 전량청산 2계약 @ 1154.91 → +3.42pt ✅
+- WARN 로그: `[PendingOrder] set` → `[ChejanFlow] 접수` → `[PartialExitSendOrderResult] ret=0` 순서 확인 (Race Condition 해소 증거)
+
+---
+
 ## 2026-05-17 (50차 — 5/15 거래 검토 기반 전략 핵심 수정 6종)
 
 **Work**: 5/15 미륵이 거래 로그를 Deep 분석(openCode)으로 검토한 결과 이상점 5종이 도출됨. 5/16~5/17 커밋(40~49차)이 대시보드/Cybos 연동에 집중되어 전략 핵심 파일이 미수정 상태임을 확인 후 우선순위 순으로 6종을 일괄 구현.

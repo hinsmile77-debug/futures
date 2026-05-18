@@ -1,7 +1,40 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-17 (50차) — **5/15 거래 검토 기반 전략 핵심 수정 6종**
+> 마지막 업데이트: 2026-05-18 (51차) — **부분청산 Race Condition 버그 3종 수정**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-18 (51차) — 부분청산 Race Condition 버그 3종 수정
+
+### 배경
+
+실거래 로그에서 `[PNL] 체결진입`만 반복되고 부분청산 로그가 나오지 않는 현상 발생. 코드 분석으로 TP 부분청산 흐름에서 Cybos BlockRequest Race Condition 등 버그 3종 확인 및 수정.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| B106 Fix: `_ts_execute_partial_exit()` Race Condition | **완료** — pending 선등록 → 주문 → 실패 시 롤백으로 수정 |
+| B107 Fix: `apply_entry_fill()` partial_done 불필요 리셋 | **완료** — 신규 포지션(FLAT→진입)일 때만 리셋, 분할체결·증량 시 보존 |
+| B108 Fix: Chejan order_no="" 오탐 매칭 | **완료** — ENTRY/EXIT 방향 교차 검증 추가 |
+| 실로그 검증 (10:00 TP1, 10:01 TP2) | **완료** — `[PendingOrder] set` → BlockRequest 중 Chejan 정상 매칭 확인 |
+
+### 수정 파일 (51차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | `_ts_execute_partial_exit()`: pending 선등록 후 주문, ret≠0 시 `_clear_pending_order()` 롤백 |
+| `main.py` | `_ts_on_chejan_event_cybos_safe()`: order_no="" 매칭 시 direction 교차 검증 (_dir_ok 조건) |
+| `strategy/position/position_tracker.py` | `apply_entry_fill()`: `_is_new_position` 플래그 추가, 증량 체결 시 partial_done 보존 |
+
+### 검증 결과 (2026-05-18 실세션)
+
+- 09:59 LONG 4계약 분할체결(1+1+1+1) 진입
+- 10:00 **TP1 부분청산 정상 실행** — 1계약 @ 1156.92, +5.43pt ✅
+- 10:01 **TP2 부분청산 정상 실행** — 1계약 @ 1160.18, +8.69pt ✅
+- 10:04 하드스톱 전량청산 — 2계약 @ 1154.91(평균) ✅
+- `[PendingOrder] set`이 `[ChejanFlow] 접수` 보다 먼저 기록됨으로 Race Condition 해소 확인
 
 ---
 

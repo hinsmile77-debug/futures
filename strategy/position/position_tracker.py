@@ -255,6 +255,8 @@ class PositionTracker:
                 "regime": self.regime,
             }
 
+        _is_new_position = (self.status == POSITION_FLAT)
+
         if self.status == POSITION_FLAT:
             self.status = direction
             self.entry_price = price
@@ -284,9 +286,12 @@ class PositionTracker:
                 self.entry_time = filled_at or now_kst()
 
         self._recalculate_levels(atr)
-        self.partial_1_done = False
-        self.partial_2_done = False
-        self.partial_3_done = False
+        # 신규 포지션(FLAT→진입)일 때만 partial_done 리셋
+        # 분할체결·증량 시에는 이미 실행된 TP 플래그를 보존하여 재발동 방지
+        if _is_new_position:
+            self.partial_1_done = False
+            self.partial_2_done = False
+            self.partial_3_done = False
         self.last_update_reason = f"apply_entry_fill:{direction}"
         self.last_update_ts = filled_at or now_kst()
         self._save_state()

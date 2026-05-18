@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-05-18 (51차 — 부분청산 Race Condition 버그 3종 수정)
+
+### [B106] `_ts_execute_partial_exit()` — pending 등록 순서 역전으로 BlockRequest Race Condition 발생
+**File**: `main.py` — `_ts_execute_partial_exit()`
+**Symptom**: TP1 도달 시 `[주문요청] TP1 청산` 로그 없이 부분청산 로그가 사라짐. `[PNL] 체결진입`만 반복.
+**Root cause**: 수동 청산(`_manual_exit_button`)은 **pending 선등록 → 주문 → 실패 시 롤백** 순서를 사용하고 코드에 주석까지 달려 있음. 그러나 `_ts_execute_partial_exit()`는 **주문 먼저 → pending 나중** 순서였다. Cybos `send_market_order()` 내부 `BlockRequest()` 실행 중 메시지 펌프가 돌면서 Chejan 접수 이벤트가 `_pending_order=None` 상태에 도착 → `pending_matched=False` → `_ts_handle_external_fill()` 경로 → `_post_partial_exit()` 미호출 → 부분청산 로그 소실.
+**Fix**: `_set_pending_order(kind="EXIT_PARTIAL", ...)` 호출을 `_send_broker_exit_order()` 전으로 이동. `ret != 0` 시 `_clear_pending_order()` 롤백 추가.
+**Verified**: 2026-05-18 10:00 TP1 — WARN 로그에서 `[PendingOrder] set` 이 `[ChejanFlow] status='접수'` 보다 선행 기록됨. TP1(+5.43pt), TP2(+8.69pt) 정상 체결.
+
+### [B107] `apply_entry_fill()` — 분할체결·증량 시 `partial_N_done` 무조건 초기화
+**File**: `strategy/position/position_tracker.py` — `apply_entry_fill()`
+**Symptom**: 잠재적 버그 — TP 부분청산이 실행된 상태에서 추가 분할체결이 오면 `partial_1_done=False`로 리셋되어 이중 청산 주문 위험.
+**Root cause**: `apply_entry_fill()` 마지막에 `partial_1_done = partial_2_done = partial_3_done = False` 무조건 실행. 신규 진입(FLAT→진입)과 분할체결·증량 케이스를 구분하지 않음.
+**Fix**: `_is_new_position = (self.status == POSITION_FLAT)` 플래그를 분기 전에 저장. 리셋을 `if _is_new_position:` 블록으로 한정. 분할체결·증량 시에는 기존 partial_done 유지.
+**Note**: 이번 세션에서 실제 이중청산 발동 상황은 없었으나 코드 구조상 언제든 발생 가능한 잠재 버그였음.
+
+### [B108] `_ts_on_chejan_event_cybos_safe()` — order_no="" pending에 방향 불문 첫 체결 매칭
+**File**: `main.py` — `_ts_on_chejan_event_cybos_safe()`
+**Symptom**: 잠재적 버그 — EXIT_PARTIAL pending에 ENTRY 체결이 오탐 매칭되거나 반대 케이스 발생 가능.
+**Root cause**: `elif not pending.get("order_no"):` 분기에서 direction 검증 없이 모든 체결을 pending에 매칭. ENTRY pending(order_no="")에 반대 방향(EXIT) 체결이 도달해도 `pending_matched=True`가 되어 `_ts_handle_entry_fill_cybos_safe()` 경로로 처리될 수 있음.
+**Fix**: `_dir_ok` 조건 추가 — ENTRY pending이면 `side == _pending_dir`, EXIT_* pending이면 `side != _pending_dir`(Long 청산은 SELL). `side` 불명이면 관대하게 허용.
+**Note**: B106 fix(pending 선등록)로 대부분의 케이스가 이미 해소되었으나, order_no 수신 전 타이밍 구간을 위한 방어 레이어.
+
+---
+
 ## 2026-05-17 (50차 — 5/15 거래 검토 기반 전략 핵심 수정 6종)
 
 ### [B105] Hurst Exponent가 feature_builder에서 계산되지 않아 항상 0.5 고정

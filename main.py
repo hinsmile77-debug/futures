@@ -902,6 +902,7 @@ class TradingSystem:
         )
 
     def _clear_pending_order(self) -> None:
+        _cleared_kind = str((self._pending_order or {}).get("kind") or "")
         if self._pending_order is not None:
             logger.warning("[PendingOrder] clear %s", self._pending_order)
             # [B56] ENTRY 미체결 소멸 → 어떤 경로든 2분 재진입 금지
@@ -920,6 +921,12 @@ class TradingSystem:
             _ts_push_exit_panel_now(self)
         except Exception as _ep_e:
             logger.debug("[ExitPanel] push 실패 (UI 무시): %s", _ep_e)
+        # EXIT_PARTIAL 해소 후 잔여 TP 즉시 재점검 (다음 분봉 대기 없이)
+        # _cleared_kind가 ENTRY/EXIT_FULL이면 추가 TP 점검 불필요
+        if _cleared_kind in ("EXIT_PARTIAL", "EXIT_MANUAL_PARTIAL") and self.position.status != "FLAT":
+            _price = float(getattr(self, "_last_pipeline_price", 0.0) or self.position.entry_price or 0.0)
+            if _price > 0:
+                QTimer.singleShot(300, lambda p=_price: _ts_intrabar_tp_check(self, p))
 
     def _has_pending_order(self) -> bool:
         return self._pending_order is not None
@@ -3746,6 +3753,16 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
     send_qty = total_qty if is_full_close else target_qty
     reason = f"TP{stage}(전량)" if is_full_close else f"TP{stage} 부분청산 {ratio:.0%}"
 
+    # pending을 주문 전에 먼저 등록 — BlockRequest() 메시지 펌프 race condition 방지
+    # (수동 청산과 동일한 순서: pending 선등록 → 주문 → 실패 시 롤백)
+    self._set_pending_order(
+        kind="EXIT_FULL" if is_full_close else "EXIT_PARTIAL",
+        direction=self.position.status,
+        qty=send_qty,
+        price_hint=price,
+        reason=reason,
+        stage=stage,
+    )
     ret = self._send_broker_exit_order(send_qty)
     _ts_log_diag(
         self,
@@ -3759,21 +3776,12 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
         position=_ts_get_position_snapshot(self),
     )
     if ret != 0:
+        self._clear_pending_order()
         log_manager.system(
-            f"[Exit] 청산 주문 실패 ret={ret} stage={stage} qty={send_qty} "
-            f"— 다음 분봉에서 하드스톱 재평가 예정",
+            f"[Exit] 청산 주문 실패 ret={ret} stage={stage} qty={send_qty} — pending 롤백",
             "ERROR",
         )
         return
-
-    self._set_pending_order(
-        kind="EXIT_FULL" if is_full_close else "EXIT_PARTIAL",
-        direction=self.position.status,
-        qty=send_qty,
-        price_hint=price,
-        reason=reason,
-        stage=stage,
-    )
     log_manager.trade(
         f"[주문요청] TP{stage} 청산 {self.position.status} {send_qty}계약 @ {price} 체결대기"
     )
@@ -3996,6 +4004,27 @@ def _ts_push_exit_panel_now(self, current_price: float = None) -> None:
         "pending_qty": int(_pending.get("qty") or 0),
         "time_exit_countdown_sec": _time_left_s,
     })
+
+
+def _ts_intrabar_tp_check(self, price: float) -> None:
+    """EXIT_PARTIAL 해소 직후 잔여 TP 즉시 재점검 — 다음 분봉 대기 없이 청산 유지.
+
+    _clear_pending_order()에서 QTimer.singleShot(300ms)으로 호출된다.
+    하드스톱·슬랭스톱은 분봉 파이프라인이 담당하므로 여기서는 TP만 점검한다.
+    """
+    if self._has_pending_order() or self.position.status == "FLAT" or price <= 0:
+        return
+    log_manager.system(
+        f"[IntrabarTPCheck] pending 해소 후 TP 즉시 재점검 price={price:.2f} "
+        f"p1={self.position.partial_1_done} p2={self.position.partial_2_done} p3={self.position.partial_3_done}",
+        "INFO",
+    )
+    if self.position.is_tp1_hit(price):
+        self._execute_partial_exit(price, stage=1)
+    if not self._has_pending_order() and self.position.is_tp2_hit(price):
+        self._execute_partial_exit(price, stage=2)
+    if not self._has_pending_order() and self.position.is_tp3_hit(price):
+        self._execute_partial_exit(price, stage=3)
 
 
 def _ts_log_diag(self, tag: str, **fields) -> None:
@@ -5819,8 +5848,19 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
         if pending.get("order_no") and order_no and pending["order_no"] == order_no:
             pending_matched = True
         elif not pending.get("order_no"):
-            pending["order_no"] = order_no or pending.get("order_no", "")
-            pending_matched = True
+            # order_no 미확보 시 방향 교차 검증으로 오탐 매칭 차단
+            # ENTRY pending → 같은 방향 체결만 허용
+            # EXIT_* pending → 반대 방향 체결만 허용 (LONG 포지션 청산은 SELL)
+            _pending_kind = pending.get("kind", "")
+            _pending_dir = pending.get("direction", "")
+            _dir_ok = (
+                not side  # side 불명이면 관대하게 허용
+                or (_pending_kind == "ENTRY" and side == _pending_dir)
+                or (_pending_kind not in ("ENTRY",) and side != _pending_dir)
+            )
+            if _dir_ok:
+                pending["order_no"] = order_no or pending.get("order_no", "")
+                pending_matched = True
     _ts_log_diag(
         self,
         "ChejanMatch",
@@ -5884,6 +5924,7 @@ TradingSystem._manual_position_restore = _ts_manual_position_restore
 TradingSystem._execute_entry = _ts_execute_entry
 TradingSystem._execute_partial_exit = _ts_execute_partial_exit
 TradingSystem._check_exit_triggers = _ts_check_exit_triggers
+TradingSystem._intrabar_tp_check = _ts_intrabar_tp_check
 
 
 class _BrokerOrderAdapter:
