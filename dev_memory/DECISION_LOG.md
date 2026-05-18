@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-05-18 (57차 — UI 체크박스 설정 유지 버그 수정)
+
+### [B120] `_restore_ui_prefs` — 종목 복원 중 체크박스 기본값으로 파일 덮어씀
+**File**: `dashboard/main_dashboard.py` — `_restore_ui_prefs()` L7813-7814
+**Symptom**: 중패널_Auto·우패널_Auto를 해제하고 종료해도, 다음 재시작 시 체크 상태로 복원됨.
+**Root cause**: `_restore_ui_prefs` 내 실행 순서 문제. 종목 복원(L7813) → `_on_symbol_changed` → `_save_ui_prefs` 호출 시점에 슬랙/mid/right 체크박스가 아직 하드코딩 기본값 True 상태. `_save_ui_prefs`가 파일에 `mid_auto_enabled=true, right_auto_enabled=true`로 덮어씀. 이후 L7823~7830에서 prefs 변수로부터 올바르게 복원되지만, 파일은 이미 True로 바뀐 상태 → 다음 실행에서 True로 초기화.
+**Fix**: `_on_symbol_changed(selected_symbol)` → `_update_symbol_label(selected_symbol)` 교체. 라벨 갱신은 동일하게 수행하되 `_save_ui_prefs` 트리거 없음.
+
+### [설계] `chk_slack.stateChanged` → `_save_ui_prefs` 중복 연결 제거
+**File**: `main.py` — L4128~4130
+**Issue**: `main_dashboard.py` L7610에 이미 `chk_slack.toggled` → `_save_ui_prefs` 연결 존재. `main.py`에서 `stateChanged`로 동일한 `_save_ui_prefs`를 재연결 → 체크박스 토글 시 2회 저장.
+**Fix**: `main.py`의 중복 연결 제거. `toggled`는 사용자 클릭 시에만 발생(setChecked에 의한 programmatic 변경 시 blockSignals로 차단됨), `stateChanged`는 항상 발생 — `toggled` 연결만 유지가 올바른 설계.
+
+---
+
 ## 2026-05-18 (56차 — 상단 배지 5종 점검·수정)
 
 ### [B116] `lbl_pos` FLAT 배지 — `update_position()` 갱신 누락

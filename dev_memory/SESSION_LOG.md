@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-05-18 (57차 — UI 체크박스 설정 유지 버그 수정)
+
+**Work**: 슬랙알림·중패널_Auto·우패널_Auto 체크박스 설정이 프로그램 재시작 시 기본값 True로 초기화되는 버그 원인 분석 및 수정.
+
+### 주요 작업
+
+| 작업 | 내용 |
+|---|---|
+| B120 분석 | `_restore_ui_prefs` 내 종목 복원 중 `_on_symbol_changed` → `_save_ui_prefs` 호출 시 체크박스가 아직 기본값 True 상태 → 파일에 덮어씀 → 다음 실행 시 True로 복원되는 사이클 확인 |
+| B120 수정 | `_restore_ui_prefs` 내 `_on_symbol_changed(selected_symbol)` → `_update_symbol_label(selected_symbol)` 교체 (dashboard/main_dashboard.py L7814) |
+| 중복 시그널 제거 | `main.py` L4128~4130: `chk_slack.stateChanged` → `_save_ui_prefs` 연결 제거. `main_dashboard.py` L7610에 `toggled` 연결이 이미 존재해 중복이었음 |
+
+### 버그 발견 (B120)
+
+| 항목 | 내용 |
+|---|---|
+| 증상 | 중패널_Auto·우패널_Auto를 해제하고 종료해도 다음 실행 시 체크됨 |
+| 원인 | `_restore_ui_prefs` 실행 순서 — 종목 복원(L7813)이 슬랙/mid/right 복원(L7816~)보다 먼저, `_on_symbol_changed` 내부에서 `_save_ui_prefs` 호출 → 파일에 True 덮어씀 |
+| 수정 | `_on_symbol_changed` → `_update_symbol_label` 교체 (저장 트리거 없음) |
+
+---
+
 ## 2026-05-18 (56차 — 상단 배지 5종 점검·수정)
 
 **Work**: 대시보드 상단 배지(FLAT·위클리·감마스퀴즈·NEUTRAL·L2) 전체 업데이트 흐름 점검. 갱신 누락 3종·툴팁 오류 2종·dead code 1종 수정.

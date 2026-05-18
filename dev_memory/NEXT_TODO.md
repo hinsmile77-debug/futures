@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-05-18 (57차) — UI 체크박스 설정 유지 버그 수정
+
+### 한일 요약
+
+- [DONE 2026-05-18] **B120 Fix: 체크박스 재시작 시 True 초기화** — `_restore_ui_prefs` 내 `_on_symbol_changed` → `_update_symbol_label` 교체 (dashboard/main_dashboard.py L7814)
+- [DONE 2026-05-18] **chk_slack 중복 시그널 제거** — `main.py` L4128~4130 `stateChanged` → `_save_ui_prefs` 연결 제거
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 2026-05-19] **57차 Fix 실세션 확인**
+  - 중패널_Auto·우패널_Auto 해제 후 재시작 → 해제 상태 복원 확인
+  - `ui_prefs.json`의 `mid_auto_enabled`, `right_auto_enabled` 값 유지 확인
+
+---
+
 ## 2026-05-18 (56차) — 상단 배지 5종 점검·수정
 
 ### 한일 요약

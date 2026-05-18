@@ -4125,9 +4125,6 @@ class TradingSystem:
         self.dashboard.chk_slack.stateChanged.connect(
             lambda state: set_slack_enabled(bool(state))
         )
-        self.dashboard.chk_slack.stateChanged.connect(
-            lambda state: self.dashboard._save_ui_prefs()
-        )
 
         # 세션 카운터 증가 + 당일 거래/패널 복원 (Day 3 서비스 단일 호출)
         self.session_recovery_service.restore_on_startup(self)

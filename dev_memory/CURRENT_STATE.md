@@ -1,7 +1,31 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-18 (56차) — **상단 배지 5종 점검·수정 (FLAT/위클리/감마/NEUTRAL/L2)**
+> 마지막 업데이트: 2026-05-18 (57차) — **UI 체크박스 설정 유지 버그 수정 (B120)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-18 (57차) — UI 체크박스 설정 유지 버그 수정
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| B120 Fix: 체크박스 재시작 시 True 초기화 | **완료** — `_restore_ui_prefs` 내 `_on_symbol_changed` → `_update_symbol_label` 교체 |
+| chk_slack 중복 시그널 제거 | **완료** — `main.py` L4128~4130 `stateChanged` → `_save_ui_prefs` 연결 제거 |
+| 5/19 실세션 동작 확인 | **미완료** — 체크박스 해제 후 재시작 시 복원 여부 확인 |
+
+### 수정 파일 (57차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `dashboard/main_dashboard.py` | `_restore_ui_prefs()` L7814: `_on_symbol_changed` → `_update_symbol_label` |
+| `main.py` | L4128~4130: `chk_slack.stateChanged` → `_save_ui_prefs` 중복 연결 제거 |
+
+### 5/19 확인 사항
+
+1. 중패널_Auto·우패널_Auto 체크 해제 후 재시작 → 해제 상태로 복원되는지 확인
+2. `ui_prefs.json`에 `mid_auto_enabled: false, right_auto_enabled: false` 유지되는지 확인
 
 ---
 

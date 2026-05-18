@@ -7811,7 +7811,7 @@ class MireukDashboard(QMainWindow):
             self.cmb_symbol.blockSignals(False)
 
             if selected_symbol:
-                self._on_symbol_changed(selected_symbol)
+                self._update_symbol_label(selected_symbol)
 
             # 슬랙 On/Off 복원 (기본 True)
             slack_on = bool(prefs.get("slack_enabled", True))
