@@ -5106,7 +5106,11 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
             _today_str = _today.isoformat()
             _today_pnl = float(str(summary.get("실현손익") or "0").replace(",", "") or "0")
             _prev_pnl  = float(str(summary.get("추정자산") or "0").replace(",", "") or "0")
-            upsert_daily_broker_pnl(_today_str, _today_pnl)
+            # FLAT 상태에서만 저장: 포지션 보유 중 CpTd6197 today_pnl에 미실현손익이
+            # 포함되면 broker_daily_pnl 테이블이 오염되어 손익 추이 탭 값이 부풀려짐.
+            if self.position.status == "FLAT":
+                upsert_daily_broker_pnl(_today_str, _today_pnl)
+                self._refresh_pnl_history()
             upsert_daily_broker_pnl(_yesterday, _prev_pnl)
         except Exception as _bpnl_e:
             logger.debug("[BrokerPnl] 일별 손익 저장 실패: %s", _bpnl_e)

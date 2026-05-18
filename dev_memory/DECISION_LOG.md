@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-05-18 (52차 — 손익 패널 4종 불일치 수정)
+
+### [B109] `broker_daily_pnl` 테이블 — 포지션 보유 중 Cybos CpTd6197 today_pnl에 미실현 포함값 저장
+**File**: `main.py` — `_ts_handle_balance_update()` (L5101~5116)
+**Symptom**: 손익 추이 탭 P/L 원(3,555,000)이 당일 거래 gross 합계(2,281,500)를 초과. PnL 탭(2,261,018)과 1,293,982원 차이.
+**Root cause**: `upsert_daily_broker_pnl(_today_str, today_pnl)` 호출이 포지션 보유 여부와 무관하게 항상 실행됨. Cybos `CpTd6197` header[6] `today_pnl`은 포지션 보유 중 미실현 평가손익을 포함해 반환. 포지션이 이익 구간일 때 잔고 TR이 호출되면 (realized + unrealized)가 저장되고, 이후 청산 후 `_refresh_pnl_history()`가 이 캐시를 읽어 손익 추이를 구성하므로 부풀려진 값이 표시됨. 또한 `_refresh_pnl_history()`는 거래 청산 시에만 호출되어, 이후 잔고 TR이 올바른 값으로 갱신해도 손익 추이가 자동 재구성되지 않는 갱신 타이밍 버그 병존.
+**Fix**: `if self.position.status == "FLAT":` 조건으로 today_pnl 저장 제한. FLAT 확인 후 저장 직후 `self._refresh_pnl_history()` 호출 추가. yesterday는 항상 FLAT이므로 조건 없이 저장 유지.
+**Verified**: 수정 논리 검증 — 오늘 거래 6건 gross = 45.63pt × 50,000 = 2,281,500원. PnL 탭 2,261,018 = gross − 수수료(약 20,000원) ✓. 3,555,000은 gross 초과이므로 미실현 포함값임이 확인됨. 실세션 동작 확인은 2026-05-19.
+
+### [분석] 4개 손익 패널 데이터 소스 정리
+**Context**: 실세션 스크린샷에서 패널 4종이 모두 다른 값을 표시해 구조적 원인 규명.
+
+| 패널 | 소스 | 신뢰도 |
+|---|---|---|
+| 실시간 잔고 금일손익 | `CpTd6197` header[6] (비주기적 TR) | 중 — 포지션 보유 중 미실현 포함 가능, STALE 발생 |
+| 손익 PnL 탭 일일누적 | `position_tracker._daily_pnl_pts × pt_value − commission` | **최고** — 엔진 실시간 메모리, 수수료 차감 순손익 |
+| 손익 추이 탭 P/L 원 | `broker_daily_pnl` 테이블 우선, 없으면 `trades.db net_pnl_krw` | 중 — B109 수정 후 FLAT 기준으로 신뢰도 향상 |
+| HTS 금일손익 | Cybos HTS 자체 TR | 중 — 수수료 처리 기준 다름 |
+
+**How to apply**: 손익 PnL 탭 일일누적을 1차 기준으로 사용. 수수료 처리 차이로 HTS와 항상 동일하지 않음을 인지.
+
+---
+
 ## 2026-05-18 (51차 — 부분청산 Race Condition 버그 3종 수정)
 
 ### [B106] `_ts_execute_partial_exit()` — pending 등록 순서 역전으로 BlockRequest Race Condition 발생
