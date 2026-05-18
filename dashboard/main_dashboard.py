@@ -283,35 +283,45 @@ COMMIT_HASH: str = _get_commit_hash()
 
 
 def _calc_cycle_badge() -> tuple:
-    """다음 목요일 만기(KOSPI200 위클리/월간)까지 D-days 계산 → (text, color).
+    """KOSPI200 옵션 다음 만기까지 D-days 계산 → (text, color).
 
-    - 만기일: 매주 목요일
-    - 월간 만기: 이달의 두 번째 목요일 (2nd Thursday)
-    - 오늘이 목요일이면 D-0 (만기일)
+    만기 구조:
+      - [월]위클리 : 매주 월요일 만기
+      - [목]위클리 : 매주 목요일 만기
+      - [목]월간   : 이달 두 번째 목요일 (월간 만기)
+    가장 가까운 다음 만기일(월/목 중 먼저 도래)을 기준으로 배지 생성.
     """
     import datetime as _dt
     today = _dt.date.today()
-    wd    = today.weekday()            # 0=Mon, 3=Thu, 4=Fri …
-    days  = (3 - wd) % 7              # 오늘→다음 목요일 일수 (0 = 오늘이 목요일)
-    target = today + _dt.timedelta(days=days)
+    wd = today.weekday()               # 0=월 1=화 2=수 3=목 4=금 5=토 6=일
 
-    # 해당 목요일이 이달 몇 번째 목요일인지 (1~5)
-    nth = (target.day - 1) // 7 + 1
-    is_monthly = (nth == 2)            # 2nd Thursday = 월간 만기
+    days_to_mon = (0 - wd) % 7        # 다음 월요일까지 (0 = 오늘이 월요일)
+    days_to_thu = (3 - wd) % 7        # 다음 목요일까지 (0 = 오늘이 목요일)
 
-    tag   = "월간" if is_monthly else "위클리"
-    if days == 0:
-        text  = f"● {tag} 만기일"
-        col   = "#FF5252"              # 빨강 — 오늘 만기
-    elif days == 1:
-        text  = f"{tag} D-1"
-        col   = "#FFB74D"              # 주황 — 내일 만기
-    elif days <= 3:
-        text  = f"{tag} D-{days}"
-        col   = "#FFD54F"              # 노랑 — 이번 주 내
+    # 더 가까운 만기일 선택
+    if days_to_mon <= days_to_thu:
+        days   = days_to_mon
+        target = today + _dt.timedelta(days=days)
+        tag    = "[월]위클리"
     else:
-        text  = f"{tag} D-{days}"
-        col   = "#CE93D8"              # 연보라 — 여유
+        days   = days_to_thu
+        target = today + _dt.timedelta(days=days)
+        # 이달 두 번째 목요일이면 월간 만기
+        nth       = (target.day - 1) // 7 + 1
+        tag       = "[목]월간" if nth == 2 else "[목]위클리"
+
+    if days == 0:
+        text = f"● {tag} 만기일"
+        col  = "#FF5252"               # 빨강 — 오늘 만기
+    elif days == 1:
+        text = f"{tag} D-1"
+        col  = "#FFB74D"               # 주황 — 내일 만기
+    elif days <= 3:
+        text = f"{tag} D-{days}"
+        col  = "#FFD54F"               # 노랑 — 이번 주 내
+    else:
+        text = f"{tag} D-{days}"
+        col  = "#CE93D8"               # 연보라 — 여유
     return text, col
 
 
@@ -7179,7 +7189,7 @@ class MireukDashboard(QMainWindow):
         # 상태 배지
         self.lbl_regime       = mk_badge("NEUTRAL", C['orange'], "#fff", 11)
         self.lbl_regime.setToolTip(
-            "매크로 레짐 — 08:50 수집 후 매분 갱신\n"
+            "매크로 레짐 — 08:55 장전 1회 수집, 당일 고정\n"
             "  RISK_ON  : 위험선호 · 공격적 진입 가능\n"
             "  NEUTRAL  : 중립 · 기본 전략 유지\n"
             "  RISK_OFF : 위험회피 · 보수적 운용"
@@ -7195,17 +7205,19 @@ class MireukDashboard(QMainWindow):
         _cyc_text, _cyc_col = _calc_cycle_badge()
         self.lbl_cycle  = mk_badge(_cyc_text, _cyc_col, "#fff", 11)
         self.lbl_cycle.setToolTip(
-            "옵션 만기 카운트다운\n"
-            "  위클리 : 매주 목요일 만기\n"
-            "  월간   : 매월 두 번째 목요일 만기\n"
+            "옵션 만기 카운트다운 (가장 가까운 만기 기준)\n"
+            "  [월]위클리 : 매주 월요일 만기\n"
+            "  [목]위클리 : 매주 목요일 만기\n"
+            "  [목]월간   : 매월 두 번째 목요일 만기\n"
             "  D-0~D-2 : 만기 근접 → 감마·핀리스크 주의"
         )
-        self.lbl_gamma  = mk_badge("감마스퀴즈", C['orange'], "#fff", 11)
+        self.lbl_gamma  = mk_badge("감마 —", C['bg3'], C['text2'], 11)
         self.lbl_gamma.setToolTip(
             "옵션 감마 포지션 — 마켓메이커 헷지 방향 추정\n"
-            "  감마스퀴즈 : MM 숏감마 · 추세 가속 구간\n"
-            "  감마플립   : 중립선 돌파 · 방향 전환 주의\n"
-            "  중립       : 감마 노출 미미"
+            "  감마스퀴즈 : MM 숏감마 · 추세 가속 구간 (GEX < -1B)\n"
+            "  감마플립   : GEX 중립선 근접 · 방향 전환 주의 (|GEX| < 1B)\n"
+            "  중립       : MM 감마롱 · 변동성 억제 (GEX > +1B)\n"
+            "  감마 —     : 옵션 체인 미수집 (5분 갱신)"
         )
         self.lbl_pos    = mk_badge("FLAT", C['text2'], "#fff", 11)
         self.lbl_pos.setToolTip(
@@ -7220,7 +7232,12 @@ class MireukDashboard(QMainWindow):
         
         # L2 영구중단 배지
         self.lbl_l2_halt = mk_badge("L2 —", C['bg3'], C['text2'], 10)
-        self.lbl_l2_halt.setToolTip("거래중단 임계 도달 시 금일 거래 영구 중단")
+        self.lbl_l2_halt.setToolTip(
+            "L2 Tier Gate — 수익 구간 도달 시 금일 거래 영구 중단\n"
+            "  L2 —   : 정상 (중단 임계 미달)\n"
+            "  L2 중단 : Tier 4 (누적 +400만원↑) 도달 → 당일 진입 전면 차단\n"
+            "  매분 파이프라인마다 ProfitGuard 상태 확인"
+        )
         self.lbl_l2_halt.setMinimumWidth(80)  # 크기 고정으로 항상 보임
         self.lbl_l2_halt.setAlignment(Qt.AlignCenter)
 
@@ -8200,6 +8217,22 @@ class DashboardAdapter:
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""
         self._win.exit_panel.update_data(pos_data)
+        # 헤더 포지션 배지 갱신
+        lbl = getattr(self._win, "lbl_pos", None)
+        if lbl is None:
+            return
+        status = str((pos_data or {}).get("status", "FLAT") or "FLAT").strip().upper()
+        _pos_style = {
+            "LONG":  (C["green"], "#fff"),
+            "SHORT": (C["red"],   "#fff"),
+            "FLAT":  (C["bg3"],   C["text2"]),
+        }
+        bg, fg = _pos_style.get(status, (C["bg3"], C["text2"]))
+        lbl.setText(status)
+        lbl.setStyleSheet(
+            f"background:{bg};color:{fg};border-radius:{S.p(3)}px;"
+            f"font-size:{S.f(11)}px;font-weight:bold;padding:1px 6px;"
+        )
 
     def update_price(self, price: float, change: float = 0.0,
                      code: str = "F202606"):
@@ -8262,6 +8295,41 @@ class DashboardAdapter:
             self._win.div_panel.update_option_chain(chain_feats)
         except Exception:
             pass
+        self._update_gamma_badge(chain_feats)
+
+    # ±1B 이내를 플립 경계(GEX 중립선 근접)로 판정
+    _GEX_FLIP_THRESHOLD = 1.0
+
+    def _update_gamma_badge(self, chain_feats: dict) -> None:
+        """헤더 감마 배지를 GEX 부호/크기로 갱신.
+
+        상태 판정:
+          opt_chain_available == 0  → 미수집, 이전 상태 유지
+          |gex_bn| < ±1B            → 감마플립 (GEX 중립선 근처, 방향 전환 주의)
+          gex_sign < 0              → 감마스퀴즈 (딜러 숏감마, 추세 가속)
+          gex_sign > 0              → 중립 (딜러 감마롱, 변동성 억제)
+        """
+        lbl = getattr(self._win, "lbl_gamma", None)
+        if lbl is None:
+            return
+        if not chain_feats.get("opt_chain_available"):
+            return  # 미수집 시 이전 배지 유지
+
+        gex_bn   = float(chain_feats.get("opt_gex_bn",   0) or 0)
+        gex_sign = float(chain_feats.get("opt_gex_sign", 0) or 0)
+
+        if abs(gex_bn) < self._GEX_FLIP_THRESHOLD:
+            state, bg, fg = "감마플립",   C["yellow"], "#000"
+        elif gex_sign < 0:
+            state, bg, fg = "감마스퀴즈", C["orange"], "#fff"
+        else:
+            state, bg, fg = "중립",       C["bg3"],    C["text2"]
+
+        lbl.setText(state)
+        lbl.setStyleSheet(
+            f"background:{bg};color:{fg};border-radius:{S.p(3)}px;"
+            f"font-size:{S.f(11)}px;font-weight:bold;padding:1px 6px;"
+        )
 
     def update_strategy_ops(self, data: dict) -> None:
         """

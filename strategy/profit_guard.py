@@ -159,9 +159,6 @@ class _TierGate:
                 f"Tier {self._halt_tier}: 중단 임계 {self._halt_threshold:,.0f}원 도달 → 당일 영구 중단",
             )
 
-        if max_qty == 0:
-            return True, active_tier, f"Tier {active_tier}: {current_pnl:+,.0f}원 → 거래 완전 중단"
-
         if min_mult is not None and size_mult < min_mult:
             return (
                 True, active_tier,

@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-05-18 (56차 — 상단 배지 5종 점검·수정)
+
+### [B116] `lbl_pos` FLAT 배지 — `update_position()` 갱신 누락
+**File**: `dashboard/main_dashboard.py` — `DashboardAdapter.update_position()`
+**Symptom**: LONG/SHORT 진입 후에도 헤더 FLAT 배지가 변하지 않음. 초기화값 "FLAT"(회색)에 고정.
+**Root cause**: `update_position()`이 `exit_panel.update_data(pos_data)`만 호출. `lbl_pos` 헤더 배지를 갱신하는 코드 완전 누락. 다른 배지(`lbl_regime`, `lbl_cb` 등)는 전용 갱신 메서드가 있으나 `lbl_pos`만 빠짐.
+**Fix**: `update_position()` 내부에 `lbl_pos` setText + setStyleSheet 추가. LONG=녹색·SHORT=빨강·FLAT=회색.
+
+### [B117] `_calc_cycle_badge()` — 목요일 만기 전용, 월요일 위클리 미지원
+**File**: `dashboard/main_dashboard.py` — `_calc_cycle_badge()`
+**Symptom**: 위클리 배지가 항상 목요일 기준 D-days 표시. 목요일 만기 직후(금~일)에 월요일 위클리를 표시하지 않고 다음 목요일 D-6/5/4를 표시.
+**Root cause**: `days = (3 - wd) % 7` 고정 계산 — 목요일(weekday=3)만 타겟. KOSPI200 옵션은 매주 월요일(weekday=0)과 목요일(weekday=3) 두 개의 만기가 존재.
+**Fix**: `days_to_mon = (0 - wd) % 7`, `days_to_thu = (3 - wd) % 7` 계산 후 더 가까운 쪽 선택. 월요일 타겟 시 `[월]위클리`, 목요일 타겟 시 이달 2번째 목요일이면 `[목]월간` else `[목]위클리`.
+**Verified**: 2주 시뮬레이션(2026-05-18~31) 전체 케이스 통과.
+
+### [B118] `lbl_gamma` 감마스퀴즈 배지 — `update_option_chain()` 갱신 누락
+**File**: `dashboard/main_dashboard.py` — `DashboardAdapter.update_option_chain()`
+**Symptom**: 장중 GEX 데이터가 수신되어도 감마스퀴즈 배지가 초기값 "감마스퀴즈"(주황)에 고정.
+**Root cause**: `update_option_chain()`이 `div_panel.update_option_chain(chain_feats)`만 호출. `lbl_gamma` 헤더 배지 갱신 코드 완전 누락. `opt_gex_bn`·`opt_gex_sign`이 패널 카드에는 반영되지만 배지에는 미반영.
+**Fix**: `_update_gamma_badge(chain_feats)` 신규 메서드. `opt_chain_available=0` 시 이전 상태 유지. `|gex_bn| < 1B` → "감마플립"(노랑), `gex_sign < 0` → "감마스퀴즈"(주황), `gex_sign > 0` → "중립"(회색). 초기값 "감마스퀴즈" → "감마 —"(미수집 명시).
+
+### [B119] `update_supply_macro()` — `usd_krw` 인수 누락
+**File**: `main.py` — `pre_market_setup()` L1897
+**Symptom**: 시스템 로그에 `[Regime] ... | USD/KRW=+0.00` 항상 출력.
+**Root cause**: `dashboard.update_supply_macro(vix=..., sp500_chg=..., regime=...)` 호출 시 `usd_krw` 생략 → 메서드 기본값 0.0 사용. `macro_data["usd_krw_chg_pct"]`는 수집되지만 전달되지 않음.
+**Fix**: 호출에 `usd_krw=macro_data["usd_krw_chg_pct"]` 추가.
+
+### [설계] `_tier.check()` dead code — `if max_qty == 0:` 분기 절대 도달 불가
+**File**: `strategy/profit_guard.py` — `_TierGate.check()` (구 L162)
+**Issue**: 루프에서 `t_max_qty == 0` 조건이 True이면 동시에 `stop_tier_hit`도 설정됨. 따라서 `if stop_tier_hit is not None:` 블록이 항상 먼저 리턴하여 `if max_qty == 0:` 분기에 도달 불가.
+**Fix**: dead code 라인 제거.
+
+---
+
 ## 2026-05-18 (55차 — 옵션 체인 파이프라인 + B115)
 
 ### [B115] `_filter_front_month` — 만기된 앞 달 옵션 선택

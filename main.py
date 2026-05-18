@@ -1897,6 +1897,7 @@ class TradingSystem:
         self.dashboard.update_supply_macro(
             vix=macro_data["vix"],
             sp500_chg=macro_data["sp500_chg_pct"] / 100,
+            usd_krw=macro_data["usd_krw_chg_pct"],
             regime=self.current_regime,
         )
         self.dashboard.append_sys_log(

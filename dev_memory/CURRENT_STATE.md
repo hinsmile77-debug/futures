@@ -1,7 +1,41 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-18 (55차) — **옵션 체인 스냅샷 파이프라인 완성 + B115 front month 만기 버그 수정**
+> 마지막 업데이트: 2026-05-18 (56차) — **상단 배지 5종 점검·수정 (FLAT/위클리/감마/NEUTRAL/L2)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-18 (56차) — 상단 배지 5종 점검·수정
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| FLAT 배지 (`lbl_pos`) | **완료** — `update_position()`에서 LONG/SHORT/FLAT 색상 갱신 |
+| 위클리 배지 (`lbl_cycle`) | **완료** — `_calc_cycle_badge()` 월/목 양방향, `[월]위클리`/`[목]위클리`/`[목]월간` 형식 |
+| 감마스퀴즈 배지 (`lbl_gamma`) | **완료** — `_update_gamma_badge()` 추가, GEX 기반 3상태 판정, 초기값 "감마 —" |
+| NEUTRAL 배지 (`lbl_regime`) | **완료** — 툴팁 "매분 갱신" 오류 수정 + `usd_krw` 인수 누락 수정 |
+| L2 배지 (`lbl_l2_halt`) | **완료** — dead code 제거 + 툴팁 400만원 기준 명시 |
+| 배지 실세션 동작 확인 | **미완료** — 5/19 장중 첫 확인 예정 |
+
+### 수정 파일 (56차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `dashboard/main_dashboard.py` | `update_position()`: `lbl_pos` 갱신 추가 |
+| `dashboard/main_dashboard.py` | `_calc_cycle_badge()`: 월/목 양방향 만기 계산 |
+| `dashboard/main_dashboard.py` | `update_option_chain()` + `_update_gamma_badge()` 신규, 초기값 "감마 —" |
+| `dashboard/main_dashboard.py` | `lbl_regime` 툴팁 "08:55 1회 수집 당일 고정" 수정 |
+| `dashboard/main_dashboard.py` | `lbl_l2_halt` 툴팁 Tier4 400만원 명시 |
+| `main.py` | `update_supply_macro()` 호출에 `usd_krw` 인수 추가 |
+| `strategy/profit_guard.py` | `_tier.check()` dead code `if max_qty == 0:` 제거 |
+
+### 5/19 기동 확인 사항
+
+1. FLAT → LONG 진입 시 배지 색상 전환 (녹색=LONG, 빨강=SHORT, 회색=FLAT)
+2. 위클리 배지: 오늘이 월요일(만기일) → `● [월]위클리 만기일` 표시
+3. 09:05 이후 감마스퀴즈 배지: "감마 —" → "감마스퀴즈"/"감마플립"/"중립" 전환
+4. 시스템 로그에서 `[Regime] ... | USD/KRW=±X.XX` (0.00이 아닌 실수치)
 
 ---
 

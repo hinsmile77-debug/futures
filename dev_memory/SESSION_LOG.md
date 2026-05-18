@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-05-18 (56차 — 상단 배지 5종 점검·수정)
+
+**Work**: 대시보드 상단 배지(FLAT·위클리·감마스퀴즈·NEUTRAL·L2) 전체 업데이트 흐름 점검. 갱신 누락 3종·툴팁 오류 2종·dead code 1종 수정.
+
+### 주요 작업
+
+| 작업 | 내용 |
+|---|---|
+| FLAT 배지 갱신 누락 수정 | `DashboardAdapter.update_position()`에 `lbl_pos` 헤더 배지 갱신 로직 추가. LONG=녹색·SHORT=빨강·FLAT=회색 |
+| 위클리 배지 월요일 만기 추가 | `_calc_cycle_badge()` 목요일 전용 → 월/목 양방향. `[월]위클리 D-x` / `[목]위클리 D-x` / `[목]월간 D-x` 형식 |
+| 감마스퀴즈 배지 갱신 누락 수정 | `update_option_chain()`에 `_update_gamma_badge()` 추가. `opt_gex_bn`·`opt_gex_sign` 기반 판정. 초기값 "감마스퀴즈" → "감마 —" |
+| NEUTRAL 배지 툴팁 오류 수정 | "매분 갱신" → "08:55 장전 1회 수집, 당일 고정" |
+| NEUTRAL 배지 usd_krw 누락 수정 | `update_supply_macro()` 호출에 `usd_krw=macro_data["usd_krw_chg_pct"]` 추가. 로그에 항상 +0.00 출력되던 문제 수정 |
+| L2 dead code 제거 | `_tier.check()`의 `if max_qty == 0:` 분기 — `stop_tier_hit is not None` 블록 이후라 절대 도달 불가. 제거. |
+| L2 툴팁 개선 | "거래중단 임계 도달 시 금일 거래 영구 중단" → Tier 4 400만원 기준·상태값 명시 |
+
+### 버그 발견 요약 (B116~B119)
+
+| ID | 증상 | 원인 | 수정 |
+|---|---|---|---|
+| B116 | FLAT 배지 포지션 전환 후에도 "FLAT" 고정 | `update_position()`이 `exit_panel`만 갱신, `lbl_pos` 미갱신 | `lbl_pos` setText+setStyleSheet 추가 |
+| B117 | 위클리 배지가 항상 목요일 만기 기준 | `_calc_cycle_badge()`가 목요일만 계산 | 월/목 양방향, 더 가까운 쪽 선택 |
+| B118 | 감마스퀴즈 배지 초기값 고정 | `update_option_chain()`이 div_panel만 갱신, `lbl_gamma` 미갱신 | `_update_gamma_badge()` 추가 |
+| B119 | NEUTRAL 로그 USD/KRW=+0.00 항상 출력 | `update_supply_macro()` 호출 시 `usd_krw` 인수 누락 | `usd_krw` 인수 추가 |
+
+---
+
 ## 2026-05-18 (55차 — 옵션 체인 스냅샷 파이프라인 완성 + B115 front month 만기 버그 수정)
 
 **Work**: Cybos 옵션 OI 수집 탐색 결과를 바탕으로 `OptionChainSnapshot` 클래스를 `main.py` STEP 4에 통합하고 대시보드 '다이버전스 + 포지션' 탭 하단에 옵션 체인 시각화 섹션 추가. 실세션 재시작(15:16) 후 UI 점검에서 PCR=1.000/OI=0 이상 발견 → 5월 만기(5/14) 이후 `_filter_front_month`가 여전히 "2605"(5월)를 선택하는 B115 버그 확인 및 수정.
