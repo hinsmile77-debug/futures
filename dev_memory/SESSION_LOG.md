@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-05-19 (59차 — 손익추이 DB 초기화 버튼 추가)
+
+**Work**: 손익추이 DB 초기화 기능을 우측 상단 서버 선택 행에 UI 추가.
+
+### 주요 작업
+
+| 항목 | 내용 |
+|---|---|
+| DB초기화 버튼 UI | `MireukDashboard._rdo_row`에 🔓 체크박스 + "DB초기화" 버튼 추가 (모의투자/실서버/상태유지 우측) |
+| 잠금 설계 | 기본 비활성, 🔓 체크 시 버튼 활성(빨간 스타일), 초기화 후 자동 잠금 복원 |
+| 확인 다이얼로그 | Cancel 기본값, "되돌릴 수 없음" 경고 |
+| 백업 + 초기화 | 타임스탬프 백업(`trades_backup_YYYYMMDD_HHMMSS.db`) 생성 후 trades/daily_stats/daily_broker_pnl 전체 삭제 + sqlite_sequence 리셋 + VACUUM |
+| 패널 즉시 갱신 | `self.log_panel.refresh_pnl_history([])` 로 손익추이 탭 즉시 빈 상태로 갱신 |
+| 패널 참조 버그 수정 | `getattr(self, "_pnl_history_panel", None)` → `self.log_panel.refresh_pnl_history([])` |
+
+### 수정 파일 (59차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `dashboard/main_dashboard.py` | `_rdo_row` DB초기화 버튼 추가, `_on_db_reset_clicked()` 핸들러 신규 |
+
+### 커밋
+- `f4607c2` — 59차: 손익추이 DB 초기화 버튼 추가
+
+---
+
 ## 2026-05-18 (58차 — 5/18 세션 심층분석 기반 안전장치 6종 구현)
 
 **Work**: 5/18 트레이딩 세션 심층 리뷰(수익률 상위 1% 트레이더 2인 분석 종합 + 자체 로그 분석)에서 도출된 우선순위 6개 안전장치 전체 구현. B113 설계 결정 번복(실손 데이터 근거).
