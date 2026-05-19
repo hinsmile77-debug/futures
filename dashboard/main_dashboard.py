@@ -42,7 +42,7 @@ from PyQt5.QtGui import (
 
 from config.constants import FUTURES_PT_VALUE
 from config.settings import (
-    RAW_DATA_DB, DATA_DIR, TIME_ZONES, ENTRY_GRADE,
+    RAW_DATA_DB, DATA_DIR, TIME_ZONES, ENTRY_GRADE, MAX_CONTRACTS,
     HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
     HEALTH_QUALITY_WARN, HEALTH_QUALITY_CRIT,
     HEALTH_CACHE_AGE_WARN_SEC, HEALTH_CACHE_AGE_CRIT_SEC,
@@ -2848,6 +2848,7 @@ class EntryPanel(QWidget):
     sig_manual_entry_requested   = pyqtSignal(str)   # "LONG" or "SHORT"
     sig_instant_exit_requested   = pyqtSignal()      # 즉시 전량청산
     sig_auto_mode_changed        = pyqtSignal(bool)  # True=Auto ON, False=Auto OFF
+    sig_max_qty_changed          = pyqtSignal(int)   # 최대허용수량 변경
 
     _TIME_ZONE_DESC = {
         "GAP_OPEN": "시초가 급변 - 고신뢰·소규모 진입만 허용",
@@ -2895,6 +2896,7 @@ class EntryPanel(QWidget):
             "hybrid": "B 등급진입",
             "manual": "C 등급진입",
         }
+        self._max_qty = self._load_max_qty()
         self._build()
         self._setup_time_zone_timer()
 
@@ -2966,10 +2968,9 @@ class EntryPanel(QWidget):
         # 앙상블 + 신뢰도
         info_lay = QGridLayout()
         info_lay.setSpacing(4)
-        kv = [("원신호","signal","대기"),("실행 신호","final_signal","대기"),
-              ("신뢰도","conf","대기"),("진입 등급","grade","대기"),
-              ("산출 수량","qty","대기")]
-        for i, (lbl, attr, init) in enumerate(kv):
+        kv_top = [("원신호","signal","대기"),("실행 신호","final_signal","대기"),
+                  ("신뢰도","conf","대기"),("진입 등급","grade","대기")]
+        for i, (lbl, attr, init) in enumerate(kv_top):
             f = QFrame()
             f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
             fl = QVBoxLayout(f)
@@ -2979,6 +2980,59 @@ class EntryPanel(QWidget):
             setattr(self, f"e_{attr}", vl)
             fl.addWidget(vl)
             info_lay.addWidget(f, i//2, i%2)
+
+        # 하단 3카드: 산출수량 | 진입수량 | 최대허용수량
+        def _mk_info_card(label_text, val_attr, init_text):
+            f = QFrame()
+            f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(6,3,6,3)
+            fl.addWidget(mk_label(label_text, C['text2'], 9))
+            vl = mk_val_label(init_text, C['text'], 13)
+            setattr(self, val_attr, vl)
+            fl.addWidget(vl)
+            return f
+
+        qty_row_lay = QHBoxLayout()
+        qty_row_lay.setSpacing(4)
+        qty_row_lay.addWidget(_mk_info_card("산출 수량", "e_qty", "대기"))
+        qty_row_lay.addWidget(_mk_info_card("진입 수량", "e_entry_qty", "대기"))
+
+        max_f = QFrame()
+        max_f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
+        max_fl = QVBoxLayout(max_f)
+        max_fl.setContentsMargins(6,3,6,3)
+        max_fl.addWidget(mk_label("최대허용수량", C['text2'], 9))
+        max_inner = QHBoxLayout()
+        max_inner.setSpacing(2)
+        self.e_max_qty = mk_val_label(f"{self._max_qty}계약", C['orange'], 13)
+        max_inner.addWidget(self.e_max_qty, 1)
+        _btn_ss = (
+            f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
+            f"border:1px solid {C['border']};border-radius:3px;"
+            f"font-size:{S.f(10)}px;padding:0px 4px;}}"
+            f"QPushButton:hover{{background:{C['border']};color:{C['text']};}}"
+        )
+        btn_up = QPushButton("▲")
+        btn_dn = QPushButton("▼")
+        btn_up.setStyleSheet(_btn_ss)
+        btn_dn.setStyleSheet(_btn_ss)
+        btn_up.setFixedWidth(22)
+        btn_dn.setFixedWidth(22)
+        btn_up.clicked.connect(self._on_max_qty_up)
+        btn_dn.clicked.connect(self._on_max_qty_dn)
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(1)
+        btn_col.addWidget(btn_up)
+        btn_col.addWidget(btn_dn)
+        max_inner.addLayout(btn_col)
+        max_fl.addLayout(max_inner)
+        qty_row_lay.addWidget(max_f)
+
+        qty_row_widget = QWidget()
+        qty_row_widget.setLayout(qty_row_lay)
+        info_lay.addWidget(qty_row_widget, 2, 0, 1, 2)
+
         lay.addLayout(info_lay)
         lay.addWidget(mk_sep())
 
@@ -3358,6 +3412,15 @@ class EntryPanel(QWidget):
             self.e_qty.setText("——")
             self.e_qty.setStyleSheet(f"color:{C['text2']};font-size:{S.f(14)}px;font-weight:bold;")
 
+        # 진입 수량 (산출수량 > 0인 경우에만 최대허용수량 클리핑, 최소 1 보장)
+        if qty > 0:
+            entry_qty = max(1, min(qty, self._max_qty))
+            self.e_entry_qty.setText(f"{entry_qty}계약")
+            self.e_entry_qty.setStyleSheet(f"color:{C['green']};font-size:{S.f(14)}px;font-weight:bold;")
+        else:
+            self.e_entry_qty.setText("——")
+            self.e_entry_qty.setStyleSheet(f"color:{C['text2']};font-size:{S.f(14)}px;font-weight:bold;")
+
         # 체크리스트 아이콘
         # checks={} → 미평가(—), True → V(green), False → X(red)
         for attr, (icon, vl) in self.check_labels.items():
@@ -3405,6 +3468,50 @@ class EntryPanel(QWidget):
                 f"border-radius:4px;padding:5px;color:{C['text2']};font-size:{S.f(12)}px;"
             )
             self.entry_alert.setText("— 관망 | 신호 대기 중")
+
+    # ── 최대허용수량 관련 메서드 ─────────────────────────────────────
+    def _load_max_qty(self) -> int:
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            if not os.path.exists(_f):
+                return MAX_CONTRACTS
+            with open(_f, "r", encoding="utf-8") as fp:
+                return max(1, int(json.load(fp).get("max_entry_qty", MAX_CONTRACTS)))
+        except Exception:
+            return MAX_CONTRACTS
+
+    def _save_max_qty(self):
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            p = {}
+            if os.path.exists(_f):
+                with open(_f, "r", encoding="utf-8") as fp:
+                    p = json.load(fp)
+            p["max_entry_qty"] = self._max_qty
+            with open(_f, "w", encoding="utf-8") as fp:
+                json.dump(p, fp, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def get_max_qty(self) -> int:
+        return self._max_qty
+
+    def _refresh_max_qty_display(self):
+        self.e_max_qty.setText(f"{self._max_qty}계약")
+
+    def _on_max_qty_up(self):
+        if self._max_qty < MAX_CONTRACTS:
+            self._max_qty += 1
+            self._refresh_max_qty_display()
+            self._save_max_qty()
+            self.sig_max_qty_changed.emit(self._max_qty)
+
+    def _on_max_qty_dn(self):
+        if self._max_qty > 1:
+            self._max_qty -= 1
+            self._refresh_max_qty_display()
+            self._save_max_qty()
+            self.sig_max_qty_changed.emit(self._max_qty)
 
 
 # ────────────────────────────────────────────────────────────
@@ -7809,14 +7916,19 @@ class MireukDashboard(QMainWindow):
                 f"trades_backup_{_dt.date.today().strftime('%Y%m%d_%H%M%S')}.db"
             )
             _sh.copy2(TRADES_DB, bak)
-            # 3테이블 초기화
+            # 3테이블 초기화 (VACUUM은 트랜잭션 외부에서 별도 실행)
+            import sqlite3 as _sqlite3
             from utils.db_utils import get_conn
             with get_conn(TRADES_DB) as conn:
                 conn.execute("DELETE FROM trades")
                 conn.execute("DELETE FROM daily_stats")
                 conn.execute("DELETE FROM daily_broker_pnl")
                 conn.execute("DELETE FROM sqlite_sequence WHERE name='trades'")
-                conn.execute("VACUUM")
+            _vc = _sqlite3.connect(TRADES_DB, isolation_level=None)
+            try:
+                _vc.execute("VACUUM")
+            finally:
+                _vc.close()
             # 손익추이 패널 갱신
             self.log_panel.refresh_pnl_history([])
             # 자동 잠금 복원
@@ -8115,6 +8227,7 @@ class DashboardAdapter:
         self.sig_auto_mode_changed        = self._win.entry_panel.sig_auto_mode_changed
         self.sig_tp1_protect_mode_changed = self._win.exit_panel.sig_tp1_protect_mode_changed
         self.sig_manual_exit_requested    = self._win.exit_panel.sig_manual_exit_requested
+        self.sig_max_qty_changed          = self._win.entry_panel.sig_max_qty_changed
         self.sig_apply_candidate_requested = self._win.feat_panel.sig_apply_candidate_requested
         self.sig_force_retrain_requested = self._win.feat_panel.sig_force_retrain_requested
         self.sig_reset_feature_set_requested = self._win.feat_panel.sig_reset_feature_set_requested
@@ -8386,6 +8499,9 @@ class DashboardAdapter:
 
     def is_auto_enabled(self) -> bool:
         return self._win.entry_panel.is_auto_enabled()
+
+    def get_max_qty(self) -> int:
+        return self._win.entry_panel.get_max_qty()
 
     def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 갱신"""
