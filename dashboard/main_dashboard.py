@@ -7426,6 +7426,37 @@ class MireukDashboard(QMainWindow):
         self.rdo_real.setStyleSheet(_rb_style  + f"QRadioButton::indicator:checked{{background:{C['orange']};}}")
         self.lbl_server_warn = mk_label("", C['red'], 8, align=Qt.AlignLeft)
         self.lbl_server_warn.setVisible(False)
+        # ── DB 초기화 버튼 (잠금해제 체크 후 활성) ────────────────
+        self.chk_db_reset_unlock = QCheckBox("🔓")
+        self.chk_db_reset_unlock.setChecked(False)
+        self.chk_db_reset_unlock.setCursor(Qt.PointingHandCursor)
+        self.chk_db_reset_unlock.setToolTip(
+            "체크 시 손익추이 DB초기화 버튼 활성\n"
+            "초기화 후 자동 잠금 복원"
+        )
+        self.chk_db_reset_unlock.setStyleSheet(_chk_style)
+        self.btn_db_reset = QPushButton("DB초기화")
+        self.btn_db_reset.setEnabled(False)
+        self.btn_db_reset.setCursor(Qt.PointingHandCursor)
+        self.btn_db_reset.setToolTip(
+            "손익추이 DB 초기화\n"
+            "trades · daily_stats · daily_broker_pnl 전체 삭제\n"
+            "신규 체결부터 재집계"
+        )
+        self.btn_db_reset.setStyleSheet(
+            f"QPushButton{{background:{C['bg2']};color:{C['red']};border:1px solid {C['red']};"
+            f"border-radius:3px;padding:1px {S.p(6)}px;font-size:{S.f(9)}px;}}"
+            f"QPushButton:enabled{{background:{C['red']};color:#fff;}}"
+            f"QPushButton:disabled{{color:{C['border']};border-color:{C['border']};}}"
+        )
+        self.chk_db_reset_unlock.stateChanged.connect(
+            lambda s: self.btn_db_reset.setEnabled(bool(s))
+        )
+        self.btn_db_reset.clicked.connect(self._on_db_reset_clicked)
+
+        _sep = QLabel("|")
+        _sep.setStyleSheet(f"color:{C['border']};padding:0 2px;")
+
         _rdo_row = QHBoxLayout()
         _rdo_row.setSpacing(S.p(8))
         _rdo_row.setContentsMargins(0, 0, 0, 0)
@@ -7433,6 +7464,9 @@ class MireukDashboard(QMainWindow):
         _rdo_row.addWidget(self.rdo_real)
         _rdo_row.addWidget(self.lbl_server_warn)
         _rdo_row.addWidget(self.chk_state_persist)
+        _rdo_row.addWidget(_sep)
+        _rdo_row.addWidget(self.chk_db_reset_unlock)
+        _rdo_row.addWidget(self.btn_db_reset)
         _rdo_row.addStretch()
         self.rdo_simul.toggled.connect(self._on_server_mode_changed)
 
@@ -7749,6 +7783,51 @@ class MireukDashboard(QMainWindow):
             return True   # 연결 전: 제한 없음
         selected = "simul" if self.rdo_simul.isChecked() else "real"
         return selected == actual
+
+    def _on_db_reset_clicked(self) -> None:
+        """손익추이 DB 3테이블 초기화 — 잠금 해제 후 클릭 시 확인 다이얼로그."""
+        from PyQt5.QtWidgets import QMessageBox
+        msg = QMessageBox(self)
+        msg.setWindowTitle("손익추이 DB 초기화")
+        msg.setText(
+            "trades · daily_stats · daily_broker_pnl\n"
+            "3개 테이블을 모두 삭제합니다.\n\n"
+            "이 작업은 되돌릴 수 없습니다."
+        )
+        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        if msg.exec_() != QMessageBox.Ok:
+            return
+        try:
+            import datetime as _dt
+            import shutil as _sh
+            from config.settings import TRADES_DB, DB_DIR
+            import os as _os
+            # 백업 생성
+            bak = _os.path.join(
+                DB_DIR,
+                f"trades_backup_{_dt.date.today().strftime('%Y%m%d_%H%M%S')}.db"
+            )
+            _sh.copy2(TRADES_DB, bak)
+            # 3테이블 초기화
+            from utils.db_utils import get_conn
+            with get_conn(TRADES_DB) as conn:
+                conn.execute("DELETE FROM trades")
+                conn.execute("DELETE FROM daily_stats")
+                conn.execute("DELETE FROM daily_broker_pnl")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name='trades'")
+                conn.execute("VACUUM")
+            # 손익추이 패널 갱신
+            self.log_panel.refresh_pnl_history([])
+            # 자동 잠금 복원
+            self.chk_db_reset_unlock.setChecked(False)
+            QMessageBox.information(
+                self, "완료",
+                f"초기화 완료.\n백업: {_os.path.basename(bak)}"
+            )
+        except Exception as _e:
+            from PyQt5.QtWidgets import QMessageBox as _MB
+            _MB.critical(self, "오류", f"DB 초기화 실패:\n{_e}")
 
     def _on_server_mode_changed(self) -> None:
         self._update_server_warn()
