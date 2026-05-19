@@ -83,6 +83,21 @@ HORIZON_THRESHOLDS = {
     "30m": 0.0032,   # 0.32% → 1200pt 기준 3.84pt (77틱)
 }
 
+# ATR 동적 Threshold — 런타임에 HORIZON_THRESHOLDS를 in-place 갱신
+# HORIZON_THRESHOLDS_BASE: 원본 고정 하한 (동적값이 이 값보다 낮으면 static 유지)
+HORIZON_THRESHOLDS_BASE: dict = dict(HORIZON_THRESHOLDS)
+
+# ATR/Price 비율에 곱하는 승수 (호라이즌별)
+# 산출 근거: KOSPI200 1분봉 σ_1min ≈ 1.47pt, ATR ≈ 1.0σ_1min 가정
+#   threshold ≈ 0.5σ 목표 → mult = 0.5 * (h_min^0.5 / 1.0)
+HORIZON_THRESHOLD_MULT: dict = {
+    "1m": 0.12, "3m": 0.20, "5m": 0.28,
+    "10m": 0.40, "15m": 0.52, "30m": 0.70,
+}
+
+# 장초반(09:00~09:30) 추가 배율 — 시초반 고변동성 구간 침묵 강화
+HORIZON_THRESHOLD_OPEN_MULT: float = 1.5
+
 ENSEMBLE_WEIGHTS = {
     "1m": 0.10, "3m": 0.15, "5m": 0.20,
     "10m": 0.20, "15m": 0.20, "30m": 0.15,
@@ -168,6 +183,20 @@ CB_API_LATENCY_PAUSE   = 300   # 지연 후 정지 (초)
 CB_HIGH_CONF_WRONG_LIMIT   = 5    # 연속 과신 오류 횟수
 CB_HIGH_CONF_THRESHOLD     = 0.85 # 과신 판정 confidence 하한
 CB_ACCURACY_MIN_30M_STRICT = 0.50 # 과신 연속 시 강화된 임계값
+
+# Mid-Conf Blind Spot Tracker (60~85% 구간 연속 오답 — 오늘 직접 원인)
+CB_MID_CONF_WRONG_LIMIT    = 7    # 연속 중간신뢰도 오류 횟수 → strict 모드
+CB_MID_CONF_LO             = 0.60 # 중간신뢰도 구간 하한
+CB_MID_CONF_HI             = 0.85 # 중간신뢰도 구간 상한 (= CB_HIGH_CONF_THRESHOLD)
+
+# Brier Score 실시간 과신 탐지
+CB_BRIER_WINDOW            = 10   # 이동평균 윈도우 (예측 건수)
+CB_BRIER_WARN              = 0.35 # Brier 이동평균 경고 임계값
+CB_BRIER_PENALTY           = 0.45 # Brier 이동평균 사이징 50% 패널티 임계값
+
+# 재시작 루프 브레이커 — 당일 CB③ HALT 횟수 기반
+CB_DAILY_HALT_HALF_SIZE    = 2    # HALT 2회 이상 → 다음 진입 50% 축소
+CB_DAILY_HALT_FULL_BLOCK   = 3    # HALT 3회 이상 → 완전 관망 (진입 차단)
 
 # ── Runtime Health / Degraded Mode (Day10-2 / Day11) ─────────────────
 # 운영 중 실시간 튜닝 가능한 헬스 임계값

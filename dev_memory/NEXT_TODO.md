@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-05-19 (60차) — CB③ 분석 기반 안전장치 6종 + Shadow/Contrarian 구현
+
+### 한일 요약
+
+- [DONE 2026-05-19] **1순위: Mid-Conf Blind Spot Tracker** — `circuit_breaker.py` 60~85% 구간 7연속 오답 → strict 모드 발동. `settings.py` 3개 상수 추가
+- [DONE 2026-05-19] **2순위: Brier Score 실시간 추적** — `circuit_breaker.py` 이동평균(10건), >0.35 경고, >0.45 사이즈 50% 패널티. `brier_size_mult` 속성 노출
+- [DONE 2026-05-19] **3순위: 재시작 루프 브레이커** — `circuit_breaker.py` `_daily_halt_count` 추적. 2회→50%, 3회→완전관망. `restart_size_mult` / `is_restart_blocked()` 추가
+- [DONE 2026-05-19] **4순위: 장 시작 5분 DNA 진단** — `safety/market_dna.py` 신규. 09:00~09:04 첫 5봉 4항목 진단, 3/4 이상 이상 → dna_mult=0.25
+- [DONE 2026-05-19] **5순위: CORE Health Score → Sizer 연동** — `features/core_health.py` 신규. streak+z_warn 기반 0~100 점수. `position_sizer.py` 4개 안전 배수 파라미터 추가
+- [DONE 2026-05-19] **6순위: Shadow Session 상태 머신** — `safety/shadow_session.py` 신규. acc30m≥40%+CoreHealth≥70+z_warn<2 → LIVE/BLOCKED
+- [DONE 2026-05-19] **6순위: Contrarian Mode 상태 머신** — `safety/contrarian_mode.py` 신규. 3조건 WATCHING→ARMED→ACTIVE. 가상 역베팅 PnL 집계
+- [DONE 2026-05-19] **6순위: 실험 게이트 대시보드 탭** — `experiment_gate_panel.py` 신규. "🧪 실험 게이트" 탭 추가
+- [DONE 2026-05-19] **파이프라인 전체 문서화** — `docs/PIPELINE_FLOW.md` 신규. STEP 1~9 전체 흐름 + 안전 배수 조합 매트릭스
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **60차 안전장치 실세션 첫 확인**
+  - MarketDNA: 09:05에 `[DNA] score=N/4 → dna_mult=X` 로그 확인
+  - CoreHealth: 매분 `[CoreHealth] score=N → size_mult=X` 로그 확인
+  - Mid-Conf 추적: 60~85% 구간 오답 연속 시 `[CB] mid_conf_wrong_streak=N` 로그
+  - Brier Score: 10건 누적 후 `brier_score=X.XX` 로그 확인
+  - ShadowSession: 09:40 분기점에 `[Shadow] → LIVE` 또는 `BLOCKED` 로그
+  - ContrarianMode: acc30m<25% 발생 시 `[Contrarian] ARMED` 상태 전환 확인
+  - 실험 게이트 탭: mid_tabs 마지막 탭 정상 표시, 30초 주기 갱신 확인
+
+- [NEXT 미정] **Shadow/Contrarian 가상 PnL 데이터 누적 후 실전 전환 검토**
+  - ShadowSession LIVE 전환 후 2주 이상 acc30m ≥ 40% 유지 확인
+  - ContrarianMode 가상 역베팅 승률 ≥ 55% 누적 시 실입금 소액 적용 검토
+
+- [NEXT 미정] **CoreHealth 점수 임계값 캘리브레이션**
+  - 실세션 데이터 2주 이상 누적 후 core_health_mult 임계값(70/85 기준) 조정 필요 여부 검토
+  - 너무 빈번하게 0.5 발동 → 임계값 완화, 너무 드물면 → 강화
+
+---
+
 ## 2026-05-19 (59차) — 손익추이 DB 초기화 버튼
 
 ### 한일 요약

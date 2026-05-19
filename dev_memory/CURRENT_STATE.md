@@ -1,7 +1,61 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-18 (58차) — **5/18 세션 심층분석 기반 안전장치 6종 구현**
+> 마지막 업데이트: 2026-05-19 (60차) — **5/19 CB③ 분석 기반 안전장치 6종 + Shadow/Contrarian 모의투자 검증 패널 구현**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-19 (60차) — 5/19 CB③ 심층분석 기반 안전장치 6종 + Shadow/Contrarian 구현
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| 1순위: Mid-Conf Blind Spot Tracker | **완료** — `circuit_breaker.py` 60~85% 구간 7연속 오답 → strict 모드 발동 |
+| 2순위: Brier Score 실시간 추적 | **완료** — `circuit_breaker.py` 이동평균(10건). >0.35 경고, >0.45 사이즈 50% 패널티 |
+| 3순위: 재시작 루프 브레이커 | **완료** — `circuit_breaker.py` _daily_halt_count 2회→50%, 3회→완전관망 |
+| 4순위: 장 시작 5분 DNA 진단 | **완료** — `safety/market_dna.py` 신규. 4항목 3/4 이상 이상 → dna_mult=0.25 |
+| 5순위: CORE Health Score → Sizer 연동 | **완료** — `features/core_health.py` 신규. 4개 안전 배수 position_sizer 연결 |
+| 6순위: Shadow Session 상태 머신 | **완료** — `safety/shadow_session.py` 신규. SHADOW→LIVE/BLOCKED 게이트 |
+| 6순위: Contrarian Mode 상태 머신 | **완료** — `safety/contrarian_mode.py` 신규. 3조건 WATCHING→ARMED→ACTIVE |
+| 6순위: 실험 게이트 대시보드 탭 | **완료** — `experiment_gate_panel.py` 신규 + main_dashboard "🧪 실험 게이트" 탭 |
+| 파이프라인 전체 문서화 | **완료** — `docs/PIPELINE_FLOW.md` 신규. STEP 1~9 전체 흐름 |
+| 실세션 동작 확인 | **미완료** — 다음 장 중 첫 기동 필요 |
+
+### 수정 파일 (60차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `config/settings.py` | CB 신규 상수 9개 (Mid-Conf 3, Brier 3, HALT 2 + 기존) |
+| `safety/circuit_breaker.py` | Mid-Conf·Brier·재시작루프 3종 추가. status/state_dict/reset 전체 반영 |
+| `safety/market_dna.py` | **신규** — 장 시작 5분 DNA 진단기 |
+| `safety/shadow_session.py` | **신규** — Shadow Session 상태 머신 (SHADOW/LIVE/BLOCKED) |
+| `safety/contrarian_mode.py` | **신규** — Contrarian Mode 상태 머신 (WATCHING/ARMED/ACTIVE/CLEARED) |
+| `features/core_health.py` | **신규** — CORE 피처 건강 점수 0~100 계산기 |
+| `model/multi_horizon_model.py` | `last_z_warn_count` 노출, 예측 결과에 `extreme_count` 포함 |
+| `strategy/entry/position_sizer.py` | 안전 배수 4종 파라미터 추가 (core_health/brier/restart/dna) |
+| `dashboard/panels/experiment_gate_panel.py` | **신규** — Shadow + Contrarian 모니터 UI |
+| `dashboard/main_dashboard.py` | "🧪 실험 게이트" 탭 mid_tabs 마지막에 추가 |
+| `main.py` | MarketDNA·CoreHealth·Shadow·Contrarian 초기화·매분업데이트·Sizer연결·reset_daily |
+| `docs/PIPELINE_FLOW.md` | **신규** — 매분 파이프라인 전체 흐름 문서 |
+
+### 안전 배수 조합 (5/19 재현 시 예상값)
+
+```
+core_health_mult × brier_mult × restart_mult × dna_mult
+= 0.5 × 0.5 × 0.5 × 0.25 = 0.031 → 사실상 0계약
+```
+
+### 다음 기동 확인 사항
+
+1. **Mid-Conf 추적**: 60~85% 구간 오답 연속 시 `[CB] mid_conf_wrong_streak=N` 로그
+2. **Brier Score**: 10건 이동평균 >0.35 → `[CB] Brier 경고`, >0.45 → `brier_size_mult=0.5`
+3. **재시작 루프 브레이커**: 일별 halt 2회 차 → 사이즈 50%, 3회 차 → 완전관망
+4. **MarketDNA**: 09:05에 `[DNA] score=N/4 → dna_mult=X` 로그
+5. **CoreHealth**: 매분 `[CoreHealth] score=N → size_mult=X` 로그
+6. **ShadowSession**: 09:40 이전 게이트 통과 → `[Shadow] → LIVE` 또는 `BLOCKED`
+7. **ContrarianMode**: acc30m<25% 발생 시 `[Contrarian] ARMED` 상태 전환
+8. **실험 게이트 탭**: mid_tabs 마지막 탭 정상 표시, 30초 주기 자동 갱신
 
 ---
 

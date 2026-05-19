@@ -60,7 +60,7 @@ from utils.db_utils import (
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, PARTIAL_EXIT_RATIOS,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
-    CB_HIGH_CONF_THRESHOLD,
+    CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
     FRED_API_KEY,
     HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
     HEALTH_QUALITY_WARN, HEALTH_QUALITY_CRIT,
@@ -203,6 +203,20 @@ class TradingSystem:
         )
         self.profit_guard    = ProfitGuard()
 
+        # [4순위] 장 시작 5분 DNA 진단 (09:00~09:05 첫 5봉 채점)
+        from safety.market_dna import MarketDNA
+        self.market_dna = MarketDNA()
+
+        # [5순위] CORE 피처 건강 점수 → Sizer 연동
+        from features.core_health import CoreHealthScore
+        self.core_health = CoreHealthScore()
+
+        # [6순위] Shadow Session + Contrarian Mode 트래커
+        from safety.shadow_session import ShadowSessionTracker
+        from safety.contrarian_mode import ContrarianModeTracker
+        self.shadow_session = ShadowSessionTracker()
+        self.contrarian_mode = ContrarianModeTracker(enable_real_order=False)
+
         # 현재 레짐
         self.current_regime       = "NEUTRAL"
         self.current_micro_regime = "혼합"
@@ -260,6 +274,8 @@ class TradingSystem:
         self.dashboard.sig_apply_candidate_requested.connect(self._on_apply_shap_candidate_requested)
         self.dashboard.sig_force_retrain_requested.connect(self._on_force_feature_retrain_requested)
         self.dashboard.sig_reset_feature_set_requested.connect(self._on_reset_feature_set_requested)
+        self.dashboard.sig_max_qty_changed.connect(self._on_max_qty_changed)
+        self._max_entry_qty = self.dashboard.get_max_qty()
         self.dashboard.set_ui_startup_mode()
         if self.challenger_engine is not None:
             try:
@@ -1316,6 +1332,11 @@ class TradingSystem:
             f"[EntryConfig] 자동진입={'ON' if enabled else 'OFF (수동 전환)'}",
             "WARNING" if not enabled else "INFO",
         )
+
+    def _on_max_qty_changed(self, max_qty: int) -> None:
+        """최대허용수량 변경 — 대시보드 ▲▼ 버튼 클릭 시 호출."""
+        self._max_entry_qty = max(1, int(max_qty))
+        log_manager.system(f"[Sizer] 최대허용수량 변경: {self._max_entry_qty}계약")
 
     def _on_reverse_entry_toggled(self, enabled: bool) -> None:
         enabled = bool(enabled)
@@ -2390,6 +2411,33 @@ class TradingSystem:
         # ATR Circuit Breaker
         self.circuit_breaker.record_atr(atr_ratio)
 
+        # ── [6순위] Shadow Session + Contrarian Mode 매분 업데이트 ──
+        _cb_status = self.circuit_breaker.status_dict()
+        _acc30m    = _cb_status.get("accuracy_30m", 0.0)
+        _z_warn    = getattr(self.model, "last_z_warn_count", 0)
+        _ts_dt_obj = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        self.shadow_session.update(
+            ts_dt            = _ts_dt_obj,
+            acc30m           = _acc30m,
+            core_health_score= self.core_health.score,
+            z_warn_count     = _z_warn,
+        )
+        # Contrarian 매분 업데이트 (30분 정확도 + 마지막 앙상블 방향 사용)
+        _last_dir = getattr(self, "_last_ensemble_direction", 0)
+        self.contrarian_mode.update(
+            acc30m           = _acc30m,
+            signal_direction = _last_dir,
+            regime           = self.current_regime,
+        )
+        # 대시보드 실험 게이트 패널 갱신
+        if getattr(self.dashboard, "experiment_gate_panel", None):
+            self.dashboard.experiment_gate_panel.update_shadow(
+                self.shadow_session.status_dict()
+            )
+            self.dashboard.experiment_gate_panel.update_contrarian(
+                self.contrarian_mode.status_dict()
+            )
+
         # ── STEP 5: 멀티 호라이즌 예측 ─────────────────────────
         _gbm_ready = self.model.is_ready()
         _sgd_ready = self.online_learner.is_ready()
@@ -2431,6 +2479,39 @@ class TradingSystem:
             else:
                 log_manager.signal("[default] 1/3 균등 예측 → DB 저장 → SGD 부트스트랩")
 
+        # ── [5순위] CORE Health Score 매분 업데이트 ───────────────────
+        _cfs = self.feature_builder._core_fail_streak
+        self.core_health.update(
+            cvd_streak   = _cfs.get("cvd", 0),
+            vwap_streak  = _cfs.get("vwap", 0),
+            ofi_streak   = _cfs.get("ofi", 0),
+            z_warn_count = getattr(self.model, "last_z_warn_count", 0),
+        )
+
+        # ── [4순위] MarketDNA — 장 시작 5분 피드 (09:00~09:04) ──────
+        _dna_ts_hour = ts_dt.hour if hasattr(ts_dt, "hour") else 9
+        _dna_ts_min  = ts_dt.minute if hasattr(ts_dt, "minute") else 0
+        if _dna_ts_hour == 9 and _dna_ts_min < 5 and not self.market_dna.is_ready():
+            _dna_dir    = 1 if bar.get("close", 0) > bar.get("open", 0) else (
+                          -1 if bar.get("close", 0) < bar.get("open", 0) else 0)
+            _dna_vol    = float(bar.get("volume", 0.0) or 0.0)
+            _dna_z_warn = getattr(self.model, "last_z_warn_count", 0)
+            _core_fs    = self.feature_builder._core_fail_streak
+            _dna_core_ok = sum(1 for v in _core_fs.values() if v == 0)
+            self.market_dna.add_bar(
+                direction          = _dna_dir,
+                volume             = _dna_vol,
+                z_score_warn_count = _dna_z_warn,
+                core_ok_count      = _dna_core_ok,
+            )
+        if _dna_ts_hour == 9 and _dna_ts_min == 5 and self.market_dna.is_ready():
+            _dna_result = self.market_dna.diagnose()
+            if _dna_result.get("caution"):
+                log_manager.system(
+                    f"[MarketDNA] 조심의 날 — 오전 사이즈 25% 고정 | {_dna_result['reason']}",
+                    "WARNING",
+                )
+
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
         horizon_proba = self._apply_horizon_calibration(horizon_proba)
         _h_conf_values = [float(v.get("confidence", 0.0) or 0.0) for v in horizon_proba.values()]
@@ -2458,6 +2539,7 @@ class TradingSystem:
         direction  = decision["direction"]
         confidence = decision["confidence"]
         grade      = decision["grade"]
+        self._last_ensemble_direction = direction  # Contrarian Mode 동방향 추적용
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,
             confidence=confidence,
@@ -2669,6 +2751,15 @@ class TradingSystem:
 
             if _final_grade != "X" and self.circuit_breaker.is_entry_allowed():
                 kelly_result = self.kelly.compute_fraction()
+                # [5순위] CORE Health 차단 시 진입 스킵
+                _core_health = getattr(self, "core_health", None)
+                if _core_health and not _core_health.is_entry_allowed():
+                    log_manager.signal(
+                        f"[CoreHealth] 건강점수={_core_health.score} < 70 — 진입 차단"
+                    )
+                    _final_grade = "X"
+                else:
+                    pass
                 size_result  = self.sizer.compute(
                     confidence          = confidence,
                     atr                 = atr,
@@ -2676,6 +2767,11 @@ class TradingSystem:
                     grade_mult          = _cr["size_mult"],
                     adaptive_kelly_mult = kelly_result["multiplier"],
                     account_balance     = _ts_current_sizer_balance(self),
+                    core_health_mult    = _core_health.size_mult if _core_health else 1.0,
+                    brier_mult          = self.circuit_breaker.brier_size_mult,
+                    restart_mult        = self.circuit_breaker.restart_size_mult,
+                    dna_mult            = (self.market_dna.diagnose().get("size_mult", 1.0)
+                                          if self.market_dna.is_ready() else 1.0),
                 )
                 _qty_display = size_result["quantity"]
                 _qty_sizer_raw = _qty_display  # 게이트 조정 전 Sizer 원본값 보존
@@ -2756,6 +2852,7 @@ class TradingSystem:
             qty=_qty_display,
             final_signal=_final_signal_ko,
             reverse_enabled=_reverse_on,
+            min_conf=decision["min_conf"],
         )
         self._manual_entry_ctx = {
             "price": close,
@@ -2932,6 +3029,9 @@ class TradingSystem:
                             f"kelly={kelly_result.get('multiplier', 1.0):.2f} "
                             f"meta={_meta_size:.2f} tox={_tox_size:.2f} exec={_exec_size:.2f}"
                         )
+                    # 최대허용수량 클리핑 (산출수량 > 0인 경우에만, 최소 1 보장)
+                    if _qty_auto > 0 and self._max_entry_qty > 0:
+                        _qty_auto = max(1, min(_qty_auto, self._max_entry_qty))
                     # L2 통과 && 모드 필터 통과 → 진입
                     self._execute_entry(
                         final_dir_str, close, _qty_auto, atr, _final_grade,
@@ -3799,6 +3899,11 @@ class TradingSystem:
         self.circuit_breaker.reset_daily()
         self.profit_guard.reset_daily()
         self.online_learner.reset_daily()
+        self.market_dna.reset_daily()
+        self.core_health.reset_daily()
+        self.shadow_session.reset_daily()
+        self.contrarian_mode.reset_daily()
+        self._last_ensemble_direction = 0
         self._param_corr_history.clear()
         self._shap_feature_window.clear()
         self._shap_last_update_minute = None

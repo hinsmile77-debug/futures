@@ -2968,6 +2968,26 @@ class EntryPanel(QWidget):
         # 앙상블 + 신뢰도
         info_lay = QGridLayout()
         info_lay.setSpacing(4)
+        _TIP_CONF = (
+            "【앙상블 신뢰도】\n"
+            "6개 호라이즌(1/3/5/10/15/30분) 예측 확률의\n"
+            "상관관계 역수 가중합 → 미시구조 게이팅 보정 후 확정값\n"
+            "\n"
+            "【레짐별 색상 기준】\n"
+            "  ● 초록 : 신뢰도 ≥ 70%\n"
+            "  ● 주황 : 신뢰도 ≥ 레짐 임계값  (진입 가능)\n"
+            "  ● 빨강 : 레짐 임계값 미달       (진입 차단)\n"
+            "\n"
+            "  레짐별 임계값\n"
+            "    RISK_ON  → 52%\n"
+            "    NEUTRAL  → 58%\n"
+            "    RISK_OFF → 65%\n"
+            "\n"
+            "【진입등급 판정 기준】\n"
+            "  신뢰도가 레짐 임계값 이상이어야 체크 2_confidence ✓\n"
+            "  9개 체크리스트 통과 수 → A(6↑) / B(4~5) / C(2~3) / X(1↓)\n"
+            "  단, CORE 3개(VWAP·CVD·OFI) 중 하나라도 ✗ → 강제 X등급"
+        )
         kv_top = [("원신호","signal","대기"),("실행 신호","final_signal","대기"),
                   ("신뢰도","conf","대기"),("진입 등급","grade","대기")]
         for i, (lbl, attr, init) in enumerate(kv_top):
@@ -2979,12 +2999,68 @@ class EntryPanel(QWidget):
             vl = mk_val_label(init, C['text'], 13)
             setattr(self, f"e_{attr}", vl)
             fl.addWidget(vl)
+            if attr == "conf":
+                f.setToolTip(_TIP_CONF)
+                vl.setToolTip(_TIP_CONF)
             info_lay.addWidget(f, i//2, i%2)
 
         # 하단 3카드: 산출수량 | 진입수량 | 최대허용수량
-        def _mk_info_card(label_text, val_attr, init_text):
+        _TIP_QTY = (
+            "【산출수량 계산 흐름】\n"
+            "\n"
+            "STEP 1  잔고 기준\n"
+            "  익일가예탁현금 (Cybos CpTd6197 next_day_deposit_cash)\n"
+            "  fallback 순서: 예탁현금 → 익일가예탁현금 → 전일손익\n"
+            "\n"
+            "STEP 2  PositionSizer — 켈리 기반 기본 수량\n"
+            "  기본리스크  = 잔고 × 1%\n"
+            "  신뢰도배수  = 58%→0.6 / 60%→1.0 / 65%→1.2 / 70%→1.5\n"
+            "  레짐배수    = RISK_ON=1.0 / NEUTRAL=0.8 / RISK_OFF=0.5\n"
+            "  손절거리    = ATR × 1.5\n"
+            "  stop_risk   = 손절거리 × pt단위가치 (250,000원/pt)\n"
+            "  raw_qty     = (기본리스크 × 신뢰도배수 × 레짐배수\n"
+            "                 × 등급배수 × 적응형켈리배수) ÷ stop_risk\n"
+            "\n"
+            "STEP 3  적응형 켈리 배수 (AdaptiveKelly)\n"
+            "  f* = (p × (b+1) − 1) / b\n"
+            "  p: 최근 20회 실전 승률\n"
+            "  b: 평균수익 / 평균손실 (손익비)\n"
+            "  하프 켈리 적용 후 0.10 ~ 1.50 클리핑\n"
+            "  데이터 5회 미만 → 보수적 0.6 고정\n"
+            "\n"
+            "STEP 4  게이트 보정 (순서대로 적용)\n"
+            "  ① HealthPolicy  : Degraded 모드 시 사이즈 축소 / 차단\n"
+            "  ② ExecutionGovernor: tradability 점수 기반 reduce / block\n"
+            "  ③ MetaGate      : 메타 신뢰도 기반 사이즈 배수 조정\n"
+            "  ④ ToxicityGate  : 독성 스코어 기반 reduce / block\n"
+            "  각 게이트: block → 0 / reduce → ×배수 / pass → 유지\n"
+            "  상한: MAX_CONTRACTS (10계약) / 하한: 1계약"
+        )
+        _TIP_ENTRY = (
+            "【진입수량 계산 흐름】\n"
+            "\n"
+            "산출수량 = 0 (X급 · CB차단 · 게이트 block) 인 경우\n"
+            "  → 진입수량 = ——  (진입 없음, 클리핑 미적용)\n"
+            "\n"
+            "산출수량 > 0 인 경우\n"
+            "  진입수량 = max(1, min(산출수량, 최대허용수량))\n"
+            "  ① min(산출수량, 최대허용수량) → 상한 클리핑\n"
+            "  ② max(1, …) → 최소 1계약 보장\n"
+            "\n"
+            "실행 일치 보장\n"
+            "  _execute_entry 직전 동일한 클리핑 적용\n"
+            "  → 대시보드 표시값 = 실제 주문수량 항상 일치\n"
+            "\n"
+            "최대허용수량 설정\n"
+            "  ▲ / ▼ 버튼으로 1 ~ MAX_CONTRACTS 범위에서 즉시 변경\n"
+            "  변경값은 ui_prefs.json에 저장되어 재시작 시 복원됨"
+        )
+
+        def _mk_info_card(label_text, val_attr, init_text, tooltip=""):
             f = QFrame()
             f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
+            if tooltip:
+                f.setToolTip(tooltip)
             fl = QVBoxLayout(f)
             fl.setContentsMargins(6,3,6,3)
             fl.addWidget(mk_label(label_text, C['text2'], 9))
@@ -2995,8 +3071,8 @@ class EntryPanel(QWidget):
 
         qty_row_lay = QHBoxLayout()
         qty_row_lay.setSpacing(4)
-        qty_row_lay.addWidget(_mk_info_card("산출 수량", "e_qty", "대기"))
-        qty_row_lay.addWidget(_mk_info_card("진입 수량", "e_entry_qty", "대기"))
+        qty_row_lay.addWidget(_mk_info_card("산출 수량", "e_qty", "대기", _TIP_QTY))
+        qty_row_lay.addWidget(_mk_info_card("진입 수량", "e_entry_qty", "대기", _TIP_ENTRY))
 
         max_f = QFrame()
         max_f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
@@ -3385,7 +3461,7 @@ class EntryPanel(QWidget):
         return self.current_mode
 
     def update_data(self, signal, conf, grade, checks, qty=0, final_signal=None,
-                    reverse_enabled=False):
+                    reverse_enabled=False, min_conf: float = 0.58):
         final_signal = final_signal or signal
         col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
         final_col = C['green'] if final_signal == "매수" else C['red'] if final_signal == "매도" else C['text2']
@@ -3395,7 +3471,7 @@ class EntryPanel(QWidget):
         self.e_final_signal.setStyleSheet(f"color:{final_col};font-size:{S.f(14)}px;font-weight:bold;")
         self.e_conf.setText(f"{conf*100:.1f}%")
         self.e_conf.setStyleSheet(
-            f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=0.58 else C['red']};"
+            f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=min_conf else C['red']};"
             f"font-size:{S.f(14)}px;font-weight:bold;"
         )
 
@@ -7745,6 +7821,16 @@ class MireukDashboard(QMainWindow):
         if self.setup_expectancy_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.setup_expectancy_panel), "📊 셋업 기대값")
 
+        # [6순위] Shadow Session + Contrarian Mode 실험 게이트 패널
+        try:
+            from dashboard.panels.experiment_gate_panel import ExperimentGatePanel as _EGP
+            self.experiment_gate_panel = _EGP()
+        except Exception as _ege:
+            logger.warning("[Dashboard] ExperimentGatePanel 로드 실패: %s", _ege)
+            self.experiment_gate_panel = None
+        if self.experiment_gate_panel is not None:
+            self.mid_tabs.addTab(self._wrap(self.experiment_gate_panel), "🧪 실험 게이트")
+
         ml.addWidget(self.mid_tabs)
 
         # 우측: 5층 로그
@@ -8474,12 +8560,13 @@ class DashboardAdapter:
 
     def update_entry(self, signal: str, conf: float, grade: str, checks: dict,
                      qty: int = 0, final_signal: str = None,
-                     reverse_enabled: bool = False):
+                     reverse_enabled: bool = False, min_conf: float = 0.58):
         """진입 관리 패널 업데이트"""
         self._win.entry_panel.update_data(
             signal, conf, grade, checks, qty=qty,
             final_signal=final_signal,
             reverse_enabled=reverse_enabled,
+            min_conf=min_conf,
         )
 
     def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False) -> None:

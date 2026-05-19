@@ -2,6 +2,48 @@
 
 ---
 
+## 2026-05-19 (60차 — CB③ 분석 기반 안전장치 6종 + Shadow/Contrarian 구현)
+
+### [설계] Mid-Conf Blind Spot Tracker — 60~85% 구간 별도 추적
+**File**: `safety/circuit_breaker.py` — `_mid_conf_wrong_streak`, `record_accuracy()`
+**Why**: 5/19 세션에서 conf 48~83%인데 30분 정확도 0%인 Overconfidence 현상 확인. 기존 `_high_conf_wrong_streak`(>85%)는 이 구간을 포착 못함. "애매한 확신" 구간이 실제로 더 위험.
+**Implementation**: conf 60~85% 범위 오답 7연속 → `_strict_mode=True` (임계값 35%→50%). 기존 high_conf 스트릭과 OR 조건으로 strict 모드 발동.
+**Settings**: `CB_MID_CONF_WRONG_LIMIT=7`, `CB_MID_CONF_LO=0.60`, `CB_MID_CONF_HI=0.85`
+
+### [설계] Brier Score 실시간 추적 — 모델 보정 품질 지표
+**File**: `safety/circuit_breaker.py` — `_brier_buf` deque(10), `brier_size_mult`
+**Why**: 정확도(맞/틀)는 신호의 방향만 보지만 Brier Score는 "(conf - actual)²" 로 신뢰도 보정까지 측정. conf=83%인데 틀리면 Brier=0.83²=0.69 → 즉각 반영.
+**Thresholds**: >0.35 경고(WARN 로그), >0.45 → `brier_size_mult=0.5` 사이즈 50% 패널티.
+**Settings**: `CB_BRIER_WINDOW=10`, `CB_BRIER_WARN=0.35`, `CB_BRIER_PENALTY=0.45`
+
+### [설계] 재시작 루프 브레이커 — 당일 HALT 누적 카운터
+**File**: `safety/circuit_breaker.py` — `_daily_halt_count`, `restart_size_mult`, `is_restart_blocked()`
+**Why**: 5/19에서 3회 연속 재시작(08:45→10:06→10:13) 모두 동일 실패 반복. 재시작이 문제를 해결하지 못하는 상황에서 사이즈를 줄이지 않고 계속 진입하면 손실 누적.
+**Logic**: halt 2회차 → size 50%, halt 3회 이상 → 완전관망(`is_restart_blocked()=True`). `reset_daily()`에서 초기화.
+**Settings**: `CB_DAILY_HALT_HALF_SIZE=2`, `CB_DAILY_HALT_FULL_BLOCK=3`
+
+### [설계] MarketDNA — 장 시작 5분 4항목 진단
+**File**: `safety/market_dna.py` **신규**
+**Why**: 09:30~09:34 특이 초강세 후 09:34부터 방향 전환. 장 시작 직후의 시장 DNA(방향일치율·이상 거래량·z-score·CORE 상태)로 당일 오전 위험도를 조기 진단.
+**4 checks**: ① 첫 3봉 방향 일치율 <2/3, ② 1분봉 거래량 >20일 평균 150%, ③ z-score 경고 ≥2, ④ CORE 평균 정상 수 <2
+**Threshold**: 3/4 이상 이상 → `caution=True`, `size_mult=0.25`. 09:05 이전에는 `size_mult=1.0` (진단 전).
+
+### [설계] CoreHealthScore — 안전 배수와 position_sizer 연결
+**File**: `features/core_health.py` **신규**, `strategy/entry/position_sizer.py`
+**Why**: 5/19에서 vwap/ofi streak이 반복 탈락하는데도 진입 사이즈가 줄지 않음. CORE 피처 건강 상태를 수치화하여 position_sizer에 직접 연결.
+**Score**: streak=0 피처당 25점(최대 75) + z_warn=0 → +10 + 최근 5분 실패율 0% → +15. streak 1회당 -5 패널티.
+**Sizer mult**: score<70 → mult=0.0(진입 차단), 70~85 → 0.5, ≥85 → 1.0
+**Integration**: `position_sizer.compute()` 에 `core_health_mult`, `brier_mult`, `restart_mult`, `dna_mult` 4개 안전 배수 파라미터 추가. 모두 곱해 raw_qty에 적용.
+
+### [설계] ShadowSession / ContrarianMode — 모의투자 검증 패널 (실진입 없음)
+**File**: `safety/shadow_session.py`, `safety/contrarian_mode.py` **신규**
+**Why**: 실전 전환 기준 검증(acc30m≥40% 2주 유지)과 역모델 아이디어 검증을 실입금 없이 가상으로 수행.
+**ShadowSession**: 09:00~09:40 SHADOW 상태 → 게이트 3종(acc30m≥40%, CoreHealth≥70, z_warn_total<2) 통과 시 LIVE, 미통과 → BLOCKED. LIVE여도 실진입은 STEP 7 기존 로직이 결정.
+**ContrarianMode**: acc30m<25% + 동방향 10연속 + NEUTRAL 3조건 만족 시 ARMED → ACTIVE. 실제 주문 없이 가상 역베팅 PnL만 집계 (`enable_real_order=False`).
+**Dashboard**: `experiment_gate_panel.py` 신규 탭 — 상태 배지·게이트 조건·가상 PnL 시각화.
+
+---
+
 ## 2026-05-18 (58차 — 안전장치 6종 구현)
 
 ### [설계 번복] B113 — ProfitGuard+CircuitBreaker 상태 영속화 구현 (이전: 의도적 유지)

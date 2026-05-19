@@ -6,6 +6,63 @@
 
 ---
 
+## 2026-05-19 (60차 — 5/19 CB③ 심층분석 기반 안전장치 6종 + Shadow/Contrarian 구현)
+
+**Work**: 5/19 세션 CB③ 조기 정지(09:50, acc30m=19%) 원인을 두 분석가 관점으로 분석 후, 즉시 구현 가능한 안전장치 6종을 우선순위 순서대로 전체 구현. 매분 파이프라인 전체 흐름 문서화.
+
+### 주요 작업
+
+| 항목 | 내용 |
+|---|---|
+| 1순위: Mid-Conf Blind Spot Tracker | `circuit_breaker.py` — 60~85% 구간 연속 오답 추적. 7연속 → strict 모드(임계값 35%→50%). `settings.py` 3개 상수 추가 |
+| 2순위: Brier Score 실시간 추적 | `circuit_breaker.py` — `brier = (conf-actual)²` 이동평균(10건). >0.35 경고, >0.45 사이즈 50% 패널티. `brier_size_mult` 속성 추가 |
+| 3순위: 재시작 루프 브레이커 | `circuit_breaker.py` — `_daily_halt_count` 추적. 2회→50%, 3회→완전관망. `restart_size_mult` / `is_restart_blocked()` 추가 |
+| 4순위: 장 시작 5분 DNA 진단 | `safety/market_dna.py` **신규** — 09:00~09:04 첫 5봉으로 방향일치·거래량·z-score·CORE 4항목 진단. 3/4 이상 이상 → dna_mult=0.25 |
+| 5순위: CORE Health Score → Sizer 연동 | `features/core_health.py` **신규** — streak+z_warn 기반 0~100 점수화. `position_sizer.py` — core_health_mult/brier_mult/restart_mult/dna_mult 4개 안전 배수 파라미터 추가 |
+| 6순위: Shadow Session | `safety/shadow_session.py` **신규** — acc30m≥40%+CoreHealth≥70+z_warn<2 게이트. 09:40 이전 통과→LIVE, 미통과→BLOCKED 상태 머신 |
+| 6순위: Contrarian Mode | `safety/contrarian_mode.py` **신규** — acc30m<25%+동방향10연속+NEUTRAL 3조건. WATCHING→ARMED→ACTIVE 상태 머신. 가상 역베팅 PnL 집계 |
+| 6순위: 실험 게이트 대시보드 탭 | `dashboard/panels/experiment_gate_panel.py` **신규** — Shadow/Contrarian 상태·조건·가상PnL 시각화. `main_dashboard.py` "🧪 실험 게이트" 탭 추가 |
+| 파이프라인 전체 문서화 | `docs/PIPELINE_FLOW.md` **신규** — STEP 1~9 전체 흐름, 안전 배수 조합 매트릭스, CB 상태 조합표 |
+
+### 5/19 CB③ 분석 핵심 발견
+
+| 발견 | 내용 |
+|---|---|
+| 09:34 이후 30분 예측 전부 오답 | acc30m이 단조 감소. 신규 정답 추가 없이 오답만 쌓임 |
+| Overconfidence | conf 48~83%인데 30m 정확도 0% → Brier Score 0.45+ |
+| CORE 피처 붕괴 | 09:15~09:50 vwap/ofi 반복 탈락 — 엔진 경고등 켜진 채 액셀 |
+| NEUTRAL 레짐 LONG 일변도 | 09:15~09:50 전 시그널 dir=+1. 방향 편향 차단기 부재 |
+| 죽음의 재시작 루프 | 3회 연속 재시작(08:45→10:06→10:13) 모두 동일 실패 반복 |
+
+### 안전 배수 조합 (5/19 재현 시 예상값)
+
+```
+core_health_mult × brier_mult × restart_mult × dna_mult
+= 0.5 × 0.5 × 0.5 × 0.25 = 0.031 → 사실상 0계약
+```
+
+### 수정 파일 (60차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `config/settings.py` | CB 신규 상수 9개 (Mid-Conf 3, Brier 3, HALT 2 + 기존 구조 유지) |
+| `safety/circuit_breaker.py` | Mid-Conf·Brier·재시작루프 3종 추가. status/state_dict/reset 모두 반영 |
+| `safety/market_dna.py` | **신규** — 장 시작 5분 DNA 진단기 |
+| `safety/shadow_session.py` | **신규** — Shadow Session 상태 머신 |
+| `safety/contrarian_mode.py` | **신규** — 역모델 스위치 트래커 |
+| `features/core_health.py` | **신규** — CORE 피처 건강 점수 계산기 |
+| `model/multi_horizon_model.py` | `last_z_warn_count` 속성 노출, 예측 결과에 `extreme_count` 포함 |
+| `strategy/entry/position_sizer.py` | 안전 배수 4종 파라미터 추가 (core_health/brier/restart/dna) |
+| `dashboard/panels/experiment_gate_panel.py` | **신규** — Shadow + Contrarian 모니터 UI |
+| `dashboard/main_dashboard.py` | "🧪 실험 게이트" 탭 mid_tabs 마지막에 추가 |
+| `main.py` | MarketDNA·CoreHealth·Shadow·Contrarian 초기화·매분업데이트·Sizer연결·reset_daily 전체 |
+| `docs/PIPELINE_FLOW.md` | **신규** — 매분 파이프라인 전체 흐름 문서 |
+
+### 커밋
+- 60차: 5/19 CB③ 분석 기반 안전장치 6종 + Shadow/Contrarian 모의투자 검증 패널 구현
+
+---
+
 ## 2026-05-19 (59차 — 손익추이 DB 초기화 버튼 추가)
 
 **Work**: 손익추이 DB 초기화 기능을 우측 상단 서버 선택 행에 UI 추가.

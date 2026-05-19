@@ -24,6 +24,9 @@ from config.settings import (
     CB_CONSEC_STOP_LIMIT, CB_ACCURACY_MIN_30M,
     CB_ATR_MULT_LIMIT, CB_API_LATENCY_LIMIT, CB_API_LATENCY_PAUSE,
     CB_HIGH_CONF_WRONG_LIMIT, CB_HIGH_CONF_THRESHOLD, CB_ACCURACY_MIN_30M_STRICT,
+    CB_MID_CONF_WRONG_LIMIT, CB_MID_CONF_LO, CB_MID_CONF_HI,
+    CB_BRIER_WINDOW, CB_BRIER_WARN, CB_BRIER_PENALTY,
+    CB_DAILY_HALT_HALF_SIZE, CB_DAILY_HALT_FULL_BLOCK,
 )
 from config.constants import CB_STATE_NORMAL, CB_STATE_PAUSED, CB_STATE_HALTED
 from utils.notify import notify_circuit_breaker
@@ -67,6 +70,23 @@ class CircuitBreaker:
         # 연속 N회 이상이면 CB③ 임계값을 0.35 → 0.50으로 상향 (더 빨리 발동)
         self._high_conf_wrong_streak: int = 0
 
+        # ── [1순위] Mid-Conf Blind Spot Tracker ──────────────────
+        # 60~85% 중간신뢰도 구간 연속 오답 — 오늘(5/19) 직접 원인
+        # 7회 연속이면 strict 모드 진입 (CB③ 임계값 0.35→0.50)
+        self._mid_conf_wrong_streak: int = 0
+
+        # ── [2순위] Brier Score 실시간 추적 ──────────────────────
+        # brier_i = (conf_i - actual_i)^2 이동평균으로 과신 탐지
+        # 이동평균 > CB_BRIER_WARN  → 경고 로그
+        # 이동평균 > CB_BRIER_PENALTY → 사이징 50% 패널티 플래그
+        self._brier_buf: deque = deque(maxlen=CB_BRIER_WINDOW)
+        self._brier_penalty_active: bool = False
+
+        # ── [3순위] 재시작 루프 브레이커 ─────────────────────────
+        # 당일 CB③ HALT 횟수 추적
+        # 2회 → 다음 진입 50% 사이즈, 3회 이상 → 완전 관망
+        self._daily_halt_count: int = 0
+
     # ── 상태 조회 ──────────────────────────────────────────────
     @property
     def state(self) -> str:
@@ -85,6 +105,36 @@ class CircuitBreaker:
         if self._high_conf_wrong_streak < CB_HIGH_CONF_WRONG_LIMIT:
             return False
         return conf >= CB_HIGH_CONF_THRESHOLD
+
+    @property
+    def brier_size_mult(self) -> float:
+        """[2순위] Brier Score 패널티 배수. 패널티 발동 시 0.5, 정상 시 1.0."""
+        return 0.5 if self._brier_penalty_active else 1.0
+
+    @property
+    def restart_size_mult(self) -> float:
+        """[3순위] 재시작 루프 브레이커 사이즈 배수.
+        당일 HALT 횟수에 따라 감소:  0~1회 → 1.0 / 2회 → 0.5 / 3회 이상 → 0.0 (진입 차단)
+        """
+        if self._daily_halt_count >= CB_DAILY_HALT_FULL_BLOCK:
+            return 0.0
+        if self._daily_halt_count >= CB_DAILY_HALT_HALF_SIZE:
+            return 0.5
+        return 1.0
+
+    def is_restart_blocked(self) -> bool:
+        """[3순위] 당일 HALT가 CB_DAILY_HALT_FULL_BLOCK 회 이상이면 재진입 완전 차단."""
+        return self._daily_halt_count >= CB_DAILY_HALT_FULL_BLOCK
+
+    @property
+    def mid_conf_wrong_streak(self) -> int:
+        """[1순위] 현재 중간신뢰도 연속 오답 횟수."""
+        return self._mid_conf_wrong_streak
+
+    @property
+    def daily_halt_count(self) -> int:
+        """[3순위] 당일 HALT 발생 횟수."""
+        return self._daily_halt_count
 
     def _check_pause_expiry(self):
         if self._state == CB_STATE_PAUSED and self._pause_until:
@@ -129,35 +179,80 @@ class CircuitBreaker:
         """
         Args:
             correct:    예측 적중 여부
-            confidence: 예측 신뢰도 (과신 오류 감지에 사용)
+            confidence: 예측 신뢰도 (과신·중간신뢰도 오류 감지에 사용)
         """
         self._accuracy_buf.append(1.0 if correct else 0.0)
 
-        # 과신 오류 연속 카운터 갱신
-        # conf >= 0.85 이면서 틀린 경우 → streak 증가, 그 외 → 리셋
+        # ── [2순위] Brier Score 누적 ──────────────────────────────
+        # actual: 정답이면 1.0, 오답이면 0.0 (direction 기준 binary)
+        actual = 1.0 if correct else 0.0
+        brier  = (confidence - actual) ** 2
+        self._brier_buf.append(brier)
+        if len(self._brier_buf) >= CB_BRIER_WINDOW:
+            brier_avg = sum(self._brier_buf) / len(self._brier_buf)
+            if brier_avg > CB_BRIER_PENALTY:
+                if not self._brier_penalty_active:
+                    self._brier_penalty_active = True
+                    msg = (
+                        f"[Brier] 과신 패널티 발동 | "
+                        f"이동평균={brier_avg:.3f} > {CB_BRIER_PENALTY} "
+                        f"— 사이징 50% 강제 축소"
+                    )
+                    logger.warning(msg)
+                    log_manager.system(msg, "WARNING")
+            elif brier_avg > CB_BRIER_WARN:
+                if not self._brier_penalty_active:
+                    logger.warning(
+                        "[Brier] 과신 경고 | 이동평균=%.3f > %.2f",
+                        brier_avg, CB_BRIER_WARN,
+                    )
+            else:
+                self._brier_penalty_active = False
+
+        # ── 과신(conf >= 0.85) 오류 연속 카운터 ──────────────────
         if not correct and confidence >= CB_HIGH_CONF_THRESHOLD:
             self._high_conf_wrong_streak += 1
         else:
             self._high_conf_wrong_streak = 0
 
+        # ── [1순위] Mid-Conf Blind Spot Tracker ──────────────────
+        # 60~85% 구간에서 틀린 경우 streak 증가, 그 외 리셋
+        if not correct and CB_MID_CONF_LO <= confidence < CB_MID_CONF_HI:
+            self._mid_conf_wrong_streak += 1
+            if self._mid_conf_wrong_streak == CB_MID_CONF_WRONG_LIMIT:
+                msg = (
+                    f"[Mid-Conf Blind Spot] {CB_MID_CONF_WRONG_LIMIT}연속 오답 "
+                    f"(conf {CB_MID_CONF_LO:.0%}~{CB_MID_CONF_HI:.0%}) "
+                    f"— CB③ strict 모드 진입"
+                )
+                logger.warning(msg)
+                log_manager.system(msg, "WARNING")
+                notify_circuit_breaker(
+                    f"Mid-Conf {CB_MID_CONF_WRONG_LIMIT}연속 오답",
+                    "CB③ strict 모드 (임계값 35%→50%)",
+                )
+        else:
+            self._mid_conf_wrong_streak = 0
+
         if len(self._accuracy_buf) >= 20:
             acc = sum(self._accuracy_buf) / len(self._accuracy_buf)
 
-            # 과신 오류가 N회 연속이면 임계값 강화 (더 빨리 HALT)
+            # 과신 또는 중간신뢰도 streak 중 하나라도 임계 초과면 strict 모드
             effective_min = (
                 CB_ACCURACY_MIN_30M_STRICT
-                if self._high_conf_wrong_streak >= CB_HIGH_CONF_WRONG_LIMIT
+                if (self._high_conf_wrong_streak >= CB_HIGH_CONF_WRONG_LIMIT
+                    or self._mid_conf_wrong_streak >= CB_MID_CONF_WRONG_LIMIT)
                 else CB_ACCURACY_MIN_30M
             )
 
             if acc < effective_min:
                 self._cb3_warn_count += 1
                 if self._cb3_warn_count >= 2:
-                    streak_note = (
-                        f" | 과신 오류 {self._high_conf_wrong_streak}연속"
-                        if self._high_conf_wrong_streak >= CB_HIGH_CONF_WRONG_LIMIT
-                        else ""
-                    )
+                    streak_note = ""
+                    if self._high_conf_wrong_streak >= CB_HIGH_CONF_WRONG_LIMIT:
+                        streak_note += f" | 고신뢰 오류 {self._high_conf_wrong_streak}연속"
+                    if self._mid_conf_wrong_streak >= CB_MID_CONF_WRONG_LIMIT:
+                        streak_note += f" | 중간신뢰도 오류 {self._mid_conf_wrong_streak}연속"
                     self._trigger_halt(
                         f"30분 정확도 {acc:.1%} < {effective_min:.0%} "
                         f"(2회 연속 미달{streak_note})"
@@ -176,7 +271,7 @@ class CircuitBreaker:
                         "다음 미달 시 당일 정지",
                     )
             else:
-                self._cb3_warn_count = 0  # 회복 시 카운터 초기화
+                self._cb3_warn_count = 0
 
     # ── 트리거 ④ ATR 급등 ─────────────────────────────────────
     def record_atr(self, atr_ratio: float):
@@ -230,10 +325,17 @@ class CircuitBreaker:
             return
         self._state = CB_STATE_HALTED
         self._pause_until = None
-        msg = f"[CB] 당일 시스템 정지 | {reason}"
+        # ── [3순위] 재시작 루프 브레이커 카운터 증가 ─────────────
+        self._daily_halt_count += 1
+        halt_note = ""
+        if self._daily_halt_count >= CB_DAILY_HALT_FULL_BLOCK:
+            halt_note = f" | 당일 HALT {self._daily_halt_count}회 → 완전 관망 모드"
+        elif self._daily_halt_count >= CB_DAILY_HALT_HALF_SIZE:
+            halt_note = f" | 당일 HALT {self._daily_halt_count}회 → 재진입 50% 사이즈"
+        msg = f"[CB] 당일 시스템 정지 | {reason}{halt_note}"
         logger.critical(msg)
         log_manager.system(msg, "CRITICAL")
-        notify_circuit_breaker(reason, "당일 시스템 정지")
+        notify_circuit_breaker(reason, f"당일 시스템 정지{halt_note}")
         # CB② · CB③ 발동 시에도 기존 포지션 즉시 청산
         # (CB⑤는 record_api_latency에서 별도 호출, 여기서는 ②·③ 공통 처리)
         if self._emergency_exit:
@@ -249,10 +351,16 @@ class CircuitBreaker:
         self._atr_buf.clear()
         self._cb3_warn_count = 0
         self._high_conf_wrong_streak = 0
+        self._mid_conf_wrong_streak = 0
+        self._brier_buf.clear()
+        self._brier_penalty_active = False
+        self._daily_halt_count = 0
         logger.info("[CB] 일간 리셋 완료")
         log_manager.system("[CB] 일간 리셋 완료", "INFO")
 
     def status_dict(self) -> dict:
+        brier_avg = (sum(self._brier_buf) / len(self._brier_buf)
+                     if self._brier_buf else 0.0)
         return {
             "state":                   self.state,
             "pause_until":             self._pause_until.strftime("%H:%M:%S") if self._pause_until else None,
@@ -262,6 +370,11 @@ class CircuitBreaker:
             "cb3_warn_count":          self._cb3_warn_count,
             "cb3_samples":             len(self._accuracy_buf),
             "high_conf_wrong_streak":  self._high_conf_wrong_streak,
+            "mid_conf_wrong_streak":   self._mid_conf_wrong_streak,
+            "brier_avg":               round(brier_avg, 4),
+            "brier_penalty_active":    self._brier_penalty_active,
+            "daily_halt_count":        self._daily_halt_count,
+            "restart_size_mult":       self.restart_size_mult,
         }
 
     def to_state_dict(self) -> dict:
@@ -272,6 +385,9 @@ class CircuitBreaker:
             "consec_stops":           self._consec_stops,
             "cb3_warn_count":         self._cb3_warn_count,
             "high_conf_wrong_streak": self._high_conf_wrong_streak,
+            "mid_conf_wrong_streak":  self._mid_conf_wrong_streak,
+            "brier_penalty_active":   self._brier_penalty_active,
+            "daily_halt_count":       self._daily_halt_count,
         }
 
     def from_state_dict(self, d: dict) -> None:
@@ -287,7 +403,12 @@ class CircuitBreaker:
         self._consec_stops           = int(d.get("consec_stops", 0) or 0)
         self._cb3_warn_count         = int(d.get("cb3_warn_count", 0) or 0)
         self._high_conf_wrong_streak = int(d.get("high_conf_wrong_streak", 0) or 0)
+        self._mid_conf_wrong_streak  = int(d.get("mid_conf_wrong_streak", 0) or 0)
+        self._brier_penalty_active   = bool(d.get("brier_penalty_active", False))
+        self._daily_halt_count       = int(d.get("daily_halt_count", 0) or 0)
         logger.info(
-            "[CB] 상태 복원: state=%s consec_stops=%d cb3_warn=%d",
+            "[CB] 상태 복원: state=%s consec_stops=%d cb3_warn=%d "
+            "mid_conf_streak=%d daily_halt=%d",
             self._state, self._consec_stops, self._cb3_warn_count,
+            self._mid_conf_wrong_streak, self._daily_halt_count,
         )

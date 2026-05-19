@@ -34,6 +34,7 @@ class MultiHorizonModel:
     SCALER_WARN_MINUTES = 90
     # 극단 z-score 임계값 — 스케일러 기준통계와 현재 피처가 심하게 벗어남을 감지
     EXTREME_ZSCORE_THRESHOLD = 4.0
+    EXTREME_ZSCORE_LOG_TOPK = 5
 
     GBM_PARAMS = {
         "n_estimators":     100,
@@ -139,12 +140,16 @@ class MultiHorizonModel:
             xs = scaler.transform(x2d) if scaler else x2d
 
             # 극단 z-score 감지: |z| > EXTREME_ZSCORE_THRESHOLD 피처 수 로깅
-            extreme_count = int(np.sum(np.abs(xs[0]) > self.EXTREME_ZSCORE_THRESHOLD))
+            extreme_mask = np.abs(xs[0]) > self.EXTREME_ZSCORE_THRESHOLD
+            extreme_count = int(np.sum(extreme_mask))
             if extreme_count > 0:
+                extreme_summary = self._summarize_extreme_zscores(xs[0], extreme_mask)
                 logger.warning(
                     f"[Model] {horizon} 극단 z-score {extreme_count}개 피처 감지 "
                     f"(|z|>{self.EXTREME_ZSCORE_THRESHOLD:.0f}) — 스케일러 노후화 또는 이상 데이터 의심"
                 )
+
+                logger.warning(f"[Model] {horizon} extreme z-score top={extreme_summary}")
 
             classes = list(clf.classes_)
             proba   = clf.predict_proba(xs)[0]
@@ -176,14 +181,37 @@ class MultiHorizonModel:
                 confidence = self.CONF_CLIP
 
             results[horizon] = {
-                "up":         round(up, 4),
-                "down":       round(down, 4),
-                "flat":       round(flat, 4),
-                "direction":  direction,
-                "confidence": round(confidence, 4),
+                "up":           round(up, 4),
+                "down":         round(down, 4),
+                "flat":         round(flat, 4),
+                "direction":    direction,
+                "confidence":   round(confidence, 4),
+                "extreme_count": extreme_count,
             }
 
+        # 전체 호라이즌 중 최대 극단 z-score 피처 수 (MarketDNA·대시보드용)
+        self.last_z_warn_count = max(
+            (r.get("extreme_count", 0) for r in results.values()), default=0
+        )
         return results
+
+    def _summarize_extreme_zscores(self, z_row: np.ndarray, extreme_mask: np.ndarray) -> str:
+        """Format the largest extreme z-score features for logging."""
+        feature_names = self.feature_names or []
+        tagged = []
+
+        for idx, is_extreme in enumerate(extreme_mask):
+            if not is_extreme:
+                continue
+            name = feature_names[idx] if idx < len(feature_names) else "f{}".format(idx)
+            tagged.append((name, float(z_row[idx])))
+
+        if not tagged:
+            return "none"
+
+        tagged.sort(key=lambda item: abs(item[1]), reverse=True)
+        top_items = tagged[:self.EXTREME_ZSCORE_LOG_TOPK]
+        return ", ".join("{}={:+.2f}".format(name, z_value) for name, z_value in top_items)
 
     def _default_result(self) -> dict:
         return {
@@ -253,4 +281,3 @@ class MultiHorizonModel:
 
         avg = acc / n
         return {name: float(v) for name, v in zip(self.feature_names, avg)}
-
