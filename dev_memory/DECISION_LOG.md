@@ -2,6 +2,38 @@
 
 ---
 
+## 2026-05-19 (62차 — 매크로 레짐 2계층 강화)
+
+### [설계] IntradayTacticalRegime — Layer 2 장중 레짐 분류 2계층화
+**File**: `collection/macro/intraday_tactical_regime.py` (신규)
+**Why**: 기존 Layer 1(Overnight) 만으로는 당일 국내 선물 급락(5/19 -1.8%)을 실시간 레짐으로 승격 불가. 매크로 지표는 08:55 1회 수집이므로 장중 변동에 즉각 반응 못함.
+**Design**: NORMAL(Layer 1 그대로) → DAY_RISK_OFF(롱 금지·사이즈 ×0.5) → CRASH(전진입 금지·사이즈 ×0.3). 매분 day_ret·ret_15m·ATR·z_warn 기반 전환. RECOVERY 3조건(bounce·OFI·ATR) 모두 충족 시만 NORMAL 복귀.
+**How to apply**: `main.py`에서 contrarian 처리 이후 매분 `intraday_regime.update()` 호출. 진입 판단 전 `is_long_allowed()` / `is_short_allowed()` 확인 필수.
+
+### [설계] Contrarian ACTIVE → DAY_RISK_OFF 자동승격
+**File**: `collection/macro/intraday_tactical_regime.py` — `_classify()`, `dro_c = contrarian_active`
+**Why**: ContrarianMode ACTIVE는 acc30m이 매우 낮아 역방향 베팅이 유리하다는 신호. 이 상태에서 Layer 2가 NORMAL이면 일반 진입이 계속 발생해 손실 누적. Contrarian이 ACTIVE면 최소한 롱 금지·사이즈 축소가 필요.
+**How to apply**: `intraday_regime.update(contrarian_active=_contra_active)`. `_contra_active`는 파이프라인 내 contrarian.update() 이후에만 참조.
+
+### [버그] micro_regime 5/19 급변장 0회 — ATR_VOLATILE_MULT=2.0 둔감
+**File**: `collection/macro/micro_regime.py` — `ATR_VOLATILE_MULT`
+**Root cause**: 5/19 폭락일 장중 ATR ratio 최댓값이 1.33 수준. 기존 임계값 2.0에 한참 못 미쳐 급변장 판정 0회. 실질적으로 ATR 기반 미시 레짐이 무력화 상태였음.
+**Fix**: 1.5로 완화. 추가로 z_warn_count≥3 단독 조건, atr≥1.25+ADX≥30 복합 조건 추가. 5/19 재현 시 급변장 발동 예상.
+**How to apply**: `push_1m_candle()` 호출 시 `z_warn_count` 인자 전달 필수 (`getattr(model, "last_z_warn_count", 0)`).
+
+### [버그] macro_fetcher 첫 fetch chg=0 NEUTRAL 편향
+**File**: `collection/macro/macro_fetcher.py` — `_fetch_all()`
+**Root cause**: 초회 fetch에서 `self._prev[key]`가 없으면 전 change=0.0 → 모든 지표 chg=0 → VIX 점수만 작동 → 구조적으로 NEUTRAL 편향.
+**Fix**: `_first_fetch_done` 플래그. 초회는 `_prev` 시딩 전용(chg=0, 실제 레짐 판단 안 함). 2회차부터 정상 변화량 계산.
+**How to apply**: 첫 08:55 fetch는 레짐 출력이 의미없음. `macro_first_fetch_seed_only=1.0` 키로 식별 가능.
+
+### [장애] Cybos COM 세션만료 → exit code 1 (Python traceback 없음)
+**Pattern**: `미륵이 시작` 로그 직후 exit code 1. Python 예외 없음. `connect_kiwoom()` 내 `CpUtil.CpCybos` COM dispatch 시 C레벨 크래시.
+**Root cause**: Cybos 세션 만료(16:00 이후 연결 끊김). Cybos 프로세스가 없는 상태에서 `Dispatch("CpUtil.CpCybos")` → STATUS_STACK_BUFFER_OVERRUN 계열 크래시.
+**How to apply**: main.py 실행 전 CYBOS_PLUS.bat 실행 → HTS 로그인 확인 → CYBOS5.bat 실행 → 프로세스 완전 기동 확인 후 main.py 실행. 이 순서가 반드시 필요.
+
+---
+
 ## 2026-05-19 (61차 — CB HALT 분석 + 지표 버그 수정 + CB⑤ 재설계)
 
 ### [버그] API지연=0ms / CB⑤ 실질 비활성 — Cybos 리팩토링 누락

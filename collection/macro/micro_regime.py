@@ -50,8 +50,9 @@ class MicroRegimeClassifier:
 
     ADX_TREND_THRESHOLD  = 25.0   # ADX > 25 → 추세
     ADX_RANGE_THRESHOLD  = 20.0   # ADX < 20 → 횡보
-    ATR_VOLATILE_MULT    = 2.0    # ATR > 평균 2배 → 급변
+    ATR_VOLATILE_MULT    = 1.5    # ATR > 평균 1.5배 → 급변 (기존 2.0: 5/19 폭락일에도 급변 0회)
     ATR_TREND_MULT       = 1.5    # ATR < 평균 1.5배 조건 (추세장 필터)
+    ATR_VOLATILE_ADX_MIN = 30.0   # 복합 조건: ATR≥1.25 AND ADX>30 → 급변
     ATR_EXHAUSTION_MULT  = 1.5    # 탈진 레짐: ATR 확대 임계값
     VWAP_EXHAUSTION_MIN  = 1.5    # 탈진 레짐: VWAP 이탈 최소 σ
 
@@ -82,8 +83,8 @@ class MicroRegimeClassifier:
 
     def push_1m_candle(self, high, low, close,
                        cvd_exhaustion=0.0, ofi_reversal_speed=0.0,
-                       vwap_position=0.0):
-        # type: (float, float, float, float, float, float) -> dict
+                       vwap_position=0.0, z_warn_count=0):
+        # type: (float, float, float, float, float, float, int) -> dict
         """
         1분봉 캔들 입력 → 미시 레짐 계산
 
@@ -110,7 +111,7 @@ class MicroRegimeClassifier:
         # 레짐 분류 (탈진 레짐 피처 전달)
         new_regime = self._classify(adx, atr, atr_avg, atr_ratio,
                                     cvd_exhaustion, ofi_reversal_speed,
-                                    vwap_position)
+                                    vwap_position, z_warn_count)
 
         # 레짐 변경 감지
         regime_changed = (new_regime != self._current_regime)
@@ -141,11 +142,17 @@ class MicroRegimeClassifier:
         }
 
     def _classify(self, adx, atr, atr_avg, atr_ratio,
-                  cvd_exhaustion=0.0, ofi_reversal_speed=0.0, vwap_position=0.0):
-        # type: (float, float, float, float, float, float, float) -> str
+                  cvd_exhaustion=0.0, ofi_reversal_speed=0.0, vwap_position=0.0,
+                  z_warn_count=0):
+        # type: (float, float, float, float, float, float, float, int) -> str
         """레짐 분류 규칙"""
-        # 급변장: ATR 2배 이상 → 최우선 차단
-        if atr_ratio >= self.ATR_VOLATILE_MULT:
+        # 급변장 판정 (셋 중 하나) — 기존 단일 2.0 조건보다 민감하게
+        volatile = (
+            atr_ratio >= self.ATR_VOLATILE_MULT               # ATR 1.5배 이상
+            or z_warn_count >= 3                               # z-score extreme ≥ 3 호라이즌
+            or (atr_ratio >= 1.25 and adx >= self.ATR_VOLATILE_ADX_MIN)  # 강추세+높변동
+        )
+        if volatile:
             return REGIME_VOLATILE
 
         # 탈진 레짐 (방안 D): 4가지 조건 동시 충족

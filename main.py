@@ -68,6 +68,7 @@ from config.settings import (
     HEALTH_EXCEPTION_DENSITY_WARN_10M, HEALTH_EXCEPTION_DENSITY_CRIT_10M,
     HEALTH_TREND_WINDOW_MIN,
     HEALTH_DEGRADED_ENABLED, HEALTH_DEGRADED_ENTER_STREAK, HEALTH_DEGRADED_EXIT_STREAK,
+    HEALTH_DEGRADED_WINDOW, HEALTH_DEGRADED_EXIT_RATIO,
     HEALTH_DEGRADED_SIZE_MULT, HEALTH_DEGRADED_MIN_CONF,
     HEALTH_DEGRADED_BLOCK_AUTO_ENTRY, HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY,
     HEALTH_POLICY_HOT_RELOAD_ENABLED, HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC,
@@ -81,6 +82,10 @@ from collection.broker import create_broker
 from collection.macro.regime_classifier import RegimeClassifier
 from collection.macro.micro_regime import MicroRegimeClassifier
 from collection.macro.macro_fetcher import MacroFetcher
+from collection.macro.intraday_tactical_regime import (
+    IntradayTacticalRegime,
+    INTRADAY_NORMAL, INTRADAY_DAY_RISK_OFF, INTRADAY_CRASH,
+)
 from collection.options.pcr_store import PCRStore
 from collection.options.option_chain_snapshot import OptionChainSnapshot
 from features.macro.macro_feature_transformer import MacroFeatureTransformer
@@ -159,9 +164,10 @@ class TradingSystem:
         self.session_recovery_service = SessionRecoveryService()
 
         # 핵심 컴포넌트
-        self.regime_classifier  = RegimeClassifier()
-        self.micro_regime_clf   = MicroRegimeClassifier()
-        self.macro_fetcher      = MacroFetcher(api_key_fred=FRED_API_KEY)
+        self.regime_classifier      = RegimeClassifier()
+        self.micro_regime_clf       = MicroRegimeClassifier()
+        self.intraday_regime        = IntradayTacticalRegime()
+        self.macro_fetcher          = MacroFetcher(api_key_fred=FRED_API_KEY)
         self.macro_fetcher.start()
         self.feature_builder    = FeatureBuilder()
         self.feature_builder._on_core_fail = self._on_core_feature_fail
@@ -218,8 +224,9 @@ class TradingSystem:
         self.contrarian_mode = ContrarianModeTracker(enable_real_order=False)
 
         # 현재 레짐
-        self.current_regime       = "NEUTRAL"
-        self.current_micro_regime = "혼합"
+        self.current_regime         = "NEUTRAL"
+        self.current_micro_regime   = "혼합"
+        self.current_intraday_regime = INTRADAY_NORMAL   # Layer 2 장중 전술 레짐
         self._verified_today: int = 0        # 당일 SGD 검증 누적 건수
         self._efficacy_tick:  int = 0        # 5분마다 효과 검증 패널 갱신용
         self._last_block_reason: str = ""    # 직전 진입 차단 이유 (중복 로그 방지)
@@ -355,6 +362,7 @@ class TradingSystem:
         self._health_degraded_mode: bool = False
         self._health_warn_streak: int = 0
         self._health_info_streak: int = 0
+        self._health_level_history: deque = deque(maxlen=10)
         self._health_policy: dict = self._build_health_policy()
         self._health_settings_path: str = os.path.join(BASE_DIR, "config", "settings.py")
         self._health_settings_mtime: float = 0.0
@@ -408,6 +416,8 @@ class TradingSystem:
             "degraded_enabled": bool(getattr(mod, "HEALTH_DEGRADED_ENABLED", HEALTH_DEGRADED_ENABLED)),
             "degraded_enter_streak": int(getattr(mod, "HEALTH_DEGRADED_ENTER_STREAK", HEALTH_DEGRADED_ENTER_STREAK)),
             "degraded_exit_streak": int(getattr(mod, "HEALTH_DEGRADED_EXIT_STREAK", HEALTH_DEGRADED_EXIT_STREAK)),
+            "degraded_window": int(getattr(mod, "HEALTH_DEGRADED_WINDOW", HEALTH_DEGRADED_WINDOW)),
+            "degraded_exit_ratio": float(getattr(mod, "HEALTH_DEGRADED_EXIT_RATIO", HEALTH_DEGRADED_EXIT_RATIO)),
             "degraded_size_mult": float(getattr(mod, "HEALTH_DEGRADED_SIZE_MULT", HEALTH_DEGRADED_SIZE_MULT)),
             "degraded_min_conf": float(getattr(mod, "HEALTH_DEGRADED_MIN_CONF", HEALTH_DEGRADED_MIN_CONF)),
             "degraded_block_auto_entry": bool(getattr(mod, "HEALTH_DEGRADED_BLOCK_AUTO_ENTRY", HEALTH_DEGRADED_BLOCK_AUTO_ENTRY)),
@@ -1107,7 +1117,14 @@ class TradingSystem:
             self._health_degraded_mode = False
             self._health_warn_streak = 0
             self._health_info_streak = 0
+            self._health_level_history.clear()
             return
+
+        self._health_level_history.append(health_level)
+        window = int(p.get("degraded_window", HEALTH_DEGRADED_WINDOW))
+        history = list(self._health_level_history)[-window:]
+        warn_count = sum(1 for lv in history if lv in ("WARNING", "CRITICAL"))
+        warn_ratio = warn_count / max(1, len(history))
 
         if health_level in ("WARNING", "CRITICAL"):
             self._health_warn_streak += 1
@@ -1116,19 +1133,21 @@ class TradingSystem:
                 self._health_degraded_mode = True
                 log_manager.system(
                     "[HealthPolicy] 자동 Degraded Mode 진입 "
-                    f"(warn_streak={self._health_warn_streak}, threshold={int(p.get('degraded_enter_streak', HEALTH_DEGRADED_ENTER_STREAK))})",
+                    f"(warn_streak={self._health_warn_streak}, warn_ratio={warn_ratio:.0%}, window={len(history)}분)",
                     "WARNING",
                 )
         else:
             self._health_warn_streak = 0
             self._health_info_streak += 1
-            if self._health_degraded_mode and self._health_info_streak >= int(p.get("degraded_exit_streak", HEALTH_DEGRADED_EXIT_STREAK)):
-                self._health_degraded_mode = False
-                log_manager.system(
-                    "[HealthPolicy] 자동 Degraded Mode 해제 "
-                    f"(info_streak={self._health_info_streak}, threshold={int(p.get('degraded_exit_streak', HEALTH_DEGRADED_EXIT_STREAK))})",
-                    "INFO",
-                )
+            if self._health_degraded_mode:
+                exit_ratio = float(p.get("degraded_exit_ratio", HEALTH_DEGRADED_EXIT_RATIO))
+                if warn_ratio < exit_ratio:
+                    self._health_degraded_mode = False
+                    log_manager.system(
+                        "[HealthPolicy] 자동 Degraded Mode 해제 "
+                        f"(warn_ratio={warn_ratio:.0%} < {exit_ratio:.0%}, window={len(history)}분)",
+                        "INFO",
+                    )
 
     def _is_degraded_entry_blocked(self, confidence: float, is_manual: bool) -> tuple:
         """현재 Degraded 정책 기준으로 진입 차단 여부를 반환한다."""
@@ -2010,6 +2029,7 @@ class TradingSystem:
                   bid_price, ask_price, bid_qty, ask_qty}
         """
         _pipe_t0 = time.perf_counter()
+        _st: list = [("start", _pipe_t0)]
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
 
@@ -2165,6 +2185,7 @@ class TradingSystem:
         log_manager.signal(f"--- {ts} 분봉 파이프라인 시작 ---")
 
         # ── STEP 1: 과거 예측 검증 ─────────────────────────────
+        _st.append(("S1", time.perf_counter()))
         verified = self.pred_buffer.verify_and_update(ts, close)
         self._verified_today += len(verified)
         for v in verified:
@@ -2178,7 +2199,11 @@ class TradingSystem:
             if (v["horizon"] == "30m"
                     and _conf > 0.38
                     and _pred_ts >= self._session_start_ts):
-                self.circuit_breaker.record_accuracy(v["correct"], confidence=_conf)
+                _contra_active = self.contrarian_mode.should_contra_enter()
+                self.circuit_breaker.record_accuracy(
+                    v["correct"], confidence=_conf,
+                    contrarian_active=_contra_active,
+                )
             self.horizon_calibrator.record(v["horizon"], _conf, v["correct"])
             # 시간대별 정확도 기록 (15:40 DailyConsolidator.consolidate()에서 집계)
             if v["horizon"] == "5m":
@@ -2197,6 +2222,7 @@ class TradingSystem:
                 )
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
+        _st.append(("S2", time.perf_counter()))
         # STEP 1 검증된 예측마다 해당 시점 피처로 즉시 partial_fit
         for v in verified:
             _meta_feats = v.get("features") or {}
@@ -2243,6 +2269,7 @@ class TradingSystem:
             )
 
         # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 또는 세션 재시작 즉시) ────
+        _st.append(("S3", time.perf_counter()))
         # [이상점3 수정] 재학습을 daemon thread로 분리 — 메인 스레드 블로킹 방지.
         # 완료 시 QTimer.singleShot(0, ...) 으로 메인 스레드에서 모델 로드.
         # _gbm_retrain_running 플래그로 중복 실행 차단.
@@ -2272,6 +2299,7 @@ class TradingSystem:
             threading.Thread(target=_retrain_worker, daemon=True).start()
 
         # ── STEP 4: 피처 생성 ──────────────────────────────────
+        _st.append(("S4", time.perf_counter()))
         # fetch_all()은 _investor_timer(60s QTimer)에서 COM 콜백 외부로 실행
         # 파이프라인은 이전 분봉에서 수집된 캐시를 읽음 (당일 누적 수급 — 1분 지연 허용)
         supply_feats = self.investor_data.get_features()
@@ -2402,6 +2430,7 @@ class TradingSystem:
             cvd_exhaustion   = float(features.get("cvd_exhaustion",  0.0) or 0.0),
             ofi_reversal_speed = float(features.get("ofi_reversal_speed", 0.0) or 0.0),
             vwap_position    = float(features.get("vwap_position",   0.0) or 0.0),
+            z_warn_count     = getattr(self.model, "last_z_warn_count", 0),
         )
         self.current_micro_regime = _mr["regime"]
         self.dashboard.update_micro_regime(
@@ -2435,6 +2464,11 @@ class TradingSystem:
             signal_direction = _last_dir,
             regime           = self.current_regime,
         )
+        # Contrarian ACTIVE 시 진입 관리 패널 역방향 버튼 힌트 전달
+        _contra_active = self.contrarian_mode.should_contra_enter()
+        _contra_d = self.contrarian_mode.contra_direction
+        _contra_dir_str = "LONG" if _contra_d == 1 else "SHORT" if _contra_d == -1 else ""
+        self.dashboard.set_contrarian_hint(_contra_active, _contra_dir_str)
         # 대시보드 실험 게이트 패널 갱신
         if getattr(self.dashboard, "experiment_gate_panel", None):
             self.dashboard.experiment_gate_panel.update_shadow(
@@ -2444,7 +2478,42 @@ class TradingSystem:
                 self.contrarian_mode.status_dict()
             )
 
+        # ── Layer 2 장중 전술 레짐 갱신 ──────────────────────────
+        # _ts_dt_obj, _z_warn, _contra_active 모두 이 시점에 정의 완료
+        _open_p  = getattr(self, "_session_open_price", 0.0) or 0.0
+        _day_ret = (close - _open_p) / (_open_p + 1e-9) if _open_p > 0 else 0.0
+        _ret_1m  = (
+            (close - float(bar.get("open", close) or close))
+            / (float(bar.get("open", close) or close) + 1e-9)
+        )
+        _ofi_15m = float(
+            features.get("ofi_imbalance_15m", 0.0) or
+            features.get("ofi_imbalance",     0.0) or 0.0
+        )
+        _prev_intraday = self.current_intraday_regime
+        self.current_intraday_regime = self.intraday_regime.update(
+            ts_dt            = _ts_dt_obj,
+            futures_day_ret  = _day_ret,
+            open_price       = _open_p,
+            close_price      = close,
+            atr_ratio        = _mr["atr_ratio"],
+            ofi_15m_avg      = _ofi_15m,
+            z_warn_count     = _z_warn,
+            ret_1m           = _ret_1m,
+            contrarian_active= _contra_active,
+        )
+        if self.current_intraday_regime != _prev_intraday:
+            log_manager.signal(
+                f"[IntradayRegime] {_prev_intraday} → {self.current_intraday_regime} "
+                f"| day={_day_ret*100:+.2f}% ATR={_mr['atr_ratio']:.2f} z={_z_warn}"
+            )
+        if getattr(self.dashboard, "regime_panel", None):
+            self.dashboard.regime_panel.update_intraday(
+                self.intraday_regime.status_dict()
+            )
+
         # ── STEP 5: 멀티 호라이즌 예측 ─────────────────────────
+        _st.append(("S5", time.perf_counter()))
         _gbm_ready = self.model.is_ready()
         _sgd_ready = self.online_learner.is_ready()
 
@@ -2495,8 +2564,8 @@ class TradingSystem:
         )
 
         # ── [4순위] MarketDNA — 장 시작 5분 피드 (09:00~09:04) ──────
-        _dna_ts_hour = ts_dt.hour if hasattr(ts_dt, "hour") else 9
-        _dna_ts_min  = ts_dt.minute if hasattr(ts_dt, "minute") else 0
+        _dna_ts_hour = _ts_dt_obj.hour if hasattr(_ts_dt_obj, "hour") else 9
+        _dna_ts_min  = _ts_dt_obj.minute if hasattr(_ts_dt_obj, "minute") else 0
         if _dna_ts_hour == 9 and _dna_ts_min < 5 and not self.market_dna.is_ready():
             _dna_dir    = 1 if bar.get("close", 0) > bar.get("open", 0) else (
                           -1 if bar.get("close", 0) < bar.get("open", 0) else 0)
@@ -2519,6 +2588,7 @@ class TradingSystem:
                 )
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
+        _st.append(("S6", time.perf_counter()))
         horizon_proba = self._apply_horizon_calibration(horizon_proba)
         _h_conf_values = [float(v.get("confidence", 0.0) or 0.0) for v in horizon_proba.values()]
         _gov_conf = (sum(_h_conf_values) / len(_h_conf_values)) if _h_conf_values else 0.0
@@ -2704,6 +2774,7 @@ class TradingSystem:
         )
 
         # ── STEP 7: 진입 실행 ──────────────────────────────────
+        _st.append(("S7", time.perf_counter()))
         _dir_ko = "상승" if direction > 0 else "하락" if direction < 0 else "관망"
         time_zone = get_time_zone()
         _CHK_MAP = {
@@ -2971,6 +3042,28 @@ class TradingSystem:
                 "WARNING",
             )
 
+        # ── Layer 2 장중 전술 레짐 진입 정책 적용 ──────────────────
+        # DAY_RISK_OFF: 신규 롱 금지 | CRASH: 모든 신규 진입 금지
+        _intraday_long_ok  = self.intraday_regime.is_long_allowed()
+        _intraday_short_ok = self.intraday_regime.is_short_allowed()
+        _intraday_block = False
+        if direction > 0 and not _intraday_long_ok:
+            _intraday_block = True
+            _final_grade = "X"
+            log_manager.signal(
+                f"[IntradayRegime] {self.current_intraday_regime} — 신규 롱 금지 "
+                f"(day={self.intraday_regime._last_factors.get('day_ret', 0)*100:+.2f}%)",
+                "WARNING",
+            )
+        elif direction < 0 and not _intraday_short_ok:
+            _intraday_block = True
+            _final_grade = "X"
+            log_manager.signal(
+                f"[IntradayRegime] {self.current_intraday_regime} — 신규 숏 금지 "
+                f"(day={self.intraday_regime._last_factors.get('day_ret', 0)*100:+.2f}%)",
+                "WARNING",
+            )
+
         if (
             _cr is not None
             and self.circuit_breaker.is_entry_allowed()
@@ -2987,6 +3080,7 @@ class TradingSystem:
             and _final_grade not in ("X",)
             and _qty_display > 0
             and not _bar_volume_zero          # Guard-C3: volume=0 분봉 진입 차단
+            and not _intraday_block           # Layer 2: DAY_RISK_OFF/CRASH 진입 금지
         ):
             dir_str = "LONG" if direction > 0 else "SHORT"
             raw_dir_str, final_dir_str, reverse_on = self._resolve_entry_direction(dir_str)
@@ -3073,14 +3167,45 @@ class TradingSystem:
             _cb_state = self.circuit_breaker.state
             if _cb_state != "NORMAL":
                 _reason = f"[차단] Circuit Breaker {_cb_state} — 진입 불가 (CB 해제까지 대기)"
+            elif _hc_block:
+                _reason = (
+                    f"[차단] 고신뢰 연속오답 {self.circuit_breaker._high_conf_wrong_streak}회 "
+                    f"(conf={confidence:.1%}) — HC 차단"
+                )
             elif self._broker_sync_block_new_entries:
                 _reason = f"[차단] 브로커 sync 미검증 상태 — 자동진입 금지 ({self._broker_sync_last_error})"
+            elif _in_armistice:
+                _reason = (
+                    f"[차단] Restart Armistice — 재시작 유예 중 "
+                    f"(time_ok={_armistice_time_ok} sync={self._restart_armistice_sync_count}/2)"
+                )
+            elif not _integrity_ok:
+                _reason = (
+                    f"[차단] 포지션 무결성 실패 (P1-b) — "
+                    f"연속불일치={self._integrity_fail_count}회"
+                )
             elif _in_cooldown:
                 _remain = (self._entry_cooldown_until - datetime.datetime.now()).seconds
                 _reason = f"[차단] ENTRY 타임아웃 쿨다운 — {_remain}초 후 재진입 가능"
             elif _in_exit_cooldown:
                 _remain = (self._exit_cooldown_until - datetime.datetime.now()).seconds
                 _reason = f"[차단] 청산 후 쿨다운 — {_remain}초 후 재진입 가능"
+            elif _in_reverse_clamp:
+                _clamp_remain = int(180 - (_now_dt - _last_exit_t).total_seconds())
+                _reason = (
+                    f"[차단] Reverse Clamp (P3-b) — "
+                    f"청산 후 역방향({_last_exit_dir}→{_entry_dir_str}) {_clamp_remain}s 이내 진입 금지"
+                )
+            elif _intraday_block:
+                _idr = self.current_intraday_regime
+                _idf = self.intraday_regime._last_factors
+                _reason = (
+                    f"[차단] IntradayRegime {_idr} — "
+                    f"{'롱' if direction > 0 else '숏'} 금지 "
+                    f"(day={_idf.get('day_ret', 0)*100:+.2f}% "
+                    f"ATR={_idf.get('atr_ratio', 0):.2f} "
+                    f"z={_idf.get('z_warn_count', 0)})"
+                )
             elif not _hurst_ok:
                 _hurst_val = features.get("hurst", 0.5)
                 _reason = f"[차단] Hurst {_hurst_val:.3f} < {HURST_RANGE_THRESHOLD} — 횡보 레짐 진입 차단"
@@ -3109,6 +3234,7 @@ class TradingSystem:
             self._last_block_reason = ""
 
         # ── STEP 8: 청산 트리거 감시 ───────────────────────────
+        _st.append(("S8", time.perf_counter()))
         if self.position.status != "FLAT":
             self._check_exit_triggers(close, features, decision, bar)
 
@@ -3176,7 +3302,15 @@ class TradingSystem:
             samples     = _ls["sample_count"],
         )
         # 파이프라인 처리시간 (CB⑤ 대체 지표) — 헬스 패널·SYSTEM 로그 공용
-        _pipe_ms = (time.perf_counter() - _pipe_t0) * 1000
+        _st.append(("end", time.perf_counter()))
+        _pipe_ms = (_st[-1][1] - _pipe_t0) * 1000
+        if _pipe_ms > HEALTH_LATENCY_WARN_MS:
+            _slow = " ".join(
+                f"{_st[i][0]}={(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
+                for i in range(1, len(_st))
+                if (_st[i][1] - _st[i-1][1]) * 1000 > 100
+            )
+            logger.warning("[PipePerf] total=%.0fms | %s", _pipe_ms, _slow or "─")
         self._emit_runtime_health(features, _pipe_ms)
 
         # ── STEP 9: 예측 DB 저장 ───────────────────────────────
@@ -3913,6 +4047,8 @@ class TradingSystem:
             self._investor_timer.stop()
         self.feature_builder.reset_daily()
         self.micro_regime_clf.reset_daily()
+        self.intraday_regime.reset_daily()
+        self.current_intraday_regime = INTRADAY_NORMAL
         self.investor_data.reset_daily()
         self.pcr_store.reset_daily()
         self.option_chain_snap.reset_daily()
@@ -6225,6 +6361,8 @@ def _ts_sync_position_from_broker(self) -> None:
                 self.dashboard.minute_chart_clear_active_position()
             self._clear_pending_order()
             _ts_set_broker_sync_status(self, True, "blank/no holdings response interpreted as flat", False)
+            # P1-a: rows=0(FLAT 확인)도 유효한 sync — 포지션 없는 재시작 시 Armistice가 영구 미해제되는 버그 수정
+            self._restart_armistice_sync_count = getattr(self, "_restart_armistice_sync_count", 0) + 1
             log_manager.system(
                 f"[BrokerSync] startup sync 무포지션 확인(blank rows): {before} -> FLAT",
                 "WARNING" if before != "FLAT" else "INFO",

@@ -8,6 +8,36 @@
 
 ---
 
+## 2026-05-19 (62차) — 매크로 레짐 2계층 강화 + 레짐 대시보드
+
+### 한일 요약
+
+- [DONE 2026-05-19] **macro_fetcher 첫 fetch=0 버그 수정** — `_first_fetch_done` 플래그. 초회 시딩만, 2회차부터 실 변화량 계산
+- [DONE 2026-05-19] **IntradayTacticalRegime 신규** — `collection/macro/intraday_tactical_regime.py`. NORMAL/DAY_RISK_OFF/CRASH. 매분 day_ret·ATR·z_warn·contrarian 기반 전환
+- [DONE 2026-05-19] **micro_regime ATR 둔감 수정** — ATR_VOLATILE_MULT 2.0→1.5. z_warn≥3 복합 조건 추가. 5/19 급변장 0회 → 개선
+- [DONE 2026-05-19] **main.py Layer 2 파이프라인 통합** — import·인스턴스·매분 update·진입차단 2종·block reason 로그·reset_daily
+- [DONE 2026-05-19] **RegimePanel 신규** — `dashboard/panels/regime_panel.py`. Layer1/2/Micro 3배지 + 진입정책 GridLayout + 이력 로그
+- [DONE 2026-05-19] **"🌐 레짐" 대시보드 탭** — `mid_tabs.addTab`. Layer1/Micro 업데이트 훅 연결
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **62차 수정사항 실세션 확인**
+  - "🌐 레짐" 탭: mid_tabs 내 탭 정상 표시, Layer1·Layer2·Micro 배지 색상 갱신 확인
+  - Layer 2 전환 로그: 당일 하락 시 `[IntradayRegime] NORMAL → DAY_RISK_OFF` 로그 발생
+  - 진입 차단: `[IntradayRegime] DAY_RISK_OFF — 신규 롱 금지` 또는 `CRASH — 신규 숏 금지` 로그
+  - micro_regime 급변장: 장중 변동성 확대 구간에서 `[MicroRegime] 혼합 → 급변장` 전환 로그
+  - macro_fetcher: 2회차 fetch chg 로그가 0.0이 아닌 실수치 확인
+
+- [NEXT 미정] **IntradayTacticalRegime RECOVERY 조건 캘리브레이션**
+  - bounce ≥ 0.5% + OFI 15m avg > 0 + ATR < 1.2 — 3조건 모두 충족 시 NORMAL 복귀
+  - 실세션 데이터 2주 이상 후 RECOVERY 발동 빈도 점검 (너무 빠르면 조건 강화)
+
+- [NEXT 미정] **Layer 2 진입정책 size_mult × 안전배수 조합 점검**
+  - CRASH(×0.3) × core_health_mult(×0.5) × brier_mult(×0.5) = ×0.075 → 사실상 0계약 여부 확인
+  - 너무 보수적이면 CRASH 발동 임계값 조정 검토
+
+---
+
 ## 2026-05-19 (61차) — CB HALT 분석 + 대시보드 지표 버그 수정 + CB⑤ 재설계
 
 ### 한일 요약

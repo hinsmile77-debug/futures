@@ -6,6 +6,55 @@
 
 ---
 
+## 2026-05-19 (62차 — 매크로 레짐 종합 강화: Layer 2 IntradayTacticalRegime + micro 1.5 + 레짐 대시보드 탭)
+
+**Work**: 5/19 제로트레이드 근본원인 분석 완결 이후, 시스템이 "장전 매크로 분위기"만 참고하고 "장중 국내 선물 붕괴"를 레짐으로 인식 못하는 구조 결함을 매크로 레짐 2계층으로 해결. macro_fetcher 초회 fetch=0 편향, micro_regime ATR 둔감 2개 버그도 함께 수정.
+
+### 주요 작업
+
+| 항목 | 내용 |
+|---|---|
+| macro_fetcher 첫 fetch=0 버그 수정 | `_first_fetch_done` 플래그 추가. 초회는 `_prev` 시딩만, 2회차부터 실 변화량 계산 |
+| IntradayTacticalRegime 신규 구현 | `collection/macro/intraday_tactical_regime.py` 신규. NORMAL/DAY_RISK_OFF/CRASH 3상태. 매분 day_ret·ATR·z_warn·contrarian 기반 전환. RECOVERY 3조건 복귀 로직 |
+| micro_regime ATR 둔감 수정 | `ATR_VOLATILE_MULT` 2.0→1.5. 복합 조건 추가 (z_warn≥3 OR atr≥1.25+ADX≥30). 5/19 폭락일 급변장 0회 → 수정 후 발동 예상 |
+| main.py Layer 2 통합 | import·인스턴스화·매분 update 파이프라인 삽입 (contrarian 이후 지점). 진입 차단 로직 2종 (롱금지/숏금지) + block reason 로그 체인. `reset_daily()` 연결 |
+| RegimePanel 신규 구현 | `dashboard/panels/regime_panel.py` 신규. Layer1/Layer2/Micro 3배지 행 + 진입정책 GridLayout + 레짐 이력 로그 |
+| main_dashboard "🌐 레짐" 탭 추가 | `mid_tabs.addTab(regime_panel)`. `update_supply_macro()` → `regime_panel.update_layer1()` 훅. `update_micro_regime()` → `regime_panel.update_micro()` 훅 |
+| Cybos COM 세션만료 크래시 진단 | 기동 직후 exit code 1 (Python traceback 없음) = Cybos 프로세스 없이 COM dispatch 시 C레벨 크래시. 해결: CYBOS_PLUS.bat → CYBOS5.bat 재기동 후 실행 |
+
+### 신규 파일
+
+| 파일 | 내용 |
+|---|---|
+| `collection/macro/intraday_tactical_regime.py` | IntradayTacticalRegime: 매분 장중 레짐 분류기. 진입정책 테이블 내장 |
+| `dashboard/panels/regime_panel.py` | RegimePanel: Layer1/2/Micro 3계층 실시간 모니터 위젯 |
+
+### 수정 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `collection/macro/macro_fetcher.py` | `_first_fetch_done` 플래그. 초회 시딩 전용 경로 분기 |
+| `collection/macro/micro_regime.py` | `ATR_VOLATILE_MULT` 2.0→1.5. `z_warn_count` 파라미터 추가. 복합 급변 조건 |
+| `main.py` | IntradayTacticalRegime import/인스턴스/파이프라인/차단/reset 전체 |
+| `dashboard/main_dashboard.py` | "🌐 레짐" 탭 + `regime_panel.update_layer1/micro()` 훅 |
+
+### 발견된 버그 (전부 수정 완료)
+
+| 버그 | 근본 원인 | 수정 |
+|---|---|---|
+| 매크로 chg 첫 fetch 항상 0 | `_prev` 없으면 변화량=0 → NEUTRAL 편향 | `_first_fetch_done` 분기 |
+| micro_regime 5/19 급변장 0회 | `ATR_VOLATILE_MULT=2.0` — ATR ratio 최댓값 1.33으로 임계값 미달 | 1.5로 완화 + 복합 조건 |
+
+### 미확인 (다음 장 기동 필요)
+
+1. `[IntradayRegime] NORMAL → DAY_RISK_OFF` 로그 당일 하락 시 발생 여부
+2. `[IntradayRegime] DAY_RISK_OFF — 신규 롱 금지` 차단 로그 발생 여부
+3. "🌐 레짐" 탭 정상 표시 및 Layer1/2/Micro 배지 실시간 갱신
+4. micro_regime 급변장 발동 확인 (장중 ATR 확대 구간)
+5. macro_fetcher 2회차부터 chg 실수치 정상 계산 로그
+
+---
+
 ## 2026-05-19 (61차 — CB HALT 장중 분석 + 대시보드 지표 버그 5종 수정 + CB⑤ Cybos 재설계)
 
 **Work**: 오늘 장중 CB=HALTED 발동(11:11~12:19) 원인을 분석하고, 분석 과정에서 발견된 대시보드 지표 버그 5종을 수정. Cybos 리팩토링 누락으로 CB⑤가 실질 비활성 상태였던 구조 결함을 파이프라인 처리시간 기반으로 재설계.

@@ -2890,6 +2890,12 @@ class EntryPanel(QWidget):
         self.current_mode = "hybrid"
         self._reverse_entry_enabled = False
         self._auto_enabled = True
+        self._contrarian_hint: bool = False
+        self._contrarian_direction: str = ""
+        self._blink_on: bool = False
+        self._blink_timer = QTimer(self)
+        self._blink_timer.setInterval(500)
+        self._blink_timer.timeout.connect(self._on_blink_tick)
         self._time_router = TimeStrategyRouter()
         self._mode_button_labels = {
             "auto": "A 등급진입",
@@ -2968,6 +2974,71 @@ class EntryPanel(QWidget):
         # 앙상블 + 신뢰도
         info_lay = QGridLayout()
         info_lay.setSpacing(4)
+        _TIP_META_GATE = (
+            "  ③ 메타 게이트 (MetaGate)\n"
+            "     '지금 상황이 예측하기 좋은 상황인가'를 별도 추정\n"
+            "\n"
+            "     [STEP 1] 9개 컨텍스트 피처 벡터 구성\n"
+            "       미시레짐   : 추세장=1.0 / 횡보장=-1.0 / 급변장=-2.0 / 혼합=0.0\n"
+            "       Hurst 지수 : 0.6↑ 추세성 강함 / 0.45↓ 랜덤 워크\n"
+            "       ATR 비율   : 현재ATR / 평균ATR (2.0↑이면 -0.20 패널티)\n"
+            "       시간대     : <10:30=1.0 / <14:00=0.0 / <15:00=-0.5 / 이후=-1.0\n"
+            "       LOB 불균형 : mlofi_norm (-1~+1)\n"
+            "       VPIN 프록시: cancel_add_ratio 기반 (0~1, 0.7↑이면 +0.05)\n"
+            "       최근 정확도: 최근 20회 정답률\n"
+            "       신호 강도  : 앙상블 confidence\n"
+            "       정확도 추세: 최근 5분 평균 − 이전 5분 평균\n"
+            "\n"
+            "     [STEP 2] 메타 신뢰도 예측\n"
+            "       샘플≥50건: SGD Classifier → P(이번 예측이 정답)\n"
+            "       미학습 fallback: 규칙 기반 점수 합산 (기본 0.6)\n"
+            "       메타 사이즈 배율: conf≥0.7→1.0~1.5× / 0.5~0.7→0.5~1.0× / <0.5→0×\n"
+            "\n"
+            "     [STEP 3] 블렌딩 + 액션 결정\n"
+            "       blended = 앙상블×0.6 + 메타×0.4\n"
+            "       blended ≥0.67 → take   (size 0.90~1.25×)\n"
+            "       0.56~0.67     → reduce (size 0.35~0.75×)\n"
+            "       <0.56         → skip   (차단)\n"
+            "       매분 결과 피드백으로 온라인 자가학습 (50건 후 SGD 전환)"
+        )
+        _TIP_RAW_SIGNAL = (
+            "【원신호】\n"
+            "앙상블이 계산한 순수 방향 예측값 (필터 적용 전)\n"
+            "\n"
+            "생성 흐름:\n"
+            "  6개 호라이즌(1·3·5·10·15·30분) 예측\n"
+            "  → 상관관계 역수 가중합 (15분마다 재계산)\n"
+            "  → 레짐별 최소 신뢰도 미달 시 FLAT 처리\n"
+            "     RISK_ON 52% / NEUTRAL 58% / RISK_OFF 65%\n"
+            "\n"
+            "역방향진입 ON 상태에서도 원신호는 미륵이의\n"
+            "순방향 판단 그대로 표시됨 (학습·통계 기준값)\n"
+            "\n"
+            "※ 이 값이 실행신호로 확정되려면 아래 3개 필터 통과 필요\n"
+            "  ① 시간대 필터  ② 9개 체크리스트  ③ 메타 게이트\n"
+            "\n"
+            + _TIP_META_GATE
+        )
+        _TIP_FINAL_SIGNAL = (
+            "【실행신호】\n"
+            "원신호가 아래 필터를 모두 통과한 뒤 최종 확정된 주문 방향\n"
+            "\n"
+            "필터 순서:\n"
+            "  ① 시간대 필터 (TimeStrategyRouter)\n"
+            "     EXIT_ONLY(15:00~15:10) · OTHER → 차단\n"
+            "     LUNCH_RECOVERY(13:00~14:00) → conf≥60% · size×0.90\n"
+            "\n"
+            "  ② 9개 체크리스트 → 등급 판정\n"
+            "     VWAP위치 · CVD방향 · OFI압력 · 외인방향\n"
+            "     직전봉방향 · 신뢰도 · 시간대 · 일일손실<2%\n"
+            "     A(6↑) / B(4~5) / C(2~3) / X(1↓)\n"
+            "     ※ CORE 3개(VWAP·CVD·OFI) 중 하나라도 ✗ → 강제 X\n"
+            "\n"
+            + _TIP_META_GATE + "\n"
+            "\n"
+            "역방향진입 ON 시: 원신호 방향을 뒤집어 주문\n"
+            "  (원신호=매수 → 실행신호=매도, 반대도 동일)"
+        )
         _TIP_CONF = (
             "【앙상블 신뢰도】\n"
             "6개 호라이즌(1/3/5/10/15/30분) 예측 확률의\n"
@@ -2999,7 +3070,13 @@ class EntryPanel(QWidget):
             vl = mk_val_label(init, C['text'], 13)
             setattr(self, f"e_{attr}", vl)
             fl.addWidget(vl)
-            if attr == "conf":
+            if attr == "signal":
+                f.setToolTip(_TIP_RAW_SIGNAL)
+                vl.setToolTip(_TIP_RAW_SIGNAL)
+            elif attr == "final_signal":
+                f.setToolTip(_TIP_FINAL_SIGNAL)
+                vl.setToolTip(_TIP_FINAL_SIGNAL)
+            elif attr == "conf":
                 f.setToolTip(_TIP_CONF)
                 vl.setToolTip(_TIP_CONF)
             info_lay.addWidget(f, i//2, i%2)
@@ -3422,16 +3499,55 @@ class EntryPanel(QWidget):
         return self._auto_enabled
 
     def _sync_reverse_button_style(self):
-        col = C['orange'] if self._reverse_entry_enabled else C['text2']
-        bg = "#2B1A07" if self._reverse_entry_enabled else C['bg3']
+        if self._reverse_entry_enabled:
+            col = C['orange']
+            bg  = "#2B1A07"
+            border = "2px"
+            text = "역방향 진입 ON"
+        elif self._contrarian_hint:
+            col = "#FFD700" if self._blink_on else "#997700"
+            bg  = "#1C1800"
+            border = "2px"
+            text = "역방향 진입 ★"
+        else:
+            col = C['text2']
+            bg  = C['bg3']
+            border = "1px"
+            text = "역방향 진입"
         self.reverse_btn.setStyleSheet(
-            f"QPushButton{{background:{bg};color:{col};border:"
-            f"{'2px' if self._reverse_entry_enabled else '1px'} solid {col};"
+            f"QPushButton{{background:{bg};color:{col};border:{border} solid {col};"
             f"border-radius:4px;padding:5px 8px;font-size:{S.f(12)}px;font-weight:bold;}}"
         )
-        self.reverse_btn.setText(
-            "역방향 진입 ON" if self._reverse_entry_enabled else "역방향 진입"
-        )
+        self.reverse_btn.setText(text)
+
+    def _on_blink_tick(self):
+        self._blink_on = not self._blink_on
+        self._sync_reverse_button_style()
+
+    def set_contrarian_hint(self, active: bool, direction: str = "") -> None:
+        """Contrarian ACTIVE 시 역방향 버튼에 황색 깜빡임 힌트 표시."""
+        self._contrarian_hint = active
+        self._contrarian_direction = direction
+        if active:
+            if not self._blink_timer.isActive():
+                self._blink_on = True
+                self._blink_timer.start()
+            dir_ko = "LONG(매수)" if direction == "LONG" else "SHORT(매도)" if direction == "SHORT" else direction
+            self.reverse_btn.setToolTip(
+                f"⚠ Contrarian ACTIVE — 역베팅 방향: {dir_ko}\n"
+                "모델이 반복적으로 틀리고 있어 역방향 베팅이 유리할 수 있습니다.\n"
+                "수동으로 판단 후 클릭하세요.\n\n"
+                "미륵이 자동 판단 신호를 반대로 실행합니다.\n"
+                "수동 진입 버튼에는 적용되지 않습니다."
+            )
+        else:
+            self._blink_timer.stop()
+            self._blink_on = False
+            self.reverse_btn.setToolTip(
+                "미륵이 자동 판단 신호를 반대로 실행합니다.\n"
+                "수동 진입 버튼에는 적용되지 않습니다."
+            )
+        self._sync_reverse_button_style()
 
     def _set_mode(self, mode):
         self.current_mode = mode
@@ -7838,7 +7954,6 @@ class MireukDashboard(QMainWindow):
         self.learn_panel    = LearningPanel()
         self.efficacy_panel = EfficacyPanel()
         self.trend_panel    = TrendPanel()
-        self.health_panel   = HealthPanel()
         self.alpha_panel    = AlphaPanel()
 
         # 🧭 전략 운용현황 패널 (strategy_registry + drift_detector 연동)
@@ -7857,7 +7972,6 @@ class MireukDashboard(QMainWindow):
         self.mid_tabs.addTab(self._wrap(self.learn_panel),    "🧠 자가학습")
         self.mid_tabs.addTab(self._wrap(self.efficacy_panel), "🎯 효과 검증")
         self.mid_tabs.addTab(self._wrap(self.trend_panel),    "📈 성장 추이")
-        self.mid_tabs.addTab(self._wrap(self.health_panel),   "⚕️ 운영 헬스")
         self.mid_tabs.addTab(self._wrap(self.alpha_panel),    "알파 리서치 봇")
         if self.strategy_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.strategy_panel), "🧭 전략 운용현황")
@@ -7901,6 +8015,16 @@ class MireukDashboard(QMainWindow):
             self.experiment_gate_panel = None
         if self.experiment_gate_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.experiment_gate_panel), "🧪 실험 게이트")
+
+        # 레짐 실시간 모니터 패널
+        try:
+            from dashboard.panels.regime_panel import RegimePanel as _RP
+            self.regime_panel = _RP()
+        except Exception as _rpe:
+            logger.warning("[Dashboard] RegimePanel 로드 실패: %s", _rpe)
+            self.regime_panel = None
+        if self.regime_panel is not None:
+            self.mid_tabs.addTab(self._wrap(self.regime_panel), "🌐 레짐")
 
         ml.addWidget(self.mid_tabs)
 
@@ -8497,6 +8621,13 @@ class DashboardAdapter:
             "all", "INFO",
             f"[Regime] {regime} | VIX={vix:.1f} | SP500={sp500_chg:+.2%} | USD/KRW={usd_krw:+.2f}"
         )
+        # 레짐 패널 Layer 1 갱신
+        _rp = getattr(self._win, "regime_panel", None)
+        if _rp is not None:
+            try:
+                _rp.update_layer1(regime, f"VIX={vix:.1f} SP500={sp500_chg:+.2%} KRW={usd_krw:+.2f}")
+            except Exception:
+                pass
 
     def update_micro_regime(self, micro_regime: str, adx: float = 0.0,
                             atr_ratio: float = 1.0, duration: int = 0):
@@ -8519,6 +8650,13 @@ class DashboardAdapter:
         if cp is not None:
             try:
                 cp.update_micro_regime(micro_regime, adx, atr_ratio, duration)
+            except Exception:
+                pass
+        # 레짐 패널 Micro 갱신
+        _rp = getattr(self._win, "regime_panel", None)
+        if _rp is not None:
+            try:
+                _rp.update_micro(micro_regime, adx, atr_ratio)
             except Exception:
                 pass
 
@@ -8646,6 +8784,10 @@ class DashboardAdapter:
     def is_reverse_entry_enabled(self) -> bool:
         return self._win.entry_panel.is_reverse_entry_enabled()
 
+    def set_contrarian_hint(self, active: bool, direction: str = "") -> None:
+        """Contrarian ACTIVE 시 역방향 버튼 황색 깜빡임 힌트 전달."""
+        self._win.entry_panel.set_contrarian_hint(active, direction)
+
     def set_tp1_protect_mode(self, mode: str, emit_signal: bool = False) -> None:
         self._win.exit_panel.set_tp1_protect_mode(mode, emit_signal=emit_signal)
 
@@ -8749,17 +8891,6 @@ class DashboardAdapter:
             trend_window_min, health_level, degraded_mode, thresholds,
         )
 
-        # 중앙 패널 헬스 탭 업데이트
-        mode_str = f"상태: {health_level} | Mode: {'DEGRADED' if degraded_mode else 'NORMAL'}"
-        self._win.health_panel.update_health_metrics(
-            health_score=0.8,  # 차후 계산 로직 추가 가능
-            latency_ms=latency_ms,
-            quality=quality_score,
-            cache_age_sec=cache_age_sec,
-            exception_count_10m=int(exception_density_10m),
-            mode_str=mode_str,
-            thresholds=thresholds,
-        )
 
     def append_health_log(self, msg: str, level: str = "INFO"):
         """창6 운영 헬스 로그."""

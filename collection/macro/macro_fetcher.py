@@ -46,6 +46,7 @@ class MacroFetcher:
         self._cache: Dict[str, float] = {}
         self._cache_time: Optional[datetime.datetime] = None
         self._prev: Dict[str, float] = {}
+        self._first_fetch_done: bool = False   # 첫 fetch는 prev 시드만, chg는 2회차부터
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._fetch_lock = threading.Lock()
@@ -102,12 +103,18 @@ class MacroFetcher:
             result: Dict[str, float] = {}
             for key in ("sp500", "nasdaq", "vix", "usd_krw", "us10y"):
                 curr = data.get(key, 0.0)
-                prev = self._prev.get(key, curr)
-                if prev and prev != 0:
-                    result["%s_chg" % key] = round((curr - prev) / abs(prev), 6)
-                else:
+                if not self._first_fetch_done:
+                    # 첫 fetch: prev 시드만 저장하고 chg는 계산하지 않음
+                    # (prev=None 상태에서 chg=0 으로 NEUTRAL 편향되는 버그 방지)
                     result["%s_chg" % key] = 0.0
-                self._prev[key] = curr
+                    self._prev[key] = curr
+                else:
+                    prev = self._prev.get(key, curr)
+                    if prev and prev != 0:
+                        result["%s_chg" % key] = round((curr - prev) / abs(prev), 6)
+                    else:
+                        result["%s_chg" % key] = 0.0
+                    self._prev[key] = curr
 
             result["vix"] = round(data.get("vix", 20.0), 2)
             result["event_flag"] = self._check_event_flag()
@@ -116,6 +123,11 @@ class MacroFetcher:
             result["macro_quality_age_sec"] = 0.0
             result["macro_quality_fallback_used"] = 1.0 if fallback_used else 0.0
             result["macro_quality_source_code"] = self._source_code("+".join(source_parts))
+            result["macro_first_fetch_seed_only"] = 0.0 if self._first_fetch_done else 1.0
+
+            if not self._first_fetch_done:
+                self._first_fetch_done = True
+                logger.info("[Macro] 첫 fetch: prev 시드 저장 완료, chg는 2회차부터 반영")
 
             self._cache = result
             self._cache_time = datetime.datetime.now()

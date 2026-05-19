@@ -1,7 +1,55 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-19 (61차) — **CB HALT 장중 분석 + 대시보드 지표 5종 버그 수정 + CB⑤ Cybos 대체**
+> 마지막 업데이트: 2026-05-19 (62차) — **매크로 레짐 2계층: IntradayTacticalRegime + micro ATR 1.5 + 레짐 대시보드 탭**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-19 (62차) — 매크로 레짐 종합 강화
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| IntradayTacticalRegime (Layer 2) | **완료** — `intraday_tactical_regime.py` 신규. NORMAL/DAY_RISK_OFF/CRASH |
+| main.py Layer 2 파이프라인 통합 | **완료** — 매분 update + 진입 차단 + reset_daily |
+| micro_regime ATR 둔감 수정 | **완료** — 2.0→1.5 + z_warn≥3 복합 조건 |
+| macro_fetcher 첫 fetch=0 버그 | **완료** — `_first_fetch_done` 분기로 NEUTRAL 편향 제거 |
+| RegimePanel 레짐 모니터 위젯 | **완료** — Layer1/2/Micro 3배지 + 진입정책 + 이력 로그 |
+| "🌐 레짐" 대시보드 탭 | **완료** — `mid_tabs` 탭 추가, Layer1·Micro 업데이트 훅 연결 |
+| 실세션 동작 확인 | **미완료** — 다음 장 기동 필요 |
+
+### 신규 파일 (62차)
+
+| 파일 | 내용 |
+|---|---|
+| `collection/macro/intraday_tactical_regime.py` | IntradayTacticalRegime: DAY_RISK_OFF/CRASH 진입정책 분류기 |
+| `dashboard/panels/regime_panel.py` | RegimePanel: 3계층 레짐 실시간 모니터 위젯 |
+
+### 수정 파일 (62차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `collection/macro/macro_fetcher.py` | `_first_fetch_done` 플래그. 초회 시딩 전용 경로 |
+| `collection/macro/micro_regime.py` | ATR_VOLATILE_MULT 2.0→1.5, z_warn_count 파라미터, 복합 급변 조건 |
+| `main.py` | IntradayTacticalRegime import·인스턴스·파이프라인·차단·reset |
+| `dashboard/main_dashboard.py` | "🌐 레짐" 탭, `update_layer1/micro()` 훅 |
+
+### Layer 2 정책 요약
+
+| 레짐 | 롱 | 숏 | 사이즈 | 신뢰도보정 |
+|---|---|---|---|---|
+| NORMAL | 허용 | 허용 | ×1.0 | +0%p |
+| DAY_RISK_OFF | **금지** | 허용 | ×0.5 | +5%p |
+| CRASH | **금지** | **금지** | ×0.3 | +12%p |
+
+### 62차 실세션 확인 사항
+
+1. **"🌐 레짐" 탭**: Layer1/Layer2/Micro 3배지 정상 표시
+2. **Layer 2 전환 로그**: `[IntradayRegime] NORMAL → DAY_RISK_OFF` (하락장 시)
+3. **진입 차단 로그**: `[IntradayRegime] DAY_RISK_OFF — 신규 롱 금지`
+4. **micro 급변장**: 장중 ATR 확대 구간에서 `급변장` 판정 확인
+5. **macro_fetcher**: 2회차 fetch chg 실수치 (≠ 0.0) 로그 확인
 
 ---
 
