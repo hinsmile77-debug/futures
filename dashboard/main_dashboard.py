@@ -1190,7 +1190,7 @@ class PredictionPanel(QWidget):
         lay.addWidget(self.corr_label)
         lay.addStretch(1)
 
-    def update_data(self, price, preds, params, conf=None, corr=""):
+    def update_data(self, price, preds, params, conf=None, corr="", min_conf: float = 0.58):
         self._model_row.setVisible(False)
         self.lbl_price.setText(f"{price:.2f}")
 
@@ -1198,7 +1198,7 @@ class PredictionPanel(QWidget):
         if conf is not None:
             self.lbl_conf.setText(f"신뢰도 {conf*100:.1f}%")
             self.lbl_conf.setStyleSheet(
-                f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=0.58 else C['red']};"
+                f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=min_conf else C['red']};"
                 f"font-size:{S.f(13)}px;font-weight:bold;"
             )
 
@@ -4874,7 +4874,7 @@ class TrendPanel(QWidget):
 # 패널 8.5: 운영 헬스
 # ────────────────────────────────────────────────────────────
 class HealthPanel(QWidget):
-    """운영 헬스 모니터링 패널: API 지연, 피처 품질, 캐시 나이, 예외 밀도 추적."""
+    """운영 헬스 모니터링 패널: 처리시간(CB⑤), 피처 품질, 캐시 나이, 예외 밀도 추적."""
 
     def __init__(self):
         super().__init__()
@@ -4883,8 +4883,8 @@ class HealthPanel(QWidget):
         self._health_latency_trend_values = []
         self._health_quality_trend_values = []
         self._thresholds = {
-            "latency_warn_ms": 500,
-            "latency_crit_ms": 1000,
+            "latency_warn_ms": 1000,   # CB_PIPE_WARN_MS 와 동일
+            "latency_crit_ms": 5000,   # CB_PIPE_PAUSE_MS 와 동일
             "quality_warn": 0.85,
             "quality_crit": 0.70,
             "cache_age_warn_sec": 300,
@@ -4900,21 +4900,42 @@ class HealthPanel(QWidget):
         lay.setSpacing(S.p(10))
 
         # ── 상단: 4개 메트릭 박스 ─────────────────────────────────
+        _PIPE_TIP = (
+            "파이프라인 처리시간 (CB⑤ 대체 지표)\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "≤ 1000ms  정상 (green)\n"
+            "≤ 4999ms  경고 로그 [CB⑤] (orange)\n"
+            "≥ 5000ms  5분 진입 정지 + Slack (red)\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Cybos Plus는 COM 콜백 기반으로\n"
+            "네트워크 RTT 측정 불가 — 파이프라인\n"
+            "실행시간을 API 지연 대체 지표로 사용"
+        )
         mrow = QHBoxLayout()
         mrow.setSpacing(S.p(8))
-        for hk_lbl, hk_attr, hk_val, hk_col in [
-            ("API 지연", "latency", "0ms", C['green']),
-            ("피처 품질", "quality", "1.00", C['green']),
-            ("캐시 나이", "cache_age", "0s", C['blue']),
-            ("예외/10m", "exception", "0", C['text2']),
+        for hk_lbl, hk_attr, hk_val, hk_col, hk_tip in [
+            ("처리시간", "latency",   "0ms",  C['green'],  _PIPE_TIP),
+            ("피처 품질", "quality",   "1.00", C['green'],  None),
+            ("캐시 나이", "cache_age", "0s",   C['blue'],   None),
+            ("예외/10m", "exception", "0",    C['text2'],  None),
         ]:
             hf = QFrame()
             hf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:{S.p(3)}px;")
             hfl = QVBoxLayout(hf)
             hfl.setContentsMargins(S.p(6), S.p(4), S.p(6), S.p(4))
             hfl.setSpacing(S.p(2))
-            hfl.addWidget(mk_label(hk_lbl, C['text2'], 10, align=Qt.AlignCenter))
+            hk_title = mk_label(hk_lbl, C['text2'], 10, align=Qt.AlignCenter)
+            if hk_tip:
+                hf.setToolTip(hk_tip)
+                hk_title.setToolTip(hk_tip)
+                hk_title.setStyleSheet(
+                    f"color:{C['text2']};font-size:{S.f(10)}px;"
+                    f"text-decoration:underline dotted;"
+                )
+            hfl.addWidget(hk_title)
             hv = mk_val_label(hk_val, hk_col, 13, align=Qt.AlignCenter)
+            if hk_tip:
+                hv.setToolTip(hk_tip)
             hfl.addWidget(hv)
             mrow.addWidget(hf)
             self._health_vals[hk_attr] = hv
@@ -4927,7 +4948,7 @@ class HealthPanel(QWidget):
 
         # ── 하단: 3라인 스파크라인 ────────────────────────────────
         self._health_spark_lbl = mk_label("Health Score:  ─────────────────", C['yellow'], 10)
-        self._health_latency_spark_lbl = mk_label("API 지연 추이:    ─────────────────", C['orange'], 10)
+        self._health_latency_spark_lbl = mk_label("처리시간 추이:    ─────────────────", C['orange'], 10)
         self._health_quality_spark_lbl = mk_label("피처 품질 추이:    ─────────────────", C['cyan'], 10)
         self._health_spark_meta = mk_label("최근 30분 추이", C['text2'], 9)
         
@@ -5041,7 +5062,7 @@ class HealthPanel(QWidget):
         spark_quality = self._spark_line(self._health_quality_trend_values, 20)
 
         self._health_spark_lbl.setText(f"Health Score:  {spark_score}")
-        self._health_latency_spark_lbl.setText(f"API 지연 추이:    {spark_latency}")
+        self._health_latency_spark_lbl.setText(f"처리시간 추이:    {spark_latency}")
         self._health_quality_spark_lbl.setText(f"피처 품질 추이:    {spark_quality}")
 
 
@@ -5871,15 +5892,20 @@ class LogPanel(QWidget):
 
             elif key == "model":
                 mrow = QHBoxLayout()
-                for mk_lbl, mk_val, mc in [("정확도(50분)","61.4%",C['green']),
-                                             ("SGD 비중","34%",C['purple']),
-                                             ("자가학습","● 활성",C['green'])]:
+                self._model_vals = {}
+                for mk_lbl, mk_attr, mk_val, mc in [
+                    ("정확도(50분)", "accuracy", "——%",   C['text2']),
+                    ("SGD 비중",     "sgd_w",    "——%",   C['purple']),
+                    ("자가학습",     "active",   "○ 대기", C['text2']),
+                ]:
                     mf = QFrame()
                     mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
                     mfl = QVBoxLayout(mf); mfl.setContentsMargins(5,3,5,3)
                     mfl.addWidget(mk_label(mk_lbl, C['text2'], 10, align=Qt.AlignCenter))
-                    mfl.addWidget(mk_val_label(mk_val, mc, 13, align=Qt.AlignCenter))
+                    vl = mk_val_label(mk_val, mc, 13, align=Qt.AlignCenter)
+                    mfl.addWidget(vl)
                     mrow.addWidget(mf)
+                    self._model_vals[mk_attr] = vl
                 pl.addLayout(mrow)
 
             elif key == "health":
@@ -5888,17 +5914,38 @@ class LogPanel(QWidget):
                 self._health_trend_values = []
                 self._health_latency_trend_values = []
                 self._health_quality_trend_values = []
-                for hk_lbl, hk_attr, hk_val, hk_col in [
-                    ("API 지연", "latency", "0ms", C['green']),
-                    ("피처 품질", "quality", "1.00", C['green']),
-                    ("캐시 나이", "cache_age", "0s", C['blue']),
-                    ("예외/10m", "exception", "0", C['text2']),
+                _PIPE_TIP = (
+                    "파이프라인 처리시간 (CB⑤ 대체 지표)\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "≤ 1000ms  정상 (green)\n"
+                    "≤ 4999ms  경고 로그 [CB⑤] (orange)\n"
+                    "≥ 5000ms  5분 진입 정지 + Slack (red)\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Cybos Plus는 COM 콜백 기반으로\n"
+                    "네트워크 RTT 측정 불가 — 파이프라인\n"
+                    "실행시간을 API 지연 대체 지표로 사용"
+                )
+                for hk_lbl, hk_attr, hk_val, hk_col, hk_tip in [
+                    ("처리시간", "latency",   "0ms",  C['green'],  _PIPE_TIP),
+                    ("피처 품질", "quality",   "1.00", C['green'],  None),
+                    ("캐시 나이", "cache_age", "0s",   C['blue'],   None),
+                    ("예외/10m", "exception", "0",    C['text2'],  None),
                 ]:
                     hf = QFrame()
                     hf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
                     hfl = QVBoxLayout(hf); hfl.setContentsMargins(5,3,5,3)
-                    hfl.addWidget(mk_label(hk_lbl, C['text2'], 10, align=Qt.AlignCenter))
+                    hk_title = mk_label(hk_lbl, C['text2'], 10, align=Qt.AlignCenter)
+                    if hk_tip:
+                        hf.setToolTip(hk_tip)
+                        hk_title.setToolTip(hk_tip)
+                        hk_title.setStyleSheet(
+                            f"color:{C['text2']};font-size:{S.f(10)}px;"
+                            f"text-decoration:underline dotted;"
+                        )
+                    hfl.addWidget(hk_title)
                     hv = mk_val_label(hk_val, hk_col, 13, align=Qt.AlignCenter)
+                    if hk_tip:
+                        hv.setToolTip(hk_tip)
                     hfl.addWidget(hv)
                     mrow.addWidget(hf)
                     self._health_vals[hk_attr] = hv
@@ -5950,6 +5997,30 @@ class LogPanel(QWidget):
     def refresh_pnl_history(self, rows):
         """손익 추이 탭 전체 갱신 (trades.db rows)."""
         self.pnl_history.refresh(rows)
+
+    def update_model_cards(self, accuracy: float, sgd_weight: float, is_active: bool):
+        """창5 모델 AI 카드 갱신 (정확도·SGD비중·자가학습)."""
+        if not hasattr(self, "_model_vals"):
+            return
+        # 정확도
+        acc_lbl = self._model_vals["accuracy"]
+        acc_lbl.setText(f"{accuracy:.1%}")
+        acc_col = (C['green'] if accuracy >= 0.55
+                   else C['yellow'] if accuracy >= 0.45
+                   else C['orange'])
+        acc_lbl.setStyleSheet(f"color:{acc_col};font-size:{S.f(13)}px;font-weight:bold;")
+        # SGD 비중
+        sgd_lbl = self._model_vals["sgd_w"]
+        sgd_lbl.setText(f"{sgd_weight:.0%}")
+        sgd_lbl.setStyleSheet(f"color:{C['purple']};font-size:{S.f(13)}px;font-weight:bold;")
+        # 자가학습 활성
+        act_lbl = self._model_vals["active"]
+        if is_active:
+            act_lbl.setText("● 활성")
+            act_lbl.setStyleSheet(f"color:{C['green']};font-size:{S.f(13)}px;font-weight:bold;")
+        else:
+            act_lbl.setText("○ 대기")
+            act_lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(13)}px;font-weight:bold;")
 
     def update_order_metrics(self, trades: int, avg_lat_ms: float, peak_lat_ms: float, samples: int):
         """창3 주문/체결 탭 상단 지표 갱신."""
@@ -8460,7 +8531,7 @@ class DashboardAdapter:
         """시스템 상태 (Circuit Breaker, 지연, 정확도) 업데이트"""
         self._win.log_panel.append(
             "model", "SYSTEM",
-            f"CB={cb_state} | API지연={latency_ms:.0f}ms | 정확도={accuracy:.1%}"
+            f"CB={cb_state} | 처리시간={latency_ms:.0f}ms | 정확도={accuracy:.1%}"
         )
         # 헤더 CB 배지 갱신
         lbl = getattr(self._win, "lbl_cb", None)
@@ -8554,9 +8625,9 @@ class DashboardAdapter:
         self._win.update_price(price, change, code)
 
     def update_prediction(self, price: float, preds: dict, params: dict,
-                          conf: float = None, corr: str = ""):
+                          conf: float = None, corr: str = "", min_conf: float = 0.58):
         """멀티 호라이즌 예측 패널 업데이트"""
-        self._win.pred_panel.update_data(price, preds, params, conf, corr)
+        self._win.pred_panel.update_data(price, preds, params, conf, corr, min_conf=min_conf)
 
     def update_entry(self, signal: str, conf: float, grade: str, checks: dict,
                      qty: int = 0, final_signal: str = None,
@@ -8710,6 +8781,10 @@ class DashboardAdapter:
     def append_trade_log(self, msg: str, val: str = ""):
         """창3 주문/체결 로그"""
         self._win.log_panel.append("order", "TRADE", msg, val)
+
+    def update_model_cards(self, accuracy: float, sgd_weight: float, is_active: bool):
+        """창5 모델 AI 카드 갱신"""
+        self._win.log_panel.update_model_cards(accuracy, sgd_weight, is_active)
 
     def update_order_metrics(self, trades: int, avg_lat_ms: float, peak_lat_ms: float, samples: int):
         """창3 주문/체결 탭 상단 지표 갱신"""

@@ -1,7 +1,42 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-19 (60차) — **5/19 CB③ 분석 기반 안전장치 6종 + Shadow/Contrarian 모의투자 검증 패널 구현**
+> 마지막 업데이트: 2026-05-19 (61차) — **CB HALT 장중 분석 + 대시보드 지표 5종 버그 수정 + CB⑤ Cybos 대체**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-19 (61차) — CB HALT 분석 + 지표 버그 수정 + CB⑤ 재설계
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| CB HALT 분석 (11:11~12:19) | **완료** — 50분정확도 26%→21% 하락, 15m/10m 역추세 고확신 연속 오답 패턴 |
+| 예측 로그 direction 추가 | **완료** — `main.py` 실패 시 `예측=DN 실제=UP` 방향 정보 추가 |
+| 정확도=0.0% 버그 수정 | **완료** — `update_system_status()` `accuracy=_acc30m` 전달 추가 |
+| API지연=0ms 버그 수정 + CB⑤ 재설계 | **완료** — `record_pipe_latency()` 신규. 1초 경고·5초 PAUSE |
+| 모델 AI 카드 하드코딩 버그 수정 | **완료** — `_model_vals` 참조 저장 + `update_model_cards()` 신규 + 매분 갱신 |
+| 헬스 카드 "처리시간" 전환 | **완료** — HealthPanel·LogPanel 양쪽 레이블·툴팁·스파크라인 모두 |
+| CB⑤ 테스트 추가 | **완료** — `tests/test_circuit_breaker.py` 2케이스 추가 |
+| 실세션 동작 확인 | **미완료** — 다음 장 기동 필요 |
+
+### 수정 파일 (61차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `config/settings.py` | `CB_PIPE_WARN_MS=1000`, `CB_PIPE_PAUSE_MS=5000` 추가. `HEALTH_LATENCY_WARN_MS` 2500→1000 |
+| `safety/circuit_breaker.py` | `record_pipe_latency()` 신규. `CB_PIPE_WARN_MS·PAUSE_MS` import 추가 |
+| `main.py` | `_pipe_t0` 타이머, `_pipe_ms` 계산, `record_pipe_latency` 연결. `record_api_latency` 제거. 예측 로그 direction 추가. `update_model_cards` 매분 호출. `accuracy=_acc30m` 전달 |
+| `dashboard/main_dashboard.py` | `HealthPanel`: "처리시간" 전환·툴팁·내부 임계값(500→1000, 1000→5000). `LogPanel`: 동일. `update_model_cards()` 신규 (LogPanel + MireukDashboard). `_model_vals` 참조 저장 |
+| `tests/test_circuit_breaker.py` | `record_pipe_latency` 경고·정지 2케이스 추가 |
+
+### 61차 실세션 확인 사항
+
+1. **처리시간 카드**: 6 운영 헬스 탭 "처리시간" 표시 + 툴팁 확인 (호버 시 임계값 안내)
+2. **SYSTEM 로그**: `CB=NORMAL | 처리시간=Xms | 정확도=YY.Y%` 형식 확인
+3. **모델 AI 카드**: 매분 `정확도(50분)·SGD비중·자가학습` 실시간 갱신 확인
+4. **예측 로그**: `✗ 15m 예측 실패 (conf=73.9% 예측=DN 실제=UP)` 형식 확인
+5. **CB⑤**: 파이프라인 1초 초과 시 `[CB⑤] 파이프라인 Xms 경고` 로그 발생 여부
 
 ---
 

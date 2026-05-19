@@ -177,8 +177,11 @@ CB_SIGNAL_FLIP_PAUSE   = 15    # 진입 정지 (분)
 CB_CONSEC_STOP_LIMIT   = 2     # 연속 손절 횟수 (5/15: 2회 후 재진입 손실 → 3→2 강화)
 CB_ACCURACY_MIN_30M    = 0.35  # 30분 이동평균 최소 정확도
 CB_ATR_MULT_LIMIT      = 3.0   # 변동성 ATR 배수 한계
-CB_API_LATENCY_LIMIT   = 5.0   # API 지연 한계 (초)
-CB_API_LATENCY_PAUSE   = 300   # 지연 후 정지 (초)
+CB_API_LATENCY_LIMIT   = 5.0   # (레거시 — Kiwoom용, Cybos에서는 사용 안 함)
+CB_API_LATENCY_PAUSE   = 300   # (레거시)
+# Cybos: API RTT 측정 불가 → 파이프라인 처리시간으로 CB⑤ 대체
+CB_PIPE_WARN_MS        = 1_000  # 1초 초과 → WARNING 로그
+CB_PIPE_PAUSE_MS       = 5_000  # 5초 초과 → 5분 진입 정지
 # 과신(conf>=0.85) 오류 N회 연속 시 CB③ 임계값을 0.35→0.50으로 상향
 CB_HIGH_CONF_WRONG_LIMIT   = 5    # 연속 과신 오류 횟수
 CB_HIGH_CONF_THRESHOLD     = 0.85 # 과신 판정 confidence 하한
@@ -200,8 +203,8 @@ CB_DAILY_HALT_FULL_BLOCK   = 3    # HALT 3회 이상 → 완전 관망 (진입 �
 
 # ── Runtime Health / Degraded Mode (Day10-2 / Day11) ─────────────────
 # 운영 중 실시간 튜닝 가능한 헬스 임계값
-HEALTH_LATENCY_WARN_MS = 2500.0
-HEALTH_LATENCY_CRIT_MS = 5000.0
+HEALTH_LATENCY_WARN_MS = 1000.0   # 파이프라인 기준 (정상 ~77ms → 1초 경고)
+HEALTH_LATENCY_CRIT_MS = 5000.0   # 5초 → CB⑤ 발동 기준과 동일
 HEALTH_QUALITY_WARN = 0.70
 HEALTH_QUALITY_CRIT = 0.55
 HEALTH_CACHE_AGE_WARN_SEC = 180.0

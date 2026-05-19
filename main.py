@@ -1872,8 +1872,6 @@ class TradingSystem:
             self._first_tick_notified = True
             notify_first_tick(candle)
 
-        # latency → Circuit Breaker 연동
-        self.circuit_breaker.record_api_latency(self.latency_sync.offset_sec)
         self.dashboard.minute_chart_candle_closed(candle)
         try:
             self.run_minute_pipeline(candle)
@@ -2011,6 +2009,7 @@ class TradingSystem:
             bar: {ts, open, high, low, close, volume, buy_vol, sell_vol,
                   bid_price, ask_price, bid_qty, ask_qty}
         """
+        _pipe_t0 = time.perf_counter()
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
 
@@ -2185,10 +2184,17 @@ class TradingSystem:
             if v["horizon"] == "5m":
                 _zone = get_time_zone(datetime.datetime.strptime(v["ts"], "%Y-%m-%d %H:%M:%S"))
                 self.daily_consolidator.record(_zone, bool(v["correct"]))
+            _dir_map = {1: "UP", -1: "DN", 0: "FL"}
+            _pred_str   = _dir_map.get(v.get("predicted", 0), "?")
+            _actual_str = _dir_map.get(v.get("actual",    0), "?")
             if v["correct"]:
-                log_manager.learning(f"✓ {v['horizon']} 예측 적중 (conf={_conf:.1%})")
+                log_manager.learning(
+                    f"✓ {v['horizon']} 예측 적중 (conf={_conf:.1%} {_pred_str})"
+                )
             else:
-                log_manager.learning(f"✗ {v['horizon']} 예측 실패 (conf={_conf:.1%})")
+                log_manager.learning(
+                    f"✗ {v['horizon']} 예측 실패 (conf={_conf:.1%} 예측={_pred_str} 실제={_actual_str})"
+                )
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
         # STEP 1 검증된 예측마다 해당 시점 피처로 즉시 partial_fit
@@ -2662,7 +2668,7 @@ class TradingSystem:
         _corr_str = self._get_param_corr_display()
 
         self.dashboard.update_prediction(close, _preds_ui, _params_ui, confidence,
-                                         corr=_corr_str)
+                                         corr=_corr_str, min_conf=decision["min_conf"])
 
         # GBM 미학습 시 모델 상태 행 재표시 (update_prediction이 행을 숨겼으므로)
         if not _gbm_ready:
@@ -3160,7 +3166,7 @@ class TradingSystem:
         _ds = self.position.daily_stats()
         self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
 
-        # 주문/체결 탭 메트릭 갱신 (LatencySync 실데이터)
+        # 주문/체결 탭 메트릭 갱신 (LatencySync — Cybos에서는 항상 0ms)
         _ls = self.latency_sync.summary()
         _latency_ms = float(_ls.get("offset_ms", 0.0) or 0.0)
         self.dashboard.update_order_metrics(
@@ -3169,7 +3175,9 @@ class TradingSystem:
             peak_lat_ms = _ls["peak_ms"],
             samples     = _ls["sample_count"],
         )
-        self._emit_runtime_health(features, _latency_ms)
+        # 파이프라인 처리시간 (CB⑤ 대체 지표) — 헬스 패널·SYSTEM 로그 공용
+        _pipe_ms = (time.perf_counter() - _pipe_t0) * 1000
+        self._emit_runtime_health(features, _pipe_ms)
 
         # ── STEP 9: 예측 DB 저장 ───────────────────────────────
         try:
@@ -3206,14 +3214,27 @@ class TradingSystem:
             }
             self.challenger_engine.run_shadow(features, _ctx.get("candle", {}), _ctx)
 
-        # ── CB 배지 매분 갱신 ──────────────────────────────────
+        # ── CB⑤ 파이프라인 지연 감시 + CB 배지 매분 갱신 ─────────
+        self.circuit_breaker.record_pipe_latency(_pipe_ms)
         try:
             self.dashboard.update_system_status(
                 cb_state=self.circuit_breaker.state,
-                latency_ms=_latency_ms,
+                latency_ms=_pipe_ms,
+                accuracy=_acc30m,
             )
         except Exception as _ds_e:
             logger.debug("[Dashboard] update_system_status 실패: %s", _ds_e)
+
+        # ── 창5 모델 AI 카드 갱신 ──────────────────────────────
+        try:
+            _ol = self.online_learner
+            self.dashboard.update_model_cards(
+                accuracy=_ol.recent_accuracy(),
+                sgd_weight=_ol.sgd_weight,
+                is_active=any(_ol._fitted.values()),
+            )
+        except Exception as _mc_e:
+            logger.debug("[Dashboard] update_model_cards 실패: %s", _mc_e)
 
         # ── L2 Tier Gate 영구중단 배지 갱신 ────────────────────
         try:

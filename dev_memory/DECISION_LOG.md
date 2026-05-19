@@ -2,6 +2,32 @@
 
 ---
 
+## 2026-05-19 (61차 — CB HALT 분석 + 지표 버그 수정 + CB⑤ 재설계)
+
+### [버그] API지연=0ms / CB⑤ 실질 비활성 — Cybos 리팩토링 누락
+**File**: `collection/kiwoom/latency_sync.py`, `main.py`, `safety/circuit_breaker.py`
+**Root cause**: Kiwoom→Cybos 리팩토링 시 `latency_sync.record(recv_ns, tick_time_str)` 호출부가 `CybosRealtimeData`에 연결되지 않음. 결과적으로 `_offset_ms=0.0` 고정 → `record_api_latency(0.0)` 항상 호출 → CB⑤ (5초 초과 즉시 청산) 실질 비활성 상태.
+**How to apply**: Cybos 환경에서 LatencySync는 사용하지 않는다. 파이프라인 처리시간 기반 CB⑤ 대체를 사용할 것.
+
+### [설계] CB⑤ Cybos 대체 — 파이프라인 처리시간 감시
+**File**: `safety/circuit_breaker.py` — `record_pipe_latency()`, `config/settings.py` — `CB_PIPE_WARN_MS/PAUSE_MS`
+**Why**: Cybos Plus는 COM 콜백 기반으로 네트워크 RTT 측정 불가. 대신 `run_minute_pipeline()` 실행시간(perf_counter 기반)이 시스템 과부하·지연의 직접 지표.
+**Thresholds**: 1000ms 초과→WARNING 로그, 5000ms 초과→5분 진입 정지(Kiwoom CB⑤와 동일 임계값 5초 유지).
+**Risk**: GBM 재학습이 동기 블로킹이면 오발동 가능. 현재 재학습은 비동기로 추정하나 확인 필요.
+**How to apply**: `main.py` pipeline 시작 시 `_pipe_t0 = time.perf_counter()` 기록 → 종료 시 `_pipe_ms` 계산 → `circuit_breaker.record_pipe_latency(_pipe_ms)` 호출.
+
+### [버그] 모델 AI 카드 초기값 고정 — 위젯 참조 미저장
+**File**: `dashboard/main_dashboard.py` — `LogPanel` model 섹션
+**Root cause**: `pnl`, `order` 카드는 `self._pnl_vals`, `self._order_vals` dict에 위젯 참조를 저장하지만, `model` 카드만 참조를 저장하지 않고 `mk_val_label()` 반환값을 버림. 결과적으로 "61.4%", "34%", "● 활성" 초기 하드코딩 값이 세션 내내 고정.
+**Fix**: `self._model_vals = {}` 추가, `update_model_cards(accuracy, sgd_weight, is_active)` 신규, `main.py` 매분 `online_learner.recent_accuracy()`·`sgd_weight` 전달.
+
+### [버그] 정확도=0.0% 항상 표시 — update_system_status 파라미터 누락
+**File**: `main.py` L3218
+**Root cause**: `update_system_status(cb_state=..., latency_ms=...)` 호출 시 `accuracy` 파라미터 누락. 함수 시그니처 기본값 `accuracy=0.0` 그대로 표시.
+**Fix**: `accuracy=_acc30m` 추가. `_acc30m`은 L2423에서 이미 계산된 값.
+
+---
+
 ## 2026-05-19 (60차 — CB③ 분석 기반 안전장치 6종 + Shadow/Contrarian 구현)
 
 ### [설계] Mid-Conf Blind Spot Tracker — 60~85% 구간 별도 추적

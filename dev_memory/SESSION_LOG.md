@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-05-19 (61차 — CB HALT 장중 분석 + 대시보드 지표 버그 5종 수정 + CB⑤ Cybos 재설계)
+
+**Work**: 오늘 장중 CB=HALTED 발동(11:11~12:19) 원인을 분석하고, 분석 과정에서 발견된 대시보드 지표 버그 5종을 수정. Cybos 리팩토링 누락으로 CB⑤가 실질 비활성 상태였던 구조 결함을 파이프라인 처리시간 기반으로 재설계.
+
+### 주요 작업
+
+| 항목 | 내용 |
+|---|---|
+| CB HALT 원인 분석 | 50분정확도 50%→21% 하락. 15m/10m 고신뢰(70~85%) 역추세 연속 오답. Mid-Conf Blind Spot + CB③ strict 모드 발동 추정 |
+| 예측 로그 direction 추가 | `main.py` — 실패 로그에 `예측=DN 실제=UP` 방향 추가. 방향성 분석 가능해짐 |
+| 정확도=0.0% 버그 수정 | `main.py` — `update_system_status()` 호출 시 `accuracy=_acc30m` 파라미터 누락 수정 |
+| API지연=0ms 버그 발견·수정 | Cybos 리팩토링 시 `latency_sync.record()` 연결 누락으로 항상 0ms 고정. CB⑤도 사실상 비활성 상태였음 |
+| CB⑤ Cybos 재설계 | 파이프라인 처리시간을 대체 지표로. `record_pipe_latency()` 신규. 1초→경고, 5초→5분 PAUSE |
+| 파이프라인 타이머 | `main.py` — `_pipe_t0` 시작, `_pipe_ms` 계산 후 CB·헬스·SYSTEM 로그 공용 |
+| 모델 AI 카드 버그 수정 | 정확도(50분)/SGD비중/자가학습 초기값("61.4%","34%","● 활성") 고정 버그 — `_model_vals` 참조 저장 + `update_model_cards()` 신규 + 매분 갱신 연결 |
+| 헬스 카드 "처리시간" 전환 | "API 지연" → "처리시간". HealthPanel·LogPanel 양쪽. 툴팁(구간·동작 안내) + underline dotted 스타일 |
+| HealthPanel 임계값 정합 | 내부 기본값 500→1000ms(경고), 1000→5000ms(임계) — CB_PIPE 기준과 통일 |
+| 스파크라인 레이블 수정 | "API 지연 추이" → "처리시간 추이" 2곳 (초기문자열·동적 setText) |
+| 테스트 추가 | `test_circuit_breaker.py` — `record_pipe_latency` 경고(1500ms→NORMAL) + 정지(6000ms→PAUSED) |
+
+### 발견된 버그 (전부 수정 완료)
+
+| 버그 | 근본 원인 | 수정 |
+|---|---|---|
+| `정확도=0.0%` 항상 표시 | `update_system_status()` accuracy 파라미터 누락 | `accuracy=_acc30m` 전달 |
+| `API지연=0ms` 항상 표시 | `latency_sync.record()` 실제 코드에서 한 번도 호출 안 됨 (Cybos 리팩토링 누락) | 파이프라인 처리시간으로 대체 |
+| CB⑤ 실질 비활성 | 위와 동일 — `record_api_latency(0.0)` 항상 0 | `record_pipe_latency()` 신규 |
+| 모델 AI 카드 고정값 | `_model_vals` dict 미생성으로 위젯 참조 없음 | 참조 저장 + 업데이트 함수 |
+
+---
+
 ## 2026-05-19 (60차 — 5/19 CB③ 심층분석 기반 안전장치 6종 + Shadow/Contrarian 구현)
 
 **Work**: 5/19 세션 CB③ 조기 정지(09:50, acc30m=19%) 원인을 두 분석가 관점으로 분석 후, 즉시 구현 가능한 안전장치 6종을 우선순위 순서대로 전체 구현. 매분 파이프라인 전체 흐름 문서화.

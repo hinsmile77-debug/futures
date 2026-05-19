@@ -27,6 +27,7 @@ from config.settings import (
     CB_MID_CONF_WRONG_LIMIT, CB_MID_CONF_LO, CB_MID_CONF_HI,
     CB_BRIER_WINDOW, CB_BRIER_WARN, CB_BRIER_PENALTY,
     CB_DAILY_HALT_HALF_SIZE, CB_DAILY_HALT_FULL_BLOCK,
+    CB_PIPE_WARN_MS, CB_PIPE_PAUSE_MS,
 )
 from config.constants import CB_STATE_NORMAL, CB_STATE_PAUSED, CB_STATE_HALTED
 from utils.notify import notify_circuit_breaker
@@ -306,6 +307,29 @@ class CircuitBreaker:
                 CB_API_LATENCY_PAUSE // 60,
                 f"API 지연 {latency_sec:.1f}초",
             )
+
+    # ── 트리거 ⑤ 파이프라인 처리시간 (Cybos CB⑤ 대체) ──────────
+    def record_pipe_latency(self, pipe_ms: float):
+        """매분 파이프라인 처리시간 감시.
+
+        Cybos Plus는 COM 콜백 기반으로 네트워크 RTT 측정 불가.
+        파이프라인 실행시간(run_minute_pipeline 경과)을 CB⑤ 대체 지표로 사용.
+
+        > CB_PIPE_WARN_MS (1초) : WARNING 로그
+        > CB_PIPE_PAUSE_MS (5초): 5분 진입 정지 + Slack 알림
+        """
+        if pipe_ms >= CB_PIPE_PAUSE_MS:
+            if self._state not in (CB_STATE_PAUSED, CB_STATE_HALTED):
+                msg = f"파이프라인 {pipe_ms:.0f}ms 초과"
+                notify_circuit_breaker(
+                    f"파이프라인 {pipe_ms:.0f}ms 지연",
+                    "5분 진입 정지",
+                )
+            self._trigger_pause(5, f"파이프라인 {pipe_ms:.0f}ms — 처리 지연")
+        elif pipe_ms >= CB_PIPE_WARN_MS:
+            msg = f"[CB⑤] 파이프라인 {pipe_ms:.0f}ms 경고 (기준 {CB_PIPE_WARN_MS:.0f}ms)"
+            logger.warning(msg)
+            log_manager.system(msg, "WARNING")
 
     # ── 내부 트리거 ────────────────────────────────────────────
     def _trigger_pause(self, minutes: int, reason: str):
