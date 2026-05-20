@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-05-20 (67차 — 장중 로그 분석 + 이상점 수정)
+
+### [버그 HIGH] online_learner StandardScaler partial_fit 최초 1회만 호출
+**File**: `learning/online_learner.py` — `learn()` L104~107
+**Root cause**: `if not self._fitted[horizon]: scaler.partial_fit(x2d)` 조건으로 첫 샘플에서만 partial_fit() 호출. 이후 장중 피처 분포가 변해도 스케일러가 적응 불가 → SGD에 왜곡된 스케일 피처 지속 공급 → 비중 30%→10% 급감의 구조적 원인 중 하나.
+**Fix**: `if not _fitted` 조건 제거, 매 샘플마다 `scaler.partial_fit(x2d)` 호출.
+**How to apply**: predict_proba()의 `if not self._fitted.get(horizon): return None` 안전장치는 그대로 유지 (fit 전 transform 방지).
+
+### [구조 이슈] SYSTEM 정확도=0.0% — 진짜 원인 2가지
+**File**: `main.py` — L2230~2232 (`_pred_ts >= self._session_start_ts`), `safety/circuit_breaker.py` — `_accuracy_buf`
+**Root cause A (정상)**: `_session_start_ts` 필터로 세션 시작 이전 예측 제외. 09:34:45 시작 시 30m 예측 ts가 항상 09:04~이므로 조건 실패 → `_accuracy_buf` 비어 0/1=0.0. 세션 시작 후 30분간은 구조적으로 0%.
+**Root cause B (실제)**: 10:04 이후에도 0%인 건 30m 예측 대부분이 `FL`(75~85%) 예측인데 실제는 UP/DN인 사례 연속. 수치적으로 낮은 정확도이므로 0%에 가까운 진실된 값.
+**Fix**: 레이블 개선만 적용 — `정확도=X%` → `CB③30m=X%(N건)` / 샘플 없으면 `집계중`. `cb3_samples` 파라미터 추가.
+**Why not fix A**: `_session_start_ts` 필터는 재시작 시 이전 세션 예측 대량 검증으로 CB③ 오발동을 막는 의도적 안전장치. 제거하면 안 됨.
+
+### [설계] horizon별 편향 진단 로그 — [Bias] 태그
+**File**: `main.py` — STEP 1 직후 (STEP 2 바로 위)
+**Why**: 5m bullish bias(UP 고확신 반복), 30m flat bias(FL 75~85% 포화)가 관찰됐으나 기존 로그로는 패턴을 추적하기 어려움. CB③이 30m 단일 horizon만 집계하므로 5m 편향은 CB가 포착 불가.
+**Implementation**: STEP 1 검증 결과를 horizon별로 집계 → 적중률·UP예측수·FL예측수 출력. UP편향(해당 분 예측 전부 UP)·FL편향(전부 FL) 자동 태그 표시.
+**How to apply**: `[Bias] 5m 적중=33%(1/3) UP예측=3 FL예측=0 [UP편향!]` 형태로 출력. 1주 관찰 후 편향 패턴 확정되면 calibrator 재보정.
+
+---
+
 ## 2026-05-20 (66차 — SHAP 중요도·파라미터 상관계수 이상점 4종 수정)
 
 ### [버그 HIGH] RESTORED SHAP값이 _live_shap_ready=True로 LIVE 오인 — 임계값 30 vs 100 불일치

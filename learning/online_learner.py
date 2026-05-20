@@ -102,8 +102,7 @@ class OnlineLearner:
         x2d = x.reshape(1, -1)
 
         scaler = self.scalers[horizon]
-        if not self._fitted[horizon]:
-            scaler.partial_fit(x2d)
+        scaler.partial_fit(x2d)   # 매 샘플마다 적응적 스케일 업데이트
         xs = scaler.transform(x2d)
 
         classes = np.array([DIRECTION_DOWN, DIRECTION_FLAT, DIRECTION_UP])

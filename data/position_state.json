@@ -16,8 +16,8 @@
   "partial_1_done": false,
   "partial_2_done": false,
   "partial_3_done": false,
-  "last_update_reason": "sync_flat_from_broker",
-  "last_update_ts": "2026-05-15T11:56:01.453766",
+  "last_update_reason": "apply_exit_fill_final:TP3(전량)",
+  "last_update_ts": "2026-05-18T11:25:01.092271",
   "futures_code": "A0566",
-  "saved_at": "2026-05-15T11:56:01.453766"
+  "saved_at": "2026-05-18T11:25:01.093271"
 }

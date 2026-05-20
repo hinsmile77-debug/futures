@@ -27,6 +27,7 @@ from config.settings import (
     CB_MID_CONF_WRONG_LIMIT, CB_MID_CONF_LO, CB_MID_CONF_HI,
     CB_BRIER_WINDOW, CB_BRIER_WARN, CB_BRIER_PENALTY,
     CB_DAILY_HALT_HALF_SIZE, CB_DAILY_HALT_FULL_BLOCK,
+    CB_CB3_WARN_RESET_MARGIN, CB_CB3_WARN_RESET_OK_STREAK,
     CB_PIPE_WARN_MS, CB_PIPE_PAUSE_MS,
 )
 from config.constants import CB_STATE_NORMAL, CB_STATE_PAUSED, CB_STATE_HALTED
@@ -66,6 +67,7 @@ class CircuitBreaker:
 
         # 트리거 ③ 연속 경고 카운터 — 2회 연속 미달 시 HALT
         self._cb3_warn_count: int = 0
+        self._cb3_ok_streak:  int = 0  # 연속 정상 분 수 (리셋 조건 강화용)
 
         # 과신(conf >= CB_HIGH_CONF_THRESHOLD) 오류 연속 카운터
         # 연속 N회 이상이면 CB③ 임계값을 0.35 → 0.50으로 상향 (더 빨리 발동)
@@ -176,16 +178,17 @@ class CircuitBreaker:
         self._consec_stops = 0   # 수익 시 카운터 초기화
 
     # ── 트리거 ③ 정확도 저하 (30분 호라이즌 전용) ───────────────
-    def record_accuracy(self, correct: bool, confidence: float = 1.0):
+    def record_accuracy(self, correct: bool, confidence: float = 1.0,
+                        contrarian_active: bool = False):
         """
         Args:
-            correct:    예측 적중 여부
-            confidence: 예측 신뢰도 (과신·중간신뢰도 오류 감지에 사용)
+            correct:            예측 적중 여부
+            confidence:         예측 신뢰도 (과신·중간신뢰도 오류 감지에 사용)
+            contrarian_active:  Contrarian 모드 활성 여부.
+                                True이면 accuracy_buf 누적 및 CB③ 경고를 스킵.
+                                Brier·과신·Mid-Conf streak는 항상 집계.
         """
-        self._accuracy_buf.append(1.0 if correct else 0.0)
-
-        # ── [2순위] Brier Score 누적 ──────────────────────────────
-        # actual: 정답이면 1.0, 오답이면 0.0 (direction 기준 binary)
+        # ── [2순위] Brier Score 누적 — Contrarian 상태와 무관하게 항상 집계 ──
         actual = 1.0 if correct else 0.0
         brier  = (confidence - actual) ** 2
         self._brier_buf.append(brier)
@@ -210,14 +213,13 @@ class CircuitBreaker:
             else:
                 self._brier_penalty_active = False
 
-        # ── 과신(conf >= 0.85) 오류 연속 카운터 ──────────────────
+        # ── 과신(conf >= 0.85) 오류 연속 카운터 — 항상 집계 ─────
         if not correct and confidence >= CB_HIGH_CONF_THRESHOLD:
             self._high_conf_wrong_streak += 1
         else:
             self._high_conf_wrong_streak = 0
 
-        # ── [1순위] Mid-Conf Blind Spot Tracker ──────────────────
-        # 60~85% 구간에서 틀린 경우 streak 증가, 그 외 리셋
+        # ── [1순위] Mid-Conf Blind Spot Tracker — 항상 집계 ──────
         if not correct and CB_MID_CONF_LO <= confidence < CB_MID_CONF_HI:
             self._mid_conf_wrong_streak += 1
             if self._mid_conf_wrong_streak == CB_MID_CONF_WRONG_LIMIT:
@@ -230,12 +232,18 @@ class CircuitBreaker:
                 log_manager.system(msg, "WARNING")
                 notify_circuit_breaker(
                     f"Mid-Conf {CB_MID_CONF_WRONG_LIMIT}연속 오답",
-                    "CB③ strict 모드 (임계값 35%→50%)",
+                    "CB③ strict 모드 (임계값 35%→42%)",
                 )
         else:
             self._mid_conf_wrong_streak = 0
 
-        if len(self._accuracy_buf) >= 20:
+        # ── CB③ 정확도 집계 — Contrarian ACTIVE 중에는 스킵 ──────
+        if contrarian_active:
+            return
+
+        self._accuracy_buf.append(1.0 if correct else 0.0)
+
+        if len(self._accuracy_buf) >= 25:
             acc = sum(self._accuracy_buf) / len(self._accuracy_buf)
 
             # 과신 또는 중간신뢰도 streak 중 하나라도 임계 초과면 strict 모드
@@ -247,6 +255,7 @@ class CircuitBreaker:
             )
 
             if acc < effective_min:
+                self._cb3_ok_streak = 0
                 self._cb3_warn_count += 1
                 if self._cb3_warn_count >= 2:
                     streak_note = ""
@@ -266,13 +275,21 @@ class CircuitBreaker:
                     )
                     logger.warning(msg)
                     log_manager.system(msg, "WARNING")
-                    from utils.notify import notify_circuit_breaker
                     notify_circuit_breaker(
                         f"30분 정확도 {acc:.1%} 경고 ({self._cb3_warn_count}/2)",
                         "다음 미달 시 당일 정지",
                     )
             else:
-                self._cb3_warn_count = 0
+                # 리셋 조건: 임계값 + 여유폭 이상으로 연속 N분 정상이어야 카운터 리셋
+                reset_margin = CB_CB3_WARN_RESET_MARGIN
+                reset_streak = CB_CB3_WARN_RESET_OK_STREAK
+                if acc >= effective_min + reset_margin:
+                    self._cb3_ok_streak += 1
+                    if self._cb3_ok_streak >= reset_streak:
+                        self._cb3_warn_count = 0
+                        self._cb3_ok_streak = 0
+                else:
+                    self._cb3_ok_streak = 0
 
     # ── 트리거 ④ ATR 급등 ─────────────────────────────────────
     def record_atr(self, atr_ratio: float):

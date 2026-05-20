@@ -11,12 +11,31 @@
 08:45  TradingSystem.__init__()
        ├─ CircuitBreaker 초기화
        │     Mid-Conf Blind Spot Tracker  (_mid_conf_wrong_streak)
-       │     Brier Score 버퍼             (_brier_buf, _brier_penalty_active)
+            애매하게 자신있다 라고 판단한 구간에서 계속 틀리는지 추적
+            횡보 가짜 돌파 옵션 만기일 뉴스 혼조
+
+       │     Brier Score 버퍼 확률 예측이 얼마나 정확했는지 측정하는 점수저장
+             (_brier_buf, _brier_penalty_active)최근 확률 예측 품질이 나빠서 페널티 모드인지 여부
+            
        │     재시작 루프 브레이커          (_daily_halt_count)
+            하루 동안 시스템이 몇 번 위험정지 되었는지 추적
+
        ├─ MarketDNA 초기화       [4순위]  safety/market_dna.py
+            현재 시장의 “성격” 분석기 
+            추세장/눌림목매매유리, 횡보장/mean reversion 유리, 패닉장/손절우선, 옵션변동성장세/fake move 많음
+
        ├─ CoreHealthScore 초기화  [5순위]  features/core_health.py
+            현재 시스템 상태 점수 계산기
+            데이터품질, 예측안정성,latency, 슬리피지,종합
+            이 점수가 낮으면:포지션 축소, 신규 진입 금지,안전모드 전환
+
        ├─ ShadowSessionTracker 초기화  [6순위]  safety/shadow_session.py
+            실제 주문 없이 “가상 거래”를 추적
+            전략 검증,새 모델 테스트,regime 변화 감지
+
        └─ ContrarianModeTracker 초기화  [6순위]  safety/contrarian_mode.py
+            시장 반대로 움직이는 전략 감시
+
 
 08:55  매크로 수집 → 레짐 확정 (NEUTRAL / RISK_ON / RISK_OFF)
        실시간 구독 사전 시작 (FutureCurOnly tick / FutureJpBid hoga)
@@ -32,28 +51,48 @@
 
 ```
 pred_buffer.verify_and_update(ts, close)
+현재 시점의 실제 종가(close)를 이용해서,
+과거에 저장해둔 예측값이 맞았는지 검증하고,
+결과를 버퍼 상태에 반영하라
   ↓
 필터: 30m 호라이즌 AND conf > 0.38 AND 이번 세션 예측(_session_start_ts)
+이번 장(세션)에서 생성된
+30분 방향 예측 중에서
+신뢰도 0.38 이상인 것만 사용한다
+
   ↓
 circuit_breaker.record_accuracy(correct, confidence)
+모델 예측이 계속 틀릴 때 자동으로 매매를 줄이거나 멈추는 안전장치
+
   │
-  ├─ [2순위] Brier Score 누적
+  ├─ [2순위] Brier Score 누적/자신 있게 맞히면 점수 낮음, 자신 있게 틀리면 점수 높음
   │     brier_i = (conf - actual)²
   │     이동평균 (최근 10건) > 0.35  → WARNING 로그
   │     이동평균 > 0.45              → brier_penalty_active = True
   │                                      → STEP 7에서 사이즈 ×0.5
   │
   ├─ [1순위] Mid-Conf Blind Spot Tracker
+      이 구간은 애매하지만 꽤 자신 있다고 판단한 예측입니다.
+      문제는 이 구간에서 계속 틀리면 모델이 특정 상황을 잘못 보고 있다는 뜻
+
   │     0.60 ≤ conf < 0.85 AND 오답 → mid_conf_wrong_streak +1
   │     7연속                        → CB③ strict 모드 (임계값 35% → 50%)
+        원래는 정확도 35%만 넘어도 허용했지만, 이제는 50% 이상 맞혀야 계속 매매 가능
+
   │     기타 경우                    → 리셋
   │
   ├─ 고신뢰(conf ≥ 0.85) 오답 연속   → high_conf_wrong_streak
+      이건 더 위험, 모델이 거의 확신했는데 틀린 경우
   │     5연속                        → CB③ strict 모드 (임계값 35% → 50%)
   │
   └─ acc30m 계산 (20샘플 이상)
+      30분 예측 정확도를 계산합니다.단, 최소 20샘플 이상 있어야 의미 있게 판단
+
         effective_min = 0.50  (high_conf or mid_conf streak ≥ 임계값)
+        위험 징후 있음
+
         effective_min = 0.35  (정상)
+
         acc < effective_min → cb3_warn_count +1
           1회: CB③ 경고 (슬랙)
           2회: _trigger_halt()
@@ -61,41 +100,166 @@ circuit_breaker.record_accuracy(correct, confidence)
                 1회: restart_size_mult = 1.0  (정상)
                 2회: restart_size_mult = 0.5  (50% 축소)
                 3회: restart_size_mult = 0.0  (완전 관망)
+
+          1차 위험:    경고
+          2차 위험:    halt 발동
+          재시작:    restart_size_mult 적용
+                      1회 halt → 정상 크기
+                      2회 halt → 50%
+                      3회 halt → 완전 관망
+
         acc ≥ effective_min → cb3_warn_count 리셋
 
-horizon_calibrator.record(horizon, conf, correct)
+horizon_calibrator.record
+(horizon/예측 시간 구간, conf/모델 confidence (확신도), correct실제 정답 여부)
+실제로 얼마나 믿을 만한가 평가
+
 daily_consolidator.record(zone, correct)  # 5m 호라이즌만
-```
+하루 동안의 예측 성능을 “구간(zone)” 별로 누적 기록하는 함수
+강한 상승장UP_STRONG,횡보장CHOP,패닉장PANIC,저변동장LOW_VOL
+왜 5m만 기록할까
+(1) 기준 호라이즌 통일
+여러 horizon을 섞으면:정확도를 직접 비교하기 어려움 대표 기준 horizon 하나만 사용
+(2) 노이즈 감소
+1m는 너무 시끄럽고(random noise 많음)30m는 너무 느립니다.
+5m는:단타,스캘핑,선물 방향성에서 균형이 좋은 경우가 많습니다.
+(3) 레짐 학습 안정화
+zone별 성능 분석은:샘플 수 일관성 안정성이 중요합니다. 5m가 보통 가장 안정적입니다.
+
+이 데이터의 활용
+이 누적 결과는 나중에:
+특정 zone 거래 금지
+position size 축소
+confidence penalty
+regime filter 강화
+champion/challenger 평가등에 사용
 
 ---
 
 ## STEP 2 — SGD 온라인 자가학습
+“방금 전 예측이 맞았나? 틀렸나?”를 보고 SGD 모델의 영향력을 조금씩 키우거나 줄이는 단계
 
 **파일**: `main.py:2193`, `learning/online_learner.py`
 
 ```
 검증된 예측 → online_learner.learn(horizon, x, actual, predicted)
   버킷: short (1m/3m/5m) / long (10m/15m/30m) 독립 학습
+short = 1m / 3m / 5m
+long  = 10m / 15m / 30m
+short	초단기 움직임. 잡음이 많고 빠르게 변함
+long	조금 더 긴 흐름. 추세와 레짐 영향이 큼
+
+
+SGD 비중은 최종 예측에서 SGD 모델 의견을 얼마나 믿을지 정하는 값
   accuracy > 62% → SGD 비중 +2% (최대 50%)
   accuracy < 48% → SGD 비중 -2% (최소 10%)
 
 stuck 발생 분봉 (비정상 체결) → 학습 스킵 (레이블 오염 방지)
 ```
+SGD = Stochastic Gradient Descent 틀린 만큼 아주 조금씩 수정
+시장 데이터 수집/ 체결강도 거래량 OFI 호가 imbalance PCR GEX 선물 흐름  외국인 수급 변동성
+    ↓
+feature vector 생성 x = [    0.82,    -0.14,    1.33,    ...]
+    ↓
+예측 수행
+    ↓
+예측 저장
+    ↓
+미래 실제값 확인
+    ↓
+예측 검증
+    ↓
+SGD partial_fit
+    ↓
+정확도 평가
+    ↓
+SGD 영향력 자동 조절
+    ↓
+실시간 시장 적응
+
+SGD 영향력(weight)은 개별 horizon 성능 평가→ bucket 평가→ 최종 종합 예측 반영
+
+
+
 
 ---
 
 ## STEP 3 — GBM 배치 재학습
+실시간으로 조금씩 배우는 SGD와 다르게, 일정 기간 쌓인 데이터를 모아서 GBM 모델을 다시 학습시키는 작업
+SGD는 수업 중 바로바로 오답노트 수정
+GBM 배치 재학습은 주말이나 월말에 전체 시험지를 다시 보고 새 참고서를 만드는 작업
 
 **파일**: `main.py:2239`, `learning/batch_retrainer.py`
 
 ```
-트리거: 주간/월간 스케줄 OR 세션 재시작 직후 (_warmup_retrain_pending)
-daemon thread 분리 → 메인 스레드 블로킹 없음
-완료 시 QTimer.singleShot(0, _on_gbm_retrain_done) — UI 스레드 안전 로드
-_gbm_retrain_running 플래그로 중복 실행 차단
-```
+트리거: 주간/월간 스케줄 OR 
+세션 재시작 직후 (_warmup_retrain_pending)재시작 후 아직 GBM 재학습을 해야 하는 상태
+즉, 프로그램이 켜졌는데 지난번에 재학습을 못 했거나, 시작 직후 한 번 모델을 최신 상태로 맞춰야 하면 이 플래그가 켜집니다.
 
+daemon thread 분리 → 메인 스레드 블로킹 없음/재학습은 뒤에서 돌림
+
+완료 시 QTimer.singleShot(0, _on_gbm_retrain_done) — UI 스레드 안전 로드
+PyQt에서는 UI를 아무 스레드에서나 직접 건드리면 위험 QTimer을 사용해서 UI 메인 스레드에서 안전하게 후처리 0의 의미는:가능한 한 빨리, 하지만 UI 이벤트 루프 안에서 실행
+
+_on_gbm_retrain_done
+재학습이 끝난 뒤 실행되는 함수
+새 GBM 모델 파일 로드 모델 상태 표시 업데이트 로그 출력 재학습 실행 플래그 해제
+즉, 재학습 thread가 만든 결과물을 메인 시스템에 반영하는 단계
+
+_gbm_retrain_running 플래그로 중복 실행 차단
+이 플래그는 현재 GBM 재학습이 돌고 있는지 표시
+```
+전체 흐름
+STEP 3 — GBM 배치 재학습
+
+1. 주간/월간 스케줄 또는 재시작 직후 조건 확인
+2. _gbm_retrain_running 확인
+3. 실행 중이 아니면 True로 변경
+4. daemon thread에서 batch_retrainer 실행
+5. 재학습 완료
+6. QTimer.singleShot(0, _on_gbm_retrain_done)
+7. UI 스레드에서 새 모델 안전 로드
+8. _gbm_retrain_running = False
 ---
+
+GBM Gradient Boosting Machine
+틀린 문제를 계속 복습하면서,
+점점 더 똑똑한 여러 개의 작은 결정트리(Tree)를 연결해
+최종 예측을 만드는 방식
+
+GBM 구조
+입력 데이터
+   ↓
+특징(Feature) 생성
+   ↓
+첫 번째 결정트리 학습
+   ↓
+오차 계산
+   ↓
+오차를 줄이는 다음 트리 학습
+   ↓
+반복
+   ↓
+모든 트리 결과 합산
+   ↓
+최종 예측
+
+결정트리(Tree)란
+거래량 증가율 > 15% ?
+   ├─ YES
+   │    외국인 순매수 > 100억 ?
+   │        ├─ YES → 상승확률 높음
+   │        └─ NO  → 보통
+   │
+   └─ NO
+        변동성 증가 ?
+             ├─ YES → 하락 위험
+             └─ NO  → 횡보
+
+GBM의 핵심은:“이전 트리가 틀린 부분만 집중 보완”
+
+
+
 
 ## STEP 4 — 피처 생성
 

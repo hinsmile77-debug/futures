@@ -8672,11 +8672,17 @@ class DashboardAdapter:
         cb_state: str = "NORMAL",
         latency_ms: float = 0.0,
         accuracy: float = 0.0,
+        cb3_samples: int = 0,
     ):
         """시스템 상태 (Circuit Breaker, 지연, 정확도) 업데이트"""
+        acc_str = (
+            f"CB③30m={accuracy:.1%}({cb3_samples}건)"
+            if cb3_samples > 0
+            else "CB③30m=집계중"
+        )
         self._win.log_panel.append(
             "model", "SYSTEM",
-            f"CB={cb_state} | 처리시간={latency_ms:.0f}ms | 정확도={accuracy:.1%}"
+            f"CB={cb_state} | 처리시간={latency_ms:.0f}ms | {acc_str}"
         )
         # 헤더 CB 배지 갱신
         lbl = getattr(self._win, "lbl_cb", None)

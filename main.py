@@ -1704,10 +1704,10 @@ class TradingSystem:
             direction = int(res.get("direction", 0))
             raw_conf = float(res.get("confidence", 1 / 3) or 1 / 3)
             # 보정 후에도 과신 방지 — calibrator가 1.0 반환 가능하므로 재클립
-            cal_conf = float(np.clip(
-                self.horizon_calibrator.calibrate(horizon, raw_conf),
-                0.0, 0.85,
-            ))
+            _calibrated_raw = self.horizon_calibrator.calibrate(horizon, raw_conf)
+            cal_conf = float(np.clip(_calibrated_raw, 0.0, 0.85))
+            if _calibrated_raw > 0.85:
+                logger.debug("[Calib] %s clipped %.3f→0.85", horizon, _calibrated_raw)
 
             up = float(res.get("up", 1 / 3) or 1 / 3)
             down = float(res.get("down", 1 / 3) or 1 / 3)
@@ -2250,6 +2250,33 @@ class TradingSystem:
             else:
                 log_manager.learning(
                     f"✗ {v['horizon']} 예측 실패 (conf={_conf:.1%} 예측={_pred_str} 실제={_actual_str})"
+                )
+
+        # horizon별 정확도 편향 추적 (5m bullish bias / 30m flat bias 진단)
+        if verified:
+            _h_stats: dict = {}
+            for _v in verified:
+                _h = _v["horizon"]
+                _p = {1: "UP", -1: "DN", 0: "FL"}.get(_v.get("predicted", 0), "?")
+                if _h not in _h_stats:
+                    _h_stats[_h] = {"ok": 0, "tot": 0, "up_pred": 0, "fl_pred": 0}
+                _h_stats[_h]["tot"] += 1
+                if _v["correct"]:
+                    _h_stats[_h]["ok"] += 1
+                if _p == "UP":
+                    _h_stats[_h]["up_pred"] += 1
+                elif _p == "FL":
+                    _h_stats[_h]["fl_pred"] += 1
+            for _h, _s in sorted(_h_stats.items()):
+                _acc_h = _s["ok"] / _s["tot"] if _s["tot"] else 0.0
+                _bias = ""
+                if _s["up_pred"] == _s["tot"] and _s["tot"] >= 2:
+                    _bias = " [UP편향!]"
+                elif _s["fl_pred"] == _s["tot"] and _s["tot"] >= 2:
+                    _bias = " [FL편향!]"
+                log_manager.learning(
+                    f"[Bias] {_h} 적중={_acc_h:.0%}({_s['ok']}/{_s['tot']})"
+                    f" UP예측={_s['up_pred']} FL예측={_s['fl_pred']}{_bias}"
                 )
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
@@ -3391,6 +3418,7 @@ class TradingSystem:
                 cb_state=self.circuit_breaker.state,
                 latency_ms=_pipe_ms,
                 accuracy=_acc30m,
+                cb3_samples=_cb_status.get("cb3_samples", 0),
             )
         except Exception as _ds_e:
             logger.debug("[Dashboard] update_system_status 실패: %s", _ds_e)

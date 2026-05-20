@@ -1,7 +1,32 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-20 (66차) — **SHAP 중요도·파라미터 상관계수 이상점 4종 수정: RESTORED→LIVE 오인 버그·데드코드·window 복원·인코딩**
+> 마지막 업데이트: 2026-05-20 (67차) — **장중 로그 분석 + 모델 이상점 5종 확인 + online_learner scaler 버그 수정 + SYSTEM 로그 개선**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-20 (67차) — 장중 로그 분석 + 이상점 수정
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| online_learner scaler partial_fit 버그 수정 | **완료** — 매 샘플마다 `partial_fit()` 호출로 변경 |
+| SYSTEM 로그 CB③30m 명확화 | **완료** — `정확도=X%` → `CB③30m=X%(N건)` / `집계중` 표시 |
+| horizon별 [Bias] 편향 진단 로그 추가 | **완료** — STEP 1 직후 호라이즌별 UP/FL편향 자동 감지 |
+| conf 클립 DEBUG 로그 추가 | **완료** — `[Calib] clipped` DEBUG 로그 |
+| SYSTEM 정확도=0.0% 원인 규명 | **완료** — 세션 초반 30분 필터 공백(정상) + 30m 실제 정확도 낮음 |
+| 5m bullish bias / 30m flat bias 근본 수정 | **미완료** — [Bias] 로그로 관찰 후 calibration 재보정 필요 |
+| 6분 주기 처리시간 스파이크 원인 | **미완료** — GBM 재학습 연관 추정, 단계별 타이머 관찰 필요 |
+| 실세션 동작 확인 | **미완료** — 다음 장(2026-05-21) 기동 필요 |
+
+### 수정 파일 (67차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `learning/online_learner.py` | scaler `partial_fit()` 매 샘플마다 호출 (조건 제거) |
+| `dashboard/main_dashboard.py` | `update_system_status()` `cb3_samples` 파라미터 추가. SYSTEM 로그 `CB③30m=X%(N건)` 형식 |
+| `main.py` | `update_system_status(cb3_samples=...)` 전달 추가. `[Bias]` horizon 편향 진단 로그 (STEP 1 직후). conf 클립 시 `[Calib] clipped` DEBUG 로그 |
 
 ---
 

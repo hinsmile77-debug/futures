@@ -185,7 +185,11 @@ CB_PIPE_PAUSE_MS       = 5_000  # 5초 초과 → 5분 진입 정지
 # 과신(conf>=0.85) 오류 N회 연속 시 CB③ 임계값을 0.35→0.50으로 상향
 CB_HIGH_CONF_WRONG_LIMIT   = 5    # 연속 과신 오류 횟수
 CB_HIGH_CONF_THRESHOLD     = 0.85 # 과신 판정 confidence 하한
-CB_ACCURACY_MIN_30M_STRICT = 0.50 # 과신 연속 시 강화된 임계값
+CB_ACCURACY_MIN_30M_STRICT = 0.42 # 과신 연속 시 강화된 임계값 (0.50→0.42 완화)
+
+# CB③ 경고 카운터 리셋 조건 — 단순 1회 회복 리셋 방지
+CB_CB3_WARN_RESET_MARGIN   = 0.05 # 임계값 + 이 여유폭 이상이어야 리셋 허용
+CB_CB3_WARN_RESET_OK_STREAK = 2   # 연속 정상 분 수 (이 횟수 이상 유지해야 리셋)
 
 # Mid-Conf Blind Spot Tracker (60~85% 구간 연속 오답 — 오늘 직접 원인)
 CB_MID_CONF_WRONG_LIMIT    = 7    # 연속 중간신뢰도 오류 횟수 → strict 모드
@@ -218,7 +222,9 @@ HEALTH_TREND_WINDOW_MIN = 30
 # 자동 Degraded Mode 정책
 HEALTH_DEGRADED_ENABLED = True
 HEALTH_DEGRADED_ENTER_STREAK = 2   # WARNING/CRITICAL 연속 N분 시 진입
-HEALTH_DEGRADED_EXIT_STREAK = 3    # INFO 연속 N분 시 해제
+HEALTH_DEGRADED_EXIT_STREAK = 3    # (미사용) 슬라이딩 윈도우 방식으로 대체됨
+HEALTH_DEGRADED_WINDOW = 5         # 슬라이딩 윈도우 크기 (분)
+HEALTH_DEGRADED_EXIT_RATIO = 0.5   # 윈도우 내 WARNING 비율이 이 미만이면 해제
 HEALTH_DEGRADED_SIZE_MULT = 0.60   # Degraded 상태에서 수량 축소 배수
 HEALTH_DEGRADED_MIN_CONF = 0.62    # Degraded 상태 최소 진입 신뢰도
 HEALTH_DEGRADED_BLOCK_AUTO_ENTRY = True    # 자동진입 최소신뢰도 미달 시 차단
