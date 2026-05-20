@@ -3102,7 +3102,7 @@ class TradingSystem:
             log_manager.signal(
                 f"[보호] 고신뢰 연속오답 {self.circuit_breaker._high_conf_wrong_streak}회 "
                 f"(conf={confidence:.1%} ≥ {CB_HIGH_CONF_THRESHOLD:.0%}) — 신규 진입 차단",
-                "WARNING",
+                level="WARNING",
             )
 
         # ── Layer 2 장중 전술 레짐 진입 정책 적용 ──────────────────
@@ -3116,7 +3116,7 @@ class TradingSystem:
             log_manager.signal(
                 f"[IntradayRegime] {self.current_intraday_regime} — 신규 롱 금지 "
                 f"(day={self.intraday_regime._last_factors.get('day_ret', 0)*100:+.2f}%)",
-                "WARNING",
+                level="WARNING",
             )
         elif direction < 0 and not _intraday_short_ok:
             _intraday_block = True
@@ -3124,7 +3124,7 @@ class TradingSystem:
             log_manager.signal(
                 f"[IntradayRegime] {self.current_intraday_regime} — 신규 숏 금지 "
                 f"(day={self.intraday_regime._last_factors.get('day_ret', 0)*100:+.2f}%)",
-                "WARNING",
+                level="WARNING",
             )
 
         entry_mode = "manual"

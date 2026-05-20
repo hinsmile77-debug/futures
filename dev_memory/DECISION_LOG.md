@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-05-20 (69차 — signal() TypeError ERR-FATAL 수정 + traceback 로깅)
+
+### [버그 CRITICAL] `log_manager.signal()` TypeError — validate_health_policy_hotreload.py monkey-patch + positional 인수 충돌
+**File**: `scripts/validate_health_policy_hotreload.py` — `_Collector.signal()`, `main.py` — 3개 호출 지점
+**Root cause**: `_Collector.signal(self, msg)` — level 파라미터 없음. `validate_health_policy_hotreload.py` 실행 중 `main.log_manager.signal = collector.signal`로 monkey-patch. 이 상태에서 pipeline이 `log_manager.signal(msg, "WARNING")` 호출 시 `TypeError: takes 2 positional arguments but 3 were given`. 발생 조건: OPEN_VOLATILE 구간 + IntradayRegime=CRASH·DAY_RISK_OFF 또는 _hc_block 발동 시.
+**Fix 1**: `_Collector.signal(self, msg, level="INFO")` — level 기본값 추가. monkey-patch 중에도 positional/keyword 모두 수용.
+**Fix 2**: `main.py` 3곳 `log_manager.signal(msg, "WARNING")` → `log_manager.signal(msg, level="WARNING")`. positional 3번째 인수를 keyword 인수로 변환. monkey-patch 여부와 무관하게 안전.
+**How to apply**: `log_manager`의 편의 메서드(`signal`, `system`, `trade`, `health`)를 호출할 때 두 번째 인수 `level`은 항상 keyword 형식(`level="WARNING"`)으로 전달. positional 전달은 시그니처가 변경될 때 취약.
+
+### [개선] `apply_error_policy()` traceback 로깅 추가
+**File**: `utils/error_policy.py`
+**Problem**: FATAL 발생 시 `logger.error("[ERR-FATAL] %s: %s", context, exc)` — 메시지와 예외 타입만 기록. 실제 실패 파일·라인은 traceback 없이 불가. `minute_pipeline` 컨텍스트만 보면 main.py에서 발생했다고 오인 → 68차 오진단의 구조적 원인.
+**Fix**: `import traceback` 추가. RECOVERABLE·DEGRADED·FATAL 모두 `logger.xxx("[ERR-...] %s: %s\n%s", context, exc, traceback.format_exc())`.
+**How to apply**: 다음 ERR-FATAL 발생 시 WARN.log에 `Traceback (most recent call last):` 블록 포함 → 정확한 파일명·라인 즉시 파악 가능. traceback이 `NoneType: None`이면 예외 컨텍스트 없는 호출(드문 케이스).
+
+### [기록] 미해결 모순 — conf=35.2% < 63%인데 pass_count=6 (CORE 체크 실행)
+**Context**: 09:14:02 SIGNAL 로그: `[Ensemble] conf=35.2% grade=X` + `[Checklist] CORE 피처 ✗ ['3_vwap'] → 강제 X등급 (pass_count=6)`. DEBUG 로그: `conf=✗ pass_count=6`.
+**Contradiction**: conf=35.2% < OPEN_VOLATILE min_conf=63%이면 체크리스트 신뢰도 체크(2_confidence)에서 조기 반환해야 함. 그런데 CORE 체크(3_vwap 포함)까지 실행되어 pass_count=6이 됨.
+**Possible explanations**: ① 체크리스트가 두 경로에서 호출됨 (실진입 경로 + 대시보드 디스플레이 경로) — 대시보드 경로에서 min_confidence가 다를 수 있음. ② signal() 예외가 발생하기 전에 이미 CORE 체크 결과가 DEBUG 로깅됨 (시간 역전 아님, 단순 로그 순서). ③ 65차 수정 이전 코드가 09:14에 실행 중이었을 가능성 (65차 커밋이 언제인지 확인 필요).
+**Status**: traceback 수집 후 다음 발생 시 정확한 코드 경로 재분석 예정.
+
+---
+
 ## 2026-05-20 (68차 — minute_pipeline ERR-FATAL 실제 근본 원인 최종 규명)
 
 ### [버그 CRITICAL] `checklist.py` `entry_mode` UnboundLocalError — 신뢰도 미달 조기 반환 경로

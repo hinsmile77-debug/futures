@@ -29,8 +29,8 @@ class _Collector:
     def system(self, msg, level="INFO"):
         self.rows.append(("SYSTEM", level, str(msg)))
 
-    def signal(self, msg):
-        self.rows.append(("SIGNAL", "INFO", str(msg)))
+    def signal(self, msg, level="INFO"):
+        self.rows.append(("SIGNAL", level, str(msg)))
 
 
 def _replace_setting(text, key, value_literal):

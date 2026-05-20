@@ -6,6 +6,25 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-20 (69차) — signal() TypeError ERR-FATAL 수정 + traceback 로깅 강화
+
+### 한일 요약
+
+- [DONE 2026-05-20] **68차 개선 3항목 실세션 검증** — ERR-FATAL 소멸·신뢰도 미달 로그 정상·watchdog 거짓 경보 없음 모두 확인
+- [DONE 2026-05-20] **`_Collector.signal` level 파라미터 추가** — `scripts/validate_health_policy_hotreload.py` `_Collector.signal(self, msg, level="INFO")`. monkey-patch 중 TypeError 방지
+- [DONE 2026-05-20] **main.py signal() positional→keyword 변환** — `_hc_block`·IntradayRegime 롱·숏 차단 3곳 `"WARNING"` positional → `level="WARNING"` keyword
+- [DONE 2026-05-20] **error_policy.py traceback 로깅 추가** — `import traceback` + RECOVERABLE·DEGRADED·FATAL 3케이스 모두 `traceback.format_exc()` 로깅. 다음 ERR-FATAL 발생 시 정확한 라인 파악 가능
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **69차 수정 실세션 확인 (2026-05-21)**
+  - ERR-FATAL `signal() takes 2 positional arguments but 3 were given` 재발 없음 확인
+  - `[보호] 고신뢰 연속오답 N회 — 신규 진입 차단` 로그 정상 출력 (TypeError 없음)
+  - `[IntradayRegime] CRASH — 신규 롱/숏 금지` 로그 정상 출력 (TypeError 없음)
+  - 다음 ERR-FATAL 발생 시 WARN.log에 traceback 포함 확인 (파일명·라인번호)
+
+---
+
 ## 2026-05-20 (68차) — minute_pipeline ERR-FATAL 실제 근본 원인 최종 수정
 
 ### 한일 요약
@@ -15,10 +34,7 @@
 
 ### 다음 할 일 (우선순위 순)
 
-- [NEXT 장중] **68차 수정 실세션 확인 (2026-05-21)**
-  - `conf < min_conf` 분봉(grade=X)에서 `ERR-FATAL minute_pipeline` 경보가 더 이상 없는지 확인
-  - `[Checklist] 신뢰도 미달 XX.X% < YY.Y% → 강제 X등급` 로그 정상 출력 확인 (예외 없이 처리)
-  - watchdog 90초 경보가 실제 분봉 미수신 상황에서만 발생하는지 확인
+- [DONE 2026-05-20] **68차 수정 실세션 확인** — 11:46:31 재시작 후 3항목 모두 정상 확인 완료
 
 ---
 

@@ -6,6 +6,49 @@
 
 ---
 
+## 2026-05-20 (69차 — 68차 개선 검증 + signal() TypeError ERR-FATAL 근본 원인 수정)
+
+**Work**: 11:46:31 재시작 후 68차 개선 3항목 실세션 검증 완료. 09:14~09:25 로그 재분석에서 `signal() takes 2 positional arguments but 3 were given` ERR-FATAL 근본 원인 규명 → 3개 파일 수정.
+
+### 68차 개선 검증 결과 (11:46:31 재시작 후)
+
+| 항목 | 결과 |
+|---|---|
+| `conf < min_conf` 분봉 ERR-FATAL 소멸 | **확인** — 11:46:31 이후 ERR-FATAL minute_pipeline 경보 없음 |
+| `[Checklist] 신뢰도 미달 → 강제 X등급` 로그 | **정상** — 매분 `XX.X% < YY.Y% → 강제 X등급` 정상 출력 |
+| watchdog 경보 거짓 경보 여부 | **정상** — 재시작 후 watchdog 허위 경보 없음 |
+| 시간대 전환 | **정상** — 11:50:26 `OTHER: 기타 구간` 전환, min_conf=65% 정상 적용 |
+| CB⑤ 9138ms 발동 | **정상** — 11:54 실제 처리 지연 → 5분 CB 정지 (허위 경보 아님) |
+
+### 신규 버그 발견 및 분석
+
+09:14 ~ 09:25 ERR-FATAL 8회 이상: `signal() takes 2 positional arguments but 3 were given`
+
+| 항목 | 내용 |
+|---|---|
+| 발생 구간 | OPEN_VOLATILE (09:05~10:30), 11:46:31 재시작 후 미재현 (구간 지남) |
+| 주요 원인 1 | `validate_health_policy_hotreload.py` `_Collector.signal(self, msg)` — level 파라미터 없음. monkey-patch 중 pipeline이 `log_manager.signal(msg, "WARNING")` 호출 시 TypeError |
+| 주요 원인 2 | `main.py` `_hc_block`·IntradayRegime 차단 로직 3곳: positional `"WARNING"` 인수 사용 |
+| traceback 부재 | `error_policy.py` FATAL 처리 시 traceback 미캡처 → 정확한 실패 라인 파악 불가 |
+| 미해결 모순 | SIGNAL: `conf=35.2% < 63% → 신뢰도 체크 실패`. DEBUG: `pass_count=6` (CORE 체크 실행됨). traceback 수집 후 다음 발생 시 재분석 예정 |
+
+### 수정 내용 (69차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `utils/error_policy.py` | `import traceback` 추가. RECOVERABLE·DEGRADED·FATAL 3케이스 모두 `traceback.format_exc()` 로깅 |
+| `scripts/validate_health_policy_hotreload.py` | `_Collector.signal(self, msg)` → `_Collector.signal(self, msg, level="INFO")` |
+| `main.py` | `_hc_block` + IntradayRegime 롱차단 + 숏차단 3곳: `"WARNING"` positional → `level="WARNING"` keyword |
+
+### 69차 실세션 확인 사항 (2026-05-21)
+
+1. ERR-FATAL `signal() takes 2 positional arguments but 3 were given` 재발 없음
+2. `[보호] 고신뢰 연속오답 N회 — 신규 진입 차단` 정상 출력 (TypeError 없음)
+3. `[IntradayRegime] CRASH — 신규 롱 금지` 정상 출력 (TypeError 없음)
+4. 다음 ERR-FATAL 발생 시 WARN.log에 traceback 포함 (파일명·라인번호 확인)
+
+---
+
 ## 2026-05-20 (68차 — minute_pipeline ERR-FATAL 실제 근본 원인 발견 및 최종 수정)
 
 **Work**: 11:04:01 재시작 후 `ERR-FATAL minute_pipeline`가 매분 반복. 1차 수정(81e0784, `main.py`) 후 재시작에도 11:37~11:42 동일 경보 지속. 2차 분석에서 실제 원인이 `checklist.py`에 있음을 규명하고 최종 수정.

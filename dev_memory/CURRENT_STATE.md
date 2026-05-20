@@ -1,7 +1,47 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-20 (68차) — **`checklist.py` `entry_mode` UnboundLocalError 실제 근본 원인 최종 규명 및 수정**
+> 마지막 업데이트: 2026-05-20 (69차) — **`signal() takes 2 positional arguments but 3 were given` ERR-FATAL 근본 원인 수정 + traceback 로깅 추가**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-20 (69차) — signal() TypeError ERR-FATAL 수정 + traceback 로깅 강화
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| 68차 개선 3항목 실세션 검증 (11:46:31~) | **완료** — ERR-FATAL 소멸·신뢰도 미달 로그 정상·watchdog 거짓 경보 없음 |
+| `signal() takes 2 positional arguments but 3 were given` | **수정 완료** — 3개 파일 수정 |
+| ERR-FATAL 발생 시 traceback 가시성 | **개선** — RECOVERABLE·DEGRADED·FATAL 모두 traceback.format_exc() 추가 |
+| 69차 수정 실세션 재검증 | **미완료** — 2026-05-21 장중 확인 필요 |
+
+### 수정 파일 (69차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `utils/error_policy.py` | `import traceback` 추가. RECOVERABLE·DEGRADED·FATAL 3케이스 모두 `\n%s, traceback.format_exc()` 로깅 |
+| `scripts/validate_health_policy_hotreload.py` | `_Collector.signal(self, msg)` → `_Collector.signal(self, msg, level="INFO")` — monkey-patch 중 TypeError 방지 |
+| `main.py` | `_hc_block`·IntradayRegime 롱차단·숏차단 3곳 `log_manager.signal(msg, "WARNING")` → `log_manager.signal(msg, level="WARNING")` keyword 인수 변경 |
+
+### 버그 핵심 구조 (수정 전)
+
+```
+validate_health_policy_hotreload.py 실행 중:
+  log_manager.signal = collector.signal   # monkey-patch
+  collector.signal(self, msg)             # level 파라미터 없음
+
+main.py pipeline:
+  IntradayRegime CRASH + direction=LONG →
+    log_manager.signal(msg, "WARNING")   # positional 3번째 인수
+    → TypeError: takes 2 positional arguments but 3 were given
+    → ERR-FATAL minute_pipeline 매분 크래시
+```
+
+### 운영 메모
+
+- traceback 추가로 다음 ERR-FATAL 시 WARN.log에 파일명·라인 번호 포함 → 디버깅 속도 대폭 향상
+- `validate_health_policy_hotreload.py`는 개발 스크립트. 장중 실행 시 monkey-patch 기간이 pipeline 실행과 겹치지 않도록 주의
 
 ---
 
