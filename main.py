@@ -3127,6 +3127,19 @@ class TradingSystem:
                 "WARNING",
             )
 
+        entry_mode = "manual"
+        if getattr(self, "dashboard", None) is not None:
+            try:
+                entry_mode = self.dashboard.get_entry_mode()
+            except Exception:
+                entry_mode = "manual"
+        allowed_grades = {
+            "auto": ["A"],
+            "hybrid": ["A", "B"],
+            "manual": ["A", "B", "C"],
+        }
+        mode_filter_passed = _final_grade in allowed_grades.get(entry_mode, ["A", "B", "C"])
+
         if (
             _cr is not None
             and self.circuit_breaker.is_entry_allowed()
@@ -3151,7 +3164,6 @@ class TradingSystem:
             final_signal_ko = self._direction_to_korean(final_dir_str)
             
             # ── 2순위: 진입 모드 필터 (1순위 L2 체크 후) ──────────────────────────
-            entry_mode = self.dashboard.get_entry_mode()
             allowed_grades = {
                 "auto":   ["A"],           # A급만
                 "hybrid": ["A", "B"],      # A, B급 (기본값)

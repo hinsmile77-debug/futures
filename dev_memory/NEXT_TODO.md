@@ -2282,3 +2282,17 @@
 - [NEXT 2026-05-19] SHAP 탭 코드 정리
   - `dashboard/main_dashboard.py` 내 중복 `update_shap()` 정의 정리
   - 인코딩 깨진 문자열과 목업 잔재 제거
+[DONE 2026-05-20] **68차: `entry_mode` 미초기화 치명 예외 수정**
+- `run_minute_pipeline()` 공통 차단 로그 경로보다 앞에서 `entry_mode`/`allowed_grades`/`mode_filter_passed`를 안전 초기화하도록 조정
+
+[DONE 2026-05-20] **68차: watchdog 허위 지연 경보 원인 규명**
+- 11:06~11:13 반복 경보는 실시간 분봉 미수신이 아니라 `minute_pipeline` 예외로 `notify_pipeline_ran()` 미도달한 결과임을 확인
+
+[NEXT 실세션] **68차 수정사항 장중 검증 (2026-05-21)**
+- SYSTEM 로그에 `ERR-FATAL minute_pipeline: local variable 'entry_mode' referenced before assignment` 재발 없는지 확인
+- 자동진입 OFF, ENTRY cooldown, X등급 분봉에서 공통 차단 로그만 남고 파이프라인이 정상 종료되는지 확인
+- 11시대와 유사한 흐름에서 watchdog 90초/150초 경보가 사라지는지 확인
+
+[NEXT 미정] **watchdog 경보 문구 정밀화**
+- 현재 `파이프라인 1분 30초 미실행` 문구가 예외 중단과 분봉 수신 지연을 구분하지 못함
+- 최근 fatal 예외가 있었으면 `수신 지연 의심` 대신 `직전 파이프라인 예외 후 미복구` 식으로 원인 힌트 분리 검토

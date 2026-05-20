@@ -2202,3 +2202,17 @@ W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
 **증상**: 재시작 직후 `weekly_review()` -> `_find_declining_features()`에서 `IndexError`.  
 **원인**: 과거 `shap_tracker_history.json`의 `importance` 길이가 현재 `self._n_features`와 다르지만, history를 그대로 로드하고 순위 계산에 사용함.  
 **Fix**: `_load_history()`와 `_find_declining_features()`에서 현재 feature length와 일치하는 history만 사용하도록 필터링.
+## 2026-05-20 (68차 — 11:04 재시작 후 minute_pipeline 치명 예외 진단 및 안전 수정)
+
+### [버그 HIGH] `run_minute_pipeline` 공통 차단 로그 경로의 `entry_mode` 미초기화
+**File**: `main.py` — `run_minute_pipeline()` STEP 7 진입 판단 / 공통 차단 사유 로그 구간
+**Root cause**: `entry_mode = self.dashboard.get_entry_mode()`가 "실제 진입 시도 블록" 내부에서만 실행됐다. 그런데 아래쪽 공통 차단 사유 로그는 자동진입 OFF, ENTRY cooldown, X등급 같은 비진입 경로에서도 실행되므로, 이 경로가 `entry_mode`를 다시 참조할 때 `local variable 'entry_mode' referenced before assignment`가 발생했다.
+**Fix**: STEP 7 공통 분기 진입 전에 `entry_mode="manual"` 기본값 + dashboard fallback + `allowed_grades`/`mode_filter_passed` 공통 초기화를 수행하도록 이동.
+**How to apply**: UI 상태값(`entry_mode`)은 실제 주문 분기 안이 아니라 공통 판단/로그 분기보다 먼저 안전 초기화한다. dashboard 접근 실패 시에도 `manual` fallback으로 계속 진행한다.
+
+### [설계결정] watchdog 지연 경보는 "분봉 수신 지연"과 "직전 파이프라인 예외 후 미복구"를 분리해야 함
+**Why**: 2026-05-20 11:06~11:13 사례에서 realtime tick/hoga는 정상 유입 중이었지만, `minute_pipeline` 예외로 `notify_pipeline_ran()`가 미호출되면서 watchdog이 이를 `파이프라인 1분 30초 미실행`으로만 표기했다. 운영자가 "수신 지연"으로 오인할 수 있다.
+**Decision**: 현재 코드는 우선 치명 예외만 수정하고, watchdog 문구 정밀화는 후속 작업으로 남긴다. 추후 최근 fatal 예외 상태를 기억해 경보 문구에 "직전 파이프라인 예외 후 미복구" 힌트를 추가하는 방향이 적절하다.
+**How to apply**: watchdog 발동 시 최근 `minute_pipeline` fatal timestamp / exception summary가 있으면 원인 힌트를 우선 표시하고, 없을 때만 기존의 수신 지연 문구를 사용한다.
+
+---
