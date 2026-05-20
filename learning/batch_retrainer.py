@@ -32,6 +32,7 @@ try:
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import accuracy_score, roc_auc_score
     from sklearn.preprocessing import StandardScaler
+    from sklearn.utils.class_weight import compute_sample_weight
     _SKLEARN_OK = True
 except ImportError:
     _SKLEARN_OK = False
@@ -40,6 +41,7 @@ from config.settings import (
     MODEL_DIR, HORIZON_DIR, HORIZONS, DB_DIR,
     GBM_WEIGHT_DEFAULT, GBM_MIN_SAMPLES_LEAF,
 )
+from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 
 logger = logging.getLogger("LEARNING")
 
@@ -57,6 +59,20 @@ GBM_PARAMS = {
 # 최소 학습 데이터 (분봉 수)
 # [한시적] 5/18 초기 운영 기간 — raw_data 누적 중, 5000 복원 목표: 약 2026-05-26
 MIN_TRAIN_BARS = 3000   # 약 8거래일 (원래 5000)
+
+# 30m 전용 class weight: FL 다운웨이팅으로 flat bias 억제
+# UP/DOWN 예측 강화 → 방향성 없는 예측 감소
+_CW_30M = {DIRECTION_FLAT: 0.5, DIRECTION_UP: 1.25, DIRECTION_DOWN: 1.25}
+
+
+def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
+    """호라이즌별 sample_weight 계산.
+    30m: FL 클래스 다운웨이팅 (flat bias 억제)
+    그 외: sklearn balanced (클래스 불균형 보정)
+    """
+    if horizon_key == "30m":
+        return np.array([_CW_30M.get(int(lbl), 1.0) for lbl in y])
+    return compute_sample_weight("balanced", y)
 
 
 class BatchRetrainer:
@@ -200,7 +216,7 @@ class BatchRetrainer:
             X_val_s = scaler.transform(X_val)
 
             model = GradientBoostingClassifier(**GBM_PARAMS)
-            model.fit(X_tr_s, y_tr)
+            model.fit(X_tr_s, y_tr, sample_weight=_make_sample_weight(y_tr, horizon_key))
             acc = accuracy_score(y_val, model.predict(X_val_s))
             cv_accs.append(acc)
 
@@ -213,7 +229,7 @@ class BatchRetrainer:
         final_scaler = StandardScaler()
         X_scaled = final_scaler.fit_transform(X)
         final_model = GradientBoostingClassifier(**GBM_PARAMS)
-        final_model.fit(X_scaled, y)
+        final_model.fit(X_scaled, y, sample_weight=_make_sample_weight(y, horizon_key))
 
         # 기존 모델과 성능 비교
         old_acc   = self._load_model_acc(horizon_key)

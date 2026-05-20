@@ -1,36 +1,36 @@
 # Meta Gate Tuning Report
 
-- Generated at: 2026-05-20 10:50:02
+- Generated at: 2026-05-20 15:33:02
 - Horizon: 5m
 - Source: meta_labels
-- Samples: 2504
+- Samples: 2751
 
 ## Distribution
 
-- Realized actions: {'skip': 1597, 'reduce': 74, 'take': 833}
-- Avg meta confidence: 0.7464
+- Realized actions: {'skip': 1754, 'reduce': 96, 'take': 901}
+- Avg meta confidence: 0.7242
 
 ## Threshold Grid
 
-- take>=0.65, reduce>=0.54: match=45.53%, take=1411, reduce=121, skip=972
-- take>=0.67, reduce>=0.56: match=46.33%, take=1399, reduce=103, skip=1002
-- take>=0.69, reduce>=0.58: match=46.96%, take=1343, reduce=123, skip=1038
-- take>=0.71, reduce>=0.60: match=47.60%, take=1332, reduce=114, skip=1058
+- take>=0.65, reduce>=0.54: match=46.09%, take=1423, reduce=180, skip=1148
+- take>=0.67, reduce>=0.56: match=47.07%, take=1408, reduce=148, skip=1195
+- take>=0.69, reduce>=0.58: match=47.84%, take=1347, reduce=158, skip=1246
+- take>=0.71, reduce>=0.60: match=48.38%, take=1333, reduce=148, skip=1270
 
 ## Recommendation
 
 - Best grid: take>=0.71, reduce>=0.60
-- Best match rate: 47.60%
+- Best match rate: 48.38%
 
 ## Latest Samples
 
-- 2026-05-20 10:35:00: meta_conf=0.6868 realized=take correct=1 mlofi=0.0480 mp_bias=0.0005 queue=-0.0180 cancel_add=0.0042
-- 2026-05-20 10:36:00: meta_conf=0.6484 realized=reduce correct=1 mlofi=0.0349 mp_bias=0.0043 queue=-0.0438 cancel_add=0.0021
-- 2026-05-20 10:37:00: meta_conf=0.7521 realized=skip correct=0 mlofi=0.0076 mp_bias=0.0003 queue=0.0110 cancel_add=0.0017
-- 2026-05-20 10:38:00: meta_conf=0.8052 realized=skip correct=0 mlofi=0.0176 mp_bias=-0.0005 queue=-0.0009 cancel_add=0.0040
-- 2026-05-20 10:39:00: meta_conf=0.7946 realized=skip correct=0 mlofi=-0.0014 mp_bias=0.0024 queue=-0.0130 cancel_add=0.0007
-- 2026-05-20 10:40:00: meta_conf=0.5942 realized=skip correct=0 mlofi=-0.0325 mp_bias=-0.0074 queue=0.0687 cancel_add=0.0015
-- 2026-05-20 10:41:00: meta_conf=0.7185 realized=skip correct=0 mlofi=0.0219 mp_bias=0.0020 queue=-0.0218 cancel_add=0.0012
-- 2026-05-20 10:42:00: meta_conf=0.5683 realized=skip correct=1 mlofi=0.0357 mp_bias=0.0020 queue=-0.0011 cancel_add=0.0022
-- 2026-05-20 10:43:00: meta_conf=0.4369 realized=skip correct=0 mlofi=-0.0435 mp_bias=-0.0052 queue=0.0323 cancel_add=0.0009
-- 2026-05-20 10:44:00: meta_conf=0.4174 realized=take correct=1 mlofi=-0.0057 mp_bias=-0.0032 queue=0.0174 cancel_add=0.0007
+- 2026-05-20 15:14:00: meta_conf=0.5677 realized=skip correct=0 mlofi=0.0492 mp_bias=0.0032 queue=-0.0013 cancel_add=0.0023
+- 2026-05-20 15:15:00: meta_conf=0.5169 realized=skip correct=0 mlofi=0.0067 mp_bias=0.0004 queue=0.0267 cancel_add=0.0045
+- 2026-05-20 15:16:00: meta_conf=0.4854 realized=reduce correct=1 mlofi=0.0186 mp_bias=0.0001 queue=-0.0058 cancel_add=0.0024
+- 2026-05-20 15:17:00: meta_conf=0.5450 realized=take correct=1 mlofi=0.0179 mp_bias=0.0009 queue=-0.0135 cancel_add=0.0024
+- 2026-05-20 15:18:00: meta_conf=0.4549 realized=reduce correct=1 mlofi=-0.0436 mp_bias=0.0013 queue=-0.0163 cancel_add=0.0125
+- 2026-05-20 15:19:00: meta_conf=0.5602 realized=take correct=1 mlofi=-0.0050 mp_bias=-0.0006 queue=0.0153 cancel_add=0.0010
+- 2026-05-20 15:20:00: meta_conf=0.5242 realized=take correct=1 mlofi=-0.0276 mp_bias=-0.0034 queue=0.0321 cancel_add=0.0027
+- 2026-05-20 15:21:00: meta_conf=0.4910 realized=reduce correct=1 mlofi=-0.0207 mp_bias=-0.0091 queue=0.0966 cancel_add=0.0091
+- 2026-05-20 15:22:00: meta_conf=0.5418 realized=reduce correct=1 mlofi=-0.0133 mp_bias=0.0026 queue=-0.0154 cancel_add=0.0011
+- 2026-05-20 15:23:00: meta_conf=0.5159 realized=skip correct=0 mlofi=-0.0072 mp_bias=0.0001 queue=-0.0064 cancel_add=0.0000

@@ -16,11 +16,21 @@ from typing import Dict, List, Optional, Tuple
 
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_sample_weight
 
 from config.settings import HORIZONS, HORIZON_DIR, SCALER_DIR, GBM_MIN_SAMPLES_LEAF
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 
 logger = logging.getLogger("SIGNAL")
+
+# 30m 전용 class weight — FL 다운웨이팅으로 flat bias 억제
+_CW_30M = {DIRECTION_FLAT: 0.5, DIRECTION_UP: 1.25, DIRECTION_DOWN: 1.25}
+
+
+def _make_sample_weight(y: np.ndarray, horizon: str) -> np.ndarray:
+    if horizon == "30m":
+        return np.array([_CW_30M.get(int(lbl), 1.0) for lbl in y])
+    return compute_sample_weight("balanced", y)
 
 
 class MultiHorizonModel:
@@ -92,9 +102,10 @@ class MultiHorizonModel:
             scaler = StandardScaler()
             Xs = scaler.fit_transform(Xm)
 
-            # GBM 학습
+            # GBM 학습 — 30m: FL 다운웨이팅, 그 외: balanced
             clf = GradientBoostingClassifier(**self.GBM_PARAMS)
-            clf.fit(Xs, ym)
+            sw = _make_sample_weight(ym, horizon)
+            clf.fit(Xs, ym, sample_weight=sw)
 
             self.models[horizon]  = clf
             self.scalers[horizon] = scaler
