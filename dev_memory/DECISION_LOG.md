@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-05-20 (65차 — 진입 체크리스트 7종 개선)
+
+### [설계결정] 신뢰도를 CORE 피처와 동급 강제 X 게이트로 격상
+**File**: `strategy/entry/checklist.py` — `evaluate()`
+**Reason**: 신뢰도 체크 실패가 단순 1점 감점이어서, conf=46.3%인데도 CORE 3개가 통과하면 8/9 → A등급 자동 진입이 가능했다. 실제 2026-05-20 로그에서 conf=46.3%, 45.5%인데 체크리스트 8/9 → A등급 케이스 존재.
+**Decision**: `2_confidence` 실패 시 CORE 실패와 동일하게 즉시 `grade=X` 반환. pass_count=1(signal만 통과)로 기록.
+**How to apply**: 탈진 레짐에서는 `min_conf_effective=0.56`으로 완화되므로 역추세 전략과 충돌 없음.
+
+### [버그 HIGH] min_conf 이중 기준 — 화면 63% 표시, 실제 판정 58% 적용
+**File**: `model/ensemble_decision.py` + `strategy/entry/time_strategy_router.py` + `main.py`
+**Root cause**: `decision["min_conf"]`는 `REGIME_MIN_CONFIDENCE`(NEUTRAL=0.58)에서 계산. `TimeStrategyRouter`의 시간대별 min_confidence(OPEN_VOLATILE=0.63)는 대시보드 디스플레이에만 표시되고 실제 `checklist.evaluate()` 판정에는 전혀 반영되지 않음. 결과: 화면은 63%라고 표시하면서 58% 기준으로 판정.
+**Fix**: `get_zone_min_confidence(zone)` 헬퍼 추가. `actual_min_conf = max(decision["min_conf"], get_zone_min_confidence(time_zone))`로 두 기준 중 더 엄격한 값 사용. 체크리스트·대시보드 모두 `actual_min_conf` 적용.
+**How to apply**: RISK_OFF + GAP_OPEN 중첩 시 `max(0.65+0.05, 0.67)=0.70`으로 계단식 강화.
+
+### [버그 HIGH] VWAP 역추세 예외 분기(MEAN_REVERSION) 사실상 비활성
+**File**: `main.py` — `checklist.evaluate()` 호출 (STEP 7)
+**Root cause**: `checklist.evaluate()` 시그니처에 `cvd_exhaustion`·`micro_regime` 파라미터가 있고 내부 로직도 구현됨. 그러나 `main.py` 호출부에서 두 인자를 전달하지 않아 기본값(`cvd_exhaustion=0.0`, `micro_regime="혼합"`)만 사용. `vwap_position < -1.5 and cvd_exhaustion > 0.0` 조건에서 cvd_exhaustion 항상 0 → MEAN_REVERSION 분기 진입 불가.
+**Fix**: `checklist.evaluate()` 호출에 `cvd_exhaustion=float(features.get("cvd_exhaustion", 0.0))`, `micro_regime=getattr(self, "current_micro_regime", "혼합")` 추가.
+**How to apply**: 탈진 레짐에서 VWAP 하방 1.5σ 이탈 시 역추세 매수 진입이 이제 실제로 작동.
+
+### [버그 MEDIUM] CVD·OFI 중립값(0) 양방향 CORE 통과
+**File**: `strategy/entry/checklist.py` — 체크 항목 4, 5
+**Root cause**: `checks["4_cvd"] = cvd_direction >= 0` (LONG) → cvd=0이면 LONG·SHORT 모두 통과. CORE 피처인데 "신호 없음" 상태가 어느 방향이든 통과하는 논리 오류.
+**Fix**: `>= 0` → `> 0`, `<= 0` → `< 0`. 중립(0)은 방향 확인 불가 = 미통과.
+**How to apply**: CVD·OFI가 0이면 CORE 실패 → 즉시 X. 기존보다 진입 횟수 감소 예상 (정밀도 향상).
+
+---
+
 ## 2026-05-20 (64차 — 09:34 재시작 점검 + 3종 이상점 수정)
 
 ### [버그 HIGH] 장중 재시작 시 warmup 재학습이 STEP 3에서 시작 → CB⑤ 5026ms

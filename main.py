@@ -97,6 +97,7 @@ from model.multi_horizon_model import MultiHorizonModel
 from model.ensemble_decision import EnsembleDecision
 from strategy.position.position_tracker import PositionTracker
 from strategy.entry.checklist import EntryChecklist
+from strategy.entry.time_strategy_router import get_zone_min_confidence
 from strategy.entry.position_sizer import PositionSizer
 from strategy.entry.meta_gate import MetaGate
 from strategy.entry.adaptive_kelly import AdaptiveKelly
@@ -2678,6 +2679,11 @@ class TradingSystem:
         confidence = decision["confidence"]
         grade      = decision["grade"]
         self._last_ensemble_direction = direction  # Contrarian Mode 동방향 추적용
+        # 시간대·레짐 두 기준 중 더 엄격한 값으로 통일 (checklist·dashboard 공용)
+        actual_min_conf = max(
+            decision["min_conf"],
+            get_zone_min_confidence(get_time_zone()),
+        )
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,
             confidence=confidence,
@@ -2800,7 +2806,7 @@ class TradingSystem:
         _corr_str = self._get_param_corr_display()
 
         self.dashboard.update_prediction(close, _preds_ui, _params_ui, confidence,
-                                         corr=_corr_str, min_conf=decision["min_conf"])
+                                         corr=_corr_str, min_conf=actual_min_conf)
 
         # GBM 미학습 시 모델 상태 행 재표시 (update_prediction이 행을 숨겼으므로)
         if not _gbm_ready:
@@ -2865,8 +2871,10 @@ class TradingSystem:
                 foreign_put_net   = features.get("foreign_put_net", 0),
                 prev_bar_bullish  = bar.get("close", 0) >= bar.get("open", 0),
                 time_zone         = time_zone,
-                daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / 50_000_000,
-                min_confidence    = decision["min_conf"],
+                daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / max(_ts_current_sizer_balance(self), 50_000_000),
+                min_confidence    = actual_min_conf,
+                cvd_exhaustion    = float(features.get("cvd_exhaustion", 0.0) or 0.0),
+                micro_regime      = getattr(self, "current_micro_regime", "혼합"),
             )
             _final_grade = _cr["grade"]
             _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
@@ -2991,7 +2999,7 @@ class TradingSystem:
             qty=_qty_display,
             final_signal=_final_signal_ko,
             reverse_enabled=_reverse_on,
-            min_conf=decision["min_conf"],
+            min_conf=actual_min_conf,
         )
         self._manual_entry_ctx = {
             "price": close,

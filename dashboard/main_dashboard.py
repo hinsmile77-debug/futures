@@ -3287,6 +3287,7 @@ class EntryPanel(QWidget):
             ),
         }
         self.check_labels = {}
+        self._conf_chk_name_label = None
         for i, (name, attr) in enumerate(checks):
             r = QHBoxLayout()
             icon = mk_badge("—", C['bg3'], C['text2'], 10)
@@ -3296,6 +3297,8 @@ class EntryPanel(QWidget):
             tooltip = check_tooltips.get(attr)
             if tooltip:
                 nl.setToolTip(tooltip)
+            if attr == "conf_chk":
+                self._conf_chk_name_label = nl
             r.addWidget(icon)
             r.addWidget(nl, 2)
             r.addWidget(vl)
@@ -3612,6 +3615,10 @@ class EntryPanel(QWidget):
         else:
             self.e_entry_qty.setText("——")
             self.e_entry_qty.setStyleSheet(f"color:{C['text2']};font-size:{S.f(14)}px;font-weight:bold;")
+
+        # 신뢰도 체크 레이블 — 실제 min_conf 기준을 실시간 반영
+        if self._conf_chk_name_label is not None:
+            self._conf_chk_name_label.setText(f"신뢰도 ≥ {min_conf:.0%}")
 
         # 체크리스트 아이콘
         # checks={} → 미평가(—), True → V(green), False → X(red)

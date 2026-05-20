@@ -226,6 +226,11 @@ class TimeStrategyRouter:
         return params
 
 
+def get_zone_min_confidence(zone: str) -> float:
+    """시간대 코드 → 최소 신뢰도 반환 (main.py에서 레짐 기준과 max 비교용)"""
+    return _ZONE_PARAMS.get(zone, _ZONE_PARAMS["OTHER"])["min_confidence"]
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     router = TimeStrategyRouter()

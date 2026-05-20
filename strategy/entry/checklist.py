@@ -81,6 +81,19 @@ class EntryChecklist:
         # 2. 최소 신뢰도 (탈진 레짐은 0.56으로 완화)
         min_conf_effective = 0.56 if is_exhaustion_regime else min_confidence
         checks["2_confidence"] = confidence >= min_conf_effective
+        if not checks["2_confidence"]:
+            logger.warning(
+                "[Checklist] 신뢰도 미달 %.1f%% < %.1f%% → 강제 X등급",
+                confidence * 100, min_conf_effective * 100,
+            )
+            return {
+                "pass_count": 1,
+                "grade":      "X",
+                "checks":     checks,
+                "size_mult":  0,
+                "auto_entry": False,
+                "entry_mode": entry_mode,
+            }
 
         # 3. VWAP 위치
         # 방안 C/D: VWAP 하방 1.5σ 초과 + CVD 탈진 → 역추세 모드로 체크 통과
@@ -98,25 +111,23 @@ class EntryChecklist:
             else:
                 checks["3_vwap"] = vwap_position < 0
 
-        # 4. CVD 방향
+        # 4. CVD 방향 (0 = 중립 → 방향 확인 불가 = 미통과)
         if is_long:
-            checks["4_cvd"] = cvd_direction >= 0
+            checks["4_cvd"] = cvd_direction > 0
         else:
-            checks["4_cvd"] = cvd_direction <= 0
+            checks["4_cvd"] = cvd_direction < 0
 
-        # 5. OFI 압력
+        # 5. OFI 압력 (0 = 중립 → 방향 확인 불가 = 미통과)
         if is_long:
-            checks["5_ofi"] = ofi_pressure >= 0
+            checks["5_ofi"] = ofi_pressure > 0
         else:
-            checks["5_ofi"] = ofi_pressure <= 0
+            checks["5_ofi"] = ofi_pressure < 0
 
-        # 6. 외인 방향
+        # 6. 외인 방향 (콜/풋 순매수 양수 AND 상대우위 — 둘 다 충족해야 통과)
         if is_long:
-            # 콜 순매수 증가 (양수)
-            checks["6_foreign"] = foreign_call_net > 0 or foreign_call_net > foreign_put_net
+            checks["6_foreign"] = foreign_call_net > 0 and foreign_call_net > foreign_put_net
         else:
-            # 풋 순매수 or 역발상
-            checks["6_foreign"] = foreign_put_net > 0 or foreign_put_net > foreign_call_net
+            checks["6_foreign"] = foreign_put_net > 0 and foreign_put_net > foreign_call_net
 
         # 7. 직전 봉
         if is_long:

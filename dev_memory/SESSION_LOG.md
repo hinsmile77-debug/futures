@@ -6,6 +6,41 @@
 
 ---
 
+## 2026-05-20 (65차 — 신뢰도·VWAP 흐름 분석 + 진입 체크리스트 7종 개선)
+
+**Work**: 10:01 로그 기반 "매수 방향 → X등급" 흐름 정밀 분석. 신뢰도·VWAP 이상점 4종(사용자 제시) 점검 후 추가 이상점 3종 발견. 총 7종 개선을 체크리스트·라우터·대시보드·main 4개 파일에 구현.
+
+### 분석 요약 (2026-05-20 10:01 기준)
+
+| 구간 | 상태 |
+|---|---|
+| dir=+1 conf=43.2% | 신뢰도 미달 (OPEN_VOLATILE 기준 63%) |
+| CORE ['3_vwap'] 실패 | 가격이 VWAP 아래 → 매수 방향 불일치 |
+| 최종 등급 X (pass_count=7) | CORE 실패 강제 X |
+| 09:05~09:34 | opt_pcr_slope_norm 극단값, cvd_slope, ofi 이상 z-score 반복 → confidence 40%대 고착 |
+
+### 수정 내용 (7종)
+
+| # | 파일 | 변경 내용 |
+|---|---|---|
+| ① | `strategy/entry/checklist.py` | 신뢰도 미달 시 즉시 X 반환 — CORE와 동일 강제 차단 |
+| ② | `strategy/entry/time_strategy_router.py` + `main.py` | `get_zone_min_confidence()` 추가. `actual_min_conf = max(레짐 기준, 시간대 기준)`. 전 구간(checklist·update_prediction·update_data) 통일 |
+| ③ | `main.py` | `checklist.evaluate()` 호출에 `cvd_exhaustion`·`micro_regime` 추가 — VWAP 역추세 예외 분기 실제 작동 |
+| ④ | `dashboard/main_dashboard.py` | `_conf_chk_name_label` 저장 → `update_data()`에서 매분 `"신뢰도 ≥ {min_conf:.0%}"` 갱신 |
+| ⑤ | `strategy/entry/checklist.py` | CVD·OFI 중립(0) 양방향 통과 차단 — `>= 0` → `> 0` |
+| ⑥ | `strategy/entry/checklist.py` | 외인 방향 OR → AND — 콜/풋 순매수 양수 AND 상대우위 모두 충족 필요 |
+| ⑦ | `main.py` | 손실률 분모 `50_000_000` 하드코딩 → `max(_ts_current_sizer_balance(self), 50_000_000)` |
+
+### 65차 실세션 확인 사항 (2026-05-21)
+
+1. **신뢰도 강제 X**: SIGNAL 로그에 `[Checklist] 신뢰도 미달 XX.X% < YY.Y% → 강제 X등급` 로그 발생 확인
+2. **min_conf 통일**: OPEN_VOLATILE 구간 체크리스트 판정이 63% 기준 적용 확인 (NEUTRAL 레짐 시 58% 아님)
+3. **VWAP 역추세 분기**: `cvd_exhaustion > 0` + `vwap_position < -1.5` 동시 발생 시 `[Checklist] 통과 X/9 → 등급 X (모드=MEAN_REVERSION)` 로그
+4. **UI 레이블**: 진입 관리 탭 체크리스트 "신뢰도 ≥ 58%" → 시간대별 실제 기준(%%) 표시 확인
+5. **CVD·OFI 0값 차단**: cvd_direction=0 시 `4_cvd` X로 처리되는지 DEBUG 로그 확인
+
+---
+
 ## 2026-05-20 (64차 — 09:34 재시작 점검 + 3종 이상점 수정)
 
 **Work**: 63차 수정 후 09:34:44 장중 재시작 결과 점검. 크래시 복구는 성공했으나 성능/재학습 타이밍 이상점 2종 + 옵션체인 블로킹 1종을 추가 발견하여 수정.

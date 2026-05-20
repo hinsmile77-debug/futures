@@ -1,7 +1,51 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-20 (64차) — **3종 이상점 수정: 장중 재시작 WarmupRetrain CB⑤ · _gbm_retrain_running 초기화 · OptionChain QTimer 분리**
+> 마지막 업데이트: 2026-05-20 (65차) — **진입 체크리스트 7종 개선: 신뢰도 강제X·min_conf 통일·VWAP 역추세·CVD/OFI 0값·외인 AND·손실률 분모**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-20 (65차) — 신뢰도·VWAP 흐름 분석 + 진입 체크리스트 7종 개선
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| 신뢰도 강제 X 게이트 | **완료** — `2_confidence` 실패 시 CORE와 동일하게 즉시 X 반환 |
+| min_conf 단일 출처 통일 | **완료** — `actual_min_conf = max(레짐 기준, 시간대 기준)`. 체크리스트·대시보드 전 구간 적용 |
+| VWAP 역추세 예외 분기 활성화 | **완료** — `checklist.evaluate()` 호출에 `cvd_exhaustion`·`micro_regime` 추가. MEAN_REVERSION 분기 실제 작동 |
+| UI 신뢰도 레이블 동적화 | **완료** — `_conf_chk_name_label` 저장 → 매분 `"신뢰도 ≥ {min_conf:.0%}"` 갱신 |
+| CVD·OFI 중립(0) 차단 | **완료** — `>= 0` → `> 0` (중립 신호가 CORE 통과하던 허점 제거) |
+| 외인 방향 AND 강화 | **완료** — `or` → `and`. 콜/풋 양수 AND 상대우위 모두 필요 |
+| 손실률 분모 동적화 | **완료** — `50_000_000` → `max(_ts_current_sizer_balance(self), 50_000_000)` |
+| 실세션 동작 확인 | **미완료** — 다음 장(2026-05-21) 기동 필요 |
+
+### 수정 파일 (65차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `strategy/entry/checklist.py` | 신뢰도 강제 X 반환 블록 추가 + CVD·OFI `> 0`/`< 0` 수정 + 외인 방향 `and` |
+| `strategy/entry/time_strategy_router.py` | `get_zone_min_confidence(zone)` 헬퍼 추가 |
+| `main.py` | `get_zone_min_confidence` import + `actual_min_conf` 계산 (decision 직후) + `checklist.evaluate()` cvd_exhaustion·micro_regime 추가 + 손실률 분모 동적화 |
+| `dashboard/main_dashboard.py` | `_conf_chk_name_label` 저장 + `update_data()` 레이블 동적 갱신 |
+
+### min_conf 흐름 (65차 이후)
+
+```
+ensemble_decision.py
+  → decision["min_conf"] = REGIME_MIN_CONFIDENCE[레짐]
+    (RISK_ON=0.52, NEUTRAL=0.58, RISK_OFF=0.65)
+
+main.py (decision 직후)
+  → actual_min_conf = max(decision["min_conf"], get_zone_min_confidence(time_zone))
+    (OPEN_VOLATILE=0.63, GAP_OPEN=0.67, STABLE_TREND=0.58, ...)
+
+checklist.evaluate(min_confidence=actual_min_conf)
+  → 신뢰도 미달 시 즉시 X 반환
+
+dashboard.update_data(min_conf=actual_min_conf)
+  → 신뢰도 색상 + 레이블 모두 actual_min_conf 기준
+```
 
 ---
 
