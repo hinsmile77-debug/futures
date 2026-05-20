@@ -8,6 +8,38 @@
 
 ---
 
+## 2026-05-20 (63차) — 파이프라인 크래시 버그 4종 수정
+
+### 한일 요약
+
+- [DONE 2026-05-20] **log_manager.signal() TypeError 수정** — `level="INFO"` 기본값 추가. 09:14 파이프라인 매분 크래시 해소
+- [DONE 2026-05-20] **GBM 재학습 08:55 PreRetrain 분리** — `pre_market_setup()` 끝에 비동기 재학습 트리거. 09:00 CB⑤ 충돌 방지
+- [DONE 2026-05-20] **PCRStore 장초반 극단값 방어** — `PCR_MIN_CALL_ABS=1000` skip + `PCR_MAX=4.0` cap. opt_pcr_slope_norm=-5.87 매분 반복 해소
+- [DONE 2026-05-20] **quality_investor_age_sec z=+45 방어** — `feature_builder.py` min(..., 300.0) cap. 09:00 첫 파이프라인 z-score 폭발 방지
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **63차 수정사항 실세션 확인 (2026-05-21)**
+  - SYSTEM 로그: `08:55:XX [PreRetrain] 08:55 GBM 사전 재학습 시작` 확인
+  - SIGNAL 로그: `[WARN] 로그에 CB⑤ 파이프라인 6179ms` 재발 없음 확인
+  - SIGNAL 로그: `opt_pcr_slope_norm=-5.87` 매분 반복 사라짐 확인
+  - 파이프라인: `[복구 실패]` 로그 없음 + 09:14 이후 정상 흐름 확인
+  - SIGNAL 로그: IntradayRegime=CRASH 시 `[IntradayRegime] CRASH — 신규 롱 금지` 정상 출력 (TypeError 없음)
+  - DEBUG 로그: `quality_investor_age_sec` 09:00 첫 파이프라인 z-score < +15 확인
+
+- [NEXT 실전 전환 전] **잔고 TR 파싱 `rows=0` 버그 수정**
+  - `[BrokerSync] 잔고 rows=0` 매분 반복 — 포지션 보유 시 TR 파싱 실패 가능성
+  - Cybos CpTd0723 TR 응답 구조 재확인 + 파싱 로직 점검
+
+- [NEXT 실전 전환 전] **프로그램 매매 TR 확인**
+  - 현재 사용 중인 TR 미확인 상태. 실전 주문 전 반드시 확인
+
+- [NEXT 미정] **opt_pcr_slope_norm 분포 안정화 확인**
+  - 2~3일 실세션 후 SIGNAL 로그에서 opt_pcr_slope_norm 값 분포 점검
+  - 여전히 극단값(-1.0, +1.0 고착) 발생 시 PCR_WINDOW(20) 또는 정규화 파라미터 조정
+
+---
+
 ## 2026-05-19 (62차) — 매크로 레짐 2계층 강화 + 레짐 대시보드
 
 ### 한일 요약

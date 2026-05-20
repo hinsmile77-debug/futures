@@ -322,7 +322,13 @@ class FeatureBuilder:
         macro_age_sec = float((macro_data or {}).get("macro_quality_age_sec", 0.0) or 0.0)
         macro_fallback = float((macro_data or {}).get("macro_quality_fallback_used", 0.0) or 0.0)
         investor_stale = float((supply_demand or {}).get("quality_investor_stale", 0.0) or 0.0)
-        investor_age_sec = float((supply_demand or {}).get("quality_investor_age_sec", 0.0) or 0.0)
+        # quality_investor_age_sec: 학습 분포는 0~180초 범위.
+        # 09:00 첫 파이프라인은 첫 fetch 이전이라 ~840초 → z=+45.70 극단값 발생.
+        # 5분(300s) 상한 적용 — 그 이상은 quality_investor_stale=1.0이 이미 커버.
+        investor_age_sec = min(
+            float((supply_demand or {}).get("quality_investor_age_sec", 0.0) or 0.0),
+            300.0,
+        )
         if recoverable_errors > 0:
             degraded = True
         quality_penalty = (

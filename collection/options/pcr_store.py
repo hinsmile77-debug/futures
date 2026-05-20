@@ -27,6 +27,13 @@ PCR_BEARISH_THRESHOLD  = 1.2   # 이 이상: 풋 우세 (약세)
 PCR_BULLISH_THRESHOLD  = 0.8   # 이 이하: 콜 우세 (강세)
 PCR_EXTREME_THRESHOLD  = 1.5   # 이 이상: 과공포 (역발상 반등 신호)
 
+# 장 시작 직후 콜 데이터 미로드 방어: |call| 최소 유효 수량
+# 이 미만이면 PCR 계산 신뢰 불가 → 스킵
+PCR_MIN_CALL_ABS = 1000
+
+# PCR 극단값 상한 — 콜≈0 상태에서 생성되는 수억 단위 PCR 방어
+PCR_MAX = 4.0
+
 
 class PCRStore:
     """
@@ -60,14 +67,26 @@ class PCRStore:
             self._available = False
             return
 
+        call_abs = abs(call_net)
+        put_abs  = abs(put_net)
+
+        # 장 시작 직후 콜 데이터 미로드 방어:
+        # call_abs < PCR_MIN_CALL_ABS 이면 PCR = put/≈0 → 수억 단위 극단값 생성.
+        # 이 틱은 신뢰 불가 데이터이므로 버퍼에 넣지 않고 스킵한다.
+        if call_abs < PCR_MIN_CALL_ABS:
+            self._available = False
+            logger.debug(
+                "[PCRStore] call_abs=%+.0f < min=%d → 미로드 스킵 (put_abs=%+.0f)",
+                call_abs, PCR_MIN_CALL_ABS, put_abs,
+            )
+            return
+
         self._available = True
         self._call_buf.append(call_net)
         self._put_buf.append(put_net)
 
-        # 양수 기준 PCR: |put| / |call|
-        call_abs = abs(call_net)
-        put_abs  = abs(put_net)
-        pcr = put_abs / (call_abs + 1e-6)
+        # 양수 기준 PCR: |put| / |call|, 극단값 상한 PCR_MAX 적용
+        pcr = min(put_abs / call_abs, PCR_MAX)
         self._pcr_buf.append(round(pcr, 4))
         self._last_pcr = pcr
 

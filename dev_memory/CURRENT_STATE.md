@@ -1,7 +1,46 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-19 (62차) — **매크로 레짐 2계층: IntradayTacticalRegime + micro ATR 1.5 + 레짐 대시보드 탭**
+> 마지막 업데이트: 2026-05-20 (63차) — **4개 버그 수정: log_manager.signal() 크래시 · GBM 재학습 CB⑤ 충돌 · PCR 장초반 극단값 · investor_age_sec 상한**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-20 (63차) — 파이프라인 크래시 버그 4종 수정
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| log_manager.signal() TypeError 크래시 | **완료** — `level="INFO"` 기본값 추가. 09:14 이후 매분 파이프라인 재귀 실패 해소 |
+| GBM 재학습 08:55 분리 | **완료** — `pre_market_setup()` 끝에서 PreRetrain 블록. 09:00 첫 파이프라인 CB⑤ 충돌 방지 |
+| PCR 장초반 극단값 — PCRStore 방어 | **완료** — `PCR_MIN_CALL_ABS=1000` skip, `PCR_MAX=4.0` cap. opt_pcr_slope_norm=-5.87 매분 반복 해소 |
+| quality_investor_age_sec z=+45 방어 | **완료** — `min(..., 300.0)` cap. 09:00 첫 파이프라인 z-score 폭발 방지 |
+| 실세션 동작 확인 | **미완료** — 다음 장(2026-05-21) 기동 필요 |
+
+### 수정 파일 (63차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `logging_system/log_manager.py` | `signal(msg, level="INFO")` — level 기본값 추가. `log_manager.signal(msg, "WARNING")` 3곳 호출 복구 |
+| `main.py` | `pre_market_setup()` 끝에 `[PreRetrain]` 블록 추가. 08:55 GBM 재학습 트리거 |
+| `collection/options/pcr_store.py` | `PCR_MIN_CALL_ABS=1000`, `PCR_MAX=4.0` 추가. `update()` call_abs 최소값 방어 + PCR 상한 적용 |
+| `features/feature_builder.py` | `quality_investor_age_sec = min(..., 300.0)` cap 추가 |
+
+### 63차 실세션 확인 사항 (2026-05-21)
+
+1. **[PreRetrain]** SYSTEM 로그: `08:55:XX [PreRetrain] 08:55 GBM 사전 재학습 시작` 로그 발생
+2. **CB⑤ 없음**: 09:00 첫 파이프라인 처리시간 < 5000ms (PreRetrain 이미 진행 중 → STEP 3 skip)
+3. **opt_pcr_slope_norm 정상화**: 09:02부터 `-5.87` 반복 사라짐 (또는 pcr_available=0으로 중립)
+4. **파이프라인 무크래시**: `[복구 실패]` 로그 없음. 09:14 이후에도 정상 흐름
+5. **IntradayRegime=CRASH 차단 로그**: 이제 TypeError 없이 `[IntradayRegime] CRASH — 신규 롱 금지` 정상 출력
+6. **quality_investor_age_sec**: 09:00 첫 파이프라인 z-score < +15 (min(840, 300) = 300 → z 정상화)
+
+### 오늘(5/20) 확인된 잠재 버그 (미수정)
+
+| 버그 | 증상 | 우선순위 |
+|---|---|---|
+| 잔고 TR 파싱 `rows=0` | `[BrokerSync] 잔고 rows=0` — 포지션 미인식 가능성 | 실전 전환 전 필수 수정 |
+| 프로그램 매매 TR | 사용 TR 미확인 상태 | 실전 전환 전 필수 확인 |
 
 ---
 

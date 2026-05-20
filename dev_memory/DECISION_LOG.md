@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-05-20 (63차 — 파이프라인 크래시 버그 4종 수정)
+
+### [버그 CRITICAL] log_manager.signal() TypeError — 09:14 이후 매분 파이프라인 크래시
+**File**: `logging_system/log_manager.py` — `signal()`, `main.py` — 3개 호출 지점
+**Root cause**: `signal(self, msg: str)` 메서드가 level 인자 미지원. 그러나 main.py 3곳에서 `log_manager.signal(msg, "WARNING")` 형태로 호출 → `TypeError: signal() takes 2 positional arguments but 3 were given`. 해당 분기는 IntradayRegime=CRASH + direction=LONG 조합에서 처음 실행됨(09:09 CRASH 전환 + 09:14 첫 롱 시도). 이후 매분 동일 분기 → 매분 크래시 → 워치독 재시도 → 동일 분기 재진입 → 무한 실패 루프.
+**Fix**: `signal(self, msg: str, level: str = "INFO")` — level 기본값 추가. 기존 호출부(`signal(msg)`) 변경 없음.
+**How to apply**: 다른 log_manager 편의 메서드(system/trade/health)는 이미 level 인자 있음. 신규 추가 시 동일 시그니처 사용.
+
+### [버그 HIGH] GBM 재학습 09:00 파이프라인 동시 실행 → CB⑤ 6179ms
+**File**: `main.py` — `run_minute_pipeline()` STEP 3, `pre_market_setup()`
+**Root cause**: 09:00 첫 파이프라인 STEP 3에서 `_warmup_retrain_pending=True` → GBM 재학습(91 피처 × 4200행 = 242.5초) 비동기 스레드 시작. 스레드가 시작되는 순간 CPU 경합으로 STEP 2(SGD 학습) 1715ms + STEP 5(예측) 4325ms → 파이프라인 총 6179ms → CB⑤ 발동 → 5분 진입 정지.
+**Fix**: `pre_market_setup()` 끝(08:55)에 `[PreRetrain]` 블록 추가. `_warmup_retrain_pending=False` 후 재학습 스레드 즉시 시작. 09:00 파이프라인 STEP 3는 `_gbm_retrain_running=True` 이므로 skip.
+**How to apply**: GBM 재학습 소요 약 4분. 08:55 시작 → 09:00 전 완료(또는 진행 중이어도 skip 보장).
+
+### [버그 HIGH] PCRStore 장초반 call=0 → PCR=6.59×10^8 → opt_pcr_slope_norm=-5.87 매분
+**File**: `collection/options/pcr_store.py` — `update()`
+**Root cause**: 장 시작 직후(09:00~09:20) Cybos foreign_call_net 미로드 상태에서 call_net≈0, put_net=659 → PCR = 659/1e-6 = 6.59×10^8. 이 값이 rolling 20봉 버퍼에 누적 → slope 계산 시 거대 음수 기울기 → clip to -1.0 → 모델 스케일러 z-score = -5.87. 결과: 약 20분간 매분 z-score 극단값 경고 + 예측 신호 왜곡.
+**Fix**: `PCR_MIN_CALL_ABS=1000` 방어 (call_abs < 1000이면 skip + _available=False). `PCR_MAX=4.0` 상한 적용.
+**How to apply**: skip 시 pcr_available=0.0, pcr_current=1.0(중립) 반환. 모델이 PCR 피처를 0으로 처리해 중립 유지.
+
+### [버그 MEDIUM] quality_investor_age_sec 장 시작 z=+45.70 — 300초 상한 미적용
+**File**: `features/feature_builder.py` — investor_age_sec 계산
+**Root cause**: 09:00 첫 파이프라인은 첫 investor fetch(09:00:16) 전 실행. 마지막 fetch 시각 = 08:45 시딩 시점 → age ≈ 840초. 학습 데이터 분포는 0~180초 → z-score = (840-mean)/std ≈ +45.70. 모델 입력 이상값 → 예측 신뢰도 왜곡.
+**Fix**: `min(investor_age_sec, 300.0)` cap. 300초 이상은 `quality_investor_stale=1.0`이 이미 stale 상태를 커버하므로 중복 정보.
+**How to apply**: 실세션 재학습 시 300초 분포가 새로 반영될 것. 단기적으로 z-score < +15로 완화.
+
+---
+
 ## 2026-05-19 (62차 — 매크로 레짐 2계층 강화)
 
 ### [설계] IntradayTacticalRegime — Layer 2 장중 레짐 분류 2계층화

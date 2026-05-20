@@ -2015,6 +2015,29 @@ class TradingSystem:
             except Exception as _snap_e:
                 logger.warning("[PreOpen] 스냅샷 워밍업 실패 (장 시작 시 재시도): %s", _snap_e)
 
+        # [PreRetrain] 08:55 GBM 사전 재학습 — 09:00 첫 파이프라인 CB⑤ 지연 방지.
+        # warmup 플래그가 설정되어 있으면 여기서 바로 백그라운드 스레드 시작.
+        # 재학습이 09:00 이전에 완료되면 STEP 3 에서 _gbm_retrain_running=True 이므로 중복 실행 없음.
+        if (
+            getattr(self, "_warmup_retrain_pending", False)
+            and not getattr(self, "_gbm_retrain_running", False)
+        ):
+            self._warmup_retrain_pending = False
+            self._gbm_retrain_running = True
+            self.dashboard.set_model_status("GBM 사전 재학습중...")
+            log_manager.system(
+                "[PreRetrain] 08:55 GBM 사전 재학습 시작 — 09:00 파이프라인 지연 방지", "INFO"
+            )
+
+            def _pre_retrain_worker():
+                try:
+                    result = self.batch_retrainer.retrain_now(force=True)
+                except Exception as _pre_e:
+                    result = {"ok": False, "error": str(_pre_e)}
+                QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
+
+            threading.Thread(target=_pre_retrain_worker, daemon=True).start()
+
     # [SERVICE-BOUNDARY 2/4] MinutePipelineService
     # 책임: 분봉 단위 의사결정(검증→학습→피처→예측→진입/청산→기록)
     # 입력: bar(분봉), 실시간 누적 피처 상태, 현재 포지션/리스크 상태

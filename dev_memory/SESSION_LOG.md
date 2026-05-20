@@ -6,6 +6,60 @@
 
 ---
 
+## 2026-05-20 (63차 — 5/20 로그 이상점 분석 + 파이프라인 크래시 버그 5종 수정)
+
+**Work**: 5/20 실세션 로그 전수 분석(5/18 대비 비교 포함). 2단계 장애 확인 — 1단계 CB⑤ 지연, 2단계 `log_manager.signal()` 시그니처 버그로 09:14부터 파이프라인 매분 크래시. 총 4개 파일 5개 버그 수정.
+
+### 장중 이벤트 타임라인 (5/20)
+
+| 시각 | 이벤트 | 원인 |
+|---|---|---|
+| 08:45 | startup sync rows=0 → blank-as-flat | Cybos 모의투자 잔고 TR 미반환 (무해) |
+| 09:00:06 | 파이프라인 **6179ms** → CB⑤ 5분 정지 | GBM 재학습(242초) + 첫 파이프라인 CPU 경합 |
+| 09:00~09:15 | 전 구간 grade=X, conf 33~42% | CORE 피처 실패 + z-score 극단값 |
+| 09:01 | HealthPolicy **Degraded Mode** 진입 | 6179ms 초과 |
+| 09:04~09:12 | CB⑤ 경고 1~3초대 반복 | 재학습 완료 전 CPU 압박 지속 |
+| 09:09 | IntradayRegime **NORMAL → CRASH** | day_ret 급락 감지 |
+| 09:14:02 | **파이프라인 예외 크래시 시작** | `signal() takes 2 args but 3 given` |
+| 09:15~09:17 | watchdog 복구 실패 매분 반복 | 동일 코드 경로 재실행 → 동일 예외 |
+| 09:17:02 | `[복구 실패] 파이프라인 예외` 확인 | signal() 버그 직접 증거 |
+| 전일 | 실제 매매 0건, 포지션 FLAT 유지 | CB 정지 + X등급 → 매매 사고 없음 |
+
+### 수정 버그 (우선순위 순)
+
+| # | 버그 | 파일 | 심각도 |
+|---|---|---|---|
+| 1 | `log_manager.signal(msg, "WARNING")` → `takes 2 args but 3 given` 파이프라인 매분 크래시 | `logging_system/log_manager.py` | **CRITICAL** |
+| 2 | `opt_pcr_slope_norm=-5.87` 고정 — call=0 시 PCR=6.59억 → slope 극단 음수 → clip -1.0 | `collection/options/pcr_store.py` | HIGH |
+| 3 | GBM 재학습 09:00 충돌 — 242초 재학습이 첫 파이프라인과 겹쳐 CB⑤ 발동 | `main.py` | HIGH |
+| 4 | `quality_investor_age_sec` z=+45.70 — 09:00 첫 파이프라인 직전 age≈840초 | `features/feature_builder.py` | MEDIUM |
+
+### 수정 내용
+
+| 파일 | 변경 내용 |
+|---|---|
+| `logging_system/log_manager.py` | `signal(msg)` → `signal(msg, level="INFO")` — `system()`·`trade()`·`health()`와 시그니처 통일 |
+| `collection/options/pcr_store.py` | `call_abs < PCR_MIN_CALL_ABS(1000)` 시 버퍼 스킵. `PCR_MAX=4.0` 상한 캡. 콜 미로드 방어 |
+| `main.py` | `pre_market_setup()` 끝에 `[PreRetrain]` 블록 추가 — 08:55에 warmup 재학습 사전 시작 |
+| `features/feature_builder.py` | `investor_age_sec = min(..., 300.0)` — 5분 상한. 840초 → 300초 → z-score 폭주 감소 |
+
+### 5/18 vs 5/20 개선 비교
+
+| 항목 | 5/18 | 5/20 | 판정 |
+|---|---|---|---|
+| z-score 감지 기능 | 없음 | 매분 전 호라이즌 경고 | ✅ 추가됨 |
+| GBM 재학습 시간 | 61.8초 (10피처) | 242.5초 (91피처) | ❌ 악화 |
+| 첫 진입 시각 | 09:23 (9/9 통과) | 없음 (X등급 지속) | ❌ |
+| 매매 사고 | 없음 | 없음 (FLAT 유지) | ✅ |
+| GBM 정확도 | 37~40% | 33~38% | ❌ 소폭 하락 |
+
+### 잠재 버그 현황 (발화 전 확인)
+
+- `잔고 TR 파싱` — `'총매매'·'총평가손익'·'총평가수익률'` 3개 필드에 동일 잔고값. 실전 전환 전 수정 필요.
+- `프로그램 매매 TR 미발견` — `program_supported=False` 매분 반복. 피처 공백 지속.
+
+---
+
 ## 2026-05-19 (62차 — 매크로 레짐 종합 강화: Layer 2 IntradayTacticalRegime + micro 1.5 + 레짐 대시보드 탭)
 
 **Work**: 5/19 제로트레이드 근본원인 분석 완결 이후, 시스템이 "장전 매크로 분위기"만 참고하고 "장중 국내 선물 붕괴"를 레짐으로 인식 못하는 구조 결함을 매크로 레짐 2계층으로 해결. macro_fetcher 초회 fetch=0 편향, micro_regime ATR 둔감 2개 버그도 함께 수정.

@@ -55,8 +55,8 @@ class LogManager:
     def system(self, msg: str, level: str = "INFO"):
         self.log("SYSTEM", msg, level)
 
-    def signal(self, msg: str):
-        self.log("SIGNAL", msg)
+    def signal(self, msg: str, level: str = "INFO"):
+        self.log("SIGNAL", msg, level)
 
     def trade(self, msg: str, level: str = "INFO"):
         self.log("TRADE", msg, level)
