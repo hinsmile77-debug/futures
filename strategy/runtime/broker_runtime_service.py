@@ -108,6 +108,10 @@ class BrokerRuntimeService:
 
         system._investor_timer = QTimer()
         system._investor_timer.timeout.connect(system._fetch_investor_data)
+
+        system._option_chain_timer = QTimer()
+        system._option_chain_timer.timeout.connect(system._poll_option_chain)
+
         if market_open_now:
             self.ensure_market_open_runtime_started(system, reason="initial_connect")
         else:
@@ -136,6 +140,16 @@ class BrokerRuntimeService:
                 getattr(system, "_futures_code", ""),
             )
             system._fetch_investor_data()
+
+        option_chain_timer = getattr(system, "_option_chain_timer", None)
+        if option_chain_timer is not None and not option_chain_timer.isActive():
+            option_chain_timer.start(300_000)
+            logger.info(
+                "[System] %s option chain timer start triggered (%s) code=%s interval=300s",
+                system.broker.name,
+                reason,
+                getattr(system, "_futures_code", ""),
+            )
 
     @staticmethod
     def _is_realtime_running(realtime_data: Any) -> bool:

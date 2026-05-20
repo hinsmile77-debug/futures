@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-05-20 (64차 — 09:34 재시작 점검 + 3종 이상점 수정)
+
+### [버그 HIGH] 장중 재시작 시 warmup 재학습이 STEP 3에서 시작 → CB⑤ 5026ms
+**File**: `main.py` — `connect_broker()`, `run_minute_pipeline()` STEP 3
+**Root cause**: `connect_broker()` 완료 후 `_warmup_retrain_pending=True`만 세팅. `pre_market_setup()`의 [PreRetrain] 블록은 08:55 타임 윈도우에서만 호출됨 → 장중 재시작 시 재호출 없음 → 첫 분봉 파이프라인 STEP 3에서 GBM 재학습 스레드 시작 → CPU 경합 → 5026ms CB⑤ 발동.
+**Fix**: `connect_broker()` 내에서 `datetime.time(9,0) <= now < datetime.time(15,10)` 이면 즉시 `_gbm_retrain_running=True` + 재학습 스레드 시작. 첫 파이프라인 STEP 3는 `_gbm_retrain_running=True`로 skip.
+**How to apply**: 장전(08:45~08:59) 재시작은 기존 `pre_market_setup()` 경로, 장중 재시작은 이 경로. 시간 범위는 `datetime.time(9,0)~datetime.time(15,10)` (오버나이트 절대원칙 동일 시각).
+
+### [버그 HIGH] OptionChainSnapshot.refresh() → ATM BlockRequest 루프 파이프라인 블로킹 → 매 5분 3347ms
+**File**: `collection/options/option_chain_snapshot.py` — `_collect_snapshots()`, `main.py` — STEP 4
+**Root cause**: `_collect_snapshots()`가 ATM ±30pt 내 종목(약 24개)에 대해 `Dscbo1.OptionMst.BlockRequest()` 동기 호출 루프 실행 + 종목당 50ms sleep. 24종목 × (100ms + 50ms) ≈ 3,600ms. `option_chain_snap.refresh()`가 STEP 4에서 직접 호출되므로 매 5분 파이프라인 타임에 이 비용이 그대로 반영됨 → `[PipePerf] S4=3347ms`.
+**Fix**: `_poll_option_chain()` QTimer 콜백 신규 추가. STEP 4는 `get_features()` 캐시 읽기만. `ensure_market_open_runtime_started()`에서 `_option_chain_timer.start(300_000)`.
+**How to apply**: QTimer는 Qt 이벤트 루프(메인 스레드)에서 실행 → STA COM 스레드 안전. `daily_close()`에서 `_option_chain_timer.stop()` 반드시 호출. 패턴은 `_investor_timer`(60s)와 동일.
+
+---
+
 ## 2026-05-20 (63차 — 파이프라인 크래시 버그 4종 수정)
 
 ### [버그 CRITICAL] log_manager.signal() TypeError — 09:14 이후 매분 파이프라인 크래시

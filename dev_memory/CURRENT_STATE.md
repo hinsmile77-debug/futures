@@ -1,7 +1,46 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-20 (63차) — **4개 버그 수정: log_manager.signal() 크래시 · GBM 재학습 CB⑤ 충돌 · PCR 장초반 극단값 · investor_age_sec 상한**
+> 마지막 업데이트: 2026-05-20 (64차) — **3종 이상점 수정: 장중 재시작 WarmupRetrain CB⑤ · _gbm_retrain_running 초기화 · OptionChain QTimer 분리**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-20 (64차) — 09:34 재시작 점검 + 3종 이상점 수정
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| 장중 재시작 warmup 재학습 CB⑤ | **완료** — `connect_broker()` 장중(09:00~15:10) 완료 시 즉시 GBM 재학습 시작. 첫 파이프라인 STEP 3 skip 보장 |
+| `_gbm_retrain_running` 초기화 | **완료** — `__init__`에 `False` 명시적 초기화. `getattr` 방어 패턴 불필요 |
+| `_last_close` 초기화 | **완료** — `__init__`에 `0.0` 추가. `_poll_option_chain` QTimer 콜백에서 사용 |
+| OptionChain BlockRequest 루프 파이프라인 분리 | **완료** — STEP 4 `refresh()` → `get_features()` 캐시 읽기만. QTimer 300s 별도 폴링 |
+| 실세션 동작 확인 | **미완료** — 다음 장(2026-05-21) 기동 필요 |
+
+### 수정 파일 (64차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | `connect_broker()`: 장중 재시작 즉시 GBM warmup 재학습 스레드 시작 블록 추가 |
+| `main.py` | `__init__`: `_gbm_retrain_running: bool = False`, `_last_close: float = 0.0` 초기화 |
+| `main.py` | `run_minute_pipeline()` STEP 4: `refresh()` 제거, `self._last_close = close` 추가 |
+| `main.py` | `_poll_option_chain()` QTimer 콜백 신규 추가 |
+| `main.py` | `daily_close()`: `_option_chain_timer.stop()` 추가 |
+| `strategy/runtime/broker_runtime_service.py` | `_option_chain_timer` QTimer 생성 + `ensure_market_open_runtime_started()`에서 `start(300_000)` |
+
+### OptionChain QTimer 분리 구조 (64차 신규)
+
+```
+장 시작(09:00) → ensure_market_open_runtime_started()
+  → _option_chain_timer.start(300_000)   # 5분마다 메인 스레드 QTimer
+
+STEP 4 (매분):
+  → option_chain_snap.get_features()     # 캐시 읽기, 0ms
+
+_poll_option_chain() (매 5분, QTimer 콜백):
+  → option_chain_snap.refresh(spot=_last_close)  # BlockRequest 루프 (파이프라인 외부)
+  → dashboard.update_option_chain()
+```
 
 ---
 

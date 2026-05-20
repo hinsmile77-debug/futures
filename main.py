@@ -322,6 +322,8 @@ class TradingSystem:
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
+        self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
+        self._last_close: float = 0.0                # 직전 분봉 종가 — 옵션체인 QTimer 폴링에 사용
         self._threshold_monitor_tick: int = 0        # threshold 모니터 주기 카운터 (30분마다)
         self._last_balance_result: dict = {}
         self._last_sizer_balance: float = 100_000_000.0
@@ -1800,6 +1802,30 @@ class TradingSystem:
         self._sync_position_from_broker()
         self._warmup_retrain_pending = True
         log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
+
+        # 장중(09:00~15:10) 재시작: pre_market_setup()이 재호출되지 않으므로 즉시 시작.
+        # 그렇지 않으면 첫 분봉 STEP 3에서 시작되어 파이프라인과 CPU 경합 → CB⑤ 5026ms 발동.
+        _rst_now = datetime.datetime.now()
+        if (
+            datetime.time(9, 0) <= _rst_now.time() < datetime.time(15, 10)
+            and not self._gbm_retrain_running
+        ):
+            self._warmup_retrain_pending = False
+            self._gbm_retrain_running = True
+            self.dashboard.set_model_status("GBM 장중 재학습중...")
+            log_manager.system(
+                "[WarmupRetrain] 장중 재시작 — GBM 즉시 재학습 시작 (파이프라인 분리)", "INFO"
+            )
+
+            def _intraday_retrain_worker():
+                try:
+                    result = self.batch_retrainer.retrain_now(force=True)
+                except Exception as _re:
+                    result = {"ok": False, "error": str(_re)}
+                QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
+
+            threading.Thread(target=_intraday_retrain_worker, daemon=True).start()
+
         if self.position.status != "FLAT":
             self.dashboard.set_ui_position_mode()
         else:
@@ -1837,6 +1863,20 @@ class TradingSystem:
                 logger=logger,
                 dashboard_logger=log_manager.system,
             )
+
+    def _poll_option_chain(self) -> None:
+        """옵션 체인 5분 폴링 — QTimer 콜백 (메인 스레드, COM 안전).
+        파이프라인 STEP 4 에서 BlockRequest 루프를 제거하고 이쪽으로 이전했다.
+        """
+        if not is_market_open(datetime.datetime.now()):
+            return
+        spot = self._last_close
+        try:
+            refreshed = self.option_chain_snap.refresh(spot=spot)
+            if refreshed and self.dashboard:
+                self.dashboard.update_option_chain(self.option_chain_snap.get_features())
+        except Exception as _e:
+            logger.debug("[OptionChain] 폴링 오류: %s", _e)
 
     def _on_tick_price_update(self, bar: dict) -> None:
         """틱 수신마다 대시보드 헤더 현재가 갱신."""
@@ -2096,6 +2136,7 @@ class TradingSystem:
 
         close  = _c
         self._last_pipeline_price = close  # 잔고 UI 합성에 사용
+        self._last_close = close           # 옵션체인 QTimer 폴링용 최신 종가
 
         # 대시보드 실시간 가격 동기화
         self.dashboard.update_price(
@@ -2330,11 +2371,9 @@ class TradingSystem:
         _raw_macro   = self.macro_fetcher.get_features()
         _macro_feats = self.macro_transformer.transform(_raw_macro)
         _option_feats = self.option_feat_calc.transform(self.pcr_store.get_features())
-        _chain_refreshed = self.option_chain_snap.refresh(spot=close)
+        # 옵션 체인 폴링은 _option_chain_timer(QTimer 300s) 에서 메인 스레드 COM 안전하게 수행.
+        # 파이프라인은 캐시된 피처만 읽는다 (1분 지연 허용, BlockRequest 루프 블로킹 제거).
         _chain_feats = self.option_chain_snap.get_features()
-        _option_feats.update(_chain_feats)
-        if _chain_refreshed and self.dashboard:
-            self.dashboard.update_option_chain(_chain_feats)
         features = self.feature_builder.build(
             bar,
             supply_demand = supply_feats,
@@ -4068,6 +4107,8 @@ class TradingSystem:
         # 일일 리셋
         if hasattr(self, "_investor_timer"):
             self._investor_timer.stop()
+        if hasattr(self, "_option_chain_timer"):
+            self._option_chain_timer.stop()
         self.feature_builder.reset_daily()
         self.micro_regime_clf.reset_daily()
         self.intraday_regime.reset_daily()

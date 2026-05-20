@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-05-20 (64차) — 09:34 재시작 점검 + 3종 이상점 수정
+
+### 한일 요약
+
+- [DONE 2026-05-20] **P1: 장중 재시작 WarmupRetrain CB⑤ 수정** — `connect_broker()` 장중 완료 시 즉시 GBM warmup 스레드 시작. 09:35 CB⑤ 5026ms 재발 방지
+- [DONE 2026-05-20] **P2: `_gbm_retrain_running` `__init__` 초기화** — `False`로 명시적 초기화. `getattr` 방어 패턴 일관화
+- [DONE 2026-05-20] **P3: OptionChain QTimer 분리** — STEP 4 `refresh()` 제거. `_option_chain_timer` QTimer 300s 신규. `_poll_option_chain()` 콜백 추가. 매 5분 3347ms 파이프라인 지연 해소
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **64차 수정사항 실세션 확인 (2026-05-21)**
+  - SYSTEM 로그: `08:55:XX [PreRetrain]` + `[System] option chain timer start triggered` 확인
+  - 장중 재시작 시: `[WarmupRetrain] 장중 재시작 — GBM 즉시 재학습 시작` 로그 확인 (STEP 3가 아닌 connect_broker 직후)
+  - 재시작 후 첫 파이프라인 CB⑤ 없음 (< 5000ms)
+  - `[OptionChain] 갱신 X.Xs` 로그가 파이프라인 PipePerf 타임라인 **밖**에서 발생
+  - `[PipePerf]` S4 수치 100ms 이하 유지 (BlockRequest 루프 제거 확인)
+
+---
+
 ## 2026-05-20 (63차) — 파이프라인 크래시 버그 4종 수정
 
 ### 한일 요약
@@ -19,9 +38,7 @@
 
 ### 다음 할 일 (우선순위 순)
 
-- [NEXT 장중] **63차 수정사항 실세션 확인 (2026-05-21)**
-  - SYSTEM 로그: `08:55:XX [PreRetrain] 08:55 GBM 사전 재학습 시작` 확인
-  - SIGNAL 로그: `[WARN] 로그에 CB⑤ 파이프라인 6179ms` 재발 없음 확인
+- [NEXT 장중] **63·64차 수정사항 실세션 확인 (2026-05-21)** — 위 64차 확인 항목으로 통합
   - SIGNAL 로그: `opt_pcr_slope_norm=-5.87` 매분 반복 사라짐 확인
   - 파이프라인: `[복구 실패]` 로그 없음 + 09:14 이후 정상 흐름 확인
   - SIGNAL 로그: IntradayRegime=CRASH 시 `[IntradayRegime] CRASH — 신규 롱 금지` 정상 출력 (TypeError 없음)

@@ -6,6 +6,41 @@
 
 ---
 
+## 2026-05-20 (64차 — 09:34 재시작 점검 + 3종 이상점 수정)
+
+**Work**: 63차 수정 후 09:34:44 장중 재시작 결과 점검. 크래시 복구는 성공했으나 성능/재학습 타이밍 이상점 2종 + 옵션체인 블로킹 1종을 추가 발견하여 수정.
+
+### 장중 이벤트 타임라인 (5/20 재시작 기준)
+
+| 시각 | 이벤트 | 판정 |
+|---|---|---|
+| 09:34:44 | 재시작 | — |
+| 09:35:00 | `[WarmupRetrain]` STEP 3에서 GBM 재학습 시작 | ❌ (P1 수정 전) |
+| 09:35:05 | `[CB] 5분 진입 정지` — 파이프라인 5026ms | ❌ CB⑤ 발동 |
+| 09:38:44 | `[Retrain]` 완료 | ✅ |
+| 09:39:45 | CB PAUSED 확인 | ✅ |
+| 09:41:03 | `[CB⑤] 3347ms 경고` | ❌ OptionChain BlockRequest 루프 |
+| 09:41:03 | CB 해제 | ✅ |
+| 전 구간 | signal() takes 2 크래시 재발 없음, PCR/investor_age z-score 경고 없음 | ✅ |
+
+### 수정 내용
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | P1: `connect_broker()` 장중(09:00~15:10) 완료 시 즉시 GBM 재학습 스레드 시작. 첫 파이프라인 STEP 3 skip 보장 |
+| `main.py` | P2: `__init__`에 `_gbm_retrain_running: bool = False`, `_last_close: float = 0.0` 명시적 초기화 |
+| `main.py` | P3: STEP 4에서 `option_chain_snap.refresh()` 제거 → `get_features()` 캐시 읽기만. `_poll_option_chain()` QTimer 콜백 신규 추가. `daily_close()`에 `_option_chain_timer.stop()` |
+| `strategy/runtime/broker_runtime_service.py` | P3: `_option_chain_timer = QTimer()` 생성 + `ensure_market_open_runtime_started()`에서 `start(300_000)` |
+
+### 64차 실세션 확인 사항 (2026-05-21)
+
+1. 장중 재시작 시: `[WarmupRetrain] 장중 재시작 — GBM 즉시 재학습 시작` 로그 발생
+2. 첫 파이프라인 CB⑤ 없음: 재시작 후 첫 파이프라인 처리시간 < 5000ms
+3. 옵션체인 폴링 분리: `[OptionChain] 갱신 X.Xs` 로그가 파이프라인 PipePerf 외부에서 발생
+4. STEP 4 지연 해소: `[PipePerf]` S4 수치 100ms 이하 유지
+
+---
+
 ## 2026-05-20 (63차 — 5/20 로그 이상점 분석 + 파이프라인 크래시 버그 5종 수정)
 
 **Work**: 5/20 실세션 로그 전수 분석(5/18 대비 비교 포함). 2단계 장애 확인 — 1단계 CB⑤ 지연, 2단계 `log_manager.signal()` 시그니처 버그로 09:14부터 파이프라인 매분 크래시. 총 4개 파일 5개 버그 수정.
