@@ -74,6 +74,7 @@ class EntryChecklist:
         is_exhaustion_regime = (micro_regime == REGIME_EXHAUSTION)
 
         checks = {}
+        entry_mode = "TREND_FOLLOW"
 
         # 1. 앙상블 신호 방향 확인
         checks["1_signal"] = direction in (DIRECTION_UP, DIRECTION_DOWN)
@@ -97,7 +98,6 @@ class EntryChecklist:
 
         # 3. VWAP 위치
         # 방안 C/D: VWAP 하방 1.5σ 초과 + CVD 탈진 → 역추세 모드로 체크 통과
-        entry_mode = "TREND_FOLLOW"
         if is_long:
             if vwap_position < -1.5 and cvd_exhaustion > 0.0:
                 checks["3_vwap"] = True

@@ -6,45 +6,63 @@
 
 ---
 
-## 2026-05-20 (68차 — 11:04 재시작 후 minute_pipeline 치명 예외 진단 및 안전 수정)
+## 2026-05-20 (68차 — minute_pipeline ERR-FATAL 실제 근본 원인 발견 및 최종 수정)
 
-**Work**: 11:04:01 장중 재시작 후 반복된 `ERR-FATAL minute_pipeline`와 watchdog 지연 경보를 로그 기준으로 역추적. 재시작 자체는 정상이며, 실제 원인은 분봉 수신 지연이 아니라 `run_minute_pipeline()` 내부의 `entry_mode` 지역변수 초기화 누락임을 규명하고 즉시 수정.
+**Work**: 11:04:01 재시작 후 `ERR-FATAL minute_pipeline`가 매분 반복. 1차 수정(81e0784, `main.py`) 후 재시작에도 11:37~11:42 동일 경보 지속. 2차 분석에서 실제 원인이 `checklist.py`에 있음을 규명하고 최종 수정.
 
 ### 증상 요약
 
 | 시각 | 관측 |
 |---|---|
-| 11:04:01 | Cybos realtime/tick/hoga 구독 정상 완료, 기동 완료 알림 |
-| 11:06:01 | `SIGNAL`에 `dir=-1 conf=43.4% grade=X` 기록 직후 `ERR-FATAL minute_pipeline` 발생 |
-| 11:06:33 | watchdog 90초 경과로 `파이프라인 1분 30초 미실행` 경보 |
-| 11:08:00 / 11:10:00 / 11:12:01 / 11:13:00 | 동일 패턴 반복 (`grade=X` 후 파이프라인 치명 예외) |
-| 11:13:30 | watchdog 150초 경과로 `파이프라인 2분 30초 지연` 경보 |
+| 11:04:01 | Cybos 재시작 완료 |
+| 11:06:01~11:12:01 | `conf=43.4% grade=X` 분봉마다 `ERR-FATAL minute_pipeline` 반복 |
+| 11:06:33~11:12:30 | watchdog 90초 경보 반복 (파이프라인이 `notify_pipeline_ran()` 미도달) |
+| 11:24:51 | 81e0784 커밋 — `main.py` `entry_mode` 기본값 추가 (잘못된 진단) |
+| 11:37:01~11:42:00 | 재시작 후에도 동일 `ERR-FATAL minute_pipeline` 재발 |
 
-### 원인 규명
+### 1차 진단의 오류 (81e0784)
 
-- `main.py`의 STEP 7 진입 판단에서 `entry_mode = self.dashboard.get_entry_mode()`가 "실제 진입 시도 블록" 안에서만 초기화돼 있었음.
-- 그런데 같은 함수 아래쪽의 공통 차단 사유 로그 경로는 자동진입 OFF, 쿨다운, X등급처럼 "진입 안 하는 경로"에서도 실행됨.
-- 이 경로에서 `entry_mode`를 다시 참조하면서 `local variable 'entry_mode' referenced before assignment`가 발생.
-- 예외로 인해 해당 분봉에서 `notify_pipeline_ran()`까지 도달하지 못했고, 그 결과 watchdog이 분봉 지연로 오인해 90초/150초 경보를 연쇄 발생시킴.
+- **잘못된 진단**: `main.py` STEP 7의 `entry_mode` (값: "auto"/"hybrid"/"manual")를 진입 블록 밖에서 참조한다고 판단 → `main.py`에 기본값 추가
+- **실제 버그 위치**: `strategy/entry/checklist.py:95` — **별개의 `entry_mode`** (값: "TREND_FOLLOW"/"MEAN_REVERSION")
 
-### 수정 내용
+### 실제 근본 원인
+
+```python
+# checklist.py — evaluate() 함수 내 (수정 전)
+
+checks = {}
+
+# 2. 신뢰도 미달 시 조기 반환 (line 84~96)
+if not checks["2_confidence"]:
+    return {
+        ...
+        "entry_mode": entry_mode,   # ← line 95: 여기서 참조
+    }
+
+entry_mode = "TREND_FOLLOW"         # ← line 100: 여기서 첫 할당 (너무 늦음)
+```
+
+Python은 함수 내 어디서든 변수가 할당되면 함수 전체 스코프에서 로컬 변수로 취급.
+신뢰도 미달(confidence < min_conf) 경로가 line 100 이전에 line 95를 참조 → `UnboundLocalError`.
+`conf=43.4%`는 min_conf(≥58%)에 항상 미달 → 매 분봉마다 예외 발생.
+
+### 최종 수정 내용
 
 | 파일 | 변경 내용 |
 |---|---|
-| `main.py` | `run_minute_pipeline()`의 진입 판단 직전에 `entry_mode` 기본값(`manual`) + dashboard fallback + `allowed_grades`/`mode_filter_passed` 공통 초기화 추가 |
-| `main.py` | 기존 진입 시도 블록 내부의 `entry_mode = self.dashboard.get_entry_mode()` 직접 호출 제거 |
+| `strategy/entry/checklist.py` | `entry_mode = "TREND_FOLLOW"` 초기화를 `checks = {}` 바로 다음(line 77)으로 이동 — 모든 조기 반환 경로보다 먼저 할당 보장 |
 
-### 이번 수정으로 기대되는 동작
+### 수정 후 기대 동작
 
-1. 자동진입 OFF, ENTRY/EXIT cooldown, X등급 같은 비진입 경로에서도 `entry_mode` 참조 예외가 발생하지 않음.
-2. 동일 상황에서는 `ERR-FATAL minute_pipeline` 대신 정상 차단 로그만 남음.
-3. 분봉 파이프라인이 끝까지 완료되므로 watchdog의 90초/150초 허위 경보도 사라져야 함.
+1. 신뢰도 미달 분봉(grade=X)에서 예외 없이 정상 조기 반환 처리됨
+2. `ERR-FATAL minute_pipeline` 경보 소멸
+3. 파이프라인이 끝까지 완료 → watchdog 허위 경보 소멸
 
-### 남은 운영 확인 포인트 (2026-05-21)
+### 운영 확인 포인트 (2026-05-21)
 
-1. 11시대처럼 `grade=X` 분봉이 나와도 SYSTEM에 `ERR-FATAL minute_pipeline`가 더 이상 발생하지 않는지 확인
-2. 자동진입 OFF 또는 cooldown 상태에서 공통 차단 로그만 남고 파이프라인이 정상 종료되는지 확인
-3. watchdog 경보가 실제 분봉 미실행 상황에서만 뜨는지 확인
+1. `grade=X` 분봉에서 `ERR-FATAL minute_pipeline` 경보가 더 이상 없는지 확인
+2. watchdog 경보가 실제 분봉 미수신 상황에서만 뜨는지 확인
+3. `[Checklist] 신뢰도 미달` 로그 정상 출력 확인 (예외 없이 체크리스트 조기 반환 처리)
 
 ---
 

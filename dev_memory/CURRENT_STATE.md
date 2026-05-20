@@ -1,33 +1,44 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-20 (68차) — **11:04 재시작 후 minute_pipeline 치명 예외 진단 + `entry_mode` 초기화 안전 수정 + watchdog 허위 지연 경보 원인 규명**
+> 마지막 업데이트: 2026-05-20 (68차) — **`checklist.py` `entry_mode` UnboundLocalError 실제 근본 원인 최종 규명 및 수정**
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
 
-## 2026-05-20 (68차) — 11:04 재시작 후 minute_pipeline 치명 예외 진단 및 안전 수정
+## 2026-05-20 (68차) — minute_pipeline ERR-FATAL 실제 근본 원인 최종 수정
 
 ### 현재 상태
 
 | 항목 | 상태 |
 |---|---|
 | 11:04 재시작 자체 | **정상** — tick/hoga/realtime 구독 완료, 데이터 유입 확인 |
-| `minute_pipeline` 치명 예외 원인 | **규명 완료** — `entry_mode` 지역변수 초기화 누락 |
-| watchdog 90초/150초 경보 | **원인 규명 완료** — 분봉 수신 지연이 아니라 파이프라인 예외로 `notify_pipeline_ran()` 미도달 |
-| `entry_mode` 안전 초기화 수정 | **완료** — `run_minute_pipeline()` 진입 판단 직전에 fallback 포함 공통 초기화 |
-| 실세션 재검증 | **미완료** — 다음 장중 재기동/자동진입 OFF 상황에서 확인 필요 |
+| `minute_pipeline` 치명 예외 원인 | **최종 규명 완료** — `checklist.py:95` `entry_mode` 할당 전 참조 (UnboundLocalError) |
+| 1차 수정 81e0784 (`main.py`) | **오진단** — UI 모드 변수(auto/hybrid/manual)를 수정했으나 실제 버그는 별개 파일 |
+| watchdog 90초/150초 경보 | **원인 규명 완료** — 파이프라인 예외로 `notify_pipeline_ran()` 미도달 → 허위 지연 경보 |
+| `checklist.py` 최종 수정 | **완료** — `entry_mode = "TREND_FOLLOW"` 초기화를 `checks = {}` 바로 다음으로 이동 |
+| 실세션 재검증 | **미완료** — 2026-05-21 장중 grade=X 분봉에서 ERR-FATAL 소멸 확인 필요 |
 
 ### 수정 파일 (68차)
 
 | 파일 | 변경 내용 |
 |---|---|
-| `main.py` | `entry_mode="manual"` 기본값 + `dashboard.get_entry_mode()` 예외 fallback 추가 |
-| `main.py` | `allowed_grades` / `mode_filter_passed`를 공통 차단 로그 경로보다 앞에서 계산하도록 이동 |
+| `main.py` (81e0784, 오진단) | `entry_mode="manual"` 기본값 추가 — UI 진입모드 변수 수정 (실제 버그와 무관) |
+| `strategy/entry/checklist.py` | `entry_mode = "TREND_FOLLOW"` 초기화를 `checks = {}` 바로 뒤(line 77)로 이동 — 신뢰도 미달 조기 반환(line 89~96)보다 선행 할당 보장 |
+
+### 버그 핵심 구조 (수정 전)
+
+```
+checklist.py evaluate():
+  checks = {}
+  if not checks["2_confidence"]:   # conf=43.4% < 58% → 항상 True
+    return {"entry_mode": entry_mode}  # line 95: 미할당 참조 → UnboundLocalError
+  entry_mode = "TREND_FOLLOW"      # line 100: 할당이 여기 있어 로컬 변수로 지정됨
+```
 
 ### 운영 메모
 
-- 이번 이슈는 "분봉이 안 온다"가 아니라 "분봉은 왔지만 STEP 7 후반 공통 차단 로그에서 예외로 탈락"한 케이스다.
-- 따라서 watchdog 메시지의 "분봉 수신 지연 의심" 문구는 실제 원인과 어긋날 수 있으며, 추후 예외 중단과 수신 지연을 분리 표기하는 개선이 유효하다.
+- `conf < min_conf` 인 분봉(X등급) 전체에서 100% 재현. 장 중 신뢰도 낮은 구간에서 파이프라인이 매분 예외 종료.
+- watchdog "분봉 수신 지연 의심" 문구는 분봉 미수신이 아닌 예외 중단 케이스에서도 발생. 추후 분리 표기 개선 검토.
 
 ---
 

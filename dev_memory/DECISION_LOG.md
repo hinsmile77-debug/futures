@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-05-20 (68차 — minute_pipeline ERR-FATAL 실제 근본 원인 최종 규명)
+
+### [버그 CRITICAL] `checklist.py` `entry_mode` UnboundLocalError — 신뢰도 미달 조기 반환 경로
+**File**: `strategy/entry/checklist.py` — `evaluate()` line 95 (수정 전)
+**Root cause**: Python은 함수 내 어느 위치에든 변수 할당이 있으면 함수 전체 스코프에서 로컬 변수로 취급. `entry_mode = "TREND_FOLLOW"` 할당이 line 100에 있으므로 전체 함수에서 로컬 변수. 그런데 신뢰도 미달 조기 반환 블록(line 89~96)에서 `"entry_mode": entry_mode`로 line 95에서 참조 → 할당 이전 참조 → `UnboundLocalError`.
+**Trigger condition**: `confidence < min_conf_effective` (신뢰도 미달) 시 항상 발생. `conf=43.4%`이면 min_conf(58%)에 미달 → 매 분봉 예외.
+**Fix**: `entry_mode = "TREND_FOLLOW"` 초기화를 `checks = {}` 바로 다음(line 77)으로 이동. 모든 조기 반환 경로보다 선행.
+**Why 81e0784 failed**: `main.py`에도 다른 이름의 `entry_mode`(값: "auto"/"hybrid"/"manual" — UI 진입모드 변수)가 있었으며, 이를 잘못 진단하고 수정. `checklist.py`의 `entry_mode`(값: "TREND_FOLLOW"/"MEAN_REVERSION" — 진입 전략 모드)와 완전히 다른 변수.
+**How to apply**: 향후 `evaluate()` 함수에 새 조기 반환 경로 추가 시 `entry_mode`를 포함하는 dict를 반환하면 `checks = {}` 직후 초기화 덕분에 안전. 단, 새 변수를 조기 반환에서 참조할 경우 동일 패턴 확인 필요.
+
+### [교훈] 같은 이름 다른 변수 — `entry_mode` 이중 존재
+**Context**: `main.py`와 `checklist.py` 양쪽에 `entry_mode`가 존재하나 의미가 전혀 다름
+| 위치 | 값 | 의미 |
+|---|---|---|
+| `main.py` (STEP 7) | "auto"/"hybrid"/"manual" | 사용자 UI 진입 모드 설정 |
+| `checklist.py evaluate()` | "TREND_FOLLOW"/"MEAN_REVERSION" | 진입 전략 방향성 (체크리스트 내부) |
+**Lesson**: 동일 이름 로컬 변수가 다른 파일에 있을 때, traceback의 `context="minute_pipeline"` 표시만 보면 `main.py` 문제로 오인하기 쉬움. 실제 예외 발생 파일은 호출 스택에서 확인해야 함.
+
+---
+
 ## 2026-05-20 (67차 — 장중 로그 분석 + 이상점 수정)
 
 ### [버그 HIGH] online_learner StandardScaler partial_fit 최초 1회만 호출

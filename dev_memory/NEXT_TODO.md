@@ -6,6 +6,20 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-20 (68차) — minute_pipeline ERR-FATAL 실제 근본 원인 최종 수정
+
+### 한일 요약
+
+- [DONE 2026-05-20] **checklist.py `entry_mode` UnboundLocalError 최종 수정** — `entry_mode = "TREND_FOLLOW"` 초기화를 `checks = {}` 바로 다음(line 77)으로 이동. 신뢰도 미달 조기 반환(line 89~96)보다 선행 할당 보장
+- [참고] **81e0784 (`main.py`) 수정은 오진단** — UI 모드 변수(auto/hybrid/manual)를 고쳤으나 실제 버그는 별개(`checklist.py`의 TREND_FOLLOW/MEAN_REVERSION 변수). 양쪽 수정이 모두 코드에 남아 있으나 실제 효과는 checklist.py 수정
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **68차 수정 실세션 확인 (2026-05-21)**
+  - `conf < min_conf` 분봉(grade=X)에서 `ERR-FATAL minute_pipeline` 경보가 더 이상 없는지 확인
+  - `[Checklist] 신뢰도 미달 XX.X% < YY.Y% → 강제 X등급` 로그 정상 출력 확인 (예외 없이 처리)
+  - watchdog 90초 경보가 실제 분봉 미수신 상황에서만 발생하는지 확인
+
 ---
 
 ## 2026-05-20 (67차) — 장중 로그 분석 + 이상점 수정
