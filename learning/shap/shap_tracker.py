@@ -66,7 +66,7 @@ class ShapTracker:
         self._load_history()
 
     # ── SHAP 계산 ─────────────────────────────────────────────────
-    def update(self, model, X: np.ndarray, sample_size: int = 500):
+    def update(self, model, X: np.ndarray, sample_size: int = 500) -> bool:
         """
         모델과 최근 데이터로 SHAP 중요도 계산 후 히스토리 추가
 
@@ -74,10 +74,14 @@ class ShapTracker:
             model:       학습된 GBM 모델 (sklearn)
             X:           최근 N개 분봉 피처 행렬
             sample_size: SHAP 계산 샘플 수 (속도 제어)
+
+        Returns:
+            True  — 실제 계산 완료
+            False — 데이터 부족·계산 실패로 skip
         """
         if len(X) < SHAP_MIN_DATA_POINTS:
             logger.debug(f"[SHAP] 데이터 부족 ({len(X)} < {SHAP_MIN_DATA_POINTS})")
-            return
+            return False
 
         # 샘플링
         idx = np.random.choice(len(X), min(sample_size, len(X)), replace=False)
@@ -85,7 +89,7 @@ class ShapTracker:
 
         importance = self._calc_importance(model, X_s)
         if importance is None:
-            return
+            return False
 
         self._current_importance = importance
         self._history.append({
@@ -96,6 +100,7 @@ class ShapTracker:
         })
         self._save_history()
         logger.info(f"[SHAP] 중요도 갱신 완료 (n={len(X_s)})")
+        return True
 
     def _calc_importance(self, model, X: np.ndarray) -> Optional[np.ndarray]:
         """SHAP TreeExplainer → fallback to feature_importances_"""

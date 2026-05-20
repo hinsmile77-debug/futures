@@ -2,6 +2,33 @@
 
 ---
 
+## 2026-05-20 (66차 — SHAP 중요도·파라미터 상관계수 이상점 4종 수정)
+
+### [버그 HIGH] RESTORED SHAP값이 _live_shap_ready=True로 LIVE 오인 — 임계값 30 vs 100 불일치
+**File**: `main.py` — `_refresh_shap_state()`, `learning/shap/shap_tracker.py` — `update()`
+**Root cause**: `_refresh_shap_state()`는 `len(window) >= 30`이면 `shap_tracker.update()` 호출. 그러나 `shap_tracker.update()` 내부는 `len(X) < SHAP_MIN_DATA_POINTS(100)`이면 `return`(계산 안 함). 30~99개 구간에서 update()가 skip해도 기존 ranking(복원값)이 그대로 남아 있어 `get_current_ranking()`이 반환 → `_live_shap_ready = True` 설정 → 대시보드 LIVE 표시 + DB에 복원값을 LIVE로 저장.
+**Fix**: ① `shap_tracker.update()` → `bool` 반환 (실계산 True, skip False). ② `_refresh_shap_state()` 임계값 30→`SHAP_MIN_DATA_POINTS`. ③ `update()` 반환값 `updated=True`일 때만 `_live_shap_ready=True` 설정.
+**How to apply**: 향후 `SHAP_MIN_DATA_POINTS` 값 변경 시 `_refresh_shap_state()`와 `shap_tracker.update()` 양쪽 모두 단일 상수로 연동됨. 별도 임계값 관리 불필요.
+
+### [버그 LOW] `_update_shap_dashboard()` 중복 정의 — 구버전 데드코드
+**File**: `main.py` — line 820~861 (구버전), line 863~ (정상버전)
+**Root cause**: Python은 동일 이름 메서드를 두 번 정의하면 두 번째로 덮어씀. line 820~861 블록은 절대 실행되지 않는 데드코드. 내부에 인코딩 깨진 문자열 `"?좎?"`도 포함.
+**Fix**: 구버전 블록(line 820~861) 전체 삭제.
+**How to apply**: 향후 `_update_shap_dashboard()` 수정 시 유일한 정의(원래 line 863~)만 편집.
+
+### [버그 MEDIUM] `_shap_feature_window` 재시작 후 미복원 — 30분 SHAP 공백
+**File**: `main.py` — `_restore_analysis_buffers()`
+**Root cause**: `_param_corr_history`는 DB에서 복원하나 `_shap_feature_window`는 빈 채로 시작. Fix 1 적용 후 임계값이 100이므로 live 분봉이 100개 쌓일 때까지(약 100분) SHAP 미계산. 복원 경로(line 676~698)는 `_cached_shap_importance`를 채우지만 `_shap_feature_window`는 채우지 않음.
+**Fix**: `_restore_analysis_buffers()`에서 `all_feat_rows` 파싱 후 `_shap_feature_window`에도 동일 데이터 채움. DB에 100건 이상이면 재시작 직후 즉시 live 계산 가능.
+**How to apply**: `_param_corr_history` 복원 패턴과 동일. DB에 데이터가 부족하면 window도 부족하므로 Fix 1의 임계값 체크가 자연스럽게 skip 보장.
+
+### [설계결정] `shap_tracker.update()` bool 반환 도입
+**File**: `learning/shap/shap_tracker.py`
+**Decision**: 기존 `None` 반환에서 `bool` 반환으로 변경. 호출자(`_refresh_shap_state()`, `_restore_analysis_buffers()`)가 실계산 여부를 직접 확인 가능. 복원 경로에서 `update()` 호출 시에도 실패 여부 로깅 가능.
+**How to apply**: 기존 `update()` 호출부 중 반환값을 무시하는 코드(restore 경로)는 그대로 유지 가능. `_refresh_shap_state()`에서만 반환값 사용.
+
+---
+
 ## 2026-05-20 (65차 — 진입 체크리스트 7종 개선)
 
 ### [설계결정] 신뢰도를 CORE 피처와 동급 강제 X 게이트로 격상

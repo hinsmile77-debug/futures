@@ -61,6 +61,7 @@ from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, PARTIAL_EXIT_RATIOS,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
     CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
+    SHAP_MIN_DATA_POINTS,
     FRED_API_KEY,
     HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
     HEALTH_QUALITY_WARN, HEALTH_QUALITY_CRIT,
@@ -653,6 +654,12 @@ class TradingSystem:
 
         self._restored_corr_str = self._build_param_corr_string(all_feat_rows)
 
+        # _shap_feature_window 복원: 재시작 직후에도 SHAP_MIN_DATA_POINTS 충족 시 즉시 live 계산 가능
+        if self.model.feature_names and all_feat_rows:
+            for feat_dict in all_feat_rows[-self._shap_feature_window.maxlen:]:
+                vec = [float(feat_dict.get(name, 0.0) or 0.0) for name in self.model.feature_names]
+                self._shap_feature_window.append(vec)
+
         self._ensure_shap_tracker()
         if self._shap_tracker is not None:
             try:
@@ -756,12 +763,12 @@ class TradingSystem:
             return ""
 
         short_names = {
-            "CVD ?ㅼ씠踰꾩쟾??": "CVD",
-            "VWAP ?꾩튂": "VWAP",
-            "OFI 遺덇퇏??": "OFI",
-            "?몄씤 肄쒖닚留ㅼ닔": "?몄씤肄?",
-            "?ㅼ씠踰꾩쟾??吏??": "?ㅼ씠踰꾩쟾",
-            "?꾨줈洹몃옩 鍮꾩감??": "?꾨줈洹몃옩",
+            "CVD 다이버전스":  "CVD",
+            "VWAP 위치":       "VWAP",
+            "OFI 불균형":      "OFI",
+            "외인 콜순매수":   "외인콜",
+            "다이버전스 지수": "다이버전스",
+            "프로그램 비차익": "프로그램",
         }
         corr_scores.sort(key=lambda item: item[1], reverse=True)
         return "  ".join(
@@ -787,7 +794,7 @@ class TradingSystem:
         self._ensure_shap_tracker()
         if not self.model.is_ready() or self._shap_tracker is None:
             return
-        if len(self._shap_feature_window) < 30:
+        if len(self._shap_feature_window) < SHAP_MIN_DATA_POINTS:
             return
 
         minute_key = str(ts or "")[:16]
@@ -802,7 +809,9 @@ class TradingSystem:
             return
 
         X_recent = np.array(list(self._shap_feature_window), dtype=np.float32)
-        self._shap_tracker.update(horizon_model, X_recent, sample_size=min(120, len(X_recent)))
+        updated = self._shap_tracker.update(horizon_model, X_recent, sample_size=min(120, len(X_recent)))
+        if not updated:
+            return
 
         ranking = self._shap_tracker.get_current_ranking()
         if not ranking:
@@ -816,49 +825,6 @@ class TradingSystem:
         self._live_shap_ready = True
         save_shap_scores(ts, "1m", score_map)
         self._update_shap_dashboard()
-
-    def _update_shap_dashboard(self) -> None:
-        self._ensure_shap_tracker()
-        if self._shap_tracker is None:
-            return
-        ranking = self._shap_tracker.get_current_ranking()
-        if not ranking:
-            return
-
-        score_map = {row["feature"]: float(row["importance"]) for row in ranking}
-        core_vals = [
-            score_map.get("cvd_divergence", 0.0),
-            score_map.get("vwap_position", 0.0),
-            score_map.get("ofi_norm", 0.0),
-        ]
-
-        dynamic_items = []
-        for row in ranking:
-            feat = row["feature"]
-            if feat in ("cvd_divergence", "vwap_position", "ofi_norm"):
-                continue
-            dynamic_items.append({
-                "rank": row["rank"],
-                "name": feat,
-                "shap": score_map.get(feat, 0.0),
-                "status": "?좎?",
-            })
-            if len(dynamic_items) >= 3:
-                break
-
-        for item in dynamic_items:
-            item["status"] = "LIVE" if self._live_shap_ready else "RESTORED"
-
-        rank_feature_order = [
-            "foreign_call_net",
-            "cvd_divergence",
-            "foreign_retail_divergence",
-            "vwap_position",
-            "program_non_arb_net",
-            "ofi_norm",
-        ]
-        rank_vals = [score_map.get(name, 0.0) for name in rank_feature_order]
-        self.dashboard.update_shap(core_vals, dynamic_items, rank_vals)
 
     def _update_shap_dashboard(self) -> None:
         self._ensure_shap_tracker()

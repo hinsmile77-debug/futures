@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-05-20 (66차 — SHAP 중요도·파라미터 상관계수 이상점 점검 및 4종 수정)
+
+**Work**: 대시보드 "파라미터 중요도(SHAP)"와 "파라미터 상관계수" 업데이트 상태 점검. 이상점 4종 발견 후 우선순위 순으로 전부 수정 완료.
+
+### 발견된 이상점 요약
+
+| # | 이상점 | 심각도 |
+|---|---|---|
+| 1 | `_refresh_shap_state()` 임계값 30 vs `SHAP_MIN_DATA_POINTS`=100 불일치 → RESTORED값이 LIVE로 둔갑 | **높음** |
+| 2 | `_update_shap_dashboard()` 메서드 중복 정의 (구버전 데드코드 + 인코딩 깨진 문자열) | 낮음 |
+| 3 | `_shap_feature_window` 재시작 후 미복원 → 30분간 SHAP 계산 공백 | 중간 |
+| 4 | `_build_param_corr_string()` `short_names` 키 인코딩 깨짐 → 레이블 매칭 실패 | 낮음 |
+
+### 수정 내용 (4종)
+
+| Fix | 파일 | 변경 내용 |
+|---|---|---|
+| Fix 1 | `learning/shap/shap_tracker.py` | `update()` → `bool` 반환 (실계산 True, skip False) |
+| Fix 1 | `main.py` | `SHAP_MIN_DATA_POINTS` import 추가. `_refresh_shap_state()` 임계값 30 → `SHAP_MIN_DATA_POINTS`. `update()` 반환값으로 `_live_shap_ready` 제어 |
+| Fix 2 | `main.py` | 구버전 `_update_shap_dashboard()` 중복 정의 (line 820~861) 제거 |
+| Fix 3 | `main.py` | `_restore_analysis_buffers()`에 `_shap_feature_window` DB 복원 추가 |
+| Fix 4 | `main.py` | `_build_param_corr_string()` `short_names` 키 정상 UTF-8 한글로 교체 |
+
+### 66차 실세션 확인 사항 (2026-05-21)
+
+1. **SHAP LIVE 전환 타이밍**: 재시작 후 DB에 100건 이상 raw_features가 있으면 기동 직후 `_live_shap_ready=True`로 전환되는지 확인
+2. **SHAP LIVE 전환 로그**: `[SHAP] 중요도 갱신 완료 (n=XX)` 로그 발생 시점이 분봉 100개 이후인지 확인
+3. **대시보드 RESTORED/LIVE 구분**: 기동 직후 100개 미만 구간에서 SHAP이 LIVE 표시되지 않는지 확인
+4. **상관계수 레이블**: 파라미터 상관계수 표시에서 CVD/VWAP/OFI 등 정상 한글 축약어 표시 확인
+
+---
+
 ## 2026-05-20 (65차 — 신뢰도·VWAP 흐름 분석 + 진입 체크리스트 7종 개선)
 
 **Work**: 10:01 로그 기반 "매수 방향 → X등급" 흐름 정밀 분석. 신뢰도·VWAP 이상점 4종(사용자 제시) 점검 후 추가 이상점 3종 발견. 총 7종 개선을 체크리스트·라우터·대시보드·main 4개 파일에 구현.

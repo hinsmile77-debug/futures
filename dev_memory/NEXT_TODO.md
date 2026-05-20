@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-05-20 (66차) — SHAP 중요도·파라미터 상관계수 이상점 4종 수정
+
+### 한일 요약
+
+- [DONE 2026-05-20] **Fix 1: RESTORED값 LIVE 오인 버그** — `shap_tracker.update()` bool 반환 + `_refresh_shap_state()` 임계값 30→`SHAP_MIN_DATA_POINTS`(100) + 반환값으로 `_live_shap_ready` 제어
+- [DONE 2026-05-20] **Fix 2: 구버전 `_update_shap_dashboard()` 중복 제거** — 데드코드 + 인코딩 깨진 문자열 포함 블록 전체 삭제
+- [DONE 2026-05-20] **Fix 3: `_shap_feature_window` 재시작 복원** — `_restore_analysis_buffers()`에서 DB raw_features로 window 채움. 재시작 직후 30분 공백 제거
+- [DONE 2026-05-20] **Fix 4: `short_names` 인코딩 교체** — `_build_param_corr_string()` 딕셔너리 키 깨진 바이트→정상 UTF-8 한글 6종
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **66차 수정사항 실세션 확인 (2026-05-21)**
+  - 기동 직후 `[AnalysisRestore]` 로그: `live_shap=N`이 100 이상이면 window 복원 성공
+  - `[SHAP] 중요도 갱신 완료` 로그: 분봉 100개 이상 확보 후 첫 발생인지 확인
+  - 대시보드 SHAP 상태: 기동 직후 100건 미만이면 RESTORED, 100건 이상이면 LIVE 표시
+  - 파라미터 상관계수 레이블: "CVD", "VWAP", "외인콜", "다이버전스", "프로그램" 정상 표시
+
+- [NEXT 미정] **SHAP LIVE/RESTORED 대시보드 색상 구분 추가 검토**
+  - 현재 텍스트 상태 표시만 있음. 색상(회색=RESTORED, 녹색=LIVE) 추가 여부 결정
+  - 데이터 충분히 쌓인 후 판단
+
+---
+
 ## 2026-05-20 (65차) — 진입 체크리스트 7종 개선
 
 ### 한일 요약

@@ -1,7 +1,50 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-20 (65차) — **진입 체크리스트 7종 개선: 신뢰도 강제X·min_conf 통일·VWAP 역추세·CVD/OFI 0값·외인 AND·손실률 분모**
+> 마지막 업데이트: 2026-05-20 (66차) — **SHAP 중요도·파라미터 상관계수 이상점 4종 수정: RESTORED→LIVE 오인 버그·데드코드·window 복원·인코딩**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-20 (66차) — SHAP 중요도·파라미터 상관계수 이상점 점검 및 4종 수정
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| RESTORED값 LIVE 오인 버그 (임계값 30 vs 100 불일치) | **완료** — `update()` bool 반환 + `_refresh_shap_state()` 임계값 `SHAP_MIN_DATA_POINTS`로 통일 |
+| 구버전 `_update_shap_dashboard()` 중복 메서드 제거 | **완료** — 데드코드 + 인코딩 깨진 문자열 포함 블록 삭제 |
+| `_shap_feature_window` 재시작 후 미복원 (30분 공백) | **완료** — `_restore_analysis_buffers()`에 DB 복원 추가 |
+| `_build_param_corr_string()` `short_names` 인코딩 깨짐 | **완료** — 정상 UTF-8 한글로 교체 |
+| 실세션 동작 확인 | **미완료** — 다음 장(2026-05-21) 기동 필요 |
+
+### 수정 파일 (66차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `learning/shap/shap_tracker.py` | `update()` 반환형 → `bool` (실계산 True, 데이터 부족·실패 False) |
+| `main.py` | `SHAP_MIN_DATA_POINTS` import 추가 |
+| `main.py` | `_refresh_shap_state()`: 임계값 30→`SHAP_MIN_DATA_POINTS`(100), `update()` 반환값으로 `_live_shap_ready` 제어 |
+| `main.py` | 구버전 `_update_shap_dashboard()` (line 820~861) 제거 (데드코드) |
+| `main.py` | `_restore_analysis_buffers()`: `_shap_feature_window` DB 데이터로 복원 추가 |
+| `main.py` | `_build_param_corr_string()`: `short_names` 키 인코딩 깨짐 → 정상 한글 교체 |
+
+### 핵심 버그 흐름 (수정 전)
+
+```
+재시작 후 30개 live 분봉 쌓임
+  → _refresh_shap_state(): len(window)=30 >= 30 → update() 호출
+  → shap_tracker.update(): len(X)=30 < 100 → return (계산 안 함)
+  → get_current_ranking() → 복원값 반환
+  → _live_shap_ready = True  ← 버그: 실계산 없이 True
+  → 대시보드: 복원값이 "LIVE" 표시
+  → save_shap_scores(): 복원값을 LIVE로 DB 저장
+```
+
+### 66차 실세션 확인 사항 (2026-05-21)
+
+1. DB에 100건 이상 raw_features가 있으면 기동 직후 SHAP live 계산 성공하는지 확인
+2. 100건 미만 구간에서 대시보드에 LIVE 표시 안 나타나는지 확인
+3. 파라미터 상관계수 레이블 정상 한글 표시(CVD, VWAP, 외인콜 등) 확인
 
 ---
 
