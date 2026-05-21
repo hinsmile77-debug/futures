@@ -101,6 +101,7 @@ from strategy.entry.checklist import EntryChecklist
 from strategy.entry.time_strategy_router import get_zone_min_confidence
 from strategy.entry.position_sizer import PositionSizer
 from strategy.entry.meta_gate import MetaGate
+from strategy.entry.trend_persistence import TrendPersistenceGate
 from strategy.entry.adaptive_kelly import AdaptiveKelly
 from strategy.exit.time_exit import TimeExitManager
 from strategy.risk.toxicity_gate import ToxicityGate
@@ -186,6 +187,7 @@ class TradingSystem:
         self.pred_buffer       = PredictionBuffer()
         self.meta_gate         = MetaGate()
         self.toxicity_gate     = ToxicityGate()
+        self.trend_gate        = TrendPersistenceGate()
         self.batch_retrainer   = BatchRetrainer()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
         self.pcr_store          = PCRStore()
@@ -2698,6 +2700,17 @@ class TradingSystem:
             decision["min_conf"],
             get_zone_min_confidence(get_time_zone()),
         )
+        # TrendPersistenceGate — above_vwap=1 AND cvd_direction=1 이 10분 연속이면
+        # UP 방향 한정으로 actual_min_conf를 0.44까지 완화
+        _tp = self.trend_gate.update(features)
+        if _tp["active"] and direction == 1:
+            _prev_mc = actual_min_conf
+            actual_min_conf = min(actual_min_conf, _tp["min_conf_override"])
+            if actual_min_conf < _prev_mc:
+                log_manager.signal(
+                    "[TrendGate] 추세 지속 %d분 — UP min_conf %.2f→%.2f",
+                    _tp["streak"], _prev_mc, actual_min_conf,
+                )
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,
             confidence=confidence,
@@ -4166,6 +4179,7 @@ class TradingSystem:
         self.core_health.reset_daily()
         self.shadow_session.reset_daily()
         self.contrarian_mode.reset_daily()
+        self.trend_gate.reset_daily()
         self._last_ensemble_direction = 0
         self._param_corr_history.clear()
         self._shap_feature_window.clear()

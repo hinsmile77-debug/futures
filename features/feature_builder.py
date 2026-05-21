@@ -45,6 +45,8 @@ class FeatureBuilder:
         self._core_fail_notified: Dict[str, bool] = {"cvd": False, "vwap": False, "ofi": False}
         self._on_core_fail: Optional[Any] = None  # 외부 CB 경보 콜백 (main.py에서 주입)
         self._close_history: deque = deque(maxlen=60)  # Hurst 계산용 종가 버퍼
+        # CVD 모노톤 비율 계산용 — 20구간(21개 포인트) 이력
+        self._cvd_history: deque = deque(maxlen=21)
 
     def update_hoga(
         self,
@@ -142,6 +144,20 @@ class FeatureBuilder:
                     self._on_core_fail("CVD", streak)
             features.update({"cvd_divergence": 0.0, "cvd_direction": 0.0,
                              "cvd": 0.0, "cvd_slope": 0.0})
+
+        # CVD 모노톤 비율 — 최근 20구간 중 CVD가 증가한 비율 (0.0~1.0)
+        # GBM 장기 학습용: 추세 지속성을 포인트 스냅샷이 아닌 시계열로 표현
+        _cvd_val = float(features.get("cvd", 0.0))
+        self._cvd_history.append(_cvd_val)
+        _ch_len = len(self._cvd_history)
+        if _ch_len >= 2:
+            _up = sum(
+                1 for _i in range(1, _ch_len)
+                if self._cvd_history[_i] > self._cvd_history[_i - 1]
+            )
+            features["cvd_monotone_ratio"] = float(_up) / float(_ch_len - 1)
+        else:
+            features["cvd_monotone_ratio"] = 0.5  # 초기 중립값
 
         try:
             exh_result = self.cvd_exhaustion_calc.compute(
