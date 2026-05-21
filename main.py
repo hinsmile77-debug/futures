@@ -2711,6 +2711,15 @@ class TradingSystem:
                     "[TrendGate] 추세 지속 %d분 — UP min_conf %.2f→%.2f",
                     _tp["streak"], _prev_mc, actual_min_conf,
                 )
+        # Layer 2 장중 전술 레짐 — min_conf 사전 상향 (사후 차단보다 먼저 적용)
+        # DAY_RISK_OFF: +5%p / CRASH: +12%p / NORMAL: ±0
+        _l2_mc_adj = self.intraday_regime.min_conf_adjust() / 100.0
+        if _l2_mc_adj > 0.0:
+            actual_min_conf = min(0.90, actual_min_conf + _l2_mc_adj)
+            log_manager.signal(
+                "[IntradayRegime] %s — min_conf +%.0f%%p → %.2f",
+                self.current_intraday_regime, _l2_mc_adj * 100, actual_min_conf,
+            )
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,
             confidence=confidence,
@@ -3015,6 +3024,14 @@ class TradingSystem:
                     f"ma={_tox_gate.get('score_ma', 0.0):.2f} size_mult={_tox_size:.2f} "
                     f"reason={_tox_gate.get('reason', '')}"
                 )
+            # Layer 2 사이즈 축소 — DAY_RISK_OFF=×0.5 / CRASH=×0.3 (마지막 단계 적용)
+            _l2_size = self.intraday_regime.size_mult()
+            if _l2_size < 1.0 and _qty_display > 0:
+                _qty_display = max(1, int(round(_qty_display * _l2_size)))
+                log_manager.signal(
+                    f"[IntradayRegime] {self.current_intraday_regime} 사이즈 축소 "
+                    f"×{_l2_size:.1f} → {_qty_display}계약"
+                )
 
         _raw_entry_dir = "LONG" if direction > 0 else "SHORT" if direction < 0 else ""
         _resolved_raw_dir, _resolved_final_dir, _reverse_on = self._resolve_entry_direction(_raw_entry_dir)
@@ -3160,13 +3177,22 @@ class TradingSystem:
                 level="WARNING",
             )
         elif direction < 0 and not _intraday_short_ok:
-            _intraday_block = True
-            _final_grade = "X"
-            log_manager.signal(
-                f"[IntradayRegime] {self.current_intraday_regime} — 신규 숏 금지 "
-                f"(day={self.intraday_regime._last_factors.get('day_ret', 0)*100:+.2f}%)",
-                level="WARNING",
-            )
+            # CRASH 상태에서도 A등급 숏 추세추종은 예외 허용 (crash=숏이 맞는 방향)
+            if self.intraday_regime.allow_crash_grade_a_short() and _final_grade == "A":
+                log_manager.signal(
+                    f"[IntradayRegime] CRASH — A등급 숏 추세추종 예외 허용 "
+                    f"(day={self.intraday_regime._last_factors.get('day_ret', 0)*100:+.2f}%)",
+                    level="WARNING",
+                )
+                # _intraday_block = False 유지 → 진입 허용, 사이즈는 CRASH size_mult=×0.3 적용됨
+            else:
+                _intraday_block = True
+                _final_grade = "X"
+                log_manager.signal(
+                    f"[IntradayRegime] {self.current_intraday_regime} — 신규 숏 금지 "
+                    f"(grade={_final_grade} day={self.intraday_regime._last_factors.get('day_ret', 0)*100:+.2f}%)",
+                    level="WARNING",
+                )
 
         entry_mode = "manual"
         if getattr(self, "dashboard", None) is not None:
