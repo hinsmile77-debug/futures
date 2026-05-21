@@ -36,21 +36,21 @@ _ZONE_PARAMS: Dict[str, dict] = {
         "desc":            "시초가 급변 — 고신뢰·소규모 진입만 허용",
     },
     "OPEN_VOLATILE": {
-        "min_confidence":  0.63,      # 신뢰도 기준 상향 (변동성 큰 구간)
+        "min_confidence":  0.60,      # 0.63→0.60: 초기 운영 기간 한시적 완화
         "size_mult":       0.8,        # 사이즈 보수적
         "strategy_mode":  "trend_follow",
         "allow_new_entry": True,
         "desc":            "개장 변동성 — 추세추종, 신뢰도↑",
     },
     "STABLE_TREND": {
-        "min_confidence":  0.58,
+        "min_confidence":  0.54,   # 0.58→0.54: 초기 운영 기간 한시적 완화
         "size_mult":       1.0,
         "strategy_mode":  "standard",
         "allow_new_entry": True,
         "desc":            "안정 추세 — 표준 앙상블",
     },
     "LUNCH_RECOVERY": {
-        "min_confidence":  0.60,
+        "min_confidence":  0.57,   # 0.60→0.57: 초기 운영 기간 한시적 완화
         "size_mult":       0.9,
         "strategy_mode":  "foreign_watch",   # 외인 재진입 감지 우선
         "allow_new_entry": True,

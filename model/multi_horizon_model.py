@@ -47,8 +47,8 @@ class MultiHorizonModel:
     EXTREME_ZSCORE_LOG_TOPK = 5
 
     GBM_PARAMS = {
-        "n_estimators":     100,
-        "max_depth":        4,
+        "n_estimators":     200,   # 100→200: BatchRetrainer 동일 수준, PreRetrain 품질 개선
+        "max_depth":        5,     # 4→5: 3000샘플×balanced weight 환경에서 표현력 확대
         "learning_rate":    0.05,
         "subsample":        0.8,
         "random_state":     42,

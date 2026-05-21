@@ -42,7 +42,7 @@ class AdaptiveEnsembleGater:
         self._load_weights()          # 이전 세션 가중치 복원 (없으면 기본값 유지)
         self._confirm_threshold = 0.22
         self._reject_threshold = -0.28
-        self._boost_max = 0.08
+        self._boost_max = 0.12   # 0.08→0.12: conf 천장 완화 (초기 운영 기간 한시적)
         self._penalty_max = 0.12
         self._outcome_count = 0       # 피드백 수신 누적 건수 (진단용)
 

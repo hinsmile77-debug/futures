@@ -49,7 +49,7 @@ logger = logging.getLogger("LEARNING")
 # min_samples_leaf는 MultiHorizonModel과 동일한 상수를 공유 (비결정성 방지)
 GBM_PARAMS = {
     "n_estimators":     200,
-    "max_depth":        4,
+    "max_depth":        5,     # 4→5: MultiHorizonModel과 동일 수준
     "learning_rate":    0.05,
     "subsample":        0.8,
     "min_samples_leaf": GBM_MIN_SAMPLES_LEAF,

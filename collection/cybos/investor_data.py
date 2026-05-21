@@ -205,7 +205,7 @@ class CybosInvestorData:
             "quality_investor_option_supported": 1.0 if self._option_flow_supported else 0.0,
             "quality_investor_stale": 1.0 if is_stale else 0.0,
             "quality_investor_age_sec": float(max(age_sec, 0.0)),
-            "quality_investor_fetch_count": float(self._fetch_count),
+            "quality_investor_fetch_count": float(min(self._fetch_count, 60)),  # z-score 단조증가 방지
             "quality_investor_source_code": float(self._source_code(self._futures_source, self._program_source)),
             "quality_investor_reason_code": float(self._reason_code(self._futures_reason, self._program_reason)),
         }
