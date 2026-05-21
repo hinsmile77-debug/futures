@@ -1973,40 +1973,15 @@ class TradingSystem:
 
     # ── 장 전 준비 (08:45) ─────────────────────────────────────
     def pre_market_setup(self):
-        """매크로 수집 + 레짐 판단"""
-        logger.info("[System] 장 전 매크로 수집 시작")
+        """1단계 (08:55): macro seed fetch + PreRetrain 시작.
+        SP500·KRW chg는 첫 fetch에서 항상 0.0(설계된 동작)이므로
+        레짐 확정은 _pre_market_stage2()에서 2회차 fetch(08:58) 후 실행한다."""
+        logger.info("[System] 장 전 매크로 수집 시작 (1단계 — seed fetch)")
         log_manager.system("장 전 매크로 수집 시작")
 
-        _fetched = self.macro_fetcher.get_features()
-        # MacroFetcher는 변동률을 소수 형태(0.005 = 0.5%)로 반환하고
-        # RegimeClassifier는 퍼센트 단위(0.5 = 0.5%)를 기대하므로 ×100 변환한다.
-        macro_data = {
-            "vix":             _fetched.get("vix", 20.0),
-            "sp500_chg_pct":   round(_fetched.get("sp500_chg", 0.0) * 100, 4),
-            "nasdaq_chg_pct":  round(_fetched.get("nasdaq_chg", 0.0) * 100, 4),
-            "usd_krw_chg_pct": round(_fetched.get("usd_krw_chg", 0.0) * 100, 4),
-            "us10y_chg":       _fetched.get("us10y_chg", 0.0),
-        }
-        logger.info("[System] 매크로 수집 완료 | VIX=%.1f SP500=%+.2f%% KRW=%+.2f%%",
-                    macro_data["vix"], macro_data["sp500_chg_pct"], macro_data["usd_krw_chg_pct"])
-
-        result = self.regime_classifier.classify(**macro_data)
-        self.current_regime = result["regime"]
-
-        logger.info(f"[System] 레짐 확정: {self.current_regime} | {result['description']}")
-        log_manager.system(f"레짐: {self.current_regime} | {result['description']}")
-        notify(f"장 전 레짐: {self.current_regime}", "INFO")
-
-        self.dashboard.update_supply_macro(
-            vix=macro_data["vix"],
-            sp500_chg=macro_data["sp500_chg_pct"] / 100,
-            usd_krw=macro_data["usd_krw_chg_pct"],
-            regime=self.current_regime,
-        )
-        self.dashboard.append_sys_log(
-            f"레짐 확정: {self.current_regime} | {result['description']}"
-        )
-        self.dashboard.set_ui_ready_mode()
+        # 첫 fetch: prev 시드 저장 전용. SP500·KRW chg = 0.0 (MacroFetcher 설계)
+        self.macro_fetcher.get_features()
+        logger.info("[System] 매크로 seed fetch 완료 — 레짐 확정은 08:58 2단계로 연기")
 
         # [PreOpen-이상점2] 장 시작 전 현재가 스냅샷 사전 조회 — realtime.start() 시 BlockRequest 병목 방지
         # start() 내부에서 _last_price > 0 이면 _prime_from_snapshot 재실행 스킵
@@ -2044,6 +2019,42 @@ class TradingSystem:
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
             threading.Thread(target=_pre_retrain_worker, daemon=True).start()
+
+    def _pre_market_stage2(self):
+        """2단계 (08:58): 2회차 macro fetch → SP500·KRW 실수치 반영 → 레짐 확정.
+        MacroFetcher._first_fetch_done=True 상태에서 호출되므로 chg가 실제값으로 계산된다."""
+        self.macro_fetcher.manual_fetch()  # 강제 2회차 fetch
+        _fetched = self.macro_fetcher.get_features()
+        # MacroFetcher는 변동률을 소수 형태(0.005 = 0.5%)로 반환하고
+        # RegimeClassifier는 퍼센트 단위(0.5 = 0.5%)를 기대하므로 ×100 변환한다.
+        macro_data = {
+            "vix":             _fetched.get("vix", 20.0),
+            "sp500_chg_pct":   round(_fetched.get("sp500_chg", 0.0) * 100, 4),
+            "nasdaq_chg_pct":  round(_fetched.get("nasdaq_chg", 0.0) * 100, 4),
+            "usd_krw_chg_pct": round(_fetched.get("usd_krw_chg", 0.0) * 100, 4),
+            "us10y_chg":       _fetched.get("us10y_chg", 0.0),
+        }
+        logger.info(
+            "[System] 매크로 수집 완료 | VIX=%.1f SP500=%+.2f%% KRW=%+.2f%%",
+            macro_data["vix"], macro_data["sp500_chg_pct"], macro_data["usd_krw_chg_pct"],
+        )
+
+        result = self.regime_classifier.classify(**macro_data)
+        self.current_regime = result["regime"]
+
+        logger.info("[System] 레짐 확정: %s | %s", self.current_regime, result["description"])
+        log_manager.system(f"레짐: {self.current_regime} | {result['description']}")
+
+        self.dashboard.update_supply_macro(
+            vix=macro_data["vix"],
+            sp500_chg=macro_data["sp500_chg_pct"] / 100,
+            usd_krw=macro_data["usd_krw_chg_pct"],
+            regime=self.current_regime,
+        )
+        self.dashboard.append_sys_log(
+            f"레짐 확정: {self.current_regime} | {result['description']}"
+        )
+        self.dashboard.set_ui_ready_mode()
 
     # [SERVICE-BOUNDARY 2/4] MinutePipelineService
     # 책임: 분봉 단위 의사결정(검증→학습→피처→예측→진입/청산→기록)
@@ -4547,8 +4558,9 @@ class TradingSystem:
         # 대시보드 서버 모드 동기화 (라디오 버튼 불일치 시 진입 차단)
         self.dashboard.set_server_mode("simul" if _is_simul else "real")
 
-        self._pre_market_done   = False
-        self._daily_close_done  = False
+        self._pre_market_done        = False
+        self._pre_market_stage1_done = False
+        self._daily_close_done       = False
         self._first_tick_notified = False      # 첫 분봉 알림 플래그
         self._broker_sync_critical_notified = False  # broker sync CRITICAL 알림 1회 플래그
 
@@ -4615,18 +4627,18 @@ class TradingSystem:
         if self._heartbeat_count % 10 == 0:
             self._log_waiting_status(now)
 
-        # 장 전 준비 + 실시간 구독 사전 시작 (08:55~08:59, KRX 거래일만)
-        # - pre_market_setup(): 레짐 결정은 09:00 이전이면 충분; 08:45 고집 불필요
-        # - realtime_data.start(): 09:00 첫 틱부터 누락 없이 수신하기 위해 5분 전 구독
-        #   구독 후 08:55~08:59 틱은 _on_candle_closed의 is_market_open 가드가 차단(안전)
+        # 1단계 (08:55): macro seed fetch + PreRetrain + 실시간 구독 시작
+        # - pre_market_setup(): SP500·KRW seed fetch, PreRetrain 시작
+        # - realtime_data.start(): 09:00 첫 틱 누락 방지. 구독 후 틱은 is_market_open 가드가 차단(안전)
+        # - 레짐 확정은 하지 않음 → 2단계(08:58)에서 2회차 fetch 후 결정
         if (
-            not self._pre_market_done
+            not getattr(self, "_pre_market_stage1_done", False)
             and is_trading_day(now)
             and datetime.time(8, 55) <= now.time() < datetime.time(9, 0)
         ):
             self.pre_market_setup()
             self.latency_sync.reset_daily()
-            self._pre_market_done    = True
+            self._pre_market_stage1_done = True
             self._daily_close_done   = False
             self._rollover_detected  = False
             self._pre_sync_attempted = False
@@ -4634,10 +4646,21 @@ class TradingSystem:
             if _rd is not None and not getattr(_rd, "_running", False):
                 _rd.start(load_history=True)
                 log_manager.system("[PreOpen] 09:00 대비 실시간 구독 사전 시작 (08:55~)", "INFO")
-                notify_premarket_ready(
-                    self.current_regime,
-                    getattr(self, "_futures_code", "?"),
-                )
+
+        # 2단계 (08:58~09:05): 2회차 macro fetch → SP500·KRW 실수치 → 레짐 확정
+        # 08:58 이후 최초 heartbeat에서 1회 실행. 폴백 상한 09:05로 GAP_OPEN 이내 보장.
+        if (
+            getattr(self, "_pre_market_stage1_done", False)
+            and not self._pre_market_done
+            and is_trading_day(now)
+            and datetime.time(8, 58) <= now.time() < datetime.time(9, 5)
+        ):
+            self._pre_market_stage2()
+            notify_premarket_ready(
+                self.current_regime,
+                getattr(self, "_futures_code", "?"),
+            )
+            self._pre_market_done = True
 
         # [PreOpen-이상점4] 장 시작 직전(08:58~08:59:30) broker sync 선실행
         # → GAP_OPEN 구간(09:00~09:05) 진입 차단 방지. 장중 재시도(3분 간격)보다 먼저 실행.
@@ -4669,8 +4692,9 @@ class TradingSystem:
             if self.realtime_data:
                 self.realtime_data.stop()
             self.daily_close()
-            self._pre_market_done  = False
-            self._daily_close_done = True
+            self._pre_market_done        = False
+            self._pre_market_stage1_done = False
+            self._daily_close_done       = True
 
         # 연결 감시 — 끊김 시 슬랙 CRITICAL 알림 후 재연결
         if not self.broker.is_connected:

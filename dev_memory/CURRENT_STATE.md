@@ -1,7 +1,65 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-21 (72차) — **방향 비대칭 편향 6종 수정 (OFI·CVD·prev_bar·PCR·SP500 레짐·RL HOLD 페널티)**
+> 마지막 업데이트: 2026-05-21 (73차) — **레짐 확정 08:58 2단계 분리 (SP500·KRW 실수치 반영)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-21 (73차) — 레짐 확정 08:58 2단계 분리
+
+### 배경
+
+매일 08:55 첫 macro fetch에서 `MacroFetcher._first_fetch_done` 메커니즘에 의해
+SP500·KRW chg가 항상 0.0으로 나옴. 그 직후 레짐을 확정하면 VIX 단독 결정 구조가 됨.
+2회차 fetch(08:58~)에서 실제 값이 나오지만 레짐은 이미 고정된 상태였음.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| `pre_market_setup()` 1단계화 | **완료** — seed fetch + PreRetrain만, 레짐 확정 제거 |
+| `_pre_market_stage2()` 신규 | **완료** — 08:58 2회차 fetch + 레짐 확정 + 대시보드 + 알림 |
+| `_heartbeat` 2단계 분리 | **완료** — stage1(08:55) / stage2(08:58~09:05) 조건 분리 |
+| 실세션 검증 | **미완료** — 2026-05-22 장중 확인 필요 |
+
+### 수정 파일 (73차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | `pre_market_setup()`: 레짐 확정 로직 제거, seed fetch + PreRetrain만 |
+| `main.py` | `_pre_market_stage2()` 신규 — 2회차 fetch + 레짐 확정 |
+| `main.py` | `_heartbeat`: `_pre_market_stage1_done` 플래그 추가, 08:58 stage2 조건 삽입 |
+| `main.py` | `connect_broker()` + 일일 마감: `_pre_market_stage1_done = False` 리셋 추가 |
+
+### 변경 전후 타임라인
+
+```
+[변경 전]
+08:55  pre_market_setup()
+         → seed fetch (SP500=0%, KRW=0%)
+         → 레짐 확정 (VIX만 반영) ← 문제
+         → PreRetrain 시작
+         → realtime 구독 시작
+
+[변경 후]
+08:55  pre_market_setup() [1단계]
+         → seed fetch (SP500=0%, KRW=0%)
+         → PreRetrain 시작
+         → realtime 구독 시작
+
+08:58  _pre_market_stage2() [2단계]
+         → manual_fetch() 강제 2회차
+         → 레짐 확정 (SP500·KRW 실수치 반영) ← 개선
+         → 대시보드 업데이트
+         → notify_premarket_ready()
+```
+
+### 실세션 확인 사항
+
+1. `08:55:XX [System] 매크로 seed fetch 완료 — 레짐 확정은 08:58 2단계로 연기` 로그 확인
+2. `08:58:XX [System] 매크로 수집 완료 | VIX=XX SP500=%+.2f%% KRW=%+.2f%%` — 실수치 확인 (SP500≠0.00%)
+3. `08:58:XX [System] 레짐 확정: XXX | ...` 로그 확인
+4. GAP_OPEN 구간(09:00~09:05) 진입 전에 레짐이 정상 확정됐는지 확인
 
 ---
 
