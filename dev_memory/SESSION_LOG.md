@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-05-21 (71차 — 자동진입관리 UI 카드 구조 개편)
+
+**Work**: 진입관리탭 자동진입관리 패널의 카드 배치를 개편. 앙상블 등급·체크리스트 등급·최종진입 카드 분리 표시 + 레이아웃 빈 공간 해소.
+
+### 주요 변경 내용
+
+| 항목 | 변경 내용 |
+|---|---|
+| **신뢰도 카드 → 앙상블 등급 카드** | 신뢰도 % 표시 제거 (멀티호라이즌 앙상블 패널과 중복) → EnsembleDecision 반환 A/B/C/X 등급 표시 |
+| **진입 등급 카드 → 체크리스트 등급** | 라벨명 변경 + 각종 게이트 차단 전 순수 체크리스트 grade (`_cr["grade"]`) 표시 |
+| **최종진입 카드 신규** | 앙상블+체크리스트 종합 최종 판정. `direction!=0 AND _final_grade in (A,B)` 시 "진입" (녹색 600ms 깜박임 테두리), 나머지 "진입대기" |
+| **레이아웃 재구성** | QGridLayout(3열) → VBoxLayout + info_row0(HBox) + info_row1(HBox). row0 2카드·row1 3카드 각각 균등 폭 |
+| **수량 카드 균등 폭** | 산출수량·진입수량·최대허용수량 각각 `stretch=1` 추가 → 상위 행과 동일한 1/3 폭 |
+
+### 수정 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `dashboard/main_dashboard.py` | EntryPanel 카드 재구성 (레이아웃·라벨·blink 타이머·툴팁 전면 개편) |
+| `main.py` | `update_entry()` 호출에 `ensemble_grade=grade`, `checklist_grade=_cr["grade"]`, `final_entry=bool` 추가 |
+
+### 데이터 흐름 (신규)
+
+```
+EnsembleDecision.compute() → grade (앙상블 등급) → 앙상블 등급 카드
+EntryChecklist.evaluate()  → _cr["grade"] (체크리스트 등급) → 체크리스트 등급 카드
+_final_grade in (A,B) + direction!=0 → final_entry bool → 최종진입 카드
+```
+
+---
+
 ## 2026-05-20 (69차 — 68차 개선 검증 + signal() TypeError ERR-FATAL 근본 원인 수정)
 
 **Work**: 11:46:31 재시작 후 68차 개선 3항목 실세션 검증 완료. 09:14~09:25 로그 재분석에서 `signal() takes 2 positional arguments but 3 were given` ERR-FATAL 근본 원인 규명 → 3개 파일 수정.

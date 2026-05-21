@@ -2896,6 +2896,10 @@ class EntryPanel(QWidget):
         self._blink_timer = QTimer(self)
         self._blink_timer.setInterval(500)
         self._blink_timer.timeout.connect(self._on_blink_tick)
+        self._entry_blink_on: bool = False
+        self._entry_blink_timer = QTimer(self)
+        self._entry_blink_timer.setInterval(600)
+        self._entry_blink_timer.timeout.connect(self._on_entry_blink_tick)
         self._time_router = TimeStrategyRouter()
         self._mode_button_labels = {
             "auto": "A 등급진입",
@@ -2971,9 +2975,13 @@ class EntryPanel(QWidget):
         self._update_mode_desc()
         lay.addWidget(mk_sep())
 
-        # 앙상블 + 신뢰도
-        info_lay = QGridLayout()
-        info_lay.setSpacing(4)
+        # 앙상블 + 신뢰도 (row0: 2카드, row1: 3카드, row2: 수량)
+        info_vlay = QVBoxLayout()
+        info_vlay.setSpacing(4)
+        info_row0 = QHBoxLayout()
+        info_row0.setSpacing(4)
+        info_row1 = QHBoxLayout()
+        info_row1.setSpacing(4)
         _TIP_META_GATE = (
             "  ③ 메타 게이트 (MetaGate)\n"
             "     '지금 상황이 예측하기 좋은 상황인가'를 별도 추정\n"
@@ -3039,29 +3047,50 @@ class EntryPanel(QWidget):
             "역방향진입 ON 시: 원신호 방향을 뒤집어 주문\n"
             "  (원신호=매수 → 실행신호=매도, 반대도 동일)"
         )
-        _TIP_CONF = (
-            "【앙상블 신뢰도】\n"
-            "6개 호라이즌(1/3/5/10/15/30분) 예측 확률의\n"
-            "상관관계 역수 가중합 → 미시구조 게이팅 보정 후 확정값\n"
+        _TIP_ENS_GRADE = (
+            "【앙상블 등급】\n"
+            "6개 호라이즌(1/3/5/10/15/30분) 예측의 앙상블 결과 등급\n"
+            "(EnsembleDecision.compute() 직접 반환값)\n"
             "\n"
-            "【레짐별 색상 기준】\n"
-            "  ● 초록 : 신뢰도 ≥ 70%\n"
-            "  ● 주황 : 신뢰도 ≥ 레짐 임계값  (진입 가능)\n"
-            "  ● 빨강 : 레짐 임계값 미달       (진입 차단)\n"
+            "  A : 신뢰도 ≥ 70%  — 강한 방향성\n"
+            "  B : 신뢰도 ≥ 레짐 임계값  — 진입 가능\n"
+            "  C : 신뢰도 약함  — 약한 방향성\n"
+            "  X : 레짐 임계값 미달 / FLAT  — 진입 차단\n"
             "\n"
             "  레짐별 임계값\n"
             "    RISK_ON  → 52%\n"
             "    NEUTRAL  → 58%\n"
-            "    RISK_OFF → 65%\n"
-            "\n"
-            "【진입등급 판정 기준】\n"
-            "  신뢰도가 레짐 임계값 이상이어야 체크 2_confidence ✓\n"
-            "  9개 체크리스트 통과 수 → A(6↑) / B(4~5) / C(2~3) / X(1↓)\n"
-            "  단, CORE 3개(VWAP·CVD·OFI) 중 하나라도 ✗ → 강제 X등급"
+            "    RISK_OFF → 65%"
         )
-        kv_top = [("원신호","signal","대기"),("실행 신호","final_signal","대기"),
-                  ("신뢰도","conf","대기"),("진입 등급","grade","대기")]
-        for i, (lbl, attr, init) in enumerate(kv_top):
+        _TIP_CONF = (
+            "【진입 등급 (체크리스트)】\n"
+            "9개 체크리스트 통과 수 기반 등급\n"
+            "\n"
+            "  A : 6개↑ 통과 → ×1.5 자동진입\n"
+            "  B : 4~5개 통과 → ×1.0 자동진입\n"
+            "  C : 2~3개 통과 → ×0.6 수동확인\n"
+            "  X : 1개↓ 통과 → 진입금지\n"
+            "\n"
+            "  ※ CORE 3개(VWAP·CVD·OFI) 중 하나라도 ✗ → 강제 X등급\n"
+            "  ※ 각종 게이트(Health·ExecutionGovernor·MetaGate·ToxicityGate\n"
+            "     ProfitGuard·IntradayRegime) 차단 시 X로 강제 변경"
+        )
+        _TIP_FINAL_ENTRY = (
+            "【최종진입 판정】\n"
+            "앙상블 등급 + 체크리스트 등급을 종합한 최종 진입 여부\n"
+            "\n"
+            "  진입    : 최종 등급 A 또는 B → 자동진입 실행 조건 충족\n"
+            "  진입대기 : 등급 C·X 또는 신호 없음\n"
+            "\n"
+            "  '진입' 상태 시 테두리가 녹색으로 깜빡입니다."
+        )
+        kv_top = [
+            ("원신호",    "signal",      "대기", info_row0, _TIP_RAW_SIGNAL),
+            ("실행 신호", "final_signal","대기", info_row0, _TIP_FINAL_SIGNAL),
+            ("앙상블 등급","ens_grade",  "대기", info_row1, _TIP_ENS_GRADE),
+            ("체크리스트 등급", "chk_grade",  "대기", info_row1, _TIP_CONF),
+        ]
+        for lbl, attr, init, row_lay, tip in kv_top:
             f = QFrame()
             f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
             fl = QVBoxLayout(f)
@@ -3070,16 +3099,27 @@ class EntryPanel(QWidget):
             vl = mk_val_label(init, C['text'], 13)
             setattr(self, f"e_{attr}", vl)
             fl.addWidget(vl)
-            if attr == "signal":
-                f.setToolTip(_TIP_RAW_SIGNAL)
-                vl.setToolTip(_TIP_RAW_SIGNAL)
-            elif attr == "final_signal":
-                f.setToolTip(_TIP_FINAL_SIGNAL)
-                vl.setToolTip(_TIP_FINAL_SIGNAL)
-            elif attr == "conf":
-                f.setToolTip(_TIP_CONF)
-                vl.setToolTip(_TIP_CONF)
-            info_lay.addWidget(f, i//2, i%2)
+            if tip:
+                f.setToolTip(tip)
+                vl.setToolTip(tip)
+            row_lay.addWidget(f)
+
+        # 최종진입 카드 (row1 우측 끝) — 앙상블+체크리스트 종합 진입 판정
+        _f_final = QFrame()
+        _f_final.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
+        _f_final.setToolTip(_TIP_FINAL_ENTRY)
+        self._final_entry_frame = _f_final
+        _fl_final = QVBoxLayout(_f_final)
+        _fl_final.setContentsMargins(6,3,6,3)
+        _fl_final.addWidget(mk_label("최종진입", C['text2'], 9))
+        _vl_final = mk_val_label("대기", C['text2'], 13)
+        _vl_final.setToolTip(_TIP_FINAL_ENTRY)
+        self.e_final_entry = _vl_final
+        _fl_final.addWidget(_vl_final)
+        info_row1.addWidget(_f_final)
+
+        info_vlay.addLayout(info_row0)
+        info_vlay.addLayout(info_row1)
 
         # 하단 3카드: 산출수량 | 진입수량 | 최대허용수량
         _TIP_QTY = (
@@ -3148,8 +3188,8 @@ class EntryPanel(QWidget):
 
         qty_row_lay = QHBoxLayout()
         qty_row_lay.setSpacing(4)
-        qty_row_lay.addWidget(_mk_info_card("산출 수량", "e_qty", "대기", _TIP_QTY))
-        qty_row_lay.addWidget(_mk_info_card("진입 수량", "e_entry_qty", "대기", _TIP_ENTRY))
+        qty_row_lay.addWidget(_mk_info_card("산출 수량", "e_qty", "대기", _TIP_QTY), 1)
+        qty_row_lay.addWidget(_mk_info_card("진입 수량", "e_entry_qty", "대기", _TIP_ENTRY), 1)
 
         max_f = QFrame()
         max_f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
@@ -3180,13 +3220,13 @@ class EntryPanel(QWidget):
         btn_col.addWidget(btn_dn)
         max_inner.addLayout(btn_col)
         max_fl.addLayout(max_inner)
-        qty_row_lay.addWidget(max_f)
+        qty_row_lay.addWidget(max_f, 1)
 
         qty_row_widget = QWidget()
         qty_row_widget.setLayout(qty_row_lay)
-        info_lay.addWidget(qty_row_widget, 2, 0, 1, 2)
+        info_vlay.addWidget(qty_row_widget)
 
-        lay.addLayout(info_lay)
+        lay.addLayout(info_vlay)
         lay.addWidget(mk_sep())
 
         # 9개 체크리스트
@@ -3527,6 +3567,13 @@ class EntryPanel(QWidget):
         self._blink_on = not self._blink_on
         self._sync_reverse_button_style()
 
+    def _on_entry_blink_tick(self):
+        self._entry_blink_on = not self._entry_blink_on
+        border_col = C['green'] if self._entry_blink_on else C['border']
+        self._final_entry_frame.setStyleSheet(
+            f"background:{C['bg2']};border:2px solid {border_col};border-radius:4px;"
+        )
+
     def set_contrarian_hint(self, active: bool, direction: str = "") -> None:
         """Contrarian ACTIVE 시 역방향 버튼에 황색 깜빡임 힌트 표시."""
         self._contrarian_hint = active
@@ -3580,7 +3627,9 @@ class EntryPanel(QWidget):
         return self.current_mode
 
     def update_data(self, signal, conf, grade, checks, qty=0, final_signal=None,
-                    reverse_enabled=False, min_conf: float = 0.58):
+                    reverse_enabled=False, min_conf: float = 0.58,
+                    ensemble_grade: str = None, checklist_grade: str = None,
+                    final_entry: bool = False):
         final_signal = final_signal or signal
         col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
         final_col = C['green'] if final_signal == "매수" else C['red'] if final_signal == "매도" else C['text2']
@@ -3588,16 +3637,35 @@ class EntryPanel(QWidget):
         self.e_signal.setStyleSheet(f"color:{col};font-size:{S.f(14)}px;font-weight:bold;")
         self.e_final_signal.setText(final_signal)
         self.e_final_signal.setStyleSheet(f"color:{final_col};font-size:{S.f(14)}px;font-weight:bold;")
-        self.e_conf.setText(f"{conf*100:.1f}%")
-        self.e_conf.setStyleSheet(
-            f"color:{C['green'] if conf>=0.7 else C['orange'] if conf>=min_conf else C['red']};"
-            f"font-size:{S.f(14)}px;font-weight:bold;"
-        )
 
+        # 앙상블 등급 카드 (신뢰도 퍼센트 대신 A/B/C/X 등급 표시)
         grade_colors = {"A": C['cyan'], "B": C['blue'], "C": C['orange'], "X": C['red']}
-        self.e_grade.setText(f"{grade}급")
-        self.e_grade.setStyleSheet(f"color:{grade_colors.get(grade,C['text'])};"
-                                    f"font-size:{S.f(14)}px;font-weight:bold;")
+        _ens_g = ensemble_grade or grade
+        self.e_ens_grade.setText(f"{_ens_g}급")
+        self.e_ens_grade.setStyleSheet(f"color:{grade_colors.get(_ens_g, C['text'])};"
+                                       f"font-size:{S.f(14)}px;font-weight:bold;")
+
+        # 진입 등급 카드 (체크리스트 grade 표시)
+        _chk_g = checklist_grade or grade
+        self.e_chk_grade.setText(f"{_chk_g}급")
+        self.e_chk_grade.setStyleSheet(f"color:{grade_colors.get(_chk_g, C['text'])};"
+                                       f"font-size:{S.f(14)}px;font-weight:bold;")
+
+        # 최종진입 카드
+        if final_entry:
+            self.e_final_entry.setText("진입")
+            self.e_final_entry.setStyleSheet(f"color:{C['green']};font-size:{S.f(14)}px;font-weight:bold;")
+            if not self._entry_blink_timer.isActive():
+                self._entry_blink_on = True
+                self._entry_blink_timer.start()
+        else:
+            self.e_final_entry.setText("진입대기")
+            self.e_final_entry.setStyleSheet(f"color:{C['text2']};font-size:{S.f(14)}px;font-weight:bold;")
+            if self._entry_blink_timer.isActive():
+                self._entry_blink_timer.stop()
+            self._final_entry_frame.setStyleSheet(
+                f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;"
+            )
 
         # 산출 수량
         if qty > 0:
@@ -3650,7 +3718,7 @@ class EntryPanel(QWidget):
             )
             reverse_tag = " | 역방향진입=ON" if reverse_enabled else ""
             self.entry_alert.setText(
-                f"▲ 원신호: {signal} / 실행신호: {final_signal} | {grade}급 — {conf*100:.1f}% 신뢰도{reverse_tag}"
+                f"▲ 원신호: {signal} / 실행신호: {final_signal} | {_chk_g}급 — {conf*100:.1f}% 신뢰도{reverse_tag}"
             )
         elif signal == "매도":
             self.entry_alert.setStyleSheet(
@@ -3659,7 +3727,7 @@ class EntryPanel(QWidget):
             )
             reverse_tag = " | 역방향진입=ON" if reverse_enabled else ""
             self.entry_alert.setText(
-                f"▼ 원신호: {signal} / 실행신호: {final_signal} | {grade}급 — {conf*100:.1f}% 신뢰도{reverse_tag}"
+                f"▼ 원신호: {signal} / 실행신호: {final_signal} | {_chk_g}급 — {conf*100:.1f}% 신뢰도{reverse_tag}"
             )
         else:
             self.entry_alert.setStyleSheet(
@@ -8782,13 +8850,18 @@ class DashboardAdapter:
 
     def update_entry(self, signal: str, conf: float, grade: str, checks: dict,
                      qty: int = 0, final_signal: str = None,
-                     reverse_enabled: bool = False, min_conf: float = 0.58):
+                     reverse_enabled: bool = False, min_conf: float = 0.58,
+                     ensemble_grade: str = None, checklist_grade: str = None,
+                     final_entry: bool = False):
         """진입 관리 패널 업데이트"""
         self._win.entry_panel.update_data(
             signal, conf, grade, checks, qty=qty,
             final_signal=final_signal,
             reverse_enabled=reverse_enabled,
             min_conf=min_conf,
+            ensemble_grade=ensemble_grade,
+            checklist_grade=checklist_grade,
+            final_entry=final_entry,
         )
 
     def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False) -> None:

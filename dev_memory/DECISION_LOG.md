@@ -2,6 +2,32 @@
 
 ---
 
+## 2026-05-21 (71차 — 자동진입관리 UI 카드 구조 개편)
+
+### [설계] 신뢰도 카드 → 앙상블 등급 카드로 전환
+**File**: `dashboard/main_dashboard.py` — `EntryPanel`
+**Problem**: 자동진입관리 패널의 "신뢰도" 카드가 멀티호라이즌 예측 앙상블 패널의 신뢰도 % 표시와 중복.
+**Decision**: 신뢰도 % 대신 EnsembleDecision이 반환하는 grade(A/B/C/X)를 표시. 라벨 "신뢰도" → "앙상블 등급".
+**Why**: 하나의 화면에 동일 정보를 두 번 보여주는 것보다, 등급(앙상블 vs 체크리스트 비교)을 나란히 보여주는 게 운영자 판단에 더 유용.
+**How to apply**: `update_entry()` 호출 시 `ensemble_grade=grade` (EnsembleDecision 원본값)를 항상 전달. 미전달 시 `_final_grade` fallback.
+
+### [설계] 앙상블 등급 vs 체크리스트 등급 vs 최종진입 3단계 분리 표시
+**File**: `dashboard/main_dashboard.py`, `main.py`
+**Decision**: 단일 "진입등급" 카드를 3개로 분리.
+- **앙상블 등급**: `decision["grade"]` — 게이트 보정 전 앙상블 순수 판단
+- **체크리스트 등급**: `_cr["grade"]` — 9개 체크리스트 순수 결과 (게이트 적용 전)
+- **최종진입**: `_final_grade in (A,B) AND direction!=0` — 모든 게이트(Health·ExecutionGovernor·MetaGate·ToxicityGate·ProfitGuard·IntradayRegime) 적용 후 실제 진입 여부
+**Why**: 기존엔 게이트 차단으로 X가 됐을 때 앙상블이 B였는지 체크리스트가 A였는지 알 수 없었음. 분리 표시로 어느 단계에서 차단됐는지 즉시 파악 가능.
+**How to apply**: `_final_grade`를 화면에 단독 표시하지 않음. 최종 실행 여부는 "최종진입" 카드로만 확인.
+
+### [설계] 최종진입 카드 깜박임 — QTimer 600ms
+**File**: `dashboard/main_dashboard.py` — `EntryPanel._on_entry_blink_tick`
+**Decision**: "진입" 상태 시 카드 테두리를 600ms 주기로 초록(C['green']) ↔ 기본(C['border']) 토글.
+**Why**: 진입 신호는 운영자가 즉시 인식해야 하는 중요 이벤트. 색상 변화만으론 시선을 끌기 부족 → 깜박임 추가.
+**How to apply**: `_entry_blink_timer`는 `_blink_timer`(역방향 버튼 깜박임)와 독립 운용. 두 깜박임이 동시에 발생해도 충돌 없음.
+
+---
+
 ## 2026-05-20 (69차 — signal() TypeError ERR-FATAL 수정 + traceback 로깅)
 
 ### [버그 CRITICAL] `log_manager.signal()` TypeError — validate_health_policy_hotreload.py monkey-patch + positional 인수 충돌

@@ -2984,6 +2984,8 @@ class TradingSystem:
         _resolved_raw_dir, _resolved_final_dir, _reverse_on = self._resolve_entry_direction(_raw_entry_dir)
         _raw_signal_ko = self._direction_to_korean(_resolved_raw_dir)
         _final_signal_ko = self._direction_to_korean(_resolved_final_dir)
+        _checklist_grade = _cr["grade"] if _cr is not None else None
+        _final_entry_ok  = direction != 0 and _final_grade in ("A", "B")
         self.dashboard.update_entry(
             _raw_signal_ko,
             confidence,
@@ -2993,6 +2995,9 @@ class TradingSystem:
             final_signal=_final_signal_ko,
             reverse_enabled=_reverse_on,
             min_conf=actual_min_conf,
+            ensemble_grade=grade,
+            checklist_grade=_checklist_grade,
+            final_entry=_final_entry_ok,
         )
         self._manual_entry_ctx = {
             "price": close,

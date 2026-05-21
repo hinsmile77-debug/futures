@@ -1,7 +1,35 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-20 (69차) — **`signal() takes 2 positional arguments but 3 were given` ERR-FATAL 근본 원인 수정 + traceback 로깅 추가**
+> 마지막 업데이트: 2026-05-21 (71차) — **자동진입관리 패널 UI 카드 구조 개편 (앙상블 등급·체크리스트 등급·최종진입 분리)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-21 (71차) — 자동진입관리 UI 카드 구조 개편
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| 자동진입관리 패널 카드 구조 | **완료** — 앙상블 등급·체크리스트 등급·최종진입 3카드 분리 |
+| 레이아웃 빈 공간 | **해소** — QGridLayout → VBox+HBox 재구성 |
+| 최종진입 깜박임 | **구현** — 600ms QTimer, 진입 조건 시 녹색 테두리 blink |
+| 수량 카드 균등 폭 | **완료** — stretch=1 균등 분배 |
+
+### 수정 파일 (71차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `dashboard/main_dashboard.py` | EntryPanel: 신뢰도→앙상블등급 카드, 진입등급→체크리스트등급 라벨, 최종진입 카드 신규, 레이아웃 재구성, blink 타이머 추가 |
+| `main.py` | `update_entry()` 호출에 `ensemble_grade`, `checklist_grade`, `final_entry` 파라미터 추가 |
+
+### 카드별 데이터 소스
+
+| 카드 | 소스 |
+|---|---|
+| 앙상블 등급 | `decision["grade"]` (EnsembleDecision, 게이트 적용 전) |
+| 체크리스트 등급 | `_cr["grade"]` (EntryChecklist, 게이트 적용 전 순수 체크리스트 결과) |
+| 최종진입 | `direction!=0 AND _final_grade in ("A","B")` (모든 게이트 적용 후) |
 
 ---
 
