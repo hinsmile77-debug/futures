@@ -185,12 +185,18 @@ class FeatureBuilder:
                     self._on_core_fail("VWAP", streak)
             features.update({"vwap_position": 0.0, "vwap": 0.0, "above_vwap": 0.0})
 
+        # ofi_raw: features 미저장(② 제거) — GBM z-score 폭발 방지.
+        # avg_vol 기반 ±3배 클리핑 후 로컬 변수로만 유지 → reversal_calc에 전달.
+        # OfiReversalChallenger는 features["ofi_raw"] 의존성으로 비활성화됨
+        # (향후 챌린저 ofi_raw 독립 계산으로 리팩토링 예정).
+        _ofi_raw_val = 0.0
         try:
             ofi_result = self.ofi.flush_minute()
+            _clip_bound = max(float(vol or 1.0), 1.0) * 3.0
+            _ofi_raw_val = float(np.clip(ofi_result["ofi_raw"], -_clip_bound, _clip_bound))
             features["ofi_norm"]      = float(ofi_result["ofi_norm"])
             features["ofi_pressure"]  = float(ofi_result["pressure"])
             features["ofi_imbalance"] = float(ofi_result["imbalance_ratio"])
-            features["ofi_raw"]       = float(ofi_result["ofi_raw"])
             self._core_fail_streak["ofi"] = 0
             self._core_fail_notified["ofi"] = False
         except Exception as _exc:
@@ -203,18 +209,17 @@ class FeatureBuilder:
                 self._core_fail_notified["ofi"] = True
                 if callable(self._on_core_fail):
                     self._on_core_fail("OFI", streak)
-            features.update({"ofi_norm": 0.0, "ofi_pressure": 0.0,
-                             "ofi_imbalance": 0.0, "ofi_raw": 0.0})
+            features.update({"ofi_norm": 0.0, "ofi_pressure": 0.0, "ofi_imbalance": 0.0})
 
         try:
             ofi_rev = self.ofi_reversal_calc.compute(
-                ofi_raw    = features.get("ofi_raw", 0.0),
+                ofi_raw    = _ofi_raw_val,   # 클리핑된 로컬값 사용 (speed 폭발 방지)
                 avg_volume = vol or 1.0,
             )
             features["ofi_reversal_speed"]   = float(ofi_rev["reversal_speed"])
             features["bull_reversal_signal"] = float(ofi_rev["bull_reversal_signal"])
             features["bear_reversal_signal"] = float(ofi_rev["bear_reversal_signal"])
-            features["ofi_reversal_signal"]  = float(ofi_rev["signal"])  # deprecated
+            # ofi_reversal_signal 제거 (③ deprecated — bull/bear_reversal_signal로 대체됨)
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] OFI reversal 오류 — 기본값 사용: %s", _exc)
@@ -222,7 +227,6 @@ class FeatureBuilder:
                 "ofi_reversal_speed":   0.0,
                 "bull_reversal_signal": 0.0,
                 "bear_reversal_signal": 0.0,
-                "ofi_reversal_signal":  0.0,
             })
         features["avg_volume"] = vol
 
