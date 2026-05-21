@@ -2685,11 +2685,19 @@ class TradingSystem:
                 "ts": ts,
             },
         )
+        # TrendPersistenceGate — ensemble.compute() 이전에 먼저 업데이트
+        # (StuckBreaker가 TrendGate 상태를 참조하므로 순서가 중요)
+        # UP:   above_vwap=1 AND cvd_direction=1  이 10분+ → UP  min_conf → 0.44
+        # DOWN: above_vwap=0 AND cvd_direction=-1 이 10분+ → DN  min_conf → 0.44
+        _tp = self.trend_gate.update(features)
         decision = self.ensemble.compute(
             horizon_proba,
             self.current_regime,
             features=features,
             adaptive_gating=True,
+            acc30m=_acc30m,
+            trend_gate_up_active=_tp["up_active"],
+            trend_gate_dn_active=_tp["dn_active"],
         )
         direction  = decision["direction"]
         confidence = decision["confidence"]
@@ -2700,10 +2708,6 @@ class TradingSystem:
             decision["min_conf"],
             get_zone_min_confidence(get_time_zone()),
         )
-        # TrendPersistenceGate — 원웨이 추세 지속 시 해당 방향 actual_min_conf 완화
-        # UP:   above_vwap=1 AND cvd_direction=1  이 10분+ → UP  min_conf → 0.44
-        # DOWN: above_vwap=0 AND cvd_direction=-1 이 10분+ → DN  min_conf → 0.44
-        _tp = self.trend_gate.update(features)
         _tp_active = (
             (_tp["up_active"] and direction == 1) or
             (_tp["dn_active"] and direction == -1)
@@ -4220,6 +4224,7 @@ class TradingSystem:
         self.shadow_session.reset_daily()
         self.contrarian_mode.reset_daily()
         self.trend_gate.reset_daily()
+        self.ensemble.reset_daily()
         self._last_ensemble_direction = 0
         self._param_corr_history.clear()
         self._shap_feature_window.clear()

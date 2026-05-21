@@ -20,6 +20,7 @@ from config.settings import (
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from model.ensemble_gater import AdaptiveEnsembleGater
+from model.directional_stuck_breaker import DirectionalStuckBreaker
 
 logger = logging.getLogger("SIGNAL")
 
@@ -119,6 +120,7 @@ class EnsembleDecision:
     def __init__(self):
         self.gater    = AdaptiveEnsembleGater()
         self._decorr  = HorizonDecorrelator()
+        self._stuck   = DirectionalStuckBreaker()
 
     def compute(
         self,
@@ -126,6 +128,9 @@ class EnsembleDecision:
         regime: str = "NEUTRAL",
         features: Optional[Dict[str, float]] = None,
         adaptive_gating: bool = True,
+        acc30m: float = 0.5,
+        trend_gate_up_active: bool = False,
+        trend_gate_dn_active: bool = False,
     ) -> Dict:
         """
         Args:
@@ -206,6 +211,28 @@ class EnsembleDecision:
                 direction  = DIRECTION_FLAT
                 confidence = flat_score
 
+        # ── 방향 고착 감쇠 ───────────────────────────────────
+        # 발동: NEUTRAL + 동방향 8회+ + acc30m < 38%
+        # 억제: TrendGate가 같은 방향 active → 실제 추세 인정
+        up_score, down_score, flat_score, _stuck_streak, _stuck_active = \
+            self._stuck.update_and_apply(
+                direction, up_score, down_score, flat_score,
+                regime=regime,
+                acc30m=acc30m,
+                trend_gate_up_active=trend_gate_up_active,
+                trend_gate_dn_active=trend_gate_dn_active,
+            )
+        # 감쇠 후 방향·신뢰도 재결정
+        if up_score >= down_score and up_score >= flat_score:
+            direction  = DIRECTION_UP
+            confidence = up_score
+        elif down_score > up_score and down_score >= flat_score:
+            direction  = DIRECTION_DOWN
+            confidence = down_score
+        else:
+            direction  = DIRECTION_FLAT
+            confidence = flat_score
+
         # ── 레짐별 최소 신뢰도 기준 ──────────────────────────
         min_conf  = REGIME_MIN_CONFIDENCE.get(regime, 0.58)
         regime_ok = (confidence >= min_conf) and (direction != DIRECTION_FLAT)
@@ -238,6 +265,7 @@ class EnsembleDecision:
             "detail":     detail,
             "gating":     gating,
             "decorr":     self._decorr.get_status(),
+            "stuck":      self._stuck.status_dict(),
         }
 
         logger.info(
@@ -245,6 +273,9 @@ class EnsembleDecision:
             f"grade={grade} regime={regime}"
         )
         return result
+
+    def reset_daily(self):
+        self._stuck.reset_daily()
 
     def record_trade_outcome(
         self,
