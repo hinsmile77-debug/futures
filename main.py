@@ -2056,6 +2056,16 @@ class TradingSystem:
         )
         self.dashboard.set_ui_ready_mode()
 
+        # 투자자 warmup fetch — _last_fetch 초기화로 09:00 첫 파이프라인 z-score 폭발 방지.
+        # _last_fetch=None 상태에서는 age_sec=9999 → quality_investor_stale z-score +27 발생.
+        # 장전 fetch라 nets={}가 예상되지만 _last_fetch 설정만으로도 효과가 있다.
+        try:
+            self.investor_data.fetch_all()
+            logger.info("[System] PreOpen 투자자 warmup fetch 완료 (age_sec 초기화)")
+            log_manager.system("PreOpen 투자자 warmup fetch 완료")
+        except Exception as _e:
+            logger.warning("[System] PreOpen 투자자 warmup fetch 실패 (무해): %s", _e)
+
     # [SERVICE-BOUNDARY 2/4] MinutePipelineService
     # 책임: 분봉 단위 의사결정(검증→학습→피처→예측→진입/청산→기록)
     # 입력: bar(분봉), 실시간 누적 피처 상태, 현재 포지션/리스크 상태
