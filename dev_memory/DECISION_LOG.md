@@ -2,6 +2,52 @@
 
 ---
 
+## 2026-05-21 (72차 — 방향 비대칭 편향 6종 수정)
+
+### [버그 CRITICAL] SHORT MR 진입에 bear_exhaustion 사용 — 의미론적 역전
+**File**: `strategy/entry/checklist.py` — VWAP 체크 (#3) SHORT 분기
+**Root cause**: MEAN_REVERSION SHORT 진입 조건 `vwap_position > 1.5 and bear_exhaustion > 0.0` 에서 `bear_exhaustion`(=하락 압력 소진, LONG MR 근거)을 사용. SHORT 역추세는 상승 압력이 소진됐을 때 정당화되는데 반대 신호를 게이트로 사용.
+**Fix**: `bull_exhaustion > 0.0`으로 교체. LONG MR은 `bear_exhaustion`(하락 압력 소진), SHORT MR은 `bull_exhaustion`(상승 압력 소진).
+**How to apply**: MEAN_REVERSION 진입 조건 설계 시 — LONG MR=하락 탈진 후 반등, SHORT MR=상승 탈진 후 하락. 각각 반대 방향의 탈진 신호가 조건.
+
+### [설계] CVD 탈진 양방향화 — bear_exhaustion / bull_exhaustion 분리
+**File**: `features/technical/cvd_exhaustion.py`
+**Problem**: `cvd_exhaustion`은 CVD 신저점 + 낙폭 둔화 + 거래량 급증 조건을 확인하는 "하락 탈진" 신호였음. 그런데 이름이 `cvd_exhaustion`(방향 불명확)이라 SHORT MR에서도 잘못 재사용됨.
+**Decision**: `bear_exhaustion`(하락 압력 소진 → LONG MR용) + `bull_exhaustion`(상승 압력 소진 → SHORT MR용)으로 분리. 이름에 방향을 명시해 오용 방지. 구 `cvd_exhaustion`/`exhaustion` → deprecated alias로 유지 (모델 전환 이행기).
+**How to apply**: 탈진 신호 사용 시 방향 명시가 필수. `bear_exhaustion`은 LONG 진입 보조, `bull_exhaustion`은 SHORT 진입 보조.
+
+### [설계] OFI 역전 신호 양방향화 — bull_reversal_signal / bear_reversal_signal 분리
+**File**: `features/technical/ofi_reversal.py`
+**Problem**: `ofi_reversal_signal`은 매도→매수 급반전(LONG 이벤트)만 감지. 매수→매도 급반전(SHORT 이벤트)은 미구현.
+**Decision**: `bull_reversal_signal`(ofi_avg_3m < -threshold AND ofi_raw > 0, LONG 이벤트) + `bear_reversal_signal`(ofi_avg_3m > +threshold AND ofi_raw < 0, SHORT 이벤트) 분리.
+**How to apply**: 진입 방향별로 대응 신호 사용. `ofi_reversal_signal` deprecated — 신규 모델 훈련 후 제거.
+
+### [설계] prev_bar_direction 3-state (+1/0/-1) — 도지 명시적 제외
+**File**: `strategy/entry/checklist.py`, `main.py`
+**Problem**: `prev_bar_bullish: bool`에서 도지(시가=종가)는 False → SHORT 체크 #7 통과. 도지는 방향 없는 봉이므로 어느 쪽도 지지 근거가 아님.
+**Decision**: `prev_bar_direction: int` 3-state. +1=양봉, 0=도지, -1=음봉. 체크 #7: LONG은 +1만, SHORT은 -1만 통과.
+**How to apply**: LONG 진입 시 직전 봉이 도지면 체크리스트 탈락. SHORT도 동일. 추세 확인 목적이므로 중립봉은 어느 방향도 지지 안 함.
+
+### [설계] PCR 극단값 양방향화 — pcr_extreme_bearish / pcr_extreme_bullish / pcr_extreme_signed
+**File**: `collection/options/pcr_store.py`, `features/options/option_features.py`
+**Problem**: `pcr_extreme`은 PCR≥1.5(풋 과잉, 역발상 반등)만 정의. PCR≤0.67(콜 과잉, 역발상 매도) 미구현 → 역발상 신호 LONG 전용.
+**Decision**: `pcr_extreme_bearish`(PCR≥1.5, 풋 극단), `pcr_extreme_bullish`(PCR≤0.67=1/1.5, 콜 극단), `pcr_extreme_signed`((pcr-1.0)/0.5 클리핑 [-1,+1], 풋극단=+1.0, 콜극단=-1.0). 기존 `pcr_extreme` deprecated.
+**Why 0.67**: 1/1.5 = 0.667. PCR 대칭점. 풋/콜 극단의 수학적 역수 관계 유지.
+
+### [설계] S&P500 레짐 임계값 대칭화 — ±0.5%
+**File**: `collection/macro/regime_classifier.py`
+**Problem**: 레짐 분류 SP500 조건: `> +0.5%` → +1점, `< -1.0%` → -1점. 상승 기준이 하락 기준보다 2배 낮아 레짐 점수가 RISK_ON 편향.
+**Decision**: `< -1.0%` → `< -0.5%`. 상승·하락 동일 ±0.5% 기준.
+**How to apply**: S&P500 ±0.5% 미만은 보합으로 중립 처리. 레짐 점수 편향 해소.
+
+### [설계] RL HOLD 페널티 제거
+**File**: `learning/rl/reward_design.py`
+**Problem**: `position=0 AND action==HOLD`일 때 `hold_penalty = 0.001` 적용. 직접 방향 편향은 아니지만, 홀드 억제 → 진입 강요 → CB·체크리스트 외부 제어와 충돌. LONG/SHORT 중 더 쉬운 방향(bias 있는 방향)으로 치우칠 간접 증폭 가능성.
+**Decision**: `hold_penalty = 0.0`. 미륵이는 체크리스트 9종 + Circuit Breaker 5종으로 과매매를 외부에서 이미 강하게 제어. RL 내부에서 추가 홀드 억제는 불필요하고 역효과.
+**How to apply**: 향후 RL 보상 설계 시 과매매 억제는 외부 안전장치에 위임. RL 보상은 순수 PnL·리스크 페널티·MDD 페널티만 포함.
+
+---
+
 ## 2026-05-21 (71차 — 자동진입관리 UI 카드 구조 개편)
 
 ### [설계] 신뢰도 카드 → 앙상블 등급 카드로 전환

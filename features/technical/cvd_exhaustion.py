@@ -1,14 +1,20 @@
-# features/technical/cvd_exhaustion.py — CVD 탈진 강도 계산기
+# features/technical/cvd_exhaustion.py — CVD 탈진 강도 계산기 (양방향)
 """
-CvdExhaustionCalculator: CVD 탈진 강도 0.0~1.0 반환.
+CvdExhaustionCalculator: bear_exhaustion / bull_exhaustion 양방향 반환.
 
 feature_builder.py 에서 호출:
-    result = self.cvd_exhaustion.compute(cvd_raw, cvd_slope, volume)
-    features["cvd_exhaustion"] = result["exhaustion"]
+    result = self.cvd_exhaustion_calc.compute(cvd_raw, cvd_slope, volume)
+    features["bear_exhaustion"] = result["bear_exhaustion"]
+    features["bull_exhaustion"] = result["bull_exhaustion"]
 
-탈진 조건 (3가지 동시 충족 시 exhaustion > 0):
+bear_exhaustion (하락 압력 소진 → LONG MR용):
   ① cvd < cvd_20min_low   (CVD 20분 신저점 갱신)
-  ② cvd_accel > 0         (CVD 2차 미분 양전환)
+  ② cvd_accel > 0         (낙폭 둔화 — CVD 2차 미분 양전환)
+  ③ volume > avg_vol × 1.8 (거래량 급증)
+
+bull_exhaustion (상승 압력 소진 → SHORT MR용):
+  ① cvd > cvd_20min_high  (CVD 20분 신고점 갱신)
+  ② cvd_accel < 0         (상승폭 둔화 — CVD 2차 미분 음전환)
   ③ volume > avg_vol × 1.8 (거래량 급증)
 """
 from collections import deque
@@ -16,11 +22,11 @@ from typing import Dict
 
 
 class CvdExhaustionCalculator(object):
-    """CVD 탈진 강도 계산기 (피처 빌더용)"""
+    """CVD 탈진 강도 계산기 — 양방향 (피처 빌더용)"""
 
-    CVD_WIN    = 20
-    VOL_MULT   = 1.8
-    VOL_WIN    = 20
+    CVD_WIN  = 20
+    VOL_MULT = 1.8
+    VOL_WIN  = 20
 
     def __init__(self):
         self._cvd_buf    = deque(maxlen=self.CVD_WIN + 2)
@@ -36,37 +42,49 @@ class CvdExhaustionCalculator(object):
             volume:    현재 분봉 거래량
 
         Returns:
-            {"exhaustion": 0.0~1.0, "exhaustion_signal": 0 or 1}
+            bear_exhaustion:        0.0~1.0  (하락 압력 소진 — LONG MR용)
+            bull_exhaustion:        0.0~1.0  (상승 압력 소진 — SHORT MR용)
+            bear_exhaustion_signal: 0 or 1
+            bull_exhaustion_signal: 0 or 1
+            exhaustion:             bear_exhaustion  (deprecated — 이행기 호환)
+            exhaustion_signal:      bear_exhaustion_signal (deprecated — 이행기 호환)
         """
         self._cvd_buf.append(float(cvd_raw))
         self._vol_buf.append(float(volume))
 
-        exhaustion = 0.0
+        bear_exhaustion = 0.0
+        bull_exhaustion = 0.0
 
         if len(self._cvd_buf) >= self.CVD_WIN and len(self._vol_buf) >= 5:
-            cvd_list     = list(self._cvd_buf)
-            cvd_20min_low = min(cvd_list[:-1])
+            cvd_list   = list(self._cvd_buf)
+            avg_vol    = sum(self._vol_buf) / len(self._vol_buf)
 
-            # ① 신저점
-            cond1 = cvd_raw < cvd_20min_low
+            prev_slope = self._slope_prev if self._slope_prev is not None else float(cvd_slope)
+            cvd_accel  = float(cvd_slope) - prev_slope
+            vol_surge  = avg_vol > 0 and volume > avg_vol * self.VOL_MULT
+            exh_val    = min(volume / (avg_vol * 3.0), 1.0) if avg_vol > 0 else 0.5
 
-            # ② 낙폭 둔화
-            prev_slope   = self._slope_prev if self._slope_prev is not None else cvd_slope
-            cvd_accel    = float(cvd_slope) - prev_slope
-            cond2        = cvd_accel > 0
+            # bear_exhaustion: CVD 신저점 + 낙폭 둔화 + 거래량 급증
+            if (cvd_raw < min(cvd_list[:-1])
+                    and cvd_accel > 0
+                    and vol_surge):
+                bear_exhaustion = exh_val
 
-            # ③ 거래량 급증
-            avg_vol = sum(self._vol_buf) / len(self._vol_buf)
-            cond3   = avg_vol > 0 and volume > avg_vol * self.VOL_MULT
-
-            if cond1 and cond2 and cond3:
-                exhaustion = min(volume / (avg_vol * 3.0), 1.0) if avg_vol > 0 else 0.5
+            # bull_exhaustion: CVD 신고점 + 상승폭 둔화 + 거래량 급증
+            if (cvd_raw > max(cvd_list[:-1])
+                    and cvd_accel < 0
+                    and vol_surge):
+                bull_exhaustion = exh_val
 
         self._slope_prev = float(cvd_slope)
 
         return {
-            "exhaustion":        round(exhaustion, 4),
-            "exhaustion_signal": 1 if exhaustion > 0 else 0,
+            "bear_exhaustion":        round(bear_exhaustion, 4),
+            "bull_exhaustion":        round(bull_exhaustion, 4),
+            "bear_exhaustion_signal": 1 if bear_exhaustion > 0 else 0,
+            "bull_exhaustion_signal": 1 if bull_exhaustion > 0 else 0,
+            "exhaustion":             round(bear_exhaustion, 4),        # deprecated
+            "exhaustion_signal":      1 if bear_exhaustion > 0 else 0,  # deprecated
         }
 
     def reset_daily(self):

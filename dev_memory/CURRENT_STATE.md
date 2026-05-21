@@ -1,7 +1,53 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-21 (71차) — **자동진입관리 패널 UI 카드 구조 개편 (앙상블 등급·체크리스트 등급·최종진입 분리)**
+> 마지막 업데이트: 2026-05-21 (72차) — **방향 비대칭 편향 6종 수정 (OFI·CVD·prev_bar·PCR·SP500 레짐·RL HOLD 페널티)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-21 (72차) — 방향 비대칭 편향 6종 수정
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| OFI 역전 신호 양방향화 | **완료** — `bull_reversal_signal` + `bear_reversal_signal` 분리, 구 `ofi_reversal_signal` deprecated |
+| CVD 탈진 양방향화 | **완료** — `bear_exhaustion` + `bull_exhaustion` 분리, 구 `cvd_exhaustion`/`exhaustion` deprecated |
+| prev_bar_direction 3-state | **완료** — `prev_bar_bullish: bool` → `prev_bar_direction: int`(+1/0/-1), 도지 양쪽 불통과 |
+| PCR 극단값 양방향화 | **완료** — `pcr_extreme_bearish` + `pcr_extreme_bullish`(≤0.67) + `pcr_extreme_signed`(연속값) 추가 |
+| S&P500 레짐 임계값 대칭화 | **완료** — `< -1.0` → `< -0.5` (상승 +0.5%와 대칭) |
+| RL HOLD 페널티 제거 | **완료** — `hold_penalty = 0.0` (CB·체크리스트 외부 제어와 중복 제거) |
+| 실세션 검증 | **미완료** — 2026-05-22 장중 새 신호 동작 확인 필요 |
+| deprecated 피처 제거 | **보류** — 모델 재훈련 후 구 피처 수렴 확인 뒤 제거 예정 |
+
+### 수정 파일 (72차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `features/technical/cvd_exhaustion.py` | `bear_exhaustion` + `bull_exhaustion` 양방향 탈진 계산 추가, 구 alias 유지 |
+| `features/technical/ofi_reversal.py` | `bull_reversal_signal` + `bear_reversal_signal` 분리, 구 `signal` deprecated |
+| `features/feature_builder.py` | 신규 6개 피처 등록 + 구 deprecated 피처 alias 유지 |
+| `strategy/entry/checklist.py` | 파라미터 `bear_exhaustion` + `bull_exhaustion` 분리, `prev_bar_direction` int 3-state |
+| `main.py` | 체크리스트 호출 파라미터 갱신, `prev_bar_direction` 계산 인라인 추가 |
+| `collection/macro/micro_regime.py` | `cvd_exhaustion` → `bear_exhaustion` 파라미터 변경 |
+| `challenger/variants/vwap_reversal.py` | `cvd_exhaustion` → `bear_exhaustion` (하락 압력 소진 의미 명확화) |
+| `challenger/variants/exhaustion_regime.py` | `cvd_exhaustion` → `bear_exhaustion` 피처 조회 변경 |
+| `collection/options/pcr_store.py` | `PCR_EXTREME_BULLISH_THRESHOLD=0.67` 신규, `pcr_extreme_bearish/bullish/signed` 추가 |
+| `features/options/option_features.py` | 신규 3개 PCR 극단 피처 pass-through, `empty()` 갱신 |
+| `collection/macro/regime_classifier.py` | SP500 하락 임계값 `< -1.0` → `< -0.5` |
+| `learning/rl/reward_design.py` | HOLD 페널티 `0.001` → `0.0` 제거 |
+
+### SHORT MR 핵심 수정 (의미론 오류)
+
+```python
+# 수정 전 (버그): SHORT MR에 하락 압력 소진 조건 → 의미 역전
+if vwap_position > 1.5 and bear_exhaustion > 0.0:
+    entry_mode = "MEAN_REVERSION"
+
+# 수정 후: SHORT MR에 상승 압력 소진 조건 → 의미 정확
+if vwap_position > 1.5 and bull_exhaustion > 0.0:
+    entry_mode = "MEAN_REVERSION"
+```
 
 ---
 

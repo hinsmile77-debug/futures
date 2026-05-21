@@ -74,12 +74,8 @@ class RewardDesign:
         else:
             mdd_pen = 0.0
 
-        # 5. 불필요 HOLD 패널티 (포지션 없이 HOLD → 기회비용)
-        # ACTION_HOLD = 0
-        if action == 0 and position == 0:
-            hold_penalty = 0.001   # 아주 작게 — 과도하게 적용하면 과매매 유도
-        else:
-            hold_penalty = 0.0
+        # 5. HOLD 페널티 없음 — 체크리스트/CB가 과매매를 외부에서 이미 제어
+        hold_penalty = 0.0
 
         reward = net_pnl - unrealized_penalty - position_penalty - mdd_pen - hold_penalty
         return float(np.clip(reward, -10.0, 10.0))

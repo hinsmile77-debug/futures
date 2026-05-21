@@ -6,6 +6,46 @@
 
 ---
 
+## 2026-05-21 (72차 — 방향 비대칭 편향 6종 수정)
+
+**Work**: 신호 설계의 방향 비대칭 편향(directional asymmetry bias) 전수 점검 및 2단계 수정. 설계 의도와 달리 LONG 또는 SHORT 한 방향을 체계적으로 편애하는 코드 패턴을 6종 발견·수정.
+
+### 1단계 수정 (4항목)
+
+| 항목 | 수정 내용 | 수정 파일 |
+|---|---|---|
+| **① OFI 역전 신호 양방향화** | `ofi_reversal_signal`(LONG 전용) → `bull_reversal_signal` + `bear_reversal_signal` 분리. 구 신호 deprecated alias 유지 | `features/technical/ofi_reversal.py`, `features/feature_builder.py` |
+| **② CVD 탈진 양방향화** | `cvd_exhaustion`(하락 탈진만 계산, SHORT MR에도 오용) → `bear_exhaustion`(하락 압력 소진, LONG MR용) + `bull_exhaustion`(상승 압력 소진, SHORT MR용) 분리 | `features/technical/cvd_exhaustion.py`, `features/feature_builder.py`, `strategy/entry/checklist.py`, `main.py`, `collection/macro/micro_regime.py`, `challenger/variants/vwap_reversal.py`, `challenger/variants/exhaustion_regime.py` |
+| **③ 이전 봉 방향 3-state화** | `prev_bar_bullish: bool`(도지=False → SHORT 조건 충족) → `prev_bar_direction: int` (+1/0/-1). 도지는 LONG·SHORT 모두 불통과 | `strategy/entry/checklist.py`, `main.py` |
+| **④ PCR 극단값 양방향화** | `opt_pcr_extreme`(풋 극단만 정의) → `pcr_extreme_bearish` + `pcr_extreme_bullish`(PCR≤0.67) + `pcr_extreme_signed`(연속 강도 [-1,+1]) 추가 | `collection/options/pcr_store.py`, `features/options/option_features.py` |
+
+### 2단계 수정 (2항목)
+
+| 항목 | 수정 내용 | 수정 파일 |
+|---|---|---|
+| **⑤ S&P500 레짐 임계값 대칭화** | `sp500_chg_pct < -1.0` → `< -0.5`. 상승 기준(+0.5%)과 하락 기준(-1.0%)의 비대칭 → 대칭 ±0.5% | `collection/macro/regime_classifier.py` |
+| **⑥ RL HOLD 페널티 제거** | `hold_penalty = 0.001`(position=0 홀드 시 미미한 페널티) → `hold_penalty = 0.0`. 직접 편향은 아니지만 CB·체크리스트 외부 제어와 중복, 간접 편향 증폭 가능성 제거 | `learning/rl/reward_design.py` |
+
+### 핵심 버그 (가장 의미론적으로 잘못된 코드)
+
+SHORT MR 진입 체크(vwap_position > +1.5)에서 `bear_exhaustion > 0` 조건을 사용하고 있었음. 하락 압력 소진 = LONG 신호인데 SHORT 역추세 진입을 허가. 수정: SHORT MR → `bull_exhaustion > 0` (상승 압력 소진 = SHORT 역추세 정당성). Python 단위 검증으로 의미론적 정확성 확인.
+
+### 수정 파일 (총 12개)
+
+`features/technical/cvd_exhaustion.py`, `features/technical/ofi_reversal.py`, `features/feature_builder.py`, `strategy/entry/checklist.py`, `main.py`, `collection/macro/micro_regime.py`, `challenger/variants/vwap_reversal.py`, `challenger/variants/exhaustion_regime.py`, `collection/options/pcr_store.py`, `features/options/option_features.py`, `collection/macro/regime_classifier.py`, `learning/rl/reward_design.py`
+
+### 검증 확인 항목
+
+- bear/bull_exhaustion 교차 발화 없음 (bear 시나리오에서 bull=0, 반대도 동일)
+- bull/bear_reversal_signal 교차 발화 없음
+- checklist SHORT MR이 bear_exhaustion으로 발화되지 않음 (의미론적 정확성)
+- 도지(direction=0) LONG·SHORT 모두 체크 #7 실패
+- pcr_extreme_signed: 풋 극단=+1.0, 콜 극단=-1.0, 중립=0.0
+- SP500 -0.6%가 score=-1 기여 (수정 전: 중립)
+- HOLD reward=0.0 (페널티 없음)
+
+---
+
 ## 2026-05-21 (71차 — 자동진입관리 UI 카드 구조 개편)
 
 **Work**: 진입관리탭 자동진입관리 패널의 카드 배치를 개편. 앙상블 등급·체크리스트 등급·최종진입 카드 분리 표시 + 레이아웃 빈 공간 해소.

@@ -6,6 +6,38 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-21 (72차) — 방향 비대칭 편향 6종 수정
+
+### 한일 요약
+
+- [DONE 2026-05-21] **① OFI 역전 신호 양방향화** — `bull_reversal_signal` + `bear_reversal_signal` 분리. 구 `ofi_reversal_signal` deprecated alias 유지
+- [DONE 2026-05-21] **② CVD 탈진 양방향화** — `bear_exhaustion` + `bull_exhaustion` 분리. SHORT MR 의미론 오류 수정 (bear→bull_exhaustion). 구 deprecated alias 유지
+- [DONE 2026-05-21] **③ prev_bar_direction 3-state** — `prev_bar_bullish: bool` → `prev_bar_direction: int`. 도지(0) LONG·SHORT 모두 불통과
+- [DONE 2026-05-21] **④ PCR 극단값 양방향화** — `pcr_extreme_bullish`(≤0.67) + `pcr_extreme_signed`([-1,+1]) 추가. 구 `pcr_extreme` deprecated
+- [DONE 2026-05-21] **⑤ SP500 레짐 임계값 대칭화** — `< -1.0` → `< -0.5`
+- [DONE 2026-05-21] **⑥ RL HOLD 페널티 제거** — `hold_penalty = 0.0`
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **72차 신규 신호 실세션 첫 확인 (2026-05-22)**
+  - `bull_reversal_signal` / `bear_reversal_signal` SIGNAL 로그에서 각각 발화 확인
+  - `bear_exhaustion` / `bull_exhaustion` SIGNAL 로그 발화 확인 (탈진 이벤트 발생 시)
+  - 체크리스트 MEAN_REVERSION 분기: LONG MR → `bear_exhaustion>0`, SHORT MR → `bull_exhaustion>0` 발화
+  - SP500 레짐: SYSTEM 로그에서 -0.5% 초과 하락 시 score=-1 확인
+  - `opt_pcr_extreme_bullish` / `opt_pcr_extreme_signed` SIGNAL 로그 피처값 확인
+
+- [NEXT 모델 재훈련 후] **deprecated 피처 제거 일정**
+  - 제거 대상: `ofi_reversal_signal`, `cvd_exhaustion`, `exhaustion`, `exhaustion_signal`, `opt_pcr_extreme`
+  - 제거 조건: GBM 모델이 신규 피처로 재훈련 완료 + 실세션 1주 이상 안정 확인 후
+  - 제거 시 수정 파일: `features/technical/ofi_reversal.py`, `features/technical/cvd_exhaustion.py`, `features/feature_builder.py`, `features/options/option_features.py`, `collection/options/pcr_store.py`
+
+- [NEXT 미정] **방향 편향 통계 집계 (1~2주 후)**
+  - LONG 진입 시도 / SHORT 진입 시도 비율 (목표: 45~55% 균형)
+  - MEAN_REVERSION LONG MR vs SHORT MR 균형 여부 집계
+  - 편향 지속 시 추가 설계 원인 조사
+
+---
+
 ## 2026-05-21 (71차) — 자동진입관리 UI 카드 구조 개편
 
 ### 한일 요약

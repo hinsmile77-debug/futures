@@ -5,12 +5,15 @@
 PCRStore + 매크로 레짐을 결합해 ML 입력 피처를 생성한다.
 
 반환 키:
-  opt_pcr_norm       — PCR 정규화 [-1(콜우세), +1(풋우세)]
-  opt_pcr_bearish    — 1.0 if PCR ≥ 1.2 (약세 신호)
-  opt_pcr_bullish    — 1.0 if PCR ≤ 0.8 (강세 신호)
-  opt_pcr_extreme    — 1.0 if PCR ≥ 1.5 (역발상 반등)
-  opt_pcr_slope_norm — PCR 추세 정규화 [-1, +1]
-  opt_available      — 1.0 if 실데이터
+  opt_pcr_norm            — PCR 정규화 [-1(콜우세), +1(풋우세)]
+  opt_pcr_bearish         — 1.0 if PCR ≥ 1.2 (약세 신호)
+  opt_pcr_bullish         — 1.0 if PCR ≤ 0.8 (강세 신호)
+  opt_pcr_extreme         — 1.0 if PCR ≥ 1.5 (deprecated — opt_pcr_extreme_bearish 사용)
+  opt_pcr_extreme_bearish — 1.0 if PCR ≥ 1.5 (풋 과잉 → 역발상 반등)
+  opt_pcr_extreme_bullish — 1.0 if PCR ≤ 0.67 (콜 과잉 → 역발상 매도)
+  opt_pcr_extreme_signed  — [-1, +1] 연속 강도 (음수=콜 극단, 양수=풋 극단)
+  opt_pcr_slope_norm      — PCR 추세 정규화 [-1, +1]
+  opt_available           — 1.0 if 실데이터
 """
 import logging
 from typing import Dict
@@ -56,20 +59,26 @@ class OptionFeatureCalculator:
         slope_norm = float(np.clip(pcr_slope / _SLOPE_CLIP, -1.0, 1.0))
 
         result = {
-            "opt_pcr_norm":       round(pcr_norm,   4),
-            "opt_pcr_bearish":    pcr_feats.get("pcr_bearish",  0.0),
-            "opt_pcr_bullish":    pcr_feats.get("pcr_bullish",  0.0),
-            "opt_pcr_extreme":    pcr_feats.get("pcr_extreme",  0.0),
-            "opt_pcr_slope_norm": round(slope_norm, 4),
-            "opt_available":      available,
+            "opt_pcr_norm":             round(pcr_norm,   4),
+            "opt_pcr_bearish":          pcr_feats.get("pcr_bearish",          0.0),
+            "opt_pcr_bullish":          pcr_feats.get("pcr_bullish",          0.0),
+            "opt_pcr_extreme":          pcr_feats.get("pcr_extreme",          0.0),  # deprecated
+            "opt_pcr_extreme_bearish":  pcr_feats.get("pcr_extreme_bearish",  0.0),
+            "opt_pcr_extreme_bullish":  pcr_feats.get("pcr_extreme_bullish",  0.0),
+            "opt_pcr_extreme_signed":   pcr_feats.get("pcr_extreme_signed",   0.0),
+            "opt_pcr_slope_norm":       round(slope_norm, 4),
+            "opt_available":            available,
         }
 
         logger.debug(
-            "[OptFeat] PCR=%.3f(norm=%.2f) slope_norm=%.2f bearish=%s bullish=%s extreme=%s",
+            "[OptFeat] PCR=%.3f(norm=%.2f) slope_norm=%.2f bearish=%s bullish=%s "
+            "ext_bearish=%s ext_bullish=%s ext_signed=%.2f",
             pcr, pcr_norm, slope_norm,
             bool(result["opt_pcr_bearish"]),
             bool(result["opt_pcr_bullish"]),
-            bool(result["opt_pcr_extreme"]),
+            bool(result["opt_pcr_extreme_bearish"]),
+            bool(result["opt_pcr_extreme_bullish"]),
+            result["opt_pcr_extreme_signed"],
         )
         return result
 
@@ -77,10 +86,13 @@ class OptionFeatureCalculator:
     def empty() -> Dict[str, float]:
         """PCRStore 미수집 시 안전 기본값"""
         return {
-            "opt_pcr_norm":       0.0,
-            "opt_pcr_bearish":    0.0,
-            "opt_pcr_bullish":    0.0,
-            "opt_pcr_extreme":    0.0,
-            "opt_pcr_slope_norm": 0.0,
-            "opt_available":      0.0,
+            "opt_pcr_norm":             0.0,
+            "opt_pcr_bearish":          0.0,
+            "opt_pcr_bullish":          0.0,
+            "opt_pcr_extreme":          0.0,  # deprecated
+            "opt_pcr_extreme_bearish":  0.0,
+            "opt_pcr_extreme_bullish":  0.0,
+            "opt_pcr_extreme_signed":   0.0,
+            "opt_pcr_slope_norm":       0.0,
+            "opt_available":            0.0,
         }

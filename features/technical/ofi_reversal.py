@@ -1,11 +1,16 @@
-# features/technical/ofi_reversal.py — OFI 반전 속도 계산기
+# features/technical/ofi_reversal.py — OFI 반전 속도 계산기 (양방향)
 """
 OfiReversalCalculator: OFI 반전 속도 + 0.8σ 임계값 계산.
 
 feature_builder.py 에서 호출:
     result = self.ofi_reversal.compute(ofi_raw, avg_volume)
-    features["ofi_reversal_speed"] = result["reversal_speed"]
-    features["ofi_reversal_signal"] = result["signal"]
+    features["ofi_reversal_speed"]   = result["reversal_speed"]
+    features["bull_reversal_signal"] = result["bull_reversal_signal"]
+    features["bear_reversal_signal"] = result["bear_reversal_signal"]
+    features["ofi_reversal_signal"]  = result["signal"]  # deprecated
+
+bull_reversal_signal: 매도 우세 → 매수 우세 급반전 (LONG 방향 이벤트)
+bear_reversal_signal: 매수 우세 → 매도 우세 급반전 (SHORT 방향 이벤트)
 """
 import math
 from collections import deque
@@ -52,19 +57,28 @@ class OfiReversalCalculator(object):
         if len(ofi_list) >= 4:
             ofi_avg_3m = sum(ofi_list[-4:-1]) / 3.0
 
-        # 반전 신호: 직전 평균 음수 + 현재 양수 + 속도 0.8σ 초과
-        threshold = self._sigma(ofi_list) * self.SIGMA_MULT
-        signal = 0
-        if (ofi_avg_3m < -threshold
-                and ofi_raw > 0
-                and abs(speed) > speed_sigma * self.SIGMA_MULT):
-            signal = 1
+        threshold  = self._sigma(ofi_list) * self.SIGMA_MULT
+        speed_cond = abs(speed) > speed_sigma * self.SIGMA_MULT
+
+        # bull_reversal: 매도 우세 → 매수 우세 급반전 (LONG 방향 이벤트)
+        bull_reversal_signal = 1 if (
+            ofi_avg_3m < -threshold and ofi_raw > 0 and speed_cond
+        ) else 0
+
+        # bear_reversal: 매수 우세 → 매도 우세 급반전 (SHORT 방향 이벤트)
+        bear_reversal_signal = 1 if (
+            ofi_avg_3m > +threshold and ofi_raw < 0 and speed_cond
+        ) else 0
+
+        signal = bull_reversal_signal   # deprecated — 이행기 호환
 
         return {
-            "reversal_speed": round(speed, 8),
-            "speed_sigma":    round(speed_sigma, 8),
-            "signal":         signal,
-            "ofi_avg_3m":     round(ofi_avg_3m, 2),
+            "reversal_speed":       round(speed, 8),
+            "speed_sigma":          round(speed_sigma, 8),
+            "bull_reversal_signal": bull_reversal_signal,
+            "bear_reversal_signal": bear_reversal_signal,
+            "signal":               signal,           # deprecated
+            "ofi_avg_3m":           round(ofi_avg_3m, 2),
         }
 
     @staticmethod

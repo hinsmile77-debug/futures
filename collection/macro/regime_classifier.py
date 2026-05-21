@@ -59,7 +59,7 @@ class RegimeClassifier:
         # S&P500
         if sp500_chg_pct > 0.5:
             score += 1; factors["sp500"] = f"SP500={sp500_chg_pct:+.2f}% (상승)"
-        elif sp500_chg_pct < -1.0:
+        elif sp500_chg_pct < -0.5:
             score -= 1; factors["sp500"] = f"SP500={sp500_chg_pct:+.2f}% (하락)"
         else:
             factors["sp500"] = f"SP500={sp500_chg_pct:+.2f}% (보합)"

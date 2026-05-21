@@ -29,11 +29,12 @@ class EntryChecklist:
         ofi_pressure: int,
         foreign_call_net: float,
         foreign_put_net: float,
-        prev_bar_bullish: bool,
+        prev_bar_direction: int,
         time_zone: str,
         daily_loss_pct: float,
         min_confidence: float = 0.58,
-        cvd_exhaustion: float = 0.0,
+        bear_exhaustion: float = 0.0,
+        bull_exhaustion: float = 0.0,
         micro_regime: str = "혼합",
     ) -> Dict:
         """
@@ -43,13 +44,14 @@ class EntryChecklist:
             vwap_position:   VWAP 위치 (양수=위, 음수=아래)
             cvd_direction:   CVD 방향 (+1/-1)
             ofi_pressure:    OFI 압력 (+1/-1/0)
-            foreign_call_net: 외인 콜 순매수
-            foreign_put_net:  외인 풋 순매수
-            prev_bar_bullish: 직전 봉 양봉 여부
-            time_zone:       현재 시간대 코드
+            foreign_call_net:   외인 콜 순매수
+            foreign_put_net:    외인 풋 순매수
+            prev_bar_direction: 직전 봉 방향 +1(양봉) / 0(도지) / -1(음봉)
+            time_zone:          현재 시간대 코드
             daily_loss_pct:  당일 누적 손실률 (양수=손실)
             min_confidence:  레짐별 최소 신뢰도
-            cvd_exhaustion:  CVD 탈진 강도 (0.0~1.0, 방안 C/D 분기용)
+            bear_exhaustion: 하락 압력 소진 강도 0.0~1.0 (LONG MR 분기용)
+            bull_exhaustion: 상승 압력 소진 강도 0.0~1.0 (SHORT MR 분기용)
             micro_regime:    현재 미시 레짐 (탈진 레짐 시 Hurst 차단 무효화)
 
         Returns:
@@ -97,15 +99,16 @@ class EntryChecklist:
             }
 
         # 3. VWAP 위치
-        # 방안 C/D: VWAP 하방 1.5σ 초과 + CVD 탈진 → 역추세 모드로 체크 통과
+        # LONG MR: VWAP 하방 1.5σ 초과 + 하락 압력 소진(bear_exhaustion) → 역추세 매수
+        # SHORT MR: VWAP 상방 1.5σ 초과 + 상승 압력 소진(bull_exhaustion) → 역추세 매도
         if is_long:
-            if vwap_position < -1.5 and cvd_exhaustion > 0.0:
+            if vwap_position < -1.5 and bear_exhaustion > 0.0:
                 checks["3_vwap"] = True
                 entry_mode = "MEAN_REVERSION"
             else:
                 checks["3_vwap"] = vwap_position > 0
         else:
-            if vwap_position > 1.5 and cvd_exhaustion > 0.0:
+            if vwap_position > 1.5 and bull_exhaustion > 0.0:
                 checks["3_vwap"] = True
                 entry_mode = "MEAN_REVERSION"
             else:
@@ -129,11 +132,11 @@ class EntryChecklist:
         else:
             checks["6_foreign"] = foreign_put_net > 0 and foreign_put_net > foreign_call_net
 
-        # 7. 직전 봉
+        # 7. 직전 봉 (도지=0은 양쪽 모두 불통과)
         if is_long:
-            checks["7_prev_bar"] = prev_bar_bullish
+            checks["7_prev_bar"] = prev_bar_direction == 1   # 양봉만
         else:
-            checks["7_prev_bar"] = not prev_bar_bullish
+            checks["7_prev_bar"] = prev_bar_direction == -1  # 음봉만
 
         # 8. 시간 필터 (금지 구간 외)
         checks["8_time"] = time_zone not in ("EXIT_ONLY", "OTHER")

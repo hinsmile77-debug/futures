@@ -82,7 +82,7 @@ class MicroRegimeClassifier:
         self._regime_history   = deque(maxlen=60)
 
     def push_1m_candle(self, high, low, close,
-                       cvd_exhaustion=0.0, ofi_reversal_speed=0.0,
+                       bear_exhaustion=0.0, ofi_reversal_speed=0.0,
                        vwap_position=0.0, z_warn_count=0):
         # type: (float, float, float, float, float, float, int) -> dict
         """
@@ -110,7 +110,7 @@ class MicroRegimeClassifier:
 
         # 레짐 분류 (탈진 레짐 피처 전달)
         new_regime = self._classify(adx, atr, atr_avg, atr_ratio,
-                                    cvd_exhaustion, ofi_reversal_speed,
+                                    bear_exhaustion, ofi_reversal_speed,
                                     vwap_position, z_warn_count)
 
         # 레짐 변경 감지
@@ -142,7 +142,7 @@ class MicroRegimeClassifier:
         }
 
     def _classify(self, adx, atr, atr_avg, atr_ratio,
-                  cvd_exhaustion=0.0, ofi_reversal_speed=0.0, vwap_position=0.0,
+                  bear_exhaustion=0.0, ofi_reversal_speed=0.0, vwap_position=0.0,
                   z_warn_count=0):
         # type: (float, float, float, float, float, float, float, int) -> str
         """레짐 분류 규칙"""
@@ -157,9 +157,9 @@ class MicroRegimeClassifier:
 
         # 탈진 레짐 (방안 D): 4가지 조건 동시 충족
         exhaustion_conds = (
-            atr_ratio >= self.ATR_EXHAUSTION_MULT          # 변동성 확대
-            and cvd_exhaustion > 0                          # CVD 탈진
-            and abs(ofi_reversal_speed) > 0                 # OFI 급반전 (0 초과면 통과)
+            atr_ratio >= self.ATR_EXHAUSTION_MULT               # 변동성 확대
+            and bear_exhaustion > 0                              # 하락 압력 소진
+            and abs(ofi_reversal_speed) > 0                     # OFI 급반전 (0 초과면 통과)
             and abs(vwap_position) >= self.VWAP_EXHAUSTION_MIN  # VWAP 밴드 이탈
         )
         if exhaustion_conds:

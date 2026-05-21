@@ -149,12 +149,20 @@ class FeatureBuilder:
                 cvd_slope = features.get("cvd_slope", 0.0),
                 volume    = vol,
             )
-            features["cvd_exhaustion"]        = float(exh_result["exhaustion"])
-            features["cvd_exhaustion_signal"] = float(exh_result["exhaustion_signal"])
+            features["bear_exhaustion"]        = float(exh_result["bear_exhaustion"])
+            features["bull_exhaustion"]        = float(exh_result["bull_exhaustion"])
+            features["bear_exhaustion_signal"] = float(exh_result["bear_exhaustion_signal"])
+            features["bull_exhaustion_signal"] = float(exh_result["bull_exhaustion_signal"])
+            features["cvd_exhaustion"]         = float(exh_result["exhaustion"])        # deprecated
+            features["cvd_exhaustion_signal"]  = float(exh_result["exhaustion_signal"]) # deprecated
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] CVD exhaustion 오류 — 기본값 사용: %s", _exc)
-            features.update({"cvd_exhaustion": 0.0, "cvd_exhaustion_signal": 0.0})
+            features.update({
+                "bear_exhaustion": 0.0, "bull_exhaustion": 0.0,
+                "bear_exhaustion_signal": 0.0, "bull_exhaustion_signal": 0.0,
+                "cvd_exhaustion": 0.0, "cvd_exhaustion_signal": 0.0,
+            })
 
         try:
             vwap_result = self.vwap.update(
@@ -203,12 +211,19 @@ class FeatureBuilder:
                 ofi_raw    = features.get("ofi_raw", 0.0),
                 avg_volume = vol or 1.0,
             )
-            features["ofi_reversal_speed"]  = float(ofi_rev["reversal_speed"])
-            features["ofi_reversal_signal"] = float(ofi_rev["signal"])
+            features["ofi_reversal_speed"]   = float(ofi_rev["reversal_speed"])
+            features["bull_reversal_signal"] = float(ofi_rev["bull_reversal_signal"])
+            features["bear_reversal_signal"] = float(ofi_rev["bear_reversal_signal"])
+            features["ofi_reversal_signal"]  = float(ofi_rev["signal"])  # deprecated
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] OFI reversal 오류 — 기본값 사용: %s", _exc)
-            features.update({"ofi_reversal_speed": 0.0, "ofi_reversal_signal": 0.0})
+            features.update({
+                "ofi_reversal_speed":   0.0,
+                "bull_reversal_signal": 0.0,
+                "bear_reversal_signal": 0.0,
+                "ofi_reversal_signal":  0.0,
+            })
         features["avg_volume"] = vol
 
         try:

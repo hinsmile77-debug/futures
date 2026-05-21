@@ -2483,7 +2483,7 @@ class TradingSystem:
             high             = float(bar.get("high", close) or close),
             low              = float(bar.get("low",  close) or close),
             close            = close,
-            cvd_exhaustion   = float(features.get("cvd_exhaustion",  0.0) or 0.0),
+            bear_exhaustion    = float(features.get("bear_exhaustion",   0.0) or 0.0),
             ofi_reversal_speed = float(features.get("ofi_reversal_speed", 0.0) or 0.0),
             vwap_position    = float(features.get("vwap_position",   0.0) or 0.0),
             z_warn_count     = getattr(self.model, "last_z_warn_count", 0),
@@ -2862,11 +2862,13 @@ class TradingSystem:
                 ofi_pressure      = int(features.get("ofi_pressure", 0)),
                 foreign_call_net  = features.get("foreign_call_net", 0),
                 foreign_put_net   = features.get("foreign_put_net", 0),
-                prev_bar_bullish  = bar.get("close", 0) >= bar.get("open", 0),
+                prev_bar_direction = (1 if bar.get("close", 0) > bar.get("open", 0)
+                                      else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
                 time_zone         = time_zone,
                 daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / max(_ts_current_sizer_balance(self), 50_000_000),
                 min_confidence    = actual_min_conf,
-                cvd_exhaustion    = float(features.get("cvd_exhaustion", 0.0) or 0.0),
+                bear_exhaustion   = float(features.get("bear_exhaustion", 0.0) or 0.0),
+                bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
                 micro_regime      = getattr(self, "current_micro_regime", "혼합"),
             )
             _final_grade = _cr["grade"]

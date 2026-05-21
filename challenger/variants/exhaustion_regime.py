@@ -4,7 +4,7 @@
 
 발동 조건:
   ① atr > avg_atr × 1.5          (변동성 확대 중)
-  ② cvd_exhaustion > 0            (CVD 탈진 감지)
+  ② bear_exhaustion > 0           (하락 압력 소진 — 구: cvd_exhaustion)
   ③ ofi_reversal_speed > 0.8σ    (OFI 급반전)
   ④ abs(vwap_position) > 1.5     (VWAP 밴드 크게 이탈)
 
@@ -41,7 +41,7 @@ class ExhaustionRegimeChallenger(BaseChallenger):
 
         atr         = float(context.get("atr", 1.0) or 1.0)
         avg_atr     = float(features.get("atr_avg", atr) or atr)
-        cvd_exh     = float(features.get("cvd_exhaustion", 0.0) or 0.0)
+        cvd_exh     = float(features.get("bear_exhaustion", 0.0) or 0.0)
         ofi_speed   = float(features.get("ofi_reversal_speed", 0.0) or 0.0)
         vwap_pos    = float(features.get("vwap_position", 0.0) or 0.0)
         vwap_val    = float(features.get("vwap", 0.0) or 0.0)
@@ -73,9 +73,9 @@ class ExhaustionRegimeChallenger(BaseChallenger):
                 confidence = self.MIN_CONFIDENCE + 0.02 * sum([cond1, cond2, cond3, cond4])
                 grade      = self._grade_from_confidence(confidence)
                 meta = {
-                    "atr":             round(atr, 4),
-                    "avg_atr":         round(avg_atr, 4),
-                    "cvd_exhaustion":  round(cvd_exh, 3),
+                    "atr":              round(atr, 4),
+                    "avg_atr":          round(avg_atr, 4),
+                    "bear_exhaustion":  round(cvd_exh, 3),
                     "ofi_speed":       round(ofi_speed, 6),
                     "ofi_sigma":       round(ofi_sigma, 6),
                     "vwap_position":   round(vwap_pos, 3),

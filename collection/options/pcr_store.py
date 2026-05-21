@@ -23,9 +23,10 @@ logger = logging.getLogger("OPTIONS")
 PCR_WINDOW = 20
 
 # PCR 해석 임계치
-PCR_BEARISH_THRESHOLD  = 1.2   # 이 이상: 풋 우세 (약세)
-PCR_BULLISH_THRESHOLD  = 0.8   # 이 이하: 콜 우세 (강세)
-PCR_EXTREME_THRESHOLD  = 1.5   # 이 이상: 과공포 (역발상 반등 신호)
+PCR_BEARISH_THRESHOLD         = 1.2   # 이 이상: 풋 우세 (약세)
+PCR_BULLISH_THRESHOLD         = 0.8   # 이 이하: 콜 우세 (강세)
+PCR_EXTREME_THRESHOLD         = 1.5   # 이 이상: 풋 과잉 (역발상 반등 신호) — bearish extreme
+PCR_EXTREME_BULLISH_THRESHOLD = 0.67  # 이 이하: 콜 과잉 (역발상 매도 신호) — bullish extreme (= 1/1.5)
 
 # 장 시작 직후 콜 데이터 미로드 방어: |call| 최소 유효 수량
 # 이 미만이면 PCR 계산 신뢰 불가 → 스킵
@@ -100,13 +101,16 @@ class PCRStore:
         PCR 기반 피처 반환 (미수집 시 중립 기본값).
 
         Returns:
-            pcr_current    — 현재 PCR (1.0=중립)
-            pcr_ma         — 롤링 평균 PCR
-            pcr_bearish    — 1.0 if PCR ≥ BEARISH_THRESHOLD
-            pcr_bullish    — 1.0 if PCR ≤ BULLISH_THRESHOLD
-            pcr_extreme    — 1.0 if PCR ≥ EXTREME_THRESHOLD (역발상 신호)
-            pcr_slope      — PCR 추세 (최근 - 이전 평균)
-            pcr_available  — 1.0 if 실데이터, 0.0 if 추정
+            pcr_current         — 현재 PCR (1.0=중립)
+            pcr_ma              — 롤링 평균 PCR
+            pcr_bearish         — 1.0 if PCR ≥ 1.2 (약세 신호)
+            pcr_bullish         — 1.0 if PCR ≤ 0.8 (강세 신호)
+            pcr_extreme         — 1.0 if PCR ≥ 1.5 (deprecated — pcr_extreme_bearish 사용)
+            pcr_extreme_bearish — 1.0 if PCR ≥ 1.5 (풋 과잉 → 역발상 반등)
+            pcr_extreme_bullish — 1.0 if PCR ≤ 0.67 (콜 과잉 → 역발상 매도)
+            pcr_extreme_signed  — [-1, +1] 연속 강도 (음수=콜 극단, 양수=풋 극단)
+            pcr_slope           — PCR 추세 (최근 - 이전 평균)
+            pcr_available       — 1.0 if 실데이터, 0.0 if 추정
         """
         if not self._available or len(self._pcr_buf) == 0:
             return self._neutral()
@@ -123,26 +127,37 @@ class PCRStore:
         else:
             slope = 0.0
 
+        # pcr_extreme_signed: 풋 극단이 양수, 콜 극단이 음수 (중립=1.0 기준 대칭)
+        pcr_extreme_signed = round(
+            max(min((pcr - 1.0) / 0.5, 1.0), -1.0), 4
+        )
+
         return {
-            "pcr_current":   round(pcr, 4),
-            "pcr_ma":        round(ma, 4),
-            "pcr_bearish":   1.0 if pcr >= PCR_BEARISH_THRESHOLD  else 0.0,
-            "pcr_bullish":   1.0 if pcr <= PCR_BULLISH_THRESHOLD  else 0.0,
-            "pcr_extreme":   1.0 if pcr >= PCR_EXTREME_THRESHOLD  else 0.0,
-            "pcr_slope":     round(slope, 4),
-            "pcr_available": 1.0,
+            "pcr_current":          round(pcr, 4),
+            "pcr_ma":               round(ma, 4),
+            "pcr_bearish":          1.0 if pcr >= PCR_BEARISH_THRESHOLD         else 0.0,
+            "pcr_bullish":          1.0 if pcr <= PCR_BULLISH_THRESHOLD         else 0.0,
+            "pcr_extreme":          1.0 if pcr >= PCR_EXTREME_THRESHOLD         else 0.0,  # deprecated
+            "pcr_extreme_bearish":  1.0 if pcr >= PCR_EXTREME_THRESHOLD         else 0.0,
+            "pcr_extreme_bullish":  1.0 if pcr <= PCR_EXTREME_BULLISH_THRESHOLD else 0.0,
+            "pcr_extreme_signed":   pcr_extreme_signed,
+            "pcr_slope":            round(slope, 4),
+            "pcr_available":        1.0,
         }
 
     @staticmethod
     def _neutral() -> Dict[str, float]:
         return {
-            "pcr_current":   1.0,
-            "pcr_ma":        1.0,
-            "pcr_bearish":   0.0,
-            "pcr_bullish":   0.0,
-            "pcr_extreme":   0.0,
-            "pcr_slope":     0.0,
-            "pcr_available": 0.0,
+            "pcr_current":          1.0,
+            "pcr_ma":               1.0,
+            "pcr_bearish":          0.0,
+            "pcr_bullish":          0.0,
+            "pcr_extreme":          0.0,  # deprecated
+            "pcr_extreme_bearish":  0.0,
+            "pcr_extreme_bullish":  0.0,
+            "pcr_extreme_signed":   0.0,
+            "pcr_slope":            0.0,
+            "pcr_available":        0.0,
         }
 
     def reset_daily(self) -> None:
