@@ -2700,16 +2700,23 @@ class TradingSystem:
             decision["min_conf"],
             get_zone_min_confidence(get_time_zone()),
         )
-        # TrendPersistenceGate — above_vwap=1 AND cvd_direction=1 이 10분 연속이면
-        # UP 방향 한정으로 actual_min_conf를 0.44까지 완화
+        # TrendPersistenceGate — 원웨이 추세 지속 시 해당 방향 actual_min_conf 완화
+        # UP:   above_vwap=1 AND cvd_direction=1  이 10분+ → UP  min_conf → 0.44
+        # DOWN: above_vwap=0 AND cvd_direction=-1 이 10분+ → DN  min_conf → 0.44
         _tp = self.trend_gate.update(features)
-        if _tp["active"] and direction == 1:
+        _tp_active = (
+            (_tp["up_active"] and direction == 1) or
+            (_tp["dn_active"] and direction == -1)
+        )
+        if _tp_active:
             _prev_mc = actual_min_conf
             actual_min_conf = min(actual_min_conf, _tp["min_conf_override"])
             if actual_min_conf < _prev_mc:
+                _tp_label  = "UP" if direction == 1 else "DN"
+                _tp_streak = _tp["up_streak"] if direction == 1 else _tp["dn_streak"]
                 log_manager.signal(
-                    "[TrendGate] 추세 지속 %d분 — UP min_conf %.2f→%.2f",
-                    _tp["streak"], _prev_mc, actual_min_conf,
+                    "[TrendGate] %s 추세 지속 %d분 — min_conf %.2f→%.2f",
+                    _tp_label, _tp_streak, _prev_mc, actual_min_conf,
                 )
         # Layer 2 장중 전술 레짐 — min_conf 사전 상향 (사후 차단보다 먼저 적용)
         # DAY_RISK_OFF: +5%p / CRASH: +12%p / NORMAL: ±0
