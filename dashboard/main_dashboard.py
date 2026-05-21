@@ -2900,6 +2900,12 @@ class EntryPanel(QWidget):
         self._entry_blink_timer = QTimer(self)
         self._entry_blink_timer.setInterval(600)
         self._entry_blink_timer.timeout.connect(self._on_entry_blink_tick)
+        # 추세 지속 게이트 깜빡임 (UP=녹색 / DN=오렌지)
+        self._trend_gate_mode: str = ""    # "" / "UP" / "DN"
+        self._trend_blink_on:  bool = False
+        self._trend_blink_timer = QTimer(self)
+        self._trend_blink_timer.setInterval(600)
+        self._trend_blink_timer.timeout.connect(self._on_trend_blink_tick)
         self._time_router = TimeStrategyRouter()
         self._mode_button_labels = {
             "auto": "A 등급진입",
@@ -3102,6 +3108,9 @@ class EntryPanel(QWidget):
             if tip:
                 f.setToolTip(tip)
                 vl.setToolTip(tip)
+            # 추세 게이트 깜빡임 대상 프레임 참조 저장
+            if attr in ("ens_grade", "chk_grade"):
+                setattr(self, f"_{attr}_frame", f)
             row_lay.addWidget(f)
 
         # 최종진입 카드 (row1 우측 끝) — 앙상블+체크리스트 종합 진입 판정
@@ -3573,6 +3582,39 @@ class EntryPanel(QWidget):
         self._final_entry_frame.setStyleSheet(
             f"background:{C['bg2']};border:2px solid {border_col};border-radius:4px;"
         )
+
+    def _on_trend_blink_tick(self):
+        """추세 지속 게이트 활성 시 등급 카드 테두리 깜빡임.
+        UP 상방 원웨이 = 녹색 / DN 하방 원웨이 = 오렌지."""
+        self._trend_blink_on = not self._trend_blink_on
+        if self._trend_gate_mode == "UP":
+            col = C['green'] if self._trend_blink_on else C['border']
+        elif self._trend_gate_mode == "DN":
+            col = C['orange'] if self._trend_blink_on else C['border']
+        else:
+            col = C['border']
+        style = f"background:{C['bg2']};border:2px solid {col};border-radius:4px;"
+        self._ens_grade_frame.setStyleSheet(style)
+        self._chk_grade_frame.setStyleSheet(style)
+
+    def set_trend_gate_mode(self, mode: str) -> None:
+        """추세 지속 게이트 상태를 등급 카드 테두리 깜빡임으로 표시.
+
+        Args:
+            mode: 'UP' (상방 원웨이, 녹색) / 'DN' (하방 원웨이, 오렌지) / '' (해제)
+        """
+        if mode == self._trend_gate_mode:
+            return
+        self._trend_gate_mode = mode
+        if mode:
+            if not self._trend_blink_timer.isActive():
+                self._trend_blink_on = True
+                self._trend_blink_timer.start()
+        else:
+            self._trend_blink_timer.stop()
+            base = f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;"
+            self._ens_grade_frame.setStyleSheet(base)
+            self._chk_grade_frame.setStyleSheet(base)
 
     def set_contrarian_hint(self, active: bool, direction: str = "") -> None:
         """Contrarian ACTIVE 시 역방향 버튼에 황색 깜빡임 힌트 표시."""
@@ -8873,6 +8915,11 @@ class DashboardAdapter:
     def set_contrarian_hint(self, active: bool, direction: str = "") -> None:
         """Contrarian ACTIVE 시 역방향 버튼 황색 깜빡임 힌트 전달."""
         self._win.entry_panel.set_contrarian_hint(active, direction)
+
+    def set_trend_gate_mode(self, mode: str) -> None:
+        """추세 지속 게이트 활성화 — 등급 카드 테두리 깜빡임.
+        mode: 'UP' (상방 원웨이, 녹색) / 'DN' (하방 원웨이, 오렌지) / '' (해제)"""
+        self._win.entry_panel.set_trend_gate_mode(mode)
 
     def set_tp1_protect_mode(self, mode: str, emit_signal: bool = False) -> None:
         self._win.exit_panel.set_tp1_protect_mode(mode, emit_signal=emit_signal)

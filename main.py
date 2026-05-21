@@ -2718,6 +2718,13 @@ class TradingSystem:
                     "[TrendGate] %s 추세 지속 %d분 — min_conf %.2f→%.2f",
                     _tp_label, _tp_streak, _prev_mc, actual_min_conf,
                 )
+        # 대시보드 등급 카드 깜빡임: UP 상방 원웨이=녹색 / DN 하방 원웨이=오렌지
+        _tp_dash_mode = (
+            "UP" if _tp["up_active"] else
+            "DN" if _tp["dn_active"] else ""
+        )
+        if getattr(self, "dashboard", None):
+            self.dashboard.set_trend_gate_mode(_tp_dash_mode)
         # Layer 2 장중 전술 레짐 — min_conf 사전 상향 (사후 차단보다 먼저 적용)
         # DAY_RISK_OFF: +5%p / CRASH: +12%p / NORMAL: ±0
         _l2_mc_adj = self.intraday_regime.min_conf_adjust() / 100.0
