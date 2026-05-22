@@ -6,6 +6,63 @@
 
 ---
 
+## 2026-05-22 (86차 — 5/22 진입 0 P0 구현 + EOD 스케일러 초기화)
+
+**Work**: Deep·Codex 5/22 진입 0 원인 분석 리뷰를 바탕으로 P0 5종 구현 + EOD 스케일러 초기화 3종 수정. 총 8개 파일 변경, 커밋 1개.
+
+### 구현 내용
+
+#### 1. System Health Score (SHS) + Early Kill Switch (EKS) 신규 (`safety/system_health.py`)
+- SHS = 100 - restart×8 - z_warn×2.5 - (1-core_pass)×25 - s2_latency×5
+- SHS < 60 → 진입 차단 + 슬랙 경고 (5점 추가 하락마다 재알림)
+- EKS: 09:05 1회 판정 — GAP_OPEN conf_max < 45% AND CORE 통과율 0% → 당일 관망 선언
+- `reset_daily()` 추가 — 15:40 마감 시 EKS·GAP_OPEN 상태 초기화
+
+#### 2. SHS 슬랙 알림 (`utils/notify.py`)
+- `notify_shs_alert()`: SHS < 60 또는 5점 추가 하락 시 구성 요소 포함 경고
+- `notify_kill_switch()`: EKS 발동 시 CRITICAL 알림
+
+#### 3. SHS UI 배지 (`dashboard/main_dashboard.py`)
+- 상단 헤더 `lbl_shs` 배지: ♥ SHS N(녹) / ⚠ SHS N(주황, 차단) / ⛔ 관망일(빨)
+- `DashboardAdapter.update_shs_badge()` 추가
+
+#### 4. Warm Scaler Canary (`model/multi_horizon_model.py`)
+- `canary_stale_age_hours()`: scaler pkl mtime 기준 최대 노후 시간
+- `canary_z_warn_count()`: X_recent 피처로 극단 z피처 수 반환
+- `_load_all()`: `_scaler_fitted_at[h]` = pkl mtime 동기화 추가 — 재시작 후 in-memory 노후 시계 정확성 보장
+
+#### 5. Warm Scaler Canary + SHS 연동 (`main.py`)
+- `pre_market_setup()` 08:55: Canary 검사 + 슬랙 경고
+- `_canary_load_z_warn()`: raw_data.db 최근 60행으로 z_warn 산출
+- SHS 업데이트 (z_warn, core_pass, s2_latency, restart_count) + badge 갱신
+- EKS 판정·GAP_OPEN 기록 로직 삽입
+- `_final_entry_ok` 조건에 `kill_switch_active` 차단 추가
+
+#### 6. log_manager **_kwargs 방어 가드 (`logging_system/log_manager.py`)
+- `signal()`, `system()`, `trade()` 에 `**_kwargs` 추가
+- 5/22 ERR-FATAL (signal() args=5) 재발 원천 차단
+
+#### 7. CORE 피처 진단 로그 (`strategy/entry/checklist.py`)
+- CORE 탈락 시 raw값 포함 상세 로그: `VWAP pos=±X.XXX need >0 (LONG) bear_exh=0.00 | CVD dir=±1 need >0 | OFI pres=±1 need >0`
+
+#### 8. EOD 스케일러 초기화 (`main.py` daily_close)
+- `self.model._load_all()` 을 `if retrain_ok:` 밖으로 이동 — 재학습 실패 시에도 최신 pkl 로드
+- `self.system_health.reset_daily()` 추가 — EKS·GAP_OPEN 상태 다음날 이월 방지
+
+### P0 조사 결과 (미구현 잔여)
+
+| 항목 | Deep | Codex | 상태 |
+|---|---|---|---|
+| signal() TypeError | P0-1 | P0-1 | ✅ 이번 세션 |
+| CORE 진단 로그 | P0-4 | P0-3 | ✅ 이번 세션 |
+| 재시작 방지 락 | P0-3 | P0-2 | ❌ **미구현** |
+| Scaler Auto Re-fit | P0-2 | P1-1 | △ Canary만 (감지, re-fit 없음) |
+| S2 병목 배치화 | P1-2 | P0-4 | ❌ 병목 위치 재확인 필요 |
+
+> 재시작 방지 락: `_restart_armistice_until`(진입만 차단)과 별개로 BrokerSync→connect_broker() 재호출 경로 차단 필요. 재시작 12회 → conf 50% 붕괴의 직접 원인.
+
+---
+
 ## 2026-05-22 (85차 — 모의투자 세션 이상점 7·8 deep dive + 구조적 수정 4종)
 
 **Work**: 14:53~15:09 모의투자 세션 로그 이상점 7·8을 deep dive 분석하여 구조적 원인을 규명하고 5개 파일에 걸쳐 수정 4종을 구현. 커밋 1개 (`67f974e`).

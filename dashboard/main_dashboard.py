@@ -8072,6 +8072,25 @@ class MireukDashboard(QMainWindow):
         self.lbl_l2_halt.setMinimumWidth(80)  # 크기 고정으로 항상 보임
         self.lbl_l2_halt.setAlignment(Qt.AlignCenter)
 
+        # ── SHS / EKS 배지 ───────────────────────────────────────
+        self.lbl_shs = mk_badge("SHS ——", C['bg3'], C['text2'], 11)
+        self.lbl_shs.setMinimumWidth(S.p(90))
+        self.lbl_shs.setAlignment(Qt.AlignCenter)
+        self.lbl_shs.setToolTip(
+            "시스템 건강 점수 (SHS: 0~100)\n"
+            "  ≥ 80  : 정상 (녹색)\n"
+            "  60~79 : 주의 (파랑)\n"
+            "  < 60  : 진입 차단 (주황)\n"
+            "  EKS   : 당일 관망일 선언 (빨강)\n\n"
+            "감점 요소:\n"
+            "  재시작 1회 = -8점 (최대 -40)\n"
+            "  z경고 피처 1개 = -2.5점 (최대 -25)\n"
+            "  CORE 탈락률 × -25점\n"
+            "  S2 초과 지연 × -5점 (최대 -10)\n\n"
+            "Early Kill Switch (09:05 판정):\n"
+            "  GAP_OPEN conf < 45% + CORE 0% → 당일 관망"
+        )
+
         # ── 우측 시계 블록 ─────────────────────────────────────
         clk_frame = QFrame()
         clk_frame.setStyleSheet(
@@ -8372,6 +8391,7 @@ class MireukDashboard(QMainWindow):
         for w in [self.lbl_regime, self._micro_box, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_cb]:
             header.addWidget(w)
         header.addWidget(self.lbl_l2_halt)  # L2 halt badge (CB 오른쪽)
+        header.addWidget(self.lbl_shs)      # SHS / EKS badge
         header.addWidget(clk_frame)
         header.addLayout(res_box)
         root.addLayout(header)
@@ -9169,11 +9189,14 @@ class DashboardAdapter:
         cb3_samples: int = 0,
     ):
         """시스템 상태 (Circuit Breaker, 지연, 정확도) 업데이트"""
-        acc_str = (
-            f"CB③30m={accuracy:.1%}({cb3_samples}건)"
-            if cb3_samples > 0
-            else "CB③30m=집계중"
-        )
+        # CB③ 발동 최솟 샘플(25건) 기준으로 표시 분기
+        # — 25건 미만은 통계적 의미 없음. "0.0%(1건)" 오표시로 오해 방지
+        if cb3_samples >= 25:
+            acc_str = f"CB③30m={accuracy:.1%}({cb3_samples}건)"
+        elif cb3_samples > 0:
+            acc_str = f"CB③30m=집계중({cb3_samples}/25건)"
+        else:
+            acc_str = "CB③30m=집계중"
         self._win.log_panel.append(
             "model", "SYSTEM",
             f"CB={cb_state} | 처리시간={latency_ms:.0f}ms | {acc_str}"
@@ -9208,6 +9231,27 @@ class DashboardAdapter:
                 f"font-size:{S.f(11)}px;font-weight:bold;"
                 f"padding:{S.p(1)}px {S.p(3)}px;"
             )
+
+    def update_shs_badge(self, shs: float, entry_blocked: bool, kill_switch: bool) -> None:
+        """SHS 배지 색상·텍스트 갱신 (매분 파이프라인에서 호출)."""
+        lbl = getattr(self._win, "lbl_shs", None)
+        if lbl is None:
+            return
+        if kill_switch:
+            text, bg, fg = "⛔ 관망일", C["red"], "#fff"
+        elif entry_blocked:
+            text, bg, fg = f"⚠ SHS {shs:.0f}", C["orange"], "#fff"
+        elif shs >= 80:
+            text, bg, fg = f"♥ SHS {shs:.0f}", C["green"], "#fff"
+        else:
+            text, bg, fg = f"SHS {shs:.0f}", C["blue"], "#fff"
+        lbl.setText(text)
+        lbl.setStyleSheet(
+            f"background:{bg};color:{fg};"
+            f"border-radius:{S.p(4)}px;"
+            f"padding:{S.p(1)}px {S.p(5)}px;"
+            f"font-size:{S.f(11)}px;font-weight:bold;"
+        )
 
     def update_l2_halt_badge(self, is_halted: bool, threshold: float = 0.0):
         """L2 Tier Gate 영구중단 상태 배지 업데이트"""

@@ -1,7 +1,53 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-22 (85차) — **모의투자 이상점 7·8 구조적 수정 4종**
+> 마지막 업데이트: 2026-05-22 (86차) — **P0 구현 + EOD 스케일러 초기화**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-22 (86차) — 5/22 진입 0 P0 구현 + EOD 스케일러 초기화
+
+### 배경
+
+Deep·Codex 5/22 진입 0 원인 분석 리뷰 기반 P0 5종 구현. signal() TypeError 재발 차단, SHS/EKS 시스템 건강 감시, Warm Scaler Canary, CORE 진단 로그. EOD 스케일러 초기화 3종 추가 수정.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **SHS + EKS**: `safety/system_health.py` 신규 | **완료** |
+| **SHS Slack 알림**: `notify_shs_alert()`, `notify_kill_switch()` | **완료** — utils/notify.py |
+| **SHS UI 배지**: `lbl_shs` 상단 헤더 + `update_shs_badge()` | **완료** — dashboard/main_dashboard.py |
+| **Warm Scaler Canary**: `canary_stale_age_hours()`, `canary_z_warn_count()` | **완료** — model/multi_horizon_model.py |
+| **`_load_all()` mtime 동기화**: `_scaler_fitted_at[h]` = pkl mtime | **완료** — model/multi_horizon_model.py |
+| **main.py Canary·SHS·EKS 연동**: 08:55 검사·GAP_OPEN·EKS 판정 | **완료** — main.py |
+| **log_manager `**_kwargs`**: signal/system/trade TypeError 방어 | **완료** — logging_system/log_manager.py |
+| **CORE 진단 로그**: VWAP/CVD/OFI raw값 탈락 시 출력 | **완료** — strategy/entry/checklist.py |
+| **EOD `_load_all()` 무조건 호출**: retrain 실패에도 최신 pkl 적용 | **완료** — main.py daily_close() |
+| **`system_health.reset_daily()`**: EKS·GAP_OPEN 일일 초기화 | **완료** — safety/system_health.py + main.py |
+| **재시작 방지 락**: BrokerSync→connect_broker() 재호출 차단 | **❌ 미구현** — 잔여 P0 최우선 |
+| **Scaler Auto Re-fit**: 기동 시 최근 5일 데이터로 scaler 재학습 | **❌ 미구현** — Canary 감지만 |
+| 실세션 확인 | **미완료** — 2026-05-23 기동 시 |
+
+### 수정 파일 (86차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `safety/system_health.py` | **신규** — SHS 계산 + EKS 상태 머신 + `reset_daily()` |
+| `utils/notify.py` | `notify_shs_alert()`, `notify_kill_switch()` 추가 |
+| `dashboard/main_dashboard.py` | `lbl_shs` 배지 + `update_shs_badge()` |
+| `model/multi_horizon_model.py` | Canary 2메서드 + `_load_all()` mtime 동기화 |
+| `logging_system/log_manager.py` | signal/system/trade `**_kwargs` 방어 가드 |
+| `strategy/entry/checklist.py` | CORE 탈락 raw값 진단 로그 |
+| `main.py` | Canary·SHS·EKS 연동 + EOD `_load_all()` + `system_health.reset_daily()` |
+
+### 86차 실세션 확인 사항 (2026-05-23)
+
+1. **SHS 배지**: 상단 헤더 `♥ SHS 100` (정상) 또는 `⚠ SHS N` (경고) 표시
+2. **Canary**: `[Canary] scaler 노후=Xh z경고피처=N개` 로그 (08:55)
+3. **EKS 판정**: `[SHS-EKS] EKS 미발동. conf_max=XX.X% core_pass=N/5봉` 로그 (09:05 직후)
+4. **CORE 진단**: `[Checklist] CORE 피처 ✗ ... | VWAP pos=±X.XXX need >0` 형식 확인
+5. **EOD**: 15:40 `daily_close()` 후 `[Model] X 로드 성공` 6개 호라이즌 재로드 확인
 
 ---
 

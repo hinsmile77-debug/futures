@@ -6,6 +6,48 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-22 (86차) — P0 구현 + EOD 스케일러 초기화
+
+### 한일 요약
+
+- [DONE 2026-05-22] **SHS + EKS 신규** — `safety/system_health.py`. SHS 4가지 구성요소 가중 점수. EKS 09:05 1회 판정. `reset_daily()` 추가
+- [DONE 2026-05-22] **SHS 슬랙 알림** — `notify_shs_alert()`, `notify_kill_switch()` (utils/notify.py)
+- [DONE 2026-05-22] **SHS UI 배지** — 상단 헤더 `lbl_shs` + `update_shs_badge()` (dashboard/main_dashboard.py)
+- [DONE 2026-05-22] **Warm Scaler Canary** — `canary_stale_age_hours()`, `canary_z_warn_count()` + `_load_all()` mtime 동기화 (multi_horizon_model.py)
+- [DONE 2026-05-22] **main.py 연동** — Canary 08:55 검사·SHS 업데이트·EKS 판정·GAP_OPEN 기록 (main.py)
+- [DONE 2026-05-22] **log_manager `**_kwargs`** — signal/system/trade TypeError 방어 가드 (logging_system/log_manager.py)
+- [DONE 2026-05-22] **CORE 피처 진단 로그** — VWAP/CVD/OFI raw값 + 요구값 탈락 시 출력 (checklist.py)
+- [DONE 2026-05-22] **EOD `_load_all()` 무조건 호출** — retrain 실패 시에도 최신 pkl 로드 (main.py daily_close)
+- [DONE 2026-05-22] **`system_health.reset_daily()`** — EKS·GAP_OPEN 상태 다음날 이월 방지 (main.py daily_close)
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **86차 실세션 확인 (2026-05-23)**
+  - `♥ SHS 100` 배지 상단 표시 (정상 기동)
+  - `[Canary] scaler 노후=Xh z경고피처=N개` 로그 (08:55)
+  - `[SHS-EKS] EKS 미발동` 로그 (09:05 직후 — 정상일이면 미발동)
+  - `[Checklist] CORE 피처 ✗ ... | VWAP pos=±X.XXX` 형식 탈락 원인 로그
+  - `[Model] 1m 로드 성공` 6개 호라이즌 (15:40 daily_close 후)
+
+- [NEXT 필수 — P0 잔여] **재시작 방지 락 구현**
+  - 5/22 재시작 12회 → conf 50% 붕괴의 직접 원인. OnlineLearner 매 재시작마다 초기화
+  - BrokerSync rows=0 → connect_broker() 재호출 경로 특정 후 구현
+  - `_restart_armistice_until`은 진입 차단만, 재시작 자체는 방지 안 함
+  - 구현 전 connect_broker() 재호출 트리거 경로 grep 필요
+
+- [NEXT 권장 — P0 잔여] **Scaler Auto Re-fit**
+  - Canary가 노후 감지만, 자동 re-fit 없음
+  - 기동 시 `raw_data.db` 최근 5일로 scaler `fit()` 재실행
+  - z-score 경고 90% 감소, GBM conf +5~8%p 기대
+  - Deep P0-2 제안: `multi_horizon_model.py` `_refit_scaler_if_stale()` 구현
+
+- [NEXT 조사 후 결정 — Codex P0-4] **S2 병목 원인 확인**
+  - S2=2364ms가 verified=0 구간(09:00)에서도 발생 → meta_gate.evaluate() 가능성
+  - online_learner.learn() 배치화보다 meta_gate 경로 먼저 확인
+  - 원인 특정 후 배치화 여부 결정
+
+---
+
 ## 2026-05-22 (85차) — 모의투자 이상점 7·8 구조적 수정 4종
 
 ### 한일 요약

@@ -117,6 +117,7 @@ from learning.shap.shap_tracker import ShapTracker
 from safety.circuit_breaker import CircuitBreaker
 from safety.kill_switch import KillSwitch
 from safety.emergency_exit import EmergencyExit
+from safety.system_health import SystemHealthScore
 from logging_system.log_manager import log_manager
 from utils.time_utils import (
     is_market_open, is_trading_day, get_time_zone, is_force_exit_time, is_new_entry_allowed,
@@ -222,6 +223,9 @@ class TradingSystem:
         # [5순위] CORE 피처 건강 점수 → Sizer 연동
         from features.core_health import CoreHealthScore
         self.core_health = CoreHealthScore()
+
+        # [SHS] 시스템 건강 점수 + Early Kill Switch
+        self.system_health = SystemHealthScore()
 
         # [6순위] Shadow Session + Contrarian Mode 트래커
         from safety.shadow_session import ShadowSessionTracker
@@ -1004,6 +1008,33 @@ class TradingSystem:
             )
         except Exception as _reload_e:
             logger.warning("[HealthPolicy] settings.py 핫리로드 실패: %s", _reload_e)
+
+    def _canary_load_z_warn(self, n_rows: int = 60) -> int:
+        """raw_data.db 최근 n_rows 피처로 현재 scaler z-score 극단 피처 수 반환."""
+        import sqlite3 as _sq3
+        import json as _json
+        from config.settings import RAW_DATA_DB as _RAW_DB
+        if not os.path.exists(_RAW_DB):
+            return 0
+        try:
+            with _sq3.connect(_RAW_DB, timeout=5) as _conn:
+                _rows = _conn.execute(
+                    "SELECT features FROM raw_features ORDER BY ts DESC LIMIT ?",
+                    (n_rows,),
+                ).fetchall()
+            if not _rows:
+                return 0
+            _fn = self.model.feature_names
+            if not _fn:
+                return 0
+            _X = np.array(
+                [[_json.loads(r[0]).get(k, 0.0) for k in _fn] for r in _rows],
+                dtype=float,
+            )
+            return self.model.canary_z_warn_count(_X)
+        except Exception as _e:
+            logger.debug("[Canary] z_warn 로드 실패: %s", _e)
+            return 0
 
     def _emit_runtime_health(self, features: dict, latency_ms: float) -> None:
         """Day10: 운영 헬스 스냅샷 생성/전파 (대시보드 + HEALTH 로그)."""
@@ -1826,6 +1857,8 @@ class TradingSystem:
         self._sync_position_from_broker()
         self._warmup_retrain_pending = True
         log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
+        self._session_no += 1
+        self.system_health.update_restart(self._session_no)
 
         # 장중(09:00~15:10) 재시작: pre_market_setup()이 재호출되지 않으므로 즉시 시작.
         # 그렇지 않으면 첫 분봉 STEP 3에서 시작되어 파이프라인과 CPU 경합 → CB⑤ 5026ms 발동.
@@ -2053,6 +2086,33 @@ class TradingSystem:
                 )
             except Exception as _snap_e:
                 logger.warning("[PreOpen] 스냅샷 워밍업 실패 (장 시작 시 재시도): %s", _snap_e)
+
+        # ── Warm Scaler Canary ──────────────────────────────────────
+        # scaler pkl mtime 기준 노후 점검 → 24h+ 경과 시 경고 + SHS z_warn 업데이트
+        try:
+            _canary_age_h = self.model.canary_stale_age_hours()
+            _canary_z_warn = 0
+            if self.model.feature_names:
+                _canary_z_warn = self._canary_load_z_warn(n_rows=60)
+            _canary_stale = _canary_age_h > 24.0
+            _canary_z_bad = _canary_z_warn >= 5
+            log_manager.system(
+                f"[Canary] scaler 노후={_canary_age_h:.0f}h  z경고피처={_canary_z_warn}개"
+                + ("  ⚠ 스케일러 24h+ 노후" if _canary_stale else "")
+                + ("  ⚠ z경고 폭증" if _canary_z_bad else ""),
+                "WARNING" if (_canary_stale or _canary_z_bad) else "INFO",
+            )
+            if _canary_stale or _canary_z_bad:
+                from utils.notify import notify as _ncanary
+                _ncanary(
+                    f"🌡 Canary 이상 감지\n"
+                    f"scaler 노후: {_canary_age_h:.0f}시간  z경고 피처: {_canary_z_warn}개\n"
+                    f"PreRetrain으로 갱신 예정 — 09:00 전 완료 목표",
+                    "WARNING",
+                )
+            self.system_health.update_z_warn(_canary_z_warn)
+        except Exception as _ce:
+            logger.warning("[Canary] 점검 실패 (무시): %s", _ce)
 
         # [PreRetrain] 08:55 GBM 사전 재학습 — 09:00 첫 파이프라인 CB⑤ 지연 방지.
         # warmup 플래그가 설정되어 있으면 여기서 바로 백그라운드 스레드 시작.
@@ -2608,6 +2668,7 @@ class TradingSystem:
         _cb_status = self.circuit_breaker.status_dict()
         _acc30m    = _cb_status.get("accuracy_30m", 0.0)
         _z_warn    = getattr(self.model, "last_z_warn_count", 0)
+        self.system_health.update_z_warn(_z_warn)
         _ts_dt_obj = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
         self.shadow_session.update(
             ts_dt            = _ts_dt_obj,
@@ -3081,6 +3142,37 @@ class TradingSystem:
                     _qty_display,
                 )
 
+        # ── SHS: GAP_OPEN 기록 + Early Kill Switch 09:05 판정 ────
+        if time_zone == "GAP_OPEN":
+            _core_all_ok = (
+                _cr is not None
+                and bool(_cr["checks"].get("3_vwap"))
+                and bool(_cr["checks"].get("4_cvd"))
+                and bool(_cr["checks"].get("5_ofi"))
+            )
+            self.system_health.record_gap_open_bar(
+                conf=confidence,
+                core_all_passed=_core_all_ok,
+            )
+        elif not self.system_health._eks_evaluated:
+            _eks_fired = self.system_health.evaluate_early_kill_switch()
+            if _eks_fired:
+                from utils.notify import notify_kill_switch as _nks
+                _shs_d = self.system_health.to_dict()
+                _nks(
+                    gap_open_conf_max=_shs_d["gap_open_conf_max"],
+                    gap_open_bars=_shs_d["gap_open_bars"],
+                )
+                log_manager.system(
+                    "[SHS-EKS] Early Kill Switch 발동 — 당일 관망 선언. "
+                    f"conf_max={_shs_d['gap_open_conf_max']*100:.1f}% bars={_shs_d['gap_open_bars']}",
+                    "CRITICAL",
+                )
+
+        # EKS 활성 시 매분 진입 차단 로그 (방향 있을 때만)
+        if self.system_health.kill_switch_active and direction != 0:
+            log_manager.signal("[SHS-EKS] 당일 관망 — 자동진입 차단")
+
         # 진입 패널 갱신 — 체크리스트 결과 + 산출 수량 (항상)
         _meta_gate = decision.get("meta_gate") or {}
         _meta_action = _meta_gate.get("action", "")
@@ -3320,6 +3412,7 @@ class TradingSystem:
             and _qty_display > 0
             and not _bar_volume_zero
             and not _intraday_block
+            and not self.system_health.kill_switch_active   # [SHS-EKS] 당일 관망일
         )
         self.dashboard.update_entry(
             _raw_signal_ko,
@@ -3589,6 +3682,30 @@ class TradingSystem:
             )
             logger.warning("[PipePerf] total=%.0fms | %s", _pipe_ms, _slow or "─")
         self._emit_runtime_health(features, _pipe_ms)
+
+        # ── SHS: S2 latency + CORE pass rate 업데이트 + 대시보드/슬랙 ──
+        _s2_dur_sec = 0.0
+        for _i in range(1, len(_st)):
+            if _st[_i][0] == "S3":
+                _s2_dur_sec = max(0.0, _st[_i][1] - _st[_i - 1][1])
+                break
+        self.system_health.update_s2_latency(_s2_dur_sec)
+
+        _core_pass_cnt = sum(
+            1 for k in ("3_vwap", "4_cvd", "5_ofi")
+            if (_cr is not None and bool(_cr["checks"].get(k)))
+        ) if _cr is not None else 0
+        self.system_health.update_core_pass(_core_pass_cnt / 3.0)
+
+        _shs_state = self.system_health.to_dict()
+        self.dashboard.update_shs_badge(
+            shs=_shs_state["shs"],
+            entry_blocked=_shs_state["entry_blocked"],
+            kill_switch=_shs_state["kill_switch_active"],
+        )
+        if self.system_health.should_send_alert():
+            from utils.notify import notify_shs_alert as _nsa
+            _nsa(shs=_shs_state["shs"], components=_shs_state)
 
         # ── STEP 9: 예측 DB 저장 ───────────────────────────────
         try:
@@ -4291,8 +4408,10 @@ class TradingSystem:
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
         retrain_result = self.batch_retrainer.retrain_now(weeks_back=8)
         retrain_ok = retrain_result.get("ok", False)
+        # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
+        # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
+        self.model._load_all()
         if retrain_ok:
-            self.model._load_all()
             self._ensure_shap_tracker()
             retrain_str = f"재학습 완료 ({retrain_result['elapsed_sec']}초, {retrain_result['data_size']}행)"
             log_manager.learning(
@@ -4356,6 +4475,7 @@ class TradingSystem:
         self._verified_today = 0
         self.emergency_exit.reset()
         self.kill_switch.deactivate()
+        self.system_health.reset_daily()    # EKS·GAP_OPEN 상태 초기화 (z_warn·restart는 유지)
 
         notify(
             f"일일 마감\n승:{stats['wins']} 패:{stats['losses']}\n"

@@ -270,11 +270,45 @@ class MultiHorizonModel:
                 self.models[h]  = joblib.load(mp)
                 self.scalers[h] = joblib.load(sp)
                 self._is_fitted[h] = True
+                # pkl mtime 기준으로 in-memory 노후 시계 동기화 (재시작·EOD 로드 후 정확성 보장)
+                self._scaler_fitted_at[h] = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(sp)
+                )
                 logger.info(f"[Model] {h} 로드 성공")
 
     def is_ready(self) -> bool:
         """최소 1개 호라이즌 학습 완료 여부"""
         return any(self._is_fitted.values())
+
+    # ── Warm Scaler Canary ────────────────────────────────────────
+
+    def canary_stale_age_hours(self) -> float:
+        """scaler pkl 파일 mtime 기준 최대 노후 시간(시간). 파일 없으면 999."""
+        max_age = 0.0
+        found_any = False
+        for h in HORIZONS:
+            sp = self._scaler_path(h)
+            if os.path.exists(sp):
+                age_h = (
+                    datetime.datetime.now()
+                    - datetime.datetime.fromtimestamp(os.path.getmtime(sp))
+                ).total_seconds() / 3600.0
+                max_age = max(max_age, age_h)
+                found_any = True
+        return max_age if found_any else 999.0
+
+    def canary_z_warn_count(self, X_recent: np.ndarray) -> int:
+        """X_recent (N×F)에 현재 scaler 적용 후 극단 z피처 수 반환 (행별 최대 합산)."""
+        scaler = self.scalers.get("1m") or (
+            next(iter(self.scalers.values())) if self.scalers else None
+        )
+        if scaler is None:
+            return 0
+        try:
+            z = scaler.transform(X_recent)
+            return int(np.sum((np.abs(z) > self.EXTREME_ZSCORE_THRESHOLD).any(axis=0)))
+        except Exception:
+            return 0
 
     def set_feature_names(self, names: List[str]) -> None:
         """GBM 미학습 상태에서 SGD 활성화를 위한 피처명 부트스트랩."""

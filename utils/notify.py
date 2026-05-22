@@ -159,3 +159,31 @@ def notify_pipeline_delayed(elapsed_str: str) -> None:
         f"분봉 수신 지연 가능성 — 지속 시 자동 복구 예정",
         "WARNING",
     )
+
+
+# ── SHS / EKS 알림 ────────────────────────────────────────────
+
+def notify_shs_alert(shs: float, components: dict) -> None:
+    """SHS < 60 최초 진입 또는 5점 이상 추가 하락 시 경고."""
+    restart  = components.get("restart_count", 0)
+    z_warn   = components.get("z_warn_count", 0)
+    core_pct = components.get("core_pass_rate", 1.0) * 100
+    s2_ms    = components.get("s2_latency_sec", 0.0) * 1000
+    notify(
+        f"🩺 시스템 건강 점수 저하\n"
+        f"SHS = {shs:.0f}점  (기준 60점 미만 → 진입 차단)\n"
+        f"  재시작: {restart}회  |  z경고 피처: {z_warn}개\n"
+        f"  CORE 통과율: {core_pct:.0f}%  |  S2 지연: {s2_ms:.0f}ms",
+        "WARNING",
+    )
+
+
+def notify_kill_switch(gap_open_conf_max: float, gap_open_bars: int) -> None:
+    """Early Kill Switch 발동 — 당일 관망일 선언."""
+    notify(
+        f"🚫 Early Kill Switch 발동 — 당일 관망일\n"
+        f"GAP_OPEN 구간({gap_open_bars}봉) 최대 conf: {gap_open_conf_max * 100:.1f}%\n"
+        f"CORE 피처 전 구간 탈락 → 신뢰 진입 조건 없음\n"
+        f"자동 진입 전면 차단 (수동 진입은 대시보드에서 가능)",
+        "CRITICAL",
+    )

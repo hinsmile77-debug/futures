@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-05-22 (86차 — P0 구현 + EOD 스케일러 초기화)
+
+### [버그 반복] signal() TypeError 재발 구조 — 3회차 재발 방지 설계
+**File**: `logging_system/log_manager.py` — `signal()`, `system()`, `trade()`
+**Root cause**: 5/22 09:10~09:23 ERR-FATAL. `log_manager.signal(msg, regime, intraday, adj, conf)` 식의 5개 인자 호출이 잔존. 63차·69차 두 번 "수정"했으나 호출 경로 전수 검사 없이 특정 호출부만 고침.
+**Fix**: 시그니처에 `**_kwargs` 추가. 인자 개수에 무관하게 crash 불가. 근본 방어: 인터페이스 계약 자체를 관대하게.
+**How to apply**: 향후 `log_manager.signal(msg, "WARNING")` 형태는 keyword 인자(`level="WARNING"`) 권장. positional은 crash는 없지만 가독성 저하.
+
+### [설계] `_load_all()` scaler mtime 동기화 — in-memory 노후 시계 정확성 보장
+**File**: `model/multi_horizon_model.py` — `_load_all()`
+**Decision**: pkl 로드 시 `self._scaler_fitted_at[h] = datetime.fromtimestamp(os.path.getmtime(sp))` 추가.
+**Why**: 이전에는 `_scaler_fitted_at`이 `fit()` 호출 시점에만 갱신. 재시작 후 `_load_all()`로 pkl 로드해도 `_scaler_fitted_at`이 빈 상태 → `predict_proba()`의 SCALER_WARN_MINUTES 체크가 항상 None 처리 → 노후 경고 미발동. pkl mtime = 실제 학습 시점의 가장 신뢰할 수 있는 proxy.
+**How to apply**: 다음 기동 후 스케일러 노후 경고가 `fitted_at is not None` 경로로 정상 발동하는지 확인.
+
+### [설계] daily_close() `_load_all()` 무조건 호출 — EOD 스케일러 강제 초기화
+**File**: `main.py` — `daily_close()`
+**Decision**: `self.model._load_all()`을 `if retrain_ok:` 블록 밖으로 이동. retrain 성공 여부와 무관하게 항상 호출.
+**Why**: retrain 실패(데이터 부족, 오류)일 때 `_load_all()` 생략 → 이전 pkl 유지 + `_scaler_fitted_at` 미갱신. 재학습이 실패해도 이전 EOD에 성공한 pkl이 있으면 그 mtime을 `_scaler_fitted_at`에 반영해야 다음날 Canary가 올바른 나이를 계산.
+**How to apply**: retrain 실패 케이스에서 `[Model] X 로드 성공` 로그가 발생하면 정상.
+
+### [설계] SystemHealthScore.reset_daily() — EKS 상태 일일 초기화
+**File**: `safety/system_health.py` — `reset_daily()`
+**Decision**: 15:40 `daily_close()`에서 `system_health.reset_daily()` 호출. GAP_OPEN 기록(`_gap_open_conf_max`, `_gap_open_bar_count`, `_gap_open_core_pass_count`), EKS 상태(`_eks_evaluated`, `_eks_active`), `_last_alerted_shs` 초기화. `_restart_count`·`_z_warn_count`는 세션 전체 누적이므로 유지.
+**Why**: EKS가 당일 발동됐을 때 `_eks_active=True`가 유지되면 다음날 기동 시에도 관망 선언 상태로 시작. GAP_OPEN 기록이 이월되면 다음날 EKS 판정이 전날 데이터로 오판.
+**How to apply**: 재시작이 없는 날은 `reset_daily()` 1회만 호출. 장중 재시작 시에는 `__init__`에서 이미 모든 상태가 초기화되므로 중복 문제 없음.
+
+### [설계] System Health Score (SHS) 설계 기준
+**File**: `safety/system_health.py`
+**Decision**: SHS = 100 - restart×8(max -40) - z_warn×2.5(max -25) - (1-core_pass)×25 - s2_latency×5(max -10). SHS<60 진입 차단. EKS 조건: GAP_OPEN conf_max<45% AND core_pass=0.
+**Why**: 5/22 실측값 기준 검증: restart=12, z_warn=10, core_pass=0%, s2=3s → SHS=0, EKS=True. 5/18 정상일: restart=0, z_warn=1, core_pass=90%, s2=0.8s → SHS=97.5, EKS=False.
+**How to apply**: 각 가중치는 5/22 실패 조건이 SHS<60을 확실히 넘도록 설계. 임계값 60은 재시작 7회 이상이면 단독으로 차단(7×8=56, 추가 -4점 발생 시).
+
+---
+
 ## 2026-05-22 (85차 — 모의투자 이상점 7·8 구조적 수정 4종)
 
 ### [버그 구조적] 1m/5m FL 편향 — `balanced` class_weight 한계

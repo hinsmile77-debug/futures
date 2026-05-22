@@ -52,13 +52,14 @@ class LogManager:
             cb(entry)
 
     # ── 편의 메서드 ────────────────────────────────────────────
-    def system(self, msg: str, level: str = "INFO"):
+    def system(self, msg: str, level: str = "INFO", **_kwargs):
         self.log("SYSTEM", msg, level)
 
-    def signal(self, msg: str, level: str = "INFO"):
+    def signal(self, msg: str, level: str = "INFO", **_kwargs):
+        # **_kwargs: 인자 추가 시 TypeError 방지 가드 (5/22 재발 방지)
         self.log("SIGNAL", msg, level)
 
-    def trade(self, msg: str, level: str = "INFO"):
+    def trade(self, msg: str, level: str = "INFO", **_kwargs):
         self.log("TRADE", msg, level)
 
     def learning(self, msg: str):
