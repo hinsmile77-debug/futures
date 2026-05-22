@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-05-22 (82차 — Layer 2 인트라데이 게이트 UI 패널 + L2 토글 영속성 및 즉시 적용)
+
+### [설계] `_l2_gate_on` 플래그 — 파이프라인 틱당 1회 계산, 3개 포인트 재사용
+**File**: `main.py` — STEP 6 진입 판단 블록
+**Decision**: `is_layer2_gate_enabled()`를 3번 각각 호출하지 않고, 틱 시작 시 `_l2_gate_on = getattr(self.dashboard, "is_layer2_gate_enabled", lambda: True)()` 1회 계산. 이하 min_conf_adjust / 방향차단 / size_mult 3곳에서 동일 값 재사용.
+**Why**: 한 틱 내에서 L2 상태가 바뀌는 경우는 없음(PyQt 시그널은 이벤트 루프 기반). 1회 계산으로 일관성 보장. `getattr` 방어 폴백은 대시보드가 None이거나 API가 없을 때 항상 ON(게이트 활성)으로 안전하게 처리.
+**How to apply**: 향후 Layer 2 게이팅 포인트 추가 시 동일 `_l2_gate_on` 플래그 재사용. 절대 틱 중간에 `is_layer2_gate_enabled()` 새로 호출하지 않음.
+
+### [설계] L2 게이트 설정 영속성 — ui_prefs.json 병합 쓰기
+**File**: `dashboard/main_dashboard.py` — `_save_layer2_gate_pref()` / `_load_layer2_gate_pref()`
+**Decision**: L2 ON/OFF 버튼 상태를 `data/ui_prefs.json`의 `"layer2_gate_enabled"` 키에 저장. 기존 키를 유지하는 read-merge-write 패턴 사용.
+**Why**: ui_prefs.json에는 다른 UI 설정(gate toggles 등)도 공존. 파일 전체를 덮어쓰면 다른 설정이 날아감.
+**How to apply**: ui_prefs.json에 새 UI 설정 저장 시 항상 기존 dict를 읽어 병합한 뒤 쓰기. 파일 부재 시 빈 dict `{}` 로 시작.
+
+### [버그 방지] `_load_layer2_gate_pref()` — blockSignals 처리
+**File**: `dashboard/main_dashboard.py` — `_load_layer2_gate_pref()`
+**Issue**: `setChecked(False)` 호출 시 `toggled(False)` 시그널 → `_on_layer2_gate_toggled(False)` → `_save_layer2_gate_pref()` 재호출 (불필요한 이중 저장 + 기동 시 로그 오염 가능).
+**Fix**: `blockSignals(True)` / `blockSignals(False)` try-finally 래핑. 로드 중에는 시그널 발화 차단 후 수동으로 `_layer2_gate_enabled = False` + `_sync_layer2_gate_btn_style()` 호출.
+**How to apply**: 초기화 시 위젯 상태를 외부 설정에서 복원할 때는 항상 blockSignals 처리. emit 없이 시각 상태만 동기화.
+
+### [설계] Layer 2 패널 — `update_layer2()` 호출 연결 미완료
+**File**: `dashboard/main_dashboard.py` — `update_layer2()` / `main.py` — STEP 6 또는 STEP 9
+**Status**: `update_layer2(status_dict, min_conf_base)` API는 완성. main.py에서 호출 코드 미삽입.
+**Why deferred**: 82차 UI 구현에 집중, 연결 코드는 83차에서 추가 예정. 연결 없으면 패널이 항상 초기 상태(NORMAL / 모든 지표 비발동)로 표시됨.
+**How to apply**: STEP 6 Layer 2 적용 직후에 `self.dashboard.update_layer2(self.intraday_regime.status_dict(), min_conf_base=actual_min_conf_base)` 1줄 추가.
+
+---
+
 ## 2026-05-22 (81차 — Platt 보정 4종 버그 수정 + 기동 사전 fit)
 
 ### [버그 CRITICAL] Calibrator 기동 시 0샘플 — 실질적 보정 비활성
@@ -2400,5 +2428,20 @@ W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
 **Why**: 2026-05-20 11:06~11:13 사례에서 realtime tick/hoga는 정상 유입 중이었지만, `minute_pipeline` 예외로 `notify_pipeline_ran()`가 미호출되면서 watchdog이 이를 `파이프라인 1분 30초 미실행`으로만 표기했다. 운영자가 "수신 지연"으로 오인할 수 있다.
 **Decision**: 현재 코드는 우선 치명 예외만 수정하고, watchdog 문구 정밀화는 후속 작업으로 남긴다. 추후 최근 fatal 예외 상태를 기억해 경보 문구에 "직전 파이프라인 예외 후 미복구" 힌트를 추가하는 방향이 적절하다.
 **How to apply**: watchdog 발동 시 최근 `minute_pipeline` fatal timestamp / exception summary가 있으면 원인 힌트를 우선 표시하고, 없을 때만 기존의 수신 지연 문구를 사용한다.
+
+---
+## 2026-05-22 (82차) — 미시 레짐 워밍업 UI
+
+### [설계] 미시 레짐은 ADX/ATR avg 워밍업 완료 전까지 "신뢰 가능한 레짐" 으로 해석하지 않는다
+**결정**: ADX fallback 및 ATR avg 초기화 구간에서는 기존 레짐 텍스트만으로 해석하지 않고, UI에 별도 `레짐 워밍업` 상태를 표시한다.  
+**이유**: 장중 재시작 직후 `ADX=15.0`, `atr_ratio≈1.00` 이 규칙상 `횡보장` 으로 바로 보일 수 있어 사용자가 실제 구조로 오인할 위험이 있다. 계산기는 워밍업 메타를 별도로 산출하고, 헤더는 `L1/L2/L3/READY` + 진행률 + 남은 시간으로 보조 설명을 제공한다.  
+**구현**: `collection/macro/micro_regime.py`, `main.py`, `dashboard/main_dashboard.py`
+
+### [버그] ATR avg 20샘플 준비 전에 캔들 버퍼 상한이 먼저 도달하는 구조
+**파일**: `collection/macro/micro_regime.py`  
+**증상**: 기존 `deque(maxlen=adx_window + 5)` 구조에서는 close/high/low 버퍼가 최대 19개라 `atr_window=20` 샘플이 차기 전에 캔들 버퍼가 먼저 밀릴 수 있었다.  
+**원인**: ADX 준비 길이(`14 + 5`)만 고려한 버퍼 크기 설계. ATR avg 는 `MIN_CANDLES_FOR_ATR + atr_window` 수준의 캔들 축적이 필요하지만 이 요구사항이 반영되지 않았다.  
+**수정**: 캔들 버퍼 길이를 `max(adx_window + 5, MIN_CANDLES_FOR_ATR + atr_window)` 로 상향. 워밍업 완료 계산도 `atr_samples` 기준으로 조정.  
+**교훈**: 여러 롤링 지표를 한 버퍼에서 공유할 때는 "가장 긴 준비 구간" 기준으로 상한을 잡아야 한다.
 
 ---

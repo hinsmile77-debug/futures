@@ -2849,6 +2849,7 @@ class EntryPanel(QWidget):
     sig_instant_exit_requested   = pyqtSignal()      # 즉시 전량청산
     sig_auto_mode_changed        = pyqtSignal(bool)  # True=Auto ON, False=Auto OFF
     sig_max_qty_changed          = pyqtSignal(int)   # 최대허용수량 변경
+    sig_layer2_gate_toggled      = pyqtSignal(bool)  # Layer 2 게이트 ON/OFF
 
     _TIME_ZONE_DESC = {
         "GAP_OPEN": "시초가 급변 - 고신뢰·소규모 진입만 허용",
@@ -2890,6 +2891,7 @@ class EntryPanel(QWidget):
         self.current_mode = "hybrid"
         self._reverse_entry_enabled = False
         self._auto_enabled = True
+        self._layer2_gate_enabled: bool = True
         self._contrarian_hint: bool = False
         self._contrarian_direction: str = ""
         self._blink_on: bool = False
@@ -3238,8 +3240,17 @@ class EntryPanel(QWidget):
         lay.addLayout(info_vlay)
         lay.addWidget(mk_sep())
 
-        # 9개 체크리스트
-        lay.addWidget(mk_label("진입 전 체크리스트 (Pre-flight 9개)", C['orange'], 9, True))
+        # ─── 양분 레이아웃: 왼쪽=Pre-flight 체크리스트, 오른쪽=Layer2 패널 ───
+        split_lay = QHBoxLayout()
+        split_lay.setSpacing(6)
+        split_lay.setContentsMargins(0, 0, 0, 0)
+
+        # ── 왼쪽: 9개 체크리스트 ──
+        left_w = QWidget()
+        left_lay = QVBoxLayout(left_w)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(3)
+        left_lay.addWidget(mk_label("Pre-flight 체크 (9개)", C['orange'], 9, True))
         checks = [
             ("앙상블 신호 방향","signal_chk"),
             ("신뢰도 ≥ 58%",   "conf_chk"),
@@ -3336,9 +3347,15 @@ class EntryPanel(QWidget):
             ),
         }
         self.check_labels = {}
+        self.check_toggles = {}   # attr → QCheckBox (ON=gate 활성, OFF=무시)
         self._conf_chk_name_label = None
+        _TOGGLE_TIP = "체크 ON: 진입 게이트로 작동  /  체크 OFF: 해당 항목 무시 (항상 통과 처리)"
         for i, (name, attr) in enumerate(checks):
             r = QHBoxLayout()
+            cb = QCheckBox()
+            cb.setChecked(True)
+            cb.setFixedWidth(18)
+            cb.setToolTip(_TOGGLE_TIP)
             icon = mk_badge("—", C['bg3'], C['text2'], 10)
             icon.setFixedWidth(22)
             nl   = mk_label(name, C['text'], 11)
@@ -3348,11 +3365,100 @@ class EntryPanel(QWidget):
                 nl.setToolTip(tooltip)
             if attr == "conf_chk":
                 self._conf_chk_name_label = nl
+            r.addWidget(cb)
             r.addWidget(icon)
             r.addWidget(nl, 2)
             r.addWidget(vl)
             self.check_labels[attr] = (icon, vl)
-            lay.addLayout(r)
+            self.check_toggles[attr] = cb
+            left_lay.addLayout(r)
+
+        self._load_gate_toggles()
+        for cb in self.check_toggles.values():
+            cb.stateChanged.connect(self._save_gate_toggles)
+
+        left_lay.addStretch()
+        split_lay.addWidget(left_w, 5)
+
+        # ── 오른쪽: Layer 2 Intraday Gate 패널 ──
+        right_w = QWidget()
+        right_lay = QVBoxLayout(right_w)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(3)
+
+        # 1. Layer 2 상태 카드 + On/Off 버튼
+        right_lay.addWidget(mk_label("Layer 2 Intraday Gate", C['cyan'], 9, True))
+        l2_top_lay = QHBoxLayout()
+        l2_top_lay.setSpacing(4)
+        self.layer2_gate_btn = QPushButton("L2 ON")
+        self.layer2_gate_btn.setCheckable(True)
+        self.layer2_gate_btn.setChecked(True)
+        self.layer2_gate_btn.setFixedWidth(60)
+        self.layer2_gate_btn.setToolTip(
+            "Layer 2 Intraday Gate 활성/비활성 전환\n"
+            "ON: 장중 레짐(NORMAL/DAY_RISK_OFF/CRASH)에 따른 진입 제한 적용\n"
+            "OFF: Layer 2 필터 무시 — Layer 1 레짐만 사용"
+        )
+        self.layer2_gate_btn.toggled.connect(self._on_layer2_gate_toggled)
+        self._l2_state_frame = QFrame()
+        self._l2_state_frame.setStyleSheet(
+            f"background:{C['bg2']};border:2px solid {C['green']};border-radius:4px;"
+        )
+        _l2_sf_lay = QVBoxLayout(self._l2_state_frame)
+        _l2_sf_lay.setContentsMargins(4, 2, 4, 2)
+        _l2_sf_lay.setSpacing(0)
+        self._l2_state_label = mk_val_label("NORMAL", C['green'], 12)
+        self._l2_state_label.setAlignment(Qt.AlignCenter)
+        _l2_sf_lay.addWidget(self._l2_state_label)
+        self._l2_trans_label = mk_label("", C['text2'], 8)
+        self._l2_trans_label.setAlignment(Qt.AlignCenter)
+        _l2_sf_lay.addWidget(self._l2_trans_label)
+        l2_top_lay.addWidget(self.layer2_gate_btn)
+        l2_top_lay.addWidget(self._l2_state_frame, 1)
+        right_lay.addLayout(l2_top_lay)
+        self._sync_layer2_gate_btn_style()
+        self._load_layer2_gate_pref()
+
+        # 2. 발동 지표 표시
+        right_lay.addWidget(mk_sep())
+        right_lay.addWidget(mk_label("발동 지표", C['text2'], 9, True))
+        _l2_inds = [
+            ("당일 수익률",   "_l2_day_ret",    "—%",  "≤−1.0%"),
+            ("시가-0.8&15m", "_l2_open_15m",   "—",   "동시"),
+            ("15분 수익률",  "_l2_ret_15m",    "—%",  "≤−0.5%"),
+            ("30분 수익률",  "_l2_ret_30m",    "—%",  "≤−1.0%"),
+            ("ATR ratio",    "_l2_atr_ratio",  "—",   "≥1.25"),
+            ("z극단 수",     "_l2_z_warn",     "—개",  "≥3개"),
+            ("Contrarian",   "_l2_contrarian", "—",   "강제승격"),
+        ]
+        for _lbl, _attr, _init, _thresh in _l2_inds:
+            _row = QHBoxLayout()
+            _row.setSpacing(2)
+            _nl = mk_label(_lbl, C['text2'], 9)
+            _nl.setFixedWidth(64)
+            _vl = mk_val_label(_init, C['text2'], 10)
+            _tl = mk_label(_thresh, C['text2'], 8)
+            setattr(self, _attr + "_label", _vl)
+            _row.addWidget(_nl)
+            _row.addWidget(_vl, 1)
+            _row.addWidget(_tl)
+            right_lay.addLayout(_row)
+
+        # 3. Layer 2 조건 로그
+        right_lay.addWidget(mk_sep())
+        right_lay.addWidget(mk_label("Layer 2 조건 체크", C['text2'], 9, True))
+        self._layer2_log = QTextEdit()
+        self._layer2_log.setReadOnly(True)
+        self._layer2_log.setFont(QFont("Consolas", S.f(8)))
+        self._layer2_log.setStyleSheet(
+            f"background:{C['bg3']};color:{C['text2']};"
+            f"border:1px solid {C['border']};border-radius:3px;"
+        )
+        self._layer2_log.setMinimumHeight(100)
+        right_lay.addWidget(self._layer2_log, 1)
+
+        split_lay.addWidget(right_w, 6)
+        lay.addLayout(split_lay)
 
         lay.addWidget(mk_sep())
 
@@ -3731,8 +3837,17 @@ class EntryPanel(QWidget):
             self._conf_chk_name_label.setText(f"신뢰도 ≥ {min_conf:.0%}")
 
         # 체크리스트 아이콘
-        # checks={} → 미평가(—), True → V(green), False → X(red)
+        # 체크박스 OFF → SKIP(파란 —), checks=None → 미평가(회색 —),
+        # True → V(green), False → X(red)
         for attr, (icon, vl) in self.check_labels.items():
+            cb = self.check_toggles.get(attr)
+            if cb is not None and not cb.isChecked():
+                icon.setText("—")
+                icon.setStyleSheet(
+                    f"background:#1A3A5C;color:#58A6FF;"
+                    f"border-radius:3px;font-size:{S.f(10)}px;font-weight:bold;padding:1px 4px;"
+                )
+                continue
             val = checks.get(attr, None)
             if val is None:
                 icon.setText("—")
@@ -3805,6 +3920,52 @@ class EntryPanel(QWidget):
     def get_max_qty(self) -> int:
         return self._max_qty
 
+    def _load_gate_toggles(self):
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            if not os.path.exists(_f):
+                return
+            with open(_f, "r", encoding="utf-8") as fp:
+                saved = json.load(fp).get("gate_toggles", {})
+            for attr, cb in self.check_toggles.items():
+                if attr in saved:
+                    cb.blockSignals(True)
+                    cb.setChecked(bool(saved[attr]))
+                    cb.blockSignals(False)
+        except Exception:
+            pass
+
+    def _save_gate_toggles(self):
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            p = {}
+            if os.path.exists(_f):
+                with open(_f, "r", encoding="utf-8") as fp:
+                    p = json.load(fp)
+            p["gate_toggles"] = {attr: cb.isChecked() for attr, cb in self.check_toggles.items()}
+            with open(_f, "w", encoding="utf-8") as fp:
+                json.dump(p, fp, ensure_ascii=False)
+        except Exception:
+            pass
+
+    _ATTR_TO_INTERNAL = {
+        "signal_chk": "1_signal",   "conf_chk": "2_confidence",
+        "vwap_chk":   "3_vwap",     "cvd_chk":  "4_cvd",
+        "ofi_chk":    "5_ofi",      "fi_chk":   "6_foreign",
+        "candle_chk": "7_prev_bar", "time_chk": "8_time",
+        "risk_chk":   "9_risk",
+    }
+
+    def get_disabled_gates(self) -> set:
+        """체크박스 OFF 항목의 내부 키 집합 반환 (checklist.evaluate 의 disabled_gates 인수용)"""
+        disabled = set()
+        for attr, cb in self.check_toggles.items():
+            if not cb.isChecked():
+                internal = self._ATTR_TO_INTERNAL.get(attr)
+                if internal:
+                    disabled.add(internal)
+        return disabled
+
     def _refresh_max_qty_display(self):
         self.e_max_qty.setText(f"{self._max_qty}계약")
 
@@ -3821,6 +3982,164 @@ class EntryPanel(QWidget):
             self._refresh_max_qty_display()
             self._save_max_qty()
             self.sig_max_qty_changed.emit(self._max_qty)
+
+    # ── Layer 2 Intraday Gate 메서드 ──────────────────────────────────────
+
+    def _sync_layer2_gate_btn_style(self):
+        on = self._layer2_gate_enabled
+        col = C['cyan'] if on else C['text2']
+        bg  = C['bg2']  if on else C['bg3']
+        bw  = "2px"     if on else "1px"
+        self.layer2_gate_btn.setText("L2 ON" if on else "L2 OFF")
+        self.layer2_gate_btn.setStyleSheet(
+            f"QPushButton{{background:{bg};color:{col};"
+            f"border:{bw} solid {col};border-radius:4px;"
+            f"padding:4px 6px;font-size:{S.f(10)}px;font-weight:bold;}}"
+        )
+
+    def _save_layer2_gate_pref(self):
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            p = {}
+            if os.path.exists(_f):
+                with open(_f, "r", encoding="utf-8") as fp:
+                    p = json.load(fp)
+            p["layer2_gate_enabled"] = self._layer2_gate_enabled
+            with open(_f, "w", encoding="utf-8") as fp:
+                json.dump(p, fp, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _load_layer2_gate_pref(self):
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            if not os.path.exists(_f):
+                return
+            with open(_f, "r", encoding="utf-8") as fp:
+                saved = json.load(fp).get("layer2_gate_enabled", True)
+            if not bool(saved):
+                self.layer2_gate_btn.blockSignals(True)
+                try:
+                    self.layer2_gate_btn.setChecked(False)
+                finally:
+                    self.layer2_gate_btn.blockSignals(False)
+                self._layer2_gate_enabled = False
+                self._sync_layer2_gate_btn_style()
+        except Exception:
+            pass
+
+    def _on_layer2_gate_toggled(self, enabled: bool):
+        self._layer2_gate_enabled = bool(enabled)
+        self._sync_layer2_gate_btn_style()
+        self._save_layer2_gate_pref()
+        self.sig_layer2_gate_toggled.emit(self._layer2_gate_enabled)
+
+    def is_layer2_gate_enabled(self) -> bool:
+        return self._layer2_gate_enabled
+
+    def update_layer2(self, status_dict: dict, min_conf_base: float = 0.58):
+        """Layer 2 Intraday Gate 패널 갱신."""
+        regime    = status_dict.get("regime",      "NORMAL")
+        prev      = status_dict.get("prev_regime", "NORMAL")
+        factors   = status_dict.get("factors",     {})
+        policy    = status_dict.get("policy",      {})
+
+        # 상태 카드
+        _l2_col = {"NORMAL": C['green'], "DAY_RISK_OFF": C['orange'], "CRASH": C['red']}
+        col = _l2_col.get(regime, C['text2'])
+        self._l2_state_label.setText(regime)
+        self._l2_state_label.setStyleSheet(
+            f"color:{col};font-size:{S.f(12)}px;font-weight:bold;"
+        )
+        self._l2_state_frame.setStyleSheet(
+            f"background:{C['bg2']};border:2px solid {col};border-radius:4px;"
+        )
+        if regime != prev:
+            self._l2_trans_label.setText(f"{prev} → {regime}")
+            self._l2_trans_label.setStyleSheet(f"color:{col};font-size:{S.f(8)}px;")
+        else:
+            self._l2_trans_label.setText("")
+
+        # 지표 갱신
+        day_ret    = factors.get("day_ret",      0.0)
+        ret_15m    = factors.get("ret_15m",      0.0)
+        ret_30m    = factors.get("ret_30m",      0.0)
+        atr_ratio  = factors.get("atr_ratio",    0.0)
+        z_warn     = int(factors.get("z_warn_count", 0))
+        contrarian = bool(factors.get("contrarian",  False))
+        bounce     = factors.get("bounce",      0.0)
+        ofi_15m    = factors.get("ofi_15m_avg", 0.0)
+
+        def _ind(attr, text, triggered):
+            lbl = getattr(self, attr + "_label", None)
+            if lbl is None:
+                return
+            lbl.setText(text)
+            lbl.setStyleSheet(
+                f"color:{C['red'] if triggered else C['text']};"
+                f"font-size:{S.f(10)}px;font-weight:bold;"
+            )
+
+        _ind("_l2_day_ret",   f"{day_ret*100:+.2f}%", day_ret <= -0.010)
+        open_15m_trig = day_ret <= -0.008 and ret_15m <= -0.005
+        _ind("_l2_open_15m",  "O" if open_15m_trig else "—", open_15m_trig)
+        _ind("_l2_ret_15m",   f"{ret_15m*100:+.2f}%", ret_15m <= -0.005)
+        _ind("_l2_ret_30m",   f"{ret_30m*100:+.2f}%", ret_30m <= -0.010)
+        _ind("_l2_atr_ratio", f"{atr_ratio:.3f}",     atr_ratio >= 1.25)
+        _ind("_l2_z_warn",    f"{z_warn}개",           z_warn >= 3)
+        con_lbl = getattr(self, "_l2_contrarian_label", None)
+        if con_lbl is not None:
+            con_lbl.setText("ACTIVE" if contrarian else "비활성")
+            con_lbl.setStyleSheet(
+                f"color:{C['orange'] if contrarian else C['text2']};"
+                f"font-size:{S.f(10)}px;font-weight:bold;"
+            )
+
+        # 조건 로그
+        min_conf_adj = float(policy.get("min_conf_adjust", 0.0))
+        size_mult    = float(policy.get("size_mult", 1.0))
+        min_eff      = min_conf_base + min_conf_adj / 100.0
+        b_ok = bounce    >= 0.005
+        o_ok = ofi_15m   >  0.0
+        a_ok = atr_ratio <  1.2
+
+        lines = ["■ 진입 허용 체크"]
+        if regime == "NORMAL":
+            lines.append("  NORMAL → 롱/숏 모두 허용 ✔")
+        elif regime == "DAY_RISK_OFF":
+            lines.append("  DAY_RISK_OFF → 신규 롱 금지 ✘")
+            lines.append("  DAY_RISK_OFF → 숏만 허용 ✔")
+        else:
+            lines.append("  CRASH → 원칙적 신규진입 전부 금지 ✘")
+            lines.append("  CRASH 예외: A등급 숏 추세추종 허용 ✔")
+        lines.append("")
+
+        lines.append("■ 신뢰도 강화 체크")
+        if regime == "NORMAL":
+            lines.append("  NORMAL → 추가 가산 없음 (0%p)")
+        else:
+            lines.append(f"  {regime} → 최소신뢰도 +{int(min_conf_adj)}%p")
+        lines.append(f"  적용 min_conf: {min_eff:.0%}")
+        lines.append("")
+
+        lines.append("■ 사이즈 축소 체크")
+        lines.append(f"  {regime} → 사이즈 ×{size_mult:.1f}")
+        if size_mult < 1.0:
+            lines.append("  ⚠ A등급도 최종 수량 감소 가능")
+        lines.append("")
+
+        lines.append("■ 복귀 체크 (→ NORMAL)")
+        lines.append(f"  반등 {bounce*100:+.2f}% ≥ +0.5%: {'✔' if b_ok else '✘'}")
+        lines.append(f"  OFI15m {ofi_15m:.4f} > 0: {'✔' if o_ok else '✘'}")
+        lines.append(f"  ATR {atr_ratio:.3f} < 1.2: {'✔' if a_ok else '✘'}")
+        if regime == "NORMAL":
+            lines.append("  (현재 NORMAL — 복귀 불필요)")
+        elif b_ok and o_ok and a_ok:
+            lines.append("  → 복귀 조건 충족 ✔")
+        else:
+            lines.append("  → 복귀 조건 미충족 ✘")
+
+        self._layer2_log.setPlainText("\n".join(lines))
 
 
 # ────────────────────────────────────────────────────────────
@@ -7689,6 +8008,31 @@ class MireukDashboard(QMainWindow):
             "  변동장 : ATR 급등 · 포지션 축소\n"
             "  혼합   : 구조 불명확 · 관망"
         )
+        self._micro_warmup_wrap = QWidget()
+        self._micro_warmup_wrap.setVisible(False)
+        _mw_lay = QVBoxLayout(self._micro_warmup_wrap)
+        _mw_lay.setContentsMargins(0, 0, 0, 0)
+        _mw_lay.setSpacing(1)
+        self.lbl_micro_warmup = mk_label("", C['text2'], 8)
+        self.lbl_micro_warmup.setAlignment(Qt.AlignCenter)
+        self.pb_micro_warmup = QProgressBar()
+        self.pb_micro_warmup.setRange(0, 100)
+        self.pb_micro_warmup.setValue(0)
+        self.pb_micro_warmup.setTextVisible(False)
+        self.pb_micro_warmup.setFixedHeight(max(4, S.p(5)))
+        self.pb_micro_warmup.setFixedWidth(S.p(84))
+        self.pb_micro_warmup.setStyleSheet(
+            f"QProgressBar{{background:{C['bg3']};border:none;border-radius:2px;}}"
+            f"QProgressBar::chunk{{background:{C['orange']};border-radius:2px;}}"
+        )
+        _mw_lay.addWidget(self.lbl_micro_warmup)
+        _mw_lay.addWidget(self.pb_micro_warmup)
+        self._micro_box = QWidget()
+        _mb_lay = QVBoxLayout(self._micro_box)
+        _mb_lay.setContentsMargins(0, 0, 0, 0)
+        _mb_lay.setSpacing(1)
+        _mb_lay.addWidget(self.lbl_micro_regime, 0, Qt.AlignCenter)
+        _mb_lay.addWidget(self._micro_warmup_wrap, 0, Qt.AlignCenter)
         _cyc_text, _cyc_col = _calc_cycle_badge()
         self.lbl_cycle  = mk_badge(_cyc_text, _cyc_col, "#fff", 11)
         self.lbl_cycle.setToolTip(
@@ -8025,7 +8369,7 @@ class MireukDashboard(QMainWindow):
         header.addLayout(title_box)
         header.addLayout(right_col)
         header.addStretch()
-        for w in [self.lbl_regime, self.lbl_micro_regime, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_cb]:
+        for w in [self.lbl_regime, self._micro_box, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_cb]:
             header.addWidget(w)
         header.addWidget(self.lbl_l2_halt)  # L2 halt badge (CB 오른쪽)
         header.addWidget(clk_frame)
@@ -8626,6 +8970,7 @@ class DashboardAdapter:
         self.sig_tp1_protect_mode_changed = self._win.exit_panel.sig_tp1_protect_mode_changed
         self.sig_manual_exit_requested    = self._win.exit_panel.sig_manual_exit_requested
         self.sig_max_qty_changed          = self._win.entry_panel.sig_max_qty_changed
+        self.sig_layer2_gate_toggled      = self._win.entry_panel.sig_layer2_gate_toggled
         self.sig_apply_candidate_requested = self._win.feat_panel.sig_apply_candidate_requested
         self.sig_force_retrain_requested = self._win.feat_panel.sig_force_retrain_requested
         self.sig_reset_feature_set_requested = self._win.feat_panel.sig_reset_feature_set_requested
@@ -8777,6 +9122,45 @@ class DashboardAdapter:
             except Exception:
                 pass
 
+    def update_micro_regime_warmup(self, warmup: dict):
+        wrap = getattr(self._win, "_micro_warmup_wrap", None)
+        if wrap is None:
+            return
+
+        warmup = warmup or {}
+        active = bool(warmup.get("active"))
+        if not active:
+            wrap.setVisible(False)
+            return
+
+        progress = int(warmup.get("progress", 0) or 0)
+        remaining = int(warmup.get("remaining_bars", 0) or 0)
+        level = str(warmup.get("level", "L?") or "L?")
+        adx_progress = int(warmup.get("adx_progress", 0) or 0)
+        atr_progress = int(warmup.get("atr_progress", 0) or 0)
+
+        if level == "L1":
+            chunk_col = C['red']
+        elif level == "L2":
+            chunk_col = C['orange']
+        else:
+            chunk_col = C['blue']
+
+        self._win.lbl_micro_warmup.setText(
+            "%s 레짐 워밍업 %d%% · %d분 남음" % (level, progress, remaining)
+        )
+        self._win.pb_micro_warmup.setValue(progress)
+        self._win.pb_micro_warmup.setToolTip(
+            "미시 레짐 워밍업\n"
+            "ADX: %d%% | ATR avg: %d%%\n"
+            "남은 시간: 약 %d분" % (adx_progress, atr_progress, remaining)
+        )
+        self._win.pb_micro_warmup.setStyleSheet(
+            f"QProgressBar{{background:{C['bg3']};border:none;border-radius:2px;}}"
+            f"QProgressBar::chunk{{background:{chunk_col};border-radius:2px;}}"
+        )
+        wrap.setVisible(True)
+
     def update_system_status(
         self,
         cb_state: str = "NORMAL",
@@ -8921,6 +9305,14 @@ class DashboardAdapter:
         mode: 'UP' (상방 원웨이, 녹색) / 'DN' (하방 원웨이, 오렌지) / '' (해제)"""
         self._win.entry_panel.set_trend_gate_mode(mode)
 
+    def update_layer2(self, status_dict: dict, min_conf_base: float = 0.58) -> None:
+        """Layer 2 Intraday Gate 패널 갱신 — IntradayTacticalRegime.status_dict() 를 넘겨줌."""
+        self._win.entry_panel.update_layer2(status_dict, min_conf_base=min_conf_base)
+
+    def is_layer2_gate_enabled(self) -> bool:
+        """Layer 2 게이트 UI 토글 상태 반환."""
+        return self._win.entry_panel.is_layer2_gate_enabled()
+
     def set_tp1_protect_mode(self, mode: str, emit_signal: bool = False) -> None:
         self._win.exit_panel.set_tp1_protect_mode(mode, emit_signal=emit_signal)
 
@@ -8935,6 +9327,10 @@ class DashboardAdapter:
 
     def get_max_qty(self) -> int:
         return self._win.entry_panel.get_max_qty()
+
+    def get_disabled_gates(self) -> set:
+        """체크박스 OFF 항목의 내부 키 집합 반환"""
+        return self._win.entry_panel.get_disabled_gates()
 
     def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 갱신"""

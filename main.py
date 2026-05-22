@@ -282,6 +282,7 @@ class TradingSystem:
         self.dashboard.sig_manual_entry_requested.connect(self._on_manual_entry_requested)
         self.dashboard.sig_instant_exit_requested.connect(self._on_instant_exit_requested)
         self.dashboard.sig_auto_mode_changed.connect(self._on_auto_mode_changed)
+        self.dashboard.sig_layer2_gate_toggled.connect(self._on_layer2_gate_ui_toggled)
         self.dashboard.sig_tp1_protect_mode_changed.connect(self._on_tp1_protect_mode_changed)
         self.dashboard.sig_manual_exit_requested.connect(self._on_manual_exit_requested)
         self.dashboard.sig_apply_candidate_requested.connect(self._on_apply_shap_candidate_requested)
@@ -1323,6 +1324,13 @@ class TradingSystem:
         log_manager.system(
             f"[EntryConfig] 자동진입={'ON' if enabled else 'OFF (수동 전환)'}",
             "WARNING" if not enabled else "INFO",
+        )
+
+    def _on_layer2_gate_ui_toggled(self, enabled: bool) -> None:
+        """Layer 2 Intraday Gate UI 토글 — ON 시 DAY_RISK_OFF/CRASH 규칙 적용, OFF 시 무시."""
+        log_manager.system(
+            f"[IntradayRegime] Layer 2 Gate UI={'ON' if enabled else 'OFF (우회 모드)'}",
+            "INFO" if enabled else "WARNING",
         )
 
     def _on_max_qty_changed(self, max_qty: int) -> None:
@@ -2545,6 +2553,7 @@ class TradingSystem:
         self.dashboard.update_micro_regime(
             _mr["regime"], _mr["adx"], _mr["atr_ratio"], _mr["regime_duration"]
         )
+        self.dashboard.update_micro_regime_warmup(_mr.get("warmup"))
         if _mr.get("regime_changed"):
             log_manager.signal(
                 f"[MicroRegime] 레짐 변경 → {_mr['regime']} "
@@ -2760,8 +2769,10 @@ class TradingSystem:
             self.dashboard.set_trend_gate_mode(_tp_dash_mode)
         # Layer 2 장중 전술 레짐 — min_conf 사전 상향 (사후 차단보다 먼저 적용)
         # DAY_RISK_OFF: +5%p / CRASH: +12%p / NORMAL: ±0
+        # UI에서 L2 OFF 시 우회
+        _l2_gate_on = getattr(self.dashboard, "is_layer2_gate_enabled", lambda: True)()
         _l2_mc_adj = self.intraday_regime.min_conf_adjust() / 100.0
-        if _l2_mc_adj > 0.0:
+        if _l2_gate_on and _l2_mc_adj > 0.0:
             actual_min_conf = min(0.90, actual_min_conf + _l2_mc_adj)
             log_manager.signal(
                 f"[IntradayRegime] {self.current_intraday_regime} — min_conf +{_l2_mc_adj * 100:.0f}%p → {actual_min_conf:.2f}"
@@ -2943,6 +2954,7 @@ class TradingSystem:
         _cr          = None
 
         if direction != 0 and self.position.status == "FLAT":
+            _disabled_gates = self.dashboard.get_disabled_gates()
             _cr = self.checklist.evaluate(
                 direction         = direction,
                 confidence        = confidence,
@@ -2959,6 +2971,7 @@ class TradingSystem:
                 bear_exhaustion   = float(features.get("bear_exhaustion", 0.0) or 0.0),
                 bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
                 micro_regime      = getattr(self, "current_micro_regime", "혼합"),
+                disabled_gates    = _disabled_gates,
             )
             _final_grade = _cr["grade"]
             _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
@@ -3071,13 +3084,15 @@ class TradingSystem:
                     f"reason={_tox_gate.get('reason', '')}"
                 )
             # Layer 2 사이즈 축소 — DAY_RISK_OFF=×0.5 / CRASH=×0.3 (마지막 단계 적용)
-            _l2_size = self.intraday_regime.size_mult()
-            if _l2_size < 1.0 and _qty_display > 0:
-                _qty_display = max(1, int(round(_qty_display * _l2_size)))
-                log_manager.signal(
-                    f"[IntradayRegime] {self.current_intraday_regime} 사이즈 축소 "
-                    f"×{_l2_size:.1f} → {_qty_display}계약"
-                )
+            # UI L2 OFF이면 우회
+            if _l2_gate_on:
+                _l2_size = self.intraday_regime.size_mult()
+                if _l2_size < 1.0 and _qty_display > 0:
+                    _qty_display = max(1, int(round(_qty_display * _l2_size)))
+                    log_manager.signal(
+                        f"[IntradayRegime] {self.current_intraday_regime} 사이즈 축소 "
+                        f"×{_l2_size:.1f} → {_qty_display}계약"
+                    )
 
         _raw_entry_dir = "LONG" if direction > 0 else "SHORT" if direction < 0 else ""
         _resolved_raw_dir, _resolved_final_dir, _reverse_on = self._resolve_entry_direction(_raw_entry_dir)
@@ -3211,8 +3226,13 @@ class TradingSystem:
 
         # ── Layer 2 장중 전술 레짐 진입 정책 적용 ──────────────────
         # DAY_RISK_OFF: 신규 롱 금지 | CRASH: 모든 신규 진입 금지
-        _intraday_long_ok  = self.intraday_regime.is_long_allowed()
-        _intraday_short_ok = self.intraday_regime.is_short_allowed()
+        # UI L2 OFF이면 게이트 우회 → 전 방향 허용
+        if _l2_gate_on:
+            _intraday_long_ok  = self.intraday_regime.is_long_allowed()
+            _intraday_short_ok = self.intraday_regime.is_short_allowed()
+        else:
+            _intraday_long_ok  = True
+            _intraday_short_ok = True
         _intraday_block = False
         if direction > 0 and not _intraday_long_ok:
             _intraday_block = True

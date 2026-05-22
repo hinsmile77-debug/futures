@@ -6,6 +6,46 @@
 
 ---
 
+## 2026-05-22 (82차 — Layer 2 인트라데이 게이트 UI 패널 + L2 토글 영속성 및 즉시 적용)
+
+**Work**: 진입 관리 탭의 Pre-flight 체크리스트 패널을 좌(5):우(6) 양분. 오른쪽에 Layer 2 IntradayTacticalRegime 전용 패널 신설. L2 ON/OFF 버튼 설정 영속성(ui_prefs.json) 구현 및 장중 토글 시 main.py 3개 게이팅 포인트에 즉시 반영. 커밋 1개.
+
+### 구현 내용
+
+**`dashboard/main_dashboard.py`**
+
+1. **레이아웃 양분** — 기존 Pre-flight 섹션을 `QHBoxLayout(ratio 5:6)`으로 분리. 왼쪽=9개 체크리스트, 오른쪽=Layer 2 패널.
+
+2. **Layer 2 패널 (오른쪽 3단)**
+   - **상단 상태 카드**: L2 ON/OFF 버튼(체크블 QPushButton) + 레짐 상태(NORMAL/DAY_RISK_OFF/CRASH) 색상 표시 + 전환 레이블(`prev→current`)
+   - **중단 7개 지표**: 당일 수익률≤−1%, 시가−0.8%&15m, 15m 수익률, 30m 수익률, ATR ratio, z극단 수, Contrarian ACTIVE — 발동 항목 빨간색 강조
+   - **하단 조건 체크 로그** (`QTextEdit` readonly): 진입허용·신뢰도강화·사이즈축소·복귀체크 4섹션 실시간 표시
+
+3. **영속성** — `_save_layer2_gate_pref()` / `_load_layer2_gate_pref()` 신규. `data/ui_prefs.json`의 `"layer2_gate_enabled"` 키. 로드 시 `blockSignals` 처리.
+
+4. **신규 API**
+   - `is_layer2_gate_enabled() → bool` — DashboardProxy 경유로 main.py에 노출
+   - `update_layer2(status_dict, min_conf_base)` — IntradayTacticalRegime `status_dict()` 결과를 패널에 반영
+   - `sig_layer2_gate_toggled` pyqtSignal — DashboardProxy에 위임 속성으로 노출
+
+**`main.py`**
+
+- `_l2_gate_on` 플래그를 파이프라인 틱당 1회 계산 (`getattr` 방어 폴백 포함)
+- 3개 게이팅 포인트 모두 `_l2_gate_on` 분기 추가:
+  - Point 1: `min_conf_adjust()` (신뢰도 강화) 우회
+  - Point 2: `is_long_allowed()` / `is_short_allowed()` (방향 차단) 우회 → 전 방향 허용
+  - Point 3: `size_mult()` (사이즈 축소) 우회
+- `sig_layer2_gate_toggled.connect(_on_layer2_gate_ui_toggled)` 연결 + 핸들러 신규
+
+### 실세션 확인 사항 (2026-05-23)
+
+1. 재시작 후 L2 ON/OFF 버튼 상태가 이전 설정 복원되는지 (ui_prefs.json)
+2. 장중 L2 OFF 토글 시 `[IntradayRegime] Layer 2 Gate UI=OFF (우회 모드)` WARN 로그
+3. L2 OFF 상태에서 CRASH 레짐에서도 LONG/SHORT 차단 없이 진입 허용 확인
+4. `update_layer2()` 호출 연결 확인 — main.py STEP 9 (또는 STEP 6) 에서 호출 추가 여부
+
+---
+
 ## 2026-05-22 (81차 — Platt 보정 기동 사전 fit + EnsembleDecision 2차 압축 연결)
 
 **Work**: GBM 모델이 "99.9% 확신" 과신 출력 → 실제 정확도 40% 수준 문제를 Platt Scaling으로 억제. 4가지 버그를 수정하고 기동 시 DB에서 calibrator를 사전 fit하도록 구조 개선. 커밋 1개.
@@ -3565,3 +3605,31 @@ GBM 배치 재학습 산출물 형식을 런타임 로더와 맞추고, 좌하�
 - `python -m py_compile main.py learning\batch_retrainer.py learning\shap\shap_tracker.py utils\db_utils.py dashboard\main_dashboard.py`
 - `create_dashboard()` 및 `dashboard.update_shap(..., action_state=...)` 직접 호출 성공
 - 런처 재현으로 SHAP/UI 패치 관련 startup crash 제거 확인 후, 최종 블로커가 CYBOS 미연결 예외임을 확인
+## 2026-05-22 (82차 — Micro Regime Warmup UI + 신뢰도 워밍업 명시화)
+
+**Work**: 장중 재시작/초기 구간에 ADX fallback 15.0, `atr_ratio≈1.00` 이 그대로 미시 레짐에 반영되어 헤더 `횡보장` 해석이 과신될 수 있는 문제를 정리했다. 미시 레짐 계산기에 워밍업 메타를 추가하고, 헤더 상단에 `레짐 워밍업` 진행률과 남은 시간을 표시하도록 연결했다.
+
+### 변경 내용
+
+| 파일 | 변경 |
+|---|---|
+| `collection/macro/micro_regime.py` | 파일 정리 + `warmup` 상태 계산 추가 (`L1 TR/ATR seed` / `L2 ADX warmup` / `L3 ATR avg warmup` / `READY`) |
+| `collection/macro/micro_regime.py` | 캔들 버퍼 길이를 `max(adx_window+5, MIN_CANDLES_FOR_ATR+atr_window)` 로 확장해 ATR avg 20샘플이 실제로 다 차기 전에 버퍼 상한에 걸리지 않도록 수정 |
+| `main.py` | `_mr["warmup"]` 을 대시보드로 전달하는 훅 추가 |
+| `dashboard/main_dashboard.py` | 헤더 `lbl_micro_regime` 아래 워밍업 상태 라벨 + progress bar 추가, `update_micro_regime_warmup()` 어댑터 추가 |
+
+### 핵심 결과
+
+- 미시 레짐은 이제 워밍업 중일 때 `레짐 워밍업` 상태를 명시적으로 보여준다.
+- 워밍업 단계는 `L1 → L2 → L3 → READY` 로 구분된다.
+- 남은 시간은 `remaining_bars` 기준으로 분 단위 안내된다.
+- `ATR avg` 준비가 완료되기 전에는 상단 배지 해석에 보조 설명이 함께 붙는다.
+- 캔들 버퍼 길이 부족 때문에 `ATR avg 20샘플` 완료 전에 close buffer가 잘리는 구조적 문제를 함께 수정했다.
+
+### 검증
+
+- `python -m py_compile collection\macro\micro_regime.py dashboard\main_dashboard.py main.py`
+- 간단한 시뮬레이션으로 `1, 4, 5, 13, 14, 23, 24분` 지점의 `warmup.level/progress/remaining_bars` 확인
+- 완료 시점: `24번째 1분봉` 에서 `READY`
+
+---

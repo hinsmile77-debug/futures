@@ -6,6 +6,32 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-22 (82차) — Layer 2 인트라데이 게이트 UI 패널 + L2 토글 영속성 및 즉시 적용
+
+### 한일 요약
+
+- [DONE 2026-05-22] **진입 관리 탭 Pre-flight 패널 양분 (5:6)** — 왼쪽=9개 체크리스트, 오른쪽=Layer 2 패널 3단
+- [DONE 2026-05-22] **Layer 2 상태 카드** — L2 ON/OFF 버튼(체크블) + 레짐 색상(NORMAL=녹/DAY_RISK_OFF=주황/CRASH=빨) + 전환 레이블
+- [DONE 2026-05-22] **Layer 2 7개 지표** — 당일 수익률·시가−0.8%&15m·15m·30m·ATR ratio·z극단·Contrarian. 발동 항목 빨간색 강조
+- [DONE 2026-05-22] **Layer 2 조건 체크 로그** — QTextEdit(readonly) 진입허용·신뢰도강화·사이즈축소·복귀체크 4섹션
+- [DONE 2026-05-22] **L2 게이트 영속성** — ui_prefs.json `layer2_gate_enabled`. 재시작 시 복원. blockSignals 처리
+- [DONE 2026-05-22] **L2 즉시 적용** — `_l2_gate_on` 플래그 (getattr 폴백). min_conf_adjust·방향차단·size_mult 3곳 우회 분기
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 필수] **`update_layer2()` → main.py 파이프라인 연결**
+  - `dashboard/main_dashboard.py`의 `update_layer2(status_dict, min_conf_base)` API가 완성됐으나 main.py에서 호출 코드 없음
+  - STEP 6 L2 적용 직후 또는 STEP 9 DB 저장 이후에 `self.dashboard.update_layer2(self.intraday_regime.status_dict(), min_conf_base=0.58)` 추가 필요
+  - 호출 없으면 오른쪽 패널이 항상 초기 상태(NORMAL / 모든 지표 비발동)로 표시됨
+
+- [NEXT 장중] **82차 실세션 확인 (2026-05-23)**
+  - 재시작 후 L2 ON/OFF 버튼 상태가 이전 설정 복원 (ui_prefs.json 읽기)
+  - 장중 L2 OFF 토글 시 `[IntradayRegime] Layer 2 Gate UI=OFF (우회 모드)` WARNING 로그 확인
+  - L2 OFF 상태 CRASH 레짐에서도 LONG/SHORT 차단 없이 진입 허용 확인
+  - `update_layer2()` 연결 후: 레짐 전환 시 상태 카드 색상·7개 지표 발동 상태 실시간 갱신 확인
+
+---
+
 ## 2026-05-22 (81차) — Platt 보정 기동 사전 fit + 앙상블 2차 압축
 
 ### 한일 요약
@@ -2429,3 +2455,32 @@
 [NEXT 미정] **watchdog 경보 문구 정밀화**
 - 현재 `파이프라인 1분 30초 미실행` 문구가 예외 중단과 분봉 수신 지연을 구분하지 못함
 - 최근 fatal 예외가 있었으면 `수신 지연 의심` 대신 `직전 파이프라인 예외 후 미복구` 식으로 원인 힌트 분리 검토
+## 2026-05-22 (82차) — 미시 레짐 워밍업 UI
+
+### 처리 완료
+
+- [DONE 2026-05-22] **MicroRegime 워밍업 메타 추가**
+  - `collection/macro/micro_regime.py` 에 `warmup` 상태 계산 추가
+  - 단계: `L1 TR/ATR seed` → `L2 ADX warmup` → `L3 ATR avg warmup` → `READY`
+
+- [DONE 2026-05-22] **헤더 미시 레짐 아래 워밍업 상태줄 추가**
+  - `dashboard/main_dashboard.py` 에 라벨 + progress bar 추가
+  - `main.py` 에서 `_mr["warmup"]` 를 대시보드로 전달
+
+- [DONE 2026-05-22] **ATR avg 워밍업용 캔들 버퍼 상한 수정**
+  - close/high/low buffer 길이를 늘려 `ATR avg 20샘플` 완료 전에 버퍼가 먼저 잘리는 문제 수정
+
+### 다음 작업
+
+- [NEXT 2026-05-23] **실 UI 워밍업 표시 검증**
+  - `start_mireuk.bat` 기동 후 헤더에서 워밍업 라벨/바 위치, 색상, 폭 확인
+  - 장중 재시작 시 `L1 → L2 → L3 → READY` 전환이 실제 분봉 흐름과 맞는지 확인
+
+- [NEXT 2026-05-23] **워밍업 중 레짐 텍스트 처리 정책 검토**
+  - 현재는 `횡보장/추세장` 텍스트는 유지하고, 아래에 워밍업 보조 설명을 표시
+  - 필요 시 워밍업 중 본문 텍스트를 `레짐 워밍업` 또는 `혼합` 으로 강등할지 검토
+
+- [NEXT 향후] **미시 레짐 워밍업 로그 명시화**
+  - `MicroRegime` 로그에 `warmup level/progress` 를 함께 남길지 검토
+
+---

@@ -1,7 +1,35 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-22 (81차) — **Platt 보정 기동 사전 fit + EnsembleDecision 2차 압축**
+> 마지막 업데이트: 2026-05-22 (82차) — **Layer 2 인트라데이 게이트 UI 패널 + L2 토글 영속성 및 즉시 적용**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-22 (82차) — Layer 2 인트라데이 게이트 UI 패널 + L2 토글 영속성 및 즉시 적용
+
+### 배경
+
+Layer 2 IntradayTacticalRegime이 코드로 구현·통합(78차)되었으나, 대시보드에서 레짐 상태나 7개 지표 발동 여부를 확인할 방법이 없었음. L2 ON/OFF 토글도 재시작 시 초기화되고 장중 적용이 안 되는 문제 존재.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| 진입 관리 탭 Pre-flight 패널 좌우 양분 (5:6) | **완료** |
+| Layer 2 상태 카드 (ON/OFF 버튼 + 레짐 색상 + 전환 레이블) | **완료** |
+| Layer 2 7개 지표 표시 (발동 항목 빨간색 강조) | **완료** |
+| Layer 2 조건 체크 로그 (진입허용·신뢰도강화·사이즈축소·복귀체크) | **완료** |
+| L2 게이트 설정 영속성 (ui_prefs.json `layer2_gate_enabled`) | **완료** |
+| L2 토글 장중 즉시 적용 — 3개 게이팅 포인트 `_l2_gate_on` 분기 | **완료** |
+| `update_layer2(status_dict)` → main.py 파이프라인 연결 | **미완료** — STEP 6 또는 STEP 9에서 호출 코드 추가 필요 |
+| 실세션 확인 | **미완료** — 2026-05-23 기동 시 확인 필요 |
+
+### 수정 파일 (82차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `dashboard/main_dashboard.py` | Layer 2 패널 3단 UI, `is_layer2_gate_enabled()`, `update_layer2()`, 영속성 메서드, `sig_layer2_gate_toggled` |
+| `main.py` | `_l2_gate_on` 분기 (3개 게이팅 포인트), `_on_layer2_gate_ui_toggled` 핸들러, 시그널 연결 |
 
 ---
 
@@ -3109,3 +3137,35 @@ STEP4: get_features() → 캐시 읽기만 (TR 호출 없음)
 - 현재 최종 블로커:
   - SHAP/UI 패치가 아니라 `U-CYBOS/CYBOS Plus is not connected` 브로커 세션 미연결
   - 앱은 SHAP 패치 구간을 통과한 뒤 broker connect 단계에서 종료된다.
+## 2026-05-22 (82차) — Micro Regime Warmup UI
+
+### 배경
+
+10:03:43 헤더 `횡보장` 표시를 추적한 결과, 실제로는 `10:03:00` 1분봉 갱신 시점의 미시 레짐이 유지된 것이었고, 당시 `ADX=15.0` 은 실측이 아니라 버퍼 부족 fallback 값이었다. 장중 재시작/초기 분봉 구간에 미시 레짐 해석 신뢰도가 낮다는 점을 UI에서 드러낼 필요가 확인되었다.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| `MicroRegimeClassifier` 워밍업 메타 | **완료** — `L1 TR/ATR seed` / `L2 ADX warmup` / `L3 ATR avg warmup` / `READY` 계산 |
+| 헤더 워밍업 표시 | **완료** — `lbl_micro_regime` 아래 상태 문구 + progress bar 추가 |
+| 남은 시간 표시 | **완료** — `remaining_bars` 기준 `N분 남음` 노출 |
+| 장중 재시작 초기 해석 보조 | **완료** — 워밍업 중에는 상단에서 레짐 과신 방지 |
+| ATR avg 준비용 버퍼 길이 수정 | **완료** — close/high/low buffer 상한 확장 |
+| 실 UI 런처 검증 | **미완료** — 다음 기동 시 헤더 배치와 가독성 확인 필요 |
+
+### 구현 파일 (82차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `collection/macro/micro_regime.py` | 워밍업 상태 계산 + 버퍼 길이 수정 + 파일 정리 |
+| `main.py` | `dashboard.update_micro_regime_warmup(_mr.get("warmup"))` 호출 |
+| `dashboard/main_dashboard.py` | 미시 레짐 배지 아래 워밍업 상태 라벨 / progress bar 추가 |
+
+### 다음 확인 사항
+
+1. `start_mireuk.bat` 재기동 후 헤더에서 워밍업 바가 정상 위치/색상으로 보이는지 확인
+2. 장중 재시작 직후 `L1 → L2 → L3 → READY` 전환이 실제 시간 흐름과 맞는지 SYSTEM/UI 로그 대조
+3. 워밍업 완료 전 `횡보장/추세장` 텍스트는 유지되더라도 사용자 해석이 충분히 보정되는지 판단
+
+---
