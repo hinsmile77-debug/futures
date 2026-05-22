@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-05-22 (85차 — 모의투자 이상점 7·8 구조적 수정 4종)
+
+### [버그 구조적] 1m/5m FL 편향 — `balanced` class_weight 한계
+**File**: `model/multi_horizon_model.py`, `learning/batch_retrainer.py` — `_CW_1M`, `_CW_5M`
+**Root cause**: 1m/5m 호라이즌에 `compute_sample_weight("balanced", y)`만 적용. `balanced`는 소수 클래스(UP/DN) 가중치를 높이지만, 피처 구별 불가 구간(저변동성)에서 FL이 기본 분류값으로 선택되는 편향을 해소하지 못함. HORIZON_THRESHOLDS 경계 케이스(1m=0.0005, 5m=0.0011) + 오후 저변동성 구간 = FL 라벨/예측 동시 급증 → 1m 87%, 5m 100% FL 편향.
+**Fix**: `_CW_1M = {FLAT:0.60, UP:1.20, DN:1.20}`, `_CW_5M = {FLAT:0.58, UP:1.21, DN:1.21}` 명시적 추가. 두 학습기(`multi_horizon_model.py`, `batch_retrainer.py`) 동시 적용.
+**How to apply**: 호라이즌별 FL 비율이 50~60% 이상 지속 시 FL class_weight 완화 검토. 완화 강도: FL 비율이 높을수록 더 낮은 값(5m=0.58이 1m=0.60보다 낮음). 학습기 일관성 필수.
+
+### [설계] CLOSE_VOLATILE(14:00~15:00) 단기 가중치 0.6× 축소
+**File**: `model/ensemble_decision.py` — `compute()`, `main.py` — `ensemble.compute()` 호출
+**Decision**: `time_zone == "CLOSE_VOLATILE"` 시 단기(1m/3m/5m) 앙상블 가중치 0.6× 축소 후 재정규화. 10m/15m 기여도 상대 확대.
+**Why**: 오후 저변동성 구간에서 단기 호라이즌이 FL에 과대 편향 → 앙상블 up/dn score를 희석하여 중기(10m/15m)의 DN 신호를 무력화. 0.6× 축소 시 단기 가중치 합이 40% 감소, 중기 가중치 비중이 상대적으로 ~15%p 증가.
+**How to apply**: `get_time_zone()` 반환값을 `ensemble.compute()`에 전달. CLOSE_VOLATILE 이외 구간은 영향 없음. 로그 `[Ensemble] CLOSE_VOLATILE 단기 0.6×`로 발화 확인.
+
+### [버그 구조적] Platt 슬라이딩 윈도우 과대 — 현재 구간 반영 지연
+**File**: `learning/calibration.py` — `PredictionCalibrator`
+**Root cause**: `WINDOW=500` = 현재 하루 데이터(약 360분봉)도 초과. 시장 컨디션 변화(변동성 레짐 시프트) 시 과거 8거래일 평균으로 희석 → 현재 구간 conf 분포와 보정 모델 미스매치. 재보정 주기 `% 50` = 50건마다 → 200건 윈도우에서 재보정 5회/윈도우(너무 느림).
+**Fix**: `WINDOW=200`(≈50분 실질 학습 데이터), 재보정 주기 `% 20`(200건당 10회 재보정).
+**How to apply**: 윈도우 크기는 "현재 시장 컨디션 반영 속도 vs. 통계 안정성" 트레이드오프. 200건 ≈ 3~4거래일 평균 → 급격한 레짐 변화 시에도 3~4거래일 내 수렴. 과소 보정(conf 너무 낮아짐) 발생 시 윈도우 재상향 검토.
+
+### [설계] 10m/15m Platt 하한 `raw_conf × 0.85` 보호
+**File**: `main.py` — `_apply_horizon_calibration()`
+**Decision**: 10m/15m 호라이즌에 한해 Platt 보정 후 conf가 `raw_conf × 0.85` 미만이면 하한 적용. 다른 호라이즌 미적용.
+**Why**: `_preload_horizon_calibration()` 18,000건 전체 평균 기반 Platt가 현재 오후 저변동성 구간에서 과소평가 → raw_conf의 80%까지 낮추는 사례 발생. 10m/15m은 진입 등급 결정에 핵심적이라 과도 압축이 진입 신호 전체를 차단. 1m/3m/5m/30m은 보정 범위가 좁아 과압축 미발생 → 하한 불필요.
+**How to apply**: 하한 발동 시 `[Calib] {horizon} Platt 하한 {before:.3f}→{after:.3f}` 로그 출력. 발동 빈도가 지속 높으면 Platt 윈도우 또는 보정 방법(isotonic) 재검토.
+
+---
+
 ## 2026-05-22 (84차 — 모의투자 이상점 3~6 구조적 수정 4종)
 
 ### [버그 구조적] `_CW_30M` FL=0.5 과도한 다운웨이팅 — 30m 7연속 DN 오분류

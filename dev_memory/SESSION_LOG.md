@@ -6,6 +6,45 @@
 
 ---
 
+## 2026-05-22 (85차 — 모의투자 세션 이상점 7·8 deep dive + 구조적 수정 4종)
+
+**Work**: 14:53~15:09 모의투자 세션 로그 이상점 7·8을 deep dive 분석하여 구조적 원인을 규명하고 5개 파일에 걸쳐 수정 4종을 구현. 커밋 1개 (`67f974e`).
+
+### 분석·수정 이상점 요약
+
+| 이상점 | 증상 | 근본 원인 | 수정 |
+|--------|------|-----------|------|
+| 7 | 1m/5m 호라이즌 FL 편향 87%/100% | `balanced` class_weight만 적용 — FL 명시적 완화 없음. HORIZON_THRESHOLDS 경계 케이스 + 오후 저변동성 구간. CLOSE_VOLATILE 구간 단기 FL편향이 앙상블 up/dn score 희석 | A: `_CW_1M={FL:0.60}`, `_CW_5M={FL:0.58}` 추가. D: CLOSE_VOLATILE 단기 0.6× 가중치 축소 |
+| 8 | 10m conf 50~55% 과도 압축 | `_preload_horizon_calibration()` 18,000건 전체 평균 Platt → 현재 구간 과소평가. balanced class_weight GBM predict_proba 절대값 낮춤. `_apply_horizon_calibration()` 하한 없음 → raw_conf 80%까지 낮춤 | B: WINDOW 500→200, 재보정 주기 50→20. C: 10m/15m raw_conf×0.85 하한 |
+
+### 구현 내용
+
+**`model/multi_horizon_model.py`** (이상점 7-A)
+- `_CW_1M = {FLAT: 0.60, UP: 1.20, DN: 1.20}` 추가 (85차 신규 — 1m FL 87% 편향)
+- `_CW_5M = {FLAT: 0.58, UP: 1.21, DN: 1.21}` 추가 (85차 신규 — 5m FL 100% 편향)
+- `_make_sample_weight()`: 1m/5m 분기 추가
+
+**`learning/batch_retrainer.py`** (이상점 7-A — 학습기 일관성)
+- `_CW_1M`, `_CW_5M` 동일하게 추가. `_make_sample_weight()` 동기화
+
+**`learning/calibration.py`** (이상점 8-B)
+- `WINDOW = 200` (500 → 200 축소, 현재 시장 반영 속도 향상)
+- 재보정 주기: `% 50` → `% 20` (200건 윈도우에서 50건 주기 너무 느림)
+
+**`main.py`** (이상점 8-C + 이상점 7-D 연결)
+- `_apply_horizon_calibration()`: 10m/15m Platt 하한 `raw_conf×0.85` 추가 (과도 압축 방지)
+- `ensemble.compute()` 호출에 `time_zone=get_time_zone()` 추가 (CLOSE_VOLATILE 전달)
+
+**`model/ensemble_decision.py`** (이상점 7-D)
+- `compute()` 파라미터에 `time_zone: str = ""` 추가
+- CLOSE_VOLATILE 구간 단기(1m/3m/5m) 가중치 0.6× 축소 후 재정규화 (10m/15m 기여도 상대 확대)
+
+### 두 이상점 연결
+
+단기 FL편향(이상점 7) → 앙상블 up/dn score 희석 → conf 저하 + 10m Platt 과압축(이상점 8) → 중기 DN 신호 약화 → 시너지로 진입 신호 차단. CLOSE_VOLATILE 구간에서 이 두 효과가 복합적으로 작용해 13개 분봉 연속 X등급 발생.
+
+---
+
 ## 2026-05-22 (84차 — 모의투자 세션 이상점 3~6 deep dive + 구조적 수정 4종)
 
 **Work**: 12:11~12:48 모의투자 세션 로그 이상점 3~6을 deep dive 분석하여 구조적 원인을 규명하고 5개 파일에 걸쳐 수정 4종을 구현. 커밋 1개.

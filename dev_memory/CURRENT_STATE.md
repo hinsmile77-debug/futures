@@ -1,7 +1,42 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-22 (84차) — **모의투자 이상점 3~6 구조적 수정 4종**
+> 마지막 업데이트: 2026-05-22 (85차) — **모의투자 이상점 7·8 구조적 수정 4종**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-22 (85차) — 모의투자 세션 이상점 7·8 deep dive + 구조적 수정 4종
+
+### 배경
+
+14:53~15:09 모의투자 세션 로그에서 이상점 7·8 발견. 1m/5m FL 편향 87%/100%(이상점 7), 10m conf 50~55% 과도 압축(이상점 8)을 deep dive 분석 후 5개 파일에 걸쳐 수정 4종 구현. 커밋 `67f974e`.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **이상점 7-A**: `_CW_1M={FL:0.60}`, `_CW_5M={FL:0.58}` 명시적 FL 완화 | **완료** — multi_horizon_model.py, batch_retrainer.py |
+| **이상점 7-D**: CLOSE_VOLATILE 단기(1m/3m/5m) 0.6× 가중치 축소 + time_zone 파라미터 | **완료** — ensemble_decision.py, main.py |
+| **이상점 8-B**: `WINDOW=200`(500→), 재보정 주기 `%20`(50→) | **완료** — calibration.py |
+| **이상점 8-C**: 10m/15m Platt 하한 `raw_conf×0.85` | **완료** — main.py `_apply_horizon_calibration()` |
+| 실세션 확인 | **미완료** — 2026-05-23 기동 시 확인 필요 |
+
+### 수정 파일 (85차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `model/multi_horizon_model.py` | `_CW_1M={FL:0.60, UP:1.20, DN:1.20}`, `_CW_5M={FL:0.58, UP:1.21, DN:1.21}` 추가 |
+| `learning/batch_retrainer.py` | `_CW_1M`, `_CW_5M` 동일하게 추가 (학습기 일관성) |
+| `learning/calibration.py` | `WINDOW=200`, 재보정 `% 20` |
+| `model/ensemble_decision.py` | `time_zone` 파라미터 추가, CLOSE_VOLATILE 단기 0.6× 재정규화 |
+| `main.py` | 10m/15m Platt 하한, `ensemble.compute()` `time_zone` 전달 |
+
+### 85차 실세션 확인 사항 (2026-05-23)
+
+1. **이상점 7 개선**: 1m/5m FL 비율 감소 확인 — `[Bias]` 로그에서 FL 편향 75% 미만 달성 여부
+2. **이상점 7-D**: `[Ensemble] CLOSE_VOLATILE 단기 0.6×` 로그 14:00~15:00 구간 발생 확인
+3. **이상점 8-B**: 다음 GBM 재학습 후 Platt 200건 윈도우로 현재 구간 반영 속도 향상
+4. **이상점 8-C**: 10m conf가 `raw_conf × 0.85` 이하로 압축되지 않는지 확인 — 로그 `[Calib] 10m Platt 하한` 발화 빈도
 
 ---
 

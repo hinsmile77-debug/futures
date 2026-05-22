@@ -6,6 +6,31 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-22 (85차) — 모의투자 이상점 7·8 구조적 수정 4종
+
+### 한일 요약
+
+- [DONE 2026-05-22] **이상점 7-A: `_CW_1M`, `_CW_5M` FL 명시적 완화** — `{FL:0.60, UP:1.20, DN:1.20}`, `{FL:0.58, UP:1.21, DN:1.21}`. multi_horizon_model.py, batch_retrainer.py 동시 적용
+- [DONE 2026-05-22] **이상점 7-D: CLOSE_VOLATILE 단기 0.6× 가중치** — ensemble_decision.py `time_zone` 파라미터, main.py `get_time_zone()` 전달
+- [DONE 2026-05-22] **이상점 8-B: Platt 슬라이딩 윈도우 200건** — `WINDOW 500→200`, 재보정 주기 `% 50→% 20`
+- [DONE 2026-05-22] **이상점 8-C: 10m/15m Platt 하한 `raw_conf×0.85`** — main.py `_apply_horizon_calibration()` 하한 보호
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **85차 실세션 확인 (2026-05-23)**
+  - 1m/5m FL 편향: `[Bias]` 로그에서 FL 비율 75% 미만 달성 여부 (이상점 7-A)
+  - `[Ensemble] CLOSE_VOLATILE 단기 0.6×` 로그 14:00~15:00 구간 발생 확인 (이상점 7-D)
+  - 10m conf: `[Calib] 10m Platt 하한` 로그 발화 빈도 확인 → 하한 발동 시 conf 55%+ 유지 여부 (이상점 8-C)
+  - 다음 GBM 재학습 후 1m/5m 호라이즌 FL 방향 비율 변화 SIGNAL 로그 확인 (이상점 7-A)
+
+- [NEXT 향후] **`_CW_1M`, `_CW_5M` 실세션 효과 모니터링 (1주)**
+  - 1m FL 비율 목표: ≤ 50% (현재 87%). 5m FL 비율 목표: ≤ 55% (현재 100%)
+  - FL 편향 지속 시: FL=0.55 추가 완화 또는 HORIZON_THRESHOLDS 경계값 재검토
+
+- [NEXT 향후] **CLOSE_VOLATILE 가중치 조정 효과 검증 (1주)**
+  - 14:00~15:00 구간 진입 신호 발생 여부 + 방향성 비율 변화
+  - 0.6× 축소로도 FL편향 미해소 시 0.4× 추가 완화 또는 CLOSE_VOLATILE 구간 진입 임계 상향 검토
+
 ## 2026-05-22 (84차) — 모의투자 이상점 3~6 구조적 수정 4종
 
 ### 한일 요약
