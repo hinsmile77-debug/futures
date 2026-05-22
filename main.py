@@ -184,6 +184,8 @@ class TradingSystem:
         self.time_exit         = TimeExitManager()
         self.online_learner    = OnlineLearner()
         self.horizon_calibrator = MultiHorizonCalibrator(list(HORIZONS.keys()))
+        self._preload_horizon_calibration()          # DB에서 사전 fit → 첫 tick부터 보정 효과
+        self.ensemble.calibrator = self.horizon_calibrator   # 앙상블 2차 압축 연결
         self.pred_buffer       = PredictionBuffer()
         self.meta_gate         = MetaGate()
         self.toxicity_gate     = ToxicityGate()
@@ -1699,6 +1701,34 @@ class TradingSystem:
             "CRITICAL" if before != after else "INFO",
         )
 
+    def _preload_horizon_calibration(self) -> None:
+        """기동 시 DB 검증 예측(최근 3000건/호라이즌)으로 calibrator를 사전 fit.
+
+        이 호출 없이는 calibrator가 fit=False 상태로 시작하여
+        첫 ~100건은 raw prob이 그대로 통과(과신 억제 효과 없음).
+        """
+        from utils.db_utils import fetchall
+        from config.settings import PREDICTIONS_DB as _PRED_DB
+        try:
+            rows = fetchall(
+                _PRED_DB,
+                """SELECT horizon, confidence, correct
+                   FROM predictions
+                   WHERE actual IS NOT NULL
+                   ORDER BY ts DESC
+                   LIMIT 18000""",   # 호라이즌 6개 × 최대 3000건
+            )
+            for row in rows:
+                self.horizon_calibrator.record(
+                    str(row["horizon"]),
+                    float(row["confidence"] or 0.0),
+                    bool(int(row["correct"] or 0)),
+                )
+            self.horizon_calibrator.fit_all()
+            logger.info("[Calib] 기동 사전 학습 완료: %d건", len(rows))
+        except Exception as exc:
+            logger.warning("[Calib] 기동 사전 학습 실패 (보정 비활성): %s", exc)
+
     def _apply_horizon_calibration(self, horizon_proba: dict) -> dict:
         calibrated = {}
         for horizon, probs in horizon_proba.items():
@@ -2719,8 +2749,7 @@ class TradingSystem:
                 _tp_label  = "UP" if direction == 1 else "DN"
                 _tp_streak = _tp["up_streak"] if direction == 1 else _tp["dn_streak"]
                 log_manager.signal(
-                    "[TrendGate] %s 추세 지속 %d분 — min_conf %.2f→%.2f",
-                    _tp_label, _tp_streak, _prev_mc, actual_min_conf,
+                    f"[TrendGate] {_tp_label} 추세 지속 {_tp_streak}분 — min_conf {_prev_mc:.2f}→{actual_min_conf:.2f}"
                 )
         # 대시보드 등급 카드 깜빡임: UP 상방 원웨이=녹색 / DN 하방 원웨이=오렌지
         _tp_dash_mode = (
@@ -2735,8 +2764,7 @@ class TradingSystem:
         if _l2_mc_adj > 0.0:
             actual_min_conf = min(0.90, actual_min_conf + _l2_mc_adj)
             log_manager.signal(
-                "[IntradayRegime] %s — min_conf +%.0f%%p → %.2f",
-                self.current_intraday_regime, _l2_mc_adj * 100, actual_min_conf,
+                f"[IntradayRegime] {self.current_intraday_regime} — min_conf +{_l2_mc_adj * 100:.0f}%p → {actual_min_conf:.2f}"
             )
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,

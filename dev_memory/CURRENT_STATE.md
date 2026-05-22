@@ -1,7 +1,104 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-21 (73차) — **레짐 확정 08:58 2단계 분리 (SP500·KRW 실수치 반영)**
+> 마지막 업데이트: 2026-05-22 (81차) — **Platt 보정 기동 사전 fit + EnsembleDecision 2차 압축**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-22 (81차) — Platt 보정 기동 사전 fit + 앙상블 2차 압축
+
+### 배경
+
+GBM 과신 출력(99.9% 확신 → 실제 40%)의 근본 원인: `horizon_calibrator`가 매 기동마다 0샘플 fresh 상태로 시작. DB에 24,626건의 검증 예측이 있어도 로드 코드가 없어 첫 ~100 tick 동안 보정이 비활성. 제안된 코드에는 4가지 추가 버그도 있었음.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| `_preload_horizon_calibration()` 신규 메서드 | **완료** — 기동 시 DB 18,000건 로드 + `fit_all()` |
+| `ensemble.calibrator` 주입 | **완료** — `main.py __init__` 에서 `self.ensemble.calibrator = self.horizon_calibrator` |
+| `EnsembleDecision.__init__` `self.calibrator = None` | **완료** |
+| Platt 보정 블록 위치 수정 | **완료** — stuck-breaker 후, **grade 계산 전** 삽입 |
+| `confidence_raw` 필드 추가 | **완료** — `result` dict에 보정 전 원본 보존 |
+| `transform()` → `calibrate()` 버그 수정 | **완료** |
+| 실세션 확인 | **미완료** — 2026-05-23 기동 시 확인 필요 |
+
+### 수정 파일 (81차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `model/ensemble_decision.py` | `self.calibrator = None`, Platt 보정 블록 (grade 전), `confidence_raw` |
+| `main.py` | `_preload_horizon_calibration()` 신규, `ensemble.calibrator` 주입 |
+
+---
+
+## 2026-05-21 (76~80차) — TrendPersistenceGate 대칭 구현 + Layer 2 통합 + 대시보드
+
+### 배경
+
+72차에서 방향 비대칭 편향 6종 수정 완료 후, 원웨이 추세장(상승/하락 한 방향으로 쭉 가는 날) 진입 부재 문제를 해결하기 위해 TrendPersistenceGate를 설계·구현·통합함.
+
+### 76차 — CVD 단조성 비율 피처 추가
+
+| 항목 | 상태 |
+|---|---|
+| `cvd_monotone_ratio` 피처 | **완료** — CVD 최근 20개 값 중 상승 이동 비율 (0~1) |
+| `_cvd_history: deque(maxlen=21)` | **완료** — feature_builder 초기화에 추가 |
+| GBM 피처 입력 | **완료** — 추세장 명시적 신호로 GBM 학습 지원 |
+
+### 77차 — TrendPersistenceGate UP-only 최초 통합
+
+| 항목 | 상태 |
+|---|---|
+| `TrendPersistenceGate` import | **완료** — `main.py` line ~104 |
+| `self.trend_gate` 초기화 | **완료** — `__init__` line ~190 |
+| STEP 6 TrendGate 블록 | **완료** — UP streak 활성 시 해당 방향 actual_min_conf 완화 |
+| `reset_daily()` | **완료** — 일일 마감 라인 ~4182 |
+
+### 78차 — Layer 2 IntradayTacticalRegime 완전 통합
+
+| 항목 | 상태 |
+|---|---|
+| `min_conf_adjust()` 적용 | **완료** — DAY_RISK_OFF +5%p, CRASH +12%p (TrendGate 이후 적용) |
+| `size_mult()` 적용 | **완료** — DAY_RISK_OFF ×0.5, CRASH ×0.3 (Toxicity gate 이후) |
+| CRASH A등급 숏 예외 | **완료** — `allow_crash_grade_a_short()` + A등급 조건 조합 |
+
+### 79차 — TrendPersistenceGate DOWN 대칭 구현
+
+| 항목 | 상태 |
+|---|---|
+| UP/DN 듀얼 streak | **완료** — `_up_streak` / `_dn_streak` 독립 카운터 |
+| DOWN 조건 | **완료** — `above_vwap=0 AND cvd_direction=-1` |
+| hard_break 비대칭 | **완료** — UP=-300, DN=+200 (숏스퀴즈가 더 빠르고 파괴적) |
+| return dict 변경 | **완료** — `up_active/up_streak/dn_active/dn_streak/min_conf_override` |
+
+### 80차 — 대시보드 등급카드 깜빡임 UI
+
+| 항목 | 상태 |
+|---|---|
+| `_trend_blink_timer` (600ms) | **완료** — `EntryPanel.__init__` |
+| `_ens_grade_frame` / `_chk_grade_frame` 저장 | **완료** — `_build()` 루프 내 |
+| `_on_trend_blink_tick()` | **완료** — UP=녹색(#3FB950), DN=오렌지(#D29922) 깜빡임 |
+| `set_trend_gate_mode(mode)` | **완료** — EntryPanel + MainDashboard 위임 |
+| main.py `set_trend_gate_mode()` 호출 | **완료** — STEP 6 TrendGate 블록 후 |
+
+### 실세션 확인 사항 (2026-05-22)
+
+1. UP streak 발동: `[TrendGate] UP 추세 지속 모드 ON (streak=10)` 로그 확인
+2. DN streak 발동: `[TrendGate] DN 추세 지속 모드 ON (streak=10)` 로그 확인
+3. 등급 카드 깜빡임: UP 활성→녹색, DN 활성→오렌지, 비활성→기본색 복원
+4. Layer 2 min_conf_adjust: `[IntradayRegime] DAY_RISK_OFF — min_conf +5%p → 0.55` 형식 로그
+5. Layer 2 size_mult: `[IntradayRegime] DAY_RISK_OFF 사이즈 축소 ×0.5 → N계약` 로그
+6. CRASH A등급 숏 예외: `[IntradayRegime] CRASH — A등급 숏 추세추종 예외 허용` 로그
+
+### 수정 파일 (76~80차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `features/feature_builder.py` | `cvd_monotone_ratio` 피처 추가 |
+| `strategy/entry/trend_persistence.py` | UP-only → UP+DN 듀얼 streak 전면 재작성 |
+| `main.py` | TrendGate import·초기화·STEP6·reset_daily, Layer2 min_conf_adjust·size_mult·CRASH예외 |
+| `dashboard/main_dashboard.py` | 등급 카드 깜빡임 (UP=녹, DN=오) + set_trend_gate_mode |
 
 ---
 

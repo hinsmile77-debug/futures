@@ -6,6 +6,59 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-22 (81차) — Platt 보정 기동 사전 fit + 앙상블 2차 압축
+
+### 한일 요약
+
+- [DONE 2026-05-22] **B1: `self.calibrator` 미선언** — `EnsembleDecision.__init__`에 `self.calibrator = None` 추가. `hasattr` 항상 False → 코드 미실행 버그 수정
+- [DONE 2026-05-22] **B2: `.transform()` → `.calibrate()`** — `MultiHorizonCalibrator`에 없는 메서드명 수정
+- [DONE 2026-05-22] **B3: grade/auto_entry 미갱신** — 보정 블록을 grade 계산 **전**으로 이동. 보정된 confidence 기준으로 grade/auto_entry 재계산
+- [DONE 2026-05-22] **B4(근본): 기동 시 calibrator 0샘플** — `_preload_horizon_calibration()` 신규. DB 18,000건 로드 + `fit_all()`. 첫 tick부터 보정 활성
+- [DONE 2026-05-22] **`ensemble.calibrator` 주입** — `main.py __init__`에서 `self.ensemble.calibrator = self.horizon_calibrator`
+- [DONE 2026-05-22] **`confidence_raw` 필드 추가** — 보정 전 원본 보존 (result dict)
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **81차 실세션 확인 (2026-05-23)**
+  - `[Calib] 기동 사전 학습 완료: N건` 로그 (N≥1000 필수)
+  - 0건이면: `predictions` DB 경로 문제 또는 `actual IS NOT NULL` 레코드 없음 → 쿼리 확인
+  - 기동 직후 `confidence` 분포가 이전 대비 낮아졌는지 SIGNAL 로그 확인
+  - `result` dict에 `confidence_raw` 키 존재 확인
+  - `grade`가 calibrated confidence 기준 재판정 (A→B 강등 케이스 발생 여부)
+
+- [NEXT 향후] **앙상블 전용 calibrator 분리 검토**
+  - 현재: 3m 호라이즌 calibrator를 앙상블 2차 압축에 재사용 (근사치)
+  - 이상적: `ensemble_calibrator` 별도 — `(앙상블 confidence, 실제 거래 손익 방향)` 쌍으로 학습
+  - 조건: 실거래 데이터 200건 이상 누적 후 설계 검토
+
+---
+
+## 2026-05-21 (76~80차) — TrendPersistenceGate 대칭 구현 + Layer 2 완전 통합
+
+### 한일 요약
+
+- [DONE 2026-05-21] **76차: cvd_monotone_ratio 피처** — CVD 최근 20개 상승 이동 비율 피처 추가 (feature_builder.py)
+- [DONE 2026-05-21] **77차: TrendGate UP 통합** — main.py import·초기화·STEP6·reset_daily 삽입. streak≥10분 시 min_conf 0.44 완화
+- [DONE 2026-05-21] **78차: Layer 2 완전 통합** — min_conf_adjust / size_mult / CRASH A등급 숏 예외 3종 구현
+- [DONE 2026-05-21] **79차: TrendGate DOWN 대칭** — UP+DN 듀얼 streak. hard_break 비대칭(-300/+200). return dict 확장
+- [DONE 2026-05-21] **80차: 대시보드 깜빡임 UI** — 등급카드 테두리 UP=녹색/DN=오렌지 600ms 토글
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **76~80차 실세션 확인 (2026-05-22)**
+  - UP streak: `[TrendGate] UP 추세 지속 모드 ON (streak=10)` 로그 확인
+  - DN streak: `[TrendGate] DN 추세 지속 모드 ON (streak=10)` 로그 확인
+  - 등급카드 깜빡임: UP 활성→녹색, DN 활성→오렌지, 비활성→기본색 복원 확인
+  - Layer 2 min_conf_adjust: `[IntradayRegime] ... min_conf +N%p → 0.XX` 로그 확인
+  - Layer 2 size_mult: `[IntradayRegime] ... 사이즈 축소 ×0.N → N계약` 로그 확인
+
+- [NEXT 선택] **81차: apply_micro_regime_override() 추세장 min_conf 완화**
+  - 현재 추세장(micro_regime) 시 size ×1.1만 있고, min_conf 인하 없음
+  - 추세장 min_conf -0.06 적용, 최소 0.44 하한 고려
+  - 구현 여부는 실세션 79차 효과 확인 후 결정
+
+---
+
 ## 2026-05-21 (72차) — 방향 비대칭 편향 6종 수정
 
 ### 한일 요약

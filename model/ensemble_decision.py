@@ -118,9 +118,10 @@ class EnsembleDecision:
     """앙상블 신호 생성 + 진입 등급 판정"""
 
     def __init__(self):
-        self.gater    = AdaptiveEnsembleGater()
-        self._decorr  = HorizonDecorrelator()
-        self._stuck   = DirectionalStuckBreaker()
+        self.gater      = AdaptiveEnsembleGater()
+        self._decorr    = HorizonDecorrelator()
+        self._stuck     = DirectionalStuckBreaker()
+        self.calibrator = None   # main.py에서 horizon_calibrator 주입 후 효과 발동
 
     def compute(
         self,
@@ -233,6 +234,18 @@ class EnsembleDecision:
             direction  = DIRECTION_FLAT
             confidence = flat_score
 
+        # ── Platt 보정 (기동 시 사전 fit 후 과신 억제) ─────────
+        # calibrator는 main.py __init__ 에서 horizon_calibrator를 주입.
+        # 3m 호라이즌 calibrator를 앙상블 2차 압축에 재사용 (샘플 가장 많음).
+        _confidence_raw = confidence
+        if self.calibrator is not None and direction != DIRECTION_FLAT:
+            _cal = self.calibrator.calibrate("3m", confidence)
+            confidence = min(max(float(_cal), 0.0), 0.85)
+            if direction == DIRECTION_UP:
+                up_score = confidence
+            elif direction == DIRECTION_DOWN:
+                down_score = confidence
+
         # ── 레짐별 최소 신뢰도 기준 ──────────────────────────
         min_conf  = REGIME_MIN_CONFIDENCE.get(regime, 0.58)
         regime_ok = (confidence >= min_conf) and (direction != DIRECTION_FLAT)
@@ -253,11 +266,12 @@ class EnsembleDecision:
         auto_entry = ENTRY_GRADE.get(grade, {}).get("auto", False) and regime_ok
 
         result = {
-            "direction":  direction,
-            "confidence": round(confidence, 4),
-            "up_score":   round(up_score, 4),
-            "down_score": round(down_score, 4),
-            "flat_score": round(flat_score, 4),
+            "direction":      direction,
+            "confidence":     round(confidence, 4),
+            "confidence_raw": round(_confidence_raw, 4),
+            "up_score":       round(up_score, 4),
+            "down_score":     round(down_score, 4),
+            "flat_score":     round(flat_score, 4),
             "grade":      grade,
             "auto_entry": auto_entry,
             "regime_ok":  regime_ok,

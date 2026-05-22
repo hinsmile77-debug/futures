@@ -6,6 +6,107 @@
 
 ---
 
+## 2026-05-22 (81차 — Platt 보정 기동 사전 fit + EnsembleDecision 2차 압축 연결)
+
+**Work**: GBM 모델이 "99.9% 확신" 과신 출력 → 실제 정확도 40% 수준 문제를 Platt Scaling으로 억제. 4가지 버그를 수정하고 기동 시 DB에서 calibrator를 사전 fit하도록 구조 개선. 커밋 1개.
+
+### 발견된 버그 4종 (모두 수정 완료)
+
+| # | 버그 | 파일 | 상태 |
+|---|---|---|---|
+| B1 | `self.calibrator` 미선언 → `hasattr` 항상 False → 보정 코드 **절대 실행 안 됨** | `model/ensemble_decision.py` | **수정** |
+| B2 | `.transform()` 미존재 → `AttributeError` (올바른 메서드는 `.calibrate()`) | `model/ensemble_decision.py` | **수정** |
+| B3 | 보정 후 `confidence`만 갱신, `grade`·`auto_entry`는 구식 값 유지 → A등급인데 conf=0.40 모순 | `model/ensemble_decision.py` | **수정** |
+| B4 (근본) | `horizon_calibrator`가 매 기동마다 0샘플 fresh 생성 — DB 24,626건 있어도 로드 코드 없음 → 첫 100건 동안 보정 비활성 | `main.py` | **수정** |
+
+### 수정 내용
+
+**`model/ensemble_decision.py`**
+- `__init__`: `self.calibrator = None` 추가 (main.py에서 주입 대기)
+- stuck-breaker 재결정 직후(grade 계산 전): Platt 보정 블록 삽입 — `calibrate("3m", confidence)`, clip(0~0.85), up/down score 동기화
+- `result` dict: `"confidence_raw"` 필드 추가 (보정 전 원본 보존)
+
+**`main.py`**
+- `__init__` (line ~188): `_preload_horizon_calibration()` 호출 + `self.ensemble.calibrator = self.horizon_calibrator` 주입
+- `_preload_horizon_calibration()` 신규 메서드: `predictions` DB 최근 18,000건 로드 → `horizon_calibrator.record()` 일괄 적재 → `fit_all()` → 첫 tick부터 보정 활성
+
+### 보정 흐름 (수정 후)
+
+```
+기동: DB 18,000건 로드 → fit_all() → 즉시 활성
+  ↓
+_apply_horizon_calibration()  ← 1차: 각 호라이즌 raw prob → calibrated (cap 0.85)
+  ↓
+EnsembleDecision.compute()    ← 가중합 → AdaptiveGater → StuckBreaker
+  ↓
+Platt 보정 블록               ← 2차: 앙상블 confidence → calibrate("3m") (cap 0.85)
+  ↓
+grade/auto_entry 계산         ← 보정된 confidence 기준
+```
+
+### 수정 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `model/ensemble_decision.py` | `self.calibrator = None`, Platt 보정 블록 (grade 전), `confidence_raw` 필드 |
+| `main.py` | `_preload_horizon_calibration()` 신규, `ensemble.calibrator` 주입 |
+
+### 실세션 확인 사항 (2026-05-23)
+
+1. 기동 시 `[Calib] 기동 사전 학습 완료: N건` 로그 (N≥1000이면 정상, 0이면 DB 쿼리 오류)
+2. 기동 직후 첫 분봉부터 `[Calib] clipped` 로그 **감소** (보정이 이미 낮춰줘서 0.85 초과 드묾)
+3. `confidence` 값이 이전 대비 낮아짐 (0.85→0.60대, 과신 억제 확인)
+4. `confidence_raw` 필드가 `result` dict에 포함됨 (대시보드 JSON 확인)
+5. `grade`가 보정 후 confidence 기준으로 재계산됨 (A→B 또는 B→X 강등 확인)
+
+---
+
+## 2026-05-21 (76~80차 — TrendPersistenceGate 대칭 구현 + Layer 2 완전 통합 + 대시보드 깜빡임)
+
+**Work**: 원웨이 추세장(한 방향으로 지속 상승/하락하는 날) 진입 기회 부재 문제를 TrendPersistenceGate로 해결. UP/DN 대칭 구현, Layer 2 3종 기능 완전 통합, 등급카드 깜빡임 UI 추가. 커밋 4개 (77차: 02a1731, 78차: a84d787, 79차: 19d5f13, 80차: 365b22d).
+
+### 76차 — CVD 단조성 비율 피처
+
+`feature_builder.py`에 `cvd_monotone_ratio` 추가 — 최근 20개 CVD 값 중 상승 이동 비율(0~1). GBM이 원웨이 추세를 명시적으로 학습할 수 있는 피처. `_cvd_history = deque(maxlen=21)` 추가.
+
+### 77차 — TrendPersistenceGate 최초 통합
+
+UP-only 버전 TrendPersistenceGate를 main.py에 통합. streak≥10분 시 UP 방향 actual_min_conf를 0.44로 완화. import·초기화·STEP 6 블록·reset_daily 4곳 삽입. 커밋 02a1731.
+
+### 78차 — Layer 2 완전 통합 (3종)
+
+Layer 2 IntradayTacticalRegime의 3가지 미구현 기능 완전 통합:
+- `min_conf_adjust()`: DAY_RISK_OFF +5%p, CRASH +12%p. TrendGate 이후 순서로 적용 (TrendGate가 낮추고, Layer 2가 올림).
+- `size_mult()`: DAY_RISK_OFF ×0.5, CRASH ×0.3. Toxicity gate 이후 적용.
+- `allow_crash_grade_a_short()`: CRASH 상태에서 A등급 숏에 한해 예외 허용.
+커밋 a84d787.
+
+### 79차 — TrendPersistenceGate DOWN 대칭 구현
+
+77차 UP-only 문제 발견: 하락 원웨이장은 대응 불가. trend_persistence.py 전면 재작성:
+- UP streak: `above_vwap=1 AND cvd_direction=1`
+- DN streak: `above_vwap=0 AND cvd_direction=-1`
+- hard_break 비대칭: UP=-300, DN=+200 (숏스퀴즈가 더 빠르고 파괴적이므로 DN을 더 민감하게)
+- return dict: `up_active/up_streak/dn_active/dn_streak/min_conf_override` 확장
+- main.py STEP 6도 듀얼 streak 대응으로 수정
+커밋 19d5f13.
+
+### 80차 — 대시보드 등급카드 깜빡임 UI
+
+TrendGate 활성 상태를 시각적으로 표시. `EntryPanel`의 앙상블 등급/체크리스트 등급 카드 테두리를:
+- UP 원웨이 모드: 녹색(#3FB950) ↔ 기본 600ms 토글
+- DN 원웨이 모드: 오렌지(#D29922) ↔ 기본 600ms 토글
+`_trend_blink_timer`, `_on_trend_blink_tick()`, `set_trend_gate_mode()` 추가. main.py STEP 6에서 `set_trend_gate_mode()` 호출.
+커밋 365b22d.
+
+### 설계 결정 핵심
+
+1. **hard_break 비대칭 (-300 vs +200)**: 하락 중 CVD 급반등(숏스퀴즈)은 상승 중 CVD 급반락보다 훨씬 빠르고 파괴적 → DN streak를 더 민감하게 리셋.
+2. **min_conf 적용 순서**: TrendGate가 먼저 낮추고(원웨이 완화), Layer 2가 나중에 올림(레짐 위험 반영). 순서 역전 시 TrendGate 효과가 무력화될 수 있음.
+3. **대시보드 mode 기준**: 방향(direction)이 아니라 streak 활성(up_active/dn_active) 기준. 방향이 반대여도 streak가 살아있으면 표시.
+
+---
+
 ## 2026-05-21 (72차 — 방향 비대칭 편향 6종 수정)
 
 **Work**: 신호 설계의 방향 비대칭 편향(directional asymmetry bias) 전수 점검 및 2단계 수정. 설계 의도와 달리 LONG 또는 SHORT 한 방향을 체계적으로 편애하는 코드 패턴을 6종 발견·수정.

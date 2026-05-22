@@ -2,6 +2,77 @@
 
 ---
 
+## 2026-05-22 (81차 — Platt 보정 4종 버그 수정 + 기동 사전 fit)
+
+### [버그 CRITICAL] Calibrator 기동 시 0샘플 — 실질적 보정 비활성
+**File**: `main.py` — `__init__`
+**Root cause**: `MultiHorizonCalibrator`는 매 기동마다 `PredictionCalibrator(fitted=False, n=0)` 상태로 새로 생성됨. `calibrate()` 호출 시 `_fitted=False` → raw prob 그대로 반환. `predictions.db`에 24,626건의 검증 예측이 있어도 로드 코드가 없어 세션 내에서 100건씩 쌓일 때까지(~50분) 보정 미작동.
+**Fix**: `_preload_horizon_calibration()` 메서드 신규 — 기동 시 `actual IS NOT NULL` 최근 18,000건 로드, `record()` 적재, `fit_all()` 호출. 기동 직후 첫 tick부터 보정 활성.
+**How to apply**: 이후 새 calibrator 계열 모듈 추가 시 반드시 기동 시 사전 fit 호출 포함. "기동 첫 N분 동안은 미보정" 패턴은 과신 억제 효과를 무력화함.
+
+### [버그] `hasattr(self, 'calibrator')` 항상 False
+**File**: `model/ensemble_decision.py` — `compute()`
+**Root cause**: `EnsembleDecision.__init__`에 `self.calibrator` 선언 없음. `hasattr` → False → 보정 블록 전혀 실행 안 됨. `main.py`에서 아무리 주입해도 객체 생성 전 구조가 없으면 `AttributeError` 또는 무시됨.
+**Fix**: `self.calibrator = None` 추가. `main.py`에서 `self.ensemble.calibrator = self.horizon_calibrator`로 주입.
+
+### [버그] `.transform()` 미존재 메서드 호출
+**File**: `model/ensemble_decision.py` — 제안된 코드 초안
+**Root cause**: `MultiHorizonCalibrator`의 보정 메서드는 `calibrate(horizon, raw_prob)`. `transform()`는 존재하지 않는 메서드 → `AttributeError`. calibrator 자체가 실행됐다면 즉시 크래시.
+**Fix**: `self.calibrator.calibrate("3m", confidence)` 로 수정.
+
+### [버그] 보정 후 grade/auto_entry 미갱신 — 데이터 불일치
+**File**: `model/ensemble_decision.py` — `compute()` 제안 삽입 위치
+**Root cause**: 원래 제안은 `result = {...}` 이후 맨 끝에 `decision["confidence"]`를 바꾸는 방식. 이미 `grade = "A"` (conf=0.70 기준)로 계산된 이후에 `confidence`만 0.40으로 갱신 → result dict에 `confidence=0.40 AND grade="A"` 모순 상태. `auto_entry=True`가 유지되어 실제 진입 판단에 오류.
+**Fix**: 보정 블록을 `min_conf`/`regime_ok`/`grade`/`auto_entry` 계산 **앞**으로 이동. 보정된 `confidence`를 기준으로 grade 재계산 보장.
+
+### [설계] 앙상블 2차 보정에 "3m 호라이즌 calibrator" 재사용 — 근사치 접근
+**File**: `model/ensemble_decision.py`
+**Decision**: 앙상블 출력 confidence를 보정할 때, 별도 앙상블 전용 calibrator 없이 `3m` 호라이즌 calibrator를 재사용.
+**Why**: 3m 호라이즌이 6개 중 가장 샘플 수가 많고(3분마다 1건 검증) 피팅이 가장 안정적. 앙상블 confidence와 3m confidence는 서로 다른 분포이므로 완벽한 매핑은 아니지만, "모델이 70% 확률이라 할 때 실제로는 X% 맞는가"라는 과신 패턴이 유사하다는 가정.
+**Trade-off**: 의미론적 불순(3m 데이터로 앙상블 분포 보정). 이상적 해결책은 `(앙상블 confidence, 실제 손익 방향)` 쌍으로 학습하는 `ensemble_calibrator` 별도 구성. 실거래 데이터 200건 이상 누적 후 전환 검토.
+**How to apply**: 현재는 2차 압축 guard 용도. 지나치게 낮은 confidence가 나오면 3m calibrator의 훈련 데이터 분포와 앙상블 분포의 불일치를 의심.
+
+---
+
+## 2026-05-21 (76~80차 — TrendPersistenceGate 대칭 + Layer 2 통합 + 대시보드)
+
+### [설계] TrendPersistenceGate DOWN 대칭 구현 — 3가지 시나리오 검토 후 채택
+**File**: `strategy/entry/trend_persistence.py`
+**Problem**: 77차 초기 구현이 UP-only (above_vwap=1 AND cvd_direction=1). 하락 원웨이장(9% 확률, 시뮬레이션 기준)에서 진입 기회를 전혀 살리지 못함. 비대칭 구조.
+**Decision**: 시나리오 A(완전 대칭 추가), B(DN 완화 강화), C(현행 유지) 중 시나리오 A 채택.
+- UP+DN 듀얼 streak 독립 카운터.
+- UP: `above_vwap=1 AND cvd_direction=1`
+- DN: `above_vwap=0 AND cvd_direction=-1`
+- streak 발동·리셋 로직은 동일 (`_step_streak` 공유).
+**Why**: 원웨이 상승 9% + 원웨이 하락 9% = 18% 장세에서 기회 확보. 시나리오 B(DN 완화 강화)는 DOWN 방향에 추가 bias를 넣는 셈이므로 기각.
+**How to apply**: 향후 gate 파라미터 조정 시 UP·DN 조건은 동일 기준 유지. 비대칭을 두려면 hard_break 임계값으로만 조정.
+
+### [설계] TrendPersistenceGate hard_break 비대칭 — DN이 더 민감 (+200 vs -300)
+**File**: `strategy/entry/trend_persistence.py`
+**Decision**: `_CVD_SLOPE_HARD_BREAK_DN = -300` (UP streak 리셋), `_CVD_SLOPE_HARD_BREAK_UP = +200` (DN streak 리셋).
+**Why**: 하락 추세 중 CVD 급반등(숏스퀴즈)은 상승 추세 중 CVD 급반락보다 훨씬 빠르고 파괴적. 숏스퀴즈는 수초 내 수십pt 급등 가능 → DN streak를 더 민감하게 중단시켜야 손실 방어. 반면 상승 중 CVD 급하락은 상대적으로 완만한 경우가 많아 -300까지 허용.
+**How to apply**: 향후 임계값 튜닝 시 DN hard_break(+200)는 UP(-300)보다 절댓값을 더 작게 유지. 방향별 시장 비대칭을 반영한 의도적 비대칭.
+
+### [설계] actual_min_conf 조정 순서 — TrendGate(완화) → Layer 2(강화)
+**File**: `main.py` — STEP 6
+**Decision**: (1) TrendGate: up/dn_active 시 `min(actual_min_conf, 0.44)` 완화. (2) Layer 2 min_conf_adjust: DAY_RISK_OFF +5%p, CRASH +12%p 강화. 이 순서를 고정.
+**Why**: TrendGate가 먼저 낮추고, Layer 2가 나중에 올린다. 순서가 역전되면 TrendGate 완화 효과가 Layer 2 강화에 묻혀 무력화됨. 레짐 위험이 있어도 추세 기회를 일부 살리되, 레짐 판단이 최종 필터로 기능해야 함.
+**How to apply**: STEP 6에서 두 조정 블록의 순서 변경 금지. 설명 주석으로 표시.
+
+### [설계] CRASH 레짐 A등급 숏 예외 — 추세추종 숏은 위험 대비 이득이 있음
+**File**: `main.py` — STEP 7 진입 실행 직전 인트라데이 차단 분기
+**Decision**: CRASH 레짐에서도 A등급 숏 추세추종만 예외 허용 (`allow_crash_grade_a_short()` 반환값 기반).
+**Why**: CRASH는 급격한 하락 국면. 이때 숏 포지션(하락 방향)은 레짐과 동일 방향 추세추종이므로 위험보다 이득이 클 수 있음. 반면 롱은 폭락 한가운데 역방향 진입이므로 CRASH에서 롱은 완전 차단. A등급 조건은 앙상블 신뢰도가 이미 최고 수준이라는 추가 확인.
+**How to apply**: `allow_crash_grade_a_short()` 조건은 CRASH 레짐 AND 숏 AND A등급 3종 교집합. B등급 숏 예외 없음.
+
+### [설계] 대시보드 TrendGate 모드 표시 기준 — streak 활성(not 방향)
+**File**: `dashboard/main_dashboard.py`, `main.py`
+**Decision**: `_tp_dash_mode = "UP" if _tp["up_active"] else "DN" if _tp["dn_active"] else ""`. direction 값이 아니라 streak 활성 여부로 모드 결정.
+**Why**: TrendGate는 방향 예측 결과(direction)와 독립적으로 작동. 예컨대 UP streak 활성이지만 이번 분봉 direction=-1일 수 있음. 대시보드는 "현재 어떤 추세 모드인가"를 보여줘야 하므로 streak 상태가 더 정확한 정보.
+**How to apply**: `set_trend_gate_mode(mode)` 호출에서 mode는 TrendGate 자체 상태 반영. 진입 방향과 혼용 금지.
+
+---
+
 ## 2026-05-21 (72차 — 방향 비대칭 편향 6종 수정)
 
 ### [버그 CRITICAL] SHORT MR 진입에 bear_exhaustion 사용 — 의미론적 역전
