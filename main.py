@@ -353,6 +353,15 @@ class TradingSystem:
         # ── P3-a: OnlineLearner stuck 학습 오염 가드 ───────────────────────────
         self._stuck_this_minute: bool = False    # 이번 분봉에 stuck 해소 발생 여부
 
+        # ── 호라이즌별 롤링 Bias 버퍼 (30건 윈도우) ──────────────────────────
+        # 분봉 1건 통계(tot=1)는 100%/0%만 나와 무의미 → 30건 누적 후 편향 판정
+        self._bias_buf: dict = {h: deque(maxlen=30) for h in HORIZONS}
+        self._bias_log_tick: int = 0   # 10분마다 요약 로그 출력 카운터
+
+        # ── 앙상블 보정기 conf 캐시 (T-1m 앙상블 conf 추적) ──────────────────
+        # STEP 6에서 저장 → STEP 1에서 T-1m 앙상블 conf 조회 → ensemble_calibrator 누적
+        self._ensemble_conf_cache: dict = {}  # {ts_str: float}
+
         # ── P3-b: Reverse Entry Clamp ─────────────────────────────────────────
         self._last_exit_direction: str = ""      # 마지막 청산 방향 "LONG" or "SHORT"
 
@@ -2297,6 +2306,12 @@ class TradingSystem:
                     contrarian_active=_contra_active,
                 )
             self.horizon_calibrator.record(v["horizon"], _conf, v["correct"])
+            # 앙상블 보정기: 1m 결과를 앙상블 정확도 대리 지표로 사용
+            # (1m이 가장 빠른 피드백 — 당시 앙상블 conf와 적중 여부로 보정기 학습)
+            if v["horizon"] == "1m":
+                _ens_conf_at_t = self._ensemble_conf_cache.get(v["ts"])
+                if _ens_conf_at_t is not None:
+                    self.ensemble.record_ensemble_outcome(_ens_conf_at_t, bool(v["correct"]))
             # 시간대별 정확도 기록 (15:40 DailyConsolidator.consolidate()에서 집계)
             if v["horizon"] == "5m":
                 _zone = get_time_zone(datetime.datetime.strptime(v["ts"], "%Y-%m-%d %H:%M:%S"))
@@ -2313,32 +2328,49 @@ class TradingSystem:
                     f"✗ {v['horizon']} 예측 실패 (conf={_conf:.1%} 예측={_pred_str} 실제={_actual_str})"
                 )
 
-        # horizon별 정확도 편향 추적 (5m bullish bias / 30m flat bias 진단)
+        # ── 호라이즌별 롤링 Bias 통계 (30건 윈도우) ──────────────────────────
+        # 분봉 1건씩 누적 → 15건 이상 쌓이면 편향 판정 / 10분마다 요약 출력
         if verified:
-            _h_stats: dict = {}
             for _v in verified:
-                _h = _v["horizon"]
-                _p = {1: "UP", -1: "DN", 0: "FL"}.get(_v.get("predicted", 0), "?")
-                if _h not in _h_stats:
-                    _h_stats[_h] = {"ok": 0, "tot": 0, "up_pred": 0, "fl_pred": 0}
-                _h_stats[_h]["tot"] += 1
-                if _v["correct"]:
-                    _h_stats[_h]["ok"] += 1
-                if _p == "UP":
-                    _h_stats[_h]["up_pred"] += 1
-                elif _p == "FL":
-                    _h_stats[_h]["fl_pred"] += 1
-            for _h, _s in sorted(_h_stats.items()):
-                _acc_h = _s["ok"] / _s["tot"] if _s["tot"] else 0.0
-                _bias = ""
-                if _s["up_pred"] == _s["tot"] and _s["tot"] >= 2:
-                    _bias = " [UP편향!]"
-                elif _s["fl_pred"] == _s["tot"] and _s["tot"] >= 2:
-                    _bias = " [FL편향!]"
-                log_manager.learning(
-                    f"[Bias] {_h} 적중={_acc_h:.0%}({_s['ok']}/{_s['tot']})"
-                    f" UP예측={_s['up_pred']} FL예측={_s['fl_pred']}{_bias}"
-                )
+                self._bias_buf[_v["horizon"]].append({
+                    "predicted": int(_v.get("predicted", 0)),
+                    "correct":   bool(_v["correct"]),
+                })
+
+            self._bias_log_tick += 1
+            _log_summary = (self._bias_log_tick % 10 == 0)
+
+            for _h in sorted(self._bias_buf):
+                _buf = self._bias_buf[_h]
+                _tot = len(_buf)
+                if _tot == 0:
+                    continue
+                _ok = sum(1 for e in _buf if e["correct"])
+                _up = sum(1 for e in _buf if e["predicted"] ==  1)
+                _dn = sum(1 for e in _buf if e["predicted"] == -1)
+                _fl = sum(1 for e in _buf if e["predicted"] ==  0)
+                _acc_h = _ok / _tot
+
+                _bias_tag = ""
+                if _tot >= 15:
+                    _up_r, _dn_r, _fl_r = _up / _tot, _dn / _tot, _fl / _tot
+                    if _up_r >= 0.75:
+                        _bias_tag = f" [UP편향! {_up_r:.0%}]"
+                    elif _dn_r >= 0.75:
+                        _bias_tag = f" [DN편향! {_dn_r:.0%}]"
+                    elif _fl_r >= 0.75:
+                        _bias_tag = f" [FL편향! {_fl_r:.0%}]"
+
+                if _bias_tag:
+                    log_manager.learning(
+                        f"[Bias⚠] {_h} 적중={_acc_h:.0%}({_ok}/{_tot})"
+                        f" UP={_up} DN={_dn} FL={_fl}{_bias_tag}"
+                    )
+                elif _log_summary and _tot >= 5:
+                    log_manager.learning(
+                        f"[Bias] {_h} 적중={_acc_h:.0%}({_ok}/{_tot})"
+                        f" UP={_up} DN={_dn} FL={_fl}"
+                    )
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
         _st.append(("S2", time.perf_counter()))
@@ -2749,6 +2781,10 @@ class TradingSystem:
         confidence = decision["confidence"]
         grade      = decision["grade"]
         self._last_ensemble_direction = direction  # Contrarian Mode 동방향 추적용
+        # 앙상블 보정기: 현재 ts의 conf 캐시 (STEP 1에서 T-1m conf 조회용)
+        self._ensemble_conf_cache[ts] = float(confidence)
+        if len(self._ensemble_conf_cache) > 35:
+            self._ensemble_conf_cache.pop(min(self._ensemble_conf_cache), None)
         # 시간대·레짐 두 기준 중 더 엄격한 값으로 통일 (checklist·dashboard 공용)
         actual_min_conf = max(
             decision["min_conf"],
@@ -4281,6 +4317,10 @@ class TradingSystem:
         self.trend_gate.reset_daily()
         self.ensemble.reset_daily()
         self._last_ensemble_direction = 0
+        for _h in self._bias_buf:
+            self._bias_buf[_h].clear()
+        self._bias_log_tick = 0
+        self._ensemble_conf_cache.clear()
         self._param_corr_history.clear()
         self._shap_feature_window.clear()
         self._shap_last_update_minute = None

@@ -6,6 +6,58 @@
 
 ---
 
+## 2026-05-22 (84차 — 모의투자 세션 이상점 3~6 deep dive + 구조적 수정 4종)
+
+**Work**: 12:11~12:48 모의투자 세션 로그 이상점 3~6을 deep dive 분석하여 구조적 원인을 규명하고 5개 파일에 걸쳐 수정 4종을 구현. 커밋 1개.
+
+### 분석·수정 이상점 요약
+
+| 이상점 | 증상 | 근본 원인 | 수정 |
+|--------|------|-----------|------|
+| 3 | 30m 예측 12:42~12:48 7연속 실패 | `_CW_30M = {FL:0.5}` 과도한 다운웨이팅 → GBM 30m이 FL 상황에서 DN 오분류 + TrendGate DN active → StuckBreaker 억제 해소 | FL=0.65, UP/DN=1.18로 완화 |
+| 4 | 50분 정확도 급락 추이 | `ACCURACY_WINDOW=50`인데 3 호라이즌/분 → 실질 17분 윈도우. 매 샘플 즉시 가중치 조정 → 연속 실패 시 1분 내 SGD 비중 급감 | ACCURACY_WINDOW→150 (실질 50분), `_ADJUST_EVERY=3` 분봉 단위 1회 조정 |
+| 5 | Bias 통계 분봉 1건 단위 (통계 의미 없음) | `_h_stats`가 매분 초기화. UP/DN 추적 없이 tot=1이라 100%/0%만 출력 | 30건 롤링 버퍼, 15건 이상 시 75% 초과 편향 감지, UP/DN/FL 모두 추적 |
+| 6 | conf 전체 구간 60% 미달 | ① SGD 초기 균일분포 희석, ② 앙상블 conf↔3m 보정기 분포 미스매치, ③ 6호라이즌 불합의, ④ 30m FL 편향(이상점 3과 동일 원인) | A:SGD 초기 GBM 전용, B:앙상블 전용 보정기, C:불합의 패널티, D:CORR_ADJ 30m 하향 |
+
+### 구현 내용
+
+**`model/multi_horizon_model.py`** (이상점 3)
+- `_CW_30M = {FL:0.5, UP:1.25, DN:1.25}` → `{FL:0.65, UP:1.18, DN:1.18}` (FL 다운웨이팅 완화)
+
+**`learning/batch_retrainer.py`** (이상점 3 — 일관성)
+- `_CW_30M` 동일하게 수정 (학습기 일관성)
+
+**`learning/online_learner.py`** (이상점 4 + 이상점 6-A)
+- `ACCURACY_WINDOW = 50` → `150` (3 호라이즌/분 × 50분)
+- `_ADJUST_EVERY = 3` 상수 추가 (분봉 단위 1회 조정)
+- `_bucket_learn_count` 버킷별 호출 카운터 추가
+- `blend_with_gbm()`: h_count < 30이면 `w_gbm=0.95, w_sgd=0.05` 초기 GBM 전용 모드 추가
+- `reset_daily()`에 `_bucket_learn_count` 리셋 추가
+
+**`model/ensemble_decision.py`** (이상점 6-B + 6-C)
+- `from learning.calibration import PredictionCalibrator` import 추가
+- `self.ensemble_calibrator = PredictionCalibrator(method="platt")` 추가 (앙상블 전용 보정기)
+- `compute()`: 합의도 패널티 블록 추가 (6호라이즌 중 ≤2 합의 시 conf×0.92, 패널티만)
+- `compute()`: Platt 보정 로직 — ensemble_calibrator 우선, 미학습 시 3m fallback
+- `record_ensemble_outcome(raw_conf, correct)` 메서드 추가
+
+**`config/settings.py`** (이상점 6-D)
+- `ENSEMBLE_WEIGHTS_CORR_ADJ`: 30m 0.20→0.15, 나머지 균등 +0.01 조정
+
+**`main.py`** (이상점 5 + 이상점 6-B 연결)
+- `_bias_buf`: 30건 롤링 버퍼 (per-horizon). 매분 초기화 해소
+- `_bias_log_tick`: 10분 요약 출력 카운터
+- STEP 1 Bias 통계: 롤링 버퍼 기반 재작성 — 15건 이상 시 75% 초과 편향 감지, UP/DN/FL 추적
+- `_ensemble_conf_cache`: 앙상블 보정기 학습용 conf 캐시 (1m 검증용)
+- STEP 6 후: `self._ensemble_conf_cache[ts] = confidence` 저장 (캐시 크기 35건 제한)
+- STEP 1 1m 검증 시: `ensemble.record_ensemble_outcome(conf, correct)` 호출
+- `reset_daily()`: `_bias_buf` 초기화 + `_ensemble_conf_cache` 초기화
+
+### 보너스 위험 판단 (이상점 6-C)
+합의도 보너스 (+5%) 초기 제안을 4개 동시 구현 이득 검토 과정에서 제외. 전 호라이즌 합의 시에도 모델 편향이 있으면 오히려 7연속 실패 (이상점 3 사례와 동일 구조). 패널티만 구현하여 하방 보호에 집중.
+
+---
+
 ## 2026-05-22 (83차 — 탈진장 ATR ratio 문턱 재설계)
 
 **Work**: `MicroRegimeClassifier`에서 탈진장(REGIME_EXHAUSTION)이 급변장(REGIME_VOLATILE)과 동일한 ATR 문턱(1.5)을 공유해 사실상 dead code로 존재하던 구조적 버그를 재설계. 급변장과 겹치지 않는 독립 구간(1.2 ~ 1.5)으로 분리하고, 양방향 대칭(`bull_exhaustion`) 추가 및 불필요한 `ofi_reversal_speed` 조건 제거. 커밋 1개.

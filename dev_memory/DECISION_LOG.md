@@ -2,6 +2,46 @@
 
 ---
 
+## 2026-05-22 (84차 — 모의투자 이상점 3~6 구조적 수정 4종)
+
+### [버그 구조적] `_CW_30M` FL=0.5 과도한 다운웨이팅 — 30m 7연속 DN 오분류
+**File**: `model/multi_horizon_model.py`, `learning/batch_retrainer.py` — `_CW_30M`
+**Root cause**: `_CW_30M = {FLAT: 0.5, UP: 1.25, DN: 1.25}`. FL을 0.5로 강하게 다운웨이팅하면 GBM 30m이 경계 케이스에서 FL→DN으로 오분류. TrendGate DN이 active인 상황에서 DirectionalStuckBreaker 억제 해소 → 7연속 DN 오답.
+**Fix**: `_CW_30M = {FLAT: 0.65, UP: 1.18, DN: 1.18}`. FL 패널티를 완화하고 UP/DN 가중치도 소폭 하향. 두 학습기(`multi_horizon_model.py`, `batch_retrainer.py`) 동시 적용해 일관성 유지.
+**How to apply**: class_weight 조정 시 학습기 일관성 필수. FL 비율이 높은 호라이즌(30m)에서만 완화 고려 — 단기(1m/3m)에는 동일 완화가 역효과 가능.
+
+### [버그 구조적] `ACCURACY_WINDOW=50` 실질 17분 윈도우 + 매 샘플 가중치 즉시 조정
+**File**: `learning/online_learner.py` — `ACCURACY_WINDOW`, `learn()`, `_adjust_weights()`
+**Root cause**: `ACCURACY_WINDOW=50`이었으나 버킷당 3 호라이즌/분이 들어오면 실질 50/3≈17분 윈도우. `learn()` 매 샘플마다 즉시 `_adjust_weights()` → 연속 실패 7건에서 −14%p 급감(−2%p × 7).
+**Fix**: `ACCURACY_WINDOW=150` (50분 실질 윈도우). `_ADJUST_EVERY=3`으로 버킷당 3 호라이즌 학습 후 1회만 조정. `_bucket_learn_count` 카운터 추가.
+**How to apply**: 버킷별 호라이즌 수(`_ADJUST_EVERY`)는 버킷 크기와 같아야 1분치 = 1회 조정. 버킷 크기 변경 시 `_ADJUST_EVERY` 함께 수정.
+
+### [설계] SGD 초기 GBM 전용 모드 — 균일분포 희석 방지
+**File**: `learning/online_learner.py` — `blend_with_gbm()`
+**Decision**: 호라이즌별 학습 횟수가 30건 미만이면 `w_gbm=0.95, w_sgd=0.05` (실질 GBM 전용). 30건 이상부터 버킷 가중치 사용.
+**Why**: SGD 초기(1~20건)에 출력이 1/3에 가까운 균일분포 → 블렌딩 후 GBM conf −5~8%p 희석. 학습 30건 이후에는 SGD가 분포를 학습해 희석 효과 감소.
+**How to apply**: 임계값 30은 호라이즌별 도달 속도(매분 1건)로 결정 — 첫 30분. 더 빠른 수렴이 필요하면 임계값 낮추되 초기 희석 허용도가 높아짐.
+
+### [설계] 앙상블 전용 Platt 보정기 분리 (이상점 6-B)
+**File**: `model/ensemble_decision.py` — `self.ensemble_calibrator`, `record_ensemble_outcome()`
+**Decision**: `EnsembleDecision`에 `PredictionCalibrator(method="platt")` 독립 추가. compute() 내 Platt 보정 우선순위: `ensemble_calibrator.is_fitted` → 3m 호라이즌 calibrator fallback → raw conf. 앙상블 보정기 학습: 1m 결과 검증 시 `record_ensemble_outcome(conf, correct)` 호출.
+**Why**: 기존 3m 보정기는 3m 호라이즌 conf 분포를 학습한 것. 앙상블 conf 분포는 6 호라이즌 가중합으로 다름 → 3m 보정기 적용 시 과보정 또는 과소보정 발생. 1m 결과로 학습하는 이유: 가장 빠르게 결과 확인 가능 (1분 후 즉시 채점).
+**How to apply**: 100건 이상 누적 후 `is_fitted=True` 전환. 그 전까지 3m fallback. 1m 검증 빈도 = 매분이므로 100건 ≈ 100분 ≈ 첫 1~2거래일.
+
+### [설계] 합의도 패널티만 (보너스 제외) — 이상점 6-C 보너스 위험
+**File**: `model/ensemble_decision.py` — `compute()` 합의도 패널티 블록
+**Decision**: 6호라이즌 중 ≤2 합의 시 conf × 0.92 패널티 적용. 전 호라이즌 합의 시 보너스(+5%) 미적용.
+**Why**: 보너스를 적용하면 모델 편향이 높을 때 오히려 과신 증폭. 이상점 3(30m 7연속 실패)가 전 호라이즌 DN 합의 상황에서 발생한 사례 — 합의 보너스가 있었다면 conf가 더 높아져 손실 증가. 패널티는 실제 불합의 노이즈 신호를 억제하는 단방향 역할로 안전.
+**How to apply**: 보너스 추가 검토 시 반드시 모델 편향(Bias 통계)이 해소됐는지 먼저 확인. 편향 미해소 상태에서 보너스 = 손실 증폭기.
+
+### [설계] `ENSEMBLE_WEIGHTS_CORR_ADJ` 30m 하향 (이상점 6-D)
+**File**: `config/settings.py` — `ENSEMBLE_WEIGHTS_CORR_ADJ`
+**Decision**: `30m: 0.20 → 0.15`, 나머지 균등 +0.01 재배분. HorizonDecorrelator 초기값(샘플 부족 시 fallback) 변경.
+**Why**: 30m 예측은 장기 추세 추종 — 단기 횡보 시 노이즈 비율이 높고, 이상점 3처럼 연속 오답 시 앙상블 전체에 과대 영향. 0.15로 하향 시 30분 분봉 예측 7연속 오답의 앙상블 영향도 약 25% 감소.
+**How to apply**: HorizonDecorrelator가 MIN_SAMPLES(30건) 이상 누적되면 자동으로 실측 상관계수 기반 가중치로 전환. CORR_ADJ는 기동 초기 30분만 적용되는 초기값.
+
+---
+
 ## 2026-05-22 (83차 — 탈진장 ATR ratio 문턱 재설계)
 
 ### [버그 구조적] 탈진장 dead code — ATR 문턱 급변장과 동일로 인한 발동 불가

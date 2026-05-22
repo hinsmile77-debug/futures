@@ -60,18 +60,24 @@ GBM_PARAMS = {
 # [한시적] 5/18 초기 운영 기간 — raw_data 누적 중, 5000 복원 목표: 약 2026-05-26
 MIN_TRAIN_BARS = 3000   # 약 8거래일 (원래 5000)
 
-# 30m 전용 class weight: FL 다운웨이팅으로 flat bias 억제
-# UP/DOWN 예측 강화 → 방향성 없는 예측 감소
-_CW_30M = {DIRECTION_FLAT: 0.5, DIRECTION_UP: 1.25, DIRECTION_DOWN: 1.25}
+# 30m 전용 class weight: FL 다운웨이팅 완화 (0.5→0.65): FL 상황 DN 오분류 방지
+# multi_horizon_model._CW_30M과 동일값 유지 (두 학습기 일관성)
+_CW_30M = {DIRECTION_FLAT: 0.65, DIRECTION_UP: 1.18, DIRECTION_DOWN: 1.18}
+# 3m 전용 class weight: balanced의 UP/DN 과대학습 완화
+# multi_horizon_model._CW_3M과 동일값 유지 (두 학습기 일관성)
+_CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.12, DIRECTION_DOWN: 1.12}
 
 
 def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
     """호라이즌별 sample_weight 계산.
     30m: FL 클래스 다운웨이팅 (flat bias 억제)
+    3m:  FL 완만한 다운웨이팅 (balanced 역설 — UP/DN 과대학습 완화)
     그 외: sklearn balanced (클래스 불균형 보정)
     """
     if horizon_key == "30m":
         return np.array([_CW_30M.get(int(lbl), 1.0) for lbl in y])
+    if horizon_key == "3m":
+        return np.array([_CW_3M.get(int(lbl), 1.0) for lbl in y])
     return compute_sample_weight("balanced", y)
 
 

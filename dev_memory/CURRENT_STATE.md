@@ -1,7 +1,47 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-22 (83차) — **탈진장 ATR ratio 문턱 재설계 (급변장 겹침 해소)**
+> 마지막 업데이트: 2026-05-22 (84차) — **모의투자 이상점 3~6 구조적 수정 4종**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-22 (84차) — 모의투자 세션 이상점 3~6 deep dive + 구조적 수정 4종
+
+### 배경
+
+12:11~12:48 모의투자 세션 로그에서 이상점 3~6을 발견. 30m 예측 7연속 실패(이상점 3), 50분 정확도 급락(이상점 4), Bias 통계 의미 없음(이상점 5), conf 전체 구간 60% 미달(이상점 6)을 deep dive 분석 후 5개 파일에 걸쳐 수정 구현.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **이상점 3**: `_CW_30M = {FL:0.65, UP:1.18, DN:1.18}` FL 다운웨이팅 완화 | **완료** — multi_horizon_model.py, batch_retrainer.py |
+| **이상점 4**: `ACCURACY_WINDOW=150`, `_ADJUST_EVERY=3` 분봉 단위 조정 | **완료** — online_learner.py |
+| **이상점 5**: 30건 롤링 Bias 버퍼, UP/DN/FL 추적, 15건+ 시 75% 편향 감지 | **완료** — main.py |
+| **이상점 6-A**: SGD 초기(< 30건) GBM 전용 모드 `w_gbm=0.95` | **완료** — online_learner.py |
+| **이상점 6-B**: 앙상블 전용 `PredictionCalibrator` 분리. 1m 검증으로 학습 | **완료** — ensemble_decision.py, main.py |
+| **이상점 6-C**: 6호라이즌 ≤2 합의 시 conf×0.92 패널티 (보너스 미포함) | **완료** — ensemble_decision.py |
+| **이상점 6-D**: `ENSEMBLE_WEIGHTS_CORR_ADJ` 30m 0.20→0.15 | **완료** — config/settings.py |
+| 실세션 확인 | **미완료** — 2026-05-23 기동 시 확인 필요 |
+
+### 수정 파일 (84차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `model/multi_horizon_model.py` | `_CW_30M = {FL:0.65, UP:1.18, DN:1.18}` |
+| `learning/batch_retrainer.py` | `_CW_30M` 동일하게 수정 (학습기 일관성) |
+| `learning/online_learner.py` | `ACCURACY_WINDOW=150`, `_ADJUST_EVERY=3`, `_bucket_learn_count`, `blend_with_gbm()` 초기 GBM 전용 모드 |
+| `model/ensemble_decision.py` | `ensemble_calibrator` 추가, 합의도 패널티, Platt 보정 로직 개선, `record_ensemble_outcome()` |
+| `config/settings.py` | `ENSEMBLE_WEIGHTS_CORR_ADJ` 30m 0.20→0.15 재배분 |
+| `main.py` | `_bias_buf` 롤링 버퍼, `_ensemble_conf_cache`, STEP 1 Bias 통계 재작성, 앙상블 보정기 학습 연결 |
+
+### 84차 실세션 확인 사항 (2026-05-23)
+
+1. **이상점 3 개선**: 30m 예측에서 FL 상황 DN 오분류 발생 빈도 감소 확인
+2. **이상점 4 개선**: 50분 정확도 급락 추이 완화 (연속 실패에도 SGD 비중 점진적 감소)
+3. **이상점 5 개선**: `[Bias⚠] 30m 적중=?%(N건) DN편향! 75%+` 형식 로그 발생 확인
+4. **이상점 6 개선**: conf ≥ 60% 도달하는 분봉 비율이 이전 대비 증가하는지 SIGNAL 로그 확인
+5. **앙상블 보정기**: 1m 검증 시 `ensemble_calibrator.record()` 호출. 100건 누적 후 `is_fitted=True` 전환 확인
 
 ---
 

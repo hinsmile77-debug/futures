@@ -32,11 +32,17 @@ logger = logging.getLogger("LEARNING")
 class OnlineLearner:
     """SGD 온라인 자가학습기 (호라이즌별, short/long 2버킷 가중치)"""
 
-    ACCURACY_WINDOW = 50   # 최근 N분 정확도 추적
+    # 버킷당 호라이즌 3개 × 50분 = 150 샘플 = 실질 50분 윈도우
+    # (이전 50은 3 호라이즌/분이 들어오면 실질 17분치에 불과했음)
+    ACCURACY_WINDOW = 150
 
     # short 버킷: 단기 반전 민감 / long 버킷: 추세 추종
     BUCKET_SHORT: Tuple[str, ...] = ("1m", "3m", "5m")
     BUCKET_LONG:  Tuple[str, ...] = ("10m", "15m", "30m")
+
+    # 1분치(버킷당 호라이즌 수) 학습 완료 후 가중치 1회 조정
+    # 매 샘플 즉시 조정 시 연속 실패로 SGD 가중치가 1분 내 절반 붕괴하는 문제 방지
+    _ADJUST_EVERY = 3
 
     def __init__(self):
         self.models:  Dict[str, SGDClassifier] = {}
@@ -61,6 +67,8 @@ class OnlineLearner:
 
         self._sample_count: int = 0
         self._horizon_counts: Dict[str, int] = {h: 0 for h in HORIZONS}
+        # 버킷별 learn() 호출 횟수 — _ADJUST_EVERY마다 가중치 1회 조정
+        self._bucket_learn_count: Dict[str, int] = {"short": 0, "long": 0}
 
         for h in HORIZONS:
             self.models[h] = SGDClassifier(
@@ -118,8 +126,12 @@ class OnlineLearner:
         self._acc_buf[bucket].append(1.0 if correct else 0.0)
         self._sample_count += 1
         self._horizon_counts[horizon] = self._horizon_counts.get(horizon, 0) + 1
+        self._bucket_learn_count[bucket] += 1
 
-        self._adjust_weights(bucket)
+        # 1분치(=_ADJUST_EVERY 호라이즌) 완료 후 1회만 조정
+        # — 매 샘플 즉시 조정 시 연속 실패 7건 → -14%p 급감하는 과민 반응 방지
+        if self._bucket_learn_count[bucket] % self._ADJUST_EVERY == 0:
+            self._adjust_weights(bucket)
 
     # ── 예측 ────────────────────────────────────────────────────
     def predict_proba(self, horizon: str, x: np.ndarray) -> Optional[Dict]:
@@ -151,9 +163,15 @@ class OnlineLearner:
         if sgd_proba is None:
             return gbm_proba
 
-        bucket = self._bucket(horizon) if horizon else "short"
-        w_gbm = self._gbm_w[bucket]
-        w_sgd = self._sgd_w[bucket]
+        # 초기 30건 미만: GBM 전용 모드 (uniform SGD가 GBM conf를 희석하는 현상 방지)
+        # SGD가 학습 초기(1~20건)에 1/3에 가까운 확률을 출력하면 블렌딩 후 conf -5~8%p 저하
+        h_count = self._horizon_counts.get(horizon, 0)
+        if h_count < 30:
+            w_gbm, w_sgd = 0.95, 0.05
+        else:
+            bucket = self._bucket(horizon) if horizon else "short"
+            w_gbm = self._gbm_w[bucket]
+            w_sgd = self._sgd_w[bucket]
 
         blended = {}
         for key in ["up", "down", "flat"]:
@@ -228,5 +246,6 @@ class OnlineLearner:
             self._acc_buf[bk].clear()
             self._sgd_w[bk] = SGD_WEIGHT_DEFAULT
             self._gbm_w[bk] = GBM_WEIGHT_DEFAULT
+            self._bucket_learn_count[bk] = 0
         self._sample_count = 0
         logger.info("[OnlineLearner] 일간 리셋 (모델 가중치 유지)")

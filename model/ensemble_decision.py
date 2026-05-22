@@ -21,6 +21,7 @@ from config.settings import (
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from model.ensemble_gater import AdaptiveEnsembleGater
 from model.directional_stuck_breaker import DirectionalStuckBreaker
+from learning.calibration import PredictionCalibrator
 
 logger = logging.getLogger("SIGNAL")
 
@@ -121,7 +122,10 @@ class EnsembleDecision:
         self.gater      = AdaptiveEnsembleGater()
         self._decorr    = HorizonDecorrelator()
         self._stuck     = DirectionalStuckBreaker()
-        self.calibrator = None   # main.py에서 horizon_calibrator 주입 후 효과 발동
+        self.calibrator = None   # main.py에서 horizon_calibrator 주입 (3m 분포 기반)
+        # 앙상블 전용 보정기: 앙상블 conf 분포를 직접 학습 (3m 분포 미스매치 해소)
+        # 100건 이상 누적 전: self.calibrator(3m) fallback
+        self.ensemble_calibrator = PredictionCalibrator(method="platt")
 
     def compute(
         self,
@@ -234,12 +238,36 @@ class EnsembleDecision:
             direction  = DIRECTION_FLAT
             confidence = flat_score
 
-        # ── Platt 보정 (기동 시 사전 fit 후 과신 억제) ─────────
-        # calibrator는 main.py __init__ 에서 horizon_calibrator를 주입.
-        # 3m 호라이즌 calibrator를 앙상블 2차 압축에 재사용 (샘플 가장 많음).
+        # ── 호라이즌 합의도 패널티 (불합의 노이즈 필터) ───────────
+        # 6개 중 2개 이하 합의: 방향 신호가 노이즈일 가능성 높음 → 진입 억제
+        # 보너스 없음: 전 호라이즌 합의도 높아도 편향이면 오히려 7연속 실패 (이상점3 사례)
+        if direction != DIRECTION_FLAT:
+            _n_agree = sum(
+                1 for h_res in horizon_proba.values()
+                if h_res.get("direction") == direction
+            )
+            if _n_agree <= 2:
+                confidence = round(confidence * 0.92, 6)
+                if direction == DIRECTION_UP:
+                    up_score = confidence
+                elif direction == DIRECTION_DOWN:
+                    down_score = confidence
+                logger.debug(
+                    "[Ensemble] 합의도 패널티 n_agree=%d/6 conf→%.3f",
+                    _n_agree, confidence,
+                )
+
+        # ── Platt 보정 (앙상블 전용 보정기 우선, 미학습 시 3m fallback) ────
+        # ensemble_calibrator: 앙상블 conf 분포를 직접 학습 (3m 분포 미스매치 해소)
+        # 100건 미만: 3m 보정기 fallback (분포 차이 일부 허용)
         _confidence_raw = confidence
-        if self.calibrator is not None and direction != DIRECTION_FLAT:
-            _cal = self.calibrator.calibrate("3m", confidence)
+        if direction != DIRECTION_FLAT:
+            if self.ensemble_calibrator.is_fitted:
+                _cal = self.ensemble_calibrator.calibrate(confidence)
+            elif self.calibrator is not None:
+                _cal = self.calibrator.calibrate("3m", confidence)
+            else:
+                _cal = confidence
             confidence = min(max(float(_cal), 0.0), 0.85)
             if direction == DIRECTION_UP:
                 up_score = confidence
@@ -287,6 +315,10 @@ class EnsembleDecision:
             f"grade={grade} regime={regime}"
         )
         return result
+
+    def record_ensemble_outcome(self, raw_conf: float, correct: bool) -> None:
+        """앙상블 보정기에 결과 누적 — STEP 1 검증 시 main.py에서 호출."""
+        self.ensemble_calibrator.record(raw_conf, correct)
 
     def reset_daily(self):
         self._stuck.reset_daily()

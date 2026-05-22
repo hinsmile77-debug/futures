@@ -6,6 +6,39 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-22 (84차) — 모의투자 이상점 3~6 구조적 수정 4종
+
+### 한일 요약
+
+- [DONE 2026-05-22] **이상점 3: `_CW_30M` FL 다운웨이팅 완화** — `{FL:0.5}` → `{FL:0.65, UP:1.18, DN:1.18}`. multi_horizon_model.py, batch_retrainer.py 동시 적용 (학습기 일관성)
+- [DONE 2026-05-22] **이상점 4: SGD 정확도 윈도우·조정 주기 수정** — `ACCURACY_WINDOW=150` (실질 50분), `_ADJUST_EVERY=3` (분봉 단위 1회 조정). `_bucket_learn_count` 추가
+- [DONE 2026-05-22] **이상점 5: Bias 통계 롤링 버퍼** — 30건 롤링 버퍼, UP/DN/FL 모두 추적, 15건+ 시 75% 초과 편향 감지
+- [DONE 2026-05-22] **이상점 6-A: SGD 초기 GBM 전용 모드** — h_count < 30 시 w_gbm=0.95, w_sgd=0.05 (균일분포 희석 방지)
+- [DONE 2026-05-22] **이상점 6-B: 앙상블 전용 Platt 보정기** — `ensemble_calibrator = PredictionCalibrator(method="platt")`. 1m 검증 시 `record_ensemble_outcome()` 호출. 3m fallback 유지
+- [DONE 2026-05-22] **이상점 6-C: 합의도 패널티** — 6호라이즌 ≤2 합의 시 conf×0.92 패널티. 보너스 미포함 (편향 증폭 위험)
+- [DONE 2026-05-22] **이상점 6-D: CORR_ADJ 30m 하향** — 30m 0.20→0.15, 나머지 균등 +0.01 재배분
+- [DONE 2026-05-22] **앙상블 전용 calibrator 분리 검토** — 81차 NEXT 항목 완료 (100건 미만까지 3m fallback 유지)
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **84차 실세션 확인 (2026-05-23)**
+  - 30m 예측: FL 상황에서 DN 오분류 발생 빈도 감소 확인 (이상점 3)
+  - SGD 비중: 연속 실패 시에도 1분 내 14%p 급감 사라지는지 확인 (이상점 4)
+  - `[Bias⚠]` 로그: 형식 `[Bias⚠] 30m 적중=X%(N건) UP=N DN=N FL=N [DN편향! 75%+]` 확인 (이상점 5)
+  - conf 분포: ≥ 60% 도달 분봉 비율 이전 대비 증가 여부 SIGNAL 로그 확인 (이상점 6)
+  - 앙상블 보정기: 100건 누적 후 `[Ensemble] ensemble_calibrator is_fitted=True` 여부 확인 (이상점 6-B)
+
+- [NEXT 향후] **이상점 6-B 앙상블 보정기 100건 누적 후 효과 검증**
+  - 100건 이상 누적(≈100분) 후 `ensemble_calibrator.is_fitted=True` 전환 확인
+  - 3m fallback → 앙상블 전용 보정기 전환 전후 conf 분포 변화 비교
+  - 과보정 발생 시(conf 너무 낮아짐) `PredictionCalibrator(method="platt")` 파라미터 조정 검토
+
+- [NEXT 향후] **_CW_30M 실세션 효과 모니터링 (2주)**
+  - 30m FL 비율 목표 ≥ 29% (이전 추정 ≈ 24% 미만 개선 여부 — 단기 지표)
+  - 7연속 실패 재발 시: `_CW_30M FL` 추가 완화(0.65→0.75) 또는 30m 특화 별도 파라미터 검토
+
+---
+
 ## 2026-05-22 (83차) — 탈진장 ATR ratio 문턱 재설계
 
 ### 한일 요약
@@ -75,10 +108,7 @@
   - `result` dict에 `confidence_raw` 키 존재 확인
   - `grade`가 calibrated confidence 기준 재판정 (A→B 강등 케이스 발생 여부)
 
-- [NEXT 향후] **앙상블 전용 calibrator 분리 검토**
-  - 현재: 3m 호라이즌 calibrator를 앙상블 2차 압축에 재사용 (근사치)
-  - 이상적: `ensemble_calibrator` 별도 — `(앙상블 confidence, 실제 거래 손익 방향)` 쌍으로 학습
-  - 조건: 실거래 데이터 200건 이상 누적 후 설계 검토
+- [DONE 2026-05-22] **앙상블 전용 calibrator 분리 검토** — 84차에서 구현 완료. `ensemble_calibrator = PredictionCalibrator(method="platt")` 분리. 1m 검증 시 학습. 100건 미만까지 3m fallback 유지.
 
 ---
 
