@@ -6,6 +6,29 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-22 (83차) — 탈진장 ATR ratio 문턱 재설계
+
+### 한일 요약
+
+- [DONE 2026-05-22] **탈진장 dead code 해소** — `ATR_EXHAUSTION_MULT=1.5` 삭제 → `ATR_EXHAUSTION_MIN=1.2`. 탈진 구간 `1.2~1.5`로 급변장과 독립 분리
+- [DONE 2026-05-22] **양방향 대칭** — `bull_exhaustion` 파라미터 추가. SHORT MR 탈진(상승 압력 소진)도 탈진장으로 분류
+- [DONE 2026-05-22] **`ofi_reversal_speed` 제거** — `push_1m_candle` / `_classify` 파라미터 + exhaustion_conds 조건에서 완전 삭제 (bear_exhaustion이 내포)
+- [DONE 2026-05-22] **main.py 호출부 동기화** — `bull_exhaustion` 추가, `ofi_reversal_speed` 제거
+
+### 다음 할 일
+
+- [NEXT 장중] **83차 실세션 확인 (2026-05-23)**
+  - `[MicroRegime] 혼합 → 탈진 (ADX=XX.X, ATR=X.XXXX, ratio=1.2X~1.4X)` 로그 첫 발화 확인
+  - 발화 시 해당 분봉 SIGNAL 로그: `bear_exhaustion > 0` or `bull_exhaustion > 0` + `abs(vwap_position) ≥ 1.5` 동시 확인
+  - 탈진장 진입 시 체크리스트 `min_conf_effective=0.56` / `entry_mode=MEAN_REVERSION` 적용 확인
+  - 탈진장에서 VWAP 방향으로 역추세 진입 발생 여부 관찰
+
+- [NEXT 향후] **ATR_EXHAUSTION_MIN 캘리브레이션 (2주 후)**
+  - 탈진장 발동 빈도 집계 (목표: 하루 0~3회). 0회 지속 시 1.2 → 1.1 하향 검토
+  - 발동 후 MEAN_REVERSION 승률 집계 (목표: ≥ 50%)
+
+---
+
 ## 2026-05-22 (82차) — Layer 2 인트라데이 게이트 UI 패널 + L2 토글 영속성 및 즉시 적용
 
 ### 한일 요약

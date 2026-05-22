@@ -6,6 +6,49 @@
 
 ---
 
+## 2026-05-22 (83차 — 탈진장 ATR ratio 문턱 재설계)
+
+**Work**: `MicroRegimeClassifier`에서 탈진장(REGIME_EXHAUSTION)이 급변장(REGIME_VOLATILE)과 동일한 ATR 문턱(1.5)을 공유해 사실상 dead code로 존재하던 구조적 버그를 재설계. 급변장과 겹치지 않는 독립 구간(1.2 ~ 1.5)으로 분리하고, 양방향 대칭(`bull_exhaustion`) 추가 및 불필요한 `ofi_reversal_speed` 조건 제거. 커밋 1개.
+
+### 발견된 구조적 버그 2종
+
+| # | 버그 | 파일 | 상태 |
+|---|---|---|---|
+| B1 | `ATR_EXHAUSTION_MULT = 1.5` = `ATR_VOLATILE_MULT = 1.5` — 급변장 판정이 먼저 실행돼 탈진장 도달 불가 (dead code) | `micro_regime.py` | **수정** |
+| B2 | exhaustion_conds 내 `abs(ofi_reversal_speed) > 0` — `bear_exhaustion`이 이미 CVD+OFI 복합 파생 신호이므로 중복이자 추가 차단 조건 | `micro_regime.py` | **제거** |
+
+### 구현 내용
+
+**`collection/macro/micro_regime.py`**
+
+1. **상수 재설계**: `ATR_EXHAUSTION_MULT = 1.5` 삭제 → `ATR_EXHAUSTION_MIN = 1.2` 신설 (탈진장 ATR 하한; 상한은 기존 `ATR_VOLATILE_MULT = 1.5` 공유)
+2. **독립 구간**: `exhaustion_conds` 판정을 `1.2 ≤ atr_ratio < 1.5`로 변경 → 급변장(`≥ 1.5`)과 완전 분리
+3. **양방향 대칭**: `bear_exhaustion > 0` 단독 → `(bear_exhaustion > 0 or bull_exhaustion > 0)` — SHORT MR 탈진도 포착
+4. **`bull_exhaustion` 파라미터 추가**: `push_1m_candle` / `_classify` 시그니처 확장
+5. **`ofi_reversal_speed` 파라미터 제거**: `push_1m_candle` / `_classify` 에서 완전 삭제
+
+**`main.py`**
+
+- `push_1m_candle()` 호출부: `ofi_reversal_speed` 제거 + `bull_exhaustion = features.get("bull_exhaustion")` 추가
+
+### 레짐별 ATR 구간 (변경 후)
+
+| 레짐 | ATR ratio 구간 |
+|---|---|
+| 급변장 | ≥ 1.5 (또는 z_warn≥3, atr≥1.25+ADX≥30) |
+| **탈진장** | **1.2 ≤ ratio < 1.5** + (bear/bull_exhaustion > 0) + VWAP 1.5σ 이탈 |
+| 추세장 | ADX≥25 + ratio < 1.5 |
+| 횡보장 | ADX<20 + ratio < 1.3 |
+| 혼합 | 나머지 |
+
+### 실세션 확인 사항 (2026-05-23)
+
+1. `[MicroRegime] 혼합 → 탈진 (ADX=XX.X, ATR=X.XXXX, ratio=1.2X~1.4X)` 로그 첫 발생 확인
+2. 발화 시 SIGNAL 로그에서 `bear_exhaustion > 0` or `bull_exhaustion > 0` + `vwap_position` 절대값 ≥ 1.5 동시 확인
+3. 탈진장 진입 후 체크리스트: `min_conf_effective = 0.56`, `entry_mode = MEAN_REVERSION` 적용 확인
+
+---
+
 ## 2026-05-22 (82차 — Layer 2 인트라데이 게이트 UI 패널 + L2 토글 영속성 및 즉시 적용)
 
 **Work**: 진입 관리 탭의 Pre-flight 체크리스트 패널을 좌(5):우(6) 양분. 오른쪽에 Layer 2 IntradayTacticalRegime 전용 패널 신설. L2 ON/OFF 버튼 설정 영속성(ui_prefs.json) 구현 및 장중 토글 시 main.py 3개 게이팅 포인트에 즉시 반영. 커밋 1개.

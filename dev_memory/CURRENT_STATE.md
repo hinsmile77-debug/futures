@@ -1,7 +1,33 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-22 (82차) — **Layer 2 인트라데이 게이트 UI 패널 + L2 토글 영속성 및 즉시 적용**
+> 마지막 업데이트: 2026-05-22 (83차) — **탈진장 ATR ratio 문턱 재설계 (급변장 겹침 해소)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-22 (83차) — 탈진장 ATR ratio 문턱 재설계
+
+### 배경
+
+`MicroRegimeClassifier._classify()`에서 탈진장(`REGIME_EXHAUSTION`)과 급변장(`REGIME_VOLATILE`)이 동일한 ATR 문턱(`1.5`)을 공유. 급변장 판정이 먼저 실행되므로 탈진장은 사실상 dead code — 장중 한 번도 발동 불가. `ofi_reversal_speed` 조건도 `bear_exhaustion`이 이미 내포한 정보라 불필요한 추가 차단 역할.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| `ATR_EXHAUSTION_MULT = 1.5` → `ATR_EXHAUSTION_MIN = 1.2` (독립 하한) | **완료** |
+| exhaustion 구간: `1.2 ≤ atr_ratio < 1.5` (급변장과 겹침 없음) | **완료** |
+| 양방향 대칭: `bull_exhaustion` 파라미터 추가 (SHORT MR 탈진 포착) | **완료** |
+| `ofi_reversal_speed` 파라미터·조건 제거 (중복 필터) | **완료** |
+| `main.py` 호출부 동기화 (`bull_exhaustion` 추가, `ofi_reversal_speed` 제거) | **완료** |
+| 실세션 확인 | **미완료** — 2026-05-23 탈진장 로그 첫 발화 확인 필요 |
+
+### 수정 파일 (83차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `collection/macro/micro_regime.py` | `ATR_EXHAUSTION_MIN=1.2`, `push_1m_candle`·`_classify` 파라미터 재설계, exhaustion_conds 독립 구간 + 양방향 |
+| `main.py` | `push_1m_candle()` 호출부: `bull_exhaustion` 추가, `ofi_reversal_speed` 제거 |
 
 ---
 

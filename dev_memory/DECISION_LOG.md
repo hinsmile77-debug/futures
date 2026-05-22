@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-05-22 (83차 — 탈진장 ATR ratio 문턱 재설계)
+
+### [버그 구조적] 탈진장 dead code — ATR 문턱 급변장과 동일로 인한 발동 불가
+**File**: `collection/macro/micro_regime.py` — `_classify()`
+**Root cause 1**: `ATR_EXHAUSTION_MULT = ATR_VOLATILE_MULT = 1.5`. `_classify()`에서 volatile 판정(`atr_ratio >= 1.5`)이 먼저 실행되고 즉시 리턴. exhaustion_conds는 동일 조건(`atr_ratio >= 1.5`)을 요구하므로 절대 도달 불가.
+**Root cause 2**: exhaustion_conds 내 `abs(ofi_reversal_speed) > 0` — `bear_exhaustion`(CVD 신저점 + 낙폭 둔화 + 거래량 급증 복합 신호)이 이미 OFI 정보를 내포. 독립 추가 조건으로 작동해 불필요한 추가 차단.
+**Fix**: `ATR_EXHAUSTION_MULT` 삭제 → `ATR_EXHAUSTION_MIN = 1.2` 신설. exhaustion 구간을 `1.2 ≤ atr_ratio < 1.5`로 변경. `ofi_reversal_speed` 조건 제거. `bull_exhaustion` 양방향 대칭 추가.
+**How to apply**: 레짐 판정 로직에서 서로 다른 레짐이 동일 ATR 문턱을 공유하는 경우 반드시 겹침 여부와 판정 순서를 함께 점검. 하위 판정이 상위 문턱과 같은 조건을 요구하면 dead code.
+
+### [설계] 탈진장 ATR 독립 구간 선정 근거
+**File**: `collection/macro/micro_regime.py` — `ATR_EXHAUSTION_MIN = 1.2`
+**Decision**: 하한 1.2 선택. 상한은 기존 `ATR_VOLATILE_MULT = 1.5` 공유.
+**Why**: 탈진(exhaustion) = 급변 직후 에너지가 소진되며 VWAP 회귀가 시작되는 구간. 전형적으로 `atr_ratio 1.2~1.5` 범위에서 발생 (1.0 미만은 너무 조용해 MR 실익 없음, 1.5 이상은 아직 급변 진행 중). `VWAP_EXHAUSTION_MIN = 1.5` 유지 — ATR 하한을 완화한 만큼 VWAP 이탈 조건으로 정밀도 보상. 1.5σ는 체크리스트 MR 분기 기준과도 일치.
+**How to apply**: 탈진장 발동 빈도(목표 0~3회/일)와 MEAN_REVERSION 승률(목표 ≥ 50%)을 2주 이상 집계 후, 0회 지속 시 하한 1.1로 하향, 과다 발동 시 VWAP 기준 상향(1.7~2.0) 검토.
+
+### [설계] `bull_exhaustion` 양방향 대칭 — SHORT MR 탈진 포착
+**File**: `collection/macro/micro_regime.py` — `_classify()`, `push_1m_candle()`
+**Decision**: exhaustion_conds를 `bear_exhaustion > 0 or bull_exhaustion > 0`으로 확장. `push_1m_candle` / `_classify` 파라미터에 `bull_exhaustion=0.0` 추가.
+**Why**: 기존 `bear_exhaustion`만 체크하면 상승 압력 소진(SHORT MR) 탈진장은 절대 발동 불가. 72차에서 `bull_exhaustion` 피처를 이미 생성·전달하고 있으나 micro_regime에서 무시되던 상태.
+**How to apply**: 탈진장 발화 로그에서 어느 방향(bear/bull) 탈진으로 발동됐는지 SIGNAL 로그에서 확인. 편향이 지속되면(LONG MR만 발동, SHORT MR 발동 없음) 개별 임계값 조정 고려.
+
+---
+
 ## 2026-05-22 (82차 — Layer 2 인트라데이 게이트 UI 패널 + L2 토글 영속성 및 즉시 적용)
 
 ### [설계] `_l2_gate_on` 플래그 — 파이프라인 틱당 1회 계산, 3개 포인트 재사용

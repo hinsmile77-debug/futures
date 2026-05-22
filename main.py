@@ -2544,9 +2544,9 @@ class TradingSystem:
             high             = float(bar.get("high", close) or close),
             low              = float(bar.get("low",  close) or close),
             close            = close,
-            bear_exhaustion    = float(features.get("bear_exhaustion",   0.0) or 0.0),
-            ofi_reversal_speed = float(features.get("ofi_reversal_speed", 0.0) or 0.0),
-            vwap_position    = float(features.get("vwap_position",   0.0) or 0.0),
+            bear_exhaustion  = float(features.get("bear_exhaustion",  0.0) or 0.0),
+            bull_exhaustion  = float(features.get("bull_exhaustion",  0.0) or 0.0),
+            vwap_position    = float(features.get("vwap_position",    0.0) or 0.0),
             z_warn_count     = getattr(self.model, "last_z_warn_count", 0),
         )
         self.current_micro_regime = _mr["regime"]
@@ -2576,11 +2576,18 @@ class TradingSystem:
             z_warn_count     = _z_warn,
         )
         # Contrarian 매분 업데이트 (30분 정확도 + 마지막 앙상블 방향 사용)
+        # [P4] acc30m 소스 분리: CB③ accuracy_buf(세션 필터 적용) 대신
+        #   pred_buffer 장기 통계를 사용 → CB③와 Contrarian 판단 기준 독립 유지
         _last_dir = getattr(self, "_last_ensemble_direction", 0)
+        try:
+            _contra_acc30m = self.pred_buffer.recent_accuracy("30m", last_n=30)
+        except Exception:
+            _contra_acc30m = _acc30m
         self.contrarian_mode.update(
-            acc30m           = _acc30m,
+            acc30m           = _contra_acc30m,
             signal_direction = _last_dir,
             regime           = self.current_regime,
+            cb3_samples      = _cb_status.get("cb3_samples", 0),
         )
         # Contrarian ACTIVE 시 진입 관리 패널 역방향 버튼 힌트 전달
         _contra_active = self.contrarian_mode.should_contra_enter()

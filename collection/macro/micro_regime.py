@@ -40,7 +40,7 @@ class MicroRegimeClassifier:
     ATR_VOLATILE_MULT = 1.5
     ATR_TREND_MULT = 1.5
     ATR_VOLATILE_ADX_MIN = 30.0
-    ATR_EXHAUSTION_MULT = 1.5
+    ATR_EXHAUSTION_MIN = 1.2   # 탈진장 ATR 하한 (상한은 ATR_VOLATILE_MULT)
     VWAP_EXHAUSTION_MIN = 1.5
     MIN_CANDLES_FOR_ATR = 5
 
@@ -68,7 +68,7 @@ class MicroRegimeClassifier:
         low,
         close,
         bear_exhaustion=0.0,
-        ofi_reversal_speed=0.0,
+        bull_exhaustion=0.0,
         vwap_position=0.0,
         z_warn_count=0,
     ) -> Dict:
@@ -94,7 +94,7 @@ class MicroRegimeClassifier:
             atr_avg,
             atr_ratio,
             bear_exhaustion,
-            ofi_reversal_speed,
+            bull_exhaustion,
             vwap_position,
             z_warn_count,
         )
@@ -138,7 +138,7 @@ class MicroRegimeClassifier:
         atr_avg,
         atr_ratio,
         bear_exhaustion=0.0,
-        ofi_reversal_speed=0.0,
+        bull_exhaustion=0.0,
         vwap_position=0.0,
         z_warn_count=0,
     ) -> str:
@@ -152,10 +152,11 @@ class MicroRegimeClassifier:
         if volatile:
             return REGIME_VOLATILE
 
+        # 탈진장: 급변장과 겹치지 않는 독립 구간 (ATR_EXHAUSTION_MIN ~ ATR_VOLATILE_MULT)
+        # ofi_reversal_speed 조건 제거 — bear/bull_exhaustion이 CVD+OFI 복합 신호를 이미 내포
         exhaustion_conds = (
-            atr_ratio >= self.ATR_EXHAUSTION_MULT
-            and bear_exhaustion > 0
-            and abs(ofi_reversal_speed) > 0
+            self.ATR_EXHAUSTION_MIN <= atr_ratio < self.ATR_VOLATILE_MULT
+            and (bear_exhaustion > 0 or bull_exhaustion > 0)
             and abs(vwap_position) >= self.VWAP_EXHAUSTION_MIN
         )
         if exhaustion_conds:
