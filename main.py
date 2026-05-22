@@ -1754,6 +1754,14 @@ class TradingSystem:
             raw_conf = float(res.get("confidence", 1 / 3) or 1 / 3)
             # 보정 후에도 과신 방지 — calibrator가 1.0 반환 가능하므로 재클립
             _calibrated_raw = self.horizon_calibrator.calibrate(horizon, raw_conf)
+            # 10m/15m: Platt 과도 압축 방지 — raw_conf의 85% 이상 보장
+            # 이유: balanced class_weight 구조상 GBM 내부 확률이 낮게 출력되고
+            #       과거 평균 성능 기반 Platt가 현재 시장 컨디션을 과소평가하는 현상 완화
+            if horizon in ("10m", "15m"):
+                _floor = raw_conf * 0.85
+                if _calibrated_raw < _floor:
+                    logger.debug("[Calib] %s Platt 하한 %.3f→%.3f", horizon, _calibrated_raw, _floor)
+                    _calibrated_raw = _floor
             cal_conf = float(np.clip(_calibrated_raw, 0.0, 0.85))
             if _calibrated_raw > 0.85:
                 logger.debug("[Calib] %s clipped %.3f→0.85", horizon, _calibrated_raw)
@@ -2776,6 +2784,7 @@ class TradingSystem:
             acc30m=_acc30m,
             trend_gate_up_active=_tp["up_active"],
             trend_gate_dn_active=_tp["dn_active"],
+            time_zone=get_time_zone(),
         )
         direction  = decision["direction"]
         confidence = decision["confidence"]
@@ -3137,33 +3146,6 @@ class TradingSystem:
                         f"×{_l2_size:.1f} → {_qty_display}계약"
                     )
 
-        _raw_entry_dir = "LONG" if direction > 0 else "SHORT" if direction < 0 else ""
-        _resolved_raw_dir, _resolved_final_dir, _reverse_on = self._resolve_entry_direction(_raw_entry_dir)
-        _raw_signal_ko = self._direction_to_korean(_resolved_raw_dir)
-        _final_signal_ko = self._direction_to_korean(_resolved_final_dir)
-        _checklist_grade = _cr["grade"] if _cr is not None else None
-        _final_entry_ok  = direction != 0 and _final_grade in ("A", "B")
-        self.dashboard.update_entry(
-            _raw_signal_ko,
-            confidence,
-            _final_grade,
-            _checks_ui,
-            qty=_qty_display,
-            final_signal=_final_signal_ko,
-            reverse_enabled=_reverse_on,
-            min_conf=actual_min_conf,
-            ensemble_grade=grade,
-            checklist_grade=_checklist_grade,
-            final_entry=_final_entry_ok,
-        )
-        self._manual_entry_ctx = {
-            "price": close,
-            "qty":   _qty_display,
-            "atr":   atr,
-            "grade": _final_grade,
-            "confidence": confidence,
-        }
-
         # [DBG-F7] 진입 실행 조건 평가
         debug_log.debug(
             "[DBG-F7] 진입조건: pos=%s CB=%s new_entry=%s grade=%s time_zone=%s",
@@ -3315,6 +3297,50 @@ class TradingSystem:
             "manual": ["A", "B", "C"],
         }
         mode_filter_passed = _final_grade in allowed_grades.get(entry_mode, ["A", "B", "C"])
+
+        _raw_entry_dir = "LONG" if direction > 0 else "SHORT" if direction < 0 else ""
+        _resolved_raw_dir, _resolved_final_dir, _reverse_on = self._resolve_entry_direction(_raw_entry_dir)
+        _raw_signal_ko = self._direction_to_korean(_resolved_raw_dir)
+        _final_signal_ko = self._direction_to_korean(_resolved_final_dir)
+        _checklist_grade = _cr["grade"] if _cr is not None else None
+        _final_entry_ok = (
+            _cr is not None
+            and self.circuit_breaker.is_entry_allowed()
+            and not _hc_block
+            and is_new_entry_allowed()
+            and not self._broker_sync_block_new_entries
+            and not _in_cooldown
+            and not _in_exit_cooldown
+            and not _in_armistice
+            and _integrity_ok
+            and not _in_reverse_clamp
+            and _hurst_ok
+            and _atr_ok
+            and _final_grade in ("A", "B")
+            and _qty_display > 0
+            and not _bar_volume_zero
+            and not _intraday_block
+        )
+        self.dashboard.update_entry(
+            _raw_signal_ko,
+            confidence,
+            _final_grade,
+            _checks_ui,
+            qty=_qty_display,
+            final_signal=_final_signal_ko,
+            reverse_enabled=_reverse_on,
+            min_conf=actual_min_conf,
+            ensemble_grade=grade,
+            checklist_grade=_checklist_grade,
+            final_entry=_final_entry_ok,
+        )
+        self._manual_entry_ctx = {
+            "price": close,
+            "qty":   _qty_display,
+            "atr":   atr,
+            "grade": _final_grade,
+            "confidence": confidence,
+        }
 
         if (
             _cr is not None

@@ -136,6 +136,7 @@ class EnsembleDecision:
         acc30m: float = 0.5,
         trend_gate_up_active: bool = False,
         trend_gate_dn_active: bool = False,
+        time_zone: str = "",
     ) -> Dict:
         """
         Args:
@@ -149,8 +150,25 @@ class EnsembleDecision:
         # ── 가중합 (상관관계 역수 적응형 가중치 적용) ──────────────
         # HorizonDecorrelator: 실측 호라이즌 간 상관관계를 추적하여
         # 이중 가중(double-counting)을 완화. 샘플 부족 시 정적 추정치 사용.
-        cur_weights = self._decorr.weights
+        cur_weights = dict(self._decorr.weights)
         self._decorr.push(horizon_proba)   # 이번 예측을 버퍼에 기록
+
+        # CLOSE_VOLATILE(14:00~15:00) 구간: 단기(1m/3m/5m) FL편향 완화
+        # 오후 저변동성 구간에서 단기 호라이즌이 FL에 과대 편향되어 중기 DN 신호를 희석.
+        # 단기 가중치를 0.6× 축소 후 재정규화하여 10m/15m의 기여도를 상대적으로 확대.
+        if time_zone == "CLOSE_VOLATILE":
+            _SHORT = {"1m", "3m", "5m"}
+            cur_weights = {
+                h: (w * 0.6 if h in _SHORT else w)
+                for h, w in cur_weights.items()
+            }
+            _total = sum(cur_weights.values())
+            if _total > 0:
+                cur_weights = {h: w / _total for h, w in cur_weights.items()}
+            logger.debug(
+                "[Ensemble] CLOSE_VOLATILE 단기 0.6× | %s",
+                {k: round(v, 3) for k, v in cur_weights.items()},
+            )
 
         up_score   = 0.0
         down_score = 0.0

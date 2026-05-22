@@ -60,24 +60,27 @@ GBM_PARAMS = {
 # [한시적] 5/18 초기 운영 기간 — raw_data 누적 중, 5000 복원 목표: 약 2026-05-26
 MIN_TRAIN_BARS = 3000   # 약 8거래일 (원래 5000)
 
-# 30m 전용 class weight: FL 다운웨이팅 완화 (0.5→0.65): FL 상황 DN 오분류 방지
-# multi_horizon_model._CW_30M과 동일값 유지 (두 학습기 일관성)
+# 호라이즌별 class weight — multi_horizon_model과 동일값 유지 (두 학습기 일관성)
 _CW_30M = {DIRECTION_FLAT: 0.65, DIRECTION_UP: 1.18, DIRECTION_DOWN: 1.18}
-# 3m 전용 class weight: balanced의 UP/DN 과대학습 완화
-# multi_horizon_model._CW_3M과 동일값 유지 (두 학습기 일관성)
 _CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.12, DIRECTION_DOWN: 1.12}
+# 85차: 1m/5m FL편향 실측(87%/100%) → 명시적 완화 추가
+_CW_1M  = {DIRECTION_FLAT: 0.60, DIRECTION_UP: 1.20, DIRECTION_DOWN: 1.20}
+_CW_5M  = {DIRECTION_FLAT: 0.58, DIRECTION_UP: 1.21, DIRECTION_DOWN: 1.21}
 
 
 def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
     """호라이즌별 sample_weight 계산.
-    30m: FL 클래스 다운웨이팅 (flat bias 억제)
-    3m:  FL 완만한 다운웨이팅 (balanced 역설 — UP/DN 과대학습 완화)
+    30m/3m/1m/5m: 명시적 FL 완화 (balanced만으로는 FL 기본값 선택 편향 미해소)
     그 외: sklearn balanced (클래스 불균형 보정)
     """
     if horizon_key == "30m":
         return np.array([_CW_30M.get(int(lbl), 1.0) for lbl in y])
     if horizon_key == "3m":
         return np.array([_CW_3M.get(int(lbl), 1.0) for lbl in y])
+    if horizon_key == "1m":
+        return np.array([_CW_1M.get(int(lbl), 1.0) for lbl in y])
+    if horizon_key == "5m":
+        return np.array([_CW_5M.get(int(lbl), 1.0) for lbl in y])
     return compute_sample_weight("balanced", y)
 
 

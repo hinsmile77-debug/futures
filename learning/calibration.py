@@ -37,7 +37,8 @@ class PredictionCalibrator:
     """
 
     MIN_SAMPLES   = 100    # 최소 보정 샘플
-    WINDOW        = 500    # 슬라이딩 윈도우 (최근 N개만 사용)
+    # 85차: 500→200 — 현재 시장 컨디션 반영 속도 향상 (500건 ≈ 과거 8거래일 평균으로 희석)
+    WINDOW        = 200    # 슬라이딩 윈도우 (최근 N개만 사용)
 
     def __init__(self, method: str = "platt"):
         """
@@ -71,8 +72,8 @@ class PredictionCalibrator:
         self._labels.append(1 if actual_correct else 0)
         self._n += 1
 
-        # 주기적 재보정
-        if self._n % 50 == 0 and self._n >= self.MIN_SAMPLES:
+        # 주기적 재보정 (85차: 50→20 — 200건 윈도우에서 50건 주기는 너무 느림)
+        if self._n % 20 == 0 and self._n >= self.MIN_SAMPLES:
             self.fit()
 
     def fit(self):
