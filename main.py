@@ -2737,6 +2737,7 @@ class TradingSystem:
             self.dashboard.regime_panel.update_intraday(
                 self.intraday_regime.status_dict()
             )
+        self.dashboard.update_layer2(self.intraday_regime.status_dict())
 
         # ── STEP 5: 멀티 호라이즌 예측 ─────────────────────────
         _st.append(("S5", time.perf_counter()))

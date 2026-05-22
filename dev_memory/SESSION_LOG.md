@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-05-22 (87차 — Layer 2 UI 개선 + update_layer2() 파이프라인 연결)
+
+**Work**: Layer 2 Intraday Gate 패널 발동지표 UI 재정비 3종, 조건 체크 로그 단순화, `_layer2_log` 초기값 설정, `update_layer2()` main.py 연결. 커밋 1개. 2개 파일 변경.
+
+### 구현 내용
+
+#### 1. 발동 지표 7개 → 6개 재정비 (`dashboard/main_dashboard.py`)
+- `시가-0.8&15m` 항목 제거 (Layer 2 조건 로그에서 이미 반영됨)
+- 당일 수익률 임계값 표시: `≤−1.0%` → `≤−0.8%|≤−1.0%` (2단계 임계값 명시)
+- Contrarian 임계값: `강제승격` → `ACTIVE`
+- 당일 수익률 3색 로직: 빨강(≤−1.0%) / 오렌지(≤−0.8%) / 기본색
+
+#### 2. Layer 2 조건 체크 로그 단순화 (`dashboard/main_dashboard.py`)
+- 기존: 4섹션(진입허용·신뢰도강화·사이즈축소·복귀체크) + 수치 나열
+- 신규: 3줄 고정 포맷 (진입 허용 / 신뢰도 강화 / 사이즈 축소)
+  - NORMAL: 롱/숏 모두 허용 / 추가 가산 없음 / ×1.0
+  - DAY_RISK_OFF: 신규 롱 금지 숏만 허용 / +5%p / ×0.5
+  - CRASH: 원칙적으로 신규 진입 전부 금지 / +12%p / ×0.3
+- DAY_RISK_OFF / CRASH 상태 시: 복귀 조건 체크 3항목 추가 표시 (반등 +0.5% / OFI15m > 0 / ATR < 1.2, ✔/✘)
+
+#### 3. `_layer2_log` 초기값 설정 (`dashboard/main_dashboard.py`)
+- 기동 직후 로그 박스가 비어있던 문제 해소
+- `_build()` 내 `_layer2_log` 생성 직후 NORMAL 기본 텍스트 삽입
+
+#### 4. `update_layer2()` main.py 파이프라인 연결 (`main.py`)
+- 82차부터 NEXT_TODO로 미뤄진 항목 완료
+- STEP 4 인트라데이 레짐 계산 직후 `self.dashboard.update_layer2(self.intraday_regime.status_dict())` 1줄 추가
+- 매분 발동지표 + 조건 로그가 실시간 갱신됨
+
+---
+
 ## 2026-05-22 (86차 — 5/22 진입 0 P0 구현 + EOD 스케일러 초기화)
 
 **Work**: Deep·Codex 5/22 진입 0 원인 분석 리뷰를 바탕으로 P0 5종 구현 + EOD 스케일러 초기화 3종 수정. 총 8개 파일 변경, 커밋 1개.

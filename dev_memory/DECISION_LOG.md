@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-05-22 (87차 — Layer 2 UI 개선 + update_layer2() 파이프라인 연결)
+
+### [버그] `_layer2_log` 기동 직후 빈 박스 — 초기값 미설정
+**File**: `dashboard/main_dashboard.py` — `_build()`, `_layer2_log`
+**Root cause**: `_l2_state_label`은 `_build()`에서 `"NORMAL"` 하드코딩 초기화. `_layer2_log`(QTextEdit)는 초기 텍스트 없이 생성 → `update_layer2()` 첫 호출 전까지 빈 박스. `update_layer2()` 자체가 82차부터 main.py에 미연결 상태여서 장 중에도 비어있었음.
+**Fix**: `_layer2_log.setMinimumHeight()` 직후 `setPlainText(NORMAL 기본 텍스트)` 삽입. `update_layer2()` 첫 호출 시 자동 덮어쓰여짐.
+**How to apply**: 상태를 내부 초기값으로 가진 위젯(상태 카드 등)과 그 위젯에 연동된 로그/텍스트 박스는 항상 같은 초기 상태로 맞춰야 한다. 위젯 쌍 초기화 불일치는 "데이터가 없어서 안 보인다"와 "버그로 안 보인다"를 구분하기 어렵게 만든다.
+
+### [설계] 당일 수익률 3색 로직 — 2단계 임계값 시각화
+**File**: `dashboard/main_dashboard.py` — `update_layer2()`
+**Decision**: 당일 수익률 레이블 색상을 단일 임계값(빨강/기본)에서 3색(빨강 ≤−1.0% / 오렌지 ≤−0.8% / 기본색)으로 변경.
+**Why**: −0.8%와 −1.0%는 서로 다른 발동 조건 (−0.8%는 시가-0.8&15m 복합 조건 트리거, −1.0%는 당일 수익률 단독 트리거). 단일 빨강이면 경고 단계를 구분할 수 없음. 오렌지 구간(−0.8%~−1.0%)에서 트레이더가 추가 하락 경계 인식 가능.
+**How to apply**: `_day_col = C['red'] if ≤−1.0 else C['orange'] if ≤−0.8 else C['text']`. 다른 지표도 2단계 임계값이 있으면 동일 패턴 적용.
+
+### [설계] Layer 2 조건 로그 단순화 — 수치 나열 → 상태별 고정 문장
+**File**: `dashboard/main_dashboard.py` — `update_layer2()` 조건 로그 섹션
+**Decision**: 4섹션 + min_conf 수치 + size_mult 계산값 나열 방식을 "3줄 고정 + 복귀 조건" 포맷으로 대체.
+**Why**: 기존 로그는 수치(`적용 min_conf: 63%`, `사이즈 ×0.5`)가 policy dict에서 오는데, 장 시작 전 또는 update_layer2() 미연결 상태에서는 항상 기본값(0.0, 1.0)을 표시하여 오해를 유발. 레짐 상태 카드가 이미 NORMAL/DAY_RISK_OFF/CRASH를 표시하므로 로그는 각 상태의 의미(진입 허용 범위, 신뢰도 가산, 사이즈 배수)를 고정 문장으로 설명하는 것이 더 직관적.
+**How to apply**: NORMAL → 3줄 고정. DAY_RISK_OFF/CRASH → 3줄 + 복귀 조건 ✔/✘ 실시간 표시. policy dict 의존 제거.
+
+---
+
 ## 2026-05-22 (86차 — P0 구현 + EOD 스케일러 초기화)
 
 ### [버그 반복] signal() TypeError 재발 구조 — 3회차 재발 방지 설계

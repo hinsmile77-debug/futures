@@ -3423,13 +3423,12 @@ class EntryPanel(QWidget):
         right_lay.addWidget(mk_sep())
         right_lay.addWidget(mk_label("발동 지표", C['text2'], 9, True))
         _l2_inds = [
-            ("당일 수익률",   "_l2_day_ret",    "—%",  "≤−1.0%"),
-            ("시가-0.8&15m", "_l2_open_15m",   "—",   "동시"),
+            ("당일 수익률",  "_l2_day_ret",    "—%",  "≤−0.8%|≤−1.0%"),
             ("15분 수익률",  "_l2_ret_15m",    "—%",  "≤−0.5%"),
             ("30분 수익률",  "_l2_ret_30m",    "—%",  "≤−1.0%"),
             ("ATR ratio",    "_l2_atr_ratio",  "—",   "≥1.25"),
             ("z극단 수",     "_l2_z_warn",     "—개",  "≥3개"),
-            ("Contrarian",   "_l2_contrarian", "—",   "강제승격"),
+            ("Contrarian",   "_l2_contrarian", "—",   "ACTIVE"),
         ]
         for _lbl, _attr, _init, _thresh in _l2_inds:
             _row = QHBoxLayout()
@@ -3455,6 +3454,11 @@ class EntryPanel(QWidget):
             f"border:1px solid {C['border']};border-radius:3px;"
         )
         self._layer2_log.setMinimumHeight(100)
+        self._layer2_log.setPlainText(
+            "진입 허용 체크:   롱/숏 모두 허용\n"
+            "신뢰도 강화 체크: 추가 가산 없음\n"
+            "사이즈 축소 체크: 사이즈 ×1.0"
+        )
         right_lay.addWidget(self._layer2_log, 1)
 
         split_lay.addWidget(right_w, 6)
@@ -4080,9 +4084,13 @@ class EntryPanel(QWidget):
                 f"font-size:{S.f(10)}px;font-weight:bold;"
             )
 
-        _ind("_l2_day_ret",   f"{day_ret*100:+.2f}%", day_ret <= -0.010)
-        open_15m_trig = day_ret <= -0.008 and ret_15m <= -0.005
-        _ind("_l2_open_15m",  "O" if open_15m_trig else "—", open_15m_trig)
+        _day_col = C['red'] if day_ret <= -0.010 else (C['orange'] if day_ret <= -0.008 else C['text'])
+        day_lbl = getattr(self, "_l2_day_ret_label", None)
+        if day_lbl is not None:
+            day_lbl.setText(f"{day_ret*100:+.2f}%")
+            day_lbl.setStyleSheet(
+                f"color:{_day_col};font-size:{S.f(10)}px;font-weight:bold;"
+            )
         _ind("_l2_ret_15m",   f"{ret_15m*100:+.2f}%", ret_15m <= -0.005)
         _ind("_l2_ret_30m",   f"{ret_30m*100:+.2f}%", ret_30m <= -0.010)
         _ind("_l2_atr_ratio", f"{atr_ratio:.3f}",     atr_ratio >= 1.25)
@@ -4096,48 +4104,36 @@ class EntryPanel(QWidget):
             )
 
         # 조건 로그
-        min_conf_adj = float(policy.get("min_conf_adjust", 0.0))
-        size_mult    = float(policy.get("size_mult", 1.0))
-        min_eff      = min_conf_base + min_conf_adj / 100.0
-        b_ok = bounce    >= 0.005
-        o_ok = ofi_15m   >  0.0
-        a_ok = atr_ratio <  1.2
-
-        lines = ["■ 진입 허용 체크"]
         if regime == "NORMAL":
-            lines.append("  NORMAL → 롱/숏 모두 허용 ✔")
+            entry_txt = "롱/숏 모두 허용"
+            conf_txt  = "추가 가산 없음"
+            size_txt  = "사이즈 ×1.0"
         elif regime == "DAY_RISK_OFF":
-            lines.append("  DAY_RISK_OFF → 신규 롱 금지 ✘")
-            lines.append("  DAY_RISK_OFF → 숏만 허용 ✔")
-        else:
-            lines.append("  CRASH → 원칙적 신규진입 전부 금지 ✘")
-            lines.append("  CRASH 예외: A등급 숏 추세추종 허용 ✔")
-        lines.append("")
+            entry_txt = "신규 롱 금지,  숏만 허용"
+            conf_txt  = "최소 신뢰도 +5%p"
+            size_txt  = "사이즈 ×0.5"
+        else:  # CRASH
+            entry_txt = "원칙적으로 신규 진입 전부 금지"
+            conf_txt  = "최소 신뢰도 +12%p"
+            size_txt  = "사이즈 ×0.3"
 
-        lines.append("■ 신뢰도 강화 체크")
-        if regime == "NORMAL":
-            lines.append("  NORMAL → 추가 가산 없음 (0%p)")
-        else:
-            lines.append(f"  {regime} → 최소신뢰도 +{int(min_conf_adj)}%p")
-        lines.append(f"  적용 min_conf: {min_eff:.0%}")
-        lines.append("")
+        lines = [
+            f"진입 허용 체크:   {entry_txt}",
+            f"신뢰도 강화 체크: {conf_txt}",
+            f"사이즈 축소 체크: {size_txt}",
+        ]
 
-        lines.append("■ 사이즈 축소 체크")
-        lines.append(f"  {regime} → 사이즈 ×{size_mult:.1f}")
-        if size_mult < 1.0:
-            lines.append("  ⚠ A등급도 최종 수량 감소 가능")
-        lines.append("")
-
-        lines.append("■ 복귀 체크 (→ NORMAL)")
-        lines.append(f"  반등 {bounce*100:+.2f}% ≥ +0.5%: {'✔' if b_ok else '✘'}")
-        lines.append(f"  OFI15m {ofi_15m:.4f} > 0: {'✔' if o_ok else '✘'}")
-        lines.append(f"  ATR {atr_ratio:.3f} < 1.2: {'✔' if a_ok else '✘'}")
-        if regime == "NORMAL":
-            lines.append("  (현재 NORMAL — 복귀 불필요)")
-        elif b_ok and o_ok and a_ok:
-            lines.append("  → 복귀 조건 충족 ✔")
-        else:
-            lines.append("  → 복귀 조건 미충족 ✘")
+        if regime != "NORMAL":
+            b_ok = bounce   >= 0.005
+            o_ok = ofi_15m  >  0.0
+            a_ok = atr_ratio < 1.2
+            lines += [
+                "",
+                "복귀 조건 체크 (→ NORMAL)",
+                f"  반등 {bounce*100:+.2f}% ≥ +0.5%:  {'✔' if b_ok else '✘'}",
+                f"  OFI15m {ofi_15m:.4f} > 0:  {'✔' if o_ok else '✘'}",
+                f"  ATR ratio {atr_ratio:.3f} < 1.2:  {'✔' if a_ok else '✘'}",
+            ]
 
         self._layer2_log.setPlainText("\n".join(lines))
 

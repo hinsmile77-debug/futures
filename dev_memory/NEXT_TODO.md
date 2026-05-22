@@ -6,6 +6,24 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-22 (87차) — Layer 2 UI 개선 + update_layer2() 파이프라인 연결
+
+### 한일 요약
+
+- [DONE 2026-05-22] **발동 지표 6개 재정비** — 시가-0.8&15m 제거, 당일수익률 3색 로직(빨강/오렌지/기본), 임계값 표시 개선 (dashboard/main_dashboard.py)
+- [DONE 2026-05-22] **조건 체크 로그 단순화** — NORMAL/DAY_RISK_OFF/CRASH 3줄 고정 포맷 + 복귀 조건 ✔/✘ (dashboard/main_dashboard.py)
+- [DONE 2026-05-22] **`_layer2_log` 초기값 설정** — 기동 직후 빈 박스 해소 (dashboard/main_dashboard.py)
+- [DONE 2026-05-22] **`update_layer2()` 파이프라인 연결** — main.py STEP 4 직후 1줄 추가. 82차부터 미연결 상태 해소 (main.py)
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **87차 실세션 확인 (2026-05-23)**
+  - 기동 직후 `_layer2_log` NORMAL 기본 텍스트 표시 (빈 박스 없음)
+  - 장중 발동지표 실시간 갱신 확인 (당일 수익률 3색 발동 여부)
+  - NORMAL 상태 조건 로그 3줄 표시 확인
+
+---
+
 ## 2026-05-22 (86차) — P0 구현 + EOD 스케일러 초기화
 
 ### 한일 요약
@@ -142,10 +160,7 @@
 
 ### 다음 할 일 (우선순위 순)
 
-- [NEXT 필수] **`update_layer2()` → main.py 파이프라인 연결**
-  - `dashboard/main_dashboard.py`의 `update_layer2(status_dict, min_conf_base)` API가 완성됐으나 main.py에서 호출 코드 없음
-  - STEP 6 L2 적용 직후 또는 STEP 9 DB 저장 이후에 `self.dashboard.update_layer2(self.intraday_regime.status_dict(), min_conf_base=0.58)` 추가 필요
-  - 호출 없으면 오른쪽 패널이 항상 초기 상태(NORMAL / 모든 지표 비발동)로 표시됨
+- [DONE 2026-05-22] **`update_layer2()` → main.py 파이프라인 연결** — STEP 4 직후 1줄 추가 (87차)
 
 - [NEXT 장중] **82차 실세션 확인 (2026-05-23)**
   - 재시작 후 L2 ON/OFF 버튼 상태가 이전 설정 복원 (ui_prefs.json 읽기)
