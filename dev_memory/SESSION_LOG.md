@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-05-29 (88차 — 호라이즌 자격 추적 Phase 1+2 구현)
+
+**Work**: 멀티호라이즌 앙상블 자격 추적 시스템 Phase 1(상태 추적) + Phase 2(대시보드 dry-run) 구현. 장중 `name 'settings' is not defined` CRITICAL 버그 수정. 커밋 1개. 3개 파일 변경.
+
+### 구현 내용
+
+#### 1. Phase 1 — `_horizon_runtime_state` 상태 추적 (`main.py`)
+- `__init__`: `_horizon_runtime_state` 딕셔너리 추가 (6개 호라이즌 × verified_cycles/trained_cycles/qualified/active/status/weight/recent_accuracy)
+- STEP 1 verified 루프 끝: `verified_cycles += 1`, `recent_accuracy` 동기화, 자격 조건(`verified≥3 AND trained≥3`) 충족 시 `qualified=True` + SIGNAL 로그
+- STEP 2 SGD learn 루프 이후: `online_learner._horizon_counts[h]` → `trained_cycles` 동기화, 자격 조건 재확인
+- STEP 6 직후: `dashboard.update_qualification(self._horizon_runtime_state)` 호출
+- `daily_close()`: `_horizon_runtime_state` 전체 리셋 (전 호라이즌 not_qualified 상태로)
+- Phase 1은 상태 추적만 — 앙상블 비중·진입 로직 변경 없음
+
+#### 2. Phase 2 — 호라이즌 자격 현황 카드 (`dashboard/main_dashboard.py`)
+- `EntryPanel.__init__`: `_qualify_cards: dict = {}` 추가
+- `EntryPanel._build()`: 모드/시간대 섹션 이후 자격 현황 카드 섹션 삽입 (2×3 그리드, 6개 카드)
+- 각 카드: 호라이즌명 / 상태(WAIT·ACTIVE·PENALIZED·BLOCKED) / 사이클 진행(v0/t0·acc=0%)
+- `EntryPanel.update_qualification(state)`: 상태별 색상 코딩 — ACTIVE=녹, WAIT=회, PENALIZED=주황, BLOCKED=빨
+- `MireukDashboard.update_qualification(state)`: `entry_panel.update_qualification(state)` 위임
+
+#### 3. 설정 상수 (`config/settings.py`)
+- `HORIZON_QUALIFY_MIN_CYCLES = 3` — 자격 획득 최소 사이클 수
+- `QUALIFY_QUALITY_MIN_SAMPLES = 10` — 품질 게이트 평가 최소 샘플 수
+
+#### 4. 버그 수정 — `settings` 네임스페이스 오류 (`main.py`)
+- 증상: 장중 재시작 후 매분 `[ERR-FATAL] minute_pipeline: name 'settings' is not defined` CRITICAL
+- 원인: `getattr(settings, "HORIZON_QUALIFY_MIN_CYCLES", 3)` — `settings`는 `runtime_settings`로 임포트됨
+- 수정: `settings.` → `runtime_settings.` 2곳 (`replace_all`)
+
+---
+
 ## 2026-05-22 (87차 — Layer 2 UI 개선 + update_layer2() 파이프라인 연결)
 
 **Work**: Layer 2 Intraday Gate 패널 발동지표 UI 재정비 3종, 조건 체크 로그 단순화, `_layer2_log` 초기값 설정, `update_layer2()` main.py 연결. 커밋 1개. 2개 파일 변경.

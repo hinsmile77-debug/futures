@@ -140,6 +140,10 @@ SGD_WEIGHT_MIN     = 0.10
 SGD_BOOST_THRESHOLD = 0.62   # 이상 → SGD 비중 +2%
 SGD_CUT_THRESHOLD   = 0.48   # 이하 → SGD 비중 -2%
 
+# 호라이즌 자격 획득 기준 (Phase 1: 상태 추적 / Phase 3: 앙상블 필터링 적용)
+HORIZON_QUALIFY_MIN_CYCLES = 3    # verified + trained 각 3회 이상이면 자격 획득
+QUALIFY_QUALITY_MIN_SAMPLES = 10  # 품질 게이트 평가 최소 샘플 수
+
 # ── 진입 등급 체계 ─────────────────────────────────────────────
 ENTRY_GRADE = {
     "A": {"min_pass": 6, "size_mult": 1.5, "auto": True},

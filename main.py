@@ -362,6 +362,22 @@ class TradingSystem:
         self._bias_buf: dict = {h: deque(maxlen=30) for h in HORIZONS}
         self._bias_log_tick: int = 0   # 10분마다 요약 로그 출력 카운터
 
+        # ── 호라이즌 자격 상태 (Qualification) ──────────────────────────────────
+        # qualified=True: 3 사이클 완료 → 앙상블 참여 허가 (Phase 3에서 실제 필터링)
+        # 현재(Phase 1): 상태 추적만 — 앙상블 비중 변경 없음
+        self._horizon_runtime_state: dict = {
+            h: {
+                "verified_cycles":  0,
+                "trained_cycles":   0,
+                "qualified":        False,
+                "active":           False,
+                "status":           "not_qualified",
+                "weight":           0.0,
+                "recent_accuracy":  0.0,
+            }
+            for h in HORIZONS
+        }
+
         # ── 앙상블 보정기 conf 캐시 (T-1m 앙상블 conf 추적) ──────────────────
         # STEP 6에서 저장 → STEP 1에서 T-1m 앙상블 conf 조회 → ensemble_calibrator 누적
         self._ensemble_conf_cache: dict = {}  # {ts_str: float}
@@ -2395,6 +2411,32 @@ class TradingSystem:
                 log_manager.learning(
                     f"✗ {v['horizon']} 예측 실패 (conf={_conf:.1%} 예측={_pred_str} 실제={_actual_str})"
                 )
+            # [Qualify] 검증 사이클 카운트 증가
+            _h = v["horizon"]
+            if _h in self._horizon_runtime_state:
+                _qs = self._horizon_runtime_state[_h]
+                _qs["verified_cycles"] += 1
+                _qs["recent_accuracy"] = (
+                    self.online_learner.horizon_accuracy(_h)
+                    if hasattr(self.online_learner, "horizon_accuracy")
+                    else 0.0
+                )
+                _need = getattr(runtime_settings, "HORIZON_QUALIFY_MIN_CYCLES", 3)
+                if _qs["verified_cycles"] >= _need and _qs["trained_cycles"] >= _need:
+                    if not _qs["qualified"]:
+                        _qs["qualified"] = True
+                        _qs["active"]    = True
+                        _qs["status"]    = "active"
+                        log_manager.signal(
+                            f"[Qualify] {_h} 자격 획득 "
+                            f"(verified={_qs['verified_cycles']} trained={_qs['trained_cycles']})"
+                        )
+                elif not _qs["qualified"]:
+                    _qs["status"] = "not_qualified"
+                logger.debug(
+                    "[Qualify] %s verified=%d/3 trained=%d/3 status=%s",
+                    _h, _qs["verified_cycles"], _qs["trained_cycles"], _qs["status"],
+                )
 
         # ── 호라이즌별 롤링 Bias 통계 (30건 윈도우) ──────────────────────────
         # 분봉 1건씩 누적 → 15건 이상 쌓이면 편향 판정 / 10분마다 요약 출력
@@ -2486,6 +2528,23 @@ class TradingSystem:
                 f"SGD비중={self.online_learner.sgd_weight:.0%} "
                 f"50분정확도={self.online_learner.recent_accuracy():.1%}"
             )
+            # [Qualify] trained_cycles 동기화 — online_learner._horizon_counts 반영
+            _hc = getattr(self.online_learner, "_horizon_counts", {})
+            _need = getattr(runtime_settings, "HORIZON_QUALIFY_MIN_CYCLES", 3)
+            for _h, _cnt in _hc.items():
+                if _h not in self._horizon_runtime_state:
+                    continue
+                _qs = self._horizon_runtime_state[_h]
+                _qs["trained_cycles"] = _cnt
+                if _qs["verified_cycles"] >= _need and _qs["trained_cycles"] >= _need:
+                    if not _qs["qualified"]:
+                        _qs["qualified"] = True
+                        _qs["active"]    = True
+                        _qs["status"]    = "active"
+                        log_manager.signal(
+                            f"[Qualify] {_h} 자격 획득 "
+                            f"(verified={_qs['verified_cycles']} trained={_qs['trained_cycles']})"
+                        )
 
         # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 또는 세션 재시작 즉시) ────
         _st.append(("S3", time.perf_counter()))
@@ -2838,8 +2897,20 @@ class TradingSystem:
         # UP:   above_vwap=1 AND cvd_direction=1  이 10분+ → UP  min_conf → 0.44
         # DOWN: above_vwap=0 AND cvd_direction=-1 이 10분+ → DN  min_conf → 0.44
         _tp = self.trend_gate.update(features)
+        # 대시보드 체크박스 필터: 비활성 호라이즌은 앙상블 판정에서 제외
+        _enabled_hz = None
+        if getattr(self, "dashboard", None):
+            try:
+                _enabled_hz = self.dashboard._win.pred_panel.get_enabled_horizons()
+            except Exception:
+                pass
+        _hp_ens = (
+            {h: v for h, v in horizon_proba.items() if h in _enabled_hz}
+            if _enabled_hz and len(_enabled_hz) < len(horizon_proba)
+            else horizon_proba
+        )
         decision = self.ensemble.compute(
-            horizon_proba,
+            _hp_ens,
             self.current_regime,
             features=features,
             adaptive_gating=True,
@@ -3014,6 +3085,11 @@ class TradingSystem:
 
         self.dashboard.update_prediction(close, _preds_ui, _params_ui, confidence,
                                          corr=_corr_str, min_conf=actual_min_conf)
+        # [Qualify] 자격 현황 카드 갱신
+        try:
+            self.dashboard.update_qualification(self._horizon_runtime_state)
+        except Exception:
+            pass
 
         # GBM 미학습 시 모델 상태 행 재표시 (update_prediction이 행을 숨겼으므로)
         if not _gbm_ready:
@@ -3703,6 +3779,13 @@ class TradingSystem:
             shs=_shs_state["shs"],
             entry_blocked=_shs_state["entry_blocked"],
             kill_switch=_shs_state["kill_switch_active"],
+        )
+        _z_warn_recent = sum(self.shadow_session._z_warn_buf)
+        self.dashboard.update_shadow_badge(
+            state        = self.shadow_session.state,
+            acc30m       = _acc30m,
+            core_health  = self.core_health.score,
+            z_warn_count = _z_warn_recent,
         )
         if self.system_health.should_send_alert():
             from utils.notify import notify_shs_alert as _nsa
@@ -4474,6 +4557,16 @@ class TradingSystem:
         self._live_shap_ready = False
         self._cached_shap_importance = {}
         self._verified_today = 0
+        for _h in self._horizon_runtime_state:
+            self._horizon_runtime_state[_h] = {
+                "verified_cycles":  0,
+                "trained_cycles":   0,
+                "qualified":        False,
+                "active":           False,
+                "status":           "not_qualified",
+                "weight":           0.0,
+                "recent_accuracy":  0.0,
+            }
         self.emergency_exit.reset()
         self.kill_switch.deactivate()
         self.system_health.reset_daily()    # EKS·GAP_OPEN 상태 초기화 (z_warn·restart는 유지)

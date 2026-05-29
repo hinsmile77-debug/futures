@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-05-29 (88차 — 호라이즌 자격 추적 Phase 1+2 구현)
+
+### [버그] `name 'settings' is not defined` — 임포트 네임스페이스 혼동
+**File**: `main.py` — STEP 1 verified 루프, STEP 2 trained_cycles 동기화 블록
+**Root cause**: `getattr(settings, "HORIZON_QUALIFY_MIN_CYCLES", 3)` 사용. `settings`는 해당 파일에서 `from config.settings import (...)` 로 개별 심볼만 임포트, 모듈 자체는 `runtime_settings` 별칭으로만 존재 (`import config.settings as runtime_settings`). 따라서 `settings` 이름이 로컬 네임스페이스에 없어 NameError.
+**Fix**: `getattr(settings, ...)` → `getattr(runtime_settings, ...)` 2곳 replace_all.
+**How to apply**: `main.py`에서 `settings.XXX` 패턴은 항상 `runtime_settings.XXX`로 써야 한다. 개별 상수 임포트 목록에 없는 것은 `getattr(runtime_settings, "KEY", default)` 패턴 사용.
+
+### [설계] 호라이즌 자격 상태 추적 — Phase 1 설계 원칙
+**File**: `main.py` — `_horizon_runtime_state`, STEP 1/2/daily_close
+**Decision**: qualified 조건 = `verified_cycles >= 3 AND trained_cycles >= 3`. trained_cycles 소스 = `online_learner._horizon_counts[h]` (SGD learn() 호출 횟수). `_bucket_learn_count` 사용 금지 (버킷 단위 카운터로 호라이즌별 세분화 불가).
+**Why**: GBM은 세션 시작 시 pkl 고정이므로 "GBM 재학습 횟수"는 trained_cycles 기준이 될 수 없음. SGD learn() 호출이 실질적인 온라인 학습 사이클의 단위. _bucket_learn_count는 short(1m·3m·5m)/long(10m·15m·30m) 2개 버킷만 구분하므로 호라이즌별 cycles 추적 불가.
+**How to apply**: Phase 3 앙상블 필터링 구현 시 `_horizon_runtime_state[h]["qualified"]` boolean으로 `active_horizons` set 구성.
+
+### [설계] Phase 1·2는 dry-run — 앙상블 변경 없음
+**File**: `main.py`, `dashboard/main_dashboard.py`
+**Decision**: Phase 1은 상태 추적만 (앙상블 비중·진입 로직 변경 없음). Phase 2는 대시보드 카드 표시만 (실제 filtering 없음). Phase 3(ensemble_decision.py 수정)는 카드가 1 세션 동안 논리적으로 정확함을 육안 확인 후 진행.
+**Why**: 검증 없는 앙상블 변경은 conf 분포 전체를 변경시킴. CLAUDE.md "알파 리서치 봇 자동 통합 절대 금지" 원칙과 동일 논리 — 한 번에 하나만 바꾸고 검증한 뒤 다음 단계.
+**How to apply**: 실세션에서 카드 전환 타이밍이 이상하면(예: 09:10에도 WAIT) Phase 3로 넘어가지 말고 원인을 먼저 진단.
+
+---
+
 ## 2026-05-22 (87차 — Layer 2 UI 개선 + update_layer2() 파이프라인 연결)
 
 ### [버그] `_layer2_log` 기동 직후 빈 박스 — 초기값 미설정

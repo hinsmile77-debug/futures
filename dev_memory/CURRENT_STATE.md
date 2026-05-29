@@ -1,7 +1,43 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-22 (87차) — **Layer 2 UI 개선 + update_layer2() 파이프라인 연결**
+> 마지막 업데이트: 2026-05-29 (88차) — **호라이즌 자격 추적 Phase 1+2 구현**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-29 (88차) — 호라이즌 자격 추적 Phase 1+2 구현
+
+### 배경
+
+`docs/HORIZON_QUALIFICATION_IMPLEMENTATION_PLAN.md` 및 `docs/HIGHER_DIRECTION_AND_LOWER_EXECUTION_ENGINE_PLAN.md` 설계 기반. 멀티호라이즌 앙상블에서 세션 초반 미검증 호라이즌이 과신 conf를 내는 문제 해결 목적. 오늘은 상태 추적(Phase 1)과 대시보드 dry-run(Phase 2)만 구현 — 앙상블 필터링은 미활성.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **Phase 1 (A-1)**: `_horizon_runtime_state` 상태 추적 + STEP 1 verified_cycles + STEP 2 trained_cycles 동기화 + daily_close() 리셋 | **완료** — main.py |
+| **Phase 2 (A-2)**: 호라이즌 자격 현황 카드 6개 (2×3) + `update_qualification()` + MireukDashboard 위임 | **완료** — dashboard/main_dashboard.py |
+| **설정 상수**: `HORIZON_QUALIFY_MIN_CYCLES=3`, `QUALIFY_QUALITY_MIN_SAMPLES=10` | **완료** — config/settings.py |
+| **버그 수정**: `settings.` → `runtime_settings.` 2곳 — CRITICAL `name 'settings' is not defined` 해소 | **완료** — main.py |
+| 실세션 확인 | **미완료** — 다음 기동 시 |
+| Phase 3 (A-3): 앙상블 필터링 활성화 | **미구현** — 카드 1세션 안정 확인 후 |
+| 장중 재시작 복원 (`_restore_qualification_state()`) | **미구현** — Phase 3 직전 |
+
+### 수정 파일 (88차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | `_horizon_runtime_state` (`__init__`), STEP 1 verified_cycles 추적, STEP 2 trained_cycles 동기화, STEP 6 `update_qualification()` 호출, `daily_close()` 리셋, `settings.` → `runtime_settings.` 2곳 |
+| `dashboard/main_dashboard.py` | `_qualify_cards` (`__init__`), `_build()` 자격 카드 6개, `EntryPanel.update_qualification()`, `MireukDashboard.update_qualification()` 위임 |
+| `config/settings.py` | `HORIZON_QUALIFY_MIN_CYCLES=3`, `QUALIFY_QUALITY_MIN_SAMPLES=10` 추가 |
+
+### 88차 실세션 확인 사항
+
+1. `[Qualify] 1m verified=N/3 trained=N/3` DEBUG 로그 매분 출력 확인
+2. 09:06+ 1m/3m `qualified=True` 전환 `[Qualify] X 자격 획득` SIGNAL 로그 확인
+3. 대시보드 호라이즌 자격 카드 WAIT(회색) → ACTIVE(녹색) 전환 확인
+4. 15:10 daily_close 후 전 호라이즌 WAIT(0/3) 리셋 확인
+5. 앙상블 비중/진입 로직 **변화 없음** 확인 (Phase 1·2는 상태 추적 + UI만)
 
 ---
 

@@ -941,12 +941,37 @@ def card(title, widget, color=C['blue'], header_widget=None):
 # 패널 1: 멀티 호라이즌 예측 + 파라미터 분석
 # ────────────────────────────────────────────────────────────
 class PredictionPanel(QWidget):
+    hz_filter_changed = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self._hz_labels = {}
+        self._hz_enabled = {}
         self._param_bars = {}
         self._param_vals = {}
         self._build()
+
+    _HZ_KEY_MAP = {
+        "1분": "1m", "3분": "3m", "5분": "5m",
+        "10분": "10m", "15분": "15m", "30분": "30m",
+    }
+
+    def get_enabled_horizons(self) -> set:
+        return {self._HZ_KEY_MAP[h] for h, cb in self._hz_enabled.items() if cb.isChecked()}
+
+    def _on_hz_filter_changed(self):
+        for hname, cb in self._hz_enabled.items():
+            if hname not in self._hz_labels:
+                continue
+            frame, arr, pct = self._hz_labels[hname]
+            if not cb.isChecked():
+                frame.setStyleSheet(
+                    f"QFrame{{background:{C['bg']};border:1px dashed {C['border']};"
+                    f"border-radius:6px;}}"
+                )
+                arr.setStyleSheet(f"color:{C['text2']};font-size:{S.f(22)}px;font-weight:bold;")
+                pct.setStyleSheet(f"color:{C['text2']};font-size:{S.f(12)}px;")
+        self.hz_filter_changed.emit()
 
     def _make_report_tab(self, title: str, accent: str):
         frame = QFrame()
@@ -1034,6 +1059,29 @@ class PredictionPanel(QWidget):
             fl.addWidget(pct)
             self._hz_labels[hname] = (frame, arr, pct)
             hgrid.addWidget(frame, 0, i)
+
+            cb = QCheckBox()
+            cb.setChecked(True)
+            cb.setToolTip(f"{hname} 호라이즌을 앙상블 신뢰도/등급 판정에 포함")
+            cb.setStyleSheet(
+                "QCheckBox{margin:0px;}"
+                "QCheckBox::indicator{width:11px;height:11px;border-radius:2px;}"
+                f"QCheckBox::indicator:checked{{background:{C['green']};"
+                f"border:1px solid {C['green']};}}"
+                f"QCheckBox::indicator:unchecked{{background:{C['bg']};"
+                f"border:1px solid {C['border']};}}"
+            )
+            cb.stateChanged.connect(self._on_hz_filter_changed)
+            self._hz_enabled[hname] = cb
+
+            cb_wrap = QWidget()
+            cb_lay = QHBoxLayout(cb_wrap)
+            cb_lay.setContentsMargins(0, 2, 0, 0)
+            cb_lay.setSpacing(0)
+            cb_lay.addStretch()
+            cb_lay.addWidget(cb)
+            cb_lay.addStretch()
+            hgrid.addWidget(cb_wrap, 1, i)
         lay.addLayout(hgrid)
 
         # ── 섹션 구분 ─────────────────────────────────────────────
@@ -1202,13 +1250,16 @@ class PredictionPanel(QWidget):
                 f"font-size:{S.f(13)}px;font-weight:bold;"
             )
 
-        # 앙상블 방향
-        ups = sum(1 for v in preds.values() if v['signal'] == 1)
-        dns = sum(1 for v in preds.values() if v['signal'] == -1)
-        if ups >= 4:
+        # 앙상블 방향 (활성화된 호라이즌만 투표)
+        _enabled_ui = {h for h, cb in self._hz_enabled.items() if cb.isChecked()} if self._hz_enabled else None
+        _total = len(_enabled_ui) if _enabled_ui else 6
+        _threshold = max(1, _total // 2 + 1)
+        ups = sum(1 for h, v in preds.items() if (_enabled_ui is None or h in _enabled_ui) and v['signal'] == 1)
+        dns = sum(1 for h, v in preds.items() if (_enabled_ui is None or h in _enabled_ui) and v['signal'] == -1)
+        if ups >= _threshold:
             self.lbl_signal.setText("▲ 매수")
             self.lbl_signal.setStyleSheet(f"color:{C['green']};font-size:{S.f(16)}px;font-weight:bold;")
-        elif dns >= 4:
+        elif dns >= _threshold:
             self.lbl_signal.setText("▼ 매도")
             self.lbl_signal.setStyleSheet(f"color:{C['red']};font-size:{S.f(16)}px;font-weight:bold;")
         else:
@@ -1220,24 +1271,37 @@ class PredictionPanel(QWidget):
             if hname not in self._hz_labels:
                 continue
             frame, arr, pct = self._hz_labels[hname]
+            _is_enabled = self._hz_enabled.get(hname)
+            _active = (_is_enabled is None) or _is_enabled.isChecked()
             if pred['signal'] == 1:
-                col = C['green']
                 arr.setText("▲")
                 pct.setText(f"{pred['up']*100:.1f}%")
-                frame.setStyleSheet(
-                    f"QFrame{{background:#0D2818;border:1px solid {C['green']};border-radius:6px;}}")
+                if _active:
+                    col = C['green']
+                    frame.setStyleSheet(
+                        f"QFrame{{background:#0D2818;border:1px solid {C['green']};border-radius:6px;}}")
+                else:
+                    col = C['text2']
+                    frame.setStyleSheet(
+                        f"QFrame{{background:{C['bg']};border:1px dashed {C['border']};border-radius:6px;}}")
             elif pred['signal'] == -1:
-                col = C['red']
                 arr.setText("▼")
                 pct.setText(f"{pred['dn']*100:.1f}%")
-                frame.setStyleSheet(
-                    f"QFrame{{background:#2D0D0D;border:1px solid {C['red']};border-radius:6px;}}")
+                if _active:
+                    col = C['red']
+                    frame.setStyleSheet(
+                        f"QFrame{{background:#2D0D0D;border:1px solid {C['red']};border-radius:6px;}}")
+                else:
+                    col = C['text2']
+                    frame.setStyleSheet(
+                        f"QFrame{{background:{C['bg']};border:1px dashed {C['border']};border-radius:6px;}}")
             else:
-                col = C['text2']
                 arr.setText("—")
                 pct.setText("횡보")
+                col = C['text2']
+                _border = "solid" if _active else "dashed"
                 frame.setStyleSheet(
-                    f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};border-radius:6px;}}")
+                    f"QFrame{{background:{C['bg2']};border:1px {_border} {C['border']};border-radius:6px;}}")
             arr.setStyleSheet(f"color:{col};font-size:{S.f(22)}px;font-weight:bold;")
             pct.setStyleSheet(f"color:{col};font-size:{S.f(12)}px;")
 
@@ -2915,6 +2979,7 @@ class EntryPanel(QWidget):
             "manual": "C 등급진입",
         }
         self._max_qty = self._load_max_qty()
+        self._qualify_cards: dict = {}  # {horizon: {"frame", "status_lbl", "cycles_lbl"}}
         self._build()
         self._setup_time_zone_timer()
 
@@ -2981,6 +3046,36 @@ class EntryPanel(QWidget):
         lay.addLayout(zone_grid)
 
         self._update_mode_desc()
+        lay.addWidget(mk_sep())
+
+        # 호라이즌 자격 현황 (Qualification Monitor) — Phase 1 dry-run 표시
+        lay.addWidget(mk_label("호라이즌 자격 현황 (사이클 추적)", C['cyan'], 9, True))
+        _qual_grid = QGridLayout()
+        _qual_grid.setSpacing(3)
+        _HORIZONS_ORDER = ["1m", "3m", "5m", "10m", "15m", "30m"]
+        for _qi, _qh in enumerate(_HORIZONS_ORDER):
+            _qframe = QFrame()
+            _qframe.setStyleSheet(
+                f"QFrame{{background:{C['bg3']};border:1px solid {C['text2']};"
+                f"border-radius:4px;}}"
+            )
+            _qinner = QVBoxLayout(_qframe)
+            _qinner.setContentsMargins(4, 3, 4, 3)
+            _qinner.setSpacing(1)
+            _qh_lbl  = mk_label(_qh, C['text2'], 9, True)
+            _qs_lbl  = mk_label("WAIT", C['text2'], 8)
+            _qc_lbl  = mk_label("0/3", C['text2'], 8)
+            _qinner.addWidget(_qh_lbl)
+            _qinner.addWidget(_qs_lbl)
+            _qinner.addWidget(_qc_lbl)
+            _qual_grid.addWidget(_qframe, _qi // 3, _qi % 3)
+            self._qualify_cards[_qh] = {
+                "frame":      _qframe,
+                "h_lbl":      _qh_lbl,
+                "status_lbl": _qs_lbl,
+                "cycles_lbl": _qc_lbl,
+            }
+        lay.addLayout(_qual_grid)
         lay.addWidget(mk_sep())
 
         # 앙상블 + 신뢰도 (row0: 2카드, row1: 3카드, row2: 수량)
@@ -4136,6 +4231,49 @@ class EntryPanel(QWidget):
             ]
 
         self._layer2_log.setPlainText("\n".join(lines))
+
+    def update_qualification(self, state: dict) -> None:
+        """호라이즌 자격 상태 카드 갱신.
+
+        state: {horizon: {"verified_cycles", "trained_cycles",
+                          "qualified", "status", "recent_accuracy"}}
+        """
+        _STATUS_COLOR = {
+            "active":        C['green'],
+            "not_qualified": C['text2'],
+            "penalized":     C['orange'],
+            "blocked":       C['red'],
+        }
+        _STATUS_TEXT = {
+            "active":        "ACTIVE",
+            "not_qualified": "WAIT",
+            "penalized":     "PENALIZED",
+            "blocked":       "BLOCKED",
+        }
+        for h, card in self._qualify_cards.items():
+            qs = state.get(h, {})
+            if not qs:
+                continue
+            status  = qs.get("status", "not_qualified")
+            vc      = qs.get("verified_cycles", 0)
+            tc      = qs.get("trained_cycles", 0)
+            acc     = qs.get("recent_accuracy", 0.0)
+            col     = _STATUS_COLOR.get(status, C['text2'])
+            s_txt   = _STATUS_TEXT.get(status, status.upper())
+            c_txt   = f"v{vc}/t{tc} acc={acc:.0%}"
+            card["status_lbl"].setText(s_txt)
+            card["status_lbl"].setStyleSheet(
+                f"color:{col};font-size:{S.f(8)}px;font-weight:bold;"
+            )
+            card["cycles_lbl"].setText(c_txt)
+            card["cycles_lbl"].setStyleSheet(
+                f"color:{C['text2']};font-size:{S.f(7)}px;"
+            )
+            border_col = col if status == "active" else C['text2']
+            card["frame"].setStyleSheet(
+                f"QFrame{{background:{C['bg3']};border:1px solid {border_col};"
+                f"border-radius:4px;}}"
+            )
 
 
 # ────────────────────────────────────────────────────────────
@@ -8087,6 +8225,28 @@ class MireukDashboard(QMainWindow):
             "  GAP_OPEN conf < 45% + CORE 0% → 당일 관망"
         )
 
+        # ── ShadowSession 배지 ───────────────────────────────────
+        _ss_tip = (
+            "Shadow Session 상태\n\n"
+            "  SHADOW  : 실주문 전 관찰 단계\n"
+            "            시스템은 신호를 생성하고 내부 평가를 계속하지만\n"
+            "            실거래는 차단됩니다.\n\n"
+            "  LIVE    : 게이트 조건 통과 → 실주문 허용\n\n"
+            "  BLOCKED : 09:40 초과 & 조건 미통과 → 당일 자동 진입 차단\n\n"
+            "통과 조건 (3가지 모두 충족 필요):\n"
+            "  ① acc30m  ≥ 40%    (30분 정확도)\n"
+            "  ② 건강점수 ≥ 70    (core_health_score)\n"
+            "  ③ z경고 누적 < 2   (최근 5분 기준)\n\n"
+            "표시값:\n"
+            "  A=acc30m  H=core_health  Z=z경고누적"
+        )
+        self.lbl_shadow = mk_badge("", C['bg3'], C['text2'], 10)
+        self.lbl_shadow.setText("SHADOW\nA:-- | H:-- | Z:-")
+        self.lbl_shadow.setMinimumWidth(S.p(110))
+        self.lbl_shadow.setAlignment(Qt.AlignCenter)
+        self.lbl_shadow.setWordWrap(True)
+        self.lbl_shadow.setToolTip(_ss_tip)
+
         # ── 우측 시계 블록 ─────────────────────────────────────
         clk_frame = QFrame()
         clk_frame.setStyleSheet(
@@ -8388,6 +8548,7 @@ class MireukDashboard(QMainWindow):
             header.addWidget(w)
         header.addWidget(self.lbl_l2_halt)  # L2 halt badge (CB 오른쪽)
         header.addWidget(self.lbl_shs)      # SHS / EKS badge
+        header.addWidget(self.lbl_shadow)   # ShadowSession 상태 배지
         header.addWidget(clk_frame)
         header.addLayout(res_box)
         root.addLayout(header)
@@ -9275,6 +9436,49 @@ class DashboardAdapter:
                 f"padding:{S.p(1)}px {S.p(3)}px;"
             )
 
+    def update_shadow_badge(
+        self,
+        state: str,
+        acc30m: float,
+        core_health: int,
+        z_warn_count: int,
+    ) -> None:
+        """ShadowSession 배지 갱신 (매분 파이프라인에서 호출).
+
+        Args:
+            state:        "SHADOW" / "LIVE" / "BLOCKED"
+            acc30m:       30분 정확도 (0.0~1.0)
+            core_health:  core_health_score (0~100)
+            z_warn_count: 최근 5분 z-score 경고 누적 횟수
+        """
+        lbl = getattr(self._win, "lbl_shadow", None)
+        if lbl is None:
+            return
+
+        acc_str = f"{acc30m * 100:.0f}%"
+        text = f"{state}\nA:{acc_str} | H:{core_health} | Z:{z_warn_count}"
+
+        if state == "LIVE":
+            bg, fg = C["green"], "#fff"
+        elif state == "BLOCKED":
+            bg, fg = C["red"], "#fff"
+        else:
+            # SHADOW — gate 미통과 항목 있으면 주황, 전부 통과 직전이면 파랑
+            gates_ok = (
+                acc30m >= 0.40
+                and core_health >= 70
+                and z_warn_count < 2
+            )
+            bg, fg = (C["blue"], "#fff") if gates_ok else (C["bg3"], C["text2"])
+
+        lbl.setText(text)
+        lbl.setStyleSheet(
+            f"background:{bg};color:{fg};"
+            f"border-radius:{S.p(3)}px;"
+            f"font-size:{S.f(10)}px;font-weight:bold;"
+            f"padding:{S.p(1)}px {S.p(3)}px;"
+        )
+
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""
         self._win.exit_panel.update_data(pos_data)
@@ -9348,6 +9552,10 @@ class DashboardAdapter:
     def update_layer2(self, status_dict: dict, min_conf_base: float = 0.58) -> None:
         """Layer 2 Intraday Gate 패널 갱신 — IntradayTacticalRegime.status_dict() 를 넘겨줌."""
         self._win.entry_panel.update_layer2(status_dict, min_conf_base=min_conf_base)
+
+    def update_qualification(self, state: dict) -> None:
+        """호라이즌 자격 상태 카드 갱신 — _horizon_runtime_state 를 넘겨줌."""
+        self._win.entry_panel.update_qualification(state)
 
     def is_layer2_gate_enabled(self) -> bool:
         """Layer 2 게이트 UI 토글 상태 반환."""
