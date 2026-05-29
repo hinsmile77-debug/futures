@@ -3049,7 +3049,40 @@ class EntryPanel(QWidget):
         lay.addWidget(mk_sep())
 
         # 호라이즌 자격 현황 (Qualification Monitor) — Phase 1 dry-run 표시
-        lay.addWidget(mk_label("호라이즌 자격 현황 (사이클 추적)", C['cyan'], 9, True))
+        _QUALIFY_TIP = (
+            "  ◆ 호라이즌 자격 현황 (Qualification Monitor)\n"
+            "\n"
+            "  각 호라이즌이 앙상블에 참여할 자격을 갖췄는지 추적합니다.\n"
+            "  자격 조건: 이번 세션에서 검증(v) 3회 + 학습(t) 3회 이상\n"
+            "\n"
+            "  ── 카드 표시 설명 ───────────────────────────────────\n"
+            "  상태 (색상)\n"
+            "    WAIT       (회색)   — 자격 미달 (v/t 3회 미만)\n"
+            "    ACTIVE     (녹색)   — 자격 획득, 앙상블 참여 허가\n"
+            "    PENALIZED  (주황)   — 자격 있으나 합의도 페널티 적용 중\n"
+            "    BLOCKED    (빨강)   — 일시 차단 (품질 게이트 미통과)\n"
+            "\n"
+            "  vN/tN  — verified(검증) / trained(학습) 사이클 수\n"
+            "  acc=N% — 해당 호라이즌의 최근 예측 적중률\n"
+            "\n"
+            "  ── acc(정확도) 상세 ─────────────────────────────────\n"
+            "  · 정의: 이번 세션 학습 샘플 중 '실제 방향 == 예측 방향' 비율\n"
+            "  · 윈도우: 최근 150건 (5건 미만이면 0% 표시)\n"
+            "  · 호라이즌별 독립 측정 → 1m/3m/5m/10m/15m/30m 각각 집계\n"
+            "\n"
+            "  ── recent_accuracy()와의 차이 ───────────────────────\n"
+            "  · recent_accuracy()  : short(1m~5m) / long(10m~30m) 버킷 평균\n"
+            "                         → SGD 비중 자동 조절 트리거에 사용\n"
+            "  · acc (이 카드)       : 호라이즌 개별 측정\n"
+            "                         → 자격 카드 표시 전용, SGD 비중 조절 무관\n"
+            "\n"
+            "  ※ 30m 호라이즌은 하루 최대 9사이클 → acc 5건 충족에 약 1주 소요\n"
+            "  ※ 현재 Phase 1·2: 상태 추적 + UI 표시만 (앙상블 필터링 미적용)\n"
+            "     Phase 3 활성화 후 WAIT 호라이즌은 앙상블에서 제외됩니다."
+        )
+        _qual_title_lbl = mk_label("호라이즌 자격 현황 (사이클 추적)", C['cyan'], 9, True)
+        _qual_title_lbl.setToolTip(_QUALIFY_TIP)
+        lay.addWidget(_qual_title_lbl)
         _qual_grid = QGridLayout()
         _qual_grid.setSpacing(3)
         _HORIZONS_ORDER = ["1m", "3m", "5m", "10m", "15m", "30m"]

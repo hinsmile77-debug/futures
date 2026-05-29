@@ -2411,16 +2411,13 @@ class TradingSystem:
                 log_manager.learning(
                     f"✗ {v['horizon']} 예측 실패 (conf={_conf:.1%} 예측={_pred_str} 실제={_actual_str})"
                 )
-            # [Qualify] 검증 사이클 카운트 증가
+            # [Qualify] 검증 사이클 카운트 — 이번 세션 예측만 (이전 세션 carry-over 제외)
             _h = v["horizon"]
-            if _h in self._horizon_runtime_state:
+            _pred_ts_q = v.get("ts", "") or ""
+            if _h in self._horizon_runtime_state and _pred_ts_q >= self._session_start_ts:
                 _qs = self._horizon_runtime_state[_h]
                 _qs["verified_cycles"] += 1
-                _qs["recent_accuracy"] = (
-                    self.online_learner.horizon_accuracy(_h)
-                    if hasattr(self.online_learner, "horizon_accuracy")
-                    else 0.0
-                )
+                _qs["recent_accuracy"] = self.online_learner.horizon_accuracy(_h)
                 _need = getattr(runtime_settings, "HORIZON_QUALIFY_MIN_CYCLES", 3)
                 if _qs["verified_cycles"] >= _need and _qs["trained_cycles"] >= _need:
                     if not _qs["qualified"]:

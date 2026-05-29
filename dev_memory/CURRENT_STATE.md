@@ -1,7 +1,42 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-29 (88차) — **호라이즌 자격 추적 Phase 1+2 구현**
+> 마지막 업데이트: 2026-05-29 (89차) — **Qualification 세션 필터 + 호라이즌별 정확도 + 툴팁**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-29 (89차) — Qualification 세션 필터 + 호라이즌별 정확도 + 툴팁
+
+### 배경
+
+88차 구현 직후 실세션 스크린샷 확인 결과 2가지 이슈 발견:
+1. 10m/15m/30m이 세션 시작 직후에도 v4/t4 (ACTIVE) — 이전 세션 carry-over 예측이 카운팅된 것
+2. acc=0% 고착 — `OnlineLearner`에 호라이즌별 정확도 메서드가 없어 항상 0
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **세션 필터**: `_pred_ts_q >= self._session_start_ts` — 이전 세션 carry-over 예측 카운팅 제외 | **완료** — main.py |
+| **호라이즌별 정확도 버퍼**: `_horizon_acc_buf` + `horizon_accuracy(h)` + `reset_daily()` 업데이트 | **완료** — learning/online_learner.py |
+| **툴팁**: "호라이즌 자격 현황" 라벨에 카드 설명 + acc 정의 + recent_accuracy() 차이 | **완료** — dashboard/main_dashboard.py |
+| 실세션 확인 | **미완료** — 다음 기동 시 |
+
+### 수정 파일 (89차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `main.py` | STEP 1 qualification 카운팅에 `_pred_ts_q >= self._session_start_ts` 필터 추가 |
+| `learning/online_learner.py` | `_horizon_acc_buf` 딕셔너리, `learn()` 호라이즌 버퍼 기록, `horizon_accuracy(h)` 신규, `reset_daily()` 확장 |
+| `dashboard/main_dashboard.py` | "호라이즌 자격 현황" 라벨 툴팁 (카드 상태·acc 정의·recent_accuracy 차이·30m 주의사항·Phase 상태) |
+
+### 89차 실세션 확인 사항
+
+1. 세션 시작 시 모든 호라이즌 v0/t0 (WAIT) 출발 확인 — 이전 세션 carry-over 없음
+2. 09:01+ 1m v1 → 09:03 v3 ACTIVE 전환 확인
+3. 10m v1 전환이 10분 이후에 발생하는지 확인
+4. acc% — 5건 누적 전 0%, 5건 이후 실제 적중률로 갱신 확인
+5. 라벨 호버 시 툴팁 표시 확인
 
 ---
 

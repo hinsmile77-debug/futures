@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-05-29 (89차 — Qualification 세션 필터 + 호라이즌별 정확도 + 툴팁)
+
+### [버그] Qualification carry-over — 이전 세션 예측이 오늘 사이클에 카운팅
+**File**: `main.py` — STEP 1 qualification 카운팅 블록
+**Root cause**: `pred_buffer.verify_and_update()`는 DB에 저장된 모든 미검증 예측을 처리. 어제 14:40~15:10의 10m/15m/30m 예측이 오늘 09:00 직후 즉시 verified 처리되어 `verified_cycles`에 누적됨. CB③에는 `_pred_ts >= self._session_start_ts` 필터가 있었으나 qualification 카운팅에는 없었음.
+**증상**: 세션 시작 직후 10m/15m/30m이 v4/t4 ACTIVE — 1m v3보다 높은 카운트로 논리 역전.
+**Fix**: `if _h in self._horizon_runtime_state and _pred_ts_q >= self._session_start_ts:` 조건 추가. CB③과 동일한 세션 경계 기준 적용.
+**How to apply**: qualification 관련 카운팅은 항상 세션 시작 이후 예측만 대상. `_session_start_ts`는 `__init__`에서 `datetime.now().strftime(...)` 으로 설정됨.
+
+### [설계] 호라이즌별 정확도 버퍼 — 버킷 평균과 분리
+**File**: `learning/online_learner.py` — `_horizon_acc_buf`, `horizon_accuracy()`
+**Decision**: `_acc_buf`(버킷 단위)와 별도로 `_horizon_acc_buf`(호라이즌 단위) deque 추가. `horizon_accuracy(h)`는 5건 미만 시 0.0 반환.
+**Why**: `_acc_buf["short"]`는 1m/3m/5m 합산 → 개별 호라이즌의 성능 차이가 희석됨. Qualification 카드는 "이 호라이즌이 지금 얼마나 잘 맞추는가"를 보여줘야 하므로 개별 측정 필요. 5건 미만 0.0 처리는 "50%에서 시작하는 착시" 방지 (샘플 부족 구간을 명시적으로 표시).
+**How to apply**: `recent_accuracy()`, `_adjust_weights()` 등 SGD 비중 조절 로직은 기존 `_acc_buf` 그대로 사용. `_horizon_acc_buf`는 UI 표시 전용으로 분리 유지.
+
+---
+
 ## 2026-05-29 (88차 — 호라이즌 자격 추적 Phase 1+2 구현)
 
 ### [버그] `name 'settings' is not defined` — 임포트 네임스페이스 혼동

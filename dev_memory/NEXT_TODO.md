@@ -6,6 +6,35 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-29 (89차) — Qualification 세션 필터 + 호라이즌별 정확도 + 툴팁
+
+### 한일 요약
+
+- [DONE 2026-05-29] **세션 필터**: `_pred_ts_q >= self._session_start_ts` — 이전 세션 carry-over 예측 카운팅 제외 (main.py)
+- [DONE 2026-05-29] **호라이즌별 정확도 버퍼**: `_horizon_acc_buf`, `horizon_accuracy(h)`, `reset_daily()` 확장 (learning/online_learner.py)
+- [DONE 2026-05-29] **자격 현황 라벨 툴팁**: 카드 설명 + acc 정의 + recent_accuracy() 차이 + 30m 주의사항 (dashboard/main_dashboard.py)
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 장중] **88·89차 실세션 확인 (다음 기동 시)**
+  - 세션 시작 시 모든 호라이즌 v0/t0 WAIT 출발 확인 (carry-over 없음)
+  - 09:01+ 1m v1 → 09:03 v3 ACTIVE 전환, 10m v1은 10분 이후 확인
+  - acc% — 5건 미만=0%, 5건+ 실제 적중률 갱신 확인
+  - 라벨 호버 시 툴팁 표시 확인
+
+- [NEXT Phase 3 진입 전] **`_restore_qualification_state()` 구현**
+  - `prediction_buffer.py`에 `count_verified_today(horizon, date_str)` 헬퍼 추가
+  - `main.py` `_restore_qualification_state()` 신규 — DB에서 당일 세션 이후 verified 수 복원
+  - `connect_broker()` 장중 재시작 경로에서 호출
+
+- [NEXT Phase 3 — 카드 1세션 확인 후] **앙상블 필터링 활성화 (A-3)**
+  - `model/ensemble_decision.py` `compute()`: `active_horizons` 마스크 + 재정규화 ([결정A])
+  - 합의도 패널티 분모 수정: `n_agree < n_active/2` ([결정B])
+  - `main.py` STEP 6: `active_horizons = _get_active_horizons()` 전달
+  - **주의**: Track A-3와 Track B(ExecutionGate) 동시 활성화 절대 금지
+
+---
+
 ## 2026-05-29 (88차) — 호라이즌 자격 추적 Phase 1+2 구현
 
 ### 한일 요약
@@ -14,26 +43,6 @@
 - [DONE 2026-05-29] **Phase 2 (A-2): 호라이즌 자격 현황 카드** — `EntryPanel._build()` 6카드 2×3 그리드, `update_qualification()` 메서드, MireukDashboard 위임 (dashboard/main_dashboard.py)
 - [DONE 2026-05-29] **설정 상수 추가** — `HORIZON_QUALIFY_MIN_CYCLES=3`, `QUALIFY_QUALITY_MIN_SAMPLES=10` (config/settings.py)
 - [DONE 2026-05-29] **버그 수정: `name 'settings' is not defined`** — `settings.` → `runtime_settings.` 2곳. 장중 재시작 후 매분 CRITICAL 에러 해소 (main.py)
-
-### 다음 할 일 (우선순위 순)
-
-- [NEXT 장중] **88차 실세션 확인 (다음 기동 시)**
-  - `[Qualify] 1m verified=N/3 trained=N/3` DEBUG 로그 매분 출력 확인
-  - 09:06+ `[Qualify] 1m 자격 획득` SIGNAL 로그 확인
-  - 대시보드 호라이즌 자격 카드: WAIT(회색) → ACTIVE(녹색) 전환 확인
-  - 15:10 daily_close 후 전 호라이즌 WAIT(0/3) 리셋 확인
-  - 앙상블 비중/진입 로직 변화 없음 확인 (Phase 1·2는 추적+UI만)
-
-- [NEXT Phase 3 진입 전] **`_restore_qualification_state()` 구현**
-  - `prediction_buffer.py`에 `count_verified_today(horizon, date_str)` 헬퍼 추가
-  - `main.py` `_restore_qualification_state()` 신규 — DB에서 당일 verified 수 복원
-  - `connect_broker()` 장중 재시작 경로에서 호출
-
-- [NEXT Phase 3 — 카드 1세션 확인 후] **앙상블 필터링 활성화 (A-3)**
-  - `model/ensemble_decision.py` `compute()`: `active_horizons` 마스크 + 재정규화 ([결정A])
-  - 합의도 패널티 분모 수정: `n_agree < n_active/2` ([결정B])
-  - `main.py` STEP 6: `active_horizons = _get_active_horizons()` 전달
-  - **주의**: Track A-3와 Track B(ExecutionGate) 동시 활성화 절대 금지
 
 ---
 

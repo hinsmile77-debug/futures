@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-05-29 (89차 — Qualification 세션 필터 + 호라이즌별 정확도 + 툴팁)
+
+**Work**: 88차 구현 직후 실세션 스크린샷에서 발견된 2가지 이슈 수정 + 툴팁 추가. 커밋 1개. 3개 파일 변경.
+
+### 구현 내용
+
+#### 1. 세션 필터 추가 (`main.py`)
+- 증상: 세션 시작 직후 10m/15m/30m이 v4/t4 ACTIVE — 이전 세션 carry-over 예측이 카운팅됨
+- 원인: `pred_buffer.verify_and_update()`가 어제 14:40~15:10 구간의 예측을 오늘 09:00 직후 즉시 verified 처리. CB③에는 `_session_start_ts` 필터가 있으나 qualification 카운팅에는 없었음
+- 수정: `if _h in self._horizon_runtime_state and _pred_ts_q >= self._session_start_ts:` — 이번 세션 예측만 카운팅
+
+#### 2. 호라이즌별 정확도 버퍼 (`learning/online_learner.py`)
+- 증상: 모든 카드 acc=0% 고착
+- 원인: `online_learner.horizon_accuracy(_h)` 메서드가 없어 `hasattr` 분기에서 항상 0.0 반환
+- 수정:
+  - `_horizon_acc_buf: Dict[str, deque]` 추가 (6개 호라이즌 × maxlen=ACCURACY_WINDOW=150)
+  - `learn()`: 버킷 버퍼에 이어 `_horizon_acc_buf[horizon]`에도 correct 기록
+  - `horizon_accuracy(h)`: 5건 미만 시 0.0 반환 (초기 불안정값 표시 억제)
+  - `reset_daily()`: 호라이즌 버퍼도 초기화
+
+#### 3. 자격 현황 라벨 툴팁 (`dashboard/main_dashboard.py`)
+- "호라이즌 자격 현황 (사이클 추적)" 라벨에 `setToolTip()` 부착
+- 툴팁 내용: 카드 상태(WAIT/ACTIVE/PENALIZED/BLOCKED) 설명, vN/tN 의미, acc% 정의(최근 150건 적중률, 5건 미만=0%), `recent_accuracy()` 차이(버킷 평균 vs 호라이즌 개별), 30m 주의사항(acc 5건 충족 ~1주), Phase 상태(현재 추적+UI만)
+
+---
+
 ## 2026-05-29 (88차 — 호라이즌 자격 추적 Phase 1+2 구현)
 
 **Work**: 멀티호라이즌 앙상블 자격 추적 시스템 Phase 1(상태 추적) + Phase 2(대시보드 dry-run) 구현. 장중 `name 'settings' is not defined` CRITICAL 버그 수정. 커밋 1개. 3개 파일 변경.

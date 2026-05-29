@@ -64,6 +64,10 @@ class OnlineLearner:
             "short": deque(maxlen=self.ACCURACY_WINDOW),
             "long":  deque(maxlen=self.ACCURACY_WINDOW),
         }
+        # 호라이즌별 독립 정확도 버퍼 (Qualification 카드 표시용)
+        self._horizon_acc_buf: Dict[str, deque] = {
+            h: deque(maxlen=self.ACCURACY_WINDOW) for h in HORIZONS
+        }
 
         self._sample_count: int = 0
         self._horizon_counts: Dict[str, int] = {h: 0 for h in HORIZONS}
@@ -120,10 +124,12 @@ class OnlineLearner:
             self._fitted[horizon] = True
             logger.info(f"[OnlineLearner] {horizon} 초기 학습 완료")
 
-        # 정확도 추적 — 버킷별 독립 버퍼에 기록
+        # 정확도 추적 — 버킷별 + 호라이즌별 독립 버퍼에 기록
         bucket = self._bucket(horizon)
         correct = (actual_label == predicted_label)
         self._acc_buf[bucket].append(1.0 if correct else 0.0)
+        if horizon in self._horizon_acc_buf:
+            self._horizon_acc_buf[horizon].append(1.0 if correct else 0.0)
         self._sample_count += 1
         self._horizon_counts[horizon] = self._horizon_counts.get(horizon, 0) + 1
         self._bucket_learn_count[bucket] += 1
@@ -232,6 +238,16 @@ class OnlineLearner:
             result[bk] = sum(buf) / len(buf) if buf else 0.5
         return result
 
+    def horizon_accuracy(self, horizon: str) -> float:
+        """호라이즌별 정확도 반환 (Qualification 카드 표시용).
+
+        샘플 5개 미만이면 0.0 반환 (불안정한 초기값 표시 억제).
+        """
+        buf = self._horizon_acc_buf.get(horizon)
+        if not buf or len(buf) < 5:
+            return 0.0
+        return sum(buf) / len(buf)
+
     # 단일 가중치 프로퍼티 — 기존 로그 참조 호환
     @property
     def sgd_weight(self) -> float:
@@ -245,6 +261,8 @@ class OnlineLearner:
         for bk in ("short", "long"):
             self._acc_buf[bk].clear()
             self._sgd_w[bk] = SGD_WEIGHT_DEFAULT
+        for h in self._horizon_acc_buf:
+            self._horizon_acc_buf[h].clear()
             self._gbm_w[bk] = GBM_WEIGHT_DEFAULT
             self._bucket_learn_count[bk] = 0
         self._sample_count = 0
