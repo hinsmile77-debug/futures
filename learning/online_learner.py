@@ -267,3 +267,36 @@ class OnlineLearner:
             self._bucket_learn_count[bk] = 0
         self._sample_count = 0
         logger.info("[OnlineLearner] 일간 리셋 (모델 가중치 유지)")
+
+    def reset_full(self):
+        """SGD 모델·스케일러·가중치 완전 초기화.
+
+        임계값 변경으로 레이블 체계가 교체될 때 호출한다.
+        partial_fit 이력이 구 레이블 기준으로 누적된 상태에서
+        새 레이블을 계속 주입하면 모순된 학습이 발생하므로 완전 리셋이 필요.
+        """
+        for h in HORIZONS:
+            self.models[h] = SGDClassifier(
+                loss="log",
+                learning_rate="optimal",
+                alpha=0.001,
+                max_iter=1,
+                warm_start=True,
+                random_state=42,
+                n_jobs=1,
+            )
+            self.scalers[h] = StandardScaler()
+            self._fitted[h] = False
+
+        for bk in ("short", "long"):
+            self._acc_buf[bk].clear()
+            self._sgd_w[bk] = SGD_WEIGHT_DEFAULT
+            self._gbm_w[bk] = GBM_WEIGHT_DEFAULT
+            self._bucket_learn_count[bk] = 0
+
+        for h in self._horizon_acc_buf:
+            self._horizon_acc_buf[h].clear()
+
+        self._sample_count = 0
+        self._horizon_counts = {h: 0 for h in HORIZONS}
+        logger.info("[OnlineLearner] 완전 초기화 — 모델·스케일러·가중치 전체 리셋")

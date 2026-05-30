@@ -1,7 +1,50 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-29 (89차) — **Qualification 세션 필터 + 호라이즌별 정확도 + 툴팁**
+> 마지막 업데이트: 2026-05-30 (90차) — **임계값 데이터 기반 재보정 + 운영/연구 병렬 구조 + Phase A WFA 모니터**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-30 (90차) — 임계값 데이터 기반 재보정 + 운영/연구 병렬 구조 + Phase A WFA 모니터
+
+### 배경
+
+2026-04-28~05-29 DB 기반 분석으로 현행 `HORIZON_THRESHOLDS`가 15m +42%, 30m +63% 과다 설정되어 FLAT 레이블 품질 심각 왜곡 확인. 임계값 현실화 + 운영(대칭)/연구(비대칭) 병렬 구조 + Phase A 자동 재보정 모니터 구현.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **HORIZON_THRESHOLDS 재보정** (1m/5m/10m/15m/30m, 3m 현행 유지) | **완료** — config/settings.py |
+| **HORIZON_THRESHOLDS_RESEARCH** (비대칭, 연구용 고정, ATR 갱신 비대상) | **완료** — config/settings.py |
+| **SGD_FULL_RESET_PENDING 플래그** (다음 GBM 재학습 완료 시 1회 reset_full) | **완료** — config/settings.py + main.py |
+| **build_targets_asymmetric()** (연구용 비대칭 레이블 생성) | **완료** — model/target_builder.py |
+| **class_weight 재조정** (1m/5m FL 0.85, 30m FL 1.00) | **완료** — multi_horizon_model.py + batch_retrainer.py |
+| **OnlineLearner.reset_full()** (SGD 완전 초기화) | **완료** — learning/online_learner.py |
+| **ThresholdRecalibrator** Phase A 롤링 재보정 모니터 | **완료** — learning/threshold_recalibrator.py (신규) |
+| **daily_close 금요일 Phase A 연결** | **완료** — main.py |
+| **docs/THRESHOLD_WFA_MONITOR.md** 설계 문서 | **완료** |
+| 프로그램 재시작 후 실세션 확인 | **미완료** — 다음 기동 시 |
+
+### 수정 파일 (90차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `config/settings.py` | HORIZON_THRESHOLDS 재보정 + RESEARCH + SGD_FULL_RESET_PENDING |
+| `model/target_builder.py` | `build_targets_asymmetric()` 신규 |
+| `model/multi_horizon_model.py` | class_weight 1m/5m/30m 재조정 |
+| `learning/batch_retrainer.py` | class_weight multi_horizon_model과 동기화 |
+| `learning/online_learner.py` | `reset_full()` 신규 |
+| `main.py` | ThresholdRecalibrator 초기화 + SGD_FULL_RESET_PENDING 처리 + Phase A 연결 |
+| `learning/threshold_recalibrator.py` | **신규** — Phase A 롤링 재보정 모니터 |
+| `docs/THRESHOLD_WFA_MONITOR.md` | **신규** — WFA 모니터 설계 문서 |
+
+### 90차 실세션 확인 사항
+
+1. 재시작 후 첫 GBM 재학습 완료 시 `[SGD] threshold 교체 후 완전 리셋 완료 (1회)` 로그
+2. 이후 재학습에서 SGD 리셋 없음 (1회만 실행 확인)
+3. 새 threshold 기준 [Threshold] ATR 로그에서 15m/30m 발동 빈도 증가 확인
+4. 다음 금요일(2026-06-05) `[ThresholdRecal] 재보정 결과` 로그 확인
 
 ---
 

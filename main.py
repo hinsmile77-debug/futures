@@ -113,6 +113,7 @@ from learning.calibration import MultiHorizonCalibrator
 from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
 from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAIN_BARS
+from learning.threshold_recalibrator import ThresholdRecalibrator
 from learning.shap.shap_tracker import ShapTracker
 from safety.circuit_breaker import CircuitBreaker
 from safety.kill_switch import KillSwitch
@@ -191,7 +192,8 @@ class TradingSystem:
         self.meta_gate         = MetaGate()
         self.toxicity_gate     = ToxicityGate()
         self.trend_gate        = TrendPersistenceGate()
-        self.batch_retrainer   = BatchRetrainer()
+        self.batch_retrainer          = BatchRetrainer()
+        self.threshold_recalibrator   = ThresholdRecalibrator()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
         self.pcr_store          = PCRStore()
         self.option_chain_snap  = OptionChainSnapshot(
@@ -232,6 +234,8 @@ class TradingSystem:
         from safety.contrarian_mode import ContrarianModeTracker
         self.shadow_session = ShadowSessionTracker()
         self.contrarian_mode = ContrarianModeTracker(enable_real_order=False)
+        from collections import deque as _deque
+        self._z_warn_5m: "_deque[int]" = _deque(maxlen=5)  # Shadow 배지용 5분 z경고 롤링
 
         # 현재 레짐
         self.current_regime         = "NEUTRAL"
@@ -2031,6 +2035,14 @@ class TradingSystem:
                     registry["last_applied_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     registry["pending_change"] = {}
                     self._save_feature_registry(registry)
+
+            # threshold 교체 후 SGD 1회 완전 리셋 (플래그가 True인 경우만 실행)
+            from config import settings as _cfg_sgd
+            if getattr(_cfg_sgd, "SGD_FULL_RESET_PENDING", False):
+                self.online_learner.reset_full()
+                _cfg_sgd.SGD_FULL_RESET_PENDING = False
+                log_manager.learning("[SGD] threshold 교체 후 완전 리셋 완료 (1회)")
+
             log_manager.learning(
                 f"[GBM] {prefix}배치 재학습 완료 | "
                 f"{result.get('elapsed_sec', '?')}초 데이터={result.get('data_size', '?')}행"
@@ -2725,21 +2737,20 @@ class TradingSystem:
         _acc30m    = _cb_status.get("accuracy_30m", 0.0)
         _z_warn    = getattr(self.model, "last_z_warn_count", 0)
         self.system_health.update_z_warn(_z_warn)
+        self._z_warn_5m.append(_z_warn)          # 배지용 5분 롤링 (state 무관)
         _ts_dt_obj = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-        self.shadow_session.update(
-            ts_dt            = _ts_dt_obj,
-            acc30m           = _acc30m,
-            core_health_score= self.core_health.score,
-            z_warn_count     = _z_warn,
-        )
-        # Contrarian 매분 업데이트 (30분 정확도 + 마지막 앙상블 방향 사용)
-        # [P4] acc30m 소스 분리: CB③ accuracy_buf(세션 필터 적용) 대신
-        #   pred_buffer 장기 통계를 사용 → CB③와 Contrarian 판단 기준 독립 유지
+        # pred_buffer 기반 30분 정확도 — CB accuracy_buf(거래 기반)보다 훨씬 빠르게 채워짐
         _last_dir = getattr(self, "_last_ensemble_direction", 0)
         try:
             _contra_acc30m = self.pred_buffer.recent_accuracy("30m", last_n=30)
         except Exception:
             _contra_acc30m = _acc30m
+        self.shadow_session.update(
+            ts_dt            = _ts_dt_obj,
+            acc30m           = _contra_acc30m,   # pred_buffer 기반으로 통일
+            core_health_score= self.core_health.score,
+            z_warn_count     = _z_warn,
+        )
         self.contrarian_mode.update(
             acc30m           = _contra_acc30m,
             signal_direction = _last_dir,
@@ -3777,12 +3788,11 @@ class TradingSystem:
             entry_blocked=_shs_state["entry_blocked"],
             kill_switch=_shs_state["kill_switch_active"],
         )
-        _z_warn_recent = sum(self.shadow_session._z_warn_buf)
         self.dashboard.update_shadow_badge(
             state        = self.shadow_session.state,
-            acc30m       = _acc30m,
+            acc30m       = _contra_acc30m,        # pred_buffer 기반 (CB보다 빠르게 갱신)
             core_health  = self.core_health.score,
-            z_warn_count = _z_warn_recent,
+            z_warn_count = sum(self._z_warn_5m),  # state 무관 5분 롤링 버퍼
         )
         if self.system_health.should_send_alert():
             from utils.notify import notify_shs_alert as _nsa
@@ -4519,6 +4529,22 @@ class TradingSystem:
                 logger.info("[DriftAdjuster] SGD alpha 갱신: %.5f (%s)", _new_alpha, _drift_result.get("action"))
         except Exception as _dae:
             logger.warning("[DriftAdjuster] 갱신 실패 (스킵): %s", _dae)
+
+        # ── Phase A 임계값 재보정 모니터 (매주 금요일만 실행) ────────
+        if now.weekday() == 4:   # 금요일
+            try:
+                recal_results = self.threshold_recalibrator.run(
+                    today=now.date().isoformat()
+                )
+                alerts = {h: r["alert"] for h, r in recal_results.items() if r["alert"] != "CLEAR"}
+                if alerts:
+                    log_manager.system(
+                        f"[ThresholdRecal] 경보 발생: {alerts}  "
+                        f"docs/THRESHOLD_WFA_MONITOR.md Phase A 참조",
+                        "WARNING",
+                    )
+            except Exception as _tre:
+                logger.warning("[ThresholdRecal] 실행 실패 (스킵): %s", _tre)
 
         # 일일 리셋
         if hasattr(self, "_investor_timer"):

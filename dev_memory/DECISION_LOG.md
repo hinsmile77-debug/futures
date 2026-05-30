@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-05-30 (90차 — 임계값 재보정 + 운영/연구 병렬 구조 + Phase A WFA 모니터)
+
+### [설계] HORIZON_THRESHOLDS 대칭 재보정 — 데이터 기반, 비대칭은 연구용 고정
+**File**: `config/settings.py`
+**Decision**: 운영 임계값(HORIZON_THRESHOLDS)은 대칭 단순화. 비대칭(HORIZON_THRESHOLDS_RESEARCH)은 ATR 갱신 비대상으로 고정. 3m는 데이터 불충분(F1 기준 현행 우세)으로 현행 0.0006 유지.
+**Why**: 2026-04-28~05-29가 상승 추세 구간이어서 비대칭이 나옴. 이 편향을 그대로 운영에 반영하면 시장 구조 전환 시 역효과. 대칭 단순화 후 Phase C(26주)에서 데이터 충분히 쌓인 뒤 재검토. 3m: n=1,393으로 적고 F1이 A 기준에서 더 높아 현행 유지가 더 안전.
+**How to apply**: RESEARCH는 challenger.db 연구용. 운영 재보정은 HORIZON_THRESHOLDS_BASE만 변경. ATR multiplier(HORIZON_THRESHOLD_MULT)는 건드리지 않음.
+
+### [설계] class_weight 재조정 원칙 — 임계값과 class_weight는 함께 변경
+**File**: `model/multi_horizon_model.py`, `learning/batch_retrainer.py`
+**Decision**: 임계값 변경으로 FLAT 비율이 ~33%로 균형잡히면 기존 강한 FL 억압(0.58~0.65) 불필요. 1m/5m FL 0.85, 30m FL 1.00으로 완화. 두 파일 반드시 동기화.
+**Why**: class_weight는 레이블 분포 불균형 보정이 목적. FLAT이 87~100%로 편향됐던 구 임계값 기준으로 설정된 값. 새 임계값으로 균형잡히면 과도한 FL 억압이 오히려 UP/DN 과대학습 유발.
+**How to apply**: 임계값 변경 시 항상 class_weight 재검토. multi_horizon_model.py와 batch_retrainer.py는 동일 값이어야 함 — 둘 중 하나만 바꾸면 비결정성 버그.
+
+### [설계] SGD 완전 리셋 — 임계값 교체 후 1회 자동 실행, 매 재학습 반복 없음
+**File**: `config/settings.py`, `main.py`, `learning/online_learner.py`
+**Decision**: `SGD_FULL_RESET_PENDING = True` 플래그로 다음 GBM 재학습 완료 시 1회 `reset_full()` 실행. 이후 즉시 False. 매 재학습마다 SGD 리셋되는 오동작 방지.
+**Why**: 임계값 교체로 레이블 체계가 바뀌면 SGD가 이전 레이블 기준 partial_fit 이력을 가지고 있어 모순된 학습 발생. 단, 이것은 1회성 이벤트. 플래그로 1회만 제어하지 않으면 매 30분 배치 재학습마다 SGD가 리셋되어 온라인 학습 이력이 사라지는 역효과.
+**How to apply**: 향후 임계값 재변경 시 `settings.SGD_FULL_RESET_PENDING = True`로 다시 세팅하면 다음 GBM 재학습 완료 시 자동 1회 리셋.
+
+### [설계] Phase A WFA 모니터 — UPDATE 경보는 자동 적용 안 함
+**File**: `learning/threshold_recalibrator.py`, `main.py`
+**Decision**: UPDATE 경보 발생 시 settings.py 자동 교체하지 않음. 로그·DB 기록만. 사용자 확인 후 수동 반영.
+**Why**: 임계값은 레이블 체계 전체에 영향. 자동 적용하면 GBM 재학습·class_weight 검토·SGD 리셋을 같이 처리해야 하는데 자동화가 복잡하고 오동작 시 회복 비용이 큼. 4.4주 데이터로 나온 UPDATE(3m, 30m)도 불안정성 범위 내이므로 추이 관찰이 먼저.
+**How to apply**: Phase A 경보는 "재산출 검토 알림". 실제 반영은 이 DECISION_LOG 원칙 → 수동 코드 수정 → commit 순서로.
+
+---
+
 ## 2026-05-29 (89차 — Qualification 세션 필터 + 호라이즌별 정확도 + 툴팁)
 
 ### [버그] Qualification carry-over — 이전 세션 예측이 오늘 사이클에 카운팅

@@ -60,27 +60,30 @@ GBM_PARAMS = {
 # [한시적] 5/18 초기 운영 기간 — raw_data 누적 중, 5000 복원 목표: 약 2026-05-26
 MIN_TRAIN_BARS = 3000   # 약 8거래일 (원래 5000)
 
-# 호라이즌별 class weight — multi_horizon_model과 동일값 유지 (두 학습기 일관성)
-_CW_30M = {DIRECTION_FLAT: 0.65, DIRECTION_UP: 1.18, DIRECTION_DOWN: 1.18}
+# 호라이즌별 class weight — multi_horizon_model._make_sample_weight 와 반드시 동기화
+# 2026-05-30 threshold 재보정 후: FLAT 비율 ~33% 균형 → 강한 FL 억압 불필요
+# 1m/5m: FL 0.60/0.58 → 0.85 (FLAT~34/33%, 강압 해소)
+# 30m:   FL 0.65 → 1.00 (balanced, FLAT~30%)
+# 3m:    FL 0.75 유지 (threshold 현행 유지, 분포 미변경)
+_CW_1M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
 _CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.12, DIRECTION_DOWN: 1.12}
-# 85차: 1m/5m FL편향 실측(87%/100%) → 명시적 완화 추가
-_CW_1M  = {DIRECTION_FLAT: 0.60, DIRECTION_UP: 1.20, DIRECTION_DOWN: 1.20}
-_CW_5M  = {DIRECTION_FLAT: 0.58, DIRECTION_UP: 1.21, DIRECTION_DOWN: 1.21}
+_CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
+_CW_30M = {DIRECTION_FLAT: 1.00, DIRECTION_UP: 1.00, DIRECTION_DOWN: 1.00}
 
 
 def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
     """호라이즌별 sample_weight 계산.
-    30m/3m/1m/5m: 명시적 FL 완화 (balanced만으로는 FL 기본값 선택 편향 미해소)
-    그 외: sklearn balanced (클래스 불균형 보정)
+    1m/3m/5m/30m: 명시적 가중치 적용.
+    10m/15m: sklearn balanced (FLAT~34~35%, 자동 균형).
     """
-    if horizon_key == "30m":
-        return np.array([_CW_30M.get(int(lbl), 1.0) for lbl in y])
-    if horizon_key == "3m":
-        return np.array([_CW_3M.get(int(lbl), 1.0) for lbl in y])
     if horizon_key == "1m":
         return np.array([_CW_1M.get(int(lbl), 1.0) for lbl in y])
+    if horizon_key == "3m":
+        return np.array([_CW_3M.get(int(lbl), 1.0) for lbl in y])
     if horizon_key == "5m":
         return np.array([_CW_5M.get(int(lbl), 1.0) for lbl in y])
+    if horizon_key == "30m":
+        return np.array([_CW_30M.get(int(lbl), 1.0) for lbl in y])
     return compute_sample_weight("balanced", y)
 
 

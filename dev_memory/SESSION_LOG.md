@@ -6,6 +6,76 @@
 
 ---
 
+## 2026-05-30 (90차 — 임계값 데이터 기반 재보정 + 운영/연구 병렬 구조 + Phase A WFA 모니터)
+
+**Work**: 2026-04-28~05-29 DB 기반 임계값 분석 → 6개 호라이즌 threshold 재보정 + 운영(대칭)/연구(비대칭) 병렬 구조 설계·구현 + SGD 완전 리셋 자동화 + Phase A 롤링 재보정 모니터 구현. 커밋 1개. 8개 파일 변경/신규.
+
+### 분석 내용
+
+#### 1. 임계값 현실화 필요성 분석
+- 기간: 2026-04-28 ~ 2026-05-29, 장중 연속봉만 (갭·이상치 제거)
+- 1분봉 6,795개 → 3분봉 2,314개 → 30분봉 232개
+- 33/34/33 목표 분포 달성 threshold:
+  - 1m: -0.041%/+0.041% | 3m: -0.073%/+0.074% | 5m: -0.089%/+0.095%
+  - 10m: -0.124%/+0.172% | 15m: -0.133%/+0.177% | 30m: -0.129%/+0.262%
+- 현행 vs 데이터 기반 괴리: 15m +42% 과다, 30m +63% 과다 (FLAT 비율 심각 왜곡)
+
+#### 2. 모델A(±0.05%) vs 모델B(데이터 기반) 비교 분석
+- 정확도: 1m·30m는 B 우세, 3m·5m는 A 우세
+- Brier Score: 1m·15m·30m는 B 우세
+- 불일치 구간 PnL: 10m -0.095pts/건, 15m -0.066pts/건, 30m -0.375pts/건 손해 (B가 스킵한 게 정답)
+- ATR 동적 threshold: 현행 BASE 너무 높아 거의 항상 BASE 사용 (동적 미발동). 새 BASE로 15m 발동률 4%→12%, 30m 3%→15%
+
+#### 3. WFA 모니터 방안 설계
+- Phase A (현재): 매주 금요일 롤링 재보정 — FLAT drift ±6%p, threshold δ ±15% 경보
+- Phase B (+6주): DriftDetector 재활용 Brier Score CUSUM 모니터
+- Phase C (+26주): PARAM_SPACE 통합 WFA
+
+### 구현 내용
+
+#### config/settings.py
+- `HORIZON_THRESHOLDS` 6개 값 교체 (1m 0.0005→0.00041, 5m 0.0011→0.00092, 10m 0.0016→0.00148, 15m 0.0022→0.00155, 30m 0.0032→0.00196, 3m 현행 유지)
+- `HORIZON_THRESHOLDS_BASE`: `dict(HORIZON_THRESHOLDS)` 자동 동기화
+- `HORIZON_THRESHOLDS_RESEARCH` 신규: 비대칭 딕셔너리 6개, ATR 갱신 비대상
+- `SGD_FULL_RESET_PENDING = True`: threshold 교체 후 SGD 1회 완전 리셋 플래그
+
+#### model/target_builder.py
+- `build_targets_asymmetric()` 신규: `{"down": float, "up": float}` 비대칭 임계값으로 레이블 생성 (연구용)
+
+#### model/multi_horizon_model.py + learning/batch_retrainer.py (동기화)
+- class_weight 재조정 (새 임계값 기준 FLAT~33% 균형으로 강한 FL 억압 불필요):
+  - 1m: FL 0.60 → 0.85 (이전 이상점 7-A 수정값)
+  - 5m: FL 0.58 → 0.85
+  - 30m: FL 0.65 → 1.00 (balanced)
+  - 3m: FL 0.75 유지 (threshold 미변경)
+  - 10m/15m: compute_sample_weight("balanced") 유지
+
+#### learning/online_learner.py
+- `reset_full()` 신규: SGDClassifier + StandardScaler 완전 재생성, 모든 버퍼·카운터 초기화. 임계값 교체 후 이력 오염 방지용.
+
+#### main.py
+- `from learning.threshold_recalibrator import ThresholdRecalibrator` import 추가
+- `__init__`: `self.threshold_recalibrator = ThresholdRecalibrator()` 초기화
+- `_on_gbm_retrain_done()`: `SGD_FULL_RESET_PENDING == True` 시 `reset_full()` 1회 호출 후 플래그 False
+- `daily_close()`: 매주 금요일 `threshold_recalibrator.run()` 호출 + 경보 시 WARNING 로그
+
+#### learning/threshold_recalibrator.py (신규)
+- `ThresholdRecalibrator` 클래스: Phase A 핵심 로직
+- 연속봉 수익률 분포 재산출, 33/67 분위수 기반 대칭 임계값 산출
+- FLAT drift(목표 34%), threshold δ, ATR ratio 3지표 계산
+- 경보: FLAT ±6%p → WATCHLIST, threshold δ ±15% → UPDATE
+- 결과 저장: `data/db/threshold_monitor.db`
+
+#### docs/THRESHOLD_WFA_MONITOR.md (신규)
+- Phase A~C 전체 설계 문서화 (단계별 구조, 지표, 구현 위치, DB 스키마)
+
+### 첫 실행 결과 (2026-05-30)
+- 3m: UPDATE (FLAT 27.7%, delta +23.5%) — 현행 보류 판단 유효, 데이터 누적 필요
+- 30m: UPDATE (FLAT 27.5%, delta +19.6%) — 4.4주 불안정성 범위, 3~4주 추이 관찰 후 재검토
+- 1m/5m/10m/15m: WATCHLIST (ATR ratio 이상)
+
+---
+
 ## 2026-05-29 (89차 — Qualification 세션 필터 + 호라이즌별 정확도 + 툴팁)
 
 **Work**: 88차 구현 직후 실세션 스크린샷에서 발견된 2가지 이슈 수정 + 툴팁 추가. 커밋 1개. 3개 파일 변경.

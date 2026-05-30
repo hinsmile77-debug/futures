@@ -6,6 +6,38 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-30 (90차) — 임계값 재보정 + Phase A WFA 모니터
+
+### 한일 요약
+
+- [DONE 2026-05-30] **HORIZON_THRESHOLDS 재보정** — 1m→0.00041, 5m→0.00092, 10m→0.00148, 15m→0.00155, 30m→0.00196, 3m 현행 유지
+- [DONE 2026-05-30] **HORIZON_THRESHOLDS_RESEARCH** — 비대칭 딕셔너리 신규, ATR 갱신 비대상
+- [DONE 2026-05-30] **build_targets_asymmetric()** — 연구용 비대칭 레이블 생성 함수 신규
+- [DONE 2026-05-30] **class_weight 재조정** — 1m/5m FL 0.85, 30m FL 1.00. multi_horizon_model + batch_retrainer 동기화
+- [DONE 2026-05-30] **OnlineLearner.reset_full()** — SGD 완전 초기화 메서드 신규
+- [DONE 2026-05-30] **SGD 1회 자동 리셋** — SGD_FULL_RESET_PENDING 플래그 + _on_gbm_retrain_done
+- [DONE 2026-05-30] **ThresholdRecalibrator Phase A** — 신규, 매주 금요일 daily_close 연결
+- [DONE 2026-05-30] **docs/THRESHOLD_WFA_MONITOR.md** — Phase A~C 설계 문서 신규
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 재시작 시] **90차 실세션 확인**
+  - 재시작 후 첫 GBM 재학습 완료 시 `[SGD] threshold 교체 후 완전 리셋 완료 (1회)` 로그
+  - 이후 재학습에서 SGD 리셋 없음 (1회만 실행)
+  - [Threshold] ATR 로그 새 BASE 기준 15m/30m 발동 시점 확인
+  - [Bias] 로그 1m/5m FL 비율 변화 확인
+
+- [NEXT 2026-06-05] **Phase A 첫 자동 실행 확인**
+  - 15:40 `[ThresholdRecal] 재보정 결과` 로그
+  - 3m/30m UPDATE 경보 추이 관찰 (즉시 변경 불필요)
+  - `data/db/threshold_monitor.db` 누적 확인
+
+- [NEXT ~2026-07-11] **Phase B 구현 — Brier Score DriftDetector 연결**
+  - DriftDetector 호라이즌별 인스턴스화 (param_drift_detector.py 재활용)
+  - 3m 임계값 재산출 검토 (현재 보류 중)
+
+---
+
 ## 2026-05-29 (89차) — Qualification 세션 필터 + 호라이즌별 정확도 + 툴팁
 
 ### 한일 요약

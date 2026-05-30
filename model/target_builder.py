@@ -7,9 +7,9 @@
 """
 import numpy as np
 import pandas as pd
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from config.settings import HORIZONS, HORIZON_THRESHOLDS
+from config.settings import HORIZONS, HORIZON_THRESHOLDS, HORIZON_THRESHOLDS_RESEARCH
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 
 
@@ -69,3 +69,48 @@ def build_single_target(
     elif ret < -threshold:
         return DIRECTION_DOWN
     return DIRECTION_FLAT
+
+
+def build_targets_asymmetric(
+    closes: List[float],
+    horizons: Dict[str, int] = None,
+    thresholds_research: Dict[str, dict] = None,
+) -> Dict[str, np.ndarray]:
+    """
+    연구용 비대칭 임계값으로 멀티 호라이즌 타겟 배열 생성.
+
+    thresholds_research 형식:
+        {"1m": {"down": -0.00041, "up": 0.00041}, "30m": {"down": -0.00129, "up": 0.00262}, ...}
+
+    Returns:
+        {"1m": np.array([1, -1, 0, ...]), ...}
+    """
+    if horizons is None:
+        horizons = HORIZONS
+    if thresholds_research is None:
+        thresholds_research = HORIZON_THRESHOLDS_RESEARCH
+
+    prices = np.array(closes, dtype=float)
+    n = len(prices)
+    targets = {}
+
+    for name, h in horizons.items():
+        t = thresholds_research.get(name)
+        if t is None:
+            continue
+        thr_up  = float(t["up"])
+        thr_dn  = float(t["down"])
+        labels  = np.full(n, np.nan)
+
+        for i in range(n - h):
+            ret = (prices[i + h] - prices[i]) / prices[i]
+            if ret > thr_up:
+                labels[i] = DIRECTION_UP
+            elif ret < thr_dn:
+                labels[i] = DIRECTION_DOWN
+            else:
+                labels[i] = DIRECTION_FLAT
+
+        targets[name] = labels
+
+    return targets

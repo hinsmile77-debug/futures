@@ -23,15 +23,19 @@ from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 
 logger = logging.getLogger("SIGNAL")
 
-# 호라이즌별 class weight — FL 다운웨이팅 (balanced만으로는 FL 기본값 선택 편향 미해소)
-# 30m: FL=0.65 (0.5→0.65 완화: 84차 — FL→DN 오분류 방지)
-_CW_30M = {DIRECTION_FLAT: 0.65, DIRECTION_UP: 1.18, DIRECTION_DOWN: 1.18}
-# 3m: FL=0.75 (balanced 역설 — UP/DN 과대학습 완화)
+# 호라이즌별 class weight
+# 2026-05-30 임계값 재보정 후 FLAT 비율이 ~33%로 균형잡힘.
+# 이전의 강한 FL 다운웨이팅은 FL이 60~100%로 편향된 구 임계값 전용이었으므로 완화.
+#
+# 1m: FL=0.85 (이전 0.60 — 새 threshold로 FL~34%, 강한 억압 불필요)
+_CW_1M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
+# 3m: FL=0.75 유지 (threshold 현행 유지, 레이블 분포 미변경)
 _CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.12, DIRECTION_DOWN: 1.12}
-# 1m: FL=0.60 (85차 — FL편향 87% 실측, balanced 미해소 → 명시적 완화)
-_CW_1M  = {DIRECTION_FLAT: 0.60, DIRECTION_UP: 1.20, DIRECTION_DOWN: 1.20}
-# 5m: FL=0.58 (85차 — FL편향 100% 실측, 가장 강한 완화 필요)
-_CW_5M  = {DIRECTION_FLAT: 0.58, DIRECTION_UP: 1.21, DIRECTION_DOWN: 1.21}
+# 5m: FL=0.85 (이전 0.58 — 새 threshold로 FL~33%, 강한 억압 불필요)
+_CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
+# 30m: balanced (이전 FL=0.65 — 새 threshold로 FL~30%, UP/DN 미세 다수이므로 balanced)
+_CW_30M = {DIRECTION_FLAT: 1.00, DIRECTION_UP: 1.00, DIRECTION_DOWN: 1.00}
+# 10m, 15m: compute_sample_weight("balanced") 유지 (FL~34~35%, 자동 균형)
 
 
 def _make_sample_weight(y: np.ndarray, horizon: str) -> np.ndarray:
