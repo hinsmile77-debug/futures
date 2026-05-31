@@ -83,8 +83,8 @@ HORIZON_THRESHOLDS = {
     "30m": 0.00196,  # 0.196% (이전 0.320%, −63%)
 }
 
-# ATR 동적 Threshold — 런타임에 HORIZON_THRESHOLDS를 in-place 갱신
-# HORIZON_THRESHOLDS_BASE: 원본 고정 하한 (동적값이 이 값보다 낮으면 static 유지)
+# HORIZON_THRESHOLDS_BASE: 설계 기준값 (ThresholdRecalibrator Phase A 모니터 참조용)
+# rolling σ 방법3 도입 후 ATR 동적 갱신 제거 (P2) — BASE는 참조 기준으로 유지
 HORIZON_THRESHOLDS_BASE: dict = dict(HORIZON_THRESHOLDS)
 
 # 연구용 비대칭 임계값 — 고정값, ATR 동적 갱신 대상 아님
@@ -119,16 +119,9 @@ HORIZON_THRESHOLDS_RESEARCH: dict = {
     "30m": {"down": -0.00129, "up":  0.00262},
 }
 
-# ATR/Price 비율에 곱하는 승수 (호라이즌별)
-# 산출 근거: KOSPI200 1분봉 σ_1min ≈ 1.47pt, ATR ≈ 1.0σ_1min 가정
-#   threshold ≈ 0.5σ 목표 → mult = 0.5 * (h_min^0.5 / 1.0)
-HORIZON_THRESHOLD_MULT: dict = {
-    "1m": 0.12, "3m": 0.14, "5m": 0.28,   # 3m: 0.20→0.14 (BASE 하향에 맞춰 동적 범위 축소)
-    "10m": 0.40, "15m": 0.52, "30m": 0.70,
-}
-
-# 장초반(09:00~09:30) 추가 배율 — 시초반 고변동성 구간 침묵 강화
-HORIZON_THRESHOLD_OPEN_MULT: float = 1.5
+# HORIZON_THRESHOLD_MULT, HORIZON_THRESHOLD_OPEN_MULT — P2에서 제거 (91차)
+# rolling σ × k 방법3이 ATR 동적 갱신을 완전 대체
+# _log_threshold_monitor() 함수도 동시 제거
 
 ENSEMBLE_WEIGHTS = {
     "1m": 0.12, "3m": 0.08, "5m": 0.22,   # 3m: 0.15→0.08 (저성능 억제), 나머지 +0.02 재분배

@@ -339,8 +339,6 @@ class TradingSystem:
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
         self._last_close: float = 0.0                # 직전 분봉 종가 — 옵션체인 QTimer 폴링에 사용
-        self._threshold_monitor_tick: int = 0        # threshold 모니터 주기 카운터 (30분마다)
-
         # ── rolling σ 임계값 (방법3) ──────────────────────────────────────
         self._sigma_buf: deque = deque(maxlen=20)    # 1분봉 수익률 rolling 버퍼
         self._sigma_20:  float = 0.0                 # 현재 rolling σ (%, 방법3 threshold 계산용)
@@ -2067,43 +2065,13 @@ class TradingSystem:
             self.dashboard.set_model_status(
                 f"GBM {prefix}재학습 완료", f"데이터 {result.get('data_size', '?')}행"
             )
-            _atr_now   = self.feature_builder._last_features.get("atr", 0.0)
-            _price_now = float(self._last_pipeline_price or 0.0)
-            self._log_threshold_monitor(_atr_now, _price_now)
+            # ATR 동적 threshold 갱신 제거 (P2) — rolling σ×k 방법3이 매분 갱신
         else:
             log_manager.learning(f"[GBM] {prefix}재학습 건너뜀: {result.get('error', '')}")
             self.dashboard.set_model_status("대기")
 
-    def _log_threshold_monitor(self, atr: float, price: float) -> None:
-        """ATR 기반 동적 threshold 계산 후 즉시 실적용 + 로그 기록."""
-        import datetime as _dt
-        from config import settings as _cfg
-        if price <= 0 or atr <= 0:
-            return
-
-        vol_ratio = atr / price
-        # 장초반(09:00~09:30) 추가 배율 — 시초반 침묵 강화
-        now_hm = _dt.datetime.now().strftime("%H%M")
-        open_mult = _cfg.HORIZON_THRESHOLD_OPEN_MULT if "0900" <= now_hm <= "0930" else 1.0
-
-        # 호라이즌별 동적값 = max(base, ATR동적) — base가 하한 보장
-        new_thresholds = {}
-        for h, base in _cfg.HORIZON_THRESHOLDS_BASE.items():
-            mult = _cfg.HORIZON_THRESHOLD_MULT.get(h, 0.5)
-            dynamic = vol_ratio * mult * open_mult
-            new_thresholds[h] = max(base, dynamic)
-
-        # in-place 갱신 — 모든 import 참조에 즉시 반영
-        _cfg.HORIZON_THRESHOLDS.update(new_thresholds)
-
-        base_parts    = "  ".join(f"{h}={v*100:.3f}%" for h, v in _cfg.HORIZON_THRESHOLDS_BASE.items())
-        dynamic_parts = "  ".join(f"{h}={v*100:.3f}%" for h, v in new_thresholds.items())
-        open_tag = f" [장초반×{open_mult}]" if open_mult > 1.0 else ""
-        log_manager.learning(
-            f"[Threshold] ATR={atr:.2f}pt  Price={price:.2f}  vol_ratio={vol_ratio*100:.3f}%{open_tag}\n"
-            f"  Base   : {base_parts}\n"
-            f"  Applied: {dynamic_parts}"
-        )
+    # _log_threshold_monitor() — P2에서 제거 (91차)
+    # rolling σ × k 방법3이 HORIZON_THRESHOLDS를 매분 갱신하므로 ATR 동적 불필요
 
     # ── 장 전 준비 (08:45) ─────────────────────────────────────
     def pre_market_setup(self):
@@ -2656,11 +2624,6 @@ class TradingSystem:
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
         atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
-
-        # ── Threshold 모니터 (30분 주기) ─────────────────────────
-        self._threshold_monitor_tick += 1
-        if self._threshold_monitor_tick % 30 == 0:
-            self._log_threshold_monitor(atr, close)
 
         # ── CORE 3종 피처 NaN/Inf 가드 ──────────────────────────
         # 진입 체크리스트가 직접 사용하는 피처만 방어 (다른 피처는 앙상블에서 0으로 처리됨)
