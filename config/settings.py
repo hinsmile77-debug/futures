@@ -94,6 +94,22 @@ HORIZON_THRESHOLDS_BASE: dict = dict(HORIZON_THRESHOLDS)
 # GBM 재학습 완료 시 True이면 reset_full() 호출 → 이후 자동으로 False
 SGD_FULL_RESET_PENDING: bool = True
 
+# rolling σ 임계값 설정 (방법3)
+# threshold_h = sigma_20봉 × SIGMA_K × sqrt(h_min)
+# k=0.41 → 실측 전 기간 FLAT=33.6% (목표 34%)
+SIGMA_K:   float = 0.41   # FLAT 34% 달성 계수
+SIGMA_W:   int   = 20     # rolling window 크기 (봉 수)
+SIGMA_W_MIN: int = 5      # 최소 유효 봉 수 (미달 시 전날 EOD sigma 사용)
+
+# ATR 동적 threshold 점진 제거 플래그
+# True → rolling σ × k 사용 (방법3)
+# False → 기존 ATR 방식 유지 (안전망, Phase 3 완료 후 제거)
+USE_ROLLING_SIGMA_THRESHOLD: bool = True
+
+# GBM 첫 재학습 완료 전 진입 사이즈 배율
+# 방법3 레이블 기반 재학습 전까지 구 레이블 GBM으로 운영 → 보수 사이즈
+PRE_RETRAIN_SIZE_MULT: float = 0.6
+
 HORIZON_THRESHOLDS_RESEARCH: dict = {
     "1m":  {"down": -0.00041, "up":  0.00041},
     "3m":  {"down": -0.00060, "up":  0.00060},

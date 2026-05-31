@@ -390,11 +390,43 @@ class BatchRetrainer:
             )
 
             # y 라벨 (호라이즌별 미래 수익률 방향)
+            # 방법B: 각 봉의 시점별 rolling sigma × k 로 threshold 계산
+            # → 날별 변동성 차이를 레이블에 반영 (FLAT std 14%p → 3%p)
+            from collections import deque as _deque
+            import math as _math
+            from config.settings import (
+                SIGMA_K as _SK, SIGMA_W as _SW, SIGMA_W_MIN as _SW_MIN,
+                USE_ROLLING_SIGMA_THRESHOLD as _USE_ROLLING,
+            )
+
             y_dict = {}
             for hz, h_min in HORIZONS.items():
-                threshold = HORIZON_THRESHOLDS.get(hz, 0.0003)
                 y = []
+                _sigma_buf_rt = _deque(maxlen=_SW)
+
                 for ts, _ in records:
+                    # 1분봉 수익률로 rolling sigma 업데이트
+                    if _USE_ROLLING:
+                        _c0 = close_map.get(ts)
+                        _t_prev = (
+                            datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                            - datetime.timedelta(minutes=1)
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+                        _c_prev = close_map.get(_t_prev)
+                        if _c0 and _c_prev and _c_prev > 0:
+                            _sigma_buf_rt.append((_c0 - _c_prev) / _c_prev * 100)
+
+                        _n = len(_sigma_buf_rt)
+                        if _n >= _SW_MIN and _n > 1:
+                            _v = list(_sigma_buf_rt)
+                            _m = sum(_v) / _n
+                            _sig = _math.sqrt(sum((x - _m) ** 2 for x in _v) / (_n - 1))
+                            threshold = _sig / 100.0 * _SK * _math.sqrt(h_min)
+                        else:
+                            threshold = HORIZON_THRESHOLDS.get(hz, 0.0003)
+                    else:
+                        threshold = HORIZON_THRESHOLDS.get(hz, 0.0003)
+
                     future_ts = (
                         datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
                         + datetime.timedelta(minutes=h_min)

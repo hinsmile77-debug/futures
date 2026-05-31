@@ -340,6 +340,14 @@ class TradingSystem:
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
         self._last_close: float = 0.0                # 직전 분봉 종가 — 옵션체인 QTimer 폴링에 사용
         self._threshold_monitor_tick: int = 0        # threshold 모니터 주기 카운터 (30분마다)
+
+        # ── rolling σ 임계값 (방법3) ──────────────────────────────────────
+        self._sigma_buf: deque = deque(maxlen=20)    # 1분봉 수익률 rolling 버퍼
+        self._sigma_20:  float = 0.0                 # 현재 rolling σ (%, 방법3 threshold 계산용)
+        self._sigma_ready: bool = False              # sigma_20봉 달성 플래그
+        self._last_sigma_20: float = 0.0            # 전날 EOD sigma (장 초반 20봉 미수집 구간 폴백)
+        # GBM 첫 재학습 완료 전 보수 진입 제어
+        self._pre_retrain_done: bool = False         # True이면 방법3 레이블 GBM 사용 중
         self._last_balance_result: dict = {}
         self._last_sizer_balance: float = 100_000_000.0
         self._effect_report_tick: int = 0
@@ -2043,6 +2051,14 @@ class TradingSystem:
                 _cfg_sgd.SGD_FULL_RESET_PENDING = False
                 log_manager.learning("[SGD] threshold 교체 후 완전 리셋 완료 (1회)")
 
+            # 방법3 레이블 기반 GBM 첫 재학습 완료 → 보수 진입 제한 해제
+            if not self._pre_retrain_done:
+                self._pre_retrain_done = True
+                log_manager.system(
+                    "[EntryGate] GBM 첫 재학습 완료(방법3 레이블) "
+                    f"— 사이즈 제한 해제 (×{runtime_settings.PRE_RETRAIN_SIZE_MULT:.1f} → ×1.0)"
+                )
+
             log_manager.learning(
                 f"[GBM] {prefix}배치 재학습 완료 | "
                 f"{result.get('elapsed_sec', '?')}초 데이터={result.get('data_size', '?')}행"
@@ -2380,6 +2396,40 @@ class TradingSystem:
         # P3-a: 매 분봉 시작 시 stuck 플래그 초기화
         self._stuck_this_minute = False
         log_manager.signal(f"--- {ts} 분봉 파이프라인 시작 ---")
+
+        # ── rolling σ 갱신 (방법3) ─────────────────────────────────────
+        # 매분 1분봉 수익률을 sigma_buf에 추가 → HORIZON_THRESHOLDS 실시간 갱신
+        _last_p = self._last_pipeline_price
+        if _last_p and _last_p > 0 and close and close > 0:
+            _ret_1m = (close - _last_p) / _last_p * 100
+            self._sigma_buf.append(_ret_1m)
+
+        _n_sig = len(self._sigma_buf)
+        if _n_sig >= runtime_settings.SIGMA_W_MIN and _n_sig > 1:
+            _v = list(self._sigma_buf)
+            _m = sum(_v) / _n_sig
+            self._sigma_20 = (
+                sum((x - _m) ** 2 for x in _v) / (_n_sig - 1)
+            ) ** 0.5
+            self._sigma_ready = (_n_sig >= runtime_settings.SIGMA_W)
+        elif self._last_sigma_20 > 0:
+            self._sigma_20 = self._last_sigma_20
+
+        if (
+            runtime_settings.USE_ROLLING_SIGMA_THRESHOLD
+            and self._sigma_20 > 0
+        ):
+            import math as _math_s
+            from config import settings as _cfg_s
+            _K = _cfg_s.SIGMA_K
+            _cfg_s.HORIZON_THRESHOLDS.update({
+                "1m":  self._sigma_20 / 100.0 * _K * _math_s.sqrt(1),
+                "3m":  self._sigma_20 / 100.0 * _K * _math_s.sqrt(3),
+                "5m":  self._sigma_20 / 100.0 * _K * _math_s.sqrt(5),
+                "10m": self._sigma_20 / 100.0 * _K * _math_s.sqrt(10),
+                "15m": self._sigma_20 / 100.0 * _K * _math_s.sqrt(15),
+                "30m": self._sigma_20 / 100.0 * _K * _math_s.sqrt(30),
+            })
 
         # ── STEP 1: 과거 예측 검증 ─────────────────────────────
         _st.append(("S1", time.perf_counter()))
@@ -3046,6 +3096,33 @@ class TradingSystem:
             except Exception as _cg_e:
                 logger.debug("[RegimeChampGate] 스킵: %s", _cg_e)
 
+        # ── 최적 진입 시점 게이트 (방법3 sigma 안정화 기준) ────────────
+        _now_hm = datetime.datetime.now().strftime("%H%M")
+        if _now_hm < "0920":
+            # 09:00~09:19: sigma_20봉 미수집 → 진입 금지
+            if direction != 0:
+                direction = 0
+                grade     = "X"
+                log_manager.signal(
+                    f"[EntryGate] sigma_20봉 미수집({len(self._sigma_buf)}봉) "
+                    f"— 진입 대기 (09:20 해제)"
+                )
+        elif _now_hm < "0930":
+            # 09:20~09:29: grade A만, min_conf 0.60 상향, size×0.5 (STEP 7에서 적용)
+            if grade in ("B", "C"):
+                direction = 0
+                grade     = "X"
+                log_manager.signal("[EntryGate] 조건부 구간 — A등급만 허용 (09:30까지)")
+            elif grade == "A":
+                actual_min_conf = max(actual_min_conf, 0.60)
+
+        # GBM 첫 재학습(방법3 레이블) 완료 전 사이즈 축소 플래그
+        # → STEP 7 진입 실행 시 size_mult 에 _pre_retrain_size_factor 곱함
+        _pre_retrain_size_factor = (
+            1.0 if self._pre_retrain_done
+            else runtime_settings.PRE_RETRAIN_SIZE_MULT
+        )
+
         log_manager.signal(
             f"앙상블: dir={direction:+d} conf={confidence:.1%} "
             f"grade={grade} micro={self.current_micro_regime}"
@@ -3281,6 +3358,14 @@ class TradingSystem:
                     log_manager.signal(
                         f"[HealthPolicy] Degraded Mode 축소: size_mult={float(HEALTH_DEGRADED_SIZE_MULT):.2f}"
                     )
+            # 방법3: GBM 첫 재학습 전 / 09:20~09:29 조건부 구간 사이즈 축소
+            if _pre_retrain_size_factor < 1.0 and _qty_display > 0:
+                _qty_display = max(1, int(round(_qty_display * _pre_retrain_size_factor)))
+                log_manager.signal(
+                    f"[EntryGate] 사이즈 축소 ×{_pre_retrain_size_factor:.1f} "
+                    f"({'GBM 재학습 전' if not self._pre_retrain_done else '조건부 진입 구간'})"
+                )
+
             if _exec_action == "block":
                 _final_grade = "X"
                 _qty_display = 0
@@ -4593,6 +4678,18 @@ class TradingSystem:
         self.emergency_exit.reset()
         self.kill_switch.deactivate()
         self.system_health.reset_daily()    # EKS·GAP_OPEN 상태 초기화 (z_warn·restart는 유지)
+
+        # rolling σ EOD 저장 + 초기화 (방법3)
+        if self._sigma_20 > 0:
+            self._last_sigma_20 = self._sigma_20
+            log_manager.learning(
+                f"[Sigma] EOD sigma_20={self._sigma_20:.5f}% 저장 "
+                f"(내일 장 초반 20봉 미수집 구간 폴백용)"
+            )
+        self._sigma_buf.clear()
+        self._sigma_ready = False
+        self._sigma_20 = 0.0
+        self._pre_retrain_done = False   # 내일 첫 재학습 완료 전까지 보수 사이즈 재활성
 
         notify(
             f"일일 마감\n승:{stats['wins']} 패:{stats['losses']}\n"
