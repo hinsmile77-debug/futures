@@ -8687,6 +8687,16 @@ class MireukDashboard(QMainWindow):
         if self.experiment_gate_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.experiment_gate_panel), "🧪 실험 게이트")
 
+        # Phase A 임계값 모니터 패널
+        try:
+            from dashboard.panels.threshold_monitor_panel import ThresholdMonitorPanel as _TMP
+            self.threshold_monitor_panel = _TMP()
+        except Exception as _tme:
+            logger.warning("[Dashboard] ThresholdMonitorPanel 로드 실패: %s", _tme)
+            self.threshold_monitor_panel = None
+        if self.threshold_monitor_panel is not None:
+            self.mid_tabs.addTab(self._wrap(self.threshold_monitor_panel), "📐 임계값 모니터")
+
         # 레짐 실시간 모니터 패널
         try:
             from dashboard.panels.regime_panel import RegimePanel as _RP

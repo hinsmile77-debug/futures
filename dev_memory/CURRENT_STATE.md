@@ -1,7 +1,50 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-30 (90차) — **임계값 데이터 기반 재보정 + 운영/연구 병렬 구조 + Phase A WFA 모니터**
+> 마지막 업데이트: 2026-05-30 (91·92차) — **rolling σ 방법3 Phase 1+2 구현 + ATR 완전 제거**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-05-30 (91·92차) — rolling σ 방법3 Phase 1+2 구현 + ATR 완전 제거
+
+### 배경
+
+5/19~5/29 진입 0 근본 원인(저변동성 장세 → FLAT 레이블 50~70% 폭증 → confidence 붕괴)을 해결하기 위해 방법3(rolling sigma × k=0.41) 단독 채택. Phase 1(핵심 로직 구현) + Phase 2(ATR 점진 제거 완료).
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **SIGMA_K=0.41, SIGMA_W=20** + `USE_ROLLING_SIGMA_THRESHOLD=True` | **완료** — config/settings.py |
+| **batch_retrainer 방법B** — 봉별 rolling σ×k 레이블 생성 | **완료** — learning/batch_retrainer.py |
+| **sigma_buf 매분 갱신** + HORIZON_THRESHOLDS 실시간 갱신 | **완료** — main.py 파이프라인 |
+| **진입 게이트** — 09:00~09:19 금지 / 09:20~09:29 A등급·size×0.5 / 09:30 표준 | **완료** — main.py STEP 6 |
+| **PRE_RETRAIN_SIZE_MULT=0.6** — GBM 첫 재학습 완료 전 보수 진입 | **완료** — main.py |
+| **EOD sigma 저장** (_last_sigma_20) + 일일 리셋 | **완료** — main.py daily_close |
+| **ATR 동적 threshold 완전 제거** — _log_threshold_monitor, tick 카운터, MULT 상수 | **완료** — main.py + settings.py |
+| **ThresholdMonitorPanel** UI 대시보드 추가 | **완료** — dashboard (미커밋) |
+| 프로그램 재시작 후 실세션 확인 | **미완료** — 다음 기동 시 |
+| P1 방안B — prediction_buffer sigma_at_t 저장 | **미구현** — NEXT 잔여 |
+
+### 수정 파일 (91·92차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `config/settings.py` | SIGMA_K/W/MIN/USE_ROLLING/PRE_RETRAIN 추가, ATR MULT 제거 |
+| `learning/batch_retrainer.py` | 방법B 봉별 rolling σ 레이블 생성 |
+| `main.py` | sigma 파이프라인 + 진입 게이트 + pre_retrain 제어 + ATR 제거 |
+| `dashboard/panels/threshold_monitor_panel.py` | **신규** — Phase A 모니터 UI |
+| `dashboard/main_dashboard.py` | "📐 임계값 모니터" 탭 추가 |
+| `docs/ROLLING_SIGMA_IMPL_PLAN.md` | **신규** — Phase 0~3 구현 계획 |
+
+### 91·92차 실세션 확인 사항
+
+1. `[EntryGate] sigma_20봉 미수집 — 진입 대기 (09:20 해제)` 로그 (09:00~09:19)
+2. `[EntryGate] GBM 첫 재학습 완료 — 사이즈 제한 해제` 로그
+3. `[Sigma] EOD sigma_20=0.0XXXX% 저장` 로그 (15:40 daily_close)
+4. `[Bias] 1m FL=XX%` — FL 35% 이하 확인 (이전 87~100% 대비)
+5. 09:30 이후 A/B 등급 진입 신호 발생 확인
+6. "📐 임계값 모니터" 탭 표시 확인
 
 ---
 

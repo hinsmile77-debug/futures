@@ -6,6 +6,65 @@
 
 ---
 
+## 2026-05-30 (91·92차 — rolling σ 방법3 Phase 1+2 구현 + ATR 완전 제거)
+
+**Work**: 방법3(rolling sigma × k=0.41) 단독 채택 구현. Phase 1(핵심 로직) + Phase 2(ATR 제거) 완료. 커밋 2개(91차 c9e4f82, 92차 9751c96). 4개 파일 변경.
+
+### 분석 내용
+
+#### 1. σ_1min 일별/시간대별 변화 실측
+- 일별 sigma: 0.044~0.218%, 최고/최저 4.9배 차이
+- 시간대별: 09:00 sigma=0.241% / 13:30 sigma=0.098% → **2.45배 차이**
+- 5/19 이후 저변동성 진입: p50 0.129% → 0.065% (절반 급감)
+
+#### 2. 방법3 선택 근거 (3가지 방법 비교)
+- 방법1 (현재 정적): FLAT std=14.4%p, 진입 0 재발 위험
+- 방법2 (σ_1min×√t): 방법1과 실질 동일 (최적 sigma_1min=0.041% = 방법1 threshold)
+- 방법3 (rolling×k): **FLAT std=3.2%p**, 저변동성 날도 26~39% 안정
+
+#### 3. k=0.41 산출 흐름
+- 탐색법: rolling 20봉 sigma에서 FLAT 34% 달성하는 k 탐색
+- k=0.41 → FLAT 33.6%, 주별 최적 k 범위 0.40~0.45 (안정)
+- 주기적 재보정 불필요 — Phase A UPDATE 경보 발생 시만 재산출
+
+#### 4. 진입 시점 분석
+- 09:00~09:19: sigma_20봉 미수집 → 진입 금지
+- 09:20~09:29: A등급만, min_conf 0.60, size×0.5
+- 09:30~: 표준 진입 (SGD warmup 30봉 완료, 10m Qualification 달성)
+
+#### 5. SGD 운영 흐름 (방법3 도입 후)
+- actual 레이블: prediction_buffer가 현재 HORIZON_THRESHOLDS(rolling σ×k)로 생성
+- 방안B(P1): 예측 시점 sigma 저장 → verify 시 사용 (미구현, P1-a~d 잔여)
+- SGD는 변동성 대비 상대 강도를 학습 (일관성 있음)
+
+#### 6. 주기적 재보정 불필요 확인
+- settings.py HORIZON_THRESHOLDS는 시작 직후 5분 폴백으로만 사용
+- 5분 이후: rolling σ×k가 자동 대체 → 재보정 의미 없음
+- k=0.41은 Phase A UPDATE 경보 발생 시에만 재산출
+
+### 구현 내용
+
+#### [91차] Phase 1 — rolling σ 핵심 구현 (c9e4f82)
+- **config/settings.py**: `SIGMA_K=0.41`, `SIGMA_W=20`, `SIGMA_W_MIN=5`, `USE_ROLLING_SIGMA_THRESHOLD=True`, `PRE_RETRAIN_SIZE_MULT=0.6`
+- **batch_retrainer._load_from_db()**: 봉별 rolling σ×k 레이블 생성 (방법B 핵심) — FLAT std 14%p→3.2%p
+- **main.py**:
+  - `_sigma_buf`, `_sigma_20`, `_sigma_ready`, `_last_sigma_20`, `_pre_retrain_done` 초기화
+  - 매분 파이프라인: sigma_buf 갱신 → HORIZON_THRESHOLDS 매분 rolling σ×k 갱신
+  - 진입 게이트: 09:20 미만 금지 / 09:20~09:29 A등급·size×0.5 / 09:30 표준
+  - `_on_gbm_retrain_done`: 첫 재학습 완료 시 `_pre_retrain_done=True`
+  - `daily_close`: EOD sigma 저장 + 버퍼 초기화 + `_pre_retrain_done=False` 리셋
+
+#### [92차] Phase 2 — ATR 완전 제거 (9751c96)
+- **main.py**: `_log_threshold_monitor()` 함수 제거, `_threshold_monitor_tick` 제거, 30분 tick 블록 제거
+- **config/settings.py**: `HORIZON_THRESHOLD_MULT`, `HORIZON_THRESHOLD_OPEN_MULT` 제거, `HORIZON_THRESHOLDS_BASE` 주석 갱신
+
+#### 추가 구현 (미커밋)
+- **dashboard/panels/threshold_monitor_panel.py**: Phase A k값/FLAT 비율 모니터 UI (신규)
+- **dashboard/main_dashboard.py**: "📐 임계값 모니터" 탭 추가
+- **docs/ROLLING_SIGMA_IMPL_PLAN.md**: Phase 0~3 구현 계획 문서 (91차에 커밋)
+
+---
+
 ## 2026-05-30 (90차 — 임계값 데이터 기반 재보정 + 운영/연구 병렬 구조 + Phase A WFA 모니터)
 
 **Work**: 2026-04-28~05-29 DB 기반 임계값 분석 → 6개 호라이즌 threshold 재보정 + 운영(대칭)/연구(비대칭) 병렬 구조 설계·구현 + SGD 완전 리셋 자동화 + Phase A 롤링 재보정 모니터 구현. 커밋 1개. 8개 파일 변경/신규.

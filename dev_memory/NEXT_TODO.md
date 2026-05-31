@@ -6,6 +6,47 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-05-30 (91·92차) — rolling σ 방법3 Phase 1+2 구현 + ATR 제거
+
+### 한일 요약
+
+- [DONE 2026-05-30] **SIGMA_K=0.41, SIGMA_W=20, USE_ROLLING_SIGMA_THRESHOLD=True** (config/settings.py)
+- [DONE 2026-05-30] **batch_retrainer 방법B** — 봉별 rolling σ×k 레이블 생성 (_load_from_db 수정)
+- [DONE 2026-05-30] **sigma_buf 매분 갱신** + HORIZON_THRESHOLDS 매분 rolling σ×k 갱신 (main.py 파이프라인)
+- [DONE 2026-05-30] **진입 게이트** — 09:20 미만 금지 / 09:20~09:29 A·size×0.5 / 09:30 표준 (main.py STEP 6)
+- [DONE 2026-05-30] **PRE_RETRAIN_SIZE_MULT=0.6** + `_pre_retrain_done` 플래그 (main.py)
+- [DONE 2026-05-30] **EOD sigma 저장** `_last_sigma_20` + 일일 리셋 (main.py daily_close)
+- [DONE 2026-05-30] **ATR 동적 threshold 완전 제거** — `_log_threshold_monitor`, `_threshold_monitor_tick`, `HORIZON_THRESHOLD_MULT`, `HORIZON_THRESHOLD_OPEN_MULT`
+- [DONE 2026-05-30] **ThresholdMonitorPanel** UI 패널 신규 (dashboard/panels)
+- [DONE 2026-05-30] **docs/ROLLING_SIGMA_IMPL_PLAN.md** — Phase 0~3 구현 계획 문서
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 재시작 시] **91·92차 실세션 확인**
+  - `[EntryGate] sigma_20봉 미수집` 로그 (09:00~09:19)
+  - `[EntryGate] GBM 첫 재학습 완료 — 사이즈 제한 해제` 로그
+  - `[SGD] threshold 교체 후 완전 리셋 완료 (1회)` 로그 (SGD_FULL_RESET_PENDING)
+  - `[Sigma] EOD sigma_20=0.0XXXX% 저장` 로그 (15:40)
+  - `[Bias] 1m FL=XX%` — FL 35% 이하 확인 (이전 87~100% 대비)
+  - "📐 임계값 모니터" 탭 표시 확인
+
+- [NEXT 미구현 — P1 잔여] **방안B: prediction_buffer sigma_at_t 저장**
+  - `predictions` 테이블 `sigma_at_t REAL` 컬럼 마이그레이션
+  - `save_prediction()` `sigma_at_t` 파라미터 추가 + DB 저장
+  - `verify_and_update()` 저장된 sigma_at_t 기반 threshold 사용
+  - `main.py` STEP 5 예측 저장 시 `sigma_at_t=self._sigma_20` 전달
+
+- [NEXT 2026-06-05] **Phase A 첫 자동 실행 확인**
+  - 15:40 `[ThresholdRecal] 재보정 결과` 로그
+  - k=0.41 기준 FLAT 비율이 26~39% 범위 유지 확인
+  - threshold_monitor.db 누적 확인
+
+- [NEXT ~2026-07-11] **Phase B 구현 — Brier Score DriftDetector 연결**
+  - DriftDetector 호라이즌별 인스턴스화 (param_drift_detector.py 재활용)
+  - 3m 임계값 재산출 검토 (현재 보류)
+
+---
+
 ## 2026-05-30 (90차) — 임계값 재보정 + Phase A WFA 모니터
 
 ### 한일 요약
@@ -21,20 +62,14 @@
 
 ### 다음 할 일 (우선순위 순)
 
-- [NEXT 재시작 시] **90차 실세션 확인**
-  - 재시작 후 첫 GBM 재학습 완료 시 `[SGD] threshold 교체 후 완전 리셋 완료 (1회)` 로그
-  - 이후 재학습에서 SGD 리셋 없음 (1회만 실행)
-  - [Threshold] ATR 로그 새 BASE 기준 15m/30m 발동 시점 확인
-  - [Bias] 로그 1m/5m FL 비율 변화 확인
-
 - [NEXT 2026-06-05] **Phase A 첫 자동 실행 확인**
   - 15:40 `[ThresholdRecal] 재보정 결과` 로그
-  - 3m/30m UPDATE 경보 추이 관찰 (즉시 변경 불필요)
+  - 3m/30m UPDATE 경보 추이 관찰
   - `data/db/threshold_monitor.db` 누적 확인
 
 - [NEXT ~2026-07-11] **Phase B 구현 — Brier Score DriftDetector 연결**
-  - DriftDetector 호라이즌별 인스턴스화 (param_drift_detector.py 재활용)
-  - 3m 임계값 재산출 검토 (현재 보류 중)
+  - DriftDetector 호라이즌별 인스턴스화
+  - 3m 임계값 재산출 검토
 
 ---
 

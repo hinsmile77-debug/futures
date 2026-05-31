@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-05-30 (91·92차 — rolling σ 방법3 Phase 1+2)
+
+### [설계] 방법3 단독 채택 — 방법1/2 폐기 이유
+**File**: `config/settings.py`, `learning/batch_retrainer.py`, `main.py`
+**Decision**: 방법1(정적 threshold)·방법2(σ_1min×√t)는 실질 동일(FLAT std=14%p). 방법3(rolling σ×k)만 채택(FLAT std=3.2%p).
+**Why**: 방법2의 최적 σ_1min=0.041% = 방법1의 1m threshold와 동일. 수익률이 fat-tail + 시계열 상관이 있어 √t 가정이 성립하지 않음. 방법3만이 저변동성 날(5/19~)에서도 FLAT 26~39% 안정적으로 유지.
+**How to apply**: SIGMA_K=0.41 고정. Phase A UPDATE 경보 발생 시에만 재산출. settings.py HORIZON_THRESHOLDS는 시작 5분 폴백으로만 사용됨.
+
+### [설계] 방법B(봉별 rolling σ 레이블) — 방법A(균일 sigma) 미채택 이유
+**File**: `learning/batch_retrainer.py`
+**Decision**: GBM 재학습 레이블 생성 시 재학습 시점 단일 sigma 균일 적용(방법A) 대신 각 봉의 시점별 rolling sigma 직접 계산(방법B) 채택.
+**Why**: 방법A: EOD sigma를 8주 전체에 균일 적용 → 전체 FLAT=28.1%(목표 34% 미달), 날별 편차 13~56%. 방법B: 봉별 sigma → 전체 FLAT=32.8%, 날별 26~39% 안정. 방법A는 고변동성 날에 FLAT 13%로 UP/DN 남발, 저변동성 날에 55%로 폭증.
+**How to apply**: `USE_ROLLING_SIGMA_THRESHOLD=True` 시 방법B 동작. False 시 기존 균일 방법A 폴백.
+
+### [설계] ATR 동적 threshold 완전 제거 — 방법3으로 완전 대체
+**File**: `main.py`, `config/settings.py`
+**Decision**: `_log_threshold_monitor()` 함수, `_threshold_monitor_tick`, `HORIZON_THRESHOLD_MULT`, `HORIZON_THRESHOLD_OPEN_MULT` 전체 제거.
+**Why**: ATR 동적 threshold는 현행 변동성(ATR > 4.4pt 이상)에서만 발동(5~15%). 방법3이 매분 rolling σ로 HORIZON_THRESHOLDS를 갱신하므로 역할 100% 중복. 복잡도만 증가.
+**How to apply**: `HORIZON_THRESHOLDS_BASE`는 ThresholdRecalibrator가 "설계 기준값"으로 참조하므로 유지. `USE_ROLLING_SIGMA_THRESHOLD=False` 설정 시 롤백 가능(방법A 폴백).
+
+### [설계] 진입 시점 게이트 — 09:30 기준
+**File**: `main.py` STEP 6
+**Decision**: 09:00~09:19 진입 금지, 09:20~09:29 A등급·min_conf 0.60·size×0.5, 09:30 표준.
+**Why**: sigma_20봉(5분+) 완성 시점: 09:05~09:20. SGD warmup 30봉: 09:30. 10m Qualification: 09:30. confidence ≥58% 비율: 09:21부터 80% 안정. 09:30이 모든 조건 최초 충족 시점.
+**How to apply**: `_sigma_ready` 플래그(20봉 달성)와 독립적으로 시계 기반 게이트 유지. sigma_ready와 time gate 모두 충족해야 진입.
+
+### [설계] HORIZON_THRESHOLDS 주기적 재보정 불필요
+**File**: `config/settings.py`
+**Decision**: 방법3 도입 후 settings.py HORIZON_THRESHOLDS 정적값의 주기적 재보정 불필요.
+**Why**: 시작 5분 후 rolling σ가 HORIZON_THRESHOLDS를 완전히 덮어씀. 정적값은 폴백으로만 작동. k=0.41의 주별 편차 0.40~0.45로 안정적. Phase A UPDATE 경보 발생 시만 SIGMA_K 조정.
+**How to apply**: Phase A 경보 모니터링으로 충분. 재보정 필요 시 `SIGMA_K` 값 하나만 변경.
+
+---
+
 ## 2026-05-30 (90차 — 임계값 재보정 + 운영/연구 병렬 구조 + Phase A WFA 모니터)
 
 ### [설계] HORIZON_THRESHOLDS 대칭 재보정 — 데이터 기반, 비대칭은 연구용 고정
