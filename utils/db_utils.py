@@ -239,6 +239,10 @@ def _migrate_predictions_db():
             for name in ("up_prob", "down_prob", "flat_prob"):
                 if name not in cols:
                     conn.execute(f"ALTER TABLE predictions ADD COLUMN {name} REAL")
+            if "sigma_at_t" not in cols:
+                conn.execute(
+                    "ALTER TABLE predictions ADD COLUMN sigma_at_t REAL DEFAULT 0.0"
+                )
             conn.execute(
                 """
                 UPDATE predictions

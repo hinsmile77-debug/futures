@@ -3917,6 +3917,7 @@ class TradingSystem:
                     flat_prob  = h_res.get("flat"),
                     features   = {k: round(float(v), 4) for k, v in features.items()
                                   if v is not None and v == v},  # NaN/None 제외
+                    sigma_at_t = self._sigma_20,
                 )
             self.pred_buffer.save_ensemble_decision(
                 ts=ts,

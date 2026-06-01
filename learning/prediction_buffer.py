@@ -13,7 +13,7 @@ import logging
 import math
 from typing import Dict, List, Optional, Tuple
 
-from config.settings import HORIZONS, HORIZON_THRESHOLDS, PREDICTIONS_DB
+from config.settings import HORIZONS, HORIZON_THRESHOLDS, PREDICTIONS_DB, SIGMA_K
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from learning.meta_labeling import compact_feature_json, derive_meta_label
 from model.target_builder import build_single_target
@@ -90,6 +90,7 @@ class PredictionBuffer:
         down_prob: Optional[float] = None,
         flat_prob: Optional[float] = None,
         features: Optional[Dict] = None,
+        sigma_at_t: float = 0.0,
     ):
         """예측 저장"""
         try:
@@ -122,12 +123,16 @@ class PredictionBuffer:
         flat_prob = _safe_prob(flat_prob, 1 / 3)
 
         feat_json = json.dumps(features, ensure_ascii=False) if features else "{}"
+        try:
+            sigma_at_t = float(sigma_at_t) if sigma_at_t else 0.0
+        except (TypeError, ValueError):
+            sigma_at_t = 0.0
         execute(
             PREDICTIONS_DB,
             """INSERT INTO predictions
-               (ts, horizon, direction, confidence, up_prob, down_prob, flat_prob, features)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (ts, horizon, direction, confidence, up_prob, down_prob, flat_prob, feat_json),
+               (ts, horizon, direction, confidence, up_prob, down_prob, flat_prob, features, sigma_at_t)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ts, horizon, direction, confidence, up_prob, down_prob, flat_prob, feat_json, sigma_at_t),
         )
 
     def verify_and_update(
@@ -148,17 +153,15 @@ class PredictionBuffer:
         verified = []
 
         for horizon, h_min in HORIZONS.items():
-            threshold = HORIZON_THRESHOLDS.get(horizon, 0.0003)
-
             # T-h분 시각 계산
             current_dt = datetime.datetime.strptime(current_ts, "%Y-%m-%d %H:%M:%S")
             target_dt  = current_dt - datetime.timedelta(minutes=h_min)
             target_ts  = target_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-            # 아직 actual이 없는 예측 조회
+            # 아직 actual이 없는 예측 조회 (sigma_at_t 포함)
             row = fetchone(
                 PREDICTIONS_DB,
-                """SELECT id, direction, confidence, up_prob, down_prob, flat_prob, features
+                """SELECT id, direction, confidence, up_prob, down_prob, flat_prob, features, sigma_at_t
                    FROM predictions
                    WHERE ts = ? AND horizon = ? AND actual IS NULL""",
                 (target_ts, horizon),
@@ -168,6 +171,13 @@ class PredictionBuffer:
 
             pred_id  = row["id"]
             pred_dir = row["direction"]
+
+            # 방안B: 예측 저장 시점의 sigma_at_t로 threshold 재현
+            _sigma_saved = float(row["sigma_at_t"] or 0.0)
+            if _sigma_saved > 0 and SIGMA_K > 0:
+                threshold = _sigma_saved / 100.0 * SIGMA_K * math.sqrt(h_min)
+            else:
+                threshold = HORIZON_THRESHOLDS.get(horizon, 0.0003)
 
             # 실제 방향: target_ts 종가 → current_ts 종가
             target_close = get_candle_close(target_ts)
