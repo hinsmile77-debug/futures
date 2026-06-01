@@ -16,7 +16,7 @@ from typing import Dict, Optional, Tuple
 
 from config.settings import (
     ENSEMBLE_WEIGHTS, ENSEMBLE_WEIGHTS_CORR_ADJ, HORIZONS,
-    REGIME_MIN_CONFIDENCE, ENTRY_GRADE,
+    REGIME_MIN_CONFIDENCE, ENTRY_GRADE, COHERENCE_GATE_MIN,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from model.ensemble_gater import AdaptiveEnsembleGater
@@ -115,12 +115,62 @@ class HorizonDecorrelator:
         }
 
 
+class HorizonF1AdaptiveWeight:
+    """
+    호라이즌별 최근 F1(정확도 EMA)을 추적하여 앙상블 가중치를 동적으로 조정.
+
+    F1 낮은 호라이즌 → 가중치 급감 (f1²에 비례).
+    HorizonDecorrelator 가중치에 곱셈 적용 → 최종 가중치로 정규화.
+
+    Args:
+        decay:     EMA 감쇠 계수 (0.95 = 최근 ~20회 반영)
+        f1_floor:  최소 가중치 보호 하한 (0.30 미만 → 0.30으로 고정)
+        min_obs:   이 관찰 수 이상 쌓여야 동적 조정 활성 (초기 충분 데이터 보호)
+    """
+
+    def __init__(self, decay: float = 0.95, f1_floor: float = 0.30, min_obs: int = 30):
+        self._f1_ema  = {h: 0.40 for h in HORIZONS}   # 초기 추정값
+        self._obs     = {h: 0 for h in HORIZONS}
+        self._decay   = decay
+        self._floor   = f1_floor
+        self._min_obs = min_obs
+
+    def update(self, horizon: str, predicted: int, actual: int) -> None:
+        """STEP 1 검증 결과 반영 — 예측 방향이 FLAT(0)이면 스킵."""
+        if predicted == 0:
+            return
+        correct = 1.0 if predicted == actual else 0.0
+        self._f1_ema[horizon] = (
+            self._decay * self._f1_ema[horizon]
+            + (1.0 - self._decay) * correct
+        )
+        self._obs[horizon] += 1
+
+    def apply(self, base_weights: Dict[str, float]) -> Dict[str, float]:
+        """base_weights(HorizonDecorrelator 출력)에 F1 배율을 곱하고 재정규화."""
+        adjusted = {}
+        for h, w in base_weights.items():
+            if self._obs.get(h, 0) >= self._min_obs:
+                f1 = max(self._floor, self._f1_ema.get(h, 0.40))
+                adjusted[h] = w * (f1 ** 2)
+            else:
+                adjusted[h] = w   # 관찰 부족 시 원래 가중치 유지
+        total = sum(adjusted.values())
+        if total <= 0:
+            return dict(base_weights)
+        return {h: v / total for h, v in adjusted.items()}
+
+    def get_f1_status(self) -> Dict[str, float]:
+        return {h: round(self._f1_ema[h], 3) for h in HORIZONS}
+
+
 class EnsembleDecision:
     """앙상블 신호 생성 + 진입 등급 판정"""
 
     def __init__(self):
         self.gater      = AdaptiveEnsembleGater()
         self._decorr    = HorizonDecorrelator()
+        self._f1_weight = HorizonF1AdaptiveWeight()
         self._stuck     = DirectionalStuckBreaker()
         self.calibrator = None   # main.py에서 horizon_calibrator 주입 (3m 분포 기반)
         # 앙상블 전용 보정기: 앙상블 conf 분포를 직접 학습 (3m 분포 미스매치 해소)
@@ -147,10 +197,10 @@ class EnsembleDecision:
             {direction, confidence, up_score, down_score,
              grade, auto_entry, regime_ok, detail}
         """
-        # ── 가중합 (상관관계 역수 적응형 가중치 적용) ──────────────
-        # HorizonDecorrelator: 실측 호라이즌 간 상관관계를 추적하여
-        # 이중 가중(double-counting)을 완화. 샘플 부족 시 정적 추정치 사용.
-        cur_weights = dict(self._decorr.weights)
+        # ── 가중합 (상관관계 역수 × F1 적응형 가중치 적용) ──────────
+        # HorizonDecorrelator: 이중 가중(double-counting) 완화.
+        # HorizonF1AdaptiveWeight: F1 낮은 호라이즌 자동 억제 (f1² 비례).
+        cur_weights = self._f1_weight.apply(self._decorr.weights)
         self._decorr.push(horizon_proba)   # 이번 예측을 버퍼에 기록
 
         # CLOSE_VOLATILE(14:00~15:00) 구간: 단기(1m/3m/5m) FL편향 완화
@@ -275,6 +325,26 @@ class EnsembleDecision:
                     _n_agree, confidence,
                 )
 
+        # ── 코히어런스 게이트 (P3b) ──────────────────────────────
+        # 모순 신호 차단: active_horizons 중 방향 합의 비율 < COHERENCE_GATE_MIN → grade=X
+        # 1m UP + 30m DOWN 같은 충돌 신호가 노이즈 진입의 주원인
+        _coherence_blocked = False
+        if direction != DIRECTION_FLAT:
+            _active_h = [h for h in horizon_proba if horizon_proba[h]]
+            _n_active  = len(_active_h)
+            if _n_active > 0:
+                _n_coherent = sum(
+                    1 for h in _active_h
+                    if horizon_proba[h].get("direction") == direction
+                )
+                _coherence_score = _n_coherent / _n_active
+                if _coherence_score < COHERENCE_GATE_MIN:
+                    _coherence_blocked = True
+                    logger.info(
+                        "[Ensemble] CoherenceGate 차단 score=%.2f (%d/%d) dir=%+d",
+                        _coherence_score, _n_coherent, _n_active, direction,
+                    )
+
         # ── Platt 보정 (앙상블 전용 보정기 우선, 미학습 시 3m fallback) ────
         # ensemble_calibrator: 앙상블 conf 분포를 직접 학습 (3m 분포 미스매치 해소)
         # 100건 미만: 3m 보정기 fallback (분포 차이 일부 허용)
@@ -297,8 +367,10 @@ class EnsembleDecision:
         regime_ok = (confidence >= min_conf) and (direction != DIRECTION_FLAT)
 
         # ── 진입 등급 (체크리스트 통과 수는 entry_manager에서 계산) ──
-        # 여기선 신뢰도 기반 사전 등급만 판정
-        if not regime_ok:
+        # 코히어런스 게이트 차단 시 최우선 X
+        if _coherence_blocked:
+            grade = "X"
+        elif not regime_ok:
             grade = "X"
         elif confidence >= 0.70:
             grade = "A"
@@ -312,20 +384,22 @@ class EnsembleDecision:
         auto_entry = ENTRY_GRADE.get(grade, {}).get("auto", False) and regime_ok
 
         result = {
-            "direction":      direction,
-            "confidence":     round(confidence, 4),
-            "confidence_raw": round(_confidence_raw, 4),
-            "up_score":       round(up_score, 4),
-            "down_score":     round(down_score, 4),
-            "flat_score":     round(flat_score, 4),
-            "grade":      grade,
-            "auto_entry": auto_entry,
-            "regime_ok":  regime_ok,
-            "min_conf":   min_conf,
-            "detail":     detail,
-            "gating":     gating,
-            "decorr":     self._decorr.get_status(),
-            "stuck":      self._stuck.status_dict(),
+            "direction":          direction,
+            "confidence":         round(confidence, 4),
+            "confidence_raw":     round(_confidence_raw, 4),
+            "up_score":           round(up_score, 4),
+            "down_score":         round(down_score, 4),
+            "flat_score":         round(flat_score, 4),
+            "grade":              grade,
+            "auto_entry":         auto_entry,
+            "regime_ok":          regime_ok,
+            "min_conf":           min_conf,
+            "coherence_blocked":  _coherence_blocked,
+            "detail":             detail,
+            "gating":             gating,
+            "decorr":             self._decorr.get_status(),
+            "stuck":              self._stuck.status_dict(),
+            "f1_adaptive":        self._f1_weight.get_f1_status(),
         }
 
         logger.info(
@@ -337,6 +411,12 @@ class EnsembleDecision:
     def record_ensemble_outcome(self, raw_conf: float, correct: bool) -> None:
         """앙상블 보정기에 결과 누적 — STEP 1 검증 시 main.py에서 호출."""
         self.ensemble_calibrator.record(raw_conf, correct)
+
+    def record_horizon_verification(
+        self, horizon: str, predicted: int, actual: int
+    ) -> None:
+        """호라이즌별 F1 EMA 업데이트 — STEP 1 검증 시 main.py에서 호출."""
+        self._f1_weight.update(horizon, predicted, actual)
 
     def reset_daily(self):
         self._stuck.reset_daily()

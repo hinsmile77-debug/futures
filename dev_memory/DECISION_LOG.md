@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-06-01 (97차 — F1 고도화 전면 구현)
+
+### [설계] USE_FIXED_LABEL_THRESHOLD — 학습 레이블과 실전 임계값 완전 분리
+**File**: `config/settings.py`, `learning/batch_retrainer.py`
+**Decision**: `USE_FIXED_LABEL_THRESHOLD=True` — GBM 배치 재학습 시 `HORIZON_THRESHOLDS` 고정값으로 레이블 생성. 실전 예측·검증은 rolling sigma 유지.
+**Why**: 배치 재학습의 rolling sigma 레이블(봉별 sigma 재계산)과 실전 파이프라인의 rolling sigma(매분 갱신되는 sigma_buf)가 완전히 동일할 수 없어 학습-실전 레이블 드리프트 발생. 고정값 사용 시 학습 분포가 안정되고 sigma_at_t 검증(예측 당시 sigma 재현)과 역할이 명확히 분리됨.
+**How to apply**: False로 되돌리면 레이블 드리프트 재발 가능 — 변경 전 영향 분석 필수. rolling sigma 실전 적용(USE_ROLLING_SIGMA_THRESHOLD)과 별개 설정.
+
+### [설계] COHERENCE_GATE_MIN=0.67 — 호라이즌 방향 합의 차단 게이트
+**File**: `config/settings.py`, `model/ensemble_decision.py`
+**Decision**: active_horizons 중 동방향 비율 < 0.67이면 grade=X로 즉시 차단. 6개 호라이즌 기준 4개 미만 동방향 신호 = 차단.
+**Why**: 1m UP + 30m DOWN 같은 모순 신호가 수치적으로 상쇄되더라도 실제로는 노이즈 진입의 주원인. 기존 합의도 패널티(conf×0.92)는 점진적 감소에 불과 — 게이트가 더 효과적. OPEN_VOLATILE 구간에서 진입 -30~40% 기대.
+**How to apply**: 코히어런스 낮아도 모두 같은 방향(예: 모두 FLAT)이면 차단되지 않음 — FLAT 방향 신호는 direction==0 제외 로직으로 처리됨.
+
+### [설계] SIGMA_K_PER_HORIZON — 호라이즌별 독립 σ_k
+**File**: `config/settings.py`, `learning/batch_retrainer.py`, `scripts/optimize_sigma_k.py`
+**Decision**: 71,144봉 기반 탐색 결과: 1m/3m/5m=0.41, 10m/15m=0.38, 30m=0.33. 장기 호라이즌일수록 UP/DOWN 비율 불균형이 크므로 k를 낮춰 FLAT 조정.
+**Why**: k=0.41 공통 적용 시 30m에서 UP=33.2%, DN=27.9%로 불균형 5.3%p. k=0.33에서 UP=36.2%, DN=30.5%, FL=33.3%로 균형화. 호라이즌별 분포 특성이 다름에도 공통 k는 최적이 아님.
+**How to apply**: batch_retrainer._load_from_db()에서 `_SK_PER_H.get(hz, _SK)` — SIGMA_K_PER_HORIZON에 없는 호라이즌은 공통 SIGMA_K fallback.
+
+### [설계] RF 이종 앙상블 가중치 0.30 — GBM 과적합 보완
+**File**: `model/rf_horizon_model.py`, `learning/batch_retrainer.py`, `main.py`
+**Decision**: RF(n=150, balanced, oob_score=True, n_jobs=1) 블렌딩. 가중치: GBM+SGD 0.70 × RF 0.30. 소급 데이터(OFI=0)의 영향을 RF 배깅으로 자동 희석.
+**Why**: GBM은 순차 잔차 학습으로 소급 데이터의 OFI=0 패턴을 "특정 상황"으로 학습할 위험. RF는 배깅 기반 — 개별 트리가 일부 피처 무시하므로 자동 희석. n_jobs=1은 Python 3.7 32-bit 멀티코어 불안정 대응.
+**How to apply**: RF OOB score < 35% 지속 시 가중치 0.15로 축소 검토. 첫 재학습 후 `[RF] X m 학습 완료 OOB=YY.Y%` 로그 확인 필수.
+
+### [설계] _path_conditioned_label PATH_LABEL_RATIO=0.45 — 레이블 순도 향상
+**File**: `learning/batch_retrainer.py`
+**Decision**: UP/DOWN 후보 레이블 생성 시 중간 경로 역행폭 > threshold × 0.45이면 FLAT 처리.
+**Why**: T분 후 UP이지만 중간에 stop-loss 발동 수준의 역행이 있는 케이스가 학습 데이터 오염 15~25% 추정. 이런 케이스가 UP으로 학습되면 GBM이 "중간에 역행해도 결국 오르는 패턴"을 학습 → 실전에서 손절 후 소용없는 예측으로 이어짐.
+**How to apply**: FLAT 비율 +5~12%p 증가 예상. 진입 빈도 과도하게 감소(>30%) 시 0.50으로 완화. PATH_LABEL_RATIO는 batch_retrainer.py 상수 직접 수정.
+
+---
+
 ## 2026-06-01 (95차 — Phase A·C: 스케일러 워밍업 + Robust 전처리)
 
 ### [설계] GBM 스케일러 단독 재적합 — 트리 스케일 불변성 활용

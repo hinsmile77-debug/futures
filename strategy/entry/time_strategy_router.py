@@ -231,6 +231,18 @@ def get_zone_min_confidence(zone: str) -> float:
     return _ZONE_PARAMS.get(zone, _ZONE_PARAMS["OTHER"])["min_confidence"]
 
 
+def get_horizon_min_confs(zone: str) -> dict:
+    """
+    시간대 코드 → 호라이즌별 min_conf 딕셔너리 반환 (P4 2D 표).
+
+    GAP_OPEN / EXIT_ONLY / OTHER 등 표에 없는 시간대 → STABLE_TREND 기준 fallback.
+    반환값 예시: {"1m": 0.57, "3m": 0.58, ..., "30m": 0.62}
+    """
+    from config.settings import MIN_CONF_TABLE
+    _fallback = MIN_CONF_TABLE.get("STABLE_TREND", {})
+    return MIN_CONF_TABLE.get(zone, _fallback)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     router = TimeStrategyRouter()

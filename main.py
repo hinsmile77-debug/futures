@@ -95,10 +95,11 @@ from learning.self_learning.daily_consolidator import DailyConsolidator
 from learning.self_learning.drift_adjuster import DriftAdjuster
 from features.feature_builder import FeatureBuilder
 from model.multi_horizon_model import MultiHorizonModel
+from model.rf_horizon_model import RFHorizonModel
 from model.ensemble_decision import EnsembleDecision
 from strategy.position.position_tracker import PositionTracker
 from strategy.entry.checklist import EntryChecklist
-from strategy.entry.time_strategy_router import get_zone_min_confidence
+from strategy.entry.time_strategy_router import get_zone_min_confidence, get_horizon_min_confs
 from strategy.entry.position_sizer import PositionSizer
 from strategy.entry.meta_gate import MetaGate
 from strategy.entry.trend_persistence import TrendPersistenceGate
@@ -177,6 +178,8 @@ class TradingSystem:
         self.feature_builder    = FeatureBuilder()
         self.feature_builder._on_core_fail = self._on_core_feature_fail
         self.model             = MultiHorizonModel()
+        self.rf_model          = RFHorizonModel()
+        self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
         self.ensemble          = EnsembleDecision()
         self._pt_value         = FUTURES_PT_VALUE   # connect_broker에서 종목코드 확정 후 갱신
         self.position          = PositionTracker(pt_value=self._pt_value)
@@ -2035,6 +2038,11 @@ class TradingSystem:
         prefix = "웜업 " if is_warmup else ""
         if result.get("ok"):
             self.model._load_all()
+            # P6c: GBM 재학습 완료 시 RF도 최신 pkl 로드
+            try:
+                self.rf_model.load_all()
+            except Exception:
+                pass
             self._ensure_shap_tracker()
             registry = self._load_feature_registry()
             if registry.get("pending_change"):
@@ -2450,6 +2458,13 @@ class TradingSystem:
                 _ens_conf_at_t = self._ensemble_conf_cache.get(v["ts"])
                 if _ens_conf_at_t is not None:
                     self.ensemble.record_ensemble_outcome(_ens_conf_at_t, bool(v["correct"]))
+            # F1 적응형 가중치: 전 호라이즌 검증 결과 누적 (이번 세션 예측만)
+            if _pred_ts >= self._session_start_ts:
+                self.ensemble.record_horizon_verification(
+                    v["horizon"],
+                    int(v.get("predicted", 0)),
+                    int(v.get("actual", 0)),
+                )
             # 시간대별 정확도 기록 (15:40 DailyConsolidator.consolidate()에서 집계)
             if v["horizon"] == "5m":
                 _zone = get_time_zone(datetime.datetime.strptime(v["ts"], "%Y-%m-%d %H:%M:%S"))
@@ -2629,6 +2644,9 @@ class TradingSystem:
 
         # ── STEP 4: 피처 생성 ──────────────────────────────────
         _st.append(("S4", time.perf_counter()))
+        # 개선 3: 전일 동시간대 수익률 매분 갱신 (prev_day_close_buf가 있는 경우만)
+        if self.feature_builder._prev_day_close_buf:
+            self.feature_builder.update_prev_day_same_hour_ret(ts)
         # fetch_all()은 _investor_timer(60s QTimer)에서 COM 콜백 외부로 실행
         # 파이프라인은 이전 분봉에서 수집된 캐시를 읽음 (당일 누적 수급 — 1분 지연 허용)
         supply_feats = self.investor_data.get_features()
@@ -2856,11 +2874,23 @@ class TradingSystem:
         feat_vec = self.feature_builder.get_feature_vector(self.model.feature_names)
 
         if _gbm_ready:
-            # ─ GBM + SGD 블렌딩 (정상 경로) ─
+            # ─ GBM + SGD + RF 블렌딩 (정상 경로) ─
             horizon_proba = self.model.predict_proba(feat_vec, monitor_ts=ts)
+            _rf_ready = self.rf_model.is_ready()
             for h_name in list(horizon_proba.keys()):
                 sgd_p   = self.online_learner.predict_proba(h_name, feat_vec)
                 blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p, h_name)
+                # P6c: RF 블렌딩 (GBM+SGD 결과에 RF 0.30 추가)
+                # 가중치: GBM+SGD 0.70, RF 0.30
+                if _rf_ready:
+                    rf_p = self.rf_model.predict_proba_single(h_name, feat_vec)
+                    if rf_p is not None:
+                        _w_rf = 0.30
+                        blended = {
+                            "up":   blended["up"]   * (1 - _w_rf) + rf_p["up"]   * _w_rf,
+                            "down": blended["down"] * (1 - _w_rf) + rf_p["down"] * _w_rf,
+                            "flat": blended["flat"] * (1 - _w_rf) + rf_p["flat"] * _w_rf,
+                        }
                 up, dn, fl = blended["up"], blended["down"], blended["flat"]
                 best = max([(up, 1), (dn, -1), (fl, 0)], key=lambda t: t[0])
                 horizon_proba[h_name] = {
@@ -2973,6 +3003,25 @@ class TradingSystem:
         # UP:   above_vwap=1 AND cvd_direction=1  이 10분+ → UP  min_conf → 0.44
         # DOWN: above_vwap=0 AND cvd_direction=-1 이 10분+ → DN  min_conf → 0.44
         _tp = self.trend_gate.update(features)
+        # P4: 시간대 × 호라이즌 min_conf 필터링
+        # OPEN_VOLATILE 구간 15m/30m처럼 해당 시간대에서 F1이 낮은 호라이즌 제외
+        _zone_h_confs = get_horizon_min_confs(get_time_zone())
+        if _zone_h_confs:
+            _hp_conf_filtered = {
+                h: v for h, v in horizon_proba.items()
+                if float(v.get("confidence", 0.0) or 0.0)
+                >= _zone_h_confs.get(h, 0.0)
+            }
+            # 최소 2개 이상 남아야 앙상블 의미 있음 — 부족 시 원래 사용
+            if len(_hp_conf_filtered) >= 2:
+                _excluded = sorted(set(horizon_proba) - set(_hp_conf_filtered))
+                if _excluded:
+                    logger.debug(
+                        "[P4] 호라이즌 conf 필터: 제외=%s (시간대=%s)",
+                        _excluded, get_time_zone(),
+                    )
+                horizon_proba = _hp_conf_filtered
+
         # 대시보드 체크박스 필터: 비활성 호라이즌은 앙상블 판정에서 제외
         _enabled_hz = None
         if getattr(self, "dashboard", None):
@@ -4602,6 +4651,24 @@ class TradingSystem:
                 self.challenger_engine.update_daily_metrics(now.date().isoformat())
             except Exception as _ce2:
                 logger.warning("[Challenger] update_daily_metrics 실패 (스킵): %s", _ce2)
+
+        # 개선 3: 당일 종가 버퍼를 feature_builder에 전달 → 내일 prev_day_same_hour_ret 계산
+        try:
+            from utils.db_utils import fetchall
+            from config.settings import RAW_DATA_DB as _RDB
+            import sqlite3 as _sqlite3
+            today_str = now.date().isoformat()
+            with _sqlite3.connect(_RDB, timeout=10) as _conn:
+                _conn.row_factory = _sqlite3.Row
+                _rows = _conn.execute(
+                    "SELECT ts, close FROM raw_candles WHERE substr(ts,1,10)=? ORDER BY ts",
+                    (today_str,),
+                ).fetchall()
+            _today_closes = {r["ts"]: float(r["close"]) for r in _rows}
+            self.feature_builder.set_prev_day_closes(_today_closes)
+            logger.info("[FeatureBuilder] 전일 종가 버퍼 갱신: %d봉", len(_today_closes))
+        except Exception as _fbe:
+            logger.warning("[FeatureBuilder] 전일 종가 버퍼 갱신 실패: %s", _fbe)
 
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
         retrain_result = self.batch_retrainer.retrain_now(weeks_back=8)

@@ -6,6 +6,59 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-01 (97차) — F1 고도화 전면 구현
+
+### 한일 요약
+
+- [DONE 2026-06-01] **피처 17개 추가** — volume_profile.py 신규 + feature_builder.py + backfill_features.py
+- [DONE 2026-06-01] **소급 190일 피처 갱신** — 71,155봉 `--update-features` 2회 완료
+- [DONE 2026-06-01] **코히어런스 게이트** — COHERENCE_GATE_MIN=0.67, ensemble_decision.py
+- [DONE 2026-06-01] **HorizonF1AdaptiveWeight** — F1 EMA 가중치, main.py STEP 1 연결
+- [DONE 2026-06-01] **시간대 × 호라이즌 min_conf 2D 표** — MIN_CONF_TABLE, main.py STEP 6
+- [DONE 2026-06-01] **호라이즌별 최적 σ_k** — optimize_sigma_k.py + SIGMA_K_PER_HORIZON
+- [DONE 2026-06-01] **경로 조건부 레이블** — _path_conditioned_label, PATH_LABEL_RATIO=0.45
+- [DONE 2026-06-01] **RF 이종 앙상블** — rf_horizon_model.py 신규, main.py blend×0.30
+- [DONE 2026-06-01] **학습 레이블 고정화** — USE_FIXED_LABEL_THRESHOLD=True
+- [DONE 2026-06-01] **MIN_TRAIN_BARS 15000** — 5000→15000 (40거래일)
+- [DONE 2026-06-01] **GBM 파라미터 강화** — n_estimators=300, learning_rate=0.04
+- [DONE 2026-06-01] **방안B: prediction_buffer sigma_at_t 저장** — 96차에서 이미 완료 확인
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 다음 기동·재학습 시] **97차 신규 기능 실세션 확인**
+  - GBM 재학습 후: `[Retrain] DB 로드 완료: X행 × Y피처 (Y ≥ 113개)` 피처 수 확인
+  - RF 학습 로그: `[RF] 30m 학습 완료 (n=X OOB=YY.Y%)` — OOB ≥ 45% 목표
+  - 코히어런스 게이트 로그: `[Ensemble] CoherenceGate 차단 score=0.XX` 빈도 확인
+  - `[Bias]` 로그: 경로 조건부 레이블 적용 후 FL 비율 (기존 33% → 38~45% 예상)
+  - `[P4] 호라이즌 conf 필터: 제외=[...]` 로그 — OPEN_VOLATILE 구간에서 15m/30m 제외 확인
+
+- [NEXT path_ratio 모니터링 — 1주 후] **경로 조건부 레이블 효과 검증**
+  - 진입 빈도가 30% 이상 감소하면 path_ratio=0.45 → 0.55로 완화 검토
+  - FL 비율이 45% 초과 지속 시 path_ratio 상향 원인 분석
+
+- [NEXT RF 모니터링 — 1주 후] **RF OOB score + 앙상블 기여 점검**
+  - OOB < 35% 지속 시 RF 가중치 0.30 → 0.15로 축소 검토
+  - `rf_horizons.pkl` 파일 존재 확인 (첫 재학습 후)
+
+- [NEXT 2026-06-05] **Phase A 첫 자동 실행 확인** (기존 계속)
+  - 15:40 `[ThresholdRecal] 재보정 결과` 로그
+  - threshold_monitor.db 누적 확인
+
+- [NEXT 2026-07-01] **monthly_cleanup.py 첫 실행**
+  - `python scripts/monthly_cleanup.py --apply`
+  - 5월 SYSTEM.log ~1.5GB 회수 예상
+
+- [NEXT Phase E — 1주 후] **2순위 피처 Robust 재평가**
+  - `ofi_norm`, `mlofi_norm`, `ofi_imbalance` 극단 z 빈도 재측정
+
+- [NEXT ~2026-07-11] **Phase B(DriftDetector) — Brier Score DriftDetector 연결**
+
+- [NEXT 실시간 90일 이상 확보 후] **P8: 2단계 예측 구조 A/B 테스트**
+  - Stage 1: DIRECTIONAL vs FLAT / Stage 2: UP vs DOWN
+  - 현재 반대 예측율 39~41% 구조적 해결의 유일한 남은 방법
+
+---
+
 ## 2026-06-01 (95차) — 스케일러 Phase A·C 구현
 
 ### 한일 요약

@@ -45,20 +45,91 @@ from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 
 logger = logging.getLogger("LEARNING")
 
+
+# P6b: 경로 조건부 레이블 파라미터
+# UP/DOWN 후보이더라도 중간 경로에서 이 비율 이상 역행하면 FLAT 처리
+PATH_LABEL_RATIO: float = 0.45   # threshold × 0.45 이상 역행 시 FLAT
+
+
+def _path_conditioned_label(
+    close_map: dict,
+    ts: str,
+    h_min: int,
+    threshold: float,
+    path_ratio: float = PATH_LABEL_RATIO,
+) -> int:
+    """
+    경로 조건부 레이블: T분 후 방향 + 중간 경로 최대 역행폭 조건.
+
+    UP 후보라도 중간에 threshold × path_ratio 이상 하락하면 FLAT.
+    DOWN 후보라도 중간에 threshold × path_ratio 이상 상승하면 FLAT.
+
+    경로 데이터 불완전(경계 구간) → build_single_target 방식 fallback.
+    """
+    c0 = close_map.get(ts)
+    if not c0:
+        return DIRECTION_FLAT
+
+    future_ts = (
+        datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        + datetime.timedelta(minutes=h_min)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    cf = close_map.get(future_ts)
+    if not cf or threshold <= 0:
+        return DIRECTION_FLAT
+
+    end_ret = (cf - c0) / c0
+
+    if end_ret > threshold:  # UP 후보
+        # 중간 경로의 최대 하락폭 계산
+        path_closes = []
+        for m in range(1, h_min):
+            mid_ts = (
+                datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                + datetime.timedelta(minutes=m)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            mc = close_map.get(mid_ts)
+            if mc:
+                path_closes.append(mc)
+        if path_closes:
+            max_dd = (min(path_closes) - c0) / c0   # 음수
+            if abs(max_dd) > path_ratio * threshold:
+                return DIRECTION_FLAT   # 중간 역행 → 노이즈
+        return DIRECTION_UP
+
+    elif end_ret < -threshold:  # DOWN 후보
+        path_closes = []
+        for m in range(1, h_min):
+            mid_ts = (
+                datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                + datetime.timedelta(minutes=m)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            mc = close_map.get(mid_ts)
+            if mc:
+                path_closes.append(mc)
+        if path_closes:
+            max_ru = (max(path_closes) - c0) / c0   # 양수
+            if max_ru > path_ratio * threshold:
+                return DIRECTION_FLAT
+        return DIRECTION_DOWN
+
+    return DIRECTION_FLAT
+
 # GBM 하이퍼파라미터 — n_estimators는 배치 재학습 시 200으로 더 정밀하게 사용
 # min_samples_leaf는 MultiHorizonModel과 동일한 상수를 공유 (비결정성 방지)
 GBM_PARAMS = {
-    "n_estimators":     200,
-    "max_depth":        5,     # 4→5: MultiHorizonModel과 동일 수준
-    "learning_rate":    0.05,
+    "n_estimators":     300,   # 200→300: 190일(71,144봉) 데이터 기반 강화 (개선 6)
+    "max_depth":        5,
+    "learning_rate":    0.04,  # 0.05→0.04: estimators 증가 보상 (과적합 방지)
     "subsample":        0.8,
     "min_samples_leaf": GBM_MIN_SAMPLES_LEAF,
     "random_state":     42,
 }
 
 # 최소 학습 데이터 (분봉 수)
-# Phase D DB 클린업 완료(2026-06-01) + 7252행 확보 → 원래 값 복원
-MIN_TRAIN_BARS = 5000   # 약 13거래일
+# 소급 190일(71,144봉) 확보 완료(2026-06-01) → 기준 상향
+# 5000(13거래일)은 과적합 위험 — 15000(약 40거래일=2개월)으로 상향
+MIN_TRAIN_BARS = 15000
 
 # 호라이즌별 class weight — multi_horizon_model._make_sample_weight 와 반드시 동기화
 # 2026-05-30 threshold 재보정 후: FLAT 비율 ~33% 균형 → 강한 FL 억압 불필요
@@ -181,6 +252,17 @@ class BatchRetrainer:
             results[horizon_key] = result
 
         self._save_feature_names(feature_names)
+
+        # P6c: RF 이종 앙상블 학습 (GBM과 동일 데이터 사용)
+        try:
+            from model.rf_horizon_model import RFHorizonModel
+            rf_model = RFHorizonModel(self.model_dir)
+            rf_model.train(X, y_dict, feature_names)
+            if rf_model.is_ready():
+                rf_model.save_all()
+                logger.info("[Retrain] RF 학습 완료 OOB=%s", rf_model.get_oob_scores())
+        except Exception as _rf_exc:
+            logger.warning("[Retrain] RF 학습 실패 (GBM 계속 사용): %s", _rf_exc)
 
         elapsed = (datetime.datetime.now() - start_time).total_seconds()
         self._last_retrain  = datetime.datetime.now()
@@ -482,16 +564,32 @@ class BatchRetrainer:
             from config.settings import (
                 SIGMA_K as _SK, SIGMA_W as _SW, SIGMA_W_MIN as _SW_MIN,
                 USE_ROLLING_SIGMA_THRESHOLD as _USE_ROLLING,
+                SIGMA_K_PER_HORIZON as _SK_PER_H,
+                USE_FIXED_LABEL_THRESHOLD as _USE_FIXED_LABEL,
             )
+
+            # 개선 4: 학습 레이블 고정화
+            # USE_FIXED_LABEL_THRESHOLD=True → HORIZON_THRESHOLDS 고정값으로 레이블 생성
+            # 실전 rolling sigma와 학습 임계값을 분리 → 레이블 드리프트 제거
+            _use_fixed = _USE_FIXED_LABEL
+            if _use_fixed:
+                logger.info("[Retrain] 레이블 고정 임계값 사용 (USE_FIXED_LABEL_THRESHOLD=True)")
 
             y_dict = {}
             for hz, h_min in HORIZONS.items():
                 y = []
                 _sigma_buf_rt = _deque(maxlen=_SW)
+                # P5: 호라이즌별 최적 k (없으면 공통 k fallback)
+                _hz_k = _SK_PER_H.get(hz, _SK)
+                # 고정 임계값 (개선 4)
+                _fixed_thresh = HORIZON_THRESHOLDS.get(hz, 0.0003)
 
                 for ts, _ in records:
-                    # 1분봉 수익률로 rolling sigma 업데이트
-                    if _USE_ROLLING:
+                    if _use_fixed:
+                        # 개선 4: 고정 임계값 — rolling sigma 계산 생략
+                        threshold = _fixed_thresh
+                    elif _USE_ROLLING:
+                        # 기존 rolling sigma 방식
                         _c0 = close_map.get(ts)
                         _t_prev = (
                             datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
@@ -506,22 +604,17 @@ class BatchRetrainer:
                             _v = list(_sigma_buf_rt)
                             _m = sum(_v) / _n
                             _sig = _math.sqrt(sum((x - _m) ** 2 for x in _v) / (_n - 1))
-                            threshold = _sig / 100.0 * _SK * _math.sqrt(h_min)
+                            threshold = _sig / 100.0 * _hz_k * _math.sqrt(h_min)
                         else:
-                            threshold = HORIZON_THRESHOLDS.get(hz, 0.0003)
+                            threshold = _fixed_thresh
                     else:
-                        threshold = HORIZON_THRESHOLDS.get(hz, 0.0003)
+                        threshold = _fixed_thresh
 
-                    future_ts = (
-                        datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-                        + datetime.timedelta(minutes=h_min)
-                    ).strftime("%Y-%m-%d %H:%M:%S")
-                    curr_close   = close_map.get(ts)
-                    future_close = close_map.get(future_ts)
-                    if curr_close and future_close:
-                        label = build_single_target(curr_close, future_close, threshold)
-                    else:
-                        label = 0   # 미래 데이터 없는 경계 구간 → FLAT
+                    # P6b: 경로 조건부 레이블
+                    # 중간 역행 과다 케이스를 FLAT으로 처리 → 레이블 순도 향상
+                    label = _path_conditioned_label(
+                        close_map, ts, h_min, threshold,
+                    )
                     y.append(label)
                 y_dict[hz] = np.array(y, dtype=int)
 

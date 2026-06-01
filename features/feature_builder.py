@@ -1,10 +1,13 @@
+import datetime
 import logging
+import math
 from collections import deque
 from typing import Any, Dict, Optional
 
 import numpy as np
 
 from features.technical.atr import ATRCalculator
+from features.technical.volume_profile import VolumeProfileCalculator
 from features.technical.cvd import CVDCalculator
 from features.technical.cvd_exhaustion import CvdExhaustionCalculator
 from features.technical.microprice import MicropriceCalculator
@@ -47,6 +50,16 @@ class FeatureBuilder:
         self._close_history: deque = deque(maxlen=60)  # Hurst 계산용 종가 버퍼
         # CVD 모노톤 비율 계산용 — 20구간(21개 포인트) 이력
         self._cvd_history: deque = deque(maxlen=21)
+        # 방향성 고도화 피처용
+        self._ema5: float = 0.0
+        self._ema20: float = 0.0
+        self._ema_initialized: bool = False
+        self._vol_profile = VolumeProfileCalculator(n=60, bins=20)
+        # 개선 3 추가 방향성 피처용 버퍼
+        self._vol_history: deque = deque(maxlen=10)   # volume_acceleration용
+        self._vwap_history: deque = deque(maxlen=10)  # VWAP 이동 속도용
+        self._prev_day_same_hour_ret: float = 0.0     # 전일 동시간대 수익률 (daily_close에서 갱신)
+        self._prev_day_close_buf: Dict[str, float] = {}  # {ts: close} 전일 전체 버퍼
 
     def update_hoga(
         self,
@@ -416,9 +429,125 @@ class FeatureBuilder:
             features["toxicity_score_ma"],
         )
 
+        # ── 시간대 피처 ─────────────────────────────────────────
+        _ts_str = str(bar.get("ts") or "")
+        try:
+            _ts_dt = datetime.datetime.strptime(_ts_str[:19], "%Y-%m-%d %H:%M:%S")
+            _mkt   = _ts_dt.replace(hour=9, minute=0, second=0, microsecond=0)
+            _mod   = max(0, min(389, int((_ts_dt - _mkt).total_seconds() / 60)))
+            features["time_sin"]          = math.sin(2.0 * math.pi * _mod / 390.0)
+            features["time_cos"]          = math.cos(2.0 * math.pi * _mod / 390.0)
+            features["is_open_volatile"]  = 1.0 if _mod < 30 else 0.0
+            features["is_close_volatile"] = 1.0 if _mod > 360 else 0.0
+        except Exception:
+            features["time_sin"]          = 0.0
+            features["time_cos"]          = 1.0
+            features["is_open_volatile"]  = 0.0
+            features["is_close_volatile"] = 0.0
+
+        # ── 가격 모멘텀 ─────────────────────────────────────────
+        _ch = list(self._close_history)
+        _n  = len(_ch)
+        features["ret_1m"]  = (_ch[-1] - _ch[-2])  / (_ch[-2]  + 1e-9) if _n >= 2  else 0.0
+        features["ret_5m"]  = (_ch[-1] - _ch[-6])  / (_ch[-6]  + 1e-9) if _n >= 6  else 0.0
+        features["ret_15m"] = (_ch[-1] - _ch[-16]) / (_ch[-16] + 1e-9) if _n >= 16 else 0.0
+
+        # ── EMA cross ────────────────────────────────────────────
+        if close > 0:
+            if not self._ema_initialized:
+                self._ema5  = close
+                self._ema20 = close
+                self._ema_initialized = True
+            else:
+                self._ema5  = self._ema5  * (1.0 - 2.0 / 6.0)  + close * (2.0 / 6.0)
+                self._ema20 = self._ema20 * (1.0 - 2.0 / 21.0) + close * (2.0 / 21.0)
+        features["ema_cross"] = 1.0 if self._ema5 > self._ema20 else -1.0
+
+        # ── 볼린저 밴드 위치 ─────────────────────────────────────
+        if _n >= 20:
+            _sma20 = sum(_ch[-20:]) / 20.0
+            _std20 = math.sqrt(sum((x - _sma20) ** 2 for x in _ch[-20:]) / 20.0)
+            _bb_rng = 4.0 * _std20 + 1e-9   # bb_upper - bb_lower = 4σ
+            features["bb_position"] = (close - (_sma20 - 2.0 * _std20)) / _bb_rng
+        else:
+            features["bb_position"] = 0.5
+
+        # ── CVD delta 고도화 (Bull/Bear Volume 분해) ─────────────
+        _rng_hilo = max(high - low, 1e-9)
+        _bull_v   = vol * max(close - low,  0.0) / _rng_hilo
+        _bear_v   = vol * max(high - close, 0.0) / _rng_hilo
+        features["cvd_delta_norm"] = (_bull_v - _bear_v) / (vol + 1e-9)
+
+        # ── 개선 3 추가 방향성 피처 ─────────────────────────────
+        # 거래량 가속도 (volume acceleration)
+        self._vol_history.append(vol)
+        _vl = list(self._vol_history)
+        _nv = len(_vl)
+        if _nv >= 6:
+            _vol_recent = sum(_vl[-3:]) / 3.0
+            _vol_prev   = sum(_vl[-6:-3]) / 3.0
+            features["volume_acceleration"] = (_vol_recent - _vol_prev) / (_vol_prev + 1e-9)
+        else:
+            features["volume_acceleration"] = 0.0
+
+        # VWAP 대비 가격 이동 속도 (vwap_momentum)
+        _vwap_cur = features.get("vwap", 0.0)
+        self._vwap_history.append(_vwap_cur)
+        _vh = list(self._vwap_history)
+        if len(_vh) >= 5 and _vh[-5] > 0:
+            features["vwap_momentum"] = (close - _vh[-5]) / (_vh[-5] + 1e-9)
+        else:
+            features["vwap_momentum"] = 0.0
+
+        # 전일 동시간대 수익률 (main.py daily_close에서 _prev_day_same_hour_ret 갱신)
+        features["prev_day_same_hour_ret"] = self._prev_day_same_hour_ret
+
+        # ── Volume Profile (POC / Value Area) ───────────────────
+        try:
+            vp = self._vol_profile.update(high=high, low=low, close=close, volume=vol)
+            features["poc_distance"]  = vp["poc_distance"]
+            features["in_value_area"] = vp["in_value_area"]
+            features["va_bandwidth"]  = vp["va_bandwidth"]
+            features["poc_above"]     = vp["poc_above"]
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            features.update({"poc_distance": 0.0, "in_value_area": 0.5,
+                              "va_bandwidth": 0.0, "poc_above": 0.5})
+
         self._last_features = features
         logger.debug("[FeatureBuilder] built %d features", len(features))
         return features
+
+    def set_prev_day_closes(self, close_map: Dict[str, float]) -> None:
+        """
+        전일 종가 맵(ts→close)을 저장해 `prev_day_same_hour_ret` 계산에 사용.
+        main.py daily_close()에서 당일 종가 버퍼를 전달.
+        """
+        self._prev_day_close_buf = dict(close_map)
+
+    def update_prev_day_same_hour_ret(self, current_ts: str) -> None:
+        """
+        현재 ts와 동일 HH:MM의 전일 봉 수익률을 계산해 버퍼에 저장.
+        main.py STEP 4 직전(매분)에 호출.
+        """
+        try:
+            dt     = datetime.datetime.strptime(current_ts[:19], "%Y-%m-%d %H:%M:%S")
+            prev_d = dt - datetime.timedelta(days=1)
+            # 주말 건너뜀
+            while prev_d.weekday() >= 5:
+                prev_d -= datetime.timedelta(days=1)
+            prev_ts = prev_d.strftime("%Y-%m-%d ") + dt.strftime("%H:%M:%S")
+            prev_ts_m1 = (prev_d - datetime.timedelta(minutes=0)).strftime(
+                "%Y-%m-%d "
+            ) + (dt - datetime.timedelta(minutes=1)).strftime("%H:%M:%S")
+            c0 = self._prev_day_close_buf.get(prev_ts_m1)
+            c1 = self._prev_day_close_buf.get(prev_ts)
+            if c0 and c1 and c0 > 0:
+                self._prev_day_same_hour_ret = (c1 - c0) / c0
+            else:
+                self._prev_day_same_hour_ret = 0.0
+        except Exception:
+            self._prev_day_same_hour_ret = 0.0
 
     def get_feature_vector(self, feature_names: list) -> np.ndarray:
         return np.array([self._last_features.get(name, 0.0) for name in feature_names], dtype=float)

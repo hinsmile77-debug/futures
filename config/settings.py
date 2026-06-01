@@ -98,7 +98,19 @@ SGD_FULL_RESET_PENDING: bool = True
 # rolling σ 임계값 설정 (방법3)
 # threshold_h = sigma_20봉 × SIGMA_K × sqrt(h_min)
 # k=0.41 → 실측 전 기간 FLAT=33.6% (목표 34%)
-SIGMA_K:   float = 0.41   # FLAT 34% 달성 계수
+SIGMA_K:   float = 0.41   # FLAT 34% 달성 계수 (공통 fallback)
+
+# 호라이즌별 최적 σ_k (scripts/optimize_sigma_k.py 탐색 결과 — P5)
+# 장기 호라이즌일수록 UP/DOWN 비율 불균형이 크므로 k를 낮춰 FLAT 조정
+SIGMA_K_PER_HORIZON = {
+    "1m": 0.41,
+    "3m": 0.41,
+    "5m": 0.41,
+    "10m": 0.38,
+    "15m": 0.38,
+    "30m": 0.33,
+}
+
 SIGMA_W:   int   = 20     # rolling window 크기 (봉 수)
 SIGMA_W_MIN: int = 5      # 최소 유효 봉 수 (미달 시 전날 EOD sigma 사용)
 
@@ -106,6 +118,12 @@ SIGMA_W_MIN: int = 5      # 최소 유효 봉 수 (미달 시 전날 EOD sigma �
 # True → rolling σ × k 사용 (방법3)
 # False → 기존 ATR 방식 유지 (안전망, Phase 3 완료 후 제거)
 USE_ROLLING_SIGMA_THRESHOLD: bool = True
+
+# 개선 4: 학습 레이블 고정화 플래그
+# True  → 배치 재학습 시 HORIZON_THRESHOLDS(고정)으로 레이블 생성
+#          실전 예측·검증은 rolling sigma 유지 → 학습/실전 레이블 드리프트 제거
+# False → rolling sigma로 레이블 생성 (기존 방식, 레이블 드리프트 잔존)
+USE_FIXED_LABEL_THRESHOLD: bool = True
 
 # GBM 첫 재학습 완료 전 진입 사이즈 배율
 # 방법3 레이블 기반 재학습 전까지 구 레이블 GBM으로 운영 → 보수 사이즈
@@ -149,6 +167,34 @@ ENSEMBLE_WEIGHTS = {
 ENSEMBLE_WEIGHTS_CORR_ADJ = {
     "1m": 0.21, "3m": 0.17, "5m": 0.15,
     "10m": 0.15, "15m": 0.17, "30m": 0.15,
+}
+
+# 호라이즌 방향 코히어런스 게이트 (P3b)
+# active_horizons 중 같은 방향 투표 비율이 이 값 미만이면 grade=X 차단
+# 0.67 = 6호라이즌 중 4개 이상 동방향 필요
+COHERENCE_GATE_MIN: float = 0.67
+
+# 시간대 × 호라이즌 min_conf 2D 표 (P4)
+# F1이 낮은 호라이즌·시간대 조합에서 기준을 선택적으로 강화해
+# 노이즈 진입을 줄이고 Precision을 높인다.
+# GAP_OPEN / EXIT_ONLY / OTHER 시간대 → STABLE_TREND fallback
+MIN_CONF_TABLE = {
+    "OPEN_VOLATILE": {
+        "1m": 0.62, "3m": 0.65, "5m": 0.63,
+        "10m": 0.63, "15m": 0.68, "30m": 0.70,
+    },
+    "STABLE_TREND": {
+        "1m": 0.57, "3m": 0.58, "5m": 0.57,
+        "10m": 0.57, "15m": 0.60, "30m": 0.62,
+    },
+    "LUNCH_RECOVERY": {
+        "1m": 0.57, "3m": 0.57, "5m": 0.57,
+        "10m": 0.57, "15m": 0.58, "30m": 0.58,
+    },
+    "CLOSE_VOLATILE": {
+        "1m": 0.55, "3m": 0.55, "5m": 0.56,
+        "10m": 0.57, "15m": 0.58, "30m": 0.58,
+    },
 }
 
 # GBM 하이퍼파라미터 — multi_horizon_model / batch_retrainer 공유 상수

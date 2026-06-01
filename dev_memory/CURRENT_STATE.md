@@ -1,7 +1,63 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-01 (95차) — **스케일러 Phase A·C 구현 (08:55 워밍업 + Robust 전처리)**
+> 마지막 업데이트: 2026-06-01 (97차) — **F1 고도화 전면 구현 (P1~P6c + 개선 1~7)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-01 (97차) — F1 고도화 전면 구현
+
+### 배경
+
+F1_IMPROVEMENT_MASTER_PLAN.md 기반 로드맵 P1~P6c 전체 구현.  
+근본원인 5가지 중 4가지 대응 완료 (2단계 예측 구조만 장기 과제로 잔존).
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **피처 17개 추가** — volume_profile.py 신규, feature_builder.py + backfill_features.py 수정 | **완료** |
+| **소급 190일 피처 갱신** — 71,155봉 `--update-features` 2회 실행 | **완료** |
+| **코히어런스 게이트** — COHERENCE_GATE_MIN=0.67, ensemble_decision.py | **완료** |
+| **HorizonF1AdaptiveWeight** — F1 EMA 기반 가중치, main.py STEP 1 연결 | **완료** |
+| **시간대 × 호라이즌 min_conf 2D 표** — MIN_CONF_TABLE, main.py STEP 6 | **완료** |
+| **호라이즌별 최적 σ_k** — optimize_sigma_k.py + SIGMA_K_PER_HORIZON (10m/15m=0.38, 30m=0.33) | **완료** |
+| **경로 조건부 레이블** — PATH_LABEL_RATIO=0.45, batch_retrainer | **완료** |
+| **RF 이종 앙상블** — rf_horizon_model.py 신규, main.py STEP 5 blend(×0.30) | **완료** |
+| **학습 레이블 고정화** — USE_FIXED_LABEL_THRESHOLD=True | **완료** |
+| **MIN_TRAIN_BARS 15000** — 5000(13일)→15000(40일) | **완료** |
+| **GBM 파라미터 강화** — n_estimators=300, learning_rate=0.04 | **완료** |
+| **다음 GBM 재학습 시 신규 피처 17개 포함 확인** | **미완료 — 다음 기동** |
+| **RF OOB score 로그 확인** (첫 재학습 후) | **미완료 — 다음 기동** |
+
+### 신규 파일 (97차)
+
+| 파일 | 내용 |
+|---|---|
+| `features/technical/volume_profile.py` | POC / Value Area 계산기 (n=60봉, bins=20) |
+| `model/rf_horizon_model.py` | RF 이종 앙상블 (n=150, balanced, OOB) |
+| `scripts/optimize_sigma_k.py` | 호라이즌별 최적 σ_k 탐색 스크립트 |
+| `docs/F1_IMPROVEMENT_MASTER_PLAN.md` | F1 고도화 마스터 플랜 (최종 업데이트) |
+
+### 수정 파일 (97차)
+
+| 파일 | 핵심 변경 |
+|---|---|
+| `config/settings.py` | MIN_CONF_TABLE, SIGMA_K_PER_HORIZON, COHERENCE_GATE_MIN, USE_FIXED_LABEL_THRESHOLD, GBM_PARAMS |
+| `features/feature_builder.py` | 피처 17개 추가 (time, momentum, EMA, BB, CVD delta, VP, volume_acc, vwap_momentum, prev_day) |
+| `scripts/backfill_features.py` | 피처 17개 소급 계산 + `--update-features` 모드 |
+| `learning/batch_retrainer.py` | USE_FIXED_LABEL_THRESHOLD + SIGMA_K_PER_HORIZON + _path_conditioned_label + RF 학습 + MIN_TRAIN_BARS=15000 + n_estimators=300 |
+| `model/ensemble_decision.py` | HorizonF1AdaptiveWeight + 코히어런스 게이트 |
+| `strategy/entry/time_strategy_router.py` | get_horizon_min_confs() 추가 |
+| `main.py` | P4 호라이즌 conf 필터 + RF blend + F1 누적 + 피처 갱신 연결 |
+
+### 97차 다음 기동 확인 사항
+
+1. GBM 재학습 후 SIGNAL 로그: `[Retrain] DB 로드 완료: X행 × Y피처 (Y ≥ 113개)` 확인
+2. RF 학습 로그: `[RF] 1m 학습 완료 (n=X OOB=YY.Y%)` 6개 호라이즌 확인
+3. 코히어런스 게이트 로그: `[Ensemble] CoherenceGate 차단 score=0.XX` 발생 여부
+4. FLAT 비율 변화: 경로 조건부 레이블 적용 후 `[Bias]` 로그에서 FL 비율 확인 (기존 33% → 38~45% 예상)
+5. F1 적응형 가중치: `[Retrain]` 이후 30m 가중치 감소 여부 DEBUG 로그
 
 ---
 

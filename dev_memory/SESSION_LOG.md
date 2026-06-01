@@ -6,6 +6,60 @@
 
 ---
 
+## 2026-06-01 (97차 — F1 고도화 전면 구현: P1~P6c + 개선 1~7)
+
+**Work**: F1_IMPROVEMENT_MASTER_PLAN.md 작성 후 로드맵 P1~P6c 전체 구현. 신규 파일 3개, 수정 파일 7개, 소급 190일(71,155봉) 피처 갱신 2회.
+
+### 구현 내용
+
+#### P2 / 개선 3 — 방향성 피처 17개 추가
+- **1차 (P2, 14개)**: `time_sin/cos`, `is_open/close_volatile`, `ret_1m/5m/15m`, `ema_cross`, `bb_position`, `cvd_delta_norm`, `poc_distance`, `in_value_area`, `va_bandwidth`, `poc_above`
+- **2차 (개선 3, 3개)**: `volume_acceleration`(3봉 거래량 변화율), `vwap_momentum`(5봉 VWAP 기준 속도), `prev_day_same_hour_ret`(전일 동시간대 수익률)
+- **신규 파일**: `features/technical/volume_profile.py` (POC/Value Area, n=60봉 롤링)
+- `scripts/backfill_features.py` `--update-features` 모드 추가 → 소급 190일 2회 완전 갱신
+
+#### P3b — 코히어런스 게이트
+- `COHERENCE_GATE_MIN=0.67` — active_horizons 중 4개 이상 동방향 미달 시 grade=X
+- `result["coherence_blocked"]` 필드 추가 → 디버깅 가능
+
+#### P3 — HorizonF1AdaptiveWeight
+- EMA(decay=0.95, floor=0.30) 기반 F1 추적 → HorizonDecorrelator 가중치에 f1² 곱셈 적용
+- main.py STEP 1 전 호라이즌 `record_horizon_verification()` 자동 누적
+
+#### P4 — 시간대 × 호라이즌 min_conf 2D 표
+- `MIN_CONF_TABLE` (OPEN_VOLATILE 30m=0.70 등 상위 강화)
+- main.py STEP 6 앙상블 직전 conf 미달 호라이즌 필터링 (최소 2개 보장)
+
+#### P5 — 호라이즌별 최적 σ_k
+- `scripts/optimize_sigma_k.py` 신규 — 71,144봉 기반 11개 k 탐색
+- 결과: 1m/3m/5m=0.41, 10m/15m=0.38, 30m=0.33
+- `SIGMA_K_PER_HORIZON` 딕셔너리 → batch_retrainer에서 호라이즌별 k 사용
+
+#### P6b — 경로 조건부 레이블
+- `_path_conditioned_label()` — 중간 역행 > threshold × 0.45 → FLAT 처리
+- UP/DOWN 레이블 순도 향상 (오염 15~25% 제거 목표)
+
+#### P6c — RF 이종 앙상블
+- `model/rf_horizon_model.py` 신규 (n=150, balanced, oob_score=True, n_jobs=1)
+- batch_retrainer GBM 완료 후 RF 자동 학습·저장 (rf_horizons.pkl)
+- main.py STEP 5: GBM+SGD 결과에 RF 0.30 blend
+- GBM 재학습 완료 콜백(`_on_gbm_retrain_done`)에서 RF pkl 자동 reload
+
+#### 개선 1 마무리
+- `MIN_TRAIN_BARS`: 5,000 (13거래일) → **15,000 (40거래일)**
+
+#### 개선 4 — 학습 레이블 고정화
+- `USE_FIXED_LABEL_THRESHOLD=True` → 학습은 HORIZON_THRESHOLDS 고정값
+- 실전 rolling sigma / 검증 sigma_at_t 재현 유지 (별개 메커니즘)
+
+#### 개선 6 — GBM 파라미터 강화
+- `n_estimators`: 200 → **300** / `learning_rate`: 0.05 → **0.04**
+
+### 마스터 플랜 문서
+- `docs/F1_IMPROVEMENT_MASTER_PLAN.md` 전면 재작성 — 구현 완료 14개 항목 + 미구현 3개 + F1 목표 시나리오
+
+---
+
 ## 2026-06-01 (95차 — Phase A·C: 스케일러 워밍업 + Robust 전처리)
 
 **Work**: 2026-06-01 진입 0건 원인 분석 후 SCALER_ROBUST_PLAN.md 작성 및 Phase A·C 구현. 4개 파일 변경 + 1개 신규.
