@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-06-01 (95차 — Phase A·C: 스케일러 워밍업 + Robust 전처리)
+
+### [설계] GBM 스케일러 단독 재적합 — 트리 스케일 불변성 활용
+**File**: `model/multi_horizon_model.py` `refit_scalers_only()`, `learning/batch_retrainer.py` `load_features_for_warmup()`
+**Decision**: GBM 모델 재학습 없이 StandardScaler만 독립 재적합(fit). 08:55 워밍업이 근본 차단, 장중 B_OPEN/C_PERIODIC/D_FORCE 3종 트리거로 보완.
+**Why**: GradientBoostingClassifier는 트리 기반 스케일 불변 — 분기 기준이 절대값이 아닌 상대 순위. 스케일러만 바꿔도 GBM 예측 품질 불변. SGD(선형 분류기)는 스케일 민감이므로 partial_fit 현행 유지. 오늘 65시간 노후화 사례: 장전 1회 refit으로 완전 차단 가능.
+**How to apply**: `refit_scalers_only()`는 pkl 저장 → 재시작 후에도 fresh 상태 유지. GBM 재학습 예약 시 워밍업 스킵(재학습이 스케일러 포함하므로).
+
+### [설계] Robust 전처리 — 단일 모듈 함수로 4경로 일관성 보장
+**File**: `model/multi_horizon_model.py` `apply_robust_preprocess()`, `learning/batch_retrainer.py`
+**Decision**: atr/avg_volume=log1p, spread_ticks=clip(0,20), mlofi_slope=clip(±500). 모듈 수준 함수로 fit()·predict_proba()·refit_scalers_only()·retrain_now() 4경로 모두 동일 전처리 통과.
+**Why**: 단방향 적용 시 학습-예측 분포 불일치 발생(학습 raw atr, 예측 log1p(atr) → 스케일러 mean/std가 다른 분포를 가리킴). 오늘 실제 폭발값: spread_ticks z=+6.45(clip 없음), atr z=+5.04(log1p 없음). cancel_add_ratio는 tick 단위 `_stable_cancel_add_ratio` 이미 적용 중이라 제외.
+**How to apply**: `SCALER_LOG1P_FEATURES`, `SCALER_CLIP_FEATURES` settings.py 제어. 새 피처 추가 시 상수만 수정. SGD 경로는 이 함수를 통과하지 않음.
+
+---
+
 ## 2026-06-01 (94차 — 스케일러 강건화 + 운영 클린업)
 
 ### [버그] SYSTEM.log 200MB/일 — 호가 이벤트 INFO 로그

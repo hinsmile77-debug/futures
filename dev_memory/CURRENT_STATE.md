@@ -1,7 +1,41 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-01 (94차) — **스케일러 강건화 완성 (Phase B·D·섹션8·9) + 운영 클린업**
+> 마지막 업데이트: 2026-06-01 (95차) — **스케일러 Phase A·C 구현 (08:55 워밍업 + Robust 전처리)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-01 (95차) — 스케일러 Phase A·C 구현 (워밍업 + Robust 전처리)
+
+### 배경
+
+2026-06-01 진입 0건 근본원인(스케일러 65시간 노후화 → ATR z=+5.04 → grade=X 전일 지속 → CB③ 당일 정지) 후속 조치. SCALER_ROBUST_PLAN.md 작성 후 Phase A(장전 워밍업)·C(Robust 전처리) 구현.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **SCALER_ROBUST_PLAN.md 신규** — 운영안·Robust 도입·DB/UI 설계 전체 (섹션 1~9) | **완료** |
+| **Phase A: 08:55 스케일러 워밍업** — `load_features_for_warmup()` + `refit_scalers_only()` + main.py daemon thread | **완료** |
+| **Phase C: Robust 전처리** — `apply_robust_preprocess()` atr/avg_volume log1p, spread_ticks/mlofi_slope clip | **완료** — 학습·예측·워밍업 3경로 일관 적용 |
+| 실세션 확인 (08:55 `[ScalerWarmup] 완료` 로그) | **미완료** — 다음 기동 시 |
+
+### 수정 파일 (95차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `config/settings.py` | `SCALER_WARMUP_LOOKBACK_BARS=500`, `SCALER_WARN_MINUTES=90`, `SCALER_LOG1P_FEATURES`, `SCALER_CLIP_FEATURES` 추가 |
+| `model/multi_horizon_model.py` | `apply_robust_preprocess()` 모듈 함수 신규 + `refit_scalers_only()` 신규 + `fit()`·`predict_proba()` 전처리 적용 |
+| `learning/batch_retrainer.py` | `load_features_for_warmup()` 신규 + `retrain_now()` Robust 전처리 적용 |
+| `main.py` | `pre_market_setup()` — `_scaler_warmup_worker` daemon thread 삽입 |
+| `docs/SCALER_ROBUST_PLAN.md` | **신규** — 운영안·Robust·DB/UI 설계 전체 |
+
+### 95차 실세션 확인 사항
+
+1. `[ScalerWarmup] 완료 n=500봉 horizons=[...] 0.XXs` 로그 (08:55 SYSTEM)
+2. `canary_stale_age_hours()` < 1h (워밍업 완료 이후)
+3. GBM 재학습 없는 날(일반 화~금): 스케일러 단독 워밍업 동작 확인
+4. atr/spread_ticks 극단 z 빈도 이전 대비 감소 확인 (SIGNAL 로그)
 
 ---
 

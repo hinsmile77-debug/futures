@@ -6,6 +6,28 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-01 (95차) — 스케일러 Phase A·C 구현
+
+### 한일 요약
+
+- [DONE 2026-06-01] **SCALER_ROBUST_PLAN.md 신규** — 운영안(4종 트리거)·Robust 도입안(피처별)·DB/UI 설계 전체 (섹션 1~9)
+- [DONE 2026-06-01] **Phase A: 08:55 스케일러 워밍업** — `load_features_for_warmup(500봉)` + `refit_scalers_only()` + main.py `_scaler_warmup_worker` daemon thread (4개 파일)
+- [DONE 2026-06-01] **Phase C: Robust 전처리** — `apply_robust_preprocess()` 모듈 함수 신규. atr/avg_volume log1p, spread_ticks clip(0,20), mlofi_slope clip(±500). 학습·예측·워밍업 3경로 일관 적용 (4개 파일)
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 다음 기동 시] **95차 실세션 확인**
+  - 08:55 SYSTEM 로그: `[ScalerWarmup] 완료 n=500봉` 확인
+  - `canary_stale_age_hours()` < 1h 이어야 함
+  - GBM 재학습 없는 날 스케일러 단독 워밍업 동작 확인
+  - atr/spread_ticks 극단 z 빈도 감소 확인 (SIGNAL 로그)
+
+- [NEXT Phase E — 1주 후] **2순위 피처 Robust 재평가**
+  - `ofi_norm`, `mlofi_norm`, `ofi_imbalance` 극단 z 빈도 재측정 (Phase A·C 1주 운영 후)
+  - 워밍업 후에도 빈번하면 clip 보강 검토
+
+---
+
 ## 2026-06-01 (94차) — 스케일러 강건화 완성 + 운영 클린업
 
 ### 한일 요약

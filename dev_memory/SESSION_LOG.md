@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-06-01 (95차 — Phase A·C: 스케일러 워밍업 + Robust 전처리)
+
+**Work**: 2026-06-01 진입 0건 원인 분석 후 SCALER_ROBUST_PLAN.md 작성 및 Phase A·C 구현. 4개 파일 변경 + 1개 신규.
+
+### 원인 분석 (2026-06-01 진입 0건)
+
+- **근본 원인**: 스케일러 65시간 노후화(금요일 마감 후 미갱신) → ATR z=+5.04, avg_volume z=+4.22
+- 연쇄: 09:00 파이프라인 7.2초(CB⑤ 5분 정지) → 09:06~09:55 grade=X → 09:55 CB③ CRITICAL 당일 정지
+- spread_ticks z=+6.45(10:12)이 장중 최대 극단값, clip 없어 무방비
+
+### 구현 내용
+
+#### Phase A — 08:55 스케일러 워밍업
+- `load_features_for_warmup(lookback_bars)`: raw_data.db 최근 500봉 X 로드 (라벨 불필요, managed feature set 적용)
+- `refit_scalers_only(X, feature_names)`: 6 호라이즌 scaler.fit() + pkl 저장 + `_scaler_fitted_at` 갱신. GBM 모델 불변(트리 스케일 불변)
+- `main.py _scaler_warmup_worker`: `_warmup_retrain_pending=False`일 때만 daemon thread 실행. GBM 재학습 예약 시 스킵(재학습이 스케일러 포함)
+
+#### Phase C — Robust 전처리 `apply_robust_preprocess()`
+- 모듈 수준 함수로 분리 → 4경로(fit/predict_proba/refit_scalers_only/retrain_now) 단일 출처 공유
+- atr, avg_volume: `log1p(max(x, 0))` — 양수 long-tail 완화
+- spread_ticks: `clip(0, 20.0)` — 오늘 z=+6.45 cap
+- mlofi_slope: `clip(-500, 500)` — 분포 -722~+1127 제한
+- SGD 경로(`online_learner`) 미적용
+
+### 주요 검토 결과
+
+- cancel_add_ratio: tick 단위 `_stable_cancel_add_ratio(log1p+clip)` 이미 적용 → 1순위 제외, DB 클린업만 해당
+- ofi_norm/mlofi_norm: clip(-3,3) 있음, 오늘 극단 z는 스케일러 노후화 원인 → Phase A 우선 후 재평가
+- spread_ticks: clip 없는 상태에서 오늘 최대값 → 즉시 1순위 처리
+
+---
+
 ## 2026-06-01 (94차 — 스케일러 강건화 완성 + 운영 클린업)
 
 **Work**: SCALER_ROBUST_PLAN.md Phase B·D + 섹션 8·9 전체 구현. SYSTEM.log 200MB/일 버그 수정. 11개 파일 변경 + 3개 신규.
