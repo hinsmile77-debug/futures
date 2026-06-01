@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-06-01 (98차 — 동적 min_conf + GBM 재학습)
+
+### [버그] shap_feature_registry가 신규 피처를 자동 포함하지 않음
+**File**: `data/db/shap_feature_registry.json`, `learning/batch_retrainer.py`
+**Bug**: 97차에서 피처 17개를 추가하고 소급 데이터 갱신(71,155봉)을 완료했으나, GBM 재학습 시 feature_names가 89개로 결정됨. 신규 피처 17개가 학습에서 완전히 누락됨.
+**Root cause**: batch_retrainer._load_from_db()에서 raw_features의 키로 먼저 feat_names를 구성한 뒤 shap_feature_registry.json의 active_features로 필터링하는데, 이 registry가 91개(구버전)로 고정되어 있어 신규 17개가 필터링됨.
+**Fix**: shap_feature_registry.json의 active_features를 수동으로 91→108개로 갱신(신규 17개 직접 추가).
+**How to apply**: 이후 신규 피처 추가 시마다 active_features 수동 갱신 필요. 또는 batch_retrainer 재학습 완료 후 raw_features의 최신 키를 registry에 자동 반영하는 로직 추가 검토.
+
+### [설계] 동적 min_conf — 모델 상태 연동 2주기 방식
+**File**: `strategy/entry/time_strategy_router.py`, `config/settings.py`, `main.py`
+**Decision**: mc를 고정값에서 2가지 주기로 자동 갱신.
+  - 주기 1: GBM 재학습 완료 즉시 (_on_gbm_retrain_done 콜백)
+  - 주기 2: 매일 08:55 워밍업 완료 후 (_scaler_warmup_worker)
+  - base_mc = max(conf_p65, MC_ABS_FLOOR=0.50) — 절대 하한 보호
+  - MC_STEP_LIMIT=0.08: 1회 최대 변화폭 ±8%p — 급격한 변화 방지
+  - 시간대 배율 테이블(_ZONE_MC_MULT) 적용 후 zone별 개별 갱신
+**Why**: 재학습 전후로 conf 분포가 크게 달라짐 (avg 0.41→0.70). 고정 mc는 한쪽 상태에서만 최적. 모델 상태와 mc가 동기화되어야 진입 품질 유지 가능.
+**How to apply**: mc_history.db에 변경 이력 저장. 대시보드 🎯 신뢰도 게이트 탭에서 실시간 모니터링. 다음날 08:55에 재학습 후 새 conf 분포가 반영되어 mc 점진 상향 예상.
+
+### [설계] 고정 mc 우선, Rolling Percentile Gate 미채택
+**File**: 설계 검토 결과 (코드 미반영)
+**Decision**: Rolling Percentile Gate(최근 N봉 conf의 p80 이상만 진입)를 채택하지 않음.
+**Why**: 오늘 재학습 후 데이터 비교 — 고정 mc=0.65: 22건 77% +1,056만원 vs Rolling p80 w=60: 12건 75% +506만원. conf가 전반적으로 높은 날(재학습 후)에 Percentile Gate는 오히려 상위 20% threshold를 높여 진입 기회를 제한함. 진입0의 근본 원인이 "conf 분포 자체가 낮음"이므로, 낮은 conf에서 상위를 추출하는 방식이 아니라 모델 재학습으로 conf 자체를 높이는 것이 올바른 접근.
+**How to apply**: 진입0 재발 시 mc 조정보다 재학습 여부 먼저 확인.
+
+---
+
 ## 2026-06-01 (97차 — F1 고도화 전면 구현)
 
 ### [설계] USE_FIXED_LABEL_THRESHOLD — 학습 레이블과 실전 임계값 완전 분리

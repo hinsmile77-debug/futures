@@ -4,6 +4,57 @@
 
 ---
 
+## 2026-06-01 (98차 — 동적 min_conf + GBM 105피처 재학습)
+
+**Work**: 진입0 근본 원인 분석 → GBM 재학습 → 동적 mc 구현. 신규 파일 4개, 수정 파일 4개.
+
+### 진입0 분석 및 GBM 재학습
+
+#### 1. 원인 파악
+- 97차 후 GBM 재학습이 자동으로 됐으나 89개 피처 기반 (신규 17개 미포함)
+- `shap_feature_registry.json`의 active_features가 91개로 신규 피처를 필터링
+- conf 평균 0.406 → min_conf 0.57 기준 전 390봉 grade=X → 진입0
+
+#### 2. 해결: shap_feature_registry 수동 갱신
+```python
+# active_features: 91개 → 108개 (신규 17개 추가)
+# ema_cross, bb_position, ret_1m/5m/15m, time_sin/cos,
+# is_open/close_volatile, poc_distance, in_value_area, va_bandwidth, poc_above,
+# cvd_delta_norm, volume_acceleration, vwap_momentum, prev_day_same_hour_ret
+```
+
+#### 3. GBM 재학습 (force=True, weeks_back=26)
+- 실행: 22:04~23:28 (84분)
+- 105개 피처, 44,520봉 학습
+- 1m: 0.362→0.419 / 5m: 0.473→0.504 / 30m: 0.478→0.512 향상
+
+#### 4. 재학습 후 conf 분포 변화
+- 재학습 전: avg=0.406, max=0.584, min_conf 통과=0건
+- 재학습 후: avg=0.698, max=0.920, min_conf=0.57 기준 42건 통과
+
+#### 5. 금일 실 데이터 진입 시뮬
+- mc=0.65: 22건, 승률 77%, +1,056만원
+- mc=0.70: 17건, 승률 82%, +888만원
+- 오늘 실제 상승장(1351→1420, +5.1%) — GBM이 13:56~14:00 DN 구간 정확히 포착
+
+### 동적 mc 설계 및 구현
+
+#### 설계: Rolling Percentile Gate vs 고정 mc 비교
+- 고정 mc=0.65: 22건 77% +1,056만원
+- Rolling p80 w=60: 12건 75% +506만원
+- **결론: 고정 mc 우위** — conf 전반 높은 날은 percentile gate가 오히려 진입 제한
+
+#### 구현 (주기 1 + 주기 2)
+- **주기 1**: GBM 재학습 완료 즉시 → `_on_gbm_retrain_done` 콜백에서 `_recalibrate_mc('RETRAIN')`
+- **주기 2**: 매일 08:55 워밍업 완료 후 → `_scaler_warmup_worker`에서 `_recalibrate_mc('DAILY_WARMUP')`
+- `update_dynamic_mc()`: conf p65 기준 base_mc 계산 + step clamp(±8%p) + 시간대 배율
+- `mc_history.db`: 변경 이력 영구 저장
+- `DynamicMcPanel`: 시간대별 mc 카드 + 금일 conf 추이 히트맵 + 통과율 게이지 + 이력 테이블
+
+#### 즉시 실행 결과
+- 최근 3,789봉 conf avg=0.441 → p65 ≈ 0.45 → floor=0.50 적용 → base_mc=0.50
+- STABLE_TREND: 0.540→0.500 / OPEN_VOLATILE: 0.600→0.510
+
 ---
 
 ## 2026-06-01 (97차 — F1 고도화 전면 구현: P1~P6c + 개선 1~7)

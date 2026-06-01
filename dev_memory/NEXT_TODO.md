@@ -6,6 +6,44 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-01 (98차) — 동적 min_conf + GBM 105피처 재학습
+
+### 한일 요약
+
+- [DONE 2026-06-01] **shap_feature_registry 갱신** — active_features 91→108개 (신규 17개 수동 추가)
+- [DONE 2026-06-01] **GBM 105피처 재학습** — force=True, 26주, acc 전반 향상 (1m 0.362→0.419)
+- [DONE 2026-06-01] **진입0 분석** — conf 평균 0.406(재학습 전)→0.698(재학습 후)
+- [DONE 2026-06-01] **금일 실 데이터 진입 시뮬** — mc=0.65: 22건 77% +1,056만원
+- [DONE 2026-06-01] **Rolling Percentile Gate vs 고정 mc 비교** — 고정 mc 우위 결론
+- [DONE 2026-06-01] **동적 mc 구현** — update_dynamic_mc() + 주기1/2 + mc_history.db
+- [DONE 2026-06-01] **DynamicMcPanel** — 🎯 신뢰도 게이트 탭 신규 (mc 카드·추이·게이지·이력)
+- [DONE 2026-06-01] **mc 즉시 재보정 실행** — STABLE_TREND 0.540→0.500
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 다음 기동 시] **98차 동적 mc 실세션 확인**
+  - 08:55 로그: `[DynMC] mc 재보정 완료 trigger=DAILY_WARMUP base=X.XXX`
+  - GBM 재학습 완료 후: `[DynMC] mc 재보정 완료 trigger=RETRAIN`
+  - 🎯 신뢰도 게이트 탭: mc 카드 5개 + 금일 추이 + 통과율 게이지 + 이력 표시 확인
+  - mc_history.db에 이력 행 누적 확인
+
+- [NEXT 다음 기동 시] **GBM 105피처 재학습 효과 실세션 확인**
+  - SIGNAL 로그: `[Retrain] DB 로드 완료: X행 × 105피처` 확인
+  - conf 분포 개선: avg 0.406→0.60+ 달성 여부
+  - 진입 발생 여부 (mc=0.50 기준, grade A/B/C 분봉 확인)
+
+- [NEXT 주의] **shap_feature_registry 자동화 필요**
+  - 신규 피처 추가 시마다 수동으로 active_features 갱신해야 함
+  - GBM 재학습 완료 후 raw_features의 최신 피처 키를 registry에 자동 반영하는 로직 추가 검토
+  - 위치: `batch_retrainer.retrain_now()` 또는 `_save_feature_names()` 완료 후
+
+- [NEXT 1주 후] **동적 mc 적응 효과 검증**
+  - 재학습 후 새 conf 분포(avg≈0.70)가 다음날 08:55에 반영되는지 확인
+  - 목표: STABLE_TREND mc가 0.50→0.62~0.67로 점진 상향
+  - 신호 통과율 패널에서 15~35% 범위 안착 확인
+
+---
+
 ## 2026-06-01 (97차) — F1 고도화 전면 구현
 
 ### 한일 요약
