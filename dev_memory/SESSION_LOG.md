@@ -6,6 +6,48 @@
 
 ---
 
+## 2026-06-01 (94차 — 스케일러 강건화 완성 + 운영 클린업)
+
+**Work**: SCALER_ROBUST_PLAN.md Phase B·D + 섹션 8·9 전체 구현. SYSTEM.log 200MB/일 버그 수정. 11개 파일 변경 + 3개 신규.
+
+### 구현 내용
+
+#### 1. Phase B — 정기/강제 스케일러 refresh (SCALER_ROBUST_PLAN.md)
+- `check_refresh_trigger(bar_dt, extreme_feats)` — D_FORCE(극단z 연속 3분/2회반복) > B_OPEN(장초 15분) > C_PERIODIC(60분) 우선순위 트리거
+- `refit_scalers_only(trigger_ts=, trigger_type=, trigger_reason=)` — 완료 후 scaler_monitor.db UPDATE
+- main.py Phase B 데몬 스레드: `_scaler_refresh_running` 중복 방지
+- settings.py Phase B/C/D 상수 6개 추가
+
+#### 2. Phase D — cancel_add_ratio DB 클린업
+- raw_data.db raw_features에서 `|cancel_add_ratio| > 10` 인 11행 삭제 (2026-05-08 13:31~41, 최대 7.49억 이상치)
+- 정리 후 7252행 → MIN_TRAIN_BARS 3000→5000 복원
+- `scripts/cleanup_cancel_add_ratio.py` 신규 (dry-run/--apply 모드)
+
+#### 3. 운영 클린업
+- **SYSTEM.log 200MB/일 버그 수정**: `[CybosEvent] recv begin/end` + `[CybosRT-EVENT] dispatch` INFO→DEBUG (api_connector.py:245/255 + realtime_data.py:141)
+  - 내일부터 SYSTEM.log 5MB/일 예상 (40배 감소)
+- `scripts/monthly_cleanup.py` 신규: 30일 로그·90일 shap·60일 예측·7일 백업 자동 삭제
+- 오늘 즉시: raw_data 백업 2개(41.6MB) + trades 백업 2개(0.1MB) + 4월 로그 삭제
+
+#### 4. 섹션 8 — scaler_monitor.db 수집 레이어
+- `model/scaler_monitor_db.py` 신규: `init_db`, `insert_events_batch`, `update_event_refresh`, `aggregate_daily`, `insert_daily`
+- `predict_proba(monitor_ts=ts)`: 호라이즌별 age_minutes·max_z·extreme_count 수집 → batch INSERT
+- `[ScalerMonitor]` 구조화 로그: 노후 90분+ 또는 극단z 발생 시 WARN
+- `daily_close()`: `aggregate_daily` + `insert_daily` (grade_x_minutes + cb3_triggered)
+
+#### 5. 섹션 9 — ScalerMonitorPanel UI
+- `dashboard/panels/scaler_monitor_panel.py` 신규 (60초 갱신)
+- 3개 섹션: 실시간(호라이즌별 노후·극단z) + Top5 extreme + 일별 이력 20거래일
+- 색상: 노후<30분=초록/30~90분=노랑/>90분=빨강, extreme=주황, D_FORCE=파랑
+- main_dashboard.py에 "🔬 스케일러" 탭 삽입
+
+### 진단 발견 사항
+- SYSTEM.log 근본 원인: 호가 이벤트(초당 1~2회) INFO 로그 → 하루 200MB. 단 3줄 수정으로 해결
+- raw_data.db: 구버전(2026-05-08) cancel_add_ratio가 raw 정수값 그대로 저장됨. 현재 코드 `_stable_cancel_add_ratio`는 `clip(log1p(d)-log1p(r), -3, 3)` 정상
+- shap.db 성장률: 650MB/월 예상 → monthly_cleanup 90일 롤링 필수
+
+---
+
 ## 2026-05-30 (91·92차 — rolling σ 방법3 Phase 1+2 구현 + ATR 완전 제거)
 
 **Work**: 방법3(rolling sigma × k=0.41) 단독 채택 구현. Phase 1(핵심 로직) + Phase 2(ATR 제거) 완료. 커밋 2개(91차 c9e4f82, 92차 9751c96). 4개 파일 변경.

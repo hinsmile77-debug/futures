@@ -8697,6 +8697,16 @@ class MireukDashboard(QMainWindow):
         if self.threshold_monitor_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.threshold_monitor_panel), "📐 임계값 모니터")
 
+        # 섹션 9: 스케일러 상태 모니터 패널
+        try:
+            from dashboard.panels.scaler_monitor_panel import ScalerMonitorPanel as _SMP
+            self.scaler_monitor_panel = _SMP()
+        except Exception as _smpe:
+            logger.warning("[Dashboard] ScalerMonitorPanel 로드 실패: %s", _smpe)
+            self.scaler_monitor_panel = None
+        if self.scaler_monitor_panel is not None:
+            self.mid_tabs.addTab(self._wrap(self.scaler_monitor_panel), "🔬 스케일러")
+
         # 레짐 실시간 모니터 패널
         try:
             from dashboard.panels.regime_panel import RegimePanel as _RP

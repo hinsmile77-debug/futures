@@ -242,7 +242,7 @@ class _CybosSubscriptionEvent:
         if owner is None:
             return
         try:
-            system_logger.info(
+            system_logger.debug(
                 "[CybosEvent] recv begin progid=%s event=%s owner=%s",
                 getattr(self, "_progid", ""),
                 getattr(self, "_event_name", ""),
@@ -252,7 +252,7 @@ class _CybosSubscriptionEvent:
             pass
         owner._handle_subscription_event(self._event_name, self)
         try:
-            system_logger.info(
+            system_logger.debug(
                 "[CybosEvent] recv end progid=%s event=%s owner=%s",
                 getattr(self, "_progid", ""),
                 getattr(self, "_event_name", ""),

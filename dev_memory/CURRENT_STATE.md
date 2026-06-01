@@ -1,7 +1,53 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-05-30 (91·92차) — **rolling σ 방법3 Phase 1+2 구현 + ATR 완전 제거**
+> 마지막 업데이트: 2026-06-01 (94차) — **스케일러 강건화 완성 (Phase B·D·섹션8·9) + 운영 클린업**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-01 (94차) — 스케일러 강건화 완성 + 운영 클린업
+
+### 배경
+
+2026-06-01 진입 0건 근본원인(스케일러 65시간 노후화 → grade=X) 후속 조치. SCALER_ROBUST_PLAN.md Phase B·D + 섹션 8·9 전체 구현. 동시에 SYSTEM.log 200MB/일 버그 수정 및 정기 클린업 인프라 구축.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **Phase B: 정기/강제 refresh** — `check_refresh_trigger()` (B_OPEN 15분·C_PERIODIC 60분·D_FORCE 극단z) | **완료** — model/multi_horizon_model.py + main.py |
+| **Phase D: cancel_add_ratio DB 클린업** — 11행 삭제(최대 7.49억 이상치) | **완료** — scripts/cleanup_cancel_add_ratio.py |
+| **MIN_TRAIN_BARS 5000 복원** — Phase D 완료 후 3000→5000 | **완료** — learning/batch_retrainer.py |
+| **섹션 8: scaler_monitor.db 수집** — predict_proba INSERT + refresh UPDATE + daily_close EOD | **완료** — model/scaler_monitor_db.py + multi_horizon_model.py + main.py |
+| **섹션 9: ScalerMonitorPanel UI** — "🔬 스케일러" 탭 | **완료** — dashboard/panels/scaler_monitor_panel.py |
+| **SYSTEM.log 200MB/일 버그 수정** — 호가 이벤트 INFO→DEBUG | **완료** — api_connector.py + realtime_data.py |
+| **monthly_cleanup.py** — 30일 로그·90일 shap·60일 예측 자동 정리 | **완료** — scripts/monthly_cleanup.py |
+| 실세션 확인 (scaler_monitor.db 누적 + 패널 표시) | **미완료** — 다음 기동 시 |
+
+### 수정 파일 (94차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `config/settings.py` | Phase B 상수 6개 + `SCALER_MONITOR_DB` 경로 추가 |
+| `model/scaler_monitor_db.py` | **신규** — scaler_monitor.db CRUD 전체 |
+| `model/multi_horizon_model.py` | Phase B `check_refresh_trigger` + `__init__` 상태변수 + `predict_proba(monitor_ts=)` INSERT + `refit_scalers_only(trigger_ts=,trigger_type=,trigger_reason=)` UPDATE |
+| `learning/batch_retrainer.py` | MIN_TRAIN_BARS 3000→5000 복원 |
+| `main.py` | `_grade_x_count` + `_scaler_refresh_running` + Phase B 스레드 + `daily_close()` EOD INSERT |
+| `dashboard/panels/scaler_monitor_panel.py` | **신규** — ScalerMonitorPanel (60초 갱신) |
+| `dashboard/main_dashboard.py` | "🔬 스케일러" 탭 추가 |
+| `collection/cybos/api_connector.py` | `[CybosEvent] recv begin/end` INFO→DEBUG |
+| `collection/cybos/realtime_data.py` | `[CybosRT-EVENT] dispatch` INFO→DEBUG |
+| `scripts/cleanup_cancel_add_ratio.py` | **신규** — Phase D DB 클린업 스크립트 |
+| `scripts/monthly_cleanup.py` | **신규** — 월 1회 정기 클린업 |
+
+### 94차 실세션 확인 사항
+
+1. `[ScalerRefresh] trigger=A_WARMUP` 로그 (08:55 워밍업)
+2. `[ScalerRefresh] trigger=B_OPEN elapsed=6min` 로그 (09:15 최초 정기 트리거)
+3. `[ScalerMonitor]` 로그 발생 (극단 z 또는 노후 90분+ 시)
+4. SYSTEM.log 크기: 당일 5MB 이하 (이전 200MB 대비)
+5. "🔬 스케일러" 탭 → 호라이즌별 노후도 실시간 갱신 확인
+6. 15:40 `[ScalerMonitor] EOD 일별 집계 저장` 로그
 
 ---
 

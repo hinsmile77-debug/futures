@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-06-01 (94차 — 스케일러 강건화 + 운영 클린업)
+
+### [버그] SYSTEM.log 200MB/일 — 호가 이벤트 INFO 로그
+**File**: `collection/cybos/api_connector.py:245,255`, `collection/cybos/realtime_data.py:141`
+**Bug**: `[CybosEvent] recv begin/end` + `[CybosRT-EVENT] dispatch` 가 INFO 레벨로 SYSTEM 로그에 기록. 호가 이벤트는 초당 1~2회 발생 → 하루 200MB, 월 4GB.
+**Fix**: INFO → DEBUG 로 변경 (3줄). 내일부터 SYSTEM.log 5MB/일 예상.
+**Why DEBUG**: 실시간 이벤트 수신 확인은 디버깅 목적. 장중 운영에서 INFO 레벨이면 파이프라인 오류 추적이 불가능해짐. DEBUG는 기본 핸들러 제외 대상.
+
+### [설계] 스케일러 정기/강제 refresh 정책 (Phase B)
+**File**: `model/multi_horizon_model.py`, `main.py`, `config/settings.py`
+**Decision**: GBM 스케일러 단독 refresh를 3가지 트리거로 운영: D_FORCE(극단 z 연속/반복) > B_OPEN(장초 15분) > C_PERIODIC(60분). 우선순위 D>B>C. 강제 후 5분 쿨다운.
+**Why**: Phase A 워밍업(08:55) 1회만으로는 장중 변동성 급변 대응 불가. 6/1 진입 0 사례: 스케일러 65시간 노후화로 z=+5.04(atr) 발생 → 모든 conf < 58%. B/C 정기 refresh로 장중 노후 방지. D_FORCE로 이상 감지 즉시 대응.
+**How to apply**: check_refresh_trigger()가 분봉마다 호출(STEP 5 직후). 트리거 시 데몬 스레드로 refit_scalers_only() 실행 → pipeline 블로킹 없음.
+
+### [설계] scaler_monitor.db 수집 레이어 — DB 경량 모니터링 패턴
+**File**: `model/scaler_monitor_db.py`, `model/multi_horizon_model.py`, `main.py`
+**Decision**: 스케일러 상태를 별도 DB(scaler_monitor.db)에 기록. predict_proba 내 per-horizon INSERT(6행/분), refresh 완료 시 UPDATE, daily_close에서 EOD 집계.
+**Why**: 장중 스케일러 노후화를 사후에 추적할 수 없었음. DB 패턴은 threshold_monitor.db와 동일 — 독립 파일, 패널 직접 조회, monthly_cleanup 대상. 파이프라인 오류 시 DB 기록 실패해도 무시(try-except) — 모니터링이 거래를 막으면 안 됨.
+**How to apply**: INSERT 실패 시 DEBUG 로그만. `SCALER_MONITOR_DB` 경로는 settings.py. 월 1회 monthly_cleanup으로 90일+ 삭제 권장.
+
+---
+
 ## 2026-05-30 (91·92차 — rolling σ 방법3 Phase 1+2)
 
 ### [설계] 방법3 단독 채택 — 방법1/2 폐기 이유

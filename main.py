@@ -338,6 +338,8 @@ class TradingSystem:
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
+        self._scaler_refresh_running: bool = False   # Phase B 스케일러 refresh 중복 방지
+        self._grade_x_count: int = 0                 # 섹션 8: 당일 grade=X 분봉 수 집계
         self._last_close: float = 0.0                # 직전 분봉 종가 — 옵션체인 QTimer 폴링에 사용
         # ── rolling σ 임계값 (방법3) ──────────────────────────────────────
         self._sigma_buf: deque = deque(maxlen=20)    # 1분봉 수익률 rolling 버퍼
@@ -2126,6 +2128,28 @@ class TradingSystem:
         except Exception as _ce:
             logger.warning("[Canary] 점검 실패 (무시): %s", _ce)
 
+        # [ScalerWarmup] 08:55 스케일러 단독 워밍업 — GBM 재학습 없을 때만 실행.
+        # GBM 재학습(_warmup_retrain_pending)이 예약된 경우 재학습이 스케일러도 포함하므로 스킵.
+        # daemon thread로 비동기 실행 — 파이프라인 블로킹 없음.
+        if not getattr(self, "_warmup_retrain_pending", False):
+            def _scaler_warmup_worker():
+                try:
+                    from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                    X_w, fn_w = self.batch_retrainer.load_features_for_warmup(
+                        lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                    )
+                    if X_w is not None:
+                        self.model.refit_scalers_only(X_w, fn_w)
+                        log_manager.system(
+                            f"[ScalerWarmup] 완료 n={len(X_w)}봉 — 스케일러 노후화 차단", "INFO"
+                        )
+                    else:
+                        log_manager.system("[ScalerWarmup] 데이터 없음 — 워밍업 건너뜀", "WARNING")
+                except Exception as _sw_e:
+                    logger.warning("[ScalerWarmup] 실패 (무해): %s", _sw_e)
+
+            threading.Thread(target=_scaler_warmup_worker, daemon=True).start()
+
         # [PreRetrain] 08:55 GBM 사전 재학습 — 09:00 첫 파이프라인 CB⑤ 지연 방지.
         # warmup 플래그가 설정되어 있으면 여기서 바로 백그라운드 스레드 시작.
         # 재학습이 09:00 이전에 완료되면 STEP 3 에서 _gbm_retrain_running=True 이므로 중복 실행 없음.
@@ -2833,7 +2857,7 @@ class TradingSystem:
 
         if _gbm_ready:
             # ─ GBM + SGD 블렌딩 (정상 경로) ─
-            horizon_proba = self.model.predict_proba(feat_vec)
+            horizon_proba = self.model.predict_proba(feat_vec, monitor_ts=ts)
             for h_name in list(horizon_proba.keys()):
                 sgd_p   = self.online_learner.predict_proba(h_name, feat_vec)
                 blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p, h_name)
@@ -2893,6 +2917,37 @@ class TradingSystem:
                     f"[MarketDNA] 조심의 날 — 오전 사이즈 25% 고정 | {_dna_result['reason']}",
                     "WARNING",
                 )
+
+        # ── Phase B: 정기/강제 스케일러 refresh 트리거 ─────────────────
+        # predict_proba 완료 후 last_extreme_features 가 갱신된 시점에 실행.
+        # refit 자체는 daemon thread — 파이프라인 블로킹 없음.
+        if not self._scaler_refresh_running:
+            _extreme_feats_b = getattr(self.model, "last_extreme_features", [])
+            _refresh_trig, _refresh_reason = self.model.check_refresh_trigger(
+                _ts_dt_obj, _extreme_feats_b
+            )
+            if _refresh_trig:
+                def _scaler_refresh_worker(
+                    _trig=_refresh_trig, _rsn=_refresh_reason, _trigger_ts=ts
+                ):
+                    self._scaler_refresh_running = True
+                    try:
+                        from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                        _Xr, _fnr = self.batch_retrainer.load_features_for_warmup(
+                            lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                        )
+                        if _Xr is not None:
+                            self.model.refit_scalers_only(
+                                _Xr, _fnr,
+                                trigger_ts=_trigger_ts,
+                                trigger_type=_trig,
+                                trigger_reason=_rsn,
+                            )
+                    except Exception as _sr_e:
+                        logger.warning("[ScalerRefresh] 실패: %s", _sr_e)
+                    finally:
+                        self._scaler_refresh_running = False
+                threading.Thread(target=_scaler_refresh_worker, daemon=True).start()
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
         _st.append(("S6", time.perf_counter()))
@@ -3213,6 +3268,9 @@ class TradingSystem:
             )
             _final_grade = _cr["grade"]
             _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
+            # 섹션 8: grade=X 분봉 수 집계 (scaler_daily EOD용)
+            if _final_grade == "X":
+                self._grade_x_count += 1
 
             # [DBG-F7a] 체크리스트 항목별 ✓/✗
             _chk = _cr["checks"]
@@ -4670,6 +4728,20 @@ class TradingSystem:
             "sgd_accuracy":   self.online_learner.recent_accuracy(),
             "verified_count": self._verified_today,
         })
+
+        # 섹션 8: scaler_daily EOD 집계 저장
+        try:
+            from model.scaler_monitor_db import aggregate_daily, insert_daily
+            _sm_stats = aggregate_daily(today_str)
+            _cb3_fired = int(bool(getattr(self.circuit_breaker, "_daily_halt", False)))
+            insert_daily(
+                today_str, _sm_stats,
+                grade_x_minutes=self._grade_x_count,
+                cb3_triggered=_cb3_fired,
+            )
+        except Exception as _sm_e:
+            logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)
+        self._grade_x_count = 0   # 내일을 위해 리셋
 
         # [Phase2] 드리프트 감지 — CUSUM 일별 업데이트
         try:

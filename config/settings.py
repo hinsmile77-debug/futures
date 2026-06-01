@@ -26,7 +26,8 @@ PREDICTIONS_DB  = os.path.join(DB_DIR, "predictions.db")
 SHAP_DB         = os.path.join(DB_DIR, "shap_tracker.db")
 TRADES_DB       = os.path.join(DB_DIR, "trades.db")
 RAW_DATA_DB     = os.path.join(DB_DIR, "raw_data.db")   # 경로 B 학습 데이터
-CHALLENGER_DB   = os.path.join(DB_DIR, "challenger.db")  # 챔피언-도전자 전용 DB
+CHALLENGER_DB      = os.path.join(DB_DIR, "challenger.db")  # 챔피언-도전자 전용 DB
+SCALER_MONITOR_DB  = os.path.join(DB_DIR, "scaler_monitor.db")  # 섹션 8 스케일러 상태 모니터
 
 # ── 비밀 설정 로드 (secrets.py가 없으면 빈 값으로 대체) ───────
 try:
@@ -154,6 +155,42 @@ ENSEMBLE_WEIGHTS_CORR_ADJ = {
 # 두 학습기의 min_samples_leaf가 달라지면 디스크에 저장된 모델과
 # 인메모리 파라미터가 불일치하는 비결정성 버그가 발생한다.
 GBM_MIN_SAMPLES_LEAF = 10   # 두 학습기 모두 이 값을 참조한다
+
+# ── 스케일러 운영 정책 ──────────────────────────────────────────
+# GBM은 트리 기반(스케일 불변) — 스케일러만 독립 refit, 모델 재학습과 분리
+# SGD 경로(online_learner)는 partial_fit 현행 유지, 이 정책 적용 외
+
+# [A] 08:55 장 시작 전 워밍업
+SCALER_WARMUP_LOOKBACK_BARS: int = 500   # raw_data.db 최근 N봉 (~2거래일)
+
+# 노후 경고 임계 (multi_horizon_model.SCALER_WARN_MINUTES 와 동기화)
+SCALER_WARN_MINUTES: int = 90
+
+# [B] 장초 단축 주기
+SCALER_OPEN_REFRESH_INTERVAL_MIN: int = 15   # 09:00~09:30 구간 15분마다
+SCALER_OPEN_END_MINUTE: int = 30             # 이 분 수 이하면 장초 구간
+
+# [C] 정기 주기
+SCALER_GBM_REFRESH_INTERVAL_MIN: int = 60   # 장중 60분마다
+
+# [D] 강제 트리거
+SCALER_FORCE_EXTREME_CONSEC: int = 3         # 동일 피처 극단 z 연속 N분
+SCALER_FORCE_FEATURE_REPEAT: int = 2         # 최근 N봉 내 같은 피처 반복
+SCALER_FORCE_REFRESH_COOLDOWN_MIN: int = 5   # 강제 refit 후 최소 대기(분)
+
+# ── Robust 전처리 — GBM 입력 직전 적용 (SGD 경로 미적용) ─────────
+# 학습(batch_retrainer)·예측(predict_proba)·워밍업(refit_scalers_only) 모두 동일하게 통과
+
+# log1p 적용 피처 (항상 양수, long-tail 분포)
+SCALER_LOG1P_FEATURES: tuple = ("atr", "avg_volume")
+
+# clip 적용 피처 {피처명: (하한, 상한)}
+# spread_ticks: 오늘 극단 z=+6.45, raw cap 없음 → tick 단위 상한 20 (약 4호가)
+# mlofi_slope:  분포 -722 ~ +1127, raw cap 없음 → ±500 제한
+SCALER_CLIP_FEATURES: dict = {
+    "spread_ticks": (0.0, 20.0),
+    "mlofi_slope":  (-500.0, 500.0),
+}
 
 # GBM / SGD 블렌딩 비율
 GBM_WEIGHT_DEFAULT = 0.70

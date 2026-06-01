@@ -57,8 +57,8 @@ GBM_PARAMS = {
 }
 
 # 최소 학습 데이터 (분봉 수)
-# [한시적] 5/18 초기 운영 기간 — raw_data 누적 중, 5000 복원 목표: 약 2026-05-26
-MIN_TRAIN_BARS = 3000   # 약 8거래일 (원래 5000)
+# Phase D DB 클린업 완료(2026-06-01) + 7252행 확보 → 원래 값 복원
+MIN_TRAIN_BARS = 5000   # 약 13거래일
 
 # 호라이즌별 class weight — multi_horizon_model._make_sample_weight 와 반드시 동기화
 # 2026-05-30 threshold 재보정 후: FLAT 비율 ~33% 균형 → 강한 FL 억압 불필요
@@ -158,6 +158,10 @@ class BatchRetrainer:
 
         if feature_names is None:
             feature_names = [f"feature_{i}" for i in range(X.shape[1])]
+
+        # Robust 전처리 — 예측 경로(predict_proba)와 동일 변환 적용 (일관성 보장)
+        from model.multi_horizon_model import apply_robust_preprocess
+        X = apply_robust_preprocess(X, feature_names)
 
         results = {}
         for horizon_key in HORIZONS:
@@ -297,6 +301,87 @@ class BatchRetrainer:
             return None
         with open(path, "rb") as f:
             return pickle.load(f)
+
+    # ── 스케일러 워밍업용 피처 로드 ──────────────────────────────────
+
+    def load_features_for_warmup(
+        self, lookback_bars: int = 500
+    ):
+        """raw_data.db 에서 최근 N봉 피처만 로드 (라벨 계산 없음).
+
+        refit_scalers_only() 에 전달할 X 행렬과 feature_names 반환.
+        데이터 부족 또는 오류 시 (None, None) 반환.
+        """
+        import json as _json
+        import sqlite3
+
+        from config.settings import RAW_DATA_DB
+
+        raw_db = RAW_DATA_DB
+        if not os.path.exists(raw_db):
+            logger.warning("[ScalerWarmup] raw_data.db 없음 — 워밍업 건너뜀")
+            return None, None
+
+        try:
+            with sqlite3.connect(raw_db, timeout=10) as conn:
+                conn.row_factory = sqlite3.Row
+                feat_rows = conn.execute(
+                    "SELECT features FROM raw_features ORDER BY ts DESC LIMIT ?",
+                    (lookback_bars,),
+                ).fetchall()
+        except Exception as _e:
+            logger.warning("[ScalerWarmup] DB 읽기 실패: %s", _e)
+            return None, None
+
+        if not feat_rows:
+            logger.warning("[ScalerWarmup] raw_features 비어있음 — 워밍업 건너뜀")
+            return None, None
+
+        # managed feature set 적용 (batch_retrainer._load_from_db와 동일)
+        registry_path = os.path.join(DB_DIR, "shap_feature_registry.json")
+        managed_feats = None
+        try:
+            import json as _json2
+            if os.path.exists(registry_path):
+                with open(registry_path, "r", encoding="utf-8") as fh:
+                    registry = _json2.load(fh)
+                active = list(registry.get("active_features") or [])
+                if active:
+                    managed_feats = active
+        except Exception:
+            pass
+
+        records = []
+        feat_names = None
+        feat_name_count = 0
+        for r in feat_rows:
+            try:
+                fd = _json.loads(r["features"])
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(fd, dict):
+                continue
+            curr_keys = list(fd.keys())
+            if feat_names is None or len(curr_keys) >= feat_name_count:
+                feat_name_count = len(curr_keys)
+                feat_names = curr_keys
+            records.append(fd)
+
+        if not records or feat_names is None:
+            return None, None
+
+        if managed_feats:
+            available = set(feat_names)
+            filtered = [n for n in managed_feats if n in available]
+            if filtered:
+                feat_names = filtered
+
+        X = np.array(
+            [[rec.get(f, 0.0) for f in feat_names] for rec in records],
+            dtype=np.float32,
+        )
+        logger.info("[ScalerWarmup] 피처 로드 완료 n=%d feat=%d", len(X), len(feat_names))
+        return X, feat_names
 
     # ── DB 로드 (raw_features + raw_candles 기반) ────────────────
     def _load_from_db(self, weeks_back: int):

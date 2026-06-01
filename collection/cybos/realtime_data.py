@@ -138,7 +138,7 @@ class CybosRealtimeData:
         logger.info("[CybosRT] stop code=%s", self._rt_code)
 
     def _handle_subscription_event(self, event_name: str, sink) -> None:
-        sys_log.info("[CybosRT-EVENT] dispatch event=%s code=%s", event_name, self._rt_code)
+        sys_log.debug("[CybosRT-EVENT] dispatch event=%s code=%s", event_name, self._rt_code)
         if event_name == "tick" and self._tick_subscription is not None:
             self._handle_tick(self._tick_subscription.com_object)
         elif event_name == "hoga" and self._hoga_subscription is not None:

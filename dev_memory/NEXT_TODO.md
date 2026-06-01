@@ -6,6 +6,50 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-01 (94차) — 스케일러 강건화 완성 + 운영 클린업
+
+### 한일 요약
+
+- [DONE 2026-06-01] **Phase B: 정기/강제 스케일러 refresh** — `check_refresh_trigger()` B_OPEN(15분)·C_PERIODIC(60분)·D_FORCE(극단z) (settings.py + multi_horizon_model.py + main.py)
+- [DONE 2026-06-01] **Phase D: cancel_add_ratio DB 클린업** — 11행 삭제, MIN_TRAIN_BARS 3000→5000 복원 (scripts/cleanup_cancel_add_ratio.py + batch_retrainer.py)
+- [DONE 2026-06-01] **섹션 8: scaler_monitor.db 수집 레이어** — init_db·insert_events_batch·update_event_refresh·aggregate_daily·insert_daily (model/scaler_monitor_db.py + multi_horizon_model.py + main.py)
+- [DONE 2026-06-01] **섹션 9: ScalerMonitorPanel UI** — 실시간·Top5·refresh이벤트·일별이력 (dashboard/panels/scaler_monitor_panel.py + main_dashboard.py)
+- [DONE 2026-06-01] **SYSTEM.log 200MB/일 버그 수정** — `[CybosEvent]` + `[CybosRT-EVENT]` INFO→DEBUG (api_connector.py + realtime_data.py)
+- [DONE 2026-06-01] **monthly_cleanup.py 신규** — 30일 로그·90일 shap·60일 예측 자동 정리
+- [DONE 2026-06-01] **raw_data 백업·trades 백업 삭제** — 42.4MB 회수
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 다음 기동 시] **94차 실세션 확인**
+  - `[ScalerRefresh] trigger=A_WARMUP` 로그 (08:55)
+  - `[ScalerRefresh] trigger=B_OPEN elapsed=6min` 로그 (09:15 최초)
+  - SYSTEM.log 당일 5MB 이하 (버그 수정 효과 확인)
+  - "🔬 스케일러" 탭 → 호라이즌 노후도 표시 확인
+  - 15:40 `[ScalerMonitor] EOD 일별 집계 저장` 로그
+
+- [NEXT 2026-06-05] **Phase A 첫 자동 실행 확인** (기존 계속)
+  - 15:40 `[ThresholdRecal] 재보정 결과` 로그
+  - threshold_monitor.db 누적 확인
+
+- [NEXT 2026-07-01] **monthly_cleanup.py 첫 실행**
+  - `python scripts/monthly_cleanup.py --apply`
+  - 5월 SYSTEM.log ~1.5GB 회수 예상
+
+- [NEXT 미구현 — 잔여] **방안B: prediction_buffer sigma_at_t 저장**
+  - `predictions` 테이블 `sigma_at_t REAL` 컬럼 마이그레이션
+  - `save_prediction()` `sigma_at_t` 파라미터 추가 + DB 저장
+  - `verify_and_update()` 저장된 sigma_at_t 기반 threshold 사용
+
+- [NEXT ~2026-07-11] **Phase B(DriftDetector) — Brier Score DriftDetector 연결**
+  - DriftDetector 호라이즌별 인스턴스화 (param_drift_detector.py 재활용)
+  - 3m 임계값 재산출 검토
+
+- [NEXT Phase E — 1주 후] **2순위 피처 재평가**
+  - `ofi_norm`, `mlofi_norm`, `ofi_imbalance` 극단 z 빈도 재측정 (Phase A 1주 운영 후)
+  - 빈번하면 clip 보강 검토
+
+---
+
 ## 2026-05-30 (91·92차) — rolling σ 방법3 Phase 1+2 구현 + ATR 제거
 
 ### 한일 요약
