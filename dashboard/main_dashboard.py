@@ -8717,6 +8717,16 @@ class MireukDashboard(QMainWindow):
         if self.regime_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.regime_panel), "🌐 레짐")
 
+        # 동적 min_conf 모니터 패널
+        try:
+            from dashboard.panels.dynamic_mc_panel import DynamicMcPanel as _DMP
+            self.dynamic_mc_panel = _DMP()
+        except Exception as _dmpe:
+            logger.warning("[Dashboard] DynamicMcPanel 로드 실패: %s", _dmpe)
+            self.dynamic_mc_panel = None
+        if self.dynamic_mc_panel is not None:
+            self.mid_tabs.addTab(self._wrap(self.dynamic_mc_panel), "🎯 신뢰도 게이트")
+
         ml.addWidget(self.mid_tabs)
 
         # 우측: 5층 로그

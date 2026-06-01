@@ -99,7 +99,9 @@ from model.rf_horizon_model import RFHorizonModel
 from model.ensemble_decision import EnsembleDecision
 from strategy.position.position_tracker import PositionTracker
 from strategy.entry.checklist import EntryChecklist
-from strategy.entry.time_strategy_router import get_zone_min_confidence, get_horizon_min_confs
+from strategy.entry.time_strategy_router import (
+    get_zone_min_confidence, get_horizon_min_confs, update_dynamic_mc,
+)
 from strategy.entry.position_sizer import PositionSizer
 from strategy.entry.meta_gate import MetaGate
 from strategy.entry.trend_persistence import TrendPersistenceGate
@@ -1808,6 +1810,44 @@ class TradingSystem:
         except Exception as exc:
             logger.warning("[Calib] 기동 사전 학습 실패 (보정 비활성): %s", exc)
 
+    def _recalibrate_mc(self, trigger: str = "RETRAIN") -> None:
+        """
+        동적 min_conf 재보정.
+        최근 MC_LOOKBACK_DAYS 거래일의 앙상블 conf 분포를 측정하고
+        _ZONE_PARAMS의 min_confidence를 런타임 업데이트.
+        mc_history.db에 이력 저장.
+        """
+        from utils.db_utils import fetchall
+        from config.settings import PREDICTIONS_DB as _PDBP, MC_LOOKBACK_DAYS
+        try:
+            rows = fetchall(
+                _PDBP,
+                """SELECT confidence FROM ensemble_decisions
+                   WHERE substr(ts,1,10) >= date('now',?)
+                   AND confidence IS NOT NULL""",
+                ("-%d days" % (MC_LOOKBACK_DAYS * 2),),   # 거래일 환산 여유
+            )
+            confs = [float(r["confidence"]) for r in rows if r["confidence"]]
+            if not confs:
+                logger.warning("[DynMC] conf 데이터 없음 — 갱신 스킵")
+                return
+            base = update_dynamic_mc(confs, trigger=trigger, record=True)
+            if base is not None:
+                log_manager.system(
+                    f"[DynMC] mc 재보정 완료 trigger={trigger}  base={base:.3f}"
+                    f"  (n={len(confs)}봉)", "INFO"
+                )
+                # 대시보드 패널 갱신
+                try:
+                    if getattr(self, "dashboard", None):
+                        _panel = getattr(self.dashboard, "dynamic_mc_panel", None)
+                        if _panel and hasattr(_panel, "refresh"):
+                            _panel.refresh()
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("[DynMC] _recalibrate_mc 실패: %s", exc)
+
     def _apply_horizon_calibration(self, horizon_proba: dict) -> dict:
         calibrated = {}
         for horizon, probs in horizon_proba.items():
@@ -2052,6 +2092,12 @@ class TradingSystem:
                     registry["pending_change"] = {}
                     self._save_feature_registry(registry)
 
+            # 동적 mc 재보정 — 주기 1: GBM 재학습 완료 즉시
+            try:
+                self._recalibrate_mc(trigger="RETRAIN")
+            except Exception as _mc_e:
+                logger.warning("[DynMC] 재학습 후 mc 재보정 실패: %s", _mc_e)
+
             # threshold 교체 후 SGD 1회 완전 리셋 (플래그가 True인 경우만 실행)
             from config import settings as _cfg_sgd
             if getattr(_cfg_sgd, "SGD_FULL_RESET_PENDING", False):
@@ -2153,6 +2199,11 @@ class TradingSystem:
                         )
                     else:
                         log_manager.system("[ScalerWarmup] 데이터 없음 — 워밍업 건너뜀", "WARNING")
+                    # 동적 mc 재보정 — 주기 2: 08:55 워밍업 완료 직후
+                    try:
+                        self._recalibrate_mc(trigger="DAILY_WARMUP")
+                    except Exception as _mc_e2:
+                        logger.warning("[DynMC] 워밍업 후 mc 재보정 실패: %s", _mc_e2)
                 except Exception as _sw_e:
                     logger.warning("[ScalerWarmup] 실패 (무해): %s", _sw_e)
 

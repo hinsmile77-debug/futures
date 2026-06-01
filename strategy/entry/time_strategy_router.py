@@ -21,7 +21,10 @@ import datetime
 import logging
 from typing import Dict, Optional
 
-from config.settings import TIME_ZONES
+from config.settings import (
+    TIME_ZONES,
+    MC_PERCENTILE, MC_ABS_FLOOR, MC_ABS_CEIL, MC_STEP_LIMIT,
+)
 from utils.time_utils import now_kst, days_to_monthly_expiry, is_fomc_day
 
 logger = logging.getLogger("SIGNAL")
@@ -224,6 +227,93 @@ class TimeStrategyRouter:
             params["_fomc_override"] = True
             logger.info("[TimeRouter] FOMC 발표일 — 신뢰도↑ 사이즈×0.7")
         return params
+
+
+# ── 시간대별 mc 배율 (base_mc 에 곱해 시간대 특성 반영) ──────────
+_ZONE_MC_MULT: Dict[str, float] = {
+    "GAP_OPEN":       1.05,
+    "OPEN_VOLATILE":  1.02,
+    "STABLE_TREND":   1.00,
+    "LUNCH_RECOVERY": 0.99,
+    "CLOSE_VOLATILE": 1.01,
+    "EXIT_ONLY":      1.00,
+    "OTHER":          1.02,
+}
+
+
+def update_dynamic_mc(
+    conf_list: list,
+    trigger: str,
+    record: bool = True,
+) -> Optional[float]:
+    """
+    최근 conf 분포를 기반으로 _ZONE_PARAMS min_confidence를 동적 갱신.
+
+    Args:
+        conf_list: 측정 기간의 앙상블 confidence 리스트
+        trigger:   'RETRAIN' | 'DAILY_WARMUP'
+        record:    mc_history.db에 이력 저장 여부
+
+    Returns:
+        적용된 base_mc (None = 샘플 부족으로 갱신 안 함)
+    """
+    if len(conf_list) < 30:
+        logger.warning("[DynMC] 샘플 부족 (%d < 30) — mc 갱신 스킵", len(conf_list))
+        return None
+
+    sorted_c = sorted(conf_list)
+    idx_p65  = int(len(sorted_c) * MC_PERCENTILE / 100)
+    conf_p65 = sorted_c[idx_p65]
+    conf_avg = sum(conf_list) / len(conf_list)
+
+    # base_mc: p65 기준, 절대 상하한 적용
+    base_mc = max(MC_ABS_FLOOR, min(MC_ABS_CEIL, conf_p65))
+
+    # 이전 STABLE_TREND mc와 비교해 변화폭 clamp
+    prev_stable = _ZONE_PARAMS["STABLE_TREND"]["min_confidence"]
+    delta = base_mc - prev_stable
+    if abs(delta) > MC_STEP_LIMIT:
+        base_mc = prev_stable + (MC_STEP_LIMIT if delta > 0 else -MC_STEP_LIMIT)
+        logger.info(
+            "[DynMC] step clamp 적용: p65=%.3f → base=%.3f (prev=%.3f delta=%.3f)",
+            conf_p65, base_mc, prev_stable, delta,
+        )
+
+    zone_changes = {}
+    for zone, params in _ZONE_PARAMS.items():
+        if zone in ("EXIT_ONLY", "OTHER"):
+            continue
+        mult    = _ZONE_MC_MULT.get(zone, 1.00)
+        old_mc  = params["min_confidence"]
+        new_mc  = round(max(MC_ABS_FLOOR, min(MC_ABS_CEIL, base_mc * mult)), 3)
+        if abs(new_mc - old_mc) >= 0.005:   # 0.5%p 미만 변화는 무시
+            zone_changes[zone] = (old_mc, new_mc)
+            params["min_confidence"] = new_mc
+
+    if zone_changes:
+        import datetime as _dt
+        ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(
+            "[DynMC] mc 갱신 trigger=%s base=%.3f  %s",
+            trigger, base_mc,
+            " | ".join("%s %.3f→%.3f" % (z, o, n) for z, (o, n) in zone_changes.items()),
+        )
+        if record:
+            try:
+                from model.mc_history_db import insert_mc_change
+                insert_mc_change(
+                    ts=ts, trigger=trigger, base_mc=base_mc,
+                    zone_changes=zone_changes,
+                    conf_avg=round(conf_avg, 4),
+                    conf_p65=round(conf_p65, 4),
+                    n_samples=len(conf_list),
+                )
+            except Exception as _e:
+                logger.debug("[DynMC] 이력 저장 실패: %s", _e)
+    else:
+        logger.debug("[DynMC] mc 변화 없음 (base=%.3f prev=%.3f)", base_mc, prev_stable)
+
+    return base_mc
 
 
 def get_zone_min_confidence(zone: str) -> float:

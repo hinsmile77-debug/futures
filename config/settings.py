@@ -174,6 +174,15 @@ ENSEMBLE_WEIGHTS_CORR_ADJ = {
 # 0.67 = 6호라이즌 중 4개 이상 동방향 필요
 COHERENCE_GATE_MIN: float = 0.67
 
+# 동적 min_conf 설계 (260601_DYNAMIC_MIN_CONF_PLAN.md)
+# 주기 1: GBM 재학습 완료 즉시 / 주기 2: 매일 08:55
+MC_PERCENTILE:  float = 0.65   # conf 분포의 N번째 백분위를 base_mc로 사용
+MC_ABS_FLOOR:   float = 0.50   # base_mc 절대 하한 (이하로 내려가지 않음)
+MC_ABS_CEIL:    float = 0.75   # base_mc 절대 상한 (이상으로 올라가지 않음)
+MC_EMA_ALPHA:   float = 0.30   # 주기2 EMA 감쇠 (0.30 = 최근 ~3거래일 반영)
+MC_LOOKBACK_DAYS: int = 5      # conf 분포 측정 기간 (거래일)
+MC_STEP_LIMIT:  float = 0.08   # 1회 갱신 최대 변화폭 (±8%p clamp)
+
 # 시간대 × 호라이즌 min_conf 2D 표 (P4)
 # F1이 낮은 호라이즌·시간대 조합에서 기준을 선택적으로 강화해
 # 노이즈 진입을 줄이고 Precision을 높인다.
