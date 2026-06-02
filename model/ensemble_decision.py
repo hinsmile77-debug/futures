@@ -167,6 +167,11 @@ class HorizonF1AdaptiveWeight:
 class EnsembleDecision:
     """앙상블 신호 생성 + 진입 등급 판정"""
 
+    # 호라이즌 상수 출력 감지 임계값
+    # 5분간 direction 동일 + confidence max-min < 0.5%p → GBM 붕괴로 판정
+    _CONST_OUT_N     = 5      # 판정 최소 관찰 수 (분)
+    _CONST_OUT_RANGE = 0.005  # confidence max-min 허용 범위
+
     def __init__(self):
         self.gater      = AdaptiveEnsembleGater()
         self._decorr    = HorizonDecorrelator()
@@ -176,6 +181,11 @@ class EnsembleDecision:
         # 앙상블 전용 보정기: 앙상블 conf 분포를 직접 학습 (3m 분포 미스매치 해소)
         # 100건 이상 누적 전: self.calibrator(3m) fallback
         self.ensemble_calibrator = PredictionCalibrator(method="platt")
+        # 호라이즌 상수 출력 감지 — (direction, confidence) 이력 + 현재 stuck 상태
+        self._hz_conf_hist: Dict[str, deque] = {
+            h: deque(maxlen=self._CONST_OUT_N) for h in HORIZONS
+        }
+        self._hz_stuck: Dict[str, bool] = {h: False for h in HORIZONS}
 
     def compute(
         self,
@@ -219,6 +229,51 @@ class EnsembleDecision:
                 "[Ensemble] CLOSE_VOLATILE 단기 0.6× | %s",
                 {k: round(v, 3) for k, v in cur_weights.items()},
             )
+
+        # ── 호라이즌 상수 출력 감지 (GBM 붕괴 보호) ──────────────────
+        # 동일 direction + confidence max-min < 0.5%p 가 _CONST_OUT_N 분 지속
+        # → 해당 호라이즌을 앙상블에서 임시 제외 후 재정규화.
+        # F1AdaptiveWeight(EMA 기반·느림)보다 빠른 응답으로 즉시 피해 최소화.
+        _const_stuck: set = set()
+        for _h in list(cur_weights.keys()):
+            _res_h = horizon_proba.get(_h) or {}
+            if not _res_h:
+                continue
+            _c = round(float(_res_h.get("confidence", 0.0)), 3)
+            _d = int(_res_h.get("direction", 0))
+            self._hz_conf_hist[_h].append((_d, _c))
+            _hist = self._hz_conf_hist[_h]
+            if len(_hist) >= self._CONST_OUT_N:
+                _dirs  = [x[0] for x in _hist]
+                _confs = [x[1] for x in _hist]
+                if len(set(_dirs)) == 1 and (max(_confs) - min(_confs)) < self._CONST_OUT_RANGE:
+                    _const_stuck.add(_h)
+
+        # 전환 시점에만 로그 (매 분봉마다 출력 안 함)
+        for _h in list(HORIZONS.keys()):
+            _prev_stuck = self._hz_stuck.get(_h, False)
+            _now_stuck  = _h in _const_stuck
+            if _now_stuck and not _prev_stuck:
+                _buf = self._hz_conf_hist[_h]
+                _rng = max(x[1] for x in _buf) - min(x[1] for x in _buf)
+                logger.warning(
+                    "[ConstOut] %s 상수 출력 %d분 감지 (range=%.4f dir=%+d) → 앙상블 제외",
+                    _h, self._CONST_OUT_N, _rng, list(_buf)[-1][0],
+                )
+            elif not _now_stuck and _prev_stuck:
+                logger.info("[ConstOut] %s 상수 출력 해소 → 앙상블 복귀", _h)
+            self._hz_stuck[_h] = _now_stuck
+            if _now_stuck:
+                cur_weights[_h] = 0.0
+
+        # stuck 호라이즌 제외 후 가중치 재정규화
+        _tw = sum(cur_weights.values())
+        if _tw > 1e-9:
+            cur_weights = {h: w / _tw for h, w in cur_weights.items()}
+        else:
+            # 전 호라이즌 동시 붕괴(매우 희귀) → 기본 가중치로 fallback
+            cur_weights = dict(ENSEMBLE_WEIGHTS)
+            logger.warning("[ConstOut] 전 호라이즌 상수 출력 — ENSEMBLE_WEIGHTS fallback")
 
         up_score   = 0.0
         down_score = 0.0
@@ -401,9 +456,10 @@ class EnsembleDecision:
             "coherence_blocked":  _coherence_blocked,
             "detail":             detail,
             "gating":             gating,
-            "decorr":             self._decorr.get_status(),
-            "stuck":              self._stuck.status_dict(),
-            "f1_adaptive":        self._f1_weight.get_f1_status(),
+            "decorr":                self._decorr.get_status(),
+            "stuck":                 self._stuck.status_dict(),
+            "f1_adaptive":           self._f1_weight.get_f1_status(),
+            "const_output_horizons": sorted(_const_stuck),
         }
 
         logger.info(
@@ -424,6 +480,9 @@ class EnsembleDecision:
 
     def reset_daily(self):
         self._stuck.reset_daily()
+        for h in self._hz_conf_hist:
+            self._hz_conf_hist[h].clear()
+        self._hz_stuck = {h: False for h in HORIZONS}
 
     def record_trade_outcome(
         self,

@@ -44,6 +44,14 @@ class OnlineLearner:
     # 매 샘플 즉시 조정 시 연속 실패로 SGD 가중치가 1분 내 절반 붕괴하는 문제 방지
     _ADJUST_EVERY = 3
 
+    # SGD 바닥 회복 파라미터
+    # 10% 바닥 고착 시 30회 조정(≈90분) 경과 + 정확도 40%+ 이면 0.5%p 소량 회복
+    # 최대 5%p까지만 (15%) 허용 — 급격한 회복으로 인한 conf 불안정 방지
+    _FLOOR_RECOVERY_INTERVAL = 30   # 조정 횟수 기준
+    _FLOOR_RECOVERY_ACC_MIN  = 0.40  # 회복 허용 최소 정확도
+    _FLOOR_RECOVERY_DELTA    = 0.005  # 1회 회복량 (0.5%p)
+    _FLOOR_RECOVERY_MAX_UP   = 0.05  # 바닥 대비 최대 회복 폭 (5%p → 15%)
+
     def __init__(self):
         self.models:  Dict[str, SGDClassifier] = {}
         self.scalers: Dict[str, StandardScaler] = {}
@@ -73,6 +81,8 @@ class OnlineLearner:
         self._horizon_counts: Dict[str, int] = {h: 0 for h in HORIZONS}
         # 버킷별 learn() 호출 횟수 — _ADJUST_EVERY마다 가중치 1회 조정
         self._bucket_learn_count: Dict[str, int] = {"short": 0, "long": 0}
+        # 바닥 고착 카운터 — _FLOOR_RECOVERY_INTERVAL 도달 시 소량 회복 시도
+        self._floor_ticks: Dict[str, int] = {"short": 0, "long": 0}
 
         for h in HORIZONS:
             self.models[h] = SGDClassifier(
@@ -194,11 +204,40 @@ class OnlineLearner:
 
     # ── 가중치 조정 ─────────────────────────────────────────────
     def _adjust_weights(self, bucket: str):
-        """버킷 정확도 기반 SGD 비중 독립 조정"""
+        """버킷 정확도 기반 SGD 비중 독립 조정 + 바닥 회복 경로"""
         buf = self._acc_buf[bucket]
         if len(buf) < 20:
             return
         acc = sum(buf) / len(buf)
+
+        _at_floor = self._sgd_w[bucket] <= SGD_WEIGHT_MIN + 1e-6
+
+        if _at_floor:
+            # 바닥 고착 상태 — 일반 컷 로직 적용 안 함
+            # 충분히 오래 머물고 정확도가 최소 기준을 넘으면 소량 회복 시도
+            self._floor_ticks[bucket] += 1
+            if (self._floor_ticks[bucket] >= self._FLOOR_RECOVERY_INTERVAL
+                    and acc >= self._FLOOR_RECOVERY_ACC_MIN):
+                _new_w = min(
+                    self._sgd_w[bucket] + self._FLOOR_RECOVERY_DELTA,
+                    SGD_WEIGHT_MIN + self._FLOOR_RECOVERY_MAX_UP,
+                )
+                self._sgd_w[bucket] = _new_w
+                self._gbm_w[bucket] = 1.0 - _new_w
+                self._floor_ticks[bucket] = 0  # 성공 후 카운터 초기화
+                logger.info(
+                    "[OnlineLearner] %s 바닥 회복 SGD=%.0f%% GBM=%.0f%%"
+                    " (50분정확도=%.1f%% 바닥체류=%d회)",
+                    bucket,
+                    self._sgd_w[bucket] * 100,
+                    self._gbm_w[bucket] * 100,
+                    acc * 100,
+                    self._FLOOR_RECOVERY_INTERVAL,
+                )
+            return  # 바닥 구간이면 여기서 종료
+
+        # 바닥 아님: 카운터 초기화 후 일반 조정 진행
+        self._floor_ticks[bucket] = 0
 
         if acc > SGD_BOOST_THRESHOLD:
             delta = +0.02
@@ -261,10 +300,11 @@ class OnlineLearner:
         for bk in ("short", "long"):
             self._acc_buf[bk].clear()
             self._sgd_w[bk] = SGD_WEIGHT_DEFAULT
-        for h in self._horizon_acc_buf:
-            self._horizon_acc_buf[h].clear()
             self._gbm_w[bk] = GBM_WEIGHT_DEFAULT
             self._bucket_learn_count[bk] = 0
+            self._floor_ticks[bk] = 0
+        for h in self._horizon_acc_buf:
+            self._horizon_acc_buf[h].clear()
         self._sample_count = 0
         logger.info("[OnlineLearner] 일간 리셋 (모델 가중치 유지)")
 

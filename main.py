@@ -344,6 +344,7 @@ class TradingSystem:
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
         self._scaler_refresh_running: bool = False   # Phase B 스케일러 refresh 중복 방지
+        self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
         self._grade_x_count: int = 0                 # 섹션 8: 당일 grade=X 분봉 수 집계
         self._last_close: float = 0.0                # 직전 분봉 종가 — 옵션체인 QTimer 폴링에 사용
         # ── rolling σ 임계값 (방법3) ──────────────────────────────────────
@@ -3105,6 +3106,47 @@ class TradingSystem:
         confidence = decision["confidence"]
         grade      = decision["grade"]
         self._last_ensemble_direction = direction  # Contrarian Mode 동방향 추적용
+
+        # ── 상수 출력 호라이즌 감지 → 스케일러 재적합 트리거 ────────────
+        # GBM이 동일 conf를 5분+ 출력하면 스케일러 노후로 모든 입력이 같은 리프에
+        # 도달 중일 가능성이 높음 → 즉시 스케일러 재적합으로 분포 복원.
+        # GBM 재학습(수분 소요)과 달리 스케일러만 재적합은 수초 이내 완료.
+        # 쿨다운 30분: 재적합 중 또 다른 트리거로 중복 실행 방지.
+        _const_hz = decision.get("const_output_horizons", [])
+        if _const_hz and not self._scaler_refresh_running:
+            _now_dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            _co_cooldown_ok = (
+                self._const_out_refit_until is None
+                or _now_dt >= self._const_out_refit_until
+            )
+            if _co_cooldown_ok:
+                self._const_out_refit_until = (
+                    _now_dt + datetime.timedelta(minutes=30)
+                )
+                log_manager.system(
+                    f"[ConstOut] {_const_hz} 상수 출력 확정 → 스케일러 재적합 시작",
+                    "WARNING",
+                )
+                def _const_out_refit_worker(_hz=_const_hz, _tts=ts):
+                    self._scaler_refresh_running = True
+                    try:
+                        from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                        _Xco, _fnco = self.batch_retrainer.load_features_for_warmup(
+                            lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                        )
+                        if _Xco is not None:
+                            self.model.refit_scalers_only(
+                                _Xco, _fnco,
+                                trigger_ts=_tts,
+                                trigger_type="D_FORCE",
+                                trigger_reason=f"const_output={_hz}",
+                            )
+                    except Exception as _co_e:
+                        logger.warning("[ConstOut] 스케일러 재적합 실패: %s", _co_e)
+                    finally:
+                        self._scaler_refresh_running = False
+                threading.Thread(target=_const_out_refit_worker, daemon=True).start()
+
         # 앙상블 보정기: 현재 ts의 conf 캐시 (STEP 1에서 T-1m conf 조회용)
         self._ensemble_conf_cache[ts] = float(confidence)
         if len(self._ensemble_conf_cache) > 35:
