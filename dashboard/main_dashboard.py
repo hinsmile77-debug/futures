@@ -3515,7 +3515,30 @@ class EntryPanel(QWidget):
         right_lay.setSpacing(3)
 
         # 1. Layer 2 상태 카드 + On/Off 버튼
-        right_lay.addWidget(mk_label("Layer 2 Intraday Gate", C['cyan'], 9, True))
+        _l2_gate_tip = (
+            "Layer 2 Intraday Gate — 장중 전술 레짐\n\n"
+            "  NORMAL        : Layer 1 레짐 그대로 사용\n"
+            "  DAY_RISK_OFF  : 신뢰도 +5%p / 사이즈 ×0.5\n"
+            "  CRASH         : 신뢰도 +12%p / 사이즈 ×0.3\n\n"
+            "━━ CRASH 발동 (3조건 중 하나) ━━\n"
+            "  ① |당일 수익률| ≥ 1.8%       (급등/급락 공통)\n"
+            "  ② |30분 수익률| ≥ 1.0%\n"
+            "       AND ATR ratio ≥ 1.25   (급변동 + 변동성)\n"
+            "  ③ z극단 수 ≥ 3              (모델/스케일러 이상)\n\n"
+            "━━ DAY_RISK_OFF 발동 (3조건 중 하나) ━━\n"
+            "  ① |당일 수익률| ≥ 1.0%       (급등/급락 공통)\n"
+            "  ② |당일 수익률| ≥ 0.8%\n"
+            "       AND |15분 수익률| ≥ 0.5% (복합 급변동)\n"
+            "  ③ Contrarian ACTIVE          (역추세 신호)\n\n"
+            "━━ NORMAL 복귀 (2조건 모두) ━━\n"
+            "  ① ATR ratio < 1.2            (변동성 안정)\n"
+            "  ② z극단 수 < 3              (모델 정상화)\n\n"
+            "[Note 2026-06-02] 수익률 조건 abs() 양방향 적용\n"
+            "  선물 양방향 특성 반영 — 급등/급락 구분 없이 동일 처리"
+        )
+        _l2_title = mk_label("Layer 2 Intraday Gate", C['cyan'], 9, True)
+        _l2_title.setToolTip(_l2_gate_tip)
+        right_lay.addWidget(_l2_title)
         l2_top_lay = QHBoxLayout()
         l2_top_lay.setSpacing(4)
         self.layer2_gate_btn = QPushButton("L2 ON")
@@ -3551,9 +3574,9 @@ class EntryPanel(QWidget):
         right_lay.addWidget(mk_sep())
         right_lay.addWidget(mk_label("발동 지표", C['text2'], 9, True))
         _l2_inds = [
-            ("당일 수익률",  "_l2_day_ret",    "—%",  "≤−0.8%|≤−1.0%"),
-            ("15분 수익률",  "_l2_ret_15m",    "—%",  "≤−0.5%"),
-            ("30분 수익률",  "_l2_ret_30m",    "—%",  "≤−1.0%"),
+            ("당일 수익률",  "_l2_day_ret",    "—%",  "±0.8%|±1.0%"),
+            ("15분 수익률",  "_l2_ret_15m",    "—%",  "±0.5%"),
+            ("30분 수익률",  "_l2_ret_30m",    "—%",  "±1.0%"),
             ("ATR ratio",    "_l2_atr_ratio",  "—",   "≥1.25"),
             ("z극단 수",     "_l2_z_warn",     "—개",  "≥3개"),
             ("Contrarian",   "_l2_contrarian", "—",   "ACTIVE"),
