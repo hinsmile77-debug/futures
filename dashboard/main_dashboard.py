@@ -1052,6 +1052,25 @@ class PredictionPanel(QWidget):
             fl = QVBoxLayout(frame)
             fl.setContentsMargins(6, 4, 6, 4)
             hl = mk_label(hname, C['text2'], 10, align=Qt.AlignCenter)
+            if hname == "30분":
+                hl.setToolTip(
+                    "30분 예측 — FLAT 기준 설명\n\n"
+                    "━━ FLAT 관련 설정 (2026-06-02 개선) ━━\n\n"
+                    "① CB③ FLAT 예측 제외\n"
+                    "   direction=0(FLAT) 예측은 CB③ 집계 제외\n"
+                    "   방향성 예측(UP/DN)만 30분 정확도로 평가\n"
+                    "   이유: FLAT 고착 시 acc 급락 → CB③ 오발동\n\n"
+                    "② CB_ACCURACY_MIN_30M: 0.35 → 0.28\n"
+                    "   FLAT 제외 후 랜덤 기준 = 50% (UP/DN 2클래스)\n"
+                    "   0.28 = 랜덤의 56% — 명백한 역방향만 정지\n\n"
+                    "③ PATH_LABEL_RATIO: 0.45 → 0.55\n"
+                    "   학습 레이블 생성 시 FLAT 분류 기준 완화\n"
+                    "   임계값의 55% 이상 역행 시만 FLAT 처리\n"
+                    "   (기존 45%) → FLAT 레이블 비율 감소\n\n"
+                    "④ _CW_30M: {FL:1.00} → {FL:0.70, UP:1.15, DN:1.15}\n"
+                    "   GBM 학습 시 FLAT 가중치 낮춤\n"
+                    "   UP/DN 예측 강화 → 반전 시 FLAT 고착 방지"
+                )
             arr = mk_label("—", C['text2'], 22, True, Qt.AlignCenter)
             pct = mk_label("—%", C['text2'], 10, align=Qt.AlignCenter)
             fl.addWidget(hl)
