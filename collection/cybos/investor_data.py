@@ -205,7 +205,9 @@ class CybosInvestorData:
             "quality_investor_option_supported": 1.0 if self._option_flow_supported else 0.0,
             "quality_investor_stale": 1.0 if is_stale else 0.0,
             "quality_investor_age_sec": float(max(age_sec, 0.0)),
-            "quality_investor_fetch_count": float(min(self._fetch_count, 60)),  # z-score 단조증가 방지
+            # clip 60→5: 소급 데이터 99.9%가 0이어서 스케일러 평균≈0 → 60이면 z=+8 폭발
+            # 5 이상은 모두 "충분히 수집됨"으로 처리 — GBM에 필요한 정보는 0 vs 1~5
+            "quality_investor_fetch_count": float(min(self._fetch_count, 5)),
             "quality_investor_source_code": float(self._source_code(self._futures_source, self._program_source)),
             "quality_investor_reason_code": float(self._reason_code(self._futures_reason, self._program_reason)),
         }

@@ -243,8 +243,11 @@ SCALER_LOG1P_FEATURES: tuple = ("atr", "avg_volume")
 # spread_ticks: 오늘 극단 z=+6.45, raw cap 없음 → tick 단위 상한 20 (약 4호가)
 # mlofi_slope:  분포 -722 ~ +1127, raw cap 없음 → ±500 제한
 SCALER_CLIP_FEATURES: dict = {
-    "spread_ticks": (0.0, 20.0),
-    "mlofi_slope":  (-500.0, 500.0),
+    "spread_ticks":  (0.0, 20.0),
+    "mlofi_slope":   (-500.0, 500.0),
+    # quality_investor_fetch_count: 소급 99.9%=0 → 스케일러 평균≈0 → 실시간 60이면 z=+8
+    # 0 vs 1~5 범위만 의미 있음 → 5로 cap (investor_data.py clip도 동기화됨)
+    "quality_investor_fetch_count": (0.0, 5.0),
 }
 
 # GBM / SGD 블렌딩 비율
