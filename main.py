@@ -345,6 +345,7 @@ class TradingSystem:
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
         self._scaler_refresh_running: bool = False   # Phase B 스케일러 refresh 중복 방지
         self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
+        self._price_momentum_refit_until = None      # D_PRICE_MOMENTUM 쿨다운 (20분)
         self._grade_x_count: int = 0                 # 섹션 8: 당일 grade=X 분봉 수 집계
         self._last_close: float = 0.0                # 직전 분봉 종가 — 옵션체인 QTimer 폴링에 사용
         # ── rolling σ 임계값 (방법3) ──────────────────────────────────────
@@ -3036,6 +3037,65 @@ class TradingSystem:
                     finally:
                         self._scaler_refresh_running = False
                 threading.Thread(target=_scaler_refresh_worker, daemon=True).start()
+
+        # ── D_PRICE_MOMENTUM: 5분 가격 급변 기반 스케일러 즉시 트리거 ────
+        # 기존 D_FORCE(z-score >4 탐지)는 장세 전환 후 약 20분 지연이 발생.
+        # 가격 자체로 급변을 감지하면 전환 후 1~2분 내 스케일러를 재적합할 수 있다.
+        # 6/2 실증: 13:39 급등 시작 → z-score 탐지 13:57 → 리프레시 13:59 (20분 지연).
+        # 본 트리거가 있었다면 13:41~13:42에 즉시 실행 가능.
+        #
+        # 발동 조건:
+        #   1. sigma_buf에 5봉+ 수익률 누적 (장 시작 5분 이후)
+        #   2. 최근 5분 누적 수익률 절대값 > HORIZON_THRESHOLDS["5m"] × 100 × 2.5
+        #      (5m 레이블 임계값의 2.5배 급변 = 약 0.23%p 이상)
+        #   3. 쿨다운 20분 경과 (중복 리프레시 방지)
+        #   4. 다른 리프레시 작업 미실행 중
+        #
+        # 쿨다운을 ConstOut(30분)보다 짧게(20분) 설정한 이유:
+        #   가격 모멘텀은 추세 지속 중 연속적으로 발생할 수 있으며,
+        #   30분 쿨다운이면 추세 중반 이후 스케일러를 다시 맞출 기회를 놓친다.
+        if not self._scaler_refresh_running:
+            _n_sig_pm = len(self._sigma_buf)
+            if _n_sig_pm >= 5:
+                _ret_5m_pct = sum(list(self._sigma_buf)[-5:])   # 최근 5분 누적 수익률(%)
+                _thr_5m_pct = (
+                    runtime_settings.HORIZON_THRESHOLDS.get("5m", 0.00092) * 100 * 2.5
+                )
+                _pm_cooldown_ok = (
+                    self._price_momentum_refit_until is None
+                    or _ts_dt_obj >= self._price_momentum_refit_until
+                )
+                if abs(_ret_5m_pct) > _thr_5m_pct and _pm_cooldown_ok:
+                    self._price_momentum_refit_until = (
+                        _ts_dt_obj + datetime.timedelta(minutes=20)
+                    )
+                    log_manager.system(
+                        f"[ScalerRefresh] 5분 누적 수익률 {_ret_5m_pct:+.3f}% "
+                        f"(임계 ±{_thr_5m_pct:.3f}%) → D_PRICE_MOMENTUM 트리거 "
+                        f"(쿨다운 20분)",
+                        "WARNING",
+                    )
+                    def _pm_refit_worker(_tts=ts, _ret=_ret_5m_pct):
+                        self._scaler_refresh_running = True
+                        try:
+                            from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                            _Xpm, _fnpm = self.batch_retrainer.load_features_for_warmup(
+                                lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                            )
+                            if _Xpm is not None:
+                                self.model.refit_scalers_only(
+                                    _Xpm, _fnpm,
+                                    trigger_ts=_tts,
+                                    trigger_type="D_FORCE",
+                                    trigger_reason=f"price_momentum_5m={_ret:+.3f}%",
+                                )
+                        except Exception as _pm_e:
+                            logger.warning(
+                                "[ScalerRefresh] D_PRICE_MOMENTUM 실패: %s", _pm_e
+                            )
+                        finally:
+                            self._scaler_refresh_running = False
+                    threading.Thread(target=_pm_refit_worker, daemon=True).start()
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
         _st.append(("S6", time.perf_counter()))

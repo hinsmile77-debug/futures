@@ -172,6 +172,19 @@ class EnsembleDecision:
     _CONST_OUT_N     = 5      # 판정 최소 관찰 수 (분)
     _CONST_OUT_RANGE = 0.005  # confidence max-min 허용 범위
 
+    # TrendGate 추세 부스트 (P0-A): 원웨이 추세 감지 시 방향 점수 직접 보정
+    # 문제: TrendGate가 min_conf만 낮춰줘서 dir=FLAT이면 완전 무력.
+    # 해결: 앙상블 점수 계산 직후 up/down_score를 올려 flat_score를 이기게 함.
+    # 6/2 13:55 실증 케이스: up=0.36 → 0.43 > flat=0.42 → dir=+1 확정.
+    _TREND_UP_BOOST    = 0.07   # UP streak active 시 up_score 보정량
+    _TREND_DN_BOOST    = 0.07   # DN streak active 시 down_score 보정량
+    _TREND_SCORE_CAP   = 0.58   # boost 후 점수 상한 (과신 방지 — 0.58 이상은 GBM 실제값 우선)
+
+    # FlatCap (P0-B): 추세 active 중 flat_score 과지배 차단
+    # 14:10 케이스: 15m+30m 가중치 합 0.79인데 FLAT/DOWN → flat 0.57 우세
+    # → flat을 0.38로 cap 후 재정규화하여 UP/DN 상대 경쟁력 확보.
+    _FLAT_CAP_ON_TREND = 0.38   # 추세 중 flat_score 상한
+
     def __init__(self):
         self.gater      = AdaptiveEnsembleGater()
         self._decorr    = HorizonDecorrelator()
@@ -216,7 +229,9 @@ class EnsembleDecision:
         # CLOSE_VOLATILE(14:00~15:00) 구간: 단기(1m/3m/5m) FL편향 완화
         # 오후 저변동성 구간에서 단기 호라이즌이 FL에 과대 편향되어 중기 DN 신호를 희석.
         # 단기 가중치를 0.6× 축소 후 재정규화하여 10m/15m의 기여도를 상대적으로 확대.
-        if time_zone == "CLOSE_VOLATILE":
+        # 예외: TrendGate active 중에는 단기 호라이즌이 추세를 가장 빠르게 감지하므로
+        #       축소하지 않는다 — CLOSE_VOLATILE 축소가 오히려 방향 확정을 방해.
+        if time_zone == "CLOSE_VOLATILE" and not (trend_gate_up_active or trend_gate_dn_active):
             _SHORT = {"1m", "3m", "5m"}
             cur_weights = {
                 h: (w * 0.6 if h in _SHORT else w)
@@ -299,6 +314,49 @@ class EnsembleDecision:
 
         flat_score = max(0.0, 1.0 - up_score - down_score)
 
+        # ── P0-A: TrendGate 추세 부스트 ─────────────────────────────
+        # TrendGate streak(10분+)이 active이면 해당 방향 점수를 직접 올린다.
+        # 이 처리가 없으면: dir=FLAT인 동안 TrendGate는 min_conf를 낮춰도
+        # direction 확정 자체에는 영향을 못 줘 사실상 무력 (6/2 실증).
+        # AdaptiveGater / StuckBreaker 적용 이전에 수행하여 후속 로직 일관성 유지.
+        _trend_boost_applied = False
+        if trend_gate_up_active:
+            _up_before = up_score
+            up_score   = min(self._TREND_SCORE_CAP, up_score + self._TREND_UP_BOOST)
+            flat_score = max(0.0, 1.0 - up_score - down_score)
+            _trend_boost_applied = True
+            logger.debug(
+                "[TrendBoost] UP streak active: up %.3f→%.3f flat→%.3f",
+                _up_before, up_score, flat_score,
+            )
+        elif trend_gate_dn_active:
+            _dn_before = down_score
+            down_score = min(self._TREND_SCORE_CAP, down_score + self._TREND_DN_BOOST)
+            flat_score = max(0.0, 1.0 - up_score - down_score)
+            _trend_boost_applied = True
+            logger.debug(
+                "[TrendBoost] DN streak active: dn %.3f→%.3f flat→%.3f",
+                _dn_before, down_score, flat_score,
+            )
+
+        # ── P0-B: FlatCap — 추세 중 flat_score 과지배 차단 ────────────
+        # TrendBoost 이후에도 long-horizon FLAT 편향으로 flat이 0.38을 넘으면
+        # 상한을 적용하고 재정규화한다.
+        # 재정규화: up+dn+flat_capped 합이 1이 되도록 비례 스케일.
+        if (trend_gate_up_active or trend_gate_dn_active) and flat_score > self._FLAT_CAP_ON_TREND:
+            _flat_before = flat_score
+            flat_score   = self._FLAT_CAP_ON_TREND
+            _tw_renorm   = up_score + down_score + flat_score
+            if _tw_renorm > 1e-9:
+                up_score   = up_score   / _tw_renorm
+                down_score = down_score / _tw_renorm
+                flat_score = flat_score / _tw_renorm
+            _trend_boost_applied = True
+            logger.debug(
+                "[FlatCap] flat %.3f→%.3f (추세 보호) up=%.3f dn=%.3f",
+                _flat_before, self._FLAT_CAP_ON_TREND, up_score, down_score,
+            )
+
         # ── 최종 방향·신뢰도 ─────────────────────────────────
         if up_score >= down_score and up_score >= flat_score:
             direction  = DIRECTION_UP
@@ -364,21 +422,35 @@ class EnsembleDecision:
         # ── 호라이즌 합의도 패널티 (불합의 노이즈 필터) ───────────
         # 6개 중 2개 이하 합의: 방향 신호가 노이즈일 가능성 높음 → 진입 억제
         # 보너스 없음: 전 호라이즌 합의도 높아도 편향이면 오히려 7연속 실패 (이상점3 사례)
+        # P0-D 예외: TrendGate active 중에는 패널티 면제.
+        #   이유: 추세 초기엔 장기 호라이즌이 FLAT 고착 상태라 n_agree가 낮아도
+        #   실제 추세 신호(단기 호라이즌)가 맞는 경우가 많다 — 이미 낮은 conf에
+        #   추가 패널티를 주면 방향 확정을 이중으로 방해한다.
         if direction != DIRECTION_FLAT:
             _n_agree = sum(
                 1 for h_res in horizon_proba.values()
                 if h_res.get("direction") == direction
             )
+            _tp_agree_exempt = (
+                (trend_gate_up_active and direction == DIRECTION_UP) or
+                (trend_gate_dn_active and direction == DIRECTION_DOWN)
+            )
             if _n_agree <= 2:
-                confidence = round(confidence * 0.92, 6)
-                if direction == DIRECTION_UP:
-                    up_score = confidence
-                elif direction == DIRECTION_DOWN:
-                    down_score = confidence
-                logger.debug(
-                    "[Ensemble] 합의도 패널티 n_agree=%d/6 conf→%.3f",
-                    _n_agree, confidence,
-                )
+                if _tp_agree_exempt:
+                    logger.debug(
+                        "[Ensemble] 합의도 패널티 면제 (TrendGate active) n_agree=%d/6",
+                        _n_agree,
+                    )
+                else:
+                    confidence = round(confidence * 0.92, 6)
+                    if direction == DIRECTION_UP:
+                        up_score = confidence
+                    elif direction == DIRECTION_DOWN:
+                        down_score = confidence
+                    logger.debug(
+                        "[Ensemble] 합의도 패널티 n_agree=%d/6 conf→%.3f",
+                        _n_agree, confidence,
+                    )
 
         # ── 코히어런스 게이트 (P3b) ──────────────────────────────
         # FLAT 제외 계산: FLAT 예측 호라이즌은 방향성 없으므로 코히어런스에서 제외
@@ -454,6 +526,7 @@ class EnsembleDecision:
             "regime_ok":          regime_ok,
             "min_conf":           min_conf,
             "coherence_blocked":  _coherence_blocked,
+            "trend_boost_applied": _trend_boost_applied,
             "detail":             detail,
             "gating":             gating,
             "decorr":                self._decorr.get_status(),
