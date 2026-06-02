@@ -401,8 +401,8 @@ class DynamicMcPanel(QWidget):
                      else _COL["muted"])
 
             ts_raw = row.get("ts", "")
-            # "2026-06-02 09:35:00" → "02-0935" (dd-hhmm)
-            ts_short = ts_raw[8:10] + "-" + ts_raw[11:13] + ts_raw[14:16] if len(ts_raw) >= 16 else ts_raw
+            # "2026-06-02 09:35:00" → "0602-0935" (mmdd-hhmm)
+            ts_short = ts_raw[5:7] + ts_raw[8:10] + "-" + ts_raw[11:13] + ts_raw[14:16] if len(ts_raw) >= 16 else ts_raw
 
             vals = [
                 ts_short,
