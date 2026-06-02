@@ -250,6 +250,14 @@ SCALER_CLIP_FEATURES: dict = {
     # quality_investor_fetch_count: 소급 99.9%=0 → 스케일러 평균≈0 → 실시간 60이면 z=+8
     # 0 vs 1~5 범위만 의미 있음 → 5로 cap (investor_data.py clip도 동기화됨)
     "quality_investor_fetch_count": (0.0, 5.0),
+    # [Phase C Tier A] std 극소 피처 — fresh scaler에서도 z_max>20, P8 독립적으로 clip 필수
+    # 3000봉 실측: 2×p99 기준 (98% 값 보존, clip 후 z_max ≤ 9)
+    # imbalance_slope:       std=0.00029, p99=±0.001, z_max_raw=42 → clip 후 6.9
+    # microprice_bias:       std=0.00243, p99=±0.006, z_max_raw=27 → clip 후 4.9
+    # microprice_depth_bias: std=0.02076, p99=±0.075, z_max_raw=25 → clip 후 7.2
+    "imbalance_slope":       (-0.002, 0.002),
+    "microprice_bias":       (-0.012, 0.012),
+    "microprice_depth_bias": (-0.150, 0.150),
 }
 
 # GBM / SGD 블렌딩 비율
