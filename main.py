@@ -2494,8 +2494,13 @@ class TradingSystem:
             #     대량 검증되어 accuracy_buf 즉시 충전 → CB③ 오발동 방지
             _conf = v.get("confidence", 0.0) or 0.0
             _pred_ts = v.get("ts", "") or ""
+            # CB③: 30m 방향성 예측만 집계 (FLAT 예측 제외)
+            # FLAT 예측(direction=0)이 틀려도 모델이 방향을 포기한 것 → 패널티 부적절
+            # UP/DOWN 예측의 정확도만 "방향 신뢰도"로 평가
+            _pred_dir = int(v.get("predicted", 0))
             if (v["horizon"] == "30m"
                     and _conf > 0.38
+                    and _pred_dir != 0          # FLAT 예측 제외
                     and _pred_ts >= self._session_start_ts):
                 _contra_active = self.contrarian_mode.should_contra_enter()
                 self.circuit_breaker.record_accuracy(

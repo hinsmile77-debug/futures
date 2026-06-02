@@ -48,7 +48,9 @@ logger = logging.getLogger("LEARNING")
 
 # P6b: 경로 조건부 레이블 파라미터
 # UP/DOWN 후보이더라도 중간 경로에서 이 비율 이상 역행하면 FLAT 처리
-PATH_LABEL_RATIO: float = 0.45   # threshold × 0.45 이상 역행 시 FLAT
+# 0.45 → 0.55: FLAT 과다 레이블 방지 (11시 반전 시 FLAT 고착 CB③ 발동 원인)
+# 임계값의 55% 이상 역행 시만 FLAT → FLAT 비율 줄고 UP/DOWN 예측 증가
+PATH_LABEL_RATIO: float = 0.55
 
 
 def _path_conditioned_label(
@@ -139,7 +141,8 @@ MIN_TRAIN_BARS = 15000
 _CW_1M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
 _CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.12, DIRECTION_DOWN: 1.12}
 _CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
-_CW_30M = {DIRECTION_FLAT: 1.00, DIRECTION_UP: 1.00, DIRECTION_DOWN: 1.00}
+# 30m FLAT 가중치 낮춤: FLAT 편향 억제 (반전 시 UP/DN 예측 강화)
+_CW_30M = {DIRECTION_FLAT: 0.70, DIRECTION_UP: 1.15, DIRECTION_DOWN: 1.15}
 
 
 def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:

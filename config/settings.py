@@ -302,7 +302,10 @@ FUTURES_COMMISSION_RATE = 0.000015   # 0.0015% 편도 (거래대금 기준)
 CB_SIGNAL_FLIP_LIMIT   = 5     # 1분 내 신호 반전 횟수
 CB_SIGNAL_FLIP_PAUSE   = 15    # 진입 정지 (분)
 CB_CONSEC_STOP_LIMIT   = 2     # 연속 손절 횟수 (5/15: 2회 후 재진입 손실 → 3→2 강화)
-CB_ACCURACY_MIN_30M    = 0.35  # 30분 이동평균 최소 정확도
+# CB③: FLAT 예측 제외 후 방향성 예측만 집계 (2026-06-02)
+# 랜덤 예측 정확도 = 50% (UP/DN 2클래스, FLAT 제외 시)
+# 0.28 = 랜덤 50%의 56% 수준 — 명백히 노이즈일 때만 정지
+CB_ACCURACY_MIN_30M    = 0.28  # 30분 방향성 예측 최소 정확도 (0.35→0.28)
 CB_ATR_MULT_LIMIT      = 3.0   # 변동성 ATR 배수 한계
 CB_API_LATENCY_LIMIT   = 5.0   # (레거시 — Kiwoom용, Cybos에서는 사용 안 함)
 CB_API_LATENCY_PAUSE   = 300   # (레거시)
