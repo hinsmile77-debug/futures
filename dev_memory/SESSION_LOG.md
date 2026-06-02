@@ -4,6 +4,61 @@
 
 ---
 
+## 2026-06-02 (99·100차 — 저변동성 인식 피처 + GBM 붕괴 방어 3종)
+
+**Work**: 장 후 세션 로그 분석(12:56~14:01) → FL/UP 편향 급등 원인 규명 → 구조적 개선 5종 구현.
+
+### 1. 로그 분석 — 15m 상수 출력 붕괴 확인 (99차 배경)
+
+- 13:00~13:35: 15m confidence = 39.3% UP 20분 고착 (동일 값 반복)
+- 13:36~14:01: 15m confidence = 44.1% FL 25분 고착
+- 30m: UP편향 77% (UP=23/30) — 방향은 맞으나 이전 실패로 acc=33%
+- SGD비중: 13:16 10% 바닥 도달 → 이후 고착
+- 원인: GBM 스케일러 노후로 모든 입력이 동일 리프 → 상수 확률 출력
+
+### 2. 저변동성 인식 피처 2종 추가 (99차)
+
+| 피처 | 의미 | 값 범위 |
+|---|---|---|
+| `threshold_feasibility` | ATR / (1m_threshold × price) | <1=FLAT 우세, >1=UP/DN 빈번 |
+| `micro_regime_code` | 직전 분 레짐 수치화 | 0=횡보·1=혼합·2=추세·3=탈진·4=급변 |
+
+- `features/feature_builder.py`: `build()` 파라미터 `micro_regime` 추가, `HORIZON_THRESHOLDS` import
+- `main.py`: `build()` 호출에 `micro_regime=self.current_micro_regime` (1분 lag) 전달
+- `main.py` `daily_close()`: `current_micro_regime = "혼합"` 리셋 추가
+- 다음 GBM 배치 재학습 시 자동 포함 (DB raw_features에 즉시 저장됨)
+
+### 3. GBM 상수 출력 감지 + 앙상블 제외 (100차-1)
+
+- `model/ensemble_decision.py`: `EnsembleDecision`에 `_CONST_OUT_N=5`, `_CONST_OUT_RANGE=0.005` 추가
+- 5분 연속 동일 direction + confidence max-min < 0.5%p → 해당 호라이즌 weight=0 + 재정규화
+- 전환 시 SIGNAL WARNING 로그 (1회), 해소 시 자동 복귀
+- `result["const_output_horizons"]` 노출 → main.py 스케일러 재적합 훅과 연동
+- `reset_daily()` 확장: hist·stuck 상태 초기화
+
+### 4. SGD 바닥 회복 경로 (100차-2)
+
+- `learning/online_learner.py`: 바닥(10%) 30회 조정(≈90분) + 50분정확도≥40% → 0.5%p 회복
+- 최대 5%p까지(15%) 허용 — 급격한 복귀로 인한 conf 불안정 방지
+- `reset_daily()` 버그 수정: `_gbm_w`·`_bucket_learn_count` 루프 위치 오류 (for h → for bk)
+
+### 5. 상수 출력 → 스케일러 재적합 훅 (100차-3)
+
+- `main.py`: `decision["const_output_horizons"]` 비어있지 않으면 daemon 스레드로 `refit_scalers_only(D_FORCE)` 실행
+- `_const_out_refit_until`: 30분 쿨다운 (중복 실행 방지)
+- `_scaler_refresh_running` 플래그 공유 (Phase B와 동일 락)
+
+### 수정 파일
+
+| 파일 | 변경 |
+|---|---|
+| `features/feature_builder.py` | `threshold_feasibility`, `micro_regime_code` 추가, `build()` 파라미터 |
+| `model/ensemble_decision.py` | ConstOut 감지 + 제외 + reset_daily |
+| `learning/online_learner.py` | SGD 바닥 회복 + reset_daily 버그 수정 |
+| `main.py` | micro_regime 전달, ConstOut 훅, _const_out_refit_until |
+
+---
+
 ## 2026-06-02 (98차 계속 — 진입0 구조 개선 전면)
 
 **Work**: 6/2 장 중 진입0 원인 다중 분석 및 수정. 커밋 20여 건.

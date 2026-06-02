@@ -1,7 +1,46 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-02 (98차 계속) — **진입0 구조 개선 전면 (CoherenceGate·Layer2·CB③·mc 복원)**
+> 마지막 업데이트: 2026-06-02 (99·100차) — **저변동성 인식 피처 + GBM 상수 출력 방어 3종**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-02 (99·100차) — 저변동성 인식 피처 + GBM 붕괴 방어
+
+### 배경
+
+6/2 장 중 로그 분석: 15m GBM이 39.3% UP → 44.1% FL로 각각 20·25분 고착.
+GBM 스케일러 노후로 모든 피처가 동일 리프에 떨어지는 상수 출력 붕괴.
+SGD비중 10% 바닥 고착. 저변동성 구간 FLAT 예측 실패 구조적 원인 규명 후 5종 구현.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **`threshold_feasibility` 피처** — ATR/(1m_threshold×price), <1=FLAT 우세 | **완료** — feature_builder.py |
+| **`micro_regime_code` 피처** — 직전분 레짐 수치화(0~4) | **완료** — feature_builder.py |
+| **GBM 상수 출력 감지 (ConstOut)** — 5분×range<0.5%p → 앙상블 weight=0 | **완료** — ensemble_decision.py |
+| **SGD 바닥 회복** — 30회 고착+acc≥40% → 0.5%p 회복(최대15%) | **완료** — online_learner.py |
+| **ConstOut → 스케일러 재적합 훅** — D_FORCE daemon thread, 30분 쿨다운 | **완료** — main.py |
+| **reset_daily() 버그 수정** — _gbm_w/_bucket_learn_count 루프 위치 오류 | **완료** — online_learner.py |
+| 다음 기동 시 실세션 확인 | **미완료** |
+
+### 실세션 확인 사항 (다음 기동)
+
+1. `[ConstOut] 15m 상수 출력 5분 감지 (range=0.XXXX) → 앙상블 제외` SIGNAL WARNING 로그 발화 여부
+2. `[ConstOut] 15m 상수 출력 해소 → 앙상블 복귀` 로그로 자동 복귀 확인
+3. `[ConstOut] 상수 출력 확정 → 스케일러 재적합 시작` SYSTEM 로그 + `[ScalerRefresh]` 완료 로그
+4. `[OnlineLearner] long 바닥 회복 SGD=11% GBM=89%` — 바닥 장기 고착 시 회복 발화 확인
+5. `threshold_feasibility`, `micro_regime_code` — SIGNAL 로그 또는 DB에서 피처 저장 확인
+
+### 수정 파일 (99·100차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `features/feature_builder.py` | `threshold_feasibility`, `micro_regime_code` 피처, `build()` `micro_regime` 파라미터, `HORIZON_THRESHOLDS` import |
+| `model/ensemble_decision.py` | ConstOut 감지 블록, `_hz_conf_hist`, `_hz_stuck`, `const_output_horizons` 결과 키, `reset_daily()` 확장 |
+| `learning/online_learner.py` | 바닥 회복 상수 4종, `_floor_ticks`, `_adjust_weights()` 재작성, `reset_daily()` 버그 수정 |
+| `main.py` | `micro_regime` 전달, `_const_out_refit_until`, ConstOut→refit 훅, daily_close 리셋 |
 
 ---
 

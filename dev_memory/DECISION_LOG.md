@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-06-02 (99·100차 — 저변동성 인식 피처 + GBM 붕괴 방어)
+
+### [분석] 15m GBM 상수 출력 붕괴 확인 — 6/2 장 중 로그
+**증상**: 13:00~13:35 confidence=39.3% UP 반복 (std≈0.001), 13:36~14:01 confidence=44.1% FL 반복.
+**원인**: GBM 스케일러 노후 시 현재 피처 분포가 학습 분포와 달라져 모든 입력이 동일 리프 노드에 도달 → 상수 확률 출력. max_depth=5 트리 구조상 특정 피처 조합이 오후 내내 같은 경로를 탐색.
+**결과**: 15m이 앙상블 오염, SGD 10% 바닥 고착으로 보정 불가. 30m UP편향은 시장 방향 자체는 맞으나 30분 롤링 버퍼에 이전 실패가 누적되어 acc 저하.
+**How to apply**: SYSTEM.log에서 `[Canary] scaler 노후=Xh` 확인 → 24h+ 이면 상수 출력 가능성. ConstOut 감지 로그와 함께 스케일러 재적합 진행.
+
+### [설계] threshold_feasibility 피처 — 저변동성 인식 직접 인코딩
+**File**: `features/feature_builder.py`
+**Decision**: `threshold_feasibility = ATR / (HORIZON_THRESHOLDS["1m"] × close)`. 피처 벡터 X에 "현재 변동성으로 1m threshold를 초과할 수 있는가"를 직접 인코딩.
+**Why**: 기존 `atr_ratio`(현재ATR/평균ATR)는 상대적 변동성만 측정. GBM이 필요한 것은 "threshold 초과 가능성" = 라벨 결정 경계와의 관계. 이 피처 없이는 저변동성 구간에서 동일 CVD/OFI 패턴이 항상 UP 예측을 유발.
+**How to apply**: <1.0이면 대부분의 분봉이 FLAT 구간. GBM 재학습 후 feature importance에서 상위 20위 안에 들어야 효과 인정. 그렇지 않으면 조합 피처(ATR×CVD) 추가 검토.
+
+### [설계] micro_regime_code 피처 — 레짐 분류 결과 직접 입력
+**File**: `features/feature_builder.py`, `main.py`
+**Decision**: `micro_regime_code = {횡보:0, 혼합:1, 추세:2, 탈진:3, 급변:4}`. `build()` 파라미터로 전달, `self.current_micro_regime`(직전 분, 1분 lag) 사용.
+**Why**: `MicroRegimeClassifier`가 "횡보장"을 분류하지만 그 결과가 GBM 예측 입력에 없었음. 레짐 정보는 진입 체크리스트(후처리)에만 사용됨. 피처로 노출 시 GBM이 "횡보장 + CVD↑ → FLAT" 패턴을 직접 학습 가능.
+**1분 lag**: `push_1m_candle()`은 `build()` 이후 실행. 따라서 직전 분 레짐을 사용. 레짐 전환은 5~10분 단위 → 1분 lag 영향 미미.
+**How to apply**: `shap_feature_registry.json` active_features에 수동 추가 필요 (GBM 재학습 후).
+
+### [설계] ConstOut 감지 — 앙상블 즉각 제외 (F1AdaptiveWeight 보완)
+**File**: `model/ensemble_decision.py`
+**Decision**: 5분 연속 동일 direction + confidence max-min < 0.005 → 해당 호라이즌 weight=0, 재정규화. 전환 시 SIGNAL WARNING 1회, 해소 시 INFO 복귀.
+**Why**: `HorizonF1AdaptiveWeight`(EMA 기반)는 `obs≥30` 이후 활성화되고 f1²에 비례해 서서히 감소 → 상수 출력 발생 후 최대 10분 이상 앙상블 오염 지속. ConstOut은 5분 내 즉시 감지·제외.
+**주의**: direction이 같아야 감지함 (UP만 5분 vs UP→FL 전환은 direction 바뀌므로 리셋됨). 신뢰도 변동이 없어도 방향이 바뀌면 새로 5분 관찰 시작.
+**How to apply**: `result["const_output_horizons"]`이 비어있지 않으면 main.py에서 스케일러 재적합 트리거. 전 호라이즌 동시 붕괴는 ENSEMBLE_WEIGHTS fallback.
+
+### [설계] SGD 바닥 회복 경로 — 연속 실패 후 자동 재참여
+**File**: `learning/online_learner.py`
+**Decision**: SGD_WEIGHT_MIN(10%) 도달 후 30회 조정 횟수 경과 + 50분정확도≥40% → 0.5%p 소량 회복. 최대 5%p(15%)까지 허용.
+**Why**: 바닥 고착 시 `_acc_buf`는 GBM 주도 혼합 성능을 측정. GBM이 나빠도 SGD가 덩달아 페널티. 30회≈90분 체류 + 40% 최소 기준으로 "시장이 적어도 무작위 이상"일 때만 회복 허용. 5%p 상한으로 급격한 conf 불안정 방지.
+**How to apply**: 회복 로그 `[OnlineLearner] long 바닥 회복 SGD=11%`가 너무 자주(하루 3회+) 발생하면 `_FLOOR_RECOVERY_ACC_MIN`을 0.42~0.45로 상향 검토.
+
+### [버그] online_learner.py reset_daily() 루프 변수 오류
+**File**: `learning/online_learner.py`
+**Bug**: `for h in self._horizon_acc_buf:` 루프 안에서 `self._gbm_w[bk]`, `self._bucket_learn_count[bk]` 갱신 (bk는 외부 루프 변수). 구조적으로 bk가 마지막 값("long")으로 2회 반복되어 실질 오류는 없었으나 코드 의도와 불일치.
+**Fix**: _gbm_w, _bucket_learn_count, _floor_ticks 갱신을 `for bk in ("short", "long"):` 루프 내부로 이동.
+
+---
+
 ## 2026-06-02 (98차 계속 — 진입0 구조 개선)
 
 ### [버그] sqlite3.Row.get() 없음 — _restore_mc_from_history() GAP_OPEN만 복원

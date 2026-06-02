@@ -6,6 +6,35 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-02 (99·100차) — 저변동성 인식 피처 + GBM 붕괴 방어
+
+### 한일 요약
+
+- [DONE 2026-06-02] **`threshold_feasibility` 피처** — ATR/(1m_threshold×price), GBM이 FLAT 가능성 직접 학습 (feature_builder.py)
+- [DONE 2026-06-02] **`micro_regime_code` 피처** — 직전 분 레짐 수치화(0=횡보~4=급변), 1분 lag 허용 (feature_builder.py, main.py)
+- [DONE 2026-06-02] **GBM 상수 출력 감지 (ConstOut)** — 5분×range<0.5%p → weight=0+재정규화+SIGNAL 경보 (ensemble_decision.py)
+- [DONE 2026-06-02] **SGD 바닥 회복 경로** — 30회+acc≥40% → 0.5%p 소량 회복, 최대 15% (online_learner.py)
+- [DONE 2026-06-02] **ConstOut → 스케일러 재적합 훅** — D_FORCE daemon thread, 30분 쿨다운 (main.py)
+- [DONE 2026-06-02] **reset_daily() 버그 수정** — _gbm_w/_bucket_learn_count 루프 위치 오류(for h→for bk) (online_learner.py)
+
+### 다음 할 일
+
+- [NEXT 다음 기동 시] **99·100차 실세션 확인**
+  - `[ConstOut] 15m 상수 출력 5분 감지 → 앙상블 제외` SIGNAL WARNING 발화 확인
+  - `[ConstOut] 상수 출력 확정 → 스케일러 재적합 시작` SYSTEM 로그 확인
+  - `[OnlineLearner] long 바닥 회복 SGD=11%` — 바닥 장기 체류 시 회복 발화
+  - threshold_feasibility, micro_regime_code DB 저장 확인
+
+- [NEXT GBM 재학습 후] **threshold_feasibility + micro_regime_code 학습 효과 확인**
+  - 다음 배치 재학습 후 [Bias] 로그에서 저변동성 구간 FL 예측 비율 변화 관찰
+  - 15m 상수 출력 고착 빈도 감소 여부 (특히 오후 13:00~15:00 구간)
+
+- [NEXT 향후] **shap_feature_registry에 신규 피처 2개 추가**
+  - GBM 재학습 후 `threshold_feasibility`, `micro_regime_code` active_features에 수동 추가
+  - 자동화 로직이 없으므로 수동 갱신 필요 (98차 NEXT 항목과 동일 이슈)
+
+---
+
 ## 2026-06-02 (98차 계속) — 진입0 구조 개선 전면
 
 ### 한일 요약
