@@ -48,12 +48,27 @@ def _restore_mc_from_history() -> None:
             "WHERE id IN (SELECT MAX(id) FROM mc_history GROUP BY zone)"
         ).fetchall()
         conn.close()
+        base_mcs = []
         for r in rows:
             zone = r["zone"]
             if zone in _ZONE_PARAMS:
                 old = _ZONE_PARAMS[zone]["min_confidence"]
                 _ZONE_PARAMS[zone]["min_confidence"] = float(r["new_mc"])
                 logger.info("[DynMC] 기동 복원: %s  %.3f → %.3f", zone, old, r["new_mc"])
+                base_mcs.append(float(r.get("base_mc") or r["new_mc"]))
+
+        # REGIME_MIN_CONFIDENCE 복원 (앙상블 내부 min_conf 동기화)
+        if base_mcs:
+            base = min(base_mcs)   # 가장 낮은 base_mc 기준
+            from config import settings as _s
+            _rmc = getattr(_s, "REGIME_MIN_CONFIDENCE", {})
+            for _regime in ("RISK_ON", "NEUTRAL"):
+                old_r = _rmc.get(_regime, 0.52)
+                new_r = round(max(base, MC_ABS_FLOOR), 3)
+                if abs(new_r - old_r) >= 0.005:
+                    _rmc[_regime] = new_r
+                    logger.info("[DynMC] 기동 복원 REGIME_MIN_CONF %s %.3f → %.3f",
+                                _regime, old_r, new_r)
     except Exception as exc:
         logger.debug("[DynMC] 기동 복원 실패 (무시): %s", exc)
 
@@ -321,6 +336,22 @@ def update_dynamic_mc(
         if abs(new_mc - old_mc) >= 0.005:   # 0.5%p 미만 변화는 무시
             zone_changes[zone] = (old_mc, new_mc)
             params["min_confidence"] = new_mc
+
+    # REGIME_MIN_CONFIDENCE도 base_mc와 동기화
+    # 앙상블 내부의 레짐별 min_conf가 _ZONE_PARAMS보다 높으면 진입 불가
+    try:
+        from config import settings as _s
+        _rmc = getattr(_s, "REGIME_MIN_CONFIDENCE", {})
+        for _regime in ("RISK_ON", "NEUTRAL"):
+            _old_rmc = _rmc.get(_regime, base_mc)
+            _new_rmc = round(max(base_mc, MC_ABS_FLOOR), 3)
+            if abs(_new_rmc - _old_rmc) >= 0.005:
+                _rmc[_regime] = _new_rmc
+                logger.info("[DynMC] REGIME_MIN_CONF %s %.3f→%.3f", _regime, _old_rmc, _new_rmc)
+        # RISK_OFF는 항상 base_mc+0.10 이상 유지 (보수 유지)
+        _rmc["RISK_OFF"] = round(min(0.75, max(base_mc + 0.10, _rmc.get("RISK_OFF", 0.65))), 3)
+    except Exception as _rmc_e:
+        logger.debug("[DynMC] REGIME_MIN_CONF 갱신 실패: %s", _rmc_e)
 
     if zone_changes:
         import datetime as _dt
