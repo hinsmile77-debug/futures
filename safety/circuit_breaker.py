@@ -29,6 +29,7 @@ from config.settings import (
     CB_DAILY_HALT_HALF_SIZE, CB_DAILY_HALT_FULL_BLOCK,
     CB_CB3_WARN_RESET_MARGIN, CB_CB3_WARN_RESET_OK_STREAK,
     CB_PIPE_WARN_MS, CB_PIPE_PAUSE_MS,
+    CB_ACC_WATCH_MIN, CB_ACC_RESTRICTED_MIN,   # [P4] 4단계 구간 경계값
 )
 from config.constants import CB_STATE_NORMAL, CB_STATE_PAUSED, CB_STATE_HALTED
 from utils.notify import notify_circuit_breaker
@@ -90,6 +91,10 @@ class CircuitBreaker:
         # 2회 → 다음 진입 50% 사이즈, 3회 이상 → 완전 관망
         self._daily_halt_count: int = 0
 
+        # ── [P4] acc30m 4단계 구간 추적 ──────────────────────────
+        # NORMAL(≥35%) / WATCH(30~35%) / RESTRICTED(28~30%) / HALTED(<28%→기존CB③)
+        self._acc30m_stage: str = "NORMAL"
+
     # ── 상태 조회 ──────────────────────────────────────────────
     @property
     def state(self) -> str:
@@ -128,6 +133,15 @@ class CircuitBreaker:
     def is_restart_blocked(self) -> bool:
         """[3순위] 당일 HALT가 CB_DAILY_HALT_FULL_BLOCK 회 이상이면 재진입 완전 차단."""
         return self._daily_halt_count >= CB_DAILY_HALT_FULL_BLOCK
+
+    @property
+    def acc30m_stage(self) -> str:
+        """[P4] 현재 acc30m 4단계 구간: NORMAL / WATCH / RESTRICTED."""
+        return self._acc30m_stage
+
+    def is_grade_restricted(self) -> bool:
+        """[P4] RESTRICTED 구간 여부 — C등급 이하 자동 진입 차단 시 True."""
+        return self._acc30m_stage == "RESTRICTED"
 
     @property
     def mid_conf_wrong_streak(self) -> int:
@@ -237,11 +251,33 @@ class CircuitBreaker:
         else:
             self._mid_conf_wrong_streak = 0
 
-        # ── CB③ 정확도 집계 — Contrarian ACTIVE 중에는 스킵 ──────
-        if contrarian_active:
-            return
-
+        # ── CB③ 정확도 집계 ───────────────────────────────────────
+        # [deadlock 수정] 누적과 발동을 분리:
+        #   - accuracy_buf 누적은 Contrarian 상태와 무관하게 항상 수행
+        #   - Contrarian ACTIVE 중에는 CB③ HALT/경고 발동만 스킵
+        # 수정 전: contrarian_active → return (누적 자체를 막아 acc30m 영구 동결)
+        # 수정 후: 누적은 허용 → acc30m이 회복되면 Contrarian이 자연 해제됨
         self._accuracy_buf.append(1.0 if correct else 0.0)
+
+        # [P4] acc30m 4단계 구간 갱신 — Contrarian 상태와 무관하게 항상 추적
+        if len(self._accuracy_buf) >= 25:
+            _acc_now = sum(self._accuracy_buf) / len(self._accuracy_buf)
+            _new_stage = (
+                "RESTRICTED" if _acc_now < CB_ACC_RESTRICTED_MIN else
+                "WATCH"      if _acc_now < CB_ACC_WATCH_MIN      else
+                "NORMAL"
+            )
+            if _new_stage != self._acc30m_stage:
+                _msg = (
+                    f"[CB③-P4] acc30m 단계 전환: {self._acc30m_stage} → {_new_stage}"
+                    f" (acc={_acc_now:.1%})"
+                )
+                logger.warning(_msg)
+                log_manager.system(_msg, "WARNING")
+                self._acc30m_stage = _new_stage
+
+        if contrarian_active:
+            return  # HALT/경고 발동만 스킵, 누적은 이미 위에서 완료
 
         if len(self._accuracy_buf) >= 25:
             acc = sum(self._accuracy_buf) / len(self._accuracy_buf)
@@ -396,6 +432,7 @@ class CircuitBreaker:
         self._brier_buf.clear()
         self._brier_penalty_active = False
         self._daily_halt_count = 0
+        self._acc30m_stage = "NORMAL"   # [P4]
         logger.info("[CB] 일간 리셋 완료")
         log_manager.system("[CB] 일간 리셋 완료", "INFO")
 
@@ -416,6 +453,7 @@ class CircuitBreaker:
             "brier_penalty_active":    self._brier_penalty_active,
             "daily_halt_count":        self._daily_halt_count,
             "restart_size_mult":       self.restart_size_mult,
+            "acc30m_stage":            self._acc30m_stage,   # [P4]
         }
 
     def to_state_dict(self) -> dict:

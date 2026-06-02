@@ -21,8 +21,11 @@ from collections import deque
 from typing import Optional
 
 from logging_system.log_manager import log_manager
+from utils.notify import notify as _notify
 
 logger = logging.getLogger("SYSTEM")
+
+_BLOCKED_NOTIFY_MIN = 30   # [P6] BLOCKED 지속 시 첫 알림 임계 (분)
 
 # 게이트 임계값
 _GATE_ACC30M      = 0.40   # 30분 정확도 최소
@@ -54,6 +57,9 @@ class ShadowSessionTracker:
         self._virtual_trades: int = 0
         self._virtual_correct: int = 0
         self._transition_time: Optional[str] = None
+        # [P6] BLOCKED 지속 알림
+        self._blocked_since: Optional[datetime.datetime] = None
+        self._blocked_last_notify: Optional[datetime.datetime] = None
 
     def update(
         self,
@@ -81,12 +87,47 @@ class ShadowSessionTracker:
             if acc30m >= _GATE_ACC30M and core_health_score >= _GATE_CORE_HEALTH:
                 self._state = SHADOW_LIVE
                 self._transition_time = ts_dt.strftime("%H:%M")
+                self._blocked_since = None          # [P6] 타이머 리셋
+                self._blocked_last_notify = None
                 msg = (
                     f"[ShadowSession] BLOCKED→LIVE 복구 | {self._transition_time} | "
                     f"acc30m={acc30m:.1%} core={core_health_score} z={z_warn_count}"
                 )
                 logger.info(msg)
                 log_manager.system(msg, "INFO")
+            else:
+                # [P6] BLOCKED 지속 알림 — 30분마다 반복
+                _now = ts_dt
+                _elapsed = (
+                    (_now - self._blocked_since).total_seconds() / 60.0
+                    if self._blocked_since else 0.0
+                )
+                _since_last = (
+                    (_now - self._blocked_last_notify).total_seconds() / 60.0
+                    if self._blocked_last_notify else float("inf")
+                )
+                if _elapsed >= _BLOCKED_NOTIFY_MIN and _since_last >= _BLOCKED_NOTIFY_MIN:
+                    _failed = [k for k, ok in self._gate_checks.items() if not ok]
+                    # 권장 대응 결정
+                    if "acc30m" in _failed and acc30m >= 0.30:
+                        _action = "→ 동적 피처(SHAP) 탭 > 현재 세트 재학습"
+                    elif "acc30m" in _failed and acc30m < 0.30:
+                        _action = "→ 금일 관망 유지 (acc30m<30%, CB③ 임박)"
+                    elif "core_health" in _failed:
+                        _action = "→ 시스템 로그 확인 (CoreHealth 저하 원인 파악)"
+                    else:
+                        _action = "→ 자연 회복 대기"
+                    _msg = (
+                        f"[ShadowSession] BLOCKED {_elapsed:.0f}분 지속 — 복구 미발동\n"
+                        f"미통과: {_failed} | "
+                        f"acc30m={acc30m:.1%}(기준 {_GATE_ACC30M:.0%}) "
+                        f"core={core_health_score}(기준 {_GATE_CORE_HEALTH})\n"
+                        f"권장 대응: {_action}"
+                    )
+                    logger.warning(_msg)
+                    log_manager.system(_msg, "WARNING")
+                    _notify(_msg, "WARNING")
+                    self._blocked_last_notify = _now
             return
 
         if self._state != SHADOW_SHADOW:
@@ -127,6 +168,8 @@ class ShadowSessionTracker:
         if ts_dt.hour == 9 and ts_dt.minute >= _SHADOW_END_MIN and not all_pass:
             self._state = SHADOW_BLOCKED
             self._transition_time = ts_dt.strftime("%H:%M")
+            self._blocked_since = ts_dt          # [P6] 타이머 시작
+            self._blocked_last_notify = None
             failed = [k for k, ok in self._gate_checks.items() if not ok]
             msg = (
                 f"[ShadowSession] BLOCKED | {self._transition_time} | "
@@ -169,6 +212,8 @@ class ShadowSessionTracker:
         self._virtual_trades = 0
         self._virtual_correct = 0
         self._transition_time = None
+        self._blocked_since = None        # [P6]
+        self._blocked_last_notify = None  # [P6]
 
     def status_dict(self) -> dict:
         return {

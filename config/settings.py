@@ -179,10 +179,11 @@ COHERENCE_GATE_MIN: float = 0.60
 # 주기 1: GBM 재학습 완료 즉시 / 주기 2: 매일 08:55
 MC_PERCENTILE:  float = 0.65   # conf 분포의 N번째 백분위를 base_mc로 사용
 MC_ABS_FLOOR:   float = 0.42   # base_mc 절대 하한 — SGD 블렌딩 희석 고려 (0.50→0.42)
-MC_ABS_CEIL:    float = 0.75   # base_mc 절대 상한 (이상으로 올라가지 않음)
+MC_ABS_CEIL:    float = 0.62   # base_mc 절대 상한 (0.75→0.62: 오전 급등 방지)
+MC_ZONE_MAX:    float = 0.65   # zone_mc 절대 상한 — restore 경로 포함 적용
 MC_EMA_ALPHA:   float = 0.30   # 주기2 EMA 감쇠 (0.30 = 최근 ~3거래일 반영)
 MC_LOOKBACK_DAYS: int = 5      # conf 분포 측정 기간 (거래일)
-MC_STEP_LIMIT:  float = 0.08   # 1회 갱신 최대 변화폭 (±8%p clamp)
+MC_STEP_LIMIT:  float = 0.03   # 1회 갱신 최대 변화폭 (±3%p clamp, 0.08→0.03)
 
 # 시간대 × 호라이즌 min_conf 2D 표 (P4)
 # F1이 낮은 호라이즌·시간대 조합에서 기준을 선택적으로 강화해
@@ -273,6 +274,12 @@ ENTRY_GRADE = {
     "X": {"min_pass": 0, "size_mult": 0.0, "auto": False},
 }
 
+# [P5] C등급 실험적 자동 진입 — 기본값 OFF, 명시적으로 켜야 동작
+# 조건: TrendGate active + 허용 시간대 + CB NORMAL(RESTRICTED 제외) + 실험 플래그 ON
+ENTRY_GRADE_C_AUTO_EXP:  bool  = False               # 실험 플래그 (OFF = 기존 동작 유지)
+C_AUTO_EXP_SIZE_MULT:    float = 0.3                 # C size_mult(0.6)의 절반
+C_AUTO_EXP_ZONES:        tuple = ("STABLE_TREND", "LUNCH_RECOVERY")  # 허용 시간대
+
 # ── 레짐별 진입 기준 ───────────────────────────────────────────
 REGIME_MIN_CONFIDENCE = {
     "RISK_ON":  0.42,   # 동적 mc 하한과 동기화 — update_dynamic_mc()로 상향 조정됨
@@ -307,6 +314,9 @@ CB_CONSEC_STOP_LIMIT   = 2     # 연속 손절 횟수 (5/15: 2회 후 재진입 
 # 랜덤 예측 정확도 = 50% (UP/DN 2클래스, FLAT 제외 시)
 # 0.28 = 랜덤 50%의 56% 수준 — 명백히 노이즈일 때만 정지
 CB_ACCURACY_MIN_30M    = 0.28  # 30분 방향성 예측 최소 정확도 (0.35→0.28)
+# [P4] CB③ 4단계 acc30m 구간 (HALT 발동 전 사전 제한)
+CB_ACC_WATCH_MIN      = 0.35  # NORMAL → WATCH 경계 (임박 구간, 로그 강화)
+CB_ACC_RESTRICTED_MIN = 0.30  # WATCH → RESTRICTED 경계 (C등급 이하 차단)
 CB_ATR_MULT_LIMIT      = 3.0   # 변동성 ATR 배수 한계
 CB_API_LATENCY_LIMIT   = 5.0   # (레거시 — Kiwoom용, Cybos에서는 사용 안 함)
 CB_API_LATENCY_PAUSE   = 300   # (레거시)

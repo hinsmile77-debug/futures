@@ -23,7 +23,7 @@ from typing import Dict, Optional
 
 from config.settings import (
     TIME_ZONES,
-    MC_PERCENTILE, MC_ABS_FLOOR, MC_ABS_CEIL, MC_STEP_LIMIT,
+    MC_PERCENTILE, MC_ABS_FLOOR, MC_ABS_CEIL, MC_ZONE_MAX, MC_STEP_LIMIT,
 )
 from utils.time_utils import now_kst, days_to_monthly_expiry, is_fomc_day
 
@@ -55,7 +55,7 @@ def _restore_mc_from_history() -> None:
                 continue
             try:
                 old    = _ZONE_PARAMS[zone]["min_confidence"]
-                new_mc = float(r["new_mc"])
+                new_mc = min(float(r["new_mc"]), MC_ZONE_MAX)   # [P2] zone_mc 상한 적용
                 _ZONE_PARAMS[zone]["min_confidence"] = new_mc
                 logger.info("[DynMC] 기동 복원: %s  %.3f → %.3f", zone, old, new_mc)
                 # sqlite3.Row에는 .get() 없음 → 직접 접근
@@ -340,6 +340,9 @@ def update_dynamic_mc(
         mult    = _ZONE_MC_MULT.get(zone, 1.00)
         old_mc  = params["min_confidence"]
         new_mc  = round(max(MC_ABS_FLOOR, min(MC_ABS_CEIL, base_mc * mult)), 3)
+        if new_mc > MC_ZONE_MAX:             # [P2] zone_mc 절대 상한
+            logger.info("[DynMC] zone_mc cap 적용: %s %.3f → %.3f (MC_ZONE_MAX)", zone, new_mc, MC_ZONE_MAX)
+            new_mc = MC_ZONE_MAX
         if abs(new_mc - old_mc) >= 0.005:   # 0.5%p 미만 변화는 무시
             zone_changes[zone] = (old_mc, new_mc)
             params["min_confidence"] = new_mc

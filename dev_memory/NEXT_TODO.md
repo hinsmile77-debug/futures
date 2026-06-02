@@ -6,6 +6,42 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-02 (102차) — 진입0 분석 + P0~P8
+
+### 한일 요약
+
+- [DONE 2026-06-02] **P0** feature/scaler 정합성 자동 검증 + ERR-FATAL 2회 연속 자동 복구 (multi_horizon_model.py, main.py)
+- [DONE 2026-06-02] **P1** Checklist min_conf CRASH 패널티 분리 — _zone_base_mc + 최대 +4%p cap (main.py)
+- [DONE 2026-06-02] **P2** 동적 mc 상한 캡 — MC_ABS_CEIL 0.75→0.62, MC_STEP_LIMIT 0.08→0.03, MC_ZONE_MAX=0.65 (settings.py, time_strategy_router.py)
+- [DONE 2026-06-02] **P3** grade=C→X 신뢰도 차단 카운터 + 일일 리포트 CL신뢰도차단 항목 (checklist.py, main.py, daily_exporter.py)
+- [DONE 2026-06-02] **P4** CB③ 4단계화 NORMAL/WATCH(35%)/RESTRICTED(30%) — C등급 RESTRICTED 차단 (settings.py, circuit_breaker.py, main.py)
+- [DONE 2026-06-02] **P5** C등급 실험적 자동 진입 플래그 ENTRY_GRADE_C_AUTO_EXP=False 기본 (settings.py, main.py)
+- [DONE 2026-06-02] **P6** ShadowSession BLOCKED 30분 알림 + 권장 대응 (shadow_session.py)
+- [DONE 2026-06-02] **P7** 재기동 원인 로깅 STARTUP/MANUAL/AUTO_DISCONNECT (main.py)
+- [DONE 2026-06-02] **P8** EOD 스케일러 재적합 E_EOD + 08:55 워밍업 스킵조건 완화 (main.py)
+
+### 다음 할 일
+
+- [NEXT 다음 기동 시] **P0~P8 실세션 확인**
+  - P0: ERR-FATAL 연속 시 `[P0] 피처 불일치 N회 연속` 로그 + 즉시 재학습 발화
+  - P1: CRASH 상태에서 `[P1] Checklist min_conf 분리: 0.XX→0.XX` 로그
+  - P2: DynMC 갱신 후 zone_mc 0.65 초과 없음 확인
+  - P3: 15:40 일일 리포트 `CL신뢰도차단: N회` 항목 존재
+  - P4: acc30m<35% 구간에서 `[CB③-P4] NORMAL → WATCH` 전환 로그
+  - P6: BLOCKED 30분 경과 시 Slack + 권장 대응 텍스트 확인
+  - P7: `[Session] 재기동 #N | cause=MANUAL` INFO 로그
+  - P8: 15:40 `[P8] EOD 스케일러 재적합 완료 n=500봉` 로그 + 다음날 09:00 scaler age < 30분
+
+- [NEXT 의도적 실험 후] **P5 C등급 자동 진입 활성화 검토**
+  - `ENTRY_GRADE_C_AUTO_EXP = True` 전환 조건: P0~P4 안정 확인 + TrendGate 발동 케이스 관찰
+  - 활성화 후 C 실험 진입 건수 + 수익률 별도 추적
+
+- [NEXT 1주 후] **P1~P2 임계값 효과 검증**
+  - P3 카운터 (CL신뢰도차단)가 여전히 하루 50회+이면 min_conf 분리 폭 추가 확대 검토
+  - P2: DynMC 0.62 이하 안착 여부 mc_history.db 확인
+
+---
+
 ## 2026-06-02 (99·100차) — 저변동성 인식 피처 + GBM 붕괴 방어
 
 ### 한일 요약

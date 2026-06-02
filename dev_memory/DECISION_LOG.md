@@ -2,6 +2,58 @@
 
 ---
 
+## 2026-06-02 (102차 — 진입0 근본 원인 + P0~P8)
+
+### [분석] 금일 진입0 원인 계층
+
+**1차 원인**: 09:01~09:14 ERR-FATAL 14회(피처 불일치) → 파이프라인 불능 → acc30m 오염 → ShadowSession BLOCKED → CB③ HALT
+**2차 원인**: CRASH +12%p가 Checklist min_conf에 그대로 전달 → grade=C도 강제 X (A=0, B=0, C=5, X=364)
+**3차 원인**: 동적 mc 급등 (64~72%) → conf 46%와 격차 과대
+**장세 원인**: 하루 종일 dir=FLAT 고착 (101차 FlatCap 미적용, 15:24 커밋)
+
+### [설계] P1 — Checklist min_conf 분리
+
+**File**: `main.py`
+**Decision**: `_zone_base_mc` (L2·TrendGate 전 기준값) 저장 → Checklist 전달 시 `min(actual, zone_base + 0.04)` cap. TrendGate active 시 추가 cap `_tp["min_conf_override"] + 0.02`.
+**Why**: `actual_min_conf = zone_mc + CRASH +12%p` 전체가 Checklist에 전달되면 grade=C가 항상 X로 강등됨. L2는 앙상블 등급 결정용이지 Checklist 이중 검증용이 아님.
+**How to apply**: `[P1] Checklist min_conf 분리` 로그가 CRASH 상태에서 발화하면 정상. 분리 폭이 너무 커서 위험 진입이 늘면 +4%p를 +6%p로 축소 검토.
+
+### [설계] P2 — 동적 mc 상한 캡
+
+**File**: `config/settings.py`, `strategy/entry/time_strategy_router.py`
+**Decision**: `MC_ABS_CEIL` 0.75→0.62 (base_mc 상한), `MC_ZONE_MAX=0.65` (zone_mc 절대 상한, restore 경로 포함), `MC_STEP_LIMIT` 0.08→0.03 (1회 변화 속도 제한).
+**Why**: 오전 DynMC가 REGIME_MIN_CONFIDENCE["NEUTRAL"]=0.64로 갱신됨 + CRASH +12%p = 72% → conf 46%와 26%p 격차. 재시작 후 DB restore 경로에서도 과거 고값이 복원되는 문제.
+**How to apply**: DynMC 갱신 로그에서 zone_mc > 0.65면 cap 발화 확인. MC_STEP_LIMIT=0.03은 GBM 재학습마다 최대 3%p 변화 → 급등 재발 방지.
+
+### [설계] P4 — CB③ 4단계화
+
+**File**: `safety/circuit_breaker.py`, `config/settings.py`
+**Decision**: acc30m 구간에 따라 NORMAL(≥35%)/WATCH(30~35%)/RESTRICTED(<30%) 3단계 추적. RESTRICTED에서 C등급 진입 차단. 기존 CB③ HALT 메커니즘(acc<28%, 2회 연속)은 그대로 유지.
+**Why**: 09:50 acc30m=30% → ShadowSession BLOCKED됐지만 CB③은 11:51에야 발동. 2시간 갭 동안 C등급이 있었다면 오히려 잘못된 방향 진입 가능. RESTRICTED 단계가 버퍼 역할.
+**How to apply**: WATCH 전환은 로그만, RESTRICTED 전환은 WARNING 알림. acc30m이 35% 아래면 평소보다 진입 품질 낮은 날이므로 C 차단이 적절.
+
+### [설계] P5 — C등급 실험적 자동 진입
+
+**File**: `config/settings.py`, `main.py`
+**Decision**: `ENTRY_GRADE_C_AUTO_EXP=False` 기본값. True 시 TrendGate active + STABLE_TREND/LUNCH_RECOVERY + CB NORMAL + not RESTRICTED 조건에서 `size × 0.3` 자동 진입.
+**Why**: A=0, B=0으로 진입 조건 미충족이 구조적으로 반복되는 날 탐색 데이터 확보 필요. 단, 안전장치(P4 RESTRICTED, CB NORMAL) 위에서만 실험적으로 허용.
+**주의**: 모의투자 단계 검증 후 실전 전환. P0~P4 안정 확인 전 ON 금지.
+
+### [설계] P8 — EOD 스케일러 재적합
+
+**File**: `main.py`
+**Decision**: `daily_close()` GBM retrain + `_load_all()` 직후 `refit_scalers_only(500봉, "E_EOD")` 동기 실행. 08:55 ScalerWarmup 스킵 조건을 `_warmup_retrain_pending` → `_gbm_retrain_running`으로 변경.
+**Why**: 오늘 08:55 ScalerWarmup이 `_warmup_retrain_pending=True`로 스킵 → GBM retrain이 09:00 전 미완료 → 09:00 scaler age=641분. EOD에 미리 재적합하면 내일 시초 age가 ~17h 이내로 보장.
+**08:55 스타트업 edge case**: ScalerWarmup과 GBM PreRetrain이 동시 스레드 실행 가능. ScalerWarmup(~0.02s)이 먼저 완료, GBM이 나중에 덮어씀. race 없음 (GBM이 최종 권한).
+
+### [버그] P3 — _ccf_today 리셋 순서 오류
+
+**File**: `main.py`
+**Bug**: `daily_close()`에서 `self._checklist_conf_fail_count = 0` 리셋 후 `build_report(extra_stats={"checklist_conf_fail": self._checklist_conf_fail_count})` 호출 → 항상 0 전달.
+**Fix**: 리셋 전 `_ccf_today = self._checklist_conf_fail_count` 캡처 → `build_report(extra_stats={"checklist_conf_fail": _ccf_today})` 전달.
+
+---
+
 ## 2026-06-02 (99·100차 — 저변동성 인식 피처 + GBM 붕괴 방어)
 
 ### [분석] 15m GBM 상수 출력 붕괴 확인 — 6/2 장 중 로그

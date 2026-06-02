@@ -4,6 +4,102 @@
 
 ---
 
+## 2026-06-02 (102차 — 진입0 3중 분석 + 안전장치 P0~P8 구현)
+
+**Work**: 금일 장중 진입 0건 원인을 SIGNAL/SYSTEM/WARN 로그 3중 분석 후 구조적 개선 8종 구현.
+
+### 1. 진입0 원인 분석 (3라운드)
+
+**1라운드 (SIGNAL 로그)**:
+- 09:00 스케일러 age=641분 → microprice z=+1423, 극단 z 34개 → conf 고착 45~46%
+- CoherenceGate 하루 내내 차단 (score 0.33~0.67, 임계값 0.60)
+- grade C 5회 모두 Checklist 신뢰도 미달로 강제 X
+
+**2라운드 (SYSTEM 로그 추가)**:
+- 09:01~09:14: ERR-FATAL 14회 (105 vs 106 피처 불일치) → 파이프라인 완전 불능 14분
+- 09:31: CB⑤ 16,616ms → CB PAUSED
+- 09:50: ShadowSession BLOCKED (acc30m=30.0%)
+- 11:51: CB③ 당일 정지 (acc30m=26.9%)
+- CRASH +12%p가 actual_min_conf에 더해진 채 Checklist 전달 → grade=C 강제 X 메커니즘 코드 확인
+
+**3라운드 (커밋 타이밍 분석)**:
+- grade 분포: A=0, B=0, C=5, X=364 → 자동진입 조건 하루 전혀 미충족
+- 101차 커밋(TrendBoost/FlatCap/CoherenceGate 면제): 15:24/15:25 → 오늘 장중 미적용
+- 커밋 적용은 재기동 이후부터 → ef31bfd 09:48 이후 반영 등 타이밍 분석
+
+### 2. P0 — feature/scaler 정합성 자동 검증 (multi_horizon_model.py, main.py)
+
+- `validate_and_resync()` 신규: 로드 후 feature_names vs scaler 차원 불일치 호라이즌 비활성화
+- `_load_all()` 말미 자동 호출 (초기 로드·GBM 재학습 완료·EOD 모두)
+- `_pipeline_fatal_streak`: 연속 ERR-FATAL 2회 → validate_and_resync() + 즉시 재학습
+
+### 3. P1 — Checklist min_conf CRASH 패널티 분리 (main.py)
+
+- `_zone_base_mc` 저장 (L2·TrendGate 적용 전)
+- Checklist 직전 `_checklist_min_conf = min(actual_min_conf, _zone_base_mc + 0.04)`
+- TrendGate active 추가 cap: `min(_checklist_min_conf, _tp["min_conf_override"] + 0.02)`
+- `[P1] Checklist min_conf 분리` 로그
+
+### 4. P2 — 동적 mc 상한 캡 + 속도 제한 (settings.py, time_strategy_router.py)
+
+- `MC_ABS_CEIL` 0.75→0.62, `MC_STEP_LIMIT` 0.08→0.03
+- `MC_ZONE_MAX=0.65` 신규 (zone_mc 절대 상한, restore 경로 포함)
+- `update_dynamic_mc()` zone loop + `_restore_mc_from_history()`에 적용
+
+### 5. P3 — grade=C→X 신뢰도 차단 카운터 (checklist.py, main.py, daily_exporter.py)
+
+- `checklist.py`: `conf_check_failed: True` 플래그 반환
+- `main.py`: `_checklist_conf_fail_count` + `_ccf_today` 캡처(리셋 전 저장 버그 수정)
+- `daily_exporter.py`: `build_report(extra_stats)` → 리포트 말미 `CL신뢰도차단: N회`
+
+### 6. P4 — CB③ 4단계화 (settings.py, circuit_breaker.py, main.py)
+
+- `CB_ACC_WATCH_MIN=0.35`, `CB_ACC_RESTRICTED_MIN=0.30`
+- `_acc30m_stage`: NORMAL/WATCH/RESTRICTED 실시간 추적
+- RESTRICTED 시 C등급 진입 차단 (`is_grade_restricted()`)
+- `status_dict()`, `reset_daily()` 반영
+
+### 7. P5 — C등급 실험적 자동 진입 (settings.py, main.py)
+
+- `ENTRY_GRADE_C_AUTO_EXP=False` 기본값 OFF
+- 조건: TrendGate active + STABLE_TREND/LUNCH_RECOVERY + CB NORMAL + not RESTRICTED
+- size = `_qty_auto × C_AUTO_EXP_SIZE_MULT(0.3)` (C 기준의 절반)
+- A/B auto 블록 다음 elif로 삽입, 기존 manual else 유지
+
+### 8. P6 — ShadowSession BLOCKED 알림 (shadow_session.py)
+
+- `_blocked_since`, `_blocked_last_notify` 변수 추가
+- 30분 지속 시 Slack 알림 + 30분마다 반복
+- 권장 대응 분기: acc30m 구간별 메시지 (재학습 트리거 / 관망 / CoreHealth 확인)
+- BLOCKED→LIVE 복구 시 타이머 리셋
+
+### 9. P7 — 재기동 원인 로깅 (main.py)
+
+- `_restart_cause`: STARTUP/MANUAL/AUTO_DISCONNECT
+- 자동 재연결 분기에서만 `AUTO_DISCONNECT` 마킹 → WARNING
+- 수동 재기동은 MANUAL INFO (오늘 7회 재기동은 의도적)
+
+### 10. P8 — EOD 스케일러 재적합 (main.py)
+
+- `daily_close()` GBM retrain + `_load_all()` 직후 `refit_scalers_only(500봉, "E_EOD")` 동기 실행
+- 08:55 ScalerWarmup 스킵 조건 `_warmup_retrain_pending` → `_gbm_retrain_running` 변경
+- 내일 시초 scaler age 보장 (641분 재발 방지)
+
+### 수정 파일 (102차)
+
+| 파일 | P번호 |
+|---|---|
+| `model/multi_horizon_model.py` | P0 |
+| `safety/circuit_breaker.py` | P4 |
+| `safety/shadow_session.py` | P6 |
+| `strategy/entry/checklist.py` | P3 |
+| `strategy/entry/time_strategy_router.py` | P2 |
+| `strategy/ops/daily_exporter.py` | P3 |
+| `config/settings.py` | P2, P4, P5 |
+| `main.py` | P0, P1, P3, P4, P5, P7, P8 |
+
+---
+
 ## 2026-06-02 (99·100차 — 저변동성 인식 피처 + GBM 붕괴 방어 3종)
 
 **Work**: 장 후 세션 로그 분석(12:56~14:01) → FL/UP 편향 급등 원인 규명 → 구조적 개선 5종 구현.

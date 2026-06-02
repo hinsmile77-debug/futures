@@ -30,12 +30,17 @@ class DailyExporter:
         self._dir = report_dir or _REPORT_DIR
         os.makedirs(self._dir, exist_ok=True)
 
-    def build_report(self) -> str:
+    def build_report(self, extra_stats: Optional[Dict] = None) -> str:
         """
         현재 전략 상태를 종합하여 리포트 문자열을 반환.
         실패해도 빈 문자열 대신 최소 골격 반환.
+
+        Args:
+            extra_stats: 런타임에서만 알 수 있는 당일 통계.
+                         {"checklist_conf_fail": int, ...}
         """
         today = datetime.now().strftime("%Y-%m-%d %H:%M")
+        extra_stats = extra_stats or {}
         lines = ["=" * 56, "  미륵이 일일 전략 상태 리포트  %s" % today, "=" * 56]
 
         # ── 현재 버전 & 판정 ─────────────────────────────────────────────
@@ -128,6 +133,12 @@ class DailyExporter:
             lines.append("  사유    : %s" % reason)
         except Exception as e:
             lines.append("  권고    : [계산 실패: %s]" % e)
+
+        # ── [P3] 당일 Checklist 신뢰도 차단 카운터 ──────────────────────────
+        _ccf = extra_stats.get("checklist_conf_fail")
+        if _ccf is not None:
+            lines.append("-" * 56)
+            lines.append("  CL신뢰도차단: %d회 (앙상블 통과→conf 미달 강제 X)" % _ccf)
 
         lines.append("=" * 56)
         return "\n".join(lines)

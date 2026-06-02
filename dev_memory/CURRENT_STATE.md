@@ -1,7 +1,72 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-02 (101차) — **원웨이 추세장 방향 확정 실패 구조 개선 4종 + 스케일러 즉시 트리거**
+> 마지막 업데이트: 2026-06-02 (102차) — **진입0 근본 원인 분석 + P0~P8 8종 안전장치 개선**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-02 (102차) — 진입0 원인 분석 + 안전장치 P0~P8 구현
+
+### 배경
+
+금일 장중 진입 0건 원인을 로그 3중 분석(SIGNAL/SYSTEM/WARN) 후 구조적 개선 8종 구현.
+
+**확인된 충격 타임라인**:
+- 09:01~09:14: ERR-FATAL 14회 (105 vs 106 피처 불일치) → 파이프라인 완전 불능
+- 09:16: SHS=42, IntradayRegime CRASH, z_warn=34 → L2 +12%p
+- 09:31: 파이프라인 16,616ms → CB PAUSED
+- 09:50: ShadowSession BLOCKED (acc30m=30.0%)
+- 11:51: CB③ 당일 정지 (acc30m=26.9% < 28%)
+- grade 분포: A=0, B=0, C=5, X=364 → 자동진입 조건 하루 전혀 미충족
+
+**2차 원인 (구조적)**:
+- CRASH +12%p → actual_min_conf → Checklist에 그대로 전달 → grade=C 강제 X
+- 동적 mc 급등(64%→72%) → conf 46%와 격차 과대
+- 스케일러 age 641분 → 09:00 극단 z-score 34개 폭발
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **P0** feature/scaler 정합성 자동 검증 + 연속 ERR-FATAL 자동 복구 | **완료** | `multi_horizon_model.py`, `main.py` |
+| **P1** Checklist min_conf CRASH 패널티 분리 (최대 +4%p cap) | **완료** | `main.py` |
+| **P2** 동적 mc 상한 캡 + 속도 제한 | **완료** | `settings.py`, `time_strategy_router.py` |
+| **P3** grade=C→X Checklist 신뢰도 차단 카운터 + 일일 리포트 반영 | **완료** | `checklist.py`, `main.py`, `daily_exporter.py` |
+| **P4** CB③ 4단계화 (NORMAL/WATCH/RESTRICTED/HALTED) | **완료** | `settings.py`, `circuit_breaker.py`, `main.py` |
+| **P5** C등급 실험적 자동 진입 플래그 (기본 OFF) | **완료** | `settings.py`, `main.py` |
+| **P6** ShadowSession BLOCKED 30분 지속 알림 + 권장 대응 | **완료** | `shadow_session.py` |
+| **P7** 재기동 원인 로깅 (STARTUP/MANUAL/AUTO_DISCONNECT) | **완료** | `main.py` |
+| **P8** EOD 스케일러 재적합 (daily_close 후 E_EOD 트리거) | **완료** | `main.py` |
+| 다음 기동 실세션 확인 | **미완료** | — |
+
+### 파라미터 상수 (P2 변경분)
+
+| 상수 | 이전값 | 신규값 | 파일 |
+|---|---|---|---|
+| `MC_ABS_CEIL` | 0.75 | **0.62** | `config/settings.py` |
+| `MC_ZONE_MAX` | (없음) | **0.65** | `config/settings.py` |
+| `MC_STEP_LIMIT` | 0.08 | **0.03** | `config/settings.py` |
+| `CB_ACC_WATCH_MIN` | (없음) | **0.35** | `config/settings.py` |
+| `CB_ACC_RESTRICTED_MIN` | (없음) | **0.30** | `config/settings.py` |
+
+### P5 활성화 방법
+
+```python
+# config/settings.py
+ENTRY_GRADE_C_AUTO_EXP = True   # False가 기본값 — 명시 변경 필요
+```
+조건: TrendGate active + STABLE_TREND/LUNCH_RECOVERY + CB NORMAL + not RESTRICTED
+
+### 다음 기동 시 실세션 확인
+
+1. **P0**: ERR-FATAL 연속 2회 시 `[P0] 피처 불일치 N회 연속 — 비활성화/즉시 재학습 요청` 로그
+2. **P1**: `[P1] Checklist min_conf 분리: 0.72→0.51` 로그 (CRASH 상태에서)
+3. **P2**: DynMC 갱신 시 zone_mc가 0.65 이상으로 올라가지 않는지 확인
+4. **P3**: 일일 리포트 말미 `CL신뢰도차단: N회` 항목 확인
+5. **P4**: acc30m<35% 시 `[CB③-P4] acc30m 단계 전환: NORMAL → WATCH` 로그
+6. **P6**: BLOCKED 30분 경과 시 Slack 알림 + 권장 대응 라인 포함 확인
+7. **P7**: `[Session] 재기동 #N | cause=MANUAL` INFO / `AUTO_DISCONNECT` WARNING 로그
+8. **P8**: 15:40 `[P8] EOD 스케일러 재적합 완료 n=500봉` SYSTEM 로그
 
 ---
 

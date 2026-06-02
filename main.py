@@ -73,6 +73,7 @@ from config.settings import (
     HEALTH_DEGRADED_SIZE_MULT, HEALTH_DEGRADED_MIN_CONF,
     HEALTH_DEGRADED_BLOCK_AUTO_ENTRY, HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY,
     HEALTH_POLICY_HOT_RELOAD_ENABLED, HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC,
+    ENTRY_GRADE_C_AUTO_EXP, C_AUTO_EXP_SIZE_MULT, C_AUTO_EXP_ZONES,  # [P5]
 )
 import config.settings as runtime_settings
 from config.constants import FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED
@@ -331,6 +332,7 @@ class TradingSystem:
         self._restore_auto_shutdown_state()
         self._heartbeat_count: int = 0
         self._session_no: int = 0
+        self._restart_cause: str = "STARTUP"   # STARTUP / MANUAL / AUTO_DISCONNECT
         self._pending_order = None
         # Chejan 이벤트 큐: COM 콜백에서 push, 파이프라인 틱에서 drain
         # → BlockRequest() 메시지 펌프 도중 _pending_order 동시 접근 차단
@@ -343,10 +345,12 @@ class TradingSystem:
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
+        self._pipeline_fatal_streak: int = 0         # [P0] 연속 ERR-FATAL 카운터
         self._scaler_refresh_running: bool = False   # Phase B 스케일러 refresh 중복 방지
         self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
         self._price_momentum_refit_until = None      # D_PRICE_MOMENTUM 쿨다운 (20분)
         self._grade_x_count: int = 0                 # 섹션 8: 당일 grade=X 분봉 수 집계
+        self._checklist_conf_fail_count: int = 0     # [P3] 앙상블 통과 → Checklist 신뢰도 차단 횟수
         self._last_close: float = 0.0                # 직전 분봉 종가 — 옵션체인 QTimer 폴링에 사용
         # ── rolling σ 임계값 (방법3) ──────────────────────────────────────
         self._sigma_buf: deque = deque(maxlen=20)    # 1분봉 수익률 rolling 버퍼
@@ -1932,6 +1936,14 @@ class TradingSystem:
         log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
         self._session_no += 1
         self.system_health.update_restart(self._session_no)
+        _cause = self._restart_cause
+        _unintended = _cause == "AUTO_DISCONNECT"
+        log_manager.system(
+            f"[Session] 재기동 #{self._session_no} | cause={_cause}"
+            + (" ← 의도치 않은 재기동" if _unintended else ""),
+            "WARNING" if _unintended else "INFO",
+        )
+        self._restart_cause = "MANUAL"   # 다음 재기동 기본값 복원
 
         # 장중(09:00~15:10) 재시작: pre_market_setup()이 재호출되지 않으므로 즉시 시작.
         # 그렇지 않으면 첫 분봉 STEP 3에서 시작되어 파이프라인과 CPU 경합 → CB⑤ 5026ms 발동.
@@ -2064,7 +2076,29 @@ class TradingSystem:
         self.dashboard.minute_chart_candle_closed(candle)
         try:
             self.run_minute_pipeline(candle)
+            self._pipeline_fatal_streak = 0
         except Exception as exc:
+            # [P0] 피처↔스케일러 불일치 ValueError 연속 2회 → 자동 복구
+            _is_feat_mismatch = (
+                isinstance(exc, ValueError)
+                and "features" in str(exc)
+                and "expecting" in str(exc)
+            )
+            if _is_feat_mismatch:
+                self._pipeline_fatal_streak += 1
+                if self._pipeline_fatal_streak >= 2:
+                    _bad = self.model.validate_and_resync()
+                    if _bad:
+                        log_manager.system(
+                            f"[P0] 피처 불일치 {self._pipeline_fatal_streak}회 연속"
+                            f" — 비활성화: {_bad} | 즉시 재학습 요청",
+                            "ERROR",
+                        )
+                        self._start_manual_retrain(force=True, reason="feature_mismatch_P0")
+                    self._pipeline_fatal_streak = 0
+            else:
+                self._pipeline_fatal_streak = 0
+
             apply_error_policy(
                 system=self,
                 level=classify_exception(exc, default=ErrorLevel.FATAL),
@@ -2184,10 +2218,12 @@ class TradingSystem:
         except Exception as _ce:
             logger.warning("[Canary] 점검 실패 (무시): %s", _ce)
 
-        # [ScalerWarmup] 08:55 스케일러 단독 워밍업 — GBM 재학습 없을 때만 실행.
-        # GBM 재학습(_warmup_retrain_pending)이 예약된 경우 재학습이 스케일러도 포함하므로 스킵.
+        # [ScalerWarmup] 08:55 스케일러 단독 워밍업.
+        # [P8] _warmup_retrain_pending(예약됨)만으로는 스킵하지 않음.
+        #       GBM 재학습이 이미 실행 중(_gbm_retrain_running)일 때만 스킵
+        #       → GBM 완료 전에도 스케일러를 신선하게 유지 (오늘 641분 재발 방지).
         # daemon thread로 비동기 실행 — 파이프라인 블로킹 없음.
-        if not getattr(self, "_warmup_retrain_pending", False):
+        if not getattr(self, "_gbm_retrain_running", False):
             def _scaler_warmup_worker():
                 try:
                     from config.settings import SCALER_WARMUP_LOOKBACK_BARS
@@ -3216,6 +3252,7 @@ class TradingSystem:
             decision["min_conf"],
             get_zone_min_confidence(get_time_zone()),
         )
+        _zone_base_mc = actual_min_conf   # [P1] L2·TrendGate 적용 전 기준값 보존
         _tp_active = (
             (_tp["up_active"] and direction == 1) or
             (_tp["dn_active"] and direction == -1)
@@ -3456,6 +3493,21 @@ class TradingSystem:
 
         if direction != 0 and self.position.status == "FLAT":
             _disabled_gates = self.dashboard.get_disabled_gates()
+
+            # [P1] Checklist 전용 min_conf — L2(CRASH/DAY_RISK_OFF) 페널티를 최대 +4%p로 제한.
+            # actual_min_conf 는 앙상블 등급·대시보드용으로 L2 전량 포함한 채 유지한다.
+            _checklist_min_conf = actual_min_conf
+            if _l2_mc_adj > 0.0:
+                _checklist_min_conf = min(actual_min_conf, _zone_base_mc + 0.04)
+            if _tp_active:
+                # TrendGate active: override + 2%p 상한 (101차 TrendBoost로 conf가 약간 높아지므로 여유 2%p)
+                _checklist_min_conf = min(_checklist_min_conf, _tp["min_conf_override"] + 0.02)
+            if _checklist_min_conf < actual_min_conf:
+                log_manager.signal(
+                    f"[P1] Checklist min_conf 분리: {actual_min_conf:.2f}→{_checklist_min_conf:.2f}"
+                    f" (L2={_l2_mc_adj*100:.0f}%p cap, TrendGate={'ON' if _tp_active else 'OFF'})"
+                )
+
             _cr = self.checklist.evaluate(
                 direction         = direction,
                 confidence        = confidence,
@@ -3468,7 +3520,7 @@ class TradingSystem:
                                       else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
                 time_zone         = time_zone,
                 daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / max(_ts_current_sizer_balance(self), 50_000_000),
-                min_confidence    = actual_min_conf,
+                min_confidence    = _checklist_min_conf,
                 bear_exhaustion   = float(features.get("bear_exhaustion", 0.0) or 0.0),
                 bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
                 micro_regime      = getattr(self, "current_micro_regime", "혼합"),
@@ -3479,6 +3531,15 @@ class TradingSystem:
             # 섹션 8: grade=X 분봉 수 집계 (scaler_daily EOD용)
             if _final_grade == "X":
                 self._grade_x_count += 1
+
+            # [P3] 앙상블은 통과(C 이상)했지만 Checklist 신뢰도 항목에서 X로 강등된 경우 집계
+            if (grade != "X" and _final_grade == "X"
+                    and _cr.get("conf_check_failed", False)):
+                self._checklist_conf_fail_count += 1
+                log_manager.signal(
+                    f"[P3] Checklist 신뢰도 차단 — 앙상블={grade} → X"
+                    f" | 금일 누적 {self._checklist_conf_fail_count}회"
+                )
 
             # [DBG-F7a] 체크리스트 항목별 ✓/✗
             _chk = _cr["checks"]
@@ -3498,6 +3559,14 @@ class TradingSystem:
             )
 
             if _final_grade != "X" and self.circuit_breaker.is_entry_allowed():
+                # [P4] CB③ RESTRICTED 단계: acc30m 저하 구간 → C등급 차단, A/B만 허용
+                if _final_grade == "C" and self.circuit_breaker.is_grade_restricted():
+                    log_manager.signal(
+                        f"[CB③-P4] RESTRICTED(acc30m<{int(0.30*100)}%) — C등급 차단"
+                        f" (acc30m={self.circuit_breaker.status_dict()['accuracy_30m']:.1%})"
+                    )
+                    _final_grade = "X"
+
                 kelly_result = self.kelly.compute_fraction()
                 # [5순위] CORE Health 차단 시 진입 스킵
                 _core_health = getattr(self, "core_health", None)
@@ -3916,6 +3985,35 @@ class TradingSystem:
                         f"[모드필터 차단] {raw_dir_str}->{final_dir_str} {_qty_auto}계약 {_final_grade}급 "
                         f"(모드={entry_mode}, 허용={allowed_grades.get(entry_mode, ['A','B','C'])})"
                     )
+            elif (
+                # [P5] C등급 실험적 자동 진입
+                # OFF 기본값 — settings.ENTRY_GRADE_C_AUTO_EXP = True 로 명시 활성화 필요
+                ENTRY_GRADE_C_AUTO_EXP
+                and _final_grade == "C"
+                and self._auto_entry_enabled
+                and not _auto_blocked                              # Degraded 차단 없음
+                and _tp_active                                     # TrendGate active + 방향 일치
+                and time_zone in C_AUTO_EXP_ZONES                 # STABLE_TREND / LUNCH_RECOVERY
+                and not self.circuit_breaker.is_grade_restricted() # P4 RESTRICTED 아님
+            ):
+                _qty_c_exp = max(1, int(round(_qty_auto * C_AUTO_EXP_SIZE_MULT)))
+                if self._max_entry_qty > 0:
+                    _qty_c_exp = max(1, min(_qty_c_exp, self._max_entry_qty))
+                log_manager.signal(
+                    f"[P5] C등급 실험 자동 진입 | {raw_dir_str}→{final_dir_str}"
+                    f" {_qty_c_exp}계약 (size×{C_AUTO_EXP_SIZE_MULT})"
+                    f" | zone={time_zone} TrendGate=ON conf={confidence:.1%}"
+                )
+                log_manager.trade(
+                    f"[P5 자동진입] {raw_dir_str}->{final_dir_str} {_qty_c_exp}계약 @ {close} "
+                    f"C급 실험 | TrendGate active"
+                )
+                self._execute_entry(
+                    final_dir_str, close, _qty_c_exp, atr, _final_grade,
+                    raw_direction=raw_dir_str,
+                    reverse_enabled=reverse_on,
+                )
+
             else:
                 log_manager.signal(
                     f"[EntrySignal] 원신호={raw_dir_str} 실행신호={final_dir_str} "
@@ -4848,6 +4946,33 @@ class TradingSystem:
                 f"[GBM] 일일 마감 재학습 건너뜀: {retrain_result.get('error','')}"
             )
 
+        # [P8] EOD 스케일러 재적합 — 금일 최근 N봉 기준으로 pkl 갱신
+        # GBM retrain의 8주 스케일러(분포 폭넓음) 위에 금일 데이터로 추가 재적합.
+        # 내일 08:55 warmup이 _warmup_retrain_pending으로 스킵돼도
+        # 스케일러 age가 ~17h 이내(GBM retrain 포함 641+분 방지)로 보장된다.
+        try:
+            from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+            _p8_X, _p8_fn = self.batch_retrainer.load_features_for_warmup(
+                lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+            )
+            if _p8_X is not None and len(_p8_X) > 0:
+                _p8_res = self.model.refit_scalers_only(
+                    _p8_X, _p8_fn,
+                    trigger_ts    = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    trigger_type  = "E_EOD",
+                    trigger_reason= "EOD 스케일러 재적합 (P8) — 내일 시초 z-score 안정화",
+                )
+                log_manager.system(
+                    f"[P8] EOD 스케일러 재적합 완료"
+                    f" n={len(_p8_X)}봉 elapsed={_p8_res.get('elapsed_sec', 0):.2f}s"
+                    f" — 내일 시초 scaler age 보장",
+                    "INFO",
+                )
+            else:
+                log_manager.system("[P8] EOD 스케일러 재적합 스킵 — 데이터 없음", "WARNING")
+        except Exception as _p8_e:
+            logger.warning("[P8] EOD 스케일러 재적합 실패 (무해): %s", _p8_e)
+
         # ── 자가학습 일일 마감 집계 ──────────────────────────────
         _today_accuracy = self.online_learner.recent_accuracy()
         try:
@@ -4970,6 +5095,13 @@ class TradingSystem:
         except Exception as _sm_e:
             logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)
         self._grade_x_count = 0   # 내일을 위해 리셋
+        _ccf_today = self._checklist_conf_fail_count   # [P3] 리포트 전달용 — 리셋 전에 캡처
+        log_manager.system(
+            f"[P3] 금일 Checklist 신뢰도 차단: {_ccf_today}회"
+            f" (앙상블 통과 후 conf 미달 강제 X)",
+            "INFO",
+        )
+        self._checklist_conf_fail_count = 0
 
         # [Phase2] 드리프트 감지 — CUSUM 일별 업데이트
         try:
@@ -5048,7 +5180,9 @@ class TradingSystem:
 
             # 일일 리포트 파일 저장
             _exp    = _get_exp()
-            _report = _exp.build_report()
+            _report = _exp.build_report(
+                extra_stats={"checklist_conf_fail": _ccf_today}
+            )
             _exp.save(_report)
             logger.info("[Phase5] 일일 전략 리포트 저장 완료")
         except Exception as _ph5_e:
@@ -5487,6 +5621,7 @@ class TradingSystem:
         if not self.broker.is_connected:
             logger.error("[System] 키움 연결 끊김 — 재연결 시도")
             notify_connection_lost(getattr(self.broker, "name", "브로커"))
+            self._restart_cause = "AUTO_DISCONNECT"
             self.connect_broker()
         elif is_market_open(now):
             self.broker_runtime_service.ensure_market_open_runtime_started(

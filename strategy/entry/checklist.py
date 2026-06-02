@@ -95,12 +95,13 @@ class EntryChecklist:
                 confidence * 100, min_conf_effective * 100,
             )
             return {
-                "pass_count": 1,
-                "grade":      "X",
-                "checks":     checks,
-                "size_mult":  0,
-                "auto_entry": False,
-                "entry_mode": entry_mode,
+                "pass_count":        1,
+                "grade":             "X",
+                "checks":            checks,
+                "size_mult":         0,
+                "auto_entry":        False,
+                "entry_mode":        entry_mode,
+                "conf_check_failed": True,   # [P3] 신뢰도 차단 식별 플래그
             }
 
         # 3. VWAP 위치

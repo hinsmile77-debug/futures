@@ -402,6 +402,39 @@ class MultiHorizonModel:
                 )
                 logger.info(f"[Model] {h} 로드 성공")
 
+        self.validate_and_resync()
+
+    def validate_and_resync(self) -> list:
+        """
+        feature_names ↔ 각 호라이즌 scaler 차원 정합성 검증.
+
+        불일치 호라이즌을 _is_fitted=False로 비활성화하고 목록을 반환한다.
+        반환값이 비어있지 않으면 호출부에서 즉시 GBM 재학습을 트리거해야 한다.
+        """
+        bad = []
+        n_feat = len(self.feature_names)
+        if n_feat == 0:
+            return bad
+        for h in list(HORIZONS):
+            scaler = self.scalers.get(h)
+            if scaler is None or not self._is_fitted.get(h):
+                continue
+            expected = getattr(scaler, "n_features_in_", None)
+            if expected is not None and n_feat != expected:
+                logger.error(
+                    "[Model] %s 피처 불일치 — feature_names=%d scaler=%d"
+                    " → 호라이즌 비활성화 (재학습 후 복구)",
+                    h, n_feat, expected,
+                )
+                self._is_fitted[h] = False
+                bad.append(h)
+        if bad:
+            logger.error(
+                "[Model] 정합성 오류 %d개 호라이즌: %s — 즉시 재학습 필요",
+                len(bad), bad,
+            )
+        return bad
+
     def is_ready(self) -> bool:
         """최소 1개 호라이즌 학습 완료 여부"""
         return any(self._is_fitted.values())
