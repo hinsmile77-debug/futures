@@ -27,7 +27,9 @@ logger = logging.getLogger("SYSTEM")
 # 게이트 임계값
 _GATE_ACC30M      = 0.40   # 30분 정확도 최소
 _GATE_CORE_HEALTH = 70     # CORE 건강 점수 최소
-_GATE_ZSCORE_WARN = 2      # z-score 경고 최대 허용 횟수 (최근 5분 누적)
+# z-score 조건 완화 (2026-06-02): 급변장 시 toxicity_atr_stress 등이 z>4 폭발하여
+# BLOCKED 고착 발생 → 50으로 완화(사실상 비활성화). acc30m + core_health 2조건만 사용.
+_GATE_ZSCORE_WARN = 50     # 급변장 대비 완화 (기존 2)
 _SHADOW_END_MIN   = 40     # Shadow 세션 종료 시각 (분) — 09:40
 _ZSCORE_WINDOW    = 5      # z-score 경고 추적 창 (분)
 
@@ -73,6 +75,20 @@ class ShadowSessionTracker:
             virtual_pnl_delta:  이번 봉 가상 체결 손익 (pt, 실제 진입 시뮬)
             virtual_correct:    이번 봉 가상 예측 적중 여부 (None = 미집계)
         """
+        # BLOCKED 복구: acc30m + core_health 조건 충족 시 LIVE 전환 허용
+        # (z 조건 완화로 2조건만 체크 — 급변장 대비 2026-06-02)
+        if self._state == SHADOW_BLOCKED:
+            if acc30m >= _GATE_ACC30M and core_health_score >= _GATE_CORE_HEALTH:
+                self._state = SHADOW_LIVE
+                self._transition_time = ts_dt.strftime("%H:%M")
+                msg = (
+                    f"[ShadowSession] BLOCKED→LIVE 복구 | {self._transition_time} | "
+                    f"acc30m={acc30m:.1%} core={core_health_score} z={z_warn_count}"
+                )
+                logger.info(msg)
+                log_manager.system(msg, "INFO")
+            return
+
         if self._state != SHADOW_SHADOW:
             return
 
