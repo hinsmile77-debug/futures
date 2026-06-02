@@ -400,8 +400,15 @@ class DynamicMcPanel(QWidget):
                      else _COL["orange"] if delta > 0.001
                      else _COL["muted"])
 
+            ts_raw = row.get("ts", "")
+            # "2026-06-01 09:35:00" → "260601 09:35"
+            if len(ts_raw) >= 16:
+                ts_short = "%s%s%s %s" % (ts_raw[2:4], ts_raw[5:7], ts_raw[8:10], ts_raw[11:16])
+            else:
+                ts_short = ts_raw[:16]
+
             vals = [
-                row.get("ts", "")[:16],
+                ts_short,
                 row.get("trigger", ""),
                 _ZONE_KR.get(row.get("zone", ""), row.get("zone", "")),
                 "%.3f" % row.get("old_mc", 0),
