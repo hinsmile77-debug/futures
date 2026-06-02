@@ -326,12 +326,16 @@ class EnsembleDecision:
                 )
 
         # ── 코히어런스 게이트 (P3b) ──────────────────────────────
-        # 모순 신호 차단: active_horizons 중 방향 합의 비율 < COHERENCE_GATE_MIN → grade=X
-        # 1m UP + 30m DOWN 같은 충돌 신호가 노이즈 진입의 주원인
+        # FLAT 제외 계산: FLAT 예측 호라이즌은 방향성 없으므로 코히어런스에서 제외
+        # (FLAT 포함 시 오늘처럼 5m/10m/15m FLAT 편향 → DN 3/6=0.50 → 과잉 차단)
         _coherence_blocked = False
         if direction != DIRECTION_FLAT:
-            _active_h = [h for h in horizon_proba if horizon_proba[h]]
-            _n_active  = len(_active_h)
+            # FLAT 예측 호라이즌 제외: 방향성 있는 호라이즌만 대상
+            _active_h = [
+                h for h in horizon_proba
+                if horizon_proba[h] and horizon_proba[h].get("direction") != DIRECTION_FLAT
+            ]
+            _n_active = len(_active_h)
             if _n_active > 0:
                 _n_coherent = sum(
                     1 for h in _active_h
@@ -341,7 +345,7 @@ class EnsembleDecision:
                 if _coherence_score < COHERENCE_GATE_MIN:
                     _coherence_blocked = True
                     logger.info(
-                        "[Ensemble] CoherenceGate 차단 score=%.2f (%d/%d) dir=%+d",
+                        "[Ensemble] CoherenceGate 차단 score=%.2f (%d/%d비FLAT) dir=%+d",
                         _coherence_score, _n_coherent, _n_active, direction,
                     )
 

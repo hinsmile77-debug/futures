@@ -171,8 +171,9 @@ ENSEMBLE_WEIGHTS_CORR_ADJ = {
 
 # 호라이즌 방향 코히어런스 게이트 (P3b)
 # active_horizons 중 같은 방향 투표 비율이 이 값 미만이면 grade=X 차단
-# 0.67 = 6호라이즌 중 4개 이상 동방향 필요
-COHERENCE_GATE_MIN: float = 0.67
+# 0.60: FLAT 포함 계산 시 4/6=0.667 통과 보장 (기존 0.67은 4/6도 차단하는 수학 오류)
+# FLAT 방향 제외 계산 적용 후에도 3/4 기준으로 충분히 엄격
+COHERENCE_GATE_MIN: float = 0.60
 
 # 동적 min_conf 설계 (260601_DYNAMIC_MIN_CONF_PLAN.md)
 # 주기 1: GBM 재학습 완료 즉시 / 주기 2: 매일 08:55
