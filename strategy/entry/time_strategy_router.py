@@ -29,6 +29,35 @@ from utils.time_utils import now_kst, days_to_monthly_expiry, is_fomc_day
 
 logger = logging.getLogger("SIGNAL")
 
+
+def _restore_mc_from_history() -> None:
+    """
+    기동 시 mc_history.db의 가장 최근 값으로 _ZONE_PARAMS를 복원.
+    재기동 시 마다 코드 초기값으로 리셋되는 문제 해결.
+    """
+    try:
+        import os, sqlite3
+        from config.settings import DB_DIR
+        db = os.path.join(DB_DIR, "mc_history.db")
+        if not os.path.exists(db):
+            return
+        conn = sqlite3.connect(db, timeout=5)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT zone, new_mc FROM mc_history "
+            "WHERE id IN (SELECT MAX(id) FROM mc_history GROUP BY zone)"
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            zone = r["zone"]
+            if zone in _ZONE_PARAMS:
+                old = _ZONE_PARAMS[zone]["min_confidence"]
+                _ZONE_PARAMS[zone]["min_confidence"] = float(r["new_mc"])
+                logger.info("[DynMC] 기동 복원: %s  %.3f → %.3f", zone, old, r["new_mc"])
+    except Exception as exc:
+        logger.debug("[DynMC] 기동 복원 실패 (무시): %s", exc)
+
+
 # ── 시간대별 파라미터 ─────────────────────────────────────────────
 _ZONE_PARAMS: Dict[str, dict] = {
     "GAP_OPEN": {
@@ -81,6 +110,9 @@ _ZONE_PARAMS: Dict[str, dict] = {
         "desc":            "기타 구간 — 진입 금지",
     },
 }
+
+# 모듈 로드 시 mc_history.db에서 마지막 mc 복원 (재기동 시 리셋 방지)
+_restore_mc_from_history()
 
 
 def _to_time(hhmm: str) -> datetime.time:
