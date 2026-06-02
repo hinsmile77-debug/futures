@@ -51,11 +51,18 @@ def _restore_mc_from_history() -> None:
         base_mcs = []
         for r in rows:
             zone = r["zone"]
-            if zone in _ZONE_PARAMS:
-                old = _ZONE_PARAMS[zone]["min_confidence"]
-                _ZONE_PARAMS[zone]["min_confidence"] = float(r["new_mc"])
-                logger.info("[DynMC] 기동 복원: %s  %.3f → %.3f", zone, old, r["new_mc"])
-                base_mcs.append(float(r.get("base_mc") or r["new_mc"]))
+            if zone not in _ZONE_PARAMS:
+                continue
+            try:
+                old    = _ZONE_PARAMS[zone]["min_confidence"]
+                new_mc = float(r["new_mc"])
+                _ZONE_PARAMS[zone]["min_confidence"] = new_mc
+                logger.info("[DynMC] 기동 복원: %s  %.3f → %.3f", zone, old, new_mc)
+                # sqlite3.Row에는 .get() 없음 → 직접 접근
+                bmc = r["base_mc"]
+                base_mcs.append(float(bmc) if bmc else new_mc)
+            except Exception as _row_e:
+                logger.debug("[DynMC] 복원 row 처리 실패 %s: %s", zone, _row_e)
 
         # REGIME_MIN_CONFIDENCE 복원 (앙상블 내부 min_conf 동기화)
         if base_mcs:

@@ -271,8 +271,8 @@ ENTRY_GRADE = {
 
 # ── 레짐별 진입 기준 ───────────────────────────────────────────
 REGIME_MIN_CONFIDENCE = {
-    "RISK_ON":  0.52,
-    "NEUTRAL":  0.52,   # 0.58→0.52: 초기 운영 기간 한시적 완화 — 진입 0건 방지
+    "RISK_ON":  0.42,   # 동적 mc 하한과 동기화 — update_dynamic_mc()로 상향 조정됨
+    "NEUTRAL":  0.42,   # MC_ABS_FLOOR=0.42 기준, SGD 블렌딩 희석 고려
     "RISK_OFF": 0.65,
 }
 
