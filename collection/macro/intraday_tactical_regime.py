@@ -75,8 +75,11 @@ class IntradayTacticalRegime:
     CRASH_Z_WARN_MIN       = 3        # z-score extreme ≥ 3 호라이즌 동시
 
     # RECOVERY_NEUTRAL 복귀 임계값
-    RECOVERY_BOUNCE        = 0.005    # 저점 대비 반등 ≥ +0.5%
-    RECOVERY_ATR_MAX       = 1.2      # ATR ratio < 1.2
+    # bounce(저점 대비 반등) 제거 — 선물 양방향 거래에서 상승 방향 복귀만 요구하면
+    # 하락 추세 지속 시 숏 기회를 차단하는 모순 발생 (2026-06-02 설계 수정)
+    # 대신: ATR 안정 + z_warn 해소 + OFI 방향 확인으로 복귀
+    RECOVERY_ATR_MAX       = 1.2      # ATR ratio < 1.2  (변동성 안정)
+    RECOVERY_Z_WARN_MAX    = 3        # z극단 수 < 3 (스케일러 정상화)
 
     def __init__(self):
         self._regime: str = INTRADAY_NORMAL
@@ -191,11 +194,13 @@ class IntradayTacticalRegime:
             return INTRADAY_DAY_RISK_OFF
 
         # ─ RECOVERY 복귀 조건 (현재 비정상 상태일 때만 평가) ─────
+        # bounce(저점 반등) 제거: 선물 양방향 — 하락 지속 시 숏 기회인데 bounce=0%로
+        # CRASH 고착되는 모순 해소. ATR 안정 + z극단 해소 + OFI 확인으로 복귀.
         if cur in (INTRADAY_CRASH, INTRADAY_DAY_RISK_OFF):
             recovery = (
-                bounce >= self.RECOVERY_BOUNCE
+                atr_ratio < self.RECOVERY_ATR_MAX
+                and z_warn_count < self.RECOVERY_Z_WARN_MAX
                 and ofi_15m_avg > 0
-                and atr_ratio < self.RECOVERY_ATR_MAX
             )
             if not recovery:
                 return cur   # 복귀 조건 미충족 → 현 레짐 유지

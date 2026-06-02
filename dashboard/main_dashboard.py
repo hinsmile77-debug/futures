@@ -4252,13 +4252,15 @@ class EntryPanel(QWidget):
         ]
 
         if regime != "NORMAL":
-            b_ok = bounce   >= 0.005
-            o_ok = ofi_15m  >  0.0
-            a_ok = atr_ratio < 1.2
+            # bounce(저점 반등) → z극단 해소로 교체 (2026-06-02)
+            # 선물 양방향: 하락 지속 시 bounce=0%로 CRASH 고착 문제 해소
+            z_ok = z_warn     <  3
+            o_ok = ofi_15m    >  0.0
+            a_ok = atr_ratio  <  1.2
             lines += [
                 "",
                 "복귀 조건 체크 (→ NORMAL)",
-                f"  반등 {bounce*100:+.2f}% ≥ +0.5%:  {'✔' if b_ok else '✘'}",
+                f"  z극단 {z_warn}개 < 3:  {'✔' if z_ok else '✘'}",
                 f"  OFI15m {ofi_15m:.4f} > 0:  {'✔' if o_ok else '✘'}",
                 f"  ATR ratio {atr_ratio:.3f} < 1.2:  {'✔' if a_ok else '✘'}",
             ]
