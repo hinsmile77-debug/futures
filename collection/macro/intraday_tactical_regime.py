@@ -63,16 +63,16 @@ class IntradayTacticalRegime:
         status_dict()  → 대시보드/로그용 상태 dict
     """
 
-    # DAY_RISK_OFF 발동 임계값
-    DAY_RISK_OFF_DAY_RET   = -0.010   # 당일 수익률 ≤ −1.0%
-    DAY_RISK_OFF_OPEN_DROP = -0.008   # 시가 낙폭 ≤ −0.8%
-    DAY_RISK_OFF_15M_RET   = -0.005   # 직전 15분 수익률 ≤ −0.5%
+    # DAY_RISK_OFF 발동 임계값 (양방향 — 상승이든 하락이든 급변 시 보수 운영)
+    DAY_RISK_OFF_ABS_DAY   = 0.010    # |당일 수익률| ≥ 1.0%
+    DAY_RISK_OFF_ABS_DAY2  = 0.008    # |당일 수익률| ≥ 0.8% (15분과 복합)
+    DAY_RISK_OFF_ABS_15M   = 0.005    # |15분 수익률| ≥ 0.5%
 
-    # CRASH 발동 임계값
-    CRASH_DAY_RET          = -0.018   # 당일 수익률 ≤ −1.8%
-    CRASH_30M_RET          = -0.010   # 30분 수익률 ≤ −1.0%
-    CRASH_ATR_RATIO        = 1.25     # ATR ratio ≥ 1.25
-    CRASH_Z_WARN_MIN       = 3        # z-score extreme ≥ 3 호라이즌 동시
+    # CRASH 발동 임계값 (양방향 — 모델 신뢰 불가 상태)
+    CRASH_ABS_DAY_RET      = 0.018    # |당일 수익률| ≥ 1.8%
+    CRASH_ABS_30M_RET      = 0.010    # |30분 수익률| ≥ 1.0%
+    CRASH_ATR_RATIO        = 1.25     # ATR ratio ≥ 1.25  (중립)
+    CRASH_Z_WARN_MIN       = 3        # z극단 ≥ 3  (중립)
 
     # RECOVERY_NEUTRAL 복귀 임계값
     # bounce(저점 대비 반등) 제거 — 선물 양방향 거래에서 상승 방향 복귀만 요구하면
@@ -174,20 +174,22 @@ class IntradayTacticalRegime:
         cur = self._regime
 
         # ─ CRASH 발동 조건 (셋 중 하나) ─────────────────────────
-        crash_a = day_ret <= self.CRASH_DAY_RET
-        crash_b = ret_30m <= self.CRASH_30M_RET and atr_ratio >= self.CRASH_ATR_RATIO
-        crash_c = z_warn_count >= self.CRASH_Z_WARN_MIN
+        # 수익률 기반은 abs() 양방향 — 급등이든 급락이든 동일 처리
+        crash_a = abs(day_ret) >= self.CRASH_ABS_DAY_RET
+        crash_b = abs(ret_30m) >= self.CRASH_ABS_30M_RET and atr_ratio >= self.CRASH_ATR_RATIO
+        crash_c = z_warn_count >= self.CRASH_Z_WARN_MIN   # 이미 방향 중립
 
         if crash_a or crash_b or crash_c:
             return INTRADAY_CRASH
 
-        # ─ DAY_RISK_OFF 발동 조건 (둘 중 하나) ──────────────────
-        dro_a = day_ret <= self.DAY_RISK_OFF_DAY_RET
+        # ─ DAY_RISK_OFF 발동 조건 (셋 중 하나) ──────────────────
+        # 수익률 기반은 abs() 양방향 — 급등이든 급락이든 보수 운영
+        dro_a = abs(day_ret) >= self.DAY_RISK_OFF_ABS_DAY
         dro_b = (
-            day_ret <= self.DAY_RISK_OFF_OPEN_DROP
-            and ret_15m <= self.DAY_RISK_OFF_15M_RET
+            abs(day_ret) >= self.DAY_RISK_OFF_ABS_DAY2
+            and abs(ret_15m) >= self.DAY_RISK_OFF_ABS_15M
         )
-        # Contrarian ACTIVE → 최소 DAY_RISK_OFF 자동 승격
+        # Contrarian ACTIVE → 최소 DAY_RISK_OFF 자동 승격 (방향 중립)
         dro_c = contrarian_active
 
         if dro_a or dro_b or dro_c:

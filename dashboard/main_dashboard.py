@@ -4212,15 +4212,15 @@ class EntryPanel(QWidget):
                 f"font-size:{S.f(10)}px;font-weight:bold;"
             )
 
-        _day_col = C['red'] if day_ret <= -0.010 else (C['orange'] if day_ret <= -0.008 else C['text'])
+        _day_col = C['red'] if abs(day_ret) >= 0.010 else (C['orange'] if abs(day_ret) >= 0.008 else C['text'])
         day_lbl = getattr(self, "_l2_day_ret_label", None)
         if day_lbl is not None:
             day_lbl.setText(f"{day_ret*100:+.2f}%")
             day_lbl.setStyleSheet(
                 f"color:{_day_col};font-size:{S.f(10)}px;font-weight:bold;"
             )
-        _ind("_l2_ret_15m",   f"{ret_15m*100:+.2f}%", ret_15m <= -0.005)
-        _ind("_l2_ret_30m",   f"{ret_30m*100:+.2f}%", ret_30m <= -0.010)
+        _ind("_l2_ret_15m",   f"{ret_15m*100:+.2f}%", abs(ret_15m) >= 0.005)
+        _ind("_l2_ret_30m",   f"{ret_30m*100:+.2f}%", abs(ret_30m) >= 0.010)
         _ind("_l2_atr_ratio", f"{atr_ratio:.3f}",     atr_ratio >= 1.25)
         _ind("_l2_z_warn",    f"{z_warn}개",           z_warn >= 3)
         con_lbl = getattr(self, "_l2_contrarian_label", None)
