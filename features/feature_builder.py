@@ -19,6 +19,7 @@ from features.technical.toxicity import ToxicityCalculator
 from features.technical.vwap import VWAPCalculator
 from features.technical.hurst_exponent import calculate_hurst
 from utils.error_policy import ErrorLevel, classify_exception
+from config.settings import HORIZON_THRESHOLDS
 
 logger = logging.getLogger("SIGNAL")
 micro_log = logging.getLogger("MICRO")
@@ -106,6 +107,7 @@ class FeatureBuilder:
         supply_demand: Optional[Dict] = None,
         option_data: Optional[Dict] = None,
         macro_data: Optional[Dict] = None,
+        micro_regime: str = "혼합",
     ) -> Dict[str, float]:
         features: Dict[str, float] = {}
         recoverable_errors = 0
@@ -401,6 +403,24 @@ class FeatureBuilder:
         features["quality_macro_fallback_used"] = macro_fallback
         features["quality_investor_stale"] = investor_stale
         features["quality_investor_age_sec"] = investor_age_sec
+
+        # ── 저변동성 인식 피처 ──────────────────────────────────────
+        # threshold_feasibility: 현재 ATR이 1m threshold를 초과할 수 있는가
+        #   < 1.0 → ATR < threshold → 대부분의 분봉이 FLAT 구간 (저변동성)
+        #   = 1.0 → ATR ≈ threshold → UP/DN/FL 균형 구간
+        #   > 1.0 → ATR > threshold → UP/DN 라벨 빈번 (고변동성)
+        # micro_regime_code: 이전 분 레짐 분류값 (1분 lag 허용 — 레짐 전환은 느림)
+        #   0=횡보장(FLAT 우세) 1=혼합 2=추세장 3=탈진 4=급변장
+        _atr_val   = max(float(features.get("atr", 0.0)), 0.01)
+        _thresh_pt = max(HORIZON_THRESHOLDS.get("1m", 0.0005) * max(close, 1.0), 1e-9)
+        features["threshold_feasibility"] = round(_atr_val / _thresh_pt, 4)
+        features["micro_regime_code"] = {
+            "횡보장": 0.0,
+            "혼합":   1.0,
+            "추세장": 2.0,
+            "탈진":   3.0,
+            "급변장": 4.0,
+        }.get(micro_regime, 1.0)
 
         self._micro_minute_count += 1
         micro_log.debug(

@@ -2718,6 +2718,7 @@ class TradingSystem:
             supply_demand = supply_feats,
             macro_data    = _macro_feats,
             option_data   = _option_feats,
+            micro_regime  = self.current_micro_regime,  # 직전 분 레짐 (1분 lag 허용)
         )
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
         atr      = max(features.get("atr", 0.5), 0.5)
@@ -4783,6 +4784,7 @@ class TradingSystem:
             self._option_chain_timer.stop()
         self.feature_builder.reset_daily()
         self.micro_regime_clf.reset_daily()
+        self.current_micro_regime = "혼합"  # threshold_feasibility 피처에 1분 lag로 전달됨
         self.intraday_regime.reset_daily()
         self.current_intraday_regime = INTRADAY_NORMAL
         self.investor_data.reset_daily()
