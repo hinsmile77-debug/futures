@@ -194,13 +194,16 @@ class IntradayTacticalRegime:
             return INTRADAY_DAY_RISK_OFF
 
         # ─ RECOVERY 복귀 조건 (현재 비정상 상태일 때만 평가) ─────
-        # bounce(저점 반등) 제거: 선물 양방향 — 하락 지속 시 숏 기회인데 bounce=0%로
-        # CRASH 고착되는 모순 해소. ATR 안정 + z극단 해소 + OFI 확인으로 복귀.
+        # 방향 중립 2가지만 사용:
+        #   ATR < 1.2       : 변동성 안정 (상승/하락 무관)
+        #   z극단 < 3       : 스케일러·모델 정상화 (상승/하락 무관)
+        # 제거 이유:
+        #   bounce ≥ 0.5%   : 상승 방향 편향 → 하락 추세 시 CRASH 고착
+        #   OFI15m > 0      : 매수 방향 편향 → 하락 추세 시 OFI 음수로 고착
         if cur in (INTRADAY_CRASH, INTRADAY_DAY_RISK_OFF):
             recovery = (
                 atr_ratio < self.RECOVERY_ATR_MAX
                 and z_warn_count < self.RECOVERY_Z_WARN_MAX
-                and ofi_15m_avg > 0
             )
             if not recovery:
                 return cur   # 복귀 조건 미충족 → 현 레짐 유지
