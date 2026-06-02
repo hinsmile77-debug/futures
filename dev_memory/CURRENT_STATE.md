@@ -1,7 +1,76 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-01 (98차) — **동적 min_conf 구현 + GBM 105피처 재학습 완료**
+> 마지막 업데이트: 2026-06-02 (98차 계속) — **진입0 구조 개선 전면 (CoherenceGate·Layer2·CB③·mc 복원)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-02 (98차 계속) — 진입0 구조 개선 전면
+
+### 배경
+
+6/2 장 중 진입0 지속. mc 복원 버그, CoherenceGate 과잉 차단, Layer 2 단방향 편향,
+CB③ FLAT 고착 등 구조적 문제 다수 발견·수정.
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **GBM 105피처 재학습** — shap_feature_registry 91→108개 후 재실행 | **완료** |
+| **mc 복원 버그 수정** — sqlite3.Row.get() → 직접 접근, 모든 zone 복원 | **완료** |
+| **REGIME_MIN_CONFIDENCE 기본값** 0.52→0.42 (동적 mc와 동기화) | **완료** |
+| **MC_ABS_FLOOR** 0.50→0.42 (SGD 블렌딩 희석 고려) | **완료** |
+| **ShadowSession z 조건 완화** — _GATE_ZSCORE_WARN 2→50, BLOCKED 복구 추가 | **완료** |
+| **quality_investor_fetch_count** clip 60→5 + SCALER_CLIP_FEATURES 추가 | **완료** |
+| **Layer 2 복귀 조건 양방향** — bounce/OFI 제거, ATR+z극단만 유지 | **완료** |
+| **Layer 2 발동 조건 양방향** — abs() 적용 (급등=급락 동일 처리) | **완료** |
+| **CoherenceGate** FLAT 제외 계산 + COHERENCE_GATE_MIN 0.67→0.60 | **완료** |
+| **CB③ FLAT 예측 제외** + CB_ACCURACY_MIN_30M 0.35→0.28 | **완료** |
+| **PATH_LABEL_RATIO** 0.45→0.55 + _CW_30M {FL:0.70} (FLAT 편향 억제) | **완료** |
+| **mc 이력 ts 형식** — mmdd-hhmm (0602-0935) | **완료** |
+| **툴팁 현행화** — 앙상블 등급·신호방향·신뢰도·Layer2 Gate | **완료** |
+| 다음 기동 시 CoherenceGate 통과 + 진입 발생 여부 확인 | **미완료** |
+
+### 핵심 수정 정리
+
+```
+진입 차단 경로 (수정 전→후):
+
+[앙상블]
+  REGIME_MIN_CONF: 0.52 → 0.42 (동적 base_mc와 동기화)
+  CoherenceGate: FLAT 포함 3/6=0.50차단 → FLAT 제외 3/4=0.75 통과
+  임계값: 0.67 → 0.60 (4/6=0.667 수학 오류 수정)
+
+[체크리스트]
+  actual_min_conf = max(0.42, ZONE_MC) → ZONE_MC 기준으로 낮아짐
+
+[CB③]
+  FLAT 예측 제외 후 방향성(UP/DN)만 집계
+  임계값 0.35 → 0.28 (랜덤 50% 기준 재설정)
+
+[Layer 2]
+  CRASH 발동: 하락만 → abs() 양방향
+  CRASH 복귀: bounce+OFI 제거 → ATR+z극단만 (방향 중립)
+
+[ShadowSession]
+  z_warn 조건: < 2 → < 50 (급변장 대비)
+  BLOCKED 상태에서 acc30m + core_health 충족 시 복구 가능
+```
+
+### 수정 파일 (6/2)
+
+| 파일 | 변경 |
+|---|---|
+| `config/settings.py` | MC_ABS_FLOOR 0.42, REGIME_MIN_CONF 0.42, COHERENCE_GATE_MIN 0.60, CB_ACCURACY_MIN_30M 0.28 |
+| `strategy/entry/time_strategy_router.py` | _restore_mc_from_history() sqlite3.Row 버그 수정 |
+| `safety/shadow_session.py` | z 조건 완화 + BLOCKED→LIVE 복구 |
+| `collection/cybos/investor_data.py` | fetch_count clip 60→5 |
+| `collection/macro/intraday_tactical_regime.py` | Layer2 발동/복귀 양방향 수정 |
+| `model/ensemble_decision.py` | CoherenceGate FLAT 제외 |
+| `learning/batch_retrainer.py` | PATH_LABEL_RATIO 0.55, _CW_30M FL:0.70 |
+| `main.py` | CB③ FLAT 제외 (direction!=0) |
+| `dashboard/main_dashboard.py` | Layer2 툴팁 + 발동지표 ± 표시 + 앙상블/신뢰도 툴팁 |
+| `dashboard/panels/dynamic_mc_panel.py` | mc 이력 ts mmdd-hhmm 형식 |
 
 ---
 

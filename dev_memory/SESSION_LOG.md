@@ -4,6 +4,59 @@
 
 ---
 
+## 2026-06-02 (98차 계속 — 진입0 구조 개선 전면)
+
+**Work**: 6/2 장 중 진입0 원인 다중 분석 및 수정. 커밋 20여 건.
+
+### 1. GBM 재학습 완료 (105피처)
+- shap_feature_registry 91→108개 (신규 17개 수동 추가)
+- force=True, weeks_back=26, 84분 소요
+- acc 향상: 1m 0.362→0.419, 5m 0.473→0.504, 30m 0.478→0.512
+
+### 2. mc 복원 버그 수정 + REGIME_MIN_CONF 동기화
+- `_restore_mc_from_history()`: `r.get()` → `r["key"]` 직접 접근 (sqlite3.Row에 .get() 없음)
+- 5개 zone 모두 복원 확인 (이전에는 GAP_OPEN만 복원)
+- REGIME_MIN_CONFIDENCE['NEUTRAL'] 코드 기본값 0.52→0.42
+- MC_ABS_FLOOR 0.50→0.42 (SGD 블렌딩 희석 고려)
+
+### 3. ShadowSession z 조건 완화 + BLOCKED 복구
+- 급변장 toxicity_atr_stress z=+19로 BLOCKED 고착 문제
+- _GATE_ZSCORE_WARN: 2→50 (사실상 비활성)
+- BLOCKED 상태에서 acc30m + core_health 충족 시 LIVE 복구 허용
+- 배지 툴팁에 [Note 2026-06-02] 완화 사유 추가
+
+### 4. quality_investor_fetch_count z=+8 수정
+- 소급 99.9% = 0, 스케일러 평균≈0 → 실시간 60이면 z=+8
+- investor_data.py: min(count, 60)→min(count, 5)
+- SCALER_CLIP_FEATURES: (0, 5) 추가
+- D_FORCE 반복 트리거 해소
+
+### 5. Layer 2 발동/복귀 조건 전면 양방향 수정
+- 발동 조건: day_ret≤-1.8% → |day_ret|≥1.8% (abs() 적용, 전면)
+- 복귀 조건: bounce+OFI 제거 → ATR < 1.2 + z극단 < 3 (방향 중립)
+- 이유: 선물 양방향 — 하락 지속 시 bounce=0%, OFI 음수로 CRASH 고착
+- 툴팁 추가: 발동/복귀 조건 전체 + ± 표시
+
+### 6. CoherenceGate FLAT 제외 + 임계값 완화
+- 문제: 4/6=0.667 < 0.67 수학 오류 + FLAT 편향 시 DN 3/6=0.50 차단
+- FLAT 예측 호라이즌 제외 후 방향성만 계산
+- COHERENCE_GATE_MIN: 0.67→0.60
+
+### 7. CB③ 30m FLAT 편향 수정
+- CB③: FLAT 예측(direction=0) 제외, 방향성 예측만 acc 집계
+- CB_ACCURACY_MIN_30M: 0.35→0.28 (FLAT 제외 후 랜덤 기준=50%)
+- PATH_LABEL_RATIO: 0.45→0.55 (FLAT 레이블 과다 완화)
+- _CW_30M: balanced→{FL:0.70, UP:1.15, DN:1.15}
+
+### 8. UI 업데이트
+- 앙상블 등급 카드 툴팁: CoherenceGate 예시 + 동적 min_conf + F1 가중치
+- 앙상블 신호 방향 툴팁: STEP4.5 CoherenceGate + GBM/SGD/RF + 동적 min_conf
+- 신뢰도 툴팁: actual_min_conf 동적 계산 설명
+- mc 이력 ts: mmdd-hhmm 형식 (0602-0935)
+- 30m 카드 라벨 FLAT 기준 툴팁
+
+---
+
 ## 2026-06-01 (98차 — 동적 min_conf + GBM 105피처 재학습)
 
 **Work**: 진입0 근본 원인 분석 → GBM 재학습 → 동적 mc 구현. 신규 파일 4개, 수정 파일 4개.

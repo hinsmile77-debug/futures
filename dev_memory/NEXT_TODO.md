@@ -6,6 +6,48 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-02 (98차 계속) — 진입0 구조 개선 전면
+
+### 한일 요약
+
+- [DONE 2026-06-02] **mc 복원 버그 수정** — sqlite3.Row.get() 오류, 5개 zone 전체 복원
+- [DONE 2026-06-02] **REGIME_MIN_CONFIDENCE** 기본값 0.52→0.42, MC_ABS_FLOOR 0.50→0.42
+- [DONE 2026-06-02] **ShadowSession z 조건 완화** — 2→50, BLOCKED→LIVE 복구 추가
+- [DONE 2026-06-02] **quality_investor_fetch_count** clip 60→5, z=+8 D_FORCE 반복 해소
+- [DONE 2026-06-02] **Layer 2 발동조건 양방향** — abs() 전면 적용 (급등=급락)
+- [DONE 2026-06-02] **Layer 2 복귀조건 양방향** — bounce+OFI 제거, ATR+z극단만 유지
+- [DONE 2026-06-02] **CoherenceGate** FLAT 제외 계산 + 0.67→0.60 (4/6=0.667 수학 오류)
+- [DONE 2026-06-02] **CB③ FLAT 예측 제외** + 임계값 0.35→0.28
+- [DONE 2026-06-02] **PATH_LABEL_RATIO** 0.45→0.55, _CW_30M {FL:0.70}
+- [DONE 2026-06-02] **툴팁 현행화** — 앙상블 등급·신호방향·신뢰도·Layer2·30m 카드
+
+### 다음 할 일 (우선순위 순)
+
+- [NEXT 다음 기동 시] **6/2 수정 사항 실세션 확인**
+  - `[DynMC] 기동 복원: STABLE_TREND 0.540 → 0.460` 5개 zone 모두 확인
+  - `[DynMC] 기동 복원 REGIME_MIN_CONF NEUTRAL 0.420 → 0.420` 로그
+  - CoherenceGate 로그: `score=0.XX (N/M비FLAT)` — FLAT 제외 계산 확인
+  - CB③ 로그: `CB③30m=XX%` — FLAT 예측 제외 후 정확도 변화 확인
+  - ShadowSession: BLOCKED→LIVE 복구 로그 확인 (acc30m≥40% + core≥70)
+  - Layer 2 발동 지표: `±0.5%|±1.0%` 표시 확인
+
+- [NEXT GBM 재학습 후] **30m FLAT 편향 개선 효과 확인**
+  - PATH_LABEL_RATIO 0.55 + _CW_30M {FL:0.70} 반영 후 재학습
+  - `[Bias]` 로그에서 30m FL% 감소 확인 (기존 79% → 목표 40% 이하)
+
+- [NEXT 주의] **shap_feature_registry 자동화 필요**
+  - 피처 추가 시마다 수동으로 active_features 갱신 필요
+  - batch_retrainer 재학습 완료 후 자동 반영 로직 검토
+
+- [NEXT ~2026-06-09] **동적 mc 적응 효과 1주 검증**
+  - 재학습 후 conf 분포(avg≈0.70)가 mc에 반영되는지 확인
+  - 신호 통과율 15~35% 범위 안착 확인 (🎯 신뢰도 게이트 탭)
+
+- [NEXT 2026-06-05] **Phase A 첫 자동 실행 확인**
+  - 15:40 `[ThresholdRecal] 재보정 결과` 로그
+
+---
+
 ## 2026-06-01 (98차) — 동적 min_conf + GBM 105피처 재학습
 
 ### 한일 요약
@@ -14,9 +56,8 @@
 - [DONE 2026-06-01] **GBM 105피처 재학습** — force=True, 26주, acc 전반 향상 (1m 0.362→0.419)
 - [DONE 2026-06-01] **진입0 분석** — conf 평균 0.406(재학습 전)→0.698(재학습 후)
 - [DONE 2026-06-01] **금일 실 데이터 진입 시뮬** — mc=0.65: 22건 77% +1,056만원
-- [DONE 2026-06-01] **Rolling Percentile Gate vs 고정 mc 비교** — 고정 mc 우위 결론
 - [DONE 2026-06-01] **동적 mc 구현** — update_dynamic_mc() + 주기1/2 + mc_history.db
-- [DONE 2026-06-01] **DynamicMcPanel** — 🎯 신뢰도 게이트 탭 신규 (mc 카드·추이·게이지·이력)
+- [DONE 2026-06-01] **DynamicMcPanel** — 🎯 신뢰도 게이트 탭 신규
 - [DONE 2026-06-01] **mc 즉시 재보정 실행** — STABLE_TREND 0.540→0.500
 
 ### 다음 할 일 (우선순위 순)

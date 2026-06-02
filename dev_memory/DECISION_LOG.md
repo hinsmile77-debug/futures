@@ -2,6 +2,42 @@
 
 ---
 
+## 2026-06-02 (98차 계속 — 진입0 구조 개선)
+
+### [버그] sqlite3.Row.get() 없음 — _restore_mc_from_history() GAP_OPEN만 복원
+**File**: `strategy/entry/time_strategy_router.py`
+**Bug**: `_restore_mc_from_history()` 내에서 `r.get("base_mc")` 호출 → `AttributeError: 'sqlite3.Row' object has no attribute 'get'`. 첫 번째 row(GAP_OPEN) 처리 후 예외 발생 → 나머지 4개 zone 미복원.
+**Fix**: `r.get("base_mc")` → `r["base_mc"]`, 각 row를 개별 try-except로 감쌈.
+**Why**: sqlite3.Row는 dict와 유사하지만 .get() 메서드가 없음. r["key"]로 직접 접근 필요.
+
+### [버그] CoherenceGate 4/6 수학 오류 + FLAT 편향 과잉 차단
+**File**: `model/ensemble_decision.py`, `config/settings.py`
+**Bug 1**: COHERENCE_GATE_MIN=0.67인데 4/6=0.6666...< 0.67 → 4개 동방향도 차단.
+**Bug 2**: FLAT 포함 계산 시 5m/10m/15m FLAT 편향 → DN 3/6=0.50 → 차단.
+**Fix**: FLAT 예측 호라이즌 제외 후 방향성만 계산, 임계값 0.67→0.60.
+**How**: DN=3 UP=1 FL=2 → FLAT 제외 후 3/4=0.75 → 통과. DN=2 UP=2 FL=2 → 2/4=0.50 → 차단.
+
+### [버그] CB③ FLAT 예측 오집계 — 11시 반전 시 FLAT 고착으로 당일 정지
+**File**: `main.py`, `config/settings.py`, `learning/batch_retrainer.py`
+**Bug**: 30m FLAT 예측이 CB③ accuracy_buf에 집계됨. 11시 시장 반전 후 5m/10m/15m FLAT 편향 → acc 23% → CB③ 발동.
+**Fix 1**: `_pred_dir != 0` 조건 추가 — 방향성 예측(UP/DN)만 CB③ 집계.
+**Fix 2**: CB_ACCURACY_MIN_30M 0.35→0.28 (FLAT 제외 후 랜덤=50%, 0.28은 56% 수준).
+**Fix 3**: PATH_LABEL_RATIO 0.45→0.55, _CW_30M {FL:0.70} — 학습 단계 FLAT 억제.
+
+### [설계] Layer 2 발동/복귀 조건 양방향 수정 — 선물 양방향 특성 반영
+**File**: `collection/macro/intraday_tactical_regime.py`
+**Decision**: 모든 수익률 기반 조건에 abs() 적용. 복귀 조건에서 bounce(상승 편향) + OFI(매수 편향) 제거.
+**Why**: 선물은 롱/숏 모두 가능. 하락 추세 지속 시 bounce=0%, OFI 음수 → CRASH 고착 → 숏 기회 차단. 방향 중립 조건(ATR, z극단)만 유지.
+**CRASH 복귀**: ATR < 1.2 AND z극단 < 3 (2가지 방향 중립 조건만).
+
+### [설계] quality_investor_fetch_count clip 60→5 — 소급 오염 해소
+**File**: `collection/cybos/investor_data.py`, `config/settings.py`
+**Bug**: 소급 99.9%=0 → 스케일러 평균≈0 → 실시간 60이면 z=+8 폭발 → D_FORCE 반복 트리거.
+**Fix**: min(count, 60)→min(count, 5) + SCALER_CLIP_FEATURES (0, 5).
+**Why**: GBM에 필요한 정보는 "수집 안 됨(0) vs 수집됨(1~5)" — 5회 이상은 모두 동일 의미.
+
+---
+
 ## 2026-06-01 (98차 — 동적 min_conf + GBM 재학습)
 
 ### [버그] shap_feature_registry가 신규 피처를 자동 포함하지 않음
