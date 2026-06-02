@@ -464,17 +464,40 @@ class MultiHorizonModel:
         import time as _time
         _t0 = _time.time()
 
-        names = feature_names or self.feature_names
-        if len(names) == 0:
-            logger.warning("[ScalerWarmup] feature_names 없음 — 재적합 건너뜀")
-            return {"ok": False, "error": "feature_names 없음"}
-
+        # 재적합 기준은 반드시 self.feature_names (predict_proba 경로와 동일해야 함)
+        # feature_names 인수가 달라도 self.feature_names 기준으로 컬럼을 재정렬하여
+        # scaler 피처 수와 predict_proba 입력 피처 수가 항상 일치하도록 보장
         if X is None or len(X) == 0:
             logger.warning("[ScalerWarmup] 데이터 없음 — 재적합 건너뜀")
             return {"ok": False, "error": "데이터 없음"}
 
-        # 피처 수 불일치 시 공통 피처만 추출해 재배열
-        if X.shape[1] != len(names):
+        if not self.feature_names:
+            logger.warning("[ScalerWarmup] self.feature_names 없음 — 재적합 건너뜀")
+            return {"ok": False, "error": "feature_names 없음"}
+
+        names = self.feature_names   # 항상 model 기준 피처셋 사용
+
+        # 입력 feature_names 가 제공됐으면 그에 맞게 X 컬럼 재정렬
+        # (load_features_for_warmup 반환 피처셋이 달라도 안전하게 처리)
+        if feature_names is not None and list(feature_names) != list(names):
+            src_idx = {f: i for i, f in enumerate(feature_names)}
+            try:
+                col_idx = [src_idx[f] for f in names if f in src_idx]
+                missing  = [f for f in names if f not in src_idx]
+                if missing:
+                    logger.warning(
+                        "[ScalerWarmup] 입력 데이터에 없는 피처 %d개 (0 패딩): %s",
+                        len(missing), missing[:5],
+                    )
+                X_aligned = np.zeros((len(X), len(names)), dtype=np.float64)
+                src_cols   = [src_idx[f] for f in names if f in src_idx]
+                dst_cols   = [i for i, f in enumerate(names) if f in src_idx]
+                X_aligned[:, dst_cols] = X[:, src_cols]
+                X = X_aligned
+            except Exception as _ae:
+                logger.warning("[ScalerWarmup] 피처 재정렬 실패 — 건너뜀: %s", _ae)
+                return {"ok": False, "error": "feature realign failed"}
+        elif X.shape[1] != len(names):
             logger.warning(
                 "[ScalerWarmup] 피처 수 불일치 X=%d names=%d — 건너뜀",
                 X.shape[1], len(names),
