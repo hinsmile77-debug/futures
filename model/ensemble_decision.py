@@ -455,7 +455,16 @@ class EnsembleDecision:
         # ── 코히어런스 게이트 (P3b) ──────────────────────────────
         # FLAT 제외 계산: FLAT 예측 호라이즌은 방향성 없으므로 코히어런스에서 제외
         # (FLAT 포함 시 오늘처럼 5m/10m/15m FLAT 편향 → DN 3/6=0.50 → 과잉 차단)
+        #
+        # TrendGate 예외: TrendBoost로 dir이 확정됐어도, 장기 호라이즌 FLAT 고착으로
+        # n_coherent/n_active가 낮으면 CoherenceGate가 다시 차단.
+        # 추세 초기엔 단기 호라이즌만 방향을 포착하므로 n_active 자체가 1~2 수준.
+        # TrendGate(10분+ 연속)가 외부 추세 근거를 제공하므로 CoherenceGate를 완화.
         _coherence_blocked = False
+        _tp_coherence_exempt = (
+            (trend_gate_up_active and direction == DIRECTION_UP) or
+            (trend_gate_dn_active and direction == DIRECTION_DOWN)
+        )
         if direction != DIRECTION_FLAT:
             # FLAT 예측 호라이즌 제외: 방향성 있는 호라이즌만 대상
             _active_h = [
@@ -470,11 +479,19 @@ class EnsembleDecision:
                 )
                 _coherence_score = _n_coherent / _n_active
                 if _coherence_score < COHERENCE_GATE_MIN:
-                    _coherence_blocked = True
-                    logger.info(
-                        "[Ensemble] CoherenceGate 차단 score=%.2f (%d/%d비FLAT) dir=%+d",
-                        _coherence_score, _n_coherent, _n_active, direction,
-                    )
+                    if _tp_coherence_exempt:
+                        # TrendGate가 외부 추세 근거를 제공 → CoherenceGate 면제
+                        logger.debug(
+                            "[Ensemble] CoherenceGate 면제 (TrendGate active) "
+                            "score=%.2f (%d/%d비FLAT) dir=%+d",
+                            _coherence_score, _n_coherent, _n_active, direction,
+                        )
+                    else:
+                        _coherence_blocked = True
+                        logger.info(
+                            "[Ensemble] CoherenceGate 차단 score=%.2f (%d/%d비FLAT) dir=%+d",
+                            _coherence_score, _n_coherent, _n_active, direction,
+                        )
 
         # ── Platt 보정 (앙상블 전용 보정기 우선, 미학습 시 3m fallback) ────
         # ensemble_calibrator: 앙상블 conf 분포를 직접 학습 (3m 분포 미스매치 해소)

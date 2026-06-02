@@ -1,7 +1,60 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-02 (99·100차) — **저변동성 인식 피처 + GBM 상수 출력 방어 3종**
+> 마지막 업데이트: 2026-06-02 (101차) — **원웨이 추세장 방향 확정 실패 구조 개선 4종 + 스케일러 즉시 트리거**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-02 (101차) — 원웨이 추세장 신뢰도 미추종 구조 개선
+
+### 배경
+
+6/2 13:39 이후 원웨이 상승장 (~65pt)에서 conf가 0.30~0.48에 머물며 진입 0건.
+로그 분석 결과 핵심 원인은 **conf 게이트가 아닌 방향 확정 실패** (dir=FLAT 고착).
+- 3m 실제 UP 63.5% 구간에서 예측 0% / 5m 실제 UP 75% 구간에서 DOWN/FLAT 편향
+- 15m+30m 가중치 합 0.79가 FLAT/DOWN → flat_score > up_score → dir=0
+- TrendGate가 13:55·14:37에 ON이어도 dir==+1일 때만 min_conf 완화 → dir=0이면 무력
+- 스케일러: 13:39 급등 후 z-score 탐지 13:57 → 리프레시 13:59 (20분 지연)
+- 14:29·14:34: 5m ConstOut까지 발동해 추가 발목
+
+### 현재 상태
+
+| 항목 | 상태 |
+|---|---|
+| **P0-A TrendBoost** — TrendGate active 시 up/dn_score +0.07 직접 보정 | **완료** — ensemble_decision.py |
+| **P0-B FlatCap** — TrendGate active 시 flat_score > 0.38 → 상한 + 재정규화 | **완료** — ensemble_decision.py |
+| **P0-C CLOSE_VOLATILE 예외** — TrendGate active 시 단기 0.6× 축소 비적용 | **완료** — ensemble_decision.py |
+| **P0-D 합의도 패널티 면제** — TrendGate active + 방향 일치 시 ×0.92 패널티 면제 | **완료** — ensemble_decision.py |
+| **P1 D_PRICE_MOMENTUM** — 5분 급변(>0.23%) 감지 시 스케일러 즉시 트리거 | **완료** — main.py |
+| 다음 기동 시 실세션 확인 | **미완료** |
+
+### 실세션 확인 사항 (다음 기동)
+
+1. TrendGate ON 로그 발화 확인: `[TrendGate] UP 추세 지속 모드 ON (streak=10)`
+2. **TrendBoost 발화**: `[TrendBoost] UP streak active: up 0.3XX→0.4XX flat→0.XXX` (DEBUG)
+3. **FlatCap 발화**: `[FlatCap] flat 0.5XX→0.38 (추세 보호)` (DEBUG) — flat이 0.38 이상일 때만
+4. **합의도 패널티 면제**: `[Ensemble] 합의도 패널티 면제 (TrendGate active) n_agree=X/6` (DEBUG)
+5. **D_PRICE_MOMENTUM 발화**: `[ScalerRefresh] 5분 누적 수익률 +0.XXX% → D_PRICE_MOMENTUM 트리거` (SYSTEM WARNING)
+6. CLOSE_VOLATILE 구간 + TrendGate ON → 단기 0.6× 축소 로그 없음 확인
+7. 원웨이 추세 중 dir=+1 확정 + 진입 발생 여부
+
+### 수정 파일 (101차)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `model/ensemble_decision.py` | 클래스 상수 4종(`_TREND_UP_BOOST` 등), P0-A TrendBoost 블록, P0-B FlatCap 블록, P0-C CLOSE_VOLATILE 조건, P0-D 합의도 패널티 면제, `trend_boost_applied` 결과 키 |
+| `main.py` | `_price_momentum_refit_until` 변수, D_PRICE_MOMENTUM 트리거 블록 (Phase B 직후) |
+
+### 파라미터 상수 (튜닝 기준점)
+
+| 상수 | 값 | 위치 | 조정 방향 |
+|---|---|---|---|
+| `_TREND_UP_BOOST` | 0.07 | ensemble_decision.py | 방향 확정 너무 쉬우면 줄임 |
+| `_TREND_DN_BOOST` | 0.07 | ensemble_decision.py | 동상 |
+| `_TREND_SCORE_CAP` | 0.58 | ensemble_decision.py | 과신 방지선 |
+| `_FLAT_CAP_ON_TREND` | 0.38 | ensemble_decision.py | 너무 자주 진입이면 높임 |
+| `_PRICE_MOMENTUM_MULT` | 2.5× | main.py | 잦은 오발화면 높임 |
+| D_PRICE_MOMENTUM 쿨다운 | 20분 | main.py | 추세 지속 중 반복 원하면 줄임 |
 
 ---
 
