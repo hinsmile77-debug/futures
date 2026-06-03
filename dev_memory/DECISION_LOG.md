@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-06-03 (103차 — 중복 피처 구조 개선)
+
+### [설계] 103-P1 — MetaGate에서 Microstructure 피처 제거
+
+**File**: `strategy/entry/meta_gate.py`, `learning/meta_confidence.py`
+**Decision**: MetaGate의 `lob_imbalance(mlofi_norm)`, `vpin_proxy(cancel_add_ratio)` 입력 제거. MetaConfidenceLearner 피처 벡터 9→7개.
+**Why**: EnsembleGater가 mlofi_norm(28%)·cancel_add_ratio(10%)를 이미 confidence에 반영 후, MetaGate가 동일 피처를 재사용해 blended_conf를 추가로 낮춤. mlofi_norm 불리 시 두 단계에서 이중 패널티 → blended_conf < 0.56 → MetaGate skip → grade=X. 진입0 직접 경로.
+**How to apply**: MetaGate는 EnsembleGater가 다루지 않는 맥락 피처(regime/hurst/atr_ratio/hour_minute/recent_accuracy)만 담당. MetaConfidenceLearner는 재시작 시 50샘플 전까지 규칙기반 fallback.
+
+### [설계] 103-P2 — ExecutionGovernor에서 Toxicity 항 제거
+
+**File**: `strategy/runtime/execution_governor.py`, `main.py`
+**Decision**: tradability 공식에서 `toxicity_passability × 0.15` 항 제거. 가중치 재분배: conf×0.35→0.40, quality×0.30→0.35, latency×0.20→0.25. `toxicity_score` 파라미터 optional(default=0.0) 유지(하위 호환).
+**Why**: ToxicityGate(block=0.78/reduce=0.58)와 ExecutionGovernor가 동일 toxicity_score 독립 사용. 두 게이트 모두 reduce 시 0.5×0.6=0.3× 복합 축소. ToxicityGate가 독성 전담이므로 중복 제거.
+**How to apply**: ToxicityGate가 독성 전담. ExecutionGovernor는 운영품질(신호강도·데이터품질·API지연) 전담. 향후 임계값(0.65/0.45) 재보정 시 toxicity 없는 3-factor 기준으로 측정.
+
+---
+
 ## 2026-06-02 (102차 — 진입0 근본 원인 + P0~P8)
 
 ### [분석] 금일 진입0 원인 계층

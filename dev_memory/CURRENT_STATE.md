@@ -1,7 +1,40 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-02 (102차) — **진입0 근본 원인 분석 + P0~P8 8종 안전장치 개선**
+> 마지막 업데이트: 2026-06-03 (103차) — **방향/진입 모델 중복 피처 2종 구조 개선**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-03 (103차) — 중복 피처 구조 개선 2종
+
+### 배경
+
+방향모델(GBM+SGD+RF+EnsembleGater)과 진입모델(Checklist+MetaGate+ExecutionGovernor+ToxicityGate) 사이의 중복 데이터 사용 3종 분석. 우선순위 1·2 수정 완료.
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **[103-P1] Microstructure 중복 해소** — MetaGate에서 mlofi_norm/cancel_add_ratio 제거 | **완료** | `learning/meta_confidence.py`, `strategy/entry/meta_gate.py` |
+| **[103-P2] Toxicity 중복 해소** — ExecutionGovernor toxicity 항 제거, 가중 재분배 | **완료** | `strategy/runtime/execution_governor.py`, `main.py` |
+| 다음 기동 시 실세션 확인 | **미완료** | — |
+
+### 수정 내용
+
+**[103-P1] MetaGate 피처 분리:**
+- `meta_gate.py`: `lob_imbalance(mlofi_norm)`, `vpin_proxy(cancel_add_ratio)` 계산·전달 제거
+- `meta_confidence.py`: 피처 벡터 9→7, len 검사 업데이트, `_rule_based_confidence` vpin 조건 삭제
+
+**[103-P2] ExecutionGovernor 가중치:**
+- 구: `conf×0.35 + quality×0.30 + latency×0.20 + toxicity_pass×0.15`
+- 신: `conf×0.40 + quality×0.35 + latency×0.25` (toxicity는 ToxicityGate 전담)
+
+### 다음 기동 시 실세션 확인
+
+1. **[103-P1]** `[MetaGate] action=reduce` 빈도 증가 확인 (mlofi_norm 불리 구간의 skip→reduce 전환)
+2. **[103-P1]** MetaConfidenceLearner: 기동 후 `source=규칙기반`으로 시작 → 50샘플 후 `source=SGD` 전환
+3. **[103-P2]** `[ToxicityGate] action=reduce score=0.XX size_mult=0.50` 단독 로그 (ExecGov와 중복 없음)
+4. **[103-P2]** `[ExecutionGovernor]` reduce/block 사유가 latency/quality 기반인지 확인
 
 ---
 

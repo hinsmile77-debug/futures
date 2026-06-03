@@ -6,6 +6,27 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-03 (103차) — 중복 피처 구조 개선 2종
+
+### 한일 요약
+
+- [DONE 2026-06-03] **[103-P1] Microstructure 중복 해소** — MetaGate lob_imbalance/vpin_proxy 제거, meta_confidence 피처 벡터 9→7 (learning/meta_confidence.py, strategy/entry/meta_gate.py)
+- [DONE 2026-06-03] **[103-P2] Toxicity 중복 해소** — ExecutionGovernor toxicity_passability×0.15 제거, 가중 재분배 conf×0.40/quality×0.35/latency×0.25 (strategy/runtime/execution_governor.py, main.py)
+
+### 다음 할 일
+
+- [NEXT 다음 기동 시] **103차 실세션 확인**
+  - `[MetaGate]` 로그: mlofi_norm 불리 구간에서 `action=skip` 빈도 감소, `action=reduce` 전환 확인
+  - MetaConfidenceLearner `source=규칙기반` → 50샘플 후 `source=SGD` 전환 로그
+  - `[ExecutionGovernor]` reduce/block 사유: `latency_warn_reduce` / `tradability_reduce` 기반인지 확인 (toxicity 아님)
+  - `[ToxicityGate]` reduce 시 size_mult=0.50 단독 적용 (ExecGov 중복 없음)
+
+- [NEXT 1주 후] **103-P1 효과 검증**
+  - MetaGate skip 발생 분봉 수 감소 여부 (일일 리포트 또는 P3 카운터와 비교)
+  - mlofi_norm 불리 구간 진입 발생 여부 관찰
+
+---
+
 ## 2026-06-02 (102차) — 진입0 분석 + P0~P8
 
 ### 한일 요약

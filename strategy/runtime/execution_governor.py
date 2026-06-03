@@ -4,7 +4,10 @@ from typing import Dict, Optional
 
 
 class ExecutionGovernor:
-    """Runtime tradability gate using confidence, quality, latency, and toxicity."""
+    """Runtime tradability gate: confidence + data quality + API latency.
+
+    toxicity는 ToxicityGate가 전담하므로 여기서 제외 (이중 차감 방지).
+    """
 
     def __init__(
         self,
@@ -24,23 +27,20 @@ class ExecutionGovernor:
         confidence: float,
         quality_score: float,
         latency_sec: float,
-        toxicity_score: float,
+        toxicity_score: float = 0.0,   # 하위 호환 — 내부에서 사용 안 함
         context: Optional[Dict] = None,
     ) -> Dict:
         confidence = float(max(0.0, min(1.0, confidence)))
         quality_score = float(max(0.0, min(1.0, quality_score)))
         latency_sec = float(max(0.0, latency_sec))
-        toxicity_score = float(max(0.0, min(1.0, toxicity_score)))
 
         latency_score = self._latency_to_score(latency_sec)
-        toxicity_passability = 1.0 - toxicity_score
 
-        # 1차 버전 고정 가중치
+        # toxicity는 ToxicityGate 전담 → 여기서 제외, 가중치 재분배
         tradability = (
-            confidence * 0.35
-            + quality_score * 0.30
-            + latency_score * 0.20
-            + toxicity_passability * 0.15
+            confidence    * 0.40
+            + quality_score * 0.35
+            + latency_score * 0.25
         )
 
         # Hard block rule: API 지연 급증은 점수와 무관하게 차단
@@ -54,9 +54,7 @@ class ExecutionGovernor:
                     "confidence": round(confidence, 4),
                     "quality": round(quality_score, 4),
                     "latency_score": round(latency_score, 4),
-                    "toxicity_passability": round(toxicity_passability, 4),
                     "latency_sec": round(latency_sec, 4),
-                    "toxicity_score": round(toxicity_score, 4),
                 },
                 "context": context or {},
             }
@@ -88,9 +86,7 @@ class ExecutionGovernor:
                 "confidence": round(confidence, 4),
                 "quality": round(quality_score, 4),
                 "latency_score": round(latency_score, 4),
-                "toxicity_passability": round(toxicity_passability, 4),
                 "latency_sec": round(latency_sec, 4),
-                "toxicity_score": round(toxicity_score, 4),
             },
             "context": context or {},
         }

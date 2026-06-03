@@ -3140,12 +3140,10 @@ class TradingSystem:
         _gov_conf = (sum(_h_conf_values) / len(_h_conf_values)) if _h_conf_values else 0.0
         _gov_quality = float(features.get("feature_quality_score", 1.0) or 0.0)
         _gov_latency = float(getattr(self.latency_sync, "offset_sec", 0.0) or 0.0)
-        _gov_toxicity = float(features.get("toxicity_score", 0.0) or 0.0)
         _exec_gate_pre = self.execution_governor.evaluate(
             confidence=_gov_conf,
             quality_score=_gov_quality,
             latency_sec=_gov_latency,
-            toxicity_score=_gov_toxicity,
             context={
                 "regime": self.current_regime,
                 "micro_regime": self.current_micro_regime,

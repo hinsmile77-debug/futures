@@ -12,8 +12,7 @@ Renaissance Technologies의 핵심 기법:
   - 최근 N분 정확도
   - 변동성 수준 (ATR ratio)
   - 시간대
-  - LOB 불균형 강도
-  - VPIN 수준
+  (mlofi_norm / cancel_add_ratio 는 EnsembleGater 전담 → 중복 제외)
 
 출력:
   confidence_score: 0.0 ~ 1.0
@@ -85,28 +84,26 @@ class MetaConfidenceLearner:
         except Exception:
             return None
 
-        if len(flat) != 9:
+        if len(flat) != 7:
             return None
         return flat
 
     def build_meta_features(
         self,
-        regime:        str,     # "추세장" / "횡보장" / "급변장" / "혼합"
-        hurst:         float,
-        atr_ratio:     float,   # ATR / ATR_평균
-        hour_minute:   int,     # HHMM (e.g. 1030)
-        lob_imbalance: float,   # -1 ~ +1
-        vpin:          float,   # 0 ~ 1
+        regime:          str,   # "추세장" / "횡보장" / "급변장" / "혼합"
+        hurst:           float,
+        atr_ratio:       float, # ATR / ATR_평균
+        hour_minute:     int,   # HHMM (e.g. 1030)
         recent_accuracy: float, # 최근 N분 정확도
         signal_strength: float, # 앙상블 신호 강도 (0~1)
     ) -> List[float]:
         """
-        메타 피처 벡터 구성
+        메타 피처 벡터 구성 (7개)
+        mlofi_norm / cancel_add_ratio 는 EnsembleGater가 이미 처리하므로 제외.
 
         Returns:
             [regime_code, hurst, atr_ratio, time_code,
-             lob_imbalance, vpin, recent_acc, signal_strength,
-             accuracy_trend]
+             recent_acc, signal_strength, accuracy_trend]
         """
         regime_map = {"추세장": 1.0, "횡보장": -1.0, "급변장": -2.0, "혼합": 0.0}
         regime_code = regime_map.get(regime, 0.0)
@@ -129,8 +126,6 @@ class MetaConfidenceLearner:
             float(hurst),
             float(atr_ratio),
             float(time_code),
-            float(lob_imbalance),
-            float(vpin),
             float(recent_accuracy),
             float(signal_strength),
             float(acc_trend),
@@ -184,9 +179,9 @@ class MetaConfidenceLearner:
         """
         학습 전 또는 fallback용 규칙 기반 신뢰도
 
-        features 순서: [regime, hurst, atr_ratio, time, lob, vpin, acc, strength, trend]
+        features 순서: [regime, hurst, atr_ratio, time, acc, strength, trend]
         """
-        regime, hurst, atr_ratio, time_code, lob, vpin, acc, strength, trend = features
+        regime, hurst, atr_ratio, time_code, acc, strength, trend = features
 
         score = 0.6  # 기본값
 
@@ -201,9 +196,6 @@ class MetaConfidenceLearner:
 
         # ATR 급등
         if atr_ratio > 2.0: score -= 0.20
-
-        # VPIN
-        if vpin > 0.7:  score += 0.05
 
         # 최근 정확도
         score += (acc - 0.55) * 0.5   # 기준 55% 대비 편차 반영
@@ -281,8 +273,7 @@ if __name__ == "__main__":
     # 추세장 + 높은 Hurst + 좋은 정확도
     feats = mc.build_meta_features(
         regime="추세장", hurst=0.62, atr_ratio=1.1,
-        hour_minute=1030, lob_imbalance=0.3, vpin=0.5,
-        recent_accuracy=0.65, signal_strength=0.75,
+        hour_minute=1030, recent_accuracy=0.65, signal_strength=0.75,
     )
     r = mc.predict_confidence(feats)
     print(f"[추세장] conf={r['confidence_score']:.4f}, size_mult={r['size_multiplier']:.3f}, src={r['model_source']}")
@@ -290,8 +281,7 @@ if __name__ == "__main__":
     # 횡보장 + 낮은 Hurst
     feats2 = mc.build_meta_features(
         regime="횡보장", hurst=0.42, atr_ratio=0.9,
-        hour_minute=1400, lob_imbalance=0.05, vpin=0.3,
-        recent_accuracy=0.48, signal_strength=0.4,
+        hour_minute=1400, recent_accuracy=0.48, signal_strength=0.4,
     )
     r2 = mc.predict_confidence(feats2)
     print(f"[횡보장] conf={r2['confidence_score']:.4f}, size_mult={r2['size_multiplier']:.3f}, src={r2['model_source']}")

@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-06-03 (103차 — 방향/진입 모델 중복 피처 분석 + 2종 구조 개선)
+
+**Work**: 방향모델(GBM+SGD+RF+EnsembleGater)과 진입모델(Checklist+MetaGate+ExecutionGovernor+ToxicityGate) 사이의 중복 데이터 사용 3종 분석 후 우선순위 1·2 수정.
+
+### 1. 중복 패턴 분석 (3종)
+
+**Confidence 중복** (우선순위3 — 구조적, 유지):
+- EnsembleDecision → AdaptiveGater → Checklist → MetaGate → ExecutionGovernor → PositionSizer로 5단계 통과
+- 각 단계가 다른 정보(맥락·운영품질·레짐)를 사용하므로 제거 불가. P1/P2(mc 상한 캡)로 이미 경계선 상황 완화됨
+
+**Toxicity 중복** (우선순위2 — size 0.3× 과소 축소):
+- ToxicityGate(전담, 0.5×)와 ExecutionGovernor(toxicity×0.15 가중)가 동일 toxicity_score를 독립 사용
+- 두 게이트 모두 reduce 시 0.5×0.6=0.3× 복합 축소
+
+**Microstructure 중복** (우선순위1 — 진입0 직접 경로):
+- EnsembleGater: mlofi_norm(28%)+cancel_add_ratio(10%) → confidence ±12%
+- MetaGate: 동일 피처를 lob_imbalance/VPIN proxy로 재사용 → meta_conf 독립 산정 → blended_conf 추가 하락
+- mlofi_norm 불리 시 EnsembleGater 패널티 후 MetaGate도 패널티 → blended_conf < 0.56 → action=skip → grade=X
+
+### 2. [103-P1] Microstructure 중복 해소 — MetaGate에서 EnsembleGater 담당 피처 제거
+
+**Files**: `learning/meta_confidence.py`, `strategy/entry/meta_gate.py`
+
+- `meta_gate.py`: `lob_imbalance = features.get("mlofi_norm")` 및 `vpin_proxy = cancel_add_ratio/3.0` 계산·전달 제거
+- `meta_confidence.py`: `build_meta_features()` 파라미터 9개→7개 (lob_imbalance, vpin 제거)
+  - `_coerce_feature_vector()` len 검사: 9→7
+  - `_rule_based_confidence()` 언패킹에서 lob/vpin 제거, `if vpin > 0.7` 조건 삭제
+  - MetaConfidenceLearner는 메모리 내 버퍼만 유지(pkl 없음) → 재기동 시 자동 7-dim으로 재학습
+
+**진입0 개선 메커니즘**:
+- 수정 전: mlofi_norm 불리 → Gater -12% → MetaGate 추가 패널티 → blended_conf 0.519 < 0.56 → skip → X
+- 수정 후: mlofi_norm 불리 → Gater -12%만 → MetaGate는 regime/hurst/atr/정확도 기반 독립 평가 → blended_conf 0.575 ≥ 0.56 → reduce (진입 허용)
+
+### 3. [103-P2] Toxicity 중복 해소 — ExecutionGovernor에서 toxicity 항 제거
+
+**Files**: `strategy/runtime/execution_governor.py`, `main.py`
+
+- `execution_governor.py`: `toxicity_passability × 0.15` 항 제거, 가중치 재분배 (0.35/0.30/0.20 → 0.40/0.35/0.25)
+  - `toxicity_score` 파라미터: 하위 호환용으로 optional 유지(default=0.0), 내부 미사용
+  - `components` dict에서 toxicity 항 제거
+- `main.py`: `_gov_toxicity` 변수 및 `toxicity_score=_gov_toxicity` 인자 제거
+
+**size 정상화**:
+- 수정 전: ToxicityGate reduce(0.5×) + ExecutionGovernor reduce(0.6×) = 0.3× 복합
+- 수정 후: ToxicityGate가 단독 처리 → 0.5× 단일 적용
+
+---
+
 ## 2026-06-02 (102차 — 진입0 3중 분석 + 안전장치 P0~P8 구현)
 
 **Work**: 금일 장중 진입 0건 원인을 SIGNAL/SYSTEM/WARN 로그 3중 분석 후 구조적 개선 8종 구현.

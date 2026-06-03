@@ -45,15 +45,12 @@ class MetaGate:
                 "source": "rule",
             }
 
-        lob_imbalance = float(features.get("mlofi_norm", 0.0) or 0.0)
-        vpin_proxy = min(max(abs(float(features.get("cancel_add_ratio", 0.0) or 0.0)) / 3.0, 0.0), 1.0)
+        # mlofi_norm / cancel_add_ratio 는 EnsembleGater가 이미 처리 → 중복 패널티 방지
         meta_features = self.learner.build_meta_features(
             regime=micro_regime,
             hurst=float(features.get("hurst", 0.5) or 0.5),
             atr_ratio=float(features.get("atr_ratio", 1.0) or 1.0),
             hour_minute=now.hour * 100 + now.minute,
-            lob_imbalance=lob_imbalance,
-            vpin=vpin_proxy,
             recent_accuracy=float(recent_accuracy),
             signal_strength=float(confidence),
         )
