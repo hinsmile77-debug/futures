@@ -3319,7 +3319,7 @@ class EntryPanel(QWidget):
             "\n"
             "STEP 4  게이트 보정 (순서대로 적용)\n"
             "  ① HealthPolicy  : Degraded 모드 시 사이즈 축소 / 차단\n"
-            "  ② ExecutionGovernor: tradability 점수 기반 reduce / block\n"
+            "  ② ExecutionGovernor: confidence·품질·지연 기반 reduce / block (toxicity 제외)\n"
             "  ③ MetaGate      : 메타 신뢰도 기반 사이즈 배수 조정\n"
             "  ④ ToxicityGate  : 독성 스코어 기반 reduce / block\n"
             "  각 게이트: block → 0 / reduce → ×배수 / pass → 유지\n"
@@ -9524,20 +9524,30 @@ class DashboardAdapter:
                 f"padding:{S.p(1)}px {S.p(3)}px;"
             )
 
-    def update_shs_badge(self, shs: float, entry_blocked: bool, kill_switch: bool) -> None:
+    def update_shs_badge(
+        self, shs: float, entry_blocked: bool, kill_switch: bool, eks_reason: str = ""
+    ) -> None:
         """SHS 배지 색상·텍스트 갱신 (매분 파이프라인에서 호출)."""
         lbl = getattr(self._win, "lbl_shs", None)
         if lbl is None:
             return
         if kill_switch:
-            text, bg, fg = "⛔ 관망일", C["red"], "#fff"
+            # [C3] 원인 있으면 "관망일" 아래 2줄로 표시
+            text = f"⛔ 관망일\n{eks_reason}" if eks_reason else "⛔ 관망일"
+            bg, fg = C["red"], "#fff"
+            lbl.setWordWrap(True)
+            lbl.setMinimumWidth(S.p(90))
         elif entry_blocked:
             text, bg, fg = f"⚠ SHS {shs:.0f}", C["orange"], "#fff"
+            lbl.setWordWrap(False)
         elif shs >= 80:
             text, bg, fg = f"♥ SHS {shs:.0f}", C["green"], "#fff"
+            lbl.setWordWrap(False)
         else:
             text, bg, fg = f"SHS {shs:.0f}", C["blue"], "#fff"
+            lbl.setWordWrap(False)
         lbl.setText(text)
+        lbl.setAlignment(Qt.AlignCenter)
         lbl.setStyleSheet(
             f"background:{bg};color:{fg};"
             f"border-radius:{S.p(4)}px;"

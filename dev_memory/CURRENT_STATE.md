@@ -1,7 +1,118 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-03 (103차) — **방향/진입 모델 중복 피처 2종 구조 개선**
+> 마지막 업데이트: 2026-06-04 (105차) — **EKS 노후화 A+B+C 추가 개선**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-04 (105차) — EKS 노후화 A+B+C 추가 개선
+
+### 배경
+
+P1~P4로 EKS 발동 후 대응은 완성됐으나, 스케일러 노후화 원인이 전날 P8 실패뿐 아니라
+**휴장일 / 프로그램 중간 멈춤 / 주말 갭** 등 P8이 아예 실행 안 된 케이스를 포함하므로 추가 보완.
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **A안** 08:45 얼리버드 warmup — scaler age > 24h 시 pre_market_setup 이전 선행 갱신 | **완료** | `main.py` |
+| **B안** P8 실패 30초 후 즉시 재시도 1회 + 재시도 실패 시 슬랙 알림 | **완료** | `main.py` |
+| **C1** P8 성공 시 `session_state["p8_last_success_date"]` 기록 | **완료** | `main.py` |
+| **C2** EKS 발동 시 원인 추론 → `system_health._eks_reason` 저장 | **완료** | `safety/system_health.py`, `main.py` |
+| **C3** SHS 배지 "⛔ 관망일" 아래 원인 2줄 표시 | **완료** | `dashboard/main_dashboard.py` |
+| 다음 기동 시 실세션 확인 | **미완료** | — |
+
+### 수정 내용
+
+**A안** (`main.py` `_scheduler_tick()`):
+- 08:45~08:55 구간 heartbeat에서 `canary_stale_age_hours() > 24h` 감지
+- 감지 시 daemon thread로 warmup 즉시 시작 (`_early_warmup_started` 플래그로 1회 보장)
+- 08:55 canary 체크 시점엔 이미 완료 → P2 90초 대기 사실상 0초
+- 커버 범위: 전날 P8 실패·휴장일·중간 멈춤·주말 갭 등 원인 무관
+
+**B안** (`main.py` daily_close P8 블록):
+- `for _p8_try in range(2)` 루프: 최초 1회 + 30초 후 재시도 1회
+- 재시도 성공 시 `[P8] 재시도 성공` 로그
+- 재시도까지 실패 시 슬랙 알림 (`"내일 08:45 EarlyWarmup이 보완"` 안내 포함)
+- 데이터 없음 케이스는 재시도 없이 즉시 break
+
+**C1** (`main.py` P8 성공 블록):
+- P8 재적합 성공 시 `session_state["p8_last_success_date"] = today` 기록
+- EKS 원인 추론 시 전날 P8 성공 여부 판별에 사용
+
+**C2** (`safety/system_health.py` + `main.py`):
+- `SystemHealthScore._eks_reason: str` 필드 추가 (`__init__` + `reset_daily()`)
+- EKS 발동 직후 `session_state["p8_last_success_date"]` vs 전날 비교:
+  - 전날 P8 기록 없음 + 월요일 → `"주말갭(Nh)"`
+  - 전날 P8 기록 없음 + 그 외 → `"휴장/중단갭(Nh)"`
+  - 전날 P8 있었는데 노후 → `"스케일러Nh노후"`
+  - scaler age < 24h → `"confN%미달"`
+- `[SHS-EKS] 원인: ...` WARN 로그 + `_eks_reason` 저장
+- `update_shs_badge()` 호출부에 `eks_reason=` 파라미터 추가
+
+**C3** (`dashboard/main_dashboard.py`):
+- `update_shs_badge(shs, entry_blocked, kill_switch, eks_reason="")` 시그니처 변경
+- kill_switch=True 시 `eks_reason` 있으면 `"⛔ 관망일\n{eks_reason}"` 2줄 표시
+- `setWordWrap(True)` + `setAlignment(Qt.AlignCenter)` 적용
+
+### 다음 기동 시 실세션 확인
+
+1. **A안**: 08:45~08:55 구간 `[EarlyWarmup] scaler 노후=Xh → 08:45 선행 warmup 시작` 로그 (노후 시만)
+2. **A안**: 이후 `[EarlyWarmup] 완료 n=N봉` 로그 확인 → 08:55 Canary 체크에서 age < 1h 확인
+3. **B안**: P8 실패 시 `[P8] EOD 재적합 실패 — 30초 후 재시도` → `완료 [재시도 성공]` 로그
+4. **C1**: P8 성공 후 `data/session_state.json`에 `"p8_last_success_date": "YYYY-MM-DD"` 기록 확인
+5. **C2+C3**: EKS 발동 시 배지에 `"⛔ 관망일\n스케일러41h노후"` (또는 `주말갭`/`conf40%미달`) 표시
+
+---
+
+## 2026-06-04 (104차) — Canary/EKS 구조 개선 P1~P4
+
+### 배경
+
+08:55 Canary 노후=41h 경고 + 09:05 EKS 발동(conf_max=40.2%)으로 당일 관망.
+원인: 전날 P8 EOD 재적합 실패(무음) + warmup 비동기 완료 미보장 + EKS 회복 불가 구조.
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **P1** P8 EOD 실패 → 슬랙 알림 추가 | **완료** | `main.py` |
+| **P2** Canary stale 시 warmup 완료 이벤트 대기 (최대 90초) | **완료** | `main.py` |
+| **P3** EKS 발동 후 09:20+ 회복 창 — `try_eks_recovery()` | **완료** | `safety/system_health.py`, `main.py` |
+| **P4** EKS core_pass AND → CORE 2/3 다수결 완화 | **완료** | `main.py` |
+| 다음 기동 시 실세션 확인 | **미완료** | — |
+
+### 수정 내용
+
+**P1** (`main.py` P8 except 블록):
+- 기존 "무해" logger.warning → 실패 시 슬랙 알림 추가
+- 전날 P8 실패를 당일 08:55 전에 인지 가능
+
+**P2** (`main.py` pre_market_setup):
+- `_canary_stale` 초기값을 try 블록 밖에서 선언
+- warmup worker에 `threading.Event` + `finally: _evt.set()` 추가
+- GBM 재학습 중 스킵 시 `_warmup_done_event.set()` 즉시 처리
+- `_canary_stale=True` 시 최대 90초 동기 대기 (08:55~09:00 여유 활용)
+
+**P3** (`safety/system_health.py` + `main.py`):
+- `_eks_recovery_checked` 플래그 추가 (`__init__` + `reset_daily()`)
+- `try_eks_recovery(scaler_age_hours, recent_conf)` 메서드 신규
+  - 조건: scaler_age < 1h AND conf >= 50% → `_eks_active = False`
+  - 1회 시도 후 `_eks_recovery_checked = True` 잠금
+- main.py STEP 7: ts >= 09:20 + `_eks_recovery_checked=False` 시 1회 호출
+
+**P4** (`main.py` GAP_OPEN 블록):
+- 기존: `VWAP AND CVD AND OFI` (3개 전부 통과)
+- 변경: `_core_votes >= 2` (3개 중 2개 이상 통과)
+- 이유: GAP_OPEN 거래량 부족으로 CORE 1개 실패가 잦아 EKS 과발동 유발
+
+### 다음 기동 시 실세션 확인
+
+1. **P1**: 다음날 P8 실패 시 슬랙 `⚠️ P8 EOD 스케일러 재적합 실패` 수신 확인
+2. **P2**: Canary stale 경고 후 `[Canary] stale 감지 — warmup 완료 대기 시작 (최대 90초)` 로그 확인, 이후 `[Canary] warmup 완료 대기 종료 — GAP_OPEN 진입` 확인
+3. **P3**: EKS 발동 후 09:20 이후 `[SHS-EKS] EKS 자동 해제 확정` 또는 `EKS 유지 — 회복 조건 미충족` 로그 확인
+4. **P4**: GAP_OPEN 구간에서 CORE 2개 이상 통과 시 `core_pass` 카운트 증가 → EKS 발동 억제 확인
 
 ---
 

@@ -38,8 +38,10 @@ class SystemHealthScore:
         self._gap_open_bar_count:       int   = 0
 
         # EKS 상태
-        self._eks_evaluated: bool = False
-        self._eks_active:    bool = False
+        self._eks_evaluated:        bool = False
+        self._eks_active:           bool = False
+        self._eks_recovery_checked: bool = False   # [P3] 09:20 이후 1회 회복 시도 여부
+        self._eks_reason:           str  = ""      # [C2] 발동 원인 (배지 표시용)
 
     # ── 업데이트 ────────────────────────────────────────────────
 
@@ -102,6 +104,27 @@ class SystemHealthScore:
             )
         return self._eks_active
 
+    # ── EKS 회복 ────────────────────────────────────────────────
+
+    def try_eks_recovery(self, scaler_age_hours: float, recent_conf: float) -> bool:
+        """[P3] 09:20 이후 1회 호출 — 스케일러 갱신 + conf 회복 시 EKS 자동 해제.
+        Returns True if EKS was deactivated."""
+        if self._eks_recovery_checked or not self._eks_active:
+            return False
+        self._eks_recovery_checked = True
+        if scaler_age_hours < 1.0 and recent_conf >= 0.50:
+            self._eks_active = False
+            logger.warning(
+                "[SHS-EKS] EKS 자동 해제 — scaler_age=%.1fh conf=%.1f%%",
+                scaler_age_hours, recent_conf * 100,
+            )
+            return True
+        logger.info(
+            "[SHS-EKS] EKS 유지 — scaler_age=%.1fh conf=%.1f%% (회복 조건 미충족)",
+            scaler_age_hours, recent_conf * 100,
+        )
+        return False
+
     # ── 조회 ────────────────────────────────────────────────────
 
     @property
@@ -148,6 +171,8 @@ class SystemHealthScore:
         self._gap_open_bar_count       = 0
         self._eks_evaluated            = False
         self._eks_active               = False
+        self._eks_recovery_checked     = False
+        self._eks_reason               = ""
         self._last_alerted_shs         = 101.0
         logger.info("[SHS] 일일 리셋 완료")
 

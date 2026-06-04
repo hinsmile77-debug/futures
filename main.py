@@ -2193,6 +2193,7 @@ class TradingSystem:
 
         # ── Warm Scaler Canary ──────────────────────────────────────
         # scaler pkl mtime 기준 노후 점검 → 24h+ 경과 시 경고 + SHS z_warn 업데이트
+        _canary_stale = False   # [P2] warmup 대기 조건 참조를 위해 try 블록 밖에서 초기화
         try:
             _canary_age_h = self.model.canary_stale_age_hours()
             _canary_z_warn = 0
@@ -2222,9 +2223,10 @@ class TradingSystem:
         # [P8] _warmup_retrain_pending(예약됨)만으로는 스킵하지 않음.
         #       GBM 재학습이 이미 실행 중(_gbm_retrain_running)일 때만 스킵
         #       → GBM 완료 전에도 스케일러를 신선하게 유지 (오늘 641분 재발 방지).
-        # daemon thread로 비동기 실행 — 파이프라인 블로킹 없음.
+        # [P2] _canary_stale=True 시 완료 이벤트 대기 — GAP_OPEN 전 신선도 보장.
+        _warmup_done_event = threading.Event()
         if not getattr(self, "_gbm_retrain_running", False):
-            def _scaler_warmup_worker():
+            def _scaler_warmup_worker(_evt=_warmup_done_event):
                 try:
                     from config.settings import SCALER_WARMUP_LOOKBACK_BARS
                     X_w, fn_w = self.batch_retrainer.load_features_for_warmup(
@@ -2244,8 +2246,18 @@ class TradingSystem:
                         logger.warning("[DynMC] 워밍업 후 mc 재보정 실패: %s", _mc_e2)
                 except Exception as _sw_e:
                     logger.warning("[ScalerWarmup] 실패 (무해): %s", _sw_e)
+                finally:
+                    _evt.set()
 
             threading.Thread(target=_scaler_warmup_worker, daemon=True).start()
+        else:
+            _warmup_done_event.set()   # GBM 재학습 중 → warmup 스킵이므로 즉시 완료 표시
+
+        # [P2] Canary stale(24h+)이면 최대 90초 동기 대기 — 08:55~09:00 사이 여유로 허용
+        if _canary_stale:
+            log_manager.system("[Canary] stale 감지 — warmup 완료 대기 시작 (최대 90초)", "WARNING")
+            _warmup_done_event.wait(timeout=90)
+            log_manager.system("[Canary] warmup 완료 대기 종료 — GAP_OPEN 진입", "INFO")
 
         # [PreRetrain] 08:55 GBM 사전 재학습 — 09:00 첫 파이프라인 CB⑤ 지연 방지.
         # warmup 플래그가 설정되어 있으면 여기서 바로 백그라운드 스레드 시작.
@@ -3602,12 +3614,14 @@ class TradingSystem:
 
         # ── SHS: GAP_OPEN 기록 + Early Kill Switch 09:05 판정 ────
         if time_zone == "GAP_OPEN":
-            _core_all_ok = (
-                _cr is not None
-                and bool(_cr["checks"].get("3_vwap"))
-                and bool(_cr["checks"].get("4_cvd"))
-                and bool(_cr["checks"].get("5_ofi"))
+            # [P4] CORE 3개 중 2개 이상 통과 = core_ok (AND → 다수결)
+            # GAP_OPEN은 거래량 부족·갭으로 1개 실패가 잦아 AND 조건이 EKS 과발동을 유발
+            _core_votes = (
+                int(bool(_cr is not None and _cr["checks"].get("3_vwap")))
+                + int(bool(_cr is not None and _cr["checks"].get("4_cvd")))
+                + int(bool(_cr is not None and _cr["checks"].get("5_ofi")))
             )
+            _core_all_ok = _core_votes >= 2
             self.system_health.record_gap_open_bar(
                 conf=confidence,
                 core_all_passed=_core_all_ok,
@@ -3625,6 +3639,46 @@ class TradingSystem:
                     "[SHS-EKS] Early Kill Switch 발동 — 당일 관망 선언. "
                     f"conf_max={_shs_d['gap_open_conf_max']*100:.1f}% bars={_shs_d['gap_open_bars']}",
                     "CRITICAL",
+                )
+                # [C2] EKS 발동 원인 추론 — 배지 표시용
+                # 스케일러 노후 > 24h 이면 노후가 원인, 아니면 시장 conf 미달이 원인
+                try:
+                    _eks_stale_h = self.model.canary_stale_age_hours()
+                    if _eks_stale_h > 24.0:
+                        # 전날 P8 실패 / 휴장 / 주말 구분
+                        _ss_eks = self._read_session_state()
+                        _p8_ok_date = _ss_eks.get("p8_last_success_date", "")
+                        _today = datetime.date.today()
+                        _yesterday = _today - datetime.timedelta(days=1)
+                        if _p8_ok_date != _yesterday.isoformat():
+                            # 전날 P8 성공 기록 없음 → 휴장·중단 케이스
+                            _dow = _today.weekday()  # 0=Mon
+                            _eks_reason_str = (
+                                f"주말갭({_eks_stale_h:.0f}h)" if _dow == 0
+                                else f"휴장/중단갭({_eks_stale_h:.0f}h)"
+                            )
+                        else:
+                            _eks_reason_str = f"스케일러{_eks_stale_h:.0f}h노후"
+                    else:
+                        _eks_reason_str = f"conf{_shs_d['gap_open_conf_max']*100:.0f}%미달"
+                    self.system_health._eks_reason = _eks_reason_str
+                    log_manager.system(f"[SHS-EKS] 원인: {_eks_reason_str}", "WARNING")
+                except Exception as _ek_re:
+                    logger.debug("[SHS-EKS] 원인 추론 실패 (무시): %s", _ek_re)
+
+        # [P3] EKS 자동 해제 — 09:20 이후 1회: 스케일러 갱신 + conf 회복 시 재개
+        # 조건: kill_switch 활성 + 미시도 + 09:20+ + scaler_age<1h + conf>=50%
+        if (
+            self.system_health.kill_switch_active
+            and not self.system_health._eks_recovery_checked
+            and ts_raw.time() >= datetime.time(9, 20)
+        ):
+            _p3_scaler_age = self.model.canary_stale_age_hours()
+            if self.system_health.try_eks_recovery(_p3_scaler_age, confidence):
+                log_manager.system(
+                    f"[SHS-EKS] EKS 자동 해제 확정 — 장중 진입 재개 "
+                    f"scaler_age={_p3_scaler_age:.1f}h conf={confidence:.1%}",
+                    "WARNING",
                 )
 
         # EKS 활성 시 매분 진입 차단 로그 (방향 있을 때만)
@@ -4197,6 +4251,7 @@ class TradingSystem:
             shs=_shs_state["shs"],
             entry_blocked=_shs_state["entry_blocked"],
             kill_switch=_shs_state["kill_switch_active"],
+            eks_reason=getattr(self.system_health, "_eks_reason", ""),
         )
         self.dashboard.update_shadow_badge(
             state        = self.shadow_session.state,
@@ -4948,28 +5003,55 @@ class TradingSystem:
         # GBM retrain의 8주 스케일러(분포 폭넓음) 위에 금일 데이터로 추가 재적합.
         # 내일 08:55 warmup이 _warmup_retrain_pending으로 스킵돼도
         # 스케일러 age가 ~17h 이내(GBM retrain 포함 641+분 방지)로 보장된다.
-        try:
-            from config.settings import SCALER_WARMUP_LOOKBACK_BARS
-            _p8_X, _p8_fn = self.batch_retrainer.load_features_for_warmup(
-                lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
-            )
-            if _p8_X is not None and len(_p8_X) > 0:
-                _p8_res = self.model.refit_scalers_only(
-                    _p8_X, _p8_fn,
-                    trigger_ts    = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    trigger_type  = "E_EOD",
-                    trigger_reason= "EOD 스케일러 재적합 (P8) — 내일 시초 z-score 안정화",
+        # [B안] 실패 시 30초 후 1회 재시도 — 일시적 DB lock·메모리 부족 대응
+        _p8_done = False
+        for _p8_try in range(2):
+            try:
+                if _p8_try == 1:
+                    import time as _p8_time
+                    log_manager.system("[P8] EOD 재적합 실패 — 30초 후 재시도", "WARNING")
+                    _p8_time.sleep(30)
+                from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                _p8_X, _p8_fn = self.batch_retrainer.load_features_for_warmup(
+                    lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
                 )
-                log_manager.system(
-                    f"[P8] EOD 스케일러 재적합 완료"
-                    f" n={len(_p8_X)}봉 elapsed={_p8_res.get('elapsed_sec', 0):.2f}s"
-                    f" — 내일 시초 scaler age 보장",
-                    "INFO",
-                )
-            else:
-                log_manager.system("[P8] EOD 스케일러 재적합 스킵 — 데이터 없음", "WARNING")
-        except Exception as _p8_e:
-            logger.warning("[P8] EOD 스케일러 재적합 실패 (무해): %s", _p8_e)
+                if _p8_X is not None and len(_p8_X) > 0:
+                    _p8_res = self.model.refit_scalers_only(
+                        _p8_X, _p8_fn,
+                        trigger_ts    = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        trigger_type  = "E_EOD",
+                        trigger_reason= f"EOD 스케일러 재적합 (P8{' 재시도' if _p8_try else ''})"
+                                        f" — 내일 시초 z-score 안정화",
+                    )
+                    _retry_tag = " [재시도 성공]" if _p8_try else ""
+                    log_manager.system(
+                        f"[P8] EOD 스케일러 재적합 완료{_retry_tag}"
+                        f" n={len(_p8_X)}봉 elapsed={_p8_res.get('elapsed_sec', 0):.2f}s",
+                        "INFO",
+                    )
+                    _p8_done = True
+                    # [C1] P8 성공일 기록 — 다음날 08:45 EarlyWarmup·EKS 원인 진단용
+                    try:
+                        _ss_p8 = self._read_session_state()
+                        _ss_p8["p8_last_success_date"] = datetime.date.today().isoformat()
+                        self._write_session_state(_ss_p8)
+                    except Exception as _ss_e:
+                        logger.debug("[P8] session_state 기록 실패 (무시): %s", _ss_e)
+                else:
+                    log_manager.system("[P8] EOD 스케일러 재적합 스킵 — 데이터 없음", "WARNING")
+                break   # 성공 or 데이터없음 → 반복 종료
+            except Exception as _p8_e:
+                logger.warning("[P8] EOD 스케일러 재적합 실패 (시도 %d/2): %s", _p8_try + 1, _p8_e)
+                if _p8_try == 1:   # 재시도까지 실패 → 슬랙 알림 (P1)
+                    try:
+                        from utils.notify import notify as _np8_notify
+                        _np8_notify(
+                            f"⚠️ P8 EOD 스케일러 재적합 실패 (재시도 포함)\n{_p8_e}\n"
+                            f"내일 08:45 EarlyWarmup이 보완 — Canary 발화 가능성 있음",
+                            "WARNING",
+                        )
+                    except Exception:
+                        pass
 
         # ── 자가학습 일일 마감 집계 ──────────────────────────────
         _today_accuracy = self.online_learner.recent_accuracy()
@@ -5545,6 +5627,44 @@ class TradingSystem:
         self._heartbeat_count += 1
         if self._heartbeat_count % 10 == 0:
             self._log_waiting_status(now)
+
+        # [A] 08:45 얼리버드 warmup — scaler age > 24h 시 pre_market_setup 이전 선행 갱신
+        # 커버: 전날 P8 실패 / 휴장일 / 중간 멈춤 / 주말 등 원인 무관 모든 노후화 케이스
+        # → 08:55 Canary 체크 시점엔 이미 완료 → P2 90초 대기 사실상 0초
+        if (
+            not getattr(self, "_early_warmup_started", False)
+            and is_trading_day(now)
+            and datetime.time(8, 45) <= now.time() < datetime.time(8, 55)
+        ):
+            try:
+                _early_age = self.model.canary_stale_age_hours()
+                if _early_age > 24.0:
+                    self._early_warmup_started = True
+                    log_manager.system(
+                        f"[EarlyWarmup] scaler 노후={_early_age:.0f}h → 08:45 선행 warmup 시작"
+                        f" (전날 P8 실패·휴장·중단 대응)",
+                        "WARNING",
+                    )
+                    def _early_warmup_worker():
+                        try:
+                            from config.settings import SCALER_WARMUP_LOOKBACK_BARS as _LB
+                            _X_ew, _fn_ew = self.batch_retrainer.load_features_for_warmup(
+                                lookback_bars=_LB
+                            )
+                            if _X_ew is not None:
+                                self.model.refit_scalers_only(_X_ew, _fn_ew)
+                                log_manager.system(
+                                    f"[EarlyWarmup] 완료 n={len(_X_ew)}봉"
+                                    f" — 08:55 canary 체크 전 scaler 갱신 완료",
+                                    "INFO",
+                                )
+                            else:
+                                log_manager.system("[EarlyWarmup] 데이터 없음 — 스킵", "WARNING")
+                        except Exception as _ew_e:
+                            logger.warning("[EarlyWarmup] 실패: %s", _ew_e)
+                    threading.Thread(target=_early_warmup_worker, daemon=True).start()
+            except Exception as _ea_e:
+                logger.warning("[EarlyWarmup] age 체크 실패 (무시): %s", _ea_e)
 
         # 1단계 (08:55): macro seed fetch + PreRetrain + 실시간 구독 시작
         # - pre_market_setup(): SP500·KRW seed fetch, PreRetrain 시작
