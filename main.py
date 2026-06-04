@@ -348,6 +348,7 @@ class TradingSystem:
         self._pipeline_fatal_streak: int = 0         # [P0] 연속 ERR-FATAL 카운터
         self._scaler_refresh_running: bool = False   # Phase B 스케일러 refresh 중복 방지
         self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
+        self._const_out_heavy_cooldown_until = None  # ConstOut 직후 heavy 작업 유예 (3분)
         self._price_momentum_refit_until = None      # D_PRICE_MOMENTUM 쿨다운 (20분)
         self._grade_x_count: int = 0                 # 섹션 8: 당일 grade=X 분봉 수 집계
         self._checklist_conf_fail_count: int = 0     # [P3] 앙상블 통과 → Checklist 신뢰도 차단 횟수
@@ -362,6 +363,7 @@ class TradingSystem:
         self._last_balance_result: dict = {}
         self._last_sizer_balance: float = 100_000_000.0
         self._effect_report_tick: int = 0
+        self._effect_report_running: bool = False
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
         self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
 
@@ -483,6 +485,9 @@ class TradingSystem:
             "degraded_min_conf": float(getattr(mod, "HEALTH_DEGRADED_MIN_CONF", HEALTH_DEGRADED_MIN_CONF)),
             "degraded_block_auto_entry": bool(getattr(mod, "HEALTH_DEGRADED_BLOCK_AUTO_ENTRY", HEALTH_DEGRADED_BLOCK_AUTO_ENTRY)),
             "degraded_block_manual_entry": bool(getattr(mod, "HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY", HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY)),
+            "degraded_soft_latency_ms": float(getattr(mod, "HEALTH_DEGRADED_SOFT_LATENCY_MS", 1300.0)),
+            "degraded_soft_warn_weight": float(getattr(mod, "HEALTH_DEGRADED_SOFT_WARN_WEIGHT", 0.35)),
+            "const_out_heavy_cooldown_sec": float(getattr(mod, "CONST_OUT_HEAVY_COOLDOWN_SEC", 180.0)),
             "hot_reload_enabled": bool(getattr(mod, "HEALTH_POLICY_HOT_RELOAD_ENABLED", HEALTH_POLICY_HOT_RELOAD_ENABLED)),
             "hot_reload_interval_sec": float(getattr(mod, "HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC", HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC)),
         }
@@ -1099,7 +1104,7 @@ class TradingSystem:
                 cache_age_sec=cache_age_sec,
                 exception_density_10m=exception_density_10m,
             )
-            self._update_degraded_mode(health_level)
+            self._update_degraded_mode(health_level, latency_ms=latency_ms)
 
             self.dashboard.update_runtime_health({
                 "latency_ms": latency_ms,
@@ -1164,7 +1169,7 @@ class TradingSystem:
             return "WARNING"
         return "INFO"
 
-    def _update_degraded_mode(self, health_level: str) -> None:
+    def _update_degraded_mode(self, health_level: str, latency_ms: float = 0.0) -> None:
         p = self._health_policy
         if not bool(p.get("degraded_enabled", HEALTH_DEGRADED_ENABLED)):
             self._health_degraded_mode = False
@@ -1173,20 +1178,26 @@ class TradingSystem:
             self._health_level_history.clear()
             return
 
-        self._health_level_history.append(health_level)
+        warn_weight = 0.0
+        if health_level in ("WARNING", "CRITICAL"):
+            soft_ms = float(p.get("degraded_soft_latency_ms", 1300.0))
+            soft_weight = float(p.get("degraded_soft_warn_weight", 0.35))
+            warn_weight = soft_weight if health_level == "WARNING" and latency_ms < soft_ms else 1.0
+
+        self._health_level_history.append(warn_weight)
         window = int(p.get("degraded_window", HEALTH_DEGRADED_WINDOW))
         history = list(self._health_level_history)[-window:]
-        warn_count = sum(1 for lv in history if lv in ("WARNING", "CRITICAL"))
-        warn_ratio = warn_count / max(1, len(history))
+        warn_score = sum(float(v) for v in history)
+        warn_ratio = warn_score / max(1, len(history))
 
         if health_level in ("WARNING", "CRITICAL"):
-            self._health_warn_streak += 1
+            self._health_warn_streak += warn_weight
             self._health_info_streak = 0
-            if (not self._health_degraded_mode) and self._health_warn_streak >= int(p.get("degraded_enter_streak", HEALTH_DEGRADED_ENTER_STREAK)):
+            if (not self._health_degraded_mode) and self._health_warn_streak >= float(p.get("degraded_enter_streak", HEALTH_DEGRADED_ENTER_STREAK)):
                 self._health_degraded_mode = True
                 log_manager.system(
                     "[HealthPolicy] 자동 Degraded Mode 진입 "
-                    f"(warn_streak={self._health_warn_streak}, warn_ratio={warn_ratio:.0%}, window={len(history)}분)",
+                    f"(warn_streak={self._health_warn_streak:.2f}, warn_ratio={warn_ratio:.0%}, window={len(history)}분)",
                     "WARNING",
                 )
         else:
@@ -1201,6 +1212,22 @@ class TradingSystem:
                         f"(warn_ratio={warn_ratio:.0%} < {exit_ratio:.0%}, window={len(history)}분)",
                         "INFO",
                     )
+
+    def _is_const_out_heavy_cooldown_active(self, now_dt: datetime.datetime = None) -> bool:
+        until = getattr(self, "_const_out_heavy_cooldown_until", None)
+        if until is None:
+            return False
+        now_dt = now_dt or datetime.datetime.now()
+        return now_dt < until
+
+    def _start_const_out_heavy_cooldown(self, now_dt: datetime.datetime, reason: str) -> None:
+        seconds = float(self._health_policy.get("const_out_heavy_cooldown_sec", 180.0))
+        self._const_out_heavy_cooldown_until = now_dt + datetime.timedelta(seconds=seconds)
+        logger.info(
+            "[ConstOut] heavy cooldown armed until %s (%s)",
+            self._const_out_heavy_cooldown_until.strftime("%H:%M:%S"),
+            reason,
+        )
 
     def _is_degraded_entry_blocked(self, confidence: float, is_manual: bool) -> tuple:
         """현재 Degraded 정책 기준으로 진입 차단 여부를 반환한다."""
@@ -1989,7 +2016,7 @@ class TradingSystem:
         if not is_market_open(datetime.datetime.now()):
             return
         try:
-            self.investor_data.fetch_all()
+            self.investor_data.fetch_all(include_program=False)
             # FutureCurOnly 틱에서 실시간으로 수집된 미결제약정 동기화
             rt = getattr(self, "realtime_data", None)
             if rt is not None:
@@ -2322,7 +2349,7 @@ class TradingSystem:
         # _last_fetch=None 상태에서는 age_sec=9999 → quality_investor_stale z-score +27 발생.
         # 장전 fetch라 nets={}가 예상되지만 _last_fetch 설정만으로도 효과가 있다.
         try:
-            self.investor_data.fetch_all()
+            self.investor_data.fetch_all(include_program=False)
             logger.info("[System] PreOpen 투자자 warmup fetch 완료 (age_sec 초기화)")
             log_manager.system("PreOpen 투자자 warmup fetch 완료")
         except Exception as _e:
@@ -3072,7 +3099,7 @@ class TradingSystem:
         # ── Phase B: 정기/강제 스케일러 refresh 트리거 ─────────────────
         # predict_proba 완료 후 last_extreme_features 가 갱신된 시점에 실행.
         # refit 자체는 daemon thread — 파이프라인 블로킹 없음.
-        if not self._scaler_refresh_running:
+        if not self._scaler_refresh_running and not self._is_const_out_heavy_cooldown_active(_ts_dt_obj):
             _extreme_feats_b = getattr(self.model, "last_extreme_features", [])
             _refresh_trig, _refresh_reason = self.model.check_refresh_trigger(
                 _ts_dt_obj, _extreme_feats_b
@@ -3116,7 +3143,7 @@ class TradingSystem:
         # 쿨다운을 ConstOut(30분)보다 짧게(20분) 설정한 이유:
         #   가격 모멘텀은 추세 지속 중 연속적으로 발생할 수 있으며,
         #   30분 쿨다운이면 추세 중반 이후 스케일러를 다시 맞출 기회를 놓친다.
-        if not self._scaler_refresh_running:
+        if not self._scaler_refresh_running and not self._is_const_out_heavy_cooldown_active(_ts_dt_obj):
             _n_sig_pm = len(self._sigma_buf)
             if _n_sig_pm >= 5:
                 _ret_5m_pct = sum(list(self._sigma_buf)[-5:])   # 최근 5분 누적 수익률(%)
@@ -3243,6 +3270,7 @@ class TradingSystem:
                 self._const_out_refit_until = (
                     _now_dt + datetime.timedelta(minutes=30)
                 )
+                self._start_const_out_heavy_cooldown(_now_dt, reason="const_output")
                 log_manager.system(
                     f"[ConstOut] {_const_hz} 상수 출력 확정 → 스케일러 재적합 시작",
                     "WARNING",
@@ -4346,23 +4374,16 @@ class TradingSystem:
         except Exception as _l2_e:
             logger.debug("[Dashboard] L2 배지 갱신 실패: %s", _l2_e)
 
-        # 🧠 자가학습 모니터 패널 갱신 (매분)
-        self.dashboard.update_learning(self._gather_learning_stats())
+        if not self._is_const_out_heavy_cooldown_active(_ts_dt_obj):
+            # 🧠 자가학습 모니터 패널 갱신 (매분)
+            self.dashboard.update_learning(self._gather_learning_stats())
 
-        # 🎯 효과 검증 리포트 자동 갱신
-        self._effect_report_tick += 1
-        if self._effect_report_tick == 1 or self._effect_report_tick % 15 == 1:
-            self._run_effect_report_script("generate_calibration_report.py")
-            self._run_effect_report_script("generate_meta_gate_tuning_report.py", "5m")
-            self._run_effect_report_script("generate_rollout_readiness_report.py")
-            if self._effect_report_tick == 1 or self._effect_report_tick % 30 == 1:
-                self._run_effect_report_script("run_microstructure_ab_backtest.py")
-            self._append_effect_monitor_history()
-
-        # 🎯 학습 효과 검증기 패널 갱신 (5분마다 — DB 쿼리 비용 분산)
-        self._efficacy_tick += 1
-        if self._efficacy_tick % 5 == 1:   # 첫 분 + 이후 5분마다
-            self.dashboard.update_efficacy(self._gather_efficacy_stats())
+            # 🎯 학습 효과 검증기 패널 갱신 (5분마다 — DB 쿼리 비용 분산)
+            self._efficacy_tick += 1
+            if self._efficacy_tick % 5 == 1:   # 첫 분 + 이후 5분마다
+                self.dashboard.update_efficacy(self._gather_efficacy_stats())
+        else:
+            logger.debug("[PipePerf] heavy dashboard refresh deferred by ConstOut cooldown")
 
         # 상태 바 '마지막 갱신' 타이머 리셋
         self.dashboard.notify_pipeline_ran()
@@ -4784,6 +4805,40 @@ class TradingSystem:
             )
             return False
         return True
+
+    def _effect_report_timer_tick(self) -> None:
+        now = datetime.datetime.now()
+        if not is_market_open(now):
+            return
+        if self._is_const_out_heavy_cooldown_active(now):
+            logger.debug("[EffectReports] skipped during ConstOut cooldown")
+            return
+        if self._effect_report_running:
+            logger.debug("[EffectReports] previous worker still running")
+            return
+        self._effect_report_tick += 1
+        if not (self._effect_report_tick == 1 or self._effect_report_tick % 15 == 1):
+            return
+        run_backtest = bool(self._effect_report_tick == 1 or self._effect_report_tick % 30 == 1)
+        self._start_effect_report_worker(run_backtest=run_backtest)
+
+    def _start_effect_report_worker(self, run_backtest: bool = False) -> None:
+        if self._effect_report_running:
+            return
+        self._effect_report_running = True
+
+        def _worker():
+            try:
+                self._run_effect_report_script("generate_calibration_report.py")
+                self._run_effect_report_script("generate_meta_gate_tuning_report.py", "5m")
+                self._run_effect_report_script("generate_rollout_readiness_report.py")
+                if run_backtest:
+                    self._run_effect_report_script("run_microstructure_ab_backtest.py")
+                self._append_effect_monitor_history()
+            finally:
+                self._effect_report_running = False
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _append_effect_monitor_history(self) -> None:
         ab = self._load_json_file(os.path.join(BASE_DIR, "microstructure_ab_metrics.json"))
@@ -5594,6 +5649,11 @@ class TradingSystem:
         self._balance_ui_timer.setInterval(2_000)
         self._balance_ui_timer.timeout.connect(self._refresh_dashboard_balance_ui_only)
         self._balance_ui_timer.start()
+
+        self._effect_report_timer = QTimer()
+        self._effect_report_timer.setInterval(60_000)
+        self._effect_report_timer.timeout.connect(self._effect_report_timer_tick)
+        self._effect_report_timer.start()
 
         # 대시보드 표시 + 긴급정지 버튼 연결
         self.dashboard.show()

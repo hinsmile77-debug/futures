@@ -1,7 +1,36 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-04 (107차 세션 마무리) — **재시동(10:53) 후 투자자 수급·S2·OptionChain 전수 확인 완료 + EffectReports 진단 로그 추가**
+> 마지막 업데이트: 2026-06-04 (108차 세션 마무리) — **CB⑤ 경고 지속 완화: EffectReports 비동기 분리 + degraded soft-weight + ProgramTrade probe 루프 중단 + ConstOut 3분 heavy cooldown**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-04 (108차 세션 마무리) — CB⑤ 경고 지속 완화 4종 적용
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **EffectReports 파이프라인 분리** | **완료** — 전용 타이머/워커로 이동 | `main.py` |
+| **HealthPolicy soft degraded weighting** | **완료** — CB⑤ 1000~1300ms 경고는 낮은 가중치 집계 | `main.py` |
+| **ProgramTrade probe 반복 실패 루프 중단** | **완료** — 운영 투자자 타이머에서 비활성 | `main.py`, `collection/cybos/investor_data.py` |
+| **ConstOut 3분 heavy cooldown** | **완료** — 추가 refit/report/heavy panel refresh 유예 | `main.py` |
+| **문법 검증** | **완료** ✅ | `python -m py_compile main.py collection\cybos\investor_data.py` |
+| **장중 실운영 검증** | **미실시** — 다음 장에서 로그 확인 필요 | — |
+
+### 운영 해석
+
+- CB⑤ 반복의 주원인이던 EffectReports 동기 호출은 메인 minute pipeline 밖으로 이동했다.
+- HealthPolicy는 이제 경계값 수준의 성능 warning을 full degraded signal로 동일 취급하지 않는다.
+- ProgramTrade는 공식 해결 전까지 운영 timer에서 빼고, 수동 probe 스크립트로만 점검하는 상태다.
+- ConstOut가 뜬 직후 3분은 무거운 후속 작업을 일부러 늦춰 부하 중첩을 피한다.
+
+### 다음 장에서 확인할 것
+
+1. WARN.log에서 `CB⑤` total/warn_streak/degraded 진입 빈도 감소 여부
+2. `EffectReports` 로그가 worker에서만 찍히고 파이프라인 지연과 분리되는지
+3. ProgramTrade 관련 `dispatch failed (-2147221005)` 반복 로그가 사라졌는지
+4. ConstOut 직후 `heavy cooldown active` 계열 skip 로그가 정상적으로 찍히는지
 
 ---
 

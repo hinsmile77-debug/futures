@@ -873,6 +873,7 @@ class CybosAPI:
         self,
         progid: str,
         inputs: List[tuple],
+        allow_status_error: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         COM 오브젝트를 Dispatch 하여 BlockRequest 후 헤더/행 데이터를 반환한다.
@@ -884,10 +885,11 @@ class CybosAPI:
                 obj.SetInputValue(idx, val)
             ret = obj.BlockRequest()
             status = _safe_int(obj.GetDibStatus())
-            if ret not in (0, None) or status != 0:
+            msg = _safe_str(obj.GetDibMsg1())
+            if ret not in (0, None) or (status != 0 and not allow_status_error):
                 system_logger.warning(
                     "[CybosProbe] %s blocked ret=%s status=%s msg=%s",
-                    progid, ret, status, _safe_str(obj.GetDibMsg1()),
+                    progid, ret, status, msg,
                 )
                 return None
             headers: Dict[int, str] = {}
@@ -925,7 +927,14 @@ class CybosAPI:
                     "[CybosProbe][RAW] %s headers=%s rows_sample=%s",
                     progid, h_nonempty, rows[:5],
                 )
-            return {"progid": progid, "headers": headers, "rows": rows}
+            return {
+                "progid": progid,
+                "ret": ret,
+                "status": status,
+                "msg": msg,
+                "headers": headers,
+                "rows": rows,
+            }
         except Exception as exc:
             system_logger.warning("[CybosProbe] %s dispatch/request failed: %s", progid, exc)
             return None
@@ -1042,41 +1051,51 @@ class CybosAPI:
 
     def request_program_investor(self) -> Dict[str, Any]:
         """
-        프로그램 매매(차익/비차익) 순매수 데이터를 반환한다.
-        Cybos Plus 후보 ProgID를 순서대로 시도한다.
+        Program trading summary probe.
 
-        Dscbo1.CpSvr8119 (레지스트리 검증 2026-05-11):
-          입력 없음, pgm.bid 응답, 장 중 누적 프로그램 매매 동향.
-          헤더 레이아웃 추정 (장 중 _probe_8119_fields.py로 확인 요망):
-            h[0]=차익매수, h[1]=차익매도, h[2]=차익순매수,
-            h[3]=비차익매수, h[4]=비차익매도, h[5]=비차익순매수,
-            h[6]=전체매수, h[7]=전체매도, h[8]=전체순매수 (단위: 백만원 추정)
+        Official Daishin docs distinguish:
+        - Dscbo1.CpSvr8111 / 8111S / 8111KS: market summary query objects
+        - CpSysDib.CpSvr8119S: per-stock realtime subscription object
+
+        This helper is used by the minute investor snapshot path, so it should
+        prefer the documented 8111 summary family instead of the 8119 per-stock
+        realtime family or undocumented ProgramTrade aliases.
         """
         candidates = [
-            # P0: 레지스트리 검증 완료 — 장 중 누적 프로그램 매매 동향
-            ("Dscbo1.CpSvr8119",         []),
-            ("Dscbo1.CpSvrNew8119",      []),
-            # fallback: 미등록 확인, 탐색용 유지
-            ("CpSysDib.ProgramTrade",    []),
-            ("Dscbo1.ProgramTrade",       []),
+            ("Dscbo1.CpSvr8111", []),
+            ("Dscbo1.CpSvr8119", []),
+            ("Dscbo1.CpSvrNew8119", []),
         ]
+        status_error_progid = ""
+        zero_response_progid = ""
         for progid, inputs in candidates:
-            probe = self._probe_investor_tr(progid, inputs)
+            probe = self._probe_investor_tr(progid, inputs, allow_status_error=True)
             if probe is None:
                 continue
+            if _safe_int(probe.get("status", 0)) != 0:
+                status_error_progid = progid
+                system_logger.info(
+                    "[CybosInvestorRaw] %s reachable but nonzero status=%s msg=%s",
+                    progid,
+                    probe.get("status"),
+                    probe.get("msg"),
+                )
+                continue
             h = probe["headers"]
-            # 헤더 레이아웃 추정: h[0~2]=차익(매수/매도/순), h[3~5]=비차익, h[6~8]=전체
-            arb_buy    = _safe_int(h.get(0, "0"))
-            arb_sell   = _safe_int(h.get(1, "0"))
-            arb_net    = _safe_int(h.get(2, "0")) or (arb_buy - arb_sell)
-            nonarb_buy  = _safe_int(h.get(3, "0"))
+            # Header layout guess: h[0~2]=arb(buy/sell/net), h[3~5]=non-arb, h[6~8]=total
+            arb_buy = _safe_int(h.get(0, "0"))
+            arb_sell = _safe_int(h.get(1, "0"))
+            arb_net = _safe_int(h.get(2, "0")) or (arb_buy - arb_sell)
+            nonarb_buy = _safe_int(h.get(3, "0"))
             nonarb_sell = _safe_int(h.get(4, "0"))
-            nonarb_net  = _safe_int(h.get(5, "0")) or (nonarb_buy - nonarb_sell)
+            nonarb_net = _safe_int(h.get(5, "0")) or (nonarb_buy - nonarb_sell)
 
-            # 헤더가 모두 0인 경우 (장 마감 후 or 미입력) → 데이터 없음으로 처리
+            # Distinguish "object exists but returned zeros" from true mapping-missing cases.
             if arb_net == 0 and nonarb_net == 0 and arb_buy == 0 and nonarb_buy == 0:
+                zero_response_progid = progid
                 logger.debug(
-                    "[CybosInvestorRaw] %s all-zero headers — market closed or no data", progid
+                    "[CybosInvestorRaw] %s all-zero payload -> market closed or no data",
+                    progid,
                 )
                 continue
 
@@ -1092,15 +1111,43 @@ class CybosAPI:
                 "raw": {"arb_net": arb_net, "nonarb_net": nonarb_net},
             }
 
+        if status_error_progid:
+            _system_info_throttled(
+                f"[CybosInvestorRaw] program investor TR status-error via {status_error_progid}",
+                key="cybos_investor_raw_program_status_error",
+                min_interval_sec=600.0,
+            )
+            return {
+                "supported": False,
+                "source": status_error_progid,
+                "reason": "probe reachable but dib status nonzero",
+                "nets": {},
+                "raw": {"arb_net": 0, "nonarb_net": 0},
+            }
+
+        if zero_response_progid:
+            _system_info_throttled(
+                f"[CybosInvestorRaw] program investor TR zero-response via {zero_response_progid}",
+                key="cybos_investor_raw_program_zero_response",
+                min_interval_sec=600.0,
+            )
+            return {
+                "supported": False,
+                "source": zero_response_progid,
+                "reason": "probe ok but all-zero payload",
+                "nets": {},
+                "raw": {"arb_net": 0, "nonarb_net": 0},
+            }
+
         _system_info_throttled(
-            "[CybosInvestorRaw] program investor TR 후보 없음",
+            "[CybosInvestorRaw] program investor TR candidate not available",
             key="cybos_investor_raw_program_missing",
             min_interval_sec=600.0,
         )
         return {
             "supported": False,
             "source": "mapping_pending",
-            "reason": "Cybos 프로그램 매매 TR 미발견",
+            "reason": "Cybos program investor TR candidate unavailable",
             "nets": {},
             "raw": {"arb_net": 0, "nonarb_net": 0},
         }

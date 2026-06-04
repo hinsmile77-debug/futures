@@ -76,9 +76,15 @@ class CybosInvestorData:
         """매매 종목코드 갱신 — Cybos는 API 내부에서 코드를 관리하므로 현재 no-op."""
         pass
 
-    def fetch_all(self) -> bool:
+    def fetch_all(self, include_program: bool = True) -> bool:
         futures_ok = self.fetch_futures_investor()
-        program_ok = self.fetch_program_investor()
+        if include_program:
+            program_ok = self.fetch_program_investor()
+        else:
+            program_ok = False
+            self._program_supported = False
+            self._program_source = "runtime_disabled"
+            self._program_reason = "program probe loop disabled in live timer"
         self._last_fetch = datetime.datetime.now()
         self._fetch_count += 1
         logger.info(
@@ -162,11 +168,13 @@ class CybosInvestorData:
         self._program_supported = bool(result.get("supported", False))
         self._program_source = str(result.get("source", "unknown"))
         self._program_reason = str(result.get("reason", ""))
+        program_state = self._program_status_label(self._program_source, self._program_reason)
         logger.info(
-            "[CybosInvestor] program supported=%s source=%s "
+            "[CybosInvestor] program supported=%s state=%s source=%s "
             "foreign=%+d individual=%+d institution=%+d "
             "arb=%+d nonarb=%+d reason=%s",
             self._program_supported,
+            program_state,
             self._program_source,
             self._program_investor.get("foreign", 0),
             self._program_investor.get("individual", 0),
@@ -243,13 +251,17 @@ class CybosInvestorData:
             status_text = "Cybos futures/program investor flow live; option flow pending"
         elif self._futures_supported:
             panel_status = "partial"
-            status_text = "Cybos futures investor flow live; program/option flow pending"
+            status_text = "Cybos futures investor flow live; {0}; option flow pending".format(
+                self._program_status_text(self._program_source, self._program_reason)
+            )
         elif self._program_supported:
             panel_status = "partial"
             status_text = "Cybos program investor flow live; futures/option flow pending"
         else:
             panel_status = "unavailable"
-            status_text = "Cybos investor-flow mapping pending; showing availability state only"
+            status_text = "Cybos investor-flow unavailable; {0}".format(
+                self._program_status_text(self._program_source, self._program_reason)
+            )
 
         if self._futures_supported:
             if retail_fut > 0:
@@ -365,6 +377,8 @@ class CybosInvestorData:
             "option_supported": self._option_flow_supported,
             "quality_age_sec": round(age_sec, 1),
             "quality_stale": age_sec > 180.0,
+            "program_source": self._program_source,
+            "program_reason": self._program_reason,
             "quality_source_code": self._source_code(self._futures_source, self._program_source),
             "quality_reason_code": self._reason_code(self._futures_reason, self._program_reason),
         }
@@ -385,4 +399,37 @@ class CybosInvestorData:
             return 0
         if "live" in text or "제공" in text:
             return 2
+        if "status nonzero" in text or "all-zero payload" in text or "zero-response" in text:
+            return 3
         return 1
+
+    @staticmethod
+    def _program_status_label(program_source: str, program_reason: str) -> str:
+        source = (program_source or "").lower()
+        reason = (program_reason or "").lower()
+        if "status nonzero" in reason:
+            return "status_error"
+        if "all-zero payload" in reason or "zero-response" in reason:
+            return "zero_response"
+        if "missing" in source or "api_missing" in source:
+            return "api_missing"
+        if "pending" in source or "pending" in reason or "unavailable" in reason:
+            return "mapping_pending"
+        if "probe ok" in reason or "live" in reason:
+            return "live"
+        return "unknown"
+
+    @classmethod
+    def _program_status_text(cls, program_source: str, program_reason: str) -> str:
+        state = cls._program_status_label(program_source, program_reason)
+        if state == "status_error":
+            return "program flow reachable but server returned nonzero status"
+        if state == "zero_response":
+            return "program flow object reachable but payload is all zero"
+        if state == "api_missing":
+            return "program flow helper missing"
+        if state == "mapping_pending":
+            return "program flow mapping pending"
+        if state == "live":
+            return "program flow live"
+        return "program flow state unknown"

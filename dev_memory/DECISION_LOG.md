@@ -2,6 +2,38 @@
 
 ---
 
+## 2026-06-04 (108차 세션 마무리 — CB⑤ 경고 지속 완화 4종)
+
+### [설계] EffectReports는 minute pipeline 안에서 돌리지 않고 전용 타이머/worker로 분리
+
+**File**: `main.py`
+**Decision**: `generate_calibration_report.py`, `generate_meta_gate_tuning_report.py`, `generate_rollout_readiness_report.py`, `run_microstructure_ab_backtest.py` 호출을 minute pipeline 말미에서 제거하고, 1분 간격 전용 `QTimer`가 조건을 판단해 daemon worker에서 실행하도록 분리.
+**Why**: 보고서 생성은 필수 거래 판단 경로가 아니고, 1200~3500ms CB⑤ 경고 시각과 15분 주기 EffectReports 실패/실행 시각이 겹쳤다. 백그라운드성 작업이 핵심 경로 SLA를 깨고 있었음.
+**How to apply**: 운영 중 부하성 진단/리포트 작업은 가능하면 파이프라인 바깥 독립 스케줄러로 분리하고, 중복 실행 방지 플래그를 둔다.
+
+### [설계] HealthPolicy degraded 집계는 경계값 latency warning에 soft weight 적용
+
+**File**: `main.py`
+**Decision**: CB⑤ `WARNING`이라도 `latency_ms < 1300` 구간은 `warn_streak`와 `warn_ratio`에 full 1.0이 아니라 soft weight(기본 0.35)로 반영.
+**Why**: `1006ms`, `1054ms`, `1199ms` 같은 경계 초과만으로도 `warn_streak=2` 조건을 빨리 채워 Degraded Mode가 과민 발동했다. 성능 조기경보와 운영 품질 저하를 같은 무게로 다루면 false positive가 많아진다.
+**How to apply**: health/degraded 정책에서는 임계값 근처의 경미한 경고와 명백한 SLA 붕괴를 분리해 가중치를 다르게 둔다.
+
+### [설계] ProgramTrade probe는 운영 타이머에서 비활성, 수동 probe 경로로만 유지
+
+**File**: `main.py`, `collection/cybos/investor_data.py`
+**Decision**: 정기 투자자 데이터 수집의 live runtime 경로에서는 `fetch_all(include_program=False)`로 호출해 ProgramTrade COM probe를 중단하고, 수동 진단은 별도 스크립트(`scripts/probe_cybos_program_trade.py`)로 분리 유지.
+**Why**: `CpSysDib.ProgramTrade` / `Dscbo1.ProgramTrade` / `8119` 계열이 분당 실패 로그를 반복했고, 현 시점 운영 가치보다 COM/로그 잡음 비용이 컸다.
+**How to apply**: 브로커 COM known issue는 운영 loop에 계속 태우지 말고, 수동 probe 도구와 운영 수집 경로를 분리한다.
+
+### [설계] ConstOut 직후에는 3분 heavy cooldown을 둬 후속 부하를 지연
+
+**File**: `main.py`
+**Decision**: ConstOut 확정 시 기존 scaler refit 쿨다운과 별도로 180초 heavy cooldown을 시작하고, 이 구간에는 추가 scaler refresh, EffectReports, heavy dashboard refresh를 유예.
+**Why**: ConstOut 직후는 이미 스케일러 재적합이 발생하는 민감 구간인데, 같은 1~3분 안에 리포트 생성이나 추가 refresh가 겹치면 CB⑤를 다시 키운다.
+**How to apply**: 이상 탐지 직후의 자동 복구 구간에는 다른 무거운 보조 작업을 잠시 미뤄 부하 중첩을 피한다.
+
+---
+
 ## 2026-06-04 (107차 세션 마무리 — EffectReports 에러 분석 + traceback 로깅 개선)
 
 ### [미해결 버그] EffectReports `list index out of range` — main.py subprocess.run()

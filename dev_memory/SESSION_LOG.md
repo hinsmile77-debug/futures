@@ -4610,3 +4610,39 @@ GBM 배치 재학습 산출물 형식을 런타임 로더와 맞추고, 좌하�
 - 완료 시점: `24번째 1분봉` 에서 `READY`
 
 ---
+## 2026-06-04 (108차 세션 마무리 — CB⑤ 경고 저감 구조 개선 + ProgramTrade probe 루프 중단)
+
+**Work**: 사용자 요청에 따라 파이프라인 경고 지속 원인 4종을 직접 완화했다. EffectReports를 파이프라인 밖으로 분리하고, HealthPolicy degraded 집계를 완화하고, ProgramTrade probe 반복 실패를 실시간 루프에서 중단하고, ConstOut 직후 3분 쿨다운을 추가했다.
+
+### 1. 적용한 구조 개선
+
+| 항목 | 조치 | 파일 |
+|---|---|---|
+| EffectReports 동기 실행 제거 | 매분 파이프라인 말미 `subprocess.run()` 제거, 전용 `QTimer` + daemon worker로 분리 | `main.py` |
+| CB⑤ 1000~1300ms 완화 | degraded warn streak / warn ratio에 soft weight 적용 | `main.py` |
+| ProgramTrade probe 루프 중단 | 정기 투자자 데이터 수집에서 `include_program=False` 적용 | `main.py`, `collection/cybos/investor_data.py` |
+| ConstOut 직후 heavy cooldown | 180초 동안 추가 scaler refresh / EffectReports / heavy panel refresh 유예 | `main.py` |
+
+### 2. 기대 효과
+
+- `EffectReports` 실패나 지연이 더 이상 CB⑤ 파이프라인 SLA를 직접 밀지 않음
+- `1006ms`, `1054ms` 같은 경계값 초과 경고만으로 HealthPolicy가 바로 Degraded Mode에 들어갈 가능성 감소
+- `[CybosProbe] ProgramTrade ... -2147221005` 분당 반복 로그 중단
+- ConstOut 직후 refit/report/panel 부하 중첩 완화
+
+### 3. 검증
+
+- `python -m py_compile main.py collection\cybos\investor_data.py` 통과
+- 장중 실운영 검증은 아직 미실시
+- 다음 확인 포인트:
+  - WARN.log: CB⑤ 총건수 및 `HealthPolicy` degraded 진입 빈도 감소 여부
+  - SYSTEM/WARN.log: `EffectReports`가 worker 경로에서만 도는지 여부
+  - SYSTEM/DATA.log: ProgramTrade probe 반복 실패 로그 소거 여부
+  - ConstOut 직후 3분 동안 heavy refresh skip 로그 확인
+
+### 4. 잔존 이슈
+
+- EffectReports의 `list index out of range` 자체는 아직 미해결이며, 다만 메인 파이프라인과 분리되어 영향도가 낮아짐
+- ProgramTrade는 수동 probe 스크립트로만 추가 진단 가능하며, 운영 타이머에서는 비활성 상태
+
+---

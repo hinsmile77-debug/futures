@@ -6,6 +6,36 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-04 (108차 세션 마무리) — CB⑤ 경고 완화 후속 확인
+
+### 한일 요약
+
+- [DONE 2026-06-04] **EffectReports 파이프라인 외부 분리** — minute pipeline 동기 `subprocess.run()` 제거, 전용 `QTimer` + background worker 추가 (`main.py`)
+- [DONE 2026-06-04] **CB⑤ 1000~1300ms degraded soft-weight 적용** — HealthPolicy warning streak / ratio를 latency 구간별 가중 집계로 변경 (`main.py`)
+- [DONE 2026-06-04] **ProgramTrade probe 반복 실패 루프 중단** — 정기 투자자 수집 경로에서 `include_program=False` 적용 (`main.py`, `collection/cybos/investor_data.py`)
+- [DONE 2026-06-04] **ConstOut 직후 3분 heavy cooldown 추가** — 추가 scaler refresh / EffectReports / heavy panel refresh 유예 (`main.py`)
+- [DONE 2026-06-04] **문법 검증** — `python -m py_compile main.py collection\cybos\investor_data.py`
+
+### 다음 할 일
+
+- [NEXT 다음 장 중] **CB⑤ 경고 감소 효과 검증**
+  - WARN.log에서 `CB⑤` 경고 건수, `1000~1300ms` 경계값 경고 비중, degraded 진입 시각 확인
+  - `warn_streak`가 soft-weight로 누적되는지 HealthPolicy 로그 확인
+
+- [NEXT 다음 장 중] **EffectReports 비동기 worker 동작 확인**
+  - 파이프라인 경고 시각과 `EffectReports` 실행 시각이 더 이상 직접 겹치지 않는지 확인
+  - `worker already running` / cooldown skip 로그가 과도하지 않은지 확인
+
+- [NEXT 다음 장 중] **ConstOut heavy cooldown 동작 확인**
+  - ConstOut 직후 3분 동안 heavy panel refresh / scaler refresh skip 로그 확인
+  - cooldown 종료 후 정상 재개되는지 확인
+
+- [NEXT 추후] **EffectReports `list index out of range` 근본 수정**
+  - 비동기 분리로 급한 불은 껐지만 traceback 기준으로 실제 원인 라인 특정 후 수정 필요
+
+- [NEXT 추후] **ProgramTrade 재도입 여부 재평가**
+  - 수동 probe 스크립트 결과와 대신증권 문서 기준으로 실제 운영 경로 복구 가능성 검토
+
 ## 2026-06-04 (107차 세션 마무리) — 재시동 확인 + EffectReports 분석
 
 ### 한일 요약
