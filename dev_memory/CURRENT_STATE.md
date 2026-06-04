@@ -1,7 +1,55 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-04 (106차) — **다이버전스 패널 투자자 수급 + 옵션 체인 미수집 수정**
+> 마지막 업데이트: 2026-06-04 (107차) — **실세션 점검 + CybosApiConnector NameError 수정 + S2 파이프라인 지연 개선**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-04 (107차) — 실세션 점검 + 버그 수정 + S2 개선
+
+### 배경
+
+104~106차 개선 후 재시작(10:18) 이후 로그 점검. 주요 버그 2종 발견·수정.
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **[버그] CybosApiConnector NameError 수정** — 실세션 발견, 7221 probe 실패 원인 | **완료** | `collection/cybos/api_connector.py:921-922` |
+| **[성능] S2 파이프라인 지연 개선** — _partial_fit() 6회/분 → 1회/분 throttle + 세부 타이밍 로그 | **완료** | `learning/meta_confidence.py`, `main.py` |
+| **옵션 체인 정상 확인** — 10:23 avail=True, PCR/GEX 갱신 | **확인됨** | — |
+| 다음 기동 시 S2 개선 효과 확인 | **미완료** | — |
+| 다음 기동 시 7221 투자자 수급 정상 확인 | **미완료** | — |
+
+### 수정 내용
+
+**CybosApiConnector NameError (api_connector.py:921-922)**:
+- `CybosApiConnector._probe_dump_done` → `CybosAPI._probe_dump_done` (실제 클래스명)
+- 효과: 7221 probe가 raw dump까지 도달 → `[CybosInvestor] futures supported=True` 기대
+
+**S2 파이프라인 지연 개선 (meta_confidence.py + main.py)**:
+- 근본 원인: `record_outcome()` 호출마다 `_partial_fit()` 실행 → 6회/분 × ~700ms = ~4.2초
+- 수정: `_fit_pending` 플래그, `flush_fit()` 메서드 추가, STEP 2 말미 1회만 호출
+- 세부 타이밍 로그: `[S2] meta=Xms learn=Xms flush=Xms` → DEBUG.log 기록 (500ms 초과 시)
+
+### 실세션 점검 결과 (10:18 이후)
+
+| 항목 | 결과 |
+|---|---|
+| 옵션 체인 avail=True | ✅ 10:23 갱신 확인 |
+| DynMC 기동 복원 | ✅ 5개 zone mc 복원 |
+| ConstOut 자동복구 | ✅ 10:14 감지 → 10:15 해소 |
+| StuckBreaker 작동 | ✅ DN streak 감쇠 |
+| 투자자 수급 | ❌ NameError 실패 → 수정 완료 |
+| S2 지연 | ❌ 4~5s 지속 → 수정 완료 |
+| 진입 발생 | ❌ conf 33~42% < mc 43.9%, grade=X |
+
+### 다음 기동 시 확인
+
+1. `[CybosProbe] CpSysDib.CpSvrNew7221 ok status=0` + `[CybosProbe][RAW]` 1회 (SYSTEM.log)
+2. `[CybosInvestor] futures supported=True source=CpSysDib.CpSvrNew7221 foreign=±XXX` (DATA.log)
+3. PipePerf `S2=Xms` — 1000ms 이하 목표
+4. `[S2] meta=Xms learn=Xms flush=Xms` (DEBUG.log) — flush가 크면 _partial_fit() 자체 최적화 필요
 
 ---
 

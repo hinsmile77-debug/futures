@@ -918,8 +918,8 @@ class CybosAPI:
                 progid, status, nonempty_h, len(rows),
             )
             # 세션당 1회 raw 덤프 — TR 구조 파악용
-            if progid not in CybosApiConnector._probe_dump_done:
-                CybosApiConnector._probe_dump_done.add(progid)
+            if progid not in CybosAPI._probe_dump_done:
+                CybosAPI._probe_dump_done.add(progid)
                 h_nonempty = {k: v for k, v in headers.items() if v}
                 system_logger.info(
                     "[CybosProbe][RAW] %s headers=%s rows_sample=%s",

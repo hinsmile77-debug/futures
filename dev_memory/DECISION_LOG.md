@@ -2,6 +2,33 @@
 
 ---
 
+## 2026-06-04 (107차 — 실세션 점검 + S2 파이프라인 지연 개선)
+
+### [버그] CybosApiConnector NameError — 실세션에서 발견
+
+**File**: `collection/cybos/api_connector.py:921-922`
+**Bug**: 106차에서 `_probe_investor_tr()` 내부에 세션당 1회 raw 덤프 코드를 추가할 때, 클래스명을 `CybosApiConnector`로 잘못 기재.
+실제 클래스명은 `CybosAPI`. → `NameError: name 'CybosApiConnector' is not defined` → 7221 probe가 NameError로 실패 → fallback도 COM 오류 → 투자자 수급 `supported=False` 유지.
+**발견 경로**: 10:18 재시작 후 WARN.log에서 1분마다 반복되는 에러 확인.
+**Fix**: `CybosApiConnector._probe_dump_done` → `CybosAPI._probe_dump_done` (2곳).
+**How to apply**: 같은 파일 내 클래스를 메서드 body에서 이름으로 참조할 때 실제 class 선언명(grep `^class`)으로 확인 필수.
+
+### [버그/성능] MetaConfidenceLearner._partial_fit() 6회/분 호출 → S2 4~5s
+
+**File**: `learning/meta_confidence.py`, `main.py`
+**Bug**: `record_outcome()`이 호출될 때마다 `_partial_fit()`(100샘플 × 7피처 SGD 배치)이 실행됨.
+STEP 2에서 verified 6건 → `record_outcome()` 6회 → `_partial_fit()` 6회/분 → S2=4~5초 (CB 경고 반복, 일부 분에서 CB "5회 진입 불가" 발동).
+**발견 경로**: PipePerf WARN 로그 분석 — S2가 total의 90%+. StuckBreaker로 FLAT 예측이 많아지는 분에서 S2가 빨라지는 패턴 (meta_gate.evaluate() FLAT early-return → record_outcome 미호출 → _partial_fit 0회).
+**Fix**: 
+- `record_outcome()`에서 `_partial_fit()` 직접 호출 제거, `_fit_pending=True` 플래그만 설정
+- `flush_fit()` 신규 메서드 추가 (pending 시 `_partial_fit()` 1회 실행)
+- `main.py` STEP 2 말미에 `self.meta_gate.learner.flush_fit()` 1회 호출
+- → 6회/분 → 1회/분 (예상 S2: 4~5s → ~0.7s)
+**세부 타이밍 진단 추가**: `[S2] meta=Xms learn=Xms flush=Xms verified=N` DEBUG 로그 → 어느 구간이 실제 지연인지 다음 기동 시 DEBUG.log에서 확인 가능.
+**How to apply**: 온라인 학습기를 verified 루프 안에서 직접 실행할 때는 비용을 인식하고 루프 외부에서 1회 호출하는 구조로 설계.
+
+---
+
 ## 2026-06-04 (106차 — 투자자 수급 + 옵션 체인 미수집)
 
 ### [버그] CpSyrNew7212 → 실제 TR은 CpSyrNew7221

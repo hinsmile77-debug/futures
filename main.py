@@ -2656,6 +2656,7 @@ class TradingSystem:
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
         _st.append(("S2", time.perf_counter()))
+        _s2_meta_t = time.perf_counter()
         # STEP 1 검증된 예측마다 해당 시점 피처로 즉시 partial_fit
         for v in verified:
             _meta_feats = v.get("features") or {}
@@ -2676,6 +2677,7 @@ class TradingSystem:
             except Exception as _meta_record_err:
                 logger.debug("[MetaGate] verify record skip: %s", _meta_record_err)
 
+        _s2_learn_t = time.perf_counter()
         if self.model.feature_names and verified:
             # P3-a: stuck 발생 분봉의 예측은 결과 레이블이 불확정 → 학습 스킵
             if self._stuck_this_minute:
@@ -2717,6 +2719,18 @@ class TradingSystem:
                             f"[Qualify] {_h} 자격 획득 "
                             f"(verified={_qs['verified_cycles']} trained={_qs['trained_cycles']})"
                         )
+
+        # MetaGate 분봉 말미 학습 — record_outcome() 누적 분을 1회에 소화
+        _s2_flush_t = time.perf_counter()
+        self.meta_gate.learner.flush_fit()
+        _s2_meta_ms  = int((_s2_learn_t - _s2_meta_t) * 1000)
+        _s2_learn_ms = int((_s2_flush_t - _s2_learn_t) * 1000)
+        _s2_flush_ms = int((time.perf_counter() - _s2_flush_t) * 1000)
+        if _s2_meta_ms + _s2_learn_ms + _s2_flush_ms > 500:
+            logger.debug(
+                "[S2] meta=%dms learn=%dms flush=%dms verified=%d",
+                _s2_meta_ms, _s2_learn_ms, _s2_flush_ms, len(verified),
+            )
 
         # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 또는 세션 재시작 즉시) ────
         _st.append(("S3", time.perf_counter()))

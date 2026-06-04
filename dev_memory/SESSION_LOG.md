@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-06-04 (107차 — 실세션 점검 + CybosApiConnector NameError + S2 개선)
+
+**Work**: 104~106차 개선 후 재시작(10:18) 로그 점검. 버그 2종 발견·수정.
+
+### 1. 실세션 점검 결과 (10:18:36 이후)
+
+**정상 확인**:
+- 옵션 체인: 10:23 `[OptionChain] avail=True PCR=0.205 GEX=584B` ✅
+- DynMC 기동 복원: GAP_OPEN(0.452), OPEN_VOLATILE(0.439) 등 5개 zone 복원 ✅
+- ConstOut 자동복구: 10:14 1m 감지 → D_FORCE → 10:15 해소 ✅
+- StuckBreaker: DN streak=8~28 감쇠 작동 ✅
+- CoherenceGate: score=0.33~0.50 차단 로그 ✅
+
+**문제 발견**:
+- 투자자 수급: `[CybosProbe] CpSysDib.CpSvrNew7221 dispatch/request failed: name 'CybosApiConnector' is not defined` 매 1분 반복 → 수급 `supported=False`
+- S2 파이프라인: PipePerf `S2=4~6초` 지속 → CB 경고 반복, 일부 분 CB "5회 진입 불가"
+- 진입 현황: conf 33~42% < mc 43.9%, grade=X, 진입 0건
+
+### 2. CybosApiConnector NameError 수정 (api_connector.py:921-922)
+
+`_probe_investor_tr()` 내 `_probe_dump_done` 참조에서 클래스명 오타.
+`CybosApiConnector` → `CybosAPI` (실제 클래스명은 `class CybosAPI`).
+이 버그로 7221 probe가 BlockRequest 성공 후 dump 코드에서 NameError 발생 → None 반환 → 투자자 수급 미수집 유지.
+
+### 3. S2 파이프라인 지연 원인 분석 및 개선
+
+**근본 원인**: `MetaConfidenceLearner.record_outcome()` 호출마다 `_partial_fit()` (100샘플 × 7피처 SGD 배치) 실행.
+verified 6건/분 → `record_outcome()` 6회 → `_partial_fit()` 6회/분 → S2=4~5초.
+
+**확인 근거**: StuckBreaker로 FLAT 예측이 많아지는 09:57~10:00 구간에서 S2가 1~2초로 빨라짐.
+FLAT 예측 → `meta_gate.evaluate()` early-return → `record_outcome()` 미호출 → `_partial_fit()` 0회.
+세션 시작 후 약 9분(MIN_SAMPLES=50 도달) 이후부터 S2가 급격히 느려지는 패턴도 일치.
+
+**수정**:
+- `meta_confidence.py`: `record_outcome()`에서 `_partial_fit()` 직접 호출 제거 → `_fit_pending=True` 플래그만 설정. `flush_fit()` 메서드 신규 추가.
+- `main.py` STEP 2 말미: `self.meta_gate.learner.flush_fit()` 1회 호출.
+- 진단 로그 추가: `[S2] meta=Xms learn=Xms flush=Xms verified=N` (DEBUG.log, 500ms 초과 시).
+- 예상: 6회/분 → 1회/분, S2 4~5초 → ~0.7초.
+
+---
+
 ## 2026-06-04 (106차 — 다이버전스 패널 투자자 수급 + 옵션 체인 미수집 원인 분석·수정)
 
 **Work**: UI 다이버전스 패널에서 투자자 수급 데이터 전체 미수집("대기") + 옵션 체인 "미수집" 원인을 조사하고 수정.

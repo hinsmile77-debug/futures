@@ -54,6 +54,7 @@ class MetaConfidenceLearner:
         self._scaler: Optional[object]  = None
         self._fitted                    = False
         self._sample_count              = 0
+        self._fit_pending               = False  # 분봉 말미 1회 재학습 플래그
 
         # 결과 추적 (label: 예측 맞음=1, 틀림=0)
         self._X_buf: List[List[float]] = []
@@ -224,8 +225,14 @@ class MetaConfidenceLearner:
         self._y_buf.append(label)
         self._sample_count += 1
 
-        # 충분한 샘플 쌓이면 온라인 학습
+        # 충분한 샘플 쌓이면 분봉 말미에 1회 재학습 예약
         if _SKLEARN_OK and self._sample_count >= self.MIN_SAMPLES:
+            self._fit_pending = True
+
+    def flush_fit(self):
+        """STEP 2 말미에 1회 호출 — 분봉당 최대 1회 _partial_fit() 실행"""
+        if self._fit_pending:
+            self._fit_pending = False
             self._partial_fit()
 
     def _partial_fit(self):

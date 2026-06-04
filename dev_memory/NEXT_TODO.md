@@ -6,6 +6,28 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-04 (107차) — 실세션 점검 + 버그 수정 + S2 개선
+
+### 한일 요약
+
+- [DONE 2026-06-04] **CybosApiConnector NameError 수정** — `_probe_dump_done` 참조 `CybosApiConnector` → `CybosAPI` (api_connector.py:921-922)
+- [DONE 2026-06-04] **S2 파이프라인 지연 개선** — MetaConfidenceLearner._partial_fit() 6회/분 → 1회/분 throttle. `flush_fit()` 신규, `_fit_pending` 플래그 (meta_confidence.py, main.py)
+- [DONE 2026-06-04] **S2 세부 타이밍 로그 추가** — `[S2] meta/learn/flush ms` DEBUG 로그, 500ms 초과 시 기록 (main.py)
+
+### 다음 할 일
+
+- [NEXT 다음 기동 시] **107차 + 106차 통합 실세션 확인**
+  - SYSTEM.log: `[CybosProbe] CpSysDib.CpSvrNew7221 ok` + `[CybosProbe][RAW]` 1회
+  - DATA.log: `[CybosInvestor] futures supported=True source=CpSyrNew7221 foreign=±XXX`
+  - WARN.log: PipePerf `S2=Xms` — 1000ms 이하 목표
+  - DEBUG.log: `[S2] meta=Xms learn=Xms flush=Xms verified=6`
+    - flush_ms 크면(>500ms) → _partial_fit() 1샘플 incremental 방식 검토
+    - learn_ms 크면(>1000ms) → online_learner.learn() background 처리 검토
+  - SYSTEM.log: `[OptionChain] 갱신 ... avail=True` (09:00 직후)
+  - 패널 UI: 외인/개인/기관 수치 + 옵션 체인 경신 시각 표시
+
+---
+
 ## 2026-06-04 (106차) — 다이버전스 패널 + 옵션 체인 수정
 
 ### 한일 요약
@@ -19,13 +41,6 @@
 - [DONE 2026-06-04] **stale 캐시 삭제** — data/option_chain.json (max strike 1340 < spot 1385)
 
 ### 다음 할 일
-
-- [NEXT 다음 기동 시] **106차 실세션 확인**
-  - SYSTEM.log: `[CybosProbe] CpSysDib.CpSvrNew7221 ok` + `[CybosProbe][RAW]` rows_sample 출력
-  - DATA.log: `[CybosInvestor] futures supported=True source=CpSysDib.CpSyrNew7221 foreign=±XXX`
-  - SYSTEM.log: `[OptionChain] 초기화 완료` + 09:00 직후 `[OptionChain] 갱신 ... avail=True`
-  - 패널 UI: 외인/개인/기관 수치 표시 + 옵션 체인 "경신: HH:MM"
-  - rows_sample 비어있으면 → `python _check_7212.py` 실행 후 결과 공유
 
 - [NEXT 필요 시] **_check_7212.py 직접 실행 (Cybos 로그인 + 장 중)**
   - CpSyrNew7221 rows 구조: ri=2(선물) fi=2/5/8 값 확인
