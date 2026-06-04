@@ -64,6 +64,36 @@
 
 ---
 
+## 2026-06-04 (107차 추가 — S2 실세션 분석 + flush_fit incremental + S1~S8 의미 정리)
+
+**Work**: 107차 fix 적용 후 실세션(12:45~15:04) CB⑤ 재분석. flush_fit incremental 추가 최적화. PipePerf 단계 의미 정리.
+
+### 1. S2 fix 후 실세션 분석
+
+- S2: 4~5초 → **500~800ms** (개선 확인)
+- CB⑤ 잔여 원인: S2 단독이 아닌 **S2+S6+S7 합산 초과** 구조  
+  `예) total=1061ms | S2=595ms S5=122ms S6=181ms S7=143ms`
+- S6 스파이크(14:36 1113ms): ConstOut D_FORCE 이후 백그라운드 CPU 경합 추정
+- S7: 진입 실행+대시보드 갱신 합산 (100~250ms)
+
+### 2. flush_fit incremental 최적화 (commit `16ab6cd`)
+
+- 기존: `_partial_fit()` 매번 `_X_buf[-100:]` 100샘플 전체 재학습 (~700ms)
+- 개선: `_partial_fit_incremental(n_new)` — 신규 6샘플만 학습 (~40ms)
+- `_last_fit_count` 추가로 flush 주기 내 신규 샘플 수 추적
+- 초회(not _fitted)는 전체 배치 1회 유지
+
+### 3. PipePerf 단계 의미 정리 (S1-8의미.txt)
+
+| 마커 | 내용 |
+|---|---|
+| S2 | SGD 온라인 자가학습 |
+| S6 | 앙상블 진입 판단 (방향·신뢰도·등급·Checklist·MetaGate·TrendGate) |
+| S7 | 진입 실행 + 대시보드 전체 갱신 |
+| S8 | 청산 트리거 감시 |
+
+---
+
 ## 2026-06-04 (107차 세션 마무리 — 재시동 점검 완료 + EffectReports 에러 분석)
 
 **Work**: 10:53:33 재시동 후 107차·106차 수정 내용 전수 확인. EffectReports 에러 원인 분석 및 진단 로그 개선.

@@ -85,6 +85,29 @@
 
 ---
 
+## 2026-06-04 (107차 추가 — S2 실세션 확인 + flush_fit incremental 최적화)
+
+### [분석] S2 1단계 fix 후 잔여 CB⑤ 구조 파악
+
+**관찰**: flush_fit 1회/분 적용 후 S2=500~800ms로 개선됐으나 CB⑤ 경고 여전히 산발.
+`PipePerf total=1061ms | S2=595ms S5=122ms S6=181ms S7=143ms` 패턴 — **S2 단독이 아닌 합산 초과**.
+14:36 특이: `S6=1113ms` 단독 초과 — ConstOut D_FORCE 재적합 이후 백그라운드 스레드 CPU 경합 추정.
+
+**결론**: S2를 더 줄이면 S6+S7 합산이 들어와도 총합이 1000ms 이하로 유지 가능.
+
+### [설계] flush_fit incremental — 신규 샘플만 학습 (100샘플→n_new샘플)
+
+**File**: `learning/meta_confidence.py`
+**Decision**: `flush_fit()`이 호출할 때 전체 `_X_buf[-100:]` 대신 마지막 flush 이후 추가된 샘플(`n_new ≈ 6`)만 `partial_fit`. 초회(`self._fitted=False`)는 기존 전체 배치 1회 유지.
+- `_last_fit_count` 추가 — 마지막 flush 시점 sample_count 추적
+- `_partial_fit_incremental(n_new)` 신규 — `_X_buf[-n_new:]` 슬라이싱으로 scaler.transform(n×7) + model.partial_fit(n×7)
+- `flush_fit()` 분기: `_fitted=False` → `_partial_fit()`, 이후 → `_partial_fit_incremental(n_new)`
+**Why**: 100샘플 배치가 매분 실행되는 건 과도한 재학습. incremental SGD는 단순히 새 샘플만 추가하는 것이 이론적으로 올바른 온라인 학습 방식이기도 함.
+**예상 효과**: flush_ms ~700ms → ~40ms → S2 500~800ms → **50~100ms** → CB⑤ 대부분 해소.
+**How to apply**: S2+S6+S7 합산이 여전히 1000ms 초과 시, S6 세부 타이밍 마커 추가로 앙상블 판단 내 병목 특정 다음 단계.
+
+---
+
 ## 2026-06-04 (107차 — 실세션 점검 + S2 파이프라인 지연 개선)
 
 ### [버그] CybosApiConnector NameError — 실세션에서 발견
