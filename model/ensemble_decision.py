@@ -199,6 +199,8 @@ class EnsembleDecision:
             h: deque(maxlen=self._CONST_OUT_N) for h in HORIZONS
         }
         self._hz_stuck: Dict[str, bool] = {h: False for h in HORIZONS}
+        # ShortHorizonOverride: dir=FLAT 연속 카운터
+        self._flat_streak: int = 0
 
     def compute(
         self,
@@ -419,6 +421,41 @@ class EnsembleDecision:
             direction  = DIRECTION_FLAT
             confidence = flat_score
 
+        # ── ShortHorizonOverride: FLAT 고착 시 단기 호라이즌 우선 ──
+        # dir=FLAT 5봉+ 연속이고 1m/3m 방향이 일치하면 단기 호라이즌으로 방향 결정.
+        # 이유: 15m/30m FLAT 고착이 단기 방향 신호를 묻어버리는 구조 해소.
+        # 안전장치: OFI/CVD 중 하나라도 동방향이어야 채택 (피처 기반 검증).
+        if direction == DIRECTION_FLAT:
+            self._flat_streak += 1
+        else:
+            self._flat_streak = 0
+
+        _short_override_applied = False
+        if direction == DIRECTION_FLAT and self._flat_streak >= 5:
+            _s1m = horizon_proba.get("1m", {})
+            _s3m = horizon_proba.get("3m", {})
+            _d1m = _s1m.get("direction", 0) if _s1m else 0
+            _d3m = _s3m.get("direction", 0) if _s3m else 0
+            if _d1m != 0 and _d1m == _d3m:
+                # OFI 또는 CVD가 같은 방향인지 피처로 검증
+                _ofi  = (features or {}).get("ofi_norm", 0.0)
+                _cvd  = (features or {}).get("cvd_direction", 0.0)
+                _feat_agree = (
+                    (_d1m == DIRECTION_UP   and (_ofi > 0 or _cvd > 0)) or
+                    (_d1m == DIRECTION_DOWN and (_ofi < 0 or _cvd < 0))
+                )
+                if _feat_agree:
+                    _c1m = _s1m.get("confidence", 0.0)
+                    _c3m = _s3m.get("confidence", 0.0)
+                    direction  = _d1m
+                    confidence = (_c1m + _c3m) / 2.0
+                    _short_override_applied = True
+                    logger.info(
+                        "[ShortHorizonOverride] flat streak=%d → 1m/3m 방향=%+d "
+                        "conf=%.1f%% (ofi=%.2f cvd=%.2f)",
+                        self._flat_streak, direction, confidence * 100, _ofi, _cvd,
+                    )
+
         # ── 호라이즌 합의도 패널티 (불합의 노이즈 필터) ───────────
         # 6개 중 2개 이하 합의: 방향 신호가 노이즈일 가능성 높음 → 진입 억제
         # 보너스 없음: 전 호라이즌 합의도 높아도 편향이면 오히려 7연속 실패 (이상점3 사례)
@@ -465,6 +502,16 @@ class EnsembleDecision:
             (trend_gate_up_active and direction == DIRECTION_UP) or
             (trend_gate_dn_active and direction == DIRECTION_DOWN)
         )
+        # 시간대별 CoherenceGate 임계값 차등 적용
+        # GAP_OPEN: 개장 직후 단기 호라이즌만 방향 포착 → 합의도 기대치 낮춤
+        # TrendGate ON(방향 불일치 포함): 추세 초기 장기 FLAT 고착 구간에서 완화
+        _trend_gate_any = trend_gate_up_active or trend_gate_dn_active
+        if time_zone == "GAP_OPEN":
+            _coherence_min = 0.50
+        elif _trend_gate_any:
+            _coherence_min = 0.50
+        else:
+            _coherence_min = COHERENCE_GATE_MIN
         if direction != DIRECTION_FLAT:
             # FLAT 예측 호라이즌 제외: 방향성 있는 호라이즌만 대상
             _active_h = [
@@ -478,7 +525,7 @@ class EnsembleDecision:
                     if horizon_proba[h].get("direction") == direction
                 )
                 _coherence_score = _n_coherent / _n_active
-                if _coherence_score < COHERENCE_GATE_MIN:
+                if _coherence_score < _coherence_min:
                     if _tp_coherence_exempt:
                         # TrendGate가 외부 추세 근거를 제공 → CoherenceGate 면제
                         logger.debug(
@@ -489,8 +536,9 @@ class EnsembleDecision:
                     else:
                         _coherence_blocked = True
                         logger.info(
-                            "[Ensemble] CoherenceGate 차단 score=%.2f (%d/%d비FLAT) dir=%+d",
+                            "[Ensemble] CoherenceGate 차단 score=%.2f (%d/%d비FLAT) dir=%+d zone=%s min=%.2f",
                             _coherence_score, _n_coherent, _n_active, direction,
+                            time_zone or "OTHER", _coherence_min,
                         )
 
         # ── Platt 보정 (앙상블 전용 보정기 우선, 미학습 시 3m fallback) ────
@@ -573,6 +621,7 @@ class EnsembleDecision:
         for h in self._hz_conf_hist:
             self._hz_conf_hist[h].clear()
         self._hz_stuck = {h: False for h in HORIZONS}
+        self._flat_streak = 0
 
     def record_trade_outcome(
         self,

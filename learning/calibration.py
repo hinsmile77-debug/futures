@@ -16,6 +16,7 @@ GBM·SGD·앙상블의 확률 출력을 Platt Scaling 또는 Isotonic Regression
 """
 import numpy as np
 import logging
+import os
 from collections import deque
 from typing import Optional, List
 
@@ -160,6 +161,44 @@ class PredictionCalibrator:
             "ece":                  round(ece, 4),   # 낮을수록 잘 보정됨 (0 = 완벽)
             "n_samples":            n,
         }
+
+    def save(self, path: str) -> bool:
+        """보정 모델 + 누적 데이터를 디스크에 저장 (joblib)."""
+        if not _SKLEARN_OK or not self._fitted:
+            return False
+        try:
+            import joblib
+            joblib.dump({
+                "model":   self._model,
+                "probs":   list(self._probs),
+                "labels":  list(self._labels),
+                "n":       self._n,
+                "method":  self.method,
+            }, path)
+            return True
+        except Exception as e:
+            logger.warning("[Calibration] save 실패: %s", e)
+            return False
+
+    def load(self, path: str) -> bool:
+        """디스크에서 보정 모델 + 누적 데이터 복원."""
+        if not _SKLEARN_OK or not os.path.exists(path):
+            return False
+        try:
+            import joblib
+            state = joblib.load(path)
+            self._model  = state["model"]
+            self._fitted = True
+            self._n      = state.get("n", 0)
+            for p in state.get("probs", []):
+                self._probs.append(p)
+            for lb in state.get("labels", []):
+                self._labels.append(lb)
+            logger.info("[Calibration] 보정기 복원 완료 (n=%d method=%s)", self._n, self.method)
+            return True
+        except Exception as e:
+            logger.warning("[Calibration] load 실패: %s", e)
+            return False
 
     @property
     def is_fitted(self) -> bool:

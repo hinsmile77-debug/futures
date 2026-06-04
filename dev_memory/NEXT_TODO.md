@@ -6,6 +6,43 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-04 (110차 세션 마무리) — 진입0 개선 6종 후속 검증
+
+### 한일 요약
+
+- [DONE 2026-06-04] **① opt_pcr_slope_norm SCALER_CLIP_FEATURES 추가** — `(-3.0, 3.0)` clip (`config/settings.py`)
+- [DONE 2026-06-04] **② EKS P3 해제 임계값 완화** — 0.50 → `max(mc, 0.42)` (`safety/system_health.py`, `main.py`)
+- [DONE 2026-06-04] **③ CoherenceGate 차등 임계값** — GAP_OPEN·TrendGate ON 구간 0.60→0.50 (`model/ensemble_decision.py`)
+- [DONE 2026-06-04] **④ ShortHorizonOverride** — FLAT 5봉+ 시 1m/3m+OFI/CVD 합의로 방향 결정 (`model/ensemble_decision.py`)
+- [DONE 2026-06-04] **⑤ Platt 보정기 영속화** — save/load, ENSEMBLE_CALIBRATOR_PATH (`learning/calibration.py`, `main.py`, `config/settings.py`)
+- [DONE 2026-06-04] **⑥ opt_pcr_* D_FORCE 연동 감쇠** — 30분간 0.3× 타이머 (`model/multi_horizon_model.py`)
+
+### 다음 할 일
+
+- [NEXT 다음 장 중] **110차 개선 6종 발동 로그 확인**
+  - `[PCR-Dampen]` — opt_pcr D_FORCE 후 감쇠 발동 확인
+  - `[ShortHorizonOverride]` — FLAT 고착 시 1m/3m 방향 채택 확인
+  - `[SHS-EKS] EKS 자동 해제 ... (임계=43.0%)` — P3 완화 조건 동작 확인
+  - `[CoherenceGate 차단 ... zone=GAP_OPEN min=0.50]` — 차등 임계값 로그 확인
+  - `[Calibration] 앙상블 보정기 복원/저장 완료` — pkl 영속화 확인
+
+- [NEXT 다음 장 중] **ShortHorizonOverride 오발동 모니터링**
+  - 실제 횡보장에서 1m/3m 우연 합의로 진입 후 손절 발생 여부
+  - 오발동 빈번 시 streak 임계 5→7 상향 또는 OFI+CVD 동시 조건으로 강화
+
+- [NEXT 다음 장 중] **PCR 감쇠 효과 검증**
+  - D_FORCE opt_pcr 발동 후 30분 conf 개선 여부 (before/after)
+  - 감쇠 중에도 D_FORCE 반복 발동 시 → 감쇠 계수 0.3 → 0.1 추가 강화 검토
+
+- [NEXT 중기] **ECE 0.250 → 0.05 목표 캘리브레이션 개선**
+  - 영속화 보정기 사용 후 calibration_metrics.json 재생성 → ECE 추이 확인
+  - bin=4(40~50%) 실제 acc 36.3% → 보정 후 40%+ 달성 여부
+  - 보정 후 mc 기준 재검토 가능
+
+- [NEXT 1주 후] **CoherenceGate 차등 임계값 정량 검증**
+  - GAP_OPEN 구간 CoherenceGate 차단 건수 감소 비율 확인
+  - 승률 저하 없이 진입 증가 확인 → 0.50 유지. 승률 저하 시 0.55 조정
+
 ## 2026-06-04 (109차 세션 마무리) — MaskedFallback + PriceStructureBoost 후속 검증
 
 ### 한일 요약

@@ -28,6 +28,7 @@ TRADES_DB       = os.path.join(DB_DIR, "trades.db")
 RAW_DATA_DB     = os.path.join(DB_DIR, "raw_data.db")   # 경로 B 학습 데이터
 CHALLENGER_DB      = os.path.join(DB_DIR, "challenger.db")  # 챔피언-도전자 전용 DB
 SCALER_MONITOR_DB  = os.path.join(DB_DIR, "scaler_monitor.db")  # 섹션 8 스케일러 상태 모니터
+ENSEMBLE_CALIBRATOR_PATH = os.path.join(DATA_DIR, "ensemble_calibrator.pkl")  # Platt 보정기 영속화
 
 # ── 비밀 설정 로드 (secrets.py가 없으면 빈 값으로 대체) ───────
 try:
@@ -52,7 +53,7 @@ ACCOUNT_BASE_RISK    = 0.01   # 기본 리스크 1% (켈리 기준)
 
 # ── 시장 시간 ──────────────────────────────────────────────────
 MARKET_OPEN         = "09:00"
-MARKET_CLOSE        = "15:30"
+MARKET_CLOSE        = "15:35"   # 선물 종가 (만기일은 15:20 — time_utils.is_market_open 참고)
 FORCE_EXIT_TIME     = "15:10"   # 강제 청산 절대원칙
 NEW_ENTRY_CUTOFF    = "15:00"   # 신규 진입 금지 이후
 
@@ -258,6 +259,9 @@ SCALER_CLIP_FEATURES: dict = {
     "imbalance_slope":       (-0.002, 0.002),
     "microprice_bias":       (-0.012, 0.012),
     "microprice_depth_bias": (-0.150, 0.150),
+    # opt_pcr_slope_norm: 오늘 z=+9.21 반복 폭발 (D_FORCE 후에도 재발)
+    # OFI/CVD 방향 신호와 충돌 → conf 소거. ±3σ clip으로 이상값 사전 차단
+    "opt_pcr_slope_norm": (-3.0, 3.0),
 }
 
 # GBM / SGD 블렌딩 비율

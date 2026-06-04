@@ -2,6 +2,45 @@
 
 ---
 
+## 2026-06-04 (110차 세션 마무리 — 진입0 개선 6종)
+
+### [분석] EKS P3 해제 임계값 0.50의 구조적 문제
+
+**현상**: EKS 09:05 발동 후 오후 conf 최고 45.2% 달성했지만 P3 임계값 0.50에 막혀 하루 전체 관망.
+**결론**: 고정 0.50은 "conf가 좋은 날"에만 해제 가능. conf가 구조적으로 낮은 날(mc=43%)에는 영구 차단 효과.
+**결정**: `max(current_mc, 0.42)` 동적화. 오늘 기준 임계 43% → 12:45 conf=43.2%에 해제 가능.
+**Why**: EKS는 "스케일러 노후+conf 붕괴" 방어 장치. 재기동 후 스케일러 신선 + conf가 mc를 넘으면 그날 기준으로 해제 정당. 0.50은 좋은 날의 기준이지 나쁜 날의 안전 기준이 아니다.
+
+### [설계] ShortHorizonOverride — FLAT 고착 시 단기 호라이즌 우선
+
+**File**: `model/ensemble_decision.py`
+**Decision**: `_flat_streak >= 5` + 1m/3m 방향 일치 + OFI or CVD 동방향 → direction/confidence 오버라이드. `reset_daily()` 리셋 포함.
+**Why**: 오늘 12:45~13:15 conf=43~45%인데 전부 dir=+0. 15m/30m FLAT이 6호라이즌 가중합에서 단기 방향 신호를 소거. OFI/CVD 조건으로 피처 기반 2차 검증 추가.
+**How to apply**: 오발동(횡보 우연 합의) 빈도 다음 장 모니터링. 빈번 시 streak 임계 5→7 상향 검토.
+
+### [설계] CoherenceGate 임계값 시간대별 차등
+
+**File**: `model/ensemble_decision.py`
+**Decision**: GAP_OPEN 구간 또는 TrendGate ANY active → `_coherence_min = 0.50` (기존 0.60). 로그에 `zone=GAP_OPEN min=0.50` 추가.
+**Why**: 개장 직후는 단기 호라이즌만 방향 포착, 장기는 FLAT 고착. n_active=3~4에서 2개 합의=0.50~0.67. 0.60 기준이 과잉 차단.
+**How to apply**: 완전 면제(TrendGate+방향 일치)와 차등 완화(0.50) 2단계 구조. 1주 후 승률 확인.
+
+### [설계] opt_pcr_* D_FORCE 연동 감쇠 타이머
+
+**File**: `model/multi_horizon_model.py`
+**Decision**: D_FORCE trigger_reason에 "opt_pcr" 포함 시 `_pcr_dampen_until = now+30min`. predict_proba 루프에서 opt_pcr_* 컬럼 ×0.3 적용.
+**Why**: D_FORCE 재적합 후에도 opt_pcr_slope_norm 반복 폭발(오늘 z=+9.21→재적합→z=+7.63). SCALER_CLIP_FEATURES(±3σ) + 감쇠 2중 방어.
+**How to apply**: 30분 후 자동 해제로 영구 손실 없음. PCR 피처가 유효 신호인 구간에서도 일시적으로 신호 약화 — 허용 가능한 트레이드오프.
+
+### [설계] Platt 보정기 디스크 영속화
+
+**File**: `learning/calibration.py`, `main.py`, `config/settings.py`
+**Decision**: `save(path)`/`load(path)` joblib 기반 추가. 기동 시 ScalerWarmup 완료 후 로드. P8 후 저장.
+**Why**: 재시동마다 100건 재누적(MIN_SAMPLES=100) 필요 → 장 초반 30~40분 fallback 상태. 영속화로 이전 세션 보정 즉시 복원.
+**How to apply**: pkl 없거나 손상 시 try/except로 무해 스킵. 기존 동작 완전 유지.
+
+---
+
 ## 2026-06-04 (109차 세션 마무리 — MaskedFallback + PriceStructureBoost)
 
 ### [분석] 오늘(2026-06-04) 진입 미발생 구조적 원인

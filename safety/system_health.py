@@ -106,22 +106,27 @@ class SystemHealthScore:
 
     # ── EKS 회복 ────────────────────────────────────────────────
 
-    def try_eks_recovery(self, scaler_age_hours: float, recent_conf: float) -> bool:
+    def try_eks_recovery(
+        self, scaler_age_hours: float, recent_conf: float, current_mc: float = 0.50
+    ) -> bool:
         """[P3] 09:20 이후 1회 호출 — 스케일러 갱신 + conf 회복 시 EKS 자동 해제.
+        해제 임계값: max(current_mc, 0.42) — 오늘처럼 낮은 conf 장에서도 해제 가능.
         Returns True if EKS was deactivated."""
         if self._eks_recovery_checked or not self._eks_active:
             return False
         self._eks_recovery_checked = True
-        if scaler_age_hours < 1.0 and recent_conf >= 0.50:
+        # 임계값: mc 기준 또는 42% 중 큰 값 (고정 50%보다 현실적)
+        _threshold = max(current_mc, 0.42)
+        if scaler_age_hours < 1.0 and recent_conf >= _threshold:
             self._eks_active = False
             logger.warning(
-                "[SHS-EKS] EKS 자동 해제 — scaler_age=%.1fh conf=%.1f%%",
-                scaler_age_hours, recent_conf * 100,
+                "[SHS-EKS] EKS 자동 해제 — scaler_age=%.1fh conf=%.1f%% (임계=%.1f%%)",
+                scaler_age_hours, recent_conf * 100, _threshold * 100,
             )
             return True
         logger.info(
-            "[SHS-EKS] EKS 유지 — scaler_age=%.1fh conf=%.1f%% (회복 조건 미충족)",
-            scaler_age_hours, recent_conf * 100,
+            "[SHS-EKS] EKS 유지 — scaler_age=%.1fh conf=%.1f%% < threshold=%.1f%% (회복 조건 미충족)",
+            scaler_age_hours, recent_conf * 100, _threshold * 100,
         )
         return False
 

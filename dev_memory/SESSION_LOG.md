@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-06-04 (110차 — 진입0 6중 원인 분석 + 개선 6종 전면 구현)
+
+**Work**: 오늘 장 전체 로그(SIGNAL/WARN/SYSTEM) 3중 교차 분석 → 진입0 원인 체계화 → 개선 6종 구현 + 구문 검증.
+
+### 1. 진입0 타임라인 재구성
+
+| 시각 | 이벤트 |
+|---|---|
+| 09:05 | EKS 발동 conf_max=40.2%, core_pass=0/5봉 → 첫 세션 전체 차단 |
+| 09:21 | TrendGate ON streak=10 — 이미 EKS 차단 상태라 무력 |
+| 10:53 | 재기동 — DynMC 복원 (mc 43.0~43.9%) |
+| 12:45~13:15 | conf 43~45% 달성 — 전부 dir=+0 (FLAT) → 진입 불가 |
+| 13:43~13:46 | opt_pcr_slope_norm z=+9.21, ofi_imbalance z=+6.35 동시 폭발 |
+| 15:10 | 강제 청산 (포지션 없음) |
+
+실제 차트: 09:00~09:40 +27pt, 11:30~14:00 +35pt — 41pt 레인지 전부 관망.
+
+### 2. 개선 6종 구현
+
+| # | 파일 | 내용 |
+|---|---|---|
+| ① | `config/settings.py` | `opt_pcr_slope_norm: (-3.0, 3.0)` → SCALER_CLIP_FEATURES 추가 |
+| ② | `safety/system_health.py`, `main.py` | EKS P3 해제 임계값 고정 0.50 → `max(mc, 0.42)` |
+| ③ | `model/ensemble_decision.py` | CoherenceGate: GAP_OPEN·TrendGate ON 구간 0.60→0.50 |
+| ④ | `model/ensemble_decision.py` | ShortHorizonOverride: FLAT 5봉+ 연속 + 1m/3m+OFI/CVD 합의 → 방향 채택 |
+| ⑤ | `learning/calibration.py`, `main.py`, `config/settings.py` | Platt 보정기 save/load 영속화 — 재시동 시 pkl 복원 |
+| ⑥ | `model/multi_horizon_model.py` | D_FORCE opt_pcr 발동 → 30분간 opt_pcr_* 피처 0.3× 감쇠 |
+
+### 3. 핵심 분석 발견
+
+- **캘리브레이션 문제**: calibration_metrics.json ECE=0.250. conf=45% 출력 시 실제 acc=36.3%(bin=4). mc 기준 자체가 실제 정확도와 단절되어 있음.
+- **PCR 후행 구조**: opt_pcr_slope_norm은 선물 가격 대비 1~2시간 후행. OFI(실시간 호가)와 충돌 시 방향 소거 구조적 문제.
+- **EKS P3 임계값 과도**: conf>=50% 고정 → 오늘처럼 conf_max=45%인 날 하루 전체 차단. mc 기반 동적 임계값으로 변경.
+
+---
+
 ## 2026-06-04 (109차 — 진입 미발생 원인 분석 + MaskedFallback + PriceStructureBoost)
 
 **Work**: 12:44:30 이후 로그 분석 → 진입 미발생 3가지 원인 특정 → opt_pcr 원시 데이터 검증 → 안 1(MaskedFallback), 안 2(PriceStructureBoost) 구현 + ScalerMonitorPanel 툴팁 추가.

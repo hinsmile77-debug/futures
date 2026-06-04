@@ -130,6 +130,10 @@ class MultiHorizonModel:
         self._recent_extreme_feat_history: List[List[str]] = []  # 최근 N봉 극단 피처 이력
         self._force_cooldown_until: Optional[datetime.datetime] = None
         self.last_extreme_features: List[str] = []           # predict_proba 후 노출
+        # [⑥] opt_pcr_* 피처 감쇠 타이머 — D_FORCE가 opt_pcr 피처에서 발동 시 30분간 0.3× 감쇠
+        self._pcr_dampen_until: Optional[datetime.datetime] = None
+        self._PCR_DAMPEN_FACTOR: float = 0.3   # 감쇠 계수
+        self._PCR_DAMPEN_MINUTES: int  = 30    # 감쇠 유지 시간(분)
 
         # 이상값 피처 격리 예측 결과 (main.py에서 참조)
         self.last_masked_proba:    Optional[Dict] = None
@@ -239,6 +243,22 @@ class MultiHorizonModel:
 
             xs = scaler.transform(x2d_proc) if scaler else x2d_proc
 
+            # [⑥] opt_pcr_* 피처 감쇠 — D_FORCE opt_pcr 발동 후 30분간 0.3× 적용
+            # 이유: opt_pcr_slope_norm 등 PCR 피처가 OFI/CVD 방향과 충돌 시 conf 소거.
+            #       D_FORCE 재적합 후에도 재발하는 구조적 이상값이므로 감쇠로 영향 억제.
+            if (
+                self._pcr_dampen_until is not None
+                and datetime.datetime.now() < self._pcr_dampen_until
+                and self.feature_names
+            ):
+                _pcr_cols = [
+                    i for i, fn in enumerate(self.feature_names)
+                    if fn.startswith("opt_pcr")
+                ]
+                if _pcr_cols:
+                    xs = xs.copy()
+                    xs[0, _pcr_cols] *= self._PCR_DAMPEN_FACTOR
+
             # 극단 z-score 감지: |z| > EXTREME_ZSCORE_THRESHOLD 피처 수 로깅
             extreme_mask = np.abs(xs[0]) > self.EXTREME_ZSCORE_THRESHOLD
             extreme_count = int(np.sum(extreme_mask))
@@ -269,6 +289,10 @@ class MultiHorizonModel:
                     (datetime.datetime.now() - _fa).total_seconds() / 60.0
                     if _fa else None
                 )
+                _raw_val  = float(x2d[0][_max_z_idx])
+                _pre_val  = float(x2d_proc[0][_max_z_idx])
+                _sc_mean  = float(scaler.mean_[_max_z_idx])
+                _sc_std   = float(scaler.scale_[_max_z_idx])
                 _monitor_rows.append({
                     "ts":            monitor_ts,
                     "date":          monitor_ts[:10],
@@ -278,6 +302,10 @@ class MultiHorizonModel:
                     "max_z":         round(_max_z_val, 4),
                     "max_z_feature": _max_z_feat,
                     "extreme_count": extreme_count,
+                    "raw_value":     round(_raw_val, 6),
+                    "pre_value":     round(_pre_val, 6),
+                    "scaler_mean":   round(_sc_mean, 6),
+                    "scaler_std":    round(_sc_std,  6),
                 })
                 # [ScalerMonitor] 구조화 로그 — 노후화 또는 극단 z 발생 시만 출력
                 if extreme_count > 0 or (_age is not None and _age > self.SCALER_WARN_MINUTES):
@@ -641,6 +669,16 @@ class MultiHorizonModel:
             len(X), refreshed, elapsed,
         )
         self._last_scaler_refit_at = datetime.datetime.now()
+
+        # [⑥] D_FORCE + opt_pcr 피처 → 30분 감쇠 타이머 설정
+        if trigger_type == "D_FORCE" and "opt_pcr" in trigger_reason:
+            self._pcr_dampen_until = datetime.datetime.now() + datetime.timedelta(
+                minutes=self._PCR_DAMPEN_MINUTES
+            )
+            logger.warning(
+                "[PCR-Dampen] opt_pcr_* 피처 D_FORCE 발동 → %d분간 %.1f× 감쇠 적용",
+                self._PCR_DAMPEN_MINUTES, self._PCR_DAMPEN_FACTOR,
+            )
 
         # 섹션 8: 트리거 분봉 행에 refresh 정보 UPDATE
         if trigger_ts:

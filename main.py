@@ -2272,6 +2272,17 @@ class TradingSystem:
                         self._recalibrate_mc(trigger="DAILY_WARMUP")
                     except Exception as _mc_e2:
                         logger.warning("[DynMC] 워밍업 후 mc 재보정 실패: %s", _mc_e2)
+                    # [Platt] 앙상블 보정기 복원 — 재시동마다 100건 재누적 방지
+                    try:
+                        from config.settings import ENSEMBLE_CALIBRATOR_PATH
+                        if self.ensemble.ensemble_calibrator.load(ENSEMBLE_CALIBRATOR_PATH):
+                            log_manager.system(
+                                f"[Calibration] 앙상블 보정기 복원 완료 "
+                                f"n={self.ensemble.ensemble_calibrator.n_samples}",
+                                "INFO",
+                            )
+                    except Exception as _cal_e:
+                        logger.warning("[Calibration] 보정기 복원 실패 (무해): %s", _cal_e)
                 except Exception as _sw_e:
                     logger.warning("[ScalerWarmup] 실패 (무해): %s", _sw_e)
                 finally:
@@ -3770,14 +3781,14 @@ class TradingSystem:
                     logger.debug("[SHS-EKS] 원인 추론 실패 (무시): %s", _ek_re)
 
         # [P3] EKS 자동 해제 — 09:20 이후 1회: 스케일러 갱신 + conf 회복 시 재개
-        # 조건: kill_switch 활성 + 미시도 + 09:20+ + scaler_age<1h + conf>=50%
+        # 조건: kill_switch 활성 + 미시도 + 09:20+ + scaler_age<1h + conf>=max(mc,0.42)
         if (
             self.system_health.kill_switch_active
             and not self.system_health._eks_recovery_checked
             and ts_raw.time() >= datetime.time(9, 20)
         ):
             _p3_scaler_age = self.model.canary_stale_age_hours()
-            if self.system_health.try_eks_recovery(_p3_scaler_age, confidence):
+            if self.system_health.try_eks_recovery(_p3_scaler_age, confidence, actual_min_conf):
                 log_manager.system(
                     f"[SHS-EKS] EKS 자동 해제 확정 — 장중 진입 재개 "
                     f"scaler_age={_p3_scaler_age:.1f}h conf={confidence:.1%}",
@@ -5188,6 +5199,18 @@ class TradingSystem:
                     except Exception:
                         pass
 
+        # [Platt] 앙상블 보정기 저장 — 다음 기동 시 즉시 복원 가능
+        try:
+            from config.settings import ENSEMBLE_CALIBRATOR_PATH
+            if self.ensemble.ensemble_calibrator.save(ENSEMBLE_CALIBRATOR_PATH):
+                log_manager.system(
+                    f"[Calibration] 앙상블 보정기 저장 완료 "
+                    f"n={self.ensemble.ensemble_calibrator.n_samples}",
+                    "INFO",
+                )
+        except Exception as _cal_s_e:
+            logger.warning("[Calibration] 보정기 저장 실패 (무해): %s", _cal_s_e)
+
         # ── 자가학습 일일 마감 집계 ──────────────────────────────
         _today_accuracy = self.online_learner.recent_accuracy()
         try:
@@ -5450,6 +5473,9 @@ class TradingSystem:
          150s  — 경보 로그 + 알림 (심각)
          240s  — 경보 로그 + 알림 + raw_candles 강제 재실행
         """
+        # 장 마감 후에는 파이프라인이 정상적으로 멈추므로 워치독 무시
+        if not is_market_open():
+            return
         m, s = divmod(elapsed_s, 60)
         elapsed_str = f"{m}분 {s:02d}초"
 

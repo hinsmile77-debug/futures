@@ -1,7 +1,43 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-04 (109차 세션 마무리) — **MaskedFallback (이상값 피처 격리 예측) + PriceStructureBoost (가격 구조 TrendGate 부스트)**
+> 마지막 업데이트: 2026-06-04 (110차 세션 마무리) — **진입0 원인 6중 분석 + 진입 개선 6종 구현**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-04 (110차 세션 마무리) — 진입0 로그 분석 + 개선 6종 전면 구현
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **① opt_pcr_slope_norm SCALER_CLIP_FEATURES 추가** | **완료** | `config/settings.py` |
+| **② EKS P3 해제 임계값 0.50 → max(mc, 0.42)** | **완료** | `safety/system_health.py`, `main.py` |
+| **③ CoherenceGate GAP_OPEN/TrendGate 차등 0.60→0.50** | **완료** | `model/ensemble_decision.py` |
+| **④ FLAT 연속 시 ShortHorizonOverride (1m/3m+OFI/CVD)** | **완료** | `model/ensemble_decision.py` |
+| **⑤ Platt 보정기 디스크 영속화 (save/load)** | **완료** | `learning/calibration.py`, `main.py`, `config/settings.py` |
+| **⑥ opt_pcr_* D_FORCE 연동 30분 0.3× 감쇠** | **완료** | `model/multi_horizon_model.py` |
+| **구문 검증** | **완료** ✅ | 5개 파일 `ast.parse` |
+| **실세션 효과 검증** | **미실시** — 다음 장 로그 확인 필요 | — |
+
+### 오늘 진입0 원인 분석 요약 (로그 기반)
+
+| 레벨 | 원인 | 내용 |
+|---|---|---|
+| L1 | EKS 09:05 발동 | conf_max=40.2%, core_pass=0/5봉 → 오전 전체 차단 |
+| L1 | conf 만성 미달 | 평균 39.7% vs mc 43.0~43.9% (갭 -3.3%p) |
+| L1 | conf↑=dir=FLAT | 12:45~13:15 conf 43~45% 달성했으나 전부 dir=+0 |
+| L2 | opt_pcr_slope_norm 반복 이상값 | z=+9.21까지 폭발, D_FORCE 후에도 재발, OFI와 충돌 |
+| L2 | CoherenceGate 과잉 차단 | 합의도 0.25~0.50 (임계값 0.60 미달) |
+| L3 | 캘리브레이션 불량 | ECE=0.250, conf=45%에서 실제 acc=36% |
+
+### 다음 장에서 확인할 것
+
+1. `[PCR-Dampen]` 로그 — opt_pcr D_FORCE 후 30분 감쇠 발동 여부
+2. `[ShortHorizonOverride]` 로그 — FLAT 5봉+ 연속 시 1m/3m 방향 채택 여부
+3. `[SHS-EKS] EKS 자동 해제 ... (임계=43.0%)` — P3 완화 조건으로 해제 여부
+4. `[CoherenceGate 차단 ... zone=GAP_OPEN min=0.50]` — 차등 임계값 적용 확인
+5. `[Calibration] 앙상블 보정기 복원 완료` — 기동 시 pkl 복원 확인
 
 ---
 
