@@ -2,6 +2,42 @@
 
 ---
 
+## 2026-06-04 (109차 세션 마무리 — MaskedFallback + PriceStructureBoost)
+
+### [분석] 오늘(2026-06-04) 진입 미발생 구조적 원인
+
+**현상**: 1분봉 차트 총 레인지 41pt, 여러 명확한 추세 구간 존재. 그러나 하루 전체 grade=X, 진입 0건.
+
+**원인 1 — opt_pcr_slope_norm 극단 z-score 지속**: 오늘 외인이 오전 숏스트랭글 → 오후 대규모 풋 매수(PCR 0.01→1.37)로 전환했고, 이것이 스케일러 500봉 참조 분포와 구조적으로 달라 `|z|>4` 연속 발생. D_FORCE 매 5분 반복. OFI 상승신호와 충돌해 방향성 희석 → conf 42~45% 수렴.
+
+**원인 2 — TrendGate streak=10 달성 후 conf 부족**: TrendGate가 발동해 min_conf=0.44로 낮춰도 모델 출력 conf=33%로 동적임계값(42.6%)을 통과 못 함.
+
+**원인 3 — opt_pcr_bearish z=+11.14 (이진 피처)**: PCR≥1.2가 500봉 내 사실상 첫 발생 → mean≈0, std≈0.09 → z=+11. 모델이 이 상황을 학습한 적 없어 확률 불안정.
+
+**결론**: 데이터 이상 없음. 오늘 시장 자체가 OFI(상승)와 PCR(하락헤지) 충돌 구조였고, 모델이 방향성을 못 잡은 것은 어느 정도 정상 동작. 단 차트상 명확한 추세 구간을 놓쳤으므로 감지 방법 보강 필요 → MaskedFallback + PriceStructureBoost로 대응.
+
+### [설계] MaskedFallback — 연속 극단 피처 격리 후 GBM 재호출
+
+**Files**: `model/multi_horizon_model.py`, `main.py`
+
+**Decision**: `_extreme_feat_streak`에서 연속 5분 이상 `|z|>4`인 피처를 0으로 치환하고 GBM predict_proba를 재호출(수 ms). SGD 블렌딩 후 `ensemble.compute`를 한 번 더 돌려, 정상 dir=FLAT + masked conf 이득 ≥ 5%p이면 격리 결과 채택.
+
+**Why**: opt_pcr_slope_norm처럼 특정 피처만 하루 종일 극단값을 내뿜는 경우, 그 피처가 OFI/CVD 등 다른 신호를 상쇄해 모델이 방향성을 잃는다. 해당 피처만 중립화했을 때 더 높은 신뢰도가 나오면, 그것이 '이 피처를 제외한 나머지 신호의 방향성'이 실제로 존재한다는 증거다.
+
+**How to apply**: 격리 이후 conf 이득이 5%p 미만이면 채택 안 함(잡음). 격리 피처가 실제 유효 신호일 때 오판하는 케이스를 다음 장에서 모니터링하고, CONF_GAIN 임계를 조정한다.
+
+### [설계] PriceStructureBoost — HH-HL/LH-LL 구조 확인 시 min_conf 추가 완화
+
+**Files**: `strategy/entry/trend_persistence.py`, `main.py`
+
+**Decision**: TrendGate `update(features, recent_bars)` 에 최근 5봉 OHLC를 넘겨, HH-HL(연속 고점·저점 상승) 또는 LH-LL 구조가 확인되고 streak≥5 + OFI/CVD 동의 시 `min_conf_override`를 0.44→0.38로 추가 완화.
+
+**Why**: 기존 TrendGate는 VWAP+CVD로만 추세를 감지하는데, 오늘처럼 CVD가 혼재할 때는 streak 달성이 어렵거나 min_conf 0.44 이하로 못 내려간다. 가격 자체의 고점-저점 구조(모델과 독립적인 신호)로 이중 확인하면 더 안정적인 추세 판정이 가능하다.
+
+**How to apply**: OFI or CVD 중 하나는 동의해야 부스트가 인정됨(과진입 방지). 횡보 구간에서 HH-HL 5봉 연속이 우연히 발생하는 오발동 빈도를 다음 장에서 확인한다.
+
+---
+
 ## 2026-06-04 (108차 세션 마무리 — CB⑤ 경고 지속 완화 4종)
 
 ### [설계] EffectReports는 minute pipeline 안에서 돌리지 않고 전용 타이머/worker로 분리

@@ -104,6 +104,10 @@ class MultiHorizonModel:
     EXTREME_ZSCORE_THRESHOLD = 4.0
     EXTREME_ZSCORE_LOG_TOPK = 5
 
+    # 이상값 피처 격리 예측 (Masked Fallback)
+    MASKED_FALLBACK_MIN_STREAK = 5    # 동일 피처 연속 N분 극단 → 격리 대상
+    MASKED_FALLBACK_CONF_GAIN  = 0.05 # 격리 후 conf 이 이상 오르면 채택
+
     GBM_PARAMS = {
         "n_estimators":     200,   # 100→200: BatchRetrainer 동일 수준, PreRetrain 품질 개선
         "max_depth":        5,     # 4→5: 3000샘플×balanced weight 환경에서 표현력 확대
@@ -126,6 +130,10 @@ class MultiHorizonModel:
         self._recent_extreme_feat_history: List[List[str]] = []  # 최근 N봉 극단 피처 이력
         self._force_cooldown_until: Optional[datetime.datetime] = None
         self.last_extreme_features: List[str] = []           # predict_proba 후 노출
+
+        # 이상값 피처 격리 예측 결과 (main.py에서 참조)
+        self.last_masked_proba:    Optional[Dict] = None
+        self.last_masked_features: List[str]      = []
 
         os.makedirs(HORIZON_DIR, exist_ok=True)
         os.makedirs(SCALER_DIR, exist_ok=True)
@@ -324,6 +332,20 @@ class MultiHorizonModel:
         # Phase B: 전 호라이즌 union (순서 보존 dedup)
         self.last_extreme_features = list(dict.fromkeys(_all_extreme_names))
 
+        # 이상값 피처 격리 예측 — 연속 MASKED_FALLBACK_MIN_STREAK 분 극단 피처 격리
+        # _extreme_feat_streak 는 check_refresh_trigger 호출 전이므로 이전 분 streak 반영
+        _chronic = [
+            feat for feat, streak in self._extreme_feat_streak.items()
+            if streak >= self.MASKED_FALLBACK_MIN_STREAK
+            and feat in set(self.last_extreme_features)
+        ]
+        if _chronic and self.feature_names:
+            self.last_masked_proba    = self._predict_masked(x2d_proc, _chronic)
+            self.last_masked_features = _chronic
+        else:
+            self.last_masked_proba    = None
+            self.last_masked_features = []
+
         # 섹션 8: scaler_events 일괄 INSERT (오류 시 무시 — 모니터링 전용)
         if _monitor_rows:
             try:
@@ -332,6 +354,62 @@ class MultiHorizonModel:
             except Exception as _sme:
                 logger.debug("[ScalerMonitor] INSERT 스킵: %s", _sme)
 
+        return results
+
+    def _predict_masked(
+        self, x2d_proc: np.ndarray, mask_features: List[str]
+    ) -> Dict[str, Dict]:
+        """극단 피처를 0(중립)으로 대체한 뒤 호라이즌별 예측을 반환한다.
+
+        GBM 재학습 없이 스케일러 통과 → predict_proba 만 재실행하므로 수 ms 이내 완료.
+        반환 형식은 predict_proba 와 동일 (extreme_count=0 으로 고정).
+        """
+        mask_idx = {
+            i for i, name in enumerate(self.feature_names)
+            if name in set(mask_features)
+        }
+        if not mask_idx:
+            return {}
+
+        xm = x2d_proc.copy()
+        for i in mask_idx:
+            xm[0, i] = 0.0
+
+        results: Dict[str, Dict] = {}
+        for horizon, clf in self.models.items():
+            if not self._is_fitted.get(horizon):
+                results[horizon] = self._default_result()
+                continue
+            scaler = self.scalers.get(horizon)
+            xs = scaler.transform(xm) if scaler else xm
+
+            classes   = list(clf.classes_)
+            proba     = clf.predict_proba(xs)[0]
+            proba_map = {int(c): float(p) for c, p in zip(classes, proba)}
+            up   = proba_map.get(DIRECTION_UP,   0.0)
+            down = proba_map.get(DIRECTION_DOWN, 0.0)
+            flat = proba_map.get(DIRECTION_FLAT, 0.0)
+            direction  = max(proba_map, key=proba_map.get)
+            confidence = max(up, down, flat)
+
+            if confidence > self.CONF_CLIP:
+                excess = confidence - self.CONF_CLIP
+                if direction == DIRECTION_UP:
+                    up    = self.CONF_CLIP; down += excess / 2.0; flat += excess / 2.0
+                elif direction == DIRECTION_DOWN:
+                    down  = self.CONF_CLIP; up   += excess / 2.0; flat += excess / 2.0
+                else:
+                    flat  = self.CONF_CLIP; up   += excess / 2.0; down += excess / 2.0
+                confidence = self.CONF_CLIP
+
+            results[horizon] = {
+                "up":            round(up, 4),
+                "down":          round(down, 4),
+                "flat":          round(flat, 4),
+                "direction":     direction,
+                "confidence":    round(confidence, 4),
+                "extreme_count": 0,
+            }
         return results
 
     def _summarize_extreme_zscores(self, z_row: np.ndarray, extreme_mask: np.ndarray) -> str:

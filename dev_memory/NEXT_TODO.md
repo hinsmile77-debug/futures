@@ -6,6 +6,31 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-04 (109차 세션 마무리) — MaskedFallback + PriceStructureBoost 후속 검증
+
+### 한일 요약
+
+- [DONE 2026-06-04] **12:44 이후 진입 미발생 원인 로그 분석** — 앙상블 conf 저하·TrendGate 차단·opt_pcr_slope_norm 극단값 3중 원인 특정
+- [DONE 2026-06-04] **opt_pcr 원시 데이터 검증** — 외인 풋 매수 급증 실제 신호 확인 (데이터 이상 아님)
+- [DONE 2026-06-04] **ScalerMonitorPanel D_FORCE 툴팁** — "오늘 refresh 이벤트" 카드에 A/B/C/D 트리거 종류 + D_FORCE 조건 HTML 툴팁 추가
+- [DONE 2026-06-04] **안 1 MaskedFallback 구현** — `multi_horizon_model.py` `_predict_masked` + `last_masked_proba`; `main.py` 격리 블렌딩 + 채택 로직
+- [DONE 2026-06-04] **안 2 PriceStructureBoost 구현** — `trend_persistence.py` `_price_structure()` + min_conf 0.38 부스트; `main.py` `_price_struct_buf` + TrendGate 전달
+
+### 다음 할 일
+
+- [NEXT 다음 장 중] **MaskedFallback 발동 확인**
+  - SIGNAL.log에서 `[MaskedFallback]` 로그 확인 (격리 피처명·conf 전후·grade)
+  - 채택 후 실제 가격 방향과 일치 여부 → 잘못 채택 케이스 있으면 CONF_GAIN 임계 상향 검토
+
+- [NEXT 다음 장 중] **PriceStructureBoost 발동 확인**
+  - SIGNAL.log에서 `가격구조 부스트 ON` + `min_conf 0.44→0.38` 로그 확인
+  - 부스트 발동 후에도 conf < 0.38이면 — 0.38보다 더 낮추거나 conf_boost 추가 검토
+  - 부스트 오발동(횡보 구간에서 HH-HL 5봉 연속 발생) 여부 확인
+
+- [NEXT 추후] **안 3 — PCR 가중치 동적 감쇠 검토**
+  - D_FORCE 유발 피처가 opt_pcr_* 계열이면 모델 입력에서 해당 피처 가중치 0.3배 감쇠
+  - SGD 학습률 임시 0 처리 포함 — SGD 학습 불안정 가능성으로 별도 검증 필요
+
 ## 2026-06-04 (108차 세션 마무리) — CB⑤ 경고 완화 후속 확인
 
 ### 한일 요약

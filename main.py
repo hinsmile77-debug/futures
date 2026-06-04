@@ -355,6 +355,7 @@ class TradingSystem:
         self._last_close: float = 0.0                # 직전 분봉 종가 — 옵션체인 QTimer 폴링에 사용
         # ── rolling σ 임계값 (방법3) ──────────────────────────────────────
         self._sigma_buf: deque = deque(maxlen=20)    # 1분봉 수익률 rolling 버퍼
+        self._price_struct_buf: deque = deque(maxlen=8)  # 가격 구조 감지용 최근 8봉 OHLC
         self._sigma_20:  float = 0.0                 # 현재 rolling σ (%, 방법3 threshold 계산용)
         self._sigma_ready: bool = False              # sigma_20봉 달성 플래그
         self._last_sigma_20: float = 0.0            # 전날 EOD sigma (장 초반 20봉 미수집 구간 폴백)
@@ -2525,6 +2526,12 @@ class TradingSystem:
         self._stuck_this_minute = False
         log_manager.signal(f"--- {ts} 분봉 파이프라인 시작 ---")
 
+        # 가격 구조 감지용 버퍼 갱신
+        self._price_struct_buf.append({
+            "high": float(bar.get("high", 0.0) or 0.0),
+            "low":  float(bar.get("low",  0.0) or 0.0),
+        })
+
         # ── rolling σ 갱신 (방법3) ─────────────────────────────────────
         # 매분 1분봉 수익률을 sigma_buf에 추가 → HORIZON_THRESHOLDS 실시간 갱신
         _last_p = self._last_pipeline_price
@@ -3045,6 +3052,19 @@ class TradingSystem:
                     "up": round(up, 4), "down": round(dn, 4), "flat": round(fl, 4),
                     "direction": best[1], "confidence": round(best[0], 4),
                 }
+
+            # [MaskedFallback] 격리 예측 SGD 블렌딩 (GBM 경로에서만 실행)
+            _masked_hp_blended: dict = {}
+            if self.model.last_masked_proba:
+                for _hm, _gbm_m in self.model.last_masked_proba.items():
+                    _sgd_m   = self.online_learner.predict_proba(_hm, feat_vec)
+                    _blend_m = self.online_learner.blend_with_gbm(_gbm_m, _sgd_m, _hm)
+                    _um, _dm, _fm = _blend_m["up"], _blend_m["down"], _blend_m["flat"]
+                    _best_m = max([(_um, 1), (_dm, -1), (_fm, 0)], key=lambda t: t[0])
+                    _masked_hp_blended[_hm] = {
+                        "up": round(_um, 4), "down": round(_dm, 4), "flat": round(_fm, 4),
+                        "direction": _best_m[1], "confidence": round(_best_m[0], 4),
+                    }
         else:
             # ─ SGD-only 또는 bootstrap 경로 (GBM 미학습) ─
             horizon_proba = {}
@@ -3062,6 +3082,7 @@ class TradingSystem:
                 log_manager.signal("[SGD-only] 예측 진행 (GBM 학습 대기)")
             else:
                 log_manager.signal("[default] 1/3 균등 예측 → DB 저장 → SGD 부트스트랩")
+            _masked_hp_blended = {}  # SGD-only 경로: 격리 예측 미지원
 
         # ── [5순위] CORE Health Score 매분 업데이트 ───────────────────
         _cfs = self.feature_builder._core_fail_streak
@@ -3207,7 +3228,9 @@ class TradingSystem:
         # (StuckBreaker가 TrendGate 상태를 참조하므로 순서가 중요)
         # UP:   above_vwap=1 AND cvd_direction=1  이 10분+ → UP  min_conf → 0.44
         # DOWN: above_vwap=0 AND cvd_direction=-1 이 10분+ → DN  min_conf → 0.44
-        _tp = self.trend_gate.update(features)
+        _tp = self.trend_gate.update(
+            features, recent_bars=list(self._price_struct_buf)
+        )
         # P4: 시간대 × 호라이즌 min_conf 필터링
         # OPEN_VOLATILE 구간 15m/30m처럼 해당 시간대에서 F1이 낮은 호라이즌 제외
         _zone_h_confs = get_horizon_min_confs(get_time_zone())
@@ -3253,6 +3276,42 @@ class TradingSystem:
         confidence = decision["confidence"]
         grade      = decision["grade"]
         self._last_ensemble_direction = direction  # Contrarian Mode 동방향 추적용
+
+        # [MaskedFallback] 격리 예측 채택 — 정상 앙상블이 FLAT이고 격리 예측이 더 높을 때
+        if direction == 0 and _masked_hp_blended and self.model.last_masked_features:
+            _mhp_cal  = self._apply_horizon_calibration(_masked_hp_blended)
+            _mhp_filt = {
+                h: v for h, v in _mhp_cal.items()
+                if float(v.get("confidence", 0.0)) >= _zone_h_confs.get(h, 0.0)
+            } if _zone_h_confs else _mhp_cal
+            _mhp_ens = (
+                {h: v for h, v in _mhp_filt.items() if h in _enabled_hz}
+                if _enabled_hz and len(_enabled_hz) < len(_mhp_filt)
+                else _mhp_filt
+            )
+            if len(_mhp_ens) >= 2:
+                _mdec  = self.ensemble.compute(
+                    _mhp_ens, self.current_regime, features=features,
+                    adaptive_gating=True, acc30m=_acc30m,
+                    trend_gate_up_active=_tp["up_active"],
+                    trend_gate_dn_active=_tp["dn_active"],
+                    time_zone=get_time_zone(),
+                )
+                _mdir  = _mdec["direction"]
+                _mconf = _mdec["confidence"]
+                _gain  = _mconf - confidence
+                if (_mdir != 0
+                        and _gain >= self.model.MASKED_FALLBACK_CONF_GAIN):
+                    _old_conf  = confidence
+                    decision   = _mdec
+                    direction  = _mdir
+                    confidence = _mconf
+                    grade      = decision["grade"]
+                    log_manager.signal(
+                        f"[MaskedFallback] {self.model.last_masked_features} 격리 "
+                        f"→ conf {_old_conf:.1%}→{_mconf:.1%} "
+                        f"dir={_mdir:+d} grade={grade}"
+                    )
 
         # ── 상수 출력 호라이즌 감지 → 스케일러 재적합 트리거 ────────────
         # GBM이 동일 conf를 5분+ 출력하면 스케일러 노후로 모든 입력이 같은 리프에
@@ -3315,8 +3374,10 @@ class TradingSystem:
             if actual_min_conf < _prev_mc:
                 _tp_label  = "UP" if direction == 1 else "DN"
                 _tp_streak = _tp["up_streak"] if direction == 1 else _tp["dn_streak"]
+                _ps_tag = " [가격구조부스트]" if _tp.get("price_boost_active") else ""
                 log_manager.signal(
-                    f"[TrendGate] {_tp_label} 추세 지속 {_tp_streak}분 — min_conf {_prev_mc:.2f}→{actual_min_conf:.2f}"
+                    f"[TrendGate] {_tp_label} 추세 지속 {_tp_streak}분{_ps_tag}"
+                    f" — min_conf {_prev_mc:.2f}→{actual_min_conf:.2f}"
                 )
         # 대시보드 등급 카드 깜빡임: UP 상방 원웨이=녹색 / DN 하방 원웨이=오렌지
         _tp_dash_mode = (

@@ -4,6 +4,66 @@
 
 ---
 
+## 2026-06-04 (109차 — 진입 미발생 원인 분석 + MaskedFallback + PriceStructureBoost)
+
+**Work**: 12:44:30 이후 로그 분석 → 진입 미발생 3가지 원인 특정 → opt_pcr 원시 데이터 검증 → 안 1(MaskedFallback), 안 2(PriceStructureBoost) 구현 + ScalerMonitorPanel 툴팁 추가.
+
+### 1. 12:44:30 이후 로그 분석 결과
+
+**결론**: 오늘 하루 전체 grade=X, 진입 0건. 원인 3가지 중첩.
+
+| 원인 | 내용 |
+|---|---|
+| ① 앙상블 conf 구조적 저하 | dir=+0, conf=42~45% — 50% 미만이라 방향성 없음으로 판정 |
+| ② TrendGate→Checklist 차단 | streak=10 발동 → dir=+1 but conf=33% < 동적임계값(42.6%) → Checklist X |
+| ③ opt_pcr_slope_norm 하루 종일 \|z\|>4 | D_FORCE 매 5분 반복 — OFI 상승신호와 충돌해 방향성 희석 |
+
+**특이점**: 13:29~13:32 `dir=+0 conf=62.2%` — 외인 풋 대규모 매수(하락 헤지) 신호가 모델에서 DOWN 방향 62%로 인식됐으나 롱 전용 시스템이라 dir=0 처리.
+
+### 2. opt_pcr 원시 데이터 검증
+
+**100% 실제 시장 신호** (데이터 이상 아님). 외인 옵션 포지션 구조 전환:
+
+| 시각 | call_foreign | put_foreign | PCR | 해석 |
+|---|---|---|---|---|
+| 12:44 | -3,779 | -299 | 0.079 | 숏스트랭글 (콜+풋 매도) |
+| 13:04 | -4,253 | +46 | 0.011 | 풋 순매수 전환 시작 |
+| 13:42 | -4,117 | +1,173 | 0.285 | 풋 매수 급가속 |
+| 14:24 | -4,782 | +6,008 | 1.256 | **pcr_bearish=1 발동** |
+| 14:28 | -4,691 | +6,445 | 1.374 | 합성 숏 / 하방 헤지 완성 |
+
+`opt_pcr_bearish z=+11.14` 원인: 이진 피처(0/1), 500봉 내 PCR≥1.2 사례 거의 없어 mean≈0, std≈0.09 → z=(1-0)/0.09≈11. 데이터 이상 아닌 희귀 이벤트.
+
+### 3. ScalerMonitorPanel 툴팁 추가
+
+`dashboard/panels/scaler_monitor_panel.py` — "오늘 refresh 이벤트" QGroupBox에 `setToolTip()` 추가. A/B/C/D 트리거 종류 + D_FORCE 발동 조건·쿨다운·반복 원인 HTML 툴팁.
+
+### 4. 안 1 — 이상값 피처 격리 예측 (MaskedFallback)
+
+**Files**: `model/multi_horizon_model.py`, `main.py`
+
+- `_extreme_feat_streak` 에서 연속 5분 이상 극단인 피처 → `_chronic` 목록 추출
+- `_predict_masked(x2d_proc, chronic)`: 격리 피처를 0으로 치환 후 GBM만 재호출 (수 ms)
+- main.py: masked GBM + SGD 블렌딩 → `_masked_hp_blended`
+- 정상 앙상블 dir=FLAT이고 masked conf − raw conf ≥ 5%p이면 masked 결과 채택
+- 로그: `[MaskedFallback] ['opt_pcr_slope_norm'] 격리 → conf 43%→61% dir=+1 grade=C`
+
+### 5. 안 2 — 가격 구조 TrendGate 부스트 (PriceStructureBoost)
+
+**Files**: `strategy/entry/trend_persistence.py`, `main.py`
+
+- `_price_structure(bars, n=5)`: 최근 5봉 HH-HL(+1) / LH-LL(-1) / 기타(0) 판정
+- `update(features, recent_bars=None)`: streak≥5 + 가격구조 동일방향 + (OFI or CVD 동의) → `min_conf_override` 0.44→0.38 추가 완화
+- main.py: `_price_struct_buf = deque(maxlen=8)` 추가, 매분 bar high/low 적재
+- TrendGate 로그에 `[가격구조부스트]` 태그 추가
+
+### 잔존 미검증
+
+- MaskedFallback / PriceStructureBoost 효과: 다음 장 실데이터로 발동 여부 확인 필요
+- opt_pcr_slope_norm 극단값: 오늘 스케일러 분포가 특수했으나 일반화 여부 미확인
+
+---
+
 ## 2026-06-04 (107차 세션 마무리 — 재시동 점검 완료 + EffectReports 에러 분석)
 
 **Work**: 10:53:33 재시동 후 107차·106차 수정 내용 전수 확인. EffectReports 에러 원인 분석 및 진단 로그 개선.

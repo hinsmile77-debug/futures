@@ -1,7 +1,42 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-04 (108차 세션 마무리) — **CB⑤ 경고 지속 완화: EffectReports 비동기 분리 + degraded soft-weight + ProgramTrade probe 루프 중단 + ConstOut 3분 heavy cooldown**
+> 마지막 업데이트: 2026-06-04 (109차 세션 마무리) — **MaskedFallback (이상값 피처 격리 예측) + PriceStructureBoost (가격 구조 TrendGate 부스트)**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-04 (109차 세션 마무리) — 진입 미발생 분석 + 방향성 감지 개선 2종
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **[안 1] MaskedFallback — 이상값 피처 격리 예측** | **완료** | `model/multi_horizon_model.py`, `main.py` |
+| **[안 2] PriceStructureBoost — 가격 구조 TrendGate 부스트** | **완료** | `strategy/entry/trend_persistence.py`, `main.py` |
+| **ScalerMonitorPanel D_FORCE 툴팁** | **완료** | `dashboard/panels/scaler_monitor_panel.py` |
+| **구문 검증** | **완료** ✅ | `python -c "ast.parse(...)"` 3개 파일 |
+| **실세션 효과 검증** | **미실시** — 다음 장 로그 확인 필요 | — |
+
+### 안 1 — MaskedFallback 동작 요약
+
+- 발동 조건: 동일 피처 `|z|>4` 연속 **5분** 이상 (streak ≥ 5) + 이번에도 극단
+- 동작: 해당 피처를 0으로 치환 후 GBM만 재호출 → SGD 블렌딩 → `ensemble.compute`
+- 채택 조건: 정상 dir=FLAT + masked_conf − raw_conf **≥ 5%p**
+- 로그 키워드: `[MaskedFallback]`
+
+### 안 2 — PriceStructureBoost 동작 요약
+
+- 발동 조건: HH-HL (또는 LH-LL) **5봉** 연속 + streak ≥ 5 + OFI/CVD 동의
+- 동작: `min_conf_override` 0.44 → **0.38** 추가 완화
+- `_price_struct_buf = deque(maxlen=8)` 매분 bar high/low 적재
+- 로그 키워드: `[TrendGate] ... [가격구조부스트]`, `[TrendGate] 가격구조 부스트 ON`
+
+### 다음 장에서 확인할 것
+
+1. opt_pcr_slope_norm 극단 상황에서 `[MaskedFallback]` 로그 발동 여부
+2. 상승 추세 구간에서 `가격구조 부스트 ON` + `min_conf 0.44→0.38` 로그 발동 여부
+3. 부스트 후에도 conf가 0.38 미달인 경우 — 0.38보다 더 낮춰야 할지 검토
+4. MaskedFallback이 잘못 채택되는 케이스(격리 피처가 실제 유효 신호였던 경우) 모니터링
 
 ---
 
