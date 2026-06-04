@@ -4,6 +4,66 @@
 
 ---
 
+## 2026-06-04 (106차 — 다이버전스 패널 투자자 수급 + 옵션 체인 미수집 원인 분석·수정)
+
+**Work**: UI 다이버전스 패널에서 투자자 수급 데이터 전체 미수집("대기") + 옵션 체인 "미수집" 원인을 조사하고 수정.
+
+### 1. 투자자 수급 TR 오사용 버그 발견 (CpSvrNew7212 → 7221)
+
+**조사 경위**:
+- SYSTEM 로그에서 매분 `[CybosInvestorRaw] futures via CpSysDib.CpSvrNew7212 supported=False nets={}` 반복 확인
+- `_probe_investor_tr`이 성공(probe ≠ None)인데도 `nets={}` → rows가 비어있거나 파싱 실패
+- 대신증권 자료실(seq=85 "[파이썬] 투자자별 매매 종합 예제") 직접 확인
+
+**버그**: 코드에서 사용한 `CpSysDib.CpSvrNew7212`는 존재하지 않는 TR명.
+
+**정확한 TR**: `CpSysDib.CpSvrNew7221` (투자자별 매매종합서비스)
+- 입력: `SetInputValue(0, ord('1'))` = 49 (선물계약 단위)
+- 행(ri) = 상품종류: ri=2 → 선물, ri=3 → 옵션콜, ri=4 → 옵션풋
+- 열(fi) = 투자자: fi=2 → 개인순매수, fi=5 → 외인순매수, fi=8 → 기관순매수
+
+**수정 파일**: `collection/cybos/api_connector.py`
+- `request_investor_futures()` candidates[0]: `CpSyrNew7212 (0,1)` → `CpSyrNew7221 (0, ord('1'))`
+- 파싱 로직 전면 재작성: row-by-investor → row-by-product × col-by-investor
+- `_7221_INVEST_INDEX` 상수 추가 (행 인덱스 의미 문서화)
+- `_probe_investor_tr`: logger → system_logger, 헤더 범위 24→32, fi 범위 10→15, ri 범위 20→30, 세션 1회 raw 덤프
+
+### 2. 옵션 체인 미수집 원인 (3가지)
+
+**원인 1 — 캐시 stale**:
+- 캐시 생성일: 2026-05-13. 현재 spot: **1385** (A0566 선물)
+- 캐시 max strike: **1340** < ATM 필터 하한 1355 → `_filter_atm` 0개 반환
+
+**원인 2 — ATM miss 시 재로드 없음**:
+- `if not target: logger.warning(...); return _empty()` — stale 캐시 계속 재사용
+
+**원인 3 — 장 시작 즉시 폴링 없음**:
+- `_option_chain_timer.start(300_000)` 후 300초 대기, 즉시 1회 호출 없음
+- `_investor_timer`는 즉시 `_fetch_investor_data()` 호출하는 것과 대조
+
+**수정**:
+- `option_chain_snapshot.py` `_poll()`: ATM miss → `_fetch_and_cache_chain()` 즉시 재로드 → 재필터
+- `option_chain_snapshot.py` `_poll()`: valid snapshots=0 → `_chain_raw=[]` 초기화 (다음 poll 강제 재로드)
+- `broker_runtime_service.py` `ensure_market_open_runtime_started()`: 타이머 시작 후 즉시 `_poll_option_chain()` 1회 호출
+- `data/option_chain.json` 삭제 (stale 캐시 제거)
+
+### 3. 로그 시스템 개선
+
+- `option_chain_snapshot.py`: `logger("OPTIONS")` → `system_logger("SYSTEM")` (initialize/refresh/warning 전환)
+- `main.py` `_poll_option_chain()` 예외 핸들링: `logger.debug` → `logger.warning`
+- 진단 스크립트 `_check_7212.py` 업데이트 (7212 → 7221 기준으로 재작성)
+
+### 4. 확인 필요 (다음 기동)
+
+1. SYSTEM.log: `[CybosProbe] CpSysDib.CpSyrNew7221 ok status=0` 기동 직후 1회
+2. SYSTEM.log: `[CybosProbe][RAW] CpSysDib.CpSyrNew7221 headers=... rows_sample=...` (raw 구조 확인)
+3. DATA.log: `[CybosInvestor] futures supported=True source=CpSysDib.CpSyrNew7221 foreign=±XXX`
+4. SYSTEM.log: `[OptionChain] 초기화 완료: 체인 캐시 0 종목` → 즉시 CpUtil.CpOptionCode 수집
+5. SYSTEM.log: `[OptionChain] 갱신 X.Xs | PCR=... avail=True`
+6. 패널 UI: 외인순매수/개인순매수/기관순매수 수치 표시 + 옵션 체인 "경신: HH:MM" 표시
+
+---
+
 ## 2026-06-03 (103차 — 방향/진입 모델 중복 피처 분석 + 2종 구조 개선)
 
 **Work**: 방향모델(GBM+SGD+RF+EnsembleGater)과 진입모델(Checklist+MetaGate+ExecutionGovernor+ToxicityGate) 사이의 중복 데이터 사용 3종 분석 후 우선순위 1·2 수정.

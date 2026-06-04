@@ -150,6 +150,9 @@ class BrokerRuntimeService:
                 reason,
                 getattr(system, "_futures_code", ""),
             )
+            # 투자자 타이머와 동일하게 장 시작 시 즉시 1회 폴링
+            if hasattr(system, "_poll_option_chain"):
+                system._poll_option_chain()
 
     @staticmethod
     def _is_realtime_running(realtime_data: Any) -> bool:

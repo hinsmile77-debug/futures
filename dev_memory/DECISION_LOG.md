@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-06-04 (106차 — 투자자 수급 + 옵션 체인 미수집)
+
+### [버그] CpSyrNew7212 → 실제 TR은 CpSyrNew7221
+
+**File**: `collection/cybos/api_connector.py`
+**Bug**: `request_investor_futures()` candidates[0]에 `CpSysDib.CpSvrNew7212` 사용.
+이 TR은 레지스트리에 등록되어 있지 않음 (probe 성공 = COM 객체 생성 가능, 하지만 데이터 없음).
+**발견 경로**: 대신증권 자료실 seq=85 "[파이썬] 투자자별 매매 종합 예제" 직접 확인.
+**Fix**: `CpSysDib.CpSvrNew7221` + `SetInputValue(0, ord('1'))` (선물계약 단위)
+**TR 구조 (대신증권 공식 확인)**:
+- 행 인덱스(ri) = 상품종류: 0=거래소주식, 1=코스닥주식, **2=선물**, 3=옵션콜, 4=옵션풋, ...
+- 열 인덱스(fi) = 투자자: 0=개인매도, 1=개인매수, **2=개인순매수**, 3=외인매도, 4=외인매수, **5=외인순매수**, 6=기관매도, 7=기관매수, **8=기관순매수**
+**How to apply**: 향후 투자자 TR 추가 시 항상 대신증권 자료실(money2.daishin.com seq=85~86) 우선 확인 후 코딩. 추측 기반 TR명 사용 금지.
+
+### [버그] 옵션 체인 stale 캐시로 ATM 필터 영구 실패
+
+**File**: `collection/options/option_chain_snapshot.py`
+**Bug**: 2026-05-13 캐시(max strike=1340)를 계속 재사용.
+현재 spot=1385 → ATM 필터 `[1355, 1415]`가 캐시 범위를 완전히 벗어남 → `target=[]` → `_empty()` 반환.
+ATM miss 시 재로드 로직 없어서 매 5분마다 같은 실패 반복.
+**Fix**: ATM 필터 miss 시 즉시 `_fetch_and_cache_chain()` 재로드 후 재필터. valid snapshots=0 시 `_chain_raw=[]` 초기화.
+**How to apply**: 옵션 체인 ATM miss 경고(`[OptionChain] ATM 대상 없음 ... stale, 재로드`)가 뜨면 자동 복구됨. 재로드 후에도 miss면 spot 범위 이상 가능 → 수동 확인.
+
+### [설계] 옵션 체인 장 시작 즉시 폴링 추가
+
+**File**: `strategy/runtime/broker_runtime_service.py`
+**Decision**: `_option_chain_timer.start()` 직후 `system._poll_option_chain()` 즉시 1회 호출.
+**Why**: `_investor_timer`는 `_fetch_investor_data()`를 즉시 호출하는데 옵션 체인 타이머는 300초 대기 후 첫 호출. 장 시작 직후 5분간 패널에 데이터 없음.
+**How to apply**: 09:00 직후 `[OptionChain] 갱신 ...` 로그가 즉시 나와야 함. 없으면 `_poll_option_chain`에 예외 발생 가능성 → SYSTEM.log 확인.
+
+### [설계] probe 진단 로그를 SYSTEM 레이어로 전환
+
+**File**: `collection/cybos/api_connector.py`, `collection/options/option_chain_snapshot.py`
+**Decision**:
+- `_probe_investor_tr`: `logger(__name__)` → `system_logger("SYSTEM")` 전환. 실패/성공 모두 SYSTEM.log에 기록.
+- 세션 당 1회: `[CybosProbe][RAW]` 메시지에 headers + rows[:5] 덤프 → TR 구조 파악용.
+- `option_chain_snapshot`: `logger("OPTIONS")`(파일 핸들러 없음) → `system_logger("SYSTEM")` 전환.
+**Why**: 기존 `logger(__name__)`과 `logger("OPTIONS")`는 `utils/logger.py`에 등록된 layer가 없어 어떤 파일에도 저장 안 됨. 투자자 TR probe 실패가 무음으로 지나가던 문제 해소.
+
+---
+
 ## 2026-06-03 (103차 — 중복 피처 구조 개선)
 
 ### [설계] 103-P1 — MetaGate에서 Microstructure 피처 제거

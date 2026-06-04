@@ -23,6 +23,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("OPTIONS")
+system_logger = logging.getLogger("SYSTEM")
 
 # ── OptionMst GetHeaderValue 인덱스 (2026-05-13 검증) ─────────────
 _HV_OI    = 99   # 현재 미결제약정 ✅
@@ -104,14 +105,14 @@ class OptionChainSnapshot:
             self._mst_obj = Dispatch("Dscbo1.OptionMst")
             self._ready = True
         except Exception as exc:
-            logger.warning("[OptionChain] COM 초기화 실패: %s", exc)
+            system_logger.warning("[OptionChain] COM 초기화 실패 (Dscbo1.OptionMst): %s", exc)
             return
 
         self._chain_raw = self._load_chain_cache()
         if self._chain_raw:
-            logger.info("[OptionChain] 체인 캐시 로드 완료: %d 종목", len(self._chain_raw))
+            system_logger.info("[OptionChain] 초기화 완료: 체인 캐시 %d 종목", len(self._chain_raw))
         else:
-            logger.info("[OptionChain] 체인 캐시 없음 — 첫 refresh 시 CpOptionCode 수집 예정")
+            system_logger.info("[OptionChain] 초기화 완료: 체인 캐시 없음 — 첫 refresh 시 CpOptionCode 수집 예정")
 
     # ── 매분 파이프라인 STEP 4 ─────────────────────────────────────
 
@@ -137,17 +138,22 @@ class OptionChainSnapshot:
             feats = self._poll(spot)
             self._last_features = feats
             self._last_refresh = time.time()
-            logger.info(
+            avail = bool(feats.get("opt_chain_available"))
+            system_logger.info(
                 "[OptionChain] 갱신 %.1fs | PCR=%.3f ATM_PCR=%.3f GEX=%.2fB avail=%s",
                 time.time() - t0,
                 feats.get("opt_chain_pcr", 0),
                 feats.get("opt_atm_pcr", 0),
                 feats.get("opt_gex_bn", 0),
-                bool(feats.get("opt_chain_available")),
+                avail,
             )
+            if not avail:
+                system_logger.warning(
+                    "[OptionChain] 데이터 수집 실패 — 체인 수집 또는 ATM 필터링 문제"
+                )
             return True
         except Exception as exc:
-            logger.warning("[OptionChain] refresh 실패: %s", exc)
+            system_logger.warning("[OptionChain] refresh 실패: %s", exc)
             return False
 
     def get_features(self) -> Dict[str, float]:
@@ -169,12 +175,33 @@ class OptionChainSnapshot:
         front = self._filter_front_month(self._chain_raw)
         target = self._filter_atm(front, spot, self._atm_window)
         if not target:
-            logger.warning("[OptionChain] ATM 대상 없음 spot=%.1f window=%.0f", spot, self._atm_window)
-            return self._empty()
+            # 캐시가 현재 spot 범위를 벗어남 (stale) → 강제 재로드
+            system_logger.warning(
+                "[OptionChain] ATM 대상 없음 spot=%.1f window=%.0f — 체인 캐시 stale, 재로드",
+                spot, self._atm_window,
+            )
+            self._chain_raw = self._fetch_and_cache_chain()
+            if not self._chain_raw:
+                return self._empty()
+            front = self._filter_front_month(self._chain_raw)
+            target = self._filter_atm(front, spot, self._atm_window)
+            if not target:
+                system_logger.warning(
+                    "[OptionChain] 재로드 후에도 ATM 대상 없음 spot=%.1f — 옵션 체인 수집 불가",
+                    spot,
+                )
+                return self._empty()
 
         snapshots = self._collect_snapshots(target)
         valid = [s for s in snapshots if not s.get("error")]
         if not valid:
+            errors = [s.get("error", "?") for s in snapshots[:3]]
+            system_logger.warning(
+                "[OptionChain] 스냅샷 전체 실패 target=%d errors=%s — 코드 만료 가능성",
+                len(target), errors,
+            )
+            # 체인 코드 만료 가능성 → 다음 refresh 시 강제 재로드
+            self._chain_raw = []
             return self._empty()
 
         pcr_oi = self._compute_pcr(snapshots)

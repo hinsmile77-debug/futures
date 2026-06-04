@@ -6,6 +6,36 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-04 (106차) — 다이버전스 패널 + 옵션 체인 수정
+
+### 한일 요약
+
+- [DONE 2026-06-04] **투자자 수급 TR 오사용 수정** — CpSyrNew7212(존재안함) → CpSyrNew7221, 입력 (0,1)→(0,ord('1')), 파싱 행=상품종류 열=투자자 전면 재작성 (api_connector.py)
+- [DONE 2026-06-04] **probe 진단 로그 강화** — logger→system_logger, 헤더 24→32, fi 10→15, ri 20→30, 세션 1회 raw 덤프 (api_connector.py)
+- [DONE 2026-06-04] **옵션 체인 ATM miss 자동 재로드** — stale 캐시 감지 시 CpUtil.CpOptionCode 즉시 재로드 (option_chain_snapshot.py)
+- [DONE 2026-06-04] **옵션 체인 valid=0 처리** — _chain_raw=[] 초기화 → 다음 poll 강제 재로드 (option_chain_snapshot.py)
+- [DONE 2026-06-04] **옵션 체인 장 시작 즉시 폴링** — 타이머 시작 즉시 _poll_option_chain() 1회 (broker_runtime_service.py)
+- [DONE 2026-06-04] **옵션 체인 로그 SYSTEM 전환** — "OPTIONS" logger → system_logger (option_chain_snapshot.py)
+- [DONE 2026-06-04] **stale 캐시 삭제** — data/option_chain.json (max strike 1340 < spot 1385)
+
+### 다음 할 일
+
+- [NEXT 다음 기동 시] **106차 실세션 확인**
+  - SYSTEM.log: `[CybosProbe] CpSysDib.CpSvrNew7221 ok` + `[CybosProbe][RAW]` rows_sample 출력
+  - DATA.log: `[CybosInvestor] futures supported=True source=CpSysDib.CpSyrNew7221 foreign=±XXX`
+  - SYSTEM.log: `[OptionChain] 초기화 완료` + 09:00 직후 `[OptionChain] 갱신 ... avail=True`
+  - 패널 UI: 외인/개인/기관 수치 표시 + 옵션 체인 "경신: HH:MM"
+  - rows_sample 비어있으면 → `python _check_7212.py` 실행 후 결과 공유
+
+- [NEXT 필요 시] **_check_7212.py 직접 실행 (Cybos 로그인 + 장 중)**
+  - CpSyrNew7221 rows 구조: ri=2(선물) fi=2/5/8 값 확인
+  - CpSvr8119 프로그램 매매 헤더 레이아웃 확인
+
+- [NEXT 추후] **프로그램 매매 TR (CpSvr8119) 파싱 검증**
+  - _check_7212.py 결과에서 헤더 인덱스 실측 → request_program_investor 추정값 보정
+
+---
+
 ## 2026-06-03 (103차) — 중복 피처 구조 개선 2종
 
 ### 한일 요약

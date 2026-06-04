@@ -2018,7 +2018,7 @@ class TradingSystem:
             if refreshed and self.dashboard:
                 self.dashboard.update_option_chain(self.option_chain_snap.get_features())
         except Exception as _e:
-            logger.debug("[OptionChain] 폴링 오류: %s", _e)
+            logger.warning("[OptionChain] 폴링 오류: %s", _e)
 
     def _on_tick_price_update(self, bar: dict) -> None:
         """틱 수신마다 대시보드 헤더 현재가 갱신."""

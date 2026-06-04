@@ -1,7 +1,53 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-04 (105차) — **EKS 노후화 A+B+C 추가 개선**
+> 마지막 업데이트: 2026-06-04 (106차) — **다이버전스 패널 투자자 수급 + 옵션 체인 미수집 수정**
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-04 (106차) — 다이버전스 패널 투자자 수급 + 옵션 체인 미수집 수정
+
+### 배경
+
+UI 다이버전스 패널에서 외인/개인/기관 선물 순매수가 전부 "대기" + 옵션 체인이 "미수집" 상태.
+로그 분석 + 대신증권 자료실 직접 조회로 근본 원인 2종 확인.
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **투자자 수급 TR 오사용 수정** — 7212 → 7221, 파싱 로직 전면 재작성 | **완료** | `collection/cybos/api_connector.py` |
+| **probe 진단 로그 강화** — system_logger, raw 덤프, 범위 확장 | **완료** | `collection/cybos/api_connector.py` |
+| **옵션 체인 ATM miss → 자동 재로드** | **완료** | `collection/options/option_chain_snapshot.py` |
+| **옵션 체인 장 시작 즉시 폴링** | **완료** | `strategy/runtime/broker_runtime_service.py` |
+| **옵션 체인 로그 SYSTEM으로 전환** | **완료** | `collection/options/option_chain_snapshot.py` |
+| **stale 캐시 삭제** | **완료** | `data/option_chain.json` (삭제됨) |
+| 다음 기동 시 실세션 확인 | **미완료** | — |
+
+### 수정 내용
+
+**투자자 수급 TR (api_connector.py)**:
+- 기존: `CpSysDib.CpSvrNew7212` (존재하지 않는 TR명) + `(0, 1)` 입력
+- 수정: `CpSysDib.CpSvrNew7221` (대신증권 자료실 seq=85 확인) + `(0, ord('1'))` 입력
+- 파싱 구조 변경: "행=투자자명" → "행=상품종류(ri), 열=투자자(fi)"
+  - ri=2(선물): fi=2(개인순), fi=5(외인순), fi=8(기관순)
+  - ri=3(옵션콜), ri=4(옵션풋)도 동일 열 구조로 콜/풋 넷 수집
+
+**옵션 체인 (option_chain_snapshot.py)**:
+- 원인: 2026-05-13 캐시 max strike=1340 < 현재 spot=1385 → ATM 필터 0개
+- ATM 필터 miss → 즉시 `CpUtil.CpOptionCode` 재로드 + 재필터 (자동 복구)
+- valid snapshots=0 → `_chain_raw=[]` 초기화 (다음 poll 강제 재로드)
+- initialize/refresh 로그를 `system_logger` 전환 → SYSTEM.log 가시화
+
+**broker_runtime_service.py**:
+- 옵션 체인 타이머 시작 즉시 `_poll_option_chain()` 1회 호출 추가 (기존: 300초 후 첫 호출)
+
+### 다음 기동 시 확인
+
+1. `[CybosProbe] CpSysDib.CpSvrNew7221 ok` + `[CybosProbe][RAW]` 덤프 (SYSTEM.log)
+2. `[CybosInvestor] futures supported=True source=CpSysDib.CpSvrNew7221 foreign=±XXX` (DATA.log)
+3. `[OptionChain] 갱신 ... avail=True` (SYSTEM.log, 09:00 직후)
+4. 패널 UI: 외인/개인/기관 수치 + 옵션 체인 "경신: HH:MM" 표시
 
 ---
 

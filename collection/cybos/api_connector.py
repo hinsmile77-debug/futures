@@ -841,9 +841,17 @@ class CybosAPI:
         9: "nation",
     }
 
-    # CpSysDib.CpSvrNew7212 한글 투자자명 → INVESTOR_KEYS 매핑
-    # (레지스트리 검증 2026-05-11: row[0]=투자자명, row[3]=선물순매수,
-    #  row[6]=콜순매수, row[9]=풋순매수)
+    # CpSysDib.CpSvrNew7221 — InvestIndex (행=상품종류, 대신증권 자료실 seq=85 확인)
+    # 0=거래소주식, 1=코스닥주식, 2=선물, 3=옵션콜, 4=옵션풋,
+    # 5=주식콜, 6=주식풋, 7=스타지수선물, 8=주식선물 ...
+    _7221_INVEST_INDEX: Dict[int, str] = {
+        0: "거래소주식", 1: "코스닥주식", 2: "선물", 3: "옵션콜", 4: "옵션풋",
+        5: "주식콜", 6: "주식풋", 7: "스타지수선물", 8: "주식선물",
+    }
+    # CpSysDib.CpSvrNew7221 — 열 인덱스 (개인/외인/기관)
+    # 2=개인순매수, 5=외인순매수, 8=기관순매수 (대신증권 자료실 seq=85 확인)
+
+    # fallback 후보용: 숫자 투자자코드 → INVESTOR_KEYS (기존 추측 코드, 미확인)
     _FUTURES_INVESTOR_NAME_MAP: Dict[str, str] = {
         "개인":     "individual",
         "외국인":   "foreign",
@@ -857,6 +865,9 @@ class CybosAPI:
         "국가지자체": "nation",
         "기타법인": "etc_corp",
     }
+
+    # 투자자 TR probe 결과를 SYSTEM 로그에 1회만 덤프 (세션당 progid별)
+    _probe_dump_done: set = set()
 
     def _probe_investor_tr(
         self,
@@ -874,22 +885,22 @@ class CybosAPI:
             ret = obj.BlockRequest()
             status = _safe_int(obj.GetDibStatus())
             if ret not in (0, None) or status != 0:
-                logger.debug(
+                system_logger.warning(
                     "[CybosProbe] %s blocked ret=%s status=%s msg=%s",
                     progid, ret, status, _safe_str(obj.GetDibMsg1()),
                 )
                 return None
             headers: Dict[int, str] = {}
-            for i in range(24):
+            for i in range(32):
                 try:
                     headers[i] = _safe_str(obj.GetHeaderValue(i))
                 except Exception:
                     break
             rows: List[Dict[int, str]] = []
-            for ri in range(20):
+            for ri in range(30):
                 row: Dict[int, str] = {}
                 any_val = False
-                for fi in range(10):
+                for fi in range(15):
                     try:
                         v = _safe_str(obj.GetDataValue(fi, ri))
                         row[fi] = v
@@ -901,33 +912,44 @@ class CybosAPI:
                     break
                 if row:
                     rows.append(row)
-            logger.info(
+            nonempty_h = sum(1 for v in headers.values() if v)
+            system_logger.info(
                 "[CybosProbe] %s ok status=%s nonempty_headers=%d rows=%d",
-                progid, status,
-                sum(1 for v in headers.values() if v),
-                len(rows),
+                progid, status, nonempty_h, len(rows),
             )
+            # 세션당 1회 raw 덤프 — TR 구조 파악용
+            if progid not in CybosApiConnector._probe_dump_done:
+                CybosApiConnector._probe_dump_done.add(progid)
+                h_nonempty = {k: v for k, v in headers.items() if v}
+                system_logger.info(
+                    "[CybosProbe][RAW] %s headers=%s rows_sample=%s",
+                    progid, h_nonempty, rows[:5],
+                )
             return {"progid": progid, "headers": headers, "rows": rows}
         except Exception as exc:
-            logger.debug("[CybosProbe] %s dispatch/request failed: %s", progid, exc)
+            system_logger.warning("[CybosProbe] %s dispatch/request failed: %s", progid, exc)
             return None
 
     def request_investor_futures(self) -> Dict[str, Any]:
         """
         선물/콜/풋 투자자별 순매수를 반환한다.
 
-        CpSysDib.CpSvrNew7212 (레지스트리 검증 2026-05-11):
-          입력 없음, row[0]=투자자명(한글), row[3]=선물순매수,
-          row[6]=콜순매수, row[9]=풋순매수.
-          단위는 백만원(MKR) 추정 — 방향(부호)이 핵심.
+        CpSysDib.CpSvrNew7221 (투자자별 매매종합서비스, 대신증권 자료실 seq=85):
+          입력: SetInputValue(0, ord('1')) → 옵션금액/선물계약 단위
+          행 인덱스(상품 종류):
+            0=거래소주식, 1=코스닥주식, 2=선물, 3=옵션콜, 4=옵션풋,
+            5=주식콜, 6=주식풋, 7=스타지수선물, 8=주식선물 ...
+          열 인덱스(투자자 종류):
+            0=개인매도, 1=개인매수, 2=개인순매수
+            3=외인매도, 4=외인매수, 5=외인순매수
+            6=기관매도, 7=기관매수, 8=기관순매수
         """
         code = self.get_nearest_futures_code()
         candidates = [
-            # P0: 레지스트리 검증 완료 — 선물+콜+풋 투자자별 누적 매매통계
-            # idx0=1 → 최근 1개월(30거래일) 누적, 단기 방향 신호에 적합
-            # (idx0=0→빈값, 기본값→YTD 누적, idx0=N→N개월 누적)
-            ("CpSysDib.CpSvrNew7212", [(0, 1)]),
-            # fallback: 기존 추측 후보 (실제로는 미등록, 탐색용 유지)
+            # P0: 대신증권 공식 자료실 확인 TR — 투자자별 매매종합
+            # ord('1')=49: 옵션금액/선물계약 단위
+            ("CpSysDib.CpSvrNew7221", [(0, ord('1'))]),
+            # fallback (미확인 후보, 탐색용 유지)
             ("Dscbo1.FutureTrader",    [(0, code)]),
             ("CpSysDib.FutureTrader",  [(0, code)]),
             ("Dscbo1.FutureTrade",     [(0, code)]),
@@ -942,20 +964,36 @@ class CybosAPI:
             call_nets: Dict[str, int] = {}
             put_nets: Dict[str, int] = {}
 
-            if progid == "CpSysDib.CpSvrNew7212":
-                # 한글 투자자명 기반 파싱
-                # row[0]=투자자명, row[3]=선물순매수, row[6]=콜순매수, row[9]=풋순매수
-                for row in probe["rows"]:
-                    name = _safe_str(row.get(0, "")).strip()
-                    key = self._FUTURES_INVESTOR_NAME_MAP.get(name)
-                    if not key:
-                        continue
-                    nets[key]      = _safe_int(row.get(3, 0))
-                    call_nets[key] = _safe_int(row.get(6, 0))
-                    put_nets[key]  = _safe_int(row.get(9, 0))
+            if progid == "CpSysDib.CpSvrNew7221":
+                # 행=상품종류(ri), 열=투자자(fi)
+                # ri 2=선물, ri 3=옵션콜, ri 4=옵션풋
+                # fi 2=개인순매수, fi 5=외인순매수, fi 8=기관순매수
+                rows = probe["rows"]
+                if len(rows) > 2:
+                    r = rows[2]  # 선물
+                    nets["individual"] = _safe_int(r.get(2, 0))
+                    nets["foreign"]    = _safe_int(r.get(5, 0))
+                    nets["institution"] = _safe_int(r.get(8, 0))
+                if len(rows) > 3:
+                    r = rows[3]  # 옵션콜
+                    call_nets["individual"] = _safe_int(r.get(2, 0))
+                    call_nets["foreign"]    = _safe_int(r.get(5, 0))
+                    call_nets["institution"] = _safe_int(r.get(8, 0))
+                if len(rows) > 4:
+                    r = rows[4]  # 옵션풋
+                    put_nets["individual"] = _safe_int(r.get(2, 0))
+                    put_nets["foreign"]    = _safe_int(r.get(5, 0))
+                    put_nets["institution"] = _safe_int(r.get(8, 0))
+
+                if not nets:
+                    system_logger.warning(
+                        "[CybosInvestorRaw] 7221 rows=%d — 선물 행(ri=2) 데이터 없음. "
+                        "rows_sample=%s",
+                        len(rows), rows[:5],
+                    )
                 supported = bool(nets)
             else:
-                # 숫자 투자자코드 기반 파싱 (기존 로직)
+                # 숫자 투자자코드 기반 파싱 (기존 fallback 로직)
                 for ri, row in enumerate(probe["rows"]):
                     try:
                         type_raw  = row.get(0, "")
