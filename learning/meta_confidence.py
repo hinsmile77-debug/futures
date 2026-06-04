@@ -55,6 +55,7 @@ class MetaConfidenceLearner:
         self._fitted                    = False
         self._sample_count              = 0
         self._fit_pending               = False  # 분봉 말미 1회 재학습 플래그
+        self._last_fit_count            = 0      # 마지막 flush 시점 sample_count
 
         # 결과 추적 (label: 예측 맞음=1, 틀림=0)
         self._X_buf: List[List[float]] = []
@@ -230,13 +231,49 @@ class MetaConfidenceLearner:
             self._fit_pending = True
 
     def flush_fit(self):
-        """STEP 2 말미에 1회 호출 — 분봉당 최대 1회 _partial_fit() 실행"""
-        if self._fit_pending:
-            self._fit_pending = False
+        """STEP 2 말미에 1회 호출 — 신규 샘플만 incremental 학습.
+
+        100샘플 전체 재학습(_partial_fit) 대신 이번 flush 주기에
+        추가된 샘플만 학습 → ~700ms → ~50ms.
+        초기 fit(self._fitted=False)은 전체 배치로 1회 수행.
+        """
+        if not self._fit_pending:
+            return
+        if self._sample_count < self.MIN_SAMPLES:
+            return
+        self._fit_pending = False
+
+        n_new = self._sample_count - self._last_fit_count
+        self._last_fit_count = self._sample_count
+        if n_new <= 0:
+            return
+
+        if not self._fitted:
+            # 최초 fit: 전체 배치로 1회만 (스케일러 초기화 목적)
             self._partial_fit()
+        else:
+            # 이후: 신규 샘플만 incremental
+            self._partial_fit_incremental(n_new)
+
+    def _partial_fit_incremental(self, n_new: int):
+        """신규 n_new개 샘플만 학습 — 전체 배치 대비 ~100/n_new 배 빠름"""
+        try:
+            pairs = []
+            for feats, label in zip(self._X_buf[-n_new:], self._y_buf[-n_new:]):
+                clean = self._coerce_feature_vector(feats)
+                if clean is not None:
+                    pairs.append((clean, label))
+            if not pairs:
+                return
+            X = np.array([p[0] for p in pairs], dtype=np.float32)
+            y = np.array([p[1] for p in pairs], dtype=np.int32)
+            X_scaled = self._scaler.transform(X)
+            self._model.partial_fit(X_scaled, y, classes=[0, 1])
+        except Exception as e:
+            logger.warning("[MetaConf] incremental 학습 오류: %s", e)
 
     def _partial_fit(self):
-        """SGD 부분 학습"""
+        """SGD 부분 학습 (전체 배치 — 초기 fit용)"""
         try:
             pairs = []
             for feats, label in zip(self._X_buf[-100:], self._y_buf[-100:]):
