@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-06-04 (107차 세션 마무리 — 재시동 점검 완료 + EffectReports 에러 분석)
+
+**Work**: 10:53:33 재시동 후 107차·106차 수정 내용 전수 확인. EffectReports 에러 원인 분석 및 진단 로그 개선.
+
+### 1. 10:53:33 재시동 후 점검 결과
+
+| 확인 항목 | 기준 | 결과 |
+|---|---|---|
+| 버그 #1 (CybosApiConnector NameError) | NameError 없음 | ✅ WARN 전체 없음 |
+| 투자자 수급 | `source=CpSvrNew7221 supported=True` | ✅ 10:53:33~ 정상 |
+| S2 속도 | PipePerf S2 ≤ 1000ms | ✅ 재시동 후 PipePerf 경고 0건 (재시동 전: 3,700~7,000ms 매분) |
+| DivergencePanel | 매분 수급 반영 | ✅ 10:54~ div=+260, futures(fi/rt/inst 정상) |
+| OptionChain stale 복구 | stale 감지 후 refresh | ✅ 10:18 stale 감지→refresh, 이후 10:23/33/43/58 정상 갱신 |
+
+### 2. EffectReports `list index out of range` 분석
+
+**현상**: `generate_rollout_readiness_report.py`, `run_microstructure_ab_backtest.py` 2종이 09:00~15분 주기로 실패.
+에러 메시지: `[EffectReports] run failed <script>: list index out of range` (except 블록 로그 형식 = subprocess.run() 자체 예외).
+
+**직접 실행 결과**: 두 스크립트 모두 직접 실행 시 성공 → 스크립트 코드 자체는 문제 없음.
+
+**핵심 관찰**:
+- `generate_calibration_report.py`, `generate_meta_gate_tuning_report.py` → 성공 (비교군)
+- 실패 2종만 `ensemble_decisions`/`meta_labels`/`raw_data.db` 추가 접근 또는 EnsembleDecision 임포트
+- 스크립트 자체는 성공하므로 main.py 실행 중에만 재현 (장 시간 중 DB 잠금 등 가능성)
+
+**조치**: `main.py:4769` except 블록에 `traceback.format_exc()` 추가. `rc != 0` 브랜치에 stdout도 추가.
+→ 다음 장 시간 WARN.log에서 정확한 스택 트레이스로 원인 특정 가능.
+
+### 3. 잔존 Known Issue
+
+- `[CybosProbe] CpSysDib.ProgramTrade dispatch/request failed (-2147221005)` — 프로그램매매 TR 미연결 (기존 known)
+- `program_source=mapping_pending` — 동일
+
+---
+
 ## 2026-06-04 (107차 — 실세션 점검 + CybosApiConnector NameError + S2 개선)
 
 **Work**: 104~106차 개선 후 재시작(10:18) 로그 점검. 버그 2종 발견·수정.

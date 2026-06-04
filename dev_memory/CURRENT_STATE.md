@@ -1,55 +1,43 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-04 (107차) — **실세션 점검 + CybosApiConnector NameError 수정 + S2 파이프라인 지연 개선**
+> 마지막 업데이트: 2026-06-04 (107차 세션 마무리) — **재시동(10:53) 후 투자자 수급·S2·OptionChain 전수 확인 완료 + EffectReports 진단 로그 추가**
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
 
-## 2026-06-04 (107차) — 실세션 점검 + 버그 수정 + S2 개선
-
-### 배경
-
-104~106차 개선 후 재시작(10:18) 이후 로그 점검. 주요 버그 2종 발견·수정.
+## 2026-06-04 (107차 세션 마무리) — 재시동 후 전수 확인 + EffectReports 분석
 
 ### 현재 상태
 
 | 항목 | 상태 | 파일 |
 |---|---|---|
-| **[버그] CybosApiConnector NameError 수정** — 실세션 발견, 7221 probe 실패 원인 | **완료** | `collection/cybos/api_connector.py:921-922` |
-| **[성능] S2 파이프라인 지연 개선** — _partial_fit() 6회/분 → 1회/분 throttle + 세부 타이밍 로그 | **완료** | `learning/meta_confidence.py`, `main.py` |
-| **옵션 체인 정상 확인** — 10:23 avail=True, PCR/GEX 갱신 | **확인됨** | — |
-| 다음 기동 시 S2 개선 효과 확인 | **미완료** | — |
-| 다음 기동 시 7221 투자자 수급 정상 확인 | **미완료** | — |
+| **[버그] CybosApiConnector NameError 수정** | **완료·검증됨** ✅ | `collection/cybos/api_connector.py:921-922` |
+| **[성능] S2 파이프라인 지연 개선** | **완료·검증됨** ✅ | `learning/meta_confidence.py`, `main.py` |
+| **투자자 수급** — 10:53:33~ `source=CpSyrNew7221 supported=True` | **검증됨** ✅ | DATA.log |
+| **S2 속도** — 재시동 후 PipePerf WARN 0건 (≤1000ms) | **검증됨** ✅ | WARN.log |
+| **OptionChain stale 복구** — 10:18 감지→refresh, 이후 매 10분 갱신 | **검증됨** ✅ | SYSTEM.log |
+| **EffectReports 에러 진단 로그 추가** — traceback.format_exc() 추가 | **완료** | `main.py:4769` |
+| **EffectReports list index 에러 근본 원인** | **미특정** — 다음 장 중 traceback 확인 필요 | — |
 
-### 수정 내용
-
-**CybosApiConnector NameError (api_connector.py:921-922)**:
-- `CybosApiConnector._probe_dump_done` → `CybosAPI._probe_dump_done` (실제 클래스명)
-- 효과: 7221 probe가 raw dump까지 도달 → `[CybosInvestor] futures supported=True` 기대
-
-**S2 파이프라인 지연 개선 (meta_confidence.py + main.py)**:
-- 근본 원인: `record_outcome()` 호출마다 `_partial_fit()` 실행 → 6회/분 × ~700ms = ~4.2초
-- 수정: `_fit_pending` 플래그, `flush_fit()` 메서드 추가, STEP 2 말미 1회만 호출
-- 세부 타이밍 로그: `[S2] meta=Xms learn=Xms flush=Xms` → DEBUG.log 기록 (500ms 초과 시)
-
-### 실세션 점검 결과 (10:18 이후)
+### 실세션 점검 결과 (10:53:33 재시동 기준)
 
 | 항목 | 결과 |
 |---|---|
-| 옵션 체인 avail=True | ✅ 10:23 갱신 확인 |
-| DynMC 기동 복원 | ✅ 5개 zone mc 복원 |
-| ConstOut 자동복구 | ✅ 10:14 감지 → 10:15 해소 |
-| StuckBreaker 작동 | ✅ DN streak 감쇠 |
-| 투자자 수급 | ❌ NameError 실패 → 수정 완료 |
-| S2 지연 | ❌ 4~5s 지속 → 수정 완료 |
-| 진입 발생 | ❌ conf 33~42% < mc 43.9%, grade=X |
+| 투자자 수급 | ✅ 10:53:33~ supported=True, source=7221 |
+| S2 속도 | ✅ 재시동 후 PipePerf WARN 0건 (전: 3.7~7s/분) |
+| DivergencePanel | ✅ 매분 div=+XXX, futures(fi/rt/inst) 정상 |
+| OptionChain stale 복구 | ✅ 10:18 감지→refresh, 이후 정상 갱신 |
+| EffectReports | ⚠️ list index out of range — 직접 실행 성공, 메인 파이프라인 영향 없음 |
+| ProgramTrade probe | ⚠️ -2147221005 실패 (known, 프로그램매매 TR 미연결) |
+| 진입 발생 | ❌ conf 33~42% < mc 43.9%, grade=X (장 중 확인 범위 밖) |
 
-### 다음 기동 시 확인
+### EffectReports 에러 현황
 
-1. `[CybosProbe] CpSysDib.CpSvrNew7221 ok status=0` + `[CybosProbe][RAW]` 1회 (SYSTEM.log)
-2. `[CybosInvestor] futures supported=True source=CpSysDib.CpSvrNew7221 foreign=±XXX` (DATA.log)
-3. PipePerf `S2=Xms` — 1000ms 이하 목표
-4. `[S2] meta=Xms learn=Xms flush=Xms` (DEBUG.log) — flush가 크면 _partial_fit() 자체 최적화 필요
+- `generate_rollout_readiness_report.py`, `run_microstructure_ab_backtest.py` — 장 중 15분 주기 실패
+- 두 스크립트 직접 실행 시 **성공** → 스크립트 코드 자체는 정상
+- main.py subprocess.run() 호출 시에만 `IndexError: list index out of range` 발생 (원인 미특정)
+- **조치**: main.py:4769 except 블록에 `traceback.format_exc()` + `rc!=0` 브랜치에 stdout 추가
+- 메인 파이프라인 무영향. 리포트만 생성 안 되는 것.
 
 ---
 

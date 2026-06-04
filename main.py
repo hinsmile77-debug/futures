@@ -4767,15 +4767,20 @@ class TradingSystem:
                 check=False,
             )
         except Exception as exc:
-            logger.warning("[EffectReports] run failed %s: %s", script_name, exc)
+            import traceback as _tb
+            logger.warning(
+                "[EffectReports] run failed %s: %s\n%s",
+                script_name, exc, _tb.format_exc().strip()[-600:],
+            )
             return False
 
         if result.returncode != 0:
             logger.warning(
-                "[EffectReports] %s rc=%s stderr=%s",
+                "[EffectReports] %s rc=%s stdout=%s stderr=%s",
                 script_name,
                 result.returncode,
-                (result.stderr or "").strip()[-300:],
+                (result.stdout or "").strip()[-200:],
+                (result.stderr or "").strip()[-400:],
             )
             return False
         return True

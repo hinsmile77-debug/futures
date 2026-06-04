@@ -6,25 +6,27 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
-## 2026-06-04 (107차) — 실세션 점검 + 버그 수정 + S2 개선
+## 2026-06-04 (107차 세션 마무리) — 재시동 확인 + EffectReports 분석
 
 ### 한일 요약
 
 - [DONE 2026-06-04] **CybosApiConnector NameError 수정** — `_probe_dump_done` 참조 `CybosApiConnector` → `CybosAPI` (api_connector.py:921-922)
 - [DONE 2026-06-04] **S2 파이프라인 지연 개선** — MetaConfidenceLearner._partial_fit() 6회/분 → 1회/분 throttle. `flush_fit()` 신규, `_fit_pending` 플래그 (meta_confidence.py, main.py)
 - [DONE 2026-06-04] **S2 세부 타이밍 로그 추가** — `[S2] meta/learn/flush ms` DEBUG 로그, 500ms 초과 시 기록 (main.py)
+- [DONE 2026-06-04] **107차+106차 실세션 전수 확인** — 10:53:33 재시동 후 투자자 수급(supported=True source=7221) ✅, S2≤1000ms ✅, OptionChain stale 복구 ✅, DivergencePanel 매분 정상 ✅
+- [DONE 2026-06-04] **EffectReports traceback 로깅 추가** — main.py:4769 except 블록 traceback.format_exc() 추가, rc!=0 브랜치 stdout 추가
 
 ### 다음 할 일
 
-- [NEXT 다음 기동 시] **107차 + 106차 통합 실세션 확인**
-  - SYSTEM.log: `[CybosProbe] CpSysDib.CpSvrNew7221 ok` + `[CybosProbe][RAW]` 1회
-  - DATA.log: `[CybosInvestor] futures supported=True source=CpSyrNew7221 foreign=±XXX`
-  - WARN.log: PipePerf `S2=Xms` — 1000ms 이하 목표
-  - DEBUG.log: `[S2] meta=Xms learn=Xms flush=Xms verified=6`
-    - flush_ms 크면(>500ms) → _partial_fit() 1샘플 incremental 방식 검토
-    - learn_ms 크면(>1000ms) → online_learner.learn() background 처리 검토
-  - SYSTEM.log: `[OptionChain] 갱신 ... avail=True` (09:00 직후)
-  - 패널 UI: 외인/개인/기관 수치 + 옵션 체인 경신 시각 표시
+- [NEXT 다음 장 중] **EffectReports 에러 근본 원인 특정**
+  - WARN.log에서 `[EffectReports] run failed <script>:\nTraceback` 전문 확인
+  - `list index out of range` 정확한 파일·라인 확인 후 수정
+  - 스크립트 직접 실행 성공 확인 → 메인 파이프라인 무영향, 낮은 우선순위
+
+- [NEXT 다음 장 중] **S2 flush_ms 모니터링**
+  - DEBUG.log: `[S2] meta=Xms learn=Xms flush=Xms verified=N`
+  - flush_ms > 500ms 지속 시 → _partial_fit() incremental 방식 검토
+  - learn_ms > 1000ms 지속 시 → online_learner.learn() background 처리 검토
 
 ---
 

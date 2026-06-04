@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-06-04 (107차 세션 마무리 — EffectReports 에러 분석 + traceback 로깅 개선)
+
+### [미해결 버그] EffectReports `list index out of range` — main.py subprocess.run()
+
+**File**: `main.py:4769` (`_run_effect_report_script` except 블록)
+**Bug**: `generate_rollout_readiness_report.py`, `run_microstructure_ab_backtest.py` 2종이 장 시간 중 15분 주기로 `IndexError: list index out of range` 발생.
+두 스크립트 직접 실행 시 모두 성공 → 스크립트 코드 자체는 정상.
+에러 형식이 `[EffectReports] run failed %s: %s` (except 블록) = subprocess.run() 자체 예외인데, 이 예외가 어떻게 발생하는지 이론적으로 특정 못함.
+**비교군 차이**: 성공하는 `generate_calibration_report.py`(predictions.db SELECT만)와 달리, 실패 2종은 `ensemble_decisions`/`meta_labels` 테이블 또는 EnsembleDecision import 추가 접근.
+**조치**: except 블록에 `traceback.format_exc()` 추가. rc!=0 브랜치에 stdout 추가.
+**다음 장 중 확인**: WARN.log에서 traceback 전문 보고 정확한 스택 특정.
+**How to apply**: 메인 파이프라인 무영향. 리포트 생성 안 되는 것만 영향. 낮은 우선순위.
+
+---
+
 ## 2026-06-04 (107차 — 실세션 점검 + S2 파이프라인 지연 개선)
 
 ### [버그] CybosApiConnector NameError — 실세션에서 발견
