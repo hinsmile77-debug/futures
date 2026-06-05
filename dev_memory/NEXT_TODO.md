@@ -6,6 +6,33 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-05 (114차 — 재학습 피처셋 불일치 사고 분석 + P0~P4 개선)
+
+### 한일 요약
+
+- [DONE 2026-06-05] **P0: registry 수동 복구** — `shap_feature_registry.json` active/baseline_features 87→105개 교체. feat=105 복귀 확인. 백업: `.bak_20260605_125941`
+- [DONE 2026-06-05] **P1: ScalerWarmup managed_feats 필터 제거** — `load_features_for_warmup`에서 registry 기준 필터 블록 제거. registry 변화에 면역. (`learning/batch_retrainer.py:436`)
+- [DONE 2026-06-05] **P2: 재학습 실패 시 registry 롤백** — `_reset_rollback_active` 저장/복원. (`main.py`)
+- [DONE 2026-06-05] **P3: 시작 시 registry ↔ pkl 정합성 경고** — `_check_registry_feature_consistency()` 신규. (`model/multi_horizon_model.py`)
+- [DONE 2026-06-05] **P4: weeks_back 8→10** — 실측 12,605봉 → ~15,750봉. (`learning/batch_retrainer.py`, `main.py` 3곳)
+
+### 다음 할 일
+
+- [NEXT 다음 기동 시] **114차 개선 발동 검증**
+  - `[Retrain] 배치 재학습 시작 (weeks_back=10)` + 피처 15,000+ 확인 (P4)
+  - `[ScalerWarmup] 피처 로드 완료 n=500 feat=105` 유지 확인 (P1)
+  - 재학습 성공 후 `[Model] 시작 시 정합성 오류` 로그 없음 확인 (P3)
+  - `[FeatureOps] 재학습 실패 — active_features 롤백 N개 복원` WARN 로그 — reset 후 재학습 실패 시 (P2)
+
+- [NEXT 재학습 성공 후] **long 정확도 회복 확인**
+  - 현재 long 50분 14~20% → 재학습 후 40%대 회복 여부 확인
+
+- [NEXT 추후] **shap_feature_registry 자동화**
+  - 재학습 완료 후 `feature_names.pkl` 기준으로 registry.active_features 자동 동기화 검토
+  - `_save_feature_names()` 완료 후 registry 동기화 로직 추가
+
+---
+
 ## 2026-06-05 (113차 — FL 편향 고착 4종 구조 개선)
 
 ### 한일 요약

@@ -689,6 +689,7 @@ class TradingSystem:
         if not baseline:
             log_manager.system("[FeatureOps] 원복할 baseline feature set 없음", "WARN")
             return
+        self._reset_rollback_active = list(registry.get("active_features") or [])
         registry["active_features"] = list(baseline)
         registry["pending_change"] = {
             "old": "*",
@@ -2102,10 +2103,18 @@ class TradingSystem:
 
         self._last_recovery_ts = ""   # 실분봉 수신 시에만 복구 ts 초기화
 
-        # 09:00 이후 첫 분봉 수신 — 정상 작동 슬랙 알림 (1회만)
+        # 09:00 이후 첫 분봉 수신 — 정상 작동 슬랙 알림 + 갭 오프셋 설정 (1회만)
         if not getattr(self, "_first_tick_notified", False):
             self._first_tick_notified = True
             notify_first_tick(candle)
+            # 당일 시가(첫 분봉 close)를 기준으로 절대 가격 피처 갭 오프셋 설정
+            # 갭하락/상승 시 microprice·vwap z-score 폭발 방어 (Phase 2-C/D 완료 전 임시)
+            try:
+                _today_open = float(candle.get("close", 0.0) or 0.0)
+                if _today_open > 0:
+                    self.model.set_daily_gap_offset(_today_open)
+            except Exception as _gap_exc:
+                logger.warning("[GapOffset] 오프셋 설정 실패: %s", _gap_exc)
 
         self.dashboard.minute_chart_candle_closed(candle)
         try:
@@ -2192,9 +2201,21 @@ class TradingSystem:
                 f"GBM {prefix}재학습 완료", f"데이터 {result.get('data_size', '?')}행"
             )
             # ATR 동적 threshold 갱신 제거 (P2) — rolling σ×k 방법3이 매분 갱신
+            self._reset_rollback_active = None
         else:
             log_manager.learning(f"[GBM] {prefix}재학습 건너뜀: {result.get('error', '')}")
             self.dashboard.set_model_status("대기")
+            rollback = getattr(self, "_reset_rollback_active", None)
+            if rollback:
+                registry = self._load_feature_registry()
+                registry["active_features"] = rollback
+                registry.pop("pending_change", None)
+                self._save_feature_registry(registry)
+                log_manager.system(
+                    "[FeatureOps] 재학습 실패 — active_features 롤백 (%d개 복원)" % len(rollback),
+                    "WARN",
+                )
+                self._reset_rollback_active = None
 
     # _log_threshold_monitor() — P2에서 제거 (91차)
     # rolling σ × k 방법3이 HORIZON_THRESHOLDS를 매분 갱신하므로 ATR 동적 불필요
@@ -5163,7 +5184,7 @@ class TradingSystem:
             logger.warning("[FeatureBuilder] 전일 종가 버퍼 갱신 실패: %s", _fbe)
 
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
-        retrain_result = self.batch_retrainer.retrain_now(weeks_back=8)
+        retrain_result = self.batch_retrainer.retrain_now(weeks_back=10)
         retrain_ok = retrain_result.get("ok", False)
         # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
         # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
@@ -5297,6 +5318,8 @@ class TradingSystem:
         self.online_learner.reset_daily()
         self.market_dna.reset_daily()
         self.core_health.reset_daily()
+        self.model.reset_daily_gap_offset()
+        self._first_tick_notified = False   # 다음 날 첫 분봉에서 갭 오프셋 재설정
         self.shadow_session.reset_daily()
         self.contrarian_mode.reset_daily()
         self.trend_gate.reset_daily()

@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-06-05 (114차)
+
+### [버그 구조적] ScalerWarmup 입력이 registry.active_features 기준으로 필터되어 refit 0-패딩 발생
+**File**: `learning/batch_retrainer.py` — `load_features_for_warmup()`
+**Root cause**: `load_features_for_warmup`이 `refit_scalers_only` 전에 registry.active_features 목록으로 raw feat_names를 사전 필터했다. registry가 87개로 바뀌면 ScalerWarmup 입력도 즉시 85개로 줄어들고, `refit_scalers_only`는 model.feature_names(105개)와 align할 때 20개를 0-패딩해 scaler를 왜곡시켰다. 결과: long 50분 정확도 14~20% 급락(12:39~).
+**Fix**: `load_features_for_warmup`에서 managed_feats 필터 블록 전체 제거. ScalerWarmup은 raw feat_names 그대로 반환하고 `refit_scalers_only`에서 model 기준 align.
+**How to apply**: 다음 기동 시 ScalerWarmup 로그에서 feat 수가 registry와 무관하게 안정적으로 유지되는지 확인.
+
+### [버그 구조적] reset_to_baseline 후 재학습 실패 시 registry 롤백 없음
+**File**: `main.py` — `_on_reset_feature_set_requested()`, `_on_gbm_retrain_done()`
+**Root cause**: `_on_reset_feature_set_requested`가 active_features를 baseline으로 먼저 저장하고 재학습을 시작한다. 재학습이 실패해도 registry는 이미 덮어써진 채 남아, ScalerWarmup이 잘못된 feature set을 사용하게 된다. 오늘 사고: 12:19:53에 active_features가 87개로 저장됐고, 재학습은 12,605 < 15,000으로 실패, 롤백 없음 → 이후 ScalerWarmup이 87개 기준으로 동작.
+**Fix**: `_reset_rollback_active`에 이전 active_features 저장, `_on_gbm_retrain_done` 실패 경로에서 registry 복원 + pending_change 클리어.
+**How to apply**: 다음 reset to baseline 후 재학습 실패 시 `[FeatureOps] 재학습 실패 — active_features 롤백 N개 복원` WARN 로그 확인.
+
+### [설계] weeks_back 8→10으로 상향, MIN_TRAIN_BARS 15,000 유지
+**File**: `learning/batch_retrainer.py`, `main.py`
+**Decision**: `weeks_back` 기본값을 8→10으로 변경. `MIN_TRAIN_BARS=15,000` 유지.
+**Why**: `weeks_back=8` 실측 ~12,605봉(휴일 포함)으로 MIN_TRAIN_BARS 15,000을 달성할 수 없는 구조. DB에는 71,144봉이 있어 10주치 로드에 부담 없음. 10주 실측 ~15,750봉으로 15,000 달성 가능.
+**How to apply**: 다음 재학습 로그에서 `(weeks_back=10)` + 피처 15,000+ 확인. 재학습 성공 시 `[Retrain] N 교체` 로그.
+
+### [설계] 시작 시 registry ↔ pkl 정합성 경고 신규
+**File**: `model/multi_horizon_model.py` — `_check_registry_feature_consistency()`
+**Decision**: `_load_all()` 이후, `validate_and_resync()` 직전에 registry.active_features vs feature_names.pkl 개수 불일치 시 ERROR 로그 출력. 예측은 pkl 기준 유지.
+**Why**: 오늘 사고에서 시작 시 registry 87개와 pkl 105개가 어긋나 있었지만 아무 경고도 없었다. 시작 직후 로그에서 불일치를 감지해 운영자가 P0 조치를 조기에 취할 수 있도록.
+**How to apply**: 다음 기동 로그에서 `[Model] 시작 시 정합성 오류` 없으면 정상. 있으면 `_fix_registry_p0.py --apply` 실행.
+
+---
+
 ## 2026-06-05 (113차)
 
 ### [버그 구조적] 10m/15m `balanced` class_weight → 강한 추세장에서 FL 100% 고착

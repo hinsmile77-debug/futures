@@ -129,8 +129,8 @@ GBM_PARAMS = {
 }
 
 # 최소 학습 데이터 (분봉 수)
-# 소급 190일(71,144봉) 확보 완료(2026-06-01) → 기준 상향
-# 5000(13거래일)은 과적합 위험 — 15000(약 40거래일=2개월)으로 상향
+# weeks_back=10 기준 실측 ~15,750봉 → 15,000 달성 가능
+# (weeks_back=8 실측 ~12,600봉으로 15,000 미달 → weeks_back 10으로 상향)
 MIN_TRAIN_BARS = 15000
 
 # 호라이즌별 class weight — multi_horizon_model._make_sample_weight 와 반드시 동기화
@@ -178,7 +178,7 @@ class BatchRetrainer:
 
     사용:
         retrainer = BatchRetrainer()
-        result    = retrainer.retrain_now(weeks_back=8)
+        result    = retrainer.retrain_now(weeks_back=10)
     """
 
     def __init__(self, model_dir: str = HORIZON_DIR):
@@ -211,7 +211,7 @@ class BatchRetrainer:
         X:             Optional[np.ndarray] = None,
         y_dict:        Optional[Dict[str, np.ndarray]] = None,
         feature_names: Optional[List[str]] = None,
-        weeks_back:    int = 8,
+        weeks_back:    int = 10,
         force:         bool = False,
     ) -> Dict:
         """
@@ -433,20 +433,6 @@ class BatchRetrainer:
             logger.warning("[ScalerWarmup] raw_features 비어있음 — 워밍업 건너뜀")
             return None, None
 
-        # managed feature set 적용 (batch_retrainer._load_from_db와 동일)
-        registry_path = os.path.join(DB_DIR, "shap_feature_registry.json")
-        managed_feats = None
-        try:
-            import json as _json2
-            if os.path.exists(registry_path):
-                with open(registry_path, "r", encoding="utf-8") as fh:
-                    registry = _json2.load(fh)
-                active = list(registry.get("active_features") or [])
-                if active:
-                    managed_feats = active
-        except Exception:
-            pass
-
         records = []
         feat_names = None
         feat_name_count = 0
@@ -465,12 +451,6 @@ class BatchRetrainer:
 
         if not records or feat_names is None:
             return None, None
-
-        if managed_feats:
-            available = set(feat_names)
-            filtered = [n for n in managed_feats if n in available]
-            if filtered:
-                feat_names = filtered
 
         X = np.array(
             [[rec.get(f, 0.0) for f in feat_names] for rec in records],

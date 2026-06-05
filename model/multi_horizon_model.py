@@ -19,7 +19,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.utils.class_weight import compute_sample_weight
 
 from config.settings import (
-    HORIZONS, HORIZON_DIR, SCALER_DIR, GBM_MIN_SAMPLES_LEAF,
+    HORIZONS, HORIZON_DIR, SCALER_DIR, DB_DIR, GBM_MIN_SAMPLES_LEAF,
     SCALER_LOG1P_FEATURES, SCALER_CLIP_FEATURES,
     SCALER_OPEN_REFRESH_INTERVAL_MIN, SCALER_OPEN_END_MINUTE,
     SCALER_GBM_REFRESH_INTERVAL_MIN,
@@ -31,26 +31,40 @@ from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 logger = logging.getLogger("SIGNAL")
 
 
+# 절대 가격 피처 목록 — 장 시작 갭 오프셋 보정 대상 (Phase 2 제거 완료 시 목록에서 삭제)
+_PRICE_LEVEL_FEATURES = ("microprice", "vwap")
+
+
 def apply_robust_preprocess(
     X: np.ndarray,
     feature_names: List[str],
     log1p_feats: tuple = SCALER_LOG1P_FEATURES,
     clip_feats: dict = SCALER_CLIP_FEATURES,
+    price_gap_offsets: Optional[Dict[str, float]] = None,
 ) -> np.ndarray:
     """GBM 입력 직전 Robust 전처리 — 학습·예측·워밍업 공통.
 
     atr / avg_volume : log1p (양수 long-tail 완화)
     spread_ticks     : clip(0, 20)  (극단 스프레드 cap)
-    mlofi_slope      : clip(-500, 500) (slope 범위 제한)
+    mlofi_slope      : clip(-300, 300) (slope 범위 제한)
+    price_gap_offsets: 절대 가격 피처를 당일 시가 대비 편차로 변환
+                       (갭하락/갭상승 시 z폭발 방어 — Phase 2 완료 전 임시)
 
     SGD 경로(online_learner)에는 적용하지 않는다.
     원본 배열을 수정하지 않고 복사본을 반환한다.
     """
-    if not log1p_feats and not clip_feats:
+    if not log1p_feats and not clip_feats and not price_gap_offsets:
         return X
 
     idx_map = {name: i for i, name in enumerate(feature_names)}
     X_out = X.astype(np.float64, copy=True)
+
+    # ① 갭 오프셋 보정 — clip보다 먼저 적용해야 보정 후 값이 clip 범위에 들어옴
+    if price_gap_offsets:
+        for feat, offset in price_gap_offsets.items():
+            idx = idx_map.get(feat)
+            if idx is not None:
+                X_out[:, idx] -= offset
 
     for feat in log1p_feats:
         idx = idx_map.get(feat)
@@ -132,6 +146,8 @@ class MultiHorizonModel:
         self.last_extreme_features: List[str] = []           # predict_proba 후 노출
         # [⑥] opt_pcr_* 피처 감쇠 타이머 — D_FORCE가 opt_pcr 피처에서 발동 시 30분간 0.3× 감쇠
         self._pcr_dampen_until: Optional[datetime.datetime] = None
+        # Gap Offset — 장 시작 시 절대 가격 피처(microprice/vwap)를 당일 시가 대비 편차로 보정
+        self._price_gap_offset: Dict[str, float] = {}
         self._PCR_DAMPEN_FACTOR: float = 0.3   # 감쇠 계수
         self._PCR_DAMPEN_MINUTES: int  = 30    # 감쇠 유지 시간(분)
 
@@ -218,8 +234,14 @@ class MultiHorizonModel:
         results = {}
         x2d = x.reshape(1, -1)
 
-        # Robust 전처리 — log1p / clip (SGD 경로와 무관, 매 예측마다 적용)
-        x2d_proc = apply_robust_preprocess(x2d, self.feature_names) if self.feature_names else x2d
+        # Robust 전처리 — log1p / clip + 갭 오프셋 (SGD 경로와 무관, 매 예측마다 적용)
+        x2d_proc = (
+            apply_robust_preprocess(
+                x2d, self.feature_names,
+                price_gap_offsets=self._price_gap_offset or None,
+            )
+            if self.feature_names else x2d
+        )
 
         _all_extreme_names: List[str] = []  # Phase B: 전 호라이즌 극단 피처 누적
         _monitor_rows: List[dict] = []      # 섹션 8: 분봉 이벤트 행 (루프 후 일괄 INSERT)
@@ -508,7 +530,32 @@ class MultiHorizonModel:
                 )
                 logger.info(f"[Model] {h} 로드 성공")
 
+        self._check_registry_feature_consistency()
         self.validate_and_resync()
+
+    def _check_registry_feature_consistency(self) -> None:
+        """시작 시 registry.active_features vs feature_names.pkl 불일치 경고."""
+        if not self.feature_names:
+            return
+        import json as _json
+        registry_path = os.path.join(DB_DIR, "shap_feature_registry.json")
+        if not os.path.exists(registry_path):
+            return
+        try:
+            with open(registry_path, "r", encoding="utf-8") as fh:
+                reg = _json.load(fh)
+            active = list(reg.get("active_features") or [])
+            if not active:
+                return
+            if len(active) != len(self.feature_names):
+                logger.error(
+                    "[Model] 시작 시 정합성 오류: registry.active=%d vs pkl.feature_names=%d"
+                    " — ScalerWarmup 입력과 모델 차원이 어긋날 수 있음."
+                    " 예측은 pkl 기준(%d개)으로 진행. registry 정합성 수동 확인 필요.",
+                    len(active), len(self.feature_names), len(self.feature_names),
+                )
+        except Exception as _e:
+            logger.warning("[Model] registry 정합성 확인 실패 (무해): %s", _e)
 
     def validate_and_resync(self) -> list:
         """
@@ -644,6 +691,7 @@ class MultiHorizonModel:
             return {"ok": False, "error": "feature dim mismatch"}
 
         # 예측 경로와 동일한 Robust 전처리 후 fit (일관성 보장)
+        # refit 시에는 gap_offset 미적용 — 과거 데이터 기반 재학습이라 당일 갭 보정 불필요
         X_proc = apply_robust_preprocess(X, names)
 
         refreshed = []
@@ -791,6 +839,41 @@ class MultiHorizonModel:
         """GBM 미학습 상태에서 SGD 활성화를 위한 피처명 부트스트랩."""
         if not self.feature_names:
             self.feature_names = list(names)
+
+    def set_daily_gap_offset(self, today_open: float) -> None:
+        """장 시작 시 1회 호출 — 절대 가격 피처의 갭 오프셋을 설정한다.
+
+        스케일러 μ와 당일 시가의 차이를 오프셋으로 기록한다.
+        이후 apply_robust_preprocess에서 절대 가격 피처값에서 오프셋을 차감하여
+        스케일러가 실질적으로 '당일 시가 대비 편차'를 z-score로 변환하게 한다.
+
+        효과: z = (microprice - today_open) / σ → 갭 크기와 무관하게 z 안정
+        제거 조건: Phase 2-C/D (microprice/vwap 절대값 피처 제거) 완료 후 불필요.
+        """
+        if not self.feature_names:
+            return
+        offsets = {}
+        for feat in _PRICE_LEVEL_FEATURES:
+            if feat not in self.feature_names:
+                continue
+            idx = self.feature_names.index(feat)
+            for h, scaler in self.scalers.items():
+                if scaler is None or not hasattr(scaler, "mean_"):
+                    continue
+                if idx < len(scaler.mean_):
+                    mu = float(scaler.mean_[idx])
+                    offsets[feat] = today_open - mu
+                    break  # 호라이즌별 μ가 다를 수 있으나 가격 피처는 동일 수준이므로 첫 호라이즌 사용
+        self._price_gap_offset = offsets
+        logger.info(
+            "[GapOffset] today_open=%.2f | offset: %s",
+            today_open,
+            {k: round(v, 3) for k, v in offsets.items()},
+        )
+
+    def reset_daily_gap_offset(self) -> None:
+        """장 마감 후 오프셋 초기화 — EOD reset_daily에서 호출."""
+        self._price_gap_offset = {}
 
     def get_feature_importance(self) -> Dict[str, float]:
         """GBM 전체 호라이즌 평균 피처 중요도 반환.

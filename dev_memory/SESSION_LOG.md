@@ -4,6 +4,59 @@
 
 ---
 
+## 2026-06-05 (114차 — 재학습 피처셋 불일치 사고 분석 + P0~P4 개선)
+
+**Work**: 금일(2026-06-05) 12:19:53 `reset to baseline` 이후 ScalerWarmup 입력이 feat=108→85로 급감하고 long 50분 정확도가 14~20%로 붕괴한 원인을 로그 3중 분석. 원인 계층(4레이어)을 특정 후 P0 긴급 수동 복구 + P1~P4 코드 개선 4종 구현.
+
+### 이상점 타임라인
+
+| 시각 | 이벤트 |
+|---|---|
+| 08:55 / 12:03 | 배치 재학습 시작 → 피처 12627/12605 < 15000 → 즉시 실패 |
+| 12:19:53 | `[FeatureOps] 재학습 진행 중 - reset to baseline feature set` → registry.active_features 87개로 저장 |
+| 12:39 | ScalerWarmup feat=108 → **feat=85** 전환 (registry 기준 필터) |
+| 12:39~ | long 50분 정확도 14~20%로 급락 (scaler 0-패딩 왜곡) |
+| 13:03 | P0 복구 적용 후 feat=105 복귀 확인 |
+
+### 원인 계층 분석
+
+| 레이어 | 원인 |
+|---|---|
+| L1 | `load_features_for_warmup`이 registry.active_features(87개)로 raw feat_names 필터 |
+| L2 | `refit_scalers_only`에서 85→105 0-패딩 → scaler 왜곡 |
+| L3 | `_on_reset_feature_set_requested`가 active_features를 먼저 저장, 재학습 실패해도 롤백 없음 |
+| L4 | `weeks_back=8` 실측 12,605봉 < MIN_TRAIN_BARS 15,000 → 재학습 구조적 실패 |
+
+### 구현 내용
+
+**P0 긴급 수동복구** (`_fix_registry_p0.py`):
+- `shap_feature_registry.json` active/baseline_features 87→105개로 교체
+- 백업: `shap_feature_registry.json.bak_20260605_125941`
+
+**P1** `learning/batch_retrainer.py:436-473`:
+- `load_features_for_warmup`에서 managed_feats(registry 필터) 블록 전체 제거
+- ScalerWarmup은 raw feat_names 그대로 반환, `refit_scalers_only`에서 model 기준 align
+
+**P2** `main.py`:
+- `_on_reset_feature_set_requested`: 변경 전 `self._reset_rollback_active`에 이전 active_features 저장
+- `_on_gbm_retrain_done` 성공: `_reset_rollback_active = None` 클리어
+- `_on_gbm_retrain_done` 실패: registry 이전 값으로 롤백 + WARN 로그
+
+**P3** `model/multi_horizon_model.py`:
+- `_check_registry_feature_consistency()` 신규
+- `_load_all()` 이후 호출, registry.active_features vs feature_names.pkl 개수 불일치 시 ERROR 로그
+
+**P4** `learning/batch_retrainer.py` + `main.py` 3곳:
+- `weeks_back` 기본값 8→10 (실측 ~15,750봉 → MIN_TRAIN_BARS 15,000 달성)
+
+### 추가로 발견된 사실
+
+- `baseline_features`가 87개로 잘못 고정됐던 이유: 과거 어느 시점 active=87개 상태에서 "현재 적용" 버튼이 눌려 baseline이 덮어써짐
+- registry에만 있고 pkl에 없는 피처 3개(`ofi_raw`, `ofi_reversal_signal`, `toxicity_spread_stress`) — SHAP 심사에서 제거됐지만 registry에 잔존
+- pkl에는 있고 registry에 없던 피처 21개 — baseline 관리 갭에서 누락
+
+---
+
 ## 2026-06-05 (113차 — 실세션 로그 종합 분석 + FL 편향 고착 4종 구조 개선)
 
 **Work**: 오늘 장(2026-06-05) 로그 전체(09:00~11:39)와 1분봉 차트를 교차 분석해 이상점 7종을 분류하고 인과 흐름을 추적. 기존 개선이력과 대조해 신규 작업 4개(P1·P2·P3·P5)를 식별·구현. P4(EarlyWarmup 가드)는 오늘 지연 원인이 EarlyWarmup이 아닌 EKS임을 확인해 취소.

@@ -1,7 +1,37 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-05 (113차 세션 마무리) — 실세션 로그 종합 분석 + FL 편향 고착 4종 구조 개선
+> 마지막 업데이트: 2026-06-05 (114차 세션 마무리) — 재학습 피처셋 불일치 사고 분석 + P0~P4 개선
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-05 (114차 — 재학습 피처셋 불일치 사고 분석 + P0~P4 개선)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **P0: registry 수동 복구** (87→105개) | **완료** ✅ feat=105 복귀 확인 | `data/db/shap_feature_registry.json` |
+| **P1: ScalerWarmup managed_feats 필터 제거** | **완료** | `learning/batch_retrainer.py:436` |
+| **P2: 재학습 실패 시 registry 롤백** | **완료** | `main.py` |
+| **P3: 시작 시 registry ↔ pkl 정합성 경고** | **완료** | `model/multi_horizon_model.py` |
+| **P4: weeks_back 8→10** | **완료** | `learning/batch_retrainer.py`, `main.py` 3곳 |
+| **다음 재학습 정상 여부 확인** | **미실시** — 다음 기동 시 | — |
+
+### 사고 원인 계층 (12:19:53~13:03)
+
+| 레이어 | 원인 |
+|---|---|
+| L1 | `load_features_for_warmup`이 registry.active_features(87개)로 raw feat 필터 |
+| L2 | `refit_scalers_only`에서 85→105 0-패딩 → scaler 왜곡 |
+| L3 | `_on_reset_feature_set_requested`가 active_features 먼저 저장, 재학습 실패 시 롤백 없음 |
+| L4 | `weeks_back=8` 실측 12,605봉 < MIN_TRAIN_BARS 15,000 → 재학습 구조적 실패 |
+
+### 다음에 확인할 것
+
+1. 다음 기동 시 `[Model] 시작 시 정합성 오류` 로그 없음 확인 (P3)
+2. 다음 재학습 시 `[Retrain] 배치 재학습 시작 (weeks_back=10)` + 피처 15,000+ 확인 (P4)
+3. reset to baseline 후 재학습 실패 시 `[FeatureOps] 재학습 실패 — active_features 롤백 N개 복원` WARN 로그 (P2)
 
 ---
 
