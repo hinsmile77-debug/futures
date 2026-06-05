@@ -136,19 +136,26 @@ MIN_TRAIN_BARS = 15000
 # 호라이즌별 class weight — multi_horizon_model._make_sample_weight 와 반드시 동기화
 # 2026-05-30 threshold 재보정 후: FLAT 비율 ~33% 균형 → 강한 FL 억압 불필요
 # 1m/5m: FL 0.60/0.58 → 0.85 (FLAT~34/33%, 강압 해소)
-# 30m:   FL 0.65 → 1.00 (balanced, FLAT~30%)
 # 3m:    FL 0.75 유지 (threshold 현행 유지, 분포 미변경)
+# 30m:   FL 0.65 → 0.70 (FLAT 편향 억제, 반전 시 UP/DN 강화)
+# 10m/15m: 2026-06-05 balanced → 명시적 설정 변경
+#   근거: 2026-06-05 세션에서 10m FL 100%, 15m FL 100% 고착 재발.
+#   balanced는 훈련 데이터 분포에 종속 → 강한 하락장(FL 과다 학습 기간)에서
+#   FL 억압 불가. 85차에서 1m/5m와 동일 문제 → 명시적 가중치로 전환.
 _CW_1M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
 _CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.12, DIRECTION_DOWN: 1.12}
 _CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
+_CW_10M = {DIRECTION_FLAT: 0.80, DIRECTION_UP: 1.10, DIRECTION_DOWN: 1.10}
+_CW_15M = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.15, DIRECTION_DOWN: 1.15}
 # 30m FLAT 가중치 낮춤: FLAT 편향 억제 (반전 시 UP/DN 예측 강화)
 _CW_30M = {DIRECTION_FLAT: 0.70, DIRECTION_UP: 1.15, DIRECTION_DOWN: 1.15}
 
 
 def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
-    """호라이즌별 sample_weight 계산.
-    1m/3m/5m/30m: 명시적 가중치 적용.
-    10m/15m: sklearn balanced (FLAT~34~35%, 자동 균형).
+    """호라이즌별 sample_weight 계산. 전 호라이즌 명시적 가중치 적용.
+
+    10m/15m은 2026-06-05까지 balanced(sklearn 자동 균형)를 사용했으나,
+    강한 하락장에서 FL 100% 고착 재발 → 명시적 설정으로 전환.
     """
     if horizon_key == "1m":
         return np.array([_CW_1M.get(int(lbl), 1.0) for lbl in y])
@@ -156,6 +163,10 @@ def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
         return np.array([_CW_3M.get(int(lbl), 1.0) for lbl in y])
     if horizon_key == "5m":
         return np.array([_CW_5M.get(int(lbl), 1.0) for lbl in y])
+    if horizon_key == "10m":
+        return np.array([_CW_10M.get(int(lbl), 1.0) for lbl in y])
+    if horizon_key == "15m":
+        return np.array([_CW_15M.get(int(lbl), 1.0) for lbl in y])
     if horizon_key == "30m":
         return np.array([_CW_30M.get(int(lbl), 1.0) for lbl in y])
     return compute_sample_weight("balanced", y)

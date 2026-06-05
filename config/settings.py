@@ -349,7 +349,9 @@ CB_HIGH_CONF_THRESHOLD     = 0.85 # 과신 판정 confidence 하한
 CB_ACCURACY_MIN_30M_STRICT = 0.42 # 과신 연속 시 강화된 임계값 (0.50→0.42 완화)
 
 # CB③ 경고 카운터 리셋 조건 — 단순 1회 회복 리셋 방지
-CB_CB3_WARN_RESET_MARGIN   = 0.05 # 임계값 + 이 여유폭 이상이어야 리셋 허용
+# 2026-06-05: 0.05 → 0.03 (CB③30m이 33~50% 진동 시 2분 연속 정상 달성 불가 현상 대응)
+# 기존 28%+5%=33% → acc 33%가 경계에서 리셋 실패. 28%+3%=31%로 완화.
+CB_CB3_WARN_RESET_MARGIN   = 0.03 # 임계값 + 이 여유폭 이상이어야 리셋 허용
 CB_CB3_WARN_RESET_OK_STREAK = 2   # 연속 정상 분 수 (이 횟수 이상 유지해야 리셋)
 
 # Mid-Conf Blind Spot Tracker (60~85% 구간 연속 오답 — 오늘 직접 원인)

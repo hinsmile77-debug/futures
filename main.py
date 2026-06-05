@@ -388,6 +388,12 @@ class TradingSystem:
         self._bias_buf: dict = {h: deque(maxlen=30) for h in HORIZONS}
         self._bias_log_tick: int = 0   # 10분마다 요약 로그 출력 카운터
 
+        # ── [P2] FL 편향 고착 → uniform fallback 제어 ──────────────────────
+        # FL 예측 비율 90%+ 가 20분 이상 지속되면 해당 호라이즌 예측을 (1/3,1/3,1/3)으로
+        # 치환해 앙상블 오염을 차단한다. 2026-06-05 10m/15m FL 100% 고착 사례 대응.
+        self._bias_fl_streak: dict = {h: 0 for h in HORIZONS}  # FL 편향 연속 분 카운터
+        self._bias_override_horizons: set = set()               # uniform fallback 적용 호라이즌
+
         # ── 호라이즌 자격 상태 (Qualification) ──────────────────────────────────
         # qualified=True: 3 사이클 완료 → 앙상블 참여 허가 (Phase 3에서 실제 필터링)
         # 현재(Phase 1): 상태 추적만 — 앙상블 비중 변경 없음
@@ -2679,6 +2685,7 @@ class TradingSystem:
                 _acc_h = _ok / _tot
 
                 _bias_tag = ""
+                _fl_r = 0.0
                 if _tot >= 15:
                     _up_r, _dn_r, _fl_r = _up / _tot, _dn / _tot, _fl / _tot
                     if _up_r >= 0.75:
@@ -2698,6 +2705,27 @@ class TradingSystem:
                         f"[Bias] {_h} 적중={_acc_h:.0%}({_ok}/{_tot})"
                         f" UP={_up} DN={_dn} FL={_fl}"
                     )
+
+                # [P2] FL 편향 고착 → uniform fallback 제어
+                # 조건: 버퍼 20건 이상 + FL 비율 90% 이상 + 연속 20분 지속
+                if _tot >= 20 and _fl_r >= 0.90:
+                    self._bias_fl_streak[_h] = self._bias_fl_streak.get(_h, 0) + 1
+                    if (self._bias_fl_streak[_h] >= 20
+                            and _h not in self._bias_override_horizons):
+                        self._bias_override_horizons.add(_h)
+                        log_manager.learning(
+                            f"[BiasReset] {_h} FL편향 {_fl_r:.0%} "
+                            f"{self._bias_fl_streak[_h]}분 지속 → uniform fallback 적용"
+                        )
+                        self.circuit_breaker.record_horizon_fl_bias(_h, _fl_r,
+                                                                     self._bias_fl_streak[_h])
+                else:
+                    if _h in self._bias_override_horizons:
+                        self._bias_override_horizons.discard(_h)
+                        log_manager.learning(
+                            f"[BiasReset] {_h} FL편향 해소 ({_fl_r:.0%}) → uniform fallback 해제"
+                        )
+                    self._bias_fl_streak[_h] = 0
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
         _st.append(("S2", time.perf_counter()))
@@ -3063,6 +3091,14 @@ class TradingSystem:
                     "up": round(up, 4), "down": round(dn, 4), "flat": round(fl, 4),
                     "direction": best[1], "confidence": round(best[0], 4),
                 }
+
+                # [P2] FL 편향 고착 호라이즌 → uniform fallback (앙상블 오염 차단)
+                if h_name in self._bias_override_horizons:
+                    horizon_proba[h_name] = {
+                        "up": round(1/3, 4), "down": round(1/3, 4),
+                        "flat": round(1/3, 4), "direction": 0,
+                        "confidence": round(1/3, 4),
+                    }
 
             # [MaskedFallback] 격리 예측 SGD 블렌딩 (GBM 경로에서만 실행)
             _masked_hp_blended: dict = {}
@@ -5269,6 +5305,8 @@ class TradingSystem:
         for _h in self._bias_buf:
             self._bias_buf[_h].clear()
         self._bias_log_tick = 0
+        self._bias_fl_streak = {h: 0 for h in HORIZONS}
+        self._bias_override_horizons.clear()
         self._ensemble_conf_cache.clear()
         self._param_corr_history.clear()
         self._shap_feature_window.clear()

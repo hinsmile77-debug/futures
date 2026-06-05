@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-06-05 (113차)
+
+### [버그 구조적] 10m/15m `balanced` class_weight → 강한 추세장에서 FL 100% 고착
+**File**: `learning/batch_retrainer.py` — `_make_sample_weight()`
+**Root cause**: 85차(2026-05-22)에서 1m/5m balanced 한계를 발견해 명시적 가중치로 전환했으나, 10m/15m는 당시 FL 편향이 없어 balanced 유지로 결정. 2026-06-05 강한 하락장(09:00~10:30 DN 일방향)에서 GBM 학습 기간(8주) 중 FL 비율 과다 구간이 포함 → balanced가 FL 억압 불가 → 10m FL 100%, 15m FL 100% 고착.
+**Fix**: `_CW_10M = {FL:0.80, UP:1.10, DN:1.10}`, `_CW_15M = {FL:0.75, UP:1.15, DN:1.15}` 명시적 추가. `_make_sample_weight()` 10m/15m 분기 삽입.
+**How to apply**: 재학습 후 `[Bias]` 로그에서 10m/15m FL 비율이 ~30~33% 수준으로 감소했는지 확인. FL 비율이 여전히 40%+ 이면 FL 가중치 추가 하향 (0.80→0.70) 검토. 1m/5m와 동일 패턴.
+
+### [설계] FL 편향 고착 시 uniform fallback — P2
+**File**: `main.py` — `__init__`, bias 감지 블록(STEP1 후), STEP5 블렌딩 직후, `reset_daily()`
+**Decision**: 특정 호라이즌의 FL 예측 비율이 90%+ 이고 20분 이상 연속으로 지속되면, 해당 호라이즌의 앙상블 기여를 `{up:1/3, down:1/3, flat:1/3, conf:1/3}`으로 치환한다. 편향이 해소되면(FL<90%) 즉시 원복.
+**Why**: MaskedFallback(z-score 4.0 조건)은 피처 이상값 기반이라 GBM 모델 내부 구조 편향을 감지 못함. 오늘 세션에서 MaskedFallback이 전혀 발동하지 않은 채 10m/15m FL 100%가 세션 전체에 지속됨. CURRENT_STATE 1495라인 "5m bullish bias / 30m flat bias 근본 수정 미완료"로 명시됐던 갭.
+**How to apply**: `[BiasReset] 15m FL편향 100% 20분 지속 → uniform fallback 적용` 로그 확인. 실제 FL 구간(횡보장)에서 오발동 시 임계 90%→95% 상향 또는 연속 20분→30분으로 강화. P2는 GBM 모델이 재학습되기 전까지의 응급 완충재 — 근본 해결은 P1(class_weight 교정)과 GBM 재학습.
+
+### [설계] CB③ 경고 리셋 마진 0.05→0.03 — P3
+**File**: `config/settings.py` — `CB_CB3_WARN_RESET_MARGIN`
+**Decision**: `CB_CB3_WARN_RESET_MARGIN = 0.05 → 0.03`. 해제 임계 = CB_ACCURACY_MIN_30M(28%) + MARGIN(3%) = 31%.
+**Why**: 오늘 세션에서 CB③30m이 33~50% 사이를 진동하는데 해제 조건(28%+5%=33%) 경계에서 2분 연속 정상을 달성하지 못해 HALTED 복귀 후 재경고 반복. 이 값에 대한 변경 이력 없이 초기값 0.05가 유지됐음. 0.03으로 완화해 31% 이상 2분 연속 정상이면 경고 카운터 리셋.
+**How to apply**: 이미 HALTED 상태(당일 정지)는 자동 해제 없음 — 이 변경은 경고(warn_count=1) 상태에서의 리셋 조건을 완화하는 것. 다음 장 acc30m이 31~33% 구간에서 경고 카운터 리셋 여부 확인.
+
+### [설계] 호라이즌별 FL 편향 고착 CB 이벤트 — P5
+**File**: `safety/circuit_breaker.py` — `record_horizon_fl_bias()`, `_horizon_fl_bias_streak`, `_horizon_fl_bias_warned`
+**Decision**: `record_horizon_fl_bias(horizon, fl_ratio, streak)` 신규 메서드. streak≥30(30분 지속) 시 CRITICAL 로그 + Slack 경보 1회. 거래 HALT는 하지 않음 — 실제 차단은 P2(uniform fallback)가 담당. CB는 운영자 경보 역할만.
+**Why**: 기존 CB③는 30m 단일 호라이즌 정확도만 집계(DECISION_LOG 1007라인 "5m 편향은 CB가 포착 불가" 기록). 오늘 15m FL 100%가 세션 내내 지속됐으나 CB는 이를 별도 이벤트로 기록하지 않아 운영자가 Slack으로 파악 불가. P2가 자동 완충하지만 심각한 모델 품질 이슈는 별도 경보가 필요.
+**How to apply**: `[CB-FLBias] 15m FL편향 100% 30분 고착` Slack 수신 시 → GBM 재학습 예약 또는 내일 장 전 P8 상태 확인. P2로 앙상블 오염은 차단됐지만 모델 자체 품질은 재학습 후에만 회복됨.
+
+---
+
 ## 2026-06-04 (111? ?? ??? ? ??? ??? ?? ???? ??)
 
 ### [??] `????`? ?? ???? ???? ?? ?? ??? ??

@@ -1,7 +1,62 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-05 (112차 세션 마무리) — 로그 분석 + EarlyWarmup/CB③/Contrarian 버그 3종 수정
+> 마지막 업데이트: 2026-06-05 (113차 세션 마무리) — 실세션 로그 종합 분석 + FL 편향 고착 4종 구조 개선
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-05 (113차 — FL 편향 고착 4종 구조 개선)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **P1: 10m/15m class_weight 명시 설정** | **완료** | `learning/batch_retrainer.py` |
+| **P2: FL 편향 고착 → uniform fallback** | **완료** | `main.py` (init+bias block+STEP5+reset) |
+| **P3: CB③ 해제 마진 0.05→0.03** | **완료** | `config/settings.py` |
+| **P5: 15m FL 편향 독립 CB 이벤트** | **완료** | `safety/circuit_breaker.py`, `main.py` |
+| **구문 검증** | **완료** ✅ | 4개 파일 ast.parse |
+| **실세션 효과 검증** | **미실시** — 다음 장 로그 확인 필요 | — |
+
+### 오늘 장 이상점 요약 (2026-06-05 실세션)
+
+| 시간 | 이상점 | 원인 |
+|---|---|---|
+| 09:00~10:18 | 10m/15m FL 100% 고착 | `balanced` class_weight → FL 억압 불가 |
+| 09:11~09:12 | 처리 18s/45s 지연 | EKS 발동 후 스케일러 재적합 파이프라인 경합 |
+| 10:18 | CB③ HALTED (30m 정확도 0%) | 30m UP 편향 + 급락장 완전 미스 |
+| 10:30 | 세션 최저점 반전 완전 미스 | CB=HALTED + 전 호라이즌 FL 예측 |
+| 10:18~ | CB③ 33~50% 진동 → 해제 불가 | 해제 마진 5%p 과대 (33% 경계 진동) |
+| 세션 전체 | MaskedFallback 미발동 | z-score 4.0 조건 미충족 (모델 내부 구조 문제) |
+
+### 구현 내용 요약
+
+**P1** `learning/batch_retrainer.py`:
+- `_CW_10M = {FL:0.80, UP:1.10, DN:1.10}` 신규
+- `_CW_15M = {FL:0.75, UP:1.15, DN:1.15}` 신규
+- `_make_sample_weight()` 10m/15m 명시 분기 추가 (balanced 제거)
+
+**P2** `main.py`:
+- `__init__`: `_bias_fl_streak`, `_bias_override_horizons` 추가
+- bias 감지 블록: FL 90%+ 20분 지속 → `_bias_override_horizons` 등록 + `[BiasReset]` 로그
+- STEP 5: override 호라이즌 → `{1/3,1/3,1/3}` 치환
+- `reset_daily()`: 두 변수 일간 리셋
+
+**P3** `config/settings.py`:
+- `CB_CB3_WARN_RESET_MARGIN = 0.05 → 0.03`
+
+**P5** `safety/circuit_breaker.py`:
+- `_horizon_fl_bias_streak`, `_horizon_fl_bias_warned` 추가
+- `record_horizon_fl_bias(horizon, fl_ratio, streak)` 신규: 30분 지속 시 CRITICAL + Slack
+- `reset_daily()` 리셋
+
+### 다음 장에서 확인할 것
+
+1. `[BiasReset] 10m FL편향 XX% 20분 지속 → uniform fallback 적용` 로그 발동 여부
+2. `[BiasReset] 15m FL편향 XX% 20분 지속 → uniform fallback 적용` 로그 발동 여부
+3. `[CB-FLBias] 15m FL편향 XX% 30분 고착` Slack 경보 수신 여부
+4. GBM 재학습 후 10m/15m FL 편향 감소 여부 (`[Bias]` 로그에서 FL 비율 확인)
+5. CB③ 해제 마진 완화 효과: 31~33% 구간에서 경고 카운터 리셋 발생 여부
 
 ---
 

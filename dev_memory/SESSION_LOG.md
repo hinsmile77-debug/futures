@@ -4,6 +4,68 @@
 
 ---
 
+## 2026-06-05 (113차 — 실세션 로그 종합 분석 + FL 편향 고착 4종 구조 개선)
+
+**Work**: 오늘 장(2026-06-05) 로그 전체(09:00~11:39)와 1분봉 차트를 교차 분석해 이상점 7종을 분류하고 인과 흐름을 추적. 기존 개선이력과 대조해 신규 작업 4개(P1·P2·P3·P5)를 식별·구현. P4(EarlyWarmup 가드)는 오늘 지연 원인이 EarlyWarmup이 아닌 EKS임을 확인해 취소.
+
+### 이상점 분류
+
+| ID | 시간 | 증상 | 근본 원인 |
+|---|---|---|---|
+| A | 09:11~12 | 처리 18s/45s → CB=PAUSED | EKS 발동 후 스케일러 재적합 + 파이프라인 경합 |
+| B | 세션 전체 | 10m/15m FL 100% 고착 | `balanced` class_weight → 훈련 데이터 FL 과다 구간 편향 억압 불가 |
+| C | 09:00~10:18 | 30m UP 편향 0% 정확도 | 8주 학습 데이터가 상승 편향 + class_weight 설정 |
+| D | 10:18 | CB③ HALTED (30m=0%) | C의 연쇄 결과 |
+| E | 10:30 | 세션 최저점 반전 완전 미스 | CB=HALTED + 전 호라이즌 FL 예측 동시 |
+| F | 10:40~ | 5m 정확도 20%로 급락 | 10:30 반등 구간 FL 편향 전이 |
+| G | 10:18~11:39 | CB③ 33~50% 진동 → 해제 불가 | RESET_MARGIN 5%p → 33% 경계 2분 연속 정상 달성 불가 |
+
+### 이력 대조 결과
+
+| 제안 | 판정 | 근거 |
+|---|---|---|
+| P1: 10m/15m class_weight 명시 | 기존 결정 번복 | 85차에서 balanced 유지 결정했으나 오늘 재발 → 새 근거 |
+| P2: 편향 고착 uniform fallback | **진짜 신규** | CURRENT_STATE 1495라인 "미완료" 명시됨 |
+| P3: CB③ 해제 마진 축소 | **신규 튜닝** | 이력 없음, 초기값 유지됐던 것 |
+| P4: EarlyWarmup 가드 | **취소(오진)** | 오늘 원인은 EarlyWarmup이 아닌 EKS |
+| P5: 15m 독립 CB 이벤트 | 인식됐으나 미구현 | DECISION_LOG 1007라인 "CB③이 5m편향 포착 불가" |
+
+### 구현 내용
+
+#### P1 — `learning/batch_retrainer.py`
+```python
+_CW_10M = {DIRECTION_FLAT: 0.80, DIRECTION_UP: 1.10, DIRECTION_DOWN: 1.10}
+_CW_15M = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.15, DIRECTION_DOWN: 1.15}
+```
+`_make_sample_weight()` 10m/15m 분기 추가. `compute_sample_weight("balanced")` 제거.
+
+#### P2 — `main.py` 4곳
+- `__init__`: `_bias_fl_streak: dict`, `_bias_override_horizons: set` 추가
+- bias 감지 블록 (STEP 1 후): FL 90%+ AND tot≥20 AND 연속 20분 → `_bias_override_horizons.add(h)` + `[BiasReset]` 로그 + `circuit_breaker.record_horizon_fl_bias()` 호출
+- STEP 5 블렌딩 직후: `if h_name in self._bias_override_horizons` → `{1/3, 1/3, 1/3, direction:0, conf:1/3}` 치환
+- `reset_daily()`: `_bias_fl_streak`, `_bias_override_horizons` 리셋
+
+#### P3 — `config/settings.py`
+```python
+CB_CB3_WARN_RESET_MARGIN = 0.03  # 0.05 → 0.03 (28%+5%=33% 경계 진동 해소)
+```
+
+#### P5 — `safety/circuit_breaker.py`
+- `__init__`: `_horizon_fl_bias_streak: dict`, `_horizon_fl_bias_warned: set` 추가
+- `record_horizon_fl_bias(horizon, fl_ratio, streak)` 신규 메서드: streak≥30 시 CRITICAL 로그 + Slack
+- `reset_daily()`: 두 변수 리셋
+
+### 수정 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `learning/batch_retrainer.py` | `_CW_10M`, `_CW_15M` 추가, `_make_sample_weight` 10m/15m 분기 |
+| `main.py` | `_bias_fl_streak`, `_bias_override_horizons`, bias override 로직, STEP 5 치환, reset |
+| `config/settings.py` | `CB_CB3_WARN_RESET_MARGIN` 0.05→0.03 |
+| `safety/circuit_breaker.py` | `record_horizon_fl_bias()`, FL bias 추적 상태변수, reset |
+
+---
+
 ## 2026-06-05 (112차 — 실시간 로그 분석 + 개선이력 대조 + 신규 버그 3종 수정)
 
 **Work**: 오늘 장(2026-06-05) 로그를 6개 이상점으로 분류하고 인과 흐름을 추적. 기존 개선이력과 대조해 실질 신규 작업 3개를 식별하고 즉시 구현.

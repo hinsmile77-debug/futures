@@ -96,6 +96,12 @@ class CircuitBreaker:
         # NORMAL(≥35%) / WATCH(30~35%) / RESTRICTED(28~30%) / HALTED(<28%→기존CB③)
         self._acc30m_stage: str = "NORMAL"
 
+        # ── [P5] 호라이즌별 FL 편향 고착 추적 ────────────────────
+        # 15m을 포함한 개별 호라이즌의 FL 편향이 30분 이상 지속 시 CRITICAL 로그 + Slack.
+        # 거래 중단(HALT)이 아닌 모델 품질 경보 — 실제 차단은 main.py P2(uniform fallback) 담당.
+        self._horizon_fl_bias_streak: dict = {}  # {horizon: 연속 분 수}
+        self._horizon_fl_bias_warned: set = set()  # 이미 경보 발송한 호라이즌
+
     # ── 상태 조회 ──────────────────────────────────────────────
     @property
     def state(self) -> str:
@@ -329,6 +335,32 @@ class CircuitBreaker:
                 else:
                     self._cb3_ok_streak = 0
 
+    # ── [P5] 호라이즌별 FL 편향 고착 경보 ───────────────────────
+    def record_horizon_fl_bias(self, horizon: str, fl_ratio: float, streak: int):
+        """특정 호라이즌의 FL 예측 편향이 고착됐을 때 호출.
+
+        30분 이상 지속이면 CRITICAL 로그 + Slack 경보를 1회 발송한다.
+        거래 중단(HALT)은 하지 않음 — 차단은 main.py P2(uniform fallback)가 담당.
+
+        Args:
+            horizon:  편향 호라이즌 ('10m', '15m' 등)
+            fl_ratio: FL 예측 비율 (0.0~1.0)
+            streak:   연속 편향 분 수
+        """
+        self._horizon_fl_bias_streak[horizon] = streak
+        if streak >= 30 and horizon not in self._horizon_fl_bias_warned:
+            self._horizon_fl_bias_warned.add(horizon)
+            msg = (
+                f"[CB-FLBias] {horizon} FL편향 {fl_ratio:.0%} {streak}분 지속 "
+                f"— uniform fallback 적용 중. 모델 재학습 또는 다음 장 P8 확인 필요."
+            )
+            logger.critical(msg)
+            log_manager.system(msg, "CRITICAL")
+            notify_circuit_breaker(
+                f"{horizon} FL편향 {fl_ratio:.0%} {streak}분 고착",
+                "uniform fallback 적용 중 — 모델 품질 경보",
+            )
+
     # ── 트리거 ④ ATR 급등 ─────────────────────────────────────
     def record_atr(self, atr_ratio: float):
         self._atr_buf.append(atr_ratio)
@@ -435,6 +467,8 @@ class CircuitBreaker:
         self._brier_penalty_active = False
         self._daily_halt_count = 0
         self._acc30m_stage = "NORMAL"   # [P4]
+        self._horizon_fl_bias_streak.clear()   # [P5]
+        self._horizon_fl_bias_warned.clear()   # [P5]
         logger.info("[CB] 일간 리셋 완료")
         log_manager.system("[CB] 일간 리셋 완료", "INFO")
 

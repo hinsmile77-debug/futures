@@ -6,6 +6,39 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-05 (113차 — FL 편향 고착 4종 구조 개선)
+
+### 한일 요약
+
+- [DONE 2026-06-05] **P1: 10m/15m class_weight 명시 설정** — `_CW_10M={FL:0.80}`, `_CW_15M={FL:0.75}` 추가. `balanced` 제거. (`learning/batch_retrainer.py`)
+- [DONE 2026-06-05] **P2: FL 편향 고착 → uniform fallback** — FL 90%+ 20분 지속 시 해당 호라이즌 예측을 `{1/3,1/3,1/3}`으로 치환. `[BiasReset]` 로그. (`main.py`)
+- [DONE 2026-06-05] **P3: CB③ 해제 마진 0.05→0.03** — `CB_CB3_WARN_RESET_MARGIN=0.03`. 28%+3%=31% 기준으로 경고 리셋. (`config/settings.py`)
+- [DONE 2026-06-05] **P5: 15m FL 편향 독립 CB 이벤트** — `record_horizon_fl_bias()` 신규. 30분 지속 시 CRITICAL + Slack. (`safety/circuit_breaker.py`, `main.py`)
+
+### 다음 할 일
+
+- [NEXT 다음 장 중] **113차 4종 수정 발동 검증**
+  - `[BiasReset] 10m FL편향 XX% 20분 지속 → uniform fallback 적용` 로그 확인
+  - `[BiasReset] 15m FL편향 XX% 20분 지속 → uniform fallback 적용` 로그 확인
+  - `[CB-FLBias] 15m FL편향 XX% 30분 고착` Slack 경보 수신 여부
+  - GBM 재학습 후 `[Bias]` 로그에서 10m/15m FL 비율 감소 여부
+
+- [NEXT 다음 장 중] **P2 오발동 모니터링**
+  - uniform fallback 적용 중 실제 FL 구간(횡보장)에서 잘못 치환되는 케이스 확인
+  - 오발동 빈번 시 임계 90%→95% 상향 또는 연속 20분→30분으로 강화 검토
+
+- [NEXT 다음 장 중] **오늘 09:11~09:12 지연 원인 재확인**
+  - P4(EarlyWarmup 가드)는 오진으로 취소. 실제 원인은 EKS 발동 후 스케일러 재적합 경합
+  - 다음 장 EKS 발동 시 `[PipePerf]` S5 구간 소요시간 확인
+
+- [NEXT GBM 재학습 후] **10m/15m FL 비율 정량 검증**
+  - 현재 FL~34% → class_weight 변경 후 FL~30% 수준으로 감소 확인
+  - `[Bias]` 로그 FL 비율 추이 1주 관찰
+
+- [NEXT 중기] **5m 정확도 20% 급락 원인 파악**
+  - 오늘 10:40 이후 5m 20%로 급락. FL 편향 전이로 추정.
+  - P2(uniform fallback)가 5m에도 적용되는지 확인 (FL 90%+ 조건 충족 시)
+
 ## 2026-06-05 (112차 — 신규 버그 3종 수정)
 
 ### 한일 요약
