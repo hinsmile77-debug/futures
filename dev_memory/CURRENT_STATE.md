@@ -1,9 +1,33 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-04 (111차 세션 마무리) — **진입0 원인 6중 분석 + 진입 개선 6종 구현**
+> 마지막 업데이트: 2026-06-05 (112차 세션 마무리) — 로그 분석 + EarlyWarmup/CB③/Contrarian 버그 3종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
+
+## 2026-06-05 (112차 — 신규 버그 3종 수정)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **P1: EarlyWarmup 임계값 24h→4h** | **완료** | config/settings.py, main.py |
+| **P2: CB③ 최솟 샘플 수 25→30 + n= 로그** | **완료** | config/settings.py, safety/circuit_breaker.py |
+| **P6: Contrarian CLEARED streak 리셋** | **완료** | safety/contrarian_mode.py |
+| **실세션 효과 검증** | **미실시** — 다음 장 로그 확인 필요 | — |
+
+### 오늘 장 로그 요약 (2026-06-05)
+
+- scaler_age=17h → EarlyWarmup 24h 조건 미발동 → EKS 발동 → 파이프라인 지연 → acc30m 붕괴 → CB③ 당일 정지
+- 실거래 없음(모의투자 + ShadowSession BLOCKED + CB③ 정지)
+- 안전장치 전반 정상 작동 확인 ✅
+
+### 다음 장에서 확인할 것
+
+1. [EarlyWarmup] 로그 — 08:45에 발동 여부 (4h 조건)
+2. [CB③] 로그 — 샘플 수 
+= 표시 확인
+3. Contrarian ACTIVE 후 CLEARED → 즉시 재발동 없는지 확인
 
 ## 2026-06-04 (111? ?? ???) ? ??? ??? ?? ???? ?? ?? + ???? ?? ??
 

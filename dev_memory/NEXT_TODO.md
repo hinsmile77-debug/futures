@@ -6,6 +6,28 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-05 (112차 — 신규 버그 3종 수정)
+
+### 한일 요약
+
+- [DONE 2026-06-05] **P1: EarlyWarmup 임계값 24h→4h** — EARLY_WARMUP_MIN_AGE_HOURS=4.0 신규 상수, main.py EarlyWarmup 조건 완화 (config/settings.py, main.py)
+- [DONE 2026-06-05] **P2: CB③ 최솟 샘플 수 25→30** — CB_ACC30M_MIN_SAMPLES=30 신규 상수, 경고·HALT 메시지에 
+=샘플수 표시 (config/settings.py, safety/circuit_breaker.py)
+- [DONE 2026-06-05] **P6: Contrarian CLEARED streak 리셋 버그** — CLEARED→WATCHING 시 streak/last_dir/active_dir 리셋 추가 (safety/contrarian_mode.py)
+
+### 다음 할 일
+
+- [NEXT 다음 장 중] **112차 3종 수정 발동 검증**
+  - [EarlyWarmup] 08:45 발동 여부 (SYSTEM.log)
+  - [CB③] 경고·HALT 메시지에 
+= 표시 확인
+  - Contrarian ACTIVE→CLEARED 후 재진입 억제 확인
+
+- [NEXT 다음 장 중] **파이프라인 지연 근본 원인 파악**
+  - 오늘 09:11~09:44 CB⑤ 4회 반복 — scaler 재적합 daemon 경합인지 STEP별 DEBUG.log 확인
+  - [PipePerf] 로그에서 S2·S3·S5 구간별 소요시간 확인
+
+
 ## 2026-06-04 (110차 세션 마무리) — 진입0 개선 6종 후속 검증
 
 ### 한일 요약

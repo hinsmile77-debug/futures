@@ -30,6 +30,7 @@ from config.settings import (
     CB_CB3_WARN_RESET_MARGIN, CB_CB3_WARN_RESET_OK_STREAK,
     CB_PIPE_WARN_MS, CB_PIPE_PAUSE_MS,
     CB_ACC_WATCH_MIN, CB_ACC_RESTRICTED_MIN,   # [P4] 4단계 구간 경계값
+    CB_ACC30M_MIN_SAMPLES,                     # CB③ 발동 최솟 유효 샘플 수
 )
 from config.constants import CB_STATE_NORMAL, CB_STATE_PAUSED, CB_STATE_HALTED
 from utils.notify import notify_circuit_breaker
@@ -260,7 +261,7 @@ class CircuitBreaker:
         self._accuracy_buf.append(1.0 if correct else 0.0)
 
         # [P4] acc30m 4단계 구간 갱신 — Contrarian 상태와 무관하게 항상 추적
-        if len(self._accuracy_buf) >= 25:
+        if len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES:
             _acc_now = sum(self._accuracy_buf) / len(self._accuracy_buf)
             _new_stage = (
                 "RESTRICTED" if _acc_now < CB_ACC_RESTRICTED_MIN else
@@ -279,8 +280,9 @@ class CircuitBreaker:
         if contrarian_active:
             return  # HALT/경고 발동만 스킵, 누적은 이미 위에서 완료
 
-        if len(self._accuracy_buf) >= 25:
+        if len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES:
             acc = sum(self._accuracy_buf) / len(self._accuracy_buf)
+            _n_samples = len(self._accuracy_buf)
 
             # 과신 또는 중간신뢰도 streak 중 하나라도 임계 초과면 strict 모드
             effective_min = (
@@ -301,13 +303,13 @@ class CircuitBreaker:
                         streak_note += f" | 중간신뢰도 오류 {self._mid_conf_wrong_streak}연속"
                     self._trigger_halt(
                         f"30분 정확도 {acc:.1%} < {effective_min:.0%} "
-                        f"(2회 연속 미달{streak_note})"
+                        f"(2회 연속 미달{streak_note}) n={_n_samples}"
                     )
                 else:
                     msg = (
                         f"[CB③ 경고 {self._cb3_warn_count}/2] "
                         f"30분 정확도 {acc:.1%} < {effective_min:.0%} "
-                        f"— 다음 확인 시 당일 정지"
+                        f"n={_n_samples} — 다음 확인 시 당일 정지"
                     )
                     logger.warning(msg)
                     log_manager.system(msg, "WARNING")

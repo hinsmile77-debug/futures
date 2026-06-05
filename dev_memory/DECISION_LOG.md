@@ -1,4 +1,4 @@
-# 설계 결정 및 버그 근본 원인 로그 — futures (미륵이)
+﻿# 설계 결정 및 버그 근본 원인 로그 — futures (미륵이)
 
 ---
 
@@ -37,6 +37,34 @@
 
 ---
 
+## 2026-06-05 (112차 — EarlyWarmup blind spot + Contrarian streak 버그)
+
+### [버그] EarlyWarmup 24h 조건이 정상 영업일 케이스를 커버 못 함
+
+**File**: `config/settings.py`, `main.py`
+**현상**: scaler_age=17h로 장 진입 — EarlyWarmup >24h 조건 미충족으로 미발동 — EKS 발동 — 파이프라인 지연 — CB③ 당일 정지.
+**근본 원인**: 장 마감 15:30 다음날 08:45 체크 = 항상 약 17h. 24h 기준은 주말(65h+)이나 휴장일만 커버, 평일 매일을 커버 못 함.
+**결정**: `EARLY_WARMUP_MIN_AGE_HOURS = 4.0` 신규 상수 추가. 매 영업일 08:45에 항상 scaler 예열 재적합 실행.
+**Why**: 4h는 장중 정기 refresh 주기(60분) 대비 충분히 높아 장중 재발동 없고, 장 마감 후 다음날 아침은 항상 발동.
+**How to apply**: settings.py 상수 하나로 조정 가능. 필요 시 8h 등으로 상향 가능.
+
+### [버그] Contrarian CLEARED 후 streak 미리셋으로 즉시 재발동
+
+**File**: `safety/contrarian_mode.py`
+**현상**: ACTIVE 상태에서 방향 전환으로 CLEARED 후, WATCHING 전환 시 _same_dir_streak가 그대로 유지되어 다음 tick에서 streak>=10 조건 즉시 충족 — 방향만 반전된 채 ACTIVE 재진입. 오늘 로그 streak=17(SHORT)에서 18(LONG)으로 즉시 재발동.
+**결정**: CLEARED→WATCHING 전환 시 _same_dir_streak=0, _last_direction=None, _active_direction=None 리셋 추가.
+**Why**: CLEARED는 역베팅 조건 소멸을 의미. streak를 유지하면 방향만 반전된 채 동일 논리로 즉시 재진입하여 ACTIVE 플리핑 발생.
+**How to apply**: reset_daily()는 일일 전체 초기화, 이것은 상태 전환 시 부분 초기화. 방향 전환 후에는 streak를 처음부터 다시 쌓아야 ACTIVE 가능.
+
+### [설계] CB③ 최솟 유효 샘플 수 25→30 상향 + 진단 로그 추가
+
+**File**: `config/settings.py`, `safety/circuit_breaker.py`
+**현상**: 파이프라인 지연 또는 conf<0.38 필터로 유효 샘플 부족 시, 소수 오답만으로 acc30m=0%가 되어 CB③ 발동.
+**결정**: `CB_ACC30M_MIN_SAMPLES=30` 신규 상수. P4 단계 추적 및 CB③ 발동 기준 모두 >=25에서 >=30으로 상향. 경고·HALT 메시지에 n=샘플수 표시.
+**Why**: 25→30으로 올려도 실전 30분 예측 검증은 장 시작 30분 후부터 시작되므로 실질 지연 5개=5분. 허위 0% 발동을 더 확실히 차단.
+**How to apply**: n= 로그로 향후 CB③ 발동 시 샘플 부족인지 실제 모델 붕괴인지 즉시 진단 가능.
+
+---
 ## 2026-06-04 (110차 세션 마무리 — 진입0 개선 6종)
 
 ### [분석] EKS P3 해제 임계값 0.50의 구조적 문제

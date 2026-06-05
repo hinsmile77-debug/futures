@@ -5794,17 +5794,20 @@ class TradingSystem:
         if self._heartbeat_count % 10 == 0:
             self._log_waiting_status(now)
 
-        # [A] 08:45 얼리버드 warmup — scaler age > 24h 시 pre_market_setup 이전 선행 갱신
+        # [A] 08:45 얼리버드 warmup — scaler age > EARLY_WARMUP_MIN_AGE_HOURS 시 선행 갱신
         # 커버: 전날 P8 실패 / 휴장일 / 중간 멈춤 / 주말 등 원인 무관 모든 노후화 케이스
         # → 08:55 Canary 체크 시점엔 이미 완료 → P2 90초 대기 사실상 0초
+        # 기존 24h 조건은 장 마감(15:30)→다음날 08:45 = ~17h 케이스를 커버 못 함
+        # 4h로 완화 → 매 영업일 항상 발동하여 scaler 노후화 원천 차단
         if (
             not getattr(self, "_early_warmup_started", False)
             and is_trading_day(now)
             and datetime.time(8, 45) <= now.time() < datetime.time(8, 55)
         ):
             try:
+                from config.settings import EARLY_WARMUP_MIN_AGE_HOURS as _EW_MIN_AGE
                 _early_age = self.model.canary_stale_age_hours()
-                if _early_age > 24.0:
+                if _early_age > _EW_MIN_AGE:
                     self._early_warmup_started = True
                     log_manager.system(
                         f"[EarlyWarmup] scaler 노후={_early_age:.0f}h → 08:45 선행 warmup 시작"

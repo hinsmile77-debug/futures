@@ -220,6 +220,10 @@ GBM_MIN_SAMPLES_LEAF = 10   # 두 학습기 모두 이 값을 참조한다
 
 # [A] 08:55 장 시작 전 워밍업
 SCALER_WARMUP_LOOKBACK_BARS: int = 500   # raw_data.db 최근 N봉 (~2거래일)
+# 08:45 EarlyWarmup 발동 최솟 노후 시간
+# 장 마감(15:30) → 다음날 08:45 = 약 17.25h → 24h 기준으로는 미발동
+# 4h로 완화하면 매 영업일 항상 발동 (불필요한 scaler 노후화 방지)
+EARLY_WARMUP_MIN_AGE_HOURS: float = 4.0
 
 # 노후 경고 임계 (multi_horizon_model.SCALER_WARN_MINUTES 와 동기화)
 SCALER_WARN_MINUTES: int = 90
@@ -329,6 +333,10 @@ CB_ACCURACY_MIN_30M    = 0.28  # 30분 방향성 예측 최소 정확도 (0.35�
 # [P4] CB③ 4단계 acc30m 구간 (HALT 발동 전 사전 제한)
 CB_ACC_WATCH_MIN      = 0.35  # NORMAL → WATCH 경계 (임박 구간, 로그 강화)
 CB_ACC_RESTRICTED_MIN = 0.30  # WATCH → RESTRICTED 경계 (C등급 이하 차단)
+# CB③ 발동 최솟 유효 샘플 수
+# 파이프라인 지연 → conf<0.38 필터 → 샘플 부족 → 0%로 허위 발동 방지
+# 기존 25에서 상향: 초기 혼란기(scaler 노후화 직후) 오답 25개만으로 당일 정지 차단
+CB_ACC30M_MIN_SAMPLES  = 30
 CB_ATR_MULT_LIMIT      = 3.0   # 변동성 ATR 배수 한계
 CB_API_LATENCY_LIMIT   = 5.0   # (레거시 — Kiwoom용, Cybos에서는 사용 안 함)
 CB_API_LATENCY_PAUSE   = 300   # (레거시)

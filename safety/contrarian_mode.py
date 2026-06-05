@@ -24,6 +24,7 @@ logger = logging.getLogger("SYSTEM")
 
 # 발동 조건 임계값
 _ACC30M_TRIGGER       = 0.25   # acc30m 이 이 값 미만이면 조건①
+_ACC30M_MIN_SAMPLES   = 15     # 조건① 판단 최솟 샘플 수 — 1건 오답(0.0%)으로 오발동 방지
 _SAME_DIR_STREAK      = 10     # 동방향 연속 횟수
 _RECOVERY_ACC30M      = 0.40   # acc30m 회복 임계값 (ACTIVE → CLEARED)
 
@@ -66,6 +67,7 @@ class ContrarianModeTracker:
         regime: str,
         virtual_pnl_delta: float = 0.0,
         signal_correct: Optional[bool] = None,
+        cb3_samples: int = 0,
     ) -> None:
         """
         매분 파이프라인 호출.
@@ -76,6 +78,7 @@ class ContrarianModeTracker:
             regime:            매크로 레짐 문자열
             virtual_pnl_delta: 역베팅 가상 손익 (pt)
             signal_correct:    원래 시그널 적중 여부 (역베팅은 반대)
+            cb3_samples:       CB③ accuracy_buf 샘플 수 — 최솟 수 미달 시 조건① 억제
         """
         # 동방향 연속 카운터 갱신
         if signal_direction != 0:
@@ -86,7 +89,10 @@ class ContrarianModeTracker:
             self._last_direction = signal_direction
 
         # 조건 평가
-        self._conditions["acc30m_low"]     = acc30m < _ACC30M_TRIGGER
+        # 조건①: 샘플 수 _ACC30M_MIN_SAMPLES 이상이어야 acc30m 판단
+        # — cb3_samples=1 오답(0.0%)으로 Contrarian이 오발동하는 deadlock 방지
+        self._conditions["acc30m_low"]     = (cb3_samples >= _ACC30M_MIN_SAMPLES
+                                               and acc30m < _ACC30M_TRIGGER)
         self._conditions["same_dir"]       = self._same_dir_streak >= _SAME_DIR_STREAK
         self._conditions["neutral_regime"] = (regime == "NEUTRAL")
 
@@ -139,6 +145,11 @@ class ContrarianModeTracker:
 
         elif self._state == CONTRA_CLEARED:
             self._state = CONTRA_WATCHING
+            # streak·방향 리셋: 유지 시 다음 tick에서 streak>=10 조건이 즉시 재충족되어
+            # CLEARED 직후 새로운 ACTIVE로 재진입하는 연속 발동 버그 차단
+            self._same_dir_streak = 0
+            self._last_direction = None
+            self._active_direction = None
 
     def should_contra_enter(self) -> bool:
         """역베팅 진입 허용 여부 (모의투자: 가상 집계, 실전: enable_real_order 필요)."""
