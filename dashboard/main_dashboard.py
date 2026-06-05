@@ -4383,7 +4383,7 @@ class LearningPanel(QWidget):
 
     HORIZONS  = ["1m", "3m", "5m", "10m", "15m", "30m"]
     H_LABELS  = ["1분", "3분", "5분", "10분", "15분", "30분"]
-    RAW_NEEDED = 5_000
+    RAW_NEEDED = 15_000
 
     def __init__(self):
         super().__init__()

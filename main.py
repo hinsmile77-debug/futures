@@ -199,6 +199,17 @@ class TradingSystem:
         self.toxicity_gate     = ToxicityGate()
         self.trend_gate        = TrendPersistenceGate()
         self.batch_retrainer          = BatchRetrainer()
+        _ss = self._read_session_state()
+        _gbm_last  = _ss.get("gbm_last_retrain", "")
+        _gbm_count = int(_ss.get("gbm_total_retrain_count", 0) or 0)
+        if not _gbm_last:
+            # session_state에 기록 없으면 feature_names.pkl mtime으로 fallback
+            _fn_path = os.path.join(HORIZON_DIR, "feature_names.pkl")
+            if os.path.exists(_fn_path):
+                _gbm_last = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(_fn_path)
+                ).strftime("%Y-%m-%d %H:%M")
+        self.batch_retrainer.restore_stats(_gbm_last, _gbm_count)
         self.threshold_recalibrator   = ThresholdRecalibrator()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
         self.pcr_store          = PCRStore()
@@ -2191,6 +2202,22 @@ class TradingSystem:
                     "[EntryGate] GBM 첫 재학습 완료(방법3 레이블) "
                     f"— 사이즈 제한 해제 (×{runtime_settings.PRE_RETRAIN_SIZE_MULT:.1f} → ×1.0)"
                 )
+
+            # 재학습 이력 영속화 — 재시동 후에도 마지막 재학습일·누적 횟수 복원
+            # _write_session_state 대신 직접 merge-write로 profit_guard 직렬화와 격리
+            try:
+                _ss_path = self._session_state_path()
+                _ss2 = self._read_session_state()
+                _ss2["gbm_last_retrain"] = result.get("timestamp", "")
+                _ss2["gbm_total_retrain_count"] = self.batch_retrainer._retrain_count
+                with open(_ss_path, "w", encoding="utf-8") as _ssf:
+                    json.dump(_ss2, _ssf, ensure_ascii=False)
+                logger.info(
+                    "[GBM] 재학습 이력 저장: %s (%d회)",
+                    _ss2["gbm_last_retrain"], _ss2["gbm_total_retrain_count"],
+                )
+            except Exception as _pe:
+                logger.warning("[GBM] 재학습 이력 저장 실패 (무해): %s", _pe)
 
             log_manager.learning(
                 f"[GBM] {prefix}배치 재학습 완료 | "
@@ -4911,8 +4938,8 @@ class TradingSystem:
             result = subprocess.run(
                 [sys.executable, script_path, *args],
                 cwd=BASE_DIR,
-                capture_output=True,
-                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 timeout=180,
                 check=False,
             )
@@ -4924,13 +4951,24 @@ class TradingSystem:
             )
             return False
 
+        def _decode(b: bytes) -> str:
+            for enc in ("utf-8", "cp949"):
+                try:
+                    return b.decode(enc)
+                except UnicodeDecodeError:
+                    pass
+            return b.decode("utf-8", errors="replace")
+
+        stdout_text = _decode(result.stdout or b"")
+        stderr_text = _decode(result.stderr or b"")
+
         if result.returncode != 0:
             logger.warning(
                 "[EffectReports] %s rc=%s stdout=%s stderr=%s",
                 script_name,
                 result.returncode,
-                (result.stdout or "").strip()[-200:],
-                (result.stderr or "").strip()[-400:],
+                stdout_text.strip()[-200:],
+                stderr_text.strip()[-400:],
             )
             return False
         return True

@@ -188,6 +188,16 @@ class BatchRetrainer:
         self._last_retrain:  Optional[datetime.datetime] = None
         self._retrain_count: int = 0
 
+    def restore_stats(self, last_retrain_str: str, total_count: int) -> None:
+        """재시동 후 이전 세션 이력 복원."""
+        if last_retrain_str:
+            try:
+                self._last_retrain = datetime.datetime.strptime(last_retrain_str, "%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+        if total_count > 0:
+            self._retrain_count = total_count
+
     # ── 재학습 스케줄 판단 ────────────────────────────────────────
     def should_retrain_weekly(self, now: Optional[datetime.datetime] = None) -> bool:
         """월요일 08:50~09:00 사이 주간 재학습 여부"""

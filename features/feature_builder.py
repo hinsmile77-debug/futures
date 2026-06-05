@@ -142,9 +142,10 @@ class FeatureBuilder:
             features["cvd_divergence"] = float(
                 cvd_result["signal_strength"] * (-1 if cvd_result["divergence"] else 1)
             )
-            features["cvd_direction"] = float(cvd_result["direction"])
-            features["cvd"]           = float(cvd_result.get("cvd", 0.0))
-            features["cvd_slope"]     = float(cvd_result.get("cvd_slope", 0.0))
+            features["cvd_direction"]   = float(cvd_result["direction"])
+            # cvd/cvd_slope 절대값 → 일중 max 대비 정규화값으로 교체 (Phase 3-A)
+            features["cvd"]             = float(cvd_result.get("cvd_norm", 0.0))
+            features["cvd_slope"]       = float(cvd_result.get("cvd_slope_norm", 0.0))
             self._core_fail_streak["cvd"] = 0
             self._core_fail_notified["cvd"] = False
         except Exception as _exc:
@@ -176,8 +177,8 @@ class FeatureBuilder:
 
         try:
             exh_result = self.cvd_exhaustion_calc.compute(
-                cvd_raw   = features.get("cvd", 0.0),
-                cvd_slope = features.get("cvd_slope", 0.0),
+                cvd_raw   = features.get("cvd", 0.0),    # 이미 cvd_norm [-1,1]
+                cvd_slope = features.get("cvd_slope", 0.0),  # 이미 cvd_slope_norm
                 volume    = vol,
             )
             features["bear_exhaustion"]        = float(exh_result["bear_exhaustion"])
@@ -200,7 +201,8 @@ class FeatureBuilder:
                 high=high, low=low, close=close, volume=vol or 1,
             )
             features["vwap_position"] = float(vwap_result["position"])
-            features["vwap"]          = float(vwap_result["vwap"])
+            # vwap 절대값 제거 — vwap_position/above_vwap으로 완전 대체 가능
+            # (절대가격이 StandardScaler μ와 드리프트 시 z폭발, Phase 2-D)
             features["above_vwap"]    = float(vwap_result["above_vwap"])
             self._core_fail_streak["vwap"] = 0
             self._core_fail_notified["vwap"] = False
@@ -214,7 +216,7 @@ class FeatureBuilder:
                 self._core_fail_notified["vwap"] = True
                 if callable(self._on_core_fail):
                     self._on_core_fail("VWAP", streak)
-            features.update({"vwap_position": 0.0, "vwap": 0.0, "above_vwap": 0.0})
+            features.update({"vwap_position": 0.0, "above_vwap": 0.0})
 
         # ofi_raw: features 미저장(② 제거) — GBM z-score 폭발 방지.
         # avg_vol 기반 ±3배 클리핑 후 로컬 변수로만 유지 → reversal_calc에 전달.
@@ -263,14 +265,15 @@ class FeatureBuilder:
 
         try:
             microprice_result = self.microprice.flush_minute()
-            features["microprice"]            = float(microprice_result["microprice"])
+            # microprice 절대값 제거 — microprice_bias/slope/depth_bias로 완전 대체 가능
+            # (절대가격이 StandardScaler μ와 드리프트 시 z폭발, Phase 2-C)
             features["microprice_bias"]       = float(microprice_result["mp_bias"])
             features["microprice_slope"]      = float(microprice_result["mp_slope"])
             features["microprice_depth_bias"] = float(microprice_result["depth_bias"])
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] Microprice 오류 — 기본값 사용: %s", _exc)
-            features.update({"microprice": 0.0, "microprice_bias": 0.0,
+            features.update({"microprice_bias": 0.0,
                              "microprice_slope": 0.0, "microprice_depth_bias": 0.0})
 
         try:
@@ -288,16 +291,17 @@ class FeatureBuilder:
             features["queue_signal"]          = float(queue_result["queue_signal_mean"])
             features["queue_signal_ma"]       = float(queue_result["queue_signal_ma"])
             features["queue_momentum"]        = float(queue_result["queue_momentum"])
-            features["queue_depletion_speed"] = float(queue_result["queue_depletion_speed"])
-            features["queue_refill_rate"]     = float(queue_result["queue_refill_rate"])
+            # 절대값 속도 → 총량 대비 비율로 교체 (Phase 3-B, 유동성 수준 독립)
+            features["queue_depletion_speed"] = float(queue_result["queue_depletion_ratio"])
+            features["queue_refill_rate"]     = float(queue_result["queue_refill_ratio"])
             features["imbalance_slope"]       = float(queue_result["imbalance_slope"])
             features["cancel_add_ratio"]      = float(queue_result["cancel_add_ratio"])
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] QueueDynamics 오류 — 기본값 사용: %s", _exc)
             features.update({"queue_signal": 0.0, "queue_signal_ma": 0.0,
-                             "queue_momentum": 0.0, "queue_depletion_speed": 0.0,
-                             "queue_refill_rate": 0.0, "imbalance_slope": 0.0,
+                             "queue_momentum": 0.0, "queue_depletion_speed": 0.5,
+                             "queue_refill_rate": 0.5, "imbalance_slope": 0.0,
                              "cancel_add_ratio": 0.0})
 
         try:
@@ -392,7 +396,6 @@ class FeatureBuilder:
             + (0.06 if opt_available < 1.0 else 0.0)
         )
         quality_penalty = min(0.85, quality_penalty)
-        features["feature_recoverable_errors"] = float(recoverable_errors)
         features["feature_degraded"] = 1.0 if degraded else 0.0
         features["feature_quality_score"] = round(max(0.0, 1.0 - quality_penalty), 4)
         features["quality_option_available"] = opt_available
@@ -424,14 +427,13 @@ class FeatureBuilder:
 
         self._micro_minute_count += 1
         micro_log.debug(
-            "[MICRO-MINUTE] #%d ts=%s close=%.2f mp=%.4f bias=%.6f slope=%.6f depth_bias=%.4f "
+            "[MICRO-MINUTE] #%d ts=%s close=%.2f bias=%.6f slope=%.6f depth_bias=%.4f "
             "mlofi_norm=%.6f mlofi_pressure=%.0f mlofi_slope=%.6f "
             "queue_signal=%.4f queue_ma=%.4f queue_momentum=%.4f depletion=%.4f refill=%.4f "
             "imbalance_slope=%.6f cancel_add=%.4f toxicity=%.4f tox_ma=%.4f",
             self._micro_minute_count,
             bar.get("ts"),
             float(bar.get("close", 0.0)),
-            features["microprice"],
             features["microprice_bias"],
             features["microprice_slope"],
             features["microprice_depth_bias"],
