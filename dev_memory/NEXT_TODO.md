@@ -6,6 +6,30 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-05 (116차 — subprocess/DB 병목 수정 + 로그 레벨 정비)
+
+### 한일 요약
+
+- [DONE 2026-06-05] **EffectReports subprocess IndexError 수정** — `text=True` 제거, 바이너리 PIPE + 수동 decode
+- [DONE 2026-06-05] **ConstOut 스팸 억제** — `scripts/run_microstructure_ab_backtest.py` SIGNAL 로거 ERROR 설정
+- [DONE 2026-06-05] **verify_and_update 배치화** — 24연결→2연결, 예상 6250ms→520ms
+- [DONE 2026-06-05] **save_candle_and_features 신규** — 2연결→1연결
+- [DONE 2026-06-05] **save_step9_batch 신규** — 7연결→1연결, 예상 1753ms→260ms
+- [DONE 2026-06-05] **BrokerSync 로그 레벨 조정** — `before=FLAT+rows=0` → DEBUG/INFO
+
+### 다음 할 일
+
+- [NEXT 다음 장] **파이프라인 병목 개선 효과 실측**
+  - `[PipePerf] total=Xms` 로그에서 13242ms→2500ms 이하 개선 여부 확인
+  - CB 5분 정지 재발 여부 확인
+  - `[EffectReports] run failed` 로그 재발 없음 확인
+
+- [NEXT 다음 장] **STEP 4 잔여 병목 파악**
+  - 위 배치화 이후에도 S5 레이블 여전히 >500ms이면 STEP 4 내 추가 DB 호출 존재 가능
+  - `_record_shap_feature_window`, `_refresh_shap_state` 등 점검
+
+---
+
 ## 2026-06-05 (115차 — Extreme 피처 절대값→상대값 정규화 전면 구현)
 
 ### 한일 요약

@@ -48,7 +48,8 @@ debug_log = logging.getLogger("DEBUG")
 
 # ── DB 초기화 ──────────────────────────────────────────────────
 from utils.db_utils import (
-    init_all_dbs, execute, save_candle, save_features, count_raw_candles,
+    init_all_dbs, execute, save_candle, save_features, save_candle_and_features,
+    count_raw_candles,
     fetch_recent_raw_features,
     fetch_today_trades, fetch_pnl_history, normalize_trade_pnl,
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
@@ -2919,9 +2920,8 @@ class TradingSystem:
                 )
                 features[_fk] = 0
 
-        # 분봉·피처 원본 저장 (경로 B 학습 데이터 축적)
-        save_candle(bar)
-        save_features(ts, features)
+        # 분봉·피처 원본 저장 (1연결 트랜잭션 — 연결 2회 → 1회)
+        save_candle_and_features(bar, ts, features)
 
         # [§19] RegimeFingerprint — PSI 기반 피처 분포 드리프트 감지 (STEP 4 직후)
         try:
@@ -3700,40 +3700,54 @@ class TradingSystem:
         _cr          = None
 
         if direction != 0 and self.position.status == "FLAT":
-            _disabled_gates = self.dashboard.get_disabled_gates()
-
-            # [P1] Checklist 전용 min_conf — L2(CRASH/DAY_RISK_OFF) 페널티를 최대 +4%p로 제한.
-            # actual_min_conf 는 앙상블 등급·대시보드용으로 L2 전량 포함한 채 유지한다.
-            _checklist_min_conf = actual_min_conf
-            if _l2_mc_adj > 0.0:
-                _checklist_min_conf = min(actual_min_conf, _zone_base_mc + 0.04)
-            if _tp_active:
-                # TrendGate active: override + 2%p 상한 (101차 TrendBoost로 conf가 약간 높아지므로 여유 2%p)
-                _checklist_min_conf = min(_checklist_min_conf, _tp["min_conf_override"] + 0.02)
-            if _checklist_min_conf < actual_min_conf:
+            # 재가동 cold-start 워밍업 — elapsed=infmin 이후 3분간 진입 차단
+            if self.model.is_in_startup_warmup(_ts_dt_obj):
+                _warmup_remain = int(
+                    (self.model._startup_warmup_until - _ts_dt_obj).total_seconds() / 60.0
+                ) + 1
                 log_manager.signal(
-                    f"[P1] Checklist min_conf 분리: {actual_min_conf:.2f}→{_checklist_min_conf:.2f}"
-                    f" (L2={_l2_mc_adj*100:.0f}%p cap, TrendGate={'ON' if _tp_active else 'OFF'})"
+                    "[StartupWarmup] 재가동 초기화 대기 중 — grade=X 강제 (약 %d분 남음)", _warmup_remain
                 )
+                _final_grade = "X"
+                _cr = {
+                    "grade": "X", "pass_count": 0, "checks": {},
+                    "size_mult": 0, "auto_entry": False, "entry_mode": "STARTUP_WARMUP",
+                }
+            else:
+                _disabled_gates = self.dashboard.get_disabled_gates()
 
-            _cr = self.checklist.evaluate(
-                direction         = direction,
-                confidence        = confidence,
-                vwap_position     = features.get("vwap_position", 0),
-                cvd_direction     = int(features.get("cvd_direction", 0)),
-                ofi_pressure      = int(features.get("ofi_pressure", 0)),
-                foreign_call_net  = features.get("foreign_call_net", 0),
-                foreign_put_net   = features.get("foreign_put_net", 0),
-                prev_bar_direction = (1 if bar.get("close", 0) > bar.get("open", 0)
-                                      else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
-                time_zone         = time_zone,
-                daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / max(_ts_current_sizer_balance(self), 50_000_000),
-                min_confidence    = _checklist_min_conf,
-                bear_exhaustion   = float(features.get("bear_exhaustion", 0.0) or 0.0),
-                bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
-                micro_regime      = getattr(self, "current_micro_regime", "혼합"),
-                disabled_gates    = _disabled_gates,
-            )
+                # [P1] Checklist 전용 min_conf — L2(CRASH/DAY_RISK_OFF) 페널티를 최대 +4%p로 제한.
+                # actual_min_conf 는 앙상블 등급·대시보드용으로 L2 전량 포함한 채 유지한다.
+                _checklist_min_conf = actual_min_conf
+                if _l2_mc_adj > 0.0:
+                    _checklist_min_conf = min(actual_min_conf, _zone_base_mc + 0.04)
+                if _tp_active:
+                    # TrendGate active: override + 2%p 상한 (101차 TrendBoost로 conf가 약간 높아지므로 여유 2%p)
+                    _checklist_min_conf = min(_checklist_min_conf, _tp["min_conf_override"] + 0.02)
+                if _checklist_min_conf < actual_min_conf:
+                    log_manager.signal(
+                        f"[P1] Checklist min_conf 분리: {actual_min_conf:.2f}→{_checklist_min_conf:.2f}"
+                        f" (L2={_l2_mc_adj*100:.0f}%p cap, TrendGate={'ON' if _tp_active else 'OFF'})"
+                    )
+
+                _cr = self.checklist.evaluate(
+                    direction         = direction,
+                    confidence        = confidence,
+                    vwap_position     = features.get("vwap_position", 0),
+                    cvd_direction     = int(features.get("cvd_direction", 0)),
+                    ofi_pressure      = int(features.get("ofi_pressure", 0)),
+                    foreign_call_net  = features.get("foreign_call_net", 0),
+                    foreign_put_net   = features.get("foreign_put_net", 0),
+                    prev_bar_direction = (1 if bar.get("close", 0) > bar.get("open", 0)
+                                          else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
+                    time_zone         = time_zone,
+                    daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / max(_ts_current_sizer_balance(self), 50_000_000),
+                    min_confidence    = _checklist_min_conf,
+                    bear_exhaustion   = float(features.get("bear_exhaustion", 0.0) or 0.0),
+                    bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
+                    micro_regime      = getattr(self, "current_micro_regime", "혼합"),
+                    disabled_gates    = _disabled_gates,
+                )
             _final_grade = _cr["grade"]
             _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
             # 섹션 8: grade=X 분봉 수 집계 (scaler_daily EOD용)
@@ -4461,31 +4475,21 @@ class TradingSystem:
             from utils.notify import notify_shs_alert as _nsa
             _nsa(shs=_shs_state["shs"], components=_shs_state)
 
-        # ── STEP 9: 예측 DB 저장 ───────────────────────────────
+        # ── STEP 9: 예측 DB 저장 (배치 — 1연결 트랜잭션) ──────────
+        _feat_clean = {k: round(float(v), 4) for k, v in features.items()
+                       if v is not None and v == v}
         try:
-            for h_name, h_res in horizon_proba.items():
-                self.pred_buffer.save_prediction(
-                    ts         = ts,
-                    horizon    = h_name,
-                    direction  = h_res["direction"],
-                    confidence = h_res["confidence"],
-                    up_prob    = h_res.get("up"),
-                    down_prob  = h_res.get("down"),
-                    flat_prob  = h_res.get("flat"),
-                    features   = {k: round(float(v), 4) for k, v in features.items()
-                                  if v is not None and v == v},  # NaN/None 제외
-                    sigma_at_t = self._sigma_20,
-                )
-            self.pred_buffer.save_ensemble_decision(
-                ts=ts,
-                regime=self.current_regime,
-                micro_regime=self.current_micro_regime,
-                decision=decision,
-                features={k: round(float(v), 4) for k, v in features.items()
-                          if v is not None and v == v},
+            self.pred_buffer.save_step9_batch(
+                ts            = ts,
+                sigma_at_t    = self._sigma_20,
+                horizon_proba = horizon_proba,
+                features_clean= _feat_clean,
+                regime        = self.current_regime,
+                micro_regime  = self.current_micro_regime,
+                decision      = decision,
             )
         except Exception as e:
-            logger.warning("[STEP9] save_prediction 오류 (스킵): %s", e)
+            logger.warning("[STEP9] save_step9_batch 오류 (스킵): %s", e)
 
         # ── 챔피언-도전자 Shadow 실행 (STEP 9 이후 훅) ─────────
         if self.challenger_engine is not None:
@@ -7716,20 +7720,24 @@ def _ts_sync_position_from_broker(self) -> None:
         _ts_set_broker_sync_status(self, False, "broker balance TR returned None", True)
         log_manager.system("[BrokerSync] 브로커 잔고 TR 조회 실패로 startup sync를 건너뜁니다.", "WARNING")
         return
-    logger.warning(
+
+    rows = result.get("rows") or []
+    nonempty_rows = result.get("nonempty_rows") or []
+    all_blank_rows = bool(result.get("all_blank_rows"))
+    # before=FLAT + rows=0: 정상 무포지션 확인 → DEBUG (실전 포지션 보유 중이면 WARNING 유지)
+    _is_flat_confirm = (before == "FLAT" and not rows)
+    _balance_log = logger.debug if _is_flat_confirm else logger.warning
+    _balance_log(
         "[BrokerSync] balance result rows=%d nonempty=%d summary_nonblank=%s probe_nonblank=%s summary=%s",
-        len(result.get("rows") or []),
-        len(result.get("nonempty_rows") or []),
+        len(rows),
+        len(nonempty_rows),
         any(str(v).strip() for v in (result.get("summary") or {}).values()),
         any(str(v).strip() for v in (result.get("summary_probe") or {}).values()),
         result.get("summary") or {},
     )
     _ts_push_balance_to_dashboard(self, result)
 
-    rows = result.get("rows") or []
-    nonempty_rows = result.get("nonempty_rows") or []
-    all_blank_rows = bool(result.get("all_blank_rows"))
-    logger.warning(
+    _balance_log(
         "[BrokerSync] startup sync raw rows=%d nonempty_rows=%d all_blank_rows=%s record_name=%r prev_next=%r rows=%s",
         len(rows),
         len(nonempty_rows),
@@ -7750,7 +7758,8 @@ def _ts_sync_position_from_broker(self) -> None:
 
     if not broker_row:
         if not nonempty_rows:
-            logger.warning(
+            _blank_log = logger.info if _is_flat_confirm else logger.warning
+            _blank_log(
                 "[BrokerSync] blank-as-flat decision before=%s rows=%s summary=%s probe=%s",
                 before,
                 rows,
@@ -7784,14 +7793,20 @@ def _ts_sync_position_from_broker(self) -> None:
                 f"[BrokerSync] startup sync 무포지션 확인(blank rows): {before} -> FLAT",
                 "WARNING" if before != "FLAT" else "INFO",
             )
-            _ts_log_diag(
-                self,
-                "BrokerSyncFlatPlaceholder",
-                before=before,
-                rows=len(rows),
-                all_blank_rows=all_blank_rows,
-                raw_rows=rows,
-            )
+            if _is_flat_confirm:
+                logger.debug(
+                    "[BrokerSyncFlatPlaceholder] before=%r | raw_rows=%s | rows=%d | all_blank_rows=%s",
+                    before, rows, len(rows), all_blank_rows,
+                )
+            else:
+                _ts_log_diag(
+                    self,
+                    "BrokerSyncFlatPlaceholder",
+                    before=before,
+                    rows=len(rows),
+                    all_blank_rows=all_blank_rows,
+                    raw_rows=rows,
+                )
             return
         _ts_set_broker_sync_status(self, False, "no broker row matched requested code", True)
         logger.warning(

@@ -1,7 +1,35 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-05 (115차 세션 마무리) — Extreme 피처 절대값→상대값 정규화 전면 구현
+> 마지막 업데이트: 2026-06-05 (116차 세션 마무리) — subprocess/DB 병목 수정 + 로그 레벨 정비
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-05 (116차 — subprocess/DB 병목 수정 + 로그 레벨 정비)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **EffectReports subprocess IndexError** | **완료** ✅ | `main.py` `_run_effect_report_script` |
+| **ConstOut 스팸 억제** | **완료** ✅ | `scripts/run_microstructure_ab_backtest.py` |
+| **DB 연결 배치화 (파이프라인 병목)** | **완료** ✅ | `prediction_buffer.py`, `db_utils.py`, `main.py` |
+| **BrokerSync 로그 레벨 조정** | **완료** ✅ | `main.py`, `dashboard/main_dashboard.py` |
+| **파이프라인 시간 실측 검증** | **미실시** — 다음 장 PipePerf 로그 확인 필요 | — |
+
+### DB 배치화 요약
+
+| 단계 | 이전 연결 수 | 이후 연결 수 | 예상 개선 |
+|---|---|---|---|
+| STEP 1 `verify_and_update` | 24회 (~6250ms) | 2회 | → ~520ms |
+| STEP 4 `save_candle_and_features` | 2회 (~700ms) | 1회 | → ~260ms |
+| STEP 9 `save_step9_batch` | 7회 (~1753ms) | 1회 | → ~260ms |
+| **합계** | **13242ms** | **~2500ms** | CB 5초 기준 이하 |
+
+### BrokerSync 로그 기준
+
+- `before=FLAT + rows=0` → DEBUG/INFO (모의투자 정상 무포지션 응답)
+- `before!=FLAT + rows=0` → WARNING 유지 (실전 포지션 중 공란 = 이상 상황)
 
 ---
 

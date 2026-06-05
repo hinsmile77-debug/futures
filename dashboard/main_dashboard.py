@@ -3546,6 +3546,7 @@ class EntryPanel(QWidget):
             left_lay.addLayout(r)
 
         self._load_gate_toggles()
+        self._load_entry_mode()
         for cb in self.check_toggles.values():
             cb.stateChanged.connect(self._save_gate_toggles)
 
@@ -3948,7 +3949,33 @@ class EntryPanel(QWidget):
 
     def _set_mode(self, mode):
         self.current_mode = mode
+        self._save_entry_mode()
         self._update_mode_desc()
+
+    def _save_entry_mode(self):
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            p = {}
+            if os.path.exists(_f):
+                with open(_f, "r", encoding="utf-8") as fp:
+                    p = json.load(fp)
+            p["entry_mode"] = self.current_mode
+            with open(_f, "w", encoding="utf-8") as fp:
+                json.dump(p, fp, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _load_entry_mode(self):
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            if not os.path.exists(_f):
+                return
+            mode = json.load(open(_f, "r", encoding="utf-8")).get("entry_mode", "hybrid")
+            if mode in self._mode_button_labels:
+                self.current_mode = mode
+                self._sync_mode_button_styles()
+        except Exception:
+            pass
 
     def _set_reverse_entry_enabled(self, enabled: bool):
         self._reverse_entry_enabled = bool(enabled)
@@ -9358,7 +9385,7 @@ class DashboardAdapter:
 
     def update_account_balance(self, summary: dict, rows, quiet: bool = False, mark_fresh: bool = True, source: str = "broker", balance_active: bool = True):
         if not quiet:
-            logger.warning(
+            logger.info(
                 "[BalanceUI] dashboard receive rows=%d summary_nonblank=%s preview=%s summary=%s",
                 len(rows or []),
                 any(str(v).strip() for v in (summary or {}).values()),

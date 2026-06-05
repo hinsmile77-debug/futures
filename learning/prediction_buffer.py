@@ -17,7 +17,7 @@ from config.settings import HORIZONS, HORIZON_THRESHOLDS, PREDICTIONS_DB, SIGMA_
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from learning.meta_labeling import compact_feature_json, derive_meta_label
 from model.target_builder import build_single_target
-from utils.db_utils import execute, fetchall, fetchone, get_candle_close
+from utils.db_utils import execute, executemany, fetchall, fetchone, get_candle_close, get_conn
 
 logger = logging.getLogger("LEARNING")
 
@@ -80,6 +80,127 @@ class PredictionBuffer:
             ),
         )
 
+    @staticmethod
+    def _normalize_probs(
+        direction: int, confidence: float,
+        up_prob=None, down_prob=None, flat_prob=None,
+    ) -> Tuple[float, float, float, float]:
+        """확률 정규화 (save_prediction / save_step9_batch 공용)"""
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 1 / 3
+        if not math.isfinite(confidence):
+            confidence = 1 / 3
+
+        def _safe(v, fb):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                v = fb
+            if not math.isfinite(v):
+                v = fb
+            return min(max(v, 0.0), 1.0)
+
+        if up_prob is None or down_prob is None or flat_prob is None:
+            side = max(0.0, 1.0 - confidence) / 2.0
+            if direction == DIRECTION_UP:
+                up_prob, down_prob, flat_prob = confidence, side, side
+            elif direction == DIRECTION_DOWN:
+                up_prob, down_prob, flat_prob = side, confidence, side
+            else:
+                up_prob, down_prob, flat_prob = side, side, confidence
+
+        return (
+            confidence,
+            _safe(up_prob, 1 / 3),
+            _safe(down_prob, 1 / 3),
+            _safe(flat_prob, 1 / 3),
+        )
+
+    def save_step9_batch(
+        self,
+        *,
+        ts: str,
+        sigma_at_t: float,
+        horizon_proba: Dict,
+        features_clean: Dict,
+        regime: str,
+        micro_regime: str,
+        decision: Dict,
+    ) -> None:
+        """STEP 9: 전 호라이즌 예측 + 앙상블 결정을 1연결 트랜잭션으로 저장.
+
+        기존 save_prediction×N + save_ensemble_decision 대비 연결 7회 → 1회.
+        """
+        feat_json = json.dumps(features_clean, ensure_ascii=False) if features_clean else "{}"
+        try:
+            _sigma = float(sigma_at_t) if sigma_at_t else 0.0
+        except (TypeError, ValueError):
+            _sigma = 0.0
+
+        pred_rows: List[Tuple] = []
+        for h_name, h_res in horizon_proba.items():
+            conf, up, dn, fl = self._normalize_probs(
+                h_res.get("direction", 0),
+                h_res.get("confidence", 1 / 3),
+                h_res.get("up"), h_res.get("down"), h_res.get("flat"),
+            )
+            pred_rows.append((ts, h_name, h_res.get("direction", 0), conf, up, dn, fl, feat_json, _sigma))
+
+        gate = decision.get("gating") or {}
+        ens_row: Tuple = (
+            ts, regime, micro_regime,
+            int(decision.get("direction", 0)),
+            float(decision.get("confidence", 0.0) or 0.0),
+            float(decision.get("up_score", 0.0) or 0.0),
+            float(decision.get("down_score", 0.0) or 0.0),
+            float(decision.get("flat_score", 0.0) or 0.0),
+            str(decision.get("grade", "")),
+            int(bool(decision.get("auto_entry", False))),
+            int(bool(decision.get("regime_ok", False))),
+            float(decision.get("min_conf", 0.0) or 0.0),
+            str(gate.get("reason", "")),
+            float(gate.get("gate_strength", 0.0) or 0.0),
+            float(gate.get("delta", 0.0) or 0.0),
+            int(bool(gate.get("blocked", False))),
+            json.dumps(gate.get("signals", {}), ensure_ascii=False),
+            json.dumps(decision.get("detail", {}), ensure_ascii=False),
+            json.dumps(features_clean or {}, ensure_ascii=False),
+            str((decision.get("meta_gate") or {}).get("action", "")),
+            float((decision.get("meta_gate") or {}).get("meta_confidence", 0.0) or 0.0),
+            float((decision.get("meta_gate") or {}).get("size_multiplier", 0.0) or 0.0),
+            str((decision.get("meta_gate") or {}).get("reason", "")),
+            str((decision.get("toxicity_gate") or {}).get("action", "")),
+            float((decision.get("toxicity_gate") or {}).get("score", 0.0) or 0.0),
+            float((decision.get("toxicity_gate") or {}).get("score_ma", 0.0) or 0.0),
+            float((decision.get("toxicity_gate") or {}).get("size_multiplier", 0.0) or 0.0),
+            str((decision.get("toxicity_gate") or {}).get("reason", "")),
+        )
+
+        with get_conn(PREDICTIONS_DB) as conn:
+            if pred_rows:
+                conn.executemany(
+                    """INSERT INTO predictions
+                       (ts, horizon, direction, confidence, up_prob, down_prob, flat_prob,
+                        features, sigma_at_t)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    pred_rows,
+                )
+            conn.execute(
+                """INSERT INTO ensemble_decisions (
+                       ts, regime, micro_regime, direction, confidence,
+                       up_score, down_score, flat_score,
+                       grade, auto_entry, regime_ok, min_conf,
+                       gate_reason, gate_strength, gate_delta, gate_blocked,
+                       gate_signals, detail, features,
+                       meta_action, meta_confidence, meta_size_mult, meta_reason,
+                       toxicity_action, toxicity_score, toxicity_score_ma,
+                       toxicity_size_mult, toxicity_reason
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ens_row,
+            )
+
     def save_prediction(
         self,
         ts: str,
@@ -92,36 +213,8 @@ class PredictionBuffer:
         features: Optional[Dict] = None,
         sigma_at_t: float = 0.0,
     ):
-        """예측 저장"""
-        try:
-            confidence = float(confidence)
-        except (TypeError, ValueError):
-            confidence = 1 / 3
-        if not math.isfinite(confidence):
-            confidence = 1 / 3
-
-        def _safe_prob(value, fallback):
-            try:
-                value = float(value)
-            except (TypeError, ValueError):
-                value = fallback
-            if not math.isfinite(value):
-                value = fallback
-            return min(max(value, 0.0), 1.0)
-
-        if up_prob is None or down_prob is None or flat_prob is None:
-            side = max(0.0, 1.0 - confidence) / 2.0
-            if direction == DIRECTION_UP:
-                up_prob, down_prob, flat_prob = confidence, side, side
-            elif direction == DIRECTION_DOWN:
-                up_prob, down_prob, flat_prob = side, confidence, side
-            else:
-                up_prob, down_prob, flat_prob = side, side, confidence
-
-        up_prob = _safe_prob(up_prob, 1 / 3)
-        down_prob = _safe_prob(down_prob, 1 / 3)
-        flat_prob = _safe_prob(flat_prob, 1 / 3)
-
+        """예측 단건 저장 (save_step9_batch 미사용 시 fallback)"""
+        conf, up, dn, fl = self._normalize_probs(direction, confidence, up_prob, down_prob, flat_prob)
         feat_json = json.dumps(features, ensure_ascii=False) if features else "{}"
         try:
             sigma_at_t = float(sigma_at_t) if sigma_at_t else 0.0
@@ -132,7 +225,7 @@ class PredictionBuffer:
             """INSERT INTO predictions
                (ts, horizon, direction, confidence, up_prob, down_prob, flat_prob, features, sigma_at_t)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (ts, horizon, direction, confidence, up_prob, down_prob, flat_prob, feat_json, sigma_at_t),
+            (ts, horizon, direction, conf, up, dn, fl, feat_json, sigma_at_t),
         )
 
     def verify_and_update(
@@ -150,111 +243,135 @@ class PredictionBuffer:
         Returns:
             검증된 예측 결과 리스트
         """
+        from config.settings import RAW_DATA_DB
+        from utils.db_utils import get_conn
+
+        current_dt = datetime.datetime.strptime(current_ts, "%Y-%m-%d %H:%M:%S")
+
+        # 각 호라이즌의 target_ts 미리 계산
+        horizon_targets = {
+            h: (current_dt - datetime.timedelta(minutes=m)).strftime("%Y-%m-%d %H:%M:%S")
+            for h, m in HORIZONS.items()
+        }
+        target_tss = list(horizon_targets.values())
+
+        # ── DB 1: RAW_DATA_DB — 필요한 종가 일괄 조회 (1연결) ──
+        candle_map: Dict[str, float] = {}
+        try:
+            placeholders = ",".join("?" * len(target_tss))
+            with get_conn(RAW_DATA_DB) as raw_conn:
+                for r in raw_conn.execute(
+                    f"SELECT ts, close FROM raw_candles WHERE ts IN ({placeholders})",
+                    target_tss,
+                ).fetchall():
+                    candle_map[r["ts"]] = float(r["close"])
+        except Exception as _raw_e:
+            logger.warning("[Buffer] raw_candles 배치 조회 실패, fallback: %s", _raw_e)
+            for tts in target_tss:
+                v = get_candle_close(tts)
+                if v is not None:
+                    candle_map[tts] = v
+
+        # ── DB 2: PREDICTIONS_DB — 조회 + UPDATE + INSERT 모두 1트랜잭션 ──
         verified = []
+        update_rows: List[Tuple] = []
+        meta_rows: List[Tuple] = []
 
-        for horizon, h_min in HORIZONS.items():
-            # T-h분 시각 계산
-            current_dt = datetime.datetime.strptime(current_ts, "%Y-%m-%d %H:%M:%S")
-            target_dt  = current_dt - datetime.timedelta(minutes=h_min)
-            target_ts  = target_dt.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with get_conn(PREDICTIONS_DB) as pred_conn:
+                for horizon, target_ts in horizon_targets.items():
+                    h_min = HORIZONS[horizon]
 
-            # 아직 actual이 없는 예측 조회 (sigma_at_t 포함)
-            row = fetchone(
-                PREDICTIONS_DB,
-                """SELECT id, direction, confidence, up_prob, down_prob, flat_prob, features, sigma_at_t
-                   FROM predictions
-                   WHERE ts = ? AND horizon = ? AND actual IS NULL""",
-                (target_ts, horizon),
-            )
-            if row is None:
-                continue
+                    row = pred_conn.execute(
+                        """SELECT id, direction, confidence, up_prob, down_prob, flat_prob,
+                                  features, sigma_at_t
+                           FROM predictions
+                           WHERE ts = ? AND horizon = ? AND actual IS NULL""",
+                        (target_ts, horizon),
+                    ).fetchone()
+                    if row is None:
+                        continue
 
-            pred_id  = row["id"]
-            pred_dir = row["direction"]
+                    target_close = candle_map.get(target_ts)
+                    if target_close is None:
+                        continue
 
-            # 방안B: 예측 저장 시점의 sigma_at_t로 threshold 재현
-            _sigma_saved = float(row["sigma_at_t"] or 0.0)
-            if _sigma_saved > 0 and SIGMA_K > 0:
-                threshold = _sigma_saved / 100.0 * SIGMA_K * math.sqrt(h_min)
-            else:
-                threshold = HORIZON_THRESHOLDS.get(horizon, 0.0003)
+                    pred_id  = row["id"]
+                    pred_dir = row["direction"]
 
-            # 실제 방향: target_ts 종가 → current_ts 종가
-            target_close = get_candle_close(target_ts)
-            if target_close is None:
-                # raw_candles 미적재 구간 — 건너뜀 (placeholder 방지)
-                continue
+                    _sigma_saved = float(row["sigma_at_t"] or 0.0)
+                    if _sigma_saved > 0 and SIGMA_K > 0:
+                        threshold = _sigma_saved / 100.0 * SIGMA_K * math.sqrt(h_min)
+                    else:
+                        threshold = HORIZON_THRESHOLDS.get(horizon, 0.0003)
 
-            actual  = build_single_target(target_close, current_price, threshold)
-            correct = int(actual == pred_dir)
-            execute(
-                PREDICTIONS_DB,
-                "UPDATE predictions SET actual = ?, correct = ? WHERE id = ?",
-                (actual, correct, pred_id),
-            )
+                    actual  = build_single_target(target_close, current_price, threshold)
+                    correct = int(actual == pred_dir)
+                    update_rows.append((actual, correct, pred_id))
 
-            try:
-                feat_dict = json.loads(row["features"]) if row["features"] else {}
-            except (ValueError, TypeError):
-                feat_dict = {}
+                    try:
+                        feat_dict = json.loads(row["features"]) if row["features"] else {}
+                    except (ValueError, TypeError):
+                        feat_dict = {}
 
-            meta = derive_meta_label(
-                predicted=pred_dir,
-                actual=actual,
-                confidence=float(row["confidence"] or 0.0),
-                target_close=float(target_close),
-                future_close=float(current_price),
-                threshold_ratio=float(threshold),
-            )
-            execute(
-                PREDICTIONS_DB,
-                """
-                INSERT INTO meta_labels (
-                    ts, horizon, predicted, actual, confidence,
-                    up_prob, down_prob, flat_prob,
-                    target_close, future_close, realized_move, threshold_move,
-                    meta_action, meta_score, features
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    target_ts,
-                    horizon,
-                    int(pred_dir),
-                    int(actual),
-                    float(row["confidence"] or 0.0),
-                    row["up_prob"],
-                    row["down_prob"],
-                    row["flat_prob"],
-                    float(target_close),
-                    float(current_price),
-                    float(meta["realized_move"]),
-                    float(meta["threshold_move"]),
-                    meta["meta_action"],
-                    float(meta["meta_score"]),
-                    compact_feature_json(feat_dict),
-                ),
-            )
+                    meta = derive_meta_label(
+                        predicted=pred_dir,
+                        actual=actual,
+                        confidence=float(row["confidence"] or 0.0),
+                        target_close=float(target_close),
+                        future_close=float(current_price),
+                        threshold_ratio=float(threshold),
+                    )
+                    meta_rows.append((
+                        target_ts, horizon, int(pred_dir), int(actual),
+                        float(row["confidence"] or 0.0),
+                        row["up_prob"], row["down_prob"], row["flat_prob"],
+                        float(target_close), float(current_price),
+                        float(meta["realized_move"]), float(meta["threshold_move"]),
+                        meta["meta_action"], float(meta["meta_score"]),
+                        compact_feature_json(feat_dict),
+                    ))
+                    verified.append({
+                        "id":         pred_id,
+                        "ts":         target_ts,
+                        "horizon":    horizon,
+                        "predicted":  pred_dir,
+                        "actual":     actual,
+                        "correct":    bool(correct),
+                        "confidence": row["confidence"],
+                        "up_prob":    row["up_prob"],
+                        "down_prob":  row["down_prob"],
+                        "flat_prob":  row["flat_prob"],
+                        "features":   feat_dict,
+                        "meta_label": meta["meta_action"],
+                        "meta_score": meta["meta_score"],
+                    })
+                    logger.debug(
+                        "[Buffer] %s 검증: pred=%s actual=%s (%s) "
+                        "target_close=%.2f→current=%.2f",
+                        horizon, pred_dir, actual,
+                        "✓" if correct else "✗",
+                        target_close, current_price,
+                    )
 
-            verified.append({
-                "id":         pred_id,
-                "ts":         target_ts,   # 예측이 만들어진 시각 (CB③ 세션 필터용)
-                "horizon":    horizon,
-                "predicted":  pred_dir,
-                "actual":     actual,
-                "correct":    bool(correct),
-                "confidence": row["confidence"],
-                "up_prob":    row["up_prob"],
-                "down_prob":  row["down_prob"],
-                "flat_prob":  row["flat_prob"],
-                "features":   feat_dict,
-                "meta_label": meta["meta_action"],
-                "meta_score": meta["meta_score"],
-            })
-            logger.debug(
-                f"[Buffer] {horizon} 검증: pred={pred_dir} actual={actual} "
-                f"({'✓' if correct else '✗'}) "
-                f"target_close={target_close:.2f}→current={current_price:.2f}"
-            )
+                # 같은 트랜잭션 안에서 일괄 쓰기 (커밋 1회)
+                if update_rows:
+                    pred_conn.executemany(
+                        "UPDATE predictions SET actual = ?, correct = ? WHERE id = ?",
+                        update_rows,
+                    )
+                if meta_rows:
+                    pred_conn.executemany(
+                        """INSERT INTO meta_labels (
+                               ts, horizon, predicted, actual, confidence,
+                               up_prob, down_prob, flat_prob,
+                               target_close, future_close, realized_move, threshold_move,
+                               meta_action, meta_score, features
+                           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        meta_rows,
+                    )
+        except Exception as _e:
+            logger.warning("[Buffer] verify_and_update 배치 오류: %s", _e)
 
         return verified
 

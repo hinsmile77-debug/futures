@@ -516,6 +516,35 @@ def save_features(ts: str, features: dict) -> None:
     )
 
 
+def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
+    """분봉 + 피처를 1연결 트랜잭션으로 저장 (save_candle+save_features 2회 연결 → 1회)."""
+    ts_raw = candle.get("ts")
+    candle_ts = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+    feat_json = json.dumps(features, ensure_ascii=False)
+    with _lock:
+        with get_conn(RAW_DATA_DB) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO raw_candles
+                   (ts, open, high, low, close, volume, bid1, ask1, oi)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candle_ts,
+                    candle.get("open",   0.0),
+                    candle.get("high",   0.0),
+                    candle.get("low",    0.0),
+                    candle.get("close",  0.0),
+                    candle.get("volume", 0),
+                    candle.get("bid1"),
+                    candle.get("ask1"),
+                    candle.get("oi"),
+                ),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO raw_features (ts, features) VALUES (?, ?)",
+                (ts, feat_json),
+            )
+
+
 def get_candle_close(ts: str) -> Optional[float]:
     """ts 시각의 종가 반환 — actual 라벨 계산용."""
     row = fetchone(RAW_DATA_DB, "SELECT close FROM raw_candles WHERE ts = ?", (ts,))

@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-05 (116차 — subprocess/DB 병목 수정 + 로그 레벨 정비)
+
+**Work**: 장 중 WARN.log 분석. EffectReports subprocess IndexError, 파이프라인 13초 지연(CB 발동), BrokerSync 과다 경고 3건 모두 수정.
+
+### 수정 내역
+
+| # | 증상 | 원인 | 수정 |
+|---|---|---|---|
+| 1 | `[EffectReports] run failed ... IndexError` | Python 3.7 32bit `text=True` pipe → 한글 출력 UnicodeDecodeError → `_readerthread` buffer 비어 → `stdout[0]` IndexError | `main.py` `_run_effect_report_script`: `capture_output=True, text=True` → `stdout=PIPE, stderr=PIPE` + 수동 decode (utf-8→cp949 fallback) |
+| 2 | 146KB ConstOut 스팸 | `run_microstructure_ab_backtest.py`가 과거 prediction 전수 순회 시 `EnsembleDecision.compute()`가 매 row마다 `SIGNAL` logger에 `[ConstOut]` WARNING 발생 | 스크립트 상단 `logging.getLogger("SIGNAL").setLevel(logging.ERROR)` 추가 |
+| 3 | `[PipePerf] total=13242ms` → CB 5분 진입 정지 | `db_utils.get_conn()` 매 호출마다 SQLite 연결 오픈. Windows Python 3.7 32bit = 연결 1회 ~260ms. STEP 1 24연결=6250ms, STEP 9 7연결=1753ms, STEP 4 2연결. | `verify_and_update` 배치화(24→2연결), `save_step9_batch` 신규(7→1연결), `save_candle_and_features` 신규(2→1연결) |
+| 4 | BrokerSync WARNING 과다(5개/회) | `before=FLAT + rows=0` 모의투자 정상 응답을 WARNING으로 기록 | `before=FLAT` 조건 시 WARNING→DEBUG/INFO. 실전 포지션 보유 중 rows=0은 WARNING 유지 |
+
+### 예상 효과
+
+- 파이프라인 13242ms → ~2500ms (CB_PIPE_PAUSE_MS 5000ms 이하 복귀)
+- WARN.log 노이즈 대폭 감소
+
+### 변경 파일
+
+- `main.py`, `learning/prediction_buffer.py`, `utils/db_utils.py`, `scripts/run_microstructure_ab_backtest.py`, `dashboard/main_dashboard.py`
+
+---
+
 ## 2026-06-05 (115차 — Extreme 피처 절대값→상대값 정규화 전면 구현)
 
 **Work**: 스케일러 extreme 피처 Top5(microprice z7.42, toxicity_cancel_stress z7.60, mlofi_slope z7.31, quality_investor_age_sec z7.08, vwap z6.73) 원인 분석. 91개 피처 전수 조사 후 절대값 14개 식별. 7종 개선 구현. 재훈련 완료.

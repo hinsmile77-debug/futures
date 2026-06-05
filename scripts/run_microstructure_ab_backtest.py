@@ -1,4 +1,5 @@
 import json
+import logging
 import sqlite3
 import sys
 from collections import defaultdict
@@ -10,6 +11,9 @@ from statistics import mean
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# 백테스트 맥락에서 EnsembleDecision ConstOut 경고 억제
+logging.getLogger("SIGNAL").setLevel(logging.ERROR)
 
 from config.settings import ENSEMBLE_WEIGHTS, PREDICTIONS_DB, RAW_DATA_DB
 from config.constants import DIRECTION_DOWN, DIRECTION_FLAT, DIRECTION_UP

@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-06-05 (116차)
+
+### [버그] Python 3.7 32bit Windows subprocess `text=True` + 한글 출력 → IndexError
+**File**: `main.py` — `_run_effect_report_script`
+**Root cause**: `subprocess.run(..., text=True)` 사용 시 파이프가 `TextIOWrapper`로 감싸져 로케일 인코딩으로 디코딩된다. 서브프로세스가 한글을 stdout/stderr로 출력할 때 인코딩 불일치 → `_readerthread` 내부 `UnicodeDecodeError` → 데몬 스레드라 예외 silently 사라짐 → buffer 빈 상태 → `stdout[0]` / `stderr[0]` → `IndexError`. `generate_rollout_readiness_report.py`는 stdout 한글(`reason=A/B 개선...`), `run_microstructure_ab_backtest.py`는 stderr에 146KB 한글 경고.
+**Fix**: `capture_output=True, text=True` → `stdout=PIPE, stderr=PIPE`(바이너리) + 수동 decode(utf-8 → cp949 fallback with replace). 로케일 의존 없음.
+**How to apply**: `[EffectReports] run failed ... IndexError` 로그 재발 없음 확인.
+
+### [설계] DB 연결 배치화 — 파이프라인 병목 근본 수정
+**File**: `learning/prediction_buffer.py`, `utils/db_utils.py`, `main.py`
+**Root cause**: `db_utils.get_conn()`이 매 호출마다 SQLite 연결 오픈 + `PRAGMA journal_mode=WAL` + commit + close. Windows Python 3.7 32bit = 연결 1회 ~260ms. STEP 1 `verify_and_update`는 6호라이즌 × 4연산 = 24연결 = ~6240ms. STEP 9는 save_prediction×6 + save_ensemble_decision = 7연결 = ~1753ms. → 합계 13242ms로 CB_PIPE_PAUSE_MS(5000ms) 초과 → CB⑤ 발동.
+**Fix**: 3종 배치화
+- `verify_and_update`: RAW_DATA_DB IN절 1회 조회 + PREDICTIONS_DB 1트랜잭션(SELECT×6 + executemany UPDATE + executemany INSERT). 24연결→2연결.
+- `save_step9_batch` 신규: STEP 9에서 prediction 6개 + ensemble 1개를 1트랜잭션. 7연결→1연결.
+- `save_candle_and_features` 신규: raw_candles + raw_features INSERT를 1트랜잭션. 2연결→1연결.
+**How to apply**: 다음 장 `[PipePerf] total=Xms` 2500ms 이하 확인. CB 발동 없음 확인.
+
+### [설계] BrokerSync 로그 레벨 — `before=FLAT + rows=0` 조건부 DEBUG/INFO
+**File**: `main.py` — `_ts_sync_position_from_broker`, `dashboard/main_dashboard.py` — `update_account_balance`
+**Decision**: `_is_flat_confirm = (before == "FLAT" and not rows)` 조건으로 WARNING → DEBUG/INFO 분기. `before != "FLAT"` 일 때는 WARNING 유지.
+**Why**: 모의투자 서버는 무포지션 시 rows=0 반환(`97007모의투자 데이터가 없습니다.`)이 정상. 이를 WARNING으로 기록하면 매 잔고 조회마다 5개의 WARN.log 항목이 쌓여 실제 이상 신호를 가림. 이미 `log_manager.system(..., "WARNING" if before != "FLAT" else "INFO")` 패턴이 올바르게 구현돼 있었고, 나머지 진단 로그에도 같은 기준 적용.
+**How to apply**: WARN.log에서 `[BrokerSync] balance result rows=0 ... before=FLAT` 항목이 더 이상 나타나지 않으면 정상.
+
+---
+
 ## 2026-06-05 (115차)
 
 ### [설계] 절대가격 피처(microprice/vwap) GBM 피처벡터에서 제거
