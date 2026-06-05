@@ -1,0 +1,110 @@
+"""
+장 마감 후 독립 실행 GBM EOD 재학습 스크립트
+────────────────────────────────────────────────
+사용:
+    conda activate py37_32
+    python scripts/eod_retrain.py
+    python scripts/eod_retrain.py --weeks 10
+    python scripts/eod_retrain.py --weeks 10 --no-force
+
+미륵이 종료 상태에서 실행하는 전용 스크립트.
+미륵이 실행 중에는 15:40 daily_close()가 자동으로 동일 작업을 실행함.
+"""
+import sys
+import os
+import argparse
+import datetime
+import logging
+
+# ── 프로젝트 루트를 sys.path에 추가 ───────────────────────────
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE_DIR)
+
+# ── 로그 설정 ─────────────────────────────────────────────────
+_today = datetime.datetime.now().strftime("%Y%m%d")
+_log_dir = os.path.join(BASE_DIR, "logs")
+os.makedirs(_log_dir, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(
+            os.path.join(_log_dir, f"{_today}_EOD_RETRAIN.log"),
+            encoding="utf-8",
+        ),
+    ],
+)
+logger = logging.getLogger("EOD_RETRAIN")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="미륵이 EOD GBM 재학습")
+    parser.add_argument(
+        "--weeks", type=int, default=10,
+        help="학습 기간 (주). 기본 10 — 약 16,000봉 (MIN_TRAIN_BARS=15,000 통과 기준)",
+    )
+    parser.add_argument(
+        "--no-force", dest="force", action="store_false", default=True,
+        help="성능 저하 시 교체 금지 (기본: force=True로 강제 교체)",
+    )
+    args = parser.parse_args()
+
+    logger.info("=" * 60)
+    logger.info("EOD GBM 재학습 시작 | weeks_back=%d | force=%s", args.weeks, args.force)
+    logger.info("BASE_DIR: %s", BASE_DIR)
+    logger.info("=" * 60)
+
+    # ── 임포트 (py37_32 환경 필요) ─────────────────────────────
+    try:
+        from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS
+    except ImportError as e:
+        logger.error("임포트 실패 — py37_32 환경에서 실행했는지 확인: %s", e)
+        sys.exit(1)
+
+    logger.info("MIN_TRAIN_BARS=%d", MIN_TRAIN_BARS)
+
+    # ── 재학습 실행 ────────────────────────────────────────────
+    start_dt = datetime.datetime.now()
+    retrainer = BatchRetrainer()
+    result = retrainer.retrain_now(weeks_back=args.weeks, force=args.force)
+
+    elapsed = (datetime.datetime.now() - start_dt).total_seconds()
+
+    # ── 결과 출력 ──────────────────────────────────────────────
+    logger.info("=" * 60)
+    if result.get("ok"):
+        logger.info(
+            "재학습 완료 | 소요=%.1f초 (%.1f분) | 데이터=%d행",
+            result.get("elapsed_sec", elapsed),
+            result.get("elapsed_sec", elapsed) / 60,
+            result.get("data_size", 0),
+        )
+        horizons = result.get("horizons", {})
+        replaced_count = sum(1 for r in horizons.values() if r.get("replaced"))
+        logger.info("교체: %d/%d 호라이즌", replaced_count, len(horizons))
+        for h in ["1m", "3m", "5m", "10m", "15m", "30m"]:
+            r = horizons.get(h, {})
+            marker = "✓" if r.get("replaced") else "−"
+            logger.info(
+                "  [%s] %s  cv_acc=%.4f  old_acc=%.4f",
+                marker, h,
+                r.get("cv_acc", 0.0),
+                r.get("old_acc", 0.0),
+            )
+    else:
+        err = result.get("error", "알 수 없음")
+        logger.error("재학습 실패: %s", err)
+        if "부족" in str(err):
+            logger.error(
+                "→ weeks_back을 늘리거나 backfill_features.py를 실행하여 피처 DB를 채우세요."
+            )
+        sys.exit(1)
+
+    logger.info("=" * 60)
+    logger.info("완료. pkl 저장 위치: %s", os.path.join(BASE_DIR, "model", "horizons"))
+
+
+if __name__ == "__main__":
+    main()

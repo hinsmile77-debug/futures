@@ -1,7 +1,38 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-05 (114차 세션 마무리) — 재학습 피처셋 불일치 사고 분석 + P0~P4 개선
+> 마지막 업데이트: 2026-06-05 (115차 세션 마무리) — Extreme 피처 절대값→상대값 정규화 전면 구현
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-05 (115차 — Extreme 피처 절대값→상대값 정규화 전면 구현)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **Phase 1: SCALER_CLIP_FEATURES 확장** | **완료** ✅ | `config/settings.py` |
+| **Phase 2-A/B: macro_vix_abs, feature_recoverable_errors 제거** | **완료** ✅ | `macro_feature_transformer.py`, `feature_builder.py`, `registry.json` |
+| **Phase 4: Gap Offset 구현** | **완료** ✅ | `model/multi_horizon_model.py`, `main.py` |
+| **Phase 2-C/D: microprice/vwap 절대값 제거** | **완료** ✅ | `feature_builder.py`, `registry.json` |
+| **Phase 3-A: cvd/cvd_slope 일중 정규화** | **완료** ✅ | `features/technical/cvd.py`, `feature_builder.py` |
+| **Phase 3-B: queue 비율화** | **완료** ✅ | `features/technical/queue_dynamics.py`, `feature_builder.py` |
+| **GBM 재훈련** | **완료** ✅ 16,406행×105피처 6/6 성공 | — |
+| **Phase 2-E: *_age_sec 제거** | **보류** — 1주일 clip 안정 확인 후 | — |
+| **Phase 3-C: B축 수급 OI 비율화** | **보류** — 설계 검토 필요 | — |
+
+### 주의 사항
+
+- **feat=118(ScalerWarmup) vs feat=105(GBM) 불일치**: 오늘 DB 잔존 이전 피처 데이터 때문. 내일~모레 자연 해소 예정. D_FORCE refit 발생 시 scaler 왜곡 가능.
+- **cvd/queue DB 혼재**: 과거 DB 절대값 + 오늘 이후 정규화값. 2~3일 후 완전 교체.
+- **재훈련 30분 소요**: 장 중 강제 재훈련은 CB⑤ 위험. EOD(15:40) 자동 재훈련 권장.
+- **weeks_back=10 반영됨**: `main.py daily_close`, `batch_retrainer` 기본값 모두 10으로 변경.
+
+### 구현 계획서 / 스크립트
+
+- `docs/260605_FEATURE_NORMALIZATION_PLAN.md` — 피처 분류, 구현 계획, 재훈련 방법
+- `scripts/eod_retrain.py` — 장 마감 후 독립 실행 EOD 재학습 스크립트
+- `EOD_RETRAIN.bat` — 더블클릭 실행 배치 파일
 
 ---
 

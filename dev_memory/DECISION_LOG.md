@@ -2,6 +2,45 @@
 
 ---
 
+## 2026-06-05 (115차)
+
+### [설계] 절대가격 피처(microprice/vwap) GBM 피처벡터에서 제거
+**File**: `features/feature_builder.py`, `data/db/shap_feature_registry.json`
+**Decision**: microprice 절대값, vwap 절대값을 GBM active_features에서 제거.
+**Why**: StandardScaler μ가 훈련 기간 가격 수준(~1387)을 기억하는데 현재 시장은 ~1297. 갭하락/상승 시 z폭발 구조적. 파생 피처(microprice_bias/slope/depth_bias, vwap_position/above_vwap)가 동일 정보를 상대값으로 완전 커버. GBM 트리가 절대 가격으로 학습한 split point는 가격 드리프트 시 무의미.
+**How to apply**: 다음 재훈련 시 `[Retrain] DB 로드 완료: N행 × 103피처(또는 105피처)` 피처 수 확인. extreme 패널에서 microprice/vwap 발생수 0 확인.
+
+### [설계] Gap Offset — 장 시작 첫 분봉 기준 절대가격 피처 z폭발 임시 방어
+**File**: `model/multi_horizon_model.py`, `main.py`
+**Decision**: 장 시작 첫 분봉 close를 기준으로 스케일러 μ와의 차이를 offset으로 기록. apply_robust_preprocess에서 microprice/vwap에서 offset 차감 → 스케일러가 "당일 시가 대비 편차"를 z-score로 변환.
+**Why**: Phase 2-C/D(절대값 피처 제거) 완료 전까지 갭하락/상승 당일 장 시작 초반 z폭발 방어 필요. 재훈련 없이 즉시 적용 가능.
+**How to apply**: `[GapOffset] today_open=XXXX | offset: {microprice: ±X, vwap: ±X}` 로그 확인. Phase 2-C/D 완료 후 `_PRICE_LEVEL_FEATURES` 목록에서 제거하면 offset 계산이 빈 dict로 no-op.
+
+### [설계] cvd/cvd_slope 절대값 → 일중 max 대비 비율 정규화
+**File**: `features/technical/cvd.py`, `features/feature_builder.py`
+**Decision**: `cvd_norm = cumulative_cvd / max(abs(cvd_buf))`, `cvd_slope_norm` 동일. 피처명 cvd/cvd_slope 유지(DB 컬럼 변경 없음).
+**Why**: 거래량 수준과 유동성 환경에 따라 동일 시장 구조도 cvd 절대값이 크게 달라짐. 정규화 후 일중 추세 강도를 [-1,+1]로 표현 가능.
+**Caution**: DB 과거 데이터는 절대값이라 재훈련 시 혼재. 2~3일 후 신규 데이터 축적 시 자연 해소. 단기 acc 변동 가능.
+
+### [설계] queue_depletion_speed/refill_rate 총량 대비 비율화
+**File**: `features/technical/queue_dynamics.py`, `features/feature_builder.py`
+**Decision**: `depletion_ratio = depletion / (depletion + refill + 1e-9)`, `refill_ratio` 동일. 피처명 기존 유지.
+**Why**: 장 초반 저유동성 vs 점심 고유동성에서 동일 수급 압박도가 10배 차이. 비율화로 유동성 수준 독립. [0,1] bounded → σ 안정.
+
+### [설계] EOD 재훈련 소요 30분 확인 → 장 중 강제 재훈련 위험
+**File**: `scripts/eod_retrain.py`, `EOD_RETRAIN.bat` 신규
+**Decision**: 장 중 강제 재훈련 사용을 최소화하고 EOD(15:40) 자동 재훈련 또는 독립 스크립트로 대체.
+**Why**: n_estimators=300, 16,406봉 × 6 호라이즌 × 4 fit = 30분. 백그라운드 스레드이지만 CPU 경합으로 매분 파이프라인 5초 초과 → CB⑤ 발동 위험 확인. `main.py:1983` 주석에도 동일 위험 경고 있음.
+**How to apply**: 수동 재훈련 필요 시 장 마감 후 `EOD_RETRAIN.bat` 더블클릭 또는 `python scripts/eod_retrain.py --weeks 10`.
+
+### [버그 발견] ScalerMonitorPanel SQL 집계 시점 불일치로 max|z|와 μ/σ가 다른 시점 데이터
+**File**: `dashboard/panels/scaler_monitor_panel.py` — Top5 SQL 쿼리
+**Root cause**: `MAX(ABS(max_z)) AS max_abs_z`는 오늘 전체 최대, `scaler_mean/scaler_std`는 `MAX(ts)` 최근 레코드 기준. 두 값이 서로 다른 시점의 스케일러를 참조해 z = (raw - μ) / σ 역산이 일치하지 않음.
+**Example**: vwap max|z|=1321.75(오전 D_FORCE refit 직후 발생), μ/σ=1344/47(14:07 최신 스케일러). 표시된 μ/σ로는 z를 재현할 수 없음.
+**Fix 여부**: 패널 가독성 문제이나 운영에 지장 없음. 향후 max|z| 발생 시각의 μ/σ를 함께 표시하면 정확. 지금은 보류.
+
+---
+
 ## 2026-06-05 (114차)
 
 ### [버그 구조적] ScalerWarmup 입력이 registry.active_features 기준으로 필터되어 refit 0-패딩 발생

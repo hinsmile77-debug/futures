@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-06-05 (115차 — Extreme 피처 절대값→상대값 정규화 전면 구현)
+
+**Work**: 스케일러 extreme 피처 Top5(microprice z7.42, toxicity_cancel_stress z7.60, mlofi_slope z7.31, quality_investor_age_sec z7.08, vwap z6.73) 원인 분석. 91개 피처 전수 조사 후 절대값 14개 식별. 7종 개선 구현. 재훈련 완료.
+
+### 구현 내용
+
+| 작업 | 파일 | 내용 |
+|---|---|---|
+| **Phase 1: SCALER_CLIP_FEATURES 확장** | `config/settings.py` | microprice(1150~1500), vwap(동일), toxicity_cancel_stress(0~0.5), quality_investor_age_sec(0~180), quality_macro_age_sec(0~3600), macro_vix_abs(10~60), feature_recoverable_errors(0~3), mlofi_slope ±500→±300 |
+| **Phase 2-A: macro_vix_abs 제거** | `features/macro/macro_feature_transformer.py`, `shap_feature_registry.json` | macro_vix 정규화 피처로 완전 대체. 파생 정보 손실 없음 |
+| **Phase 2-B: feature_recoverable_errors 제거** | `features/feature_builder.py`, `shap_feature_registry.json` | feature_degraded 0/1 플래그로 충분, σ≈0 z폭발 원천 제거 |
+| **Phase 4: Gap Offset 구현** | `model/multi_horizon_model.py`, `main.py` | 장 시작 첫 분봉 close를 기준으로 microprice/vwap offset 보정. Phase 2-C/D 완료 전 임시 방어 |
+| **Phase 2-C/D: microprice/vwap 절대값 제거** | `features/feature_builder.py`, `shap_feature_registry.json` | 파생 피처(bias/slope/depth_bias, position/above_vwap)로 완전 대체 |
+| **Phase 3-A: cvd/cvd_slope 일중 정규화** | `features/technical/cvd.py`, `features/feature_builder.py` | cvd_norm = cvd / daily_max, cvd_slope_norm 동일. 피처명 유지(cvd, cvd_slope) |
+| **Phase 3-B: queue 비율화** | `features/technical/queue_dynamics.py`, `features/feature_builder.py` | depletion_ratio = depletion/(depletion+refill), refill_ratio 동일. 유동성 수준 독립 |
+
+### 추가 작업
+
+- `docs/260605_FEATURE_NORMALIZATION_PLAN.md` 신규 — 피처 분류, 구현 계획, 재훈련 방법 포함
+- `scripts/eod_retrain.py` 신규 — 장 마감 후 독립 실행 EOD 재학습 스크립트
+- `EOD_RETRAIN.bat` 신규 — 더블클릭 실행 배치 파일
+
+### 재훈련 결과
+
+| 항목 | 값 |
+|---|---|
+| 데이터 | 16,406행 × 105피처 (cutoff 2026-03-27) |
+| 소요 시간 | 1830초 (30.5분) |
+| 성공 호라이즌 | 6/6 |
+| GBM acc | 1m 0.4287 / 3m 0.5527 / 5m 0.5692 / 10m 0.5798 / 15m 0.5905 / 30m 0.5841 |
+| RF OOB | 1m 0.456 / 3m 0.375 / 5m 0.388 / 10m 0.445 / 15m 0.461 / 30m 0.499 |
+
+### 발견된 이슈
+
+1. **feat=105(GBM) vs feat=118(ScalerWarmup) 불일치**: 오늘 장 중 DB에 저장된 과거 행에 microprice/vwap 등 이전 피처 포함. 내일부터 새 피처 구조 데이터 축적 시 자연 해소.
+2. **cvd/queue 변환 데이터 혼재**: DB 과거 데이터는 절대값(cvd~±50000), 오늘 이후는 정규화값(-1~+1). 첫 재훈련은 혼재 데이터로 학습됨. 2~3일 후 DB 데이터 교체되면 정상화.
+3. **재훈련 30분 소요**: n_estimators=300 + 16,000봉 × 24 fit. 장 중 강제 재훈련 시 CB⑤ 위험.
+
+---
+
 ## 2026-06-05 (114차 — 재학습 피처셋 불일치 사고 분석 + P0~P4 개선)
 
 **Work**: 금일(2026-06-05) 12:19:53 `reset to baseline` 이후 ScalerWarmup 입력이 feat=108→85로 급감하고 long 50분 정확도가 14~20%로 붕괴한 원인을 로그 3중 분석. 원인 계층(4레이어)을 특정 후 P0 긴급 수동 복구 + P1~P4 코드 개선 4종 구현.

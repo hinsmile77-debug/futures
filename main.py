@@ -4102,7 +4102,7 @@ class TradingSystem:
             except Exception:
                 entry_mode = "manual"
         allowed_grades = {
-            "auto": ["A"],
+            "auto":   ["A"],
             "hybrid": ["A", "B"],
             "manual": ["A", "B", "C"],
         }
@@ -4126,7 +4126,7 @@ class TradingSystem:
             and not _in_reverse_clamp
             and _hurst_ok
             and _atr_ok
-            and _final_grade in ("A", "B")
+            and mode_filter_passed
             and _qty_display > 0
             and not _bar_volume_zero
             and not _intraday_block
@@ -4178,9 +4178,9 @@ class TradingSystem:
             
             # ── 2순위: 진입 모드 필터 (1순위 L2 체크 후) ──────────────────────────
             allowed_grades = {
-                "auto":   ["A"],           # A급만
-                "hybrid": ["A", "B"],      # A, B급 (기본값)
-                "manual": ["A", "B", "C"]  # A, B, C급
+                "auto":   ["A"],
+                "hybrid": ["A", "B"],
+                "manual": ["A", "B", "C"],
             }
             mode_filter_passed = _final_grade in allowed_grades.get(entry_mode, ["A", "B", "C"])
             

@@ -248,10 +248,10 @@ SCALER_LOG1P_FEATURES: tuple = ("atr", "avg_volume")
 
 # clip 적용 피처 {피처명: (하한, 상한)}
 # spread_ticks: 오늘 극단 z=+6.45, raw cap 없음 → tick 단위 상한 20 (약 4호가)
-# mlofi_slope:  분포 -722 ~ +1127, raw cap 없음 → ±500 제한
+# mlofi_slope:  실측 σ=57.885, 3σ≈174 → ±300으로 좁힘 (기존 ±500은 423 통과, z=7.31)
 SCALER_CLIP_FEATURES: dict = {
     "spread_ticks":  (0.0, 20.0),
-    "mlofi_slope":   (-500.0, 500.0),
+    "mlofi_slope":   (-300.0, 300.0),
     # quality_investor_fetch_count: 소급 99.9%=0 → 스케일러 평균≈0 → 실시간 60이면 z=+8
     # 0 vs 1~5 범위만 의미 있음 → 5로 cap (investor_data.py clip도 동기화됨)
     "quality_investor_fetch_count": (0.0, 5.0),
@@ -266,6 +266,23 @@ SCALER_CLIP_FEATURES: dict = {
     # opt_pcr_slope_norm: 오늘 z=+9.21 반복 폭발 (D_FORCE 후에도 재발)
     # OFI/CVD 방향 신호와 충돌 → conf 소거. ±3σ clip으로 이상값 사전 차단
     "opt_pcr_slope_norm": (-3.0, 3.0),
+    # ── Phase 1 추가 (2026-06-05) — 절대값 피처 z폭발 방어 ──────────
+    # microprice/vwap: 절대 가격 피처, 훈련 μ≈1387 vs 현재 ~1297 → 갭 시 z폭발
+    # 근본 해결은 Phase 2(피처 제거)지만, 그 전까지 현실 범위로 cap
+    "microprice":               (1150.0, 1500.0),
+    "vwap":                     (1150.0, 1500.0),
+    # toxicity_cancel_stress: [0,1] bounded이나 σ=0.002 → 0.016 입력만으로 z=7.0
+    # 0.5 = cancel_add_ratio=1.0에 해당하는 극단 상한
+    "toxicity_cancel_stress":   (0.0, 0.5),
+    # quality_investor_age_sec: σ=11.351, 109초 입력 시 z=7.08
+    # is_stale threshold 180초와 일치 — 이상은 모두 "완전 stale" 동일 취급
+    "quality_investor_age_sec": (0.0, 180.0),
+    # quality_macro_age_sec: 매크로 수집 간격 최대 1시간
+    "quality_macro_age_sec":    (0.0, 3600.0),
+    # macro_vix_abs: VIX 원본값, Phase 2-A에서 제거 전까지 현실 범위 cap
+    "macro_vix_abs":            (10.0, 60.0),
+    # feature_recoverable_errors: σ≈0 → 정수 1만 돼도 z폭발, Phase 2-B 제거 전까지 cap
+    "feature_recoverable_errors": (0.0, 3.0),
 }
 
 # GBM / SGD 블렌딩 비율
@@ -286,13 +303,13 @@ QUALIFY_QUALITY_MIN_SAMPLES = 10  # 품질 게이트 평가 최소 샘플 수
 ENTRY_GRADE = {
     "A": {"min_pass": 6, "size_mult": 1.5, "auto": True},
     "B": {"min_pass": 4, "size_mult": 1.0, "auto": True},
-    "C": {"min_pass": 2, "size_mult": 0.6, "auto": False},
+    "C": {"min_pass": 2, "size_mult": 0.6, "auto": True},
     "X": {"min_pass": 0, "size_mult": 0.0, "auto": False},
 }
 
-# [P5] C등급 실험적 자동 진입 — 기본값 OFF, 명시적으로 켜야 동작
-# 조건: TrendGate active + 허용 시간대 + CB NORMAL(RESTRICTED 제외) + 실험 플래그 ON
-ENTRY_GRADE_C_AUTO_EXP:  bool  = False               # 실험 플래그 (OFF = 기존 동작 유지)
+# [P5] C등급 자동 진입 — UI 토글로 실시간 ON/OFF 가능 (기본값 ON)
+# EntryPanel._grade_c_auto_enabled 와 연동; False 시 C등급 수동 확인으로 강등
+ENTRY_GRADE_C_AUTO_EXP:  bool  = True                # 기본 ON (UI 토글로 override)
 C_AUTO_EXP_SIZE_MULT:    float = 0.3                 # C size_mult(0.6)의 절반
 C_AUTO_EXP_ZONES:        tuple = ("STABLE_TREND", "LUNCH_RECOVERY")  # 허용 시간대
 

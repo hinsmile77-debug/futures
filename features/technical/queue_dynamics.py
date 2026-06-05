@@ -97,12 +97,18 @@ class QueueDynamicsCalculator:
         ]))
 
         direction = 1 if signal_ma > 0.15 else -1 if signal_ma < -0.15 else 0
+        # 총량 대비 비율 — 유동성 수준 독립 (Phase 3-B)
+        _total = depletion_speed + refill_rate + 1e-9
+        depletion_ratio = depletion_speed / _total   # [0, 1]
+        refill_ratio    = refill_rate    / _total    # [0, 1]
         result = {
             "queue_signal_mean": round(mean_signal, 4),
             "queue_signal_ma": round(signal_ma, 4),
             "queue_momentum": round(queue_momentum, 4),
             "queue_depletion_speed": round(depletion_speed, 4),
             "queue_refill_rate": round(refill_rate, 4),
+            "queue_depletion_ratio": round(depletion_ratio, 4),
+            "queue_refill_ratio":    round(refill_ratio, 4),
             "imbalance_slope": round(imbalance_slope, 6),
             "cancel_add_ratio": round(cancel_add_ratio, 4),
             "direction": direction,

@@ -81,10 +81,13 @@ class CVDCalculator:
         if n < 3:
             return {
                 "cvd": self._cumulative_cvd,
+                "cvd_norm": 0.0,
                 "delta": 0.0,
                 "divergence": False,
                 "signal_strength": 0.0,
                 "direction": 0,
+                "cvd_slope": 0.0,
+                "cvd_slope_norm": 0.0,
             }
 
         prices = list(self._price_buf)
@@ -107,14 +110,21 @@ class CVDCalculator:
         # CVD 방향 (단순)
         direction = 1 if cvd_slope > 0 else (-1 if cvd_slope < 0 else 0)
 
+        # 일중 최대 절대값 기준 정규화 — 가격 수준·유동성 독립 (Phase 3-A)
+        cvd_abs_max = max(abs(v) for v in cvds) or 1.0
+        cvd_norm       = float(self._cumulative_cvd) / cvd_abs_max
+        cvd_slope_norm = cvd_slope / cvd_abs_max
+
         return {
             "cvd":              round(self._cumulative_cvd, 2),
+            "cvd_norm":         round(cvd_norm, 4),
             "delta":            round(cvds[-1] - cvds[-2] if n >= 2 else 0, 2),
             "divergence":       divergence,
             "signal_strength":  round(strength, 3),
             "direction":        direction,
             "price_slope":      round(price_slope, 4),
             "cvd_slope":        round(cvd_slope, 2),
+            "cvd_slope_norm":   round(cvd_slope_norm, 4),
         }
 
     def reset_daily(self):

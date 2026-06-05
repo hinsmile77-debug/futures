@@ -6,6 +6,38 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-05 (115차 — Extreme 피처 절대값→상대값 정규화 전면 구현)
+
+### 한일 요약
+
+- [DONE 2026-06-05] **Phase 1: SCALER_CLIP_FEATURES 확장** — 8개 추가/변경 (`config/settings.py`)
+- [DONE 2026-06-05] **Phase 2-A: macro_vix_abs 제거** (`macro_feature_transformer.py`, `registry.json`)
+- [DONE 2026-06-05] **Phase 2-B: feature_recoverable_errors 제거** (`feature_builder.py`, `registry.json`)
+- [DONE 2026-06-05] **Phase 4: Gap Offset 구현** (`multi_horizon_model.py`, `main.py`)
+- [DONE 2026-06-05] **Phase 2-C/D: microprice/vwap 절대값 제거** (`feature_builder.py`, `registry.json`)
+- [DONE 2026-06-05] **Phase 3-A: cvd/cvd_slope 일중 정규화** (`cvd.py`, `feature_builder.py`)
+- [DONE 2026-06-05] **Phase 3-B: queue 비율화** (`queue_dynamics.py`, `feature_builder.py`)
+- [DONE 2026-06-05] **GBM 재훈련** — weeks_back=10, 16,406행×105피처, 6/6 성공
+- [DONE 2026-06-05] **EOD 재훈련 스크립트** — `scripts/eod_retrain.py`, `EOD_RETRAIN.bat`
+- [DONE 2026-06-05] **구현 계획서** — `docs/260605_FEATURE_NORMALIZATION_PLAN.md`
+
+### 다음 할 일
+
+- [NEXT 2~3일 후] **feat=118 불일치 해소 확인** — ScalerWarmup 로그 `feat=105` 안착 확인. 오늘 DB 잔존 이전 피처 사라지면 자연 해소
+
+- [NEXT 다음 장] **115차 수정 발동 확인**
+  - 스케일러 패널 extreme Top5에서 microprice/vwap 발생수 감소 여부
+  - `[GapOffset] today_open=XXXX | offset: {...}` 로그 (09:00 첫 분봉)
+  - D_FORCE extreme 발생 시 vwap 더 이상 Top5 진입 여부
+
+- [NEXT 1주일 후] **Phase 2-E: *_age_sec 2개 제거** — Phase 1 clip 안정 확인 후 `quality_investor_age_sec`, `quality_macro_age_sec` feature_builder.py 제거 + registry 제거 + GBM 재훈련
+
+- [NEXT 1주일 후] **cvd/queue DB 혼재 해소 확인** — cvd 값 범위 [-1,+1] 수렴, GBM acc 변화 모니터링
+
+- [NEXT 추후] **Phase 3-C: B축 수급 11개 OI 비율화 설계** — Cybos FutureMst open_interest 활용. `docs/260605_FEATURE_NORMALIZATION_PLAN.md` Task 3-3 참조
+
+---
+
 ## 2026-06-05 (114차 — 재학습 피처셋 불일치 사고 분석 + P0~P4 개선)
 
 ### 한일 요약

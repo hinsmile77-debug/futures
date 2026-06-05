@@ -7,7 +7,6 @@ GBM/SGD 피처로 주입하려면 0~1 범위 정규화 + 바이너리 플래그 
 
 반환 키:
   macro_vix           — VIX 정규화 (0=안정 15, 1=공포 40)
-  macro_vix_abs       — VIX 원본값 (레짐 판단용 참고)
   macro_sp500_chg     — S&P500 변동률 정규화 [-1, +1]
   macro_nasdaq_chg    — 나스닥 변동률 정규화 [-1, +1]
   macro_krw_chg       — USD/KRW 변동률 정규화 [-1, +1]
@@ -77,7 +76,6 @@ class MacroFeatureTransformer:
 
         result = {
             "macro_vix":        vix_norm,
-            "macro_vix_abs":    round(vix, 2),
             "macro_sp500_chg":  _norm(sp500),
             "macro_nasdaq_chg": _norm(nasdaq),
             "macro_krw_chg":    _norm(krw),
@@ -106,7 +104,6 @@ class MacroFeatureTransformer:
         """MacroFetcher 미수집 시 안전 기본값"""
         return {
             "macro_vix":        0.125,   # VIX≈20 정규화값
-            "macro_vix_abs":    20.0,
             "macro_sp500_chg":  0.0,
             "macro_nasdaq_chg": 0.0,
             "macro_krw_chg":    0.0,
