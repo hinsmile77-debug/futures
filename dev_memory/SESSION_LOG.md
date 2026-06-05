@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-06-05 (118차 — daily_close Qt 메인 스레드 블로킹 버그 수정)
+
+**Work**: UI 먹통 원인 분석 + `daily_close()` 백그라운드 스레드 분리.
+
+### 증상 및 원인
+
+**증상**: 미륵이 기동 후 마우스를 올리면 UI 먹통. 실제로는 기동 ~38초 뒤 자동 발생.
+
+**타임라인**:
+| 시각 | 이벤트 |
+|---|---|
+| 17:26:53 | 기동 |
+| 17:27:31 | `_scheduler_tick` 첫 발동 (30초 QTimer) → `daily_close()` 조건 충족 |
+| 17:27:32 | `[FeatureBuilder] 전일 종가 버퍼 갱신` — 마지막 로그 |
+| 17:27:32~ | `retrain_now(weeks_back=10)` Qt 메인 스레드 동기 실행 → **freeze** |
+
+**근본 원인**: `_scheduler_tick`이 Qt 메인 스레드에서 실행되고, 조건(`now≥15:40 AND is_trading_day AND not _daily_close_done`) 충족 시 `daily_close()` 직접 호출. `daily_close()`가 `retrain_now()` (10주 GBM 훈련) + `model._load_all()` + P8 스케일러 재적합을 동기 호출 → Qt 이벤트 루프 완전 차단.
+
+### 수정 내역
+
+| # | 내용 | 파일 |
+|---|---|---|
+| 1 | Qt 타이머 `_investor_timer`, `_option_chain_timer` → 스레드 분기 전 메인 스레드 stop | `main.py` |
+| 2 | `_daily_close_running` 플래그 추가 → 재진입 방지 | `main.py` |
+| 3 | `_daily_close_done = True` 즉시 선점 → 30초마다 반복 진입 방지 | `main.py` |
+| 4 | `daily_close()` 전체를 `DailyClose` 데몬 스레드로 실행 | `main.py` |
+| 5 | `_pre_market_done/stage1_done` 리셋을 스레드 finally로 이동 | `main.py` |
+
+### 참고 — 117차 STEP 3/EOD 직렬화와의 관계
+
+117차에서 `_gbm_retrain_done_event.wait(timeout=40*60)` 를 `daily_close()` 안에 추가했는데, 이제 `daily_close()` 자체가 백그라운드 스레드에서 실행되므로 해당 wait도 Qt 메인 스레드를 블록하지 않아 안전.
+
+---
+
 ## 2026-06-05 (117차 — 종료 흐름 구조 수정 + microprice 버그 방어)
 
 **Work**: 금일 로그 이상점 전수 점검 + STEP 3/EOD 재학습 경합 근본 수정 + microprice debug log 방어.

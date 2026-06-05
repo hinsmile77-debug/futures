@@ -1,7 +1,47 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-05 (117차 세션 마무리) — 종료 흐름 구조 수정 + microprice 버그 방어
+> 마지막 업데이트: 2026-06-05 (118차 세션 마무리) — daily_close Qt 메인 스레드 블로킹 버그 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-05 (118차 — daily_close Qt 메인 스레드 블로킹 버그 수정)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **UI 먹통 버그 수정** — daily_close 백그라운드 스레드 분리 | **완료** ✅ | `main.py` |
+
+### 버그 요약
+
+**증상**: 미륵이 기동 후 ~38초 뒤 UI 완전 먹통. 마우스 호버 시점과 겹쳐 "마우스 호버가 원인"으로 오진.
+
+**실제 원인**:
+```
+_scheduler (30초 QTimer, 메인 스레드)
+  → _scheduler_tick() 첫 발동 (17:27:31, now≥15:40 조건 충족)
+  → daily_close() 동기 호출
+  → retrain_now(weeks_back=10) 동기 실행  ← Qt 이벤트 루프 완전 차단
+  → UI 먹통 (타이머·마우스·페인트 이벤트 모두 불처리)
+```
+
+로그 마지막: `[FeatureBuilder] 전일 종가 버퍼 갱신 17:27:32` → 이후 완전 침묵.
+python.exe 440MB 살아 있으나 Qt 이벤트 루프 정지.
+"마우스 올리면 무한 루프"는 오진 — 기동 38초 후 자동 발생.
+
+**수정** (`main.py` `_scheduler_tick`):
+1. Qt 타이머(`_investor_timer`, `_option_chain_timer`) → 스레드 분기 전 메인 스레드에서 stop
+2. `_daily_close_running` 플래그로 중복 진입 방지
+3. `_daily_close_done = True` 즉시 선점
+4. `daily_close()` 전체를 `DailyClose` 데몬 스레드로 실행
+5. `_pre_market_done/stage1_done` 리셋은 스레드 finally에서 처리
+
+### 다음 장에서 확인할 것
+
+1. 기동 후 38초 뒤에도 UI 정상 응답 확인
+2. `[Daily] 마감 통계` → `[FeatureBuilder] 전일 종가 버퍼 갱신` 로그 후 UI 미먹통
+3. `[Retrain] 배치 재학습 시작` 로그가 백그라운드에서 출력되면 정상
 
 ---
 

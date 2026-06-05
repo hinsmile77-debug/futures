@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-06-05 (118차)
+
+### [버그] daily_close() Qt 메인 스레드 동기 실행 → UI 완전 먹통
+**File**: `main.py` — `_scheduler_tick`, `daily_close`
+**Root cause**: `_scheduler` (30초 QTimer, Qt 메인 스레드)가 15:40 이후 첫 발동 시 `daily_close()` 직접 호출. `daily_close()`는 `retrain_now(weeks_back=10)` (10주 GBM 훈련, DB 로드 + 6 호라이즌 fit) + `model._load_all()` + P8 스케일러 재적합을 동기 실행 → Qt 이벤트 루프 완전 차단. 장외 재시동 시(17:27) 기동 38초 만에 freeze. python.exe 440MB로 살아 있으나 타이머·마우스·페인트 이벤트 모두 불처리. "마우스 호버 원인" 오진 — 기동 타이밍 우연 겹침.
+**Fix**: `_scheduler_tick`에서 `daily_close()` 호출 전:
+1. Qt 타이머(`_investor_timer`, `_option_chain_timer`) 메인 스레드에서 먼저 stop
+2. `_daily_close_running` 플래그 + `_daily_close_done=True` 즉시 선점
+3. `daily_close()` 전체를 `DailyClose` 데몬 스레드에서 실행
+4. `_pre_market_done/stage1_done` 리셋은 finally에서 스레드 완료 후 처리
+**Note**: 117차의 `_gbm_retrain_done_event.wait(timeout=40*60)` 도 같은 블로킹 경로였으나, `daily_close()` 자체가 스레드로 이동하면서 함께 해결됨.
+**How to apply**: 다음 장외 재시동 후 38초 경과 후에도 UI 정상 응답 + `[Retrain] 배치 재학습 시작` 로그 백그라운드 출력 확인.
+
+---
+
 ## 2026-06-05 (117차)
 
 ### [버그] microprice KeyError — debug log 블록 키 직접 참조 잔존

@@ -6019,6 +6019,7 @@ class TradingSystem:
             not self._daily_close_done
             and now.time() >= datetime.time(15, 40)
             and is_trading_day(now)
+            and not getattr(self, "_daily_close_running", False)
         ):
             if self._skip_post_close_cycle_today:
                 self._daily_close_done = True
@@ -6026,10 +6027,24 @@ class TradingSystem:
                 return
             if self.realtime_data:
                 self.realtime_data.stop()
-            self.daily_close()
-            self._pre_market_done        = False
-            self._pre_market_stage1_done = False
-            self._daily_close_done       = True
+            # Qt 타이머는 소유 스레드(메인)에서 정지해야 안전 — 스레드 분기 전에 처리
+            if hasattr(self, "_investor_timer"):
+                self._investor_timer.stop()
+            if hasattr(self, "_option_chain_timer"):
+                self._option_chain_timer.stop()
+            self._daily_close_running = True
+            self._daily_close_done = True  # 중복 진입 방지 — 스레드 완료 전에 플래그 선점
+
+            def _run_daily_close():
+                try:
+                    self.daily_close()
+                finally:
+                    self._daily_close_running = False
+                    self._pre_market_done        = False
+                    self._pre_market_stage1_done = False
+
+            import threading as _threading
+            _threading.Thread(target=_run_daily_close, daemon=True, name="DailyClose").start()
 
         # 연결 감시 — 끊김 시 슬랙 CRITICAL 알림 후 재연결
         if not self.broker.is_connected:

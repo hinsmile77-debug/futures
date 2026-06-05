@@ -6,6 +6,24 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-05 (118차 — daily_close Qt 메인 스레드 블로킹 버그 수정)
+
+### 한일 요약
+
+- [DONE 2026-06-05] **UI 먹통 버그 수정** — `daily_close()` 백그라운드 데몬 스레드 분리. Qt 타이머 stop을 스레드 분기 전 메인 스레드에서 처리. (`main.py` `_scheduler_tick`)
+
+### 다음 할 일
+
+- [NEXT 다음 장] **118차 수정 효과 확인**
+  - 기동 후 38초 뒤에도 UI 정상 응답 (먹통 재발 없음)
+  - `[Retrain] 배치 재학습 시작` 로그가 백그라운드에서 출력 (장외 재시동 시)
+  - `[Daily] 마감 통계` → `[FeatureBuilder]` 로그 이후 타이머·탭 자동전환 정상 동작 확인
+
+- [NEXT 추후] **daily_close 내 Qt-unsafe 호출 점검**
+  - `notify()` Slack HTTP 직접 호출이면 안전. Qt 시그널 emit 있으면 `QTimer.singleShot(0, ...)` 마샬링 검토
+
+---
+
 ## 2026-06-05 (117차 — 종료 흐름 구조 수정 + microprice 버그 방어)
 
 ### 한일 요약
