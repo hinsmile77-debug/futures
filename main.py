@@ -357,6 +357,8 @@ class TradingSystem:
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
+        self._gbm_retrain_done_event = threading.Event()  # daily_close 대기용 — 초기값 set(완료 상태)
+        self._gbm_retrain_done_event.set()
         self._pipeline_fatal_streak: int = 0         # [P0] 연속 ERR-FATAL 카운터
         self._scaler_refresh_running: bool = False   # Phase B 스케일러 refresh 중복 방지
         self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
@@ -636,6 +638,7 @@ class TradingSystem:
             log_manager.system(f"[FeatureOps] 재학습 진행 중 - {reason}", "WARN")
             return False
         self._gbm_retrain_running = True
+        self._gbm_retrain_done_event.clear()
         log_manager.learning(f"[GBM] 수동 재학습 시작 | {reason}")
 
         def _retrain_worker():
@@ -2001,6 +2004,7 @@ class TradingSystem:
         ):
             self._warmup_retrain_pending = False
             self._gbm_retrain_running = True
+            self._gbm_retrain_done_event.clear()
             self.dashboard.set_model_status("GBM 장중 재학습중...")
             log_manager.system(
                 "[WarmupRetrain] 장중 재시작 — GBM 즉시 재학습 시작 (파이프라인 분리)", "INFO"
@@ -2166,6 +2170,7 @@ class TradingSystem:
     def _on_gbm_retrain_done(self, result: dict, is_warmup: bool) -> None:
         """GBM 재학습 daemon thread 완료 콜백 — 메인 스레드에서 실행."""
         self._gbm_retrain_running = False
+        self._gbm_retrain_done_event.set()  # daily_close 대기 해제
         prefix = "웜업 " if is_warmup else ""
         if result.get("ok"):
             self.model._load_all()
@@ -2362,6 +2367,7 @@ class TradingSystem:
         ):
             self._warmup_retrain_pending = False
             self._gbm_retrain_running = True
+            self._gbm_retrain_done_event.clear()
             self.dashboard.set_model_status("GBM 사전 재학습중...")
             log_manager.system(
                 "[PreRetrain] 08:55 GBM 사전 재학습 시작 — 09:00 파이프라인 지연 방지", "INFO"
@@ -2872,6 +2878,7 @@ class TradingSystem:
                     "[WarmupRetrain] 세션 재시작 후 첫 GBM 즉시 재학습 — 별도 스레드 시작", "INFO"
                 )
             self._gbm_retrain_running = True
+            self._gbm_retrain_done_event.clear()
             self.dashboard.set_model_status("GBM 재학습중...")
             _is_warmup = bool(_warmup_forced)
 
@@ -5224,6 +5231,23 @@ class TradingSystem:
             logger.info("[FeatureBuilder] 전일 종가 버퍼 갱신: %d봉", len(_today_closes))
         except Exception as _fbe:
             logger.warning("[FeatureBuilder] 전일 종가 버퍼 갱신 실패: %s", _fbe)
+
+        # ── STEP 3 재학습 완료 대기 ──────────────────────────────
+        # 장중 마지막 30분 배치 재학습이 아직 실행 중이면 완료될 때까지 기다린다.
+        # 대기 없이 retrain_now()를 동시 호출하면 pkl 경합 + 미완료 상태로 종료됨.
+        # 15:40 이후 분봉 파이프라인은 없으므로 메인 스레드 블로킹 허용.
+        if getattr(self, "_gbm_retrain_running", False):
+            log_manager.system(
+                "[DailyClose] STEP 3 재학습 진행 중 — EOD 재학습 전 완료 대기 (최대 40분)",
+                "INFO",
+            )
+            completed = self._gbm_retrain_done_event.wait(timeout=40 * 60)
+            if completed:
+                log_manager.system("[DailyClose] STEP 3 재학습 완료 확인 — EOD 재학습 시작", "INFO")
+            else:
+                log_manager.system(
+                    "[DailyClose] STEP 3 재학습 40분 초과 — 강제 진행 (타임아웃)", "WARNING"
+                )
 
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
         retrain_result = self.batch_retrainer.retrain_now(weeks_back=10)

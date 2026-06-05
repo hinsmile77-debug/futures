@@ -1,7 +1,70 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-05 (116차 세션 마무리) — subprocess/DB 병목 수정 + 로그 레벨 정비
+> 마지막 업데이트: 2026-06-05 (117차 세션 마무리) — 종료 흐름 구조 수정 + microprice 버그 방어
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-05 (117차 — 종료 흐름 구조 수정 + microprice 버그 방어)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **microprice debug log KeyError 방어** | **완료** ✅ | `features/feature_builder.py` |
+| **STEP 3/EOD 재학습 직렬화** | **완료** ✅ | `main.py` |
+| **116차 DB 배치화 효과 실측** | **미실시** — 다음 장 PipePerf 로그 확인 필요 | — |
+| **EffectReports IndexError 116차 수정 확인** | **미실시** — 다음 장 WARN.log 확인 | — |
+
+### 오늘 장 이상점 요약
+
+| 시각 | 이상점 | 상태 |
+|---|---|---|
+| 13:47~13:54 | microprice KeyError ERR-FATAL 8회 | ✅ 수정 완료 |
+| 15:29~15:50 | STEP 3/EOD 경합 → 15m/30m/RF EOD 미반영 | ✅ 직렬화로 근본 수정 |
+| 12:43~14:30 | S2 5000ms+ / 13242ms 최대 | ⏳ 116차 배치화 효과 내일 확인 |
+| 하루 종일 | EffectReports IndexError | ⏳ 116차 수정 효과 내일 확인 |
+
+### STEP 3/EOD 직렬화 구현 요약
+
+**구조**: `threading.Event` 기반
+
+```
+재학습 시작 4곳: _gbm_retrain_done_event.clear()
+완료 콜백(_on_gbm_retrain_done): _gbm_retrain_done_event.set()
+daily_close() 진입 시:
+  _gbm_retrain_running == True
+    → Event.wait(timeout=40분)
+    → 완료 후 EOD retrain_now() 동기 실행
+```
+
+**효과**: STEP 3 완료 → EOD 재학습 → P8 스케일러 → 종료 순서 보장.
+전 호라이즌 pkl이 EOD 기준 단일 세션 결과로 완성됨.
+
+### EarlyWarmup/PreRetrain 흐름 정리
+
+```
+08:45 가동
+  → _warmup_retrain_pending = True (장외이므로 즉시 재학습 안 함)
+  → EarlyWarmup: canary_stale_age > 4h → refit_scalers_only (daemon)
+
+08:55 pre_market_setup()
+  → Canary 체크: EarlyWarmup 완료 시 age 짧음 → stale=False → 90초 대기 없음
+  → ScalerWarmup: daemon thread (EarlyWarmup과 독립)
+  → PreRetrain: _warmup_retrain_pending=True → retrain_now(force=True) daemon
+
+결론: EarlyWarmup = Canary 통과 + 08:55 대기 시간 단축이 목적
+      PreRetrain = GBM 전체 재학습 (재시동 후만)
+      EarlyWarmup → ScalerWarmup + PreRetrain 병렬 시작
+```
+
+### 다음 장에서 확인할 것
+
+1. `[DailyClose] STEP 3 재학습 진행 중 — EOD 재학습 전 완료 대기` 로그 발동 여부
+2. 전 호라이즌 pkl 수정 시각이 15:40 이후 동일 세션으로 완성되는지
+3. `[P8] EOD 스케일러 재적합 완료` + `session_state["p8_last_success_date"]` 기록
+4. `[PipePerf] total=Xms` 2500ms 이하 (116차 배치화 효과)
+5. `[EffectReports] run failed` 재발 없음 (116차 IndexError 수정 효과)
 
 ---
 

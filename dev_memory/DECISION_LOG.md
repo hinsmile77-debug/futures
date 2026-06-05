@@ -2,6 +2,27 @@
 
 ---
 
+## 2026-06-05 (117차)
+
+### [버그] microprice KeyError — debug log 블록 키 직접 참조 잔존
+**File**: `features/feature_builder.py` — MICRO-MINUTE debug log 블록
+**Root cause**: 115차에서 `features["microprice"]` 생성 코드를 제거했으나, debug log 블록에서 `features["microprice"]` 직접 참조가 남아있던 버전이 13:46 재시동 세션에서 실행됨. `microprice` 키가 dict에 없으므로 KeyError → ERR-FATAL 8회 연속(13:47~13:54). 13:55 재시동 시 수정된 코드(`features["microprice_bias"]`)로 해소됐으나, 같은 블록의 다른 키도 동일 취약점 보유.
+**Fix**: debug log 블록 전체를 try/except로 감싸고 18개 키 참조를 `.get(key, 0.0)` fallback으로 변경. 향후 피처 추가/제거 시 debug log에서 동일 패턴 재발 방지.
+**How to apply**: ERR-FATAL microprice 재발 없음 확인.
+
+### [설계] STEP 3/EOD 재학습 직렬화 — `_gbm_retrain_done_event`
+**File**: `main.py`
+**Root cause**: 15:29 STEP 3 daemon thread가 `retrain_now()` 실행 중에 15:40 `daily_close()`가 `_gbm_retrain_running` 플래그를 무시하고 동기로 `retrain_now()`를 직접 호출. `batch_retrainer` 내부에 lock 없음 → pkl 동시 쓰기 경합. 15초 후 `_qt_app.quit()` → 15:50:44까지 3m 완료 후 중단. **15m/30m/RF는 EOD 기준 미갱신 상태로 종료됨** (pkl 수정 시각으로 확인: gbm_15m=14:55, gbm_30m=15:00, rf=15:00 = 이전 세션).
+**Fix**: `threading.Event` 기반 직렬화.
+- `_gbm_retrain_done_event`: init 시 set(완료 상태).
+- 재학습 시작 4곳(수동/장중재시작/PreRetrain/STEP3): `.clear()` 추가.
+- `_on_gbm_retrain_done` 콜백: `.set()` 추가.
+- `daily_close()` 진입 시 `_gbm_retrain_running == True` → `Event.wait(timeout=40*60)` → 완료 후 EOD `retrain_now()`.
+- 15:40 이후 분봉 없으므로 메인 스레드 블로킹 허용.
+**How to apply**: 내일 장 마감 후 `[DailyClose] STEP 3 재학습 완료 확인 — EOD 재학습 시작` 로그 + 전 호라이즌 pkl 수정 시각이 모두 15:40 이후로 통일 확인.
+
+---
+
 ## 2026-06-05 (116차)
 
 ### [버그] Python 3.7 32bit Windows subprocess `text=True` + 한글 출력 → IndexError

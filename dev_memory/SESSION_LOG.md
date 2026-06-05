@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-06-05 (117차 — 종료 흐름 구조 수정 + microprice 버그 방어)
+
+**Work**: 금일 로그 이상점 전수 점검 + STEP 3/EOD 재학습 경합 근본 수정 + microprice debug log 방어.
+
+### 이상점 점검 결과
+
+| 시각 | 이상점 | 조치 |
+|---|---|---|
+| 13:47~13:54 | microprice KeyError ERR-FATAL 8회 | debug log `.get()` + try/except 추가 (코드 수정) |
+| 15:29~15:50 | STEP 3/EOD 재학습 경합 — 15m/30m/RF EOD 미반영 | `_gbm_retrain_done_event` 직렬화 구현 |
+| 12:43~14:30 | S2 5000ms+ 지연 / 13242ms 최대 | 116차 DB 배치화 효과 내일 실측 필요 |
+| 하루 종일 | EffectReports IndexError 반복 | 116차 수정 세션 여부 불명 — 내일 확인 |
+
+### 수정 내역
+
+| # | 내용 | 파일 |
+|---|---|---|
+| 1 | microprice debug log 방어 — 18개 키 직접 참조 → `.get(, 0.0)` + try/except | `features/feature_builder.py` |
+| 2 | `_gbm_retrain_done_event` 초기화 (init에 set 상태로) | `main.py` |
+| 3 | 재학습 시작 4곳 `.clear()` — 수동/장중재시작/PreRetrain/STEP 3 | `main.py` |
+| 4 | `_on_gbm_retrain_done` `.set()` — daemon 완료 시 Event 해제 | `main.py` |
+| 5 | `daily_close()` STEP 3 완료 대기 블록 — 최대 40분 `Event.wait()` | `main.py` |
+
+### 설계 정리 (개념 문서화)
+
+- STEP 3 재학습: 장중 주기 (daemon thread, _gbm_retrain_running 플래그)
+- EOD 재학습: 15:40 daily_close() 동기 호출 — 오늘 데이터 전체 반영 확정
+- EarlyWarmup(08:45): 스케일러만 재적합, 매 영업일 발동 (age > 4h)
+  - Canary stale 해소가 목적 → 08:55 90초 대기 없이 즉시 PreRetrain 진입 가능
+- PreRetrain(08:55): GBM 전체 재학습, `_warmup_retrain_pending=True` 시만 발동 (재시동 후만)
+- should_retrain_weekly/monthly: 조건 시간대가 파이프라인 실행 전이라 사실상 미발동 (레거시)
+
+---
+
 ## 2026-06-05 (116차 — subprocess/DB 병목 수정 + 로그 레벨 정비)
 
 **Work**: 장 중 WARN.log 분석. EffectReports subprocess IndexError, 파이프라인 13초 지연(CB 발동), BrokerSync 과다 경고 3건 모두 수정.

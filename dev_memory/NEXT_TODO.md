@@ -6,6 +6,27 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-05 (117차 — 종료 흐름 구조 수정 + microprice 버그 방어)
+
+### 한일 요약
+
+- [DONE 2026-06-05] **microprice debug log 방어** — `.get(, 0.0)` fallback + try/except (`features/feature_builder.py`)
+- [DONE 2026-06-05] **`_gbm_retrain_done_event` 직렬화 구현** — 재학습 시작 4곳 clear + 완료 콜백 set + daily_close 대기 블록 (`main.py`)
+
+### 다음 할 일
+
+- [NEXT 다음 장] **EOD 직렬화 효과 확인**
+  - `[DailyClose] STEP 3 재학습 진행 중 — EOD 재학습 전 완료 대기` 로그 여부
+  - 전 호라이즌 pkl 수정 시각이 15:40 이후 동일 세션으로 완성되는지 (오늘 15m/30m/RF 미완)
+  - `[P8] EOD 스케일러 재적합 완료` + `session_state["p8_last_success_date"]` 기록 확인
+
+- [NEXT 다음 장] **116차 + 117차 수정 효과 통합 확인**
+  - `[PipePerf] total=Xms` 2500ms 이하 (DB 배치화 효과)
+  - `[EffectReports] run failed` 재발 없음 (IndexError 수정 효과)
+  - microprice ERR-FATAL 재발 없음
+
+---
+
 ## 2026-06-05 (116차 — subprocess/DB 병목 수정 + 로그 레벨 정비)
 
 ### 한일 요약

@@ -426,30 +426,33 @@ class FeatureBuilder:
         }.get(micro_regime, 1.0)
 
         self._micro_minute_count += 1
-        micro_log.debug(
-            "[MICRO-MINUTE] #%d ts=%s close=%.2f bias=%.6f slope=%.6f depth_bias=%.4f "
-            "mlofi_norm=%.6f mlofi_pressure=%.0f mlofi_slope=%.6f "
-            "queue_signal=%.4f queue_ma=%.4f queue_momentum=%.4f depletion=%.4f refill=%.4f "
-            "imbalance_slope=%.6f cancel_add=%.4f toxicity=%.4f tox_ma=%.4f",
-            self._micro_minute_count,
-            bar.get("ts"),
-            float(bar.get("close", 0.0)),
-            features["microprice_bias"],
-            features["microprice_slope"],
-            features["microprice_depth_bias"],
-            features["mlofi_norm"],
-            features["mlofi_pressure"],
-            features["mlofi_slope"],
-            features["queue_signal"],
-            features["queue_signal_ma"],
-            features["queue_momentum"],
-            features["queue_depletion_speed"],
-            features["queue_refill_rate"],
-            features["imbalance_slope"],
-            features["cancel_add_ratio"],
-            features["toxicity_score"],
-            features["toxicity_score_ma"],
-        )
+        try:
+            micro_log.debug(
+                "[MICRO-MINUTE] #%d ts=%s close=%.2f bias=%.6f slope=%.6f depth_bias=%.4f "
+                "mlofi_norm=%.6f mlofi_pressure=%.0f mlofi_slope=%.6f "
+                "queue_signal=%.4f queue_ma=%.4f queue_momentum=%.4f depletion=%.4f refill=%.4f "
+                "imbalance_slope=%.6f cancel_add=%.4f toxicity=%.4f tox_ma=%.4f",
+                self._micro_minute_count,
+                bar.get("ts"),
+                float(bar.get("close", 0.0)),
+                features.get("microprice_bias", 0.0),
+                features.get("microprice_slope", 0.0),
+                features.get("microprice_depth_bias", 0.0),
+                features.get("mlofi_norm", 0.0),
+                features.get("mlofi_pressure", 0.0),
+                features.get("mlofi_slope", 0.0),
+                features.get("queue_signal", 0.0),
+                features.get("queue_signal_ma", 0.0),
+                features.get("queue_momentum", 0.0),
+                features.get("queue_depletion_speed", 0.0),
+                features.get("queue_refill_rate", 0.0),
+                features.get("imbalance_slope", 0.0),
+                features.get("cancel_add_ratio", 0.0),
+                features.get("toxicity_score", 0.0),
+                features.get("toxicity_score_ma", 0.0),
+            )
+        except Exception:
+            pass
 
         # ── 시간대 피처 ─────────────────────────────────────────
         _ts_str = str(bar.get("ts") or "")
