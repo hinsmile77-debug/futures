@@ -288,21 +288,23 @@ class FeatureBuilder:
 
         try:
             queue_result = self.queue.flush_minute()
-            features["queue_signal"]          = float(queue_result["queue_signal_mean"])
-            features["queue_signal_ma"]       = float(queue_result["queue_signal_ma"])
-            features["queue_momentum"]        = float(queue_result["queue_momentum"])
+            features["queue_signal"]                  = float(queue_result["queue_signal_mean"])
+            features["queue_signal_ma"]               = float(queue_result["queue_signal_ma"])
+            features["queue_momentum"]                = float(queue_result["queue_momentum"])
             # 절대값 속도 → 총량 대비 비율로 교체 (Phase 3-B, 유동성 수준 독립)
-            features["queue_depletion_speed"] = float(queue_result["queue_depletion_ratio"])
-            features["queue_refill_rate"]     = float(queue_result["queue_refill_ratio"])
-            features["imbalance_slope"]       = float(queue_result["imbalance_slope"])
-            features["cancel_add_ratio"]      = float(queue_result["cancel_add_ratio"])
+            features["queue_depletion_speed"]         = float(queue_result["queue_depletion_ratio"])
+            features["queue_refill_rate"]             = float(queue_result["queue_refill_ratio"])
+            # 방향 강도: 양수=매수압(매도호가 고갈), 음수=매도압(매수호가 고갈) [-1,1]
+            features["queue_directional_depletion"]   = float(queue_result["queue_directional_depletion"])
+            features["imbalance_slope"]               = float(queue_result["imbalance_slope"])
+            features["cancel_add_ratio"]              = float(queue_result["cancel_add_ratio"])
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] QueueDynamics 오류 — 기본값 사용: %s", _exc)
             features.update({"queue_signal": 0.0, "queue_signal_ma": 0.0,
                              "queue_momentum": 0.0, "queue_depletion_speed": 0.5,
-                             "queue_refill_rate": 0.5, "imbalance_slope": 0.0,
-                             "cancel_add_ratio": 0.0})
+                             "queue_refill_rate": 0.5, "queue_directional_depletion": 0.0,
+                             "imbalance_slope": 0.0, "cancel_add_ratio": 0.0})
 
         try:
             atr_result = self.atr.update(high=high, low=low, close=close)
@@ -511,16 +513,19 @@ class FeatureBuilder:
         if _nv >= 6:
             _vol_recent = sum(_vl[-3:]) / 3.0
             _vol_prev   = sum(_vl[-6:-3]) / 3.0
-            features["volume_acceleration"] = (_vol_recent - _vol_prev) / (_vol_prev + 1e-9)
+            features["volume_acceleration"] = float(np.clip(
+                (_vol_recent - _vol_prev) / (_vol_prev + 1e-9), -3.0, 3.0
+            ))
         else:
             features["volume_acceleration"] = 0.0
 
-        # VWAP 대비 가격 이동 속도 (vwap_momentum)
-        _vwap_cur = features.get("vwap", 0.0)
+        # VWAP 포지션 5분 변화량 (vwap_momentum)
+        # features["vwap"]는 Phase 2-D에서 제거됨 → vwap_position(정규화값)으로 대체
+        _vwap_cur = features.get("vwap_position", 0.0)
         self._vwap_history.append(_vwap_cur)
         _vh = list(self._vwap_history)
-        if len(_vh) >= 5 and _vh[-5] > 0:
-            features["vwap_momentum"] = (close - _vh[-5]) / (_vh[-5] + 1e-9)
+        if len(_vh) >= 5:
+            features["vwap_momentum"] = _vh[-1] - _vh[-5]
         else:
             features["vwap_momentum"] = 0.0
 

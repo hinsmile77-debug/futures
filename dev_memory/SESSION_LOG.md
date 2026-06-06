@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-06-06 (119차 — FeatureBuilder 양방향성 버그 수정 4건)
+
+**Work**: FeatureBuilder 양방향성 점검 보고서 검토 → 확정 버그 수정 + 피처 개선 구현.
+
+### 점검 결과 요약
+
+선물 양방향성(롱/숏 대칭) 관점에서 피처 레벨과 전략 레벨을 분리 점검.
+- **진입 로직** (`strategy/entry/checklist.py`): 롱/숏 조건 완벽 대칭 — 문제 없음
+- **피처 레벨**: 버그 2건 + 개선 2건 발견
+
+### 수정 내역
+
+| # | 항목 | 파일 | 내용 |
+|---|---|---|---|
+| 1 | `vwap_momentum` 항상 0 버그 | `feature_builder.py:519` | `features.get("vwap")` → `features.get("vwap_position")`, `_vh[-5]>0` 조건 제거 |
+| 2 | `ofi_imbalance` 방향 손실 | `ofi.py:125` | `abs(ofi_norm)/3.0` → `np.clip(ofi_norm/3.0, -1.0, 1.0)` |
+| 3 | `volume_acceleration` 클리핑 | `feature_builder.py:514` | `np.clip(..., -3.0, 3.0)` 추가 |
+| 4 | `queue_directional_depletion` 신규 | `queue_dynamics.py`, `feature_builder.py` | 매도호가-매수호가 고갈 방향 강도 [-1, 1] |
+
+### 보고서에서 버그 오분류 확인
+
+외부 보고서 2순위로 제시된 `prev_day_same_hour_ret` 계산 버그는 코드 직접 확인 결과 **버그 아님**. `timedelta(minutes=0)`은 의미없는 코드이나 `c0 = 전일 동시간-1분`, `c1 = 전일 동시간`으로 수익률 올바르게 계산됨. 가독성 개선 수준으로 재분류.
+
+### 잔여 항목 (미구현)
+
+- `ema_cross` 이진값 → 연속값 전환 (4순위 — 다음 세션)
+- `avg_volume` 이름 분리 `bar_volume` + `avg_volume` (이동평균)
+- `tick_size = 0.05` config 설정화
+- shap_feature_registry에 `queue_directional_depletion` 수동 추가
+
+---
+
 ## 2026-06-05 (118차 — daily_close Qt 메인 스레드 블로킹 버그 수정)
 
 **Work**: UI 먹통 원인 분석 + `daily_close()` 백그라운드 스레드 분리.

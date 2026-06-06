@@ -1,4 +1,4 @@
-# 다음 할 일 목록 — futures (미륵이)
+﻿# 다음 할 일 목록 — futures (미륵이)
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
@@ -6,6 +6,41 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-06 (119차 — FeatureBuilder 양방향성 버그 수정 4건)
+
+### 한일 요약
+
+- [DONE 2026-06-06] **vwap_momentum 항상 0 버그 수정** — features.get("vwap") 참조 잔존 → features.get("vwap_position") + 5분 변화량 방식으로 전환 (feature_builder.py)
+- [DONE 2026-06-06] **ofi_imbalance 방향 복원** — abs(ofi_norm) → 부호 유지 np.clip(ofi_norm/3.0, -1.0, 1.0) (ofi.py)
+- [DONE 2026-06-06] **volume_acceleration 클리핑 추가** — np.clip(..., -3.0, 3.0) (feature_builder.py)
+- [DONE 2026-06-06] **queue_directional_depletion 신규 피처** — 매도/매수호가 고갈 방향 강도 [-1, 1] (queue_dynamics.py, feature_builder.py)
+
+### 다음 할 일
+
+- [NEXT 다음 재학습 전] **shap_feature_registry에 queue_directional_depletion 수동 추가**
+  - shap_feature_registry.json active_features 배열에 "queue_directional_depletion" 추가
+  - GBM 재학습 후 피처 수 카운트 +1 확인
+
+- [NEXT 다음 재학습 후] **119차 수정 효과 확인**
+  - SHAP 리포트: vwap_momentum 비제로값 출현 (기존 0 → 의미있는 값)
+  - ofi_imbalance DB 분포가 [-1, 1] 대칭으로 변경됨 (기존 [0, 1])
+  - queue_directional_depletion DB에 정상 저장 확인
+  - volume_acceleration 극단값 3.0 클리핑 동작 확인
+
+- [NEXT 이번 주] **ema_cross 연속값 전환**
+  - features["ema_cross"] = 이진값 → (ema5 - ema20) / (ema20 + 1e-9) 연속값
+  - 초기 워밍업 20봉 이전은 0.0 처리 방어 코드 필요
+
+- [NEXT 이번 주] **avg_volume 이름 분리**
+  - features["avg_volume"] = vol → features["bar_volume"] = vol + features["avg_volume"] = 이동평균
+  - _vol_history 버퍼 활용 (이미 존재)
+  - OfiReversalCalculator에 전달하는 avg_volume=vol 인자도 함께 수정
+
+- [NEXT 추후] **tick_size = 0.05 설정화**
+  - config/settings.py TICK_SIZE = 0.05 추가
+  - feature_builder.py FeatureBuilder.__init__ 파라미터화
+
+---
 ## 2026-06-05 (118차 — daily_close Qt 메인 스레드 블로킹 버그 수정)
 
 ### 한일 요약

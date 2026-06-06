@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-06-06 (119차)
+
+### [버그] vwap_momentum 항상 0 — features["vwap"] Phase 2-D 제거 후 참조 잔존
+**File**: `features/feature_builder.py:519`
+**Root cause**: Phase 2-D에서 StandardScaler z-score 폭발 방지를 위해 `features["vwap"]` 절대값 저장을 제거하면서, `_vwap_history` 버퍼 채우는 코드의 참조가 `features.get("vwap", 0.0)`으로 남아있었음. 결과적으로 `_vwap_history`에 매분 0.0이 누적되고, `_vh[-5] > 0` 조건을 절대 통과하지 못해 `vwap_momentum`이 항상 0.0. 모델에 의미 없는 상수 입력.
+**Fix**: `features.get("vwap_position", 0.0)` 참조로 교체. `_vh[-5] > 0` 조건 제거(vwap_position은 음수 가능). 계산을 `_vh[-1] - _vh[-5]` (5분 vwap_position 변화량)으로 변경.
+**How to apply**: SHAP 리포트에서 vwap_momentum이 비제로값으로 출현하는지 확인.
+
+### [버그] ofi_imbalance 방향 손실 — abs() 사용으로 숏 신호 강도 약화
+**File**: `features/technical/ofi.py:125`
+**Root cause**: `imbalance_ratio = min(abs(ofi_norm) / 3.0, 1.0)` — 절대값 취함. 매수압 ofi_norm=+2.0과 매도압 ofi_norm=-2.0이 동일하게 0.67. GBM이 `ofi_pressure`와 `ofi_imbalance`를 조합해야만 방향×강도를 학습 가능 → 비효율. 숏 신호에서 방향 정보 손실.
+**Fix**: `float(np.clip(ofi_norm / 3.0, -1.0, 1.0))` — 부호 유지, [-1, 1] 범위.
+**How to apply**: ofi_imbalance DB 분포가 [-1, 1] 대칭으로 변경됨. GBM 재학습 필요.
+
+### [설계] queue_directional_depletion 신규 피처 — 매도/매수호가 고갈 방향 강도
+**File**: `features/technical/queue_dynamics.py`, `features/feature_builder.py`
+**Decision**: 기존 `queue_depletion_ratio`/`queue_refill_ratio`는 bid+ask 합산이라 방향 없음. `queue_signal_ma`가 방향을 커버하지만 고갈 강도와 방향을 동시에 표현하는 피처 부재. 신규 피처: `(depletion_ask - depletion_bid) / (depletion_speed + 1e-9)` → [-1, 1] 클리핑. 양수 = 매도호가 고갈 우세(매수압), 음수 = 매수호가 고갈 우세(매도압). 빈 tick_stats 경로 기본값 0.0.
+**How to apply**: shap_feature_registry에 수동 추가 후 GBM 재학습 필요. SHAP에서 queue 관련 피처 중요도 변화 확인.
+
+### [설계] volume_acceleration 범위 무제한 → 클리핑 적용
+**File**: `features/feature_builder.py:514`
+**Decision**: `(_vol_recent - _vol_prev) / (_vol_prev + 1e-9)` — 거래량 급등 시 9.0+ 가능. StandardScaler 학습 시 이상치 영향으로 평상시 z-score가 눌림. `-3.0~3.0` 클리핑 적용. 선물 1% 전략에서 거래량 가속도가 3σ를 초과하는 경우는 극단적 이벤트로 동일 취급해도 무방.
+
+---
+
 ## 2026-06-05 (118차)
 
 ### [버그] daily_close() Qt 메인 스레드 동기 실행 → UI 완전 먹통

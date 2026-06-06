@@ -76,6 +76,9 @@ class QueueDynamicsCalculator:
                 "queue_momentum": 0.0,
                 "queue_depletion_speed": 0.0,
                 "queue_refill_rate": 0.0,
+                "queue_depletion_ratio": 0.5,
+                "queue_refill_ratio": 0.5,
+                "queue_directional_depletion": 0.0,
                 "imbalance_slope": 0.0,
                 "cancel_add_ratio": 0.0,
                 "direction": 0,
@@ -90,6 +93,10 @@ class QueueDynamicsCalculator:
 
         depletion_speed = float(np.mean([s["depletion_bid"] + s["depletion_ask"] for s in self._tick_stats]))
         refill_rate = float(np.mean([s["refill_bid"] + s["refill_ask"] for s in self._tick_stats]))
+        # 방향 강도: 매도호가 고갈 우세 → 양수(매수압), 매수호가 고갈 우세 → 음수(매도압)
+        _raw_directional = float(np.mean([s["depletion_ask"] - s["depletion_bid"] for s in self._tick_stats]))
+        _depletion_total = depletion_speed + 1e-9
+        directional_depletion = float(np.clip(_raw_directional / _depletion_total, -1.0, 1.0))
         imbalance_slope = float(np.mean([s["imbalance_slope"] for s in self._tick_stats]))
         cancel_add_ratio = float(np.mean([
             (s["bid_cancel_add_ratio"] + s["ask_cancel_add_ratio"]) / 2.0
@@ -109,6 +116,7 @@ class QueueDynamicsCalculator:
             "queue_refill_rate": round(refill_rate, 4),
             "queue_depletion_ratio": round(depletion_ratio, 4),
             "queue_refill_ratio":    round(refill_ratio, 4),
+            "queue_directional_depletion": round(directional_depletion, 4),
             "imbalance_slope": round(imbalance_slope, 6),
             "cancel_add_ratio": round(cancel_add_ratio, 4),
             "direction": direction,

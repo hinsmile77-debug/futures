@@ -78,7 +78,7 @@ class OFICalculator:
         1분봉 마감 시 OFI 집계 후 버퍼 저장
 
         Returns:
-            {ofi_raw, ofi_norm, ofi_ma, pressure, imbalance_ratio}
+            {ofi_raw, ofi_norm, ofi_ma, pressure, imbalance_ratio(-1~1)}
         """
         self._ofi_buf.append(self._minute_ofi)
         self._vol_buf.append(max(self._minute_vol, 1.0))
@@ -121,8 +121,8 @@ class OFICalculator:
         # 압력 방향: +1(매수)/−1(매도)/0
         pressure = 1 if ofi_raw > 0 else (-1 if ofi_raw < 0 else 0)
 
-        # 불균형 비율 (0 ~ 1.0, 높을수록 강한 방향성)
-        imbalance_ratio = min(abs(ofi_norm) / 3.0, 1.0)
+        # 방향 유지 불균형 비율 (-1.0 ~ 1.0, 부호=방향, 절대값=강도)
+        imbalance_ratio = float(np.clip(ofi_norm / 3.0, -1.0, 1.0))
 
         return {
             "ofi_raw":         round(ofi_raw, 2),

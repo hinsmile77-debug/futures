@@ -1,7 +1,49 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-05 (118차 세션 마무리) — daily_close Qt 메인 스레드 블로킹 버그 수정
+> 마지막 업데이트: 2026-06-06 (119차 세션 마무리) — FeatureBuilder 양방향성 버그 수정 4건
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-06 (119차 — FeatureBuilder 양방향성 버그 수정)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| `vwap_momentum` 항상 0 버그 수정 | **완료** ✅ | `features/feature_builder.py` |
+| `ofi_imbalance` 방향 손실 수정 | **완료** ✅ | `features/technical/ofi.py` |
+| `volume_acceleration` 클리핑 누락 수정 | **완료** ✅ | `features/feature_builder.py` |
+| `queue_directional_depletion` 신규 피처 | **완료** ✅ | `features/technical/queue_dynamics.py`, `features/feature_builder.py` |
+| GBM 재학습 (신규 피처 반영) | **미실시** — 다음 장 전 재학습 필요 | — |
+
+### 수정 내역 요약
+
+**1. vwap_momentum 항상 0 버그** (`feature_builder.py:519`)
+- `features.get("vwap", 0.0)` → Phase 2-D에서 `features["vwap"]` 제거됐으나 참조 잔존
+- `_vwap_history`에 0.0만 쌓여 `_vh[-5] > 0` 조건 미통과 → 항상 0.0
+- 수정: `features.get("vwap_position", 0.0)` + `_vh[-1] - _vh[-5]` (5분 변화량)
+
+**2. ofi_imbalance 방향 손실** (`ofi.py:125`)
+- `abs(ofi_norm)` 사용 → 매수압 +2.0 = 매도압 -2.0 = 0.67 (방향 소멸)
+- 수정: `np.clip(ofi_norm / 3.0, -1.0, 1.0)` — 부호 유지, 범위 [-1, 1]
+
+**3. volume_acceleration 클리핑 없음** (`feature_builder.py:514`)
+- 거래량 급등 시 최대 9.0+ → StandardScaler z-score 폭발
+- 수정: `np.clip(..., -3.0, 3.0)` 추가
+
+**4. queue_directional_depletion 신규 피처** (`queue_dynamics.py:91`)
+- 기존 depletion_ratio/refill_ratio: bid+ask 합산 → 방향 없음
+- 신규: `(depletion_ask - depletion_bid) / depletion_total` → [-1, 1]
+- 양수 = 매도호가 고갈 우세(매수압), 음수 = 매수호가 고갈 우세(매도압)
+- 빈 tick_stats 경로 기본값 0.0 처리 완료
+
+### 다음 장에서 확인할 것
+
+1. GBM 재학습 후 `queue_directional_depletion` 피처 DB 저장 확인
+2. SHAP에서 `vwap_momentum` 비제로값 출현 (기존엔 항상 0)
+3. `ofi_imbalance` 분포가 [-1, 1] 대칭으로 바뀌었는지 (기존엔 [0, 1])
+4. shap_feature_registry에 `queue_directional_depletion` 수동 추가 필요
 
 ---
 
