@@ -1,5 +1,5 @@
 # dashboard/main_dashboard.py
-# 미륵이 v7.0 — 풀 통합 대시보드
+# 미륵이 v8.0 — 풀 통합 대시보드
 # PyQt5 기반 7개 패널 완전 구현
 """
 구현 패널:
@@ -3000,6 +3000,7 @@ class EntryPanel(QWidget):
         self._max_qty = self._load_max_qty()
         self._qualify_cards: dict = {}  # {horizon: {"frame", "status_lbl", "cycles_lbl"}}
         self._build()
+        self._load_entry_mode()         # _build() 완료 후 위젯 존재 보장 상태에서 복원
         self._setup_time_zone_timer()
 
     def _build(self):
@@ -3546,7 +3547,6 @@ class EntryPanel(QWidget):
             left_lay.addLayout(r)
 
         self._load_gate_toggles()
-        self._load_entry_mode()
         for cb in self.check_toggles.values():
             cb.stateChanged.connect(self._save_gate_toggles)
 
@@ -3962,20 +3962,24 @@ class EntryPanel(QWidget):
             p["entry_mode"] = self.current_mode
             with open(_f, "w", encoding="utf-8") as fp:
                 json.dump(p, fp, ensure_ascii=False)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("SYSTEM").warning("[EntryPanel] entry_mode 저장 실패: %s", e)
 
     def _load_entry_mode(self):
         try:
             _f = os.path.join(DATA_DIR, "ui_prefs.json")
             if not os.path.exists(_f):
                 return
-            mode = json.load(open(_f, "r", encoding="utf-8")).get("entry_mode", "hybrid")
-            if mode in self._mode_button_labels:
-                self.current_mode = mode
-                self._sync_mode_button_styles()
-        except Exception:
-            pass
+            with open(_f, "r", encoding="utf-8") as fp:
+                mode = json.load(fp).get("entry_mode", "hybrid")
+            if mode not in self._mode_button_labels:
+                return
+            self.current_mode = mode
+            self._sync_mode_button_styles()
+        except Exception as e:
+            import logging
+            logging.getLogger("SYSTEM").warning("[EntryPanel] entry_mode 복원 실패: %s", e)
 
     def _set_reverse_entry_enabled(self, enabled: bool):
         self._reverse_entry_enabled = bool(enabled)
@@ -8189,7 +8193,7 @@ def _find_symbol_text(market: str, *, symbol_code: str = "", symbol_text: str = 
 
 
 class MireukDashboard(QMainWindow):
-    """미륵이 v7.0 풀 대시보드"""
+    """미륵이 v8.0 풀 대시보드"""
 
     def __init__(self, kiwoom=None):
         super().__init__()
@@ -8197,7 +8201,7 @@ class MireukDashboard(QMainWindow):
         self._start_dt = datetime.now()        # 프로그램 시작 시각 (불변)
         # ── 해상도 감지 (UI 빌드 전에 반드시 먼저) ──────────────
         S.init()
-        self.setWindowTitle("미륵이 v7.0  |  KOSPI 200 선물 예측 시스템")
+        self.setWindowTitle("미륵이 v8.0  |  KOSPI 200 선물 예측 시스템")
         # WindowStaysOnTopHint 해제 — 일반 창으로 동작
         # availableGeometry 기준으로 창 크기/위치 고정 — 태스크바 잘림 방지
         _avail = QApplication.instance().primaryScreen().availableGeometry()
@@ -8219,6 +8223,12 @@ class MireukDashboard(QMainWindow):
         self._cycle_timer.timeout.connect(self._refresh_cycle_badge)
         self._cycle_timer.start()
 
+        # ── Phase 3 알림 배지 깜박임 (800ms) ─────────────────────
+        self._phase3_blink_timer = QTimer(self)
+        self._phase3_blink_timer.setInterval(800)
+        self._phase3_blink_timer.timeout.connect(self._blink_phase3)
+        self._phase3_blink_timer.start()
+
         self._minute_chart_dialog = MinuteChartDialog(self)
         self._minute_chart_shortcut = QShortcut(QKeySequence(MinuteChartDialog.SHORTCUT_TEXT), self)
         self._minute_chart_shortcut.activated.connect(self.toggle_minute_chart_dialog)
@@ -8236,7 +8246,7 @@ class MireukDashboard(QMainWindow):
 
         # ── 상단 헤더 ──────────────────────────────────────────
         header = QHBoxLayout()
-        title = mk_label("⚡ 미륵이  v7.0", C['text'], 16, True)
+        title = mk_label("⚡ 미륵이  v8.0", C['text'], 16, True)
         title_box = QVBoxLayout()
         title_box.setContentsMargins(0, 0, 0, 0)
         title_box.setSpacing(S.p(4))
@@ -8537,7 +8547,36 @@ class MireukDashboard(QMainWindow):
         strat_row.addWidget(self.cmb_strategy)
         strat_row.addWidget(self.btn_save_strategy)
         strat_row.addStretch()
-        title_box.addWidget(title)
+        # Phase 3 알림 배지 (깜박임 — _blink_phase3 타이머로 갱신)
+        self.lbl_phase3 = QLabel("Phase 3 예정")
+        self.lbl_phase3.setStyleSheet(
+            f"color:{C['orange']};font-size:{S.f(9)}px;font-weight:bold;"
+            f"border:1px solid {C['orange']};border-radius:3px;padding:1px 5px;"
+        )
+        self.lbl_phase3.setToolTip(
+            "Phase 3 — 모의투자 2주 이상 안정 확인 후 착수 예정\n\n"
+            "구현 항목:\n"
+            "  ① Platt Scaling 호라이즌별 독립 적용\n"
+            "     ECE 측정 후 대상 호라이즌 결정\n"
+            "  ② online_learner.py — anti_signal 채널 추가\n"
+            "     역신호 학습 채널 (아이디어 C)\n"
+            "  ③ MFE 기반 레이블 재설계\n"
+            "     Phase 5 실전 전환 이후 착수\n\n"
+            "착수 조건:\n"
+            "  모의투자 4주 통산 수익률 양수\n"
+            "  Circuit Breaker 1회 이상 정상 작동 확인\n"
+            "  Walk-Forward 26주 통과 (Sharpe >= 1.5)"
+        )
+        self._phase3_blink_on = True
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(S.p(8))
+        title_row.addWidget(title)
+        title_row.addWidget(self.lbl_phase3)
+        title_row.addStretch()
+
+        title_box.addLayout(title_row)
         title_box.addLayout(acct_row)
         title_box.addLayout(strat_row)
         # ── 서버 구분 라디오 버튼 ─────────────────────────────────
@@ -9199,6 +9238,21 @@ class MireukDashboard(QMainWindow):
         self.cmb_symbol.blockSignals(False)
         self._update_symbol_label(new_text)
         self._save_ui_prefs()
+
+    def _blink_phase3(self):
+        """Phase 3 알림 배지 800ms 깜박임."""
+        self._phase3_blink_on = not self._phase3_blink_on
+        if self._phase3_blink_on:
+            style = (
+                f"color:{C['orange']};font-size:{S.f(9)}px;font-weight:bold;"
+                f"border:1px solid {C['orange']};border-radius:3px;padding:1px 5px;"
+            )
+        else:
+            style = (
+                f"color:{C['bg3']};font-size:{S.f(9)}px;font-weight:bold;"
+                f"border:1px solid {C['bg3']};border-radius:3px;padding:1px 5px;"
+            )
+        self.lbl_phase3.setStyleSheet(style)
 
     def _tick_header(self):
         """1초마다 헤더 가동 경과시간 + 파이프라인 생존 바 갱신."""
