@@ -4,6 +4,93 @@
 
 ---
 
+## 2026-06-08 (123차 — 대시보드 유효성 점검 + Phase 2 bar_age 시각화)
+
+**Work**: v8.0 구현에 따른 대시보드 전체 유효성 점검 → 이슈 2건 발견/수정.
+
+### 점검 결과 요약
+
+Phase 2 bar_age/BAR_CACHE_DECAY 효과가 대시보드에 미반영된 것을 발견.
+
+### 수정 내역
+
+| # | 항목 | 파일 | 내용 |
+|---|---|---|---|
+| 1 | Phase 2 bar_age 미표시 | `dashboard/main_dashboard.py`, `main.py` | PredictionPanel 호라이즌 카드에 `{_age}m전` 표시 + stale시 주황 dashed 테두리 |
+| 2 | lbl_futures_code 하드코딩 | `dashboard/main_dashboard.py` | "F202606" → `_MARKET_SYMBOLS` 기반 동적 계산 |
+
+### 주요 변경
+
+**bar_age 시각화** (`PredictionPanel.update_data`):
+- 시그니처: `bar_ages: dict = None` 파라미터 추가
+- 각 호라이즌 카드 pct 레이블: `age > 0`이면 `"58.3% 2m전"` 형식 표시
+- stale 기준: `age > h_min // 2` (30m봉 15분 초과 등) → 카드 테두리 주황 dashed + 텍스트 주황
+- `update_prediction(bar_ages=None)` 어댑터 파라미터 추가
+- `main.py` line 3756: `bar_ages=self._hz_bar_age` 전달
+
+**lbl_futures_code 동적화**:
+- 기동 시 `_MARKET_SYMBOLS["KOSPI200 선물"][0]`에서 텍스트 추출 → 7월 이후도 올바른 근월물 코드 표시
+
+### 이상 없음 확인
+
+- `update_price`: main.py 양쪽 모두 `self.realtime_data.code` 실제 전달 (기본값 F202606 미사용)
+- BAR_CACHE_DECAY confidence 감쇠: horizon_proba에 이미 반영 후 대시보드 전달 (앙상블 계산 정상)
+- `_update_symbol_label`: cmb_symbol 변경 시 lbl_futures_code 갱신 정상
+
+### 커밋
+
+- `123차 커밋` (이번 세션)
+
+---
+
+## 2026-06-08 (122차 — UI v7.0→v8.0 + Phase 3 깜박임 배지)
+
+**Work**: 사용자 요청으로 대시보드 버전 표시 업데이트 + Phase 3 착수 예정 알림 배지 추가.
+
+### 수정 내역
+
+- 파일 주석/docstring/윈도우 타이틀/헤더 타이틀 모두 v7.0 → v8.0
+- `lbl_phase3 = QLabel("Phase 3 예정")` — 주황색 배지, 제목 오른쪽 배치
+- 툴팁: 착수 조건(모의투자 4주 수익 양수 + CB 작동 확인) + 구현 예정 3종 안내
+- `_phase3_blink_timer` (800ms QTimer): `_blink_phase3()` 메서드로 주황↔배경색 토글
+
+### 커밋
+
+- `e5d5474` — 122차: UI 버전 v7.0→v8.0 표시 + Phase 3 깜박임 알림 배지
+
+---
+
+## 2026-06-08 (121차 — Phase 2 백필/재학습 3종 버그 수정)
+
+**Work**: Phase 2 재학습 실행 → 3종 치명 버그 발견/수정. cp949 UnicodeEncodeError 수정.
+
+### 버그 현황
+
+Phase 2 재학습 실행 결과 30m 성능이 0.5841→0.4902로 급락. 원인 추적 결과 3종 버그 발견.
+
+### 수정 내역
+
+| # | 파일 | 버그 | 수정 |
+|---|---|---|---|
+| 1 | `scripts/aggregate_and_backfill.py` | raw_features_horizon에 12피처만 저장 (OHLCV 기반) | raw_features 테이블과 JOIN → 105+피처 base에 atr/bar_volume/ret_Nm 오버라이드 |
+| 2 | `learning/batch_retrainer.py` | Phase 2 재학습 시 feature_names.pkl을 3m 피처 12개로 덮어쓰기 | `_load_feature_names()` 신규 → 105개 백업 후 루프 완료 후 복원 |
+| 3 | `learning/batch_retrainer.py` | 3m~30m X 행렬 119~120차원 (raw_features_horizon 추가 피처 혼입) | `use_feat_names = _existing_feat_names` 105개 고정 |
+| 4 | `scripts/eod_retrain.py` | ✓, − 특수문자 cp949 UnicodeEncodeError | OK, -- ASCII 대체 |
+
+### 검증 결과 (수정 후)
+
+```
+feature_names.pkl: 105 features
+gbm_1m~gbm_30m: 모두 105차원 일치
+Phase 1 재학습으로 30m 복원: 0.4902 → 0.5864
+```
+
+### 커밋
+
+- `ad44efe` — 121차: Phase 2 백필/재학습 3종 버그 수정
+
+---
+
 ## 2026-06-06 (119차 — FeatureBuilder 양방향성 버그 수정 4건)
 
 **Work**: FeatureBuilder 양방향성 점검 보고서 검토 → 확정 버그 수정 + 피처 개선 구현.

@@ -3754,7 +3754,8 @@ class TradingSystem:
         _corr_str = self._get_param_corr_display()
 
         self.dashboard.update_prediction(close, _preds_ui, _params_ui, confidence,
-                                         corr=_corr_str, min_conf=actual_min_conf)
+                                         corr=_corr_str, min_conf=actual_min_conf,
+                                         bar_ages=self._hz_bar_age)
         # [Qualify] 자격 현황 카드 갱신
         try:
             self.dashboard.update_qualification(self._horizon_runtime_state)

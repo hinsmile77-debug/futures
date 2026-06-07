@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-06-08 (121~123차)
+
+### [버그] Phase 2 백필 12피처만 저장 — 학습/추론 피처 공간 불일치
+**File**: `scripts/aggregate_and_backfill.py`
+**Root cause**: 초기 구현이 OHLCV 12개 피처(atr, ret, volume 등)만 계산해서 raw_features_horizon에 저장. GBM은 추론 시 105피처를 기대하는데 학습 데이터는 12피처 → 차원 불일치. `force=True`로 강제 교체되어 30m 성능 0.5841→0.4902로 급락.
+**Fix**: `raw_features` 테이블과 JOIN해서 105+피처 dict를 base로 가져오고, N분봉 고유 피처(atr, bar_volume, ret_Nm)만 오버라이드. raw_features 없으면 해당 타임스탬프 건너뜀.
+**How to apply**: 재백필 실행 후 `SELECT horizon, COUNT(*) FROM raw_features_horizon GROUP BY horizon`으로 행 수 확인. 재학습 후 전 호라이즌 105차원 일치 검증.
+
+### [버그] feature_names.pkl 오염 — Phase 2 재학습 시 3m 피처 12개로 덮어쓰기
+**File**: `learning/batch_retrainer.py` — `_retrain_phase2`
+**Root cause**: `_retrain_phase2` 루프가 첫 호라이즌(3m) 재학습 완료 후 `feature_names.pkl`을 3m 피처 이름 12개로 덮어씀. 이후 모든 호라이즌과 메인 시스템 추론이 12피처 공간으로 동작 → predict_proba에서 105 vs 12 불일치.
+**Fix**: `_load_feature_names()` 신규 메서드로 재학습 시작 전 기존 105개 백업. 루프 완료 후 `_save_feature_names(_existing_feat_names)`로 복원. 재학습 중 X 행렬 구성도 `use_feat_names = _existing_feat_names`(105개)로 고정해 raw_features_horizon 추가 컬럼이 섞이지 않도록 방어.
+
+### [버그] Phase 2 모델 119~120차원 불일치 — raw_features_horizon 추가 컬럼 혼입
+**File**: `learning/batch_retrainer.py` — `_retrain_phase2`
+**Root cause**: raw_features_horizon에 `ret_3m`, `ret_5m` 등 호라이즌별 추가 피처가 있어 `feat_names`가 119~120개로 확장됨. X 행렬을 `feat_names`(가변)로 구성하면 호라이즌마다 차원이 달라짐.
+**Fix**: `use_feat_names = _existing_feat_names`(105개 고정)로 X 행렬 구성. 추가 컬럼은 무시 (Phase 2 이점인 atr/ret_Nm 중 feature_names.pkl에 있는 것만 활용).
+
+### [설계] 대시보드 Phase 2 bar_age 시각화 — PredictionPanel 호라이즌 카드
+**File**: `dashboard/main_dashboard.py`, `main.py`
+**Decision**: BAR_CACHE_DECAY가 confidence를 감쇠시키지만 사용자가 어느 호라이즌이 얼마나 stale인지 알 방법이 없었음. PredictionPanel `update_data`에 `bar_ages: dict` 파라미터 추가. 카드 pct 레이블에 `"58.3% 2m전"` 형식으로 경과 분 수 표시. stale 기준(`age > h_min // 2`: 30m=15분, 15m=7분, 10m=5분, 5m=2분, 3m=1분) 초과 시 카드 테두리를 주황 2px dashed로 변경해 즉각 시각화. `main.py`에서 `bar_ages=self._hz_bar_age` 전달.
+
+### [설계] lbl_futures_code 동적화 — 기동일 기준 근월물 코드
+**File**: `dashboard/main_dashboard.py`
+**Decision**: 초기값 "F202606" 하드코딩이 6월물 만기 이후 잘못된 코드를 표시. `_MARKET_SYMBOLS["KOSPI200 선물"][0]`에서 첫 항목(근월물) 텍스트를 분리해 초기값 설정. `_build_market_symbols()`가 기동일 기준 동적 계산하므로 7월 이후에도 자동 대응.
+
+---
+
 ## 2026-06-06 (119차)
 
 ### [버그] vwap_momentum 항상 0 — features["vwap"] Phase 2-D 제거 후 참조 잔존

@@ -1,7 +1,102 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-06 (119차 세션 마무리) — FeatureBuilder 양방향성 버그 수정 4건
+> 마지막 업데이트: 2026-06-08 (123차 세션 마무리) — 대시보드 유효성 점검 + Phase 2 bar_age 시각화
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-08 (121~123차 — Phase 2 버그 수정 + UI v8.0 + 대시보드 개선)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| **Phase 2 백필** (`aggregate_and_backfill.py --weeks 10`) | **완료** ✅ | `scripts/aggregate_and_backfill.py` |
+| **Phase 2 재학습** (버그 3건 수정 후 재실행) | **완료** ✅ | `learning/batch_retrainer.py` |
+| **feature_names.pkl 무결성** | **복원 완료** ✅ 105 features | `model/horizons/feature_names.pkl` |
+| **전 호라이즌 차원 일치** | **완료** ✅ 모두 105 | `model/horizons/gbm_*.pkl` |
+| **30m 모델 성능 복원** | **완료** ✅ 0.4902→0.5864 | Phase 1 재학습으로 복원 |
+| UI v8.0 표시 | **완료** ✅ | `dashboard/main_dashboard.py` |
+| Phase 3 깜박임 배지 | **완료** ✅ | `dashboard/main_dashboard.py` |
+| **Phase 2 bar_age 시각화** | **완료** ✅ | `dashboard/main_dashboard.py`, `main.py` |
+| **lbl_futures_code 동적화** | **완료** ✅ | `dashboard/main_dashboard.py` |
+
+### Phase 2 현재 운영 구조
+
+```
+백필: raw_features JOIN → 105+피처 저장 (raw_features_horizon 테이블)
+학습: feature_names.pkl 105개 고정 (use_feat_names = _existing_feat_names)
+추론: BAR_CACHE_DECAY 감쇠 → dashboard bar_ages 전달 → 카드 표시
+```
+
+### 대시보드 현황 (v8.0)
+
+| 패널 | 표시 내용 | 이슈 |
+|---|---|---|
+| PredictionPanel 호라이즌 카드 | 방향↑/↓/횡보 + 확률% + `{age}m전` (stale시 주황) | ✅ v8.0 신규 |
+| 상단 종목코드 | 근월물 동적 계산 (F202606 하드코딩 제거) | ✅ v8.0 신규 |
+| Phase 3 배지 | 800ms 깜박임, 착수 조건 툴팁 | ✅ v8.0 신규 |
+
+### 커밋
+
+- `ad44efe` — 121차: Phase 2 백필/재학습 3종 버그 수정
+- `e5d5474` — 122차: UI v7.0→v8.0 + Phase 3 깜박임 배지
+- `123차 커밋 예정` — 대시보드 bar_age 시각화 + lbl_futures_code 동적화
+
+### 다음 장에서 확인할 것
+
+1. 기동 후 `[Phase2-STEP4]` 오류 없음 확인
+2. 3m봉 완성 시 PredictionPanel 카드에 `"58.3% 2m전"` 표시 확인
+3. 30m봉 16분 경과 시 카드 테두리 주황 dashed 확인
+4. BAR_CACHE_DECAY: 30m봉 미완성 구간 confidence 점진 감소 확인
+5. `validate_horizon_scaler_consistency()` 불일치 경보 없음 확인
+
+---
+
+## 2026-06-07 (120차 — Phase 2 호라이즌별 완성봉 입력 구조 구현)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| `BarAggregator` 신규 — 1m봉→N분봉 집계 | **완료** ✅ | `features/bar_aggregator.py` |
+| `feats_to_vec` / `build_for_horizon` 추가 | **완료** ✅ | `features/feature_builder.py` |
+| DB 스키마 확장 — `raw_features_horizon`, `raw_candles_aggregated`, buy_vol/sell_vol | **완료** ✅ | `utils/db_utils.py` |
+| `validate_horizon_scaler_consistency` / `predict_proba_multi` 추가 | **완료** ✅ | `model/multi_horizon_model.py` |
+| `MIN_TRAIN_BARS_PER_HORIZON` + `_retrain_phase2` + `--phase2` 플래그 | **완료** ✅ | `learning/batch_retrainer.py`, `scripts/eod_retrain.py` |
+| `main.py` STEP 4/5 Phase 2 로직 + `_hz_feat_cache` + `BAR_CACHE_DECAY` | **완료** ✅ | `main.py` |
+| `scripts/aggregate_and_backfill.py` 신규 — 기존 72k봉 소급 적용 스크립트 | **완료** ✅ | `scripts/aggregate_and_backfill.py` |
+| 테스트 6종 통과 확인 | **완료** ✅ | `scripts/_test_phase2.py` (삭제됨) |
+| **백필 실행** (`aggregate_and_backfill.py --weeks 10`) | **완료** ✅ (2026-06-08, 버그 수정 후 재실행) | `scripts/aggregate_and_backfill.py` |
+| **Phase 2 재학습** (`eod_retrain.py --phase2 --weeks 10`) | **완료** ✅ (2026-06-08, 버그 3건 수정 후) | `learning/batch_retrainer.py` |
+
+### 구조 변경 요약
+
+**Phase 1-1 → Phase 2 전환 핵심**:
+- 이전: 모든 호라이즌이 동일한 1분봉 피처벡터 공유, halflife 감쇠만 적용
+- 이후: 각 호라이즌 모델이 실제 N분봉 OHLCV에서 산출한 피처벡터를 독립적으로 수신
+
+**주요 상수**:
+```python
+BAR_CACHE_DECAY = {3: 0.97, 5: 0.95, 10: 0.93, 15: 0.92, 30: 0.90}
+MIN_TRAIN_BARS_PER_HORIZON = {"1m":15000,"3m":5000,"5m":3000,"10m":1500,"15m":1000,"30m":500}
+```
+
+**DB 신규 테이블**:
+- `raw_features_horizon (ts, horizon, features)` — N분봉 완성 시 피처 JSON 저장
+- `raw_candles_aggregated (ts, horizon, ...)` — 집계봉 캐시
+- `raw_candles.buy_vol / sell_vol` — 미래 OFI/CVD tick 데이터용 예약 컬럼
+
+### 커밋
+- `b340c30` — 120차: Phase 2 호라이즌별 완성봉 입력 구조 구현 (9 files, +888/-54)
+
+### 다음 장에서 확인할 것
+
+1. `python scripts/aggregate_and_backfill.py --weeks 10` 실행 → raw_features_horizon 행 수 확인
+2. `python scripts/eod_retrain.py --phase2 --weeks 10 --force` 실행 → 6/6 호라이즌 재학습 성공 확인
+3. 기동 후 `[Phase2-STEP4]` 오류 없음 + STEP5 `_hz_feat_cache` 갱신 로그 확인
+4. `validate_horizon_scaler_consistency()` 불일치 경보 없음 확인
+5. Stage 2 준비: buy_vol/sell_vol 데이터 축적 (약 +30일 후 1m/3m OFI/CVD 재학습 가능)
 
 ---
 

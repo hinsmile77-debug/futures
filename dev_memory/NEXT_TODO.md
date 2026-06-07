@@ -6,6 +6,51 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-08 (121~123차)
+
+### 한일 요약
+
+- [DONE 2026-06-08] **백필 실행** — `aggregate_and_backfill.py --weeks 10` (raw_features JOIN 방식 v2로 수정 후 실행)
+- [DONE 2026-06-08] **Phase 2 재학습** — 버그 3종 수정 후 `eod_retrain.py --phase2 --weeks 10` 완료 (전 호라이즌 105차원 일치)
+- [DONE 2026-06-08] **Phase 2 백필 12피처 버그 수정** — raw_features JOIN으로 105+피처 저장 (`aggregate_and_backfill.py` v2 전면 재작성)
+- [DONE 2026-06-08] **feature_names.pkl 오염 버그 수정** — `_load_feature_names()` 신규 + 105개 재학습 완료 후 복원 (`batch_retrainer.py`)
+- [DONE 2026-06-08] **X 행렬 차원 불일치 버그 수정** — `use_feat_names = _existing_feat_names` 105개 고정 (`batch_retrainer.py`)
+- [DONE 2026-06-08] **cp949 UnicodeEncodeError 수정** — ✓/−/— → OK/-- ASCII 대체 (`eod_retrain.py`)
+- [DONE 2026-06-08] **UI v7.0→v8.0** + Phase 3 깜박임 배지 추가 (`dashboard/main_dashboard.py`)
+- [DONE 2026-06-08] **PredictionPanel bar_age 시각화** — `{age}m전` 표시 + stale시 주황 dashed 테두리 (`dashboard/main_dashboard.py`, `main.py`)
+- [DONE 2026-06-08] **lbl_futures_code 동적화** — "F202606" 하드코딩 → `_MARKET_SYMBOLS` 동적 계산
+
+### 다음 할 일
+
+- [NEXT 다음 장] **Phase 2 실세션 확인** (최우선)
+  - `[Phase2-STEP4]` 오류 로그 없음 확인
+  - 3m봉 완성 시 PredictionPanel `"58.3% 2m전"` 표시 확인
+  - 30m봉 16분 경과 시 카드 테두리 주황 dashed 전환 확인
+  - BAR_CACHE_DECAY: 30m봉 미완성 구간 confidence 점진 감소 확인
+  - `validate_horizon_scaler_consistency()` 불일치 경보 없음
+
+- [NEXT ~30일 후] **Stage 2: buy_vol/sell_vol 축적 후 1m/3m 재학습**
+  - raw_candles.buy_vol/sell_vol 30일 축적
+  - `eod_retrain.py --phase2` 재실행 → OFI/CVD 정상 학습
+
+- [NEXT ~50일 후] **Stage 3: 전 호라이즌 go-forward 데이터 전면 재학습**
+  - raw_features_horizon 50일+ 데이터 기준
+
+## 2026-06-07 (120차 — Phase 2 호라이즌별 완성봉 입력 구조 구현)
+
+### 한일 요약
+
+- [DONE 2026-06-07] **`features/bar_aggregator.py` 신규** — 1m봉→3/5/10/15/30m 완성봉 집계. `push(bar_1m)` → `{h_min: agg_bar}`, `reset_daily()` 포함
+- [DONE 2026-06-07] **`feats_to_vec` + `build_for_horizon` 추가** — `feature_builder.py`. N분봉 OHLCV에서 atr/bar_volume/ret_Nm 재산출 후 feature_decay 적용
+- [DONE 2026-06-07] **DB 스키마 확장** — `raw_features_horizon`, `raw_candles_aggregated` 테이블 신규; `raw_candles`에 `buy_vol`/`sell_vol` 컬럼 추가 (마이그레이션 포함)
+- [DONE 2026-06-07] **`validate_horizon_scaler_consistency` + `predict_proba_multi` 추가** — `model/multi_horizon_model.py`
+- [DONE 2026-06-07] **`MIN_TRAIN_BARS_PER_HORIZON` + `_retrain_phase2` 추가** — `learning/batch_retrainer.py`; `--phase2` 플래그 추가 `scripts/eod_retrain.py`
+- [DONE 2026-06-07] **`main.py` STEP 4/5 Phase 2 로직** — `bar_aggregator.push()` → `save_horizon_features()` → `_hz_feat_cache` 캐시 → `BAR_CACHE_DECAY` 신뢰도 감쇠
+- [DONE 2026-06-07] **`scripts/aggregate_and_backfill.py` 신규** — 기존 72k봉 소급 백필 스크립트 (v1, v2로 교체됨)
+- [DONE 2026-06-07] **6종 기능 테스트 통과**
+
+---
+
 ## 2026-06-06 (119차 — FeatureBuilder 양방향성 버그 수정 4건)
 
 ### 한일 요약

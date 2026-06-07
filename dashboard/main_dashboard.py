@@ -1257,7 +1257,8 @@ class PredictionPanel(QWidget):
         lay.addWidget(self.corr_label)
         lay.addStretch(1)
 
-    def update_data(self, price, preds, params, conf=None, corr="", min_conf: float = 0.58):
+    def update_data(self, price, preds, params, conf=None, corr="", min_conf: float = 0.58,
+                    bar_ages: dict = None):
         self._model_row.setVisible(False)
         self.lbl_price.setText(f"{price:.2f}")
 
@@ -1286,6 +1287,7 @@ class PredictionPanel(QWidget):
             self.lbl_signal.setStyleSheet(f"color:{C['text2']};font-size:{S.f(16)}px;font-weight:bold;")
 
         # 호라이즌 카드
+        _HZ_MIN = {"1분":1,"3분":3,"5분":5,"10분":10,"15분":15,"30분":30}
         for hname, pred in preds.items():
             if hname not in self._hz_labels:
                 continue
@@ -1294,7 +1296,7 @@ class PredictionPanel(QWidget):
             _active = (_is_enabled is None) or _is_enabled.isChecked()
             if pred['signal'] == 1:
                 arr.setText("▲")
-                pct.setText(f"{pred['up']*100:.1f}%")
+                _pct_base = f"{pred['up']*100:.1f}%"
                 if _active:
                     col = C['green']
                     frame.setStyleSheet(
@@ -1305,7 +1307,7 @@ class PredictionPanel(QWidget):
                         f"QFrame{{background:{C['bg']};border:1px dashed {C['border']};border-radius:6px;}}")
             elif pred['signal'] == -1:
                 arr.setText("▼")
-                pct.setText(f"{pred['dn']*100:.1f}%")
+                _pct_base = f"{pred['dn']*100:.1f}%"
                 if _active:
                     col = C['red']
                     frame.setStyleSheet(
@@ -1316,11 +1318,24 @@ class PredictionPanel(QWidget):
                         f"QFrame{{background:{C['bg']};border:1px dashed {C['border']};border-radius:6px;}}")
             else:
                 arr.setText("—")
-                pct.setText("횡보")
+                _pct_base = "횡보"
                 col = C['text2']
                 _border = "solid" if _active else "dashed"
                 frame.setStyleSheet(
                     f"QFrame{{background:{C['bg2']};border:1px {_border} {C['border']};border-radius:6px;}}")
+            # Phase 2: bar_age 표시 — 완성봉 이후 경과 분 수 (1m봉은 제외)
+            _h_key = self._HZ_KEY_MAP.get(hname, hname)
+            _h_min = _HZ_MIN.get(hname, 1)
+            _age = (bar_ages or {}).get(_h_key, 0)
+            if _age > 0 and _h_min > 1:
+                pct.setText(f"{_pct_base} {_age}m전")
+                if _age > _h_min // 2 and _active:
+                    frame.setStyleSheet(
+                        f"QFrame{{background:{C['bg2']};border:2px dashed {C['orange']};"
+                        f"border-radius:6px;}}")
+                    col = C['orange']
+            else:
+                pct.setText(_pct_base)
             arr.setStyleSheet(f"color:{col};font-size:{S.f(22)}px;font-weight:bold;")
             pct.setStyleSheet(f"color:{col};font-size:{S.f(12)}px;")
 
@@ -8254,7 +8269,9 @@ class MireukDashboard(QMainWindow):
         # ── 실시간 현재가 (키움 API 연동 핵심) ──────────────────
         self.lbl_realtime_price = mk_label("——.——", C['cyan'], 22, True)
         self.lbl_price_change   = mk_label("——", C['text2'], 14, True)
-        self.lbl_futures_code   = mk_label("F202606", C['text2'], 11)
+        _sym0 = _MARKET_SYMBOLS.get("KOSPI200 선물", [""])[0]
+        _code0 = _sym0.split(None, 1)[1] if _sym0 else "——"
+        self.lbl_futures_code   = mk_label(_code0, C['text2'], 11)
 
         price_box = QHBoxLayout()
         price_box.setSpacing(S.p(6))
@@ -9740,9 +9757,11 @@ class DashboardAdapter:
         self._win.update_price(price, change, code)
 
     def update_prediction(self, price: float, preds: dict, params: dict,
-                          conf: float = None, corr: str = "", min_conf: float = 0.58):
+                          conf: float = None, corr: str = "", min_conf: float = 0.58,
+                          bar_ages: dict = None):
         """멀티 호라이즌 예측 패널 업데이트"""
-        self._win.pred_panel.update_data(price, preds, params, conf, corr, min_conf=min_conf)
+        self._win.pred_panel.update_data(price, preds, params, conf, corr, min_conf=min_conf,
+                                         bar_ages=bar_ages)
 
     def update_entry(self, signal: str, conf: float, grade: str, checks: dict,
                      qty: int = 0, final_signal: str = None,
