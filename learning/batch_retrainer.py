@@ -412,6 +412,16 @@ class BatchRetrainer:
         with open(feature_path, "wb") as f:
             pickle.dump(list(feature_names), f)
 
+    def _load_feature_names(self):
+        # type: () -> list
+        """저장된 feature_names.pkl 로드. 없으면 빈 리스트."""
+        feature_path = os.path.join(self.model_dir, "feature_names.pkl")
+        try:
+            with open(feature_path, "rb") as f:
+                return pickle.load(f)
+        except (IOError, OSError, pickle.UnpicklingError):
+            return []
+
     def _load_model_acc(self, horizon_key: str) -> float:
         acc_path = os.path.join(self.model_dir, f"gbm_{horizon_key}_acc.txt")
         try:
@@ -526,7 +536,10 @@ class BatchRetrainer:
         ).strftime("%Y-%m-%d %H:%M:%S")
 
         results = {}
-        saved_feat_names = None
+        # Phase 2에서는 feature_names.pkl을 덮어쓰지 않음.
+        # 1m 모델(Phase 1 경로)은 기존 105+ 피처 기반이므로 전역 feature_names 보존.
+        # 각 호라이즌 모델의 피처명은 _train_horizon 내부에서 해당 pkl에 저장됨.
+        _existing_feat_names = self._load_feature_names()  # 기존 전역 피처명 백업
 
         for hz, h_min in HORIZONS.items():
             min_bars = MIN_TRAIN_BARS_PER_HORIZON.get(hz, MIN_TRAIN_BARS)
@@ -549,7 +562,7 @@ class BatchRetrainer:
 
             if len(rows) < min_bars:
                 logger.warning(
-                    "[Retrain-P2] %s 데이터 부족 %d < %d — 건너뜀",
+                    "[Retrain-P2] %s 데이터 부족 %d < %d -- 건너뜀",
                     hz, len(rows), min_bars,
                 )
                 results[hz] = {"replaced": False, "error": "데이터 부족"}
@@ -578,11 +591,15 @@ class BatchRetrainer:
                 results[hz] = {"replaced": False, "error": "피처 파싱 실패"}
                 continue
 
+            # global feature_names(1m 기준 105개)로 X 구성 → 추론 공간과 일치.
+            # raw_features_horizon에는 ret_Nm 등 추가 피처가 있지만,
+            # 학습/추론 모두 동일한 105피처 공간 사용해야 scaler/gbm 차원 충돌 없음.
+            use_feat_names = _existing_feat_names if _existing_feat_names else feat_names
             X_hz = np.array(
-                [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],
+                [[rec[1].get(f, 0.0) for f in use_feat_names] for rec in records],
                 dtype=np.float32,
             )
-            X_hz = apply_robust_preprocess(X_hz, feat_names)
+            X_hz = apply_robust_preprocess(X_hz, use_feat_names)
 
             # y 레이블 (Phase 2는 고정 임계값 사용)
             _fixed_thresh = HORIZON_THRESHOLDS.get(hz, 0.0003)
@@ -592,13 +609,13 @@ class BatchRetrainer:
                 y_hz.append(label)
             y_hz = np.array(y_hz, dtype=int)
 
-            result = self._train_horizon(hz, X_hz, y_hz, feature_names=feat_names, force=force)
+            result = self._train_horizon(hz, X_hz, y_hz, feature_names=use_feat_names, force=force)
             results[hz] = result
-            if saved_feat_names is None:
-                saved_feat_names = feat_names
 
-        if saved_feat_names is not None:
-            self._save_feature_names(saved_feat_names)
+        # 전역 feature_names.pkl 복원 (Phase 2는 1m 기존 피처명 보존)
+        if _existing_feat_names:
+            self._save_feature_names(_existing_feat_names)
+            logger.info("[Retrain-P2] feature_names.pkl 보존 (n=%d, 1m 기준)", len(_existing_feat_names))
 
         # RF 재학습 (Phase 2에서는 생략 — 1m X 없음)
 

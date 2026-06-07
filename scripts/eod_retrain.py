@@ -98,7 +98,7 @@ def main():
         logger.info("교체: %d/%d 호라이즌", replaced_count, len(horizons))
         for h in ["1m", "3m", "5m", "10m", "15m", "30m"]:
             r = horizons.get(h, {})
-            marker = "✓" if r.get("replaced") else "−"
+            marker = "OK" if r.get("replaced") else "--"
             logger.info(
                 "  [%s] %s  cv_acc=%.4f  old_acc=%.4f",
                 marker, h,
