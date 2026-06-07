@@ -133,6 +133,12 @@ GBM_PARAMS = {
 # (weeks_back=8 실측 ~12,600봉으로 15,000 미달 → weeks_back 10으로 상향)
 MIN_TRAIN_BARS = 15000
 
+# Phase 2: 호라이즌별 학습 최소 데이터 — 시간 등가 기준 (72k 봉 기준 전 호라이즌 충족)
+MIN_TRAIN_BARS_PER_HORIZON = {
+    "1m": 15000, "3m": 5000, "5m": 3000,
+    "10m": 1500, "15m": 1000, "30m": 500,
+}
+
 # 호라이즌별 class weight — multi_horizon_model._make_sample_weight 와 반드시 동기화
 # 2026-05-30 threshold 재보정 후: FLAT 비율 ~33% 균형 → 강한 FL 억압 불필요
 # 1m/5m: FL 0.60/0.58 → 0.85 (FLAT~34/33%, 강압 해소)
@@ -218,20 +224,22 @@ class BatchRetrainer:
     # ── 재학습 메인 ───────────────────────────────────────────────
     def retrain_now(
         self,
-        X:             Optional[np.ndarray] = None,
-        y_dict:        Optional[Dict[str, np.ndarray]] = None,
-        feature_names: Optional[List[str]] = None,
-        weeks_back:    int = 10,
-        force:         bool = False,
+        X:                    Optional[np.ndarray] = None,
+        y_dict:               Optional[Dict[str, np.ndarray]] = None,
+        feature_names:        Optional[List[str]] = None,
+        weeks_back:           int = 10,
+        force:                bool = False,
+        use_horizon_features: bool = False,
     ) -> Dict:
         """
         GBM 모델 전체 재학습
 
         Args:
-            X:          피처 행렬 (None이면 DB에서 로드)
-            y_dict:     {horizon: label_array} (None이면 DB에서 로드)
-            weeks_back: 학습 기간 (주)
-            force:      성능 저하여도 강제 교체
+            X:                    피처 행렬 (None이면 DB에서 로드)
+            y_dict:               {horizon: label_array} (None이면 DB에서 로드)
+            weeks_back:           학습 기간 (주)
+            force:                성능 저하여도 강제 교체
+            use_horizon_features: Phase 2 경로 활성화 — raw_features_horizon 테이블 사용
 
         Returns:
             재학습 결과 딕셔너리
@@ -239,20 +247,32 @@ class BatchRetrainer:
         if not _SKLEARN_OK:
             return {"ok": False, "error": "scikit-learn 미설치"}
 
-        logger.info(f"[Retrain] 배치 재학습 시작 (weeks_back={weeks_back})")
+        logger.info(
+            "[Retrain] 배치 재학습 시작 (weeks_back=%d, phase2=%s)",
+            weeks_back, use_horizon_features,
+        )
         start_time = datetime.datetime.now()
 
-        # 데이터 로드
+        # Phase 2: 호라이즌별 독립 X로 재학습
+        if use_horizon_features and (X is None or y_dict is None):
+            if self._has_horizon_features_table():
+                return self._retrain_phase2(weeks_back, force, start_time)
+            else:
+                logger.warning("[Retrain] raw_features_horizon 테이블 없음 — Phase 1 경로로 fallback")
+
+        # 데이터 로드 (Phase 0/1 경로)
         if X is None or y_dict is None:
             X, y_dict, feature_names = self._load_from_db(weeks_back)
 
         if X is None or len(X) < MIN_TRAIN_BARS:
-            msg = f"학습 데이터 부족 ({len(X) if X is not None else 0} < {MIN_TRAIN_BARS})"
-            logger.warning(f"[Retrain] {msg}")
+            msg = "학습 데이터 부족 ({} < {})".format(
+                len(X) if X is not None else 0, MIN_TRAIN_BARS
+            )
+            logger.warning("[Retrain] %s", msg)
             return {"ok": False, "error": msg}
 
         if feature_names is None:
-            feature_names = [f"feature_{i}" for i in range(X.shape[1])]
+            feature_names = ["feature_{}".format(i) for i in range(X.shape[1])]
 
         # Robust 전처리 — 예측 경로(predict_proba)와 동일 변환 적용 (일관성 보장)
         from model.multi_horizon_model import apply_robust_preprocess
@@ -468,6 +488,131 @@ class BatchRetrainer:
         )
         logger.info("[ScalerWarmup] 피처 로드 완료 n=%d feat=%d", len(X), len(feat_names))
         return X, feat_names
+
+    # ── Phase 2: 호라이즌별 독립 재학습 ─────────────────────────
+    def _has_horizon_features_table(self):
+        # type: () -> bool
+        """raw_features_horizon 테이블 존재 여부 확인."""
+        import sqlite3
+        from config.settings import RAW_DATA_DB
+        if not os.path.exists(RAW_DATA_DB):
+            return False
+        try:
+            with sqlite3.connect(RAW_DATA_DB, timeout=5) as conn:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='raw_features_horizon'"
+                ).fetchone()
+                if row is None:
+                    return False
+                cnt = conn.execute(
+                    "SELECT COUNT(*) FROM raw_features_horizon"
+                ).fetchone()
+                return (cnt[0] if cnt else 0) > 0
+        except Exception:
+            return False
+
+    def _retrain_phase2(self, weeks_back, force, start_time):
+        # type: (int, bool, object) -> dict
+        """Phase 2 경로: raw_features_horizon 테이블에서 호라이즌별 독립 X 로드 후 재학습."""
+        import json as _json2
+        import sqlite3
+
+        from config.settings import RAW_DATA_DB, HORIZON_THRESHOLDS
+        from model.multi_horizon_model import apply_robust_preprocess
+
+        raw_db = RAW_DATA_DB
+        cutoff = (
+            datetime.datetime.now() - datetime.timedelta(weeks=weeks_back)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+        results = {}
+        saved_feat_names = None
+
+        for hz, h_min in HORIZONS.items():
+            min_bars = MIN_TRAIN_BARS_PER_HORIZON.get(hz, MIN_TRAIN_BARS)
+            try:
+                with sqlite3.connect(raw_db, timeout=10) as conn:
+                    conn.row_factory = sqlite3.Row
+                    rows = conn.execute(
+                        "SELECT ts, features FROM raw_features_horizon "
+                        "WHERE horizon=? AND ts>=? ORDER BY ts",
+                        (hz, cutoff),
+                    ).fetchall()
+                    candle_rows = conn.execute(
+                        "SELECT ts, close FROM raw_candles WHERE ts>=? ORDER BY ts",
+                        (cutoff,),
+                    ).fetchall()
+            except Exception as _e:
+                logger.warning("[Retrain-P2] %s DB 조회 실패: %s", hz, _e)
+                results[hz] = {"replaced": False, "error": str(_e)}
+                continue
+
+            if len(rows) < min_bars:
+                logger.warning(
+                    "[Retrain-P2] %s 데이터 부족 %d < %d — 건너뜀",
+                    hz, len(rows), min_bars,
+                )
+                results[hz] = {"replaced": False, "error": "데이터 부족"}
+                continue
+
+            close_map = {r["ts"]: float(r["close"]) for r in candle_rows}
+
+            # X 행렬 구성
+            feat_names = None
+            feat_name_count = 0
+            records = []
+            for r in rows:
+                try:
+                    fd = _json2.loads(r["features"])
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(fd, dict):
+                    continue
+                curr_keys = list(fd.keys())
+                if feat_names is None or len(curr_keys) >= feat_name_count:
+                    feat_name_count = len(curr_keys)
+                    feat_names = curr_keys
+                records.append((r["ts"], fd))
+
+            if not records or feat_names is None:
+                results[hz] = {"replaced": False, "error": "피처 파싱 실패"}
+                continue
+
+            X_hz = np.array(
+                [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],
+                dtype=np.float32,
+            )
+            X_hz = apply_robust_preprocess(X_hz, feat_names)
+
+            # y 레이블 (Phase 2는 고정 임계값 사용)
+            _fixed_thresh = HORIZON_THRESHOLDS.get(hz, 0.0003)
+            y_hz = []
+            for ts, _ in records:
+                label = _path_conditioned_label(close_map, ts, h_min, _fixed_thresh)
+                y_hz.append(label)
+            y_hz = np.array(y_hz, dtype=int)
+
+            result = self._train_horizon(hz, X_hz, y_hz, feature_names=feat_names, force=force)
+            results[hz] = result
+            if saved_feat_names is None:
+                saved_feat_names = feat_names
+
+        if saved_feat_names is not None:
+            self._save_feature_names(saved_feat_names)
+
+        # RF 재학습 (Phase 2에서는 생략 — 1m X 없음)
+
+        elapsed = (datetime.datetime.now() - start_time).total_seconds()
+        self._last_retrain  = datetime.datetime.now()
+        self._retrain_count += 1
+        return {
+            "ok":           True,
+            "phase2":       True,
+            "retrain_count": self._retrain_count,
+            "elapsed_sec":  round(elapsed, 1),
+            "horizons":     results,
+            "timestamp":    self._last_retrain.strftime("%Y-%m-%d %H:%M"),
+        }
 
     # ── DB 로드 (raw_features + raw_candles 기반) ────────────────
     def _load_from_db(self, weeks_back: int):

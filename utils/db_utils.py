@@ -472,14 +472,46 @@ def init_raw_data_db():
             bid1       REAL,
             ask1       REAL,
             oi         INTEGER,
+            buy_vol    INTEGER DEFAULT 0,
+            sell_vol   INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
         )
     """)
+    # Phase 2 마이그레이션: 기존 DB에 buy_vol/sell_vol 컬럼 추가 (없으면 추가, 있으면 무시)
+    for _col, _type in [("buy_vol", "INTEGER DEFAULT 0"), ("sell_vol", "INTEGER DEFAULT 0")]:
+        try:
+            execute(RAW_DATA_DB, "ALTER TABLE raw_candles ADD COLUMN {} {}".format(_col, _type))
+        except Exception:
+            pass  # 이미 존재하면 무시
     execute(RAW_DATA_DB, """
         CREATE TABLE IF NOT EXISTS raw_features (
             ts         TEXT PRIMARY KEY,
             features   TEXT NOT NULL,
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
+        )
+    """)
+    # Phase 2: 호라이즌별 피처 테이블 (N분봉 완성 시 저장)
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS raw_features_horizon (
+            ts       TEXT NOT NULL,
+            horizon  TEXT NOT NULL,
+            features TEXT NOT NULL,
+            PRIMARY KEY (ts, horizon)
+        )
+    """)
+    try:
+        execute(RAW_DATA_DB,
+                "CREATE INDEX IF NOT EXISTS idx_rfh_horizon ON raw_features_horizon(horizon, ts)")
+    except Exception:
+        pass
+    # Phase 2: N분봉 완성봉 집계 캐시 (backfill 및 검증용)
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS raw_candles_aggregated (
+            ts       TEXT NOT NULL,
+            horizon  TEXT NOT NULL,
+            open     REAL, high  REAL, low REAL, close REAL,
+            volume   INTEGER, buy_vol INTEGER, sell_vol INTEGER,
+            PRIMARY KEY (ts, horizon)
         )
     """)
 
@@ -491,18 +523,20 @@ def save_candle(candle: dict) -> None:
     execute(
         RAW_DATA_DB,
         """INSERT OR REPLACE INTO raw_candles
-           (ts, open, high, low, close, volume, bid1, ask1, oi)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ts,
-            candle.get("open",   0.0),
-            candle.get("high",   0.0),
-            candle.get("low",    0.0),
-            candle.get("close",  0.0),
-            candle.get("volume", 0),
+            candle.get("open",     0.0),
+            candle.get("high",     0.0),
+            candle.get("low",      0.0),
+            candle.get("close",    0.0),
+            candle.get("volume",   0),
             candle.get("bid1"),
             candle.get("ask1"),
             candle.get("oi"),
+            candle.get("buy_vol",  0),
+            candle.get("sell_vol", 0),
         ),
     )
 
@@ -525,24 +559,35 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
         with get_conn(RAW_DATA_DB) as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO raw_candles
-                   (ts, open, high, low, close, volume, bid1, ask1, oi)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     candle_ts,
-                    candle.get("open",   0.0),
-                    candle.get("high",   0.0),
-                    candle.get("low",    0.0),
-                    candle.get("close",  0.0),
-                    candle.get("volume", 0),
+                    candle.get("open",     0.0),
+                    candle.get("high",     0.0),
+                    candle.get("low",      0.0),
+                    candle.get("close",    0.0),
+                    candle.get("volume",   0),
                     candle.get("bid1"),
                     candle.get("ask1"),
                     candle.get("oi"),
+                    candle.get("buy_vol",  0),
+                    candle.get("sell_vol", 0),
                 ),
             )
             conn.execute(
                 "INSERT OR REPLACE INTO raw_features (ts, features) VALUES (?, ?)",
                 (ts, feat_json),
             )
+
+
+def save_horizon_features(ts: str, horizon: str, features: dict) -> None:
+    """N분봉 완성 시 호라이즌별 피처 저장 (Phase 2 전용)."""
+    execute(
+        RAW_DATA_DB,
+        "INSERT OR REPLACE INTO raw_features_horizon (ts, horizon, features) VALUES (?,?,?)",
+        (ts, horizon, json.dumps(features, ensure_ascii=False)),
+    )
 
 
 def get_candle_close(ts: str) -> Optional[float]:

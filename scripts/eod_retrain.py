@@ -49,6 +49,10 @@ def main():
         "--no-force", dest="force", action="store_false", default=True,
         help="성능 저하 시 교체 금지 (기본: force=True로 강제 교체)",
     )
+    parser.add_argument(
+        "--phase2", action="store_true", default=False,
+        help="Phase 2 경로: raw_features_horizon 테이블(호라이즌별 N분봉 피처)로 재학습",
+    )
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -58,17 +62,25 @@ def main():
 
     # ── 임포트 (py37_32 환경 필요) ─────────────────────────────
     try:
-        from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS
+        from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS, MIN_TRAIN_BARS_PER_HORIZON
     except ImportError as e:
         logger.error("임포트 실패 — py37_32 환경에서 실행했는지 확인: %s", e)
         sys.exit(1)
 
-    logger.info("MIN_TRAIN_BARS=%d", MIN_TRAIN_BARS)
+    if args.phase2:
+        logger.info("Phase 2 모드: 호라이즌별 N분봉 피처 사용")
+        logger.info("MIN_TRAIN_BARS_PER_HORIZON=%s", MIN_TRAIN_BARS_PER_HORIZON)
+    else:
+        logger.info("MIN_TRAIN_BARS=%d", MIN_TRAIN_BARS)
 
     # ── 재학습 실행 ────────────────────────────────────────────
     start_dt = datetime.datetime.now()
     retrainer = BatchRetrainer()
-    result = retrainer.retrain_now(weeks_back=args.weeks, force=args.force)
+    result = retrainer.retrain_now(
+        weeks_back=args.weeks,
+        force=args.force,
+        use_horizon_features=args.phase2,
+    )
 
     elapsed = (datetime.datetime.now() - start_dt).total_seconds()
 

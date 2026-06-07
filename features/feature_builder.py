@@ -18,6 +18,7 @@ from features.technical.queue_dynamics import QueueDynamicsCalculator
 from features.technical.toxicity import ToxicityCalculator
 from features.technical.vwap import VWAPCalculator
 from features.technical.hurst_exponent import calculate_hurst
+from config.settings import TICK_SIZE
 from utils.error_policy import ErrorLevel, classify_exception
 from config.settings import HORIZON_THRESHOLDS
 
@@ -261,7 +262,9 @@ class FeatureBuilder:
                 "bull_reversal_signal": 0.0,
                 "bear_reversal_signal": 0.0,
             })
-        features["avg_volume"] = vol
+        features["bar_volume"] = float(vol)
+        _vh = list(self._vol_history)
+        features["avg_volume"] = float(sum(_vh) / len(_vh)) if _vh else float(vol)
 
         try:
             microprice_result = self.microprice.flush_minute()
@@ -315,6 +318,12 @@ class FeatureBuilder:
             logger.warning("[FeatureBuilder] ATR 오류 — 기본값 사용: %s", _exc)
             features.update({"atr": 0.0, "atr_ratio": 1.0})
 
+        _prev_atr = float(self._last_features.get("atr", 0.0))
+        _cur_atr  = features.get("atr", 0.0)
+        features["atr_expansion_rate"] = (
+            (_cur_atr - _prev_atr) / (_prev_atr + 1e-9) if _prev_atr > 0 else 0.0
+        )
+
         # Hurst Exponent — 종가 버퍼에 추가 후 계산 (40봉 이상 시 실계산, 미만 시 0.5)
         if close > 0:
             self._close_history.append(close)
@@ -328,8 +337,7 @@ class FeatureBuilder:
         try:
             bid1 = float(bar.get("bid1") or 0.0)
             ask1 = float(bar.get("ask1") or 0.0)
-            tick_size = 0.05
-            spread_ticks = max((ask1 - bid1) / tick_size, 0.0) if bid1 > 0 and ask1 > 0 else 0.0
+            spread_ticks = max((ask1 - bid1) / TICK_SIZE, 0.0) if bid1 > 0 and ask1 > 0 else 0.0
             toxicity_result = self.toxicity.update(
                 atr_ratio=features.get("atr_ratio", 1.0),
                 spread_ticks=spread_ticks,
@@ -407,7 +415,7 @@ class FeatureBuilder:
         features["quality_macro_age_sec"] = macro_age_sec
         features["quality_macro_fallback_used"] = macro_fallback
         features["quality_investor_stale"] = investor_stale
-        features["quality_investor_age_sec"] = investor_age_sec
+        features["quality_investor_age_sec"] = investor_age_sec / 300.0
 
         # ── 저변동성 인식 피처 ──────────────────────────────────────
         # threshold_feasibility: 현재 ATR이 1m threshold를 초과할 수 있는가
@@ -488,7 +496,7 @@ class FeatureBuilder:
             else:
                 self._ema5  = self._ema5  * (1.0 - 2.0 / 6.0)  + close * (2.0 / 6.0)
                 self._ema20 = self._ema20 * (1.0 - 2.0 / 21.0) + close * (2.0 / 21.0)
-        features["ema_cross"] = 1.0 if self._ema5 > self._ema20 else -1.0
+        features["ema_cross"] = (self._ema5 - self._ema20) / (self._ema20 + 1e-9)
 
         # ── 볼린저 밴드 위치 ─────────────────────────────────────
         if _n >= 20:
@@ -544,6 +552,12 @@ class FeatureBuilder:
             features.update({"poc_distance": 0.0, "in_value_area": 0.5,
                               "va_bandwidth": 0.0, "poc_above": 0.5})
 
+        features["entry_ok"] = 1.0 if (
+            features.get("toxicity_score", 1.0)        < 0.6 and
+            features.get("feature_quality_score", 0.0) > 0.7 and
+            features.get("spread_ticks", 99.0)         <= 1.0
+        ) else 0.0
+
         self._last_features = features
         logger.debug("[FeatureBuilder] built %d features", len(features))
         return features
@@ -567,9 +581,7 @@ class FeatureBuilder:
             while prev_d.weekday() >= 5:
                 prev_d -= datetime.timedelta(days=1)
             prev_ts = prev_d.strftime("%Y-%m-%d ") + dt.strftime("%H:%M:%S")
-            prev_ts_m1 = (prev_d - datetime.timedelta(minutes=0)).strftime(
-                "%Y-%m-%d "
-            ) + (dt - datetime.timedelta(minutes=1)).strftime("%H:%M:%S")
+            prev_ts_m1 = prev_d.strftime("%Y-%m-%d ") + (dt - datetime.timedelta(minutes=1)).strftime("%H:%M:%S")
             c0 = self._prev_day_close_buf.get(prev_ts_m1)
             c1 = self._prev_day_close_buf.get(prev_ts)
             if c0 and c1 and c0 > 0:
@@ -581,6 +593,33 @@ class FeatureBuilder:
 
     def get_feature_vector(self, feature_names: list) -> np.ndarray:
         return np.array([self._last_features.get(name, 0.0) for name in feature_names], dtype=float)
+
+    def feats_to_vec(self, feats, feature_names):
+        # type: (dict, list) -> np.ndarray
+        """피처 dict → numpy 1D 배열. feature_names 순서 보장."""
+        return np.array([feats.get(n, 0.0) for n in feature_names], dtype=float)
+
+    def build_for_horizon(self, bar_n, horizon_min):
+        # type: (dict, int) -> dict
+        """
+        N분봉 기준 bar-level 피처 재계산.
+        반드시 build(bar_1m) 호출 후 사용 — _last_features(1m 기반)에서 복사 후 N분봉 값 덮어씀.
+        """
+        feats = dict(self._last_features)
+        close = float(bar_n.get("close", 0.0) or 0.0)
+        high  = float(bar_n.get("high",  0.0) or 0.0)
+        low   = float(bar_n.get("low",   0.0) or 0.0)
+        vol   = int(bar_n.get("volume",  0)   or 0)
+        open_ = float(bar_n.get("open",  close) or close)
+
+        # N분봉 bar-level 피처 덮어쓰기
+        feats["atr"]        = max(high - low, 0.5)
+        feats["bar_volume"] = float(vol)
+        feats["ret_{}m".format(horizon_min)] = (close - open_) / (open_ + 1e-9)
+
+        # 반감기 적용 (Phase 1-1)
+        from features.feature_decay import get_horizon_features
+        return get_horizon_features(feats, "{}m".format(horizon_min))
 
     def get_last_hoga_snapshot(self) -> Dict[str, Any]:
         return dict(self._last_hoga_snapshot)

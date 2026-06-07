@@ -143,6 +143,8 @@ class MultiHorizonModel:
         self._extreme_feat_streak: Dict[str, int] = {}       # 피처 → 연속 극단 분 수
         self._recent_extreme_feat_history: List[List[str]] = []  # 최근 N봉 극단 피처 이력
         self._force_cooldown_until: Optional[datetime.datetime] = None
+        # 재가동 cold-start 워밍업: elapsed=inf 감지 시 설정, 이 시간까지 진입 차단
+        self._startup_warmup_until: Optional[datetime.datetime] = None
         self.last_extreme_features: List[str] = []           # predict_proba 후 노출
         # [⑥] opt_pcr_* 피처 감쇠 타이머 — D_FORCE가 opt_pcr 피처에서 발동 시 30분간 0.3× 감쇠
         self._pcr_dampen_until: Optional[datetime.datetime] = None
@@ -220,12 +222,20 @@ class MultiHorizonModel:
         self._save_all()
 
     # ── 예측 ──────────────────────────────────────────────────
-    def predict_proba(self, x: np.ndarray, monitor_ts: str = "") -> Dict[str, Dict]:
+    def predict_proba(
+        self,
+        x: np.ndarray,
+        monitor_ts: str = "",
+        hz_feat_vecs: Optional[Dict[str, np.ndarray]] = None,
+    ) -> Dict[str, Dict]:
         """
-        단일 샘플 예측
+        단일 샘플 예측.
 
         Args:
-            x: 1D 피처 배열
+            x:            1D 피처 배열 (기본 feat_vec)
+            monitor_ts:   스케일러 모니터 타임스탬프
+            hz_feat_vecs: 호라이즌별 반감기 적용 feat_vec dict (Phase 1-1).
+                          주어지면 해당 호라이즌 예측에 사용; 없는 호라이즌은 x로 fallback.
 
         Returns:
             {"1m": {"up": 0.45, "down": 0.35, "flat": 0.20,
@@ -263,7 +273,18 @@ class MultiHorizonModel:
                         f"(≥{self.SCALER_WARN_MINUTES}분) — 변동성 레짐 시프트 시 z-score 왜곡 가능"
                     )
 
-            xs = scaler.transform(x2d_proc) if scaler else x2d_proc
+            # Phase 1-1: 반감기 적용 feat_vec이 있으면 예측에 사용, 모니터링은 원본 유지
+            if hz_feat_vecs is not None and horizon in hz_feat_vecs:
+                _hx = hz_feat_vecs[horizon].reshape(1, -1)
+                _hx_proc = apply_robust_preprocess(
+                    _hx, self.feature_names,
+                    price_gap_offsets=self._price_gap_offset or None,
+                ) if self.feature_names else _hx
+                xs = scaler.transform(_hx_proc) if scaler else _hx_proc
+                xs_mon = scaler.transform(x2d_proc) if scaler else x2d_proc
+            else:
+                xs = scaler.transform(x2d_proc) if scaler else x2d_proc
+                xs_mon = xs
 
             # [⑥] opt_pcr_* 피처 감쇠 — D_FORCE opt_pcr 발동 후 30분간 0.3× 적용
             # 이유: opt_pcr_slope_norm 등 PCR 피처가 OFI/CVD 방향과 충돌 시 conf 소거.
@@ -281,11 +302,11 @@ class MultiHorizonModel:
                     xs = xs.copy()
                     xs[0, _pcr_cols] *= self._PCR_DAMPEN_FACTOR
 
-            # 극단 z-score 감지: |z| > EXTREME_ZSCORE_THRESHOLD 피처 수 로깅
-            extreme_mask = np.abs(xs[0]) > self.EXTREME_ZSCORE_THRESHOLD
+            # 극단 z-score 감지: 원본(xs_mon) 기준 — 모니터링 목적이므로 반감기 미적용값 사용
+            extreme_mask = np.abs(xs_mon[0]) > self.EXTREME_ZSCORE_THRESHOLD
             extreme_count = int(np.sum(extreme_mask))
             if extreme_count > 0:
-                extreme_summary = self._summarize_extreme_zscores(xs[0], extreme_mask)
+                extreme_summary = self._summarize_extreme_zscores(xs_mon[0], extreme_mask)
                 logger.warning(
                     f"[Model] {horizon} 극단 z-score {extreme_count}개 피처 감지 "
                     f"(|z|>{self.EXTREME_ZSCORE_THRESHOLD:.0f}) — 스케일러 노후화 또는 이상 데이터 의심"
@@ -293,14 +314,14 @@ class MultiHorizonModel:
                 logger.warning(f"[Model] {horizon} extreme z-score top={extreme_summary}")
                 # Phase B 강제 트리거용 피처명 누적
                 _all_extreme_names.extend(
-                    self._get_extreme_feature_names(xs[0], extreme_mask)
+                    self._get_extreme_feature_names(xs_mon[0], extreme_mask)
                 )
 
-            # 섹션 8: 호라이즌별 max_z / max_z_feature 수집 (모니터 INSERT용)
+            # 섹션 8: 호라이즌별 max_z / max_z_feature 수집 (원본 기준)
             if monitor_ts and scaler:
-                _z_abs = np.abs(xs[0])
+                _z_abs = np.abs(xs_mon[0])
                 _max_z_idx  = int(np.argmax(_z_abs))
-                _max_z_val  = float(xs[0][_max_z_idx])
+                _max_z_val  = float(xs_mon[0][_max_z_idx])
                 _max_z_feat = (
                     self.feature_names[_max_z_idx]
                     if _max_z_idx < len(self.feature_names)
@@ -389,9 +410,18 @@ class MultiHorizonModel:
             if streak >= self.MASKED_FALLBACK_MIN_STREAK
             and feat in set(self.last_extreme_features)
         ]
+        # AutoMaskedFallback: 이상값 피처 3개+ 동시 발생 시 streak 없이 즉시 격리 예측
+        _auto_mask_feats = self.last_extreme_features[:5] if len(self.last_extreme_features) >= 3 else []
         if _chronic and self.feature_names:
             self.last_masked_proba    = self._predict_masked(x2d_proc, _chronic)
             self.last_masked_features = _chronic
+        elif _auto_mask_feats and self.feature_names:
+            self.last_masked_proba    = self._predict_masked(x2d_proc, _auto_mask_feats)
+            self.last_masked_features = _auto_mask_feats
+            logger.info(
+                "[AutoMasked] 이상값 %d개 즉시 격리 예측: %s",
+                len(_auto_mask_feats), _auto_mask_feats,
+            )
         else:
             self.last_masked_proba    = None
             self.last_masked_features = []
@@ -587,6 +617,40 @@ class MultiHorizonModel:
                 len(bad), bad,
             )
         return bad
+
+    def validate_horizon_scaler_consistency(self):
+        # type: () -> None
+        """
+        Phase 2: 호라이즌별 스케일러가 해당 N분봉 데이터로 적합됐는지 메타 검증.
+        _scaler_meta[h]["bar_horizon"] != h 이면 재적합 예약.
+        """
+        scaler_meta = getattr(self, "_scaler_meta", {})
+        for h, scaler in list(self.scalers.items()):
+            h_meta = scaler_meta.get(h, {})
+            bar_h  = h_meta.get("bar_horizon")
+            if bar_h and bar_h != h:
+                logger.warning(
+                    "[ScalerMeta] %s 스케일러 봉 불일치 (meta=%s) → 재적합 예약", h, bar_h
+                )
+                self._is_fitted[h] = False
+
+    def predict_proba_multi(self, feat_vecs):
+        # type: (dict) -> dict
+        """
+        Phase 2: 호라이즌별 완성봉 기반 독립 벡터로 예측.
+        feat_vecs = {"1m": np.array, "3m": np.array, ...}
+        기존 predict_proba(x, hz_feat_vecs) 인터페이스를 활용.
+        """
+        import numpy as _np_pm
+        base_vec = feat_vecs.get("1m")
+        if base_vec is None:
+            for v in feat_vecs.values():
+                if v is not None:
+                    base_vec = v
+                    break
+        if base_vec is None:
+            return {}
+        return self.predict_proba(base_vec, hz_feat_vecs=feat_vecs)
 
     def is_ready(self) -> bool:
         """최소 1개 호라이즌 학습 완료 여부"""
@@ -831,9 +895,19 @@ class MultiHorizonModel:
         if elapsed_min >= interval_min:
             # 즉시 타임스탬프 갱신 — refit 스레드 완료 전 이중 트리거 방지
             self._last_scaler_refit_at = bar_dt
+            # cold-start 감지: 최초 재적합(elapsed=inf)이면 3분 진입 차단 워밍업 설정
+            if elapsed_min == float("inf"):
+                self._startup_warmup_until = bar_dt + datetime.timedelta(minutes=3)
             return trigger_type, f"elapsed={elapsed_min:.0f}min"
 
         return None, ""
+
+    def is_in_startup_warmup(self, bar_dt: datetime.datetime) -> bool:
+        """재가동 cold-start 워밍업 기간 여부 (True이면 진입 차단)."""
+        return (
+            self._startup_warmup_until is not None
+            and bar_dt < self._startup_warmup_until
+        )
 
     def set_feature_names(self, names: List[str]) -> None:
         """GBM 미학습 상태에서 SGD 활성화를 위한 피처명 부트스트랩."""

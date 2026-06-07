@@ -49,7 +49,7 @@ debug_log = logging.getLogger("DEBUG")
 # ── DB 초기화 ──────────────────────────────────────────────────
 from utils.db_utils import (
     init_all_dbs, execute, save_candle, save_features, save_candle_and_features,
-    count_raw_candles,
+    save_horizon_features, count_raw_candles,
     fetch_recent_raw_features,
     fetch_today_trades, fetch_pnl_history, normalize_trade_pnl,
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
@@ -96,6 +96,7 @@ from features.options.option_features import OptionFeatureCalculator
 from learning.self_learning.daily_consolidator import DailyConsolidator
 from learning.self_learning.drift_adjuster import DriftAdjuster
 from features.feature_builder import FeatureBuilder
+from features.bar_aggregator import BarAggregator
 from model.multi_horizon_model import MultiHorizonModel
 from model.rf_horizon_model import RFHorizonModel
 from model.ensemble_decision import EnsembleDecision
@@ -181,6 +182,10 @@ class TradingSystem:
         self.macro_fetcher.start()
         self.feature_builder    = FeatureBuilder()
         self.feature_builder._on_core_fail = self._on_core_feature_fail
+        # Phase 2: 1분봉 → N분봉 집계기 + 호라이즌별 피처 벡터 캐시
+        self.bar_aggregator     = BarAggregator()
+        self._hz_feat_cache     = {}   # {h_name: np.ndarray} — 마지막 완성봉 기반 피처 벡터
+        self._hz_bar_age        = {}   # {h_name: int} — 마지막 완성봉 이후 경과 분 수
         self.model             = MultiHorizonModel()
         self.rf_model          = RFHorizonModel()
         self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
@@ -2930,6 +2935,19 @@ class TradingSystem:
         # 분봉·피처 원본 저장 (1연결 트랜잭션 — 연결 2회 → 1회)
         save_candle_and_features(bar, ts, features)
 
+        # ── Phase 2: N분봉 집계 + 호라이즌별 피처 저장 ────────────
+        try:
+            _p2_completed = self.bar_aggregator.push(bar)
+            for _h_min, _h_name in [(3, "3m"), (5, "5m"), (10, "10m"), (15, "15m"), (30, "30m")]:
+                if _p2_completed.get(_h_min) is not None:
+                    _h_feats = self.feature_builder.build_for_horizon(
+                        _p2_completed[_h_min], _h_min
+                    )
+                    save_horizon_features(ts, _h_name, _h_feats)
+        except Exception as _p2_err:
+            logger.debug("[Phase2-STEP4] N분봉 처리 오류 (무해): %s", _p2_err)
+            _p2_completed = {1: bar}
+
         # [§19] RegimeFingerprint — PSI 기반 피처 분포 드리프트 감지 (STEP 4 직후)
         try:
             from strategy.regime_fingerprint import get_fingerprint as _get_fp
@@ -3122,12 +3140,61 @@ class TradingSystem:
 
         feat_vec = self.feature_builder.get_feature_vector(self.model.feature_names)
 
+        # ── Phase 2: 호라이즌별 완성봉 기반 feat_vec 캐시 관리 ──────
+        # _p2_completed는 STEP 4 끝에서 생성됨
+        _BAR_CACHE_DECAY = {3: 0.97, 5: 0.95, 10: 0.93, 15: 0.92, 30: 0.90}
+        try:
+            import numpy as _np_p2
+            _fn = self.model.feature_names
+            _H_MINS = {"1m": 1, "3m": 3, "5m": 5, "10m": 10, "15m": 15, "30m": 30}
+            if _fn:
+                # 1m 캐시: 매 분봉마다 현재 피처로 갱신
+                _p2_1m_feats = self.feature_builder.build_for_horizon(bar, 1)
+                self._hz_feat_cache["1m"] = _np_p2.array(
+                    [_p2_1m_feats.get(n, 0.0) for n in _fn], dtype=float
+                )
+                self._hz_bar_age["1m"] = 0
+
+                # N분봉 캐시: 완성 시 갱신, 미완성 시 나이 증가
+                for _h_name, _h_min in list(_H_MINS.items()):
+                    if _h_min == 1:
+                        continue
+                    _comp_bar = _p2_completed.get(_h_min)
+                    if _comp_bar is not None:
+                        _h_feats_p2 = self.feature_builder.build_for_horizon(_comp_bar, _h_min)
+                        self._hz_feat_cache[_h_name] = _np_p2.array(
+                            [_h_feats_p2.get(n, 0.0) for n in _fn], dtype=float
+                        )
+                        self._hz_bar_age[_h_name] = 0
+                    else:
+                        self._hz_bar_age[_h_name] = self._hz_bar_age.get(_h_name, 0) + 1
+
+                # hz_feat_vecs: 캐시에서 로드, 없으면 Phase 1-1 반감기 fallback
+                _hz_feat_vecs = {}
+                from features.feature_decay import get_horizon_features as _gHF
+                for _h_name in HORIZONS:
+                    if _h_name in self._hz_feat_cache:
+                        _hz_feat_vecs[_h_name] = self._hz_feat_cache[_h_name]
+                    else:
+                        _hz_feat_vecs[_h_name] = _np_p2.array(
+                            [_gHF(features, _h_name).get(n, 0.0) for n in _fn],
+                            dtype=float,
+                        )
+            else:
+                _hz_feat_vecs = None
+        except Exception as _p2e:
+            logger.debug("[Phase2-STEP5] 캐시 갱신 오류 — 기본 feat_vec 사용: %s", _p2e)
+            _hz_feat_vecs = None
+
         if _gbm_ready:
             # ─ GBM + SGD + RF 블렌딩 (정상 경로) ─
-            horizon_proba = self.model.predict_proba(feat_vec, monitor_ts=ts)
+            horizon_proba = self.model.predict_proba(
+                feat_vec, monitor_ts=ts, hz_feat_vecs=_hz_feat_vecs
+            )
             _rf_ready = self.rf_model.is_ready()
             for h_name in list(horizon_proba.keys()):
-                sgd_p   = self.online_learner.predict_proba(h_name, feat_vec)
+                _sgd_fv = _hz_feat_vecs[h_name] if _hz_feat_vecs else feat_vec
+                sgd_p   = self.online_learner.predict_proba(h_name, _sgd_fv)
                 blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p, h_name)
                 # P6c: RF 블렌딩 (GBM+SGD 결과에 RF 0.30 추가)
                 # 가중치: GBM+SGD 0.70, RF 0.30
@@ -3146,6 +3213,15 @@ class TradingSystem:
                     "up": round(up, 4), "down": round(dn, 4), "flat": round(fl, 4),
                     "direction": best[1], "confidence": round(best[0], 4),
                 }
+
+                # Phase 2: BAR_CACHE_DECAY — 봉 미완성 구간 신뢰도 감쇠
+                _h_min_v = {"1m":1,"3m":3,"5m":5,"10m":10,"15m":15,"30m":30}.get(h_name, 1)
+                _bar_age = self._hz_bar_age.get(h_name, 0)
+                if _bar_age > 0 and _h_min_v > 1:
+                    _decay_f = _BAR_CACHE_DECAY.get(_h_min_v, 1.0) ** _bar_age
+                    horizon_proba[h_name]["confidence"] = round(
+                        horizon_proba[h_name]["confidence"] * _decay_f, 4
+                    )
 
                 # [P2] FL 편향 고착 호라이즌 → uniform fallback (앙상블 오염 차단)
                 if h_name in self._bias_override_horizons:
@@ -3171,7 +3247,8 @@ class TradingSystem:
             # ─ SGD-only 또는 bootstrap 경로 (GBM 미학습) ─
             horizon_proba = {}
             for h in HORIZONS:
-                sgd_p = self.online_learner.predict_proba(h, feat_vec)
+                _sgd_fv = _hz_feat_vecs[h] if _hz_feat_vecs else feat_vec
+                sgd_p = self.online_learner.predict_proba(h, _sgd_fv)
                 if sgd_p is None:
                     sgd_p = {"up": 1/3, "down": 1/3, "flat": 1/3}
                 up, dn, fl = sgd_p["up"], sgd_p["down"], sgd_p["flat"]
@@ -3373,6 +3450,10 @@ class TradingSystem:
             trend_gate_up_active=_tp["up_active"],
             trend_gate_dn_active=_tp["dn_active"],
             time_zone=get_time_zone(),
+            active_horizons=self._get_active_horizons(
+                _ts_dt_obj.hour * 100 + _ts_dt_obj.minute
+                if hasattr(_ts_dt_obj, "hour") else 930
+            ),
         )
         direction  = decision["direction"]
         confidence = decision["confidence"]
@@ -3398,6 +3479,10 @@ class TradingSystem:
                     trend_gate_up_active=_tp["up_active"],
                     trend_gate_dn_active=_tp["dn_active"],
                     time_zone=get_time_zone(),
+                    active_horizons=self._get_active_horizons(
+                        _ts_dt_obj.hour * 100 + _ts_dt_obj.minute
+                        if hasattr(_ts_dt_obj, "hour") else 930
+                    ),
                 )
                 _mdir  = _mdec["direction"]
                 _mconf = _mdec["confidence"]
@@ -3498,6 +3583,28 @@ class TradingSystem:
             log_manager.signal(
                 f"[IntradayRegime] {self.current_intraday_regime} — min_conf +{_l2_mc_adj * 100:.0f}%p → {actual_min_conf:.2f}"
             )
+
+        # ── Phase 1: feature_quality_score 기반 dynamic_mc 양방향 조정 ──
+        # 피처 품질 우수(≥0.9) → 진입 문턱 낮춤(-3%p) / 불량(<0.6) → 강화(+5%p)
+        # MC_ABS_FLOOR~MC_ABS_CEIL 범위 내 조정만 허용
+        _fq_score = float(features.get("feature_quality_score", 0.5) or 0.5)
+        _mc_floor = getattr(runtime_settings, "MC_ABS_FLOOR", 0.42)
+        _mc_ceil  = getattr(runtime_settings, "MC_ABS_CEIL",  0.62)
+        if _fq_score >= 0.9:
+            _fq_adj = max(actual_min_conf - 0.03, _mc_floor)
+            if _fq_adj < actual_min_conf:
+                log_manager.signal(
+                    f"[FQAdj] fq={_fq_score:.2f} → min_conf {actual_min_conf:.2f}→{_fq_adj:.2f} (완화)"
+                )
+                actual_min_conf = _fq_adj
+        elif _fq_score < 0.6:
+            _fq_adj = min(actual_min_conf + 0.05, _mc_ceil)
+            if _fq_adj > actual_min_conf:
+                log_manager.signal(
+                    f"[FQAdj] fq={_fq_score:.2f} → min_conf {actual_min_conf:.2f}→{_fq_adj:.2f} (강화)"
+                )
+                actual_min_conf = _fq_adj
+
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,
             confidence=confidence,
@@ -3687,6 +3794,10 @@ class TradingSystem:
             f" pause_until={_cb['pause_until']}" if _cb["pause_until"] else "",
         )
 
+        # ── Phase 1: 진입0 자동 원인 진단 ───────────────────────
+        if direction == 0 or grade == "X":
+            self._diagnose_zero_entry(features, horizon_proba, decision)
+
         # ── STEP 7: 진입 실행 ──────────────────────────────────
         _st.append(("S7", time.perf_counter()))
         _dir_ko = "상승" if direction > 0 else "하락" if direction < 0 else "관망"
@@ -3755,6 +3866,31 @@ class TradingSystem:
                     micro_regime      = getattr(self, "current_micro_regime", "혼합"),
                     disabled_gates    = _disabled_gates,
                 )
+
+            # [Phase 1] cold-start 구간 최소 pass 수 강화 (HORIZON_COLDSTART_MIN_PASS)
+            # 09:05~09:10: 7개 이상, 09:10~09:15: 6개 이상 — 활성 호라이즌이 제한된 구간의
+            # 저품질 신호로 A등급 자동진입 방지
+            if _cr and _cr.get("grade") not in ("X",):
+                _hhmm_now = (
+                    _ts_dt_obj.hour * 100 + _ts_dt_obj.minute
+                    if hasattr(_ts_dt_obj, "hour") else 930
+                )
+                _cs_policy = getattr(runtime_settings, "HORIZON_COLDSTART_MIN_PASS", {})
+                _cs_min_pass = None
+                for (_cs_start, _cs_end), _cs_req in _cs_policy.items():
+                    if _cs_start <= _hhmm_now < _cs_end:
+                        _cs_min_pass = _cs_req
+                        break
+                if _cs_min_pass is not None and _cr["pass_count"] < _cs_min_pass:
+                    log_manager.signal(
+                        "[ColdStart] pass=%d < required=%d (%d~%d) → X등급 강등",
+                        _cr["pass_count"], _cs_min_pass, _cs_start, _cs_end,
+                    )
+                    _cr = dict(_cr)
+                    _cr["grade"]      = "X"
+                    _cr["size_mult"]  = 0
+                    _cr["auto_entry"] = False
+
             _final_grade = _cr["grade"]
             _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
             # 섹션 8: grade=X 분봉 수 집계 (scaler_daily EOD용)
@@ -5180,6 +5316,74 @@ class TradingSystem:
         except Exception as _e:
             logger.warning("[Shadow] shadow_candidate.json 로드 실패: %s", _e)
 
+    # ── Phase 1 헬퍼 메서드 ──────────────────────────────────────
+
+    def _get_active_horizons(self, hhmm):
+        # type: (int) -> list
+        """HORIZON_TIME_POLICY 기반 활성 호라이즌 목록 반환.
+
+        Returns:
+            None = 전체 허용 / [] = 전 차단 / ["1m", "3m", ...] = 지정 목록
+        """
+        try:
+            policy = getattr(runtime_settings, "HORIZON_TIME_POLICY", None)
+            if not policy:
+                return None
+            for (start, end), horizons in policy.items():
+                if start <= hhmm < end:
+                    return horizons
+        except Exception:
+            pass
+        return None
+
+    def _diagnose_zero_entry(self, features, horizon_proba, ensemble_result):
+        # type: (dict, dict, dict) -> None
+        """진입0 원인을 자동 진단하여 [ZeroDiag] 로그 출력.
+
+        STEP 7 전 grade==X 또는 direction==0 시 호출.
+        """
+        try:
+            reasons = []
+            if ensemble_result.get("coherence_blocked"):
+                reasons.append("CoherenceGate")
+            if ensemble_result.get("cascade_blocked"):
+                reasons.append("CascadeCoherence")
+            if ensemble_result.get("direction") == 0:
+                reasons.append("FLAT수렴")
+            try:
+                _eks_active = (
+                    self.system_health.is_eks_active()
+                    if hasattr(self.system_health, "is_eks_active")
+                    else (
+                        not getattr(self.system_health, "_eks_evaluated", True)
+                        and getattr(self.system_health, "_eks_fired", False)
+                    )
+                )
+                if _eks_active:
+                    reasons.append("EKS발동")
+            except Exception:
+                pass
+            _conf = ensemble_result.get("confidence", 0)
+            _mc   = ensemble_result.get("min_conf", 0)
+            if _conf < _mc:
+                reasons.append("conf미달({:.3f}<mc{:.3f})".format(_conf, _mc))
+            _fl_horizons = [
+                h for h, v in horizon_proba.items()
+                if isinstance(v, dict) and float(v.get("flat", 0.0) or 0.0) > 0.7
+            ]
+            if _fl_horizons:
+                reasons.append("FL고착({})".format(",".join(_fl_horizons)))
+            _outlier_feats = [
+                fn for fn in (self.model.last_extreme_features or [])
+                if fn
+            ]
+            if _outlier_feats:
+                reasons.append("이상값피처({})".format(",".join(_outlier_feats[:3])))
+            if reasons:
+                log_manager.signal("[ZeroDiag] 진입X 원인: {}".format(" / ".join(reasons)))
+        except Exception as _de:
+            logger.debug("[ZeroDiag] 진단 실패: %s", _de)
+
     # ── 일일 마감 (15:40) ─────────────────────────────────────
     def daily_close(self):
         """자가학습 일일 마감"""
@@ -5371,6 +5575,9 @@ class TradingSystem:
         if hasattr(self, "_option_chain_timer"):
             self._option_chain_timer.stop()
         self.feature_builder.reset_daily()
+        self.bar_aggregator.reset_daily()
+        self._hz_feat_cache.clear()
+        self._hz_bar_age.clear()
         self.micro_regime_clf.reset_daily()
         self.current_micro_regime = "혼합"  # threshold_feasibility 피처에 1분 lag로 전달됨
         self.intraday_regime.reset_daily()
