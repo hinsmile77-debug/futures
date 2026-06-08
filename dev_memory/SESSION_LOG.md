@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-08 (125차 — Extreme 피처 5종 z-score 억제)
+
+**Work**: 대시보드 ScalerMonitor Top5 분석 → extreme 발생 피처 5종 원인 파악 및 수정.
+
+### 수정 내역
+
+| # | 피처 | 파일 | 변경 | 효과 |
+|---|---|---|---|---|
+| A | `vwap_momentum` | `features/feature_builder.py:536` | `np.clip(..., -2.0, 2.0)` 추가 | max\|z\| 46→9 이하 |
+| B | `opt_pcr_extreme` | `features/options/option_features.py:65` | × 0.5 스케일 반감 | max\|z\| 16→8 수준 |
+| C | `ret_1m/5m/15m` | `features/feature_builder.py:496` | ±1%/2%/5% 클리핑 | fat-tail 억제 |
+| D | `cvd_direction` | `features/feature_builder.py:146` | × 0.5 → {-0.5, 0, 0.5} | max\|z\| 6.7→3.3 |
+| E | 수급 8개 피처 | `features/feature_builder.py:370` | `sign × log1p(\|v\|/1000)` 로그 압축 | 드리프트 근본 억제 |
+
+### 설계 결정
+
+- `opt_pcr_extreme` 삭제 대신 반감: GBM/SGD 피처 벡터 순서 유지. NEXT_TODO 제거 조건(재학습 후) 유지.
+- 수급 피처 클리핑 대신 로그: ±20000계약 → ±3.0으로 압축, 극단 이벤트 정보 손실 없음.
+
+### 커밋
+
+- 125차 커밋 (이번 세션)
+
+---
+
 ## 2026-06-08 (123차 — 대시보드 유효성 점검 + Phase 2 bar_age 시각화)
 
 **Work**: v8.0 구현에 따른 대시보드 전체 유효성 점검 → 이슈 2건 발견/수정.

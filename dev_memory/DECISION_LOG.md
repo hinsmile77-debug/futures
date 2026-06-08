@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-06-08 (125차 — Extreme 피처 z-score 억제)
+
+### [설계] opt_pcr_extreme 삭제 대신 × 0.5 반감
+**File**: `features/options/option_features.py:65`
+**Decision**: NEXT_TODO에 "제거 조건: GBM 재학습 완료 + 실세션 1주"가 명시되어 있어 즉시 삭제 시 GBM/SGD 피처 벡터 불일치 위험. 대신 반환값 × 0.5로 max|z|를 16→8 수준으로 억제. 완전 삭제는 재학습 후 진행.
+
+### [설계] 수급 피처 클리핑 대신 로그 압축
+**File**: `features/feature_builder.py:370`
+**Decision**: `foreign_put_net` 등 8개 계약수 피처는 fat-tail 분포 (극단 이벤트 시 ±20000 발생). 단순 클리핑은 극단 이벤트 정보를 소실. `sign × log1p(|v| / 1000)` 로그 압축은 ±1000계약→0.69, ±20000계약→3.0으로 스케일 균일화하면서 방향 정보 유지. 드리프트("D") 근본 억제 효과.
+
+### [설계] cvd_direction × 0.5 스케일 조정
+**File**: `features/feature_builder.py:146`
+**Decision**: {-1, 0, 1} 이산 피처가 StandardScaler에서 μ≈0, σ≈0.15로 학습되어 발화 시 z≈6.7 발생. 피처를 0.5배 하면 {-0.5, 0, 0.5}로 z≈3.3으로 억제되고, GBM은 스케일 무관(재학습 불필요), SGD는 온라인 학습으로 자동 적응.
+
+---
+
 ## 2026-06-08 (121~123차)
 
 ### [버그] Phase 2 백필 12피처만 저장 — 학습/추론 피처 공간 불일치

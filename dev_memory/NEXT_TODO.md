@@ -6,6 +6,23 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-08 (125차 — Extreme 피처 z-score 억제)
+
+### 한일 요약
+
+- [DONE 2026-06-08] **vwap_momentum clip** — `np.clip(..., -2.0, 2.0)` (max|z| 46→9)
+- [DONE 2026-06-08] **opt_pcr_extreme × 0.5** — 스케일 반감 (max|z| 16→8), 완전 삭제는 재학습 후
+- [DONE 2026-06-08] **ret_1m/5m/15m 클리핑** — ±1%/2%/5% 상한 (fat-tail 억제)
+- [DONE 2026-06-08] **cvd_direction × 0.5** — {-1,0,1} → {-0.5,0,0.5} (max|z| 6.7→3.3)
+- [DONE 2026-06-08] **수급 8개 피처 로그 압축** — `sign × log1p(|v|/1000)` (드리프트 근본 억제)
+
+### 다음 할 일
+
+- [NEXT 즉시] **실세션 extreme 패널 재확인** — 5종 수정 후 max|z| 변화 확인
+- [NEXT 재학습 후] **opt_pcr_extreme 완전 삭제** — GBM 재학습 + 1주 안정 후 `option_features.py` 키 제거
+
+---
+
 ## 2026-06-08 (124차 — v8.0 Phase 0)
 
 ### 한일 요약

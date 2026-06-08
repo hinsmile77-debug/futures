@@ -1,7 +1,25 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-08 (124차 세션 마무리) — v8.0 Phase 0 구현 (재학습 불필요 인프라)
+> 마지막 업데이트: 2026-06-08 (125차 세션 마무리) — Extreme 피처 5종 z-score 억제
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-08 (125차 — Extreme 피처 5종 z-score 억제)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| `vwap_momentum` np.clip(±2.0) | **완료** ✅ | `features/feature_builder.py:536` |
+| `opt_pcr_extreme` × 0.5 반감 | **완료** ✅ | `features/options/option_features.py:65` |
+| `ret_1m/5m/15m` ±1%/2%/5% 클리핑 | **완료** ✅ | `features/feature_builder.py:496` |
+| `cvd_direction` × 0.5 | **완료** ✅ | `features/feature_builder.py:146` |
+| 수급 8개 피처 로그 압축 | **완료** ✅ | `features/feature_builder.py:370` |
+
+### 잔여 extreme 피처 조치 사항
+
+- `opt_pcr_extreme` 완전 삭제: GBM 재학습 + 실세션 1주 안정 확인 후 진행 (NEXT_TODO 조건 유지)
 
 ---
 
