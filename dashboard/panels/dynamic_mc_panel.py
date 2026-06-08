@@ -98,7 +98,7 @@ _ENTRY_STAGE_TOOLTIP = (
     "진입단계 판정 순서\n"
     "1. conf미달: conf < mc\n"
     "2. FLAT(X): direction=0 또는 grade=X\n"
-    "3. gate차단: gate_blocked=1 또는 gate_reason 활성\n"
+    "3. gate차단: gate_blocked=1 또는 gate_reason='blocked_by_microstructure'\n"
     "4. regime불일치: regime_ok=0\n"
     "5. Meta skip: meta_action='skip'\n"
     "6. Toxic block/reduce: toxicity_action='block' 또는 'reduce'\n"
@@ -722,7 +722,7 @@ class DynamicMcPanel(QWidget):
             return "1. conf미달"
         if direction == 0 or grade == "X":
             return "2. FLAT(X)"
-        if gate_blocked or (gate_reason and gate_reason != "inactive"):
+        if gate_blocked or gate_reason == "blocked_by_microstructure":
             return "3. gate차단"
         if regime_ok == 0:
             return "4. regime불일치"

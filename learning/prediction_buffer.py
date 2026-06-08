@@ -375,16 +375,38 @@ class PredictionBuffer:
 
         return verified
 
-    def recent_accuracy(self, horizon: str, last_n: int = 50) -> float:
-        """최근 N회 정확도"""
+    def recent_accuracy(self, horizon: str, last_n: int = 50,
+                        exclude_flat: bool = False,
+                        min_conf: float = 0.0,
+                        since_ts: str = None,
+                        min_samples: int = 0) -> float:
+        """최근 N회 정확도.
+
+        exclude_flat: FLAT 예측(predicted=0) 제외 — CB③와 동일 기준
+        min_conf:     이 값 이하 confidence 제외 (bootstrap/uniform fallback 차단)
+        since_ts:     이 타임스탬프 이후 예측만 집계 (이전 세션 혼입 차단)
+        min_samples:  유효 샘플이 이 수 미만이면 0.5 반환 (초기 불안정 방지)
+        """
+        conds = ["horizon = ?", "actual IS NOT NULL"]
+        params = [horizon]
+        if exclude_flat:
+            conds.append("predicted != 0")
+        if min_conf > 0.0:
+            conds.append("confidence > ?")
+            params.append(min_conf)
+        if since_ts:
+            conds.append("ts >= ?")
+            params.append(since_ts)
+        params.append(last_n)
+
         rows = fetchall(
             PREDICTIONS_DB,
-            """SELECT correct FROM predictions
-               WHERE horizon = ? AND actual IS NOT NULL
-               ORDER BY id DESC LIMIT ?""",
-            (horizon, last_n),
+            "SELECT correct FROM predictions"
+            " WHERE " + " AND ".join(conds) +
+            " ORDER BY id DESC LIMIT ?",
+            tuple(params),
         )
-        if not rows:
+        if not rows or len(rows) < min_samples:
             return 0.5
         return sum(r["correct"] for r in rows) / len(rows)
 

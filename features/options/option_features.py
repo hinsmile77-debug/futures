@@ -62,7 +62,7 @@ class OptionFeatureCalculator:
             "opt_pcr_norm":             round(pcr_norm,   4),
             "opt_pcr_bearish":          pcr_feats.get("pcr_bearish",          0.0),
             "opt_pcr_bullish":          pcr_feats.get("pcr_bullish",          0.0),
-            "opt_pcr_extreme":          pcr_feats.get("pcr_extreme",          0.0),  # deprecated
+            "opt_pcr_extreme":          pcr_feats.get("pcr_extreme",          0.0) * 0.5,  # deprecated — 0.5 스케일로 z 억제
             "opt_pcr_extreme_bearish":  pcr_feats.get("pcr_extreme_bearish",  0.0),
             "opt_pcr_extreme_bullish":  pcr_feats.get("pcr_extreme_bullish",  0.0),
             "opt_pcr_extreme_signed":   pcr_feats.get("pcr_extreme_signed",   0.0),
@@ -89,7 +89,7 @@ class OptionFeatureCalculator:
             "opt_pcr_norm":             0.0,
             "opt_pcr_bearish":          0.0,
             "opt_pcr_bullish":          0.0,
-            "opt_pcr_extreme":          0.0,  # deprecated
+            "opt_pcr_extreme":          0.0,
             "opt_pcr_extreme_bearish":  0.0,
             "opt_pcr_extreme_bullish":  0.0,
             "opt_pcr_extreme_signed":   0.0,

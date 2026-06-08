@@ -3425,3 +3425,12 @@ W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
 **교훈**: 여러 롤링 지표를 한 버퍼에서 공유할 때는 "가장 긴 준비 구간" 기준으로 상한을 잡아야 한다.
 
 ---
+
+## 2026-06-08 (세션 운영)
+
+### [운영] 세션 마무리 파일 업데이트 전략 확립
+**Reason**: SESSION_LOG(3MB+), CURRENT_STATE(266KB)를 매 세션 Read→Edit하면 토큰/시간 낭비.
+**Strategy**:
+- SESSION_LOG / DECISION_LOG → `Add-Content -Encoding utf8` 덧붙임 (파일 읽기 불필요)
+- CURRENT_STATE / NEXT_TODO → `Write` 전체 교체 (세션 컨텍스트로 이미 파악)
+- 세션 마무리 요청 시 "이번 한 것: [A,B]. 다음: [X,Y]" 직접 명시 → 파일 읽기 생략

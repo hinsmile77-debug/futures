@@ -44,8 +44,9 @@ CYBOS_EXE        = r"C:\DAISHIN\STARTER\ncStarter.exe"
 CYBOS_ARGS       = "/prj:cp"
 CRED_TARGET      = "cybosplus"   # cmdkey /add: 에서 지정한 이름
 MOCK_MODE        = True          # True=모의투자, False=실투자
-CONNECT_TIMEOUT  = 90            # 로그인 후 연결 대기 최대 초
-MOCK_POPUP_MIN_WAIT = 20         # 로그인 클릭 후 모의투자 선택 팝업 최소 대기 초
+CONNECT_TIMEOUT   = 120          # 통합 루프(모의투자 팝업 + 연결 대기) 타임아웃 (초)
+MAX_LOGIN_ATTEMPTS = 3           # 연결 실패 시 전체 재시도 횟수
+MOCK_POPUP_MIN_WAIT = 8          # 구버전 호환용 상수 — _wait_for_connection_and_mock 에서 미사용
 PASSWORD_OVERRIDE = None  # Windows 자격증명 관리자(cybosplus)에서 읽음
 
 # kill 대상 (ncStarter 먼저, CpStart 나중 -- 순서 중요)
@@ -155,14 +156,25 @@ def _find_child_by_text_contains(parent_hwnd, keywords, class_name=None):
 
 def _looks_like_login_form(parent_hwnd):
     """owner-drawn 로그인 UI라도 폼 형태인지 대략 판별한다."""
-    visible_edits = [
-        child for child in _enum_children(parent_hwnd)
-        if win32gui.GetClassName(child) == "Edit" and win32gui.IsWindowVisible(child)
-    ]
+    edit_count = 0
+    for child in _enum_children(parent_hwnd):
+        try:
+            if win32gui.GetClassName(child) != "Edit":
+                continue
+            if win32gui.IsWindowVisible(child):
+                edit_count += 1
+            elif _is_control_enabled(child):
+                # Cybos Starter: Afx 컨테이너 내부 Edit는 IsWindowVisible=False이지만
+                # rect 크기가 있으면 실제 입력 필드임 (owner-drawn UI)
+                rect = _get_window_rect_safe(child)
+                if rect and (rect[2] - rect[0]) > 0 and (rect[3] - rect[1]) > 0:
+                    edit_count += 1
+        except Exception:
+            pass
     login_btns = _find_child_by_exact_text(parent_hwnd, LOGIN_BUTTON_TEXTS, class_name="Button")
     if not login_btns:
         login_btns = _find_child_by_text_contains(parent_hwnd, [u"로그인", u"모의"], class_name="Button")
-    return len(visible_edits) >= 2 or bool(login_btns)
+    return edit_count >= 2 or bool(login_btns)
 
 
 def _physical_click_hwnd(hwnd):
@@ -276,7 +288,7 @@ def _collect_edits(parent_hwnd):
                 continue
             try:
                 cn = win32gui.GetClassName(c)
-                if any(kw in cn.upper() for kw in ("EDIT", "RICHEDIT", "TEXTBOX")):
+                if cn and any(kw in cn.upper() for kw in ("EDIT", "RICHEDIT", "TEXTBOX")):
                     edits.append(c)
             except Exception:
                 pass
@@ -394,10 +406,10 @@ def _ensure_cybos_plus_menu_selected(hwnd):
     if not opener_hwnd:
         if _looks_like_login_form(hwnd):
             print("[WARN] Product menu control was not exposed by the login window.")
-            print("[WARN] CYBOS PLUS selection could not be verified from control text, but the login form is present.")
+            print("[WARN] Login form detected (owner-drawn UI) -- skipping menu verify, proceeding with login.")
             _dump_children(hwnd, "CYBOS Plus menu verify skipped")
             return True
-        print("[WARN] Product menu control was not found in the login window.")
+        print("[WARN] Product menu control was not found and login form not detected.")
         _dump_children(hwnd, "CYBOS Plus menu verify failed")
         return False
 
@@ -902,71 +914,259 @@ def _handle_password_confirm_dialog(timeout=10):
 
 # -- 모의투자 선택 창 -----------------------------------------------------------
 
+def _find_mock_dialog_candidates():
+    """
+    '모의투자 선택' 창을 두 가지 방법으로 탐색:
+      1. 키워드 기반 EnumWindows
+      2. FindWindow 직접 탐색 (키워드 탐색 실패 시 보험)
+    중복 hwnd를 제거하여 반환한다.
+    """
+    candidates = _find_window_by_keywords(MOCK_DIALOG_KEYWORDS, require_visible=True)
+    seen = {hwnd for hwnd, _ in candidates}
+
+    # FindWindow 직접 탐색 — 키워드 정규화 오류나 인코딩 차이 대응
+    for title_exact in (u"모의투자 선택", u"모의투자선택"):
+        try:
+            direct_hwnd = win32gui.FindWindow(None, title_exact)
+            if direct_hwnd and direct_hwnd not in seen and win32gui.IsWindowVisible(direct_hwnd):
+                candidates.append((direct_hwnd, title_exact))
+                seen.add(direct_hwnd)
+        except Exception:
+            pass
+    return candidates
+
+
+def _click_mock_access_button(hwnd):
+    """
+    '모의투자 접속' 버튼을 다음 순서로 모두 시도한다:
+      1. 버튼 탐색 (정확한 텍스트 → 부분 텍스트 → 가장 오른쪽 Button)
+      2. BM_CLICK  (표준 버튼 동작)
+      3. 물리 클릭 (owner-drawn/커스텀 버튼 대응 — 키움과 동일 패턴)
+      4. Enter 전송 (기본 버튼 fallback)
+    클릭 후 창이 닫혔으면 True 반환, 아직 열려 있으면 False 반환.
+    """
+    _dump_children(hwnd, "모의투자 선택")
+
+    # ── 버튼 탐색 ────────────────────────────────────────────────────────
+    found_btns = _find_child_by_exact_text(hwnd, MOCK_ACCESS_BUTTON_TEXTS, class_name="Button")
+    if not found_btns:
+        # "접속" 포함 — 단, "참가신청"은 걸러 내기 위해 "접속"만 검색
+        found_btns = _find_child_by_text_contains(hwnd, [u"접속"])
+    if not found_btns:
+        # 최후 수단: 모든 Button 중 가장 오른쪽 버튼 (우상단 = "모의투자 접속")
+        # "모의투자 참가신청"은 하단 중앙 → right 좌표가 더 작음
+        all_btns = _find_child_by_class(hwnd, "Button")
+        if all_btns:
+            btn = max(all_btns,
+                      key=lambda b: (_get_window_rect_safe(b) or (0, 0, 0, 0))[2])
+            found_btns = [(btn, win32gui.GetWindowText(btn))]
+
+    if found_btns:
+        btn_hwnd, btn_text = found_btns[0]
+        print("[INFO] '모의투자 접속' 버튼 발견: '%s' hwnd=%d" % (btn_text, btn_hwnd))
+
+        # Method 1: BM_CLICK (표준 버튼)
+        _post_button_click(btn_hwnd)
+        time.sleep(0.25)
+
+        # Method 2: 물리 클릭 (owner-drawn 버튼 대응 — BM_CLICK 불응 시 필수)
+        _force_foreground(hwnd)
+        _physical_click_hwnd(btn_hwnd)
+        time.sleep(0.25)
+
+        # Method 3: Enter (기본 버튼 fallback)
+        _force_foreground(hwnd)
+        send_keys("{ENTER}")
+        print("[INFO] BM_CLICK + 물리클릭 + ENTER 전송 완료")
+    else:
+        # 버튼 탐색 자체 실패 — Enter만
+        print("[WARN] 접속 버튼 컨트롤 미발견 → Enter 폴백")
+        _dump_children(hwnd, "모의투자 창 (버튼 못찾음)")
+        _force_foreground(hwnd)
+        send_keys("{ENTER}")
+
+    # 클릭 반영 대기 후 창이 닫혔는지 확인
+    time.sleep(0.8)
+    try:
+        still_visible = win32gui.IsWindowVisible(hwnd)
+    except Exception:
+        still_visible = False  # hwnd 무효 → 닫힌 것으로 간주
+
+    if not still_visible:
+        print("[INFO] 모의투자 선택 창이 닫혔습니다 -- 처리 완료.")
+        return True
+
+    print("[WARN] 모의투자 선택 창이 아직 열려 있음 -- 재시도 예정")
+    return False
+
+
 def _handle_mock_select_dialog(timeout=45, min_wait=0):
-    """모의투자 선택 창을 찾아 '모의투자 접속' 버튼을 BM_CLICK"""
+    """
+    '모의투자 선택' 창을 찾아 '모의투자 접속' 버튼을 처리한다.
+
+    개선 사항:
+      - min_wait 중에 팝업이 먼저 나타나면 즉시 처리 (20초 불필요 대기 제거)
+      - blind Enter 전송 시 팝업에 포커스를 맞춘 후 전송 (엉뚱한 창 방지)
+      - 버튼 클릭 순서: BM_CLICK → 물리클릭 → Enter (owner-drawn 완전 대응)
+      - 클릭 후 창이 닫혔는지 검증 — 안 닫히면 루프 계속
+      - FindWindow 직접 탐색으로 키워드 탐색 실패 보완
+    """
     print("[INFO] 모의투자 선택 창 대기 중...")
 
     if min_wait > 0:
-        print("[INFO] 모의투자 선택 팝업 대기 보장... %d초" % min_wait)
+        print("[INFO] 모의투자 선택 팝업 최소 대기... %d초" % min_wait)
         for waited in range(min_wait):
             if _is_connected():
-                print("[INFO] 이미 연결되어 있어 모의투자 선택 창 처리를 생략합니다.")
+                print("[INFO] 이미 연결됨 — 모의투자 선택 창 처리 생략")
                 return True
+            # 팝업이 min_wait 중에 먼저 나타나면 즉시 처리
+            early = _find_mock_dialog_candidates()
+            if early:
+                print("[INFO] 모의투자 팝업 조기 발견 (대기 %d초) — 즉시 처리" % (waited + 1))
+                for hwnd, title in early:
+                    if win32gui.IsWindowVisible(hwnd):
+                        _activate_and_wait_for_window(hwnd, title)
+                        if _click_mock_access_button(hwnd):
+                            return True
+                break  # 팝업 발견했으나 클릭 실패 → 아래 메인 루프로 이어서 처리
             time.sleep(1)
             if (waited + 1) % 5 == 0:
                 print("[INFO] 모의투자 팝업 최소 대기... %d/%d초" % (waited + 1, min_wait))
-        # min_wait 후 Enter → 팝업이 안 보일 경우 기본 선택 강제
-        send_keys("{ENTER}")
-        print("[INFO] 모의투자 팝업 최소 대기 후 Enter 입력")
-        time.sleep(3)
-        print("[INFO] 3초 대기 완료 — 연결 대기 확인 진행")
+        else:
+            # min_wait를 모두 소진한 경우 — 팝업에 포커스 맞춘 뒤 Enter
+            blind_cands = _find_mock_dialog_candidates()
+            if blind_cands:
+                hwnd, _ = blind_cands[0]
+                _force_foreground(hwnd)
+                time.sleep(0.2)
+            send_keys("{ENTER}")
+            print("[INFO] 모의투자 팝업 최소 대기 후 Enter 입력 (팝업 포커스 시도 후)")
+            time.sleep(3)
 
+    # ── 메인 탐지·클릭 루프 ─────────────────────────────────────────────
     for tick in range(timeout):
         if _is_connected():
-            print("[INFO] 이미 연결되어 있어 모의투자 선택 창 처리를 생략합니다.")
+            print("[INFO] 이미 연결됨 — 모의투자 선택 창 처리 생략")
             return True
 
-        candidates = _find_window_by_keywords(MOCK_DIALOG_KEYWORDS, require_visible=True)
+        candidates = _find_mock_dialog_candidates()
         for hwnd, title in candidates:
             if not win32gui.IsWindowVisible(hwnd):
                 continue
-
             print("[INFO] 모의투자 선택 창 발견: '%s' hwnd=%d" % (title, hwnd))
             _activate_and_wait_for_window(hwnd, title)
-            _dump_children(hwnd, "모의투자 선택 '%s'" % title)
-
-            # 1차: 정확한 텍스트의 Button 컨트롤
-            found_btns = _find_child_by_exact_text(hwnd, MOCK_ACCESS_BUTTON_TEXTS, class_name="Button")
-            if not found_btns:
-                # 2차: 부분 텍스트 매치
-                found_btns = _find_child_by_text_contains(hwnd, [u"접속", u"모의"])
-            if not found_btns:
-                # 3차: 모든 Button 중 가장 오른쪽 버튼 (우상단 "모의투자 접속")
-                # "모의투자 참가신청"은 하단 중앙 → 오른쪽 기준으로 구분
-                all_btns = _find_child_by_class(hwnd, "Button")
-                if all_btns:
-                    btn = max(all_btns,
-                              key=lambda b: (_get_window_rect_safe(b) or (0, 0, 0, 0))[2],
-                              )
-                    found_btns = [(btn, win32gui.GetWindowText(btn))]
-
-            if found_btns:
-                btn_hwnd, btn_text = found_btns[0]
-                print("[INFO] '모의투자 접속' 버튼: '%s' hwnd=%d → BM_CLICK"
-                      % (btn_text, btn_hwnd))
-                _post_button_click(btn_hwnd)
+            if _click_mock_access_button(hwnd):
                 return True
-            else:
-                print("[WARN] 접속 버튼 컨트롤 미발견")
-                _dump_children(hwnd, "모의투자 창 (버튼 못찾음)")
-                return False
+            # 클릭했지만 창이 안 닫힌 경우 — 다음 tick에서 재시도
+            break
 
         if tick % 5 == 4:
-            titles = [title for _, title in candidates[:6]]
-            print("[INFO] 모의투자 선택 창 대기... %d/%d초 candidates=%s" % (tick + 1, timeout, titles))
+            titles = [t for _, t in candidates[:6]]
+            print("[INFO] 모의투자 선택 창 대기... %d/%d초 visible=%s" % (tick + 1, timeout, titles))
         time.sleep(1)
 
     print("[WARN] 모의투자 선택 창이 나타나지 않음 -- 건너뜀")
+    return False
+
+
+# -- 통합 연결 대기 루프 ---------------------------------------------------------
+
+def _wait_for_connection_and_mock(total_timeout=120):
+    """
+    모의투자 팝업 처리 + 연결 대기를 하나의 루프로 통합 (race condition 근절).
+
+    매 1초:
+      ① IsConnect=1 → True 즉시 반환
+      ② 에러·공지사항 다이얼로그 닫기
+      ③ 모의투자 팝업 탐지 → BM_CLICK + 물리클릭 + Enter 순차 시도
+      ④ 팝업 미탐지 시 5초마다 blind Enter
+         (팝업이 타이틀 인식 실패·숨김 상태여도 포커스된 창에 전달)
+      ⑤ 로그인 실패 팝업 → False 반환 (자격증명 오류)
+    """
+    BLIND_INTERVAL = 5
+    print("[INFO] 연결+모의투자 통합 대기 (최대 %ds)..." % total_timeout)
+
+    start = time.time()
+    deadline = start + total_timeout
+    last_blind = start - BLIND_INTERVAL  # 즉시 첫 blind Enter 허용
+    last_10s_mark = -1
+
+    while time.time() < deadline:
+        elapsed = int(time.time() - start)
+
+        # ① 연결 확인
+        if _is_connected():
+            return True
+
+        # ② 에러·공지사항 다이얼로그
+        _dismiss_error_dialogs()
+
+        # ③ 모의투자 팝업 탐지 + 클릭
+        candidates = _find_mock_dialog_candidates()
+        popup_handled = False
+        for hwnd, title in candidates:
+            try:
+                if not win32gui.IsWindowVisible(hwnd):
+                    continue
+            except Exception:
+                continue
+            print("[INFO] 모의투자 팝업 발견: '%s' hwnd=%d (%ds)" % (title, hwnd, elapsed))
+            _activate_and_wait_for_window(hwnd, title)
+            _click_mock_access_button(hwnd)
+            last_blind = time.time()
+            popup_handled = True
+            break
+
+        # ④ Blind Enter — 팝업이 감지되지 않아도 주기적으로 전송
+        if not popup_handled and (time.time() - last_blind) >= BLIND_INTERVAL:
+            print("[INFO] Blind Enter 전송 (%ds 경과)" % elapsed)
+            send_keys("{ENTER}")
+            last_blind = time.time()
+
+        # ⑤ 로그인 실패 팝업 (내부 sleep 없이 직접 체크)
+        fail = _find_password_confirm_dialog()
+        if fail:
+            hwnd, title, child_texts = fail
+            ok_btns = _find_child_by_exact_text(hwnd, PASSWORD_DIALOG_CONFIRM_TEXTS, class_name="Button")
+            for btn_hwnd, _btn_text in ok_btns:
+                if _is_control_enabled(btn_hwnd):
+                    print("[ERROR] 로그인 실패 팝업 감지: %s" % child_texts)
+                    _post_button_click(btn_hwnd)
+                    return False
+            return False
+
+        mark = elapsed // 10
+        if mark > last_10s_mark:
+            last_10s_mark = mark
+            print("  ... %ds 경과" % elapsed)
+
+        time.sleep(1)
+
+    print("[ERROR] 연결 타임아웃 (%ds)" % total_timeout)
+    return False
+
+
+def _wait_for_connection_realmode(total_timeout=120):
+    """실투자 모드: 에러 다이얼로그 처리 + 연결 대기"""
+    print("[INFO] 연결 대기 중 (최대 %ds)..." % total_timeout)
+    start = time.time()
+    last_10s_mark = -1
+
+    for _ in range(total_timeout):
+        elapsed = int(time.time() - start)
+        if _is_connected():
+            return True
+        _dismiss_error_dialogs()
+        fail = _find_password_confirm_dialog()
+        if fail:
+            return False
+        mark = elapsed // 10
+        if mark > last_10s_mark:
+            last_10s_mark = mark
+            print("  ... %ds 경과" % elapsed)
+        time.sleep(1)
+
+    print("[ERROR] 연결 타임아웃 (%ds)" % total_timeout)
     return False
 
 
@@ -984,71 +1184,71 @@ def autologin():
         sys.exit(1)
 
     import psutil
-    names = set(CYBOS_PROC_NAMES)
-    already_running = any(
-        p.info["name"] and p.info["name"].lower() in names
-        for p in psutil.process_iter(["name"])
-        if p.info["name"]
-    )
 
-    if already_running:
-        print("[INFO] 기존 Cybos 프로세스 발견 -- 재시작합니다.")
-        _kill_cybos_procs()
+    for attempt in range(MAX_LOGIN_ATTEMPTS):
+        if attempt > 0:
+            print("\n[INFO] ===  재시도 %d/%d  ===" % (attempt + 1, MAX_LOGIN_ATTEMPTS))
 
-    exe_dir = os.path.dirname(CYBOS_EXE)
-    try:
-        win32api.ShellExecute(0, "open", CYBOS_EXE, CYBOS_ARGS, exe_dir, win32con.SW_SHOW)
-        print("[INFO] %s %s 시작됨" % (os.path.basename(CYBOS_EXE), CYBOS_ARGS))
-    except Exception as e:
-        print("[WARN] ShellExecute 실패(%s) -- Popen 재시도" % e)
-        subprocess.Popen([CYBOS_EXE, CYBOS_ARGS], cwd=exe_dir)
+        # 기존 Cybos 프로세스 정리
+        names = set(CYBOS_PROC_NAMES)
+        already_running = any(
+            p.info["name"] and p.info["name"].lower() in names
+            for p in psutil.process_iter(["name"])
+            if p.info["name"]
+        )
+        if already_running:
+            print("[INFO] 기존 Cybos 프로세스 발견 -- 재시작합니다.")
+            _kill_cybos_procs()
 
-    # STEP 1+2: 보안 다이얼로그 자동 클릭 + 로그인 창 대기 (통합 루프)
-    hwnd = _wait_for_login_clicking_security(timeout=120)
-    if hwnd is None:
-        print("[ERROR] 로그인 창을 찾지 못했습니다 (120초 초과).")
-        print("[HINT]  _ncStarter_.exe -> '사용안함' -> 'CYBOS Starter' 창을 확인하세요.")
-        sys.exit(1)
+        exe_dir = os.path.dirname(CYBOS_EXE)
+        try:
+            win32api.ShellExecute(0, "open", CYBOS_EXE, CYBOS_ARGS, exe_dir, win32con.SW_SHOW)
+            print("[INFO] %s %s 시작됨" % (os.path.basename(CYBOS_EXE), CYBOS_ARGS))
+        except Exception as e:
+            print("[WARN] ShellExecute 실패(%s) -- Popen 재시도" % e)
+            subprocess.Popen([CYBOS_EXE, CYBOS_ARGS], cwd=exe_dir)
 
-    for _ in range(5):
-        if _dismiss_error_dialogs() == 0:
-            break
-        time.sleep(0.5)
-    time.sleep(1.5)
+        # STEP 1+2: 보안 다이얼로그 자동 클릭 + 로그인 창 대기
+        hwnd = _wait_for_login_clicking_security(timeout=120)
+        if hwnd is None:
+            print("[WARN] 로그인 창 미발견 (120초 초과) -- 재시도...")
+            continue
 
-    # STEP 3: 컨트롤 기반 비밀번호 입력 + 로그인
-    try:
-        if not _perform_login(hwnd, user_id, password):
-            print("[ERROR] 로그인 자동화 단계가 실패했습니다.")
-            sys.exit(1)
-        # 비밀번호 갱신 확인 다이얼로그 등 팝업 처리
-        if _handle_password_confirm_dialog(timeout=5):
-            print("[ERROR] CYBOS 로그인 실패 팝업 감지 -- 아이디/비밀번호를 확인하세요.")
-            sys.exit(1)
-    except Exception as e:
-        print("[ERROR] UI 자동화 실패: %s" % e)
-        sys.exit(1)
+        for _ in range(5):
+            if _dismiss_error_dialogs() == 0:
+                break
+            time.sleep(0.5)
+        time.sleep(1.5)
 
-    # STEP 4: 모의투자 선택 창
-    if MOCK_MODE:
-        _handle_mock_select_dialog(timeout=45, min_wait=MOCK_POPUP_MIN_WAIT)
+        # STEP 3: 자격증명 입력 + 로그인
+        try:
+            if not _perform_login(hwnd, user_id, password):
+                print("[WARN] 로그인 자동화 실패 -- 재시도...")
+                continue
+            if _handle_password_confirm_dialog(timeout=5):
+                # 아이디/비밀번호 오류 — 재시도해도 동일하므로 즉시 종료
+                print("[ERROR] CYBOS 로그인 실패 팝업 -- 아이디/비밀번호를 확인하세요.")
+                sys.exit(1)
+        except Exception as e:
+            print("[WARN] UI 자동화 예외: %s -- 재시도..." % e)
+            continue
 
-    # STEP 5: 연결 완료 대기
-    print("[INFO] 연결 대기 중 (최대 %d초)..." % CONNECT_TIMEOUT)
-    for i in range(CONNECT_TIMEOUT):
-        _dismiss_error_dialogs()
-        if _handle_password_confirm_dialog(timeout=1):
-            print("[ERROR] CYBOS 로그인 실패 팝업 감지 -- 연결 대기를 중단합니다.")
-            return False
-        if _is_connected():
+        # STEP 4+5 통합: 모의투자 팝업 처리 + 연결 완료 대기 (단일 루프)
+        wait_fn = _wait_for_connection_and_mock if MOCK_MODE else _wait_for_connection_realmode
+        if wait_fn(total_timeout=CONNECT_TIMEOUT):
             cp = win32com.client.Dispatch("CpUtil.CpCybos")
             print("[OK] CybosPlus 연결 성공 (ServerType=%s)" % cp.ServerType)
+            # 연결 직후 공지사항 등 잔여 다이얼로그 마무리 (연결 확인 즉시 루프 탈출 시 놓칠 수 있음)
+            time.sleep(2)
+            for _ in range(6):
+                if _dismiss_error_dialogs() == 0:
+                    break
+                time.sleep(0.8)
             return True
-        time.sleep(1)
-        if i % 10 == 9:
-            print("  ... %d초 경과" % (i + 1))
 
-    print("[ERROR] 연결 타임아웃")
+        print("[WARN] 시도 %d/%d 연결 실패" % (attempt + 1, MAX_LOGIN_ATTEMPTS))
+
+    print("[ERROR] Auto-login failed.")
     return False
 
 

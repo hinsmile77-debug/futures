@@ -138,21 +138,41 @@ def _load_last_refresh(today):
 
 
 def _load_top5_extreme(today):
-    """오늘 누적 extreme 피처 Top5 (feature, count, max_abs_z)."""
+    """오늘 누적 extreme 피처 Top5.
+    반환: (feature, cnt, max_abs_z, ts, horizon, age_minutes,
+            max_z, raw_value, pre_value, scaler_mean, scaler_std, refresh_type)
+    """
     path = _db_path()
     if not os.path.exists(path):
         return []
+    _Q = """
+WITH agg AS (
+    SELECT max_z_feature,
+           COUNT(*)          AS cnt,
+           MAX(ABS(max_z))   AS max_abs_z,
+           MAX(ts)           AS latest_ts
+    FROM scaler_events
+    WHERE date = ?
+      AND extreme_count > 0
+      AND max_z_feature IS NOT NULL
+      AND max_z_feature != ''
+    GROUP BY max_z_feature
+    ORDER BY cnt DESC, max_abs_z DESC
+    LIMIT 5
+)
+SELECT a.max_z_feature, a.cnt, a.max_abs_z,
+       e.ts, e.horizon, e.age_minutes, e.max_z,
+       e.raw_value, e.pre_value, e.scaler_mean, e.scaler_std, e.refresh_type
+FROM agg a
+JOIN scaler_events e ON e.max_z_feature = a.max_z_feature
+                     AND e.ts = a.latest_ts
+                     AND e.date = ?
+GROUP BY a.max_z_feature
+ORDER BY a.cnt DESC, a.max_abs_z DESC
+"""
     try:
         with sqlite3.connect(path, timeout=5) as c:
-            return c.execute(
-                "SELECT max_z_feature, COUNT(*) AS cnt, MAX(ABS(max_z)) AS mz "
-                "FROM scaler_events "
-                "WHERE date=? AND extreme_count > 0 "
-                "GROUP BY max_z_feature "
-                "ORDER BY cnt DESC, mz DESC "
-                "LIMIT 5",
-                (today,),
-            ).fetchall()
+            return c.execute(_Q, (today, today)).fetchall()
     except Exception as e:
         logger.debug("[ScalerMonitorPanel] top5 load failed: %s", e)
         return []
@@ -297,7 +317,7 @@ class ScalerMonitorPanel(QWidget):
 
         self._txt_events = QTextEdit()
         self._txt_events.setReadOnly(True)
-        self._txt_events.setMaximumHeight(200)
+        self._txt_events.setMaximumHeight(100)
         self._txt_events.setStyleSheet(
             "QTextEdit{background:%s;color:%s;border:none;"
             "font-size:11px;font-family:monospace;}" % (_COL["bg2"], _COL["text"])
@@ -307,21 +327,35 @@ class ScalerMonitorPanel(QWidget):
 
         root.addLayout(top)
 
-        top5_grp = QGroupBox("오늘 누적 extreme 피처 Top5")
+        top5_grp = QGroupBox("오늘 누적 대표 extreme 피처 Top5")
         top5_grp.setStyleSheet(_GRP_STYLE)
+        top5_grp.setToolTip(
+            "각 분봉/호라이즌에서 max|z|를 기록한 대표 피처 기준 집계\n"
+            "raw→pre: 전처리 전→후 값 (파랑=전처리 영향 있음)\n"
+            "μ/σ: 스케일러 기준값/표준편차 (노랑=σ<0.1 협소 분산)\n"
+            "최근: 최신 발생 시각·호라이즌 (D=D_FORCE 강제 갱신)"
+        )
         top5_lay = QVBoxLayout(top5_grp)
         top5_lay.setContentsMargins(4, 8, 4, 4)
 
         self._tbl_top5 = QTableWidget()
-        self._tbl_top5.setColumnCount(3)
-        self._tbl_top5.setHorizontalHeaderLabels(["피처명", "발생 수", "max|z|"])
-        self._tbl_top5.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._tbl_top5.setColumnCount(6)
+        self._tbl_top5.setHorizontalHeaderLabels(
+            ["피처명", "발생수", "max|z|", "입력값 raw→pre", "기준 μ/σ", "최근"]
+        )
+        _top5_hdr = self._tbl_top5.horizontalHeader()
+        _top5_hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        _top5_hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        _top5_hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        _top5_hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+        _top5_hdr.setSectionResizeMode(4, QHeaderView.Stretch)
+        _top5_hdr.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self._tbl_top5.setEditTriggers(QTableWidget.NoEditTriggers)
         self._tbl_top5.setSelectionMode(QTableWidget.NoSelection)
         self._tbl_top5.setAlternatingRowColors(True)
         self._tbl_top5.setStyleSheet(_TBL_STYLE)
-        self._tbl_top5.setMinimumHeight(170)
-        self._tbl_top5.setMaximumHeight(220)
+        self._tbl_top5.setMinimumHeight(160)
+        self._tbl_top5.setMaximumHeight(250)
         top5_lay.addWidget(self._tbl_top5)
         root.addWidget(top5_grp)
 
@@ -421,13 +455,51 @@ class ScalerMonitorPanel(QWidget):
             self._tbl_top5.setItem(0, 0, item)
             return
 
-        for i, (feat, cnt, mz) in enumerate(rows):
-            feat_col = _COL["orange"] if mz and mz > 4.0 else _COL["text"]
-            mz_str = ("%.2f" % mz) if mz is not None else "--"
+        for i, r in enumerate(rows):
+            feat, cnt, max_abs_z, ts, horizon, age_min, max_z, raw, pre, sc_mean, sc_std, ref_type = r
+
+            # 피처명 / max|z| 색상
+            if max_abs_z is not None and max_abs_z >= 8.0:
+                feat_col = _COL["red"]
+            elif max_abs_z is not None and max_abs_z >= 4.0:
+                feat_col = _COL["orange"]
+            else:
+                feat_col = _COL["text"]
+
+            # 입력값 raw→pre
+            if raw is not None and pre is not None:
+                raw_pre_str = "%.3f→%.3f" % (raw, pre)
+                raw_pre_col = _COL["cyan"] if abs(raw - pre) > 0.001 else _COL["text"]
+            else:
+                raw_pre_str = "--"
+                raw_pre_col = _COL["muted"]
+
+            # 기준 μ/σ
+            if sc_mean is not None and sc_std is not None:
+                mean_std_str = "%.3f/%.3f" % (sc_mean, sc_std)
+                mean_std_col = _COL["yellow"] if sc_std < 0.1 else _COL["text"]
+            else:
+                mean_std_str = "--"
+                mean_std_col = _COL["muted"]
+
+            # 최근 (시각 호라이즌 [D])
+            if ts:
+                force_mark = " D" if ref_type == "D_FORCE" else ""
+                latest_str = "%s %s%s" % (ts[11:16], horizon or "--", force_mark)
+                latest_col = _COL["blue"] if ref_type == "D_FORCE" else _COL["muted"]
+            else:
+                latest_str = "--"
+                latest_col = _COL["muted"]
+
+            mz_str = ("%.2f" % max_abs_z) if max_abs_z is not None else "--"
+
             cells = [
-                (feat or "--", feat_col),
-                (str(cnt), _COL["text"]),
-                (mz_str, feat_col),
+                (feat or "--",  feat_col),
+                (str(cnt),      _COL["text"]),
+                (mz_str,        feat_col),
+                (raw_pre_str,   raw_pre_col),
+                (mean_std_str,  mean_std_col),
+                (latest_str,    latest_col),
             ]
             for j, (txt, col) in enumerate(cells):
                 item = QTableWidgetItem(txt)
@@ -442,7 +514,7 @@ class ScalerMonitorPanel(QWidget):
             return
 
         lines = []
-        for ts, refresh_type, refresh_reason in events[:12]:
+        for ts, refresh_type, refresh_reason in events[:6]:
             ts_short = ts[11:16] if ts else "--"
             label = refresh_type or "--"
             reason = refresh_reason or ""

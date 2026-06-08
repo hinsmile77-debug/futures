@@ -47,6 +47,7 @@ except ImportError:
 
 # ── 거래 설정 ──────────────────────────────────────────────────
 MAX_CONTRACTS = 10          # 최대 계약 수
+TICK_SIZE     = 0.05         # KOSPI 200 선물 1틱 = 0.05pt
 
 DAILY_LOSS_LIMIT_PCT = 0.02   # 일일 최대 손실 2%
 ACCOUNT_BASE_RISK    = 0.01   # 기본 리스크 1% (켈리 기준)
@@ -298,6 +299,24 @@ SGD_CUT_THRESHOLD   = 0.48   # 이하 → SGD 비중 -2%
 # 호라이즌 자격 획득 기준 (Phase 1: 상태 추적 / Phase 3: 앙상블 필터링 적용)
 HORIZON_QUALIFY_MIN_CYCLES = 3    # verified + trained 각 3회 이상이면 자격 획득
 QUALIFY_QUALITY_MIN_SAMPLES = 10  # 품질 게이트 평가 최소 샘플 수
+
+# ── 시간대별 호라이즌 활성화 정책 (Phase 1-3 + 부록 C-6 cold-start 2단계) ───
+# (from_hhmm, to_hhmm): enabled_horizons (None = 전체 허용)
+# 정수 HHMM 비교: 905 = 09:05, 930 = 09:30
+HORIZON_TIME_POLICY = {
+    (  900,  905): [],                   # cold-start — 전 호라이즌 차단
+    (  905,  910): ["1m"],               # cold-start 2단계: 1m만, A등급 7/7 필요
+    (  910,  915): ["1m", "3m"],         # cold-start 2단계: 1m·3m, A등급 6/7 이상
+    (  915,  930): ["1m", "3m", "5m"],  # 개장 초 — 단기 3개만
+    (  930, 1500): None,                 # 전 호라이즌 정상 가동
+    ( 1500, 1510): ["1m", "3m"],         # 마감 청산 집중 (look-ahead 방지)
+}
+
+# HORIZON_TIME_POLICY 09:05~09:15 구간 최소 등급 요건 (cold-start 강화)
+HORIZON_COLDSTART_MIN_PASS = {
+    (905, 910): 7,   # A등급 7/7 충족 시만 진입
+    (910, 915): 6,   # A등급 6/7 이상
+}
 
 # ── 진입 등급 체계 ─────────────────────────────────────────────
 ENTRY_GRADE = {

@@ -59,7 +59,7 @@ from utils.db_utils import (
     save_shap_scores,
 )
 from config.settings import (
-    TRADES_DB, DB_DIR, HORIZONS, PARTIAL_EXIT_RATIOS,
+    TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
     CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
     SHAP_MIN_DATA_POINTS,
@@ -3062,9 +3062,18 @@ class TradingSystem:
         self._z_warn_5m.append(_z_warn)          # 배지용 5분 롤링 (state 무관)
         _ts_dt_obj = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
         # pred_buffer 기반 30분 정확도 — CB accuracy_buf(거래 기반)보다 훨씬 빠르게 채워짐
+        # CB③와 동일 기준: FLAT 제외 + conf>0.38 + 이번 세션 예측만 집계
+        # min_samples=10: 샘플 부족(세션 초기 30분) 시 0.5 반환 → 게이트 통과 유지
         _last_dir = getattr(self, "_last_ensemble_direction", 0)
         try:
-            _contra_acc30m = self.pred_buffer.recent_accuracy("30m", last_n=30)
+            _contra_acc30m = self.pred_buffer.recent_accuracy(
+                "30m",
+                last_n=30,
+                exclude_flat=True,
+                min_conf=0.38,
+                since_ts=self._session_start_ts,
+                min_samples=10,
+            )
         except Exception:
             _contra_acc30m = _acc30m
         self.shadow_session.update(
@@ -8744,11 +8753,25 @@ class _BrokerOrderAdapter:
 
 
 def main():
+    import traceback as _tb
     # DB 초기화
     init_all_dbs()
     logger.info("[System] DB 초기화 완료")
 
-    system = TradingSystem()
+    try:
+        system = TradingSystem()
+    except Exception as _init_exc:
+        _crash_msg = _tb.format_exc()
+        print("[CRASH] TradingSystem.__init__ 실패:\n" + _crash_msg, flush=True)
+        logger.error("[System] TradingSystem 초기화 실패: %s", _init_exc)
+        try:
+            import os as _os
+            with open(_os.path.join("logs", "crash_init.log"), "a", encoding="utf-8") as _f:
+                import datetime as _dt
+                _f.write("[%s]\n%s\n" % (_dt.datetime.now().isoformat(), _crash_msg))
+        except Exception:
+            pass
+        raise
     system.run()
 
 

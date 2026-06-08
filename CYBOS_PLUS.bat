@@ -14,10 +14,25 @@ ECHO   Start: %TIMESTAMP%
 ECHO ============================================================
 ECHO.
 ECHO [INFO] If Cybos Plus is not connected, auto-login will be attempted.
-ECHO [INFO] The login window must have the left-top product menu set to CYBOS PLUS.
+ECHO [INFO] This CMD window is the loading monitor. Do not close it.
 ECHO.
 
-REM 1. Workspace detection
+REM ============================================================
+REM  STEP 0: Pre-launch Cleanup
+REM  - Minimize other windows so they do not interfere with Cybos GUI automation
+REM  - SW_MINIMIZE only (no process termination)
+REM  - CMD / Python / Cybos processes are protected and restored
+REM  - Reset mouse cursor to (0,0)
+REM ============================================================
+ECHO [STEP 0] Pre-launch cleanup: minimizing other windows, resetting mouse...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\close_other_windows.ps1" -KeepTitle "Mireuk Cybos Plus Launcher"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(0, 0)"
+ECHO [INFO] Pre-launch cleanup done.
+ECHO.
+
+REM ============================================================
+REM  1. Workspace Detection
+REM ============================================================
 IF EXIST "%DEFAULT_DIR%" (
     ECHO [INFO] Default directory found: %DEFAULT_DIR%
 ) ELSE (
@@ -56,12 +71,15 @@ ECHO [INFO] BROKER_BACKEND=%BROKER_BACKEND%
 
 IF NOT EXIST "logs" MKDIR "logs" 2>NUL
 SET "LOG=%WORKDIR%\logs\cybos_plus_launch.log"
+
 ECHO. >> "%LOG%"
 ECHO ============================================================ >> "%LOG%"
 ECHO [%TIMESTAMP%] Cybos Plus Launcher started >> "%LOG%"
 ECHO ============================================================ >> "%LOG%"
 
-REM 2. Anaconda detection and activation
+REM ============================================================
+REM  2. Anaconda Detection and Activation
+REM ============================================================
 ECHO.
 ECHO [INFO] Searching for Anaconda...
 
@@ -87,7 +105,6 @@ IF DEFINED ACTIVATE_SCRIPT (
 IF %ERRORLEVEL% NEQ 0 (
     ECHO [ERROR] Failed to activate conda env 'py37_32'.
     ECHO [ERROR] Failed to activate conda env 'py37_32'. >> "%LOG%"
-    ECHO [ERROR] Current directory=%CD%, ACTIVATE_SCRIPT=!ACTIVATE_SCRIPT! >> "%LOG%"
     SET "ERROR_FLAG=1"
     GOTO :end_error
 )
@@ -95,10 +112,11 @@ IF %ERRORLEVEL% NEQ 0 (
 ECHO [INFO] Environment activated: %CONDA_DEFAULT_ENV%
 ECHO [INFO] Environment activated: %CONDA_DEFAULT_ENV% >> "%LOG%"
 
-REM 3. Dynamic Qt path configuration
+REM ============================================================
+REM  3. Dynamic Qt Path Configuration
+REM ============================================================
 IF DEFINED CONDA_PREFIX (
     ECHO [INFO] CONDA_PREFIX: !CONDA_PREFIX!
-    ECHO [INFO] CONDA_PREFIX: !CONDA_PREFIX! >> "%LOG%"
 
     SET "PYQT5_PLUGIN_PATH=!CONDA_PREFIX!\Lib\site-packages\PyQt5\Qt5\plugins"
     SET "ANACONDA_PLUGIN_PATH=!CONDA_PREFIX!\Library\plugins"
@@ -119,94 +137,123 @@ IF DEFINED CONDA_PREFIX (
     ECHO [INFO] QT_PLUGIN_PATH: !QT_PLUGIN_PATH! >> "%LOG%"
 ) ELSE (
     ECHO [WARNING] CONDA_PREFIX not defined. Qt plugins might fail.
-    ECHO [WARNING] CONDA_PREFIX not defined. Qt plugins might fail. >> "%LOG%"
+    ECHO [WARNING] CONDA_PREFIX not defined. >> "%LOG%"
 )
 
 SET PYTHONUNBUFFERED=1
 SET PYTHONIOENCODING=utf-8
 
-REM 4. Auto-login if not connected
+REM ============================================================
+REM  4. Auto-Login if Not Connected
+REM  cybos_autologin.py outputs progress to CMD and its own log
+REM ============================================================
 ECHO.
 ECHO [INFO] Checking Cybos Plus connection...
-python -c "import sys,win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); print('[BASE] IsConnect={} ServerType={}'.format(c.IsConnect, c.ServerType)); sys.exit(0 if c.IsConnect==1 else 1)" >> "%LOG%" 2>&1
+python -c "import sys,win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); print('[CHECK] IsConnect={} ServerType={}'.format(c.IsConnect,c.ServerType)); sys.exit(0 if c.IsConnect==1 else 1)"
 IF %ERRORLEVEL% NEQ 0 (
-    ECHO [INFO] CybosPlus not connected - attempting auto-login...
-    ECHO [INFO] CybosPlus not connected - attempting auto-login... >> "%LOG%"
-    python scripts\cybos_autologin.py >> "%LOG%" 2>&1
-    IF !ERRORLEVEL! NEQ 0 (
-        ECHO [ERROR] Auto-login failed. Check the log.
-        ECHO [ERROR] Auto-login failed. >> "%LOG%"
+    ECHO [INFO] CybosPlus not connected -- starting auto-login...
+    ECHO [INFO] CybosPlus not connected -- starting auto-login... >> "%LOG%"
+    IF EXIST "%WORKDIR%\scripts\cybos_autologin.py" (
+        python "%WORKDIR%\scripts\cybos_autologin.py"
+        IF !ERRORLEVEL! NEQ 0 (
+            ECHO.
+            ECHO [ERROR] Auto-login failed.
+            ECHO [HINT]  Register credentials: cmdkey /add:cybosplus /user:ID /pass:PASSWORD
+            ECHO [HINT]  Check executable: C:\DAISHIN\STARTER\ncStarter.exe
+            ECHO [HINT]  Log location: %WORKDIR%\logs\
+            ECHO [ERROR] Auto-login failed. >> "%LOG%"
+            SET "ERROR_FLAG=1"
+            GOTO :end_error
+        )
+        ECHO [OK] CybosPlus auto-login completed.
+        ECHO [OK] Auto-login completed. >> "%LOG%"
+    ) ELSE (
+        ECHO [WARN] cybos_autologin.py not found: %WORKDIR%\scripts\
+        ECHO [WARN] Complete CybosPlus login manually, then press any key.
+        PAUSE
+    )
+) ELSE (
+    ECHO [INFO] CybosPlus already connected -- skipping login.
+    ECHO [INFO] Already connected. >> "%LOG%"
+)
+
+REM ============================================================
+REM  5. Preflight Check
+REM ============================================================
+ECHO.
+ECHO [INFO] Running Cybos Plus preflight...
+IF EXIST "%WORKDIR%\scripts\cybos_plus_preflight.py" (
+    python "%WORKDIR%\scripts\cybos_plus_preflight.py"
+    SET "PREFLIGHT_ERR=!ERRORLEVEL!"
+    IF "!PREFLIGHT_ERR!"=="1" (
+        ECHO [ERROR] Cybos Plus COM connection failed.
+        ECHO [ERROR] COM connection failed. >> "%LOG%"
         SET "ERROR_FLAG=1"
         GOTO :end_error
     )
+    IF "!PREFLIGHT_ERR!"=="2" (
+        ECHO [ERROR] TradeInit failed. Check account session.
+        ECHO [ERROR] TradeInit failed. >> "%LOG%"
+        SET "ERROR_FLAG=1"
+        GOTO :end_error
+    )
+    IF "!PREFLIGHT_ERR!"=="3" (
+        ECHO [ERROR] Preflight script raised an exception.
+        ECHO [ERROR] Preflight exception. >> "%LOG%"
+        SET "ERROR_FLAG=1"
+        GOTO :end_error
+    )
+    IF "!PREFLIGHT_ERR!" NEQ "0" (
+        ECHO [ERROR] Preflight unknown exit code ^(!PREFLIGHT_ERR!^)
+        ECHO [ERROR] Preflight unknown exit code=!PREFLIGHT_ERR! >> "%LOG%"
+        SET "ERROR_FLAG=1"
+        GOTO :end_error
+    )
+    ECHO [OK] Cybos Plus preflight passed.
+    ECHO [OK] Preflight passed. >> "%LOG%"
 ) ELSE (
-    ECHO [INFO] CybosPlus already connected.
-    ECHO [INFO] CybosPlus already connected. >> "%LOG%"
+    ECHO [INFO] cybos_plus_preflight.py not found -- skipping preflight.
 )
 
-REM 5. Preflight check
-ECHO.
-ECHO [INFO] Running Cybos Plus preflight...
-python scripts\cybos_plus_preflight.py >> "%LOG%" 2>&1
-SET "PREFLIGHT_ERR=!ERRORLEVEL!"
-IF "!PREFLIGHT_ERR!"=="1" (
-    ECHO [ERROR] Cybos Plus COM connection failed.
-    ECHO [ERROR] COM connection failed. >> "%LOG%"
-    SET "ERROR_FLAG=1"
-    GOTO :end_error
-)
-IF "!PREFLIGHT_ERR!"=="2" (
-    ECHO [ERROR] TradeInit failed. Check account session.
-    ECHO [ERROR] TradeInit failed. >> "%LOG%"
-    SET "ERROR_FLAG=1"
-    GOTO :end_error
-)
-IF "!PREFLIGHT_ERR!"=="3" (
-    ECHO [ERROR] Preflight script raised an exception. Check the log.
-    ECHO [ERROR] Preflight exception. >> "%LOG%"
-    SET "ERROR_FLAG=1"
-    GOTO :end_error
-)
-IF "!PREFLIGHT_ERR!" NEQ "0" (
-    ECHO [ERROR] Preflight unknown exit code ^(!PREFLIGHT_ERR!^)
-    ECHO [ERROR] Preflight unknown exit code=!PREFLIGHT_ERR! >> "%LOG%"
-    SET "ERROR_FLAG=1"
-    GOTO :end_error
-)
-ECHO [OK] Cybos Plus preflight passed.
-ECHO [OK] Preflight passed ^(cybos_plus_preflight.py exit=0^) >> "%LOG%"
-
-REM 6. Final recheck
+REM ============================================================
+REM  6. Final Connection Recheck
+REM ============================================================
 TIMEOUT /T 3 /NOBREAK >NUL
-python -c "import sys,win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); connected=(c.IsConnect==1); print('[RECHECK] IsConnect={} ServerType={}'.format(c.IsConnect, c.ServerType)); sys.exit(0 if connected else 1)" >> "%LOG%" 2>&1
+ECHO.
+ECHO [INFO] Final connection recheck...
+python -c "import sys,win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); print('[RECHECK] IsConnect={} ServerType={}'.format(c.IsConnect,c.ServerType)); sys.exit(0 if c.IsConnect==1 else 1)"
 IF %ERRORLEVEL% NEQ 0 (
     ECHO.
     ECHO [ERROR] Cybos Plus session was lost before completion.
-    ECHO [ERROR] Session recheck failed. Connection lost. >> "%LOG%"
+    ECHO [ERROR] Session recheck failed. >> "%LOG%"
     SET "ERROR_FLAG=1"
     GOTO :end_error
 )
 
+REM ============================================================
+REM  7. Done -- restore CMD window and keep it open
+REM ============================================================
 ECHO.
 ECHO ============================================================
 ECHO   [OK] Cybos Plus session ready
+ECHO   This CMD window stays open. Close it manually when done.
 ECHO ============================================================
-ECHO.
 ECHO [%DATE:~0,10% %TIME:~0,8%] [OK] Cybos Plus session ready >> "%LOG%"
-ECHO   This window will close automatically in 10 seconds.
-TIMEOUT /T 10 >NUL
+
+REM Restore CMD window to foreground
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=[System.Diagnostics.Process]::GetCurrentProcess(); Add-Type -Name CB2 -Namespace '' -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h,int n); [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h);'; [void][CB2]::ShowWindow($p.MainWindowHandle,9); [void][CB2]::SetForegroundWindow($p.MainWindowHandle)" 2>NUL
+
+ECHO.
+TIMEOUT /T 10
 GOTO :EOF
 
 :end_error
 ECHO.
 ECHO ============================================================
 ECHO   [ERROR] Cybos Plus session setup failed
-ECHO   Log file: %LOG%
+ECHO   Log: %LOG%
 ECHO ============================================================
 ECHO.
-ECHO   This window will stay open for 30 seconds.
-ECHO   Review the log above for details.
-ECHO.
-IF DEFINED LOG ECHO [%DATE:~0,10% %TIME:~0,8%] [ERROR] Launcher failed. Check log above. >> "%LOG%"
-TIMEOUT /T 30 >NUL
+IF DEFINED LOG ECHO [%DATE:~0,10% %TIME:~0,8%] [ERROR] Launcher failed. >> "%LOG%"
+PAUSE
 CMD /K

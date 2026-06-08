@@ -5,7 +5,7 @@
 등급 기준:
   A: 6개 이상 → ×1.5 자동 진입
   B: 4~5개   → ×1.0 자동 진입
-  C: 2~3개   → ×0.6 수동 확인
+  C: 2~3개   → ×0.6 자동 진입 (UI 'C 자동' 토글로 ON/OFF)
   X: 1개 이하 → 진입 금지
 """
 import logging
@@ -37,6 +37,7 @@ class EntryChecklist:
         bull_exhaustion: float = 0.0,
         micro_regime: str = "혼합",
         disabled_gates: set = None,
+        entry_ok: float = 1.0,
     ) -> Dict:
         """
         Args:
@@ -63,6 +64,17 @@ class EntryChecklist:
         from collection.macro.micro_regime import REGIME_EXHAUSTION
 
         disabled = set(disabled_gates) if disabled_gates else set()
+
+        if entry_ok == 0.0:
+            logger.debug("[Checklist] entry_ok=0 (독성·품질·스프레드 미달) → 즉시 X등급")
+            return {
+                "pass_count": 0,
+                "grade":      "X",
+                "checks":     {"0_entry_ok": False},
+                "size_mult":  0,
+                "auto_entry": False,
+                "entry_mode": "NO_ENTRY",
+            }
 
         # FLAT 신호는 방향 없음 → SHORT로 오분류되어 8/9 통과 후 A등급 AUTO진입이
         # 발생하는 버그를 차단한다. 반드시 즉시 X등급 반환해야 한다.

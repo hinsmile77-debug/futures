@@ -1,7 +1,56 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-08 (123차 세션 마무리) — 대시보드 유효성 점검 + Phase 2 bar_age 시각화
+> 마지막 업데이트: 2026-06-08 (124차 세션 마무리) — v8.0 Phase 0 구현 (재학습 불필요 인프라)
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-08 (124차 — v8.0 Phase 0: 시간대 정책·캐스케이드 게이트·FL 감쇠·entry_ok 등)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| `TICK_SIZE = 0.05` 설정화 | **완료** ✅ | `config/settings.py` |
+| `HORIZON_TIME_POLICY` / `HORIZON_COLDSTART_MIN_PASS` | **완료** ✅ | `config/settings.py` |
+| `compute_cascade_coherence()` — 장기→단기 방향 흐름 검증 | **완료** ✅ | `model/ensemble_decision.py` |
+| `select_entry_horizon()` — ATR 레짐별 최적 호라이즌 선택 | **완료** ✅ | `model/ensemble_decision.py` |
+| FL 조기 감쇠 (`_fl_streak`) — FL 70%+ 10분→weight×0.2 | **완료** ✅ | `model/ensemble_decision.py` |
+| `active_horizons` 시간대 정책 앙상블 적용 | **완료** ✅ | `model/ensemble_decision.py` |
+| CascadeCoherence gate (< 0.34 차단) | **완료** ✅ | `model/ensemble_decision.py` |
+| `entry_ok` 파라미터 — 0.0이면 즉시 X등급 | **완료** ✅ | `strategy/entry/checklist.py` |
+| `is_market_open` / `minutes_to_close` 만기일 15:20 수정 | **완료** ✅ | `utils/time_utils.py` |
+| `scaler_events` raw_value/pre_value/scaler_mean/scaler_std 컬럼 | **완료** ✅ | `model/scaler_monitor_db.py` |
+| ScalerMonitorPanel Top5 6컬럼 확장 (raw→pre, μ/σ, 최근) | **완료** ✅ | `dashboard/panels/scaler_monitor_panel.py` |
+| CYBOS_PLUS.bat STEP 0 (close_other_windows.ps1) | **완료** ✅ | `CYBOS_PLUS.bat`, `scripts/close_other_windows.ps1` |
+| `docs/260607_MIREUK_V8_IMPLEMENTATION_PLAN.md` 신규 | **완료** ✅ | `docs/` |
+| **main.py 연결** — `active_horizons` 계산 → `EnsembleDecision.compute()` 전달 | **미구현** ⏳ | `main.py` |
+| **main.py 연결** — `entry_ok` 계산 → `EntryChecklist.check()` 전달 | **미구현** ⏳ | `main.py` |
+| **feature_builder.py** — `prev_day_same_hour_ret` 버그 / `ema_cross` 연속 / `avg_volume` 분리 등 | **미구현** ⏳ | `features/feature_builder.py` |
+
+### Phase 0 구현 항목 vs V8 계획서 우선순위
+
+| V8 우선순위 | 항목 | 완료 |
+|---|---|---|
+| S0 | `vwap_momentum` 버그 (119차) | ✅ |
+| S0 | `prev_day_same_hour_ret` 버그 | ⏳ 다음 세션 |
+| 1 | 피처 반감기 적응 정규화 | ⏳ |
+| 2 | 호라이즌 응집도 게이트 (CoherenceGate + CascadeGate) | ✅ |
+| 3 | 시간대별 호라이즌 활성화 (HORIZON_TIME_POLICY) | ✅ (설정 완료, main.py 연결 ⏳) |
+| 4 | ATR 레짐별 호라이즌 자동전환 (`select_entry_horizon`) | ✅ (함수 완료, main.py 연결 ⏳) |
+| 5 | `entry_ok` 규칙 기반 게이팅 | ✅ (checklist 완료, main.py 연결 ⏳) |
+| 6 | FeatureBuilder 6개 항목 | ⏳ 다음 세션 |
+
+### 커밋
+
+- `124차 커밋 완료` 2026-06-08
+
+### 다음 장에서 확인할 것
+
+1. `cascade_blocked` 로그 확인: 하위만 방향 있고 상위 FLAT 시 차단
+2. `_fl_streak` 로그: FL 70%+ 10분 연속 시 `[EarlyFLDamp]` 출력
+3. STEP 0 pre-launch: 다른 창 최소화 후 Cybos 정상 로그인 확인
+4. 만기일(3·6·9·12월 두 번째 목요일) `is_market_open` 15:20 마감 동작
 
 ---
 

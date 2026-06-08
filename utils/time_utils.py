@@ -25,21 +25,27 @@ def is_trading_day(dt: Optional[datetime.datetime] = None) -> bool:
 
 
 def is_market_open(dt: Optional[datetime.datetime] = None) -> bool:
-    """장 중 여부 (09:00~15:30, KRX 거래일)."""
+    """장 중 여부 (09:00~15:35 일반 / 09:00~15:20 만기일, KRX 거래일).
+
+    KOSPI200 선물 종료 시각:
+      - 일반일: 15:35
+      - 월물 만기일: 15:20 (현물 동시 만기 — 조기 마감)
+    """
     if dt is None:
         dt = now_kst()
+    if not is_trading_day(dt):
+        return False
     t = dt.time()
-    return (
-        datetime.time(9, 0) <= t <= datetime.time(15, 30)
-        and is_trading_day(dt)
-    )
+    close = datetime.time(15, 20) if is_expiry_day(dt) else datetime.time(15, 35)
+    return datetime.time(9, 0) <= t <= close
 
 
 def minutes_to_close(dt: Optional[datetime.datetime] = None) -> int:
-    """장 마감까지 남은 분 수"""
+    """장 마감까지 남은 분 수 (만기일은 15:20, 일반일은 15:35 기준)."""
     if dt is None:
         dt = now_kst()
-    close = dt.replace(hour=15, minute=30, second=0, microsecond=0)
+    close_time = datetime.time(15, 20) if is_expiry_day(dt) else datetime.time(15, 35)
+    close = dt.replace(hour=close_time.hour, minute=close_time.minute, second=0, microsecond=0)
     delta = close - dt
     return max(0, int(delta.total_seconds() // 60))
 

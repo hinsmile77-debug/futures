@@ -756,6 +756,34 @@ _HZ_TIP = (
     "&nbsp;&nbsp;<b>HORIZON_THRESHOLDS_BASE + ATR 동적 방식 전환 검토 권장</b>"
     "</div>"
 
+    # ── 황색 점선 테두리 ──────────────────────────────────────────────
+    "<b style='color:#D29922'>⑦ 황색(오렌지) 점선 테두리 — 완성봉 스태일(Stale) 경고</b><br>"
+    "<div style='margin-left:10px;line-height:1.9;font-size:11px;'>"
+    "• 해당 호라이즌의 <b>마지막 완성봉이 오래된 경우</b> 발동 (1·3분봉 제외)<br>"
+    "• 발동 조건: <b>경과 분(bar_age) &gt; 호라이즌 절반</b><br>"
+    "<table style='margin:4px 0 4px 0;border-collapse:collapse;font-size:11px;'>"
+    "<tr style='color:#8B949E;'>"
+    "<td style='padding-right:14px;'>호라이즌</td>"
+    "<td style='padding-right:14px;'>황색 발동 기준</td>"
+    "<td>예 (스크린샷)</td>"
+    "</tr>"
+    "<tr><td style='color:#58A6FF;padding-right:14px;'>5분봉</td>"
+    "<td style='color:#D29922;padding-right:14px;'>age &gt; 2.5분</td>"
+    "<td style='color:#8B949E;'>횡보 4m전 → 발동</td></tr>"
+    "<tr><td style='color:#58A6FF;padding-right:14px;'>10분봉</td>"
+    "<td style='color:#D29922;padding-right:14px;'>age &gt; 5분</td>"
+    "<td style='color:#8B949E;'>35.9% 9m전 → 발동</td></tr>"
+    "<tr><td style='color:#58A6FF;padding-right:14px;'>15분봉</td>"
+    "<td style='color:#D29922;padding-right:14px;'>age &gt; 7.5분</td>"
+    "<td style='color:#8B949E;'>50.1% 9m전 → 발동</td></tr>"
+    "<tr><td style='color:#58A6FF;padding-right:14px;'>30분봉</td>"
+    "<td style='color:#D29922;padding-right:14px;'>age &gt; 15분</td>"
+    "<td style='color:#8B949E;'>횡보 9m전 → 미발동</td></tr>"
+    "</table>"
+    "• 카드 숫자 뒤 <b style='color:#D29922;'>Xm전</b> = 완성봉 확정 후 경과 분<br>"
+    "• 예측값 자체는 유효하나 <b>입력 데이터 신선도 저하</b> — 진입 시 주의"
+    "</div><br>"
+
     "<hr style='border:0;border-top:1px solid #30363D;margin:7px 0 5px 0'>"
     "<span style='color:#8B949E;font-size:11px;'>"
     "▸ 카드 % 수치 = GBM·SGD 확률 출력 (threshold 무관)&nbsp;|&nbsp;"
@@ -1042,13 +1070,59 @@ class PredictionPanel(QWidget):
         lay.addWidget(hz_title)
         hgrid = QGridLayout()
         hgrid.setSpacing(4)
+        _HZ_STALE_TIP = {
+            "5분":  ("2.5분", "age &gt; 2.5분"),
+            "10분": ("5분",   "age &gt; 5분"),
+            "15분": ("7.5분", "age &gt; 7.5분"),
+            "30분": ("15분",  "age &gt; 15분"),
+        }
+        _HZ_CARD_TIP_BASE = (
+            "<div style='font-family:Consolas,monospace;font-size:11px;"
+            "line-height:1.8;min-width:310px;'>"
+            "<b style='color:#58A6FF;'>{hname} 호라이즌 예측 카드</b>"
+            "<hr style='border:0;border-top:1px solid #30363D;margin:4px 0 6px 0'>"
+            "<b style='color:#E6EDF3;'>테두리·색상 의미</b><br>"
+            "<table style='border-collapse:collapse;font-size:11px;margin-left:4px;'>"
+            "<tr><td style='color:#F85149;font-weight:bold;padding-right:8px;'>■ 빨간 solid</td>"
+            "<td style='color:#E6EDF3;'>하락(▼) 신호 활성화</td></tr>"
+            "<tr><td style='color:#3FB950;font-weight:bold;padding-right:8px;'>■ 초록 solid</td>"
+            "<td style='color:#E6EDF3;'>상승(▲) 신호 활성화</td></tr>"
+            "<tr><td style='color:#8B949E;font-weight:bold;padding-right:8px;'>■ 회색 solid</td>"
+            "<td style='color:#E6EDF3;'>횡보 또는 중립</td></tr>"
+            "<tr><td style='color:#8B949E;font-weight:bold;padding-right:8px;'>- - 점선</td>"
+            "<td style='color:#E6EDF3;'>앙상블에서 비활성화(체크박스 OFF)</td></tr>"
+            "{stale_row}"
+            "</table>"
+            "{stale_note}"
+            "<hr style='border:0;border-top:1px solid #30363D;margin:5px 0 4px 0'>"
+            "<span style='color:#8B949E;font-size:10px;'>"
+            "% 수치 = 해당 방향 확률 (GBM+SGD 블렌딩)"
+            "</span></div>"
+        )
+        _STALE_ROW = (
+            "<tr><td style='color:#D29922;font-weight:bold;padding-right:8px;'>■ 황색 점선</td>"
+            "<td style='color:#E6EDF3;'>완성봉 스태일 경고 ({cond})</td></tr>"
+        )
+        _STALE_NOTE = (
+            "<div style='margin-top:5px;color:#D29922;font-size:11px;'>"
+            "⚠ <b>Xm전</b> = 완성봉 확정 후 경과 분<br>"
+            "&nbsp;&nbsp;예측값은 유효하나 입력 신선도 저하 — 진입 시 주의"
+            "</div>"
+        )
         for i, hname in enumerate(["1분","3분","5분","10분","15분","30분"]):
+            _stale_info = _HZ_STALE_TIP.get(hname)
+            _tip = _HZ_CARD_TIP_BASE.format(
+                hname=hname,
+                stale_row=_STALE_ROW.format(cond=_stale_info[1]) if _stale_info else "",
+                stale_note=_STALE_NOTE if _stale_info else "",
+            )
             frame = QFrame()
             frame.setFixedHeight(72)
             frame.setStyleSheet(
                 f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
                 f"border-radius:6px;}}"
             )
+            frame.setToolTip(_tip)
             fl = QVBoxLayout(frame)
             fl.setContentsMargins(6, 4, 6, 4)
             hl = mk_label(hname, C['text2'], 10, align=Qt.AlignCenter)

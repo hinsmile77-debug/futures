@@ -5226,3 +5226,26 @@ GBM 배치 재학습 산출물 형식을 런타임 로더와 맞추고, 좌하�
 - ProgramTrade는 수동 probe 스크립트로만 추가 진단 가능하며, 운영 타이머에서는 비활성 상태
 
 ---
+
+## 2026-06-08 (124차 — v8.0 Phase 0: 시간대 정책·캐스케이드 게이트·FL 감쇠·entry_ok 등)
+
+**Work**: 재학습 불필요 인프라(Phase 0) 구현 14건. main.py 연결·feature_builder 버그 수정은 다음 세션.
+
+| # | 항목 | 파일 |
+|---|---|---|
+| 1 | TICK_SIZE = 0.05 설정화 | config/settings.py |
+| 2 | HORIZON_TIME_POLICY + HORIZON_COLDSTART_MIN_PASS | config/settings.py |
+| 3 | compute_cascade_coherence() — 30m→1m 정렬 점수 | model/ensemble_decision.py |
+| 4 | select_entry_horizon() — ATR 기반 최적 호라이즌 선택 | model/ensemble_decision.py |
+| 5 | FL 조기 감쇠 _fl_streak — FL 70%+ 10분→weight×0.2 | model/ensemble_decision.py |
+| 6 | active_horizons 앙상블 적용 — 비활성 weight=0 | model/ensemble_decision.py |
+| 7 | CascadeCoherence gate — score < 0.34 차단 | model/ensemble_decision.py |
+| 8 | entry_ok 파라미터 — 0.0이면 즉시 X등급 | strategy/entry/checklist.py |
+| 9 | is_market_open / minutes_to_close 만기일 15:20 수정 | utils/time_utils.py |
+| 10 | scaler_events 컬럼 확장 + 자동 마이그레이션 | model/scaler_monitor_db.py |
+| 11 | ScalerMonitorPanel Top5 6컬럼 확장 (raw→pre, μ/σ) | dashboard/panels/scaler_monitor_panel.py |
+| 12 | CYBOS_PLUS.bat STEP 0 (close_other_windows.ps1 신규) | CYBOS_PLUS.bat |
+| 13 | docs 정리 — 구버전 3개 삭제, V8 통합 계획서 신규 | docs/ |
+| 14 | SGD_FEATURE_VECTOR.md 갱신 | docs/ |
+
+**미구현 (다음 세션)**: main.py 연결(active_horizons/entry_ok/select_entry_horizon/cascade_blocked), feature_builder.py 버그 5건

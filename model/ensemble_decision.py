@@ -164,6 +164,50 @@ class HorizonF1AdaptiveWeight:
         return {h: round(self._f1_ema[h], 3) for h in HORIZONS}
 
 
+# ── Phase 1 유틸리티 함수 ────────────────────────────────────────────────────
+
+def compute_cascade_coherence(horizon_proba):
+    # type: (Dict[str, Dict]) -> float
+    """30m→15m→…→1m 방향이 흘러내려오는 정렬도를 반환.
+
+    하위 호라이즌만 방향 있고 상위가 FLAT이면 노이즈성 스파이크.
+    반환: 0.0(완전 불일치) ~ 1.0(완전 정렬)
+    """
+    cascade = ["30m", "15m", "10m", "5m", "3m", "1m"]
+    dirs = [
+        (horizon_proba.get(h) or {}).get("direction", DIRECTION_FLAT)
+        for h in cascade
+    ]
+    target = dirs[-1]  # 1m 방향 기준
+    if target == DIRECTION_FLAT:
+        return 0.5    # FLAT → 중립
+    aligned = 0
+    for d in reversed(dirs):
+        if d == target:
+            aligned += 1
+        else:
+            break
+    return aligned / len(dirs)
+
+
+def select_entry_horizon(atr, threshold_1m):
+    # type: (float, float) -> Optional[str]
+    """ATR 레짐 기반 최적 진입 호라이즌 선택.
+
+    기존 threshold_feasibility 피처(atr / threshold_1m) 역활용.
+    Returns: "1m" / "3m" / "5m" / None(저변동성 차단)
+    """
+    feasibility = atr / (threshold_1m + 1e-9)
+    if feasibility < 0.8:
+        return None       # 저변동성 → 진입 차단
+    elif feasibility < 1.5:
+        return "1m"       # 적정 변동성
+    elif feasibility < 2.5:
+        return "3m"       # 중간 변동성
+    else:
+        return "5m"       # 고변동성
+
+
 class EnsembleDecision:
     """앙상블 신호 생성 + 진입 등급 판정"""
 
@@ -201,6 +245,8 @@ class EnsembleDecision:
         self._hz_stuck: Dict[str, bool] = {h: False for h in HORIZONS}
         # ShortHorizonOverride: dir=FLAT 연속 카운터
         self._flat_streak: int = 0
+        # FL 조기 감쇠: FL 확률 70%+ 연속 분 카운터 (Phase 1 부록 C-1)
+        self._fl_streak: Dict[str, int] = {h: 0 for h in HORIZONS}
 
     def compute(
         self,
@@ -212,6 +258,7 @@ class EnsembleDecision:
         trend_gate_up_active: bool = False,
         trend_gate_dn_active: bool = False,
         time_zone: str = "",
+        active_horizons: Optional[list] = None,
     ) -> Dict:
         """
         Args:
@@ -227,6 +274,61 @@ class EnsembleDecision:
         # HorizonF1AdaptiveWeight: F1 낮은 호라이즌 자동 억제 (f1² 비례).
         cur_weights = self._f1_weight.apply(self._decorr.weights)
         self._decorr.push(horizon_proba)   # 이번 예측을 버퍼에 기록
+
+        # ── 시간대 정책: 비활성 호라이즌 가중치 0 ────────────────────
+        # HORIZON_TIME_POLICY 기반 active_horizons가 주어진 경우 적용
+        if active_horizons is not None:
+            _active_set = set(active_horizons)
+            for _h in list(cur_weights.keys()):
+                if _h not in _active_set:
+                    cur_weights[_h] = 0.0
+            _tw = sum(cur_weights.values())
+            if _tw <= 1e-9:
+                # 활성 호라이즌이 없는 cold-start 구간 → FLAT 즉시 반환
+                logger.debug(
+                    "[Ensemble] active_horizons=%s 전체 차단 → FLAT 반환", active_horizons
+                )
+                return {
+                    "direction": DIRECTION_FLAT,
+                    "confidence": 0.0,
+                    "up_score": 0.0,
+                    "down_score": 0.0,
+                    "grade": "X",
+                    "auto_entry": False,
+                    "regime_ok": False,
+                    "coherence_blocked": False,
+                    "cascade_blocked": False,
+                    "detail": {},
+                    "active_horizons_blocked": True,
+                }
+            cur_weights = {h: w / _tw for h, w in cur_weights.items()}
+            logger.debug(
+                "[Ensemble] 시간대 정책 active=%s | weights=%s",
+                active_horizons,
+                {k: round(v, 3) for k, v in cur_weights.items() if v > 0},
+            )
+
+        # ── FL 조기 감쇠 (Phase 1 부록 C-1): FL 70%+ 10분 → weight×0.2 ─
+        # 기존 uniform fallback(90%+ 20분)의 사전 단계 — 앙상블 오염 조기 차단
+        _fl_damped = set()
+        for _h in list(cur_weights.keys()):
+            _fl_prob = float((horizon_proba.get(_h) or {}).get("flat", 0.0))
+            if _fl_prob > 0.70:
+                self._fl_streak[_h] = self._fl_streak.get(_h, 0) + 1
+            else:
+                self._fl_streak[_h] = 0
+            _streak = self._fl_streak.get(_h, 0)
+            if _streak >= 10 and cur_weights.get(_h, 0) > 0:
+                cur_weights[_h] *= 0.2
+                _fl_damped.add(_h)
+                logger.debug(
+                    "[EarlyFLDamp] %s fl=%.0f%% %dmin → weight×0.2",
+                    _h, _fl_prob * 100, _streak,
+                )
+        if _fl_damped:
+            _tw = sum(cur_weights.values())
+            if _tw > 1e-9:
+                cur_weights = {h: w / _tw for h, w in cur_weights.items()}
 
         # CLOSE_VOLATILE(14:00~15:00) 구간: 단기(1m/3m/5m) FL편향 완화
         # 오후 저변동성 구간에서 단기 호라이즌이 FL에 과대 편향되어 중기 DN 신호를 희석.
@@ -541,6 +643,20 @@ class EnsembleDecision:
                             time_zone or "OTHER", _coherence_min,
                         )
 
+        # ── 캐스케이드 코히어런스 게이트 (Phase 1-2) ─────────────────
+        # CoherenceGate(비율)와 보완: 장기→단기 방향 정렬 순서를 검증
+        # 하위 호라이즌만 방향 있고 상위는 FLAT이면 노이즈성 스파이크로 차단
+        _cascade_blocked = False
+        if direction != DIRECTION_FLAT and not _coherence_blocked:
+            _cascade_score = compute_cascade_coherence(horizon_proba)
+            if _cascade_score < 0.34:
+                _cascade_blocked = True
+                _coherence_blocked = True
+                logger.info(
+                    "[Ensemble] CascadeCoherence 차단 score=%.2f dir=%+d",
+                    _cascade_score, direction,
+                )
+
         # ── Platt 보정 (앙상블 전용 보정기 우선, 미학습 시 3m fallback) ────
         # ensemble_calibrator: 앙상블 conf 분포를 직접 학습 (3m 분포 미스매치 해소)
         # 100건 미만: 3m 보정기 fallback (분포 차이 일부 허용)
@@ -591,6 +707,7 @@ class EnsembleDecision:
             "regime_ok":          regime_ok,
             "min_conf":           min_conf,
             "coherence_blocked":  _coherence_blocked,
+            "cascade_blocked":    _cascade_blocked,
             "trend_boost_applied": _trend_boost_applied,
             "detail":             detail,
             "gating":             gating,
@@ -622,6 +739,7 @@ class EnsembleDecision:
             self._hz_conf_hist[h].clear()
         self._hz_stuck = {h: False for h in HORIZONS}
         self._flat_streak = 0
+        self._fl_streak = {h: 0 for h in HORIZONS}
 
     def record_trade_outcome(
         self,

@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS scaler_events (
     max_z          REAL,
     max_z_feature  TEXT,
     extreme_count  INTEGER DEFAULT 0,
+    raw_value      REAL,
+    pre_value      REAL,
+    scaler_mean    REAL,
+    scaler_std     REAL,
     refresh_type   TEXT,
     refresh_reason TEXT
 );
@@ -45,10 +49,20 @@ CREATE TABLE IF NOT EXISTS scaler_daily (
 
 
 def init_db() -> None:
-    """DB 파일 생성 + 스키마 초기화 (멱등)."""
+    """DB 파일 생성 + 스키마 초기화 (멱등). 기존 DB에 신규 컬럼 자동 마이그레이션."""
     os.makedirs(os.path.dirname(SCALER_MONITOR_DB), exist_ok=True)
     with sqlite3.connect(SCALER_MONITOR_DB, timeout=10) as c:
         c.executescript(_DDL)
+        existing = {r[1] for r in c.execute("PRAGMA table_info(scaler_events)").fetchall()}
+        for col, typedef in [
+            ("raw_value",   "REAL"),
+            ("pre_value",   "REAL"),
+            ("scaler_mean", "REAL"),
+            ("scaler_std",  "REAL"),
+        ]:
+            if col not in existing:
+                c.execute("ALTER TABLE scaler_events ADD COLUMN %s %s" % (col, typedef))
+        c.commit()
 
 
 def insert_events_batch(rows: List[dict]) -> None:
@@ -56,7 +70,8 @@ def insert_events_batch(rows: List[dict]) -> None:
 
     rows: list of dicts — keys:
         ts, date, horizon, fitted_at, age_minutes,
-        max_z, max_z_feature, extreme_count
+        max_z, max_z_feature, extreme_count,
+        raw_value, pre_value, scaler_mean, scaler_std
     """
     if not rows:
         return
@@ -65,10 +80,12 @@ def insert_events_batch(rows: List[dict]) -> None:
             c.executemany(
                 """INSERT INTO scaler_events
                    (ts, date, horizon, fitted_at, age_minutes,
-                    max_z, max_z_feature, extreme_count)
+                    max_z, max_z_feature, extreme_count,
+                    raw_value, pre_value, scaler_mean, scaler_std)
                    VALUES
                    (:ts, :date, :horizon, :fitted_at, :age_minutes,
-                    :max_z, :max_z_feature, :extreme_count)""",
+                    :max_z, :max_z_feature, :extreme_count,
+                    :raw_value, :pre_value, :scaler_mean, :scaler_std)""",
                 rows,
             )
             c.commit()

@@ -6,6 +6,45 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-08 (124차 — v8.0 Phase 0)
+
+### 한일 요약
+
+- [DONE 2026-06-08] **TICK_SIZE 설정화** — `config/settings.py`에 `TICK_SIZE = 0.05`
+- [DONE 2026-06-08] **HORIZON_TIME_POLICY + HORIZON_COLDSTART_MIN_PASS** — cold-start 2단계 + 마감 구간 정책
+- [DONE 2026-06-08] **compute_cascade_coherence()** — 30m→1m 방향 정렬 점수 반환 (유틸 함수)
+- [DONE 2026-06-08] **select_entry_horizon()** — ATR feasibility 기반 최적 호라이즌 선택 (유틸 함수)
+- [DONE 2026-06-08] **FL 조기 감쇠 `_fl_streak`** — FL 70%+ 10분 → weight×0.2 앙상블 차단
+- [DONE 2026-06-08] **`active_horizons` 앙상블 적용** — 시간대 정책 비활성 호라이즌 weight=0
+- [DONE 2026-06-08] **CascadeCoherence gate** — score < 0.34 시 방향성 신호 차단 (CoherenceGate 보완)
+- [DONE 2026-06-08] **`entry_ok` 파라미터** — checklist.check()에 추가, 0.0이면 즉시 X등급
+- [DONE 2026-06-08] **만기일 마감 수정** — `is_market_open` / `minutes_to_close` 만기일 15:20, 일반 15:35
+- [DONE 2026-06-08] **scaler_events DB 컬럼 확장** — raw_value/pre_value/scaler_mean/scaler_std + 자동 마이그레이션
+- [DONE 2026-06-08] **ScalerMonitorPanel Top5 6컬럼 확장** — raw→pre, μ/σ, 최근 ts/horizon
+- [DONE 2026-06-08] **CYBOS_PLUS.bat STEP 0** — 다른 창 최소화 + 마우스 (0,0) 리셋 (close_other_windows.ps1 신규)
+- [DONE 2026-06-08] **docs 정리** — 구버전 3개 삭제, V8 통합 계획서 신규, SGD_FEATURE_VECTOR 갱신
+
+### 다음 할 일
+
+- [NEXT 즉시] **main.py 연결** (Phase 0 함수들을 실제 파이프라인에 연결)
+  - `HORIZON_TIME_POLICY` → 매분 `active_horizons` 계산 → `EnsembleDecision.compute(active_horizons=...)` 전달
+  - `select_entry_horizon(atr, threshold_1m)` → `active_entry_hz` → 로그 기록
+  - `entry_ok` → `EntryChecklist.check(entry_ok=...)` 전달 (독성·품질·스프레드 미달 시 0.0)
+  - `cascade_blocked` 반환값 → 대시보드 진입 단계 표시 연결
+
+- [NEXT 즉시] **feature_builder.py Phase 0 버그 수정** (V8 S0/6번)
+  - `prev_day_same_hour_ret`: `timedelta(minutes=0)` 잔존 코드 제거 (`prev_d.strftime` 직접 사용)
+  - `ema_cross`: 이진값 → `(ema5 - ema20) / (ema20 + 1e-9)` 연속값
+  - `avg_volume`: `bar_volume = vol` 분리 + `avg_volume = rolling_mean`
+  - `atr_expansion_rate` 신규: `(atr[-1] - atr[-2]) / atr[-2]`
+  - `investor_age_norm` 정규화: `min(age, 300.0) / 300.0`
+
+- [NEXT 다음 장] **Phase 0 실세션 확인**
+  - STEP 0 pre-launch: 다른 창 최소화 → Cybos 로그인 정상
+  - `[EarlyFLDamp]` 로그: FL 70%+ 10분 연속 시 출력
+  - `[Ensemble] CascadeCoherence 차단` 로그: 하위만 방향 시 차단
+  - 만기일 `is_market_open` 15:20 마감 동작
+
 ## 2026-06-08 (121~123차)
 
 ### 한일 요약

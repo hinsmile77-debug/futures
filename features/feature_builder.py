@@ -143,7 +143,7 @@ class FeatureBuilder:
             features["cvd_divergence"] = float(
                 cvd_result["signal_strength"] * (-1 if cvd_result["divergence"] else 1)
             )
-            features["cvd_direction"]   = float(cvd_result["direction"])
+            features["cvd_direction"]   = float(cvd_result["direction"]) * 0.5
             # cvd/cvd_slope 절대값 → 일중 max 대비 정규화값으로 교체 (Phase 3-A)
             features["cvd"]             = float(cvd_result.get("cvd_norm", 0.0))
             features["cvd_slope"]       = float(cvd_result.get("cvd_slope_norm", 0.0))
@@ -368,8 +368,18 @@ class FeatureBuilder:
                              "toxicity_regime_code": 0.0})
 
         if supply_demand:
+            _INV_LOG_COLS = {
+                "foreign_futures_net", "foreign_call_net", "foreign_put_net",
+                "retail_futures_net", "institution_futures_net",
+                "program_arb_net", "program_non_arb_net", "foreign_retail_divergence",
+            }
             for k, v in supply_demand.items():
-                features[k] = float(v) if v is not None else 0.0
+                _fv = float(v) if v is not None else 0.0
+                if k in _INV_LOG_COLS:
+                    # 계약수 단위 원시값 → 로그 압축: ±1000계약≈0.69, ±20000계약≈3.0
+                    features[k] = float(np.sign(_fv) * np.log1p(abs(_fv) / 1000.0))
+                else:
+                    features[k] = _fv
 
         if option_data:
             for k, v in option_data.items():
@@ -483,9 +493,12 @@ class FeatureBuilder:
         # ── 가격 모멘텀 ─────────────────────────────────────────
         _ch = list(self._close_history)
         _n  = len(_ch)
-        features["ret_1m"]  = (_ch[-1] - _ch[-2])  / (_ch[-2]  + 1e-9) if _n >= 2  else 0.0
-        features["ret_5m"]  = (_ch[-1] - _ch[-6])  / (_ch[-6]  + 1e-9) if _n >= 6  else 0.0
-        features["ret_15m"] = (_ch[-1] - _ch[-16]) / (_ch[-16] + 1e-9) if _n >= 16 else 0.0
+        features["ret_1m"]  = float(np.clip(
+            (_ch[-1] - _ch[-2])  / (_ch[-2]  + 1e-9) if _n >= 2  else 0.0, -0.01, 0.01))
+        features["ret_5m"]  = float(np.clip(
+            (_ch[-1] - _ch[-6])  / (_ch[-6]  + 1e-9) if _n >= 6  else 0.0, -0.02, 0.02))
+        features["ret_15m"] = float(np.clip(
+            (_ch[-1] - _ch[-16]) / (_ch[-16] + 1e-9) if _n >= 16 else 0.0, -0.05, 0.05))
 
         # ── EMA cross ────────────────────────────────────────────
         if close > 0:
@@ -533,7 +546,7 @@ class FeatureBuilder:
         self._vwap_history.append(_vwap_cur)
         _vh = list(self._vwap_history)
         if len(_vh) >= 5:
-            features["vwap_momentum"] = _vh[-1] - _vh[-5]
+            features["vwap_momentum"] = float(np.clip(_vh[-1] - _vh[-5], -2.0, 2.0))
         else:
             features["vwap_momentum"] = 0.0
 
