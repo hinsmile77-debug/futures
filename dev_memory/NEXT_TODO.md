@@ -6,6 +6,36 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-08 (131차 — 진입0 탈출 5종 패치)
+
+### 한일 요약
+
+- [DONE 2026-06-08] **CascadeCoherence FL 제외 패치** — FL 호라이즌 제외 후 방향성 있는 것만 집계. 오늘 케이스(30m/15m/10m=DN, 5m/3m=FL, 1m=DN) 0.17→1.00 (`model/ensemble_decision.py`)
+- [DONE 2026-06-08] **CascadeCoherence 임계값 0.34→0.25** — 혼합 방향 케이스 허용 확대 (`model/ensemble_decision.py`)
+- [DONE 2026-06-08] **MC_ABS_FLOOR 0.42→0.25** — 실 conf(27.9%) 분포에 수렴 허용. REGIME_MIN_CONF RISK_ON/NEUTRAL 0.42→0.25 동기화 (`config/settings.py`)
+- [DONE 2026-06-08] **BiasReset coldstart FL 기준 완화** — startup_warmup 구간에서 10분→5분 (`main.py`)
+- [DONE 2026-06-08] **CORE CVD/OFI 강제X → pass_count-1** — VWAP만 강제X 유지, CVD/OFI 불일치는 등급 하락으로 처리 (`strategy/entry/checklist.py`)
+- [DONE 2026-06-08] **_restore_mc_from_history SELECT 버그 수정** — `SELECT zone, new_mc` → `zone, new_mc, base_mc`. KeyError로 REGIME_MIN_CONF 동기화 항상 실패하던 문제 (`strategy/entry/time_strategy_router.py`)
+
+### 다음 할 일
+
+- [NEXT 즉시] **앱 재시작 후 GBM 재학습** (최우선)
+  - 앱 재시작 → SHAP 탭 "현재 세트 재학습" 클릭
+  - 재학습 완료 후 `[DynMC] step clamp 적용: p65=0.279 → base=0.390` 로그 확인 (MC_FLOOR 하강 첫 단계)
+  - cvd_divergence SHAP rank 상승 확인
+
+- [NEXT 내일 장] **131차 패치 효과 확인**
+  - `[CascadeCoherence]` 차단 비율 대폭 감소 확인 (오늘 96% → 개선 기대)
+  - `[BiasReset]` coldstart 5분 기준 발동 확인 (재기동 직후 FL 고착 시)
+  - `[Checklist] CORE CVD/OFI ✗` INFO 로그 확인 (강제X → 등급하락 처리 확인)
+  - DynMC step clamp 로그로 mc 하강 추이 모니터링
+
+- [NEXT 중기] **MC 하강 후 진입 재개 확인**
+  - 재학습 5~6회 후 mc ≈ 0.28~0.30 수렴 시 conf 33%대 신호 통과 가능
+  - 과진입(과도한 완화) 여부 모니터링 — 필요 시 MC_ABS_FLOOR 상향 조정
+
+---
+
 ## 2026-06-08 (130차 — CVD SHAP 복구 + SHAP 추천 3단 개선 + 코드 정리)
 
 ### 한일 요약
@@ -25,9 +55,7 @@
   - 재학습 완료 후 버튼 enabled 복원 확인 (`_update_shap_dashboard` 호출 효과)
   - cvd_divergence SHAP rank 상승 확인 (기존 rank 63/101 0.0% → 개선 예상)
 
-- [NEXT 다음 세션] **`_up_r` UnboundLocalError 조사** (미착수)
-  - `main.py` minute_pipeline에서 `local variable '_up_r' referenced before assignment` 발생
-  - 발생 이력: 2026-06-08 13:06~13:11 SYSTEM 로그
+- [DONE 2026-06-08] **`_up_r` UnboundLocalError 조사** — 129차에서 이미 수정 확인. 원인: 미커밋 편집 중 `_dir_bias_r = max(_up_r, _dn_r, _fl_r)` 추가 후 초기화 누락(당시 `_fl_r = 0.0`만 있었음). 수정: `_up_r = _dn_r = _fl_r = 0.0` (main.py:2777)
 
 ---
 

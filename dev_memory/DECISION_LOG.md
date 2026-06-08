@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-06-08 (131차 — 진입0 탈출 5종 패치)
+
+### [분석] 6/8 진입0 원인 — CascadeCoherence FL 끼임이 주범
+**Root cause**: `compute_cascade_coherence()`가 1m부터 역순으로 연속 정렬을 체크하다가 FL이 끼면 즉시 break. 오늘 30m/15m/10m=DN, 5m/3m=FL, 1m=DN → score=1/6=0.17 → 임계 0.34 미달 → 125건 차단. 실제 DN 4/4 호라이즌이 정렬됐음에도 FL 끼임 때문에 차단됨.
+**Fix**: FL 호라이즌을 제외한 directional만으로 집계. `aligned / len(directional)`.
+
+### [버그] _restore_mc_from_history SELECT 쿼리 base_mc 누락
+**File**: `strategy/entry/time_strategy_router.py`
+**Root cause**: `SELECT zone, new_mc FROM mc_history`에서 `base_mc` 컬럼 누락 → `r["base_mc"]` KeyError 발생 → `except`로 잡혀 DEBUG 로그만 → `base_mcs = []` → `REGIME_MIN_CONFIDENCE` 동기화 항상 스킵됨. 수백 번 재기동에서 모두 동기화 실패했으나 zone 복원 자체(new_mc 설정)는 성공했으므로 기능 영향은 제한적.
+**Fix**: `SELECT zone, new_mc, base_mc FROM mc_history`
+
+### [버그] ensemble_decisions 테이블이 predictions.db 안에 있음 (오해 방지)
+**Note**: `PREDICTIONS_DB = data/db/predictions.db` 안에 `ensemble_decisions` 테이블이 있음. 별도 `data/db/ensemble_decisions.db`가 아님. `_recalibrate_mc()`가 정상 작동하려면 `predictions.db`가 존재해야 함.
+
+### [설계] MC_ABS_FLOOR 0.42→0.25 배경
+**Decision**: 오늘 실 conf_p65=0.279 (2,223봉 기준). 기존 MC_FLOOR=0.42이면 DynMC가 실 conf를 반영하지 못하고 항상 0.42에 붙어 있음 → mc=42% vs conf=33% → 영구 미달. MC_FLOOR=0.25로 낮추면 step_limit=0.03씩 단계적 하강 가능. 즉시 25%로 내려가지 않고 재학습 5~6회 거쳐 conf 분포에 수렴.
+
+### [설계] VWAP 강제X 유지, CVD/OFI pass_count-1 완화
+**Decision**: VWAP는 기관 알고리즘 기준선으로 방향 판단의 절대 근거 → 강제X 유지. CVD/OFI는 앙상블이 틀리고 CVD/OFI가 맞는 케이스(오늘 오전)에서 기회 손실 발생 → pass_count 감점으로 완화. VWAP와 CVD/OFI의 역할 차이: VWAP=포지션 기준선(방향 판단), CVD/OFI=수급 확인(보조 검증).
+
+---
+
 ## 2026-06-08 (130차 — CVD SHAP 복구 + SHAP 추천 3단 개선)
 
 ### [버그] CVD signal_strength 단위 불일치 — SHAP 기여도 0% 원인

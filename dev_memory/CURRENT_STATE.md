@@ -1,7 +1,52 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-08 (130차 세션 마무리) — CVD SHAP 복구 + SHAP 추천 알고리즘 3단 개선 + 코드 정리
+> 마지막 업데이트: 2026-06-08 (131차 세션 마무리) — 진입0 분석 + 5종 패치 (Coherence·MC·BiasReset·CORE 완화)
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-08 (131차 — 진입0 탈출 5종 패치)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| CascadeCoherence FL 제외 패치 | **완료** ✅ | `model/ensemble_decision.py` |
+| CascadeCoherence 임계값 0.34→0.25 | **완료** ✅ | `model/ensemble_decision.py` |
+| MC_ABS_FLOOR 0.42→0.25 + REGIME_MIN_CONF 동기화 | **완료** ✅ | `config/settings.py` |
+| BiasReset coldstart FL 기준 10분→5분 | **완료** ✅ | `main.py` |
+| CORE CVD/OFI 강제X → pass_count-1 완화 | **완료** ✅ | `strategy/entry/checklist.py` |
+| _restore_mc_from_history SELECT base_mc 누락 버그 수정 | **완료** ✅ | `strategy/entry/time_strategy_router.py` |
+| **GBM 재학습** — 패치 반영 필요 | **미완료** ⏳ | 앱 재시작 후 "현재 세트 재학습" 버튼 클릭 |
+
+### 6/8 진입0 원인 분석 결과
+
+| 원인 | 건수 | 차단 비율 | 패치 |
+|---|---|---|---|
+| CascadeCoherence 차단 (FL 끼임) | 125건 | 37% | ②⑥ 완료 |
+| 신뢰도 미달 (conf 33% vs mc 42%) | 161건 | 48% | ③ 완료 (MC_FLOOR 0.25) |
+| CORE 피처 불일치 (CVD/OFI) | 22건 | 7% | ⑦ 완료 |
+| 나머지 (FL 방향, etc.) | 27건 | 8% | — |
+
+### 5종 패치 상세
+
+| 패치 | 변경 전 | 변경 후 | 기대 효과 |
+|---|---|---|---|
+| ② Coherence FL 제외 | FL 끼면 즉시 break | directional만 집계 | 오늘 케이스 0.17→1.00 |
+| ⑥ Coherence 임계값 | 0.34 | 0.25 | 차단 범위 축소 |
+| ③ MC_ABS_FLOOR | 0.42 | 0.25 | 실 conf(27%) 수렴 허용 |
+| ④ BiasReset coldstart | FL: 항상 10분 | coldstart: 5분 | 재기동 직후 즉각 대응 |
+| ⑦ CORE CVD/OFI | 실패→강제X | VWAP만 강제X, CVD/OFI는 등급하락 | 기회 손실 방지 |
+
+### MC_ABS_FLOOR 하강 경로 (주의)
+
+MC_FLOOR=0.25지만 즉시 반영이 아님. 재학습마다 step_limit=0.03씩 단계적 하강:
+- 현재: mc=0.42 (mc_history.db 복원값)
+- 재학습 1회: 0.42-0.03=0.39
+- 재학습 2회: 0.39-0.03=0.36
+- ...→ conf_p65=0.279 수렴까지 약 5~6회 재학습 필요
+
+`[DynMC] step clamp 적용` 로그로 정상 하강 확인 가능.
 
 ---
 
@@ -19,7 +64,7 @@
 | SHAP 추천 알고리즘 3단 개선 | **완료** ✅ | `learning/shap/shap_tracker.py` |
 | update_shap 3중 정의 → 1개로 통합 | **완료** ✅ | `dashboard/main_dashboard.py` |
 | **GBM 재학습** — cvd_divergence 연속값 DB 반영 필요 | **미완료** ⏳ | 앱 재시작 후 "현재 세트 재학습" 버튼 클릭 |
-| `_up_r` UnboundLocalError 조사 | **미착수** ⏳ | `main.py` minute_pipeline |
+| `_up_r` UnboundLocalError 조사 | **완료** ✅ (129차에서 수정됨) | `main.py:2777` |
 
 ### cvd_divergence 복구 결과
 
@@ -43,7 +88,7 @@
 
 - 앱 재시작 → "현재 세트 재학습" 클릭 → 버튼 enabled 복원 확인
 - GBM 재학습 완료 후 SHAP 탭에서 cvd_divergence rank 상승 확인
-- `_up_r` UnboundLocalError 재발 여부 (minute_pipeline 13:06~13:11 발생 이력)
+- ~~`_up_r` UnboundLocalError~~: 129차에서 수정 완료 (재발 없음)
 
 ---
 

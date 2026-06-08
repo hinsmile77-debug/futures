@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-06-08 (131차 — 진입0 분석 + 5종 패치)
+
+**Work**: 6/8 진입0(A/B/C 0건) 원인 분석 → 패치 5종 구현.
+
+### 한 것
+
+- [A] **6/8 진입0 원인 분석** — grade: A=0, B=0, C=4(1.2%), X=331(98.8%). 주원인 3가지 특정
+  - CascadeCoherence FL 끼임: 125건(37%) — 30m/15m/10m=DN, 5m/3m=FL → score=0.17 → 임계 차단
+  - 신뢰도 미달: 161건(48%) — conf 평균 33.2% vs mc=42% (MC_FLOOR가 실 conf보다 높음)
+  - CORE CVD/OFI 불일치: 22건(7%)
+
+- [B] **mc=62% 소스 추적** — 11:51 OTHER 전환 후 62%가 Checklist에 적용됨. 코드 상 65%가 나와야 하지만 62%가 로그에 기록. 산술적으로 설명 불가한 값. 단, OTHER는 allow_new_entry=False 구간이므로 실제 진입에 무관. 부수적으로 _restore_mc_from_history SELECT 버그(base_mc 누락) 발견
+
+- [C] **131차 패치 5종 구현 및 커밋** (커밋: )
+  - CascadeCoherence FL 제외: directional 호라이즌만 집계 (오늘 케이스 0.17→1.00)
+  - CascadeCoherence 임계값: 0.34→0.25
+  - MC_ABS_FLOOR: 0.42→0.25, REGIME_MIN_CONF NEUTRAL/RISK_ON 동기화
+  - BiasReset coldstart FL 기준: 10분→5분 (startup_warmup 구간 한정)
+  - CORE CVD/OFI: 강제X→pass_count-1 (VWAP는 강제X 유지)
+  - 부록: _restore_mc_from_history SELECT base_mc 누락 버그 수정
+
+---
+
 ## 2026-06-08 (130차 — CVD SHAP 복구 + SHAP 추천 3단 개선 + 코드 정리)
 
 **Work**: 동적 피처(SHAP) 탭 3가지 실질적 문제 점검 및 전면 수정.
@@ -34,7 +57,23 @@
 ### 다음 할 것
 
 - [X] **앱 재시작 후 GBM 재학습** — cvd_divergence 연속값 DB를 모델이 학습해야 SHAP 개선 반영
-- [Y] **`_up_r` UnboundLocalError 조사** — minute_pipeline에서 13:06~13:11 사이 발생 이력, 미착수
+- [DONE 2026-06-08] **`_up_r` UnboundLocalError 조사 완료** — 129차에서 이미 수정됨. 상세: 아래 131차 세션 참조
+
+---
+
+## 2026-06-08 (131차 — `_up_r` UnboundLocalError 근인 조사)
+
+**Work**: 13:06~13:11 SYSTEM 로그 `UnboundLocalError: local variable '_up_r' referenced before assignment` 발생 원인 분석.
+
+### 조사 결과
+
+**버그 발생 경위**:
+- 126차 코드(12:26 커밋): `_fl_r = 0.0`만 초기화. `_up_r`/`_dn_r`은 `if _tot >= 15:` 블록 안에서만 사용 → 정상
+- 13:06~13:11: **미커밋 편집 중** `_dir_bias_r = max(_up_r, _dn_r, _fl_r)` 코드를 블록 밖에 추가, 그러나 초기화는 `_fl_r = 0.0`만 남겨둔 채 실행
+- `_tot < 15`인 호라이즌이 loop 첫 번째로 등장 → `_up_r` 미할당 상태로 `max()` 호출 → UnboundLocalError
+- **129차(14:59)에서 수정 완료**: `_fl_r = 0.0` → `_up_r = _dn_r = _fl_r = 0.0` (main.py:2777)
+
+**현재 상태**: 수정 완료, 재발 없음.
 
 ---
 
