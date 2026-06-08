@@ -174,27 +174,18 @@ class EntryChecklist:
 
         pass_count = sum(1 for v in checks.values() if v)
 
-        # CORE 3개(CVD·VWAP·OFI) 중 하나라도 ✗ → 즉시 X등급 (절대 원칙)
-        core_fail = not checks["4_cvd"] or not checks["3_vwap"] or not checks["5_ofi"]
-        if core_fail:
-            failed = [k for k in ("3_vwap", "4_cvd", "5_ofi") if not checks[k]]
-            # [CORE-DIAG] 탈락 원인 진단 — 데이터 문제 vs 로직 문제 구분용
-            _diag_parts = []
-            if not checks["3_vwap"]:
-                _need = ">0 (LONG)" if is_long else "<0 (SHORT)"
-                _diag_parts.append(
-                    f"VWAP pos={vwap_position:+.3f} need {_need}"
-                    + (f" bear_exh={bear_exhaustion:.2f}" if is_long else f" bull_exh={bull_exhaustion:.2f}")
-                )
-            if not checks["4_cvd"]:
-                _need_cvd = ">0" if is_long else "<0"
-                _diag_parts.append(f"CVD dir={cvd_direction:+d} need {_need_cvd}")
-            if not checks["5_ofi"]:
-                _need_ofi = ">0" if is_long else "<0"
-                _diag_parts.append(f"OFI pres={ofi_pressure:+d} need {_need_ofi}")
+        # VWAP만 강제 X 유지 (절대 원칙 — 기관 알고리즘 기준선)
+        # CVD/OFI 불일치는 pass_count -1 완화: 앙상블이 틀리고 CVD/OFI가 맞는 케이스에서
+        # 기회 손실 방지 (강제 X → 등급 하락으로 완화)
+        if not checks["3_vwap"]:
+            _need = ">0 (LONG)" if is_long else "<0 (SHORT)"
+            _diag = (
+                f"VWAP pos={vwap_position:+.3f} need {_need}"
+                + (f" bear_exh={bear_exhaustion:.2f}" if is_long else f" bull_exh={bull_exhaustion:.2f}")
+            )
             logger.warning(
-                "[Checklist] CORE 피처 ✗ %s → 강제 X등급 (pass_count=%d) | %s",
-                failed, pass_count, "  |  ".join(_diag_parts),
+                "[Checklist] CORE VWAP ✗ → 강제 X등급 (pass_count=%d) | %s",
+                pass_count, _diag,
             )
             return {
                 "pass_count": pass_count,
@@ -204,6 +195,20 @@ class EntryChecklist:
                 "auto_entry": False,
                 "entry_mode": entry_mode,
             }
+        # CVD/OFI 불일치: pass_count에 이미 반영됨 (등급 하락) — 진단 로그만
+        if not checks["4_cvd"] or not checks["5_ofi"]:
+            _cvd_ofi_fail = [k for k in ("4_cvd", "5_ofi") if not checks[k]]
+            _diag_parts = []
+            if not checks["4_cvd"]:
+                _need_cvd = ">0" if is_long else "<0"
+                _diag_parts.append(f"CVD dir={cvd_direction:+d} need {_need_cvd}")
+            if not checks["5_ofi"]:
+                _need_ofi = ">0" if is_long else "<0"
+                _diag_parts.append(f"OFI pres={ofi_pressure:+d} need {_need_ofi}")
+            logger.info(
+                "[Checklist] CORE CVD/OFI ✗ %s — pass_count-1 적용 (pass_count=%d) | %s",
+                _cvd_ofi_fail, pass_count, "  |  ".join(_diag_parts),
+            )
 
         # 등급 결정
         if pass_count >= ENTRY_GRADE["A"]["min_pass"]:

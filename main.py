@@ -2805,7 +2805,11 @@ class TradingSystem:
                     "FL" if _fl_r == _dir_bias_r else
                     ("UP" if _up_r == _dir_bias_r else "DN")
                 )
-                _bias_thresh_min = 10 if _biased_dir == "FL" else 5
+                # coldstart 구간(재기동 직후 GBM 초기화 중)은 FL 기준 완화 10분→5분
+                _in_coldstart = self.model.is_in_startup_warmup(
+                    datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                )
+                _bias_thresh_min = (5 if _in_coldstart else 10) if _biased_dir == "FL" else 5
                 if _tot >= 15 and _dir_bias_r >= 0.80:
                     self._bias_fl_streak[_h] = self._bias_fl_streak.get(_h, 0) + 1
                     if (self._bias_fl_streak[_h] >= _bias_thresh_min

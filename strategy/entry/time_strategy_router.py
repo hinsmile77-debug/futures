@@ -44,7 +44,7 @@ def _restore_mc_from_history() -> None:
         conn = sqlite3.connect(db, timeout=5)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT zone, new_mc FROM mc_history "
+            "SELECT zone, new_mc, base_mc FROM mc_history "
             "WHERE id IN (SELECT MAX(id) FROM mc_history GROUP BY zone)"
         ).fetchall()
         conn.close()
@@ -58,7 +58,6 @@ def _restore_mc_from_history() -> None:
                 new_mc = min(float(r["new_mc"]), MC_ZONE_MAX)   # [P2] zone_mc 상한 적용
                 _ZONE_PARAMS[zone]["min_confidence"] = new_mc
                 logger.info("[DynMC] 기동 복원: %s  %.3f → %.3f", zone, old, new_mc)
-                # sqlite3.Row에는 .get() 없음 → 직접 접근
                 bmc = r["base_mc"]
                 base_mcs.append(float(bmc) if bmc else new_mc)
             except Exception as _row_e:

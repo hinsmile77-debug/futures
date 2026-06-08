@@ -180,7 +180,7 @@ COHERENCE_GATE_MIN: float = 0.60
 # 동적 min_conf 설계 (260601_DYNAMIC_MIN_CONF_PLAN.md)
 # 주기 1: GBM 재학습 완료 즉시 / 주기 2: 매일 08:55
 MC_PERCENTILE:  float = 0.65   # conf 분포의 N번째 백분위를 base_mc로 사용
-MC_ABS_FLOOR:   float = 0.42   # base_mc 절대 하한 — SGD 블렌딩 희석 고려 (0.50→0.42)
+MC_ABS_FLOOR:   float = 0.25   # base_mc 절대 하한 (0.42→0.25: 저신뢰 장세 conf floor 허용)
 MC_ABS_CEIL:    float = 0.62   # base_mc 절대 상한 (0.75→0.62: 오전 급등 방지)
 MC_ZONE_MAX:    float = 0.65   # zone_mc 절대 상한 — restore 경로 포함 적용
 MC_EMA_ALPHA:   float = 0.30   # 주기2 EMA 감쇠 (0.30 = 최근 ~3거래일 반영)
@@ -336,8 +336,8 @@ C_AUTO_EXP_ZONES:        tuple = ("STABLE_TREND", "LUNCH_RECOVERY")  # 허용 �
 
 # ── 레짐별 진입 기준 ───────────────────────────────────────────
 REGIME_MIN_CONFIDENCE = {
-    "RISK_ON":  0.42,   # 동적 mc 하한과 동기화 — update_dynamic_mc()로 상향 조정됨
-    "NEUTRAL":  0.42,   # MC_ABS_FLOOR=0.42 기준, SGD 블렌딩 희석 고려
+    "RISK_ON":  0.25,   # MC_ABS_FLOOR=0.25 기준, update_dynamic_mc()로 상향 조정됨
+    "NEUTRAL":  0.25,   # MC_ABS_FLOOR=0.25 기준
     "RISK_OFF": 0.65,
 }
 

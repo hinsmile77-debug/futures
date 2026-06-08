@@ -170,7 +170,8 @@ def compute_cascade_coherence(horizon_proba):
     # type: (Dict[str, Dict]) -> float
     """30m→15m→…→1m 방향이 흘러내려오는 정렬도를 반환.
 
-    하위 호라이즌만 방향 있고 상위가 FLAT이면 노이즈성 스파이크.
+    FL 호라이즌 제외 후 방향성 있는 호라이즌만으로 정렬 비율 계산.
+    (FL 끼임으로 인한 연속 break 방지 — 오늘 오전처럼 30m/15m/10m=DN, 5m/3m=FL 케이스)
     반환: 0.0(완전 불일치) ~ 1.0(완전 정렬)
     """
     cascade = ["30m", "15m", "10m", "5m", "3m", "1m"]
@@ -181,13 +182,11 @@ def compute_cascade_coherence(horizon_proba):
     target = dirs[-1]  # 1m 방향 기준
     if target == DIRECTION_FLAT:
         return 0.5    # FLAT → 중립
-    aligned = 0
-    for d in reversed(dirs):
-        if d == target:
-            aligned += 1
-        else:
-            break
-    return aligned / len(dirs)
+    directional = [d for d in dirs if d != DIRECTION_FLAT]
+    if not directional:
+        return 0.5
+    aligned = sum(1 for d in directional if d == target)
+    return aligned / len(directional)
 
 
 def select_entry_horizon(atr, threshold_1m):
@@ -657,7 +656,7 @@ class EnsembleDecision:
         _cascade_blocked = False
         if direction != DIRECTION_FLAT and not _coherence_blocked:
             _cascade_score = compute_cascade_coherence(horizon_proba)
-            if _cascade_score < 0.34:
+            if _cascade_score < 0.25:
                 _cascade_blocked = True
                 _coherence_blocked = True
                 logger.info(
