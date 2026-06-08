@@ -136,9 +136,9 @@ class HorizonF1AdaptiveWeight:
         self._min_obs = min_obs
 
     def update(self, horizon: str, predicted: int, actual: int) -> None:
-        """STEP 1 검증 결과 반영 — 예측 방향이 FLAT(0)이면 스킵."""
-        if predicted == 0:
-            return
+        """STEP 1 검증 결과 반영 — FL 포함 전 예측 방향을 EMA 업데이트."""
+        # 수정: 기존에 predicted==FL(0)이면 스킵했으나, FL만 반복 예측하는 호라이즌의
+        # obs가 누적되지 않아 min_obs 미달 → 동적 억제가 영구 비활성되는 버그 수정.
         correct = 1.0 if predicted == actual else 0.0
         self._f1_ema[horizon] = (
             self._decay * self._f1_ema[horizon]
@@ -308,24 +308,32 @@ class EnsembleDecision:
                 {k: round(v, 3) for k, v in cur_weights.items() if v > 0},
             )
 
-        # ── FL 조기 감쇠 (Phase 1 부록 C-1): FL 70%+ 10분 → weight×0.2 ─
-        # 기존 uniform fallback(90%+ 20분)의 사전 단계 — 앙상블 오염 조기 차단
-        _fl_damped = set()
+        # ── 방향 편향 조기 감쇠: 단일 방향 50%+ 10분 → weight×0.2 ─
+        # 127차: FL 전용 → UP/DN/FL 공통 (30m DN 100% 고착 사례 대응)
+        # 수정: 70% → 50% — GBM이 FL을 50~55%로 반복 예측할 때 70% 임계로는
+        # streak이 전혀 쌓이지 않아 감쇠 미발동. 3m FL 100% 고착 사례(14:28~) 대응.
+        _dir_damped = set()
         for _h in list(cur_weights.keys()):
-            _fl_prob = float((horizon_proba.get(_h) or {}).get("flat", 0.0))
-            if _fl_prob > 0.70:
+            _hp    = horizon_proba.get(_h) or {}
+            _fl_p  = float(_hp.get("flat", 0.0))
+            _up_p  = float(_hp.get("up",   0.0))
+            _dn_p  = float(_hp.get("down", 0.0))
+            _max_p = max(_fl_p, _up_p, _dn_p)
+            if _max_p > 0.50:
                 self._fl_streak[_h] = self._fl_streak.get(_h, 0) + 1
             else:
                 self._fl_streak[_h] = 0
             _streak = self._fl_streak.get(_h, 0)
             if _streak >= 10 and cur_weights.get(_h, 0) > 0:
+                _bname = ("FL" if _fl_p == _max_p else
+                          ("UP" if _up_p == _max_p else "DN"))
                 cur_weights[_h] *= 0.2
-                _fl_damped.add(_h)
+                _dir_damped.add(_h)
                 logger.debug(
-                    "[EarlyFLDamp] %s fl=%.0f%% %dmin → weight×0.2",
-                    _h, _fl_prob * 100, _streak,
+                    "[EarlyDirDamp] %s %s=%.0f%% %dmin → weight×0.2",
+                    _h, _bname, _max_p * 100, _streak,
                 )
-        if _fl_damped:
+        if _dir_damped:
             _tw = sum(cur_weights.values())
             if _tw > 1e-9:
                 cur_weights = {h: w / _tw for h, w in cur_weights.items()}

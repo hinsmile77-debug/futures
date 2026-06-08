@@ -6,6 +6,95 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-08 (129차 — 3m/5m FL 편향 버그 수정)
+
+### 한일 요약
+
+- [DONE 2026-06-08] **F1AdaptiveWeight FL 스킵 버그 수정** — `update(predicted==0)` 스킵 제거. FL 예측도 obs 누적 → min_obs 도달 후 동적 억제 활성. (`model/ensemble_decision.py:139`)
+- [DONE 2026-06-08] **_fl_streak 임계값 70%→50%** — 3m conf 50~55% FL 편향이 70% 임계 미달로 감쇠 불발 → 50%로 낮춰 10분 연속 시 weight×0.2 발동. (`model/ensemble_decision.py:322`)
+- [DONE 2026-06-08] **BiasReset 발동 조건 완화** — FL 20→10분, UP/DN 10→5분, tot≥20→15, 80% 임계. 오늘 18분 FL 100% 미발동 재발 방지. (`main.py:2797-2799`)
+
+### 다음 할 일
+
+- [NEXT 다음 장] **129차 발동 확인**
+  - `[EarlyDirDamp] 3m FL=XX% 10min → weight×0.2` 로그 확인
+  - `[BiasReset] 3m FL편향 XX% 10분 지속 → uniform fallback 적용` 로그 확인
+  - Bias⚠ 소멸 후 15m/30m 앙상블 점유율 증가 확인 (flat_score 감소)
+
+- [NEXT 다음 장] **1m UP편향 모니터링**
+  - 오늘 1m UP=65%, 적중=23% — BiasReset 발동 조건 충족 시 uniform fallback 적용 여부 확인
+  - 오발동(정상 UP 추세에서 BiasReset 발동) 여부 점검
+
+- [NEXT 중기] **3m/5m GBM class_weight 검토**
+  - FL 편향이 구조적으로 반복되면 class_weight {FL:0.70} 등 재학습 검토
+
+---
+
+## 2026-06-08 (128차 — 30m DN 편향 고착 대응)
+
+### 한일 요약
+
+- [DONE 2026-06-08] **EarlyDirDamp 일반화** — FL 전용(`_fl_streak`) → UP/DN/FL 공통. 단일 방향 70%+ 10분 지속 → weight×0.2 + 재정규화. 로그: `[EarlyDirDamp] 30m DN=XX% 10min → weight×0.2` (`model/ensemble_decision.py`)
+- [DONE 2026-06-08] **BiasReset 일반화** — FL 전용 → UP/DN/FL 공통. FL=20분, UP/DN=10분 임계. 30m DN 100% 고착 시 즉시 uniform fallback 적용. 로그: `[BiasReset] 30m DN편향 100% N분 지속 → uniform fallback 적용` (`main.py`)
+- [DONE 2026-06-08] **30m class_weight DN 균형** — UP=1.15→1.40, DN=1.15→0.90, FL=0.70 유지. DN 과잉 학습 억제, UP 강화로 DN 100% 편향 구조적 해소 (다음 재학습 적용) (`learning/batch_retrainer.py`)
+
+### 다음 할 일
+
+- [NEXT 다음 장] **128차 발동 확인**
+  - `[EarlyDirDamp] 30m DN=XX% 10min → weight×0.2` 로그 확인
+  - `[BiasReset] 30m DN편향 100% 10분 지속 → uniform fallback 적용` 로그 확인
+  - uniform fallback 적용 후 30m 예측이 UP=1/3, DN=1/3, FL=1/3으로 전환 확인
+  - 과도한 오발동 모니터링: UP/DN 방향 예측이 잠깐 70% 넘는 정상 추세 구간에서도 발동되는지
+
+- [NEXT 다음 재학습 후] **30m class_weight 효과 확인**
+  - `[Bias] 30m DN%` 로그에서 DN 비율 감소 여부 (기존 100% → 40~50% 목표)
+  - UP 예측 출현 여부 (현재 UP=0 → 재학습 후 UP 예측 발생해야 함)
+
+- [NEXT 1주 모니터링] **EarlyDirDamp 오발동 점검**
+  - TrendGate DN 구간에서 30m DN 70%+ 정상 추세 → EarlyDirDamp 발동 여부
+  - 오발동 빈번 시: DN 임계 70%→80% 상향 또는 TrendGate active 중 EarlyDirDamp 스킵 검토
+
+---
+
+## 2026-06-08 (127차 — 완성봉 입력 개선안 구현)
+
+### 한일 요약
+
+- [DONE 2026-06-08] **`build_for_horizon` cvd_direction 재계산** — N분봉 buy_vol/sell_vol 합계로 `cvd_direction` override. 125차 scaling 동일 (`(buy-sell)/(buy+sell) × 0.5`, clip ±0.45). buy/sell=0이면 1m 값 그대로 사용 (`features/feature_builder.py`)
+- [DONE 2026-06-08] **`generate_calibration_report.py` Platt 도입일 필터** — Platt 보정기 도입일(2026-06-04) 이후 데이터만 현재 성능으로 보고. ECE 0.2477(전체 누적 raw) → **0.1526(최근 5050건 calibrated)** 로 실제 성능 확인. 기존 `overall`/`by_horizon` 키 유지(하위 호환) (`scripts/generate_calibration_report.py`)
+- [DONE 2026-06-08] **`_retrain_phase2` cvd_direction 비제로 검증 로그** — 재학습 시 `[Retrain-P2] %s cvd_direction 비제로 N/M (XX%)` 로그 추가. build_for_horizon N분봉 재계산 반영률 확인용 (`learning/batch_retrainer.py`)
+
+### 127차 calibration 스냅샷
+
+| 구간 | ECE | 적중율 | 비고 |
+|---|---|---|---|
+| 전체 누적 | 0.2477 | 36.5% | Platt 이전 raw conf 오염 |
+| 최근(since 2026-06-04) | **0.1526** | 30.3% | Platt 보정 후 실제 성능 |
+| 1m (최근) | **0.0532** | 38.4% | 목표 0.05에 근접 |
+| 3m (최근) | 0.1236 | 30.5% | |
+| 30m (최근) | 0.2165 | 25.0% | 개선 여지 가장 큼 |
+
+### 다음 할 일
+
+- [NEXT 다음 재학습 후] **cvd_direction 재계산 효과 확인**
+  - `[Retrain-P2] 3m cvd_direction 비제로 N/M (XX%)` — 50% 이상이면 재계산 데이터 충분
+  - 비제로율이 낮으면 → buy_vol/sell_vol이 기존 DB에 미저장 (Phase 1 백필 데이터)
+  - 신규 세션 데이터 누적 후 재학습 시 비율 증가 예상
+
+- [NEXT 다음 장] **127차 수정 발동 확인**
+  - 완성봉 발생 시 `cvd_direction` 값이 1m 기준과 달라지는지 SIGNAL.log 확인
+  - N분봉 buy_vol=sell_vol=0인 봉은 1m 값 그대로 유지됨 (정상)
+
+- [NEXT 중기] **30m ECE 0.2165 개선**
+  - 최근 25.0% accuracy, gap 0.43 (0.6~0.7 bin) → 30m 과신뢰 구간 집중
+  - class_weight {FL:0.70} 재조정 또는 min_conf 0.6 이상 30m 신호 차단 강화 검토
+
+- [NEXT 중기] **calibration_metrics.json 대시보드 파싱 업데이트**
+  - 현재 대시보드에서 `calibration_metrics["overall"]["ece"]`로 접근 중
+  - 이제 `"recent"` 섹션이 현재 성능. 대시보드 EfficacyPanel에서 `"recent"` 우선 읽도록 수정 검토
+
+---
+
 ## 2026-06-08 (126차 — 거래소 CB 대응 + Registry 정합성 + cvd_direction clip)
 
 ### 한일 요약

@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-06-08 (129차 — 3m/5m FL 편향 버그 수정)
+
+### [버그] F1AdaptiveWeight.update() FL 예측 스킵 — 동적 억제 영구 비활성
+**File**: `model/ensemble_decision.py:139`
+**Root cause**: `if predicted == 0: return` 조건으로 FL 예측 시 obs 카운트 미누적. 3m이 FL만 예측하면 obs[3m]가 0으로 고정 → min_obs(30) 미달 → 동적 가중치 억제 영구 비활성. F1 EMA는 초기값 0.40으로 고정.
+**Fix**: `predicted == 0` 스킵 조건 제거. FL 포함 전 예측 방향을 EMA 업데이트.
+**How to apply**: 약 30분 누적 후 obs[3m]≥30 달성 → F1 EMA가 낮아져 3m 가중치 자동 억제 시작.
+
+### [버그] _fl_streak 임계값 70% — 3m FL 50~55%에 감쇠 미발동
+**File**: `model/ensemble_decision.py:322`
+**Root cause**: GBM이 FL을 50~55% 확률로 반복 예측할 때 `_max_p > 0.70` 조건을 못 넘어 streak 미누적 → 조기 감쇠(weight×0.2) 불발. 3m FL 100% 고착이 26분 지속됐으나 감쇠 없음.
+**Fix**: 임계값 70%→50%. 50%+ FL이 10분 연속 → weight×0.2.
+
+### [설계] BiasReset 발동 조건 완화
+**File**: `main.py:2797-2799`
+**Decision**: 기존 FL 20분/90% 조건이 너무 보수적. 오늘 3m FL 100%가 18분 지속돼도 미발동(20분 미달). FL 자연 발생 비율이 높다는 원래 우려는 맞지만, 90%+ 편향은 GBM 붕괴급이므로 10분/80% 기준으로 충분. UP/DN은 역방향 진입 직결이라 5분으로 단축.
+
+---
+
 ## 2026-06-08 (125차 — Extreme 피처 z-score 억제)
 
 ### [설계] opt_pcr_extreme 삭제 대신 × 0.5 반감

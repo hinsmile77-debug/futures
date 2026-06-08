@@ -2764,7 +2764,7 @@ class TradingSystem:
                 _acc_h = _ok / _tot
 
                 _bias_tag = ""
-                _fl_r = 0.0
+                _up_r = _dn_r = _fl_r = 0.0
                 if _tot >= 15:
                     _up_r, _dn_r, _fl_r = _up / _tot, _dn / _tot, _fl / _tot
                     if _up_r >= 0.75:
@@ -2785,24 +2785,35 @@ class TradingSystem:
                         f" UP={_up} DN={_dn} FL={_fl}"
                     )
 
-                # [P2] FL 편향 고착 → uniform fallback 제어
-                # 조건: 버퍼 20건 이상 + FL 비율 90% 이상 + 연속 20분 지속
-                if _tot >= 20 and _fl_r >= 0.90:
+                # [P2+] 방향 편향 고착 → uniform fallback 제어 (FL/UP/DN 공통)
+                # 127차: FL 전용 → 전 방향 공통
+                # 수정: FL 20분→10분, UP/DN 10분→5분, tot>=20→15, bias>=0.90→0.80
+                #   근거: 3m FL 100%가 18분 지속돼도 BiasReset 미발동(20분 미달) 확인.
+                #   FL 자연 발생은 맞지만 GBM 붕괴급 편향(80%+)에는 빠른 대응 필요.
+                _dir_bias_r = max(_up_r, _dn_r, _fl_r)
+                _biased_dir = (
+                    "FL" if _fl_r == _dir_bias_r else
+                    ("UP" if _up_r == _dir_bias_r else "DN")
+                )
+                _bias_thresh_min = 10 if _biased_dir == "FL" else 5
+                if _tot >= 15 and _dir_bias_r >= 0.80:
                     self._bias_fl_streak[_h] = self._bias_fl_streak.get(_h, 0) + 1
-                    if (self._bias_fl_streak[_h] >= 20
+                    if (self._bias_fl_streak[_h] >= _bias_thresh_min
                             and _h not in self._bias_override_horizons):
                         self._bias_override_horizons.add(_h)
                         log_manager.learning(
-                            f"[BiasReset] {_h} FL편향 {_fl_r:.0%} "
+                            f"[BiasReset] {_h} {_biased_dir}편향 {_dir_bias_r:.0%} "
                             f"{self._bias_fl_streak[_h]}분 지속 → uniform fallback 적용"
                         )
-                        self.circuit_breaker.record_horizon_fl_bias(_h, _fl_r,
-                                                                     self._bias_fl_streak[_h])
+                        self.circuit_breaker.record_horizon_fl_bias(
+                            _h, _dir_bias_r, self._bias_fl_streak[_h]
+                        )
                 else:
                     if _h in self._bias_override_horizons:
                         self._bias_override_horizons.discard(_h)
                         log_manager.learning(
-                            f"[BiasReset] {_h} FL편향 해소 ({_fl_r:.0%}) → uniform fallback 해제"
+                            f"[BiasReset] {_h} {_biased_dir}편향 해소 ({_dir_bias_r:.0%})"
+                            f" → uniform fallback 해제"
                         )
                     self._bias_fl_streak[_h] = 0
 

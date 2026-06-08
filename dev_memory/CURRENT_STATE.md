@@ -1,7 +1,25 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-08 (125차 세션 마무리) — Extreme 피처 5종 z-score 억제
+> 마지막 업데이트: 2026-06-08 (129차 세션 마무리) — 3m/5m FL 편향 버그 수정 3종
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-08 (129차 — 3m/5m FL 편향 구조 버그 수정)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| F1AdaptiveWeight.update() FL 스킵 버그 수정 | **완료** ✅ | `model/ensemble_decision.py:139` |
+| _fl_streak 임계값 70%→50% | **완료** ✅ | `model/ensemble_decision.py:322` |
+| BiasReset 발동 조건 완화 (FL 20→10분, tot≥20→15, 80%) | **완료** ✅ | `main.py:2797-2799` |
+
+### 확인해야 할 로그 (다음 장)
+
+- `[EarlyDirDamp] 3m FL=XX% 10min → weight×0.2` — 버그 2 발동 확인
+- `[BiasReset] 3m FL편향 XX% 10분 지속 → uniform fallback 적용` — main.py 발동 확인
+- 3m/5m Bias⚠ 소멸 후 15m/30m DN 신호 기반 진입 발생 여부
 
 ---
 
