@@ -92,14 +92,20 @@ class ShapTracker:
             return False
 
         self._current_importance = importance
-        self._history.append({
-            "week":       datetime.date.today().isocalendar()[:2],  # (year, week)
+        current_week = tuple(datetime.date.today().isocalendar()[:2])
+        entry = {
+            "week":       list(current_week),
             "importance": importance.tolist(),
             "n_samples":  len(X_s),
             "timestamp":  datetime.datetime.now().isoformat(),
-        })
+        }
+        # 같은 주 엔트리는 최신 데이터로 교체 (weekly deduplication)
+        # 매분 호출돼도 주별 슬롯 1개만 유지 → 다주 히스토리 보존
+        if self._history and tuple(self._history[-1].get("week", [])) == current_week:
+            self._history.pop()
+        self._history.append(entry)
         self._save_history()
-        logger.info(f"[SHAP] 중요도 갱신 완료 (n={len(X_s)})")
+        logger.info(f"[SHAP] 중요도 갱신 완료 (n={len(X_s)}, week={current_week})")
         return True
 
     def _calc_importance(self, model, X: np.ndarray) -> Optional[np.ndarray]:
@@ -159,19 +165,41 @@ class ShapTracker:
         # 하락 트렌드 감지 (최근 4주 추세)
         declining = self._find_declining_features()
 
-        # 교체 후보 필터링 (CORE 제외, 최하위 5개)
-        bottom5 = [e for e in reversed(rank_table) if not e["is_core"]][:5]
+        # 절대값 기준: 전체 평균의 30% 미만이면 declining 없어도 교체 후보
+        mean_imp = float(np.mean(self._current_importance)) if self._current_importance is not None else 0.0
+        low_imp_threshold = mean_imp * 0.3
+
+        # 교체 후보 필터링 (CORE 제외, 하위 20%)
+        bottom_n = max(5, int(len(rank_table) * 0.20))
+        bottom = [e for e in reversed(rank_table) if not e["is_core"]][:bottom_n]
         candidates = []
-        for feat in bottom5:
-            if feat["feature"] in declining:
-                replacement = self._suggest_replacement(feat["feature"])
-                candidates.append({
-                    "feature":     feat["feature"],
-                    "rank":        feat["rank"],
-                    "importance":  feat["importance"],
-                    "replacement": replacement,
-                    "reason":      "하락 트렌드 + 최하위",
-                })
+        seen = set()
+        already_suggested: set = set()
+        for feat in bottom:
+            if feat["feature"] in seen:
+                continue
+            is_declining = feat["feature"] in declining
+            is_low_imp   = float(feat["importance"]) < low_imp_threshold
+            if not (is_declining or is_low_imp):
+                continue
+            if is_declining:
+                reason = "하락 트렌드 + 최하위"
+            else:
+                ratio = float(feat["importance"]) / (mean_imp + 1e-9)
+                reason = f"기여도 미달 (avg의 {ratio*100:.0f}%)"
+            replacement = self._suggest_replacement(feat["feature"], already_suggested)
+            if replacement:
+                already_suggested.add(replacement)
+            candidates.append({
+                "feature":     feat["feature"],
+                "rank":        feat["rank"],
+                "importance":  feat["importance"],
+                "replacement": replacement,
+                "reason":      reason,
+            })
+            seen.add(feat["feature"])
+            if len(candidates) >= 3:
+                break
 
         # 교체 허용 여부
         replace_allowed = self._check_replace_allowed()
@@ -193,20 +221,29 @@ class ShapTracker:
         return report
 
     def _find_declining_features(self) -> List[str]:
-        """최근 4주 중요도 순위가 지속 하락한 피처"""
-        if len(self._history) < 4:
+        """최근 4주(주별 deduplicate) 중요도 순위 하락 피처 감지.
+
+        조건: 4회 중 3회 이상 하락 (기존 4회 연속에서 완화 — 노이즈 1회 허용)
+        """
+        # 주별 중복 제거: 같은 week는 마지막 엔트리만 사용
+        seen_weeks: dict = {}
+        for h in self._history:
+            w = tuple(h.get("week") or [])
+            if w:
+                seen_weeks[w] = h
+        deduped = sorted(seen_weeks.values(), key=lambda h: h.get("timestamp", ""))
+
+        if len(deduped) < 4:
             return []
 
-        recent4 = []
-        for hist in list(self._history)[-8:]:
-            imp = np.array(hist.get("importance") or [])
-            if len(imp) == self._n_features:
-                recent4.append(hist)
-        recent4 = recent4[-4:]
+        recent4 = [
+            h for h in deduped[-4:]
+            if len(np.array(h.get("importance") or [])) == self._n_features
+        ]
         if len(recent4) < 4:
             return []
-        declining = []
 
+        declining = []
         for i, fname in enumerate(self.feature_names):
             if fname in CORE_FEATURES:
                 continue
@@ -218,18 +255,21 @@ class ShapTracker:
                 if len(matched) == 0:
                     ranks = []
                     break
-                rank  = int(matched[0]) + 1
-                ranks.append(rank)
+                ranks.append(int(matched[0]) + 1)
 
-            # 4주 연속 순위 하락
-            if len(ranks) == 4 and all(ranks[j] < ranks[j + 1] for j in range(len(ranks) - 1)):
-                declining.append(fname)
+            # 4회 중 3회 이상 하락 (연속 불요 — 노이즈 1회 허용)
+            if len(ranks) == 4:
+                drop_count = sum(ranks[j] < ranks[j + 1] for j in range(3))
+                if drop_count >= 3:
+                    declining.append(fname)
 
         return declining
 
-    def _suggest_replacement(self, current_feat: str) -> Optional[str]:
-        """현재 피처의 교체 후보 반환 (DYNAMIC_FEATURES_POOL에서)"""
+    def _suggest_replacement(self, current_feat: str, already_suggested: Optional[set] = None) -> Optional[str]:
+        """현재 피처의 교체 후보 반환 (DYNAMIC_FEATURES_POOL에서, 중복 제외)"""
         used = set(self.feature_names)
+        if already_suggested:
+            used |= already_suggested
         pool = [f for f in DYNAMIC_FEATURES_POOL if f not in used]
         return pool[0] if pool else None
 
@@ -294,16 +334,24 @@ class ShapTracker:
                 return
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # 주별 dedup: 같은 week는 마지막(최신) 엔트리만 보존
+            seen_weeks: dict = {}
             for h in data.get("history", []):
                 imp = np.array(h.get("importance") or [])
-                if len(imp) == self._n_features:
-                    self._history.append(h)
+                if len(imp) != self._n_features:
+                    continue
+                w = tuple(h.get("week") or [])
+                if w:
+                    seen_weeks[w] = h  # 같은 주 → 뒤에 나온 것(최신)으로 덮음
+            for h in sorted(seen_weeks.values(), key=lambda x: x.get("timestamp", "")):
+                self._history.append(h)
             self._replace_log = data.get("replace_log", [])
             lr = data.get("last_replace")
             if lr:
                 self._last_replace = datetime.date.fromisoformat(lr)
             if self._history:
                 self._current_importance = np.array(self._history[-1]["importance"])
+            logger.debug(f"[SHAP] 히스토리 로드: {len(self._history)}주차")
         except Exception as e:
             logger.debug(f"[SHAP] 로드 오류: {e}")
 
@@ -323,9 +371,17 @@ class ShapTracker:
         if not self._history:
             return []
 
+        # 주별 dedup 후 최근 lookback개 사용 (매분 중복 제거)
+        seen_weeks: dict = {}
+        for h in self._history:
+            w = tuple(h.get("week") or [])
+            if w:
+                seen_weeks[w] = h
+        deduped = sorted(seen_weeks.values(), key=lambda h: h.get("timestamp", ""))
+        recent = deduped[-max(int(lookback), 1):]
+
         feat_idx = self.feature_names.index(feature)
         ranks = []
-        recent = list(self._history)[-max(int(lookback), 1):]
         for hist in recent:
             imp = np.array(hist.get("importance") or [])
             if len(imp) != self._n_features:

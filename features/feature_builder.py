@@ -131,17 +131,27 @@ class FeatureBuilder:
         vol   = float(bar.get("volume") or 0.0)
         # buy_vol/sell_vol: key 존재하지만 값이 None인 경우 get() fallback이 무시되므로
         # 명시적 None 체크로 처리한다.
+        # buy_vol/sell_vol 없을 때 vol/2 fallback은 delta=0 → CVD 고정 → cvd_divergence 이진화.
+        # 가격 기반(고저종) 추정으로 교체하여 과거 데이터에서도 의미 있는 CVD 생성.
         _bv = bar.get("buy_vol")
         _sv = bar.get("sell_vol")
-        buy_vol  = float(_bv) if _bv is not None else vol / 2.0
-        sell_vol = float(_sv) if _sv is not None else vol / 2.0
+        if _bv is not None and _sv is not None:
+            buy_vol  = float(_bv)
+            sell_vol = float(_sv)
+        else:
+            _rng = max(high - low, 1e-9)
+            buy_vol  = vol * max(close - low,  0.0) / _rng
+            sell_vol = vol * max(high - close, 0.0) / _rng
 
         try:
             cvd_result = self.cvd.update_from_bar(
                 close=close, buy_vol=buy_vol, sell_vol=sell_vol,
             )
+            # cvd_divergence: -1~+1 연속값
+            # 다이버전스(가격↑CVD↓ 또는 가격↓CVD↑) → 음수, 동방향 → 양수
             features["cvd_divergence"] = float(
-                cvd_result["signal_strength"] * (-1 if cvd_result["divergence"] else 1)
+                -cvd_result["signal_strength"] if cvd_result["divergence"]
+                else cvd_result["signal_strength"]
             )
             features["cvd_direction"]   = float(cvd_result["direction"]) * 0.5
             # cvd/cvd_slope 절대값 → 일중 max 대비 정규화값으로 교체 (Phase 3-A)
@@ -619,16 +629,26 @@ class FeatureBuilder:
         반드시 build(bar_1m) 호출 후 사용 — _last_features(1m 기반)에서 복사 후 N분봉 값 덮어씀.
         """
         feats = dict(self._last_features)
-        close = float(bar_n.get("close", 0.0) or 0.0)
-        high  = float(bar_n.get("high",  0.0) or 0.0)
-        low   = float(bar_n.get("low",   0.0) or 0.0)
-        vol   = int(bar_n.get("volume",  0)   or 0)
-        open_ = float(bar_n.get("open",  close) or close)
+        close  = float(bar_n.get("close",    0.0) or 0.0)
+        high   = float(bar_n.get("high",     0.0) or 0.0)
+        low    = float(bar_n.get("low",      0.0) or 0.0)
+        vol    = int(bar_n.get("volume",     0)   or 0)
+        open_  = float(bar_n.get("open",     close) or close)
+        buy_v  = float(bar_n.get("buy_vol",  0)   or 0)
+        sell_v = float(bar_n.get("sell_vol", 0)   or 0)
 
         # N분봉 bar-level 피처 덮어쓰기
         feats["atr"]        = max(high - low, 0.5)
         feats["bar_volume"] = float(vol)
         feats["ret_{}m".format(horizon_min)] = (close - open_) / (open_ + 1e-9)
+
+        # N분봉 CVD 방향 재계산 (bar_aggregator buy_vol/sell_vol 합계 기반)
+        # 125차 scaling 동일: net_ratio × 0.5 → (-0.45, 0.45) clip
+        _tot_v = buy_v + sell_v
+        if _tot_v > 0:
+            feats["cvd_direction"] = float(
+                np.clip((buy_v - sell_v) / _tot_v * 0.5, -0.45, 0.45)
+            )
 
         # 반감기 적용 (Phase 1-1)
         from features.feature_decay import get_horizon_features

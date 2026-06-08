@@ -6,6 +6,31 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-08 (130차 — CVD SHAP 복구 + SHAP 추천 3단 개선 + 코드 정리)
+
+### 한일 요약
+
+- [DONE 2026-06-08] **CVD signal_strength 단위 불일치 버그 수정** — cvd_slope/price_slope(계약수÷포인트) → cvd_slope_norm(일중 max 대비) 사용. cvd_divergence 이진값({0,-1}) → 연속값(-1~+1). (`features/technical/cvd.py`)
+- [DONE 2026-06-08] **buy_vol fallback 가격기반으로 교체** — vol/2(delta=0→CVD고착) → `vol×(close-low)/range`. (`features/feature_builder.py`)
+- [DONE 2026-06-08] **cvd_divergence 부호 수정** — 다이버전스=음수, 동방향=양수. (`features/feature_builder.py`)
+- [DONE 2026-06-08] **raw_data.db 72,591봉 소급 재계산** — 백업 후 날짜별 reset_daily() 적용. 이진 2종→연속 1,789 unique값. (`data/db/raw_data.db`)
+- [DONE 2026-06-08] **"현재 세트 재학습" 버튼 영구 비활성화 버그 수정** — `_on_gbm_retrain_done` 완료 후 `_update_shap_dashboard()` 추가. (`main.py`)
+- [DONE 2026-06-08] **SHAP 추천 3단 개선** — ①주별 dedup ②3/4 완화 ③절대값 기준(mean×0.3) 즉시 후보. (`learning/shap/shap_tracker.py`)
+- [DONE 2026-06-08] **update_shap 3중 정의 → 1개 통합** — 죽은코드(NameError 위험)·중간버전(action_state 누락) 제거. (`dashboard/main_dashboard.py`)
+
+### 다음 할 일
+
+- [NEXT 즉시] **앱 재시작 후 GBM 재학습** (최우선)
+  - 앱 재시작 → SHAP 탭 "현재 세트 재학습" 버튼 클릭
+  - 재학습 완료 후 버튼 enabled 복원 확인 (`_update_shap_dashboard` 호출 효과)
+  - cvd_divergence SHAP rank 상승 확인 (기존 rank 63/101 0.0% → 개선 예상)
+
+- [NEXT 다음 세션] **`_up_r` UnboundLocalError 조사** (미착수)
+  - `main.py` minute_pipeline에서 `local variable '_up_r' referenced before assignment` 발생
+  - 발생 이력: 2026-06-08 13:06~13:11 SYSTEM 로그
+
+---
+
 ## 2026-06-08 (129차 — 3m/5m FL 편향 버그 수정)
 
 ### 한일 요약
@@ -3566,9 +3591,8 @@
 - [NEXT 2026-05-19] 중패널 운영 플로우 UX 검증
   - 툴팁, 버튼 enabled/disabled 상태, review summary, cooldown/교체이력 표시가 실운영 시나리오와 맞는지 확인
 
-- [NEXT 2026-05-19] SHAP 탭 코드 정리
-  - `dashboard/main_dashboard.py` 내 중복 `update_shap()` 정의 정리
-  - 인코딩 깨진 문자열과 목업 잔재 제거
+- [DONE 2026-06-08] SHAP 탭 코드 정리
+  - `dashboard/main_dashboard.py` 내 중복 `update_shap()` 정의 정리 (3개→1개, 죽은코드·중간버전 제거)
 [DONE 2026-05-20] **68차: `entry_mode` 미초기화 치명 예외 수정**
 - `run_minute_pipeline()` 공통 차단 로그 경로보다 앞에서 `entry_mode`/`allowed_grades`/`mode_filter_passed`를 안전 초기화하도록 조정
 

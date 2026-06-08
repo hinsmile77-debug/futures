@@ -696,13 +696,17 @@ class TradingSystem:
         self._update_shap_dashboard()
 
     def _on_force_feature_retrain_requested(self) -> None:
-        active = self._get_active_feature_set()
-        registry = self._load_feature_registry()
-        if not registry.get("active_features") and active:
-            registry["active_features"] = list(active)
-            registry["baseline_features"] = list(active)
-            self._save_feature_registry(registry)
-        self._start_manual_retrain(True, "current managed feature set")
+        log_manager.system("[FeatureOps] 수동 재학습 버튼 클릭", "INFO")
+        try:
+            active = self._get_active_feature_set()
+            registry = self._load_feature_registry()
+            if not registry.get("active_features") and active:
+                registry["active_features"] = list(active)
+                registry["baseline_features"] = list(active)
+                self._save_feature_registry(registry)
+            self._start_manual_retrain(True, "current managed feature set")
+        except Exception as _exc:
+            log_manager.system(f"[FeatureOps] 수동 재학습 오류: {_exc}", "ERROR")
 
     def _on_reset_feature_set_requested(self) -> None:
         registry = self._load_feature_registry()
@@ -2273,6 +2277,12 @@ class TradingSystem:
                     "WARN",
                 )
                 self._reset_rollback_active = None
+        # 재학습 완료(성공/실패 모두) 후 SHAP 패널 버튼 상태 갱신
+        # 파이프라인이 멈춘 상태(장 마감 후 등)에서도 버튼 enabled 복원
+        try:
+            self._update_shap_dashboard()
+        except Exception:
+            pass
 
     # _log_threshold_monitor() — P2에서 제거 (91차)
     # rolling σ × k 방법3이 HORIZON_THRESHOLDS를 매분 갱신하므로 ATR 동적 불필요

@@ -1,7 +1,49 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-08 (129차 세션 마무리) — 3m/5m FL 편향 버그 수정 3종
+> 마지막 업데이트: 2026-06-08 (130차 세션 마무리) — CVD SHAP 복구 + SHAP 추천 알고리즘 3단 개선 + 코드 정리
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-08 (130차 — CVD SHAP 복구 + SHAP 추천 3단 개선 + 코드 정리)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| CVD signal_strength 단위 불일치 버그 수정 | **완료** ✅ | `features/technical/cvd.py` |
+| buy_vol fallback (vol/2 → 가격기반 추정) | **완료** ✅ | `features/feature_builder.py` |
+| cvd_divergence 부호 수정 (동방향=양수, 다이버전스=음수) | **완료** ✅ | `features/feature_builder.py` |
+| raw_data.db 72,591봉 소급 재계산 | **완료** ✅ | `data/db/raw_data.db` |
+| "현재 세트 재학습" 버튼 수정 (_on_gbm_retrain_done 상태 복원) | **완료** ✅ | `main.py` |
+| SHAP 추천 알고리즘 3단 개선 | **완료** ✅ | `learning/shap/shap_tracker.py` |
+| update_shap 3중 정의 → 1개로 통합 | **완료** ✅ | `dashboard/main_dashboard.py` |
+| **GBM 재학습** — cvd_divergence 연속값 DB 반영 필요 | **미완료** ⏳ | 앱 재시작 후 "현재 세트 재학습" 버튼 클릭 |
+| `_up_r` UnboundLocalError 조사 | **미착수** ⏳ | `main.py` minute_pipeline |
+
+### cvd_divergence 복구 결과
+
+| 항목 | 수정 전 | 수정 후 |
+|---|---|---|
+| unique값 수 | 2개 (0.0 / -1.0) | 1,789개 |
+| 값 범위 | {0.0, -1.0} | -1.0 ~ +1.0 |
+| 이진값(±1.0) 비율 | 99.1%/0.9% | 1/500봉 미만 |
+| SHAP 기여 (예상) | 0.0%, rank 63/101 | 재학습 후 개선 예상 |
+
+### SHAP 추천 개선 결과 (즉시 효과)
+
+- 이전: "추천 없음: 추천 후보 없음" (12개 엔트리가 모두 week 24 → declining 감지 불가)
+- 이후: 3개 후보 즉시 감지 (기여도 미달 avg×0.3 이하 절대값 기준)
+  - `prev_day_same_hour_ret` (rank 101, 0.0%)
+  - `quality_investor_stale` (rank 100, 0.0%)
+  - `macro_event_flag` (rank 99, 0.0%)
+- 각 후보마다 다른 교체 후보 반환 (already_suggested set으로 중복 제거)
+
+### 확인해야 할 사항 (다음 장 전)
+
+- 앱 재시작 → "현재 세트 재학습" 클릭 → 버튼 enabled 복원 확인
+- GBM 재학습 완료 후 SHAP 탭에서 cvd_divergence rank 상승 확인
+- `_up_r` UnboundLocalError 재발 여부 (minute_pipeline 13:06~13:11 발생 이력)
 
 ---
 

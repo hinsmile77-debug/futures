@@ -100,20 +100,19 @@ class CVDCalculator:
         divergence = (price_slope > 0 and cvd_slope < 0) or \
                      (price_slope < 0 and cvd_slope > 0)
 
-        # 신호 강도: 0.0 ~ 1.0
-        if divergence:
-            magnitude = min(abs(cvd_slope) / (abs(price_slope) + 1e-9), 3.0)
-            strength  = min(magnitude / 3.0, 1.0)
-        else:
-            strength = 0.0
-
-        # CVD 방향 (단순)
-        direction = 1 if cvd_slope > 0 else (-1 if cvd_slope < 0 else 0)
-
         # 일중 최대 절대값 기준 정규화 — 가격 수준·유동성 독립 (Phase 3-A)
         cvd_abs_max = max(abs(v) for v in cvds) or 1.0
         cvd_norm       = float(self._cumulative_cvd) / cvd_abs_max
         cvd_slope_norm = cvd_slope / cvd_abs_max
+
+        # 신호 강도: cvd_slope_norm(이미 일중 max 대비 정규화) 절대값 사용.
+        # 다이버전스/동방향 모두 연속값으로 반환 → -1~+1 피처로 변환 가능.
+        # 기존 방식(cvd_slope/price_slope)은 단위 불일치(계약 수 vs 포인트)로
+        # 항상 magnitude > 3 → strength=1.0 이진화 → SHAP 정보량 소멸.
+        strength = min(abs(cvd_slope_norm), 1.0)
+
+        # CVD 방향 (단순)
+        direction = 1 if cvd_slope > 0 else (-1 if cvd_slope < 0 else 0)
 
         return {
             "cvd":              round(self._cumulative_cvd, 2),

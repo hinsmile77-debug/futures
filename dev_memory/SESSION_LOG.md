@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-06-08 (130차 — CVD SHAP 복구 + SHAP 추천 3단 개선 + 코드 정리)
+
+**Work**: 동적 피처(SHAP) 탭 3가지 실질적 문제 점검 및 전면 수정.
+
+### 한 것
+
+- [A] **CVD 다이버전스 SHAP 기여도 복구** — rank 63/101 → 재학습 후 상위 예상
+  - `features/technical/cvd.py`: signal_strength 공식 버그 수정. `cvd_slope / price_slope` (단위 불일치: 계약수 ÷ 포인트 = 항상 1000배 이상 → clamped to 3 → strength=1.0 이진화) → `abs(cvd_slope_norm)` (이미 일중 max 대비 정규화된 값)
+  - `features/feature_builder.py`: buy_vol fallback `vol/2` (delta=0 → CVD 고착) → 가격기반 추정 `vol × (close-low) / range`. cvd_divergence 부호 수정 (다이버전스=음수, 동방향=양수)
+  - `data/db/raw_data.db`: 72,591봉 소급 재계산 (backup: `.bak_20260608_151648`). 이진값 2종 → 1,789 unique값, -1~+1 연속
+
+- [B] **"현재 세트 재학습" 버튼 영구 비활성화 버그 수정**
+  - `main.py` `_on_gbm_retrain_done`: 재학습 완료(성공/실패 모두) 후 `_update_shap_dashboard()` 호출 추가 → 장 마감 후에도 버튼 enabled 복원
+  - `main.py` `_on_force_feature_retrain_requested`: 진입 로그 + try-except 추가 (무음 실패 방지)
+
+- [C] **SHAP 추천 알고리즘 3단 개선** (`learning/shap/shap_tracker.py`)
+  - Layer 1: `update()` 주별 deduplication — 같은 week 엔트리는 최신으로 교체 (기존: 12개 모두 week 24 중복 저장)
+  - `_load_history()`: 파일 로드 시에도 주별 dedup 적용 (기존 JSON 12개 → 1개로 축약)
+  - Layer 2: `_find_declining_features()` 주별 dedup + "4연속 하락" → "4회 중 3회 이상" 완화 (노이즈 1회 허용)
+  - Layer 3: `weekly_review()` 절대값 임계 추가 (importance < mean×0.3 → 즉시 후보), 대상 하위 20%로 확대, 최대 3개 후보
+  - `_suggest_replacement()`: `already_suggested` 파라미터로 후보마다 다른 교체 피처 반환
+
+- [D] **update_shap 3중 정의 → 1개로 통합** (`dashboard/main_dashboard.py`)
+  - 제거: 죽은코드 (core_vals/rank_vals 미정의 → NameError), 중간버전 (action_state 없어 버튼 상태 미갱신)
+  - 유지: action_state 포함 완전 버전 (btn_apply_candidate·btn_force_retrain·btn_reset_feature_set 상태 갱신)
+  - 잘못 배치된 `# 패널 4: 청산 관리 패널` 주석도 함께 제거
+
+### 다음 할 것
+
+- [X] **앱 재시작 후 GBM 재학습** — cvd_divergence 연속값 DB를 모델이 학습해야 SHAP 개선 반영
+- [Y] **`_up_r` UnboundLocalError 조사** — minute_pipeline에서 13:06~13:11 사이 발생 이력, 미착수
+
+---
+
 ## 2026-06-08 (129차 — 3m/5m FL 편향 구조 버그 수정)
 
 **Work**: 실세션 로그 분석(14:09~14:46) → 3m FL편향 100%, 5m FL편향 80%+ 지속 원인 파악 및 구조 버그 3종 수정.

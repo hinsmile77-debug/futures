@@ -2,6 +2,33 @@
 
 ---
 
+## 2026-06-08 (130차 — CVD SHAP 복구 + SHAP 추천 3단 개선)
+
+### [버그] CVD signal_strength 단위 불일치 — SHAP 기여도 0% 원인
+**File**: `features/technical/cvd.py`
+**Root cause**: `signal_strength = min(abs(cvd_slope / price_slope), 3.0) / 3.0`. cvd_slope는 계약수 단위(50~5000), price_slope는 가격 포인트(0.05~1.0) → 비율이 항상 1000배 이상 → clamped to 3 → strength=1.0. 결과: cvd_divergence가 {0.0, -1.0} 이진값 → GBM이 정보량 없는 이진 피처로 학습 → SHAP 기여 0%.
+**Fix**: `strength = min(abs(cvd_slope_norm), 1.0)`. cvd_slope_norm은 일중 CVD 최대 절대값으로 나눈 0~1 값이므로 단위 불일치 없음.
+
+### [버그] buy_vol/sell_vol fallback vol/2 — CVD 고착
+**File**: `features/feature_builder.py`
+**Root cause**: 브로커가 tick direction을 제공하지 않을 때 `buy_vol = sell_vol = vol/2` fallback → delta=0 → CVD 누적값 고정 → cvd_slope=0 → cvd_divergence=0.0 (99%+ 비율). 역사 데이터 72,591봉 중 99.1%가 cvd_divergence=0.0.
+**Fix**: `buy_vol = vol × max(close-low, 0) / range`, `sell_vol = vol × max(high-close, 0) / range`. 가격 위치 기반 추정으로 의미 있는 delta 생성.
+
+### [설계] raw_data.db 72,591봉 소급 재계산
+**File**: `data/db/raw_data.db`
+**Decision**: cvd_divergence 값 분포가 근본적으로 달라졌으므로(이진→연속) 기존 DB를 재계산해야 GBM이 의미 있는 학습 데이터를 확보함. 백업(`raw_data.db.bak_20260608_151648`) 후 날짜별 CVDCalculator.reset_daily() 적용해 소급 계산. 재계산 후 GBM 재학습 필수.
+
+### [설계] SHAP 추천 절대값 기준 추가
+**File**: `learning/shap/shap_tracker.py`
+**Decision**: 기존 알고리즘은 4주 연속 하락만 감지 → 데이터가 1주치뿐이면 항상 "추천 없음". 단기 해결: importance < mean×0.3 이면 weeks 누적 불문 즉시 교체 후보. 0.0% 기여 피처 3개(prev_day_same_hour_ret, quality_investor_stale, macro_event_flag)가 즉시 감지됨.
+
+### [버그] update_shap 3중 정의 — NameError 잠재 버그
+**File**: `dashboard/main_dashboard.py`
+**Root cause**: 개발 과정에서 시그니처가 3번 바뀌며 3개가 누적됨. Python은 마지막 정의만 사용하므로 기능상 문제없었으나, 첫 번째 정의(line 2447)의 `core_vals`, `rank_vals`는 미정의 변수 → 만약 호출됐다면 NameError 즉시 발생.
+**Fix**: 첫 번째(NameError 위험)·두 번째(action_state 누락) 제거, 세 번째(완전 버전)만 유지.
+
+---
+
 ## 2026-06-08 (129차 — 3m/5m FL 편향 버그 수정)
 
 ### [버그] F1AdaptiveWeight.update() FL 예측 스킵 — 동적 억제 영구 비활성
