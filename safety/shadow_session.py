@@ -2,18 +2,22 @@
 """
 Shadow Session (제안 9):
   09:00~09:40은 실제 주문 대신 가상체결 채점만 진행.
-  3가지 게이트 조건을 모두 통과해야 실주문 세션으로 전환.
+  게이트 조건을 통과해야 실주문 세션으로 전환.
 
-게이트 조건:
-  ① acc30m  >= 40%   (30분 정확도)
-  ② CORE 건강 점수   >= 70점
-  ③ 최근 5분 z-score 경고 횟수 < 2
+게이트 조건 (단일):
+  ① CORE 건강 점수 >= 70점
+  ② z-score 경고 < 50 (사실상 비활성 — 급변장 대비 완화)
+
+  [2026-06-08] acc30m 게이트 제거:
+    스캘퍼 진입 호라이즌(1m/5m)과 30m 채점이 불일치하고,
+    장초반 30분 채점 지연으로 SHADOW 구간에서 의미 없음.
+    acc30m은 CB③(당일 정지 조건)에서만 관리.
 
 상태 머신:
-  SHADOW  → (모든 조건 통과)  → LIVE
+  SHADOW  → (조건 통과, 09:40 이전) → LIVE
   SHADOW  → (시간 09:40 초과, 미통과) → BLOCKED
   LIVE    → 정상 운영
-  BLOCKED → 해당일 진입 차단 (소형 진입만 허용)
+  BLOCKED → 해당일 진입 차단 / core_health 회복 시 자동 복구
 """
 import datetime
 import logging
@@ -28,10 +32,11 @@ logger = logging.getLogger("SYSTEM")
 _BLOCKED_NOTIFY_MIN = 30   # [P6] BLOCKED 지속 시 첫 알림 임계 (분)
 
 # 게이트 임계값
-_GATE_ACC30M      = 0.40   # 30분 정확도 최소
-_GATE_CORE_HEALTH = 70     # CORE 건강 점수 최소
+# [2026-06-08] acc30m 게이트 제거 — 스캘퍼 진입 호라이즌(1m/5m)과 불일치,
+# 30분 채점 지연으로 장초반에 의미 없음. CB③에서만 관리.
+_GATE_CORE_HEALTH = 70     # CORE 건강 점수 최소 (단일 조건)
 # z-score 조건 완화 (2026-06-02): 급변장 시 toxicity_atr_stress 등이 z>4 폭발하여
-# BLOCKED 고착 발생 → 50으로 완화(사실상 비활성화). acc30m + core_health 2조건만 사용.
+# BLOCKED 고착 발생 → 50으로 완화(사실상 비활성화).
 _GATE_ZSCORE_WARN = 50     # 급변장 대비 완화 (기존 2)
 _SHADOW_END_MIN   = 40     # Shadow 세션 종료 시각 (분) — 09:40
 _ZSCORE_WINDOW    = 5      # z-score 경고 추적 창 (분)
@@ -51,7 +56,7 @@ class ShadowSessionTracker:
 
     def __init__(self):
         self._state: str = SHADOW_SHADOW
-        self._gate_checks: dict = {"acc30m": False, "core_health": False, "zscore": False}
+        self._gate_checks: dict = {"core_health": False, "zscore": False}
         self._z_warn_buf: deque = deque(maxlen=_ZSCORE_WINDOW)
         self._virtual_pnl: float = 0.0          # 가상 PnL 누적 (pt)
         self._virtual_trades: int = 0
@@ -60,11 +65,12 @@ class ShadowSessionTracker:
         # [P6] BLOCKED 지속 알림
         self._blocked_since: Optional[datetime.datetime] = None
         self._blocked_last_notify: Optional[datetime.datetime] = None
+        # 거래소 CB 중 플래그 — BLOCKED 복구 시도 skip 용
+        self._exchange_cb_active: bool = False
 
     def update(
         self,
         ts_dt: datetime.datetime,
-        acc30m: float,
         core_health_score: int,
         z_warn_count: int,
         virtual_pnl_delta: float = 0.0,
@@ -75,23 +81,24 @@ class ShadowSessionTracker:
 
         Args:
             ts_dt:              현재 분봉 datetime
-            acc30m:             CB③ 30분 정확도 (0.0~1.0)
             core_health_score:  CoreHealthScore.score (0~100)
             z_warn_count:       해당 봉 극단 z-score 피처 수
             virtual_pnl_delta:  이번 봉 가상 체결 손익 (pt, 실제 진입 시뮬)
             virtual_correct:    이번 봉 가상 예측 적중 여부 (None = 미집계)
         """
-        # BLOCKED 복구: acc30m + core_health 조건 충족 시 LIVE 전환 허용
-        # (z 조건 완화로 2조건만 체크 — 급변장 대비 2026-06-02)
+        # BLOCKED 복구: core_health 단일 조건 (acc30m 제거 — 스캘퍼 호라이즌 불일치)
         if self._state == SHADOW_BLOCKED:
-            if acc30m >= _GATE_ACC30M and core_health_score >= _GATE_CORE_HEALTH:
+            # 거래소 CB 중에는 core_health가 무의미 — 복구 시도 자체를 skip
+            if self._exchange_cb_active:
+                return
+            if core_health_score >= _GATE_CORE_HEALTH:
                 self._state = SHADOW_LIVE
                 self._transition_time = ts_dt.strftime("%H:%M")
                 self._blocked_since = None          # [P6] 타이머 리셋
                 self._blocked_last_notify = None
                 msg = (
                     f"[ShadowSession] BLOCKED→LIVE 복구 | {self._transition_time} | "
-                    f"acc30m={acc30m:.1%} core={core_health_score} z={z_warn_count}"
+                    f"core={core_health_score} z={z_warn_count}"
                 )
                 logger.info(msg)
                 log_manager.system(msg, "INFO")
@@ -108,19 +115,14 @@ class ShadowSessionTracker:
                 )
                 if _elapsed >= _BLOCKED_NOTIFY_MIN and _since_last >= _BLOCKED_NOTIFY_MIN:
                     _failed = [k for k, ok in self._gate_checks.items() if not ok]
-                    # 권장 대응 결정
-                    if "acc30m" in _failed and acc30m >= 0.30:
-                        _action = "→ 동적 피처(SHAP) 탭 > 현재 세트 재학습"
-                    elif "acc30m" in _failed and acc30m < 0.30:
-                        _action = "→ 금일 관망 유지 (acc30m<30%, CB③ 임박)"
-                    elif "core_health" in _failed:
-                        _action = "→ 시스템 로그 확인 (CoreHealth 저하 원인 파악)"
-                    else:
-                        _action = "→ 자연 회복 대기"
+                    _action = (
+                        "→ 시스템 로그 확인 (CoreHealth 저하 원인 파악)"
+                        if "core_health" in _failed
+                        else "→ 자연 회복 대기"
+                    )
                     _msg = (
                         f"[ShadowSession] BLOCKED {_elapsed:.0f}분 지속 — 복구 미발동\n"
                         f"미통과: {_failed} | "
-                        f"acc30m={acc30m:.1%}(기준 {_GATE_ACC30M:.0%}) "
                         f"core={core_health_score}(기준 {_GATE_CORE_HEALTH})\n"
                         f"권장 대응: {_action}"
                     )
@@ -144,8 +146,7 @@ class ShadowSessionTracker:
         self._z_warn_buf.append(z_warn_count)
         recent_z_total = sum(self._z_warn_buf)
 
-        # 게이트 체크
-        self._gate_checks["acc30m"]      = acc30m >= _GATE_ACC30M
+        # 게이트 체크 (acc30m 제거 — CB③에서 별도 관리)
         self._gate_checks["core_health"] = core_health_score >= _GATE_CORE_HEALTH
         self._gate_checks["zscore"]      = recent_z_total < _GATE_ZSCORE_WARN
 
@@ -157,7 +158,7 @@ class ShadowSessionTracker:
             self._transition_time = ts_dt.strftime("%H:%M")
             msg = (
                 f"[ShadowSession] LIVE 전환 | {self._transition_time} | "
-                f"acc30m={acc30m:.1%} core={core_health_score} z={recent_z_total} "
+                f"core={core_health_score} z={recent_z_total} "
                 f"가상PnL={self._virtual_pnl:+.1f}pt"
             )
             logger.info(msg)
@@ -173,11 +174,34 @@ class ShadowSessionTracker:
             failed = [k for k, ok in self._gate_checks.items() if not ok]
             msg = (
                 f"[ShadowSession] BLOCKED | {self._transition_time} | "
-                f"미통과={failed} acc30m={acc30m:.1%} core={core_health_score} "
-                f"z={recent_z_total}"
+                f"미통과={failed} core={core_health_score} z={recent_z_total}"
             )
             logger.warning(msg)
             log_manager.system(msg, "WARNING")
+
+    def mark_exchange_cb(self, active: bool) -> None:
+        """거래소 서킷브레이커 중임을 마킹.
+
+        active=True  : CB 진입 — BLOCKED 복구 시도를 중단하고 대기.
+        active=False : CB 해제 — 복구 시도 재개 (force_live와 함께 호출).
+        """
+        self._exchange_cb_active = active
+
+    def force_live(self, reason: str = "") -> None:
+        """외부 이벤트(거래소 CB 해제)로 강제 LIVE 전환.
+
+        BLOCKED 상태일 때만 동작. core_health 조건 면제.
+        """
+        if self._state == SHADOW_BLOCKED:
+            self._state = SHADOW_LIVE
+            self._blocked_since = None
+            self._blocked_last_notify = None
+            msg = (
+                f"[ShadowSession] 거래소 CB 해제 → 강제 LIVE 복구"
+                f" | reason={reason}"
+            )
+            logger.info(msg)
+            log_manager.system(msg, "INFO")
 
     def is_live_allowed(self) -> bool:
         """실주문 허용 여부. LIVE 상태일 때만 True."""
@@ -206,7 +230,7 @@ class ShadowSessionTracker:
 
     def reset_daily(self) -> None:
         self._state = SHADOW_SHADOW
-        self._gate_checks = {"acc30m": False, "core_health": False, "zscore": False}
+        self._gate_checks = {"core_health": False, "zscore": False}
         self._z_warn_buf.clear()
         self._virtual_pnl = 0.0
         self._virtual_trades = 0
@@ -214,6 +238,7 @@ class ShadowSessionTracker:
         self._transition_time = None
         self._blocked_since = None        # [P6]
         self._blocked_last_notify = None  # [P6]
+        self._exchange_cb_active = False  # 거래소 CB 플래그도 초기화
 
     def status_dict(self) -> dict:
         return {

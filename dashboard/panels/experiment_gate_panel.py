@@ -58,11 +58,20 @@ class ExperimentGatePanel(QWidget):
         self.setStyleSheet("background:#0e0e0e; color:#cccccc;")
 
         # ─ 상단: Shadow Session ─────────────────────────────────
-        shadow_box = QGroupBox("🌑  Shadow Session  (모의투자 검증 게이트)")
+        shadow_box = QGroupBox("🌑  Shadow Session  (진입 게이트: CoreHealth ≥ 70)")
         shadow_box.setStyleSheet(
             "QGroupBox{color:#4488ff; border:1px solid #2a3a5a; "
             "margin-top:6px; padding:6px;}"
             "QGroupBox::title{subcontrol-origin:margin; left:8px; color:#4488ff;}"
+        )
+        shadow_box.setToolTip(
+            "Shadow Session 게이트 조건\n\n"
+            "  LIVE 전환: CoreHealth ≥ 70 (단일 조건)\n"
+            "  BLOCKED 복구: 동일 조건 매분 재평가\n\n"
+            "[2026-06-08] acc30m 게이트 제거\n"
+            "  이유: 스캘퍼 진입 호라이즌(1m/5m)과 불일치,\n"
+            "  30분 채점 지연으로 장초반에 의미 없음.\n"
+            "  acc30m은 CB③(당일 정지)에서만 관리."
         )
         s_lay = QVBoxLayout(shadow_box)
         s_lay.setSpacing(4)
@@ -82,12 +91,11 @@ class ExperimentGatePanel(QWidget):
         self._s_info_lbl.setStyleSheet("font-size:10px; color:#888;")
         s_lay.addWidget(self._s_info_lbl)
 
-        # 게이트 조건 3가지
+        # 게이트 조건 (acc30m 제거 — CB③에서 관리, core_health 단일 게이트)
         self._s_gates = {}
         gate_defs = [
-            ("acc30m",      "acc30m ≥ 40%"),
             ("core_health", "CORE 건강 ≥ 70점"),
-            ("zscore",      "z-score 경고 < 2회"),
+            ("zscore",      "z-score 경고 < 50회"),
         ]
         for key, label in gate_defs:
             row = QHBoxLayout()

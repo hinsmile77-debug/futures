@@ -741,6 +741,21 @@ class EnsembleDecision:
         self._flat_streak = 0
         self._fl_streak = {h: 0 for h in HORIZONS}
 
+    def reset_exchange_cb(self) -> None:
+        """거래소 CB 해제 후 앙상블 상태 초기화.
+
+        - ConstOut 버퍼: CB 기간 빈 데이터로 상수 출력 오판 방지
+        - CascadeCoherence 방향 버퍼: 공백 전 호라이즌 방향 잔존 제거
+        - FL streak: CB 공백이 FL 연속으로 오산될 수 있음
+        """
+        for h in self._hz_conf_hist:
+            self._hz_conf_hist[h].clear()
+        self._hz_stuck = {h: False for h in HORIZONS}
+        self._flat_streak = 0
+        self._fl_streak = {h: 0 for h in HORIZONS}
+        # StuckBreaker streak도 리셋 — CB 직전 방향 고착이 재개 후 오발동 방지
+        self._stuck.reset_daily()
+
     def record_trade_outcome(
         self,
         *,

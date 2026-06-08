@@ -267,6 +267,8 @@ SCALER_CLIP_FEATURES: dict = {
     # opt_pcr_slope_norm: 오늘 z=+9.21 반복 폭발 (D_FORCE 후에도 재발)
     # OFI/CVD 방향 신호와 충돌 → conf 소거. ±3σ clip으로 이상값 사전 차단
     "opt_pcr_slope_norm": (-3.0, 3.0),
+    # cvd_direction: -1/0/1 이산값 — 방향 편향 지속 시 D_FORCE 반복 방지 (z=-6.38 실측)
+    "cvd_direction": (-0.45, 0.45),
     # ── Phase 1 추가 (2026-06-05) — 절대값 피처 z폭발 방어 ──────────
     # microprice/vwap: 절대 가격 피처, 훈련 μ≈1387 vs 현재 ~1297 → 갭 시 z폭발
     # 근본 해결은 Phase 2(피처 제거)지만, 그 전까지 현실 범위로 cap

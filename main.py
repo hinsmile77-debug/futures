@@ -268,6 +268,9 @@ class TradingSystem:
         self._efficacy_tick:  int = 0        # 5분마다 효과 검증 패널 갱신용
         self._last_block_reason: str = ""    # 직전 진입 차단 이유 (중복 로그 방지)
         self._last_recovery_ts:  str = ""    # 마지막 복구 처리 분봉 ts (동일 분봉 반복 방지)
+        # 거래소 CB 대기 모드
+        self._exchange_cb_mode:  bool = False
+        self._exchange_cb_start: Optional[datetime.datetime] = None
         # EnsembleGater 온라인 학습: 마지막 진입의 gate signals / direction 저장
         self._last_gate_signals: dict = {}
         self._last_gate_direction: int = 0
@@ -2124,6 +2127,22 @@ class TradingSystem:
 
         self._last_recovery_ts = ""   # 실분봉 수신 시에만 복구 ts 초기화
 
+        # ── 거래소 CB 해제 감지 ─────────────────────────────────────────
+        # CB 대기 모드 중 분봉이 재수신되면 해제 후처리 실행
+        if self._exchange_cb_mode:
+            self._exchange_cb_mode = False
+            _gap_min = int(
+                (now - self._exchange_cb_start).total_seconds() / 60
+            ) if self._exchange_cb_start else 0
+            self._exchange_cb_start = None
+            log_manager.system(
+                f"[ExchangeCB] 거래소 CB 해제 — {_gap_min}분 공백 후 분봉 재개. "
+                f"상태 초기화 시작",
+                "INFO",
+            )
+            notify(f"▶ 미륵이 거래소 CB 해제 — {_gap_min}분 후 분봉 재개")
+            self._post_exchange_cb_resume(_gap_min)
+
         # 09:00 이후 첫 분봉 수신 — 정상 작동 슬랙 알림 + 갭 오프셋 설정 (1회만)
         if not getattr(self, "_first_tick_notified", False):
             self._first_tick_notified = True
@@ -3078,7 +3097,6 @@ class TradingSystem:
             _contra_acc30m = _acc30m
         self.shadow_session.update(
             ts_dt            = _ts_dt_obj,
-            acc30m           = _contra_acc30m,   # pred_buffer 기반으로 통일
             core_health_score= self.core_health.score,
             z_warn_count     = _z_warn,
         )
@@ -5816,12 +5834,36 @@ class TradingSystem:
           90s  — 경보 로그 (분봉 30초 지연)
          150s  — 경보 로그 + 알림 (심각)
          240s  — 경보 로그 + 알림 + raw_candles 강제 재실행
+         300s  — 거래소 CB 추정 → CB 대기 모드 진입 (복구 시도 중단)
         """
         # 장 마감 후에는 파이프라인이 정상적으로 멈추므로 워치독 무시
         if not is_market_open():
             return
         m, s = divmod(elapsed_s, 60)
         elapsed_str = f"{m}분 {s:02d}초"
+
+        # ── 거래소 CB 대기 모드 ─────────────────────────────────────────
+        # 5분 이상 미수신 = 네트워크 단절이 아닌 거래소 CB/단일가 구간으로 판단.
+        # 이후 복구 시도를 멈추고 분봉 재개를 기다린다.
+        if elapsed_s >= 300:
+            if not self._exchange_cb_mode:
+                self._exchange_cb_mode = True
+                self._exchange_cb_start = datetime.datetime.now()
+                msg = (
+                    f"[ExchangeCB] 분봉 {elapsed_str} 미수신 — "
+                    f"거래소 CB/단일가 구간 추정. 복구 시도 중단, 재개 대기 모드 진입"
+                )
+                log_manager.system(msg, "WARNING")
+                notify(f"⏸ 미륵이 거래소 CB 대기 — {elapsed_str} 분봉 미수신")
+                self._shadow_tracker.mark_exchange_cb(True)
+            else:
+                # CB 모드 중 — 30분마다 생존 알림만 발송
+                _gap_min = int(
+                    (datetime.datetime.now() - self._exchange_cb_start).total_seconds() / 60
+                ) if self._exchange_cb_start else m
+                if _gap_min > 0 and _gap_min % 30 == 0 and s < 60:
+                    notify(f"⏸ 거래소 CB 대기 중 {_gap_min}분 — 분봉 재개 시 자동 복구")
+            return  # CB 모드 중에는 _try_pipeline_recovery 절대 호출 안 함
 
         if elapsed_s >= 240:
             msg = (f"⛔ 파이프라인 {elapsed_str} 미실행 — 원인 불명. 긴급 복구 시도 중  "
@@ -5843,8 +5885,87 @@ class TradingSystem:
             log_manager.system(msg, "WARNING")
             notify_pipeline_delayed(elapsed_str)
 
+    def _post_exchange_cb_resume(self, gap_min: int) -> None:
+        """거래소 CB 해제 후 상태 초기화 루틴.
+
+        CB 구간은 분봉 공백이므로 공백 전 상태가 그대로 잔존한다.
+        재개 즉시 다음 5가지를 초기화해 오판을 방지한다.
+
+          ① ShadowSession BLOCKED 강제 LIVE 복구 (연결 단절이 아닌 거래소 중단)
+          ② acc30m 버퍼 리셋 (CB 전 예측이 오방향 오판 오염 방지)
+          ③ 앙상블 ConstOut/CascadeCoherence/FL 버퍼 리셋 (공백 전 방향 잔존 제거)
+          ④ 스케일러 즉시 재적합 (CB 후 분포 급변 대응)
+          ⑤ D_PRICE_MOMENTUM 쿨다운 리셋 (CB 직후 급변 구간에서 즉시 트리거 허용)
+        """
+        # ① ShadowSession — CB 해제이므로 core_health 조건 면제하고 LIVE 복귀
+        self._shadow_tracker.mark_exchange_cb(False)
+        self._shadow_tracker.force_live(reason=f"exchange_cb_resume gap={gap_min}m")
+
+        # ② acc30m 버퍼 리셋 — CB 전 예측은 전혀 다른 시장 상황
+        self.circuit_breaker._accuracy_buf.clear()
+        log_manager.system(
+            f"[ExchangeCB] acc30m 버퍼 초기화 — CB {gap_min}분 공백 전 예측 제거",
+            "INFO",
+        )
+
+        # ③ 앙상블 상태 리셋 — ConstOut/CascadeCoherence/FL streak/StuckBreaker
+        self.ensemble.reset_exchange_cb()
+        log_manager.system(
+            "[ExchangeCB] 앙상블 버퍼 초기화 — ConstOut/Cascade/FL/Stuck 리셋",
+            "INFO",
+        )
+
+        # ④ 스케일러 즉시 재적합 (백그라운드 daemon thread)
+        # CB 후 가격 레벨이 크게 변해 microprice/vwap 등 절대값 피처가 극단값을 가짐
+        if not self._scaler_refresh_running:
+            def _ecb_scaler_worker(_gap=gap_min):
+                self._scaler_refresh_running = True
+                try:
+                    from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                    _X, _fn = self.batch_retrainer.load_features_for_warmup(
+                        lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                    )
+                    if _X is not None:
+                        self.model.refit_scalers_only(
+                            _X, _fn,
+                            trigger_type="ExchangeCB",
+                            trigger_reason=f"거래소CB {_gap}분 공백 후 재개",
+                        )
+                        log_manager.system(
+                            f"[ExchangeCB] 스케일러 재적합 완료 (gap={_gap}m)",
+                            "INFO",
+                        )
+                except Exception as _e:
+                    logger.warning("[ExchangeCB] 스케일러 재적합 실패: %s", _e)
+                finally:
+                    self._scaler_refresh_running = False
+            import threading as _th
+            _th.Thread(target=_ecb_scaler_worker, daemon=True).start()
+        else:
+            log_manager.system(
+                "[ExchangeCB] 스케일러 재적합 스킵 — 이미 진행 중",
+                "INFO",
+            )
+
+        # ⑤ D_PRICE_MOMENTUM 쿨다운 리셋 — CB 직후 급변 구간에서 즉시 트리거 허용
+        self._price_momentum_refit_until = None
+
+        log_manager.system(
+            f"[ExchangeCB] 재개 초기화 완료 | gap={gap_min}m | "
+            f"ShadowLIVE/acc리셋/앙상블리셋/스케일러재적합/쿨다운리셋",
+            "INFO",
+        )
+
     def _try_pipeline_recovery(self) -> None:
         """raw_candles 최신 분봉으로 파이프라인 강제 재실행."""
+        # 거래소 CB 대기 모드 중에는 분봉 자체가 없으므로 복구 시도 무의미
+        if self._exchange_cb_mode:
+            log_manager.system(
+                "[복구 스킵] 거래소 CB 대기 모드 — 분봉 재개 시 자동 복구",
+                "INFO",
+            )
+            return
+
         from utils.db_utils import fetchone
         from config.settings import RAW_DATA_DB
 

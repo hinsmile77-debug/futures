@@ -6,6 +6,27 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-08 (126차 — 거래소 CB 대응 + Registry 정합성 + cvd_direction clip)
+
+### 한일 요약
+
+- [DONE 2026-06-08] **거래소 CB 상태머신** — 5분 미수신 → ExchangeCB 모드 진입, 분봉 재개 시 자동 복구 (`main.py`)
+- [DONE 2026-06-08] **ShadowSession ExchangeCB 연동** — `mark_exchange_cb()` + `force_live()` 추가, BLOCKED 복구 시도 중단 (`safety/shadow_session.py`)
+- [DONE 2026-06-08] **앙상블 CB 해제 초기화** — `reset_exchange_cb()` 추가 (hz_conf_hist/stuck/fl_streak 리셋) (`model/ensemble_decision.py`)
+- [DONE 2026-06-08] **Registry 정합성 동기화** — 115차에서 삭제된 4개 피처(vwap/microprice/macro_vix_abs/feature_recoverable_errors) registry에서 제거 (105→101) (`data/db/shap_feature_registry.json`)
+- [DONE 2026-06-08] **cvd_direction clip 추가** — `(-0.45, 0.45)` SCALER_CLIP_FEATURES 추가, z=-6.38 D_FORCE 반복 방지 (`config/settings.py`)
+
+### 다음 할 일
+
+- [NEXT 다음 장] **126차 수정 발동 확인**
+  - `[ExchangeCB] 분봉 5분 미수신 — 거래소 CB/단일가 구간 추정` SYSTEM WARNING 로그
+  - `[ExchangeCB] 거래소 CB 해제 — N분 공백 후 분봉 재개. 상태 초기화 시작` 복구 로그
+  - `[ShadowSession] 거래소 CB 해제 → 강제 LIVE 복구` 로그
+  - cvd_direction D_FORCE 재발 없음 확인 (SIGNAL.log)
+  - `managed feature set 적용: 101개` 재학습 로그 (registry 101 일치 확인)
+
+---
+
 ## 2026-06-08 (125차 — Extreme 피처 z-score 억제)
 
 ### 한일 요약

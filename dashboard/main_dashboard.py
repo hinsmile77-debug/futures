@@ -8460,21 +8460,18 @@ class MireukDashboard(QMainWindow):
             "            실거래는 차단됩니다.\n\n"
             "  LIVE    : 게이트 조건 통과 → 실주문 허용\n\n"
             "  BLOCKED : 09:40 초과 & 조건 미통과 → 자동 진입 차단\n"
-            "            ※ acc30m + core_health 충족 시 장중 복구 가능\n\n"
-            "통과 조건 (2가지 충족 필요):\n"
-            "  ① acc30m  ≥ 40%    (30분 정확도)\n"
-            "  ② 건강점수 ≥ 70    (core_health_score)\n"
-            "  ③ z경고 < 50       (완화됨 — 기존 <2)\n\n"
-            "[Note 2026-06-02] z 조건 완화\n"
-            "  급변장 시 toxicity_atr_stress 등이 z>4 폭발하여\n"
-            "  BLOCKED 고착 발생. z임계값 2→50 완화(사실상 비활성).\n"
-            "  acc30m + core_health 2조건만 유효하게 운영.\n"
-            "  시장 안정 후 원복 검토 (_GATE_ZSCORE_WARN = 2).\n\n"
+            "            ※ core_health 충족 시 장중 자동 복구\n\n"
+            "통과 조건 (단일):\n"
+            "  ① 건강점수 ≥ 70    (core_health_score)\n\n"
+            "[2026-06-08] acc30m 게이트 제거\n"
+            "  이유: 스캘퍼 진입 호라이즌(1m/5m)과 불일치,\n"
+            "  30분 채점 지연으로 장초반에 의미 없음.\n"
+            "  acc30m은 CB③(30분 정확도<35% → 당일 정지)에서만 관리.\n\n"
             "표시값:\n"
-            "  A=acc30m  H=core_health  Z=z경고누적"
+            "  H=core_health  Z=z경고누적"
         )
         self.lbl_shadow = mk_badge("", C['bg3'], C['text2'], 10)
-        self.lbl_shadow.setText("SHADOW\nA:-- | H:-- | Z:-")
+        self.lbl_shadow.setText("SHADOW\nH:-- | Z:-")
         self.lbl_shadow.setMinimumWidth(S.p(110))
         self.lbl_shadow.setAlignment(Qt.AlignCenter)
         self.lbl_shadow.setWordWrap(True)
@@ -9764,28 +9761,23 @@ class DashboardAdapter:
 
         Args:
             state:        "SHADOW" / "LIVE" / "BLOCKED"
-            acc30m:       30분 정확도 (0.0~1.0)
-            core_health:  core_health_score (0~100)
+            acc30m:       30분 정확도 (0.0~1.0) — 표시 전용, 게이트 조건 아님
+            core_health:  core_health_score (0~100) — 단일 게이트 조건
             z_warn_count: 최근 5분 z-score 경고 누적 횟수
         """
         lbl = getattr(self._win, "lbl_shadow", None)
         if lbl is None:
             return
 
-        acc_str = f"{acc30m * 100:.0f}%"
-        text = f"{state}\nA:{acc_str} | H:{core_health} | Z:{z_warn_count}"
+        text = f"{state}\nH:{core_health} | Z:{z_warn_count}"
 
         if state == "LIVE":
             bg, fg = C["green"], "#fff"
         elif state == "BLOCKED":
             bg, fg = C["red"], "#fff"
         else:
-            # SHADOW — gate 미통과 항목 있으면 주황, 전부 통과 직전이면 파랑
-            gates_ok = (
-                acc30m >= 0.40
-                and core_health >= 70
-                and z_warn_count < 2
-            )
+            # SHADOW — core_health 통과 직전이면 파랑, 미통과면 회색
+            gates_ok = core_health >= 70
             bg, fg = (C["blue"], "#fff") if gates_ok else (C["bg3"], C["text2"])
 
         lbl.setText(text)
