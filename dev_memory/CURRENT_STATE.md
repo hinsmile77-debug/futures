@@ -1,7 +1,37 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-09 (136차 세션) — S2 파이프라인 지연 5~7초 근본 수정 4종
+> 마지막 업데이트: 2026-06-09 (137차 세션) — cvd_dir int잘림·hurst sqrt버그·latency 고착 3종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-09 (137차 — cvd_dir/hurst/latency 3종 근본 수정)
+
+### 문제 원인 (20260609 로그 딥다이브)
+
+| 버그 | 증거 | 원인 | 파일 |
+|---|---|---|---|
+| cvd_dir=+0 전 장 고착 | DBG-F4 cvd_dir=+0, 체크리스트 cvd=✗ 100% | `int(±0.5) = 0` — Python 소수점 버림 | `main.py:3979,3116` |
+| hurst=0.500 2시간→0.070 급변 | 09:00~11:01 고착, 이후 극단값 | `sqrt(std)` 중첩 → 기울기 H/2 underestimate | `hurst_exponent.py` |
+| latency=0.000s 전 장 고착 | DBG-CB latency=0.000s | Cybos: record_api_latency 미호출 → _last_latency 미갱신 | `circuit_breaker.py` |
+
+### 개선 내용 (137차)
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| `_dir_sign()` 헬퍼 추가 — 부호 기반 변환 (크기 무관) | **완료** ✅ | `main.py` |
+| DBG-F4 로그: `int()` → `_dir_sign()` | **완료** ✅ | `main.py:3116` |
+| 체크리스트 전달: `int()` → `_dir_sign()` | **완료** ✅ | `main.py:3988` |
+| hurst `sqrt(std)` → `std` + `1e-10` floor | **완료** ✅ | `hurst_exponent.py` |
+| `record_pipe_latency` → `_last_latency` 갱신 | **완료** ✅ | `circuit_breaker.py` |
+
+### 다음 장 확인 사항
+
+- DBG-F4에서 `cvd_dir=+1` 또는 `-1` 출력 (더 이상 +0 고착 아님)
+- 체크리스트 `cvd=✓` 비율 상승 확인
+- hurst 값이 0.35~0.65 정상 범위에서 변화 (더 이상 0.500 또는 0.07 고착 아님)
+- DBG-CB `latency=0.XXXs` 실측값 출력 (더 이상 0.000s 고착 아님)
+- 진입 발생 여부 (cvd 복원 + hurst 정상화 → grade=A 유지 → conf 임계 통과 기대)
 
 ---
 
