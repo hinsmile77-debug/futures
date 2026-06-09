@@ -671,6 +671,7 @@ class TradingSystem:
                 result = self.batch_retrainer.retrain_now(force=force)
             except Exception as exc:
                 result = {"ok": False, "error": str(exc)}
+            self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
             QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, False))
 
         threading.Thread(target=_retrain_worker, daemon=True).start()
@@ -2090,6 +2091,7 @@ class TradingSystem:
                     result = self.batch_retrainer.retrain_now(force=True)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
+                self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
             threading.Thread(target=_intraday_retrain_worker, daemon=True).start()
@@ -2479,6 +2481,7 @@ class TradingSystem:
                     result = self.batch_retrainer.retrain_now(force=True)
                 except Exception as _pre_e:
                     result = {"ok": False, "error": str(_pre_e)}
+                self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
             threading.Thread(target=_pre_retrain_worker, daemon=True).start()
@@ -2977,6 +2980,7 @@ class TradingSystem:
                     result = self.batch_retrainer.retrain_now(force=_is_warmup)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
+                self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, _is_warmup))
 
             threading.Thread(target=_retrain_worker, daemon=True).start()
