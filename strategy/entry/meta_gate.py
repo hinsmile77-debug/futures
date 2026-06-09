@@ -31,6 +31,7 @@ class MetaGate:
         features: Optional[Dict],
         now: Optional[datetime.datetime] = None,
         recent_accuracy: float = 0.5,
+        min_conf: float = 0.57,
     ) -> Dict:
         if now is None:
             now = now_kst()
@@ -56,13 +57,33 @@ class MetaGate:
         )
         learned = self.learner.predict_confidence(meta_features)
         meta_conf = float(learned["confidence_score"])
+
+        # SGD 붕괴 보완: prob[1]≈0 고착 시 rule-based 값으로 하한 보정
+        # (극단 z-score → 연속 오예측 → SGD "항상 틀림" 학습 방지)
+        if meta_conf < 0.15:
+            _rb_conf = self.learner._rule_based_confidence(meta_features)
+            if _rb_conf > meta_conf:
+                logger.info(
+                    "[MetaGate] SGD 붕괴 보완: raw=%.3f → rule=%.3f",
+                    meta_conf, _rb_conf,
+                )
+                meta_conf = _rb_conf
+                learned["model_source"] = "규칙기반(붕괴보완)"
+
         blended_conf = (float(confidence) * 0.6) + (meta_conf * 0.4)
 
-        if blended_conf >= 0.67:
+        # min_conf 연동 상대 임계값
+        # reduce_thr: offset 없이 min_conf 그대로 사용.
+        #   - actual_min_conf(존+FQAdj 반영값)이 MetaGate 의 실질 하한이 됨
+        #   - floor 0.38: 극단적 저품질 신호까지 열지 않음
+        take_thr   = max(0.52, min(0.70, min_conf + 0.14))
+        reduce_thr = max(0.38, min_conf)
+
+        if blended_conf >= take_thr:
             action = "take"
             size_mult = max(0.9, min(1.25, learned["size_multiplier"]))
             reason = "meta_take"
-        elif blended_conf >= 0.56:
+        elif blended_conf >= reduce_thr:
             action = "reduce"
             size_mult = max(0.35, min(0.75, learned["size_multiplier"] or 0.5))
             reason = "meta_reduce"
@@ -70,6 +91,12 @@ class MetaGate:
             action = "skip"
             size_mult = 0.0
             reason = "meta_skip"
+            logger.info(
+                "[MetaGate] skip: blended=%.3f reduce_thr=%.3f take_thr=%.3f "
+                "(min_conf=%.3f ens=%.3f meta_raw=%.3f)",
+                blended_conf, reduce_thr, take_thr, min_conf,
+                float(confidence), meta_conf,
+            )
 
         return {
             "action": action,

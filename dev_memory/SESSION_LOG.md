@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-06-09 (135차 — Meta skip·conf=100% 4종 근본 원인 수정)
+
+**Work**: 6/9 장중 로그(SIGNAL.log) 전수 분석 → MetaGate skip 과발동 2종 + SGD 붕괴 + conf=100% FLAT 고착 원인 규명 → 5개 파일 패치.
+
+### 한 일
+
+| Fix | 내용 | 파일 |
+|---|---|---|
+| A-1 | MetaGate reduce_thr 공식 수정: `max(0.43, min_conf+0.04)` → `max(0.38, min_conf)` (오프셋 제거) | `strategy/entry/meta_gate.py` |
+| A-2 | actual_min_conf(존+FQAdj 반영값)를 MetaGate.evaluate()에 전달 (UI 표시 mc ≠ 실제 mc 불일치) | `main.py` STEP 6 |
+| B-1 | SGD 붕괴 보완: meta_conf < 0.15 시 rule-based floor로 하한 보정 | `strategy/entry/meta_gate.py` |
+| B-2 | MetaConfidenceLearner 붕괴 자동 감지·복구: `_is_collapsed()` + `_reset_model()` (최근 30회 max < 0.05) | `learning/meta_confidence.py` |
+| C | AutoMask CORE 피처 면제: `_CORE_MASK_EXEMPT` frozenset — cvd/vwap/ofi 계열 xs=0.0 대체 차단 | `model/multi_horizon_model.py` |
+| D-1 | cvd_direction, cvd → `DFORCE_EXCLUDE_FEATURES` 추가 (이산 피처 D_FORCE로 해소 불가) | `config/settings.py` |
+| D-2 | `refit_scalers_only()` CORE 피처 scale 보호: `scale_<0.05`이면 이전 mean/scale 복원 | `model/multi_horizon_model.py` |
+
+### conf=100% FLAT 고착 원인 분석
+
+```
+12:49  D_FORCE feat=cvd_direction repeat=2회 → refit_scalers_only(500봉)
+       500봉 전부 cvd_direction=-1 (하루종일 하락장)
+       StandardScaler: mean=-1, std=0 → scale=1 (sklearn divide-by-zero fallback)
+12:50~ scaler.transform(-1) = (-1-(-1))/1 = 0.0 → GBM에 "중립 CVD" 전달
+       GBM: up≈0.001, flat≈0.998, down≈0.001
+       flat_score = 1.0 - 0.001 - 0.001 = 0.998 → conf=100.0% 표시
+       dir=+0 → grade=X → 진입 전면 차단 (12:50~13:11+ 21분간)
+```
+
+CONF_CLIP=0.92가 무효한 이유: CONF_CLIP은 개별 호라이즌 direction confidence에 적용되며, `flat_score = 1.0 - up_score - down_score`는 raw 확률 잔여값이라 클리핑 경로를 통과하지 않음.
+
+### Meta skip 원인 체인 (이전 세션 이월 분석)
+
+```
+[문제 1] reduce_thr = max(0.43, min_conf+0.04) = max(0.43, 0.398+0.04) = 0.438
+         blended = ens×0.6 + meta×0.4 ≈ 0.42 < 0.438 → skip (임계가 너무 높음)
+
+[문제 2] actual_min_conf = max(decision["min_conf"], zone_mc) = 0.398 (OPEN_VOLATILE)
+         UI는 mc=0.390 표시 → MetaGate에 0.390 전달 → reduce_thr=0.430 계산 → 오판
+
+[문제 3] 극단 z-score → AutoMasked → 연속 오예측 → SGD "항상 틀림" 학습
+         → prob[1]=0 고착 → meta_raw=0.000 → blended ≈ ens×0.6 → reduce_thr 미달
+```
+
+### 다음 할 일
+
+- 내일 장: 135차 패치 효과 확인 (상세 NEXT_TODO 참조)
+- GBM 재학습 (131차+133차+135차 반영) — 계속 이월
+
+---
+
 ## 2026-06-09 (134차 — 파이프라인 지연 CB⑤ 근본 원인 2종 제거)
 
 **Work**: 09:32 CB⑤ (8872ms) 패치 이후 재시동에서 탈출한 10:23 CB⑤ (5943ms) 딥다이브 분석 → `scaler_monitor.db` EXCLUSIVE lock 경합 근본 원인 확인 → Fix 7/8/9 구현. Fix 3/4/6 완성 포함.

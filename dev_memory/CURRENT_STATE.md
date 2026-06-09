@@ -1,7 +1,44 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-09 (134차 세션 마무리) — 파이프라인 지연 CB⑤ 근본 원인 2종 제거 (scaler_monitor 비동기 + WAL)
+> 마지막 업데이트: 2026-06-09 (135차 세션 마무리) — Meta skip·conf=100% FLAT 4종 근본 원인 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-09 (135차 — Meta skip·conf=100% 4종 근본 원인 수정)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| MetaGate reduce_thr 공식 수정 (`max(0.38, min_conf)`) | **완료** ✅ | `strategy/entry/meta_gate.py` |
+| actual_min_conf MetaGate 전달 (STEP 6) | **완료** ✅ | `main.py` |
+| SGD 붕괴 보완 — rule-based floor (meta_conf<0.15) | **완료** ✅ | `strategy/entry/meta_gate.py` |
+| MetaConfidenceLearner 붕괴 자동 감지·복구 | **완료** ✅ | `learning/meta_confidence.py` |
+| AutoMask CORE 피처 면제 (`_CORE_MASK_EXEMPT`) | **완료** ✅ | `model/multi_horizon_model.py` |
+| cvd_direction·cvd → `DFORCE_EXCLUDE_FEATURES` 추가 | **완료** ✅ | `config/settings.py` |
+| refit_scalers_only() CORE 피처 scale 보호 (`scale_<0.05`) | **완료** ✅ | `model/multi_horizon_model.py` |
+
+### 오늘 장 이상 패턴 (6/9 실측, 135차 패치 전)
+
+```
+[Meta skip] reduce_thr > blended → 전 분봉 meta skip
+  원인 1: reduce_thr 오프셋(+0.04) → 임계 0.438 > blended 0.42
+  원인 2: actual_min_conf=0.398 vs UI mc=0.390 불일치 → 더 높은 임계 사용
+  원인 3: SGD 붕괴 → meta_raw=0.000 → blended=ens×0.6만 → reduce_thr 미달
+
+[conf=100%] 12:50~13:11+ 21분간 dir=+0 conf=100.0% grade=X
+  원인: D_FORCE ScalerRefresh(12:49) → 500봉 all cvd=-1 → std=0 → scale=1
+        transform(-1)=0 → GBM "중립 CVD" → FLAT 100%
+```
+
+### 내일 장 확인 사항
+
+- D_FORCE 로그에서 `feat=cvd_direction` / `feat=cvd` 발동 없음 확인
+- AutoMask 로그에서 `cvd_direction` 격리 없음 확인 (_CORE_MASK_EXEMPT 효과)
+- conf=100% FLAT 고착 재발 없음
+- C_PERIODIC/A_WARMUP 시 `[ScalerRefresh] CORE 'cvd_direction' std≈0 → 이전 scale 복원` 로그 (scale 보호 동작)
+- MetaGate: `reduce_thr` 적정 범위(min_conf ± 0) 확인, skip 비율 정상화
 
 ---
 

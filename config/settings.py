@@ -292,12 +292,17 @@ SCALER_CLIP_FEATURES: dict = {
     "opt_pcr_bearish":            (0.0, 1.0),
 }
 
-# D_FORCE 트리거에서 제외할 피처 — 이진(0/1) 피처는 스케일러 재적합으로 해소 불가
-# 이 피처들이 D_FORCE를 반복 트리거하면 스케일러 불안정 → CoherenceGate 차단 반복
+# D_FORCE 트리거에서 제외할 피처 — 이진(0/1) 또는 이산(-1/0/+1) 피처는
+# 스케일러 재적합으로 z폭발 해소 불가. 특히 cvd_direction 은 일방향 장에서
+# 500봉 std→0 → D_FORCE 후 transform(-1)=0 → GBM에 "중립" 전달 → FLAT 100% 고착.
 DFORCE_EXCLUDE_FEATURES: set = {
     "is_open_volatile",    # 이진 — 장 시작 30분만 1, 나머지 0 → 분포 차이로 z폭발 구조적
     "opt_pcr_bullish",     # 이진 — PCR 임계 기반 0/1
     "opt_pcr_bearish",     # 이진 — PCR 임계 기반 0/1
+    # CORE 이산 피처 — 일방향 장(예: 하락장 지속)에서 std→0 → D_FORCE 후 신호 소실
+    # 6/9 실증: 12:49 D_FORCE(cvd_direction) → 500봉 all-1 → std=0 → FLAT 100% 21분
+    "cvd_direction",       # 이산 -1/0/+1 — 방향 편향 지속 시 D_FORCE로 해소 불가
+    "cvd",                 # cvd_direction 파생 — 동일 이유
 }
 
 # GBM / SGD 블렌딩 비율

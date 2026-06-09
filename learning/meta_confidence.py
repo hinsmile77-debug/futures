@@ -133,6 +133,28 @@ class MetaConfidenceLearner:
             float(acc_trend),
         ]
 
+    def _is_collapsed(self) -> bool:
+        """최근 30회 출력이 모두 0.05 이하 → SGD 붕괴 판정"""
+        recent = list(self._conf_history)[-30:]
+        return len(recent) >= 30 and max(recent) < 0.05
+
+    def _reset_model(self):
+        """SGD 붕괴 복구: 모델·스케일러·버퍼 초기화 (conf_history 는 이력 보존)"""
+        logger.warning(
+            "[MetaConf] SGD 붕괴 → 모델 초기화 (sample_count=%d, 최근30 최대=%.3f)",
+            self._sample_count,
+            max(list(self._conf_history)[-30:]) if len(self._conf_history) >= 30 else 0.0,
+        )
+        if _SKLEARN_OK:
+            self._model  = SGDClassifier(loss="log", max_iter=1, warm_start=True, alpha=0.001)
+            self._scaler = StandardScaler()
+        self._fitted         = False
+        self._X_buf.clear()
+        self._y_buf.clear()
+        self._sample_count   = 0
+        self._last_fit_count = 0
+        self._fit_pending    = False
+
     def predict_confidence(
         self,
         meta_features: List[float],
@@ -162,6 +184,15 @@ class MetaConfidenceLearner:
             source = "규칙기반"
 
         self._conf_history.append(conf)
+
+        # SGD 붕괴 감지: 연속 30회 0.05 이하 → 초기화 후 rule-based 로 이번 값 대체
+        if self._fitted and self._is_collapsed():
+            self._reset_model()
+            conf   = self._rule_based_confidence(meta_features)
+            source = "규칙기반(붕괴복구)"
+            # 히스토리 마지막 값(붕괴 직전 0)을 복구값으로 갱신
+            if self._conf_history:
+                self._conf_history[-1] = conf
 
         # 사이즈 배율: 신뢰도 선형 매핑 (0.5→0.5x, 0.7→1.0x, 0.9→1.5x)
         if conf >= 0.7:

@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-06-09 (135차 — Meta skip·conf=100% 4종 근본 원인 수정)
+
+### [버그] MetaGate reduce_thr 오프셋으로 meta skip 과발동
+**Root cause**: `reduce_thr = max(0.43, min_conf + 0.04)`. actual_min_conf=0.398일 때 reduce_thr=0.438. blended_conf=ens×0.6+meta×0.4 ≈ 0.42 < 0.438 → 전 분봉 skip. actual_min_conf와 UI mc 불일치(0.398 vs 0.390)가 임계값을 더 높이는 복합 요인.  
+**Fix A-1**: `reduce_thr = max(0.38, min_conf)` (오프셋 제거). floor 0.38 = 극단적 저품질 신호 방어.  
+**Fix A-2**: STEP 6에서 `actual_min_conf = max(decision["min_conf"], zone_mc)` 계산 후 MetaGate에 전달.
+
+### [버그] SGD 붕괴 → meta_raw=0.000 고착 → blended 저하
+**Root cause**: 극단 z-score → AutoMasked → GBM FLAT 출력 → 연속 오예측 → SGD 학습 "항상 틀림" → `prob[1] ≈ 0` 고착. blended = ens×0.6 + 0×0.4 = ens×0.6 ≈ 0.22~0.35 → reduce_thr 미달 → 전 분봉 skip.  
+**Fix B-1**: MetaGate: meta_conf<0.15이면 `_rule_based_confidence()` 값으로 하한 보정.  
+**Fix B-2**: MetaConfidenceLearner: `_is_collapsed()` — 최근 30회 max<0.05이면 붕괴 판정 → `_reset_model()` 자동 실행 (SGD+스케일러+버퍼 초기화, conf_history 보존).
+
+### [버그] AutoMask가 CORE 피처를 xs=0으로 대체 → 방향 신호 소실
+**Root cause**: |z|>4 극단 피처를 xs[i]=0.0으로 치환. cvd_direction=-5.33이 "0(중립)"으로 대체되면 GBM이 방향 신호 소실 → FLAT 편향 증가. cvd/vwap/ofi는 강한 방향 신호이므로 0으로 치환하면 안 됨.  
+**설계결정**: `_CORE_MASK_EXEMPT` frozenset 도입. CORE 피처의 극단 z-score는 "데이터 오류"가 아니라 "강한 방향 신호"이므로 AutoMask에서 제외.
+
+### [버그] D_FORCE ScalerRefresh + 일방향 장 → conf=100% FLAT 고착
+**Root cause**: 일방향 하락장에서 cvd_direction=-1 연속 → z=-5.33 반복 → D_FORCE 발동 → `refit_scalers_only(500봉)`. 500봉 전부 cvd=-1 → `StandardScaler.fit`: mean=-1, std=0, scale=1(sklearn divide-by-zero fallback). 이후 `transform(-1)=(-1-(-1))/1=0` → GBM에 "중립 CVD" 전달 → up≈0.001, flat≈0.998 → `flat_score=1.0-0.001-0.001≈1.0` → conf=100% → grade=X.  
+**발생 타이밍**: 오전(09:xx)에는 500봉에 어제 데이터가 많아 std>0. 오후로 갈수록 오늘 데이터 비중 증가 → std→0. 12:47 재시동이 history 초기화 → 2봉만에 D_FORCE 가속.  
+**Fix D-1**: `cvd_direction`, `cvd`를 `DFORCE_EXCLUDE_FEATURES`에 추가. 이산(-1/0/+1) 피처는 D_FORCE로 z-score를 해소할 수 없으므로 트리거 제외.  
+**Fix D-2**: `refit_scalers_only()`에서 새 스케일러 CORE 피처 `scale_<0.05`이면 이전 scaler의 mean/scale로 복원 (C_PERIODIC/A_WARMUP 경로 방어).
+
+### [설계결정] CORE 피처 이중 보호 전략
+- **1차 방어 (D-1)**: D_FORCE 트리거 자체를 막음 — cvd_direction이 D_FORCE를 발동시키지 않음.
+- **2차 방어 (D-2)**: 만약 다른 경로(C_PERIODIC, A_WARMUP)로 스케일러가 재적합되어 CORE 피처 std≈0이 되면, scale 복원으로 신호 소실 방지.
+- CONF_CLIP=0.92가 flat_score에 무효한 이유: CONF_CLIP은 개별 호라이즌 direction confidence에 적용되며, `flat_score = 1.0 - up - down`은 raw 확률 잔여값이라 클리핑 경로를 통과하지 않음.
+
+---
+
 ## 2026-06-09 (134차 — scaler_monitor 비동기 + WAL)
 
 ### [버그] 10:23 CB⑤ 5943ms — scaler_monitor.db EXCLUSIVE lock 경합

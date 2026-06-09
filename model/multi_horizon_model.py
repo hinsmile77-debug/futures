@@ -122,6 +122,16 @@ class MultiHorizonModel:
     MASKED_FALLBACK_MIN_STREAK = 5    # 동일 피처 연속 N분 극단 → 격리 대상
     MASKED_FALLBACK_CONF_GAIN  = 0.05 # 격리 후 conf 이 이상 오르면 채택
 
+    # CORE 피처 AutoMask 면제 목록
+    # 이 피처들의 극단 z-score는 "데이터 오류"가 아니라 "강한 방향 신호"
+    # (예: 하루종일 강세/약세 추세 → cvd_direction=-1 연속 → z=-5 → 정상 신호)
+    # 이 피처를 0.0으로 치환하면 GBM이 "중립" 으로 읽어 FLAT 100% 고착
+    _CORE_MASK_EXEMPT: frozenset = frozenset({
+        "cvd_direction", "cvd",
+        "vwap_position", "vwap_ratio", "vwap_dev",
+        "ofi_norm", "ofi_pressure",
+    })
+
     GBM_PARAMS = {
         "n_estimators":     200,   # 100→200: BatchRetrainer 동일 수준, PreRetrain 품질 개선
         "max_depth":        5,     # 4→5: 3000샘플×balanced weight 환경에서 표현력 확대
@@ -411,13 +421,20 @@ class MultiHorizonModel:
 
         # 이상값 피처 격리 예측 — 연속 MASKED_FALLBACK_MIN_STREAK 분 극단 피처 격리
         # _extreme_feat_streak 는 check_refresh_trigger 호출 전이므로 이전 분 streak 반영
+        # CORE 피처(_CORE_MASK_EXEMPT) 제외: 강한 방향 추세 → 극단 z-score = 올바른 신호
         _chronic = [
             feat for feat, streak in self._extreme_feat_streak.items()
             if streak >= self.MASKED_FALLBACK_MIN_STREAK
             and feat in set(self.last_extreme_features)
+            and feat not in self._CORE_MASK_EXEMPT
         ]
         # AutoMaskedFallback: 이상값 피처 3개+ 동시 발생 시 streak 없이 즉시 격리 예측
-        _auto_mask_feats = self.last_extreme_features[:5] if len(self.last_extreme_features) >= 3 else []
+        # CORE 피처 제외 후 남은 비핵심 피처만 격리 (cvd/vwap/ofi 는 방향 신호 보존)
+        _non_core_extreme = [
+            f for f in self.last_extreme_features
+            if f not in self._CORE_MASK_EXEMPT
+        ]
+        _auto_mask_feats = _non_core_extreme[:5] if len(self.last_extreme_features) >= 3 else []
         if _chronic and self.feature_names:
             self.last_masked_proba    = self._predict_masked(x2d_proc, _chronic)
             self.last_masked_features = _chronic
@@ -425,7 +442,7 @@ class MultiHorizonModel:
             self.last_masked_proba    = self._predict_masked(x2d_proc, _auto_mask_feats)
             self.last_masked_features = _auto_mask_feats
             logger.info(
-                "[AutoMasked] 이상값 %d개 즉시 격리 예측: %s",
+                "[AutoMasked] 이상값 %d개 즉시 격리 예측 (CORE 제외): %s",
                 len(_auto_mask_feats), _auto_mask_feats,
             )
         else:
@@ -767,7 +784,35 @@ class MultiHorizonModel:
             if horizon not in self.scalers:
                 continue
             try:
-                self.scalers[horizon] = StandardScaler().fit(X_proc)
+                _new_sc = StandardScaler().fit(X_proc)
+
+                # CORE 피처 scale 보호: std≈0이면 이전 scaler mean/scale 복원
+                # 일방향 장에서 cvd_direction=-1 연속 → std=0 → transform(-1)=0
+                # → GBM이 "중립 CVD" 로 해석 → FLAT 100% 고착 방지
+                _old_sc = self.scalers.get(horizon)
+                if (
+                    _old_sc is not None
+                    and hasattr(_new_sc, "scale_")
+                    and self.feature_names
+                ):
+                    for _feat in self._CORE_MASK_EXEMPT:
+                        if _feat not in self.feature_names:
+                            continue
+                        _fi = self.feature_names.index(_feat)
+                        if _fi >= len(_new_sc.scale_):
+                            continue
+                        if _new_sc.scale_[_fi] < 0.05:
+                            logger.warning(
+                                "[ScalerRefresh] %s CORE '%s' std≈0(scale=%.4f)"
+                                " → 이전 scale 복원 (방향성 보호)",
+                                horizon, _feat, _new_sc.scale_[_fi],
+                            )
+                            _new_sc.mean_[_fi]  = _old_sc.mean_[_fi]
+                            _new_sc.scale_[_fi] = _old_sc.scale_[_fi]
+                            if hasattr(_new_sc, "var_") and hasattr(_old_sc, "var_"):
+                                _new_sc.var_[_fi] = _old_sc.var_[_fi]
+
+                self.scalers[horizon] = _new_sc
                 self._scaler_fitted_at[horizon] = datetime.datetime.now()
                 # 원자적 저장: tmp에 쓴 후 os.replace로 교체 — 읽기 도중 corrupt 방지
                 _dst = self._scaler_path(horizon)

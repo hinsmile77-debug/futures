@@ -6,6 +6,32 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-09 (135차 — Meta skip·conf=100% 4종 근본 원인 수정)
+
+### 한일 요약
+
+- [DONE 2026-06-09] **MetaGate reduce_thr 공식 수정** — `max(0.43, min_conf+0.04)` → `max(0.38, min_conf)`. 오프셋 제거로 actual_min_conf가 실질 하한이 됨 (`strategy/entry/meta_gate.py`)
+- [DONE 2026-06-09] **actual_min_conf MetaGate 전달** — STEP 6에서 `max(decision["min_conf"], zone_mc)` 계산값을 MetaGate.evaluate()에 직접 전달. UI 표시 mc 불일치 해소 (`main.py`)
+- [DONE 2026-06-09] **SGD 붕괴 보완 (rule-based floor)** — meta_conf<0.15이면 `_rule_based_confidence()` 값으로 하한 보정 (`strategy/entry/meta_gate.py`)
+- [DONE 2026-06-09] **MetaConfidenceLearner 붕괴 자동 복구** — `_is_collapsed()` (최근 30회 max<0.05) + `_reset_model()` 구현 (`learning/meta_confidence.py`)
+- [DONE 2026-06-09] **AutoMask CORE 피처 면제** — `_CORE_MASK_EXEMPT` frozenset(cvd/vwap/ofi 계열) 추가. 극단 z-score를 "신호"로 인식, xs=0.0 대체 차단 (`model/multi_horizon_model.py`)
+- [DONE 2026-06-09] **cvd_direction·cvd DFORCE_EXCLUDE 추가** — 이산(-1/0/+1) 피처는 D_FORCE로 z-score 해소 불가. 일방향 장에서 std→0 → transform(-1)=0 → FLAT 100% 고착 방지 (`config/settings.py`)
+- [DONE 2026-06-09] **refit_scalers_only() CORE scale 보호** — 새 스케일러 CORE 피처 `scale_<0.05`이면 이전 mean/scale 복원 (`model/multi_horizon_model.py`)
+
+### 다음 할 일
+
+- [NEXT 내일 장] **135차 패치 효과 확인** (최우선)
+  - D_FORCE: `feat=cvd_direction` 발동 없음 확인 (`DFORCE_EXCLUDE` 적용)
+  - AutoMask: `cvd_direction` 격리 목록에서 빠짐 확인 (`_CORE_MASK_EXEMPT` 적용)
+  - conf=100% FLAT 고착 재발 없음 (SIGNAL.log)
+  - MetaGate: reduce_thr ≈ actual_min_conf (오프셋 없음), skip 비율 정상화
+  - C_PERIODIC/A_WARMUP 후 `[ScalerRefresh] CORE 'cvd_direction' std≈0 → 이전 scale 복원` 로그 (scale 보호)
+
+- [NEXT 즉시] **GBM 재학습** — 131차+133차+135차 패치 반영 (계속 이월)
+  - 앱 재시작 → SHAP 탭 "현재 세트 재학습" 클릭
+
+---
+
 ## 2026-06-09 (134차 — 파이프라인 지연 CB⑤ 2종 제거)
 
 ### 한일 요약
