@@ -395,9 +395,16 @@ class FeatureBuilder:
             for k, v in option_data.items():
                 features[k] = float(v) if v is not None else 0.0
 
+        # macro_quality_{available,stale,age_sec,fallback_used}는 아래 quality_macro_* 로 별도 저장
+        # → merge 시 제외하여 managed feature set 중복 방지
+        _MACRO_QUALITY_SKIP = {
+            "macro_quality_available", "macro_quality_stale",
+            "macro_quality_age_sec", "macro_quality_fallback_used",
+        }
         if macro_data:
             for k, v in macro_data.items():
-                features[k] = float(v) if v is not None else 0.0
+                if k not in _MACRO_QUALITY_SKIP:
+                    features[k] = float(v) if v is not None else 0.0
 
         opt_available = float((option_data or {}).get("opt_available", 0.0) or 0.0)
         macro_available = float((macro_data or {}).get("macro_quality_available", 1.0 if macro_data else 0.0) or 0.0)
