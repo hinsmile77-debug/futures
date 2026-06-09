@@ -786,9 +786,11 @@ class MultiHorizonModel:
             try:
                 _new_sc = StandardScaler().fit(X_proc)
 
-                # CORE 피처 scale 보호: std≈0이면 이전 scaler mean/scale 복원
-                # 일방향 장에서 cvd_direction=-1 연속 → std=0 → transform(-1)=0
-                # → GBM이 "중립 CVD" 로 해석 → FLAT 100% 고착 방지
+                # CORE 피처 scale 보호: 일방향 장에서 데이터가 상수에 가까울 때 scaler 보호
+                # 일방향 장에서 cvd_direction=-1 연속 → raw_std=0 → sklearn이 scale_=1.0으로
+                # 치환 → transform(-1)=0 → GBM이 "중립 CVD"로 해석 → FLAT 100% 고착 방지
+                # 주의: scale_ < 0.05 체크는 sklearn의 자동 치환(std=0→scale=1) 때문에 무력화됨
+                # → raw std를 직접 계산하여 감지
                 _old_sc = self.scalers.get(horizon)
                 if (
                     _old_sc is not None
@@ -801,16 +803,31 @@ class MultiHorizonModel:
                         _fi = self.feature_names.index(_feat)
                         if _fi >= len(_new_sc.scale_):
                             continue
-                        if _new_sc.scale_[_fi] < 0.05:
-                            logger.warning(
-                                "[ScalerRefresh] %s CORE '%s' std≈0(scale=%.4f)"
-                                " → 이전 scale 복원 (방향성 보호)",
-                                horizon, _feat, _new_sc.scale_[_fi],
-                            )
-                            _new_sc.mean_[_fi]  = _old_sc.mean_[_fi]
-                            _new_sc.scale_[_fi] = _old_sc.scale_[_fi]
-                            if hasattr(_new_sc, "var_") and hasattr(_old_sc, "var_"):
-                                _new_sc.var_[_fi] = _old_sc.var_[_fi]
+                        # raw std 직접 계산 — sklearn 치환 전 실제 분산 확인
+                        _raw_std = float(np.std(X_proc[:, _fi]))
+                        if _raw_std < 0.05:
+                            # 이전 스케일러가 유효(scale_>0.05)한 경우에만 복원
+                            if (
+                                hasattr(_old_sc, "scale_")
+                                and _fi < len(_old_sc.scale_)
+                                and _old_sc.scale_[_fi] > 0.05
+                            ):
+                                logger.warning(
+                                    "[ScalerRefresh] %s CORE '%s' raw_std≈0(%.4f)"
+                                    " → 이전 scale 복원 (방향성 보호)",
+                                    horizon, _feat, _raw_std,
+                                )
+                                _new_sc.mean_[_fi]  = _old_sc.mean_[_fi]
+                                _new_sc.scale_[_fi] = _old_sc.scale_[_fi]
+                                if hasattr(_new_sc, "var_") and hasattr(_old_sc, "var_"):
+                                    _new_sc.var_[_fi] = _old_sc.var_[_fi]
+                            else:
+                                logger.warning(
+                                    "[ScalerRefresh] %s CORE '%s' raw_std≈0(%.4f)"
+                                    " + 이전 scale도 무효(%.4f) — 복원 불가",
+                                    horizon, _feat, _raw_std,
+                                    _old_sc.scale_[_fi] if hasattr(_old_sc, "scale_") else -1,
+                                )
 
                 self.scalers[horizon] = _new_sc
                 self._scaler_fitted_at[horizon] = datetime.datetime.now()
@@ -890,7 +907,8 @@ class MultiHorizonModel:
                 self._extreme_feat_streak[feat] = 1
 
         # 최근 N봉 이력 유지 (SCALER_FORCE_FEATURE_REPEAT 봉)
-        self._recent_extreme_feat_history.append(list(extreme_feats))
+        # DFORCE_EXCLUDE_FEATURES를 이력에서도 제거 — 제외 피처가 repeat 카운터에 포함되던 버그 수정
+        self._recent_extreme_feat_history.append([f for f in extreme_feats if f not in DFORCE_EXCLUDE_FEATURES])
         if len(self._recent_extreme_feat_history) > SCALER_FORCE_FEATURE_REPEAT:
             self._recent_extreme_feat_history.pop(0)
 

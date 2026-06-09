@@ -12,7 +12,10 @@ from typing import Optional, Dict, Tuple
 from utils.time_utils import now_kst
 
 from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT, FUTURES_PT_VALUE
-from config.settings import ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT, FUTURES_COMMISSION_RATE
+from config.settings import (
+    ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT,
+    ATR_HORIZON_TP1_MULT, FUTURES_COMMISSION_RATE,
+)
 
 # 인스턴스별 pt_value를 주입받기 전 module-level fallback 으로만 사용
 def _calc_commission(price: float, quantity: int, pt_value: float = FUTURES_PT_VALUE) -> float:
@@ -40,6 +43,7 @@ class PositionTracker:
         self.regime:       str   = ""
         self.signal_direction: str = ""
         self.reverse_entry_enabled: bool = False
+        self.entry_horizon: Optional[str] = None
 
         self.stop_price:   float = 0.0
         self.tp1_price:    float = 0.0
@@ -106,17 +110,20 @@ class PositionTracker:
         regime: str = "NEUTRAL",
         raw_direction: Optional[str] = None,
         reverse_entry_enabled: bool = False,
+        entry_horizon: Optional[str] = None,
     ):
         """
         포지션 진입
 
         Args:
-            direction: LONG | SHORT
-            price:     진입가
-            quantity:  계약 수
-            atr:       현재 ATR (손절/목표 계산)
-            grade:     진입 등급 (A/B/C)
-            regime:    매크로 레짐
+            direction:      LONG | SHORT
+            price:          진입가
+            quantity:       계약 수
+            atr:            현재 ATR (손절/목표 계산)
+            grade:          진입 등급 (A/B/C)
+            regime:         매크로 레짐
+            entry_horizon:  ATR 레짐 선택 호라이즌 ("1m"/"3m"/"5m"/None)
+                            지정 시 ATR_HORIZON_TP1_MULT로 TP1 단축, None이면 ATR_TP1_MULT(1.0) 사용
         """
         assert direction in (POSITION_LONG, POSITION_SHORT), f"Invalid direction: {direction}"
         assert self.status == POSITION_FLAT, "이미 포지션 보유 중"
@@ -129,12 +136,14 @@ class PositionTracker:
         self.regime      = regime
         self.signal_direction = raw_direction or direction
         self.reverse_entry_enabled = bool(reverse_entry_enabled)
+        self.entry_horizon = entry_horizon
         self.initial_quantity = quantity
         self.trailing_anchor_price = price
 
         mult = 1 if direction == POSITION_LONG else -1
+        _tp1_mult = ATR_HORIZON_TP1_MULT.get(entry_horizon, ATR_TP1_MULT) if entry_horizon else ATR_TP1_MULT
         self.stop_price = price - mult * atr * ATR_STOP_MULT
-        self.tp1_price  = price + mult * atr * ATR_TP1_MULT
+        self.tp1_price  = price + mult * atr * _tp1_mult
         self.tp2_price  = price + mult * atr * ATR_TP2_MULT
 
         self.partial_1_done = False
@@ -143,9 +152,11 @@ class PositionTracker:
         self.last_update_reason = f"open_position:{direction}"
         self.last_update_ts = now_kst()
 
+        _hz_tag = f" horizon={entry_horizon}" if entry_horizon else ""
         logger.info(
             f"[Position] 진입 {direction} {quantity}계약 @ {price} "
-            f"| 손절={self.stop_price:.2f} 1차={self.tp1_price:.2f} 2차={self.tp2_price:.2f}"
+            f"| 손절={self.stop_price:.2f} 1차={self.tp1_price:.2f}(×{_tp1_mult}) "
+            f"2차={self.tp2_price:.2f}{_hz_tag}"
         )
         self._save_state()
 
@@ -219,6 +230,7 @@ class PositionTracker:
         filled_at: Optional[datetime.datetime] = None,
         raw_direction: Optional[str] = None,
         reverse_entry_enabled: bool = False,
+        entry_horizon: Optional[str] = None,
     ) -> Dict:
         """Chejan 체결 기준으로 포지션을 오픈하거나 증액한다."""
         assert direction in (POSITION_LONG, POSITION_SHORT), f"Invalid direction: {direction}"
@@ -268,6 +280,7 @@ class PositionTracker:
             self.regime = regime
             self.signal_direction = raw_direction or direction
             self.reverse_entry_enabled = bool(reverse_entry_enabled)
+            self.entry_horizon = entry_horizon
         else:
             assert self.status == direction, (
                 f"Opposite fill mismatch: status={self.status} fill={direction}"
@@ -284,6 +297,8 @@ class PositionTracker:
             self.reverse_entry_enabled = bool(reverse_entry_enabled or self.reverse_entry_enabled)
             if self.entry_time is None:
                 self.entry_time = filled_at or now_kst()
+            if entry_horizon and not self.entry_horizon:
+                self.entry_horizon = entry_horizon
 
         self._recalculate_levels(atr)
         # 신규 포지션(FLAT→진입)일 때만 partial_done 리셋
@@ -756,8 +771,12 @@ class PositionTracker:
 
     def _recalculate_levels(self, atr: float) -> None:
         mult = 1 if self.status == POSITION_LONG else -1
+        _tp1_mult = (
+            ATR_HORIZON_TP1_MULT.get(self.entry_horizon, ATR_TP1_MULT)
+            if self.entry_horizon else ATR_TP1_MULT
+        )
         self.stop_price = self.entry_price - mult * atr * ATR_STOP_MULT
-        self.tp1_price = self.entry_price + mult * atr * ATR_TP1_MULT
+        self.tp1_price = self.entry_price + mult * atr * _tp1_mult
         self.tp2_price = self.entry_price + mult * atr * ATR_TP2_MULT
         self.tp3_price = self.entry_price + mult * atr * ATR_TP3_MULT
 
@@ -822,6 +841,7 @@ class PositionTracker:
         self.regime = ""
         self.signal_direction = ""
         self.reverse_entry_enabled = False
+        self.entry_horizon = None
         self.stop_price = 0.0
         self.tp1_price = 0.0
         self.tp2_price = 0.0

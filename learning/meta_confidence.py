@@ -68,7 +68,9 @@ class MetaConfidenceLearner:
         self._conf_history = deque(maxlen=200)
 
         if _SKLEARN_OK:
-            self._model  = SGDClassifier(loss="log", max_iter=1, warm_start=True, alpha=0.001)
+            # class_weight='balanced': label=0(틀림) 누적 시 prob[1]→0 붕괴 방지
+            self._model  = SGDClassifier(loss="log", max_iter=1, warm_start=True,
+                                         alpha=0.001, class_weight="balanced")
             self._scaler = StandardScaler()
 
     def _coerce_feature_vector(self, meta_features) -> Optional[List[float]]:
@@ -134,9 +136,12 @@ class MetaConfidenceLearner:
         ]
 
     def _is_collapsed(self) -> bool:
-        """최근 30회 출력이 모두 0.05 이하 → SGD 붕괴 판정"""
+        """최근 30회 출력이 모두 0.15 이하 → SGD 붕괴 판정
+        역치 0.05→0.15: 간헐적 0.06-0.10 출력 시 max≥0.05로 감지 실패 방지
+        rule_based 정상 출력(0.40-0.60)과 충분히 구분되는 역치 설정
+        """
         recent = list(self._conf_history)[-30:]
-        return len(recent) >= 30 and max(recent) < 0.05
+        return len(recent) >= 30 and max(recent) < 0.15
 
     def _reset_model(self):
         """SGD 붕괴 복구: 모델·스케일러·버퍼 초기화 (conf_history 는 이력 보존)"""
@@ -146,7 +151,8 @@ class MetaConfidenceLearner:
             max(list(self._conf_history)[-30:]) if len(self._conf_history) >= 30 else 0.0,
         )
         if _SKLEARN_OK:
-            self._model  = SGDClassifier(loss="log", max_iter=1, warm_start=True, alpha=0.001)
+            self._model  = SGDClassifier(loss="log", max_iter=1, warm_start=True,
+                                         alpha=0.001, class_weight="balanced")
             self._scaler = StandardScaler()
         self._fitted         = False
         self._X_buf.clear()
@@ -185,7 +191,7 @@ class MetaConfidenceLearner:
 
         self._conf_history.append(conf)
 
-        # SGD 붕괴 감지: 연속 30회 0.05 이하 → 초기화 후 rule-based 로 이번 값 대체
+        # SGD 붕괴 감지: 연속 30회 0.15 이하 → 초기화 후 rule-based 로 이번 값 대체
         if self._fitted and self._is_collapsed():
             self._reset_model()
             conf   = self._rule_based_confidence(meta_features)

@@ -2537,6 +2537,10 @@ class TradingSystem:
         _st: list = [("start", _pipe_t0)]
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+        # [S2-A] 지연 SGD 학습 변수 — S2에서 채워지고 "end" 이후에 소비
+        # 초기값 [] 로 설정해 early return 시에도 NameError 방지
+        _sgd_deferred_verified: list = []
+        _sgd_deferred_stuck: bool = False
 
         # ── 분봉 데이터 유효성 가드 ───────────────────────────────
         # 비정상 분봉이 피처/진입/청산 오발동을 일으키지 않도록 파이프라인 앞단 차단
@@ -2912,59 +2916,29 @@ class TradingSystem:
             except Exception as _meta_record_err:
                 logger.debug("[MetaGate] verify record skip: %s", _meta_record_err)
 
-        _s2_learn_t = time.perf_counter()
-        if self.model.feature_names and verified:
-            # P3-a: stuck 발생 분봉의 예측은 결과 레이블이 불확정 → 학습 스킵
-            if self._stuck_this_minute:
-                log_manager.learning(
-                    f"[SGD] stuck 발생 분봉 — {len(verified)}건 학습 스킵 (레이블 오염 방지)"
-                )
-            else:
-                for v in verified:
-                    feat_dict = v.get("features") or {}
-                    x = np.array(
-                        [feat_dict.get(f, 0.0) for f in self.model.feature_names],
-                        dtype=np.float32,
-                    )
-                    self.online_learner.learn(
-                        horizon         = v["horizon"],
-                        x               = x,
-                        actual_label    = v["actual"],
-                        predicted_label = v["predicted"],
-                    )
-            log_manager.learning(
-                f"[SGD] {len(verified)}건 학습 | "
-                f"SGD비중={self.online_learner.sgd_weight:.0%} "
-                f"50분정확도={self.online_learner.recent_accuracy():.1%}"
-            )
-            # [Qualify] trained_cycles 동기화 — online_learner._horizon_counts 반영
-            _hc = getattr(self.online_learner, "_horizon_counts", {})
-            _need = getattr(runtime_settings, "HORIZON_QUALIFY_MIN_CYCLES", 3)
-            for _h, _cnt in _hc.items():
-                if _h not in self._horizon_runtime_state:
-                    continue
-                _qs = self._horizon_runtime_state[_h]
-                _qs["trained_cycles"] = _cnt
-                if _qs["verified_cycles"] >= _need and _qs["trained_cycles"] >= _need:
-                    if not _qs["qualified"]:
-                        _qs["qualified"] = True
-                        _qs["active"]    = True
-                        _qs["status"]    = "active"
-                        log_manager.signal(
-                            f"[Qualify] {_h} 자격 획득 "
-                            f"(verified={_qs['verified_cycles']} trained={_qs['trained_cycles']})"
-                        )
+        # [S2-A] online_learner.learn() 은 파이프라인 "end" 이후로 지연 실행
+        # — GBM 배치 재학습 중 Python GC/CPU 포화로 5~7s 블로킹 방지
+        # — _sgd_deferred_stuck 과 verified 를 보존해 두고 "end" 이후에 소비
+        _sgd_deferred_stuck    = bool(self._stuck_this_minute)
+        _sgd_deferred_verified = list(verified)  # snapshot (verified 는 이후 재활용 안 됨)
 
         # MetaGate 분봉 말미 학습 — record_outcome() 누적 분을 1회에 소화
+        # (flush_fit 은 S6 meta_gate.evaluate 이전에 필요하므로 크리티컬 경로에 유지)
         _s2_flush_t = time.perf_counter()
         self.meta_gate.learner.flush_fit()
-        _s2_meta_ms  = int((_s2_learn_t - _s2_meta_t) * 1000)
-        _s2_learn_ms = int((_s2_flush_t - _s2_learn_t) * 1000)
+        _s2_meta_ms  = int((_s2_flush_t - _s2_meta_t) * 1000)
         _s2_flush_ms = int((time.perf_counter() - _s2_flush_t) * 1000)
-        if _s2_meta_ms + _s2_learn_ms + _s2_flush_ms > 500:
-            logger.debug(
-                "[S2] meta=%dms learn=%dms flush=%dms verified=%d",
-                _s2_meta_ms, _s2_learn_ms, _s2_flush_ms, len(verified),
+        if _s2_meta_ms + _s2_flush_ms > 200:
+            # [S2-B] SYSTEM logger(INFO 레벨)에는 debug 가 필터링되므로 debug_log 사용
+            debug_log.debug(
+                "[S2] meta=%dms flush=%dms verified=%d (learn 지연)",
+                _s2_meta_ms, _s2_flush_ms, len(verified),
+            )
+        if _s2_meta_ms + _s2_flush_ms > 1000:
+            # [S2-C] 1000ms 초과 시 SYSTEM WARN 으로도 출력 (CB 임박 진단용)
+            logger.warning(
+                "[S2-느림] meta=%dms flush=%dms verified=%d",
+                _s2_meta_ms, _s2_flush_ms, len(verified),
             )
 
         # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 또는 세션 재시작 즉시) ────
@@ -4793,6 +4767,62 @@ class TradingSystem:
             )
         except Exception as e:
             logger.warning("[STEP9] save_step9_batch 오류 (스킵): %s", e)
+
+        # ── [S2-A] 지연 SGD 학습 — 파이프라인 크리티컬 경로 밖에서 실행 ──
+        # online_learner.learn() 을 "end" 이후로 이동 → _pipe_ms 에 포함 안 됨
+        # GBM 배치 재학습 중 5~7s 지연이 파이프라인 CB 를 트리거하던 문제 해소
+        _sgd_deferred_t0 = time.perf_counter()
+        if self.model.feature_names and _sgd_deferred_verified:
+            if _sgd_deferred_stuck:
+                log_manager.learning(
+                    f"[SGD] stuck 발생 분봉 — {len(_sgd_deferred_verified)}건 학습 스킵 (레이블 오염 방지)"
+                )
+            else:
+                for _dv in _sgd_deferred_verified:
+                    _dfeat = _dv.get("features") or {}
+                    _dx = np.array(
+                        [_dfeat.get(f, 0.0) for f in self.model.feature_names],
+                        dtype=np.float32,
+                    )
+                    self.online_learner.learn(
+                        horizon         = _dv["horizon"],
+                        x               = _dx,
+                        actual_label    = _dv["actual"],
+                        predicted_label = _dv["predicted"],
+                    )
+            log_manager.learning(
+                f"[SGD] {len(_sgd_deferred_verified)}건 학습 | "
+                f"SGD비중={self.online_learner.sgd_weight:.0%} "
+                f"50분정확도={self.online_learner.recent_accuracy():.1%}"
+            )
+            # [Qualify] trained_cycles 동기화 — online_learner._horizon_counts 반영
+            _hc = getattr(self.online_learner, "_horizon_counts", {})
+            _need = getattr(runtime_settings, "HORIZON_QUALIFY_MIN_CYCLES", 3)
+            for _h, _cnt in _hc.items():
+                if _h not in self._horizon_runtime_state:
+                    continue
+                _qs = self._horizon_runtime_state[_h]
+                _qs["trained_cycles"] = _cnt
+                if _qs["verified_cycles"] >= _need and _qs["trained_cycles"] >= _need:
+                    if not _qs["qualified"]:
+                        _qs["qualified"] = True
+                        _qs["active"]    = True
+                        _qs["status"]    = "active"
+                        log_manager.signal(
+                            f"[Qualify] {_h} 자격 획득 "
+                            f"(verified={_qs['verified_cycles']} trained={_qs['trained_cycles']})"
+                        )
+        _sgd_deferred_ms = int((time.perf_counter() - _sgd_deferred_t0) * 1000)
+        if _sgd_deferred_ms > 500:
+            debug_log.debug(
+                "[SGD-deferred] %dms verified=%d (크리티컬 경로 외)",
+                _sgd_deferred_ms, len(_sgd_deferred_verified),
+            )
+            if _sgd_deferred_ms > 2000:
+                logger.warning(
+                    "[SGD-deferred] %dms — 다음 분봉 전 완료 필요 (verified=%d)",
+                    _sgd_deferred_ms, len(_sgd_deferred_verified),
+                )
 
         # ── 챔피언-도전자 Shadow 실행 (STEP 9 이후 훅) ─────────
         if self.challenger_engine is not None:

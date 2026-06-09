@@ -138,8 +138,11 @@ class RFHorizonModel:
             "oob":           self._oob,
             "feature_names": self.feature_names,
         }
-        with open(path, "wb") as f:
+        # [S2-D] 원자 쓰기: .tmp 먼저 쓴 뒤 os.replace()
+        _tmp = path + ".tmp"
+        with open(_tmp, "wb") as f:
             pickle.dump(payload, f, protocol=2)   # protocol=2: Python 3.7 호환
+        os.replace(_tmp, path)
         logger.info("[RF] 저장 완료: %s (%d호라이즌)", path, len(self._models))
 
     def load_all(self) -> bool:

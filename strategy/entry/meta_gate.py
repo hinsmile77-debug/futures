@@ -73,11 +73,17 @@ class MetaGate:
         blended_conf = (float(confidence) * 0.6) + (meta_conf * 0.4)
 
         # min_conf 연동 상대 임계값
-        # reduce_thr: offset 없이 min_conf 그대로 사용.
-        #   - actual_min_conf(존+FQAdj 반영값)이 MetaGate 의 실질 하한이 됨
-        #   - floor 0.38: 극단적 저품질 신호까지 열지 않음
+        # reduce_thr: blended 분포 기반 재보정.
+        #   blended = 0.6*ens + 0.4*meta_raw 이므로 앙상블 임계(min_conf)를 통과한
+        #   신호의 blended 는 항상 ens < min_conf 로 희석됨.
+        #   예: ens=min_conf=0.570, meta_raw=0.35 → blended=0.482 < min_conf(0.570)
+        #   → reduce_thr = min_conf 이면 앙상블 임계 통과 신호가 100% 차단.
+        #   6/9 실증: 491건 중 2건(0.4%)만 도달 → MetaGate 사실상 항상 skip.
+        #   fix: reduce_thr = 0.80 * min_conf 로 희석 폭 보정.
+        #     ens=min_conf(0.570), meta_raw=0.35 → blended=0.482 ≥ 0.456 → reduce ✓
+        #     meta_raw=0(SGD붕괴), ens=0.640(오늘 최대) → blended=0.384 < 0.456 → skip ✓
         take_thr   = max(0.52, min(0.70, min_conf + 0.14))
-        reduce_thr = max(0.38, min_conf)
+        reduce_thr = max(0.38, min_conf * 0.80)
 
         if blended_conf >= take_thr:
             action = "take"

@@ -153,8 +153,9 @@ _CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.12, DIRECTION_DOWN: 1.12}
 _CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
 _CW_10M = {DIRECTION_FLAT: 0.80, DIRECTION_UP: 1.10, DIRECTION_DOWN: 1.10}
 _CW_15M = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.15, DIRECTION_DOWN: 1.15}
-# 30m FLAT 가중치 낮춤: FLAT 편향 억제 (반전 시 UP/DN 예측 강화)
-_CW_30M = {DIRECTION_FLAT: 0.70, DIRECTION_UP: 1.15, DIRECTION_DOWN: 1.15}
+# 30m: FL 억제 유지 + UP 강화로 DN 100% 편향 상쇄 (127차, 2026-06-08 DN 100% 고착 사례)
+# DN=1.15→0.90 (과잉 가중치 제거), UP=1.15→1.40 (DN 편향 상쇄), FL=0.70 유지
+_CW_30M = {DIRECTION_FLAT: 0.70, DIRECTION_UP: 1.40, DIRECTION_DOWN: 0.90}
 
 
 def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
@@ -394,15 +395,21 @@ class BatchRetrainer:
 
     # ── 모델 저장/로드 ────────────────────────────────────────────
     def _save_model(self, horizon_key: str, model, scaler, acc: float, feature_names: List[str]):
-        path     = os.path.join(self.model_dir, f"gbm_{horizon_key}.pkl")
-        acc_path = os.path.join(self.model_dir, f"gbm_{horizon_key}_acc.txt")
+        path       = os.path.join(self.model_dir, f"gbm_{horizon_key}.pkl")
+        acc_path   = os.path.join(self.model_dir, f"gbm_{horizon_key}_acc.txt")
         scaler_dir = os.path.join(MODEL_DIR, "scaler")
         scaler_path = os.path.join(scaler_dir, f"scaler_{horizon_key}.pkl")
         os.makedirs(scaler_dir, exist_ok=True)
-        with open(path, "wb") as f:
+        # [S2-D] 원자 쓰기: .tmp 에 먼저 쓴 뒤 os.replace() 로 교체
+        # — 직접 open(path,"wb") 은 쓰는 중 main 스레드가 joblib.load() 하면 불완전 파일 읽기 발생
+        _tmp_model  = path       + ".tmp"
+        _tmp_scaler = scaler_path + ".tmp"
+        with open(_tmp_model, "wb") as f:
             pickle.dump(model, f)
-        with open(scaler_path, "wb") as f:
+        os.replace(_tmp_model, path)
+        with open(_tmp_scaler, "wb") as f:
             pickle.dump(scaler, f)
+        os.replace(_tmp_scaler, scaler_path)
         with open(acc_path, "w") as f:
             f.write(str(acc))
         self._save_feature_names(feature_names)
@@ -591,14 +598,24 @@ class BatchRetrainer:
                 results[hz] = {"replaced": False, "error": "피처 파싱 실패"}
                 continue
 
-            # global feature_names(1m 기준 105개)로 X 구성 → 추론 공간과 일치.
-            # raw_features_horizon에는 ret_Nm 등 추가 피처가 있지만,
-            # 학습/추론 모두 동일한 105피처 공간 사용해야 scaler/gbm 차원 충돌 없음.
+            # global feature_names(1m 기준)로 X 구성 → 추론 공간과 일치.
+            # raw_features_horizon의 cvd_direction/atr 등은 build_for_horizon에서
+            # N분봉 완성봉 기반으로 재계산되어 저장되므로 (127차~) 자동 반영됨.
             use_feat_names = _existing_feat_names if _existing_feat_names else feat_names
             X_hz = np.array(
                 [[rec[1].get(f, 0.0) for f in use_feat_names] for rec in records],
                 dtype=np.float32,
             )
+            # N분봉 재계산 피처 채움 검증: cvd_direction 비제로 비율 로깅
+            _cvd_idx = (use_feat_names.index("cvd_direction")
+                        if "cvd_direction" in use_feat_names else None)
+            if _cvd_idx is not None:
+                _nonzero = int(np.count_nonzero(X_hz[:, _cvd_idx]))
+                logger.info(
+                    "[Retrain-P2] %s cvd_direction 비제로 %d/%d (%.1f%%)",
+                    hz, _nonzero, len(records),
+                    100.0 * _nonzero / max(len(records), 1),
+                )
             X_hz = apply_robust_preprocess(X_hz, use_feat_names)
 
             # y 레이블 (Phase 2는 고정 임계값 사용)

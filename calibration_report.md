@@ -1,71 +1,59 @@
 # Calibration Report
 
-- Generated at: 2026-06-08 10:17:31
-- Total verified predictions: 46660
+- Generated at: 2026-06-09 14:47:04
+- Platt 보정기 도입 이후(since 2026-06-04) 검증 예측: 7250건
+- 전체 누적 검증 예측: 49658건
 
-## Overall
+## 최근 (Platt 보정 이후) — 현재 모델 성능 기준
 
-- Accuracy: 36.70%
-- Brier score: 0.278583
-- Log-loss: 3.641982
-- ECE: 0.247990
+- Accuracy: 30.83%
+- Brier score: 0.242951
+- Log-loss: 1.205972
+- ECE: 0.146800
 
-## By Horizon
+### 호라이즌별 (최근)
 
-### 10m
+#### 10m
+- Count: 1207  Accuracy: 29.49%  Brier: 0.247009  ECE: 0.170181
 
-- Count: 7762
-- Accuracy: 36.34%
-- Brier score: 0.280872
-- Log-loss: 3.605032
-- ECE: 0.267569
+#### 15m
+- Count: 1218  Accuracy: 31.94%  Brier: 0.248766  ECE: 0.170285
 
-### 15m
+#### 1m
+- Count: 1215  Accuracy: 37.12%  Brier: 0.219803  ECE: 0.053879
 
-- Count: 7640
-- Accuracy: 34.99%
-- Brier score: 0.284134
-- Log-loss: 3.557719
-- ECE: 0.287047
+#### 30m
+- Count: 1175  Accuracy: 27.49%  Brier: 0.254389  ECE: 0.190755
 
-### 1m
+#### 3m
+- Count: 1206  Accuracy: 29.93%  Brier: 0.241816  ECE: 0.139762
 
-- Count: 8057
-- Accuracy: 38.35%
-- Brier score: 0.272827
-- Log-loss: 3.819746
-- ECE: 0.216579
+#### 5m
+- Count: 1229  Accuracy: 28.89%  Brier: 0.246264  ECE: 0.163109
 
-### 30m
+### Worst Confidence Bins (최근)
 
-- Count: 7288
-- Accuracy: 36.18%
-- Brier score: 0.286670
-- Log-loss: 3.602264
-- ECE: 0.281002
+- 0.7~0.8: n=5 avg_conf=0.7113 acc=0.2000 gap=0.5113
+- 0.6~0.7: n=331 avg_conf=0.6318 acc=0.2628 gap=0.3689
+- 0.5~0.6: n=1325 avg_conf=0.5362 acc=0.2891 gap=0.2471
+- 0.4~0.5: n=3962 avg_conf=0.4462 acc=0.3087 gap=0.1375
+- 0.3~0.4: n=1627 avg_conf=0.3739 acc=0.3325 gap=0.0413
 
-### 3m
+---
 
-- Count: 7978
-- Accuracy: 37.09%
-- Brier score: 0.271226
-- Log-loss: 3.496639
-- ECE: 0.212121
+## 전체 누적 (참고용 — Platt 보정 이전 raw conf 포함)
 
-### 5m
+- Accuracy: 36.30%
+- Brier score: 0.276686
+- Log-loss: 3.496718
+- ECE: 0.242563
 
-- Count: 7935
-- Accuracy: 37.08%
-- Brier score: 0.276815
-- Log-loss: 3.761369
-- ECE: 0.240070
-
-## Worst Confidence Bins
+### Worst Confidence Bins (전체)
 
 - 0.9~1.0: n=10263 avg_conf=0.9994 acc=0.3941 gap=0.6053
 - 0.8~0.9: n=1802 avg_conf=0.8570 acc=0.3169 gap=0.5402
-- 0.7~0.8: n=1610 avg_conf=0.7434 acc=0.3801 gap=0.3633
-- 0.6~0.7: n=3243 avg_conf=0.6477 acc=0.3367 gap=0.3109
-- 0.5~0.6: n=10024 avg_conf=0.5271 acc=0.3735 gap=0.1536
-- 0.4~0.5: n=13076 avg_conf=0.4496 acc=0.3583 gap=0.0913
-- 0.3~0.4: n=6642 avg_conf=0.3662 acc=0.3573 gap=0.0090
+- 0.7~0.8: n=1613 avg_conf=0.7433 acc=0.3794 gap=0.3639
+- 0.6~0.7: n=3398 avg_conf=0.6469 acc=0.3376 gap=0.3094
+- 0.5~0.6: n=10527 avg_conf=0.5273 acc=0.3691 gap=0.1582
+- 0.4~0.5: n=14869 avg_conf=0.4499 acc=0.3505 gap=0.0994
+- 0.3~0.4: n=7186 avg_conf=0.3665 acc=0.3556 gap=0.0109

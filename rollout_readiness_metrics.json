@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-06-08 10:17:32",
-  "recommended_stage": "alert_only",
-  "recommended_reason": "A/B 개선 확인, 다만 calibration 또는 meta 표본 추가 필요",
+  "generated_at": "2026-06-09 14:47:05",
+  "recommended_stage": "small_size",
+  "recommended_reason": "A/B 개선 확인 + calibration 양호 + meta 표본 충분",
   "gate_stats": {
-    "ensemble_decisions": 6733,
-    "meta_labels": 38164,
-    "verified_predictions": 46660
+    "ensemble_decisions": 7366,
+    "meta_labels": 41162,
+    "verified_predictions": 49658
   },
-  "ece": 0.24799,
-  "pnl_delta": 160.25,
+  "ece": 0.1468,
+  "pnl_delta": 13.82,
   "has_calibration": true,
   "has_meta_tuning": true
 }
