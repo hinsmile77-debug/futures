@@ -806,28 +806,21 @@ class MultiHorizonModel:
                         # raw std 직접 계산 — sklearn 치환 전 실제 분산 확인
                         _raw_std = float(np.std(X_proc[:, _fi]))
                         if _raw_std < 0.05:
-                            # 이전 스케일러가 유효(scale_>0.05)한 경우에만 복원
-                            if (
-                                hasattr(_old_sc, "scale_")
-                                and _fi < len(_old_sc.scale_)
-                                and _old_sc.scale_[_fi] > 0.05
-                            ):
-                                logger.warning(
-                                    "[ScalerRefresh] %s CORE '%s' raw_std≈0(%.4f)"
-                                    " → 이전 scale 복원 (방향성 보호)",
-                                    horizon, _feat, _raw_std,
-                                )
-                                _new_sc.mean_[_fi]  = _old_sc.mean_[_fi]
-                                _new_sc.scale_[_fi] = _old_sc.scale_[_fi]
-                                if hasattr(_new_sc, "var_") and hasattr(_old_sc, "var_"):
-                                    _new_sc.var_[_fi] = _old_sc.var_[_fi]
-                            else:
-                                logger.warning(
-                                    "[ScalerRefresh] %s CORE '%s' raw_std≈0(%.4f)"
-                                    " + 이전 scale도 무효(%.4f) — 복원 불가",
-                                    horizon, _feat, _raw_std,
-                                    _old_sc.scale_[_fi] if hasattr(_old_sc, "scale_") else -1,
-                                )
+                            # identity transform(mean=0, scale=1) 강제 적용
+                            # 이유: 이전 스케일러도 std≈0 조건에서 학습됐을 경우 mean≈편향값,
+                            # scale=1(sklearn 자동치환) → 복원해도 transform=0 고착 재발.
+                            # 6/9 실증: C_PERIODIC→mean_=-0.5, scale_=1.0 → transform(-0.5)=0 →
+                            # 재시동 후 이전 스케일러 복원해도 동일 결과 → FLAT 100% 144분 지속.
+                            # identity: transform(x)=x → cvd_direction=-0.5가 -0.5로 GBM 전달.
+                            _new_sc.mean_[_fi]  = 0.0
+                            _new_sc.scale_[_fi] = 1.0
+                            if hasattr(_new_sc, "var_") and _fi < len(_new_sc.var_):
+                                _new_sc.var_[_fi] = 1.0
+                            logger.warning(
+                                "[ScalerRefresh] %s CORE '%s' raw_std≈0(%.4f)"
+                                " → identity(0,1) 강제 (FLAT 100% 방지)",
+                                horizon, _feat, _raw_std,
+                            )
 
                 self.scalers[horizon] = _new_sc
                 self._scaler_fitted_at[horizon] = datetime.datetime.now()
