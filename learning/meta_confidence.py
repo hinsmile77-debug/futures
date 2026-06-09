@@ -136,12 +136,16 @@ class MetaConfidenceLearner:
         ]
 
     def _is_collapsed(self) -> bool:
-        """최근 30회 출력이 모두 0.15 이하 → SGD 붕괴 판정
-        역치 0.05→0.15: 간헐적 0.06-0.10 출력 시 max≥0.05로 감지 실패 방지
-        rule_based 정상 출력(0.40-0.60)과 충분히 구분되는 역치 설정
+        """SGD 붕괴 판정 — 조기 감지(10회/0.10) + 확정 감지(30회/0.15) 이중 체크
+        6/9 실증: 30회 누적까지 ~10분 지연 → 붕괴 상태로 장시간 운영
+        조기 감지: 10회 max<0.10 → 즉시 초기화 (약 3분 단축)
         """
-        recent = list(self._conf_history)[-30:]
-        return len(recent) >= 30 and max(recent) < 0.15
+        recent = list(self._conf_history)
+        recent10 = recent[-10:]
+        if len(recent10) >= 10 and max(recent10) < 0.10:
+            return True
+        recent30 = recent[-30:]
+        return len(recent30) >= 30 and max(recent30) < 0.15
 
     def _reset_model(self):
         """SGD 붕괴 복구: 모델·스케일러·버퍼 초기화 (conf_history 는 이력 보존)"""

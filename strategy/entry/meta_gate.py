@@ -58,13 +58,15 @@ class MetaGate:
         learned = self.learner.predict_confidence(meta_features)
         meta_conf = float(learned["confidence_score"])
 
-        # SGD 붕괴 보완: prob[1]≈0 고착 시 rule-based 값으로 하한 보정
-        # (극단 z-score → 연속 오예측 → SGD "항상 틀림" 학습 방지)
-        if meta_conf < 0.15:
-            _rb_conf = self.learner._rule_based_confidence(meta_features)
+        # SGD 붕괴 보완: meta_conf<0.20 시 rule-based 하한 + 절대 하한 0.25 적용
+        # 6/9 실증: rule_based도 급변장+낮은정확도 조합에서 0.06 반환 → floor 불작동
+        # → 절대 하한 0.25: SGD붕괴 시 앙상블 신호만 믿는 중립 수준 보장
+        #   (ens=0.570, meta=0.25 → blended=0.442 ≥ reduce_thr=0.428 → reduce 통과)
+        if meta_conf < 0.20:
+            _rb_conf = max(self.learner._rule_based_confidence(meta_features), 0.25)
             if _rb_conf > meta_conf:
                 logger.info(
-                    "[MetaGate] SGD 붕괴 보완: raw=%.3f → rule=%.3f",
+                    "[MetaGate] SGD 붕괴 보완: raw=%.3f → floor=%.3f",
                     meta_conf, _rb_conf,
                 )
                 meta_conf = _rb_conf
@@ -73,17 +75,13 @@ class MetaGate:
         blended_conf = (float(confidence) * 0.6) + (meta_conf * 0.4)
 
         # min_conf 연동 상대 임계값
-        # reduce_thr: blended 분포 기반 재보정.
-        #   blended = 0.6*ens + 0.4*meta_raw 이므로 앙상블 임계(min_conf)를 통과한
-        #   신호의 blended 는 항상 ens < min_conf 로 희석됨.
-        #   예: ens=min_conf=0.570, meta_raw=0.35 → blended=0.482 < min_conf(0.570)
-        #   → reduce_thr = min_conf 이면 앙상블 임계 통과 신호가 100% 차단.
-        #   6/9 실증: 491건 중 2건(0.4%)만 도달 → MetaGate 사실상 항상 skip.
-        #   fix: reduce_thr = 0.80 * min_conf 로 희석 폭 보정.
-        #     ens=min_conf(0.570), meta_raw=0.35 → blended=0.482 ≥ 0.456 → reduce ✓
-        #     meta_raw=0(SGD붕괴), ens=0.640(오늘 최대) → blended=0.384 < 0.456 → skip ✓
+        # reduce_thr: 6/9 실증 → blended=0.6*ens+0.4*meta_raw 이므로
+        #   ens=min_conf, meta_raw=0.25(floor) → blended=0.342+0.100=0.442
+        #   0.75×: reduce_thr=0.428 → 0.442 ≥ 0.428 → reduce ✓
+        #   0.80×: reduce_thr=0.456 → 0.442 < 0.456 → skip ✗ (오늘 전부 차단)
+        #   SGD붕괴(meta_raw=0), ens=0.640(최대) → blended=0.384 < 0.428 → skip ✓
         take_thr   = max(0.52, min(0.70, min_conf + 0.14))
-        reduce_thr = max(0.38, min_conf * 0.80)
+        reduce_thr = max(0.36, min_conf * 0.75)
 
         if blended_conf >= take_thr:
             action = "take"
