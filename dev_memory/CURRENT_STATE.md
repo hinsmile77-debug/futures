@@ -1,7 +1,39 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-09 (132차 세션 마무리) — 장전/장시작 연쇄 오류 7종 패치
+> 마지막 업데이트: 2026-06-09 (133차 세션 마무리) — 이진 피처 D_FORCE 차단 + EKS 재시작 안정화
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-09 (133차 — 이진 피처 D_FORCE 반복 차단 + EKS 재시작 안정화)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| `is_open_volatile` D_FORCE 트리거 제외 | **완료** ✅ | `model/multi_horizon_model.py` |
+| `opt_pcr_bullish/bearish` D_FORCE 제외 + CLIP | **완료** ✅ | `config/settings.py`, `model/multi_horizon_model.py` |
+| EKS 재시작 후 09:15+ 봉 없으면 미발동 확정 | **완료** ✅ | `safety/system_health.py` |
+
+### 6/9 진입0 원인 분석 (132차 패치 이후 잔존 문제)
+
+```
+08:45  1차 기동 (132차 패치 前 코드) → 'min_conf' KeyError × 5 → EKS 발동
+09:13  재시작 (132차 패치 적용)
+09:13+ is_open_volatile z=+15.78 → D_FORCE 매분 발동 → 스케일러 불안정
+       → CoherenceGate 차단 반복 (방향 합의 불가)
+       CB⑤ S2=5~9초 → 5분 정지 13회
+       conf 39~43% (actual_mc ≈ 41%) → 간신히 미달
+       OnlineLearner 50분 정확도 27~38% 폭락 → SGD 가중치 최소
+재시작 5회 → GAP_OPEN 봉 카운터 0 반복 → EKS 판정 유예 메시지 반복
+```
+
+### 내일 장 확인 사항
+
+- `is_open_volatile`, `opt_pcr_bullish` D_FORCE 로그에서 제외됐는지 확인
+  (극단 z 경고는 나와도 D_FORCE 발동 없어야 함)
+- CoherenceGate 차단 횟수 감소 확인
+- 재시작 후 `[SHS-EKS] 재시작 후 GAP_OPEN 봉 없음 (09:15 이후) — EKS 미발동 확정` 로그 확인
 
 ---
 

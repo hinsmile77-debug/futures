@@ -6,6 +6,33 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-09 (133차 — 이진 피처 D_FORCE 차단 + EKS 재시작 안정화)
+
+### 한일 요약
+
+- [DONE 2026-06-09] **DFORCE_EXCLUDE_FEATURES 추가** — `is_open_volatile`, `opt_pcr_bullish/bearish` D_FORCE 트리거 제외. 이진(0/1) 피처는 스케일러 재적합으로 z폭발 해소 불가 (`config/settings.py`, `model/multi_horizon_model.py`)
+- [DONE 2026-06-09] **opt_pcr_bullish/bearish CLIP 추가** — z=+22.34 실측. 원시값 (0.0, 1.0) cap (`config/settings.py`)
+- [DONE 2026-06-09] **EKS 재시작 안정화** — 09:15 이후 재시작 시 GAP_OPEN 봉 없으면 EKS 미발동 확정 (판단 근거 없음). 유예 메시지 반복 방지 (`safety/system_health.py`)
+
+### 다음 할 일
+
+- [NEXT 내일 장] **133차 패치 효과 확인** (최우선)
+  - `is_open_volatile`, `opt_pcr_bullish` D_FORCE 발동 없음 확인
+  - CoherenceGate 차단 횟수 감소 (132차까지 09:08, 09:27 × 2회 → 0회 목표)
+  - `[SHS-EKS] 재시작 후 GAP_OPEN 봉 없음 (09:15 이후) — EKS 미발동 확정` 확인
+
+- [NEXT 즉시] **GBM 재학습** — 131차 패치(CORE 완화·MC_FLOOR 0.25) + 133차 피처 제외 반영 (이월)
+  - 앱 재시작 → SHAP 탭 "현재 세트 재학습" 클릭
+
+- [NEXT 중기] **CB S2 지연 원인 분석** — 오늘 S2=5~9초 (정상 <1초)
+  - OnlineLearner가 verified 예측 × MetaGate × DB 조회 중 어느 단계가 느린지 프로파일링 필요
+
+- [NEXT 중기] **110차 Platt/ShortHorizonOverride 동작 확인**
+  - `[Calibration] 앙상블 보정기 복원/저장` 로그 확인 (ScalerWarmup 스레드에서 실행)
+  - `[ShortHorizonOverride]` 발동 조건 재점검 (FLAT streak ≥ 5봉 조건 도달 여부)
+
+---
+
 ## 2026-06-09 (132차 — 장전/장시작 연쇄 오류 7종 패치)
 
 ### 한일 요약

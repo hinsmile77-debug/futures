@@ -86,8 +86,16 @@ class SystemHealthScore:
         self._eks_evaluated = True
 
         if self._gap_open_bar_count < EKS_MIN_BARS:
-            # ERR-FATAL·CB 등으로 GAP_OPEN 데이터가 충분하지 않으면 발동 유예.
-            # 당일 관망을 선언할 근거가 없으므로 EKS를 비활성 상태로 유지.
+            import datetime as _dt_mod
+            _now_t = _dt_mod.datetime.now().time()
+            if _now_t >= _dt_mod.time(9, 15):
+                # 09:15 이후 재시작 → GAP_OPEN 봉 수집 기회 없음 → EKS 미발동 확정
+                # (판단 근거 없으므로 관망 선언하지 않음)
+                logger.info(
+                    "[SHS-EKS] 재시작 후 GAP_OPEN 봉 없음 (09:15 이후) — EKS 미발동 확정"
+                )
+                return False
+            # 09:15 이전이면 기존대로 유예 (이후 GAP_OPEN 봉 수집 가능)
             logger.warning(
                 "[SHS-EKS] EKS 판정 유예 — GAP_OPEN 봉 부족 "
                 "(%d봉 < 최소 %d봉) conf_max=%.1f%%",

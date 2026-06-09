@@ -286,6 +286,18 @@ SCALER_CLIP_FEATURES: dict = {
     "macro_vix_abs":            (10.0, 60.0),
     # feature_recoverable_errors: σ≈0 → 정수 1만 돼도 z폭발, Phase 2-B 제거 전까지 cap
     "feature_recoverable_errors": (0.0, 3.0),
+    # opt_pcr_bullish/bearish: 이진(0/1) 피처, z=+22.34 실측 (6/9)
+    # 스케일러 학습 당시 분포와 장 시작 분포 차이로 z폭발 → 원시값 cap으로 방어
+    "opt_pcr_bullish":            (0.0, 1.0),
+    "opt_pcr_bearish":            (0.0, 1.0),
+}
+
+# D_FORCE 트리거에서 제외할 피처 — 이진(0/1) 피처는 스케일러 재적합으로 해소 불가
+# 이 피처들이 D_FORCE를 반복 트리거하면 스케일러 불안정 → CoherenceGate 차단 반복
+DFORCE_EXCLUDE_FEATURES: set = {
+    "is_open_volatile",    # 이진 — 장 시작 30분만 1, 나머지 0 → 분포 차이로 z폭발 구조적
+    "opt_pcr_bullish",     # 이진 — PCR 임계 기반 0/1
+    "opt_pcr_bearish",     # 이진 — PCR 임계 기반 0/1
 }
 
 # GBM / SGD 블렌딩 비율
@@ -349,9 +361,18 @@ REGIME_SIZE_MULT = {
 
 # ── 청산 설정 ──────────────────────────────────────────────────
 ATR_STOP_MULT   = 1.5   # 하드 스톱: ATR × 1.5
-ATR_TP1_MULT    = 1.0   # 1차 목표: ATR × 1.0
+ATR_TP1_MULT    = 1.0   # 1차 목표: ATR × 1.0 (entry_horizon 미지정 시 fallback)
 ATR_TP2_MULT    = 1.5   # 2차 목표: ATR × 1.5
 ATR_TP3_MULT    = 2.5   # 3차 목표: ATR × 2.5
+
+# 스캘퍼 호라이즌별 TP1 배수 — ATR 레짐에 따라 진입 호라이즌이 선택되면
+# 이 배수로 TP1을 단축해 빠른 청산을 유도한다.
+# (기존 ATR_TP1_MULT = 1.0은 entry_horizon=None 일 때 fallback으로 사용)
+ATR_HORIZON_TP1_MULT = {
+    "1m": 0.3,   # ATR의 30% — 1분봉 스캘핑
+    "3m": 0.5,   # ATR의 50% — 3분봉 스캘핑
+    "5m": 0.7,   # ATR의 70% — 5분봉 데이트레이딩
+}
 
 PARTIAL_EXIT_RATIOS = [0.33, 0.33, 0.34]   # 부분 청산 3단계
 

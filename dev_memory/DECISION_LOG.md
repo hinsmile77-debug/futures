@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-06-09 (133차 — 이진 피처 D_FORCE 차단 + EKS 재시작 안정화)
+
+### [버그] is_open_volatile z=+15.78 D_FORCE 반복 발동
+**Root cause**: `is_open_volatile`은 이진(0/1) 피처. 09:00~09:30에만 1.0, 나머지 0.0. 스케일러 학습 데이터에서 해당 피처 평균 ≈ 0.05, std ≈ 0.06 → 실시간 1.0 입력 시 z ≈ 15.8. D_FORCE가 매분 발동 → 스케일러 재적합 → 재적합 후에도 분포 동일 → 반복. CoherenceGate 차단 반복.  
+**Fix**: `DFORCE_EXCLUDE_FEATURES`에 추가. D_FORCE 트리거 이력(streak/history) 계산 시 제외. z경고 자체는 유지(AutoMasked 격리 동작).
+
+### [버그] opt_pcr_bullish z=+22.34 CLIP 미포함
+**Root cause**: 110차에서 `opt_pcr_slope_norm`만 CLIP에 추가. `opt_pcr_bullish/bearish`는 이진(0/1) 피처인데 CLIP 없음. 09:02에 z=+22.34 발생 → D_FORCE와 무관하게 AutoMasked에서 격리됐지만 스케일러 불안정 기여.  
+**Fix**: SCALER_CLIP_FEATURES에 `opt_pcr_bullish/bearish: (0.0, 1.0)` 추가. DFORCE_EXCLUDE에도 추가.
+
+### [설계결정] EKS 재시작 후 09:15+ 봉 없으면 미발동 확정
+재시작이 반복될 때 GAP_OPEN 봉 카운터가 0으로 리셋됨. 09:15 이후에는 GAP_OPEN 시간대(09:00~09:15)가 지났으므로 봉 수집 기회가 없음 → EKS 판단 근거 없음 → 미발동 확정이 올바른 결정. 종전 "판정 유예" 반복(매 재시작마다)은 불필요한 경고 발생.  
+**Note**: 원래 EKS 발동 여부는 당일 첫 정상 기동에서만 판정해야 하며, 재시작 후에는 상태가 유실되어 재판정 불가.
+
+---
+
 ## 2026-06-09 (132차 — 장전/장시작 연쇄 오류 7종 패치)
 
 ### [버그] ERR-FATAL: `'min_conf'` KeyError — EnsembleDecision 조기 반환 dict 누락 키

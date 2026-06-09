@@ -767,7 +767,11 @@ class MultiHorizonModel:
             try:
                 self.scalers[horizon] = StandardScaler().fit(X_proc)
                 self._scaler_fitted_at[horizon] = datetime.datetime.now()
-                joblib.dump(self.scalers[horizon], self._scaler_path(horizon))
+                # 원자적 저장: tmp에 쓴 후 os.replace로 교체 — 읽기 도중 corrupt 방지
+                _dst = self._scaler_path(horizon)
+                _tmp = _dst + ".tmp"
+                joblib.dump(self.scalers[horizon], _tmp)
+                os.replace(_tmp, _dst)
                 refreshed.append(horizon)
             except Exception as _e:
                 logger.warning("[ScalerWarmup] %s 재적합 실패: %s", horizon, _e)
@@ -824,7 +828,9 @@ class MultiHorizonModel:
             reason:       사유 문자열 (로그용)
         """
         # ── 극단 피처 streak / 이력 갱신 ──────────────────────────
-        current_set = set(extreme_feats)
+        # 이진(0/1) 피처는 스케일러 재적합으로 z폭발 해소 불가 → D_FORCE 트리거 제외
+        from config.settings import DFORCE_EXCLUDE_FEATURES
+        current_set = set(f for f in extreme_feats if f not in DFORCE_EXCLUDE_FEATURES)
 
         # 이전 분봉에 없던 피처는 streak 초기화
         for feat in list(self._extreme_feat_streak.keys()):

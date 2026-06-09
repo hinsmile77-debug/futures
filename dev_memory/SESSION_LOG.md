@@ -4,6 +4,37 @@
 
 ---
 
+## 2026-06-09 (133차 — 이진 피처 D_FORCE 차단 + EKS 재시작 안정화)
+
+**Work**: 6/9 SIGNAL·SYSTEM·TRADE·LEARNING 로그 전수 분석 → 132차 패치 동작 확인 + 잔존 진입0 원인 딥다이브 + 3종 추가 패치.
+
+### 6/9 로그 분석 결과
+
+| 개선 (110차) | 실제 동작 |
+|---|---|
+| ① opt_pcr clip | `opt_pcr_bullish=+22.34` — 대상 피처 미포함 → ❌ |
+| ② EKS P3 임계 | GAP_OPEN 봉 부족으로 P3 자체 실행 안됨 → ❌ |
+| ③ CoherenceGate 차등 | 09:08, 09:27 차단 로그 확인 → ✅ |
+| ④ ShortHorizonOverride | 로그 없음 (FLAT 연속 아닌 dir=-1 반복) → 미발동 |
+| ⑤ Platt 보정기 | 복원/저장 로그 없음 → 미작동 |
+| ⑥ PCR 감쇠 | `opt_pcr_bullish` D_FORCE 당시 trigger_reason이 cvd → 미발동 |
+
+| 개선 (132차) | 실제 동작 |
+|---|---|
+| min_conf KeyError 수정 | 08:45 기동(패치 前)에서 발생, 09:13 재시작 후 적용 → ✅ |
+| EKS bars=3 조건 | 09:13+ 재시작 후 bars=0 → 판정 유예 반복 → ⚠ 추가 패치 필요 |
+| CB⑤ 완화 구간 09:10 | S2=5~9초 지연으로 CB⑤ 13회 발동 → 여전히 심각 |
+
+### 133차 패치 3종
+
+| 패치 | 대상 | 파일 |
+|---|---|---|
+| DFORCE_EXCLUDE_FEATURES | is_open_volatile, opt_pcr_bullish/bearish D_FORCE 제외 | settings.py, multi_horizon_model.py |
+| opt_pcr_bullish/bearish CLIP | (0.0, 1.0) 추가 | settings.py |
+| EKS 09:15+ 재시작 | GAP_OPEN 봉 없으면 미발동 확정 | system_health.py |
+
+---
+
 ## 2026-06-09 (132차 — 장전/장시작 연쇄 오류 7종 패치)
 
 **Work**: 금일 장전·장시작 로그 2회 분석 → 이상점 7종 근본 원인 파악 + 즉시 패치.
