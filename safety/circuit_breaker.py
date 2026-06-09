@@ -409,6 +409,9 @@ class CircuitBreaker:
         스레드가 동시에 실행되어 첫 분봉 처리가 구조적으로 느림.
         이 구간은 임계를 9000ms로 완화하고 경고만 발생시킨다.
         """
+        # DBG-CB latency 필드 갱신 — status_dict()의 last_latency가 0.0 고착되던 문제 수정
+        # record_api_latency가 Cybos에서 호출 안 됨 → pipe_ms를 초 단위로 대입
+        self._last_latency = pipe_ms / 1000.0
         _now_t = now_kst().time()
         # 09:00~09:10: EarlyWarmup·ScalerWarmup·GBM PreRetrain·ERR-FATAL 복구가
         # 겹쳐 파이프라인이 구조적으로 느림. 임계를 9000ms로 완화하여 오발동 방지.

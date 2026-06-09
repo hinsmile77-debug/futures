@@ -158,6 +158,15 @@ TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
 TP1_PROTECT_ATR_LOCK_MULT = 0.25
 
 
+def _dir_sign(v) -> int:
+    """float 방향값(±0.5 등)을 -1/0/+1 정수 방향으로 안전 변환.
+
+    int() 잘림(int(0.5)=0) 방지 — 부호 기반 변환.
+    """
+    f = float(v or 0)
+    return 1 if f > 0 else (-1 if f < 0 else 0)
+
+
 class TradingSystem:
     """미륵이 메인 트레이딩 시스템"""
 
@@ -3104,7 +3113,7 @@ class TradingSystem:
             " | bid=%.2f ask=%.2f buyvol=%d sllvol=%d",
             ts, close,
             features.get("atr", 0.0), atr,
-            int(features.get("cvd_direction", 0)),
+            _dir_sign(features.get("cvd_direction", 0)),
             int(features.get("ofi_pressure", 0)),
             features.get("vwap_position", 0.0),
             features.get("hurst", 0.5),
@@ -3976,7 +3985,7 @@ class TradingSystem:
                     direction         = direction,
                     confidence        = confidence,
                     vwap_position     = features.get("vwap_position", 0),
-                    cvd_direction     = int(features.get("cvd_direction", 0)),
+                    cvd_direction     = _dir_sign(features.get("cvd_direction", 0)),
                     ofi_pressure      = int(features.get("ofi_pressure", 0)),
                     foreign_call_net  = features.get("foreign_call_net", 0),
                     foreign_put_net   = features.get("foreign_put_net", 0),

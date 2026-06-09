@@ -36,18 +36,20 @@ def calculate_hurst(price_series, max_lag: int = 20) -> float:
 
     lags = range(2, max_lag)
 
-    # R/S (Rescaled Range) 기반 Hurst 추정
-    # tau[i] = sqrt(std(price[lag:] - price[:-lag]))
+    # Variance 기반 Hurst 추정 (표준 구현)
+    # tau[i] = std(price[lag:] - price[:-lag])
+    # random walk: std ~ lag^0.5 → log-log 기울기 = H = 0.5
+    # ★ 수정: 이전 코드는 sqrt(std)를 사용해 기울기가 H/2로 underestimate됨
+    #   (sqrt(lag^H) = lag^(H/2)) — 오늘 0.064~0.070이 나온 원인
+    # 1e-10 floor: std=0인 lag에서 log(0)=-inf → polyfit NaN 방지
     tau = [
-        np.sqrt(np.std(np.subtract(prices[lag:], prices[:-lag])))
+        max(float(np.std(np.subtract(prices[lag:], prices[:-lag]))), 1e-10)
         for lag in lags
     ]
 
     # log-log 선형 회귀: log(tau) = H * log(lag) + const
     reg = np.polyfit(np.log(list(lags)), np.log(tau), 1)
 
-    # ★ 수정: polyfit 기울기 = H (R/S 분석)
-    #   Gemini 원본은 × 2.0 적용 → Variance 분석 혼동 오류
     hurst_h = float(reg[0])
 
     return float(np.clip(hurst_h, 0.0, 1.0))

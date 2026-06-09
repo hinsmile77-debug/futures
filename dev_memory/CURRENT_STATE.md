@@ -1,7 +1,35 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-09 (135차 세션 마무리) — Meta skip·conf=100% FLAT 4종 근본 원인 수정
+> 마지막 업데이트: 2026-06-09 (136차 세션) — S2 파이프라인 지연 5~7초 근본 수정 4종
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-09 (136차 — S2 파이프라인 지연 근본 수정)
+
+### 문제 원인 (딥다이브 결론)
+
+| 원인 | 증거 | 파일 |
+|---|---|---|
+| online_learner.learn() 이 크리티컬 경로(S2)에서 동기 실행 | 13:54 S2=7201ms, 14:03 S2=5815ms — GBM 배치 재학습 중 Python GC/CPU 포화 | `main.py` |
+| S2 서브-타이밍이 SYSTEM logger.debug()로 전송 → INFO 필터링 → 실종 | DEBUG.log에 [S2] 로그 없음 | `main.py` |
+| _save_model() 원자 쓰기 없음 | open(path,"wb") 직접 쓰기 → 경합 시 불완전 파일 읽기 리스크 | `batch_retrainer.py`, `rf_horizon_model.py` |
+
+### 개선 내용 (136차)
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| [S2-A] online_learner.learn() → "end" 이후로 이동 | **완료** ✅ | `main.py` |
+| [S2-B] S2 sub-타이밍 debug_log 로 교정 (DEBUG.log) | **완료** ✅ | `main.py` |
+| [S2-C] S2 > 1000ms 시 SYSTEM WARN 출력 | **완료** ✅ | `main.py` |
+| [S2-D] _save_model() · RF.save_all() 원자 쓰기 | **완료** ✅ | `batch_retrainer.py`, `rf_horizon_model.py` |
+
+### 다음 장 확인 사항
+
+- CB⑤ 5000ms 트리거 재발 없음 (S2 이제 < 100ms 예상)
+- `[SGD-deferred] NNNms` DEBUG.log 에 학습 지연 시간 확인
+- 만약 SGD-deferred 가 2000ms 초과 시 → SYSTEM WARN 로그 발생
+- 135차 확인사항도 함께: D_FORCE cvd_direction 발동 없음, MetaGate reduce/take 등장
 
 ---
 
