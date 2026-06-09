@@ -18,6 +18,8 @@ logger = logging.getLogger("SYSTEM")
 
 ENTRY_BLOCK_THRESHOLD = 60.0       # SHS 이 이하면 진입 차단
 EKS_CONF_THRESHOLD    = 0.45       # GAP_OPEN 최대 conf 기준
+EKS_MIN_BARS          = 3          # EKS 판정 최솟 GAP_OPEN 봉 수
+                                   # ERR-FATAL 등으로 데이터 부족 시 섣부른 당일 관망 방지
 ALERT_DELTA           = 5.0        # 이 이상 추가 하락 시 슬랙 재알림
 
 
@@ -83,9 +85,20 @@ class SystemHealthScore:
 
         self._eks_evaluated = True
 
+        if self._gap_open_bar_count < EKS_MIN_BARS:
+            # ERR-FATAL·CB 등으로 GAP_OPEN 데이터가 충분하지 않으면 발동 유예.
+            # 당일 관망을 선언할 근거가 없으므로 EKS를 비활성 상태로 유지.
+            logger.warning(
+                "[SHS-EKS] EKS 판정 유예 — GAP_OPEN 봉 부족 "
+                "(%d봉 < 최소 %d봉) conf_max=%.1f%%",
+                self._gap_open_bar_count,
+                EKS_MIN_BARS,
+                self._gap_open_conf_max * 100,
+            )
+            return False
+
         if (
-            self._gap_open_bar_count > 0
-            and self._gap_open_conf_max < EKS_CONF_THRESHOLD
+            self._gap_open_conf_max < EKS_CONF_THRESHOLD
             and self._gap_open_core_pass_count == 0
         ):
             self._eks_active = True

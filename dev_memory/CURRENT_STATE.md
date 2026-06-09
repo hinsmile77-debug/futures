@@ -1,7 +1,44 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-08 (131차 세션 마무리) — 진입0 분석 + 5종 패치 (Coherence·MC·BiasReset·CORE 완화)
+> 마지막 업데이트: 2026-06-09 (132차 세션 마무리) — 장전/장시작 연쇄 오류 7종 패치
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-09 (132차 — 장전/장시작 연쇄 오류 7종 패치)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| `'min_conf'` KeyError (ERR-FATAL 근본 원인) 수정 | **완료** ✅ | `model/ensemble_decision.py:290` |
+| main.py decision.get() 안전 접근 (방어 레이어) | **완료** ✅ | `main.py:3606` |
+| Canary z경고 EarlyWarmup 후 임계 5→12 완화 | **완료** ✅ | `main.py:2325` |
+| CB⑤ 장 시작 완화 구간 09:00~09:10 (9000ms) | **완료** ✅ | `safety/circuit_breaker.py:408` |
+| EKS 최솟 bars=3 조건 (bars<3 발동 유예) | **완료** ✅ | `safety/system_health.py:84` |
+| Degraded Mode 09:00~09:10 진입 유예 | **완료** ✅ | `main.py:1231` |
+| **GBM 재학습** — 131차 패치 미반영 (131차 이월) | **미완료** ⏳ | 앱 재시작 후 "현재 세트 재학습" 클릭 |
+
+### 오늘 장 연쇄 실패 흐름 (재발 방지 참고)
+
+```
+08:45  EarlyWarmup: 전날 데이터로 scaler refit (노후=16h → 0h)
+08:55  Canary: z경고=12개 (전날 scaler ↔ 당일 피처 분포 괴리) → 허위 알림
+09:00  파이프라인 6133ms → CB⑤ 5분 정지 (동시 스레드 부하)
+09:01  ERR-FATAL: decision["min_conf"] KeyError (조기 반환 dict 누락 키)
+09:02  동일 오류 반복 → GAP_OPEN bars=1 누락
+09:06  EKS 발동(bars=1, conf=39.6%) + Degraded Mode 진입 → 당일 관망
+```
+
+→ 수정 1~7 적용 후 동일 패턴 재발 시 각 단계에서 차단됨.
+
+### 내일 장 확인 사항
+
+- `[Canary]` z경고피처 12개 미만이면 `⚠ z경고 폭증` 알림 미발생 확인
+- `[CB⑤]` 09:00~09:10 `[장시작 버스트]` 태그 경고만, PAUSE 미발동 확인
+- `[SHS-EKS] EKS 판정 유예 — GAP_OPEN 봉 부족` 로그 (bars<3 시)
+- `[HealthPolicy] Degraded Mode 진입 유예 — 장 시작 초기` 로그 (09:10 전)
+- ERR-FATAL `'min_conf'` 재발 없음
 
 ---
 

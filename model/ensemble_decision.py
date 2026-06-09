@@ -290,14 +290,23 @@ class EnsembleDecision:
                 return {
                     "direction": DIRECTION_FLAT,
                     "confidence": 0.0,
+                    "confidence_raw": 0.0,
                     "up_score": 0.0,
                     "down_score": 0.0,
+                    "flat_score": 0.0,
                     "grade": "X",
                     "auto_entry": False,
                     "regime_ok": False,
+                    "min_conf": 0.60,
                     "coherence_blocked": False,
                     "cascade_blocked": False,
+                    "trend_boost_applied": False,
                     "detail": {},
+                    "gating": {},
+                    "decorr": {},
+                    "stuck": {},
+                    "f1_adaptive": {},
+                    "const_output_horizons": [],
                     "active_horizons_blocked": True,
                 }
             cur_weights = {h: w / _tw for h, w in cur_weights.items()}

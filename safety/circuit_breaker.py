@@ -404,17 +404,29 @@ class CircuitBreaker:
 
         > CB_PIPE_WARN_MS (1초) : WARNING 로그
         > CB_PIPE_PAUSE_MS (5초): 5분 진입 정지 + Slack 알림
+
+        예외: 09:00~09:02 장 시작 직후 2분은 EarlyWarmup·ScalerWarmup·GBM PreRetrain
+        스레드가 동시에 실행되어 첫 분봉 처리가 구조적으로 느림.
+        이 구간은 임계를 9000ms로 완화하고 경고만 발생시킨다.
         """
-        if pipe_ms >= CB_PIPE_PAUSE_MS:
+        _now_t = now_kst().time()
+        # 09:00~09:10: EarlyWarmup·ScalerWarmup·GBM PreRetrain·ERR-FATAL 복구가
+        # 겹쳐 파이프라인이 구조적으로 느림. 임계를 9000ms로 완화하여 오발동 방지.
+        _open_burst = (
+            datetime.time(9, 0) <= _now_t < datetime.time(9, 10)
+        )
+        _pause_threshold = 9_000 if _open_burst else CB_PIPE_PAUSE_MS
+
+        if pipe_ms >= _pause_threshold:
             if self._state not in (CB_STATE_PAUSED, CB_STATE_HALTED):
-                msg = f"파이프라인 {pipe_ms:.0f}ms 초과"
                 notify_circuit_breaker(
                     f"파이프라인 {pipe_ms:.0f}ms 지연",
                     "5분 진입 정지",
                 )
             self._trigger_pause(5, f"파이프라인 {pipe_ms:.0f}ms — 처리 지연")
         elif pipe_ms >= CB_PIPE_WARN_MS:
-            msg = f"[CB⑤] 파이프라인 {pipe_ms:.0f}ms 경고 (기준 {CB_PIPE_WARN_MS:.0f}ms)"
+            _open_tag = " [장시작 버스트]" if _open_burst else ""
+            msg = f"[CB⑤] 파이프라인 {pipe_ms:.0f}ms 경고 (기준 {CB_PIPE_WARN_MS:.0f}ms){_open_tag}"
             logger.warning(msg)
             log_manager.system(msg, "WARNING")
 

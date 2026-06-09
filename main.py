@@ -60,7 +60,7 @@ from utils.db_utils import (
 )
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
-    HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT,
+    HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT, ATR_HORIZON_TP1_MULT,
     CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
     SHAP_MIN_DATA_POINTS,
     FRED_API_KEY,
@@ -99,7 +99,7 @@ from features.feature_builder import FeatureBuilder
 from features.bar_aggregator import BarAggregator
 from model.multi_horizon_model import MultiHorizonModel
 from model.rf_horizon_model import RFHorizonModel
-from model.ensemble_decision import EnsembleDecision
+from model.ensemble_decision import EnsembleDecision, select_entry_horizon
 from strategy.position.position_tracker import PositionTracker
 from strategy.entry.checklist import EntryChecklist
 from strategy.entry.time_strategy_router import (
@@ -1228,13 +1228,25 @@ class TradingSystem:
         if health_level in ("WARNING", "CRITICAL"):
             self._health_warn_streak += warn_weight
             self._health_info_streak = 0
-            if (not self._health_degraded_mode) and self._health_warn_streak >= float(p.get("degraded_enter_streak", HEALTH_DEGRADED_ENTER_STREAK)):
-                self._health_degraded_mode = True
-                log_manager.system(
-                    "[HealthPolicy] 자동 Degraded Mode 진입 "
-                    f"(warn_streak={self._health_warn_streak:.2f}, warn_ratio={warn_ratio:.0%}, window={len(history)}분)",
-                    "WARNING",
-                )
+            _enter_thresh = float(p.get("degraded_enter_streak", HEALTH_DEGRADED_ENTER_STREAK))
+            if (not self._health_degraded_mode) and self._health_warn_streak >= _enter_thresh:
+                # 09:00~09:10 장 시작 초기: ERR-FATAL·파이프라인 버스트로 인한
+                # 구조적 지연이 warn_streak을 쌓아 섣불리 Degraded Mode에 진입하지 않도록 유예.
+                _now_t = datetime.datetime.now().time()
+                _open_warmup = datetime.time(9, 0) <= _now_t < datetime.time(9, 10)
+                if _open_warmup:
+                    log_manager.system(
+                        "[HealthPolicy] Degraded Mode 진입 유예 — 장 시작 초기 (09:10 전) "
+                        f"warn_streak={self._health_warn_streak:.2f}",
+                        "WARNING",
+                    )
+                else:
+                    self._health_degraded_mode = True
+                    log_manager.system(
+                        "[HealthPolicy] 자동 Degraded Mode 진입 "
+                        f"(warn_streak={self._health_warn_streak:.2f}, warn_ratio={warn_ratio:.0%}, window={len(history)}분)",
+                        "WARNING",
+                    )
         else:
             self._health_warn_streak = 0
             self._health_info_streak += 1
@@ -2322,9 +2334,13 @@ class TradingSystem:
             if self.model.feature_names:
                 _canary_z_warn = self._canary_load_z_warn(n_rows=60)
             _canary_stale = _canary_age_h > 24.0
-            _canary_z_bad = _canary_z_warn >= 5
+            # EarlyWarmup 완료 직후는 전날 데이터 기준 scaler라 장전 피처 분포와 괴리 발생.
+            # 임계를 12개로 완화하여 허위 z경고 알림 억제 (실제 이상은 5개 기준 유지).
+            _z_bad_thresh = 12 if getattr(self, "_early_warmup_started", False) else 5
+            _canary_z_bad = _canary_z_warn >= _z_bad_thresh
+            _ew_tag = f" (EarlyWarmup 완료 — 임계 {_z_bad_thresh}개)" if getattr(self, "_early_warmup_started", False) else ""
             log_manager.system(
-                f"[Canary] scaler 노후={_canary_age_h:.0f}h  z경고피처={_canary_z_warn}개"
+                f"[Canary] scaler 노후={_canary_age_h:.0f}h  z경고피처={_canary_z_warn}개{_ew_tag}"
                 + ("  ⚠ 스케일러 24h+ 노후" if _canary_stale else "")
                 + ("  ⚠ z경고 폭증" if _canary_z_bad else ""),
                 "WARNING" if (_canary_stale or _canary_z_bad) else "INFO",
@@ -3440,6 +3456,7 @@ class TradingSystem:
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
         _st.append(("S6", time.perf_counter()))
+        _entry_horizon = None   # ATR 레짐별 진입 호라이즌 (STEP 6 말미에 확정)
         horizon_proba = self._apply_horizon_calibration(horizon_proba)
         _h_conf_values = [float(v.get("confidence", 0.0) or 0.0) for v in horizon_proba.values()]
         _gov_conf = (sum(_h_conf_values) / len(_h_conf_values)) if _h_conf_values else 0.0
@@ -3598,9 +3615,11 @@ class TradingSystem:
         if len(self._ensemble_conf_cache) > 35:
             self._ensemble_conf_cache.pop(min(self._ensemble_conf_cache), None)
         # 시간대·레짐 두 기준 중 더 엄격한 값으로 통일 (checklist·dashboard 공용)
+        # decision.get(): active_horizons 전체 차단 시 조기 반환 dict에 min_conf 없을 수 있음
+        _zone_mc = get_zone_min_confidence(get_time_zone())
         actual_min_conf = max(
-            decision["min_conf"],
-            get_zone_min_confidence(get_time_zone()),
+            decision.get("min_conf", _zone_mc),
+            _zone_mc,
         )
         _zone_base_mc = actual_min_conf   # [P1] L2·TrendGate 적용 전 기준값 보존
         _tp_active = (
@@ -3846,6 +3865,24 @@ class TradingSystem:
             _cb["accuracy_30m"] * 100, _cb["last_latency"],
             f" pause_until={_cb['pause_until']}" if _cb["pause_until"] else "",
         )
+
+        # ── ATR 레짐별 진입 호라이즌 선택 (2순위) ──────────────────
+        # threshold_feasibility = atr / threshold_1m_pt (feature_builder에서 계산)
+        # select_entry_horizon(tf, 1.0) 호출 시 내부에서 feasibility = tf / 1.0 = tf
+        _tf = float(features.get("threshold_feasibility", 1.0))
+        _entry_horizon = select_entry_horizon(_tf, 1.0)
+        if _entry_horizon is None and direction != 0:
+            log_manager.signal(
+                f"[ATR-Horizon] tf={_tf:.2f} < 0.8 → 저변동성 진입 차단 "
+                f"(ATR={atr:.3f})"
+            )
+            direction = 0
+            grade = "X"
+        elif direction != 0:
+            log_manager.signal(
+                f"[ATR-Horizon] 진입 호라이즌={_entry_horizon} tf={_tf:.2f} "
+                f"→ TP1×{ATR_HORIZON_TP1_MULT.get(_entry_horizon, 1.0)}"
+            )
 
         # ── Phase 1: 진입0 자동 원인 진단 ───────────────────────
         if direction == 0 or grade == "X":
@@ -4435,6 +4472,7 @@ class TradingSystem:
                         final_dir_str, close, _qty_auto, atr, _final_grade,
                         raw_direction=raw_dir_str,
                         reverse_enabled=reverse_on,
+                        entry_horizon=_entry_horizon,
                     )
                 else:
                     # 모드 필터 차단
@@ -4472,6 +4510,7 @@ class TradingSystem:
                     final_dir_str, close, _qty_c_exp, atr, _final_grade,
                     raw_direction=raw_dir_str,
                     reverse_enabled=reverse_on,
+                    entry_horizon=_entry_horizon,
                 )
 
             else:
@@ -7073,6 +7112,7 @@ def _ts_handle_entry_fill(
         filled_at=filled_at,
         raw_direction=pending.get("raw_direction") or pending["direction"],
         reverse_entry_enabled=bool(pending.get("reverse_entry_enabled", False)),
+        entry_horizon=pending.get("entry_horizon"),
     )
     if before.get("status") == "FLAT":
         self.dashboard.minute_chart_record_entry(
@@ -8410,6 +8450,7 @@ def _ts_execute_entry(
     grade: str,
     raw_direction: str = None,
     reverse_enabled: bool = False,
+    entry_horizon: str = None,
 ):
     cooldown_active, cooldown_remain = _ts_in_exit_cooldown(self)
     raw_direction = raw_direction or direction
@@ -8471,6 +8512,7 @@ def _ts_execute_entry(
     # 낙관적 오픈 후 분할체결 VWAP 보정을 위한 플래그
     self._pending_order["optimistic_opened"] = True
     self._pending_order["partial_fill_count"] = 0
+    self._pending_order["entry_horizon"] = entry_horizon
     ret = self._send_broker_entry_order(direction, quantity)
     logger.info(
         "[Entry] send_order result ret=%s raw=%s final=%s qty=%s reverse=%s code=%s broker_sync_verified=%s",
@@ -8540,6 +8582,7 @@ def _ts_execute_entry(
             self.current_regime,
             raw_direction=raw_direction,
             reverse_entry_enabled=reverse_enabled,
+            entry_horizon=entry_horizon,
         )
         self.position._optimistic = True
         self.dashboard.minute_chart_record_entry(

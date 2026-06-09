@@ -4,6 +4,57 @@
 
 ---
 
+## 2026-06-09 (132차 — 장전/장시작 연쇄 오류 7종 패치)
+
+**Work**: 금일 장전·장시작 로그 2회 분석 → 이상점 7종 근본 원인 파악 + 즉시 패치.
+
+### 한 것
+
+**1차 로그 분석 (08:46~09:02)**
+
+- [A] **이상점 분석** — 3종 이상점 연쇄 구조 파악
+  - `EarlyWarmup scaler 노후=16h` → 08:45 전날 데이터로 refit → `Canary z경고=12개` (당일 분포 괴리)
+  - `파이프라인 6133ms` → CB⑤ 5분 정지
+  - `ERR-FATAL: 'min_conf'` KeyError × 2회 → 자동진입 OFF + 15분 쿨다운
+
+- [수정1] **ensemble_decision.py 조기 반환 dict에 min_conf 추가** — `active_horizons` 전체 차단 시 FLAT 반환하는 dict에 `min_conf`, `trend_boost_applied` 등 정규 키 전부 추가. **ERR-FATAL 근본 원인 제거.** (`model/ensemble_decision.py:290`)
+
+- [수정2] **main.py decision["min_conf"] → decision.get() 안전 접근** — 방어 레이어 추가. `_zone_mc = get_zone_min_confidence(…)` 로 fallback. (`main.py:3606`)
+
+- [수정3] **Canary z경고 임계 EarlyWarmup 후 완화** — `_early_warmup_started=True` 시 임계 5→12개. 전날 scaler 기반 장전 z-score 괴리는 구조적 현상이므로 허위 알림 억제. (`main.py:2325`)
+
+- [수정4] **CB⑤ 장 시작 구간 임계 완화** — 09:00~09:02 구간 5000ms → 9000ms. EarlyWarmup·ScalerWarmup·GBM PreRetrain 동시 부하 대응. (`safety/circuit_breaker.py:408`)
+
+**2차 로그 분석 (09:06)**
+
+- [B] **이상점 분석** — EKS·Degraded Mode 연쇄 오발동 구조 파악
+  - 09:01-02 ERR-FATAL → `record_gap_open_bar` 미호출 → GAP_OPEN bars=1
+  - 09:04-05 파이프라인 지연 → HealthPolicy CRITICAL × 2 → `warn_streak=2.0`
+  - 09:06: EKS 발동(bars=1, conf=39.6%) + Degraded Mode 동시 진입 → 당일 관망
+
+- [수정5] **EKS 최솟 bars=3 조건 추가** — `EKS_MIN_BARS=3`. bars < 3이면 발동 유예, 경고만 기록. ERR-FATAL로 GAP_OPEN 데이터 부족 시 당일 관망 오선언 방지. (`safety/system_health.py:84`)
+
+- [수정6] **Degraded Mode 장 시작 10분 유예** — 09:00~09:10 이내 `warn_streak` 임계 도달해도 Degraded Mode 진입 차단. 파이프라인 버스트→CRITICAL→Degraded 경로 봉쇄. (`main.py:1231`)
+
+- [수정7] **CB⑤ 완화 구간 09:10으로 확장** — 09:02→09:10. 오늘 09:06도 5591ms였으므로 ERR-FATAL 복구까지 실제 10분 소요. (`safety/circuit_breaker.py:408`)
+
+### 수정 파일 목록
+
+| 파일 | 수정 |
+|---|---|
+| `model/ensemble_decision.py` | 조기 반환 dict min_conf 등 누락 키 추가 |
+| `main.py` | decision.get() 안전 접근, Canary z임계 완화, Degraded Mode 유예 |
+| `safety/circuit_breaker.py` | CB⑤ 완화 구간 09:00~09:10 |
+| `safety/system_health.py` | EKS_MIN_BARS=3 조건 추가 |
+
+### 현재 상태
+
+오늘 장에서 ERR-FATAL → EKS → Degraded Mode 3중 연쇄로 사실상 전일 관망.  
+수정 1~7 적용 후 내일 장에서 정상 운영 여부 확인 필요.  
+GBM 재학습(131차 미완료) 여전히 필요.
+
+---
+
 ## 2026-06-08 (131차 — 진입0 분석 + 5종 패치)
 
 **Work**: 6/8 진입0(A/B/C 0건) 원인 분석 → 패치 5종 구현.

@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-06-09 (132차 — 장전/장시작 연쇄 오류 7종 패치)
+
+### [버그] ERR-FATAL: `'min_conf'` KeyError — EnsembleDecision 조기 반환 dict 누락 키
+**Root cause**: `ensemble_decision.py:compute()`가 `active_horizons` 전체 차단 시 조기 반환하는 dict에 `"min_conf"` 키가 없었음. `main.py:3603`에서 `decision["min_conf"]`로 직접 접근 → KeyError → ERR-FATAL.  
+**발생 조건**: 09:00 직후 GAP_OPEN 구간 `HORIZON_TIME_POLICY`에 의해 모든 호라이즌 비활성화 + CB PAUSED 상태 중첩 시.  
+**Fix**: 조기 반환 dict에 정규 반환값과 동일한 키 구조 추가 (`min_conf: 0.60`, `trend_boost_applied: False` 등). `decision.get()` 방어 접근 추가.
+
+### [버그] EKS bars=1 오발동 — ERR-FATAL로 GAP_OPEN 데이터 부족
+**Root cause**: `evaluate_early_kill_switch()`에 최솟 bars 조건이 없었음. ERR-FATAL로 09:01-02 파이프라인 실패 → `record_gap_open_bar()` 미호출 → GAP_OPEN bars=1. 09:06에 EKS 평가: bars=1, conf=39.6% < 45%, core_pass=0 → EKS 발동 → 당일 관망.  
+**Fix**: `EKS_MIN_BARS=3` 상수 추가. bars<3이면 발동 유예, 경고 로그만 기록.
+
+### [버그] Degraded Mode 오진입 — 장 시작 파이프라인 버스트로 CRITICAL 누적
+**Root cause**: `HEALTH_DEGRADED_ENTER_STREAK=2`. 09:04-05 파이프라인 5초+ 지연 → `_emit_runtime_health()` CRITICAL level → `warn_streak += 1.0` × 2 = 2.0 ≥ 2.0 → Degraded Mode 진입. 장 시작 구조적 부하임에도 즉시 진입.  
+**Fix**: `_update_degraded_mode()`에 09:00~09:10 유예 구간 추가. 이 시간대는 warn_streak 임계 도달해도 Degraded Mode 미진입.
+
+### [설계결정] CB⑤ 완화 구간을 09:00~09:10으로 정의
+EarlyWarmup(전날 데이터 refit) + ScalerWarmup + GBM PreRetrain + ERR-FATAL 복구까지 안정화에 실측 10분이 소요됨(오늘 09:06도 5591ms). 첫 2분(09:00~09:02)만 완화하면 부족. 구간을 09:10으로 확장하되 임계는 9000ms로 유지(실제 처리 불능 수준은 여전히 차단).
+
+### [설계결정] Canary z경고 임계를 EarlyWarmup 완료 후 12개로 완화
+EarlyWarmup이 전날 데이터로 scaler refit → 당일 장전 피처 분포와 괴리 → z경고 구조적 증가. scaler 노후(24h+) 기반 EKS와 달리 허위 알림에 해당. EarlyWarmup 완료 플래그(`_early_warmup_started`) 기준으로 임계를 5→12로 분기. 진짜 scaler 노후(24h+) 경고는 별도 `_canary_stale` 로직으로 유지.
+
+---
+
 ## 2026-06-08 (131차 — 진입0 탈출 5종 패치)
 
 ### [분석] 6/8 진입0 원인 — CascadeCoherence FL 끼임이 주범

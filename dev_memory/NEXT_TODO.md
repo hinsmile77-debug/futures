@@ -6,6 +6,32 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-09 (132차 — 장전/장시작 연쇄 오류 7종 패치)
+
+### 한일 요약
+
+- [DONE 2026-06-09] **`'min_conf'` KeyError 수정** — `ensemble_decision.compute()` 조기 반환 dict에 `min_conf` 등 누락 키 추가 (`model/ensemble_decision.py:290`)
+- [DONE 2026-06-09] **decision.get() 안전 접근** — `decision["min_conf"]` → `decision.get("min_conf", _zone_mc)` (`main.py:3606`)
+- [DONE 2026-06-09] **Canary z경고 임계 완화** — EarlyWarmup 후 5→12개. 허위 알림 억제 (`main.py:2325`)
+- [DONE 2026-06-09] **CB⑤ 완화 구간 확장** — 09:00~09:10, 5000→9000ms (`safety/circuit_breaker.py:408`)
+- [DONE 2026-06-09] **EKS 최솟 bars=3 조건** — bars<3 시 당일 관망 선언 유예 (`safety/system_health.py:84`)
+- [DONE 2026-06-09] **Degraded Mode 09:10 이전 진입 유예** — 장 시작 초기 파이프라인 버스트 대응 (`main.py:1231`)
+
+### 다음 할 일
+
+- [NEXT 내일 장] **132차 패치 효과 확인** (최우선)
+  - `[Canary]` z경고 12개 미만 → `⚠ z경고 폭증` 알림 미발생
+  - `[CB⑤]` 09:00~09:10 `[장시작 버스트]` 경고만, PAUSE 미발동
+  - `[SHS-EKS] EKS 판정 유예 — GAP_OPEN 봉 부족` 로그 (bars<3 시)
+  - `[HealthPolicy] Degraded Mode 진입 유예 — 장 시작 초기` 로그 (09:10 전)
+  - ERR-FATAL `'min_conf'` 재발 없음
+
+- [NEXT 즉시] **GBM 재학습** — 131차 패치(CORE 완화·MC_FLOOR 0.25) 반영 (이월)
+  - 앱 재시작 → SHAP 탭 "현재 세트 재학습" 클릭
+  - `[DynMC] step clamp 적용: p65=0.279 → base=0.390` 로그 확인
+
+---
+
 ## 2026-06-08 (131차 — 진입0 탈출 5종 패치)
 
 ### 한일 요약
@@ -19,7 +45,7 @@
 
 ### 다음 할 일
 
-- [NEXT 즉시] **앱 재시작 후 GBM 재학습** (최우선)
+- [NEXT 즉시] **앱 재시작 후 GBM 재학습** (최우선, 132차로 이월)
   - 앱 재시작 → SHAP 탭 "현재 세트 재학습" 클릭
   - 재학습 완료 후 `[DynMC] step clamp 적용: p65=0.279 → base=0.390` 로그 확인 (MC_FLOOR 하강 첫 단계)
   - cvd_divergence SHAP rank 상승 확인
@@ -29,6 +55,7 @@
   - `[BiasReset]` coldstart 5분 기준 발동 확인 (재기동 직후 FL 고착 시)
   - `[Checklist] CORE CVD/OFI ✗` INFO 로그 확인 (강제X → 등급하락 처리 확인)
   - DynMC step clamp 로그로 mc 하강 추이 모니터링
+  - ⚠ 오늘 132차 패치도 함께 확인 (위 132차 NEXT 항목 참조)
 
 - [NEXT 중기] **MC 하강 후 진입 재개 확인**
   - 재학습 5~6회 후 mc ≈ 0.28~0.30 수렴 시 conf 33%대 신호 통과 가능
