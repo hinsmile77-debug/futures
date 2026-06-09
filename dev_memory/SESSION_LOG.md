@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-06-09 (134차 — 파이프라인 지연 CB⑤ 근본 원인 2종 제거)
+
+**Work**: 09:32 CB⑤ (8872ms) 패치 이후 재시동에서 탈출한 10:23 CB⑤ (5943ms) 딥다이브 분석 → `scaler_monitor.db` EXCLUSIVE lock 경합 근본 원인 확인 → Fix 7/8/9 구현. Fix 3/4/6 완성 포함.
+
+### 한 일
+
+| Fix | 내용 | 파일 |
+|---|---|---|
+| Fix 3 | STEP 4 candle/horizon_features DB → `_db_write_queue.put_nowait()` (큐 포화 시 동기 fallback) | `main.py` |
+| Fix 4 | `daily_close()` WAL TRUNCATE 체크포인트 (PREDICTIONS_DB·RAW_DATA_DB) | `main.py` |
+| Fix 6 | PipePerf CB임박 스텝별 breakdown 로그 (≥5s 전체, >1s 100ms 초과 스텝) | `main.py` |
+| Fix 7 | `predict_proba()` 내 sync `insert_events_batch()` 제거 → `last_monitor_rows` + `_db_write_worker` 큐 처리 | `main.py`, `model/multi_horizon_model.py` |
+| Fix 8 | `scaler_monitor.db` WAL 모드 (`insert_events_batch`, `update_event_refresh`) | `model/scaler_monitor_db.py` |
+| Fix 9 | monitor rows 조건부 수집 — extreme>0 or age>90m만 기록 | `model/multi_horizon_model.py` |
+
+### 10:23 CB⑤ 탈출 원인 분석
+
+```
+Phase C/ConstOut 재적합(10:22) → update_event_refresh() → scaler_monitor.db EXCLUSIVE lock
+STEP 5 predict_proba() → insert_events_batch() → 동일 DB lock 대기 (timeout=5s)
+= 5943ms 파이프라인 (5s 대기 + 943ms 나머지)
+```
+
+**왜 Fix 1~6으로 못 막았나**: Fix 3(STEP 4 비동기)은 STEP 4만 커버. STEP 5 내부 `insert_events_batch()`는 별개 경로. `scaler_monitor.db`는 PREDICTIONS_DB/RAW_DATA_DB와 다른 파일 — WAL 전환이 별도로 필요했음.
+
+### 다음 할 일
+
+- 내일 장: CB⑤ 재발 없음, PipePerf 스텝별 분포 확인
+- GBM 재학습 (131차+133차 반영) — 이월
+
+---
+
 ## 2026-06-09 (133차 — 이진 피처 D_FORCE 차단 + EKS 재시작 안정화)
 
 **Work**: 6/9 SIGNAL·SYSTEM·TRADE·LEARNING 로그 전수 분석 → 132차 패치 동작 확인 + 잔존 진입0 원인 딥다이브 + 3종 추가 패치.

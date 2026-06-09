@@ -156,6 +156,8 @@ class MultiHorizonModel:
         # 이상값 피처 격리 예측 결과 (main.py에서 참조)
         self.last_masked_proba:    Optional[Dict] = None
         self.last_masked_features: List[str]      = []
+        # 섹션 8: 모니터 행 — predict_proba()가 채우고 main.py _db_write_worker가 비동기 처리
+        self.last_monitor_rows: List[dict]        = []
 
         os.makedirs(HORIZON_DIR, exist_ok=True)
         os.makedirs(SCALER_DIR, exist_ok=True)
@@ -318,6 +320,7 @@ class MultiHorizonModel:
                 )
 
             # 섹션 8: 호라이즌별 max_z / max_z_feature 수집 (원본 기준)
+            # 극단 z-score 발생 또는 스케일러 노후화 시만 기록 — 정상 구간에서 INSERT 빈도 제거
             if monitor_ts and scaler:
                 _z_abs = np.abs(xs_mon[0])
                 _max_z_idx  = int(np.argmax(_z_abs))
@@ -332,6 +335,9 @@ class MultiHorizonModel:
                     (datetime.datetime.now() - _fa).total_seconds() / 60.0
                     if _fa else None
                 )
+                # 정상 구간은 스킵 — 극단 z-score 또는 노후화 시에만 INSERT
+                if not (extreme_count > 0 or (_age is not None and _age > self.SCALER_WARN_MINUTES)):
+                    continue
                 _raw_val  = float(x2d[0][_max_z_idx])
                 _pre_val  = float(x2d_proc[0][_max_z_idx])
                 _sc_mean  = float(scaler.mean_[_max_z_idx])
@@ -426,13 +432,9 @@ class MultiHorizonModel:
             self.last_masked_proba    = None
             self.last_masked_features = []
 
-        # 섹션 8: scaler_events 일괄 INSERT (오류 시 무시 — 모니터링 전용)
-        if _monitor_rows:
-            try:
-                from model.scaler_monitor_db import insert_events_batch
-                insert_events_batch(_monitor_rows)
-            except Exception as _sme:
-                logger.debug("[ScalerMonitor] INSERT 스킵: %s", _sme)
+        # 섹션 8: 모니터 행을 caller에 위임 — 파이프라인 타이밍 윈도우 밖에서 비동기 처리
+        # predict_proba()는 DB I/O 없이 반환. main.py의 _db_write_worker가 비동기로 처리.
+        self.last_monitor_rows = _monitor_rows  # caller가 큐에 투입
 
         return results
 

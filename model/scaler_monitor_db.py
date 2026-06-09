@@ -77,6 +77,7 @@ def insert_events_batch(rows: List[dict]) -> None:
         return
     try:
         with sqlite3.connect(SCALER_MONITOR_DB, timeout=5) as c:
+            c.execute("PRAGMA journal_mode=WAL")  # WAL: 배경 스레드 write와 EXCLUSIVE lock 경합 해소
             c.executemany(
                 """INSERT INTO scaler_events
                    (ts, date, horizon, fitted_at, age_minutes,
@@ -100,6 +101,7 @@ def update_event_refresh(ts: str, refresh_type: str, refresh_reason: str) -> Non
     """
     try:
         with sqlite3.connect(SCALER_MONITOR_DB, timeout=5) as c:
+            c.execute("PRAGMA journal_mode=WAL")
             c.execute(
                 "UPDATE scaler_events SET refresh_type=?, refresh_reason=? WHERE ts=?",
                 (refresh_type, refresh_reason, ts),

@@ -6,6 +6,35 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-09 (134차 — 파이프라인 지연 CB⑤ 2종 제거)
+
+### 한일 요약
+
+- [DONE 2026-06-09] **Fix 3: STEP 4 DB 비동기화** — candle_features·horizon_features `save_*()` 동기 호출 → `_db_write_queue.put_nowait()` 교체. 큐 포화 시 동기 fallback 포함 (`main.py`)
+- [DONE 2026-06-09] **Fix 4: WAL 체크포인트** — `daily_close()` 마감 시 PREDICTIONS_DB·RAW_DATA_DB WAL TRUNCATE (`main.py`)
+- [DONE 2026-06-09] **Fix 6: PipePerf 스텝별 breakdown** — CB임박(≥5s) 시 전체 스텝, 경고(>1s) 시 100ms 초과 스텝만 출력 (`main.py`)
+- [DONE 2026-06-09] **Fix 7: scaler_monitor 비동기화** — `predict_proba()` 내 동기 `insert_events_batch()` 제거 → `last_monitor_rows` 속성으로 caller에 전달 → `_db_write_worker` 큐 처리 (`main.py`, `model/multi_horizon_model.py`)
+- [DONE 2026-06-09] **Fix 8: scaler_monitor.db WAL 모드** — `insert_events_batch()`, `update_event_refresh()` 모두 `PRAGMA journal_mode=WAL` 적용 → 배경 스레드 write와 EXCLUSIVE lock 경합 해소 (`model/scaler_monitor_db.py`)
+- [DONE 2026-06-09] **Fix 9: monitor rows 조건부 수집** — extreme_count>0 또는 age>90m일 때만 row 추가 → 정상 분봉 노이즈 제거 (`model/multi_horizon_model.py`)
+
+### 다음 할 일
+
+- [NEXT 내일 장] **134차 패치 효과 확인** (최우선)
+  - `[PipePerf][CB임박]` 로그에서 스텝별 지연 분포 확인
+  - CB⑤ 5000ms 미발동 확인 (10:23 유형 재발 없음)
+  - `[DBQueue] 큐 포화` fallback 로그 없음 확인
+  - Degraded Mode 진입 없음 확인
+
+- [NEXT 즉시] **GBM 재학습** — 131차 패치(CORE 완화·MC_FLOOR 0.25) + 133차 피처 제외 반영 (이월)
+  - 앱 재시작 → SHAP 탭 "현재 세트 재학습" 클릭
+
+- [NEXT 중기] **133차 패치 효과 확인** (이월)
+  - `is_open_volatile`, `opt_pcr_bullish` D_FORCE 발동 없음 확인
+  - CoherenceGate 차단 횟수 감소 확인
+  - `[SHS-EKS] 재시작 후 GAP_OPEN 봉 없음 (09:15 이후) — EKS 미발동 확정` 로그 확인
+
+---
+
 ## 2026-06-09 (133차 — 이진 피처 D_FORCE 차단 + EKS 재시작 안정화)
 
 ### 한일 요약

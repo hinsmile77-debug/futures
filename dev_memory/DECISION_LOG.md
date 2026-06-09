@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-06-09 (134차 — scaler_monitor 비동기 + WAL)
+
+### [버그] 10:23 CB⑤ 5943ms — scaler_monitor.db EXCLUSIVE lock 경합
+**Root cause**: `predict_proba()` (STEP 5, 파이프라인 타이밍 윈도우 내부)에서 `insert_events_batch()` 동기 호출. DELETE journal mode SQLite는 COMMIT 시 EXCLUSIVE lock 필요. 배경 재적합 스레드의 `update_event_refresh()`가 같은 시각 EXCLUSIVE lock 보유 → 메인 스레드 최대 timeout=5s 블로킹.  
+**발생 조건**: Phase C/ConstOut/D_PRICE_MOMENTUM 재적합이 10:22경 완료 → `update_event_refresh()` 호출 시 타이밍 충돌.  
+**Fix 7**: `predict_proba()`에서 sync INSERT 제거 → `last_monitor_rows` 속성으로 반환 → `_db_write_worker` 배경 큐에서 처리.  
+**Fix 8**: `scaler_monitor.db` WAL 모드 전환 → 동시 write도 짧은 lock으로 처리 (WAL lock ≪ EXCLUSIVE lock).  
+**Fix 9**: extreme_count=0 AND age<90m인 정상 행은 row 자체를 생성하지 않아 INSERT 빈도 감소.
+
+### [설계결정] scaler_monitor rows — 이상 이벤트만 기록
+매분 6개 호라이즌 × 전 피처를 기록하면 정상 분봉에서도 매분 최소 6 INSERT 발생. 실제 분석 가치가 있는 경우는 extreme_count>0 또는 scaler 노후(age>90m)인 경우에 한정. 조건부 수집으로 DB 부하 최소화, 분석 신호 대 잡음비 개선.
+
+### [설계결정] _db_write_worker — "scaler_monitor" op 추가
+기존 worker가 처리하는 op: `"candle_features"`, `"horizon_features"`. 동일 패턴으로 `"scaler_monitor"` op 추가. `scaler_monitor` 유실은 모니터링 기능만 저하되므로 큐 포화 시 silent discard(`pass`) 정책 적용 (candle/horizon과 달리 fallback 없음).
+
+---
+
 ## 2026-06-09 (133차 — 이진 피처 D_FORCE 차단 + EKS 재시작 안정화)
 
 ### [버그] is_open_volatile z=+15.78 D_FORCE 반복 발동

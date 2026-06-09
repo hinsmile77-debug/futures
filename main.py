@@ -369,6 +369,14 @@ class TradingSystem:
         self._gbm_retrain_done_event.set()
         self._pipeline_fatal_streak: int = 0         # [P0] 연속 ERR-FATAL 카운터
         self._scaler_refresh_running: bool = False   # Phase B 스케일러 refresh 중복 방지
+        # ── 비동기 DB write 큐 (STEP 4 분봉·피처·호라이즌 저장용) ──────
+        # 파이프라인 타이밍 윈도우 밖에서 SQLite 쓰기를 처리해 I/O 블로킹 제거.
+        # maxsize=60: 약 1분치 6봉 × 10배 여유. 포화 시 동기 fallback.
+        self._db_write_queue: _queue.Queue = _queue.Queue(maxsize=60)
+        _db_writer = threading.Thread(
+            target=self._db_write_worker, daemon=True, name="DBWriter"
+        )
+        _db_writer.start()
         self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
         self._const_out_heavy_cooldown_until = None  # ConstOut 직후 heavy 작업 유예 (3분)
         self._price_momentum_refit_until = None      # D_PRICE_MOMENTUM 쿨다운 (20분)
@@ -1259,6 +1267,40 @@ class TradingSystem:
                         f"(warn_ratio={warn_ratio:.0%} < {exit_ratio:.0%}, window={len(history)}분)",
                         "INFO",
                     )
+
+    # ── 비동기 DB write 워커 ─────────────────────────────────────
+    def _db_write_worker(self) -> None:
+        """STEP 4에서 큐에 넣은 candle/feature/horizon 쓰기를 백그라운드 처리.
+
+        파이프라인 타이밍 윈도우(_pipe_t0 ~ end)에서 SQLite I/O를 분리해
+        WAL 체크포인트·디스크 경합이 파이프라인 지연으로 이어지지 않게 한다.
+
+        None 센티넬을 받으면 종료 (daily_close 이후 정리용).
+        """
+        while True:
+            item = self._db_write_queue.get()
+            if item is None:
+                self._db_write_queue.task_done()
+                break
+            try:
+                op = item[0]
+                if op == "candle_features":
+                    _, _bar, _ts, _feats = item
+                    save_candle_and_features(_bar, _ts, _feats)
+                elif op == "horizon_features":
+                    _, _ts, _h_name, _h_feats = item
+                    save_horizon_features(_ts, _h_name, _h_feats)
+                elif op == "scaler_monitor":
+                    # predict_proba()가 위임한 scaler_events 행 INSERT
+                    # WAL 모드 + 배경 스레드 → main pipeline 블로킹 없음
+                    _, _sm_rows = item
+                    if _sm_rows:
+                        from model.scaler_monitor_db import insert_events_batch as _smib
+                        _smib(_sm_rows)
+            except Exception as _dq_e:
+                logger.warning("[DBQueue] 쓰기 실패 (op=%s): %s", item[0] if item else "?", _dq_e)
+            finally:
+                self._db_write_queue.task_done()
 
     def _is_const_out_heavy_cooldown_active(self, now_dt: datetime.datetime = None) -> bool:
         until = getattr(self, "_const_out_heavy_cooldown_until", None)
@@ -2992,8 +3034,12 @@ class TradingSystem:
                 )
                 features[_fk] = 0
 
-        # 분봉·피처 원본 저장 (1연결 트랜잭션 — 연결 2회 → 1회)
-        save_candle_and_features(bar, ts, features)
+        # 분봉·피처 원본 저장 — 비동기 큐에 투입 (파이프라인 블로킹 제거)
+        try:
+            self._db_write_queue.put_nowait(("candle_features", bar, ts, features))
+        except _queue.Full:
+            logger.warning("[DBQueue] 큐 포화 — candle_features 동기 write fallback")
+            save_candle_and_features(bar, ts, features)
 
         # ── Phase 2: N분봉 집계 + 호라이즌별 피처 저장 ────────────
         try:
@@ -3003,7 +3049,11 @@ class TradingSystem:
                     _h_feats = self.feature_builder.build_for_horizon(
                         _p2_completed[_h_min], _h_min
                     )
-                    save_horizon_features(ts, _h_name, _h_feats)
+                    try:
+                        self._db_write_queue.put_nowait(("horizon_features", ts, _h_name, _h_feats))
+                    except _queue.Full:
+                        logger.warning("[DBQueue] 큐 포화 — %s horizon_features 동기 write fallback", _h_name)
+                        save_horizon_features(ts, _h_name, _h_feats)
         except Exception as _p2_err:
             logger.debug("[Phase2-STEP4] N분봉 처리 오류 (무해): %s", _p2_err)
             _p2_completed = {1: bar}
@@ -3331,6 +3381,15 @@ class TradingSystem:
                 log_manager.signal("[default] 1/3 균등 예측 → DB 저장 → SGD 부트스트랩")
             _masked_hp_blended = {}  # SGD-only 경로: 격리 예측 미지원
 
+        # scaler_monitor 행 — predict_proba()가 last_monitor_rows에 위임, 비동기 큐 투입
+        # (파이프라인 타이밍 윈도우 밖에서 처리 → insert_events_batch 5초 블로킹 해소)
+        _sm_rows = getattr(self.model, "last_monitor_rows", [])
+        if _sm_rows:
+            try:
+                self._db_write_queue.put_nowait(("scaler_monitor", list(_sm_rows)))
+            except _queue.Full:
+                pass  # 모니터링 전용 — 유실 허용
+
         # ── [5순위] CORE Health Score 매분 업데이트 ───────────────────
         _cfs = self.feature_builder._core_fail_streak
         self.core_health.update(
@@ -3373,10 +3432,10 @@ class TradingSystem:
                 _ts_dt_obj, _extreme_feats_b
             )
             if _refresh_trig:
+                self._scaler_refresh_running = True  # 스레드 시작 전 선점 — 이중 트리거 방지
                 def _scaler_refresh_worker(
                     _trig=_refresh_trig, _rsn=_refresh_reason, _trigger_ts=ts
                 ):
-                    self._scaler_refresh_running = True
                     try:
                         from config.settings import SCALER_WARMUP_LOOKBACK_BARS
                         _Xr, _fnr = self.batch_retrainer.load_features_for_warmup(
@@ -3432,8 +3491,8 @@ class TradingSystem:
                         f"(쿨다운 20분)",
                         "WARNING",
                     )
+                    self._scaler_refresh_running = True  # 스레드 시작 전 선점 — 이중 트리거 방지
                     def _pm_refit_worker(_tts=ts, _ret=_ret_5m_pct):
-                        self._scaler_refresh_running = True
                         try:
                             from config.settings import SCALER_WARMUP_LOOKBACK_BARS
                             _Xpm, _fnpm = self.batch_retrainer.load_features_for_warmup(
@@ -3586,12 +3645,12 @@ class TradingSystem:
                     _now_dt + datetime.timedelta(minutes=30)
                 )
                 self._start_const_out_heavy_cooldown(_now_dt, reason="const_output")
+                self._scaler_refresh_running = True  # 스레드 시작 전 선점 — 이중 트리거 방지
                 log_manager.system(
                     f"[ConstOut] {_const_hz} 상수 출력 확정 → 스케일러 재적합 시작",
                     "WARNING",
                 )
                 def _const_out_refit_worker(_hz=_const_hz, _tts=ts):
-                    self._scaler_refresh_running = True
                     try:
                         from config.settings import SCALER_WARMUP_LOOKBACK_BARS
                         _Xco, _fnco = self.batch_retrainer.load_features_for_warmup(
@@ -3684,6 +3743,7 @@ class TradingSystem:
             features=features,
             now=datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S"),
             recent_accuracy=self.online_learner.recent_accuracy(),
+            min_conf=actual_min_conf,
         )
         decision["toxicity_gate"] = self.toxicity_gate.evaluate(features)
         decision["execution_governor"] = _exec_gate_pre
@@ -4670,7 +4730,15 @@ class TradingSystem:
         # 파이프라인 처리시간 (CB⑤ 대체 지표) — 헬스 패널·SYSTEM 로그 공용
         _st.append(("end", time.perf_counter()))
         _pipe_ms = (_st[-1][1] - _pipe_t0) * 1000
-        if _pipe_ms > HEALTH_LATENCY_WARN_MS:
+        if _pipe_ms >= HEALTH_LATENCY_CRIT_MS:
+            # CB⑤ 발동 임계값 이상 — 전 단계 무조건 출력 (진단용)
+            _all_steps = " ".join(
+                f"{_st[i][0]}={(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
+                for i in range(1, len(_st))
+            )
+            logger.warning("[PipePerf][CB임박] total=%.0fms | %s", _pipe_ms, _all_steps or "─")
+        elif _pipe_ms > HEALTH_LATENCY_WARN_MS:
+            # 경고 수준 — 100ms 초과 단계만 출력
             _slow = " ".join(
                 f"{_st[i][0]}={(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
                 for i in range(1, len(_st))
@@ -5854,6 +5922,22 @@ class TradingSystem:
 
         # [Shadow] shadow_candidate.json 체크 → 섀도우 자동 시작
         self._load_shadow_candidate()
+
+        # ── WAL 체크포인트 — 장중 누적된 WAL 파일 강제 플러시 ────────
+        # WAL auto-checkpoint(1000 page)는 장중 파이프라인 타이밍에 걸릴 수 있음.
+        # 장 마감 후 TRUNCATE 체크포인트로 WAL을 0 바이트로 초기화해 내일 새벽을 준비.
+        try:
+            import sqlite3 as _wal_sqlite3
+            from config.settings import RAW_DATA_DB as _WAL_RAW, PREDICTIONS_DB as _WAL_PRED
+            for _wal_db in (_WAL_RAW, _WAL_PRED):
+                try:
+                    with _wal_sqlite3.connect(_wal_db, timeout=30) as _wc:
+                        _wc.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    logger.info("[WAL] 체크포인트 완료: %s", _wal_db)
+                except Exception as _wal_db_e:
+                    logger.warning("[WAL] 체크포인트 실패 (%s): %s", _wal_db, _wal_db_e)
+        except Exception as _wal_e:
+            logger.warning("[WAL] 체크포인트 전체 실패 (무해): %s", _wal_e)
 
         # ── 자동 종료 예약 ────────────────────────────────────────
         win_rate = stats["wins"] / max(stats["trades"], 1)

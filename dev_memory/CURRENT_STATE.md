@@ -1,7 +1,40 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-09 (133차 세션 마무리) — 이진 피처 D_FORCE 차단 + EKS 재시작 안정화
+> 마지막 업데이트: 2026-06-09 (134차 세션 마무리) — 파이프라인 지연 CB⑤ 근본 원인 2종 제거 (scaler_monitor 비동기 + WAL)
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-09 (134차 — 파이프라인 지연 CB⑤ 2종 제거: STEP4 비동기 + scaler_monitor WAL)
+
+### 현재 상태
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| Fix 3: STEP 4 candle/horizon_features DB 큐 비동기화 | **완료** ✅ | `main.py` |
+| Fix 4: daily_close WAL 체크포인트 | **완료** ✅ | `main.py` |
+| Fix 6: PipePerf CB임박 스텝별 breakdown 로그 | **완료** ✅ | `main.py` |
+| Fix 7: scaler_monitor INSERT 큐 비동기화 (`last_monitor_rows`) | **완료** ✅ | `main.py`, `model/multi_horizon_model.py` |
+| Fix 8: `scaler_monitor.db` WAL 모드 (`journal_mode=WAL`) | **완료** ✅ | `model/scaler_monitor_db.py` |
+| Fix 9: monitor rows 조건부 수집 (extreme>0 or age>90m) | **완료** ✅ | `model/multi_horizon_model.py` |
+
+### 10:23 CB⑤ (5943ms) 근본 원인 분석
+
+```
+10:22±  배경 Phase C/ConstOut 재적합 → update_event_refresh() 호출
+        → scaler_monitor.db EXCLUSIVE lock 획득 (DELETE journal mode)
+10:23   STEP 5 predict_proba() 내부 insert_events_batch() 동기 호출
+        → EXCLUSIVE lock 대기 (timeout=5s) → 5943ms 발생
+10:24   HealthPolicy Degraded Mode 진입 (warn_streak=2)
+10:25   2028ms 경고 (디스크 I/O 아직 높음)
+```
+
+### 내일 장 확인 사항
+
+- `[PipePerf][CB임박]` 로그에서 어느 STEP이 느린지 확인 (Fix 6)
+- CB⑤ 5943ms 재발 없음 확인 (Fix 7/8 효과)
+- `[DBQueue] 큐 포화` fallback 로그 없음 확인 (정상 비동기 처리)
+- Degraded Mode 진입 없음 확인
 
 ---
 
