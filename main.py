@@ -3365,6 +3365,15 @@ class TradingSystem:
             horizon_proba = self.model.predict_proba(
                 feat_vec, monitor_ts=ts, hz_feat_vecs=_hz_feat_vecs
             )
+            # [STEP5-P0 보완] GBM ready임에도 빈 예측 반환 — 조기 감지
+            # ensemble.compute()의 P0가 conf=0.0으로 차단하지만,
+            # 여기서 로그를 남겨 "어느 단계에서 비어있었는가"를 즉시 파악한다.
+            if not horizon_proba:
+                logger.warning(
+                    "[STEP5] GBM ready=%s 이나 predict_proba()={} — 빈 예측 감지",
+                    _gbm_ready,
+                )
+                log_manager.signal("[STEP5] predict_proba()={} — ensemble P0 방어 진입")
             _rf_ready = self.rf_model.is_ready()
             for h_name in list(horizon_proba.keys()):
                 _sgd_fv = _hz_feat_vecs[h_name] if _hz_feat_vecs else feat_vec

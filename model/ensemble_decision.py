@@ -269,6 +269,34 @@ class EnsembleDecision:
             {direction, confidence, up_score, down_score,
              grade, auto_entry, regime_ok, detail}
         """
+        # [P0] 빈 예측 입력 차단 — horizon_proba={} 시 flat_score=1.0→conf=100% 방지
+        # 근본 원인(predict_proba continue 버그)이 수정됐더라도 다른 경로로
+        # horizon_proba={}이 전달될 수 있으므로 진입부에서 즉시 차단한다.
+        if not horizon_proba:
+            logger.warning("[Ensemble] horizon_proba={} — confidence=0.0 반환 (P0 방어)")
+            return {
+                "direction": DIRECTION_FLAT,
+                "confidence": 0.0,
+                "confidence_raw": 0.0,
+                "up_score": 0.0,
+                "down_score": 0.0,
+                "flat_score": 0.0,
+                "grade": "X",
+                "auto_entry": False,
+                "regime_ok": False,
+                "min_conf": zone_mc,
+                "coherence_blocked": False,
+                "cascade_blocked": False,
+                "trend_boost_applied": False,
+                "detail": {},
+                "gating": {},
+                "decorr": {},
+                "stuck": {},
+                "f1_adaptive": {},
+                "const_output_horizons": [],
+                "active_horizons_blocked": False,
+            }
+
         # ── 가중합 (상관관계 역수 × F1 적응형 가중치 적용) ──────────
         # HorizonDecorrelator: 이중 가중(double-counting) 완화.
         # HorizonF1AdaptiveWeight: F1 낮은 호라이즌 자동 억제 (f1² 비례).
