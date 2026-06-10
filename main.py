@@ -3934,6 +3934,42 @@ class TradingSystem:
         else:
             _hz_agreement = 0.5
 
+        # Checklist 선행 평가 — MetaGate checklist_grade 결정용
+        # 체크리스트는 MetaGate와 독립(features만 사용) → FLAT 포지션 진입 후보 분에 한해 선행 실행
+        # 결과(_pre_cr_cache)는 이후 STEP 7 체크리스트 절에서 재사용해 이중 계산 방지
+        _pre_cl_grade = grade        # 기본: 앙상블 등급 (포지션 청산 감시 분 등은 이 값 유지)
+        _pre_cr_cache = None
+        if direction != DIRECTION_FLAT and self.position.status == "FLAT":
+            if not self.model.is_in_startup_warmup(_ts_dt_obj):
+                try:
+                    _cl_min_conf_pre = actual_min_conf
+                    if _l2_mc_adj > 0.0:
+                        _cl_min_conf_pre = min(actual_min_conf, _zone_base_mc + 0.04)
+                    if _tp_active:
+                        _cl_min_conf_pre = min(_cl_min_conf_pre, _tp["min_conf_override"] + 0.02)
+                    _pre_cr_cache = self.checklist.evaluate(
+                        direction          = direction,
+                        confidence         = confidence,
+                        vwap_position      = features.get("vwap_position", 0),
+                        cvd_direction      = _dir_sign(features.get("cvd_direction", 0)),
+                        ofi_pressure       = int(features.get("ofi_pressure", 0)),
+                        foreign_call_net   = features.get("foreign_call_net", 0),
+                        foreign_put_net    = features.get("foreign_put_net", 0),
+                        prev_bar_direction = (1 if bar.get("close", 0) > bar.get("open", 0)
+                                              else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
+                        time_zone          = time_zone,
+                        daily_loss_pct     = max(-self.position.daily_stats()["pnl_krw"], 0)
+                                             / max(_ts_current_sizer_balance(self), 50_000_000),
+                        min_confidence     = _cl_min_conf_pre,
+                        bear_exhaustion    = float(features.get("bear_exhaustion", 0.0) or 0.0),
+                        bull_exhaustion    = float(features.get("bull_exhaustion", 0.0) or 0.0),
+                        micro_regime       = getattr(self, "current_micro_regime", "혼합"),
+                        disabled_gates     = self.dashboard.get_disabled_gates(),
+                    )
+                    _pre_cl_grade = _pre_cr_cache.get("grade", grade)
+                except Exception as _pre_cl_e:
+                    logger.debug("[Checklist.pre] 선행 평가 실패, 앙상블 등급 사용: %s", _pre_cl_e)
+
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,
             confidence=confidence,
@@ -3944,7 +3980,7 @@ class TradingSystem:
             recent_accuracy=self.online_learner.recent_accuracy(),
             min_conf=actual_min_conf,
             horizon_agreement=_hz_agreement,
-            checklist_grade=grade,  # 앙상블 등급(A/B/C/X) — checklist보다 앞에 실행되므로 앙상블 grade 사용
+            checklist_grade=_pre_cl_grade,  # 체크리스트 선행 등급 (A/B/C/X)
         )
         # selection bias 해소: skip된 비-FLAT 신호를 shadow 버퍼에 보존
         # → STEP 2에서 동일 ts 검증 결과 도착 시 record_outcome 처리
@@ -4206,24 +4242,28 @@ class TradingSystem:
                         f" (L2={_l2_mc_adj*100:.0f}%p cap, TrendGate={'ON' if _tp_active else 'OFF'})"
                     )
 
-                _cr = self.checklist.evaluate(
-                    direction         = direction,
-                    confidence        = confidence,
-                    vwap_position     = features.get("vwap_position", 0),
-                    cvd_direction     = _dir_sign(features.get("cvd_direction", 0)),
-                    ofi_pressure      = int(features.get("ofi_pressure", 0)),
-                    foreign_call_net  = features.get("foreign_call_net", 0),
-                    foreign_put_net   = features.get("foreign_put_net", 0),
-                    prev_bar_direction = (1 if bar.get("close", 0) > bar.get("open", 0)
-                                          else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
-                    time_zone         = time_zone,
-                    daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / max(_ts_current_sizer_balance(self), 50_000_000),
-                    min_confidence    = _checklist_min_conf,
-                    bear_exhaustion   = float(features.get("bear_exhaustion", 0.0) or 0.0),
-                    bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
-                    micro_regime      = getattr(self, "current_micro_regime", "혼합"),
-                    disabled_gates    = _disabled_gates,
-                )
+                # MetaGate 선행 평가에서 캐시된 결과 재사용 (동일 입력 → 재계산 불필요)
+                if _pre_cr_cache is not None:
+                    _cr = _pre_cr_cache
+                else:
+                    _cr = self.checklist.evaluate(
+                        direction         = direction,
+                        confidence        = confidence,
+                        vwap_position     = features.get("vwap_position", 0),
+                        cvd_direction     = _dir_sign(features.get("cvd_direction", 0)),
+                        ofi_pressure      = int(features.get("ofi_pressure", 0)),
+                        foreign_call_net  = features.get("foreign_call_net", 0),
+                        foreign_put_net   = features.get("foreign_put_net", 0),
+                        prev_bar_direction = (1 if bar.get("close", 0) > bar.get("open", 0)
+                                              else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
+                        time_zone         = time_zone,
+                        daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / max(_ts_current_sizer_balance(self), 50_000_000),
+                        min_confidence    = _checklist_min_conf,
+                        bear_exhaustion   = float(features.get("bear_exhaustion", 0.0) or 0.0),
+                        bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
+                        micro_regime      = getattr(self, "current_micro_regime", "혼합"),
+                        disabled_gates    = _disabled_gates,
+                    )
 
             # [Phase 1] cold-start 구간 최소 pass 수 강화 (HORIZON_COLDSTART_MIN_PASS)
             # 09:05~09:10: 7개 이상, 09:10~09:15: 6개 이상 — 활성 호라이즌이 제한된 구간의
