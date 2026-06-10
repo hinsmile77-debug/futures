@@ -2153,7 +2153,10 @@ class TradingSystem:
 
             def _intraday_retrain_worker():
                 try:
-                    result = self.batch_retrainer.retrain_now(force=True)
+                    # force=False: 장중 재시작 Retrain은 cv_acc 하락 시 기존 모델 유지
+                    # force=True를 쓰면 cv_acc가 old_acc-1% 아래여도 강제 저장 →
+                    # 매 재시작마다 성능 하락 모델로 덮어써 하향 래칫 발생 (147차 수정)
+                    result = self.batch_retrainer.retrain_now(force=False)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
                 self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
@@ -3072,7 +3075,9 @@ class TradingSystem:
 
             def _retrain_worker():
                 try:
-                    result = self.batch_retrainer.retrain_now(force=_is_warmup)
+                    # force=False: STEP 3 warmup(세션 재시작 포함)도 성능 하락 시 기존 모델 유지
+                    # 08:55 pre-market(_pre_retrain_worker)만 force=True 유지 — 전날 EOD 과장 acc 정상화 목적
+                    result = self.batch_retrainer.retrain_now(force=False)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
                 self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)

@@ -734,6 +734,27 @@ class BatchRetrainer:
             except Exception as exc:
                 logger.warning("[Retrain] managed feature set load 실패: %s", exc)
 
+            # ── 미래 가격 없는 행 제거 (BUG-B 수정) ──────────────────────────
+            # 오늘 세션 끝 근처 행은 max_horizon(30m) 후 가격이 close_map에 없음
+            # → _path_conditioned_label이 FLAT 반환 → validation fold acc 하락
+            # → EOD Retrain에서 acc가 89%로 폭등하는 역현상 방지
+            # 해결: 30m 미래 가격이 close_map에 없는 행을 학습 전 제거
+            _max_h_min = max(HORIZONS.values())  # 30
+            _n_before = len(records)
+            records = [
+                (ts, feat) for ts, feat in records
+                if (
+                    datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                    + datetime.timedelta(minutes=_max_h_min)
+                ).strftime("%Y-%m-%d %H:%M:%S") in close_map
+            ]
+            _n_dropped = _n_before - len(records)
+            if _n_dropped > 0:
+                logger.info(
+                    "[Retrain] 미래 가격 불완전 행 %d개 제거 (max_horizon=%dm 후 종가 없음)",
+                    _n_dropped, _max_h_min,
+                )
+
             X = np.array(
                 [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],
                 dtype=np.float32,
