@@ -808,7 +808,9 @@ class TradingSystem:
             and self.model.is_ready()
             and self._shap_tracker is not None
             and self.model.feature_names
-            and len(all_feat_rows) >= 30
+            # SHAP_MIN_DATA_POINTS(100)로 조건 통일 — 이전 >= 30은 update() 내부에서
+            # len(X) < 100 체크로 항상 False를 반환해 복원 후 계산이 불가능했음
+            and len(all_feat_rows) >= SHAP_MIN_DATA_POINTS
         ):
             horizon_model = self.model.models.get("1m")
             if horizon_model is None:
@@ -821,7 +823,7 @@ class TradingSystem:
                     ],
                     dtype=np.float32,
                 )
-                self._shap_tracker.update(
+                _restored_ok = self._shap_tracker.update(
                     horizon_model,
                     restored_vectors,
                     sample_size=min(120, len(restored_vectors)),
@@ -832,6 +834,10 @@ class TradingSystem:
                         row["feature"]: float(row["importance"])
                         for row in ranking
                     }
+                logger.info(
+                    "[AnalysisRestore] SHAP 복원 계산: ok=%s, rows=%d, cached=%d",
+                    _restored_ok, len(restored_vectors), len(self._cached_shap_importance),
+                )
 
         logger.info(
             "[AnalysisRestore] live_corr=%d restored_corr=%s live_shap=%d live_ready=%s shap_features=%d",
@@ -940,6 +946,12 @@ class TradingSystem:
         X_recent = np.array(list(self._shap_feature_window), dtype=np.float32)
         updated = self._shap_tracker.update(horizon_model, X_recent, sample_size=min(120, len(X_recent)))
         if not updated:
+            logger.warning(
+                "[ShapRefresh] update() False — window=%d, model_feat=%d, tracker_feat=%d",
+                len(X_recent),
+                len(self.model.feature_names or []),
+                len(getattr(self._shap_tracker, "feature_names", []) or []),
+            )
             return
 
         ranking = self._shap_tracker.get_current_ranking()
@@ -961,7 +973,19 @@ class TradingSystem:
             return
         ranking = self._shap_tracker.get_current_ranking()
         if not ranking:
-            return
+            # [fallback] SHAP 히스토리 없음 → GBM 내장 importance로 기본 표시
+            # 히스토리 길이 불일치(피처 수 변경 후 첫 재시작) 또는 아직 미계산 상태에서
+            # 중간 패널이 완전히 비는 것을 방지한다.
+            _gbm_imp = self.model.get_feature_importance() if self.model.is_ready() else {}
+            if not _gbm_imp:
+                return
+            ranking = [
+                {"rank": i + 1, "feature": fn, "importance": float(v)}
+                for i, (fn, v) in enumerate(
+                    sorted(_gbm_imp.items(), key=lambda t: -t[1])
+                )
+            ]
+            logger.debug("[ShapDash] SHAP ranking 없음 → GBM importance fallback (n=%d)", len(ranking))
 
         def _pretty_name(feature_name: str) -> str:
             name_map = {
@@ -3939,7 +3963,6 @@ class TradingSystem:
         }
 
         # Fix2: GBM 피처 중요도 → 파라미터 중요도 바
-        _importance = self.model.get_feature_importance() if _gbm_ready else {}
         _importance = self.model.get_feature_importance() if _gbm_ready else {}
         _params_ui  = {
             pname: _importance.get(fname, 0.0)

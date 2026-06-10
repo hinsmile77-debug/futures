@@ -33,7 +33,9 @@ from config.settings import (
     SHAP_RANK_IMPROVE_MIN, SHAP_MIN_DATA_POINTS, SHAP_DB,
 )
 
-logger = logging.getLogger("SHAP")
+# SHAP 전용 로거: LEARNING 레이어 파일 핸들러 없이 독립 실행되는 문제를 방지하기 위해
+# LEARNING 로거를 사용한다. shap 패키지 오류가 LEARNING.log에 기록된다.
+logger = logging.getLogger("LEARNING")
 
 
 class ShapTracker:
@@ -114,17 +116,33 @@ class ShapTracker:
             try:
                 explainer  = _shap.TreeExplainer(model)
                 shap_vals  = explainer.shap_values(X)
-                # 분류: shap_values[1] = positive class
+                # 다중 클래스: list[n_classes] 또는 3D array (shap 버전 의존)
                 if isinstance(shap_vals, list):
-                    shap_vals = shap_vals[1]
-                return np.abs(shap_vals).mean(axis=0)
+                    # 3-class: [DN, FL, UP] → UP 클래스(index 2) 사용
+                    # index 1 대신 절댓값 평균을 모든 클래스에 대해 계산
+                    shap_vals = np.mean([np.abs(sv) for sv in shap_vals], axis=0)
+                    return shap_vals.mean(axis=0)
+                elif shap_vals.ndim == 3:
+                    # shap 최신버전: shape (n_samples, n_features, n_classes)
+                    return np.abs(shap_vals).mean(axis=(0, 2))
+                else:
+                    return np.abs(shap_vals).mean(axis=0)
             except Exception as e:
-                logger.debug(f"[SHAP] TreeExplainer 오류: {e}")
+                logger.warning("[SHAP] TreeExplainer 오류 (feature_importances_ fallback): %s", e)
 
-        # fallback
+        # fallback — sklearn GBM은 항상 feature_importances_ 보유
         if hasattr(model, "feature_importances_"):
-            return model.feature_importances_
+            imp = model.feature_importances_
+            if len(imp) == self._n_features:
+                logger.debug("[SHAP] feature_importances_ fallback 사용 (n=%d)", len(imp))
+                return imp
+            logger.warning(
+                "[SHAP] feature_importances_ 길이 불일치: %d != %d (tracker n_features)",
+                len(imp), self._n_features,
+            )
 
+        logger.warning("[SHAP] 중요도 계산 불가: SHAP=%s, feature_importances_=%s",
+                       _SHAP_OK, hasattr(model, "feature_importances_"))
         return None
 
     # ── 주간 심사 ─────────────────────────────────────────────────
@@ -336,13 +354,23 @@ class ShapTracker:
                 data = json.load(f)
             # 주별 dedup: 같은 week는 마지막(최신) 엔트리만 보존
             seen_weeks: dict = {}
+            skipped = 0
             for h in data.get("history", []):
                 imp = np.array(h.get("importance") or [])
                 if len(imp) != self._n_features:
+                    skipped += 1
                     continue
                 w = tuple(h.get("week") or [])
                 if w:
                     seen_weeks[w] = h  # 같은 주 → 뒤에 나온 것(최신)으로 덮음
+            if skipped:
+                logger.warning(
+                    "[SHAP] 히스토리 %d개 항목 길이 불일치로 skip (저장=%d, 현재 n_features=%d)"
+                    " — 다음 update() 호출 시 재계산됨",
+                    skipped,
+                    skipped and len(np.array(data["history"][0].get("importance") or [])),
+                    self._n_features,
+                )
             for h in sorted(seen_weeks.values(), key=lambda x: x.get("timestamp", "")):
                 self._history.append(h)
             self._replace_log = data.get("replace_log", [])
