@@ -1,7 +1,77 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-10 (144차 세션) — 파이프라인 지연 134차 escape 5종 근본 수정
+> 마지막 업데이트: 2026-06-10 (146차 세션) — 로그 딥다이브: MetaConf 버그 수정 + RF OOB 근본 원인 3종
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-10 (146차 — MetaConf class_weight 버그 + RF OOB 근본 원인 3종)
+
+### 문제 발견 (20260610 LEARNING 로그 딥다이브)
+
+| 이상점 | 증거 | 근본 원인 |
+|---|---|---|
+| MetaConf 학습 오류 매분 반복 | `[MetaConf] 학습 오류: class_weight 'balanced' is not supported for partial_fit` — 09:24부터 세션 끝까지 200회+ | sklearn `SGDClassifier(class_weight="balanced")` + `partial_fit()` 비호환 |
+| RF OOB 전 호라이즌 랜덤 수준 | 1m=46.2%, 3m=37.5%, 5m=39.4%, 10m=45.0%, 15m=45.9%, 30m=48.1% (3-class random=33%) | BUG #1: 추론 시 `apply_robust_preprocess` 미적용 (train/test 불일치) + BUG #2: 저성능 RF 고정 30% 앙상블 오염 |
+| SHAP 주간 심사 중복 | 12:44~12:52 구간 매분 2회 출력 | 2차 Retrain 세션(11:04)이 145차 수정 미반영 구버전 실행 — 12:52 3차 세션부터 정상 |
+
+### BUG #1 (P0): MetaConf `class_weight='balanced'` + `partial_fit` 비호환
+
+**증상:** 09:24~세션 끝까지 매분 동일 오류 → MetaConf SGD 학습 완전 중단 (MetaGate 확률 품질 저하)
+
+**원인:** sklearn `SGDClassifier`는 `class_weight="balanced"` 지정 시 `partial_fit()` 에서 예외 발생. `fit()`에서만 동작함.
+
+**수정 (`learning/meta_confidence.py`):**
+- `class_weight="balanced"` 제거 (SGDClassifier 생성자 2곳: `__init__`, `_reset_model`)
+- `_make_sample_weight(y)` 정적 메서드 추가: `compute_class_weight('balanced', ...)` → `sample_weight` 배열 계산
+- `_partial_fit_incremental`, `_partial_fit` 양쪽에서 `sw = self._make_sample_weight(y)` → `partial_fit(..., sample_weight=sw)` 전달
+
+### BUG #2 (P0): RF 추론 시 `apply_robust_preprocess` 미적용
+
+**증상:** RF는 학습 시 `apply_robust_preprocess(X)` (atr/avg_volume log1p, clip) 적용 후 학습하지만, 추론 시 raw `feat_vec` 그대로 입력 → 스케일 불일치 → OOB 실제 정확도보다 추론 정확도 훨씬 낮음
+
+**수정 (`model/rf_horizon_model.py` `predict_proba_single`):**
+```python
+from model.multi_horizon_model import apply_robust_preprocess
+x2d = x.reshape(1, -1)
+if self.feature_names:
+    x2d = apply_robust_preprocess(x2d, self.feature_names)
+```
+
+### BUG #3 (P1): 저성능 RF 고정 30% 앙상블 오염
+
+**증상:** 3m(37.5%), 5m(39.4%) RF OOB가 랜덤+4~6pp 수준인데 GBM+SGD 앙상블에 30% 고정 혼합 → 앙상블 성능 저하
+
+**수정 (`main.py` STEP 5 RF 블렌딩):**
+```python
+_oob_hz = self.rf_model.get_oob_scores().get(h_name, 0.0)
+_w_rf = 0.30 if _oob_hz >= 0.45 else 0.0  # 45% 미만 = RF 제외
+```
+- OOB < 45% (랜덤+12pp 미만): 해당 호라이즌 RF 블렌딩 비활성화
+- 현재 기준: 3m, 5m 제외 / 1m, 10m, 15m, 30m 30% 유지
+
+### 기타 이상점 (수정 불필요)
+
+| 이상점 | 판단 | 이유 |
+|---|---|---|
+| OnlineLearner SGD 가중치 Retrain마다 리셋 (short/long 28%→10%) | 아키텍처 설계 — 변경 불필요 | Retrain 세션이 가중치를 재평가하는 정상 동작 |
+| Retrain acc 미세 하강 (5m: 0.6123→0.6057→0.6052) | 정상 범위 — 조치 불필요 | 동일 cutoff(2026-04-01) 데이터로 반복 재학습 시 미세 진동 |
+| RF OOB 방법론적 한계 (random holdout vs temporal) | 알려진 한계 — 코드 버그 아님 | RF OOB는 시간 정보 무시 — GBM은 TimeSeriesSplit으로 보완 |
+
+### 수정 파일 요약
+
+| 파일 | 변경 내용 |
+|---|---|
+| `learning/meta_confidence.py` | SGDClassifier `class_weight="balanced"` 제거 + `_make_sample_weight` + `sample_weight=sw` 전달 |
+| `model/rf_horizon_model.py` | `predict_proba_single`: `apply_robust_preprocess` 추론 전 적용 |
+| `main.py` | RF 블렌딩: 고정 30% → OOB ≥ 0.45 조건부 30% (미달 시 0%) |
+
+### 다음 장 확인 사항
+
+- `[MetaConf]` 학습 오류 로그 미발생 확인
+- RF 추론 오류 없음 (`[RF] … 예측 오류` 로그 미발생)
+- OOB 낮은 호라이즌 RF 블렌딩 skip 로그 없음 (동적 가중치 0은 로그 없음, 정상)
+- 다음 Retrain 후 RF OOB 45% 이상 호라이즌이 앙상블에 반영되는지 확인
 
 ---
 
@@ -33,6 +103,53 @@
 - ConstOut 발생 시 `[CB③] acc30m 버퍼 리셋` 로그 확인
 - EKS 발동 상태에서 CB③ 경고/HALT 로그 미발생 확인
 - 극단 지연 발생 시 `[PipePerf][CB임박] total=Xms | S1=Xms S2=Xms ...` SYSTEM 로그 출력 확인
+
+---
+
+## 2026-06-10 (145차 — horizon_proba={} 빈 예측 근본 원인 수정)
+
+### 문제 원인 딥다이브 결과
+
+**증상:** ConstOut 발생 → scaler refit 완료 후 `conf=100%, dir=FLAT`이 1시간+ 지속
+
+**143차에서 escape된 이유:**
+- 143차 수정(CONF_CLIP, temperature scaling, ShortHorizonOverride/TrendBoost 정규화)은 "GBM이 극단 확률을 반환하는 경우"를 전제로 함
+- 실제 근본 원인은 "GBM이 아무것도 반환하지 않는 경우" (`horizon_proba={}`) → 완전히 다른 경로
+
+**진짜 근본 원인 (145차 발견):**
+
+`model/multi_horizon_model.py` 섹션 8 모니터링 코드의 `continue` 위치 오류:
+
+```python
+# 버그 코드 (이전)
+if monitor_ts and scaler:
+    ...
+    if not (extreme_count > 0 or age > 90):
+        continue  ← for 루프 전체 continue → 예측 코드(line 383~) 스킵됨
+    _monitor_rows.append(...)
+    
+classes = list(clf.classes_)   ← continue 발동 시 여기도 건너뜀
+results[horizon] = {...}       ← 미설정 → results = {} → horizon_proba = {}
+```
+
+**역설적 트리거 연쇄:**
+- 09:03~10:04: 스케일러 노후/극단 z-score 존재 → `extreme_count > 0 = True` → continue 미발동 → 정상 예측
+- 10:04:01: ConstOut D_FORCE refit 완료 → 스케일러 정상화 → `extreme_count=0, age=1분` → continue 발동!
+- 결과: `horizon_proba={}` → `flat_score=1.0` → `conf=100%, dir=FLAT` 1시간 지속
+
+**핵심 아이러니:** ConstOut을 감지하고 스케일러를 "고칠수록" 예측이 멈춥니다.
+
+### 수정 내용 (145차)
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| `continue` → 조건부 `_needs_insert` if 블록으로 교체 — 예측 코드는 항상 실행 | **완료** ✅ | `model/multi_horizon_model.py:338-385` |
+
+### 다음 장 확인 사항
+
+- ConstOut 발생 후에도 `[DBG-F6] horizons: 1m:...` 6개 정상 출력 확인
+- ConstOut 발생 후 `conf=100%` 이상점 미발생 확인
+- `[ScalerMonitor]` 로그가 extreme/노후화 시에만 출력되는지 확인
 
 ---
 

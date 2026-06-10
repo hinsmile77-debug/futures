@@ -3405,17 +3405,20 @@ class TradingSystem:
                 _sgd_fv = _hz_feat_vecs[h_name] if _hz_feat_vecs else feat_vec
                 sgd_p   = self.online_learner.predict_proba(h_name, _sgd_fv)
                 blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p, h_name)
-                # P6c: RF 블렌딩 (GBM+SGD 결과에 RF 0.30 추가)
-                # 가중치: GBM+SGD 0.70, RF 0.30
+                # P6c: RF 블렌딩 — OOB 기반 동적 가중치
+                # OOB < 0.45 (랜덤+12pp 미만): 해당 호라이즌 RF 제외
+                # 3-class random=33%, OOB 45% 미만은 신호 약해 오히려 앙상블 오염
                 if _rf_ready:
-                    rf_p = self.rf_model.predict_proba_single(h_name, feat_vec)
-                    if rf_p is not None:
-                        _w_rf = 0.30
-                        blended = {
-                            "up":   blended["up"]   * (1 - _w_rf) + rf_p["up"]   * _w_rf,
-                            "down": blended["down"] * (1 - _w_rf) + rf_p["down"] * _w_rf,
-                            "flat": blended["flat"] * (1 - _w_rf) + rf_p["flat"] * _w_rf,
-                        }
+                    _oob_hz = self.rf_model.get_oob_scores().get(h_name, 0.0)
+                    _w_rf = 0.30 if _oob_hz >= 0.45 else 0.0
+                    if _w_rf > 0:
+                        rf_p = self.rf_model.predict_proba_single(h_name, feat_vec)
+                        if rf_p is not None:
+                            blended = {
+                                "up":   blended["up"]   * (1 - _w_rf) + rf_p["up"]   * _w_rf,
+                                "down": blended["down"] * (1 - _w_rf) + rf_p["down"] * _w_rf,
+                                "flat": blended["flat"] * (1 - _w_rf) + rf_p["flat"] * _w_rf,
+                            }
                 up, dn, fl = blended["up"], blended["down"], blended["flat"]
                 best = max([(up, 1), (dn, -1), (fl, 0)], key=lambda t: t[0])
                 horizon_proba[h_name] = {

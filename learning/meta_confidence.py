@@ -29,6 +29,7 @@ try:
     from sklearn.linear_model import SGDClassifier
     from sklearn.preprocessing import StandardScaler
     from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.utils.class_weight import compute_class_weight as _compute_class_weight
     _SKLEARN_OK = True
 except ImportError:
     _SKLEARN_OK = False
@@ -68,9 +69,9 @@ class MetaConfidenceLearner:
         self._conf_history = deque(maxlen=200)
 
         if _SKLEARN_OK:
-            # class_weight='balanced': label=0(틀림) 누적 시 prob[1]→0 붕괴 방지
+            # sample_weight로 balanced 처리 — partial_fit은 class_weight='balanced' 미지원
             self._model  = SGDClassifier(loss="log", max_iter=1, warm_start=True,
-                                         alpha=0.001, class_weight="balanced")
+                                         alpha=0.001)
             self._scaler = StandardScaler()
 
     def _coerce_feature_vector(self, meta_features) -> Optional[List[float]]:
@@ -156,7 +157,7 @@ class MetaConfidenceLearner:
         )
         if _SKLEARN_OK:
             self._model  = SGDClassifier(loss="log", max_iter=1, warm_start=True,
-                                         alpha=0.001, class_weight="balanced")
+                                         alpha=0.001)
             self._scaler = StandardScaler()
         self._fitted         = False
         self._X_buf.clear()
@@ -296,6 +297,15 @@ class MetaConfidenceLearner:
             # 이후: 신규 샘플만 incremental
             self._partial_fit_incremental(n_new)
 
+    @staticmethod
+    def _make_sample_weight(y: np.ndarray) -> Optional[np.ndarray]:
+        """label=0(틀림) 누적 시 prob[1]→0 붕괴 방지용 balanced 가중치 계산."""
+        unique = np.unique(y)
+        if len(unique) < 2:
+            return None
+        cw = _compute_class_weight('balanced', classes=np.array([0, 1]), y=y)
+        return np.array([cw[int(yi)] for yi in y], dtype=np.float32)
+
     def _partial_fit_incremental(self, n_new: int):
         """신규 n_new개 샘플만 학습 — 전체 배치 대비 ~100/n_new 배 빠름"""
         try:
@@ -309,7 +319,8 @@ class MetaConfidenceLearner:
             X = np.array([p[0] for p in pairs], dtype=np.float32)
             y = np.array([p[1] for p in pairs], dtype=np.int32)
             X_scaled = self._scaler.transform(X)
-            self._model.partial_fit(X_scaled, y, classes=[0, 1])
+            sw = self._make_sample_weight(y)
+            self._model.partial_fit(X_scaled, y, classes=[0, 1], sample_weight=sw)
         except Exception as e:
             logger.warning("[MetaConf] incremental 학습 오류: %s", e)
 
@@ -333,7 +344,8 @@ class MetaConfidenceLearner:
                 self._fitted = True
 
             X_scaled = self._scaler.transform(X)
-            self._model.partial_fit(X_scaled, y, classes=[0, 1])
+            sw = self._make_sample_weight(y)
+            self._model.partial_fit(X_scaled, y, classes=[0, 1], sample_weight=sw)
 
         except Exception as e:
             logger.warning(f"[MetaConf] 학습 오류: {e}")

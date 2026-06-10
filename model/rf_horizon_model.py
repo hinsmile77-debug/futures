@@ -110,13 +110,20 @@ class RFHorizonModel:
         horizon: str,
         x: np.ndarray,
     ) -> Optional[Dict[str, float]]:
-        """단일 봉 예측 → {"up", "down", "flat"} 또는 None (미학습 시)."""
+        """단일 봉 예측 → {"up", "down", "flat"} 또는 None (미학습 시).
+
+        학습과 동일한 apply_robust_preprocess(log1p/clip)를 적용한 뒤 예측.
+        이 변환 없이 raw feat_vec를 넣으면 atr·avg_volume 스케일이 훈련과 다르다.
+        """
         rf = self._models.get(horizon)
         if rf is None:
             return None
 
         try:
-            x2d    = x.reshape(1, -1)
+            from model.multi_horizon_model import apply_robust_preprocess
+            x2d = x.reshape(1, -1)
+            if self.feature_names:
+                x2d = apply_robust_preprocess(x2d, self.feature_names)
             classes = list(rf.classes_)
             proba  = rf.predict_proba(x2d)[0]
             pm     = {int(c): float(p) for c, p in zip(classes, proba)}
