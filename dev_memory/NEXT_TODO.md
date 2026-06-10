@@ -6,6 +6,27 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-10 (142차 — EOD 자동종료 흐름 6종 안전화)
+
+### 한일 요약
+
+- [DONE 2026-06-10] **_ShutdownSignal(QObject) 추가** — DailyClose 스레드의 `QTimer.singleShot` 비-Qt 호출 → `_shutdown_sig.request.emit()` + `QueuedConnection`으로 교체 (`main.py`)
+- [DONE 2026-06-10] **_schedule_shutdown() 신규** — append_sys_log·QTimer 메인 스레드에서 실행 보장 (`main.py`)
+- [DONE 2026-06-10] **_run_daily_close 예외 처리 강화** — try/except + `_emit_done` 플래그로 예외 시에도 종료 보장 (`main.py`)
+- [DONE 2026-06-10] **DBWriter 큐 플러시** — WAL 체크포인트 전 `put(None)` + `join()` 추가 (`main.py`)
+- [DONE 2026-06-10] **WAL 체크포인트 6개 DB 전체 확장** — `EOD_WAL_CHECKPOINT_DBS` 상수화 (`config/settings.py`, `main.py`)
+- [DONE 2026-06-10] **EOD retrain force=False 명시** — standalone vs in-process 의도 차이 주석 기록 (`main.py`)
+
+### 다음 할 일
+
+- [NEXT 다음 장 마감 후] **142차 패치 효과 확인**
+  - `[System] 자동 종료 실행` 로그가 15:40 이후 반드시 출력되는지 (자동종료 미발동 재발 없음)
+  - `[DBQueue] EOD 플러시 완료` 로그 확인 (15:40 이후)
+  - `[WAL] 체크포인트 완료: ...trades.db / shap_tracker.db / challenger.db / scaler_monitor.db` 로그 6개 모두 출력 확인
+  - `daily_close()` 예외 발생 시 `[DailyClose] 예외 발생 — 강제 종료 예약` 로그 + 프로그램 정상 종료 확인
+
+---
+
 ## 2026-06-09 (135차 — Meta skip·conf=100% 4종 근본 원인 수정)
 
 ### 한일 요약

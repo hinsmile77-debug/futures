@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-06-10 (142차 — EOD 자동종료 흐름 6종 안전화)
+
+**Work**: 장마감 후 GBM 학습·EOD 작업·자동종료 흐름 전체 점검 → 이상점 6개 발견 → 우선순위 순서대로 전부 구현.
+
+### 한 일
+
+| Fix | 내용 | 파일 |
+|---|---|---|
+| A | `_ShutdownSignal(QObject)` 추가 + `QueuedConnection` 연결 — DailyClose 스레드의 `QTimer.singleShot` 비-Qt 스레드 호출 근본 수정 | `main.py` |
+| B | `_schedule_shutdown()` 신규 메서드 — Qt 위젯 접근(append_sys_log)·QTimer 모두 메인 스레드에서 실행 보장 | `main.py` |
+| C | `_run_daily_close` try/except + `_emit_done` 플래그 — `daily_close()` 예외 시에도 종료 시그널 emit 보장 | `main.py` |
+| D | DBWriter 큐 플러시 (`put(None)` + `join()`) — 마지막 분봉 candle/feature 기록 유실 방지 | `main.py` |
+| E | WAL 체크포인트 대상 6개 DB 전체 확장 (기존 2개) + `EOD_WAL_CHECKPOINT_DBS` 상수화 | `main.py`, `config/settings.py` |
+| F | EOD `retrain_now(force=False)` 명시 — standalone `eod_retrain.py`(`force=True`)와 의도 차이 주석 기록 | `main.py` |
+
+### 이상점 분석
+
+| 이상점 | 증거 | 원인 |
+|---|---|---|
+| 자동 종료 간헐 미발동 | `QTimer.singleShot` 이 DailyClose 스레드에서 호출 | DailyClose는 일반 Python thread — Qt 이벤트 루프 없음, 타이머 미발화 |
+| 예외 시 프로그램 무한 실행 | `_daily_close_done=True` 선점 후 thread 시작 | 예외 발생 시 `QTimer.singleShot` 미등록, 재진입 차단으로 무한 실행 |
+| 마지막 분봉 DB 유실 가능 | `_db_write_queue.put(None)` 코드 없음 | `_qt_app.quit()` 시 daemon thread 강제 종료 → 큐 미처리 항목 드랍 |
+| 4개 DB WAL 미체크포인트 | TRADES/SHAP/CHALLENGER/SCALER_MONITOR 누락 | 누락 DB WAL 파일 매일 누적 → 다음날 기동 지연 |
+| Qt 위젯 비-Qt 스레드 접근 | `append_sys_log()` → `QTextEdit.insertHtml()` | DailyClose 스레드에서 Qt 위젯 직접 조작 |
+| force 불일치 | in-process `force=False`, standalone `force=True` | 의도 차이이나 주석 없어 혼란 유발 |
+
+---
+
 ## 2026-06-09 (135차 — Meta skip·conf=100% 4종 근본 원인 수정)
 
 **Work**: 6/9 장중 로그(SIGNAL.log) 전수 분석 → MetaGate skip 과발동 2종 + SGD 붕괴 + conf=100% FLAT 고착 원인 규명 → 5개 파일 패치.

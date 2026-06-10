@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-06-10 (142차 — EOD 자동종료 흐름 안전화)
+
+### [설계결정] QTimer.singleShot 비-Qt 스레드 문제 — _ShutdownSignal(QObject)으로 해결
+**Root cause**: `daily_close()`가 DailyClose 데몬 스레드에서 실행되는데 `QTimer.singleShot(15_000, self._auto_shutdown)` 호출. Qt 이벤트 루프 없는 일반 Python 스레드에서 QTimer는 발화하지 않거나 간헐적으로만 동작.  
+**Fix A**: `_ShutdownSignal(QObject)` 모듈 레벨 클래스 추가. `__init__`에서 `_shutdown_sig.request.connect(_schedule_shutdown, Qt.QueuedConnection)` 연결. DailyClose 스레드에서 `_shutdown_sig.request.emit()` 호출 → Qt AutoConnection이 스레드 차이를 감지해 메인 이벤트 루프에 포스팅 → `_schedule_shutdown()` 메인 스레드에서 실행 → `QTimer.singleShot(15_000, _auto_shutdown)` 안전 호출.
+
+### [설계결정] _schedule_shutdown() 메서드 분리
+`daily_close()` 마지막 블록에 있던 `append_sys_log()` 2곳 + `QTimer.singleShot` → `_schedule_shutdown()`으로 분리. Qt 위젯 직접 접근(QTextEdit) 도 메인 스레드로 이동. `_auto_shutdown_done_today` 중복 체크 로직도 이쪽에서 처리.
+
+### [설계결정] DBWriter 큐 플러시 시점 — WAL 체크포인트 직전
+WAL 체크포인트(TRUNCATE)는 DB에 pending write가 없는 상태에서 수행해야 완전한 플러시가 보장됨. 순서: `_db_write_queue.put(None)` → `join()` → WAL TRUNCATE. DBWriter 스레드는 sentinel 수신 후 종료되므로 이후 큐 재사용은 없음 (다음날 재기동 시 새 인스턴스).
+
+### [설계결정] EOD_WAL_CHECKPOINT_DBS 상수화 (settings.py)
+기존 `RAW_DATA_DB, PREDICTIONS_DB` 2개만 체크포인트. `db_utils.get_connection` 이 모든 DB에 `PRAGMA journal_mode=WAL` 설정 → `TRADES_DB, SHAP_DB, CHALLENGER_DB, SCALER_MONITOR_DB`도 WAL 모드. 6개 전체를 `EOD_WAL_CHECKPOINT_DBS` 리스트로 settings.py에 관리.
+
+### [설계결정] EOD retrain force=False (in-process) vs force=True (standalone)
+**의도적 차이**: in-process EOD는 보수적으로 성능 향상 시에만 교체 (프로덕션 안전). standalone `eod_retrain.py`는 수동 복구 목적이므로 강제 교체가 기본. `force=False` 명시 + 주석으로 의도 기록.
+
+---
+
 ## 2026-06-09 (135차 — Meta skip·conf=100% 4종 근본 원인 수정)
 
 ### [버그] MetaGate reduce_thr 오프셋으로 meta skip 과발동

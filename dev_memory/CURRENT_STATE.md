@@ -1,7 +1,28 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-09 (138차 세션) — MetaGate floor 강화·reduce_thr 0.75×·붕괴 조기 감지
+> 마지막 업데이트: 2026-06-10 (142차 세션) — EOD 자동종료 흐름 6종 안전화
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-10 (142차 — EOD 자동종료 흐름 안전화)
+
+### 개선 내용
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| `_ShutdownSignal(QObject)` + `QueuedConnection` — QTimer 비-Qt 스레드 호출 근본 수정 | **완료** ✅ | `main.py:170-179, 349-350` |
+| `_schedule_shutdown()` 신규 — 메인 스레드에서 Qt 위젯·QTimer 처리 | **완료** ✅ | `main.py:6027-6039` |
+| `_run_daily_close` 예외 처리 — `_emit_done` 플래그로 종료 보장 | **완료** ✅ | `main.py:6602-6615` |
+| DBWriter 큐 플러시 — `put(None)` + `join()` WAL 체크포인트 직전 | **완료** ✅ | `main.py:5983-5992` |
+| WAL 체크포인트 6개 DB 전체 (`EOD_WAL_CHECKPOINT_DBS`) | **완료** ✅ | `config/settings.py:33-37` |
+| EOD `retrain_now(force=False)` 명시 | **완료** ✅ | `main.py:5674` |
+
+### 다음 장 확인 사항
+
+- 15:40 이후 `[System] 자동 종료 실행` 로그 반드시 출력 (자동종료 미발동 재발 없음)
+- `[DBQueue] EOD 플러시 완료` + `[WAL] 체크포인트 완료` 6개 DB 모두 로그 확인
+- 예외 경로: `[DailyClose] 예외 발생 — 강제 종료 예약` 로그 + 프로그램 정상 종료
 
 ---
 

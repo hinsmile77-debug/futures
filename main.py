@@ -37,7 +37,7 @@ if BASE_DIR not in sys.path:
 
 # ── Qt Application (키움 OCX 보다 먼저 생성) ───────────────────
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 _qt_app = QApplication.instance() or QApplication(sys.argv)
 
 # ── 로깅 초기화 (가장 먼저) ────────────────────────────────────
@@ -165,6 +165,18 @@ def _dir_sign(v) -> int:
     """
     f = float(v or 0)
     return 1 if f > 0 else (-1 if f < 0 else 0)
+
+
+class _ShutdownSignal(QObject):
+    """DailyClose 스레드 → 메인 Qt 스레드 종료 예약 (스레드-안전).
+
+    QueuedConnection 으로 연결하면 emit() 을 어느 스레드에서 호출해도
+    슬롯은 반드시 메인 이벤트 루프에서 실행된다.
+    """
+    request = pyqtSignal()
+
+
+_shutdown_sig = _ShutdownSignal()  # 모듈 로드(메인 스레드)에서 생성 — thread affinity = main
 
 
 class TradingSystem:
@@ -334,6 +346,8 @@ class TradingSystem:
         self.dashboard.sig_max_qty_changed.connect(self._on_max_qty_changed)
         self._max_entry_qty = self.dashboard.get_max_qty()
         self.dashboard.set_ui_startup_mode()
+        # 스레드-안전 종료 예약: DailyClose 스레드가 emit() → 메인 스레드에서 _schedule_shutdown 호출
+        _shutdown_sig.request.connect(self._schedule_shutdown, Qt.QueuedConnection)
         if self.challenger_engine is not None:
             try:
                 self.dashboard.set_challenger_engine(
@@ -5657,7 +5671,8 @@ class TradingSystem:
                 )
 
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
-        retrain_result = self.batch_retrainer.retrain_now(weeks_back=10)
+        # force=False: 성능 향상 시에만 교체 (안전 보수적) — 수동 eod_retrain.py 는 force=True
+        retrain_result = self.batch_retrainer.retrain_now(weeks_back=10, force=False)
         retrain_ok = retrain_result.get("ok", False)
         # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
         # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
@@ -5966,13 +5981,23 @@ class TradingSystem:
         # [Shadow] shadow_candidate.json 체크 → 섀도우 자동 시작
         self._load_shadow_candidate()
 
+        # ── DBWriter 큐 플러시 — 마지막 분봉 쓰기 완료 후 WAL 체크포인트 ────
+        # 15:10 강제청산 ~ 15:40 사이 큐에 남은 candle/feature/scaler_monitor 기록을
+        # 모두 처리한 뒤 체크포인트를 수행해야 WAL에 미반영 데이터가 없다.
+        try:
+            self._db_write_queue.put(None)  # DBWriter 종료 sentinel
+            self._db_write_queue.join()     # 모든 pending write 완료 대기
+            logger.info("[DBQueue] EOD 플러시 완료")
+        except Exception as _dq_eod_e:
+            logger.warning("[DBQueue] EOD 플러시 실패 (무해): %s", _dq_eod_e)
+
         # ── WAL 체크포인트 — 장중 누적된 WAL 파일 강제 플러시 ────────
         # WAL auto-checkpoint(1000 page)는 장중 파이프라인 타이밍에 걸릴 수 있음.
         # 장 마감 후 TRUNCATE 체크포인트로 WAL을 0 바이트로 초기화해 내일 새벽을 준비.
         try:
             import sqlite3 as _wal_sqlite3
-            from config.settings import RAW_DATA_DB as _WAL_RAW, PREDICTIONS_DB as _WAL_PRED
-            for _wal_db in (_WAL_RAW, _WAL_PRED):
+            from config.settings import EOD_WAL_CHECKPOINT_DBS as _WAL_DBS
+            for _wal_db in _WAL_DBS:
                 try:
                     with _wal_sqlite3.connect(_wal_db, timeout=30) as _wc:
                         _wc.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -5996,6 +6021,15 @@ class TradingSystem:
             f"다음 시작: 내일 08:45 이후",
             "INFO",
         )
+        # 종료 예약은 메인 Qt 스레드에서 수행 (QueuedConnection → _schedule_shutdown 에서 처리)
+        _shutdown_sig.request.emit()
+
+    def _schedule_shutdown(self) -> None:
+        """자동 종료 15초 예약 — 반드시 메인 Qt 스레드에서 실행.
+
+        _shutdown_sig.request 시그널(QueuedConnection)을 통해 호출되므로
+        DailyClose 스레드에서 emit() 해도 이 메서드는 메인 이벤트 루프에서 실행된다.
+        """
         if self._auto_shutdown_done_today:
             log_manager.system("오늘 자동 종료가 이미 실행되어 자동 종료 예약을 생략합니다.", "WARNING")
             self.dashboard.append_sys_log("오늘 자동 종료 이력 감지 — 자동 종료 예약 생략")
@@ -6565,12 +6599,20 @@ class TradingSystem:
             self._daily_close_done = True  # 중복 진입 방지 — 스레드 완료 전에 플래그 선점
 
             def _run_daily_close():
+                _emit_done = False
                 try:
                     self.daily_close()
+                    _emit_done = True   # daily_close() 마지막 emit() 이 정상 실행된 경우
+                except Exception as _dc_exc:
+                    # daily_close() 중 예외 → emit() 이 호출되지 않은 경우 여기서 보강
+                    logger.error("[DailyClose] 예외 발생 — 강제 종료 예약: %s", _dc_exc, exc_info=True)
+                    log_manager.system(f"[DailyClose] 예외 → 강제 종료 예약: {_dc_exc}", "ERROR")
                 finally:
                     self._daily_close_running = False
                     self._pre_market_done        = False
                     self._pre_market_stage1_done = False
+                    if not _emit_done:
+                        _shutdown_sig.request.emit()
 
             import threading as _threading
             _threading.Thread(target=_run_daily_close, daemon=True, name="DailyClose").start()

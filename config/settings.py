@@ -30,6 +30,12 @@ CHALLENGER_DB      = os.path.join(DB_DIR, "challenger.db")  # 챔피언-도전�
 SCALER_MONITOR_DB  = os.path.join(DB_DIR, "scaler_monitor.db")  # 섹션 8 스케일러 상태 모니터
 ENSEMBLE_CALIBRATOR_PATH = os.path.join(DATA_DIR, "ensemble_calibrator.pkl")  # Platt 보정기 영속화
 
+# EOD WAL 체크포인트 대상 — 모든 WAL-모드 DB (db_utils.get_connection 이 WAL 설정)
+EOD_WAL_CHECKPOINT_DBS = [
+    RAW_DATA_DB, PREDICTIONS_DB, TRADES_DB,
+    SHAP_DB, CHALLENGER_DB, SCALER_MONITOR_DB,
+]
+
 # ── 비밀 설정 로드 (secrets.py가 없으면 빈 값으로 대체) ───────
 try:
     from config.secrets import ACCOUNT_NO, ACCOUNT_PWD, APP_KEY, APP_SECRET
