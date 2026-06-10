@@ -5987,7 +5987,8 @@ class TradingSystem:
         self.market_dna.reset_daily()
         self.core_health.reset_daily()
         self.model.reset_daily_gap_offset()
-        self._first_tick_notified = False   # 다음 날 첫 분봉에서 갭 오프셋 재설정
+        self._first_tick_notified = False        # 다음 날 첫 분봉에서 갭 오프셋 재설정
+        self._intraday_startup_warmup_done = False  # 다음 날 B_INTRADAY 재발동 허용
         self.shadow_session.reset_daily()
         self.contrarian_mode.reset_daily()
         self.trend_gate.reset_daily()
@@ -6701,6 +6702,56 @@ class TradingSystem:
                     threading.Thread(target=_early_warmup_worker, daemon=True).start()
             except Exception as _ea_e:
                 logger.warning("[EarlyWarmup] age 체크 실패 (무시): %s", _ea_e)
+
+        # [B_INTRADAY] 장중 재시작 스케일러 즉시 warmup (1회만 실행)
+        # 근거: pre_market_setup(08:55)은 장중 재시작에서 실행되지 않으므로
+        #   scaler가 수십~백분 노후화된 채로 D_FORCE 발동(90분 지연)까지 방치됨.
+        #   재시작 후 첫 scheduler tick(≤30s)에 age > 30min이면 즉시 refit.
+        # 하한 09:05: 08:55 ScalerWarmup 완료 전 충돌 방지
+        if (
+            not getattr(self, "_intraday_startup_warmup_done", False)
+            and is_trading_day(now)
+            and datetime.time(9, 5) <= now.time() < datetime.time(15, 10)
+            and not getattr(self, "_scaler_refresh_running", False)
+            and not getattr(self, "_gbm_retrain_running", False)
+        ):
+            try:
+                _bi_age_min = self.model.canary_stale_age_hours() * 60.0
+                if _bi_age_min > 30.0:
+                    self._intraday_startup_warmup_done = True
+                    log_manager.system(
+                        f"[StartupWarmup] 장중 재시작 감지 — scaler {_bi_age_min:.0f}분 노후 "
+                        f"(>30분) → B_INTRADAY refit 트리거",
+                        "WARNING",
+                    )
+                    self._scaler_refresh_running = True
+                    def _b_intraday_worker(_age=_bi_age_min):
+                        try:
+                            from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                            _X_bi, _fn_bi = self.batch_retrainer.load_features_for_warmup(
+                                lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                            )
+                            if _X_bi is not None:
+                                self.model.refit_scalers_only(
+                                    _X_bi, _fn_bi,
+                                    trigger_type="B_INTRADAY",
+                                    trigger_reason=f"startup_stale_{_age:.0f}m",
+                                )
+                                log_manager.system(
+                                    f"[StartupWarmup] 완료 n={len(_X_bi)}봉", "INFO"
+                                )
+                            else:
+                                log_manager.system("[StartupWarmup] 데이터 없음 — 스킵", "WARNING")
+                        except Exception as _bi_e:
+                            logger.warning("[StartupWarmup] 실패: %s", _bi_e)
+                        finally:
+                            self._scaler_refresh_running = False
+                    threading.Thread(target=_b_intraday_worker, daemon=True).start()
+                else:
+                    # scaler 신선 (≤30분) — B_INTRADAY 불필요
+                    self._intraday_startup_warmup_done = True
+            except Exception as _bi_e2:
+                logger.warning("[StartupWarmup] age 체크 실패 (무시): %s", _bi_e2)
 
         # 1단계 (08:55): macro seed fetch + PreRetrain + 실시간 구독 시작
         # - pre_market_setup(): SP500·KRW seed fetch, PreRetrain 시작
