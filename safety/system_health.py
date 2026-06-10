@@ -35,9 +35,10 @@ class SystemHealthScore:
         self._last_alerted_shs: float = 101.0  # 아직 블록 임계 미달 적 없음
 
         # GAP_OPEN 구간 수집 (EKS 판정)
-        self._gap_open_conf_max:        float = 0.0
-        self._gap_open_core_pass_count: int   = 0
-        self._gap_open_bar_count:       int   = 0
+        self._gap_open_conf_max:          float = 0.0
+        self._gap_open_core_pass_count:   int   = 0
+        self._gap_open_bar_count:         int   = 0
+        self._gap_open_delayed_count:     int   = 0   # [P2] 파이프라인 지연으로 conf 제외된 봉 수
 
         # EKS 상태
         self._eks_evaluated:        bool = False
@@ -65,10 +66,22 @@ class SystemHealthScore:
 
     # ── GAP_OPEN 기록 ────────────────────────────────────────────
 
-    def record_gap_open_bar(self, conf: float, core_all_passed: bool) -> None:
-        """GAP_OPEN 구간(09:00~09:05) 분봉 1건 기록. EKS 판정에 사용."""
-        self._gap_open_conf_max = max(self._gap_open_conf_max, float(conf))
+    def record_gap_open_bar(
+        self,
+        conf: float,
+        core_all_passed: bool,
+        pipeline_delayed: bool = False,
+    ) -> None:
+        """GAP_OPEN 구간(09:00~09:05) 분봉 1건 기록. EKS 판정에 사용.
+
+        pipeline_delayed=True 이면 파이프라인 지연으로 conf 신뢰 불가.
+        bar_count는 올리되 conf_max에는 반영하지 않음 — [P2] EKS 과발동 방지.
+        """
         self._gap_open_bar_count += 1
+        if not pipeline_delayed:
+            self._gap_open_conf_max = max(self._gap_open_conf_max, float(conf))
+        else:
+            self._gap_open_delayed_count += 1
         if core_all_passed:
             self._gap_open_core_pass_count += 1
 
@@ -195,6 +208,7 @@ class SystemHealthScore:
         self._gap_open_conf_max        = 0.0
         self._gap_open_core_pass_count = 0
         self._gap_open_bar_count       = 0
+        self._gap_open_delayed_count   = 0
         self._eks_evaluated            = False
         self._eks_active               = False
         self._eks_recovery_checked     = False

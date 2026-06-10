@@ -2420,6 +2420,35 @@ class TradingSystem:
                     f"PreRetrain으로 갱신 예정 — 09:00 전 완료 목표",
                     "WARNING",
                 )
+            # [P1] z경고 폭증 시 08:58 전 즉시 재적합 — EarlyWarmup 이후 갭오픈 분포 갱신
+            # EarlyWarmup은 전날 데이터 기준이라 오늘 갭오픈 이후 분포와 괴리가 생김.
+            # 08:58 전에 한 번 더 재적합해 GAP_OPEN 분봉의 conf 신뢰성을 높임.
+            if _canary_z_bad:
+                _p1_now_t = datetime.datetime.now().time()
+                if _p1_now_t < datetime.time(8, 58):
+                    log_manager.system(
+                        f"[Canary] z경고 폭증({_canary_z_warn}개 ≥ {_z_bad_thresh}개)"
+                        f" → 장전 scaler 재적합 시도 (08:58 전)",
+                        "WARNING",
+                    )
+                    def _canary_refit_worker():
+                        try:
+                            from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                            _Xcr, _fncr = self.batch_retrainer.load_features_for_warmup(
+                                lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                            )
+                            if _Xcr is not None:
+                                self.model.refit_scalers_only(_Xcr, _fncr)
+                                log_manager.system(
+                                    f"[Canary] 장전 재적합 완료 n={len(_Xcr)}봉", "INFO"
+                                )
+                            else:
+                                log_manager.system("[Canary] 장전 재적합 스킵 — 데이터 없음", "WARNING")
+                        except Exception as _e:
+                            logger.warning("[Canary] 장전 재적합 실패: %s", _e)
+                    threading.Thread(target=_canary_refit_worker, daemon=True).start()
+            # [P3] EKS 원인 진단용 — 마지막 Canary z경고 수 인스턴스 변수로 보존
+            self._last_canary_z_warn = _canary_z_warn
             self.system_health.update_z_warn(_canary_z_warn)
         except Exception as _ce:
             logger.warning("[Canary] 점검 실패 (무시): %s", _ce)
@@ -3570,6 +3599,8 @@ class TradingSystem:
             if _enabled_hz and len(_enabled_hz) < len(horizon_proba)
             else horizon_proba
         )
+        _tz = get_time_zone()
+        _zone_mc = get_zone_min_confidence(_tz)
         decision = self.ensemble.compute(
             _hp_ens,
             self.current_regime,
@@ -3578,11 +3609,12 @@ class TradingSystem:
             acc30m=_acc30m,
             trend_gate_up_active=_tp["up_active"],
             trend_gate_dn_active=_tp["dn_active"],
-            time_zone=get_time_zone(),
+            time_zone=_tz,
             active_horizons=self._get_active_horizons(
                 _ts_dt_obj.hour * 100 + _ts_dt_obj.minute
                 if hasattr(_ts_dt_obj, "hour") else 930
             ),
+            zone_mc=_zone_mc,
         )
         direction  = decision["direction"]
         confidence = decision["confidence"]
@@ -3607,11 +3639,12 @@ class TradingSystem:
                     adaptive_gating=True, acc30m=_acc30m,
                     trend_gate_up_active=_tp["up_active"],
                     trend_gate_dn_active=_tp["dn_active"],
-                    time_zone=get_time_zone(),
+                    time_zone=_tz,
                     active_horizons=self._get_active_horizons(
                         _ts_dt_obj.hour * 100 + _ts_dt_obj.minute
                         if hasattr(_ts_dt_obj, "hour") else 930
                     ),
+                    zone_mc=_zone_mc,
                 )
                 _mdir  = _mdec["direction"]
                 _mconf = _mdec["confidence"]
@@ -3675,8 +3708,7 @@ class TradingSystem:
         if len(self._ensemble_conf_cache) > 35:
             self._ensemble_conf_cache.pop(min(self._ensemble_conf_cache), None)
         # 시간대·레짐 두 기준 중 더 엄격한 값으로 통일 (checklist·dashboard 공용)
-        # decision.get(): active_horizons 전체 차단 시 조기 반환 dict에 min_conf 없을 수 있음
-        _zone_mc = get_zone_min_confidence(get_time_zone())
+        # _zone_mc는 ensemble.compute() 호출 전 계산됨 (cold-start zone_mc로 전달)
         actual_min_conf = max(
             decision.get("min_conf", _zone_mc),
             _zone_mc,
@@ -4128,9 +4160,13 @@ class TradingSystem:
                 + int(bool(_cr is not None and _cr["checks"].get("5_ofi")))
             )
             _core_all_ok = _core_votes >= 2
+            # [P2] 파이프라인 지연 분봉은 conf 신뢰 불가 — EKS conf_max에서 제외
+            # _pipe_t0 기준 현재까지 경과시간으로 현재 분봉 지연 여부 판정
+            _gap_pipe_delayed = (time.perf_counter() - _pipe_t0) * 1000 >= 1000
             self.system_health.record_gap_open_bar(
                 conf=confidence,
                 core_all_passed=_core_all_ok,
+                pipeline_delayed=_gap_pipe_delayed,
             )
         elif not self.system_health._eks_evaluated:
             _eks_fired = self.system_health.evaluate_early_kill_switch()
@@ -4146,27 +4182,36 @@ class TradingSystem:
                     f"conf_max={_shs_d['gap_open_conf_max']*100:.1f}% bars={_shs_d['gap_open_bars']}",
                     "CRITICAL",
                 )
-                # [C2] EKS 발동 원인 추론 — 배지 표시용
-                # 스케일러 노후 > 24h 이면 노후가 원인, 아니면 시장 conf 미달이 원인
+                # [C2][P3] EKS 발동 원인 — 멀티 태그 복합 분류
+                # 스케일러 노후·z경고·파이프라인 지연·P8 실패를 모두 체크해
+                # 반복 패턴 추적에 사용한다.
                 try:
+                    _eks_causes = []
                     _eks_stale_h = self.model.canary_stale_age_hours()
                     if _eks_stale_h > 24.0:
-                        # 전날 P8 실패 / 휴장 / 주말 구분
                         _ss_eks = self._read_session_state()
                         _p8_ok_date = _ss_eks.get("p8_last_success_date", "")
                         _today = datetime.date.today()
                         _yesterday = _today - datetime.timedelta(days=1)
                         if _p8_ok_date != _yesterday.isoformat():
-                            # 전날 P8 성공 기록 없음 → 휴장·중단 케이스
                             _dow = _today.weekday()  # 0=Mon
-                            _eks_reason_str = (
+                            _eks_causes.append(
                                 f"주말갭({_eks_stale_h:.0f}h)" if _dow == 0
                                 else f"휴장/중단갭({_eks_stale_h:.0f}h)"
                             )
                         else:
-                            _eks_reason_str = f"스케일러{_eks_stale_h:.0f}h노후"
-                    else:
-                        _eks_reason_str = f"conf{_shs_d['gap_open_conf_max']*100:.0f}%미달"
+                            _eks_causes.append(f"스케일러{_eks_stale_h:.0f}h노후")
+                    # z경고 폭증 (Canary 최신값 — 인스턴스 변수로 보존)
+                    _eks_z = getattr(self, "_last_canary_z_warn", 0)
+                    if _eks_z >= 10:
+                        _eks_causes.append(f"z경고{_eks_z}개")
+                    # 파이프라인 지연 분봉 수
+                    _eks_delayed = self.system_health._gap_open_delayed_count
+                    if _eks_delayed >= 3:
+                        _eks_causes.append(f"파이프라인지연{_eks_delayed}분")
+                    # conf 미달 (항상 포함 — EKS 발동 1차 조건)
+                    _eks_causes.append(f"conf{_shs_d['gap_open_conf_max']*100:.0f}%미달")
+                    _eks_reason_str = "+".join(_eks_causes)
                     self.system_health._eks_reason = _eks_reason_str
                     log_manager.system(f"[SHS-EKS] 원인: {_eks_reason_str}", "WARNING")
                 except Exception as _ek_re:
@@ -5657,18 +5702,34 @@ class TradingSystem:
         # 장중 마지막 30분 배치 재학습이 아직 실행 중이면 완료될 때까지 기다린다.
         # 대기 없이 retrain_now()를 동시 호출하면 pkl 경합 + 미완료 상태로 종료됨.
         # 15:40 이후 분봉 파이프라인은 없으므로 메인 스레드 블로킹 허용.
+        # [I] 진입 시 retrain 상태 항상 기록 — _gbm_retrain_running=False 경로도 추적 가능
+        _retrain_at_dc = "진행중" if getattr(self, "_gbm_retrain_running", False) else "완료/미시작"
+        log_manager.system(
+            f"[DailyClose] 진입 | retrain={_retrain_at_dc} | {datetime.datetime.now().strftime('%H:%M:%S')}",
+            "INFO",
+        )
         if getattr(self, "_gbm_retrain_running", False):
             log_manager.system(
-                "[DailyClose] STEP 3 재학습 진행 중 — EOD 재학습 전 완료 대기 (최대 40분)",
+                "[DailyClose] STEP 3 재학습 진행 중 — EOD 재학습 전 완료 대기 (최대 20분)",
                 "INFO",
             )
-            completed = self._gbm_retrain_done_event.wait(timeout=40 * 60)
+            completed = self._gbm_retrain_done_event.wait(timeout=20 * 60)
             if completed:
                 log_manager.system("[DailyClose] STEP 3 재학습 완료 확인 — EOD 재학습 시작", "INFO")
             else:
                 log_manager.system(
-                    "[DailyClose] STEP 3 재학습 40분 초과 — 강제 진행 (타임아웃)", "WARNING"
+                    "[DailyClose] STEP 3 재학습 20분 초과 — 강제 진행 (타임아웃)", "WARNING"
                 )
+                # [J] 타임아웃 발생 시 슬랙 알림 — P8 지연 가능성 사전 고지
+                try:
+                    from utils.notify import notify as _nfy_step3
+                    _nfy_step3(
+                        "⚠️ DailyClose STEP3 타임아웃 — GBM 재학습 20분 초과\n"
+                        "P8 지연 발생 가능 | 내일 EarlyWarmup 보완 예정",
+                        "WARNING",
+                    )
+                except Exception:
+                    pass
 
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
         # force=False: 성능 향상 시에만 교체 (안전 보수적) — 수동 eod_retrain.py 는 force=True
@@ -5715,9 +5776,12 @@ class TradingSystem:
                                         f" — 내일 시초 z-score 안정화",
                     )
                     _retry_tag = " [재시도 성공]" if _p8_try else ""
+                    # [H] _p8_res None 방어 — refit_scalers_only 반환값 타입 불일치 시에도 로그 보장
+                    _p8_elapsed = (_p8_res or {}).get("elapsed_sec", 0)
+                    _p8_horizons = (_p8_res or {}).get("horizons", [])
                     log_manager.system(
                         f"[P8] EOD 스케일러 재적합 완료{_retry_tag}"
-                        f" n={len(_p8_X)}봉 elapsed={_p8_res.get('elapsed_sec', 0):.2f}s",
+                        f" n={len(_p8_X)}봉 elapsed={_p8_elapsed:.2f}s horizons={_p8_horizons}",
                         "INFO",
                     )
                     _p8_done = True
@@ -5727,7 +5791,8 @@ class TradingSystem:
                         _ss_p8["p8_last_success_date"] = datetime.date.today().isoformat()
                         self._write_session_state(_ss_p8)
                     except Exception as _ss_e:
-                        logger.debug("[P8] session_state 기록 실패 (무시): %s", _ss_e)
+                        # [G] debug → WARNING 격상 — 기록 실패 시 다음날 EKS 원인 오진단 방지
+                        log_manager.system(f"[P8] session_state 기록 실패: {_ss_e}", "WARNING")
                 else:
                     log_manager.system("[P8] EOD 스케일러 재적합 스킵 — 데이터 없음", "WARNING")
                 break   # 성공 or 데이터없음 → 반복 종료
