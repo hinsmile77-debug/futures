@@ -1,7 +1,38 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-10 (142차 세션) — EOD 자동종료 흐름 6종 안전화
+> 마지막 업데이트: 2026-06-10 (144차 세션) — 파이프라인 지연 134차 escape 5종 근본 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-10 (144차 — 파이프라인 지연 134차 escape 5종 근본 수정)
+
+### 문제 원인 (20260610 로그 딥다이브)
+
+| 현상 | 근본 원인 | escape 이유 |
+|---|---|---|
+| 09:47 17,569ms 극단 지연 | ConstOut scaler refit(daemon) + GBM 재학습(daemon) 동시 raw_data.db 접근 → I/O + GIL 경합 | 134차: scaler_monitor.db만 WAL 처리 / 136차: online_learner만 크리티컬 경로 제거 |
+| ConstOut ['15m'] 2회 반복 (09:21, 10:04) | scaler만 재적합 → GBM 트리 구조 미변경 → 30분 쿨다운 후 재발 | 100차 ConstOut 설계 가정 오류 |
+| CB③ 당일 정지 (EKS 발동 후에도) | EKS 활성(관망 선언) 상태에서 CB③이 추가 당일 정지 → 중복 제약 | CB③ / EKS 연결 고리 미설계 |
+| 17s 지연 STEP breakdown 불가 | PipePerf CB임박 로그가 logger.warning → SYSTEM 로그에 미출력 | 134차 Fix 6 채널 오배치 |
+
+### 개선 내용 (144차)
+
+| 항목 | 상태 | 파일 |
+|---|---|---|
+| [P0-A] scaler refit + GBM 재학습 상호 잠금 — Phase B / D_PRICE_MOMENTUM / ConstOut 3곳 | **완료** ✅ | `main.py:3482,3530,3700` |
+| [P0-B] ConstOut 재적합 완료 후 GBM 재학습 자동 연계 (`_on_const_out_refit_done`) | **완료** ✅ | `main.py:1345,3718` |
+| [P1-A] EKS 활성 시 CB③ HALT 스킵 (`record_accuracy` eks_active 파라미터) | **완료** ✅ | `circuit_breaker.py:202`, `main.py:2838` |
+| [P2-B] ConstOut 완료 후 acc30m 버퍼 리셋 (`reset_acc30m_buffer`) | **완료** ✅ | `circuit_breaker.py:474` |
+| [Layer0] PipePerf CB임박 로그 SYSTEM 채널 추가 | **완료** ✅ | `main.py:4822` |
+
+### 다음 장 확인 사항
+
+- GBM 재학습 중 scaler refit 트리거 skip 로그 없음 확인 (정상이면 skip 로그 없어야 함)
+- ConstOut 발생 시 `[ConstOut] {hz} → GBM 재학습 예약` 로그 확인
+- ConstOut 발생 시 `[CB③] acc30m 버퍼 리셋` 로그 확인
+- EKS 발동 상태에서 CB③ 경고/HALT 로그 미발생 확인
+- 극단 지연 발생 시 `[PipePerf][CB임박] total=Xms | S1=Xms S2=Xms ...` SYSTEM 로그 출력 확인
 
 ---
 
