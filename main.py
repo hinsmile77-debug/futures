@@ -391,6 +391,7 @@ class TradingSystem:
         self._session_no: int = 0
         self._restart_cause: str = "STARTUP"   # STARTUP / MANUAL / AUTO_DISCONNECT
         self._pending_order = None
+        self._completed_order_nos: list = []   # 최근 완료 주문번호 (중복 chejan 콜백 방어)
         # Chejan 이벤트 큐: COM 콜백에서 push, 파이프라인 틱에서 drain
         # → BlockRequest() 메시지 펌프 도중 _pending_order 동시 접근 차단
         self._chejan_event_queue = _queue.Queue()
@@ -1870,6 +1871,14 @@ class TradingSystem:
                     "[EntryCooldown] ENTRY 미체결 소멸 → 2분 재진입 금지 until %s",
                     self._entry_cooldown_until.strftime("%H:%M:%S"),
                 )
+        # 완료된 주문번호를 보관 → 중복 chejan 콜백이 _ts_handle_external_fill 오호출하는 것을 방지
+        _done_no = str((self._pending_order or {}).get("order_no") or "").strip()
+        if _done_no:
+            if not hasattr(self, "_completed_order_nos"):
+                self._completed_order_nos = []
+            self._completed_order_nos.append(_done_no)
+            if len(self._completed_order_nos) > 20:
+                self._completed_order_nos.pop(0)
         self._pending_order = None
         try:
             _ts_push_exit_panel_now(self)
@@ -7836,11 +7845,11 @@ def _ts_handle_external_fill(
         return
 
     before = _ts_get_position_snapshot(self)
-    reason_label = "외부체결(HTS/수동)"
+    reason_label = "미추적체결(pending_miss)"
     atr = _ts_get_reference_atr(self)
 
     log_manager.system(
-        f"[OrderSync] 외부 체결 감지 order_no={payload.get('order_no') or '?'} "
+        f"[OrderSync] 미추적 체결 감지 (pending_miss) order_no={payload.get('order_no') or '?'} "
         f"side={side} qty={fill_qty} price={fill_price} before={before}",
         "WARNING",
     )
@@ -7911,7 +7920,7 @@ def _ts_handle_external_fill(
 
     after = _ts_get_position_snapshot(self)
     log_manager.system(
-        f"[OrderSync] 외부 체결 반영 완료 order_no={payload.get('order_no') or '?'} after={after}",
+        f"[OrderSync] 미추적 체결 반영 완료 (pending_miss) order_no={payload.get('order_no') or '?'} after={after}",
         "WARNING",
     )
 
@@ -8228,6 +8237,13 @@ def _ts_on_chejan_event(self, payload: dict) -> None:
 
     filled_at = _ts_parse_chejan_time(payload.get("order_time", ""))
     if not pending_matched:
+        _completed = getattr(self, "_completed_order_nos", [])
+        if order_no and order_no in _completed:
+            log_manager.system(
+                f"[ChejanDup] 중복 콜백 무시 order_no={order_no} side={side} qty={fill_qty}",
+                "WARNING",
+            )
+            return
         _ts_handle_external_fill(self, payload, side, fill_qty, fill_price, filled_at)
         return
 
@@ -9396,6 +9412,13 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
 
     filled_at = _ts_parse_chejan_time(payload.get("order_time", ""))
     if not pending_matched:
+        _completed = getattr(self, "_completed_order_nos", [])
+        if order_no and order_no in _completed:
+            log_manager.system(
+                f"[ChejanDup] 중복 콜백 무시 order_no={order_no} side={side} qty={fill_qty}",
+                "WARNING",
+            )
+            return
         _ts_handle_external_fill(self, payload, side, fill_qty, fill_price, filled_at)
         return
 
