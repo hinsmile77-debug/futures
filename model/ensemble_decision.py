@@ -399,9 +399,13 @@ class EnsembleDecision:
         # → 해당 호라이즌을 앙상블에서 임시 제외 후 재정규화.
         # F1AdaptiveWeight(EMA 기반·느림)보다 빠른 응답으로 즉시 피해 최소화.
         _const_stuck: set = set()
+        # 비활성 호라이즌은 fallback 상수값으로 ConstOut을 허위 트리거하므로 버퍼 업데이트 제외
+        _active_set_co = set(active_horizons) if active_horizons is not None else set(HORIZONS.keys())
         for _h in list(cur_weights.keys()):
             _res_h = horizon_proba.get(_h) or {}
             if not _res_h:
+                continue
+            if _h not in _active_set_co:
                 continue
             _c = round(float(_res_h.get("confidence", 0.0)), 3)
             _d = int(_res_h.get("direction", 0))
@@ -426,6 +430,7 @@ class EnsembleDecision:
                 )
             elif not _now_stuck and _prev_stuck:
                 logger.info("[ConstOut] %s 상수 출력 해소 → 앙상블 복귀", _h)
+                self._hz_conf_hist[_h].clear()   # 오염된 버퍼 클리어 후 재관찰 시작
             self._hz_stuck[_h] = _now_stuck
             if _now_stuck:
                 cur_weights[_h] = 0.0

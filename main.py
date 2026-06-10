@@ -2271,6 +2271,9 @@ class TradingSystem:
         now = datetime.datetime.now()
         if not is_market_open(now):
             return
+        # 15:10 강제 청산 이후 예측 파이프라인 중단 (TimeRouter·앙상블 불필요 실행 방지)
+        if is_force_exit_time(now):
+            return
 
         self._last_recovery_ts = ""   # 실분봉 수신 시에만 복구 ts 초기화
 
