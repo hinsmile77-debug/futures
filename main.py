@@ -654,11 +654,13 @@ class TradingSystem:
         }
         return name_map.get(feature_name, feature_name)
 
-    def _pick_shap_candidate(self):
+    def _pick_shap_candidate(self, review: dict = None):
         self._ensure_shap_tracker()
         if self._shap_tracker is None:
             return None, "SHAP tracker 없음"
-        review = self._shap_tracker.weekly_review()
+        # review를 인자로 받으면 재사용 — weekly_review() 중복 호출 방지
+        if review is None:
+            review = self._shap_tracker.weekly_review()
         candidates = list(review.get("candidates") or []) if isinstance(review, dict) else []
         if not candidates:
             return None, "추천 후보 없음"
@@ -1083,7 +1085,7 @@ class TradingSystem:
                 )
             )
 
-        candidate, candidate_reason = self._pick_shap_candidate()
+        candidate, candidate_reason = self._pick_shap_candidate(review=review)
         registry = self._load_feature_registry()
         pending = registry.get("pending_change") or {}
         if candidate is not None:

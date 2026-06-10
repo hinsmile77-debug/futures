@@ -65,6 +65,9 @@ class ShapTracker:
         # 현재 중요도 (최신)
         self._current_importance: Optional[np.ndarray] = None
 
+        # TreeExplainer 첫 실패 후 False로 설정 → 이후 매분 WARNING 방지
+        self._tree_explainer_ok: bool = True
+
         self._load_history()
 
     # ── SHAP 계산 ─────────────────────────────────────────────────
@@ -112,23 +115,24 @@ class ShapTracker:
 
     def _calc_importance(self, model, X: np.ndarray) -> Optional[np.ndarray]:
         """SHAP TreeExplainer → fallback to feature_importances_"""
-        if _SHAP_OK:
+        if _SHAP_OK and self._tree_explainer_ok:
             try:
                 explainer  = _shap.TreeExplainer(model)
                 shap_vals  = explainer.shap_values(X)
                 # 다중 클래스: list[n_classes] 또는 3D array (shap 버전 의존)
                 if isinstance(shap_vals, list):
-                    # 3-class: [DN, FL, UP] → UP 클래스(index 2) 사용
-                    # index 1 대신 절댓값 평균을 모든 클래스에 대해 계산
                     shap_vals = np.mean([np.abs(sv) for sv in shap_vals], axis=0)
                     return shap_vals.mean(axis=0)
                 elif shap_vals.ndim == 3:
-                    # shap 최신버전: shape (n_samples, n_features, n_classes)
                     return np.abs(shap_vals).mean(axis=(0, 2))
                 else:
                     return np.abs(shap_vals).mean(axis=0)
             except Exception as e:
-                logger.warning("[SHAP] TreeExplainer 오류 (feature_importances_ fallback): %s", e)
+                # 첫 실패 시 WARNING, 이후 재시도 차단 (매분 WARNING 방지)
+                logger.warning(
+                    "[SHAP] TreeExplainer 불가 — 이후 feature_importances_ 전용 사용: %s", e
+                )
+                self._tree_explainer_ok = False
 
         # fallback — sklearn GBM은 항상 feature_importances_ 보유
         if hasattr(model, "feature_importances_"):
