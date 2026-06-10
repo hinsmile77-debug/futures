@@ -77,7 +77,7 @@ from config.settings import (
     ENTRY_GRADE_C_AUTO_EXP, C_AUTO_EXP_SIZE_MULT, C_AUTO_EXP_ZONES,  # [P5]
 )
 import config.settings as runtime_settings
-from config.constants import FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED
+from config.constants import FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED, DIRECTION_FLAT
 from config import secrets as _secrets
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -223,6 +223,10 @@ class TradingSystem:
         self.ensemble.calibrator = self.horizon_calibrator   # 앙상블 2차 압축 연결
         self.pred_buffer       = PredictionBuffer()
         self.meta_gate         = MetaGate()
+        # selection bias 해소: skip된 신호의 meta_features 임시 보관
+        # key=ts_str, value=[(meta_features, confidence), ...]
+        # STEP 2 에서 동일 ts 검증 결과가 도착할 때 record_outcome 처리
+        self._meta_shadow      = {}
         self.toxicity_gate     = ToxicityGate()
         self.trend_gate        = TrendPersistenceGate()
         self.batch_retrainer          = BatchRetrainer()
@@ -2454,6 +2458,15 @@ class TradingSystem:
         logger.info("[System] 장 전 매크로 수집 시작 (1단계 — seed fetch)")
         log_manager.system("장 전 매크로 수집 시작")
 
+        # [MetaConf] 전일 학습 상태 복원 — cold-start 없이 장 시작부터 SGD 예측 경로 사용
+        try:
+            from config.settings import META_CONF_STATE_PATH
+            _mc_loaded = self.meta_gate.learner.load(META_CONF_STATE_PATH)
+            if not _mc_loaded:
+                log_manager.system("[MetaConf] warm-start 파일 없음 — cold-start로 진행", "INFO")
+        except Exception as _mc_l_e:
+            logger.warning("[MetaConf] warm-start 로드 실패 (cold-start 진행): %s", _mc_l_e)
+
         # 첫 fetch: prev 시드 저장 전용. SP500·KRW chg = 0.0 (MacroFetcher 설계)
         self.macro_fetcher.get_features()
         logger.info("[System] 매크로 seed fetch 완료 — 레짐 확정은 08:58 2단계로 연기")
@@ -3033,24 +3046,57 @@ class TradingSystem:
         _st.append(("S2", time.perf_counter()))
         _s2_meta_t = time.perf_counter()
         # STEP 1 검증된 예측마다 해당 시점 피처로 즉시 partial_fit
+        # FLAT 예측도 포함: evaluate() FLAT early-return 경우 meta_features를 직접 build
         for v in verified:
             _meta_feats = v.get("features") or {}
             try:
-                _meta_eval = self.meta_gate.evaluate(
-                    direction=v["predicted"],
-                    confidence=float(v.get("confidence", 0.0) or 0.0),
-                    regime=self.current_regime,
-                    micro_regime=self.current_micro_regime,
-                    features=_meta_feats,
-                    now=datetime.datetime.strptime(v["ts"], "%Y-%m-%d %H:%M:%S"),
-                    recent_accuracy=self.online_learner.recent_accuracy(),
-                )
-                self.meta_gate.record_outcome(
-                    _meta_eval.get("meta_features", []),
-                    bool(v["correct"]),
-                )
+                _v_dir = v["predicted"]
+                _v_ts  = datetime.datetime.strptime(v["ts"], "%Y-%m-%d %H:%M:%S")
+                _v_conf = float(v.get("confidence", 0.5) or 0.5)
+                if _v_dir == DIRECTION_FLAT:
+                    # FLAT early-return 경로는 meta_features를 반환하지 않으므로 직접 빌드
+                    _flat_meta_feats = self.meta_gate.learner.build_meta_features(
+                        regime=self.current_micro_regime,
+                        hurst=float((_meta_feats or {}).get("hurst", 0.5) or 0.5),
+                        atr_ratio=float((_meta_feats or {}).get("atr_ratio", 1.0) or 1.0),
+                        hour_minute=_v_ts.hour * 100 + _v_ts.minute,
+                        recent_accuracy=self.online_learner.recent_accuracy(),
+                        signal_strength=_v_conf,
+                    )
+                    self.meta_gate.record_outcome(_flat_meta_feats, bool(v["correct"]), _v_conf)
+                else:
+                    _meta_eval = self.meta_gate.evaluate(
+                        direction=_v_dir,
+                        confidence=_v_conf,
+                        regime=self.current_regime,
+                        micro_regime=self.current_micro_regime,
+                        features=_meta_feats,
+                        now=_v_ts,
+                        recent_accuracy=self.online_learner.recent_accuracy(),
+                    )
+                    self.meta_gate.record_outcome(
+                        _meta_eval.get("meta_features", []),
+                        bool(v["correct"]),
+                        _v_conf,
+                    )
+                # selection bias 해소: 동일 ts에 skip된 shadow 신호도 동일 결과로 기록
+                for _sf, _sc in self._meta_shadow.pop(v.get("ts", ""), []):
+                    self.meta_gate.record_outcome(_sf, bool(v["correct"]), _sc)
             except Exception as _meta_record_err:
                 logger.debug("[MetaGate] verify record skip: %s", _meta_record_err)
+
+        # shadow 버퍼 오래된 항목 정리 (60분 초과) — 검증 도달 없는 항목 누적 방지
+        if self._meta_shadow and ts:
+            try:
+                _shadow_cutoff = (
+                    datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                    - datetime.timedelta(minutes=60)
+                ).strftime("%Y-%m-%d %H:%M:%S")
+                _stale = [k for k in self._meta_shadow if k < _shadow_cutoff]
+                for _k in _stale:
+                    del self._meta_shadow[_k]
+            except Exception:
+                pass
 
         # [S2-A] online_learner.learn() 은 파이프라인 "end" 이후로 지연 실행
         # — GBM 배치 재학습 중 Python GC/CPU 포화로 5~7s 블로킹 방지
@@ -3877,6 +3923,17 @@ class TradingSystem:
                 )
                 actual_min_conf = _fq_adj
 
+        # 호라이즌 방향 합의율: 6개 호라이즌 중 앙상블 최종 방향과 동일한 비율
+        _hz_detail = decision.get("detail") or {}
+        if _hz_detail:
+            _hz_agree = sum(
+                1 for _hd in _hz_detail.values()
+                if isinstance(_hd, dict) and _hd.get("direction") == direction
+            )
+            _hz_agreement = _hz_agree / len(_hz_detail)
+        else:
+            _hz_agreement = 0.5
+
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,
             confidence=confidence,
@@ -3886,7 +3943,17 @@ class TradingSystem:
             now=datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S"),
             recent_accuracy=self.online_learner.recent_accuracy(),
             min_conf=actual_min_conf,
+            horizon_agreement=_hz_agreement,
+            checklist_grade=grade,  # 앙상블 등급(A/B/C/X) — checklist보다 앞에 실행되므로 앙상블 grade 사용
         )
+        # selection bias 해소: skip된 비-FLAT 신호를 shadow 버퍼에 보존
+        # → STEP 2에서 동일 ts 검증 결과 도착 시 record_outcome 처리
+        if direction != DIRECTION_FLAT and decision["meta_gate"]["action"] == "skip":
+            self._meta_shadow.setdefault(ts, []).append((
+                decision["meta_gate"].get("meta_features", []),
+                float(confidence),
+            ))
+
         decision["toxicity_gate"] = self.toxicity_gate.evaluate(features)
         decision["execution_governor"] = _exec_gate_pre
 
@@ -5936,6 +6003,13 @@ class TradingSystem:
         except Exception as _cal_s_e:
             logger.warning("[Calibration] 보정기 저장 실패 (무해): %s", _cal_s_e)
 
+        # [MetaConf] 학습 상태 저장 — 다음 날 warm-start (cold-start 제거)
+        try:
+            from config.settings import META_CONF_STATE_PATH
+            self.meta_gate.learner.save(META_CONF_STATE_PATH)
+        except Exception as _mc_s_e:
+            logger.warning("[MetaConf] EOD 상태 저장 실패 (무해): %s", _mc_s_e)
+
         # ── 자가학습 일일 마감 집계 ──────────────────────────────
         _today_accuracy = self.online_learner.recent_accuracy()
         try:
@@ -5972,6 +6046,10 @@ class TradingSystem:
             self._investor_timer.stop()
         if hasattr(self, "_option_chain_timer"):
             self._option_chain_timer.stop()
+        # MetaGate shadow 버퍼 초기화 — 다음 날 전일 shadow 잔재 방지
+        if hasattr(self, "_meta_shadow"):
+            self._meta_shadow.clear()
+        self.meta_gate.learner.reset_daily()
         self.feature_builder.reset_daily()
         self.bar_aggregator.reset_daily()
         self._hz_feat_cache.clear()

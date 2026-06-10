@@ -6,6 +6,70 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-10 (142~147차 — 금일 장중 이상점 6세션 수정)
+
+### 금일 수정 완료 요약
+
+| 차수 | 핵심 수정 |
+|---|---|
+| 142 | EOD 자동종료 ShutdownSignal + WAL 6개 + DBWriter 플러시 |
+| 143 | conf=100% 근본 수정 4종 + EKS·DailyClose 관측성 7종 |
+| 144 | scaler↔GBM 상호 잠금 + ConstOut→GBM 자동 연계 + CB③/PipePerf 개선 |
+| 145 | horizon_proba={} 봉쇄 + SHAP 수정 2종 + Armistice 버그 |
+| 146 | MetaConf class_weight 버그 + RF OOB 추론 불일치 2종 |
+| 147 | Retrain force=True 하향 래칫 제거 + FLAT 레이블 오염 제거 |
+
+- [DONE 2026-06-10] **conf=100% 경로 원천 봉쇄** — horizon_proba={} → grade=X/conf=0 + score 재정규화 + CONF_CLIP 0.80 + T=1.2 (`model/ensemble_decision.py`, `model/multi_horizon_model.py`)
+- [DONE 2026-06-10] **SGD 붕괴 근본 수정** — MetaConf `class_weight='balanced'` + `partial_fit` 비호환 → `compute_class_weight` + `sample_weight` 배열 교체 (`learning/meta_confidence.py`)
+- [DONE 2026-06-10] **scaler↔GBM 상호 잠금** — raw_data.db 동시 접근 경합 방지 + ConstOut 재적합 후 GBM 자동 연계 (`main.py` 3곳)
+- [DONE 2026-06-10] **Retrain force=True 하향 래칫 제거** — 장중 acc 하락 모델 강제 저장 방지. 08:55 pre-market만 force=True 유지 (`main.py:2156`, `3075`)
+- [DONE 2026-06-10] **미래 가격 없는 행 FLAT 오염 제거** — close_map 기반 필터로 T+30m 종가 없는 행 학습 제외 (`batch_retrainer.py:_load_from_db`)
+- [DONE 2026-06-10] **RF OOB 추론 스케일 불일치 수정** — `apply_robust_preprocess` 추론 경로 추가 + OOB<0.45 앙상블 블렌딩 비활성화 (`model/rf_horizon_model.py`, `main.py`)
+- [DONE 2026-06-10] **SHAP 수정 2종** — TreeExplainer WARNING 반복→1회 + 주간 심사 중복 2회→1회 (`shap_tracker.py`, `main.py`)
+- [DONE 2026-06-10] **FLAT 재시작 Armistice 영구 미해제 버그** — sync_count=2 직접 설정으로 즉시 해제 (`main.py`)
+- [DONE 2026-06-10] **EOD 자동종료 안전화** — ShutdownSignal QueuedConnection + WAL 6개 DB + DBWriter 플러시 (`main.py`, `config/settings.py`)
+
+### 다음 장 검증 항목
+
+#### [P0] 147차 — Retrain 안정화 (최우선)
+- `[Retrain] {hz} 유지 (cv_acc=0.XXXX < old_acc-0.01)` 로그 확인 — 장중 acc 하락 시 이전 모델 보존
+- `[Retrain] 미래 가격 불완전 행 X개 제거 (max_horizon=30m)` 로그 확인
+- EOD Retrain acc ≤ 0.70 수준 안정화 (기존 0.80~0.90 폭등 억제 목표)
+- DriftAdjuster 실측 acc와 CV acc 간격 축소 모니터링
+
+#### [P0] 146차 — MetaConf·RF 복구
+- `[MetaConf] 학습 오류` 로그 완전 소멸 (기존 09:24~세션끝 매분 반복 → 0건)
+- `[MetaGate] SGD 붕괴 보완` 로그 없음 + meta_raw 0.30+ 정상화 확인
+- RF OOB 재학습 후 >50% 확인 (재학습 전까지 ~37% 유지)
+
+#### [P1] 145차 — 앙상블 안전망
+- conf=100% 재발 없음 (SIGNAL.log 전수)
+- FLAT 재시작 후 Armistice 즉시 해제 확인
+
+#### [P1] 144차 — ConstOut 재발 방지
+- ConstOut 발동 후 GBM 재학습 자동 연계 로그 + 30분 후 재발 없음
+
+#### [P2] 143·142차 — EOD·관측성 (이월)
+- Canary z경고 폭증 시 08:58 전 재적합 발동 확인
+- `[System] 자동 종료 실행` 15:40 이후 + WAL 체크포인트 6개 DB 전체
+
+### 미해결 이상점 — 로그 관찰, 수정 미완료
+
+- [TODO P1] **TimeRouter "월물 만기 전날" 30초 간격 스팸** — 7,624줄 중 ~3,000줄 동일 메시지 반복. state-change 방식으로 수정 필요 (`time_strategy_router.py`)
+- [TODO P1] **GapOffset today_open 재시작마다 다른 값** — 09:00: 1251.10 → 12:45 재시작: 1233.14 (-17.96p). 09:00 최초 확정 후 당일 고정 필요
+- [TODO P2] **macro_quality_available z=-11.14 장 개시 직후 5분 반복** — 09:04~09:08 30회 동일 경고. 장 개시 전 매크로 유효성 검증 또는 Canary refit 포함 검토
+- [TODO P2] **스케일러 90~130분 노후화** — 12:45: 95분, 15:01: 123분 미갱신. 144차 효과 확인 후 재시작 A_WARMUP 강제 실행 여부 판단
+- [TODO P2] **registry=97 vs scaler=101 차원 불일치** — 시작 시 WARNING, 11:04에 ERROR 전환. 재학습 후 97→101 복구 확인. 미복구 시 원인 조사
+
+### 재학습 필요
+
+- **내일 장 전 GBM 재학습** — 147차(force=True 제거 + FLAT 오염 제거) + 146차(RF preprocess) 반영
+  - 앱 재시작 → SHAP 탭 "현재 세트 재학습" 클릭
+  - 재학습 후 feature_names 피처 수 97→101 복구 확인
+  - `[Retrain] 미래 가격 불완전 행 X개 제거` 로그 확인
+
+---
+
 ## 2026-06-10 (142차 — EOD 자동종료 흐름 6종 안전화)
 
 ### 한일 요약
@@ -19,11 +83,7 @@
 
 ### 다음 할 일
 
-- [NEXT 다음 장 마감 후] **142차 패치 효과 확인**
-  - `[System] 자동 종료 실행` 로그가 15:40 이후 반드시 출력되는지 (자동종료 미발동 재발 없음)
-  - `[DBQueue] EOD 플러시 완료` 로그 확인 (15:40 이후)
-  - `[WAL] 체크포인트 완료: ...trades.db / shap_tracker.db / challenger.db / scaler_monitor.db` 로그 6개 모두 출력 확인
-  - `daily_close()` 예외 발생 시 `[DailyClose] 예외 발생 — 강제 종료 예약` 로그 + 프로그램 정상 종료 확인
+- *(142~147차 통합 섹션으로 이동)*
 
 ---
 
