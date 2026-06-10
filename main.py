@@ -1342,6 +1342,31 @@ class TradingSystem:
             reason,
         )
 
+    def _on_const_out_refit_done(self, hz: list) -> None:
+        """ConstOut scaler 재적합 완료 후 메인 스레드에서 실행되는 콜백.
+
+        1) acc30m 버퍼 리셋 — 노후 스케일러 기반 예측은 무효
+        2) GBM 재학습 예약 — scaler만 재적합해도 GBM 트리 구조 미변경 시 ConstOut 재발
+        """
+        # (1) acc30m 버퍼 리셋
+        self.circuit_breaker.reset_acc30m_buffer()
+        log_manager.system(
+            f"[ConstOut] {hz} 재적합 완료 → acc30m 버퍼 리셋",
+            "INFO",
+        )
+        # (2) GBM 재학습 예약 — 상호 잠금: 이미 재학습 중이면 skip
+        if self._gbm_retrain_running:
+            log_manager.system(
+                f"[ConstOut] GBM 재학습 진행 중 — 재학습 예약 skip (hz={hz})",
+                "INFO",
+            )
+            return
+        log_manager.system(
+            f"[ConstOut] {hz} → GBM 재학습 예약 (scaler 재적합 후 트리 구조 갱신 필요)",
+            "INFO",
+        )
+        self._start_manual_retrain(force=True, reason=f"const_out={hz}")
+
     def _is_degraded_entry_blocked(self, confidence: float, is_manual: bool) -> tuple:
         """현재 Degraded 정책 기준으로 진입 차단 여부를 반환한다."""
         p = self._health_policy
@@ -2813,6 +2838,7 @@ class TradingSystem:
                 self.circuit_breaker.record_accuracy(
                     v["correct"], confidence=_conf,
                     contrarian_active=_contra_active,
+                    eks_active=self.system_health.kill_switch_active,
                 )
             self.horizon_calibrator.record(v["horizon"], _conf, v["correct"])
             # 앙상블 보정기: 1m 결과를 앙상블 정확도 대리 지표로 사용
@@ -3456,7 +3482,11 @@ class TradingSystem:
         # ── Phase B: 정기/강제 스케일러 refresh 트리거 ─────────────────
         # predict_proba 완료 후 last_extreme_features 가 갱신된 시점에 실행.
         # refit 자체는 daemon thread — 파이프라인 블로킹 없음.
-        if not self._scaler_refresh_running and not self._is_const_out_heavy_cooldown_active(_ts_dt_obj):
+        # GBM 재학습 중이면 skip: 두 daemon thread가 raw_data.db를 동시 접근하면
+        # I/O 경합 + Python GIL 경합으로 파이프라인 17s 지연 재발.
+        if (not self._scaler_refresh_running
+                and not self._gbm_retrain_running
+                and not self._is_const_out_heavy_cooldown_active(_ts_dt_obj)):
             _extreme_feats_b = getattr(self.model, "last_extreme_features", [])
             _refresh_trig, _refresh_reason = self.model.check_refresh_trigger(
                 _ts_dt_obj, _extreme_feats_b
@@ -3500,7 +3530,9 @@ class TradingSystem:
         # 쿨다운을 ConstOut(30분)보다 짧게(20분) 설정한 이유:
         #   가격 모멘텀은 추세 지속 중 연속적으로 발생할 수 있으며,
         #   30분 쿨다운이면 추세 중반 이후 스케일러를 다시 맞출 기회를 놓친다.
-        if not self._scaler_refresh_running and not self._is_const_out_heavy_cooldown_active(_ts_dt_obj):
+        if (not self._scaler_refresh_running
+                and not self._gbm_retrain_running
+                and not self._is_const_out_heavy_cooldown_active(_ts_dt_obj)):
             _n_sig_pm = len(self._sigma_buf)
             if _n_sig_pm >= 5:
                 _ret_5m_pct = sum(list(self._sigma_buf)[-5:])   # 최근 5분 누적 수익률(%)
@@ -3668,7 +3700,8 @@ class TradingSystem:
         # GBM 재학습(수분 소요)과 달리 스케일러만 재적합은 수초 이내 완료.
         # 쿨다운 30분: 재적합 중 또 다른 트리거로 중복 실행 방지.
         _const_hz = decision.get("const_output_horizons", [])
-        if _const_hz and not self._scaler_refresh_running:
+        # GBM 재학습 중이면 skip — raw_data.db 동시 접근 + CPU 경합 방지
+        if _const_hz and not self._scaler_refresh_running and not self._gbm_retrain_running:
             _now_dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
             _co_cooldown_ok = (
                 self._const_out_refit_until is None
@@ -3685,6 +3718,7 @@ class TradingSystem:
                     "WARNING",
                 )
                 def _const_out_refit_worker(_hz=_const_hz, _tts=ts):
+                    _refit_ok = False
                     try:
                         from config.settings import SCALER_WARMUP_LOOKBACK_BARS
                         _Xco, _fnco = self.batch_retrainer.load_features_for_warmup(
@@ -3697,10 +3731,16 @@ class TradingSystem:
                                 trigger_type="D_FORCE",
                                 trigger_reason=f"const_output={_hz}",
                             )
+                            _refit_ok = True
                     except Exception as _co_e:
                         logger.warning("[ConstOut] 스케일러 재적합 실패: %s", _co_e)
                     finally:
                         self._scaler_refresh_running = False
+                    if _refit_ok:
+                        # 재적합 완료 → 메인 스레드에서 acc30m 리셋 + GBM 재학습 예약
+                        QTimer.singleShot(
+                            0, lambda _h=_hz: self._on_const_out_refit_done(_h)
+                        )
                 threading.Thread(target=_const_out_refit_worker, daemon=True).start()
 
         # 앙상블 보정기: 현재 ts의 conf 캐시 (STEP 1에서 T-1m conf 조회용)
@@ -4782,7 +4822,9 @@ class TradingSystem:
                 f"{_st[i][0]}={(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
                 for i in range(1, len(_st))
             )
-            logger.warning("[PipePerf][CB임박] total=%.0fms | %s", _pipe_ms, _all_steps or "─")
+            _pipeperf_msg = f"[PipePerf][CB임박] total={_pipe_ms:.0f}ms | {_all_steps or '─'}"
+            logger.warning(_pipeperf_msg)
+            log_manager.system(_pipeperf_msg, "WARNING")  # SYSTEM 로그에도 기록 — 진단 가시성
         elif _pipe_ms > HEALTH_LATENCY_WARN_MS:
             # 경고 수준 — 100ms 초과 단계만 출력
             _slow = " ".join(

@@ -200,13 +200,17 @@ class CircuitBreaker:
 
     # ── 트리거 ③ 정확도 저하 (30분 호라이즌 전용) ───────────────
     def record_accuracy(self, correct: bool, confidence: float = 1.0,
-                        contrarian_active: bool = False):
+                        contrarian_active: bool = False,
+                        eks_active: bool = False):
         """
         Args:
             correct:            예측 적중 여부
             confidence:         예측 신뢰도 (과신·중간신뢰도 오류 감지에 사용)
             contrarian_active:  Contrarian 모드 활성 여부.
                                 True이면 accuracy_buf 누적 및 CB③ 경고를 스킵.
+            eks_active:         EKS(Early Kill Switch) 활성 여부.
+                                True이면 누적·P4 갱신은 유지하되 HALT/경고 발동만 스킵.
+                                (EKS = 이미 당일 관망 → CB③ 중복 당일 정지 불필요)
                                 Brier·과신·Mid-Conf streak는 항상 집계.
         """
         # ── [2순위] Brier Score 누적 — Contrarian 상태와 무관하게 항상 집계 ──
@@ -283,7 +287,7 @@ class CircuitBreaker:
                 log_manager.system(_msg, "WARNING")
                 self._acc30m_stage = _new_stage
 
-        if contrarian_active:
+        if contrarian_active or eks_active:
             return  # HALT/경고 발동만 스킵, 누적은 이미 위에서 완료
 
         if len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES:
@@ -466,6 +470,19 @@ class CircuitBreaker:
         # (CB⑤는 record_api_latency에서 별도 호출, 여기서는 ②·③ 공통 처리)
         if self._emergency_exit:
             self._emergency_exit()
+
+    def reset_acc30m_buffer(self) -> None:
+        """스케일러 재적합 완료 후 acc30m 버퍼 초기화.
+
+        ConstOut 재적합 완료 시점 이전 예측은 노후 스케일러 기반 → 신뢰 불가.
+        CB③ 경고 카운터도 리셋해 새 스케일러 기준에서 재카운트한다.
+        """
+        self._accuracy_buf.clear()
+        self._acc30m_stage = "NORMAL"
+        self._cb3_warn_count = 0
+        msg = "[CB③] acc30m 버퍼 리셋 (스케일러 재적합 완료 — 이전 예측 무효화)"
+        logger.info(msg)
+        log_manager.system(msg, "INFO")
 
     def reset_daily(self):
         """장 시작 시 일간 리셋"""
