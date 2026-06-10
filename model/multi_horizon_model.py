@@ -110,7 +110,13 @@ class MultiHorizonModel:
 
     # GBM predict_proba 극단 확률 상한 (conf=1.000 과신 방지)
     # 학습 범위를 벗어난 피처 입력 시 GBM이 0/1 극단 확률을 반환하는 현상 완화
-    CONF_CLIP = 0.92
+    # 개선3: 0.92 → 0.80 — 앙상블 캘리브레이션 최종 cap(0.85)보다 낮게 맞춰
+    #        GBM 극단 출력을 조기에 억제하고 calibrator 학습 분포 정상화
+    CONF_CLIP = 0.80
+
+    # 개선5: GBM 출력 temperature scaling (T>1: 극단 확률 완만하게 억제)
+    # T=1.0이면 비활성. p^(1/T) / Σp^(1/T) 으로 rank order 보존하며 극단값 완화
+    GBM_TEMP_SCALE = 1.2
 
     # 스케일러 노후화 경고 임계값 (분) — 변동성 레짐 시프트 감지
     SCALER_WARN_MINUTES = 90
@@ -377,6 +383,14 @@ class MultiHorizonModel:
             classes = list(clf.classes_)
             proba   = clf.predict_proba(xs)[0]
 
+            # 개선5: temperature scaling — 극단 확률 rank-preserving 완화
+            # p^(1/T) / Σp^(1/T): T=1.2 → 0.95→≈0.89, 0.80→≈0.77
+            if self.GBM_TEMP_SCALE > 1.0 + 1e-6:
+                _scaled = np.power(proba + 1e-9, 1.0 / self.GBM_TEMP_SCALE)
+                _s_sum  = _scaled.sum()
+                if _s_sum > 1e-9:
+                    proba = _scaled / _s_sum
+
             proba_map = {int(c): float(p) for c, p in zip(classes, proba)}
             up   = proba_map.get(DIRECTION_UP,   0.0)
             down = proba_map.get(DIRECTION_DOWN, 0.0)
@@ -484,6 +498,11 @@ class MultiHorizonModel:
 
             classes   = list(clf.classes_)
             proba     = clf.predict_proba(xs)[0]
+            if self.GBM_TEMP_SCALE > 1.0 + 1e-6:
+                _scaled = np.power(proba + 1e-9, 1.0 / self.GBM_TEMP_SCALE)
+                _s_sum  = _scaled.sum()
+                if _s_sum > 1e-9:
+                    proba = _scaled / _s_sum
             proba_map = {int(c): float(p) for c, p in zip(classes, proba)}
             up   = proba_map.get(DIRECTION_UP,   0.0)
             down = proba_map.get(DIRECTION_DOWN, 0.0)

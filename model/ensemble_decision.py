@@ -258,6 +258,7 @@ class EnsembleDecision:
         trend_gate_dn_active: bool = False,
         time_zone: str = "",
         active_horizons: Optional[list] = None,
+        zone_mc: float = 0.60,
     ) -> Dict:
         """
         Args:
@@ -297,7 +298,7 @@ class EnsembleDecision:
                     "grade": "X",
                     "auto_entry": False,
                     "regime_ok": False,
-                    "min_conf": 0.60,
+                    "min_conf": zone_mc,
                     "coherence_blocked": False,
                     "cascade_blocked": False,
                     "trend_boost_applied": False,
@@ -459,6 +460,19 @@ class EnsembleDecision:
                 _dn_before, down_score, flat_score,
             )
 
+        # 개선2: TrendBoost 후 확률 합 정규화
+        # flat이 음수가 되어 0에 clamp된 경우 up+down+flat > 1.0 발생 → 명시적 정규화
+        if _trend_boost_applied:
+            _tw_tb = up_score + down_score + flat_score
+            if _tw_tb > 1e-9 and abs(_tw_tb - 1.0) > 1e-6:
+                up_score   /= _tw_tb
+                down_score /= _tw_tb
+                flat_score /= _tw_tb
+                logger.debug(
+                    "[TrendBoost] sum=%.4f → 정규화 후 up=%.3f dn=%.3f fl=%.3f",
+                    _tw_tb, up_score, down_score, flat_score,
+                )
+
         # ── P0-B: FlatCap — 추세 중 flat_score 과지배 차단 ────────────
         # TrendBoost 이후에도 long-horizon FLAT 편향으로 flat이 0.38을 넘으면
         # 상한을 적용하고 재정규화한다.
@@ -567,6 +581,17 @@ class EnsembleDecision:
                     _c3m = _s3m.get("confidence", 0.0)
                     direction  = _d1m
                     confidence = (_c1m + _c3m) / 2.0
+                    # 개선1: score 삼총사 정규화 — direction 전환 시 up/down/flat 일관성 보장
+                    # override 전 값(flat 고착)이 그대로 남으면 합계가 1.0 초과 가능
+                    _sho_rem = max(0.0, 1.0 - confidence) / 2.0
+                    if direction == DIRECTION_UP:
+                        up_score   = confidence
+                        down_score = _sho_rem
+                        flat_score = _sho_rem
+                    else:
+                        down_score = confidence
+                        up_score   = _sho_rem
+                        flat_score = _sho_rem
                     _short_override_applied = True
                     logger.info(
                         "[ShortHorizonOverride] flat streak=%d → 1m/3m 방향=%+d "
