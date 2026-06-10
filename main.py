@@ -8537,11 +8537,12 @@ def _ts_sync_position_from_broker(self) -> None:
                 self.dashboard.minute_chart_clear_active_position()
             self._clear_pending_order()
             _ts_set_broker_sync_status(self, True, "blank/no holdings response interpreted as flat", False)
-            # P1-a: rows=0(FLAT 확인)도 유효한 sync — 포지션 없는 재시작 시 Armistice가 영구 미해제되는 버그 수정
-            self._restart_armistice_sync_count = getattr(self, "_restart_armistice_sync_count", 0) + 1
-            log_manager.system(
-                f"[BrokerSync] startup sync 무포지션 확인(blank rows): {before} -> FLAT",
-                "WARNING" if before != "FLAT" else "INFO",
+            # P1-a: blank-as-flat = FLAT 확인 완료 → Armistice 즉시 해제 (sync_count=2 직접 설정)
+            # +1 방식은 FLAT 재시작 시 두 번째 sync가 영구적으로 오지 않아 장 종료까지 Armistice가 지속되는 버그 유발
+            self._restart_armistice_sync_count = 2
+            logger.info(
+                "[BrokerSync] startup sync 무포지션 확인(blank rows): %s -> FLAT (armistice cleared)",
+                before,
             )
             if _is_flat_confirm:
                 logger.debug(
