@@ -162,6 +162,8 @@ class TimeStrategyRouter:
 
     def __init__(self):
         self._last_zone: Optional[str] = None
+        self._last_expiry_state: Optional[int] = None  # -1: 일반, 0: 만기당일, 1: 만기전날
+        self._last_fomc_state: Optional[bool] = None
 
     def get_zone(self, dt: Optional[datetime.datetime] = None) -> str:
         """
@@ -258,13 +260,19 @@ class TimeStrategyRouter:
             params["min_confidence"] = min(params["min_confidence"] + 0.05, 0.90)
             params["size_mult"]      = params["size_mult"] * 0.6
             params["_expiry_override"] = "EXPIRY_DAY"
-            logger.info("[TimeRouter] 월물 만기 당일 — 신뢰도↑ 사이즈×0.6")
+            if self._last_expiry_state != 0:
+                logger.info("[TimeRouter] 월물 만기 당일 — 신뢰도↑ 사이즈×0.6")
+            self._last_expiry_state = 0
         elif d2e == 1:
             params = dict(params)
             params["min_confidence"] = min(params["min_confidence"] + 0.02, 0.90)
             params["size_mult"]      = params["size_mult"] * 0.8
             params["_expiry_override"] = "PRE_EXPIRY"
-            logger.info("[TimeRouter] 월물 만기 전날 — 신뢰도↑ 사이즈×0.8")
+            if self._last_expiry_state != 1:
+                logger.info("[TimeRouter] 월물 만기 전날 — 신뢰도↑ 사이즈×0.8")
+            self._last_expiry_state = 1
+        else:
+            self._last_expiry_state = -1
         return params
 
     def apply_fomc_override(self, params: dict, dt: Optional[datetime.datetime] = None) -> dict:
@@ -273,12 +281,17 @@ class TimeStrategyRouter:
 
         FOMC 당일 → 신뢰도 기준 +5%, 사이즈 ×0.7 (글로벌 변동성 급등 대비)
         """
-        if is_fomc_day(dt):
+        _is_fomc = is_fomc_day(dt)
+        if _is_fomc:
             params = dict(params)
             params["min_confidence"] = min(params["min_confidence"] + 0.05, 0.90)
             params["size_mult"]      = params["size_mult"] * 0.7
             params["_fomc_override"] = True
-            logger.info("[TimeRouter] FOMC 발표일 — 신뢰도↑ 사이즈×0.7")
+            if self._last_fomc_state is not True:
+                logger.info("[TimeRouter] FOMC 발표일 — 신뢰도↑ 사이즈×0.7")
+            self._last_fomc_state = True
+        else:
+            self._last_fomc_state = False
         return params
 
 

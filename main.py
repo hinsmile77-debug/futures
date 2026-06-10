@@ -237,6 +237,16 @@ class TradingSystem:
                     os.path.getmtime(_fn_path)
                 ).strftime("%Y-%m-%d %H:%M")
         self.batch_retrainer.restore_stats(_gbm_last, _gbm_count)
+        # GapOffset 재시작 복원 — 당일 session_state에 today_open 이 있으면 모델에 주입
+        _gap_today = _ss.get("date", "")
+        _gap_open  = float(_ss.get("today_open", 0.0) or 0.0)
+        if _gap_today == datetime.date.today().isoformat() and _gap_open > 0:
+            try:
+                self.model.set_daily_gap_offset(_gap_open)
+                self._first_tick_notified = True  # 첫 분봉에서 덮어쓰기 방지
+                logger.info("[GapOffset] 재시작 복원: today_open=%.2f", _gap_open)
+            except Exception as _ge:
+                logger.warning("[GapOffset] 재시작 복원 실패: %s", _ge)
         self.threshold_recalibrator   = ThresholdRecalibrator()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
         self.pcr_store          = PCRStore()
@@ -2290,6 +2300,13 @@ class TradingSystem:
                 _today_open = float(candle.get("close", 0.0) or 0.0)
                 if _today_open > 0:
                     self.model.set_daily_gap_offset(_today_open)
+                    # 재시작 시 복원할 수 있도록 session_state에 저장
+                    try:
+                        _gap_ss = self._read_session_state()
+                        _gap_ss["today_open"] = _today_open
+                        self._write_session_state(_gap_ss)
+                    except Exception:
+                        pass
             except Exception as _gap_exc:
                 logger.warning("[GapOffset] 오프셋 설정 실패: %s", _gap_exc)
 

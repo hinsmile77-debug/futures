@@ -174,6 +174,8 @@ class MultiHorizonModel:
         self.last_masked_features: List[str]      = []
         # 섹션 8: 모니터 행 — predict_proba()가 채우고 main.py _db_write_worker가 비동기 처리
         self.last_monitor_rows: List[dict]        = []
+        # ScalerMonitor / 극단 z 경고 스로틀 — (prefix, horizon, feat) → 마지막 로그 시각
+        self._scaler_warn_throttle: Dict[tuple, datetime.datetime] = {}
 
         os.makedirs(HORIZON_DIR, exist_ok=True)
         os.makedirs(SCALER_DIR, exist_ok=True)
@@ -325,11 +327,16 @@ class MultiHorizonModel:
             extreme_count = int(np.sum(extreme_mask))
             if extreme_count > 0:
                 extreme_summary = self._summarize_extreme_zscores(xs_mon[0], extreme_mask)
-                logger.warning(
-                    f"[Model] {horizon} 극단 z-score {extreme_count}개 피처 감지 "
-                    f"(|z|>{self.EXTREME_ZSCORE_THRESHOLD:.0f}) — 스케일러 노후화 또는 이상 데이터 의심"
-                )
-                logger.warning(f"[Model] {horizon} extreme z-score top={extreme_summary}")
+                _ex_key = ("EX", horizon)
+                _now_ex = datetime.datetime.now()
+                _last_ex = self._scaler_warn_throttle.get(_ex_key)
+                if _last_ex is None or (_now_ex - _last_ex).total_seconds() > 600:
+                    logger.warning(
+                        f"[Model] {horizon} 극단 z-score {extreme_count}개 피처 감지 "
+                        f"(|z|>{self.EXTREME_ZSCORE_THRESHOLD:.0f}) — 스케일러 노후화 또는 이상 데이터 의심"
+                    )
+                    logger.warning(f"[Model] {horizon} extreme z-score top={extreme_summary}")
+                    self._scaler_warn_throttle[_ex_key] = _now_ex
                 # Phase B 강제 트리거용 피처명 누적
                 _all_extreme_names.extend(
                     self._get_extreme_feature_names(xs_mon[0], extreme_mask)
@@ -377,12 +384,17 @@ class MultiHorizonModel:
                         "scaler_mean":   round(_sc_mean, 6),
                         "scaler_std":    round(_sc_std,  6),
                     })
-                    # [ScalerMonitor] 구조화 로그 — 노후화 또는 극단 z 발생 시만 출력
-                    logger.warning(
-                        "[ScalerMonitor] ts=%s horizon=%s age=%.0fm max_z=%+.2f(%s) extreme=%d",
-                        monitor_ts[11:16], horizon,
-                        _age or 0.0, _max_z_val, _max_z_feat, extreme_count,
-                    )
+                    # [ScalerMonitor] 구조화 로그 — 노후화 또는 극단 z 발생 시만 출력 (10분 스로틀)
+                    _sm_key = ("SM", horizon, _max_z_feat)
+                    _now_sm = datetime.datetime.now()
+                    _last_sm = self._scaler_warn_throttle.get(_sm_key)
+                    if _last_sm is None or (_now_sm - _last_sm).total_seconds() > 600:
+                        logger.warning(
+                            "[ScalerMonitor] ts=%s horizon=%s age=%.0fm max_z=%+.2f(%s) extreme=%d",
+                            monitor_ts[11:16], horizon,
+                            _age or 0.0, _max_z_val, _max_z_feat, extreme_count,
+                        )
+                        self._scaler_warn_throttle[_sm_key] = _now_sm
 
             classes = list(clf.classes_)
             proba   = clf.predict_proba(xs)[0]
