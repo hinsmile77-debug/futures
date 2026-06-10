@@ -2334,7 +2334,13 @@ class TradingSystem:
         self._gbm_retrain_done_event.set()  # daily_close 대기 해제
         prefix = "웜업 " if is_warmup else ""
         if result.get("ok"):
-            self.model._load_all()
+            _bad = self.model._load_all()
+            if _bad:
+                logger.error(
+                    "[Model] 재학습 후 %d개 호라이즌 차원 불일치: %s → 재학습 재트리거",
+                    len(_bad), _bad,
+                )
+                self._start_manual_retrain(force=True, reason="resync_mismatch")
             # P6c: GBM 재학습 완료 시 RF도 최신 pkl 로드
             try:
                 self.rf_model.load_all()
@@ -5821,7 +5827,12 @@ class TradingSystem:
         retrain_ok = retrain_result.get("ok", False)
         # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
         # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
-        self.model._load_all()
+        _bad = self.model._load_all()
+        if _bad:
+            logger.error(
+                "[Model] EOD 재학습 후 %d개 호라이즌 차원 불일치: %s",
+                len(_bad), _bad,
+            )
         if retrain_ok:
             self._ensure_shap_tracker()
             retrain_str = f"재학습 완료 ({retrain_result['elapsed_sec']}초, {retrain_result['data_size']}행)"

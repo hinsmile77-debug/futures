@@ -412,7 +412,6 @@ class BatchRetrainer:
         os.replace(_tmp_scaler, scaler_path)
         with open(acc_path, "w") as f:
             f.write(str(acc))
-        self._save_feature_names(feature_names)
 
     def _save_feature_names(self, feature_names: List[str]) -> None:
         feature_path = os.path.join(self.model_dir, "feature_names.pkl")

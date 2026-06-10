@@ -337,6 +337,9 @@ class MultiHorizonModel:
 
             # 섹션 8: 호라이즌별 max_z / max_z_feature 수집 (원본 기준)
             # 극단 z-score 발생 또는 스케일러 노후화 시만 기록 — 정상 구간에서 INSERT 빈도 제거
+            # [버그수정] continue → 조건부 append: continue는 for 루프 전체를 건너뛰므로
+            #   스케일러 정상화(extreme=0, age<90) 후 예측 자체가 스킵되어 horizon_proba={}
+            #   → flat_score=1.0 → conf=100% 이상점의 실제 근본 원인
             if monitor_ts and scaler:
                 _z_abs = np.abs(xs_mon[0])
                 _max_z_idx  = int(np.argmax(_z_abs))
@@ -351,29 +354,30 @@ class MultiHorizonModel:
                     (datetime.datetime.now() - _fa).total_seconds() / 60.0
                     if _fa else None
                 )
-                # 정상 구간은 스킵 — 극단 z-score 또는 노후화 시에만 INSERT
-                if not (extreme_count > 0 or (_age is not None and _age > self.SCALER_WARN_MINUTES)):
-                    continue
-                _raw_val  = float(x2d[0][_max_z_idx])
-                _pre_val  = float(x2d_proc[0][_max_z_idx])
-                _sc_mean  = float(scaler.mean_[_max_z_idx])
-                _sc_std   = float(scaler.scale_[_max_z_idx])
-                _monitor_rows.append({
-                    "ts":            monitor_ts,
-                    "date":          monitor_ts[:10],
-                    "horizon":       horizon,
-                    "fitted_at":     _fa.strftime("%Y-%m-%d %H:%M:%S") if _fa else None,
-                    "age_minutes":   round(_age, 1) if _age is not None else None,
-                    "max_z":         round(_max_z_val, 4),
-                    "max_z_feature": _max_z_feat,
-                    "extreme_count": extreme_count,
-                    "raw_value":     round(_raw_val, 6),
-                    "pre_value":     round(_pre_val, 6),
-                    "scaler_mean":   round(_sc_mean, 6),
-                    "scaler_std":    round(_sc_std,  6),
-                })
-                # [ScalerMonitor] 구조화 로그 — 노후화 또는 극단 z 발생 시만 출력
-                if extreme_count > 0 or (_age is not None and _age > self.SCALER_WARN_MINUTES):
+                _needs_insert = (
+                    extreme_count > 0
+                    or (_age is not None and _age > self.SCALER_WARN_MINUTES)
+                )
+                if _needs_insert:
+                    _raw_val  = float(x2d[0][_max_z_idx])
+                    _pre_val  = float(x2d_proc[0][_max_z_idx])
+                    _sc_mean  = float(scaler.mean_[_max_z_idx])
+                    _sc_std   = float(scaler.scale_[_max_z_idx])
+                    _monitor_rows.append({
+                        "ts":            monitor_ts,
+                        "date":          monitor_ts[:10],
+                        "horizon":       horizon,
+                        "fitted_at":     _fa.strftime("%Y-%m-%d %H:%M:%S") if _fa else None,
+                        "age_minutes":   round(_age, 1) if _age is not None else None,
+                        "max_z":         round(_max_z_val, 4),
+                        "max_z_feature": _max_z_feat,
+                        "extreme_count": extreme_count,
+                        "raw_value":     round(_raw_val, 6),
+                        "pre_value":     round(_pre_val, 6),
+                        "scaler_mean":   round(_sc_mean, 6),
+                        "scaler_std":    round(_sc_std,  6),
+                    })
+                    # [ScalerMonitor] 구조화 로그 — 노후화 또는 극단 z 발생 시만 출력
                     logger.warning(
                         "[ScalerMonitor] ts=%s horizon=%s age=%.0fm max_z=%+.2f(%s) extreme=%d",
                         monitor_ts[11:16], horizon,
@@ -599,7 +603,7 @@ class MultiHorizonModel:
                 logger.info(f"[Model] {h} 로드 성공")
 
         self._check_registry_feature_consistency()
-        self.validate_and_resync()
+        return self.validate_and_resync()
 
     def _check_registry_feature_consistency(self) -> None:
         """시작 시 registry.active_features vs feature_names.pkl 불일치 경고."""
