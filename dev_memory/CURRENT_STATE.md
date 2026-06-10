@@ -1,7 +1,67 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-10 (146차 세션) — 로그 딥다이브: MetaConf 버그 수정 + RF OOB 근본 원인 3종
+> 마지막 업데이트: 2026-06-10 (147차 세션) — 장중 Retrain acc 하락 근본 원인 2종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-10 (147차 — 장중 Retrain acc 하락 근본 원인 2종 수정)
+
+### 발견 배경 (20260610 LEARNING 로그)
+
+| 관측 | 수치 |
+|---|---|
+| 10m acc 추이 | 0.6169 → 0.6057 → 0.6044 (장중 하락) |
+| EOD 10m acc | 0.6044 → 0.8051 (폭등) |
+| EOD 30m acc | 0.6190 → 0.8905 (폭등) |
+| DriftAdjuster 실측 acc | 22~50% (CV 89%와 대조적) |
+
+### BUG-A (P0): force=True 하향 래칫 — 코드버그
+
+**위치:** `main.py:2156(_intraday_retrain_worker)`, `main.py:3075(STEP 3 warmup)`
+
+**메커니즘:**
+- `_train_horizon:381` 조건: `if force or cv_acc > old_acc - 0.01`
+- force=True이면 cv_acc가 old_acc-1% 아래여도 강제 저장
+- 10m 예시: cv_acc=0.6057 < old_acc-0.01=0.6069 → 기존 0.6169 모델 덮어쓰기
+- 다음 Retrain의 old_acc=0.6057 → 기준점 하향 → 하향 래칫
+
+**수정:** `force=True` → `force=False` 2곳
+- 08:55 pre-market(`_pre_retrain_worker:2578`)만 force=True 유지
+  - 이유: 전날 EOD 과장 acc(10m 0.80 등)를 정상화하려면 force=True 필요
+
+**효과 (수정 후 예상):**
+- Retrain 2(11:36): 10m cv_acc=0.6057 → old_acc=0.6169 유지 (0.6057 < 0.6069 → 유지)
+- 장중 내내 0.6169 모델 보존
+
+### BUG-B (P1): 미래 가격 없는 행 FLAT 오염 — 알고리즘버그
+
+**위치:** `batch_retrainer.py:_load_from_db`
+
+**메커니즘:**
+- `_load_from_db`는 `WHERE ts >= cutoff` → 오늘 데이터 포함
+- 오늘 T시점 Retrain에서: 오늘 rows 중 `ts > now-30min` 인 행은 30m 후 가격 없음
+- `_path_conditioned_label` → FLAT 반환 (실제는 UP/DOWN일 수 있음)
+- 이 FLAT 행들이 TimeSeriesSplit 마지막 validation fold에 포함 → acc 하락
+- EOD 역현상: 오늘 완전한 레이블 → val fold acc 89%로 폭등 (DriftAdjuster 22%와 gap)
+
+**수정:** `_load_from_db:737` 이전에 close_map 기반 필터 추가
+```python
+_max_h_min = max(HORIZONS.values())  # 30
+records = [(ts, feat) for ts, feat in records
+    if (ts + 30min) in close_map]  # 미래 가격 없는 행 제외
+```
+
+**효과:**
+- 장중: 오늘 마지막 ~30행 제거 → FLAT 오염 제거 → cv_acc 안정화
+- EOD: 14:41-15:10 구간 ~29행 제거 → 89% 폭등 억제
+
+### 다음 장 확인 사항
+
+- 장중 세션 재시작 후 Retrain 로그에서 `[Retrain] {hz} 유지` 출력 확인 (acc 하락 시)
+- `[Retrain] 미래 가격 불완전 행 X개 제거 (max_horizon=30m 후 종가 없음)` 로그 확인
+- EOD Retrain acc가 0.65 미만으로 안정화되는지 확인
+- DriftAdjuster 실측 acc와 CV acc 간격이 줄어드는지 모니터링
 
 ---
 
