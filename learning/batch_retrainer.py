@@ -28,14 +28,24 @@ from typing import Optional, Dict, List
 import numpy as np
 
 try:
-    from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+    from sklearn.ensemble import (
+        GradientBoostingClassifier, RandomForestClassifier,
+        HistGradientBoostingClassifier,
+    )
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import accuracy_score, roc_auc_score
     from sklearn.preprocessing import StandardScaler
     from sklearn.utils.class_weight import compute_sample_weight
     _SKLEARN_OK = True
+    # HistGBM 가용 여부 별도 확인 (sklearn 0.21+ 필요, 1.0.2에서 확인됨)
+    try:
+        _test = HistGradientBoostingClassifier(max_iter=1)
+        _HIST_GBM_OK = True
+    except Exception:
+        _HIST_GBM_OK = False
 except ImportError:
     _SKLEARN_OK = False
+    _HIST_GBM_OK = False
 
 from config.settings import (
     MODEL_DIR, HORIZON_DIR, HORIZONS, DB_DIR,
@@ -118,25 +128,41 @@ def _path_conditioned_label(
 
     return DIRECTION_FLAT
 
-# GBM 하이퍼파라미터 — n_estimators는 배치 재학습 시 200으로 더 정밀하게 사용
-# min_samples_leaf는 MultiHorizonModel과 동일한 상수를 공유 (비결정성 방지)
+# ── sklearn GBM (HistGBM 불가 시 fallback) ───────────────────────
+# 정상 환경(_HIST_GBM_OK=True)에서는 사용 안 됨.
 GBM_PARAMS = {
-    "n_estimators":     300,   # 200→300: 190일(71,144봉) 데이터 기반 강화 (개선 6)
+    "n_estimators":     300,
     "max_depth":        5,
-    "learning_rate":    0.04,  # 0.05→0.04: estimators 증가 보상 (과적합 방지)
+    "learning_rate":    0.04,
+    "subsample":        0.8,
+    "min_samples_leaf": GBM_MIN_SAMPLES_LEAF,
+    "random_state":     42,
+}
+GBM_PARAMS_INTRADAY = {
+    "n_estimators":     100,
+    "max_depth":        4,
+    "learning_rate":    0.08,
     "subsample":        0.8,
     "min_samples_leaf": GBM_MIN_SAMPLES_LEAF,
     "random_state":     42,
 }
 
-# 장중 재학습 전용 경량 파라미터
-# n_estimators 300→100, max_depth 5→4: sklearn 1.0.2 32-bit GIL 블로킹 ~3배 단축
-# 사용 조건: 장중 재시작·warmup retrain (intraday=True) — 08:55 pre-market은 풀 파라미터 유지
-GBM_PARAMS_INTRADAY = {
-    "n_estimators":     100,
+# ── HistGradientBoostingClassifier (주 경로) ─────────────────────
+# 벤치마크 실측 (20k봉×97피처, daemon thread, 20260611):
+#   GBM(n=100):     total=272s  main_blocked=253,706ms (93%)
+#   HistGBM(n=100): total=  0.6s  main_blocked=559ms   (0.2%)
+# C++ OpenMP 백엔드가 fit() 중 GIL을 해제 → S2 5s 차단 근본 제거
+HIST_GBM_PARAMS = {
+    "max_iter":         300,   # GBM n_estimators=300 동등
+    "max_depth":        5,
+    "learning_rate":    0.04,
+    "min_samples_leaf": GBM_MIN_SAMPLES_LEAF,
+    "random_state":     42,
+}
+HIST_GBM_PARAMS_INTRADAY = {
+    "max_iter":         100,
     "max_depth":        4,
-    "learning_rate":    0.08,  # estimators 감소 보상
-    "subsample":        0.8,
+    "learning_rate":    0.08,
     "min_samples_leaf": GBM_MIN_SAMPLES_LEAF,
     "random_state":     42,
 }
@@ -370,12 +396,21 @@ class BatchRetrainer:
         intraday:    bool = False,
     ) -> Dict:
         """
-        단일 호라이즌 GBM 학습 + 교차검증
+        단일 호라이즌 학습 + 교차검증
 
-        성능 향상 시에만 저장 (안전 교체)
-        intraday=True: 경량 파라미터 + CV 없이 전체 직접 학습 (GIL 블로킹 최소화)
+        HistGBM 가용 시 HistGradientBoostingClassifier 우선 사용 (GIL-free).
+        불가 시 GradientBoostingClassifier fallback.
+        intraday=True: 경량 파라미터 + CV 없이 전체 직접 학습.
         """
-        _gbm_params = GBM_PARAMS_INTRADAY if intraday else GBM_PARAMS
+        # 모델 팩토리 선택 — HistGBM은 GIL을 학습 중 해제 (C++ OpenMP)
+        if _HIST_GBM_OK:
+            _params = HIST_GBM_PARAMS_INTRADAY if intraday else HIST_GBM_PARAMS
+            def _make_model():
+                return HistGradientBoostingClassifier(**_params)
+        else:
+            _params = GBM_PARAMS_INTRADAY if intraday else GBM_PARAMS
+            def _make_model():
+                return GradientBoostingClassifier(**_params)
 
         cv_accs = []
         if not intraday:
@@ -392,7 +427,7 @@ class BatchRetrainer:
                 X_tr_s = scaler.fit_transform(X_tr)
                 X_val_s = scaler.transform(X_val)
 
-                model = GradientBoostingClassifier(**_gbm_params)
+                model = _make_model()
                 model.fit(X_tr_s, y_tr, sample_weight=_make_sample_weight(y_tr, horizon_key))
                 acc = accuracy_score(y_val, model.predict(X_val_s))
                 cv_accs.append(acc)
@@ -405,8 +440,10 @@ class BatchRetrainer:
         # 전체 데이터로 최종 학습 (장중 모드: CV 없이 여기만 실행)
         final_scaler = StandardScaler()
         X_scaled = final_scaler.fit_transform(X)
-        final_model = GradientBoostingClassifier(**_gbm_params)
+        final_model = _make_model()
         final_model.fit(X_scaled, y, sample_weight=_make_sample_weight(y, horizon_key))
+        _model_type = "HistGBM" if _HIST_GBM_OK else "GBM"
+        logger.debug("[Retrain] %s %s 학습 완료 (n=%d)", _model_type, horizon_key, len(X))
 
         # 기존 모델과 성능 비교
         old_acc  = self._load_model_acc(horizon_key)

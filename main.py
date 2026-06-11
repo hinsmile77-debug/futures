@@ -2170,7 +2170,7 @@ class TradingSystem:
         # 장중(09:00~15:10) 재시작: pre_market_setup()이 재호출되지 않으므로 즉시 시작.
         # 그렇지 않으면 첫 분봉 STEP 3에서 시작되어 파이프라인과 CPU 경합 → CB⑤ 5026ms 발동.
         # [P0] 당일 08:50 이후 이미 재학습 완료된 경우 장중 재학습 중복 차단.
-        # 근거: 장중 재시작 GBM(50k봉×24fit)이 sklearn GIL을 2~3시간 보유 → S2 5s 블로킹 반복.
+        # [P0-Gate] 14:30 이후 재시작: 장 마감 40분 전 — 재학습해도 실사용 시간 없음 → 스킵.
         _rst_now = datetime.datetime.now()
         _today_0850 = _rst_now.replace(hour=8, minute=50, second=0, microsecond=0)
         _last_rt = getattr(self.batch_retrainer, "_last_retrain", None)
@@ -2179,10 +2179,12 @@ class TradingSystem:
             and _last_rt.date() == _rst_now.date()
             and _last_rt >= _today_0850
         )
+        _late_restart = _rst_now.time() >= datetime.time(14, 30)   # 14:30 이후 재학습 무의미
         if (
             datetime.time(9, 0) <= _rst_now.time() < datetime.time(15, 10)
             and not self._gbm_retrain_running
             and not _already_retrained_today
+            and not _late_restart
         ):
             self._warmup_retrain_pending = False
             self._gbm_retrain_running = True
@@ -2196,8 +2198,6 @@ class TradingSystem:
 
             def _intraday_retrain_worker():
                 try:
-                    # intraday=True: n_estimators 100, 20k봉, CV 없음 → GIL 블로킹 시간 대폭 단축
-                    # force=False: cv_acc 하락 시 기존 모델 유지 (intraday는 cv 없으므로 force 취급됨)
                     result = self.batch_retrainer.retrain_now(force=False, intraday=True)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
@@ -2208,10 +2208,16 @@ class TradingSystem:
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
             threading.Thread(target=_intraday_retrain_worker, daemon=True).start()
+        elif _late_restart and not _already_retrained_today:
+            self._warmup_retrain_pending = False
+            log_manager.system(
+                f"[WarmupRetrain] 14:30 이후 재시작 → 재학습 스킵 (잔여시간 {(datetime.time(15, 10).hour*60+10) - (_rst_now.hour*60+_rst_now.minute)}분)",
+                "INFO",
+            )
         elif _already_retrained_today:
             self._warmup_retrain_pending = False
             log_manager.system(
-                f"[WarmupRetrain] 당일 재학습 완료({_last_rt.strftime('%H:%M')}) 확인 → 장중 재학습 스킵 (GIL 차단 방지)",
+                f"[WarmupRetrain] 당일 재학습 완료({_last_rt.strftime('%H:%M')}) 확인 → 장중 재학습 스킵 (중복 방지)",
                 "INFO",
             )
 
