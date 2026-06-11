@@ -30,7 +30,7 @@ except ImportError:
 
 
 CACHE_TTL_SEC = 300
-YF_RETRY_COOLDOWN_SEC = 900
+YF_RETRY_COOLDOWN_SEC = 180  # 3분 (구: 900초 → 한국 장 중 yfinance 실패 시 회복 지연 방지)
 
 
 class MacroFetcher:
@@ -53,6 +53,7 @@ class MacroFetcher:
         self._last_yf_fail_time: Optional[datetime.datetime] = None
         self._last_source: str = "uninitialized"
         self._last_fallback_used: bool = False
+        self._last_good_vix: Optional[float] = None  # yfinance 성공 시 마지막 실제 VIX 보존
         self.fetch_count = 0
         self.last_error = ""
 
@@ -88,6 +89,8 @@ class MacroFetcher:
                 if yf:
                     data.update(yf)
                     source_parts.append("yfinance")
+                    if "vix" in yf:
+                        self._last_good_vix = float(yf["vix"])
             if _REQUESTS_OK:
                 naver = self._fetch_naver_fx()
                 if naver:
@@ -96,9 +99,16 @@ class MacroFetcher:
 
             fallback_used = False
             if not data:
+                # yfinance+naver 둘 다 실패 → 마지막 성공 VIX 우선 사용, 없으면 dummy
+                fallback_vix = self._last_good_vix if self._last_good_vix is not None else 20.0
                 data = self._dummy_values()
-                source_parts = ["dummy_fallback"]
+                data["vix"] = fallback_vix
+                source_parts = ["prev_vix_fallback" if self._last_good_vix is not None else "dummy_fallback"]
                 fallback_used = True
+                logger.warning(
+                    "[Macro] 수집 실패 — fallback 사용 vix=%.1f source=%s",
+                    fallback_vix, source_parts[0],
+                )
 
             result: Dict[str, float] = {}
             for key in ("sp500", "nasdaq", "vix", "usd_krw", "us10y"):
@@ -134,11 +144,12 @@ class MacroFetcher:
             self._last_source = "+".join(source_parts)
             self._last_fallback_used = fallback_used
             self.fetch_count += 1
-            logger.debug(
-                "[Macro] refreshed | VIX=%.1f KRW=%+.4f",
-                result["vix"],
-                result.get("usd_krw_chg", 0.0),
-            )
+            if not fallback_used:
+                logger.debug(
+                    "[Macro] refreshed | VIX=%.1f KRW=%+.4f src=%s",
+                    result["vix"], result.get("usd_krw_chg", 0.0),
+                    "+".join(source_parts),
+                )
 
     def _fetch_yfinance(self) -> Dict[str, float]:
         now = datetime.datetime.now()

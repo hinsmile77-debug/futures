@@ -55,11 +55,14 @@ class PredictionCalibrator:
 
         self._model: Optional[object] = None
 
+        self._transition_steps: int = 0  # P3: is_fitted 전환 후 블렌딩 카운터
+
         if _SKLEARN_OK:
             if method == "isotonic":
                 self._model = IsotonicRegression(out_of_bounds="clip")
             else:
-                self._model = LogisticRegression(C=1.0, solver="lbfgs")
+                # P2: C=1.0→0.1 — overconfident 데이터에서 급경사 Platt 커브 완화
+                self._model = LogisticRegression(C=0.1, solver="lbfgs")
 
     def record(self, raw_prob: float, actual_correct: bool):
         """
@@ -96,6 +99,9 @@ class PredictionCalibrator:
                 X = probs.reshape(-1, 1)
                 self._model.fit(X, labels)
 
+            # P3: 첫 fitted 전환 시 블렌딩 카운터 설정 (conf 점프 완화)
+            if not self._fitted:
+                self._transition_steps = 20
             self._fitted = True
             logger.debug(f"[Calibration] {self.method} 보정 완료 (n={len(probs)})")
 
@@ -114,10 +120,17 @@ class PredictionCalibrator:
 
         try:
             if self.method == "isotonic":
-                return float(np.clip(self._model.predict([raw_prob])[0], 0.0, 1.0))
+                cal = float(np.clip(self._model.predict([raw_prob])[0], 0.0, 1.0))
             else:
                 X = np.array([[raw_prob]])
-                return float(np.clip(self._model.predict_proba(X)[0][1], 0.0, 1.0))
+                cal = float(np.clip(self._model.predict_proba(X)[0][1], 0.0, 1.0))
+
+            # P3: is_fitted 첫 전환 후 N봉 동안 raw↔calibrated 블렌딩 (점프 완화)
+            if self._transition_steps > 0:
+                alpha = 1.0 - self._transition_steps / 20.0  # 0.05→1.0 선형 증가
+                cal = alpha * cal + (1.0 - alpha) * float(raw_prob)
+                self._transition_steps -= 1
+            return cal
         except Exception:
             return float(raw_prob)
 

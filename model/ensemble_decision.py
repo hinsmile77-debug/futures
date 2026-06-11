@@ -246,6 +246,9 @@ class EnsembleDecision:
         self._flat_streak: int = 0
         # FL 조기 감쇠: FL 확률 70%+ 연속 분 카운터 (Phase 1 부록 C-1)
         self._fl_streak: Dict[str, int] = {h: 0 for h in HORIZONS}
+        # P4: display용 EMA smoothing (span=20, 실거래 로직 무영향)
+        self._conf_ema: Optional[float] = None
+        self._CONF_EMA_ALPHA: float = 2.0 / (20 + 1)  # span=20
 
     def compute(
         self,
@@ -742,29 +745,24 @@ class EnsembleDecision:
                     _cascade_score, direction,
                 )
 
-        # ── Platt 보정 (앙상블 전용 보정기 우선, 미학습 시 3m fallback) ────
-        # ensemble_calibrator: 앙상블 conf 분포를 직접 학습 (3m 분포 미스매치 해소)
-        # 100건 미만: 3m 보정기 fallback (분포 차이 일부 허용)
+        # ── Platt 보정 — UP/DN/FLAT 전방향 동일 처리 (P1) ────────────────
+        # P1: FLAT도 UP/DN과 같은 calibration 경로 통과
+        #   → 방향 전환 시 calibration 불연속(conf 급등락) 제거
+        # P3 블렌딩(calibration.py)으로 is_fitted 전환 점프 완화
         _confidence_raw = confidence
-        if direction != DIRECTION_FLAT:
-            if self.ensemble_calibrator.is_fitted:
-                _cal = self.ensemble_calibrator.calibrate(confidence)
-            elif self.calibrator is not None:
-                _cal = self.calibrator.calibrate("3m", confidence)
-            else:
-                _cal = confidence
-            confidence = min(max(float(_cal), 0.0), 0.85)
-            if direction == DIRECTION_UP:
-                up_score = confidence
-            elif direction == DIRECTION_DOWN:
-                down_score = confidence
+        if self.ensemble_calibrator.is_fitted:
+            _cal = self.ensemble_calibrator.calibrate(confidence)
+        elif self.calibrator is not None:
+            _cal = self.calibrator.calibrate("3m", confidence)
         else:
-            # [Fix2] FLAT 방향도 0.85 cap — Fix1(직접 가중합) 이후에도
-            # TrendBoost/FlatCap 등 후속 처리에서 flat_score가 1.0에 근접하는
-            # 잔여 경로 방어 (2차 안전망)
-            if confidence > 0.85:
-                confidence = 0.85
-                flat_score = confidence
+            _cal = confidence
+        confidence = min(max(float(_cal), 0.0), 0.85)
+        if direction == DIRECTION_UP:
+            up_score = confidence
+        elif direction == DIRECTION_DOWN:
+            down_score = confidence
+        else:
+            flat_score = confidence
 
         # ── 레짐별 최소 신뢰도 기준 ──────────────────────────
         min_conf  = REGIME_MIN_CONFIDENCE.get(regime, 0.58)
@@ -787,10 +785,17 @@ class EnsembleDecision:
 
         auto_entry = ENTRY_GRADE.get(grade, {}).get("auto", False) and regime_ok
 
+        # P4: display용 EMA smoothing (span=20) — 실거래 로직(grade·regime_ok)은 비보정 confidence 기준
+        if self._conf_ema is None:
+            self._conf_ema = confidence
+        else:
+            self._conf_ema = self._CONF_EMA_ALPHA * confidence + (1.0 - self._CONF_EMA_ALPHA) * self._conf_ema
+
         result = {
             "direction":          direction,
             "confidence":         round(confidence, 4),
             "confidence_raw":     round(_confidence_raw, 4),
+            "confidence_smoothed": round(self._conf_ema, 4),
             "up_score":           round(up_score, 4),
             "down_score":         round(down_score, 4),
             "flat_score":         round(flat_score, 4),

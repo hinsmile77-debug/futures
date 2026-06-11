@@ -213,7 +213,7 @@ class DynamicMcPanel(QWidget):
 
         self._bar_table = QTableWidget(0, 9)
         self._bar_table.setHorizontalHeaderLabels(
-            ["시각", "conf", "mc", "Δ", "dir", "grade", "gate", "meta/tox", "진입단계"]
+            ["시각", "conf(ema)", "mc", "Δ", "dir", "grade", "gate", "meta/tox", "진입단계"]
         )
         hdr = self._bar_table.horizontalHeader()
         for idx in (0, 1, 2, 3, 4, 5, 6):
@@ -418,10 +418,20 @@ class DynamicMcPanel(QWidget):
             % (_COL["border"], _COL["bg3"], _COL["text"], chunk_color)
         )
 
+        # P4: 전체 오늘 데이터 기준으로 span=20 EMA 계산 (display용 — 실거래 로직 무영향)
+        _ema_alpha = 2.0 / (20 + 1)
+        _ema_val = None
+        _ema_list = []
+        for _r in rows:
+            _c = float(_r["confidence"])
+            _ema_val = _c if _ema_val is None else (_ema_alpha * _c + (1.0 - _ema_alpha) * _ema_val)
+            _ema_list.append(_ema_val)
+        ema_sample = _ema_list[-24:]
+
         sample = rows[-24:]
         self._bar_table.setRowCount(len(sample))
         for i, r in enumerate(sample):
-            conf = float(r["confidence"])
+            conf = ema_sample[i]      # P4: EMA 표시
             mc = float(r["min_conf"] or fallback_mc)
             delta = conf - mc
             ts_str = r["ts"][11:16]
@@ -718,6 +728,8 @@ class DynamicMcPanel(QWidget):
 
         if completed_entry:
             return "8. 진입완료"
+        if conf == 0.0 and direction == 0 and grade == "X":
+            return "0. cold-start 대기"
         if conf < mc:
             return "1. conf미달"
         if direction == 0 or grade == "X":
