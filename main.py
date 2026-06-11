@@ -403,6 +403,7 @@ class TradingSystem:
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
+        self._eod_retrain_ok: bool = False           # 전날 EOD 재학습 성공 여부 — 08:55 PreRetrain 스킵 판단용
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
         self._gbm_retrain_started_at: Optional[datetime.datetime] = None  # P1-B: 30분 타임아웃 감시용
         self._gbm_retrain_done_event = threading.Event()  # daily_close 대기용 — 초기값 set(완료 상태)
@@ -2619,31 +2620,41 @@ class TradingSystem:
         # [PreRetrain] 08:55 GBM 사전 재학습 — 09:00 첫 파이프라인 CB⑤ 지연 방지.
         # warmup 플래그가 설정되어 있으면 여기서 바로 백그라운드 스레드 시작.
         # 재학습이 09:00 이전에 완료되면 STEP 3 에서 _gbm_retrain_running=True 이므로 중복 실행 없음.
+        # [Skip] 전날 EOD 재학습이 성공했으면 동일 데이터로 재학습하는 중복을 스킵.
+        #        EOD force=True 로 교체가 완료됐으므로 09:00 파이프라인 지연도 없다.
+        #        단, _eod_retrain_ok 는 세션 재시작 시 False로 초기화되므로
+        #        의도치 않은 재시작 후 warmup 은 그대로 실행된다.
         if (
             getattr(self, "_warmup_retrain_pending", False)
             and not getattr(self, "_gbm_retrain_running", False)
         ):
             self._warmup_retrain_pending = False
-            self._gbm_retrain_running = True
-            self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
-            self._gbm_retrain_done_event.clear()
-            self.dashboard.set_model_status("GBM 사전 재학습중...")
-            log_manager.system(
-                "[PreRetrain] 08:55 GBM 사전 재학습 시작 — 09:00 파이프라인 지연 방지", "INFO"
-            )
+            if getattr(self, "_eod_retrain_ok", False):
+                log_manager.system(
+                    "[PreRetrain] 08:55 사전 재학습 스킵 — 전날 EOD 재학습 성공 (동일 데이터 중복 불필요)",
+                    "INFO",
+                )
+            else:
+                self._gbm_retrain_running = True
+                self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
+                self._gbm_retrain_done_event.clear()
+                self.dashboard.set_model_status("GBM 사전 재학습중...")
+                log_manager.system(
+                    "[PreRetrain] 08:55 GBM 사전 재학습 시작 — EOD 미완료 또는 재시작 복구", "INFO"
+                )
 
-            def _pre_retrain_worker():
-                try:
-                    result = self.batch_retrainer.retrain_now(force=True)
-                except Exception as _pre_e:
-                    result = {"ok": False, "error": str(_pre_e)}
-                if not result.get("ok"):
-                    # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
-                    self._gbm_retrain_running = False
-                self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
-                QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
+                def _pre_retrain_worker():
+                    try:
+                        result = self.batch_retrainer.retrain_now(force=True)
+                    except Exception as _pre_e:
+                        result = {"ok": False, "error": str(_pre_e)}
+                    if not result.get("ok"):
+                        # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
+                        self._gbm_retrain_running = False
+                    self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
+                    QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
-            threading.Thread(target=_pre_retrain_worker, daemon=True).start()
+                threading.Thread(target=_pre_retrain_worker, daemon=True).start()
 
     def _pre_market_stage2(self):
         """2단계 (08:58): 2회차 macro fetch → SP500·KRW 실수치 반영 → 레짐 확정.
@@ -5993,8 +6004,10 @@ class TradingSystem:
                     pass
 
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
-        # force=False: 성능 향상 시에만 교체 (안전 보수적) — 수동 eod_retrain.py 는 force=True
-        retrain_result = self.batch_retrainer.retrain_now(force=False)
+        # force=True: 26주 데이터 기준 acc 안정화 → cv_acc 소폭 하락도 교체가 안전
+        # (force=False 시 미교체된 모델을 다음날 08:55 force=True로 덮어쓰는 왕복 비용 제거)
+        self._eod_retrain_ok = False   # EOD 진입 시 초기화 — 완료 후 True로 설정
+        retrain_result = self.batch_retrainer.retrain_now(force=True)
         retrain_ok = retrain_result.get("ok", False)
         # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
         # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
@@ -6005,6 +6018,7 @@ class TradingSystem:
                 len(_bad), _bad,
             )
         if retrain_ok:
+            self._eod_retrain_ok = True   # 내일 08:55 PreRetrain 스킵 신호
             self._ensure_shap_tracker()
             retrain_str = f"재학습 완료 ({retrain_result['elapsed_sec']}초, {retrain_result['data_size']}행)"
             log_manager.learning(
