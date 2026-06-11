@@ -3164,6 +3164,15 @@ class TradingSystem:
 
         # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 또는 세션 재시작 즉시) ────
         _st.append(("S3", time.perf_counter()))
+        # [P1a-보완] S2 wall-time vs 측정합계 괴리 = 분산 GIL 대기 (체크포인트 밖 누적분)
+        _s2_wall_ms    = int((_st[-1][1] - _st[-2][1]) * 1000)
+        _s2_hidden_gil = _s2_wall_ms - _s2_total_ms
+        if _s2_hidden_gil > 500:
+            _gil_src = "GBM" if self._gbm_retrain_running else "MetaConf-LR"
+            logger.warning(
+                "[S2-분산GIL] wall=%dms measured=%dms hidden_gil=%dms src=%s",
+                _s2_wall_ms, _s2_total_ms, _s2_hidden_gil, _gil_src,
+            )
         # [이상점3 수정] 재학습을 daemon thread로 분리 — 메인 스레드 블로킹 방지.
         # 완료 시 QTimer.singleShot(0, ...) 으로 메인 스레드에서 모델 로드.
         # _gbm_retrain_running 플래그로 중복 실행 차단.

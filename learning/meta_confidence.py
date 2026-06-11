@@ -91,9 +91,10 @@ class MetaConfidenceLearner:
         for r in _REGIME_KEYS:
             if _SKLEARN_OK:
                 # lbfgs: 소규모(30~300 샘플, 7피처) 다중클래스에 최적
+                # max_iter=200: 32-bit Python에서 1000은 수렴 실패 시 3분+ 소요 확인(20260611)
                 # class_weight='balanced': Q0~Q3 빈도 불균형 보정
                 self._models[r]  = LogisticRegression(
-                    C=1.0, max_iter=1000, solver='lbfgs', class_weight='balanced',
+                    C=1.0, max_iter=200, solver='lbfgs', class_weight='balanced',
                 )
                 self._scalers[r] = StandardScaler()
             else:
