@@ -29,6 +29,7 @@ RAW_DATA_DB     = os.path.join(DB_DIR, "raw_data.db")   # 경로 B 학습 데이
 CHALLENGER_DB      = os.path.join(DB_DIR, "challenger.db")  # 챔피언-도전자 전용 DB
 SCALER_MONITOR_DB  = os.path.join(DB_DIR, "scaler_monitor.db")  # 섹션 8 스케일러 상태 모니터
 ENSEMBLE_CALIBRATOR_PATH = os.path.join(DATA_DIR, "ensemble_calibrator.pkl")  # Platt 보정기 영속화
+META_CONF_STATE_PATH     = os.path.join(DATA_DIR, "meta_conf_state.pkl")       # MetaConf warm-start용
 
 # EOD WAL 체크포인트 대상 — 모든 WAL-모드 DB (db_utils.get_connection 이 WAL 설정)
 EOD_WAL_CHECKPOINT_DBS = [
@@ -221,6 +222,12 @@ MIN_CONF_TABLE = {
 # 인메모리 파라미터가 불일치하는 비결정성 버그가 발생한다.
 GBM_MIN_SAMPLES_LEAF = 10   # 두 학습기 모두 이 값을 참조한다
 
+# ── 배치 재학습 데이터 기간 ───────────────────────────────────────
+# DB 보유량(2025-08-19~): 73,421행 / 43주 / 피처 스키마 안정(2025-08~)
+# weeks_back=10 은 DB 초기(데이터 부족) 시절 고착된 값.
+# 26주(6개월)로 확장하면 ~44,000행 확보 → 스케일러 σ 안정 + 학습 품질 개선.
+RETRAIN_WEEKS_BACK: int = 26
+
 # ── 스케일러 운영 정책 ──────────────────────────────────────────
 # GBM은 트리 기반(스케일 불변) — 스케일러만 독립 refit, 모델 재학습과 분리
 # SGD 경로(online_learner)는 partial_fit 현행 유지, 이 정책 적용 외
@@ -395,7 +402,7 @@ FUTURES_COMMISSION_RATE = 0.000015   # 0.0015% 편도 (거래대금 기준)
 # ── Circuit Breaker 설정 ───────────────────────────────────────
 CB_SIGNAL_FLIP_LIMIT   = 5     # 1분 내 신호 반전 횟수
 CB_SIGNAL_FLIP_PAUSE   = 15    # 진입 정지 (분)
-CB_CONSEC_STOP_LIMIT   = 2     # 연속 손절 횟수 (5/15: 2회 후 재진입 손실 → 3→2 강화)
+CB_CONSEC_STOP_LIMIT   = 9999     # 연속 손절 횟수 (5/15: 2회 후 재진입 손실 → 3→2 강화)
 # CB③: FLAT 예측 제외 후 방향성 예측만 집계 (2026-06-02)
 # 랜덤 예측 정확도 = 50% (UP/DN 2클래스, FLAT 제외 시)
 # 0.28 = 랜덤 50%의 56% 수준 — 명백히 노이즈일 때만 정지
