@@ -6,6 +6,25 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-11 (155차 — EKS·conf100%·SHAP 3종 수정)
+
+### 다음 장 검증 항목
+
+#### [P1] EKS 기준 통합 확인
+- `[SHS-EKS] 기준=XX.X%` 로그에서 DynMC mc 값 표시 (45% 고정 아님)
+- `[SHS-EKS] 회복 기준=XX.X%` — 0.42 floor 없이 mc 직접 사용 확인
+
+#### [P1] conf=100% FLAT 재발 없음
+- SIGNAL.log에서 `conf=100%` 패턴 전수 확인
+- flat_score가 1.0으로 팽창하는 로그 없음 확인
+
+#### [P2] SHAP weekly_review 개선 확인
+- `방향별분석=ON` 로그 확인
+- `direction_top` dict 키 포함 확인 (UP/DN/FL top-3)
+- per-class Tier 2 발동 로그: `[SHAP] GBM 다중 클래스: ... per-class 트리 중요도로 폴백 (1회 알림)`
+
+---
+
 ## 2026-06-10 (142~147차 — 금일 장중 이상점 6세션 수정)
 
 ### 금일 수정 완료 요약

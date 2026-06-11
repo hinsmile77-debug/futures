@@ -446,6 +446,7 @@ class EnsembleDecision:
 
         up_score   = 0.0
         down_score = 0.0
+        flat_score = 0.0   # [Fix1] 직접 가중합 — 1-up-down 계산 시 up/down 반올림→0 → 1.0 팽창 방지
         total_w    = 0.0
 
         detail = {}
@@ -455,6 +456,7 @@ class EnsembleDecision:
                 continue
             up_score   += res.get("up",   0.0) * w
             down_score += res.get("down", 0.0) * w
+            flat_score += res.get("flat", 0.0) * w
             total_w    += w
             detail[h]  = {
                 "direction":  res.get("direction"),
@@ -465,8 +467,17 @@ class EnsembleDecision:
         if total_w > 0:
             up_score   /= total_w
             down_score /= total_w
+            flat_score /= total_w
 
-        flat_score = max(0.0, 1.0 - up_score - down_score)
+        # [Fix1] 직접 가중합 후 합계 정규화 (개별 호라이즌 반올림 오차 흡수)
+        _score_sum = up_score + down_score + flat_score
+        if _score_sum > 1e-9 and abs(_score_sum - 1.0) > 1e-4:
+            up_score   /= _score_sum
+            down_score /= _score_sum
+            flat_score /= _score_sum
+        # 안전망: 합계가 0인 극단 케이스 (모든 호라이즌 missing)
+        if _score_sum <= 1e-9:
+            flat_score = 1.0
 
         # ── P0-A: TrendGate 추세 부스트 ─────────────────────────────
         # TrendGate streak(10분+)이 active이면 해당 방향 점수를 직접 올린다.
@@ -747,6 +758,13 @@ class EnsembleDecision:
                 up_score = confidence
             elif direction == DIRECTION_DOWN:
                 down_score = confidence
+        else:
+            # [Fix2] FLAT 방향도 0.85 cap — Fix1(직접 가중합) 이후에도
+            # TrendBoost/FlatCap 등 후속 처리에서 flat_score가 1.0에 근접하는
+            # 잔여 경로 방어 (2차 안전망)
+            if confidence > 0.85:
+                confidence = 0.85
+                flat_score = confidence
 
         # ── 레짐별 최소 신뢰도 기준 ──────────────────────────
         min_conf  = REGIME_MIN_CONFIDENCE.get(regime, 0.58)

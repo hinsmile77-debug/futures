@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-11 (155차 — EKS min_conf 통합 + conf=100% FLAT 방어 3종 + SHAP 폴백 개선)
+
+**Work**: 금일 SIGNAL.log 분석 → 3개 독립 이슈 수정.
+
+### 한 일
+
+| Fix | 내용 | 파일 |
+|---|---|---|
+| A | EKS 발동/회복 기준을 DynMC GAP_OPEN mc로 통합. 고정 0.45 → `gap_open_mc` 파라미터. 회복 max(mc,0.42) floor 제거 | `safety/system_health.py`, `main.py` |
+| B-1 | flat_score 직접 가중합 (1-up-down 수식 제거 + 정규화). up/down 반올림→0 → flat=1.0 팽창 근본 차단 | `model/ensemble_decision.py` |
+| B-2 | FLAT 방향 0.85 cap 추가. 기존 UP/DN에만 cap → FLAT 누락 구멍 패치 | `model/ensemble_decision.py` |
+| B-3 | `_PROB_FLOOR=0.0001` — `predict_proba`·`_predict_masked` 양쪽. 극소값 반올림→0 원천 차단 | `model/multi_horizon_model.py` |
+| C | SHAP 3-tier fallback: TreeExplainer → per-class tree 중요도 → global. `get_class_ranking()` 신규. `weekly_review()` `direction_top` dict 추가 | `learning/shap/shap_tracker.py` |
+
+### conf=100% 탈출 경로 (이번 세션 규명)
+
+기존 135차·143차 수정에서도 살아남은 탈출 경로 발견:
+- GBM: `up=0.00004, down=0.00004, flat=0.70`
+- CONF_CLIP(0.80) 미발동 (flat < 0.80)
+- `round(up, 4)=0.0`, `round(down, 4)=0.0`
+- `flat_score = max(0, 1-0-0) = 1.0`
+- calibration·0.85 cap 모두 우회 → `conf=100%`
+
+Fix1+2+3 세 층으로 봉쇄.
+
+---
+
 ## 2026-06-10 (142차 — EOD 자동종료 흐름 6종 안전화)
 
 **Work**: 장마감 후 GBM 학습·EOD 작업·자동종료 흐름 전체 점검 → 이상점 6개 발견 → 우선순위 순서대로 전부 구현.

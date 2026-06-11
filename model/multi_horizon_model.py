@@ -138,6 +138,18 @@ class MultiHorizonModel:
         "ofi_norm", "ofi_pressure",
     })
 
+    # macro 피처 스케일러 σ 하한 — 학습기간 저변동 시 σ 극소화로 실전 z-score 폭발 방지
+    # macro_feature_transformer가 이미 정규화([0,1]/[-1,1])한 값을 StandardScaler가
+    # 재정규화할 때, 학습기간 VIX가 낮아 σ≈0.005이면 VIX=22 → z=35 같은 폭발 발생.
+    # 각 하한은 해당 피처 이론 범위의 10~20% 수준으로 설정 (실질 변동을 허용하는 최소값).
+    _MACRO_SCALE_FLOOR: dict = {
+        "macro_vix":          0.10,   # [0,1] — VIX 정규화값
+        "macro_sp500_chg":    0.15,   # [-1,1] — S&P500 변동률 정규화값
+        "macro_nasdaq_chg":   0.15,   # [-1,1]
+        "macro_krw_chg":      0.10,   # [-1,1] — USD/KRW 변동률
+        "macro_us10y_chg":    0.10,   # [-1,1] — 미국 10년물 변동률
+    }
+
     GBM_PARAMS = {
         "n_estimators":     200,   # 100→200: BatchRetrainer 동일 수준, PreRetrain 품질 개선
         "max_depth":        5,     # 4→5: 3000샘플×balanced weight 환경에서 표현력 확대
@@ -226,6 +238,7 @@ class MultiHorizonModel:
             # 스케일러
             scaler = StandardScaler()
             Xs = scaler.fit_transform(Xm)
+            self._apply_macro_scale_floor(scaler, horizon)
 
             # GBM 학습 — 30m: FL 다운웨이팅, 그 외: balanced
             clf = GradientBoostingClassifier(**self.GBM_PARAMS)
@@ -433,6 +446,16 @@ class MultiHorizonModel:
                     down += excess / 2.0
                 confidence = self.CONF_CLIP
 
+            # [Fix3] 방향 확률 극소값 floor — CONF_CLIP 미발동 구간(flat < 0.80)에서
+            # up/down이 0.00005 미만이면 round(4)에서 0.0이 되어 앙상블 flat_score
+            # 인플레이션(1-0-0=1.0)으로 이어지는 경로 예방.
+            # Fix1(직접 가중합)의 1차 방어를 보완하는 호라이즌 레벨 안전망.
+            _PROB_FLOOR = 0.0001
+            if up < _PROB_FLOOR and direction != DIRECTION_UP:
+                up = _PROB_FLOOR
+            if down < _PROB_FLOOR and direction != DIRECTION_DOWN:
+                down = _PROB_FLOOR
+
             results[horizon] = {
                 "up":           round(up, 4),
                 "down":         round(down, 4),
@@ -536,6 +559,13 @@ class MultiHorizonModel:
                     flat  = self.CONF_CLIP; up   += excess / 2.0; down += excess / 2.0
                 confidence = self.CONF_CLIP
 
+            # [Fix3] 방향 확률 극소값 floor (predict_proba와 동일 로직)
+            _PROB_FLOOR = 0.0001
+            if up < _PROB_FLOOR and direction != DIRECTION_UP:
+                up = _PROB_FLOOR
+            if down < _PROB_FLOOR and direction != DIRECTION_DOWN:
+                down = _PROB_FLOOR
+
             results[horizon] = {
                 "up":            round(up, 4),
                 "down":          round(down, 4),
@@ -587,6 +617,29 @@ class MultiHorizonModel:
 
     def _scaler_path(self, horizon: str) -> str:
         return os.path.join(SCALER_DIR, f"scaler_{horizon}.pkl")
+
+    def _apply_macro_scale_floor(self, sc, horizon_label: str) -> None:
+        """macro 피처 σ 하한 적용. fit_and_train·refresh_scalers 양쪽에서 공유.
+
+        macro_feature_transformer가 이미 [0,1]/[-1,1]로 정규화한 값에 StandardScaler가
+        재정규화하면서 학습기간 저변동 → σ 극소 → 실전 z-score 폭발 방지.
+        """
+        if not (self.feature_names and hasattr(sc, "scale_")):
+            return
+        for _feat, _floor in self._MACRO_SCALE_FLOOR.items():
+            if _feat not in self.feature_names:
+                continue
+            _fi = self.feature_names.index(_feat)
+            if _fi >= len(sc.scale_):
+                continue
+            if float(sc.scale_[_fi]) < _floor:
+                logger.warning(
+                    "[ScalerFloor] %s macro '%s' scale=%.4f → floor=%.2f 적용 (z-score 폭발 방지)",
+                    horizon_label, _feat, sc.scale_[_fi], _floor,
+                )
+                sc.scale_[_fi] = _floor
+                if hasattr(sc, "var_") and _fi < len(sc.var_):
+                    sc.var_[_fi] = _floor ** 2
 
     def _save_all(self):
         for h in self.models:
@@ -857,6 +910,7 @@ class MultiHorizonModel:
                                 horizon, _feat, _raw_std,
                             )
 
+                self._apply_macro_scale_floor(_new_sc, horizon)
                 self.scalers[horizon] = _new_sc
                 self._scaler_fitted_at[horizon] = datetime.datetime.now()
                 # 원자적 저장: tmp에 쓴 후 os.replace로 교체 — 읽기 도중 corrupt 방지

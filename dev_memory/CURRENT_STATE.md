@@ -1,7 +1,56 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-10 (147차 세션) — 장중 Retrain acc 하락 근본 원인 2종 수정
+> 마지막 업데이트: 2026-06-11 (155차 세션) — EKS min_conf 통합 + conf=100% FLAT 방어 3종 + SHAP 폴백 개선
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-11 (155차 — EKS·conf100%·SHAP 3종 수정)
+
+### [A] EKS min_conf 통합
+
+**파일:** `safety/system_health.py`, `main.py`
+
+**문제:** EKS 발동 기준이 고정 `EKS_CONF_THRESHOLD=0.45`인데 DynMC GAP_OPEN mc=0.346. 기준 불일치 → EKS가 실제 운영 기준(34.6%)보다 훨씬 높은 45%에서 발동/회복 판단.
+
+**수정:**
+- `evaluate_early_kill_switch(gap_open_mc: float = EKS_CONF_THRESHOLD)` 파라미터 추가
+- `main.py` 호출 시 `gap_open_mc=get_zone_min_confidence("GAP_OPEN")` 전달
+- 회복 `_threshold = max(current_mc, 0.42)` → `_threshold = current_mc` (0.42 floor 제거, window 3/10 조건이 노이즈 방어)
+
+### [B] conf=100% FLAT 탈출 Fix 3종
+
+**파일:** `model/ensemble_decision.py`, `model/multi_horizon_model.py`
+
+**탈출 경로:** GBM `up=0.00004, down=0.00004, flat=0.70`. CONF_CLIP(0.80) 미발동 → `round(up,4)=0.0` → `flat_score=max(0,1-0-0)=1.0` → calibration·cap 우회 → conf=100%.
+
+| Fix | 파일 | 내용 |
+|---|---|---|
+| Fix1 | `ensemble_decision.py` | flat_score 직접 가중합. `1-up-down` 수식 제거 + 정규화 |
+| Fix2 | `ensemble_decision.py` | FLAT 방향 0.85 cap 추가 (UP/DN과 동일 처리) |
+| Fix3 | `multi_horizon_model.py` | `_PROB_FLOOR=0.0001` — `predict_proba` + `_predict_masked` 양쪽에 극소값 floor |
+
+### [C] SHAP TreeExplainer 폴백 개선
+
+**파일:** `learning/shap/shap_tracker.py`
+
+**문제:** shap 0.41.0 + 3-class GBM 비호환. `TreeExplainer`·`shap.Explainer` 둘 다 실패.
+
+**수정 (3-tier fallback):**
+1. Tier 1: TreeExplainer (기존 — 실패 시 WARNING→INFO 다운그레이드, 1회만)
+2. Tier 2 (NEW): `model.estimators_[i][k].feature_importances_` per-class 평균 → `max(axis=0)`. global avg 대비 상관 0.7753, 방향별 신호 포착
+3. Tier 3: global `feature_importances_` (기존 최종 fallback)
+
+**신규 기능:**
+- `get_class_ranking(class_labels=["UP","DN","FL"])` — 방향별 피처 중요도 순위 반환
+- `weekly_review()` `direction_top` dict 추가 + 로그 `방향별분석=ON`
+
+### 다음 장 확인 사항
+
+- `[SHS-EKS] 기준=XX.X%` 로그 — DynMC mc와 일치 확인 (고정 45% 아님)
+- `[SHS-EKS] 회복 기준=XX.X%` — max(mc,0.42) 없이 mc 직접 사용 확인
+- conf=100% 재발 없음 (SIGNAL.log 전수)
+- SHAP weekly_review `방향별분석=ON` + `direction_top` 키 출력 확인
 
 ---
 

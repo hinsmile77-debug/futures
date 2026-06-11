@@ -9,18 +9,32 @@ SHS = 100
 SHS < 60 → 진입 차단 + 슬랙 경고 (5점 하락마다 재알림)
 
 Early Kill Switch (09:05 1회 평가):
-  조건: GAP_OPEN(09:00~09:05) 구간 최대 conf < 45%  AND  CORE 통과율 0%
+  조건: GAP_OPEN(09:00~09:05) 구간 최대 conf < GAP_OPEN zone min_conf  AND  CORE 통과율 0%
   → 당일 관망 선언 (수동 진입은 대시보드에서 별도 허용)
+
+EKS 동적 해제:
+  간격: 30분마다 재평가 (09:20, 09:50, 10:20, 11:00, 11:30)
+  해제 조건 (3가지 모두 충족):
+    ① 스케일러 age < 1h  (갱신된 스케일러 사용 중)
+    ② 최근 10봉 중 conf ≥ current_mc 봉 수 ≥ 3  (DynMC 기준, 0.42 floor 제거)
+    ③ z경고 피처 수 < 5
+  마감: 11:30 이후 재평가 없음 (거래 시간 부족)
 """
+import datetime
 import logging
 
 logger = logging.getLogger("SYSTEM")
 
-ENTRY_BLOCK_THRESHOLD = 60.0       # SHS 이 이하면 진입 차단
-EKS_CONF_THRESHOLD    = 0.45       # GAP_OPEN 최대 conf 기준
-EKS_MIN_BARS          = 3          # EKS 판정 최솟 GAP_OPEN 봉 수
-                                   # ERR-FATAL 등으로 데이터 부족 시 섣부른 당일 관망 방지
-ALERT_DELTA           = 5.0        # 이 이상 추가 하락 시 슬랙 재알림
+ENTRY_BLOCK_THRESHOLD       = 60.0   # SHS 이 이하면 진입 차단
+EKS_CONF_THRESHOLD          = 0.45   # GAP_OPEN zone mc 미전달 시 fallback (실제 기준은 DynMC)
+EKS_MIN_BARS                = 3      # EKS 판정 최솟 GAP_OPEN 봉 수
+                                     # ERR-FATAL 등으로 데이터 부족 시 섣부른 당일 관망 방지
+ALERT_DELTA                 = 5.0    # 이 이상 추가 하락 시 슬랙 재알림
+
+EKS_RECOVERY_INTERVAL_MIN   = 30     # 재평가 최소 간격 (분)
+EKS_RECOVERY_CONF_WINDOW    = 10     # 회복 판정용 최근 봉 수
+EKS_RECOVERY_CONF_MIN_HITS  = 3      # window 내 임계 초과 최소 봉 수
+EKS_RECOVERY_DEADLINE       = datetime.time(11, 30)  # 이 시각 이후 재평가 없음
 
 
 class SystemHealthScore:
@@ -41,10 +55,11 @@ class SystemHealthScore:
         self._gap_open_delayed_count:     int   = 0   # [P2] 파이프라인 지연으로 conf 제외된 봉 수
 
         # EKS 상태
-        self._eks_evaluated:        bool = False
-        self._eks_active:           bool = False
-        self._eks_recovery_checked: bool = False   # [P3] 09:20 이후 1회 회복 시도 여부
-        self._eks_reason:           str  = ""      # [C2] 발동 원인 (배지 표시용)
+        self._eks_evaluated:          bool  = False
+        self._eks_active:             bool  = False
+        self._eks_recovery_count:     int   = 0     # 회복 시도 횟수 (로그·진단용)
+        self._eks_last_recovery_ts:   "datetime.datetime | None" = None
+        self._eks_reason:             str   = ""    # [C2] 발동 원인 (배지 표시용)
 
     # ── 업데이트 ────────────────────────────────────────────────
 
@@ -87,9 +102,10 @@ class SystemHealthScore:
 
     # ── EKS 판정 ────────────────────────────────────────────────
 
-    def evaluate_early_kill_switch(self) -> bool:
+    def evaluate_early_kill_switch(self, gap_open_mc: float = EKS_CONF_THRESHOLD) -> bool:
         """
         09:05 최초 비-GAP_OPEN 분봉에서 1회 호출.
+        gap_open_mc: GAP_OPEN zone DynMC min_conf (main.py에서 전달). 미전달 시 fallback 0.45.
         GAP_OPEN 바가 1개 이상 있을 때만 판정.
         Returns: True if kill switch fired.
         """
@@ -119,20 +135,22 @@ class SystemHealthScore:
             return False
 
         if (
-            self._gap_open_conf_max < EKS_CONF_THRESHOLD
+            self._gap_open_conf_max < gap_open_mc
             and self._gap_open_core_pass_count == 0
         ):
             self._eks_active = True
             logger.warning(
                 "[SHS-EKS] Early Kill Switch 발동! "
-                "conf_max=%.1f%% core_pass=0/%d봉 → 당일 관망 선언",
+                "conf_max=%.1f%% < mc=%.1f%% core_pass=0/%d봉 → 당일 관망 선언",
                 self._gap_open_conf_max * 100,
+                gap_open_mc * 100,
                 self._gap_open_bar_count,
             )
         else:
             logger.info(
-                "[SHS-EKS] EKS 미발동. conf_max=%.1f%% core_pass=%d/%d봉",
+                "[SHS-EKS] EKS 미발동. conf_max=%.1f%% mc=%.1f%% core_pass=%d/%d봉",
                 self._gap_open_conf_max * 100,
+                gap_open_mc * 100,
                 self._gap_open_core_pass_count,
                 self._gap_open_bar_count,
             )
@@ -140,27 +158,63 @@ class SystemHealthScore:
 
     # ── EKS 회복 ────────────────────────────────────────────────
 
-    def try_eks_recovery(
-        self, scaler_age_hours: float, recent_conf: float, current_mc: float = 0.50
-    ) -> bool:
-        """[P3] 09:20 이후 1회 호출 — 스케일러 갱신 + conf 회복 시 EKS 자동 해제.
-        해제 임계값: max(current_mc, 0.42) — 오늘처럼 낮은 conf 장에서도 해제 가능.
-        Returns True if EKS was deactivated."""
-        if self._eks_recovery_checked or not self._eks_active:
+    def can_attempt_recovery(self, now: "datetime.datetime") -> bool:
+        """EKS 회복 시도 가능 여부: 활성·마감·간격 체크.
+        main.py 매분 파이프라인에서 호출. True이면 try_eks_recovery 호출."""
+        if not self._eks_active:
             return False
-        self._eks_recovery_checked = True
-        # 임계값: mc 기준 또는 42% 중 큰 값 (고정 50%보다 현실적)
-        _threshold = max(current_mc, 0.42)
-        if scaler_age_hours < 1.0 and recent_conf >= _threshold:
+        if now.time() >= EKS_RECOVERY_DEADLINE:
+            return False
+        if self._eks_last_recovery_ts is None:
+            return now.time() >= datetime.time(9, 20)
+        elapsed_min = (now - self._eks_last_recovery_ts).total_seconds() / 60.0
+        return elapsed_min >= EKS_RECOVERY_INTERVAL_MIN
+
+    def try_eks_recovery(
+        self,
+        scaler_age_hours: float,
+        conf_window: list,      # 최근 EKS_RECOVERY_CONF_WINDOW봉 conf 목록
+        current_mc: float = 0.50,
+        z_warn_count: int = 0,
+    ) -> bool:
+        """주기적 EKS 회복 평가. can_attempt_recovery() 확인 후 호출.
+
+        해제 조건 (3가지 모두):
+          ① scaler_age < 1h
+          ② 최근 window 중 conf ≥ current_mc 봉 수 ≥ EKS_RECOVERY_CONF_MIN_HITS  (DynMC 기준)
+          ③ z경고 피처 수 < 5
+        Returns True if EKS was deactivated.
+        """
+        if not self._eks_active:
+            return False
+
+        self._eks_recovery_count += 1
+        self._eks_last_recovery_ts = datetime.datetime.now()
+
+        _threshold = current_mc
+        _hits      = sum(1 for c in conf_window if c >= _threshold)
+
+        _ok_scaler = scaler_age_hours < 1.0
+        _ok_conf   = _hits >= EKS_RECOVERY_CONF_MIN_HITS
+        _ok_z      = z_warn_count < 5
+
+        if _ok_scaler and _ok_conf and _ok_z:
             self._eks_active = False
             logger.warning(
-                "[SHS-EKS] EKS 자동 해제 — scaler_age=%.1fh conf=%.1f%% (임계=%.1f%%)",
-                scaler_age_hours, recent_conf * 100, _threshold * 100,
+                "[SHS-EKS] EKS 자동 해제 (회복 #%d) — "
+                "scaler_age=%.1fh conf_hits=%d/%d(임계%.0f%%) z_warn=%d",
+                self._eks_recovery_count,
+                scaler_age_hours, _hits, len(conf_window),
+                _threshold * 100, z_warn_count,
             )
             return True
+
         logger.info(
-            "[SHS-EKS] EKS 유지 — scaler_age=%.1fh conf=%.1f%% < threshold=%.1f%% (회복 조건 미충족)",
-            scaler_age_hours, recent_conf * 100, _threshold * 100,
+            "[SHS-EKS] EKS 유지 (회복 시도 #%d) — "
+            "scaler_ok=%s conf_hits=%d/%d(필요%d,임계%.0f%%) z_ok=%s(z=%d)",
+            self._eks_recovery_count,
+            _ok_scaler, _hits, len(conf_window), EKS_RECOVERY_CONF_MIN_HITS,
+            _threshold * 100, _ok_z, z_warn_count,
         )
         return False
 
@@ -211,7 +265,8 @@ class SystemHealthScore:
         self._gap_open_delayed_count   = 0
         self._eks_evaluated            = False
         self._eks_active               = False
-        self._eks_recovery_checked     = False
+        self._eks_recovery_count       = 0
+        self._eks_last_recovery_ts     = None
         self._eks_reason               = ""
         self._last_alerted_shs         = 101.0
         logger.info("[SHS] 일일 리셋 완료")

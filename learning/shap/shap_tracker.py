@@ -64,8 +64,10 @@ class ShapTracker:
 
         # 현재 중요도 (최신)
         self._current_importance: Optional[np.ndarray] = None
+        # 방향별 중요도: [UP클래스배열, DN클래스배열, FL클래스배열] — per-class 경로에서만 설정
+        self._current_importance_by_class: Optional[List[np.ndarray]] = None
 
-        # TreeExplainer 첫 실패 후 False로 설정 → 이후 매분 WARNING 방지
+        # TreeExplainer 첫 실패 후 False로 설정 → 이후 매분 불필요한 시도 방지
         self._tree_explainer_ok: bool = True
 
         self._load_history()
@@ -114,7 +116,12 @@ class ShapTracker:
         return True
 
     def _calc_importance(self, model, X: np.ndarray) -> Optional[np.ndarray]:
-        """SHAP TreeExplainer → fallback to feature_importances_"""
+        """중요도 계산 3단계 우선순위:
+        1) SHAP TreeExplainer (이진 모델 / shap 미래 버전에서 다중 클래스 지원 시 자동 활성)
+        2) per-class 트리 중요도 (GBM 다중 클래스 전용 — 방향별 기여도 max 집계)
+        3) global feature_importances_ (최종 fallback)
+        """
+        # ── 1) SHAP TreeExplainer ───────────────────────────────────
         if _SHAP_OK and self._tree_explainer_ok:
             try:
                 explainer  = _shap.TreeExplainer(model)
@@ -128,25 +135,64 @@ class ShapTracker:
                 else:
                     return np.abs(shap_vals).mean(axis=0)
             except Exception as e:
-                # 첫 실패 시 WARNING, 이후 재시도 차단 (매분 WARNING 방지)
-                logger.warning(
-                    "[SHAP] TreeExplainer 불가 — 이후 feature_importances_ 전용 사용: %s", e
-                )
+                _emsg = str(e)
+                if "binary classification" in _emsg.lower():
+                    # shap 0.41: GBM 다중 클래스 TreeExplainer 미지원 — 알려진 제한, 오류 아님
+                    logger.info(
+                        "[SHAP] GBM 다중 클래스: TreeExplainer 미지원 (shap %s) "
+                        "→ per-class 트리 중요도로 전환 (1회 알림)",
+                        _shap.__version__ if _SHAP_OK else "N/A",
+                    )
+                else:
+                    logger.warning("[SHAP] TreeExplainer 실패: %s → per-class fallback", _emsg)
                 self._tree_explainer_ok = False
 
-        # fallback — sklearn GBM은 항상 feature_importances_ 보유
+        # ── 2) per-class 트리 중요도 (GBM 다중 클래스 실전 경로) ───
+        # GBM 내부: estimators_[i][k] = DecisionTreeRegressor for class k
+        # 각 클래스 전용 트리의 feature_importances_ 평균 → max across classes
+        # 단순 global 평균 대비: 방향 신호를 가장 강하게 내는 피처를 누락하지 않음
+        if (
+            hasattr(model, "estimators_")
+            and hasattr(model, "n_classes_")
+            and int(getattr(model, "n_classes_", 1)) > 1
+        ):
+            try:
+                n_cls    = int(model.n_classes_)
+                n_trees  = len(model.estimators_)
+                class_imps: List[np.ndarray] = []
+                for k in range(n_cls):
+                    fi_list = [
+                        model.estimators_[i][k].feature_importances_
+                        for i in range(n_trees)
+                        if hasattr(model.estimators_[i][k], "feature_importances_")
+                    ]
+                    if fi_list and len(fi_list[0]) == self._n_features:
+                        class_imps.append(np.mean(fi_list, axis=0))
+                if len(class_imps) == n_cls:
+                    imp = np.max(class_imps, axis=0)   # max: 어느 방향에서든 기여하면 포착
+                    self._current_importance_by_class = class_imps
+                    logger.debug(
+                        "[SHAP] per-class 트리 중요도 (n_cls=%d, n_trees=%d)",
+                        n_cls, n_trees,
+                    )
+                    return imp
+            except Exception as e:
+                logger.debug("[SHAP] per-class 트리 중요도 실패: %s", e)
+
+        # ── 3) global feature_importances_ (최종 fallback) ────────
         if hasattr(model, "feature_importances_"):
             imp = model.feature_importances_
             if len(imp) == self._n_features:
-                logger.debug("[SHAP] feature_importances_ fallback 사용 (n=%d)", len(imp))
                 return imp
             logger.warning(
-                "[SHAP] feature_importances_ 길이 불일치: %d != %d (tracker n_features)",
+                "[SHAP] feature_importances_ 길이 불일치: %d != %d",
                 len(imp), self._n_features,
             )
 
-        logger.warning("[SHAP] 중요도 계산 불가: SHAP=%s, feature_importances_=%s",
-                       _SHAP_OK, hasattr(model, "feature_importances_"))
+        logger.warning(
+            "[SHAP] 중요도 계산 불가: SHAP=%s, feature_importances_=%s",
+            _SHAP_OK, hasattr(model, "feature_importances_"),
+        )
         return None
 
     # ── 주간 심사 ─────────────────────────────────────────────────
@@ -226,19 +272,34 @@ class ShapTracker:
         # 교체 허용 여부
         replace_allowed = self._check_replace_allowed()
 
+        # 방향별 상위 피처 (per-class 경로에서만 유효)
+        direction_top: dict = {}
+        if self._current_importance_by_class is not None:
+            _cls_labels = ["UP", "DN", "FL"]
+            for k, label in enumerate(_cls_labels[:len(self._current_importance_by_class)]):
+                _imp_k = self._current_importance_by_class[k]
+                _top_idx = np.argsort(-_imp_k)[:3]
+                direction_top[label] = [
+                    {"feature": self.feature_names[i], "importance": round(float(_imp_k[i]), 6)}
+                    for i in _top_idx
+                ]
+
         report = {
             "rank_table":      rank_table[:15],  # 상위 15개만
             "core_ranks":      core_ranks,
             "declining":       declining,
             "candidates":      candidates,
             "replace_allowed": replace_allowed,
+            "direction_top":   direction_top,    # 방향별 상위 3개 (per-class 경로만)
             "note":            "⚠️ 교체는 반드시 인간 검토 후 수동 적용",
         }
 
         logger.info(
-            f"[SHAP] 주간 심사 완료 | "
-            f"하락피처={len(declining)}개 | 교체후보={len(candidates)}개 | "
-            f"CORE안전={'✅' if len(core_ranks) == 3 else '⚠️'}"
+            "[SHAP] 주간 심사 완료 | "
+            "하락피처=%d개 | 교체후보=%d개 | CORE안전=%s%s",
+            len(declining), len(candidates),
+            "✅" if len(core_ranks) == 3 else "⚠️",
+            " | 방향별분석=ON" if direction_top else "",
         )
         return report
 
@@ -396,6 +457,34 @@ class ShapTracker:
              "importance": round(float(self._current_importance[idx[i]]), 6)}
             for i in range(len(idx))
         ]
+
+    def get_class_ranking(self, class_labels: Optional[List[str]] = None) -> List[dict]:
+        """방향별(UP/DN/FL) 피처 중요도 순위 반환.
+
+        per-class 트리 중요도 경로에서만 유효.
+        class_labels: ['UP', 'DN', 'FL'] 등 클래스 이름 (없으면 class_0/1/2 사용).
+        Returns list of {feature, class_0_imp, class_1_imp, ..., max_imp, max_class}
+        """
+        if self._current_importance_by_class is None:
+            return []
+        n_cls    = len(self._current_importance_by_class)
+        labels   = class_labels or ["class_%d" % k for k in range(n_cls)]
+        labels   = labels[:n_cls]
+        n_feat   = self._n_features
+        rows = []
+        idx  = np.argsort(-self._current_importance)
+        for i in idx:
+            row = {
+                "rank":      int(i) + 1,
+                "feature":   self.feature_names[i],
+            }
+            imp_vals = [float(self._current_importance_by_class[k][i]) for k in range(n_cls)]
+            for k, label in enumerate(labels):
+                row[label] = round(imp_vals[k], 6)
+            row["max_imp"]   = round(max(imp_vals), 6)
+            row["max_class"] = labels[int(np.argmax(imp_vals))]
+            rows.append(row)
+        return rows
 
     def get_recent_ranks(self, feature: str, lookback: int = 4) -> List[int]:
         if feature not in self.feature_names:

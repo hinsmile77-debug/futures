@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-06-11 (155차 — EKS·conf100%·SHAP 3종)
+
+### [설계결정] EKS 기준 DynMC 통합 — 0.42 floor 제거
+
+**배경:** EKS 0.45 vs DynMC GAP_OPEN mc=0.346. 기준 불일치 → EKS가 모델 자체 운영 기준(34.6%)보다 훨씬 높은 45%에서 발동 판단.  
+**결정:** `evaluate_early_kill_switch(gap_open_mc=...)` 파라미터화. `main.py`에서 `get_zone_min_confidence("GAP_OPEN")` 전달. 0.45는 fallback 상수로만 잔존.  
+**회복 floor 제거 이유:** `max(current_mc, 0.42)` → `current_mc` 직접 사용. 회복 조건에 이미 window 3/10 봉 조건이 있어 노이즈 방어 충분. 0.42 floor는 mc가 0.35일 때 회복 기준을 인위적으로 올려 회복 지연 유발.
+
+### [버그] conf=100% FLAT — round(4dp) 반올림 탈출
+
+**Root cause:** GBM `up=0.00004, down=0.00004` → `round(..., 4)=0.0`. `flat_score = max(0, 1-0-0) = 1.0`. CONF_CLIP 미발동 구간이라 이전 수정(135차, 143차) 모두 우회.  
+**Fix1:** flat_score 직접 가중합 + 정규화. `1-up-down` 수식 전면 제거.  
+**Fix2:** FLAT 방향 `if confidence > 0.85: confidence = 0.85` 추가 (UP/DN과 동일).  
+**Fix3:** `_PROB_FLOOR=0.0001` — `predict_proba`·`_predict_masked` 양쪽. 반올림 전에 floor 적용.
+
+### [설계결정] SHAP per-class tree 중요도 (Tier 2 fallback)
+
+**배경:** shap 0.41.0 + 3-class GBM 비호환. TreeExplainer·shap.Explainer 모두 실패.  
+**결정:** `model.estimators_[i][k].feature_importances_` per-class 평균 → `max(axis=0)`. global `feature_importances_` 대비 방향성 신호 보존.  
+**이유:** global avg는 UP/DN/FL 중요도를 뭉개지만, per-class max는 "UP에만 중요한 피처"를 살림. `get_class_ranking()`으로 방향별 top 피처 추적 가능.
+
+---
+
 ## 2026-06-10 (142차 — EOD 자동종료 흐름 안전화)
 
 ### [설계결정] QTimer.singleShot 비-Qt 스레드 문제 — _ShutdownSignal(QObject)으로 해결

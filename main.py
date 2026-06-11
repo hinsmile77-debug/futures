@@ -294,6 +294,7 @@ class TradingSystem:
         self.contrarian_mode = ContrarianModeTracker(enable_real_order=False)
         from collections import deque as _deque
         self._z_warn_5m: "_deque[int]" = _deque(maxlen=5)  # Shadow 배지용 5분 z경고 롤링
+        self._eks_recovery_conf_window: "_deque[float]" = _deque(maxlen=10)  # EKS 회복 판정용 최근 conf
 
         # 현재 레짐
         self.current_regime         = "NEUTRAL"
@@ -4393,7 +4394,9 @@ class TradingSystem:
                 pipeline_delayed=_gap_pipe_delayed,
             )
         elif not self.system_health._eks_evaluated:
-            _eks_fired = self.system_health.evaluate_early_kill_switch()
+            _eks_fired = self.system_health.evaluate_early_kill_switch(
+                gap_open_mc=get_zone_min_confidence("GAP_OPEN"),
+            )
             if _eks_fired:
                 from utils.notify import notify_kill_switch as _nks
                 _shs_d = self.system_health.to_dict()
@@ -4441,20 +4444,23 @@ class TradingSystem:
                 except Exception as _ek_re:
                     logger.debug("[SHS-EKS] 원인 추론 실패 (무시): %s", _ek_re)
 
-        # [P3] EKS 자동 해제 — 09:20 이후 1회: 스케일러 갱신 + conf 회복 시 재개
-        # 조건: kill_switch 활성 + 미시도 + 09:20+ + scaler_age<1h + conf>=max(mc,0.42)
-        if (
-            self.system_health.kill_switch_active
-            and not self.system_health._eks_recovery_checked
-            and ts_raw.time() >= datetime.time(9, 20)
-        ):
-            _p3_scaler_age = self.model.canary_stale_age_hours()
-            if self.system_health.try_eks_recovery(_p3_scaler_age, confidence, actual_min_conf):
-                log_manager.system(
-                    f"[SHS-EKS] EKS 자동 해제 확정 — 장중 진입 재개 "
-                    f"scaler_age={_p3_scaler_age:.1f}h conf={confidence:.1%}",
-                    "WARNING",
-                )
+        # [P3] EKS 동적 회복 — 30분 간격, 11:30 이전
+        # 슬라이딩 윈도우에 conf 축적 후 can_attempt_recovery가 True이면 재평가
+        if self.system_health.kill_switch_active:
+            self._eks_recovery_conf_window.append(confidence)
+            if self.system_health.can_attempt_recovery(ts_raw):
+                _p3_scaler_age = self.model.canary_stale_age_hours()
+                _p3_z_warn     = getattr(self, "_last_canary_z_warn", 0)
+                _p3_window     = list(self._eks_recovery_conf_window)
+                if self.system_health.try_eks_recovery(
+                    _p3_scaler_age, _p3_window, actual_min_conf, _p3_z_warn
+                ):
+                    log_manager.system(
+                        f"[SHS-EKS] EKS 자동 해제 확정 — 장중 진입 재개 "
+                        f"scaler_age={_p3_scaler_age:.1f}h "
+                        f"conf_window={[f'{c:.0%}' for c in _p3_window[-3:]]}",
+                        "WARNING",
+                    )
 
         # EKS 활성 시 매분 진입 차단 로그 (방향 있을 때만)
         if self.system_health.kill_switch_active and direction != 0:
@@ -5959,7 +5965,7 @@ class TradingSystem:
 
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
         # force=False: 성능 향상 시에만 교체 (안전 보수적) — 수동 eod_retrain.py 는 force=True
-        retrain_result = self.batch_retrainer.retrain_now(weeks_back=10, force=False)
+        retrain_result = self.batch_retrainer.retrain_now(force=False)
         retrain_ok = retrain_result.get("ok", False)
         # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
         # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
