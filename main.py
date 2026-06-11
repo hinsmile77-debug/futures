@@ -2595,8 +2595,12 @@ class TradingSystem:
         #       GBM 재학습이 이미 실행 중(_gbm_retrain_running)일 때만 스킵
         #       → GBM 완료 전에도 스케일러를 신선하게 유지 (오늘 641분 재발 방지).
         # [P2] _canary_stale=True 시 완료 이벤트 대기 — GAP_OPEN 전 신선도 보장.
+        # EarlyWarmup이 실행 중(_scaler_refresh_running)이면 스킵 — 동시 refit 방지.
         _warmup_done_event = threading.Event()
-        if not getattr(self, "_gbm_retrain_running", False):
+        if (
+            not getattr(self, "_gbm_retrain_running", False)
+            and not getattr(self, "_scaler_refresh_running", False)
+        ):
             def _scaler_warmup_worker(_evt=_warmup_done_event):
                 try:
                     from config.settings import SCALER_WARMUP_LOOKBACK_BARS
@@ -2633,7 +2637,7 @@ class TradingSystem:
 
             threading.Thread(target=_scaler_warmup_worker, daemon=True).start()
         else:
-            _warmup_done_event.set()   # GBM 재학습 중 → warmup 스킵이므로 즉시 완료 표시
+            _warmup_done_event.set()   # GBM 재학습 중 or EarlyWarmup 실행 중 → 스킵이므로 즉시 완료 표시
 
         # [P2] Canary stale(24h+)이면 최대 90초 동기 대기 — 08:55~09:00 사이 여유로 허용
         if _canary_stale:
@@ -2646,8 +2650,26 @@ class TradingSystem:
         # 재학습이 09:00 이전에 완료되면 STEP 3 에서 _gbm_retrain_running=True 이므로 중복 실행 없음.
         # [Skip] 전날 EOD 재학습이 성공했으면 동일 데이터로 재학습하는 중복을 스킵.
         #        EOD force=True 로 교체가 완료됐으므로 09:00 파이프라인 지연도 없다.
-        #        단, _eod_retrain_ok 는 세션 재시작 시 False로 초기화되므로
-        #        의도치 않은 재시작 후 warmup 은 그대로 실행된다.
+        #        __init__이 False로 초기화하는 것을 session_state 날짜 기록으로 보완:
+        #        08:45 신규 시작 시 전날 EOD 성공이면 여기서 복원 → PreRetrain 스킵.
+        #        단, 장중 재시작(__init__ 이후 08:55 미경유)은 _warmup_retrain_pending=False
+        #        로 이미 이 블록 자체를 건너뛰므로 인트라데이 즉시재학습 동작에 영향 없음.
+        if not getattr(self, "_eod_retrain_ok", False):
+            try:
+                _pre_ss = self._read_session_state()
+                _eod_date_str = _pre_ss.get("eod_retrain_ok_date", "")
+                if _eod_date_str:
+                    _eod_d = datetime.date.fromisoformat(_eod_date_str)
+                    _days_ago = (datetime.date.today() - _eod_d).days
+                    if 1 <= _days_ago <= 5:   # 주말·공휴일 포함 최대 5 영업일 이내
+                        self._eod_retrain_ok = True
+                        log_manager.system(
+                            f"[PreRetrain] EOD 재학습 날짜 복원: {_eod_date_str} "
+                            f"({_days_ago}일 전) → PreRetrain 스킵 검토",
+                            "INFO",
+                        )
+            except Exception as _pre_ss_e:
+                logger.warning("[PreRetrain] eod_retrain_ok_date 복원 실패 (무해): %s", _pre_ss_e)
         if (
             getattr(self, "_warmup_retrain_pending", False)
             and not getattr(self, "_gbm_retrain_running", False)
@@ -6064,6 +6086,14 @@ class TradingSystem:
             )
         if retrain_ok:
             self._eod_retrain_ok = True   # 내일 08:55 PreRetrain 스킵 신호
+            # 다음날 08:45 신규 시작 시 __init__이 False로 초기화하는 것을 보완:
+            # session_state에 날짜를 기록해 pre_market_setup()에서 복원한다.
+            try:
+                _eod_ss = self._read_session_state()
+                _eod_ss["eod_retrain_ok_date"] = datetime.date.today().isoformat()
+                self._write_session_state(_eod_ss)
+            except Exception as _eod_ss_e:
+                logger.warning("[EOD] eod_retrain_ok_date 저장 실패 (무해): %s", _eod_ss_e)
             self._ensure_shap_tracker()
             retrain_str = f"재학습 완료 ({retrain_result['elapsed_sec']}초, {retrain_result['data_size']}행)"
             log_manager.learning(
@@ -6905,16 +6935,18 @@ class TradingSystem:
         # → 08:55 Canary 체크 시점엔 이미 완료 → P2 90초 대기 사실상 0초
         # 기존 24h 조건은 장 마감(15:30)→다음날 08:45 = ~17h 케이스를 커버 못 함
         # 4h로 완화 → 매 영업일 항상 발동하여 scaler 노후화 원천 차단
+        # 상한 08:57: 08:40 이전 시작 + Cybos 로그인 지연 시에도 EarlyWarmup 창 확보
         if (
             not getattr(self, "_early_warmup_started", False)
             and is_trading_day(now)
-            and datetime.time(8, 45) <= now.time() < datetime.time(8, 55)
+            and datetime.time(8, 45) <= now.time() < datetime.time(8, 57)
         ):
             try:
                 from config.settings import EARLY_WARMUP_MIN_AGE_HOURS as _EW_MIN_AGE
                 _early_age = self.model.canary_stale_age_hours()
                 if _early_age > _EW_MIN_AGE:
                     self._early_warmup_started = True
+                    self._scaler_refresh_running = True   # ScalerWarmup 동시 실행 방지
                     log_manager.system(
                         f"[EarlyWarmup] scaler 노후={_early_age:.0f}h → 08:45 선행 warmup 시작"
                         f" (전날 P8 실패·휴장·중단 대응)",
@@ -6937,6 +6969,8 @@ class TradingSystem:
                                 log_manager.system("[EarlyWarmup] 데이터 없음 — 스킵", "WARNING")
                         except Exception as _ew_e:
                             logger.warning("[EarlyWarmup] 실패: %s", _ew_e)
+                        finally:
+                            self._scaler_refresh_running = False
                     threading.Thread(target=_early_warmup_worker, daemon=True).start()
             except Exception as _ea_e:
                 logger.warning("[EarlyWarmup] age 체크 실패 (무시): %s", _ea_e)
