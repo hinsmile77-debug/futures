@@ -79,35 +79,40 @@ def apply_robust_preprocess(
     return X_out
 
 # 호라이즌별 class weight
-# 2026-05-30 임계값 재보정 후 FLAT 비율이 ~33%로 균형잡힘.
-# 이전의 강한 FL 다운웨이팅은 FL이 60~100%로 편향된 구 임계값 전용이었으므로 완화.
-# 2026-06-11: batch_retrainer.py와 동기화 — UP 강화·DN 억제 (DN 100% 고착 재발 대응)
-#
-# 1m: FL=0.85 (이전 0.60 — 새 threshold로 FL~34%, 강한 억압 불필요)
-_CW_1M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
-# 3m/5m/10m/15m: UP=1.35/1.30/1.30/1.40, DN=0.90 (batch_retrainer 동기화)
-_CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.35, DIRECTION_DOWN: 0.90}
-_CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.30, DIRECTION_DOWN: 0.90}
-_CW_10M = {DIRECTION_FLAT: 0.80, DIRECTION_UP: 1.30, DIRECTION_DOWN: 0.90}
-_CW_15M = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.40, DIRECTION_DOWN: 0.90}
-# 30m: FL 억제 + UP 강화 (batch_retrainer 동기화)
-_CW_30M = {DIRECTION_FLAT: 0.70, DIRECTION_UP: 1.40, DIRECTION_DOWN: 0.90}
+# P0: 호라이즌별 FLAT 상한 — 동적 가중치에서도 FLAT 과잉 억제 유지
+_FLAT_CAP = {
+    "1m": 0.85, "3m": 0.75, "5m": 0.85,
+    "10m": 0.80, "15m": 0.75, "30m": 0.70,
+}
+_DYN_HALFLIFE   = 100
+_DYN_CLIP_RATIO = 3.0
 
 
 def _make_sample_weight(y: np.ndarray, horizon: str) -> np.ndarray:
-    if horizon == "30m":
-        return np.array([_CW_30M.get(int(lbl), 1.0) for lbl in y])
-    if horizon == "3m":
-        return np.array([_CW_3M.get(int(lbl), 1.0) for lbl in y])
-    if horizon == "1m":
-        return np.array([_CW_1M.get(int(lbl), 1.0) for lbl in y])
-    if horizon == "5m":
-        return np.array([_CW_5M.get(int(lbl), 1.0) for lbl in y])
-    if horizon == "10m":
-        return np.array([_CW_10M.get(int(lbl), 1.0) for lbl in y])
-    if horizon == "15m":
-        return np.array([_CW_15M.get(int(lbl), 1.0) for lbl in y])
-    return compute_sample_weight("balanced", y)
+    """P0: 동적 역빈도 + 시간감쇠 sample_weight. batch_retrainer와 동일 로직."""
+    n = len(y)
+    if n == 0:
+        return np.ones(0, dtype=np.float64)
+
+    decay = np.exp(-np.arange(n)[::-1] * (np.log(2) / max(_DYN_HALFLIFE, 1)))
+
+    weighted_counts = {}
+    for cls in [DIRECTION_FLAT, DIRECTION_UP, DIRECTION_DOWN]:
+        mask = (y == cls)
+        weighted_counts[cls] = float(decay[mask].sum()) if mask.any() else 1e-6
+
+    total = sum(weighted_counts.values())
+    inv_freq = {cls: total / (3.0 * cnt) for cls, cnt in weighted_counts.items()}
+
+    median_w = sorted(inv_freq.values())[1]
+    max_w = median_w * _DYN_CLIP_RATIO
+    weights = {cls: min(v, max_w) for cls, v in inv_freq.items()}
+
+    flat_cap = _FLAT_CAP.get(horizon)
+    if flat_cap is not None:
+        weights[DIRECTION_FLAT] = min(weights[DIRECTION_FLAT], flat_cap)
+
+    return np.array([weights.get(int(lbl), 1.0) for lbl in y], dtype=np.float64)
 
 
 class MultiHorizonModel:

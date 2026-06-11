@@ -181,47 +181,114 @@ MIN_TRAIN_BARS_PER_HORIZON = {
     "10m": 1500, "15m": 1000, "30m": 500,
 }
 
-# 호라이즌별 class weight — multi_horizon_model._make_sample_weight 와 반드시 동기화
-# 2026-05-30 threshold 재보정 후: FLAT 비율 ~33% 균형 → 강한 FL 억압 불필요
-# 1m/5m: FL 0.60/0.58 → 0.85 (FLAT~34/33%, 강압 해소)
-# 3m:    FL 0.75 유지 (threshold 현행 유지, 분포 미변경)
-# 30m:   FL 0.65 → 0.70 (FLAT 편향 억제, 반전 시 UP/DN 강화)
-# 10m/15m: 2026-06-05 balanced → 명시적 설정 변경
-#   근거: 2026-06-05 세션에서 10m FL 100%, 15m FL 100% 고착 재발.
-#   balanced는 훈련 데이터 분포에 종속 → 강한 하락장(FL 과다 학습 기간)에서
-#   FL 억압 불가. 85차에서 1m/5m와 동일 문제 → 명시적 가중치로 전환.
-# 2026-06-11 분석: 3m DN=68%/UP=2%, 5m DN=72%/UP=8% — 실제 +5% UP장에서 DOWN 고착
-#   원인: 최근 하락 데이터 누적으로 DN이 학습 데이터에서 우세 → UP 예측 극단 억제
-#   수정: 3m/5m/10m/15m UP 강화·DN 억제 (30m 전략 동일 적용)
-_CW_1M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
-_CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.35, DIRECTION_DOWN: 0.90}
-_CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.30, DIRECTION_DOWN: 0.90}
-_CW_10M = {DIRECTION_FLAT: 0.80, DIRECTION_UP: 1.30, DIRECTION_DOWN: 0.90}
-_CW_15M = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.40, DIRECTION_DOWN: 0.90}
-# 30m: FL 억제 유지 + UP 강화로 DN 100% 편향 상쇄 (127차, 2026-06-08 DN 100% 고착 사례)
-# DN=1.15→0.90 (과잉 가중치 제거), UP=1.15→1.40 (DN 편향 상쇄), FL=0.70 유지
-_CW_30M = {DIRECTION_FLAT: 0.70, DIRECTION_UP: 1.40, DIRECTION_DOWN: 0.90}
+# P0: 호라이즌별 FLAT 상한 — 동적 가중치에서도 FLAT 과잉 억제 유지
+_FLAT_CAP = {
+    "1m": 0.85, "3m": 0.75, "5m": 0.85,
+    "10m": 0.80, "15m": 0.75, "30m": 0.70,
+}
+_DYN_HALFLIFE   = 100   # 시간감쇠 반감기 (봉 수, ≈100분)
+_DYN_CLIP_RATIO = 3.0   # 최대 가중치 = 중간값 × 배율 (역보정 폭발 방지)
 
 
 def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
-    """호라이즌별 sample_weight 계산. 전 호라이즌 명시적 가중치 적용.
-
-    10m/15m은 2026-06-05까지 balanced(sklearn 자동 균형)를 사용했으나,
-    강한 하락장에서 FL 100% 고착 재발 → 명시적 설정으로 전환.
     """
-    if horizon_key == "1m":
-        return np.array([_CW_1M.get(int(lbl), 1.0) for lbl in y])
-    if horizon_key == "3m":
-        return np.array([_CW_3M.get(int(lbl), 1.0) for lbl in y])
-    if horizon_key == "5m":
-        return np.array([_CW_5M.get(int(lbl), 1.0) for lbl in y])
-    if horizon_key == "10m":
-        return np.array([_CW_10M.get(int(lbl), 1.0) for lbl in y])
-    if horizon_key == "15m":
-        return np.array([_CW_15M.get(int(lbl), 1.0) for lbl in y])
-    if horizon_key == "30m":
-        return np.array([_CW_30M.get(int(lbl), 1.0) for lbl in y])
-    return compute_sample_weight("balanced", y)
+    P0: 동적 역빈도 + 시간감쇠 sample_weight.
+
+    y는 시간순 정렬 레이블 (DB ORDER BY ts 보장).
+    최근 데이터 우선(halflife=100봉), DOWN 과다 시 DN 가중치 자동 감소.
+    클리핑 = 중간값×3으로 역보정 폭발 방지.
+    multi_horizon_model._make_sample_weight 와 동일 로직 유지 필수.
+    """
+    n = len(y)
+    if n == 0:
+        return np.ones(0, dtype=np.float64)
+
+    decay = np.exp(-np.arange(n)[::-1] * (np.log(2) / max(_DYN_HALFLIFE, 1)))
+
+    weighted_counts = {}
+    for cls in [DIRECTION_FLAT, DIRECTION_UP, DIRECTION_DOWN]:
+        mask = (y == cls)
+        weighted_counts[cls] = float(decay[mask].sum()) if mask.any() else 1e-6
+
+    total = sum(weighted_counts.values())
+    inv_freq = {cls: total / (3.0 * cnt) for cls, cnt in weighted_counts.items()}
+
+    median_w = sorted(inv_freq.values())[1]
+    max_w = median_w * _DYN_CLIP_RATIO
+    weights = {cls: min(v, max_w) for cls, v in inv_freq.items()}
+
+    flat_cap = _FLAT_CAP.get(horizon_key)
+    if flat_cap is not None:
+        weights[DIRECTION_FLAT] = min(weights[DIRECTION_FLAT], flat_cap)
+
+    logger.debug(
+        "[Retrain] %s 동적가중치 FL=%.2f UP=%.2f DN=%.2f",
+        horizon_key,
+        weights.get(DIRECTION_FLAT, 1.0),
+        weights.get(DIRECTION_UP, 1.0),
+        weights.get(DIRECTION_DOWN, 1.0),
+    )
+    return np.array([weights.get(int(lbl), 1.0) for lbl in y], dtype=np.float64)
+
+
+def _cusum_filter(records, close_map, h_mult=0.5):
+    """
+    P1: CUSUM 이벤트 필터.
+
+    연속 하락/상승 구간에서 동일 방향 신호가 반복 학습되는 것을 방지.
+    CUSUM 누적통계가 동적 임계값 h를 초과하는 시점만 선택.
+    선택 결과가 원본의 30% 미만이면 전체 반환 (데이터 부족 안전망).
+
+    records: [(ts, feat_dict), ...]  — 시간순 정렬
+    close_map: {ts: float}
+    h_mult: 임계값 배율 (평균 표준편차 × h_mult)
+    """
+    n = len(records)
+    if n < 40:
+        return list(range(n))
+
+    closes = [close_map.get(ts, 0.0) for ts, _ in records]
+
+    stds = []
+    for i in range(20, n):
+        window = closes[i - 20:i]
+        mean_w = sum(window) / 20.0
+        if mean_w <= 0:
+            continue
+        var_w = sum((x - mean_w) ** 2 for x in window) / 19.0
+        stds.append(var_w ** 0.5)
+
+    if not stds:
+        return list(range(n))
+    h = (sum(stds) / len(stds)) * h_mult
+    if h <= 0:
+        return list(range(n))
+
+    selected = []
+    s_pos, s_neg = 0.0, 0.0
+    for i in range(1, n):
+        prev_c, curr_c = closes[i - 1], closes[i]
+        if prev_c <= 0 or curr_c <= 0:
+            continue
+        diff = curr_c - prev_c
+        s_pos = max(0.0, s_pos + diff)
+        s_neg = min(0.0, s_neg + diff)
+        if s_pos > h or s_neg < -h:
+            selected.append(i)
+            s_pos = s_neg = 0.0
+
+    if len(selected) < n * 0.30:
+        logger.info(
+            "[CUSUM] 이벤트 %d/%d (%.1f%%) < 30%% — 전체 사용",
+            len(selected), n, 100.0 * len(selected) / max(n, 1),
+        )
+        return list(range(n))
+
+    logger.info(
+        "[CUSUM] %d → %d봉 (%.1f%% 유지)",
+        n, len(selected), 100.0 * len(selected) / max(n, 1),
+    )
+    return selected
 
 
 class BatchRetrainer:
@@ -681,6 +748,11 @@ class BatchRetrainer:
                 results[hz] = {"replaced": False, "error": "피처 파싱 실패"}
                 continue
 
+            # P1: CUSUM 이벤트 필터
+            cusum_idx = _cusum_filter(records, close_map)
+            if len(cusum_idx) < len(records):
+                records = [records[i] for i in cusum_idx]
+
             # global feature_names(1m 기준)로 X 구성 → 추론 공간과 일치.
             # raw_features_horizon의 cvd_direction/atr 등은 build_for_horizon에서
             # N분봉 완성봉 기반으로 재계산되어 저장되므로 (127차~) 자동 반영됨.
@@ -849,6 +921,11 @@ class BatchRetrainer:
                     len(records), MAX_TRAIN_BARS,
                 )
                 records = records[-MAX_TRAIN_BARS:]
+
+            # P1: CUSUM 이벤트 필터 — 연속 구간 반복학습 차단
+            cusum_idx = _cusum_filter(records, close_map)
+            if len(cusum_idx) < len(records):
+                records = [records[i] for i in cusum_idx]
 
             X = np.array(
                 [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],

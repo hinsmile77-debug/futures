@@ -1,5 +1,6 @@
 import datetime
 import logging
+from collections import deque
 from typing import Dict, Optional
 
 from utils.time_utils import now_kst
@@ -50,6 +51,19 @@ class MetaGate:
     def __init__(self):
         self.learner = MetaConfidenceLearner()
         self._collapse_warn_streak = 0  # meta_conf 과소 연속 횟수
+        self._direction_buf = deque(maxlen=30)  # P3: 방향 편향 감지 (최근 30예측)
+
+    def _bias_penalty(self, direction: int) -> float:
+        """P3: 최근 30예측에서 동일 방향 비율 >70% 시 패널티 반환.
+        70%→0.02, 100%→0.05 선형 스케일. 버퍼 15개 미만이면 0.
+        """
+        if len(self._direction_buf) < 15:
+            return 0.0
+        same = sum(1 for d in self._direction_buf if d == direction)
+        ratio = same / len(self._direction_buf)
+        if ratio <= 0.70:
+            return 0.0
+        return round(min((ratio - 0.70) / 0.30 * 0.05, 0.05), 4)
 
     def evaluate(
         self,
@@ -120,6 +134,16 @@ class MetaGate:
 
         blended_conf = float(confidence) * cfg["ens_w"] + meta_conf * cfg["meta_w"]
 
+        # P3: 방향 편향 패널티 (최근 30봉 동일 방향 >70% 시 신뢰도 소폭 하향)
+        bias_pen = self._bias_penalty(direction)
+        if bias_pen > 0:
+            logger.info(
+                "[MetaGate] 편향패널티: dir=%d buf=%d pen=%.3f blended %.3f→%.3f",
+                direction, len(self._direction_buf), bias_pen,
+                blended_conf, max(0.0, blended_conf - bias_pen),
+            )
+            blended_conf = max(0.0, blended_conf - bias_pen)
+
         take_thr   = max(cfg["take_floor"],
                          min(cfg["take_ceil"], min_conf + cfg["take_add"]))
         reduce_thr = max(cfg["reduce_base"], min_conf * cfg["reduce_mult"])
@@ -142,6 +166,9 @@ class MetaGate:
                 blended_conf, reduce_thr, take_thr,
                 checklist_grade, min_conf, float(confidence), meta_conf, cfg["ens_w"],
             )
+
+        # P3: 방향 버퍼 갱신 (action 무관하게 모든 evaluate 호출 기록)
+        self._direction_buf.append(direction)
 
         return {
             "action":              action,
