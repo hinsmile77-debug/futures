@@ -91,12 +91,13 @@ class MetaGate:
         learned = self.learner.predict_confidence(meta_features)
         meta_conf = float(learned["confidence_score"])
 
-        # meta_conf 과소 보완: meta_conf<0.20 시 rule-based 하한 + 절대 하한 0.25 적용
-        # LR은 SGD 붕괴 없음 — 초기 cold-start(60봉 미만) 또는 클래스 단조성 구간에서만 발생
-        # → 절대 하한 0.25: LR 미학습 시 앙상블 신호만 믿는 중립 수준 보장
+        # meta_conf 과소 보완: meta_conf<0.20 시 rule-based 하한 + 절대 하한 0.45 적용
+        # LR은 SGD 붕괴 없음 — 초기 cold-start(레짐별 30봉 미만) 또는 클래스 단조성 구간에서만 발생
+        # → 절대 하한 0.45: LR 미학습 레짐에서 중립(0.5 수준) 보장, 불필요한 skip 억제
+        # 이전 0.25 → 0.45: 6/11 분석에서 cold-start skip이 12시 이후 진입 전면 차단 원인으로 확인
         if meta_conf < 0.20:
             self._collapse_warn_streak += 1
-            _rb_conf = max(self.learner._rule_based_confidence(meta_features), 0.25)
+            _rb_conf = max(self.learner._rule_based_confidence(meta_features), 0.45)
             if _rb_conf > meta_conf:
                 logger.info(
                     "[MetaGate] meta_conf 과소 보완: raw=%.3f → floor=%.3f (연속%d회)",

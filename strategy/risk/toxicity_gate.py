@@ -17,7 +17,7 @@ class ToxicityGate:
         self,
         block_threshold: float = 0.78,
         reduce_threshold: float = 0.58,
-        severe_spread_ticks: float = 4.0,
+        severe_spread_ticks: float = 8.0,
     ):
         self.block_threshold = block_threshold
         self.reduce_threshold = reduce_threshold
@@ -52,7 +52,7 @@ class ToxicityGate:
         ):
             return {
                 "action": "reduce",
-                "size_multiplier": 0.5,
+                "size_multiplier": 0.7,
                 "reason": "toxicity_reduce",
                 "score": round(score, 4),
                 "score_ma": round(score_ma, 4),

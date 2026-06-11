@@ -190,11 +190,14 @@ MIN_TRAIN_BARS_PER_HORIZON = {
 #   근거: 2026-06-05 세션에서 10m FL 100%, 15m FL 100% 고착 재발.
 #   balanced는 훈련 데이터 분포에 종속 → 강한 하락장(FL 과다 학습 기간)에서
 #   FL 억압 불가. 85차에서 1m/5m와 동일 문제 → 명시적 가중치로 전환.
+# 2026-06-11 분석: 3m DN=68%/UP=2%, 5m DN=72%/UP=8% — 실제 +5% UP장에서 DOWN 고착
+#   원인: 최근 하락 데이터 누적으로 DN이 학습 데이터에서 우세 → UP 예측 극단 억제
+#   수정: 3m/5m/10m/15m UP 강화·DN 억제 (30m 전략 동일 적용)
 _CW_1M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
-_CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.12, DIRECTION_DOWN: 1.12}
-_CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
-_CW_10M = {DIRECTION_FLAT: 0.80, DIRECTION_UP: 1.10, DIRECTION_DOWN: 1.10}
-_CW_15M = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.15, DIRECTION_DOWN: 1.15}
+_CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.35, DIRECTION_DOWN: 0.90}
+_CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.30, DIRECTION_DOWN: 0.90}
+_CW_10M = {DIRECTION_FLAT: 0.80, DIRECTION_UP: 1.30, DIRECTION_DOWN: 0.90}
+_CW_15M = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.40, DIRECTION_DOWN: 0.90}
 # 30m: FL 억제 유지 + UP 강화로 DN 100% 편향 상쇄 (127차, 2026-06-08 DN 100% 고착 사례)
 # DN=1.15→0.90 (과잉 가중치 제거), UP=1.15→1.40 (DN 편향 상쇄), FL=0.70 유지
 _CW_30M = {DIRECTION_FLAT: 0.70, DIRECTION_UP: 1.40, DIRECTION_DOWN: 0.90}
@@ -415,10 +418,17 @@ class BatchRetrainer:
         cv_accs = []
         if not intraday:
             # 정규 재학습: 시계열 교차검증 3폴드
+            # 32-bit Python 메모리 제약: fold 3 훈련 세트가 전체 데이터의 ~75%
+            # → 40k행 기준 ~30k×97×8B = 22 MiB → MemoryError 방어 (2026-06-11 실측)
+            # 최신 MAX_TRAIN_BARS_INTRADAY 행으로 CV 수행, 최종 fit은 전체 X 사용
             tscv = TimeSeriesSplit(n_splits=3)
             for train_idx, val_idx in tscv.split(X):
                 X_tr, X_val = X[train_idx], X[val_idx]
                 y_tr, y_val = y[train_idx], y[val_idx]
+
+                if len(X_tr) > MAX_TRAIN_BARS_INTRADAY:
+                    X_tr = X_tr[-MAX_TRAIN_BARS_INTRADAY:]
+                    y_tr = y_tr[-MAX_TRAIN_BARS_INTRADAY:]
 
                 if len(np.unique(y_tr)) < 2:
                     continue

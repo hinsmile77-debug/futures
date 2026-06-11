@@ -2787,6 +2787,7 @@ class TradingSystem:
             )
 
         close  = _c
+        _prev_pipeline_price      = self._last_pipeline_price  # sigma 계산용 이전 종가 선점
         self._last_pipeline_price = close  # 잔고 UI 합성에 사용
         self._last_close = close           # 옵션체인 QTimer 폴링용 최신 종가
 
@@ -2908,7 +2909,8 @@ class TradingSystem:
 
         # ── rolling σ 갱신 (방법3) ─────────────────────────────────────
         # 매분 1분봉 수익률을 sigma_buf에 추가 → HORIZON_THRESHOLDS 실시간 갱신
-        _last_p = self._last_pipeline_price
+        # _prev_pipeline_price: 이 틱 진입 전 캡처 (2790에서 close로 덮어쓰이기 전 값)
+        _last_p = _prev_pipeline_price
         if _last_p and _last_p > 0 and close and close > 0:
             _ret_1m = (close - _last_p) / _last_p * 100
             self._sigma_buf.append(_ret_1m)
@@ -6045,8 +6047,12 @@ class TradingSystem:
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
         # force=True: 26주 데이터 기준 acc 안정화 → cv_acc 소폭 하락도 교체가 안전
         # (force=False 시 미교체된 모델을 다음날 08:55 force=True로 덮어쓰는 왕복 비용 제거)
+        # intraday=True: 32-bit Python 메모리 제약 — 3-fold CV fold 3이 30k행×97피처×8B
+        #   = 22 MiB 할당 시도로 MemoryError 발생 (2026-06-11 실측).
+        #   intraday=True → 20k행 절단 + CV 없음 → OOM 근본 차단.
+        #   장중 14:58 재학습과 동일 경로지만 당일 마지막 봉이 추가된 최신 데이터로 갱신.
         self._eod_retrain_ok = False   # EOD 진입 시 초기화 — 완료 후 True로 설정
-        retrain_result = self.batch_retrainer.retrain_now(force=True)
+        retrain_result = self.batch_retrainer.retrain_now(force=True, intraday=True)
         retrain_ok = retrain_result.get("ok", False)
         # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
         # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)

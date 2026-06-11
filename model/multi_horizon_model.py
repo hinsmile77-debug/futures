@@ -81,16 +81,17 @@ def apply_robust_preprocess(
 # 호라이즌별 class weight
 # 2026-05-30 임계값 재보정 후 FLAT 비율이 ~33%로 균형잡힘.
 # 이전의 강한 FL 다운웨이팅은 FL이 60~100%로 편향된 구 임계값 전용이었으므로 완화.
+# 2026-06-11: batch_retrainer.py와 동기화 — UP 강화·DN 억제 (DN 100% 고착 재발 대응)
 #
 # 1m: FL=0.85 (이전 0.60 — 새 threshold로 FL~34%, 강한 억압 불필요)
 _CW_1M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
-# 3m: FL=0.75 유지 (threshold 현행 유지, 레이블 분포 미변경)
-_CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.12, DIRECTION_DOWN: 1.12}
-# 5m: FL=0.85 (이전 0.58 — 새 threshold로 FL~33%, 강한 억압 불필요)
-_CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.08, DIRECTION_DOWN: 1.08}
-# 30m: balanced (이전 FL=0.65 — 새 threshold로 FL~30%, UP/DN 미세 다수이므로 balanced)
-_CW_30M = {DIRECTION_FLAT: 1.00, DIRECTION_UP: 1.00, DIRECTION_DOWN: 1.00}
-# 10m, 15m: compute_sample_weight("balanced") 유지 (FL~34~35%, 자동 균형)
+# 3m/5m/10m/15m: UP=1.35/1.30/1.30/1.40, DN=0.90 (batch_retrainer 동기화)
+_CW_3M  = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.35, DIRECTION_DOWN: 0.90}
+_CW_5M  = {DIRECTION_FLAT: 0.85, DIRECTION_UP: 1.30, DIRECTION_DOWN: 0.90}
+_CW_10M = {DIRECTION_FLAT: 0.80, DIRECTION_UP: 1.30, DIRECTION_DOWN: 0.90}
+_CW_15M = {DIRECTION_FLAT: 0.75, DIRECTION_UP: 1.40, DIRECTION_DOWN: 0.90}
+# 30m: FL 억제 + UP 강화 (batch_retrainer 동기화)
+_CW_30M = {DIRECTION_FLAT: 0.70, DIRECTION_UP: 1.40, DIRECTION_DOWN: 0.90}
 
 
 def _make_sample_weight(y: np.ndarray, horizon: str) -> np.ndarray:
@@ -102,6 +103,10 @@ def _make_sample_weight(y: np.ndarray, horizon: str) -> np.ndarray:
         return np.array([_CW_1M.get(int(lbl), 1.0) for lbl in y])
     if horizon == "5m":
         return np.array([_CW_5M.get(int(lbl), 1.0) for lbl in y])
+    if horizon == "10m":
+        return np.array([_CW_10M.get(int(lbl), 1.0) for lbl in y])
+    if horizon == "15m":
+        return np.array([_CW_15M.get(int(lbl), 1.0) for lbl in y])
     return compute_sample_weight("balanced", y)
 
 
