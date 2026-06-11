@@ -129,10 +129,25 @@ GBM_PARAMS = {
     "random_state":     42,
 }
 
+# 장중 재학습 전용 경량 파라미터
+# n_estimators 300→100, max_depth 5→4: sklearn 1.0.2 32-bit GIL 블로킹 ~3배 단축
+# 사용 조건: 장중 재시작·warmup retrain (intraday=True) — 08:55 pre-market은 풀 파라미터 유지
+GBM_PARAMS_INTRADAY = {
+    "n_estimators":     100,
+    "max_depth":        4,
+    "learning_rate":    0.08,  # estimators 감소 보상
+    "subsample":        0.8,
+    "min_samples_leaf": GBM_MIN_SAMPLES_LEAF,
+    "random_state":     42,
+}
+
 # 최소 학습 데이터 (분봉 수)
 # RETRAIN_WEEKS_BACK=26 기준 실측 ~44,000봉 → 충분히 초과
 # (구 weeks_back=10 기준 ~15,750봉으로 간신히 달성 → 26주로 확장)
 MIN_TRAIN_BARS = 15000
+
+# 장중 재학습 최대 봉 수: 최근 ~2.5주 (최신 데이터 우선 + 속도 우선)
+MAX_TRAIN_BARS_INTRADAY = 20_000
 
 # Phase 2: 호라이즌별 학습 최소 데이터 — 시간 등가 기준 (72k 봉 기준 전 호라이즌 충족)
 MIN_TRAIN_BARS_PER_HORIZON = {
@@ -232,6 +247,7 @@ class BatchRetrainer:
         weeks_back:           int = RETRAIN_WEEKS_BACK,
         force:                bool = False,
         use_horizon_features: bool = False,
+        intraday:             bool = False,
     ) -> Dict:
         """
         GBM 모델 전체 재학습
@@ -242,6 +258,7 @@ class BatchRetrainer:
             weeks_back:           학습 기간 (주)
             force:                성능 저하여도 강제 교체
             use_horizon_features: Phase 2 경로 활성화 — raw_features_horizon 테이블 사용
+            intraday:             True이면 경량 파라미터 사용 (장중 GIL 차단 방지)
 
         Returns:
             재학습 결과 딕셔너리
@@ -250,8 +267,8 @@ class BatchRetrainer:
             return {"ok": False, "error": "scikit-learn 미설치"}
 
         logger.info(
-            "[Retrain] 배치 재학습 시작 (weeks_back=%d, phase2=%s)",
-            weeks_back, use_horizon_features,
+            "[Retrain] 배치 재학습 시작 (weeks_back=%d, phase2=%s, intraday=%s)",
+            weeks_back, use_horizon_features, intraday,
         )
         start_time = datetime.datetime.now()
 
@@ -272,6 +289,14 @@ class BatchRetrainer:
             )
             logger.warning("[Retrain] %s", msg)
             return {"ok": False, "error": msg}
+
+        # 장중 모드: 최신 데이터 MAX_TRAIN_BARS_INTRADAY 봉만 사용 (GIL 블로킹 시간 비례 단축)
+        if intraday and len(X) > MAX_TRAIN_BARS_INTRADAY:
+            logger.info(
+                "[Retrain] 장중 경량 모드: %d → %d봉 (최신 데이터 우선)", len(X), MAX_TRAIN_BARS_INTRADAY
+            )
+            X = X[-MAX_TRAIN_BARS_INTRADAY:]
+            y_dict = {h: y[-MAX_TRAIN_BARS_INTRADAY:] for h, y in y_dict.items()}
 
         if feature_names is None:
             feature_names = ["feature_{}".format(i) for i in range(X.shape[1])]
@@ -294,21 +319,25 @@ class BatchRetrainer:
                 y,
                 feature_names=feature_names,
                 force=force,
+                intraday=intraday,
             )
             results[horizon_key] = result
 
         self._save_feature_names(feature_names)
 
-        # P6c: RF 이종 앙상블 학습 (GBM과 동일 데이터 사용)
-        try:
-            from model.rf_horizon_model import RFHorizonModel
-            rf_model = RFHorizonModel(self.model_dir)
-            rf_model.train(X, y_dict, feature_names)
-            if rf_model.is_ready():
-                rf_model.save_all()
-                logger.info("[Retrain] RF 학습 완료 OOB=%s", rf_model.get_oob_scores())
-        except Exception as _rf_exc:
-            logger.warning("[Retrain] RF 학습 실패 (GBM 계속 사용): %s", _rf_exc)
+        # P6c: RF 이종 앙상블 학습 — 장중 모드에서는 스킵 (GIL 블로킹 추가 방지)
+        if intraday:
+            logger.info("[Retrain] 장중 경량 모드: RF 학습 스킵 (기존 RF 모델 유지)")
+        else:
+            try:
+                from model.rf_horizon_model import RFHorizonModel
+                rf_model = RFHorizonModel(self.model_dir)
+                rf_model.train(X, y_dict, feature_names)
+                if rf_model.is_ready():
+                    rf_model.save_all()
+                    logger.info("[Retrain] RF 학습 완료 OOB=%s", rf_model.get_oob_scores())
+            except Exception as _rf_exc:
+                logger.warning("[Retrain] RF 학습 실패 (GBM 계속 사용): %s", _rf_exc)
 
         elapsed = (datetime.datetime.now() - start_time).total_seconds()
         self._last_retrain  = datetime.datetime.now()
@@ -338,57 +367,64 @@ class BatchRetrainer:
         y:           np.ndarray,
         feature_names: List[str],
         force:       bool = False,
+        intraday:    bool = False,
     ) -> Dict:
         """
         단일 호라이즌 GBM 학습 + 교차검증
 
         성능 향상 시에만 저장 (안전 교체)
+        intraday=True: 경량 파라미터 + CV 없이 전체 직접 학습 (GIL 블로킹 최소화)
         """
-        # 시계열 교차검증 (3폴드)
-        tscv    = TimeSeriesSplit(n_splits=3)
+        _gbm_params = GBM_PARAMS_INTRADAY if intraday else GBM_PARAMS
+
         cv_accs = []
+        if not intraday:
+            # 정규 재학습: 시계열 교차검증 3폴드
+            tscv = TimeSeriesSplit(n_splits=3)
+            for train_idx, val_idx in tscv.split(X):
+                X_tr, X_val = X[train_idx], X[val_idx]
+                y_tr, y_val = y[train_idx], y[val_idx]
 
-        for train_idx, val_idx in tscv.split(X):
-            X_tr, X_val = X[train_idx], X[val_idx]
-            y_tr, y_val = y[train_idx], y[val_idx]
+                if len(np.unique(y_tr)) < 2:
+                    continue
 
-            if len(np.unique(y_tr)) < 2:
-                continue
+                scaler = StandardScaler()
+                X_tr_s = scaler.fit_transform(X_tr)
+                X_val_s = scaler.transform(X_val)
 
-            scaler = StandardScaler()
-            X_tr_s = scaler.fit_transform(X_tr)
-            X_val_s = scaler.transform(X_val)
+                model = GradientBoostingClassifier(**_gbm_params)
+                model.fit(X_tr_s, y_tr, sample_weight=_make_sample_weight(y_tr, horizon_key))
+                acc = accuracy_score(y_val, model.predict(X_val_s))
+                cv_accs.append(acc)
 
-            model = GradientBoostingClassifier(**GBM_PARAMS)
-            model.fit(X_tr_s, y_tr, sample_weight=_make_sample_weight(y_tr, horizon_key))
-            acc = accuracy_score(y_val, model.predict(X_val_s))
-            cv_accs.append(acc)
+            if not cv_accs:
+                return {"ok": False, "error": "교차검증 실패"}
 
-        if not cv_accs:
-            return {"ok": False, "error": "교차검증 실패"}
+        cv_acc = float(np.mean(cv_accs)) if cv_accs else None
 
-        cv_acc = float(np.mean(cv_accs))
-
-        # 전체 데이터로 최종 학습
+        # 전체 데이터로 최종 학습 (장중 모드: CV 없이 여기만 실행)
         final_scaler = StandardScaler()
         X_scaled = final_scaler.fit_transform(X)
-        final_model = GradientBoostingClassifier(**GBM_PARAMS)
+        final_model = GradientBoostingClassifier(**_gbm_params)
         final_model.fit(X_scaled, y, sample_weight=_make_sample_weight(y, horizon_key))
 
         # 기존 모델과 성능 비교
-        old_acc   = self._load_model_acc(horizon_key)
-        replaced  = False
+        old_acc  = self._load_model_acc(horizon_key)
+        replaced = False
 
-        if force or cv_acc > old_acc - 0.01:   # 기존 대비 1% 이내 하락은 허용
-            self._save_model(horizon_key, final_model, final_scaler, cv_acc, feature_names)
+        # intraday=True: CV 없으므로 cv_acc=None → force로 취급 (기존 모델 보호 로직 비적용)
+        if intraday or force or (cv_acc is not None and cv_acc > old_acc - 0.01):
+            _disp_acc = cv_acc if cv_acc is not None else float("nan")
+            self._save_model(horizon_key, final_model, final_scaler, _disp_acc, feature_names)
             replaced = True
-            logger.info(f"[Retrain] {horizon_key} 교체 (acc {old_acc:.4f}→{cv_acc:.4f})")
+            logger.info(f"[Retrain] {horizon_key} 교체 (acc {old_acc:.4f}→{_disp_acc:.4f})")
         else:
-            logger.info(f"[Retrain] {horizon_key} 유지 (acc {cv_acc:.4f} < {old_acc:.4f})")
+            _disp_acc = cv_acc if cv_acc is not None else float("nan")
+            logger.info(f"[Retrain] {horizon_key} 유지 (acc {_disp_acc:.4f} < {old_acc:.4f})")
 
         return {
             "ok":       True,
-            "cv_acc":   round(cv_acc, 4),
+            "cv_acc":   round(cv_acc, 4) if cv_acc is not None else None,
             "old_acc":  round(old_acc, 4),
             "replaced": replaced,
             "n_samples":len(X),

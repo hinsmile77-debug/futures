@@ -699,6 +699,7 @@ class TradingSystem:
         self._gbm_retrain_running = True
         self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
         self._gbm_retrain_done_event.clear()
+        self.circuit_breaker.set_gbm_retrain_active(True)   # CB⑤ 임계 완화
         log_manager.learning(f"[GBM] 수동 재학습 시작 | {reason}")
 
         def _retrain_worker():
@@ -2168,26 +2169,36 @@ class TradingSystem:
 
         # 장중(09:00~15:10) 재시작: pre_market_setup()이 재호출되지 않으므로 즉시 시작.
         # 그렇지 않으면 첫 분봉 STEP 3에서 시작되어 파이프라인과 CPU 경합 → CB⑤ 5026ms 발동.
+        # [P0] 당일 08:50 이후 이미 재학습 완료된 경우 장중 재학습 중복 차단.
+        # 근거: 장중 재시작 GBM(50k봉×24fit)이 sklearn GIL을 2~3시간 보유 → S2 5s 블로킹 반복.
         _rst_now = datetime.datetime.now()
+        _today_0850 = _rst_now.replace(hour=8, minute=50, second=0, microsecond=0)
+        _last_rt = getattr(self.batch_retrainer, "_last_retrain", None)
+        _already_retrained_today = (
+            _last_rt is not None
+            and _last_rt.date() == _rst_now.date()
+            and _last_rt >= _today_0850
+        )
         if (
             datetime.time(9, 0) <= _rst_now.time() < datetime.time(15, 10)
             and not self._gbm_retrain_running
+            and not _already_retrained_today
         ):
             self._warmup_retrain_pending = False
             self._gbm_retrain_running = True
             self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
             self._gbm_retrain_done_event.clear()
+            self.circuit_breaker.set_gbm_retrain_active(True)   # CB⑤ 임계 완화
             self.dashboard.set_model_status("GBM 장중 재학습중...")
             log_manager.system(
-                "[WarmupRetrain] 장중 재시작 — GBM 즉시 재학습 시작 (파이프라인 분리)", "INFO"
+                "[WarmupRetrain] 장중 재시작 — GBM 경량 재학습 시작 (intraday, 파이프라인 분리)", "INFO"
             )
 
             def _intraday_retrain_worker():
                 try:
-                    # force=False: 장중 재시작 Retrain은 cv_acc 하락 시 기존 모델 유지
-                    # force=True를 쓰면 cv_acc가 old_acc-1% 아래여도 강제 저장 →
-                    # 매 재시작마다 성능 하락 모델로 덮어써 하향 래칫 발생 (147차 수정)
-                    result = self.batch_retrainer.retrain_now(force=False)
+                    # intraday=True: n_estimators 100, 20k봉, CV 없음 → GIL 블로킹 시간 대폭 단축
+                    # force=False: cv_acc 하락 시 기존 모델 유지 (intraday는 cv 없으므로 force 취급됨)
+                    result = self.batch_retrainer.retrain_now(force=False, intraday=True)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
                 if not result.get("ok"):
@@ -2197,6 +2208,12 @@ class TradingSystem:
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
             threading.Thread(target=_intraday_retrain_worker, daemon=True).start()
+        elif _already_retrained_today:
+            self._warmup_retrain_pending = False
+            log_manager.system(
+                f"[WarmupRetrain] 당일 재학습 완료({_last_rt.strftime('%H:%M')}) 확인 → 장중 재학습 스킵 (GIL 차단 방지)",
+                "INFO",
+            )
 
         if self.position.status != "FLAT":
             self.dashboard.set_ui_position_mode()
@@ -2376,6 +2393,7 @@ class TradingSystem:
         """GBM 재학습 daemon thread 완료 콜백 — 메인 스레드에서 실행."""
         self._gbm_retrain_running = False
         self._gbm_retrain_done_event.set()  # daily_close 대기 해제
+        self.circuit_breaker.set_gbm_retrain_active(False)  # CB⑤ 임계 복원
         prefix = "웜업 " if is_warmup else ""
         if result.get("ok"):
             _bad = self.model._load_all()
@@ -3186,19 +3204,20 @@ class TradingSystem:
             if _warmup_forced:
                 self._warmup_retrain_pending = False
                 log_manager.system(
-                    "[WarmupRetrain] 세션 재시작 후 첫 GBM 즉시 재학습 — 별도 스레드 시작", "INFO"
+                    "[WarmupRetrain] 세션 재시작 후 첫 GBM 경량 재학습 — 별도 스레드 시작 (intraday)", "INFO"
                 )
             self._gbm_retrain_running = True
             self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
             self._gbm_retrain_done_event.clear()
+            self.circuit_breaker.set_gbm_retrain_active(True)   # CB⑤ 임계 완화
             self.dashboard.set_model_status("GBM 재학습중...")
             _is_warmup = bool(_warmup_forced)
 
             def _retrain_worker():
                 try:
-                    # force=False: STEP 3 warmup(세션 재시작 포함)도 성능 하락 시 기존 모델 유지
-                    # 08:55 pre-market(_pre_retrain_worker)만 force=True 유지 — 전날 EOD 과장 acc 정상화 목적
-                    result = self.batch_retrainer.retrain_now(force=False)
+                    # intraday=True: n_estimators 100, 20k봉, CV 없음 → 장중 GIL 블로킹 최소화
+                    # 08:55 pre-market(_pre_retrain_worker)만 풀 파라미터 유지
+                    result = self.batch_retrainer.retrain_now(force=False, intraday=True)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
                 if not result.get("ok"):

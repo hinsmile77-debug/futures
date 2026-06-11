@@ -102,6 +102,11 @@ class CircuitBreaker:
         self._horizon_fl_bias_streak: dict = {}  # {horizon: 연속 분 수}
         self._horizon_fl_bias_warned: set = set()  # 이미 경보 발송한 호라이즌
 
+        # GBM 재학습 중 CB⑤ 임계 완화 플래그
+        # 재학습 스레드가 sklearn GIL을 간헐적으로 보유해 S2가 ~5s 블로킹되는 정상 현상.
+        # True 동안 PAUSE 기준을 CB_PIPE_PAUSE_MS × 2 로 완화해 오발동 방지.
+        self._gbm_retrain_active: bool = False
+
     # ── 상태 조회 ──────────────────────────────────────────────
     @property
     def state(self) -> str:
@@ -399,6 +404,10 @@ class CircuitBreaker:
                 f"API 지연 {latency_sec:.1f}초",
             )
 
+    def set_gbm_retrain_active(self, active: bool) -> None:
+        """GBM 재학습 시작/완료 시 호출 — CB⑤ PAUSE 임계 일시 완화."""
+        self._gbm_retrain_active = active
+
     # ── 트리거 ⑤ 파이프라인 처리시간 (Cybos CB⑤ 대체) ──────────
     def record_pipe_latency(self, pipe_ms: float):
         """매분 파이프라인 처리시간 감시.
@@ -409,9 +418,10 @@ class CircuitBreaker:
         > CB_PIPE_WARN_MS (1초) : WARNING 로그
         > CB_PIPE_PAUSE_MS (5초): 5분 진입 정지 + Slack 알림
 
-        예외: 09:00~09:02 장 시작 직후 2분은 EarlyWarmup·ScalerWarmup·GBM PreRetrain
-        스레드가 동시에 실행되어 첫 분봉 처리가 구조적으로 느림.
-        이 구간은 임계를 9000ms로 완화하고 경고만 발생시킨다.
+        예외1: 09:00~09:10 장 시작 직후는 EarlyWarmup·GBM PreRetrain이 겹쳐 느림.
+               이 구간은 9000ms로 완화.
+        예외2: GBM 재학습 스레드 실행 중(_gbm_retrain_active=True)은 sklearn GIL
+               간헐 보유로 S2가 구조적으로 ~5s 블로킹. CB_PIPE_PAUSE_MS × 2로 완화.
         """
         # DBG-CB latency 필드 갱신 — status_dict()의 last_latency가 0.0 고착되던 문제 수정
         # record_api_latency가 Cybos에서 호출 안 됨 → pipe_ms를 초 단위로 대입
@@ -422,7 +432,12 @@ class CircuitBreaker:
         _open_burst = (
             datetime.time(9, 0) <= _now_t < datetime.time(9, 10)
         )
-        _pause_threshold = 9_000 if _open_burst else CB_PIPE_PAUSE_MS
+        if _open_burst:
+            _pause_threshold = 9_000
+        elif getattr(self, "_gbm_retrain_active", False):
+            _pause_threshold = CB_PIPE_PAUSE_MS * 2   # GBM GIL 완화: 5000→10000ms
+        else:
+            _pause_threshold = CB_PIPE_PAUSE_MS
 
         if pipe_ms >= _pause_threshold:
             if self._state not in (CB_STATE_PAUSED, CB_STATE_HALTED):
