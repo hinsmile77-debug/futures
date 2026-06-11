@@ -1,7 +1,36 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-11 (155차 세션) — EKS min_conf 통합 + conf=100% FLAT 방어 3종 + SHAP 폴백 개선
+> 마지막 업데이트: 2026-06-11 (156차 세션) — _gbm_retrain_running 고착 + MIN_TRAIN_BARS 이중 체크 + C_PERIODIC 독립
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-11 (156차 — GBM 플래그 고착 + ScalerRefresh 3종 수정)
+
+### 배경 (20260611 SIGNAL/LEARNING 로그 분석)
+
+| 이상점 | 수치 | 원인 |
+|---|---|---|
+| macro_vix z폭발 | z=+35.24 | 학습기간 VIX 저변동 → σ 극소화 (155차 _MACRO_SCALE_FLOOR로 해결됨) |
+| 스케일러 98분 미갱신 | 09:00~10:38 갱신 없음 | `_gbm_retrain_running` 고착 → Phase B 전 구간 차단 |
+| GBM 재학습 하루 0회 | LEARNING.log에 `[Retrain] 완료` 없음 | feat_rows 조기 체크 통과 → 미래가격 제거 후 14766 < 15000 실패 |
+| MetaConf 과소 | 5연속 41~47% | conf 기반이 stale scaler → z폭발로 GBM 혼란 |
+| 진입 0건 | 하루 종일 | 위 연쇄 |
+
+### 수정 내용 (P1/P2/P3)
+
+| 수정 | 파일 | 핵심 변경 |
+|---|---|---|
+| P1-A | `main.py` 4곳 | `ok=False` 시 `_gbm_retrain_running = False` worker thread 즉시 리셋 |
+| P1-B | `main.py` 5곳+1곳 | `_gbm_retrain_started_at` 추적 + Phase B 직전 30분 타임아웃 강제 해제 |
+| P2 | `batch_retrainer.py` | feat_rows 기준 조기 체크 삭제 → 미래가격 제거 후 records 기준 단일 체크 |
+| P3 | `main.py` Phase B | B/C_PERIODIC — `_gbm_retrain_running` 무관 독립 실행. D_FORCE만 내부 skip |
+
+### 다음 장 확인 사항
+
+- `[Retrain] 배치 재학습 시작 (weeks_back=26)` + 미래가격 제거 후 15000+ 행 확인 (P2)
+- `[ScalerRefresh]` C_PERIODIC 60분 내 발동 확인 (P3)
+- 스케일러 미갱신 60분 초과 경고 없음
 
 ---
 

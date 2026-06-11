@@ -404,6 +404,7 @@ class TradingSystem:
         self._broker_sync_last_error: str = "startup sync not attempted"
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
+        self._gbm_retrain_started_at: Optional[datetime.datetime] = None  # P1-B: 30분 타임아웃 감시용
         self._gbm_retrain_done_event = threading.Event()  # daily_close 대기용 — 초기값 set(완료 상태)
         self._gbm_retrain_done_event.set()
         self._pipeline_fatal_streak: int = 0         # [P0] 연속 ERR-FATAL 카운터
@@ -695,6 +696,7 @@ class TradingSystem:
             log_manager.system(f"[FeatureOps] 재학습 진행 중 - {reason}", "WARN")
             return False
         self._gbm_retrain_running = True
+        self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
         self._gbm_retrain_done_event.clear()
         log_manager.learning(f"[GBM] 수동 재학습 시작 | {reason}")
 
@@ -703,6 +705,9 @@ class TradingSystem:
                 result = self.batch_retrainer.retrain_now(force=force)
             except Exception as exc:
                 result = {"ok": False, "error": str(exc)}
+            if not result.get("ok"):
+                # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
+                self._gbm_retrain_running = False
             self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
             QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, False))
 
@@ -2169,6 +2174,7 @@ class TradingSystem:
         ):
             self._warmup_retrain_pending = False
             self._gbm_retrain_running = True
+            self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
             self._gbm_retrain_done_event.clear()
             self.dashboard.set_model_status("GBM 장중 재학습중...")
             log_manager.system(
@@ -2183,6 +2189,9 @@ class TradingSystem:
                     result = self.batch_retrainer.retrain_now(force=False)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
+                if not result.get("ok"):
+                    # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
+                    self._gbm_retrain_running = False
                 self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
@@ -2616,6 +2625,7 @@ class TradingSystem:
         ):
             self._warmup_retrain_pending = False
             self._gbm_retrain_running = True
+            self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
             self._gbm_retrain_done_event.clear()
             self.dashboard.set_model_status("GBM 사전 재학습중...")
             log_manager.system(
@@ -2627,6 +2637,9 @@ class TradingSystem:
                     result = self.batch_retrainer.retrain_now(force=True)
                 except Exception as _pre_e:
                     result = {"ok": False, "error": str(_pre_e)}
+                if not result.get("ok"):
+                    # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
+                    self._gbm_retrain_running = False
                 self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
@@ -3151,6 +3164,7 @@ class TradingSystem:
                     "[WarmupRetrain] 세션 재시작 후 첫 GBM 즉시 재학습 — 별도 스레드 시작", "INFO"
                 )
             self._gbm_retrain_running = True
+            self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
             self._gbm_retrain_done_event.clear()
             self.dashboard.set_model_status("GBM 재학습중...")
             _is_warmup = bool(_warmup_forced)
@@ -3162,6 +3176,9 @@ class TradingSystem:
                     result = self.batch_retrainer.retrain_now(force=False)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
+                if not result.get("ok"):
+                    # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
+                    self._gbm_retrain_running = False
                 self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, _is_warmup))
 
@@ -3607,37 +3624,49 @@ class TradingSystem:
         # ── Phase B: 정기/강제 스케일러 refresh 트리거 ─────────────────
         # predict_proba 완료 후 last_extreme_features 가 갱신된 시점에 실행.
         # refit 자체는 daemon thread — 파이프라인 블로킹 없음.
-        # GBM 재학습 중이면 skip: 두 daemon thread가 raw_data.db를 동시 접근하면
-        # I/O 경합 + Python GIL 경합으로 파이프라인 17s 지연 재발.
+        # P1-B: GBM 재학습 플래그 30분 타임아웃 — QTimer.singleShot 미실행 시 강제 해제
+        _gbm_started = getattr(self, "_gbm_retrain_started_at", None)
+        if (self._gbm_retrain_running and _gbm_started is not None
+                and (_ts_dt_obj - _gbm_started).total_seconds() > 1800):
+            logger.warning(
+                "[GBM] 재학습 플래그 30분 타임아웃 강제 해제 (started=%s)",
+                _gbm_started.strftime("%H:%M:%S"),
+            )
+            self._gbm_retrain_running = False
+            self._gbm_retrain_started_at = None
+        # P3: B_OPEN / C_PERIODIC은 GBM 재학습 여부와 무관하게 실행 허용
+        # D_FORCE만 raw_data.db 동시 접근 17s 지연 방지를 위해 GBM 재학습 중 skip
         if (not self._scaler_refresh_running
-                and not self._gbm_retrain_running
                 and not self._is_const_out_heavy_cooldown_active(_ts_dt_obj)):
             _extreme_feats_b = getattr(self.model, "last_extreme_features", [])
             _refresh_trig, _refresh_reason = self.model.check_refresh_trigger(
                 _ts_dt_obj, _extreme_feats_b
             )
             if _refresh_trig:
-                self._scaler_refresh_running = True  # 스레드 시작 전 선점 — 이중 트리거 방지
-                def _scaler_refresh_worker(
-                    _trig=_refresh_trig, _rsn=_refresh_reason, _trigger_ts=ts
-                ):
-                    try:
-                        from config.settings import SCALER_WARMUP_LOOKBACK_BARS
-                        _Xr, _fnr = self.batch_retrainer.load_features_for_warmup(
-                            lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
-                        )
-                        if _Xr is not None:
-                            self.model.refit_scalers_only(
-                                _Xr, _fnr,
-                                trigger_ts=_trigger_ts,
-                                trigger_type=_trig,
-                                trigger_reason=_rsn,
+                if _refresh_trig == "D_FORCE" and self._gbm_retrain_running:
+                    pass  # D_FORCE: GBM 재학습 중 raw_data.db 동시 접근 방지
+                else:
+                    self._scaler_refresh_running = True  # 스레드 시작 전 선점 — 이중 트리거 방지
+                    def _scaler_refresh_worker(
+                        _trig=_refresh_trig, _rsn=_refresh_reason, _trigger_ts=ts
+                    ):
+                        try:
+                            from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                            _Xr, _fnr = self.batch_retrainer.load_features_for_warmup(
+                                lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
                             )
-                    except Exception as _sr_e:
-                        logger.warning("[ScalerRefresh] 실패: %s", _sr_e)
-                    finally:
-                        self._scaler_refresh_running = False
-                threading.Thread(target=_scaler_refresh_worker, daemon=True).start()
+                            if _Xr is not None:
+                                self.model.refit_scalers_only(
+                                    _Xr, _fnr,
+                                    trigger_ts=_trigger_ts,
+                                    trigger_type=_trig,
+                                    trigger_reason=_rsn,
+                                )
+                        except Exception as _sr_e:
+                            logger.warning("[ScalerRefresh] 실패: %s", _sr_e)
+                        finally:
+                            self._scaler_refresh_running = False
+                    threading.Thread(target=_scaler_refresh_worker, daemon=True).start()
 
         # ── D_PRICE_MOMENTUM: 5분 가격 급변 기반 스케일러 즉시 트리거 ────
         # 기존 D_FORCE(z-score >4 탐지)는 장세 전환 후 약 20분 지연이 발생.

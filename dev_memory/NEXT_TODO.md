@@ -6,6 +6,25 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-11 (156차 — GBM 플래그 고착 + ScalerRefresh 3종 수정)
+
+### 다음 장 검증 항목 (최우선)
+
+#### [P0] GBM 재학습 성공 확인
+- `[Retrain] 배치 재학습 시작 (weeks_back=26)` 로그 확인
+- `[Retrain] DB 로드 완료: XXXXX행 × 97피처` — 미래가격 제거 후 15000+ 행 확인 (P2 효과)
+- `[Retrain] 완료` 로그 + 하루 종일 재학습 없던 현상 해소 확인
+
+#### [P0] ScalerRefresh 60분 이내 발동
+- `[ScalerRefresh]` C_PERIODIC 트리거 로그 — 재학습 상태 무관 60분 내 발동 (P3 효과)
+- 스케일러 노후화 경고 `[Model] 1m 스케일러 Xm 미갱신` — 60분 초과 없음
+
+#### [P1] P1-A 플래그 즉시 리셋
+- 재학습 실패(`ok=False`) 시 LEARNING.log 직후 Phase B ScalerRefresh 발동으로 간접 확인
+- `[GBM] 재학습 플래그 30분 타임아웃 강제 해제` 로그 없음 (정상 흐름)
+
+---
+
 ## 2026-06-11 (155차 — EKS·conf100%·SHAP 3종 수정)
 
 ### 다음 장 검증 항목

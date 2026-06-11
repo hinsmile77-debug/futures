@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-06-11 (156차 — _gbm_retrain_running 고착 + ScalerRefresh 3종 수정)
+
+### [버그] `_gbm_retrain_running` 고착 — QTimer.singleShot daemon thread 불안정
+
+**Root cause**: 4개 재학습 worker 모두 `QTimer.singleShot(0, lambda: _on_gbm_retrain_done(r, ...))` 호출. Python 3.7 32-bit + PyQt5 환경에서 daemon thread → Qt 이벤트 루프 미연결 → `ok=False` 시 콜백 미실행 → `_gbm_retrain_running = False` 설정 누락 → 플래그 True 고착.  
+**Fix P1-A**: 4개 worker 전부 `if not result.get("ok"): self._gbm_retrain_running = False` daemon thread 내 즉시 리셋.  
+**Fix P1-B**: `_gbm_retrain_started_at` 추적 + Phase B 직전 30분 타임아웃 방어. 코드에 이미 `# QTimer 전달 불안정 대비` 주석이 있었으나 `_gbm_retrain_running = False`는 여전히 QTimer에만 의존했던 것이 원인.
+
+### [버그] `_load_from_db` MIN_TRAIN_BARS 이중 체크 모순
+
+**Root cause**: L689 feat_rows(16387) 기준 조기 체크 통과 → 미래가격 제거 1621행 드랍 → 실제 records=14766 → `retrain_now()` 내 두 번째 체크(14766 < 15000) 실패. 즉 DB에는 충분한 데이터가 있지만 미래가격 필터 후 부족해지는 케이스를 조기 체크가 감지 못함.  
+**Fix P2**: 조기 체크(feat_rows 기준) 삭제. 미래가격 제거 후 `len(records)` 기준으로 단일 체크로 통합. `retrain_now()` 두 번째 체크는 외부 X 인자 전달 경우를 위한 safety net으로 유지.
+
+### [설계결정] C_PERIODIC ScalerRefresh — `_gbm_retrain_running` 의존 분리
+
+**배경**: 스케일러가 stale해지는 것(98분 미갱신)이 GBM 재학습 중 raw_data.db I/O 경합(17s 지연)보다 훨씬 치명적. RETRAIN_WEEKS_BACK=26 기준 GBM 재학습은 최장 ~30분 소요 가능.  
+**결정**: B/C_PERIODIC은 `_gbm_retrain_running` 무관 실행. D_FORCE만 GBM 재학습 중 skip (동일 DB 동시 read → 17s 지연 방지가 여전히 필요). D_PRICE_MOMENTUM도 raw_data.db 읽기 포함이므로 기존 차단 유지.
+
+---
+
 ## 2026-06-11 (155차 — EKS·conf100%·SHAP 3종)
 
 ### [설계결정] EKS 기준 DynMC 통합 — 0.42 floor 제거

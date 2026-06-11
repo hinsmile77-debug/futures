@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-06-11 (156차 — _gbm_retrain_running 고착 + MIN_TRAIN_BARS 이중 체크 + C_PERIODIC 독립)
+
+**Work**: SIGNAL.log 분석 → 스케일러 98분 미갱신 원인 딥다이브 → P1/P2/P3 수정.
+
+### 한 일
+
+| Fix | 내용 | 파일 |
+|---|---|---|
+| A (분석) | 20260611_SIGNAL.log 전체 분석 — macro_vix z=+35.24 고착·스케일러 91→98분 미갱신·MetaConf 과소·ConstOut 6회·StuckBreaker streak=13·진입0 확인 | 로그 분석 |
+| B (딥다이브) | 스케일러 미갱신 원인 추적: 08:55 GBM 재학습 ok=False → `_gbm_retrain_running` 고착 → Phase B 전 구간 차단 (C_PERIODIC 60분 포함) | LEARNING.log + main.py + batch_retrainer.py |
+| P1-A | 4개 worker(`_retrain_worker`×2, `_intraday_retrain_worker`, `_pre_retrain_worker`)에 `ok=False` 즉시 `_gbm_retrain_running = False` 리셋 추가 | `main.py` L708/2192/2640/3179 |
+| P1-B | `_gbm_retrain_started_at` 추적 변수 추가(init+4곳). Phase B 직전 30분 타임아웃 강제 해제 | `main.py` L407/699/2177/2628/3167/3628-3636 |
+| P2 | `_load_from_db` 조기 체크(feat_rows 기준, 미래가격 제거 전) 삭제 → 미래가격 제거 후 `len(records)` 기준으로 이동 | `learning/batch_retrainer.py` L689-693 삭제, L752-758 추가 |
+| P3 | Phase B 조건 분리: B/C_PERIODIC은 `_gbm_retrain_running` 무관 실행. D_FORCE만 내부에서 GBM 재학습 중 skip | `main.py` L3612-3660 |
+
+### 스케일러 미갱신 근본 원인 (규명)
+
+```
+08:55:05 GBM 재학습 시작 (weeks_back=10)
+08:55:22 DB 로드 완료: 14766행 × 97피처
+         → feat_rows=16387로 조기 체크 통과 (미래가격 제거 전)
+         → 미래가격 제거 후 14766행 (1621행 드랍)
+         → retrain_now() 두 번째 체크: 14766 < 15000 → ok=False
+         → _on_gbm_retrain_done QTimer 미발화(daemon thread 불안정)
+         → _gbm_retrain_running = True 고착
+09:00~15:00 Phase B: `not _gbm_retrain_running` 조건 → C_PERIODIC 60분 전 구간 차단
+         → 스케일러 98분 미갱신
+```
+
+### 155차 효과 점검
+
+| 항목 | 155차 수정 | 내일 예상 효과 |
+|---|---|---|
+| macro_vix z=+35.24 | `_MACRO_SCALE_FLOOR["macro_vix"]=0.10` 추가 | z폭발 억제 |
+| conf=100% FLAT | Fix1+2+3 (직접 가중합·0.85 cap·PROB_FLOOR) | FLAT 고착 차단 |
+| GBM 데이터 부족 | RETRAIN_WEEKS_BACK 10→26 | 충분한 데이터 확보 |
+| EKS 기준 | DynMC GAP_OPEN mc 연동 | 0.45 고정 기준 제거 |
+
+---
+
 ## 2026-06-11 (155차 — EKS min_conf 통합 + conf=100% FLAT 방어 3종 + SHAP 폴백 개선)
 
 **Work**: 금일 SIGNAL.log 분석 → 3개 독립 이슈 수정.

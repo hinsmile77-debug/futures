@@ -40,6 +40,7 @@ except ImportError:
 from config.settings import (
     MODEL_DIR, HORIZON_DIR, HORIZONS, DB_DIR,
     GBM_WEIGHT_DEFAULT, GBM_MIN_SAMPLES_LEAF,
+    RETRAIN_WEEKS_BACK,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 
@@ -129,8 +130,8 @@ GBM_PARAMS = {
 }
 
 # 최소 학습 데이터 (분봉 수)
-# weeks_back=10 기준 실측 ~15,750봉 → 15,000 달성 가능
-# (weeks_back=8 실측 ~12,600봉으로 15,000 미달 → weeks_back 10으로 상향)
+# RETRAIN_WEEKS_BACK=26 기준 실측 ~44,000봉 → 충분히 초과
+# (구 weeks_back=10 기준 ~15,750봉으로 간신히 달성 → 26주로 확장)
 MIN_TRAIN_BARS = 15000
 
 # Phase 2: 호라이즌별 학습 최소 데이터 — 시간 등가 기준 (72k 봉 기준 전 호라이즌 충족)
@@ -185,7 +186,7 @@ class BatchRetrainer:
 
     사용:
         retrainer = BatchRetrainer()
-        result    = retrainer.retrain_now(weeks_back=10)
+        result    = retrainer.retrain_now(weeks_back=RETRAIN_WEEKS_BACK)
     """
 
     def __init__(self, model_dir: str = HORIZON_DIR):
@@ -228,7 +229,7 @@ class BatchRetrainer:
         X:                    Optional[np.ndarray] = None,
         y_dict:               Optional[Dict[str, np.ndarray]] = None,
         feature_names:        Optional[List[str]] = None,
-        weeks_back:           int = 10,
+        weeks_back:           int = RETRAIN_WEEKS_BACK,
         force:                bool = False,
         use_horizon_features: bool = False,
     ) -> Dict:
@@ -685,12 +686,6 @@ class BatchRetrainer:
                     (cutoff,),
                 ).fetchall()
 
-            if len(feat_rows) < MIN_TRAIN_BARS:
-                logger.warning(
-                    f"[Retrain] 피처 데이터 부족 ({len(feat_rows)} < {MIN_TRAIN_BARS})"
-                )
-                return None, None, None
-
             # close 맵 (ts → close)
             close_map = {r["ts"]: float(r["close"]) for r in candle_rows}
 
@@ -753,6 +748,14 @@ class BatchRetrainer:
                     "[Retrain] 미래 가격 불완전 행 %d개 제거 (max_horizon=%dm 후 종가 없음)",
                     _n_dropped, _max_h_min,
                 )
+
+            # P2: MIN_TRAIN_BARS 체크를 미래가격 제거 후 실제 행 수 기준으로 수행
+            if len(records) < MIN_TRAIN_BARS:
+                logger.warning(
+                    "[Retrain] 학습 데이터 부족 (미래가격 제거 후 %d < %d)",
+                    len(records), MIN_TRAIN_BARS,
+                )
+                return None, None, None
 
             X = np.array(
                 [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],
