@@ -6045,6 +6045,19 @@ class TradingSystem:
                 f"[GBM] 일일 마감 재학습 건너뜀: {retrain_result.get('error','')}"
             )
 
+        # DB pruning — 매주 월요일 EOD 1회 실행 (RAW_DATA_PRUNE_WEEKS=52주 이전 삭제)
+        # 슬라이딩 창(26주) 정상 운영 시 학습 행 수는 ~40,000 안정적
+        # 하지만 raw_data.db 자체는 누적 → 52주 초과분 정리로 DB 비대화 방지
+        if datetime.datetime.now().weekday() == 0:  # 월요일
+            try:
+                _pruned = self.batch_retrainer.prune_raw_data_db()
+                if _pruned > 0:
+                    log_manager.learning(
+                        f"[GBM] DB pruning: {_pruned:,}행 삭제 (52주 초과분)"
+                    )
+            except Exception as _pe:
+                logger.warning("[GBM] DB pruning 실패: %s", _pe)
+
         # [P8] EOD 스케일러 재적합 — 금일 최근 N봉 기준으로 pkl 갱신
         # GBM retrain의 8주 스케일러(분포 폭넓음) 위에 금일 데이터로 추가 재적합.
         # 내일 08:55 warmup이 _warmup_retrain_pending으로 스킵돼도

@@ -40,7 +40,7 @@ except ImportError:
 from config.settings import (
     MODEL_DIR, HORIZON_DIR, HORIZONS, DB_DIR,
     GBM_WEIGHT_DEFAULT, GBM_MIN_SAMPLES_LEAF,
-    RETRAIN_WEEKS_BACK,
+    RETRAIN_WEEKS_BACK, MAX_TRAIN_BARS, RAW_DATA_PRUNE_WEEKS,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 
@@ -757,6 +757,16 @@ class BatchRetrainer:
                 )
                 return None, None, None
 
+            # MAX_TRAIN_BARS 상한: weeks_back 오설정·이상 입력으로 행 수 폭증 방지
+            # 슬라이딩 창(26주) 정상 운영 시 ~40,000행 → 50,000 초과 불가
+            # 초과 시 최신 N행 사용 (시계열 특성상 최신 우선)
+            if len(records) > MAX_TRAIN_BARS:
+                logger.warning(
+                    "[Retrain] MAX_TRAIN_BARS 상한 적용: %d → %d행",
+                    len(records), MAX_TRAIN_BARS,
+                )
+                records = records[-MAX_TRAIN_BARS:]
+
             X = np.array(
                 [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],
                 dtype=np.float32,
@@ -833,6 +843,43 @@ class BatchRetrainer:
         except Exception as e:
             logger.warning(f"[Retrain] DB 로드 오류: {e}")
             return None, None, None
+
+    def prune_raw_data_db(self, keep_weeks: int = RAW_DATA_PRUNE_WEEKS) -> int:
+        """raw_data.db 오래된 데이터 정리 — 매주 월요일 EOD 1회 호출 권장.
+
+        keep_weeks 이전 데이터를 raw_features / raw_candles / raw_features_horizon 에서 삭제.
+        RETRAIN_WEEKS_BACK(26주)의 2배(52주)를 기본 보존 기간으로 유지.
+        삭제된 총 행 수를 반환.
+        """
+        import sqlite3
+        from config.settings import RAW_DATA_DB
+
+        if not os.path.exists(RAW_DATA_DB):
+            return 0
+
+        cutoff = (
+            datetime.datetime.now() - datetime.timedelta(weeks=keep_weeks)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+        deleted = 0
+        try:
+            with sqlite3.connect(RAW_DATA_DB, timeout=15) as conn:
+                for table in ("raw_features", "raw_candles", "raw_features_horizon"):
+                    try:
+                        r = conn.execute(
+                            "DELETE FROM {} WHERE ts < ?".format(table), (cutoff,)
+                        )
+                        deleted += r.rowcount
+                    except Exception:
+                        pass  # 테이블 없으면 무시
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            logger.info(
+                "[Retrain] DB pruning 완료: %d행 삭제 (cutoff=%s, keep=%d주)",
+                deleted, cutoff[:10], keep_weeks,
+            )
+        except Exception as e:
+            logger.warning("[Retrain] DB pruning 실패: %s", e)
+        return deleted
 
     def get_stats(self) -> dict:
         return {

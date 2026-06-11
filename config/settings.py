@@ -228,6 +228,15 @@ GBM_MIN_SAMPLES_LEAF = 10   # 두 학습기 모두 이 값을 참조한다
 # 26주(6개월)로 확장하면 ~44,000행 확보 → 스케일러 σ 안정 + 학습 품질 개선.
 RETRAIN_WEEKS_BACK: int = 26
 
+# GBM 학습 행 수 상한 — weeks_back 확장/이상 입력 시 학습 시간 폭증 방지
+# 26주 × 310봉/거래일 × 5일 ≈ 40,300행 → 50,000은 충분한 여유
+# 초과 시 최신 N행만 사용 (슬라이딩 창 내 최신 우선)
+MAX_TRAIN_BARS: int = 50000
+
+# raw_data.db 보존 기간 — RETRAIN_WEEKS_BACK×2 = 52주 (2배 안전 마진)
+# 이보다 오래된 raw_features / raw_candles 행은 매주 월요일 EOD 정리
+RAW_DATA_PRUNE_WEEKS: int = 52
+
 # ── 스케일러 운영 정책 ──────────────────────────────────────────
 # GBM은 트리 기반(스케일 불변) — 스케일러만 독립 refit, 모델 재학습과 분리
 # SGD 경로(online_learner)는 partial_fit 현행 유지, 이 정책 적용 외
