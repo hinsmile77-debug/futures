@@ -24,6 +24,8 @@ v4 변경:
   confidence_score: 0.0 ~ 1.0  (정상 범위 0.40~0.70)
   size_multiplier:  0.0 ~ 1.5
 """
+import copy
+import threading
 import numpy as np
 import logging
 from collections import deque
@@ -111,6 +113,11 @@ class MetaConfidenceLearner:
         self._conf_hist_by_regime: Dict[str, deque] = {
             r: deque(maxlen=100) for r in _REGIME_KEYS
         }
+
+        # 비동기 LR.fit() 상태 — GIL 경합 제거
+        self._fit_lock     = threading.Lock()
+        self._fit_running: Dict[str, bool]  = {r: False for r in _REGIME_KEYS}
+        self._pending_fitted: Dict[str, tuple] = {}
 
     # ── 피처 유틸 ─────────────────────────────────────────────────
 
@@ -301,46 +308,84 @@ class MetaConfidenceLearner:
         self._total_count += 1
 
     def flush_fit(self):
-        """STEP 2 말미에 1회 호출 — 레짐별 30분 배치 재학습 트리거
+        """STEP 2 말미에 1회 호출 — 레짐별 비동기 배치 재학습 트리거 (GIL-free)
 
-        각 레짐 독립적으로 MIN_SAMPLES 충족 + BATCH_INTERVAL 경과 시 fit
+        LR.fit()을 daemon 스레드로 분리해 메인 스레드 GIL 블로킹 제거.
+        완료된 모델은 apply_pending()으로 다음 틱 S2 진입 시 반영.
         """
         for regime in _REGIME_KEYS:
             buf_len = len(self._bufs[regime])
             cnt     = self._sample_counts.get(regime, 0)
             last    = self._last_fit_counts.get(regime, 0)
-            if buf_len >= self.MIN_SAMPLES_PER_REGIME and cnt - last >= self.BATCH_INTERVAL:
-                self._batch_fit_regime(regime)
+            if buf_len < self.MIN_SAMPLES_PER_REGIME or cnt - last < self.BATCH_INTERVAL:
+                continue
+            with self._fit_lock:
+                if self._fit_running.get(regime, False):
+                    continue  # 이전 틱 학습 진행 중 — 중복 실행 차단
+                self._fit_running[regime] = True
+            # 메인 스레드에서 스냅샷 + deep-copy (thread-safe, GIL 보호)
+            snapshot    = list(self._bufs[regime])
+            model_snap  = copy.deepcopy(self._models[regime])
+            scaler_snap = copy.deepcopy(self._scalers[regime])
+            already_fit = bool(self._fitted.get(regime, False))
+            threading.Thread(
+                target=self._async_fit_regime,
+                args=(regime, snapshot, model_snap, scaler_snap, already_fit, cnt),
+                daemon=True,
+                name="MetaFit-{}".format(regime[:2]),
+            ).start()
 
-    def _batch_fit_regime(self, regime: str):
-        """레짐별 30분 배치: 4급 품질 레이블 → LogisticRegression 재학습"""
-        recent = self._bufs[regime][-self._BUF_MAX:]
-        pairs  = [(f, self._quality_label(c, ok)) for f, c, ok in recent]
+    def _async_fit_regime(self, regime, snapshot, model, scaler, already_fit, cnt):
+        """daemon 스레드: LR.fit() GIL 블로킹을 메인 스레드 밖으로 이동.
 
-        y    = np.array([lbl for _, lbl in pairs], dtype=np.int32)
-        seen = set(y.tolist())
-        if len(seen) < 2:
-            logger.debug("[MetaConf] [%s] 배치 스킵 — 클래스 다양성 부족 (%d종)", regime, len(seen))
-            return
-
-        X      = np.array([f for f, _ in pairs], dtype=np.float32)
-        scaler = self._scalers[regime]
-        model  = self._models[regime]
-
-        if not self._fitted[regime]:
-            scaler.fit(X)
-
-        X_s = scaler.transform(X)
+        model/scaler 는 메인 스레드에서 deep-copy된 독립 객체 — 경합 없음.
+        완료 후 _pending_fitted 에 저장, apply_pending()으로 swap-in.
+        """
         try:
+            recent = snapshot[-self._BUF_MAX:]
+            pairs  = [(f, self._quality_label(c, ok)) for f, c, ok in recent]
+            y      = np.array([lbl for _, lbl in pairs], dtype=np.int32)
+            seen   = set(y.tolist())
+            if len(seen) < 2:
+                logger.debug(
+                    "[MetaConf] [%s] 비동기 배치 스킵 — 클래스 다양성 부족 (%d종)",
+                    regime, len(seen),
+                )
+                return
+            X = np.array([f for f, _ in pairs], dtype=np.float32)
+            if not already_fit:
+                scaler.fit(X)
+            X_s = scaler.transform(X)
             model.fit(X_s, y)
-            self._fitted[regime]          = True
-            self._last_fit_counts[regime] = self._sample_counts.get(regime, 0)
             logger.info(
-                "[MetaConf] LR[%s] 배치 재학습 완료 (n=%d, classes=%s, total=%d)",
-                regime, len(pairs), sorted(seen), self._total_count,
+                "[MetaConf] LR[%s] 비동기 학습 완료 (n=%d, classes=%s)",
+                regime, len(pairs), sorted(seen),
             )
+            with self._fit_lock:
+                self._pending_fitted[regime] = (model, scaler, cnt)
         except Exception as e:
-            logger.warning("[MetaConf] LR[%s] 학습 오류: %s", regime, e)
+            logger.warning("[MetaConf] LR[%s] 비동기 학습 오류: %s", regime, e)
+        finally:
+            with self._fit_lock:
+                self._fit_running[regime] = False
+
+    def apply_pending(self):
+        """메인 스레드 전용: 완료된 비동기 학습 결과를 활성 모델에 반영.
+
+        STEP 2 진입 시 1회 호출 — 전 틱 daemon 학습 결과를 swap-in.
+        predict_confidence()는 메인 스레드 전용이므로 추가 락 불필요.
+        """
+        with self._fit_lock:
+            if not self._pending_fitted:
+                return
+            pending = dict(self._pending_fitted)
+            self._pending_fitted.clear()
+        for regime, (model, scaler, cnt) in pending.items():
+            self._models[regime]          = model
+            self._scalers[regime]         = scaler
+            self._fitted[regime]          = True
+            self._last_fit_counts[regime] = cnt
+            logger.info("[MetaConf] LR[%s] 비동기 결과 반영 (cnt=%d)", regime, cnt)
 
     # ── 통계 ───────────────────────────────────────────────────────
 

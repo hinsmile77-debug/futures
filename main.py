@@ -3078,7 +3078,10 @@ class TradingSystem:
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
         _st.append(("S2", time.perf_counter()))
+        _s2_enter_t = _st[-1][1]                                    # [P1a] GIL 대기 측정 기준점
+        self.meta_gate.learner.apply_pending()                       # [P0] 이전 틱 비동기 LR 결과 반영
         _s2_meta_t = time.perf_counter()
+        _s2_gil_wait_ms = int((_s2_meta_t - _s2_enter_t) * 1000)   # [P1a] S2 마커→실행 gap
         # STEP 1 검증된 예측마다 해당 시점 피처로 즉시 partial_fit
         # FLAT 예측도 포함: evaluate() FLAT early-return 경우 meta_features를 직접 build
         for v in verified:
@@ -3139,22 +3142,24 @@ class TradingSystem:
         _sgd_deferred_verified = list(verified)  # snapshot (verified 는 이후 재활용 안 됨)
 
         # MetaGate 분봉 말미 학습 — record_outcome() 누적 분을 1회에 소화
-        # (flush_fit 은 S6 meta_gate.evaluate 이전에 필요하므로 크리티컬 경로에 유지)
+        # flush_fit()은 daemon 스레드 비동기 실행 → 즉시 반환 (GIL 블로킹 없음)
+        # 완료된 결과는 다음 틱 apply_pending()에서 swap-in
         _s2_flush_t = time.perf_counter()
         self.meta_gate.learner.flush_fit()
         _s2_meta_ms  = int((_s2_flush_t - _s2_meta_t) * 1000)
         _s2_flush_ms = int((time.perf_counter() - _s2_flush_t) * 1000)
-        if _s2_meta_ms + _s2_flush_ms > 200:
+        _s2_total_ms = _s2_gil_wait_ms + _s2_meta_ms + _s2_flush_ms
+        if _s2_total_ms > 200:
             # [S2-B] SYSTEM logger(INFO 레벨)에는 debug 가 필터링되므로 debug_log 사용
             debug_log.debug(
-                "[S2] meta=%dms flush=%dms verified=%d (learn 지연)",
-                _s2_meta_ms, _s2_flush_ms, len(verified),
+                "[S2] gil_wait=%dms meta=%dms flush=%dms verified=%d",
+                _s2_gil_wait_ms, _s2_meta_ms, _s2_flush_ms, len(verified),
             )
-        if _s2_meta_ms + _s2_flush_ms > 1000:
+        if _s2_total_ms > 1000:
             # [S2-C] 1000ms 초과 시 SYSTEM WARN 으로도 출력 (CB 임박 진단용)
             logger.warning(
-                "[S2-느림] meta=%dms flush=%dms verified=%d",
-                _s2_meta_ms, _s2_flush_ms, len(verified),
+                "[S2-느림] gil_wait=%dms meta=%dms flush=%dms verified=%d",
+                _s2_gil_wait_ms, _s2_meta_ms, _s2_flush_ms, len(verified),
             )
 
         # ── STEP 3: GBM 배치 재학습 (주간/월간 스케줄 또는 세션 재시작 즉시) ────
@@ -6463,9 +6468,10 @@ class TradingSystem:
 
         else:  # 90s
             msg = (f"⚠ 파이프라인 {elapsed_str} 미실행 — 분봉 수신 지연 의심  "
-                   f"장 시간({is_market_open()}) 확인. 다음 분봉에서 자동 회복 기대")
+                   f"장 시간({is_market_open()}) 확인. 자동 복구 시도 예약 (300ms 후)")
             log_manager.system(msg, "WARNING")
             notify_pipeline_delayed(elapsed_str)
+            QTimer.singleShot(300, self._try_pipeline_recovery)  # [P1b] 90s 자동 재진입
 
     def _post_exchange_cb_resume(self, gap_min: int) -> None:
         """거래소 CB 해제 후 상태 초기화 루틴.
