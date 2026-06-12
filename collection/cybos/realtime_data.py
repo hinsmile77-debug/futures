@@ -9,6 +9,7 @@ from collection.cybos.api_connector import CybosAPI, _safe_float, _safe_int, _sa
 
 logger = logging.getLogger(__name__)
 sys_log = logging.getLogger("SYSTEM")
+hoga_log = logging.getLogger("HOGA")
 
 MAX_CANDLES = 500
 
@@ -248,16 +249,22 @@ class CybosRealtimeData:
             "ask_qtys": ask_qtys,
         }
         self._hoga_event_count += 1
-        if self._hoga_event_count <= 5 or self._hoga_event_count % 200 == 0:
-            sys_log.info(
-                "[CybosRT-HOGA] #%d code=%s bid1=%.2f/%d ask1=%.2f/%d",
-                self._hoga_event_count,
-                self._rt_code,
-                self._last_bid1,
-                self._last_bid_qty,
-                self._last_ask1,
-                self._last_ask_qty,
+
+        active = sum(
+            1 for i in range(5) if bid_prices[i] > 0 and ask_prices[i] > 0
+        )
+        level_parts = " ".join(
+            "L%d: bid=%.2f/%d ask=%.2f/%d" % (
+                i + 1,
+                bid_prices[i], bid_qtys[i],
+                ask_prices[i], ask_qtys[i],
             )
+            for i in range(5)
+        )
+        hoga_log.debug(
+            "[HOGA] code=%s active_levels=%d/5 %s",
+            self._rt_code, active, level_parts,
+        )
 
         if self._current_bar is not None:
             self._current_bar["bid1"] = self._last_bid1

@@ -46,27 +46,47 @@ class HorizonDecorrelator:
         self._buf = {h: deque(maxlen=self.BUF_SIZE) for h in self._horizons}
         self._weights = dict(ENSEMBLE_WEIGHTS_CORR_ADJ)
         self._ticks   = 0
+        # 호라이즌별 마지막 push 틱 (-1 = 미사용)
+        # _recompute 에서 "최근 UPDATE_EVERY 틱 내에 실제 push된 것"만 available로 간주
+        self._last_push_tick: Dict[str, int] = {h: -1 for h in self._horizons}
 
     def push(self, horizon_proba: Dict[str, Dict]) -> None:
         """매분 예측 결과를 버퍼에 추가하고 필요 시 가중치를 재계산한다."""
         for h in self._horizons:
-            p = horizon_proba.get(h, {}).get("up", 0.5)
+            if h not in horizon_proba:
+                # 체크박스 OFF 등 비활성 호라이즌 건너뜀
+                continue
+            prev_tick = self._last_push_tick[h]
+            if prev_tick >= 0 and (self._ticks - prev_tick) >= self.UPDATE_EVERY:
+                # UPDATE_EVERY(15분) 이상 공백 후 재활성 → 구 데이터로 상관관계 왜곡 방지
+                self._buf[h].clear()
+                logger.debug("[Decorr] %s 버퍼 클리어 (비활성 %d틱 후 복귀)", h, self._ticks - prev_tick)
+            p = horizon_proba[h].get("up", 0.5)
             self._buf[h].append(float(p))
+            self._last_push_tick[h] = self._ticks
 
         self._ticks += 1
         if self._ticks % self.UPDATE_EVERY == 0:
             self._recompute()
 
     def _recompute(self) -> None:
-        min_len = min(len(self._buf[h]) for h in self._horizons)
-        if min_len < self.MIN_SAMPLES:
+        # 최근 UPDATE_EVERY 틱 내에 실제 push된 호라이즌만 대상
+        # push 공백이 UPDATE_EVERY 이상이면 구 버퍼 데이터 → 시간 불일치 상관관계 배제
+        _recent = self._ticks - self.UPDATE_EVERY
+        available = [
+            h for h in self._horizons
+            if len(self._buf[h]) >= self.MIN_SAMPLES
+            and self._last_push_tick[h] >= _recent
+        ]
+        if len(available) < 2:
             return
+        min_len = min(len(self._buf[h]) for h in available)
 
-        # 각 호라이즌의 다른 5개 호라이즌과의 평균 |ρ|
+        # 각 호라이즌의 다른 호라이즌과의 평균 |ρ|
         avg_abs_rho: Dict[str, float] = {}
-        for h in self._horizons:
+        for h in available:
             rhos = []
-            for other in self._horizons:
+            for other in available:
                 if other == h:
                     continue
                 rho = self._pearson(
@@ -76,17 +96,20 @@ class HorizonDecorrelator:
                 rhos.append(abs(rho))
             avg_abs_rho[h] = sum(rhos) / len(rhos) if rhos else 0.5
 
-        # w_adj[h] = (1 - avg_|ρ|[h]) / 정규화
-        raw   = {h: max(1.0 - avg_abs_rho[h], 0.05) for h in self._horizons}
+        # w_adj[h] = (1 - avg_|ρ|[h]) / 정규화 — available 호라이즌만 갱신
+        # 비활성 호라이즌의 self._weights는 이전 값 유지
+        # (compute() 에서 horizon_proba 부재 시 if not res: continue 로 자동 스킵)
+        raw   = {h: max(1.0 - avg_abs_rho[h], 0.05) for h in available}
         total = sum(raw.values())
         if total <= 0:
             return
 
-        self._weights = {h: raw[h] / total for h in self._horizons}
+        for h in available:
+            self._weights[h] = raw[h] / total
         logger.debug(
-            "[Decorr] 가중치 갱신 (샘플=%d) | %s",
-            min_len,
-            {k: round(v, 3) for k, v in self._weights.items()},
+            "[Decorr] 가중치 갱신 (샘플=%d, 활성=%d/%d) | %s",
+            min_len, len(available), len(self._horizons),
+            {k: round(v, 3) for k, v in self._weights.items() if v > 0},
         )
 
     @staticmethod
@@ -107,10 +130,11 @@ class HorizonDecorrelator:
         return dict(self._weights)
 
     def get_status(self) -> Dict:
-        min_len = min(len(self._buf[h]) for h in self._horizons)
+        populated = [len(self._buf[h]) for h in self._horizons if len(self._buf[h]) > 0]
+        min_len = min(populated) if populated else 0
         return {
             "samples": min_len,
-            "adaptive": min_len >= self.MIN_SAMPLES,
+            "adaptive": len(populated) >= 2 and min_len >= self.MIN_SAMPLES,
             "weights": {k: round(v, 4) for k, v in self._weights.items()},
         }
 
@@ -611,40 +635,46 @@ class EnsembleDecision:
 
         _short_override_applied = False
         if direction == DIRECTION_FLAT and self._flat_streak >= 5:
-            _s1m = horizon_proba.get("1m", {})
-            _s3m = horizon_proba.get("3m", {})
-            _d1m = _s1m.get("direction", 0) if _s1m else 0
-            _d3m = _s3m.get("direction", 0) if _s3m else 0
-            if _d1m != 0 and _d1m == _d3m:
-                # OFI 또는 CVD가 같은 방향인지 피처로 검증
-                _ofi  = (features or {}).get("ofi_norm", 0.0)
-                _cvd  = (features or {}).get("cvd_direction", 0.0)
-                _feat_agree = (
-                    (_d1m == DIRECTION_UP   and (_ofi > 0 or _cvd > 0)) or
-                    (_d1m == DIRECTION_DOWN and (_ofi < 0 or _cvd < 0))
-                )
-                if _feat_agree:
-                    _c1m = _s1m.get("confidence", 0.0)
-                    _c3m = _s3m.get("confidence", 0.0)
-                    direction  = _d1m
-                    confidence = (_c1m + _c3m) / 2.0
-                    # 개선1: score 삼총사 정규화 — direction 전환 시 up/down/flat 일관성 보장
-                    # override 전 값(flat 고착)이 그대로 남으면 합계가 1.0 초과 가능
-                    _sho_rem = max(0.0, 1.0 - confidence) / 2.0
-                    if direction == DIRECTION_UP:
-                        up_score   = confidence
-                        down_score = _sho_rem
-                        flat_score = _sho_rem
-                    else:
-                        down_score = confidence
-                        up_score   = _sho_rem
-                        flat_score = _sho_rem
-                    _short_override_applied = True
-                    logger.info(
-                        "[ShortHorizonOverride] flat streak=%d → 1m/3m 방향=%+d "
-                        "conf=%.1f%% (ofi=%.2f cvd=%.2f)",
-                        self._flat_streak, direction, confidence * 100, _ofi, _cvd,
+            # 활성 호라이즌 중 가장 짧은 두 개를 단기 쌍으로 선택
+            # (1m OFF 시 3m+5m, 1m+3m OFF 시 5m+10m 등 자동 대체)
+            _HZ_SHORT_PREF = ["1m", "3m", "5m", "10m", "15m", "30m"]
+            _short_pair = [h for h in _HZ_SHORT_PREF if horizon_proba.get(h)][:2]
+            if len(_short_pair) >= 2:
+                _h1, _h2 = _short_pair
+                _s1 = horizon_proba[_h1]
+                _s2 = horizon_proba[_h2]
+                _d1 = _s1.get("direction", 0)
+                _d2 = _s2.get("direction", 0)
+                if _d1 != 0 and _d1 == _d2:
+                    # OFI 또는 CVD가 같은 방향인지 피처로 검증
+                    _ofi  = (features or {}).get("ofi_norm", 0.0)
+                    _cvd  = (features or {}).get("cvd_direction", 0.0)
+                    _feat_agree = (
+                        (_d1 == DIRECTION_UP   and (_ofi > 0 or _cvd > 0)) or
+                        (_d1 == DIRECTION_DOWN and (_ofi < 0 or _cvd < 0))
                     )
+                    if _feat_agree:
+                        _c1 = _s1.get("confidence", 0.0)
+                        _c2 = _s2.get("confidence", 0.0)
+                        direction  = _d1
+                        confidence = (_c1 + _c2) / 2.0
+                        # score 삼총사 정규화 — direction 전환 시 up/down/flat 일관성 보장
+                        _sho_rem = max(0.0, 1.0 - confidence) / 2.0
+                        if direction == DIRECTION_UP:
+                            up_score   = confidence
+                            down_score = _sho_rem
+                            flat_score = _sho_rem
+                        else:
+                            down_score = confidence
+                            up_score   = _sho_rem
+                            flat_score = _sho_rem
+                        _short_override_applied = True
+                        logger.info(
+                            "[ShortHorizonOverride] flat streak=%d → %s/%s 방향=%+d "
+                            "conf=%.1f%% (ofi=%.2f cvd=%.2f)",
+                            self._flat_streak, _h1, _h2, direction,
+                            confidence * 100, _ofi, _cvd,
+                        )
 
         # ── 호라이즌 합의도 패널티 (불합의 노이즈 필터) ───────────
         # 6개 중 2개 이하 합의: 방향 신호가 노이즈일 가능성 높음 → 진입 억제

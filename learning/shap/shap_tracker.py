@@ -70,6 +70,10 @@ class ShapTracker:
         # TreeExplainer 첫 실패 후 False로 설정 → 이후 매분 불필요한 시도 방지
         self._tree_explainer_ok: bool = True
 
+        # 반복 로그 억제: 같은 주 갱신은 DEBUG, 심사 로그는 30분 1회
+        self._last_logged_update_week: Optional[tuple] = None
+        self._last_review_log_ts: Optional[datetime.datetime] = None
+
         self._load_history()
 
     # ── SHAP 계산 ─────────────────────────────────────────────────
@@ -108,11 +112,17 @@ class ShapTracker:
         }
         # 같은 주 엔트리는 최신 데이터로 교체 (weekly deduplication)
         # 매분 호출돼도 주별 슬롯 1개만 유지 → 다주 히스토리 보존
-        if self._history and tuple(self._history[-1].get("week", [])) == current_week:
+        is_new_week = not (self._history and tuple(self._history[-1].get("week", [])) == current_week)
+        if not is_new_week:
             self._history.pop()
         self._history.append(entry)
         self._save_history()
-        logger.info(f"[SHAP] 중요도 갱신 완료 (n={len(X_s)}, week={current_week})")
+
+        if current_week != self._last_logged_update_week:
+            logger.info("[SHAP] 중요도 갱신 완료 (n=%d, week=%s)", len(X_s), current_week)
+            self._last_logged_update_week = current_week
+        else:
+            logger.debug("[SHAP] 중요도 갱신 (n=%d, week=%s)", len(X_s), current_week)
         return True
 
     def _calc_importance(self, model, X: np.ndarray) -> Optional[np.ndarray]:
@@ -294,13 +304,23 @@ class ShapTracker:
             "note":            "⚠️ 교체는 반드시 인간 검토 후 수동 적용",
         }
 
-        logger.info(
-            "[SHAP] 주간 심사 완료 | "
-            "하락피처=%d개 | 교체후보=%d개 | CORE안전=%s%s",
-            len(declining), len(candidates),
-            "✅" if len(core_ranks) == 3 else "⚠️",
-            " | 방향별분석=ON" if direction_top else "",
-        )
+        now = datetime.datetime.now()
+        _review_interval = datetime.timedelta(minutes=30)
+        if (self._last_review_log_ts is None
+                or (now - self._last_review_log_ts) >= _review_interval):
+            logger.info(
+                "[SHAP] 주간 심사 완료 | "
+                "하락피처=%d개 | 교체후보=%d개 | CORE안전=%s%s",
+                len(declining), len(candidates),
+                "✅" if len(core_ranks) == 3 else "⚠️",
+                " | 방향별분석=ON" if direction_top else "",
+            )
+            self._last_review_log_ts = now
+        else:
+            logger.debug(
+                "[SHAP] 주간 심사 (하락=%d, 후보=%d)",
+                len(declining), len(candidates),
+            )
         return report
 
     def _find_declining_features(self) -> List[str]:

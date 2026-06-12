@@ -18,7 +18,7 @@ import os
 
 _DRY_RUN = "--execute" not in sys.argv
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "data", "predictions.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "data", "db", "predictions.db")
 CUTOFF_DATE = "2026-06-04"
 CONF_THRESHOLD = 0.85
 
@@ -71,9 +71,13 @@ deleted = conn.execute(
     "WHERE confidence > ? AND ts < ?",
     (CONF_THRESHOLD, CUTOFF_DATE + " 00:00:00"),
 ).rowcount
-conn.execute("VACUUM")
 conn.commit()
 conn.close()
+
+# VACUUM은 트랜잭션 밖에서 별도 연결로 실행
+conn2 = sqlite3.connect(DB_PATH, timeout=10)
+conn2.execute("VACUUM")
+conn2.close()
 
 print(f"[DONE] {deleted}건 → predictions_archive로 이동 완료.")
 print("복구 필요 시: INSERT INTO predictions SELECT * FROM predictions_archive WHERE ts < ?")

@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover - GUI/runtime dependency
 
 logger = logging.getLogger(__name__)
 system_logger = logging.getLogger("SYSTEM")
+probe_log = logging.getLogger("PROBE")
 
 # Per-key last emission timestamp for throttled diagnostic logs.
 _THROTTLED_INFO_TS: Dict[str, float] = {}
@@ -819,7 +820,7 @@ class CybosAPI:
         return data or {}
 
     def probe_investor_ticker(self, extra_codes: Optional[List[str]] = None) -> None:
-        logger.info("[CybosInvestorProbe] not implemented; extra_codes=%s", extra_codes or [])
+        probe_log.info("[CybosInvestorProbe] not implemented; extra_codes=%s", extra_codes or [])
 
     # ──────────────────────────────────────────────────────────────
     # 투자자 수급 / 프로그램 매매 데이터 수집
@@ -887,7 +888,7 @@ class CybosAPI:
             status = _safe_int(obj.GetDibStatus())
             msg = _safe_str(obj.GetDibMsg1())
             if ret not in (0, None) or (status != 0 and not allow_status_error):
-                system_logger.warning(
+                probe_log.warning(
                     "[CybosProbe] %s blocked ret=%s status=%s msg=%s",
                     progid, ret, status, msg,
                 )
@@ -915,7 +916,7 @@ class CybosAPI:
                 if row:
                     rows.append(row)
             nonempty_h = sum(1 for v in headers.values() if v)
-            system_logger.info(
+            probe_log.info(
                 "[CybosProbe] %s ok status=%s nonempty_headers=%d rows=%d",
                 progid, status, nonempty_h, len(rows),
             )
@@ -923,7 +924,7 @@ class CybosAPI:
             if progid not in CybosAPI._probe_dump_done:
                 CybosAPI._probe_dump_done.add(progid)
                 h_nonempty = {k: v for k, v in headers.items() if v}
-                system_logger.info(
+                probe_log.info(
                     "[CybosProbe][RAW] %s headers=%s rows_sample=%s",
                     progid, h_nonempty, rows[:5],
                 )
@@ -936,7 +937,7 @@ class CybosAPI:
                 "rows": rows,
             }
         except Exception as exc:
-            system_logger.warning("[CybosProbe] %s dispatch/request failed: %s", progid, exc)
+            probe_log.warning("[CybosProbe] %s dispatch/request failed: %s", progid, exc)
             return None
 
     def request_investor_futures(self) -> Dict[str, Any]:
