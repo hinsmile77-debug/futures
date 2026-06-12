@@ -495,7 +495,7 @@ class TradingSystem:
 
         # ── 앙상블 보정기 conf 캐시 (T-1m 앙상블 conf 추적) ──────────────────
         # STEP 6에서 저장 → STEP 1에서 T-1m 앙상블 conf 조회 → ensemble_calibrator 누적
-        self._ensemble_conf_cache: dict = {}  # {ts_str: float}
+        self._ensemble_conf_cache: dict = {}  # {ts_str: (conf_float, 1m_included_bool)}
 
         # ── P3-b: Reverse Entry Clamp ─────────────────────────────────────────
         self._last_exit_direction: str = ""      # 마지막 청산 방향 "LONG" or "SHORT"
@@ -2182,14 +2182,22 @@ class TradingSystem:
         # 장중(09:00~15:10) 재시작: pre_market_setup()이 재호출되지 않으므로 즉시 시작.
         # 그렇지 않으면 첫 분봉 STEP 3에서 시작되어 파이프라인과 CPU 경합 → CB⑤ 5026ms 발동.
         # [P0] 당일 08:50 이후 이미 재학습 완료된 경우 장중 재학습 중복 차단.
+        #      단, 마지막 재학습으로부터 _RESTART_RETRAIN_GAP_MIN 이상 경과 시 재학습 허용.
+        #      근거: 12:18 재시작에서 11:10 재학습 완료 이유로 스킵 → 오후 방향 전환 무감지.
+        #      오전/오후 시장 방향이 달라지는 경우 60분+ 경과 후 재시작 시 재학습이 필요.
         # [P0-Gate] 14:30 이후 재시작: 장 마감 40분 전 — 재학습해도 실사용 시간 없음 → 스킵.
+        _RESTART_RETRAIN_GAP_MIN = 60   # 마지막 재학습으로부터 이 시간(분) 경과 시 재학습 허용
         _rst_now = datetime.datetime.now()
         _today_0850 = _rst_now.replace(hour=8, minute=50, second=0, microsecond=0)
         _last_rt = getattr(self.batch_retrainer, "_last_retrain", None)
+        _mins_since_last_rt = (
+            (_rst_now - _last_rt).total_seconds() / 60 if _last_rt else float("inf")
+        )
         _already_retrained_today = (
             _last_rt is not None
             and _last_rt.date() == _rst_now.date()
             and _last_rt >= _today_0850
+            and _mins_since_last_rt < _RESTART_RETRAIN_GAP_MIN   # 60분 이내 재학습은 스킵
         )
         _late_restart = _rst_now.time() >= datetime.time(14, 30)   # 14:30 이후 재학습 무의미
         if (
@@ -2204,8 +2212,12 @@ class TradingSystem:
             self._gbm_retrain_done_event.clear()
             self.circuit_breaker.set_gbm_retrain_active(True)   # CB⑤ 임계 완화
             self.dashboard.set_model_status("GBM 장중 재학습중...")
+            _rt_gap_tag = (
+                f" ({_mins_since_last_rt:.0f}분 경과, {_last_rt.strftime('%H:%M')} 이후)"
+                if _last_rt else ""
+            )
             log_manager.system(
-                "[WarmupRetrain] 장중 재시작 — GBM 경량 재학습 시작 (intraday, 파이프라인 분리)", "INFO"
+                f"[WarmupRetrain] 장중 재시작 — GBM 경량 재학습 시작{_rt_gap_tag} (intraday)", "INFO"
             )
 
             def _intraday_retrain_worker():
@@ -2229,7 +2241,7 @@ class TradingSystem:
         elif _already_retrained_today:
             self._warmup_retrain_pending = False
             log_manager.system(
-                f"[WarmupRetrain] 당일 재학습 완료({_last_rt.strftime('%H:%M')}) 확인 → 장중 재학습 스킵 (중복 방지)",
+                f"[WarmupRetrain] 최근 재학습({_last_rt.strftime('%H:%M')}, {_mins_since_last_rt:.0f}분 전) → 장중 재학습 스킵",
                 "INFO",
             )
 
@@ -3169,10 +3181,14 @@ class TradingSystem:
             self.horizon_calibrator.record(v["horizon"], _conf, v["correct"])
             # 앙상블 보정기: 1m 결과를 앙상블 정확도 대리 지표로 사용
             # (1m이 가장 빠른 피드백 — 당시 앙상블 conf와 적중 여부로 보정기 학습)
+            # 단, 당시 앙상블에 1m가 포함됐을 때만 유효 — OFF 중 결과로 학습하면
+            # "1m 제외 앙상블 conf"를 "1m 단독 적중 여부"로 검증하는 논리 불일치 발생
             if v["horizon"] == "1m":
-                _ens_conf_at_t = self._ensemble_conf_cache.get(v["ts"])
-                if _ens_conf_at_t is not None:
-                    self.ensemble.record_ensemble_outcome(_ens_conf_at_t, bool(v["correct"]))
+                _cached = self._ensemble_conf_cache.get(v["ts"])
+                if _cached is not None:
+                    _ens_conf_at_t, _1m_was_active = _cached
+                    if _1m_was_active:
+                        self.ensemble.record_ensemble_outcome(_ens_conf_at_t, bool(v["correct"]))
             # F1 적응형 가중치: 전 호라이즌 검증 결과 누적 (이번 세션 예측만)
             if _pred_ts >= self._session_start_ts:
                 self.ensemble.record_horizon_verification(
@@ -3411,8 +3427,33 @@ class TradingSystem:
         # 완료 시 QTimer.singleShot(0, ...) 으로 메인 스레드에서 모델 로드.
         # _gbm_retrain_running 플래그로 중복 실행 차단.
         _warmup_forced = self._warmup_retrain_pending
+
+        # [DriftRetrain] 방향 드리프트 감지 → 자동 장중 재학습
+        # 오전/오후 시장 방향이 전환될 때 GBM이 오전 편향을 유지하는 문제 대응.
+        # 조건: 30분 정확도 25% 미만 + 마지막 재학습으로부터 60분 이상 경과
+        # 근거: 6/12 13:51 CB③ 발동 — acc30m=6.7%, 마지막 재학습 11:10 (약 2.5시간 전)
+        _dr_acc30m = self.circuit_breaker.status_dict().get("accuracy_30m", 1.0)
+        _dr_last_rt = getattr(self.batch_retrainer, "_last_retrain", None)
+        _dr_mins = (
+            (datetime.datetime.now() - _dr_last_rt).total_seconds() / 60
+            if _dr_last_rt else float("inf")
+        )
+        _drift_trigger = (
+            self.circuit_breaker.state != CB_STATE_HALTED  # HALT 중에는 재학습 불필요
+            and _dr_acc30m < 0.25                          # 30분 정확도 25% 미만
+            and _dr_mins >= 60.0                           # 마지막 재학습으로부터 60분 이상
+            and not getattr(self, "_gbm_retrain_running", False)
+        )
+        if _drift_trigger:
+            log_manager.system(
+                f"[DriftRetrain] 30분 정확도 {_dr_acc30m:.1%} < 25% "
+                f"({_dr_mins:.0f}분 경과) → 장중 경량 재학습 트리거",
+                "WARNING",
+            )
+
         _need_retrain = (
             _warmup_forced
+            or _drift_trigger
             or self.batch_retrainer.should_retrain_weekly()
             or self.batch_retrainer.should_retrain_monthly()
         )
@@ -4178,7 +4219,8 @@ class TradingSystem:
                 threading.Thread(target=_const_out_refit_worker, daemon=True).start()
 
         # 앙상블 보정기: 현재 ts의 conf 캐시 (STEP 1에서 T-1m conf 조회용)
-        self._ensemble_conf_cache[ts] = float(confidence)
+        # 1m 포함 여부 함께 저장 — 1m OFF 중에는 1m 결과로 앙상블 보정기 학습 불가
+        self._ensemble_conf_cache[ts] = (float(confidence), "1m" in _hp_ens)
         if len(self._ensemble_conf_cache) > 35:
             self._ensemble_conf_cache.pop(min(self._ensemble_conf_cache), None)
         # 시간대·레짐 두 기준 중 더 엄격한 값으로 통일 (checklist·dashboard 공용)
