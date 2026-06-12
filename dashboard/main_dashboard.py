@@ -987,7 +987,37 @@ class PredictionPanel(QWidget):
     def get_enabled_horizons(self) -> set:
         return {self._HZ_KEY_MAP[h] for h, cb in self._hz_enabled.items() if cb.isChecked()}
 
-    def _on_hz_filter_changed(self):
+    def _save_hz_filter(self):
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            p = {}
+            if os.path.exists(_f):
+                with open(_f, "r", encoding="utf-8") as fp:
+                    p = json.load(fp)
+            p["hz_filter"] = {hname: cb.isChecked() for hname, cb in self._hz_enabled.items()}
+            with open(_f, "w", encoding="utf-8") as fp:
+                json.dump(p, fp, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _load_hz_filter(self):
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            if not os.path.exists(_f):
+                return
+            with open(_f, "r", encoding="utf-8") as fp:
+                saved = json.load(fp).get("hz_filter", {})
+            for hname, cb in self._hz_enabled.items():
+                if hname in saved:
+                    cb.blockSignals(True)
+                    cb.setChecked(bool(saved[hname]))
+                    cb.blockSignals(False)
+        except Exception:
+            pass
+        # 로드 후 시각 상태 동기화 (OFF 항목 dim 처리); 초기화 시점이므로 signal emit 생략
+        self._on_hz_filter_changed(emit=False)
+
+    def _on_hz_filter_changed(self, emit=True):
         for hname, cb in self._hz_enabled.items():
             if hname not in self._hz_labels:
                 continue
@@ -999,7 +1029,8 @@ class PredictionPanel(QWidget):
                 )
                 arr.setStyleSheet(f"color:{C['text2']};font-size:{S.f(22)}px;font-weight:bold;")
                 pct.setStyleSheet(f"color:{C['text2']};font-size:{S.f(12)}px;")
-        self.hz_filter_changed.emit()
+        if emit:
+            self.hz_filter_changed.emit()
 
     def _make_report_tab(self, title: str, accent: str):
         frame = QFrame()
@@ -1165,6 +1196,7 @@ class PredictionPanel(QWidget):
                 f"border:1px solid {C['border']};}}"
             )
             cb.stateChanged.connect(self._on_hz_filter_changed)
+            cb.stateChanged.connect(self._save_hz_filter)
             self._hz_enabled[hname] = cb
 
             cb_wrap = QWidget()
@@ -1175,6 +1207,7 @@ class PredictionPanel(QWidget):
             cb_lay.addWidget(cb)
             cb_lay.addStretch()
             hgrid.addWidget(cb_wrap, 1, i)
+        self._load_hz_filter()
         lay.addLayout(hgrid)
 
         # ── 섹션 구분 ─────────────────────────────────────────────
@@ -7147,6 +7180,17 @@ class LogPanel(QWidget):
 # ────────────────────────────────────────────────────────────
 # 메인 윈도우
 # ────────────────────────────────────────────────────────────
+# 레짐 배지 fg 색상 (regime_panel._MICRO_COLOR의 텍스트 색상과 동일)
+_REGIME_BAR_COLOR = {
+    "추세장": "#00c878",
+    "횡보장": "#ffee58",
+    "급변장": "#ff4444",
+    "혼합":   "#8888ff",
+    "탈진":   "#ce93d8",
+}
+_REGIME_BAR_H = 4   # x축 라인 위 레짐 바 높이(px)
+
+
 class MinuteChartCanvas(QWidget):
     RIGHT_PADDING_BARS = 10
 
@@ -7167,6 +7211,7 @@ class MinuteChartCanvas(QWidget):
         self._last_step_px = 0.0
         self._last_plot_rect = QRectF()
         self._instrument_code = ""   # 현재 표시 중인 종목코드
+        self._regime_map = {}        # {ts_key: regime_str} 봉별 레짐 히스토리
         self.setMinimumHeight(S.p(420))
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
@@ -7188,6 +7233,18 @@ class MinuteChartCanvas(QWidget):
         self._view_offset = 0
         self._hover_pos = None
         self._dragging = False
+        self._regime_map.clear()
+        self.update()
+
+    def set_regime_at(self, ts_key: str, regime: str):
+        """봉 완성 후 레짐 기록. run_minute_pipeline 완료 시점에 호출."""
+        if not ts_key or not regime:
+            return
+        self._regime_map[ts_key] = regime
+        # 오래된 항목 정리 (최대 400봉)
+        if len(self._regime_map) > 400:
+            for k in sorted(self._regime_map)[:50]:
+                del self._regime_map[k]
         self.update()
 
     def update_tick(self, price: float, ts=None):
@@ -7363,6 +7420,7 @@ class MinuteChartCanvas(QWidget):
         index_map = {c["ts"]: i for i, c in enumerate(candles)}
         self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
         self._draw_candles(painter, plot, candles, lo, hi, padded_count)
+        self._draw_regime_bar(painter, plot, candles, padded_count)
         self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
         self._draw_axes(painter, plot, candles, lo, hi, padded_count)
         self._draw_crosshair_and_tooltip(painter, plot, candles, lo, hi)
@@ -7476,6 +7534,35 @@ class MinuteChartCanvas(QWidget):
             else:
                 painter.setBrush(QColor(119, 37, 37))
             painter.drawRect(rect)
+
+    def _draw_regime_bar(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
+        """X축 라인 바로 위에 봉별 레짐 색상 바 (높이 _REGIME_BAR_H px) 표시."""
+        if not self._regime_map:
+            return
+        count  = max(padded_count, 1)
+        step   = plot.width() / count
+        bar_y  = plot.bottom() - _REGIME_BAR_H  # x축 위로 밀착
+        painter.setPen(Qt.NoPen)
+        prev_regime = None
+        prev_color  = None
+        for idx, candle in enumerate(candles):
+            regime = self._regime_map.get(candle["ts"])
+            if not regime:
+                prev_regime = None
+                continue
+            color_hex = _REGIME_BAR_COLOR.get(regime)
+            if not color_hex:
+                prev_regime = None
+                continue
+            # 레짐이 바뀔 때만 setBrush (성능 최적화)
+            if regime != prev_regime:
+                col = QColor(color_hex)
+                col.setAlpha(210)
+                painter.setBrush(col)
+                prev_regime = regime
+                prev_color  = col
+            x = plot.left() + step * idx
+            painter.drawRect(QRectF(x, bar_y, step - 1, _REGIME_BAR_H))
 
     def _draw_trade_spans(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
         count = max(padded_count, 1)
@@ -8066,6 +8153,10 @@ class MinuteChartDialog(QDialog):
     def on_candle_closed(self, candle: dict):
         self.maybe_roll_session()
         self._chart.on_candle_closed(candle)
+
+    def set_regime_at(self, ts_key: str, regime: str):
+        """파이프라인 완료 후 봉 레짐 색상 업데이트."""
+        self._chart.set_regime_at(ts_key, regime)
 
     def record_entry(self, direction: str, price: float, ts=None):
         self.maybe_roll_session()
@@ -8924,6 +9015,10 @@ class MireukDashboard(QMainWindow):
 
     def minute_chart_candle_closed(self, candle: dict):
         self._minute_chart_dialog.on_candle_closed(candle)
+
+    def minute_chart_set_regime(self, ts_key: str, regime: str):
+        """파이프라인 완료 후 봉 레짐 색상 업데이트."""
+        self._minute_chart_dialog.set_regime_at(ts_key, regime)
 
     def minute_chart_record_entry(self, direction: str, price: float, ts=None):
         self._minute_chart_dialog.record_entry(direction, price, ts=ts)
@@ -10112,6 +10207,10 @@ def _adapter_minute_chart_candle_closed(self, candle: dict):
     self._win.minute_chart_candle_closed(candle)
 
 
+def _adapter_minute_chart_set_regime(self, ts_key: str, regime: str):
+    self._win.minute_chart_set_regime(ts_key, regime)
+
+
 def _adapter_minute_chart_record_entry(self, direction: str, price: float, ts=None):
     self._win.minute_chart_record_entry(direction, price, ts=ts)
 
@@ -10146,6 +10245,7 @@ def _adapter_minute_chart_clear_active_position(self):
 DashboardAdapter.toggle_minute_chart_dialog = _adapter_toggle_minute_chart_dialog
 DashboardAdapter.minute_chart_tick = _adapter_minute_chart_tick
 DashboardAdapter.minute_chart_candle_closed = _adapter_minute_chart_candle_closed
+DashboardAdapter.minute_chart_set_regime = _adapter_minute_chart_set_regime
 DashboardAdapter.minute_chart_record_entry = _adapter_minute_chart_record_entry
 DashboardAdapter.minute_chart_record_exit = _adapter_minute_chart_record_exit
 DashboardAdapter.minute_chart_sync_active_position = _adapter_minute_chart_sync_active_position

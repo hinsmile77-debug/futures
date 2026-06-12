@@ -3668,6 +3668,8 @@ class TradingSystem:
             _mr["regime"], _mr["adx"], _mr["atr_ratio"], _mr["regime_duration"]
         )
         self.dashboard.update_micro_regime_warmup(_mr.get("warmup"))
+        # 1분봉 차트 레짐 색상 바 업데이트 (파이프라인 완료 후 정확한 레짐 전달)
+        self.dashboard.minute_chart_set_regime(ts, _mr["regime"])
         if _mr.get("regime_changed"):
             log_manager.signal(
                 f"[MicroRegime] 레짐 변경 → {_mr['regime']} "
