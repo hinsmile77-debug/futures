@@ -3430,10 +3430,15 @@ class TradingSystem:
 
         # [DriftRetrain] 방향 드리프트 감지 → 자동 장중 재학습
         # 오전/오후 시장 방향이 전환될 때 GBM이 오전 편향을 유지하는 문제 대응.
-        # 조건: 30분 정확도 25% 미만 + 마지막 재학습으로부터 60분 이상 경과
+        # 조건: 30분 정확도 25% 미만 + 최소 20건 집계 + 마지막 재학습 60분 이상 경과
         # 근거: 6/12 13:51 CB③ 발동 — acc30m=6.7%, 마지막 재학습 11:10 (약 2.5시간 전)
-        _dr_acc30m = self.circuit_breaker.status_dict().get("accuracy_30m", 1.0)
-        _dr_last_rt = getattr(self.batch_retrainer, "_last_retrain", None)
+        # 부작용 방어:
+        #   n >= 20 조건: _accuracy_buf 비어있으면 0/1=0.0 → 오발동 방지
+        #   (세션 초기·재시작 직후 n=0인 상태에서 acc30m=0.0으로 잘못 감지되는 현상)
+        _dr_cb_status = self.circuit_breaker.status_dict()
+        _dr_acc30m    = _dr_cb_status.get("accuracy_30m", 1.0)
+        _dr_acc30m_n  = _dr_cb_status.get("cb3_samples",  0)
+        _dr_last_rt   = getattr(self.batch_retrainer, "_last_retrain", None)
         _dr_mins = (
             (datetime.datetime.now() - _dr_last_rt).total_seconds() / 60
             if _dr_last_rt else float("inf")
@@ -3441,12 +3446,13 @@ class TradingSystem:
         _drift_trigger = (
             self.circuit_breaker.state != CB_STATE_HALTED  # HALT 중에는 재학습 불필요
             and _dr_acc30m < 0.25                          # 30분 정확도 25% 미만
+            and _dr_acc30m_n >= 20                         # 최소 20건 집계 후 판단 (빈 버퍼 오발동 방지)
             and _dr_mins >= 60.0                           # 마지막 재학습으로부터 60분 이상
             and not getattr(self, "_gbm_retrain_running", False)
         )
         if _drift_trigger:
             log_manager.system(
-                f"[DriftRetrain] 30분 정확도 {_dr_acc30m:.1%} < 25% "
+                f"[DriftRetrain] 30분 정확도 {_dr_acc30m:.1%} (n={_dr_acc30m_n}) < 25% "
                 f"({_dr_mins:.0f}분 경과) → 장중 경량 재학습 트리거",
                 "WARNING",
             )
@@ -3462,6 +3468,12 @@ class TradingSystem:
                 self._warmup_retrain_pending = False
                 log_manager.system(
                     "[WarmupRetrain] 세션 재시작 후 첫 GBM 경량 재학습 — 별도 스레드 시작 (intraday)", "INFO"
+                )
+            elif _drift_trigger:
+                log_manager.system(
+                    f"[DriftRetrain] GBM 경량 재학습 시작 "
+                    f"(acc30m={_dr_acc30m:.1%} n={_dr_acc30m_n} 경과={_dr_mins:.0f}분)",
+                    "WARNING",
                 )
             self._gbm_retrain_running = True
             self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
