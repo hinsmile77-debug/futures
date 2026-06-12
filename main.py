@@ -465,6 +465,11 @@ class TradingSystem:
         self._bias_fl_streak: dict = {h: 0 for h in HORIZONS}  # FL 편향 연속 분 카운터
         self._bias_override_horizons: set = set()               # uniform fallback 적용 호라이즌
 
+        # ── [P2-진단] conf 고착 감지 ────────────────────────────────────────
+        # conf가 N분 연속 동일값일 때 WARN 로그로 GBM/SGD 분해값을 기록
+        self._conf_prev: dict = {}      # {h_name: float} 직전 틱 blended conf
+        self._conf_stuck: dict = {h: 0 for h in HORIZONS}  # 연속 동일 카운터
+
         # ── 호라이즌 자격 상태 (Qualification) ──────────────────────────────────
         # qualified=True: 3 사이클 완료 → 앙상블 참여 허가 (Phase 3에서 실제 필터링)
         # 현재(Phase 1): 상태 추적만 — 앙상블 비중 변경 없음
@@ -3116,12 +3121,20 @@ class TradingSystem:
                             _h, _dir_bias_r, self._bias_fl_streak[_h]
                         )
                 else:
+                    # P1: fallback 해제 임계값 60% (진입 80%와 비대칭)
+                    # 이력이 충분히 정상화된 후에만 해제 → 경계 flip-flop 방지
+                    _can_release = _dir_bias_r < 0.60
                     if _h in self._bias_override_horizons:
-                        self._bias_override_horizons.discard(_h)
-                        log_manager.learning(
-                            f"[BiasReset] {_h} {_biased_dir}편향 해소 ({_dir_bias_r:.0%})"
-                            f" → uniform fallback 해제"
-                        )
+                        if _can_release:
+                            self._bias_override_horizons.discard(_h)
+                            # P0: 오염된 편향 이력도 함께 초기화 → 해제 즉시 재고착 방지
+                            self._bias_buf[_h].clear()
+                            self._conf_stuck[_h] = 0
+                            log_manager.learning(
+                                f"[BiasReset] {_h} {_biased_dir}편향 해소 ({_dir_bias_r:.0%})"
+                                f" → uniform fallback 해제"
+                            )
+                        # else: 60~80% 구간은 fallback 유지, streak만 리셋
                     self._bias_fl_streak[_h] = 0
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
@@ -3581,6 +3594,7 @@ class TradingSystem:
             _rf_ready = self.rf_model.is_ready()
             for h_name in list(horizon_proba.keys()):
                 _sgd_fv = _hz_feat_vecs[h_name] if _hz_feat_vecs else feat_vec
+                _gbm_raw_conf = horizon_proba[h_name].get("confidence", 0.0)  # P2: blend 전 GBM conf
                 sgd_p   = self.online_learner.predict_proba(h_name, _sgd_fv)
                 blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p, h_name)
                 # P6c: RF 블렌딩 — OOB 기반 동적 가중치
@@ -3603,6 +3617,25 @@ class TradingSystem:
                     "up": round(up, 4), "down": round(dn, 4), "flat": round(fl, 4),
                     "direction": best[1], "confidence": round(best[0], 4),
                 }
+
+                # [P2-진단] conf 고착 감지 — 3분+ 동일값이면 LEARNING 로그
+                _curr_conf = horizon_proba[h_name]["confidence"]
+                if abs(_curr_conf - self._conf_prev.get(h_name, -1.0)) < 1e-6:
+                    self._conf_stuck[h_name] = self._conf_stuck.get(h_name, 0) + 1
+                    if self._conf_stuck[h_name] >= 3:
+                        _sgd_str = (
+                            f"u={sgd_p['up']:.3f}/d={sgd_p['down']:.3f}/f={sgd_p['flat']:.3f}"
+                            if sgd_p else "None"
+                        )
+                        log_manager.learning(
+                            f"[CONF⚠] {h_name} conf={_curr_conf:.4f} "
+                            f"{self._conf_stuck[h_name]}분 고착 | "
+                            f"gbm_raw={_gbm_raw_conf:.4f} sgd={_sgd_str} "
+                            f"bar_age={self._hz_bar_age.get(h_name, 0)}"
+                        )
+                else:
+                    self._conf_stuck[h_name] = 0
+                self._conf_prev[h_name] = _curr_conf
 
                 # Phase 2: BAR_CACHE_DECAY — 봉 미완성 구간 신뢰도 감쇠
                 _h_min_v = {"1m":1,"3m":3,"5m":5,"10m":10,"15m":15,"30m":30}.get(h_name, 1)
@@ -5109,23 +5142,30 @@ class TradingSystem:
         # 파이프라인 처리시간 (CB⑤ 대체 지표) — 헬스 패널·SYSTEM 로그 공용
         _st.append(("end", time.perf_counter()))
         _pipe_ms = (_st[-1][1] - _pipe_t0) * 1000
+        # P5: 전 단계 분해 문자열 — CB임박/WARN 양쪽에서 재사용
+        _all_steps_str = " ".join(
+            f"{_st[i][0]}={(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
+            for i in range(1, len(_st))
+        )
+        _retrain_tag_pipe = (
+            " [GBM재학습중]" if self.circuit_breaker._gbm_retrain_active else ""
+        )
         if _pipe_ms >= HEALTH_LATENCY_CRIT_MS:
             # CB⑤ 발동 임계값 이상 — 전 단계 무조건 출력 (진단용)
-            _all_steps = " ".join(
-                f"{_st[i][0]}={(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
-                for i in range(1, len(_st))
+            _pipeperf_msg = (
+                f"[PipePerf][CB임박]{_retrain_tag_pipe} "
+                f"total={_pipe_ms:.0f}ms | {_all_steps_str or '─'}"
             )
-            _pipeperf_msg = f"[PipePerf][CB임박] total={_pipe_ms:.0f}ms | {_all_steps or '─'}"
             logger.warning(_pipeperf_msg)
             log_manager.system(_pipeperf_msg, "WARNING")  # SYSTEM 로그에도 기록 — 진단 가시성
         elif _pipe_ms > HEALTH_LATENCY_WARN_MS:
-            # 경고 수준 — 100ms 초과 단계만 출력
-            _slow = " ".join(
-                f"{_st[i][0]}={(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
-                for i in range(1, len(_st))
-                if (_st[i][1] - _st[i-1][1]) * 1000 > 100
+            # P5: 경고 수준도 전 단계 분해 출력 (100ms+ 필터 제거 — 병목 단계 특정에 필요)
+            _pipeperf_warn_msg = (
+                f"[PipePerf]{_retrain_tag_pipe} "
+                f"total={_pipe_ms:.0f}ms | {_all_steps_str or '─'}"
             )
-            logger.warning("[PipePerf] total=%.0fms | %s", _pipe_ms, _slow or "─")
+            logger.warning(_pipeperf_warn_msg)
+            log_manager.system(_pipeperf_warn_msg, "WARNING")
         self._emit_runtime_health(features, _pipe_ms)
 
         # ── SHS: S2 latency + CORE pass rate 업데이트 + 대시보드/슬랙 ──
@@ -6266,6 +6306,8 @@ class TradingSystem:
         self._bias_log_tick = 0
         self._bias_fl_streak = {h: 0 for h in HORIZONS}
         self._bias_override_horizons.clear()
+        self._conf_prev.clear()
+        self._conf_stuck = {h: 0 for h in HORIZONS}
         self._ensemble_conf_cache.clear()
         self._param_corr_history.clear()
         self._shap_feature_window.clear()

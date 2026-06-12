@@ -439,16 +439,27 @@ class CircuitBreaker:
         else:
             _pause_threshold = CB_PIPE_PAUSE_MS
 
+        # P5: PAUSE 발동 원인 진단을 위해 retrain_active·임계값·완화사유를 로그에 포함
+        _retrain_tag = (
+            " [GBM재학습중→임계×2]" if getattr(self, "_gbm_retrain_active", False)
+            else (" [장시작버스트→임계9s]" if _open_burst else "")
+        )
         if pipe_ms >= _pause_threshold:
             if self._state not in (CB_STATE_PAUSED, CB_STATE_HALTED):
                 notify_circuit_breaker(
                     f"파이프라인 {pipe_ms:.0f}ms 지연",
                     "5분 진입 정지",
                 )
-            self._trigger_pause(5, f"파이프라인 {pipe_ms:.0f}ms — 처리 지연")
+            self._trigger_pause(
+                5,
+                f"파이프라인 {pipe_ms:.0f}ms — 처리 지연{_retrain_tag} (임계={_pause_threshold:.0f}ms)"
+            )
         elif pipe_ms >= CB_PIPE_WARN_MS:
             _open_tag = " [장시작 버스트]" if _open_burst else ""
-            msg = f"[CB⑤] 파이프라인 {pipe_ms:.0f}ms 경고 (기준 {CB_PIPE_WARN_MS:.0f}ms){_open_tag}"
+            msg = (
+                f"[CB⑤] 파이프라인 {pipe_ms:.0f}ms 경고 "
+                f"(기준 {CB_PIPE_WARN_MS:.0f}ms){_open_tag}{_retrain_tag}"
+            )
             logger.warning(msg)
             log_manager.system(msg, "WARNING")
 
