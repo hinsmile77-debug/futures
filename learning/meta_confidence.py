@@ -362,7 +362,25 @@ class MetaConfidenceLearner:
             if not already_fit:
                 scaler.fit(X)
             X_s = scaler.transform(X)
-            model.fit(X_s, y)
+            try:
+                model.fit(X_s, y)
+            except ValueError as _ve:
+                # warm_start=True 시 클래스 수 변경으로 coef_ shape 불일치 발생 가능
+                # (예: 이전 classes=[1,2] → coef_(1,8), 현재 classes=[0,1,2,3] → expected (4,8))
+                # coef_/intercept_/classes_ 삭제 후 cold-start 로 재시도
+                _reshaped = False
+                for _attr in ("coef_", "intercept_", "classes_", "n_iter_"):
+                    if hasattr(model, _attr):
+                        delattr(model, _attr)
+                        _reshaped = True
+                if _reshaped:
+                    logger.info(
+                        "[MetaConf] LR[%s] warm_start coef_ 리셋 → cold-start 재시도 (원인: %s)",
+                        regime, _ve,
+                    )
+                    model.fit(X_s, y)   # cold-start 재시도
+                else:
+                    raise
             logger.info(
                 "[MetaConf] LR[%s] 비동기 학습 완료 (n=%d, classes=%s)",
                 regime, len(pairs), sorted(seen),

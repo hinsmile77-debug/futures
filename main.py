@@ -3115,12 +3115,13 @@ class TradingSystem:
 
         # P5: sigma_at_t 검증 로그 — 157차 P3 수정(sigma 항상 0 버그) 효과 확인
         # 장 초반 20봉 누적 전(SIGMA_W_MIN 미달)에도 _last_sigma_20 폴백이 작동하는지 포함
+        # _last_p가 None(재시작 첫 분봉)일 수 있으므로 float 변환 후 포맷
         _sigma_nonzero = sum(1 for x in self._sigma_buf if x != 0.0)
         if _n_sig <= 5 or (_n_sig % 10 == 0):
             log_manager.learning(
                 f"[sigma] sigma_at_t={self._sigma_20:.4f}% "
                 f"buf_n={_n_sig} nonzero={_sigma_nonzero} "
-                f"prev_p={_last_p:.2f} cur_p={close:.2f}"
+                f"prev_p={float(_last_p or 0.0):.2f} cur_p={float(close or 0.0):.2f}"
             )
 
         if (
