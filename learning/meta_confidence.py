@@ -348,7 +348,11 @@ class MetaConfidenceLearner:
         완료 후 _pending_fitted 에 저장, apply_pending()으로 swap-in.
         """
         try:
-            recent = snapshot[-self._BUF_MAX:]
+            # cold-start(재시작 직후 already_fit=False)는 최신 100건으로 제한:
+            # n=300 cold-start는 n=100 대비 GIL 보유 ~3배 → S2 wall 5s+ 원인.
+            # warm_start 이후는 전체 버퍼 사용(누적 데이터로 정밀도 향상).
+            _n_limit = 100 if not already_fit else self._BUF_MAX
+            recent = snapshot[-_n_limit:]
             pairs  = [(f, self._quality_label(c, ok)) for f, c, ok in recent]
             y      = np.array([lbl for _, lbl in pairs], dtype=np.int32)
             seen   = set(y.tolist())

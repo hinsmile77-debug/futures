@@ -3419,9 +3419,24 @@ class TradingSystem:
         _s2_hidden_gil = _s2_wall_ms - _s2_total_ms
         if _s2_hidden_gil > 500:
             _gil_src = "GBM" if self._gbm_retrain_running else "MetaConf-LR"
+            # MetaConf-LR 원인 시 각 레짐 버퍼 크기 포함 → cold-start n 진단
+            _meta_buf_info = ""
+            if _gil_src == "MetaConf-LR":
+                try:
+                    _meta_buf_info = " buf=" + "/".join(
+                        f"{r[:2]}:{len(self.meta_gate.learner._bufs[r])}"
+                        for r in self.meta_gate.learner._bufs
+                    )
+                except Exception:
+                    pass
             logger.warning(
-                "[S2-분산GIL] wall=%dms measured=%dms hidden_gil=%dms src=%s",
-                _s2_wall_ms, _s2_total_ms, _s2_hidden_gil, _gil_src,
+                "[S2-분산GIL] wall=%dms measured=%dms hidden_gil=%dms src=%s%s",
+                _s2_wall_ms, _s2_total_ms, _s2_hidden_gil, _gil_src, _meta_buf_info,
+            )
+            log_manager.system(
+                f"[S2-분산GIL] wall={_s2_wall_ms}ms hidden={_s2_hidden_gil}ms "
+                f"src={_gil_src}{_meta_buf_info}",
+                "WARNING",
             )
         # [이상점3 수정] 재학습을 daemon thread로 분리 — 메인 스레드 블로킹 방지.
         # 완료 시 QTimer.singleShot(0, ...) 으로 메인 스레드에서 모델 로드.
