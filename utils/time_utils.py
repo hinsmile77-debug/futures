@@ -8,6 +8,10 @@ from config.krx_holidays import is_krx_holiday
 # 모든 시간 판단이 KST 기준으로 일관되게 동작하도록 명시한다.
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
+# 선물 프리장 시간 경계
+PRE_MARKET_START = datetime.time(8, 45)
+PRE_MARKET_END   = datetime.time(9,  0)
+
 
 def now_kst() -> datetime.datetime:
     """현재 KST 시각을 naive datetime으로 반환 (기존 naive 비교 코드와 호환)."""
@@ -24,6 +28,19 @@ def is_trading_day(dt: Optional[datetime.datetime] = None) -> bool:
     return d.weekday() < 5 and not is_krx_holiday(d)
 
 
+def is_pre_market(dt: Optional[datetime.datetime] = None) -> bool:
+    """선물 프리장 여부 (08:45~09:00, KRX 거래일).
+
+    프리장 분봉은 진입 없이 scaler warmup·피처 검증·GapOffset 사전 설정에 활용.
+    """
+    if dt is None:
+        dt = now_kst()
+    if not is_trading_day(dt):
+        return False
+    t = dt.time()
+    return PRE_MARKET_START <= t < PRE_MARKET_END
+
+
 def is_market_open(dt: Optional[datetime.datetime] = None) -> bool:
     """장 중 여부 (09:00~15:35 일반 / 09:00~15:20 만기일, KRX 거래일).
 
@@ -38,6 +55,11 @@ def is_market_open(dt: Optional[datetime.datetime] = None) -> bool:
     t = dt.time()
     close = datetime.time(15, 20) if is_expiry_day(dt) else datetime.time(15, 35)
     return datetime.time(9, 0) <= t <= close
+
+
+def is_trading_session(dt: Optional[datetime.datetime] = None) -> bool:
+    """프리장 또는 본장 여부 — 파이프라인 활성 판단용."""
+    return is_pre_market(dt) or is_market_open(dt)
 
 
 def minutes_to_close(dt: Optional[datetime.datetime] = None) -> int:
@@ -65,11 +87,13 @@ def is_new_entry_allowed(dt: Optional[datetime.datetime] = None) -> bool:
 
 
 def get_time_zone(dt: Optional[datetime.datetime] = None) -> str:
-    """시간대 구간 분류 (v6.6)"""
+    """시간대 구간 분류 (v6.7 — PRE_MARKET 추가)"""
     if dt is None:
         dt = now_kst()
     t = dt.time()
 
+    if PRE_MARKET_START <= t < PRE_MARKET_END:
+        return "PRE_MARKET"
     if datetime.time(9, 0) <= t < datetime.time(9, 5):
         return "GAP_OPEN"
     elif datetime.time(9, 5) <= t < datetime.time(10, 30):

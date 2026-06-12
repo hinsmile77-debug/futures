@@ -65,8 +65,9 @@ MARKET_CLOSE        = "15:35"   # 선물 종가 (만기일은 15:20 — time_uti
 FORCE_EXIT_TIME     = "15:10"   # 강제 청산 절대원칙
 NEW_ENTRY_CUTOFF    = "15:00"   # 신규 진입 금지 이후
 
-# 시간대별 전략 구간 (v6.6)
+# 시간대별 전략 구간 (v6.7 — PRE_MARKET 추가)
 TIME_ZONES = {
+    "PRE_MARKET":     ("08:45", "09:00"),   # 선물 프리장 — 진입 불허, scaler warmup 전용
     "GAP_OPEN":       ("09:00", "09:05"),   # 시초가 급변 — 고신뢰·소규모 진입만 허용
     "OPEN_VOLATILE":  ("09:05", "10:30"),   # 변동성 高 — 추세추종, 신뢰도 상향
     "STABLE_TREND":   ("10:30", "11:50"),   # 안정 추세 — 표준 앙상블
@@ -74,6 +75,9 @@ TIME_ZONES = {
     "CLOSE_VOLATILE": ("14:00", "15:00"),   # 마감 가속/청산 구간
     "EXIT_ONLY":      ("15:00", "15:10"),   # 신규 진입 금지
 }
+
+# 프리장 scaler refit 트리거 최소 분봉 수
+PRE_MARKET_REFIT_MIN_BARS = 3
 
 # ── 예측 모델 설정 ─────────────────────────────────────────────
 HORIZONS = {

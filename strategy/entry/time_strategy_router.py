@@ -81,6 +81,13 @@ def _restore_mc_from_history() -> None:
 
 # ── 시간대별 파라미터 ─────────────────────────────────────────────
 _ZONE_PARAMS: Dict[str, dict] = {
+    "PRE_MARKET": {
+        "min_confidence":  1.01,          # 1.0 초과 → 진입 불가 (방어선)
+        "size_mult":       0.0,
+        "strategy_mode":  "warmup_only",
+        "allow_new_entry": False,
+        "desc":            "선물 프리장 — 진입 불허, scaler warmup 전용",
+    },
     "GAP_OPEN": {
         "min_confidence":  0.67,      # 시초가 급변 → 고신뢰 신호만 허용
         "size_mult":       0.5,        # 슬리피지·갭 리스크 대비 소규모
@@ -297,6 +304,7 @@ class TimeStrategyRouter:
 
 # ── 시간대별 mc 배율 (base_mc 에 곱해 시간대 특성 반영) ──────────
 _ZONE_MC_MULT: Dict[str, float] = {
+    "PRE_MARKET":     1.00,   # warmup 전용 — DynMC 업데이트 대상 제외
     "GAP_OPEN":       1.05,
     "OPEN_VOLATILE":  1.02,
     "STABLE_TREND":   1.00,
@@ -347,7 +355,7 @@ def update_dynamic_mc(
 
     zone_changes = {}
     for zone, params in _ZONE_PARAMS.items():
-        if zone in ("EXIT_ONLY", "OTHER"):
+        if zone in ("EXIT_ONLY", "OTHER", "PRE_MARKET"):
             continue
         mult    = _ZONE_MC_MULT.get(zone, 1.00)
         old_mc  = params["min_confidence"]
