@@ -57,6 +57,7 @@ from utils.db_utils import (
     is_plausible_futures_trade,
     upsert_daily_broker_pnl,
     save_shap_scores,
+    save_regime_at, purge_old_regime_history,
 )
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
@@ -3668,8 +3669,12 @@ class TradingSystem:
             _mr["regime"], _mr["adx"], _mr["atr_ratio"], _mr["regime_duration"]
         )
         self.dashboard.update_micro_regime_warmup(_mr.get("warmup"))
-        # 1분봉 차트 레짐 색상 바 업데이트 (파이프라인 완료 후 정확한 레짐 전달)
+        # 1분봉 차트 레짐 색상 바 업데이트 + 재시작 복원용 DB 저장
         self.dashboard.minute_chart_set_regime(ts, _mr["regime"])
+        try:
+            save_regime_at(ts, _mr["regime"])
+        except Exception:
+            pass
         if _mr.get("regime_changed"):
             log_manager.signal(
                 f"[MicroRegime] 레짐 변경 → {_mr['regime']} "
@@ -6726,6 +6731,12 @@ class TradingSystem:
             logger.info("[DBQueue] EOD 플러시 완료")
         except Exception as _dq_eod_e:
             logger.warning("[DBQueue] EOD 플러시 실패 (무해): %s", _dq_eod_e)
+
+        # 오래된 레짐 히스토리 정리 (30일 초과분 삭제)
+        try:
+            purge_old_regime_history(keep_days=30)
+        except Exception as _prh_e:
+            logger.warning("[RegimeHistory] 정리 실패 (무해): %s", _prh_e)
 
         # ── WAL 체크포인트 — 장중 누적된 WAL 파일 강제 플러시 ────────
         # WAL auto-checkpoint(1000 page)는 장중 파이프라인 타이밍에 걸릴 수 있음.

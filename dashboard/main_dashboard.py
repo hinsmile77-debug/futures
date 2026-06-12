@@ -50,7 +50,7 @@ from config.settings import (
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
-from utils.db_utils import fetch_today_trades, fetchall
+from utils.db_utils import fetch_today_trades, fetchall, fetch_regime_today
 
 TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
 TP1_PROTECT_ATR_LOCK_MULT = 0.25
@@ -8140,6 +8140,14 @@ class MinuteChartDialog(QDialog):
                     "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"]),
                 })
         self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers)
+        # 재시작 복원: 오늘 레짐 히스토리를 _regime_map에 채움
+        try:
+            regime_map = fetch_regime_today(self._session_date)
+            if regime_map:
+                self._chart._regime_map.update(regime_map)
+                self._chart.update()
+        except Exception:
+            pass
 
     def maybe_roll_session(self):
         today = datetime.now().date().isoformat()

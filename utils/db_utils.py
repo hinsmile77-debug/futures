@@ -504,6 +504,13 @@ def init_raw_data_db():
                 "CREATE INDEX IF NOT EXISTS idx_rfh_horizon ON raw_features_horizon(horizon, ts)")
     except Exception:
         pass
+    # 173차: 레짐 히스토리 (차트 레짐 바 재시작 복원용)
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS regime_history (
+            ts     TEXT PRIMARY KEY,
+            regime TEXT NOT NULL
+        )
+    """)
     # Phase 2: N분봉 완성봉 집계 캐시 (backfill 및 검증용)
     execute(RAW_DATA_DB, """
         CREATE TABLE IF NOT EXISTS raw_candles_aggregated (
@@ -891,6 +898,29 @@ def fetch_broker_daily_pnl_map(days: int = 90) -> Dict[str, float]:
                     "SELECT date, pnl_krw FROM daily_broker_pnl WHERE date >= ? ORDER BY date",
                     (cutoff,))
     return {r["date"]: float(r["pnl_krw"]) for r in rows}
+
+
+def save_regime_at(ts: str, regime: str) -> None:
+    """매분 레짐 결과를 regime_history에 저장 (재시작 시 복원용)."""
+    if not ts or not regime:
+        return
+    execute(RAW_DATA_DB, "INSERT OR REPLACE INTO regime_history (ts, regime) VALUES (?, ?)", (ts, regime))
+
+
+def fetch_regime_today(today_str: str = None) -> dict:
+    """오늘 날짜 레짐 히스토리를 {ts: regime} dict로 반환."""
+    import datetime as _dt
+    if today_str is None:
+        today_str = _dt.date.today().isoformat()
+    rows = fetchall(RAW_DATA_DB, "SELECT ts, regime FROM regime_history WHERE ts LIKE ?", (today_str + "%",))
+    return {row["ts"]: row["regime"] for row in rows}
+
+
+def purge_old_regime_history(keep_days: int = 30) -> None:
+    """keep_days 이전 레짐 히스토리 삭제 (EOD 마감 시 1회 호출)."""
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=keep_days)).isoformat()
+    execute(RAW_DATA_DB, "DELETE FROM regime_history WHERE ts < ?", (cutoff,))
 
 
 def init_all_dbs():
