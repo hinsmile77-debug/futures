@@ -91,10 +91,15 @@ class MetaConfidenceLearner:
         for r in _REGIME_KEYS:
             if _SKLEARN_OK:
                 # lbfgs: 소규모(30~300 샘플, 7피처) 다중클래스에 최적
-                # max_iter=200: 32-bit Python에서 1000은 수렴 실패 시 3분+ 소요 확인(20260611)
+                # max_iter=50: warm_start=True 로 이전 coef_ 에서 재시작 → 대부분 5~15회로 수렴
+                #   200→50 변경 근거: daemon 스레드 LR.fit() GIL 간헐 보유 시간이 S2 wall time을
+                #   5~6초로 부풀리는 원인. 6/12 S2=5739ms 확인(20260612_WARN.log).
+                #   warm_start 미사용 시 cold-start 첫 fit은 최대 50회, 이후 incremental fit에서
+                #   수렴 반복 수가 크게 감소 → GIL 보유 시간 ~75% 단축 기대.
                 # class_weight='balanced': Q0~Q3 빈도 불균형 보정
                 self._models[r]  = LogisticRegression(
-                    C=1.0, max_iter=200, solver='lbfgs', class_weight='balanced',
+                    C=1.0, max_iter=50, solver='lbfgs', class_weight='balanced',
+                    warm_start=True,
                 )
                 self._scalers[r] = StandardScaler()
             else:

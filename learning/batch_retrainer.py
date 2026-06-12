@@ -231,7 +231,7 @@ def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
     return np.array([weights.get(int(lbl), 1.0) for lbl in y], dtype=np.float64)
 
 
-def _cusum_filter(records, close_map, h_mult=0.5):
+def _cusum_filter(records, close_map, h_mult=0.7):
     """
     P1: CUSUM 이벤트 필터.
 
@@ -242,6 +242,9 @@ def _cusum_filter(records, close_map, h_mult=0.5):
     records: [(ts, feat_dict), ...]  — 시간순 정렬
     close_map: {ts: float}
     h_mult: 임계값 배율 (평균 표준편차 × h_mult)
+      0.5 → 0.7 변경 근거: 6/12 장전 재학습에서 40211→12067봉(70% 제거)으로
+      안전망 30% 경계선에서 학습 데이터 부족 경고 상시 발생. h_mult 상향으로
+      이벤트 선택 기준 완화 → ~50% 유지 목표 (최소 20000봉 확보).
     """
     n = len(records)
     if n < 40:

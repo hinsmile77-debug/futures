@@ -3113,6 +3113,16 @@ class TradingSystem:
         elif self._last_sigma_20 > 0:
             self._sigma_20 = self._last_sigma_20
 
+        # P5: sigma_at_t 검증 로그 — 157차 P3 수정(sigma 항상 0 버그) 효과 확인
+        # 장 초반 20봉 누적 전(SIGMA_W_MIN 미달)에도 _last_sigma_20 폴백이 작동하는지 포함
+        _sigma_nonzero = sum(1 for x in self._sigma_buf if x != 0.0)
+        if _n_sig <= 5 or (_n_sig % 10 == 0):
+            log_manager.learning(
+                f"[sigma] sigma_at_t={self._sigma_20:.4f}% "
+                f"buf_n={_n_sig} nonzero={_sigma_nonzero} "
+                f"prev_p={_last_p:.2f} cur_p={close:.2f}"
+            )
+
         if (
             runtime_settings.USE_ROLLING_SIGMA_THRESHOLD
             and self._sigma_20 > 0
@@ -3280,6 +3290,8 @@ class TradingSystem:
                         self.circuit_breaker.record_horizon_fl_bias(
                             _h, _dir_bias_r, self._bias_fl_streak[_h]
                         )
+                        # P4: GBM 편향 감지 → SGD 비중 min floor 탈출 (대항력 회복)
+                        self.online_learner.boost_sgd_for_bias(_h)
                 else:
                     # P1: fallback 해제 임계값 60% (진입 80%와 비대칭)
                     # 이력이 충분히 정상화된 후에만 해제 → 경계 flip-flop 방지

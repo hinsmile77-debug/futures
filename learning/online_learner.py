@@ -296,6 +296,25 @@ class OnlineLearner:
     def gbm_weight(self) -> float:
         return 1.0 - self.sgd_weight
 
+    def boost_sgd_for_bias(self, horizon: str, target_w: float = 0.15) -> None:
+        """GBM 방향 편향 감지 시 해당 버킷 SGD 비중을 target_w 이상으로 복구.
+
+        SGD가 min floor(10%)에 고착되면 GBM 편향 대항 능력이 없어진다.
+        BiasReset fallback 적용 시 호출해 편향 대항력을 최소한으로 보장.
+
+        target_w: 목표 SGD 비중 (기본 15% — min floor 10% + 5%p)
+        """
+        bucket = self._bucket(horizon)
+        current = self._sgd_w[bucket]
+        if current < target_w:
+            self._sgd_w[bucket] = float(np.clip(target_w, SGD_WEIGHT_MIN, SGD_WEIGHT_MAX))
+            self._gbm_w[bucket] = 1.0 - self._sgd_w[bucket]
+            self._floor_ticks[bucket] = 0  # 바닥 체류 카운터 리셋
+            logger.info(
+                "[OnlineLearner] %s bias fallback SGD 복구 %.0f%%→%.0f%%",
+                horizon, current * 100, self._sgd_w[bucket] * 100,
+            )
+
     def reset_daily(self):
         for bk in ("short", "long"):
             self._acc_buf[bk].clear()
