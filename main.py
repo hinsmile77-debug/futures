@@ -248,7 +248,8 @@ class TradingSystem:
         if _gap_today == datetime.date.today().isoformat() and _gap_open > 0:
             try:
                 self.model.set_daily_gap_offset(_gap_open)
-                self._first_tick_notified = True  # 첫 분봉에서 덮어쓰기 방지
+                self._first_tick_notified = True       # 첫 분봉에서 덮어쓰기 방지
+                self._pre_market_gap_offset_set = True # [Bug-2] 플래그 동기화 — 이후 논리 일관성
                 logger.info("[GapOffset] 재시작 복원: today_open=%.2f", _gap_open)
             except Exception as _ge:
                 logger.warning("[GapOffset] 재시작 복원 실패: %s", _ge)
@@ -7065,13 +7066,26 @@ class TradingSystem:
         self._pre_market_done        = False
         self._pre_market_stage1_done = False
         self._daily_close_done       = False
-        self._first_tick_notified = False      # 첫 분봉 알림 플래그
+        # [Bug-1] 장중 재시작 시 __init__ 에서 복원된 True를 보존.
+        # (False로 무조건 덮어쓰면 GapOffset 재복원 보호가 무효화되어 첫 수신봉 가격으로 오염됨)
+        self._first_tick_notified = getattr(self, "_first_tick_notified", False)
         self._broker_sync_critical_notified = False  # broker sync CRITICAL 알림 1회 플래그
         # 프리장 warmup 상태 초기화 (앱 최초 기동 시)
         self._pre_market_bars               = getattr(self, "_pre_market_bars", [])
         self._pre_market_scaler_refitted    = getattr(self, "_pre_market_scaler_refitted", False)
         self._pre_market_gap_offset_set     = getattr(self, "_pre_market_gap_offset_set", False)
         self._pre_market_conf_history       = getattr(self, "_pre_market_conf_history", [])
+
+        # [Bug-4] 장중 재시작 감지 로그 — GapOffset·scaler 복원 상태 명시
+        _startup_now = datetime.datetime.now()
+        if is_market_open(_startup_now):
+            _gap_restored = self._first_tick_notified  # True = __init__ 에서 복원 성공
+            log_manager.system(
+                f"[RESTART] 장중 재시작 감지 {_startup_now.strftime('%H:%M')} — "
+                f"GapOffset={'복원됨' if _gap_restored else '미설정(첫분봉 재설정 예정)'}  "
+                f"pre_market_scaler={self._pre_market_scaler_refitted}",
+                "WARNING",
+            )
 
         # 1분 주기 관리 타이머 (분봉 파이프라인은 on_candle_closed 콜백으로 구동)
         self._scheduler = QTimer()
@@ -7190,11 +7204,13 @@ class TradingSystem:
         # 근거: pre_market_setup(08:55)은 장중 재시작에서 실행되지 않으므로
         #   scaler가 수십~백분 노후화된 채로 D_FORCE 발동(90분 지연)까지 방치됨.
         #   재시작 후 첫 scheduler tick(≤30s)에 age > 30min이면 즉시 refit.
-        # 하한 09:05: 08:55 ScalerWarmup 완료 전 충돌 방지
+        # [Bug-3] 하한 09:00 (기존 09:05에서 변경):
+        #   GAP_OPEN(09:00~09:05) 재시작 시 ScalerWarmup·EarlyWarmup 모두 miss →
+        #   09:05 까지 scaler 보호 공백 발생. _scaler_refresh_running 가드가 충돌 방지 역할.
         if (
             not getattr(self, "_intraday_startup_warmup_done", False)
             and is_trading_day(now)
-            and datetime.time(9, 5) <= now.time() < datetime.time(15, 10)
+            and datetime.time(9, 0) <= now.time() < datetime.time(15, 10)
             and not getattr(self, "_scaler_refresh_running", False)
             and not getattr(self, "_gbm_retrain_running", False)
         ):
