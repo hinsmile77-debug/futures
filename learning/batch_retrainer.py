@@ -347,6 +347,7 @@ class BatchRetrainer:
         force:                bool = False,
         use_horizon_features: bool = False,
         intraday:             bool = False,
+        full_cv:              bool = False,
     ) -> Dict:
         """
         GBM 모델 전체 재학습
@@ -374,7 +375,7 @@ class BatchRetrainer:
         # Phase 2: 호라이즌별 독립 X로 재학습
         if use_horizon_features and (X is None or y_dict is None):
             if self._has_horizon_features_table():
-                return self._retrain_phase2(weeks_back, force, start_time)
+                return self._retrain_phase2(weeks_back, force, start_time, full_cv=full_cv)
             else:
                 logger.warning("[Retrain] raw_features_horizon 테이블 없음 — Phase 1 경로로 fallback")
 
@@ -404,6 +405,13 @@ class BatchRetrainer:
         from model.multi_horizon_model import apply_robust_preprocess
         X = apply_robust_preprocess(X, feature_names)
 
+        # Phase C: 호라이즌별 피처셋 레지스트리 로드
+        try:
+            from features.horizon_feature_registry import get_available_feature_set
+            _registry_ok = True
+        except ImportError:
+            _registry_ok = False
+
         results = {}
         for horizon_key in HORIZONS:
             if horizon_key not in y_dict:
@@ -412,16 +420,39 @@ class BatchRetrainer:
             if len(y) != len(X):
                 continue
 
+            # 호라이즌별 피처 슬라이싱 (Phase C)
+            if _registry_ok:
+                h_names = get_available_feature_set(horizon_key, feature_names)
+            else:
+                h_names = None
+
+            if h_names and len(h_names) < len(feature_names):
+                # 해당 호라이즌 전용 컬럼만 추출
+                h_idx = [feature_names.index(n) for n in h_names]
+                X_h = X[:, h_idx]
+                logger.info(
+                    "[Retrain] %s 호라이즌 피처 슬라이싱: %d → %d개",
+                    horizon_key, len(feature_names), len(h_names),
+                )
+            else:
+                X_h = X
+                h_names = feature_names
+
             result = self._train_horizon(
                 horizon_key,
-                X,
+                X_h,
                 y,
-                feature_names=feature_names,
+                feature_names=h_names,
                 force=force,
                 intraday=intraday,
+                full_cv=full_cv,
             )
             results[horizon_key] = result
 
+            # 호라이즌 전용 pkl 저장 (Phase C)
+            self._save_feature_names(h_names, horizon_key=horizon_key)
+
+        # 공유 pkl도 유지 (backward compat: 구 모델·ScalerWarmup 경로)
         self._save_feature_names(feature_names)
 
         # P6c: RF 이종 앙상블 학습 — 장중 모드에서는 스킵 (GIL 블로킹 추가 방지)
@@ -467,6 +498,7 @@ class BatchRetrainer:
         feature_names: List[str],
         force:       bool = False,
         intraday:    bool = False,
+        full_cv:     bool = False,
     ) -> Dict:
         """
         단일 호라이즌 학습 + 교차검증
@@ -488,15 +520,15 @@ class BatchRetrainer:
         cv_accs = []
         if not intraday:
             # 정규 재학습: 시계열 교차검증 3폴드
-            # 32-bit Python 메모리 제약: fold 3 훈련 세트가 전체 데이터의 ~75%
-            # → 40k행 기준 ~30k×97×8B = 22 MiB → MemoryError 방어 (2026-06-11 실측)
-            # 최신 MAX_TRAIN_BARS_INTRADAY 행으로 CV 수행, 최종 fit은 전체 X 사용
+            # full_cv=False (기본): 32-bit Python 메모리 방어 — fold 훈련 세트를 20k행으로 절단
+            #   (Cybos+Qt+데이터수집 동시 실행 구간 — 장중·프리마켓)
+            # full_cv=True: Cybos 단절 후 장 마감 재학습 전용 — 캡 해제, 전체 데이터로 정직한 CV
             tscv = TimeSeriesSplit(n_splits=3)
             for train_idx, val_idx in tscv.split(X):
                 X_tr, X_val = X[train_idx], X[val_idx]
                 y_tr, y_val = y[train_idx], y[val_idx]
 
-                if len(X_tr) > MAX_TRAIN_BARS_INTRADAY:
+                if not full_cv and len(X_tr) > MAX_TRAIN_BARS_INTRADAY:
                     X_tr = X_tr[-MAX_TRAIN_BARS_INTRADAY:]
                     y_tr = y_tr[-MAX_TRAIN_BARS_INTRADAY:]
 
@@ -567,14 +599,37 @@ class BatchRetrainer:
         with open(acc_path, "w") as f:
             f.write(str(acc))
 
-    def _save_feature_names(self, feature_names: List[str]) -> None:
-        feature_path = os.path.join(self.model_dir, "feature_names.pkl")
-        with open(feature_path, "wb") as f:
-            pickle.dump(list(feature_names), f)
+    def _save_feature_names(self, feature_names: List[str], horizon_key: str = None) -> None:
+        """feature_names 저장.
 
-    def _load_feature_names(self):
-        # type: () -> list
-        """저장된 feature_names.pkl 로드. 없으면 빈 리스트."""
+        horizon_key 지정 시: feature_names_{horizon_key}.pkl (호라이즌 전용)
+        항상: feature_names.pkl (공유, backward compat)
+        """
+        if horizon_key:
+            h_path = os.path.join(self.model_dir, "feature_names_{}.pkl".format(horizon_key))
+            with open(h_path, "wb") as f:
+                pickle.dump(list(feature_names), f)
+        else:
+            # 공유 pkl: 전체 피처셋 저장 (구버전 모델과의 호환성)
+            feature_path = os.path.join(self.model_dir, "feature_names.pkl")
+            with open(feature_path, "wb") as f:
+                pickle.dump(list(feature_names), f)
+
+    def _load_feature_names(self, horizon_key: str = None):
+        # type: (str) -> list
+        """저장된 feature_names 로드.
+
+        horizon_key 지정 시 전용 pkl → 없으면 공유 pkl → 없으면 빈 리스트.
+        """
+        if horizon_key:
+            h_path = os.path.join(self.model_dir, "feature_names_{}.pkl".format(horizon_key))
+            if os.path.exists(h_path):
+                try:
+                    with open(h_path, "rb") as f:
+                        return pickle.load(f)
+                except (IOError, OSError, pickle.UnpicklingError):
+                    pass
+        # fallback: 공유 pkl
         feature_path = os.path.join(self.model_dir, "feature_names.pkl")
         try:
             with open(feature_path, "rb") as f:
@@ -681,8 +736,8 @@ class BatchRetrainer:
         except Exception:
             return False
 
-    def _retrain_phase2(self, weeks_back, force, start_time):
-        # type: (int, bool, object) -> dict
+    def _retrain_phase2(self, weeks_back, force, start_time, full_cv=False):
+        # type: (int, bool, object, bool) -> dict
         """Phase 2 경로: raw_features_horizon 테이블에서 호라이즌별 독립 X 로드 후 재학습."""
         import json as _json2
         import sqlite3
@@ -784,7 +839,7 @@ class BatchRetrainer:
                 y_hz.append(label)
             y_hz = np.array(y_hz, dtype=int)
 
-            result = self._train_horizon(hz, X_hz, y_hz, feature_names=use_feat_names, force=force)
+            result = self._train_horizon(hz, X_hz, y_hz, feature_names=use_feat_names, force=force, full_cv=full_cv)
             results[hz] = result
 
         # 전역 feature_names.pkl 복원 (Phase 2는 1m 기존 피처명 보존)

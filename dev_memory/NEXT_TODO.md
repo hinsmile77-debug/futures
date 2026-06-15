@@ -6,6 +6,32 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+---
+
+## 2026-06-15 (178차 — 호라이즌별 피처셋 인프라 + opt_chain 버그 수정)
+
+### 다음 장 즉시 확인 [P0]
+
+- [ ] `[OptionChain] 갱신` 로그 확인 — PCR/GEX 값 비영(0) 여부 (avail=True 필수)
+- [ ] `raw_features` DB 조회: `opt_chain_pcr`, `opt_gex_bn` 키 존재 여부
+- [ ] `[Macro] 갱신 | VIX=XX.XX` 로그 — `fallback_used=0.0`, `source_code=4.0` 확인
+- [ ] 수급 데이터 `[InvestorData]` 60초마다 갱신 로그 확인
+
+### 예정 작업 (opt 4주 수집 후)
+
+- [ ] **Phase D 재검증**: opt_chain_pcr/gex_bn/atm_* 4주 축적 확인 후 Walk-Forward 재실행
+  - 조건: `SELECT COUNT(*) FROM raw_features WHERE features LIKE '%opt_chain_pcr%' AND CAST(json_extract(features,'$.opt_chain_pcr') AS REAL) != 0` > 3000행
+- [ ] **GBM retrain**: opt 피처 포함 첫 retrain → per-horizon pkl 생성 → 호라이즌별 모델 전환
+- [ ] **Phase E**: SHAP Tracker 6개 호라이즌 확장 (shap_tracker.py horizon 컬럼 추가)
+- [ ] **feat=118 vs managed=97 불일치** 해소: shap_feature_registry.json active_features 갱신 (opt_chain 포함)
+
+### 미해결 이슈 (이월)
+
+- [TODO P1] **S2 지연 원인 추적** — 장 시작 직후 S2=56s 지연. `[S2] gil_wait` DEBUG 로그 임계 50ms로 낮춰 세분화 필요
+- [TODO P1] **TimeRouter 스팸** — 30초 간격 동일 메시지 반복 (state-change 방식 수정 필요)
+
+---
+
 ## 2026-06-15 (177차 — C_PERIODIC 독립 타이머 + P1-A 강화 + EKS z조건 완화)
 
 ### 다음 장 확인 사항

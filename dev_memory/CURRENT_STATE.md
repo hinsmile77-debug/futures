@@ -1,7 +1,57 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-15 (177차 세션) — C_PERIODIC 독립 타이머 + P1-A 강화 + EKS z조건 완화
+> 마지막 업데이트: 2026-06-15 (178차 세션) — 호라이즌별 피처셋 인프라 + opt_chain 버그 3종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-15 (178차 — 호라이즌별 피처셋 인프라 + opt_chain 버그 수정)
+
+### 작업 개요
+
+기획안(`featureset by horizon/미륵이_호라이즌별_최적피처셋_기획안.docx`) 기반
+Phase A~D 구현 + opt_chain_snapshot 수집 버그 3종 수정.
+
+### 완료된 변경
+
+| Phase | 파일 | 핵심 내용 |
+|---|---|---|
+| A (macro 복구) | `collection/macro/macro_fetcher.py` | yfinance 429 대응 → Cboe CDN(VIX) / Yahoo v8 daily(S&P) / Treasury XML(US10Y) / Naver+frankfurter(KRW) 교체. source_code=4.0 달성 |
+| B (JSON 작성) | `featureset by horizon/horizon_feature_sets.json` | 6개 호라이즌 × include/exclude 명세. 12개 need_add 피처 식별 |
+| C (인프라) | `features/horizon_feature_registry.py` (신규) | JSON 로드, get_available_feature_set(), 컬럼 슬라이싱 |
+| C | `learning/batch_retrainer.py` | _save/_load_feature_names(horizon_key), retrain 루프 X 슬라이싱 |
+| C | `model/multi_horizon_model.py` | horizon_feature_names dict + _hz_feat_indices 사전계산, predict_proba 슬라이싱, validate_and_resync 호라이즌별 검증 |
+| C | `main.py` STEP5 | 주석 추가 (실질 변경 없음 — 모델 내부 슬라이싱) |
+| D (검증) | `featureset by horizon/validation_results.md` | Walk-Forward 결과 저장 |
+| Bugfix | `main.py` L3537 | _chain_feats → _option_combined 병합 (opt_chain_pcr/gex_bn/atm_* 미전달 버그) |
+| Bugfix | `main.py` run() | _investor_timer(60s) + _option_chain_timer(300s) QTimer 생성·시작 코드 추가 |
+
+### Phase D Walk-Forward 결과 (핵심)
+
+| 전략 | 10m | 15m | 30m | 판정 |
+|---|---|---|---|---|
+| 공유 97개 | 0.4104 | 0.3957 | 0.3911 | 베이스라인 |
+| Registry strict | 0.4073 | 0.3909 | **0.3538** | **REGRESS** |
+
+**원인**: opt_gex_bn(ρ=0.290), opt_chain_pcr(ρ=0.245) 등 핵심 신호 DB 미수집.  
+**결정**: opt 4주 축적 후 Phase D 재검증 시까지 **공유 97개 피처셋 유지**.
+
+### opt_chain 버그 수정 효과 (다음 장부터 적용)
+
+- `opt_chain_pcr`, `opt_gex_bn`, `opt_gex_sign`, `opt_atm_put_oi`, `opt_atm_call_oi`, `opt_atm_pcr`가 raw_features에 저장 시작
+- 수급 데이터(investor_net) 장중 60초마다 주기 갱신 시작
+
+### 현재 피처셋 상태
+
+- 공유 pkl: 97개 (production 사용 중)
+- per-horizon pkl: 미존재 (opt 수집 안정화 후 retrain 시 생성 예정)
+- raw_features DB: 118개 피처 수집 중 (opt_chain_pcr 등 추가됨 — 다음 장부터)
+
+### 다음 장 확인 사항
+
+1. `[OptionChain] 갱신 X.Xs | PCR=X.XXX ATM_PCR=X.XXX GEX=X.XXB avail=True` 로그 확인 (5분마다)
+2. `raw_features`에 `opt_chain_pcr`, `opt_gex_bn` 키 저장 여부 (장 종료 후 DB 조회)
+3. `[Macro] 갱신 | VIX=XX.XX SP500chg=+0.XXXX` 로그 확인 (fallback_used=0.0)
 
 ---
 

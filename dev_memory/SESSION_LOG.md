@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-15 (178차 — 호라이즌별 피처셋 인프라 + opt_chain 버그 3종 수정)
+
+**Work**: 기획안(호라이즌별 최적피처셋 v1.0) 검토 → Phase A~D 구현 + opt_chain 수집 버그 발견/수정.
+
+### 한 일
+
+| 항목 | 내용 | 파일 |
+|---|---|---|
+| [A] macro 복구 | yfinance 429 → Cboe CDN/Treasury XML/Yahoo v8 daily/Naver+frankfurter 교체. fallback_used=0, source_code=4 달성 | `collection/macro/macro_fetcher.py` |
+| [B] 피처셋 JSON | 6개 호라이즌 × include/exclude/need_add 명세. 교차검증(PASS) | `featureset by horizon/horizon_feature_sets.json` |
+| [C] 인프라 구현 | `horizon_feature_registry.py` 신규. batch_retrainer X 슬라이싱 + per-horizon pkl 저장. multi_horizon_model 슬라이싱 인덱스 사전계산 + predict_proba 호라이즌별 슬라이싱 | `features/horizon_feature_registry.py`, `learning/batch_retrainer.py`, `model/multi_horizon_model.py` |
+| [D] Walk-Forward | 10m/15m/30m 검증 → REGRESS. 원인: opt_gex_bn/chain_pcr DB 미수집. 결정: opt 4주 후 재검증, 현재 97개 유지 | `featureset by horizon/validation_results.md` |
+| Bug 1 | `_chain_feats` → `feature_builder.build()` 미전달 (opt_chain/gex/atm 모두 DB 저장 안 됨) | `main.py` L3537 |
+| Bug 2 | `_option_chain_timer` 미생성 → `_poll_option_chain()` 한 번도 호출 안 됨 | `main.py` `run()` |
+| Bug 3 | `_investor_timer` 미생성 → 수급 데이터 장중 주기 갱신 없음 | `main.py` `run()` |
+
+### 다음 할 일
+
+- 다음 장: opt_chain 수집 로그 확인 + DB opt_chain_pcr 키 저장 여부
+- opt 4주 축적 후 Phase D 재검증
+- Phase E: SHAP Tracker 6개 호라이즌 확장
+
+---
+
 ## 2026-06-11 (156차 — _gbm_retrain_running 고착 + MIN_TRAIN_BARS 이중 체크 + C_PERIODIC 독립)
 
 **Work**: SIGNAL.log 분석 → 스케일러 98분 미갱신 원인 딥다이브 → P1/P2/P3 수정.

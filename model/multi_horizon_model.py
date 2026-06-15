@@ -173,6 +173,10 @@ class MultiHorizonModel:
         self.models:  Dict[str, GradientBoostingClassifier] = {}
         self.scalers: Dict[str, StandardScaler] = {}
         self.feature_names: List[str] = []
+        # Phase C: 호라이즌별 독립 피처셋 (없으면 feature_names 공유 fallback)
+        self.horizon_feature_names: Dict[str, List[str]] = {}
+        # 추론 슬라이싱용 사전계산 인덱스 (predict_proba에서 배열 슬라이스에 사용)
+        self._hz_feat_indices: Dict[str, np.ndarray] = {}
         self._is_fitted: Dict[str, bool] = {h: False for h in HORIZONS}
         self._scaler_fitted_at: Dict[str, datetime.datetime] = {}
 
@@ -318,29 +322,35 @@ class MultiHorizonModel:
                         f"(≥{self.SCALER_WARN_MINUTES}분) — 변동성 레짐 시프트 시 z-score 왜곡 가능"
                     )
 
-            # Phase 1-1: 반감기 적용 feat_vec이 있으면 예측에 사용, 모니터링은 원본 유지
+            # Phase C: 호라이즌별 피처 슬라이싱 인덱스
+            _h_idx = self._hz_feat_indices.get(horizon)  # None이면 전체 피처 사용
+
+            # Phase 1-1: 반감기/N분봉 feat_vec이 있으면 예측에 사용, 모니터링은 원본 유지
             if hz_feat_vecs is not None and horizon in hz_feat_vecs:
                 _hx = hz_feat_vecs[horizon].reshape(1, -1)
                 _hx_proc = apply_robust_preprocess(
                     _hx, self.feature_names,
                     price_gap_offsets=self._price_gap_offset or None,
                 ) if self.feature_names else _hx
-                xs = scaler.transform(_hx_proc) if scaler else _hx_proc
+                # Phase C 슬라이싱: 호라이즌 전용 피처만 스케일러에 입력
+                _hx_proc_h = _hx_proc[:, _h_idx] if _h_idx is not None else _hx_proc
+                xs = scaler.transform(_hx_proc_h) if scaler else _hx_proc_h
+                # 모니터링은 항상 전체 피처(공유 스케일러 기준) 원본 사용
                 xs_mon = scaler.transform(x2d_proc) if scaler else x2d_proc
             else:
-                xs = scaler.transform(x2d_proc) if scaler else x2d_proc
-                xs_mon = xs
+                _x2d_proc_h = x2d_proc[:, _h_idx] if _h_idx is not None else x2d_proc
+                xs = scaler.transform(_x2d_proc_h) if scaler else _x2d_proc_h
+                xs_mon = scaler.transform(x2d_proc) if scaler else x2d_proc
 
             # [⑥] opt_pcr_* 피처 감쇠 — D_FORCE opt_pcr 발동 후 30분간 0.3× 적용
-            # 이유: opt_pcr_slope_norm 등 PCR 피처가 OFI/CVD 방향과 충돌 시 conf 소거.
-            #       D_FORCE 재적합 후에도 재발하는 구조적 이상값이므로 감쇠로 영향 억제.
             if (
                 self._pcr_dampen_until is not None
                 and datetime.datetime.now() < self._pcr_dampen_until
-                and self.feature_names
             ):
+                # Phase C: 슬라이싱 후 xs 기준으로 opt_pcr 컬럼 색인
+                h_names = self.horizon_feature_names.get(horizon, self.feature_names)
                 _pcr_cols = [
-                    i for i, fn in enumerate(self.feature_names)
+                    i for i, fn in enumerate(h_names)
                     if fn.startswith("opt_pcr")
                 ]
                 if _pcr_cols:
@@ -657,11 +667,18 @@ class MultiHorizonModel:
         for h in self.models:
             joblib.dump(self.models[h],  self._model_path(h))
             joblib.dump(self.scalers[h], self._scaler_path(h))
+        # 공유 pkl (backward compat)
         joblib.dump(self.feature_names,
                     os.path.join(HORIZON_DIR, "feature_names.pkl"))
+        # Phase C: 호라이즌별 전용 pkl
+        for h, h_names in self.horizon_feature_names.items():
+            if h_names != self.feature_names:
+                h_path = os.path.join(HORIZON_DIR, "feature_names_{}.pkl".format(h))
+                joblib.dump(h_names, h_path)
         logger.info("[Model] 전체 모델 저장 완료")
 
     def _load_all(self):
+        # 공유 pkl (전체 피처셋 기준 — 전처리·모니터링에 사용)
         fn_path = os.path.join(HORIZON_DIR, "feature_names.pkl")
         if os.path.exists(fn_path):
             self.feature_names = joblib.load(fn_path)
@@ -673,14 +690,44 @@ class MultiHorizonModel:
                 self.models[h]  = joblib.load(mp)
                 self.scalers[h] = joblib.load(sp)
                 self._is_fitted[h] = True
-                # pkl mtime 기준으로 in-memory 노후 시계 동기화 (재시작·EOD 로드 후 정확성 보장)
                 self._scaler_fitted_at[h] = datetime.datetime.fromtimestamp(
                     os.path.getmtime(sp)
                 )
                 logger.info(f"[Model] {h} 로드 성공")
 
+            # Phase C: 호라이즌별 전용 pkl 로드 (없으면 공유 fallback)
+            h_fn_path = os.path.join(HORIZON_DIR, "feature_names_{}.pkl".format(h))
+            if os.path.exists(h_fn_path):
+                self.horizon_feature_names[h] = joblib.load(h_fn_path)
+                logger.debug("[Model] %s 전용 피처셋 로드: %d개", h,
+                             len(self.horizon_feature_names[h]))
+
+        # 슬라이싱 인덱스 사전계산
+        self._rebuild_hz_feat_indices()
+
         self._check_registry_feature_consistency()
         return self.validate_and_resync()
+
+    def _rebuild_hz_feat_indices(self) -> None:
+        """horizon_feature_names → _hz_feat_indices 사전계산.
+
+        self.feature_names 기준으로 각 호라이즌 피처의 컬럼 인덱스를 np.ndarray로 캐싱.
+        predict_proba 내 슬라이싱에서 배열 인덱싱으로 O(1) 접근.
+        """
+        if not self.feature_names:
+            self._hz_feat_indices = {}
+            return
+        fn_index = {n: i for i, n in enumerate(self.feature_names)}
+        self._hz_feat_indices = {}
+        for h, h_names in self.horizon_feature_names.items():
+            if h_names == self.feature_names:
+                continue  # 전체 사용 — 슬라이싱 불필요
+            idx = np.array(
+                [fn_index[n] for n in h_names if n in fn_index],
+                dtype=np.intp,
+            )
+            if len(idx) > 0:
+                self._hz_feat_indices[h] = idx
 
     def _check_registry_feature_consistency(self) -> None:
         """시작 시 registry.active_features vs feature_names.pkl 불일치 경고."""
@@ -714,14 +761,16 @@ class MultiHorizonModel:
         반환값이 비어있지 않으면 호출부에서 즉시 GBM 재학습을 트리거해야 한다.
         """
         bad = []
-        n_feat = len(self.feature_names)
-        if n_feat == 0:
+        if not self.feature_names:
             return bad
         for h in list(HORIZONS):
             scaler = self.scalers.get(h)
             if scaler is None or not self._is_fitted.get(h):
                 continue
             expected = getattr(scaler, "n_features_in_", None)
+            # Phase C: 호라이즌 전용 피처셋이 있으면 그 크기로 비교
+            h_names = self.horizon_feature_names.get(h, self.feature_names)
+            n_feat = len(h_names)
             if expected is not None and n_feat != expected:
                 logger.error(
                     "[Model] %s 피처 불일치 — feature_names=%d scaler=%d"
@@ -1080,6 +1129,7 @@ class MultiHorizonModel:
         """GBM 미학습 상태에서 SGD 활성화를 위한 피처명 부트스트랩."""
         if not self.feature_names:
             self.feature_names = list(names)
+            self._rebuild_hz_feat_indices()
 
     def set_daily_gap_offset(self, today_open: float) -> None:
         """장 시작 시 1회 호출 — 절대 가격 피처의 갭 오프셋을 설정한다.

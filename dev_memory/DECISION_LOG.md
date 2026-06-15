@@ -2,6 +2,33 @@
 
 ---
 
+## 2026-06-15 (178차 — 호라이즌별 피처셋 인프라 + opt_chain 버그 3종)
+
+### [버그] opt_chain_pcr / opt_gex_bn / opt_atm_* DB 미저장 (3중 버그)
+
+**Root cause 1**: `_chain_feats = self.option_chain_snap.get_features()` 로 읽지만 `feature_builder.build(option_data=_option_feats)` 에 `_chain_feats` 전달 안 함 (main.py STEP4).  
+**Root cause 2**: `_option_chain_timer = QTimer()` 생성·시작 코드 자체가 `run()` 함수에 없음 → `_poll_option_chain()` 한 번도 호출되지 않음 → `refresh()` 미실행 → 캐시 항상 0.  
+**Root cause 3**: `_investor_timer` 도 동일하게 미생성 → `_fetch_investor_data()` 장전 1회 제외 호출 없음.  
+**Fix**: (1) `_option_combined.update(_chain_feats)` 병합 후 build() 전달. (2)(3) `run()`에 60s/_investor_timer와 300s/_option_chain_timer QTimer 생성·시작 추가.  
+**발견 경위**: Phase D Walk-Forward 검증 시 `opt_chain_pcr` DB 미존재 확인 → 코드 추적.
+
+### [설계결정] Phase D REGRESS → 공유 97개 피처셋 유지
+
+**배경**: Registry strict 선택(호라이즌별 13~18개)이 공유 97개 대비 30m -3.7%p REGRESS.  
+**원인**: opt_gex_bn(ρ=0.290), opt_chain_pcr(ρ=0.245) 등 핵심 신호 DB 미수집. Registry가 mlofi/microprice 등 제거하는데 보상 신호 부재 → 정보 순손실.  
+**결정**: opt_chain_snapshot 버그 수정 후 4주 수집 → Phase D 재검증 시까지 97개 공유셋 유지. Phase C 인프라(horizon_feature_registry.py, per-horizon pkl 저장 로직)는 그대로 유지 — opt 수집 후 retrain 1회로 자동 전환 가능.
+
+### [설계결정] macro_fetcher yfinance 429 대응 — 영구 소스 교체
+
+**배경**: yfinance가 Yahoo Finance HTTP 429 rate-limit으로 장 중 수집 불가. macro 피처 모두 0값으로 학습됨.  
+**결정**: 영구 소스 교체 (yfinance는 rate-limit 해제 시 자동 fallback으로만 잔존).  
+- VIX: Cboe CDN CSV (공식, 제한 없음)
+- S&P500: Yahoo v8 chart API daily interval (1d는 429 없음)
+- US10Y: Treasury XML (태그 regex 수정: `m:type` 속성 처리)
+- USD/KRW: Naver (regex 수정: `<td>([\d,]+\.\d{2})<img`) + frankfurter.app 전일값 병행
+
+---
+
 ## 2026-06-11 (156차 — _gbm_retrain_running 고착 + ScalerRefresh 3종 수정)
 
 ### [버그] `_gbm_retrain_running` 고착 — QTimer.singleShot daemon thread 불안정

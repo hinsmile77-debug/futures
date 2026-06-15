@@ -1,0 +1,333 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "created": "2026-06-15",
+    "analysis_basis": "2026-05-11 ~ 2026-06-12 | 46,151행 | Spearman + SHAP",
+    "phase_a_done": "2026-06-15 (macro_fetcher Cboe/Treasury/Yahoo-daily 교체 완료)",
+    "notes": [
+      "pkl_status: 'in_pkl' = 현재 feature_names.pkl(97개)에 포함, 'need_add' = 코드 계산되지만 pkl 미포함 (Phase C 재학습 필요)",
+      "macro 피처: Phase A 이후 실데이터 수집 복구됨 — 재학습 전까지 모델은 0값으로 학습된 상태",
+      "opt_chain_*, opt_gex_*, opt_atm_* 피처: 코드 계산되지만 현재 pkl 미포함 (Phase C에서 추가)",
+      "quality_* / feature_degraded / entry_ok 등 메타 피처는 모델 입력 제외",
+      "macro_vix_chg: Phase A 수집은 완료, transformer 출력 추가 필요 (현재는 macro_vix로 대체)"
+    ]
+  },
+
+  "1m": {
+    "description": "순수 마이크로구조 모멘텀 — 0~60초 보유, 비선형 GBM 주도",
+    "current_acc": 0.385,
+    "target_acc": [0.40, 0.42],
+    "target_metric": "Precision 향상 (오신호 감소)",
+    "include": [
+      {"name": "ofi_norm",                    "rho": 0.024, "pkl": "in_pkl",  "note": "체결 호가 불균형 — 가장 빠른 방향 신호 (CORE)"},
+      {"name": "mlofi_slope",                  "rho": 0.024, "pkl": "in_pkl",  "note": "멀티레벨 호가창 기울기"},
+      {"name": "queue_directional_depletion",  "rho": 0.033, "pkl": "need_add","note": "매수/매도 큐 방향별 고갈 속도 ★"},
+      {"name": "microprice_bias",              "rho": 0.021, "pkl": "in_pkl",  "note": "호가 중간값 편향"},
+      {"name": "cvd_direction",                "rho": 0.019, "pkl": "in_pkl",  "note": "당분봉 체결 방향 (CORE)"},
+      {"name": "toxicity_score",               "rho": 0.018, "pkl": "in_pkl",  "note": "독성 거래 비율 — 정보 비대칭"},
+      {"name": "cancel_add_ratio",             "rho": 0.017, "pkl": "in_pkl",  "note": "취소/추가 비율 — 알고 행동 감지"},
+      {"name": "spread_ticks",                 "rho": 0.015, "pkl": "in_pkl",  "note": "스프레드 틱 수 — 유동성 레짐"},
+      {"name": "micro_regime_code",            "rho": 0.039, "pkl": "need_add","note": "직전분 마이크로 레짐 코드 (0~4) ★"},
+      {"name": "ret_1m",                       "rho": 0.018, "pkl": "in_pkl",  "note": "1분 모멘텀 (±1% 클리핑)"},
+      {"name": "vwap_position",                "rho": 0.029, "pkl": "in_pkl",  "note": "VWAP 대비 위치 (CORE)"},
+      {"name": "time_sin",                     "rho": null,  "pkl": "in_pkl",  "note": "장중 시간 사이클 인코딩 (비선형)"},
+      {"name": "time_cos",                     "rho": null,  "pkl": "in_pkl",  "note": "시간 인코딩 코사인"},
+      {"name": "is_open_volatile",             "rho": null,  "pkl": "in_pkl",  "note": "장 초반 30분 플래그"}
+    ],
+    "include_pending_validation": [
+      {"name": "ofi_reversal_speed",           "pkl": "in_pkl",  "note": "OFI 방향 전환 속도 — SHAP↑ 확인, Walk-Forward 검증 후 확정"}
+    ],
+    "exclude": [
+      {"name": "macro_vix",        "reason": "lag 너무 큼 — 1분 후 예측에 일봉 데이터 지연"},
+      {"name": "macro_sp500_chg",  "reason": "동일"},
+      {"name": "macro_us10y_chg",  "reason": "동일"},
+      {"name": "macro_krw_chg",    "reason": "동일"},
+      {"name": "hurst",            "reason": "40봉 계산 지연 → 1m 실질 무효"},
+      {"name": "opt_chain_pcr",    "reason": "1m 선형 상관 없음 (p>0.09) — 단기 잡음"},
+      {"name": "opt_gex_bn",       "reason": "동일"},
+      {"name": "opt_atm_put_oi",   "reason": "동일"},
+      {"name": "opt_atm_call_oi",  "reason": "동일"},
+      {"name": "foreign_futures_net",     "reason": "D+0 배분 지연 — 1~3m 노이즈"},
+      {"name": "retail_futures_net",      "reason": "동일"},
+      {"name": "institution_futures_net", "reason": "동일"},
+      {"name": "ret_15m",          "reason": "look-back 과잉 — 1m 예측에 15분 과거는 과다"},
+      {"name": "bb_position",      "reason": "5m+ 피처 — 1m에 중복 노이즈"},
+      {"name": "ema_cross",        "reason": "동일"},
+      {"name": "mlofi_norm",       "reason": "mlofi_slope로 충분 — norm은 중복"},
+      {"name": "mlofi_pressure",   "reason": "동일"},
+      {"name": "cvd_monotone_ratio","reason": "20구간 이력 — 1m에서 지연 신호"},
+      {"name": "in_value_area",    "reason": "1m 미유의"},
+      {"name": "va_bandwidth",     "reason": "동일"}
+    ]
+  },
+
+  "3m": {
+    "description": "OFI 지속성 + 소진 감지 — 1~3분 보유, 반전 탐지",
+    "current_acc": 0.352,
+    "target_acc": [0.37, 0.39],
+    "target_metric": "Precision+Recall 동시 개선",
+    "include": [
+      {"name": "cvd_direction",      "rho": 0.032, "pkl": "in_pkl",  "note": "CVD 방향 지속성 (CORE)"},
+      {"name": "cvd_divergence",     "rho": 0.032, "pkl": "in_pkl",  "note": "가격-CVD 다이버전스 (CORE)"},
+      {"name": "cvd_monotone_ratio", "rho": 0.031, "pkl": "need_add","note": "최근 20구간 CVD 단조 비율 ★"},
+      {"name": "bear_reversal_signal","rho": 0.034, "pkl": "need_add","note": "약세 반전 신호 ★★ (3m 전문)"},
+      {"name": "microprice_bias",    "rho": 0.033, "pkl": "in_pkl",  "note": "호가 중간값 편향"},
+      {"name": "poc_above",          "rho": 0.050, "pkl": "in_pkl",  "note": "가격이 POC 위에 있는가"},
+      {"name": "va_bandwidth",       "rho": 0.041, "pkl": "in_pkl",  "note": "가치영역 폭 — 변동성 레짐"},
+      {"name": "is_open_volatile",   "rho": 0.059, "pkl": "in_pkl",  "note": "장 초반 플래그 ★★ 3m 최강"},
+      {"name": "ret_15m",            "rho": 0.051, "pkl": "in_pkl",  "note": "역모멘텀 신호 (음수 상관) ★"},
+      {"name": "ofi_norm",           "rho": null,  "pkl": "in_pkl",  "note": "단기 호가 압력 유지 (CORE)"},
+      {"name": "time_sin",           "rho": null,  "pkl": "in_pkl",  "note": "시간 인코딩"},
+      {"name": "time_cos",           "rho": null,  "pkl": "in_pkl",  "note": "시간 인코딩"},
+      {"name": "macro_vix",          "rho": 0.030, "pkl": "in_pkl",  "note": "VIX 레벨 (★p=0.008) — 백필 후 유효"},
+      {"name": "macro_us10y_chg",    "rho": 0.024, "pkl": "in_pkl",  "note": "금리 변화 (★p=0.035) — 백필 후 유효"}
+    ],
+    "include_pending_validation": [
+      {"name": "vwap_position",        "pkl": "in_pkl",  "note": "CORE 피처 — 3m 상관 미유의지만 GBM 비선형 패턴 가능성, Walk-Forward 검증 필요"},
+      {"name": "bull_exhaustion_signal","pkl": "need_add","note": "소진→반전 탐지 — 3m 역할 재검증 필요"},
+      {"name": "poc_distance",         "pkl": "in_pkl",  "note": "ρ=0.050, 선택적"}
+    ],
+    "exclude": [
+      {"name": "opt_chain_pcr",       "reason": "3m 상관 미유의 (p>0.22) — 5m+ 피처"},
+      {"name": "opt_gex_bn",          "reason": "동일"},
+      {"name": "opt_atm_call_oi",     "reason": "p>0.39 — 유의하지 않음"},
+      {"name": "opt_atm_put_oi",      "reason": "동일"},
+      {"name": "mlofi_pressure",      "reason": "틱 단위 — 3m에서 잡음화"},
+      {"name": "mlofi_norm",          "reason": "동일"},
+      {"name": "queue_depletion_speed","reason": "3m 수준에서 희석"},
+      {"name": "queue_refill_rate",   "reason": "동일"},
+      {"name": "microprice_slope",    "reason": "3m 잡음"},
+      {"name": "microprice_depth_bias","reason": "동일"}
+    ]
+  },
+
+  "5m": {
+    "description": "VWAP 구조 + 평균 회귀 경계 — 3~5분 보유, 추세 전환 탐지",
+    "current_acc": 0.359,
+    "target_acc": [0.38, 0.40],
+    "target_metric": "Precision+Recall 동시 개선",
+    "include": [
+      {"name": "opt_chain_pcr",      "rho": 0.106, "pkl": "need_add","note": "풋/콜 비율 ★★ 5m 최강 — 5m 전환점"},
+      {"name": "bb_position",        "rho": 0.067, "pkl": "in_pkl",  "note": "볼린저 위치 — 평균 회귀 신호"},
+      {"name": "ema_cross",          "rho": 0.057, "pkl": "in_pkl",  "note": "EMA5/20 크로스 비율"},
+      {"name": "ret_5m",             "rho": 0.051, "pkl": "in_pkl",  "note": "5분 모멘텀"},
+      {"name": "ret_15m",            "rho": 0.060, "pkl": "in_pkl",  "note": "역모멘텀 신호"},
+      {"name": "poc_distance",       "rho": 0.059, "pkl": "in_pkl",  "note": "POC 이탈 거리"},
+      {"name": "poc_above",          "rho": 0.053, "pkl": "in_pkl",  "note": "POC 위치"},
+      {"name": "vwap_position",      "rho": 0.029, "pkl": "in_pkl",  "note": "VWAP 대비 위치 (CORE)"},
+      {"name": "above_vwap",         "rho": null,  "pkl": "in_pkl",  "note": "VWAP 상하 플래그"},
+      {"name": "cvd_monotone_ratio", "rho": null,  "pkl": "need_add","note": "CVD 단조 비율 (SHAP↑)"},
+      {"name": "is_open_volatile",   "rho": 0.061, "pkl": "in_pkl",  "note": "장 초반 플래그 ★"},
+      {"name": "is_close_volatile",  "rho": null,  "pkl": "in_pkl",  "note": "장 마감 플래그"},
+      {"name": "in_value_area",      "rho": null,  "pkl": "in_pkl",  "note": "가치영역 내 여부"},
+      {"name": "va_bandwidth",       "rho": 0.047, "pkl": "in_pkl",  "note": "가치영역 폭"},
+      {"name": "macro_vix",          "rho": 0.051, "pkl": "in_pkl",  "note": "VIX 레벨 (★p=0.0003) — 5m 전문"},
+      {"name": "opt_pcr_slope_norm", "rho": null,  "pkl": "in_pkl",  "note": "PCR 기울기 정규화 (SHAP↑)"},
+      {"name": "cvd_slope",          "rho": null,  "pkl": "in_pkl",  "note": "CVD 기울기 (SHAP↑)"}
+    ],
+    "include_pending_validation": [
+      {"name": "vwap_momentum", "pkl": "in_pkl", "note": "경계선 — 10m 전용으로 분류했으나 5m 검증 필요"},
+      {"name": "cvd_divergence", "pkl": "in_pkl", "note": "5m CVD 다이버전스 — SHAP 확인 필요"}
+    ],
+    "exclude": [
+      {"name": "mlofi_slope",         "reason": "틱 단위 — 5m 잡음"},
+      {"name": "mlofi_norm",          "reason": "동일"},
+      {"name": "cancel_add_ratio",    "reason": "5m에서 정보 희석"},
+      {"name": "microprice_bias",     "reason": "5m 수준에서 잡음화"},
+      {"name": "microprice_slope",    "reason": "동일"},
+      {"name": "opt_gex_bn",          "reason": "5m 상관 미유의 (p=0.10) — 10m+에 맡김"},
+      {"name": "ofi_norm",            "reason": "5m에서 이미 희석"},
+      {"name": "ofi_pressure",        "reason": "동일"},
+      {"name": "queue_directional_depletion", "reason": "5m 미유의"},
+      {"name": "spread_ticks",        "reason": "5m에서 잡음"},
+      {"name": "macro_sp500_chg",     "reason": "5m 상관 미유의 (p>0.05)"},
+      {"name": "macro_us10y_chg",     "reason": "동일"},
+      {"name": "macro_krw_chg",       "reason": "동일"}
+    ]
+  },
+
+  "10m": {
+    "description": "옵션 감마 구조 + 수급 전환 — 5~10분 보유, 개선 여지 最大",
+    "current_acc": 0.343,
+    "target_acc": [0.38, 0.41],
+    "target_metric": "Recall 향상 (FLAT 편향 완화)",
+    "include": [
+      {"name": "opt_atm_put_oi",     "rho": 0.153, "pkl": "need_add","note": "ATM 풋 OI ★★★ 10m 최강"},
+      {"name": "opt_gex_sign",       "rho": 0.143, "pkl": "need_add","note": "GEX 방향 부호 ★★★ 10m 전문"},
+      {"name": "vwap_momentum",      "rho": 0.071, "pkl": "in_pkl",  "note": "5분 VWAP 이동 속도 ★ 10m 전용"},
+      {"name": "poc_above",          "rho": 0.050, "pkl": "in_pkl",  "note": "POC 위치"},
+      {"name": "poc_distance",       "rho": 0.048, "pkl": "in_pkl",  "note": "POC 이탈 거리"},
+      {"name": "mlofi_slope",        "rho": 0.036, "pkl": "in_pkl",  "note": "10m에서도 일부 유효"},
+      {"name": "vwap_position",      "rho": 0.031, "pkl": "in_pkl",  "note": "VWAP 위치 (CORE)"},
+      {"name": "cvd_monotone_ratio", "rho": 0.031, "pkl": "need_add","note": "CVD 지속성"},
+      {"name": "opt_pcr_extreme",    "rho": 0.030, "pkl": "in_pkl",  "note": "극단 PCR 여부"},
+      {"name": "macro_sp500_chg",    "rho": 0.025, "pkl": "in_pkl",  "note": "S&P 전일 변화율 (★p=0.034) — 백필 후"},
+      {"name": "macro_us10y_chg",    "rho": 0.023, "pkl": "in_pkl",  "note": "금리 변화 (★p=0.049) — 백필 후"},
+      {"name": "macro_krw_chg",      "rho": 0.028, "pkl": "in_pkl",  "note": "원화 변동 (★p=0.017) — 백필 후"},
+      {"name": "macro_vix",          "rho": 0.044, "pkl": "in_pkl",  "note": "VIX 변화 (★p=0.0001) — 백필 후 핵심"},
+      {"name": "micro_regime_code",  "rho": null,  "pkl": "need_add","note": "레짐 코드 — 레짐 조건부 신호"},
+      {"name": "hurst",              "rho": null,  "pkl": "in_pkl",  "note": "허스트 지수 (10m+ 유효 구간)"}
+    ],
+    "include_pending_validation": [
+      {"name": "foreign_futures_net", "pkl": "in_pkl",  "note": "D+0 지연 감안 10m부터 유효 가능 — 검증 필요"},
+      {"name": "cvd_direction",       "pkl": "in_pkl",  "note": "ρ=0.031 — 경계선"}
+    ],
+    "exclude": [
+      {"name": "opt_atm_call_oi",   "reason": "p=0.08 — 10m 미유의"},
+      {"name": "opt_atm_pcr",       "reason": "p=0.09 — 미유의"},
+      {"name": "va_bandwidth",       "reason": "p=0.06 — 경계선 제거"},
+      {"name": "ofi_norm",           "reason": "10m에서 틱 잡음"},
+      {"name": "mlofi_norm",         "reason": "동일"},
+      {"name": "microprice_bias",    "reason": "잡음 수준"},
+      {"name": "microprice_slope",   "reason": "동일"},
+      {"name": "ret_1m",             "reason": "1m 피처 — 10m에 불필요"},
+      {"name": "queue_directional_depletion", "reason": "10m에서 희석"},
+      {"name": "cancel_add_ratio",   "reason": "동일"},
+      {"name": "spread_ticks",       "reason": "동일"}
+    ]
+  },
+
+  "15m": {
+    "description": "옵션 구조 + 매크로 레짐 — 10~15분 보유, 22개 유의 피처 (가장 풍부)",
+    "current_acc": 0.331,
+    "target_acc": [0.36, 0.39],
+    "target_metric": "Recall 향상 (FLAT 편향 완화) — 개선 우선순위 2위",
+    "include": [
+      {"name": "opt_gex_bn",              "rho": 0.198, "pkl": "need_add","note": "딜러 감마 헤지 방향 ★★★ 최강"},
+      {"name": "opt_chain_pcr",           "rho": 0.184, "pkl": "need_add","note": "전체 체인 PCR ★★★"},
+      {"name": "opt_atm_call_oi",         "rho": 0.133, "pkl": "need_add","note": "ATM 콜 OI ★★"},
+      {"name": "opt_atm_put_oi",          "rho": 0.098, "pkl": "need_add","note": "ATM 풋 OI ★★"},
+      {"name": "threshold_feasibility",   "rho": 0.086, "pkl": "need_add","note": "변동성 실현 가능성 ★ 15m 전문"},
+      {"name": "time_sin",                "rho": 0.082, "pkl": "in_pkl",  "note": "시간 사이클 ★ 15m 전문"},
+      {"name": "toxicity_atr_stress",     "rho": 0.067, "pkl": "in_pkl",  "note": "ATR 스트레스 ★"},
+      {"name": "va_bandwidth",            "rho": 0.066, "pkl": "in_pkl",  "note": "가치영역 폭"},
+      {"name": "atr_ratio",               "rho": 0.065, "pkl": "in_pkl",  "note": "ATR 비율"},
+      {"name": "opt_pcr_extreme",         "rho": 0.060, "pkl": "in_pkl",  "note": "극단 PCR"},
+      {"name": "opt_pcr_slope_norm",      "rho": null,  "pkl": "in_pkl",  "note": "PCR 기울기"},
+      {"name": "opt_pcr_extreme_bearish", "rho": null,  "pkl": "need_add","note": "극단 약세 PCR"},
+      {"name": "opt_pcr_norm",            "rho": null,  "pkl": "in_pkl",  "note": "PCR 정규화"},
+      {"name": "retail_futures_net",      "rho": null,  "pkl": "in_pkl",  "note": "개인 선물 순매수"},
+      {"name": "foreign_put_net",         "rho": null,  "pkl": "in_pkl",  "note": "외국인 풋 순매수"},
+      {"name": "foreign_retail_divergence","rho": null, "pkl": "in_pkl",  "note": "외국인-개인 괴리"},
+      {"name": "in_value_area",           "rho": null,  "pkl": "in_pkl",  "note": "가치영역 내 여부"},
+      {"name": "volume_acceleration",     "rho": null,  "pkl": "in_pkl",  "note": "거래량 가속도 (15m 전문)"},
+      {"name": "avg_volume",              "rho": null,  "pkl": "in_pkl",  "note": "평균 거래량"},
+      {"name": "is_close_volatile",       "rho": null,  "pkl": "in_pkl",  "note": "장 마감 플래그"},
+      {"name": "macro_vix",               "rho": 0.021, "pkl": "in_pkl",  "note": "VIX 변화 — 백필 후"}
+    ],
+    "include_pending_validation": [
+      {"name": "macro_sp500_chg", "pkl": "in_pkl", "note": "장 레짐 연동 — 15m부터 유효 검증 필요"},
+      {"name": "macro_us10y_chg", "pkl": "in_pkl", "note": "동일"}
+    ],
+    "exclude": [
+      {"name": "mlofi_slope",    "reason": "틱 단위 — 15m 완전 잡음"},
+      {"name": "mlofi_norm",     "reason": "동일"},
+      {"name": "mlofi_pressure", "reason": "동일"},
+      {"name": "ofi_norm",       "reason": "잡음"},
+      {"name": "ofi_pressure",   "reason": "동일"},
+      {"name": "cancel_add_ratio","reason": "15m에서 무의미"},
+      {"name": "microprice_bias","reason": "전부 제거"},
+      {"name": "microprice_slope","reason": "동일"},
+      {"name": "microprice_depth_bias","reason": "동일"},
+      {"name": "cvd_slope",      "reason": "p>0.05 — 15m 미유의"},
+      {"name": "queue_directional_depletion","reason": "p>0.05 — 15m 미유의"},
+      {"name": "vwap_momentum",  "reason": "15m 미유의 — 10m에서 더 강함"},
+      {"name": "ret_1m",         "reason": "1m 피처 불필요"},
+      {"name": "spread_ticks",   "reason": "15m 잡음"}
+    ]
+  },
+
+  "30m": {
+    "description": "구조적 방향 + 매크로 레짐 — 15~30분 보유, 틱 노이즈 전부 제거",
+    "current_acc": 0.354,
+    "target_acc": [0.38, 0.41],
+    "target_metric": "Recall 향상 (FLAT 편향 완화) — 개선 우선순위 1위",
+    "include": [
+      {"name": "opt_gex_bn",              "rho": 0.290, "pkl": "need_add","note": "딜러 감마 헤지 ★★★★ 전체 최강"},
+      {"name": "opt_chain_pcr",           "rho": 0.245, "pkl": "need_add","note": "전체 체인 PCR ★★★★"},
+      {"name": "opt_atm_call_oi",         "rho": 0.126, "pkl": "need_add","note": "ATM 콜 OI ★★★"},
+      {"name": "opt_atm_pcr",             "rho": 0.126, "pkl": "need_add","note": "ATM PCR (30m 유의) ★★★"},
+      {"name": "threshold_feasibility",   "rho": 0.098, "pkl": "need_add","note": "변동성 실현 가능성 ★★"},
+      {"name": "in_value_area",           "rho": 0.055, "pkl": "in_pkl",  "note": "가치영역 내 여부"},
+      {"name": "opt_pcr_slope_norm",      "rho": 0.044, "pkl": "in_pkl",  "note": "PCR 기울기"},
+      {"name": "opt_pcr_bearish",         "rho": 0.041, "pkl": "in_pkl",  "note": "약세 PCR"},
+      {"name": "opt_pcr_extreme_bearish", "rho": 0.039, "pkl": "need_add","note": "극단 약세 PCR"},
+      {"name": "toxicity_score_ma",       "rho": 0.039, "pkl": "in_pkl",  "note": "독성 이동평균"},
+      {"name": "atr_ratio",               "rho": null,  "pkl": "in_pkl",  "note": "ATR 비율"},
+      {"name": "above_vwap",              "rho": null,  "pkl": "in_pkl",  "note": "VWAP 상하 여부 (CORE)"},
+      {"name": "queue_signal_ma",         "rho": null,  "pkl": "in_pkl",  "note": "큐 신호 이동평균 (30m 전문)"},
+      {"name": "toxicity_atr_stress",     "rho": null,  "pkl": "in_pkl",  "note": "ATR 스트레스"},
+      {"name": "time_cos",                "rho": null,  "pkl": "in_pkl",  "note": "시간 인코딩"},
+      {"name": "micro_regime_code",       "rho": null,  "pkl": "need_add","note": "레짐 코드"},
+      {"name": "macro_vix",               "rho": 0.067, "pkl": "in_pkl",  "note": "VIX — 백필 후 매크로 최강 신호"},
+      {"name": "macro_krw_chg",           "rho": 0.026, "pkl": "in_pkl",  "note": "원화 변동 (★p=0.032) — 백필 후"}
+    ],
+    "include_pending_validation": [
+      {"name": "macro_us10y_chg", "pkl": "in_pkl", "note": "금리 변화 30m 레짐 반영 — 백필 후 검증"},
+      {"name": "macro_sp500_chg", "pkl": "in_pkl", "note": "전날 S&P 방향 — 30m 레짐 연동 검증"}
+    ],
+    "exclude": [
+      {"name": "ofi_norm",        "reason": "틱 단위 — 30m 완전 무효"},
+      {"name": "mlofi_norm",      "reason": "동일"},
+      {"name": "mlofi_pressure",  "reason": "동일"},
+      {"name": "mlofi_slope",     "reason": "잡음"},
+      {"name": "microprice_bias", "reason": "전부 제거"},
+      {"name": "microprice_slope","reason": "동일"},
+      {"name": "microprice_depth_bias","reason": "동일"},
+      {"name": "cancel_add_ratio","reason": "무의미"},
+      {"name": "queue_depletion_speed","reason": "틱 수준 — 30m 잡음"},
+      {"name": "queue_refill_rate","reason": "동일"},
+      {"name": "ret_1m",          "reason": "1m 피처 — 30m에 완전 불필요"},
+      {"name": "opt_atm_put_oi",  "reason": "30m 미유의 — 10m~15m에 맡김"},
+      {"name": "va_bandwidth",    "reason": "p=0.055 — 경계선 제거"},
+      {"name": "spread_ticks",    "reason": "30m 잡음"},
+      {"name": "ema_cross",       "reason": "단기 지표 — 30m 무의미"},
+      {"name": "bb_position",     "reason": "동일"}
+    ]
+  },
+
+  "_feature_status_summary": {
+    "note": "현재 feature_names.pkl(97개) 기준 포함 여부",
+    "in_pkl_total": 97,
+    "need_add_features": [
+      "queue_directional_depletion",
+      "micro_regime_code",
+      "cvd_monotone_ratio",
+      "bear_reversal_signal",
+      "bull_reversal_signal",
+      "bull_exhaustion_signal",
+      "opt_chain_pcr",
+      "opt_gex_bn",
+      "opt_gex_sign",
+      "opt_atm_put_oi",
+      "opt_atm_call_oi",
+      "opt_atm_pcr",
+      "opt_pcr_extreme_bearish",
+      "threshold_feasibility"
+    ],
+    "macro_relearn_required": [
+      "macro_vix", "macro_sp500_chg", "macro_us10y_chg", "macro_krw_chg",
+      "macro_risk_on", "macro_risk_off"
+    ],
+    "excluded_from_all_horizons": [
+      "feature_degraded", "feature_quality_score", "entry_ok",
+      "quality_option_available", "quality_macro_available", "quality_supply_available",
+      "quality_macro_stale", "quality_macro_age_sec", "quality_macro_fallback_used",
+      "quality_investor_stale", "quality_investor_age_sec",
+      "quality_investor_fetch_count", "quality_investor_futures_supported",
+      "quality_investor_option_supported", "quality_investor_program_supported",
+      "quality_investor_reason_code", "quality_investor_source_code",
+      "quality_investor_supported", "macro_quality_source_code",
+      "cvd_exhaustion", "cvd_exhaustion_signal",
+      "prev_day_same_hour_ret",
+      "program_arb_net", "program_non_arb_net",
+      "program_foreign_net_krw", "program_individual_net_krw", "program_institution_net_krw"
+    ]
+  },
+
+  "_implementation_order": {
+    "note": "Walk-Forward 검증 우선순위",
+    "phase_c_retrain_order": ["10m", "15m", "30m", "5m", "3m", "1m"],
+    "reason": "10m이 개선 기대치 최대 (34.3%→38~41%), 단계별 검증으로 롤백 리스크 최소화"
+  }
+}

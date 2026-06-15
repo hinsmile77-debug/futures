@@ -3471,10 +3471,16 @@ class TradingSystem:
                 "WARNING",
             )
 
+        # 주간 재학습(월요일 08:50): 전날(금요일) EOD full_cv 재학습이 성공했으면 스킵
+        # → daily_close()가 월요일 포함 매일 정규 파라미터로 재학습하므로 중복 불필요
+        _weekly_needed = (
+            self.batch_retrainer.should_retrain_weekly()
+            and not getattr(self, "_eod_retrain_ok", False)
+        )
         _need_retrain = (
             _warmup_forced
             or _drift_trigger
-            or self.batch_retrainer.should_retrain_weekly()
+            or _weekly_needed
             or self.batch_retrainer.should_retrain_monthly()
         )
         if _need_retrain and not getattr(self, "_gbm_retrain_running", False):
@@ -3526,11 +3532,15 @@ class TradingSystem:
         # 옵션 체인 폴링은 _option_chain_timer(QTimer 300s) 에서 메인 스레드 COM 안전하게 수행.
         # 파이프라인은 캐시된 피처만 읽는다 (1분 지연 허용, BlockRequest 루프 블로킹 제거).
         _chain_feats = self.option_chain_snap.get_features()
+        # [BUG FIX] _chain_feats(opt_chain_pcr/opt_gex_bn/opt_atm_*)를 option_data에 병합.
+        # 이전: _chain_feats가 읽혔지만 build()에 전달되지 않아 raw_features에 저장 안 됨.
+        _option_combined = dict(_option_feats)
+        _option_combined.update(_chain_feats)
         features = self.feature_builder.build(
             bar,
             supply_demand = supply_feats,
             macro_data    = _macro_feats,
-            option_data   = _option_feats,
+            option_data   = _option_combined,
             micro_regime  = self.current_micro_regime,  # 직전 분 레짐 (1분 lag 허용)
         )
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
@@ -3807,6 +3817,8 @@ class TradingSystem:
                         self._hz_bar_age[_h_name] = self._hz_bar_age.get(_h_name, 0) + 1
 
                 # hz_feat_vecs: 캐시에서 로드, 없으면 Phase 1-1 반감기 fallback
+                # Phase C: 캐시 벡터는 항상 전체 피처(_fn) 기준으로 저장
+                #          모델 내부 predict_proba에서 호라이즌별 슬라이싱 수행
                 _hz_feat_vecs = {}
                 from features.feature_decay import get_horizon_features as _gHF
                 for _h_name in HORIZONS:
@@ -6355,13 +6367,22 @@ class TradingSystem:
 
         # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
         # force=True: 26주 데이터 기준 acc 안정화 → cv_acc 소폭 하락도 교체가 안전
-        # (force=False 시 미교체된 모델을 다음날 08:55 force=True로 덮어쓰는 왕복 비용 제거)
-        # intraday=True: 32-bit Python 메모리 제약 — 3-fold CV fold 3이 30k행×97피처×8B
-        #   = 22 MiB 할당 시도로 MemoryError 발생 (2026-06-11 실측).
-        #   intraday=True → 20k행 절단 + CV 없음 → OOM 근본 차단.
-        #   장중 14:58 재학습과 동일 경로지만 당일 마지막 봉이 추가된 최신 데이터로 갱신.
+        # intraday=False + full_cv=True: Cybos 단절 후 메모리 경쟁 프로세스 없음
+        #   → 300그루 정규 파라미터 + 3-fold CV 20k 캡 해제 + 50k봉 최종 fit
+        #   (구 intraday=True는 장 마감 후에도 Cybos COM 경쟁 우려로 제한했던 것 — 해소)
+        # 월요일: 주간 재학습도 여기서 통합 → STEP 3 08:50 주간 재학습 중복 스킵됨
+        _is_monday_eod = (datetime.datetime.now().weekday() == 0)
         self._eod_retrain_ok = False   # EOD 진입 시 초기화 — 완료 후 True로 설정
-        retrain_result = self.batch_retrainer.retrain_now(force=True, intraday=True)
+        log_manager.system(
+            "[DailyClose] EOD 재학습 시작 — 정규 파라미터 (300그루, full_cv=True)"
+            + (" [월요일: 주간 재학습 포함]" if _is_monday_eod else ""),
+            "INFO",
+        )
+        retrain_result = self.batch_retrainer.retrain_now(
+            force=True,
+            intraday=False,   # 정규 파라미터 (max_iter=300, max_depth=5, lr=0.04)
+            full_cv=True,     # CV 20k 캡 해제 — Cybos 단절 후 메모리 여유
+        )
         retrain_ok = retrain_result.get("ok", False)
         # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
         # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
@@ -7185,6 +7206,18 @@ class TradingSystem:
         self._scheduler.setInterval(30_000)   # 30초마다 체크
         self._scheduler.timeout.connect(self._scheduler_tick)
         self._scheduler.start()
+
+        # 수급 TR 주기 폴링 — 60초 (COM 콜백 외부에서 안전하게 실행)
+        self._investor_timer = QTimer()
+        self._investor_timer.setInterval(60_000)
+        self._investor_timer.timeout.connect(self._fetch_investor_data)
+        self._investor_timer.start()
+
+        # 옵션 체인 주기 폴링 — 300초 (opt_chain_pcr / opt_gex_bn / opt_atm_* 수집)
+        self._option_chain_timer = QTimer()
+        self._option_chain_timer.setInterval(300_000)
+        self._option_chain_timer.timeout.connect(self._poll_option_chain)
+        self._option_chain_timer.start()
 
         self._balance_ui_timer = QTimer()
         self._balance_ui_timer.setInterval(2_000)
