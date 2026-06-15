@@ -6,6 +6,32 @@
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
 
+## 2026-06-15 (177차 — C_PERIODIC 독립 타이머 + P1-A 강화 + EKS z조건 완화)
+
+### 다음 장 확인 사항
+
+#### [P0] C_PERIODIC 독립 타이머 발동
+- `[ScalerRefresh] trigger=C_PERIODIC elapsed=60min` 로그 확인 — D_FORCE 발동 없는 구간에서 60분마다 발동
+- D_FORCE 연속 발동 중에도 `_last_periodic_refit_at` 기준으로 독립 카운트 → 60분 후 C_PERIODIC 발동 확인
+- D_FORCE와 C_PERIODIC 동시 조건이면 D_FORCE 우선 반환 (C_PERIODIC 타이머만 리셋)
+
+#### [P0] _gbm_retrain_running 30분 타임아웃 경고 소멸
+- `[GBM] 재학습 플래그 30분 타임아웃 강제 해제` 로그 **없음** 확인 (오늘 10:25 발동 → 내일 없어야 함)
+- `_gbm_retrain_done_event.set()`이 worker에서 즉시 실행되므로 daily_close 대기도 정상화 확인
+
+#### [P0] EKS z조건 완화 효과
+- EKS 회복 시도에서 `z_ok=True` 출현 확인 (기존 z=22 > 5 → 22 < 15로 통과)
+- `[SHS-EKS] EKS 자동 해제 ... z_warn=22` 로그 — z=22여도 해제되는지 확인
+- EKS 해제 후 정상 진입 재개 여부 (conf_hits 조건도 동시 충족 필요)
+
+### 미해결 이슈 (이월)
+
+- [TODO P1] **S2 지연 원인 추적** — 장 시작 직후 S2=56s 지연. `[S2] gil_wait` DEBUG 로그 임계 50ms로 낮춰 세분화 필요
+- [TODO P1] **TimeRouter 스팸** — 30초 간격 동일 메시지 반복 (state-change 방식 수정 필요)
+- [TODO P2] **feat=114 vs managed=97 불일치** — ScalerWarmup 114개 vs 재학습 97개. registry 재정합 필요
+
+---
+
 ## 2026-06-11 (156차 — GBM 플래그 고착 + ScalerRefresh 3종 수정)
 
 ### 다음 장 검증 항목 (최우선)

@@ -17,7 +17,7 @@ EKS 동적 해제:
   해제 조건 (3가지 모두 충족):
     ① 스케일러 age < 1h  (갱신된 스케일러 사용 중)
     ② 최근 10봉 중 conf ≥ current_mc 봉 수 ≥ 3  (DynMC 기준, 0.42 floor 제거)
-    ③ z경고 피처 수 < 5
+    ③ z경고 피처 수 < 15  (장 시작 직후 극단 z 스파이크 고려, 5→15 완화)
   마감: 11:30 이후 재평가 없음 (거래 시간 부족)
 """
 import datetime
@@ -196,7 +196,9 @@ class SystemHealthScore:
 
         _ok_scaler = scaler_age_hours < 1.0
         _ok_conf   = _hits >= EKS_RECOVERY_CONF_MIN_HITS
-        _ok_z      = z_warn_count < 5
+        # P0-C: 장 시작 직후 극단 z 스파이크(quality_investor 등)로 인한 영구 차단 방지
+        # 5 → 15로 완화 (실전 관측치: 장 시작 후 z=22개 지속, 5 기준으로 해제 불가)
+        _ok_z      = z_warn_count < 15
 
         if _ok_scaler and _ok_conf and _ok_z:
             self._eks_active = False

@@ -178,6 +178,8 @@ class MultiHorizonModel:
 
         # Phase B: 정기/강제 refresh 상태
         self._last_scaler_refit_at: Optional[datetime.datetime] = None
+        # P0-A: B/C PERIODIC 전용 타이머 — D_FORCE 발동으로 리셋되지 않음
+        self._last_periodic_refit_at: Optional[datetime.datetime] = None
         self._extreme_feat_streak: Dict[str, int] = {}       # 피처 → 연속 극단 분 수
         self._recent_extreme_feat_history: List[List[str]] = []  # 최근 N봉 극단 피처 이력
         self._force_cooldown_until: Optional[datetime.datetime] = None
@@ -1040,6 +1042,7 @@ class MultiHorizonModel:
                 return "D_FORCE", force_reason
 
         # ── B/C: 정기 트리거 ─────────────────────────────────────
+        # P0-A: _last_periodic_refit_at 사용 — D_FORCE 발동으로 타이머가 리셋되지 않도록 분리
         market_open = bar_dt.replace(hour=9, minute=0, second=0, microsecond=0)
         minutes_since_open = (bar_dt - market_open).total_seconds() / 60.0
         in_open_period = 0.0 <= minutes_since_open <= SCALER_OPEN_END_MINUTE
@@ -1050,14 +1053,15 @@ class MultiHorizonModel:
         trigger_type = "B_OPEN" if in_open_period else "C_PERIODIC"
 
         elapsed_min = (
-            (bar_dt - self._last_scaler_refit_at).total_seconds() / 60.0
-            if self._last_scaler_refit_at is not None
+            (bar_dt - self._last_periodic_refit_at).total_seconds() / 60.0
+            if self._last_periodic_refit_at is not None
             else float("inf")
         )
 
         if elapsed_min >= interval_min:
             # 즉시 타임스탬프 갱신 — refit 스레드 완료 전 이중 트리거 방지
-            self._last_scaler_refit_at = bar_dt
+            self._last_periodic_refit_at = bar_dt
+            self._last_scaler_refit_at = bar_dt  # 공통 타임스탬프도 동기화 (age 계산 등 호환)
             # cold-start 감지: 최초 재적합(elapsed=inf)이면 3분 진입 차단 워밍업 설정
             if elapsed_min == float("inf"):
                 self._startup_warmup_until = bar_dt + datetime.timedelta(minutes=3)

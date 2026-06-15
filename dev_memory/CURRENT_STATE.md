@@ -1,7 +1,33 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-11 (156차 세션) — _gbm_retrain_running 고착 + MIN_TRAIN_BARS 이중 체크 + C_PERIODIC 독립
+> 마지막 업데이트: 2026-06-15 (177차 세션) — C_PERIODIC 독립 타이머 + P1-A 강화 + EKS z조건 완화
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-15 (177차 — C_PERIODIC 독립 타이머 + P1-A 강화 + EKS z조건 완화)
+
+### 배경 (20260615 로그 분석)
+
+| 이상점 | 수치 | 원인 |
+|---|---|---|
+| C_PERIODIC 미발동 | 10:25까지 전무 | D_FORCE가 `_last_scaler_refit_at` 리셋 + B/C 경로 조기 차단 |
+| _gbm_retrain_running 30분 타임아웃 | 09:53 완료 → 10:25 강제 해제 | ok=True 시 P1-A 리셋 스킵, QTimer daemon-thread 발화 불안정 |
+| EKS z_ok=False 지속 | z=22 (3회 연속) | `z_warn_count < 5` 기준이 장 시작 극단 z 스파이크로 달성 불가 |
+
+### 수정 내용
+
+| 수정 | 파일 | 핵심 변경 |
+|---|---|---|
+| P0-A | `model/multi_horizon_model.py` | `_last_periodic_refit_at` 신규 — D_FORCE와 B/C PERIODIC 타이머 분리. D_FORCE가 60분 카운터 리셋 불가 |
+| P0-B | `main.py` 3곳 + `_on_gbm_retrain_done` | ok/fail 무관 worker에서 `_gbm_retrain_running = False` 즉시 리셋. `_gbm_retrain_started_at = None` 콜백에 추가 |
+| P0-C | `safety/system_health.py` | EKS 회복 z조건 `z_warn_count < 5` → `< 15` (실측 z=22 기준) |
+
+### 다음 장 확인 사항
+
+- `[ScalerRefresh] trigger=C_PERIODIC` 로그 확인 (D_FORCE 연속 중에도 60분마다 발동)
+- `[GBM] 재학습 플래그 30분 타임아웃 강제 해제` 로그 **없음** 확인
+- `[SHS-EKS] EKS 자동 해제 ... z_warn=22` — z=22여도 conf_hits 충족 시 해제 확인
 
 ---
 

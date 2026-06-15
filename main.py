@@ -720,9 +720,8 @@ class TradingSystem:
                 result = self.batch_retrainer.retrain_now(force=force)
             except Exception as exc:
                 result = {"ok": False, "error": str(exc)}
-            if not result.get("ok"):
-                # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
-                self._gbm_retrain_running = False
+            # P1-A 강화: ok/fail 무관 worker에서 즉시 해제 (QTimer daemon-thread 불안정 대비)
+            self._gbm_retrain_running = False
             self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
             QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, False))
 
@@ -2226,9 +2225,8 @@ class TradingSystem:
                     result = self.batch_retrainer.retrain_now(force=False, intraday=True)
                 except Exception as _re:
                     result = {"ok": False, "error": str(_re)}
-                if not result.get("ok"):
-                    # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
-                    self._gbm_retrain_running = False
+                # P1-A 강화: ok/fail 무관 worker에서 즉시 해제 (QTimer daemon-thread 불안정 대비)
+                self._gbm_retrain_running = False
                 self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
@@ -2558,6 +2556,7 @@ class TradingSystem:
     def _on_gbm_retrain_done(self, result: dict, is_warmup: bool) -> None:
         """GBM 재학습 daemon thread 완료 콜백 — 메인 스레드에서 실행."""
         self._gbm_retrain_running = False
+        self._gbm_retrain_started_at = None  # P1-B: 타임아웃 허위 경고 방지
         self._gbm_retrain_done_event.set()  # daily_close 대기 해제
         self.circuit_breaker.set_gbm_retrain_active(False)  # CB⑤ 임계 복원
         prefix = "웜업 " if is_warmup else ""
@@ -2872,9 +2871,8 @@ class TradingSystem:
                         result = self.batch_retrainer.retrain_now(force=True)
                     except Exception as _pre_e:
                         result = {"ok": False, "error": str(_pre_e)}
-                    if not result.get("ok"):
-                        # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
-                        self._gbm_retrain_running = False
+                    # P1-A 강화: ok/fail 무관 worker에서 즉시 해제 (QTimer daemon-thread 불안정 대비)
+                    self._gbm_retrain_running = False
                     self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                     QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
 
