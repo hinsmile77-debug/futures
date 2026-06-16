@@ -78,6 +78,8 @@ class MetaGate:
         min_conf: float = 0.57,
         horizon_agreement: float = 0.5,   # 6개 호라이즌 중 앙상블 방향 일치 비율
         checklist_grade: str = "C",        # 앙상블 등급(A/B/C/X) — STEP 6 grade 변수 전달
+        trend_gate_active: bool = False,   # ② TrendGate ON → 편향패널티 비활성화
+        time_zone: str = "",               # ③ STABLE_TREND/LUNCH_RECOVERY → reduce_thr 완화
     ) -> Dict:
         if now is None:
             now = now_kst()
@@ -135,7 +137,9 @@ class MetaGate:
         blended_conf = float(confidence) * cfg["ens_w"] + meta_conf * cfg["meta_w"]
 
         # P3: 방향 편향 패널티 (최근 30봉 동일 방향 >70% 시 신뢰도 소폭 하향)
-        bias_pen = self._bias_penalty(direction)
+        # ② TrendGate active 구간(STABLE_TREND 추세 지속)에서는 편향패널티 비활성화
+        #    실제 추세를 "편향"으로 오인해 매 분봉 0.005~0.006씩 blended 감소하는 문제 해소
+        bias_pen = 0.0 if trend_gate_active else self._bias_penalty(direction)
         if bias_pen > 0:
             logger.info(
                 "[MetaGate] 편향패널티: dir=%d buf=%d pen=%.3f blended %.3f→%.3f",
@@ -147,6 +151,19 @@ class MetaGate:
         take_thr   = max(cfg["take_floor"],
                          min(cfg["take_ceil"], min_conf + cfg["take_add"]))
         reduce_thr = max(cfg["reduce_base"], min_conf * cfg["reduce_mult"])
+
+        # ③ STABLE_TREND/LUNCH_RECOVERY 시간대 reduce_thr 완화
+        #    점심 추세 구간에서 blended=0.39~0.43이 0.427에 근소 미달하는 문제 해소
+        #    0.04p 하향 → 12:33 기준 blended=0.42 > 0.387 → reduce 통과
+        _trend_zones = ("STABLE_TREND", "LUNCH_RECOVERY")
+        if time_zone in _trend_zones:
+            _original_reduce_thr = reduce_thr
+            reduce_thr = max(reduce_thr - 0.04, 0.36)
+            if abs(reduce_thr - _original_reduce_thr) > 1e-4:
+                logger.debug(
+                    "[MetaGate] reduce_thr 완화: %.3f→%.3f (zone=%s)",
+                    _original_reduce_thr, reduce_thr, time_zone,
+                )
 
         if blended_conf >= take_thr:
             action    = "take"

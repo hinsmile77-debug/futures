@@ -1050,10 +1050,16 @@ class TradingSystem:
             for row in review.get("candidates", [])
         } if isinstance(review, dict) else {}
         declining = set(review.get("declining", [])) if isinstance(review, dict) else set()
-        core_features = ["cvd_divergence", "vwap_position", "ofi_norm"]
-
+        # 단기 CORE — SHAP 대시보드 패널 기준 (1m GBM 기준 SHAP 계산이므로 단기 CORE 고정)
+        # 중기/장기 CORE(opt_gex_bn 등)는 해당 호라이즌 SHAP 탭 구현 후 확장 예정
+        # ── 단기 CORE (1m~5m) ───────────────────────────────────────
+        _short_core_feats = [
+            ("CVD 다이버전스", "cvd_divergence", False),
+            ("VWAP 위치",      "vwap_position",  True),   # forced_x=True
+            ("OFI 불균형",     "ofi_norm",        False),
+        ]
         core_items = []
-        for feat in core_features:
+        for pretty, feat, forced_x in _short_core_feats:
             feat_rank = rank_map.get(feat, 999)
             recent_ranks = self._shap_tracker.get_recent_ranks(feat, lookback=4)
             if feat in declining:
@@ -1067,15 +1073,74 @@ class TradingSystem:
             else:
                 status = "모니터"
             core_items.append({
-                "name": _pretty_name(feat),
+                "name": pretty,
                 "shap": score_map.get(feat, 0.0),
                 "status": status,
+                "forced_x": forced_x,
             })
 
+        # ── 중기 CORE (10m~15m) ─────────────────────────────────────
+        _vix_raw   = getattr(self, "_last_macro_vix_raw", None)    # 0~1 정규화값
+        _vix_lbl   = f"VIX={_vix_raw*100:.0f} {'↓' if _vix_raw and _vix_raw < 0.5 else '↑'}" if _vix_raw else ""
+        _mid_core_feats = [
+            ("VWAP 위치",    "vwap_position", True,  ""),
+            ("macro_vix",    "macro_vix",     False, _vix_lbl),
+        ]
+        mid_core_items = []
+        for pretty, feat, forced_x, extra in _mid_core_feats:
+            feat_rank = rank_map.get(feat, 999)
+            recent_ranks = self._shap_tracker.get_recent_ranks(feat, lookback=4)
+            if feat in declining:
+                status = "약화"
+            elif feat_rank <= 3:
+                status = "핵심"
+            elif feat_rank <= 8:
+                status = "안정"
+            elif recent_ranks and recent_ranks[-1] > min(recent_ranks):
+                status = "주의"
+            else:
+                status = "모니터"
+            mid_core_items.append({
+                "name": pretty,
+                "shap": score_map.get(feat, 0.0),
+                "status": status,
+                "forced_x": forced_x,
+                "extra": extra,
+            })
+
+        # ── 장기 CORE (30m) ──────────────────────────────────────────
+        _pcr_raw   = getattr(self, "_last_opt_chain_pcr", None)
+        _pcr_lbl   = f"PCR={_pcr_raw:.2f}" if _pcr_raw else ""
+        _long_core_feats = [
+            ("opt_chain_pcr", "opt_chain_pcr", False, _pcr_lbl),
+            ("macro_vix",     "macro_vix",     False, _vix_lbl),
+        ]
+        long_core_items = []
+        for pretty, feat, forced_x, extra in _long_core_feats:
+            feat_rank = rank_map.get(feat, 999)
+            recent_ranks = self._shap_tracker.get_recent_ranks(feat, lookback=4)
+            if feat in declining:
+                status = "약화"
+            elif feat_rank <= 3:
+                status = "핵심"
+            elif feat_rank <= 8:
+                status = "안정"
+            else:
+                status = "모니터"
+            long_core_items.append({
+                "name": pretty,
+                "shap": score_map.get(feat, 0.0),
+                "status": status,
+                "forced_x": forced_x,
+                "extra": extra,
+            })
+
+        # ── 단기 CORE 제외 동적 TOP3 ────────────────────────────────
+        _all_core_feats = {f for _, f, *_ in _short_core_feats + _mid_core_feats + _long_core_feats}
         dynamic_items = []
         for row in ranking:
             feat = row["feature"]
-            if feat in core_features:
+            if feat in _all_core_feats:
                 continue
             if feat in candidate_map:
                 status = "교체후보"
@@ -1149,6 +1214,9 @@ class TradingSystem:
             cooldown=cooldown,
             change_lines=change_lines,
             action_state=action_state,
+            mid_core_items=mid_core_items,
+            long_core_items=long_core_items,
+            entry_horizon=getattr(self, "_entry_horizon", "1m") or "1m",
         )
 
     def _maybe_reload_health_policy(self) -> None:
@@ -3547,6 +3615,14 @@ class TradingSystem:
         atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
 
+        # SHAP 대시보드용 VIX·PCR 실측값 캐싱 (매분)
+        _mv = features.get("macro_vix")
+        if _mv is not None:
+            self._last_macro_vix_raw = float(_mv)
+        _pcr = features.get("opt_chain_pcr")
+        if _pcr and float(_pcr) > 0:
+            self._last_opt_chain_pcr = float(_pcr)
+
         # ── CORE 3종 피처 NaN/Inf 가드 ──────────────────────────
         # 진입 체크리스트가 직접 사용하는 피처만 방어 (다른 피처는 앙상블에서 0으로 처리됨)
         for _fk in ("vwap_position", "cvd_direction", "ofi_pressure"):
@@ -3851,7 +3927,10 @@ class TradingSystem:
                 log_manager.signal("[STEP5] predict_proba()={} — ensemble P0 방어 진입")
             _rf_ready = self.rf_model.is_ready()
             for h_name in list(horizon_proba.keys()):
-                _sgd_fv = _hz_feat_vecs[h_name] if _hz_feat_vecs else feat_vec
+                _sgd_fv_raw = _hz_feat_vecs[h_name] if _hz_feat_vecs else feat_vec
+                # P0-SGD: 호라이즌별 피처 슬라이싱 — GBM과 동일한 피처셋으로 학습·예측 일치
+                _sgd_h_idx  = getattr(self.model, "_hz_feat_indices", {}).get(h_name)
+                _sgd_fv     = _sgd_fv_raw[_sgd_h_idx] if _sgd_h_idx is not None else _sgd_fv_raw
                 _gbm_raw_conf = horizon_proba[h_name].get("confidence", 0.0)  # P2: blend 전 GBM conf
                 sgd_p   = self.online_learner.predict_proba(h_name, _sgd_fv)
                 blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p, h_name)
@@ -4370,6 +4449,9 @@ class TradingSystem:
                         bull_exhaustion    = float(features.get("bull_exhaustion", 0.0) or 0.0),
                         micro_regime       = getattr(self, "current_micro_regime", "혼합"),
                         disabled_gates     = self.dashboard.get_disabled_gates(),
+                        entry_horizon      = getattr(self, "_entry_horizon_pre", "1m") or "1m",
+                        macro_vix          = float(features.get("macro_vix", 0.5) or 0.5),
+                        opt_chain_pcr      = float(features.get("opt_chain_pcr", 0.0) or 0.0),
                     )
                     _pre_cl_grade = _pre_cr_cache.get("grade", grade)
                 except Exception as _pre_cl_e:
@@ -4386,6 +4468,8 @@ class TradingSystem:
             min_conf=actual_min_conf,
             horizon_agreement=_hz_agreement,
             checklist_grade=_pre_cl_grade,  # 체크리스트 선행 등급 (A/B/C/X)
+            trend_gate_active=bool(_tp_active),   # ② TrendGate 편향패널티 비활성화
+            time_zone=time_zone,                  # ③ STABLE_TREND reduce_thr 완화
         )
         # selection bias 해소: skip된 비-FLAT 신호를 shadow 버퍼에 보존
         # → STEP 2에서 동일 ts 검증 결과 도착 시 record_outcome 처리
@@ -4641,10 +4725,21 @@ class TradingSystem:
                 if _tp_active:
                     # TrendGate active: override + 2%p 상한 (101차 TrendBoost로 conf가 약간 높아지므로 여유 2%p)
                     _checklist_min_conf = min(_checklist_min_conf, _tp["min_conf_override"] + 0.02)
+                # ① STABLE_TREND·LUNCH_RECOVERY 점심 추세 구간 min_conf 완화
+                #    ConstOut 순환으로 conf=45~49% 고착 시 62% 기준이 모든 진입을 차단하는 문제 해소
+                #    C등급 자동 진입은 별도 UI 토글로 제어 — 안전 장치 유지
+                _trend_mc_zones = ("STABLE_TREND", "LUNCH_RECOVERY")
+                if time_zone in _trend_mc_zones:
+                    _trend_mc_cap = 0.48   # STABLE_TREND 구간 체크리스트 상한 (52%→48%)
+                    # 근거: ConstOut 순환 시 conf=45~49%로 억제 → 52% 기준 전면 차단
+                    # 48% = 랜덤(33%) + 15%p — 최소 신뢰도 보장선
+                    if _checklist_min_conf > _trend_mc_cap:
+                        _checklist_min_conf = _trend_mc_cap
                 if _checklist_min_conf < actual_min_conf:
                     log_manager.signal(
                         f"[P1] Checklist min_conf 분리: {actual_min_conf:.2f}→{_checklist_min_conf:.2f}"
-                        f" (L2={_l2_mc_adj*100:.0f}%p cap, TrendGate={'ON' if _tp_active else 'OFF'})"
+                        f" (L2={_l2_mc_adj*100:.0f}%p cap, TrendGate={'ON' if _tp_active else 'OFF'}"
+                        f", zone={time_zone})"
                     )
 
                 # MetaGate 선행 평가에서 캐시된 결과 재사용 (동일 입력 → 재계산 불필요)
@@ -4668,6 +4763,9 @@ class TradingSystem:
                         bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
                         micro_regime      = getattr(self, "current_micro_regime", "혼합"),
                         disabled_gates    = _disabled_gates,
+                        entry_horizon     = _entry_horizon or "1m",
+                        macro_vix         = float(features.get("macro_vix", 0.5) or 0.5),
+                        opt_chain_pcr     = float(features.get("opt_chain_pcr", 0.0) or 0.0),
                     )
 
             # [Phase 1] cold-start 구간 최소 pass 수 강화 (HORIZON_COLDSTART_MIN_PASS)
@@ -5484,15 +5582,24 @@ class TradingSystem:
                     f"[SGD] stuck 발생 분봉 — {len(_sgd_deferred_verified)}건 학습 스킵 (레이블 오염 방지)"
                 )
             else:
+                _sgd_h_indices = getattr(self.model, "_hz_feat_indices", {})
+                _min_conf_sgd  = 0.52   # P2-D: 저신뢰 레이블 오염 차단
                 for _dv in _sgd_deferred_verified:
+                    # P2-D: 고신뢰도 필터 — conf < 0.52 예측 결과는 학습 제외
+                    if float(_dv.get("confidence", 0.0)) < _min_conf_sgd:
+                        continue
                     _dfeat = _dv.get("features") or {}
-                    _dx = np.array(
+                    _dx_full = np.array(
                         [_dfeat.get(f, 0.0) for f in self.model.feature_names],
                         dtype=np.float32,
                     )
+                    # P0-SGD: 호라이즌별 피처 슬라이싱 — GBM과 동일한 피처셋 사용
+                    _hz_learn = _dv["horizon"]
+                    _h_idx_learn = _sgd_h_indices.get(_hz_learn)
+                    _dx_learn = _dx_full[_h_idx_learn] if _h_idx_learn is not None else _dx_full
                     self.online_learner.learn(
-                        horizon         = _dv["horizon"],
-                        x               = _dx,
+                        horizon         = _hz_learn,
+                        x               = _dx_learn,
                         actual_label    = _dv["actual"],
                         predicted_label = _dv["predicted"],
                     )
@@ -5925,10 +6032,10 @@ class TradingSystem:
         buf_acc = {hz: self.pred_buffer.recent_accuracy(hz, 50)
                    for hz in ["1m", "3m", "5m", "10m", "15m", "30m"]}
 
-        # SGD 버킷별 정확도 (short: 1/3/5m, long: 10/15/30m)
-        bucket_acc = ol.recent_accuracy_by_bucket()
+        # SGD 호라이즌별 정확도 (P1-B: 호라이즌별 독립 가중치 대응)
+        bucket_acc = ol.recent_accuracy_by_bucket()  # short/long 평균 — 하위 호환 로그용
         h_acc = {
-            hz: bucket_acc["short"] if hz in ol.BUCKET_SHORT else bucket_acc["long"]
+            hz: ol.horizon_accuracy(hz)
             for hz in ol._fitted
         }
 

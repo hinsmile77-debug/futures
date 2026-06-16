@@ -1,7 +1,38 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-15 (178차 세션) — 호라이즌별 피처셋 인프라 + opt_chain 버그 3종 수정
+> 마지막 업데이트: 2026-06-16 (179차 세션) — Phase C 슬라이싱 버그 수정 + SGD 최적화 + CORE 그룹 분리
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-16 (179차 — Phase C 슬라이싱 버그 + SGD + CORE + UI)
+
+### 현재 시스템 상태
+
+| 항목 | 상태 |
+|---|---|
+| 피처셋 (GBM) | 97개 공유 + Phase C 호라이즌별 슬라이싱 정상 동작 |
+| 스케일러 | 97개짜리 정상 저장 (12개 오류 해소) |
+| ScalerRefresh | A_WARMUP·B_INTRADAY·C_PERIODIC 전 호라이즌 정상 갱신 확인 |
+| SGD | P0(피처슬라이싱)·P1-B(호라이즌별 가중치)·P1-C(FLAT억제)·P2-D(고신뢰도필터)·P2-E(초기부스트) 적용 |
+| CORE | 단기/중기/장기 그룹별 분리 (settings·checklist·model·dashboard 전 반영) |
+| FeaturePanel | Phase A·B·C 구현 완료 (CORE × 호라이즌 매트릭스 포함) |
+| 진입 최적화 | STABLE_TREND min_conf 48% + 편향패널티 TrendGate 연동 + reduce_thr 완화 |
+| 모의투자 실거래 | 11:43 TP3 청산 +1.5pt / +72,914원 |
+
+### 활성 알려진 이슈
+
+- **feat=121 vs managed=97**: ScalerWarmup 피처 수 불일치 (registry 갱신 필요)
+- **quality_investor_fetch_count D_FORCE 반복**: 매 5분마다 consec=5 → 이진 피처 차단 검토
+- **ConstOut 해소 지연**: 재시작 후 순환 ConstOut 14분 지속 (CONST_OUT_MIN_BARS 3분 검토)
+- **S2 지연**: 분봉 교체 직후 TickUI 폭발 + DB WAL 경합 (근본 해결 미완)
+
+### 다음 장 최우선 확인
+
+1. SGD `[OnlineLearner] 1m 가중치 조정 SGD=XX%` 로그 형식 (호라이즌별 독립)
+2. STABLE_TREND 구간 `[P1] Checklist min_conf 분리: 0.XX→0.48` 로그
+3. TrendGate ON 구간 편향패널티 로그 없음
+4. ERR-FATAL 없음
 
 ---
 

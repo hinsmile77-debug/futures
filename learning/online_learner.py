@@ -2,13 +2,27 @@
 """
 매분 예측 결과가 확인되는 즉시 SGD 모델을 업데이트합니다.
 
-GBM과의 블렌딩 비율은 short(1/3/5m) / long(10/15/30m) 버킷별로
-독립된 50분 정확도에 따라 동적 조정합니다:
-  accuracy > 62% → SGD 비중 +2% (최대 50%)
-  accuracy < 48% → SGD 비중 -2% (최소 10%)
+[Phase C 피처셋 분리 적용]
+  호라이즌별 슬라이싱된 x 를 learn()/predict_proba()에서 수신.
+  GBM과 동일한 피처셋으로 학습하여 신호 일관성 확보.
 
-버킷 분리 이유: 단기 반전장에서 1m/3m가 흔들릴 때
-  장기 추세(15m/30m) 가중치까지 함께 벌을 받는 문제 해소.
+[P1-B: 호라이즌별 독립 가중치]
+  버킷(short/long 묶음) → 6개 호라이즌 완전 독립.
+  1m 노이즈가 3m·5m 가중치에 전파되는 문제 해소.
+
+[P1-C: sample_weight FLAT 억제]
+  FLAT 실제 비율 > 50% 구간에서 FLAT 레이블 가중치 0.5, UP/DN 1.5.
+  SGD가 FLAT 편향을 흡수하지 않도록 차단.
+
+[P2-E: 초기 부스트 + GBM FLAT 편향 대항]
+  GBM flat_score > 0.6 → 학습 건수 부족해도 SGD 20% 즉시 투입.
+
+가중치 조정 기준 (호라이즌별 임계값):
+  1m/3m : BOOST=58%  CUT=45%
+  5m    : BOOST=60%  CUT=47%
+  10m   : BOOST=62%  CUT=48%
+  15m   : BOOST=62%  CUT=50%
+  30m   : BOOST=65%  CUT=52%
 """
 import numpy as np
 import logging
@@ -21,68 +35,61 @@ from sklearn.preprocessing import StandardScaler
 from config.settings import (
     SGD_WEIGHT_DEFAULT, GBM_WEIGHT_DEFAULT,
     SGD_WEIGHT_MAX, SGD_WEIGHT_MIN,
-    SGD_BOOST_THRESHOLD, SGD_CUT_THRESHOLD,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from config.settings import HORIZONS
 
 logger = logging.getLogger("LEARNING")
 
+# P1-B: 호라이즌별 독립 임계값
+_BOOST_THR: Dict[str, float] = {
+    "1m": 0.58, "3m": 0.58, "5m": 0.60,
+    "10m": 0.62, "15m": 0.62, "30m": 0.65,
+}
+_CUT_THR: Dict[str, float] = {
+    "1m": 0.45, "3m": 0.45, "5m": 0.47,
+    "10m": 0.48, "15m": 0.50, "30m": 0.52,
+}
+
 
 class OnlineLearner:
-    """SGD 온라인 자가학습기 (호라이즌별, short/long 2버킷 가중치)"""
+    """SGD 온라인 자가학습기 — 호라이즌별 완전 독립 가중치 (Phase C 대응)"""
 
-    # 버킷당 호라이즌 3개 × 50분 = 150 샘플 = 실질 50분 윈도우
-    # (이전 50은 3 호라이즌/분이 들어오면 실질 17분치에 불과했음)
-    ACCURACY_WINDOW = 150
+    ACCURACY_WINDOW = 100       # 호라이즌별 독립 100분 윈도우
+    _ADJUST_EVERY   = 1         # 1건 학습마다 조정 (호라이즌 독립이므로 묶음 불필요)
+    _MIN_SAMPLES    = 15        # 가중치 조정 최소 샘플 수
 
-    # short 버킷: 단기 반전 민감 / long 버킷: 추세 추종
-    BUCKET_SHORT: Tuple[str, ...] = ("1m", "3m", "5m")
-    BUCKET_LONG:  Tuple[str, ...] = ("10m", "15m", "30m")
+    # 바닥 회복 파라미터
+    _FLOOR_RECOVERY_INTERVAL = 30
+    _FLOOR_RECOVERY_ACC_MIN  = 0.40
+    _FLOOR_RECOVERY_DELTA    = 0.005
+    _FLOOR_RECOVERY_MAX_UP   = 0.05
 
-    # 1분치(버킷당 호라이즌 수) 학습 완료 후 가중치 1회 조정
-    # 매 샘플 즉시 조정 시 연속 실패로 SGD 가중치가 1분 내 절반 붕괴하는 문제 방지
-    _ADJUST_EVERY = 3
-
-    # SGD 바닥 회복 파라미터
-    # 10% 바닥 고착 시 30회 조정(≈90분) 경과 + 정확도 40%+ 이면 0.5%p 소량 회복
-    # 최대 5%p까지만 (15%) 허용 — 급격한 회복으로 인한 conf 불안정 방지
-    _FLOOR_RECOVERY_INTERVAL = 30   # 조정 횟수 기준
-    _FLOOR_RECOVERY_ACC_MIN  = 0.40  # 회복 허용 최소 정확도
-    _FLOOR_RECOVERY_DELTA    = 0.005  # 1회 회복량 (0.5%p)
-    _FLOOR_RECOVERY_MAX_UP   = 0.05  # 바닥 대비 최대 회복 폭 (5%p → 15%)
+    # P1-C: FLAT 비율 추적 윈도우
+    FLAT_TRACK_WINDOW = 50
 
     def __init__(self):
         self.models:  Dict[str, SGDClassifier] = {}
         self.scalers: Dict[str, StandardScaler] = {}
         self._fitted: Dict[str, bool] = {}
 
-        # 버킷별 독립 가중치
-        self._sgd_w: Dict[str, float] = {
-            "short": SGD_WEIGHT_DEFAULT,
-            "long":  SGD_WEIGHT_DEFAULT,
-        }
-        self._gbm_w: Dict[str, float] = {
-            "short": GBM_WEIGHT_DEFAULT,
-            "long":  GBM_WEIGHT_DEFAULT,
-        }
+        # P1-B: 호라이즌별 완전 독립 가중치
+        self._sgd_w: Dict[str, float] = {h: SGD_WEIGHT_DEFAULT for h in HORIZONS}
+        self._gbm_w: Dict[str, float] = {h: GBM_WEIGHT_DEFAULT for h in HORIZONS}
 
-        # 버킷별 독립 정확도 버퍼
+        # 호라이즌별 독립 정확도 버퍼
         self._acc_buf: Dict[str, deque] = {
-            "short": deque(maxlen=self.ACCURACY_WINDOW),
-            "long":  deque(maxlen=self.ACCURACY_WINDOW),
-        }
-        # 호라이즌별 독립 정확도 버퍼 (Qualification 카드 표시용)
-        self._horizon_acc_buf: Dict[str, deque] = {
             h: deque(maxlen=self.ACCURACY_WINDOW) for h in HORIZONS
+        }
+        # P1-C: 호라이즌별 실제 레이블 버퍼 (FLAT 비율 추적)
+        self._label_buf: Dict[str, deque] = {
+            h: deque(maxlen=self.FLAT_TRACK_WINDOW) for h in HORIZONS
         }
 
         self._sample_count: int = 0
         self._horizon_counts: Dict[str, int] = {h: 0 for h in HORIZONS}
-        # 버킷별 learn() 호출 횟수 — _ADJUST_EVERY마다 가중치 1회 조정
-        self._bucket_learn_count: Dict[str, int] = {"short": 0, "long": 0}
-        # 바닥 고착 카운터 — _FLOOR_RECOVERY_INTERVAL 도달 시 소량 회복 시도
-        self._floor_ticks: Dict[str, int] = {"short": 0, "long": 0}
+        self._learn_count:    Dict[str, int] = {h: 0 for h in HORIZONS}
+        self._floor_ticks:    Dict[str, int] = {h: 0 for h in HORIZONS}
 
         for h in HORIZONS:
             self.models[h] = SGDClassifier(
@@ -96,10 +103,6 @@ class OnlineLearner:
             )
             self.scalers[h] = StandardScaler()
             self._fitted[h] = False
-
-    # ── 버킷 분류 헬퍼 ──────────────────────────────────────────
-    def _bucket(self, horizon: str) -> str:
-        return "short" if horizon in self.BUCKET_SHORT else "long"
 
     # ── 학습 ────────────────────────────────────────────────────
     def learn(
@@ -109,151 +112,175 @@ class OnlineLearner:
         actual_label: int,
         predicted_label: int,
     ):
-        """
-        매분 학습 (partial_fit)
+        """매분 partial_fit.
 
-        Args:
-            horizon:         "1m" | "3m" | ...
-            x:               피처 벡터 (1D)
-            actual_label:    실제 결과 (+1/-1/0)
-            predicted_label: 직전 예측 방향
+        x: 호라이즌 전용 슬라이싱된 피처 벡터 (Phase C 적용 시 12~15개).
+           GBM과 동일한 피처 공간에서 학습.
         """
         if horizon not in self.models:
             return
 
         x2d = x.reshape(1, -1)
-
         scaler = self.scalers[horizon]
-        scaler.partial_fit(x2d)   # 매 샘플마다 적응적 스케일 업데이트
+        scaler.partial_fit(x2d)
         xs = scaler.transform(x2d)
 
+        # P1-C: FLAT 비율 기반 sample_weight
+        self._label_buf[horizon].append(actual_label)
+        buf_labels = list(self._label_buf[horizon])
+        n_buf = len(buf_labels)
+        flat_ratio = buf_labels.count(DIRECTION_FLAT) / n_buf if n_buf > 0 else 0.33
+
+        if flat_ratio > 0.50:
+            sw = 0.5 if actual_label == DIRECTION_FLAT else 1.5
+        elif flat_ratio < 0.20:
+            # UP/DN 과다 구간: FLAT 강화
+            sw = 1.3 if actual_label == DIRECTION_FLAT else 0.85
+        else:
+            sw = 1.0
+
         classes = np.array([DIRECTION_DOWN, DIRECTION_FLAT, DIRECTION_UP])
-        self.models[horizon].partial_fit(xs, [actual_label], classes=classes)
+        self.models[horizon].partial_fit(
+            xs, [actual_label],
+            classes=classes,
+            sample_weight=[sw],
+        )
 
         if not self._fitted[horizon]:
             self._fitted[horizon] = True
-            logger.info(f"[OnlineLearner] {horizon} 초기 학습 완료")
+            logger.info("[OnlineLearner] %s 초기 학습 완료", horizon)
 
-        # 정확도 추적 — 버킷별 + 호라이즌별 독립 버퍼에 기록
-        bucket = self._bucket(horizon)
+        # 정확도 추적
         correct = (actual_label == predicted_label)
-        self._acc_buf[bucket].append(1.0 if correct else 0.0)
-        if horizon in self._horizon_acc_buf:
-            self._horizon_acc_buf[horizon].append(1.0 if correct else 0.0)
+        self._acc_buf[horizon].append(1.0 if correct else 0.0)
         self._sample_count += 1
         self._horizon_counts[horizon] = self._horizon_counts.get(horizon, 0) + 1
-        self._bucket_learn_count[bucket] += 1
+        self._learn_count[horizon]    = self._learn_count.get(horizon, 0) + 1
 
-        # 1분치(=_ADJUST_EVERY 호라이즌) 완료 후 1회만 조정
-        # — 매 샘플 즉시 조정 시 연속 실패 7건 → -14%p 급감하는 과민 반응 방지
-        if self._bucket_learn_count[bucket] % self._ADJUST_EVERY == 0:
-            self._adjust_weights(bucket)
+        # 1건마다 해당 호라이즌 가중치 독립 조정
+        self._adjust_weights(horizon)
 
     # ── 예측 ────────────────────────────────────────────────────
     def predict_proba(self, horizon: str, x: np.ndarray) -> Optional[Dict]:
-        """SGD 예측 확률 반환"""
+        """SGD 예측.
+
+        x: 호라이즌 전용 슬라이싱된 피처 벡터.
+        """
         if not self._fitted.get(horizon):
             return None
 
         x2d = x.reshape(1, -1)
-        xs = self.scalers[horizon].transform(x2d)
+        try:
+            xs = self.scalers[horizon].transform(x2d)
+        except Exception:
+            return None
+
         clf = self.models[horizon]
-        proba = clf.predict_proba(xs)[0]
+        try:
+            proba = clf.predict_proba(xs)[0]
+        except Exception:
+            return None
+
         classes = list(clf.classes_)
-
         proba_map = {int(c): float(p) for c, p in zip(classes, proba)}
-        up   = proba_map.get(DIRECTION_UP,   0.0)
-        down = proba_map.get(DIRECTION_DOWN, 0.0)
-        flat = proba_map.get(DIRECTION_FLAT, 1/3)
-
-        return {"up": up, "down": down, "flat": flat}
+        return {
+            "up":   proba_map.get(DIRECTION_UP,   0.0),
+            "down": proba_map.get(DIRECTION_DOWN, 0.0),
+            "flat": proba_map.get(DIRECTION_FLAT, 1/3),
+        }
 
     # ── 블렌딩 ──────────────────────────────────────────────────
     def blend_with_gbm(
         self,
         gbm_proba: dict,
         sgd_proba: Optional[dict],
-        horizon: str = "",
+        horizon: str = "1m",
     ) -> dict:
-        """GBM + SGD 블렌딩 (버킷별 가중치 적용)"""
+        """GBM + SGD 블렌딩 — 호라이즌별 독립 가중치.
+
+        P2-E: GBM FLAT 편향(flat_score > 0.60) 감지 시 초기 부스트 적용.
+        """
         if sgd_proba is None:
             return gbm_proba
 
-        # 초기 30건 미만: GBM 전용 모드 (uniform SGD가 GBM conf를 희석하는 현상 방지)
-        # SGD가 학습 초기(1~20건)에 1/3에 가까운 확률을 출력하면 블렌딩 후 conf -5~8%p 저하
         h_count = self._horizon_counts.get(horizon, 0)
-        if h_count < 30:
+        gbm_flat = gbm_proba.get("flat", 1/3)
+
+        if h_count < 20:
+            # 완전 초기: GBM 전용 (uniform SGD가 conf 희석)
+            w_gbm, w_sgd = 1.0, 0.0
+        elif h_count < 50 and gbm_flat > 0.60:
+            # P2-E: GBM FLAT 편향 감지 → 조기 SGD 20% 투입
+            w_gbm, w_sgd = 0.80, 0.20
+        elif h_count < 50:
             w_gbm, w_sgd = 0.95, 0.05
         else:
-            bucket = self._bucket(horizon) if horizon else "short"
-            w_gbm = self._gbm_w[bucket]
-            w_sgd = self._sgd_w[bucket]
+            w_sgd = self._sgd_w.get(horizon, SGD_WEIGHT_DEFAULT)
+            w_gbm = self._gbm_w.get(horizon, GBM_WEIGHT_DEFAULT)
 
-        blended = {}
-        for key in ["up", "down", "flat"]:
-            blended[key] = (
-                gbm_proba.get(key, 1/3) * w_gbm +
-                sgd_proba.get(key, 1/3) * w_sgd
-            )
-
+        blended = {
+            k: gbm_proba.get(k, 1/3) * w_gbm + sgd_proba.get(k, 1/3) * w_sgd
+            for k in ("up", "down", "flat")
+        }
         total = sum(blended.values())
         if total > 0:
             blended = {k: v / total for k, v in blended.items()}
-
         return blended
 
     # ── 가중치 조정 ─────────────────────────────────────────────
-    def _adjust_weights(self, bucket: str):
-        """버킷 정확도 기반 SGD 비중 독립 조정 + 바닥 회복 경로"""
-        buf = self._acc_buf[bucket]
-        if len(buf) < 20:
+    def _adjust_weights(self, horizon: str):
+        """호라이즌별 독립 정확도 기반 SGD 비중 조정."""
+        buf = self._acc_buf[horizon]
+        if len(buf) < self._MIN_SAMPLES:
             return
         acc = sum(buf) / len(buf)
 
-        _at_floor = self._sgd_w[bucket] <= SGD_WEIGHT_MIN + 1e-6
+        _at_floor = self._sgd_w[horizon] <= SGD_WEIGHT_MIN + 1e-6
 
         if _at_floor:
-            # 바닥 고착 상태 — 일반 컷 로직 적용 안 함
-            # 충분히 오래 머물고 정확도가 최소 기준을 넘으면 소량 회복 시도
-            self._floor_ticks[bucket] += 1
-            if (self._floor_ticks[bucket] >= self._FLOOR_RECOVERY_INTERVAL
+            self._floor_ticks[horizon] += 1
+            if (self._floor_ticks[horizon] >= self._FLOOR_RECOVERY_INTERVAL
                     and acc >= self._FLOOR_RECOVERY_ACC_MIN):
-                _new_w = min(
-                    self._sgd_w[bucket] + self._FLOOR_RECOVERY_DELTA,
+                new_w = min(
+                    self._sgd_w[horizon] + self._FLOOR_RECOVERY_DELTA,
                     SGD_WEIGHT_MIN + self._FLOOR_RECOVERY_MAX_UP,
                 )
-                self._sgd_w[bucket] = _new_w
-                self._gbm_w[bucket] = 1.0 - _new_w
-                self._floor_ticks[bucket] = 0  # 성공 후 카운터 초기화
+                self._sgd_w[horizon] = new_w
+                self._gbm_w[horizon] = 1.0 - new_w
+                self._floor_ticks[horizon] = 0
                 logger.info(
                     "[OnlineLearner] %s 바닥 회복 SGD=%.0f%% GBM=%.0f%%"
-                    " (50분정확도=%.1f%% 바닥체류=%d회)",
-                    bucket,
-                    self._sgd_w[bucket] * 100,
-                    self._gbm_w[bucket] * 100,
+                    " (정확도=%.1f%% 바닥체류=%d회)",
+                    horizon,
+                    self._sgd_w[horizon] * 100,
+                    self._gbm_w[horizon] * 100,
                     acc * 100,
                     self._FLOOR_RECOVERY_INTERVAL,
                 )
-            return  # 바닥 구간이면 여기서 종료
+            return
 
-        # 바닥 아님: 카운터 초기화 후 일반 조정 진행
-        self._floor_ticks[bucket] = 0
+        self._floor_ticks[horizon] = 0
+        boost = _BOOST_THR.get(horizon, 0.62)
+        cut   = _CUT_THR.get(horizon, 0.48)
 
-        if acc > SGD_BOOST_THRESHOLD:
+        if acc > boost:
             delta = +0.02
-        elif acc < SGD_CUT_THRESHOLD:
+        elif acc < cut:
             delta = -0.02
         else:
             return
 
-        new_w = float(np.clip(self._sgd_w[bucket] + delta, SGD_WEIGHT_MIN, SGD_WEIGHT_MAX))
-        if new_w != self._sgd_w[bucket]:
-            self._sgd_w[bucket] = new_w
-            self._gbm_w[bucket] = 1.0 - new_w
+        new_w = float(np.clip(self._sgd_w[horizon] + delta, SGD_WEIGHT_MIN, SGD_WEIGHT_MAX))
+        if abs(new_w - self._sgd_w[horizon]) > 1e-6:
+            self._sgd_w[horizon] = new_w
+            self._gbm_w[horizon] = 1.0 - new_w
             logger.info(
-                f"[OnlineLearner] {bucket} 가중치 조정 "
-                f"SGD={self._sgd_w[bucket]:.0%} GBM={self._gbm_w[bucket]:.0%} "
-                f"(50분 정확도={acc:.1%})"
+                "[OnlineLearner] %s 가중치 조정 SGD=%.0f%% GBM=%.0f%%"
+                " (정확도=%.1f%%)",
+                horizon,
+                self._sgd_w[horizon] * 100,
+                self._gbm_w[horizon] * 100,
+                acc * 100,
             )
 
     # ── 상태 조회 ────────────────────────────────────────────────
@@ -261,79 +288,68 @@ class OnlineLearner:
         return any(self._fitted.values())
 
     def recent_accuracy(self) -> float:
-        """전체 버킷 가중 평균 정확도 (대시보드용)"""
-        short_buf = self._acc_buf["short"]
-        long_buf  = self._acc_buf["long"]
-        short_acc = sum(short_buf) / len(short_buf) if short_buf else 0.5
-        long_acc  = sum(long_buf)  / len(long_buf)  if long_buf  else 0.5
-        # short 3개 호라이즌 / long 3개 — 동등 가중
-        return (short_acc + long_acc) / 2.0
+        """전 호라이즌 단순 평균 정확도 (대시보드용)"""
+        accs = [sum(b) / len(b) for b in self._acc_buf.values() if b]
+        return sum(accs) / len(accs) if accs else 0.5
 
     def recent_accuracy_by_bucket(self) -> Dict[str, float]:
-        """버킷별 정확도 반환 (로그·대시보드 상세용)"""
-        result = {}
-        for bk in ("short", "long"):
-            buf = self._acc_buf[bk]
-            result[bk] = sum(buf) / len(buf) if buf else 0.5
-        return result
+        """버킷별 정확도 — 기존 로그 호환용 (short/long 평균)"""
+        short_hz = ("1m", "3m", "5m")
+        long_hz  = ("10m", "15m", "30m")
+        def _avg(hzs):
+            vals = [sum(self._acc_buf[h]) / len(self._acc_buf[h])
+                    for h in hzs if self._acc_buf.get(h)]
+            return sum(vals) / len(vals) if vals else 0.5
+        return {"short": _avg(short_hz), "long": _avg(long_hz)}
 
     def horizon_accuracy(self, horizon: str) -> float:
-        """호라이즌별 정확도 반환 (Qualification 카드 표시용).
-
-        샘플 5개 미만이면 0.0 반환 (불안정한 초기값 표시 억제).
-        """
-        buf = self._horizon_acc_buf.get(horizon)
+        """호라이즌별 정확도 (Qualification 카드용)"""
+        buf = self._acc_buf.get(horizon)
         if not buf or len(buf) < 5:
             return 0.0
         return sum(buf) / len(buf)
 
-    # 단일 가중치 프로퍼티 — 기존 로그 참조 호환
+    # 기존 코드 호환 프로퍼티
     @property
     def sgd_weight(self) -> float:
-        return (self._sgd_w["short"] + self._sgd_w["long"]) / 2.0
+        vals = list(self._sgd_w.values())
+        return sum(vals) / len(vals)
 
     @property
     def gbm_weight(self) -> float:
         return 1.0 - self.sgd_weight
 
+    def _bucket(self, horizon: str) -> str:
+        """하위 호환 — 기존 코드에서 _bucket() 호출 시"""
+        return "short" if horizon in ("1m", "3m", "5m") else "long"
+
     def boost_sgd_for_bias(self, horizon: str, target_w: float = 0.15) -> None:
-        """GBM 방향 편향 감지 시 해당 버킷 SGD 비중을 target_w 이상으로 복구.
-
-        SGD가 min floor(10%)에 고착되면 GBM 편향 대항 능력이 없어진다.
-        BiasReset fallback 적용 시 호출해 편향 대항력을 최소한으로 보장.
-
-        target_w: 목표 SGD 비중 (기본 15% — min floor 10% + 5%p)
-        """
-        bucket = self._bucket(horizon)
-        current = self._sgd_w[bucket]
+        """GBM 방향 편향 감지 시 해당 호라이즌 SGD 비중 복구."""
+        current = self._sgd_w.get(horizon, SGD_WEIGHT_DEFAULT)
         if current < target_w:
-            self._sgd_w[bucket] = float(np.clip(target_w, SGD_WEIGHT_MIN, SGD_WEIGHT_MAX))
-            self._gbm_w[bucket] = 1.0 - self._sgd_w[bucket]
-            self._floor_ticks[bucket] = 0  # 바닥 체류 카운터 리셋
+            new_w = float(np.clip(target_w, SGD_WEIGHT_MIN, SGD_WEIGHT_MAX))
+            self._sgd_w[horizon] = new_w
+            self._gbm_w[horizon] = 1.0 - new_w
+            self._floor_ticks[horizon] = 0
             logger.info(
                 "[OnlineLearner] %s bias fallback SGD 복구 %.0f%%→%.0f%%",
-                horizon, current * 100, self._sgd_w[bucket] * 100,
+                horizon, current * 100, new_w * 100,
             )
 
     def reset_daily(self):
-        for bk in ("short", "long"):
-            self._acc_buf[bk].clear()
-            self._sgd_w[bk] = SGD_WEIGHT_DEFAULT
-            self._gbm_w[bk] = GBM_WEIGHT_DEFAULT
-            self._bucket_learn_count[bk] = 0
-            self._floor_ticks[bk] = 0
-        for h in self._horizon_acc_buf:
-            self._horizon_acc_buf[h].clear()
+        """일간 리셋 — 모델 가중치 유지, 정확도 버퍼만 초기화."""
+        for h in HORIZONS:
+            self._acc_buf[h].clear()
+            self._label_buf[h].clear()
+            self._sgd_w[h] = SGD_WEIGHT_DEFAULT
+            self._gbm_w[h] = GBM_WEIGHT_DEFAULT
+            self._learn_count[h] = 0
+            self._floor_ticks[h] = 0
         self._sample_count = 0
         logger.info("[OnlineLearner] 일간 리셋 (모델 가중치 유지)")
 
     def reset_full(self):
-        """SGD 모델·스케일러·가중치 완전 초기화.
-
-        임계값 변경으로 레이블 체계가 교체될 때 호출한다.
-        partial_fit 이력이 구 레이블 기준으로 누적된 상태에서
-        새 레이블을 계속 주입하면 모순된 학습이 발생하므로 완전 리셋이 필요.
-        """
+        """완전 초기화 — 임계값 교체 후 레이블 체계 불일치 해소."""
         for h in HORIZONS:
             self.models[h] = SGDClassifier(
                 loss="log",
@@ -346,16 +362,12 @@ class OnlineLearner:
             )
             self.scalers[h] = StandardScaler()
             self._fitted[h] = False
-
-        for bk in ("short", "long"):
-            self._acc_buf[bk].clear()
-            self._sgd_w[bk] = SGD_WEIGHT_DEFAULT
-            self._gbm_w[bk] = GBM_WEIGHT_DEFAULT
-            self._bucket_learn_count[bk] = 0
-
-        for h in self._horizon_acc_buf:
-            self._horizon_acc_buf[h].clear()
-
+            self._acc_buf[h].clear()
+            self._label_buf[h].clear()
+            self._sgd_w[h] = SGD_WEIGHT_DEFAULT
+            self._gbm_w[h] = GBM_WEIGHT_DEFAULT
+            self._learn_count[h] = 0
+            self._floor_ticks[h] = 0
         self._sample_count = 0
         self._horizon_counts = {h: 0 for h in HORIZONS}
         logger.info("[OnlineLearner] 완전 초기화 — 모델·스케일러·가중치 전체 리셋")

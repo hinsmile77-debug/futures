@@ -8,14 +8,40 @@
 
 ---
 
+## 2026-06-17 (179차 — Phase C 슬라이싱 + SGD 최적화 + CORE 그룹 분리)
+
+### 다음 장 즉시 확인 [P0]
+
+- [ ] **ScalerRefresh B_INTRADAY** `horizons=['1m','3m','5m','10m','15m','30m']` — `_is_fitted` 제거 효과 유지 확인
+- [ ] **SGD 가중치 로그 형식** — `[OnlineLearner] 1m 가중치 조정 SGD=XX% GBM=XX%` (버킷→호라이즌별 변경 확인)
+- [ ] **ERR-FATAL 없음** — `X has N features` 에러 재발 없음
+- [ ] **STABLE_TREND 진입 개선** — 12시대 conf=48~52% 신호 발생 시 `[P1] Checklist min_conf 분리: 0.XX→0.48` 로그 확인
+- [ ] **편향패널티 비활성화** — TrendGate ON 구간에서 `[MetaGate] 편향패널티` 로그 없음 확인
+
+### 이월 미해결 이슈
+
+- [TODO P1] **S2 지연 원인** — TickUI 폭발(분봉 교체 직후 466건)+DB WAL 경합. 해결책: TickUI throttle 또는 DB WAL timeout 상향
+- [TODO P1] **feat=121 vs managed=97 불일치** — ScalerWarmup 로드 feat=121, 재학습 97개. registry 재정합 필요
+- [TODO P2] **quality_investor_fetch_count D_FORCE 반복** — 매 5분마다 consec=5 발동. 이진 피처 D_FORCE 차단 검토
+- [TODO P2] **ConstOut 해소 속도** — 재시작 후 1m~30m 순환 ConstOut 14분 지속. CONST_OUTPUT_MIN_BARS 5→3 검토
+
+### 예정 작업
+
+- [ ] **opt 4주 수집 후 Phase D 재검증**: opt_chain_pcr/gex_bn/atm_* 누적 확인
+  - 조건: `SELECT COUNT(*) FROM raw_features WHERE features LIKE '%opt_chain_pcr%' AND CAST(json_extract(features,'$.opt_chain_pcr') AS REAL) != 0` > 3000행
+- [ ] **feat=118 vs managed=97 불일치** 해소: shap_feature_registry.json active_features 갱신 (opt_chain 포함)
+- [ ] **SHAP 탭 호라이즌별 확장** — Phase C 호라이즌별 SHAP 계산 (현재 1m 기준만)
+
+---
+
 ## 2026-06-15 (178차 — 호라이즌별 피처셋 인프라 + opt_chain 버그 수정)
 
 ### 다음 장 즉시 확인 [P0]
 
-- [ ] `[OptionChain] 갱신` 로그 확인 — PCR/GEX 값 비영(0) 여부 (avail=True 필수)
-- [ ] `raw_features` DB 조회: `opt_chain_pcr`, `opt_gex_bn` 키 존재 여부
-- [ ] `[Macro] 갱신 | VIX=XX.XX` 로그 — `fallback_used=0.0`, `source_code=4.0` 확인
-- [ ] 수급 데이터 `[InvestorData]` 60초마다 갱신 로그 확인
+- [DONE 2026-06-16] `[OptionChain] 갱신` 로그 확인 — PCR/GEX 비영, avail=True ✅
+- [ ] `raw_features` DB 조회: `opt_chain_pcr`, `opt_gex_bn` 키 존재 여부 (미확인)
+- [DONE 2026-06-16] `[Macro] 갱신 | VIX=17.7` ✅
+- [DONE 2026-06-16] `[InvestorData]` 60초마다 갱신 ✅
 
 ### 예정 작업 (opt 4주 수집 후)
 

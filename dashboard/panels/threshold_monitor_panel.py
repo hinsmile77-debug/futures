@@ -101,11 +101,13 @@ class ThresholdMonitorPanel(QWidget):
         self._lbl_k = self._small_card("k값", "0.41", _COL["cyan"])
         self._lbl_target = self._small_card("FLAT 목표", "34%", _COL["muted"])
         self._lbl_last = self._small_card("마지막 실행", "—", _COL["muted"])
+        self._lbl_next = self._small_card("다음 갱신", "—", _COL["muted"])
         self._lbl_alert_global = self._alert_badge("CLEAR")
 
         hdr.addWidget(self._lbl_k)
         hdr.addWidget(self._lbl_target)
         hdr.addWidget(self._lbl_last)
+        hdr.addWidget(self._lbl_next)
         hdr.addStretch()
         hdr.addWidget(self._lbl_alert_global)
         root.addLayout(hdr)
@@ -214,8 +216,27 @@ class ThresholdMonitorPanel(QWidget):
         return {"frame": frame, "flat": lbl_flat, "drift": lbl_drift, "alert": lbl_alert}
 
     # ── 갱신 ─────────────────────────────────────────────────────────
+    def _update_next_refresh(self):
+        """다음 갱신(금요일 15:40)까지 남은 일수를 헤더 카드에 반영."""
+        today = datetime.date.today()
+        dow = today.weekday()   # 0=월 … 4=금 … 6=일
+        if dow == 4:
+            label = "오늘 15:40"
+            color = _COL["green"]
+        else:
+            days = (4 - dow) % 7
+            next_fri = today + datetime.timedelta(days=days)
+            label = f"{next_fri.strftime('%m/%d')} ({days}일 후)"
+            color = _COL["yellow"] if days <= 2 else _COL["muted"]
+        self._lbl_next.setText(
+            f"<b style='color:{_COL['muted']};font-size:10px;'>다음 갱신</b>"
+            f"<br><span style='color:{color};font-size:12px;'>{label}</span>"
+        )
+
     def refresh(self):
         """DB에서 최신 데이터 로드 후 UI 갱신."""
+        self._update_next_refresh()
+
         rows = _load_recent(n_rows=6 * 4 * 4)   # 6호라이즌 × 4주 × 4주기
 
         if not rows:

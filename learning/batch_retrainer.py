@@ -446,6 +446,8 @@ class BatchRetrainer:
                 force=force,
                 intraday=intraday,
                 full_cv=full_cv,
+                X_full=X if X_h is not X else None,
+                h_idx=h_idx if X_h is not X else None,
             )
             results[horizon_key] = result
 
@@ -499,6 +501,8 @@ class BatchRetrainer:
         force:       bool = False,
         intraday:    bool = False,
         full_cv:     bool = False,
+        X_full:      "Optional[np.ndarray]" = None,
+        h_idx:       "Optional[List[int]]"  = None,
     ) -> Dict:
         """
         단일 호라이즌 학습 + 교차검증
@@ -535,9 +539,15 @@ class BatchRetrainer:
                 if len(np.unique(y_tr)) < 2:
                     continue
 
+                # 스케일러는 항상 전체 97개 피처 기준 (predict_proba 경로와 일치)
+                X_tr_full = X_full[train_idx][-len(X_tr):] if X_full is not None else X_tr
+                X_val_full = X_full[val_idx] if X_full is not None else X_val
                 scaler = StandardScaler()
-                X_tr_s = scaler.fit_transform(X_tr)
-                X_val_s = scaler.transform(X_val)
+                X_tr_full_s = scaler.fit_transform(X_tr_full)
+                X_val_full_s = scaler.transform(X_val_full)
+                # GBM은 스케일된 전체 피처에서 호라이즌 전용 열만 추출
+                X_tr_s = X_tr_full_s[:, h_idx] if h_idx is not None else X_tr_full_s
+                X_val_s = X_val_full_s[:, h_idx] if h_idx is not None else X_val_full_s
 
                 model = _make_model()
                 model.fit(X_tr_s, y_tr, sample_weight=_make_sample_weight(y_tr, horizon_key))
@@ -550,8 +560,11 @@ class BatchRetrainer:
         cv_acc = float(np.mean(cv_accs)) if cv_accs else None
 
         # 전체 데이터로 최종 학습 (장중 모드: CV 없이 여기만 실행)
+        # 스케일러는 97개 전체 피처 기준 — predict_proba의 scaler.transform(97개) 경로와 일치
         final_scaler = StandardScaler()
-        X_scaled = final_scaler.fit_transform(X)
+        X_for_scaler = X_full if X_full is not None else X
+        X_for_scaler_scaled = final_scaler.fit_transform(X_for_scaler)
+        X_scaled = X_for_scaler_scaled[:, h_idx] if h_idx is not None else X_for_scaler_scaled
         final_model = _make_model()
         final_model.fit(X_scaled, y, sample_weight=_make_sample_weight(y, horizon_key))
         _model_type = "HistGBM" if _HIST_GBM_OK else "GBM"

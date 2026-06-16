@@ -41,12 +41,27 @@ KOSPI 200 선물 1분봉 기반 방향 예측 + 자동매매 시스템 (별칭: 
 - ④ 변동성 ATR 3배 초과 → 5분 정지
 - ⑤ API 지연 5초 초과 → 즉시 청산
 
-### 3. CORE 피처 3개 — 절대 교체 불가
-| 피처 | 파일 | 이유 |
-|---|---|---|
-| CVD 다이버전스 | `features/technical/cvd.py` | 단기 최강 방향 신호 |
-| VWAP 위치 | `features/technical/vwap.py` | 기관 알고리즘 기준선 |
-| OFI 불균형 | `features/technical/ofi.py` | 1~3분 방향 선행 |
+### 3. CORE 피처 — 호라이즌 그룹별 분리 (절대 교체 불가)
+
+피처 유효 구간이 호라이즌마다 달라 단일 CORE를 전 호라이즌에 강제하면
+10m~30m에서 ofi_norm(틱 잡음)·cvd_divergence(희석) 등이 역효과.
+호라이즌 그룹별로 의미 있는 CORE를 분리 정의한다.
+
+| 그룹 | 호라이즌 | CORE 피처 | 파일 | 체크리스트 규칙 |
+|---|---|---|---|---|
+| **단기** | 1m·3m·5m | CVD 다이버전스 | `features/technical/cvd.py` | 미통과 → 등급 하락 |
+| **단기** | 1m·3m·5m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
+| **단기** | 1m·3m·5m | OFI 불균형 | `features/technical/ofi.py` | 미통과 → 등급 하락 |
+| **중기** | 10m·15m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
+| **중기** | 10m·15m | macro_vix 방향 | `collection/macro/macro_fetcher.py` | 미통과 → 등급 하락 |
+| **장기** | 30m | opt_chain_pcr | `collection/option/option_chain.py` | 미통과 → 등급 하락 |
+| **장기** | 30m | macro_vix 방향 | `collection/macro/macro_fetcher.py` | 미통과 → 등급 하락 |
+
+```
+설정: config/settings.py  HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP
+모델: model/multi_horizon_model.py  _CORE_MASK_EXEMPT_BY_HZ (AutoMask 면제)
+진입: strategy/entry/checklist.py  entry_horizon 인자로 그룹 결정
+```
 
 ### 4. COM 콜백 내 dynamicCall·emit 금지
 ```python

@@ -4,6 +4,72 @@
 
 ---
 
+## 2026-06-16 (179차 — Phase C 슬라이싱 버그 수정 + SGD 최적화 + CORE 그룹 분리 + UI 개선)
+
+**Work**: 178차 호라이즌 피처셋 인프라 적용 후 발생한 ERR-FATAL 다수 수정 → SGD P0·P1·P2 최적화 → CORE 호라이즌 그룹별 분리 → 동적피처 패널 Phase A·B·C 구현 → 점심 추세 진입 최적화.
+
+### [A] Phase C 슬라이싱 버그 수정 (ERR-FATAL 연쇄 해소)
+
+| 버그 | 파일 | 원인 | 수정 |
+|---|---|---|---|
+| `X has 12 features, but StandardScaler expecting 97` | `multi_horizon_model.py` `predict_proba` | 슬라이싱→스케일러 순서 오류 | 스케일러(97개)→슬라이싱(12개)으로 교정 |
+| `X has 97 features, but HistGBM expecting 12` | `multi_horizon_model.py` `_predict_masked` | 동일 누락 | 동일 교정 |
+| 스케일러 피처 수 불일치 방어 | `multi_horizon_model.py` `predict_proba` 진입부 | 재학습 전환기 구 스케일러 잔존 | 불일치 감지 → None 처리(5분 스로틀 경고) |
+| `_train_horizon` 스케일러 12개 저장 | `batch_retrainer.py` | `X_h`(슬라이싱)로 스케일러 적합 | `X_full`(97개)로 스케일러, GBM은 슬라이싱값 사용 |
+| `refit_scalers_only` `horizons=[]` 지속 | `multi_horizon_model.py` | `_is_fitted=False` 시 전 호라이즌 skip | `_is_fitted` 조건 제거 (스케일러는 독립 재적합 가능) |
+| scaler pkl 12개짜리 잔존 | model/scaler/ | 이전 재학습에서 저장 | 6개 파일 삭제 → 재시작 시 97개 재생성 |
+
+결과: 12:03:02 C_PERIODIC `horizons=['1m',...] elapsed=0.20s` — 스케일러 정상 갱신 확인.
+
+### [B] SGD P0·P1·P2 최적화
+
+| 개선 | 파일 | 내용 |
+|---|---|---|
+| P0: 피처 슬라이싱 | `main.py` | `learn()`·`predict_proba()` 호라이즌별 `_hz_feat_indices` 슬라이싱. 1m SGD가 macro_vix(EX) 등 잡음 피처 학습 차단 |
+| P1-B: 호라이즌별 독립 가중치 | `online_learner.py` | short/long 2버킷 → 6개 호라이즌 완전 독립. 임계값 차등(1m BOOST=58% / 30m BOOST=65%) |
+| P1-C: sample_weight FLAT 억제 | `online_learner.py` | FLAT 비율>50% 시 FLAT 0.5배 / UP·DN 1.5배 |
+| P2-D: 고신뢰도 학습 필터 | `main.py` | conf<0.52 예측 결과 학습 제외 |
+| P2-E: 초기 GBM FLAT 편향 대항 | `online_learner.py` | flat_score>0.60 감지 시 학습건<50이라도 SGD 20% 즉시 투입 |
+
+### [C] CORE 호라이즌 그룹별 분리
+
+단기(1m~5m): CVD·VWAP★·OFI / 중기(10m~15m): VWAP★·macro_vix / 장기(30m): opt_chain_pcr·macro_vix
+
+| 수정 | 파일 |
+|---|---|
+| `HORIZON_CORE_GROUP`, `CORE_FEATURES_BY_GROUP`, `CORE_MASK_EXEMPT_BY_GROUP` 상수 | `config/settings.py` |
+| `_CORE_MASK_EXEMPT` 전체 union 확장 + `_CORE_MASK_EXEMPT_BY_HZ` 호라이즌별 맵 | `model/multi_horizon_model.py` |
+| `entry_horizon`, `macro_vix`, `opt_chain_pcr` 인자 추가. 그룹별 4번(CVD→대체)·5번(OFI→중기 면제) 분화. VWAP 강제X 장기 해제 | `strategy/entry/checklist.py` |
+| 체크리스트 두 호출에 `entry_horizon`·`macro_vix`·`opt_chain_pcr` 전달 + VIX·PCR 캐싱 | `main.py` |
+| CORE 설명 텍스트 호라이즌 그룹별로 교체 | `dashboard/main_dashboard.py` |
+| CORE 정의 섹션 재작성 | `CLAUDE.md` |
+
+### [D] 동적피처 패널 Phase A·B·C 구현
+
+`FeaturePanel` 전체 재작성:
+- **Phase A**: 헤더(진입 호라이즌 배지 + 그룹별 통과수 요약) + 단기/중기/장기 CORE GroupBox(색상 분리)
+- **Phase B**: SHAP 바 + 상태(핵심/안정/약화) + `★강제X` 마크 + VIX·PCR 실측값 인라인
+- **Phase C**: CORE × 호라이즌 5×6 신호 매트릭스 (●포함 ○pending ✕제거 —미해당), 진입 호라이즌 열 강조
+
+### [E] 점심 추세 진입 최적화
+
+12:32~12:45 추세 상승 14분 진입 미발생 원인 분석 → 3종 최적화:
+- ① STABLE_TREND/LUNCH_RECOVERY 시간대 Checklist min_conf 48%로 완화 (기존 62%)
+- ② TrendGate ON 시 MetaGate 편향패널티 비활성화 (추세를 편향으로 오인 차단)
+- ③ STABLE_TREND/LUNCH_RECOVERY 시간대 reduce_thr -0.04p 완화 (0.427→0.387)
+역산: 12:45 blended=0.482>0.387 + conf=49%≥48% → 진입 후보 ✅
+
+### 기타 수정·개선
+- `scaler_monitor_panel`: `_needs_insert` 매분 저장 → 스케일러탭 정상 표시
+- `threshold_monitor_panel`: "다음 갱신" 카드 추가 (금요일 기준)
+- `main.py` `_gather_learning_stats()`: `ol.BUCKET_SHORT` → `ol.horizon_accuracy(hz)`
+- `main_dashboard.py` `_build_matrix()`: `C['muted']` → `C['text2']`
+
+### 실거래 (모의투자)
+- 11:43 LONG 1계약 @ 1390.58 → TP3 청산 @ 1392.08 **+1.5pt / +72,914원** ✅
+
+---
+
 ## 2026-06-15 (178차 — 호라이즌별 피처셋 인프라 + opt_chain 버그 3종 수정)
 
 **Work**: 기획안(호라이즌별 최적피처셋 v1.0) 검토 → Phase A~D 구현 + opt_chain 수집 버그 발견/수정.

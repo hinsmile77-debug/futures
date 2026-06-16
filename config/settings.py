@@ -331,6 +331,67 @@ DFORCE_EXCLUDE_FEATURES: set = {
     "cvd",                 # cvd_direction 파생 — 동일 이유
 }
 
+# ── 호라이즌 그룹별 CORE 피처 정의 ────────────────────────────────────────────
+# 배경: 피처 유효 구간이 호라이즌마다 달라 "전 호라이즌 공통 CORE" 강제는
+#        10m~30m에서 ofi_norm(틱 잡음)·cvd_divergence(희석) 등을 역효과로 강제 유지하게 됨.
+#        호라이즌 그룹별로 의미 있는 CORE를 분리 정의.
+#
+# 단기 (1m~5m) : 마이크로구조 + VWAP — 기존 CORE 그대로
+# 중기 (10m~15m): VWAP + 매크로 레짐 — 수급·옵션이 지배
+# 장기 (30m)    : 딜러 감마·옵션 체인 + 매크로 — 구조적 힘
+
+HORIZON_CORE_GROUP: dict = {
+    "1m": "short", "3m": "short", "5m": "short",
+    "10m": "mid",  "15m": "mid",
+    "30m": "long",
+}
+
+# 그룹별 CORE 피처명 (checklist 체크 기준 피처 키)
+CORE_FEATURES_BY_GROUP: dict = {
+    "short": {
+        # 단기: 마이크로구조 주도 — 모두 1~5분 내 선행 신호
+        "cvd":  "cvd_direction",    # CVD 방향 (이산 -1/0/+1)
+        "vwap": "vwap_position",    # VWAP 대비 위치 (연속, 기관 기준선)
+        "ofi":  "ofi_pressure",     # OFI 압력 (이산 +1/-1/0)
+        "vwap_forced_x": True,      # VWAP ✗ → 강제 X등급
+    },
+    "mid": {
+        # 중기: VWAP 구조 + 매크로 레짐
+        "cvd":  None,               # CVD 10m~15m 유의성 없음 — 체크 면제
+        "vwap": "vwap_position",    # VWAP 여전히 유효 (기관 기준선)
+        "ofi":  None,               # OFI 10m+ 희석 — 체크 면제
+        "macro": "macro_vix",       # VIX 레벨 — 중기 방향 레짐 신호
+        "vwap_forced_x": True,      # VWAP ✗ → 강제 X등급 (유지)
+    },
+    "long": {
+        # 장기: 딜러 감마(GEX) + 옵션 체인 + 매크로
+        "cvd":  None,               # CVD 30m 완전 무효
+        "vwap": "above_vwap",       # VWAP 이진 플래그 (연속값 대신)
+        "ofi":  None,               # OFI 틱 잡음
+        "opt":  "opt_chain_pcr",    # PCR — 방향 구조 신호 (가용 시)
+        "macro": "macro_vix",       # VIX — 장기 레짐 핵심
+        "vwap_forced_x": False,     # 장기에서는 VWAP 강제 X 해제
+    },
+}
+
+# 그룹별 AutoMask·ScalerProtect에서 면제할 CORE 파생 피처 집합
+CORE_MASK_EXEMPT_BY_GROUP: dict = {
+    "short": frozenset({
+        "cvd_direction", "cvd", "cvd_divergence",
+        "vwap_position", "vwap_ratio", "vwap_dev",
+        "ofi_norm", "ofi_pressure",
+    }),
+    "mid": frozenset({
+        "vwap_position", "vwap_ratio", "vwap_dev",
+        "macro_vix",
+    }),
+    "long": frozenset({
+        "above_vwap",
+        "opt_chain_pcr", "opt_gex_bn",
+        "macro_vix",
+    }),
+}
+
 # GBM / SGD 블렌딩 비율
 GBM_WEIGHT_DEFAULT = 0.70
 SGD_WEIGHT_DEFAULT = 0.30

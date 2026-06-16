@@ -2,6 +2,55 @@
 
 ---
 
+## 2026-06-16 (179차 — Phase C 슬라이싱 버그 + SGD + CORE + UI)
+
+### [버그] Phase C 슬라이싱 순서 오류 — 스케일러·GBM 차원 불일치 3종
+
+**Root cause**: 178차 호라이즌별 슬라이싱 구현 시 `predict_proba`에서 슬라이싱(12개)→스케일러(97개 기대) 순서 오류. 재학습 시 `_train_horizon`에 슬라이싱된 X를 넘겨 스케일러도 12개로 저장됨.
+
+**연쇄**: ERR-FATAL(`X has 12 features, StandardScaler expecting 97`) → EKS 발동 → 진입 0 → ConstOut 연쇄.
+
+**Fix 3종**:
+1. `predict_proba`: 스케일러(97개)→슬라이싱(12개) 순서 교정
+2. `_predict_masked`: 동일
+3. `batch_retrainer._train_horizon`: `X_full`(97개)로 스케일러, GBM은 스케일된 값에서 슬라이싱
+
+**부가 Fix**:
+- `predict_proba` 진입부 스케일러 피처 수 불일치 방어 코드 (SC_MISMATCH 경고 + None)
+- `refit_scalers_only` `_is_fitted` 조건 제거 → 재시작 후 B_INTRADAY 빠른 발동 시 `horizons=[]` 해소
+
+### [설계결정] CORE 호라이즌 그룹별 분리
+
+**배경**: 178차 호라이즌별 피처셋 도입 후 OFI(10m+ exclude)·CVD(30m 없음) 등이 해당 호라이즌에서 CORE 체크를 받아 구조적 오판단 발생.
+
+**결정**: CORE를 호라이즌 그룹별로 분리:
+- 단기(1m~5m): CVD·VWAP★·OFI (기존 유지)
+- 중기(10m~15m): VWAP★·macro_vix (OFI 10m+ 잡음, CVD 희석)
+- 장기(30m): opt_chain_pcr·macro_vix (GEX·PCR 구조적 신호)
+
+**파일**: `config/settings.py`, `checklist.py`, `multi_horizon_model.py`, `main.py`, `CLAUDE.md`
+
+### [설계결정] SGD P1-B: 버킷→호라이즌별 독립 가중치
+
+**배경**: short(1m·3m·5m) 묶음 가중치에서 1m 저정확도가 3m·5m 가중치까지 오염.
+
+**결정**: 6개 호라이즌 완전 독립 가중치 + 임계값 차등(1m BOOST=58% vs 30m BOOST=65%). 기존 `BUCKET_SHORT`/`BUCKET_LONG` 클래스 상수 제거 → `_bucket()` 메서드는 하위 호환용으로 유지.
+
+### [설계결정] 점심 추세 진입 최적화 — 3종 완화
+
+**배경**: 12:32~12:45 추세 상승 14분 동안 ConstOut 순환+편향패널티 누적+Checklist 62% 기준으로 전면 차단.
+
+**결정**:
+1. STABLE_TREND/LUNCH_RECOVERY 시간대 Checklist min_conf 상한 48% (기존 62%)
+2. TrendGate ON 시 MetaGate 편향패널티 비활성화 (추세를 편향으로 오인 방지)
+3. STABLE_TREND/LUNCH_RECOVERY 시간대 reduce_thr -0.04p (0.427→0.387)
+
+**근거**: ConstOut 순환으로 conf=45~49% 억제 상태에서 62% 기준은 전면 차단. 48%=랜덤(33%)+15%p 최소 신뢰도 보장선. 역산: 12:45 blended=0.482>0.387 + conf=49%≥48% → 진입 후보.
+
+**위험**: C등급 자동 진입은 별도 UI 토글로 제어 — 안전 장치 유지.
+
+---
+
 ## 2026-06-15 (178차 — 호라이즌별 피처셋 인프라 + opt_chain 버그 3종)
 
 ### [버그] opt_chain_pcr / opt_gex_bn / opt_atm_* DB 미저장 (3중 버그)

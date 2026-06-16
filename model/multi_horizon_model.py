@@ -138,14 +138,32 @@ class MultiHorizonModel:
     MASKED_FALLBACK_MIN_STREAK = 5    # 동일 피처 연속 N분 극단 → 격리 대상
     MASKED_FALLBACK_CONF_GAIN  = 0.05 # 격리 후 conf 이 이상 오르면 채택
 
-    # CORE 피처 AutoMask 면제 목록
-    # 이 피처들의 극단 z-score는 "데이터 오류"가 아니라 "강한 방향 신호"
-    # (예: 하루종일 강세/약세 추세 → cvd_direction=-1 연속 → z=-5 → 정상 신호)
-    # 이 피처를 0.0으로 치환하면 GBM이 "중립" 으로 읽어 FLAT 100% 고착
+    # CORE 피처 AutoMask 면제 목록 — 호라이즌 그룹별 분리
+    # 극단 z-score는 "데이터 오류"가 아니라 "강한 방향 신호"이므로 마스킹 금지
+    # (예: 하루종일 강세 → cvd_direction=+1 연속 → z=+5 → 정상 추세 신호)
+    # settings.CORE_MASK_EXEMPT_BY_GROUP 을 런타임에 참조하여 호라이즌별 적용
+    # backward compat: 임포트 실패 시 단기 CORE(구 전체 CORE) 고정 사용
+    try:
+        from config.settings import CORE_MASK_EXEMPT_BY_GROUP as _CEMG, HORIZON_CORE_GROUP as _HCG
+        _CORE_MASK_EXEMPT_BY_HZ: dict = {
+            hz: _CEMG[grp] for hz, grp in _HCG.items()
+        }
+    except Exception:
+        _CEMG = {}
+        _HCG = {}
+        _CORE_MASK_EXEMPT_BY_HZ: dict = {}
+
+    # 전체 호라이즌 CORE 면제 union — predict_proba AutoMask·chronic 체크에 사용
+    # (어느 호라이즌에서라도 CORE인 피처는 전체에서 마스킹 금지)
     _CORE_MASK_EXEMPT: frozenset = frozenset({
-        "cvd_direction", "cvd",
+        # 단기 CORE (1m~5m)
+        "cvd_direction", "cvd", "cvd_divergence",
         "vwap_position", "vwap_ratio", "vwap_dev",
         "ofi_norm", "ofi_pressure",
+        # 중기 CORE (10m~15m) 추가
+        "macro_vix",
+        # 장기 CORE (30m) 추가
+        "above_vwap", "opt_chain_pcr", "opt_gex_bn",
     })
 
     # macro 피처 스케일러 σ 하한 — 학습기간 저변동 시 σ 극소화로 실전 z-score 폭발 방지
@@ -312,6 +330,23 @@ class MultiHorizonModel:
 
             scaler = self.scalers.get(horizon)
 
+            # 스케일러 피처 수 불일치 방어 — 재학습 전환기에 구 스케일러가 잔존하는 경우
+            # 97개 입력에 12개짜리 스케일러가 물려 ERR-FATAL 발생 방지. 다음 ScalerRefresh까지 스킵.
+            if scaler is not None and self.feature_names:
+                _sc_n = getattr(scaler, "n_features_in_", len(self.feature_names))
+                if _sc_n != len(self.feature_names):
+                    _throttle_key = ("SC_MISMATCH", horizon)
+                    _now_mm = datetime.datetime.now()
+                    _last_mm = self._scaler_warn_throttle.get(_throttle_key)
+                    if _last_mm is None or (_now_mm - _last_mm).total_seconds() > 300:
+                        logger.warning(
+                            "[Model] %s 스케일러 피처 수 불일치(scaler=%d vs model=%d)"
+                            " — ScalerRefresh까지 스케일러 스킵",
+                            horizon, _sc_n, len(self.feature_names),
+                        )
+                        self._scaler_warn_throttle[_throttle_key] = _now_mm
+                    scaler = None
+
             # 스케일러 노후화 경고: 마지막 fit 이후 SCALER_WARN_MINUTES 경과 시 WARN
             fitted_at = self._scaler_fitted_at.get(horizon)
             if fitted_at is not None:
@@ -332,15 +367,16 @@ class MultiHorizonModel:
                     _hx, self.feature_names,
                     price_gap_offsets=self._price_gap_offset or None,
                 ) if self.feature_names else _hx
-                # Phase C 슬라이싱: 호라이즌 전용 피처만 스케일러에 입력
-                _hx_proc_h = _hx_proc[:, _h_idx] if _h_idx is not None else _hx_proc
-                xs = scaler.transform(_hx_proc_h) if scaler else _hx_proc_h
+                # Phase C 슬라이싱: 스케일러(97개 전체)→변환 후 호라이즌 피처 슬라이싱→GBM 입력
+                # 스케일러는 97개 전체 피처로 적합되므로 슬라이싱을 먼저 하면 차원 불일치 에러
+                _hx_scaled = scaler.transform(_hx_proc) if scaler else _hx_proc
+                xs = _hx_scaled[:, _h_idx] if _h_idx is not None else _hx_scaled
                 # 모니터링은 항상 전체 피처(공유 스케일러 기준) 원본 사용
                 xs_mon = scaler.transform(x2d_proc) if scaler else x2d_proc
             else:
-                _x2d_proc_h = x2d_proc[:, _h_idx] if _h_idx is not None else x2d_proc
-                xs = scaler.transform(_x2d_proc_h) if scaler else _x2d_proc_h
-                xs_mon = scaler.transform(x2d_proc) if scaler else x2d_proc
+                _x2d_scaled = scaler.transform(x2d_proc) if scaler else x2d_proc
+                xs = _x2d_scaled[:, _h_idx] if _h_idx is not None else _x2d_scaled
+                xs_mon = _x2d_scaled
 
             # [⑥] opt_pcr_* 피처 감쇠 — D_FORCE opt_pcr 발동 후 30분간 0.3× 적용
             if (
@@ -378,10 +414,8 @@ class MultiHorizonModel:
                 )
 
             # 섹션 8: 호라이즌별 max_z / max_z_feature 수집 (원본 기준)
-            # 극단 z-score 발생 또는 스케일러 노후화 시만 기록 — 정상 구간에서 INSERT 빈도 제거
-            # [버그수정] continue → 조건부 append: continue는 for 루프 전체를 건너뛰므로
-            #   스케일러 정상화(extreme=0, age<90) 후 예측 자체가 스킵되어 horizon_proba={}
-            #   → flat_score=1.0 → conf=100% 이상점의 실제 근본 원인
+            # 매분 저장으로 실시간 패널 업데이트 보장.
+            # raw/pre/mean/std 는 extreme 발생 시에만 저장 (DB 크기 절약).
             if monitor_ts and scaler:
                 _z_abs = np.abs(xs_mon[0])
                 _max_z_idx  = int(np.argmax(_z_abs))
@@ -396,30 +430,29 @@ class MultiHorizonModel:
                     (datetime.datetime.now() - _fa).total_seconds() / 60.0
                     if _fa else None
                 )
-                _needs_insert = (
-                    extreme_count > 0
-                    or (_age is not None and _age > self.SCALER_WARN_MINUTES)
-                )
-                if _needs_insert:
+                if extreme_count > 0:
                     _raw_val  = float(x2d[0][_max_z_idx])
                     _pre_val  = float(x2d_proc[0][_max_z_idx])
                     _sc_mean  = float(scaler.mean_[_max_z_idx])
                     _sc_std   = float(scaler.scale_[_max_z_idx])
-                    _monitor_rows.append({
-                        "ts":            monitor_ts,
-                        "date":          monitor_ts[:10],
-                        "horizon":       horizon,
-                        "fitted_at":     _fa.strftime("%Y-%m-%d %H:%M:%S") if _fa else None,
-                        "age_minutes":   round(_age, 1) if _age is not None else None,
-                        "max_z":         round(_max_z_val, 4),
-                        "max_z_feature": _max_z_feat,
-                        "extreme_count": extreme_count,
-                        "raw_value":     round(_raw_val, 6),
-                        "pre_value":     round(_pre_val, 6),
-                        "scaler_mean":   round(_sc_mean, 6),
-                        "scaler_std":    round(_sc_std,  6),
-                    })
-                    # [ScalerMonitor] 구조화 로그 — 노후화 또는 극단 z 발생 시만 출력 (10분 스로틀)
+                else:
+                    _raw_val = _pre_val = _sc_mean = _sc_std = None
+                _monitor_rows.append({
+                    "ts":            monitor_ts,
+                    "date":          monitor_ts[:10],
+                    "horizon":       horizon,
+                    "fitted_at":     _fa.strftime("%Y-%m-%d %H:%M:%S") if _fa else None,
+                    "age_minutes":   round(_age, 1) if _age is not None else None,
+                    "max_z":         round(_max_z_val, 4),
+                    "max_z_feature": _max_z_feat,
+                    "extreme_count": extreme_count,
+                    "raw_value":     round(_raw_val, 6) if _raw_val is not None else None,
+                    "pre_value":     round(_pre_val, 6) if _pre_val is not None else None,
+                    "scaler_mean":   round(_sc_mean, 6) if _sc_mean is not None else None,
+                    "scaler_std":    round(_sc_std,  6) if _sc_std  is not None else None,
+                })
+                # [ScalerMonitor] 구조화 로그 — 극단 z 또는 노후화 시만 출력 (10분 스로틀)
+                if extreme_count > 0 or (_age is not None and _age > self.SCALER_WARN_MINUTES):
                     _sm_key = ("SM", horizon, _max_z_feat)
                     _now_sm = datetime.datetime.now()
                     _last_sm = self._scaler_warn_throttle.get(_sm_key)
@@ -555,7 +588,9 @@ class MultiHorizonModel:
                 results[horizon] = self._default_result()
                 continue
             scaler = self.scalers.get(horizon)
-            xs = scaler.transform(xm) if scaler else xm
+            _h_idx_m = self._hz_feat_indices.get(horizon)
+            _xs_full_m = scaler.transform(xm) if scaler else xm
+            xs = _xs_full_m[:, _h_idx_m] if _h_idx_m is not None else _xs_full_m
 
             classes   = list(clf.classes_)
             proba     = clf.predict_proba(xs)[0]
@@ -928,10 +963,9 @@ class MultiHorizonModel:
 
         refreshed = []
         for horizon in HORIZONS:
-            if not self._is_fitted.get(horizon):
-                continue
-            if horizon not in self.scalers:
-                continue
+            # 스케일러는 GBM 학습 완료(_is_fitted) 여부와 독립적으로 재적합 가능.
+            # 재시작 직후 B_INTRADAY startup_stale 등 빠른 트리거 시 _is_fitted=False 상태
+            # 에서도 스케일러를 97개로 갱신해야 ERR-FATAL 방지됨.
             try:
                 _new_sc = StandardScaler().fit(X_proc)
 
@@ -946,7 +980,11 @@ class MultiHorizonModel:
                     and hasattr(_new_sc, "scale_")
                     and self.feature_names
                 ):
-                    for _feat in self._CORE_MASK_EXEMPT:
+                    # 호라이즌별 CORE 면제셋 사용 — 해당 호라이즌 CORE만 보호
+                    _hz_core_exempt = self._CORE_MASK_EXEMPT_BY_HZ.get(
+                        horizon, self._CORE_MASK_EXEMPT
+                    )
+                    for _feat in _hz_core_exempt:
                         if _feat not in self.feature_names:
                             continue
                         _fi = self.feature_names.index(_feat)
