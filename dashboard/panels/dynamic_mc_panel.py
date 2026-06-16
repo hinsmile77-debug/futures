@@ -8,6 +8,7 @@ Dynamic min_conf monitor panel.
 - 하단2: mc 변경 이력
 """
 import datetime
+import json
 import logging
 import os
 import re
@@ -102,14 +103,19 @@ _ENTRY_STAGE_TOOLTIP = (
     "4. regime불일치: regime_ok=0\n"
     "5. Meta skip: meta_action='skip'\n"
     "6. Toxic block/reduce: toxicity_action='block' 또는 'reduce'\n"
-    "7. Auto 불가: auto_entry=0\n"
-    "8. 진입완료/후보: 실제 체결 확인 시 완료, 아니면 후보\n"
+    "7. Auto 불가: 체크리스트 auto_entry=0\n"
+    "8. STEP7 차단: 체크리스트는 통과했지만 CB·Hurst·ATR·쿨다운·재시작유예·\n"
+    "   포지션무결성·역방향클램프·IntradayRegime·모드필터 등 STEP7 마스터\n"
+    "   게이트 중 하나라도 실패 — '차단사유' 칸에 구체 원인 표시, 단계 칸\n"
+    "   호버 시 16개 조건 ✓/✗ 전체 표시\n"
+    "9. 진입후보(최종): STEP7 마스터 게이트 전체 통과 — 자동진입 대기/실행 중\n"
+    "10. 진입완료: 실제 체결(trades.db/TRADE.log) 확인됨\n"
     "\n"
     "색상 규칙\n"
     "Δ: +초록 / -빨강\n"
     "grade: A,B 초록 / C 노랑 / X 빨강\n"
     "dir: F 회색\n"
-    "진입단계: 1 빨강 / 2 주황 / 3,4 노랑 / 5,6 보라 / 7 파랑 / 8 초록"
+    "진입단계: 1,8 빨강 / 2 주황 / 3,4 노랑 / 5,6 보라 / 7 파랑 / 9,10 초록"
 )
 
 
@@ -211,15 +217,17 @@ class DynamicMcPanel(QWidget):
         sumrow.addWidget(self._lbl_today_pass)
         lay.addLayout(sumrow)
 
-        self._bar_table = QTableWidget(0, 9)
+        self._bar_table = QTableWidget(0, 10)
         self._bar_table.setHorizontalHeaderLabels(
-            ["시각", "conf(ema)", "mc", "Δ", "dir", "grade", "gate", "meta/tox", "진입단계"]
+            ["시각", "conf(ema)", "mc", "Δ", "dir", "grade", "gate", "meta/tox",
+             "차단사유", "진입단계"]
         )
         hdr = self._bar_table.horizontalHeader()
         for idx in (0, 1, 2, 3, 4, 5, 6):
             hdr.setSectionResizeMode(idx, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(7, QHeaderView.Stretch)
         hdr.setSectionResizeMode(8, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(9, QHeaderView.Stretch)
         self._bar_table.setMinimumHeight(260)
         self._bar_table.setMaximumHeight(380)
         self._bar_table.setAlternatingRowColors(False)
@@ -361,7 +369,9 @@ class DynamicMcPanel(QWidget):
             rows = conn.execute(
                 "SELECT ts, direction, confidence, grade, auto_entry, regime_ok, "
                 "       min_conf, gate_reason, gate_blocked, meta_action, meta_confidence, "
-                "       toxicity_action, toxicity_score "
+                "       meta_reason, toxicity_action, toxicity_score, toxicity_reason, "
+                "       entry_gate_json, entry_final_ok, entry_qty, entry_mode, "
+                "       entry_executed, entry_block_reason "
                 "FROM ensemble_decisions "
                 "WHERE substr(ts,1,10)=? ORDER BY ts",
                 (today,),
@@ -445,7 +455,8 @@ class DynamicMcPanel(QWidget):
                 r["toxicity_score"],
             )
             completed_entry = self._lookup_completed_entry(completed_entries, str(r["ts"]))
-            stage = self._resolve_stage(r, conf, mc, completed_entry)
+            stage, stage_reason = self._resolve_stage(r, conf, mc, completed_entry)
+            block_reason = self._resolve_block_reason(r, stage, stage_reason)
 
             conf_bg, conf_fg = self._conf_colors(conf, mc)
             items = [
@@ -457,11 +468,17 @@ class DynamicMcPanel(QWidget):
                 self._make_item(grade, fg=self._grade_color(grade), bold=True),
                 self._make_item(gate, fg=self._gate_color(gate), bold=True),
                 self._make_item(meta_tox, fg=self._meta_color(meta_tox)),
+                self._make_item(block_reason, fg=self._stage_color(stage)),
                 self._make_item(stage, fg=self._stage_color(stage), bold=True),
             ]
+            _gate_tip = self._entry_gate_tooltip(
+                r["entry_gate_json"] if "entry_gate_json" in r.keys() else ""
+            )
             for j, item in enumerate(items):
-                if j == 8 and completed_entry:
+                if j == 9 and completed_entry:
                     item.setToolTip(self._entry_complete_tooltip(completed_entry))
+                elif j in (8, 9) and _gate_tip:
+                    item.setToolTip(_gate_tip)
                 self._bar_table.setItem(i, j, item)
 
     def _refresh_history(self):
@@ -716,7 +733,9 @@ class DynamicMcPanel(QWidget):
         tox_score = float(toxicity_score or 0.0)
         return "%s %.2f / %s %.2f" % (meta, meta_conf, tox, tox_score)
 
-    def _resolve_stage(self, row, conf: float, mc: float, completed_entry=None) -> str:
+    def _resolve_stage(self, row, conf: float, mc: float, completed_entry=None):
+        """진입단계 판정. (stage_label, detail) 튜플 반환 — detail은 8단계(STEP7 차단)일 때
+        main.py가 산출한 구체 차단사유, 그 외 단계는 _resolve_block_reason()이 별도 생성."""
         direction = int(row["direction"] or 0)
         grade = str(row["grade"] or "")
         gate_reason = str(row["gate_reason"] or "")
@@ -725,28 +744,103 @@ class DynamicMcPanel(QWidget):
         meta_action = str(row["meta_action"] or "")
         toxicity_action = str(row["toxicity_action"] or "")
         auto_entry = int(row["auto_entry"] or 0)
+        _keys = row.keys()
+        _raw_final_ok = row["entry_final_ok"] if "entry_final_ok" in _keys else None
+        entry_final_ok = None if _raw_final_ok is None else int(_raw_final_ok)
+        entry_block_reason = (
+            str(row["entry_block_reason"] or "") if "entry_block_reason" in _keys else ""
+        )
 
         if completed_entry:
-            return "8. 진입완료"
+            return "10. 진입완료 ✓", ""
         if conf == 0.0 and direction == 0 and grade == "X":
-            return "0. cold-start 대기"
+            return "0. cold-start 대기", ""
         if conf < mc:
-            return "1. conf미달"
+            return "1. conf미달", ""
         if direction == 0 or grade == "X":
-            return "2. FLAT(X)"
+            return "2. FLAT(X)", ""
         if gate_blocked or gate_reason == "blocked_by_microstructure":
-            return "3. gate차단"
+            return "3. gate차단", ""
         if regime_ok == 0:
-            return "4. regime불일치"
+            return "4. regime불일치", ""
         if meta_action == "skip":
-            return "5. Meta skip"
+            return "5. Meta skip", ""
         if toxicity_action == "block":
-            return "6. Toxic block"
+            return "6. Toxic block", ""
         if toxicity_action == "reduce":
-            return "6. Toxic reduce"
+            return "6. Toxic reduce", ""
         if auto_entry == 0:
-            return "7. Auto 불가"
-        return "8. 진입후보"
+            return "7. Auto 불가", ""
+        # STEP7 마스터 게이트(CB·Hurst·ATR·쿨다운·재시작유예 등) — main.py에서 산출된 값
+        if entry_final_ok == 0:
+            return "8. STEP7 차단", entry_block_reason
+        return "9. 진입후보(최종) ▶", ""
+
+    def _resolve_block_reason(self, row, stage: str, stage_detail: str) -> str:
+        """단계별 차단사유를 트레이더가 한눈에 읽을 수 있는 한 줄 텍스트로 변환."""
+        if stage.startswith("0."):
+            return "초기화(cold-start) 대기 중"
+        if stage.startswith("1."):
+            return "신뢰도 미달 (conf < mc)"
+        if stage.startswith("2."):
+            return "방향 없음(FLAT) 또는 앙상블 등급 X"
+        if stage.startswith("3."):
+            gr = str(row["gate_reason"] or "")
+            return f"마이크로구조 게이트 차단 ({gr})" if gr else "마이크로구조 게이트 차단"
+        if stage.startswith("4."):
+            return "레짐 불일치 (regime_ok=0)"
+        if stage.startswith("5."):
+            mr = str(row["meta_reason"] or "") if "meta_reason" in row.keys() else ""
+            return f"MetaGate skip ({mr})" if mr else "MetaGate skip"
+        if stage.startswith("6."):
+            tr = str(row["toxicity_reason"] or "") if "toxicity_reason" in row.keys() else ""
+            tox_act = str(row["toxicity_action"] or "")
+            return f"ToxicityGate {tox_act} ({tr})" if tr else f"ToxicityGate {tox_act}"
+        if stage.startswith("7."):
+            return "체크리스트 자동진입 조건 미달 (auto_entry=0)"
+        if stage.startswith("8."):
+            return stage_detail or "STEP7 마스터 게이트 차단 (상세 미수집)"
+        if stage.startswith("9."):
+            return "모든 조건 통과 — 진입 대기/실행 중"
+        if stage.startswith("10."):
+            return "체결 완료"
+        return "-"
+
+    _GATE_CHECK_LABELS = {
+        "cb_normal":        "Circuit Breaker 정상",
+        "hc_ok":            "고신뢰 연속오답 차단 없음",
+        "new_entry_time":   "신규진입 시간대 (15:00 이전)",
+        "broker_sync_ok":   "브로커 sync 검증됨",
+        "cooldown_ok":      "ENTRY 타임아웃 쿨다운 해제",
+        "exit_cooldown_ok": "청산 후 쿨다운 해제",
+        "armistice_ok":     "재시작 유예(Armistice) 해제",
+        "integrity_ok":     "포지션 무결성 정상",
+        "reverse_clamp_ok": "역방향 클램프 해제",
+        "hurst_ok":         "Hurst ≥ 0.45 (추세장)",
+        "atr_ok":           "ATR ≥ 최소 변동성",
+        "mode_filter_ok":   "등급-진입모드 필터 통과",
+        "qty_ok":           "산출수량 > 0",
+        "bar_volume_ok":    "분봉 거래량 ≠ 0",
+        "intraday_ok":      "IntradayRegime(L2) 허용",
+        "kill_switch_ok":   "Early Kill Switch 비활성",
+    }
+
+    def _entry_gate_tooltip(self, gate_json: str) -> str:
+        """STEP7 마스터 게이트의 조건별 통과 여부를 ✓/✗ 목록으로 보여주는 툴팁."""
+        if not gate_json:
+            return ""
+        try:
+            gate = json.loads(gate_json)
+        except Exception:
+            return ""
+        if not gate:
+            return ""
+        lines = ["STEP7 마스터 게이트 상세"]
+        for key, label in self._GATE_CHECK_LABELS.items():
+            if key in gate:
+                mark = "✓" if gate[key] else "✗"
+                lines.append(f"{mark} {label}")
+        return "\n".join(lines)
 
     def _direction_color(self, direction: str) -> str:
         if direction == "UP":
@@ -781,8 +875,12 @@ class DynamicMcPanel(QWidget):
         return _COL["muted"]
 
     def _stage_color(self, stage: str) -> str:
-        if stage.startswith("8."):
+        if stage.startswith("10."):
             return _COL["green"]
+        if stage.startswith("9."):
+            return _COL["green"]
+        if stage.startswith("8."):
+            return _COL["red"]
         if stage.startswith("1."):
             return _COL["red"]
         if stage.startswith("2."):

@@ -1,7 +1,33 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-16 (180차 세션) — CB 파이프라인 정체 진단(S2 라벨 오프셋) + 워치독 무한루프 버그 수정
+> 마지막 업데이트: 2026-06-16 (181차 세션) — time_zone 크래시 수정 + 진입단계 추적 카드 STEP7 게이트 반영 전면 개선
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-16 (181차 — time_zone 크래시 수정 + 진입단계 추적 카드 전면 개선 + 로그 파일화)
+
+### 현재 시스템 상태
+
+| 항목 | 상태 |
+|---|---|
+| `time_zone` UnboundLocalError | 수정 완료 — STEP6의 체크리스트 선행평가·MetaGate 호출이 `_tz`(이미 할당됨)를 쓰도록 교정. 라이브 미반영(재시작 필요) |
+| 신뢰도게이트 "진입단계 추적" 카드 | STEP7 마스터 게이트 16조건 + 차단사유까지 반영하는 10단계 체계로 전면 개선 (`dashboard/panels/dynamic_mc_panel.py`) |
+| `ensemble_decisions` DB | `entry_gate_json/entry_final_ok/entry_qty/entry_mode/entry_executed/entry_block_reason` 6컬럼 추가 (재시작 시 자동 마이그레이션) |
+| `LogManager` | 대시보드 버퍼 전용이던 `log_manager.signal/system/trade/health`가 이제 SYSTEM/SIGNAL/TRADE/LEARNING `.log` 파일에도 동시 기록됨 |
+| 검증 | `python -m py_compile` 5개 파일 통과. PyQt5 UI 렌더링·라이브 동작은 미검증(재시작 필요) |
+
+### 활성 알려진 이슈 (이번 세션 신규)
+
+- **대시보드 신규 컬럼 시각 미확인**: "차단사유"/단계 9·10/게이트 툴팁이 실제 UI에서 의도대로 그려지는지 다음 재시작 후 확인 필요
+- **STEP7 게이트 데이터는 재시작 이후 분봉부터 채워짐**: 재시작 전 과거 행은 `entry_final_ok` 등이 NULL → 패널이 구버전 7단계("진입후보")로 자동 폴백(의도된 동작)
+
+### 다음 장 최우선 확인
+
+1. 재시작 직후 `[ERR-FATAL] minute_pipeline: local variable 'time_zone'` 크래시 미재발 확인
+2. 신뢰도게이트 탭 "금일 Conf → 진입단계 추적" 카드에 "차단사유" 컬럼·9/10단계·게이트 툴팁이 정상 표시되는지 확인
+3. Hurst<0.45 등으로 STEP7 차단되는 분봉이 실제로 "8. STEP7 차단" + 정확한 사유 텍스트로 표시되는지 확인
+4. `.log` 파일(`SIGNAL.log` 등)에서 `[차단] Hurst...` 등 기존엔 대시보드에만 있던 메시지가 grep으로 확인되는지 점검
 
 ---
 

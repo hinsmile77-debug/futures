@@ -9,8 +9,21 @@ Layer 4 (LEARNING) — 자가학습·SHAP 교체
 Layer 5 (DEBUG)    — 피처·모델 상세 디버그
 """
 import datetime
+import logging
 from collections import deque
 from typing import Dict, List, Callable, Optional
+
+from utils.logger import get_logger
+
+# 대시보드 레이어 → 파일 로거 레이어 매핑 (HEALTH는 전용 파일이 없어 SYSTEM으로 합류)
+_FILE_LOGGER_LAYER = {
+    "SYSTEM":   "SYSTEM",
+    "SIGNAL":   "SIGNAL",
+    "TRADE":    "TRADE",
+    "LEARNING": "LEARNING",
+    "DEBUG":    "DEBUG",
+    "HEALTH":   "SYSTEM",
+}
 
 
 class LogEntry:
@@ -50,6 +63,19 @@ class LogManager:
         self._buffers[layer].append(entry)
         for cb in self._callbacks[layer]:
             cb(entry)
+        self._write_to_file(layer, message, level)
+
+    def _write_to_file(self, layer: str, message: str, level: str) -> None:
+        """대시보드 버퍼 전용이던 메시지를 파일 로거로도 남긴다 — 차단사유 등
+        사후 추적이 필요한 신호가 .log 파일 grep으로도 확인되도록 한다."""
+        file_layer = _FILE_LOGGER_LAYER.get(layer)
+        if not file_layer:
+            return
+        try:
+            lvl = getattr(logging, str(level or "INFO").upper(), logging.INFO)
+            get_logger(file_layer).log(lvl, message)
+        except Exception:
+            pass
 
     # ── 편의 메서드 ────────────────────────────────────────────
     def system(self, msg: str, level: str = "INFO", **_kwargs):

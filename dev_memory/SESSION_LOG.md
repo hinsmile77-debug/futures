@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-06-16 (181차 — time_zone 크래시 수정 + Hurst 미진입 딥다이브 + 진입단계 추적 카드 전면 개선 + 로그 파일화)
+
+**Work**: 사용자가 공유한 `cybos_plus_launch.log` 크래시 로그와 신뢰도게이트 대시보드 캡처(14:32/14:33 "8.진입후보"인데 미진입)를 각각 딥다이브해 근본 원인을 확정·수정. 이어서 대시보드 "금일 Conf → 진입단계 추적" 카드를 STEP7 마스터 게이트까지 반영하도록 전면 개선했다.
+
+### [A] `time_zone` UnboundLocalError 수정
+
+`run_minute_pipeline()`에서 체크리스트 선행평가(`main.py:4444`)와 `decision["meta_gate"] = self.meta_gate.evaluate(..., time_zone=time_zone, ...)`(`main.py:4472`)가 STEP7에서야 할당되는 `time_zone`을 그보다 먼저 참조 — `UnboundLocalError`로 매분 `minute_pipeline` 크래시(WARN.log: 12:58~13:02 5회 연속 확인). 두 지점 모두 같은 값으로 이미 위(4232행)에서 할당돼 있던 `_tz`를 쓰도록 교정 — 동작 변화 없이 크래시만 제거.
+
+### [B] 14:32/14:33 "8.진입후보"인데 미진입 — Hurst 필터 딥다이브
+
+DEBUG.log 대조 결과 체크리스트는 등급 A까지 통과(`[DBG-F7a] checklist 7/9 → A`)했으나 `hurst=0.417/0.390 < HURST_RANGE_THRESHOLD(0.45)` → STEP7 마스터 게이트 `_hurst_ok` 조건에서 차단(`main.py:5092`, `:5243`). 차단사유 로그(`log_manager.signal`)가 대시보드 버퍼에만 쌓이고 파일 로거로는 안 나가 `.log` grep으로 추적 불가했던 것도 진단을 어렵게 한 원인 — [D]에서 해소. 근본적으로는 대시보드 "8.진입후보" 단계가 체크리스트/메타/톡시시티만 보고 판정하며 CB·Hurst·ATR·쿨다운 등 STEP7 마스터 게이트 나머지 조건을 전혀 반영하지 않았던 것이 원인 — [C]에서 해소.
+
+### [C] "금일 Conf → 진입단계 추적" 카드 전면 개선
+
+| 항목 | 내용 | 파일 |
+|---|---|---|
+| STEP7 게이트 16조건 DB 저장 | CB/HC/브로커sync/쿨다운/청산쿨다운/재시작유예/무결성/역방향클램프/Hurst/ATR/모드필터/수량/거래량/IntradayRegime/EKS + 우선순위 기반 차단사유(`_entry_block_reason`)를 `decision`에 담아 STEP9에서 저장 | `main.py` |
+| 기존 차단사유 로그 중복 제거 | STEP7 말미의 동일 elif 체인을 삭제하고 위에서 산출한 `_entry_block_reason` 재사용 | `main.py` |
+| DB 컬럼 6종 추가 | `entry_gate_json/entry_final_ok/entry_qty/entry_mode/entry_executed/entry_block_reason` 마이그레이션 | `utils/db_utils.py` |
+| STEP9 INSERT 확장 | `save_step9_batch()` 컬럼·바인딩 추가 | `learning/prediction_buffer.py` |
+| 단계 체계 재정비 | 7(Auto불가, 체크리스트) → **8.STEP7 차단**(구체 사유) → **9.진입후보(최종)** → **10.진입완료** | `dashboard/panels/dynamic_mc_panel.py` |
+| 신규 컬럼 "차단사유" | 단계 0~10 전부에 대해 사람이 읽는 한 줄 설명 표시 | 〃 |
+| 게이트 상세 툴팁 | 진입단계/차단사유 셀 호버 시 16개 조건 ✓/✗ 전체 표시 | 〃 |
+| 범례 갱신 | 카드 제목 툴팁을 새 단계 체계로 교체 | 〃 |
+
+### [D] 차단사유 로그 파일 영속화
+
+`LogManager.log()`가 대시보드 버퍼 적재에 더해 `utils.logger.get_logger(layer)`(SYSTEM/SIGNAL/TRADE/LEARNING/DEBUG, HEALTH→SYSTEM)로도 동시에 기록하도록 브리지 추가 (`logging_system/log_manager.py`). `log_manager.signal/system/trade/health`로만 남기던 메시지가 이제 `.log` 파일 grep으로도 확인된다.
+
+### 검증
+
+- `python -m py_compile main.py utils/db_utils.py learning/prediction_buffer.py logging_system/log_manager.py dashboard/panels/dynamic_mc_panel.py` 통과
+- 라이브 미반영 — main.py/prediction_buffer.py 변경은 다음 재시작부터 적용. DB 컬럼은 `init_predictions_db()`가 재시작 시 자동 `ALTER TABLE`
+- PyQt5 대시보드 렌더링은 미검증(UI 미기동) — 다음 장 재시작 후 카드 표시 확인 필요
+
+### 비고
+
+- 작업 중 `learning/prediction_buffer.py`에 본 세션과 무관한 미커밋 변경(180차의 `_db_write_lock` 직렬화·서브타이밍 계측)이 이미 있었음 — 별도 세션 작업으로 확인, 본 세션 변경과 충돌 없음.
+
+---
+
 ## 2026-06-16 (180차 — CB 파이프라인 정체 진단 + 워치독 무한루프 버그 수정)
 
 **Work**: 사용자가 CB 발동 로그(`S2=5976ms` 등)와 15:10 이후 90초 간격 반복 경보 로그 제공 → 두 건 모두 딥다이브로 근본 원인 확정 후 패치.

@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-06-16 (181차 — time_zone 크래시 수정 + 진입단계 추적 카드 STEP7 게이트 반영)
+
+### [버그] `time_zone` UnboundLocalError — STEP6에서 STEP7 변수를 선참조
+
+**Root cause**: `run_minute_pipeline()`의 STEP7(`main.py:4687`)에서 `time_zone = get_time_zone()`로 처음 할당되는데, 그보다 앞선 STEP6 구간에서 체크리스트 선행평가(`main.py:4444`)와 `decision["meta_gate"] = self.meta_gate.evaluate(...)`(`main.py:4472`, `if` 가드 없이 매분 무조건 실행)가 동일 이름 `time_zone`을 파라미터로 참조 — Python이 함수 스코프 전체에서 `time_zone`을 로컬 변수로 판단하므로, 할당 이전 참조 시점에 `UnboundLocalError`가 발생. 체크리스트 선행평가는 try/except로 감싸여 있어 조용히 무시됐지만, `decision["meta_gate"]` 호출은 보호되지 않아 `minute_pipeline` 전체가 크래시(WARN.log: 12:58~13:02 5회 연속).
+
+**Fix**: 두 지점 모두, 동일한 `get_time_zone()` 값으로 이미 그 위(`main.py:4232`)에서 할당돼 있던 `_tz`를 쓰도록 교정. 로직 변화 없음.
+
+**여담**: 라이브 프로세스는 .py 파일을 핫리로드하지 않으므로, 트레이스백의 소스 라인 텍스트(`linecache`가 디스크에서 다시 읽음)와 실제 실행 중인 바이트코드의 변수명이 어긋나 보이는 경우가 있었다(예: 13:03:07 로그는 `time_zone=_tz,`를 보여주지만 에러는 여전히 `time_zone` 미정의) — 디스크 파일이 이미 부분 수정된 상태에서 프로세스가 재시작되지 않은 결과로 추정. 재시작 전까지는 같은 버그가 반복될 수 있음을 시사.
+
+### [설계결정] 신뢰도게이트 "진입단계 추적" 카드가 STEP7 마스터 게이트를 반영하지 않던 구조적 한계
+
+**배경**: 사용자가 14:32/14:33 분봉이 대시보드상 "8.진입후보"로 표시됐는데 실제 진입이 안 된 이유를 질문. 확인 결과 체크리스트는 등급 A까지 통과했으나 `hurst=0.417/0.390 < HURST_RANGE_THRESHOLD(0.45)`로 STEP7 마스터 게이트(`main.py:5232~5249`)에서 차단됨. 그러나 `dynamic_mc_panel.py`의 `_resolve_stage()`는 conf/grade/gate_blocked/regime_ok/meta_action/toxicity_action/auto_entry(체크리스트)만 보고 단계를 매겨, CB·HC·브로커sync·쿨다운·재시작유예·포지션무결성·역방향클램프·Hurst·ATR·모드필터·수량·거래량·IntradayRegime·EKS 등 STEP7의 나머지 조건을 전혀 반영하지 못했다 — "진입후보"가 실제로는 "체크리스트만 통과"를 의미했던 것.
+
+**결정**: STEP7에서 이미 계산되는 16개 조건과 우선순위 기반 차단사유(`_entry_block_reason`)를 `decision` dict에 실어 STEP9에서 `ensemble_decisions`에 함께 저장(`entry_gate_json/entry_final_ok/entry_qty/entry_mode/entry_executed/entry_block_reason` 6컬럼). 대시보드 단계 체계를 7(Auto불가)→**8.STEP7 차단**(구체 사유)→**9.진입후보(최종)**→**10.진입완료**로 재정비하고, 모든 단계에 대해 "차단사유" 컬럼과 게이트 상세 툴팁(16조건 ✓/✗)을 추가.
+
+**부수 효과**: 기존 STEP7 말미에 있던 차단사유 로그용 elif 체인을 위치만 옮겨 재사용(중복 로직 제거). 동시에 `LogManager.log()`가 대시보드 버퍼 전용이던 메시지를 파일 로거로도 기록하도록 브리지를 추가해, 이번처럼 "차단사유가 어디에도 안 남아 추적이 안 되는" 상황을 구조적으로 줄임(`logging_system/log_manager.py`).
+
+**하위호환**: 재시작 전(이번 세션 코드 배포 전) 저장된 과거 행은 `entry_final_ok`가 NULL이므로, 패널은 이를 "데이터 없음"으로 보고 구버전 방식대로 "9.진입후보(최종)"로 폴백 표시한다 (과거 데이터 깨짐 없음).
+
+---
+
 ## 2026-06-16 (180차 — CB 파이프라인 정체 진단 + 워치독 무한루프 버그 수정)
 
 ### [버그] PipePerf 스텝 라벨 오프셋 — STEP1 정체를 STEP2로 오인
