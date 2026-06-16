@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-16 (182차 — EOD MemoryError 복구 + validate_and_resync() 허위 정합성오류·재학습 무한루프 버그 수정)
+
+**Work**: 오늘 15:40 EOD가 MemoryError로 중단된 것을 점검·복구. 복구 과정에서 발견된 "[Model] 정합성 오류 6개 호라이즌" 로그(오늘 7회 발생)를 딥다이브해 별도의 구조적 버그를 확정·수정.
+
+### [A] EOD MemoryError 점검 + 수동 복구
+
+15:40:25 EOD GBM 재학습(`weeks_back=26, full_cv=True`) 중 15:41:25 `MemoryError: Unable to allocate 29.7 MiB for array shape (40093, 97)` 발생 — 06-11 동일 패턴 재발(32-bit 프로세스 가상주소공간 고갈 추정). `daily_close()`가 예외를 캐치하지 못해 P8 스케일러 재적합·Platt/MetaConf 저장·일일 리셋·WAL 체크포인트가 전부 스킵된 채 강제 종료됨.
+
+- `scripts/catch_up_eod.py` 실행 — GBM 재학습(40,093행, 6/6 호라이즌, cv_acc 36~43%) + P8 스케일러 재적합(6/6) + WAL 체크포인트(6/6 DB) 전부 OK로 복구
+- `main.py:6546` `retrain_now()` 호출을 try/except로 감싸 — 재학습이 예외로 죽어도 이후 EOD 단계(P8·Platt·MetaConf 저장·일일 리셋·WAL 체크포인트)는 계속 진행되도록 구조적으로 고침. 다음 동일 사고 발생 시 수동 복구 불필요
+
+### [B] `validate_and_resync()` 허위 정합성오류 + 재학습 무한 재트리거 버그 발견·수정
+
+복구 과정에서 "[Model] 정합성 오류 6개 호라이즌 ... 즉시 재학습 필요"가 오늘 09:01·09:42·11:39·11:45·12:02·12:57·13:03 총 7회(일부 6분 간격 페어) 발생한 것을 확인 → 딥다이브.
+
+**Root cause**: `model/multi_horizon_model.py:805` `validate_and_resync()`가 스케일러 차원(항상 전체 97개 — `batch_retrainer.py:563` "스케일러는 97개 전체 피처 기준" 참조)을 Phase C 호라이즌별 슬라이싱된 피처 수(12~15개)와 비교 — 슬라이싱은 스케일링 *후* GBM 입력 단계에서만 적용되므로 이 비교는 구조적으로 영원히 불일치. 불일치 시 `_is_fitted[h]=False`로 전 호라이즌을 비활성화 → `predict_proba()`가 GBM 대신 `_default_result()`(33.3%/33.3%/33.3% FLAT)로 대체. 더 나아가 `main.py:2632` `_on_gbm_retrain_done()`이 이 결과로 즉시 `_start_manual_retrain(reason="resync_mismatch")`를 재트리거 — 재학습 완료마다 똑같은 허위 불일치가 재발해 비계획적 GBM 재학습이 반복됨 (오늘 앞서 분석한 PipePerf "[GBM재학습중]" 09:26-09:28·11:14-11:15 정체와 연관 가능).
+
+**Fix**: 비교 기준을 슬라이싱된 `horizon_feature_names` 크기 대신 `len(self.feature_names)`(전체 97개, 스케일러의 실제 적합 기준)로 교정.
+
+**검증**: 수정 후 `MultiHorizonModel()` 직접 인스턴스화 → `validate_and_resync()` 호출 → `BAD HORIZONS: []`, 6개 호라이즌 전부 `fitted=True` 확인.
+
+### 검증
+
+`main.py`, `model/multi_horizon_model.py` `ast.parse` 통과. 라이브 프로세스는 재시작 후 반영.
+
+---
+
 ## 2026-06-16 (181차 — time_zone 크래시 수정 + Hurst 미진입 딥다이브 + 진입단계 추적 카드 전면 개선 + 로그 파일화)
 
 **Work**: 사용자가 공유한 `cybos_plus_launch.log` 크래시 로그와 신뢰도게이트 대시보드 캡처(14:32/14:33 "8.진입후보"인데 미진입)를 각각 딥다이브해 근본 원인을 확정·수정. 이어서 대시보드 "금일 Conf → 진입단계 추적" 카드를 STEP7 마스터 게이트까지 반영하도록 전면 개선했다.

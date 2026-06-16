@@ -2,6 +2,32 @@
 
 ---
 
+## 2026-06-16 (182차 — EOD MemoryError 복구 + validate_and_resync() 허위 정합성오류 수정)
+
+### [버그] EOD GBM 재학습 MemoryError → daily_close() 전체 중단 (06-11 재발)
+
+**Root cause**: 15:40 EOD GBM 배치 재학습(`weeks_back=26, full_cv=True`) 중 `MemoryError: Unable to allocate 29.7 MiB for array shape (40093, 97)`. 06-11에도 동일 패턴(`shape (30159, 97)`)으로 발생한 적 있음 — 32-bit Python 프로세스(`py37_32`)의 가상주소공간 단편화로 추정 (물리메모리 부족이 아니라 30MB대 소규모 할당조차 실패). `main.py:6546` `retrain_now()` 호출에 try/except가 없어 예외가 `daily_close()` 전체를 중단시키고, 이후 단계(P8 스케일러 재적합·Platt/MetaConf 저장·일일 리셋 전부·scaler_daily 집계·WAL 체크포인트)가 통째로 스킵됨.
+
+**대응**:
+1. **즉시 복구**: `scripts/catch_up_eod.py` 실행 — GBM 재학습(6/6 호라이즌 OK) + P8 스케일러 재적합(6/6 OK) + WAL 체크포인트(6/6 DB OK).
+2. **구조적 수정**: `retrain_now()` 호출을 try/except로 감싸 예외 발생 시에도 `retrain_result={"ok": False, "error": ...}`로 처리하고 EOD 잔여 단계를 계속 진행하도록 변경 (`main.py:6546`). 다음 재발 시 수동 복구(`catch_up_eod.py`) 불필요.
+
+**위험/한계**: `catch_up_eod.py`는 `session_state.json`의 `eod_retrain_ok_date`/`p8_last_success_date`를 기록하지 않음(스크립트 자체가 의도한 동작 — 다음날 08:55 PreRetrain이 항상 재실행되어 자연 보완). MemoryError의 근본 원인(32-bit 주소공간 단편화) 자체는 미해결 — `full_cv=True`(CV 캡 해제)가 메모리 사용량을 늘리는 트리거로 추정되나 확정은 아님.
+
+### [버그] `validate_and_resync()` 허위 정합성오류 + GBM 재학습 무한 재트리거 (06-16 발견)
+
+**Root cause**: `model/multi_horizon_model.py:805`에서 스케일러 차원(`scaler.n_features_in_`, 항상 전체 97개 — `batch_retrainer.py:563` "스케일러는 97개 전체 피처 기준" 참조)을 178차 Phase C에서 도입한 호라이즌별 슬라이싱 피처 수(`horizon_feature_names[h]`, 12~15개)와 비교하던 로직 버그. 슬라이싱은 스케일링 *후* GBM 입력 단계에서만 적용되고 스케일러 자체는 절대 슬라이싱되지 않으므로, 이 비교는 **구조적으로 항상 불일치**.
+
+**연쇄**: 불일치 시 `self._is_fitted[h] = False`(전 6개 호라이즌) → `predict_proba()`(`multi_horizon_model.py:327`)가 GBM 예측 대신 `_default_result()`(33.3%/33.3%/33.3% FLAT)로 대체 → `main.py:2632` `_on_gbm_retrain_done()`이 `bad` 비어있지 않으면 즉시 `_start_manual_retrain(force=True, reason="resync_mismatch")`로 재학습 재트리거 → 재학습 완료 후 `_load_all()`이 동일 검사를 다시 돌려 또 불일치 → 무한 반복 가능 구조. 오늘(06-16) 09:01·09:42·11:39·11:45·12:02·12:57·13:03 총 7회 발생(일부 6분 간격 페어 — 재학습 1회 소요시간과 일치), 이 중 일부는 같은 날 앞서 분석한 PipePerf "[GBM재학습중]" STEP1 정체(09:26-09:28, 11:14-11:15)와 시간대가 겹쳐 연관 가능성.
+
+**Fix**: 비교 기준을 `len(horizon_feature_names[h])`(슬라이싱된 크기) → `len(self.feature_names)`(전체 97개, 스케일러의 실제 적합 기준)로 교정.
+
+**검증**: 수정 후 `MultiHorizonModel()`을 직접 인스턴스화해 `validate_and_resync()` 호출 — `BAD HORIZONS: []`, 6개 호라이즌 전부 `scaler_dim=97 full_feat=97 fitted=True` 확인 (sliced_feat은 호라이즌별 12~15로 정상 분리 유지).
+
+**영향 범위 추정**: 178차(2026-06-15) Phase C 호라이즌별 피처셋 인프라 도입 시점부터 존재했을 가능성 — 이 커밋부터 `horizon_feature_names`가 채워지기 시작했기 때문. 그 이전엔 모든 호라이즌이 `h_names == self.feature_names`였으므로 버그가 드러나지 않았을 것.
+
+---
+
 ## 2026-06-16 (181차 — time_zone 크래시 수정 + 진입단계 추적 카드 STEP7 게이트 반영)
 
 ### [버그] `time_zone` UnboundLocalError — STEP6에서 STEP7 변수를 선참조

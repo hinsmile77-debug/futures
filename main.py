@@ -6543,11 +6543,27 @@ class TradingSystem:
             + (" [월요일: 주간 재학습 포함]" if _is_monday_eod else ""),
             "INFO",
         )
-        retrain_result = self.batch_retrainer.retrain_now(
-            force=True,
-            intraday=False,   # 정규 파라미터 (max_iter=300, max_depth=5, lr=0.04)
-            full_cv=True,     # CV 20k 캡 해제 — Cybos 단절 후 메모리 여유
-        )
+        # [P0] retrain_now() 예외(예: 32bit 프로세스 MemoryError) 시에도 EOD 잔여 단계
+        # (P8 스케일러 재적합·Platt/MetaConf 저장·일일 리셋·WAL 체크포인트)는 계속 진행.
+        # 06-11/06-16 동일 패턴 MemoryError로 daily_close() 전체가 중단되며
+        # 위 단계 전부 스킵됐던 문제 재발 방지 — catch_up_eod.py로 수동 복구하던 것을
+        # 구조적으로 차단.
+        try:
+            retrain_result = self.batch_retrainer.retrain_now(
+                force=True,
+                intraday=False,   # 정규 파라미터 (max_iter=300, max_depth=5, lr=0.04)
+                full_cv=True,     # CV 20k 캡 해제 — Cybos 단절 후 메모리 여유
+            )
+        except Exception as _retrain_exc:
+            logger.error(
+                "[DailyClose] EOD 재학습 예외 — 스킵하고 EOD 잔여 단계 계속 진행: %s",
+                _retrain_exc, exc_info=True,
+            )
+            log_manager.system(
+                f"[DailyClose] EOD 재학습 예외(스킵, 잔여단계 계속): {_retrain_exc}",
+                "ERROR",
+            )
+            retrain_result = {"ok": False, "error": str(_retrain_exc)}
         retrain_ok = retrain_result.get("ok", False)
         # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
         # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)

@@ -803,9 +803,13 @@ class MultiHorizonModel:
             if scaler is None or not self._is_fitted.get(h):
                 continue
             expected = getattr(scaler, "n_features_in_", None)
-            # Phase C: 호라이즌 전용 피처셋이 있으면 그 크기로 비교
-            h_names = self.horizon_feature_names.get(h, self.feature_names)
-            n_feat = len(h_names)
+            # 스케일러는 호라이즌 무관 항상 전체 feature_names(97개) 기준으로 적합된다
+            # (batch_retrainer._train_horizon: final_scaler.fit_transform(X_full) 참조).
+            # Phase C 호라이즌별 슬라이싱은 스케일링 *후* GBM 입력 단계에서만 적용되므로
+            # 여기서 슬라이싱된 horizon_feature_names 크기와 비교하면 항상(영구) 불일치로
+            # 오판 — 매 재학습/재시작마다 전 호라이즌이 거짓으로 비활성화되고
+            # resync_mismatch 재학습이 무한 재트리거되는 버그였음 (260616 발견).
+            n_feat = len(self.feature_names)
             if expected is not None and n_feat != expected:
                 logger.error(
                     "[Model] %s 피처 불일치 — feature_names=%d scaler=%d"

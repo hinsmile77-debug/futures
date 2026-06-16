@@ -1,7 +1,31 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-16 (181차 세션) — time_zone 크래시 수정 + 진입단계 추적 카드 STEP7 게이트 반영 전면 개선
+> 마지막 업데이트: 2026-06-16 (182차 세션) — EOD MemoryError 복구 + validate_and_resync() 허위 정합성오류·재학습 무한루프 버그 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-16 (182차 — EOD MemoryError 복구 + validate_and_resync() 허위 정합성오류 버그 수정)
+
+### 현재 시스템 상태
+
+| 항목 | 상태 |
+|---|---|
+| 오늘자 EOD (15:40) | MemoryError로 중단됐던 것을 `scripts/catch_up_eod.py`로 수동 복구 완료 — GBM 재학습(40,093행, 6/6 호라이즌) + P8 스케일러 재적합(6/6) + WAL 체크포인트(6/6 DB) 전부 OK |
+| `daily_close()` EOD 재학습 예외 내구성 | `retrain_now()` 호출을 try/except로 감싸 MemoryError 등 예외 발생해도 P8·Platt·MetaConf 저장·일일 리셋·WAL 체크포인트는 계속 진행되도록 수정 (`main.py:6546`) |
+| `validate_and_resync()` 허위 정합성오류 버그 | 수정 완료 — 스케일러(항상 전체 97개 기준)를 Phase C 슬라이싱된 호라이즌별 피처수(12~15개)와 비교해 영구 불일치로 오판하던 버그. 전 6개 호라이즌이 매 재학습/재시작마다 거짓으로 `_is_fitted=False`(→FLAT 디폴트 예측 대체) + `resync_mismatch` 재학습 무한 재트리거 — 오늘 7회 발생, 일부는 6분 간격 페어로 GBM 재학습이 비계획적으로 반복됨 (`model/multi_horizon_model.py:805`) |
+| 검증 | 수정 후 `MultiHorizonModel()` 직접 인스턴스화해 `validate_and_resync()` 재호출 — `BAD HORIZONS: []`, 6개 호라이즌 전부 `fitted=True` 확인. 라이브 미반영(재시작 필요) |
+
+### 활성 알려진 이슈
+
+- **오늘 GBM 모델 신뢰도 불확실 구간**: `resync_mismatch` 루프로 인해 09:01~13:03 사이 여러 차례 6개 호라이즌이 일시적으로 FLAT 디폴트(33.3%)로 대체됐을 가능성 — SGD 블렌딩이 가렸을 수 있어 그 구간 진입/판단 로그를 재검토할 여지 있음
+- **PipePerf "[GBM재학습중]" 정체와의 연관**: 오늘 앞서 분석한 09:26-09:28, 11:14-11:15 STEP1 정체가 이 버그로 인한 비계획 재학습과 겹쳤을 가능성
+
+### 다음 장 최우선 확인
+
+1. `[Model] 정합성 오류` 로그 재발 없음 확인 (재시작·재학습 후)
+2. `resync_mismatch` 사유의 비계획 GBM 재학습 재발 없음 확인
+3. EOD(15:40) 재학습이 MemoryError로 실패해도 `[P8] EOD 스케일러 재적합 완료`·`[WAL] 체크포인트 완료`가 이어서 출력되는지 확인
 
 ---
 
