@@ -11,13 +11,17 @@ import json
 import datetime
 import logging
 import math
+import time
 from typing import Dict, List, Optional, Tuple
 
 from config.settings import HORIZONS, HORIZON_THRESHOLDS, PREDICTIONS_DB, SIGMA_K
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from learning.meta_labeling import compact_feature_json, derive_meta_label
 from model.target_builder import build_single_target
-from utils.db_utils import execute, executemany, fetchall, fetchone, get_candle_close, get_conn
+from utils.db_utils import (
+    execute, executemany, fetchall, fetchone, get_candle_close, get_conn,
+    _lock as _db_write_lock,
+)
 
 logger = logging.getLogger("LEARNING")
 
@@ -176,6 +180,12 @@ class PredictionBuffer:
             float((decision.get("toxicity_gate") or {}).get("score_ma", 0.0) or 0.0),
             float((decision.get("toxicity_gate") or {}).get("size_multiplier", 0.0) or 0.0),
             str((decision.get("toxicity_gate") or {}).get("reason", "")),
+            json.dumps(decision.get("entry_gate") or {}, ensure_ascii=False),
+            int(bool(decision.get("entry_final_ok", False))),
+            int(decision.get("entry_qty", 0) or 0),
+            str(decision.get("entry_mode", "")),
+            int(bool(decision.get("entry_executed", False))),
+            str(decision.get("entry_block_reason", "")),
         )
 
         with get_conn(PREDICTIONS_DB) as conn:
@@ -196,8 +206,10 @@ class PredictionBuffer:
                        gate_signals, detail, features,
                        meta_action, meta_confidence, meta_size_mult, meta_reason,
                        toxicity_action, toxicity_score, toxicity_score_ma,
-                       toxicity_size_mult, toxicity_reason
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       toxicity_size_mult, toxicity_reason,
+                       entry_gate_json, entry_final_ok, entry_qty, entry_mode,
+                       entry_executed, entry_block_reason
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 
@@ -255,16 +267,25 @@ class PredictionBuffer:
         }
         target_tss = list(horizon_targets.values())
 
+        # [P0-Timing] verify_and_update 구간별 소요시간 — PipePerf "S2"(=STEP1 본문)
+        # 정체 원인을 raw_fetch/pred_select/pred_update/pred_insert 중 어디인지 확정하기 위함.
+        _vt0 = time.perf_counter()
+
         # ── DB 1: RAW_DATA_DB — 필요한 종가 일괄 조회 (1연결) ──
+        # _db_write_lock으로 _db_write_worker(STEP4 비동기 큐 쓰기)와 직렬화 —
+        # 동일 프로세스 내 쓰기 스레드와의 SQLite 락 경합 제거.
+        # timeout=3.0: 기본 10s 대신 짧게 fail-fast — 파이프라인 CB⑤ 임계(5000ms) 전에
+        # 멈춰서 차라리 이번 분 검증을 스킵하고 다음 분에서 재시도하게 함.
         candle_map: Dict[str, float] = {}
         try:
             placeholders = ",".join("?" * len(target_tss))
-            with get_conn(RAW_DATA_DB) as raw_conn:
-                for r in raw_conn.execute(
-                    f"SELECT ts, close FROM raw_candles WHERE ts IN ({placeholders})",
-                    target_tss,
-                ).fetchall():
-                    candle_map[r["ts"]] = float(r["close"])
+            with _db_write_lock:
+                with get_conn(RAW_DATA_DB, timeout=3.0) as raw_conn:
+                    for r in raw_conn.execute(
+                        f"SELECT ts, close FROM raw_candles WHERE ts IN ({placeholders})",
+                        target_tss,
+                    ).fetchall():
+                        candle_map[r["ts"]] = float(r["close"])
         except Exception as _raw_e:
             logger.warning("[Buffer] raw_candles 배치 조회 실패, fallback: %s", _raw_e)
             for tts in target_tss:
@@ -272,106 +293,128 @@ class PredictionBuffer:
                 if v is not None:
                     candle_map[tts] = v
 
+        _vt1 = time.perf_counter()   # raw_fetch 완료
+
         # ── DB 2: PREDICTIONS_DB — 조회 + UPDATE + INSERT 모두 1트랜잭션 ──
         verified = []
         update_rows: List[Tuple] = []
         meta_rows: List[Tuple] = []
+        _vt_select = _vt_update = _vt_insert = _vt1   # 예외 발생 시에도 길이 일관성 유지
 
         try:
-            with get_conn(PREDICTIONS_DB) as pred_conn:
-                for horizon, target_ts in horizon_targets.items():
-                    h_min = HORIZONS[horizon]
+            with _db_write_lock:
+                with get_conn(PREDICTIONS_DB, timeout=3.0) as pred_conn:
+                    for horizon, target_ts in horizon_targets.items():
+                        h_min = HORIZONS[horizon]
 
-                    row = pred_conn.execute(
-                        """SELECT id, direction, confidence, up_prob, down_prob, flat_prob,
-                                  features, sigma_at_t
-                           FROM predictions
-                           WHERE ts = ? AND horizon = ? AND actual IS NULL""",
-                        (target_ts, horizon),
-                    ).fetchone()
-                    if row is None:
-                        continue
+                        row = pred_conn.execute(
+                            """SELECT id, direction, confidence, up_prob, down_prob, flat_prob,
+                                      features, sigma_at_t
+                               FROM predictions
+                               WHERE ts = ? AND horizon = ? AND actual IS NULL""",
+                            (target_ts, horizon),
+                        ).fetchone()
+                        if row is None:
+                            continue
 
-                    target_close = candle_map.get(target_ts)
-                    if target_close is None:
-                        continue
+                        target_close = candle_map.get(target_ts)
+                        if target_close is None:
+                            continue
 
-                    pred_id  = row["id"]
-                    pred_dir = row["direction"]
+                        pred_id  = row["id"]
+                        pred_dir = row["direction"]
 
-                    _sigma_saved = float(row["sigma_at_t"] or 0.0)
-                    if _sigma_saved > 0 and SIGMA_K > 0:
-                        threshold = _sigma_saved / 100.0 * SIGMA_K * math.sqrt(h_min)
-                    else:
-                        threshold = HORIZON_THRESHOLDS.get(horizon, 0.0003)
+                        _sigma_saved = float(row["sigma_at_t"] or 0.0)
+                        if _sigma_saved > 0 and SIGMA_K > 0:
+                            threshold = _sigma_saved / 100.0 * SIGMA_K * math.sqrt(h_min)
+                        else:
+                            threshold = HORIZON_THRESHOLDS.get(horizon, 0.0003)
 
-                    actual  = build_single_target(target_close, current_price, threshold)
-                    correct = int(actual == pred_dir)
-                    update_rows.append((actual, correct, pred_id))
+                        actual  = build_single_target(target_close, current_price, threshold)
+                        correct = int(actual == pred_dir)
+                        update_rows.append((actual, correct, pred_id))
 
-                    try:
-                        feat_dict = json.loads(row["features"]) if row["features"] else {}
-                    except (ValueError, TypeError):
-                        feat_dict = {}
+                        try:
+                            feat_dict = json.loads(row["features"]) if row["features"] else {}
+                        except (ValueError, TypeError):
+                            feat_dict = {}
 
-                    meta = derive_meta_label(
-                        predicted=pred_dir,
-                        actual=actual,
-                        confidence=float(row["confidence"] or 0.0),
-                        target_close=float(target_close),
-                        future_close=float(current_price),
-                        threshold_ratio=float(threshold),
-                    )
-                    meta_rows.append((
-                        target_ts, horizon, int(pred_dir), int(actual),
-                        float(row["confidence"] or 0.0),
-                        row["up_prob"], row["down_prob"], row["flat_prob"],
-                        float(target_close), float(current_price),
-                        float(meta["realized_move"]), float(meta["threshold_move"]),
-                        meta["meta_action"], float(meta["meta_score"]),
-                        compact_feature_json(feat_dict),
-                    ))
-                    verified.append({
-                        "id":         pred_id,
-                        "ts":         target_ts,
-                        "horizon":    horizon,
-                        "predicted":  pred_dir,
-                        "actual":     actual,
-                        "correct":    bool(correct),
-                        "confidence": row["confidence"],
-                        "up_prob":    row["up_prob"],
-                        "down_prob":  row["down_prob"],
-                        "flat_prob":  row["flat_prob"],
-                        "features":   feat_dict,
-                        "meta_label": meta["meta_action"],
-                        "meta_score": meta["meta_score"],
-                    })
-                    logger.debug(
-                        "[Buffer] %s 검증: pred=%s actual=%s (%s) "
-                        "target_close=%.2f→current=%.2f",
-                        horizon, pred_dir, actual,
-                        "✓" if correct else "✗",
-                        target_close, current_price,
-                    )
+                        meta = derive_meta_label(
+                            predicted=pred_dir,
+                            actual=actual,
+                            confidence=float(row["confidence"] or 0.0),
+                            target_close=float(target_close),
+                            future_close=float(current_price),
+                            threshold_ratio=float(threshold),
+                        )
+                        meta_rows.append((
+                            target_ts, horizon, int(pred_dir), int(actual),
+                            float(row["confidence"] or 0.0),
+                            row["up_prob"], row["down_prob"], row["flat_prob"],
+                            float(target_close), float(current_price),
+                            float(meta["realized_move"]), float(meta["threshold_move"]),
+                            meta["meta_action"], float(meta["meta_score"]),
+                            compact_feature_json(feat_dict),
+                        ))
+                        verified.append({
+                            "id":         pred_id,
+                            "ts":         target_ts,
+                            "horizon":    horizon,
+                            "predicted":  pred_dir,
+                            "actual":     actual,
+                            "correct":    bool(correct),
+                            "confidence": row["confidence"],
+                            "up_prob":    row["up_prob"],
+                            "down_prob":  row["down_prob"],
+                            "flat_prob":  row["flat_prob"],
+                            "features":   feat_dict,
+                            "meta_label": meta["meta_action"],
+                            "meta_score": meta["meta_score"],
+                        })
+                        logger.debug(
+                            "[Buffer] %s 검증: pred=%s actual=%s (%s) "
+                            "target_close=%.2f→current=%.2f",
+                            horizon, pred_dir, actual,
+                            "✓" if correct else "✗",
+                            target_close, current_price,
+                        )
 
-                # 같은 트랜잭션 안에서 일괄 쓰기 (커밋 1회)
-                if update_rows:
-                    pred_conn.executemany(
-                        "UPDATE predictions SET actual = ?, correct = ? WHERE id = ?",
-                        update_rows,
-                    )
-                if meta_rows:
-                    pred_conn.executemany(
-                        """INSERT INTO meta_labels (
-                               ts, horizon, predicted, actual, confidence,
-                               up_prob, down_prob, flat_prob,
-                               target_close, future_close, realized_move, threshold_move,
-                               meta_action, meta_score, features
-                           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        meta_rows,
-                    )
+                    _vt_select = time.perf_counter()   # 호라이즌별 SELECT 루프 완료
+
+                    # 같은 트랜잭션 안에서 일괄 쓰기 (커밋 1회)
+                    if update_rows:
+                        pred_conn.executemany(
+                            "UPDATE predictions SET actual = ?, correct = ? WHERE id = ?",
+                            update_rows,
+                        )
+                    _vt_update = time.perf_counter()   # UPDATE executemany 완료
+                    if meta_rows:
+                        pred_conn.executemany(
+                            """INSERT INTO meta_labels (
+                                   ts, horizon, predicted, actual, confidence,
+                                   up_prob, down_prob, flat_prob,
+                                   target_close, future_close, realized_move, threshold_move,
+                                   meta_action, meta_score, features
+                               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            meta_rows,
+                        )
+                    _vt_insert = time.perf_counter()   # INSERT executemany 완료
         except Exception as _e:
             logger.warning("[Buffer] verify_and_update 배치 오류: %s", _e)
+
+        # [P0-Timing] 300ms 초과 시 구간별 분해 — PipePerf "S2"(=STEP1 본문) 정체 원인 확정용
+        _v_total_ms = (time.perf_counter() - _vt0) * 1000
+        if _v_total_ms > 300:
+            logger.warning(
+                "[Buffer-Timing] total=%dms raw_fetch=%dms pred_select=%dms "
+                "pred_update=%dms pred_insert=%dms verified=%d",
+                _v_total_ms,
+                (_vt1 - _vt0) * 1000,
+                (_vt_select - _vt1) * 1000,
+                (_vt_update - _vt_select) * 1000,
+                (_vt_insert - _vt_update) * 1000,
+                len(verified),
+            )
 
         return verified
 

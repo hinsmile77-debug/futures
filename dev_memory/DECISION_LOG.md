@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-06-16 (180차 — CB 파이프라인 정체 진단 + 워치독 무한루프 버그 수정)
+
+### [버그] PipePerf 스텝 라벨 오프셋 — STEP1 정체를 STEP2로 오인
+
+**Root cause**: `_st.append(("Sn", ...))` 마커가 각 STEPn **시작 지점**에 찍힘. `_all_steps_str`는 구간 끝 마커 이름(`_st[i][0]`)을 그 직전 구간(실제로는 직전 STEP의 본문) 소요시간에 매칭 → `S2=5976ms`로 찍히던 정체가 실제로는 STEP1(`pred_buffer.verify_and_update`, 과거 예측 검증) 본문 시간이었음. 진짜 STEP2(SGD/MetaGate)는 항상 5~13ms로 정상.
+
+**부작용**: STEP2 코드 내부에 이미 구현돼 있던 자체 진단(`[S2-느림]`/`[S2-분산GIL]`, `main.py:3469~3507`)이 정체가 실제로 발생한 STEP1을 보고 있지 않았기 때문에 한 번도 발동하지 않음 — 진단 코드 자체는 정상이지만 잘못된 구간에 배치된 격.
+
+**Fix**: `main.py` `_all_steps_str` 라벨을 `_st[i][0]` → `_st[i-1][0]`로 교정 (마커 위치/내부 위치-참조 로직은 그대로 — 표시 문자열만 수정).
+
+### [버그] 파이프라인 워치독 무한루프 — 15:10 이후 90초 경보 영구 반복
+
+**Root cause**: `_try_pipeline_recovery()`(`main.py:7071`)가 raw_candles 최신 분봉이 이전 복구 시도와 동일한 ts일 때("이미 복구함") `notify_pipeline_ran()`을 호출해 워치독 경과시간(`_pipe_elapsed_s`)을 0으로 리셋. 15:10 강제청산 이후 `_on_candle_closed()`가 의도적으로 `run_minute_pipeline()` 호출을 멈추므로(`is_force_exit_time` 가드, `main.py:2544`) 새 분봉 처리가 영구히 없는 게 **정상 상태**인데, 워치독은 이를 모르고 90초마다 경보 → 복구시도 → "이미 복구함" → 리셋의 무한루프에 빠짐. 150s/240s/300s(거래소 CB 대기 모드) 단계로 영원히 에스컬레이션되지 않음.
+
+**부가 버그**: 15:10 직후 첫 복구 시도는 raw_candles ts가 아직 `_last_recovery_ts`와 다르므로 스킵 분기를 안 타고 `run_minute_pipeline(bar)`를 직접 호출 — `_on_candle_closed()`의 force-exit 가드를 우회해 강제청산 후에도 예측 파이프라인이 1회 더 강제 실행되는 부작용.
+
+**Fix**: `_on_pipeline_watchdog()`(`main.py:6936`), `_try_pipeline_recovery()`(`main.py:7071`) 양쪽 최상단에 `is_force_exit_time(datetime.datetime.now())` 가드 추가 — `is_market_open()`/`_exchange_cb_mode` 가드와 동일한 패턴으로 15:10 이후는 워치독 감시·복구 시도 자체를 비활성화.
+
+### [설계결정] `verify_and_update()` DB 접근 직렬화 + busy_timeout 단축
+
+**배경**: PipePerf 정체(라벨 수정 후 실제로는 STEP1)의 정확한 메커니즘(SQLite 락 경합 vs 디스크 I/O vs 체크포인트)은 미확정. `get_conn()`의 `timeout=10`(busy_timeout)이 관측된 정체 시간(5~9초, 10초 캡 이하)과 일치해 SQLite 락 대기 가설이 유력.
+
+**결정**: 확정 전이라도 안전성 개선을 선제 적용 — `verify_and_update()`의 RAW_DATA_DB/PREDICTIONS_DB 접근을 `_db_write_worker`가 쓰는 앱 공용 `_lock`으로 직렬화(동일 프로세스 내 쓰기 스레드 경합 제거) + busy_timeout 10s→3s(fail-fast, CB⑤ 임계 5000ms 전에 빠지도록). 동시에 `learning/prediction_buffer.py`에 구간별 sub-timing 계측(`[Buffer-Timing]`)을 추가해 다음 정체 시 정확한 메커니즘을 로그로 확정할 수 있게 함.
+
+**위험**: timeout 3s로 단축한 만큼 정상 상황에서도 드물게 검증이 스킵될 수 있음 — 다음 분에 재시도되므로 데이터 손실은 아니나, 빈도가 높으면 timeout 상향 검토 필요 (`dev_memory/NEXT_TODO.md` 180차 항목).
+
+---
+
 ## 2026-06-16 (179차 — Phase C 슬라이싱 버그 + SGD + CORE + UI)
 
 ### [버그] Phase C 슬라이싱 순서 오류 — 스케일러·GBM 차원 불일치 3종

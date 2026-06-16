@@ -1,7 +1,33 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-16 (179차 세션) — Phase C 슬라이싱 버그 수정 + SGD 최적화 + CORE 그룹 분리
+> 마지막 업데이트: 2026-06-16 (180차 세션) — CB 파이프라인 정체 진단(S2 라벨 오프셋) + 워치독 무한루프 버그 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-16 (180차 — CB 파이프라인 정체 진단 + 워치독 무한루프 버그 수정)
+
+### 현재 시스템 상태
+
+| 항목 | 상태 |
+|---|---|
+| PipePerf 라벨 | `_all_steps_str` 오프셋 수정 — `S2=Xms`가 진짜 STEP2(SGD)를 가리킴 (종전엔 STEP1 검증 시간이 S2로 오표기) |
+| `verify_and_update()` | raw_fetch/pred_select/pred_update/pred_insert 4구간 서브타이밍 계측 추가 (300ms 초과 시 `[Buffer-Timing]` 로그) |
+| `verify_and_update()` DB 접근 | `_db_write_lock`으로 직렬화 + busy_timeout 10s→3s (fail-fast) |
+| 파이프라인 워치독 | `is_force_exit_time(now)` 가드 추가 — 15:10 강제청산 이후 워치독·복구시도 비활성화 |
+| 검증 | `main.py`/`learning/prediction_buffer.py`/`utils/db_utils.py` `ast.parse` 통과. 라이브 미반영(재시작 필요) |
+
+### 활성 알려진 이슈 (이번 세션 신규)
+
+- **PipePerf 정체 근본 원인 미확정**: sub-timing 계측은 추가했으나 다음 정체 재발 전까지 `[Buffer-Timing]`으로 raw_fetch/pred_select/pred_update/pred_insert 중 실제 병목 확인 안 됨
+- **timeout=3.0 단축 부작용 모니터링 필요**: 너무 자주 실패(검증 스킵)하면 상향 검토
+
+### 다음 장 최우선 확인
+
+1. `[PipePerf]` 로그에서 `S1=Xms`로 정상 라벨링 확인 (정체 시 S1이 커야 정상 — STEP1=검증)
+2. `[Buffer-Timing] total=...` 로그 발생 시 raw_fetch/pred_select/pred_update/pred_insert 중 병목 구간 확인
+3. 15:10 이후 "파이프라인 N분 미실행" 경보가 반복되지 않는지, 강제청산 후 `run_minute_pipeline` 추가 실행 로그가 없는지 확인
+4. `[Buffer] verify_and_update 배치 오류` (timeout) 빈도 — 잦으면 timeout 상향 검토
 
 ---
 

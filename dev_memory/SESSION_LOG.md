@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-06-16 (180차 — CB 파이프라인 정체 진단 + 워치독 무한루프 버그 수정)
+
+**Work**: 사용자가 CB 발동 로그(`S2=5976ms` 등)와 15:10 이후 90초 간격 반복 경보 로그 제공 → 두 건 모두 딥다이브로 근본 원인 확정 후 패치.
+
+### [A] PipePerf "S2" 라벨 오프셋 버그 발견 + 수정
+
+`_st.append(("S2", ...))` 등 마커가 각 STEP **시작 지점**에 찍히는데, `_all_steps_str`는 마커 자기 이름을 그 직전 구간 소요시간에 매칭 → 로그의 `S2=Xms`가 실제로는 STEP1(`verify_and_update`, 검증) 본문 시간이었음 (진짜 STEP2 SGD는 항상 5~13ms). 이 때문에 STEP2 내부에 이미 있던 자체 진단(`[S2-느림]`/`[S2-분산GIL]`, `main.py:3469~3507`)이 한 번도 발동하지 않았음 — 엉뚱한 구간을 보고 있었기 때문.
+
+- `main.py` `_all_steps_str` 조립부: `_st[i][0]` → `_st[i-1][0]`로 라벨 교정 (마커 위치는 그대로, 표기만 수정 — 내부 위치 참조 로직 영향 없음)
+
+### [B] `verify_and_update()` 서브타이밍 계측 추가
+
+`learning/prediction_buffer.py`에 `raw_fetch`/`pred_select`/`pred_update`/`pred_insert` 4구간 perf_counter 분해. 총합 300ms 초과 시 `[Buffer-Timing] total=... raw_fetch=... pred_select=... pred_update=... pred_insert=... verified=N`을 LEARNING.log에 출력 — 다음 정체 시 정확한 병목 구간 확정용.
+
+### [C] `verify_and_update()` DB 락·타임아웃 개선
+
+- `utils/db_utils.py` `get_conn()`에 `timeout` 파라미터 추가 (기본 10.0초 유지, 다른 호출부 무영향)
+- `verify_and_update()`의 RAW_DATA_DB/PREDICTIONS_DB 접근을 앱 공용 `_db_write_lock`(`utils.db_utils._lock`)으로 감싸 `_db_write_worker`와 동일 프로세스 내 SQLite 락 경합 제거
+- 두 접근 모두 `timeout=3.0`으로 단축 — 막혀도 10초 대신 3초 안에 fail-fast, 해당 분 검증 스킵 후 다음 분 재시도
+
+### [D] 워치독 무한루프 버그 수정 (15:10 이후 90초 경보 반복)
+
+`_try_pipeline_recovery()`(`main.py:7071`)의 "이미 복구한 분봉" 스킵 분기가 `notify_pipeline_ran()`을 호출해 매번 워치독 경과시간을 0으로 리셋 → 15:10 강제청산 이후 실분봉이 더 안 들어오는 정상 상태인데도 90초 경보가 영원히 반복되고 150s/240s/300s(거래소 CB 대기) 단계로 절대 에스컬레이션되지 않음. 부가로 첫 복구 시도는 `_on_candle_closed()`의 `is_force_exit_time` 가드를 우회해 `run_minute_pipeline()`을 강제청산 후에도 1회 더 실행시키는 부작용도 있었음.
+
+- `_on_pipeline_watchdog()`(`main.py:6936`)·`_try_pipeline_recovery()`(`main.py:7071`) 양쪽에 `is_force_exit_time(now)` 가드 추가 — 15:10 이후는 워치독·복구 시도 자체를 끔
+
+### 검증
+
+3개 파일(`main.py`, `learning/prediction_buffer.py`, `utils/db_utils.py`) `ast.parse` 문법 검증 통과. 라이브 프로세스는 재시작 후 반영.
+
+---
+
 ## 2026-06-16 (179차 — Phase C 슬라이싱 버그 수정 + SGD 최적화 + CORE 그룹 분리 + UI 개선)
 
 **Work**: 178차 호라이즌 피처셋 인프라 적용 후 발생한 ERR-FATAL 다수 수정 → SGD P0·P1·P2 최적화 → CORE 호라이즌 그룹별 분리 → 동적피처 패널 Phase A·B·C 구현 → 점심 추세 진입 최적화.

@@ -4441,7 +4441,7 @@ class TradingSystem:
                         foreign_put_net    = features.get("foreign_put_net", 0),
                         prev_bar_direction = (1 if bar.get("close", 0) > bar.get("open", 0)
                                               else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
-                        time_zone          = time_zone,
+                        time_zone          = _tz,
                         daily_loss_pct     = max(-self.position.daily_stats()["pnl_krw"], 0)
                                              / max(_ts_current_sizer_balance(self), 50_000_000),
                         min_confidence     = _cl_min_conf_pre,
@@ -4469,7 +4469,7 @@ class TradingSystem:
             horizon_agreement=_hz_agreement,
             checklist_grade=_pre_cl_grade,  # 체크리스트 선행 등급 (A/B/C/X)
             trend_gate_active=bool(_tp_active),   # ② TrendGate 편향패널티 비활성화
-            time_zone=time_zone,                  # ③ STABLE_TREND reduce_thr 완화
+            time_zone=_tz,                        # ③ STABLE_TREND reduce_thr 완화
         )
         # selection bias 해소: skip된 비-FLAT 신호를 shadow 버퍼에 보존
         # → STEP 2에서 동일 ts 검증 결과 도착 시 record_outcome 처리
@@ -5208,6 +5208,102 @@ class TradingSystem:
             and not _intraday_block
             and not self.system_health.kill_switch_active   # [SHS-EKS] 당일 관망일
         )
+
+        # ── [DashboardHistory] STEP7 마스터 게이트 — 조건별 통과 여부 + 차단사유
+        # "금일 Conf → 진입단계 추적" 카드가 과거 분봉의 진입 차단 원인을 그대로
+        # 복원할 수 있도록 ensemble_decisions DB에 함께 저장한다 (STEP 9에서 사용).
+        _gate_checks = {
+            "cb_normal":        self.circuit_breaker.is_entry_allowed(),
+            "hc_ok":            not _hc_block,
+            "new_entry_time":   is_new_entry_allowed(),
+            "broker_sync_ok":   not self._broker_sync_block_new_entries,
+            "cooldown_ok":      not _in_cooldown,
+            "exit_cooldown_ok": not _in_exit_cooldown,
+            "armistice_ok":     not _in_armistice,
+            "integrity_ok":     _integrity_ok,
+            "reverse_clamp_ok": not _in_reverse_clamp,
+            "hurst_ok":         _hurst_ok,
+            "atr_ok":           _atr_ok,
+            "mode_filter_ok":   mode_filter_passed,
+            "qty_ok":           _qty_display > 0,
+            "bar_volume_ok":    not _bar_volume_zero,
+            "intraday_ok":      not _intraday_block,
+            "kill_switch_ok":   not self.system_health.kill_switch_active,
+        }
+
+        _entry_block_reason = ""
+        if direction != 0 and self.position.status == "FLAT":
+            _cb_state = self.circuit_breaker.state
+            if _cb_state != "NORMAL":
+                _entry_block_reason = f"[차단] Circuit Breaker {_cb_state} — 진입 불가 (CB 해제까지 대기)"
+            elif _hc_block:
+                _entry_block_reason = (
+                    f"[차단] 고신뢰 연속오답 {self.circuit_breaker._high_conf_wrong_streak}회 "
+                    f"(conf={confidence:.1%}) — HC 차단"
+                )
+            elif self._broker_sync_block_new_entries:
+                _entry_block_reason = f"[차단] 브로커 sync 미검증 상태 — 자동진입 금지 ({self._broker_sync_last_error})"
+            elif _in_armistice:
+                _entry_block_reason = (
+                    f"[차단] Restart Armistice — 재시작 유예 중 "
+                    f"(time_ok={_armistice_time_ok} sync={self._restart_armistice_sync_count}/2)"
+                )
+            elif not _integrity_ok:
+                _entry_block_reason = (
+                    f"[차단] 포지션 무결성 실패 (P1-b) — "
+                    f"연속불일치={self._integrity_fail_count}회"
+                )
+            elif _in_cooldown:
+                _remain = (self._entry_cooldown_until - datetime.datetime.now()).seconds
+                _entry_block_reason = f"[차단] ENTRY 타임아웃 쿨다운 — {_remain}초 후 재진입 가능"
+            elif _in_exit_cooldown:
+                _remain = (self._exit_cooldown_until - datetime.datetime.now()).seconds
+                _entry_block_reason = f"[차단] 청산 후 쿨다운 — {_remain}초 후 재진입 가능"
+            elif _in_reverse_clamp:
+                _clamp_remain = int(180 - (_now_dt - _last_exit_t).total_seconds())
+                _entry_block_reason = (
+                    f"[차단] Reverse Clamp (P3-b) — "
+                    f"청산 후 역방향({_last_exit_dir}→{_entry_dir_str}) {_clamp_remain}s 이내 진입 금지"
+                )
+            elif _intraday_block:
+                _idr = self.current_intraday_regime
+                _idf = self.intraday_regime._last_factors
+                _entry_block_reason = (
+                    f"[차단] IntradayRegime {_idr} — "
+                    f"{'롱' if direction > 0 else '숏'} 금지 "
+                    f"(day={_idf.get('day_ret', 0)*100:+.2f}% "
+                    f"ATR={_idf.get('atr_ratio', 0):.2f} "
+                    f"z={_idf.get('z_warn_count', 0)})"
+                )
+            elif not _hurst_ok:
+                _hurst_val = features.get("hurst", 0.5)
+                _entry_block_reason = f"[차단] Hurst {_hurst_val:.3f} < {HURST_RANGE_THRESHOLD} — 횡보 레짐 진입 차단"
+            elif not _atr_ok:
+                _entry_block_reason = f"[차단] ATR {atr:.2f}pt < {ATR_MIN_ENTRY}pt — 변동성 부족 (휩쏘 위험)"
+            elif not is_new_entry_allowed():
+                _entry_block_reason = "[차단] 15:00 이후 — 신규 진입 금지 구간"
+            elif _auto_blocked:
+                _entry_block_reason = f"[차단] 자동진입 Degraded 최소신뢰도 {_deg_min_conf:.1%} 미달"
+            elif not mode_filter_passed:
+                _entry_block_reason = (
+                    f"[차단] 모드필터 — {_final_grade}급 신호 vs {entry_mode} 모드"
+                    f"({allowed_grades.get(entry_mode, ['A','B','C'])} 만 허용)"
+                )
+            elif _cr is None:
+                _entry_block_reason = ""
+            elif _final_grade == "X":
+                _failed = [k for k, v in _cr["checks"].items() if not v]
+                if "8_time" in _failed and time_zone == "OTHER":
+                    _entry_block_reason = "[차단] 점심 휴식 구간 (11:50~13:00 OTHER) — 체크리스트 8_time 실패"
+                elif "8_time" in _failed:
+                    _entry_block_reason = f"[차단] 진입 금지 시간대 ({time_zone}) — 체크리스트 8_time 실패"
+                else:
+                    _entry_block_reason = f"[차단] 등급X — 미통과 항목: {', '.join(_failed)}"
+            else:
+                _entry_block_reason = ""
+
+        _entry_executed_this_cycle = False
+
         self.dashboard.update_entry(
             _raw_signal_ko,
             confidence,
@@ -5303,6 +5399,7 @@ class TradingSystem:
                         reverse_enabled=reverse_on,
                         entry_horizon=_entry_horizon,
                     )
+                    _entry_executed_this_cycle = True
                 else:
                     # 모드 필터 차단
                     log_manager.signal(
@@ -5341,6 +5438,7 @@ class TradingSystem:
                     reverse_enabled=reverse_on,
                     entry_horizon=_entry_horizon,
                 )
+                _entry_executed_this_cycle = True
 
             else:
                 log_manager.signal(
@@ -5358,73 +5456,11 @@ class TradingSystem:
                 )
 
         # ── 진입 차단 이유 로그 (이유가 바뀔 때만 1회 출력) ──────
+        # _entry_block_reason은 위(_final_entry_ok 계산 직후)에서 동일 우선순위로 산출됨
         if direction != 0 and self.position.status == "FLAT":
-            _cb_state = self.circuit_breaker.state
-            if _cb_state != "NORMAL":
-                _reason = f"[차단] Circuit Breaker {_cb_state} — 진입 불가 (CB 해제까지 대기)"
-            elif _hc_block:
-                _reason = (
-                    f"[차단] 고신뢰 연속오답 {self.circuit_breaker._high_conf_wrong_streak}회 "
-                    f"(conf={confidence:.1%}) — HC 차단"
-                )
-            elif self._broker_sync_block_new_entries:
-                _reason = f"[차단] 브로커 sync 미검증 상태 — 자동진입 금지 ({self._broker_sync_last_error})"
-            elif _in_armistice:
-                _reason = (
-                    f"[차단] Restart Armistice — 재시작 유예 중 "
-                    f"(time_ok={_armistice_time_ok} sync={self._restart_armistice_sync_count}/2)"
-                )
-            elif not _integrity_ok:
-                _reason = (
-                    f"[차단] 포지션 무결성 실패 (P1-b) — "
-                    f"연속불일치={self._integrity_fail_count}회"
-                )
-            elif _in_cooldown:
-                _remain = (self._entry_cooldown_until - datetime.datetime.now()).seconds
-                _reason = f"[차단] ENTRY 타임아웃 쿨다운 — {_remain}초 후 재진입 가능"
-            elif _in_exit_cooldown:
-                _remain = (self._exit_cooldown_until - datetime.datetime.now()).seconds
-                _reason = f"[차단] 청산 후 쿨다운 — {_remain}초 후 재진입 가능"
-            elif _in_reverse_clamp:
-                _clamp_remain = int(180 - (_now_dt - _last_exit_t).total_seconds())
-                _reason = (
-                    f"[차단] Reverse Clamp (P3-b) — "
-                    f"청산 후 역방향({_last_exit_dir}→{_entry_dir_str}) {_clamp_remain}s 이내 진입 금지"
-                )
-            elif _intraday_block:
-                _idr = self.current_intraday_regime
-                _idf = self.intraday_regime._last_factors
-                _reason = (
-                    f"[차단] IntradayRegime {_idr} — "
-                    f"{'롱' if direction > 0 else '숏'} 금지 "
-                    f"(day={_idf.get('day_ret', 0)*100:+.2f}% "
-                    f"ATR={_idf.get('atr_ratio', 0):.2f} "
-                    f"z={_idf.get('z_warn_count', 0)})"
-                )
-            elif not _hurst_ok:
-                _hurst_val = features.get("hurst", 0.5)
-                _reason = f"[차단] Hurst {_hurst_val:.3f} < {HURST_RANGE_THRESHOLD} — 횡보 레짐 진입 차단"
-            elif not _atr_ok:
-                _reason = f"[차단] ATR {atr:.2f}pt < {ATR_MIN_ENTRY}pt — 변동성 부족 (휩쏘 위험)"
-            elif not is_new_entry_allowed():
-                _reason = "[차단] 15:00 이후 — 신규 진입 금지 구간"
-            elif _auto_blocked:
-                _reason = f"[차단] 자동진입 Degraded 최소신뢰도 {_deg_min_conf:.1%} 미달"
-            elif _cr is None:
-                _reason = ""
-            elif _final_grade == "X":
-                _failed = [k for k, v in _cr["checks"].items() if not v]
-                if "8_time" in _failed and time_zone == "OTHER":
-                    _reason = f"[차단] 점심 휴식 구간 (11:50~13:00 OTHER) — 체크리스트 8_time 실패"
-                elif "8_time" in _failed:
-                    _reason = f"[차단] 진입 금지 시간대 ({time_zone}) — 체크리스트 8_time 실패"
-                else:
-                    _reason = f"[차단] 등급X — 미통과 항목: {', '.join(_failed)}"
-            else:
-                _reason = ""
-            if _reason and _reason != self._last_block_reason:
-                log_manager.signal(_reason)
-                self._last_block_reason = _reason
+            if _entry_block_reason and _entry_block_reason != self._last_block_reason:
+                log_manager.signal(_entry_block_reason)
+                self._last_block_reason = _entry_block_reason
         elif direction == 0 or self.position.status != "FLAT":
             self._last_block_reason = ""
 
@@ -5500,8 +5536,14 @@ class TradingSystem:
         _st.append(("end", time.perf_counter()))
         _pipe_ms = (_st[-1][1] - _pipe_t0) * 1000
         # P5: 전 단계 분해 문자열 — CB임박/WARN 양쪽에서 재사용
+        # [라벨 수정] 마커는 각 STEP "시작" 지점에 찍힌다(예: S2 마커 = STEP2 시작).
+        # 따라서 구간 _st[i-1]→_st[i]의 실제 소요시간은 "_st[i-1]에 적힌 STEP"의 본문이다
+        # (예: S1마커→S2마커 구간 = STEP1(검증) 본문, 종전엔 이를 "S2"로 오표기해
+        #  STEP1의 verify_and_update() 정체를 STEP2(SGD)로 오인하게 만들었음).
+        # start 마커는 STEP1 진입 전 준비 구간이므로 "S0"으로 표기.
         _all_steps_str = " ".join(
-            f"{_st[i][0]}={(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
+            f"{_st[i-1][0] if _st[i-1][0] != 'start' else 'S0'}="
+            f"{(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
             for i in range(1, len(_st))
         )
         _retrain_tag_pipe = (
@@ -5557,6 +5599,14 @@ class TradingSystem:
             _nsa(shs=_shs_state["shs"], components=_shs_state)
 
         # ── STEP 9: 예측 DB 저장 (배치 — 1연결 트랜잭션) ──────────
+        # STEP7 마스터 게이트 결과 — 대시보드 "진입단계 추적" 카드 복원용
+        decision["entry_gate"]         = _gate_checks
+        decision["entry_final_ok"]     = bool(_final_entry_ok)
+        decision["entry_qty"]          = int(_qty_display)
+        decision["entry_mode"]         = entry_mode
+        decision["entry_executed"]     = bool(_entry_executed_this_cycle)
+        decision["entry_block_reason"] = _entry_block_reason
+
         _feat_clean = {k: round(float(v), 4) for k, v in features.items()
                        if v is not None and v == v}
         try:
@@ -6070,6 +6120,7 @@ class TradingSystem:
             "gbm_retrain_count": gbm["retrain_count"],
             "raw_candles_count": raw,
             "last_event":        last_ev,
+            **self._load_effect_report_metrics(),
         }
 
     def _load_json_file(self, path: str) -> dict:
@@ -6081,6 +6132,24 @@ class TradingSystem:
         except Exception as exc:
             logger.warning("[EffectReports] json load failed %s: %s", path, exc)
             return {}
+
+    def _load_effect_report_metrics(self) -> dict:
+        """A/B·Calibration·Meta Gate·Rollout 리포트 JSON 일괄 로드.
+
+        LearningPanel(자가학습)·EfficacyPanel(효과 검증) 양쪽 모두
+        동일한 리포트 탭(A/B, Calibration, Meta Gate, Rollout)을 표시하므로
+        로딩 로직을 한 곳에서 공유해 두 패널 간 데이터 불일치를 방지한다.
+        """
+        report_history = self._load_json_file(EFFECT_MONITOR_HISTORY_PATH)
+        if not isinstance(report_history, list):
+            report_history = []
+        return {
+            "ab_metrics": self._load_json_file(os.path.join(BASE_DIR, "microstructure_ab_metrics.json")),
+            "calibration_metrics": self._load_json_file(os.path.join(BASE_DIR, "calibration_metrics.json")),
+            "meta_metrics": self._load_json_file(os.path.join(BASE_DIR, "meta_gate_tuning_metrics.json")),
+            "rollout_metrics": self._load_json_file(os.path.join(BASE_DIR, "rollout_readiness_metrics.json")),
+            "report_history": report_history,
+        }
 
     def _run_effect_report_script(self, script_name: str, *args: str) -> bool:
         script_path = os.path.join(BASE_DIR, "scripts", script_name)
@@ -6217,23 +6286,12 @@ class TradingSystem:
         except Exception as e:
             logger.warning(f"[Efficacy] 쿼리 실패: {e}")
             calib, grades, regime, hist = [], [], [], []
-        ab_metrics = self._load_json_file(os.path.join(BASE_DIR, "microstructure_ab_metrics.json"))
-        calibration_metrics = self._load_json_file(os.path.join(BASE_DIR, "calibration_metrics.json"))
-        meta_metrics = self._load_json_file(os.path.join(BASE_DIR, "meta_gate_tuning_metrics.json"))
-        rollout_metrics = self._load_json_file(os.path.join(BASE_DIR, "rollout_readiness_metrics.json"))
-        report_history = self._load_json_file(EFFECT_MONITOR_HISTORY_PATH)
-        if not isinstance(report_history, list):
-            report_history = []
         return {
             "calibration_bins": calib,
             "grade_stats": grades,
             "regime_stats": regime,
             "accuracy_history": hist,
-            "ab_metrics": ab_metrics,
-            "calibration_metrics": calibration_metrics,
-            "meta_metrics": meta_metrics,
-            "rollout_metrics": rollout_metrics,
-            "report_history": report_history,
+            **self._load_effect_report_metrics(),
             "updated_at": datetime.datetime.now().strftime("%H:%M"),
         }
 
@@ -6937,6 +6995,11 @@ class TradingSystem:
         # 장 마감 후에는 파이프라인이 정상적으로 멈추므로 워치독 무시
         if not is_market_open():
             return
+        # 15:10 강제청산 이후는 예측 파이프라인이 정상적으로 멈추는 구간 —
+        # _try_pipeline_recovery()의 "이미 복구함" 스킵 분기가 notify_pipeline_ran()으로
+        # 워치독을 매번 리셋해 90초 경보가 무한 반복되는 문제 방지 (감시 자체를 끔)
+        if is_force_exit_time(datetime.datetime.now()):
+            return
         m, s = divmod(elapsed_s, 60)
         elapsed_str = f"{m}분 {s:02d}초"
 
@@ -7063,6 +7126,11 @@ class TradingSystem:
                 "[복구 스킵] 거래소 CB 대기 모드 — 분봉 재개 시 자동 복구",
                 "INFO",
             )
+            return
+        # 15:10 강제청산 이후는 파이프라인 정지가 의도된 상태 —
+        # 복구를 시도하면 _on_candle_closed()의 force-exit 가드를 우회해
+        # run_minute_pipeline()이 강제로 다시 돌아버리는 부작용 방지
+        if is_force_exit_time(datetime.datetime.now()):
             return
 
         from utils.db_utils import fetchone

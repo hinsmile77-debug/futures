@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-06-17 (180차 — CB 파이프라인 정체 진단 + 워치독 무한루프 수정)
+
+### 다음 장 즉시 확인 [P0]
+
+- [ ] **PipePerf 라벨 정상화** — `S1=Xms`가 STEP1(검증) 본문을 가리키는지 확인 (종전 S2로 오표기되던 것)
+- [ ] **`[Buffer-Timing]` 로그 확인** — 정체 재발 시 raw_fetch/pred_select/pred_update/pred_insert 중 실제 병목 구간 확정 (179차 "S2 지연 원인" TODO를 이 계측으로 대체)
+- [ ] **15:10 이후 워치독 경보 미반복** — "파이프라인 N분 미실행" 90초 간격 반복 없음 확인
+- [ ] **15:10 이후 강제 파이프라인 재실행 부작용 소멸** — `_try_pipeline_recovery`가 `run_minute_pipeline`을 추가 호출하는 로그 없음 확인
+- [ ] **`verify_and_update` timeout 부작용 점검** — `[Buffer] verify_and_update 배치 오류` (3s timeout 실패) 빈도, 너무 잦으면 timeout 상향 검토
+
+---
+
 ## 2026-06-17 (179차 — Phase C 슬라이싱 + SGD 최적화 + CORE 그룹 분리)
 
 ### 다음 장 즉시 확인 [P0]
@@ -20,7 +32,7 @@
 
 ### 이월 미해결 이슈
 
-- [TODO P1] **S2 지연 원인** — TickUI 폭발(분봉 교체 직후 466건)+DB WAL 경합. 해결책: TickUI throttle 또는 DB WAL timeout 상향
+- [DONE 2026-06-16] **S2 지연 원인** — 180차에서 라벨 오프셋 버그 확인(실제로는 STEP1 `verify_and_update`) + sub-timing 계측·`_lock`+timeout 3s 적용 완료. 위 180차 [P0] 항목으로 후속 확인 진행 중
 - [TODO P1] **feat=121 vs managed=97 불일치** — ScalerWarmup 로드 feat=121, 재학습 97개. registry 재정합 필요
 - [TODO P2] **quality_investor_fetch_count D_FORCE 반복** — 매 5분마다 consec=5 발동. 이진 피처 D_FORCE 차단 검토
 - [TODO P2] **ConstOut 해소 속도** — 재시작 후 1m~30m 순환 ConstOut 14분 지속. CONST_OUTPUT_MIN_BARS 5→3 검토

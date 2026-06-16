@@ -18,10 +18,15 @@ MAX_REASONABLE_TRADE_PNL_PTS = 200.0
 
 
 @contextmanager
-def get_conn(db_path: str):
-    """SQLite 연결 컨텍스트 매니저 (스레드 안전)"""
+def get_conn(db_path: str, timeout: float = 10.0):
+    """SQLite 연결 컨텍스트 매니저 (스레드 안전)
+
+    timeout: busy_timeout(초) — 다른 연결이 DB를 잠그고 있을 때 대기할 최대 시간.
+             파이프라인 크리티컬 경로에서 호출하는 경우 짧게(2~3s) 줘서
+             장시간 블로킹 대신 빠르게 실패시키는 용도로 사용.
+    """
     os.makedirs(DB_DIR, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=10, check_same_thread=False)
+    conn = sqlite3.connect(db_path, timeout=timeout, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     try:
@@ -287,6 +292,13 @@ def _migrate_ensemble_decisions_db():
                 "toxicity_score_ma": "REAL",
                 "toxicity_size_mult": "REAL",
                 "toxicity_reason": "TEXT",
+                # STEP7 마스터 게이트 — 대시보드 "진입단계 추적" 카드 복원용
+                "entry_gate_json": "TEXT",
+                "entry_final_ok": "INTEGER",
+                "entry_qty": "INTEGER",
+                "entry_mode": "TEXT",
+                "entry_executed": "INTEGER",
+                "entry_block_reason": "TEXT",
             }
             for name, dtype in additions.items():
                 if name not in cols:
