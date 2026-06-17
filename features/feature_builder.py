@@ -262,15 +262,13 @@ class FeatureBuilder:
             )
             features["ofi_reversal_speed"]   = float(ofi_rev["reversal_speed"])
             features["bull_reversal_signal"] = float(ofi_rev["bull_reversal_signal"])
-            features["bear_reversal_signal"] = float(ofi_rev["bear_reversal_signal"])
-            # ofi_reversal_signal 제거 (③ deprecated — bull/bear_reversal_signal로 대체됨)
+            # bear_reversal_signal 삭제 (일평균 10봉/일 희소 이진 신호 — 재학습 기여 없음, 260617)
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] OFI reversal 오류 — 기본값 사용: %s", _exc)
             features.update({
                 "ofi_reversal_speed":   0.0,
                 "bull_reversal_signal": 0.0,
-                "bear_reversal_signal": 0.0,
             })
         features["bar_volume"] = float(vol)
         _vh = list(self._vol_history)
