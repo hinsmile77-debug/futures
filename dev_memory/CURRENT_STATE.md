@@ -1,7 +1,62 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-17 (190차 세션) — SGD 학습 B군 피처 N분봉 교정 (중간 단계)
+> 마지막 업데이트: 2026-06-17 (191차 세션) — EOD 재학습 OOM 해결 + py310_64 장외 스케줄러 분리
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-17 (191차 — EOD 재학습 OOM 해결 + py310_64 장외 스케줄러 분리)
+
+### 문제 배경
+
+매일 15:40 `daily_close()` 내 EOD 재학습이 py37_32(32-bit Python) 메모리 단편화로
+`StandardScaler.fit_transform` 중 22.2 MiB 연속 블록 할당 실패 → 재학습 스킵 반복.
+RF 이종 앙상블도 사실상 매일 미학습 상태였음.
+
+### 해결 방안 및 구현
+
+| 파일 | 변경 |
+|---|---|
+| `learning/batch_retrainer.py` | `_save_model` + `_save_feature_names` 4곳에 `pickle.dump(..., protocol=4)` 추가 — py37_32 로드 호환 |
+| `retrain_eod.py` (신규) | py310_64 전용 장외 독립 재학습 스크립트. 완료 마커 `data/eod_retrain_done_{YYYYMMDD}.txt` 생성 |
+| `register_eod_scheduler.ps1` (신규) | 윈도우 스케줄러 매일 **15:45** 자동 등록 스크립트 |
+
+### 실측 결과 (py310_64 / sklearn 1.0.2 / 40,080행×97열)
+
+```
+데이터 로드:  39.9s
+재학습:      169.2s  (GBM 6/6 + RF 6/6 호라이즌)
+합계:        209.4s  (약 3분 30초)
+peak 메모리: ~200 MB  (OOM 없음)
+```
+
+- full_cv=True / False 차이: **0.7초** — 절단 없이 full 재학습해도 CUSUM 필터 효과로 동일
+- py37_32에서 pkl 로드 호환 확인: 6/6 호라이즌 모두 OK (protocol=4 적용)
+
+### py310_64 환경 정보
+
+```
+경로:    C:\Users\82108\anaconda3\envs\py310_64\python.exe
+Python:  3.10.20 64-bit
+sklearn: 1.0.2  (py37_32와 동일 버전 → pkl 완전 호환)
+numpy:   1.26.4
+```
+
+### 스케줄러 등록 완료
+
+```
+태스크명:  MireukiEODRetrain
+실행 시각: 매일 15:45
+다음 실행: 2026-06-18 15:45
+상태:      Ready
+```
+
+### 내일 확인 포인트
+
+- `Get-ScheduledTask -TaskName "MireukiEODRetrain" | Get-ScheduledTaskInfo` → `LastTaskResult: 0`
+- `data/eod_retrain_done_20260618.txt` 생성 확인
+- `logs/retrain_eod_20260618.log` 에서 `6/6 호라이즌 교체` 확인
+- main.py `[EarlyWarmup] scaler 노후` 경고 소멸 여부
 
 ---
 

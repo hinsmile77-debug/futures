@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-06-17 (191차 — EOD 재학습 OOM 해결 + py310_64 장외 스케줄러 분리)
+
+**Work**: 매일 15:40 EOD 재학습이 py37_32 메모리 단편화로 OOM 실패하는 문제를 py310_64 장외 스케줄러 분리로 근본 해결.
+
+### 에러 분석
+
+```
+numpy.core._exceptions._ArrayMemoryError:
+  Unable to allocate 22.2 MiB for an array with shape (30060, 97) and data type float64
+```
+- 원인: 32-bit Python 2GB 가상 주소 공간 단편화 → 연속 22.2 MiB 할당 불가
+- 발생 위치: `StandardScaler.fit_transform` 내부 `temp = X - T` 임시 배열
+- `full_cv=True` (EOD 전용 20k 캡 해제) 상태에서 전체 30k행 처리 중 발생
+
+### 구현
+
+| 파일 | 내용 |
+|---|---|
+| `learning/batch_retrainer.py` | `pickle.dump(..., protocol=4)` 4곳 추가 |
+| `retrain_eod.py` | py310_64 독립 재학습 스크립트 (완료 마커 생성) |
+| `register_eod_scheduler.ps1` | 윈도우 스케줄러 15:45 등록 |
+| `_measure_retrain.py` | 소요 시간 실측 스크립트 |
+| `_check_pkl_compat.py` | pkl 호환성 검증 스크립트 |
+
+### 실측 (py310_64, 40,080행×97열)
+
+- 데이터 로드: 39.9s / 재학습(GBM+RF): 169.2s / **합계 209.4s**
+- peak 메모리: ~200 MB (OOM 없음)
+- pkl 호환 확인: py37_32에서 6/6 호라이즌 로드 성공
+
+| 수정 | 커밋 |
+|---|---|
+| protocol=4 + 장외 스크립트 + 스케줄러 | `7d73e47` 191차 |
+
+---
+
 ## 2026-06-17 (190차 — SGD 학습 B군 피처 N분봉 교정)
 
 **Work**: 189차 분석에서 도출된 SGD 학습-예측 피처 불일치 문제의 중간 단계 교정 구현. B군(봉 크기 의존) 피처만 선별해 N분봉 캐시값으로 교체.

@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-06-17 (191차 — EOD 재학습 OOM 해결 + py310_64 장외 스케줄러)
+
+### 내일 즉시 확인 [P0]
+
+- [ ] **스케줄러 첫 실행 성공** — 15:49 이후 `Get-ScheduledTask -TaskName "MireukiEODRetrain" | Get-ScheduledTaskInfo` → `LastTaskResult: 0`
+- [ ] **완료 마커 생성** — `data/eod_retrain_done_20260618.txt` 존재 확인
+- [ ] **재학습 로그 정상** — `logs/retrain_eod_20260618.log` 에서 `6/6 호라이즌 교체` + `합계 ~210s` 확인
+- [ ] **EarlyWarmup 경고 소멸** — main.py 시작 시 `[EarlyWarmup] scaler 노후=17h` 경고 없어야 함
+
+### 잠재 리스크 [P1]
+
+- [ ] **스케줄러 실패 시 대응** — `LastTaskResult != 0`이면 `logs/retrain_eod_20260618.log` + `data/eod_retrain_fail_20260618.txt` 확인 → 수동 실행: `C:\Users\82108\anaconda3\envs\py310_64\python.exe retrain_eod.py`
+- [ ] **daily_close OOM 로그 계속 출력** — 기존 try/except는 유지 중. 스케줄러와 별개로 OOM 스킵 로그 계속 나올 수 있음 (정상, 스케줄러가 보완)
+
+---
+
 ## 2026-06-17 (190차 — SGD B군 피처 N분봉 교정)
 
 ### 다음 장 즉시 확인 [P0]
