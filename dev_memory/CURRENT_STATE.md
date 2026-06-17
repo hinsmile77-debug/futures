@@ -1,7 +1,41 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-16 (182차 세션) — EOD MemoryError 복구 + validate_and_resync() 허위 정합성오류·재학습 무한루프 버그 수정
+> 마지막 업데이트: 2026-06-17 (189차 세션) — SGD UP/DN 붕괴 감지 + BAR_CACHE_DECAY 적용 + FULL_RESET_PENDING 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-17 (189차 — SGD UP/DN 붕괴 감지 + BAR_CACHE_DECAY 적용 + FULL_RESET_PENDING 수정)
+
+### 현재 시스템 상태
+
+| 항목 | 상태 |
+|---|---|
+| SGD 단방향 붕괴 감지 | `learning/online_learner.py` — FL 단독 감지 → UP/DN/FL 3방향 통합. `u=1.000` / `d=1.000` 15분 지속 시 해당 호라이즌 SGD 자동 리셋. 오늘 30m UP(19분) + 5m/10m DN(4~9분) 붕괴가 자동 복구 없이 방치된 것이 계기 |
+| SGD_FULL_RESET_PENDING | `config/settings.py:109` `True → False`. 재시작마다 첫 GBM 재학습 시 `reset_full()` 반복 발동 → acc_buf 소실·SGD비중 30% 초기화 문제 해소. 오늘 14:21 재학습 완료 시 SGD 완전 초기화가 발생한 근본 원인 |
+| BAR_CACHE_DECAY 적용 | `main.py:3916-3920` — 정의만 되고 미사용이던 `_BAR_CACHE_DECAY`를 실제 적용. bar_age 경과 시 캐시 피처값 점진 감쇠 (30m: 0.97^age). conf 고착 + SGD collapse 동시 완화 |
+
+### 세션 중 발견된 이슈 (수정 완료)
+
+| 이슈 | 원인 | 수정 |
+|---|---|---|
+| `15m sgd=u=0.998 11분 고착` | UP 붕괴 감지 없음 (FL만 감지) | UP/DN/FL 3방향 감지로 통합 |
+| 14:21 SGD 갑자기 초기화 | `SGD_FULL_RESET_PENDING=True` 파일에 잔존 | False로 수정 |
+| `[CONF⚠] 30m bar_age=19` conf 고착 | `_BAR_CACHE_DECAY` 미적용 | 실제 적용 |
+
+### 오늘 50분정확도 분포 분석 (참고)
+
+- 총 358분 관측, 평균 42.0% (기준 48% 미달)
+- 0.0% 32분(8.9%): SGD 붕괴 구간
+- 50.0% 41분(11.5%): fallback(acc_buf 비어있음) — 초기 P2-D 전체 차단 또는 SGD 리셋 직후
+- P2-D 필터(conf<0.52)가 오늘 전체 예측의 89.4%를 차단 → 실학습 극히 희소
+- "50분정확도" 라벨은 ACCURACY_WINDOW=100 기준 실제 100분 윈도우 (명칭 불일치)
+
+### 다음 장 최우선 확인
+
+1. `[OnlineLearner] Xm SGD UP붕괴 자동 복구` / `DN붕괴 자동 복구` 로그 정상 출력 확인
+2. `[CONF⚠] Xm bar_age=N` 고착 분수가 이전 대비 감소하는지 확인 (BAR_CACHE_DECAY 효과)
+3. `SGD_FULL_RESET_PENDING` 관련 재시작 후 `[SGD] threshold 교체 후 완전 리셋 완료` 로그 미출력 확인
 
 ---
 

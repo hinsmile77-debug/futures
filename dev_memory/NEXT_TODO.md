@@ -8,6 +8,75 @@
 
 ---
 
+## 2026-06-17 (189차 — SGD 붕괴 감지 + BAR_CACHE_DECAY + FULL_RESET_PENDING)
+
+### 다음 장 즉시 확인 [P0]
+
+- [ ] **UP/DN 붕괴 자동 복구 로그** — `[OnlineLearner] Xm SGD UP붕괴 자동 복구 (≥95% 15분 지속)` 또는 `DN붕괴` 로그가 실제 붕괴 시 출력되는지 확인
+- [ ] **conf 고착 분수 감소** — `[CONF⚠] Xm bar_age=N` 에서 N이 이전(19분) 대비 낮아지는지 확인 (BAR_CACHE_DECAY 효과)
+- [ ] **SGD 리셋 미발동** — 재시작 후 GBM 재학습 완료 시 `[SGD] threshold 교체 후 완전 리셋 완료` 로그 없음 확인 (FULL_RESET_PENDING=False 효과)
+- [ ] **SGD비중 안정성** — GBM 재학습 완료 후 SGD비중이 30%로 초기화되지 않고 이전 값 유지되는지 확인
+
+### 잠재 리스크 모니터링 [P1]
+
+- [ ] **BAR_CACHE_DECAY 과감쇠 여부** — 15m bar_age=14 → 0.92^14=0.33배. 신호가 너무 약해져 FL로 수렴하는지 모니터링. 심하면 decay 값 완화 검토
+- [ ] **P2-D 필터 과도 차단** — 오늘 89.4% 차단. conf<0.52 임계값 완화(0.44~0.46) 검토 필요
+
+---
+
+## 2026-06-17 (185·186차 — pred_select CB⑤ 근본 수정 + FL편향 3종 수정)
+
+### 다음 장 즉시 확인 [P0]
+
+- [ ] **[185차] pred_select < 300ms** — 09:31~09:45 CB⑤ 패턴 소멸. `[Buffer-Timing]` 경보 없음 확인
+- [ ] **[185차] CB⑤ 미발동** — 09:30~09:50 `[CB] 5분 진입 정지` 로그 없음
+- [ ] **[186차] UP예측 출현** — 오전 상승장에서 `앙상블: dir=+1` 로그 확인 (기존 UP=0건)
+- [ ] **[186차] EarlyDirDamp 조기 발동** — `[EarlyDirDamp] 3m FL=47% 10min → weight×0.2` 형태 로그 확인
+- [ ] **[186차] BiasReset 조기 발동** — FL=70% 이상 10분 → `[BiasReset] Xm FL편향 70% Y분 지속` 로그
+
+### 재학습 후 확인 [P1]
+
+- [ ] **FLAT_CAP 효과** — 재학습 후 `[Retrain] X동적가중치 FL=0.55 UP=0.65` 비율 확인 (DEBUG 로그)
+- [ ] **3m/5m 예측 분포 정상화** — `[Bias] 3m UP=X DN=X FL=X` 에서 UP≥5건 이상 출현
+
+---
+
+## 2026-06-17 (184차 — 봉차트 손익 이력 분실 3종 버그 수정)
+
+### 다음 장 즉시 확인 [P0]
+
+- [ ] **[Fix1] stuck exit 시 차트 이력 보존** — stuck exit(브로커 무포지션) 발생 시 `[ChartFix] stuck exit 차트·DB 합성 기록:` 로그가 SYSTEM.log에 출력되고, 봉차트에 해당 거래 스팬이 남는지 확인
+- [ ] **[Fix2] 마커 위치 정확도** — 체결 봉차트에서 청산 마커가 실제 체결 분봉에 위치하는지 확인 (기존 1~2초 오프셋 개선)
+- [ ] **[Fix3] ChartWarn 무음 로그** — 정상 동작 시 `[ChartWarn] record_exit(finalize=True) called with no active_trade` 로그가 나오지 않아야 함. 나온다면 새로운 stuck 경로 존재 가능성
+
+### 이월 관찰 이슈
+
+- [ ] **trades DB 재확인** — stuck exit 발생 후 재열기 시 차트에 해당 거래가 표시되는지 (`SELECT * FROM trades WHERE exit_reason = 'stuck_exit_flat'`)
+
+---
+
+## 2026-06-17 (183차 — retrain worker MemoryError 미처리 버그 수정)
+
+### 수정 배경
+- 06-16 EOD 재학습이 자동종료(15:41:40)로 인터럽트 → eod_retrain_ok_date 미저장
+- 06-17 08:55 PreRetrain 시작 → 40093행 풀 GBM 학습 중 MemoryError 발생
+- `except Exception`이 BaseException(MemoryError) 못 잡음 → `_gbm_retrain_running=True` 고착
+- 장중 모든 재학습 skip → `_pre_retrain_done=False` → 사이즈 ×0.6 하루 종일 지속
+
+### 다음 장 즉시 확인 [P0]
+
+- [ ] **MemoryError 재발 없음** — LEARNING.log에 `[Retrain] 완료 | ...초 | 성공=6/6` 로그 확인 (08:55~08:59 사이)
+- [ ] **`_pre_retrain_done=True` 해제** — `[EntryGate] GBM 첫 재학습 완료(방법3 레이블) — 사이즈 제한 해제` (SYSTEM.log)
+- [ ] **사이즈 축소 ×0.6 없음** — `[EntryGate] 사이즈 축소 ×0.6 (GBM 재학습 전)` 로그 없음 확인
+- [ ] **MemoryError 발생 시 플래그 해제 확인** — 혹시 재학습 실패하더라도 `[GBM] ...재학습 건너뜀: MemoryError` 로그가 LEARNING.log에 남는지 확인 (이전엔 아무 로그도 없었음)
+
+### 이월 관찰 이슈
+
+- [ ] **pred_select 5-12초 병목 (S1)** — verified=6 전환 시점(30m 첫 채점 후) predictions DB 쿼리 풀스캔 의심. `ts`/`horizon` 컬럼 인덱스 추가 검토
+- [ ] **30m FL편향 87%** — 09:50~10:07 구간 FL편향 심각. BiasReset 발동 여부 확인
+
+---
+
 ## 2026-06-17 (182차 — EOD MemoryError 복구 + validate_and_resync() 허위 정합성오류 수정)
 
 ### 다음 장 즉시 확인 [P0]

@@ -4,6 +4,61 @@
 
 ---
 
+## 2026-06-17 (189차 — SGD UP/DN 붕괴 감지 + BAR_CACHE_DECAY 적용 + FULL_RESET_PENDING 수정)
+
+**Work**: 장중 `15m sgd=u=0.998 11분 고착` 알림을 계기로 SGD 붕괴 감지 구조 점검. 오늘 50분정확도 분포 전체 분석(358분). BAR_CACHE_DECAY 미사용 발견 및 적용. N분봉 현실화 구조 설계 검토.
+
+### [A] SGD UP/DN 붕괴 감지 추가 (`learning/online_learner.py`)
+
+기존: `flat > 0.95` 연속 15회만 감지 → UP/DN 붕괴 방치.
+오늘 실제: `30m u=1.000 19분`, `5m d=1.000 4분`, `10m d=1.000 9분` 동시 붕괴 방치 확인.
+
+`_sgd_fl_collapse_ticks` → `_sgd_collapse_ticks` + `_sgd_collapse_dir` 통합.
+UP/DN/FL 중 어느 방향이든 0.95 초과 15분 연속 시 해당 호라이즌 SGD 리셋.
+방향 전환 시 카운터 초기화. `reset_daily`/`reset_full`에도 새 변수 초기화 추가.
+
+### [B] SGD_FULL_RESET_PENDING 수정 (`config/settings.py`)
+
+오늘 14:21 GBM 재학습 완료 후 SGD비중 26%→30%, 50분정확도 48.9%→50.0% 갑자기 초기화 원인 추적.
+`settings.py:109` `SGD_FULL_RESET_PENDING = True`가 파일에 잔존 → 재시작마다 첫 GBM 재학습 시 `reset_full()` 반복 발동.
+`False`로 수정. threshold 교체 등 필요 시 수동으로 True 세팅 후 재시작.
+
+### [C] BAR_CACHE_DECAY 실제 적용 (`main.py:3916-3920`)
+
+`_BAR_CACHE_DECAY = {3:0.97, 5:0.95, 10:0.93, 15:0.92, 30:0.97}` 정의만 있고 미사용이었음.
+캐시 존재 시 `bar_age`와 무관하게 원값 그대로 사용 → 30m는 29분간 동일 피처 입력 → conf 고착.
+`_hz_feat_vecs[h] = cache[h] * decay^age` 적용.
+30m bar_age=19 → 0.97^19=0.56배 감쇠 → 시간 경과 시 conf가 자연스럽게 중립으로 이동.
+
+### [D] 오늘 50분정확도 분포 분석 (참고 기록)
+
+| 구간 | 빈도 | 원인 |
+|---|---|---|
+| 0.0% | 32분(8.9%) | SGD 붕괴 |
+| 50.0% | 41분(11.5%) | acc_buf 비어있음(fallback) |
+| <33.3% | 86분(24.0%) | 랜덤 이하 |
+| ≥48% | 140분(39.1%) | 정상 |
+
+P2-D 필터(conf<0.52)가 오늘 89.4% 차단 → 실학습 분당 0~1건. "N건 학습" 로그는 검증 건수(≠실학습 건수).
+"50분정확도" 라벨은 ACCURACY_WINDOW=100 기준 실제 100분 윈도우.
+
+### [E] N분봉 피처 현실화 구조 검토 (설계 논의, 미수정)
+
+- GBM 학습(Phase 2): N분봉 재계산 피처 ✅
+- GBM 예측: `_hz_feat_cache[h]` N분봉 피처 ✅
+- SGD 예측: `_hz_feat_vecs[h]` N분봉 피처 ✅
+- SGD 학습: `_dv.get("features")` DB 저장 1분봉 피처 ❌ → 예측-학습 피처값 불일치
+- 피처 이름(NAME) 세트는 `horizon_feature_sets.json`으로 호라이즌별 고정. 불일치는 이름이 아닌 값(VALUE)의 출처 문제.
+- N분봉 캐시 없을 때 전 호라이즌 동일하게 `get_horizon_features(1m피처, h)` 반감기 fallback 사용. 3m는 2분, 30m는 29분간 fallback.
+
+| 수정 | 파일 | 커밋 |
+|---|---|---|
+| SGD UP/DN 붕괴 감지 통합 | `learning/online_learner.py` | `1f1445c` 189차 |
+| SGD_FULL_RESET_PENDING False | `config/settings.py` | `1f1445c` 189차 |
+| BAR_CACHE_DECAY 실제 적용 | `main.py` | `1f1445c` 189차 |
+
+---
+
 ## 2026-06-16 (182차 — EOD MemoryError 복구 + validate_and_resync() 허위 정합성오류·재학습 무한루프 버그 수정)
 
 **Work**: 오늘 15:40 EOD가 MemoryError로 중단된 것을 점검·복구. 복구 과정에서 발견된 "[Model] 정합성 오류 6개 호라이즌" 로그(오늘 7회 발생)를 딥다이브해 별도의 구조적 버그를 확정·수정.
