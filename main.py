@@ -5653,6 +5653,15 @@ class TradingSystem:
             else:
                 _sgd_h_indices = getattr(self.model, "_hz_feat_indices", {})
                 _min_conf_sgd  = 0.52   # P2-D: 저신뢰 레이블 오염 차단
+                # B군 피처 교정: 장기 호라이즌의 봉 크기 의존 피처(ATR·거래량·hurst 등)를
+                # DB 저장 1분봉값 대신 _hz_feat_cache N분봉값으로 교체.
+                # 미래 오염 없음(N분봉값 자체는 학습 시점 기준 과거 완성봉).
+                _SGD_BGROUP_FEATS = {
+                    "10m": ["hurst", "mlofi_slope", "vwap_momentum", "cvd_monotone_ratio"],
+                    "15m": ["volume_acceleration", "avg_volume", "atr_ratio", "toxicity_atr_stress"],
+                    "30m": ["atr_ratio", "toxicity_score_ma", "queue_signal_ma",
+                            "toxicity_atr_stress", "threshold_feasibility"],
+                }
                 for _dv in _sgd_deferred_verified:
                     # P2-D: 고신뢰도 필터 — conf < 0.52 예측 결과는 학습 제외
                     if float(_dv.get("confidence", 0.0)) < _min_conf_sgd:
@@ -5664,6 +5673,17 @@ class TradingSystem:
                     )
                     # P0-SGD: 호라이즌별 피처 슬라이싱 — GBM과 동일한 피처셋 사용
                     _hz_learn = _dv["horizon"]
+                    # B군 피처 교정: N분봉 캐시값으로 덮어쓰기 (슬라이싱 전)
+                    _b_feats = _SGD_BGROUP_FEATS.get(_hz_learn)
+                    if _b_feats and _hz_learn in self._hz_feat_cache:
+                        _cache_vec = self._hz_feat_cache[_hz_learn]
+                        _fn_list   = self.model.feature_names
+                        for _bf in _b_feats:
+                            try:
+                                _bi = _fn_list.index(_bf)
+                                _dx_full[_bi] = float(_cache_vec[_bi])
+                            except (ValueError, IndexError):
+                                pass
                     _h_idx_learn = _sgd_h_indices.get(_hz_learn)
                     _dx_learn = _dx_full[_h_idx_learn] if _h_idx_learn is not None else _dx_full
                     self.online_learner.learn(
