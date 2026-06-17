@@ -383,7 +383,12 @@ class EnsembleDecision:
             _up_p  = float(_hp.get("up",   0.0))
             _dn_p  = float(_hp.get("down", 0.0))
             _max_p = max(_fl_p, _up_p, _dn_p)
-            if _max_p > 0.50:
+            # FL은 0.43 이상이면 streak 누적 (UP/DN은 기존 0.50 유지)
+            # 근거: 3m/5m GBM raw FL≈0.47 → 0.50 임계로는 streak 미누적 → 감쇠 미발동
+            #       FL 편향의 임계를 낮춰 10분 지속 시 앙상블 가중치 0.2× 적용
+            _fl_dominant = _fl_p == _max_p and _fl_p > 0.43
+            _dir_dominant = _fl_p != _max_p and _max_p > 0.50
+            if _fl_dominant or _dir_dominant:
                 self._fl_streak[_h] = self._fl_streak.get(_h, 0) + 1
             else:
                 self._fl_streak[_h] = 0

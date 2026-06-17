@@ -3364,7 +3364,8 @@ class TradingSystem:
                     datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
                 )
                 _bias_thresh_min = (5 if _in_coldstart else 10) if _biased_dir == "FL" else 5
-                if _tot >= 15 and _dir_bias_r >= 0.80:
+                # 0.80→0.70: 3m/5m FL=75~79% 구간이 80% 미달로 BiasReset 미발동하는 gap 해소
+                if _tot >= 15 and _dir_bias_r >= 0.70:
                     self._bias_fl_streak[_h] = self._bias_fl_streak.get(_h, 0) + 1
                     if (self._bias_fl_streak[_h] >= _bias_thresh_min
                             and _h not in self._bias_override_horizons):
