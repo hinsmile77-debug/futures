@@ -1,0 +1,190 @@
+"""
+미륵이 EOD 재학습 스크립트 (py310_64 전용)
+---
+윈도우 스케줄러에서 매일 15:45 자동 실행.
+main.py 종료 후 독립 프로세스로 full 재학습 수행.
+
+실행 환경: py310_64 (Python 3.10 64-bit, scikit-learn=1.0.2)
+저장 형식: pickle protocol=4 → py37_32 main.py 로드 호환
+
+로그: logs/retrain_eod_{YYYYMMDD}.log
+완료 마커: data/eod_retrain_done_{YYYYMMDD}.txt
+  → main.py EarlyWarmup에서 이 파일 확인 → 불필요 warmup 스킵
+"""
+
+import sys
+import os
+import gc
+import time
+import datetime
+import logging
+import traceback
+
+# ── 프로젝트 루트 설정 ────────────────────────────────────────────
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+_TODAY = datetime.datetime.now().strftime("%Y%m%d")
+_LOG_PATH    = os.path.join(_ROOT, "logs", f"retrain_eod_{_TODAY}.log")
+_MARKER_PATH = os.path.join(_ROOT, "data", f"eod_retrain_done_{_TODAY}.txt")
+_FAIL_PATH   = os.path.join(_ROOT, "data", f"eod_retrain_fail_{_TODAY}.txt")
+
+os.makedirs(os.path.join(_ROOT, "logs"), exist_ok=True)
+os.makedirs(os.path.join(_ROOT, "data"), exist_ok=True)
+
+# ── 로거 독립 설정 ────────────────────────────────────────────────
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+_fh  = logging.FileHandler(_LOG_PATH, encoding="utf-8")
+_fh.setFormatter(_fmt)
+_ch  = logging.StreamHandler(sys.stdout)
+_ch.setFormatter(_fmt)
+
+logging.root.handlers = []
+logging.root.setLevel(logging.INFO)
+logging.root.addHandler(_fh)
+logging.root.addHandler(_ch)
+
+# 하위 모듈 로거 레벨 제어
+logging.getLogger("LEARNING").setLevel(logging.INFO)
+
+log = logging.getLogger("EOD_RETRAIN")
+
+
+# ── 환경 검증 ─────────────────────────────────────────────────────
+def _check_env():
+    bits = "64-bit" if sys.maxsize > 2**32 else "32-bit"
+    try:
+        import sklearn
+        sk_ver = sklearn.__version__
+    except ImportError:
+        sk_ver = "미설치"
+    try:
+        import numpy as np
+        np_ver = np.__version__
+    except ImportError:
+        np_ver = "미설치"
+
+    log.info("=" * 55)
+    log.info("미륵이 EOD 재학습 시작")
+    log.info("Python : %s %s", sys.version.split()[0], bits)
+    log.info("sklearn: %s", sk_ver)
+    log.info("numpy  : %s", np_ver)
+    log.info("=" * 55)
+
+    if bits != "64-bit":
+        log.error("32-bit Python 감지 — py310_64 환경으로 실행해야 합니다. 종료.")
+        sys.exit(2)
+
+
+# ── 알림 (실패 시) ───────────────────────────────────────────────
+def _notify_fail(msg: str):
+    try:
+        from utils.notify import notify as _nfy
+        _nfy(f"[EOD재학습] 실패: {msg}", "ERROR")
+    except Exception:
+        pass  # 알림 모듈 없어도 무시
+
+
+# ── 메인 재학습 ───────────────────────────────────────────────────
+def main():
+    _check_env()
+
+    # 중복 실행 방지: 완료 마커가 이미 존재하면 스킵
+    if os.path.exists(_MARKER_PATH):
+        log.info("완료 마커 존재 — 오늘 재학습 이미 완료됨. 종료.")
+        sys.exit(0)
+
+    t_start = time.perf_counter()
+
+    try:
+        from learning.batch_retrainer import BatchRetrainer
+        from config.settings import RETRAIN_WEEKS_BACK
+
+        retrainer = BatchRetrainer()
+
+        log.info("데이터 로드 시작 (weeks_back=%d)", RETRAIN_WEEKS_BACK)
+        gc.collect()
+        t1 = time.perf_counter()
+        X, y_dict, feature_names = retrainer._load_from_db(RETRAIN_WEEKS_BACK)
+        t_load = time.perf_counter() - t1
+
+        if X is None:
+            raise RuntimeError("DB 데이터 없음 — raw_data.db 확인 필요")
+
+        log.info(
+            "데이터 로드 완료: %d행 × %d열  (%.1fs)",
+            X.shape[0], X.shape[1], t_load,
+        )
+
+        gc.collect()
+        log.info(
+            "재학습 시작: force=True, intraday=False, full_cv=True  "
+            "(절단 없음, 300그루, 3-fold CV)"
+        )
+        t2 = time.perf_counter()
+        result = retrainer.retrain_now(
+            X=X,
+            y_dict=y_dict,
+            feature_names=feature_names,
+            force=True,
+            intraday=False,
+            full_cv=True,
+        )
+        t_retrain = time.perf_counter() - t2
+        t_total   = time.perf_counter() - t_start
+
+        if not result.get("ok"):
+            raise RuntimeError(f"retrain_now 실패: {result.get('error')}")
+
+        horizons_ok = sum(
+            1 for r in result.get("horizons", {}).values() if r.get("replaced")
+        )
+        log.info(
+            "재학습 완료: 호라이즌 교체=%d/%d  재학습=%.1fs  로드=%.1fs  합계=%.1fs",
+            horizons_ok,
+            len(result.get("horizons", {})),
+            t_retrain,
+            t_load,
+            t_total,
+        )
+
+        # 완료 마커 기록
+        with open(_MARKER_PATH, "w", encoding="utf-8") as f:
+            f.write(
+                f"completed: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"rows: {X.shape[0]}\n"
+                f"cols: {X.shape[1]}\n"
+                f"horizons_replaced: {horizons_ok}/{len(result.get('horizons', {}))}\n"
+                f"t_load_s: {t_load:.1f}\n"
+                f"t_retrain_s: {t_retrain:.1f}\n"
+                f"t_total_s: {t_total:.1f}\n"
+            )
+        log.info("완료 마커 저장: %s", _MARKER_PATH)
+
+        # 이전 실패 마커 제거
+        if os.path.exists(_FAIL_PATH):
+            os.remove(_FAIL_PATH)
+
+        log.info("=" * 55)
+        log.info("EOD 재학습 정상 완료 — 합계 %.1fs", t_total)
+        log.info("=" * 55)
+        sys.exit(0)
+
+    except Exception as exc:
+        t_total = time.perf_counter() - t_start
+        tb = traceback.format_exc()
+        log.error("EOD 재학습 예외 (%.1fs 경과):\n%s", t_total, tb)
+
+        with open(_FAIL_PATH, "w", encoding="utf-8") as f:
+            f.write(
+                f"failed: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"error: {exc}\n\n{tb}"
+            )
+
+        _notify_fail(str(exc))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

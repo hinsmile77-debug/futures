@@ -609,10 +609,10 @@ class BatchRetrainer:
         _tmp_model  = path       + ".tmp"
         _tmp_scaler = scaler_path + ".tmp"
         with open(_tmp_model, "wb") as f:
-            pickle.dump(model, f)
+            pickle.dump(model, f, protocol=4)   # py37_32 호환 상한
         os.replace(_tmp_model, path)
         with open(_tmp_scaler, "wb") as f:
-            pickle.dump(scaler, f)
+            pickle.dump(scaler, f, protocol=4)  # py37_32 호환 상한
         os.replace(_tmp_scaler, scaler_path)
         with open(acc_path, "w") as f:
             f.write(str(acc))
@@ -626,12 +626,12 @@ class BatchRetrainer:
         if horizon_key:
             h_path = os.path.join(self.model_dir, "feature_names_{}.pkl".format(horizon_key))
             with open(h_path, "wb") as f:
-                pickle.dump(list(feature_names), f)
+                pickle.dump(list(feature_names), f, protocol=4)   # py37_32 호환 상한
         else:
             # 공유 pkl: 전체 피처셋 저장 (구버전 모델과의 호환성)
             feature_path = os.path.join(self.model_dir, "feature_names.pkl")
             with open(feature_path, "wb") as f:
-                pickle.dump(list(feature_names), f)
+                pickle.dump(list(feature_names), f, protocol=4)   # py37_32 호환 상한
 
     def _load_feature_names(self, horizon_key: str = None):
         # type: (str) -> list
