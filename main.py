@@ -3867,7 +3867,9 @@ class TradingSystem:
 
         # ── Phase 2: 호라이즌별 완성봉 기반 feat_vec 캐시 관리 ──────
         # _p2_completed는 STEP 4 끝에서 생성됨
-        _BAR_CACHE_DECAY = {3: 0.97, 5: 0.95, 10: 0.93, 15: 0.92, 30: 0.90}
+        # 30m: 0.90→0.97 완화 — 0.90^22=0.098으로 방향성 신호가 22분 후 사실상 소멸해
+        # 블렌딩이 FL로 수렴하는 문제 방지. 0.97^22=0.515로 절반 수준까지만 감쇠.
+        _BAR_CACHE_DECAY = {3: 0.97, 5: 0.95, 10: 0.93, 15: 0.92, 30: 0.97}
         try:
             import numpy as _np_p2
             _fn = self.model.feature_names

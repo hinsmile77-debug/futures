@@ -206,11 +206,15 @@ class OnlineLearner:
         h_count = self._horizon_counts.get(horizon, 0)
         gbm_flat = gbm_proba.get("flat", 1/3)
 
+        # P2-E 임계: 장기 호라이즌(10m 이상)은 FL 구조 편향이 더 강해 낮은 임계에서 SGD 투입
+        _p2e_flat_thr = 0.48 if horizon in ("10m", "15m", "30m") else 0.60
+
         if h_count < 20:
             # 완전 초기: GBM 전용 (uniform SGD가 conf 희석)
             w_gbm, w_sgd = 1.0, 0.0
-        elif h_count < 50 and gbm_flat > 0.60:
+        elif h_count < 50 and gbm_flat > _p2e_flat_thr:
             # P2-E: GBM FLAT 편향 감지 → 조기 SGD 20% 투입
+            # 장기 호라이즌 임계 0.48 (기존 0.60): 30m gbm_flat≈0.47도 포착
             w_gbm, w_sgd = 0.80, 0.20
         elif h_count < 50:
             w_gbm, w_sgd = 0.95, 0.05

@@ -172,6 +172,9 @@ def init_predictions_db():
             "CREATE INDEX IF NOT EXISTS idx_ts ON predictions(ts)")
     execute(PREDICTIONS_DB,
             "CREATE INDEX IF NOT EXISTS idx_horizon ON predictions(horizon)")
+    # 복합 인덱스 — verify_and_update의 WHERE ts=? AND horizon=? AND actual IS NULL 최적화
+    execute(PREDICTIONS_DB,
+            "CREATE INDEX IF NOT EXISTS idx_ts_hz ON predictions(ts, horizon)")
     execute(
         PREDICTIONS_DB,
         """
