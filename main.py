@@ -6004,8 +6004,10 @@ class TradingSystem:
             result = self.position.close_position(price, "15:10 강제청산")
             self._post_exit(result)
 
-    def _post_exit(self, result: dict):
-        """청산 후 처리"""
+    def _post_exit(self, result: dict, filled_at=None):
+        """청산 후 처리.
+        filled_at: Cybos Chejan 콜백에서 전달된 실제 체결 시각 (None이면 now() 사용)
+        """
         pnl = result["pnl_pts"]
         was_correct = pnl > 0
         if was_correct:
@@ -6055,9 +6057,10 @@ class TradingSystem:
             f"@ {result['exit_price']} ({result['exit_reason']})",
             f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  │ 금일 {_daily['pnl_krw']:+,.0f}원",
         )
+        # [Fix2] filled_at 우선 사용 — Cybos 비동기 경로에서 실제 체결 시각으로 마커 위치 정확화
         self.dashboard.minute_chart_record_exit(
             result["exit_price"],
-            datetime.datetime.now(),
+            filled_at or datetime.datetime.now(),
             finalize=True,
             pnl_pts=result.get("pnl_pts"),
             reason=result.get("exit_reason", ""),
@@ -8501,7 +8504,7 @@ def _ts_handle_exit_fill(
     agg_result = _ts_build_agg_exit_result(result, pending)
     _ts_apply_exit_cooldown(self, agg_result, filled_at)
     self._exit_cooldown_applied_this_fill = True
-    self._post_exit(agg_result)
+    self._post_exit(agg_result, filled_at=filled_at)
     _ts_log_diag(
         self,
         "ExitFillFlow",
@@ -8565,7 +8568,7 @@ def _ts_handle_external_fill(
         else:
             _ts_apply_exit_cooldown(self, result, filled_at)
             self._exit_cooldown_applied_this_fill = True
-            self._post_exit(result)
+            self._post_exit(result, filled_at=filled_at)
             if self.position.status == "FLAT":
                 self.dashboard.minute_chart_clear_active_position()
                 _ts_force_balance_flat_ui(self, f"external_exit:{reason_label}")
@@ -8740,6 +8743,69 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
 
     if broker_row is None:
         before = _ts_get_position_snapshot(self)
+
+        # [Fix1] stuck exit 차트·DB 합성 기록
+        # _active_trade가 clear 전에 completed_trades로 이동해야 이력이 보존됨
+        _sq_filled = int(pending.get("agg_exit_qty") or 0)
+        _sq_price_x_qty = float(pending.get("agg_exit_price_x_qty") or 0.0)
+        _sq_pnl_pts = float(pending.get("agg_exit_pnl_pts") or 0.0)
+        _sq_pnl_krw = float(pending.get("agg_exit_pnl_krw") or 0.0)
+        _sq_direction = str(pending.get("direction") or "")
+        _sq_last_fill_at = pending.get("last_fill_at") or datetime.datetime.now()
+        _sq_avg_price = (
+            _sq_price_x_qty / _sq_filled
+            if _sq_filled > 0 and _sq_price_x_qty > 0
+            else float(pending.get("price_hint") or 0.0)
+        )
+        if _sq_avg_price > 0:
+            # (a) 차트 — finalize=True 로 _active_trade → completed_trades 이동
+            self.dashboard.minute_chart_record_exit(
+                _sq_avg_price,
+                _sq_last_fill_at,
+                finalize=True,
+                pnl_pts=_sq_pnl_pts,
+                reason="stuck_exit_flat",
+                direction=_sq_direction,
+            )
+            # (b) trades DB — 집계된 체결 수량만큼 합성 기록
+            if _sq_filled > 0:
+                _sq_entry_price = float(getattr(self.position, "entry_price", 0.0) or 0.0)
+                _sq_entry_time = getattr(self.position, "entry_time", None) or _sq_last_fill_at
+                _sq_result = {
+                    "direction": _sq_direction,
+                    "entry_price": _sq_entry_price,
+                    "exit_price": _sq_avg_price,
+                    "quantity": _sq_filled,
+                    "pnl_pts": _sq_pnl_pts,
+                    "pnl_krw": _sq_pnl_krw,
+                    "forward_pnl_pts": float(pending.get("agg_exit_fwd_pts") or _sq_pnl_pts),
+                    "forward_pnl_krw": float(pending.get("agg_exit_fwd_krw") or _sq_pnl_krw),
+                    "exit_reason": "stuck_exit_flat",
+                    "grade": str(pending.get("grade") or ""),
+                    "entry_ts": (
+                        _sq_entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                        if hasattr(_sq_entry_time, "strftime")
+                        else str(_sq_entry_time)
+                    ),
+                    "exit_ts": (
+                        _sq_last_fill_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if hasattr(_sq_last_fill_at, "strftime")
+                        else str(_sq_last_fill_at)
+                    ),
+                }
+                try:
+                    self._record_trade_result(_sq_result)
+                    self._refresh_pnl_history()
+                except Exception as _sq_e:
+                    log_manager.system(
+                        f"[ChartFix] stuck exit DB 합성 기록 실패(무해): {_sq_e}", "WARNING"
+                    )
+            log_manager.system(
+                f"[ChartFix] stuck exit 차트·DB 합성 기록: {_sq_direction} {_sq_filled}계약 "
+                f"@ {_sq_avg_price:.2f} pnl={_sq_pnl_pts:+.2f}pt",
+                "INFO",
+            )
+
         self.position.sync_flat_from_broker()
         self.dashboard.minute_chart_clear_active_position()
         self._clear_pending_order()

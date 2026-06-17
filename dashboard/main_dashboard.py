@@ -4820,6 +4820,33 @@ class LearningPanel(QWidget):
         if acc >= 0.48:  return C['orange']
         return C['red']
 
+    def _history_series(self, history: list, key: str) -> list:
+        vals = []
+        for item in history[-24:]:
+            try:
+                if key not in item or item[key] is None:
+                    continue
+                vals.append(float(item[key]))
+            except Exception:
+                continue
+        return vals
+
+    @staticmethod
+    def _spark(values, width: int = 18) -> str:
+        """0~1 float 리스트 → 유니코드 스파크라인 (고정 width)"""
+        if not values:
+            return "─" * width
+        blk = "▁▂▃▄▅▆▇█"
+        mn, mx = min(values), max(values)
+        span = mx - mn if mx != mn else 1.0
+        chars = [blk[min(7, int((v - mn) / span * 7.99))] for v in values]
+        while len(chars) > width:
+            step = len(chars) / width
+            chars = [chars[int(i * step)] for i in range(width)]
+        while len(chars) < width:
+            chars.append("─")
+        return "".join(chars)
+
     def _make_report_tab(self, title: str, accent: str):
         frame = QFrame()
         frame.setStyleSheet(
@@ -5104,6 +5131,42 @@ class LearningPanel(QWidget):
         calibration_metrics = data.get("calibration_metrics") or {}
         meta_metrics = data.get("meta_metrics") or {}
         rollout_metrics = data.get("rollout_metrics") or {}
+
+        # A/B · Calibration · Meta Gate · Rollout 리포트 탭
+        baseline = ab_metrics.get("baseline", {})
+        enhanced = ab_metrics.get("enhanced", {})
+        ab_delta = float(enhanced.get("total_pnl_pts", 0.0) or 0.0) - float(baseline.get("total_pnl_pts", 0.0) or 0.0)
+        ab_acc_delta = float(enhanced.get("directional_accuracy", 0.0) or 0.0) - float(baseline.get("directional_accuracy", 0.0) or 0.0)
+        self._report_widgets["ab"]["value"].setText(f"{ab_delta:+.2f}pt")
+        self._report_widgets["ab"]["detail"].setText(
+            f"acc {ab_acc_delta:+.2%} | changed {int(ab_metrics.get('changed_count', 0) or 0)}"
+        )
+        self._report_widgets["ab"]["spark"].setText(self._spark(self._history_series(report_history, "ab_pnl_delta"), 16))
+
+        overall_cal = calibration_metrics.get("overall", {})
+        calib_ece = float(overall_cal.get("ece", 0.0) or 0.0)
+        self._report_widgets["calibration"]["value"].setText(f"ECE {calib_ece:.3f}")
+        self._report_widgets["calibration"]["detail"].setText(
+            f"brier {float(overall_cal.get('brier', 0.0) or 0.0):.3f} | n {int(overall_cal.get('count', 0) or 0)}"
+        )
+        self._report_widgets["calibration"]["spark"].setText(self._spark(self._history_series(report_history, "calibration_ece"), 16))
+
+        best_grid = meta_metrics.get("best_grid", {})
+        meta_count = int(meta_metrics.get("count", 0) or 0)
+        meta_match = float(best_grid.get("match_rate", 0.0) or 0.0)
+        self._report_widgets["meta"]["value"].setText(f"{meta_match:.1%}")
+        self._report_widgets["meta"]["detail"].setText(
+            f"labels {meta_count} | take>={float(best_grid.get('take_threshold', 0.0) or 0.0):.2f}"
+        )
+        self._report_widgets["meta"]["spark"].setText(self._spark(self._history_series(report_history, "meta_match_rate"), 16))
+
+        rollout_stage = str(rollout_metrics.get("recommended_stage", "shadow") or "shadow")
+        self._report_widgets["rollout"]["value"].setText(rollout_stage.upper())
+        self._report_widgets["rollout"]["detail"].setText(
+            f"meta {int((rollout_metrics.get('gate_stats') or {}).get('meta_labels', 0) or 0)} | ece {float(rollout_metrics.get('ece', 0.0) or 0.0):.3f}"
+        )
+        rollout_hist = [1.0 if str(item.get("rollout_stage", "shadow")) != "shadow" else 0.0 for item in report_history[-24:]]
+        self._report_widgets["rollout"]["spark"].setText(self._spark(rollout_hist, 16))
 
         # 요약 카드
         self._sum_lbls["verified"].setText(str(data.get("verified_today", 0)))
@@ -7706,6 +7769,15 @@ class MinuteChartCanvas(QWidget):
             trade["outcome"] = outcome
             self._completed_trades.append(trade)
             self._active_trade = None
+        elif finalize and not self._active_trade:
+            # [Fix3] entry 없이 finalize=True 호출 — exit_marker는 위에서 추가됐지만
+            # completed_trades에 span이 없음. stuck_exit_flat 경로에서는 Fix1이 이를 방지하며,
+            # 다른 경로에서 발생하면 WARN 로그로 감지한다.
+            import logging as _log_fix3
+            _log_fix3.getLogger(__name__).warning(
+                "[ChartWarn] record_exit(finalize=True) called with no active_trade — "
+                "exit_marker only @ %.2f reason=%s", price, reason or ""
+            )
         self.update()
 
     def paintEvent(self, event):
@@ -10443,6 +10515,11 @@ class DashboardAdapter:
             gbm_retrain_count   int
             raw_candles_count   int
             last_event          str    최근 자가학습 이벤트 요약
+            report_history      list[dict]  A/B·calibration·meta·rollout 스냅샷 이력
+            ab_metrics          dict   microstructure_ab_metrics.json
+            calibration_metrics dict   calibration_metrics.json
+            meta_metrics        dict   meta_gate_tuning_metrics.json
+            rollout_metrics     dict   rollout_readiness_metrics.json
         """
         self._win.learn_panel.update_data(data)
 
