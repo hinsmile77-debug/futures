@@ -3365,14 +3365,17 @@ class TradingSystem:
                 )
                 _bias_thresh_min = (5 if _in_coldstart else 10) if _biased_dir == "FL" else 5
                 # 0.80→0.70: 3m/5m FL=75~79% 구간이 80% 미달로 BiasReset 미발동하는 gap 해소
-                if _tot >= 15 and _dir_bias_r >= 0.70:
+                # 적중률 >= 0.55이면 BiasReset 스킵 — 편향이지만 정확하면 오히려 정상 신호
+                # (30m UP=100% 적중=100% 사례: 시장이 실제 상승 중인데 BiasReset이 신호 소멸)
+                _acc_ok_for_bias = _acc_h < 0.55
+                if _tot >= 15 and _dir_bias_r >= 0.70 and _acc_ok_for_bias:
                     self._bias_fl_streak[_h] = self._bias_fl_streak.get(_h, 0) + 1
                     if (self._bias_fl_streak[_h] >= _bias_thresh_min
                             and _h not in self._bias_override_horizons):
                         self._bias_override_horizons.add(_h)
                         log_manager.learning(
                             f"[BiasReset] {_h} {_biased_dir}편향 {_dir_bias_r:.0%} "
-                            f"{self._bias_fl_streak[_h]}분 지속 → uniform fallback 적용"
+                            f"적중={_acc_h:.0%} {self._bias_fl_streak[_h]}분 지속 → uniform fallback 적용"
                         )
                         self.circuit_breaker.record_horizon_fl_bias(
                             _h, _dir_bias_r, self._bias_fl_streak[_h]

@@ -90,6 +90,8 @@ class OnlineLearner:
         self._horizon_counts: Dict[str, int] = {h: 0 for h in HORIZONS}
         self._learn_count:    Dict[str, int] = {h: 0 for h in HORIZONS}
         self._floor_ticks:    Dict[str, int] = {h: 0 for h in HORIZONS}
+        # SGD FL 완전 붕괴 감지 — 연속 FL 예측 카운터
+        self._sgd_fl_collapse_ticks: Dict[str, int] = {h: 0 for h in HORIZONS}
 
         for h in HORIZONS:
             self.models[h] = SGDClassifier(
@@ -183,11 +185,39 @@ class OnlineLearner:
 
         classes = list(clf.classes_)
         proba_map = {int(c): float(p) for c, p in zip(classes, proba)}
-        return {
+        result = {
             "up":   proba_map.get(DIRECTION_UP,   0.0),
             "down": proba_map.get(DIRECTION_DOWN, 0.0),
             "flat": proba_map.get(DIRECTION_FLAT, 1/3),
         }
+
+        # SGD FL 완전 붕괴 감지: flat > 0.95 연속 15회 → 해당 호라이즌 모델 리셋
+        # sgd=u=0.000/d=0.000/f=1.000 상태가 15분 이상 지속 시 자동 복구
+        if result["flat"] > 0.95:
+            self._sgd_fl_collapse_ticks[horizon] = (
+                self._sgd_fl_collapse_ticks.get(horizon, 0) + 1
+            )
+            if self._sgd_fl_collapse_ticks[horizon] >= 15:
+                # SGD 리셋: 모델·스케일러 초기화, 가중치 DEFAULT 복원
+                self.models[horizon] = self.models[horizon].__class__(
+                    loss="log", learning_rate="optimal", alpha=0.001,
+                    max_iter=1, warm_start=True, random_state=42, n_jobs=1,
+                )
+                self.scalers[horizon] = self.scalers[horizon].__class__()
+                self._fitted[horizon] = False
+                self._sgd_w[horizon] = SGD_WEIGHT_DEFAULT
+                self._gbm_w[horizon] = GBM_WEIGHT_DEFAULT
+                self._sgd_fl_collapse_ticks[horizon] = 0
+                self._floor_ticks[horizon] = 0
+                logger.info(
+                    "[OnlineLearner] %s SGD FL붕괴 자동 복구 (flat≥95%% 15분 지속) "
+                    "→ 모델·스케일러 리셋",
+                    horizon,
+                )
+        else:
+            self._sgd_fl_collapse_ticks[horizon] = 0
+
+        return result
 
     # ── 블렌딩 ──────────────────────────────────────────────────
     def blend_with_gbm(
