@@ -3914,7 +3914,10 @@ class TradingSystem:
                 from features.feature_decay import get_horizon_features as _gHF
                 for _h_name in HORIZONS:
                     if _h_name in self._hz_feat_cache:
-                        _hz_feat_vecs[_h_name] = self._hz_feat_cache[_h_name]
+                        _age   = self._hz_bar_age.get(_h_name, 0)
+                        _hmin  = _H_MINS.get(_h_name, 1)
+                        _decay = _BAR_CACHE_DECAY.get(_hmin, 1.0) ** _age
+                        _hz_feat_vecs[_h_name] = self._hz_feat_cache[_h_name] * _decay
                     else:
                         _hz_feat_vecs[_h_name] = _np_p2.array(
                             [_gHF(features, _h_name).get(n, 0.0) for n in _fn],

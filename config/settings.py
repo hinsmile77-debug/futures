@@ -106,7 +106,7 @@ HORIZON_THRESHOLDS_BASE: dict = dict(HORIZON_THRESHOLDS)
 # 운영: HORIZON_THRESHOLDS (대칭) / 연구: HORIZON_THRESHOLDS_RESEARCH (비대칭)
 # threshold 교체 후 SGD 1회 완전 리셋 플래그
 # GBM 재학습 완료 시 True이면 reset_full() 호출 → 이후 자동으로 False
-SGD_FULL_RESET_PENDING: bool = True
+SGD_FULL_RESET_PENDING: bool = False
 
 # rolling σ 임계값 설정 (방법3)
 # threshold_h = sigma_20봉 × SIGMA_K × sqrt(h_min)

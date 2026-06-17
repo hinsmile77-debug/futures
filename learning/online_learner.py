@@ -90,8 +90,9 @@ class OnlineLearner:
         self._horizon_counts: Dict[str, int] = {h: 0 for h in HORIZONS}
         self._learn_count:    Dict[str, int] = {h: 0 for h in HORIZONS}
         self._floor_ticks:    Dict[str, int] = {h: 0 for h in HORIZONS}
-        # SGD FL 완전 붕괴 감지 — 연속 FL 예측 카운터
-        self._sgd_fl_collapse_ticks: Dict[str, int] = {h: 0 for h in HORIZONS}
+        # SGD 단방향 붕괴 감지 (up/dn/fl > 0.95 연속) — 방향 포함
+        self._sgd_collapse_ticks: Dict[str, int] = {h: 0 for h in HORIZONS}
+        self._sgd_collapse_dir:   Dict[str, str]  = {h: ""  for h in HORIZONS}
 
         for h in HORIZONS:
             self.models[h] = SGDClassifier(
@@ -191,14 +192,23 @@ class OnlineLearner:
             "flat": proba_map.get(DIRECTION_FLAT, 1/3),
         }
 
-        # SGD FL 완전 붕괴 감지: flat > 0.95 연속 15회 → 해당 호라이즌 모델 리셋
-        # sgd=u=0.000/d=0.000/f=1.000 상태가 15분 이상 지속 시 자동 복구
-        if result["flat"] > 0.95:
-            self._sgd_fl_collapse_ticks[horizon] = (
-                self._sgd_fl_collapse_ticks.get(horizon, 0) + 1
-            )
-            if self._sgd_fl_collapse_ticks[horizon] >= 15:
-                # SGD 리셋: 모델·스케일러 초기화, 가중치 DEFAULT 복원
+        # SGD 단방향 붕괴 감지: up/dn/fl > 0.95 연속 15회 → 해당 호라이즌 모델 리셋
+        collapse_dir = None
+        if result["up"]   > 0.95:
+            collapse_dir = "up"
+        elif result["down"] > 0.95:
+            collapse_dir = "dn"
+        elif result["flat"] > 0.95:
+            collapse_dir = "fl"
+
+        if collapse_dir:
+            if collapse_dir == self._sgd_collapse_dir.get(horizon, ""):
+                self._sgd_collapse_ticks[horizon] = self._sgd_collapse_ticks.get(horizon, 0) + 1
+            else:
+                self._sgd_collapse_ticks[horizon] = 1
+                self._sgd_collapse_dir[horizon] = collapse_dir
+
+            if self._sgd_collapse_ticks[horizon] >= 15:
                 self.models[horizon] = self.models[horizon].__class__(
                     loss="log", learning_rate="optimal", alpha=0.001,
                     max_iter=1, warm_start=True, random_state=42, n_jobs=1,
@@ -207,15 +217,17 @@ class OnlineLearner:
                 self._fitted[horizon] = False
                 self._sgd_w[horizon] = SGD_WEIGHT_DEFAULT
                 self._gbm_w[horizon] = GBM_WEIGHT_DEFAULT
-                self._sgd_fl_collapse_ticks[horizon] = 0
+                self._sgd_collapse_ticks[horizon] = 0
+                self._sgd_collapse_dir[horizon] = ""
                 self._floor_ticks[horizon] = 0
                 logger.info(
-                    "[OnlineLearner] %s SGD FL붕괴 자동 복구 (flat≥95%% 15분 지속) "
+                    "[OnlineLearner] %s SGD %s붕괴 자동 복구 (≥95%% 15분 지속) "
                     "→ 모델·스케일러 리셋",
-                    horizon,
+                    horizon, collapse_dir.upper(),
                 )
         else:
-            self._sgd_fl_collapse_ticks[horizon] = 0
+            self._sgd_collapse_ticks[horizon] = 0
+            self._sgd_collapse_dir[horizon] = ""
 
         return result
 
@@ -379,6 +391,8 @@ class OnlineLearner:
             self._gbm_w[h] = GBM_WEIGHT_DEFAULT
             self._learn_count[h] = 0
             self._floor_ticks[h] = 0
+            self._sgd_collapse_ticks[h] = 0
+            self._sgd_collapse_dir[h] = ""
         self._sample_count = 0
         logger.info("[OnlineLearner] 일간 리셋 (모델 가중치 유지)")
 
@@ -402,6 +416,8 @@ class OnlineLearner:
             self._gbm_w[h] = GBM_WEIGHT_DEFAULT
             self._learn_count[h] = 0
             self._floor_ticks[h] = 0
+            self._sgd_collapse_ticks[h] = 0
+            self._sgd_collapse_dir[h] = ""
         self._sample_count = 0
         self._horizon_counts = {h: 0 for h in HORIZONS}
         logger.info("[OnlineLearner] 완전 초기화 — 모델·스케일러·가중치 전체 리셋")
