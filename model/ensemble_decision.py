@@ -286,6 +286,7 @@ class EnsembleDecision:
         time_zone: str = "",
         active_horizons: Optional[list] = None,
         zone_mc: float = 0.60,
+        bias_override_horizons: Optional[set] = None,
     ) -> Dict:
         """
         Args:
@@ -739,9 +740,16 @@ class EnsembleDecision:
             _coherence_min = COHERENCE_GATE_MIN
         if direction != DIRECTION_FLAT:
             # FLAT 예측 호라이즌 제외: 방향성 있는 호라이즌만 대상
+            # + BiasReset uniform fallback 적용된 호라이즌도 분모에서 제외
+            # 이유: BiasReset이 uniform(=방향0=FLAT처럼 계산)을 적용하면 CoherenceGate
+            #   score가 낮아져 원웨이장에서도 차단됨. BiasReset은 편향 모델을 방어하기 위한
+            #   것이지 원웨이 감지를 방해하려는 게 아니므로, 해당 호라이즌은 집계 제외.
+            _bias_overrides = set(bias_override_horizons or [])
             _active_h = [
                 h for h in horizon_proba
-                if horizon_proba[h] and horizon_proba[h].get("direction") != DIRECTION_FLAT
+                if (horizon_proba[h]
+                    and horizon_proba[h].get("direction") != DIRECTION_FLAT
+                    and h not in _bias_overrides)
             ]
             _n_active = len(_active_h)
             if _n_active > 0:

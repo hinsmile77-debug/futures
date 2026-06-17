@@ -131,9 +131,16 @@ class TrendPersistenceGate:
         above_vwap    = int(features.get("above_vwap", 0) or 0)
         cvd_direction = int(features.get("cvd_direction", 0) or 0)
         cvd_slope     = float(features.get("cvd_slope", 0.0) or 0.0)
+        # ret_5m: 5분 수익률 (양수=가격 상승) — cvd_direction이 DN(-1)이어도 가격이 오르면
+        # UP 조건을 충족할 수 있는 대체 기준. 스칼라감쇠·극단 z-score 등으로 cvd_direction이
+        # 왜곡될 때 (오늘 cvd_direction=-5.89) TrendGate가 완전히 마비되는 문제 방지.
+        ret_5m = float(features.get("ret_5m", 0.0) or 0.0)
 
         # ── UP streak ───────────────────────────────────────────────────
-        up_cond   = (above_vwap == 1 and cvd_direction == 1)
+        # 조건 A (CVD 확인): above_vwap=1 AND cvd_direction=1 (기존)
+        # 조건 B (가격 확인): above_vwap=1 AND ret_5m > 0 (CVD 극단/왜곡 시 대체)
+        # 둘 중 하나 충족이면 UP 조건 인정. hard_break는 CVD 급반전만 사용.
+        up_cond   = (above_vwap == 1 and (cvd_direction == 1 or ret_5m > 0))
         up_hbreak = (cvd_slope < _CVD_SLOPE_HARD_BREAK_DN)
         self._up_streak, self._up_fail_streak = _step_streak(
             self._up_streak, self._up_fail_streak, up_cond, up_hbreak, "UP"
@@ -152,7 +159,8 @@ class TrendPersistenceGate:
             logger.info("[TrendGate] UP 추세 지속 모드 OFF (streak=%d)", self._up_streak)
 
         # ── DOWN streak ─────────────────────────────────────────────────
-        dn_cond   = (above_vwap == 0 and cvd_direction == -1)
+        # DN 조건도 대칭 완화: above_vwap=0 AND (cvd_direction=-1 OR ret_5m < 0)
+        dn_cond   = (above_vwap == 0 and (cvd_direction == -1 or ret_5m < 0))
         dn_hbreak = (cvd_slope > _CVD_SLOPE_HARD_BREAK_UP)   # 숏스퀴즈 감지
         self._dn_streak, self._dn_fail_streak = _step_streak(
             self._dn_streak, self._dn_fail_streak, dn_cond, dn_hbreak, "DN"

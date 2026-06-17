@@ -3383,20 +3383,27 @@ class TradingSystem:
                         # P4: GBM 편향 감지 → SGD 비중 min floor 탈출 (대항력 회복)
                         self.online_learner.boost_sgd_for_bias(_h)
                 else:
-                    # P1: fallback 해제 임계값 60% (진입 80%와 비대칭)
-                    # 이력이 충분히 정상화된 후에만 해제 → 경계 flip-flop 방지
-                    _can_release = _dir_bias_r < 0.60
+                    # P1: fallback 해제 조건 — 아래 중 하나 충족 시 해제
+                    #  A) 방향편향 < 60% (정상화)
+                    #  B) 적중률 >= 0.60 (편향 지속이지만 정확함 = 원웨이장 전환)
+                    # B 추가 근거: 12:13 30m BiasReset 발동(적중=0%) 후 12:29 시장 상승 전환.
+                    #   적중률이 60%+ 되면 "편향이 아니라 원웨이"로 판단 → uniform 해제.
+                    _can_release = _dir_bias_r < 0.60 or _acc_h >= 0.60
                     if _h in self._bias_override_horizons:
                         if _can_release:
+                            _release_reason = (
+                                f"방향편향 해소({_dir_bias_r:.0%})" if _dir_bias_r < 0.60
+                                else f"적중률 회복({_acc_h:.0%}→원웨이 판정)"
+                            )
                             self._bias_override_horizons.discard(_h)
                             # P0: 오염된 편향 이력도 함께 초기화 → 해제 즉시 재고착 방지
                             self._bias_buf[_h].clear()
                             self._conf_stuck[_h] = 0
                             log_manager.learning(
-                                f"[BiasReset] {_h} {_biased_dir}편향 해소 ({_dir_bias_r:.0%})"
-                                f" → uniform fallback 해제"
+                                f"[BiasReset] {_h} {_biased_dir}편향 "
+                                f"→ uniform fallback 해제 ({_release_reason})"
                             )
-                        # else: 60~80% 구간은 fallback 유지, streak만 리셋
+                        # else: 60~80% 구간 + 저적중률 → fallback 유지, streak만 리셋
                     self._bias_fl_streak[_h] = 0
 
         # ── STEP 2: SGD 온라인 자가학습 ────────────────────────
@@ -4253,6 +4260,7 @@ class TradingSystem:
                 if hasattr(_ts_dt_obj, "hour") else 930
             ),
             zone_mc=_zone_mc,
+            bias_override_horizons=self._bias_override_horizons,
         )
         direction  = decision["direction"]
         confidence = decision["confidence"]
