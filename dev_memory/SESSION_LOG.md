@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-06-17 (190차 — SGD 학습 B군 피처 N분봉 교정)
+
+**Work**: 189차 분석에서 도출된 SGD 학습-예측 피처 불일치 문제의 중간 단계 교정 구현. B군(봉 크기 의존) 피처만 선별해 N분봉 캐시값으로 교체.
+
+### 구현 내용 (`main.py:5659-5686`)
+
+SGD learn() 직전, `_dx_full`(1분봉 피처 97개) 중 B군 인덱스를 `_hz_feat_cache[horizon]`(N분봉값)으로 덮어씀. 슬라이싱(`_h_idx_learn`) 전에 교정하므로 호라이즌별 피처셋에 B군이 포함된 경우 정확히 반영됨.
+
+```
+for _dv in _sgd_deferred_verified:
+    _dx_full = 1분봉 피처 97개  ← DB
+    if 장기 호라이즌 AND 캐시 있음:
+        B군 피처 인덱스 → N분봉 캐시값으로 덮어쓰기
+    _dx_learn = _dx_full[슬라이싱]  ← 교정 포함
+    learn(_dx_learn)
+```
+
+**교정 대상:**
+- 10m: `hurst`, `mlofi_slope`, `vwap_momentum`, `cvd_monotone_ratio`
+- 15m: `volume_acceleration`, `avg_volume`, `atr_ratio`, `toxicity_atr_stress`
+- 30m: `atr_ratio`, `toxicity_score_ma`, `queue_signal_ma`, `toxicity_atr_stress`, `threshold_feasibility`
+
+**안전장치:** 캐시 없는 구간(장 초반 N분) 교정 스킵. 피처명 미존재 시 `ValueError`로 조용히 통과.
+
+**A군(옵션·매크로·VWAP) 유지 이유:** 1m봉값 = Nm봉값이므로 교정 불필요.
+
+### A안 전체 구현 일정 확정
+
+`docs/260617_SGD_NMIN_FEATURE_CORRECTION_PLAN.md` 작성. Phase C 재학습 완료 + 모의투자 4주 후(2026-07~08 예상)로 A안 구현 일정 확정. 현 중간 단계로 핵심 B군 오염 제거.
+
+| 수정 | 파일 | 커밋 |
+|---|---|---|
+| SGD B군 피처 N분봉 교정 | `main.py` | `b886b0c` 190차 |
+| SGD N분봉 교정 검토 문서 | `docs/260617_SGD_NMIN_FEATURE_CORRECTION_PLAN.md` | `c836bfc` |
+
+---
+
 ## 2026-06-17 (189차 — SGD UP/DN 붕괴 감지 + BAR_CACHE_DECAY 적용 + FULL_RESET_PENDING 수정)
 
 **Work**: 장중 `15m sgd=u=0.998 11분 고착` 알림을 계기로 SGD 붕괴 감지 구조 점검. 오늘 50분정확도 분포 전체 분석(358분). BAR_CACHE_DECAY 미사용 발견 및 적용. N분봉 현실화 구조 설계 검토.

@@ -1,7 +1,39 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-17 (189차 세션) — SGD UP/DN 붕괴 감지 + BAR_CACHE_DECAY 적용 + FULL_RESET_PENDING 수정
+> 마지막 업데이트: 2026-06-17 (190차 세션) — SGD 학습 B군 피처 N분봉 교정 (중간 단계)
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-17 (190차 — SGD 학습 B군 피처 N분봉 교정)
+
+### 현재 시스템 상태
+
+| 항목 | 상태 |
+|---|---|
+| SGD 학습 B군 피처 교정 | `main.py:5659-5686` — 장기 호라이즌(10m·15m·30m) SGD learn() 시 봉 크기 의존 피처를 DB 저장 1분봉값 대신 `_hz_feat_cache` N분봉값으로 교체. A군(옵션·매크로·VWAP)은 현행 유지. 캐시 없는 초기 구간은 교정 스킵. |
+
+**교정 대상 피처:**
+- 10m: `hurst`, `mlofi_slope`, `vwap_momentum`, `cvd_monotone_ratio`
+- 15m: `volume_acceleration`, `avg_volume`, `atr_ratio`, `toxicity_atr_stress`
+- 30m: `atr_ratio`, `toxicity_score_ma`, `queue_signal_ma`, `toxicity_atr_stress`, `threshold_feasibility`
+
+### 배경 (189~190차 연속 분석)
+
+SGD는 예측 시 N분봉 피처(`_hz_feat_vecs`)를 사용하지만 학습 시 DB 저장 1분봉 피처를 사용해 왔음. 피처 이름(NAME)은 `horizon_feature_sets.json`으로 고정되어 있으나, 봉 크기 의존 피처(B군)는 1m값 ≠ Nm값:
+- `hurst` 1m 20봉 ≠ 10m 20봉 (프랙탈 시간척도 완전히 다름)
+- `volume_acceleration` 1m 거래량 vs 15m 거래량 (절대값 15배 차이)
+- `atr_ratio` 1m ATR vs Nm ATR (스케일 상이)
+
+이로 인해 SGD가 1m 틱 잡음과 장기 레이블 간 허위 상관을 학습 → acc 저하 및 collapse 원인 중 하나.
+
+A군(옵션 체인, 일봉 매크로, 일간 VWAP/POC)은 봉 크기 무관하여 현행 유지.
+A안(DB에 N분봉 피처 저장) 전체 구현은 Phase C 재학습 완료 + 모의투자 4주 후로 일정 확정. (`docs/260617_SGD_NMIN_FEATURE_CORRECTION_PLAN.md` 참조)
+
+### 다음 장 모니터링
+
+1. 10m/15m/30m SGD acc 변화 관찰 — B군 교정 효과로 acc가 이전 대비 개선되는지
+2. `_hz_feat_cache` 미존재 구간(장 초반 N분) 스킵이 정상 동작하는지
 
 ---
 
