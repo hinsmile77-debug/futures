@@ -2289,11 +2289,12 @@ class TradingSystem:
             )
 
             def _intraday_retrain_worker():
+                result = {"ok": False, "error": "unknown"}
                 try:
                     result = self.batch_retrainer.retrain_now(force=False, intraday=True)
-                except Exception as _re:
+                except BaseException as _re:  # MemoryError 등 BaseException 포함
                     result = {"ok": False, "error": str(_re)}
-                # P1-A 강화: ok/fail 무관 worker에서 즉시 해제 (QTimer daemon-thread 불안정 대비)
+                # P1-A 강화: BaseException(MemoryError 포함) 무관 항상 해제
                 self._gbm_retrain_running = False
                 self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
@@ -2935,11 +2936,12 @@ class TradingSystem:
                 )
 
                 def _pre_retrain_worker():
+                    result = {"ok": False, "error": "unknown"}
                     try:
                         result = self.batch_retrainer.retrain_now(force=True)
-                    except Exception as _pre_e:
+                    except BaseException as _pre_e:  # MemoryError 등 BaseException 포함
                         result = {"ok": False, "error": str(_pre_e)}
-                    # P1-A 강화: ok/fail 무관 worker에서 즉시 해제 (QTimer daemon-thread 불안정 대비)
+                    # P1-A 강화: BaseException(MemoryError 포함) 무관 항상 해제
                     self._gbm_retrain_running = False
                     self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                     QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
@@ -3571,15 +3573,15 @@ class TradingSystem:
             _is_warmup = bool(_warmup_forced)
 
             def _retrain_worker():
+                result = {"ok": False, "error": "unknown"}
                 try:
                     # intraday=True: n_estimators 100, 20k봉, CV 없음 → 장중 GIL 블로킹 최소화
                     # 08:55 pre-market(_pre_retrain_worker)만 풀 파라미터 유지
                     result = self.batch_retrainer.retrain_now(force=False, intraday=True)
-                except Exception as _re:
+                except BaseException as _re:  # MemoryError 등 BaseException 포함
                     result = {"ok": False, "error": str(_re)}
-                if not result.get("ok"):
-                    # P1-A: QTimer 불안정성 대비 — 실패 시 worker thread에서 즉시 플래그 해제
-                    self._gbm_retrain_running = False
+                # P1-A: BaseException(MemoryError 포함) 무관 항상 해제
+                self._gbm_retrain_running = False
                 self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
                 QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, _is_warmup))
 
@@ -6554,7 +6556,7 @@ class TradingSystem:
                 intraday=False,   # 정규 파라미터 (max_iter=300, max_depth=5, lr=0.04)
                 full_cv=True,     # CV 20k 캡 해제 — Cybos 단절 후 메모리 여유
             )
-        except Exception as _retrain_exc:
+        except BaseException as _retrain_exc:  # MemoryError 등 BaseException 포함
             logger.error(
                 "[DailyClose] EOD 재학습 예외 — 스킵하고 EOD 잔여 단계 계속 진행: %s",
                 _retrain_exc, exc_info=True,
