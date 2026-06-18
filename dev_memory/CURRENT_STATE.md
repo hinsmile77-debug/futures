@@ -1,7 +1,72 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-18 (197차 세션) — P8 스케일러 재적합 retrain_eod.py 재배치
+> 마지막 업데이트: 2026-06-18 (199차 세션) — UI 응답없음·파이프라인 멈춤 근본 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-18 (199차 — UI 응답없음·파이프라인 멈춤 근본 수정)
+
+### 문제 배경
+
+금일 장중(12:17~14:18) 파이프라인이 반복 멈추고 시스템이 8회 재시작됨.
+원인 추적 결과 **오늘 신설한 `conf_trend_widget.py`** (신뢰도게이트 금일 conf→진입단계 추적 카드)가 주범으로 확인.
+
+### 인과관계 (증명)
+
+`ConfTrendWidget.refresh()` — 30초 타이머 — 전체 ensemble_decisions 테이블 렌더링:
+
+| 시각 | 당일 행수 | setItem() | 블로킹 | 결과 |
+|---|---|---|---|---|
+| 09:00 | 1행 | 10회 | 0.0초 | 정상 |
+| 12:17 | 195행 | 1,950회 | **7.8초** | 최초 5분 공백 |
+| 12:54 | 220행 | 2,200회 | **8.8초** | 14분 공백 + 재시작 |
+| 14:16 | 266행 | 2,660회 | **10.6초** | 연속 재시작 |
+
+30초 중 7-10초 Qt 메인스레드 점유 → COM 콜백(`FutureCurOnly`) 수신 지연 → `_on_candle_closed()` 불규칙 → 파이프라인 멈춤.
+
+### 수정 내용
+
+**conf_trend_widget.py** (근본 수정):
+- `MAX_ROWS=30` (전체→최근 30봉, setItem 600회 → 300회)
+- In-place 업데이트: 두 번째 이후 `setItem()` 없이 `item().setText()` 재사용
+- `setUpdatesEnabled(False/True)` 배치 렌더링
+- `substr(ts,1,10)=?` → `ts >= ? AND ts < ?` (인덱스 활성화)
+- `setStyleSheet` 조건부 적용
+
+**MinuteChartDialog** (1분봉 차트 응답없음):
+- `reload_today()` 메인스레드 블로킹 → `QTimer.singleShot(0, _start_reload_thread)` 비동기화
+- `mouseMoveEvent` 16ms throttle (60fps 상한)
+- `paintEvent` 거대 캔버스 가드 (>3000px 즉시 반환)
+- `restore_saved_geometry` 범위 초과 시 복원 스킵
+- `setSpan(0,0,1,1)` → `clearSpans()`
+
+**장외 BlockRequest 블로킹 방지** (main.py):
+- `_ts_refresh_dashboard_balance_inner` 장외 즉시 반환
+- `_ts_sync_position_from_broker` 스케줄러 경로 장외 가드
+
+**`restore_panels_from_history` 백그라운드화** (session_recovery_service.py):
+- 무거운 DB 쿼리(`_gather_efficacy_stats` 등) → 백그라운드 스레드
+- 완료 후 QTimer.singleShot으로 UI 업데이트 (메인스레드 안전)
+
+**substr 쿼리 인덱스 활성화** (전체):
+- `ensemble_decisions`, `predictions`, `raw_candles`, `mc_history` 등
+- `WHERE substr(ts,1,10)=?` → `WHERE ts >= ? AND ts < ?`
+- `predictions.db` 439MB, `idx_ensemble_ts` 인덱스 존재하나 함수 적용으로 무력화됐던 것 수정
+
+### LiveDBG 진단 코드 (장중 검증 후 제거)
+
+다음 로그 태그로 추가 이슈 모니터링:
+- `[LiveDBG] _tick_header 간격 Xms` — 메인스레드 블로킹 직접 검출
+- `[LiveDBG] ConfTrend step1~6 Xms` — 각 단계 타이밍
+- `[ChartDBG] paintEvent slow Xms` — 차트 렌더링 병목
+- `[LiveDBG] request_futures_balance 호출` — BlockRequest 경로 추적
+
+### 신규 파일 (git 추적 시작)
+
+- `dashboard/panels/conf_trend_widget.py` — 신뢰도게이트 금일 conf→진입단계 추적
+- `dashboard/panels/candle_chart_dialog.py` — 봉차트 방향 인디케이터 (matplotlib)
+- `dashboard/panels/direction_indicator_dialog.py` — 호라이즌 합창판 방향 인디케이터
 
 ---
 

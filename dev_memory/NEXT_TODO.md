@@ -8,6 +8,32 @@
 
 ---
 
+## 2026-06-19 (199차 후속 — UI 블로킹 수정 검증)
+
+### 내일 장중 즉시 확인 [P0]
+
+- [ ] **파이프라인 재시작 반복 없음** — 장중 `재기동 #N cause=STARTUP` 로그가 없어야 함 (199차 이전 14:18까지 8회 재시작)
+- [ ] **`[LiveDBG] ConfTrendWidget.refresh slow`** — 200ms 이하로 줄었는지 확인. 초과 시 MAX_ROWS 추가 감소 검토
+- [ ] **`_tick_header 간격` 경고 없음** — 장중 2초 이상 갭이 없어야 파이프라인 안전
+- [ ] **1분봉 차트 응답없음 없음** — 마우스 hover 및 닫기 버튼 정상 동작 확인
+
+### 장중 후 정리 예정 [P1]
+
+- [ ] **LiveDBG 진단 코드 제거** — 이슈 확인 완료 후 아래 파일에서 WARNING 로그 제거:
+  - `dashboard/main_dashboard.py` (_tick_header, paintEvent, ChartDBG, _scheduler_tick)
+  - `main.py` (BalanceRefresh, _fetch_investor_data, _poll_option_chain)
+  - `collection/cybos/api_connector.py` (request_futures_balance 호출 스택)
+  - `strategy/runtime/session_recovery_service.py` (_apply 단계 타이밍)
+  - `dashboard/panels/conf_trend_widget.py` (step1~6 타이밍)
+- [ ] **`conf_trend_widget.py` step 타이밍 제거** — 검증 완료 후 _do_refresh() 내 LiveDBG WARNING 삭제
+
+### 잠재 리스크 [P2]
+
+- [ ] **In-place 업데이트 첫 렌더링** — 최초 setItem() 300회 (~1200ms) 장중 첫 파이프라인 타이밍과 겹치면 지연. `ConfTrendWidget.__init__`의 `self.refresh()` 초기 호출은 이벤트 루프 이전이므로 빠름
+- [ ] **`restore_saved_geometry` geometry 재저장** — `closeEvent` 가드가 2480×1473 (2모니터)을 합법으로 판단해 저장 → Qt가 3688×2060으로 확장하는 문제 재발 가능. `[ChartDBG] 범위 초과 — 복원 스킵` 로그로 모니터링
+
+---
+
 ## 2026-06-18 (197차 — P8 스케일러 재적합 retrain_eod.py 재배치)
 
 ### 내일 즉시 확인 [P0]
