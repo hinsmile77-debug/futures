@@ -17,6 +17,7 @@ import os
 import gc
 import time
 import datetime
+import json
 import logging
 import traceback
 
@@ -84,6 +85,65 @@ def _notify_fail(msg: str):
         _nfy(f"[EOD재학습] 실패: {msg}", "ERROR")
     except Exception:
         pass  # 알림 모듈 없어도 무시
+
+
+# ── P8: EOD 스케일러 재적합 ──────────────────────────────────────
+def p8_scaler_refit() -> bool:
+    """GBM 재학습 직후 최신 500봉 기준으로 스케일러 재적합.
+
+    retrain_now()는 26주 데이터 기준 스케일러를 pkl에 포함해 저장한다.
+    daily_close()에서 P8이 먼저 실행되면 이 재학습이 나중에 덮어쓰므로
+    P8 효과가 무효화됐던 문제를 여기(재학습 직후)로 이동해 해결.
+    재학습 성공/실패 무관하게 실행 — 실패 시에도 기존 pkl 기준으로 재적합.
+    """
+    try:
+        from learning.batch_retrainer import BatchRetrainer
+        from model.multi_horizon_model import MultiHorizonModel
+        from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+
+        retrainer = BatchRetrainer()
+        X, feature_names = retrainer.load_features_for_warmup(
+            lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+        )
+        if X is None or len(X) == 0:
+            log.warning("[P8] 스케일러 재적합 스킵 — 데이터 없음")
+            return False
+
+        model = MultiHorizonModel()
+        model._load_all()
+        result = model.refit_scalers_only(
+            X,
+            feature_names,
+            trigger_ts    = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            trigger_type  = "E_EOD",
+            trigger_reason= "retrain_eod.py P8 — GBM 재학습 직후 500봉 스케일러 최종화",
+        )
+        elapsed  = (result or {}).get("elapsed_sec", 0)
+        horizons = (result or {}).get("horizons", [])
+        log.info(
+            "[P8] 스케일러 재적합 완료 n=%d봉 elapsed=%.2fs horizons=%s",
+            len(X), elapsed, horizons,
+        )
+
+        # p8_last_success_date → 내일 08:45 EarlyWarmup·EKS 원인 진단용
+        try:
+            _ss_path = os.path.join(_ROOT, "data", "session_state.json")
+            _ss: dict = {}
+            if os.path.exists(_ss_path):
+                with open(_ss_path, "r", encoding="utf-8") as _f:
+                    _ss = json.load(_f)
+            _ss["p8_last_success_date"] = datetime.date.today().isoformat()
+            with open(_ss_path, "w", encoding="utf-8") as _f:
+                json.dump(_ss, _f, ensure_ascii=False, indent=2)
+            log.info("[P8] session_state p8_last_success_date 기록 완료")
+        except Exception as _sse:
+            log.warning("[P8] session_state 기록 실패 (무해): %s", _sse)
+
+        return True
+
+    except Exception as exc:
+        log.warning("[P8] 스케일러 재적합 예외 (무해): %s", exc)
+        return False
 
 
 # ── 메인 재학습 ───────────────────────────────────────────────────
@@ -169,6 +229,11 @@ def main():
         log.info("=" * 55)
         log.info("EOD 재학습 정상 완료 — 합계 %.1fs", t_total)
         log.info("=" * 55)
+
+        # P8: 재학습 완료 직후 스케일러 재적합
+        # 26주 기준 스케일러를 500봉 최신으로 덮어써 내일 시초 z-score 안정화
+        p8_scaler_refit()
+
         sys.exit(0)
 
     except Exception as exc:

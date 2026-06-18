@@ -1010,7 +1010,7 @@ class MultiHorizonModel:
                                 _new_sc.var_[_fi] = 1.0
                             logger.warning(
                                 "[ScalerRefresh] %s CORE '%s' raw_std≈0(%.4f)"
-                                " → identity(0,1) 강제 (FLAT 100% 방지)",
+                                " → identity(0,1) 강제 (FLAT 100%% 방지)",
                                 horizon, _feat, _raw_std,
                             )
 

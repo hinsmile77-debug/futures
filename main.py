@@ -6673,63 +6673,10 @@ class TradingSystem:
             except Exception as _pe:
                 logger.warning("[GBM] DB pruning 실패: %s", _pe)
 
-        # [P8] EOD 스케일러 재적합 — 금일 최근 N봉 기준으로 pkl 갱신
-        # GBM retrain의 8주 스케일러(분포 폭넓음) 위에 금일 데이터로 추가 재적합.
-        # 내일 08:55 warmup이 _warmup_retrain_pending으로 스킵돼도
-        # 스케일러 age가 ~17h 이내(GBM retrain 포함 641+분 방지)로 보장된다.
-        # [B안] 실패 시 30초 후 1회 재시도 — 일시적 DB lock·메모리 부족 대응
-        _p8_done = False
-        for _p8_try in range(2):
-            try:
-                if _p8_try == 1:
-                    import time as _p8_time
-                    log_manager.system("[P8] EOD 재적합 실패 — 30초 후 재시도", "WARNING")
-                    _p8_time.sleep(30)
-                from config.settings import SCALER_WARMUP_LOOKBACK_BARS
-                _p8_X, _p8_fn = self.batch_retrainer.load_features_for_warmup(
-                    lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
-                )
-                if _p8_X is not None and len(_p8_X) > 0:
-                    _p8_res = self.model.refit_scalers_only(
-                        _p8_X, _p8_fn,
-                        trigger_ts    = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        trigger_type  = "E_EOD",
-                        trigger_reason= f"EOD 스케일러 재적합 (P8{' 재시도' if _p8_try else ''})"
-                                        f" — 내일 시초 z-score 안정화",
-                    )
-                    _retry_tag = " [재시도 성공]" if _p8_try else ""
-                    # [H] _p8_res None 방어 — refit_scalers_only 반환값 타입 불일치 시에도 로그 보장
-                    _p8_elapsed = (_p8_res or {}).get("elapsed_sec", 0)
-                    _p8_horizons = (_p8_res or {}).get("horizons", [])
-                    log_manager.system(
-                        f"[P8] EOD 스케일러 재적합 완료{_retry_tag}"
-                        f" n={len(_p8_X)}봉 elapsed={_p8_elapsed:.2f}s horizons={_p8_horizons}",
-                        "INFO",
-                    )
-                    _p8_done = True
-                    # [C1] P8 성공일 기록 — 다음날 08:45 EarlyWarmup·EKS 원인 진단용
-                    try:
-                        _ss_p8 = self._read_session_state()
-                        _ss_p8["p8_last_success_date"] = datetime.date.today().isoformat()
-                        self._write_session_state(_ss_p8)
-                    except Exception as _ss_e:
-                        # [G] debug → WARNING 격상 — 기록 실패 시 다음날 EKS 원인 오진단 방지
-                        log_manager.system(f"[P8] session_state 기록 실패: {_ss_e}", "WARNING")
-                else:
-                    log_manager.system("[P8] EOD 스케일러 재적합 스킵 — 데이터 없음", "WARNING")
-                break   # 성공 or 데이터없음 → 반복 종료
-            except Exception as _p8_e:
-                logger.warning("[P8] EOD 스케일러 재적합 실패 (시도 %d/2): %s", _p8_try + 1, _p8_e)
-                if _p8_try == 1:   # 재시도까지 실패 → 슬랙 알림 (P1)
-                    try:
-                        from utils.notify import notify as _np8_notify
-                        _np8_notify(
-                            f"⚠️ P8 EOD 스케일러 재적합 실패 (재시도 포함)\n{_p8_e}\n"
-                            f"내일 08:45 EarlyWarmup이 보완 — Canary 발화 가능성 있음",
-                            "WARNING",
-                        )
-                    except Exception:
-                        pass
+        # [P8] EOD 스케일러 재적합 — retrain_eod.py로 이전
+        # GBM 재학습(retrain_now)이 26주 기준 scaler_pkl을 저장하므로
+        # daily_close()에서 P8을 먼저 실행하면 재학습이 덮어쓰는 순서 역전 문제가 있었음.
+        # retrain_eod.py 완료 직후 P8을 실행하도록 재배치 — 내일 08:45 EarlyWarmup이 보완.
 
         # [Platt] 앙상블 보정기 저장 — 다음 기동 시 즉시 복원 가능
         try:
