@@ -8575,9 +8575,23 @@ class MinuteChartDialog(QDialog):
                 return
             x, y = int(geo["x"]), int(geo["y"])
             w, h = int(geo["w"]), int(geo["h"])
-            screen = QApplication.primaryScreen().availableGeometry()
-            x = max(screen.left(), min(x, screen.right() - w))
-            y = max(screen.top(), min(y, screen.bottom() - h))
+
+            # [194차] 다중 모니터 지원: 저장된 좌표가 속한 화면에 복원
+            # 기존 primaryScreen() 고정 → 제2 모니터 저장값을 주 모니터로 강제이동하는 버그 수정
+            # 팝업 중심점 기준으로 해당 화면을 탐색, 없으면 부모 창 화면 → primaryScreen 순 폴백
+            from PyQt5.QtCore import QPoint
+            _cx, _cy = x + w // 2, y + h // 2
+            target_screen = QApplication.screenAt(QPoint(_cx, _cy))
+            if target_screen is None:
+                # 저장된 화면이 현재 연결돼 있지 않은 경우 (모니터 분리 등)
+                # → 미륵이 메인 창이 있는 화면 사용, 없으면 primaryScreen
+                _parent = self.parent()
+                target_screen = (_parent.screen() if _parent and hasattr(_parent, "screen")
+                                 else None) or QApplication.primaryScreen()
+
+            avail = target_screen.availableGeometry()
+            x = max(avail.left(), min(x, avail.right() - w))
+            y = max(avail.top(), min(y, avail.bottom() - h))
             self.setGeometry(x, y, w, h)
         except Exception:
             pass
