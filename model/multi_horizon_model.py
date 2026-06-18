@@ -162,6 +162,7 @@ class MultiHorizonModel:
         "ofi_norm", "ofi_pressure",
         # 중기 CORE (10m~15m) 추가
         "macro_vix",
+        "macro_risk_off",   # VIX>28|SP500 -1% 이진 신호 — z폭발 → AutoMask 금지 (192차)
         # 장기 CORE (30m) 추가
         "above_vwap", "opt_chain_pcr", "opt_gex_bn",
     })

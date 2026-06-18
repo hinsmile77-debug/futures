@@ -384,11 +384,13 @@ CORE_MASK_EXEMPT_BY_GROUP: dict = {
     "mid": frozenset({
         "vwap_position", "vwap_ratio", "vwap_dev",
         "macro_vix",
+        "macro_risk_off",   # VIX>28|SP500 -1% 이진 신호 — z폭발 시 AutoMask 금지
     }),
     "long": frozenset({
         "above_vwap",
         "opt_chain_pcr", "opt_gex_bn",
         "macro_vix",
+        "macro_risk_off",   # 장기 레짐 핵심 신호 — 동일 이유
     }),
 }
 
