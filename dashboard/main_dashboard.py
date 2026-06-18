@@ -939,7 +939,7 @@ def mk_prog(color=C['green'], h=6):
 
 
 def card(title, widget, color=C['blue'], header_widget=None):
-    gb = QGroupBox("" if header_widget else f"● {title}")
+    gb = QGroupBox("" if (header_widget or not title) else f"● {title}")
     gb.setStyleSheet(
         f"QGroupBox{{border:1px solid {C['border']};border-radius:{S.p(6)}px;"
         f"margin-top:{S.p(8)}px;padding:{S.p(8)}px;color:{color};"
@@ -975,8 +975,6 @@ class PredictionPanel(QWidget):
         super().__init__()
         self._hz_labels = {}
         self._hz_enabled = {}
-        self._param_bars = {}
-        self._param_vals = {}
         self._build()
 
     _HZ_KEY_MAP = {
@@ -1067,17 +1065,18 @@ class PredictionPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
 
-        # 상단: 현재가 + 신호
-        top = QHBoxLayout()
-        self.lbl_price   = mk_val_label("——.——", C['text'], 20)
-        self.lbl_signal  = mk_val_label("대기중", C['text2'], 16)
-        self.lbl_conf    = mk_label("신뢰도 — %", C['text2'])
-        top.addWidget(mk_label("현재가", C['text2']))
-        top.addWidget(self.lbl_price, 2)
-        top.addWidget(self.lbl_signal, 2)
-        top.addWidget(self.lbl_conf, 1)
-        lay.addLayout(top)
+        # 현재가·신호·신뢰도 위젯 — 화면 미표시, 외부 참조 유지용
+        self.lbl_price  = mk_val_label("——.——", C['text'], 20)
+        self.lbl_signal = mk_val_label("대기중", C['text2'], 16)
+        self.lbl_conf   = mk_label("신뢰도 — %", C['text2'])
+
+        # ── 1. 앙상블 판단 (최상단 — lamp·차트·hz strip) ──────────
+        from dashboard.panels.direction_indicator_dialog import DirectionIndicatorWidget
+        self._dir_indicator = DirectionIndicatorWidget()
+        lay.addWidget(self._dir_indicator)
         lay.addWidget(mk_sep())
+
+        # ── 2. 멀티 호라이즌 예측 카드 ───────────────────────────
 
         # 모델 상태 행 (학습 대기 / 재학습중) — model.is_ready() 시 숨김
         self._model_row = QWidget()
@@ -1092,8 +1091,7 @@ class PredictionPanel(QWidget):
         _mrow.addWidget(self._lbl_model_state)
         _mrow.addWidget(self._model_prog, 2)
         _mrow.addWidget(self._lbl_model_detail, 1)
-        lay.addWidget(self._model_row)
-        lay.addSpacing(8)   # 모델 상태 행 ↔ 섹션 타이틀 여백
+        # lay.add는 hgrid 아래로 이동
 
         # ── 섹션: 멀티 호라이즌 예측 ─────────────────────────────
         hz_title = mk_label("멀티 호라이즌 예측 ( 1 · 3 · 5 · 10 · 15 · 30분 )", C['blue'], 10, True)
@@ -1210,158 +1208,16 @@ class PredictionPanel(QWidget):
         self._load_hz_filter()
         lay.addLayout(hgrid)
 
-        # ── 섹션 구분 ─────────────────────────────────────────────
-        lay.addSpacing(16)
-        lay.addWidget(mk_sep())
-        lay.addSpacing(12)
+        # ── 3. 모델 상태 행 (hz 카드 아래) ──────────────────────
+        lay.addSpacing(4)
+        lay.addWidget(self._model_row)
 
-        # ── 섹션: 파라미터 중요도 ────────────────────────────────
-        param_title = mk_label("파라미터 중요도 (SHAP 실시간)", C['purple'], 10, True)
-        param_title.setToolTip(
-            "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.75;min-width:480px;'>"
+        # ── 4. conf 추적 카드 ──────────────────────────────────
+        lay.addSpacing(4)
+        from dashboard.panels.conf_trend_widget import make_conf_trend_card
+        self._conf_trend_card = make_conf_trend_card(self)
+        lay.addWidget(self._conf_trend_card)
 
-            "<b style='color:#A371F7;font-size:13px;'>📊 파라미터 중요도 (SHAP 실시간)</b>"
-            "<hr style='border:0;border-top:1px solid #30363D;margin:5px 0 7px 0'>"
-
-            "<b style='color:#58A6FF'>① SHAP 실시간의 의미</b><br>"
-            "<div style='margin-left:10px;line-height:1.9;'>"
-            "• SHAP = SHapley Additive exPlanations<br>"
-            "&nbsp;&nbsp;'이번 예측이 왜 이 방향인지'를 피처별 기여도로 분해한 값<br>"
-            "• '실시간' = GBM 배치 재학습 직후 최신 가중치로 자동 갱신<br>"
-            "&nbsp;&nbsp;매 분봉마다 화면이 갱신되지만 재학습 전까지는 같은 값 유지"
-            "</div><br>"
-
-            "<b style='color:#58A6FF'>② 업데이트 조건</b><br>"
-            "<div style='margin-left:10px;line-height:1.9;'>"
-            "• GBM 최초 학습 전: 모든 항목 0.0% (미학습 상태)<br>"
-            "• GBM 배치 재학습 완료 시 자동 갱신<br>"
-            "&nbsp;&nbsp;— 주간: 매주 월요일 08:50~09:00<br>"
-            "&nbsp;&nbsp;— 학습 최소 데이터: 5,000분봉 (약 13거래일)<br>"
-            "• <b style='color:#39D3BB'>CORE는 호라이즌 그룹별 분리: 단기(CVD·VWAP·OFI) / 중기(VWAP·VIX) / 장기(GEX·PCR·VIX)</b>"
-            "</div><br>"
-
-            "<b style='color:#58A6FF'>③ 피처별 내부 윈도우</b>"
-            "<div style='margin-left:4px;margin-top:5px;'>"
-            "<table style='border-collapse:collapse;line-height:1.85;font-size:11px;'>"
-            "<tr style='color:#8B949E;border-bottom:1px solid #30363D;'>"
-            "<td style='padding:0 12px 2px 0;font-weight:bold;'>피처</td>"
-            "<td style='padding:0 12px 2px 0;'>윈도우</td>"
-            "<td style='padding:0 0 2px 0;'>의미</td>"
-            "</tr>"
-
-            "<tr>"
-            "<td style='color:#39D3BB;font-weight:bold;padding-right:12px;'>CVD</td>"
-            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>10</b>분봉</td>"
-            "<td style='color:#8B949E;'>매수-매도 누적체결 차이 → 방향 다이버전스</td>"
-            "</tr>"
-
-            "<tr>"
-            "<td style='color:#39D3BB;font-weight:bold;padding-right:12px;'>VWAP</td>"
-            "<td style='color:#E6EDF3;padding-right:12px;'>당일 <b>장 시작</b>부터 누적</td>"
-            "<td style='color:#8B949E;'>거래량 가중 평균가 → 기관 알고리즘 기준선</td>"
-            "</tr>"
-
-            "<tr>"
-            "<td style='color:#39D3BB;font-weight:bold;padding-right:12px;'>OFI</td>"
-            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>5</b>분봉</td>"
-            "<td style='color:#8B949E;'>호가창 잔량 불균형 → 1~3분 선행신호</td>"
-            "</tr>"
-
-            "<tr>"
-            "<td style='color:#D29922;padding-right:12px;'>ATR</td>"
-            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>14</b>분봉</td>"
-            "<td style='color:#8B949E;'>평균 변동폭 → 변동성 기준값</td>"
-            "</tr>"
-
-            "<tr>"
-            "<td style='color:#D29922;padding-right:12px;'>Microprice</td>"
-            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>5</b>분봉 · 5호가</td>"
-            "<td style='color:#8B949E;'>잔량 가중 중간가 → 체결 기대가</td>"
-            "</tr>"
-
-            "<tr>"
-            "<td style='color:#D29922;padding-right:12px;'>MLOFI</td>"
-            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>5</b>분봉 · 5호가</td>"
-            "<td style='color:#8B949E;'>멀티레벨 주문흐름 불균형</td>"
-            "</tr>"
-
-            "<tr>"
-            "<td style='color:#D29922;padding-right:12px;'>Queue</td>"
-            "<td style='color:#E6EDF3;padding-right:12px;'>틱 <b>20</b>개 · 분봉 <b>5</b>개</td>"
-            "<td style='color:#8B949E;'>호가 잔량 소진/보충 속도</td>"
-            "</tr>"
-
-            "<tr>"
-            "<td style='color:#D29922;padding-right:12px;'>Toxicity</td>"
-            "<td style='color:#E6EDF3;padding-right:12px;'>최근 <b>20</b>분봉</td>"
-            "<td style='color:#8B949E;'>고독성 주문흐름 감지 (ATR·스프레드·잔량 복합)</td>"
-            "</tr>"
-
-            "<tr>"
-            "<td style='color:#8B949E;padding-right:12px;'>수급·옵션·매크로</td>"
-            "<td style='color:#E6EDF3;padding-right:12px;'>주기적 외부 수집</td>"
-            "<td style='color:#8B949E;'>외국인·기관 수급 / 풋콜비율 / 환율·금리</td>"
-            "</tr>"
-
-            "</table>"
-            "</div>"
-
-            "<hr style='border:0;border-top:1px solid #30363D;margin:7px 0 5px 0'>"
-            "<span style='color:#8B949E;font-size:11px;'>"
-            "▸ 윈도우는 피처 계산 내부에서 사용 — 모델 입력은 현재 분봉 1개의 피처 벡터"
-            "</span>"
-
-            "</div>"
-        )
-        lay.addWidget(param_title)
-        params = [
-            ("CVD 다이버전스", "CORE", C['cyan']),
-            ("VWAP 위치",      "CORE", C['cyan']),
-            ("OFI 불균형",     "CORE", C['cyan']),
-            ("외인 콜순매수",  "SHAP", C['purple']),
-            ("다이버전스 지수","SHAP", C['purple']),
-            ("프로그램 비차익","SHAP", C['purple']),
-        ]
-        pgrid = QGridLayout()
-        pgrid.setSpacing(3)
-        for i, (name, tag, col) in enumerate(params):
-            badge = mk_badge(tag, col if tag=="CORE" else C['bg3'],
-                             C['bg'] if tag=="CORE" else C['purple'])
-            nlab  = mk_label(name, C['text'], 10)
-            bar   = mk_prog(col, 8)
-            vlab  = mk_val_label("—%", col, 11)
-            pgrid.addWidget(badge, i, 0)
-            pgrid.addWidget(nlab,  i, 1)
-            pgrid.addWidget(bar,   i, 2)
-            pgrid.addWidget(vlab,  i, 3)
-            self._param_bars[name] = bar
-            self._param_vals[name] = vlab
-        lay.addLayout(pgrid)
-
-        # ── 섹션 구분 ─────────────────────────────────────────────
-        lay.addSpacing(16)
-        lay.addWidget(mk_sep())
-        lay.addSpacing(12)
-
-        # ── 섹션: 파라미터 상관계수 ──────────────────────────────
-        corr_title = mk_label("파라미터 상관계수", C['orange'], 10, True)
-        corr_title.setToolTip(
-            "GBM 피처 중요도 상위 항목을 요약한 레이블입니다.\n"
-            "\n"
-            "【표시 형식】\n"
-            "  중요도가 높은 순으로 '피처이름+기여도' 형태로 나열합니다.\n"
-            "  예) CVD+0.31  VWAP+0.22  OFI+0.18\n"
-            "\n"
-            "【업데이트 조건】\n"
-            "  • GBM 최초 학습 전: '—' (데이터 부족 또는 미학습)\n"
-            "  • GBM 배치 재학습 완료 시 자동 갱신\n"
-            "    - 주간: 매주 월요일 08:50~09:00\n"
-            "    - 학습 최소 데이터: 5,000분봉 (약 13거래일)\n"
-            "  • 기여도 0인 항목은 표시되지 않습니다."
-        )
-        lay.addWidget(corr_title)
-        self.corr_label = mk_label("—", C['text2'], 9)
-        lay.addWidget(self.corr_label)
         lay.addStretch(1)
 
     def update_data(self, price, preds, params, conf=None, corr="", min_conf: float = 0.58,
@@ -1446,14 +1302,6 @@ class PredictionPanel(QWidget):
             arr.setStyleSheet(f"color:{col};font-size:{S.f(22)}px;font-weight:bold;")
             pct.setStyleSheet(f"color:{col};font-size:{S.f(12)}px;")
 
-        # SHAP 바
-        for name, val in params.items():
-            if name in self._param_bars:
-                self._param_bars[name].setValue(int(val * 100))
-                self._param_vals[name].setText(f"{val*100:.1f}%")
-
-        # 상관계수 레이블 (GBM 중요도 기반, 없으면 —)
-        self.corr_label.setText(corr if corr else "—")
 
     def set_model_status(self, state, detail="", progress=-1, price=None,
                          update_signal=True):
@@ -1648,44 +1496,46 @@ class AccountInfoPanel(QWidget):
 
         lay.addWidget(mk_sep())
 
-        summary_grid = QGridLayout()
-        summary_grid.setContentsMargins(0, 0, 0, 0)
-        summary_grid.setHorizontalSpacing(S.p(18))
-        summary_grid.setVerticalSpacing(S.p(10))
-        for key, title, row, col in [
-            ("총매매", "예탁현금", 0, 0),
-            ("총평가손익", "청산후총평가금액", 0, 1),
-            ("실현손익", "금일손익", 0, 2),
-            ("총평가", "수익율(%)", 1, 0),
-            ("총평가수익률", "익일가예탁현금", 1, 1),
-            ("추정자산", "전일손익", 1, 2),
+        # 제거된 필드 더미 레이블 — update_summary 호환성 유지
+        for _k in ("총매매", "총평가손익", "총평가수익률"):
+            self._summary_values[_k] = mk_label("", C['text2'], 10)
+
+        # 핵심 3필드 compact 스트립: 금일손익 · 수익율(%) · 전일손익
+        strip = QHBoxLayout()
+        strip.setContentsMargins(0, 0, 0, 0)
+        strip.setSpacing(S.p(8))
+        for key, title in [
+            ("실현손익", "금일손익"),
+            ("총평가",   "수익율(%)"),
+            ("추정자산", "전일손익"),
         ]:
             cell = QHBoxLayout()
             cell.setContentsMargins(0, 0, 0, 0)
-            cell.setSpacing(S.p(6))
-            label = mk_label(f"{title}:", C['text'], 10, True)
-            value = mk_label("", C['text2'], 10, align=Qt.AlignLeft)
-            value.setMinimumWidth(S.p(104))
+            cell.setSpacing(S.p(5))
+            lbl = mk_label(f"{title}:", C['text2'], 9, True)
+            value = mk_label("", C['text2'], 11, align=Qt.AlignLeft)
+            value.setMinimumWidth(S.p(80))
             value.setStyleSheet(
-                f"font-size:{S.f(10)}px;color:{C['text2']};"
-                f"padding:{S.p(4)}px {S.p(8)}px;"
+                f"font-size:{S.f(11)}px;color:{C['text2']};"
+                f"padding:{S.p(3)}px {S.p(6)}px;"
                 f"background:{C['bg3']};border:1px solid {C['border']};"
-                f"border-radius:{S.p(4)}px;"
+                f"border-radius:{S.p(3)}px;"
             )
-            cell.addWidget(label)
+            cell.addWidget(lbl)
             cell.addWidget(value, 1)
-            summary_grid.addLayout(cell, row, col)
+            strip.addLayout(cell)
             self._summary_values[key] = value
-        lay.addLayout(summary_grid)
+        lay.addLayout(strip)
         lay.addWidget(mk_sep())
 
-        self.tbl_balance = QTableWidget(0, 9)
+        self.tbl_balance = QTableWidget(3, 5)
         self.tbl_balance.setHorizontalHeaderLabels([
-            "종목코드", "구분", "보유량", "청산가능", "평가손익",
-            "평가수익률", "매입가", "현재가", "평가금액"
+            "구분", "보유량", "매입가", "현재가", "평가손익"
         ])
-        self.tbl_balance.setMinimumHeight(S.p(250))
         self.tbl_balance.verticalHeader().setVisible(False)
+        self.tbl_balance.verticalHeader().setDefaultSectionSize(S.p(22))
+        self.tbl_balance.horizontalHeader().setFixedHeight(S.p(26))
+        self.tbl_balance.setFixedHeight(3 * S.p(22) + S.p(26))
         self.tbl_balance.setAlternatingRowColors(False)
         self.tbl_balance.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tbl_balance.setSelectionMode(QTableWidget.NoSelection)
@@ -1699,7 +1549,7 @@ class AccountInfoPanel(QWidget):
             f"padding:{S.p(6)}px;border:none;border-bottom:1px solid {C['blue']};"
             f"font-size:{S.f(9)}px;font-weight:bold;}}"
         )
-        lay.addWidget(self.tbl_balance, 1)
+        lay.addWidget(self.tbl_balance)
 
     def tick_live(self):
         self._refresh_live_status()
@@ -1818,17 +1668,21 @@ class AccountInfoPanel(QWidget):
 
     def update_rows(self, rows):
         rows = list(rows or [])
-        self.tbl_balance.setRowCount(len(rows))
+        self.tbl_balance.setSpan(0, 0, 1, 1)  # 이전 FLAT span 해제
+        self.tbl_balance.setRowCount(max(3, len(rows)))
+        if not rows:
+            flat = QTableWidgetItem("FLAT")
+            flat.setTextAlignment(Qt.AlignCenter)
+            flat.setForeground(QColor(C['text2']))
+            self.tbl_balance.setItem(0, 0, flat)
+            self.tbl_balance.setSpan(0, 0, 1, 5)
+            return
         columns = [
-            (("종목코드",), False),
             (("매매구분", "구분"), False),
             (("잔고수량", "보유수량"), False),
-            (("청산가능", "주문가능수량", "청산가능수량"), False),
-            (("평가손익(원)", "평가손익"), False),
-            (("수익률(%)", "손익율"), True),
             (("매입단가", "평균가"), False),
             (("현재가",), False),
-            (("평가금액",), False),
+            (("평가손익(원)", "평가손익"), False),
         ]
         for r, row in enumerate(rows):
             for c, (fields, is_percent) in enumerate(columns):
@@ -1837,7 +1691,7 @@ class AccountInfoPanel(QWidget):
                     raw = row.get(field, "")
                     if str(raw or "").strip():
                         break
-                text = self._format_value(raw, is_percent=is_percent) if c >= 2 else str(raw or "").strip()
+                text = self._format_value(raw, is_percent=is_percent) if c >= 1 else str(raw or "").strip()
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter)
                 self.tbl_balance.setItem(r, c, item)
@@ -7784,6 +7638,8 @@ class MinuteChartCanvas(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.fillRect(self.rect(), QColor(C["bg"]))
 
         candles = list(self._closed_candles)
@@ -7903,50 +7759,86 @@ class MinuteChartCanvas(QWidget):
         super().leaveEvent(event)
 
     def _draw_grid(self, painter: QPainter, plot: QRectF, lo: float, hi: float):
-        grid_pen = QPen(QColor(C["border"]))
+        # 수평 6단계 미세 그리드
+        grid_col = QColor(C["border"])
+        grid_col.setAlpha(90)
+        grid_pen = QPen(grid_col)
         grid_pen.setStyle(Qt.DotLine)
+        grid_pen.setWidthF(0.8)
         painter.setPen(grid_pen)
-        for idx in range(5):
-            y = plot.top() + (plot.height() * idx / 4.0)
-            painter.drawLine(int(plot.left()), int(y), int(plot.right()), int(y))
-        for idx in range(6):
-            x = plot.left() + (plot.width() * idx / 5.0)
-            painter.drawLine(int(x), int(plot.top()), int(x), int(plot.bottom()))
+        N_H = 6
+        for idx in range(N_H + 1):
+            y = plot.top() + plot.height() * idx / N_H
+            painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
 
-        painter.setPen(QColor(C["text2"]))
-        for idx in range(5):
-            price = hi - ((hi - lo) * idx / 4.0)
-            y = plot.top() + (plot.height() * idx / 4.0)
-            painter.drawText(QRectF(0, y - 10, plot.left() - 8, 20), Qt.AlignRight | Qt.AlignVCenter, f"{price:.2f}")
+        # 수직 시간 구분선 (더 연하게)
+        v_col = QColor(C["border"])
+        v_col.setAlpha(55)
+        v_pen = QPen(v_col)
+        v_pen.setStyle(Qt.DotLine)
+        v_pen.setWidthF(0.6)
+        painter.setPen(v_pen)
+        for idx in range(7):
+            x = plot.left() + plot.width() * idx / 6.0
+            painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+
+        # 가격 레이블
+        f = painter.font()
+        f.setPointSizeF(S.f(8))
+        painter.setFont(f)
+        lbl_col = QColor(C["text2"])
+        lbl_col.setAlpha(200)
+        painter.setPen(lbl_col)
+        for idx in range(N_H + 1):
+            price = hi - (hi - lo) * idx / N_H
+            y = plot.top() + plot.height() * idx / N_H
+            painter.drawText(QRectF(0, y - 10, plot.left() - 6, 20),
+                             Qt.AlignRight | Qt.AlignVCenter, f"{price:.2f}")
 
     def _draw_candles(self, painter: QPainter, plot: QRectF, candles, lo: float, hi: float, padded_count: int):
         count = max(padded_count, 1)
         step = plot.width() / count
         self._last_step_px = step
-        body_w = max(4.0, min(14.0, step * 0.62))
+        body_w   = max(3.0, min(18.0, step * 0.68))
+        wick_w   = max(1.0, min(2.0, body_w * 0.14))
+        corner_r = min(2.5, body_w * 0.20)
+
+        # 색상 — 상승: 밝은 초록 테두리 + 반투명 채움 / 하락: 밝은 적색 + 반투명
+        UP_BORDER   = QColor("#3FCF8E")
+        UP_FILL     = QColor(14, 52, 32, 210)
+        UP_WICK     = QColor("#3FCF8E")
+        DOWN_BORDER = QColor("#F05454")
+        DOWN_FILL   = QColor(60, 16, 18, 220)
+        DOWN_WICK   = QColor("#F05454")
 
         for idx, candle in enumerate(candles):
             x = plot.left() + step * (idx + 0.5)
-            high_y = self._price_to_y(candle["high"], plot, lo, hi)
-            low_y = self._price_to_y(candle["low"], plot, lo, hi)
-            open_y = self._price_to_y(candle["open"], plot, lo, hi)
+            high_y  = self._price_to_y(candle["high"],  plot, lo, hi)
+            low_y   = self._price_to_y(candle["low"],   plot, lo, hi)
+            open_y  = self._price_to_y(candle["open"],  plot, lo, hi)
             close_y = self._price_to_y(candle["close"], plot, lo, hi)
-            rising = candle["close"] >= candle["open"]
-            color = QColor(C["green"] if rising else C["red"])
+            rising  = candle["close"] >= candle["open"]
 
-            pen = QPen(color)
-            pen.setWidth(1)
-            painter.setPen(pen)
-            painter.drawLine(int(x), int(high_y), int(x), int(low_y))
+            border_col = UP_BORDER  if rising else DOWN_BORDER
+            fill_col   = UP_FILL    if rising else DOWN_FILL
+            wick_col   = UP_WICK    if rising else DOWN_WICK
 
-            top_y = min(open_y, close_y)
-            height = max(abs(close_y - open_y), 1.5)
-            rect = QRectF(x - body_w / 2.0, top_y, body_w, height)
-            if rising:
-                painter.setBrush(QColor(24, 90, 54))
+            # 심지 (wick) — 몸통 아래에 먼저 그려 몸통이 위로 덮임
+            wick_pen = QPen(wick_col)
+            wick_pen.setWidthF(wick_w)
+            painter.setPen(wick_pen)
+            painter.drawLine(QPointF(x, high_y), QPointF(x, low_y))
+
+            # 몸통
+            top_y  = min(open_y, close_y)
+            height = max(abs(close_y - open_y), 2.0)
+            rect   = QRectF(x - body_w / 2.0, top_y, body_w, height)
+            painter.setBrush(fill_col)
+            painter.setPen(QPen(border_col, 1.3))
+            if corner_r >= 1.0:
+                painter.drawRoundedRect(rect, corner_r, corner_r)
             else:
-                painter.setBrush(QColor(119, 37, 37))
-            painter.drawRect(rect)
+                painter.drawRect(rect)
 
     def _draw_regime_bar(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
         """X축 라인 바로 위에 봉별 레짐 색상 바 (높이 _REGIME_BAR_H px) 표시."""
@@ -8332,10 +8224,12 @@ class MinuteChartCanvas(QWidget):
         price = hi - ((self._hover_pos.y() - plot.top()) / max(plot.height(), 1e-6)) * (hi - lo)
         y = self._price_to_y(price, plot, lo, hi)
 
-        pen = QPen(QColor("#8B949E"))
-        pen.setStyle(Qt.DotLine)
-        pen.setWidth(1)
-        painter.setPen(pen)
+        cross_col = QColor("#A0ACBB")
+        cross_col.setAlpha(160)
+        h_pen = QPen(cross_col)
+        h_pen.setStyle(Qt.DashLine)
+        h_pen.setWidthF(0.8)
+        painter.setPen(h_pen)
         painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
         painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
 
@@ -8565,10 +8459,49 @@ class MinuteChartDialog(QDialog):
     def maybe_roll_session(self):
         today = datetime.now().date().isoformat()
         if today != self._session_date:
-            self.reload_today()
+            # reload_today() DB 쿼리를 백그라운드 스레드로 분리 — 메인 스레드 블로킹 방지 (194차)
+            import threading as _thr
+            _thr.Thread(target=self._reload_today_bg, daemon=True).start()
+
+    def _reload_today_bg(self):
+        """reload_today를 백그라운드 스레드에서 실행 후 Qt 메인 스레드에서 reset_session 적용."""
+        try:
+            from PyQt5.QtCore import QTimer as _QTimer
+            self._session_date = datetime.now().date().isoformat()
+            candle_rows = fetchall(
+                RAW_DATA_DB,
+                "SELECT ts, open, high, low, close, volume FROM raw_candles WHERE ts LIKE ? ORDER BY ts ASC",
+                (f"{self._session_date}%",),
+            )
+            candles = self._trim_to_last_price_group([dict(row) for row in candle_rows])
+            completed_trades, exit_markers = [], []
+            for row in fetch_today_trades(self._session_date):
+                entry_ts = self._coerce_dt(row["entry_ts"])
+                exit_ts = self._coerce_dt(row["exit_ts"])
+                if not entry_ts or not exit_ts:
+                    continue
+                is_partial = self._is_partial_exit_reason(row["exit_reason"])
+                if is_partial:
+                    exit_markers.append({"price": float(row["exit_price"] or 0.0), "ts": exit_ts,
+                                         "kind": "EXIT", "finalize": False,
+                                         "pnl_pts": float(row["pnl_pts"] or 0.0),
+                                         "reason": str(row["exit_reason"] or ""),
+                                         "direction": str(row["direction"] or "").upper(), "outcome": "PARTIAL"})
+                else:
+                    completed_trades.append({"direction": str(row["direction"] or "").upper(),
+                                             "entry_price": float(row["entry_price"] or 0.0),
+                                             "exit_price": float(row["exit_price"] or 0.0),
+                                             "entry_ts": entry_ts, "exit_ts": exit_ts,
+                                             "exit_reason": str(row["exit_reason"] or ""),
+                                             "pnl_pts": float(row["pnl_pts"] or 0.0),
+                                             "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"])})
+            # Qt UI 업데이트는 메인 스레드에서 실행
+            _QTimer.singleShot(0, lambda: self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers))
+        except Exception:
+            pass
 
     def update_tick(self, price: float, ts=None):
-        self.maybe_roll_session()
+        # maybe_roll_session 제거: 매 틱마다 날짜 비교 불필요 — on_candle_closed에서만 체크 (194차)
         self._chart.update_tick(price, ts=ts)
 
     def on_candle_closed(self, candle: dict):
@@ -8611,6 +8544,43 @@ class MinuteChartDialog(QDialog):
 
     def _coerce_dt(self, value):
         return self._chart._coerce_dt(value)
+
+    def closeEvent(self, event):
+        try:
+            geo = self.geometry()
+            prefs = {}
+            if os.path.exists(_UI_PREFS_FILE):
+                try:
+                    with open(_UI_PREFS_FILE, "r", encoding="utf-8") as _rf:
+                        prefs = json.load(_rf)
+                except Exception:
+                    prefs = {}
+            prefs["chart_dialog_geometry"] = {
+                "x": geo.x(), "y": geo.y(),
+                "w": geo.width(), "h": geo.height(),
+            }
+            with open(_UI_PREFS_FILE, "w", encoding="utf-8") as _wf:
+                json.dump(prefs, _wf, ensure_ascii=False)
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    def restore_saved_geometry(self):
+        try:
+            if not os.path.exists(_UI_PREFS_FILE):
+                return
+            with open(_UI_PREFS_FILE, "r", encoding="utf-8") as _rf:
+                geo = json.load(_rf).get("chart_dialog_geometry")
+            if not geo:
+                return
+            x, y = int(geo["x"]), int(geo["y"])
+            w, h = int(geo["w"]), int(geo["h"])
+            screen = QApplication.primaryScreen().availableGeometry()
+            x = max(screen.left(), min(x, screen.right() - w))
+            y = max(screen.top(), min(y, screen.bottom() - h))
+            self.setGeometry(x, y, w, h)
+        except Exception:
+            pass
 
 
 import datetime as _dt
@@ -9020,6 +8990,19 @@ class MireukDashboard(QMainWindow):
             "개발/디버그 재시작 시 Off → 상태 초기화"
         )
         self.chk_state_persist.setStyleSheet(_chk_style)
+        _cmb_chart_style = (
+            f"QComboBox{{background:{C['bg2']};color:{C['text']};"
+            f"border:1px solid {C['border']};border-radius:3px;"
+            f"padding:1px 4px;font-size:{S.f(9)}px;}}"
+            f"QComboBox QAbstractItemView{{background:{C['bg2']};color:{C['text']};"
+            f"selection-background-color:{C['blue']};}}"
+        )
+        self.cmb_chart_auto = QComboBox()
+        self.cmb_chart_auto.addItems(["수동", "자동팝업"])
+        self.cmb_chart_auto.setFixedWidth(S.p(66))
+        self.cmb_chart_auto.setCursor(Qt.PointingHandCursor)
+        self.cmb_chart_auto.setToolTip("프로그램 시작 시 당일 1분봉 차트를 자동으로 팝업합니다")
+        self.cmb_chart_auto.setStyleSheet(_cmb_chart_style)
         header_label_w = S.p(58)
         header_combo_w = S.p(188)
         header_btn_w = S.p(54)
@@ -9186,6 +9169,9 @@ class MireukDashboard(QMainWindow):
         _chk_row.addWidget(self.chk_slack)
         _chk_row.addWidget(self.chk_mid_auto)
         _chk_row.addWidget(self.chk_right_auto)
+        _lbl_chart = mk_label("봉차트", C['text2'], 9, align=Qt.AlignRight)
+        _chk_row.addWidget(_lbl_chart)
+        _chk_row.addWidget(self.cmb_chart_auto)
         _chk_row.addStretch()
         res_box.addWidget(self.lbl_scale)
         res_box.addWidget(self.lbl_commit)
@@ -9272,9 +9258,9 @@ class MireukDashboard(QMainWindow):
         left_split.addWidget(card("실시간 잔고",
                                   self.account_info_panel, C['cyan'],
                                   header_widget=self.account_info_panel.live_header_widget))
-        left_split.addWidget(card("멀티 호라이즌 예측 + 파라미터 분석",
+        left_split.addWidget(card("",
                                   self.pred_panel, C['blue']))
-        left_split.setSizes([420, 520])
+        left_split.setSizes([200, 740])
         ll.addWidget(left_split, 1)
 
         # 중앙 컬럼 (탭)
@@ -9420,6 +9406,7 @@ class MireukDashboard(QMainWindow):
         self.chk_mid_auto.toggled.connect(lambda _: self._save_ui_prefs())
         self.chk_right_auto.toggled.connect(lambda _: self._save_ui_prefs())
         self.chk_state_persist.toggled.connect(lambda _: self._save_ui_prefs())
+        self.cmb_chart_auto.currentIndexChanged.connect(lambda _: self._save_ui_prefs())
         self.ui_auto_tabs.set_startup_mode()
 
     def toggle_minute_chart_dialog(self):
@@ -9430,6 +9417,9 @@ class MireukDashboard(QMainWindow):
         self._minute_chart_dialog.show()
         self._minute_chart_dialog.raise_()
         self._minute_chart_dialog.activateWindow()
+        # show() 후 WM_SHOWWINDOW 처리가 끝난 다음 틱에 geometry를 적용해야
+        # Windows WM의 기본 재배치에 덮어쓰이지 않는다.
+        QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)
 
     def minute_chart_tick(self, price: float, ts=None):
         self._minute_chart_dialog.update_tick(price, ts=ts)
@@ -9637,6 +9627,7 @@ class MireukDashboard(QMainWindow):
                 "right_auto_enabled": self.chk_right_auto.isChecked(),
                 "state_persist_enabled": self.chk_state_persist.isChecked(),
                 "server_mode": "simul" if self.rdo_simul.isChecked() else "real",
+                "chart_auto_popup": self.cmb_chart_auto.currentText() == "자동팝업",
             })
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as f:
                 json.dump(prefs, f, ensure_ascii=False)
@@ -9709,6 +9700,12 @@ class MireukDashboard(QMainWindow):
             self.rdo_simul.setChecked(not is_real)
             self.rdo_simul.blockSignals(False)
             self.rdo_real.blockSignals(False)
+
+            # 봉차트 자동팝업 복원 (기본 수동)
+            chart_auto = bool(prefs.get("chart_auto_popup", False))
+            self.cmb_chart_auto.blockSignals(True)
+            self.cmb_chart_auto.setCurrentText("자동팝업" if chart_auto else "수동")
+            self.cmb_chart_auto.blockSignals(False)
         except Exception:
             pass
 
@@ -9907,6 +9904,9 @@ class DashboardAdapter:
         # 항상 위는 아니지만 시작 직후에는 일반 창들 위로 자연스럽게 올린다.
         self._win.raise_()
         self._win.activateWindow()
+        if self._win.cmb_chart_auto.currentText() == "자동팝업":
+            from PyQt5.QtCore import QTimer as _QTimer
+            _QTimer.singleShot(600, self._win.toggle_minute_chart_dialog)
 
     def _save_ui_prefs(self):
         self._win._save_ui_prefs()

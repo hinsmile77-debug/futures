@@ -2587,7 +2587,10 @@ class TradingSystem:
                     "[GapOffset] 프리장 사전 설정 확인 → 본장 첫 분봉 재설정 스킵", "INFO"
                 )
 
-        self.dashboard.minute_chart_candle_closed(candle)
+        try:
+            self.dashboard.minute_chart_candle_closed(candle)
+        except Exception as _ce:
+            logger.debug("[ChartWarn] candle_closed 예외 무시: %s", _ce)
         try:
             self.run_minute_pipeline(candle)
             self._pipeline_fatal_streak = 0
