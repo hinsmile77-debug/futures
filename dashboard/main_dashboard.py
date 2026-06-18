@@ -1212,12 +1212,6 @@ class PredictionPanel(QWidget):
         lay.addSpacing(4)
         lay.addWidget(self._model_row)
 
-        # ── 4. conf 추적 카드 ──────────────────────────────────
-        lay.addSpacing(4)
-        from dashboard.panels.conf_trend_widget import make_conf_trend_card
-        self._conf_trend_card = make_conf_trend_card(self)
-        lay.addWidget(self._conf_trend_card)
-
         lay.addStretch(1)
 
     def update_data(self, price, preds, params, conf=None, corr="", min_conf: float = 0.58,
