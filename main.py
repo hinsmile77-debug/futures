@@ -6595,93 +6595,35 @@ class TradingSystem:
                 except Exception:
                     pass
 
-        # 일일 배치 재학습 (장 마감 후 — 당일 축적 데이터 반영)
-        # force=True: 26주 데이터 기준 acc 안정화 → cv_acc 소폭 하락도 교체가 안전
-        # intraday=False + full_cv=True: Cybos 단절 후 메모리 경쟁 프로세스 없음
-        #   → 300그루 정규 파라미터 + 3-fold CV 20k 캡 해제 + 50k봉 최종 fit
-        #   (구 intraday=True는 장 마감 후에도 Cybos COM 경쟁 우려로 제한했던 것 — 해소)
-        # 월요일: 주간 재학습도 여기서 통합 → STEP 3 08:50 주간 재학습 중복 스킵됨
-        _is_monday_eod = (datetime.datetime.now().weekday() == 0)
-        self._eod_retrain_ok = False   # EOD 진입 시 초기화 — 완료 후 True로 설정
+        # GBM 재학습 + P8 스케일러 재적합은 py310_64 장외 스케줄러(MireukiEODRetrain, 15:45)가
+        # retrain_eod.py를 통해 수행한다 (191차~, OOM 방지).
+        # daily_close()에서 retrain_now()를 직접 호출하지 않는다:
+        #   - py37_32 메인 스레드 동기 실행 → 12분+ Qt 블로킹 → UI 행 상태 (오늘 실증)
+        #   - py310_64 스케줄러 완료 후 마커 파일로 성공 여부 확인
 
-        # [행 방지] py310_64 장외 스케줄러(MireukiEODRetrain) 완료 마커 체크.
-        # 마커가 있으면 retrain_now() 동기 호출(12분+ Qt 블로킹)을 건너뛰고
-        # pkl 로드만 수행한다. 마커 없으면 py37_32 내부에서 직접 실행(OOM 위험 있음).
+        # 마커 파일 기반으로 내일 08:55 PreRetrain 스킵 신호 기록
         _eod_marker_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "data",
             f"eod_retrain_done_{datetime.date.today().isoformat()}.txt",
         )
-        _eod_by_scheduler = os.path.exists(_eod_marker_path)
-        if _eod_by_scheduler:
-            log_manager.system(
-                f"[DailyClose] EOD 재학습 마커 확인 ({_eod_marker_path}) "
-                f"— py310_64 스케줄러 완료됨, 이중 재학습 스킵 (12분 Qt 블로킹 방지)",
-                "INFO",
-            )
-            _bad = self.model._load_all()  # 스케줄러가 교체한 최신 pkl 로드
-            if _bad:
-                logger.error("[Model] EOD 마커스킵 후 pkl 로드 %d개 불일치: %s", len(_bad), _bad)
+        if os.path.exists(_eod_marker_path):
             self._eod_retrain_ok = True
-            retrain_result = {"ok": True, "elapsed_sec": 0, "data_size": 0,
-                              "note": "skipped — py310_64 scheduler already ran"}
-        else:
-            log_manager.system(
-                "[DailyClose] EOD 재학습 시작 — 정규 파라미터 (300그루, full_cv=True)"
-                + (" [월요일: 주간 재학습 포함]" if _is_monday_eod else ""),
-                "INFO",
-            )
-        # [P0] retrain_now() 예외(예: 32bit 프로세스 MemoryError) 시에도 EOD 잔여 단계
-        # (P8 스케일러 재적합·Platt/MetaConf 저장·일일 리셋·WAL 체크포인트)는 계속 진행.
-        # 06-11/06-16 동일 패턴 MemoryError로 daily_close() 전체가 중단되며
-        # 위 단계 전부 스킵됐던 문제 재발 방지 — catch_up_eod.py로 수동 복구하던 것을
-        # 구조적으로 차단.
-        if not _eod_by_scheduler:
-            try:
-                retrain_result = self.batch_retrainer.retrain_now(
-                    force=True,
-                    intraday=False,   # 정규 파라미터 (max_iter=300, max_depth=5, lr=0.04)
-                    full_cv=True,     # CV 20k 캡 해제 — Cybos 단절 후 메모리 여유
-                )
-            except BaseException as _retrain_exc:  # MemoryError 등 BaseException 포함
-                logger.error(
-                    "[DailyClose] EOD 재학습 예외 — 스킵하고 EOD 잔여 단계 계속 진행: %s",
-                    _retrain_exc, exc_info=True,
-                )
-                log_manager.system(
-                    f"[DailyClose] EOD 재학습 예외(스킵, 잔여단계 계속): {_retrain_exc}",
-                    "ERROR",
-                )
-                retrain_result = {"ok": False, "error": str(_retrain_exc)}
-            # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
-            # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
-            _bad = self.model._load_all()
-            if _bad:
-                logger.error(
-                    "[Model] EOD 재학습 후 %d개 호라이즌 차원 불일치: %s",
-                    len(_bad), _bad,
-                )
-        retrain_ok = retrain_result.get("ok", False)
-        if retrain_ok:
-            self._eod_retrain_ok = True   # 내일 08:55 PreRetrain 스킵 신호
-            # 다음날 08:45 신규 시작 시 __init__이 False로 초기화하는 것을 보완:
-            # session_state에 날짜를 기록해 pre_market_setup()에서 복원한다.
             try:
                 _eod_ss = self._read_session_state()
                 _eod_ss["eod_retrain_ok_date"] = datetime.date.today().isoformat()
                 self._write_session_state(_eod_ss)
             except Exception as _eod_ss_e:
                 logger.warning("[EOD] eod_retrain_ok_date 저장 실패 (무해): %s", _eod_ss_e)
-            self._ensure_shap_tracker()
-            retrain_str = f"재학습 완료 ({retrain_result['elapsed_sec']}초, {retrain_result['data_size']}행)"
-            log_manager.learning(
-                f"[GBM] 일일 마감 재학습 완료 | {retrain_result['elapsed_sec']}초 "
-                f"데이터={retrain_result['data_size']}행"
+            log_manager.system(
+                "[DailyClose] EOD 재학습 마커 확인 — 스케줄러 완료, 내일 PreRetrain 스킵 예약",
+                "INFO",
             )
         else:
-            retrain_str = f"재학습 건너뜀 ({retrain_result.get('error', '')})"
-            log_manager.learning(
-                f"[GBM] 일일 마감 재학습 건너뜀: {retrain_result.get('error','')}"
+            log_manager.system(
+                "[DailyClose] EOD 재학습 마커 없음 — retrain_eod.py 미실행 또는 실패 "
+                "(내일 PreRetrain에서 보완 재학습 예약됨)",
+                "WARNING",
             )
 
         # DB pruning — 매주 월요일 EOD 1회 실행 (RAW_DATA_PRUNE_WEEKS=52주 이전 삭제)
@@ -6696,11 +6638,6 @@ class TradingSystem:
                     )
             except Exception as _pe:
                 logger.warning("[GBM] DB pruning 실패: %s", _pe)
-
-        # [P8] EOD 스케일러 재적합 — retrain_eod.py로 이전
-        # GBM 재학습(retrain_now)이 26주 기준 scaler_pkl을 저장하므로
-        # daily_close()에서 P8을 먼저 실행하면 재학습이 덮어쓰는 순서 역전 문제가 있었음.
-        # retrain_eod.py 완료 직후 P8을 실행하도록 재배치 — 내일 08:45 EarlyWarmup이 보완.
 
         # [Platt] 앙상블 보정기 저장 — 다음 기동 시 즉시 복원 가능
         try:
