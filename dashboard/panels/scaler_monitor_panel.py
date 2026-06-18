@@ -378,14 +378,18 @@ class ScalerMonitorPanel(QWidget):
         root.addWidget(hist_grp)
 
     def refresh(self):
+        import time as _t, logging as _log
+        _t0 = _t.monotonic()
         today = _today()
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
         self._lbl_refresh_ts.setText("갱신: " + now_str)
-
         self._refresh_realtime(today)
         self._refresh_top5(today)
         self._refresh_events(today)
         self._refresh_history()
+        _ms = (_t.monotonic() - _t0) * 1000
+        if _ms > 200:
+            _log.getLogger("SYSTEM").warning("[LiveDBG] ScalerMonitorPanel.refresh slow %.0fms", _ms)
 
     def _refresh_realtime(self, today):
         rt = _load_realtime(today)
@@ -418,8 +422,7 @@ class ScalerMonitorPanel(QWidget):
                 (mz_str, _COL["orange"] if extreme_count and extreme_count > 0 else _COL["muted"]),
             ]
             for j, (txt, col) in enumerate(cells):
-                item = self._tbl_rt.item(i, j) or QTableWidgetItem()
-                item.setText(txt)
+                item = QTableWidgetItem(txt)
                 item.setForeground(QColor(col))
                 item.setTextAlignment(Qt.AlignCenter)
                 if j == 0:

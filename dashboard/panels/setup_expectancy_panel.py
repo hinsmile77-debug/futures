@@ -292,6 +292,8 @@ class SetupExpectancyPanel(QWidget):
         self.refresh()
 
     def refresh(self):
+        import time as _t, logging as _log
+        _t0 = _t.monotonic()
         date_where = _date_filter(self._filter)
         for sec in (self._sec_action, self._sec_hurst, self._sec_hour, self._sec_grade):
             try:
@@ -300,6 +302,9 @@ class SetupExpectancyPanel(QWidget):
                 logger.debug("[SetupExpectancy] 섹션 갱신 실패: %s", e)
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
         self._lbl_updated.setText(f"최종 갱신: {now_str}  |  필터: {self._filter}")
+        _ms = (_t.monotonic() - _t0) * 1000
+        if _ms > 200:
+            _log.getLogger("SYSTEM").warning("[LiveDBG] SetupExpectancyPanel.refresh slow %.0fms", _ms)
 
     def showEvent(self, event):
         super().showEvent(event)

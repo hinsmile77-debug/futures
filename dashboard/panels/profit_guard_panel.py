@@ -887,6 +887,8 @@ class ProfitGuardPanel(QWidget):
 
     def _auto_refresh(self):
         """타이머 주기 자동 갱신 — 가드 인스턴스 없으면 스킵."""
+        import time as _t, logging as _log
+        _t0 = _t.monotonic()
         if self._guard is None:
             return
         try:
@@ -896,6 +898,9 @@ class ProfitGuardPanel(QWidget):
             self.refresh(daily_pnl, trades)
         except Exception:
             pass
+        _ms = (_t.monotonic() - _t0) * 1000
+        if _ms > 200:
+            _log.getLogger("SYSTEM").warning("[LiveDBG] ProfitGuardPanel._auto_refresh slow %.0fms", _ms)
 
     def _on_config_changed(self, cfg):
         try:

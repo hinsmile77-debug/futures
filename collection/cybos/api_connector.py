@@ -501,9 +501,20 @@ class CybosAPI:
             self._msg_callbacks.append(callback)
 
     def request_futures_balance(self, account_no: str) -> Optional[Dict[str, Any]]:
+        import time as _t, traceback as _tb, logging as _log
+        _rfb_t0 = _t.monotonic()
+        _rfb_caller = "".join(_tb.format_stack()[-4:-1]).replace("\n", " | ").replace("  ", " ")
+        _log.getLogger("SYSTEM").warning(
+            "[LiveDBG] request_futures_balance 호출 account=%s | caller=%s",
+            account_no, _rfb_caller[-200:],
+        )
         if not account_no:
             return None
         self._ensure_trade_init()
+        _log.getLogger("SYSTEM").warning(
+            "[LiveDBG] request_futures_balance TradeInit 완료 %.0fms",
+            (_t.monotonic() - _rfb_t0) * 1000,
+        )
 
         def _read_rows(obj):
             count = _safe_int(obj.GetHeaderValue(2))
@@ -580,6 +591,11 @@ class CybosAPI:
             "all_blank_rows": bool(rows) and not bool(nonempty_rows),
         }
         logger.info("[CybosBalance] account=%s rows=%d nonempty=%d", account_no, len(rows), len(nonempty_rows))
+        import time as _t2, logging as _log2
+        _log2.getLogger("SYSTEM").warning(
+            "[LiveDBG] request_futures_balance 완료 총 %.0fms account=%s",
+            (_t2.monotonic() - _rfb_t0) * 1000, account_no,
+        )
         return result
 
     def _request_futures_daily_pnl_summary(self, account_no: str) -> Dict[str, str]:

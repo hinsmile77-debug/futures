@@ -18,7 +18,62 @@ class SessionRecoveryService:
     def restore_on_startup(self, system: Any) -> None:
         system._session_no = self.increment_session(system)
         self.restore_daily_state(system)
-        QTimer.singleShot(500, lambda: self.restore_panels_from_history(system))
+        # restore_panels_from_history의 DB 쿼리(_gather_efficacy_stats 등)를
+        # 백그라운드 스레드에서 실행 후 Qt 메인 스레드에서 UI 업데이트 적용.
+        # 메인 스레드에서 직접 실행 시 4s+ 블로킹 → _tick_header 지연 → live 멈춤.
+        QTimer.singleShot(500, lambda: self._restore_panels_bg(system))
+
+    def _restore_panels_bg(self, system: Any) -> None:
+        import threading as _thr
+        _thr.Thread(target=self._restore_panels_worker, args=(system,), daemon=True).start()
+
+    def _restore_panels_worker(self, system: Any) -> None:
+        """restore_panels_from_history의 무거운 DB 쿼리를 백그라운드에서 실행."""
+        from PyQt5.QtCore import QTimer as _QTimer
+        import time as _t
+        _t0 = _t.monotonic()
+        try:
+            learning  = system._gather_learning_stats()
+            efficacy  = system._gather_efficacy_stats()
+            trend     = system._gather_trend_stats()
+        except Exception as _e:
+            import logging as _log
+            _log.getLogger("SYSTEM").warning("[Restore] 패널 데이터 수집 실패: %s", _e)
+            learning, efficacy, trend = None, None, None
+        _gather_ms = (_t.monotonic() - _t0) * 1000
+        import logging as _log
+        _log.getLogger("SYSTEM").debug(
+            "[LiveDBG] _restore_panels_worker DB 수집 %.0fms", _gather_ms
+        )
+        if _gather_ms > 2000:
+            _log.getLogger("SYSTEM").warning(
+                "[LiveDBG] _restore_panels_worker 지연 %.0fms — live 중단 원인 분석용",
+                _gather_ms,
+            )
+        # UI 업데이트는 메인 스레드에서 실행
+        def _apply():
+            import time as _ta
+            _log.getLogger("SYSTEM").warning("[LiveDBG] _apply 시작 (메인 스레드)")
+            try:
+                _s = _ta.monotonic()
+                if learning:
+                    system.dashboard.update_learning(learning)
+                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply update_learning %.0fms", (_ta.monotonic()-_s)*1000)
+                _s = _ta.monotonic()
+                if efficacy:
+                    system.dashboard.update_efficacy(efficacy)
+                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply update_efficacy %.0fms", (_ta.monotonic()-_s)*1000)
+                _s = _ta.monotonic()
+                if trend:
+                    system.dashboard.update_trend(trend)
+                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply update_trend %.0fms", (_ta.monotonic()-_s)*1000)
+                _s = _ta.monotonic()
+                system._refresh_pnl_history()
+                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply _refresh_pnl_history %.0fms", (_ta.monotonic()-_s)*1000)
+            except Exception as _ue:
+                _log.getLogger("SYSTEM").debug("[Restore] 패널 UI 업데이트 실패: %s", _ue)
+            _log.getLogger("SYSTEM").warning("[LiveDBG] _apply 완료 총 %.0fms", (_ta.monotonic()-_t0)*1000)
+        _QTimer.singleShot(0, _apply)
 
     def increment_session(self, system: Any) -> int:
         data = system._read_session_state()

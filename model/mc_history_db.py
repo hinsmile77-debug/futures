@@ -78,8 +78,8 @@ def get_today_history(date_str: str) -> List[dict]:
         with sqlite3.connect(MC_HISTORY_DB, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT * FROM mc_history WHERE substr(ts,1,10)=? ORDER BY ts",
-                (date_str,),
+                "SELECT * FROM mc_history WHERE ts >= ? AND ts < ? ORDER BY ts",
+                (date_str, date_str + "Z"),
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception:

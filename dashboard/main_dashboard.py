@@ -1668,7 +1668,7 @@ class AccountInfoPanel(QWidget):
 
     def update_rows(self, rows):
         rows = list(rows or [])
-        self.tbl_balance.setSpan(0, 0, 1, 1)  # 이전 FLAT span 해제
+        self.tbl_balance.clearSpans()  # 이전 FLAT span 해제
         self.tbl_balance.setRowCount(max(3, len(rows)))
         if not rows:
             flat = QTableWidgetItem("FLAT")
@@ -7470,7 +7470,13 @@ class MinuteChartCanvas(QWidget):
         self._last_plot_rect = QRectF()
         self._instrument_code = ""   # 현재 표시 중인 종목코드
         self._regime_map = {}        # {ts_key: regime_str} 봉별 레짐 히스토리
-        self._last_tick_update_ms: float = 0.0  # update() throttle용 타임스탬프
+        self._last_tick_update_ms: float = 0.0   # update() throttle용 타임스탬프
+        self._last_mouse_update_ms: float = 0.0  # mouseMoveEvent throttle용
+        # ── 디버그: 응답없음 분석용 ─────────────────────────────
+        self._dbg_paint_count: int = 0
+        self._dbg_paint_slow_count: int = 0
+        self._dbg_mouse_event_count: int = 0
+        self._dbg_mouse_log_ts: float = 0.0  # 마지막 빈도 로그 시각
         self.setMinimumHeight(S.p(420))
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
@@ -7638,7 +7644,17 @@ class MinuteChartCanvas(QWidget):
         self.update()
 
     def paintEvent(self, event):
+        import time as _t
+        _t0 = _t.monotonic()
         del event
+        # 비정상 거대 캔버스 가드 (저장된 geometry 버그 등): 즉시 반환으로 UI 블로킹 방지
+        if self.width() > 3000 or self.height() > 2000:
+            logger.warning(
+                "[ChartDBG] paintEvent 거대 캔버스 차단: %dx%d candles=%d",
+                self.width(), self.height(), len(self._closed_candles),
+            )
+            QPainter(self).fillRect(self.rect(), QColor(C["bg"]))
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.TextAntialiasing)
@@ -7688,14 +7704,36 @@ class MinuteChartCanvas(QWidget):
         lo -= pad
         hi += pad
 
-        self._draw_grid(painter, plot, lo, hi)
+        import time as _t2
+        _t_grid = _t2.monotonic(); self._draw_grid(painter, plot, lo, hi)
+        _t_spans = _t2.monotonic()
         index_map = {c["ts"]: i for i, c in enumerate(candles)}
         self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
-        self._draw_candles(painter, plot, candles, lo, hi, padded_count)
-        self._draw_regime_bar(painter, plot, candles, padded_count)
-        self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
-        self._draw_axes(painter, plot, candles, lo, hi, padded_count)
-        self._draw_crosshair_and_tooltip(painter, plot, candles, lo, hi)
+        _t_candles = _t2.monotonic(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
+        _t_regime = _t2.monotonic();  self._draw_regime_bar(painter, plot, candles, padded_count)
+        _t_markers = _t2.monotonic(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
+        _t_axes = _t2.monotonic();   self._draw_axes(painter, plot, candles, lo, hi, padded_count)
+        _t_cross = _t2.monotonic();  self._draw_crosshair_and_tooltip(painter, plot, candles, lo, hi)
+        _t_end = _t2.monotonic()
+
+        self._dbg_paint_count += 1
+        _elapsed_ms = (_t_end - _t0) * 1000
+        if _elapsed_ms > 10:
+            self._dbg_paint_slow_count += 1
+            logger.warning(
+                "[ChartDBG] paintEvent slow %.1fms | size=%dx%d candles=%d "
+                "grid=%.1f spans=%.1f candles=%.1f regime=%.1f markers=%.1f axes=%.1f cross=%.1f | "
+                "slow_cnt=%d total_cnt=%d",
+                _elapsed_ms, self.width(), self.height(), len(candles),
+                (_t_spans  - _t_grid)    * 1000,
+                (_t_candles- _t_spans)   * 1000,
+                (_t_regime - _t_candles) * 1000,
+                (_t_markers- _t_regime)  * 1000,
+                (_t_axes   - _t_markers) * 1000,
+                (_t_cross  - _t_axes)    * 1000,
+                (_t_end    - _t_cross)   * 1000,
+                self._dbg_paint_slow_count, self._dbg_paint_count,
+            )
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -7725,6 +7763,8 @@ class MinuteChartCanvas(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        import time as _time
+        _now_ms = _time.monotonic() * 1000
         pos = event.pos()
         self._hover_pos = pos
         if self._dragging and self._drag_start_pos is not None and self._last_step_px > 0:
@@ -7733,7 +7773,25 @@ class MinuteChartCanvas(QWidget):
             total = len(self._closed_candles) + (1 if self._live_candle else 0)
             visible_count = min(max(self._visible_count or total, self._min_visible_count), max(total, 1))
             self._view_offset = self._clamp_view_offset(self._drag_start_offset - candle_shift, total, visible_count)
-        self.update()
+        if _now_ms - self._last_mouse_update_ms >= 16:
+            self._last_mouse_update_ms = _now_ms
+            self.update()
+        # 디버그: 10초마다 이벤트 빈도 요약 로그
+        self._dbg_mouse_event_count += 1
+        if _now_ms - self._dbg_mouse_log_ts >= 10_000:
+            if self._dbg_mouse_log_ts > 0:
+                _hz = self._dbg_mouse_event_count / 10.0
+                logger.debug(
+                    "[ChartDBG] mouseMoveEvent %.0f ev/s | size=%dx%d paint_slow=%d/%d",
+                    _hz, self.width(), self.height(),
+                    self._dbg_paint_slow_count, self._dbg_paint_count,
+                )
+                if _hz > 200:
+                    logger.warning(
+                        "[ChartDBG] mouseMoveEvent 과부하 %.0f ev/s — throttle 점검 필요", _hz,
+                    )
+            self._dbg_mouse_event_count = 0
+            self._dbg_mouse_log_ts = _now_ms
         event.accept()
 
     def mouseReleaseEvent(self, event):
@@ -7755,10 +7813,18 @@ class MinuteChartCanvas(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def leaveEvent(self, event):
+        import time as _t
+        _t0 = _t.monotonic()
         self._hover_pos = None
         self._dragging = False
         self._drag_start_pos = None
         self.update()
+        _elapsed_ms = (_t.monotonic() - _t0) * 1000
+        logger.debug(
+            "[ChartDBG] leaveEvent → update() 예약 %.2fms | size=%dx%d visible=%s",
+            _elapsed_ms, self.width(), self.height(),
+            self.isVisible(),
+        )
         super().leaveEvent(event)
 
     def _draw_grid(self, painter: QPainter, plot: QRectF, lo: float, hi: float):
@@ -8379,7 +8445,10 @@ class MinuteChartDialog(QDialog):
         self._toggle_shortcut = QShortcut(QKeySequence(self.SHORTCUT_TEXT), self)
         self._toggle_shortcut.activated.connect(self.close)
 
-        self.reload_today()
+        # Qt 이벤트 루프 진입 후 첫 틱에 백그라운드 로드 시작
+        # (이벤트 루프 이전에 스레드를 시작하면 QTimer.singleShot 람다가
+        #  Python 3.7 32-bit에서 레퍼런스 카운팅 오류로 크래시)
+        QTimer.singleShot(0, self._start_reload_thread)
 
     @staticmethod
     def _trim_to_last_price_group(candles: list, threshold: float = 0.04) -> list:
@@ -8459,25 +8528,34 @@ class MinuteChartDialog(QDialog):
         except Exception:
             pass
 
+    def _start_reload_thread(self):
+        import threading as _thr
+        _thr.Thread(target=self._reload_today_bg, daemon=True).start()
+
     def maybe_roll_session(self):
         today = datetime.now().date().isoformat()
         if today != self._session_date:
-            # reload_today() DB 쿼리를 백그라운드 스레드로 분리 — 메인 스레드 블로킹 방지 (194차)
-            import threading as _thr
-            _thr.Thread(target=self._reload_today_bg, daemon=True).start()
+            self._start_reload_thread()
 
     def _reload_today_bg(self):
         """reload_today를 백그라운드 스레드에서 실행 후 Qt 메인 스레드에서 reset_session 적용."""
+        import time as _t
+        _t0 = _t.monotonic()
         try:
             from PyQt5.QtCore import QTimer as _QTimer
             self._session_date = datetime.now().date().isoformat()
+
+            _t1 = _t.monotonic()
             candle_rows = fetchall(
                 RAW_DATA_DB,
                 "SELECT ts, open, high, low, close, volume FROM raw_candles WHERE ts LIKE ? ORDER BY ts ASC",
                 (f"{self._session_date}%",),
             )
+            _t2 = _t.monotonic()
             candles = self._trim_to_last_price_group([dict(row) for row in candle_rows])
+
             completed_trades, exit_markers = [], []
+            _t3 = _t.monotonic()
             for row in fetch_today_trades(self._session_date):
                 entry_ts = self._coerce_dt(row["entry_ts"])
                 exit_ts = self._coerce_dt(row["exit_ts"])
@@ -8498,10 +8576,25 @@ class MinuteChartDialog(QDialog):
                                              "exit_reason": str(row["exit_reason"] or ""),
                                              "pnl_pts": float(row["pnl_pts"] or 0.0),
                                              "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"])})
+            _t4 = _t.monotonic()
+            _total_ms = (_t4 - _t0) * 1000
+            _candle_ms = (_t2 - _t1) * 1000
+            _trade_ms  = (_t4 - _t3) * 1000
+            logger.debug(
+                "[ChartDBG] _reload_today_bg 완료 | total=%.1fms "
+                "raw_candles=%.1fms(%d봉) trades=%.1fms(%d건)",
+                _total_ms, _candle_ms, len(candles), _trade_ms, len(completed_trades),
+            )
+            if _total_ms > 3000:
+                logger.warning(
+                    "[ChartDBG] _reload_today_bg 과도 지연 %.1fms "
+                    "— DB 락 경합 가능 (raw_candles=%.1fms trades=%.1fms)",
+                    _total_ms, _candle_ms, _trade_ms,
+                )
             # Qt UI 업데이트는 메인 스레드에서 실행
             _QTimer.singleShot(0, lambda: self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning("[ChartDBG] _reload_today_bg 예외: %s", _e)
 
     def update_tick(self, price: float, ts=None):
         # maybe_roll_session 제거: 매 틱마다 날짜 비교 불필요 — on_candle_closed에서만 체크 (194차)
@@ -8549,8 +8642,27 @@ class MinuteChartDialog(QDialog):
         return self._chart._coerce_dt(value)
 
     def closeEvent(self, event):
+        import time as _t
+        _t0 = _t.monotonic()
         try:
             geo = self.geometry()
+            logger.debug(
+                "[ChartDBG] closeEvent 시작 | size=%dx%d pos=(%d,%d) "
+                "paint_slow=%d/%d",
+                geo.width(), geo.height(), geo.x(), geo.y(),
+                self._chart._dbg_paint_slow_count, self._chart._dbg_paint_count,
+            )
+            # 화면 크기 초과 geometry는 저장하지 않음 (DPI 변경·모니터 제거 등 대비)
+            scr = QApplication.screenAt(geo.center()) or QApplication.primaryScreen()
+            avail = scr.availableGeometry()
+            if geo.width() > avail.width() or geo.height() > avail.height():
+                logger.warning(
+                    "[ChartDBG] closeEvent geometry 초과 — 저장 스킵 "
+                    "size=%dx%d avail=%dx%d",
+                    geo.width(), geo.height(), avail.width(), avail.height(),
+                )
+                super().closeEvent(event)
+                return
             prefs = {}
             if os.path.exists(_UI_PREFS_FILE):
                 try:
@@ -8564,9 +8676,23 @@ class MinuteChartDialog(QDialog):
             }
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as _wf:
                 json.dump(prefs, _wf, ensure_ascii=False)
-        except Exception:
-            pass
+            _io_ms = (_t.monotonic() - _t0) * 1000
+            if _io_ms > 100:
+                logger.warning("[ChartDBG] closeEvent I/O slow %.1fms", _io_ms)
+        except Exception as _e:
+            logger.warning("[ChartDBG] closeEvent 예외: %s", _e)
+        _pre_super_ms = (_t.monotonic() - _t0) * 1000
         super().closeEvent(event)
+        _total_ms = (_t.monotonic() - _t0) * 1000
+        logger.debug(
+            "[ChartDBG] closeEvent 완료 | pre_super=%.1fms total=%.1fms",
+            _pre_super_ms, _total_ms,
+        )
+        if _total_ms > 500:
+            logger.warning(
+                "[ChartDBG] closeEvent 과도 지연 %.1fms — super().closeEvent 블로킹",
+                _total_ms,
+            )
 
     def restore_saved_geometry(self):
         try:
@@ -8593,11 +8719,37 @@ class MinuteChartDialog(QDialog):
                                  else None) or QApplication.primaryScreen()
 
             avail = target_screen.availableGeometry()
+            orig_w, orig_h = w, h
+            # 저장된 크기가 화면보다 크면 클램핑 (DPI 변경·모니터 교체 등 대응)
+            w = min(w, avail.width())
+            h = min(h, avail.height())
+            # 위치가 화면 밖으로 나가지 않도록 클램핑
             x = max(avail.left(), min(x, avail.right() - w))
             y = max(avail.top(), min(y, avail.bottom() - h))
+            # 클램핑 후 실제 화면 내에 창이 충분히 들어오는지 최종 확인
+            # (Qt가 setGeometry 거부 후 임의 확장하는 경우 방지)
+            if (x + w > avail.right() + 10 or y + h > avail.bottom() + 10
+                    or x < avail.left() - 10 or y < avail.top() - 10):
+                logger.warning(
+                    "[ChartDBG] restore_saved_geometry 범위 초과 — 복원 스킵 "
+                    "pos=(%d,%d) size=%dx%d avail=%s",
+                    x, y, w, h, avail,
+                )
+                return  # 기본 크기/위치 유지
+            if orig_w != w or orig_h != h:
+                logger.warning(
+                    "[ChartDBG] restore_saved_geometry 클램핑: %dx%d → %dx%d "
+                    "(avail=%dx%d)",
+                    orig_w, orig_h, w, h, avail.width(), avail.height(),
+                )
+            else:
+                logger.debug(
+                    "[ChartDBG] restore_saved_geometry: %dx%d pos=(%d,%d)",
+                    w, h, x, y,
+                )
             self.setGeometry(x, y, w, h)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning("[ChartDBG] restore_saved_geometry 예외: %s", _e)
 
 
 import datetime as _dt
@@ -9803,6 +9955,23 @@ class MireukDashboard(QMainWindow):
 
     def _tick_header(self):
         """1초마다 헤더 가동 경과시간 + 파이프라인 생존 바 갱신."""
+        import time as _t
+        _now_mono = _t.monotonic()
+        # ── 메인 스레드 블로킹 검출 ─────────────────────────────────
+        # _tick_header는 1초마다 호출됨. 직전 호출과 간격이 2s 초과이면
+        # 그 사이에 메인 스레드가 블로킹됐다는 직접 증거.
+        _prev = getattr(self, "_tick_header_last_mono", None)
+        if _prev is not None:
+            _gap_ms = (_now_mono - _prev) * 1000
+            if _gap_ms > 2000:
+                logger.warning(
+                    "[LiveDBG] _tick_header 간격 %.0fms — 메인 스레드 블로킹 발생 | "
+                    "pipe_elapsed=%d watchdog_alerted=%s",
+                    _gap_ms,
+                    self._pipe_elapsed_s,
+                    sorted(self._watchdog_alerted),
+                )
+        self._tick_header_last_mono = _now_mono
         if hasattr(self, "account_info_panel"):
             self.account_info_panel.tick_live()
         now     = datetime.now()

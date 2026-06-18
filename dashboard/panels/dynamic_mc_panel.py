@@ -352,12 +352,17 @@ class DynamicMcPanel(QWidget):
         self._candle_dialog.activateWindow()
 
     def refresh(self):
+        import time as _t, logging as _log
+        _t0 = _t.monotonic()
         try:
             self._refresh_mc_cards()
             self._refresh_trend()
             self._refresh_history()
         except Exception as e:
             logger.debug("[DynMCPanel] refresh error: %s", e)
+        _ms = (_t.monotonic() - _t0) * 1000
+        if _ms > 200:
+            _log.getLogger("SYSTEM").warning("[LiveDBG] DynMCPanel.refresh slow %.0fms", _ms)
 
     def _refresh_mc_cards(self):
         try:
@@ -410,6 +415,7 @@ class DynamicMcPanel(QWidget):
         try:
             conn = sqlite3.connect(PREDICTIONS_DB, timeout=5)
             conn.row_factory = sqlite3.Row
+            # idx_ensemble_ts 인덱스 활성화: substr() → 범위 쿼리
             rows = conn.execute(
                 "SELECT ts, direction, confidence, grade, auto_entry, regime_ok, "
                 "       min_conf, gate_reason, gate_blocked, meta_action, meta_confidence, "
@@ -417,8 +423,8 @@ class DynamicMcPanel(QWidget):
                 "       entry_gate_json, entry_final_ok, entry_qty, entry_mode, "
                 "       entry_executed, entry_block_reason "
                 "FROM ensemble_decisions "
-                "WHERE substr(ts,1,10)=? ORDER BY ts",
-                (today,),
+                "WHERE ts >= ? AND ts < ? ORDER BY ts",
+                (today, today + "Z"),
             ).fetchall()
             conn.close()
         except Exception:
@@ -483,6 +489,7 @@ class DynamicMcPanel(QWidget):
         ema_sample = _ema_list[-24:]
 
         sample = rows[-24:]
+        self._bar_table.setUpdatesEnabled(False)
         self._bar_table.setRowCount(len(sample))
         for i, r in enumerate(sample):
             conf = ema_sample[i]      # P4: EMA 표시
@@ -524,6 +531,7 @@ class DynamicMcPanel(QWidget):
                 elif j in (8, 9) and _gate_tip:
                     item.setToolTip(_gate_tip)
                 self._bar_table.setItem(i, j, item)
+        self._bar_table.setUpdatesEnabled(True)
 
     def _refresh_history(self):
         hist = self._get_recent_history(20)

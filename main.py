@@ -2333,6 +2333,8 @@ class TradingSystem:
         """수급 TR 수집 — QTimer에서 호출 (COM 콜백 체인 외부)."""
         if not is_market_open(datetime.datetime.now()):
             return
+        _t0 = time.perf_counter()
+        logger.debug("[LiveDBG] _fetch_investor_data 시작 (메인 스레드 점유 시작)")
         try:
             self.investor_data.fetch_all(include_program=False)
             # FutureCurOnly 틱에서 실시간으로 수집된 미결제약정 동기화
@@ -2350,6 +2352,16 @@ class TradingSystem:
                 logger=logger,
                 dashboard_logger=log_manager.system,
             )
+        finally:
+            _elapsed_ms = (time.perf_counter() - _t0) * 1000
+            if _elapsed_ms > 500:
+                logger.warning(
+                    "[LiveDBG] _fetch_investor_data 지연 %.0fms — "
+                    "메인 스레드 %.0fms 점유 (live 중단 원인 후보)",
+                    _elapsed_ms, _elapsed_ms,
+                )
+            else:
+                logger.debug("[LiveDBG] _fetch_investor_data 완료 %.0fms", _elapsed_ms)
 
     def _poll_option_chain(self) -> None:
         """옵션 체인 5분 폴링 — QTimer 콜백 (메인 스레드, COM 안전).
@@ -2357,6 +2369,8 @@ class TradingSystem:
         """
         if not is_market_open(datetime.datetime.now()):
             return
+        _t0 = time.perf_counter()
+        logger.debug("[LiveDBG] _poll_option_chain 시작 (메인 스레드 점유 시작)")
         spot = self._last_close
         try:
             refreshed = self.option_chain_snap.refresh(spot=spot)
@@ -2364,6 +2378,16 @@ class TradingSystem:
                 self.dashboard.update_option_chain(self.option_chain_snap.get_features())
         except Exception as _e:
             logger.warning("[OptionChain] 폴링 오류: %s", _e)
+        finally:
+            _elapsed_ms = (time.perf_counter() - _t0) * 1000
+            if _elapsed_ms > 500:
+                logger.warning(
+                    "[LiveDBG] _poll_option_chain 지연 %.0fms — "
+                    "메인 스레드 %.0fms 점유 (live 중단 원인 후보)",
+                    _elapsed_ms, _elapsed_ms,
+                )
+            else:
+                logger.debug("[LiveDBG] _poll_option_chain 완료 %.0fms", _elapsed_ms)
 
     def _on_tick_price_update(self, bar: dict) -> None:
         """틱 수신마다 대시보드 헤더 현재가 갱신."""
@@ -6553,8 +6577,8 @@ class TradingSystem:
             with _sqlite3.connect(_RDB, timeout=10) as _conn:
                 _conn.row_factory = _sqlite3.Row
                 _rows = _conn.execute(
-                    "SELECT ts, close FROM raw_candles WHERE substr(ts,1,10)=? ORDER BY ts",
-                    (today_str,),
+                    "SELECT ts, close FROM raw_candles WHERE ts >= ? AND ts < ? ORDER BY ts",
+                    (today_str, today_str + "Z"),
                 ).fetchall()
             _today_closes = {r["ts"]: float(r["close"]) for r in _rows}
             self.feature_builder.set_prev_day_closes(_today_closes)
@@ -7205,6 +7229,8 @@ class TradingSystem:
 
     def _refresh_pnl_history(self) -> None:
         """trades.db 최근 90일 조회 → 손익 추이 패널 갱신."""
+        _rph_t0 = time.perf_counter()
+        logger.debug("[LiveDBG] _refresh_pnl_history 시작")
         try:
             rows = fetch_pnl_history(limit_days=90)
             self.dashboard.update_pnl_history(rows)
@@ -7217,6 +7243,9 @@ class TradingSystem:
                 logger=logger,
                 dashboard_logger=log_manager.system,
             )
+        _rph_ms1 = (time.perf_counter() - _rph_t0) * 1000
+        if _rph_ms1 > 200:
+            logger.warning("[LiveDBG] _refresh_pnl_history fetch+update_pnl %.0fms", _rph_ms1)
         # 수익 보존 가드 패널 갱신 (청산 직후 최신 트레이드 반영)
         try:
             today_trades = fetch_today_trades() or []
@@ -7231,6 +7260,9 @@ class TradingSystem:
                 logger=logger,
                 dashboard_logger=log_manager.system,
             )
+        _rph_total = (time.perf_counter() - _rph_t0) * 1000
+        if _rph_total > 200:
+            logger.warning("[LiveDBG] _refresh_pnl_history 총 %.0fms", _rph_total)
 
     def _collect_broker_capability_summary(self) -> dict:
         """브로커 기능 지원/현재 세션 검증 상태 요약."""
@@ -7438,7 +7470,13 @@ class TradingSystem:
 
     def _scheduler_tick(self) -> None:
         """30초마다 호출 — 장 전 준비 / 일일 마감 / 연결 감시."""
+        _sched_t0 = time.perf_counter()
         now = datetime.datetime.now()
+        logger.debug(
+            "[LiveDBG] _scheduler_tick 시작 #%d | %s (메인 스레드 점유 시작)",
+            getattr(self, "_heartbeat_count", 0) + 1,
+            now.strftime("%H:%M:%S"),
+        )
 
         # 5분(10 tick)마다 현재 상태 로그
         self._heartbeat_count += 1
@@ -7655,7 +7693,11 @@ class TradingSystem:
                         f"(reason={self._broker_sync_last_error})",
                         "WARNING",
                     )
-                    _ts_sync_position_from_broker(self)
+                    self._sync_from_broker_via_scheduler = True
+                    try:
+                        _ts_sync_position_from_broker(self)
+                    finally:
+                        self._sync_from_broker_via_scheduler = False
                 # 장 시작 후에도 sync 차단이 지속되면 CRITICAL 슬랙 알림 (1회)
                 if not getattr(self, "_broker_sync_critical_notified", False):
                     self._broker_sync_critical_notified = True
@@ -7666,6 +7708,19 @@ class TradingSystem:
             if self._heartbeat_count % 60 == 0 and not getattr(self, "_rollover_detected", False):
                 if self.broker_runtime_service.check_rollover(self):
                     self._rollover_detected = True  # 이후 반복 알림 억제
+
+        _sched_elapsed_ms = (time.perf_counter() - _sched_t0) * 1000
+        if _sched_elapsed_ms > 1000:
+            logger.warning(
+                "[LiveDBG] _scheduler_tick 지연 %.0fms #%d — "
+                "메인 스레드 %.0fms 점유 (live 중단 원인 후보)",
+                _sched_elapsed_ms, self._heartbeat_count, _sched_elapsed_ms,
+            )
+        else:
+            logger.debug(
+                "[LiveDBG] _scheduler_tick 완료 %.0fms #%d",
+                _sched_elapsed_ms, self._heartbeat_count,
+            )
 
     def _log_waiting_status(self, now: datetime.datetime) -> None:
         """현재 대기 이유를 로그 + 대시보드에 표시."""
@@ -9364,6 +9419,16 @@ def _ts_refresh_dashboard_balance(self) -> None:
 
 
 def _ts_refresh_dashboard_balance_inner(self) -> None:
+    # 장외 시간 가드: Cybos BlockRequest가 장외에서 ~30초 타임아웃 →
+    # 큐에 쌓인 singleShot이 연속 3회 실행되면 90초+ 메인 스레드 블로킹.
+    # 잔고 TR은 장 중에만 의미 있으므로 장외 호출은 즉시 반환한다.
+    _now_inner = datetime.datetime.now()
+    if not is_market_open(_now_inner):
+        logger.debug(
+            "[LiveDBG] BalanceRefresh 장외 스킵 %s — BlockRequest 블로킹 방지",
+            _now_inner.strftime("%H:%M:%S"),
+        )
+        return
     account_no = str(_secrets.ACCOUNT_NO or "").strip()
     if not account_no:
         log_manager.system("[BalanceRefresh] skipped: empty account number", "WARNING")
@@ -9374,7 +9439,18 @@ def _ts_refresh_dashboard_balance_inner(self) -> None:
         f"[BalanceRefresh] request start account={account_no} position={_ts_get_position_snapshot(self)}",
         min_interval_sec=60.0,
     )
+    _br_t0 = time.perf_counter()
+    logger.debug("[LiveDBG] BalanceRefresh BlockRequest 시작 (메인 스레드 점유 시작)")
     result = self.broker.request_futures_balance(account_no)
+    _br_elapsed_ms = (time.perf_counter() - _br_t0) * 1000
+    if _br_elapsed_ms > 1000:
+        logger.warning(
+            "[LiveDBG] BalanceRefresh BlockRequest 지연 %.0fms — "
+            "메인 스레드 %.0fms 점유 (live 중단 원인 후보)",
+            _br_elapsed_ms, _br_elapsed_ms,
+        )
+    else:
+        logger.debug("[LiveDBG] BalanceRefresh BlockRequest 완료 %.0fms", _br_elapsed_ms)
     if result is None:
         log_manager.system("[BalanceRefresh] request returned None", "WARNING")
         return
@@ -9416,6 +9492,17 @@ def _ts_refresh_dashboard_balance_ui_only(self) -> None:
 
 
 def _ts_sync_position_from_broker(self) -> None:
+    # 장외 가드: 장외 BlockRequest는 ~30초 타임아웃 → 메인 스레드 블로킹.
+    # 장 시작 전 startup sync는 is_market_open 이전에 실행되므로 예외적으로 허용.
+    # 스케줄러 장중 재시도 경로(is_market_open 조건 내부)에서 호출될 때만 차단.
+    _now_sync = datetime.datetime.now()
+    _caller_is_scheduler = getattr(self, "_sync_from_broker_via_scheduler", False)
+    if _caller_is_scheduler and not is_market_open(_now_sync):
+        logger.debug(
+            "[LiveDBG] _ts_sync_position_from_broker 장외 스킵 %s — BlockRequest 블로킹 방지",
+            _now_sync.strftime("%H:%M:%S"),
+        )
+        return
     account_no = str(_secrets.ACCOUNT_NO or "").strip()
     code = self._normalize_broker_code(getattr(self, "_futures_code", ""))
     if not account_no or not code:
@@ -9427,7 +9514,15 @@ def _ts_sync_position_from_broker(self) -> None:
         "[BrokerSync] startup sync begin account=%s code=%s before=%s",
         account_no, code, before,
     )
+    _br_sync_t0 = time.perf_counter()
     result = self.broker.request_futures_balance(account_no)
+    _br_sync_ms = (time.perf_counter() - _br_sync_t0) * 1000
+    if _br_sync_ms > 500:
+        logger.warning(
+            "[LiveDBG] _ts_sync_position_from_broker BlockRequest %.0fms — "
+            "메인 스레드 %.0fms 점유",
+            _br_sync_ms, _br_sync_ms,
+        )
     if result is None:
         _ts_set_broker_sync_status(self, False, "broker balance TR returned None", True)
         log_manager.system("[BrokerSync] 브로커 잔고 TR 조회 실패로 startup sync를 건너뜁니다.", "WARNING")

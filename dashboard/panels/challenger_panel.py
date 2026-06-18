@@ -289,10 +289,15 @@ class ChallengerPanel(QWidget):
     # ── 데이터 갱신 ──────────────────────────────────────────────
 
     def refresh(self):
+        import time as _t, logging as _log
+        _t0 = _t.monotonic()
         try:
             self._refresh_inner()
         except Exception:
             logger.warning("[ChallengerPanel] refresh 예외:\n%s", traceback.format_exc())
+        _ms = (_t.monotonic() - _t0) * 1000
+        if _ms > 200:
+            _log.getLogger("SYSTEM").warning("[LiveDBG] ChallengerPanel.refresh slow %.0fms", _ms)
 
     def _refresh_inner(self):
         if self._engine is None:
