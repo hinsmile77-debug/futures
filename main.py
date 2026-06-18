@@ -6603,41 +6603,65 @@ class TradingSystem:
         # 월요일: 주간 재학습도 여기서 통합 → STEP 3 08:50 주간 재학습 중복 스킵됨
         _is_monday_eod = (datetime.datetime.now().weekday() == 0)
         self._eod_retrain_ok = False   # EOD 진입 시 초기화 — 완료 후 True로 설정
-        log_manager.system(
-            "[DailyClose] EOD 재학습 시작 — 정규 파라미터 (300그루, full_cv=True)"
-            + (" [월요일: 주간 재학습 포함]" if _is_monday_eod else ""),
-            "INFO",
+
+        # [행 방지] py310_64 장외 스케줄러(MireukiEODRetrain) 완료 마커 체크.
+        # 마커가 있으면 retrain_now() 동기 호출(12분+ Qt 블로킹)을 건너뛰고
+        # pkl 로드만 수행한다. 마커 없으면 py37_32 내부에서 직접 실행(OOM 위험 있음).
+        _eod_marker_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "data",
+            f"eod_retrain_done_{datetime.date.today().isoformat()}.txt",
         )
+        _eod_by_scheduler = os.path.exists(_eod_marker_path)
+        if _eod_by_scheduler:
+            log_manager.system(
+                f"[DailyClose] EOD 재학습 마커 확인 ({_eod_marker_path}) "
+                f"— py310_64 스케줄러 완료됨, 이중 재학습 스킵 (12분 Qt 블로킹 방지)",
+                "INFO",
+            )
+            _bad = self.model._load_all()  # 스케줄러가 교체한 최신 pkl 로드
+            if _bad:
+                logger.error("[Model] EOD 마커스킵 후 pkl 로드 %d개 불일치: %s", len(_bad), _bad)
+            self._eod_retrain_ok = True
+            retrain_result = {"ok": True, "elapsed_sec": 0, "data_size": 0,
+                              "note": "skipped — py310_64 scheduler already ran"}
+        else:
+            log_manager.system(
+                "[DailyClose] EOD 재학습 시작 — 정규 파라미터 (300그루, full_cv=True)"
+                + (" [월요일: 주간 재학습 포함]" if _is_monday_eod else ""),
+                "INFO",
+            )
         # [P0] retrain_now() 예외(예: 32bit 프로세스 MemoryError) 시에도 EOD 잔여 단계
         # (P8 스케일러 재적합·Platt/MetaConf 저장·일일 리셋·WAL 체크포인트)는 계속 진행.
         # 06-11/06-16 동일 패턴 MemoryError로 daily_close() 전체가 중단되며
         # 위 단계 전부 스킵됐던 문제 재발 방지 — catch_up_eod.py로 수동 복구하던 것을
         # 구조적으로 차단.
-        try:
-            retrain_result = self.batch_retrainer.retrain_now(
-                force=True,
-                intraday=False,   # 정규 파라미터 (max_iter=300, max_depth=5, lr=0.04)
-                full_cv=True,     # CV 20k 캡 해제 — Cybos 단절 후 메모리 여유
-            )
-        except BaseException as _retrain_exc:  # MemoryError 등 BaseException 포함
-            logger.error(
-                "[DailyClose] EOD 재학습 예외 — 스킵하고 EOD 잔여 단계 계속 진행: %s",
-                _retrain_exc, exc_info=True,
-            )
-            log_manager.system(
-                f"[DailyClose] EOD 재학습 예외(스킵, 잔여단계 계속): {_retrain_exc}",
-                "ERROR",
-            )
-            retrain_result = {"ok": False, "error": str(_retrain_exc)}
+        if not _eod_by_scheduler:
+            try:
+                retrain_result = self.batch_retrainer.retrain_now(
+                    force=True,
+                    intraday=False,   # 정규 파라미터 (max_iter=300, max_depth=5, lr=0.04)
+                    full_cv=True,     # CV 20k 캡 해제 — Cybos 단절 후 메모리 여유
+                )
+            except BaseException as _retrain_exc:  # MemoryError 등 BaseException 포함
+                logger.error(
+                    "[DailyClose] EOD 재학습 예외 — 스킵하고 EOD 잔여 단계 계속 진행: %s",
+                    _retrain_exc, exc_info=True,
+                )
+                log_manager.system(
+                    f"[DailyClose] EOD 재학습 예외(스킵, 잔여단계 계속): {_retrain_exc}",
+                    "ERROR",
+                )
+                retrain_result = {"ok": False, "error": str(_retrain_exc)}
+            # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
+            # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
+            _bad = self.model._load_all()
+            if _bad:
+                logger.error(
+                    "[Model] EOD 재학습 후 %d개 호라이즌 차원 불일치: %s",
+                    len(_bad), _bad,
+                )
         retrain_ok = retrain_result.get("ok", False)
-        # 재학습 성공 여부와 무관하게 최신 pkl 로드 — EOD 스케일러 강제 초기화
-        # (실패해도 이전 EOD 재학습 pkl이 있으면 _scaler_fitted_at 시계가 맞춰짐)
-        _bad = self.model._load_all()
-        if _bad:
-            logger.error(
-                "[Model] EOD 재학습 후 %d개 호라이즌 차원 불일치: %s",
-                len(_bad), _bad,
-            )
         if retrain_ok:
             self._eod_retrain_ok = True   # 내일 08:55 PreRetrain 스킵 신호
             # 다음날 08:45 신규 시작 시 __init__이 False로 초기화하는 것을 보완:
