@@ -1,7 +1,48 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-17 (191차 세션) — EOD 재학습 OOM 해결 + py310_64 장외 스케줄러 분리
+> 마지막 업데이트: 2026-06-18 (197차 세션) — P8 스케일러 재적합 retrain_eod.py 재배치
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-18 (197차 — P8 스케일러 재적합 retrain_eod.py 재배치)
+
+### 문제 배경
+
+`daily_close()`(15:40)에서 P8 스케일러 재적합이 실행되지만, 이후 실행되는
+`retrain_eod.py`(15:45)가 26주 기준 스케일러를 포함한 pkl을 저장해 P8 효과를 매일 덮어씼음.
+두 스크립트가 동일한 `model/scaler/scaler_{hz}.pkl` 경로에 저장하므로 나중 실행이 최종 상태.
+
+### 해결 방안 (A안 채택)
+
+| 파일 | 변경 |
+|---|---|
+| `retrain_eod.py` | `p8_scaler_refit()` 추가 — GBM 재학습 완료 직후 500봉 스케일러 최종화. `session_state.json`에 `p8_last_success_date` 기록 |
+| `main.py` daily_close() | P8 블록(57줄) 제거 → 재배치 사유 주석으로 교체 |
+| `model/multi_horizon_model.py` | 로그 포맷 `100%` → `100%%` 버그 수정 (`--- Logging error ---` 스팸 원인) |
+| `scripts/catch_up_eod.py` | `trigger_reason` 문구 실제 용도(수동 복구)로 수정. 신규 git 추적 시작 |
+
+### 올바른 EOD 실행 흐름 (197차 이후)
+
+```
+15:40  daily_close()
+         ├─ (GBM 재학습: in-process, OOM 가능 → 실패해도 잔여 단계 계속)
+         ├─ DBWriter 플러시
+         ├─ WAL checkpoint (6개 DB)   ← DB 쓰기 완료 후 → 올바른 위치
+         └─ auto-shutdown (~15:41)
+
+15:45  retrain_eod.py (py310_64)
+         ├─ GBM 재학습 full (26주, full_cv=True)
+         └─ p8_scaler_refit()         ← 500봉 최신 스케일러 최종화 ✅
+```
+
+### 오늘(2026-06-18) 장마감 작업 현황
+
+- Windows Task Scheduler(`MireukiEODRetrain`) 미실행 (LastTaskResult: 267011)
+- 수동으로 처리:
+  - `retrain_eod.py` (py310_64): 6/6 호라이즌 교체, 합계 194.3s → `eod_retrain_done_20260618.txt` 생성
+  - `catch_up_eod.py --skip-retrain` (py37_32): P8 ✅ WAL 6/6 ✅
+- 스케줄러 미실행 원인 조사 필요 (내일 실행 전 확인)
 
 ---
 

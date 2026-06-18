@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-06-18 (197차 — P8 스케일러 재적합 retrain_eod.py 재배치)
+
+### 내일 즉시 확인 [P0]
+
+- [ ] **retrain_eod.py에서 P8 로그 출현** — `logs/retrain_eod_20260619.log`에서 `[P8] 스케일러 재적합 완료 n=500봉` 확인
+- [ ] **daily_close() 로그에 `[P8]` 없음** — `20260619_SYSTEM.log`에서 `[P8] EOD 스케일러 재적합` 로그 없어야 함 (재배치 효과)
+- [ ] **p8_last_success_date 갱신** — 내일 retrain_eod.py 완료 후 `data/session_state.json`에 `p8_last_success_date: 2026-06-19` 기록 확인
+
+### 잠재 리스크 [P1]
+
+- [ ] **retrain_eod.py 실패 시 P8 미실행** — retrain_eod.py 예외 발생(catch 블록)이면 p8_scaler_refit() 미호출. 내일 `data/eod_retrain_fail_20260619.txt` 없음 확인. 있으면 `catch_up_eod.py --skip-retrain` 수동 실행
+- [ ] **스케줄러 오늘 미실행 원인** — `LastTaskResult: 267011` (한 번도 실행 안 됨). 내일 15:45 실행 전 `Get-ScheduledTask -TaskName "MireukiEODRetrain"` 상태 확인 → 필요 시 `register_eod_scheduler.ps1` 재실행
+
+---
+
 ## 2026-06-18 (193차 — GBM 재학습 완료 모델 교체 race condition 수정)
 
 ### 배경
@@ -53,15 +68,15 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
 
 ### 내일 즉시 확인 [P0]
 
-- [ ] **스케줄러 첫 실행 성공** — 15:49 이후 `Get-ScheduledTask -TaskName "MireukiEODRetrain" | Get-ScheduledTaskInfo` → `LastTaskResult: 0`
-- [ ] **완료 마커 생성** — `data/eod_retrain_done_20260618.txt` 존재 확인
-- [ ] **재학습 로그 정상** — `logs/retrain_eod_20260618.log` 에서 `6/6 호라이즌 교체` + `합계 ~210s` 확인
-- [ ] **EarlyWarmup 경고 소멸** — main.py 시작 시 `[EarlyWarmup] scaler 노후=17h` 경고 없어야 함
+- [DONE 2026-06-18] **스케줄러 첫 실행 성공** — 오늘 스케줄러 미실행(LastTaskResult: 267011). 수동 `retrain_eod.py`로 대체 처리. 스케줄러 원인은 197차 P1 참조
+- [DONE 2026-06-18] **완료 마커 생성** — `data/eod_retrain_done_20260618.txt` 확인 (6/6 호라이즌, 194.3s)
+- [DONE 2026-06-18] **재학습 로그 정상** — `logs/retrain_eod_20260618.log` 6/6 교체, 합계 194.3s
+- [DONE 2026-06-18] **EarlyWarmup 경고 소멸** — 08:45 `완료 n=500봉` 정상, 노후 경고 없음
 
 ### 잠재 리스크 [P1]
 
-- [ ] **스케줄러 실패 시 대응** — `LastTaskResult != 0`이면 `logs/retrain_eod_20260618.log` + `data/eod_retrain_fail_20260618.txt` 확인 → 수동 실행: `C:\Users\82108\anaconda3\envs\py310_64\python.exe retrain_eod.py`
-- [ ] **daily_close OOM 로그 계속 출력** — 기존 try/except는 유지 중. 스케줄러와 별개로 OOM 스킵 로그 계속 나올 수 있음 (정상, 스케줄러가 보완)
+- [DONE 2026-06-18] **스케줄러 실패 시 대응** — 수동 retrain_eod.py + catch_up_eod.py --skip-retrain 실행 완료
+- [DONE 2026-06-18] **daily_close OOM 로그 계속 출력** — 197차에서 P8을 retrain_eod.py로 재배치 완료. in-process 재학습 OOM은 여전히 발생 가능하나 잔여 단계(WAL 등) 계속 진행됨
 
 ---
 
