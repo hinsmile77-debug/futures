@@ -9915,12 +9915,37 @@ class DashboardAdapter:
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
         self._win.showMaximized()
-        # 항상 위는 아니지만 시작 직후에는 일반 창들 위로 자연스럽게 올린다.
         self._win.raise_()
         self._win.activateWindow()
+        # [195차] Windows foreground lock 우회 — raise_/activateWindow 만으로는
+        # 다른 프로세스(Cybos HTS 등)가 포커스를 쥐고 있으면 foreground 이동 불가.
+        # AttachThreadInput으로 현재 foreground 스레드에 붙인 뒤 SetForegroundWindow 호출.
+        from PyQt5.QtCore import QTimer as _QTimer
+        _QTimer.singleShot(400, self._bring_to_front)
         if self._win.cmb_chart_auto.currentText() == "자동팝업":
-            from PyQt5.QtCore import QTimer as _QTimer
             _QTimer.singleShot(600, self._win.toggle_minute_chart_dialog)
+
+    def _bring_to_front(self):
+        """Windows API로 창을 강제로 맨 앞(foreground)으로 이동."""
+        try:
+            import ctypes
+            user32   = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            hwnd     = int(self._win.winId())
+            # 현재 foreground 창의 스레드에 Attach → SetForegroundWindow 권한 획득
+            fg_hwnd = user32.GetForegroundWindow()
+            fg_tid  = user32.GetWindowThreadProcessId(fg_hwnd, None)
+            my_tid  = kernel32.GetCurrentThreadId()
+            if fg_hwnd and fg_tid and fg_tid != my_tid:
+                user32.AttachThreadInput(my_tid, fg_tid, True)
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+                user32.AttachThreadInput(my_tid, fg_tid, False)
+            else:
+                user32.SetForegroundWindow(hwnd)
+            user32.SwitchToThisWindow(hwnd, True)
+        except Exception:
+            pass
 
     def _save_ui_prefs(self):
         self._win._save_ui_prefs()

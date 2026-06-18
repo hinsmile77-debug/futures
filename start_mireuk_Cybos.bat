@@ -215,7 +215,8 @@ IF %ERRORLEVEL% NEQ 0 (
 REM ============================================================
 REM  7. Launch main.py
 REM  - Blocking execution in this CMD window (log monitor stays open)
-REM  - Restore CMD window to foreground before Qt app takes focus
+REM  - AllowSetForegroundWindow(ASFW_ANY) 로 Qt 앱이 스스로 foreground 이동 가능하도록
+REM  - 195차: _bring_to_front (AttachThreadInput + SetForegroundWindow) 와 연계
 REM ============================================================
 ECHO.
 ECHO ============================================================
@@ -224,8 +225,9 @@ ECHO   [INFO] This CMD window is the loading monitor. Do not close.
 ECHO ============================================================
 ECHO.
 
-REM Restore CMD window to foreground before Qt app takes focus
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=[System.Diagnostics.Process]::GetCurrentProcess(); Add-Type -Name CW2 -Namespace '' -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h,int n); [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h);'; [void][CW2]::ShowWindow($p.MainWindowHandle,9); [void][CW2]::SetForegroundWindow($p.MainWindowHandle)" 2>NUL
+REM AllowSetForegroundWindow(ASFW_ANY=-1): 어떤 프로세스라도 foreground 이동 허가
+REM → Python/Qt 프로세스가 AttachThreadInput 없이도 SetForegroundWindow 호출 가능
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -Name ASFG -Namespace '' -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool AllowSetForegroundWindow(uint pid);'; [ASFG]::AllowSetForegroundWindow(0xFFFFFFFF)" 2>NUL
 
 python main.py
 SET EXIT_CODE=%ERRORLEVEL%
