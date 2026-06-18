@@ -8,6 +8,47 @@
 
 ---
 
+## 2026-06-18 (193차 — GBM 재학습 완료 모델 교체 race condition 수정)
+
+### 배경
+`_on_gbm_retrain_done`에서 `_load_all()` 즉시 호출 → `run_minute_pipeline` `predict_proba()`와
+동시 실행 → `ValueError: X has N features, expected M` → `apply_error_policy(FATAL)` → 자동재시작.
+오늘(2026-06-18) RF 로드 완료 후 8초 → RESTART 패턴 7회 반복 관찰. 커밋: `6ae2b91`
+
+### 재시작 후 확인 [P0]
+
+- [ ] **`[Model] 재학습 완료 모델 교체 적용 (S0)` 로그 출현** — SIGNAL.log에서 확인. 재학습 완료 후 이 로그가 나오면 플래그 방식으로 정상 작동
+- [ ] **RESTART 반복 패턴 소멸** — WARN.log에서 `[RF] 로드 완료` 후 8초 이내 `[RESTART]` 없음 확인
+- [ ] **`[Model] 재학습 완료 — 다음 파이프라인 시작 전 모델 교체 예약` 로그** — LEARNING.log에서 재학습 완료 직후 출현
+
+### 잠재 리스크 [P1]
+
+- [ ] **S0 모델 교체 지연으로 인한 오래된 모델 1분봉 사용** — 재학습 완료 후 다음 분봉까지 (최대 1분) 이전 모델 사용. 이건 race condition보다 훨씬 낮은 위험
+- [ ] **`_pending_model_reload` 초기화 여부** — 프로그램 시작 시 `getattr(..., False)` 기본값 False로 정상 처리됨
+
+---
+
+## 2026-06-18 (192차 — macro_risk_off AutoMask CORE 면제)
+
+### 배경
+VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22.34 폭발 → AutoMask 소거 →
+15m/30m GBM FLAT=0.80 과신뢰 → 앙상블 conf=20% 고착 (09:00~09:55+ 전 구간). 어제 커밋과 무관.
+커밋: `c3875dd`
+
+### 재시작 후 확인 [P0]
+
+- [ ] **AutoMask 목록에서 macro_risk_off 소멸** — `[AutoMasked]` 로그에 `macro_risk_off` 없어야 함 (VIX 급등 상황에서도)
+- [ ] **conf=20% 고착 해소** — VIX 급등 구간에서 앙상블 conf가 20% 바닥에 고착되지 않음 확인
+- [ ] **15m/30m GBM FL=0.8000 고착 소멸** — `[CONF⚠]` 15m/30m conf=0.8000 로그 없어야 함
+- [ ] **ZeroDiag 원인 변화** — `극단z값포함(macro_risk_off)` 차단 사유 소멸 확인
+
+### 잠재 리스크 [P1]
+
+- [ ] **GBM 과방향 예측 여부** — macro_risk_off=1.0이 GBM에 직접 입력 시 특정 방향(DN)을 과신뢰할 수 있음. VIX 급등 상황에서 conf가 너무 높아지는지 (60%+) 모니터링
+- [ ] **단기(1m~5m) AutoMask 잔존** — short 그룹은 의도적으로 미면제. 1m~5m에서 macro_risk_off AutoMask 유지는 정상
+
+---
+
 ## 2026-06-17 (191차 — EOD 재학습 OOM 해결 + py310_64 장외 스케줄러)
 
 ### 내일 즉시 확인 [P0]

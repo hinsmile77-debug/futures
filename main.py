@@ -5601,6 +5601,12 @@ class TradingSystem:
             )
             logger.warning(_pipeperf_warn_msg)
             log_manager.system(_pipeperf_warn_msg, "WARNING")
+        # [진단] PipePerf 항상 INFO 출력 — 임계값 무관하게 매 봉 기록 (병목 분석용)
+        log_manager.system(
+            f"[PipePerf][DBG]{_retrain_tag_pipe} "
+            f"total={_pipe_ms:.0f}ms | {_all_steps_str or '─'}",
+            "INFO",
+        )
         self._emit_runtime_health(features, _pipe_ms)
 
         # ── SHS: S2 latency + CORE pass rate 업데이트 + 대시보드/슬랙 ──
@@ -9436,6 +9442,20 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
 
 
 def _ts_refresh_dashboard_balance(self) -> None:
+    # 인플라이트 가드: 이미 실행 중이면 스킵 — 중첩 30s 블로킹 방지.
+    # Fill → BalanceRefresh → processEvents() → 파이프라인 → 또 Fill → 또 BalanceRefresh
+    # 패턴에서 두 번째 이후 호출이 중첩되면 메인스레드 60s+ 블로킹 발생.
+    if getattr(self, "_balance_refresh_in_flight", False):
+        log_manager.system("[BalanceRefresh] skipped: in-flight", "DEBUG")
+        return
+    self._balance_refresh_in_flight = True
+    try:
+        _ts_refresh_dashboard_balance_inner(self)
+    finally:
+        self._balance_refresh_in_flight = False
+
+
+def _ts_refresh_dashboard_balance_inner(self) -> None:
     account_no = str(_secrets.ACCOUNT_NO or "").strip()
     if not account_no:
         log_manager.system("[BalanceRefresh] skipped: empty account number", "WARNING")

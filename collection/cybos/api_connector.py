@@ -171,6 +171,12 @@ def _run_block_request(progid, input_pairs, data_reader=None,
     # done.wait()로 메인 스레드를 블록하면 메시지 펌프가 멈춰 백그라운드 스레드의
     # BlockRequest가 영구 데드락에 빠진다. 10ms 간격으로 PumpWaitingMessages를
     # 호출해 COM 메시지를 처리하면서 완료를 기다린다.
+    #
+    # [주의] QCoreApplication.processEvents() 를 이 루프에서 호출하면
+    # QTimer 이벤트(투자자 데이터 폴링 등)가 발동 → 또 다른 _run_block_request()
+    # 호출 → 그 안에서 processEvents() → 재귀 깊이 폭발 + Qt 이벤트 루프 상태 오염.
+    # 실증: TickUI 5분 침묵 → 폭발, 차트 응답 없음, 파이프라인 멈춤.
+    # processEvents() 는 절대 이 루프에서 호출하지 않는다.
     deadline = time.time() + timeout_sec
     while True:
         if done.wait(timeout=0.01):
@@ -528,6 +534,8 @@ class CybosAPI:
             return rows
 
         try:
+            # 잔고 조회는 대시보드 표시용 — 트레이딩 로직 무관.
+            # 서버 무응답 시 메인스레드 블로킹을 최소화하기 위해 8초 단축 타임아웃 사용.
             ret, status, msg, rows = _run_block_request(
                 progid=CYBOS_FUTURES_BALANCE_PROGID,
                 input_pairs=[
@@ -538,6 +546,7 @@ class CybosAPI:
                     (4, 20),
                 ],
                 data_reader=_read_rows,
+                timeout_sec=8,
             )
         except TimeoutError as exc:
             logger.error("[CybosBalance] %s account=%s", exc, account_no)

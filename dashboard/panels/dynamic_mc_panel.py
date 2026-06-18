@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QLabel,
     QProgressBar,
+    QPushButton,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -158,6 +159,33 @@ class DynamicMcPanel(QWidget):
         trend_card.setToolTip(_ENTRY_STAGE_TOOLTIP)
         root.addWidget(trend_card)
         root.addWidget(_card("mc 변경 이력 (최근 20건)", self._build_history_table()))
+
+        self._dir_dialog    = None
+        self._candle_dialog = None
+
+        btn_row = QHBoxLayout()
+
+        btn_dir = QPushButton("▲▼ 호라이즌 합창판")
+        btn_dir.setStyleSheet(
+            "QPushButton { background:#1c2128; color:#e6edf3; border:1px solid #30363d;"
+            " border-radius:4px; padding:5px 10px; font-size:12px; font-weight:bold; }"
+            "QPushButton:hover { background:#30363d; }"
+            "QPushButton:pressed { background:#0d1117; }"
+        )
+        btn_dir.clicked.connect(self._open_dir_indicator)
+        btn_row.addWidget(btn_dir)
+
+        btn_chart = QPushButton("📊 봉차트 방향")
+        btn_chart.setStyleSheet(
+            "QPushButton { background:#1c2128; color:#e6edf3; border:1px solid #30363d;"
+            " border-radius:4px; padding:5px 10px; font-size:12px; font-weight:bold; }"
+            "QPushButton:hover { background:#30363d; }"
+            "QPushButton:pressed { background:#0d1117; }"
+        )
+        btn_chart.clicked.connect(self._open_candle_chart)
+        btn_row.addWidget(btn_chart)
+
+        root.addLayout(btn_row)
 
     def _build_mc_cards(self) -> QWidget:
         w = QWidget()
@@ -306,6 +334,22 @@ class DynamicMcPanel(QWidget):
         t.setSelectionBehavior(QTableWidget.SelectRows)
         self._hist_table = t
         return t
+
+    def _open_dir_indicator(self):
+        from dashboard.panels.direction_indicator_dialog import DirectionIndicatorDialog
+        if self._dir_dialog is None or not self._dir_dialog.isVisible():
+            self._dir_dialog = DirectionIndicatorDialog(parent=None)
+        self._dir_dialog.show()
+        self._dir_dialog.raise_()
+        self._dir_dialog.activateWindow()
+
+    def _open_candle_chart(self):
+        from dashboard.panels.candle_chart_dialog import CandleChartDialog
+        if self._candle_dialog is None or not self._candle_dialog.isVisible():
+            self._candle_dialog = CandleChartDialog(parent=None)
+        self._candle_dialog.show()
+        self._candle_dialog.raise_()
+        self._candle_dialog.activateWindow()
 
     def refresh(self):
         try:

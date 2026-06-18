@@ -7470,6 +7470,7 @@ class MinuteChartCanvas(QWidget):
         self._last_plot_rect = QRectF()
         self._instrument_code = ""   # 현재 표시 중인 종목코드
         self._regime_map = {}        # {ts_key: regime_str} 봉별 레짐 히스토리
+        self._last_tick_update_ms: float = 0.0  # update() throttle용 타임스탬프
         self.setMinimumHeight(S.p(420))
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
@@ -7517,10 +7518,7 @@ class MinuteChartCanvas(QWidget):
             self._closed_candles[-1]["close"] = price
             self._closed_candles[-1]["high"] = max(self._closed_candles[-1]["high"], price)
             self._closed_candles[-1]["low"] = min(self._closed_candles[-1]["low"], price)
-            self.update()
-            return
-
-        if self._live_candle and self._live_candle["ts"] == key:
+        elif self._live_candle and self._live_candle["ts"] == key:
             self._live_candle["close"] = price
             self._live_candle["high"] = max(self._live_candle["high"], price)
             self._live_candle["low"] = min(self._live_candle["low"], price)
@@ -7533,7 +7531,12 @@ class MinuteChartCanvas(QWidget):
                 "close": price,
                 "volume": 0,
             }
-        self.update()
+        # 틱 update() throttle: 200ms 이내 중복 요청 무시 (초당 수십 틱 × paintEvent 방지)
+        import time as _time
+        _now_ms = _time.monotonic() * 1000
+        if _now_ms - self._last_tick_update_ms >= 200:
+            self._last_tick_update_ms = _now_ms
+            self.update()
 
     def on_candle_closed(self, candle: dict):
         normalized = self._normalize_candle(candle)

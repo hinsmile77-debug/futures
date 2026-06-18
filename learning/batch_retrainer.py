@@ -566,14 +566,24 @@ class BatchRetrainer:
 
         # 전체 데이터로 최종 학습 (장중 모드: CV 없이 여기만 실행)
         # 스케일러는 97개 전체 피처 기준 — predict_proba의 scaler.transform(97개) 경로와 일치
+        _t_scaler_start = datetime.datetime.now()
         final_scaler = StandardScaler()
         X_for_scaler = X_full if X_full is not None else X
         X_for_scaler_scaled = final_scaler.fit_transform(X_for_scaler)
         X_scaled = X_for_scaler_scaled[:, h_idx] if h_idx is not None else X_for_scaler_scaled
+        _t_scaler_sec = (datetime.datetime.now() - _t_scaler_start).total_seconds()
+
         final_model = _make_model()
+        _t_fit_start = datetime.datetime.now()
         final_model.fit(X_scaled, y, sample_weight=_make_sample_weight(y, horizon_key))
+        _t_fit_sec = (datetime.datetime.now() - _t_fit_start).total_seconds()
+
         _model_type = "HistGBM" if _HIST_GBM_OK else "GBM"
-        logger.debug("[Retrain] %s %s 학습 완료 (n=%d)", _model_type, horizon_key, len(X))
+        _n_feats = X_scaled.shape[1]
+        logger.info(
+            "[Retrain-Timing] %s %s | n=%d feat=%d | scaler=%.2fs fit=%.2fs",
+            _model_type, horizon_key, len(X), _n_feats, _t_scaler_sec, _t_fit_sec,
+        )
 
         # 기존 모델과 성능 비교
         old_acc  = self._load_model_acc(horizon_key)
@@ -584,7 +594,13 @@ class BatchRetrainer:
             _disp_acc = cv_acc if cv_acc is not None else float("nan")
             self._save_model(horizon_key, final_model, final_scaler, _disp_acc, feature_names)
             replaced = True
-            logger.info(f"[Retrain] {horizon_key} 교체 (acc {old_acc:.4f}→{_disp_acc:.4f})")
+            if intraday:
+                logger.info(
+                    "[Retrain] %s 교체 (intraday — CV 없음 | fit=%.2fs | old_acc=%.4f)",
+                    horizon_key, _t_fit_sec, old_acc,
+                )
+            else:
+                logger.info(f"[Retrain] {horizon_key} 교체 (acc {old_acc:.4f}→{_disp_acc:.4f})")
         else:
             _disp_acc = cv_acc if cv_acc is not None else float("nan")
             logger.info(f"[Retrain] {horizon_key} 유지 (acc {_disp_acc:.4f} < {old_acc:.4f})")

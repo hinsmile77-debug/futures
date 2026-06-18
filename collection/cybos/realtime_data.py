@@ -42,6 +42,7 @@ class CybosRealtimeData:
         self._current_bar = None
         self._current_min = None
         self._running = False
+        self._last_closed_min: Optional[int] = None  # 중복 BAR-CLOSE 감지용
 
         self._tick_subscription = None
         self._hoga_subscription = None
@@ -194,6 +195,39 @@ class CybosRealtimeData:
         self._last_price = price
         bar_ts = tick_time.replace(second=0, microsecond=0)
         bar_min = bar_ts.hour * 60 + bar_ts.minute
+
+        # 버퍼 재생 틱 감지: 체결 시각이 현재보다 90초 이상 오래됐으면 실제 시각 사용.
+        # Cybos 재구독 시 버퍼된 과거 틱들이 느린 속도로 재생되면 봉 전환이 영구 차단됨.
+        _now = datetime.now()
+        _stale_sec = (_now - tick_time).total_seconds()
+        if _stale_sec > 90:
+            _actual_bar_ts = _now.replace(second=0, microsecond=0)
+            _actual_bar_min = _actual_bar_ts.hour * 60 + _actual_bar_ts.minute
+            # [stale oscillation 근본 수정 — _last_closed_min 기준 단조증가]
+            #
+            # 이전 수정(_current_min 기준)의 버그:
+            #   _close_current_bar()가 _current_min = None 으로 리셋하므로
+            #   봉 전환 직후 다음 stale 틱에서 보정 조건이 항상 False → 역행 봉 재생성.
+            #
+            # 올바른 기준: _last_closed_min (닫힌 봉의 분 인덱스, None으로 리셋 안 됨).
+            #   stale actual_bar_min <= _last_closed_min 이면 이미 닫힌 구간 →
+            #   _last_closed_min + 1(현재 진행 중인 봉)으로 교정하여 역행 봉 생성 방지.
+            _ref = self._last_closed_min
+            if _ref is not None and _actual_bar_min <= _ref:
+                _actual_bar_min = _ref + 1
+                _actual_bar_ts = _actual_bar_ts.replace(
+                    hour=_actual_bar_min // 60,
+                    minute=_actual_bar_min % 60,
+                )
+            sys_log.warning(
+                "[CybosRT-STALE] code=%s stale=%.0fs raw_time=%s → actual=%s",
+                self._rt_code, _stale_sec,
+                tick_time.strftime("%H:%M:%S"),
+                _actual_bar_ts.strftime("%H:%M"),
+            )
+            bar_ts = _actual_bar_ts
+            bar_min = _actual_bar_min
+
         self._tick_event_count += 1
         if self._tick_event_count <= 5 or self._tick_event_count % 100 == 0:
             sys_log.info(
@@ -362,6 +396,17 @@ class CybosRealtimeData:
         self._current_bar = None
         self._current_min = None
         self._candles.append(closed)
+        _closed_min = closed["ts"].hour * 60 + closed["ts"].minute
+        # 중복 BAR-CLOSE 감지: 같은 분봉이 두 번 이상 닫히면 경고
+        if self._last_closed_min is not None and _closed_min <= self._last_closed_min:
+            sys_log.warning(
+                "[BAR-CLOSE][DUPLICATE] ts=%s 이미 닫힌 봉 재발화 "
+                "(last_closed=%02d:%02d, cur=%02d:%02d) — stale oscillation 가능성",
+                closed["ts"].strftime("%H:%M"),
+                self._last_closed_min // 60, self._last_closed_min % 60,
+                _closed_min // 60, _closed_min % 60,
+            )
+        self._last_closed_min = _closed_min
         sys_log.info(
             "[BAR-CLOSE][CYBOS] ts=%s O=%.2f H=%.2f L=%.2f C=%.2f V=%d",
             closed["ts"].strftime("%H:%M"),
