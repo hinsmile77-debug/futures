@@ -2630,18 +2630,13 @@ class TradingSystem:
         self.circuit_breaker.set_gbm_retrain_active(False)  # CB⑤ 임계 복원
         prefix = "웜업 " if is_warmup else ""
         if result.get("ok"):
-            _bad = self.model._load_all()
-            if _bad:
-                logger.error(
-                    "[Model] 재학습 후 %d개 호라이즌 차원 불일치: %s → 재학습 재트리거",
-                    len(_bad), _bad,
-                )
-                self._start_manual_retrain(force=True, reason="resync_mismatch")
-            # P6c: GBM 재학습 완료 시 RF도 최신 pkl 로드
-            try:
-                self.rf_model.load_all()
-            except Exception:
-                pass
+            # [193차] 모델 교체를 파이프라인 밖으로 지연 — race condition 방지
+            # _load_all() 즉시 호출 시 run_minute_pipeline predict_proba() 와 동시 실행돼
+            # "X has N features, expected M" ValueError → apply_error_policy(FATAL) → 자동재시작
+            # 반복 패턴: RF 로드 완료 → 8초 → RESTART (오늘 7회 관찰, 2026-06-18)
+            # → 플래그로 표시하고 다음 파이프라인 시작 직전(STEP 0)에서 안전하게 교체
+            self._pending_model_reload = True
+            logger.info("[Model] 재학습 완료 — 다음 파이프라인 시작 전 모델 교체 예약")
             self._ensure_shap_tracker()
             registry = self._load_feature_registry()
             if registry.get("pending_change"):
@@ -3011,6 +3006,25 @@ class TradingSystem:
         _st: list = [("start", _pipe_t0)]
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+
+        # ── [S0] 재학습 완료 모델 교체 — predict_proba 전 안전 지점 ─────────
+        # _on_gbm_retrain_done 이 플래그를 세우면 여기서 소비.
+        # 파이프라인 실행 중 모델 객체 교체 race condition 방지 (193차).
+        if getattr(self, "_pending_model_reload", False):
+            self._pending_model_reload = False
+            _bad = self.model._load_all()
+            if _bad:
+                logger.error(
+                    "[Model] 재학습 후 %d개 호라이즌 차원 불일치: %s → 재학습 재트리거",
+                    len(_bad), _bad,
+                )
+                self._start_manual_retrain(force=True, reason="resync_mismatch")
+            try:
+                self.rf_model.load_all()
+            except Exception:
+                pass
+            logger.info("[Model] 재학습 완료 모델 교체 적용 (S0)")
+
         # [S2-A] 지연 SGD 학습 변수 — S2에서 채워지고 "end" 이후에 소비
         # 초기값 [] 로 설정해 early return 시에도 NameError 방지
         _sgd_deferred_verified: list = []
