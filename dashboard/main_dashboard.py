@@ -7671,8 +7671,9 @@ class MinuteChartCanvas(QWidget):
         import time as _t
         _t0 = _t.monotonic()
         del event
-        # 비정상 거대 캔버스 가드 (저장된 geometry 버그 등): 즉시 반환으로 UI 블로킹 방지
-        if self.width() > 3000 or self.height() > 2000:
+        # 비정상 거대 캔버스 가드 — 진짜 비정상 크기만 차단 (5K+ 모니터 정상 동작 허용)
+        # 임계값: 6000×4000 (이전 3000×2000은 3030폭 모니터에서 차트 차단 버그 유발)
+        if self.width() > 6000 or self.height() > 4000:
             logger.warning(
                 "[ChartDBG] paintEvent 거대 캔버스 차단: %dx%d candles=%d",
                 self.width(), self.height(), len(self._closed_candles),
@@ -8766,24 +8767,15 @@ class MinuteChartDialog(QDialog):
                 self._chart._dbg_paint_slow_count, self._chart._dbg_paint_count,
             )
             # ── geometry 저장 스킵 조건 ──────────────────────────────
-            # ① Qt maximize 상태
+            # ① Qt maximize 상태 (setGeometry로는 복원 불가)
             if self.isMaximized():
                 logger.debug("[ChartDBG] closeEvent isMaximized → 저장 스킵")
                 super().closeEvent(event)
                 return
             scr = QApplication.screenAt(geo.center()) or QApplication.primaryScreen()
             avail = scr.availableGeometry()
-            # ② 화면의 90% 이상 — Windows Snap·수동 드래그 전체화면(isMaximized=False) 감지
-            if (geo.width()  >= round(avail.width()  * 0.90) or
-                    geo.height() >= round(avail.height() * 0.90)):
-                logger.debug(
-                    "[ChartDBG] closeEvent 화면 90%%+ (%dx%d / avail %dx%d) "
-                    "→ 사실상 최대화, 저장 스킵",
-                    geo.width(), geo.height(), avail.width(), avail.height(),
-                )
-                super().closeEvent(event)
-                return
-            # ③ 화면 크기 초과 geometry (DPI 변경·모니터 제거 등 대비)
+            # ② 화면 크기 초과 — 모니터 분리·DPI 변경 등으로 geometry가 화면 밖인 경우만 스킵
+            #    (이전 90% 체크 제거: screenAt이 잘못된 화면 반환 시 오탐 + 사용자 의도 대형창 차단)
             if geo.width() > avail.width() or geo.height() > avail.height():
                 logger.warning(
                     "[ChartDBG] closeEvent geometry 초과 — 저장 스킵 "
@@ -8874,17 +8866,8 @@ class MinuteChartDialog(QDialog):
 
             avail = target_screen.availableGeometry()
             orig_w, orig_h = w, h
-            # 저장값이 화면의 90% 이상이면 최대화 잔재로 판단 → _center_on_second_screen fallback
-            # (88% % 캡은 2628 등 여전히 큰 값을 통과시키므로 threshold 방식으로 교체)
-            if (w >= round(avail.width()  * 0.90) or
-                    h >= round(avail.height() * 0.90)):
-                logger.warning(
-                    "[ChartDBG] restore_saved_geometry: 저장 크기(%dx%d)가 화면의 90%%+ "
-                    "(avail=%dx%d) → 최대화 잔재, 제2모니터 중앙",
-                    w, h, avail.width(), avail.height(),
-                )
-                self._center_on_second_screen()
-                return
+            # 90% 크기 threshold 제거 — 사용자가 의도적으로 대형 창을 사용하는 경우 허용
+            # paintEvent guard를 6000×4000으로 상향해 대형 창에서도 차트가 정상 렌더링됨
             # 위치가 화면 밖으로 나가지 않도록 클램핑
             x = max(avail.left(), min(x, avail.right()  - w))
             y = max(avail.top(),  min(y, avail.bottom() - h))
