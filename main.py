@@ -5441,6 +5441,21 @@ class TradingSystem:
 
         _entry_executed_this_cycle = False
 
+        _prev_bar_dir = (1 if bar.get("close", 0) > bar.get("open", 0)
+                         else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0))
+        _dl_pct = (max(-self.position.daily_stats()["pnl_krw"], 0)
+                   / max(_ts_current_sizer_balance(self), 50_000_000))
+        _check_vals = {
+            "signal_chk": "UP" if direction > 0 else ("DN" if direction < 0 else "FLAT"),
+            "conf_chk":   f"{confidence:.1%}",
+            "vwap_chk":   f"{float(features.get('vwap_position', 0)):+.3f}",
+            "cvd_chk":    f"{int(features.get('cvd_direction', 0)):+d}",
+            "ofi_chk":    f"{int(features.get('ofi_pressure', 0)):+d}",
+            "fi_chk":     f"C{float(features.get('foreign_call_net', 0)):+.0f}",
+            "candle_chk": "▲" if _prev_bar_dir > 0 else ("▼" if _prev_bar_dir < 0 else "—"),
+            "time_chk":   time_zone or "—",
+            "risk_chk":   f"{_dl_pct:.1%}",
+        }
         self.dashboard.update_entry(
             _raw_signal_ko,
             confidence,
@@ -5453,6 +5468,7 @@ class TradingSystem:
             ensemble_grade=grade,
             checklist_grade=_checklist_grade,
             final_entry=_final_entry_ok,
+            check_values=_check_vals,
         )
         self._manual_entry_ctx = {
             "price": close,

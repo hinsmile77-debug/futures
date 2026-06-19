@@ -4247,7 +4247,7 @@ class EntryPanel(QWidget):
     def update_data(self, signal, conf, grade, checks, qty=0, final_signal=None,
                     reverse_enabled=False, min_conf: float = 0.58,
                     ensemble_grade: str = None, checklist_grade: str = None,
-                    final_entry: bool = False):
+                    final_entry: bool = False, check_values: dict = None):
         final_signal = final_signal or signal
         col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
         final_col = C['green'] if final_signal == "매수" else C['red'] if final_signal == "매도" else C['text2']
@@ -4309,6 +4309,7 @@ class EntryPanel(QWidget):
         # 체크리스트 아이콘
         # 체크박스 OFF → SKIP(파란 —), checks=None → 미평가(회색 —),
         # True → V(green), False → X(red)
+        _cv = check_values or {}
         for attr, (icon, vl) in self.check_labels.items():
             cb = self.check_toggles.get(attr)
             if cb is not None and not cb.isChecked():
@@ -4317,6 +4318,8 @@ class EntryPanel(QWidget):
                     f"background:#1A3A5C;color:#58A6FF;"
                     f"border-radius:3px;font-size:{S.f(10)}px;font-weight:bold;padding:1px 4px;"
                 )
+                vl.setText(_cv.get(attr, "——"))
+                vl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
                 continue
             val = checks.get(attr, None)
             if val is None:
@@ -4325,18 +4328,24 @@ class EntryPanel(QWidget):
                     f"background:{C['bg3']};color:{C['text2']};"
                     f"border-radius:3px;font-size:{S.f(10)}px;font-weight:bold;padding:1px 4px;"
                 )
+                vl.setText("——")
+                vl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
             elif val:
                 icon.setText("V")
                 icon.setStyleSheet(
                     f"background:{C['green']};color:#fff;"
                     f"border-radius:3px;font-size:{S.f(10)}px;font-weight:bold;padding:1px 4px;"
                 )
+                vl.setText(_cv.get(attr, "——"))
+                vl.setStyleSheet(f"color:{C['green']};font-size:{S.f(10)}px;")
             else:
                 icon.setText("X")
                 icon.setStyleSheet(
                     f"background:{C['red']};color:#fff;"
                     f"border-radius:3px;font-size:{S.f(10)}px;font-weight:bold;padding:1px 4px;"
                 )
+                vl.setText(_cv.get(attr, "——"))
+                vl.setStyleSheet(f"color:{C['red']};font-size:{S.f(10)}px;")
 
         if signal == "매수":
             self.entry_alert.setStyleSheet(
@@ -8688,29 +8697,54 @@ class MinuteChartDialog(QDialog):
                 _total_ms,
             )
 
+    def _center_on_second_screen(self):
+        """제2모니터 중앙에 최적 크기로 배치. 모니터 1대면 주모니터 중앙."""
+        primary = QApplication.primaryScreen()
+        non_primary = [s for s in QApplication.screens() if s is not primary]
+        screen = non_primary[0] if non_primary else primary
+        sg = screen.availableGeometry()
+        w = max(900, min(round(sg.width()  * 0.82), 1680))
+        h = max(600, min(round(sg.height() * 0.85),  980))
+        x = sg.x() + (sg.width()  - w) // 2
+        y = sg.y() + (sg.height() - h) // 2
+        self.setGeometry(x, y, w, h)
+        logger.debug(
+            "[ChartDBG] _center_on_second_screen: %dx%d pos=(%d,%d) screen=%s",
+            w, h, x, y, screen.name(),
+        )
+
     def restore_saved_geometry(self):
         try:
-            if not os.path.exists(_UI_PREFS_FILE):
-                return
-            with open(_UI_PREFS_FILE, "r", encoding="utf-8") as _rf:
-                geo = json.load(_rf).get("chart_dialog_geometry")
+            geo = None
+            if os.path.exists(_UI_PREFS_FILE):
+                try:
+                    with open(_UI_PREFS_FILE, "r", encoding="utf-8") as _rf:
+                        geo = json.load(_rf).get("chart_dialog_geometry")
+                except Exception:
+                    pass
+
             if not geo:
+                # 저장된 위치 없음 → 제2모니터 중앙 초기 배치
+                logger.debug("[ChartDBG] restore_saved_geometry: 저장값 없음 → 제2모니터 중앙")
+                self._center_on_second_screen()
                 return
+
             x, y = int(geo["x"]), int(geo["y"])
             w, h = int(geo["w"]), int(geo["h"])
 
-            # [194차] 다중 모니터 지원: 저장된 좌표가 속한 화면에 복원
-            # 기존 primaryScreen() 고정 → 제2 모니터 저장값을 주 모니터로 강제이동하는 버그 수정
-            # 팝업 중심점 기준으로 해당 화면을 탐색, 없으면 부모 창 화면 → primaryScreen 순 폴백
+            # 팝업 중심점 기준으로 해당 화면을 탐색
             from PyQt5.QtCore import QPoint
             _cx, _cy = x + w // 2, y + h // 2
             target_screen = QApplication.screenAt(QPoint(_cx, _cy))
             if target_screen is None:
-                # 저장된 화면이 현재 연결돼 있지 않은 경우 (모니터 분리 등)
-                # → 미륵이 메인 창이 있는 화면 사용, 없으면 primaryScreen
-                _parent = self.parent()
-                target_screen = (_parent.screen() if _parent and hasattr(_parent, "screen")
-                                 else None) or QApplication.primaryScreen()
+                # 저장된 좌표가 현재 연결된 어떤 화면에도 속하지 않음
+                # (모니터 분리·DPI 변경·저장값 오염 등) → 제2모니터 중앙 재배치
+                logger.warning(
+                    "[ChartDBG] restore_saved_geometry: 저장 화면 없음 "
+                    "center=(%d,%d) → 제2모니터 중앙", _cx, _cy,
+                )
+                self._center_on_second_screen()
+                return
 
             avail = target_screen.availableGeometry()
             orig_w, orig_h = w, h
@@ -8718,18 +8752,18 @@ class MinuteChartDialog(QDialog):
             w = min(w, avail.width())
             h = min(h, avail.height())
             # 위치가 화면 밖으로 나가지 않도록 클램핑
-            x = max(avail.left(), min(x, avail.right() - w))
-            y = max(avail.top(), min(y, avail.bottom() - h))
+            x = max(avail.left(), min(x, avail.right()  - w))
+            y = max(avail.top(),  min(y, avail.bottom() - h))
             # 클램핑 후 실제 화면 내에 창이 충분히 들어오는지 최종 확인
-            # (Qt가 setGeometry 거부 후 임의 확장하는 경우 방지)
             if (x + w > avail.right() + 10 or y + h > avail.bottom() + 10
                     or x < avail.left() - 10 or y < avail.top() - 10):
                 logger.warning(
-                    "[ChartDBG] restore_saved_geometry 범위 초과 — 복원 스킵 "
+                    "[ChartDBG] restore_saved_geometry 범위 초과 → 제2모니터 중앙 "
                     "pos=(%d,%d) size=%dx%d avail=%s",
                     x, y, w, h, avail,
                 )
-                return  # 기본 크기/위치 유지
+                self._center_on_second_screen()
+                return
             if orig_w != w or orig_h != h:
                 logger.warning(
                     "[ChartDBG] restore_saved_geometry 클램핑: %dx%d → %dx%d "
@@ -9423,7 +9457,17 @@ class MireukDashboard(QMainWindow):
                                   header_widget=self.account_info_panel.live_header_widget))
         left_split.addWidget(card("",
                                   self.pred_panel, C['blue']))
-        left_split.setSizes([200, 740])
+
+        # 좌측 하단: 금일 conf 진입단계 추적 카드
+        try:
+            from dashboard.panels.conf_trend_widget import make_conf_trend_card
+            self._conf_trend_card = make_conf_trend_card(parent=None)
+            left_split.addWidget(self._conf_trend_card)
+            left_split.setSizes([200, 500, 280])
+        except Exception as _cte:
+            logger.warning("[Dashboard] ConfTrendCard 로드 실패: %s", _cte)
+            left_split.setSizes([200, 740])
+
         ll.addWidget(left_split, 1)
 
         # 중앙 컬럼 (탭)
@@ -9572,7 +9616,7 @@ class MireukDashboard(QMainWindow):
         self.cmb_chart_auto.currentIndexChanged.connect(lambda _: self._save_ui_prefs())
         self.ui_auto_tabs.set_startup_mode()
 
-    def toggle_minute_chart_dialog(self):
+    def toggle_minute_chart_dialog(self, auto_popup=False):
         self._minute_chart_dialog.maybe_roll_session()
         if self._minute_chart_dialog.isVisible():
             self._minute_chart_dialog.close()
@@ -9582,7 +9626,12 @@ class MireukDashboard(QMainWindow):
         self._minute_chart_dialog.activateWindow()
         # show() 후 WM_SHOWWINDOW 처리가 끝난 다음 틱에 geometry를 적용해야
         # Windows WM의 기본 재배치에 덮어쓰이지 않는다.
-        QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)
+        if auto_popup:
+            # 자동팝업: 저장된 geometry 무시 → 항상 제2모니터 중앙 최적 배치
+            QTimer.singleShot(0, self._minute_chart_dialog._center_on_second_screen)
+        else:
+            # 수동 토글(단축키 등): 이전 위치 복원 시도
+            QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)
 
     def minute_chart_tick(self, price: float, ts=None):
         self._minute_chart_dialog.update_tick(price, ts=ts)
@@ -10089,7 +10138,7 @@ class DashboardAdapter:
         from PyQt5.QtCore import QTimer as _QTimer
         _QTimer.singleShot(400, self._bring_to_front)
         if self._win.cmb_chart_auto.currentText() == "자동팝업":
-            _QTimer.singleShot(600, self._win.toggle_minute_chart_dialog)
+            _QTimer.singleShot(600, lambda: self._win.toggle_minute_chart_dialog(auto_popup=True))
 
     def _bring_to_front(self):
         """Windows API로 창을 강제로 맨 앞(foreground)으로 이동."""
@@ -10483,7 +10532,7 @@ class DashboardAdapter:
                      qty: int = 0, final_signal: str = None,
                      reverse_enabled: bool = False, min_conf: float = 0.58,
                      ensemble_grade: str = None, checklist_grade: str = None,
-                     final_entry: bool = False):
+                     final_entry: bool = False, check_values: dict = None):
         """진입 관리 패널 업데이트"""
         self._win.entry_panel.update_data(
             signal, conf, grade, checks, qty=qty,
@@ -10493,6 +10542,7 @@ class DashboardAdapter:
             ensemble_grade=ensemble_grade,
             checklist_grade=checklist_grade,
             final_entry=final_entry,
+            check_values=check_values,
         )
 
     def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False) -> None:
