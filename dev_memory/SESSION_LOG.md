@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-19 (203차 — EKS z_ok 영구 차단 버그 수정)
+
+**Work**: 6/19 장중 EKS 회복 불가(`z_ok=False(z=18)` 5회 반복) 원인 딥다이브 → 1줄 수정.
+
+**원인 확정**:
+- Canary 블록이 `pre_market_setup()` 안에 있어 **08:55 1회만** 실행됨
+- 이 시점(전날 스케일러 기준) z=18 → `_last_canary_z_warn = 18` 저장
+- PreMarket refit 완료 후 실제 z=4로 줄었지만 `_last_canary_z_warn`은 절대 갱신되지 않음
+- EKS 회복 평가에서 이 stale 값을 사용 → `z_ok = 18 < 15 = False` → 회복 불가
+- 반면 SHS `_z_warn_count`는 매분 파이프라인에서 4로 정상 갱신 중 (두 경로 분리 버그)
+
+**수정 내용**:
+- `main.py:5054`: `getattr(self, "_last_canary_z_warn", 0)` → `getattr(self.model, "last_z_warn_count", 0)`
+- `safety/system_health.py:185`: 독스트링 `< 5` → `< 15` 불일치 수정
+
+**오늘 장 관찰 사항**:
+- EKS 발동 09:05, 회복 시도 5회(09:20~11:24) 모두 z_ok=False(z=18)로 실패
+- conf_hits=10/10 (필요 3), scaler_ok=True 충족 — z_ok만 막고 있었음
+- ConfTrendWidget.refresh slow: 281~2297ms (장 후반 step3+step4 병목)
+- 5m FL편향 80%, 30m 정확도 10% → DriftRetrain 경량 재학습 11:52 발동
+
+**커밋**: 203차
+
+---
+
 ## 2026-06-19 (201차 — 프리장 갭오픈 즉시 반영 점진 scaler 재적합)
 
 **Work**: 6/19 장초반 EKS 발동(conf_max=0.0%, bars=5) 원인 딥다이브 → 근본 수정 구현.

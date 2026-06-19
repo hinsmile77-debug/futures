@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-06-19 (203차 — EKS z_ok 버그 수정)
+
+### 배경
+EKS 회복 평가에서 `_last_canary_z_warn`(stale 고착값)을 사용하던 버그 수정.
+- `_last_canary_z_warn`은 `pre_market_setup()` 안 Canary 블록에서 **1회만** 설정(08:55, z=18)
+- PreMarket refit 완료 후 실제 z=4로 줄었지만 회복 시 여전히 18 참조 → z_ok=False → 영구 차단
+- 수정: `_p3_z_warn = getattr(self.model, "last_z_warn_count", 0)` (매분 predict_proba 갱신값)
+- 커밋: 202차
+
+### 내일 장초반 즉시 확인 [P0]
+
+- [ ] **EKS 회복 z_ok=True** — 회복 시도 시 `z_ok=True(z=N)` (N<15) 로그 확인
+  - 기존: `z_ok=False(z=18)` 매 회복 시도마다 반복 → 내일은 `z_ok=True` 기대
+- [ ] **EKS 미발동 또는 정상 해제** — EKS 발동 시에도 30분 후 conf/z 조건 충족 시 자동 해제되는지 확인
+  - z경고가 15개 미만으로 안정화되면 `[SHS-EKS] EKS 자동 해제 (회복 #N)` 로그 출현
+
+### 잠재 리스크 [P1]
+
+- [ ] **last_z_warn_count가 EKS 발동 직전 파이프라인 값** — EKS 판정(09:05) 직전 파이프라인이 실행됐는지 확인. 만약 09:00~09:05 conf=0%여서 `last_z_warn_count`가 발동 당시 z와 같다면 변화 없음
+- [ ] **오늘 conf_hits 조건 검토** — 오늘 conf_hits=10/10이었지만 mc=25% 기준. 내일도 GAP_OPEN mc 수준에 따라 달라질 수 있음
+
+---
+
 ## 2026-06-20 (201차 — 프리장 점진 재적합 효과 검증)
 
 ### 내일 장초반 즉시 확인 [P0]

@@ -182,7 +182,7 @@ class SystemHealthScore:
         해제 조건 (3가지 모두):
           ① scaler_age < 1h
           ② 최근 window 중 conf ≥ current_mc 봉 수 ≥ EKS_RECOVERY_CONF_MIN_HITS  (DynMC 기준)
-          ③ z경고 피처 수 < 5
+          ③ z경고 피처 수 < 15
         Returns True if EKS was deactivated.
         """
         if not self._eks_active:

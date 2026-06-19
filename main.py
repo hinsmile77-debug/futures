@@ -5051,7 +5051,7 @@ class TradingSystem:
             self._eks_recovery_conf_window.append(confidence)
             if self.system_health.can_attempt_recovery(ts_raw):
                 _p3_scaler_age = self.model.canary_stale_age_hours()
-                _p3_z_warn     = getattr(self, "_last_canary_z_warn", 0)
+                _p3_z_warn     = getattr(self.model, "last_z_warn_count", 0)
                 _p3_window     = list(self._eks_recovery_conf_window)
                 if self.system_health.try_eks_recovery(
                     _p3_scaler_age, _p3_window, actual_min_conf, _p3_z_warn

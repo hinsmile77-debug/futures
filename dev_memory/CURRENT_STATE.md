@@ -1,7 +1,53 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-19 (201차 세션) — 프리장 갭오픈 즉시 반영 점진 scaler 재적합
+> 마지막 업데이트: 2026-06-19 (203차 세션) — EKS z_ok 영구 차단 버그 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-19 (203차 — EKS z_ok 영구 차단 버그 수정)
+
+### 문제 배경
+
+6/19 장중 EKS 발동(09:05) 후 회복 불가 — `z_ok=False(z=18)` 5회 반복(09:20~11:24).
+
+### 근본 원인
+
+`_last_canary_z_warn` stale 고착 버그.
+
+```
+Canary 블록이 pre_market_setup() [08:55, 1회만 실행] 안에 있음.
+  → _last_canary_z_warn = 18 (전날 스케일러 기준)
+
+이후 PreMarket refit 완료 → 실제 z=4로 감소
+  → SHS _z_warn_count: 4 (매분 update_z_warn 갱신, 정상)
+  → _last_canary_z_warn: 18 (갱신 없음, 고착)
+
+EKS 회복 평가 (30분마다):
+  _p3_z_warn = getattr(self, "_last_canary_z_warn", 0)  ← 18 stale
+  z_ok = 18 < 15 = False  → 회복 불가
+
+conf_hits=10/10(필요 3), scaler_ok=True 모두 충족 중
+→ z_ok 1개 조건만으로 하루 종일 차단
+```
+
+### 수정 내용 (main.py:5054, 1줄)
+
+```python
+# 수정 전
+_p3_z_warn = getattr(self, "_last_canary_z_warn", 0)
+
+# 수정 후
+_p3_z_warn = getattr(self.model, "last_z_warn_count", 0)
+```
+
+`model.last_z_warn_count`는 매분 `predict_proba()` 실행 시 실시간 갱신됨.  
+`safety/system_health.py` 독스트링 `< 5` → `< 15` 불일치도 함께 수정.
+
+### 예상 효과
+
+내일 EKS 발동 시에도 30분 후 회복 시 `z_ok = 4 < 15 = True` → 자동 해제 가능.  
+`[SHS-EKS] EKS 자동 해제 (회복 #1)` 로그 출현 확인 필요.
 
 ---
 
