@@ -2434,11 +2434,11 @@ class TradingSystem:
 
         목적:
           ① GapOffset 사전 설정 (첫 분봉 close 기준) — 본장 z경고 원천 차단
-          ② 프리장 실데이터로 scaler 재적합 (PRE_MARKET_REFIT_MIN_BARS봉 후)
-          ③ z경고 점진적 해소 → 09:00 EKS 발동 방지
-          ④ 프리장 conf 히스토리 수집 → EKS GAP_OPEN 판정 보완용
+          ② 피처 계산 → raw_data.db 동기 저장 — refit이 갭오픈 분포 자동 흡수
+          ③ PRE_MARKET_REFIT_STEPS봉마다 점진 scaler 재적합 (1·5·10·14봉)
+          ④ 프리장 conf 히스토리 수집 + z경고 업데이트
         """
-        from config.settings import PRE_MARKET_REFIT_MIN_BARS, SCALER_WARMUP_LOOKBACK_BARS
+        from config.settings import PRE_MARKET_REFIT_STEPS, SCALER_WARMUP_LOOKBACK_BARS
 
         now_dt = datetime.datetime.now()
         self._pre_market_bars.append(candle)
@@ -2471,52 +2471,10 @@ class TradingSystem:
                 except Exception as _goe:
                     logger.warning("[PreMarket] GapOffset 설정 실패: %s", _goe)
 
-        # ② PRE_MARKET_REFIT_MIN_BARS봉 누적 후 scaler 재적합
-        # EarlyWarmup(전날 데이터)과 달리 오늘 갭오픈 분포를 직접 반영
-        if (
-            n_bars >= PRE_MARKET_REFIT_MIN_BARS
-            and not self._pre_market_scaler_refitted
-            and not getattr(self, "_scaler_refresh_running", False)
-        ):
-            _z_now = self._canary_load_z_warn(n_rows=min(n_bars, 10))
-            if _z_now >= 5:   # 실제 이상 임계 (Canary의 완화된 12개와 구분)
-                self._scaler_refresh_running = True
-                self._pre_market_scaler_refitted = True
-                log_manager.system(
-                    f"[PreMarket] {n_bars}봉 z경고={_z_now}개 → scaler refit 시작"
-                    f" (프리장 실데이터 기반)",
-                    "WARNING",
-                )
-                def _pm_refit_worker(_nb=n_bars):
-                    try:
-                        _Xpm, _fnpm = self.batch_retrainer.load_features_for_warmup(
-                            lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
-                        )
-                        if _Xpm is not None:
-                            self.model.refit_scalers_only(
-                                _Xpm, _fnpm,
-                                trigger_type="A_WARMUP",
-                                trigger_reason=f"pre_market_{_nb}bars",
-                            )
-                            log_manager.system(
-                                f"[PreMarket] refit 완료 n={len(_Xpm)}봉", "INFO"
-                            )
-                        else:
-                            log_manager.system("[PreMarket] refit 스킵 — 데이터 없음", "WARNING")
-                    except Exception as _pme:
-                        logger.warning("[PreMarket] refit 실패: %s", _pme)
-                    finally:
-                        self._scaler_refresh_running = False
-                threading.Thread(target=_pm_refit_worker, daemon=True).start()
-            else:
-                # z경고 정상 범위 → refit 불필요, 완료로 표시해 ScalerWarmup 스킵 유도
-                self._pre_market_scaler_refitted = True
-                log_manager.system(
-                    f"[PreMarket] {n_bars}봉 z경고={_z_now}개 — 정상 범위, refit 스킵",
-                    "INFO",
-                )
-
-        # ③④ 모델이 준비됐으면 예측 → conf 히스토리 수집
+        # ② 피처 계산 → raw_data.db 동기 저장
+        # 프리장 봉이 DB에 쌓이면 load_features_for_warmup()이 갭오픈 분포를 자동 흡수.
+        # 동기 저장: refit 스레드 기동 전 DB 반영 확정 (race 방지).
+        _pm_feats = None
         if self.model.is_ready():
             try:
                 _pm_feats = self.feature_builder.build(
@@ -2526,8 +2484,60 @@ class TradingSystem:
                     option_data={},
                     micro_regime=self.current_micro_regime,
                 )
+                if _pm_feats:
+                    _pm_ts = candle.get("time", now_dt.strftime("%Y-%m-%d %H:%M:%S"))
+                    try:
+                        save_candle_and_features(candle, _pm_ts, _pm_feats)
+                    except Exception as _dbe:
+                        logger.debug("[PreMarket] 피처 DB 저장 실패: %s", _dbe)
+            except Exception as _fe:
+                logger.debug("[PreMarket] 피처 계산 스킵: %s", _fe)
+
+        # ③ PRE_MARKET_REFIT_STEPS봉마다 점진 재적합
+        # 1봉(08:45): 갭오픈 즉시 반영, 5·10·14봉: 수렴 → 09:00 GAP_OPEN 완벽 준비.
+        # DB 동기 저장(②) 완료 후 스레드 기동 → race 없음.
+        if n_bars in PRE_MARKET_REFIT_STEPS and not getattr(self, "_scaler_refresh_running", False):
+            _phase = sorted(PRE_MARKET_REFIT_STEPS).index(n_bars) + 1
+            _z_now = self._canary_load_z_warn(n_rows=n_bars)
+            self._scaler_refresh_running = True
+            if n_bars == min(PRE_MARKET_REFIT_STEPS):
+                # Phase1 기동 즉시 ScalerWarmup(08:55) 스킵 예약
+                self._pre_market_scaler_refitted = True
+            log_manager.system(
+                f"[PreMarket] Phase{_phase} refit 기동 ({n_bars}봉 z경고={_z_now}개)",
+                "INFO",
+            )
+            def _pm_refit_worker(_nb=n_bars, _ph=_phase, _z=_z_now):
+                try:
+                    _Xpm, _fnpm = self.batch_retrainer.load_features_for_warmup(
+                        lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                    )
+                    if _Xpm is not None:
+                        self.model.refit_scalers_only(
+                            _Xpm, _fnpm,
+                            trigger_type="A_WARMUP",
+                            trigger_reason=f"pre_market_phase{_ph}_{_nb}bars",
+                        )
+                        _z_after = self._canary_load_z_warn(n_rows=_nb)
+                        log_manager.system(
+                            f"[PreMarket] Phase{_ph} refit 완료 n={len(_Xpm)}봉"
+                            f" z경고 {_z}→{_z_after}개",
+                            "INFO",
+                        )
+                    else:
+                        log_manager.system(
+                            f"[PreMarket] Phase{_ph} refit 스킵 — 데이터 없음", "WARNING"
+                        )
+                except Exception as _pme:
+                    logger.warning("[PreMarket] Phase%d refit 실패: %s", _ph, _pme)
+                finally:
+                    self._scaler_refresh_running = False
+            threading.Thread(target=_pm_refit_worker, daemon=True).start()
+
+        # ④ conf 히스토리 수집 + z경고 업데이트
+        if _pm_feats and self.model.is_ready():
+            try:
                 _pm_proba = self.model.predict_proba(_pm_feats)
-                # conf = 가장 강한 방향 확률의 중립(0.5) 대비 편차
                 _pm_conf = 0.0
                 if _pm_proba:
                     _pm_conf = max(
@@ -2536,7 +2546,6 @@ class TradingSystem:
                         if isinstance(v, float)
                     )
                 self._pre_market_conf_history.append(_pm_conf)
-                # SHS z경고 최신화
                 _z_update = self._canary_load_z_warn(n_rows=min(n_bars, 10))
                 self.system_health.update_z_warn(_z_update)
                 log_manager.system(

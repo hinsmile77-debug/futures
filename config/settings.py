@@ -76,8 +76,9 @@ TIME_ZONES = {
     "EXIT_ONLY":      ("15:00", "15:10"),   # 신규 진입 금지
 }
 
-# 프리장 scaler refit 트리거 최소 분봉 수
-PRE_MARKET_REFIT_MIN_BARS = 3
+# 프리장 scaler 점진 재적합 발동 봉 수 집합
+# 1봉(08:45): 갭오픈 즉시 반영, 5·10·14봉: 수렴 → 09:00 GAP_OPEN 완벽 준비
+PRE_MARKET_REFIT_STEPS = frozenset({1, 5, 10, 14})
 
 # ── 예측 모델 설정 ─────────────────────────────────────────────
 HORIZONS = {
