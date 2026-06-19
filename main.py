@@ -2729,6 +2729,18 @@ class TradingSystem:
             )
             # ATR 동적 threshold 갱신 제거 (P2) — rolling σ×k 방법3이 매분 갱신
             self._reset_rollback_active = None
+
+            # 새 GBM 기준으로 BiasReset·SGD 상태 초기화
+            # 구 GBM 편향 판정(bias_override_horizons, bias_fl_streak, bias_buf)이
+            # 새 모델에 그대로 남으면 uniform fallback 고착 + SGD 대항력 약화 지속
+            self._bias_override_horizons.clear()
+            self._bias_fl_streak = {h: 0 for h in HORIZONS}
+            for _bh in HORIZONS:
+                self._bias_buf[_bh].clear()
+            self.online_learner.reset_daily()
+            log_manager.learning(
+                "[GBM] 재학습 완료 → BiasReset·SGD 상태 초기화 (새 GBM 기준 재평가 시작)"
+            )
         else:
             log_manager.learning(f"[GBM] {prefix}재학습 건너뜀: {result.get('error', '')}")
             self.dashboard.set_model_status("대기")
@@ -3594,10 +3606,11 @@ class TradingSystem:
 
         # [DriftRetrain] 방향 드리프트 감지 → 자동 장중 재학습
         # 오전/오후 시장 방향이 전환될 때 GBM이 오전 편향을 유지하는 문제 대응.
-        # 조건: 30분 정확도 25% 미만 + 최소 20건 집계 + 마지막 재학습 60분 이상 경과
+        # 조건A: 30분 정확도 25% 미만 + 최소 20건 집계 + 마지막 재학습 60분 이상 경과
+        # 조건B(조기): 30분 정확도 15% 미만 + 최소 15건 + 30분 이상 경과 (극단 혼란 시 조기화)
         # 근거: 6/12 13:51 CB③ 발동 — acc30m=6.7%, 마지막 재학습 11:10 (약 2.5시간 전)
         # 부작용 방어:
-        #   n >= 20 조건: _accuracy_buf 비어있으면 0/1=0.0 → 오발동 방지
+        #   n >= 20(A)/15(B) 조건: _accuracy_buf 비어있으면 0/1=0.0 → 오발동 방지
         #   (세션 초기·재시작 직후 n=0인 상태에서 acc30m=0.0으로 잘못 감지되는 현상)
         _dr_cb_status = self.circuit_breaker.status_dict()
         _dr_acc30m    = _dr_cb_status.get("accuracy_30m", 1.0)
@@ -3607,17 +3620,33 @@ class TradingSystem:
             (datetime.datetime.now() - _dr_last_rt).total_seconds() / 60
             if _dr_last_rt else float("inf")
         )
-        _drift_trigger = (
-            self.circuit_breaker.state != CB_STATE_HALTED  # HALT 중에는 재학습 불필요
-            and _dr_acc30m < 0.25                          # 30분 정확도 25% 미만
-            and _dr_acc30m_n >= 20                         # 최소 20건 집계 후 판단 (빈 버퍼 오발동 방지)
-            and _dr_mins >= 60.0                           # 마지막 재학습으로부터 60분 이상
-            and not getattr(self, "_gbm_retrain_running", False)
+        _not_halted   = self.circuit_breaker.state != CB_STATE_HALTED
+        _not_running  = not getattr(self, "_gbm_retrain_running", False)
+        # 조건A: 표준 — acc<25% + n>=20 + 60분 경과
+        _drift_trigger_a = (
+            _not_halted
+            and _dr_acc30m < 0.25
+            and _dr_acc30m_n >= 20
+            and _dr_mins >= 60.0
+            and _not_running
         )
+        # 조건B: 조기 — acc<15% + n>=15 + 30분 경과 (UP/DN 혼재 극단 혼란)
+        _drift_trigger_b = (
+            _not_halted
+            and _dr_acc30m < 0.15
+            and _dr_acc30m_n >= 15
+            and _dr_mins >= 30.0
+            and _not_running
+        )
+        _drift_trigger = _drift_trigger_a or _drift_trigger_b
         if _drift_trigger:
+            _dt_reason = (
+                f"acc30m={_dr_acc30m:.1%}(n={_dr_acc30m_n}) < 15% → 조기 트리거 ({_dr_mins:.0f}분 경과)"
+                if _drift_trigger_b
+                else f"acc30m={_dr_acc30m:.1%}(n={_dr_acc30m_n}) < 25% ({_dr_mins:.0f}분 경과)"
+            )
             log_manager.system(
-                f"[DriftRetrain] 30분 정확도 {_dr_acc30m:.1%} (n={_dr_acc30m_n}) < 25% "
-                f"({_dr_mins:.0f}분 경과) → 장중 경량 재학습 트리거",
+                f"[DriftRetrain] {_dt_reason} → 장중 경량 재학습 트리거",
                 "WARNING",
             )
 

@@ -63,6 +63,13 @@ logger = logging.getLogger("LEARNING")
 # 임계값의 55% 이상 역행 시만 FLAT → FLAT 비율 줄고 UP/DOWN 예측 증가
 PATH_LABEL_RATIO: float = 0.55
 
+# 호라이즌별 경로 조건부 레이블 비율 — 장기 호라이즌일수록 중간 역행이 자연스럽게 많아
+# 30m는 0.55 기준이 FL 레이블을 과소 생성해 GBM이 UP/DN을 과잉 예측하는 문제 해소
+PATH_LABEL_RATIO_BY_HZ: dict = {
+    "1m": 0.60, "3m": 0.58, "5m": 0.55,
+    "10m": 0.52, "15m": 0.50, "30m": 0.45,
+}
+
 
 def _path_conditioned_label(
     close_map: dict,
@@ -867,9 +874,10 @@ class BatchRetrainer:
 
             # y 레이블 (Phase 2는 고정 임계값 사용)
             _fixed_thresh = HORIZON_THRESHOLDS.get(hz, 0.0003)
+            _plr = PATH_LABEL_RATIO_BY_HZ.get(hz, PATH_LABEL_RATIO)
             y_hz = []
             for ts, _ in records:
-                label = _path_conditioned_label(close_map, ts, h_min, _fixed_thresh)
+                label = _path_conditioned_label(close_map, ts, h_min, _fixed_thresh, path_ratio=_plr)
                 y_hz.append(label)
             y_hz = np.array(y_hz, dtype=int)
 
@@ -1082,6 +1090,7 @@ class BatchRetrainer:
                     # 중간 역행 과다 케이스를 FLAT으로 처리 → 레이블 순도 향상
                     label = _path_conditioned_label(
                         close_map, ts, h_min, threshold,
+                        path_ratio=PATH_LABEL_RATIO_BY_HZ.get(hz, PATH_LABEL_RATIO),
                     )
                     y.append(label)
                 y_dict[hz] = np.array(y, dtype=int)
