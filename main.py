@@ -4393,6 +4393,8 @@ class TradingSystem:
         confidence = decision["confidence"]
         grade      = decision["grade"]
         self._last_ensemble_direction = direction  # Contrarian Mode 동방향 추적용
+        # 1분봉 차트 방향예측 바 업데이트 (닫힌 봉에 색상 기록)
+        self.dashboard.minute_chart_set_direction(ts, direction)
 
         # [MaskedFallback] 격리 예측 채택 — 정상 앙상블이 FLAT이고 격리 예측이 더 높을 때
         if direction == 0 and _masked_hp_blended and self.model.last_masked_features:

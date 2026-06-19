@@ -947,6 +947,22 @@ def fetch_regime_today(today_str: str = None) -> dict:
     return {row["ts"]: row["regime"] for row in rows}
 
 
+def fetch_direction_today(today_str: str = None) -> dict:
+    """오늘 날짜 앙상블 방향 이력을 {ts: direction_int} dict로 반환 (방향 바 재시작 복원용).
+
+    ensemble_decisions 테이블을 직접 읽으므로 별도 저장 없이 복원 가능.
+    """
+    import datetime as _dt
+    if today_str is None:
+        today_str = _dt.date.today().isoformat()
+    rows = fetchall(
+        PREDICTIONS_DB,
+        "SELECT ts, direction FROM ensemble_decisions WHERE ts LIKE ?",
+        (today_str + "%",),
+    )
+    return {row["ts"]: int(row["direction"] or 0) for row in rows}
+
+
 def purge_old_regime_history(keep_days: int = 30) -> None:
     """keep_days 이전 레짐 히스토리 삭제 (EOD 마감 시 1회 호출)."""
     import datetime as _dt
