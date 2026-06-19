@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-19 (204차 — ConfTrend refresh 장 후반 지연 근본 수정)
+
+**Work**: ConfTrendWidget.refresh가 09:31 280ms → 11:53 2297ms로 선형 악화 → 원인 3개 확정 후 수정.
+
+**원인 확정**:
+1. **step3 906ms** — 매 30초마다 `sqlite3.connect()` 신규 연결 생성. WAL 파일이 하루종일 누적(기본 wal_autocheckpoint=1000페이지)되어 연결 오픈 시 WAL 헤더 파싱 비용이 선형 증가
+2. **step2 343ms (trades DB)** — `substr(entry_ts,1,10)=?` 함수 적용으로 `idx_entry_ts` 인덱스 미사용 → 풀스캔
+3. **step2 증가분 (log 파일)** — 매 30초마다 TRADE.log 처음부터 전체 재읽기. 장 후반 ~170분치 누적으로 O(N) 증가
+
+**수정 내용**:
+- `utils/db_utils.py`: `PRAGMA wal_autocheckpoint=100` — WAL 100페이지마다 체크포인트(기본 1000 → 100)
+- `conf_trend_widget.py/_get_pred_conn()`: PREDICTIONS_DB 영구 read 연결 (인스턴스 수명 내 1회만 연결, 오류 시 재연결)
+- `conf_trend_widget.py/_completed_from_db()`: `substr(entry_ts,1,10)=?` → `entry_ts >= ? AND entry_ts < ?` (idx_entry_ts 활성화)
+- `conf_trend_widget.py/_completed_from_log()`: `_log_offset` / `_log_cache` 캐싱으로 신규 라인만 증분 읽기
+
+**예상 효과**: step2 ≈0ms, step3 ≈30ms 이하로 장 후반까지 유지
+
+**커밋**: 204차
+
+---
+
 ## 2026-06-19 (203차 — EKS z_ok 영구 차단 버그 수정)
 
 **Work**: 6/19 장중 EKS 회복 불가(`z_ok=False(z=18)` 5회 반복) 원인 딥다이브 → 1줄 수정.

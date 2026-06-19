@@ -83,6 +83,10 @@ class ConfTrendWidget(QWidget):
         self._timer.timeout.connect(self.refresh)
         self._timer.start(self.REFRESH_MS)
         self._last_pass_style = ""  # setStyleSheet 조건부 적용용
+        self._pred_conn = None       # 영구 read 연결 (매 refresh 연결 생성 비용 제거)
+        self._log_today  = ""        # 날짜 변경 감지
+        self._log_offset = 0         # 마지막 읽은 파일 offset (전체 재읽기 방지)
+        self._log_cache  = {}        # 누적 진입완료 맵
         self.refresh()
 
     def showEvent(self, event):
@@ -164,11 +168,9 @@ class ConfTrendWidget(QWidget):
 
         rows = []
         try:
-            conn = sqlite3.connect(PREDICTIONS_DB, timeout=5)
-            conn.row_factory = sqlite3.Row
             _s = _t2.monotonic()
-            # substr() 대신 LIKE 또는 범위 쿼리 사용 — idx_ensemble_ts 인덱스 활성화
-            rows = conn.execute(
+            _conn = self._get_pred_conn()
+            rows = _conn.execute(
                 "SELECT ts, direction, confidence, grade, auto_entry, regime_ok, "
                 "       min_conf, gate_reason, gate_blocked, meta_action, meta_confidence, "
                 "       meta_reason, toxicity_action, toxicity_score, toxicity_reason, "
@@ -180,9 +182,9 @@ class ConfTrendWidget(QWidget):
                 (today, today + "Z", self.MAX_ROWS),
             ).fetchall()
             rows = list(reversed(rows))  # 최신 N봉, 오래된 순 정렬
-            conn.close()
             _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step3_db_query %.0fms rows=%d", (_t2.monotonic()-_s)*1000, len(rows))
         except Exception as _qe:
+            self._pred_conn = None  # 오류 시 재연결 허용
             _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step3_db_EXCEPTION: %s", _qe)
 
         if not rows:
@@ -294,6 +296,15 @@ class ConfTrendWidget(QWidget):
         _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step6_scroll %.0fms", (_t2.monotonic()-_s)*1000)
         _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend total %.0fms rows=%d", (_t2.monotonic()-_d0)*1000, len(rows))
 
+    # ── 헬퍼: 영구 read 연결 ─────────────────────────────────────
+
+    def _get_pred_conn(self):
+        if self._pred_conn is None:
+            conn = sqlite3.connect(PREDICTIONS_DB, timeout=5, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            self._pred_conn = conn
+        return self._pred_conn
+
     # ── 헬퍼: 진입 완료 맵 ───────────────────────────────────────
 
     def _get_completed_entry_map(self, today: str) -> dict:
@@ -308,9 +319,11 @@ class ConfTrendWidget(QWidget):
         try:
             conn = sqlite3.connect(TRADES_DB, timeout=5)
             conn.row_factory = sqlite3.Row
+            # range 쿼리 사용 — substr() 함수 적용 시 idx_entry_ts 인덱스 미사용 (풀스캔) 방지
             rows = conn.execute(
                 "SELECT entry_ts, direction, quantity, grade, had_partial_fill "
-                "FROM trades WHERE substr(entry_ts,1,10)=?", (today,)
+                "FROM trades WHERE entry_ts >= ? AND entry_ts < ?",
+                (today, today + "Z"),
             ).fetchall()
             conn.close()
         except Exception:
@@ -337,10 +350,15 @@ class ConfTrendWidget(QWidget):
         log_path = os.path.join(LOG_DIR, today.replace("-", "") + "_TRADE.log")
         if not os.path.exists(log_path):
             return {}
+        # 날짜가 바뀌면 캐시·offset 초기화
+        if today != self._log_today:
+            self._log_today  = today
+            self._log_offset = 0
+            self._log_cache  = {}
         patterns = ("[체결진입]", "[체결진입보정]", "[체결동기화] 외부진입")
-        done = {}
         try:
             with open(log_path, "r", encoding="utf-8", errors="ignore") as fp:
+                fp.seek(self._log_offset)          # 마지막으로 읽은 위치부터 시작
                 for line in fp:
                     if not any(t in line for t in patterns):
                         continue
@@ -354,7 +372,7 @@ class ConfTrendWidget(QWidget):
                         direction = "SHORT"
                     m = re.search(r"(\d+)계약", line)
                     quantity = int(m.group(1)) if m else 0
-                    done[key] = {
+                    self._log_cache[key] = {
                         "direction": direction,
                         "quantity": quantity,
                         "grade": "",
@@ -362,9 +380,10 @@ class ConfTrendWidget(QWidget):
                         "source": os.path.basename(log_path),
                         "entry_ts": line[:19],
                     }
+                self._log_offset = fp.tell()       # 다음 호출에서 여기부터 재개
         except Exception:
             pass
-        return done
+        return self._log_cache
 
     def _lookup_completed_entry(self, completed: dict, ts: str):
         if not completed:

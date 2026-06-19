@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-06-19 (204차 — ConfTrend refresh 장 후반 지연 수정)
+
+### 내일 장중 확인 [P0]
+
+- [ ] **step3_db_query ≤30ms 유지** — 11:00 이후에도 `[LiveDBG] ConfTrend step3_db_query` 30ms 이하인지 확인 (기존 11:53 906ms)
+- [ ] **step2_completed_map ≤10ms** — `[LiveDBG] ConfTrend step2_completed_map` 10ms 이하인지 확인 (기존 343ms)
+- [ ] **전체 refresh ≤100ms** — `[LiveDBG] ConfTrend total` 100ms 이하로 하루종일 유지
+
+### 잠재 리스크 [P1]
+
+- [ ] **영구 연결 오류 시 재연결 확인** — `step3_db_EXCEPTION` 로그 후 다음 refresh에서 자동 재연결되는지 확인 (`_pred_conn = None` 후 `_get_pred_conn()` 재생성)
+- [ ] **wal_autocheckpoint=100 부작용** — 더 잦은 체크포인트로 PREDICTIONS_DB 쓰기 경합 증가 여부. `[DBWriter]` 큐 포화 로그 모니터링
+
+---
+
 ## 2026-06-19 (203차 — EKS z_ok 버그 수정)
 
 ### 배경

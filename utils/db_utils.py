@@ -234,6 +234,8 @@ def init_predictions_db():
             "CREATE INDEX IF NOT EXISTS idx_meta_ts ON meta_labels(ts)")
     execute(PREDICTIONS_DB,
             "CREATE INDEX IF NOT EXISTS idx_meta_horizon ON meta_labels(horizon)")
+    # WAL 파일이 하루종일 비대해지는 것을 방지 (기본 1000 → 100페이지)
+    execute(PREDICTIONS_DB, "PRAGMA wal_autocheckpoint=100")
 
 
 def _migrate_predictions_db():
