@@ -10,6 +10,7 @@
 import os
 import datetime
 import joblib
+import pickle as _pickle
 import logging
 import numpy as np
 from typing import Dict, List, Optional, Tuple
@@ -700,17 +701,25 @@ class MultiHorizonModel:
                     sc.var_[_fi] = _floor ** 2
 
     def _save_all(self):
+        # 스케일러는 순수 pickle.dump(protocol=4) 사용.
+        # joblib.dump(protocol=4)는 헤더만 4이고 내부 numpy 배열을 별도 서브스트림으로
+        # 직렬화할 때 DEFAULT_PROTOCOL(Python 3.10 = 5)을 사용해 BYTEARRAY8 opcode가
+        # 삽입된다. Python 3.7(py37_32)은 opcode 63을 인식하지 못해 KeyError: 63 crash.
+        # 모델(gbm_*.pkl)은 HistGBM C 확장이 별도 직렬화해 문제 없으므로 joblib 유지.
+        _PROTO = 4
         for h in self.models:
-            joblib.dump(self.models[h],  self._model_path(h))
-            joblib.dump(self.scalers[h], self._scaler_path(h))
+            joblib.dump(self.models[h], self._model_path(h), protocol=_PROTO)
+            _sp = self._scaler_path(h)
+            with open(_sp, "wb") as _f:
+                _pickle.dump(self.scalers[h], _f, protocol=_PROTO)
         # 공유 pkl (backward compat)
         joblib.dump(self.feature_names,
-                    os.path.join(HORIZON_DIR, "feature_names.pkl"))
+                    os.path.join(HORIZON_DIR, "feature_names.pkl"), protocol=_PROTO)
         # Phase C: 호라이즌별 전용 pkl
         for h, h_names in self.horizon_feature_names.items():
             if h_names != self.feature_names:
                 h_path = os.path.join(HORIZON_DIR, "feature_names_{}.pkl".format(h))
-                joblib.dump(h_names, h_path)
+                joblib.dump(h_names, h_path, protocol=_PROTO)
         logger.info("[Model] 전체 모델 저장 완료")
 
     def _load_all(self):
@@ -723,8 +732,9 @@ class MultiHorizonModel:
             mp = self._model_path(h)
             sp = self._scaler_path(h)
             if os.path.exists(mp) and os.path.exists(sp):
-                self.models[h]  = joblib.load(mp)
-                self.scalers[h] = joblib.load(sp)
+                self.models[h] = joblib.load(mp)
+                with open(sp, "rb") as _sf:
+                    self.scalers[h] = _pickle.load(_sf)
                 self._is_fitted[h] = True
                 self._scaler_fitted_at[h] = datetime.datetime.fromtimestamp(
                     os.path.getmtime(sp)
@@ -1018,9 +1028,12 @@ class MultiHorizonModel:
                 self.scalers[horizon] = _new_sc
                 self._scaler_fitted_at[horizon] = datetime.datetime.now()
                 # 원자적 저장: tmp에 쓴 후 os.replace로 교체 — 읽기 도중 corrupt 방지
+                # pickle.dump(protocol=4): joblib.dump는 내부 numpy 서브스트림에
+                # DEFAULT_PROTOCOL(=5) 사용 → BYTEARRAY8 삽입 → py37_32 KeyError: 63
                 _dst = self._scaler_path(horizon)
                 _tmp = _dst + ".tmp"
-                joblib.dump(self.scalers[horizon], _tmp)
+                with open(_tmp, "wb") as _sf:
+                    _pickle.dump(self.scalers[horizon], _sf, protocol=4)
                 os.replace(_tmp, _dst)
                 refreshed.append(horizon)
             except Exception as _e:

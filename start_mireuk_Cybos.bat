@@ -3,10 +3,27 @@ SETLOCAL EnableDelayedExpansion
 CHCP 65001 >NUL
 TITLE Mireuk (Futures Auto Trader) Universal Launcher
 
-ECHO.
-ECHO ============================================================
-ECHO   Mireuk (KOSPI 200 Futures Auto Trader) Universal Start
-ECHO ============================================================
+REM ============================================================
+REM  배치 자체 로그 설정
+REM  저장 위치 : logs\Mireuk_batch\launcher_YYYYMMDD_HHMMSS.log
+REM  보관 개수 : 최신 10개 (초과분 자동 삭제)
+REM ============================================================
+SET "_BLOG_DIR=%USERPROFILE%\PycharmProjects\futures\logs\Mireuk_batch"
+IF NOT EXIST "!_BLOG_DIR!" MKDIR "!_BLOG_DIR!"
+
+FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "Get-Date -Format 'yyyyMMdd_HHmmss'"`) DO SET "_BLOG_TS=%%T"
+SET "_BLOG=!_BLOG_DIR!\launcher_!_BLOG_TS!.log"
+
+REM 최신 10개 초과 로그 삭제 (날짜 내림차순 정렬 후 11번째부터 삭제)
+FOR /F "skip=10 delims=" %%F IN ('DIR "!_BLOG_DIR!\launcher_*.log" /B /O-D /A-D 2^>NUL') DO (
+    DEL "!_BLOG_DIR!\%%F" 2>NUL
+)
+
+CALL :L "============================================================"
+CALL :L "  Mireuk (KOSPI 200 Futures Auto Trader) Universal Start"
+CALL :L "  Launch: !_BLOG_TS!"
+CALL :L "  Log   : !_BLOG!"
+CALL :L "============================================================"
 ECHO.
 
 REM ============================================================
@@ -16,10 +33,10 @@ REM  - SW_MINIMIZE only (no process termination)
 REM  - CMD / Python(Mireuk) / Cybos processes are protected
 REM  - Reset mouse cursor to (0,0)
 REM ============================================================
-ECHO [STEP 0] Pre-launch cleanup: minimizing other windows, resetting mouse...
+CALL :L "[STEP 0] Pre-launch cleanup: minimizing other windows, resetting mouse..."
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\close_other_windows.ps1" -KeepTitle "Mireuk (Futures Auto Trader) Universal Launcher"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(0, 0)"
-ECHO [INFO] Pre-launch cleanup done.
+CALL :L "[INFO] Pre-launch cleanup done."
 ECHO.
 
 REM ============================================================
@@ -57,7 +74,7 @@ IF NOT EXIST "%WORKDIR%" (
     EXIT /B 1
 )
 
-ECHO [INFO] WorkDir set to: %WORKDIR%
+CALL :L "[INFO] WorkDir set to: %WORKDIR%"
 cd /d "%WORKDIR%"
 
 REM 2. Anaconda Detection & Activation
@@ -90,7 +107,7 @@ IF %ERRORLEVEL% NEQ 0 (
     EXIT /B 1
 )
 
-ECHO [INFO] Environment activated: %CONDA_DEFAULT_ENV%
+CALL :L "[INFO] Environment activated: %CONDA_DEFAULT_ENV%"
 
 REM 3. Dynamic Qt Path Configuration
 IF DEFINED CONDA_PREFIX (
@@ -143,30 +160,30 @@ REM    5) Wait for COM connection
 REM  If already connected, entire login sequence is skipped
 REM ============================================================
 ECHO.
-ECHO [INFO] Checking CybosPlus connection status...
+CALL :L "[INFO] Checking CybosPlus connection status..."
 python -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); sys.exit(0 if c.IsConnect==1 else 1)" >NUL 2>&1
 IF %ERRORLEVEL% NEQ 0 (
-    ECHO [INFO] CybosPlus not connected -- starting auto-login...
-    ECHO [INFO] Auto-login handles: security dialog, login, mock-investment popup
+    CALL :L "[INFO] CybosPlus not connected -- starting auto-login..."
+    CALL :L "[INFO] Auto-login handles: security dialog, login, mock-investment popup"
     IF EXIST "%WORKDIR%\scripts\cybos_autologin.py" (
         python "%WORKDIR%\scripts\cybos_autologin.py"
         IF !ERRORLEVEL! NEQ 0 (
             ECHO.
-            ECHO [ERROR] CybosPlus auto-login failed.
-            ECHO [HINT]  Register credentials: cmdkey /add:cybosplus /user:ID /pass:PASSWORD
-            ECHO [HINT]  Check executable: C:\DAISHIN\STARTER\ncStarter.exe
-            ECHO [HINT]  Log location: %WORKDIR%\logs\
+            CALL :L "[ERROR] CybosPlus auto-login failed."
+            CALL :L "[HINT]  Register credentials: cmdkey /add:cybosplus /user:ID /pass:PASSWORD"
+            CALL :L "[HINT]  Check executable: C:\DAISHIN\STARTER\ncStarter.exe"
+            CALL :L "[HINT]  Log location: %WORKDIR%\logs\"
             TIMEOUT /T 30
             EXIT /B 1
         )
-        ECHO [OK] CybosPlus auto-login completed.
+        CALL :L "[OK] CybosPlus auto-login completed."
     ) ELSE (
-        ECHO [WARN] cybos_autologin.py not found: %WORKDIR%\scripts\
+        CALL :L "[WARN] cybos_autologin.py not found: %WORKDIR%\scripts\"
         ECHO [WARN] Complete CybosPlus login + mock-investment connection manually, then press any key.
         PAUSE
     )
 ) ELSE (
-    ECHO [INFO] CybosPlus already connected -- skipping login.
+    CALL :L "[INFO] CybosPlus already connected -- skipping login."
 )
 
 REM ============================================================
@@ -174,27 +191,28 @@ REM  5. CybosPlus Preflight Check
 REM ============================================================
 IF EXIST "%WORKDIR%\scripts\cybos_plus_preflight.py" (
     ECHO.
-    ECHO [INFO] Running CybosPlus preflight check...
+    CALL :L "[INFO] Running CybosPlus preflight check..."
+    REM 파이프 미사용 — 파이프 시 ERRORLEVEL이 항상 PowerShell 종료코드(0)가 되어 오류 감지 불가
     python "%WORKDIR%\scripts\cybos_plus_preflight.py"
     SET "PREFLIGHT_ERR=!ERRORLEVEL!"
     IF "!PREFLIGHT_ERR!"=="1" (
-        ECHO [ERROR] Preflight: COM connection failed.
+        CALL :L "[ERROR] Preflight: COM connection failed."
         TIMEOUT /T 30
         EXIT /B 1
     )
     IF "!PREFLIGHT_ERR!"=="2" (
-        ECHO [ERROR] Preflight: TradeInit failed -- check account session.
+        CALL :L "[ERROR] Preflight: TradeInit failed -- check account session."
         TIMEOUT /T 30
         EXIT /B 1
     )
     IF "!PREFLIGHT_ERR!" NEQ "0" (
-        ECHO [ERROR] Preflight failed ^(exit code !PREFLIGHT_ERR!^).
+        CALL :L "[ERROR] Preflight failed (exit code !PREFLIGHT_ERR!)."
         TIMEOUT /T 30
         EXIT /B 1
     )
-    ECHO [OK] CybosPlus preflight check passed.
+    CALL :L "[OK] CybosPlus preflight check passed."
 ) ELSE (
-    ECHO [INFO] cybos_plus_preflight.py not found -- skipping preflight.
+    CALL :L "[INFO] cybos_plus_preflight.py not found -- skipping preflight."
 )
 
 REM ============================================================
@@ -202,12 +220,14 @@ REM  6. Final Connection Recheck
 REM ============================================================
 TIMEOUT /T 2 /NOBREAK >NUL
 ECHO.
-ECHO [INFO] Final connection recheck before launching main.py...
-python -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); print('[RECHECK] IsConnect={} ServerType={}'.format(c.IsConnect, c.ServerType)); sys.exit(0 if c.IsConnect==1 else 1)"
-IF %ERRORLEVEL% NEQ 0 (
+CALL :L "[INFO] Final connection recheck before launching main.py..."
+REM 파이프 미사용 — ERRORLEVEL 정확히 캡처해야 연결 실패 감지 가능
+python -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); r='[RECHECK] IsConnect={} ServerType={}'.format(c.IsConnect, c.ServerType); print(r); sys.exit(0 if c.IsConnect==1 else 1)"
+CALL :L "[RECHECK] done — see console output above"
+IF !ERRORLEVEL! NEQ 0 (
     ECHO.
-    ECHO [ERROR] CybosPlus session lost before launching main.py.
-    ECHO [ERROR] Re-run the launcher to reconnect.
+    CALL :L "[ERROR] CybosPlus session lost before launching main.py."
+    CALL :L "[ERROR] Re-run the launcher to reconnect."
     TIMEOUT /T 30
     EXIT /B 1
 )
@@ -218,29 +238,36 @@ REM  - Blocking execution in this CMD window (log monitor stays open)
 REM  - AllowSetForegroundWindow(ASFW_ANY) 로 Qt 앱이 스스로 foreground 이동 가능하도록
 REM  - 195차: _bring_to_front (AttachThreadInput + SetForegroundWindow) 와 연계
 REM ============================================================
-ECHO.
-ECHO ============================================================
-ECHO   [OK] CybosPlus ready -- launching main.py
-ECHO   [INFO] This CMD window is the loading monitor. Do not close.
-ECHO ============================================================
+CALL :L "============================================================"
+CALL :L "  [OK] CybosPlus ready -- launching main.py"
+CALL :L "  [INFO] This CMD window is the loading monitor. Do not close."
+CALL :L "============================================================"
 ECHO.
 
 REM AllowSetForegroundWindow(ASFW_ANY=-1): 어떤 프로세스라도 foreground 이동 허가
 REM → Python/Qt 프로세스가 AttachThreadInput 없이도 SetForegroundWindow 호출 가능
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -Name ASFG -Namespace '' -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool AllowSetForegroundWindow(uint pid);'; [ASFG]::AllowSetForegroundWindow(0xFFFFFFFF)" 2>NUL
 
-python main.py
-SET EXIT_CODE=%ERRORLEVEL%
+REM main.py output: console + log file simultaneously via PowerShell Tee-Object
+REM RULES (do not change):
+REM  1) One literal line - no ^ continuation (breaks pipe under EnableDelayedExpansion)
+REM  2) No SET variable for the PS command (| inside variable re-parsed as CMD pipe)
+REM  3) No non-ASCII chars in REM near this line (CP949 misreads UTF-8, corrupts REM)
+REM  4) Both OutputEncoding flags needed: console stream + file write UTF-8
+python main.py 2>&1 | powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; $input | Tee-Object -FilePath '!_BLOG!' -Append"
 
 ECHO.
-IF %EXIT_CODE% NEQ 0 (
-    ECHO [ERROR] main.py exited with error code: %EXIT_CODE%
-) ELSE (
-    ECHO [INFO] main.py exited normally.
-)
-
-ECHO.
-ECHO ============================================================
-ECHO   Mireuk exited. This window closes in 10 seconds.
-ECHO ============================================================
+CALL :L "============================================================"
+CALL :L "  Mireuk exited. Log: !_BLOG!"
+CALL :L "============================================================"
 TIMEOUT /T 10 >NUL
+GOTO :EOF
+
+REM ============================================================
+REM  :L  콘솔 출력 + 로그파일 동시 기록 서브루틴
+REM  사용법: CALL :L "메시지"
+REM ============================================================
+:L
+ECHO %~1
+ECHO %~1 >> "!_BLOG!"
+GOTO :EOF

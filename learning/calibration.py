@@ -190,7 +190,7 @@ class PredictionCalibrator:
                 "labels":  list(self._labels),
                 "n":       self._n,
                 "method":  self.method,
-            }, path)
+            }, path, protocol=4)
             return True
         except Exception as e:
             logger.warning("[Calibration] save 실패: %s", e)

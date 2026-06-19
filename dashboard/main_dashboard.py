@@ -6427,7 +6427,7 @@ class PnlHistoryPanel(QWidget):
         tbl.horizontalHeader().setHighlightSections(False)
         tbl.setStyleSheet(
             f"QTableWidget{{background:{C['bg']};color:{C['text']};border:none;"
-            f"gridline-color:{C['border']};font-size:{S.f(11)}px;outline:none;}}"
+            f"gridline-color:{C['border']};font-size:{S.f(11)}px;}}"
             f"QTableWidget::item{{padding:2px 5px;}}"
             f"QHeaderView::section{{background:{C['bg2']};color:{C['text2']};"
             f"border:none;border-bottom:1px solid {C['border']};"

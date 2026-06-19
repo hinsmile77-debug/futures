@@ -160,11 +160,11 @@ class ConfTrendWidget(QWidget):
             fallback_mc = _ZONE_PARAMS.get("STABLE_TREND", {}).get("min_confidence", 0.57)
         except Exception:
             fallback_mc = 0.57
-        _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step1_import %.0fms", (_t2.monotonic()-_d0)*1000)
+        _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend step1_import %.0fms", (_t2.monotonic()-_d0)*1000)
 
         _s = _t2.monotonic()
         completed_entries = self._get_completed_entry_map(today)
-        _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step2_completed_map %.0fms", (_t2.monotonic()-_s)*1000)
+        _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend step2_completed_map %.0fms", (_t2.monotonic()-_s)*1000)
 
         rows = []
         try:
@@ -182,10 +182,10 @@ class ConfTrendWidget(QWidget):
                 (today, today + "Z", self.MAX_ROWS),
             ).fetchall()
             rows = list(reversed(rows))  # 최신 N봉, 오래된 순 정렬
-            _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step3_db_query %.0fms rows=%d", (_t2.monotonic()-_s)*1000, len(rows))
+            _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend step3_db_query %.0fms rows=%d", (_t2.monotonic()-_s)*1000, len(rows))
         except Exception as _qe:
             self._pred_conn = None  # 오류 시 재연결 허용
-            _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step3_db_EXCEPTION: %s", _qe)
+            _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend step3_db_EXCEPTION: %s", _qe)
 
         if not rows:
             self._table.setRowCount(0)
@@ -226,12 +226,12 @@ class ConfTrendWidget(QWidget):
             ema_val = c if ema_val is None else alpha * c + (1 - alpha) * ema_val
             ema_list.append(ema_val)
 
-        _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step4_arithmetic %.0fms", (_t2.monotonic()-_d0)*1000)
+        _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend step4_arithmetic %.0fms", (_t2.monotonic()-_d0)*1000)
 
         # 탭이 보이지 않으면 테이블 업데이트 건너뜀 (600×setItem = 2.4s 블로킹 방지)
         # showEvent에서 다시 refresh()를 호출하므로 데이터 정합성 유지됨
         if not self.isVisible():
-            _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend skip_table (not visible) total %.0fms", (_t2.monotonic()-_d0)*1000)
+            _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend skip_table (not visible) total %.0fms", (_t2.monotonic()-_d0)*1000)
             return
 
         _s = _t2.monotonic()
@@ -288,13 +288,18 @@ class ConfTrendWidget(QWidget):
                 elif j in (8, 9) and gate_tip:
                     it.setToolTip(gate_tip)
         self._table.setUpdatesEnabled(True)
-        _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step5_table_update %.0fms", (_t2.monotonic()-_s)*1000)
+        _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend step5_table_update %.0fms", (_t2.monotonic()-_s)*1000)
 
         # 최신 행(맨 아래)이 항상 보이도록 스크롤
         _s = _t2.monotonic()
         self._table.scrollToBottom()
-        _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend step6_scroll %.0fms", (_t2.monotonic()-_s)*1000)
-        _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend total %.0fms rows=%d", (_t2.monotonic()-_d0)*1000, len(rows))
+        _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend step6_scroll %.0fms", (_t2.monotonic()-_s)*1000)
+        # 200ms 초과 시에만 WARNING (30초마다 정상 동작을 WARNING으로 오염 방지)
+        _total_ms = (_t2.monotonic()-_d0)*1000
+        if _total_ms > 200:
+            _lg.getLogger("SYSTEM").warning("[LiveDBG] ConfTrend SLOW total %.0fms rows=%d", _total_ms, len(rows))
+        else:
+            _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend total %.0fms rows=%d", _total_ms, len(rows))
 
     # ── 헬퍼: 영구 read 연결 ─────────────────────────────────────
 
