@@ -173,7 +173,8 @@ class ConfTrendWidget(QWidget):
                 "       min_conf, gate_reason, gate_blocked, meta_action, meta_confidence, "
                 "       meta_reason, toxicity_action, toxicity_score, toxicity_reason, "
                 "       entry_gate_json, entry_final_ok, entry_qty, entry_mode, "
-                "       entry_executed, entry_block_reason "
+                "       entry_executed, entry_block_reason, "
+                "       checklist_reason "
                 "FROM ensemble_decisions "
                 "WHERE ts >= ? AND ts < ? ORDER BY ts DESC LIMIT ?",
                 (today, today + "Z", self.MAX_ROWS),
@@ -419,8 +420,10 @@ class ConfTrendWidget(QWidget):
             return "0. cold-start 대기", ""
         if conf < mc:
             return "1. conf미달", ""
-        if d == 0 or grade == "X":
-            return "2. FLAT(X)", ""
+        if d == 0:
+            return "2. Enb Flat", ""
+        if grade == "X":
+            return "2. Enb X", ""
         if gb or gr == "blocked_by_microstructure":
             return "3. gate차단", ""
         if ro == 0:
@@ -443,7 +446,11 @@ class ConfTrendWidget(QWidget):
         if stage.startswith("1."):
             return "신뢰도 미달 (conf < mc)"
         if stage.startswith("2."):
-            return "방향 없음(FLAT) 또는 앙상블 등급 X"
+            _keys = row.keys()
+            cr = str(row["checklist_reason"] or "") if "checklist_reason" in _keys else ""
+            if "Flat" in stage:
+                return "Enb Flat"
+            return ("Enb X — " + cr) if cr else "Enb X"
         if stage.startswith("3."):
             gr = str(row["gate_reason"] or "")
             return "마이크로구조 게이트 차단 (%s)" % gr if gr else "마이크로구조 게이트 차단"
@@ -461,7 +468,11 @@ class ConfTrendWidget(QWidget):
         if stage.startswith("7."):
             return "체크리스트 자동진입 조건 미달 (auto_entry=0)"
         if stage.startswith("8."):
-            return detail or "STEP7 마스터 게이트 차단 (상세 미수집)"
+            if detail:
+                return detail
+            _keys = row.keys()
+            cr = str(row["checklist_reason"] or "") if "checklist_reason" in _keys else ""
+            return ("Chk X — " + cr) if cr else "STEP7 차단 (상세 미수집)"
         if stage.startswith("9."):
             return "모든 조건 통과 — 진입 대기/실행 중"
         if stage.startswith("10."):

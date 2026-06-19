@@ -302,6 +302,8 @@ def _migrate_ensemble_decisions_db():
                 "entry_mode": "TEXT",
                 "entry_executed": "INTEGER",
                 "entry_block_reason": "TEXT",
+                # 차단사유 축약 키 — stage 2/8 표시용
+                "checklist_reason": "TEXT",
             }
             for name, dtype in additions.items():
                 if name not in cols:

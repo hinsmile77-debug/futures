@@ -49,8 +49,9 @@ class PredictionBuffer:
                 gate_reason, gate_strength, gate_delta, gate_blocked,
                 gate_signals, detail, features,
                 meta_action, meta_confidence, meta_size_mult, meta_reason,
-                toxicity_action, toxicity_score, toxicity_score_ma, toxicity_size_mult, toxicity_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                toxicity_action, toxicity_score, toxicity_score_ma, toxicity_size_mult, toxicity_reason,
+                checklist_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -81,6 +82,7 @@ class PredictionBuffer:
                 float((decision.get("toxicity_gate") or {}).get("score_ma", 0.0) or 0.0),
                 float((decision.get("toxicity_gate") or {}).get("size_multiplier", 0.0) or 0.0),
                 str((decision.get("toxicity_gate") or {}).get("reason", "")),
+                str(decision.get("checklist_reason", "")),
             ),
         )
 
@@ -186,6 +188,7 @@ class PredictionBuffer:
             str(decision.get("entry_mode", "")),
             int(bool(decision.get("entry_executed", False))),
             str(decision.get("entry_block_reason", "")),
+            str(decision.get("checklist_reason", "")),
         )
 
         with get_conn(PREDICTIONS_DB) as conn:
@@ -208,8 +211,9 @@ class PredictionBuffer:
                        toxicity_action, toxicity_score, toxicity_score_ma,
                        toxicity_size_mult, toxicity_reason,
                        entry_gate_json, entry_final_ok, entry_qty, entry_mode,
-                       entry_executed, entry_block_reason
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       entry_executed, entry_block_reason,
+                       checklist_reason
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 

@@ -4380,6 +4380,12 @@ class TradingSystem:
                         f"dir={_mdir:+d} grade={grade}"
                     )
 
+        # checklist_reason: 차단사유 DB 저장 — 앙상블 확정 직후 초기값 설정
+        if direction == 0:
+            decision["checklist_reason"] = "FLAT"
+        elif grade == "X":
+            decision["checklist_reason"] = "Coherence↓" if decision.get("coherence_blocked") else "conf↓"
+
         # ── 상수 출력 호라이즌 감지 → 스케일러 재적합 트리거 ────────────
         # GBM이 동일 conf를 5분+ 출력하면 스케일러 노후로 모든 입력이 같은 리프에
         # 도달 중일 가능성이 높음 → 즉시 스케일러 재적합으로 분포 복원.
@@ -4589,6 +4595,7 @@ class TradingSystem:
             if _ieb(_regime_params):
                 direction = 0
                 grade     = "X"
+                decision["checklist_reason"] = "RegimeOverride"
                 log_manager.signal(
                     f"[RegimeOverride] 진입 금지 "
                     f"— {self.current_regime}×{self.current_micro_regime}"
@@ -4602,6 +4609,7 @@ class TradingSystem:
             if _get_fp2().get_level() >= 3:  # DriftLevel.CRITICAL = 3
                 direction = 0
                 grade     = "X"
+                decision["checklist_reason"] = "FP-CRITICAL"
                 log_manager.signal(
                     f"[RegimeFingerprint] PSI={_get_fp2().get_psi():.3f} CRITICAL "
                     f"— 시장 구조 변화로 진입 차단"
@@ -4622,6 +4630,7 @@ class TradingSystem:
                 if _reg_champ is None:
                     direction = 0
                     grade     = "X"
+                    decision["checklist_reason"] = "ChampGate"
                     log_manager.signal(
                         f"[RegimeChampGate] {self.current_micro_regime} 레짐 "
                         f"전문가 챔피언 미설정 — 진입 차단 (수동 승격 필요)"
@@ -4641,6 +4650,7 @@ class TradingSystem:
             if direction != 0:
                 direction = 0
                 grade     = "X"
+                decision["checklist_reason"] = "σ미수집"
                 log_manager.signal(
                     f"[EntryGate] sigma_20봉 미수집({len(self._sigma_buf)}봉) "
                     f"— 진입 대기 (09:20 해제)"
@@ -4650,6 +4660,7 @@ class TradingSystem:
             if grade in ("B", "C"):
                 direction = 0
                 grade     = "X"
+                decision["checklist_reason"] = "조건부구간"
                 log_manager.signal("[EntryGate] 조건부 구간 — A등급만 허용 (09:30까지)")
             elif grade == "A":
                 actual_min_conf = max(actual_min_conf, 0.60)
@@ -4759,6 +4770,7 @@ class TradingSystem:
             )
             direction = 0
             grade = "X"
+            decision["checklist_reason"] = "ATR저변동"
         elif direction != 0:
             log_manager.signal(
                 f"[ATR-Horizon] 진입 호라이즌={_entry_horizon} tf={_tf:.2f} "
@@ -4798,6 +4810,7 @@ class TradingSystem:
                     "[StartupWarmup] 재가동 초기화 대기 중 — grade=X 강제 (약 %d분 남음)", _warmup_remain
                 )
                 _final_grade = "X"
+                decision["checklist_reason"] = "Warmup대기"
                 _cr = {
                     "grade": "X", "pass_count": 0, "checks": {},
                     "size_mult": 0, "auto_entry": False, "entry_mode": "STARTUP_WARMUP",
@@ -4879,9 +4892,16 @@ class TradingSystem:
                     _cr["grade"]      = "X"
                     _cr["size_mult"]  = 0
                     _cr["auto_entry"] = False
+                    decision["checklist_reason"] = "coldstart"
 
             _final_grade = _cr["grade"]
             _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
+            # checklist_reason: STEP7 체크리스트 X 원인 기록 (stage 8 차단사유 표시)
+            if _final_grade == "X" and _cr.get("checks"):
+                if not _cr["checks"].get("3_vwap", True):
+                    decision["checklist_reason"] = "VWAP강제X"
+                else:
+                    decision["checklist_reason"] = "pass %d/9" % _cr.get("pass_count", 0)
             # 섹션 8: grade=X 분봉 수 집계 (scaler_daily EOD용)
             if _final_grade == "X":
                 self._grade_x_count += 1
