@@ -9739,14 +9739,21 @@ class MireukDashboard(QMainWindow):
             self._minute_chart_dialog.close()
             return
         self._minute_chart_dialog._start_reload_thread()  # 재기동 시 DB 새로고침
+        # ── geometry 복원 전략 ────────────────────────────────────────
+        # 수동 재열기: dialog가 이미 HIDDEN 상태이므로 show()가 마지막 위치 그대로 복원.
+        #              singleShot(0) 만으로 충분.
+        # 자동팝업 (재시동): dialog HWND가 최초 생성됨. show() 호출 시 Windows가
+        #   부모(MireukDashboard, PRIMARY 모니터 최대화) 기준으로 HWND를 PRIMARY에 배치.
+        #   이후 singleShot(0)에서 second monitor로 이동하면 WM_DPICHANGED 발생
+        #   → Windows가 DPI 비율로 크기 재조정 → 크기 뒤죽박죽.
+        # 해결: show() 전에 restore_saved_geometry()를 먼저 호출해 HWND 생성 위치를
+        #   second monitor로 지정. Windows가 올바른 DPI 컨텍스트로 HWND를 생성.
+        #   show() 이후 singleShot(0)으로 WM_SHOWWINDOW 재배치 보정.
+        self._minute_chart_dialog.restore_saved_geometry()   # pre-show: HWND 생성 위치 지정
         self._minute_chart_dialog.show()
         self._minute_chart_dialog.raise_()
         self._minute_chart_dialog.activateWindow()
-        # show() 후 WM_SHOWWINDOW 처리가 끝난 다음 틱에 geometry를 적용해야
-        # Windows WM의 기본 재배치에 덮어쓰이지 않는다.
-        # 자동팝업·수동 모두 저장된 위치 복원 시도.
-        # restore_saved_geometry 내부에서 저장값 없음·화면 밖 시 제2모니터 중앙으로 fallback.
-        QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)
+        QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)  # post-show: WM_SHOWWINDOW 보정
 
     def minute_chart_tick(self, price: float, ts=None):
         self._minute_chart_dialog.update_tick(price, ts=ts)
