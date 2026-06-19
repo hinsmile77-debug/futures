@@ -383,6 +383,17 @@ class TradingSystem:
                 self.position.entry_price,
                 self.position.entry_time,
             )
+        # 차트 리로드 후 reset_session이 _active_trade를 초기화하므로
+        # 훅을 통해 현재 포지션 상태를 재동기화한다 (장중 재시동 시 포지션 마커 복원)
+        _system = self
+        def _chart_reload_hook():
+            if _system.position.status != "FLAT":
+                _system.dashboard.minute_chart_sync_active_position(
+                    _system.position.status,
+                    _system.position.entry_price,
+                    _system.position.entry_time,
+                )
+        self.dashboard.set_minute_chart_post_reload_hook(_chart_reload_hook)
         self._reverse_entry_enabled: bool = False
         self._tp1_protect_mode: str = "breakeven"
         self._auto_shutdown_done_today: bool = False

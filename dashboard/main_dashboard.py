@@ -8422,6 +8422,11 @@ class MinuteChartCanvas(QWidget):
 
 class MinuteChartDialog(QDialog):
     SHORTCUT_TEXT = "Ctrl+Shift+X"
+    # 배경 스레드 → 메인 스레드 안전 전달용 시그널
+    # threading.Thread에서 QTimer.singleShot 람다는 Python 3.7 32-bit에서
+    # 타이머가 이벤트 루프 없는 스레드에 귀속되어 발동하지 않는다.
+    # pyqtSignal은 cross-thread 시 Qt::QueuedConnection으로 자동 처리된다.
+    _sig_reload_done = pyqtSignal(list, list, list)  # candles, completed_trades, exit_markers
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -8447,6 +8452,13 @@ class MinuteChartDialog(QDialog):
 
         self._toggle_shortcut = QShortcut(QKeySequence(self.SHORTCUT_TEXT), self)
         self._toggle_shortcut.activated.connect(self.close)
+
+        # 배경 스레드 → 메인 스레드 전달: 시그널 연결
+        self._sig_reload_done.connect(self._apply_reload_result)
+
+        # 리로드 완료 후 호출될 외부 콜백 (active position 재동기화 등)
+        # main.py에서 set_minute_chart_post_reload_hook()으로 주입
+        self._post_reload_hook = None
 
         # Qt 이벤트 루프 진입 후 첫 틱에 백그라운드 로드 시작
         # (이벤트 루프 이전에 스레드를 시작하면 QTimer.singleShot 람다가
@@ -8550,11 +8562,10 @@ class MinuteChartDialog(QDialog):
             self._start_reload_thread()
 
     def _reload_today_bg(self):
-        """reload_today를 백그라운드 스레드에서 실행 후 Qt 메인 스레드에서 reset_session 적용."""
+        """reload_today를 백그라운드 스레드에서 실행 후 _sig_reload_done 시그널로 메인 스레드에 전달."""
         import time as _t
         _t0 = _t.monotonic()
         try:
-            from PyQt5.QtCore import QTimer as _QTimer
             self._session_date = datetime.now().date().isoformat()
 
             _t1 = _t.monotonic()
@@ -8603,13 +8614,14 @@ class MinuteChartDialog(QDialog):
                     "— DB 락 경합 가능 (raw_candles=%.1fms trades=%.1fms)",
                     _total_ms, _candle_ms, _trade_ms,
                 )
-            # Qt UI 업데이트는 메인 스레드에서 실행 (regime 복원 포함)
-            _QTimer.singleShot(0, lambda: self._apply_reload_result(candles, completed_trades, exit_markers))
+            # 메인 스레드로 결과 전달 — pyqtSignal(QueuedConnection) 사용
+            # QTimer.singleShot(lambda)는 threading.Thread에서 발동하지 않음 (Python 3.7 32-bit)
+            self._sig_reload_done.emit(candles, completed_trades, exit_markers)
         except Exception as _e:
             logger.warning("[ChartDBG] _reload_today_bg 예외: %s", _e)
 
     def _apply_reload_result(self, candles, completed_trades, exit_markers):
-        """메인 스레드에서 reset_session + regime_map 복원까지 원자적으로 처리."""
+        """메인 스레드에서 reset_session + regime_map 복원 + active position 재동기화를 원자적으로 처리."""
         self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers)
         try:
             regime_map = fetch_regime_today(self._session_date)
@@ -8618,6 +8630,12 @@ class MinuteChartDialog(QDialog):
                 self._chart.update()
         except Exception as _e:
             logger.debug("[ChartDBG] _apply_reload_result regime 복원 실패: %s", _e)
+        # reset_session이 _active_trade를 초기화하므로, 외부 훅으로 재동기화
+        if callable(getattr(self, '_post_reload_hook', None)):
+            try:
+                self._post_reload_hook()
+            except Exception as _he:
+                logger.debug("[ChartDBG] _apply_reload_result hook 예외: %s", _he)
 
     def update_tick(self, price: float, ts=None):
         # maybe_roll_session 제거: 매 틱마다 날짜 비교 불필요 — on_candle_closed에서만 체크 (194차)
@@ -9647,12 +9665,9 @@ class MireukDashboard(QMainWindow):
         self._minute_chart_dialog.activateWindow()
         # show() 후 WM_SHOWWINDOW 처리가 끝난 다음 틱에 geometry를 적용해야
         # Windows WM의 기본 재배치에 덮어쓰이지 않는다.
-        if auto_popup:
-            # 자동팝업: 저장된 geometry 무시 → 항상 제2모니터 중앙 최적 배치
-            QTimer.singleShot(0, self._minute_chart_dialog._center_on_second_screen)
-        else:
-            # 수동 토글(단축키 등): 이전 위치 복원 시도
-            QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)
+        # 자동팝업·수동 모두 저장된 위치 복원 시도.
+        # restore_saved_geometry 내부에서 저장값 없음·화면 밖 시 제2모니터 중앙으로 fallback.
+        QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)
 
     def minute_chart_tick(self, price: float, ts=None):
         self._minute_chart_dialog.update_tick(price, ts=ts)
@@ -10107,6 +10122,18 @@ class MireukDashboard(QMainWindow):
             f"padding:1px {S.p(5)}px;font-size:{S.f(11)}px;font-weight:bold;"
         )
 
+    def closeEvent(self, event):
+        """메인 윈도우 종료 시 차트 다이얼로그 geometry를 명시적으로 저장.
+
+        Qt 부모-자식 소멸 경로에서는 자식 closeEvent가 호출되지 않으므로,
+        메인 윈도우 closeEvent에서 차트 다이얼로그를 먼저 닫아 geometry를 저장한다.
+        """
+        if hasattr(self, '_minute_chart_dialog'):
+            try:
+                self._minute_chart_dialog.close()  # → MinuteChartDialog.closeEvent 발동 → geometry 저장
+            except Exception:
+                pass
+        super().closeEvent(event)
 
 
 # ────────────────────────────────────────────────────────────
@@ -10944,6 +10971,11 @@ def _adapter_minute_chart_clear_active_position(self):
     self._win.minute_chart_clear_active_position()
 
 
+def _adapter_set_minute_chart_post_reload_hook(self, hook):
+    """리로드 완료 후 호출될 콜백 등록. active position 재동기화 등 외부 상태 복원에 사용."""
+    self._win._minute_chart_dialog._post_reload_hook = hook
+
+
 DashboardAdapter.toggle_minute_chart_dialog = _adapter_toggle_minute_chart_dialog
 DashboardAdapter.minute_chart_tick = _adapter_minute_chart_tick
 DashboardAdapter.minute_chart_candle_closed = _adapter_minute_chart_candle_closed
@@ -10952,6 +10984,7 @@ DashboardAdapter.minute_chart_record_entry = _adapter_minute_chart_record_entry
 DashboardAdapter.minute_chart_record_exit = _adapter_minute_chart_record_exit
 DashboardAdapter.minute_chart_sync_active_position = _adapter_minute_chart_sync_active_position
 DashboardAdapter.minute_chart_clear_active_position = _adapter_minute_chart_clear_active_position
+DashboardAdapter.set_minute_chart_post_reload_hook = _adapter_set_minute_chart_post_reload_hook
 
 
 # ────────────────────────────────────────────────────────────
