@@ -8825,6 +8825,10 @@ class MinuteChartDialog(QDialog):
         h = max(600, min(round(sg.height() * 0.85),  980))
         x = sg.x() + (sg.width()  - w) // 2
         y = sg.y() + (sg.height() - h) // 2
+        # y < 0 방지: 보조 모니터가 주모니터 위에 배치된 경우 y가 음수가 될 수 있음
+        # 음수 y → Windows가 content+frame이 화면 밖으로 나갔다고 판단
+        # → "Unable to set geometry" → DPI 1.5× 강제 확대 (log: 3030→4547)
+        y = max(y, 0)
         self.setGeometry(x, y, w, h)
         logger.debug(
             "[ChartDBG] _center_on_second_screen: %dx%d pos=(%d,%d) screen=%s",
@@ -8871,6 +8875,18 @@ class MinuteChartDialog(QDialog):
             # 위치가 화면 밖으로 나가지 않도록 클램핑
             x = max(avail.left(), min(x, avail.right()  - w))
             y = max(avail.top(),  min(y, avail.bottom() - h))
+            # ── 음수 y 방지 (DPI 확대 트리거 차단) ──────────────────────
+            # 로그: "Unable to set geometry 3030x1460+3369-8 → Resulting 4547x2124+3372+6"
+            # 보조 모니터 avail.top()=-7일 때 content y=-7(=avail.top()) → Qt 프레임 계산 중
+            # 1px 감소 → content y=-8 → avail.top()=-7 밖으로 나감 → Windows가 DPI 1.5×
+            # 강제 적용 (Python 3.7 32-bit System-DPI-Aware + 보조모니터 150% DPI 조합)
+            # y를 0 이상으로 보정하면 content+frame이 항상 가상 데스크탑 양수 영역에 배치됨
+            if y < 0:
+                logger.warning(
+                    "[ChartDBG] restore_saved_geometry: y=%d < 0 → y=0으로 보정 "
+                    "(음수 y → Windows DPI 1.5× 확대 방지)", y,
+                )
+                y = 0
             # 클램핑 후 실제 화면 내에 창이 충분히 들어오는지 최종 확인
             if (x + w > avail.right() + 10 or y + h > avail.bottom() + 10
                     or x < avail.left() - 10 or y < avail.top() - 10):
