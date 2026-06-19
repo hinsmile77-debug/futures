@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-06-19 (206차 — poc_distance z폭발 근본 수정: VP 버퍼 DB 복원)
+
+**Work**: 장중 재시작 후 poc_distance z폭발 원인 딥다이브 → VP 버퍼 cold-start 구조 확정 → DB 복원으로 근본 수정.
+
+**원인 확정**:
+- `VolumeProfileCalculator` 버퍼가 재시작 시 항상 빈 상태로 초기화
+- `_restore_analysis_buffers()`이 SHAP/Corr는 복원하나 VP 버퍼 복원 경로 없음
+- 재시작 후 bars 1~9: poc_distance=0.0, bars 10~59: 짧은 윈도우 POC 불안정
+- 스케일러 std(0.00417)가 cold-start 0.0값 오염으로 낮게 학습 → z 임계 낮음
+- z>4 조건: poc_distance > ±0.0167 = KOSPI 200 기준 ±5.5포인트 이격
+
+**수정 내용**:
+- `utils/db_utils.py`: `fetch_recent_raw_candles(limit=60)` 신규 추가
+- `main.py` import: `fetch_recent_raw_candles` 추가
+- `main.py` `_restore_analysis_buffers()`: VP 버퍼 복원 블록 추가 (raw_candles 60봉 → `_vol_profile.update()`)
+
+**Fix 2(clip) 기각**: Fix 1 이후 남는 z>4 = 진성 시장 신호 → 클리핑 시 신호 손실. 이득 없음.
+
+**커밋**: 206차
+
+---
+
+## 2026-06-19 (205차 — 5m FL편향·30m acc 10%·SGD 15% 악순환 4종 수정)
+
+**Work**: 장중 5m FL편향 80% 지속 + 30m 정확도 10% (DriftRetrain 발동) + SGD 15% 동시 발생 딥다이브 → 구조적 악순환 4종 수정.
+
+**원인 확정**:
+- DriftRetrain 완료 후 BiasReset·SGD 상태가 구 GBM 기준 그대로 남아 재학습 효과 무산 (버그)
+- SGD CUT_THR 30m=0.52 — 30m는 랜덤워크에 근접해 구조적으로 달성 불가 → 매분 -0.02씩 바닥 수렴
+- DriftRetrain 60분 대기 — acc=10% 극단 혼란에도 조기 대응 불가
+- PATH_LABEL_RATIO 전역 0.55 — 30m 훈련 데이터에서 FL 레이블 과소 → GBM UP/DN 과잉 예측
+
+**수정 내용**:
+- `main.py` `_on_gbm_retrain_done`: 재학습 성공 시 `_bias_override_horizons` 클리어 + `reset_daily()` 추가
+- `online_learner.py`: `_CUT_THR["30m"]` 0.52 → 0.42
+- `main.py` DriftRetrain: 조건B 추가 (acc<15% + n>=15 + 30분 → 조기 트리거)
+- `batch_retrainer.py`: `PATH_LABEL_RATIO_BY_HZ` dict 추가 (1m~30m 호라이즌별 분리, 두 호출 위치 적용)
+
+**커밋**: 205차 (`aca776c`)
+
+---
+
 ## 2026-06-19 (204차 — ConfTrend refresh 장 후반 지연 근본 수정)
 
 **Work**: ConfTrendWidget.refresh가 09:31 280ms → 11:53 2297ms로 선형 악화 → 원인 3개 확정 후 수정.

@@ -8,6 +8,48 @@
 
 ---
 
+## 2026-06-19 (206차 — poc_distance VP 버퍼 DB 복원)
+
+### 다음 재시작 시 즉시 확인 [P0]
+
+- [ ] **VP 복원 로그** — 기동 시 `[VPRestore] VP 버퍼 복원 완료: 60봉` 로그 출현 확인
+- [ ] **[AnalysisRestore] vp_bars=60** — 로그에서 `vp_bars=60` 확인 (0이면 raw_candles 비어있음)
+- [ ] **poc_distance z폭발 미발생** — 재시작 직후 첫 5분간 `[ScalerMonitor]` 로그에서 poc_distance 극단값 없음 확인
+
+### 잠재 리스크 [P2]
+
+- [ ] **당일 첫 기동(DB 비어있음)**: raw_candles가 0행이면 vp_bars=0 → cold start 유지 (정상 fallback). 당일 기동 직후는 여전히 cold start — 09:00 이전 pre-market 봉으로 VP가 채워질 때까지 poc_distance z 주의
+- [ ] **스케일러 오염 잔재**: 과거 DB의 cold-start 0.0값은 기존 scaler에 이미 반영됨. 다음 scaler refit 때까지 std가 낮게 유지될 수 있음 (D_FORCE 또는 C_PERIODIC refit으로 자연 교정)
+
+---
+
+## 2026-06-19 (205차 — 5m FL편향·30m acc·SGD 악순환 수정)
+
+### 내일 DriftRetrain 발동 시 즉시 확인 [P0]
+
+- [ ] **BiasReset 즉시 해제** — DriftRetrain 완료 후 `[GBM] 재학습 완료 → BiasReset·SGD 상태 초기화` 로그 출현 확인
+- [ ] **5m uniform fallback 해제** — 재학습 직후 `[BiasReset] 5m FL편향 → uniform fallback 해제` 로그 (또는 해제 없이 재평가 시작 — `_bias_override_horizons` 클리어됨)
+- [ ] **SGD 비중 30%로 복구** — `[OnlineLearner] 가중치 조정 SGD=30% GBM=70%` 수준으로 복귀 확인 (기존 15%)
+
+### 내일 DriftRetrain 조기 트리거 확인 [P1]
+
+- [ ] **조기 트리거 로그** — acc<15% 시 `[DriftRetrain] acc30m=X% < 15% → 조기 트리거 (30분 경과)` 로그 출현 확인
+  - 기존: acc=10%이어도 60분 대기 → 내일은 30분 후 발동 기대
+- [ ] **조기 트리거 오발동 방지** — n<15건 상태에서 조기 트리거가 잘못 발동되지 않는지 확인
+
+### 다음 GBM 재학습 시 [P1]
+
+- [ ] **30m FL 레이블 비율 증가** — `[Retrain] y_dict` 로그에서 30m FL 비율이 이전 대비 증가했는지 확인 (PATH_LABEL_RATIO 0.55→0.45 효과)
+- [ ] **30m acc 회복** — 재학습 후 30m acc가 25% 이상으로 회복되는지 CB③ 버퍼 추적
+
+### 잠재 리스크 [P2]
+
+- [ ] **reset_daily 타이밍 충돌** — `_on_gbm_retrain_done`이 호출되는 시점에 파이프라인이 실행 중이면 `_acc_buf` 초기화와 race condition 가능성 (QTimer.singleShot이 메인 스레드이므로 낮지만 확인)
+- [ ] **BiasReset 재발동 주기 단축** — 재학습 후 클리어된 상태에서 GBM이 여전히 편향이면 10분 후 재발동. 재학습-BiasReset-재학습 반복 루프 여부 모니터링
+- [ ] **30m PATH_LABEL_RATIO 0.45 과도 완화** — FL 레이블이 지나치게 많아져 30m 모델이 FL 과다 예측으로 전환될 가능성. 재학습 후 30m UP/DN/FL 분포 확인
+
+---
+
 ## 2026-06-19 (204차 — ConfTrend refresh 장 후반 지연 수정)
 
 ### 내일 장중 확인 [P0]

@@ -1,7 +1,106 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-19 (203차 세션) — EKS z_ok 영구 차단 버그 수정
+> 마지막 업데이트: 2026-06-19 (206차 세션) — poc_distance z폭발 근본 수정 (VP 버퍼 DB 복원)
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-19 (206차 — poc_distance z폭발 근본 수정: VP 버퍼 DB 복원)
+
+### 문제 배경
+
+12:32 장중 재시작 후 `poc_distance z 폭발` 관찰.
+
+### 근본 원인
+
+```
+프로세스 재시작
+  → VolumeProfileCalculator.__init__() → 빈 deque(maxlen=60)
+  → _restore_analysis_buffers(): SHAP/Corr 복원 O, VP 버퍼 복원 X (누락)
+  → 재시작 후 bars 1~9: poc_distance = 0.0 (default, len < 10)
+  → bars 10~59: 짧은 윈도우로 계산 → POC 불안정
+  → 장중 5+ 포인트 이동 시: poc_distance > 0.0167 → z > 4
+
+부가: 스케일러 std(0.00417)가 구조적으로 낮게 학습됨
+  → cold-start 0.0값이 raw_data.db에 쌓여 std 하향 오염
+  → 정상 full-window값도 z 임계에 가까워짐
+```
+
+스케일러 실측: `mean=-0.000185, std=0.004173` → z>4 조건: poc_distance > ±0.0167 (±5.5포인트)
+
+Fix 2 (clip ±0.040) 검토 후 **기각**: Fix 1 완료 후 z>4 케이스는 진성 시장 신호(5.5포인트+ 이격) → 클리핑 시 신호 손실. 이득 없음.
+
+### 수정 내용 (206차)
+
+**`utils/db_utils.py`**: `fetch_recent_raw_candles(limit=60)` 추가
+- `raw_candles` 테이블에서 최근 60봉 `high/low/close/volume` oldest→newest 반환
+
+**`main.py`** `_restore_analysis_buffers()`:
+- `fetch_recent_raw_candles` import 추가
+- SHAP 복원 블록 직후 VP 버퍼 복원 코드 추가
+  - 최근 60봉 로드 → `_vol_profile.update()` 순서대로 투입
+  - 실패 시 cold start 유지 (예외 무시, warn 로그)
+  - `[AnalysisRestore]` 로그에 `vp_bars=N` 추가
+
+### 예상 효과
+
+- 재시작 직후 첫 분봉부터 60봉 성숙 VP 윈도우 사용
+- `poc_distance` cold-start 기본값(0.0) 완전 소멸
+- z폭발 원천 차단 (DB 비어있으면 cold start 유지, 기존 동작 그대로)
+- 로그: `[VPRestore] VP 버퍼 복원 완료: 60봉`
+
+---
+
+## 2026-06-19 (205차 — 5m FL편향·30m acc 10%·SGD 15% 악순환 구조 수정)
+
+### 문제 배경
+
+장중 관찰 (11:52 기준):
+- `5m FL편향 80%` 지속
+- `30m 정확도 10%` (UP=10, DN=13, FL=7 — 방향 혼재, 둘 다 틀림) → DriftRetrain 발동
+- `SGD 비중 15~16%` (기본값 30%, min 10%)
+
+### 근본 원인 (악순환 루프)
+
+```
+GBM 30m acc=10% (UP/DN 혼재)
+  → DriftRetrain 발동 → 경량 재학습
+  → 재학습 완료해도 BiasReset/SGD 상태 구 GBM 기준 그대로 유지 ← 버그
+  → 5m uniform fallback 고착 + SGD 15% 유지
+  → GBM FL 편향 교정 불가
+  → 다시 acc 낮음 → 루프 반복
+```
+
+부가 원인:
+1. **SGD CUT_THR 30m=0.52** — 랜덤워크 근사 구간에서 52% 달성 구조적 불가 → 매분 -0.02씩 바닥 수렴
+2. **DriftRetrain 60분 대기** — acc=10% 극단 혼란에도 60분 기다려야 함
+3. **PATH_LABEL_RATIO 전역 0.55** — 30m 훈련 데이터에서 FL 레이블 과소 생성 → GBM이 UP/DN 과잉 예측
+
+### 수정 내용 (205차)
+
+**제안1**: `main.py` `_on_gbm_retrain_done` — 재학습 성공 시 BiasReset·SGD 상태 초기화
+```python
+self._bias_override_horizons.clear()
+self._bias_fl_streak = {h: 0 for h in HORIZONS}
+for _bh in HORIZONS: self._bias_buf[_bh].clear()
+self.online_learner.reset_daily()
+```
+
+**제안2**: `online_learner.py` — `_CUT_THR["30m"]` 0.52 → 0.42
+
+**제안3**: `main.py` DriftRetrain 조건B 추가
+- acc30m < 15% + n>=15 + 30분 경과 → 조기 재학습 (60분 대기 생략)
+
+**제안4**: `learning/batch_retrainer.py` — `PATH_LABEL_RATIO_BY_HZ` 호라이즌별 분리
+- 1m:0.60 / 3m:0.58 / 5m:0.55 / 10m:0.52 / 15m:0.50 / **30m:0.45** (FL 허용 기준 완화)
+- Phase2 레이블 루프 + 메인 retrain 루프 두 곳 모두 적용
+
+### 예상 효과
+
+- DriftRetrain 완료 직후 `[BiasReset]` uniform fallback 즉시 해제 → 5m 기여 복구
+- SGD 30%로 즉각 복구 → GBM 대항력 회복
+- acc=10% 극단 혼란 시 30분 후 재학습 발동 (기존 60분)
+- 다음 GBM 재학습 시 30m FL 레이블 증가 → UP/DN 과잉 예측 완화
 
 ---
 

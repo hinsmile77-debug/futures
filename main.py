@@ -50,7 +50,7 @@ debug_log = logging.getLogger("DEBUG")
 from utils.db_utils import (
     init_all_dbs, execute, save_candle, save_features, save_candle_and_features,
     save_horizon_features, count_raw_candles,
-    fetch_recent_raw_features,
+    fetch_recent_raw_features, fetch_recent_raw_candles,
     fetch_today_trades, fetch_pnl_history, normalize_trade_pnl,
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
     fetch_trend_monthly, fetch_trend_yearly,
@@ -876,13 +876,28 @@ class TradingSystem:
                     _restored_ok, len(restored_vectors), len(self._cached_shap_importance),
                 )
 
+        # VP 버퍼 복원: 재시작 후 poc_distance cold-start z폭발 방지
+        # 재시작 전 60봉 OHLCV를 VP 계산기에 미리 투입 → 첫 분봉부터 성숙 윈도우 사용
+        _vp_restored = 0
+        try:
+            _vp_bars = fetch_recent_raw_candles(limit=60)
+            for _vrow in _vp_bars:
+                self.feature_builder._vol_profile.update(
+                    float(_vrow["high"]), float(_vrow["low"]),
+                    float(_vrow["close"]), float(_vrow["volume"]),
+                )
+            _vp_restored = len(_vp_bars)
+        except Exception as _vpe:
+            logger.warning("[VPRestore] VP 버퍼 복원 실패 — cold start 유지: %s", _vpe)
+
         logger.info(
-            "[AnalysisRestore] live_corr=%d restored_corr=%s live_shap=%d live_ready=%s shap_features=%d",
+            "[AnalysisRestore] live_corr=%d restored_corr=%s live_shap=%d live_ready=%s shap_features=%d vp_bars=%d",
             len(self._param_corr_history),
             "yes" if self._restored_corr_str else "no",
             len(self._shap_feature_window),
             "yes" if self._live_shap_ready else "no",
             len(self._cached_shap_importance),
+            _vp_restored,
         )
 
     def _record_param_corr_snapshot(self, features: dict) -> None:

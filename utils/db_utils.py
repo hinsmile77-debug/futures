@@ -643,6 +643,18 @@ def fetch_recent_raw_features(limit: int = 240) -> List[sqlite3.Row]:
     return list(reversed(rows))
 
 
+def fetch_recent_raw_candles(limit: int = 60) -> List[sqlite3.Row]:
+    """Return recent raw candle rows (high/low/close/volume) oldest -> newest.
+    VP 버퍼 복원 등 재시작 후 상태 복구 용도.
+    """
+    rows = fetchall(
+        RAW_DATA_DB,
+        "SELECT ts, high, low, close, volume FROM raw_candles ORDER BY ts DESC LIMIT ?",
+        (int(limit),),
+    )
+    return list(reversed(rows))
+
+
 def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
     """최근 N일 체결 완료 거래 전체 반환 — 손익 추이 패널용.
     반환 컬럼: direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,
