@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-06-19 (201차 — 프리장 scaler 재적합 입력 데이터 결함)
+
+### [버그 구조적] 프리장 봉 피처가 raw_data.db에 미저장 → 갭오픈 분포 재적합 불가
+
+**File**: `main.py` — `_on_pre_market_bar()` / `learning/batch_retrainer.py` — `load_features_for_warmup()`
+
+**Root cause**: `_on_pre_market_bar()`는 `feature_builder.build()`로 피처를 계산한 뒤 `predict_proba()` 호출에만 사용하고 `raw_data.db`에 저장하지 않는다. 반면 모든 scaler 재적합 경로(EarlyWarmup·Canary refit·PreMarket refit)는 `load_features_for_warmup(SCALER_WARMUP_LOOKBACK_BARS)`로 동일한 `raw_features` 테이블을 읽는다. 결국 재적합 횟수와 무관하게 입력 데이터가 항상 "전날 DB"이므로 오늘 갭오픈 이후 분포가 전혀 학습되지 않는다.
+
+**연쇄**: 갭오픈 발생 → 피처 분포 이동 → 전날 DB 기준 scaler → z경고 폭증(오늘 18개) → GBM 입력 왜곡 → conf≈50% → EKS 발동 → 당일 관망.
+
+**Fix**: `_on_pre_market_bar()`에서 피처 계산 직후 `save_candle_and_features(candle, ts, _pm_feats)` 동기 저장 추가. 재적합 스레드 기동 전 DB 반영 확정(race 방지). `PRE_MARKET_REFIT_STEPS = {1, 5, 10, 14}`봉 점진 4회 재적합으로 갭오픈 분포 수렴.
+
+**How to apply**: 프리장 로그에서 `[PreMarket] Phase1~4 refit 완료 z경고 X→Y개` 추이 확인. Phase4 완료(08:58) 후 z경고 ≤5개가 목표.
+
+**Escape 이력**: 104차(EarlyWarmup 24h) → 112차(4h) → 143차(Canary refit) → 166차(프리장 파이프라인) → 177차(EKS z=15) → **201차(DB 저장)** — 7세대에 걸쳐 재적합 횟수만 늘어났으나 입력 데이터 결함이 잠복.
+
+---
+
 ## 2026-06-16 (182차 — EOD MemoryError 복구 + validate_and_resync() 허위 정합성오류 수정)
 
 ### [버그] EOD GBM 재학습 MemoryError → daily_close() 전체 중단 (06-11 재발)

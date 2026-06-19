@@ -1,7 +1,90 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-18 (199차 세션) — UI 응답없음·파이프라인 멈춤 근본 수정
+> 마지막 업데이트: 2026-06-19 (201차 세션) — 프리장 갭오픈 즉시 반영 점진 scaler 재적합
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-19 (201차 — 프리장 갭오픈 즉시 반영 점진 scaler 재적합)
+
+### 문제 배경
+
+6/19 장초반 로그:
+- `[EarlyWarmup]` scaler 노후=16h → 08:45 선행 warmup (전날 DB 기준)
+- `[Canary]` z경고=18개 ≥ 임계 12개 → 08:55 장전 재적합 시작
+- `[PreMarket]` 3봉 z경고=10개 → 08:57:58 재적합
+- `[SHS-EKS]` conf_max=0.0% bars=5 → **당일 관망 선언**
+- `[ConstOut]` ['1m'] 상수 출력 확정 → 09:21 scaler 재적합
+
+재적합이 3회 실행됐음에도 EKS 발동 → 딥다이브 결과 구조적 결함 발견.
+
+### 근본 원인
+
+**`_on_pre_market_bar()`가 피처를 계산하고도 `raw_data.db`에 저장하지 않음.**
+
+```
+기존 흐름:
+프리장 봉 → 피처 계산(predict_proba용) → 버려짐
+재적합 호출 → load_features_for_warmup() → raw_data.db (전날 데이터만)
+
+결과: EarlyWarmup·Canary refit·PreMarket refit 모두 "전날 DB"가 입력
+      → 오늘 갭오픈 분포 미반영 → z경고 18개 → conf≈50% → EKS
+```
+
+이것은 104차 EarlyWarmup 도입 이후 166차 프리장 파이프라인 전체 구현까지
+7세대에 걸쳐 누적된 Escaped 패턴의 종착지.
+
+### 개선 이력 요약 (Escape 체인)
+
+| 세대 | 커밋 | 해결 | Escaped 이유 |
+|---|---|---|---|
+| 1 | 104차 | 24h 노후 scaler 사전 갱신 | 17h 케이스 미커버 |
+| 2 | 112차 | 4h → 매일 발동 보장 | 전날 DB 기준 → 갭오픈 분포 괴리 |
+| 3 | 143차 | Canary 즉시 재적합 추가 | 과거 DB 기준 동일 문제 |
+| 4 | 166차 | 프리장 봉 + GapOffset 선행 | DB 저장 안 함 → 재적합 미흡수 |
+| 5 | 177차 | EKS 회복 z=15로 완화 | 갭오픈 클 때 z>15 여전히 발동 |
+| **6** | **201차** | **프리장 봉 DB 저장 + 점진 재적합** | — |
+
+### 수정 내용
+
+**`config/settings.py`**
+```python
+PRE_MARKET_REFIT_MIN_BARS = 3           # 삭제
+PRE_MARKET_REFIT_STEPS = frozenset({1, 5, 10, 14})  # 신규
+```
+
+**`main.py` — `_on_pre_market_bar()`**
+
+핵심 추가:
+```python
+save_candle_and_features(candle, _pm_ts, _pm_feats)  # ← 동기 저장
+```
+
+점진 재적합 구조 (1회 완료 플래그 → STEPS 4회):
+- Phase1 (1봉/08:45): 갭오픈 즉시 반영 + ScalerWarmup 스킵 예약
+- Phase2 (5봉/08:49): 분포 안정화
+- Phase3 (10봉/08:54): 충분한 샘플 수렴
+- Phase4 (14봉/08:58): 09:00 직전 최종 확정
+- 각 Phase 완료 시 z경고 before→after 비교 로그
+
+### 예상 효과
+
+```
+08:45~08:58: 전날DB(500봉) + 프리장봉 누적 → scaler 점진 수렴
+09:00 GAP_OPEN: z경고 목표 ≤5개 → conf 정상화 → EKS 미발동
+```
+
+---
+
+## 2026-06-19 (200차 — PreRetrain 타이밍 레이스 수정)
+
+`daily_close(15:40)` 시점에 `retrain_eod.py`(15:45~15:57 완료)의 마커 파일이 없어
+`eod_retrain_ok_date`가 session_state에 미저장 → 다음날 PreRetrain 오판.
+
+**수정**: `pre_market_setup()`에 fallback 추가 — session_state 미기록 시
+`data/eod_retrain_done_*.txt` 마커 파일 직접 검색(1~5일 이내).
+
+커밋: `59a7195`
 
 ---
 

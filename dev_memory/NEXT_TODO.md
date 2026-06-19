@@ -8,6 +8,34 @@
 
 ---
 
+## 2026-06-20 (201차 — 프리장 점진 재적합 효과 검증)
+
+### 내일 장초반 즉시 확인 [P0]
+
+- [ ] **Phase1~4 refit 완료 로그** — `[PreMarket] Phase1 refit 기동 (1봉 z경고=X개)` → `Phase1 refit 완료 n=501봉 z경고 X→Y개` 패턴 4회 출력 확인
+- [ ] **z경고 수렴 추이** — Phase1→4 진행하며 z경고 단조감소 확인 (목표: Phase4 완료 후 ≤5개)
+- [ ] **EKS 미발동** — `[SHS-EKS] Early Kill Switch 발동` 로그 없음 (오늘 09:05 발동 → 내일 없어야 함)
+- [ ] **GAP_OPEN conf 정상화** — `conf_max`가 GAP_OPEN mc(≈45%) 이상으로 기록되는지 확인
+- [ ] **피처 DB 저장 에러 없음** — `[PreMarket] 피처 DB 저장 실패` 로그 없음 확인
+
+### Phase별 z경고 목표 [P1]
+
+| Phase | 봉 수 | 시각 | z경고 목표 |
+|---|---|---|---|
+| 기동 전 | 0봉 | 08:45 전 | 18개 (오늘 실측) |
+| Phase1 완료 | 1봉 | ~08:46 | ≤15개 |
+| Phase2 완료 | 5봉 | ~08:50 | ≤10개 |
+| Phase3 완료 | 10봉 | ~08:55 | ≤7개 |
+| Phase4 완료 | 14봉 | ~08:59 | ≤5개 |
+
+### 잠재 리스크 [P2]
+
+- [ ] **Phase 건너뜀** — `_scaler_refresh_running=True` 상태에서 다음 STEP 봉 도착 시 해당 Phase 스킵. Phase 번호가 연속되지 않으면 EarlyWarmup 오버랩 의심
+- [ ] **동기 DB write 블로킹** — 프리장 봉 `save_candle_and_features()` 메인스레드 동기 호출. `[PreMarket]` 로그 간격이 60초 이상이면 비동기 전환 검토
+- [ ] **갭 매우 큰 날 Phase1 역효과** — 1봉으로 scaler 왜곡 가능. Phase1 완료 후 z경고 증가 시 `PRE_MARKET_REFIT_STEPS` 최솟값 3으로 상향 검토
+
+---
+
 ## 2026-06-19 (199차 후속 — UI 블로킹 수정 검증)
 
 ### 내일 장중 즉시 확인 [P0]
