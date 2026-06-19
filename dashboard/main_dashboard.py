@@ -1093,10 +1093,7 @@ class PredictionPanel(QWidget):
         _mrow.addWidget(self._lbl_model_detail, 1)
         # lay.add는 hgrid 아래로 이동
 
-        # ── 섹션: 멀티 호라이즌 예측 ─────────────────────────────
-        hz_title = mk_label("멀티 호라이즌 예측 ( 1 · 3 · 5 · 10 · 15 · 30분 )", C['blue'], 10, True)
-        hz_title.setToolTip(_HZ_TIP)
-        lay.addWidget(hz_title)
+        # ── 섹션: 호라이즌 On/Off ─────────────────────────────────
         hgrid = QGridLayout()
         hgrid.setSpacing(4)
         _HZ_STALE_TIP = {
@@ -1180,7 +1177,7 @@ class PredictionPanel(QWidget):
             fl.addWidget(arr)
             fl.addWidget(pct)
             self._hz_labels[hname] = (frame, arr, pct)
-            hgrid.addWidget(frame, 0, i)
+            # 카드 프레임은 레이아웃 비표시 (update_data 로직 보존용으로만 유지)
 
             cb = QCheckBox()
             cb.setChecked(True)
@@ -1198,19 +1195,22 @@ class PredictionPanel(QWidget):
             self._hz_enabled[hname] = cb
 
             cb_wrap = QWidget()
-            cb_lay = QHBoxLayout(cb_wrap)
+            cb_lay = QVBoxLayout(cb_wrap)
             cb_lay.setContentsMargins(0, 2, 0, 0)
-            cb_lay.setSpacing(0)
-            cb_lay.addStretch()
-            cb_lay.addWidget(cb)
-            cb_lay.addStretch()
-            hgrid.addWidget(cb_wrap, 1, i)
+            cb_lay.setSpacing(2)
+            name_lbl = mk_label(hname, C['text2'], 9, align=Qt.AlignCenter)
+            cb_row = QWidget()
+            cb_row_lay = QHBoxLayout(cb_row)
+            cb_row_lay.setContentsMargins(0, 0, 0, 0)
+            cb_row_lay.setSpacing(0)
+            cb_row_lay.addStretch()
+            cb_row_lay.addWidget(cb)
+            cb_row_lay.addStretch()
+            cb_lay.addWidget(name_lbl)
+            cb_lay.addWidget(cb_row)
+            hgrid.addWidget(cb_wrap, 0, i)
         self._load_hz_filter()
         lay.addLayout(hgrid)
-
-        # ── 3. 모델 상태 행 (hz 카드 아래) ──────────────────────
-        lay.addSpacing(4)
-        lay.addWidget(self._model_row)
 
         lay.addStretch(1)
 
