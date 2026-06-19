@@ -7450,6 +7450,12 @@ _REGIME_BAR_COLOR = {
     "탈진":   "#ce93d8",
 }
 _REGIME_BAR_H = 4   # x축 라인 위 레짐 바 높이(px)
+_DIR_BAR_H    = 4   # 레짐 바 바로 위 방향예측 바 높이(px)
+_DIR_BAR_COLOR = {
+    1:  "#3fb950",   # UP   (녹색)
+    -1: "#f85149",   # DOWN (적색)
+    0:  "#444c56",   # FLAT (회색)
+}
 
 
 class MinuteChartCanvas(QWidget):
@@ -7473,6 +7479,7 @@ class MinuteChartCanvas(QWidget):
         self._last_plot_rect = QRectF()
         self._instrument_code = ""   # 현재 표시 중인 종목코드
         self._regime_map = {}        # {ts_key: regime_str} 봉별 레짐 히스토리
+        self._dir_map    = {}        # {ts_key: direction_int} 봉별 방향예측 히스토리
         self._last_tick_update_ms: float = 0.0   # update() throttle용 타임스탬프
         self._last_mouse_update_ms: float = 0.0  # mouseMoveEvent throttle용
         # ── 디버그: 응답없음 분석용 ─────────────────────────────
@@ -7502,6 +7509,7 @@ class MinuteChartCanvas(QWidget):
         self._hover_pos = None
         self._dragging = False
         self._regime_map.clear()
+        self._dir_map.clear()
         self.update()
 
     def set_regime_at(self, ts_key: str, regime: str):
@@ -8693,6 +8701,14 @@ class MinuteChartDialog(QDialog):
                 geo.width(), geo.height(), geo.x(), geo.y(),
                 self._chart._dbg_paint_slow_count, self._chart._dbg_paint_count,
             )
+            # 최대화 상태는 저장 스킵 — 복원 시 전체 화면 크기로 열리는 현상 방지
+            if self.isMaximized():
+                logger.debug(
+                    "[ChartDBG] closeEvent 최대화 상태 → geometry 저장 스킵 "
+                    "(이전 정상 크기 보존)"
+                )
+                super().closeEvent(event)
+                return
             # 화면 크기 초과 geometry는 저장하지 않음 (DPI 변경·모니터 제거 등 대비)
             scr = QApplication.screenAt(geo.center()) or QApplication.primaryScreen()
             avail = scr.availableGeometry()
@@ -8786,9 +8802,12 @@ class MinuteChartDialog(QDialog):
 
             avail = target_screen.availableGeometry()
             orig_w, orig_h = w, h
-            # 저장된 크기가 화면보다 크면 클램핑 (DPI 변경·모니터 교체 등 대응)
-            w = min(w, avail.width())
-            h = min(h, avail.height())
+            # 화면의 88% 이하로 제한 — 최대화 상태가 저장된 경우 적정 크기로 축소
+            # (w=avail.width() 등 전체화면 크기를 그대로 복원하면 "상당히 큰 사이즈" 현상 발생)
+            max_w = max(900,  round(avail.width()  * 0.88))
+            max_h = max(600,  round(avail.height() * 0.88))
+            w = min(w, max_w)
+            h = min(h, max_h)
             # 위치가 화면 밖으로 나가지 않도록 클램핑
             x = max(avail.left(), min(x, avail.right()  - w))
             y = max(avail.top(),  min(y, avail.bottom() - h))
@@ -10127,10 +10146,13 @@ class MireukDashboard(QMainWindow):
 
         Qt 부모-자식 소멸 경로에서는 자식 closeEvent가 호출되지 않으므로,
         메인 윈도우 closeEvent에서 차트 다이얼로그를 먼저 닫아 geometry를 저장한다.
+        단, 다이얼로그가 VISIBLE인 경우에만 닫기 — 숨겨진 상태면 이미 저장됨.
+        (비표시 상태에서 close() 호출 시 __init__의 초기 크기가 저장되는 버그 방지)
         """
         if hasattr(self, '_minute_chart_dialog'):
             try:
-                self._minute_chart_dialog.close()  # → MinuteChartDialog.closeEvent 발동 → geometry 저장
+                if self._minute_chart_dialog.isVisible():
+                    self._minute_chart_dialog.close()  # → MinuteChartDialog.closeEvent → geometry 저장
             except Exception:
                 pass
         super().closeEvent(event)
