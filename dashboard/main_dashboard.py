@@ -50,7 +50,7 @@ from config.settings import (
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
-from utils.db_utils import fetch_today_trades, fetchall, fetch_regime_today
+from utils.db_utils import fetch_today_trades, fetchall, fetch_regime_today, fetch_direction_today
 
 TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
 TP1_PROTECT_ATR_LOCK_MULT = 0.25
@@ -7523,6 +7523,19 @@ class MinuteChartCanvas(QWidget):
                 del self._regime_map[k]
         self.update()
 
+    def set_direction_at(self, ts_key: str, direction: int):
+        """매분 앙상블 방향 기록. 닫힌 봉에 방향예측 색상 바로 표시.
+
+        현재봉은 삼각형 마커가 예측을 표시하므로 _draw_direction_bar에서 제외.
+        """
+        if not ts_key:
+            return
+        self._dir_map[ts_key] = int(direction)
+        if len(self._dir_map) > 400:
+            for k in sorted(self._dir_map)[:50]:
+                del self._dir_map[k]
+        self.update()
+
     def update_tick(self, price: float, ts=None):
         price = float(price or 0.0)
         if price <= 0:
@@ -7721,6 +7734,7 @@ class MinuteChartCanvas(QWidget):
         index_map = {c["ts"]: i for i, c in enumerate(candles)}
         self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
         _t_candles = _t2.monotonic(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
+        _t_dir    = _t2.monotonic();  self._draw_direction_bar(painter, plot, candles, padded_count)
         _t_regime = _t2.monotonic();  self._draw_regime_bar(painter, plot, candles, padded_count)
         _t_markers = _t2.monotonic(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
         _t_axes = _t2.monotonic();   self._draw_axes(painter, plot, candles, lo, hi, padded_count)
@@ -7733,12 +7747,13 @@ class MinuteChartCanvas(QWidget):
             self._dbg_paint_slow_count += 1
             logger.warning(
                 "[ChartDBG] paintEvent slow %.1fms | size=%dx%d candles=%d "
-                "grid=%.1f spans=%.1f candles=%.1f regime=%.1f markers=%.1f axes=%.1f cross=%.1f | "
+                "grid=%.1f spans=%.1f candles=%.1f dir=%.1f regime=%.1f markers=%.1f axes=%.1f cross=%.1f | "
                 "slow_cnt=%d total_cnt=%d",
                 _elapsed_ms, self.width(), self.height(), len(candles),
                 (_t_spans  - _t_grid)    * 1000,
                 (_t_candles- _t_spans)   * 1000,
-                (_t_regime - _t_candles) * 1000,
+                (_t_dir    - _t_candles) * 1000,
+                (_t_regime - _t_dir)     * 1000,
                 (_t_markers- _t_regime)  * 1000,
                 (_t_axes   - _t_markers) * 1000,
                 (_t_cross  - _t_axes)    * 1000,
@@ -7919,6 +7934,39 @@ class MinuteChartCanvas(QWidget):
                 painter.drawRoundedRect(rect, corner_r, corner_r)
             else:
                 painter.drawRect(rect)
+
+    def _draw_direction_bar(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
+        """레짐 바 바로 위에 봉별 방향예측 색상 바 (높이 _DIR_BAR_H px) 표시.
+
+        현재봉(live_candle)은 건너뜀 — 삼각형 마커가 예측 표시 중이므로.
+        """
+        if not self._dir_map:
+            return
+        count   = max(padded_count, 1)
+        step    = plot.width() / count
+        bar_y   = plot.bottom() - _REGIME_BAR_H - _DIR_BAR_H  # 레짐 바 바로 위
+        live_ts = self._live_candle["ts"] if self._live_candle else None
+        painter.setPen(Qt.NoPen)
+        prev_dir   = None
+        for idx, candle in enumerate(candles):
+            if candle["ts"] == live_ts:   # 현재봉: 삼각형 마커로 예측 중 → 건너뜀
+                prev_dir = None
+                continue
+            direction = self._dir_map.get(candle["ts"])
+            if direction is None:
+                prev_dir = None
+                continue
+            color_hex = _DIR_BAR_COLOR.get(int(direction))
+            if not color_hex:
+                prev_dir = None
+                continue
+            if direction != prev_dir:
+                col = QColor(color_hex)
+                col.setAlpha(210)
+                painter.setBrush(col)
+                prev_dir = direction
+            x = plot.left() + step * idx
+            painter.drawRect(QRectF(x, bar_y, step - 1, _DIR_BAR_H))
 
     def _draw_regime_bar(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
         """X축 라인 바로 위에 봉별 레짐 색상 바 (높이 _REGIME_BAR_H px) 표시."""
@@ -8542,14 +8590,20 @@ class MinuteChartDialog(QDialog):
                     "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"]),
                 })
         self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers)
-        # 재시작 복원: 오늘 레짐 히스토리를 _regime_map에 채움
+        # 재시작 복원: 오늘 레짐·방향예측 히스토리를 _regime_map / _dir_map에 채움
         try:
             regime_map = fetch_regime_today(self._session_date)
             if regime_map:
                 self._chart._regime_map.update(regime_map)
-                self._chart.update()
         except Exception:
             pass
+        try:
+            dir_map = fetch_direction_today(self._session_date)
+            if dir_map:
+                self._chart._dir_map.update(dir_map)
+        except Exception:
+            pass
+        self._chart.update()
 
     def _start_reload_thread(self):
         import threading as _thr
@@ -8635,9 +8689,15 @@ class MinuteChartDialog(QDialog):
             regime_map = fetch_regime_today(self._session_date)
             if regime_map:
                 self._chart._regime_map.update(regime_map)
-                self._chart.update()
         except Exception as _e:
             logger.debug("[ChartDBG] _apply_reload_result regime 복원 실패: %s", _e)
+        try:
+            dir_map = fetch_direction_today(self._session_date)
+            if dir_map:
+                self._chart._dir_map.update(dir_map)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _apply_reload_result direction 복원 실패: %s", _e)
+        self._chart.update()
         # reset_session이 _active_trade를 초기화하므로, 외부 훅으로 재동기화
         if callable(getattr(self, '_post_reload_hook', None)):
             try:
@@ -8656,6 +8716,10 @@ class MinuteChartDialog(QDialog):
     def set_regime_at(self, ts_key: str, regime: str):
         """파이프라인 완료 후 봉 레짐 색상 업데이트."""
         self._chart.set_regime_at(ts_key, regime)
+
+    def set_direction_at(self, ts_key: str, direction: int):
+        """파이프라인 완료 후 봉 방향예측 색상 업데이트."""
+        self._chart.set_direction_at(ts_key, direction)
 
     def record_entry(self, direction: str, price: float, ts=None):
         self.maybe_roll_session()
@@ -8701,17 +8765,25 @@ class MinuteChartDialog(QDialog):
                 geo.width(), geo.height(), geo.x(), geo.y(),
                 self._chart._dbg_paint_slow_count, self._chart._dbg_paint_count,
             )
-            # 최대화 상태는 저장 스킵 — 복원 시 전체 화면 크기로 열리는 현상 방지
+            # ── geometry 저장 스킵 조건 ──────────────────────────────
+            # ① Qt maximize 상태
             if self.isMaximized():
+                logger.debug("[ChartDBG] closeEvent isMaximized → 저장 스킵")
+                super().closeEvent(event)
+                return
+            scr = QApplication.screenAt(geo.center()) or QApplication.primaryScreen()
+            avail = scr.availableGeometry()
+            # ② 화면의 90% 이상 — Windows Snap·수동 드래그 전체화면(isMaximized=False) 감지
+            if (geo.width()  >= round(avail.width()  * 0.90) or
+                    geo.height() >= round(avail.height() * 0.90)):
                 logger.debug(
-                    "[ChartDBG] closeEvent 최대화 상태 → geometry 저장 스킵 "
-                    "(이전 정상 크기 보존)"
+                    "[ChartDBG] closeEvent 화면 90%%+ (%dx%d / avail %dx%d) "
+                    "→ 사실상 최대화, 저장 스킵",
+                    geo.width(), geo.height(), avail.width(), avail.height(),
                 )
                 super().closeEvent(event)
                 return
-            # 화면 크기 초과 geometry는 저장하지 않음 (DPI 변경·모니터 제거 등 대비)
-            scr = QApplication.screenAt(geo.center()) or QApplication.primaryScreen()
-            avail = scr.availableGeometry()
+            # ③ 화면 크기 초과 geometry (DPI 변경·모니터 제거 등 대비)
             if geo.width() > avail.width() or geo.height() > avail.height():
                 logger.warning(
                     "[ChartDBG] closeEvent geometry 초과 — 저장 스킵 "
@@ -8802,12 +8874,17 @@ class MinuteChartDialog(QDialog):
 
             avail = target_screen.availableGeometry()
             orig_w, orig_h = w, h
-            # 화면의 88% 이하로 제한 — 최대화 상태가 저장된 경우 적정 크기로 축소
-            # (w=avail.width() 등 전체화면 크기를 그대로 복원하면 "상당히 큰 사이즈" 현상 발생)
-            max_w = max(900,  round(avail.width()  * 0.88))
-            max_h = max(600,  round(avail.height() * 0.88))
-            w = min(w, max_w)
-            h = min(h, max_h)
+            # 저장값이 화면의 90% 이상이면 최대화 잔재로 판단 → _center_on_second_screen fallback
+            # (88% % 캡은 2628 등 여전히 큰 값을 통과시키므로 threshold 방식으로 교체)
+            if (w >= round(avail.width()  * 0.90) or
+                    h >= round(avail.height() * 0.90)):
+                logger.warning(
+                    "[ChartDBG] restore_saved_geometry: 저장 크기(%dx%d)가 화면의 90%%+ "
+                    "(avail=%dx%d) → 최대화 잔재, 제2모니터 중앙",
+                    w, h, avail.width(), avail.height(),
+                )
+                self._center_on_second_screen()
+                return
             # 위치가 화면 밖으로 나가지 않도록 클램핑
             x = max(avail.left(), min(x, avail.right()  - w))
             y = max(avail.top(),  min(y, avail.bottom() - h))
@@ -9697,6 +9774,10 @@ class MireukDashboard(QMainWindow):
     def minute_chart_set_regime(self, ts_key: str, regime: str):
         """파이프라인 완료 후 봉 레짐 색상 업데이트."""
         self._minute_chart_dialog.set_regime_at(ts_key, regime)
+
+    def minute_chart_set_direction(self, ts_key: str, direction: int):
+        """파이프라인 완료 후 봉 방향예측 색상 업데이트."""
+        self._minute_chart_dialog.set_direction_at(ts_key, direction)
 
     def minute_chart_record_entry(self, direction: str, price: float, ts=None):
         self._minute_chart_dialog.record_entry(direction, price, ts=ts)
