@@ -2938,6 +2938,25 @@ class TradingSystem:
                         )
             except Exception as _pre_ss_e:
                 logger.warning("[PreRetrain] eod_retrain_ok_date 복원 실패 (무해): %s", _pre_ss_e)
+        # [Fallback] session_state 미기록 시 마커 파일 직접 확인
+        # 원인: daily_close(15:40) 시점에 retrain_eod.py 미완료 → 마커 없음 → session_state 저장 생략
+        #       retrain_eod.py가 15:40 이후 완료(예: 15:57)되면 다음날까지 eod_retrain_ok_date 공백
+        if not getattr(self, "_eod_retrain_ok", False):
+            try:
+                _mdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+                for _d in range(1, 6):
+                    _prev = datetime.date.today() - datetime.timedelta(days=_d)
+                    _mf = os.path.join(_mdir, f"eod_retrain_done_{_prev.isoformat()}.txt")
+                    if os.path.exists(_mf):
+                        self._eod_retrain_ok = True
+                        log_manager.system(
+                            f"[PreRetrain] EOD 마커 파일 직접 확인 ({_d}일 전: {_prev}) "
+                            f"→ PreRetrain 스킵 (session_state 미기록 보완)",
+                            "INFO",
+                        )
+                        break
+            except Exception as _mf_e:
+                logger.warning("[PreRetrain] 마커 파일 직접 확인 실패 (무해): %s", _mf_e)
         if (
             getattr(self, "_warmup_retrain_pending", False)
             and not getattr(self, "_gbm_retrain_running", False)
