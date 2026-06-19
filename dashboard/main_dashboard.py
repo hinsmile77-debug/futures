@@ -4328,7 +4328,7 @@ class EntryPanel(QWidget):
                     f"background:{C['bg3']};color:{C['text2']};"
                     f"border-radius:3px;font-size:{S.f(10)}px;font-weight:bold;padding:1px 4px;"
                 )
-                vl.setText("——")
+                vl.setText(_cv.get(attr, "——"))
                 vl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
             elif val:
                 icon.setText("V")
@@ -8533,7 +8533,16 @@ class MinuteChartDialog(QDialog):
 
     def _start_reload_thread(self):
         import threading as _thr
-        _thr.Thread(target=self._reload_today_bg, daemon=True).start()
+        if getattr(self, '_reload_running', False):
+            logger.debug("[ChartDBG] _start_reload_thread: 이미 실행 중 — 중복 방지")
+            return
+        self._reload_running = True
+        def _run():
+            try:
+                self._reload_today_bg()
+            finally:
+                self._reload_running = False
+        _thr.Thread(target=_run, daemon=True).start()
 
     def maybe_roll_session(self):
         today = datetime.now().date().isoformat()
@@ -8594,10 +8603,21 @@ class MinuteChartDialog(QDialog):
                     "— DB 락 경합 가능 (raw_candles=%.1fms trades=%.1fms)",
                     _total_ms, _candle_ms, _trade_ms,
                 )
-            # Qt UI 업데이트는 메인 스레드에서 실행
-            _QTimer.singleShot(0, lambda: self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers))
+            # Qt UI 업데이트는 메인 스레드에서 실행 (regime 복원 포함)
+            _QTimer.singleShot(0, lambda: self._apply_reload_result(candles, completed_trades, exit_markers))
         except Exception as _e:
             logger.warning("[ChartDBG] _reload_today_bg 예외: %s", _e)
+
+    def _apply_reload_result(self, candles, completed_trades, exit_markers):
+        """메인 스레드에서 reset_session + regime_map 복원까지 원자적으로 처리."""
+        self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers)
+        try:
+            regime_map = fetch_regime_today(self._session_date)
+            if regime_map:
+                self._chart._regime_map.update(regime_map)
+                self._chart.update()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _apply_reload_result regime 복원 실패: %s", _e)
 
     def update_tick(self, price: float, ts=None):
         # maybe_roll_session 제거: 매 틱마다 날짜 비교 불필요 — on_candle_closed에서만 체크 (194차)
@@ -9621,6 +9641,7 @@ class MireukDashboard(QMainWindow):
         if self._minute_chart_dialog.isVisible():
             self._minute_chart_dialog.close()
             return
+        self._minute_chart_dialog._start_reload_thread()  # 재기동 시 DB 새로고침
         self._minute_chart_dialog.show()
         self._minute_chart_dialog.raise_()
         self._minute_chart_dialog.activateWindow()
