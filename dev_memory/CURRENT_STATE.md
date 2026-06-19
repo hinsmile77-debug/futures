@@ -1,7 +1,91 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-19 (206차 세션) — poc_distance z폭발 근본 수정 (VP 버퍼 DB 복원)
+> 마지막 업데이트: 2026-06-19 (208차 세션) — 좌측 패널 멀티 호라이즌 예측 카드 제거
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-19 (208차 — 멀티 호라이즌 예측 카드 제거)
+
+### 변경 내용
+
+`PredictionPanel._build()` (`dashboard/main_dashboard.py`)
+
+| 항목 | 처리 |
+|---|---|
+| "멀티 호라이즌 예측 ( 1·3·5·10·15·30분 )" 타이틀 | 제거 |
+| 6개 예측 카드 프레임 (▲/▼/%) | 레이아웃 미표시 (update_data 로직 보존용 참조는 유지) |
+| 6개 호라이즌 On/Off 체크박스 | 유지 — cb_wrap에 이름 레이블(1분·3분…) 추가, hgrid row 0 배치 |
+| 모델 상태 행 (_model_row) | 레이아웃에서 제거 (위젯 객체 보존 → setVisible 호출 오류 없음) |
+
+**커밋**: 208차 (3c7af18)
+
+---
+
+## 2026-06-19 (207차 — 1분봉 차트 복원 4종 수정)
+
+### 문제 배경
+
+14:29 장중 재시동 후 두 가지 현상 확인:
+1. 1분봉 차트(Ctrl+Shift+X) 재열기 시 당일 봉데이터·거래 이력 표시 안 됨
+2. 윈도우 위치·크기 미복원 (저장된 geometry 무시됨)
+
+### 근본 원인 분석
+
+```
+[데이터 미복원 — 주원인]
+_reload_today_bg()  ← threading.Thread (Qt 이벤트 루프 없음)
+  └─ QTimer.singleShot(0, lambda: _apply_reload_result(...))
+       └─ 타이머가 호출 스레드(배경 스레드)에 귀속됨
+       └─ Qt 이벤트 루프 없는 스레드 → 타이머 영원히 발동 안 됨
+       └─ _apply_reload_result() 미호출 → 차트 빈 화면
+
+[윈도우 위치 미저장 — 주원인]
+MireukDashboard.closeEvent() → 존재 안 함
+  → 메인 프로그램 종료 시 Qt 부모-자식 소멸 경로에서
+     MinuteChartDialog.closeEvent() 미호출
+  → chart_dialog_geometry → ui_prefs.json 미저장
+  → 다음 기동 시 저장값 없음 → 제2모니터 중앙 배치
+
+[자동팝업 geometry 무시]
+toggle_minute_chart_dialog(auto_popup=True)
+  → _center_on_second_screen() 고정 호출 (restore_saved_geometry 미사용)
+```
+
+### 수정 내용 (207차)
+
+**`dashboard/main_dashboard.py`**
+
+| 항목 | 수정 |
+|---|---|
+| `_sig_reload_done = pyqtSignal(list, list, list)` 클래스 속성 추가 | cross-thread 안전 전달 |
+| `__init__`에서 `_sig_reload_done.connect(_apply_reload_result)` | 시그널-슬롯 연결 |
+| `_reload_today_bg`: `QTimer.singleShot(lambda)` → `_sig_reload_done.emit()` | 핵심 수정 |
+| `_reload_today_bg`: 불필요한 `from PyQt5.QtCore import QTimer` 제거 | 정리 |
+| `_apply_reload_result`: `reset_session` + `_regime_map` 복원 + `_post_reload_hook` 원자 처리 | 신규 |
+| `_start_reload_thread`: `_reload_running` 플래그로 동시 실행 방지 | 신규 |
+| `toggle_minute_chart_dialog`: 재열기 시 `_start_reload_thread()` 호출 추가 | 신규 |
+| `toggle_minute_chart_dialog`: `auto_popup` 분기 제거 → 항상 `restore_saved_geometry()` | 수정 |
+| `MireukDashboard.closeEvent()` 신규 추가 | geometry 저장 보장 |
+| `_post_reload_hook` 필드 + `set_minute_chart_post_reload_hook` 어댑터 | active position 재동기화 훅 |
+
+**`main.py`**
+
+| 항목 | 수정 |
+|---|---|
+| `_chart_reload_hook` 등록 (`set_minute_chart_post_reload_hook`) | 재시동 시 active position 마커 복원 |
+
+### 수정 전후 복원 현황
+
+| 항목 | 수정 전 | 수정 후 |
+|---|---|---|
+| 당일 분봉 데이터 | ❌ QTimer.singleShot 미발동 | ✅ pyqtSignal emit |
+| 완료 거래 이력 | ❌ 동일 이유 | ✅ |
+| 레짐 색상 바 | ❌ reset 후 미복원 | ✅ _apply_reload_result |
+| 활성 포지션 마커 | ❌ reset_session 경쟁 조건 | ✅ _chart_reload_hook |
+| 윈도우 위치·크기 (수동) | ✅ restore_saved_geometry | ✅ 동일 |
+| 윈도우 위치·크기 (자동팝업) | ❌ 항상 제2모니터 중앙 | ✅ restore_saved_geometry |
+| 윈도우 위치 저장 (메인 종료) | ❌ closeEvent 미호출 | ✅ MireukDashboard.closeEvent |
 
 ---
 

@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-06-19 (208차 — 예측 카드 제거)
+
+- [ ] **UI 확인** — 앱 재시동 후 좌측 패널에 호라이즌 이름 레이블 + On/Off 체크박스만 표시되는지 확인
+- [ ] **On/Off 동작** — 체크박스 토글 시 앙상블 집계 필터가 정상 적용되는지 확인 (_hz_enabled 참조 경로)
+
+---
+
+## 2026-06-19 (207차 — 1분봉 차트 복원 4종 수정)
+
+### 다음 장중 재시동 시 즉시 확인 [P0]
+
+- [ ] **데이터 복원** — Ctrl+Shift+X 열기 후 당일 분봉 차트(09:00~현재)와 거래 이력 표시 확인
+- [ ] **[ChartDBG] 로그** — `_reload_today_bg 완료 | total=Xms raw_candles=Y봉 trades=Z건` 로그 출현 확인 (X ms 이내에 완료, Y봉 > 0)
+- [ ] **레짐 색상** — 봉 색상이 RISK_ON(녹)/NEUTRAL(회)/RISK_OFF(적)로 정상 표시되는지 확인
+- [ ] **활성 포지션 마커** — 재시동 시 포지션 보유 중이면 차트에 진입 마커 표시 확인
+
+### 다음 장중 Ctrl+Shift+X 토글 시 확인 [P0]
+
+- [ ] **닫기 후 재열기** — Ctrl+Shift+X로 닫고 다시 열 때 데이터·거래 이력 유지 확인
+- [ ] **윈도우 위치 복원** — 재열기 시 이전 위치/크기 그대로 복원 확인
+- [ ] **자동팝업 위치** — 자동팝업 모드에서도 마지막 저장 위치로 복원 확인 (과거에는 제2모니터 중앙 고정이었음)
+
+### 메인 프로그램 정상 종료 시 확인 [P1]
+
+- [ ] **geometry 저장** — 차트 열린 상태로 메인 종료 후 `data/ui_prefs.json`에 `chart_dialog_geometry` 키 존재 확인
+- [ ] **다음 기동 시 위치 복원** — 저장된 geometry로 차트가 열리는지 확인
+
+### 잠재 리스크 [P2]
+
+- [ ] **pyqtSignal emit from thread** — Python 3.7 32-bit에서 `pyqtSignal.emit(list, list, list)` cross-thread 동작 검증. 만약 크래시 발생 시 대안: `QMetaObject.invokeMethod` 또는 Queue + QTimer polling
+- [ ] **_reload_running 초기화** — `_reload_running`이 `__init__`에서 초기화되지 않고 `getattr(self, '_reload_running', False)`로 처리됨. 이 패턴은 Python에서 안전하지만, 명시적 초기화가 더 명확함 (차후 리팩토링 시 정리)
+- [ ] **이중 reload** — 기동 시 `singleShot(0, _start_reload_thread)` + `toggle_minute_chart_dialog`의 `_start_reload_thread()` 두 번 호출됨. `_reload_running` 플래그로 중복 방지되나, 첫 번째 완료 후 두 번째가 시작될 수 있음 (정확성 무해, 이중 DB 쿼리만 발생)
+
+---
+
 ## 2026-06-19 (206차 — poc_distance VP 버퍼 DB 복원)
 
 ### 다음 재시작 시 즉시 확인 [P0]

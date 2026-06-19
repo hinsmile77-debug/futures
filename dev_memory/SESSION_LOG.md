@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-06-19 (208차 — 좌측 패널 멀티 호라이즌 예측 카드 제거)
+
+**Work**: 좌측 패널에서 6개 호라이즌 예측 카드(▲/▼/%) 제거, On/Off 체크박스만 유지.
+
+**변경**:
+- `hz_title` 레이아웃에서 제거
+- 6개 QFrame 예측 카드 → hgrid 미표시 (update_data 내부 참조만 보존)
+- `cb_wrap`: HBox→VBox, 이름 레이블 추가, row 0으로 이동
+- `_model_row` 레이아웃에서 제거 (위젯 객체 보존)
+
+**커밋**: 208차 (3c7af18)
+
+---
+
+## 2026-06-19 (207차 — 1분봉 차트 닫기·재열기·재시동 복원 4종 수정)
+
+**Work**: 14:29 장중 재시동 후 차트 데이터 미복원 + 윈도우 위치 미복원 딥다이브 → 근본 원인 2개 확정 → 전체 복원 흐름 재설계.
+
+**근본 원인**:
+1. **데이터 미복원**: `_reload_today_bg()`(threading.Thread)에서 `QTimer.singleShot(lambda)`가 Qt 이벤트 루프 없는 배경 스레드에 귀속 → 영원히 발동 안 됨 → `_apply_reload_result()` 미호출 → 빈 차트
+2. **geometry 미저장**: `MireukDashboard.closeEvent()` 미존재 → 메인 종료 시 Qt 부모-자식 소멸 경로로 `MinuteChartDialog.closeEvent()` 미호출 → `chart_dialog_geometry` 미저장
+3. **자동팝업 geometry 무시**: `auto_popup=True` 경로가 `_center_on_second_screen()` 고정이었음
+
+**수정 내용**:
+- `pyqtSignal(list, list, list) _sig_reload_done` 클래스 속성 추가 → cross-thread 안전 전달
+- `_reload_today_bg`: `QTimer.singleShot(lambda)` 완전 제거 → `_sig_reload_done.emit()` 교체
+- `_apply_reload_result()`: `reset_session` + `_regime_map` 복원 + `_post_reload_hook` 원자 처리
+- `_start_reload_thread()`: `_reload_running` 플래그로 동시 실행 방지
+- `toggle_minute_chart_dialog()`: 재열기 시 `_start_reload_thread()` 추가 + 항상 `restore_saved_geometry()` 사용
+- `MireukDashboard.closeEvent()` 신규 추가: `_minute_chart_dialog.close()` 명시 호출
+- `_post_reload_hook` + `set_minute_chart_post_reload_hook` 어댑터 → 재시동 active position 마커 복원
+- `main.py`: `_chart_reload_hook` 등록
+
+**커밋**: 207차 (240e9c6)
+
+---
+
 ## 2026-06-19 (206차 — poc_distance z폭발 근본 수정: VP 버퍼 DB 복원)
 
 **Work**: 장중 재시작 후 poc_distance z폭발 원인 딥다이브 → VP 버퍼 cold-start 구조 확정 → DB 복원으로 근본 수정.
