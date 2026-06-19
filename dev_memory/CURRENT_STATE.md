@@ -1,7 +1,38 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-19 (208차 세션) — 좌측 패널 멀티 호라이즌 예측 카드 제거
+> 마지막 업데이트: 2026-06-19 (210차 세션) — 1분봉 차트 X축 방향예측·레짐 레인 구현
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-19 (210차 — X축 방향예측·레짐 레인)
+
+### 변경 내용
+
+`MinuteChartCanvas` (좌측패널 봉차트 `main_dashboard.py`) X축 위 두 개의 색상 레인 추가.
+
+| 레인 | 위치 | 색상 | 현재봉 |
+|---|---|---|---|
+| 방향예측 | 레짐 바 위 4px | UP=녹(`#3fb950`) / DOWN=적(`#f85149`) / FLAT=회(`#444c56`) | 빈칸 (삼각형 마커가 표시 중) |
+| 레짐 | X축 직상 4px (기존) | 추세장=녹 / 횡보장=황 / 급변장=적 / 혼합=청보라 / 탈진=보라 | 빈칸 |
+
+**방향예측 규칙**: 매분 STEP 6 앙상블 방향 확정 즉시 `_dir_map[ts] = direction` 기록 → 닫힌 봉에 색상 표시.
+
+### 변경 파일
+
+| 파일 | 변경 |
+|---|---|
+| `dashboard/main_dashboard.py` | `_dir_map`, `set_direction_at`, `_draw_direction_bar` 추가; 세션 복원 2곳에 `_dir_map` 복원; `minute_chart_set_direction` 퍼블릭 메서드 |
+| `utils/db_utils.py` | `fetch_direction_today()` 추가 — `ensemble_decisions → {ts: int}` |
+| `main.py` | STEP6 방향 확정 직후 `self.dashboard.minute_chart_set_direction(ts, direction)` 호출 |
+| `dashboard/panels/candle_chart_dialog.py` | 팝업 봉차트에도 동일 인디케이터 (3-axes 레이아웃, `_fetch_candle_decisions`, 현재봉 빈칸) |
+
+### 재시작 복원
+
+`ensemble_decisions`에 매분 자동 기록 → `fetch_direction_today()` 로 당일 이력 전체 복원.  
+레짐은 기존대로 `regime_history` → `fetch_regime_today()` 복원.
+
+### 커밋: 210차 (2e9b9f0)
 
 ---
 
@@ -19,6 +50,42 @@
 | 모델 상태 행 (_model_row) | 레이아웃에서 제거 (위젯 객체 보존 → setVisible 호출 오류 없음) |
 
 **커밋**: 208차 (3c7af18)
+
+---
+
+## 2026-06-19 (208차-추가 — 1분봉 차트 자동팝업 창 크기 복원 버그 3종 수정)
+
+### 문제 배경
+
+프로그램 시작 + 자동팝업 설정 시:
+- 위치: 차트 종료 시 위치로 복원됨 ✓
+- 크기: **차트 종료 크기가 아닌 "상당히 큰 사이즈"** ✗ (w=2880 = 제2모니터 전체 폭)
+
+### 근본 원인
+
+```
+ui_prefs.json에 저장된 chart_dialog_geometry: {"x":3513, "y":294, "w":2880, "h":1154}
+w=2880 = 제2모니터 전체 폭 → 이전 세션에서 최대화 상태로 저장된 geometry
+
+restore_saved_geometry():
+  w = min(2880, avail.width()=2880)  → 클램핑 없음 (화면 = 저장값 동일)
+  bounds check 통과 → setGeometry(3513, 294, 2880, 1154) 그대로 적용
+  → 위치 맞음 / 크기 전체화면 폭 = "상당히 큰 사이즈"
+```
+
+부가: `MireukDashboard.closeEvent`가 숨겨진 다이얼로그에도 `close()` 호출
+  → `__init__` 초기 크기(S.p(1180)×S.p(700))가 저장되는 경우 있음
+
+### 수정 내용
+
+| 파일 | 수정 |
+|---|---|
+| `MinuteChartDialog.closeEvent` | `isMaximized()` 체크 → 최대화 상태면 저장 스킵 |
+| `restore_saved_geometry` | 화면의 88% 상한 추가 (`max_w`, `max_h`) → 최대화 크기 복원 방지 |
+| `MireukDashboard.closeEvent` | `isVisible()` 체크 → 숨긴 상태에서 close() 호출 방지 |
+| `data/ui_prefs.json` | `chart_dialog_geometry` 초기화 → 다음 기동 시 `_center_on_second_screen` fallback |
+
+**커밋**: 208차-추가 (236ac7f)
 
 ---
 

@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-19 (210차 — 1분봉 차트 X축 방향예측·레짐 레인 구현)
+
+**Work**: `MinuteChartCanvas` X축 위에 방향예측 레인(UP/DOWN/FLAT, 현재봉 빈칸)과 레짐 레인(추세/횡보/급변/혼합/탈진) 두 개의 색상 바 추가. 팝업 봉차트(`CandleChartDialog`)에도 동일 구현.
+
+**변경**:
+- `main_dashboard.py`: `_dir_map`, `set_direction_at()`, `_draw_direction_bar()` 추가; 세션 복원 2곳에 `_dir_map` 복원; `minute_chart_set_direction()` 퍼블릭 메서드
+- `utils/db_utils.py`: `fetch_direction_today()` — `ensemble_decisions → {ts: int}`
+- `main.py`: STEP6 앙상블 방향 확정 직후 `minute_chart_set_direction(ts, direction)` 호출
+- `candle_chart_dialog.py`: 3-axes matplotlib 레이아웃, `_fetch_candle_decisions()`, 시그널 4인자
+
+**재시작 복원**: `ensemble_decisions` 테이블에서 당일 전체 복원 (`fetch_direction_today`)
+
+**커밋**: 210차 (2e9b9f0)
+
+---
+
 ## 2026-06-19 (208차 — 좌측 패널 멀티 호라이즌 예측 카드 제거)
 
 **Work**: 좌측 패널에서 6개 호라이즌 예측 카드(▲/▼/%) 제거, On/Off 체크박스만 유지.
