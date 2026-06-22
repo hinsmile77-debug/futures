@@ -2769,6 +2769,19 @@ class TradingSystem:
             log_manager.learning(
                 "[GBM] 재학습 완료 → BiasReset·SGD 상태 초기화 (새 GBM 기준 재평가 시작)"
             )
+
+            # ── ConstOut 원인 CB③ HALT 해제 시도 ──────────────────────────
+            # 스케일러 재적합(scaler refit)만으로는 GBM 트리 구조가 미변경이라 ConstOut 재발 가능.
+            # GBM 재학습까지 완료된 시점이 원인 완전 해소 시점이므로 여기서 해제한다.
+            if self.circuit_breaker.lift_cb3_halt():
+                log_manager.system(
+                    "[CB③→RESUME] ConstOut 회복 + GBM 재학습 완료 → HALT 해제 — 거래 재개",
+                    "INFO",
+                )
+                notify(
+                    "CB③ HALT 해제 — 거래 재개 (ConstOut 회복 + GBM 재학습 완료)",
+                    "INFO",
+                )
         else:
             log_manager.learning(f"[GBM] {prefix}재학습 건너뜀: {result.get('error', '')}")
             self.dashboard.set_model_status("대기")

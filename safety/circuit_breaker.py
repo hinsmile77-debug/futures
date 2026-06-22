@@ -107,6 +107,11 @@ class CircuitBreaker:
         # True 동안 PAUSE 기준을 CB_PIPE_PAUSE_MS × 2 로 완화해 오발동 방지.
         self._gbm_retrain_active: bool = False
 
+        # HALT 원인 코드 — 선택적 해제 판단용
+        # "cb2": 연속 손절 (전략 실패 → 당일 해제 불가)
+        # "cb3": 30분 정확도 저하 (데이터 품질 문제 → ConstOut 회복 시 해제 가능)
+        self._halt_cause: str = ""
+
     # ── 상태 조회 ──────────────────────────────────────────────
     @property
     def state(self) -> str:
@@ -198,7 +203,7 @@ class CircuitBreaker:
         self._consec_stops += 1
         logger.warning(f"[CB] 연속 손절 {self._consec_stops}회")
         if self._consec_stops >= CB_CONSEC_STOP_LIMIT:
-            self._trigger_halt(f"연속 손절 {self._consec_stops}회 — 당일 정지")
+            self._trigger_halt(f"연속 손절 {self._consec_stops}회 — 당일 정지", cause="cb2")
 
     def record_win(self):
         self._consec_stops = 0   # 수익 시 카운터 초기화
@@ -318,7 +323,8 @@ class CircuitBreaker:
                         streak_note += f" | 중간신뢰도 오류 {self._mid_conf_wrong_streak}연속"
                     self._trigger_halt(
                         f"30분 정확도 {acc:.1%} < {effective_min:.0%} "
-                        f"(2회 연속 미달{streak_note}) n={_n_samples}"
+                        f"(2회 연속 미달{streak_note}) n={_n_samples}",
+                        cause="cb3",
                     )
                 else:
                     msg = (
@@ -475,10 +481,11 @@ class CircuitBreaker:
         log_manager.system(msg, "WARNING")
         notify_circuit_breaker(reason, f"{minutes}분 진입 정지")
 
-    def _trigger_halt(self, reason: str):
+    def _trigger_halt(self, reason: str, cause: str = ""):
         # HALTED 상태에서는 재발동 금지 (중복 슬랙 전송 방지)
         if self._state == CB_STATE_HALTED:
             return
+        self._halt_cause = cause
         self._state = CB_STATE_HALTED
         self._pause_until = None
         # ── [3순위] 재시작 루프 브레이커 카운터 증가 ─────────────
@@ -510,6 +517,51 @@ class CircuitBreaker:
         logger.info(msg)
         log_manager.system(msg, "INFO")
 
+    def lift_cb3_halt(self) -> bool:
+        """CB③(정확도 저하)로 발동된 HALT를 원인 해소 후 해제.
+
+        GBM 재학습 완료 시점에 ConstOut이 회복됐다고 판단하고 호출한다.
+
+        해제 조건:
+          - state == HALTED
+          - _halt_cause == "cb3"  (CB②·기타 원인 HALT는 해제 불가)
+          - daily_halt_count < CB_DAILY_HALT_FULL_BLOCK  (3회 이상이면 완전 관망 유지)
+
+        반환값: True = HALT 해제됨 / False = 조건 미충족으로 해제 안 됨
+        """
+        if self._state != CB_STATE_HALTED:
+            return False
+        if self._halt_cause != "cb3":
+            msg = (
+                f"[CB③] HALT 해제 불가 — 원인이 CB③ 아님 (cause={self._halt_cause!r})"
+            )
+            logger.warning(msg)
+            log_manager.system(msg, "WARNING")
+            return False
+        if self._daily_halt_count >= CB_DAILY_HALT_FULL_BLOCK:
+            msg = (
+                f"[CB③] HALT 해제 불가 — 당일 HALT {self._daily_halt_count}회 "
+                f"(≥{CB_DAILY_HALT_FULL_BLOCK}) → 완전 관망 정책 유지"
+            )
+            logger.warning(msg)
+            log_manager.system(msg, "WARNING")
+            return False
+        self._state = CB_STATE_NORMAL
+        self._halt_cause = ""
+        self._cb3_ok_streak = 0
+        size_note = f"×{self.restart_size_mult:.1f}" if self.restart_size_mult < 1.0 else "풀사이즈"
+        msg = (
+            f"[CB③] ConstOut 회복 — HALT 해제 (당일 HALT {self._daily_halt_count}회, "
+            f"진입 사이즈 {size_note})"
+        )
+        logger.info(msg)
+        log_manager.system(msg, "INFO")
+        notify_circuit_breaker(
+            "ConstOut 회복 후 CB③ HALT 해제",
+            f"거래 재개 (진입 사이즈 {size_note})",
+        )
+        return True
+
     def reset_daily(self):
         """장 시작 시 일간 리셋"""
         self._state = CB_STATE_NORMAL
@@ -527,6 +579,7 @@ class CircuitBreaker:
         self._acc30m_stage = "NORMAL"   # [P4]
         self._horizon_fl_bias_streak.clear()   # [P5]
         self._horizon_fl_bias_warned.clear()   # [P5]
+        self._halt_cause = ""
         logger.info("[CB] 일간 리셋 완료")
         log_manager.system("[CB] 일간 리셋 완료", "INFO")
 
