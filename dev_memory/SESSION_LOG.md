@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-06-22 (215차 — minute_chart 예외 가드 + 좌측패널 카드 업데이트 불가 근인 확인)
+
+**Work**: 좌측패널 `DirectionIndicatorWidget`/`ConfTrendWidget` 종일 업데이트 안 되는 문제 로그 분석.
+
+**원인 확정**:
+- 1차 세션(09:00~10:32): `AttributeError: 'DashboardAdapter' has no attribute 'minute_chart_set_direction'` 매분 → STEP9 미도달 → DB 0건 → 위젯 데이터 없음
+- 두 위젯 자체는 정상 (DB에 데이터 있으면 정상 갱신)
+
+**수정**: `run_minute_pipeline` 내 `minute_chart_set_regime`/`set_direction` 호출을 try-except로 감쌈 (차트 갱신 실패가 파이프라인 차단 방지)
+
+**커밋**: `1b2bbcd` (215차)
+
+---
+
 ## 2026-06-22 (214차 — ERR-FATAL 수정 + 프리장 Phase 재설계 + RT 08:45 선행구독)
 
 **Work**: 6/22 장초반 로그 분석 → ERR-FATAL 매분 반복(자동진입 영구 차단) 수정 + 201차 프리장 Phase 실측 결과 반영 재설계.

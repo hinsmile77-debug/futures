@@ -1,7 +1,48 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-22 (214차 세션) — ERR-FATAL 수정 + 프리장 Phase 재설계 + RT 08:45 선행구독
+> 마지막 업데이트: 2026-06-22 (215차 세션) — minute_chart 호출 예외 가드 + 좌측패널 DB 미저장 근인 확인
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-22 (215차 — minute_chart 예외 가드 + 좌측패널 카드 업데이트 불가 근인 확인)
+
+### 문제 현상
+
+좌측패널 두 카드가 종일 업데이트 안 됨:
+- `DirectionIndicatorWidget` (1m~30m 방향, 합의) → "대기" / "—"
+- `ConfTrendWidget` (금일 conf → 진입단계 추적) → 데이터 없음
+
+### 근본 원인 (로그 분석으로 확정)
+
+**1차 세션(09:00~10:32)**에 DB 저장 0건:
+```
+[ERR-FATAL] minute_pipeline: 'DashboardAdapter' object has no attribute 'minute_chart_set_direction'
+```
+214차 fix가 코드에 적용됐으나 프로그램은 수정 前 코드로 기동 중 → 매분 AttributeError
+→ `run_minute_pipeline`이 라인 4399에서 예외 → **STEP9(`save_step9_batch`) 미도달**
+→ `ensemble_decisions` 0건, `predictions` 0건
+→ 두 위젯 모두 DB 쿼리 결과 없음 → 정상적으로 "—" 표시
+
+10:32 재시작 후 → 45건 정상 저장 / 두 위젯 정상 복구.
+
+### 수정 내용 (215차)
+
+**방어 try-except 추가** — 차트 갱신 실패가 파이프라인 크리티컬 경로 차단 방지
+
+| 위치 | 대상 |
+|---|---|
+| `main.py` ~3896 | `dashboard.minute_chart_set_regime(ts, regime)` |
+| `main.py` ~4402 | `dashboard.minute_chart_set_direction(ts, direction)` |
+
+기존 `minute_chart_candle_closed`(라인 2651)와 동일 패턴. DEBUG 로그 출력.
+
+**커밋**: `1b2bbcd` (215차)
+
+### 위젯 코드 상태
+
+`DirectionIndicatorWidget`, `ConfTrendWidget` 자체 코드는 정상.
+DB에 데이터가 있으면 각각 10초/30초 타이머로 자동 갱신됨.
 
 ---
 
