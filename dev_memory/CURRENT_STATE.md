@@ -1,7 +1,52 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-22 (217차 세션) — 호라이즌 자격 조건 수정 + GDI 크래시 방지 + 런처 자동 재시작
+> 마지막 업데이트: 2026-06-22 (218차 세션) — DriftRetrain 32-bit OOM 수정 + 재시도 쿨다운
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-22 (218차 — DriftRetrain 32-bit OOM 수정 + 재시도 쿨다운)
+
+### 문제 현상
+
+```
+[13:50~14:07] [DriftRetrain] GBM 경량 재학습 시작 (acc30m=0.0% n=15~30 경과=4159~4174분)
+→ 매분 재트리거, 17회 연속. _last_retrain 갱신 안 됨 (경과가 1분씩 증가)
+[14:07] [CB] 당일 시스템 정지 | 30분 정확도 0.0%
+```
+
+- 30m GBM 모델 UP편향 80% 고착 (acc30m=10%→0.0%)
+- DriftRetrain이 매분 시작되지만 즉시 실패 → `_last_retrain` 미갱신 → 무한 루프
+
+### 근본 원인
+
+**[P0] 32-bit Python OOM (메모리 단편화)**
+
+```
+[WARNING] [Retrain] DB 로드 오류:
+  Unable to allocate 14.8 MiB for an array with shape (39922, 97) and data type float32
+[WARNING] [Retrain] 학습 데이터 부족 (0 < 15000)
+```
+
+- `_load_from_db()`가 39,880행을 dict 리스트로 정상 로드 후 `np.array(..., float32)` 변환 시 OOM
+- 기존 `retrain_now()` 내 20,000행 슬라이싱은 **np.array 생성 이후** → 이미 늦음
+- 변환 실패 → `X=None` → `"학습 데이터 부족"` 반환 → `_last_retrain` 미갱신
+- 11:22부터 14:07까지 165회 이상 동일 패턴 반복
+
+**[P2] 실패 쿨다운 부재**
+- `_last_retrain` 미갱신 시 `_dr_mins`가 계속 증가 → 다음 분 조건 즉시 재충족
+
+### 수정 내용 (218차)
+
+| 파일 | 변경 |
+|---|---|
+| `learning/batch_retrainer.py` | `_load_from_db(intraday=False)` 파라미터 추가, CUSUM 후 np.array 전 20,000행 사전 제한 |
+| `main.py` | `_drift_retrain_last_attempt` 플래그 추가, 조건A/B에 5분 쿨다운 체크 |
+
+**P0 효과**: 39,880행→20,000행 사전 제한 → np.array 14.8 MiB→7.4 MiB → 할당 성공
+**P2 효과**: 재학습 실패 시에도 5분 쿨다운 보장 (OOM 재발 시 안전망)
+
+**커밋**: `f2cb738` (218차)
 
 ---
 

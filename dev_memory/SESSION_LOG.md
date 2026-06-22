@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-06-22 (218차 — DriftRetrain 32-bit OOM 수정 + 재시도 쿨다운)
+
+**Work**: 장중 DriftRetrain이 17회 연속 즉시 실패해 CB③ HALT까지 이어진 구조 버그 수정.
+
+**원인 확정**:
+- `_load_from_db()` 내 `np.array(39880, 97, float32)` = 14.8 MiB 연속 블록 할당 실패 (32-bit OOM)
+- 기존 20,000행 슬라이싱이 np.array 생성 이후에 위치해 실효 없음
+- 실패 시 `_last_retrain` 미갱신 → 다음 분 조건 즉시 재충족 → 무한 루프
+
+**수정**:
+- `learning/batch_retrainer.py`: `_load_from_db(intraday=)` 파라미터 추가 + CUSUM 후 np.array 전 레코드 사전 제한
+- `main.py`: `_drift_retrain_last_attempt` 추가 + 조건A/B에 5분 쿨다운
+
+**커밋**: `f2cb738` (218차)
+
+---
+
 ## 2026-06-22 (217차 — 호라이즌 자격 조건 수정 + GDI 크래시 방지 + 런처 자동 재시작)
 
 **Work**: 호라이즌 자격 현황 1m/3m/10m 영구 WAIT 원인 분석 및 수정, 장중 재시작 시 GDI 크래시 방지, 런처 자동 재시작 루프 추가.
