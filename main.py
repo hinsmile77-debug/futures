@@ -420,6 +420,7 @@ class TradingSystem:
         self._eod_retrain_ok: bool = False           # 전날 EOD 재학습 성공 여부 — 08:55 PreRetrain 스킵 판단용
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
         self._gbm_retrain_started_at: Optional[datetime.datetime] = None  # P1-B: 30분 타임아웃 감시용
+        self._drift_retrain_last_attempt: Optional[datetime.datetime] = None  # DriftRetrain 시도 시각 (실패 포함)
         self._gbm_retrain_done_event = threading.Event()  # daily_close 대기용 — 초기값 set(완료 상태)
         self._gbm_retrain_done_event.set()
         self._pipeline_fatal_streak: int = 0         # [P0] 연속 ERR-FATAL 카운터
@@ -3667,6 +3668,14 @@ class TradingSystem:
         )
         _not_halted   = self.circuit_breaker.state != CB_STATE_HALTED
         _not_running  = not getattr(self, "_gbm_retrain_running", False)
+        # 실패 쿨다운: 성공 여부와 무관하게 시도 후 5분간 재트리거 차단
+        # 재학습이 즉시 실패해 _last_retrain이 갱신되지 않아도 매분 재실행되는 현상 방지
+        _dr_last_attempt = getattr(self, "_drift_retrain_last_attempt", None)
+        _dr_attempt_mins = (
+            (datetime.datetime.now() - _dr_last_attempt).total_seconds() / 60
+            if _dr_last_attempt else float("inf")
+        )
+        _drift_cooldown_ok = _dr_attempt_mins >= 5.0
         # 조건A: 표준 — acc<25% + n>=20 + 60분 경과
         _drift_trigger_a = (
             _not_halted
@@ -3674,6 +3683,7 @@ class TradingSystem:
             and _dr_acc30m_n >= 20
             and _dr_mins >= 60.0
             and _not_running
+            and _drift_cooldown_ok
         )
         # 조건B: 조기 — acc<15% + n>=15 + 30분 경과 (UP/DN 혼재 극단 혼란)
         _drift_trigger_b = (
@@ -3682,6 +3692,7 @@ class TradingSystem:
             and _dr_acc30m_n >= 15
             and _dr_mins >= 30.0
             and _not_running
+            and _drift_cooldown_ok
         )
         _drift_trigger = _drift_trigger_a or _drift_trigger_b
         if _drift_trigger:
@@ -3714,6 +3725,7 @@ class TradingSystem:
                     "[WarmupRetrain] 세션 재시작 후 첫 GBM 경량 재학습 — 별도 스레드 시작 (intraday)", "INFO"
                 )
             elif _drift_trigger:
+                self._drift_retrain_last_attempt = datetime.datetime.now()
                 log_manager.system(
                     f"[DriftRetrain] GBM 경량 재학습 시작 "
                     f"(acc30m={_dr_acc30m:.1%} n={_dr_acc30m_n} 경과={_dr_mins:.0f}분)",

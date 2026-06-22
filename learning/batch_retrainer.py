@@ -393,7 +393,7 @@ class BatchRetrainer:
 
         # 데이터 로드 (Phase 0/1 경로)
         if X is None or y_dict is None:
-            X, y_dict, feature_names = self._load_from_db(weeks_back)
+            X, y_dict, feature_names = self._load_from_db(weeks_back, intraday=intraday)
 
         if X is None or len(X) < MIN_TRAIN_BARS:
             msg = "학습 데이터 부족 ({} < {})".format(
@@ -904,7 +904,7 @@ class BatchRetrainer:
         }
 
     # ── DB 로드 (raw_features + raw_candles 기반) ────────────────
-    def _load_from_db(self, weeks_back: int):
+    def _load_from_db(self, weeks_back: int, intraday: bool = False):
         """
         raw_data.db 의 raw_features / raw_candles 테이블에서 학습 데이터 로드.
 
@@ -1026,6 +1026,16 @@ class BatchRetrainer:
             cusum_idx = _cusum_filter(records, close_map)
             if len(cusum_idx) < len(records):
                 records = [records[i] for i in cusum_idx]
+
+            # 장중 경량 모드: np.array 변환 전 최신 N행으로 제한 (32-bit OOM 방지)
+            # retrain_now()의 사후 슬라이싱은 np.array 생성 이후라 이미 늦음 —
+            # 변환 전에 잘라야 39,880행→20,000행으로 메모리 절반 감소
+            if intraday and len(records) > MAX_TRAIN_BARS_INTRADAY:
+                logger.info(
+                    "[Retrain] 장중 경량 모드(DB): %d → %d행 사전 제한 (OOM 방지)",
+                    len(records), MAX_TRAIN_BARS_INTRADAY,
+                )
+                records = records[-MAX_TRAIN_BARS_INTRADAY:]
 
             X = np.array(
                 [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],
