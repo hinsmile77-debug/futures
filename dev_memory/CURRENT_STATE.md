@@ -1,7 +1,61 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-22 (219차 세션) — 브로커 잔여계약 PnL 누락·Sizer 잔고·TRADE 로그 3버그 수정
+> 마지막 업데이트: 2026-06-22 (220차 세션) — 15:10 강제청산 FLAT불일치 버그 수정 + 15:18 FINAL_CLOSE 안전망
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-22 (220차 — 15:10 강제청산 FLAT불일치 + 15:18 FINAL_CLOSE 안전망)
+
+### 배경 — 오늘 15:20 Cybos 잔고 3계약 미청산 사고
+
+14:56:52 SHORT 3계약 진입 후 14:58~15:00 사이 3×1계약 순차 청산
+→ ChejanFlow 체결 확인 → 시스템 내부 position=FLAT 선언.
+그러나 Cybos 실제 잔고는 여전히 3계약 보유.
+15:10 강제청산이 `_send_broker_exit_order(qty=0)` 호출
+→ FLAT 가드(`position.status == "FLAT" → return -1`) 에 막혀 아무것도 하지 않음.
+→ 15:20에도 3계약 잔류 (오버나이트 위험).
+
+### 근본 원인
+
+**FLAT 가드**: `_send_broker_exit_order` 내부에 `position.status == "FLAT" → return -1` 가드 존재.
+**qty=0 호출**: 시스템이 FLAT으로 착각하므로 `position.quantity=0` → qty=0 주문 → 가드에 걸림.
+**broker 잔고 무시**: 15:10 강제청산 경로가 `_integrity_broker_qty`(마지막 잔고조회 캐시)를
+참조하지 않아 broker 실수량을 알 방법이 없었음.
+
+### 수정 내용 (220차)
+
+| 파일 | 위치 | 변경 |
+|---|---|---|
+| `strategy/exit/time_exit.py` | `TimeExitManager` | `should_final_close()` 추가 — 15:18 FINAL_CLOSE 발동 여부 |
+| `main.py` | `__init__` ~L474 | `_final_close_done: bool = False` 플래그 추가 |
+| `main.py` | `_ts_check_exit_triggers` ~L8174 | 15:10 강제청산: `_integrity_broker_qty` 폴백 + FLAT 시 BrokerDirect 분기 |
+| `main.py` | `_check_exit_triggers` ~L6248 | 분봉 기반 15:10 강제청산 동일 패턴 적용 |
+| `main.py` | `_ts_check_exit_triggers` ~L8222 | 15:18 FINAL_CLOSE 블록 추가 — `_ts_broker_direct_force_exit` 호출 |
+| `main.py` | `_ts_broker_direct_force_exit` ~L9181 | 신규 함수 — `request_futures_balance` 직접 조회 후 `send_market_order` 호출 |
+
+### `_ts_broker_direct_force_exit` 동작
+
+1. `request_futures_balance(account_no)` 직접 TR 조회
+2. 해당 종목코드 행 탐색 → `잔고수량`, `구분(매도/매수)` 파싱
+3. `send_market_order(BUY/SELL, qty)` 직접 호출 (FLAT 가드 완전 우회)
+4. 잔고 없으면 "진짜 FLAT" INFO 로그 후 False 반환 (무해)
+
+### 오늘 사고 재현 시 예상 동작
+
+```
+15:10:xx  should_force_exit() = True
+          position.status = "FLAT" / _integrity_broker_qty = 3
+          → BrokerDirect 분기: request_futures_balance 조회
+          → broker SHORT 3계약 확인 → BUY 3계약 직접주문
+          [BrokerDirectExit] 15:10 FLAT불일치 강제청산 — broker SHORT 3계약 → BUY 직접주문
+
+15:18:xx  should_final_close() = True, _final_close_done = False
+          → _ts_broker_direct_force_exit 재실행
+          → broker 잔고 0 확인 → "진짜 FLAT" INFO → _final_close_done = True
+```
+
+**커밋**: `f412df8` (220차)
 
 ---
 

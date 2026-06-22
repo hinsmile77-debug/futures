@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-22 (220차 — 15:10 강제청산 FLAT불일치 버그 + 15:18 FINAL_CLOSE 안전망)
+
+**Work**: 15:20 Cybos 잔고 3계약 미청산 사고 분석 → 로그 딥다이브 → 2개 버그 확정·수정.
+
+**분석 발견**:
+- 14:56 진입 3계약, 14:58~15:00 3×1계약 순차 청산 → ChejanFlow 체결 확인 → 시스템 FLAT 착각
+- Cybos 잔고 15:00:39에 여전히 `잔고수량=3` 반환 (모의투자 잔고 지연 or 첫 번째 4계약 진입 잔여분)
+- 15:10 `should_force_exit()` 발동 → `_send_broker_exit_order(qty=0)` → FLAT 가드 `-1` 반환 → 무효
+- 14:46 진입: Cybos BlockRequest COM 이벤트 루프 pump → Chejan이 `open_position()` 보다 먼저 실행 (레이스컨디션) → qty=1 고착 → 1계약만 체결됐으므로 정상 완료 (오늘은 사고 無)
+
+**수정**:
+- `time_exit.py`: `should_final_close()` 추가 (15:18 FINAL_CLOSE 방어선)
+- `main.py __init__`: `_final_close_done` 플래그
+- `main.py _ts_broker_direct_force_exit`: 신규 함수 — `request_futures_balance` 직접 조회 후 `send_market_order` (FLAT 가드 우회)
+- `main.py _ts_check_exit_triggers:8174`: 15:10 강제청산 — `_integrity_broker_qty` 폴백 + FLAT 시 BrokerDirect 분기
+- `main.py _check_exit_triggers:6248`: 분봉 기반 경로 동일 패턴
+- `main.py _ts_check_exit_triggers:8222`: 15:18 FINAL_CLOSE 블록
+
+**커밋**: `f412df8` (220차)
+
+---
+
 ## 2026-06-22 (219차 — 브로커 잔여계약 PnL 누락·Sizer 잔고·TRADE 로그 3버그 수정)
 
 **Work**: 실시간 잔고 패널 이상점 딥다이브 → CpTd6197 헤더 원시값 + TRADE 로그 교차분석으로 3버그 확정·수정.

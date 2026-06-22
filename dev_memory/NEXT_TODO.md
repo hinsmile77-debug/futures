@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-06-23 (220차 — 15:10 강제청산 + FINAL_CLOSE 검증)
+
+### BrokerDirect 경로 동작 확인 [P0]
+
+- [ ] **[BrokerDirectExit] 로그 출현** — 내부 FLAT이지만 broker 잔량이 있을 때
+  `[BrokerDirectExit] 15:10 FLAT불일치 강제청산 — broker SHORT N계약 → BUY 직접주문` 확인
+- [ ] **send_market_order ret=0** — `[BrokerDirectExit] send_market_order ret=0 SHORT N계약` 확인
+  (ret≠0이면 broker API 오류 — 수동 청산 필요)
+
+### FINAL_CLOSE 15:18 동작 확인 [P0]
+
+- [ ] **정상 케이스** — 15:10에 이미 청산 완료 시 15:18에
+  `[BrokerDirectExit] broker 잔고 없음 → 진짜 FLAT (15:18 FINAL_CLOSE 안전망)` 출력 확인
+- [ ] **_final_close_done = True** — 이후 중복 발동 없음 확인
+
+### 오늘 사고 미재발 확인 [P1]
+
+- [ ] **15:20 Cybos 잔고 0** — 장 종료 후 Cybos HTS에서 보유 잔고 없음 확인
+- [ ] **ExitAttempt 로그** — `[ExitAttempt] 시간청산 status=FLAT engine=0ct broker_cached=3ct` 출현 후
+  BrokerDirect 경로 진입했는지 확인 (broker_cached=3이 key signal)
+
+### P1 개선 — 분할체결 qty 누락 (레이스컨디션 방어) [P1]
+
+- [ ] **`_ts_handle_entry_fill_cybos_safe` VWAP 보정 분기** — `position.quantity += fill_qty` 추가
+  대상: `main.py` L10277~10288 의 보정 분기 (2번째 이후 분할체결)
+  조건: 테스트 환경에서 4계약 전량 체결 시뮬레이션 후 적용 권장
+
+---
+
 ## 2026-06-23 (219차 — 브로커 잔여계약 수정 검증)
 
 ### Bug1 잔여계약 PnL 처리 검증 [P0]
