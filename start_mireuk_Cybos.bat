@@ -143,6 +143,7 @@ IF DEFINED CONDA_PREFIX (
 SET BROKER_BACKEND=cybos
 SET PYTHONUNBUFFERED=1
 SET PYTHONIOENCODING=utf-8
+SET PYTHONUTF8=1
 ECHO [INFO] BROKER_BACKEND=%BROKER_BACKEND%
 
 IF NOT EXIST "logs" MKDIR "logs" 2>NUL
@@ -233,8 +234,9 @@ IF !ERRORLEVEL! NEQ 0 (
 )
 
 REM ============================================================
-REM  7. Launch main.py
-REM  - Blocking execution in this CMD window (log monitor stays open)
+REM  7. Launch main.py — Auto-Restart Loop (장중 자동 재시작)
+REM  - 장중(09:00~15:10) 비정상 종료 시 최대 5회 자동 재시작
+REM  - 15:10 이후 or 재시작 5회 초과 시 루프 종료
 REM  - AllowSetForegroundWindow(ASFW_ANY) 로 Qt 앱이 스스로 foreground 이동 가능하도록
 REM  - 195차: _bring_to_front (AttachThreadInput + SetForegroundWindow) 와 연계
 REM ============================================================
@@ -244,8 +246,11 @@ CALL :L "  [INFO] This CMD window is the loading monitor. Do not close."
 CALL :L "============================================================"
 ECHO.
 
+SET "_RESTART_CNT=0"
+
+:RESTART_LOOP
+
 REM AllowSetForegroundWindow(ASFW_ANY=-1): 어떤 프로세스라도 foreground 이동 허가
-REM → Python/Qt 프로세스가 AttachThreadInput 없이도 SetForegroundWindow 호출 가능
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -Name ASFG -Namespace '' -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool AllowSetForegroundWindow(uint pid);'; [ASFG]::AllowSetForegroundWindow(0xFFFFFFFF)" 2>NUL
 
 REM main.py output: console + log file simultaneously via PowerShell Tee-Object
@@ -253,13 +258,52 @@ REM RULES (do not change):
 REM  1) One literal line - no ^ continuation (breaks pipe under EnableDelayedExpansion)
 REM  2) No SET variable for the PS command (| inside variable re-parsed as CMD pipe)
 REM  3) No non-ASCII chars in REM near this line (CP949 misreads UTF-8, corrupts REM)
-REM  4) Both OutputEncoding flags needed: console stream + file write UTF-8
+REM  4) PYTHONUTF8=1 + Both OutputEncoding flags: console stream + file write UTF-8
 python main.py 2>&1 | powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; $input | Tee-Object -FilePath '!_BLOG!' -Append"
 
 ECHO.
 CALL :L "============================================================"
-CALL :L "  Mireuk exited. Log: !_BLOG!"
+CALL :L "  Mireuk exited (restart_cnt=!_RESTART_CNT!). Log: !_BLOG!"
 CALL :L "============================================================"
+
+REM ── 현재 시각 확인 (HHMM 형식) ──────────────────────────────────
+FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).ToString('HHmm')"`) DO SET "_NOW=%%T"
+
+REM ── 15:10 이후면 재시작 안 함 (오버나이트 금지) ───────────────────
+IF !_NOW! GTR 1510 (
+    CALL :L "[AUTO-RESTART] 15:10 이후 종료 -- 재시작 안 함 (오버나이트 금지)"
+    GOTO :restart_done
+)
+
+REM ── 재시작 횟수 초과 시 중단 ──────────────────────────────────────
+SET /A "_RESTART_CNT+=1"
+IF !_RESTART_CNT! GTR 5 (
+    CALL :L "[AUTO-RESTART] 재시작 5회 초과 -- 수동 확인 필요"
+    CALL :L "[AUTO-RESTART] 로그: !_BLOG!"
+    powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('[Mireuk] 재시작 5회 초과. 수동 확인 필요.', '미륵이 오류', 'OK', 'Error')" 2>NUL
+    GOTO :restart_done
+)
+
+REM ── Cybos 연결 재확인 후 재시작 ────────────────────────────────────
+CALL :L "[AUTO-RESTART] #!_RESTART_CNT! 시도 (시각=!_NOW!) -- 10초 후 재시작..."
+TIMEOUT /T 10 /NOBREAK >NUL
+
+python -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); sys.exit(0 if c.IsConnect==1 else 1)" >NUL 2>&1
+IF !ERRORLEVEL! NEQ 0 (
+    CALL :L "[AUTO-RESTART] Cybos 연결 끊김 -- 재로그인 시도..."
+    IF EXIST "%WORKDIR%\scripts\cybos_autologin.py" (
+        python "%WORKDIR%\scripts\cybos_autologin.py"
+        IF !ERRORLEVEL! NEQ 0 (
+            CALL :L "[AUTO-RESTART] 재로그인 실패 -- 재시작 중단"
+            GOTO :restart_done
+        )
+    )
+)
+
+CALL :L "[AUTO-RESTART] main.py 재시작..."
+GOTO :RESTART_LOOP
+
+:restart_done
 TIMEOUT /T 10 >NUL
 GOTO :EOF
 

@@ -406,7 +406,18 @@ SGD_BOOST_THRESHOLD = 0.62   # 이상 → SGD 비중 +2%
 SGD_CUT_THRESHOLD   = 0.48   # 이하 → SGD 비중 -2%
 
 # 호라이즌 자격 획득 기준 (Phase 1: 상태 추적 / Phase 3: 앙상블 필터링 적용)
-HORIZON_QUALIFY_MIN_CYCLES = 3    # verified + trained 각 3회 이상이면 자격 획득
+HORIZON_QUALIFY_MIN_CYCLES = 3    # verified_cycles 최소값 (전 호라이즌 공통)
+# trained_cycles 최소값 — 호라이즌별 별도 설정
+# 단기(1m·3m): SGD conf 필터(0.52)로 학습 사실상 불가 → verified만으로 자격
+# 10m: BAR_CACHE_DECAY + BiasReset 중첩으로 학습 희소 → 1회면 충분
+HORIZON_QUALIFY_MIN_TRAINED = {
+    "1m":  0,
+    "3m":  0,
+    "10m": 1,
+    "5m":  3,
+    "15m": 3,
+    "30m": 3,
+}
 QUALIFY_QUALITY_MIN_SAMPLES = 10  # 품질 게이트 평가 최소 샘플 수
 
 # ── 시간대별 호라이즌 활성화 정책 (Phase 1-3 + 부록 C-6 cold-start 2단계) ───

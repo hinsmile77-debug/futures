@@ -7671,9 +7671,11 @@ class MinuteChartCanvas(QWidget):
         import time as _t
         _t0 = _t.monotonic()
         del event
-        # 비정상 거대 캔버스 가드 — 진짜 비정상 크기만 차단 (5K+ 모니터 정상 동작 허용)
-        # 임계값: 6000×4000 (이전 3000×2000은 3030폭 모니터에서 차트 차단 버그 유발)
-        if self.width() > 6000 or self.height() > 4000:
+        # 비정상 거대 캔버스 가드 — GDI 단편화 크래시 2차 방어
+        # restore_saved_geometry에서 _CHART_MAX_LOGICAL_W/H로 1차 차단되므로
+        # 여기는 세션 중 수동 리사이즈 후 단편화 크래시 대비 안전망
+        # 3000×2000: DPI 150% → 4500×3000×4=54MB — 이 이상은 32-bit에서 unsafe
+        if self.width() > 3000 or self.height() > 2000:
             logger.warning(
                 "[ChartDBG] paintEvent 거대 캔버스 차단: %dx%d candles=%d",
                 self.width(), self.height(), len(self._closed_candles),
@@ -8793,7 +8795,8 @@ class MinuteChartDialog(QDialog):
                     prefs = {}
             prefs["chart_dialog_geometry"] = {
                 "x": geo.x(), "y": geo.y(),
-                "w": geo.width(), "h": geo.height(),
+                "w": min(geo.width(),  _CHART_MAX_LOGICAL_W),
+                "h": min(geo.height(), _CHART_MAX_LOGICAL_H),
             }
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as _wf:
                 json.dump(prefs, _wf, ensure_ascii=False)
@@ -8853,6 +8856,18 @@ class MinuteChartDialog(QDialog):
 
             x, y = int(geo["x"]), int(geo["y"])
             w, h = int(geo["w"]), int(geo["h"])
+
+            # 32-bit GDI 보호: 초대형 DIB 방지
+            # DPI 150% 환경에서 w×h 논리픽셀 → 물리픽셀 1.5×가 발생,
+            # 가상주소 단편화 후 setGeometry로 CreateDIBSection FAILED → crash 방지
+            if w > _CHART_MAX_LOGICAL_W or h > _CHART_MAX_LOGICAL_H:
+                logger.warning(
+                    "[ChartDBG] restore_saved_geometry: 32-bit GDI 상한 초과 "
+                    "%dx%d → %dx%d (DPI 스케일 후 물리 DIB 과대 방지)",
+                    w, h, min(w, _CHART_MAX_LOGICAL_W), min(h, _CHART_MAX_LOGICAL_H),
+                )
+                w = min(w, _CHART_MAX_LOGICAL_W)
+                h = min(h, _CHART_MAX_LOGICAL_H)
 
             # 팝업 중심점 기준으로 해당 화면을 탐색
             from PyQt5.QtCore import QPoint
@@ -8998,6 +9013,13 @@ def _build_market_symbols():
 _MARKET_SYMBOLS = _build_market_symbols()
 
 _UI_PREFS_FILE = os.path.join(DATA_DIR, "ui_prefs.json")
+
+# 32-bit GDI 보호: 논리 픽셀 최대 크기 상한
+# DPI 150% 환경: 물리 DIB = 2880×1590×4 ≈ 18 MB → 단편화 후에도 alloc 안전
+# 배경: w=3030, h=1460 저장값이 DPI 150% 스케일로 4547×2124×4=38.6 MB 요구
+#   → 3시간+ 운용 후 32-bit 가상주소 단편화로 CreateDIBSection FAILED → crash
+_CHART_MAX_LOGICAL_W = 1920
+_CHART_MAX_LOGICAL_H = 1060
 
 
 def _extract_symbol_code(symbol_text: str) -> str:

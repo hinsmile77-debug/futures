@@ -3410,7 +3410,10 @@ class TradingSystem:
                 _qs["verified_cycles"] += 1
                 _qs["recent_accuracy"] = self.online_learner.horizon_accuracy(_h)
                 _need = getattr(runtime_settings, "HORIZON_QUALIFY_MIN_CYCLES", 3)
-                if _qs["verified_cycles"] >= _need and _qs["trained_cycles"] >= _need:
+                _need_trained = getattr(
+                    runtime_settings, "HORIZON_QUALIFY_MIN_TRAINED", {}
+                ).get(_h, _need)
+                if _qs["verified_cycles"] >= _need and _qs["trained_cycles"] >= _need_trained:
                     if not _qs["qualified"]:
                         _qs["qualified"] = True
                         _qs["active"]    = True
@@ -3422,8 +3425,9 @@ class TradingSystem:
                 elif not _qs["qualified"]:
                     _qs["status"] = "not_qualified"
                 logger.debug(
-                    "[Qualify] %s verified=%d/3 trained=%d/3 status=%s",
-                    _h, _qs["verified_cycles"], _qs["trained_cycles"], _qs["status"],
+                    "[Qualify] %s verified=%d/%d trained=%d/%d status=%s",
+                    _h, _qs["verified_cycles"], _need,
+                    _qs["trained_cycles"], _need_trained, _qs["status"],
                 )
 
         # ── 호라이즌별 롤링 Bias 통계 (30건 윈도우) ──────────────────────────
@@ -5889,12 +5893,14 @@ class TradingSystem:
             # [Qualify] trained_cycles 동기화 — online_learner._horizon_counts 반영
             _hc = getattr(self.online_learner, "_horizon_counts", {})
             _need = getattr(runtime_settings, "HORIZON_QUALIFY_MIN_CYCLES", 3)
+            _need_trained_map = getattr(runtime_settings, "HORIZON_QUALIFY_MIN_TRAINED", {})
             for _h, _cnt in _hc.items():
                 if _h not in self._horizon_runtime_state:
                     continue
                 _qs = self._horizon_runtime_state[_h]
                 _qs["trained_cycles"] = _cnt
-                if _qs["verified_cycles"] >= _need and _qs["trained_cycles"] >= _need:
+                _need_trained = _need_trained_map.get(_h, _need)
+                if _qs["verified_cycles"] >= _need and _qs["trained_cycles"] >= _need_trained:
                     if not _qs["qualified"]:
                         _qs["qualified"] = True
                         _qs["active"]    = True
