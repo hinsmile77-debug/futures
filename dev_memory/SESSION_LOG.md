@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-22 (217차 — 호라이즌 자격 조건 수정 + GDI 크래시 방지 + 런처 자동 재시작)
+
+**Work**: 호라이즌 자격 현황 1m/3m/10m 영구 WAIT 원인 분석 및 수정, 장중 재시작 시 GDI 크래시 방지, 런처 자동 재시작 루프 추가.
+
+**원인 확정**:
+- 1m/3m WAIT: SGD conf 필터 0.52가 단기 호라이즌 전량 차단 → trained_cycles=0 → 영구 WAIT
+- 10m WAIT: BAR_CACHE_DECAY(0.93^age) 추가 감쇠 → trained_cycles=1
+- GDI 크래시: ui_prefs.json `w=3030, h=1460` → DPI 150% → 물리 DIB 38.6 MB → 32-bit 단편화로 CreateDIBSection FAILED
+- 런처: crash 후 자동 재시작 없음, 로그 한글 UTF-16 깨짐
+
+**수정**:
+- `config/settings.py`: `HORIZON_QUALIFY_MIN_TRAINED = {"1m":0, "3m":0, "10m":1, "5m":3, "15m":3, "30m":3}`
+- `main.py`: 자격 판정 2곳에 `_need_trained` 호라이즌별 분리 적용
+- `dashboard/main_dashboard.py`: `_CHART_MAX_LOGICAL_W/H=1920/1060` 상수 + restore/close/paintEvent 3중 가드
+- `data/ui_prefs.json`: `w=3030→1920, h=1460→1060` 즉시 교정
+- `start_mireuk_Cybos.bat`: 장중 자동 재시작 루프(최대 5회, Cybos 재연결 포함) + PYTHONUTF8=1
+
+**커밋**: `752a8c9` (217차)
+
+---
+
 ## 2026-06-22 (216차 — CB③ HALT 원인해소 후 거래 재개)
 
 **Work**: CB③(30분 정확도 저하) HALT 후 ConstOut 스케일러 재적합 + GBM 재학습이 완료돼도 거래가 재개되지 않는 구조 결함 수정.

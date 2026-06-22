@@ -1,7 +1,53 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-22 (216차 세션) — CB③ HALT 원인해소 후 자동 거래 재개
+> 마지막 업데이트: 2026-06-22 (217차 세션) — 호라이즌 자격 조건 수정 + GDI 크래시 방지 + 런처 자동 재시작
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-22 (217차 — 호라이즌 자격 조건 수정 + GDI 크래시 방지 + 런처 자동 재시작)
+
+### 문제 현상
+
+1. 호라이즌 자격 현황(사이클 추적)에서 1m/3m/10m가 영구 WAIT 상태
+2. 장중 재시작 후 `createDIB: CreateDIBSection failed (3030x1460, format: 6)` 즉시 크래시
+3. 크래시 후 런처가 자동 재시작하지 않아 수동 개입 필요
+
+### 근본 원인
+
+**① WAIT 고착**: SGD 학습 conf 필터(0.52)가 단기 호라이즌에 과도하게 엄격
+- 1m/3m: BiasReset으로 conf=1/3 강제 또는 GBM 자체 저신뢰 → trained_cycles 영구 0
+- 10m: BAR_CACHE_DECAY(0.93^age) 감쇠 중첩 → trained_cycles ≤1
+
+**② GDI 크래시**: ui_prefs.json에 저장된 `w=3030, h=1460` (논리픽셀)
+- DPI 150% 자동 스케일: 4547×2124 물리픽셀 DIB = 38.6 MB 연속 블록 필요
+- 3시간+ GBM 재학습 후 32-bit 가상주소 단편화 → CreateDIBSection FAILED → crash
+- (08:40 첫 기동은 신선한 프로세스라 성공, 12:25 재시작 시 단편화로 실패)
+
+**③ 런처**: crash 후 자동 재시작 로직 없음 + 로그 한글 UTF-16 깨짐
+
+### 수정 내용 (217차)
+
+| 파일 | 변경 |
+|---|---|
+| `config/settings.py` | `HORIZON_QUALIFY_MIN_TRAINED` 딕셔너리 추가 |
+| `main.py` | verified/trained 자격 판정 2곳에 `_need_trained` 분리 적용 |
+| `dashboard/main_dashboard.py` | `_CHART_MAX_LOGICAL_W/H=1920/1060` + restore/close/paintEvent 3중 가드 |
+| `data/ui_prefs.json` | bad 값 w=3030→1920, h=1460→1060 즉시 교정 |
+| `start_mireuk_Cybos.bat` | 장중 자동 재시작 루프(최대 5회) + PYTHONUTF8=1 |
+
+**HORIZON_QUALIFY_MIN_TRAINED:**
+```python
+{"1m": 0, "3m": 0, "10m": 1, "5m": 3, "15m": 3, "30m": 3}
+```
+→ 재시작 3분 후 1m/3m ACTIVE 전환 예상
+
+**GDI 보호 3중 레이어:**
+- Layer 1: `restore_saved_geometry`에서 setGeometry 전 cap (1차 방어)
+- Layer 2: `closeEvent`에서 저장 시 cap (재유입 차단)
+- Layer 3: `paintEvent` 가드 6000×4000 → 3000×2000 (2차 방어)
+
+**커밋**: `752a8c9` (217차)
 
 ---
 
