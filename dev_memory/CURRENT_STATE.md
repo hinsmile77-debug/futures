@@ -1,7 +1,59 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-22 (220차 세션) — 15:10 강제청산 FLAT불일치 버그 수정 + 15:18 FINAL_CLOSE 안전망
+> 마지막 업데이트: 2026-06-22 (221차 세션) — BlockRequest 레이스 컨디션 분할체결 qty 누락 방어
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-22 (221차 — BlockRequest 레이스 컨디션 분할체결 qty 누락 방어)
+
+### 배경 — 14:46 진입 로그 순서 이상 딥다이브
+
+14:46 매도진입 후 14:56 재진입이 "청산 전 재진입"인지 딥다이브 요청.
+TRADE/SIGNAL/SYSTEM 로그 교차분석 결과:
+
+- **14:56 재진입은 정상**: 14:52:52 청산 완료 후 쿨다운 경과 + B등급 독립 신호
+- **14:46 진입에서 레이스 컨디션 발생**: Chejan이 `open_position()` 전에 먼저 처리됨
+  - `[Position] 진입 SHORT` 로그 없이 `[체결진입]`이 먼저 나온 것이 증거
+  - 실제 체결은 1계약 (브로커 잔고 확인: `14:46:52 position=SHORT 1계약`) → 오늘은 무해
+
+### 근본 원인
+
+Cybos `BlockRequest()`는 COM 이벤트 루프를 pump하므로 `_send_broker_entry_order()` 반환 전에
+Chejan 콜백이 먼저 실행될 수 있다 (`[Fix-PendingFirst]` 주석에도 기술됨).
+
+이때 `pending["optimistic_opened"]=True`는 이미 설정됐지만 `open_position()`은 아직 미호출.
+`_ts_handle_entry_fill_cybos_safe`의 VWAP 보정 분기 진입 조건:
+
+```python
+pending["optimistic_opened"] = True  AND  status == entry_direction  AND  _optimistic = False
+```
+
+- 첫 체결: `status=FLAT ≠ SHORT` → else → `apply_entry_fill(FLAT→SHORT)` → qty=1
+- 2번째+ 체결: `status=SHORT, _optimistic=False` → **보정 분기** → VWAP만 업데이트, qty 증가 없음
+
+→ **실전에서 4계약 전량 체결 + 레이스 컨디션이 겹치면 position.qty=1, 브로커 잔고=4 불일치 발생**
+
+### 수정 내용 (221차)
+
+| 파일 | 위치 | 변경 |
+|---|---|---|
+| `main.py` | `_ts_execute_entry` FixB 블록 ~L10299 | `open_position()` 성공 직후 `_pending_order["open_position_done"] = True` 설정 |
+| `main.py` | `_ts_handle_entry_fill_cybos_safe` 보정 분기 ~L10397 | 조건에 `pending.get("open_position_done")` 추가 |
+
+### 케이스별 동작
+
+| 케이스 | `open_position_done` | 분기 | qty 처리 |
+|---|---|---|---|
+| 정상 분할체결 | `True` | VWAP 보정 분기 | qty 그대로 (기존 동작) |
+| 레이스 컨디션 + 전량 체결 | `False` | else → `apply_entry_fill` 증량 | qty 올바르게 누적 |
+| 레이스 컨디션 + 부분 체결 | `False` | else → `apply_entry_fill` 신규/증량 | qty 실체결 수량으로 관리 |
+
+> **왜 단순 `quantity += fill_qty`가 안 되는가**: 정상 케이스에서 `open_position(qty=4)` 후
+> 분할 Chejan마다 `+=1`을 하면 4+1+1+1=7이 되는 이중 카운팅 발생.
+> `open_position_done` 플래그로 두 케이스를 명확히 구분해야 한다.
+
+**커밋**: `9ad777c` (221차)
 
 ---
 

@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-22 (221차 — BlockRequest 레이스 컨디션 분할체결 qty 누락 방어)
+
+**Work**: 14:46 매도진입 후 14:56 재진입이 "청산 전 재진입"인지 딥다이브 → 레이스 컨디션 버그 확정·수정.
+
+**분석 발견**:
+- 14:56 재진입은 14:52 청산 완료 후 쿨다운 경과된 정상 B등급 신호 (버그 아님)
+- 14:46에서 `[Position] 진입 SHORT` 로그 없이 Chejan이 먼저 처리되는 레이스 컨디션 발생
+- Cybos BlockRequest가 COM 이벤트 루프 pump → `open_position()` 전에 Chejan 4회 선행 처리
+- 보정 분기 조건(`optimistic_opened=True, status==SHORT, _optimistic=False`)이 2번째+ 체결에서 True
+  → VWAP만 업데이트, qty 증가 없음 → 오늘은 1계약 실체결이라 무해, 실전 전량체결 시 qty 불일치 위험
+- 단순 `quantity += fill_qty` 수정은 정상 케이스 4계약→7계약 이중 카운팅 발생하므로 기각
+
+**수정**:
+- `main.py _ts_execute_entry FixB ~L10299`: `open_position()` 성공 후 `_pending_order["open_position_done"] = True`
+- `main.py _ts_handle_entry_fill_cybos_safe 보정 분기 ~L10397`: 조건에 `pending.get("open_position_done")` 추가
+  → False(레이스 컨디션) 시 else→apply_entry_fill 증량 경로로 qty 올바르게 누적
+
+**커밋**: `9ad777c` (221차)
+
+---
+
 ## 2026-06-22 (220차 — 15:10 강제청산 FLAT불일치 버그 + 15:18 FINAL_CLOSE 안전망)
 
 **Work**: 15:20 Cybos 잔고 3계약 미청산 사고 분석 → 로그 딥다이브 → 2개 버그 확정·수정.
