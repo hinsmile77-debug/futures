@@ -8998,6 +8998,52 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
                 "INFO",
             )
 
+        # [Bug1] 브로커 FLAT 확인 시 엔진 잔여 계약 PnL 계산·기록
+        # Chejan 콜백 누락으로 position.quantity > 0이 남은 경우, 브로커 가격 기준으로
+        # PnL을 계산하고 trades DB·TRADE 로그·PnL 탭에 기록한다.
+        _rem_qty = self.position.quantity if self.position.status != "FLAT" else 0
+        if _rem_qty > 0:
+            _rem_exit = _sq_avg_price or float(getattr(self, "_last_pipeline_price", 0.0) or 0.0)
+            if _rem_exit > 0:
+                _rem_entry_ts_obj = getattr(self.position, "entry_time", None) or _sq_last_fill_at
+                _rem_entry_ts_str = (
+                    _rem_entry_ts_obj.strftime("%Y-%m-%d %H:%M:%S")
+                    if hasattr(_rem_entry_ts_obj, "strftime") else str(_rem_entry_ts_obj)
+                )
+                _rem_exit_ts_str = (
+                    _sq_last_fill_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if hasattr(_sq_last_fill_at, "strftime") else str(_sq_last_fill_at)
+                )
+                _rem_result = self.position.close_position(_rem_exit, "stuck_exit_remainder")
+                _rem_result["entry_ts"] = _rem_entry_ts_str
+                _rem_result["exit_ts"]  = _rem_exit_ts_str
+                _rem_cum = self.position.daily_stats()["pnl_krw"]
+                # [Bug3] TRADE 로그에 잔여 계약 처리 내용 기록
+                log_manager.trade(
+                    f"[잔여청산] {_rem_result['direction']} {_rem_qty}계약 @ {_rem_exit:.2f} "
+                    f"PnL={_rem_result['pnl_pts']:+.2f}pt ({_rem_result['pnl_krw']:+,.0f}원) "
+                    f"│ 금일누적 {_rem_cum:+,.0f}원 [브로커FLAT 추정가]"
+                )
+                self.dashboard.append_pnl_log(
+                    f"잔여청산 | {_rem_result['direction']} {_rem_qty}계약 @ {_rem_exit:.2f}",
+                    f"PnL {_rem_result['pnl_pts']:+.2f}pt  {_rem_result['pnl_krw']:+,.0f}원 (추정) │ 금일 {_rem_cum:+,.0f}원",
+                )
+                try:
+                    self._record_trade_result(_rem_result)
+                    self._refresh_pnl_history()
+                except Exception as _rem_e:
+                    log_manager.system(f"[StuckExit] 잔여계약 DB 기록 실패: {_rem_e}", "WARNING")
+                log_manager.system(
+                    f"[StuckExit] 잔여 {_rem_qty}계약 PnL 확정: "
+                    f"{_rem_result['pnl_pts']:+.2f}pt ({_rem_result['pnl_krw']:+,.0f}원) @ {_rem_exit:.2f}",
+                    "INFO",
+                )
+            else:
+                log_manager.system(
+                    f"[StuckExit] 잔여 {_rem_qty}계약 가격 추정 불가 "
+                    f"(avg={_sq_avg_price} pipeline={getattr(self, '_last_pipeline_price', 0)}) → PnL 미계산",
+                    "WARNING",
+                )
         self.position.sync_flat_from_broker()
         self.dashboard.minute_chart_clear_active_position()
         self._clear_pending_order()
@@ -9249,7 +9295,9 @@ def _ts_extract_sizer_balance(summary: dict) -> float:
     if not isinstance(summary, dict):
         return 0.0
 
-    for key in ("총매매", "총평가수익률", "추정자산"):
+    # [Bug2] 총평가수익률 = Cybos 익일예탁금(header 2) — 당일 실현손익 반영된 실시간 잔고
+    # 총매매 = 예탁금(header 1) — 정적, 당일 거래로 변하지 않음
+    for key in ("총평가수익률", "총매매", "추정자산"):
         value = _ts_safe_float_text(summary.get(key))
         if value > 0:
             return value
@@ -9759,6 +9807,14 @@ def _ts_sync_position_from_broker(self) -> None:
                 _ts_push_balance_to_dashboard(self, result)
                 return
             if self.position.status != "FLAT":
+                # [Bug3] blank-as-flat 강제 시 TRADE 로그 기록
+                _baf_dir   = self.position.status
+                _baf_qty   = self.position.quantity
+                _baf_entry = self.position.entry_price
+                log_manager.trade(
+                    f"[BrokerSync] blank-as-flat 강제: {_baf_dir} {_baf_qty}계약 @ {_baf_entry:.2f} → FLAT "
+                    f"(PnL 미계산 — 브로커 잔고 blank rows)"
+                )
                 self.position.sync_flat_from_broker()
                 self.dashboard.minute_chart_clear_active_position()
             self._clear_pending_order()
