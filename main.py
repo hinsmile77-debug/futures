@@ -10296,6 +10296,8 @@ def _ts_execute_entry(
             entry_horizon=entry_horizon,
         )
         self.position._optimistic = True
+        if self._pending_order is not None:
+            self._pending_order["open_position_done"] = True
         self.dashboard.minute_chart_record_entry(
             direction,
             price,
@@ -10388,9 +10390,11 @@ def _ts_handle_entry_fill_cybos_safe(
         )
 
     # 낙관적 오픈 주문의 두 번째 이후 분할체결: 수량 증가 없이 VWAP 가격 보정
-    # _optimistic=False이면 첫 보정은 이미 완료됨 → 이후 체결은 평균가 업데이트만
+    # open_position_done=True(정상 흐름)일 때만 진입 — qty는 open_position에서 이미 설정됨.
+    # False(레이스 컨디션: BlockRequest 내 Chejan 선행)이면 else→apply_entry_fill로 qty 누적.
     if (
         pending.get("optimistic_opened")
+        and pending.get("open_position_done")
         and self.position.status == entry_direction
         and not self.position._optimistic
     ):
