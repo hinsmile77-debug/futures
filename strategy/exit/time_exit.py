@@ -65,3 +65,12 @@ class TimeExitManager:
         elif mins <= 20:
             return "WARNING"
         return "NORMAL"
+
+    def should_final_close(self, dt: datetime.datetime = None) -> bool:
+        """15:18 FINAL_CLOSE 안전망 발동 여부.
+        15:10 강제청산 후에도 broker 잔량이 남아 있을 경우를 대비한 2차 방어선.
+        broker 잔고를 직접 조회해 무조건 청산하므로 should_force_exit()와 독립 동작.
+        """
+        if dt is None:
+            dt = now_kst()
+        return dt.time() >= self.FINAL_CLOSE

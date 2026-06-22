@@ -471,6 +471,9 @@ class TradingSystem:
         self._integrity_broker_qty:  int  = 0   # 최근 balance chejan/TR에서 갱신
         self._integrity_fail_count:  int  = 0   # 연속 불일치 횟수
 
+        # ── 15:18 FINAL_CLOSE 안전망 ───────────────────────────────────────────
+        self._final_close_done: bool = False     # 1회만 실행 (중복 방지)
+
         # ── P3-a: OnlineLearner stuck 학습 오염 가드 ───────────────────────────
         self._stuck_this_minute: bool = False    # 이번 분봉에 stuck 해소 발생 여부
 
@@ -6244,9 +6247,19 @@ class TradingSystem:
 
         # 4순위: 시간 강제 청산
         if self.time_exit.should_force_exit():
-            self._send_broker_exit_order(self.position.quantity)
-            result = self.position.close_position(price, "15:10 강제청산")
-            self._post_exit(result)
+            _b_cached = int(getattr(self, "_integrity_broker_qty", 0) or 0)
+            if self.position.status != "FLAT":
+                _fq = max(self.position.quantity, _b_cached) if _b_cached > 0 else self.position.quantity
+                self._send_broker_exit_order(_fq)
+                result = self.position.close_position(price, "15:10 강제청산")
+                self._post_exit(result)
+            elif _b_cached > 0:
+                # 내부 FLAT이지만 broker 캐시에 잔량 → BrokerDirect 청산
+                log_manager.system(
+                    f"[BarExit] 내부FLAT broker_cached={_b_cached}계약 — BrokerDirect 청산",
+                    "ERROR",
+                )
+                _ts_broker_direct_force_exit(self, price, "15:10 분봉FLAT불일치 강제청산")
 
     def _post_exit(self, result: dict, filled_at=None):
         """청산 후 처리.
@@ -8169,30 +8182,53 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
         self._execute_partial_exit(price, stage=3)
 
     if not self._has_pending_order() and self.time_exit.should_force_exit():
+        _engine_qty  = self.position.quantity
+        _broker_cached = int(getattr(self, "_integrity_broker_qty", 0) or 0)
         log_manager.system(
-            f"[ExitAttempt] 시간청산 {self.position.status} {self.position.quantity}ct "
-            f"price={price:.2f}",
+            f"[ExitAttempt] 시간청산 status={self.position.status} "
+            f"engine={_engine_qty}ct broker_cached={_broker_cached}ct price={price:.2f}",
             "WARNING",
         )
-        ret = self._send_broker_exit_order(self.position.quantity)
+        if self.position.status != "FLAT":
+            # 정상 경로: 내부 포지션 있음 — broker_cached가 더 크면 그 수량으로 청산
+            _force_qty = max(_engine_qty, _broker_cached) if _broker_cached > 0 else _engine_qty
+            ret = self._send_broker_exit_order(_force_qty)
+            log_manager.system(
+                f"[ExitSendOrderResult] ret={ret} kind=시간청산 "
+                f"direction={self.position.status} qty={_force_qty}",
+                "WARNING",
+            )
+            if ret == 0:
+                self._set_pending_order(
+                    kind="EXIT_FULL",
+                    direction=self.position.status,
+                    qty=_force_qty,
+                    price_hint=round(price, 2),  # [B50] float 오차 방지
+                    reason="15:10 강제청산",
+                )
+                log_manager.trade(
+                    f"[주문요청] 시간청산 {self.position.status} {_force_qty}계약 @ {price:.2f}"
+                )
+            else:
+                log_manager.system(f"[Exit] 시간청산 주문 실패 ret={ret}", "ERROR")
+        elif _broker_cached > 0:
+            # 폴백: 내부 FLAT이지만 broker 캐시에 잔량 → broker 직접 조회 후 청산
+            log_manager.system(
+                f"[ExitAttempt] 내부FLAT broker_cached={_broker_cached}계약 — BrokerDirect 청산 시도",
+                "ERROR",
+            )
+            _ts_broker_direct_force_exit(self, price, "15:10 FLAT불일치 강제청산")
+
+    # 5순위: 15:18 FINAL_CLOSE 안전망 — broker 직접 조회 후 잔량 무조건 청산
+    if (not self._has_pending_order()
+            and self.time_exit.should_final_close()
+            and not getattr(self, "_final_close_done", False)):
         log_manager.system(
-            f"[ExitSendOrderResult] ret={ret} kind=시간청산 "
-            f"direction={self.position.status} qty={self.position.quantity}",
-            "WARNING",
+            f"[FinalClose] 15:18 안전망 발동 — broker 잔고 직접 조회 후 잔량 청산 price={price:.2f}",
+            "ERROR",
         )
-        if ret == 0:
-            self._set_pending_order(
-                kind="EXIT_FULL",
-                direction=self.position.status,
-                qty=self.position.quantity,
-                price_hint=round(price, 2),  # [B50] float 오차 방지
-                reason="15:10 강제청산",
-            )
-            log_manager.trade(
-                f"[주문요청] 시간청산 {self.position.status} {self.position.quantity}계약 @ {price:.2f}"
-            )
-        else:
-            log_manager.system(f"[Exit] 시간청산 주문 실패 ret={ret}", "ERROR")
+        _ts_broker_direct_force_exit(self, price, "15:18 FINAL_CLOSE 안전망")
+        self._final_close_done = True
 
 
 def _ts_in_exit_cooldown(self, now: datetime.datetime = None):
@@ -9140,6 +9176,90 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
         )
         self.exit_manager.force_exit(_force_price, reason="EXIT잔여 반대포지션 긴급청산")
     return True
+
+
+def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산") -> bool:
+    """Cybos 잔고를 직접 조회해 남은 포지션을 시장가로 청산.
+
+    내부 position=FLAT이지만 broker에 잔량이 남은 경우 안전망으로 사용.
+    _send_broker_exit_order의 FLAT 가드를 우회해 send_market_order를 직접 호출한다.
+    Returns True if an order was sent successfully.
+    """
+    account_no = str(_secrets.ACCOUNT_NO or "").strip()
+    code = getattr(self, "_futures_code", "")
+    target_code = self._normalize_broker_code(code)
+    if not account_no or not target_code:
+        log_manager.system(
+            f"[BrokerDirectExit] account_no 또는 code 없음 — 청산 불가 reason={reason}",
+            "ERROR",
+        )
+        return False
+
+    result = self.broker.request_futures_balance(account_no)
+    if result is None:
+        log_manager.system(
+            f"[BrokerDirectExit] broker balance TR 실패 — 청산 불가 reason={reason}",
+            "ERROR",
+        )
+        return False
+
+    rows = result.get("nonempty_rows") or result.get("rows") or []
+    broker_row = None
+    for row in rows:
+        row_code = self._normalize_broker_code(
+            row.get("종목코드") or row.get("code") or ""
+        )
+        if row_code == target_code:
+            broker_row = row
+            break
+
+    if broker_row is None:
+        log_manager.system(
+            f"[BrokerDirectExit] broker 잔고 없음 → 진짜 FLAT ({reason})",
+            "INFO",
+        )
+        return False
+
+    def _num(v):
+        try:
+            return float(str(v or "").replace(",", "").strip())
+        except Exception:
+            return 0.0
+
+    broker_qty = int(_num(
+        broker_row.get("잔고수량") or broker_row.get("position_qty") or broker_row.get("qty")
+    ))
+    broker_side = _ts_order_side_to_direction({
+        "balance_side":      broker_row.get("구분") or broker_row.get("매매구분"),
+        "balance_side_code": broker_row.get("side_code"),
+    })
+
+    if broker_qty <= 0 or broker_side not in ("LONG", "SHORT"):
+        log_manager.system(
+            f"[BrokerDirectExit] 브로커 행 해석 실패 qty={broker_qty} side={broker_side} "
+            f"row={broker_row} reason={reason}",
+            "WARNING",
+        )
+        return False
+
+    close_side = "BUY" if broker_side == "SHORT" else "SELL"
+    log_manager.system(
+        f"[BrokerDirectExit] {reason} — broker {broker_side} {broker_qty}계약 → {close_side} 직접주문",
+        "ERROR",
+    )
+    ret = self.broker.send_market_order(
+        account_no=account_no,
+        code=code,
+        side=close_side,
+        qty=broker_qty,
+        rqname="강제청산",
+        screen_no="1001",
+    )
+    log_manager.system(
+        f"[BrokerDirectExit] send_market_order ret={ret} {broker_side} {broker_qty}계약 reason={reason}",
+        "ERROR" if ret != 0 else "WARNING",
+    )
+    return ret == 0
 
 
 def _ts_on_chejan_event(self, payload: dict) -> None:
