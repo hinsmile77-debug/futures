@@ -2545,10 +2545,12 @@ class TradingSystem:
                             trigger_reason=f"pre_market_phase{_ph}_{_nb}bars",
                         )
                         _z_after = self._canary_load_z_warn(n_rows=_nb)
+                        _z_worsened = _z_after > _z + 3
                         log_manager.system(
                             f"[PreMarket] Phase{_ph} refit 완료 n={len(_Xpm)}봉"
-                            f" z경고 {_z}→{_z_after}개",
-                            "INFO",
+                            f" z경고 {_z}→{_z_after}개"
+                            + (" ⚠ 악화 (봉 수 부족)" if _z_worsened else ""),
+                            "WARNING" if _z_worsened else "INFO",
                         )
                     else:
                         log_manager.system(
@@ -7646,6 +7648,15 @@ class TradingSystem:
                         finally:
                             self._scaler_refresh_running = False
                     threading.Thread(target=_early_warmup_worker, daemon=True).start()
+                    # [P1] Cybos 실시간 구독 08:45 선행 시작 — 기존 08:55에서 앞당김
+                    # 프리장 봉을 08:45부터 수집 → PRE_MARKET_REFIT_STEPS 전 단계 발동 가능
+                    _rd_ew = getattr(self, "realtime_data", None)
+                    if _rd_ew is not None and not getattr(_rd_ew, "_running", False):
+                        _rd_ew.start(load_history=True)
+                        log_manager.system(
+                            "[EarlyWarmup] Cybos RT 08:45 선행 구독 시작 (프리장 봉 15봉 확보)",
+                            "INFO",
+                        )
             except Exception as _ea_e:
                 logger.warning("[EarlyWarmup] age 체크 실패 (무시): %s", _ea_e)
 

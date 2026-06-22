@@ -7744,7 +7744,7 @@ class MinuteChartCanvas(QWidget):
 
         self._dbg_paint_count += 1
         _elapsed_ms = (_t_end - _t0) * 1000
-        if _elapsed_ms > 10:
+        if _elapsed_ms > 30:
             self._dbg_paint_slow_count += 1
             logger.warning(
                 "[ChartDBG] paintEvent slow %.1fms | size=%dx%d candles=%d "
@@ -11049,6 +11049,10 @@ def _adapter_minute_chart_set_regime(self, ts_key: str, regime: str):
     self._win.minute_chart_set_regime(ts_key, regime)
 
 
+def _adapter_minute_chart_set_direction(self, ts_key: str, direction: int):
+    self._win.minute_chart_set_direction(ts_key, direction)
+
+
 def _adapter_minute_chart_record_entry(self, direction: str, price: float, ts=None):
     self._win.minute_chart_record_entry(direction, price, ts=ts)
 
@@ -11089,6 +11093,7 @@ DashboardAdapter.toggle_minute_chart_dialog = _adapter_toggle_minute_chart_dialo
 DashboardAdapter.minute_chart_tick = _adapter_minute_chart_tick
 DashboardAdapter.minute_chart_candle_closed = _adapter_minute_chart_candle_closed
 DashboardAdapter.minute_chart_set_regime = _adapter_minute_chart_set_regime
+DashboardAdapter.minute_chart_set_direction = _adapter_minute_chart_set_direction
 DashboardAdapter.minute_chart_record_entry = _adapter_minute_chart_record_entry
 DashboardAdapter.minute_chart_record_exit = _adapter_minute_chart_record_exit
 DashboardAdapter.minute_chart_sync_active_position = _adapter_minute_chart_sync_active_position
