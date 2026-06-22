@@ -1,7 +1,90 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-19 (210차 세션) — 1분봉 차트 X축 방향예측·레짐 레인 구현
+> 마지막 업데이트: 2026-06-22 (214차 세션) — ERR-FATAL 수정 + 프리장 Phase 재설계 + RT 08:45 선행구독
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-22 (214차 — ERR-FATAL 수정 + 프리장 Phase 재설계)
+
+### 문제 배경 (6/22 장초반 로그 분석)
+
+6/22 정규장 09:00~09:07 매분 반복:
+```
+[ERR-FATAL] minute_pipeline: 'DashboardAdapter' object has no attribute 'minute_chart_set_direction'
+→ 자동진입 OFF + 15분 타임아웃 (매분 갱신 → 진입 영구 차단)
+```
+
+추가 발견: 201차 PRE_MARKET_REFIT_STEPS {1,5,10,14} 실측
+- Phase1(1봉): z경고 6→14개 역효과 (1봉 통계 불안정)
+- Phase2(5봉): z경고 15→15개 무효과
+- Phase3·4: 발동 안됨 (Cybos RT 구독 08:55 → 최대 4~6봉만 수집)
+
+### 수정 내용
+
+| 우선순위 | 내용 | 파일 |
+|---|---|---|
+| **P0** | `_adapter_minute_chart_set_direction` 추가 + `DashboardAdapter` 바인딩 | `dashboard/main_dashboard.py` |
+| **P1-①** | `PRE_MARKET_REFIT_STEPS` `{1,5,10,14}` → `{3,5,10,14}` (1봉 역효과 제거) | `config/settings.py` |
+| **P1-②** | Cybos RT 실시간 구독 08:45 선행 시작 (EarlyWarmup 트리거 직후) | `main.py` |
+| **P2-①** | `_pm_refit_worker` z경고 악화(+3개↑) 시 WARNING 로그 | `main.py` |
+| **P2-②** | ChartDBG paintEvent 임계 10ms → 30ms (WARN 로그 스팸 103KB 제거) | `dashboard/main_dashboard.py` |
+
+### P0 근본 원인
+
+210차(X축 방향예측 레인)에서 `main.py`에 `self.dashboard.minute_chart_set_direction(ts, direction)` 호출을 추가했지만, `DashboardAdapter` 어댑터 함수 등록을 누락. `MireukDashboard`에는 메서드가 있어 단독 실행 시 정상이나 `DashboardAdapter` 경유 시 AttributeError.
+
+### 프리장 Phase 설계 변경
+
+```
+기존: {1, 5, 10, 14}봉 (1봉 역효과 + 5봉 이상 발동 불가)
+개선: {3, 5, 10, 14}봉 + Cybos RT 08:45 선행 구독
+
+결과 (내일 예상):
+08:45 Cybos RT 구독 시작
+08:47 Phase1(3봉) 기동·완료  ← z경고 안정적 감소 예상
+08:49 Phase2(5봉)
+08:54 Phase3(10봉)
+08:58 Phase4(14봉) ← 09:00 직전 최종 확정
+```
+
+커밋: `995a2d4` (214차)
+
+---
+
+## 2026-06-19 (211~213차 — 1분봉 차트 자동팝업 복원 완전 해결)
+
+### 핵심 발화점 (log 분석으로 확정)
+
+```
+QWindowsWindow::setGeometry: Unable to set geometry 3030x1460+3369-8
+→ Resulting: 4547x2124+3372+6
+```
+
+보조 모니터 avail.top()=-7인 환경에서:
+- 저장값 y=-7 → Qt 프레임 계산으로 y=-8 요청 → avail.top()=-7 밖 1px
+- Python 3.7 32-bit(96DPI) + 보조모니터 144DPI(150%) → Windows DPI 가상화
+- 3030×1.5=4547, 1460×1.5=2190 → 4547×2124로 강제 확대
+- 이후 매분 paintEvent 4513×2060 반복 (17:26~17:50, 20회+)
+
+### 수정 이력
+
+| 차수 | 수정 | 커밋 |
+|---|---|---|
+| 207차 | QTimer.singleShot→pyqtSignal, _reload_today_bg 데이터 복원 | 240e9c6 |
+| 208차-추가 | closeEvent 90%/isMaximized 체크, MireukDashboard.closeEvent | 236ac7f |
+| 209차 | 90% threshold → _center_on_second_screen fallback | fe194c1 |
+| 210차 | paintEvent 6000px guard, 90% 체크 전면 제거 | f53f4e9 |
+| 211차 | pre-show restore_saved_geometry (HWND 생성 모니터 지정) | 27dafe1 |
+| **212차** | **y<0 → y=0 보정 (DPI 1.5× 근본 차단)** | **76d14b6** |
+| 213차 | pickle protocol=4, ConfTrend 로그 정제, 런처 로그 | 0274cd4 |
+
+### 현재 geometry 처리 규칙 (최종)
+
+- `closeEvent`: isMaximized() → 저장 스킵. width>avail.width → 스킵. 그 외 저장.
+- `restore_saved_geometry`: y<0 → y=0 보정 + WARNING 로그. 화면 밖 → _center_on_second_screen.
+- `toggle_minute_chart_dialog`: restore_saved_geometry() pre-show + singleShot(0) post-show.
+- `paintEvent guard`: width>6000 or height>4000 (이전 3000/2000 → 차트 차단 버그)
 
 ---
 

@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-06-22 (214차 — DashboardAdapter 어댑터 바인딩 누락 패턴)
+
+### [버그 반복패턴] MireukDashboard 메서드 추가 시 DashboardAdapter 바인딩 동시 등록 필수
+
+**File**: `dashboard/main_dashboard.py` 말미 어댑터 섹션
+
+**Root cause**: `DashboardAdapter`는 monkey-patching 방식으로 메서드를 등록한다(`DashboardAdapter.foo = _adapter_foo`). `MireukDashboard`에 메서드를 추가하고 `main.py`에 호출부를 추가해도, 어댑터 등록을 빠뜨리면 `DashboardAdapter` 경유 시 `AttributeError`가 발생한다. 210차에서 `minute_chart_set_direction`을 `MireukDashboard`에 추가·`main.py` 호출 추가했으나 어댑터 바인딩을 누락 → 6/22 장 개시부터 매분 ERR-FATAL 반복.
+
+**Fix**: `_adapter_minute_chart_set_direction` 함수 신설 + `DashboardAdapter.minute_chart_set_direction = ...` 등록.
+
+**How to apply**: `MireukDashboard`에 public 메서드 추가 시 반드시 아래 3곳 동시 작업:
+1. `MireukDashboard`에 메서드 구현
+2. `_adapter_<name>` 래퍼 함수 정의 (파일 말미 어댑터 섹션)
+3. `DashboardAdapter.<name> = _adapter_<name>` 바인딩 등록
+
+---
+
 ## 2026-06-19 (201차 — 프리장 scaler 재적합 입력 데이터 결함)
 
 ### [버그 구조적] 프리장 봉 피처가 raw_data.db에 미저장 → 갭오픈 분포 재적합 불가

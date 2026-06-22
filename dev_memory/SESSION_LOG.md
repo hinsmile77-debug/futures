@@ -4,6 +4,50 @@
 
 ---
 
+## 2026-06-22 (214차 — ERR-FATAL 수정 + 프리장 Phase 재설계 + RT 08:45 선행구독)
+
+**Work**: 6/22 장초반 로그 분석 → ERR-FATAL 매분 반복(자동진입 영구 차단) 수정 + 201차 프리장 Phase 실측 결과 반영 재설계.
+
+**원인 확정**:
+- P0: 210차에서 `main.py` 호출 추가했으나 `DashboardAdapter` 어댑터 등록 누락 → 매분 ERR-FATAL
+- P1: Cybos RT 구독 08:55 시작 → 최대 4~6봉 수집 → Phase3·4 발동 불가
+- P1: 1봉 refit 역효과 실측 (z경고 6→14개)
+- P2: paintEvent 15-16ms가 정상인데 WARN 수백 건 출력 (103KB)
+
+**수정**:
+- `DashboardAdapter.minute_chart_set_direction` 바인딩 추가
+- `PRE_MARKET_REFIT_STEPS`: `{1,5,10,14}` → `{3,5,10,14}`
+- EarlyWarmup 트리거 직후 Cybos RT `realtime_data.start()` 08:45 선행 호출
+- `_pm_refit_worker` z경고 악화 감지 WARNING 로그
+- ChartDBG paintEvent 임계 10ms → 30ms
+
+**커밋**: `995a2d4` (214차)
+
+---
+
+## 2026-06-19 (211~213차 — 차트 복원 완전 해결 + 5종 개선)
+
+**Work**: 자동팝업 재시동 시 차트 창이 DPI 1.5×로 비정상 확대되는 근본 원인을 로그 분석으로 확정, 음수 y 좌표 차단으로 해결. 5종 별도 개선 커밋.
+
+**근본 원인 확정**:
+- `QWindowsWindow::setGeometry: Unable to set geometry 3030x1460+3369-8 → 4547x2124`
+- 보조 모니터 avail.top()=-7에서 y=-7(=avail.top())로 setGeometry 호출
+- Qt 프레임 계산 중 y=-8로 변환 → avail.top()=-7 밖 1px → Windows DPI 가상화 발동
+- Python 3.7 32-bit(96DPI) + 144DPI 보조모니터 → 3030×1.5=4547, 1460×1.5=2190
+
+**212차 핵심 수정**: `y<0` → `y=0` 보정 (restore_saved_geometry + _center_on_second_screen)
+
+**213차 추가 수정**:
+- model/multi_horizon_model.py: 스케일러 pickle.dump(protocol=4) (joblib 내부 BYTEARRAY8=opcode63 → Python 3.7 KeyError 크래시 수정)
+- learning/calibration.py: protocol=4 통일
+- dashboard/panels/conf_trend_widget.py: ConfTrend 디버그 로그 WARNING→DEBUG (30초마다 6개 WARNING 오염 수정)
+- dashboard/panels/dynamic_mc_panel.py: 대규모 정리 (-533 lines)
+- start_mireuk_Cybos.bat: 런처 로그 자동 저장 (logs\Mireuk_batch\, 최신 10개 보관)
+
+**커밋**: 211차(27dafe1) 212차(76d14b6) 213차(0274cd4)
+
+---
+
 ## 2026-06-19 (210차 — 1분봉 차트 X축 방향예측·레짐 레인 구현)
 
 **Work**: `MinuteChartCanvas` X축 위에 방향예측 레인(UP/DOWN/FLAT, 현재봉 빈칸)과 레짐 레인(추세/횡보/급변/혼합/탈진) 두 개의 색상 바 추가. 팝업 봉차트(`CandleChartDialog`)에도 동일 구현.
