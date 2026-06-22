@@ -1,7 +1,40 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-22 (215차 세션) — minute_chart 호출 예외 가드 + 좌측패널 DB 미저장 근인 확인
+> 마지막 업데이트: 2026-06-22 (216차 세션) — CB③ HALT 원인해소 후 자동 거래 재개
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-22 (216차 — CB③ HALT 원인해소 후 거래 재개)
+
+### 문제 현상
+
+```
+[CRITICAL] [CB] 당일 시스템 정지 | 30분 정확도 10.0%
+[WARN] [ConstOut] ['30m', '3m'] 상수 출력 확정 → 스케일러 재적합 시작
+```
+
+CB③ 발동 후 스케일러 재적합 + GBM 재학습으로 원인이 해소돼도 `_state = "HALTED"` 고정 → 당일 내내 거래 불가.
+
+### 근본 원인
+
+`_on_const_out_refit_done()` → `reset_acc30m_buffer()` 는 acc 버퍼만 지우고 `_state`를 HALTED → NORMAL 로 복귀시키지 않음. HALT 해제 경로가 `reset_daily()`(다음 날 장 시작) 외에 없었음.
+
+### 수정 내용 (216차)
+
+| 파일 | 변경 |
+|---|---|
+| `safety/circuit_breaker.py` | `_halt_cause` 필드 + `_trigger_halt(cause=)` + `lift_cb3_halt()` 신규 메서드 |
+| `main.py` | `_on_gbm_retrain_done` 성공 블록에 `lift_cb3_halt()` 호출 |
+
+**`lift_cb3_halt()` 해제 조건:**
+- `state == HALTED` AND `_halt_cause == "cb3"` (CB②·연속손절 HALT는 해제 불가)
+- `daily_halt_count < 3` (3회 이상 = 완전 관망 정책 유지)
+
+**해제 시점**: GBM 재학습 완료 후 (`_on_gbm_retrain_done` 성공 블록)
+— scaler refit만으로는 GBM 트리 미변경 → ConstOut 재발 가능하므로 재학습까지 기다림
+
+**커밋**: `059bbe4` (216차)
 
 ---
 

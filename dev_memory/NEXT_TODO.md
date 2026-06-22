@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-06-23 (216차 — CB③ HALT 해제 검증)
+
+### ConstOut + HALT 재발 시 확인 [P0]
+
+- [ ] **CB③ HALT 발동** — `[CRITICAL] [CB] 당일 시스템 정지 | 30분 정확도` 로그 이후 `_halt_cause="cb3"` 설정 확인 (직접 확인 불가 → 아래 로그로 간접 확인)
+- [ ] **HALT 해제 로그 출현** — `[CB③] ConstOut 회복 — HALT 해제 (당일 HALT N회, 진입 사이즈 풀사이즈)` 로그 확인
+- [ ] **거래 재개** — HALT 해제 후 STEP7 진입 평가 정상 진행 확인 (`is_entry_allowed() == True`)
+- [ ] **Slack 알림** — "ConstOut 회복 후 CB③ HALT 해제" 알림 수신 확인
+
+### CB② (연속 손절) 보호 확인 [P1]
+
+- [ ] **CB② HALT는 해제 안 됨** — 연속 손절 HALT 후 GBM 재학습 완료 시 `[CB③] HALT 해제 불가 — 원인이 CB③ 아님 (cause='cb2')` 로그 출현 (재현 어려우나 로그 패턴 확인)
+
+### 잠재 리스크 [P2]
+
+- [ ] **daily_halt_count=3 이상 시 해제 거부** — `[CB③] HALT 해제 불가 — 당일 HALT 3회` 로그 출현 확인 (3회 HALT는 드문 상황)
+
+---
+
 ## 2026-06-23 (214차 — ERR-FATAL 수정 + 프리장 Phase 재설계 검증)
 
 ### 내일 장초반 즉시 확인 [P0]

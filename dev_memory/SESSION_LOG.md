@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-22 (216차 — CB③ HALT 원인해소 후 거래 재개)
+
+**Work**: CB③(30분 정확도 저하) HALT 후 ConstOut 스케일러 재적합 + GBM 재학습이 완료돼도 거래가 재개되지 않는 구조 결함 수정.
+
+**원인 확정**:
+- `_trigger_halt()` 호출 시 HALT 원인 코드를 저장하는 필드 없음
+- `reset_acc30m_buffer()`는 acc 버퍼만 지우고 `_state` 변경 없음
+- HALT 해제 경로가 `reset_daily()`(다음 날) 외에 없어 당일 거래 영구 불가
+
+**수정**:
+- `circuit_breaker.py`: `_halt_cause` 필드 + `_trigger_halt(cause=)` 파라미터 + `lift_cb3_halt()` 신규 메서드
+- `main.py`: `_on_gbm_retrain_done` 성공 블록에 `lift_cb3_halt()` 호출
+- CB② (연속 손절) HALT는 해제 불가 보호, daily_halt_count ≥ 3 시 완전 관망 정책 유지
+
+**커밋**: `059bbe4` (216차)
+
+---
+
 ## 2026-06-22 (215차 — minute_chart 예외 가드 + 좌측패널 카드 업데이트 불가 근인 확인)
 
 **Work**: 좌측패널 `DirectionIndicatorWidget`/`ConfTrendWidget` 종일 업데이트 안 되는 문제 로그 분석.
