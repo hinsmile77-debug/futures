@@ -253,13 +253,15 @@ SET "_RESTART_CNT=0"
 REM AllowSetForegroundWindow(ASFW_ANY=-1): 어떤 프로세스라도 foreground 이동 허가
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -Name ASFG -Namespace '' -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool AllowSetForegroundWindow(uint pid);'; [ASFG]::AllowSetForegroundWindow(0xFFFFFFFF)" 2>NUL
 
-REM main.py output: console + log file simultaneously via PowerShell Tee-Object
+REM main.py output: console + log file simultaneously
 REM RULES (do not change):
 REM  1) One literal line - no ^ continuation (breaks pipe under EnableDelayedExpansion)
 REM  2) No SET variable for the PS command (| inside variable re-parsed as CMD pipe)
 REM  3) No non-ASCII chars in REM near this line (CP949 misreads UTF-8, corrupts REM)
-REM  4) PYTHONUTF8=1 + Both OutputEncoding flags: console stream + file write UTF-8
-python main.py 2>&1 | powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; $input | Tee-Object -FilePath '!_BLOG!' -Append"
+REM  4) [Console]::Out.WriteLine = UTF-8 bytes to CMD (not PS pipeline UTF-16LE)
+REM     IO.StreamWriter($true,$e) = UTF-8 append to log file
+REM     Tee-Object removed: PS 5.1 Tee-Object writes UTF-16LE to stdout -> NUL chars in CMD
+python main.py 2>&1 | powershell -NoProfile -ExecutionPolicy Bypass -Command "$e=[Text.Encoding]::UTF8;[Console]::OutputEncoding=$e;$OutputEncoding=$e;$lf=New-Object IO.StreamWriter('!_BLOG!',$true,$e);try{$input|ForEach-Object{[Console]::Out.WriteLine($_);$lf.WriteLine($_)}}finally{$lf.Flush();$lf.Close()}"
 
 ECHO.
 CALL :L "============================================================"
