@@ -3893,7 +3893,10 @@ class TradingSystem:
         )
         self.dashboard.update_micro_regime_warmup(_mr.get("warmup"))
         # 1분봉 차트 레짐 색상 바 업데이트 + 재시작 복원용 DB 저장
-        self.dashboard.minute_chart_set_regime(ts, _mr["regime"])
+        try:
+            self.dashboard.minute_chart_set_regime(ts, _mr["regime"])
+        except Exception as _cre:
+            logger.debug("[ChartWarn] set_regime_at 예외 무시: %s", _cre)
         try:
             save_regime_at(ts, _mr["regime"])
         except Exception:
@@ -4396,7 +4399,10 @@ class TradingSystem:
         grade      = decision["grade"]
         self._last_ensemble_direction = direction  # Contrarian Mode 동방향 추적용
         # 1분봉 차트 방향예측 바 업데이트 (닫힌 봉에 색상 기록)
-        self.dashboard.minute_chart_set_direction(ts, direction)
+        try:
+            self.dashboard.minute_chart_set_direction(ts, direction)
+        except Exception as _cde:
+            logger.debug("[ChartWarn] set_direction_at 예외 무시: %s", _cde)
 
         # [MaskedFallback] 격리 예측 채택 — 정상 앙상블이 FLAT이고 격리 예측이 더 높을 때
         if direction == 0 and _masked_hp_blended and self.model.last_masked_features:
