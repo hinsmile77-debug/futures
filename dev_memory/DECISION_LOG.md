@@ -2,6 +2,51 @@
 
 ---
 
+## 2026-06-22 (219차 — Cybos CpTd6197 헤더 매핑 확정 + 잔여계약 처리 패턴)
+
+### [확정] CpTd6197 헤더 인덱스 매핑 (2026-06-22 SYSTEM 로그 실측)
+
+```
+header 0: 계좌번호
+header 1: 예탁금 (총매매) — 정적, 당일 변하지 않음
+header 2: 익일예탁금 (총평가수익률) — 실시간, 당일 실현손익 반영
+header 5: 전일손익 (추정자산) — 모의투자에서 1,111,000원 고정 관측
+header 6: 금일 실현손익 (실현손익) — 확정 실현 거래만 반영
+header 7: 미실현 손익 — 보유 포지션 평가손익 (FLAT이면 0, 포지션 있으면 음수 가능)
+header 8: 총손익 = header6 + header7
+header 9: 청산평가액 (총평가손익) — 포지션 없으면 header2와 동일
+```
+
+**중요**: 모의투자에서 `header 2 == header 9`가 관측됨(미결제 없을 때 정상).
+`header 5`(전일손익)는 모의투자에서 0이 아닌 실제 값(1,111,000원)이 나옴.
+
+### [패턴] 다계약 청산 시 Chejan 이벤트 유실 대응
+
+**증상**: N계약 청산 주문 후 Chejan 콜백이 M회(M < N)만 수신. 브로커는 FLAT인데 엔진에 잔여 포지션 잔류.
+
+**근본 원인**: Cybos 모의투자 서버에서 복수 체결이 단일 주문번호로 발생 시 Chejan 이벤트가 합산되거나 일부 누락될 수 있음.
+
+**대응 패턴** (219차 구현):
+```python
+# _ts_resolve_stuck_exit_pending의 broker_row is None 분기
+_rem_qty = self.position.quantity if self.position.status != "FLAT" else 0
+if _rem_qty > 0:
+    _rem_exit = _sq_avg_price or _last_pipeline_price
+    if _rem_exit > 0:
+        result = self.position.close_position(_rem_exit, "stuck_exit_remainder")
+        # trades DB 기록 + TRADE 로그 + PnL 탭
+```
+
+추정가 우선순위: Chejan 확인 평균가 → 파이프라인 마지막 가격.
+
+### [설계 결정] Sizer 잔고 소스 = 익일예탁금(총평가수익률, header2)
+
+`_ts_extract_sizer_balance` 키 순서를 `총평가수익률→총매매→추정자산`으로 변경.
+이유: `총매매`(예탁금)는 당일 거래로 변하지 않아 손실 후에도 Sizer가 과대 포지션 산출.
+`총평가수익률`(익일예탁금)은 실현손익이 즉시 반영되어 더 정확한 잔고 추정치.
+
+---
+
 ## 2026-06-22 (214차 — DashboardAdapter 어댑터 바인딩 누락 패턴)
 
 ### [버그 반복패턴] MireukDashboard 메서드 추가 시 DashboardAdapter 바인딩 동시 등록 필수

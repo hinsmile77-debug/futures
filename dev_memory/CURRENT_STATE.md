@@ -1,7 +1,51 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-22 (218차 세션) — DriftRetrain 32-bit OOM 수정 + 재시도 쿨다운
+> 마지막 업데이트: 2026-06-22 (219차 세션) — 브로커 잔여계약 PnL 누락·Sizer 잔고·TRADE 로그 3버그 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-22 (219차 — 브로커 잔여계약 PnL 누락·Sizer 잔고·TRADE 로그 3버그 수정)
+
+### 배경 — 딥다이브 분석으로 발견
+
+실시간 잔고 패널(금일손익 -96,999원)과 엔진 누적 손익(-353,129원)의 괴리를 CpTd6197 헤더 원시값과
+TRADE 로그를 교차 분석해 3개 버그를 확정.
+
+### 문제 현상
+
+| 버그 | 현상 |
+|---|---|
+| Bug1 | 다계약 청산 주문 시 Chejan 콜백 일부 미수신 → 잔여계약이 PnL 없이 소멸, 엔진 누적 손익 왜곡 |
+| Bug2 | Sizer 잔고가 종일 481,366,885원 고정 — 거래 후 손익이 Sizer에 미반영, 과대 포지션 크기 산출 가능 |
+| Bug3 | 포지션이 브로커 기준 FLAT으로 강제될 때 TRADE 로그 공백 — 사후 추적 불가 |
+
+### 근본 원인
+
+**[Bug1]** `_ts_resolve_stuck_exit_pending`의 `broker_row is None` 분기에서 `sync_flat_from_broker()`가
+`position.quantity > 0`인 상태로 호출됨. `sync_flat_from_broker()`는 PnL 계산 없이 `_reset_position()`만 실행.
+
+오늘 케이스: 2계약 하드스톱 주문 → Chejan 이벤트 1회만 수신(1계약) → 잔여 1계약 PnL ~+242,000원 소멸
+→ 엔진(-353,129) vs 브로커(-96,999) 256,130원 괴리의 주원인.
+
+**[Bug2]** `_ts_extract_sizer_balance`가 `총매매`(예탁금=header1, 정적)를 우선 탐색.
+Cybos CpTd6197의 `총평가수익률`(익일예탁금=header2)이 당일 실현손익 반영 실시간 잔고인데 순서가 뒤였음.
+
+**[Bug3]** `sync_flat_from_broker()` 자체는 `[Position] 브로커 기준 동기화: FLAT` 로그를 남기지만,
+어느 계약이, 어떤 이유로 FLAT이 됐는지 TRADE 탭에서 파악 불가능했음.
+
+### 수정 내용 (219차)
+
+| 파일 | 위치 | 변경 |
+|---|---|---|
+| `main.py` | `_ts_resolve_stuck_exit_pending` ~L9001 | Bug1: `close_position(exit_price, "stuck_exit_remainder")` + DB 기록 + PnL 로그 |
+| `main.py` | `_ts_extract_sizer_balance` ~L9300 | Bug2: 키 탐색 순서 `총평가수익률→총매매→추정자산` 으로 변경 |
+| `main.py` | `_ts_sync_position_from_broker` blank-as-flat 분기 | Bug3: `log_manager.trade("[BrokerSync] blank-as-flat 강제:...")` 추가 |
+
+**Bug1 동작**: 잔여계약 발견 → 추정가(`_sq_avg_price` 우선, 없으면 `_last_pipeline_price`) → `close_position()` 호출
+→ `_daily_pnl_pts` / `_daily_commission` 정상 업데이트 → trades DB 기록 → PnL 탭 표시
+
+**커밋**: `4d2b8bf` (219차)
 
 ---
 

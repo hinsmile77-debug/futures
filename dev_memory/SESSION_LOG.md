@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-06-22 (219차 — 브로커 잔여계약 PnL 누락·Sizer 잔고·TRADE 로그 3버그 수정)
+
+**Work**: 실시간 잔고 패널 이상점 딥다이브 → CpTd6197 헤더 원시값 + TRADE 로그 교차분석으로 3버그 확정·수정.
+
+**분석 발견**:
+- `CpTd6197 header 6` = -96,999원(브로커 실현손익), 엔진 누적 = -353,129원
+- 13:28→13:33 사이 브로커 +485,500원 변화(2계약분) vs 엔진 +240,528원(1계약분) → Chejan 콜백 1회 누락 확인
+- `header 7` = 미실현 손익(포지션 없으면 0), `header 8` = header6+header7
+- `총평가수익률`(header2=익일예탁금)이 Sizer 잔고 소스로 설계됐지만 `총매매`(예탁금)가 앞에 있어 항상 정적값 반환
+
+**수정**:
+- `main.py` Bug1: 잔여계약 `close_position("stuck_exit_remainder")` → trades DB·PnL 탭 기록
+- `main.py` Bug2: `_ts_extract_sizer_balance` 키 순서 `총평가수익률→총매매→추정자산`
+- `main.py` Bug3: blank-as-flat 강제 경로에 `log_manager.trade("[BrokerSync] blank-as-flat 강제:...")` 추가
+
+**커밋**: `4d2b8bf` (219차)
+
+---
+
 ## 2026-06-22 (218차 — DriftRetrain 32-bit OOM 수정 + 재시도 쿨다운)
 
 **Work**: 장중 DriftRetrain이 17회 연속 즉시 실패해 CB③ HALT까지 이어진 구조 버그 수정.

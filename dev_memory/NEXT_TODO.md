@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-06-23 (219차 — 브로커 잔여계약 수정 검증)
+
+### Bug1 잔여계약 PnL 처리 검증 [P0]
+
+- [ ] **[잔여청산] 로그 출현** — 다음 번 다계약 청산 시 TRADE 탭에
+  `[잔여청산] SHORT N계약 @ P.PP PnL=±X.XXpt (±Y원) │ 금일누적 Z원 [브로커FLAT 추정가]` 확인
+- [ ] **DB 기록 확인** — trades DB에 `exit_reason="stuck_exit_remainder"` 행이 남는지 확인
+- [ ] **엔진·브로커 괴리 축소** — 이전 256,130원 괴리가 ±50,000원 이내(수수료 오차 수준)로 줄었는지 확인
+
+### Bug2 Sizer 잔고 갱신 검증 [P1]
+
+- [ ] **Sizer 잔고 변동** — 거래 후 `[Sizer] 미니선물 잔고=481,XXX,XXX` 값이
+  익일예탁금(CpTd6197 header2)으로 업데이트되는지 확인 (481,366,885 고정 탈피)
+- [ ] **잔고 방향성** — 손실 거래 후 Sizer 잔고가 감소하는지 확인
+
+### Bug3 TRADE 로그 확인 [P2]
+
+- [ ] **blank-as-flat 경로** — 모의투자 blank rows 상황에서
+  `[BrokerSync] blank-as-flat 강제: SHORT N계약 @ P.PP → FLAT` 로그 확인
+
+### 잠재 이슈 — stuck_exit_remainder 추정가 정확도
+
+추정가 = Chejan 확인된 마지막 체결가(`_sq_avg_price`) 사용.
+실제 잔여계약 체결가와 ±0.5pt 이내이면 허용 오차 수준.
+만약 시장이 급변해 추정가 오차가 크면 → 향후 개선안:
+CpTd6197 header 8(총손익)에서 역산하는 방법 검토.
+
+---
+
 ## 2026-06-23 (218차 — DriftRetrain OOM 수정 검증)
 
 ### 재학습 정상화 확인 [P0]
