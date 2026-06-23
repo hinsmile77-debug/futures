@@ -10916,19 +10916,96 @@ class _BrokerOrderAdapter:
 
 def main():
     import traceback as _tb
-    # ── [230차] faulthandler — C레벨 크래시(0xC0000409 스택오버런·SIGSEGV) 시 스택 트레이스 기록
-    # Python exception handler 도달 전 OS 강제 종료 시에도 logs/crash_fault.log 에 트레이스 남김.
+
+    # ── [230차] faulthandler 크래시 핸들러 ────────────────────────────────
+    # 목적: C 레벨 치명 예외(0xC0000409 STATUS_STACK_BUFFER_OVERRUN, SIGSEGV 등) 발생 시
+    #       Python exception handler 도달 전 OS가 프로세스를 강제 종료해도
+    #       logs/crash_fault.log 에 전체 스레드 Python 스택 트레이스를 기록.
+    #
+    # 기능:
+    #   ① faulthandler.enable(all_threads=True)
+    #        — 크래시 즉시 전 스레드 트레이스 덤프
+    #        — Windows: AddVectoredExceptionHandler 등록 → 0xC0000409 포함 치명 예외 포착
+    #   ② faulthandler.dump_traceback_later(timeout=30, repeat=True)
+    #        — 30초 동안 GIL 해제 안 되면(COM BlockRequest 행 등) 주기적 트레이스 덤프
+    #        — 15:09 크래시 재현 시: _scheduler_tick 안에서 무엇이 30초 블로킹했는지 즉시 확인
+    #   ③ atexit: 정상 종료 시 "CLEAN EXIT" 마커 → 크래시 여부 구별
+    #
+    # 파일: logs/crash_fault.log (append — 이전 세션 로그 누적 보관)
+    # 인코딩: faulthandler는 fd에 직접 ASCII 바이트 씀 → BOM·인코딩 지정 불필요
+    _fault_file = None
     try:
         import faulthandler as _fh
-        _crash_fault_path = os.path.join("logs", "crash_fault.log")
+        import atexit    as _atexit
+        import sys       as _sys_fh
+        import datetime  as _dt_fh
+
+        _fault_path = os.path.join("logs", "crash_fault.log")
         os.makedirs("logs", exist_ok=True)
-        _crash_fault_file = open(_crash_fault_path, "a", encoding="utf-8")
-        import datetime as _dt_fh
-        _crash_fault_file.write(f"\n=== {_dt_fh.datetime.now().isoformat()} 시작 ===\n")
-        _crash_fault_file.flush()
-        _fh.enable(file=_crash_fault_file)
-    except Exception:
-        pass
+
+        # append + no encoding → faulthandler가 fd에 직접 ASCII 쓰므로 충돌 없음
+        _fault_file = open(_fault_path, "a")
+
+        # ── 세션 헤더 ───────────────────────────────────────────────────
+        _now_s  = _dt_fh.datetime.now().isoformat(timespec="seconds")
+        _pid    = os.getpid()
+        _bits   = "32bit" if _sys_fh.maxsize <= 2**32 else "64bit"
+        _pyver  = _sys_fh.version.split()[0]
+        try:
+            import psutil as _psu
+            _mem_mb = _psu.Process(_pid).memory_info().rss / 1024 / 1024
+            _mem_s  = f"  RSS={_mem_mb:.0f}MB"
+        except Exception:
+            _mem_s  = ""
+        _fault_file.write(
+            f"\n{'='*64}\n"
+            f"[START] {_now_s}  PID={_pid}  Python {_pyver} {_bits}{_mem_s}\n"
+            f"  → 크래시 시 아래에 전 스레드 트레이스 자동 기록됩니다\n"
+            f"{'='*64}\n"
+        )
+        _fault_file.flush()
+        try:
+            os.fsync(_fault_file.fileno())   # OS 캐시 → 디스크 강제 기록
+        except Exception:
+            pass
+
+        # ── ① 크래시 핸들러 활성화 ─────────────────────────────────────
+        # all_threads=True: 메인 + GBM 재학습 스레드 + 워치독 스레드 전부 덤프
+        _fh.enable(file=_fault_file, all_threads=True)
+
+        # ── ② 행 감지 (30초 GIL 미해제 시 트레이스 덤프) ──────────────
+        # COM BlockRequest(_poll_option_chain 3s, _scheduler_tick 중 COM 호출)나
+        # DB 쿼리가 30초 이상 블로킹되면 "TIMEOUT" 덤프 기록.
+        # repeat=True: 계속 블로킹 중이면 30초마다 반복 덤프.
+        _fh.dump_traceback_later(30, repeat=True, file=_fault_file)
+
+        # ── ③ 정상 종료 마커 (atexit) ──────────────────────────────────
+        # 크래시 종료: 마커 없음 → "CLEAN EXIT" 부재로 비정상 확인
+        # 정상 종료: "CLEAN EXIT" 기록 → 크래시 아님 확인
+        def _fault_atexit():
+            try:
+                _fh.cancel_dump_traceback_later()   # 행 감지 타이머 해제
+                _fault_file.write(
+                    f"[CLEAN EXIT] {_dt_fh.datetime.now().isoformat(timespec='seconds')}"
+                    f"  PID={_pid}\n"
+                )
+                _fault_file.flush()
+                _fault_file.close()
+            except Exception:
+                pass
+        _atexit.register(_fault_atexit)
+
+        logger.info(
+            "[FaultHandler] 활성화 | file=%s PID=%d | "
+            "행감지=30s all_threads=True",
+            _fault_path, _pid,
+        )
+
+    except Exception as _fh_e:
+        try:
+            logger.warning("[FaultHandler] 설치 실패 (무해): %s", _fh_e)
+        except Exception:
+            pass
 
     # DB 초기화
     init_all_dbs()
