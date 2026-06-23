@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-23 (228차 — ExchangeCB 미감지 버그 수정)
+
+**Work**: 금일 14:34~14:58 거래소 CB 24분간 ExchangeCB 모드 미발동 원인 분석 → 수정.
+
+**분석 발견**:
+- `_try_pipeline_recovery()` 복구 스킵 경로(line 7515)에 `notify_pipeline_ran()` 존재
+  → 워치독 타이머 90초마다 리셋 → elapsed_s 항상 90s → 300s(ExchangeCB 임계) 영구 미도달
+- 금일 14:34:30 복구 성공 후 14:34~14:58 24분간 ExchangeCB 미진입, 매 90초 Slack 도배
+- 단일가 tick 14:33:35~42에 ts=14:33:00으로 수백 개 쏟아짐 (파이프라인 영향 없음)
+- CB④ ATR 3.5배 → 5분 정지, AutoMask, X등급 정상 작동
+- 14:59 즉시 재크래시(2회): 추정 원인 OptionChain 3초 블로킹 + CB 특수 상태 조합
+- PnL=+1,399,653원 복원 (10건 거래, FLAT 포지션)
+
+**수정 (228차 68b6095)**:
+- `__init__`: `_last_real_pipeline_dt` 신설 — 실제 분봉 완료 시각(복구 스킵·가드 제외)
+- `run_minute_pipeline()` 말미: `_last_real_pipeline_dt = datetime.datetime.now()` 갱신
+- `_try_pipeline_recovery()` 복구 스킵 경로: `notify_pipeline_ran()` 제거 → 워치독 자연 누적 허용
+  + `_real_elapsed > 600s` 시 ExchangeCB 강제 진입(안전망)
+- `_on_pipeline_watchdog()`: `elapsed_s` vs `_real_gap` 중 큰 값으로 ExchangeCB 판단
+- `_try_pipeline_recovery()` `age_s > 600` 경로: 장중이면 ExchangeCB 자동 진입
+
+**커밋**: 228차 (68b6095)
+
+---
+
 ## 2026-06-23 (227차 — 거래소 서킷브레이커 CB 재개 대응 강화)
 
 **Work**: 금일 KOSPI CB 1단계(8% 하락, 14:14~14:34 30분 거래 중단) 로그 분석 → 대응 로직 개선.

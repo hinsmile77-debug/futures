@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-06-24 (228차 — ExchangeCB 수정 효과 검증) [최우선]
+
+### ExchangeCB 정상 감지 확인 [P0]
+
+- [ ] **ExchangeCB 로그 출현** — 분봉 5분 이상 미수신 시 `[ExchangeCB] 분봉 N미수신(실경과=Xs) — 거래소 CB/단일가 구간 추정` 출현
+- [ ] **Slack 도배 없음** — ExchangeCB 진입 후 90초마다 경보 STOP, 30분마다 생존 알림 1회만
+- [ ] **CB 재개 후 _post_exchange_cb_resume** — `[ExchangeCB] 거래소 CB 해제` + `[GBM-64] 재학습 시작` + CB③ 쿨다운=30샘플 출현
+- [ ] **_last_real_pipeline_dt 갱신** — 실 분봉 처리 후 워치독 실경과 정상 누적 (복구 스킵 시 타이머 리셋 없음)
+
+### OptionChain 블로킹 해소 필요 (별도 개선 검토) [P1]
+
+- [ ] `[LiveDBG] _poll_option_chain 지연 2897ms` — 메인 스레드 3초 블로킹 반복
+  → CB 재개 직후 크래시 원인 후보. `_poll_option_chain` timeout 단축 또는 비동기 처리 검토
+
+---
+
 ## 2026-06-24 (226차 — 64비트 subprocess 재학습 효과 검증) [최우선]
 
 ### GBM 64비트 subprocess 작동 확인 [P0]
