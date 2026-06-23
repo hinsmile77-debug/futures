@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-23 (223차 — BiasReset uniform fallback 고착 버그 수정)
+
+**Work**: 장중 10m·3m FL편향 고착 원인 분석 → 2개 연쇄 버그 발견·수정.
+
+**분석 발견**:
+- BiasReset 발동 시 `_bias_buf`를 클리어하지 않아 FL 26건 잔존 → 해제 조건 영구 미달
+- uniform fallback 후 `direction=0` 예측이 10분 뒤 verified될 때 FL로 카운트 → 해제 불가 무한루프
+- 오늘 09:42 발동 후 `[Bias⚠]` 경고가 장중 내내 반복 출력되고 앙상블에서 10m이 uniform으로 고착됨
+
+**수정**:
+- `main.py` BiasReset 발동 시 `_bias_buf[h].clear()` + `streak=0` + `timer=20` 추가
+- `main.py` bias_override active 호라이즌의 `_bias_buf` 기록 스킵
+- `main.py` 20분 자동 해제 타이머 (`_bias_override_timer`) 신설 — 타이머 0 도달 시 override 해제
+- GBM 재학습·일간 리셋 함수에 `_bias_override_timer` 초기화 추가
+
+**오늘 거래 결과**: 1차 +760,602원(TP1+TP2) / 2차 -92,184원(하드스톱) → 누적 **+668,418원**
+
+**커밋**: 223차 (ca33da8)
+
+---
+
 ## 2026-06-23 (222차 — EOD 마커 파일명 불일치 + retrain_str NameError 수정)
 
 **Work**: 장전 점검 중 PreRetrain 불필요 발동 원인 추적 → 2개 버그 발견·수정.

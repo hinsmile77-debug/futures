@@ -1,7 +1,50 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-23 (222차 세션) — EOD 마커 파일명 불일치 + retrain_str NameError 수정
+> 마지막 업데이트: 2026-06-23 (223차 세션) — BiasReset uniform fallback 고착 버그 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-23 (223차 — BiasReset uniform fallback 고착 버그 수정)
+
+### 배경 — 장중 10m·3m FL편향 고착 확인
+
+오늘 장중(09:42~) 10m 호라이즌에서 BiasReset이 발동됐음에도 uniform fallback이 해제되지 않고
+계속 `[Bias⚠] FL편향 80~87%` 경고가 반복 출력됨. 3m도 09:49부터 같은 패턴 진입.
+
+### 버그 원인 (2가지 연쇄)
+
+**원인 1**: BiasReset 발동 시 `_bias_buf`를 클리어하지 않아 이전 FL 26건이 잔존
+→ 해제 조건 `_dir_bias_r < 0.60` 영구 미달
+
+**원인 2**: uniform fallback 적용 후 저장된 예측(direction=0=FLAT)이 10분 후 verified될 때 FL로 카운트
+→ bias_buf가 자연 교체되어도 FL 비율이 유지되어 해제 불가
+
+### 수정 (main.py, 6곳)
+
+| 위치 | 변경 내용 |
+|---|---|
+| `__init__` ~L491 | `_bias_override_timer: dict` 추가 |
+| bias_buf 기록 ~L3447 | override active 호라이즌 verified 기록 스킵 |
+| 편향 판정 루프 앞 ~L3458 | 타이머 감소 + 0 도달 시 자동 해제 로그 |
+| BiasReset 발동 ~L3529 | `buf.clear()` + `streak=0` + `timer=20` 설정 |
+| GBM 재학습 리셋 ~L2772 | `_bias_override_timer` 초기화 추가 |
+| 일간 리셋 ~L6962 | `_bias_override_timer` 초기화 추가 |
+
+### 수정 후 동작
+
+- BiasReset 발동 즉시 `_bias_buf` 클리어 → `[Bias⚠]` 반복 경고 즉시 중단
+- override active 중 verified 예측 buf 제외 → uniform(FL) 쌓임 차단
+- 20분 타이머 자동 해제 → 영구 고착 방지
+- GBM 재학습 발생 시 기존대로 즉시 강제 해제
+
+### 오늘 거래 결과 (참고)
+
+- 1차 (09:21): SHORT 2계약 @ 1465.84 → TP1+TP2 = +760,602원
+- 2차 (09:30): SHORT 1계약 @ 1455.80 → 하드스톱 = -92,184원
+- 당일 누적: **+668,418원**
+
+**커밋**: 223차 (ca33da8)
 
 ---
 
