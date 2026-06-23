@@ -8,6 +8,28 @@
 
 ---
 
+## 2026-06-24 (226차 — 64비트 subprocess 재학습 효과 검증) [최우선]
+
+### GBM 64비트 subprocess 작동 확인 [P0]
+
+- [ ] **subprocess 시작** — LEARNING.log에 `[GBM-64] 64비트 서브프로세스 재학습 시작 | ... pid=N` 출현
+- [ ] **subprocess 완료** — `[GBM-64] subprocess 완료 (returncode=0)` 출현 (returncode≠0 이면 retrain_intraday_{}.log 확인)
+- [ ] **GBM 배치 완료** — `[GBM] 웜업 배치 재학습 완료 | Xs 데이터=N행` 출현 (OOM 없이)
+- [ ] **로그 파일 생성** — `logs/retrain_intraday_{YYYYMMDD_HHMMSS}.log` 존재 확인
+- [ ] **결과 JSON 정리** — `data/_gbm_result_*.json` 임시 파일이 완료 후 삭제됨 (잔류 시 S0 읽기 오류)
+
+### OOM 재발 없음 확인 [P1]
+
+- [ ] **OOM 미출현** — `Unable to allocate 14.8 MiB` 미출현 (출현 시 py310_64 경로 확인)
+- [ ] **모델 교체** — S0에서 `[Model] 재학습 완료 모델 교체 적용 (S0)` 출현
+
+### 30m ConstOut 감소 [P2]
+
+- [ ] **ConstOut 빈도 감소** — 이전 12~14시 4회 → 재학습 후 감소 기대
+- [ ] **30m 정확도 회복** — GBM 교체 후 30m acc30m ≥ 35% 수준으로 회복 여부
+
+---
+
 ## 2026-06-24 (225차 — sigma·QTimer·CB③ 수정 효과 검증) [최우선]
 
 ### sigma 수정 확인 [P0]

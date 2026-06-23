@@ -1,7 +1,48 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-23 (225차 세션) — sigma=0 버그·QTimer daemon thread 미전달·CB③ 재트리거 3종 수정
+> 마지막 업데이트: 2026-06-23 (226차 세션) — GBM 재학습 64비트 subprocess 이관 (OOM 완전 차단)
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-23 (226차 — GBM 재학습 64비트 subprocess 이관)
+
+### 배경 — 금일 12시 재시작 후 OOM 반복 확인
+
+225차 커밋 후 12:00 재시작으로 sigma·QTimer 수정 효과 확인됐으나,
+GBM 재학습이 12:01·12:24·12:54·13:29·13:52 모두 OOM으로 실패:
+```
+Unable to allocate 14.8 MiB for an array with shape (39876, 97) and data type float32
+```
+32비트 Python 3.7의 메모리 단편화 한계. 재학습 없이 구형 모델 유지 → 30m ConstOut 반복.
+
+### 해결: py310_64 서브프로세스 재학습
+
+```
+retrain_intraday.py (신규)
+  py310_64 (Python 3.10 64-bit) 전용
+  retrain_now(force, intraday) 실행 → 결과 JSON 기록
+  EOD retrain_eod.py 와 동일 환경 (pickle protocol=4 호환)
+
+main.py 구조 변경
+  _start_gbm_retrain_subprocess() 신규 헬퍼
+  PreRetrain(08:55), WarmupRetrain(장중재시작), STEP3(주기/드리프트),
+  _start_manual_retrain() 4곳 모두 subprocess 이관
+  S0-A: subprocess.poll() 완료 감지 → _on_gbm_retrain_done() 호출
+  S0-B: deferred_callbacks 큐는 const_out_done 전용 유지
+
+config/settings.py: PYTHON_64_EXEC = py310_64 경로 추가
+```
+
+### 예상 효과 (내일 로그 확인 포인트)
+
+- `[GBM-64] 64비트 서브프로세스 재학습 시작 | force=... pid=N` 출현
+- `[GBM-64] subprocess 완료 (returncode=0)` 출현
+- `[GBM] 배치 재학습 완료 | Xs` 출현 (OOM 없이)
+- 30m ConstOut 발생 감소 (모델 정상 교체 시)
+- `retrain_intraday_{YYYYMMDD_HHMMSS}.log` 생성 확인
+
+**커밋**: 226차 (054c21d)
 
 ---
 

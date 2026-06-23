@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-06-23 (226차 — GBM 재학습 64비트 subprocess 이관)
+
+**Work**: 12:00 재시작 후 로그 점검 → OOM 반복 확인 → subprocess 이관.
+
+**분석 발견**:
+- 225차 P0(sigma) 수정 완전 성공: 12:02~ nonzero=1, 12:06~ sigma_at_t=0.0466%
+- 225차 P1(deferred 큐) 완전 성공: 12:24 `[ConstOut] 재적합 완료 → acc30m 버퍼 리셋` 정상 출현
+- CB③ 재시작으로 초기화 → 13:00 LONG 진입 확인
+- OOM 패턴: 12:01·12:24·12:54·13:29·13:52 전부 `Unable to allocate 14.8 MiB (39876×97 float32)` — 32비트 단편화
+- GBM 모델 미교체 → 30m ConstOut 반복 → sigma=0 시절 학습된 구형 모델 유지
+
+**수정 (모두 226차 054c21d)**:
+- `retrain_intraday.py` 신규: py310_64 전용 재학습 스크립트 (argv: result_json force intraday)
+- `config/settings.py`: `PYTHON_64_EXEC` 상수 추가
+- `main.py`: `_start_gbm_retrain_subprocess()` 헬퍼 신설
+- `main.py`: PreRetrain·WarmupRetrain·STEP3·_start_manual_retrain 4곳 모두 subprocess 이관
+- `main.py` S0-A: `subprocess.poll()` 완료 감지 → `_on_gbm_retrain_done()` 직접 호출
+- `main.py` S0-B: deferred_callbacks 큐는 `const_out_done` 전용 유지
+
+**커밋**: 226차 (054c21d)
+
+---
+
 ## 2026-06-23 (225차 — sigma=0 버그·QTimer daemon thread 미전달·CB③ 재트리거 3종 수정)
 
 **Work**: 20260623 장중 로그(LEARNING + SYSTEM) 딥다이브 → CB③ 종일 HALT 미해제 원인 3종 발굴·수정.
