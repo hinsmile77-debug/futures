@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-06-24 (224차 — SGD 임계 완화 효과 검증)
+
+### SGD 붕괴 복구 조기 발동 확인 [P0]
+
+- [ ] **DN/UP 편향 시 80% 임계 복구 발동** — `[OnlineLearner] Xm SGD DN붕괴 자동 복구 (≥80% 12분 지속)` 로그 출현 시 기존 95% 대비 평균 3분 단축 여부 확인
+- [ ] **BiasReset 연계 SGD 리셋** — BiasReset 발동 직후 `[OnlineLearner] Xm BiasReset 연계 SGD 리셋` 로그 출현 → conf=34.0% UP 고착 재발 여부 확인 (미출현이 정상: 편향 없음)
+- [ ] **오발동 없음 확인** — 정상 원웨이 추세(적중률≥60%)에서 BiasReset 미발동 → SGD 리셋 미발동 (기존 `적중률≥0.55 → BiasReset 스킵` 조건이 보호)
+
+---
+
 ## 2026-06-24 (222차 — EOD 마커·PreRetrain 수정 검증)
 
 ### PreRetrain 스킵 확인 [P0]

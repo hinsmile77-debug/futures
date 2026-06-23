@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-23 (224차 — SGD 붕괴 복구 임계 완화 + BiasReset 연계 SGD 리셋)
+
+**Work**: 오늘 5m DN 편향 흐름 로그 분석 → 2개 구조적 문제 발견·수정.
+
+**분석 발견**:
+- 5m DN=83% 편향에서 SGD 붕괴 자동복구 미발동: SGD 출력이 95% 임계에 미달 (5m는 극단 확신을 잘 찍지 않는 특성)
+- 09:58 BiasReset 발동 후 `boost_sgd_for_bias`가 오염된 파라미터 상태에서 UP 고착 → 10:03~10:19 conf=34.0% UP 연속 실패
+- 4일치 로그 분석: 발동 케이스 11건 Bias% 최솟값 76%, 평균 87.4% → 80% 임계에 4%p 마진 확보
+
+**수정**:
+- `online_learner.py`: `_COLLAPSE_THR=0.80`, `_COLLAPSE_TICKS=12` 클래스 상수로 분리 (하드코딩 제거)
+- `online_learner.py`: `_do_sgd_reset()` 공통 메서드 추출, `reset_sgd_for_bias()` 신규 추가
+- `main.py` L3545: `boost_sgd_for_bias` → `reset_sgd_for_bias` 교체 (가중치 boost → 전체 리셋)
+
+**커밋**: 224차 (c9c2d74)
+
+---
+
 ## 2026-06-23 (223차 — BiasReset uniform fallback 고착 버그 수정)
 
 **Work**: 장중 10m·3m FL편향 고착 원인 분석 → 2개 연쇄 버그 발견·수정.

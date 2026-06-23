@@ -1,7 +1,45 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-23 (223차 세션) — BiasReset uniform fallback 고착 버그 수정
+> 마지막 업데이트: 2026-06-23 (224차 세션) — SGD 붕괴 복구 임계 완화 + BiasReset 연계 SGD 리셋
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-23 (224차 — SGD 붕괴 복구 임계 완화 + BiasReset 연계 SGD 리셋)
+
+### 배경 — 5m DN 편향 로그 분석
+
+오늘 장중 5m DN 편향 흐름을 분석한 결과 두 가지 구조적 문제 발견:
+
+1. **SGD 붕괴 자동복구 미발동**: 5m DN=83% 편향임에도 SGD 출력이 95% 임계에 미달 → 복구 불발
+2. **BiasReset 후 UP 고착**: BiasReset이 09:58에 발동 후 `boost_sgd_for_bias`가 SGD 가중치를 올렸는데, 오염된 파라미터 상태에서 UP 방향으로 고착되어 10:03~10:19 conf=34.0% UP 연속 실패
+
+### 데이터 근거 (4일치 로그 분석)
+
+발동된 붕괴 복구 케이스 11건의 직전 Bias% 분포:
+- 최솟값 76%, 평균 87.4%, 중앙값 87%
+- 미발동 케이스: 5m DN=83% (오늘)
+
+### 수정 1: SGD 붕괴 임계 완화 (online_learner.py)
+
+| 항목 | 이전 | 이후 |
+|---|---|---|
+| `_COLLAPSE_THR` | 0.95 (하드코딩) | **0.80** (클래스 상수) |
+| `_COLLAPSE_TICKS` | 15분 (하드코딩) | **12분** (클래스 상수) |
+| 리셋 로직 | 인라인 중복 | `_do_sgd_reset()` 공통 메서드 |
+
+### 수정 2: BiasReset 시 SGD 전체 리셋 (online_learner.py + main.py)
+
+- `reset_sgd_for_bias(horizon)` 신규 메서드 추가: 모델·스케일러·가중치 전체 초기화
+- `main.py` L3545: `boost_sgd_for_bias` → `reset_sgd_for_bias` 교체
+- BiasReset uniform fallback 기간 중 SGD 공백이 동기화되어 UP 고착 부작용 제거
+
+### 예상 효과 (내일 로그 확인 포인트)
+
+- `[OnlineLearner] 5m SGD DN붕괴 자동 복구 (≥80% 12분 지속) → 모델·스케일러 리셋`
+- `[OnlineLearner] 5m BiasReset 연계 SGD 리셋 → 모델·스케일러·가중치 초기화`
+
+**커밋**: 224차 (c9c2d74)
 
 ---
 
