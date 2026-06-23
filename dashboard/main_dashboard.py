@@ -10251,28 +10251,57 @@ class MireukDashboard(QMainWindow):
         )
 
     def closeEvent(self, event):
-        """메인 윈도우 종료 시 차트 다이얼로그 geometry를 명시적으로 저장.
+        """메인 윈도우 종료 시 '완전 종료 / 재시작' 선택 다이얼로그 표시.
+
+        [229차] X 버튼 클릭 시 의도를 확인:
+          - 완전 종료: _exit_normally 플래그 → 런처 RESTART_LOOP 종료
+          - 재시작:    플래그 없음 → 런처 AUTO-RESTART 10초 후 재기동
+          - 취소:      닫기 취소
 
         Qt 부모-자식 소멸 경로에서는 자식 closeEvent가 호출되지 않으므로,
         메인 윈도우 closeEvent에서 차트 다이얼로그를 먼저 닫아 geometry를 저장한다.
-        단, 다이얼로그가 VISIBLE인 경우에만 닫기 — 숨겨진 상태면 이미 저장됨.
-        (비표시 상태에서 close() 호출 시 __init__의 초기 크기가 저장되는 버그 방지)
         """
+        from PyQt5.QtWidgets import QMessageBox as _MB
+        _dlg = _MB(self)
+        _dlg.setWindowTitle("미륵이 종료")
+        _dlg.setText("종료 방법을 선택하세요.")
+        _dlg.setInformativeText(
+            "완전 종료: 런처(배치창)도 함께 종료됩니다.\n"
+            "재시작: 10초 후 런처가 자동으로 재기동합니다."
+        )
+        _btn_full = _dlg.addButton("완전 종료", _MB.DestructiveRole)
+        _btn_restart = _dlg.addButton("재시작 (10초 후)", _MB.AcceptRole)
+        _btn_cancel = _dlg.addButton("취소", _MB.RejectRole)
+        _dlg.setDefaultButton(_btn_cancel)
+        _dlg.exec_()
+        _clicked = _dlg.clickedButton()
+
+        if _clicked == _btn_cancel:
+            event.ignore()
+            return
+
+        # 차트 다이얼로그 geometry 저장
         if hasattr(self, '_minute_chart_dialog'):
             try:
                 if self._minute_chart_dialog.isVisible():
-                    self._minute_chart_dialog.close()  # → MinuteChartDialog.closeEvent → geometry 저장
+                    self._minute_chart_dialog.close()
             except Exception:
                 pass
-        # [229차] 사용자가 UI X 버튼으로 종료 시 런처 RESTART_LOOP 재시작 방지 플래그
-        try:
-            import os as _os
-            _flag = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data", "_exit_normally")
-            with open(_flag, "w", encoding="utf-8") as _f:
-                import datetime as _dt
-                _f.write(f"user_close\n{_dt.datetime.now().isoformat()}\n")
-        except Exception:
-            pass
+
+        if _clicked == _btn_full:
+            # 완전 종료: 플래그 생성 → 런처 재시작 방지
+            try:
+                import os as _os, datetime as _dt
+                _flag = _os.path.join(
+                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                    "data", "_exit_normally",
+                )
+                with open(_flag, "w", encoding="utf-8") as _f:
+                    _f.write(f"user_close\n{_dt.datetime.now().isoformat()}\n")
+            except Exception:
+                pass
+        # 재시작: 플래그 없음 → 런처가 10초 후 AUTO-RESTART
+
         super().closeEvent(event)
 
 
