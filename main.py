@@ -487,6 +487,8 @@ class TradingSystem:
         # 치환해 앙상블 오염을 차단한다. 2026-06-05 10m/15m FL 100% 고착 사례 대응.
         self._bias_fl_streak: dict = {h: 0 for h in HORIZONS}  # FL 편향 연속 분 카운터
         self._bias_override_horizons: set = set()               # uniform fallback 적용 호라이즌
+        # 자동 해제 타이머: 발동 후 N분 경과 시 자동 해제 (buf 스킵으로 조기해제 불가 대비)
+        self._bias_override_timer: dict = {h: 0 for h in HORIZONS}
 
         # ── [P2-진단] conf 고착 감지 ────────────────────────────────────────
         # conf가 N분 연속 동일값일 때 WARN 로그로 GBM/SGD 분해값을 기록
@@ -2767,6 +2769,7 @@ class TradingSystem:
             # 새 모델에 그대로 남으면 uniform fallback 고착 + SGD 대항력 약화 지속
             self._bias_override_horizons.clear()
             self._bias_fl_streak = {h: 0 for h in HORIZONS}
+            self._bias_override_timer = {h: 0 for h in HORIZONS}
             for _bh in HORIZONS:
                 self._bias_buf[_bh].clear()
             self.online_learner.reset_daily()
@@ -3436,15 +3439,35 @@ class TradingSystem:
 
         # ── 호라이즌별 롤링 Bias 통계 (30건 윈도우) ──────────────────────────
         # 분봉 1건씩 누적 → 15건 이상 쌓이면 편향 판정 / 10분마다 요약 출력
+        # bias_override active 호라이즌은 기록 스킵:
+        #   uniform fallback 후 direction=0이 쌓이면 FL 카운트가 유지되어
+        #   해제 조건(_dir_bias_r < 0.60)이 영구 달성 불가 → 타이머로만 해제
         if verified:
             for _v in verified:
-                self._bias_buf[_v["horizon"]].append({
+                _h_name_v = _v["horizon"]
+                if _h_name_v in self._bias_override_horizons:
+                    continue
+                self._bias_buf[_h_name_v].append({
                     "predicted": int(_v.get("predicted", 0)),
                     "correct":   bool(_v["correct"]),
                 })
 
             self._bias_log_tick += 1
             _log_summary = (self._bias_log_tick % 10 == 0)
+
+            # ── bias_override 자동 해제 타이머 ────────────────────────────────
+            # buf 스킵 중이므로 조기 해제(bias < 60%) 평가 불가 → 타이머로 해제
+            for _ht in list(self._bias_override_horizons):
+                _t = self._bias_override_timer.get(_ht, 0)
+                if _t > 0:
+                    self._bias_override_timer[_ht] = _t - 1
+                if self._bias_override_timer.get(_ht, 0) <= 0:
+                    self._bias_override_horizons.discard(_ht)
+                    self._bias_buf[_ht].clear()
+                    self._bias_fl_streak[_ht] = 0
+                    log_manager.learning(
+                        f"[BiasReset] {_ht} uniform fallback 자동 해제 (20분 경과)"
+                    )
 
             for _h in sorted(self._bias_buf):
                 _buf = self._bias_buf[_h]
@@ -3503,12 +3526,18 @@ class TradingSystem:
                     if (self._bias_fl_streak[_h] >= _bias_thresh_min
                             and _h not in self._bias_override_horizons):
                         self._bias_override_horizons.add(_h)
+                        # buf clear: 이전 FL 이력 제거 → 발동 후 Bias⚠ 반복 출력 차단
+                        # 이전 이력 유지 시 FL 26건이 남아 해제 조건(_dir_bias_r < 0.60) 영구 미달
+                        self._bias_buf[_h].clear()
+                        self._bias_fl_streak[_h] = 0
+                        # 20분 자동 해제 타이머 (buf 스킵으로 조기해제 불가 대비)
+                        self._bias_override_timer[_h] = 20
                         log_manager.learning(
                             f"[BiasReset] {_h} {_biased_dir}편향 {_dir_bias_r:.0%} "
-                            f"적중={_acc_h:.0%} {self._bias_fl_streak[_h]}분 지속 → uniform fallback 적용"
+                            f"적중={_acc_h:.0%} {_bias_thresh_min}분 지속 → uniform fallback 적용 (20분 후 자동해제)"
                         )
                         self.circuit_breaker.record_horizon_fl_bias(
-                            _h, _dir_bias_r, self._bias_fl_streak[_h]
+                            _h, _dir_bias_r, _bias_thresh_min
                         )
                         # P4: GBM 편향 감지 → SGD 비중 min floor 탈출 (대항력 회복)
                         self.online_learner.boost_sgd_for_bias(_h)
@@ -6930,6 +6959,7 @@ class TradingSystem:
         self._bias_log_tick = 0
         self._bias_fl_streak = {h: 0 for h in HORIZONS}
         self._bias_override_horizons.clear()
+        self._bias_override_timer = {h: 0 for h in HORIZONS}
         self._conf_prev.clear()
         self._conf_stuck = {h: 0 for h in HORIZONS}
         self._ensemble_conf_cache.clear()
