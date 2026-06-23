@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-06-24 (231차 — EOD 수정 효과 검증) [최우선]
+
+### ScalerWarmup 피처 수 확인 [P0]
+- [ ] EOD 로그 `[ScalerWarmup] 피처 로드 완료 n=500 feat=97` — 120 → 97 변경 확인
+- [ ] `[ScalerWarmup] 입력 데이터에 없는 피처 N개 (0 패딩)` 경고 미출현
+
+### 피처 활성화 확인 [P0]
+- [ ] EOD 로그 `1m 피처 슬라이싱: 97 → 13개` (+1), `15m → 16개` (+1), `30m → 12개` (+1)
+- [ ] `1m: queue_directional_depletion 제외` 로그 미출현 (활성화 완료)
+- [ ] `15m·30m: threshold_feasibility 제외` 로그 미출현
+
+### macro chg 캐시 확인 [P1]
+- [ ] MACRO 로그에서 sp500_chg가 장중 0으로 떨어지는 구간 없음 (또는 감소)
+
+### need_add 잔여 피처 활성화 일정 모니터링 [P2]
+- micro_regime_code (3,253행): 06-26 이후
+- cvd_monotone_ratio (2,902행): 06-28~07-05
+- opt_chain_pcr·opt_gex 3종 (1,897행): 06-29 이후 일괄
+- opt_atm_call_oi·opt_atm_pcr (1,724/1,738행): 07-02 이후
+- opt_atm_put_oi (1,616행): 07-09 이후
+- opt_pcr_extreme_bearish (1,832행): 07-01 예상
+
+---
+
 ## 2026-06-24 (229차 — 종료/재시작 흐름 검증) [최우선]
 
 ### X 버튼 다이얼로그 확인 [P0]

@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-23 (231차 — EOD 점검 + macro/ScalerWarmup/피처셋 3종 수정)
+
+**Work**: EOD 로그 이상점 분석 → 3종 버그 수정 + 피처 활성화/삭제 + 문서 정비.
+
+**분석 발견**:
+- EOD Python 환경 `3.10 64-bit` → 의도적 설계 확인 (226차 py310_64 이관, CLAUDE.md 미반영이었음)
+- `macro_sp500_chg` 장중 간헐적 0 (11:59~12:02, 14:09~14:11, 15:03~15:04) — Yahoo daily prev 미취득 시 0 강제
+- `ScalerWarmup feat=120` vs GBM 학습 `feat=97` 불일치 — DB 최대 키 봉 기준으로 X 구성해서 발생
+- need_add 피처 중 threshold_feasibility(5,101행), queue_directional_depletion(4,253행) 이미 4,000행 초과 → 5일·3일 지연 미활성화 상태
+- bull_exhaustion_signal 2행(0.0%), bull_reversal_signal 145행(0.2%) — 즉시 삭제 대상
+- bear_reversal_signal: 191차 삭제 처리됐으나 JSON include에 미반영 상태
+- 매크로 Phase A 이후(06-16~) 수집 정상 (VIX 96~100%, src=4.0) / 프리장 13행 NULL 구조적
+
+**수정 (3종)**:
+- `collection/macro/macro_fetcher.py`: `_last_chg` 캐시 추가 — prev 미취득 시 0 강제 → 마지막 성공값 재사용
+- `learning/batch_retrainer.py` `load_features_for_warmup()`: feature_names.pkl(97개) 우선 로드 → X(500,97) 직접 구성 (120→97 재정렬 로직 스킵)
+- `featureset by horizon/horizon_feature_sets.json`: threshold_feasibility·queue_directional_depletion 활성화, bear/bull_reversal_signal·bull_exhaustion_signal 삭제
+
+**문서 정비**:
+- `CLAUDE.md`: Python 환경 테이블 py37_32(런타임)/py310_64(재학습) 분리 + 이유 설명 추가
+- `dev_memory/DECISION_LOG.md`: 226차 GBM 64비트 이관 결정 기록
+- `docs/260617_FEATURE_ADD_TIMING_REPORT.md`: 오늘 활성화/삭제 현황 반영
+
+**커밋**: 231차 (이번 세션)
+
+---
+
 ## 2026-06-23 (229차 — X 버튼 종료/재시작 선택 + 이중 인스턴스 방지 완성)
 
 **Work**: 이중 subprocess 원인 규명 → 런처 이중 실행 + X 버튼 재시작 흐름 정비.

@@ -1,7 +1,32 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-23 (229차 세션) — X 버튼 종료/재시작 다이얼로그 + 이중 인스턴스 방지 완성
+> 마지막 업데이트: 2026-06-23 (231차 세션) — EOD 점검 + macro/ScalerWarmup/피처셋 3종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-23 (231차 — EOD 점검 3종 수정)
+
+### 수정 1: macro_fetcher sp500_chg 간헐적 0 fallback 방지
+
+`collection/macro/macro_fetcher.py` `__init__`에 `_last_chg: Dict[str, float] = {}` 추가.
+`_fetch_all()` chg 계산부: prev 취득 성공 시 `_last_chg[key]`에 저장, prev 미취득 시 0 강제 → `_last_chg.get(key, 0.0)` 재사용.
+
+### 수정 2: ScalerWarmup 피처 수 불일치 (120→97) 수정
+
+`learning/batch_retrainer.py` `load_features_for_warmup()`:
+- 기존: DB 500봉 중 최대 키 수 봉의 피처명(120개) → X(500,120) → refit에서 97개로 재정렬
+- 수정: `feature_names.pkl`(97개) 우선 로드 → X(500,97) 직접 구성 → 재정렬 스킵
+- pkl 없는 경우(최초 실행) DB 최대 키 봉 fallback 유지
+
+### 피처셋 업데이트
+
+`featureset by horizon/horizon_feature_sets.json`:
+- 활성화(need_add→in_pkl): `threshold_feasibility`(5,101행, 15m·30m), `queue_directional_depletion`(4,253행, 1m)
+- 삭제: `bear_reversal_signal`(3m include 미반영 정리), `bull_reversal_signal`(145행,0.2%), `bull_exhaustion_signal`(2행,0.0%)
+- 내일(06-24) EOD 재학습에서 1m:13개, 15m:16개, 30m:12개로 슬라이싱 증가 예상
+
+**커밋**: 231차
 
 ---
 
