@@ -431,6 +431,19 @@ class TradingSystem:
         self._retrain_subproc = None                     # subprocess.Popen handle
         self._retrain_subproc_is_warmup: bool = False
         self._retrain_subproc_result_path: str = ""
+        # [228차] 시작 시 이전 세션의 잔류 결과 JSON 정리 — 이중 인스턴스 경합 잔류 파일 방지
+        try:
+            import glob as _glob
+            _stale = _glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "_gbm_result_*.json"))
+            for _sf in _stale:
+                try:
+                    os.remove(_sf)
+                except Exception:
+                    pass
+            if _stale:
+                logger.info("[GBM-64] 시작 시 잔류 결과 JSON %d개 정리: %s", len(_stale), _stale)
+        except Exception:
+            pass
         self._gbm_retrain_done_event = threading.Event()  # daily_close 대기용 — 초기값 set(완료 상태)
         self._gbm_retrain_done_event.set()
         self._pipeline_fatal_streak: int = 0         # [P0] 연속 ERR-FATAL 카운터
