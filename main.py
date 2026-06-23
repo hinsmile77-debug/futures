@@ -427,6 +427,8 @@ class TradingSystem:
         self._drift_retrain_last_attempt: Optional[datetime.datetime] = None  # DriftRetrain 시도 시각 (실패 포함)
         # [228차] 실제 분봉 완료 시각 — 복구 스킵 경로와 구별해 ExchangeCB 정확히 감지
         self._last_real_pipeline_dt: Optional[datetime.datetime] = datetime.datetime.now()
+        # [230차] TickUI 차트 업데이트 쓰로틀 — 100ms 이내 중복 minute_chart_tick 스킵
+        self._last_tick_chart_update: float = 0.0
         # [226차] 64비트 서브프로세스 재학습 추적 — Popen·결과 경로·warmup 플래그
         self._retrain_subproc = None                     # subprocess.Popen handle
         self._retrain_subproc_is_warmup: bool = False
@@ -2477,7 +2479,12 @@ class TradingSystem:
                 logger.debug("[LiveDBG] _poll_option_chain 완료 %.0fms", _elapsed_ms)
 
     def _on_tick_price_update(self, bar: dict) -> None:
-        """틱 수신마다 대시보드 헤더 현재가 갱신."""
+        """틱 수신마다 대시보드 헤더 현재가 갱신.
+
+        [230차] 쓰로틀링: 초당 최대 10회만 chart.update() 호출.
+        CB 후·단일가 구간에서 sub-second 틱 폭증 시 348 candles paintEvent 연쇄 재진입으로
+        32비트 스택 소진 → 0xC0000409 크래시. 100ms 이내 중복 호출 스킵으로 방지.
+        """
         if self.realtime_data is None:
             return
         close = float(bar.get("close", 0) or 0.0)
@@ -2489,8 +2496,13 @@ class TradingSystem:
         )
         if close > 0:
             self._last_pipeline_price = close
-            logger.info("[TickUI] minute_chart_tick code=%s close=%.2f", self.realtime_data.code, close)
-            self.dashboard.minute_chart_tick(close, bar.get("ts"))
+            # [230차] 100ms 쓰로틀 — minute_chart_tick(chart.update) 은 heavy (348 candles paintEvent)
+            _now_tick = time.perf_counter()
+            _last_tick_ui = getattr(self, "_last_tick_chart_update", 0.0)
+            if _now_tick - _last_tick_ui >= 0.10:   # 100ms 미만이면 스킵
+                self._last_tick_chart_update = _now_tick
+                logger.info("[TickUI] minute_chart_tick code=%s close=%.2f", self.realtime_data.code, close)
+                self.dashboard.minute_chart_tick(close, bar.get("ts"))
         logger.info("[TickUI] update_price code=%s close=%.2f", self.realtime_data.code, float(bar["close"]))
         self.dashboard.update_price(
             price  = bar["close"],
@@ -10904,6 +10916,20 @@ class _BrokerOrderAdapter:
 
 def main():
     import traceback as _tb
+    # ── [230차] faulthandler — C레벨 크래시(0xC0000409 스택오버런·SIGSEGV) 시 스택 트레이스 기록
+    # Python exception handler 도달 전 OS 강제 종료 시에도 logs/crash_fault.log 에 트레이스 남김.
+    try:
+        import faulthandler as _fh
+        _crash_fault_path = os.path.join("logs", "crash_fault.log")
+        os.makedirs("logs", exist_ok=True)
+        _crash_fault_file = open(_crash_fault_path, "a", encoding="utf-8")
+        import datetime as _dt_fh
+        _crash_fault_file.write(f"\n=== {_dt_fh.datetime.now().isoformat()} 시작 ===\n")
+        _crash_fault_file.flush()
+        _fh.enable(file=_crash_fault_file)
+    except Exception:
+        pass
+
     # DB 초기화
     init_all_dbs()
     logger.info("[System] DB 초기화 완료")
