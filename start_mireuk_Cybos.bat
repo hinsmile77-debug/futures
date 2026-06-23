@@ -248,6 +248,12 @@ ECHO.
 
 SET "_RESTART_CNT=0"
 
+REM ── [229차] 이전 세션 잔류 플래그 정리 ───────────────────────────────
+IF EXIST "data\_exit_normally" (
+    DEL "data\_exit_normally" 2>NUL
+    CALL :L "[INFO] 이전 세션 정상 종료 플래그 정리됨 (새 세션 시작)."
+)
+
 REM ============================================================
 REM  단일 인스턴스 보장 — 기존 main.py 프로세스 감지 후 종료 확인
 REM  원인: 런처를 두 번 실행하면 두 main.py가 공존 → GBM pkl 경합
@@ -295,6 +301,19 @@ CALL :L "============================================================"
 
 REM ── 현재 시각 확인 (HHMM 형식) ──────────────────────────────────
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).ToString('HHmm')"`) DO SET "_NOW=%%T"
+
+REM ── [229차] 정상 종료 플래그 체크 — UI X 버튼·자동종료 → 재시작 안 함 ─────
+IF EXIST "data\_exit_normally" (
+    FOR /F "delims=" %%R IN (data\_exit_normally) DO (
+        SET "_EXIT_REASON=%%R"
+        GOTO :_exit_reason_read
+    )
+    :_exit_reason_read
+    DEL "data\_exit_normally" 2>NUL
+    CALL :L "[AUTO-RESTART] 정상 종료 감지 (!_EXIT_REASON!) -- 재시작 안 함"
+    CALL :L "[AUTO-RESTART] 재시작이 필요하면 start_mireuk_Cybos.bat 를 다시 실행하세요."
+    GOTO :restart_done
+)
 
 REM ── 15:10 이후면 재시작 안 함 (오버나이트 금지) ───────────────────
 IF !_NOW! GTR 1510 (

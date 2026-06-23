@@ -7313,7 +7313,24 @@ class TradingSystem:
         self._skip_post_close_cycle_today = True
         logger.info("[System] 자동 종료 실행")
         log_manager.system("미륵이 자동 종료")
+        self._write_exit_normally_flag("auto_shutdown")
         _qt_app.quit()
+
+    def _write_exit_normally_flag(self, reason: str = "user_close") -> None:
+        """정상 종료 플래그 파일 생성 — 런처 RESTART_LOOP 재시작 방지.
+
+        [229차] UI X 버튼·자동 종료 등 의도된 종료 시 생성.
+        런처(start_mireuk_Cybos.bat)가 이 파일을 감지하면 AUTO-RESTART 건너뜀.
+        → X 버튼 후 스케줄러 클릭으로 인한 이중 인스턴스 방지.
+        """
+        try:
+            _flag = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "_exit_normally")
+            with open(_flag, "w", encoding="utf-8") as _f:
+                import datetime as _dt
+                _f.write(f"{reason}\n{_dt.datetime.now().isoformat()}\n")
+            logger.info("[Shutdown] 정상 종료 플래그 기록: %s (%s)", _flag, reason)
+        except Exception as _e:
+            logger.warning("[Shutdown] 정상 종료 플래그 기록 실패 (무해): %s", _e)
 
     # ── 파이프라인 생존 감시 ──────────────────────────────────────
 

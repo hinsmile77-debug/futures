@@ -10264,6 +10264,15 @@ class MireukDashboard(QMainWindow):
                     self._minute_chart_dialog.close()  # → MinuteChartDialog.closeEvent → geometry 저장
             except Exception:
                 pass
+        # [229차] 사용자가 UI X 버튼으로 종료 시 런처 RESTART_LOOP 재시작 방지 플래그
+        try:
+            import os as _os
+            _flag = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data", "_exit_normally")
+            with open(_flag, "w", encoding="utf-8") as _f:
+                import datetime as _dt
+                _f.write(f"user_close\n{_dt.datetime.now().isoformat()}\n")
+        except Exception:
+            pass
         super().closeEvent(event)
 
 
