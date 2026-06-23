@@ -2662,6 +2662,10 @@ class TradingSystem:
                 (now - self._exchange_cb_start).total_seconds() / 60
             ) if self._exchange_cb_start else 0
             self._exchange_cb_start = None
+            # [227차] CB⑤ 임계 복원 — ExchangeCB 진입 시 완화했던 것 해제
+            # GBM 재학습이 이미 시작되면 set_gbm_retrain_active(True)가 유지됨
+            if not getattr(self, "_gbm_retrain_running", False):
+                self.circuit_breaker.set_gbm_retrain_active(False)
             log_manager.system(
                 f"[ExchangeCB] 거래소 CB 해제 — {_gap_min}분 공백 후 분봉 재개. "
                 f"상태 초기화 시작",
@@ -7329,6 +7333,8 @@ class TradingSystem:
                 log_manager.system(msg, "WARNING")
                 notify(f"⏸ 미륵이 거래소 CB 대기 — {elapsed_str} 분봉 미수신")
                 self._shadow_tracker.mark_exchange_cb(True)
+                # [227차] CB⑤ 임계 완화 — CB 모드 중 파이프라인 지연 오발동 방지
+                self.circuit_breaker.set_gbm_retrain_active(True)
             else:
                 # CB 모드 중 — 30분마다 생존 알림만 발송
                 _gap_min = int(
@@ -7424,9 +7430,45 @@ class TradingSystem:
         # ⑤ D_PRICE_MOMENTUM 쿨다운 리셋 — CB 직후 급변 구간에서 즉시 트리거 허용
         self._price_momentum_refit_until = None
 
+        # ⑥ [227차] GBM 재학습 트리거 — KOSPI CB 후 가격레벨·변동성·구조 전면 변화
+        # 스케일러 재적합(④)만으론 GBM 트리 구조가 유지돼 구형 시장 패턴 그대로 적용.
+        # CB 재개 후 최우선 재학습 — acc30m 버퍼가 비어있어 CB③ 재발동도 방지됨.
+        if not getattr(self, "_gbm_retrain_running", False):
+            self._start_gbm_retrain_subprocess(
+                force=True,
+                reason=f"ExchangeCB_{gap_min}분_재개",
+                is_warmup=False,
+                intraday=True,
+            )
+            log_manager.system(
+                f"[ExchangeCB] GBM 재학습 예약 — CB {gap_min}분 공백 후 시장 구조 변화 대응",
+                "INFO",
+            )
+        else:
+            log_manager.system(
+                "[ExchangeCB] GBM 재학습 스킵 — 이미 진행 중",
+                "INFO",
+            )
+
+        # ⑦ [227차] CB③ 쿨다운 강화 — CB 재개 직후 시장이 불안정하여 즉시 재HALT 위험
+        # 기본 reset_acc30m_buffer()의 쿨다운(15샘플)보다 2배 강화 (30샘플)
+        self.circuit_breaker._cb3_reset_cooldown_samples = max(
+            getattr(self.circuit_breaker, "_cb3_reset_cooldown_samples", 0), 30
+        )
+        log_manager.system(
+            "[ExchangeCB] CB③ 쿨다운 강화 → 30샘플 전 CB③ 재발동 억제",
+            "INFO",
+        )
+
+        # ⑧ [227차] ExchangeCB 해제 직후 CB⑤ 파이프라인 지연 임계 완화
+        # CB 재개 첫 분봉: 스케일러 재적합·GBM 재학습·앙상블 복구 중첩 → 파이프라인 과중
+        # GBM 재학습 중 CB⑤ 완화(set_gbm_retrain_active=True)가 이미 적용되므로 추가 불필요.
+        # 단, 워치독 리셋: CB 해제 직후 watchdog이 즉시 경보하지 않도록 파이프라인 타이머 리셋
+        self.dashboard.notify_pipeline_ran()
+
         log_manager.system(
             f"[ExchangeCB] 재개 초기화 완료 | gap={gap_min}m | "
-            f"ShadowLIVE/acc리셋/앙상블리셋/스케일러재적합/쿨다운리셋",
+            f"ShadowLIVE/acc리셋/앙상블리셋/스케일러재적합/쿨다운리셋/GBM재학습예약",
             "INFO",
         )
 
