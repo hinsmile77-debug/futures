@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-06-23 (229차 — X 버튼 종료/재시작 선택 + 이중 인스턴스 방지 완성)
+
+**Work**: 이중 subprocess 원인 규명 → 런처 이중 실행 + X 버튼 재시작 흐름 정비.
+
+**분석 발견**:
+- 이중 인스턴스 원인: `launcher_20260623_115926` (11:59 시작)가 14:58:30까지 실행 중인 상태에서 사용자가 14:09:15에 새 런처 수동 실행 → 두 main.py 공존
+- UI X 클릭 → Python exit(0) → 런처 파이프 구조(python | powershell) 때문에 ERRORLEVEL이 항상 0 → 런처가 정상/비정상 구분 불가 → 무조건 RESTART_LOOP
+- 사용자: "창 닫았으니 종료된 줄 알고" 스케줄러 클릭 → 런처 #2 → 이중 인스턴스
+- 배치창 X = CTRL_CLOSE_EVENT → Python 강제 종료 (closeEvent 없음, 포지션 청산 보장 없음)
+
+**수정 (229차 3개 커밋: 6bd1014, bc97fa3, 3fbb292)**:
+- `dashboard/main_dashboard.py` closeEvent: 3-way 다이얼로그 추가
+  - "완전 종료" → `_exit_normally` 플래그 생성 → 런처 종료
+  - "재시작 (10초 후)" → 플래그 없음 → AUTO-RESTART 유지
+  - "취소" → 거래 계속
+- `main.py` `_write_exit_normally_flag()` 신설, `_auto_shutdown()`에 연결
+- `start_mireuk_Cybos.bat` RESTART_LOOP 직후 `_exit_normally` 체크 → 정상 종료 시 재시작 안 함
+- `start_mireuk_Cybos.bat` 시작 시 잔류 플래그 정리 + psutil 단일 인스턴스 가드(228차-c)
+
+**올바른 종료-재시작 흐름 (229차 이후)**:
+- 완전 종료: 미륵이 UI X → "완전 종료" → 런처 자동 종료 (배치창 X 불필요)
+- 장중 재시작: 미륵이 UI X → "재시작 (10초 후)" → 10초 후 자동 재기동
+- 배치창 X: 비상 강제 종료 전용 (포지션 청산 보장 없음, 정상 운영 중 사용 금지)
+
+**커밋**: 229차 (6bd1014·bc97fa3·3fbb292)
+
+---
+
 ## 2026-06-23 (228차 — ExchangeCB 미감지 버그 수정)
 
 **Work**: 금일 14:34~14:58 거래소 CB 24분간 ExchangeCB 모드 미발동 원인 분석 → 수정.
