@@ -3539,8 +3539,10 @@ class TradingSystem:
                         self.circuit_breaker.record_horizon_fl_bias(
                             _h, _dir_bias_r, _bias_thresh_min
                         )
-                        # P4: GBM 편향 감지 → SGD 비중 min floor 탈출 (대항력 회복)
-                        self.online_learner.boost_sgd_for_bias(_h)
+                        # P4: GBM 편향 감지 → SGD 오염 파라미터 제거 (모델·스케일러·가중치 리셋)
+                        # boost_sgd_for_bias(가중치만 올림)에서 교체: boost 후 UP 방향 고착 부작용 제거
+                        # BiasReset uniform fallback 기간에 SGD 리셋이 동기화되어 공백 없음
+                        self.online_learner.reset_sgd_for_bias(_h)
                 else:
                     # P1: fallback 해제 조건 — 아래 중 하나 충족 시 해제
                     #  A) 방향편향 < 60% (정상화)

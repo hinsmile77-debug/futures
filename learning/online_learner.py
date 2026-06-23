@@ -61,6 +61,12 @@ class OnlineLearner:
     _ADJUST_EVERY   = 1         # 1건 학습마다 조정 (호라이즌 독립이므로 묶음 불필요)
     _MIN_SAMPLES    = 15        # 가중치 조정 최소 샘플 수
 
+    # SGD 단방향 붕괴 감지 임계
+    # 95%→80%: 5m SGD는 극단 확신을 잘 찍지 않아 DN=83% 편향에서도 미발동됐던 문제 해소
+    # 15→12분: BiasReset(5분)보다 길고 기존(15분)보다 짧은 중간값, 데이터 최저 발동 Bias 76%에서 마진 확보
+    _COLLAPSE_THR   = 0.80
+    _COLLAPSE_TICKS = 12
+
     # 바닥 회복 파라미터
     _FLOOR_RECOVERY_INTERVAL = 30
     _FLOOR_RECOVERY_ACC_MIN  = 0.40
@@ -194,13 +200,13 @@ class OnlineLearner:
             "flat": proba_map.get(DIRECTION_FLAT, 1/3),
         }
 
-        # SGD 단방향 붕괴 감지: up/dn/fl > 0.95 연속 15회 → 해당 호라이즌 모델 리셋
+        # SGD 단방향 붕괴 감지: up/dn/fl > _COLLAPSE_THR 연속 _COLLAPSE_TICKS회 → 리셋
         collapse_dir = None
-        if result["up"]   > 0.95:
+        if result["up"]   > self._COLLAPSE_THR:
             collapse_dir = "up"
-        elif result["down"] > 0.95:
+        elif result["down"] > self._COLLAPSE_THR:
             collapse_dir = "dn"
-        elif result["flat"] > 0.95:
+        elif result["flat"] > self._COLLAPSE_THR:
             collapse_dir = "fl"
 
         if collapse_dir:
@@ -210,22 +216,13 @@ class OnlineLearner:
                 self._sgd_collapse_ticks[horizon] = 1
                 self._sgd_collapse_dir[horizon] = collapse_dir
 
-            if self._sgd_collapse_ticks[horizon] >= 15:
-                self.models[horizon] = self.models[horizon].__class__(
-                    loss="log", learning_rate="optimal", alpha=0.001,
-                    max_iter=1, warm_start=True, random_state=42, n_jobs=1,
-                )
-                self.scalers[horizon] = self.scalers[horizon].__class__()
-                self._fitted[horizon] = False
-                self._sgd_w[horizon] = SGD_WEIGHT_DEFAULT
-                self._gbm_w[horizon] = GBM_WEIGHT_DEFAULT
-                self._sgd_collapse_ticks[horizon] = 0
-                self._sgd_collapse_dir[horizon] = ""
-                self._floor_ticks[horizon] = 0
+            if self._sgd_collapse_ticks[horizon] >= self._COLLAPSE_TICKS:
+                self._do_sgd_reset(horizon)
                 logger.info(
-                    "[OnlineLearner] %s SGD %s붕괴 자동 복구 (≥95%% 15분 지속) "
+                    "[OnlineLearner] %s SGD %s붕괴 자동 복구 (≥%d%% %d분 지속) "
                     "→ 모델·스케일러 리셋",
                     horizon, collapse_dir.upper(),
+                    int(self._COLLAPSE_THR * 100), self._COLLAPSE_TICKS,
                 )
         else:
             self._sgd_collapse_ticks[horizon] = 0
@@ -371,8 +368,22 @@ class OnlineLearner:
         """하위 호환 — 기존 코드에서 _bucket() 호출 시"""
         return "short" if horizon in ("1m", "3m", "5m") else "long"
 
+    def _do_sgd_reset(self, horizon: str) -> None:
+        """모델·스케일러·가중치·붕괴 카운터 리셋 공통 로직."""
+        self.models[horizon] = self.models[horizon].__class__(
+            loss="log", learning_rate="optimal", alpha=0.001,
+            max_iter=1, warm_start=True, random_state=42, n_jobs=1,
+        )
+        self.scalers[horizon] = self.scalers[horizon].__class__()
+        self._fitted[horizon] = False
+        self._sgd_w[horizon]  = SGD_WEIGHT_DEFAULT
+        self._gbm_w[horizon]  = GBM_WEIGHT_DEFAULT
+        self._sgd_collapse_ticks[horizon] = 0
+        self._sgd_collapse_dir[horizon]   = ""
+        self._floor_ticks[horizon]        = 0
+
     def boost_sgd_for_bias(self, horizon: str, target_w: float = 0.15) -> None:
-        """GBM 방향 편향 감지 시 해당 호라이즌 SGD 비중 복구."""
+        """GBM 방향 편향 감지 시 해당 호라이즌 SGD 비중 복구 (가중치만)."""
         current = self._sgd_w.get(horizon, SGD_WEIGHT_DEFAULT)
         if current < target_w:
             new_w = float(np.clip(target_w, SGD_WEIGHT_MIN, SGD_WEIGHT_MAX))
@@ -383,6 +394,18 @@ class OnlineLearner:
                 "[OnlineLearner] %s bias fallback SGD 복구 %.0f%%→%.0f%%",
                 horizon, current * 100, new_w * 100,
             )
+
+    def reset_sgd_for_bias(self, horizon: str) -> None:
+        """BiasReset 발동 시 해당 호라이즌 SGD 전체 리셋.
+
+        boost_sgd_for_bias(가중치만 올림)와 달리 오염된 모델 파라미터 자체를 제거.
+        BiasReset uniform fallback 기간 중 실행되므로 SGD 공백이 fallback과 동기화됨.
+        """
+        self._do_sgd_reset(horizon)
+        logger.info(
+            "[OnlineLearner] %s BiasReset 연계 SGD 리셋 → 모델·스케일러·가중치 초기화",
+            horizon,
+        )
 
     def reset_daily(self):
         """일간 리셋 — 모델 가중치 유지, 정확도 버퍼만 초기화."""
