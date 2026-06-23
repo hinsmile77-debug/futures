@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-06-23 (227차 — 거래소 서킷브레이커 CB 재개 대응 강화)
+
+**Work**: 금일 KOSPI CB 1단계(8% 하락, 14:14~14:34 30분 거래 중단) 로그 분석 → 대응 로직 개선.
+
+**분석 발견**:
+- 226차 GBM-64: 14:34:30 `[GBM-64] 64비트 서브프로세스 재학습 시작 pid=8932` 정상 작동 확인
+- ExchangeCB 모드 미감지: 14:14~14:34 분봉 없음인데 `[ExchangeCB]` 로그 없음 (이중 인스턴스 watchdog 혼선)
+- 이중 인스턴스: 14:09:34 + 14:09:43 두 번 재시작 → 모든 LEARNING 로그 두 줄씩
+- CB PAUSED at 14:34 (CB⑤ 파이프라인 지연), 14:39 해제 정상 복귀
+- `_post_exchange_cb_resume()`에 GBM 재학습 없음 → CB 후에도 구형 모델 유지
+
+**수정 (227차 ae41af1)**:
+- `_post_exchange_cb_resume()`: ⑥ GBM 재학습(`_start_gbm_retrain_subprocess`) ⑦ CB③ 쿨다운 30샘플 ⑧ 워치독 리셋 추가
+- ExchangeCB 진입 시 `set_gbm_retrain_active(True)` → CB⑤ 임계 완화
+- ExchangeCB 해제 시 `set_gbm_retrain_active(False)` 복원
+
+**커밋**: 227차 (ae41af1)
+
+---
+
 ## 2026-06-23 (226차 — GBM 재학습 64비트 subprocess 이관)
 
 **Work**: 12:00 재시작 후 로그 점검 → OOM 반복 확인 → subprocess 이관.
