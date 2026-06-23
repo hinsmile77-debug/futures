@@ -425,6 +425,10 @@ class TradingSystem:
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
         self._gbm_retrain_started_at: Optional[datetime.datetime] = None  # P1-B: 30분 타임아웃 감시용
         self._drift_retrain_last_attempt: Optional[datetime.datetime] = None  # DriftRetrain 시도 시각 (실패 포함)
+        # [226차] 64비트 서브프로세스 재학습 추적 — Popen·결과 경로·warmup 플래그
+        self._retrain_subproc = None                     # subprocess.Popen handle
+        self._retrain_subproc_is_warmup: bool = False
+        self._retrain_subproc_result_path: str = ""
         self._gbm_retrain_done_event = threading.Event()  # daily_close 대기용 — 초기값 set(완료 상태)
         self._gbm_retrain_done_event.set()
         self._pipeline_fatal_streak: int = 0         # [P0] 연속 ERR-FATAL 카운터
@@ -731,27 +735,62 @@ class TradingSystem:
         return None, "실데이터에 존재하는 대체 후보 없음"
 
     def _start_manual_retrain(self, force: bool, reason: str) -> bool:
+        """ConstOut 재적합·드리프트 트리거 시 호출 — 64비트 subprocess 경량 재학습."""
+        return self._start_gbm_retrain_subprocess(
+            force=force, reason=reason, is_warmup=False, intraday=True,
+        )
+
+    def _start_gbm_retrain_subprocess(
+        self, force: bool, reason: str, is_warmup: bool, intraday: bool = True,
+    ) -> bool:
+        """[226차] GBM 재학습을 py310_64 서브프로세스로 실행 — 32비트 OOM 완전 차단.
+
+        기존 데몬 스레드 방식(retrain_now() → 32비트 numpy 14.8 MiB 연속 블록 OOM)을
+        64비트 독립 프로세스로 대체. retrain_intraday.py 스크립트가 결과 JSON을 기록하고,
+        main.py S0 루프가 poll()로 완료를 감지 → _on_gbm_retrain_done() 정상 호출.
+        """
         if getattr(self, "_gbm_retrain_running", False):
-            log_manager.system(f"[FeatureOps] 재학습 진행 중 - {reason}", "WARN")
+            log_manager.system(f"[GBM-64] 재학습 진행 중 — 스킵 ({reason})", "WARN")
             return False
-        self._gbm_retrain_running = True
-        self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
+
+        from config.settings import PYTHON_64_EXEC
+        import uuid
+
+        _script  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "retrain_intraday.py")
+        _rpath   = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data",
+            f"_gbm_result_{uuid.uuid4().hex[:8]}.json",
+        )
+        _force_s   = "1" if force    else "0"
+        _intraday_s = "1" if intraday else "0"
+
+        try:
+            _proc = subprocess.Popen(
+                [PYTHON_64_EXEC, _script, _rpath, _force_s, _intraday_s],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except FileNotFoundError:
+            log_manager.system(
+                f"[GBM-64] py310_64 Python 없음 ({PYTHON_64_EXEC}) — 재학습 불가", "ERROR",
+            )
+            return False
+        except Exception as _pe:
+            log_manager.system(f"[GBM-64] subprocess 시작 실패: {_pe}", "WARNING")
+            return False
+
+        self._gbm_retrain_running      = True
+        self._gbm_retrain_started_at   = datetime.datetime.now()
         self._gbm_retrain_done_event.clear()
-        self.circuit_breaker.set_gbm_retrain_active(True)   # CB⑤ 임계 완화
-        log_manager.learning(f"[GBM] 수동 재학습 시작 | {reason}")
-
-        def _retrain_worker():
-            try:
-                result = self.batch_retrainer.retrain_now(force=force)
-            except Exception as exc:
-                result = {"ok": False, "error": str(exc)}
-            # P1-A 강화: ok/fail 무관 worker에서 즉시 해제 (QTimer daemon-thread 불안정 대비)
-            self._gbm_retrain_running = False
-            self._gbm_retrain_done_event.set()
-            # [225차 P1] QTimer 대신 deferred 큐 — daemon thread QTimer 미전달 버그 수정
-            self._deferred_callbacks.put(("gbm_done", result, False))
-
-        threading.Thread(target=_retrain_worker, daemon=True).start()
+        self._retrain_subproc          = _proc
+        self._retrain_subproc_is_warmup = is_warmup
+        self._retrain_subproc_result_path = _rpath
+        self.circuit_breaker.set_gbm_retrain_active(True)
+        log_manager.learning(
+            f"[GBM-64] 64비트 서브프로세스 재학습 시작 "
+            f"| force={force} intraday={intraday} pid={_proc.pid} | {reason}"
+        )
         return True
 
     def _on_apply_shap_candidate_requested(self) -> None:
@@ -2329,19 +2368,10 @@ class TradingSystem:
                 f"[WarmupRetrain] 장중 재시작 — GBM 경량 재학습 시작{_rt_gap_tag} (intraday)", "INFO"
             )
 
-            def _intraday_retrain_worker():
-                result = {"ok": False, "error": "unknown"}
-                try:
-                    result = self.batch_retrainer.retrain_now(force=False, intraday=True)
-                except BaseException as _re:  # MemoryError 등 BaseException 포함
-                    result = {"ok": False, "error": str(_re)}
-                # P1-A 강화: BaseException(MemoryError 포함) 무관 항상 해제
-                self._gbm_retrain_running = False
-                self._gbm_retrain_done_event.set()
-                # [225차 P1] QTimer 대신 deferred 큐
-                self._deferred_callbacks.put(("gbm_done", result, True))
-
-            threading.Thread(target=_intraday_retrain_worker, daemon=True).start()
+            # [226차] 64비트 subprocess 경량 재학습 — 32비트 OOM 없이 실행
+            self._start_gbm_retrain_subprocess(
+                force=False, reason="장중 재시작 WarmupRetrain", is_warmup=True, intraday=True,
+            )
         elif _late_restart and not _already_retrained_today:
             self._warmup_retrain_pending = False
             log_manager.system(
@@ -3047,27 +3077,14 @@ class TradingSystem:
                     "INFO",
                 )
             else:
-                self._gbm_retrain_running = True
-                self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
-                self._gbm_retrain_done_event.clear()
-                self.dashboard.set_model_status("GBM 사전 재학습중...")
+                self.dashboard.set_model_status("GBM 사전 재학습중(64bit)...")
                 log_manager.system(
-                    "[PreRetrain] 08:55 GBM 사전 재학습 시작 — EOD 미완료 또는 재시작 복구", "INFO"
+                    "[PreRetrain] 08:55 GBM 사전 재학습 시작 — EOD 미완료 또는 재시작 복구 (64bit subprocess)", "INFO"
                 )
-
-                def _pre_retrain_worker():
-                    result = {"ok": False, "error": "unknown"}
-                    try:
-                        result = self.batch_retrainer.retrain_now(force=True)
-                    except BaseException as _pre_e:  # MemoryError 등 BaseException 포함
-                        result = {"ok": False, "error": str(_pre_e)}
-                    # P1-A 강화: BaseException(MemoryError 포함) 무관 항상 해제
-                    self._gbm_retrain_running = False
-                    self._gbm_retrain_done_event.set()
-                    # [225차 P1] QTimer 대신 deferred 큐
-                    self._deferred_callbacks.put(("gbm_done", result, True))
-
-                threading.Thread(target=_pre_retrain_worker, daemon=True).start()
+                # [226차] PreRetrain도 64비트 subprocess — 32비트 OOM 없이 full 재학습
+                self._start_gbm_retrain_subprocess(
+                    force=True, reason="08:55 PreRetrain", is_warmup=True, intraday=False,
+                )
 
     def _pre_market_stage2(self):
         """2단계 (08:58): 2회차 macro fetch → SP500·KRW 실수치 반영 → 레짐 확정.
@@ -3133,9 +3150,37 @@ class TradingSystem:
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
 
-        # ── [S0] 데몬 스레드 콜백 큐 drain — P1 QTimer 불안정 대체 ──────────
-        # daemon thread 에서 QTimer.singleShot(0, ...) 은 PyQt5 이벤트 루프 전달 미보장.
-        # 대신 worker → _deferred_callbacks.put() → 매분 S0 에서 메인 스레드 안전 소비.
+        # ── [S0-A] 64비트 GBM subprocess 완료 체크 ────────────────────────
+        # [226차] poll()은 non-blocking — subprocess가 완료되면 returncode 반환.
+        # 완료 즉시 결과 JSON 읽고 _on_gbm_retrain_done() 호출 (메인 스레드 안전).
+        _subproc = getattr(self, "_retrain_subproc", None)
+        if _subproc is not None:
+            _rc = _subproc.poll()
+            if _rc is not None:
+                _result = {"ok": _rc == 0, "error": f"exit={_rc}"}
+                _rpath  = getattr(self, "_retrain_subproc_result_path", "")
+                if _rpath and os.path.exists(_rpath):
+                    try:
+                        with open(_rpath, "r", encoding="utf-8") as _rf:
+                            _result = json.load(_rf)
+                        os.remove(_rpath)
+                    except Exception as _rpe:
+                        logger.warning("[GBM-64] 결과 JSON 읽기 실패: %s", _rpe)
+                _is_wu = getattr(self, "_retrain_subproc_is_warmup", False)
+                self._retrain_subproc = None
+                self._retrain_subproc_result_path = ""
+                self._gbm_retrain_running     = False
+                self._gbm_retrain_started_at  = None
+                self._gbm_retrain_done_event.set()
+                self.circuit_breaker.set_gbm_retrain_active(False)
+                log_manager.learning(
+                    f"[GBM-64] subprocess 완료 (returncode={_rc}) → _on_gbm_retrain_done 호출"
+                )
+                self._on_gbm_retrain_done(_result, _is_wu)
+
+        # ── [S0-B] ConstOut 재적합 완료 콜백 큐 drain — P1 QTimer 불안정 대체 ──
+        # ConstOut refit worker → _deferred_callbacks.put("const_out_done") →
+        # 여기서 메인 스레드 소비. GBM done은 [226차] subprocess poll로 이동.
         while True:
             try:
                 _dcb = self._deferred_callbacks.get_nowait()
@@ -3143,10 +3188,9 @@ class TradingSystem:
                 break
             try:
                 _dcb_tag = _dcb[0]
-                if _dcb_tag == "gbm_done":
-                    self._on_gbm_retrain_done(_dcb[1], _dcb[2])
-                elif _dcb_tag == "const_out_done":
+                if _dcb_tag == "const_out_done":
                     self._on_const_out_refit_done(_dcb[1])
+                # gbm_done 태그: [226차] subprocess 이관 — 큐에서 수신 시 무시(잔여 배출)
             except Exception as _dcb_e:
                 logger.warning("[DeferredCB] 콜백 처리 오류 (tag=%s): %s", _dcb[0] if _dcb else "?", _dcb_e)
 
@@ -3800,40 +3844,17 @@ class TradingSystem:
             or self.batch_retrainer.should_retrain_monthly()
         )
         if _need_retrain and not getattr(self, "_gbm_retrain_running", False):
+            _reason_s = "WarmupRetrain" if _warmup_forced else ("DriftRetrain" if _drift_trigger else "periodic")
             if _warmup_forced:
                 self._warmup_retrain_pending = False
-                log_manager.system(
-                    "[WarmupRetrain] 세션 재시작 후 첫 GBM 경량 재학습 — 별도 스레드 시작 (intraday)", "INFO"
-                )
             elif _drift_trigger:
                 self._drift_retrain_last_attempt = datetime.datetime.now()
-                log_manager.system(
-                    f"[DriftRetrain] GBM 경량 재학습 시작 "
-                    f"(acc30m={_dr_acc30m:.1%} n={_dr_acc30m_n} 경과={_dr_mins:.0f}분)",
-                    "WARNING",
-                )
-            self._gbm_retrain_running = True
-            self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
-            self._gbm_retrain_done_event.clear()
-            self.circuit_breaker.set_gbm_retrain_active(True)   # CB⑤ 임계 완화
-            self.dashboard.set_model_status("GBM 재학습중...")
-            _is_warmup = bool(_warmup_forced)
-
-            def _retrain_worker():
-                result = {"ok": False, "error": "unknown"}
-                try:
-                    # intraday=True: n_estimators 100, 20k봉, CV 없음 → 장중 GIL 블로킹 최소화
-                    # 08:55 pre-market(_pre_retrain_worker)만 풀 파라미터 유지
-                    result = self.batch_retrainer.retrain_now(force=False, intraday=True)
-                except BaseException as _re:  # MemoryError 등 BaseException 포함
-                    result = {"ok": False, "error": str(_re)}
-                # P1-A: BaseException(MemoryError 포함) 무관 항상 해제
-                self._gbm_retrain_running = False
-                self._gbm_retrain_done_event.set()
-                # [225차 P1] QTimer 대신 deferred 큐
-                self._deferred_callbacks.put(("gbm_done", result, _is_warmup))
-
-            threading.Thread(target=_retrain_worker, daemon=True).start()
+            # [226차] 64비트 subprocess 경량 재학습 — 32비트 OOM 없이 실행
+            self.dashboard.set_model_status("GBM 재학습중(64bit)...")
+            self._start_gbm_retrain_subprocess(
+                force=False, reason=f"STEP3 {_reason_s}",
+                is_warmup=bool(_warmup_forced), intraday=True,
+            )
 
         # ── STEP 4: 피처 생성 ──────────────────────────────────
         _st.append(("S4", time.perf_counter()))
@@ -4334,10 +4355,24 @@ class TradingSystem:
         if (self._gbm_retrain_running and _gbm_started is not None
                 and (_ts_dt_obj - _gbm_started).total_seconds() > 600):
             log_manager.system(
-                f"[GBM] 재학습 플래그 10분 타임아웃 강제 해제 "
-                f"(started={_gbm_started.strftime('%H:%M:%S')}) — deferred 큐 미전달 가능성",
+                f"[GBM-64] 재학습 10분 타임아웃 강제 해제 "
+                f"(started={_gbm_started.strftime('%H:%M:%S')}) — subprocess 강제 종료",
                 "WARNING",
             )
+            _sp = getattr(self, "_retrain_subproc", None)
+            if _sp is not None:
+                try:
+                    _sp.terminate()
+                except Exception:
+                    pass
+                self._retrain_subproc = None
+                _rp = getattr(self, "_retrain_subproc_result_path", "")
+                if _rp and os.path.exists(_rp):
+                    try:
+                        os.remove(_rp)
+                    except Exception:
+                        pass
+                self._retrain_subproc_result_path = ""
             self._gbm_retrain_running = False
             self._gbm_retrain_started_at = None
         # P3: B_OPEN / C_PERIODIC은 GBM 재학습 여부와 무관하게 실행 허용
