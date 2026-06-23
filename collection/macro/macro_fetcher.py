@@ -68,6 +68,7 @@ class MacroFetcher:
         self._last_source: str = "uninitialized"
         self._last_fallback_used: bool = False
         self._last_good_vix: Optional[float] = None
+        self._last_chg: Dict[str, float] = {}  # prev 미취득 시 재사용용 캐시
         self.fetch_count = 0
         self.last_error = ""
 
@@ -183,11 +184,12 @@ class MacroFetcher:
                     result["%s_chg" % key] = 0.0
                 elif prev_from_hist is not None and prev_from_hist != 0:
                     # 역사적 전일 값 사용 (더 정확한 daily change)
-                    result["%s_chg" % key] = round(
-                        (curr - prev_from_hist) / abs(prev_from_hist), 6
-                    )
+                    chg = round((curr - prev_from_hist) / abs(prev_from_hist), 6)
+                    result["%s_chg" % key] = chg
+                    self._last_chg[key] = chg  # 성공값 캐싱
                 else:
-                    result["%s_chg" % key] = 0.0
+                    # prev 미취득 — 마지막 성공 chg 재사용 (0 강제 방지)
+                    result["%s_chg" % key] = self._last_chg.get(key, 0.0)
 
             result["vix"] = round(raw.get("vix", 20.0), 2)
             result["event_flag"] = self._check_event_flag()

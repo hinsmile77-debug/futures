@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-06-23 (226차 — GBM 재학습 64비트 subprocess 이관)
+
+### [결정] retrain_eod.py · retrain_intraday.py → py310_64 전용 실행
+
+**근거**: py37_32에서 numpy 39,876×97 float32 ≈ 14.8 MiB 연속 블록 할당 실패(OOM) 반복.
+장중 5회(12:01·12:24·12:54·13:29·13:52) OOM → 모델 미교체 → 30m ConstOut → CB③ HALT 종일 미해제.
+
+**설계 구조**:
+- 재학습 전용: `py310_64` (Python 3.10 64-bit) — `retrain_eod.py`, `retrain_intraday.py`
+- 실거래 런타임: `py37_32` (Python 3.7 32-bit) — `main.py` (Cybos COM/OCX 필수)
+- 연결: `config/settings.py PYTHON_64_EXEC` 경로 상수 → `subprocess.Popen`으로 기동
+- 호환성: `pickle protocol=4` 저장 → py37_32(Python 3.7+)에서 로드 가능
+
+**방어 코드**: `retrain_eod.py:76-78` — 32-bit 감지 시 `exit(2)` 즉시 종료.
+
+**오해 방지**: EOD 로그에 `Python 3.10.20 64-bit`가 찍히는 것은 정상 설계. py37_32가 아니라고 이상으로 판단하지 말 것.
+
+---
+
 ## 2026-06-23 (224차 — SGD 붕괴 임계 완화 결정)
 
 ### [결정] SGD 붕괴 임계 95%→80%, 기간 15→12분

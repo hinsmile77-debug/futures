@@ -17,11 +17,16 @@ KOSPI 200 선물 1분봉 기반 방향 예측 + 자동매매 시스템 (별칭: 
 
 | 항목 | 값 |
 |---|---|
-| Python | **3.7 32-bit** (`conda env: py37_32`) |
-| OS | Windows 전용 (키움 OpenAPI+ COM/OCX) |
+| Python (런타임) | **3.7 32-bit** (`conda env: py37_32`) — Cybos Plus COM/OCX 필수 |
+| Python (재학습) | **3.10 64-bit** (`conda env: py310_64`) — GBM/RF 배치 학습 전용 (226차, OOM 방지) |
+| OS | Windows 전용 (Cybos Plus COM/OCX) |
 | scipy | **1.5.4** (32-bit DLL 충돌 회피) |
 | scikit-learn | 1.0.2, joblib 1.1.1 |
 | 선물 분봉 TR | **OPT50029** (선물분차트요청) — OPT10080 사용 금지 |
+
+> **재학습 환경 분리 이유**: py37_32에서 numpy float32 배열 OOM 반복으로 모델 미교체 → CB③ HALT 유발.
+> `retrain_eod.py` / `retrain_intraday.py`는 `py310_64`에서 실행되며 `pickle protocol=4`로 저장해 py37_32 런타임에서 로드 호환.
+> EOD 로그에 `Python 3.10.20 64-bit`가 찍혀도 정상 — 이상 환경이 아님.
 
 ---
 

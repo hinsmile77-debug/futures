@@ -729,9 +729,15 @@ class BatchRetrainer:
             logger.warning("[ScalerWarmup] raw_features 비어있음 — 워밍업 건너뜀")
             return None, None
 
+        # feature_names.pkl(모델 기준 97개)을 우선 사용.
+        # DB 봉에는 need_add 피처가 섞여 키 수가 더 많을 수 있는데,
+        # 최대 키 봉 기준으로 X를 만들면 refit_scalers_only() 재정렬이 필요하고
+        # 피처 수 불일치 로그가 발생함. pkl 기준으로 직접 구성해 불일치를 제거한다.
+        model_feat_names = self._load_feature_names() or None  # [] → None 처리
+
         records = []
-        feat_names = None
-        feat_name_count = 0
+        db_feat_names = None   # model pkl 없을 때 fallback
+        db_feat_count = 0
         for r in feat_rows:
             try:
                 fd = _json.loads(r["features"])
@@ -739,20 +745,26 @@ class BatchRetrainer:
                 continue
             if not isinstance(fd, dict):
                 continue
-            curr_keys = list(fd.keys())
-            if feat_names is None or len(curr_keys) >= feat_name_count:
-                feat_name_count = len(curr_keys)
-                feat_names = curr_keys
+            if model_feat_names is None:
+                curr_keys = list(fd.keys())
+                if db_feat_names is None or len(curr_keys) > db_feat_count:
+                    db_feat_count = len(curr_keys)
+                    db_feat_names = curr_keys
             records.append(fd)
 
-        if not records or feat_names is None:
+        if not records:
+            return None, None
+
+        feat_names = model_feat_names or db_feat_names
+        if feat_names is None:
             return None, None
 
         X = np.array(
             [[rec.get(f, 0.0) for f in feat_names] for rec in records],
             dtype=np.float32,
         )
-        logger.info("[ScalerWarmup] 피처 로드 완료 n=%d feat=%d", len(X), len(feat_names))
+        _src = "" if model_feat_names else " (db_fallback)"
+        logger.info("[ScalerWarmup] 피처 로드 완료 n=%d feat=%d%s", len(X), len(feat_names), _src)
         return X, feat_names
 
     # ── Phase 2: 호라이즌별 독립 재학습 ─────────────────────────

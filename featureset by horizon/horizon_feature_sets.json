@@ -36,7 +36,7 @@
       {
         "name": "queue_directional_depletion",
         "rho": 0.033,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "매수/매도 큐 방향별 고갈 속도 ★"
       },
       {
@@ -224,12 +224,6 @@
         "note": "최근 20구간 CVD 단조 비율 ★"
       },
       {
-        "name": "bear_reversal_signal",
-        "rho": 0.034,
-        "pkl": "need_add",
-        "note": "약세 반전 신호 ★★ (3m 전문)"
-      },
-      {
         "name": "microprice_bias",
         "rho": 0.033,
         "pkl": "in_pkl",
@@ -295,11 +289,6 @@
         "name": "vwap_position",
         "pkl": "in_pkl",
         "note": "CORE 피처 — 3m 상관 미유의지만 GBM 비선형 패턴 가능성, Walk-Forward 검증 필요"
-      },
-      {
-        "name": "bull_exhaustion_signal",
-        "pkl": "need_add",
-        "note": "소진→반전 탐지 — 3m 역할 재검증 필요"
       },
       {
         "name": "poc_distance",
@@ -724,7 +713,7 @@
       {
         "name": "threshold_feasibility",
         "rho": 0.086,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "변동성 실현 가능성 ★ 15m 전문"
       },
       {
@@ -931,7 +920,7 @@
       {
         "name": "threshold_feasibility",
         "rho": 0.098,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "변동성 실현 가능성 ★★"
       },
       {
@@ -1096,19 +1085,15 @@
     "note": "현재 feature_names.pkl(97개) 기준 포함 여부",
     "in_pkl_total": 97,
     "need_add_features": [
-      "queue_directional_depletion",
       "micro_regime_code",
       "cvd_monotone_ratio",
-      "bull_reversal_signal",
-      "bull_exhaustion_signal",
       "opt_chain_pcr",
       "opt_gex_bn",
       "opt_gex_sign",
       "opt_atm_put_oi",
       "opt_atm_call_oi",
       "opt_atm_pcr",
-      "opt_pcr_extreme_bearish",
-      "threshold_feasibility"
+      "opt_pcr_extreme_bearish"
     ],
     "macro_relearn_required": [
       "macro_vix",

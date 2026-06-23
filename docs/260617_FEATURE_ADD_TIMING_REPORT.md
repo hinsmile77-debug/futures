@@ -12,14 +12,18 @@
 
 | 호라이즌 | 미가용 피처 |
 |---|---|
-| 1m | `queue_directional_depletion`, `micro_regime_code` |
+| 1m | `micro_regime_code` |
 | 3m | `cvd_monotone_ratio` |
 | 5m | `opt_chain_pcr`, `cvd_monotone_ratio` |
 | 10m | `opt_atm_put_oi`, `opt_gex_sign`, `cvd_monotone_ratio`, `micro_regime_code` |
-| 15m | `opt_gex_bn`, `opt_chain_pcr`, `opt_atm_call_oi`, `opt_atm_put_oi`, `threshold_feasibility` |
-| 30m | `opt_gex_bn`, `opt_chain_pcr`, `opt_atm_call_oi`, `opt_atm_pcr`, `threshold_feasibility` |
+| 15m | `opt_gex_bn`, `opt_chain_pcr`, `opt_atm_call_oi`, `opt_atm_put_oi`, `opt_pcr_extreme_bearish` |
+| 30m | `opt_gex_bn`, `opt_chain_pcr`, `opt_atm_call_oi`, `opt_atm_pcr`, `opt_pcr_extreme_bearish` |
 
 ※ `bear_reversal_signal` — 동일 세션(191차)에 **삭제 처리** (일평균 10봉/일, 0.2% 희소, 390일 소요 → `ff68ac1`)
+※ `bull_reversal_signal` — 2026-06-23 **삭제 처리** (145행, 0.2% 희소 — bear 버전과 동일 사유)
+※ `bull_exhaustion_signal` — 2026-06-23 **삭제 처리** (2행, 사실상 미수집)
+※ `threshold_feasibility` — 2026-06-23 **활성화** (5,101행 달성 → 1m·15m·30m `in_pkl` 전환)
+※ `queue_directional_depletion` — 2026-06-23 **활성화** (4,253행 달성 → 1m `in_pkl` 전환)
 
 ---
 
