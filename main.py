@@ -425,6 +425,8 @@ class TradingSystem:
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
         self._gbm_retrain_started_at: Optional[datetime.datetime] = None  # P1-B: 30분 타임아웃 감시용
         self._drift_retrain_last_attempt: Optional[datetime.datetime] = None  # DriftRetrain 시도 시각 (실패 포함)
+        # [228차] 실제 분봉 완료 시각 — 복구 스킵 경로와 구별해 ExchangeCB 정확히 감지
+        self._last_real_pipeline_dt: Optional[datetime.datetime] = datetime.datetime.now()
         # [226차] 64비트 서브프로세스 재학습 추적 — Popen·결과 경로·warmup 플래그
         self._retrain_subproc = None                     # subprocess.Popen handle
         self._retrain_subproc_is_warmup: bool = False
@@ -6114,6 +6116,9 @@ class TradingSystem:
         # tick 이벤트(_on_tick_price_update)와 분리해 ret=0 고착 차단
         self._sigma_prev_price = close
 
+        # [228차] 실제 분봉 완료 시각 기록 — 복구 스킵 경로와 구별해 ExchangeCB 정확히 감지
+        self._last_real_pipeline_dt = datetime.datetime.now()
+
         # 상태 바 '마지막 갱신' 타이머 리셋
         self.dashboard.notify_pipeline_ran()
 
@@ -7322,12 +7327,20 @@ class TradingSystem:
         # ── 거래소 CB 대기 모드 ─────────────────────────────────────────
         # 5분 이상 미수신 = 네트워크 단절이 아닌 거래소 CB/단일가 구간으로 판단.
         # 이후 복구 시도를 멈추고 분봉 재개를 기다린다.
-        if elapsed_s >= 300:
+        # [228차] elapsed_s 는 워치독 타이머 기반(복구 스킵으로 리셋될 수 있음)이므로
+        # _last_real_pipeline_dt 기반 실 경과 시간을 ExchangeCB 감지의 우선 기준으로 사용.
+        _real_gap = (
+            (datetime.datetime.now() - self._last_real_pipeline_dt).total_seconds()
+            if self._last_real_pipeline_dt else elapsed_s
+        )
+        _ecb_trigger_s = max(elapsed_s, _real_gap)
+
+        if _ecb_trigger_s >= 300:
             if not self._exchange_cb_mode:
                 self._exchange_cb_mode = True
                 self._exchange_cb_start = datetime.datetime.now()
                 msg = (
-                    f"[ExchangeCB] 분봉 {elapsed_str} 미수신 — "
+                    f"[ExchangeCB] 분봉 {elapsed_str} 미수신 (실경과={int(_real_gap)}s) — "
                     f"거래소 CB/단일가 구간 추정. 복구 시도 중단, 재개 대기 모드 진입"
                 )
                 log_manager.system(msg, "WARNING")
@@ -7352,8 +7365,8 @@ class TradingSystem:
             notify(f"🚨 미륵이 파이프라인 {elapsed_str} 정지 — 긴급 복구 시도")
             QTimer.singleShot(300, self._try_pipeline_recovery)
 
-        elif elapsed_s >= 150:
-            msg = (f"⚠ 파이프라인 {elapsed_str} 미실행 — 분봉 수신 또는 API 상태 이상  "
+        elif _ecb_trigger_s >= 150:
+            msg = (f"⚠ 파이프라인 {elapsed_str} 미실행 (실경과={int(_real_gap)}s) — 분봉 수신 또는 API 상태 이상  "
                    f"다음 90초 내 미복구 시 긴급 복구 자동 실행")
             log_manager.system(msg, "WARNING")
             notify(f"⚠ 미륵이 파이프라인 {elapsed_str} 지연 — 90초 내 미복구 시 자동 조치")
@@ -7507,12 +7520,30 @@ class TradingSystem:
 
         ts_str = row["ts"]  # "YYYY-MM-DD HH:MM:SS"
 
-        # 동일 분봉 반복 재처리 방지 — 이미 복구한 ts면 스킵 후 감시 리셋
+        # 동일 분봉 반복 재처리 방지 — 이미 복구한 ts면 스킵
         if ts_str == self._last_recovery_ts:
+            # [228차] notify_pipeline_ran() 제거 — 워치독 타이머를 리셋하지 않음.
+            # 이전 코드: notify_pipeline_ran() → elapsed_s가 항상 90s로 고착 → ExchangeCB 미발동.
+            # 수정 후: 워치독이 실제 경과 시간 누적 → 300s 도달 시 ExchangeCB 정상 진입.
+            _real_elapsed = (
+                datetime.datetime.now() - self._last_real_pipeline_dt
+            ).total_seconds() if self._last_real_pipeline_dt else 9999
             log_manager.system(
-                f"[복구 스킵] {ts_str} 이미 재처리 완료 — 새 분봉 대기 중",
+                f"[복구 스킵] {ts_str} 이미 재처리 완료 "
+                f"(실 분봉 {int(_real_elapsed)}초 전) — 새 분봉 대기 중",
             )
-            self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
+            # 안전망: 실 분봉 없이 10분 초과 → ExchangeCB 모드 강제 진입
+            if _real_elapsed > 600 and not self._exchange_cb_mode:
+                self._exchange_cb_mode = True
+                self._exchange_cb_start = datetime.datetime.now()
+                log_manager.system(
+                    f"[ExchangeCB] 복구 스킵 {int(_real_elapsed)}초 지속 — "
+                    f"거래소 CB/단일가 구간 추정. 재개 대기 모드 강제 진입",
+                    "WARNING",
+                )
+                notify(f"⏸ 미륵이 거래소 CB 대기 — 실 분봉 {int(_real_elapsed//60)}분 미수신 (강제 진입)")
+                self._shadow_tracker.mark_exchange_cb(True)
+                self.circuit_breaker.set_gbm_retrain_active(True)
             return
 
         try:
@@ -7526,6 +7557,16 @@ class TradingSystem:
             log_manager.system(
                 f"[복구 포기] 최신 분봉이 {age_s}초 전 데이터 — 재처리 무의미 (장외 시간?)", "WARNING"
             )
+            # [228차] 장중에 분봉이 10분 이상 없으면 거래소 CB로 판단 → ExchangeCB 진입
+            if is_market_open() and not self._exchange_cb_mode:
+                self._exchange_cb_mode = True
+                self._exchange_cb_start = datetime.datetime.now()
+                log_manager.system(
+                    f"[ExchangeCB] 복구 포기({age_s}s) + 장중 → 거래소 CB 추정, 재개 대기 모드 진입",
+                    "WARNING",
+                )
+                self._shadow_tracker.mark_exchange_cb(True)
+                self.circuit_breaker.set_gbm_retrain_active(True)
             if self.position.status != "FLAT":
                 log_manager.system(
                     "[포지션 경보] 파이프라인 장기 정지 + 포지션 보유 — 수동 청산 검토 필요", "WARNING"
