@@ -248,6 +248,31 @@ ECHO.
 
 SET "_RESTART_CNT=0"
 
+REM ============================================================
+REM  단일 인스턴스 보장 — 기존 main.py 프로세스 감지 후 종료 확인
+REM  원인: 런처를 두 번 실행하면 두 main.py가 공존 → GBM pkl 경합
+REM ============================================================
+CALL :L "[GUARD] 기존 main.py 프로세스 체크..."
+python -c "import psutil, sys, os; procs=[p for p in psutil.process_iter(['pid','name','cmdline']) if 'python' in (p.info.get('name') or '').lower() and any('main.py' in (c or '') for c in (p.info.get('cmdline') or [])) and p.pid != os.getpid()]; print('[GUARD] 실행 중 main.py 프로세스: {}'.format(len(procs))); [print('  PID={} cmd={}'.format(p.pid, ' '.join(p.info.get('cmdline') or []))) for p in procs]; sys.exit(1 if procs else 0)" 2>NUL
+IF !ERRORLEVEL! NEQ 0 (
+    ECHO.
+    CALL :L "[WARN] 이미 실행 중인 main.py 프로세스가 감지됐습니다."
+    CALL :L "[WARN] 이중 실행 시 GBM pkl 파일 경합 및 중복 주문이 발생할 수 있습니다."
+    ECHO.
+    CHOICE /C YN /N /T 10 /D N /M "기존 프로세스를 종료하고 새로 시작하시겠습니까? (Y=종료후재시작 / N=취소) [10초 후 N]: "
+    IF !ERRORLEVEL!==2 (
+        CALL :L "[GUARD] 취소됨 — 기존 인스턴스 유지."
+        TIMEOUT /T 5 >NUL
+        GOTO :EOF
+    )
+    CALL :L "[GUARD] 기존 main.py 프로세스 종료 중..."
+    python -c "import psutil, os; [p.terminate() for p in psutil.process_iter(['pid','name','cmdline']) if 'python' in (p.info.get('name') or '').lower() and any('main.py' in (c or '') for c in (p.info.get('cmdline') or [])) and p.pid != os.getpid()]" 2>NUL
+    TIMEOUT /T 3 /NOBREAK >NUL
+    CALL :L "[GUARD] 기존 프로세스 종료 완료 — 새 인스턴스 시작."
+) ELSE (
+    CALL :L "[GUARD] 기존 main.py 없음 — 단일 인스턴스 확인."
+)
+
 :RESTART_LOOP
 
 REM AllowSetForegroundWindow(ASFW_ANY=-1): 어떤 프로세스라도 foreground 이동 허가
