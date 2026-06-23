@@ -3012,7 +3012,7 @@ class TradingSystem:
                 _mdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
                 for _d in range(1, 6):
                     _prev = datetime.date.today() - datetime.timedelta(days=_d)
-                    _mf = os.path.join(_mdir, f"eod_retrain_done_{_prev.isoformat()}.txt")
+                    _mf = os.path.join(_mdir, f"eod_retrain_done_{_prev.strftime('%Y%m%d')}.txt")
                     if os.path.exists(_mf):
                         self._eod_retrain_ok = True
                         log_manager.system(
@@ -6802,7 +6802,7 @@ class TradingSystem:
         _eod_marker_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "data",
-            f"eod_retrain_done_{datetime.date.today().isoformat()}.txt",
+            f"eod_retrain_done_{datetime.date.today().strftime('%Y%m%d')}.txt",
         )
         if os.path.exists(_eod_marker_path):
             self._eod_retrain_ok = True
@@ -7125,6 +7125,11 @@ class TradingSystem:
             logger.warning("[WAL] 체크포인트 전체 실패 (무해): %s", _wal_e)
 
         # ── 자동 종료 예약 ────────────────────────────────────────
+        retrain_str = (
+            "재학습: 완료 (스케줄러)"
+            if getattr(self, "_eod_retrain_ok", False)
+            else "재학습: 미완료 (내일 PreRetrain 보완)"
+        )
         win_rate = stats["wins"] / max(stats["trades"], 1)
         pnl_sign = "+" if stats["pnl_krw"] >= 0 else ""
         notify(

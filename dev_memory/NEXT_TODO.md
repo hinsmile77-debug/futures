@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-06-24 (222차 — EOD 마커·PreRetrain 수정 검증)
+
+### PreRetrain 스킵 확인 [P0]
+
+- [ ] **[PreRetrain] EOD 마커 파일 직접 확인** — `[PreRetrain] EOD 마커 파일 직접 확인 (1일 전: 2026-06-23) → PreRetrain 스킵 (session_state 미기록 보완)` 로그 출현 확인
+- [ ] **PreRetrain 스킵** — `[PreRetrain] 08:55 사전 재학습 스킵 — 전날 EOD 재학습 성공 (동일 데이터 중복 불필요)` 로그 출현 (GBM 사전 재학습 시작 로그 없음)
+- [ ] **session_state 저장** — 오늘 15:40 daily_close() 시 `eod_retrain_ok_date` 저장 여부 → `[DailyClose] EOD 재학습 마커 확인 — 스케줄러 완료, 내일 PreRetrain 스킵 예약` 로그 출현 (retrain_eod.py가 15:40 이전 완료 시)
+
+### DailyClose retrain_str 알림 확인 [P1]
+
+- [ ] **retrain_str 정상 출력** — 오늘 15:40 Slack 알림에 `"재학습: 완료 (스케줄러)"` 또는 `"재학습: 미완료 (내일 PreRetrain 보완)"` 포함 확인 (NameError 소멸)
+
+---
+
 ## 2026-06-23 (220차 — 15:10 강제청산 + FINAL_CLOSE 검증)
 
 ### BrokerDirect 경로 동작 확인 [P0]

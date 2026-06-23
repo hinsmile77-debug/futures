@@ -1,7 +1,71 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-22 (221차 세션) — BlockRequest 레이스 컨디션 분할체결 qty 누락 방어
+> 마지막 업데이트: 2026-06-23 (222차 세션) — EOD 마커 파일명 불일치 + retrain_str NameError 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-23 (222차 — EOD 마커 파일명 불일치 + retrain_str NameError 수정)
+
+### 배경 — 장전 점검 중 두 버그 발견
+
+오늘 장전 점검에서 PreRetrain이 불필요하게 발동된 원인 추적.
+마커 파일 `eod_retrain_done_20260622.txt`가 실재함에도 `_eod_retrain_ok = False`로 유지 →
+매일 PreRetrain 강제 실행되는 구조였음.
+
+### Bug 1 — retrain_str NameError (DailyClose 비정상 종료)
+
+**현상**: 어제(6/22) 15:40 `daily_close()` 종료 시 `NameError: name 'retrain_str' is not defined`.
+DailyClose가 exception으로 중단 → `_schedule_shutdown` 경유 자동 종료는 정상 실행됨.
+
+**원인**: `main.py:7135` notify() f-string에서 `retrain_str` 변수를 사용했으나 정의문 누락.
+
+**수정**:
+
+| 파일 | 위치 | 변경 |
+|---|---|---|
+| `main.py` | `daily_close()` notify() 직전 ~L7127 | `retrain_str` 정의 추가 — `_eod_retrain_ok` 참조해 "완료(스케줄러)" / "미완료(내일 PreRetrain 보완)" 분기 |
+
+### Bug 2 — EOD 마커 파일명 형식 불일치 (PreRetrain 항상 강제 실행)
+
+**현상**: `retrain_eod.py`가 성공해도 `main.py`가 마커 파일을 찾지 못함
+→ `_eod_retrain_ok` 항상 False → PreRetrain 불필요 실행 (매일).
+
+**원인**: 파일명 날짜 형식 불일치
+
+| 위치 | 형식 | 실제 파일명 예시 |
+|---|---|---|
+| `retrain_eod.py:29` | `strftime("%Y%m%d")` | `eod_retrain_done_20260622.txt` |
+| `main.py:3015` PreRetrain 폴백 | `isoformat()` | `eod_retrain_done_2026-06-22.txt` (못 찾음) |
+| `main.py:6805` daily_close 조회 | `isoformat()` | `eod_retrain_done_2026-06-22.txt` (못 찾음) |
+
+`retrain_eod.py`가 하이픈 없이 생성하지만, `main.py`는 하이픈 있는 이름을 찾아서 **항상 미발견**.
+
+**수정**:
+
+| 파일 | 위치 | 변경 |
+|---|---|---|
+| `main.py` | `pre_market_setup()` PreRetrain 폴백 ~L3015 | `_prev.isoformat()` → `_prev.strftime('%Y%m%d')` |
+| `main.py` | `daily_close()` 마커 조회 ~L6805 | `datetime.date.today().isoformat()` → `datetime.date.today().strftime('%Y%m%d')` |
+
+### 연쇄 영향 (수정 전)
+
+```
+retrain_eod.py 15:48 완료 → 마커 파일 생성 (하이픈 없음)
+daily_close() 15:40 → 마커 조회 (하이픈 있음) → 못 찾음 → eod_retrain_ok_date 저장 안 됨
+pre_market_setup() 08:55 → session_state 공백 → 폴백 마커 조회 (하이픈 있음) → 못 찾음
+→ PreRetrain 불필요 실행 (매일 반복)
+```
+
+> **주의**: 이 버그는 retrain_str NameError와 독립적. NameError 없었어도 하이픈 불일치로 동일하게 발생.
+
+### 검증 포인트 (내일 장전)
+
+- [ ] **[PreRetrain] EOD 마커 파일 직접 확인 (1일 전: 2026-06-23)** 로그 출현 확인
+- [ ] **[PreRetrain] 08:55 사전 재학습 스킵** 로그 출현 확인 (PreRetrain 불필요 실행 없음)
+- [ ] **DailyClose retrain_str** — 오늘 15:40 `"재학습: 완료 (스케줄러)"` 또는 `"재학습: 미완료 (내일 PreRetrain 보완)"` 알림 정상 출력
+
+**커밋**: 222차 (오늘)
 
 ---
 

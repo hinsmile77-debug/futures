@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-23 (222차 — EOD 마커 파일명 불일치 + retrain_str NameError 수정)
+
+**Work**: 장전 점검 중 PreRetrain 불필요 발동 원인 추적 → 2개 버그 발견·수정.
+
+**분석 발견**:
+- `retrain_eod.py`는 `strftime("%Y%m%d")` (하이픈 없음: `20260622`), `main.py`는 `isoformat()` (하이픈 있음: `2026-06-22`) 불일치로 마커 파일을 항상 못 찾음 → 매일 PreRetrain 강제 발동
+- `daily_close()` notify() f-string에 `retrain_str` 정의 누락 → 어제 15:40 NameError로 DailyClose 비정상 종료
+- 두 버그 독립적: NameError가 없었어도 하이픈 불일치로 동일하게 PreRetrain 강제 발동
+
+**수정**:
+- `main.py pre_market_setup() ~L3015`: `_prev.isoformat()` → `_prev.strftime('%Y%m%d')`
+- `main.py daily_close() ~L6805`: `datetime.date.today().isoformat()` → `datetime.date.today().strftime('%Y%m%d')`
+- `main.py daily_close() ~L7127`: `retrain_str` 정의 추가 (`_eod_retrain_ok` 참조)
+
+**커밋**: 222차
+
+---
+
 ## 2026-06-22 (221차 — BlockRequest 레이스 컨디션 분할체결 qty 누락 방어)
 
 **Work**: 14:46 매도진입 후 14:56 재진입이 "청산 전 재진입"인지 딥다이브 → 레이스 컨디션 버그 확정·수정.
