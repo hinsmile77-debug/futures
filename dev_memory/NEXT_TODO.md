@@ -8,6 +8,38 @@
 
 ---
 
+## 2026-06-24 (225차 — sigma·QTimer·CB③ 수정 효과 검증) [최우선]
+
+### sigma 수정 확인 [P0]
+
+- [ ] **nonzero > 0** — `[sigma] sigma_at_t=X.XXXX% buf_n=20 nonzero=Y` 에서 Y ≥ 1 출력 확인 (0이면 _sigma_prev_price 커밋 누락)
+- [ ] **sigma 정상 범위** — 오전 장 평균 σ ≥ 0.03% (KOSPI 200 선물 통상 분봉 변동률)
+- [ ] **ConstOut 발생 빈도 감소** — 기존 하루 3~4회 → 없거나 1회 이하 기대
+
+### QTimer → deferred 큐 확인 [P1]
+
+- [ ] **GBM 재학습 완료 로그** — LEARNING.log에 `[GBM] 배치 재학습 완료 | Xs 데이터=N행` 출현 (08:55 PreRetrain 포함)
+- [ ] **ConstOut 재적합 콜백** — SYSTEM.log에 `[ConstOut] [] 재적합 완료 → acc30m 버퍼 리셋` 출현 (ConstOut 발생 시)
+- [ ] **모델 교체** — S0에서 `[Model] 재학습 완료 모델 교체 적용 (S0)` 출현
+- [ ] **DeferredCB 오류 없음** — `[DeferredCB] 콜백 처리 오류` 미출현
+
+### CB③ 쿨다운 확인 [P2]
+
+- [ ] **재트리거 방어** — ConstOut 재적합 후 CB③ 즉시 재HALT 없음 확인
+- [ ] **쿨다운 로그** — `reset_acc30m_buffer` 직후 15샘플 내 warn_count 미증가
+
+### CB③ HALT 정상 복구 확인 [P3]
+
+- [ ] **lift_cb3_halt 성공** — `[CB③→RESUME]` 로그 출현 (ConstOut 발생 시 GBM 재학습 후 자동 해제)
+- [ ] **주기적 재시도 불필요** — `[CB③→RESUME] 주기적 재시도` 미출현이 정상 (콜백이 제대로 작동한 경우)
+
+### GBM 타임아웃 10분 확인 [P4]
+
+- [ ] **정상 완료 시 타임아웃 미발동** — `[GBM] 재학습 플래그 10분 타임아웃 강제 해제` 미출현 (재학습이 10분 내 완료되면 타임아웃 불필요)
+- [ ] **PreRetrain 10분 초과 시 경보** — 타임아웃 로그 출현 시 batch_retrainer 성능 점검 필요
+
+---
+
 ## 2026-06-24 (224차 — SGD 임계 완화 효과 검증)
 
 ### SGD 붕괴 복구 조기 발동 확인 [P0]

@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-23 (225차 — sigma=0 버그·QTimer daemon thread 미전달·CB③ 재트리거 3종 수정)
+
+**Work**: 20260623 장중 로그(LEARNING + SYSTEM) 딥다이브 → CB③ 종일 HALT 미해제 원인 3종 발굴·수정.
+
+**분석 발견**:
+- `sigma_at_t=0.0000% nonzero=0` 종일 지속: `_on_tick_price_update()`가 파이프라인 진입 전 `_last_pipeline_price`를 현재봉 close로 덮어써 ret=0 고착
+- QTimer daemon thread 미전달: SYSTEM.log에 `[GBM] 배치 재학습 완료` 미등장 → GBM worker 4곳 + ConstOut worker 모두 콜백 미실행 확인
+- CB③ 재트리거: 10:15 refit → reset_acc30m_buffer() 미호출 → 7샘플 만에 10:22 즉시 재HALT
+- 오늘 CB③ HALT 10:22 발동 후 11:30 이후까지 미해제 (lift_cb3_halt() 미호출)
+- 30m acc30m: 0%(0/30) 종일 유지, Contrarian 11:02 ACTIVE, Brier 패널티 11:19 발동
+
+**수정 (모두 225차 58b3c1b)**:
+- `main.py`: `self._sigma_prev_price` 전용 변수 신설 + 파이프라인 말미 커밋 (sigma=0 수정)
+- `main.py`: GBM worker 4곳 + ConstOut worker 1곳 QTimer → `_deferred_callbacks` 큐 교체
+- `main.py`: S0 시작에 큐 drain 블록 추가 + 15분마다 CB③ 재시도 추가
+- `circuit_breaker.py`: `_cb3_reset_cooldown_samples=15` 쿨다운 신설
+- `main.py`: GBM 재학습 타임아웃 1800s → 600s 단축
+
+**커밋**: 225차 (58b3c1b)
+
+---
+
 ## 2026-06-23 (224차 — SGD 붕괴 복구 임계 완화 + BiasReset 연계 SGD 리셋)
 
 **Work**: 오늘 5m DN 편향 흐름 로그 분석 → 2개 구조적 문제 발견·수정.

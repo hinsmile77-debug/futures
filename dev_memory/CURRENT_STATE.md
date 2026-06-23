@@ -1,7 +1,66 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-23 (224차 세션) — SGD 붕괴 복구 임계 완화 + BiasReset 연계 SGD 리셋
+> 마지막 업데이트: 2026-06-23 (225차 세션) — sigma=0 버그·QTimer daemon thread 미전달·CB③ 재트리거 3종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-23 (225차 — sigma=0 고착·QTimer 미전달·CB③ 재트리거 수정)
+
+### 배경 — 금일 장중 로그 딥다이브
+
+20260623 LEARNING.log / SYSTEM.log 분석으로 종일 CB③ HALT(10:22~장마감) 미해제 원인 규명.
+
+### 근본 원인 체인
+
+```
+sigma=0 고착 (신규 버그)
+  → sigma 기반 피처 상수
+  → GBM 30m ConstOut 순환
+  → ConstOut refit 후 QTimer 미전달 (기존 버그)
+  → _on_const_out_refit_done() 미실행
+  → reset_acc30m_buffer() 미호출 / GBM 재학습 미트리거
+  → 10:15 refit 후에도 30m 7연속 실패
+  → CB③ 재트리거 (버퍼 리셋 후 샘플 부족 방어 없음)
+  → 10:22 HALT → lift_cb3_halt() 미호출 → 종일 정지
+```
+
+**추가 피해**: 08:55 PreRetrain도 QTimer 미전달 → 모델 미교체 → 누적 예측 품질 저하.
+
+### 수정 1: sigma=0 고착 수정 [P0] (main.py)
+
+**버그**: `_on_tick_price_update()`(bar 수신 즉시)가 `self._last_pipeline_price = close[T]`로 덮어씀. 파이프라인 라인 3187에서 `_prev = self._last_pipeline_price` 캡처 시 prev == cur → ret=0 고착.
+
+**수정**: `self._sigma_prev_price: float = 0.0` 전용 변수 신설. 파이프라인 **말미**(`notify_pipeline_ran()` 직전)에서만 갱신. sigma 계산에서 이 변수만 참조.
+
+### 수정 2: QTimer daemon thread → deferred 큐 [P1] (main.py)
+
+**버그**: PyQt5에서 daemon thread의 `QTimer.singleShot(0, ...)` 메인 이벤트 루프 전달 미보장 → GBM worker 4곳 + ConstOut worker 1곳 콜백 전부 미실행.
+
+**수정**: 모든 worker → `self._deferred_callbacks.put(tag, ...)`. 매분 파이프라인 S0 첫 블록에서 큐 drain → 메인 스레드 안전 실행.
+
+### 수정 3: CB③ 버퍼 리셋 후 쿨다운 [P2] (circuit_breaker.py)
+
+**버그**: `reset_acc30m_buffer()` 직후 7샘플 만에 7연속 오답 → 즉시 재HALT.
+
+**수정**: 리셋 시 `_cb3_reset_cooldown_samples = 15`. 15샘플 누적 전 warn_count 억제.
+
+### 수정 4: CB③ HALT 주기적 재시도 [P3] (main.py)
+
+S0에서 15분마다 `HALTED & cause==cb3 & 재학습 미실행` 시 `lift_cb3_halt()` 재시도 — P1 누락 최후 안전망.
+
+### 수정 5: GBM 재학습 타임아웃 30분 → 10분 [P4] (main.py)
+
+PreRetrain 통상 ~3분 완료. 30분 → 10분으로 단축해 조기 해제 후 ConstOut 정상 경로 복귀 보장.
+
+### 예상 효과 (내일 로그 확인 포인트)
+
+- `[sigma] sigma_at_t=X.XXXX% nonzero=Y` — nonzero > 0 출력 확인 (0이면 버그 재발)
+- `[DeferredCB]` 오류 없음 + `[CB③→RESUME]` 정상 해제 흐름
+- `[CB③] acc30m 버퍼 리셋 (스케일러 재적합 완료 — 이전 예측 무효화, 쿨다운=15샘플)` 출력
+- ConstOut 후 CB③ 재트리거 없이 거래 재개
+
+**커밋**: 225차 (58b3c1b)
 
 ---
 
