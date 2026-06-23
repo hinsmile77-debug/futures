@@ -410,6 +410,10 @@ class TradingSystem:
         # Chejan 이벤트 큐: COM 콜백에서 push, 파이프라인 틱에서 drain
         # → BlockRequest() 메시지 펌프 도중 _pending_order 동시 접근 차단
         self._chejan_event_queue = _queue.Queue()
+        # [225차 P1] 데몬 스레드 → 메인 스레드 콜백 큐
+        # QTimer.singleShot(0, ...) 은 daemon thread에서 PyQt5 이벤트 루프 전달 보장이 없음.
+        # worker 완료 시 (tag, *args) 를 put → 매분 S0 drain → 메인 스레드에서 안전 실행.
+        self._deferred_callbacks: _queue.Queue = _queue.Queue()
         self._auto_entry_enabled: bool = True   # Auto On/Off 토글 상태
         self._manual_entry_ctx: dict = {}        # 마지막 파이프라인 산출값 (수동 진입 버튼용)
         self._last_order_event_key = None
@@ -450,6 +454,10 @@ class TradingSystem:
         self._sigma_20:  float = 0.0                 # 현재 rolling σ (%, 방법3 threshold 계산용)
         self._sigma_ready: bool = False              # sigma_20봉 달성 플래그
         self._last_sigma_20: float = 0.0            # 전날 EOD sigma (장 초반 20봉 미수집 구간 폴백)
+        # [225차 P0] sigma 전전봉 종가 — _on_tick_price_update가 같은 틱에서
+        # _last_pipeline_price를 현재봉 종가로 덮어써 ret=0 고착 버그 수정.
+        # 이전 파이프라인 완료 시점에만 갱신하여 tick 오염 차단.
+        self._sigma_prev_price: float = 0.0
         # GBM 첫 재학습 완료 전 보수 진입 제어
         self._pre_retrain_done: bool = False         # True이면 방법3 레이블 GBM 사용 중
         self._last_balance_result: dict = {}
@@ -739,8 +747,9 @@ class TradingSystem:
                 result = {"ok": False, "error": str(exc)}
             # P1-A 강화: ok/fail 무관 worker에서 즉시 해제 (QTimer daemon-thread 불안정 대비)
             self._gbm_retrain_running = False
-            self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
-            QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, False))
+            self._gbm_retrain_done_event.set()
+            # [225차 P1] QTimer 대신 deferred 큐 — daemon thread QTimer 미전달 버그 수정
+            self._deferred_callbacks.put(("gbm_done", result, False))
 
         threading.Thread(target=_retrain_worker, daemon=True).start()
         return True
@@ -2328,8 +2337,9 @@ class TradingSystem:
                     result = {"ok": False, "error": str(_re)}
                 # P1-A 강화: BaseException(MemoryError 포함) 무관 항상 해제
                 self._gbm_retrain_running = False
-                self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
-                QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
+                self._gbm_retrain_done_event.set()
+                # [225차 P1] QTimer 대신 deferred 큐
+                self._deferred_callbacks.put(("gbm_done", result, True))
 
             threading.Thread(target=_intraday_retrain_worker, daemon=True).start()
         elif _late_restart and not _already_retrained_today:
@@ -3053,8 +3063,9 @@ class TradingSystem:
                         result = {"ok": False, "error": str(_pre_e)}
                     # P1-A 강화: BaseException(MemoryError 포함) 무관 항상 해제
                     self._gbm_retrain_running = False
-                    self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
-                    QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, True))
+                    self._gbm_retrain_done_event.set()
+                    # [225차 P1] QTimer 대신 deferred 큐
+                    self._deferred_callbacks.put(("gbm_done", result, True))
 
                 threading.Thread(target=_pre_retrain_worker, daemon=True).start()
 
@@ -3122,6 +3133,40 @@ class TradingSystem:
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
 
+        # ── [S0] 데몬 스레드 콜백 큐 drain — P1 QTimer 불안정 대체 ──────────
+        # daemon thread 에서 QTimer.singleShot(0, ...) 은 PyQt5 이벤트 루프 전달 미보장.
+        # 대신 worker → _deferred_callbacks.put() → 매분 S0 에서 메인 스레드 안전 소비.
+        while True:
+            try:
+                _dcb = self._deferred_callbacks.get_nowait()
+            except _queue.Empty:
+                break
+            try:
+                _dcb_tag = _dcb[0]
+                if _dcb_tag == "gbm_done":
+                    self._on_gbm_retrain_done(_dcb[1], _dcb[2])
+                elif _dcb_tag == "const_out_done":
+                    self._on_const_out_refit_done(_dcb[1])
+            except Exception as _dcb_e:
+                logger.warning("[DeferredCB] 콜백 처리 오류 (tag=%s): %s", _dcb[0] if _dcb else "?", _dcb_e)
+
+        # ── [P3] CB③ HALT 주기적 해제 재시도 ─────────────────────────────
+        # ConstOut 재적합 + GBM 재학습이 완료됐으나 콜백 누락으로 lift 안 된 경우 복구.
+        # 15분마다 조건 확인: HALTED + cb3 원인 + 재학습·스케일러 재적합 미실행.
+        if (not getattr(self, "_gbm_retrain_running", False)
+                and not getattr(self, "_scaler_refresh_running", False)):
+            _cb3_state = self.circuit_breaker
+            if (_cb3_state.state == "HALTED"
+                    and getattr(_cb3_state, "_halt_cause", "") == "cb3"):
+                _ts_min_for_cb3 = int(ts[14:16]) if len(ts) >= 16 else -1
+                if _ts_min_for_cb3 >= 0 and _ts_min_for_cb3 % 15 == 0:
+                    if _cb3_state.lift_cb3_halt():
+                        log_manager.system(
+                            "[CB③→RESUME] 주기적 재시도 → HALT 해제 "
+                            "(ConstOut 재적합·GBM 재학습 완료 누락 복구)",
+                            "INFO",
+                        )
+
         # ── [S0] 재학습 완료 모델 교체 — predict_proba 전 안전 지점 ─────────
         # _on_gbm_retrain_done 이 플래그를 세우면 여기서 소비.
         # 파이프라인 실행 중 모델 객체 교체 race condition 방지 (193차).
@@ -3184,7 +3229,9 @@ class TradingSystem:
             )
 
         close  = _c
-        _prev_pipeline_price      = self._last_pipeline_price  # sigma 계산용 이전 종가 선점
+        # [225차 P0] _last_pipeline_price 는 _on_tick_price_update(현재 봉 tick)에 의해
+        # 파이프라인 진입 전 이미 cur_p 로 덮어써져 ret=0 고착 → 전용 변수 사용
+        _prev_pipeline_price      = self._sigma_prev_price     # sigma 계산용 이전 종가
         self._last_pipeline_price = close  # 잔고 UI 합성에 사용
         self._last_close = close           # 옵션체인 QTimer 폴링용 최신 종가
 
@@ -3782,8 +3829,9 @@ class TradingSystem:
                     result = {"ok": False, "error": str(_re)}
                 # P1-A: BaseException(MemoryError 포함) 무관 항상 해제
                 self._gbm_retrain_running = False
-                self._gbm_retrain_done_event.set()   # worker 스레드에서 직접 해제 (QTimer 전달 불안정 대비)
-                QTimer.singleShot(0, lambda r=result: self._on_gbm_retrain_done(r, _is_warmup))
+                self._gbm_retrain_done_event.set()
+                # [225차 P1] QTimer 대신 deferred 큐
+                self._deferred_callbacks.put(("gbm_done", result, _is_warmup))
 
             threading.Thread(target=_retrain_worker, daemon=True).start()
 
@@ -4278,13 +4326,17 @@ class TradingSystem:
         # ── Phase B: 정기/강제 스케일러 refresh 트리거 ─────────────────
         # predict_proba 완료 후 last_extreme_features 가 갱신된 시점에 실행.
         # refit 자체는 daemon thread — 파이프라인 블로킹 없음.
-        # P1-B: GBM 재학습 플래그 30분 타임아웃 — QTimer.singleShot 미실행 시 강제 해제
+        # [225차 P4] GBM 재학습 타임아웃 — 장전 PreRetrain 행/완료 미콜백 시 조기 해제
+        # deferred 큐 도입으로 콜백 누락은 해소됐으나, retrain_now() 자체 행 대비 안전망 유지.
+        # 기존 30분(1800s) → 10분(600s): PreRetrain은 ~3분 내 완료 기대.
+        # intraday 재학습(force=False)은 더 빠르므로 600s 임계 안에 항상 수렴.
         _gbm_started = getattr(self, "_gbm_retrain_started_at", None)
         if (self._gbm_retrain_running and _gbm_started is not None
-                and (_ts_dt_obj - _gbm_started).total_seconds() > 1800):
-            logger.warning(
-                "[GBM] 재학습 플래그 30분 타임아웃 강제 해제 (started=%s)",
-                _gbm_started.strftime("%H:%M:%S"),
+                and (_ts_dt_obj - _gbm_started).total_seconds() > 600):
+            log_manager.system(
+                f"[GBM] 재학습 플래그 10분 타임아웃 강제 해제 "
+                f"(started={_gbm_started.strftime('%H:%M:%S')}) — deferred 큐 미전달 가능성",
+                "WARNING",
             )
             self._gbm_retrain_running = False
             self._gbm_retrain_started_at = None
@@ -4557,10 +4609,8 @@ class TradingSystem:
                     finally:
                         self._scaler_refresh_running = False
                     if _refit_ok:
-                        # 재적합 완료 → 메인 스레드에서 acc30m 리셋 + GBM 재학습 예약
-                        QTimer.singleShot(
-                            0, lambda _h=_hz: self._on_const_out_refit_done(_h)
-                        )
+                        # [225차 P1] QTimer 대신 deferred 큐 — daemon thread QTimer 미전달 버그 수정
+                        self._deferred_callbacks.put(("const_out_done", _hz))
                 threading.Thread(target=_const_out_refit_worker, daemon=True).start()
 
         # 앙상블 보정기: 현재 ts의 conf 캐시 (STEP 1에서 T-1m conf 조회용)
@@ -6020,6 +6070,10 @@ class TradingSystem:
                 self.dashboard.update_efficacy(self._gather_efficacy_stats())
         else:
             logger.debug("[PipePerf] heavy dashboard refresh deferred by ConstOut cooldown")
+
+        # [225차 P0] 이번 봉 종가를 다음 파이프라인의 sigma 전봉 가격으로 확정
+        # tick 이벤트(_on_tick_price_update)와 분리해 ret=0 고착 차단
+        self._sigma_prev_price = close
 
         # 상태 바 '마지막 갱신' 타이머 리셋
         self.dashboard.notify_pipeline_ran()

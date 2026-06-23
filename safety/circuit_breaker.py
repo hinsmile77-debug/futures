@@ -112,6 +112,10 @@ class CircuitBreaker:
         # "cb3": 30분 정확도 저하 (데이터 품질 문제 → ConstOut 회복 시 해제 가능)
         self._halt_cause: str = ""
 
+        # [225차 P2] reset_acc30m_buffer() 후 쿨다운 — 재적합 직후 CB③ 재트리거 방어.
+        # 버퍼 리셋 직후 샘플이 충분히 쌓이기 전(≤15샘플) 연속 오답으로 즉시 재HALT되는 문제.
+        self._cb3_reset_cooldown_samples: int = 0
+
     # ── 상태 조회 ──────────────────────────────────────────────
     @property
     def state(self) -> str:
@@ -299,6 +303,14 @@ class CircuitBreaker:
 
         if contrarian_active or eks_active:
             return  # HALT/경고 발동만 스킵, 누적은 이미 위에서 완료
+
+        # [225차 P2] 버퍼 리셋 후 쿨다운 중 — CB③ warn 누적 억제
+        # 재적합 직후 샘플 부족 시 즉시 재HALT 방지 (쿨다운=15샘플)
+        if self._cb3_reset_cooldown_samples > 0:
+            if len(self._accuracy_buf) <= self._cb3_reset_cooldown_samples:
+                return  # 쿨다운 기간 — HALT/경고 발동 억제
+            else:
+                self._cb3_reset_cooldown_samples = 0  # 쿨다운 해제
 
         if len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES:
             acc = sum(self._accuracy_buf) / len(self._accuracy_buf)
@@ -513,7 +525,10 @@ class CircuitBreaker:
         self._accuracy_buf.clear()
         self._acc30m_stage = "NORMAL"
         self._cb3_warn_count = 0
-        msg = "[CB③] acc30m 버퍼 리셋 (스케일러 재적합 완료 — 이전 예측 무효화)"
+        # [225차 P2] 리셋 직후 샘플 부족 구간에서 즉시 재HALT 방어
+        # 15샘플 이상 누적 전까지 CB③ warn_count 누적 억제
+        self._cb3_reset_cooldown_samples = 15
+        msg = "[CB③] acc30m 버퍼 리셋 (스케일러 재적합 완료 — 이전 예측 무효화, 쿨다운=15샘플)"
         logger.info(msg)
         log_manager.system(msg, "INFO")
 
@@ -580,6 +595,7 @@ class CircuitBreaker:
         self._horizon_fl_bias_streak.clear()   # [P5]
         self._horizon_fl_bias_warned.clear()   # [P5]
         self._halt_cause = ""
+        self._cb3_reset_cooldown_samples = 0   # [225차 P2]
         logger.info("[CB] 일간 리셋 완료")
         log_manager.system("[CB] 일간 리셋 완료", "INFO")
 
