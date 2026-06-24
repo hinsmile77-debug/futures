@@ -13,10 +13,10 @@ echo  %DATE% %TIME%
 echo ============================================================
 echo.
 
-REM conda 환경 활성화
-call conda activate py37_32
+REM conda 환경 활성화 — py310_64 전용 (191차 결정, OOM 방지)
+call conda activate py310_64
 if errorlevel 1 (
-    echo [ERROR] conda activate py37_32 실패
+    echo [ERROR] conda activate py310_64 실패
     pause
     exit /b 1
 )

@@ -27,6 +27,7 @@ KOSPI 200 선물 1분봉 기반 방향 예측 + 자동매매 시스템 (별칭: 
 > **재학습 환경 분리 이유**: py37_32에서 numpy float32 배열 OOM 반복으로 모델 미교체 → CB③ HALT 유발.
 > `retrain_eod.py` / `retrain_intraday.py`는 `py310_64`에서 실행되며 `pickle protocol=4`로 저장해 py37_32 런타임에서 로드 호환.
 > EOD 로그에 `Python 3.10.20 64-bit`가 찍혀도 정상 — 이상 환경이 아님.
+> `EOD_RETRAIN.bat`도 **`py310_64`** 전용 (191차 결정). `scripts\eod_retrain.py`도 동일. 두 파일 모두 py37_32 언급은 구버전 잔재이며, py37_32로 실행하면 OOM 재발 — 다시 거론하지 말 것.
 
 ---
 
