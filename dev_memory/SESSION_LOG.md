@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-06-24 (234차 — 재시동 버그 수정 + 종목변경 배지)
+
+**Work**: X버튼 재시작 후 프로세스 미종료 근본 원인 분석 및 수정, GUARD 커밋 이력 무결성 점검.
+
+**분석 발견**:
+- 08:40 스케줄러 자동 기동 시 기존 main.py 프로세스 살아있어 GUARD 취소됨
+- 229차-b `super().closeEvent(event)` 만으로는 `quitOnLastWindowClosed` 미보장 → 프로세스 미종료
+- 커밋 이력 정리: 228차-c(GUARD 기본N) → 229차(완전종료고정) → 229차-b(3-way다이얼) → 233차(장전 자동Y) → 234차(quit 강제) 순 진화
+- 233차에서 GUARD 장전 자동 Y 수정은 오늘 08:40 재발 방지 (배치 기본값 N→Y)
+- 234차는 229차-b에서 잔존한 프로세스 미종료 구조적 결함 해소
+
+**수정 (3종)**:
+- `dashboard/main_dashboard.py` closeEvent: `super().closeEvent()` 뒤 `QApplication.quit()` 명시 추가
+- `main.py` run(): `exec_()` 반환 후 `sys.exit(0)` 추가 (COM 비데몬 스레드 방지)
+- `dashboard/main_dashboard.py` + `main.py`: 종목변경 재시작 배지 (AUTO-RESTART 경유)
+
+**커밋**: 234차 (64ad55e)
+
+---
+
 ## 2026-06-24 (232차 — macro_risk_off 이진 피처 ScaleFloor 추가)
 
 **Work**: 금일 09:05 EKS 발동 원인 딥다이브 → `macro_risk_off` z폭발 버그 수정.

@@ -1,7 +1,63 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-24 (232차 세션) — macro_risk_off ScaleFloor 이진 피처 z폭발 방지
+> 마지막 업데이트: 2026-06-24 (234차 세션) — 재시동 프로세스 미종료 버그 수정 + 종목변경 재시작 배지
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-24 (234차 — 재시동 프로세스 미종료 버그 수정 + 종목변경 배지)
+
+### 배경 — X버튼 재시작 후 프로세스 미종료 원인
+
+오늘 08:40 자동 스케줄러 기동 시 GUARD에서 기존 main.py 프로세스(전날 세션)가 살아있어 취소됨.
+229차-b에서 도입한 `super().closeEvent(event)`만으로는 차트 다이얼로그 등 다른 Qt 윈도우가 남아있을 때
+`quitOnLastWindowClosed` 자동 종료가 트리거되지 않아 Python 프로세스가 살아있게 되는 구조적 결함 확인.
+
+### 수정 1: closeEvent QApplication.quit() 명시 호출 (`dashboard/main_dashboard.py`)
+
+```python
+# 기존: super().closeEvent(event)
+# 수정:
+super().closeEvent(event)          # Qt WA_DeleteOnClose 등 기본 처리 보존
+QApplication.instance().quit()    # 이벤트 루프 강제 종료 (다른 윈도우 무관)
+```
+
+### 수정 2: run() exec_() 후 sys.exit(0) 추가 (`main.py`)
+
+```python
+_qt_app.exec_()
+import sys as _sys
+_sys.exit(0)  # COM 비데몬 스레드가 프로세스 붙잡는 경우 방지
+```
+
+### 수정 3: 종목변경 재시작 배지 (`dashboard/main_dashboard.py`, `main.py`)
+
+- `lbl_code_change` 배지: 기동 코드 ≠ UI 선택 코드일 때만 표시
+- 클릭 → FLAT 확인 + 15:10 이전 체크 후 `quit()` (AUTO-RESTART 경유 재시작)
+- `_exit_normally` 미생성 → 런처 AUTO-RESTART 발동
+
+**커밋**: 234차 (64ad55e)
+
+---
+
+## 2026-06-24 (233차 — DailyClose _exit_normally 즉시 생성 + GUARD 장전 자동 Y)
+
+### 배경
+
+오늘 08:40 스케줄러 자동 기동 시 GUARD 기본값이 N(10초, 228차-c)이어서
+기존 프로세스가 있을 때 자동 취소됨 → 재시동 실패.
+
+### 수정 1: DailyClose 즉시 플래그 생성 (`main.py`)
+
+`daily_close()` 완료 즉시 `_write_exit_normally_flag("daily_close")` 호출.
+기존 경로(_auto_shutdown Qt 타이머 15초 지연)는 타이머 미실행/예외 시 플래그 누락 가능.
+
+### 수정 2: GUARD 장전/장중 분기 (`start_mireuk_Cybos.bat`)
+
+- 장전(09:00 이전): CHOICE /D **Y** 10초 자동 → 스케줄러 무인 기동
+- 장중(09:00 이후): 타임아웃 없이 사용자 직접 선택 (실수 방지)
+
+**커밋**: 233차 (3d33950)
 
 ---
 

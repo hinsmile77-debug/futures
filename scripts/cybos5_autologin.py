@@ -37,6 +37,7 @@ import win32com.client
 import win32con
 import win32cred
 import win32gui
+import win32process
 
 
 CYBOS_EXE = r"C:\DAISHIN\STARTER\ncStarter.exe"
@@ -115,6 +116,10 @@ MAIN_WINDOW_EXCLUDE_KEYWORDS = [
     u"STARTER",
     u"MIREUK",
     u"SESSION LAUNCHER",
+    u"VISUAL STUDIO",  # VS Code / VS IDE title contains "CYBOS5.bat"
+    u"PYCHARM",
+    u".BAT",           # any bat file open in an editor
+    u"NOTEPAD",
 ]
 ALREADY_RUNNING_DIALOG_KEYWORDS = [
     u"BOS.EXE",
@@ -494,6 +499,46 @@ def _wait_for_main_window(timeout=MAIN_WINDOW_TIMEOUT):
     return None, None
 
 
+def _is_minimized(hwnd):
+    try:
+        return win32gui.GetWindowPlacement(hwnd)[1] == win32con.SW_SHOWMINIMIZED
+    except Exception:
+        return False
+
+
+_SC_RESTORE = 0xF120  # WM_SYSCOMMAND SC_RESTORE
+
+
+def _restore_to_previous_size(hwnd, title):
+    """Cybos 창을 이전 크기로 복원 (최대화/최소화 → 이전 크기, SW_RESTORE)."""
+    time.sleep(0.3)
+
+    # Method 1: WM_SYSCOMMAND SC_RESTORE
+    try:
+        win32gui.PostMessage(hwnd, win32con.WM_SYSCOMMAND, _SC_RESTORE, 0)
+        time.sleep(0.4)
+        show_cmd = win32gui.GetWindowPlacement(hwnd)[1]
+        if show_cmd == win32con.SW_SHOWNORMAL:
+            print("[INFO] Cybos5 restored via WM_SYSCOMMAND: '%s' hwnd=%d" % (title, hwnd))
+            return True
+    except Exception as exc:
+        print("[WARN] WM_SYSCOMMAND SC_RESTORE failed: %s" % exc)
+
+    # Method 2: ShowWindow SW_RESTORE
+    try:
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        time.sleep(0.4)
+        show_cmd = win32gui.GetWindowPlacement(hwnd)[1]
+        if show_cmd == win32con.SW_SHOWNORMAL:
+            print("[INFO] Cybos5 restored via ShowWindow SW_RESTORE: '%s' hwnd=%d" % (title, hwnd))
+            return True
+        print("[WARN] Restore attempted but show_cmd=%d: '%s' hwnd=%d" % (show_cmd, title, hwnd))
+    except Exception as exc:
+        print("[WARN] ShowWindow SW_RESTORE failed: %s" % exc)
+
+    return False
+
+
 def _restore_main_window(hwnd, title):
     try:
         placement = win32gui.GetWindowPlacement(hwnd)
@@ -815,6 +860,149 @@ def _handle_mock_select_dialog(timeout=MOCK_POPUP_TIMEOUT, min_wait=MOCK_POPUP_M
     return False
 
 
+def _find_cpstart_main_windows():
+    """CpStart.exe 소유 StSdkMainWndCN 창 목록 반환 (vis=0 포함, 면적 내림차순)."""
+    try:
+        import psutil
+        cpstart_pids = {p.pid for p in psutil.process_iter(['pid', 'name'])
+                        if (p.info.get('name') or '').lower() == 'cpstart.exe'}
+    except Exception:
+        cpstart_pids = set()
+
+    results = []
+
+    def _cb(hwnd, _):
+        try:
+            if win32gui.GetClassName(hwnd) != u'StSdkMainWndCN':
+                return
+            try:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                if cpstart_pids and pid not in cpstart_pids:
+                    return
+            except Exception:
+                pass
+            rect = _get_window_rect_safe(hwnd) or (0, 0, 0, 0)
+            w, h = rect[2] - rect[0], rect[3] - rect[1]
+            title = win32gui.GetWindowText(hwnd) or u'(StSdkMainWndCN)'
+            results.append((hwnd, title, w * h))
+        except Exception:
+            pass
+
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:
+        pass
+    results.sort(key=lambda x: -x[2])
+    return results
+
+
+def _minimize_cpstart_windows():
+    """StSdkMainWndCN (CpStart.exe) 창 전체 최소화 — vis=0 창에도 동작."""
+    wins = _find_cpstart_main_windows()
+    if not wins:
+        print("[INFO] No StSdkMainWndCN windows found to minimize.")
+        return False
+
+    minimized = 0
+    for hwnd, title, area in wins:
+        print("[INFO] Minimizing StSdkMainWndCN hwnd=%d area=%d title=%r" % (hwnd, area, title))
+        try:
+            win32gui.PostMessage(hwnd, win32con.WM_SYSCOMMAND, win32con.SC_MINIMIZE, 0)
+            time.sleep(0.2)
+        except Exception as exc:
+            print("[WARN] PostMessage SC_MINIMIZE failed hwnd=%d: %s" % (hwnd, exc))
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+            time.sleep(0.2)
+        except Exception as exc:
+            print("[WARN] ShowWindow SW_MINIMIZE failed hwnd=%d: %s" % (hwnd, exc))
+        try:
+            show_cmd = win32gui.GetWindowPlacement(hwnd)[1]
+            if show_cmd == win32con.SW_SHOWMINIMIZED:
+                print("[INFO] StSdkMainWndCN minimized OK: hwnd=%d" % hwnd)
+                minimized += 1
+            else:
+                print("[WARN] StSdkMainWndCN not minimized (show_cmd=%d): hwnd=%d" % (show_cmd, hwnd))
+        except Exception:
+            pass
+
+    return minimized > 0
+
+
+def _find_bos_main_windows():
+    """Bos.exe 소유 대형 가시창 탐색 (실제 Cybos5 HTS 화면)."""
+    try:
+        import psutil
+        bos_pids = {p.pid for p in psutil.process_iter(['pid', 'name'])
+                    if (p.info.get('name') or '').lower() == 'bos.exe'}
+    except Exception:
+        bos_pids = set()
+
+    results = []
+
+    def _cb(hwnd, _):
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            try:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                if bos_pids and pid not in bos_pids:
+                    return
+            except Exception:
+                pass
+            rect = _get_window_rect_safe(hwnd) or (0, 0, 0, 0)
+            w, h = rect[2] - rect[0], rect[3] - rect[1]
+            if w * h < 200000:
+                return
+            title = win32gui.GetWindowText(hwnd)
+            results.append((hwnd, title, w * h))
+        except Exception:
+            pass
+
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:
+        pass
+    results.sort(key=lambda x: -x[2])
+    return results
+
+
+def _restore_bos_windows():
+    """Bos.exe HTS 메인 창을 이전 크기로 복원 (최대화 → 이전 크기, SW_RESTORE)."""
+    wins = _find_bos_main_windows()
+    if not wins:
+        print("[INFO] No Bos.exe HTS windows found to restore.")
+        return False
+
+    restored = 0
+    for hwnd, title, area in wins:
+        print("[INFO] Restoring Bos.exe hwnd=%d area=%d title=%r" % (hwnd, area, title[:50]))
+        # Method 1: WM_SYSCOMMAND SC_RESTORE
+        try:
+            win32gui.PostMessage(hwnd, win32con.WM_SYSCOMMAND, _SC_RESTORE, 0)
+            time.sleep(0.4)
+        except Exception as exc:
+            print("[WARN] PostMessage SC_RESTORE failed hwnd=%d: %s" % (hwnd, exc))
+        # Method 2: ShowWindow SW_RESTORE (MAXIMIZED/MINIMIZED → 이전 크기)
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.4)
+        except Exception as exc:
+            print("[WARN] ShowWindow SW_RESTORE failed hwnd=%d: %s" % (hwnd, exc))
+        # 검증
+        try:
+            show_cmd = win32gui.GetWindowPlacement(hwnd)[1]
+            if show_cmd == win32con.SW_SHOWNORMAL:
+                print("[INFO] Bos.exe HTS restored OK (SW_SHOWNORMAL): hwnd=%d" % hwnd)
+                restored += 1
+            else:
+                print("[WARN] Bos.exe restore result show_cmd=%d: hwnd=%d" % (show_cmd, hwnd))
+        except Exception:
+            pass
+
+    return restored > 0
+
+
 def _launch_ncstarter():
     if not os.path.exists(CYBOS_EXE):
         print("[ERROR] Starter executable not found: %s" % CYBOS_EXE)
@@ -868,11 +1056,25 @@ def autologin():
     for i in range(CONNECT_TIMEOUT):
         if _is_connected():
             cp = win32com.client.Dispatch("CpUtil.CpCybos")
-            hwnd, title = _wait_for_main_window(timeout=MAIN_WINDOW_TIMEOUT)
-            if hwnd:
-                _restore_main_window(hwnd, title)
-            else:
-                print("[WARN] Cybos5 main window was not found after COM connection.")
+            time.sleep(1)  # 창 안정화 대기
+
+            # ── 이전 크기 복원 3단계 ──────────────────────────────────
+            # Step 1: Bos.exe HTS 메인 창 → 이전 크기 복원 (최우선)
+            bos_ok = _restore_bos_windows()
+
+            # Step 2: StSdkMainWndCN 배경창 최소화 (CpStart.exe, vis=0 포함)
+            _minimize_cpstart_windows()
+
+            # Step 3: 키워드 기반 fallback (Bos.exe 미감지 시, 30초 대기)
+            if not bos_ok:
+                print("[INFO] Bos.exe not found; falling back to keyword window search...")
+                hwnd, title = _wait_for_main_window(timeout=MAIN_WINDOW_TIMEOUT)
+                if hwnd:
+                    _restore_to_previous_size(hwnd, title)
+                else:
+                    print("[WARN] Cybos5 HTS window could not be restored via any method.")
+            # ──────────────────────────────────────────────────────────
+
             print("[OK] Connected (ServerType=%s)" % cp.ServerType)
             return True
         time.sleep(1)
