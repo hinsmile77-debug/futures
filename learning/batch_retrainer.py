@@ -925,8 +925,40 @@ class BatchRetrainer:
                 y_hz.append(label)
             y_hz = np.array(y_hz, dtype=int)
 
-            result = self._train_horizon(hz, X_hz, y_hz, feature_names=use_feat_names, force=force, full_cv=full_cv)
+            # Phase C: horizon_feature_sets.json 기반 호라이즌별 피처 슬라이싱
+            # Phase 1 경로와 동일한 방식 — 스케일러는 97개 전체(X_hz)로 fit,
+            # GBM은 스케일 후 호라이즌 전용 컬럼만 추출해 학습.
+            _h_names_p2 = None
+            _h_idx_p2 = None
+            try:
+                from features.horizon_feature_registry import get_available_feature_set as _get_avail_p2
+                _h_names_p2 = _get_avail_p2(hz, use_feat_names)
+            except ImportError:
+                pass
+
+            if _h_names_p2 and len(_h_names_p2) < len(use_feat_names):
+                _h_idx_p2 = [use_feat_names.index(n) for n in _h_names_p2]
+                X_h_p2 = X_hz[:, _h_idx_p2]
+                logger.info(
+                    "[Retrain-P2] %s 피처 슬라이싱: %d → %d개 (horizon_feature_sets.json)",
+                    hz, len(use_feat_names), len(_h_names_p2),
+                )
+            else:
+                _h_names_p2 = use_feat_names
+                _h_idx_p2 = None
+                X_h_p2 = X_hz
+
+            result = self._train_horizon(
+                hz, X_h_p2, y_hz,
+                feature_names=_h_names_p2,
+                force=force, full_cv=full_cv,
+                X_full=X_hz if _h_idx_p2 is not None else None,
+                h_idx=_h_idx_p2,
+            )
             results[hz] = result
+
+            # 호라이즌 전용 피처명 pkl 저장 (Phase C) — 추론 시 _hz_feat_indices 슬라이싱 적용
+            self._save_feature_names(_h_names_p2, horizon_key=hz)
 
         # 전역 feature_names.pkl 복원 (Phase 2는 1m 기존 피처명 보존)
         if _existing_feat_names:
