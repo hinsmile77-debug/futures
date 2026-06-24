@@ -9028,6 +9028,14 @@ def _extract_symbol_code(symbol_text: str) -> str:
     return parts[0] if parts else ""
 
 
+def _normalize_code_5(code: str) -> str:
+    """8자리(A0567000) → 5자리(A0567) 정규화. 이미 5자리면 그대로."""
+    c = str(code or "").strip()
+    if len(c) == 8 and c.endswith("000"):
+        return c[:-3]
+    return c
+
+
 def _find_symbol_text(market: str, *, symbol_code: str = "", symbol_text: str = "") -> str:
     symbols = _MARKET_SYMBOLS.get(market, [])
     normalized_code = str(symbol_code or "").strip()
@@ -9047,10 +9055,13 @@ def _find_symbol_text(market: str, *, symbol_code: str = "", symbol_text: str = 
 class MireukDashboard(QMainWindow):
     """미륵이 v8.0 풀 대시보드"""
 
+    sig_code_change_restart_requested = pyqtSignal()  # [234차] 종목변경 재시작 요청
+
     def __init__(self, kiwoom=None):
         super().__init__()
         self.kiwoom    = kiwoom
         self._start_dt = datetime.now()        # 프로그램 시작 시각 (불변)
+        self._active_futures_code: str = ""    # [234차] 기동 시 확정된 종목코드
         # ── 해상도 감지 (UI 빌드 전에 반드시 먼저) ──────────────
         S.init()
         self.setWindowTitle("미륵이 v8.0  |  KOSPI 200 선물 예측 시스템")
@@ -9239,6 +9250,20 @@ class MireukDashboard(QMainWindow):
         self.lbl_shadow.setAlignment(Qt.AlignCenter)
         self.lbl_shadow.setWordWrap(True)
         self.lbl_shadow.setToolTip(_ss_tip)
+
+        # ── [234차] 종목변경 재시작 배지 ─────────────────────────
+        self.lbl_code_change = mk_badge("⚠ 종목변경됨 — 재시작", C['orange'], "#fff", 9)
+        self.lbl_code_change.setVisible(False)
+        self.lbl_code_change.setCursor(Qt.PointingHandCursor)
+        self.lbl_code_change.setToolTip(
+            "UI에서 선택한 종목코드가 현재 거래 종목과 다릅니다.\n"
+            "클릭하면 포지션 FLAT 조건 확인 후 재시작합니다.\n\n"
+            "⚠ 포지션 보유 중에는 재시작 불가 (청산 후 클릭).\n"
+            "⚠ 15:10 이후에는 재시작 불가 (오버나이트 방지)."
+        )
+        self.lbl_code_change.mousePressEvent = (
+            lambda _e: self.sig_code_change_restart_requested.emit()
+        )
 
         # ── 우측 시계 블록 ─────────────────────────────────────
         clk_frame = QFrame()
@@ -9585,8 +9610,9 @@ class MireukDashboard(QMainWindow):
         for w in [self.lbl_regime, self._micro_box, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_cb]:
             header.addWidget(w)
         header.addWidget(self.lbl_l2_halt)  # L2 halt badge (CB 오른쪽)
-        header.addWidget(self.lbl_shs)      # SHS / EKS badge
-        header.addWidget(self.lbl_shadow)   # ShadowSession 상태 배지
+        header.addWidget(self.lbl_shs)        # SHS / EKS badge
+        header.addWidget(self.lbl_shadow)     # ShadowSession 상태 배지
+        header.addWidget(self.lbl_code_change)  # [234차] 종목변경 재시작 배지
         header.addWidget(clk_frame)
         header.addLayout(res_box)
         root.addLayout(header)
@@ -9882,6 +9908,7 @@ class MireukDashboard(QMainWindow):
         """종목코드 선택 변경 → 상단 종목명 라벨 갱신."""
         self._update_symbol_label(text)
         self._save_ui_prefs()
+        self._refresh_code_change_badge()
 
     def _on_market_changed(self, market: str):
         """시장구분 선택 변경 → 종목코드 콤보 갱신 + 첫 종목명 반영."""
@@ -9892,6 +9919,24 @@ class MireukDashboard(QMainWindow):
         self.cmb_symbol.blockSignals(False)
         if symbols:
             self._on_symbol_changed(symbols[0])
+
+    # ── [234차] 종목변경 배지 ──────────────────────────────────────
+
+    def set_active_futures_code(self, code: str) -> None:
+        """기동 시 확정된 종목코드 등록 — 이후 UI 변경과 비교해 배지를 표시한다."""
+        self._active_futures_code = str(code or "").strip()
+        self._refresh_code_change_badge()
+
+    def _refresh_code_change_badge(self) -> None:
+        """UI 선택 코드 vs 활성 코드 비교 → 불일치 시 재시작 배지 표시."""
+        if not getattr(self, "_active_futures_code", ""):
+            self.lbl_code_change.setVisible(False)
+            return
+        selected_raw = _extract_symbol_code(self.cmb_symbol.currentText())
+        # 5자리(A0567)·8자리(A0567000) 모두 normalize 후 비교
+        selected = _normalize_code_5(selected_raw)
+        active = _normalize_code_5(self._active_futures_code)
+        self.lbl_code_change.setVisible(bool(selected and selected != active))
 
     # ── 서버 모드 관리 ─────────────────────────────────────────
 
@@ -10302,7 +10347,13 @@ class MireukDashboard(QMainWindow):
                 pass
         # 재시작: 플래그 없음 → 런처가 10초 후 AUTO-RESTART
 
+        # super().closeEvent 만으로는 차트 다이얼로그 등 다른 Qt 윈도우가
+        # 남아있을 때 quitOnLastWindowClosed 자동 종료가 트리거되지 않아
+        # Python 프로세스가 살아있게 된다 → QApplication.quit() 명시 호출 필수.
+        # Qt WA_DeleteOnClose 등 기본 처리 보존을 위해 super() 먼저 호출.
         super().closeEvent(event)
+        from PyQt5.QtWidgets import QApplication as _QApp
+        _QApp.instance().quit()
 
 
 # ────────────────────────────────────────────────────────────
@@ -10343,6 +10394,8 @@ class DashboardAdapter:
         self.sig_apply_candidate_requested = self._win.feat_panel.sig_apply_candidate_requested
         self.sig_force_retrain_requested = self._win.feat_panel.sig_force_retrain_requested
         self.sig_reset_feature_set_requested = self._win.feat_panel.sig_reset_feature_set_requested
+        # [234차] 종목변경 재시작 요청 시그널
+        self.sig_code_change_restart_requested = self._win.sig_code_change_restart_requested
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
@@ -10440,6 +10493,10 @@ class DashboardAdapter:
         market: None이면 코드에서 자동 판별.
         """
         self._win.set_selected_symbol(code, market=market)
+
+    def set_active_futures_code(self, code: str) -> None:
+        """[234차] 기동 시 확정된 종목코드 등록 — UI 변경 시 재시작 배지 활성화 기준."""
+        self._win.set_active_futures_code(code)
 
     def update_account_balance(self, summary: dict, rows, quiet: bool = False, mark_fresh: bool = True, source: str = "broker", balance_active: bool = True):
         if not quiet:

@@ -363,6 +363,10 @@ class TradingSystem:
         self.dashboard.sig_reset_feature_set_requested.connect(self._on_reset_feature_set_requested)
         self.dashboard.sig_max_qty_changed.connect(self._on_max_qty_changed)
         self._max_entry_qty = self.dashboard.get_max_qty()
+        # [234차] 종목변경 재시작 배지 시그널 연결
+        self.dashboard.sig_code_change_restart_requested.connect(
+            self._on_code_change_restart_requested
+        )
         self.dashboard.set_ui_startup_mode()
         # 스레드-안전 종료 예약: DailyClose 스레드가 emit() → 메인 스레드에서 _schedule_shutdown 호출
         _shutdown_sig.request.connect(self._schedule_shutdown, Qt.QueuedConnection)
@@ -2330,6 +2334,11 @@ class TradingSystem:
         self.emergency_exit.set_order_manager(
             _BrokerOrderAdapter(self.broker, code, selected_account)
         )
+        # [234차] 기동 시 확정 코드 → 대시보드에 등록 (UI 변경 시 재시작 배지 기준)
+        try:
+            self.dashboard.set_active_futures_code(code)
+        except Exception as _ace:
+            logger.debug("[SymbolChange] set_active_futures_code 실패 (무해): %s", _ace)
         self._sync_position_from_broker()
         self._warmup_retrain_pending = True
         log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
@@ -7322,6 +7331,42 @@ class TradingSystem:
         # 종료 예약은 메인 Qt 스레드에서 수행 (QueuedConnection → _schedule_shutdown 에서 처리)
         _shutdown_sig.request.emit()
 
+    def _on_code_change_restart_requested(self) -> None:
+        """[234차] 종목변경 재시작 배지 클릭 → 포지션·시각 안전 조건 확인 후 재시작.
+
+        안전 조건:
+          ① 포지션 FLAT — 보유 중이면 청산 코드 불일치 위험
+          ② 15:10 이전 — 이후는 오버나이트 방지 원칙
+        조건 충족 시 _exit_normally 파일 없이 quit() → AUTO-RESTART 루프 재시작.
+        """
+        from PyQt5.QtWidgets import QMessageBox as _MB
+        _now = datetime.datetime.now()
+        if self.position.status != "FLAT":
+            _MB.warning(
+                None,
+                "재시작 불가 — 포지션 보유 중",
+                f"현재 {self.position.status} {self.position.quantity}계약 보유 중입니다.\n"
+                "포지션을 청산한 뒤 재시작 버튼을 클릭하세요.",
+            )
+            return
+        if _now.time() >= datetime.time(15, 10):
+            _MB.warning(
+                None,
+                "재시작 불가 — 15:10 이후",
+                "15:10 이후 재시작은 오버나이트 방지 원칙에 따라 허용되지 않습니다.\n"
+                "내일 기동 시 자동 반영됩니다.",
+            )
+            return
+        _selected = self.dashboard.get_selected_symbol()
+        log_manager.system(
+            f"[SymbolChange] 종목변경 재시작 — "
+            f"active={getattr(self, '_futures_code', '?')} → selected={_selected} "
+            f"포지션=FLAT 시각={_now.strftime('%H:%M')}",
+            "INFO",
+        )
+        # _exit_normally 미생성 → AUTO-RESTART 루프가 재시작 처리
+        _qt_app.quit()
+
     def _schedule_shutdown(self) -> None:
         """자동 종료 15초 예약 — 반드시 메인 Qt 스레드에서 실행.
 
@@ -7911,6 +7956,10 @@ class TradingSystem:
 
         logger.info("[System] Qt 이벤트 루프 진입")
         _qt_app.exec_()
+        # exec_() 반환 후 COM 스레드·비데몬 스레드가 프로세스를 붙잡는 경우 방지
+        # → sys.exit(0)으로 프로세스 확실 종료, 런처 RESTART_LOOP 정상 감지
+        import sys as _sys
+        _sys.exit(0)
 
 
     def _scheduler_tick(self) -> None:
