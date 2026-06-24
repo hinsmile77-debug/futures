@@ -1597,10 +1597,48 @@ class TradingSystem:
         )
         self._start_manual_retrain(force=True, reason=f"const_out={hz}")
 
-    def _is_degraded_entry_blocked(self, confidence: float, is_manual: bool) -> tuple:
-        """현재 Degraded 정책 기준으로 진입 차단 여부를 반환한다."""
+    def _is_degraded_entry_blocked(
+        self,
+        confidence: float,
+        is_manual: bool,
+        latency_ms: float = 0.0,
+        quality_score: float = 1.0,
+        cache_age_sec: float = 0.0,
+        exception_density_10m: float = 0.0,
+    ) -> tuple:
+        """현재 Degraded 정책 기준으로 진입 차단 여부를 반환한다.
+
+        _emit_runtime_health 가 파이프라인 끝(STEP 9 이후)에 호출되므로
+        _health_degraded_mode 플래그는 항상 1사이클 늦다.
+        latency_ms 등 현재 사이클 지표가 전달되면 '이번 사이클에 Degraded 진입 예정'
+        여부를 미리 계산해 진입을 차단한다.
+        """
         p = self._health_policy
-        if not self._health_degraded_mode:
+        is_degraded = self._health_degraded_mode
+
+        # Lookahead: 현재 사이클 지표로 Degraded 진입 여부를 선제 판단
+        if not is_degraded and latency_ms > 0:
+            _cur_level = self._classify_health_level(
+                latency_ms=latency_ms,
+                quality_score=quality_score,
+                cache_age_sec=cache_age_sec,
+                exception_density_10m=exception_density_10m,
+            )
+            if _cur_level in ("WARNING", "CRITICAL"):
+                _soft_ms = float(p.get("degraded_soft_latency_ms", 1300.0))
+                _soft_w  = float(p.get("degraded_soft_warn_weight", 0.35))
+                _w = _soft_w if _cur_level == "WARNING" and latency_ms < _soft_ms else 1.0
+                _enter_thresh = float(p.get("degraded_enter_streak", HEALTH_DEGRADED_ENTER_STREAK))
+                if self._health_warn_streak + _w >= _enter_thresh:
+                    is_degraded = True
+                    logger.warning(
+                        "[HealthPolicy] Degraded 선제차단: streak=%.2f+%.2f ≥ %.0f "
+                        "(latency=%.0fms quality=%.2f cache=%.0fs exc10m=%.0f)",
+                        self._health_warn_streak, _w, _enter_thresh,
+                        latency_ms, quality_score, cache_age_sec, exception_density_10m,
+                    )
+
+        if not is_degraded:
             return False, 0.0
         min_conf = float(p.get("degraded_min_conf", HEALTH_DEGRADED_MIN_CONF))
         if is_manual:
@@ -5485,7 +5523,24 @@ class TradingSystem:
         _hurst_ok = features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
         _atr_ok   = atr >= ATR_MIN_ENTRY   # ATR 너무 낮으면 노이즈 > 손절거리 → 휩쏘
         _hp = self._health_policy
-        _auto_blocked, _deg_min_conf = self._is_degraded_entry_blocked(confidence, is_manual=False)
+        # Degraded 선제차단용 현재 사이클 지표 (1-사이클 지연 버그 수정)
+        # _last_pipe_ms: 직전 사이클 지연 (현재 사이클 _pipe_ms는 STEP9 이후 확정)
+        _dg_latency_ms  = float(getattr(self, "_last_pipe_ms", 0.0) or 0.0)
+        _dg_quality     = float(features.get("feature_quality_score", 1.0) or 1.0)
+        _dg_cache_age   = float(features.get("quality_investor_age_sec", 0.0) or 0.0)
+        _dg_level_counts = log_manager.get_level_counts(since_sec=600, layer="SYSTEM")
+        _dg_exc_density = float(
+            _dg_level_counts.get("WARNING", 0)
+            + _dg_level_counts.get("ERROR", 0)
+            + _dg_level_counts.get("CRITICAL", 0)
+        )
+        _auto_blocked, _deg_min_conf = self._is_degraded_entry_blocked(
+            confidence, is_manual=False,
+            latency_ms=_dg_latency_ms,
+            quality_score=_dg_quality,
+            cache_age_sec=_dg_cache_age,
+            exception_density_10m=_dg_exc_density,
+        )
         _qty_auto = _qty_display
         if self._health_degraded_mode and _qty_auto > 0:
             _qty_auto = max(1, int(round(_qty_auto * float(_hp.get("degraded_size_mult", HEALTH_DEGRADED_SIZE_MULT)))))
@@ -5798,17 +5853,36 @@ class TradingSystem:
                             f"kelly={kelly_result.get('multiplier', 1.0):.2f} "
                             f"meta={_meta_size:.2f} tox={_tox_size:.2f} exec={_exec_size:.2f}"
                         )
-                    # 최대허용수량 클리핑 (산출수량 > 0인 경우에만, 최소 1 보장)
-                    if _qty_auto > 0 and self._max_entry_qty > 0:
-                        _qty_auto = max(1, min(_qty_auto, self._max_entry_qty))
-                    # L2 통과 && 모드 필터 통과 → 진입
-                    self._execute_entry(
-                        final_dir_str, close, _qty_auto, atr, _final_grade,
-                        raw_direction=raw_dir_str,
-                        reverse_enabled=reverse_on,
-                        entry_horizon=_entry_horizon,
+                    # MetaGate + ToxicityGate 동시 reduce → 합산 mult < 0.50 시 진입 차단
+                    # 두 게이트가 각각 독립적으로 "위험하다"고 판단한 상황이므로 진입 의미 없음
+                    # 5일 실거래 분석: 이 조건은 6/24 14:04(-1.27M), 6/18 14:14 손실 케이스에 해당
+                    _joint_mult = _meta_size * _tox_size
+                    _joint_blocked = (
+                        _meta_action == "reduce"
+                        and _tox_action == "reduce"
+                        and _joint_mult < 0.50
                     )
-                    _entry_executed_this_cycle = True
+                    if _joint_blocked:
+                        log_manager.signal(
+                            f"[JointGateBlock] MetaGate({_meta_size:.2f})×ToxGate({_tox_size:.2f})"
+                            f"={_joint_mult:.3f} < 0.50 → 진입 차단"
+                        )
+                        log_manager.trade(
+                            f"[JointGateBlock 차단] {raw_dir_str} {_qty_auto}계약 {_final_grade}급 "
+                            f"(meta={_meta_size:.2f} tox={_tox_size:.2f} joint={_joint_mult:.3f})"
+                        )
+                    else:
+                        # 최대허용수량 클리핑 (산출수량 > 0인 경우에만, 최소 1 보장)
+                        if _qty_auto > 0 and self._max_entry_qty > 0:
+                            _qty_auto = max(1, min(_qty_auto, self._max_entry_qty))
+                        # L2 통과 && 모드 필터 통과 → 진입
+                        self._execute_entry(
+                            final_dir_str, close, _qty_auto, atr, _final_grade,
+                            raw_direction=raw_dir_str,
+                            reverse_enabled=reverse_on,
+                            entry_horizon=_entry_horizon,
+                        )
+                        _entry_executed_this_cycle = True
                 else:
                     # 모드 필터 차단
                     log_manager.signal(
@@ -5944,6 +6018,7 @@ class TradingSystem:
         # 파이프라인 처리시간 (CB⑤ 대체 지표) — 헬스 패널·SYSTEM 로그 공용
         _st.append(("end", time.perf_counter()))
         _pipe_ms = (_st[-1][1] - _pipe_t0) * 1000
+        self._last_pipe_ms = _pipe_ms   # 다음 사이클 Degraded 선제차단 lookahead용
         # P5: 전 단계 분해 문자열 — CB임박/WARN 양쪽에서 재사용
         # [라벨 수정] 마커는 각 STEP "시작" 지점에 찍힌다(예: S2 마커 = STEP2 시작).
         # 따라서 구간 _st[i-1]→_st[i]의 실제 소요시간은 "_st[i-1]에 적힌 STEP"의 본문이다

@@ -12,7 +12,7 @@ import logging
 from typing import Dict, Tuple
 
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
-from config.settings import ENTRY_GRADE, HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP
+from config.settings import ENTRY_GRADE, HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP, ENS_CONF_FLOOR_FOR_AUTO
 
 logger = logging.getLogger("SIGNAL")
 
@@ -256,6 +256,16 @@ class EntryChecklist:
 
         size_mult  = ENTRY_GRADE[grade]["size_mult"]
         auto_entry = ENTRY_GRADE[grade]["auto"]
+
+        # conf < ENS_CONF_FLOOR_FOR_AUTO → A/B 등급이어도 자동진입 차단
+        # 체크리스트 구조가 맞아도 앙상블이 33% 미만이면 EV 음수 (5일 실거래 분석 근거)
+        # 대시보드에는 원래 등급(A/B)이 표시되어 수동 확인은 가능하다
+        if auto_entry and confidence < ENS_CONF_FLOOR_FOR_AUTO:
+            auto_entry = False
+            logger.info(
+                "[Checklist] conf=%.1f%% < floor=%.1f%% → 등급=%s 유지, auto_entry=OFF (수동확인 필요)",
+                confidence * 100, ENS_CONF_FLOOR_FOR_AUTO * 100, grade,
+            )
 
         logger.info(
             "[Checklist] 통과 %d/9 → 등급 %s (자동=%s, 배수×%s, 모드=%s, group=%s)",

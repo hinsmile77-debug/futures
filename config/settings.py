@@ -452,6 +452,11 @@ ENTRY_GRADE = {
     "X": {"min_pass": 0, "size_mult": 0.0, "auto": False},
 }
 
+# 앙상블 conf가 이 값 미만이면 체크리스트 A/B 등급이라도 auto_entry=False 강제
+# 분석근거: conf<33% 신호는 5일 실거래 기준 EV=-34K/건 (승률55% but 손실>이익 38%)
+# 32~33%로 설정 시 6/22·6/23 수익 케이스는 유지하면서 6/24 14:04 같은 대형손실 차단
+ENS_CONF_FLOOR_FOR_AUTO: float = 0.33
+
 # [P5] C등급 자동 진입 — UI 토글로 실시간 ON/OFF 가능 (기본값 ON)
 # EntryPanel._grade_c_auto_enabled 와 연동; False 시 C등급 수동 확인으로 강등
 ENTRY_GRADE_C_AUTO_EXP:  bool  = True                # 기본 ON (UI 토글로 override)
