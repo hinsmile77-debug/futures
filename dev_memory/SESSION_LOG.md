@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-25 (244차 — Q3 N분봉 완성 주기 배포 절충안 구현)
+
+**Work**: `docs/q3_proba_deploy_guide.md` 가이드 기반 Q3 절충안 전체 구현. 학습-추론 분포 불일치 해소 + 스캘퍼 기회 손실 최소화.
+
+**구현 내용**:
+1. **`features/bar_aggregator.py`**: `_hz_bar_age` 내부 추적 + `get_bar_age(hz)` / `is_bar_fresh(hz, max_age)` 메서드 추가. `reset_daily()`에 `_hz_bar_age.clear()` 추가.
+2. **`config/settings.py`**: `HZ_DEPLOY_POLICY` 상수 추가 — `1m=always`, `3m/5m=bar_only(age≤0)`, `10m/15m=bar_plus1(age≤1)`, `30m=filter_only`.
+3. **`main.py`**: 모듈 레벨 `_is_deployable(hz, bar_aggregator)` 함수 추가. 피처 벡터 `* _decay` 제거(완성봉 원본 그대로 투입). 배포 정책 미충족 호라이즌 `horizon_proba`에서 제거. `[Deploy]` 상태 로그 추가.
+4. **`model/ensemble_decision.py`**: 30m 가중치 0→재정규화(Decorrelator·F1 추적은 유지). 30m 역방향 시 `grade=X` / `auto_entry=False`. `30m_filter_blocked` 키를 모든 반환 dict에 추가.
+
+**변경 전 → 후**:
+```
+[전] 매분 → 모든 hz → decay 피처 → predict_proba() → confidence × decay
+[후] 매분 → hz별 배포 판정 (완성봉 타이밍 기준)
+       1m        → 항상 배포
+       3m/5m     → age=0만 배포
+       10m/15m   → age≤1만 배포
+       30m       → 항상 배포, 앙상블 가중합 제외 → 역방향 시 grade=X
+```
+
+**커밋**: `c3931d4` (244차)
+
+---
+
 ## 2026-06-24 (방향 편향 근본 개선 — 구현 상태 검토·버그 수정·P2 사전 준비)
 
 **Work**: `docs/260611_DIRECTION_BIAS_IMPROVEMENT_PLAN.md` 기반 방향 편향 근본 개선 전체 구현 상태 점검 → 파라미터 불일치 버그 발견·수정 → 미구현 3종 적기 판단 → P2 사전 준비 구현.

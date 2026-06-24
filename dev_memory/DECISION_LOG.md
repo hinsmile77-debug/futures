@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-06-25 (Q3 배포 절충안)
+
+### [결정] 호라이즌별 predict_proba 배포 정책 (Q3)
+
+**배경**: 기존 방식은 매분 모든 호라이즌에 `_BAR_CACHE_DECAY * age`로 피처를 감쇠시켜 predict_proba 투입 → 학습 피처(완성봉 원본)와 추론 피처(decay된 값) 분포 불일치. 신호 밀도를 유지하려다 모델 입력 오염.
+
+**결정**: 완성봉 타이밍 기준 배포 정책 도입.
+- `1m`: 매분 배포 (현행 유지)
+- `3m/5m`: 완성봉 직후(age=0)만 배포 → 분포 일치, 기회 손실 미미
+- `10m/15m`: 완성봉+1분(age≤1)만 배포 → 10분 침묵은 과도한 손실
+- `30m`: 매분 배포하되 앙상블 가중합 제외, 방향 필터 전용
+
+**구현**: `HZ_DEPLOY_POLICY` (config/settings.py), `_is_deployable()` (main.py), `get_bar_age()`/`is_bar_fresh()` (bar_aggregator.py), 30m 가중치 0 처리 (ensemble_decision.py)
+
+**피처 decay**: `_hz_feat_vecs[h] * _decay` 제거 — 완성봉 원본 그대로 투입. confidence decay (`_BAR_CACHE_DECAY ** age`)는 유지 (bar_only 시 age=0 → rate^0=1.0이므로 실질 무영향).
+
+**30m 역방향 필터**: `_proba_30m.direction != FLAT && != ensemble_direction` 시 `grade=X` 격하. 결과 dict에 `30m_filter_blocked` 키 추가.
+
+---
+
 ## 2026-06-24 (방향 편향 근본 개선 구현 검토)
 
 ### [버그·수정] _DYN_HALFLIFE·_FLAT_CAP 파라미터 불일치
