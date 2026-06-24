@@ -323,6 +323,7 @@ class EnsembleDecision:
                 "f1_adaptive": {},
                 "const_output_horizons": [],
                 "active_horizons_blocked": False,
+                "30m_filter_blocked": False,
             }
 
         # ── 가중합 (상관관계 역수 × F1 적응형 가중치 적용) ──────────
@@ -330,6 +331,21 @@ class EnsembleDecision:
         # HorizonF1AdaptiveWeight: F1 낮은 호라이즌 자동 억제 (f1² 비례).
         cur_weights = self._f1_weight.apply(self._decorr.weights)
         self._decorr.push(horizon_proba)   # 이번 예측을 버퍼에 기록
+
+        # Q3: 30m 필터 전용 — 가중합에서 제외, 방향 필터로만 사용
+        # Decorrelator·F1 추적은 위 push()에서 이미 반영되므로 순서 중요
+        _proba_30m = horizon_proba.get("30m")
+        _30m_filter_blocked = False
+        if _proba_30m is not None and "30m" in cur_weights:
+            cur_weights["30m"] = 0.0
+            _tw_no30 = sum(cur_weights.values())
+            if _tw_no30 > 1e-9:
+                cur_weights = {h: w / _tw_no30 for h, w in cur_weights.items()}
+            logger.debug(
+                "[Ensemble] 30m 필터 전용: dir=%+d conf=%.1f%% (앙상블 가중합 제외)",
+                _proba_30m.get("direction", 0),
+                _proba_30m.get("confidence", 0.0) * 100,
+            )
 
         # ── 시간대 정책: 비활성 호라이즌 가중치 0 ────────────────────
         # HORIZON_TIME_POLICY 기반 active_horizons가 주어진 경우 적용
@@ -365,6 +381,7 @@ class EnsembleDecision:
                     "f1_adaptive": {},
                     "const_output_horizons": [],
                     "active_horizons_blocked": True,
+                    "30m_filter_blocked": False,
                 }
             cur_weights = {h: w / _tw for h, w in cur_weights.items()}
             logger.debug(
@@ -828,6 +845,19 @@ class EnsembleDecision:
 
         auto_entry = ENTRY_GRADE.get(grade, {}).get("auto", False) and regime_ok
 
+        # Q3: 30m 역방향 필터 — 앙상블 방향과 30m 방향이 반대면 진입 차단
+        # grade=X로 격하하여 체크리스트·진입 관리자까지 차단 (auto_entry=False만으로 불충분)
+        if _proba_30m is not None and direction != DIRECTION_FLAT:
+            _dir_30m = _proba_30m.get("direction", DIRECTION_FLAT)
+            if _dir_30m != DIRECTION_FLAT and _dir_30m != direction:
+                _30m_filter_blocked = True
+                grade = "X"
+                auto_entry = False
+                logger.info(
+                    "[Ensemble] 30m 역방향 필터 작동: 30m=%+d ens=%+d → grade=X",
+                    _dir_30m, direction,
+                )
+
         # P4: display용 EMA smoothing (span=20) — 실거래 로직(grade·regime_ok)은 비보정 confidence 기준
         if self._conf_ema is None:
             self._conf_ema = confidence
@@ -855,11 +885,13 @@ class EnsembleDecision:
             "stuck":                 self._stuck.status_dict(),
             "f1_adaptive":           self._f1_weight.get_f1_status(),
             "const_output_horizons": sorted(_const_stuck),
+            "30m_filter_blocked":    _30m_filter_blocked,
         }
 
         logger.info(
             f"[Ensemble] dir={direction:+d} conf={confidence:.1%} "
             f"grade={grade} regime={regime}"
+            + (" [30m역방향차단]" if _30m_filter_blocked else "")
         )
         return result
 

@@ -15,6 +15,7 @@ class BarAggregator(object):
     def __init__(self):
         self._bufs = {h: [] for h in self.HORIZONS if h > 1}
         self._last = {h: None for h in self.HORIZONS}
+        self._hz_bar_age = {}   # {"1m": 0, "3m": 2, ...} — 완성봉 이후 경과 1분봉 수
 
     def push(self, bar_1m):
         # type: (dict) -> dict
@@ -26,16 +27,30 @@ class BarAggregator(object):
         """
         result = {1: bar_1m}
         self._last[1] = bar_1m
+        self._hz_bar_age["1m"] = 0   # 1m: 매분 완성
         for h in [3, 5, 10, 15, 30]:
             self._bufs[h].append(bar_1m)
+            h_name = "{}m".format(h)
             if len(self._bufs[h]) >= h:
                 agg = self._aggregate(self._bufs[h])
                 self._last[h] = agg
                 self._bufs[h] = []
                 result[h] = agg
+                self._hz_bar_age[h_name] = 0
             else:
                 result[h] = None
+                self._hz_bar_age[h_name] = self._hz_bar_age.get(h_name, 0) + 1
         return result
+
+    def get_bar_age(self, hz):
+        # type: (str) -> int
+        """N분봉 완성 후 경과 1분봉 수. 완성 직후=0, 미초기화=999"""
+        return self._hz_bar_age.get(hz, 999)
+
+    def is_bar_fresh(self, hz, max_age=0):
+        # type: (str, int) -> bool
+        """max_age 이내면 True"""
+        return self.get_bar_age(hz) <= max_age
 
     def get_last(self, h):
         # type: (int) -> dict
@@ -64,3 +79,4 @@ class BarAggregator(object):
             self._bufs[h] = []
             self._last[h] = None
         self._last[1] = None
+        self._hz_bar_age.clear()

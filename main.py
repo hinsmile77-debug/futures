@@ -61,6 +61,7 @@ from utils.db_utils import (
 )
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
+    HZ_DEPLOY_POLICY,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT, ATR_HORIZON_TP1_MULT,
     CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
     SHAP_MIN_DATA_POINTS,
@@ -180,6 +181,27 @@ class _ShutdownSignal(QObject):
 
 
 _shutdown_sig = _ShutdownSignal()  # 모듈 로드(메인 스레드)에서 생성 — thread affinity = main
+
+
+def _is_deployable(hz, bar_aggregator):
+    # type: (str, object) -> bool
+    """호라이즌별 배포 정책에 따라 이번 분에 predict_proba를 앙상블에 반영할지 결정.
+
+    Returns:
+        True  → predict_proba() 결과를 앙상블에 포함
+        False → 해당 호라이즌 스킵 (완성봉 캐시 오래됨 — 학습/추론 분포 불일치 방지)
+    """
+    policy = HZ_DEPLOY_POLICY.get(hz, {"mode": "always", "max_age": 999})
+    mode = policy["mode"]
+    max_age = policy["max_age"]
+
+    if mode == "always":
+        return True
+    if mode == "filter_only":
+        # 앙상블 가중합에서 제외하되 30m 필터로 전달 — ensemble_decision 내부에서 차단
+        return True
+    # "bar_only" or "bar_plus1"
+    return bar_aggregator.is_bar_fresh(hz, max_age=max_age)
 
 
 class TradingSystem:
@@ -1549,8 +1571,8 @@ class TradingSystem:
                     _, _bar, _ts, _feats = item
                     save_candle_and_features(_bar, _ts, _feats)
                 elif op == "horizon_features":
-                    _, _ts, _h_name, _h_feats = item
-                    save_horizon_features(_ts, _h_name, _h_feats)
+                    _, _ts, _h_name, _h_feats, _regime = item
+                    save_horizon_features(_ts, _h_name, _h_feats, _regime)
                 elif op == "scaler_monitor":
                     # predict_proba()가 위임한 scaler_events 행 INSERT
                     # WAL 모드 + 배경 스레드 → main pipeline 블로킹 없음
@@ -4031,10 +4053,10 @@ class TradingSystem:
                         _p2_completed[_h_min], _h_min
                     )
                     try:
-                        self._db_write_queue.put_nowait(("horizon_features", ts, _h_name, _h_feats))
+                        self._db_write_queue.put_nowait(("horizon_features", ts, _h_name, _h_feats, self.current_regime))
                     except _queue.Full:
                         logger.warning("[DBQueue] 큐 포화 — %s horizon_features 동기 write fallback", _h_name)
-                        save_horizon_features(ts, _h_name, _h_feats)
+                        save_horizon_features(ts, _h_name, _h_feats, self.current_regime)
         except Exception as _p2_err:
             logger.debug("[Phase2-STEP4] N분봉 처리 오류 (무해): %s", _p2_err)
             _p2_completed = {1: bar}
@@ -4286,10 +4308,9 @@ class TradingSystem:
                 from features.feature_decay import get_horizon_features as _gHF
                 for _h_name in HORIZONS:
                     if _h_name in self._hz_feat_cache:
-                        _age   = self._hz_bar_age.get(_h_name, 0)
-                        _hmin  = _H_MINS.get(_h_name, 1)
-                        _decay = _BAR_CACHE_DECAY.get(_hmin, 1.0) ** _age
-                        _hz_feat_vecs[_h_name] = self._hz_feat_cache[_h_name] * _decay
+                        # Q3: 피처 decay 제거 — 완성봉 원본 그대로 투입
+                        # (학습/추론 분포 일치. decay는 하단 confidence 감쇠에서만 유지)
+                        _hz_feat_vecs[_h_name] = self._hz_feat_cache[_h_name]
                     else:
                         _hz_feat_vecs[_h_name] = _np_p2.array(
                             [_gHF(features, _h_name).get(n, 0.0) for n in _fn],
@@ -4380,6 +4401,30 @@ class TradingSystem:
                         "flat": round(1/3, 4), "direction": 0,
                         "confidence": round(1/3, 4),
                     }
+
+            # Q3: 배포 정책 미충족 호라이즌 앙상블에서 제거
+            # bar_only (3m/5m): age>0 제거, bar_plus1 (10m/15m): age>1 제거
+            # filter_only (30m): 항상 통과 — 앙상블 내부에서 직접 진입 차단
+            for _h_dp in list(horizon_proba.keys()):
+                if not _is_deployable(_h_dp, self.bar_aggregator):
+                    _dp_age = self.bar_aggregator.get_bar_age(_h_dp)
+                    del horizon_proba[_h_dp]
+                    logger.debug(
+                        "[Deploy] %s 스킵 (age=%d, policy=%s)",
+                        _h_dp, _dp_age,
+                        HZ_DEPLOY_POLICY.get(_h_dp, {}).get("mode", "?"),
+                    )
+
+            # [Deploy] 배포 상태 요약 로그
+            for _dl_h in HORIZONS:
+                _dl_age = self.bar_aggregator.get_bar_age(_dl_h)
+                _dl_dep = _dl_h in horizon_proba
+                _dl_pol = HZ_DEPLOY_POLICY.get(_dl_h, {}).get("mode", "?")
+                logger.debug(
+                    "[Deploy] %-4s | age=%2d | policy=%-12s | %s",
+                    _dl_h, _dl_age, _dl_pol,
+                    "✅ 배포" if _dl_dep else "⏸ 스킵",
+                )
 
             # [MaskedFallback] 격리 예측 SGD 블렌딩 (GBM 경로에서만 실행)
             _masked_hp_blended: dict = {}

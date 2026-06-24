@@ -86,6 +86,21 @@ HORIZONS = {
     "10m": 10, "15m": 15, "30m": 30,
 }
 
+# Q3 절충안 — 호라이즌별 predict_proba 배포 정책
+# mode:
+#   always      — 매분 배포 (1m)
+#   bar_only    — N분봉 완성 직후만 배포 (3m/5m, age=0)
+#   bar_plus1   — 완성봉 + 다음 1분 배포 (10m/15m, age≤1)
+#   filter_only — 매분 배포하되 앙상블 직접 진입 신호 제외, 방향 필터로만 사용 (30m)
+HZ_DEPLOY_POLICY = {
+    "1m":  {"mode": "always",      "max_age": 999},
+    "3m":  {"mode": "bar_only",    "max_age": 0},
+    "5m":  {"mode": "bar_only",    "max_age": 0},
+    "10m": {"mode": "bar_plus1",   "max_age": 1},
+    "15m": {"mode": "bar_plus1",   "max_age": 1},
+    "30m": {"mode": "filter_only", "max_age": 0},
+}
+
 # 2026-05-30 데이터 기반 재보정 (2026-04-28~05-29, 21 거래일, 33/34/33 목표)
 # 이전값(2026-05-16): 1m=0.0005, 3m=0.0006, 5m=0.0011, 10m=0.0016, 15m=0.0022, 30m=0.0032
 # 3m: 데이터 불충분(F1 기준 현행 우세)으로 현행 유지 — 6~8주 후 재산출
