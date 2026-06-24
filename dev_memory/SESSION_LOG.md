@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-24 (242차 — V8 Phase 2 완료 점검 + 재학습 재실행 + TRAINING_WINDOW_BARS)
+
+**Work**: V8 구현 계획서 기반 현재 고도화 상태 전수 점검 → 커밋 이력으로 Phase 2 재학습 공백(6/8~6/24 레거시 경로 덮어씌움) 확인 → 수정 3종 + 문서 정리.
+
+**수정**:
+1. `EOD_RETRAIN.bat`: `--phase2` 플래그 영구 추가 (커밋 1293022)
+2. Phase 2 재학습 재실행: `eod_retrain.py --phase2 --weeks 10` → 5/6 호라이즌 교체 (30m +30.7%p, 15m +28.6%p)
+3. `TRAINING_WINDOW_BARS` 구현: `learning/batch_retrainer.py` Phase 2-D 항목 완료 (커밋 1e32131)
+4. V8 계획서 전면 업데이트: TODO 완료 처리 + 구현 이력 + 원안/실제 차이 명시 (커밋 e7c5e90, e872899)
+
+**V8 잔여 판정**:
+- SGD 호라이즌별 feat_vec → 구현 불필요 확정 (B군 교체 방식이 최종 설계)
+- multi_timeframe.py → Stage 2(~7/8) 때 삭제 (dead code)
+
+**커밋**: 1293022, 1e32131, e7c5e90, e872899
+
+---
+
 ## 2026-06-24 (241차 — 장마감 종료·EOD 흐름 점검 + EOD_RETRAIN.bat py310_64 수정)
 
 **Work**: 장마감 후 프로그램 종료 흐름(15:10→15:18→15:40 DailyClose→자동 종료)과 EOD 흐름(작업 스케줄러 `retrain_eod.py`) 전체 코드 점검 및 오늘 실측 상태 확인.

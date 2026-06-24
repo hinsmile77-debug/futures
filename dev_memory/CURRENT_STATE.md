@@ -1,7 +1,76 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-24 (241차-b 세션) — 1m SGD DN 편향 모니터링 강화
+> 마지막 업데이트: 2026-06-24 (242차) — V8 Phase 2 재학습 재실행 + TRAINING_WINDOW_BARS 구현
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-24 (242차 — V8 Phase 2 완료 점검 + 재학습 재실행)
+
+### 배경 — V8 구현 상태 커밋 이력 전수 점검
+
+커밋 이력으로 Phase 2 재학습 공백 기간 확인:
+- 6/8 (121차): Backfill + `eod_retrain.py --phase2 --weeks 10` 최초 실행 완료
+- 6/11 (163차): HistGBM 전환으로 전 모델 재학습 — `EOD_RETRAIN.bat`에 `--phase2` 없어 레거시 경로로 덮어씌워짐
+- 6/17~6/24: py310_64 스케줄러로 매일 레거시 경로 재학습 → Phase 2 모델 사실상 초기화 상태
+
+### 수정 1: EOD_RETRAIN.bat `--phase2` 영구 추가
+
+```bat
+- python scripts\eod_retrain.py --weeks 10
++ python scripts\eod_retrain.py --phase2 --weeks 10
+```
+
+**커밋**: 1293022
+
+### 수정 2: Phase 2 재학습 재실행 (22:14~22:17)
+
+```
+python scripts\eod_retrain.py --phase2 --weeks 10
+```
+
+| 호라이즌 | 구 정확도 | 신 정확도 | 개선 |
+|---|---|---|---|
+| 1m | — | — | 건너뜀 (raw_features_horizon에 1m 없음, 설계 정상) |
+| 3m | 0.4474 | 0.5245 | +7.7%p |
+| 5m | 0.3921 | 0.5370 | +14.5%p |
+| 10m | 0.4222 | 0.5541 | +13.2%p |
+| **15m** | 0.3305 | **0.6165** | **+28.6%p** |
+| **30m** | 0.2909 | **0.5984** | **+30.7%p** |
+
+5/6 호라이즌 교체 완료, 소요 2.3분. 30m FLAT 편향 구조적 해소 효과 발현.
+
+### 수정 3: TRAINING_WINDOW_BARS 구현 (`learning/batch_retrainer.py`)
+
+V8 Phase 2-D 항목. 호라이즌별 학습 데이터 상한 상수 + `_retrain_phase2` 내 트림 로직.
+
+```python
+TRAINING_WINDOW_BARS = {
+    "1m": None, "3m": 5000, "5m": 3000,
+    "10m": None, "15m": None, "30m": None,
+}
+```
+
+- V8 원안(90/60/48)은 배치 MIN_BARS 미달로 실효 없어 현실적 값으로 조정
+- 현재(3m=5330봉): window=5000 조건 충족 → 최신 5000봉 우선 트림 활성화
+- Stage 3(50일+) 이후 단기 모델 최근 레짐 집중 효과 발현
+
+**커밋**: 1e32131
+
+### V8 잔여 항목 최종 판정
+
+| 항목 | 판정 |
+|---|---|
+| SGD 호라이즌별 feat_vec | **구현 불필요** — B군 교체 방식(main.py:6190~6222)이 미래 오염 없는 최종 설계 |
+| multi_timeframe.py deprecate | **Stage 2(~7/8) 때 삭제** — 현재 프로젝트 전체 임포트 없음, dead code |
+
+### V8 전체 완료 상태 (2026-06-24 기준)
+
+- Phase 0·1·2 코드 전 항목 완료
+- Phase 2 재학습: Stage 1 완료 (6/8 최초 + 6/24 재실행)
+- Phase 3: Platt Scaling·역방향 서브모델·MFE 레이블 → 안정화 후 대기
+
+**커밋**: e7c5e90, e872899 (V8 문서 업데이트)
 
 ---
 

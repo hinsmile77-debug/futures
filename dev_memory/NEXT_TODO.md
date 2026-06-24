@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-06-25 (242차 — Phase 2 재학습 효과 확인) [최우선]
+
+### Phase 2 모델 교체 확인 [P0]
+
+- [ ] **30m FLAT 고착 감소** — SIGNAL.log에서 `horizon_proba["30m"]["direction"]` 이 UP/DN으로 전환되는 빈도 증가 확인 (기존 거의 항상 FLAT)
+- [ ] **confidence 상승** — `blended_conf` 평균이 0.38 → 0.43+ 로 상승하는지 확인 (MetaConf 재보정 중이므로 3~5일 누적 필요)
+- [ ] **[BiasReset] 1m DN편향 로그** — `[DN편향⚠ XX%]` 출현 여부 (241차-b 수정 효과, 63% → 0.60 경보)
+- [ ] **진입 기회 증가** — 일평균 진입 0~3회 → 3~6회 방향으로 개선 추세 확인 (1주일 단위 관찰)
+
+### Stage 2 재학습 일정 확인 [P1]
+
+- [ ] **~7/8 이후**: `buy_vol/sell_vol` 30일 누적 확인 후 `eod_retrain.py --phase2 --weeks 4` 실행
+  - 1m/3m OFI·CVD 피처가 0 fill → 실측 값으로 교체 예정
+- [ ] **~7/28 이후**: Stage 3 — `eod_retrain.py --phase2 --weeks 8` 전면 재학습
+
+### multi_timeframe.py 삭제 [P2 — Stage 2 때 처리]
+
+- [ ] `features/technical/multi_timeframe.py` 삭제 (dead code, Stage 2~7/8 때 같이 처리)
+
+---
+
 ## 2026-06-25 (236차 — 저신뢰 자동진입 차단 검증) [최우선]
 
 ### ENS_CONF_FLOOR_FOR_AUTO 작동 확인 [P0]
