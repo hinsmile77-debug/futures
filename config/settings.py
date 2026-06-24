@@ -53,8 +53,8 @@ except ImportError:
     _SECRET_SLACK_TOKEN = ""
 
 # ── 거래 설정 ──────────────────────────────────────────────────
-MAX_CONTRACTS = 10          # 최대 계약 수
-TICK_SIZE     = 0.05         # KOSPI 200 선물 1틱 = 0.05pt
+MAX_CONTRACTS = 10          # 최대 계약 수 — 미니선물 기준 (일반선물 운영 시 2~3으로 낮춰야 함)
+TICK_SIZE     = 0.02         # KOSPI 200 미니선물 1틱 = 0.02pt (일반선물은 0.05pt — 235차 미니선물 전용 교정)
 
 DAILY_LOSS_LIMIT_PCT = 0.02   # 일일 최대 손실 2%
 ACCOUNT_BASE_RISK    = 0.01   # 기본 리스크 1% (켈리 기준)
