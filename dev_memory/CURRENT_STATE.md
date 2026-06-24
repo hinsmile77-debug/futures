@@ -1,7 +1,58 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-24 (237차 세션) — Hurst 미계산 자동진입 차단
+> 마지막 업데이트: 2026-06-24 (238차 세션) — Platt 보정기 피드백 루프 버그 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-24 (238차 — Platt 보정기 피드백 루프 버그 수정)
+
+### 배경 — ensemble_calibrator.pkl 분석
+
+Platt A/B 값 확인 결과:
+- A = -0.0016 (사실상 0), B = -1.3245
+- conf 0.30~0.80 전체 구간에서 출력 = **0.21 상수**
+- 훈련 데이터(probs): 0.2099~0.2901 범위 (정상이라면 0.30~0.85 범위여야 함)
+
+### 근본 원인 — calibrated conf 피드백 루프
+
+```
+STEP 6: raw_conf 0.44 → calibrate() → 0.21
+        _ensemble_conf_cache[ts] = 0.21  ← calibrated 값 저장 (버그)
+STEP 1: record_ensemble_outcome(0.21, correct)  ← calibrator가 자신의 출력으로 학습
+fit(): probs=[0.21,0.21,...] 범위 없음 → A≈0 → 다음에도 0.21 → 무한 루프
+```
+
+`decision["confidence"]` (calibrated)를 캐시에 넣었는데,
+이것이 1분 뒤 calibrator의 훈련 입력으로 들어가는 구조적 버그.
+
+### 수정 (`main.py:4749`)
+
+```python
+# 기존 (버그): calibrated conf 저장 → 피드백 루프
+self._ensemble_conf_cache[ts] = (float(confidence), ...)
+
+# 수정: raw conf 저장 → calibrator가 원본 확률로 학습
+self._ensemble_conf_cache[ts] = (
+    float(decision.get("confidence_raw", confidence)), ...
+)
+```
+
+`decision["confidence_raw"]`는 `ensemble_decision.py:840`에서 Platt 통과 전 원본값.
+
+### 오염된 pkl 삭제
+
+`data/ensemble_calibrator.pkl` 삭제 (훈련 데이터 probs가 0.21~0.29 오염 상태).
+다음 기동 시 cold-start → 80건 누적 후 정상 재학습.
+cold-start 기간(~80분): 3m 호라이즌 fallback calibrator 또는 raw_conf 그대로 사용.
+
+### 예상 효과
+
+- 수일 내 Platt A가 의미 있는 음수 기울기로 수렴 (raw conf 높을수록 보정 눌러줌)
+- calibration_metrics.json ECE 0.13 → 장기적으로 0.06 이하 목표
+- 진입 임계값이 실제 정확도와 연동되기 시작
+
+**커밋**: 238차
 
 ---
 

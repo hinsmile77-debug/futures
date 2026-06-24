@@ -4744,7 +4744,11 @@ class TradingSystem:
 
         # 앙상블 보정기: 현재 ts의 conf 캐시 (STEP 1에서 T-1m conf 조회용)
         # 1m 포함 여부 함께 저장 — 1m OFF 중에는 1m 결과로 앙상블 보정기 학습 불가
-        self._ensemble_conf_cache[ts] = (float(confidence), "1m" in _hp_ens)
+        # [238차] raw conf 저장 — calibrated conf를 저장하면 calibrator가 자신의 출력을
+        #         입력으로 재학습하는 피드백 루프 발생 → A≈0, 상수 0.21 출력 고착
+        self._ensemble_conf_cache[ts] = (
+            float(decision.get("confidence_raw", confidence)), "1m" in _hp_ens
+        )
         if len(self._ensemble_conf_cache) > 35:
             self._ensemble_conf_cache.pop(min(self._ensemble_conf_cache), None)
         # 시간대·레짐 두 기준 중 더 엄격한 값으로 통일 (checklist·dashboard 공용)
