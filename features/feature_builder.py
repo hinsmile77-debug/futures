@@ -18,7 +18,7 @@ from features.technical.queue_dynamics import QueueDynamicsCalculator
 from features.technical.toxicity import ToxicityCalculator
 from features.technical.vwap import VWAPCalculator
 from features.technical.hurst_exponent import calculate_hurst
-from config.settings import TICK_SIZE as _DEFAULT_TICK_SIZE
+from config.constants import MINI_FUTURES_TICK_SIZE as _DEFAULT_TICK_SIZE  # [235차] 미니선물 전용 기본값 0.02
 from utils.error_policy import ErrorLevel, classify_exception
 from config.settings import HORIZON_THRESHOLDS
 

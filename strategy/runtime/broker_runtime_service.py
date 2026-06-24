@@ -56,7 +56,12 @@ class BrokerRuntimeService:
                 logger.info("[System] 모의투자 서버 접속 - A0166000 SetRealReg 실시간 수신 사용")
         print(f"[DBG CK-2b] broker={broker_name!r} 서버종류={server_label}", flush=True)
 
-        code, broker_code, ui_code_raw, ui_code, is_mini = self._resolve_trade_code(system)
+        resolved = self._resolve_trade_code(system)
+        if resolved[0] is None:
+            # [235차] CodeGuard 차단 — 허용 계열 외 종목 확정 시 기동 중단
+            logger.critical("[CodeGuard] 기동 중단 — _resolve_trade_code() None 반환")
+            return None
+        code, broker_code, ui_code_raw, ui_code, is_mini = resolved
         print(
             f"[DBG CK-3] 금월물코드={code} (broker={broker_code} ui_raw={ui_code_raw!r} "
             f"ui={ui_code!r} is_mini={is_mini}) 서버={server_label}",
@@ -218,6 +223,24 @@ class BrokerRuntimeService:
                 system.dashboard.set_selected_symbol(code)
             except Exception as e:
                 logger.debug("[CodeRoll] 대시보드 동기화 실패: %s", e)
+
+        # [235차] CodeGuard — secrets.py FUTURES_CODE_PREFIX로 허용 계열 검증
+        # 미니선물 인스턴스: "A05" / 일반선물 인스턴스(미륵이2): "A01"
+        # 프로브 실패 등으로 허용 계열 외 코드가 확정되면 기동 중단
+        try:
+            from config import secrets as _sec
+            _allowed_pfx = str(getattr(_sec, "FUTURES_CODE_PREFIX", "") or "").strip()
+            if _allowed_pfx and code:
+                _norm = code[1:] if code.startswith("A") else code
+                if not _norm.startswith(_allowed_pfx.lstrip("A")):
+                    logger.critical(
+                        "[CodeGuard] 확정 종목(%s)이 허용 계열(%s)과 불일치 — 기동 중단. "
+                        "secrets.py FUTURES_CODE_PREFIX 또는 ui_prefs.json 종목 확인 필요.",
+                        code, _allowed_pfx,
+                    )
+                    return None, broker_code, ui_code_raw, ui_code, is_mini_selected
+        except Exception as _cg_e:
+            logger.debug("[CodeGuard] 검증 실패 (무해): %s", _cg_e)
 
         return code, broker_code, ui_code_raw, ui_code, is_mini_selected
 

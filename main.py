@@ -78,7 +78,7 @@ from config.settings import (
     ENTRY_GRADE_C_AUTO_EXP, C_AUTO_EXP_SIZE_MULT, C_AUTO_EXP_ZONES,  # [P5]
 )
 import config.settings as runtime_settings
-from config.constants import FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED, DIRECTION_FLAT
+from config.constants import FUTURES_PT_VALUE, MINI_FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED, DIRECTION_FLAT
 from config import secrets as _secrets
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -213,7 +213,7 @@ class TradingSystem:
         self.rf_model          = RFHorizonModel()
         self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
         self.ensemble          = EnsembleDecision()
-        self._pt_value         = FUTURES_PT_VALUE   # connect_broker에서 종목코드 확정 후 갱신
+        self._pt_value         = MINI_FUTURES_PT_VALUE  # [235차] 미니선물 전용 초기값 — connect_broker에서 get_contract_spec으로 재확정
         self.position          = PositionTracker(pt_value=self._pt_value)
         self.checklist         = EntryChecklist()
         self.sizer             = PositionSizer(account_balance=100_000_000)  # 기본 1억
@@ -9877,9 +9877,9 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
         # 미실현 PnL: 마지막 알려진 close 가격이 있으면 계산, 없으면 entry 기준 0
         _last_price = getattr(self, "_last_pipeline_price", _entry) or _entry
         _pnl_pts = self.position.unrealized_pnl_pts(_last_price)
-        # KOSPI200 선물 계약 승수: 250,000원/pt (2017년 기준, HTS 일치)
-        _pnl_krw = _pnl_pts * 250_000
-        _eval_krw = _entry * _qty * 250_000  # 매입금액 = entry_pt × 계약수 × 250,000
+        # [235차] 계약 승수: connect_broker에서 확정된 _pt_value 사용 (미니=50,000 / 일반=250,000)
+        _pnl_krw = _pnl_pts * self._pt_value
+        _eval_krw = _entry * _qty * self._pt_value  # 매입금액 = entry_pt × 계약수 × pt_value
         rows = [{
             "종목코드": getattr(self, "_futures_code", ""),
             "종목명": "KOSPI200선물",
