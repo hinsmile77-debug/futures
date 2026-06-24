@@ -511,9 +511,15 @@ class TradingSystem:
         # ── P3-a: OnlineLearner stuck 학습 오염 가드 ───────────────────────────
         self._stuck_this_minute: bool = False    # 이번 분봉에 stuck 해소 발생 여부
 
-        # ── 호라이즌별 롤링 Bias 버퍼 (30건 윈도우) ──────────────────────────
-        # 분봉 1건 통계(tot=1)는 100%/0%만 나와 무의미 → 30건 누적 후 편향 판정
-        self._bias_buf: dict = {h: deque(maxlen=30) for h in HORIZONS}
+        # ── 호라이즌별 롤링 Bias 버퍼 ────────────────────────────────────────
+        # [241차] 1m=45분: 단기 DN 편향이 하루 지속돼도 감지할 증거 기반 확보
+        # 단기(1m) 편향은 SGD 누적이 빠르므로 더 넓은 윈도우 필요
+        # 10m/15m/30m는 봉 수 자체가 적어 윈도우 줄임
+        _BIAS_MAXLEN = {"1m": 45, "3m": 30, "5m": 30,
+                        "10m": 20, "15m": 15, "30m": 10}
+        self._bias_buf: dict = {
+            h: deque(maxlen=_BIAS_MAXLEN.get(h, 30)) for h in HORIZONS
+        }
         self._bias_log_tick: int = 0   # 10분마다 요약 로그 출력 카운터
 
         # ── [P2] FL 편향 고착 → uniform fallback 제어 ──────────────────────
@@ -3670,12 +3676,14 @@ class TradingSystem:
                 _up_r = _dn_r = _fl_r = 0.0
                 if _tot >= 15:
                     _up_r, _dn_r, _fl_r = _up / _tot, _dn / _tot, _fl / _tot
-                    if _up_r >= 0.75:
-                        _bias_tag = f" [UP편향! {_up_r:.0%}]"
-                    elif _dn_r >= 0.75:
-                        _bias_tag = f" [DN편향! {_dn_r:.0%}]"
-                    elif _fl_r >= 0.75:
-                        _bias_tag = f" [FL편향! {_fl_r:.0%}]"
+                    # [241차] 0.75→0.60/0.65: 실측 편향(47~64%)이 기존 75% 임계 아래에서
+                    # 감지 불가했던 문제 해소. FL은 자연 발생 가능성이 높아 0.65 유지.
+                    if _up_r >= 0.60:
+                        _bias_tag = f" [UP편향⚠ {_up_r:.0%}]"
+                    elif _dn_r >= 0.60:
+                        _bias_tag = f" [DN편향⚠ {_dn_r:.0%}]"
+                    elif _fl_r >= 0.65:
+                        _bias_tag = f" [FL편향⚠ {_fl_r:.0%}]"
 
                 if _bias_tag:
                     log_manager.learning(
@@ -3702,12 +3710,20 @@ class TradingSystem:
                 _in_coldstart = self.model.is_in_startup_warmup(
                     datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
                 )
-                _bias_thresh_min = (5 if _in_coldstart else 10) if _biased_dir == "FL" else 5
+                # [241차] 1m UP/DN streak 5→8분: 임계 하향(0.62)으로 인한 오발동 방지
+                # 0.62×8분 = 충분한 증거, 단순 잡음과 구조적 편향 구분
+                _dn_up_streak = 8 if _h == "1m" else 5
+                _bias_thresh_min = (5 if _in_coldstart else 10) if _biased_dir == "FL" else _dn_up_streak
                 # 0.80→0.70: 3m/5m FL=75~79% 구간이 80% 미달로 BiasReset 미발동하는 gap 해소
                 # 적중률 >= 0.55이면 BiasReset 스킵 — 편향이지만 정확하면 오히려 정상 신호
                 # (30m UP=100% 적중=100% 사례: 시장이 실제 상승 중인데 BiasReset이 신호 소멸)
-                _acc_ok_for_bias = _acc_h < 0.55
-                if _tot >= 15 and _dir_bias_r >= 0.70 and _acc_ok_for_bias:
+                # [241차] 1m DN/UP: 0.70→0.62, acc 0.55→0.50
+                #   근거: 6/16~6/24 실측 편향이 0.60~0.64 구간에 집중 (기존 0.70 미달로 무감지)
+                #   1m만 하향: 타 호라이즌은 봉 단위가 길어 60~65% 방향성이 자연 발생 가능
+                _BIAS_RESET_THR = {"1m": 0.62}   # 1m 전용 하향, 나머지 0.70 유지
+                _bias_thr_h     = _BIAS_RESET_THR.get(_h, 0.70)
+                _acc_ok_for_bias = _acc_h < (0.50 if _h == "1m" else 0.55)
+                if _tot >= 15 and _dir_bias_r >= _bias_thr_h and _acc_ok_for_bias:
                     self._bias_fl_streak[_h] = self._bias_fl_streak.get(_h, 0) + 1
                     if (self._bias_fl_streak[_h] >= _bias_thresh_min
                             and _h not in self._bias_override_horizons):
