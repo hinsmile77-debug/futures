@@ -475,8 +475,13 @@ label_1m = 1 if max_high[t:t+1] - close[t] > threshold_tp else (
 - [x] `EOD_RETRAIN.bat` — `--phase2` 플래그 영구 추가 (242차, 6/24)
 - [x] **GBM Phase 2 재학습 재실행** — 6/8~6/24 레거시 경로 덮어씌움 복구 (242차, 6/24)
   - 결과: 3m 0.45→0.52, 5m 0.39→0.54, 10m 0.42→0.55, **15m 0.33→0.62, 30m 0.29→0.60** ⬆
-- [ ] `learning/online_learner.py` — SGD도 호라이즌별 feat_vec 수신 ← **잔여 미완**
-- [ ] `features/technical/multi_timeframe.py` — BarAggregator 통합 후 deprecate ← **잔여 미완**
+- [x] `learning/online_learner.py` — SGD 호라이즌별 feat_vec 수신 **→ 구현 불필요 (설계 변경)**
+  - 현재: 예측 시점 1m 피처 기반 + 봉 크기 의존 B군 피처만 `_hz_feat_cache` N분봉 값으로 교체 (main.py:6190~6222)
+  - 전체 `_hz_feat_cache` 교체 시 미래 데이터 오염 발생 (SGD는 T-3 예측을 T 시점 학습 → 현재 캐시값이 미래 정보)
+  - B군 교체 방식이 오염 없이 N분봉 피처를 반영하는 **최종 설계로 확정**
+- [ ] `features/technical/multi_timeframe.py` — 삭제 (dead code, 이미 BarAggregator로 대체)
+  - 현재 프로젝트 전체에 임포트 없음, 피처명 `multi_timeframe_5m/15m`은 model feature_names.pkl에 없음
+  - **Stage 2 재학습(~7/8) 전후 코드 정리 때 1분 작업으로 처리**
 
 ### 🔜 Phase 2 재학습 로드맵 (Stage 2·3)
 
