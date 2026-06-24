@@ -1,7 +1,31 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-24 (240차 세션) — MetaConf CONF_HIGH 재보정 + 임계값 하향
+> 마지막 업데이트: 2026-06-24 (241차 세션) — 장마감 종료·EOD 흐름 점검 + EOD_RETRAIN.bat py310_64 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-24 (241차 — 장마감 종료·EOD 흐름 점검 + EOD_RETRAIN.bat py310_64 수정)
+
+### 작업 내용
+
+장마감 후 프로그램 종료 흐름과 EOD 흐름 전체를 점검(코드 리뷰·실측 상태 확인).
+
+**종료 흐름 확인 (코드 리뷰)**:
+- 15:10 강제 청산 → 15:18 FINAL_CLOSE 안전망 → 15:40 DailyClose 스레드 기동 → `_shutdown_sig.request.emit()` → QTimer 15초 → `_qt_app.quit()` → 런처 `_exit_normally` 감지 → AUTO-RESTART 중단
+- `daily_close()` 내부 순서 22단계 전체 확인 (통계·보정기 저장·리셋·DBWriter 플러시·WAL 체크포인트 등)
+
+**오늘(2026-06-24) 실측 상태**:
+- `auto_shutdown_done_date = 2026-06-24` — 자동 종료 정상
+- `eod_retrain_ok_date = 공백` — daily_close(15:40)가 마커 체크 시 retrain_eod.py 미완료(완료 15:48:17), 설계상 정상. 내일 PreRetrain fallback(마커 파일 1~5일 전 탐색)으로 자동 보완
+- `p8_last_success_date = 2026-06-24` — P8 스케일러 재적합 완료
+- EOD 마커: 6/6 호라이즌 교체, 193.8초
+
+**수정: EOD_RETRAIN.bat py310_64 수정 (커밋 2de2afc)**:
+- `EOD_RETRAIN.bat:17` `conda activate py37_32` → `py310_64` (191차 결정 실제 반영)
+- `CLAUDE.md` 운영 환경 섹션에 note 추가 — EOD_RETRAIN.bat·scripts/eod_retrain.py 모두 py310_64 전용임을 명시, 재거론 방지
+
+**커밋**: 241차 (2de2afc)
 
 ---
 

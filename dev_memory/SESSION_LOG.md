@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-06-24 (241차 — 장마감 종료·EOD 흐름 점검 + EOD_RETRAIN.bat py310_64 수정)
+
+**Work**: 장마감 후 프로그램 종료 흐름(15:10→15:18→15:40 DailyClose→자동 종료)과 EOD 흐름(작업 스케줄러 `retrain_eod.py`) 전체 코드 점검 및 오늘 실측 상태 확인.
+
+**점검 결과**:
+- 종료 흐름 정상 — `daily_close()` 22단계 완료 후 `_qt_app.quit()`, 런처 AUTO-RESTART 중단 확인
+- 오늘 상태: 자동 종료 완료 / EOD 마커 완료(15:48, 6/6 호라이즌) / P8 스케일러 완료
+- `eod_retrain_ok_date` 공백은 설계상 정상 (daily_close 15:40 시점 마커 없음 → 내일 fallback 자동 처리)
+
+**수정**:
+- `EOD_RETRAIN.bat`: `conda activate py37_32` → `py310_64` (191차 결정 실제 반영)
+- `CLAUDE.md`: 운영 환경 섹션에 EOD_RETRAIN.bat·scripts/eod_retrain.py py310_64 전용 note 추가 — 재거론 방지
+
+**커밋**: 241차 (2de2afc)
+
+---
+
 ## 2026-06-24 (236차 — 저신뢰 자동진입 차단 3중 안전장치)
 
 **Work**: 6/24 일중 거래 3건 분석 → conf<35% 신호 EV=-34K/건 확인 → 자동진입 차단 로직 3개 추가.
