@@ -129,6 +129,56 @@ GUARD CHOICE를 현재 시각 기준으로 분기:
 
 ---
 
+## 2026-06-24 (234차 — 종목변경 재시작 배지)
+
+UI 종목코드/시장구분 변경 후 런타임 `_futures_code`가 갱신되지 않는 버그에 대한 안전 개선.
+즉시 적용 불가(pt_value 5배 차이·COM 재구독 크래시·DB 혼재 위험) → 재시작 경유 안전 경로 구현.
+
+- `MireukDashboard.sig_code_change_restart_requested` pyqtSignal
+- `_active_futures_code` 상태 변수 + `set_active_futures_code()`
+- `lbl_code_change` 배지 (lbl_shadow 옆, 평소 숨김, 기동코드≠UI코드 시 출현)
+- `_on_code_change_restart_requested()`: 포지션FLAT + 15:10이전 이중 체크 → quit()
+- `DashboardAdapter` 위임 + 시그널 노출
+
+**커밋**: 234차 (64ad55e)
+
+---
+
+## 2026-06-24 (235차 — TICK_SIZE 동적 주입 + 종목전환 안전절차 다이얼로그)
+
+### TICK_SIZE 하드코딩 버그 수정
+
+`config/settings.py` `TICK_SIZE = 0.05`(일반선물)가 미니선물 운영 시에도 그대로 적용됐음.
+미니선물 틱 = 0.02pt → spread_ticks가 2.5배 과소계산 → toxicity_spread_stress 항상 0 → 독성 주문 감지 둔화.
+
+`features/feature_builder.py`:
+- `_tick_size` 인스턴스 변수 (기본 0.05)
+- `set_tick_size(tick_size)` 메서드
+- `spread_ticks = (ask1-bid1) / self._tick_size` (전역 상수 → 인스턴스 변수)
+
+`main.py` `connect_broker()` 코드 확정 직후:
+- `get_contract_spec(code)["tick_size"]` → `feature_builder.set_tick_size()` 호출
+- 미니선물 기동 시 0.02, 일반선물 기동 시 0.05 자동 적용
+
+### 종목전환 안전절차 확인 다이얼로그
+
+`_on_code_change_restart_requested()` 조건 통과 후 Yes/No 확인창:
+- 현재·변경 종목 및 레이블 비교
+- 틱 사이즈·pt_value 변경 여부 명시
+- spread_ticks·toxicity 전환 기간 경고
+- DB 혼재(raw_candles 종목코드 없음)로 GBM 일시 저하 안내
+- 모의투자 1주일 이상 검증 권장
+
+### 예상 효과 (내일 로그 확인 포인트)
+
+- `[FeatureBuilder] 계약스펙 적용: 미니선물 tick_size=0.02 pt_value=50,000` 출현
+- spread_ticks가 2틱(0.04pt) 스프레드 시 0.8 → 2.0으로 정상화
+- toxicity_spread_stress가 실제 호가 상황 반영
+
+**커밋**: 235차 (c836e5e)
+
+---
+
 ## 2026-06-23 (231차 — EOD 점검 3종 수정)
 
 ### 수정 1: macro_fetcher sp500_chg 간헐적 0 fallback 방지
