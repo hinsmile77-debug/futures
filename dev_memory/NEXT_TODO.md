@@ -8,6 +8,16 @@
 
 ---
 
+## P2 Regime-Conditional GBM — 사전 준비 추적 [장기, ≈2027-01]
+
+> 2026-06-24 `raw_features_horizon` 테이블에 `regime` 컬럼 추가 완료. 이후 데이터 자동 누적.
+
+- [ ] **regime_history 26주 도달 확인** — 예상 시점 ≈ 2027-01-20. `SELECT MIN(ts), MAX(ts) FROM regime_history`로 확인.
+- [ ] **레짐별 샘플 수 확인** — 착수 조건: `SELECT horizon, regime, COUNT(*) FROM raw_features_horizon GROUP BY horizon, regime` → 최소 레짐이 5000봉 이상
+- [ ] **본구현 착수** — 조건 충족 시 `docs/260611_DIRECTION_BIAS_IMPROVEMENT_PLAN.md` §4.2 참고
+
+---
+
 ## 2026-06-25 (242차 — Phase 2 재학습 효과 확인) [최우선]
 
 ### Phase 2 모델 교체 확인 [P0]
@@ -4760,3 +4770,32 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
   - `MicroRegime` 로그에 `warmup level/progress` 를 함께 남길지 검토
 
 ---
+
+---
+
+## 2026-06-25 (243차 이후)
+
+### DONE
+
+- [DONE 2026-06-25] **Phase 2 재학습 경로 피처 슬라이싱 적용 (Audit Q1·Q2 해소)**
+  - `learning/batch_retrainer.py` `_retrain_phase2()`에 `get_available_feature_set()` 호출 추가
+  - 스케일러 97개 전체 fit, GBM h_idx 슬라이싱, feature_names_{hz}.pkl 저장
+  - 커밋: 2f2cb8e (243차)
+
+### NEXT (Stage 2 ~ Phase 3)
+
+- [NEXT Stage 2] **buy_vol/sell_vol 30일 누적 후 1m/3m 재학습**
+  - Phase 2 배포 후 ~30일 경과 시 OFI/CVD 기반 단기 모델 추가 개선 가능
+  - EOD_RETRAIN.bat --phase2 로그에서 cvd_direction 비제로 비율 모니터링
+
+- [NEXT Stage 3] **TRAINING_WINDOW 3m:5000 / 5m:3000 효과 확인**
+  - 50일+ 누적 시 3m/5m 학습 윈도우 상한 실제 적용 여부 확인
+  - `[Retrain-P2] * TRAINING_WINDOW=N 적용` 로그 출력 확인
+
+- [NEXT Phase 3] **Platt Scaling 호라이즌별 독립 적용**
+  - 현재 앙상블 캘리브레이션 공유 → 호라이즌별 독립 Platt 보정기 분리
+  - 앙상블 왜곡 제거 효과 기대
+
+- [NEXT 모니터링] **다음 EOD 재학습 후 슬라이싱 로그 확인**
+  - `[Retrain-P2] *m 피처 슬라이싱: 97 → N개 (horizon_feature_sets.json)` 출력 여부
+  - 출력 없으면: JSON에 해당 호라이즌 미등록 또는 전체 피처셋과 동일한 경우

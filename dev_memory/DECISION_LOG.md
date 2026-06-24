@@ -2,6 +2,38 @@
 
 ---
 
+## 2026-06-24 (방향 편향 근본 개선 구현 검토)
+
+### [버그·수정] _DYN_HALFLIFE·_FLAT_CAP 파라미터 불일치
+
+**근본 원인**: 165차(P0 구현) 이후 168차 추가 조정 시 `batch_retrainer.py`만 업데이트하고 `multi_horizon_model.py`를 동기화하지 않음. 코드에 "동일 로직 유지 필수" 주석이 있었으나 기계적으로 누락됨.
+
+**영향**: EOD 배치(halflife=70)와 장중 `train()` 경로(halflife=100)가 다른 강도로 편향 교정 → 재학습 경로에 따라 DOWN 편향 교정 수준이 달라짐.
+
+**수정**: `multi_horizon_model.py` `_DYN_HALFLIFE=70`, `_FLAT_CAP={1m:0.75, 3m:0.55, 5m:0.55, 10m:0.65, 15m:0.60, 30m:0.55}` — `batch_retrainer.py` 기준으로 동기화.
+
+**재발 방지**: 두 파일 중 한 쪽 파라미터 변경 시 반드시 다른 쪽도 동기화. 파라미터 블록 상단 주석 "동일 로직 유지 필수" 유지.
+
+---
+
+### [결정] P1-B Triple Barrier — 보류
+
+**근거**: 현재 `_path_conditioned_label()`(경로+임계값+시간 장벽) + `USE_ROLLING_SIGMA_THRESHOLD=True`(sigma×k×√h 동적 임계값)가 Triple Barrier 3장벽 구조와 사실상 동등. 추가 이득은 sl 장벽 방향 반전 레이블뿐. P0~P3 효과 검증 중 레이블 분포 급변은 인과관계 추적을 불가능하게 함.
+
+**재검토 조건**: P0+P1+P3 효과를 2~3주 모의투자 데이터로 확인 후 재판단.
+
+---
+
+### [결정] P2 Regime-Conditional GBM — 데이터 인프라 선착수, 본구현 보류
+
+**근거**: regime_history 10일치(2026-06-15~06-24)만 존재 → 26주 학습 범위 JOIN 불가. raw_features_horizon에 regime 컬럼 없음 → 데이터 없이 구현 불가. 레짐별 최소 5000봉 조건도 미충족(현재 호라이즌별 최대 6981봉, 레짐 분할 시 최다 레짐도 ~3000봉).
+
+**준비 작업(금일 완료)**: `raw_features_horizon` 테이블에 `regime TEXT DEFAULT 'NEUTRAL'` 컬럼 추가. 오늘(2026-06-24)부터 매분 `current_regime` 저장 시작.
+
+**실제 구현 착수 조건**: regime_history 26주 이상 + 레짐별 5000봉 이상 확인 후. 예상 시점 ≈ 2027년 1월.
+
+---
+
 ## 2026-06-23 (226차 — GBM 재학습 64비트 subprocess 이관)
 
 ### [결정] retrain_eod.py · retrain_intraday.py → py310_64 전용 실행
@@ -3936,3 +3968,20 @@ W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
 - SESSION_LOG / DECISION_LOG → `Add-Content -Encoding utf8` 덧붙임 (파일 읽기 불필요)
 - CURRENT_STATE / NEXT_TODO → `Write` 전체 교체 (세션 컨텍스트로 이미 파악)
 - 세션 마무리 요청 시 "이번 한 것: [A,B]. 다음: [X,Y]" 직접 명시 → 파일 읽기 생략
+
+## 2026-06-25 (243차) — Phase 2 재학습 경로에 Phase C 피처 슬라이싱 적용
+
+**결정**: `_retrain_phase2()`에 `get_available_feature_set()` 호출 추가
+
+**배경**:
+- Audit 결과 Phase 1 경로(retrain_now)는 horizon_feature_sets.json 슬라이싱 적용
+- Phase 2 경로(_retrain_phase2)는 슬라이싱 미적용 → 97개 전체로 GBM 학습
+- EOD_RETRAIN.bat이 --phase2 고정 이후 Phase 2 경로가 기본 재학습 경로가 됨
+- 결과적으로 JSON에 정의된 호라이즌별 피처 분리 의도가 실제 모델에 반영되지 않음
+
+**구현 원칙 (Phase 1 경로와 동일)**:
+- 스케일러: X_hz 97개 전체로 fit → predict_proba·validate_and_resync 호환 유지
+- GBM: 스케일 후 h_idx 컬럼 슬라이싱 → 호라이즌 전용 피처 학습
+- feature_names_{hz}.pkl: h_names_p2 저장 → 재기동 시 _hz_feat_indices 자동 세팅
+
+**영향 범위**: 다음 EOD 재학습 이후 자동 적용. 기존 pkl은 다음 재학습까지 유효.

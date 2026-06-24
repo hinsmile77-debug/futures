@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-06-24 (방향 편향 근본 개선 — 구현 상태 검토·버그 수정·P2 사전 준비)
+
+**Work**: `docs/260611_DIRECTION_BIAS_IMPROVEMENT_PLAN.md` 기반 방향 편향 근본 개선 전체 구현 상태 점검 → 파라미터 불일치 버그 발견·수정 → 미구현 3종 적기 판단 → P2 사전 준비 구현.
+
+**발견 및 수정**:
+1. **버그 수정**: `_DYN_HALFLIFE`·`_FLAT_CAP` 불일치 — `batch_retrainer.py`(halflife=70, 3m/5m cap=0.55)와 `multi_horizon_model.py`(halflife=100, 3m/5m cap=0.75~0.85)가 "동일 로직 유지 필수" 주석을 위반하고 있었음 → `multi_horizon_model.py`를 `batch_retrainer.py` 기준으로 동기화 (`model/multi_horizon_model.py:84-89`)
+2. **P2 사전 준비 구현**: `raw_features_horizon` 테이블에 `regime TEXT DEFAULT 'NEUTRAL'` 컬럼 추가. 스키마·마이그레이션(`init_raw_data_db`)·저장 함수·`main.py` 큐 4곳 수정. 오늘부터 `current_regime` 값이 매분 기록됨.
+
+**미구현 3종 적기 판단**:
+- P1-B Triple Barrier: **보류** — `_path_conditioned_label()`+`USE_ROLLING_SIGMA_THRESHOLD`가 이미 Triple Barrier 3장벽과 동등한 구조. P0~P3 효과 검증 중 레이블 체계 변경 금지. 2~3주 후 재검토.
+- P2 Regime-Conditional GBM: **불가 (데이터 부족)** — regime_history 10일치만 존재(26주 필요), 실제 구현 적기 ≈ 2027년 1월. 금일 컬럼 추가로 데이터 누적 시작.
+- P4 Sample Uniqueness: **불가** — P2 의존.
+
+**변경 파일**:
+- `model/multi_horizon_model.py` — `_DYN_HALFLIFE` 100→70, `_FLAT_CAP` 전체 동기화
+- `utils/db_utils.py` — `raw_features_horizon` 스키마 `regime` 컬럼 추가 + 마이그레이션 + `save_horizon_features` 시그니처 변경
+- `main.py` — `horizon_features` 큐 튜플에 `regime` 추가 (put 2곳 + 워커 언팩 1곳)
+
+---
+
 ## 2026-06-24 (242차 — V8 Phase 2 완료 점검 + 재학습 재실행 + TRAINING_WINDOW_BARS)
 
 **Work**: V8 구현 계획서 기반 현재 고도화 상태 전수 점검 → 커밋 이력으로 Phase 2 재학습 공백(6/8~6/24 레거시 경로 덮어씌움) 확인 → 수정 3종 + 문서 정리.
@@ -6658,3 +6678,48 @@ GBM 배치 재학습 산출물 형식을 런타임 로더와 맞추고, 좌하�
 | 14 | SGD_FEATURE_VECTOR.md 갱신 | docs/ |
 
 **미구현 (다음 세션)**: main.py 연결(active_horizons/entry_ok/select_entry_horizon/cascade_blocked), feature_builder.py 버그 5건
+
+## 2026-06-25 (243차 — Phase 2 재학습 경로 피처 슬라이싱 수정)
+
+### 작업 개요
+
+모델 운영 Audit (Q1~Q3) + V8 구현 현황 검토 후, Audit에서 지적된 최우선 결함 수정.
+
+**Audit 핵심 발견**
+
+| 항목 | 판정 | 핵심 결함 |
+|---|---|---|
+| Q1: GBM 피처 분리 | ❌ 미분리 | Phase 2 경로(_retrain_phase2)가 horizon_feature_sets.json 슬라이싱 미적용 |
+| Q2: 독립 Proba 산출 | ⚠️ 부분 | 입력 봉 데이터는 분리, GBM 피처 공간(97개)은 비분리 |
+| Q3: N분봉 완성 주기 배포 | ❌ 설계상 매분 배포 | N분봉은 캐시 갱신 주기, decay 보완 (설계 의도) |
+
+**V8 현황 (242차 기준 정리)**
+- Phase 0·1·2 코드 전 항목 완료 ✅
+- Phase 2 재학습: 6/8 최초 → EOD_RETRAIN.bat --phase2 누락으로 16일 레거시 덮어씌워짐 → 6/24 재실행으로 복구
+- TRAINING_WINDOW_BARS (3m:5000, 5m:3000) 구현 완료 ✅
+- SGD 호라이즌별 feat_vec: 구현 불필요 확정 (미래 데이터 오염 위험)
+- multi_timeframe.py: dead code — Stage 2~7/8 처리
+
+### 변경 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `learning/batch_retrainer.py` | `_retrain_phase2()`에 Phase C 슬라이싱 블록 추가 |
+
+### 수정 상세
+
+- `get_available_feature_set(hz, use_feat_names)` 호출로 JSON 기반 호라이즌 전용 피처셋 조회
+- 슬라이싱 있으면: `X_h_p2 = X_hz[:, h_idx]`, `X_full=X_hz(97개)` → 스케일러 전체 피처 fit 유지
+- `_save_feature_names(h_names_p2, horizon_key=hz)` → `feature_names_{hz}.pkl` 저장
+- JSON 없거나 분리 불필요 시 fallback(기존 동작) 유지
+
+### 검증
+
+- py310_64 py_compile OK
+- 커밋: 2f2cb8e (243차)
+
+### 잔여 항목
+
+- Platt Scaling 호라이즌별 독립 적용: Phase 3 대기
+- TRAINING_WINDOW 효과: Stage 3 (50일+) 이후 발현 예정
+- Q3 (N분봉 완성 주기): 설계 의도 — 변경 없음
