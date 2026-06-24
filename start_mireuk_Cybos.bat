@@ -257,6 +257,8 @@ IF EXIST "data\_exit_normally" (
 REM ============================================================
 REM  단일 인스턴스 보장 — 기존 main.py 프로세스 감지 후 종료 확인
 REM  원인: 런처를 두 번 실행하면 두 main.py가 공존 → GBM pkl 경합
+REM  [233차] 장전(09:00 이전): 10초 후 자동 Y — 스케줄러 자동 기동, PC 재부팅 후 잔류 프로세스 자동 정리
+REM          장중(09:00 이후): 사용자 직접 선택 (무제한 대기) — 의도적 재시작, 실수 방지
 REM ============================================================
 CALL :L "[GUARD] 기존 main.py 프로세스 체크..."
 python -c "import psutil, sys, os; procs=[p for p in psutil.process_iter(['pid','name','cmdline']) if 'python' in (p.info.get('name') or '').lower() and any('main.py' in (c or '') for c in (p.info.get('cmdline') or [])) and p.pid != os.getpid()]; print('[GUARD] 실행 중 main.py 프로세스: {}'.format(len(procs))); [print('  PID={} cmd={}'.format(p.pid, ' '.join(p.info.get('cmdline') or []))) for p in procs]; sys.exit(1 if procs else 0)" 2>NUL
@@ -265,7 +267,15 @@ IF !ERRORLEVEL! NEQ 0 (
     CALL :L "[WARN] 이미 실행 중인 main.py 프로세스가 감지됐습니다."
     CALL :L "[WARN] 이중 실행 시 GBM pkl 파일 경합 및 중복 주문이 발생할 수 있습니다."
     ECHO.
-    CHOICE /C YN /N /T 10 /D N /M "기존 프로세스를 종료하고 새로 시작하시겠습니까? (Y=종료후재시작 / N=취소) [10초 후 N]: "
+    REM [233차] 현재 시각으로 장전/장중 구분 → GUARD 기본값 분기
+    FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).ToString('HHmm')"`) DO SET "_GUARD_NOW=%%T"
+    IF !_GUARD_NOW! LSS 0900 (
+        CALL :L "[GUARD] 장전 시간대(!_GUARD_NOW!) — 10초 후 자동 Y (스케줄러 자동 기동)"
+        CHOICE /C YN /N /T 10 /D Y /M "기존 프로세스를 종료하고 새로 시작하시겠습니까? (Y=종료후재시작 / N=취소) [10초 후 Y]: "
+    ) ELSE (
+        CALL :L "[GUARD] 장중 시간대(!_GUARD_NOW!) — 직접 선택 필요 (의도적 재시작 확인)"
+        CHOICE /C YN /N /M "기존 프로세스를 종료하고 새로 시작하시겠습니까? (Y=종료후재시작 / N=취소): "
+    )
     IF !ERRORLEVEL!==2 (
         CALL :L "[GUARD] 취소됨 — 기존 인스턴스 유지."
         TIMEOUT /T 5 >NUL

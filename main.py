@@ -7314,6 +7314,11 @@ class TradingSystem:
             f"다음 시작: 내일 08:45 이후",
             "INFO",
         )
+        # [233차] DailyClose 완료 즉시 _exit_normally 플래그 생성.
+        # _auto_shutdown()은 Qt 타이머(15초 지연) 경유로 생성하므로
+        # 타이머 미실행·예외 시 플래그가 누락돼 런처가 재시작을 시도하는 버그 방지.
+        # 다음날 08:40 스케줄러 자동 시작 시 GUARD 취소 근본 원인 차단.
+        self._write_exit_normally_flag("daily_close")
         # 종료 예약은 메인 Qt 스레드에서 수행 (QueuedConnection → _schedule_shutdown 에서 처리)
         _shutdown_sig.request.emit()
 
