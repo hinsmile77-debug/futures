@@ -5872,17 +5872,27 @@ class TradingSystem:
                             f"(meta={_meta_size:.2f} tox={_tox_size:.2f} joint={_joint_mult:.3f})"
                         )
                     else:
-                        # 최대허용수량 클리핑 (산출수량 > 0인 경우에만, 최소 1 보장)
-                        if _qty_auto > 0 and self._max_entry_qty > 0:
-                            _qty_auto = max(1, min(_qty_auto, self._max_entry_qty))
-                        # L2 통과 && 모드 필터 통과 → 진입
-                        self._execute_entry(
-                            final_dir_str, close, _qty_auto, atr, _final_grade,
-                            raw_direction=raw_dir_str,
-                            reverse_enabled=reverse_on,
-                            entry_horizon=_entry_horizon,
-                        )
-                        _entry_executed_this_cycle = True
+                        # [237차] Hurst 미계산 진입 차단 — 워밍업 미완료(데이터 부족·오류) 시 손실 방지
+                        if not features.get("hurst_ready", False):
+                            log_manager.signal(
+                                f"[차단] Hurst 미계산 — 워밍업 중 자동진입 차단"
+                                f" (hurst={features.get('hurst', 0.5):.3f})"
+                            )
+                            log_manager.trade(
+                                f"[Hurst 미계산 차단] {raw_dir_str} {_qty_auto}계약 {_final_grade}급"
+                            )
+                        else:
+                            # 최대허용수량 클리핑 (산출수량 > 0인 경우에만, 최소 1 보장)
+                            if _qty_auto > 0 and self._max_entry_qty > 0:
+                                _qty_auto = max(1, min(_qty_auto, self._max_entry_qty))
+                            # L2 통과 && 모드 필터 통과 → 진입
+                            self._execute_entry(
+                                final_dir_str, close, _qty_auto, atr, _final_grade,
+                                raw_direction=raw_dir_str,
+                                reverse_enabled=reverse_on,
+                                entry_horizon=_entry_horizon,
+                            )
+                            _entry_executed_this_cycle = True
                 else:
                     # 모드 필터 차단
                     log_manager.signal(
@@ -5903,25 +5913,45 @@ class TradingSystem:
                 and time_zone in C_AUTO_EXP_ZONES                 # STABLE_TREND / LUNCH_RECOVERY
                 and not self.circuit_breaker.is_grade_restricted() # P4 RESTRICTED 아님
             ):
-                _qty_c_exp = max(1, int(round(_qty_auto * C_AUTO_EXP_SIZE_MULT)))
-                if self._max_entry_qty > 0:
-                    _qty_c_exp = max(1, min(_qty_c_exp, self._max_entry_qty))
-                log_manager.signal(
-                    f"[P5] C등급 실험 자동 진입 | {raw_dir_str}→{final_dir_str}"
-                    f" {_qty_c_exp}계약 (size×{C_AUTO_EXP_SIZE_MULT})"
-                    f" | zone={time_zone} TrendGate=ON conf={confidence:.1%}"
+                # [237차] P2-b 셋업 컨텍스트 — C급 경로에도 동일 설정 (hurst_bucket 공백 방지)
+                _hurst_now_c = float(features.get("hurst", 0.5) or 0.5)
+                self._entry_hurst_bucket = (
+                    "trend"       if _hurst_now_c >= 0.55
+                    else "neutral" if _hurst_now_c >= 0.45
+                    else "mean-revert"
                 )
-                log_manager.trade(
-                    f"[P5 자동진입] {raw_dir_str}->{final_dir_str} {_qty_c_exp}계약 @ {close} "
-                    f"C급 실험 | TrendGate active"
-                )
-                self._execute_entry(
-                    final_dir_str, close, _qty_c_exp, atr, _final_grade,
-                    raw_direction=raw_dir_str,
-                    reverse_enabled=reverse_on,
-                    entry_horizon=_entry_horizon,
-                )
-                _entry_executed_this_cycle = True
+                self._entry_hour_bucket = datetime.datetime.now().hour
+                self._entry_was_restart = 1 if self._session_no > 1 else 0
+                self._entry_had_partial = 0
+                # [237차] Hurst 미계산 시 C급 진입도 차단
+                if not features.get("hurst_ready", False):
+                    log_manager.signal(
+                        f"[차단] Hurst 미계산 — C급 자동진입 차단"
+                        f" (hurst={features.get('hurst', 0.5):.3f})"
+                    )
+                    log_manager.trade(
+                        f"[Hurst 미계산 차단] {raw_dir_str} C급 {_qty_auto}계약 {_final_grade}급"
+                    )
+                else:
+                    _qty_c_exp = max(1, int(round(_qty_auto * C_AUTO_EXP_SIZE_MULT)))
+                    if self._max_entry_qty > 0:
+                        _qty_c_exp = max(1, min(_qty_c_exp, self._max_entry_qty))
+                    log_manager.signal(
+                        f"[P5] C등급 실험 자동 진입 | {raw_dir_str}→{final_dir_str}"
+                        f" {_qty_c_exp}계약 (size×{C_AUTO_EXP_SIZE_MULT})"
+                        f" | zone={time_zone} TrendGate=ON conf={confidence:.1%}"
+                    )
+                    log_manager.trade(
+                        f"[P5 자동진입] {raw_dir_str}->{final_dir_str} {_qty_c_exp}계약 @ {close} "
+                        f"C급 실험 | TrendGate active"
+                    )
+                    self._execute_entry(
+                        final_dir_str, close, _qty_c_exp, atr, _final_grade,
+                        raw_direction=raw_dir_str,
+                        reverse_enabled=reverse_on,
+                        entry_horizon=_entry_horizon,
+                    )
+                    _entry_executed_this_cycle = True
 
             else:
                 log_manager.signal(

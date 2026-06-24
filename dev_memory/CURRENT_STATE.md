@@ -1,7 +1,74 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-24 (236차 세션) — 저신뢰 자동진입 차단 3중 안전장치 추가
+> 마지막 업데이트: 2026-06-24 (237차 세션) — Hurst 미계산 자동진입 차단
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-24 (237차 — Hurst 미계산 자동진입 차단)
+
+### 배경 — 6/8 완성봉 커밋 전후 딥다이브 분석 결과
+
+6/8 N분봉 완성봉 구조(120차) 커밋 이후 6/10~6/12에 발생한 -2,923,240원 손실(전체 누적 손실의 162%)을
+trades DB `hurst_bucket=""` 공백 7건이 설명함.
+
+- hurst_bucket이 ""인 것은 `_entry_hurst_bucket` 초기값("")에서 변경되지 않은 채 진입된 것
+- `_entry_hour_bucket=0`도 동일 (초기값 0, 실거래는 9~15시이므로 0은 미설정 상태)
+- 두 값 모두 공백/0인 거래 = P2-b 셋업 컨텍스트 블록을 우회한 진입 (수동 또는 C급 경로)
+
+근본 원인: C급 실험 진입 경로(5905~)에 P2-b setter가 없었음 + Hurst 실계산 완료 여부를 
+feature_builder가 외부에 알리지 않아 워밍업 미완료 상태에서 진입 가능.
+
+### 수정 1: `features["hurst_ready"]` 플래그 추가 (`features/feature_builder.py:354`)
+
+```python
+# 기존
+features["hurst"] = calculate_hurst(...)  # 예외 시 0.5 반환
+
+# 수정
+features["hurst"] = calculate_hurst(...)
+features["hurst_ready"] = True   # 실계산 성공
+# except:
+features["hurst"] = 0.5
+features["hurst_ready"] = False  # 데이터 부족·오류 → 미계산
+```
+
+`calculate_hurst`가 정상 계산됐는지 여부를 feature dict에 명시.
+예외 분기(데이터 부족, NaN 등)는 hurst_ready=False로 표시.
+
+### 수정 2: A/B 자동진입 경로에 hurst_ready 차단 (`main.py:5875`)
+
+```python
+else:  # JointGateBlock 미발동
+    # [237차] Hurst 미계산 차단
+    if not features.get("hurst_ready", False):
+        log "차단 — 워밍업 중 자동진입 차단"
+    else:
+        _qty_auto 클리핑 → _execute_entry
+```
+
+### 수정 3: C급 실험 경로에 P2-b setter + hurst_ready 차단 (`main.py:5916`)
+
+```python
+# [237차] P2-b 셋업 컨텍스트 추가 (기존 C급 경로에 누락)
+self._entry_hurst_bucket = "trend"/"neutral"/"mean-revert"
+self._entry_hour_bucket = now().hour
+self._entry_was_restart = ...
+self._entry_had_partial = 0
+# [237차] Hurst 미계산 시 C급도 차단
+if not features.get("hurst_ready", False):
+    log "C급 자동진입 차단"
+else:
+    _execute_entry
+```
+
+### 예상 효과
+
+- hurst="" / hour=0 공백 거래 재발 방지
+- 워밍업 미완료 구간(장 시작 약 40봉 이내) 자동진입 차단
+- 차단 시 SIGNAL 로그: `[차단] Hurst 미계산 — 워밍업 중 자동진입 차단 (hurst=0.500)`
+
+**커밋**: 237차
 
 ---
 

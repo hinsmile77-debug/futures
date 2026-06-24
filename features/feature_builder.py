@@ -352,10 +352,12 @@ class FeatureBuilder:
             self._close_history.append(close)
         try:
             features["hurst"] = calculate_hurst(list(self._close_history), max_lag=20)
+            features["hurst_ready"] = True
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] Hurst 오류 — 기본값 0.5 사용: %s", _exc)
             features["hurst"] = 0.5
+            features["hurst_ready"] = False
 
         try:
             bid1 = float(bar.get("bid1") or 0.0)
