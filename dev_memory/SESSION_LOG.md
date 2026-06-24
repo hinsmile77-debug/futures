@@ -18,11 +18,13 @@
 - EKS 동적 회복 로직 확인: 09:20 첫 시도, 30분 간격 최대 5회, 11:30 마감
 - EKS 커밋 이력: 86차 최초 → 177차 z조건 완화(5→15) → 203차 stale z_warn 고착 버그 수정
 
-**수정 (1종)**:
+**수정 (2종)**:
 - `model/multi_horizon_model.py` `_MACRO_SCALE_FLOOR`: `macro_risk_off/on/event_flag` floor=0.50 추가
   - 이진 피처 이론 최대 σ=0.5 → floor=0.5 → z ≤ 2.0 보장
+- `main.py` L5309: EKS 해제(`try_eks_recovery()=True`) 직후 GBM 경량 재학습 즉시 트리거
+  - 장전 기동 + EOD 성공 스킵으로 WarmupRetrain 미실행 시 EKS 해제 후 당일 데이터 반영 공백 해소
 
-**커밋**: 232차 (4238538, 이번 세션)
+**커밋**: 232차 (4238538), 232차-b (ca55a8c, 이번 세션)
 
 ---
 

@@ -16,11 +16,15 @@
 - [ ] **z-score 억제** — `macro_risk_off` z ≤ 2.0 (이전 +15.78σ, D_FORCE 연속 트리거 없음)
 - [ ] **D_FORCE consec=5 미발생** — SIGNAL.log에 `D_FORCE feat=macro_risk_off consec=5` 미출현
 
-### WarmupRetrain 미실행 추적 [P1]
+### WarmupRetrain 미실행 — 설계대로 동작 확인 [DONE 2026-06-24]
 
-- [ ] **오늘 WarmupRetrain 정상 실행 여부** — `[GBM-64] 재학습 시작 | ... pid=N` 출현 확인
-  - 미출현 시: `[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약` 후 실제 시작 로직 추적 필요
-  - 06-24 retrain_intraday_*.log 미생성 원인 불명 → 코드 흐름 재확인 필요
+- [x] **원인 확인**: 장전(08:48) 기동 → L2368 장중 재시작 블록 미해당 → L3101 PreRetrain이 `_warmup_retrain_pending` 소비 → `_eod_retrain_ok=True`로 스킵. 버그 아님.
+- [x] **개선**: EKS 해제 시 GBM 재학습 트리거 추가 (232차-b, ca55a8c)
+
+### EKS 해제 후 GBM 재학습 확인 [P0]
+
+- [ ] **재학습 시작** — EKS 해제 시 `[SHS-EKS] EKS 해제 → GBM 경량 재학습 시작` 출현
+- [ ] **subprocess 완료** — `[GBM-64] subprocess 완료 (returncode=0)` 출현
 
 ### P1 후속 개선 (별도 검토) [P2]
 

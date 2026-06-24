@@ -55,6 +55,43 @@ floor=0.5 근거: 이진 피처 이론 최대 σ=0.5(p=0.5) → z=(1−mean)/0.5
 
 ---
 
+## 2026-06-24 (232차-b — EKS 해제 직후 GBM 재학습 트리거)
+
+### 배경 — WarmupRetrain 미실행 구조 분석
+
+코드 추적 결과: 장전(08:00~08:59) 기동 시 `_warmup_retrain_pending=True`가 설정되지만,
+`pre_market_setup()` 내 장중 재시작 블록(L2368) 조건 `09:00 <= t`에 미달 → 미실행.
+08:55 PreRetrain 블록(L3101)이 `_warmup_retrain_pending`을 소비하면서 `_eod_retrain_ok=True`
+(전날 EOD 성공) 이유로 스킵 → STEP3에서도 `_warmup_forced=False` → 하루 종일 전날 모델 유지.
+
+이 자체는 버그 아님(설계대로). 단, EKS 관망 중 DriftRetrain도 미발동(acc30m 미축적)되어
+EKS 해제 후 첫 진입까지 당일 데이터 미반영 공백이 생기는 잠재 이슈.
+
+### 수정 (`main.py:5309`)
+
+`try_eks_recovery()` True 반환 직후(EKS 해제 확정 시점) GBM 경량 재학습 즉시 트리거:
+
+```python
+if not getattr(self, "_gbm_retrain_running", False):
+    self.dashboard.set_model_status("GBM 재학습중(EKS해제)...")
+    log_manager.system("[SHS-EKS] EKS 해제 → GBM 경량 재학습 시작 (관망 구간 데이터 반영)", "INFO")
+    self._start_gbm_retrain_subprocess(
+        force=False, reason="EKS 해제 후 즉시 재학습", is_warmup=False, intraday=True,
+    )
+```
+
+중복 실행 차단은 `_start_gbm_retrain_subprocess()` 내부(`_gbm_retrain_running` 체크)에서 처리.
+
+### 예상 효과 (내일 로그 확인 포인트)
+
+- `[SHS-EKS] EKS 해제 → GBM 경량 재학습 시작` 출현 (EKS 해제 시)
+- `[GBM-64] subprocess 완료 (returncode=0)` 출현
+- EKS 해제 후 첫 진입 시 당일 데이터 반영 모델 사용
+
+**커밋**: 232차-b (ca55a8c)
+
+---
+
 ## 2026-06-23 (231차 — EOD 점검 3종 수정)
 
 ### 수정 1: macro_fetcher sp500_chg 간헐적 0 fallback 방지
