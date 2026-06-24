@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-24 (236차 — 저신뢰 자동진입 차단 3중 안전장치)
+
+**Work**: 6/24 일중 거래 3건 분석 → conf<35% 신호 EV=-34K/건 확인 → 자동진입 차단 로직 3개 추가.
+
+**분석 결과**:
+- Case 1 (10:26 SHORT conf=36.6%): TP1+하드스톱 net -198K원
+- Case 2 (13:09 SHORT conf=37.3%): TP1+TP2 net +612K원
+- Case 3 (14:04 LONG conf=27%): 하드스톱 2분 -1,271K원 ← 핵심 문제
+- 5거래일 차단 시뮬레이션: 총 17건 중 11건 차단, 순익 +304K원 개선 (손실 3.1M 회피, 이익 2.8M 포기)
+
+**수정**:
+- `config/settings.py`: `ENS_CONF_FLOOR_FOR_AUTO = 0.33` 추가
+- `strategy/entry/checklist.py`: conf < floor 시 `auto_entry = False` 강제 (등급 유지, 자동실행만 차단)
+- `main.py` `_is_degraded_entry_blocked`: lookahead 파라미터 추가 + 선제차단 로직
+- `main.py` 진입부: `_joint_blocked` 체크 (MetaGate×ToxGate 합산 < 0.50 시 차단)
+- `main.py`: `self._last_pipe_ms` 매 사이클 저장
+
+**커밋**: 236차 (894151b)
+
+---
+
 ## 2026-06-24 (235차-d — connect_broker pt_value 갱신 누락 수정 + 이상점 정리)
 
 **Work**: 재시작 후 금일 커밋 5개 정상작동 점검 → 이상점 3건 발견·수정.

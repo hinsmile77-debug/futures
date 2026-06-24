@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-06-25 (236차 — 저신뢰 자동진입 차단 검증) [최우선]
+
+### ENS_CONF_FLOOR_FOR_AUTO 작동 확인 [P0]
+
+- [ ] **차단 로그 출현** — conf<33% 신호 발생 시 SIGNAL.log에 `[Checklist] conf=XX.X% < floor=33.0% → 등급=A 유지, auto_entry=OFF` 출현
+- [ ] **수동 모드에서는 여전히 알림** — grade=A 신호가 수동확인 팝업으로 뜨는지 확인 (진입 차단 ≠ 신호 무시)
+- [ ] **conf≥33% 신호 자동진입 정상** — 기존 A등급 자동진입 작동 이상 없음
+
+### JointGateBlock 작동 확인 [P1]
+
+- [ ] **차단 로그** — MetaGate+ToxGate 동시 reduce 발생 시 SIGNAL.log에 `[JointGateBlock] MetaGate(X.XX)×ToxGate(X.XX)=X.XXX < 0.50 → 진입 차단` 출현
+- [ ] **정상 진입 미영향** — meta=reduce + tox=pass (합산≥0.50) 케이스는 정상 진입됨
+
+### Degraded Mode 선제차단 확인 [P1]
+
+- [ ] **선제차단 로그** — 다음 Degraded Mode 진입 사이클에서 `[HealthPolicy] Degraded 선제차단: streak=X.XX+X.XX ≥ 2` 출현
+- [ ] **_last_pipe_ms 업데이트** — SYSTEM.log에서 파이프라인 latency가 매 사이클 갱신되는지 확인
+
+---
+
 ## 2026-06-25 (235차 — 미니선물 전용 설정 검증) [최우선]
 
 ### CodeGuard 작동 확인 [P0]

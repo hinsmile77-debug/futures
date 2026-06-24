@@ -1,7 +1,36 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-24 (235차-d 세션) — connect_broker pt_value 갱신 누락 수정 + 이상점 정리
+> 마지막 업데이트: 2026-06-24 (236차 세션) — 저신뢰 자동진입 차단 3중 안전장치 추가
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-24 (236차 — 저신뢰 자동진입 차단 3중 안전장치)
+
+### 배경 — 6/24 일중 거래 분석
+
+일중 3건 거래 중 Case 3 (14:04 LONG conf=27%, -1,271,185원)가 최대 손실.  
+5거래일 SIGNAL 로그 분석 결과 conf<35% 신호의 기댓값 = **-34K/건** (승률55%지만 손실이 이익보다 38% 큼).
+
+### 수정 1: ENS_CONF_FLOOR_FOR_AUTO = 0.33 (`config/settings.py`)
+
+conf<33% 시 체크리스트 A/B 등급이어도 `auto_entry=False` 강제.
+대시보드에는 원래 등급(A/B) 표시 → 수동 확인은 가능, 자동 실행만 차단.
+
+### 수정 2: Degraded Mode 1-사이클 지연 버그 수정 (`main.py`)
+
+`_emit_runtime_health`가 파이프라인 끝(STEP 9)에서 호출되어 진입 체크(STEP 6)보다 항상 1사이클 늦는 구조적 결함 수정.
+
+- `_is_degraded_entry_blocked`에 `latency_ms, quality_score, cache_age_sec, exception_density_10m` 파라미터 추가
+- lookahead: `_health_warn_streak + 현재사이클 가중치 ≥ enter_thresh` 이면 선제 차단
+- `self._last_pipe_ms` 파이프라인 끝에서 매 사이클 저장
+
+### 수정 3: MetaGate×ToxicityGate 동시 reduce 차단 (`main.py`)
+
+`_meta_size × _tox_size < 0.50` + 두 게이트 모두 `reduce` → `_joint_blocked=True`, `_execute_entry` 스킵.  
+6/24 14:04 케이스: meta=0.58, tox=0.70 → 합산 0.406 → 차단.
+
+**커밋**: 236차 (894151b)
 
 ---
 
