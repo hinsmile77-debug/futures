@@ -92,6 +92,43 @@ if not getattr(self, "_gbm_retrain_running", False):
 
 ---
 
+## 2026-06-24 (233차 — DailyClose _exit_normally 즉시 생성 + GUARD 장전 자동 Y)
+
+### 배경 — 08:40 자동 스케줄러 GUARD 취소 원인 분석
+
+PC 환경: EOD 후 power off → 08:30 power on → 08:40 자동 스케줄러 실행.
+launcher_20260624_084001 로그에서 GUARD가 기존 main.py 감지 → 10초 N 기본값 → 자동 취소.
+08:47:14 사용자가 수동으로 Y 선택 후 정상 기동.
+
+전날 DailyClose 후 `_exit_normally` 파일이 생성됐어야 하는데, `_auto_shutdown()`이
+Qt 타이머(15초 지연) 경유이므로 타이머 미실행·예외 시 플래그 누락 가능.
+플래그 없으면 런처가 `15:10 이후 종료 → 재시작 안 함`으로 처리하고 종료되지만,
+잔류 프로세스(스케줄러 중복 기동 등)가 있을 때 GUARD에 걸림.
+
+### 수정 1 (`main.py:7317`)
+
+`daily_close()` 마지막 `emit()` 직전에 즉시 플래그 생성:
+```python
+self._write_exit_normally_flag("daily_close")
+_shutdown_sig.request.emit()
+```
+
+### 수정 2 (`start_mireuk_Cybos.bat:270`)
+
+GUARD CHOICE를 현재 시각 기준으로 분기:
+- 09:00 이전(장전): `CHOICE /D Y /T 10` — 10초 후 자동 Y, 스케줄러 무인 처리
+- 09:00 이후(장중): `CHOICE /N` (타임아웃 없음) — 사용자 직접 선택, 실수 방지
+
+### 예상 효과 (내일 로그 확인 포인트)
+
+- `[Shutdown] 정상 종료 플래그 기록: data/_exit_normally (daily_close)` 출현
+- 다음날 런처에서 `[AUTO-RESTART] 정상 종료 감지 (daily_close) -- 재시작 안 함` 출현
+- 08:40 자동 스케줄러 GUARD 통과 (`[GUARD] 기존 main.py 없음 — 단일 인스턴스 확인.`)
+
+**커밋**: 233차 (3d33950)
+
+---
+
 ## 2026-06-23 (231차 — EOD 점검 3종 수정)
 
 ### 수정 1: macro_fetcher sp500_chg 간헐적 0 fallback 방지
