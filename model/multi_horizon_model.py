@@ -172,12 +172,18 @@ class MultiHorizonModel:
     # macro_feature_transformer가 이미 정규화([0,1]/[-1,1])한 값을 StandardScaler가
     # 재정규화할 때, 학습기간 VIX가 낮아 σ≈0.005이면 VIX=22 → z=35 같은 폭발 발생.
     # 각 하한은 해당 피처 이론 범위의 10~20% 수준으로 설정 (실질 변동을 허용하는 최소값).
+    # 이진(0/1) 피처(risk_off·risk_on·event_flag): 이론 최대 σ=0.5(p=0.5 시).
+    # floor=0.5 → z=(1-mean)/0.5 ≤ 2.0, AutoMask 임계(4.0) 미만 보장.
+    # 192차 AutoMask CORE 면제와 세트여야 하는데 ScaleFloor 등록이 누락됐던 버그(232차 수정).
     _MACRO_SCALE_FLOOR: dict = {
         "macro_vix":          0.10,   # [0,1] — VIX 정규화값
         "macro_sp500_chg":    0.15,   # [-1,1] — S&P500 변동률 정규화값
         "macro_nasdaq_chg":   0.15,   # [-1,1]
         "macro_krw_chg":      0.10,   # [-1,1] — USD/KRW 변동률
         "macro_us10y_chg":    0.10,   # [-1,1] — 미국 10년물 변동률
+        "macro_risk_off":     0.50,   # 이진(0/1) — 희귀 발동 시 σ≈0.06 → z≈16 폭발 방지
+        "macro_risk_on":      0.50,   # 이진(0/1) — 동일 구조
+        "macro_event_flag":   0.50,   # 이진(0/1) — 동일 구조
     }
 
     GBM_PARAMS = {
