@@ -63,10 +63,14 @@ class MetaConfidenceLearner:
     ACCURACY_WINDOW        = 20   # 최근 N분 정확도 추적
     MIN_SAMPLES_PER_REGIME = 30   # 레짐별 최초 학습 최소 샘플 (≈30분)
     BATCH_INTERVAL         = 30   # 레짐별 배치 재학습 주기 (봉 수)
-    CONF_HIGH              = 0.60 # 고신뢰도 기준 (Q2/Q3 경계)
+    # [240차] 0.60 → 0.37: 실측 avg_ens_conf(0.37)에 맞춰 최대 쌍봉 분리
+    # 기존 0.60 기준 → Q3(맞음+고신뢰) 0.2%, Q1 67% 지배 → LR 출력 0.33~0.67 협소
+    # 0.37 기준 → Q0/Q3 각 ~30-65% 쌍봉 → LR이 0.0↔1.0 극단값 학습 → 변별력 10배
+    CONF_HIGH              = 0.37 # 고신뢰도 기준 (Q2/Q3 경계) — avg_ens_conf 맞춤
     _BUF_MAX               = 300  # 레짐별 최대 버퍼 (≈5시간)
     # 피처 버전 — 피처 셋·모델 구조 변경 시 올려서 구버전 pkl warm-start 자동 거부
-    _FEATURE_VERSION = 4          # v4: 레짐별 독립 LR (v3: 단일 LR)
+    # [240차] 5로 올림: CONF_HIGH 변경으로 레이블 분포 완전 재편 → 구버전 warm-start 거부
+    _FEATURE_VERSION = 5          # v5: CONF_HIGH=0.37 (v4: 0.60)
 
     # Q0(최하·틀림+고신뢰)=0.00, Q1(하·틀림+저신뢰)=0.33
     # Q2(상·맞음+저신뢰)=0.67,   Q3(최상·맞음+고신뢰)=1.00

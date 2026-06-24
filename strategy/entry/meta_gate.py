@@ -19,21 +19,27 @@ logger = logging.getLogger("SIGNAL")
 # 검증 케이스 — grade=A, confidence=0.62, meta_conf=0.25(floor), min_conf=0.65:
 #   blended(A) = 0.75×0.62 + 0.25×0.25 = 0.528  >  reduce_thr(A)=0.423  → reduce ✓
 #   blended(C) = 0.60×0.62 + 0.40×0.25 = 0.472  <  reduce_thr(C)=0.488  → skip  ✗ (기존 차단)
+# [240차] take_floor/take_ceil/reduce_base 전면 하향 — blended_conf 실측 분포 반영
+# 변경 근거 (최근 10일 데이터):
+#   blended_conf 평균=0.38, P75=0.42, P90=0.46, P95=0.49, 최대=0.63
+#   기존 take_floor(0.50~0.52) → 달성 가능 최대값이 P90~P95 수준이어서 사실상 차단
+#   CONF_HIGH=0.37 변경으로 meta_conf가 0.0↔1.0 쌍봉 분포로 전환되면
+#   좋은 신호에서 blended_C ≈ 0.60×0.37 + 0.40×0.80 = 0.54 → take_ceil=0.57 달성 가능
 _GRADE_CFG: Dict[str, Dict] = {
     "A": dict(
         ens_w=0.75,  meta_w=0.25,
-        take_add=0.10, take_floor=0.50, take_ceil=0.67,
-        reduce_mult=0.65, reduce_base=0.33,
+        take_add=0.08, take_floor=0.43, take_ceil=0.55,  # floor 0.50→0.43, ceil 0.67→0.55
+        reduce_mult=0.65, reduce_base=0.27,               # base 0.33→0.27
     ),
     "B": dict(
         ens_w=0.65,  meta_w=0.35,
-        take_add=0.12, take_floor=0.51, take_ceil=0.68,
-        reduce_mult=0.70, reduce_base=0.34,
+        take_add=0.09, take_floor=0.44, take_ceil=0.56,  # floor 0.51→0.44, ceil 0.68→0.56
+        reduce_mult=0.70, reduce_base=0.28,               # base 0.34→0.28
     ),
     "C": dict(
         ens_w=0.60,  meta_w=0.40,
-        take_add=0.14, take_floor=0.52, take_ceil=0.70,
-        reduce_mult=0.75, reduce_base=0.36,
+        take_add=0.10, take_floor=0.45, take_ceil=0.57,  # floor 0.52→0.45, ceil 0.70→0.57
+        reduce_mult=0.75, reduce_base=0.30,               # base 0.36→0.30
     ),
 }
 # X: 앙상블 자체가 X 등급 → 체크리스트가 최종 차단. MetaGate는 C 기준 유지
