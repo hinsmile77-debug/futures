@@ -1,7 +1,44 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-24 (235차 세션) — 미니선물 전용 설정 전면 교정 + 종목 전환 안전 인프라
+> 마지막 업데이트: 2026-06-24 (235차-d 세션) — connect_broker pt_value 갱신 누락 수정 + 이상점 정리
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-24 (235차-d — connect_broker pt_value 갱신 누락 수정)
+
+### 배경 — 재시작 후 이상점 점검에서 발견
+
+235차 시리즈(미니선물 전용 설정 교정) 커밋 5개 검증 중 `connect_broker` 구현 누락 발견.
+
+### 수정 1: `self._pt_value` + `position.set_pt_value()` 갱신 누락 (`main.py`)
+
+`connect_broker` 내 계약 스펙 적용 블록에서 `set_tick_size`만 호출되고
+`self._pt_value` 및 `self.position.set_pt_value()` 갱신이 누락되어 있었음.
+
+```python
+# 기존 (누락)
+self.feature_builder.set_tick_size(_spec["tick_size"])
+
+# 수정
+self.feature_builder.set_tick_size(_spec["tick_size"])
+self._pt_value = _spec["pt_value"]          # 추가
+self.position.set_pt_value(self._pt_value)  # 추가
+```
+
+주석에는 "connect_broker에서 get_contract_spec으로 재확정"이라 명시되어 있었으나
+실제 구현이 없던 상태. 현재 미니선물 운영에서는 초기값 50,000이 정확해 실영향 없음.
+미륵이2(일반선물) 기동 시 pt_value가 50,000으로 고정되어 PnL 5배 오류 발생할 뻔.
+
+### 수정 2: feature_builder.py line 34 주석 교정
+
+"기본값은 일반선물(0.05)이나" → "기본값은 미니선물(0.02);" (235차-b 교체 후 미갱신)
+
+### 수정 3: main.py 미사용 임포트 제거
+
+`FUTURES_PT_VALUE` — 235차-b에서 초기화를 MINI_FUTURES_PT_VALUE로 바꾼 뒤 임포트 잔존.
+
+**커밋**: 235차-d (3169a8d)
 
 ---
 

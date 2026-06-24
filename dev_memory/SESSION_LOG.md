@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-24 (235차-d — connect_broker pt_value 갱신 누락 수정 + 이상점 정리)
+
+**Work**: 재시작 후 금일 커밋 5개 정상작동 점검 → 이상점 3건 발견·수정.
+
+**발견 이슈**:
+- `connect_broker`: `set_tick_size`만 호출, `self._pt_value` 갱신 + `position.set_pt_value()` 누락 — [MED]
+- `feature_builder.py` line 34 주석: "기본값은 일반선물(0.05)이나" 스테일 — [LOW]
+- `main.py` `FUTURES_PT_VALUE` 미사용 임포트 잔존 — [LOW]
+
+**수정**:
+- `main.py` connect_broker: `self._pt_value = _spec["pt_value"]` + `self.position.set_pt_value()` 추가
+- `features/feature_builder.py` line 34: 주석 "미니선물(0.02)"로 교정
+- `main.py` line 81: `FUTURES_PT_VALUE` 임포트 제거
+
+**커밋**: 235차-d (3169a8d)
+
+---
+
 ## 2026-06-24 (235차 — 미니선물 전용 설정 전면 교정)
 
 **Work**: 미니선물 전용 운영을 위한 제반 설정 점검 → 이슈 6건 발견 및 전체 수정.

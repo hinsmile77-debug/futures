@@ -14,7 +14,7 @@
 
 - [ ] **정상 기동 로그** — `[DBG CK-3] 금월물코드=A0567 ... is_mini=True` 출현
 - [ ] **CodeGuard 통과** — `[CodeGuard]` CRITICAL 로그 없음 (A05 계열 정상 통과)
-- [ ] **계약스펙 로그** — `[FeatureBuilder] 계약스펙 적용: 미니선물 tick_size=0.02 pt_value=50,000`
+- [ ] **계약스펙 로그** — `[ContractSpec] 계약스펙 확정: 미니선물 tick_size=0.02 pt_value=50,000` (235차-d에서 로그 태그 변경)
 
 ### spread_ticks 정상화 확인 [P1]
 
