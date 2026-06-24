@@ -25,7 +25,7 @@ REM 프로젝트 디렉토리로 이동
 cd /d "%~dp0"
 
 REM 재학습 실행
-python scripts\eod_retrain.py --weeks 10
+python scripts\eod_retrain.py --phase2 --weeks 10
 
 if errorlevel 1 (
     echo.
