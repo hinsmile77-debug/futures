@@ -18,7 +18,7 @@ from features.technical.queue_dynamics import QueueDynamicsCalculator
 from features.technical.toxicity import ToxicityCalculator
 from features.technical.vwap import VWAPCalculator
 from features.technical.hurst_exponent import calculate_hurst
-from config.settings import TICK_SIZE
+from config.settings import TICK_SIZE as _DEFAULT_TICK_SIZE
 from utils.error_policy import ErrorLevel, classify_exception
 from config.settings import HORIZON_THRESHOLDS
 
@@ -30,6 +30,9 @@ class FeatureBuilder:
     """Assemble per-minute model features from bars and intraminute hoga updates."""
 
     def __init__(self):
+        # [235차] 종목코드(미니/일반선물) 기반 동적 tick_size.
+        # 기본값은 일반선물(0.05)이나 connect_broker 완료 후 set_tick_size()로 갱신된다.
+        self._tick_size: float = _DEFAULT_TICK_SIZE
         self.cvd = CVDCalculator(window=10)
         self.cvd_exhaustion_calc = CvdExhaustionCalculator()
         self.vwap = VWAPCalculator()
@@ -62,6 +65,18 @@ class FeatureBuilder:
         self._vwap_history: deque = deque(maxlen=10)  # VWAP 이동 속도용
         self._prev_day_same_hour_ret: float = 0.0     # 전일 동시간대 수익률 (daily_close에서 갱신)
         self._prev_day_close_buf: Dict[str, float] = {}  # {ts: close} 전일 전체 버퍼
+
+    def set_tick_size(self, tick_size: float) -> None:
+        """[235차] 종목코드 확정 후 틱 사이즈 주입 — spread_ticks 계산 정확도 보정.
+
+        미니선물 0.02pt vs 일반선물 0.05pt 차이로 spread_ticks가 2.5배 왜곡됨.
+        connect_broker() 완료 후 get_contract_spec(code)["tick_size"]로 호출한다.
+        """
+        ts = float(tick_size)
+        if ts <= 0:
+            return
+        self._tick_size = ts
+        logger.info("[FeatureBuilder] tick_size 갱신: %.4f (spread_ticks 계산 기준)", ts)
 
     def update_hoga(
         self,
@@ -345,7 +360,7 @@ class FeatureBuilder:
         try:
             bid1 = float(bar.get("bid1") or 0.0)
             ask1 = float(bar.get("ask1") or 0.0)
-            spread_ticks = max((ask1 - bid1) / TICK_SIZE, 0.0) if bid1 > 0 and ask1 > 0 else 0.0
+            spread_ticks = max((ask1 - bid1) / self._tick_size, 0.0) if bid1 > 0 and ask1 > 0 else 0.0
             toxicity_result = self.toxicity.update(
                 atr_ratio=features.get("atr_ratio", 1.0),
                 spread_ticks=spread_ticks,

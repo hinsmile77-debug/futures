@@ -2339,6 +2339,19 @@ class TradingSystem:
             self.dashboard.set_active_futures_code(code)
         except Exception as _ace:
             logger.debug("[SymbolChange] set_active_futures_code 실패 (무해): %s", _ace)
+        # [235차] 종목코드 기반 tick_size 주입 — spread_ticks·toxicity 정확도 보정
+        # 미니선물 0.02pt vs 일반선물 0.05pt 미구분으로 spread_ticks가 2.5배 왜곡되던 버그 수정
+        try:
+            from config.constants import get_contract_spec as _gcs
+            _spec = _gcs(code)
+            self.feature_builder.set_tick_size(_spec["tick_size"])
+            log_manager.system(
+                f"[FeatureBuilder] 계약스펙 적용: {_spec['label']} "
+                f"tick_size={_spec['tick_size']} pt_value={_spec['pt_value']:,}",
+                "INFO",
+            )
+        except Exception as _tse:
+            logger.warning("[FeatureBuilder] tick_size 주입 실패 (기본값 유지): %s", _tse)
         self._sync_position_from_broker()
         self._warmup_retrain_pending = True
         log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
@@ -7357,10 +7370,61 @@ class TradingSystem:
                 "내일 기동 시 자동 반영됩니다.",
             )
             return
+        _active  = getattr(self, "_futures_code", "?")
         _selected = self.dashboard.get_selected_symbol()
+        # 전환 전후 스펙 비교 — 경고 내용 구성
+        try:
+            from config.constants import get_contract_spec as _gcs
+            _spec_a = _gcs(_active)
+            _spec_s = _gcs(_selected)
+            _label_a = _spec_a["label"]   # "미니선물" / "일반선물"
+            _label_s = _spec_s["label"]
+            _tick_a  = _spec_a["tick_size"]
+            _tick_s  = _spec_s["tick_size"]
+            _pt_a    = _spec_a["pt_value"]
+            _pt_s    = _spec_s["pt_value"]
+        except Exception:
+            _label_a = _label_s = "?"
+            _tick_a = _tick_s = _pt_a = _pt_s = 0
+
+        _tick_warn = (
+            f"\n• 틱 사이즈 변경: {_tick_a}pt → {_tick_s}pt\n"
+            f"  (spread_ticks 기준이 변경됩니다)"
+            if _tick_a != _tick_s else ""
+        )
+        _pt_warn = (
+            f"\n• pt_value 변경: {_pt_a:,}원 → {_pt_s:,}원\n"
+            f"  (포지션 손익·사이즈 계산 기준이 변경됩니다)"
+            if _pt_a != _pt_s else ""
+        )
+
+        _msg = (
+            f"현재: {_active}  ({_label_a})\n"
+            f"변경: {_selected}  ({_label_s})\n"
+            f"\n"
+            f"[전환 후 주의사항]\n"
+            f"• 첫 1~2시간은 spread_ticks·toxicity가\n"
+            f"  이전 종목 기준으로 계산될 수 있습니다.{_tick_warn}{_pt_warn}\n"
+            f"• 학습 DB(raw_candles)에 이전 종목 데이터가 섞여\n"
+            f"  GBM 재학습 품질이 일시 저하될 수 있습니다.\n"
+            f"• 실투자 전환 전 모의투자에서 1주일 이상 검증을\n"
+            f"  권장합니다.\n"
+            f"\n재시작하시겠습니까?"
+        )
+        from PyQt5.QtWidgets import QMessageBox as _MB2
+        ret = _MB2.question(
+            None,
+            "종목변경 재시작 확인",
+            _msg,
+            _MB2.Yes | _MB2.No,
+            _MB2.No,
+        )
+        if ret != _MB2.Yes:
+            return
+
         log_manager.system(
-            f"[SymbolChange] 종목변경 재시작 — "
-            f"active={getattr(self, '_futures_code', '?')} → selected={_selected} "
+            f"[SymbolChange] 종목변경 재시작 확정 — "
+            f"{_active}({_label_a}) → {_selected}({_label_s}) "
             f"포지션=FLAT 시각={_now.strftime('%H:%M')}",
             "INFO",
         )
