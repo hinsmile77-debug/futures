@@ -1,7 +1,96 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-24 (238차 세션) — Platt 보정기 피드백 루프 버그 수정
+> 마지막 업데이트: 2026-06-24 (240차 세션) — MetaConf CONF_HIGH 재보정 + 임계값 하향
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-24 (240차 — MetaConf CONF_HIGH 재보정 + 임계값 하향)
+
+### 배경 — MetaConf 딥다이브 분석
+
+최근 10일 `ensemble_decisions.meta_confidence` (= blended_conf) 분포:
+- 평균=0.38, P75=0.42, P90=0.46, P95=0.49, 최대=0.63
+- 기존 take_thr(A=0.50, C=0.52) 달성: P90~P95 수준 → 구조적으로 불가
+
+meta_action 분포: skip 49.5% / reduce 49.4% / take **1.1%** (17건, 전부 규칙 기반 fallback)
+
+**근본 원인**: `CONF_HIGH=0.60`이 실측 avg_ens_conf(0.37)보다 높아
+- Q3(맞음+고신뢰, conf≥0.60): **0.2%** — 거의 발생 안 함
+- Q1(틀림+저신뢰): **67.1%** 지배
+- → LR 출력이 0.33~0.67 협소 구간에 고착, 변별력 없음
+- → take_thr에 도달하는 신호 = 0건
+
+### 수정 1: CONF_HIGH 재보정 (`learning/meta_confidence.py:69`)
+
+```python
+# 기존
+CONF_HIGH = 0.60
+
+# 수정: avg_ens_conf(0.37) 기준 — 최대 쌍봉 분리점
+CONF_HIGH = 0.37
+```
+
+CONF_HIGH=0.37 적용 시 품질 레이블 분포:
+- Q0(틀림+고신뢰): ~65% → weight 0.0 (나쁜 신호 0점)
+- Q3(맞음+고신뢰): ~28% → weight 1.0 (좋은 신호 만점)
+→ 쌍봉 분포: LR이 0.0 vs 1.0 극단값 학습 → 변별력 10배 기대
+
+### 수정 2: `_FEATURE_VERSION` 4→5 (`learning/meta_confidence.py:73`)
+
+CONF_HIGH 변경 = 레이블 분포 완전 재편 → 구버전 pkl warm-start 자동 거부.
+버전 불일치 감지 시 cold-start 강제 (기존 load() 로직 재활용).
+
+### 수정 3: 임계값 하향 (`strategy/entry/meta_gate.py`)
+
+| 등급 | take_floor 전→후 | take_ceil 전→후 | reduce_base 전→후 |
+|---|---|---|---|
+| A | 0.50 → **0.43** | 0.67 → **0.55** | 0.33 → **0.27** |
+| B | 0.51 → **0.44** | 0.68 → **0.56** | 0.34 → **0.28** |
+| C | 0.52 → **0.45** | 0.70 → **0.57** | 0.36 → **0.30** |
+
+CONF_HIGH=0.37 후 좋은 신호 blended_C ≈ 0.60×0.37 + 0.40×0.80 = 0.54 → take_ceil=0.57 달성 가능.
+
+### 수정 4: meta_conf_state.pkl 삭제
+
+구버전 레이블(Q1/Q2 편중) 오염 제거. 다음 기동 cold-start → 30봉 후 재학습.
+
+### 예상 효과 (3~5거래일 후 확인)
+
+- meta_action take 비율 1% → **5~15%** 달성
+- blended_conf P90 0.46 → **0.50+** 도달
+- reduce 50% → 더 의미 있는 size 조절로 작동
+
+**커밋**: 240차 (a36c04b)
+
+---
+
+## 2026-06-24 (239차 — C급 자동진입 conf_floor 차단)
+
+### 배경
+
+C등급 `auto_entry=False`이므로 `checklist.py`의 conf_floor 체크(`if auto_entry and conf < 0.33`)가
+실행되지 않음. P5 C급 실험 경로(`main.py:5909`)가 conf_floor 없이 직접 진입.
+오늘 6/24 14:04 (conf=0.2701, C등급) 진입이 이 경로로 실행 → -1,271,185원 손실.
+
+최근 5일 영향 분석:
+- C급 실행 11건 중 floor 미달(conf<0.33): 4건
+- 차단 대상 PnL: **-1,986,557원** (승률 1/3)
+- floor 통과 건 PnL: **+1,108,312원** (승률 9/13)
+
+### 수정 (`main.py`)
+
+1. `ENS_CONF_FLOOR_FOR_AUTO` import 추가
+2. C급 경로 내 hurst_ready 체크 다음에 `elif confidence < ENS_CONF_FLOOR_FOR_AUTO:` 차단 추가
+
+```python
+# C급 P5 경로 진입 필터 순서
+#   ① hurst_ready=False → 차단 (237차)
+#   ② conf < 0.33       → 차단 (239차) ← 신규
+#   ③ 둘 다 통과         → _execute_entry
+```
+
+**커밋**: 239차 (6ff7bc6)
 
 ---
 
