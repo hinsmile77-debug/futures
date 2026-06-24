@@ -8,6 +8,28 @@
 
 ---
 
+## 2026-06-25 (235차 — 미니선물 전용 설정 검증) [최우선]
+
+### CodeGuard 작동 확인 [P0]
+
+- [ ] **정상 기동 로그** — `[DBG CK-3] 금월물코드=A0567 ... is_mini=True` 출현
+- [ ] **CodeGuard 통과** — `[CodeGuard]` CRITICAL 로그 없음 (A05 계열 정상 통과)
+- [ ] **계약스펙 로그** — `[FeatureBuilder] 계약스펙 적용: 미니선물 tick_size=0.02 pt_value=50,000`
+
+### spread_ticks 정상화 확인 [P1]
+
+- [ ] **SIGNAL.log** — `[FeatureBuilder] tick_size 갱신: 0.0200` 출현 (기동 직후)
+- [ ] EarlyWarmup 시 `_tick_size=0.02` 적용 (장 개시 전 spread_ticks 과소계산 없음)
+
+### 미니선물 전용 설정 파일 최종 상태
+
+- [x] `ui_prefs.json`: market="KOSPI200 미니선물" / symbol_code="A0567000" ✅
+- [x] `config/settings.py`: TICK_SIZE=0.02 ✅
+- [x] `config/secrets.py` (로컬): FUTURES_CODE_PREFIX="A05" ✅
+- [x] `main.py`: 초기 _pt_value=50,000 ✅
+
+---
+
 ## 2026-06-25 (234차 — 재시동 수정 검증) [최우선]
 
 ### X버튼 재시작 프로세스 종료 확인 [P0]

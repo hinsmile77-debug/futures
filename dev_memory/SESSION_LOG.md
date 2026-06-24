@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-06-24 (235차 — 미니선물 전용 설정 전면 교정)
+
+**Work**: 미니선물 전용 운영을 위한 제반 설정 점검 → 이슈 6건 발견 및 전체 수정.
+
+**발견 이슈**:
+- `ui_prefs.json`: market="KOSPI200 **선물**"(일반), symbol_code="A0169000"(일반선물 9월물) — [HIGH] 잘못 저장됨
+- `secrets.py`: `FUTURES_CODE_PREFIX` 키 없음 — [HIGH] CodeGuard 작동 불가
+- `settings.py`: `TICK_SIZE=0.05`(일반선물) — [HIGH] 미니선물 기준 0.02여야 함
+- `feature_builder._DEFAULT_TICK_SIZE`: EarlyWarmup 기간 0.05 적용 — [MED]
+- `main.py` 초기 `_pt_value`: 250,000(일반선물) — [MED] connect_broker 전 오계산
+- `main.py` 하드코딩 `250_000`: PnL·평가금액 고정 — [MED]
+
+**수정 (235차 3개 커밋)**:
+- `ui_prefs.json`: "KOSPI200 미니선물" / "A0567000  미니 F 202607" 교정
+- `config/secrets.py` (로컬): `FUTURES_CODE_PREFIX = "A05"` 추가
+- `broker_runtime_service._resolve_trade_code()`: CodeGuard — A05 계열 외 코드 확정 시 기동 중단
+- `features/feature_builder.py`: `_DEFAULT_TICK_SIZE = MINI_FUTURES_TICK_SIZE(0.02)`
+- `main.py`: 초기 `_pt_value = MINI_FUTURES_PT_VALUE(50,000)` + `250_000 → self._pt_value`
+- `config/settings.py`: `TICK_SIZE = 0.05 → 0.02` + `MAX_CONTRACTS` 미니선물 기준 주석
+- `docs/260624_mireuk2_migration_plan.md`: 일반선물 미륵이2 마이그레이션 계획 문서화
+
+**핵심 아키텍처 결정**:
+- 미륵이: 미니선물(A05xxx) 전용 영구 고정
+- 미륵이2(일반선물): 별도 코드 분기 금지 → 설정 주도 단일 코드베이스 (`FUTURES_CODE_PREFIX`만 다름)
+
+**커밋**: 235차 (c836e5e), 235차-b (02cb0ce), 235차-c (7f03a56, 이번 세션)
+
+---
+
 ## 2026-06-24 (234차 — 재시동 버그 수정 + 종목변경 배지)
 
 **Work**: X버튼 재시작 후 프로세스 미종료 근본 원인 분석 및 수정, GUARD 커밋 이력 무결성 점검.
