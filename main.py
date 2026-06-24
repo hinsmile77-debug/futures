@@ -76,6 +76,7 @@ from config.settings import (
     HEALTH_DEGRADED_BLOCK_AUTO_ENTRY, HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY,
     HEALTH_POLICY_HOT_RELOAD_ENABLED, HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC,
     ENTRY_GRADE_C_AUTO_EXP, C_AUTO_EXP_SIZE_MULT, C_AUTO_EXP_ZONES,  # [P5]
+    ENS_CONF_FLOOR_FOR_AUTO,                                          # [239차] C급 conf_floor
 )
 import config.settings as runtime_settings
 from config.constants import MINI_FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED, DIRECTION_FLAT
@@ -5935,6 +5936,18 @@ class TradingSystem:
                     )
                     log_manager.trade(
                         f"[Hurst 미계산 차단] {raw_dir_str} C급 {_qty_auto}계약 {_final_grade}급"
+                    )
+                # [239차] conf_floor — C급 경로에도 동일 하한 적용
+                # checklist.py는 auto_entry=True 시에만 floor를 체크하므로
+                # C급(auto_entry=False)은 여기서 별도로 차단해야 함
+                elif confidence < ENS_CONF_FLOOR_FOR_AUTO:
+                    log_manager.signal(
+                        f"[차단] conf_floor — C급 자동진입 차단"
+                        f" (conf={confidence:.1%} < floor={ENS_CONF_FLOOR_FOR_AUTO:.1%})"
+                    )
+                    log_manager.trade(
+                        f"[conf_floor 차단] {raw_dir_str} C급 {_qty_auto}계약"
+                        f" (conf={confidence:.1%} floor={ENS_CONF_FLOOR_FOR_AUTO:.1%})"
                     )
                 else:
                     _qty_c_exp = max(1, int(round(_qty_auto * C_AUTO_EXP_SIZE_MULT)))
