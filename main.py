@@ -5306,6 +5306,22 @@ class TradingSystem:
                         f"conf_window={[f'{c:.0%}' for c in _p3_window[-3:]]}",
                         "WARNING",
                     )
+                    # [232차] EKS 해제 직후 GBM 재학습 — 관망 중 누락된 당일 데이터 반영.
+                    # 장전 기동 + EOD 성공 스킵 조합으로 WarmupRetrain이 실행되지 않은 경우
+                    # EKS 해제 후 첫 진입까지 전날 EOD 모델이 그대로 사용되는 공백을 메움.
+                    # _start_gbm_retrain_subprocess 내부에서 중복 실행 차단(_gbm_retrain_running).
+                    if not getattr(self, "_gbm_retrain_running", False):
+                        self.dashboard.set_model_status("GBM 재학습중(EKS해제)...")
+                        log_manager.system(
+                            "[SHS-EKS] EKS 해제 → GBM 경량 재학습 시작 (관망 구간 데이터 반영)",
+                            "INFO",
+                        )
+                        self._start_gbm_retrain_subprocess(
+                            force=False,
+                            reason="EKS 해제 후 즉시 재학습",
+                            is_warmup=False,
+                            intraday=True,
+                        )
 
         # EKS 활성 시 매분 진입 차단 로그 (방향 있을 때만)
         if self.system_health.kill_switch_active and direction != 0:
