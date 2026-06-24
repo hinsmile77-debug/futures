@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-06-25 (232차 — ScaleFloor 효과 검증) [최우선]
+
+### macro_risk_off ScaleFloor 작동 확인 [P0]
+
+- [ ] **ScaleFloor 출현** — 급락 당일 `[ScalerFloor] macro_risk_off scale=X.XXX → floor=0.50 적용` 출현
+- [ ] **z-score 억제** — `macro_risk_off` z ≤ 2.0 (이전 +15.78σ, D_FORCE 연속 트리거 없음)
+- [ ] **D_FORCE consec=5 미발생** — SIGNAL.log에 `D_FORCE feat=macro_risk_off consec=5` 미출현
+
+### WarmupRetrain 미실행 추적 [P1]
+
+- [ ] **오늘 WarmupRetrain 정상 실행 여부** — `[GBM-64] 재학습 시작 | ... pid=N` 출현 확인
+  - 미출현 시: `[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약` 후 실제 시작 로직 추적 필요
+  - 06-24 retrain_intraday_*.log 미생성 원인 불명 → 코드 흐름 재확인 필요
+
+### P1 후속 개선 (별도 검토) [P2]
+
+- [ ] **identity 강제 임계 바이너리 분리** — `_BINARY_PASSTHROUGH` 목록 추가하여 raw_std 무관하게 이진 피처 항상 identity 유지 (P0 ScaleFloor 보다 구조적 수정)
+- [ ] **macro_risk_off 연속형 리디자인** — 이진→연속형 점수화 검토 (GBM 재학습 필요, 중기)
+
+---
+
 ## 2026-06-24 (231차 — EOD 수정 효과 검증) [최우선]
 
 ### ScalerWarmup 피처 수 확인 [P0]

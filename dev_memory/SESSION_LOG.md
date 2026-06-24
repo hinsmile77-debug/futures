@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-24 (232차 — macro_risk_off 이진 피처 ScaleFloor 추가)
+
+**Work**: 금일 09:05 EKS 발동 원인 딥다이브 → `macro_risk_off` z폭발 버그 수정.
+
+**분석 발견**:
+- 09:05:57 EKS 발동(당일 관망): z경고 33개 + 장 시작 5봉 conf=0% (FLAT 수렴)
+- `macro_risk_off` = 이진(0/1) 피처인데 장 시작 급락 시 z=+15.78σ 폭발
+- 근본 원인: warmup 500봉이 risk_off=0 전부 → D_FORCE 재적합 시 risk_off=1 봉 1~2개 추가 → raw_std=0.063 > identity 강제 임계(0.05) → identity 해제 → ScaleFloor 미등록 → z 폭발
+- 192차에서 AutoMask CORE 면제 추가 시 ScaleFloor 등록을 함께 했어야 했는데 누락
+- D_FORCE가 macro_risk_off 이상 z로 재트리거 → 재적합 → 여전히 이상 z 악순환 확인
+- WarmupRetrain GBM 미실행: 예약 로그만 있고 서브프로세스 시작 없음, retrain_intraday_20260624 미생성
+- EKS 동적 회복 로직 확인: 09:20 첫 시도, 30분 간격 최대 5회, 11:30 마감
+- EKS 커밋 이력: 86차 최초 → 177차 z조건 완화(5→15) → 203차 stale z_warn 고착 버그 수정
+
+**수정 (1종)**:
+- `model/multi_horizon_model.py` `_MACRO_SCALE_FLOOR`: `macro_risk_off/on/event_flag` floor=0.50 추가
+  - 이진 피처 이론 최대 σ=0.5 → floor=0.5 → z ≤ 2.0 보장
+
+**커밋**: 232차 (4238538, 이번 세션)
+
+---
+
 ## 2026-06-23 (231차 — EOD 점검 + macro/ScalerWarmup/피처셋 3종 수정)
 
 **Work**: EOD 로그 이상점 분석 → 3종 버그 수정 + 피처 활성화/삭제 + 문서 정비.

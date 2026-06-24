@@ -1,7 +1,57 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-23 (231차 세션) — EOD 점검 + macro/ScalerWarmup/피처셋 3종 수정
+> 마지막 업데이트: 2026-06-24 (232차 세션) — macro_risk_off ScaleFloor 이진 피처 z폭발 방지
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-24 (232차 — macro_risk_off·on·event_flag ScaleFloor 추가)
+
+### 배경 — 금일 장 시작 EKS 발동 원인 딥다이브
+
+오늘(06-24) 09:05:57 EKS(Early Kill Switch) 발동 → 당일 관망 선언.
+원인 분석 중 `macro_risk_off` z=+15.78σ가 D_FORCE 연속 트리거 악순환 원인임을 확인.
+
+### 근본 원인
+
+`macro_risk_off`는 이진(0/1) 피처 (`vix>28 or sp500<-1%`).
+192차에서 AutoMask CORE 면제는 추가했으나 `_MACRO_SCALE_FLOOR` 등록이 누락됨.
+
+발동 시퀀스:
+```
+warmup 500봉: risk_off=0 전부 → raw_std=0.0000 → identity 강제 ✅
+B_OPEN 재적합: raw_std=0.0447 < 0.05 임계 → identity 강제 ✅
+D_FORCE 재적합(09:01): risk_off=1 봉 1~2개 → raw_std=0.063 > 0.05
+  → identity 강제 해제, ScaleFloor 미등록
+  → z = (1.0 - ≈0.004) / 0.063 ≈ +15.8σ (로그 +15.78σ 일치)
+  → 5분마다 D_FORCE 재트리거 악순환
+  → EKS 발동 원인 중 하나
+```
+
+### 수정 (`model/multi_horizon_model.py:178`)
+
+`_MACRO_SCALE_FLOOR`에 이진 피처 3종 추가:
+
+```python
+"macro_risk_off":   0.50,   # 이진(0/1) — 희귀 발동 시 σ≈0.06 → z≈16 폭발 방지
+"macro_risk_on":    0.50,   # 이진(0/1) — 동일 구조
+"macro_event_flag": 0.50,   # 이진(0/1) — 동일 구조
+```
+
+floor=0.5 근거: 이진 피처 이론 최대 σ=0.5(p=0.5) → z=(1−mean)/0.5 ≤ 2.0 (AutoMask 임계 4.0 미만).
+
+### 반영 시점
+
+재시작 불필요. 다음 ScalerRefresh(D_FORCE 또는 C_PERIODIC 30분 주기) 시 `_apply_macro_scale_floor()` 자동 적용.
+
+### 예상 효과 (내일 로그 확인 포인트)
+
+- `[ScalerFloor] macro_risk_off scale=0.063 → floor=0.50 적용` 출현 (급락 당일)
+- `macro_risk_off` z-score ≤ 2.0 (이전 +15.78σ)
+- D_FORCE 연속 트리거 없음 (macro_risk_off consec=5 트리거 미발생)
+- EKS 발동 억제 (장 초반 급락 시에도 z경고 수 감소)
+
+**커밋**: 232차 (4238538)
 
 ---
 
