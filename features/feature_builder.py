@@ -31,7 +31,7 @@ class FeatureBuilder:
 
     def __init__(self):
         # [235차] 종목코드(미니/일반선물) 기반 동적 tick_size.
-        # 기본값은 일반선물(0.05)이나 connect_broker 완료 후 set_tick_size()로 갱신된다.
+        # 기본값은 미니선물(0.02); connect_broker 완료 후 set_tick_size()로 재확정된다.
         self._tick_size: float = _DEFAULT_TICK_SIZE
         self.cvd = CVDCalculator(window=10)
         self.cvd_exhaustion_calc = CvdExhaustionCalculator()

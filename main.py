@@ -78,7 +78,7 @@ from config.settings import (
     ENTRY_GRADE_C_AUTO_EXP, C_AUTO_EXP_SIZE_MULT, C_AUTO_EXP_ZONES,  # [P5]
 )
 import config.settings as runtime_settings
-from config.constants import FUTURES_PT_VALUE, MINI_FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED, DIRECTION_FLAT
+from config.constants import MINI_FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED, DIRECTION_FLAT
 from config import secrets as _secrets
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -2339,19 +2339,22 @@ class TradingSystem:
             self.dashboard.set_active_futures_code(code)
         except Exception as _ace:
             logger.debug("[SymbolChange] set_active_futures_code 실패 (무해): %s", _ace)
-        # [235차] 종목코드 기반 tick_size 주입 — spread_ticks·toxicity 정확도 보정
-        # 미니선물 0.02pt vs 일반선물 0.05pt 미구분으로 spread_ticks가 2.5배 왜곡되던 버그 수정
+        # [235차] 종목코드 기반 계약 스펙 주입 — tick_size·pt_value 동적 확정
+        # 미니선물 0.02pt/50,000원 vs 일반선물 0.05pt/250,000원 미구분으로
+        # spread_ticks 2.5배 왜곡 + PnL 5배 오류 유발하던 버그 수정
         try:
             from config.constants import get_contract_spec as _gcs
             _spec = _gcs(code)
             self.feature_builder.set_tick_size(_spec["tick_size"])
+            self._pt_value = _spec["pt_value"]
+            self.position.set_pt_value(self._pt_value)
             log_manager.system(
-                f"[FeatureBuilder] 계약스펙 적용: {_spec['label']} "
+                f"[ContractSpec] 계약스펙 확정: {_spec['label']} "
                 f"tick_size={_spec['tick_size']} pt_value={_spec['pt_value']:,}",
                 "INFO",
             )
         except Exception as _tse:
-            logger.warning("[FeatureBuilder] tick_size 주입 실패 (기본값 유지): %s", _tse)
+            logger.warning("[ContractSpec] 계약스펙 주입 실패 (기본값 유지): %s", _tse)
         self._sync_position_from_broker()
         self._warmup_retrain_pending = True
         log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
