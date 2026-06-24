@@ -188,6 +188,22 @@ MIN_TRAIN_BARS_PER_HORIZON = {
     "10m": 1500, "15m": 1000, "30m": 500,
 }
 
+# Phase 2-D: 호라이즌별 학습 윈도우 상한 (봉 수)
+# 단기 모델은 최근 데이터로 현재 레짐 반응, 장기 모델은 넓은 역사적 맥락 활용.
+# None  = weeks_back 전체 사용 (변경 없음)
+# int   = 가장 최근 N봉 상한. MIN_TRAIN_BARS_PER_HORIZON 미달 시 전체 사용으로 자동 후퇴.
+# Stage 3(50일+ go-forward 누적) 이후 단기 효과 발현:
+#   3m 누적이 ~30k봉에 달할 때 window=5000 → 최근 5주 데이터만 사용.
+# V8 계획서 원안(90/60/48)은 온라인학습 메모리 개념이라 배치학습 MIN_BARS 미달 → 현재 값으로 조정.
+TRAINING_WINDOW_BARS = {
+    "1m":   None,   # Phase 2 미사용 (raw_features 경로)
+    "3m":   5000,   # 최근 5k봉 상한 — Stage 3 이후 단기 반응 효과 발현
+    "5m":   3000,   # 최근 3k봉 상한
+    "10m":  None,   # session_all 의도: 데이터 충분 시 세션 필터 구현 예정
+    "15m":  None,
+    "30m":  None,   # multi_day: weeks_back 전체로 장기 맥락 최대화
+}
+
 # P0: 호라이즌별 FLAT 상한 — 동적 가중치에서도 FLAT 과잉 억제 유지
 # 3m/5m: 0.75/0.85 → 0.55 하향 근거:
 #   HORIZON_THRESHOLDS["3m"]=0.060% 기준 훈련 데이터에서 FL≈47%.
@@ -863,6 +879,22 @@ class BatchRetrainer:
             cusum_idx = _cusum_filter(records, close_map)
             if len(cusum_idx) < len(records):
                 records = [records[i] for i in cusum_idx]
+
+            # Phase 2-D: 호라이즌별 학습 윈도우 상한 적용 (최신 N봉 우선)
+            _tw = TRAINING_WINDOW_BARS.get(hz)
+            if isinstance(_tw, int) and _tw > 0 and len(records) > _tw:
+                _min_b = MIN_TRAIN_BARS_PER_HORIZON.get(hz, MIN_TRAIN_BARS)
+                if _tw >= _min_b:
+                    logger.info(
+                        "[Retrain-P2] %s TRAINING_WINDOW=%d 적용 (%d→%d봉 최신 우선)",
+                        hz, _tw, len(records), _tw,
+                    )
+                    records = records[-_tw:]
+                else:
+                    logger.debug(
+                        "[Retrain-P2] %s TRAINING_WINDOW=%d < MIN_BARS=%d — 전체 사용 (%d봉)",
+                        hz, _tw, _min_b, len(records),
+                    )
 
             # global feature_names(1m 기준)로 X 구성 → 추론 공간과 일치.
             # raw_features_horizon의 cvd_direction/atr 등은 build_for_horizon에서
