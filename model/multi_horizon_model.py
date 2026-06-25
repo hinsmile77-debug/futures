@@ -163,8 +163,8 @@ class MultiHorizonModel:
         "cvd_delta_norm", "cvd_divergence",
         "vwap_position", "vwap_ratio", "vwap_dev",
         "ofi_norm", "ofi_pressure",
+        # macro_vix 제거 (2026-06-25): CORE 강등 — 일봉 상수, SHAP 기여 ≈ 0
         # 중기 CORE (10m~15m) 추가
-        "macro_vix",
         "macro_risk_off",   # VIX>28|SP500 -1% 이진 신호 — z폭발 → AutoMask 금지 (192차)
         # 장기 CORE (30m) 추가
         "above_vwap", "opt_chain_pcr", "opt_gex_bn",

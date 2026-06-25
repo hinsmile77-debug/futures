@@ -59,9 +59,9 @@ KOSPI 200 선물 1분봉 기반 방향 예측 + 자동매매 시스템 (별칭: 
 | **단기** | 1m·3m·5m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
 | **단기** | 1m·3m·5m | OFI 불균형 | `features/technical/ofi.py` | 미통과 → 등급 하락 |
 | **중기** | 10m·15m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
-| **중기** | 10m·15m | macro_vix 방향 | `collection/macro/macro_fetcher.py` | 미통과 → 등급 하락 |
 | **장기** | 30m | opt_chain_pcr | `collection/option/option_chain.py` | 미통과 → 등급 하락 |
-| **장기** | 30m | macro_vix 방향 | `collection/macro/macro_fetcher.py` | 미통과 → 등급 하락 |
+
+> `macro_vix`는 2026-06-25 CORE 강등. 일봉 VIX → 분봉 상수, SHAP 기여 ≈ 0, 임계 VIX 27.5 평상시 항상 통과 확인. 보조 피처로 GBM 피처셋에 유지.
 
 ```
 설정: config/settings.py  HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP

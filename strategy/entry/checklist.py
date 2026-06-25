@@ -149,15 +149,15 @@ class EntryChecklist:
         #   ※ cvd_direction(구 이산 -1/0/+1)에서 교체 (2026-06-25):
         #      Cybos buy_vol 시스템 편향으로 cvd_direction이 +0.5 고착(98.6%)되어
         #      사실상 상수화. cvd_delta_norm은 동일 정보를 price-action으로 올바르게 표현.
-        # 중기(10m~15m): macro_vix 방향 — VIX<0.5=저공포=LONG 유리, >0.5=고공포=SHORT 유리
+        # 중기(10m~15m): 면제 — CVD·OFI·macro_vix 모두 중기 유의성 없음 (2026-06-25)
+        #   macro_vix는 일봉 VIX 상수, SHAP 기여 ≈ 0, 임계 VIX 27.5는 평상시 항상 통과
         # 장기(30m): opt_chain_pcr 방향 — PCR<1.0=콜우세=LONG, >1.0=풋우세=SHORT (미가용 시 면제)
         if "4_cvd" in disabled:
             checks["4_cvd"] = True
         elif _core_group == "short":
             checks["4_cvd"] = cvd_direction > 0 if is_long else cvd_direction < 0
         elif _core_group == "mid":
-            # macro_vix [0,1] — 낮을수록 위험선호(LONG 유리)
-            checks["4_cvd"] = (macro_vix < 0.5) if is_long else (macro_vix > 0.5)
+            checks["4_cvd"] = True  # CVD·OFI·macro_vix 모두 면제
         else:  # long
             if opt_chain_pcr > 0:
                 checks["4_cvd"] = (opt_chain_pcr < 1.0) if is_long else (opt_chain_pcr > 1.0)
@@ -235,9 +235,7 @@ class EntryChecklist:
                 if _core_group == "short":
                     _need_cvd = ">0" if is_long else "<0"
                     _diag_parts.append(f"cvd_delta_norm={cvd_direction:+.3f} need {_need_cvd}")
-                elif _core_group == "mid":
-                    _diag_parts.append(f"macro_vix={macro_vix:.2f} need {'<0.5' if is_long else '>0.5'}")
-                else:
+                else:  # long (mid는 항상 True이므로 여기 도달 불가)
                     _diag_parts.append(f"opt_chain_pcr={opt_chain_pcr:.3f} need {'<1.0' if is_long else '>1.0'}")
             if not checks["5_ofi"] and _core_group == "short":
                 _need_ofi = ">0" if is_long else "<0"

@@ -388,20 +388,21 @@ CORE_FEATURES_BY_GROUP: dict = {
         "vwap_forced_x": True,      # VWAP ✗ → 강제 X등급
     },
     "mid": {
-        # 중기: VWAP 구조 + 매크로 레짐
+        # 중기: VWAP 구조
+        # CVD·OFI·macro_vix 모두 면제 (2026-06-25):
+        #   macro_vix는 일봉 VIX — 장 내 상수, SHAP 기여 ≈ 0, 임계 VIX 27.5는 평상시 항상 통과
         "cvd":  None,               # CVD 10m~15m 유의성 없음 — 체크 면제
         "vwap": "vwap_position",    # VWAP 여전히 유효 (기관 기준선)
         "ofi":  None,               # OFI 10m+ 희석 — 체크 면제
-        "macro": "macro_vix",       # VIX 레벨 — 중기 방향 레짐 신호
         "vwap_forced_x": True,      # VWAP ✗ → 강제 X등급 (유지)
     },
     "long": {
-        # 장기: 딜러 감마(GEX) + 옵션 체인 + 매크로
+        # 장기: 딜러 감마(GEX) + 옵션 체인
+        # macro_vix 제거 (2026-06-25): 일봉 데이터 → 분봉 예측 시간대 불일치, SHAP 기여 ≈ 0
         "cvd":  None,               # CVD 30m 완전 무효
         "vwap": "above_vwap",       # VWAP 이진 플래그 (연속값 대신)
         "ofi":  None,               # OFI 틱 잡음
         "opt":  "opt_chain_pcr",    # PCR — 방향 구조 신호 (가용 시)
-        "macro": "macro_vix",       # VIX — 장기 레짐 핵심
         "vwap_forced_x": False,     # 장기에서는 VWAP 강제 X 해제
     },
 }
@@ -417,13 +418,13 @@ CORE_MASK_EXEMPT_BY_GROUP: dict = {
     }),
     "mid": frozenset({
         "vwap_position", "vwap_ratio", "vwap_dev",
-        "macro_vix",
+        # macro_vix 제거 (2026-06-25): CORE 강등 — 일봉 상수, SHAP 기여 ≈ 0
         "macro_risk_off",   # VIX>28|SP500 -1% 이진 신호 — z폭발 시 AutoMask 금지
     }),
     "long": frozenset({
         "above_vwap",
         "opt_chain_pcr", "opt_gex_bn",
-        "macro_vix",
+        # macro_vix 제거 (2026-06-25): CORE 강등 — 일봉 상수, SHAP 기여 ≈ 0
         "macro_risk_off",   # 장기 레짐 핵심 신호 — 동일 이유
     }),
 }
