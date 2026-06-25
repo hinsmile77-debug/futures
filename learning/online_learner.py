@@ -133,6 +133,19 @@ class OnlineLearner:
 
         x2d = x.reshape(1, -1)
         scaler = self.scalers[horizon]
+
+        # 피처 수 불일치 방어: Phase C 슬라이싱 전환기에 스케일러가 이전
+        # 피처 수(예: 97개)로 학습된 상태에서 새 슬라이싱 피처(11~15개)가
+        # 들어오면 partial_fit에서 ValueError → ERR-FATAL 반복 진입.
+        # 불일치 감지 시 스케일러·모델을 함께 리셋해 새 피처 공간에 재적응.
+        if hasattr(scaler, "n_features_in_") and scaler.n_features_in_ != x2d.shape[1]:
+            logger.warning(
+                "[OnlineLearner] %s 피처 수 불일치(scaler=%d, x=%d) → 리셋",
+                horizon, scaler.n_features_in_, x2d.shape[1],
+            )
+            self._do_sgd_reset(horizon)
+            scaler = self.scalers[horizon]
+
         scaler.partial_fit(x2d)
         xs = scaler.transform(x2d)
 
