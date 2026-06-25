@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-06-25 (247차 — PRE_MARKET_SCALER_BARS=30 검증) [P0]
+
+- [ ] **z경고 임계 이하 확인** — 다음 장 SYSTEM.log에서 `[PreMarket] Phase refit 완료 n=30봉 z경고 X→Y개`에서 bar5 이후 Y < 12 확인
+- [ ] **Canary refit 미발동 확인** — `[Canary] 장전 재적합 시도` 로그 미출현 (z<12 → 자동 패스)
+- [ ] **Canary z 재측정 로그 확인** — `[Canary] 장전 재적합 완료 n=30봉 z경고 →N개 ✓ 임계 이하` 패턴 확인
+- [ ] **09:00 첫봉 z경고 없음 확인** — WARN.log에 `z경고` 관련 항목 미출현
+- [ ] **D_FORCE refit 정상 전환** — 09:30~10:00 내 `D_FORCE` 혹은 `D_PRICE_MOMENTUM` 트리거 후 500봉 scaler 복원 확인
+
+---
+
 ## 2026-06-25 (246차 — Phase C 불일치 수정 후 검증) [P0]
 
 - [ ] **불일치 자동 복구 확인** — 다음 시작 시 `[Model] {h} feature_names_{h}.pkl({N}개) vs GBM({M}개) 불일치 — pkl 무효화` 로그 출현 후 정상 운영되는지 확인 (현재 디스크에 불일치 파일 잔류 가능)

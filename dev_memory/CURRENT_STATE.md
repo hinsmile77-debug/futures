@@ -1,7 +1,62 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-25 (246차) — Phase C pkl-모델 불일치 근본 수정 + Canary refit 완료 보장
+> 마지막 업데이트: 2026-06-25 (247차) — 프리장 scaler 재적합 window 단기화 (PRE_MARKET_SCALER_BARS=30)
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-25 (247차 — 프리장 scaler 재적합 window 단기화)
+
+### 발단
+
+20260625_WARN.log에서 EarlyWarmup 완료 후에도 z경고 폭증(23개)이 해결되지 않고 본장에 escape. 5일치 로그 및 실데이터 시뮬레이션으로 딥다이브.
+
+### 근본 원인
+
+모든 pre-market refit 경로(EarlyWarmup/PRE_MARKET_REFIT_STEPS/Canary/ScalerWarmup)가 `lookback_bars=500(SCALER_WARMUP_LOOKBACK_BARS)`을 동일하게 사용. 08:55 기준 500봉 = 어제 490봉 + 오늘 pre-market 10봉(2%) → scaler가 어제 분포 기준으로 재적합되어도 오늘 갭오픈 피처 z경고가 고착.
+
+**실측 증거 (SYSTEM.log)**:
+- 6/24: Phase1~3 refit 4회, z경고 `16→16→16→16` (0% 변화)
+- 6/25: Phase1~3 + Canary 5회, z경고 `18→18→18→19→17` (1봉 개선)
+- 결과: 6/24 EKS 발동 (`z경고33개+conf0%미달`)
+
+### 수정 (247차, 커밋 `169b793`)
+
+| 항목 | 내용 |
+|---|---|
+| `config/settings.py` | `PRE_MARKET_SCALER_BARS = 30` 신규 추가. `SCALER_WARMUP_LOOKBACK_BARS=500`은 장중 정기 refit 전용 유지 |
+| `main.py` (5개 경로) | EarlyWarmup / PRE_MARKET_REFIT_STEPS worker / Canary refit / ScalerWarmup → `lookback_bars=PRE_MARKET_SCALER_BARS(30)` 변경 |
+| Canary refit | 완료 후 z경고 재측정 로그 추가 (`z경고 →N개 ✓임계이하` or `⚠z경고 지속`) |
+
+### 30봉 구성 (실측)
+
+| 시점 | 어제 구간 | 오늘 PM | 오늘 비율 |
+|---|---|---|---|
+| EarlyWarmup 08:45 | 14:40~15:09 (30봉) | 0봉 | 0% |
+| bar3 08:48 | 14:43~15:09 (27봉) | 3봉 | 10% |
+| bar10/Canary 08:55 | 14:50~15:09 (20봉) | 10봉 | 33% |
+| bar14 08:59 | 14:54~15:09 (16봉) | 14봉 | **47%** |
+
+어제 종가구간(14:40~15:09)은 pre-market과 미시구조 유사(저유동성·포지션 정리) → scaler mean이 오늘 분포에 빠르게 수렴.
+
+### 검증 결과
+
+**시뮬레이션 (5일 실데이터 기반)**:
+
+| window | bar5이후 z<12 달성율 | 6/23 | 6/24 | 6/25 |
+|---|---|---|---|---|
+| 500봉(기존) | 0% | 20 | 29 | 14 |
+| 60봉(1차시도) | 33% | 13 | 16 | 11 |
+| **30봉(채택)** | **100%** | **5** | **4** | **8** |
+
+60봉 불채택: 6/25 bar3에서 z 악화 회귀(14→26). 30봉은 전 케이스 bar5 이후 임계(12) 이하.
+
+### 호환성
+
+- CORE 피처 영향 없음 (`cvd_direction` zero-std는 30봉·60봉 동일)
+- `opt_pcr_*` 7개 추가 zero-std → 비CORE, `scale_=1.0` 안전 처리
+- 장중 `D_FORCE/B_OPEN/ExchangeCB/B_INTRADAY` refit: `SCALER_WARMUP_LOOKBACK_BARS=500` 유지
+- D_FORCE(약 90분 후) 재적합으로 pre-market scaler 자동 복원
 
 ---
 
