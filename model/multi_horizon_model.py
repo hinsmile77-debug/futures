@@ -164,8 +164,8 @@ class MultiHorizonModel:
         "vwap_position", "vwap_ratio", "vwap_dev",
         "ofi_norm", "ofi_pressure",
         # macro_vix 제거 (2026-06-25): CORE 강등 — 일봉 상수, SHAP 기여 ≈ 0
-        # 중기 CORE (10m~15m) 추가
-        "macro_risk_off",   # VIX>28|SP500 -1% 이진 신호 — z폭발 → AutoMask 금지 (192차)
+        # macro_risk_off 제거 (2026-06-25): 모든 호라이즌 feature_names_hz 미포함
+        #   GBM gain=0, SHAP=0 — 유령 CORE, 면제 보호 대상 없음
         # 장기 CORE (30m) 추가
         "above_vwap", "opt_chain_pcr", "opt_gex_bn",
     })
@@ -183,7 +183,7 @@ class MultiHorizonModel:
         "macro_nasdaq_chg":   0.15,   # [-1,1]
         "macro_krw_chg":      0.10,   # [-1,1] — USD/KRW 변동률
         "macro_us10y_chg":    0.10,   # [-1,1] — 미국 10년물 변동률
-        "macro_risk_off":     0.50,   # 이진(0/1) — 희귀 발동 시 σ≈0.06 → z≈16 폭발 방지
+        # macro_risk_off 제거 (2026-06-25): 모델 미포함 — global scaler 보호 불필요
         "macro_risk_on":      0.50,   # 이진(0/1) — 동일 구조
         "macro_event_flag":   0.50,   # 이진(0/1) — 동일 구조
     }

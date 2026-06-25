@@ -419,13 +419,14 @@ CORE_MASK_EXEMPT_BY_GROUP: dict = {
     "mid": frozenset({
         "vwap_position", "vwap_ratio", "vwap_dev",
         # macro_vix 제거 (2026-06-25): CORE 강등 — 일봉 상수, SHAP 기여 ≈ 0
-        "macro_risk_off",   # VIX>28|SP500 -1% 이진 신호 — z폭발 시 AutoMask 금지
+        # macro_risk_off 제거 (2026-06-25): 어떤 호라이즌 모델에도 미포함(feature_names_hz 기준)
+        #   — GBM gain=0, SHAP=0, 유령 CORE. AutoMask 면제 보호 대상 없음.
     }),
     "long": frozenset({
         "above_vwap",
         "opt_chain_pcr", "opt_gex_bn",
         # macro_vix 제거 (2026-06-25): CORE 강등 — 일봉 상수, SHAP 기여 ≈ 0
-        "macro_risk_off",   # 장기 레짐 핵심 신호 — 동일 이유
+        # macro_risk_off 제거 (2026-06-25): 동일 이유 — 모델 미포함 유령 CORE
     }),
 }
 
