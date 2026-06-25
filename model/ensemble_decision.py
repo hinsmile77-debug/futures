@@ -845,16 +845,16 @@ class EnsembleDecision:
 
         auto_entry = ENTRY_GRADE.get(grade, {}).get("auto", False) and regime_ok
 
-        # Q3: 30m 역방향 필터 — 앙상블 방향과 30m 방향이 반대면 진입 차단
-        # grade=X로 격하하여 체크리스트·진입 관리자까지 차단 (auto_entry=False만으로 불충분)
+        # Q3: 30m 역방향 필터 — 비활성화 (2026-06-25)
+        # 사유: 30m 모델이 need_add 피처(opt_gex_bn·opt_chain_pcr 등) 미탑재 상태로
+        #       CV acc=0.2796(랜덤 이하)이며, 필터가 정상 진입을 차단하는 역효과 발생.
+        #       need_add 피처 탑재 + acc 회복 후 재활성화 예정.
         if _proba_30m is not None and direction != DIRECTION_FLAT:
             _dir_30m = _proba_30m.get("direction", DIRECTION_FLAT)
             if _dir_30m != DIRECTION_FLAT and _dir_30m != direction:
-                _30m_filter_blocked = True
-                grade = "X"
-                auto_entry = False
-                logger.info(
-                    "[Ensemble] 30m 역방향 필터 작동: 30m=%+d ens=%+d → grade=X",
+                _30m_filter_blocked = True  # 플래그만 기록 (grade 격하 없음)
+                logger.debug(
+                    "[Ensemble] 30m 역방향 감지(필터 비활성): 30m=%+d ens=%+d",
                     _dir_30m, direction,
                 )
 

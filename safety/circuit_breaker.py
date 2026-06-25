@@ -312,46 +312,27 @@ class CircuitBreaker:
             else:
                 self._cb3_reset_cooldown_samples = 0  # 쿨다운 해제
 
+        # CB③ acc30m HALT 트리거 — 비활성화 (2026-06-25)
+        # 사유: 30m 모델이 need_add 피처(opt_gex_bn·opt_chain_pcr 등) 미탑재 상태.
+        #       구조적 acc 저하(CV 0.2796)로 CB③가 오발동 → 당일 정지 반복.
+        #       피처 탑재 + acc 회복 후 재활성화 예정.
+        #       _accuracy_buf 누적·P4 stage 추적·DriftRetrain은 그대로 유지.
         if len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES:
             acc = sum(self._accuracy_buf) / len(self._accuracy_buf)
             _n_samples = len(self._accuracy_buf)
-
-            # 과신 또는 중간신뢰도 streak 중 하나라도 임계 초과면 strict 모드
             effective_min = (
                 CB_ACCURACY_MIN_30M_STRICT
                 if (self._high_conf_wrong_streak >= CB_HIGH_CONF_WRONG_LIMIT
                     or self._mid_conf_wrong_streak >= CB_MID_CONF_WRONG_LIMIT)
                 else CB_ACCURACY_MIN_30M
             )
-
             if acc < effective_min:
-                self._cb3_ok_streak = 0
-                self._cb3_warn_count += 1
-                if self._cb3_warn_count >= 2:
-                    streak_note = ""
-                    if self._high_conf_wrong_streak >= CB_HIGH_CONF_WRONG_LIMIT:
-                        streak_note += f" | 고신뢰 오류 {self._high_conf_wrong_streak}연속"
-                    if self._mid_conf_wrong_streak >= CB_MID_CONF_WRONG_LIMIT:
-                        streak_note += f" | 중간신뢰도 오류 {self._mid_conf_wrong_streak}연속"
-                    self._trigger_halt(
-                        f"30분 정확도 {acc:.1%} < {effective_min:.0%} "
-                        f"(2회 연속 미달{streak_note}) n={_n_samples}",
-                        cause="cb3",
-                    )
-                else:
-                    msg = (
-                        f"[CB③ 경고 {self._cb3_warn_count}/2] "
-                        f"30분 정확도 {acc:.1%} < {effective_min:.0%} "
-                        f"n={_n_samples} — 다음 확인 시 당일 정지"
-                    )
-                    logger.warning(msg)
-                    log_manager.system(msg, "WARNING")
-                    notify_circuit_breaker(
-                        f"30분 정확도 {acc:.1%} 경고 ({self._cb3_warn_count}/2)",
-                        "다음 미달 시 당일 정지",
-                    )
+                # HALT/경고 발동 없음 — 로그만 기록
+                logger.debug(
+                    "[CB③ 비활성] acc30m=%.1f%% < %.0f%% n=%d (30m 피처 미탑재 기간 중 발동 억제)",
+                    acc * 100, effective_min * 100, _n_samples,
+                )
             else:
-                # 리셋 조건: 임계값 + 여유폭 이상으로 연속 N분 정상이어야 카운터 리셋
                 reset_margin = CB_CB3_WARN_RESET_MARGIN
                 reset_streak = CB_CB3_WARN_RESET_OK_STREAK
                 if acc >= effective_min + reset_margin:

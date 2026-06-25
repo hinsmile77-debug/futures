@@ -378,7 +378,11 @@ HORIZON_CORE_GROUP: dict = {
 CORE_FEATURES_BY_GROUP: dict = {
     "short": {
         # 단기: 마이크로구조 주도 — 모두 1~5분 내 선행 신호
-        "cvd":  "cvd_direction",    # CVD 방향 (이산 -1/0/+1)
+        # cvd_direction → cvd_delta_norm 교체 (2026-06-25):
+        #   cvd_direction은 Cybos buy_vol 시스템 편향(buy>sell 98.6%)으로
+        #   10일 이상 +0.5 고착 — 상수 피처로 전락. cvd_delta_norm은
+        #   price-action 기반(Williams A/D)이라 편향 없고 양방향 정상 분포.
+        "cvd":  "cvd_delta_norm",   # CVD 바 단위 방향 (연속 -1~+1, price-action 기반)
         "vwap": "vwap_position",    # VWAP 대비 위치 (연속, 기관 기준선)
         "ofi":  "ofi_pressure",     # OFI 압력 (이산 +1/-1/0)
         "vwap_forced_x": True,      # VWAP ✗ → 강제 X등급
@@ -405,7 +409,9 @@ CORE_FEATURES_BY_GROUP: dict = {
 # 그룹별 AutoMask·ScalerProtect에서 면제할 CORE 파생 피처 집합
 CORE_MASK_EXEMPT_BY_GROUP: dict = {
     "short": frozenset({
-        "cvd_direction", "cvd", "cvd_divergence",
+        # cvd_direction·cvd 제거 (2026-06-25): Cybos 편향으로 상수화 → 마스킹 보호 불필요
+        # cvd_delta_norm 추가: price-action 기반, 극단 z는 실제 방향 신호
+        "cvd_delta_norm", "cvd_divergence",
         "vwap_position", "vwap_ratio", "vwap_dev",
         "ofi_norm", "ofi_pressure",
     }),

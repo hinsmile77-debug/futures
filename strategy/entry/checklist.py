@@ -25,7 +25,7 @@ class EntryChecklist:
         direction: int,
         confidence: float,
         vwap_position: float,
-        cvd_direction: int,
+        cvd_direction: float,
         ofi_pressure: int,
         foreign_call_net: float,
         foreign_put_net: float,
@@ -47,7 +47,7 @@ class EntryChecklist:
             direction:       앙상블 방향 (+1/-1)
             confidence:      앙상블 신뢰도
             vwap_position:   VWAP 위치 (양수=위, 음수=아래)
-            cvd_direction:   CVD 방향 (+1/-1)
+            cvd_direction:   cvd_delta_norm (-1~+1, price-action 기반 바 단위 방향)
             ofi_pressure:    OFI 압력 (+1/-1/0)
             foreign_call_net:   외인 콜 순매수
             foreign_put_net:    외인 풋 순매수
@@ -145,7 +145,10 @@ class EntryChecklist:
                 checks["3_vwap"] = vwap_position < 0
 
         # 4. CVD / 중기·장기 대체 신호 체크
-        # 단기(1m~5m): CVD 방향 — 마이크로구조 주도 신호
+        # 단기(1m~5m): cvd_delta_norm — price-action 기반 바 단위 방향 (>0=매수압, <0=매도압)
+        #   ※ cvd_direction(구 이산 -1/0/+1)에서 교체 (2026-06-25):
+        #      Cybos buy_vol 시스템 편향으로 cvd_direction이 +0.5 고착(98.6%)되어
+        #      사실상 상수화. cvd_delta_norm은 동일 정보를 price-action으로 올바르게 표현.
         # 중기(10m~15m): macro_vix 방향 — VIX<0.5=저공포=LONG 유리, >0.5=고공포=SHORT 유리
         # 장기(30m): opt_chain_pcr 방향 — PCR<1.0=콜우세=LONG, >1.0=풋우세=SHORT (미가용 시 면제)
         if "4_cvd" in disabled:
@@ -231,7 +234,7 @@ class EntryChecklist:
             if not checks["4_cvd"]:
                 if _core_group == "short":
                     _need_cvd = ">0" if is_long else "<0"
-                    _diag_parts.append(f"CVD dir={cvd_direction:+d} need {_need_cvd}")
+                    _diag_parts.append(f"cvd_delta_norm={cvd_direction:+.3f} need {_need_cvd}")
                 elif _core_group == "mid":
                     _diag_parts.append(f"macro_vix={macro_vix:.2f} need {'<0.5' if is_long else '>0.5'}")
                 else:

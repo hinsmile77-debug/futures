@@ -36,7 +36,7 @@
       {
         "name": "queue_directional_depletion",
         "rho": 0.033,
-        "pkl": "in_pkl",
+        "pkl": "need_add",
         "note": "매수/매도 큐 방향별 고갈 속도 ★"
       },
       {
@@ -713,7 +713,7 @@
       {
         "name": "threshold_feasibility",
         "rho": 0.086,
-        "pkl": "in_pkl",
+        "pkl": "need_add",
         "note": "변동성 실현 가능성 ★ 15m 전문"
       },
       {
@@ -920,7 +920,7 @@
       {
         "name": "threshold_feasibility",
         "rho": 0.098,
-        "pkl": "in_pkl",
+        "pkl": "need_add",
         "note": "변동성 실현 가능성 ★★"
       },
       {

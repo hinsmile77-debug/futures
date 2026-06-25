@@ -141,7 +141,7 @@ class MultiHorizonModel:
 
     # CORE 피처 AutoMask 면제 목록 — 호라이즌 그룹별 분리
     # 극단 z-score는 "데이터 오류"가 아니라 "강한 방향 신호"이므로 마스킹 금지
-    # (예: 하루종일 강세 → cvd_direction=+1 연속 → z=+5 → 정상 추세 신호)
+    # (예: 강한 하락장 → cvd_delta_norm=-0.9 연속 → z=-5 → 정상 방향 신호)
     # settings.CORE_MASK_EXEMPT_BY_GROUP 을 런타임에 참조하여 호라이즌별 적용
     # backward compat: 임포트 실패 시 단기 CORE(구 전체 CORE) 고정 사용
     try:
@@ -157,8 +157,10 @@ class MultiHorizonModel:
     # 전체 호라이즌 CORE 면제 union — predict_proba AutoMask·chronic 체크에 사용
     # (어느 호라이즌에서라도 CORE인 피처는 전체에서 마스킹 금지)
     _CORE_MASK_EXEMPT: frozenset = frozenset({
-        # 단기 CORE (1m~5m)
-        "cvd_direction", "cvd", "cvd_divergence",
+        # 단기 CORE (1m~5m) — cvd_direction/cvd 제거 (2026-06-25 Cybos 편향 확인)
+        # cvd_direction: Cybos buy_vol 시스템 편향으로 +0.5 고착(98.6%), 보호 불필요
+        # cvd_delta_norm: price-action 기반(Williams A/D), 극단 z = 실제 방향 신호
+        "cvd_delta_norm", "cvd_divergence",
         "vwap_position", "vwap_ratio", "vwap_dev",
         "ofi_norm", "ofi_pressure",
         # 중기 CORE (10m~15m) 추가

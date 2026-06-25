@@ -4188,11 +4188,11 @@ class TradingSystem:
         # [DBG-F4] ATR floor 적용 전후 + 핵심 피처 원시값 확인
         debug_log.debug(
             "[DBG-F4] ts=%s close=%.2f | ATR raw=%.4fpt → floor=%.4fpt"
-            " | cvd_dir=%+d ofi=%+d vwap_pos=%.4f hurst=%.3f vol=%d"
+            " | cvd_delta=%.3f ofi=%+d vwap_pos=%.4f hurst=%.3f vol=%d"
             " | bid=%.2f ask=%.2f buyvol=%d sllvol=%d",
             ts, close,
             features.get("atr", 0.0), atr,
-            _dir_sign(features.get("cvd_direction", 0)),
+            float(features.get("cvd_delta_norm", 0.0) or 0.0),
             int(features.get("ofi_pressure", 0)),
             features.get("vwap_position", 0.0),
             features.get("hurst", 0.5),
@@ -4966,7 +4966,7 @@ class TradingSystem:
                         direction          = direction,
                         confidence         = confidence,
                         vwap_position      = features.get("vwap_position", 0),
-                        cvd_direction      = _dir_sign(features.get("cvd_direction", 0)),
+                        cvd_direction      = float(features.get("cvd_delta_norm", 0.0) or 0.0),
                         ofi_pressure       = int(features.get("ofi_pressure", 0)),
                         foreign_call_net   = features.get("foreign_call_net", 0),
                         foreign_put_net    = features.get("foreign_put_net", 0),
@@ -5288,7 +5288,7 @@ class TradingSystem:
                         direction         = direction,
                         confidence        = confidence,
                         vwap_position     = features.get("vwap_position", 0),
-                        cvd_direction     = _dir_sign(features.get("cvd_direction", 0)),
+                        cvd_direction     = float(features.get("cvd_delta_norm", 0.0) or 0.0),
                         ofi_pressure      = int(features.get("ofi_pressure", 0)),
                         foreign_call_net  = features.get("foreign_call_net", 0),
                         foreign_put_net   = features.get("foreign_put_net", 0),
