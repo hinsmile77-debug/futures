@@ -8,6 +8,40 @@
 
 ---
 
+## 2026-06-26 (250차 검증) [P0]
+
+### 30m·CB③ 비활성화 확인
+
+- [ ] **30m 역방향 필터 미발동** — `[Ensemble] 30m 역방향 감지(필터 비활성)` DEBUG 로그 출현 시 grade=X 강제 없음 확인
+- [ ] **CB③ HALT 미발동** — `[CB③ 비활성] acc30m=...%` DEBUG 로그 확인, CRITICAL/Slack 미발송 확인
+- [ ] **P4 stage 추적 유지** — `status_dict()["acc30m_stage"]` 변화 모니터링 (NORMAL/WATCH/RESTRICTED)
+
+### CORE 피처 교체 확인
+
+- [ ] **체크리스트 4번 실질 평가** — 하락봉 구간에서 `[Checklist] CORE 4·5 ✗` 로그 출현 확인 (기존에는 cvd_direction=+0.5 고착으로 항상 통과)
+- [ ] **cvd_delta_norm z-score 정상** — ScalerRefresh에서 `cvd_delta_norm` identity 강제 미발동 확인 (std ≥ 0.05 기대)
+- [ ] **cvd_direction AutoMask 발동 허용** — D_FORCE 시 cvd_direction 마스킹 허용 (CORE 면제 해제됨)
+
+### feature_names_hz.pkl 정합성
+
+- [ ] **EOD 재학습 후 pkl 정합** — `feature_names_1m.pkl`=12, `3m`=12, `5m`=15, `10m`=11, `15m`=15, `30m`=11 확인
+- [ ] **[FeatureReg] 로그 현행화 확인** — 1m에 `queue_directional_depletion` need_add 로그 출현 (기존 미출현)
+
+### ERR-FATAL 재발 없음
+
+- [ ] **방어 fallback 작동** — 불일치 발생 시 `[Model] %s 피처 차원 불일치` ERROR 로그 후 default_result 반환 (프로세스 종료 없음)
+
+---
+
+## 2026-07-02 (30m·CB③ 재활성화 검토) [예정]
+
+- [ ] `opt_gex_bn` / `opt_chain_pcr` 각 4,000행 달성 SQL 확인
+- [ ] `shap_feature_registry.json` + `horizon_feature_sets.json` need_add → in_pkl 업데이트
+- [ ] EOD 재학습 (full_cv=True) 실행 → 30m CV acc 확인
+- [ ] acc ≥ 0.33: `ensemble_decision.py` Q3 블록·`circuit_breaker.py` CB③ 주석 해제
+
+---
+
 ## 2026-06-25 (249차 — poll_option_chain QThread 분리 검증) [P1]
 
 - [ ] **워커 기동 로그 확인** — 실운영 시 `[LiveDBG] OptionChainWorker 기동 spot=XXX.X` 로그 출현 확인

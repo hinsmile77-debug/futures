@@ -1,7 +1,46 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-25 (249차) — poll_option_chain QThread 분리
+> 마지막 업데이트: 2026-06-25 (250차) — 30m 비활성화·CB③ 억제·CORE 교체·JSON 정정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-25 (250차 — 30m/CB③ 임시 비활성화·CORE cvd_delta_norm 교체)
+
+### 현재 운영 상태
+
+| 항목 | 상태 |
+|---|---|
+| **30m 역방향 필터** | **비활성** — acc=0.2796(랜덤 이하), need_add 7개 미탑재 |
+| **CB③ acc30m HALT** | **억제 중** — 버퍼/P4 추적 유지, HALT/경고 미발동 |
+| **CORE CVD 피처** | `cvd_direction` → **`cvd_delta_norm`** 교체 완료 |
+| **feature_names_hz.pkl** | EOD retrain 후 전 호라이즌 정합 (6/6 일치) |
+| **30m CV acc** | 0.2796 (EOD full_cv 기준) |
+| **ERR-FATAL** | 방어 코드 추가 — 재발 시 fallback 반환 (HALT 아님) |
+
+### 임시 비활성화 재활성화 조건 (≈2026-07-02)
+
+1. `opt_gex_bn` / `opt_chain_pcr` 각 4,000행 달성 확인
+2. `shap_feature_registry.json` + `horizon_feature_sets.json` need_add → in_pkl 업데이트
+3. EOD 재학습 (full_cv=True) → 30m CV acc ≥ 0.33 확인
+4. `ensemble_decision.py` Q3 블록 + `circuit_breaker.py` CB③ 재활성화
+
+### cvd_direction 중기 개선 예정 (≈2026-07-14)
+
+`CVDCalculator` 누적 방식 → delta-of-cumulative 전환. 상세: `docs/260715_CVD_DIRECTION_ANALYSIS.md`
+
+### horizon_feature_sets.json 현행 need_add 목록
+
+| 호라이즌 | need_add 피처 |
+|---|---|
+| 1m | `queue_directional_depletion`, `micro_regime_code` |
+| 3m | `cvd_monotone_ratio` |
+| 5m | `opt_chain_pcr`, `cvd_monotone_ratio` |
+| 10m | `opt_atm_put_oi`, `opt_gex_sign`, `cvd_monotone_ratio`, `micro_regime_code` |
+| 15m | `opt_gex_bn`, `opt_chain_pcr`, `opt_atm_call_oi`, `opt_atm_put_oi`, `threshold_feasibility`, `opt_pcr_extreme_bearish` |
+| 30m | `opt_gex_bn`, `opt_chain_pcr`, `opt_atm_call_oi`, `opt_atm_pcr`, `threshold_feasibility`, `opt_pcr_extreme_bearish`, `micro_regime_code` |
+
+> `threshold_feasibility`·`queue_directional_depletion`: 06-23 in_pkl 전환 시도 → 06-25 실 pkl 미포함 확인 후 need_add 재정정
 
 ---
 

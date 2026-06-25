@@ -4,6 +4,51 @@
 
 ---
 
+## 2026-06-25 (250차 — 30m 비활성화·CB③ 억제·CORE 피처 교체·feature_names_hz JSON 정정)
+
+**트리거**: 장중 ERR-FATAL `X has 12 features, but HistGradientBoostingClassifier expecting 97` (09:00:59) + EOD 로그 `cvd_direction raw_std≈0(0.0490)` 경보.
+
+### 발견 1 — feature_names_hz.pkl · 모델 불일치 (ERR-FATAL 원인)
+
+Phase C 슬라이싱 도입 이후 retrain에서 모델 정확도 미달 시 `_save_feature_names(h_names, hz)` 가 `replaced=False` 상태에서도 실행 → `feature_names_3m.pkl`=12개 vs `gbm_3m.pkl`=97피처 → `_hz_feat_indices` 슬라이싱 → `xs=12`-dim → ERR-FATAL. (246차에서 근본 수정, 250차에서 방어 코드 추가)
+
+**방어 코드 추가** (`multi_horizon_model.py`): `clf.predict_proba(xs)` 직전 `xs.shape[1] != clf.n_features_in_` 체크 → 불일치 시 ERR-FATAL 대신 `default_result` fallback + ERROR 로그.
+
+**불일치 파일 삭제 처리**: EOD 재학습(force=True) 이전 상태에서 `feature_names_{3m-30m}.pkl` 삭제 → EOD가 재생성하여 현재 정합 (6/6 일치).
+
+### 발견 2 — 30m 피처 미탑재 구조적 저성능
+
+EOD CV acc=0.2796 (랜덤 0.333 이하). need_add 7개(opt_gex_bn·opt_chain_pcr 등) 미탑재.
+- **30m 역방향 필터 비활성화** (`ensemble_decision.py`): grade=X 강제 제거, 플래그만 기록
+- **CB③ acc30m HALT 억제** (`circuit_breaker.py`): HALT/경고 미발동, 버퍼·P4 stage 추적 유지
+- 재활성화 조건: opt 피처 4,000행 달성(≈07-02) + 30m CV acc ≥ 0.33
+
+### 발견 3 — cvd_direction 12거래일 일방향 고착
+
+12거래일 실측: cvd_direction 음수(-0.5) 비율 **0.0%** (12일 내내). cvd_norm=1.000 고착.
+- **Layer 1**: Cybos buy_vol 시스템 편향 (buy>sell 98.6%, 하락봉에서도 97.0%)
+- **Layer 2**: cumulative_cvd 단조증가 → cvd_slope 항상 양수
+- **Layer 3**: cvd_abs_max = window[-1] (항상 최대값) → cvd_norm = 1.0
+
+**대체 피처 `cvd_delta_norm`**: price-action(Williams A/D) 기반, Cybos 미사용, std 0.59~0.66, 음수 43~55% (정상 양방향). 이미 pkl 97개 포함 → 재학습 불필요.
+
+**CORE 교체** (`config/settings.py`, `multi_horizon_model.py`, `checklist.py`, `main.py`):
+- CORE_FEATURES_BY_GROUP["short"]["cvd"]: `cvd_direction` → `cvd_delta_norm`
+- CORE_MASK_EXEMPT: `cvd_direction`·`cvd` 제거, `cvd_delta_norm` 추가
+- checklist 4번·main.py 2곳·DBG 로그 교체
+
+### 발견 4 — feature_names_hz JSON 오표기
+
+`horizon_feature_sets.json`의 `in_pkl` 표기 vs 실제 pkl 전체 교차검증:
+- `threshold_feasibility` (15m·30m): `in_pkl` → **`need_add`** 정정
+- `queue_directional_depletion` (1m): `in_pkl` → **`need_add`** 정정
+
+### 커밋
+
+`1bdc971` (250차) — 9개 파일, 660 additions / 52 deletions
+
+---
+
 ## 2026-06-25 (249차 — poll_option_chain BlockRequest QThread 분리)
 
 **문제**: `_poll_option_chain()` QTimer 콜백에서 `Dscbo1.OptionMst.BlockRequest()` 루프가 메인 스레드를 ~3초 점유 → 틱·파이프라인·UI 정지.
