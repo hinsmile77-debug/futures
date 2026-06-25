@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-06-25 (245차 — SGD 스케일러 피처 수 불일치 ERR-FATAL 버그 수정)
+
+**Work**: 장중 운영 중 `X has 11/12/15 features, but StandardScaler is expecting 97 features` ERR-FATAL 경보 딥다이브 → 원인 특정 → 방어 코드 추가.
+
+**에러 발원지**: `online_learner.py:136` `scaler.partial_fit(x2d)` — SGD 온라인 학습 단계.
+
+**버그 원인**:
+- Phase C (호라이즌별 피처 슬라이싱) 구현 후, SGD 스케일러가 초기 타이밍에 97개 전체 피처로 `partial_fit`되어 굳음
+- 이후 `_hz_feat_indices` 복원 → 11~15개 슬라이싱 피처 투입 → `n_features_in_=97` 충돌
+- `learn()`에 피처 수 방어 코드 없어 ValueError → ERR-FATAL 매 분봉 반복
+
+**진단 증거**: 에러 숫자(11/12/15)가 `feature_names_hz_*.pkl` 크기와 1:1 일치.
+
+**수정**: `learning/online_learner.py` `learn()` — `scaler.partial_fit()` 전 `n_features_in_` 불일치 감지 시 `_do_sgd_reset()` 자동 실행.
+
+**커밋**: (245차)
+
+---
+
 ## 2026-06-25 (244차 — Q3 N분봉 완성 주기 배포 절충안 구현)
 
 **Work**: `docs/q3_proba_deploy_guide.md` 가이드 기반 Q3 절충안 전체 구현. 학습-추론 분포 불일치 해소 + 스캘퍼 기회 손실 최소화.

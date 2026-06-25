@@ -8,6 +8,14 @@
 
 ---
 
+## 2026-06-25 (245차 — SGD 불일치 수정 후 검증) [P0]
+
+- [ ] **경고 로그 1회 출현 확인** — 재시작 후 `[OnlineLearner] {hz} 피처 수 불일치 → 리셋` 경고 로그 1회 출현 후 ERR-FATAL 없이 정상 진행되는지 확인
+- [ ] **ERR-FATAL 재발 없음** — 오늘 운영 중 `X has N features, but StandardScaler is expecting 97` 에러 재발 여부 확인
+- [ ] **SGD 학습 재개 확인** — `[SGD] N건 학습` 로그 정상 출현 여부 (불일치 리셋 후 약 1~2분 내 정상화)
+
+---
+
 ## P2 Regime-Conditional GBM — 사전 준비 추적 [장기, ≈2027-01]
 
 > 2026-06-24 `raw_features_horizon` 테이블에 `regime` 컬럼 추가 완료. 이후 데이터 자동 누적.

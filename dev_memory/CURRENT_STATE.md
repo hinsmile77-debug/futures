@@ -1,7 +1,52 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-24 (242차) — V8 Phase 2 재학습 재실행 + TRAINING_WINDOW_BARS 구현
+> 마지막 업데이트: 2026-06-25 (245차) — SGD 스케일러 피처 수 불일치 ERR-FATAL 버그 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-25 (245차 — SGD 스케일러 피처 수 불일치 ERR-FATAL 버그 수정)
+
+### 증상
+
+장중 운영 중 아래 에러가 매 분봉마다 반복 발생 (09:50~10:15+), 자동진입 OFF + 15분 쿨다운 누적:
+
+```
+[ERR-FATAL] minute_pipeline: X has 11 features, but StandardScaler is expecting 97 features
+```
+
+에러 숫자: 11 (10m/30m), 12 (1m/3m), 15 (5m/15m) — `feature_names_hz_*.pkl` 크기와 정확히 일치.
+
+### 근본 원인 (로그 traceback 확인)
+
+```
+main.py:6272  run_minute_pipeline  (SGD 지연 학습 구간)
+  → online_learner.py:136  learn()
+      → scaler.partial_fit(x2d)   ← ValueError 발생
+```
+
+**에러 체인**:
+1. `_hz_feat_indices`가 없거나 특정 호라이즌이 없는 타이밍에 SGD 학습 실행
+2. `_h_idx_learn = None` → `_dx_learn = _dx_full` (97개 전체) → `scaler.partial_fit(97개)` → 스케일러 97개로 굳음
+3. 이후 `_hz_feat_indices` 복원 → Phase C 슬라이싱 피처 11~15개 투입
+4. `scaler.partial_fit(11개)` but `scaler.n_features_in_=97` → **ValueError 반복**
+
+`online_learner.learn()`에는 피처 수 방어 코드가 없었음.
+
+### 수정 (`learning/online_learner.py`)
+
+`learn()` 내 `scaler.partial_fit()` 호출 전, `n_features_in_` 불일치 시 `_do_sgd_reset()` 자동 실행:
+
+```python
+if hasattr(scaler, "n_features_in_") and scaler.n_features_in_ != x2d.shape[1]:
+    logger.warning("[OnlineLearner] %s 피처 수 불일치(scaler=%d, x=%d) → 리셋", ...)
+    self._do_sgd_reset(horizon)
+    scaler = self.scalers[horizon]
+```
+
+재시작 후 첫 불일치 감지 시 경고 로그 1회 출력 후 이후 ERR-FATAL 없이 정상 실행.
+
+**커밋**: (245차)
 
 ---
 
