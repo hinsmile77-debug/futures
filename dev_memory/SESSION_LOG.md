@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-06-25 (252차 — macro_risk_off CORE 해제)
+
+**트리거**: ScalerFloor 로그 `macro_krw_chg 0.0776→0.10`, `macro_risk_off 0.4221→0.50` 딥다이브 + 피처 이득 분석 요청.
+
+### 딥다이브 결과
+
+**ScalerFloor 흐름**:
+- `refit_scalers_only()` → `StandardScaler().fit(X_97feat)` → `_apply_macro_scale_floor()` 순서
+- `macro_krw_chg` σ_raw=0.0776: KRW 변동성 비정상 저조 (≈0.23%/일). floor=0.10 → 실전 z-score 폭발 방지 ✓
+- `macro_risk_off` σ_raw=0.4221: Bernoulli p=0.232 (23.2% 봉에서 발동). floor=0.50 → 발동했지만 예측 경로 무관
+
+**피처 이득 분석**:
+- `macro_krw_chg`: 10m gain 3.4%(7위/11), 30m gain 6.3%(6위/11) → **유지 결정**
+- `macro_risk_off`: 전 호라이즌 feature_names_hz.pkl 미포함. SHAP=0, gain=0 → **CORE 해제 결정**
+
+**경로 확인 (macro_risk_off)**:
+- `checklist.py` → 없음 ✓
+- `online_learner.py` → 없음 ✓
+- `CORE_MASK_EXEMPT_BY_GROUP` settings.py → mid/long 양쪽 등록 확인 → 제거 대상
+- `horizon_feature_sets.json` → `_feature_status_summary.macro_relearn_required`에만 있음 (피처셋 정의 아님)
+
+### 수정 (252차)
+
+- `CORE_MASK_EXEMPT_BY_GROUP["mid"]["long"]`에서 제거
+- `_CORE_MASK_EXEMPT` frozenset에서 제거
+- `_MACRO_SCALE_FLOOR`에서 제거
+- `CLAUDE.md` CORE 해제 이력 추가
+
+**커밋**: `e37f815`
+
+---
+
 ## 2026-06-25 (251차 — macro_vix CORE 강등)
 
 **트리거**: EOD 로그 `[ScalerRefresh] CORE 'macro_vix' raw_std=0.0309 → identity(0,1) 강제` 반복 경보 딥다이브 요청.

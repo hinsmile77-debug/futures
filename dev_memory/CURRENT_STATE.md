@@ -1,7 +1,39 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-25 (251차) — macro_vix CORE 강등
+> 마지막 업데이트: 2026-06-25 (252차) — macro_risk_off CORE 해제
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-25 (252차 — macro_risk_off CORE 해제)
+
+### 변경 내용
+
+**`macro_risk_off`를 CORE 면제 목록에서 제거 (유령 CORE 정리).**
+
+근거:
+- **모델 미포함**: 전 호라이즌 `feature_names_hz.pkl` 확인 → 어디에도 없음
+- **GBM gain = 0**: HistGBM split gain 순위 해당 없음
+- **SHAP = 0**: shap_tracker.db mean_abs ≈ 0.000000 (108개 중 95위)
+- **체크리스트·SGD 경로**: `checklist.py`, `online_learner.py` 모두 미참조 확인
+- **ScalerFloor 발동은 정상**: global scaler(97개) σ=0.4221 → 0.50 보호는 작동했으나 예측 경로에 무관
+
+### 수정 파일
+
+| 파일 | 변경 |
+|---|---|
+| `config/settings.py` | `CORE_MASK_EXEMPT_BY_GROUP["mid"]["long"]`에서 `macro_risk_off` 제거 |
+| `model/multi_horizon_model.py` | `_CORE_MASK_EXEMPT` frozenset에서 제거, `_MACRO_SCALE_FLOOR`에서 제거 |
+| `CLAUDE.md` | CORE 테이블 주석에 2026-06-25 해제 이력 추가 |
+
+### 유지한 것
+
+- `MacroFeatureTransformer`의 `macro_risk_off` 계산 — 추후 모델 재투입 여지 보존
+- `active_features`의 `macro_risk_off` 항목 — SHAP 심사 대상으로 유지
+
+### 함께 분석한 것 (변경 없음)
+
+- **`macro_krw_chg`**: 10m gain 3.4%(7위/11), 30m gain 6.3%(6위/11). ScalerFloor σ=0.0776→0.10 정상 작동. **유지**.
 
 ---
 
