@@ -1,7 +1,37 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-25 (248차) — EXIT stuck 무한루프 수정 + ManualExit override 확장
+> 마지막 업데이트: 2026-06-25 (249차) — poll_option_chain QThread 분리
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-25 (249차 — poll_option_chain BlockRequest QThread 분리)
+
+### 문제
+
+`_poll_option_chain()` (QTimer 300s 콜백)이 메인 스레드에서 `Dscbo1.OptionMst.BlockRequest()`를 ATM ±30pt 종목 수(~24개)만큼 루프 실행 → **~3초 메인 스레드 점유**. 틱 수신·파이프라인·UI가 3초간 정지.
+
+### 수정 (249차, 커밋 `745e444`)
+
+| 파일 | 변경 내용 |
+|---|---|
+| `collection/options/option_chain_worker.py` (신규) | `OptionChainWorker(QThread)` — CoInitialize 후 Dscbo1.OptionMst BlockRequest 루프, result_ready 시그널로 feats/chain_raw 반환 |
+| `collection/options/option_chain_snapshot.py` | COM 코드 전부 제거. `is_due()` / `get_chain_raw()` / `mark_refresh_started()` / `on_worker_done()` 추가. 상태 관리 전용 |
+| `main.py` | `_poll_option_chain()`: 조건 체크 후 워커 기동 (~0ms). `_on_option_chain_done()`: result_ready 수신 |
+
+### 핵심 설계 결정
+
+**Cybos COM 메시지 라우팅**: BlockRequest 응답이 메인 스레드 Windows 메시지 큐를 경유 (api_connector.py 주석). QThread에서 호출 시 메인 Qt 이벤트 루프가 정상 펌핑 → 데드락 없음.
+
+**COM STA 규칙**: `Dscbo1.OptionMst`를 워커 스레드 내에서 새로 `Dispatch()` — 메인 스레드 객체와 공유 안 함.
+
+**이중 기동 방어**: `isRunning()` 체크 + `mark_refresh_started()` (5분 인터벌 락).
+
+**실패 격리**: 워커 실패 시 빈 dict/빈 list 반환 → 이전 피처 유지, `_chain_raw` 무효화로 다음 기동 시 CpOptionCode 재수집.
+
+### 검증 결과
+
+순수 Python 로직 테스트 12개 + end-to-end 시나리오 6개 전부 통과 (COM 없는 환경).
 
 ---
 

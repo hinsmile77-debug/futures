@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-06-25 (249차 — poll_option_chain QThread 분리 검증) [P1]
+
+- [ ] **워커 기동 로그 확인** — 실운영 시 `[LiveDBG] OptionChainWorker 기동 spot=XXX.X` 로그 출현 확인
+- [ ] **완료 로그 확인** — `[OptionChain][Worker] 완료 XXXXms | target=N valid=M PCR=...` 로그 출현 및 elapsed ~3000ms 내외 확인
+- [ ] **메인 스레드 블로킹 없음 확인** — 워커 기동 후 5분간 틱 수신·파이프라인 로그가 연속 출현 (3초 공백 없음)
+- [ ] **실패 격리 확인** — stale chain 발생 시 `[OptionChain][Worker] ATM 대상 없음 ... stale, 재로드` 로그 후 정상 재수집되는지 확인
+
+---
+
 ## 2026-06-25 (248차 — EXIT stuck 수정 후 검증) [P0]
 
 - [ ] **3-confirm 자동 해소 로그 확인** — 향후 stuck 발생 시 `[PendingOrder] EXIT stuck 3회 브로커 확인 → 원주문(...) 거래소 취소 간주, pending 소멸 후 TP 재점검` CRITICAL 로그 출현 확인

@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-06-25 (249차 — poll_option_chain BlockRequest QThread 분리)
+
+**문제**: `_poll_option_chain()` QTimer 콜백에서 `Dscbo1.OptionMst.BlockRequest()` 루프가 메인 스레드를 ~3초 점유 → 틱·파이프라인·UI 정지.
+
+**원인**: ATM ±30pt 범위 옵션 ~24종목 × (BlockRequest ~100ms + pause 50ms) = ~3.6초를 메인 스레드에서 동기 실행.
+
+**수정**: `OptionChainWorker(QThread)` 신규 생성. 워커 스레드에서 `CoInitialize()` + 새 `Dscbo1.OptionMst` `Dispatch()` 후 BlockRequest 루프 실행. `result_ready` 시그널로 메인 스레드에 결과 반환. `OptionChainSnapshot`은 COM 코드 전부 제거 후 상태 관리 전용으로 슬림화.
+
+**Cybos 안전 근거**: api_connector.py 주석 — BlockRequest 응답이 메인 스레드 Windows 메시지 큐 경유. QThread 분리 시 메인 Qt 이벤트 루프가 정상 펌핑하므로 응답 전달 보장. 데드락 없음.
+
+**커밋**: `745e444` (249차), 3 files, +419 -291
+
+---
+
 ## 2026-06-25 (248차 — EXIT stuck 무한루프 수정 + ManualExit override 확장)
 
 **Work**: `20260625_WARN.log` 딥다이브 — 14:11~14:14 동안 order_no=4280 EXIT 부분체결 stuck이 매분 반복되며 수동 청산까지 4분 이상 차단된 현상 근본 원인 분석 및 수정.
