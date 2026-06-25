@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-25 (248차 — EXIT stuck 무한루프 수정 + ManualExit override 확장)
+
+**Work**: `20260625_WARN.log` 딥다이브 — 14:11~14:14 동안 order_no=4280 EXIT 부분체결 stuck이 매분 반복되며 수동 청산까지 4분 이상 차단된 현상 근본 원인 분석 및 수정.
+
+**근본 원인 3건**:
+1. `last_fill_at = now()` 무한 리셋 → 타이머가 매분 60s로 초기화돼 루프 탈출 불가
+2. ManualExit가 CB HALT일 때만 stuck EXIT pending override — 브로커 확인된 stuck은 운영자도 손댈 수 없음
+3. 오해 로그: "pending 소멸, 긴급청산 시도"라고 찍히지만 실제 소멸 없음
+
+**추가 발견**: 오늘 케이스의 진짜 원인은 **부분 Chejan 유실** (2계약 거래소 체결, 1번째 Chejan만 수신). expected_remaining 탐지가 prev_pos_qty drift로 실패하는 구조적 한계 확인.
+
+**오늘 전체 거래 흐름 분석** (TRADE.log):
+- 11:13 SHORT 3계약 → TP1 +2.57pt, 하드스톱 (pending_miss 1건 포함)
+- 13:04 LONG 6계약 → TP1+TP2 정상 체결, 13:15 하드스톱 1계약 stuck → 13:16 잔여청산 + 동일 분봉 LONG 5계약 재진입
+- 13:23 TP1 4280 1/2 체결 후 stuck → 14:11~14:14 stuck 루프
+- 14:21~14:22 외부진입 4676/4678 (LONG 1계약씩), 14:24 외부 청산 4694 (SHORT 5계약 전량)
+
+**수정** (`main.py`, 커밋 `26f3d9f`, +26 -4):
+- `_broker_confirm_count` 카운터 (3회 → 자동 pending 소멸 + TP 재점검)
+- ManualExit: `_broker_confirm_count >= 1`이면 stuck EXIT pending override 허용
+
+**커밋**: `26f3d9f` (248차), 1 file, +26 -4
+
+---
+
 ## 2026-06-25 (247차 — 프리장 scaler 재적합 window 단기화)
 
 **Work**: `20260625_WARN.log` EarlyWarmup 완료 후 z경고 폭증(23개) 미해결 현상 딥다이브. 5일치 로그 실증 분석 + 실데이터 시뮬레이션으로 근본 원인 규명 → PRE_MARKET_SCALER_BARS=30 도입.

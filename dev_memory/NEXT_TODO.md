@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-06-25 (248차 — EXIT stuck 수정 후 검증) [P0]
+
+- [ ] **3-confirm 자동 해소 로그 확인** — 향후 stuck 발생 시 `[PendingOrder] EXIT stuck 3회 브로커 확인 → 원주문(...) 거래소 취소 간주, pending 소멸 후 TP 재점검` CRITICAL 로그 출현 확인
+- [ ] **ManualExit override 로그 확인** — stuck 상황에서 수동 청산 시 `[ManualExit] stuck EXIT pending(...) 브로커 확인 완료 → 강제 소멸 후 수동 청산 진행` 로그 출현 확인
+- [ ] **IntrabarTPSchedule 정상 발동** — `_clear_pending_order` 호출 후 300ms 내 `[IntrabarTPSchedule] EXIT_PARTIAL 해소 → 300ms 후 TP 재점검` 로그 출현 확인
+- [ ] **position_before_qty 개선** — `_set_pending_order`에 `position_before_qty: int` 필드 추가 → `expected_remaining` 계산에 사용 → 부분 Chejan 유실을 1회 만에 탐지 가능 (현재는 3-confirm fallback으로 커버 중, 긴급 아님)
+
+---
+
 ## 2026-06-25 (247차 — PRE_MARKET_SCALER_BARS=30 검증) [P0]
 
 - [ ] **z경고 임계 이하 확인** — 다음 장 SYSTEM.log에서 `[PreMarket] Phase refit 완료 n=30봉 z경고 X→Y개`에서 bar5 이후 Y < 12 확인

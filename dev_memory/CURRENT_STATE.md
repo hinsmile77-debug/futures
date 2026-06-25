@@ -1,7 +1,60 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-25 (247차) — 프리장 scaler 재적합 window 단기화 (PRE_MARKET_SCALER_BARS=30)
+> 마지막 업데이트: 2026-06-25 (248차) — EXIT stuck 무한루프 수정 + ManualExit override 확장
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-25 (248차 — EXIT stuck 무한루프 수정 + ManualExit override 확장)
+
+### 발단
+
+20260625_WARN.log에서 14:11~14:14 동안 `EXIT 부분체결 stuck` 경고가 매분 반복되며 수동 청산까지 차단된 현상을 딥다이브.
+
+order_no=4280 (TP1 청산 2계약 주문, 1계약 체결 후 stuck). WARN 로그: `"EXIT partial fill timeout -> 브로커 잔량 확인 LONG 3 @ 1462.37, pending 유지"` 가 4분 이상 반복. 운영자 수동 청산(14:11:41, 14:12:05) 모두 차단.
+
+### 근본 원인 (3가지 버그)
+
+**Bug 1 — `last_fill_at` 무한 리셋** ([main.py:9771 이전](main.py)):
+`_ts_resolve_stuck_exit_pending`이 브로커 잔량 확인 후 "아직 포지션 있음" 판단하면 `pending["last_fill_at"] = now()` 리셋 후 True 반환. 다음 분봉에서 `_since_last_fill ≈ 60s > 10s` → 동일 로직 재실행 → **무한 루프**.
+
+**Bug 2 — ManualExit 차단** ([main.py:1916 이전](main.py)):
+`_on_manual_exit_requested`가 `_has_pending_order()=True`이면 CB HALT일 때만 override 허용. 브로커가 잔량을 확인해준 stuck EXIT pending은 운영자가 아무것도 할 수 없음.
+
+**Bug 3 — 오해 로그** ([main.py:3540 이전](main.py)):
+"pending 소멸, 잔여 포지션 긴급청산 시도"라고 찍히지만 실제로는 조회 결과에 따라 소멸 여부가 결정되는 구조. `_ts_resolve_stuck_exit_pending`이 True 반환하면 소멸도 청산도 없음.
+
+### 추가 발견 — Chejan 부분 유실 탐지 한계
+
+오늘 케이스의 진짜 원인: order 4280 2계약이 **거래소에서 모두 체결** (broker 잔고=3), 그러나 **2번째 Chejan만 유실** (엔진 인식=1). `expected_remaining = prev_pos_qty - pending.qty` 검사는 전량 Chejan 유실만 탐지 가능. 부분 유실 시 prev_pos_qty가 이미 drift → 탐지 실패. → 3-confirm 카운터가 실질 fallback으로 커버.
+
+### 수정 (248차, 커밋 `26f3d9f`)
+
+| 위치 | 변경 내용 |
+|---|---|
+| `main.py:9779+` | `last_fill_at` 리셋 제거 → `_broker_confirm_count` 카운터. 3회 누적 시 CRITICAL 경고 + `_clear_pending_order()`. `_clear_pending_order`가 EXIT_PARTIAL 해소 시 IntrabarTPSchedule(300ms 후 TP 재점검) 자동 발동 |
+| `main.py:1916+` | ManualExit: `_broker_confirm_count >= 1`(브로커 확인 완료)이면 stuck EXIT pending 강제 소멸 후 수동 청산 허용 |
+| `main.py:3540` | 오해 로그 수정: "브로커 잔고 조회 후 처리 (소멸 여부는 조회 결과에 따름)" |
+
+### 오늘 로그 기준 효과 시뮬레이션
+
+| 시각 | 현재(수정前) | 수정後 |
+|---|---|---|
+| 14:11:00 | pending 유지, last_fill_at 리셋 | `_broker_confirm_count=1` |
+| 14:11:41 | 수동 청산 차단 | `_stuck_exit=True` → **수동 청산 허용** |
+| 14:12:00 | 동일 반복 | `_broker_confirm_count=2` |
+| 14:13:00 | 동일 반복 | `_broker_confirm_count=3` → **자동 pending 소멸 + TP 재점검** |
+| 14:14+ | 무한 지속 | 정상 종료 |
+
+### 외부진입 청산 UI 분석 (4676/4678/4694)
+
+- 외부진입 4676, 4678: `_ts_handle_external_fill` → `apply_entry_fill` → 평균가 재계산(1464.051, 1465.4008) 정확. 250ms/1200ms QTimer balance refresh. ✅
+- 외부 청산 4694 (5계약 pending_miss): 비최종 4회는 `_ts_record_nonfinal_exit`(PnL 탭 즉시 갱신, 잔고 패널 갱신 없음), 최종 1회에서 `_ts_force_balance_flat_ui` + QTimer(250ms, 1200ms). 1~2초 지연은 허용 범위. ✅
+- pending 4280 잔류: 4694 청산 완료 후에도 4280 pending 살아있음. position=FLAT이므로 balance 합성 억제 미적용. 14:25:00 다음 분봉에서 broker FLAT 확인 후 자동 소멸. ✅
+
+### 향후 개선 권고
+
+`pending['position_before_qty']` (int)를 `_set_pending_order` 시 저장, `expected_remaining` 계산 시 `prev_pos_qty` 대신 사용 → 부분 Chejan 유실도 1회 만에 탐지 가능. 현재는 3-confirm fallback으로 커버 중.
 
 ---
 

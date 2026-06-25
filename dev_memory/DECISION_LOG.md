@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-06-25 (EXIT stuck 해소 전략)
+
+### [결정] _broker_confirm_count 3회 후 pending 자동 소멸
+
+**배경**: 시장가 주문 부분체결 stuck 시 `_ts_resolve_stuck_exit_pending`이 브로커 잔량 확인 후 `last_fill_at = now()` 리셋 → 매분 동일 루프 반복. ManualExit도 pending 존재로 차단. 오늘(14:11~14:14) 4분 이상 stuck.
+
+**결정**: `last_fill_at` 리셋 대신 `_broker_confirm_count` 카운터 증가. 3회(≈3분) 누적 시 시장가 주문 거래소 취소로 간주, `_clear_pending_order()` 호출 → `IntrabarTPSchedule`(300ms 후 TP 재점검) 자동 발동.
+
+**ManualExit 확장**: `_broker_confirm_count >= 1`(브로커 1회 이상 포지션 확인)이면 stuck EXIT pending을 override해 수동 청산 허용. CB HALT와 동일 권한.
+
+**위험 수용**: `_clear_pending_order`가 order_no를 `_completed_order_nos`에 등록 → 원주문 late-fill Chejan은 ChejanDup으로 무시됨. KOSPI 200 선물 시장가 주문이 3분 이상 미체결이면 거래소 취소가 사실상 확실하므로 위험 미미.
+
+**구조적 한계 (미수정)**: `expected_remaining = prev_pos_qty - pending.qty` 계산은 부분 Chejan 유실(2개 중 1개 수신) 시 prev_pos_qty drift로 탐지 실패. 3-confirm fallback이 커버. 근본 해결은 `pending['position_before_qty']` 저장 후 fixed 값으로 계산하는 추가 개선 필요.
+
+---
+
 ## 2026-06-25 (Q3 배포 절충안)
 
 ### [결정] 호라이즌별 predict_proba 배포 정책 (Q3)
