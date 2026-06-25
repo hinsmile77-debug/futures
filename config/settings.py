@@ -268,7 +268,13 @@ RAW_DATA_PRUNE_WEEKS: int = 52
 # SGD 경로(online_learner)는 partial_fit 현행 유지, 이 정책 적용 외
 
 # [A] 08:55 장 시작 전 워밍업
-SCALER_WARMUP_LOOKBACK_BARS: int = 500   # raw_data.db 최근 N봉 (~2거래일)
+SCALER_WARMUP_LOOKBACK_BARS: int = 500   # raw_data.db 최근 N봉 (~2거래일) — 장중 정기 refit 전용
+# 프리장 전용 단기 window: 어제 마지막 30분 + 오늘 pre-market 봉
+# 이유: 500봉은 어제 분포 위주 → 오늘 갭오픈 z경고 고착 (6/23~6/25 실측: z≥18)
+# 검증 (5일 실데이터): bar5 이후 z < 12(임계) 달성율 — 30봉=100%, 60봉=33%, 500봉=0%
+# 60봉 불채택 이유: bar3에서 z 악화 회귀 발생 (6/25: 14→26), 6/23·6/24 Canary FAIL
+# 30봉 주의: opt_pcr_* 7개 추가 zero-std 발생 → scale_=1.0(비CORE), D_FORCE 90분내 복원
+PRE_MARKET_SCALER_BARS: int = 30
 # 08:45 EarlyWarmup 발동 최솟 노후 시간
 # 장 마감(15:30) → 다음날 08:45 = 약 17.25h → 24h 기준으로는 미발동
 # 4h로 완화하면 매 영업일 항상 발동 (불필요한 scaler 노후화 방지)

@@ -2629,7 +2629,7 @@ class TradingSystem:
           ③ PRE_MARKET_REFIT_STEPS봉마다 점진 scaler 재적합 (1·5·10·14봉)
           ④ 프리장 conf 히스토리 수집 + z경고 업데이트
         """
-        from config.settings import PRE_MARKET_REFIT_STEPS, SCALER_WARMUP_LOOKBACK_BARS
+        from config.settings import PRE_MARKET_REFIT_STEPS
 
         now_dt = datetime.datetime.now()
         self._pre_market_bars.append(candle)
@@ -2700,8 +2700,11 @@ class TradingSystem:
             )
             def _pm_refit_worker(_nb=n_bars, _ph=_phase, _z=_z_now):
                 try:
+                    # 단기 window 사용: 500봉은 전날 분포 위주 → 오늘 갭오픈 z경고 고착
+                    # PRE_MARKET_SCALER_BARS(30봉)로 오늘 비율 최대화 (bar14: 47% today)
+                    from config.settings import PRE_MARKET_SCALER_BARS as _PM_LB
                     _Xpm, _fnpm = self.batch_retrainer.load_features_for_warmup(
-                        lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                        lookback_bars=_PM_LB
                     )
                     if _Xpm is not None:
                         self.model.refit_scalers_only(
@@ -3053,19 +3056,27 @@ class TradingSystem:
                             f" → 장전 scaler 재적합 시도 (08:58 전)",
                             "WARNING",
                         )
-                        def _canary_refit_worker():
+                        def _canary_refit_worker(_thresh=_z_bad_thresh):
                             try:
-                                from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                                # 단기 window(PRE_MARKET_SCALER_BARS=30) 사용:
+                                # 500봉은 전날 490봉 위주 → 오늘 갭오픈 z경고 고착
+                                # 60봉 = 어제 마지막 1시간 + 오늘 pre-market → 오늘 비율 ≥17%
+                                from config.settings import PRE_MARKET_SCALER_BARS
                                 _Xcr, _fncr = self.batch_retrainer.load_features_for_warmup(
-                                    lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                                    lookback_bars=PRE_MARKET_SCALER_BARS
                                 )
                                 if _Xcr is not None:
                                     self.model.refit_scalers_only(_Xcr, _fncr)
-                                    # 장전 scaler 재적합 완료 플래그 설정 — 재시작 로그 및
-                                    # ScalerWarmup 중복 방지에 사용 (프리장 refit과 동일 취급)
                                     self._pre_market_scaler_refitted = True
+                                    # post-refit z경고 재측정 — 효과 검증
+                                    _pm_n = min(len(getattr(self, "_pre_market_bars", [])), 15)
+                                    _z_after = self._canary_load_z_warn(n_rows=max(_pm_n, 10))
+                                    _improved = _z_after < _thresh
                                     log_manager.system(
-                                        f"[Canary] 장전 재적합 완료 n={len(_Xcr)}봉", "INFO"
+                                        f"[Canary] 장전 재적합 완료 n={len(_Xcr)}봉"
+                                        f" z경고 →{_z_after}개"
+                                        + (" ✓ 임계 이하" if _improved else " ⚠ z경고 지속 — bar14 재적합 대기"),
+                                        "INFO" if _improved else "WARNING",
                                     )
                                 else:
                                     log_manager.system("[Canary] 장전 재적합 스킵 — 데이터 없음", "WARNING")
@@ -3105,9 +3116,11 @@ class TradingSystem:
             self._scaler_refresh_running = True   # [P0] 스레드 시작 전 선점 — Canary refit과 상호 배제
             def _scaler_warmup_worker(_evt=_warmup_done_event):
                 try:
-                    from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                    # 08:55 ScalerWarmup도 단기 window 사용:
+                    # 이 경로는 Canary refit / 프리장 refit이 모두 스킵됐을 때만 실행됨
+                    from config.settings import PRE_MARKET_SCALER_BARS
                     X_w, fn_w = self.batch_retrainer.load_features_for_warmup(
-                        lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
+                        lookback_bars=PRE_MARKET_SCALER_BARS
                     )
                     if X_w is not None:
                         self.model.refit_scalers_only(X_w, fn_w)
@@ -8279,7 +8292,10 @@ class TradingSystem:
                     )
                     def _early_warmup_worker():
                         try:
-                            from config.settings import SCALER_WARMUP_LOOKBACK_BARS as _LB
+                            # 단기 window(PRE_MARKET_SCALER_BARS=30)로 로드:
+                            # 500봉은 전날 분포 위주 → 오늘 갭오픈 분포 미반영 → z경고 고착
+                            # 30봉(어제 마지막 30분+오늘 pre-market)으로 오늘 비율 최대화
+                            from config.settings import PRE_MARKET_SCALER_BARS as _LB
                             _X_ew, _fn_ew = self.batch_retrainer.load_features_for_warmup(
                                 lookback_bars=_LB
                             )
