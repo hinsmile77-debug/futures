@@ -8,11 +8,18 @@
 
 ---
 
-## 2026-06-25 (245차 — SGD 불일치 수정 후 검증) [P0]
+## 2026-06-25 (246차 — Phase C 불일치 수정 후 검증) [P0]
 
-- [ ] **경고 로그 1회 출현 확인** — 재시작 후 `[OnlineLearner] {hz} 피처 수 불일치 → 리셋` 경고 로그 1회 출현 후 ERR-FATAL 없이 정상 진행되는지 확인
-- [ ] **ERR-FATAL 재발 없음** — 오늘 운영 중 `X has N features, but StandardScaler is expecting 97` 에러 재발 여부 확인
-- [ ] **SGD 학습 재개 확인** — `[SGD] N건 학습` 로그 정상 출현 여부 (불일치 리셋 후 약 1~2분 내 정상화)
+- [ ] **불일치 자동 복구 확인** — 다음 시작 시 `[Model] {h} feature_names_{h}.pkl({N}개) vs GBM({M}개) 불일치 — pkl 무효화` 로그 출현 후 정상 운영되는지 확인 (현재 디스크에 불일치 파일 잔류 가능)
+- [ ] **ERR-FATAL 재발 없음** — `X has N features, but HistGradientBoostingClassifier is expecting 97` 에러 재발 여부 확인 (FIX-A의 97개 fallback이 정상 작동해야 함)
+- [ ] **Phase C 슬라이싱 경고 로그 모니터링** — `[Retrain] {hz} feature_names_{hz}.pkl {N}개→{M}개 변경 — Phase C 슬라이싱 비활성화` 로그 출현 여부 (FIX-B 경고, `_registry_ok=False` 탐지용)
+- [ ] **Canary refit 완료 확인** — 08:55 `[Canary] 장전 재적합 완료` 로그 후 `pre_market_scaler=True` 재시작 로그 확인 (FIX-C)
+
+## 2026-06-25 (245차 — SGD 불일치 수정 후 검증) [DONE 2026-06-25]
+
+- [x] **경고 로그 1회 출현 확인** — [OnlineLearner] 피처 수 불일치 → 리셋 경고 확인됨
+- [x] **ERR-FATAL 재발 없음** — 245차 이후 StandardScaler ERR-FATAL 소멸 확인
+- [x] **SGD 학습 재개 확인** — 246차 분석에서 09:50+ SGD 경로로 전환된 것 확인
 
 ---
 

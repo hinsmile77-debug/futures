@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-25 (246차 — Phase C pkl-모델 불일치 근본 수정 + Canary refit 완료 보장)
+
+**Work**: `20260625_WARN.log` 전체 딥다이브 → 245차 수정 이후에도 ERR-FATAL이 09:00~10:36 지속된 원인 분석 → 근본 수정 4건 + 검증 후 추가 수정 2건.
+
+**이슈 1 — 타임아웃 SIGKILL → 모델·pkl 원자성 파괴**:
+- `_train_horizon()` 내부에서 `gbm_{h}.pkl` 저장 완료 → subprocess SIGKILL → `_save_feature_names()` 미실행
+- `feature_names_{h}.pkl` = 12개 (미갱신), `clf.n_features_in_` = 97 → `_hz_feat_indices` 슬라이싱 오활성화
+- **수정 FIX-A**: `_load_all()` 불일치 감지 + `.mismatch_bak` 자동 백업 + 97개 fallback
+- **수정 FIX-B**: `_save_model()` 내부 모델+pkl 원자적 동시 저장. Phase C 피처 수 변경 경고 로그. `replaced=False` 시 외부 저장 차단
+
+**이슈 2 — Canary refit 완료 미대기 → 미갱신 scaler로 장 진입**:
+- z경고 23개 → Canary refit 기동 → `_scaler_refresh_running=True`
+- ScalerWarmup 즉시 `_warmup_done_event.set()` (refit 완료 안 기다림) → `_canary_stale=True`여도 wait가 즉시 반환
+- **수정 FIX-C**: Canary refit 성공 시 `_pre_market_scaler_refitted=True` 설정
+- **수정 FIX-D**: refit 실행 중엔 `_wait_refit_done` 스레드로 완료 대기 후 event set (85초 상한)
+
+**커밋 이력 교차검증 (병렬 fork 에이전트 2개)**:
+- BUG 추가 발견: FIX-A의 `os.rename` → `os.replace` (Windows WinError 183, 매 시작 ERROR 반복)
+- WARNING: FIX-D의 대기 상한 120초 > wait timeout 90초 불균형 → 85초로 수정
+- 243차(08:03)가 Phase 2 경로에 `_save_feature_names` 최초 추가 → 같은 날 09:27 SIGKILL이 즉시 불일치를 만든 것 확인
+
+**커밋**: `1242963` (246차), 3 files, +121 -12
+
+---
+
 ## 2026-06-25 (245차 — SGD 스케일러 피처 수 불일치 ERR-FATAL 버그 수정)
 
 **Work**: 장중 운영 중 `X has 11/12/15 features, but StandardScaler is expecting 97 features` ERR-FATAL 경보 딥다이브 → 원인 특정 → 방어 코드 추가.

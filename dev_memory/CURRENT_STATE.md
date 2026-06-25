@@ -1,7 +1,50 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-25 (245차) — SGD 스케일러 피처 수 불일치 ERR-FATAL 버그 수정
+> 마지막 업데이트: 2026-06-25 (246차) — Phase C pkl-모델 불일치 근본 수정 + Canary refit 완료 보장
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-25 (246차 — Phase C pkl-모델 불일치 근본 수정)
+
+### 발단
+
+245차 수정(SGD 방어 코드) 이후에도 09:00~10:36 동안 ERR-FATAL이 지속됐음을 WARN.log 딥다이브로 확인.
+245차는 증상(ERR-FATAL 크래시)을 막았지만 근본 원인(불일치 상태 자체)은 미해결이었다.
+
+### 근본 원인 (20260625_WARN.log 분석)
+
+**타임아웃 SIGKILL이 모델·pkl 원자성을 파괴하는 시나리오**:
+
+```
+09:16:48  장중 재시작 → WarmupRetrain 기동
+           (내부: _train_horizon → gbm_{h}.pkl 저장 완료)
+09:27:59  GBM-64 10분 타임아웃 강제 해제 (subprocess SIGKILL)
+           ↓ _save_feature_names() 미실행
+           gbm_{h}.pkl = 새 97개 모델
+           feature_names_{h}.pkl = 기존 12개 (미갱신)
+           → 다음 _load_all(): _hz_feat_indices=12 + clf.n_features_in_=97 → 불일치
+```
+
+**장전 Canary refit 흐름 버그**:
+- 08:55 z경고 23개 → Canary refit 기동 → `_scaler_refresh_running=True`
+- ScalerWarmup: `_scaler_refresh_running=True` → else 분기 → `_warmup_done_event.set()` 즉시 (refit 완료 안 기다림)
+- Canary refit 완료해도 `_pre_market_scaler_refitted` 미설정 → 재시작 로그 `pre_market_scaler=False`
+
+### 수정 (246차, 커밋 `1242963`)
+
+| Fix | 파일 | 내용 |
+|---|---|---|
+| FIX-A | `model/multi_horizon_model.py` | `_load_all()`에서 pkl·GBM 피처 수 비교 → 불일치 시 `.mismatch_bak` 백업 후 97개 fallback (`os.replace` — Windows 안전) |
+| FIX-B | `learning/batch_retrainer.py` | `_save_model()` 내부에서 모델 저장 직후 `feature_names_{h}.pkl`도 원자적 동시 저장. 피처 수 변경 감지 경고 로그 추가. `replaced=False`시 외부 `_save_feature_names` 차단 (EOD·인트라 두 경로) |
+| FIX-C | `main.py` | Canary refit 성공 시 `_pre_market_scaler_refitted=True` 설정 |
+| FIX-D | `main.py` | `_scaler_refresh_running=True`일 때 즉시 event set 대신 `_wait_refit_done` 스레드로 완료 대기 후 set. 대기 상한 85초 (wait timeout 90초 대비 마진 5초) |
+
+### 커밋 이력 교차검증 결과
+
+- 245차 커밋은 **11:04**에 적용됨 → 09:00~10:36 ERR-FATAL은 수정 전 코드에서 발생한 것 확인
+- 불일치의 직접 원인: **243차(08:03)** — Phase 2 경로에 `_save_feature_names` 최초 추가 → 같은 날 09:27 SIGKILL로 즉시 불일치 발생
+- Canary/ScalerWarmup 영역에서 104·105·201·203·245·246차까지 동일 구조 버그 6회 반복 → 비동기 스레드 완료-플래그 경쟁이 구조적 취약점
 
 ---
 
