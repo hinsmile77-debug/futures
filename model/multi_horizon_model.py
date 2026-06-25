@@ -82,10 +82,10 @@ def apply_robust_preprocess(
 # 호라이즌별 class weight
 # P0: 호라이즌별 FLAT 상한 — 동적 가중치에서도 FLAT 과잉 억제 유지
 _FLAT_CAP = {
-    "1m": 0.85, "3m": 0.75, "5m": 0.85,
-    "10m": 0.80, "15m": 0.75, "30m": 0.70,
+    "1m": 0.75, "3m": 0.55, "5m": 0.55,
+    "10m": 0.65, "15m": 0.60, "30m": 0.55,
 }
-_DYN_HALFLIFE   = 100
+_DYN_HALFLIFE   = 70   # batch_retrainer와 동기화 (100→70, 최근 70분 강조)
 _DYN_CLIP_RATIO = 3.0
 
 
@@ -472,6 +472,23 @@ class MultiHorizonModel:
                         )
                         self._scaler_warn_throttle[_sm_key] = _now_sm
 
+            # 피처 차원 불일치 방어 — feature_names_hz.pkl과 모델 간 동기화 깨진 경우
+            # (retrain에서 모델 미교체 + feature_names_hz만 갱신되는 버그 잔류물 대비)
+            _model_n_in = getattr(clf, "n_features_in_", None)
+            if _model_n_in is not None and xs.shape[1] != _model_n_in:
+                _dim_key = ("DIM_MISMATCH", horizon)
+                _now_dm = datetime.datetime.now()
+                _last_dm = self._scaler_warn_throttle.get(_dim_key)
+                if _last_dm is None or (_now_dm - _last_dm).total_seconds() > 300:
+                    logger.error(
+                        "[Model] %s 피처 차원 불일치 (xs=%d vs model.n_features_in_=%d)"
+                        " — feature_names_%s.pkl 재동기화 필요, fallback 반환",
+                        horizon, xs.shape[1], _model_n_in, horizon,
+                    )
+                    self._scaler_warn_throttle[_dim_key] = _now_dm
+                results[horizon] = self._default_result()
+                continue
+
             classes = list(clf.classes_)
             proba   = clf.predict_proba(xs)[0]
 
@@ -599,6 +616,11 @@ class MultiHorizonModel:
             _h_idx_m = self._hz_feat_indices.get(horizon)
             _xs_full_m = scaler.transform(xm) if scaler else xm
             xs = _xs_full_m[:, _h_idx_m] if _h_idx_m is not None else _xs_full_m
+
+            _model_n_in_m = getattr(clf, "n_features_in_", None)
+            if _model_n_in_m is not None and xs.shape[1] != _model_n_in_m:
+                results[horizon] = self._default_result()
+                continue
 
             classes   = list(clf.classes_)
             proba     = clf.predict_proba(xs)[0]
@@ -750,9 +772,34 @@ class MultiHorizonModel:
             # Phase C: 호라이즌별 전용 pkl 로드 (없으면 공유 fallback)
             h_fn_path = os.path.join(HORIZON_DIR, "feature_names_{}.pkl".format(h))
             if os.path.exists(h_fn_path):
-                self.horizon_feature_names[h] = joblib.load(h_fn_path)
-                logger.debug("[Model] %s 전용 피처셋 로드: %d개", h,
-                             len(self.horizon_feature_names[h]))
+                _h_fnames = joblib.load(h_fn_path)
+                # 모델·pkl 불일치 방어 — subprocess 타임아웃 강제 종료 시
+                # gbm_{h}.pkl(저장 완료) + feature_names_{h}.pkl(미갱신) 불일치 발생 가능.
+                # 불일치 감지 시 pkl을 무효화해 전체 피처셋 fallback으로 복구.
+                _clf = self.models.get(h)
+                _model_n = getattr(_clf, "n_features_in_", None) if _clf else None
+                if _model_n is not None and len(_h_fnames) != _model_n:
+                    logger.error(
+                        "[Model] %s feature_names_%s.pkl(%d개) vs GBM(%d개) 불일치 — "
+                        "타임아웃 강제 종료 잔류 파일 의심. pkl 무효화, 전체 피처셋 fallback.",
+                        h, h, len(_h_fnames), _model_n,
+                    )
+                    try:
+                        _bak = h_fn_path + ".mismatch_bak"
+                        # os.replace: Windows에서 대상 파일이 이미 존재해도 덮어씀
+                        # (os.rename은 대상 존재 시 WinError 183 발생 → 원본 잔류 → 매 시작 ERROR 반복)
+                        os.replace(h_fn_path, _bak)
+                        logger.warning("[Model] %s 불일치 pkl → %s 백업", h, _bak)
+                    except OSError:
+                        try:
+                            os.remove(h_fn_path)
+                            logger.warning("[Model] %s 불일치 pkl 삭제 (백업 실패)", h)
+                        except OSError:
+                            pass
+                    # horizon_feature_names에 등록하지 않음 → 슬라이싱 비활성화 (97개 fallback)
+                else:
+                    self.horizon_feature_names[h] = _h_fnames
+                    logger.debug("[Model] %s 전용 피처셋 로드: %d개", h, len(_h_fnames))
 
         # 슬라이싱 인덱스 사전계산
         self._rebuild_hz_feat_indices()

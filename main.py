@@ -3061,6 +3061,9 @@ class TradingSystem:
                                 )
                                 if _Xcr is not None:
                                     self.model.refit_scalers_only(_Xcr, _fncr)
+                                    # 장전 scaler 재적합 완료 플래그 설정 — 재시작 로그 및
+                                    # ScalerWarmup 중복 방지에 사용 (프리장 refit과 동일 취급)
+                                    self._pre_market_scaler_refitted = True
                                     log_manager.system(
                                         f"[Canary] 장전 재적합 완료 n={len(_Xcr)}봉", "INFO"
                                     )
@@ -3137,7 +3140,26 @@ class TradingSystem:
 
             threading.Thread(target=_scaler_warmup_worker, daemon=True).start()
         else:
-            _warmup_done_event.set()   # GBM 재학습 중 or refit 실행 중 → 스킵이므로 즉시 완료 표시
+            # GBM 재학습 중(_gbm_retrain_running): 즉시 완료 표시 (재학습 완료 후 scaler 갱신됨)
+            # Canary/프리장 refit 실행 중(_scaler_refresh_running): 해당 refit이 완료된 후 event set.
+            # _canary_stale=True이면 아래에서 _warmup_done_event.wait()하므로 완료를 기다려야 함.
+            if getattr(self, "_gbm_retrain_running", False):
+                _warmup_done_event.set()
+            else:
+                # refit 실행 중 — 완료 시점에 event 설정
+                def _wait_refit_done(_evt=_warmup_done_event):
+                    import time as _time
+                    # _canary_stale=True 시 caller가 wait(timeout=90)으로 기다리므로
+                    # 이 스레드가 90초 전에 event를 set해야 타임아웃 전에 unblock 가능.
+                    # 85초 = 90초 wait - 마진 5초
+                    _deadline = _time.monotonic() + 85
+                    while getattr(self, "_scaler_refresh_running", False):
+                        if _time.monotonic() > _deadline:
+                            logger.warning("[ScalerWarmup] refit 완료 대기 85초 초과 — 강제 진행")
+                            break
+                        _time.sleep(0.5)
+                    _evt.set()
+                threading.Thread(target=_wait_refit_done, daemon=True).start()
 
         # [P2] Canary stale(24h+)이면 최대 90초 동기 대기 — 08:55~09:00 사이 여유로 허용
         if _canary_stale:
@@ -4709,6 +4731,11 @@ class TradingSystem:
             self.dashboard.minute_chart_set_direction(ts, direction)
         except Exception as _cde:
             logger.debug("[ChartWarn] set_direction_at 예외 무시: %s", _cde)
+        # 방향카드 즉시 갱신 — DB 폴링(10s) 지연 없이 매분 확정값 반영
+        try:
+            self.dashboard.push_direction_live(decision, ts)
+        except Exception as _pde:
+            logger.debug("[DirPush] push_direction_live 예외 무시: %s", _pde)
 
         # [MaskedFallback] 격리 예측 채택 — 정상 앙상블이 FLAT이고 격리 예측이 더 높을 때
         if direction == 0 and _masked_hp_blended and self.model.last_masked_features:
@@ -6218,7 +6245,8 @@ class TradingSystem:
                 decision      = decision,
             )
         except Exception as e:
-            logger.warning("[STEP9] save_step9_batch 오류 (스킵): %s", e)
+            logger.error("[STEP9] save_step9_batch 실패 — DB 미기록 (conf=%s grade=%s): %s",
+                         decision.get("confidence", "?"), decision.get("grade", "?"), e)
 
         # ── [S2-A] 지연 SGD 학습 — 파이프라인 크리티컬 경로 밖에서 실행 ──
         # online_learner.learn() 을 "end" 이후로 이동 → _pipe_ms 에 포함 안 됨

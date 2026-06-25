@@ -479,8 +479,11 @@ class BatchRetrainer:
             )
             results[horizon_key] = result
 
-            # 호라이즌 전용 pkl 저장 (Phase C)
-            self._save_feature_names(h_names, horizon_key=horizon_key)
+            # 호라이즌 전용 pkl 저장 (Phase C) — 모델이 실제 교체된 경우에만 저장
+            # 미교체 시 저장하면 구 모델(97피처)과 feature_names_hz(12피처) 불일치 발생
+            # → 다음 _load_all에서 _hz_feat_indices=12, model.n_features_in_=97 → ERR-FATAL
+            if result.get("replaced"):
+                self._save_feature_names(h_names, horizon_key=horizon_key)
 
         # 공유 pkl도 유지 (backward compat: 구 모델·ScalerWarmup 경로)
         self._save_feature_names(feature_names)
@@ -655,6 +658,35 @@ class BatchRetrainer:
         os.replace(_tmp_scaler, scaler_path)
         with open(acc_path, "w") as f:
             f.write(str(acc))
+        # Phase C 원자성 보장: 모델 저장 직후 feature_names_{h}.pkl도 함께 저장.
+        # 외부 호출자(_train_horizon 이후)의 _save_feature_names와 중복이지만 무해.
+        # subprocess 타임아웃 강제 종료 시 모델은 저장되지만 외부 _save_feature_names는
+        # 미실행될 수 있어 pkl 불일치가 발생했으므로 여기서 선점 저장한다.
+        _n_model = getattr(model, "n_features_in_", None)
+        if feature_names and _n_model is not None and len(feature_names) == _n_model:
+            h_fn_path = os.path.join(self.model_dir, f"feature_names_{horizon_key}.pkl")
+            # Phase C 피처셋 변경 감지 로그 — _registry_ok=False 등으로 전체 피처가
+            # 투입됐을 때 기존 슬라이싱 pkl을 조용히 덮어쓰는 상황을 운영 중 탐지.
+            if os.path.exists(h_fn_path):
+                try:
+                    with open(h_fn_path, "rb") as _rf:
+                        _prev = pickle.load(_rf)
+                    _prev_n = len(_prev)
+                    _new_n  = len(feature_names)
+                    if _prev_n != _new_n:
+                        _direction = "비활성화" if _new_n > _prev_n else "재슬라이싱"
+                        logger.warning(
+                            "[Retrain] %s feature_names_%s.pkl %d개→%d개 변경 — "
+                            "Phase C 슬라이싱 %s "
+                            "(horizon_feature_sets.json 미반영 또는 _registry_ok=False 의심)",
+                            horizon_key, horizon_key, _prev_n, _new_n, _direction,
+                        )
+                except Exception:
+                    pass
+            _tmp_fn = h_fn_path + ".tmp"
+            with open(_tmp_fn, "wb") as f:
+                pickle.dump(list(feature_names), f, protocol=4)
+            os.replace(_tmp_fn, h_fn_path)
 
     def _save_feature_names(self, feature_names: List[str], horizon_key: str = None) -> None:
         """feature_names 저장.
@@ -957,8 +989,10 @@ class BatchRetrainer:
             )
             results[hz] = result
 
-            # 호라이즌 전용 피처명 pkl 저장 (Phase C) — 추론 시 _hz_feat_indices 슬라이싱 적용
-            self._save_feature_names(_h_names_p2, horizon_key=hz)
+            # 호라이즌 전용 피처명 pkl 저장 (Phase C) — 모델이 실제 교체된 경우에만 저장
+            # 미교체 시 저장하면 구 모델(97피처)과 feature_names_hz(12피처) 불일치 발생
+            if result.get("replaced"):
+                self._save_feature_names(_h_names_p2, horizon_key=hz)
 
         # 전역 feature_names.pkl 복원 (Phase 2는 1m 기존 피처명 보존)
         if _existing_feat_names:
