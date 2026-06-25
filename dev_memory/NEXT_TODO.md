@@ -211,6 +211,7 @@
 
 - [ ] **identity 강제 임계 바이너리 분리** — `_BINARY_PASSTHROUGH` 목록 추가하여 raw_std 무관하게 이진 피처 항상 identity 유지 (P0 ScaleFloor 보다 구조적 수정)
 - [ ] **macro_risk_off 연속형 리디자인** — 이진→연속형 점수화 검토 (GBM 재학습 필요, 중기)
+- [x] **macro_vix CORE 강등** — 일봉 상수·SHAP ≈ 0·임계 비현실 확인 → 보조 피처 유지, 251차 f157046
 
 ---
 

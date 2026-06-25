@@ -4,6 +4,37 @@
 
 ---
 
+## 2026-06-25 (251차 — macro_vix CORE 강등)
+
+**트리거**: EOD 로그 `[ScalerRefresh] CORE 'macro_vix' raw_std=0.0309 → identity(0,1) 강제` 반복 경보 딥다이브 요청.
+
+### 딥다이브 결과
+
+**raw_std=0.0309 원인 (5계층)**:
+1. Cboe CDN `VIX_History.csv` = 일봉 종가 → 장 내 상수
+2. `vix_norm = (vix-15)/25` → 하루 종일 동일값
+3. ScalerWarmup 500봉 윈도우에 전날 데이터 포함 → 날짜 경계 VIX jump가 소량 std 발생 (0 아닌 0.031 이유)
+4. `raw_std < 0.05` → identity 강제(scale=1.0)
+5. `_MACRO_SCALE_FLOOR["macro_vix"]=0.10` 미동작 — identity 후 scale=1.0 > floor=0.10 → 조건 미충족
+
+**피처 가치 평가**:
+- SHAP 중요도: 주 24=0.000669, 주 25–26=0.000 → 사실상 최하위
+- 체크리스트: mid 그룹 slot 4 임계 `macro_vix < 0.5` = VIX < 27.5 → 평상시 항상 통과 (무의미)
+- 동일 정보: `macro_risk_off`(VIX>28 이진), `atr`(중요도 0.33)이 이미 포착
+
+### 수정 (251차)
+
+`macro_vix`를 중기/장기 CORE에서 강등, 보조 피처로 유지:
+- `CORE_FEATURES_BY_GROUP["mid/long"]` macro 키 제거
+- `CORE_MASK_EXEMPT_BY_GROUP["mid/long"]` macro_vix 제거
+- `_CORE_MASK_EXEMPT` frozenset에서 macro_vix 제거
+- 중기 slot `4_cvd` → True 고정 (CVD·OFI처럼 면제)
+- `_MACRO_SCALE_FLOOR["macro_vix"]=0.10` 및 `active_features` 유지
+
+**커밋**: `f157046`
+
+---
+
 ## 2026-06-25 (250차 — 30m 비활성화·CB③ 억제·CORE 피처 교체·feature_names_hz JSON 정정)
 
 **트리거**: 장중 ERR-FATAL `X has 12 features, but HistGradientBoostingClassifier expecting 97` (09:00:59) + EOD 로그 `cvd_direction raw_std≈0(0.0490)` 경보.

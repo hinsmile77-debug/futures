@@ -1,7 +1,41 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-25 (250차) — 30m 비활성화·CB③ 억제·CORE 교체·JSON 정정
+> 마지막 업데이트: 2026-06-25 (251차) — macro_vix CORE 강등
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-25 (251차 — macro_vix CORE 강등)
+
+### 변경 내용
+
+**`macro_vix`를 중기/장기 CORE에서 제거하고 단순 보조 피처로 강등.**
+
+근거:
+- **일봉 상수**: Cboe CDN 일봉 VIX close → 장 내 분봉 500봉에서 std ≈ 0~0.03
+- **SHAP 기여 ≈ 0**: 주 24 = 0.000669, 주 25–26 = 0.000 (97개 피처 중 사실상 최하위)
+- **체크리스트 임계 비현실**: VIX 27.5 기준 → 평상시 항상 통과 → 무의미한 조건
+- **ScaleFloor(0.10) 무력화 부작용**: identity 강제(raw_std<0.05) 후 scale=1.0 → ScaleFloor 조건 미충족 → "[ScalerRefresh] CORE 'macro_vix' raw_std=0.03 → identity" 경보 반복
+
+### 수정 파일
+
+| 파일 | 변경 |
+|---|---|
+| `config/settings.py` | `CORE_FEATURES_BY_GROUP["mid/long"]` macro 키 제거, `CORE_MASK_EXEMPT_BY_GROUP["mid/long"]` macro_vix 제거 |
+| `model/multi_horizon_model.py` | `_CORE_MASK_EXEMPT` frozenset에서 macro_vix 제거. `_MACRO_SCALE_FLOOR["macro_vix"]=0.10` 유지 |
+| `strategy/entry/checklist.py` | 중기(10m·15m) slot `4_cvd` → `True` 고정 (항상 면제) |
+| `CLAUDE.md` | CORE 테이블에서 macro_vix 행 2개 제거 |
+
+### 유지한 것
+
+- `active_features`의 `macro_vix` — GBM 피처셋 유지 (재학습 불필요)
+- `_MACRO_SCALE_FLOOR["macro_vix"] = 0.10` — 미래 VIX 급변 시 z 폭발 방어
+- `checklist.py` `macro_vix` 파라미터 — 대시보드 VIX 표시에 계속 사용
+
+### 기대 효과
+
+- "[ScalerRefresh] CORE 'macro_vix' raw_std≈0 → identity 강제" 경보 소멸
+- 중기 체크리스트 slot 4: 사실상 항상 통과이던 것이 명시적으로 면제로 전환 (실질 무변화)
 
 ---
 
