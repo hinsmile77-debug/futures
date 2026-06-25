@@ -37,7 +37,7 @@ if BASE_DIR not in sys.path:
 
 # ── Qt Application (키움 OCX 보다 먼저 생성) ───────────────────
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 _qt_app = QApplication.instance() or QApplication(sys.argv)
 
 # ── 로깅 초기화 (가장 먼저) ────────────────────────────────────
@@ -94,6 +94,7 @@ from collection.macro.intraday_tactical_regime import (
 )
 from collection.options.pcr_store import PCRStore
 from collection.options.option_chain_snapshot import OptionChainSnapshot
+from collection.options.option_chain_worker import OptionChainWorker
 from features.macro.macro_feature_transformer import MacroFeatureTransformer
 from features.options.option_features import OptionFeatureCalculator
 from learning.self_learning.daily_consolidator import DailyConsolidator
@@ -2556,30 +2557,42 @@ class TradingSystem:
                 logger.debug("[LiveDBG] _fetch_investor_data 완료 %.0fms", _elapsed_ms)
 
     def _poll_option_chain(self) -> None:
-        """옵션 체인 5분 폴링 — QTimer 콜백 (메인 스레드, COM 안전).
-        파이프라인 STEP 4 에서 BlockRequest 루프를 제거하고 이쪽으로 이전했다.
+        """옵션 체인 5분 폴링 — QTimer 콜백.
+
+        OptionChainWorker(QThread)를 기동하여 BlockRequest 루프를 메인 스레드에서 분리.
+        Qt 이벤트 루프가 정상 동작하므로 Cybos 응답 수신 보장.
         """
         if not is_market_open(datetime.datetime.now()):
             return
-        _t0 = time.perf_counter()
-        logger.debug("[LiveDBG] _poll_option_chain 시작 (메인 스레드 점유 시작)")
         spot = self._last_close
-        try:
-            refreshed = self.option_chain_snap.refresh(spot=spot)
-            if refreshed and self.dashboard:
-                self.dashboard.update_option_chain(self.option_chain_snap.get_features())
-        except Exception as _e:
-            logger.warning("[OptionChain] 폴링 오류: %s", _e)
-        finally:
-            _elapsed_ms = (time.perf_counter() - _t0) * 1000
-            if _elapsed_ms > 500:
-                logger.warning(
-                    "[LiveDBG] _poll_option_chain 지연 %.0fms — "
-                    "메인 스레드 %.0fms 점유 (live 중단 원인 후보)",
-                    _elapsed_ms, _elapsed_ms,
-                )
-            else:
-                logger.debug("[LiveDBG] _poll_option_chain 완료 %.0fms", _elapsed_ms)
+        if not self.option_chain_snap.is_due(spot):
+            return
+
+        _prev = getattr(self, "_option_chain_worker", None)
+        if _prev is not None and _prev.isRunning():
+            logger.debug("[OptionChain] 이전 워커 실행 중 — 스킵 spot=%.1f", spot)
+            return
+
+        self.option_chain_snap.mark_refresh_started()
+        logger.debug("[LiveDBG] OptionChainWorker 기동 spot=%.1f", spot)
+
+        _worker = OptionChainWorker(
+            chain_raw     = self.option_chain_snap.get_chain_raw(),
+            spot          = spot,
+            cache_path    = self.option_chain_snap.cache_path,
+            atm_window_pt = self.option_chain_snap.atm_window,
+            pause_ms      = self.option_chain_snap.pause_ms,
+        )
+        _worker.result_ready.connect(self._on_option_chain_done)
+        _worker.finished.connect(_worker.deleteLater)   # Qt C++ 객체 정리
+        self._option_chain_worker = _worker             # GC 방지용 참조 보관
+        _worker.start()
+
+    def _on_option_chain_done(self, feats: dict, chain_raw: list) -> None:
+        """OptionChainWorker.result_ready 수신 — 메인 스레드."""
+        self.option_chain_snap.on_worker_done(feats, chain_raw)
+        if self.dashboard and feats:
+            self.dashboard.update_option_chain(self.option_chain_snap.get_features())
 
     def _on_tick_price_update(self, bar: dict) -> None:
         """틱 수신마다 대시보드 헤더 현재가 갱신.
@@ -4047,8 +4060,8 @@ class TradingSystem:
         _raw_macro   = self.macro_fetcher.get_features()
         _macro_feats = self.macro_transformer.transform(_raw_macro)
         _option_feats = self.option_feat_calc.transform(self.pcr_store.get_features())
-        # 옵션 체인 폴링은 _option_chain_timer(QTimer 300s) 에서 메인 스레드 COM 안전하게 수행.
-        # 파이프라인은 캐시된 피처만 읽는다 (1분 지연 허용, BlockRequest 루프 블로킹 제거).
+        # 옵션 체인 폴링은 _option_chain_timer(QTimer 300s)에서 OptionChainWorker(QThread)로 비동기 실행.
+        # 파이프라인은 캐시된 피처만 읽는다 (1분 지연 허용, 메인 스레드 블로킹 없음).
         _chain_feats = self.option_chain_snap.get_features()
         # [BUG FIX] _chain_feats(opt_chain_pcr/opt_gex_bn/opt_atm_*)를 option_data에 병합.
         # 이전: _chain_feats가 읽혔지만 build()에 전달되지 않아 raw_features에 저장 안 됨.
@@ -11360,8 +11373,8 @@ def main():
         _fh.enable(file=_fault_file, all_threads=True)
 
         # ── ② 행 감지 (30초 GIL 미해제 시 트레이스 덤프) ──────────────
-        # COM BlockRequest(_poll_option_chain 3s, _scheduler_tick 중 COM 호출)나
-        # DB 쿼리가 30초 이상 블로킹되면 "TIMEOUT" 덤프 기록.
+        # _poll_option_chain은 OptionChainWorker(QThread)로 분리되어 메인 스레드 블로킹 없음.
+        # _scheduler_tick 중 COM 호출이나 DB 쿼리가 30초 이상 블로킹되면 "TIMEOUT" 덤프 기록.
         # repeat=True: 계속 블로킹 중이면 30초마다 반복 덤프.
         _fh.dump_traceback_later(30, repeat=True, file=_fault_file)
 
