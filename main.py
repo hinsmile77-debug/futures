@@ -1914,11 +1914,22 @@ class TradingSystem:
             log_manager.system("[ManualExit] 포지션이 없어 수동 청산을 무시했습니다.", "WARNING")
             return
         if self._has_pending_order():
-            # CB HALT 상태에서는 pending을 강제 소멸 후 청산 진행
+            # CB HALT 또는 브로커 확인된 stuck EXIT pending 시 강제 소멸 후 청산 진행
             # — stuck pending 때문에 운영자가 수동 청산조차 불가능한 상태 방지
+            _po_kind = self._pending_order.get("kind", "")
+            _stuck_exit = (
+                _po_kind.startswith("EXIT")
+                and self._pending_order.get("_broker_confirm_count", 0) >= 1
+            )
             if self.circuit_breaker.state == CB_STATE_HALTED:
                 log_manager.system(
                     "[ManualExit] CB HALT 상태 — stuck pending 강제 소멸 후 수동 청산 진행",
+                    "WARNING",
+                )
+                self._clear_pending_order()
+            elif _stuck_exit:
+                log_manager.system(
+                    f"[ManualExit] stuck EXIT pending({_po_kind}) 브로커 확인 완료 → 강제 소멸 후 수동 청산 진행",
                     "WARNING",
                 )
                 self._clear_pending_order()
@@ -3537,7 +3548,7 @@ class TradingSystem:
                         f"[PendingOrder] EXIT 부분체결 stuck {_since_last_fill:.0f}s — "
                         f"filled={_po['filled_qty']}/{_po['qty']} "
                         f"kind={_po['kind']} order_no={_po.get('order_no','?')} "
-                        f"→ pending 소멸, 잔여 포지션 긴급청산 시도",
+                        f"→ 브로커 잔고 조회 후 처리 (소멸 여부는 조회 결과에 따름)",
                         "WARNING",
                     )
                     if not _ts_resolve_stuck_exit_pending(self):
@@ -9768,12 +9779,23 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
                 "WARNING",
             )
             return True
-        pending["last_fill_at"] = datetime.datetime.now()
+        _confirm_count = pending.get("_broker_confirm_count", 0) + 1
+        pending["_broker_confirm_count"] = _confirm_count
         _ts_set_broker_sync_status(self, True, f"stuck exit still holding {side} {qty} @ {avg_price}", False)
         log_manager.system(
-            f"[PendingOrder] EXIT partial fill timeout -> 브로커 잔량 확인 {side} {qty} @ {avg_price:.2f}, pending 유지",
+            f"[PendingOrder] EXIT partial fill timeout -> 브로커 잔량 확인 {side} {qty} @ {avg_price:.2f}, pending 유지 "
+            f"(broker_confirm={_confirm_count}/3)",
             "WARNING",
         )
+        if _confirm_count >= 3:
+            # 3회 연속 브로커 확인 후에도 잔량 미체결 → 시장가 주문 거래소 취소로 간주
+            # _clear_pending_order()가 EXIT_PARTIAL 해소 시 자동으로 TP 재점검 스케줄 (IntrabarTPSchedule)
+            log_manager.system(
+                f"[PendingOrder] EXIT stuck {_confirm_count}회 브로커 확인 → "
+                f"원주문(order_no={pending.get('order_no','?')}) 거래소 취소 간주, pending 소멸 후 TP 재점검",
+                "CRITICAL",
+            )
+            self._clear_pending_order()
         return True
 
     self._clear_pending_order()
