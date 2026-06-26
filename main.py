@@ -2524,7 +2524,15 @@ class TradingSystem:
 
     def _fetch_investor_data(self) -> None:
         """수급 TR 수집 — QTimer에서 호출 (COM 콜백 체인 외부)."""
-        if not is_market_open(datetime.datetime.now()):
+        now = datetime.datetime.now()
+        if not is_market_open(now):
+            return
+        # [CB⑤ 방어] 09:00~09:02: 장 개시 직후 CpSysDib.CpSvrNew7221 서버 피크 부하
+        # → BlockRequest 응답 7초+ 소요 → 메인 스레드 7,187ms 블로킹 실증(6/26 09:01)
+        # 이 구간은 investor_data가 stale(age≥300s)이므로 스킵해도 정보 손실 없음.
+        # quality_investor_stale=1.0 플래그가 이미 파이프라인에 전달됨.
+        if datetime.time(9, 0) <= now.time() < datetime.time(9, 2):
+            logger.debug("[LiveDBG] _fetch_investor_data 09:00~09:02 서버피크 스킵")
             return
         _t0 = time.perf_counter()
         logger.debug("[LiveDBG] _fetch_investor_data 시작 (메인 스레드 점유 시작)")
@@ -2569,9 +2577,14 @@ class TradingSystem:
             return
 
         _prev = getattr(self, "_option_chain_worker", None)
-        if _prev is not None and _prev.isRunning():
-            logger.debug("[OptionChain] 이전 워커 실행 중 — 스킵 spot=%.1f", spot)
-            return
+        if _prev is not None:
+            try:
+                if _prev.isRunning():
+                    logger.debug("[OptionChain] 이전 워커 실행 중 — 스킵 spot=%.1f", spot)
+                    return
+            except RuntimeError:
+                # deleteLater()로 C++ 객체가 이미 소멸됐지만 Python wrapper는 살아있는 경우
+                self._option_chain_worker = None
 
         self.option_chain_snap.mark_refresh_started()
         logger.debug("[LiveDBG] OptionChainWorker 기동 spot=%.1f", spot)
@@ -8311,8 +8324,8 @@ class TradingSystem:
                     self._scaler_refresh_running = True   # ScalerWarmup 동시 실행 방지
                     log_manager.system(
                         f"[EarlyWarmup] scaler 노후={_early_age:.0f}h → 08:45 선행 warmup 시작"
-                        f" (전날 P8 실패·휴장·중단 대응)",
-                        "WARNING",
+                        f" (매 영업일 필수 실행 — 30봉 단기 window로 오늘 분포 갱신)",
+                        "INFO",
                     )
                     def _early_warmup_worker():
                         try:

@@ -186,6 +186,15 @@ class MultiHorizonModel:
         # macro_risk_off 제거 (2026-06-25): 모델 미포함 — global scaler 보호 불필요
         "macro_risk_on":      0.50,   # 이진(0/1) — 동일 구조
         "macro_event_flag":   0.50,   # 이진(0/1) — 동일 구조
+        # ── quality / toxicity σ 하한 (2026-06-26) ───────────────────────────────
+        # quality_investor_age_sec: 학습 분포 σ_normalized≈0.038 (≈11.35s/300s).
+        #   장 시작 전 fetch 없음 → 1.0 → SCALER_CLIP_FEATURES(0,0.60) clip 후
+        #   z = (0.60 - μ) / σ. σ_floor=0.15 → z_max=(0.60-0.017)/0.15≈3.9 < 4 보장.
+        "quality_investor_age_sec": 0.15,
+        # toxicity_atr_stress: 학습 σ가 극소한 저변동성 구간 기준이라 고변동성 장
+        #   atr_stress=0.75(clip) 시 z>4 가능. σ_floor=0.20 → z_max=(0.75-μ)/0.20<4 보장
+        #   (μ≤0.35 가정, 실측 μ≈0.08~0.15 범위).
+        "toxicity_atr_stress":      0.20,
     }
 
     GBM_PARAMS = {
@@ -707,14 +716,24 @@ class MultiHorizonModel:
     def _scaler_path(self, horizon: str) -> str:
         return os.path.join(SCALER_DIR, f"scaler_{horizon}.pkl")
 
-    def _apply_macro_scale_floor(self, sc, horizon_label: str) -> None:
-        """macro 피처 σ 하한 적용. fit_and_train·refresh_scalers 양쪽에서 공유.
+    # trigger_type별 ScalerFloor 로그 레벨:
+    #   INFO  — A_WARMUP / E_EOD / "" (fit_and_train):
+    #     macro 피처는 일봉 상수 → 30봉 또는 26주 window에서도 σ가 floor 미만인 게 정상.
+    #     pre-market refit 4회 × 6 horizon × 3 피처 = 72 WARNING 폭증 방지 (실제 이상 묻힘).
+    #   WARNING — D_FORCE / B_OPEN / C_PERIODIC:
+    #     장중에 σ < floor는 이상 징후 (정상 학습 분포와 乖離). 실제 경고로 남김.
+    _FLOOR_WARN_TRIGGERS: frozenset = frozenset({"D_FORCE", "B_OPEN", "C_PERIODIC"})
 
-        macro_feature_transformer가 이미 [0,1]/[-1,1]로 정규화한 값에 StandardScaler가
-        재정규화하면서 학습기간 저변동 → σ 극소 → 실전 z-score 폭발 방지.
+    def _apply_macro_scale_floor(self, sc, horizon_label: str, trigger_type: str = "") -> None:
+        """피처 σ 하한 적용. fit_and_train·refresh_scalers 양쪽에서 공유.
+
+        학습기간 저변동 → σ 극소 → 실전 z-score 폭발 방지.
+        _MACRO_SCALE_FLOOR는 macro 외에 quality/toxicity 피처도 포함.
+        trigger_type: 'A_WARMUP'|'E_EOD'|''→INFO, 'D_FORCE'|'B_OPEN'|'C_PERIODIC'→WARNING
         """
         if not (self.feature_names and hasattr(sc, "scale_")):
             return
+        _is_intraday = trigger_type in self._FLOOR_WARN_TRIGGERS
         for _feat, _floor in self._MACRO_SCALE_FLOOR.items():
             if _feat not in self.feature_names:
                 continue
@@ -722,8 +741,9 @@ class MultiHorizonModel:
             if _fi >= len(sc.scale_):
                 continue
             if float(sc.scale_[_fi]) < _floor:
-                logger.warning(
-                    "[ScalerFloor] %s macro '%s' scale=%.4f → floor=%.2f 적용 (z-score 폭발 방지)",
+                _log = logger.warning if _is_intraday else logger.info
+                _log(
+                    "[ScalerFloor] %s '%s' scale=%.4f → floor=%.2f 적용 (z-score 폭발 방지)",
                     horizon_label, _feat, sc.scale_[_fi], _floor,
                 )
                 sc.scale_[_fi] = _floor
@@ -1079,7 +1099,7 @@ class MultiHorizonModel:
                                 horizon, _feat, _raw_std,
                             )
 
-                self._apply_macro_scale_floor(_new_sc, horizon)
+                self._apply_macro_scale_floor(_new_sc, horizon, trigger_type)
                 self.scalers[horizon] = _new_sc
                 self._scaler_fitted_at[horizon] = datetime.datetime.now()
                 # 원자적 저장: tmp에 쓴 후 os.replace로 교체 — 읽기 도중 corrupt 방지

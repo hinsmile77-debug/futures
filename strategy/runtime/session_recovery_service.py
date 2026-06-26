@@ -50,30 +50,53 @@ class SessionRecoveryService:
                 "[LiveDBG] _restore_panels_worker 지연 %.0fms — live 중단 원인 분석용",
                 _gather_ms,
             )
-        # UI 업데이트는 메인 스레드에서 실행
-        def _apply():
-            import time as _ta
-            _log.getLogger("SYSTEM").warning("[LiveDBG] _apply 시작 (메인 스레드)")
+        # UI 업데이트는 메인 스레드에서 실행 — 4단계 QTimer 체인
+        # 이유: 기존 단일 _apply()는 update_learning+efficacy+trend+pnl_history 합산 ~14초
+        #   → 메인 스레드 14,828ms 블로킹 실증(6/26 09:23, 재시작 직후 CB⑤ 위험)
+        # 각 단계 사이 10ms 양보 → _tick_header가 중간에 발화해 블로킹 검출 간격 ≤4s로 분산.
+        import time as _ta
+        _log.getLogger("SYSTEM").warning("[LiveDBG] _apply 시작 (4단계 체인)")
+
+        def _stage4():
+            try:
+                _s = _ta.monotonic()
+                system._refresh_pnl_history()
+                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply pnl_history %.0fms 총%.0fms",
+                                                 (_ta.monotonic()-_s)*1000, (_ta.monotonic()-_t0)*1000)
+            except Exception as _ue:
+                _log.getLogger("SYSTEM").debug("[Restore] pnl_history 실패: %s", _ue)
+
+        def _stage3():
+            try:
+                _s = _ta.monotonic()
+                if trend:
+                    system.dashboard.update_trend(trend)
+                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply update_trend %.0fms", (_ta.monotonic()-_s)*1000)
+            except Exception as _ue:
+                _log.getLogger("SYSTEM").debug("[Restore] update_trend 실패: %s", _ue)
+            _QTimer.singleShot(10, _stage4)
+
+        def _stage2():
+            try:
+                _s = _ta.monotonic()
+                if efficacy:
+                    system.dashboard.update_efficacy(efficacy)
+                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply update_efficacy %.0fms", (_ta.monotonic()-_s)*1000)
+            except Exception as _ue:
+                _log.getLogger("SYSTEM").debug("[Restore] update_efficacy 실패: %s", _ue)
+            _QTimer.singleShot(10, _stage3)
+
+        def _stage1():
             try:
                 _s = _ta.monotonic()
                 if learning:
                     system.dashboard.update_learning(learning)
                 _log.getLogger("SYSTEM").warning("[LiveDBG] _apply update_learning %.0fms", (_ta.monotonic()-_s)*1000)
-                _s = _ta.monotonic()
-                if efficacy:
-                    system.dashboard.update_efficacy(efficacy)
-                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply update_efficacy %.0fms", (_ta.monotonic()-_s)*1000)
-                _s = _ta.monotonic()
-                if trend:
-                    system.dashboard.update_trend(trend)
-                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply update_trend %.0fms", (_ta.monotonic()-_s)*1000)
-                _s = _ta.monotonic()
-                system._refresh_pnl_history()
-                _log.getLogger("SYSTEM").warning("[LiveDBG] _apply _refresh_pnl_history %.0fms", (_ta.monotonic()-_s)*1000)
             except Exception as _ue:
-                _log.getLogger("SYSTEM").debug("[Restore] 패널 UI 업데이트 실패: %s", _ue)
-            _log.getLogger("SYSTEM").warning("[LiveDBG] _apply 완료 총 %.0fms", (_ta.monotonic()-_t0)*1000)
-        _QTimer.singleShot(0, _apply)
+                _log.getLogger("SYSTEM").debug("[Restore] update_learning 실패: %s", _ue)
+            _QTimer.singleShot(10, _stage2)
+
+        _QTimer.singleShot(0, _stage1)
 
     def increment_session(self, system: Any) -> int:
         data = system._read_session_state()

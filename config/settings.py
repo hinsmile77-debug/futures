@@ -331,9 +331,13 @@ SCALER_CLIP_FEATURES: dict = {
     # toxicity_cancel_stress: [0,1] bounded이나 σ=0.002 → 0.016 입력만으로 z=7.0
     # 0.5 = cancel_add_ratio=1.0에 해당하는 극단 상한
     "toxicity_cancel_stress":   (0.0, 0.5),
-    # quality_investor_age_sec: σ=11.351, 109초 입력 시 z=7.08
-    # is_stale threshold 180초와 일치 — 이상은 모두 "완전 stale" 동일 취급
-    "quality_investor_age_sec": (0.0, 180.0),
+    # toxicity_atr_stress: [0,1] bounded — atr_ratio=3.0 → atr_stress=1.0 → z>4 (고변동성 장)
+    # 0.75 = atr_ratio=2.5에 해당 (정상 범위 상한). cancel_stress와 동일 패턴.
+    "toxicity_atr_stress":      (0.0, 0.75),
+    # quality_investor_age_sec: feature_builder가 min(age,300)/300 으로 [0,1] 정규화 출력.
+    # 구 설정 (0.0, 180.0)은 원시 초 단위 기준이라 정규화값에 clip이 무효했던 버그.
+    # 0.60 = 180s/300s — is_stale threshold(180s)와 일치, 이상은 모두 "완전 stale" 동일 취급.
+    "quality_investor_age_sec": (0.0, 0.60),
     # quality_macro_age_sec: 매크로 수집 간격 최대 1시간
     "quality_macro_age_sec":    (0.0, 3600.0),
     # macro_vix_abs: VIX 원본값, Phase 2-A에서 제거 전까지 현실 범위 cap

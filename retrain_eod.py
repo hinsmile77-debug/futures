@@ -110,7 +110,6 @@ def p8_scaler_refit() -> bool:
             return False
 
         model = MultiHorizonModel()
-        model._load_all()
         result = model.refit_scalers_only(
             X,
             feature_names,
@@ -125,17 +124,24 @@ def p8_scaler_refit() -> bool:
             len(X), elapsed, horizons,
         )
 
-        # p8_last_success_date → 내일 08:45 EarlyWarmup·EKS 원인 진단용
+        # session_state 기록:
+        #   p8_last_success_date → 내일 EarlyWarmup·EKS 원인 진단용
+        #   eod_retrain_ok_date  → 내일 08:55 PreRetrain 스킵 판단용 (main.py:3224)
+        # 구조적 문제: daily_close()(15:40)는 EOD 완료 전 체크라 마커가 없어 eod_retrain_ok_date를
+        # 기록 못함 → PreRetrain이 매일 fallback(마커파일 직접확인)에 의존하게 됨.
+        # 근본 수정: retrain_eod.py 완료 시점(15:47+)에 두 키를 모두 기록.
         try:
             _ss_path = os.path.join(_ROOT, "data", "session_state.json")
             _ss: dict = {}
             if os.path.exists(_ss_path):
                 with open(_ss_path, "r", encoding="utf-8") as _f:
                     _ss = json.load(_f)
-            _ss["p8_last_success_date"] = datetime.date.today().isoformat()
+            _today = datetime.date.today().isoformat()
+            _ss["p8_last_success_date"] = _today
+            _ss["eod_retrain_ok_date"]  = _today   # main.py PreRetrain 스킵용 (daily_close 레이스 해소)
             with open(_ss_path, "w", encoding="utf-8") as _f:
                 json.dump(_ss, _f, ensure_ascii=False, indent=2)
-            log.info("[P8] session_state p8_last_success_date 기록 완료")
+            log.info("[P8] session_state p8_last_success_date + eod_retrain_ok_date 기록 완료")
         except Exception as _sse:
             log.warning("[P8] session_state 기록 실패 (무해): %s", _sse)
 
