@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-06-26 (253차 — 6/26 장중 분석 7종 수정)
+
+**트리거**: 6/26 모의투자 첫 장 — EKS 발동, OptionChainWorker 크래시 2회, CB⑤ 기준 초과 블로킹 2회. launcher_20260626_084000.log 전체 분석 요청.
+
+### 딥다이브 결과 (5개 주제)
+
+**① OptionChainWorker 크래시 (09:11, 09:21)**
+- 원인: `_poll_option_chain` line 2572 — `deleteLater()` 후 C++ 소멸, Python wrapper 살아있어 `.isRunning()` → RuntimeError
+- 수정: try/except RuntimeError → `self._option_chain_worker = None`
+
+**② 메인 스레드 블로킹 2건**
+- 09:01 (7,187ms): `_fetch_investor_data` → BlockRequest(CpSysDib.CpSvrNew7221) 09:00 서버 피크. COM STA 메시지 펌프는 COM 이벤트(파이프라인)는 허용, Qt 타이머(_tick_header) 불허.
+- 09:23 (14,828ms): 재시작 직후 `_apply()` 4개 패널 직렬 → 4단계 QTimer 체인으로 분해
+- InvestorWorker QThread 분리 검토 → COM STA 위반 위험 + 09:00-09:02 guard로 충분 → **기각**
+
+**③ EKS 과발동 원인 — z경고 12개**
+- `toxicity_atr_stress`: SCALER_CLIP_FEATURES 미등록 → 고변동성 장 z>4
+- `quality_investor_age_sec`: clip 범위 버그 (0,180.0) → 정규화값 [0,1]에 무효. (0,0.60)으로 수정
+- ScalerFloor σ 하한 추가: quality(0.15), toxicity(0.20) → z_max<4 보장
+
+**④ ScalerFloor WARNING 72개 폭증 원인**
+- macro 피처는 일봉 상수 → 30봉 window σ<floor 구조적 정상
+- `_apply_macro_scale_floor`에 trigger_type 파라미터 추가 → pre-market/EOD: INFO, 장중: WARNING
+- 개선안 B (mean=0) 검토: macro_us10y_chg mean=-0.483 → z=-4.83 EXTREME 발생 확인(py37_32 scaler pkl 직접 로드 테스트) → **기각**
+
+**⑤ EarlyWarmup 17h — EOD P8 정상인데 왜 경고?**
+- EARLY_WARMUP_MIN_AGE_HOURS=4.0 (247차) → 매 영업일 15:47→08:45=17h>4h 항상 발동. 설계 의도.
+- retrain_eod.py가 `p8_last_success_date`만 쓰고 `eod_retrain_ok_date`는 안 씀 → daily_close(15:40) 레이스 → PreRetrain fallback 의존. `eod_retrain_ok_date` 추가 기록으로 해결.
+
+### 수정 파일
+
+`main.py`, `config/settings.py`, `model/multi_horizon_model.py`, `retrain_eod.py`, `strategy/runtime/session_recovery_service.py`
+
+**커밋**: `8952dd7` (253차)
+
+---
+
 ## 2026-06-25 (252차 — macro_risk_off CORE 해제)
 
 **트리거**: ScalerFloor 로그 `macro_krw_chg 0.0776→0.10`, `macro_risk_off 0.4221→0.50` 딥다이브 + 피처 이득 분석 요청.

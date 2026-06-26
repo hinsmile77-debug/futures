@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-06-27 (253차 검증) [P0]
+
+### 크래시·블로킹 수정 확인
+
+- [ ] **OptionChainWorker 크래시 재발 없음** — `[OptionChain] 이전 워커 실행 중 — 스킵` 로그 정상 출현, RuntimeError 없음
+- [ ] **09:00~09:02 investor skip 확인** — `[LiveDBG] _fetch_investor_data 09:00~09:02 서버피크 스킵` 로그 출현
+- [ ] **재시작 후 4단계 체인 확인** — `[LiveDBG] _apply 시작 (4단계 체인)` 후 `update_learning/efficacy/trend/pnl_history` 4줄 순서대로 출현, 각 ≤5s
+- [ ] **14828ms 블로킹 재발 없음** — `_tick_header 간격 >5000ms` WARNING 없음 (재시작 후 60초 내)
+
+### z경고 억제 확인
+
+- [ ] **EarlyWarmup ScalerFloor INFO 전환** — 08:45 이후 `[ScalerFloor]` 로그가 WARNING 아닌 INFO로 출현
+- [ ] **quality_investor_age_sec z경고 없음** — 09:00 첫 분봉에서 `quality_investor_age_sec` extreme 로그 없음
+- [ ] **toxicity_atr_stress z경고 감소** — 고변동성 구간에서 `toxicity_atr_stress` extreme 로그 없음
+- [ ] **EKS 미발동** — `[SHS-EKS] Early Kill Switch 발동` CRITICAL 없음 (단, 진짜 불량 장이면 정상 발동 허용)
+
+### session_state 레이스 수정 확인 (EOD 후)
+
+- [ ] **P8 완료 후 양키 기록** — retrain_eod 로그에 `p8_last_success_date + eod_retrain_ok_date 기록 완료` 출현
+- [ ] **다음날 PreRetrain fallback 없음** — 08:55 로그에 `session_state 미기록 보완` 문구 없음, `PreRetrain 스킵 검토` 직접 출현
+
+---
+
 ## 2026-06-26 (250차 검증) [P0]
 
 ### 30m·CB③ 비활성화 확인

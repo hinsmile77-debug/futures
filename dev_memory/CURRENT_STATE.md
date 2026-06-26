@@ -1,7 +1,41 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-25 (252차) — macro_risk_off CORE 해제
+> 마지막 업데이트: 2026-06-26 (253차) — 6/26 장중 분석 7종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-26 (253차 — 6/26 장중 분석 7종 수정)
+
+### 배경
+
+6/26 모의투자 첫 장: 09:05 EKS 발동(당일 관망), 09:11·09:21 OptionChainWorker 크래시 2회, 09:01·09:23 CB⑤ 기준 초과 블로킹 발생. 장 종료 후 원인 딥다이브 및 전량 수정.
+
+### 수정 내용 7종
+
+| # | 파일 | 수정 | 원인 |
+|---|---|---|---|
+| ① | `main.py` | `_poll_option_chain` RuntimeError try/except | deleteLater() 후 C++ 소멸, Python wrapper 살아있어 크래시 |
+| ② | `main.py` | `_fetch_investor_data` 09:00~09:02 skip guard | BlockRequest(CpSysDib.CpSvrNew7221) 서버 피크 7,187ms 블로킹 |
+| ③ | `session_recovery_service.py` | `_apply` 4단계 QTimer 체인 (10ms 양보) | 재시작 패널 복원 14,828ms 연속 블로킹 |
+| ④ | `config/settings.py` | `quality_investor_age_sec` clip 버그 수정 (0.0,180.0)→(0.0,0.60) | /300 정규화값에 원시 초 clip → 무효였던 버그 |
+| ⑤ | `config/settings.py` | `toxicity_atr_stress` (0.0,0.75) 추가 | 고변동성 장 z>4 → EKS 과발동 기여 |
+| ⑥ | `model/multi_horizon_model.py` | ScalerFloor quality/toxicity σ 하한 추가, trigger_type별 로그 레벨 분리 | pre-market 72 WARNING 폭증 → INFO 전환, 장중 D_FORCE는 WARNING 유지 |
+| ⑦ | `retrain_eod.py` | P8 완료 시 `eod_retrain_ok_date` 추가 기록 | daily_close(15:40) vs EOD 완료(15:47) 레이스 → PreRetrain 매일 fallback 의존 |
+
+### 분석에서 기각된 것
+
+- **InvestorWorker QThread 분리**: COM STA 위반 위험 + ②로 주요 구간 커버됨 → 불필요
+- **SHAP 백그라운드화**: ③으로 주요 블로킹 해결됨 + VP cold-start 위험 → 불필요
+- **ScalerFloor mean=0 적용(개선안 B)**: `macro_us10y_chg` mean=-0.483 → z=-4.83 극단 발생 확인 → 기각. 실측 테스트(py37_32 scaler pkl 직접 로드)로 검증.
+
+### EKS 발동 근본 원인 (6/26)
+
+오늘 특이: 1447(08:45) → 1404(09:33) 급락 -43pt, VIX=18.6 평상. CORE 피처가 conf=0.0% 5봉 → EKS 발동. 수정 ④⑤⑥으로 내일부터 z경고 구조적 억제.
+
+### 커밋
+
+`8952dd7` (253차)
 
 ---
 
