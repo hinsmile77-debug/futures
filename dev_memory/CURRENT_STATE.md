@@ -1,7 +1,53 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-26 (253차) — 6/26 장중 분석 7종 수정
+> 마지막 업데이트: 2026-06-26 (254차) — 거래소 서킷브레이커 감지·대응·대시보드 표시
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-26 (254차 — 거래소 서킷브레이커 감지·대응·대시보드 표시)
+
+### 배경
+
+6/26 KOSPI 8% 이상 하락으로 KRX 거래소 서킷브레이커(CB 1단계) 발동. 미륵이 파이프라인 4분 미실행 WARN 발생. KRX CB 메커니즘: 20분 거래 중단 → 10분 단일가매매 → 정규매매 재개 (총 30분).
+
+### 구현 내용
+
+**조기 감지 (main.py)**
+- 분봉 240초(4분) 미수신 + `broker.is_connected=True` → 거래소 CB 즉시 확정 (기존 300초에서 앞당김)
+- Cybos 서버 연결 정상인데 분봉 없음 = 네트워크 아닌 거래소 중단 판별
+- Cybos 연결 이상(False)이면 기존 긴급 복구 로직 실행
+
+**CB 발동 시 처리**
+- Slack 알림에 예상 재개 시각 추가 (발동 감지 시각 +30분, KRX 기준)
+- 30분 생존 알림 시 `_gap_min==30` → "재개 임박" 메시지 분기
+
+**CB 해제 직후 처리**
+- 포지션 보유 시 CB 해제 첫 분봉 close 기준 `force_exit()` 즉시 실행
+- 관망 기간 **10분** 설정 (단일가매매 10분 전 구간 커버, 기존 5분 → 수정)
+- 관망 중 STEP 7 게이트 `_ecb_observation_ok` 차단 + 매분 잔여 시간 갱신
+
+**CB 3단계(장 조기 종료) 대비**
+- `daily_close()`에 `_exchange_cb_mode / _ecb_observation_until` 강제 리셋 추가
+- CB 3단계 발동 시 다음날까지 CB 모드 잔류 방지
+
+**대시보드 거래소 CB 배지 (main_dashboard.py)**
+- `lbl_ecb` 배지 신설 — `lbl_regime`(매크로레짐) 왼쪽, 정상 시 숨김(`setVisible(False)`)
+- CB 발동: 진한 빨강(`#7a0000`) + 빨간 테두리, "KRX CB ⏸ / 재개≈HH:MM"
+- 관망 중: 진한 주황(`#7a3800`) + 주황 테두리, "관망 N분 / HH:MM 재개" (매분 카운트다운)
+- 정상 복귀 시: `setVisible(False)` 자동 복구
+- `DashboardController.update_exchange_cb_badge(state, resume_est, until_dt)` 메서드 신설
+
+### 수정 파일
+
+| 파일 | 변경 |
+|---|---|
+| `main.py` | CB 조기 감지, 포지션 즉시 청산, 관망 10분, daily_close 리셋, 대시보드 호출 |
+| `dashboard/main_dashboard.py` | `lbl_ecb` 배지 생성·배치, `update_exchange_cb_badge()` 메서드 |
+
+### 커밋
+
+`a320849` (254차)
 
 ---
 
