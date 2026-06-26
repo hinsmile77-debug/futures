@@ -334,6 +334,7 @@ class TradingSystem:
         # 거래소 CB 대기 모드
         self._exchange_cb_mode:  bool = False
         self._exchange_cb_start: Optional[datetime.datetime] = None
+        self._ecb_observation_until: Optional[datetime.datetime] = None  # CB 해제 후 관망 기간
         # EnsembleGater 온라인 학습: 마지막 진입의 gate signals / direction 저장
         self._last_gate_signals: dict = {}
         self._last_gate_direction: int = 0
@@ -2831,6 +2832,22 @@ class TradingSystem:
                 "INFO",
             )
             notify(f"▶ 미륵이 거래소 CB 해제 — {_gap_min}분 후 분봉 재개")
+            # 거래소 CB 중 포지션이 열려 있었다면 즉시 시장가 청산
+            # (CB 중에는 체결 불가 → 해제 첫 분봉의 close 기준으로 즉시 청산)
+            if self.position.status != "FLAT":
+                _ecb_close = float(candle.get("close", 0) or 0)
+                log_manager.system(
+                    f"[ExchangeCB] CB 해제 직후 포지션 보유 ({self.position.status}) — "
+                    f"즉시 청산 실행 (close={_ecb_close})",
+                    "WARNING",
+                )
+                try:
+                    self.exit_manager.force_exit(_ecb_close, reason="ExchangeCB_해제_즉시청산")
+                except Exception as _ecb_ex:
+                    log_manager.system(
+                        f"[ExchangeCB] 즉시 청산 실패: {_ecb_ex} — 수동 확인 필요",
+                        "CRITICAL",
+                    )
             self._post_exchange_cb_resume(_gap_min)
 
         # 09:00 이후 첫 분봉 수신 — 정상 작동 슬랙 알림 + 갭 오프셋 설정 (1회만)
@@ -5780,6 +5797,23 @@ class TradingSystem:
         _raw_signal_ko = self._direction_to_korean(_resolved_raw_dir)
         _final_signal_ko = self._direction_to_korean(_resolved_final_dir)
         _checklist_grade = _cr["grade"] if _cr is not None else None
+        # 거래소 CB 해제 후 관망 기간 — 극단 변동성 구간 신규 진입 차단
+        _ecb_obs = getattr(self, "_ecb_observation_until", None)
+        if _ecb_obs and datetime.datetime.now() >= _ecb_obs:
+            self._ecb_observation_until = None
+            _ecb_obs = None
+            # 관망 기간 만료 → 배지 정상 리셋
+            try:
+                self.dashboard.update_exchange_cb_badge("NORMAL")
+            except Exception:
+                pass
+        elif _ecb_obs is not None:
+            # 관망 중 — 매분 남은 시간 갱신
+            try:
+                self.dashboard.update_exchange_cb_badge("OBSERVING", until_dt=_ecb_obs)
+            except Exception:
+                pass
+        _ecb_observation_ok = _ecb_obs is None
         _final_entry_ok = (
             _cr is not None
             and self.circuit_breaker.is_entry_allowed()
@@ -5798,6 +5832,7 @@ class TradingSystem:
             and not _bar_volume_zero
             and not _intraday_block
             and not self.system_health.kill_switch_active   # [SHS-EKS] 당일 관망일
+            and _ecb_observation_ok                         # 거래소 CB 해제 후 관망 기간
         )
 
         # ── [DashboardHistory] STEP7 마스터 게이트 — 조건별 통과 여부 + 차단사유
@@ -5820,12 +5855,19 @@ class TradingSystem:
             "bar_volume_ok":    not _bar_volume_zero,
             "intraday_ok":      not _intraday_block,
             "kill_switch_ok":   not self.system_health.kill_switch_active,
+            "ecb_observe_ok":   _ecb_observation_ok,
         }
 
         _entry_block_reason = ""
         if direction != 0 and self.position.status == "FLAT":
             _cb_state = self.circuit_breaker.state
-            if _cb_state != "NORMAL":
+            if not _ecb_observation_ok:
+                _obs_remain = int((self._ecb_observation_until - datetime.datetime.now()).total_seconds() / 60) + 1
+                _entry_block_reason = (
+                    f"[차단] 거래소 CB 해제 후 관망 중 — 약 {_obs_remain}분 후 진입 재개 "
+                    f"({self._ecb_observation_until.strftime('%H:%M')} 해제)"
+                )
+            elif _cb_state != "NORMAL":
                 _entry_block_reason = f"[차단] Circuit Breaker {_cb_state} — 진입 불가 (CB 해제까지 대기)"
             elif _hc_block:
                 _entry_block_reason = (
@@ -7410,6 +7452,22 @@ class TradingSystem:
         self.emergency_exit.reset()
         self.kill_switch.deactivate()
         self.system_health.reset_daily()    # EKS·GAP_OPEN 상태 초기화 (z_warn·restart는 유지)
+        # CB 3단계(당일 장 조기 종료) 대비: 마감 시 거래소 CB 모드 강제 해제.
+        # 3단계 발동 시 _on_candle_closed가 다시 불리지 않아 _exchange_cb_mode=True가
+        # 다음날까지 잔류하며 불필요한 GBM 재학습·스케일러 재적합을 유발하는 것을 방지.
+        if self._exchange_cb_mode:
+            log_manager.system(
+                "[DailyClose] 거래소 CB 모드 잔류 감지 → 일일 마감 시 강제 해제 "
+                "(CB 3단계 또는 장중 종료로 인한 미해제 추정)",
+                "WARNING",
+            )
+        self._exchange_cb_mode = False
+        self._exchange_cb_start = None
+        self._ecb_observation_until = None
+        try:
+            self.dashboard.update_exchange_cb_badge("NORMAL")
+        except Exception:
+            pass
 
         # rolling σ EOD 저장 + 초기화 (방법3)
         if self._sigma_20 > 0:
@@ -7775,31 +7833,75 @@ class TradingSystem:
             if not self._exchange_cb_mode:
                 self._exchange_cb_mode = True
                 self._exchange_cb_start = datetime.datetime.now()
+                _ecb_resume_est_300 = (
+                    self._exchange_cb_start + datetime.timedelta(minutes=30)
+                ).strftime("%H:%M")
                 msg = (
                     f"[ExchangeCB] 분봉 {elapsed_str} 미수신 (실경과={int(_real_gap)}s) — "
-                    f"거래소 CB/단일가 구간 추정. 복구 시도 중단, 재개 대기 모드 진입"
+                    f"거래소 CB/단일가 구간 추정. 복구 시도 중단, 재개 대기 모드 진입 "
+                    f"(예상 재개 ≈ {_ecb_resume_est_300})"
                 )
                 log_manager.system(msg, "WARNING")
-                notify(f"⏸ 미륵이 거래소 CB 대기 — {elapsed_str} 분봉 미수신")
+                notify(
+                    f"⏸ 미륵이 거래소 CB 대기 — {elapsed_str} 분봉 미수신\n"
+                    f"예상: 20분 중단→10분 단일가→정규매매 재개 ≈ {_ecb_resume_est_300}"
+                )
                 self._shadow_tracker.mark_exchange_cb(True)
                 # [227차] CB⑤ 임계 완화 — CB 모드 중 파이프라인 지연 오발동 방지
                 self.circuit_breaker.set_gbm_retrain_active(True)
+                try:
+                    self.dashboard.update_exchange_cb_badge("CB_ACTIVE", resume_est=_ecb_resume_est_300)
+                except Exception:
+                    pass
             else:
-                # CB 모드 중 — 30분마다 생존 알림만 발송
+                # CB 모드 중 — 30분마다 생존 알림 (30분=KRX CB 총 중단 시간이므로 재개 임박 메시지 포함)
                 _gap_min = int(
                     (datetime.datetime.now() - self._exchange_cb_start).total_seconds() / 60
                 ) if self._exchange_cb_start else m
                 if _gap_min > 0 and _gap_min % 30 == 0 and s < 60:
-                    notify(f"⏸ 거래소 CB 대기 중 {_gap_min}분 — 분봉 재개 시 자동 복구")
+                    _resume_msg = "재개 임박 — 분봉 수신 즉시 자동 복구" if _gap_min == 30 else "분봉 재개 시 자동 복구"
+                    notify(f"⏸ 거래소 CB 대기 중 {_gap_min}분 — {_resume_msg}")
             return  # CB 모드 중에는 _try_pipeline_recovery 절대 호출 안 함
 
         if elapsed_s >= 240:
-            msg = (f"⛔ 파이프라인 {elapsed_str} 미실행 — 원인 불명. 긴급 복구 시도 중  "
-                   f"가능한 원인: ① API 무응답 ② on_candle_closed 미호출 "
-                   f"③ STEP 내 예외 누락 ④ 장외 시간")
-            log_manager.system(msg, "WARNING")
-            notify(f"🚨 미륵이 파이프라인 {elapsed_str} 정지 — 긴급 복구 시도")
-            QTimer.singleShot(300, self._try_pipeline_recovery)
+            # [ExchangeCB 조기 감지] Cybos 서버 연결이 정상인데 분봉이 4분 이상 미수신
+            # → 네트워크/API 문제가 아니라 거래소 서킷브레이커로 판단하고 CB 모드 즉시 진입.
+            # 연결 이상이면 기존 긴급 복구 로직을 그대로 실행.
+            try:
+                _broker_connected = bool(self.broker.is_connected)
+            except Exception:
+                _broker_connected = False
+
+            if _broker_connected and not self._exchange_cb_mode:
+                self._exchange_cb_mode = True
+                self._exchange_cb_start = datetime.datetime.now()
+                _ecb_resume_est = (
+                    self._exchange_cb_start + datetime.timedelta(minutes=30)
+                ).strftime("%H:%M")
+                msg = (
+                    f"[ExchangeCB] 분봉 {elapsed_str} 미수신 (실경과={int(_real_gap)}s) + "
+                    f"Cybos 연결 정상 → 거래소 CB/단일가 구간 조기 확정. "
+                    f"복구 시도 중단, 재개 대기 모드 진입 "
+                    f"(KRX: 20분 중단+10분 단일가, 예상 재개 ≈ {_ecb_resume_est})"
+                )
+                log_manager.system(msg, "WARNING")
+                notify(
+                    f"⏸ 미륵이 거래소 CB 감지 — {elapsed_str} 미수신\n"
+                    f"예상: 20분 중단→10분 단일가→정규매매 재개 ≈ {_ecb_resume_est}"
+                )
+                self._shadow_tracker.mark_exchange_cb(True)
+                self.circuit_breaker.set_gbm_retrain_active(True)
+                try:
+                    self.dashboard.update_exchange_cb_badge("CB_ACTIVE", resume_est=_ecb_resume_est)
+                except Exception:
+                    pass
+            elif not _broker_connected:
+                msg = (f"⛔ 파이프라인 {elapsed_str} 미실행 — 원인 불명. 긴급 복구 시도 중  "
+                       f"가능한 원인: ① API 무응답 ② on_candle_closed 미호출 "
+                       f"③ STEP 내 예외 누락 ④ 장외 시간")
+                log_manager.system(msg, "WARNING")
+                notify(f"🚨 미륵이 파이프라인 {elapsed_str} 정지 — 긴급 복구 시도")
+                QTimer.singleShot(300, self._try_pipeline_recovery)
 
         elif _ecb_trigger_s >= 150:
             msg = (f"⚠ 파이프라인 {elapsed_str} 미실행 (실경과={int(_real_gap)}s) — 분봉 수신 또는 API 상태 이상  "
@@ -7915,11 +8017,32 @@ class TradingSystem:
         # 단, 워치독 리셋: CB 해제 직후 watchdog이 즉시 경보하지 않도록 파이프라인 타이머 리셋
         self.dashboard.notify_pipeline_ran()
 
+        # ⑨ CB 해제 후 관망 기간 — 극단 변동성 구간에서 신규 진입 차단
+        # CB 재개 직후는 반등/급락이 과격해 1분봉 모델 예측 신뢰 불가.
+        # GBM 재학습·스케일러 재적합이 완료되기 전 진입도 방지.
+        # KRX CB 구조: 20분 거래 중단 → 10분 단일가매매 = 30분 총 블랙아웃.
+        # 단일가매매 시작과 동시에 분봉이 도착하는 경우에도 단일가 10분 전체를 커버하려면 10분 필요.
+        _ECB_OBSERVE_MIN = 10
+        self._ecb_observation_until = (
+            datetime.datetime.now() + datetime.timedelta(minutes=_ECB_OBSERVE_MIN)
+        )
         log_manager.system(
-            f"[ExchangeCB] 재개 초기화 완료 | gap={gap_min}m | "
-            f"ShadowLIVE/acc리셋/앙상블리셋/스케일러재적합/쿨다운리셋/GBM재학습예약",
+            f"[ExchangeCB] 관망 기간 설정 — {_ECB_OBSERVE_MIN}분 신규 진입 차단 "
+            f"(단일가매매 커버, 해제: {self._ecb_observation_until.strftime('%H:%M')})",
             "INFO",
         )
+
+        log_manager.system(
+            f"[ExchangeCB] 재개 초기화 완료 | gap={gap_min}m | "
+            f"ShadowLIVE/acc리셋/앙상블리셋/스케일러재적합/쿨다운리셋/GBM재학습예약/관망{_ECB_OBSERVE_MIN}분",
+            "INFO",
+        )
+        try:
+            self.dashboard.update_exchange_cb_badge(
+                "OBSERVING", until_dt=self._ecb_observation_until
+            )
+        except Exception:
+            pass
 
     def _try_pipeline_recovery(self) -> None:
         """raw_candles 최신 분봉으로 파이프라인 강제 재실행."""

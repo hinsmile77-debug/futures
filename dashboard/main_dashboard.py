@@ -9128,6 +9128,25 @@ class MireukDashboard(QMainWindow):
         price_box.addWidget(self.lbl_price_change)
 
         # 상태 배지
+        # 거래소 CB 상태 배지 — lbl_regime 왼쪽에 위치
+        # 정상 시에는 숨김, CB 발동/관망 시에만 표시
+        self.lbl_ecb = QLabel("KRX CB\n⏸ --:--")
+        self.lbl_ecb.setAlignment(Qt.AlignCenter)
+        self.lbl_ecb.setStyleSheet(
+            f"background:#7a0000;color:#fff;"
+            f"border:2px solid #FF5252;"
+            f"border-radius:{S.p(3)}px;"
+            f"font-size:{S.f(10)}px;font-weight:bold;"
+            f"padding:{S.p(1)}px {S.p(4)}px;"
+        )
+        self.lbl_ecb.setToolTip(
+            "거래소 서킷브레이커 상태\n"
+            "  KRX CB ⏸  : 거래소 CB 발동 — 거래 중단 중\n"
+            "  관망 중    : CB 해제 후 관망 구간 (신규 진입 차단)\n"
+            "  (숨김)     : 정상 거래 중"
+        )
+        self.lbl_ecb.setVisible(False)
+
         self.lbl_regime       = mk_badge("NEUTRAL", C['orange'], "#fff", 11)
         self.lbl_regime.setToolTip(
             "매크로 레짐 — 08:55 장전 1회 수집, 당일 고정\n"
@@ -9607,7 +9626,7 @@ class MireukDashboard(QMainWindow):
         header.addLayout(title_box)
         header.addLayout(right_col)
         header.addStretch()
-        for w in [self.lbl_regime, self._micro_box, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_cb]:
+        for w in [self.lbl_ecb, self.lbl_regime, self._micro_box, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_cb]:
             header.addWidget(w)
         header.addWidget(self.lbl_l2_halt)  # L2 halt badge (CB 오른쪽)
         header.addWidget(self.lbl_shs)        # SHS / EKS badge
@@ -10666,6 +10685,72 @@ class DashboardAdapter:
                 f"padding:{S.p(1)}px {S.p(3)}px;"
             )
 
+    def update_exchange_cb_badge(
+        self,
+        state: str = "NORMAL",
+        resume_est: str = "",
+        until_dt=None,
+    ) -> None:
+        """거래소 서킷브레이커 상태 배지 갱신.
+
+        state:
+          "NORMAL"    — 정상 거래 중 → 배지 숨김
+          "CB_ACTIVE" — 거래소 CB 발동 중 (거래 중단)
+          "OBSERVING" — CB 해제 후 관망 기간 (신규 진입 차단)
+
+        resume_est: CB 예상 재개 시각 문자열 (HH:MM)
+        until_dt:   관망 종료 datetime (OBSERVING 상태에서 남은 분 계산용)
+        """
+        import datetime as _dt
+        lbl = getattr(self._win, "lbl_ecb", None)
+        if lbl is None:
+            return
+
+        if state == "CB_ACTIVE":
+            _est = resume_est or "--:--"
+            lbl.setText(f"KRX CB ⏸\n재개≈{_est}")
+            lbl.setStyleSheet(
+                f"background:#7a0000;color:#fff;"
+                f"border:2px solid #FF5252;"
+                f"border-radius:{S.p(3)}px;"
+                f"font-size:{S.f(10)}px;font-weight:bold;"
+                f"padding:{S.p(1)}px {S.p(4)}px;"
+            )
+            lbl.setToolTip(
+                f"거래소 서킷브레이커 발동 중\n"
+                f"KRX: 20분 거래 중단 → 10분 단일가매매\n"
+                f"예상 재개: {_est}\n"
+                f"분봉 재수신 시 자동 복구"
+            )
+            lbl.setVisible(True)
+
+        elif state == "OBSERVING":
+            if until_dt is not None:
+                _remain = max(0, int(
+                    (_dt.datetime.now() - until_dt).total_seconds() / -60
+                ))
+                _until_str = until_dt.strftime("%H:%M")
+                _body = f"관망 {_remain}분\n{_until_str} 재개"
+            else:
+                _body = "관망 중\n진입 차단"
+            lbl.setText(_body)
+            lbl.setStyleSheet(
+                f"background:#7a3800;color:#fff;"
+                f"border:2px solid #FFB74D;"
+                f"border-radius:{S.p(3)}px;"
+                f"font-size:{S.f(10)}px;font-weight:bold;"
+                f"padding:{S.p(1)}px {S.p(4)}px;"
+            )
+            lbl.setToolTip(
+                f"거래소 CB 해제 후 관망 구간\n"
+                f"단일가매매·급변 안정화 대기 중 신규 진입 차단\n"
+                f"{'종료: ' + until_dt.strftime('%H:%M') if until_dt else ''}"
+            )
+            lbl.setVisible(True)
+
+        else:  # NORMAL
+            lbl.setVisible(False)
+
     def update_shs_badge(
         self, shs: float, entry_blocked: bool, kill_switch: bool, eks_reason: str = ""
     ) -> None:
@@ -11206,6 +11291,14 @@ def _adapter_set_minute_chart_post_reload_hook(self, hook):
     self._win._minute_chart_dialog._post_reload_hook = hook
 
 
+def _adapter_push_direction_live(self, decision: dict, ts: str) -> None:
+    """파이프라인 실시간 앙상블 결과를 방향카드에 즉시 반영 (DB 폴링 우회)."""
+    try:
+        self._win.pred_panel._dir_indicator.push_live(decision, ts)
+    except Exception:
+        pass
+
+
 DashboardAdapter.toggle_minute_chart_dialog = _adapter_toggle_minute_chart_dialog
 DashboardAdapter.minute_chart_tick = _adapter_minute_chart_tick
 DashboardAdapter.minute_chart_candle_closed = _adapter_minute_chart_candle_closed
@@ -11216,6 +11309,7 @@ DashboardAdapter.minute_chart_record_exit = _adapter_minute_chart_record_exit
 DashboardAdapter.minute_chart_sync_active_position = _adapter_minute_chart_sync_active_position
 DashboardAdapter.minute_chart_clear_active_position = _adapter_minute_chart_clear_active_position
 DashboardAdapter.set_minute_chart_post_reload_hook = _adapter_set_minute_chart_post_reload_hook
+DashboardAdapter.push_direction_live = _adapter_push_direction_live
 
 
 # ────────────────────────────────────────────────────────────
