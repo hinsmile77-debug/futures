@@ -112,21 +112,25 @@ INSTALL.bat
 ```
 
 - `py37_32` conda env 자동 생성
-- `requirements.txt` 패키지 자동 설치
+- **32-bit SSL DLL 자동 복사** (`libssl-1_1.dll` → `DLLs/`) — pip SSL 오류 선제 해결
+- `requirements.txt` 패키지 자동 설치 (`PYTHONUTF8=1` 적용)
+- `lightgbm`, `pywinauto`, `psutil` 추가 설치 (requirements.txt 외 필수 패키지)
 - `py310_64` conda env 생성 (EOD 재학습용)
 - `requirements_310.txt` 패키지 설치
 
-### STEP 4: 계좌 정보 등록
+### STEP 4: CREON 자격증명 등록 (Windows Credential Manager)
 
 ```bat
 conda activate py37_32
 python scripts\set_cybos_credential.py
 ```
 
-입력 항목:
-- Cybos Plus ID (대신증권 아이디)
-- Cybos Plus 비밀번호
-- 계좌번호, 계좌 비밀번호
+또는 직접:
+```bat
+cmdkey /add:creonplus /user:대신증권아이디 /pass:비밀번호
+```
+
+> `cybos_autologin.py --broker creon`이 `creonplus` 키를 참조하여 자동 로그인합니다.
 
 ### STEP 5: secrets.py 생성
 
@@ -188,24 +192,26 @@ maitreya_dist ← 배포 전용 (타 PC pull 대상)
 ### 7-1. 브랜치 생성 / 초기 설정
 
 - [x] `docs/260629_MAITREYA_DIST_DEPLOYMENT_PLAN.md` 작성
-- [ ] `maitreya_dist` 브랜치 생성 (from dev)
-- [ ] `.gitignore` 수정: `model/scaler/` 및 `data/db/` 제외 줄 삭제 또는 negate
-- [ ] `config/secrets_example.py` 작성
-- [ ] `SETUP_GUIDE.md` 작성 (타 PC 설치 한글 가이드)
-- [ ] `INSTALL.bat` 작성 (conda 환경 자동 구성)
-- [ ] `requirements_310.txt` 작성 (py310_64 재학습 의존성)
+- [x] `maitreya_dist` 브랜치 생성 (from dev) — 완료
+- [x] `.gitignore` 수정: `model/scaler/`, `model/horizons/`, `data/db/` 제외 줄 주석 처리 → 추적 포함
+- [x] `config/secrets_example.py` 작성
+- [x] `SETUP_GUIDE.md` 작성 (타 PC 설치 한글 가이드)
+- [x] `INSTALL.bat` 작성 + 수정 (SSL DLL 자동 복사, lightgbm·pywinauto 추가, PYTHONUTF8=1)
+- [x] `requirements_310.txt` 작성 (py310_64 재학습 의존성)
+- [x] `start_mireuk_CREON.bat` 신규 생성 (CREON 전용 런처, 자동 재시작 루프)
+- [x] `scripts/set_cybos_credential.py` 신규 생성 (Windows Credential Manager 자격증명 등록)
+- [x] `scripts/close_other_windows.ps1` 신규 생성 (런처 실행 전 창 최소화)
 
 ### 7-2. 모델 / 데이터 파일
 
-- [ ] `model/scaler/` 의 pkl 파일 배포 브랜치에 강제 추가 (`git add -f`)
-- [ ] `data/db/` 초기 빈 DB (또는 스키마만) 포함 여부 결정
-  - 옵션 A: 빈 DB 포함 (main.py 최초 실행 시 테이블 자동 생성이면 불필요)
-  - 옵션 B: init_db.py 스크립트로 최초 실행 시 DB 생성
-- [ ] `data/*.json` 상태 파일 초기화 버전 검토
+- [x] `model/scaler/*.pkl` 배포 브랜치에 추가 — git ls-files로 추적 확인
+- [x] `model/horizons/*.pkl` (GBM 6종 + RF + feature_names) 추적 확인
+- [x] `data/db/` — 운영 DB 7종 + json 3종 추적 포함 (raw_data·predictions·trades 등 대용량은 gitignore 유지)
+- [ ] `data/*.json` 상태 파일 초기화 버전 검토 — 현재 운영 데이터 포함됨, 타 PC 배포 시 수동 초기화 필요
 
 ### 7-3. 검증
 
-- [ ] 타 PC 에서 `INSTALL.bat` → `CREON_PLUS.bat` → `start_mireuk_CREON.bat` 순서 실행 테스트
+- [ ] 타 PC 에서 `INSTALL.bat` → `cmdkey 자격증명 등록` → `CREON_PLUS.bat` → `start_mireuk_CREON.bat` 순서 실행 테스트
 - [ ] 모의투자 모드 연결 확인
 - [ ] Circuit Breaker 정상 작동 확인
 
@@ -213,11 +219,13 @@ maitreya_dist ← 배포 전용 (타 PC pull 대상)
 
 ## 8. 주의 사항
 
-1. **모델 파일 크기**: `model/scaler/*.pkl` 파일이 크면 git LFS 고려
+1. **모델 파일 크기**: `rf_horizons.pkl` 약 60MB — 현재 git 직접 추적 중. 100MB 미만이므로 LFS 불필요
 2. **secrets.py 절대 커밋 금지**: `.gitignore`에 `config/secrets.py` 유지
 3. **py310_64 환경**: EOD 재학습(`EOD_RETRAIN.bat`)은 py310_64 전용 — py37_32로 실행 시 OOM 발생
 4. **Cybos Plus 32-bit COM**: `py37_32` 환경만 COM 오브젝트 접근 가능
 5. **포지션 상태 초기화**: 타 PC 배포 시 `data/position_state.json`은 빈 상태(`{}`)로 초기화
+6. **32-bit conda SSL 문제**: py37_32 최초 생성 후 pip SSL 오류 발생 시 → `INSTALL.bat`이 자동 처리 (`libssl-1_1.dll`을 `Library\bin\` → `DLLs\`에 복사)
+7. **CREON 자격증명**: 타 PC 최초 1회 `cmdkey /add:creonplus /user:ID /pass:PW` 또는 `python scripts\set_cybos_credential.py` 실행 필수
 
 ---
 
