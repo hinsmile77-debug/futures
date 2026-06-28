@@ -73,7 +73,19 @@ IF EXIST "%USERPROFILE%\anaconda3\Scripts\activate.bat" (
 
 CALL "!ACTIVATE_SCRIPT!" py37_32
 
+REM [FIX] 32-bit conda py37_32: libssl/libcrypto DLL이 Library\bin에만 있어 pip SSL 오류 발생
+REM       DLLs\ 폴더에 복사하면 Python이 직접 로드 가능
+ECHO [INFO] Fixing SSL DLL path for 32-bit conda (py37_32)...
+IF EXIST "!CONDA_PREFIX!\Library\bin\libssl-1_1.dll" (
+    COPY /Y "!CONDA_PREFIX!\Library\bin\libssl-1_1.dll" "!CONDA_PREFIX!\DLLs\" >NUL 2>&1
+    COPY /Y "!CONDA_PREFIX!\Library\bin\libcrypto-1_1.dll" "!CONDA_PREFIX!\DLLs\" >NUL 2>&1
+    ECHO [OK] SSL DLL copied to DLLs\.
+) ELSE (
+    ECHO [WARN] libssl-1_1.dll not found -- pip may fail with SSL error.
+)
+
 ECHO [INFO] Installing from requirements.txt...
+SET PYTHONUTF8=1
 pip install -r requirements.txt
 IF %ERRORLEVEL% NEQ 0 (
     ECHO [WARN] Some packages may have failed. Check output above.
@@ -88,7 +100,12 @@ IF %ERRORLEVEL% NEQ 0 (
     python "%CONDA_PREFIX%\Scripts\pywin32_postinstall.py" -install 2>NUL
 )
 
-REM Install psutil (for process guard)
+REM Install additional required packages
+ECHO [INFO] Installing lightgbm (GBM model inference)...
+pip install lightgbm
+ECHO [INFO] Installing pywinauto (Cybos auto-login GUI automation)...
+pip install pywinauto
+ECHO [INFO] Installing psutil (process guard)...
 pip install psutil
 
 ECHO [OK] py37_32 packages installed.
