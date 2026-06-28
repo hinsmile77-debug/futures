@@ -19,9 +19,17 @@ build/
 # 데이터 (용량)
 data/raw/
 data/processed/
-data/db/
-model/horizons/
-model/scaler/
+# 자동생성 대용량 DB (실행 시 자동 생성, 100MB 초과)
+data/db/raw_data.db
+data/db/raw_data.db.bak_*
+data/db/predictions.db
+data/db/shap_tracker.db
+data/db/trades.db
+# [maitreya_dist] data/db/(소형), model/horizons/, model/scaler/ 배포 브랜치에 포함
+# dev/main 에서 제외하려면 아래 주석 해제:
+# data/db/
+# model/horizons/
+# model/scaler/
 
 # 로그
 logs/

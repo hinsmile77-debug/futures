@@ -1,0 +1,23 @@
+# requirements_310.txt
+# Python 3.10 64-bit (conda env: py310_64) - EOD GBM 재학습 전용
+# py37_32 에서 실행 시 OOM 발생 → 반드시 py310_64 에서 실행할 것
+
+# 핵심
+numpy>=1.23.0
+pandas>=1.5.0
+scipy>=1.9.0
+
+# 머신러닝
+scikit-learn>=1.1.0
+lightgbm>=3.3.0
+joblib>=1.2.0
+
+# SHAP (피처 심사)
+shap>=0.42.0
+
+# DB
+# sqlite3: Python 내장
+
+# 기타 유틸
+python-dateutil>=2.8.2
+pytz>=2023.3

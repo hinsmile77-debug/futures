@@ -515,9 +515,16 @@ def init_raw_data_db():
             ts       TEXT NOT NULL,
             horizon  TEXT NOT NULL,
             features TEXT NOT NULL,
+            regime   TEXT DEFAULT 'NEUTRAL',
             PRIMARY KEY (ts, horizon)
         )
     """)
+    # P2 사전 준비: 기존 DB에 regime 컬럼 추가 (없으면 추가, 있으면 무시)
+    try:
+        execute(RAW_DATA_DB,
+                "ALTER TABLE raw_features_horizon ADD COLUMN regime TEXT DEFAULT 'NEUTRAL'")
+    except Exception:
+        pass  # 이미 존재하면 무시
     try:
         execute(RAW_DATA_DB,
                 "CREATE INDEX IF NOT EXISTS idx_rfh_horizon ON raw_features_horizon(horizon, ts)")
@@ -607,12 +614,12 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
             )
 
 
-def save_horizon_features(ts: str, horizon: str, features: dict) -> None:
+def save_horizon_features(ts: str, horizon: str, features: dict, regime: str = "NEUTRAL") -> None:
     """N분봉 완성 시 호라이즌별 피처 저장 (Phase 2 전용)."""
     execute(
         RAW_DATA_DB,
-        "INSERT OR REPLACE INTO raw_features_horizon (ts, horizon, features) VALUES (?,?,?)",
-        (ts, horizon, json.dumps(features, ensure_ascii=False)),
+        "INSERT OR REPLACE INTO raw_features_horizon (ts, horizon, features, regime) VALUES (?,?,?,?)",
+        (ts, horizon, json.dumps(features, ensure_ascii=False), regime or "NEUTRAL"),
     )
 
 

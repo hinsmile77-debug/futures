@@ -390,20 +390,35 @@ def _is_connected():
 
 
 def _load_credential():
-    """Windows Credential Manager에서 ID/PW 읽기"""
+    """Windows Credential Manager에서 ID/PW 읽기.
+
+    CredEnumerate(flags=0)는 CRED_TYPE_GENERIC을 빠뜨리는 경우가 있으므로
+    CredRead로 타입을 명시해서 순서대로 시도한다.
+      1. CRED_TYPE_GENERIC (1)  -- cmdkey /add 기본값
+      2. CRED_TYPE_DOMAIN_PASSWORD (2)  -- 도메인 자격증명 (blob 비어있을 수 있음)
+    """
     if PASSWORD_OVERRIDE:
         return "", PASSWORD_OVERRIDE
 
-    try:
-        all_creds = win32cred.CredEnumerate(None, 0) or []
-        for cred in all_creds:
-            if cred.get("TargetName") == CRED_TARGET:
-                username = cred["UserName"]
-                blob = cred.get("CredentialBlob", b"")
-                password = blob.decode("utf-16-le") if blob else ""
-                return username, password
-    except Exception as e:
-        print("[DEBUG] CredEnumerate 오류: %s" % e)
+    CRED_TYPE_GENERIC          = 1
+    CRED_TYPE_DOMAIN_PASSWORD  = 2
+
+    for cred_type in (CRED_TYPE_GENERIC, CRED_TYPE_DOMAIN_PASSWORD):
+        try:
+            cred = win32cred.CredRead(CRED_TARGET, cred_type, 0)
+            username = cred.get("UserName", "")
+            blob = cred.get("CredentialBlob", b"")
+            if not blob:
+                print("[DEBUG] blob 비어있음 건너뜀: Target=%s Type=%d User=%s"
+                      % (CRED_TARGET, cred_type, username))
+                continue
+            password = blob.decode("utf-16-le")
+            print("[DEBUG] 자격증명 로드 성공: Target=%s Type=%d User=%s"
+                  % (CRED_TARGET, cred_type, username))
+            return username, password
+        except Exception as e:
+            print("[DEBUG] CredRead(Type=%d) 실패: %s" % (cred_type, e))
+
     print("[ERROR] 자격증명 없음 -- PowerShell에서 아래 명령 실행 후 재시도:")
     print("  cmdkey /add:%s /user:아이디 /pass:비밀번호" % CRED_TARGET)
     sys.exit(1)
@@ -1033,8 +1048,8 @@ def _perform_login(hwnd, user_id, password):
 
     EM_SETSEL = 0x00B1  # 전체 선택용 (0, -1)
 
-    def _clear_and_input_creon(edit_hwnd, text, label):
-        """CREON 전용: 물리 클릭 + EM_SETSEL + WM_CLEAR + WM_SETTEXT"""
+    def _clear_and_input(edit_hwnd, text, label):
+        """물리 클릭 → EM_SETSEL(전체선택) → WM_CLEAR → WM_SETTEXT (CREON/CYBOS 공통)"""
         rect = _get_window_rect_safe(edit_hwnd)
         if rect:
             cx = (rect[0] + rect[2]) // 2
@@ -1057,22 +1072,13 @@ def _perform_login(hwnd, user_id, password):
             send_keys("^a{BACKSPACE}")
             send_keys(text)
             print("[INFO] send_keys로 %s 입력 완료" % label)
-        print("[INFO] %s 입력 완료 (cleared → set)" % label)
+        print("[INFO] %s 입력 완료 (clicked → cleared → set)" % label)
         time.sleep(0.10)
 
     # ── STEP 1: 아이디 입력 ──
     if id_edit and user_id:
         print("[INFO] 아이디 Edit 발견: hwnd=%d → '%s'" % (id_edit, user_id))
-        if BROKER_TYPE == "creon":
-            _clear_and_input_creon(id_edit, user_id, "아이디")
-        else:
-            # CYBOS: 기존 방식 (WM_SETTEXT, 실패 시 send_keys)
-            if not _set_edit_text(id_edit, user_id):
-                _focus_control(id_edit)
-                time.sleep(0.1)
-                send_keys("^a{BACKSPACE}")
-                send_keys(user_id)
-                print("[INFO] send_keys로 아이디 입력 완료")
+        _clear_and_input(id_edit, user_id, "아이디")
     else:
         print("[WARN] 아이디 Edit 미발견 또는 user_id 없음 -- 건너뜀")
 
@@ -1081,16 +1087,7 @@ def _perform_login(hwnd, user_id, password):
     # ── STEP 2: 비밀번호 입력 ──
     if pw_edit:
         print("[INFO] 비밀번호 Edit 발견: hwnd=%d" % pw_edit)
-        if BROKER_TYPE == "creon":
-            _clear_and_input_creon(pw_edit, password, "비밀번호")
-        else:
-            # CYBOS: 기존 방식
-            if not _set_edit_text(pw_edit, password):
-                _focus_control(pw_edit)
-                time.sleep(0.1)
-                send_keys("^a{BACKSPACE}")
-                send_keys(password)
-                print("[INFO] send_keys로 비밀번호 입력 완료")
+        _clear_and_input(pw_edit, password, "비밀번호")
     elif id_edit:
         # Edit가 1개뿐(커스텀 창) -- 포커스 이동 후 비밀번호 입력
         print("[WARN] 비밀번호 Edit 미발견 -- Tab으로 이동 후 입력 시도")
