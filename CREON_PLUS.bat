@@ -70,7 +70,7 @@ SET "BROKER_BACKEND=cybos"
 ECHO [INFO] BROKER_BACKEND=%BROKER_BACKEND%
 
 IF NOT EXIST "logs" MKDIR "logs" 2>NUL
-SET "LOG=%WORKDIR%\logs\cybos_plus_launch.log"
+SET "LOG=%WORKDIR%\logs\creon_plus_launch.log"
 
 ECHO. >> "%LOG%"
 ECHO ============================================================ >> "%LOG%"
