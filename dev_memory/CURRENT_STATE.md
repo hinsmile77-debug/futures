@@ -1,7 +1,67 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-26 (254차) — 거래소 서킷브레이커 감지·대응·대시보드 표시
+> 마지막 업데이트: 2026-06-28 (255차) — CREON Plus 자동 로그인 완전 구현
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-28 (255차 — CREON Plus 자동 로그인 완전 구현)
+
+### 배경
+
+`cybos_autologin.py`가 CREON Plus 로그인 창에서 CREON Plus 선택·자격증명 입력·모의투자 접속을 하지 못하는 문제. CREON 로그인 창은 전체가 owner-drawn(GDI)이라 Win32 표준 API로 텍스트·버튼 탐지 불가. 실증적 디버깅(스크린샷, 픽셀 스캔, 히트테스트)으로 좌표를 확정하고 구현.
+
+### 핵심 발견 (CREON UI 구조)
+
+| 항목 | 내용 |
+|---|---|
+| 좌측 Afx 패널 | `WM_NCHITTEST = HTRANSPARENT(-1)` — 모든 마우스가 부모로 전달 |
+| 부모 login_hwnd 전체 | `WM_NCHITTEST = HTCAPTION` — 커스텀 타이틀바 영역 |
+| 드롭다운/버튼 | owner-drawn GDI 렌더링, Win32 텍스트 탐지 불가 |
+| 모의투자 선택 팝업 | in-window GDI 오버레이, `EnumWindows` 불가 |
+
+### 실증 확인 좌표 (패널 origin 기준)
+
+| 단계 | 좌표 | 비고 |
+|---|---|---|
+| CREON Plus 드롭다운 열기 | panel+(90, 15) 클릭 | HTCAPTION 영역, 1회만 클릭 |
+| CREON Plus 항목 선택 | panel+(65, 85) hover 400ms → 클릭 | 픽셀 스캔으로 확인 |
+| "아이디" 탭 클릭 | panel+(295, 215) | Edit 컨트롤 가시화 |
+| 모의투자로그인 버튼 | window_x+182, PW_bottom+72 ≈ screen y=780 | owner-drawn 버튼 |
+| 모의투자 접속 팝업 | window_origin+(365, 317) | in-window 오버레이 |
+
+### 구현 함수 (`scripts/cybos_autologin.py`)
+
+| 함수 | 역할 |
+|---|---|
+| `_select_creon_plus_by_coordinate(hwnd)` | CREON Plus 드롭다운 선택 (좌표) |
+| `_click_creon_id_tab(hwnd)` | "아이디" 탭 클릭 → Edit 가시화 |
+| `_click_creon_login_button(hwnd)` | 모의투자로그인 버튼 좌표 클릭 |
+| `_click_creon_mock_access(hwnd)` | 모의투자 접속 팝업 좌표 클릭 |
+| `_clear_and_input(edit_hwnd, text)` | EM_SETSEL+WM_CLEAR → WM_SETTEXT |
+
+### 자격증명 분리
+
+| Target | User | 브로커 |
+|---|---|---|
+| `cybosplus` | smart5na | CYBOS (기존, 유지) |
+| `creonplus` | smart6na | CREON (신규) |
+
+- `CRED_TARGET`: CREON일 때 `"creonplus"`, CYBOS일 때 `"cybosplus"` 자동 분기
+
+### 기타 수정
+
+- em-dash(`—`) 전체 `--` 교체 (cp949 인코딩 오류 방지)
+- UTF-8 stdout 강제 설정 (직접 실행 시 보장)
+- `CREON_PLUS.bat` 실행 파일 힌트 업데이트
+
+### 검증 결과
+
+`CybosPlus 연결 성공 (ServerType=1)` — 모의투자 로그인 완료 실증
+
+### 커밋
+
+`5b1c033` (255차)
 
 ---
 

@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-28 (255차 — CREON Plus 자동 로그인 완전 구현)
+
+**트리거**: CREON Plus 로그인 시 CREON Plus 드롭다운 미선택, 자격증명 미입력, 모의투자 접속 팝업 미처리 문제.
+
+### 핵심 결정
+
+- **좌표 기반 접근**: CREON 로그인 창 전체가 HTCAPTION+HTRANSPARENT 구조 → 텍스트/UIA 탐지 불가 → 픽셀 스캔 + 히트테스트로 좌표 확정
+- **드롭다운 선택**: 헤더 click(+90,+15) → hover 400ms → click(+65,+85) (단일 클릭만, 반복 시 창 드래그)
+- **자격증명 분리**: CREON=`creonplus`, CYBOS=`cybosplus` (CredTarget 브로커별 분기)
+- **모의투자 팝업**: in-window GDI 오버레이 → EnumWindows 불가 → win_origin+(365,317) 고정 좌표
+
+### 실증 검증
+
+- `IsConnect=1, ServerType=1` 확인 (모의투자 로그인 성공)
+- em-dash 인코딩 오류 수정, UTF-8 stdout 강제 설정
+
+---
+
 ## 2026-06-26 (254차 — 거래소 서킷브레이커 감지·대응·대시보드 표시)
 
 **트리거**: 6/26 KRX CB 1단계 발동 (KOSPI 8% 이상 하락) → 파이프라인 4분 미실행 WARN. 이후 CB 대응 구현 + 대시보드 배지 추가 요청.
