@@ -14,12 +14,20 @@ CybosPlus 자동 로그인 스크립트 (윈도우 컨트롤 기반)
   4. "모의투자 선택" 창 -> "모의투자 접속" 버튼 컨트롤 클릭 (MOCK_MODE=True)
 """
 import sys
+import io
 import struct
 import time
 import subprocess
 import os
 import ctypes
 import ctypes.wintypes
+
+# CP949 터미널에서 em-dash 등 특수문자 인코딩 오류 방지
+# CREON_PLUS.bat에 PYTHONIOENCODING=utf-8이 있지만 직접 실행 시 보장
+if hasattr(sys.stdout, "buffer") and getattr(sys.stdout, "encoding", "").lower() not in ("utf-8", "utf-8-sig"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "buffer") and getattr(sys.stderr, "encoding", "").lower() not in ("utf-8", "utf-8-sig"):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # 32-bit Python 필수 (Cybos COM은 32-bit 전용)
 if struct.calcsize("P") != 4:
@@ -40,27 +48,47 @@ import win32con
 import win32api
 
 # -- 설정 -----------------------------------------------------------------------
-CYBOS_EXE        = r"C:\DAISHIN\STARTER\ncStarter.exe"
-CYBOS_ARGS       = "/prj:cp"
-CRED_TARGET      = "cybosplus"   # cmdkey /add: 에서 지정한 이름
-MOCK_MODE        = True          # True=모의투자, False=실투자
+CRED_TARGET       = "cybosplus"  # CYBOS 기본값; CREON은 아래에서 "creon"으로 재설정
+MOCK_MODE         = True         # True=모의투자, False=실투자
 CONNECT_TIMEOUT   = 120          # 통합 루프(모의투자 팝업 + 연결 대기) 타임아웃 (초)
 MAX_LOGIN_ATTEMPTS = 3           # 연결 실패 시 전체 재시도 횟수
-MOCK_POPUP_MIN_WAIT = 8          # 구버전 호환용 상수 — _wait_for_connection_and_mock 에서 미사용
-PASSWORD_OVERRIDE = None  # Windows 자격증명 관리자(cybosplus)에서 읽음
+MOCK_POPUP_MIN_WAIT = 8          # 구버전 호환용 상수 -- _wait_for_connection_and_mock 에서 미사용
+PASSWORD_OVERRIDE = None         # Windows 자격증명 관리자(cybosplus)에서 읽음
 
-# kill 대상 (ncStarter 먼저, CpStart 나중 -- 순서 중요)
-CYBOS_PROC_NAMES = ["_ncstarter_.exe", "cpstart.exe"]
+# ── 브로커 자동 감지: CREON(신) 우선 → CYBOS(구) 폴백 ──────────────────────
+_CREON_EXE_PATH = r"C:\CREON\STARTER\coStarter.exe"
+_CYBOS_EXE_PATH = r"C:\DAISHIN\STARTER\ncStarter.exe"
+
+if os.path.exists(_CREON_EXE_PATH):
+    BROKER_TYPE      = "creon"
+    CYBOS_EXE        = _CREON_EXE_PATH
+    CYBOS_ARGS       = ""
+    CYBOS_PROC_NAMES = ["costarter.exe", "cpstart.exe"]
+    CRED_TARGET      = "creonplus"  # CREON 전용 자격증명 (win32cred TargetName=creonplus)
+elif os.path.exists(_CYBOS_EXE_PATH):
+    BROKER_TYPE      = "cybos"
+    CYBOS_EXE        = _CYBOS_EXE_PATH
+    CYBOS_ARGS       = "/prj:cp"
+    CYBOS_PROC_NAMES = ["_ncstarter_.exe", "cpstart.exe"]
+else:
+    BROKER_TYPE      = "cybos"          # 파일 없으면 실행 시 오류
+    CYBOS_EXE        = _CYBOS_EXE_PATH
+    CYBOS_ARGS       = "/prj:cp"
+    CYBOS_PROC_NAMES = ["_ncstarter_.exe", "cpstart.exe"]
+
+# 보안 다이얼로그는 CYBOS 전용 -- CREON 흐름에는 없음
+HAS_SECURITY_DIALOG   = BROKER_TYPE == "cybos"
+SECURITY_DIALOG_EXACT = u"CYBOS"
+
+# CREON 로그인 창 hwnd (autologin에서 설정 → _wait_for_connection_and_mock에서 사용)
+_creon_starter_hwnd = None
+
 SECURITY_BUTTON_TEXTS = {u"사용안함", u"사용 안함"}
-LOGIN_WINDOW_TITLES   = {u"CYBOS Starter", u"CYBOS Plus"}
-CYBOS_PLUS_MENU_EXACT_TEXTS = {u"CYBOS PLUS", u"CYBOS Plus"}
+LOGIN_WINDOW_TITLES   = {u"CYBOS Starter", u"CYBOS Plus", u"CREON Starter", u"CREON Plus"}
+CYBOS_PLUS_MENU_EXACT_TEXTS = {u"CYBOS PLUS", u"CYBOS Plus", u"CREON PLUS", u"CREON Plus"}
 CYBOS_PLUS_MENU_CANDIDATE_TEXTS = {
-    u"CYBOS PLUS",
-    u"CYBOS Plus",
-    u"CYBOS",
-    u"CYBOS Trader",
-    u"CYBOS I",
-    u"CYBOS Oneclick",
+    u"CYBOS PLUS", u"CYBOS Plus", u"CYBOS", u"CYBOS Trader", u"CYBOS I", u"CYBOS Oneclick",
+    u"CREON PLUS", u"CREON Plus", u"CREON", u"CREON Trader",
 }
 LOGIN_BUTTON_TEXTS    = {u"로그인", u"모의투자 로그인", u"모의투자로그인", u"확 인", u"확인", u"ENTER", u"enter"}
 PASSWORD_DIALOG_CONFIRM_TEXTS = {u"확인", u"예", u"Yes", u"OK"}
@@ -69,7 +97,6 @@ MOCK_ACCESS_BUTTON_TEXTS = {
     u"모의투자 접속", u"접속",
 }
 MOCK_DIALOG_KEYWORDS = [u"모의투자 선택", u"모의투자선택", u"모의투자", u"접속"]
-SECURITY_DIALOG_EXACT = u"CYBOS"
 # -------------------------------------------------------------------------------
 
 # WinEventHook 타입 정의 (콜백 GC 방지용 모듈 레벨 유지)
@@ -244,7 +271,7 @@ def _is_control_enabled(hwnd):
 # -- 컨트롤 조작 유틸 -----------------------------------------------------------
 
 def _post_button_click(btn_hwnd):
-    """BM_CLICK 메시지로 버튼 클릭 — 마우스/좌표 불필요"""
+    """BM_CLICK 메시지로 버튼 클릭 -- 마우스/좌표 불필요"""
     try:
         win32gui.PostMessage(btn_hwnd, win32con.BM_CLICK, 0, 0)
         print("  [CTRL] BM_CLICK → hwnd=%d text='%s'" % (btn_hwnd, win32gui.GetWindowText(btn_hwnd)))
@@ -282,7 +309,7 @@ def _collect_edits(parent_hwnd):
              if win32gui.GetClassName(c) == "Edit" and win32gui.IsWindowVisible(c)]
 
     if not edits:
-        # Cybos 로그인 창은 커스텀 윈도우일 수 있음 — AfxWnd/PopupEdit 등 다양한 클래스 탐색
+        # Cybos 로그인 창은 커스텀 윈도우일 수 있음 -- AfxWnd/PopupEdit 등 다양한 클래스 탐색
         for c in _enum_children(parent_hwnd):
             if not win32gui.IsWindowVisible(c):
                 continue
@@ -392,55 +419,257 @@ def _find_window_by_keywords(keywords, require_visible=True):
     return found
 
 
-def _ensure_cybos_plus_menu_selected(hwnd):
-    """로그인 창 좌상단 상품 메뉴가 CYBOS PLUS인지 확인하고 필요 시 선택한다."""
-    print("[INFO] Verifying left-top product menu is set to CYBOS PLUS...")
-    _activate_and_wait_for_window(hwnd, "CYBOS Plus menu")
+def _click_creon_id_tab(hwnd):
+    """
+    CREON 로그인 창의 '아이디' 탭 클릭.
+    CREON Plus 선택 직후 Edit 컨트롤이 비가시 상태 -- '아이디' 탭을 클릭해야 visible=True.
 
+    실증 좌표: 패널 좌상단 + (295, 215) [3번째 탭, '아이디']
+    """
+    afx_ctrls = []
+    def _cb(ch, _):
+        try:
+            if "Afx" in win32gui.GetClassName(ch) and win32gui.IsWindowVisible(ch):
+                r = win32gui.GetWindowRect(ch)
+                if (r[2]-r[0]) > 200 and (r[3]-r[1]) > 400:
+                    afx_ctrls.append((ch, r))
+        except Exception:
+            pass
+    win32gui.EnumChildWindows(hwnd, _cb, None)
+    if not afx_ctrls:
+        return
+    afx_ctrls.sort(key=lambda x: x[1][0])
+    px, py = afx_ctrls[0][1][0], afx_ctrls[0][1][1]
+
+    tab_x = px + 295
+    tab_y = py + 215
+    print("[INFO] CREON '아이디' 탭 클릭: screen(%d,%d)" % (tab_x, tab_y))
+    win32api.SetCursorPos((tab_x, tab_y))
+    time.sleep(0.10)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.08)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.40)  # 탭 전환 후 Edit 가시화 대기
+
+
+def _click_creon_login_button(hwnd):
+    """
+    CREON '모의투자로그인' 버튼 좌표 기반 클릭.
+    버튼이 owner-drawn (HTCAPTION 영역)이므로 BM_CLICK 탐지 불가.
+
+    실증 좌표:
+    - PW Edit 하단(screen y ≈ 708) + 72px → 버튼 center y ≈ 780
+    - 패널 중앙 x: 창 left + 182
+    """
+    edits = []
+    def _eb(ch, _):
+        try:
+            if win32gui.GetClassName(ch) == "Edit" and win32gui.IsWindowVisible(ch):
+                r = win32gui.GetWindowRect(ch)
+                if r[2] - r[0] > 50:
+                    edits.append(r)
+        except Exception:
+            pass
+    win32gui.EnumChildWindows(hwnd, _eb, None)
+    edits.sort(key=lambda r: r[1])
+
+    win_rect = _get_window_rect_safe(hwnd)
+    if not win_rect:
+        return
+    wx, wy = win_rect[0], win_rect[1]
+
+    if edits:
+        pw_bottom = edits[-1][3]
+        btn_x = wx + 182
+        btn_y = pw_bottom + 72
+    else:
+        btn_x = wx + 182
+        btn_y = wy + 391
+
+    print("[INFO] CREON 모의투자로그인 버튼 클릭: screen(%d,%d)" % (btn_x, btn_y))
+    _force_foreground(hwnd)
+    time.sleep(0.20)
+    win32api.SetCursorPos((btn_x, btn_y))
+    time.sleep(0.12)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.08)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.30)
+
+
+def _click_creon_mock_access(hwnd):
+    """
+    CREON '모의투자 선택' 팝업의 '모의투자 접속' 버튼 좌표 클릭.
+    팝업이 in-window GDI 오버레이라 EnumWindows/FindWindow 불가.
+
+    실증 좌표: 창 origin + (365, 317)
+    """
+    try:
+        win_rect = win32gui.GetWindowRect(hwnd)
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+    except Exception:
+        return
+    wx, wy = win_rect[0], win_rect[1]
+    btn_x = wx + 365
+    btn_y = wy + 317
+    print("[INFO] CREON 모의투자 접속 클릭: screen(%d,%d)" % (btn_x, btn_y))
+    _force_foreground(hwnd)
+    time.sleep(0.20)
+    win32api.SetCursorPos((btn_x, btn_y))
+    time.sleep(0.12)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.08)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.30)
+
+
+def _select_creon_plus_by_coordinate(hwnd):
+    """
+    CREON 로그인 창 좌상단 드롭다운에서 'CREON Plus' 를 좌표 기반으로 선택.
+
+    실증 분석 결과:
+    - 좌측 Afx 패널: HTRANSPARENT → 모든 마우스가 부모(login_hwnd)로 전달
+    - login_hwnd 전체: HTCAPTION (커스텀 타이틀바)
+    - 드롭다운 열기:    패널 (+90, +15) 클릭
+    - CREON Plus 항목: 패널 (+65, +85) [hover 400 ms 후 클릭]
+    - ESC 전송 금지: 창이 닫힘
+    """
+    afx_ctrls = []
+    def _cb(ch, _):
+        try:
+            if "Afx" in win32gui.GetClassName(ch) and win32gui.IsWindowVisible(ch):
+                r = win32gui.GetWindowRect(ch)
+                if (r[2]-r[0]) > 200 and (r[3]-r[1]) > 400:
+                    afx_ctrls.append((ch, r))
+        except Exception:
+            pass
+    win32gui.EnumChildWindows(hwnd, _cb, None)
+    if not afx_ctrls:
+        print("[WARN] CREON 패널 탐색 실패 -- CREON Plus 선택 생략, 로그인 계속")
+        return True
+    afx_ctrls.sort(key=lambda x: x[1][0])
+    px, py = afx_ctrls[0][1][0], afx_ctrls[0][1][1]
+
+    win_before = _get_window_rect_safe(hwnd)
+
+    # 헤더 클릭 → 드롭다운 열기 (단 한 번)
+    hdr_x, hdr_y = px + 90, py + 15
+    print("[INFO] CREON Plus 드롭다운 열기: screen(%d,%d)" % (hdr_x, hdr_y))
+    win32api.SetCursorPos((hdr_x, hdr_y))
+    time.sleep(0.10)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.08)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(1.0)
+
+    # 창 이동 보정
+    win_after = _get_window_rect_safe(hwnd)
+    dx = (win_after[0] - win_before[0]) if (win_before and win_after) else 0
+    dy = (win_after[1] - win_before[1]) if (win_before and win_after) else 0
+
+    # CREON Plus 항목 클릭: hover 후 클릭
+    cp_x = px + 65 + dx
+    cp_y = py + 85 + dy
+    print("[INFO] CREON Plus 항목 클릭: screen(%d,%d) [hover 400ms → click]" % (cp_x, cp_y))
+    win32api.SetCursorPos((cp_x, cp_y))
+    time.sleep(0.40)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.08)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.60)
+
+    print("[INFO] CREON Plus 선택 완료")
+    return True
+
+
+def _ensure_cybos_plus_menu_selected(hwnd):
+    """로그인 창 좌상단 상품 메뉴가 CREON Plus / CYBOS Plus인지 확인하고 필요 시 선택한다."""
+    broker_plus    = u"CREON Plus" if BROKER_TYPE == "creon" else u"CYBOS Plus"
+    broker_kw      = u"CREON"      if BROKER_TYPE == "creon" else u"CYBOS"
+    plus_keywords  = ([u"CREON Plus", u"CREON PLUS"] if BROKER_TYPE == "creon"
+                      else [u"CYBOS Plus", u"CYBOS PLUS"])
+
+    # CREON: 전체 UI가 owner-drawn (HTRANSPARENT Afx + HTCAPTION 부모)
+    # 텍스트 컨트롤 탐색 불가 → 좌표 기반 드롭다운 선택으로 직행
+    if BROKER_TYPE == "creon":
+        return _select_creon_plus_by_coordinate(hwnd)
+
+    print("[INFO] Verifying left-top product menu is set to %s..." % broker_plus)
+    _activate_and_wait_for_window(hwnd, "%s menu" % broker_plus)
+
+    # ── ① exact match ─────────────────────────────────────────────────────────
     exact_hwnd, exact_text = _find_top_left_text_control(hwnd, CYBOS_PLUS_MENU_EXACT_TEXTS)
     if exact_hwnd:
-        print("[INFO] CYBOS PLUS menu already selected: '%s' hwnd=%d" % (exact_text, exact_hwnd))
+        print("[INFO] %s menu already selected: '%s' hwnd=%d" % (broker_plus, exact_text, exact_hwnd))
         return True
 
+    # ── ② partial match ─ 드롭다운 화살표(∨ 등)가 텍스트에 포함된 경우 대응 ──
+    partial = _find_child_by_text_contains(hwnd, plus_keywords)
+    for p_hwnd, p_text in partial:
+        if win32gui.IsWindowVisible(p_hwnd):
+            print("[INFO] %s menu already selected (partial): '%s' hwnd=%d" % (broker_plus, p_text, p_hwnd))
+            return True
+
+    # ── ③ opener 탐색 (현재 선택 항목 표시 드롭다운 버튼) ─────────────────────
     opener_hwnd, opener_text = _find_top_left_text_control(hwnd, CYBOS_PLUS_MENU_CANDIDATE_TEXTS)
     if not opener_hwnd:
+        # 화살표 포함 텍스트 대응: broker 키워드 부분일치
+        for p_hwnd, p_text in _find_child_by_text_contains(hwnd, [broker_kw]):
+            if win32gui.IsWindowVisible(p_hwnd):
+                opener_hwnd, opener_text = p_hwnd, p_text
+                break
+
+    if not opener_hwnd:
         if _looks_like_login_form(hwnd):
-            print("[WARN] Product menu control was not exposed by the login window.")
-            print("[WARN] Login form detected (owner-drawn UI) -- skipping menu verify, proceeding with login.")
-            _dump_children(hwnd, "CYBOS Plus menu verify skipped")
+            print("[WARN] Product menu control not found. Login form detected -- skipping menu verify.")
+            _dump_children(hwnd, "%s menu verify skipped" % broker_plus)
             return True
         print("[WARN] Product menu control was not found and login form not detected.")
-        _dump_children(hwnd, "CYBOS Plus menu verify failed")
+        _dump_children(hwnd, "%s menu verify failed" % broker_plus)
         return False
 
-    print("[INFO] Product menu control found: '%s' hwnd=%d" % (opener_text, opener_hwnd))
+    print("[INFO] Product menu opener found: '%s' hwnd=%d" % (opener_text, opener_hwnd))
     if not _physical_click_hwnd(opener_hwnd):
         print("[WARN] Failed to open the product menu.")
         return False
     time.sleep(0.4)
 
-    popup_matches = _find_window_by_keywords([u"CYBOS"], require_visible=True)
+    # ── ④ 팝업 탐색 -- CREON / CYBOS 모두 탐색 ───────────────────────────────
+    popup_matches = _find_window_by_keywords([u"CYBOS", u"CREON"], require_visible=True)
     for popup_hwnd, popup_title in popup_matches:
         menu_hwnd, menu_text = _find_top_left_text_control(popup_hwnd, CYBOS_PLUS_MENU_EXACT_TEXTS)
         if menu_hwnd:
-            print("[INFO] CYBOS PLUS menu item found in popup: '%s' hwnd=%d" % (menu_text, menu_hwnd))
+            print("[INFO] %s menu item found in popup: '%s' hwnd=%d" % (broker_plus, menu_text, menu_hwnd))
             _physical_click_hwnd(menu_hwnd)
             time.sleep(0.4)
             break
+        # partial match in popup (팝업 내 아이템에도 화살표 포함 가능성)
+        for p_hwnd, p_text in _find_child_by_text_contains(popup_hwnd, plus_keywords):
+            print("[INFO] %s menu item found in popup (partial): '%s' hwnd=%d" % (broker_plus, p_text, p_hwnd))
+            _physical_click_hwnd(p_hwnd)
+            time.sleep(0.4)
+            break
 
+    # ── ⑤ 선택 후 재확인 ──────────────────────────────────────────────────────
     exact_hwnd, exact_text = _find_top_left_text_control(hwnd, CYBOS_PLUS_MENU_EXACT_TEXTS)
     if exact_hwnd:
-        print("[INFO] CYBOS PLUS menu confirmed after selection: '%s' hwnd=%d" % (exact_text, exact_hwnd))
+        print("[INFO] %s menu confirmed: '%s' hwnd=%d" % (broker_plus, exact_text, exact_hwnd))
         return True
+
+    for p_hwnd, p_text in _find_child_by_text_contains(hwnd, plus_keywords):
+        if win32gui.IsWindowVisible(p_hwnd):
+            print("[INFO] %s menu confirmed (partial): '%s' hwnd=%d" % (broker_plus, p_text, p_hwnd))
+            return True
 
     if _looks_like_login_form(hwnd):
-        print("[WARN] Could not explicitly confirm CYBOS PLUS menu selection from control text.")
+        print("[WARN] Could not confirm %s menu selection from control text." % broker_plus)
         print("[WARN] Continuing because the owner-drawn login form is visible.")
-        _dump_children(hwnd, "CYBOS Plus menu verify inconclusive")
+        _dump_children(hwnd, "%s menu verify inconclusive" % broker_plus)
         return True
 
-    print("[WARN] Could not explicitly confirm CYBOS PLUS menu selection.")
-    _dump_children(hwnd, "CYBOS Plus menu verify failed")
+    print("[WARN] Could not confirm %s menu selection." % broker_plus)
+    _dump_children(hwnd, "%s menu verify failed" % broker_plus)
     return False
 
 
@@ -695,7 +924,8 @@ def _wait_for_login_clicking_security(timeout=120):
     else:
         print("[WARN] WinEventHook 설치 실패 -- 폴링만 사용")
 
-    print("[INFO] ncStarter 초기화 대기 중 (보안 다이얼로그 + 로그인 창 탐지)...")
+    _sec_hint = " + 보안 다이얼로그" if HAS_SECURITY_DIALOG else ""
+    print("[INFO] %s 초기화 대기 중 (로그인 창 탐지%s)..." % (os.path.basename(CYBOS_EXE), _sec_hint))
     start = time.time()
     msg = ctypes.wintypes.MSG()
 
@@ -708,7 +938,7 @@ def _wait_for_login_clicking_security(timeout=120):
                 ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
                 ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
 
-            if not security_clicked:
+            if HAS_SECURITY_DIALOG and not security_clicked:
                 sec_hwnd = hook_found[0]
                 if not sec_hwnd:
                     sec_hwnd = ctypes.windll.user32.FindWindowW(None, SECURITY_DIALOG_EXACT)
@@ -773,43 +1003,71 @@ def _perform_login(hwnd, user_id, password):
     _dump_children(hwnd, "로그인 창 '%s'" % title)
 
     if not _ensure_cybos_plus_menu_selected(hwnd):
-        print("[ERROR] CYBOS PLUS menu is not selected in the login window.")
+        print("[ERROR] %s menu is not selected in the login window." % ("CREON Plus" if BROKER_TYPE == "creon" else "CYBOS Plus"))
         return False
 
+    # CREON: "아이디" 탭 클릭 -- CREON Plus 선택 후 Edit 컨트롤이 비가시 상태일 수 있음
+    # "아이디" 탭을 클릭해야 ID/PW Edit가 visible=True가 됨
+    if BROKER_TYPE == "creon":
+        _click_creon_id_tab(hwnd)
+
     id_edit, pw_edit = _find_id_password_edits(hwnd)
+
+    EM_SETSEL = 0x00B1  # 전체 선택용 (0, -1)
+
+    def _clear_and_input(edit_hwnd, text, label):
+        """Edit 컨트롤을 완전히 비운 뒤 text 입력"""
+        # 1. 클릭으로 포커스
+        rect = _get_window_rect_safe(edit_hwnd)
+        if rect:
+            cx = (rect[0] + rect[2]) // 2
+            cy = (rect[1] + rect[3]) // 2
+            win32api.SetCursorPos((cx, cy))
+            time.sleep(0.08)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(0.05)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            time.sleep(0.10)
+        else:
+            _focus_control(edit_hwnd)
+            time.sleep(0.10)
+        # 2. 전체 선택 후 삭제 (잔류 데이터 제거)
+        win32gui.SendMessage(edit_hwnd, EM_SETSEL, 0, -1)
+        time.sleep(0.05)
+        win32gui.SendMessage(edit_hwnd, win32con.WM_CLEAR, 0, 0)
+        time.sleep(0.05)
+        # 3. WM_SETTEXT로 새 값 입력
+        result = _set_edit_text(edit_hwnd, text)
+        if not result:
+            # fallback: send_keys
+            send_keys("^a{BACKSPACE}")
+            send_keys(text)
+            print("[INFO] send_keys로 %s 입력 완료" % label)
+        print("[INFO] %s 입력 완료 (cleared → set)" % label)
+        time.sleep(0.10)
 
     # ── STEP 1: 아이디 입력 ──
     if id_edit and user_id:
         print("[INFO] 아이디 Edit 발견: hwnd=%d → '%s'" % (id_edit, user_id))
-        if not _set_edit_text(id_edit, user_id):
-            _focus_control(id_edit)
-            time.sleep(0.1)
-            send_keys("^a{BACKSPACE}")
-            send_keys(user_id)
-            print("[INFO] send_keys로 아이디 입력 완료")
+        _clear_and_input(id_edit, user_id, "아이디")
     else:
-        print("[WARN] 아이디 Edit 미발견 또는 user_id 없음 — 건너뜀")
+        print("[WARN] 아이디 Edit 미발견 또는 user_id 없음 -- 건너뜀")
 
     time.sleep(0.15)
 
     # ── STEP 2: 비밀번호 입력 ──
     if pw_edit:
         print("[INFO] 비밀번호 Edit 발견: hwnd=%d" % pw_edit)
-        if not _set_edit_text(pw_edit, password):
-            _focus_control(pw_edit)
-            time.sleep(0.1)
-            send_keys("^a{BACKSPACE}")
-            send_keys(password)
-            print("[INFO] send_keys로 비밀번호 입력 완료")
+        _clear_and_input(pw_edit, password, "비밀번호")
     elif id_edit:
-        # Edit가 1개뿐(커스텀 창) — 포커스 이동 후 비밀번호 입력
-        print("[WARN] 비밀번호 Edit 미발견 — Tab으로 이동 후 입력 시도")
+        # Edit가 1개뿐(커스텀 창) -- 포커스 이동 후 비밀번호 입력
+        print("[WARN] 비밀번호 Edit 미발견 -- Tab으로 이동 후 입력 시도")
         send_keys("{TAB}")
         time.sleep(0.15)
         send_keys("^a{BACKSPACE}")
         send_keys(password)
     else:
-        print("[WARN] Edit 컨트롤 전혀 없음 — Tab 탐색 시도")
+        print("[WARN] Edit 컨트롤 전혀 없음 -- Tab 탐색 시도")
         send_keys("{TAB}{TAB}")
         time.sleep(0.15)
         send_keys("^a{BACKSPACE}")
@@ -842,7 +1100,12 @@ def _perform_login(hwnd, user_id, password):
                 print("[INFO] 로그인 버튼 (disabled?) '%s' hwnd=%d → BM_CLICK" % (btn_text, btn_hwnd))
                 _post_button_click(btn_hwnd)
     else:
-        print("[INFO] 로그인 버튼 컨트롤 없음 — Enter로 충분할 수 있음")
+        print("[INFO] 로그인 버튼 컨트롤 없음 -- Enter로 충분할 수 있음")
+
+    # CREON: 버튼이 owner-drawn이라 BM_CLICK 탐지 불가 → 좌표 클릭 추가
+    if BROKER_TYPE == "creon":
+        time.sleep(0.3)
+        _click_creon_login_button(hwnd)
 
     return True
 
@@ -924,7 +1187,7 @@ def _find_mock_dialog_candidates():
     candidates = _find_window_by_keywords(MOCK_DIALOG_KEYWORDS, require_visible=True)
     seen = {hwnd for hwnd, _ in candidates}
 
-    # FindWindow 직접 탐색 — 키워드 정규화 오류나 인코딩 차이 대응
+    # FindWindow 직접 탐색 -- 키워드 정규화 오류나 인코딩 차이 대응
     for title_exact in (u"모의투자 선택", u"모의투자선택"):
         try:
             direct_hwnd = win32gui.FindWindow(None, title_exact)
@@ -941,7 +1204,7 @@ def _click_mock_access_button(hwnd):
     '모의투자 접속' 버튼을 다음 순서로 모두 시도한다:
       1. 버튼 탐색 (정확한 텍스트 → 부분 텍스트 → 가장 오른쪽 Button)
       2. BM_CLICK  (표준 버튼 동작)
-      3. 물리 클릭 (owner-drawn/커스텀 버튼 대응 — 키움과 동일 패턴)
+      3. 물리 클릭 (owner-drawn/커스텀 버튼 대응 -- 키움과 동일 패턴)
       4. Enter 전송 (기본 버튼 fallback)
     클릭 후 창이 닫혔으면 True 반환, 아직 열려 있으면 False 반환.
     """
@@ -950,7 +1213,7 @@ def _click_mock_access_button(hwnd):
     # ── 버튼 탐색 ────────────────────────────────────────────────────────
     found_btns = _find_child_by_exact_text(hwnd, MOCK_ACCESS_BUTTON_TEXTS, class_name="Button")
     if not found_btns:
-        # "접속" 포함 — 단, "참가신청"은 걸러 내기 위해 "접속"만 검색
+        # "접속" 포함 -- 단, "참가신청"은 걸러 내기 위해 "접속"만 검색
         found_btns = _find_child_by_text_contains(hwnd, [u"접속"])
     if not found_btns:
         # 최후 수단: 모든 Button 중 가장 오른쪽 버튼 (우상단 = "모의투자 접속")
@@ -969,7 +1232,7 @@ def _click_mock_access_button(hwnd):
         _post_button_click(btn_hwnd)
         time.sleep(0.25)
 
-        # Method 2: 물리 클릭 (owner-drawn 버튼 대응 — BM_CLICK 불응 시 필수)
+        # Method 2: 물리 클릭 (owner-drawn 버튼 대응 -- BM_CLICK 불응 시 필수)
         _force_foreground(hwnd)
         _physical_click_hwnd(btn_hwnd)
         time.sleep(0.25)
@@ -979,7 +1242,7 @@ def _click_mock_access_button(hwnd):
         send_keys("{ENTER}")
         print("[INFO] BM_CLICK + 물리클릭 + ENTER 전송 완료")
     else:
-        # 버튼 탐색 자체 실패 — Enter만
+        # 버튼 탐색 자체 실패 -- Enter만
         print("[WARN] 접속 버튼 컨트롤 미발견 → Enter 폴백")
         _dump_children(hwnd, "모의투자 창 (버튼 못찾음)")
         _force_foreground(hwnd)
@@ -1008,7 +1271,7 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
       - min_wait 중에 팝업이 먼저 나타나면 즉시 처리 (20초 불필요 대기 제거)
       - blind Enter 전송 시 팝업에 포커스를 맞춘 후 전송 (엉뚱한 창 방지)
       - 버튼 클릭 순서: BM_CLICK → 물리클릭 → Enter (owner-drawn 완전 대응)
-      - 클릭 후 창이 닫혔는지 검증 — 안 닫히면 루프 계속
+      - 클릭 후 창이 닫혔는지 검증 -- 안 닫히면 루프 계속
       - FindWindow 직접 탐색으로 키워드 탐색 실패 보완
     """
     print("[INFO] 모의투자 선택 창 대기 중...")
@@ -1017,12 +1280,12 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
         print("[INFO] 모의투자 선택 팝업 최소 대기... %d초" % min_wait)
         for waited in range(min_wait):
             if _is_connected():
-                print("[INFO] 이미 연결됨 — 모의투자 선택 창 처리 생략")
+                print("[INFO] 이미 연결됨 -- 모의투자 선택 창 처리 생략")
                 return True
             # 팝업이 min_wait 중에 먼저 나타나면 즉시 처리
             early = _find_mock_dialog_candidates()
             if early:
-                print("[INFO] 모의투자 팝업 조기 발견 (대기 %d초) — 즉시 처리" % (waited + 1))
+                print("[INFO] 모의투자 팝업 조기 발견 (대기 %d초) -- 즉시 처리" % (waited + 1))
                 for hwnd, title in early:
                     if win32gui.IsWindowVisible(hwnd):
                         _activate_and_wait_for_window(hwnd, title)
@@ -1033,7 +1296,7 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
             if (waited + 1) % 5 == 0:
                 print("[INFO] 모의투자 팝업 최소 대기... %d/%d초" % (waited + 1, min_wait))
         else:
-            # min_wait를 모두 소진한 경우 — 팝업에 포커스 맞춘 뒤 Enter
+            # min_wait를 모두 소진한 경우 -- 팝업에 포커스 맞춘 뒤 Enter
             blind_cands = _find_mock_dialog_candidates()
             if blind_cands:
                 hwnd, _ = blind_cands[0]
@@ -1046,7 +1309,7 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
     # ── 메인 탐지·클릭 루프 ─────────────────────────────────────────────
     for tick in range(timeout):
         if _is_connected():
-            print("[INFO] 이미 연결됨 — 모의투자 선택 창 처리 생략")
+            print("[INFO] 이미 연결됨 -- 모의투자 선택 창 처리 생략")
             return True
 
         candidates = _find_mock_dialog_candidates()
@@ -1057,7 +1320,7 @@ def _handle_mock_select_dialog(timeout=45, min_wait=0):
             _activate_and_wait_for_window(hwnd, title)
             if _click_mock_access_button(hwnd):
                 return True
-            # 클릭했지만 창이 안 닫힌 경우 — 다음 tick에서 재시도
+            # 클릭했지만 창이 안 닫힌 경우 -- 다음 tick에서 재시도
             break
 
         if tick % 5 == 4:
@@ -1117,8 +1380,18 @@ def _wait_for_connection_and_mock(total_timeout=120):
             popup_handled = True
             break
 
-        # ④ Blind Enter — 팝업이 감지되지 않아도 주기적으로 전송
-        if not popup_handled and (time.time() - last_blind) >= BLIND_INTERVAL:
+        # ④ CREON: in-window 모의투자 선택 팝업 좌표 클릭 (EnumWindows 탐지 불가)
+        if BROKER_TYPE == "creon" and not popup_handled:
+            if _creon_starter_hwnd and (time.time() - last_blind) >= BLIND_INTERVAL and elapsed >= 3:
+                try:
+                    if win32gui.IsWindowVisible(_creon_starter_hwnd):
+                        _click_creon_mock_access(_creon_starter_hwnd)
+                        last_blind = time.time()
+                except Exception:
+                    pass
+
+        # ④ Blind Enter -- 팝업이 감지되지 않아도 주기적으로 전송 (CREON은 생략)
+        if BROKER_TYPE != "creon" and not popup_handled and (time.time() - last_blind) >= BLIND_INTERVAL:
             print("[INFO] Blind Enter 전송 (%ds 경과)" % elapsed)
             send_keys("{ENTER}")
             last_blind = time.time()
@@ -1214,6 +1487,11 @@ def autologin():
             print("[WARN] 로그인 창 미발견 (120초 초과) -- 재시도...")
             continue
 
+        # CREON: 로그인 창 hwnd 저장 (모의투자 팝업 좌표 클릭에 사용)
+        if BROKER_TYPE == "creon":
+            global _creon_starter_hwnd
+            _creon_starter_hwnd = hwnd
+
         for _ in range(5):
             if _dismiss_error_dialogs() == 0:
                 break
@@ -1226,7 +1504,7 @@ def autologin():
                 print("[WARN] 로그인 자동화 실패 -- 재시도...")
                 continue
             if _handle_password_confirm_dialog(timeout=5):
-                # 아이디/비밀번호 오류 — 재시도해도 동일하므로 즉시 종료
+                # 아이디/비밀번호 오류 -- 재시도해도 동일하므로 즉시 종료
                 print("[ERROR] CYBOS 로그인 실패 팝업 -- 아이디/비밀번호를 확인하세요.")
                 sys.exit(1)
         except Exception as e:
