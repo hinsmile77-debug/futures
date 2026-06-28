@@ -1033,9 +1033,8 @@ def _perform_login(hwnd, user_id, password):
 
     EM_SETSEL = 0x00B1  # 전체 선택용 (0, -1)
 
-    def _clear_and_input(edit_hwnd, text, label):
-        """Edit 컨트롤을 완전히 비운 뒤 text 입력"""
-        # 1. 클릭으로 포커스
+    def _clear_and_input_creon(edit_hwnd, text, label):
+        """CREON 전용: 물리 클릭 + EM_SETSEL + WM_CLEAR + WM_SETTEXT"""
         rect = _get_window_rect_safe(edit_hwnd)
         if rect:
             cx = (rect[0] + rect[2]) // 2
@@ -1049,15 +1048,12 @@ def _perform_login(hwnd, user_id, password):
         else:
             _focus_control(edit_hwnd)
             time.sleep(0.10)
-        # 2. 전체 선택 후 삭제 (잔류 데이터 제거)
         win32gui.SendMessage(edit_hwnd, EM_SETSEL, 0, -1)
         time.sleep(0.05)
         win32gui.SendMessage(edit_hwnd, win32con.WM_CLEAR, 0, 0)
         time.sleep(0.05)
-        # 3. WM_SETTEXT로 새 값 입력
         result = _set_edit_text(edit_hwnd, text)
         if not result:
-            # fallback: send_keys
             send_keys("^a{BACKSPACE}")
             send_keys(text)
             print("[INFO] send_keys로 %s 입력 완료" % label)
@@ -1067,7 +1063,16 @@ def _perform_login(hwnd, user_id, password):
     # ── STEP 1: 아이디 입력 ──
     if id_edit and user_id:
         print("[INFO] 아이디 Edit 발견: hwnd=%d → '%s'" % (id_edit, user_id))
-        _clear_and_input(id_edit, user_id, "아이디")
+        if BROKER_TYPE == "creon":
+            _clear_and_input_creon(id_edit, user_id, "아이디")
+        else:
+            # CYBOS: 기존 방식 (WM_SETTEXT, 실패 시 send_keys)
+            if not _set_edit_text(id_edit, user_id):
+                _focus_control(id_edit)
+                time.sleep(0.1)
+                send_keys("^a{BACKSPACE}")
+                send_keys(user_id)
+                print("[INFO] send_keys로 아이디 입력 완료")
     else:
         print("[WARN] 아이디 Edit 미발견 또는 user_id 없음 -- 건너뜀")
 
@@ -1076,7 +1081,16 @@ def _perform_login(hwnd, user_id, password):
     # ── STEP 2: 비밀번호 입력 ──
     if pw_edit:
         print("[INFO] 비밀번호 Edit 발견: hwnd=%d" % pw_edit)
-        _clear_and_input(pw_edit, password, "비밀번호")
+        if BROKER_TYPE == "creon":
+            _clear_and_input_creon(pw_edit, password, "비밀번호")
+        else:
+            # CYBOS: 기존 방식
+            if not _set_edit_text(pw_edit, password):
+                _focus_control(pw_edit)
+                time.sleep(0.1)
+                send_keys("^a{BACKSPACE}")
+                send_keys(password)
+                print("[INFO] send_keys로 비밀번호 입력 완료")
     elif id_edit:
         # Edit가 1개뿐(커스텀 창) -- 포커스 이동 후 비밀번호 입력
         print("[WARN] 비밀번호 Edit 미발견 -- Tab으로 이동 후 입력 시도")
