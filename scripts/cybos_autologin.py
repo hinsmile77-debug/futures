@@ -55,17 +55,35 @@ MAX_LOGIN_ATTEMPTS = 3           # 연결 실패 시 전체 재시도 횟수
 MOCK_POPUP_MIN_WAIT = 8          # 구버전 호환용 상수 -- _wait_for_connection_and_mock 에서 미사용
 PASSWORD_OVERRIDE = None         # Windows 자격증명 관리자(cybosplus)에서 읽음
 
-# ── 브로커 자동 감지: CREON(신) 우선 → CYBOS(구) 폴백 ──────────────────────
+# ── 브로커 지정: --broker creon|cybos 인수 우선, 없으면 exe 존재 여부로 자동 감지 ──
+# CYBOS_PLUS.bat → --broker cybos
+# CREON_PLUS.bat → --broker creon
 _CREON_EXE_PATH = r"C:\CREON\STARTER\coStarter.exe"
 _CYBOS_EXE_PATH = r"C:\DAISHIN\STARTER\ncStarter.exe"
 
-if os.path.exists(_CREON_EXE_PATH):
+_broker_override = None
+for _i, _arg in enumerate(sys.argv[1:]):
+    if _arg == "--broker" and _i + 2 <= len(sys.argv[1:]):
+        _broker_override = sys.argv[_i + 2].lower()
+        break
+    elif _arg.startswith("--broker="):
+        _broker_override = _arg.split("=", 1)[1].lower()
+        break
+
+_use_creon = (_broker_override == "creon") or (
+    _broker_override is None and os.path.exists(_CREON_EXE_PATH)
+)
+_use_cybos = (_broker_override == "cybos") or (
+    _broker_override is None and not _use_creon and os.path.exists(_CYBOS_EXE_PATH)
+)
+
+if _use_creon:
     BROKER_TYPE      = "creon"
     CYBOS_EXE        = _CREON_EXE_PATH
     CYBOS_ARGS       = ""
     CYBOS_PROC_NAMES = ["costarter.exe", "cpstart.exe"]
     CRED_TARGET      = "creonplus"  # CREON 전용 자격증명 (win32cred TargetName=creonplus)
-elif os.path.exists(_CYBOS_EXE_PATH):
+elif _use_cybos:
     BROKER_TYPE      = "cybos"
     CYBOS_EXE        = _CYBOS_EXE_PATH
     CYBOS_ARGS       = "/prj:cp"

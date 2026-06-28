@@ -154,12 +154,12 @@ IF %ERRORLEVEL% NEQ 0 (
     ECHO [INFO] CybosPlus not connected -- starting auto-login...
     ECHO [INFO] CybosPlus not connected -- starting auto-login... >> "%LOG%"
     IF EXIST "%WORKDIR%\scripts\cybos_autologin.py" (
-        python "%WORKDIR%\scripts\cybos_autologin.py"
+        python "%WORKDIR%\scripts\cybos_autologin.py" --broker creon
         IF !ERRORLEVEL! NEQ 0 (
             ECHO.
             ECHO [ERROR] Auto-login failed.
-            ECHO [HINT]  Register credentials: cmdkey /add:cybosplus /user:ID /pass:PASSWORD
-            ECHO [HINT]  Check executable: C:\CREON\STARTER\coStarter.exe ^(CREON^) or C:\DAISHIN\STARTER\ncStarter.exe ^(CYBOS^)
+            ECHO [HINT]  Register credentials: cmdkey /add:creonplus /user:ID /pass:PASSWORD
+            ECHO [HINT]  Check executable: C:\CREON\STARTER\coStarter.exe
             ECHO [HINT]  Log location: %WORKDIR%\logs\
             ECHO [ERROR] Auto-login failed. >> "%LOG%"
             SET "ERROR_FLAG=1"

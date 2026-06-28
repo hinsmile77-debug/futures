@@ -154,7 +154,7 @@ IF %ERRORLEVEL% NEQ 0 (
     ECHO [INFO] CybosPlus not connected -- starting auto-login...
     ECHO [INFO] CybosPlus not connected -- starting auto-login... >> "%LOG%"
     IF EXIST "%WORKDIR%\scripts\cybos_autologin.py" (
-        python "%WORKDIR%\scripts\cybos_autologin.py"
+        python "%WORKDIR%\scripts\cybos_autologin.py" --broker cybos
         IF !ERRORLEVEL! NEQ 0 (
             ECHO.
             ECHO [ERROR] Auto-login failed.
