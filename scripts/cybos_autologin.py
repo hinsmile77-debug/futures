@@ -642,24 +642,44 @@ def _select_creon_plus_by_coordinate(hwnd):
 
     win_before = _get_window_rect_safe(hwnd)
 
-    # 헤더 클릭 → 드롭다운 열기 (단 한 번)
+    # ── 헤더 클릭 → 드롭다운 열기 ─────────────────────────────────────────
     hdr_x, hdr_y = px + 90, py + 15
     print("[INFO] CREON Plus 드롭다운 열기: screen(%d,%d)" % (hdr_x, hdr_y))
     _click_at_screen(hwnd, hdr_x, hdr_y)
-    time.sleep(1.0)
+    time.sleep(1.2)  # 드롭다운 팝업 렌더링 대기
 
     # 창 이동 보정
     win_after = _get_window_rect_safe(hwnd)
     dx = (win_after[0] - win_before[0]) if (win_before and win_after) else 0
     dy = (win_after[1] - win_before[1]) if (win_before and win_after) else 0
 
-    # CREON Plus 항목 클릭: hover 후 클릭
+    # ── CREON Plus 항목 클릭 ────────────────────────────────────────────────
+    # 드롭다운이 별도 팝업 창으로 뜨는 경우 PostMessage(parent hwnd)는 팝업에 미도달.
+    # 관리자 권한 실행 시 SetCursorPos + mouse_event 가 직접 팝업을 클릭하므로 더 신뢰적.
     cp_x = px + 65 + dx
     cp_y = py + 85 + dy
-    print("[INFO] CREON Plus 항목 클릭: screen(%d,%d) [hover 400ms → click]" % (cp_x, cp_y))
-    _click_at_screen(hwnd, cp_x, cp_y, hover_ms=400)
-    time.sleep(0.60)
+    print("[INFO] CREON Plus 항목 클릭: screen(%d,%d) [물리클릭]" % (cp_x, cp_y))
+    _force_foreground(hwnd)
+    time.sleep(0.15)
 
+    _clicked = False
+    # 1차: SetCursorPos + mouse_event (관리자 권한 필요 -- CREON_PLUS.bat 관리자 실행으로 보장)
+    try:
+        win32api.SetCursorPos((cp_x, cp_y))
+        time.sleep(0.40)  # hover 대기 (드롭다운 항목 하이라이트)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.10)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        print("[INFO] CREON Plus 물리클릭 완료")
+        _clicked = True
+    except Exception as e:
+        print("[WARN] SetCursorPos 실패(%s) -- PostMessage fallback" % e)
+
+    # 2차: PostMessage fallback (관리자 권한 없거나 SetCursorPos 실패 시)
+    if not _clicked:
+        _click_at_screen(hwnd, cp_x, cp_y, hover_ms=400)
+
+    time.sleep(0.60)
     print("[INFO] CREON Plus 선택 완료")
     return True
 
