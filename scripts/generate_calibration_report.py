@@ -112,7 +112,52 @@ def _worst_bins_text(bins, n=7):
     return lines
 
 
+def _check_confidence_inversion(bins):
+    """conf 역전 감지: 고신뢰도 구간 정확도가 저신뢰도보다 낮으면 경고 반환."""
+    low_bins  = [b for b in bins if b["bin"] in (3, 4)]   # 0.3~0.5
+    high_bins = [b for b in bins if b["bin"] in (6, 7, 8)]  # 0.6~0.9
+
+    if not low_bins or not high_bins:
+        return None
+
+    low_n   = sum(b["count"] for b in low_bins)
+    high_n  = sum(b["count"] for b in high_bins)
+    if low_n == 0 or high_n < 10:
+        return None
+
+    low_acc  = sum(b["accuracy"] * b["count"] for b in low_bins)  / low_n
+    high_acc = sum(b["accuracy"] * b["count"] for b in high_bins) / high_n
+    gap      = low_acc - high_acc
+
+    if gap > 0.03:   # 고신뢰 구간이 저신뢰 구간보다 3%p 이상 낮음
+        ece_high = sum(b["gap"] * b["count"] for b in high_bins) / high_n
+        return {
+            "inverted": True,
+            "low_acc":  round(low_acc,  4),
+            "high_acc": round(high_acc, 4),
+            "gap":      round(gap,      4),
+            "ece_high": round(ece_high, 4),
+            "high_n":   high_n,
+        }
+    return None
+
+
 def build_report(metrics):
+    inv = _check_confidence_inversion(metrics["recent"]["overall"]["bins"])
+    inv_alert = []
+    if inv:
+        inv_alert = [
+            "",
+            "## ⚠️ 신뢰도 역전 경고 (Confidence Inversion Alert)",
+            "",
+            f"- 저신뢰(0.3~0.5) 정확도: {inv['low_acc']:.2%}",
+            f"- 고신뢰(0.6+) 정확도:   {inv['high_acc']:.2%}  ← {inv['gap']:.2%}p 낮음",
+            f"- 고신뢰 ECE: {inv['ece_high']:.4f}  (표본: {inv['high_n']}건)",
+            "- **등급 A 자동진입이 B보다 오히려 정확도 낮은 역전 상태**",
+            "- → EnsembleDecision HCGuard가 자동 차단 중 (conf≥0.65 실적 모니터 확인)",
+            "",
+        ]
+
     lines = [
         "# Calibration Report",
         "",
@@ -120,6 +165,9 @@ def build_report(metrics):
         f"- Platt 보정기 도입 이후(since {PLATT_SINCE[:10]}) 검증 예측: "
         f"{metrics['recent']['overall']['count']}건",
         f"- 전체 누적 검증 예측: {metrics['all']['overall']['count']}건",
+    ]
+    lines += inv_alert
+    lines += [
         "",
         "## 최근 (Platt 보정 이후) — 현재 모델 성능 기준",
         "",
@@ -195,19 +243,24 @@ def main():
     all_bh    = split_by_horizon(all_rows)
     recent_bh = split_by_horizon(recent_rows)
 
+    recent_summary = summarize(recent_rows)
+    all_summary    = summarize(all_rows)
+    conf_inversion = _check_confidence_inversion(recent_summary["bins"])
+
     metrics = {
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "platt_since":  PLATT_SINCE,
+        "generated_at":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "platt_since":      PLATT_SINCE,
+        "conf_inversion":   conf_inversion,  # None이면 정상, dict이면 역전 발생
         "recent": {
-            "overall":    summarize(recent_rows),
+            "overall":    recent_summary,
             "by_horizon": {h: summarize(r) for h, r in sorted(recent_bh.items())},
         },
         "all": {
-            "overall":    summarize(all_rows),
+            "overall":    all_summary,
             "by_horizon": {h: summarize(r) for h, r in sorted(all_bh.items())},
         },
         # 하위 호환: 기존 키(overall/by_horizon) 유지 — 대시보드 파싱 유지
-        "overall":    summarize(recent_rows),
+        "overall":    recent_summary,
         "by_horizon": {h: summarize(r) for h, r in sorted(recent_bh.items())},
     }
 
@@ -220,6 +273,11 @@ def main():
     print(f"recent_ece={metrics['recent']['overall']['ece']}")
     print(f"all_count={metrics['all']['overall']['count']}")
     print(f"all_ece={metrics['all']['overall']['ece']}")
+    if conf_inversion:
+        print(
+            f"CONF_INVERSION_ALERT: high_acc={conf_inversion['high_acc']:.2%} "
+            f"low_acc={conf_inversion['low_acc']:.2%} gap={conf_inversion['gap']:.2%}p"
+        )
 
 
 if __name__ == "__main__":

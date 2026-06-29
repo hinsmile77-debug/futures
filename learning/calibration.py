@@ -37,11 +37,10 @@ class PredictionCalibrator:
     호라이즌별로 독립 관리.
     """
 
-    MIN_SAMPLES   = 80     # 최소 보정 샘플 (100→80: 신규 시장 컨디션 빠른 적용)
-    # 85차: 500→200 — 현재 시장 컨디션 반영 속도 향상 (500건 ≈ 과거 8거래일 평균으로 희석)
-    # 6/11 분석: ECE=0.155, conf 역전(0.60+ 구간 정확도 오히려 낮음) — 오래된 데이터 희석 효과
-    # 200→100: 최근 ~1.7일 데이터만 반영, 최신 시장 컨디션 빠른 추적
-    WINDOW        = 100    # 슬라이딩 윈도우 (최근 N개만 사용)
+    MIN_SAMPLES   = 80     # 최소 보정 샘플
+    # 6/29 분석: WINDOW=100에서 conf≥0.6 tail 샘플 ~7건 → tail 보정 불안정.
+    # 200으로 복원: tail 샘플 ~15건 확보, 시장 컨디션 적응(~3.4일)과 tail 안정성 균형.
+    WINDOW        = 200    # 슬라이딩 윈도우 (최근 N개만 사용)
 
     def __init__(self, method: str = "platt"):
         """
@@ -63,9 +62,11 @@ class PredictionCalibrator:
             if method == "isotonic":
                 self._model = IsotonicRegression(out_of_bounds="clip")
             else:
-                # P2: C=1.0→0.1 — overconfident 데이터에서 급경사 Platt 커브 완화
-                # 6/11 분석: 0.60+ 구간 conf-accuracy 역전 → C=0.1→0.05 추가 정규화
-                self._model = LogisticRegression(C=0.05, solver="lbfgs")
+                # C 이력: 1.0 → 0.1 → 0.05 → 0.02
+                # 6/29 분석: WINDOW=200(tail ~15건) + C=0.02로 tail 압축 추가 강화.
+                # C=0.05에서 conf 0.7+ tail이 여전히 0.7+ 출력 — 실측 acc 29-31%.
+                # C=0.02: 계수 w를 더 0에 가깝게 → tail의 sigmoid가 base rate(33%)에 더 밀착.
+                self._model = LogisticRegression(C=0.02, solver="lbfgs")
 
     def record(self, raw_prob: float, actual_correct: bool):
         """
@@ -79,8 +80,8 @@ class PredictionCalibrator:
         self._labels.append(1 if actual_correct else 0)
         self._n += 1
 
-        # 주기적 재보정 (85차: 50→20, 6/11: 20→10 — 100건 윈도우에서 20건 주기는 느림)
-        if self._n % 10 == 0 and self._n >= self.MIN_SAMPLES:
+        # 주기적 재보정 (85차: 50→20, 6/11: 20→10, 6/29: 10→5 — 200건 윈도우에서 tail 반영 속도 향상)
+        if self._n % 5 == 0 and self._n >= self.MIN_SAMPLES:
             self.fit()
 
     def fit(self):
