@@ -252,6 +252,14 @@ class EnsembleDecision:
     # → flat을 0.38로 cap 후 재정규화하여 UP/DN 상대 경쟁력 확보.
     _FLAT_CAP_ON_TREND = 0.38   # 추세 중 flat_score 상한
 
+    # ── Grade A 롤링 정확도 가드 ─────────────────────────────────────────────
+    # conf ≥ 0.65 예측의 최근 N건 실적이 임계값 미달이면 Grade A를 B로 강등.
+    # 근거: conf 0.7+ 실측 정확도 ~29-31% — conf 0.4대 정확도(33%)보다 낮은 역전 현상.
+    _HC_GUARD_WINDOW   = 50    # 최근 N건 고신뢰도 예측
+    _HC_GUARD_MIN_N    = 20    # 이 수 이상 쌓여야 가드 활성 (초기 cold start 보호)
+    _HC_GUARD_CONF_THR = 0.65  # 고신뢰도 판단 기준
+    _HC_GUARD_ACC_THR  = 0.42  # 이 정확도 미달 시 Grade A → B 강등
+
     def __init__(self):
         self.gater      = AdaptiveEnsembleGater()
         self._decorr    = HorizonDecorrelator()
@@ -273,6 +281,9 @@ class EnsembleDecision:
         # P4: display용 EMA smoothing (span=20, 실거래 로직 무영향)
         self._conf_ema: Optional[float] = None
         self._CONF_EMA_ALPHA: float = 2.0 / (20 + 1)  # span=20
+        # Grade A 롤링 정확도 가드: conf ≥ _HC_GUARD_CONF_THR 예측 결과 버퍼
+        self._hc_buf: deque = deque(maxlen=self._HC_GUARD_WINDOW)
+        self._hc_grade_a_blocked: bool = False  # 현재 차단 상태 (로그용)
 
     def compute(
         self,
@@ -835,7 +846,28 @@ class EnsembleDecision:
         elif not regime_ok:
             grade = "X"
         elif confidence >= 0.70:
-            grade = "A"
+            # Grade A 롤링 정확도 가드: 고신뢰도 예측 실적이 _HC_GUARD_ACC_THR 미달이면 B 강등.
+            # conf 0.7+ 실측 acc ~29-31% (conf 0.4대 33%보다 낮음) 역전 현상 대응.
+            _hc_n = len(self._hc_buf)
+            _hc_acc = (sum(self._hc_buf) / _hc_n) if _hc_n > 0 else 0.0
+            _hc_guard_active = _hc_n >= self._HC_GUARD_MIN_N
+            _hc_blocked = _hc_guard_active and (_hc_acc < self._HC_GUARD_ACC_THR)
+            if _hc_blocked:
+                grade = "B"
+                if not self._hc_grade_a_blocked:
+                    logger.warning(
+                        "[HCGuard] Grade A → B 강등: 고신뢰 최근 %d건 acc=%.1f%% < %.0f%%",
+                        _hc_n, _hc_acc * 100, self._HC_GUARD_ACC_THR * 100,
+                    )
+                self._hc_grade_a_blocked = True
+            else:
+                grade = "A"
+                if self._hc_grade_a_blocked and _hc_guard_active:
+                    logger.info(
+                        "[HCGuard] Grade A 차단 해제: 고신뢰 최근 %d건 acc=%.1f%%",
+                        _hc_n, _hc_acc * 100,
+                    )
+                self._hc_grade_a_blocked = False
         elif confidence >= 0.60:
             grade = "B"
         elif confidence >= min_conf:
@@ -898,6 +930,9 @@ class EnsembleDecision:
     def record_ensemble_outcome(self, raw_conf: float, correct: bool) -> None:
         """앙상블 보정기에 결과 누적 — STEP 1 검증 시 main.py에서 호출."""
         self.ensemble_calibrator.record(raw_conf, correct)
+        # Grade A 가드용 고신뢰도 버퍼 업데이트 (calibrated conf 기준)
+        if raw_conf >= self._HC_GUARD_CONF_THR:
+            self._hc_buf.append(1 if correct else 0)
 
     def record_horizon_verification(
         self, horizon: str, predicted: int, actual: int
@@ -912,6 +947,8 @@ class EnsembleDecision:
         self._hz_stuck = {h: False for h in HORIZONS}
         self._flat_streak = 0
         self._fl_streak = {h: 0 for h in HORIZONS}
+        # HCGuard 버퍼는 일일 리셋 안 함 — 누적 데이터가 가드 품질의 핵심
+        # (장 사이 하루만 공백이어도 50건 버퍼가 유효하므로 유지)
 
     def reset_exchange_cb(self) -> None:
         """거래소 CB 해제 후 앙상블 상태 초기화.
