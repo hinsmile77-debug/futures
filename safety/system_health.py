@@ -10,7 +10,7 @@ SHS < 60 → 진입 차단 + 슬랙 경고 (5점 하락마다 재알림)
 
 Early Kill Switch (09:05 1회 평가):
   조건: GAP_OPEN(09:00~09:05) 구간 최대 conf < GAP_OPEN zone min_conf  AND  CORE 통과율 0%
-  → 당일 관망 선언 (수동 진입은 대시보드에서 별도 허용)
+  → 일시 관망 (수동 진입은 대시보드에서 별도 허용 / 이슈 해소 시 자동 재개)
 
 EKS 동적 해제:
   간격: 30분마다 재평가 (09:20, 09:50, 10:20, 11:00, 11:30)
@@ -134,16 +134,33 @@ class SystemHealthScore:
             )
             return False
 
+        # cold-start 판별: conf_max==0.0% 이고 pipeline_delayed 봉도 없는 경우
+        # → active_horizons 초기화 지연(정상) 으로 인한 conf=0% 이므로 EKS 미발동.
+        # cold-start는 모델 붕괴가 아니라 GAP_OPEN 워밍업 구간 특성.
+        _is_cold_start = (
+            self._gap_open_conf_max == 0.0
+            and self._gap_open_delayed_count == 0
+        )
+
         if (
             self._gap_open_conf_max < gap_open_mc
             and self._gap_open_core_pass_count == 0
+            and not _is_cold_start
         ):
             self._eks_active = True
             logger.warning(
-                "[SHS-EKS] Early Kill Switch 발동! "
-                "conf_max=%.1f%% < mc=%.1f%% core_pass=0/%d봉 → 당일 관망 선언",
+                "[SHS-EKS] Early Kill Switch 발동 "
+                "conf_max=%.1f%% < mc=%.1f%% core_pass=0/%d봉 "
+                "→ 일시 관망 (09:20부터 30분 간격 자동 회복 평가, 마감 11:30)",
                 self._gap_open_conf_max * 100,
                 gap_open_mc * 100,
+                self._gap_open_bar_count,
+            )
+        elif _is_cold_start:
+            logger.info(
+                "[SHS-EKS] EKS 미발동 — cold-start (conf_max=0%% delayed=%d/%d봉) "
+                "active_horizons 초기화 지연으로 판단",
+                self._gap_open_delayed_count,
                 self._gap_open_bar_count,
             )
         else:
@@ -166,9 +183,18 @@ class SystemHealthScore:
         if now.time() >= EKS_RECOVERY_DEADLINE:
             return False
         if self._eks_last_recovery_ts is None:
-            return now.time() >= datetime.time(9, 20)
+            _ok = now.time() >= datetime.time(9, 20)
+            if _ok:
+                logger.info("[SHS-EKS] 회복 평가 시작 (첫 시도) — %s", now.strftime("%H:%M"))
+            return _ok
         elapsed_min = (now - self._eks_last_recovery_ts).total_seconds() / 60.0
-        return elapsed_min >= EKS_RECOVERY_INTERVAL_MIN
+        _ok = elapsed_min >= EKS_RECOVERY_INTERVAL_MIN
+        if _ok:
+            logger.info(
+                "[SHS-EKS] 회복 평가 시작 (#%d, 경과=%.0f분) — %s",
+                self._eks_recovery_count + 1, elapsed_min, now.strftime("%H:%M"),
+            )
+        return _ok
 
     def try_eks_recovery(
         self,
@@ -211,12 +237,19 @@ class SystemHealthScore:
             )
             return True
 
-        logger.info(
-            "[SHS-EKS] EKS 유지 (회복 시도 #%d) — "
-            "scaler_ok=%s conf_hits=%d/%d(필요%d,임계%.0f%%) z_ok=%s(z=%d)",
+        # 미해제 원인을 명확히 노출 (INFO→WARNING: 매 30분 시도 결과 가시성 확보)
+        _reasons = []
+        if not _ok_scaler:
+            _reasons.append("scaler_age=%.1fh(≥1h)" % scaler_age_hours)
+        if not _ok_conf:
+            _reasons.append("conf_hits=%d/%d(필요%d,임계%.0f%%)" % (
+                _hits, len(conf_window), EKS_RECOVERY_CONF_MIN_HITS, _threshold * 100))
+        if not _ok_z:
+            _reasons.append("z_warn=%d(≥15)" % z_warn_count)
+        logger.warning(
+            "[SHS-EKS] EKS 미해제 (시도 #%d) — 미충족: %s",
             self._eks_recovery_count,
-            _ok_scaler, _hits, len(conf_window), EKS_RECOVERY_CONF_MIN_HITS,
-            _threshold * 100, _ok_z, z_warn_count,
+            " | ".join(_reasons) if _reasons else "알 수 없음",
         )
         return False
 

@@ -48,6 +48,22 @@ def _restore_mc_from_history() -> None:
             "WHERE id IN (SELECT MAX(id) FROM mc_history GROUP BY zone)"
         ).fetchall()
         conn.close()
+
+        # mc_history 레코드 없음(첫 기동·DB 소실) → 코드 기본값(0.54~0.67)이 그대로 남아
+        # 장 시작 시 MC가 과도하게 높아지는 것을 막기 위해 안전 fallback 적용.
+        # STEP_LIMIT 덕분에 DynMC가 목표값에 수렴하는 데 수 시간이 걸리므로 초기값이 중요.
+        if not rows:
+            _SAFE_MC = 0.35
+            for _z, _p in _ZONE_PARAMS.items():
+                if _z in ("EXIT_ONLY", "OTHER", "PRE_MARKET"):
+                    continue
+                if _p["min_confidence"] > _SAFE_MC:
+                    _p["min_confidence"] = _SAFE_MC
+            logger.warning(
+                "[DynMC] mc_history 레코드 없음 — 안전 fallback=%.2f 전 구간 적용", _SAFE_MC
+            )
+            return
+
         base_mcs = []
         for r in rows:
             zone = r["zone"]
@@ -336,7 +352,8 @@ def update_dynamic_mc(
         return None
 
     sorted_c = sorted(conf_list)
-    idx_p65  = int(len(sorted_c) * MC_PERCENTILE / 100)
+    # MC_PERCENTILE = 0.65 (소수점 분율). /100 적용 시 0.0065 → 최솟값 근방 오류.
+    idx_p65  = min(int(len(sorted_c) * MC_PERCENTILE), len(sorted_c) - 1)
     conf_p65 = sorted_c[idx_p65]
     conf_avg = sum(conf_list) / len(conf_list)
 

@@ -229,7 +229,67 @@ maitreya_dist ← 배포 전용 (타 PC pull 대상)
 
 ---
 
-## 9. 파일 크기 체크 (모델 파일)
+## 9. 레슨런 — CREON Plus 자동 로그인 (MW0602, 2026-06-29)
+
+> `scripts/cybos_autologin.py` 라이브 디버그로 확정된 좌표·흐름  
+> 실행 환경: MW0601 PC, 화면해상도 1920×1080, 로그인창 위치 (wx=599, wy=209)
+
+### 9-1. 확정 절대 좌표 (창 상대 오프셋)
+
+| 단계 | 절대좌표 | wx/wy 오프셋 | 비고 |
+|---|---|---|---|
+| CREON Plus 드롭다운 열기 | (662, 233) | wx+63, wy+24 | 좌상단 "CREON ▼" 클릭 |
+| CREON Plus 항목 선택 | (657, 298) | popup_top+52 | 팝업 rect=(615,246,755,316) |
+| 아이디 탭 클릭 | (890, 422) | wx+291, wy+213 | 좌측 패널 우단 탭바 |
+| 아이디 입력 필드 | (738, 479) | wx+139, wy+270 | |
+| 비밀번호 입력 필드 | (693, 515) | wx+94, wy+306 | |
+| 모의투자로그인 버튼 | (770, 614) | wx+171, wy+405 | 핑크 버튼 |
+| 모의투자선택 팝업 버튼 | (962, 509) | 절대좌표 | 팝업 top≈262, offset=247 |
+| 공지사항 닫기 버튼 | (1448, 161) | 절대좌표 | CREON 데스크 내 테이블 X |
+
+### 9-2. CREON Starter 창 구조 특성
+
+- **전체 창이 HTCAPTION(오너드로)**: 자식 Afx 패널은 HTTRANSPARENT → 마우스가 부모 hwnd로 전달됨
+- **드롭다운은 별도 popup hwnd**: 헤더 클릭으로 팝업 생성, `EnumWindows`로 탐지 가능
+  - 드롭다운 팝업에 `PostMessage(WM_NCLBUTTONDOWN)` to 메인창 → 팝업 즉시 닫힘 (금지)
+  - 항목 클릭은 반드시 `SetCursorPos + mouse_event` 단독 사용
+- **드롭다운 ONE 클릭 원칙**: 팝업은 첫 클릭 후 닫힘 → 한 retry에 여러 y 시도 불가, retry별 1클릭
+- **좌측 Afx 패널**: rect=(600,210,960,830), 우측: rect=(960,210,1320,830)
+
+### 9-3. Edit 가시성 상태 머신
+
+```
+coStarter 최초 기동 (CREON 선택)  : Edit visible (기본)
+CREON Plus 선택 직후              : Edit invisible  ← "공인인증서" 탭 기본
+"아이디" 탭 클릭 후               : Edit visible 재개
+coStarter 재시작 (CREON Plus 기억) : Edit invisible (마지막 상태 유지)
+※ 단, "아이디" 탭이 마지막으로 선택됐으면 재시작 후에도 Edit visible
+```
+
+**비가시 Edit 처리**: `_collect_edits()` → 가시 Edit 없으면 비가시 Edit 폴백 → `WM_SETTEXT` 직접 주입 (물리 클릭 금지)
+
+### 9-4. 주요 함정과 해결책
+
+| 함정 | 원인 | 해결 |
+|---|---|---|
+| 모의투자 팝업 버튼 오클릭 | wy+130=392 로 고정 (실제 버튼 wy+247=509) | offset 247로 수정 + 절대좌표 폴백 (962,509) |
+| COMAIN.EXE 다이얼로그 오탐 | "CREON Starter" 제목 공유, Afx 패널 없음 | '예(Y)' 버튼 감지 후 클릭, None 반환 |
+| 아이디 탭 그리드 스캔 실패 | 63~126 위치 스캔해도 CREON Plus 모드서 Edit 미가시 | 확정 좌표 (890,422) 직접 4회 시도로 교체 |
+| 모의투자 팝업 title 불일치 | `FindWindow("모의투자 선택")` 미매칭 | 소형 팝업(ww<800) 탐색 + (962,509) 절대좌표 폴백 |
+| 로그인 버튼 좌표 오차 | PW Edit 하단 + 72px 계산 불일치 | 확정 wx+171, wy+405 직접 지정 |
+
+### 9-5. 진단 방법
+
+- **실시간 로그**: `logs/creon_autologin_diag.log` (TeeStream으로 stdout 미러)
+- **진단 포인트**:
+  - `[DEBUG] 드롭다운 팝업 후보:` → 팝업 rect, hwnd 확인
+  - `[DEBUG] 비가시 Edit hwnd=... screen=(x,y)` → Edit 실제 좌표 확인
+  - `[INFO] CREON Plus 항목 클릭: retry? y_offset=? screen(?,?)` → 선택 경로 추적
+  - `[OK] CybosPlus 연결 성공 (ServerType=1)` → 모의투자 연결 확인
+
+---
+
+## 10. 파일 크기 체크 (모델 파일)
 
 배포 전 아래 명령으로 모델 파일 크기 확인:
 

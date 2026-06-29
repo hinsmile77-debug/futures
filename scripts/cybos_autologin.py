@@ -29,6 +29,63 @@ if hasattr(sys.stdout, "buffer") and getattr(sys.stdout, "encoding", "").lower()
 if hasattr(sys.stderr, "buffer") and getattr(sys.stderr, "encoding", "").lower() not in ("utf-8", "utf-8-sig"):
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
+
+class _TeeStream(object):
+    """stdout을 콘솔과 파일에 동시 기록 (진단 로그)"""
+    def __init__(self, original, log_path):
+        self._orig = original
+        try:
+            log_dir = os.path.dirname(log_path)
+            if log_dir and not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+            self._f = io.open(log_path, "a", encoding="utf-8", errors="replace")
+        except Exception:
+            self._f = None
+
+    def write(self, data):
+        try:
+            self._orig.write(data)
+            self._orig.flush()
+        except Exception:
+            pass
+        if self._f:
+            try:
+                self._f.write(data)
+                self._f.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        try:
+            self._orig.flush()
+        except Exception:
+            pass
+        if self._f:
+            try:
+                self._f.flush()
+            except Exception:
+                pass
+
+    def __getattr__(self, name):
+        return getattr(self._orig, name)
+
+
+_DIAG_LOG = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "logs", "creon_autologin_diag.log"
+)
+try:
+    import datetime as _dt
+    _log_dir = os.path.dirname(_DIAG_LOG)
+    if not os.path.exists(_log_dir):
+        os.makedirs(_log_dir)
+    with io.open(_DIAG_LOG, "a", encoding="utf-8") as _lf:
+        _lf.write("\n=== autologin start: %s ===\n" % _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+except Exception:
+    pass
+sys.stdout = _TeeStream(sys.stdout, _DIAG_LOG)
+sys.stderr = _TeeStream(sys.stderr, _DIAG_LOG)
+
 # 32-bit Python 필수 (Cybos COM은 32-bit 전용)
 if struct.calcsize("P") != 4:
     print("[ERROR] 32-bit Python 필요 -- 현재 %d-bit" % (struct.calcsize("P") * 8))
@@ -81,7 +138,7 @@ if _use_creon:
     BROKER_TYPE      = "creon"
     CYBOS_EXE        = _CREON_EXE_PATH
     CYBOS_ARGS       = ""
-    CYBOS_PROC_NAMES = ["costarter.exe", "cpstart.exe"]
+    CYBOS_PROC_NAMES = ["comain.exe", "costarter.exe", "cpstart.exe"]
     CRED_TARGET      = "creonplus"  # CREON 전용 자격증명 (win32cred TargetName=creonplus)
 elif _use_cybos:
     BROKER_TYPE      = "cybos"
@@ -366,12 +423,17 @@ def _focus_control(hwnd):
 # -- Edit 컨트롤 탐지 -----------------------------------------------------------
 
 def _collect_edits(parent_hwnd):
-    """로그인 창의 Edit 컨트롤 목록을 y 좌표 오름차순으로 반환"""
+    """로그인 창의 Edit 컨트롤 목록을 y 좌표 오름차순으로 반환.
+
+    1차: 가시(IsWindowVisible=True) + 클래스명 "Edit" 정확 매치
+    2차: 가시 + 클래스명 EDIT/RICHEDIT/TEXTBOX 포함 (AfxWnd 계열 대응)
+    3차: 비가시(IsWindowVisible=False) + "Edit" 클래스 + width>50 + height>10
+         → CREON Plus 모드에서 "아이디" 탭 미선택 시 사용 (WM_SETTEXT 직접 주입)
+    """
     edits = [c for c in _enum_children(parent_hwnd)
              if win32gui.GetClassName(c) == "Edit" and win32gui.IsWindowVisible(c)]
 
     if not edits:
-        # Cybos 로그인 창은 커스텀 윈도우일 수 있음 -- AfxWnd/PopupEdit 등 다양한 클래스 탐색
         for c in _enum_children(parent_hwnd):
             if not win32gui.IsWindowVisible(c):
                 continue
@@ -382,7 +444,23 @@ def _collect_edits(parent_hwnd):
             except Exception:
                 pass
 
-    # y 좌표 기준 오름차순 (위→아래: ID → PW)
+    if not edits:
+        # CREON Plus 모드 폴백: 비가시 Edit에 직접 WM_SETTEXT 주입
+        invisible_edits = []
+        for c in _enum_children(parent_hwnd):
+            if win32gui.IsWindowVisible(c):
+                continue
+            try:
+                cn = win32gui.GetClassName(c)
+                if cn == "Edit":
+                    r = _get_window_rect_safe(c) or (0, 0, 0, 0)
+                    if (r[2] - r[0]) > 50 and (r[3] - r[1]) > 10:
+                        invisible_edits.append(c)
+                        print("[DEBUG] 비가시 Edit 폴백: hwnd=%d rect=%s" % (c, r))
+            except Exception:
+                pass
+        edits = invisible_edits
+
     edits.sort(key=lambda h: (_get_window_rect_safe(h) or (0, 9999, 0, 0))[1])
     return edits
 
@@ -501,28 +579,68 @@ def _click_creon_id_tab(hwnd):
     CREON 로그인 창의 '아이디' 탭 클릭.
     CREON Plus 선택 직후 Edit 컨트롤이 비가시 상태 -- '아이디' 탭을 클릭해야 visible=True.
 
-    실증 좌표: 패널 좌상단 + (295, 215) [3번째 탭, '아이디']
+    2D 그리드 스캔:
+    - x_offsets × y_offsets 조합으로 패널 전체 탐색
+    - 각 클릭 후 Edit 가시화 확인 → 성공 즉시 반환
+    - SetCursorPos + mouse_event 사용 필수 (PostMessage만으로는 탭 전환 안 됨)
     """
-    afx_ctrls = []
-    def _cb(ch, _):
+    # Afx 패널 전체 위치 로깅 (진단)
+    afx_all = []
+    def _cb_all(ch, _):
         try:
             if "Afx" in win32gui.GetClassName(ch) and win32gui.IsWindowVisible(ch):
                 r = win32gui.GetWindowRect(ch)
-                if (r[2]-r[0]) > 200 and (r[3]-r[1]) > 400:
-                    afx_ctrls.append((ch, r))
+                afx_all.append((ch, r))
         except Exception:
             pass
-    win32gui.EnumChildWindows(hwnd, _cb, None)
-    if not afx_ctrls:
-        return
-    afx_ctrls.sort(key=lambda x: x[1][0])
-    px, py = afx_ctrls[0][1][0], afx_ctrls[0][1][1]
+    try:
+        win32gui.EnumChildWindows(hwnd, _cb_all, None)
+    except Exception:
+        pass
+    afx_all.sort(key=lambda x: x[1][0])
+    for _ah, _ar in afx_all:
+        print("[DEBUG] Afx패널 hwnd=%d rect=%s sz=%dx%d" % (
+            _ah, _ar, _ar[2]-_ar[0], _ar[3]-_ar[1]))
 
-    tab_x = px + 295
-    tab_y = py + 215
-    print("[INFO] CREON '아이디' 탭 클릭: screen(%d,%d)" % (tab_x, tab_y))
-    _click_at_screen(hwnd, tab_x, tab_y)
-    time.sleep(0.40)  # 탭 전환 후 Edit 가시화 대기
+    # 실증 절대좌표: (890, 422) @ 창위치(599,209) → 창 상대: wx+291, wy+213
+    win_rect = _get_window_rect_safe(hwnd)
+    if not win_rect:
+        print("[WARN] 창 rect 탐색 실패 -- '아이디' 탭 클릭 생략")
+        return
+    wx, wy = win_rect[0], win_rect[1]
+
+    # 창 포커스 확보
+    _force_foreground(hwnd)
+    time.sleep(0.15)
+
+    # 정확 좌표로 직접 클릭 (3회 시도, ±5px 미세 보정)
+    _tab_candidates = [
+        (wx + 291, wy + 213),  # 실증 좌표 (890, 422)
+        (wx + 286, wy + 210),  # -5px 보정
+        (wx + 296, wy + 216),  # +5px 보정
+        (wx + 280, wy + 213),  # x만 -11px
+    ]
+
+    for _ti, (tab_x, tab_y) in enumerate(_tab_candidates):
+        print("[INFO] '아이디' 탭 클릭 시도%d: screen(%d,%d)" % (_ti, tab_x, tab_y))
+        try:
+            win32api.SetCursorPos((tab_x, tab_y))
+            time.sleep(0.12)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(0.08)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        except Exception as e:
+            print("[WARN] SetCursorPos 실패 시도%d: %s" % (_ti, e))
+            _post_nclbclick(hwnd, tab_x, tab_y)
+
+        for _t in range(3):
+            time.sleep(0.20)
+            _edits = _collect_wide_edits_visibility(hwnd)
+            if _edits and any(v for _, _, v in _edits):
+                print("[INFO] '아이디' 탭 클릭 성공: screen(%d,%d) → Edit 가시화" % (tab_x, tab_y))
+                return
+
+    print("[WARN] '아이디' 탭 4회 시도 후 Edit 비가시 -- 계속 진행 (비가시 Edit WM_SETTEXT 폴백)")
 
 
 def _click_creon_login_button(hwnd):
@@ -551,13 +669,9 @@ def _click_creon_login_button(hwnd):
         return
     wx, wy = win_rect[0], win_rect[1]
 
-    if edits:
-        pw_bottom = edits[-1][3]
-        btn_x = wx + 182
-        btn_y = pw_bottom + 72
-    else:
-        btn_x = wx + 182
-        btn_y = wy + 391
+    # 실증 절대좌표: (770, 614) @ 창위치(599,209) → 창 상대: wx+171, wy+405
+    btn_x = wx + 171
+    btn_y = wy + 405
 
     print("[INFO] CREON 모의투자로그인 버튼 클릭: screen(%d,%d)" % (btn_x, btn_y))
     _force_foreground(hwnd)
@@ -568,12 +682,14 @@ def _click_creon_login_button(hwnd):
 
 def _click_creon_mock_access(hwnd):
     """
-    CREON '모의투자 선택' 팝업의 '모의투자 접속' 버튼 좌표 클릭 (fallback).
+    CREON '모의투자 선택' 팝업의 '모의투자 접속' 버튼 클릭.
 
-    우선 BM_CLICK을 시도(버튼 텍스트 탐색). 실패 시 좌표 기반 클릭.
-    hwnd: CREON 메인 데스크 창 or 모의투자 선택 팝업 hwnd 모두 허용.
-      - 팝업 hwnd인 경우: 팝업 rect 기반 좌표 = 팝업 중앙 상단
-      - 메인 창 hwnd인 경우: 메인 창 안에서 팝업이 표시되는 예상 위치 클릭
+    순서:
+    1. 자식 Button BM_CLICK (텍스트 매칭)
+    2. 자식창 덤프 (진단용 -- 팝업 구조 파악)
+    3. 좌표 다중 시도 (wy+75, +90, +100, +115, +130, +150)
+
+    hwnd: 모의투자 선택 팝업 hwnd or CREON 메인 창 hwnd
     """
     try:
         if not win32gui.IsWindowVisible(hwnd):
@@ -582,7 +698,30 @@ def _click_creon_mock_access(hwnd):
     except Exception:
         return
 
-    # 먼저 버튼 BM_CLICK 시도 (자식 컨트롤이 있는 경우)
+    wx, wy = win_rect[0], win_rect[1]
+    ww = win_rect[2] - win_rect[0]
+    wh = win_rect[3] - win_rect[1]
+
+    # 자식창 덤프 (진단 -- 버튼 위치 파악)
+    children_info = []
+    try:
+        def _dump_child(c, _):
+            try:
+                r = win32gui.GetWindowRect(c)
+                children_info.append((c, win32gui.GetClassName(c),
+                                      win32gui.GetWindowText(c), r))
+            except Exception:
+                pass
+        win32gui.EnumChildWindows(hwnd, _dump_child, None)
+    except Exception:
+        pass
+    if children_info:
+        print("[DEBUG] 모의투자팝업 hwnd=%d 자식창(%d개):" % (hwnd, len(children_info)))
+        for c, cn, ct, r in children_info:
+            print("  hwnd=%d cls='%s' txt='%s' sz=%dx%d pos=(%d,%d)" % (
+                c, cn, ct[:30], r[2]-r[0], r[3]-r[1], r[0], r[1]))
+
+    # 먼저 버튼 BM_CLICK 시도
     found_btns = _find_child_by_exact_text(hwnd, MOCK_ACCESS_BUTTON_TEXTS, class_name="Button")
     if not found_btns:
         found_btns = _find_child_by_text_contains(hwnd, [u"접속"], class_name="Button")
@@ -593,24 +732,77 @@ def _click_creon_mock_access(hwnd):
         time.sleep(0.30)
         return
 
-    # fallback: 좌표 클릭
-    # 팝업이 작은 다이얼로그(~240x340)면 중앙 상단, 메인 창이면 예상 위치
-    wx, wy = win_rect[0], win_rect[1]
-    ww = win_rect[2] - win_rect[0]
-    wh = win_rect[3] - win_rect[1]
-    if ww < 800:
-        # 팝업 자체 hwnd -- "모의투자 접속" 버튼은 ComboBox 바로 아래 (약 130px)
-        btn_x = wx + ww // 2
-        btn_y = wy + 130
-    else:
-        # 메인 창 hwnd -- 팝업이 화면 중앙에 뜨므로 모니터 중앙 근처 클릭
-        btn_x = wx + ww // 2
-        btn_y = wy + 400
-    print("[INFO] CREON 모의투자 접속 좌표 클릭: screen(%d,%d)" % (btn_x, btn_y))
+    # Button 미발견 (오너드로) → 좌표 다중 시도
     _force_foreground(hwnd)
     time.sleep(0.20)
-    _click_at_screen(hwnd, btn_x, btn_y)
-    time.sleep(0.30)
+
+    if ww < 800:
+        # 팝업 hwnd -- 실증 절대좌표: (962,509) @ popup위치(wy=262) → wy+247
+        # 기존 wy+130=392 는 버튼 위치보다 117px 위로 오클릭이었음
+        btn_x = wx + ww // 2
+        y_offsets = (247, 230, 260, 215, 280)
+        print("[INFO] CREON 모의투자 접속 좌표 다중시도: x=%d, wy=%d, offsets=%s" % (btn_x, wy, y_offsets))
+        for _oy in y_offsets:
+            btn_y = wy + _oy
+            _click_at_screen(hwnd, btn_x, btn_y)
+            time.sleep(0.20)
+    else:
+        # 메인 창 hwnd
+        btn_x = wx + ww // 2
+        btn_y = wy + 400
+        print("[INFO] CREON 모의투자 접속 메인창 클릭: screen(%d,%d)" % (btn_x, btn_y))
+        _click_at_screen(hwnd, btn_x, btn_y)
+        time.sleep(0.30)
+
+
+def _collect_wide_edits_visibility(parent_hwnd):
+    """
+    parent_hwnd 하위 모든 Edit-류 컨트롤(width>50) 가시 여부 목록 반환.
+
+    "Edit" 정확 매치 외에 "EDIT"/"RICHEDIT"/"TEXTBOX" 포함 클래스명도 탐색
+    (CREON Afx 커스텀 Edit 클래스 대응).
+    반환: [(hwnd, class_name, is_visible), ...]
+    """
+    results = []
+    def _ev(ch, _):
+        try:
+            cn = win32gui.GetClassName(ch)
+            is_edit = (cn == "Edit") or any(
+                kw in cn.upper() for kw in ("EDIT", "RICHEDIT", "TEXTBOX")
+            )
+            if is_edit:
+                r = win32gui.GetWindowRect(ch)
+                if (r[2] - r[0]) > 50:
+                    results.append((ch, cn, win32gui.IsWindowVisible(ch)))
+        except Exception:
+            pass
+    try:
+        win32gui.EnumChildWindows(parent_hwnd, _ev, None)
+    except Exception:
+        pass
+    return results
+
+
+def _get_afx_panel(hwnd):
+    """로그인 창 좌측 Afx 패널 (width>200, height>400)의 화면 좌표 (px, py) 반환."""
+    afx_list = []
+    def _cb(ch, _):
+        try:
+            if "Afx" in win32gui.GetClassName(ch) and win32gui.IsWindowVisible(ch):
+                r = win32gui.GetWindowRect(ch)
+                if (r[2]-r[0]) > 200 and (r[3]-r[1]) > 400:
+                    afx_list.append((ch, r))
+        except Exception:
+            pass
+    try:
+        win32gui.EnumChildWindows(hwnd, _cb, None)
+    except Exception:
+        pass
+    if not afx_list:
+        return None, None
+    afx_list.sort(key=lambda x: x[1][0])
+    r = afx_list[0][1]
+    return r[0], r[1]  # screen x, y of leftmost large Afx panel
 
 
 def _select_creon_plus_by_coordinate(hwnd):
@@ -621,24 +813,36 @@ def _select_creon_plus_by_coordinate(hwnd):
     - 좌측 Afx 패널: HTRANSPARENT → 모든 마우스가 부모(login_hwnd)로 전달
     - login_hwnd 전체: HTCAPTION (커스텀 타이틀바)
     - 드롭다운 열기:    패널 (+90, +15) 클릭
-    - CREON Plus 항목: 패널 (+65, +85) [hover 400 ms 후 클릭]
+    - CREON Plus 항목: 패널 (+65, +85) [hover 300 ms 후 클릭]
     - ESC 전송 금지: 창이 닫힘
+    - _force_foreground 금지: 드롭다운이 닫힘
     """
-    afx_ctrls = []
-    def _cb(ch, _):
-        try:
-            if "Afx" in win32gui.GetClassName(ch) and win32gui.IsWindowVisible(ch):
-                r = win32gui.GetWindowRect(ch)
-                if (r[2]-r[0]) > 200 and (r[3]-r[1]) > 400:
-                    afx_ctrls.append((ch, r))
-        except Exception:
-            pass
-    win32gui.EnumChildWindows(hwnd, _cb, None)
-    if not afx_ctrls:
+    px, py = _get_afx_panel(hwnd)
+    if px is None:
         print("[WARN] CREON 패널 탐색 실패 -- CREON Plus 선택 생략, 로그인 계속")
         return True
-    afx_ctrls.sort(key=lambda x: x[1][0])
-    px, py = afx_ctrls[0][1][0], afx_ctrls[0][1][1]
+
+    print("[DEBUG] Afx 패널 좌상단: screen(%d,%d)  창hwnd=%d" % (px, py, hwnd))
+
+    # ── 사전 검증: Edit 가시 상태 안정화 대기 (최대 2s) ──────────────────────
+    # 창이 막 열린 직후에는 Edit 컨트롤이 아직 렌더링되지 않아 invisible일 수 있음.
+    # CREON Plus 이미 선택 여부와 구별하려면 충분히 기다린 후 판단해야 함.
+    initial_edits = []
+    for _init_t in range(8):  # 0.25s × 8 = 2s
+        initial_edits = _collect_wide_edits_visibility(hwnd)
+        if initial_edits and any(v for _, _, v in initial_edits):
+            break  # 적어도 1개 visible → 창 초기화 완료
+        time.sleep(0.25)
+    print("[DEBUG] 초기 Edit 상태 (%d개, %.2fs 안정화): %s" % (
+        len(initial_edits),
+        _init_t * 0.25,
+        [(cn, v) for _, cn, v in initial_edits]
+    ))
+
+    # 2s 후에도 Edit 모두 비가시 → CREON Plus 이미 선택된 것으로 판단
+    if initial_edits and all(not v for _, _, v in initial_edits):
+        print("[INFO] CREON Plus 이미 선택됨 (2s 안정화 후 Edit 모두 비가시) -- 선택 생략")
+        return True
 
     win_before = _get_window_rect_safe(hwnd)
 
@@ -647,72 +851,129 @@ def _select_creon_plus_by_coordinate(hwnd):
         if _retry > 0:
             print("[INFO] CREON Plus 선택 재시도 %d/3..." % (_retry + 1))
             time.sleep(0.8)
-            # 윈도우 위치 재계산 (이동됐을 경우)
-            win_after2 = _get_window_rect_safe(hwnd)
-            if win_after2:
-                px, py = win_after2[0], win_after2[1]
+            # Afx 패널 좌표 재계산 (창 이동 대비) -- 창 좌표가 아닌 Afx 패널 좌표로
+            new_px, new_py = _get_afx_panel(hwnd)
+            if new_px is not None:
+                print("[DEBUG] Afx 패널 좌표 갱신: (%d,%d) → (%d,%d)" % (px, py, new_px, new_py))
+                px, py = new_px, new_py
+            win_before = _get_window_rect_safe(hwnd)
 
         # ── 헤더 클릭 → 드롭다운 열기 ───────────────────────────────────────
-        hdr_x, hdr_y = px + 90, py + 15
+        # 실증 절대좌표: (662, 233) @ 창위치(599,209) → 창 상대: wx+63, wy+24
+        hdr_x, hdr_y = win_before[0] + 63, win_before[1] + 24
         print("[INFO] CREON Plus 드롭다운 열기: screen(%d,%d)" % (hdr_x, hdr_y))
-        _click_at_screen(hwnd, hdr_x, hdr_y)
-        time.sleep(1.0)  # 드롭다운 팝업 렌더링 대기
-
-        # 창 이동 보정 (드롭다운 열리면서 창이 이동하는 경우 대비)
-        win_after = _get_window_rect_safe(hwnd)
-        dx = (win_after[0] - win_before[0]) if (win_before and win_after) else 0
-        dy = (win_after[1] - win_before[1]) if (win_before and win_after) else 0
-        cp_x = px + 65 + dx
-        cp_y = py + 85 + dy
-
-        # ── CREON Plus 항목 클릭 ─────────────────────────────────────────────
-        # 주의: 드롭다운 열린 후 _force_foreground(hwnd) 금지 → 드롭다운이 닫힘
-        #
-        # 1차: PostMessage(WM_NCLBUTTONDOWN) -- CREON 창 전체 HTCAPTION 구조
-        #      NC 메시지로 드롭다운 항목 선택 처리 (원본 동작 방식, 관리자 환경 정상)
-        print("[INFO] CREON Plus 항목 클릭: screen(%d,%d) [PostMessage]" % (cp_x, cp_y))
-        _post_nclbclick(hwnd, cp_x, cp_y, hover_ms=300)
-        time.sleep(0.25)
-
-        # 2차: SetCursorPos + mouse_event (force_foreground 없이 직접 클릭)
-        #      드롭다운이 별도 팝업이면 OS가 해당 좌표 창으로 라우팅
+        _post_nclbclick(hwnd, hdr_x, hdr_y, hover_ms=0)
+        time.sleep(0.15)
         try:
-            win32api.SetCursorPos((cp_x, cp_y))
+            win32api.SetCursorPos((hdr_x, hdr_y))
             time.sleep(0.10)
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
             time.sleep(0.08)
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            print("[INFO] CREON Plus 물리클릭 완료")
         except Exception as e:
-            print("[WARN] SetCursorPos 실패: %s" % e)
+            print("[WARN] 헤더 SetCursorPos 실패: %s" % e)
+        time.sleep(0.80)  # 드롭다운 팝업 렌더링 대기
+
+        # ── 드롭다운 팝업 hwnd 탐색 (메인창 근처의 새 팝업) ─────────────────
+        main_rect = _get_window_rect_safe(hwnd) or (0, 0, 0, 0)
+        dropdown_hwnd = None
+        _dd_candidates = []
+        def _find_dd_popup(h, _):
+            if h == hwnd or not win32gui.IsWindowVisible(h):
+                return
+            try:
+                r = win32gui.GetWindowRect(h)
+                # 메인 창 근처(±200px) 이고 작은 창(폭<500) 인 경우
+                near_x = abs(r[0] - main_rect[0]) < 200
+                near_y = abs(r[1] - main_rect[1]) < 200
+                small = (r[2] - r[0]) < 500
+                if near_x and near_y and small:
+                    _dd_candidates.append((h, r, win32gui.GetClassName(h),
+                                           win32gui.GetWindowText(h)))
+            except Exception:
+                pass
+        try:
+            win32gui.EnumWindows(_find_dd_popup, None)
+        except Exception:
+            pass
+        if _dd_candidates:
+            print("[DEBUG] 드롭다운 팝업 후보: %s" % [
+                (h, r, cn, ct) for h, r, cn, ct in _dd_candidates])
+            # 첫 번째 후보를 드롭다운으로 사용
+            dropdown_hwnd, _dd_rect = _dd_candidates[0][0], _dd_candidates[0][1]
+            print("[INFO] 드롭다운 hwnd=%d rect=%s" % (dropdown_hwnd, _dd_rect))
+        else:
+            print("[DEBUG] 드롭다운 팝업 미탐지 -- 헤더클릭이 드롭다운을 열지 않음?")
+
+        # 창 이동 보정
+        win_after = _get_window_rect_safe(hwnd)
+        dx = (win_after[0] - win_before[0]) if (win_before and win_after) else 0
+        dy = (win_after[1] - win_before[1]) if (win_before and win_after) else 0
+
+        # ── CREON Plus 항목 클릭 ─────────────────────────────────────────────
+        # PostMessage(WM_NCLBUTTONDOWN) to 메인창 금지: 드롭다운 팝업을 닫음
+        # SetCursorPos + mouse_event 단독 사용
+        if dropdown_hwnd:
+            # 드롭다운 팝업 기준 ONE 클릭 per retry
+            # - 팝업 첫 클릭으로 팝업이 닫힘 → 같은 retry에서 여러 y 시도 불가
+            # - 팝업 높이 70px 기준 3항목 × 23px: CREON=offset~34, CREON Plus=offset~58
+            # - retry 인덱스로 y 오프셋을 달리해 CREON Plus를 탐색
+            _dd_r = _dd_candidates[0][1]
+            cp_x = (_dd_r[0] + _dd_r[2]) // 2
+            # 실증 절대좌표: CREON Plus 항목 y=298 @ popup_top=246 → offset=52
+            _per_retry_offsets = (52, 42, 62, 35, 72)  # retry별 ONE 클릭
+            _oy = _per_retry_offsets[min(_retry, len(_per_retry_offsets) - 1)]
+            cp_y = _dd_r[1] + _oy
+            print("[INFO] 드롭다운 팝업 기준 CREON Plus 항목 클릭: retry%d y_offset=%d screen(%d,%d)" % (
+                _retry, _oy, cp_x, cp_y))
+            try:
+                win32api.SetCursorPos((cp_x, cp_y))
+                time.sleep(0.20)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.10)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                print("[INFO] 드롭다운 아이템 클릭 완료")
+            except Exception as e:
+                print("[WARN] 드롭다운 아이템 클릭 실패: %s" % e)
+        else:
+            # 드롭다운 미탐지: 기존 고정 좌표 방식 fallback
+            cp_x = px + 65 + dx
+            cp_y = py + 85 + dy
+            print("[INFO] CREON Plus 항목 고정좌표 클릭: screen(%d,%d) [SetCursorPos]" % (cp_x, cp_y))
+            try:
+                win32api.SetCursorPos((cp_x, cp_y))
+                time.sleep(0.18)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.08)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                print("[INFO] CREON Plus 고정좌표 클릭 완료")
+            except Exception as e:
+                print("[WARN] SetCursorPos 실패 -- PostMessage fallback: %s" % e)
+                _post_nclbclick(hwnd, cp_x, cp_y, hover_ms=300)
 
         time.sleep(0.5)
 
         # ── 선택 검증 ────────────────────────────────────────────────────────
         # CREON Plus 선택 후: 넓은 Edit 컨트롤(ID/PW)이 비가시(invisible)로 전환됨
         # CREON(일반) 선택 유지 시: Edit 컨트롤 계속 visible → 재시도 필요
-        _wide_edits_visible = []
-        def _ev(ch, _):
-            try:
-                if win32gui.GetClassName(ch) == "Edit":
-                    r = win32gui.GetWindowRect(ch)
-                    if (r[2] - r[0]) > 50:
-                        _wide_edits_visible.append(win32gui.IsWindowVisible(ch))
-            except Exception:
-                pass
-        win32gui.EnumChildWindows(hwnd, _ev, None)
+        verify_edits = _collect_wide_edits_visibility(hwnd)
+        print("[DEBUG] CREON Plus 선택 검증 (%d개): %s" % (
+            len(verify_edits),
+            [(cn, v) for _, cn, v in verify_edits]
+        ))
 
-        if _wide_edits_visible:
-            all_invisible = all(not v for v in _wide_edits_visible)
-            print("[DEBUG] CREON Plus 선택 검증: Edit 가시=%s → %s" % (
-                _wide_edits_visible, "성공(비가시화)" if all_invisible else "실패(여전히 가시)"))
+        if verify_edits:
+            all_invisible = all(not v for _, _, v in verify_edits)
             if all_invisible:
-                print("[INFO] CREON Plus 선택 완료 (검증 통과)")
+                print("[INFO] CREON Plus 선택 완료 (검증 통과 -- Edit 모두 비가시)")
                 return True
+            print("[INFO] CREON Plus 선택 검증 실패 (Edit 여전히 가시) -- 재시도")
         else:
-            # Edit 컨트롤을 찾지 못한 경우 -- 선택된 것으로 간주
-            print("[INFO] CREON Plus 선택 완료 (Edit 미탐지 -- 완료로 간주)")
-            return True
+            # Edit 컨트롤 미탐지: 아직 상태 확인 불가 -- 마지막 시도에서만 통과 처리
+            if _retry == 2:
+                print("[WARN] CREON Plus 선택 검증: Edit 미탐지 (3회 완료) -- 완료로 간주")
+                return True
+            print("[INFO] Edit 컨트롤 미탐지 -- 상태 불확실, 재시도 %d/3" % (_retry + 1))
 
     print("[WARN] CREON Plus 선택 3회 재시도 후에도 검증 실패 -- 계속 진행")
     return True
@@ -904,9 +1165,14 @@ def _dismiss_error_dialogs():
 # -- 창 탐지 --------------------------------------------------------------------
 
 def _find_login_window_once():
-    """정확한 제목 일치로 로그인 창 탐지"""
+    """정확한 제목 일치로 로그인 창 탐지.
+
+    주의: 'CREON Starter' 제목의 COMAIN.EXE 실행중 다이얼로그가 같은 제목을 가짐.
+    이 경우 Afx 패널이 없고 '예(Y)'/'아니요(N)' 버튼만 존재 → 감지 후 '예' 클릭하고 None 반환.
+    """
     SKIP_CLASSES = {"Shell_TrayWnd", "CabinetWClass", "ExploreWClass", "ShellTabWindowClass"}
     result = [None]
+    comain_hwnd = [None]
 
     def _enum(hwnd, _):
         if result[0]:
@@ -916,8 +1182,26 @@ def _find_login_window_once():
                 return
             if win32gui.GetClassName(hwnd) in SKIP_CLASSES:
                 return
-            if win32gui.GetWindowText(hwnd) in LOGIN_WINDOW_TITLES:
-                result[0] = hwnd
+            if win32gui.GetWindowText(hwnd) not in LOGIN_WINDOW_TITLES:
+                return
+            # 자식 컨트롤 열거해서 COMAIN 다이얼로그인지 판별
+            children = []
+            def _ec(c, __):
+                children.append(c)
+            try:
+                win32gui.EnumChildWindows(hwnd, _ec, None)
+            except Exception:
+                pass
+            has_afx = any("Afx" in (win32gui.GetClassName(c) or "") for c in children)
+            has_comain = any(
+                "COMAIN" in (win32gui.GetWindowText(c) or "").upper()
+                for c in children
+            )
+            if has_comain and not has_afx:
+                # COMAIN.EXE "이미 실행중" 다이얼로그 - 로그인 창 아님
+                comain_hwnd[0] = hwnd
+                return
+            result[0] = hwnd
         except Exception:
             pass
 
@@ -925,6 +1209,37 @@ def _find_login_window_once():
         win32gui.EnumWindows(_enum, None)
     except Exception:
         pass
+
+    # COMAIN.EXE 다이얼로그 감지 시 '예(Y)' 버튼 클릭
+    if comain_hwnd[0] and not result[0]:
+        _chw = comain_hwnd[0]
+        print("[INFO] COMAIN.EXE 실행중 다이얼로그 감지 hwnd=%d -- '예(&Y)' 클릭" % _chw)
+        yes_found = [False]
+        def _click_yes(c, __):
+            if yes_found[0]:
+                return
+            try:
+                t = win32gui.GetWindowText(c)
+                cn = win32gui.GetClassName(c)
+                if cn == "Button" and "예" in t:
+                    win32gui.PostMessage(c, win32con.BM_CLICK, 0, 0)
+                    yes_found[0] = True
+                    print("[INFO] COMAIN.EXE 다이얼로그 '예' 클릭 완료")
+            except Exception:
+                pass
+        try:
+            win32gui.EnumChildWindows(_chw, _click_yes, None)
+        except Exception:
+            pass
+        if not yes_found[0]:
+            # fallback: WM_CLOSE
+            try:
+                win32gui.PostMessage(_chw, win32con.WM_CLOSE, 0, 0)
+                print("[INFO] COMAIN.EXE 다이얼로그 WM_CLOSE 전송")
+            except Exception:
+                pass
+        time.sleep(0.8)
+
     return result[0]
 
 
@@ -1163,9 +1478,16 @@ def _perform_login(hwnd, user_id, password):
     EM_SETSEL = 0x00B1  # 전체 선택용 (0, -1)
 
     def _clear_and_input(edit_hwnd, text, label):
-        """물리 클릭 → EM_SETSEL(전체선택) → WM_CLEAR → WM_SETTEXT (CREON/CYBOS 공통)"""
+        """물리 클릭 → EM_SETSEL(전체선택) → WM_CLEAR → WM_SETTEXT (CREON/CYBOS 공통)
+        비가시 Edit의 경우: 물리 클릭 생략 → WM_SETTEXT 직접 주입 (CREON Plus 모드)
+        """
+        is_visible = win32gui.IsWindowVisible(edit_hwnd)
         rect = _get_window_rect_safe(edit_hwnd)
-        if rect:
+        if not is_visible:
+            # CREON Plus 모드: Edit가 비가시 → 물리 클릭 금지 (다른 컨트롤 클릭됨)
+            # WM_SETTEXT 직접 주입으로 텍스트 설정 (클릭 없이 동작)
+            print("[INFO] 비가시 Edit %s hwnd=%d -- 물리클릭 생략, WM_SETTEXT 직접 주입" % (label, edit_hwnd))
+        elif rect:
             cx = (rect[0] + rect[2]) // 2
             cy = (rect[1] + rect[3]) // 2
             win32api.SetCursorPos((cx, cy))
@@ -1183,10 +1505,14 @@ def _perform_login(hwnd, user_id, password):
         time.sleep(0.05)
         result = _set_edit_text(edit_hwnd, text)
         if not result:
-            send_keys("^a{BACKSPACE}")
-            send_keys(text)
-            print("[INFO] send_keys로 %s 입력 완료" % label)
-        print("[INFO] %s 입력 완료 (clicked → cleared → set)" % label)
+            if is_visible:
+                send_keys("^a{BACKSPACE}")
+                send_keys(text)
+                print("[INFO] send_keys로 %s 입력 완료" % label)
+            else:
+                # 비가시 Edit에서 send_keys는 다른 창에 전달될 수 있어 금지
+                print("[WARN] 비가시 Edit WM_SETTEXT 실패 -- 입력 불가")
+        print("[INFO] %s 입력 완료 (visible=%s → cleared → set)" % (label, is_visible))
         time.sleep(0.10)
 
     # ── STEP 1: 아이디 입력 ──
@@ -1577,34 +1903,54 @@ def _wait_for_connection_and_mock(total_timeout=120):
             break
 
         # ④ CREON: 모의투자 선택 팝업 좌표 클릭 fallback
-        # -- "모의투자 선택" 창이 EnumWindows/FindWindow에 안 잡힐 경우 대비
-        # -- CREON 메인 데스크 창 또는 "모의투자 선택" 팝업 hwnd 직접 사용
+        # 우선순위:
+        #   (a) FindWindow "모의투자 선택" → _click_creon_mock_access(popup_hwnd)
+        #   (b) EnumWindows에서 소형 팝업(ww<800) 탐색 → 동일
+        #   (c) 실증 절대좌표 (962, 509) 직접 클릭 (팝업 미탐지 시 폴백)
         if BROKER_TYPE == "creon" and not popup_handled:
             if (time.time() - last_blind) >= BLIND_INTERVAL and elapsed >= 3:
                 try:
-                    # 먼저 "모의투자 선택" 팝업 자체 hwnd 탐색
                     _mock_hwnd = None
+                    # (a) 타이틀 직접 탐색
                     for _t in (u"모의투자 선택", u"모의투자선택"):
                         _h = win32gui.FindWindow(None, _t)
                         if _h and win32gui.IsWindowVisible(_h):
                             _mock_hwnd = _h
                             break
-                    # 없으면 CREON 메인 창에서 child 탐색
+                    # (b) EnumWindows 소형 팝업(ww<800) 탐색
                     if not _mock_hwnd:
-                        def _f(h, _):
+                        _small_popup_ref = [None]
+                        def _sp(h, _):
+                            if _small_popup_ref[0]:
+                                return
                             try:
-                                if win32gui.IsWindowVisible(h):
+                                if not win32gui.IsWindowVisible(h):
+                                    return
+                                r = win32gui.GetWindowRect(h)
+                                ww_ = r[2] - r[0]
+                                if 100 < ww_ < 800:
                                     t = win32gui.GetWindowText(h)
-                                    if u"금융지원센터" in t:
-                                        _creon_desk_ref[0] = h
+                                    if u"모의투자" in t or u"선택" in t:
+                                        _small_popup_ref[0] = h
                             except Exception:
                                 pass
-                        _creon_desk_ref = [None]
-                        win32gui.EnumWindows(_f, None)
-                        _mock_hwnd = _creon_desk_ref[0]
+                        win32gui.EnumWindows(_sp, None)
+                        _mock_hwnd = _small_popup_ref[0]
 
                     if _mock_hwnd and win32gui.IsWindowVisible(_mock_hwnd):
                         _click_creon_mock_access(_mock_hwnd)
+                        last_blind = time.time()
+                    else:
+                        # (c) 절대좌표 폴백: (962,509) -- 실증 확인된 "모의투자 접속" 버튼
+                        print("[INFO] CREON 모의투자팝업 미탐지 -- 실증좌표 (962,509) 직접 클릭")
+                        try:
+                            win32api.SetCursorPos((962, 509))
+                            time.sleep(0.12)
+                            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                            time.sleep(0.10)
+                            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                        except Exception as _ec:
+                            print("[WARN] 좌표 폴백 클릭 실패: %s" % _ec)
                         last_blind = time.time()
                 except Exception:
                     pass
@@ -1735,12 +2081,26 @@ def autologin():
         if wait_fn(total_timeout=CONNECT_TIMEOUT):
             cp = win32com.client.Dispatch("CpUtil.CpCybos")
             print("[OK] CybosPlus 연결 성공 (ServerType=%s)" % cp.ServerType)
-            # 연결 직후 공지사항 등 잔여 다이얼로그 마무리 (연결 확인 즉시 루프 탈출 시 놓칠 수 있음)
+            # 연결 직후 공지사항 등 잔여 다이얼로그 마무리
             time.sleep(2)
             for _ in range(6):
                 if _dismiss_error_dialogs() == 0:
                     break
                 time.sleep(0.8)
+            # 공지사항 테이블 닫기: 실증 절대좌표 (1448,161) = CREON 데스크 공지사항 X 버튼
+            if BROKER_TYPE == "creon":
+                time.sleep(1)
+                for _nt in range(3):
+                    try:
+                        win32api.SetCursorPos((1448, 161))
+                        time.sleep(0.10)
+                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                        time.sleep(0.08)
+                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                        print("[INFO] 공지사항 닫기 클릭: screen(1448,161) %d/3" % (_nt + 1))
+                    except Exception as _e:
+                        print("[WARN] 공지사항 닫기 실패: %s" % _e)
+                    time.sleep(0.5)
             return True
 
         print("[WARN] 시도 %d/%d 연결 실패" % (attempt + 1, MAX_LOGIN_ATTEMPTS))
