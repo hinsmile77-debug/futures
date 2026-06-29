@@ -2320,6 +2320,22 @@ class TradingSystem:
             if not confs:
                 logger.warning("[DynMC] conf 데이터 없음 — 갱신 스킵")
                 return
+            # ConstOut 구간 conf 제외: 동일 값(±0.01 반올림)이 전체의 15% 이상 점유 시
+            # GBM 상수 출력 고착 구간 데이터가 p65를 왜곡하는 것을 방지.
+            if len(confs) >= 50:
+                _cr = [round(c, 2) for c in confs]
+                _freq: dict = {}
+                for _v in _cr:
+                    _freq[_v] = _freq.get(_v, 0) + 1
+                _stuck = {_v for _v, _cnt in _freq.items() if _cnt > len(confs) * 0.15}
+                if _stuck:
+                    _filtered = [c for c, r in zip(confs, _cr) if r not in _stuck]
+                    if len(_filtered) >= 30:
+                        logger.info(
+                            "[DynMC] ConstOut 고착 conf 제외: %s → %d건 제거 (잔여 %d건)",
+                            sorted(_stuck), len(confs) - len(_filtered), len(_filtered),
+                        )
+                        confs = _filtered
             base = update_dynamic_mc(confs, trigger=trigger, record=True)
             if base is not None:
                 log_manager.system(
@@ -5570,11 +5586,15 @@ class TradingSystem:
         _exec_size = float(_exec_gate.get("size_multiplier", 1.0) or 1.0)
         if direction != 0 and self.position.status == "FLAT":
             if self._health_degraded_mode:
-                if confidence < float(HEALTH_DEGRADED_MIN_CONF):
+                # DynMC zone_mc(actual_min_conf)를 기준으로 동적 계산.
+                # 고정값 0.62는 현 Platt-보정 conf 분포(32~42%)에서 상시 차단.
+                # Degraded 상태의 보호는 size_mult 축소로 충분 — 진입 기준은 zone_mc 동일 적용.
+                _dg_mc = max(actual_min_conf, 0.30)   # 절대 하한 0.30 (극단 상황 방어)
+                if confidence < _dg_mc:
                     _final_grade = "X"
                     _qty_display = 0
                     log_manager.signal(
-                        f"[HealthPolicy] Degraded Mode 차단: conf={confidence:.1%} < {HEALTH_DEGRADED_MIN_CONF:.1%}"
+                        f"[HealthPolicy] Degraded Mode 차단: conf={confidence:.1%} < {_dg_mc:.1%} (zone_mc 기준)"
                     )
                 elif _qty_display > 0:
                     _qty_display = max(1, int(round(_qty_display * float(HEALTH_DEGRADED_SIZE_MULT))))
