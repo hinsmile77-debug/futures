@@ -1,7 +1,42 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-29 (260차) — Extreme 피처 Top5 딥다이브 이상점 5종 수정
+> 마지막 업데이트: 2026-06-29 (261차) — High-confidence Overconfidence 3종 개선
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-29 (261차 — HCGuard + Platt tail 압축 + 역전 경보)
+
+### 배경
+
+EOD 재학습 + P8 완료 후 calibration 분석:
+- conf 0.7+ 실측 정확도 **29-31%** (conf 0.3~0.5 구간 33%보다 낮음) — 신뢰도 역전
+- Grade A 자동진입이 Grade B보다 오히려 정확도 낮은 신호에 실행
+- Platt WINDOW=100 시 tail(0.6+) 샘플 ~7건 → 보정 불안정
+- ECE high_bins = 0.38 (0.6+ 구간)
+
+### 수정 내용 3종 (커밋 482cb05)
+
+| # | 파일 | 변경 | 효과 |
+|---|---|---|---|
+| ① | `model/ensemble_decision.py` | `HCGuard`: conf≥0.65 최근 50건 acc 추적, acc<42% → Grade A→B 강등 | 역전 구간 A급 자동진입 차단 |
+| ② | `learning/calibration.py` | WINDOW 100→200, C 0.05→0.02, 재보정 주기 10→5 | tail 샘플 확보 + 압축 강화 |
+| ③ | `scripts/generate_calibration_report.py` | `_check_confidence_inversion()`, conf_inversion JSON 키, 리포트 경고 섹션 | 역전 상태 자동 감지·보고 |
+
+### HCGuard 동작 규칙
+
+- `_HC_GUARD_WINDOW = 50`: 최근 50건 고신뢰 예측 버퍼
+- `_HC_GUARD_MIN_N = 20`: 20건 이상 쌓여야 가드 활성 (cold start 보호)
+- `_HC_GUARD_CONF_THR = 0.65`: 고신뢰 판단 기준
+- `_HC_GUARD_ACC_THR = 0.42`: 이 정확도 미달 시 Grade A → B 강등
+- `reset_daily()`에서 버퍼 유지 (일일 공백에도 누적 유효)
+- `record_ensemble_outcome(raw_conf, correct)` 호출 시 자동 업데이트
+
+### 현재 데이터 기준
+
+- 역전 감지: `high_acc=29.5%` vs `low_acc=32.8%` (gap=3.3%) → **경보 발동**
+- 다음 장 시작 후 20건 누적되면 HCGuard 자동 발동 예정
+- Platt 변경 효과는 내일 이후 ECE 추이로 확인
 
 ---
 
