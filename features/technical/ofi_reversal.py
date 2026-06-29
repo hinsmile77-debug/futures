@@ -18,13 +18,15 @@ from typing import Dict, Optional
 class OfiReversalCalculator(object):
     """OFI 반전 속도 계산기 (피처 빌더용)"""
 
-    SIGMA_WIN  = 20     # 롤링 σ 계산 윈도우
-    SIGMA_MULT = 0.8    # 0.8σ 임계값
+    SIGMA_WIN     = 20     # 롤링 σ 계산 윈도우
+    SIGMA_MULT    = 0.8    # 0.8σ 임계값
+    COOLDOWN_BARS = 5      # 발동 후 최소 쿨다운 (분봉)
 
     def __init__(self):
-        self._ofi_buf      = deque(maxlen=self.SIGMA_WIN + 5)
-        self._speed_buf    = deque(maxlen=self.SIGMA_WIN)
-        self._prev_ofi     = None   # type: Optional[float]
+        self._ofi_buf       = deque(maxlen=self.SIGMA_WIN + 5)
+        self._speed_buf     = deque(maxlen=self.SIGMA_WIN)
+        self._prev_ofi      = None   # type: Optional[float]
+        self._bull_cooldown = 0      # 잔여 쿨다운 봉수
 
     def compute(self, ofi_raw, avg_volume):
         # type: (float, float) -> Dict[str, float]
@@ -58,10 +60,19 @@ class OfiReversalCalculator(object):
         threshold  = self._sigma(ofi_list) * self.SIGMA_MULT
         speed_cond = abs(speed) > speed_sigma * self.SIGMA_MULT
 
-        # bull_reversal: 매도 우세 → 매수 우세 급반전 (LONG 방향 이벤트)
-        bull_reversal_signal = 1 if (
-            ofi_avg_3m < -threshold and ofi_raw > 0 and speed_cond
-        ) else 0
+        # 쿨다운 카운터 소진
+        if self._bull_cooldown > 0:
+            self._bull_cooldown -= 1
+
+        # warmup 미완료(σ 불안정) 또는 쿨다운 중이면 신호 억제
+        warmup_done = len(self._ofi_buf) >= self.SIGMA_WIN
+
+        bull_reversal_signal = 0
+        if warmup_done and self._bull_cooldown == 0:
+            # bull_reversal: 매도 우세 → 매수 우세 급반전 (LONG 방향 이벤트)
+            if ofi_avg_3m < -threshold and ofi_raw > 0 and speed_cond:
+                bull_reversal_signal = 1
+                self._bull_cooldown  = self.COOLDOWN_BARS
 
         return {
             "reversal_speed":       round(speed, 8),
@@ -82,4 +93,5 @@ class OfiReversalCalculator(object):
     def reset_daily(self):
         self._ofi_buf.clear()
         self._speed_buf.clear()
-        self._prev_ofi = None
+        self._prev_ofi      = None
+        self._bull_cooldown = 0

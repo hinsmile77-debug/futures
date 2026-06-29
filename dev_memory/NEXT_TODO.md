@@ -8,6 +8,59 @@
 
 ---
 
+## 2026-06-29 (260차 검증) [P0]
+
+### Extreme 피처 5종 수정 검증
+
+- [ ] **① atr_expansion_rate 클리핑 효과** — scaler_monitor에서 `atr_expansion_rate` max|z|가 8.0 이하로 유지되는지 확인 (이전 18.32)
+- [ ] **② bull_reversal_signal 쿨다운 효과** — 하루 발동 횟수 15회 이하로 감소 확인 (이전 30회)
+- [ ] **③ toxicity_spread_stress SCALE_FLOOR 효과** — `[ScalerFloor] toxicity_spread_stress scale=... → floor=0.25 적용` 로그 출현 확인 (다음 B/D refresh 시)
+- [ ] **④ hurst_ready / is_close_volatile WARNING 제거** — scaler_monitor extreme Top5에서 두 피처 미출현 확인
+- [ ] **⑤ toxicity_spread_stress μ 정상화** — 다음 EOD 재학습 후 scaler_mean이 0.05~0.15 범위로 내려왔는지 확인 (현재 0.978 이상)
+
+---
+
+## 2026-06-29 (259차 검증) [P0]
+
+### bull_reversal_signal + HealthPolicy 수정 검증
+
+- [DONE 2026-06-29] **② Z_WARN_EXEMPT 즉시 효과** — 260차에서 `hurst_ready`·`is_close_volatile`·`is_open_volatile` 함께 등록 완료
+- [ ] **① ScalerFloor 재학습 효과** — 다음 B_INTRADAY/GBM 재학습 후 `bull_reversal_signal` z-score가 2.2 이하로 유지되는지 scaler_monitor 확인
+- [ ] **③ HealthPolicy 동적 차단 효과** — Degraded Mode 발동 중 `conf >= zone_mc` 조건 충족 시 `[HealthPolicy] Degraded Mode 차단` 미출현 + `Degraded Mode 축소 size_mult=0.60` 출현 확인
+- [ ] **④ ConstOut 필터 효과** — 다음 DynMC RETRAIN 로그에서 `[DynMC] ConstOut 고착 conf 제외: {0.36} → N건 제거` 출현 (ConstOut 구간 존재 시)
+
+---
+
+## 2026-06-29 (258차 검증) [P0]
+
+### horizon_features DB 쓰기 복구 확인
+
+- [ ] **save_horizon_features 정상 동작** — WARN 로그에 `[DBQueue] 쓰기 실패 (op=horizon_features)` 미출현 확인 (258차 재시작 이후)
+
+---
+
+## 2026-06-29 (257차 검증) [P0]
+
+### DynMC 5종 수정 검증
+
+- [x] **MC_PERCENTILE 수정 효과** — 11:31:58 DynMC RETRAIN에서 `conf_p65=0.170` → `base=0.357` 즉시 수렴 확인 **[DONE 2026-06-29]**
+- [ ] **mc_history 복원 성공** — 기동 로그에 `[DynMC] 기동 복원: STABLE_TREND 0.540 → 0.42` (오늘 저장 값) 출현
+- [ ] **빈 DB fallback 확인** — DB 소실 시뮬레이션 필요 시: `[DynMC] mc_history 레코드 없음 — 안전 fallback=0.35` 로그 출현
+- [ ] **cold-start EKS 미발동** — 내일 장 시작 시 GAP_OPEN 5봉 conf=0%여도 EKS 미발동 (대신 `[SHS-EKS] EKS 미발동 — cold-start` 로그 출현)
+- [ ] **EKS 회복 로그 강화 확인** — EKS 발동 시 `[SHS-EKS] 회복 평가 시작 (#N)` + `[SHS-EKS] EKS 미해제 — 미충족: conf_hits=N/10` WARNING 출현
+
+---
+
+## 2026-06-29 (256차 검증) [P0]
+
+### EKS 회복 메시지 확인
+
+- [ ] **EKS 발동 로그 문구** — 다음 EKS 발동 시 `→ 일시 관망 (09:20부터 30분 간격 평가)` 포함 확인 ("당일 관망 선언" 미출현)
+- [ ] **EKS 회복 로그 출현** — `[SHS-EKS] EKS 미해제 (시도 #N)` WARNING 로그 출현 확인 (257차로 INFO→WARNING 전환)
+- [ ] **EKS 해제 Slack 수신** — EKS 해제 시 `✅ Early Kill Switch 해제 — 장중 진입 재개` Slack 알림 수신 확인
+
+---
+
 ## 2026-06-27 (254차 검증) [P0]
 
 ### 거래소 CB 대응 검증

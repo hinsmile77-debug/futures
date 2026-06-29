@@ -4,6 +4,123 @@
 
 ---
 
+## 2026-06-29 (260차 — Extreme 피처 Top5 딥다이브 이상점 5종 수정)
+
+**트리거**: 오늘 누적 extreme 피처 Top5 대시보드 스크린샷 — hurst_ready(162회), is_close_volatile(54회), toxicity_spread_stress(48회), bull_reversal_signal(30회), atr_expansion_rate(18회) 딥다이브 요청.
+
+### 이상점 분석 및 수정
+
+| 피처 | 이상 유형 | 수정 | 파일 |
+|---|---|---|---|
+| `atr_expansion_rate` | unbounded, z=18.32 | `np.clip(-0.5, 0.5)` + `_prev_atr > 1e-6` | `feature_builder.py:346` |
+| `bull_reversal_signal` | 쿨다운 없는 과발동 30회 | warmup 20봉 억제 + 5봉 쿨다운 | `ofi_reversal.py` |
+| `toxicity_spread_stress` | 스케일러 μ=0.978 역전 | `_MACRO_SCALE_FLOOR[...]=0.25` | `multi_horizon_model.py` |
+| `hurst_ready` | binary 플래그 z≈4.5 | `_Z_WARN_EXEMPT` 등록 | `multi_horizon_model.py` |
+| `is_close_volatile` | 시간 binary z≈5.5 | `_Z_WARN_EXEMPT` 등록 | `multi_horizon_model.py` |
+| `is_open_volatile` | 시간 binary (예방적) | `_Z_WARN_EXEMPT` 등록 | `multi_horizon_model.py` |
+
+### 핵심 판단
+
+- `toxicity_spread_stress` μ=0.978은 235차 tick_size 수정 이전 훈련 데이터 고착. SCALE_FLOOR=0.25로 임시 억제, EOD 재학습으로 자연 해소 예정.
+- `bull_reversal_signal` 5봉 쿨다운은 단기 반전 신호 특성상 보수적 설정. 실전 검증 후 조정 가능.
+
+---
+
+## 2026-06-29 (259차 — bull_reversal_signal z>4 과발동 + HealthPolicy 동적화)
+
+**트리거**: 11:04:58 bull_reversal_signal z=+5.89 전 호라이즌 동시 발생 → conf 36% 26분 고착 + HealthPolicy 상시 차단 → 이후 흐름 딥다이브 및 개선 구현 요청.
+
+### 분석 과정
+
+1. **bull_reversal_signal 정체 확인**: `ofi_reversal.py` — 이진(0/1) OFI 반전 신호. 발동 시 항상 z≈5.89 (mean≈0.01, σ≈0.17). 전 호라이즌 동시 발생은 동일 OFI 데이터 공유로 구조적 불가피.
+
+2. **conf 36.0% 26분 고착 원인**: bull_reversal_signal=1이 GBM UP 방향 편향 → 30m 역방향/CoherenceGate와 결합해 conf=36% 고착. ConstOut으로 인한 것이 아니라 GBM 내부 편향 고착.
+
+3. **MetaGate take 신호 발생 확인**: 11:13(47.5%), 11:15(49.5%), 11:17(50.8%), 11:18(50.8%) meta_conf=take — 신호는 있었으나 HealthPolicy(0.62 고정)에 최종 차단.
+
+4. **MetaGate min_conf=0.570 "고착" 오해 해소**: STEP 1 검증 루프(default 0.57)와 STEP 6 진입 판단(actual_min_conf=0.39) 두 경로가 같은 타임스탬프에 찍혀서 착시. 실제 진입 판단은 0.39 정상 사용.
+
+5. **HealthPolicy Degraded Mode 차단 구조**: 고정 0.62가 현 conf(32~38%) 대비 과도 → zone_mc 기준 동적화로 개선.
+
+6. **257차 효과 실증**: 11:31:58 RETRAIN에서 STABLE_TREND 0.420→0.357 (MC_PERCENTILE 수정 첫 확인), grade=C 최초 출현.
+
+### 핵심 결정
+
+- 이진 피처는 `_MACRO_SCALE_FLOOR`(floor=0.45) + `_Z_WARN_EXEMPT`로 이중 처리
+- HealthPolicy Degraded min_conf를 `max(actual_min_conf, 0.30)` 동적화
+- DynMC ConstOut 15% 필터로 고착 conf 제외
+
+### 수정 파일
+
+`model/multi_horizon_model.py`, `main.py` | 커밋: `3281067` (259차)
+
+---
+
+## 2026-06-29 (258차 — save_horizon_features 4인자 버그 수정)
+
+**트리거**: WARN 로그 86회 `[DBQueue] 쓰기 실패: save_horizon_features() takes 3 positional arguments but 4 were given` 발견 → 즉시 수정.
+
+### 핵심 결정
+
+- 호출에서 `_regime` 제거 (2군데). 스키마 변경 불필요 — raw_features_horizon에 regime 컬럼 없음.
+- 옵션 B(regime 컬럼 추가)는 ALTER TABLE 위험 + 당장 불필요 → 기각.
+
+### 수정 파일
+
+`main.py` | 커밋: `ea5f4f7` (258차)
+
+---
+
+## 2026-06-29 (257차 — DynMC MC 기준 상향 원인 5종 수정)
+
+**트리거**: 6/29 오전 진입 0회. 앙상블 conf 추이 분석 + 6/26 대비 MC 상향 원인 딥다이브 요청.
+
+### 분석 과정
+
+1. **앙상블 conf 추이 분석** — meta_gate_tuning_metrics.json에서 오늘 blended_conf=0.333~0.499, take_thr=0.570 → 17%p 갭. Platt 캘리브레이터가 raw conf를 35~45%로 압축하는 구조적 상한 확인.
+
+2. **6/25 vs 6/29 진입 비교** — 6/25: 수동 버튼 클릭 2회 + 자동 1회(DynMC=0.25). 6/29: EKS 09:05 발동 후 미해제, 진입 0회. 6/25는 EKS 없었고 MC=0.25(낮음), 6/29는 MC=0.54~0.57(코드 기본값에서 시작).
+
+3. **MC 상향 원인 추적** — SIGNAL 로그 비교:
+   - 6/25 09:00: `FQAdj min_conf 0.26→0.25` (mc_history 복원 성공 → 0.250)
+   - 6/29 09:00: `FQAdj min_conf 0.67→0.64` (코드 기본값 0.670 그대로)
+   - 6/29 09:11: `DynMC RETRAIN base=0.510 STABLE_TREND 0.540→0.510`
+
+4. **mc_history DB 실체 확인** — `data/mc_history.db` 0 bytes(내 쿼리가 빈 파일 생성). 실제 DB는 `data/db/mc_history.db` (DB_DIR 기반). 오늘 20건만 존재, 이전 날 기록 없음 → 기동 복원 0건 → 코드 기본값(0.54) 사용.
+
+5. **MC_PERCENTILE 버그 확인** — `int(n × 0.65 / 100) = int(n × 0.0065)` → n=2086 기준 idx=13 (0.6%분위, 실측 conf_p65=0.17). 의도는 65분위이나 /100으로 인해 최솟값 근방 사용 중.
+
+### 핵심 결정
+
+- **MC_STEP_LIMIT 0.03→0.08**: 복원 실패 시 코드 기본값에서 목표까지 5시간→1시간 내 수렴
+- **MC_PERCENTILE 수정**: `/100` 제거로 진짜 65분위 사용 (p65 0.17→0.38~0.42)
+- **빈 DB fallback 0.35**: 복원 실패 시 코드 기본값(0.54~0.67)이 아닌 안전값 적용
+- **cold-start EKS 면제**: conf=0%+delayed=0 조합 → cold-start로 감별, EKS 미발동
+- **EKS 회복 로그 INFO→WARNING**: 미충족 조건 명시로 진단 가시성 확보
+
+### 수정 파일
+
+`config/settings.py`, `strategy/entry/time_strategy_router.py`, `safety/system_health.py`
+커밋: `f4b7806` (257차)
+
+---
+
+## 2026-06-29 (256차 — EKS 로그 메시지 정정)
+
+**트리거**: 장기 중단(약 41일) 후 재시작 로그에서 `[SHS-EKS] Early Kill Switch 발동 — 당일 관망 선언. conf_max=0.0% bars=5` 메시지 분석 요청. EKS가 영구 차단처럼 보이는 문제 + 실제 코드 상 자동 회복 메커니즘 확인 요청.
+
+### 핵심 결정
+
+- **EKS 자동 회복 코드 검증**: `can_attempt_recovery()` + `try_eks_recovery()` 정상 구현 확인 (09:20부터 30분 간격, 11:30 마감)
+- **메시지 정정**: "당일 관망 선언" → "일시 관망 (30분 간격 자동 회복 평가)" 전면 교체
+- **EKS 해제 Slack 알림 신설**: 발동은 CRITICAL 알림 있었으나 해제 알림 누락 → `notify_kill_switch_cleared()` 추가
+
+### 수정 파일
+
+`safety/system_health.py`, `main.py` (2곳), `utils/notify.py`, `dashboard/main_dashboard.py`
+
+---
+
 ## 2026-06-28 (255차 — CREON Plus 자동 로그인 완전 구현)
 
 **트리거**: CREON Plus 로그인 시 CREON Plus 드롭다운 미선택, 자격증명 미입력, 모의투자 접속 팝업 미처리 문제.

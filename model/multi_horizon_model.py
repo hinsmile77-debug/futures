@@ -154,11 +154,14 @@ class MultiHorizonModel:
         _HCG = {}
         _CORE_MASK_EXEMPT_BY_HZ: dict = {}
 
-    # 이진 피처 z>4 경보 exempt — 발동 시 항상 z≈2~6은 구조적으로 정상 패턴.
+    # 이진 피처 z>4 경보 exempt — 발동 시 항상 z≈2~11은 구조적으로 정상 패턴.
     # _MACRO_SCALE_FLOOR로 다음 재학습부터 z<4 보장되지만,
     # 현 세션 스케일러에는 소급 적용 안 되므로 경보 로그 필터로 즉시 노이즈 제거.
     _Z_WARN_EXEMPT: frozenset = frozenset({
-        "bull_reversal_signal",   # 0/1 이진, 발동 시 z≈5.9 (정상 이벤트)
+        "bull_reversal_signal",   # 0/1 이진, 발동 시 z≈11 (COOLDOWN_BARS로 빈도 제한)
+        "hurst_ready",            # 0/1 이진 플래그, warmup 완료 후 항상 z≈4.5
+        "is_close_volatile",      # 0/1 시간 플래그, 15:01~ 항상 z≈5.5
+        "is_open_volatile",       # 0/1 시간 플래그, 09:00~09:30 항상 z≈5.0
     })
 
     # 전체 호라이즌 CORE 면제 union — predict_proba AutoMask·chronic 체크에 사용
@@ -208,6 +211,12 @@ class MultiHorizonModel:
         # σ_floor=0.45 → z=(1-μ)/0.45 ≤ (1-0.01)/0.45 ≈ 2.2 < 4.0 보장.
         # macro_risk_on(σ_floor=0.50)과 동일 이진 피처 구조이므로 같은 접근 적용.
         "bull_reversal_signal":     0.45,
+        # ── spread_stress σ 하한 (2026-06-29) ────────────────────────────────────
+        # toxicity_spread_stress: [0,1] 연속값. 스케일러 μ≈0.978 고착(tick_size 235차 수정
+        # 이전 훈련 데이터 기반)으로 현재 실값 0~0.25 구간에서 z≈-5~-7 음방향 폭발.
+        # σ_floor=0.25 → z=(0-μ)/0.25 ≥ (0-0.978)/0.25 = -3.9 > -4.0 보장.
+        # EOD 재학습 후 μ가 정상화(≈0.05)되면 z_max=(1-0.05)/0.25=3.8로 자연 안정화.
+        "toxicity_spread_stress":   0.25,
     }
 
     GBM_PARAMS = {

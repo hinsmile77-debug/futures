@@ -343,9 +343,9 @@ class FeatureBuilder:
 
         _prev_atr = float(self._last_features.get("atr", 0.0))
         _cur_atr  = features.get("atr", 0.0)
-        features["atr_expansion_rate"] = (
-            (_cur_atr - _prev_atr) / (_prev_atr + 1e-9) if _prev_atr > 0 else 0.0
-        )
+        # ATR 급변 시 unbounded 폭발 방지 — 학습 μ≈0.003, σ≈0.063 기준 ±50% 클리핑
+        _raw_expansion = (_cur_atr - _prev_atr) / (_prev_atr + 1e-9) if _prev_atr > 1e-6 else 0.0
+        features["atr_expansion_rate"] = float(np.clip(_raw_expansion, -0.5, 0.5))
 
         # Hurst Exponent — 종가 버퍼에 추가 후 계산 (40봉 이상 시 실계산, 미만 시 0.5)
         if close > 0:
