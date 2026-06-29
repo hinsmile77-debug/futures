@@ -1,7 +1,171 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-28 (255차) — CREON Plus 자동 로그인 완전 구현
+> 마지막 업데이트: 2026-06-29 (260차) — Extreme 피처 Top5 딥다이브 이상점 5종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-29 (260차 — Extreme 피처 Top5 이상점 5종 수정)
+
+### 배경
+
+오늘 누적 extreme 피처 Top5 딥다이브 결과, 구조적 z-score 폭발 4종 + 스케일러 기준 역전 1종 확인.
+
+| 순위 | 피처 | 이상 유형 | 오늘 max|z| |
+|---|---|---|---|
+| 1 | `atr_expansion_rate` | unbounded 입력 (z=18.32) | 18.32 |
+| 2 | `bull_reversal_signal` | 쿨다운 없는 과발동 (30회) | 10.96 |
+| 3 | `toxicity_spread_stress` | 스케일러 μ=0.978 역전 | 9.89 |
+| 4 | `hurst_ready` | binary 플래그 z≈4.5 오발동 | 5.61 |
+| 5 | `is_close_volatile` | 시간 binary 플래그 z≈5.5 오발동 | 7.39 |
+
+### 수정 내용 4종 (파일 3개)
+
+| # | 파일 | 변경 | 효과 |
+|---|---|---|---|
+| ① | `features/feature_builder.py:346-348` | `atr_expansion_rate` `np.clip(-0.5, 0.5)` + `_prev_atr > 1e-6` | max|z| 18.32 → 최대 7.9로 억제 |
+| ② | `features/technical/ofi_reversal.py` | `bull_reversal_signal` warmup 억제(20봉 미만) + 5봉 쿨다운 | 오늘 30회 → 이론 최대 15회 이하 |
+| ③ | `model/multi_horizon_model.py` | `_MACRO_SCALE_FLOOR["toxicity_spread_stress"] = 0.25` | z=(0-0.978)/0.25=-3.9 → extreme 4.0 미만 보장 |
+| ④ | `model/multi_horizon_model.py` | `_Z_WARN_EXEMPT`에 `hurst_ready`, `is_close_volatile`, `is_open_volatile` 추가 | binary/시간 플래그 경보 노이즈 제거 |
+
+### 주의사항
+
+- `toxicity_spread_stress` μ=0.978 고착은 235차 tick_size 수정 이전 훈련 데이터 기반. 다음 EOD 재학습 후 μ 정상화(≈0.05) 확인 필요.
+- `atr_expansion_rate` clip=0.5는 ATR이 1분 만에 50% 이상 변화하는 경우 클리핑 — 극단 변동성 장세에서 정보 손실 감수.
+- `bull_reversal_signal` COOLDOWN_BARS=5는 장 시작 직후 신호 연속 발동 억제. 단기 반전 잡기 목적이므로 5분이 적절하나 실전 검증 필요.
+
+---
+
+## 2026-06-29 (259차 — bull_reversal_signal 이진 피처 z>4 과발동 + HealthPolicy 동적화)
+
+### 배경
+
+11:04:58 `bull_reversal_signal=1` 발동으로 전 호라이즌 z=+5.89 동시 발생.
+→ conf 36.0% 26분 고착 + HealthPolicy Degraded Mode 상시 차단 → 진입 0회.
+11:13~11:18 MetaGate=take 신호 있었으나 HealthPolicy(62.0% 고정)에 의해 최종 차단.
+
+### 피처 분석
+
+`bull_reversal_signal`: OFI 반전 이진(0/1) 신호. 발동 빈도 낮아 GBM 스케일러 σ≈0.17 학습 → 발동 시 항상 z=(1-μ)/σ≈5.89. 전 호라이즌이 같은 분봉 OFI 입력 → 동시 발생 구조적 불가피. ScalerFloor 미적용은 올바른 동작(σ 충분)이나 이진 특성으로 인한 구조적 z 폭발은 별도 처리 필요.
+
+### 수정 내용 4종 (커밋 3281067)
+
+| # | 파일 | 변경 | 효과 |
+|---|---|---|---|
+| ① | `model/multi_horizon_model.py` | `_MACRO_SCALE_FLOOR["bull_reversal_signal"] = 0.45` | 다음 재학습부터 z≤2.2 보장 |
+| ② | `model/multi_horizon_model.py` | `_Z_WARN_EXEMPT` + extreme_mask 필터 | 현 세션부터 z>4 WARNING 즉시 제거 |
+| ③ | `main.py` | HealthPolicy `_dg_mc = max(actual_min_conf, 0.30)` | zone_mc 0.357 → conf 0.360 Degraded 통과 |
+| ④ | `main.py` | DynMC ConstOut 15% 필터 (`_recalibrate_mc`) | 고착 conf 제외 후 p65 계산 |
+
+### 추가 발견 — 257차 수정 효과 실증
+
+11:31:58 DynMC RETRAIN에서 MC_PERCENTILE 수정(②) 효과 최초 확인:
+- STABLE_TREND 0.420→**0.357** (이전: 0.03/회 × 30분 → 5시간 소요, 이제: 0.08 STEP_LIMIT 내 즉시)
+- grade=C 최초 출현 (conf=36.0% > zone_mc=0.357)
+
+---
+
+## 2026-06-29 (258차 — save_horizon_features 4인자 버그 수정)
+
+### 배경
+
+오늘 09:02부터 매분 `[DBQueue] 쓰기 실패 (op=horizon_features): save_horizon_features() takes 3 positional arguments but 4 were given` 86회 발생. horizon_features DB 쓰기 전일 실패.
+
+### 원인
+
+`main.py`에서 DBQueue/fallback 경로 모두 `_regime`을 4번째 인자로 전달했으나 `db_utils.save_horizon_features(ts, horizon, features)`는 3 positional 인자만 받음. 함수 시그니처/DB 스키마에 반영 안 된 미완성 구현.
+
+### 수정 (커밋 ea5f4f7)
+
+- `main.py:1577` DBQueue 소비 경로: `_regime` 인자 제거
+- `main.py:4148` 동기 fallback 경로: `_regime` 인자 제거
+- `_regime`은 raw_features_horizon 테이블(ts/horizon/features 3컬럼)에 애초에 없었음 → 스키마 변경 불필요
+
+---
+
+## 2026-06-29 (257차 — DynMC MC 기준 상향 원인 5종 수정)
+
+### 배경
+
+6/29 모의투자 장 시작 후 전일 대비 MC 기준이 대폭 상향돼 오전 내내 진입 0회 발생.
+앙상블 conf 추이 딥다이브 + 6/25 vs 6/29 MC 흐름 비교를 통해 원인 5종 특정·수정.
+
+### 핵심 발견
+
+| 발견 | 내용 |
+|---|---|
+| mc_history DB 경로 오류 | `data/mc_history.db`(0 bytes) vs 실제 `data/db/mc_history.db` — 기동 복원 실패로 코드 기본값(0.54~0.67) 사용 |
+| MC_PERCENTILE 버그 | `MC_PERCENTILE=0.65`를 `/100`해 0.65%분위(≈최솟값 0.17) 사용 — 65분위가 아닌 최솟값이 p65로 계산됨 |
+| MC_STEP_LIMIT 0.03 — 수렴 지연 | 코드 기본값(0.54)→목표(0.25)까지 0.03/회×30분 = 5시간 소요. 장 중 절대 도달 불가 |
+| GAP_OPEN cold-start EKS 과발동 | active_horizons 초기화 지연으로 conf=0% 5봉 → EKS 발동. 모델 붕괴 아닌 정상 cold-start |
+| EKS 회복 로그 불투명 | `try_eks_recovery()` 실패 원인이 INFO 레벨에 묻혀 진단 어려움 |
+
+### 6/25 vs 6/29 MC 실측 비교
+
+| 항목 | 6/25 | 6/29 |
+|---|---|---|
+| 기동 MC (STABLE_TREND) | **0.250** (mc_history 복원 성공) | **0.540** (복원 실패 → 코드 기본값) |
+| EKS 발동 | 없음 | 09:05 발동, 미해제 |
+| 진입 | 수동 2회 + 자동 1회 | **0회** |
+| 오전 conf | 17~35% | 31.0% 고착 (전 호라이즌 ConstOut) |
+| MetaGate take_thr | 0.450 (min_conf=0.25) | 0.570 (min_conf=0.57) |
+
+### 수정 내용 (커밋 f4b7806)
+
+| # | 파일 | 변경 |
+|---|---|---|
+| ① | `config/settings.py` | `MC_STEP_LIMIT` 0.03→**0.08** |
+| ② | `strategy/entry/time_strategy_router.py` | `idx_p65` 계산: `/ 100` 제거 → n=2086 기준 idx 13→1355 |
+| ③ | `strategy/entry/time_strategy_router.py` | `_restore_mc_from_history()` 빈 DB 시 0.35 안전 fallback |
+| ④ | `safety/system_health.py` | `evaluate_early_kill_switch()` cold-start 감별(conf=0%+delayed=0) → EKS 미발동 |
+| ⑤ | `safety/system_health.py` | `can_attempt_recovery()` 시작 로그 + `try_eks_recovery()` 실패 원인 WARNING 출력 |
+
+### 내일 기동 예상 동작
+
+- mc_history DB에 오늘 0.42 기록 저장 → 기동 시 복원 성공 → STABLE_TREND 0.42로 시작
+- MC_PERCENTILE 수정으로 p65≈0.38~0.42 → base_mc 현실적 계산 (STEP_LIMIT 거의 불필요)
+- GAP_OPEN cold-start conf=0%여도 EKS 미발동 → 오전 자동진입 차단 해소
+
+---
+
+## 2026-06-29 (256차 — EKS "당일 관망 선언" 메시지 정정)
+
+### 배경
+
+장기 중단(약 41일) 후 재시작 시 로그:
+- `[Canary] scaler 노후=999h` → B_INTRADAY refit 트리거
+- `[SHS-EKS] Early Kill Switch 발동 — 당일 관망 선언. conf_max=0.0% bars=5`
+- `[ConstOut] ['1m'] 상수 출력 확정 → 스케일러 재적합 시작`
+
+EKS 코드를 확인한 결과 **자동 회복 메커니즘이 이미 구현돼 있음**:
+- `can_attempt_recovery()` → 09:20부터 30분 간격, 11:30 이전까지
+- `try_eks_recovery()` → scaler_age<1h + conf 10봉 중 3봉 이상 + z경고<15 → `_eks_active=False`
+
+그런데 모든 로그 메시지가 "당일 관망 선언"으로 표시돼 영구 차단처럼 보이는 오해 유발.
+
+### 이상점 정리
+
+| # | 이상 | 원인 | 판단 |
+|---|---|---|---|
+| 1 | scaler 노후=999h | 장기 중단 후 재시작 | 정상 케이스, B_INTRADAY refit 트리거됨 |
+| 2 | EKS conf_max=0.0% | scaler 노후 → 상수출력 → GAP_OPEN conf 0% | 발동 올바름, 메시지가 문제 |
+| 3 | ConstOut 09:09 | B_INTRADAY 완료 전 ConstOut 감지 → 2차 refit | `_scaler_refresh_running` guard로 중복 방지 확인 |
+
+### 수정 내용
+
+| 파일 | 변경 |
+|---|---|
+| `safety/system_health.py` | 모듈 docstring + `evaluate_early_kill_switch` 로그: "당일 관망 선언" → "일시 관망 (30분 간격 자동 회복 평가, 마감 11:30)" |
+| `main.py` CRITICAL 로그 | "당일 관망 선언" → "일시 관망 → 스케일러·conf 회복 시 자동 재개 (09:20부터 30분 간격 평가)" |
+| `main.py` 매분 차단 로그 | "당일 관망 — 자동진입 차단" → "EKS 활성 — 자동진입 차단 (conf 회복 대기)" |
+| `utils/notify.py` | 슬랙 발동 메시지 수정 + **EKS 해제 시 슬랙 알림 신설** (`notify_kill_switch_cleared`) |
+| `dashboard/main_dashboard.py` | SHS 툴팁 "당일 관망일 선언" → "일시 관망 (자동 재개 대기)" + 회복 스케줄 설명 추가 |
+
+### 핵심 확인
+
+- EKS 자동 해제: `try_eks_recovery()` → `_eks_active=False` → 진입 재개 정상 작동 확인
+- EKS 해제 후 GBM 재학습 트리거도 기존대로 유지 (232차 구현)
+- **EKS 해제 Slack 알림 신설** — 발동(CRITICAL)은 있었으나 해제 알림 없었음. `notify_kill_switch_cleared(scaler_age_h, conf_hits, conf_window)` 추가
 
 ---
 
