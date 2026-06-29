@@ -212,7 +212,7 @@ MC_ABS_CEIL:    float = 0.62   # base_mc 절대 상한 (0.75→0.62: 오전 급�
 MC_ZONE_MAX:    float = 0.65   # zone_mc 절대 상한 — restore 경로 포함 적용
 MC_EMA_ALPHA:   float = 0.30   # 주기2 EMA 감쇠 (0.30 = 최근 ~3거래일 반영)
 MC_LOOKBACK_DAYS: int = 5      # conf 분포 측정 기간 (거래일)
-MC_STEP_LIMIT:  float = 0.03   # 1회 갱신 최대 변화폭 (±3%p clamp, 0.08→0.03)
+MC_STEP_LIMIT:  float = 0.08   # 1회 갱신 최대 변화폭 (±8%p — 0.03 시 기동→목표 5시간 소요로 복원)
 
 # 시간대 × 호라이즌 min_conf 2D 표 (P4)
 # F1이 낮은 호라이즌·시간대 조합에서 기준을 선택적으로 강화해
