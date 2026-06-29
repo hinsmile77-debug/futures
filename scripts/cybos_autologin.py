@@ -642,45 +642,79 @@ def _select_creon_plus_by_coordinate(hwnd):
 
     win_before = _get_window_rect_safe(hwnd)
 
-    # ── 헤더 클릭 → 드롭다운 열기 ─────────────────────────────────────────
-    hdr_x, hdr_y = px + 90, py + 15
-    print("[INFO] CREON Plus 드롭다운 열기: screen(%d,%d)" % (hdr_x, hdr_y))
-    _click_at_screen(hwnd, hdr_x, hdr_y)
-    time.sleep(1.2)  # 드롭다운 팝업 렌더링 대기
+    # CREON Plus 선택 -- 최대 3회 재시도 + 선택 검증
+    for _retry in range(3):
+        if _retry > 0:
+            print("[INFO] CREON Plus 선택 재시도 %d/3..." % (_retry + 1))
+            time.sleep(0.8)
+            # 윈도우 위치 재계산 (이동됐을 경우)
+            win_after2 = _get_window_rect_safe(hwnd)
+            if win_after2:
+                px, py = win_after2[0], win_after2[1]
 
-    # 창 이동 보정
-    win_after = _get_window_rect_safe(hwnd)
-    dx = (win_after[0] - win_before[0]) if (win_before and win_after) else 0
-    dy = (win_after[1] - win_before[1]) if (win_before and win_after) else 0
+        # ── 헤더 클릭 → 드롭다운 열기 ───────────────────────────────────────
+        hdr_x, hdr_y = px + 90, py + 15
+        print("[INFO] CREON Plus 드롭다운 열기: screen(%d,%d)" % (hdr_x, hdr_y))
+        _click_at_screen(hwnd, hdr_x, hdr_y)
+        time.sleep(1.0)  # 드롭다운 팝업 렌더링 대기
 
-    # ── CREON Plus 항목 클릭 ────────────────────────────────────────────────
-    # 드롭다운이 별도 팝업 창으로 뜨는 경우 PostMessage(parent hwnd)는 팝업에 미도달.
-    # 관리자 권한 실행 시 SetCursorPos + mouse_event 가 직접 팝업을 클릭하므로 더 신뢰적.
-    cp_x = px + 65 + dx
-    cp_y = py + 85 + dy
-    print("[INFO] CREON Plus 항목 클릭: screen(%d,%d) [물리클릭]" % (cp_x, cp_y))
-    _force_foreground(hwnd)
-    time.sleep(0.15)
+        # 창 이동 보정 (드롭다운 열리면서 창이 이동하는 경우 대비)
+        win_after = _get_window_rect_safe(hwnd)
+        dx = (win_after[0] - win_before[0]) if (win_before and win_after) else 0
+        dy = (win_after[1] - win_before[1]) if (win_before and win_after) else 0
+        cp_x = px + 65 + dx
+        cp_y = py + 85 + dy
 
-    _clicked = False
-    # 1차: SetCursorPos + mouse_event (관리자 권한 필요 -- CREON_PLUS.bat 관리자 실행으로 보장)
-    try:
-        win32api.SetCursorPos((cp_x, cp_y))
-        time.sleep(0.40)  # hover 대기 (드롭다운 항목 하이라이트)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.10)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        print("[INFO] CREON Plus 물리클릭 완료")
-        _clicked = True
-    except Exception as e:
-        print("[WARN] SetCursorPos 실패(%s) -- PostMessage fallback" % e)
+        # ── CREON Plus 항목 클릭 ─────────────────────────────────────────────
+        # 주의: 드롭다운 열린 후 _force_foreground(hwnd) 금지 → 드롭다운이 닫힘
+        #
+        # 1차: PostMessage(WM_NCLBUTTONDOWN) -- CREON 창 전체 HTCAPTION 구조
+        #      NC 메시지로 드롭다운 항목 선택 처리 (원본 동작 방식, 관리자 환경 정상)
+        print("[INFO] CREON Plus 항목 클릭: screen(%d,%d) [PostMessage]" % (cp_x, cp_y))
+        _post_nclbclick(hwnd, cp_x, cp_y, hover_ms=300)
+        time.sleep(0.25)
 
-    # 2차: PostMessage fallback (관리자 권한 없거나 SetCursorPos 실패 시)
-    if not _clicked:
-        _click_at_screen(hwnd, cp_x, cp_y, hover_ms=400)
+        # 2차: SetCursorPos + mouse_event (force_foreground 없이 직접 클릭)
+        #      드롭다운이 별도 팝업이면 OS가 해당 좌표 창으로 라우팅
+        try:
+            win32api.SetCursorPos((cp_x, cp_y))
+            time.sleep(0.10)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(0.08)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            print("[INFO] CREON Plus 물리클릭 완료")
+        except Exception as e:
+            print("[WARN] SetCursorPos 실패: %s" % e)
 
-    time.sleep(0.60)
-    print("[INFO] CREON Plus 선택 완료")
+        time.sleep(0.5)
+
+        # ── 선택 검증 ────────────────────────────────────────────────────────
+        # CREON Plus 선택 후: 넓은 Edit 컨트롤(ID/PW)이 비가시(invisible)로 전환됨
+        # CREON(일반) 선택 유지 시: Edit 컨트롤 계속 visible → 재시도 필요
+        _wide_edits_visible = []
+        def _ev(ch, _):
+            try:
+                if win32gui.GetClassName(ch) == "Edit":
+                    r = win32gui.GetWindowRect(ch)
+                    if (r[2] - r[0]) > 50:
+                        _wide_edits_visible.append(win32gui.IsWindowVisible(ch))
+            except Exception:
+                pass
+        win32gui.EnumChildWindows(hwnd, _ev, None)
+
+        if _wide_edits_visible:
+            all_invisible = all(not v for v in _wide_edits_visible)
+            print("[DEBUG] CREON Plus 선택 검증: Edit 가시=%s → %s" % (
+                _wide_edits_visible, "성공(비가시화)" if all_invisible else "실패(여전히 가시)"))
+            if all_invisible:
+                print("[INFO] CREON Plus 선택 완료 (검증 통과)")
+                return True
+        else:
+            # Edit 컨트롤을 찾지 못한 경우 -- 선택된 것으로 간주
+            print("[INFO] CREON Plus 선택 완료 (Edit 미탐지 -- 완료로 간주)")
+            return True
+
+    print("[WARN] CREON Plus 선택 3회 재시도 후에도 검증 실패 -- 계속 진행")
     return True
 
 
