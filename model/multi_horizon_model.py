@@ -154,6 +154,13 @@ class MultiHorizonModel:
         _HCG = {}
         _CORE_MASK_EXEMPT_BY_HZ: dict = {}
 
+    # 이진 피처 z>4 경보 exempt — 발동 시 항상 z≈2~6은 구조적으로 정상 패턴.
+    # _MACRO_SCALE_FLOOR로 다음 재학습부터 z<4 보장되지만,
+    # 현 세션 스케일러에는 소급 적용 안 되므로 경보 로그 필터로 즉시 노이즈 제거.
+    _Z_WARN_EXEMPT: frozenset = frozenset({
+        "bull_reversal_signal",   # 0/1 이진, 발동 시 z≈5.9 (정상 이벤트)
+    })
+
     # 전체 호라이즌 CORE 면제 union — predict_proba AutoMask·chronic 체크에 사용
     # (어느 호라이즌에서라도 CORE인 피처는 전체에서 마스킹 금지)
     _CORE_MASK_EXEMPT: frozenset = frozenset({
@@ -195,6 +202,12 @@ class MultiHorizonModel:
         #   atr_stress=0.75(clip) 시 z>4 가능. σ_floor=0.20 → z_max=(0.75-μ)/0.20<4 보장
         #   (μ≤0.35 가정, 실측 μ≈0.08~0.15 범위).
         "toxicity_atr_stress":      0.20,
+        # ── OFI 반전 이진 피처 σ 하한 (2026-06-29) ───────────────────────────────
+        # bull_reversal_signal / bear_reversal_signal: 0/1 이진값.
+        # 발동 빈도 낮아 스케일러 mean≈0.01~0.05, σ≈0.10~0.17 학습 → 발동 시 z≈5~9 폭발.
+        # σ_floor=0.45 → z=(1-μ)/0.45 ≤ (1-0.01)/0.45 ≈ 2.2 < 4.0 보장.
+        # macro_risk_on(σ_floor=0.50)과 동일 이진 피처 구조이므로 같은 접근 적용.
+        "bull_reversal_signal":     0.45,
     }
 
     GBM_PARAMS = {
@@ -414,6 +427,11 @@ class MultiHorizonModel:
 
             # 극단 z-score 감지: 원본(xs_mon) 기준 — 모니터링 목적이므로 반감기 미적용값 사용
             extreme_mask = np.abs(xs_mon[0]) > self.EXTREME_ZSCORE_THRESHOLD
+            # 이진 피처 exempt: 발동 시 항상 z≈5~9 (정상 구조), 경보 노이즈 제거
+            if self._Z_WARN_EXEMPT and self.feature_names:
+                for _ew_i, _ew_fn in enumerate(self.feature_names):
+                    if _ew_fn in self._Z_WARN_EXEMPT and _ew_i < len(extreme_mask):
+                        extreme_mask[_ew_i] = False
             extreme_count = int(np.sum(extreme_mask))
             if extreme_count > 0:
                 extreme_summary = self._summarize_extreme_zscores(xs_mon[0], extreme_mask)
