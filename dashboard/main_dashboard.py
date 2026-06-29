@@ -5002,10 +5002,31 @@ class LearningPanel(QWidget):
 
         overall_cal = calibration_metrics.get("overall", {})
         calib_ece = float(overall_cal.get("ece", 0.0) or 0.0)
-        self._report_widgets["calibration"]["value"].setText(f"ECE {calib_ece:.3f}")
-        self._report_widgets["calibration"]["detail"].setText(
-            f"brier {float(overall_cal.get('brier', 0.0) or 0.0):.3f} | n {int(overall_cal.get('count', 0) or 0)}"
-        )
+        _conf_inv = calibration_metrics.get("conf_inversion") or {}
+        _cal_val_w = self._report_widgets["calibration"]["value"]
+        _cal_det_w = self._report_widgets["calibration"]["detail"]
+        if _conf_inv.get("inverted"):
+            _hi = float(_conf_inv.get("high_acc", 0.0) or 0.0)
+            _lo = float(_conf_inv.get("low_acc",  0.0) or 0.0)
+            _cal_val_w.setText(f"ECE {calib_ece:.3f}  ⚠역전")
+            _cal_val_w.setStyleSheet(
+                f"font-size:{S.f(11)}px;color:{C['red']};"
+                f"padding:{S.p(3)}px {S.p(6)}px;"
+                f"background:#2D0D0D;border:1px solid {C['red']};"
+            )
+            _cal_det_w.setText(
+                f"고신뢰 acc {_hi:.1%} < 저신뢰 {_lo:.1%} | HCGuard 차단중"
+            )
+        else:
+            _cal_val_w.setText(f"ECE {calib_ece:.3f}")
+            _cal_val_w.setStyleSheet(
+                f"font-size:{S.f(11)}px;color:{C['text2']};"
+                f"padding:{S.p(3)}px {S.p(6)}px;"
+                f"background:{C['bg3']};border:1px solid {C['border']};"
+            )
+            _cal_det_w.setText(
+                f"brier {float(overall_cal.get('brier', 0.0) or 0.0):.3f} | n {int(overall_cal.get('count', 0) or 0)}"
+            )
         self._report_widgets["calibration"]["spark"].setText(self._spark(self._history_series(report_history, "calibration_ece"), 16))
 
         best_grid = meta_metrics.get("best_grid", {})
@@ -5551,10 +5572,31 @@ class EfficacyPanel(QWidget):
 
         overall_cal = calibration_metrics.get("overall", {})
         calib_ece = float(overall_cal.get("ece", 0.0) or 0.0)
-        self._report_widgets["calibration"]["value"].setText(f"ECE {calib_ece:.3f}")
-        self._report_widgets["calibration"]["detail"].setText(
-            f"brier {float(overall_cal.get('brier', 0.0) or 0.0):.3f} | n {int(overall_cal.get('count', 0) or 0)}"
-        )
+        _conf_inv = calibration_metrics.get("conf_inversion") or {}
+        _cal_val_w = self._report_widgets["calibration"]["value"]
+        _cal_det_w = self._report_widgets["calibration"]["detail"]
+        if _conf_inv.get("inverted"):
+            _hi = float(_conf_inv.get("high_acc", 0.0) or 0.0)
+            _lo = float(_conf_inv.get("low_acc",  0.0) or 0.0)
+            _cal_val_w.setText(f"ECE {calib_ece:.3f}  ⚠역전")
+            _cal_val_w.setStyleSheet(
+                f"font-size:{S.f(11)}px;color:{C['red']};"
+                f"padding:{S.p(3)}px {S.p(6)}px;"
+                f"background:#2D0D0D;border:1px solid {C['red']};"
+            )
+            _cal_det_w.setText(
+                f"고신뢰 acc {_hi:.1%} < 저신뢰 {_lo:.1%} | HCGuard 차단중"
+            )
+        else:
+            _cal_val_w.setText(f"ECE {calib_ece:.3f}")
+            _cal_val_w.setStyleSheet(
+                f"font-size:{S.f(11)}px;color:{C['text2']};"
+                f"padding:{S.p(3)}px {S.p(6)}px;"
+                f"background:{C['bg3']};border:1px solid {C['border']};"
+            )
+            _cal_det_w.setText(
+                f"brier {float(overall_cal.get('brier', 0.0) or 0.0):.3f} | n {int(overall_cal.get('count', 0) or 0)}"
+            )
         self._report_widgets["calibration"]["spark"].setText(self._spark(self._history_series(report_history, "calibration_ece"), 16))
 
         best_grid = meta_metrics.get("best_grid", {})
@@ -9235,14 +9277,15 @@ class MireukDashboard(QMainWindow):
             "  ≥ 80  : 정상 (녹색)\n"
             "  60~79 : 주의 (파랑)\n"
             "  < 60  : 진입 차단 (주황)\n"
-            "  EKS   : 당일 관망일 선언 (빨강)\n\n"
+            "  EKS   : 일시 관망 (자동 재개 대기) (빨강)\n\n"
             "감점 요소:\n"
             "  재시작 1회 = -8점 (최대 -40)\n"
             "  z경고 피처 1개 = -2.5점 (최대 -25)\n"
             "  CORE 탈락률 × -25점\n"
             "  S2 초과 지연 × -5점 (최대 -10)\n\n"
             "Early Kill Switch (09:05 판정):\n"
-            "  GAP_OPEN conf < 45% + CORE 0% → 당일 관망"
+            "  GAP_OPEN conf < 45% + CORE 0% → 일시 관망\n"
+            "  09:20부터 30분 간격 자동 회복 평가 (마감 11:30)"
         )
 
         # ── ShadowSession 배지 ───────────────────────────────────
