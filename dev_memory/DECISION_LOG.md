@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-06-29 (261차 — High-confidence Overconfidence 개선)
+
+### [결정] Grade A 롤링 정확도 가드 (HCGuard) 도입
+
+**배경**: conf 0.7+ 예측의 실측 정확도 29-31%로 conf 0.3~0.5 구간(33%)보다 낮은 신뢰도 역전 구조. Platt 보정기의 WINDOW=100에서 tail(0.6+) 샘플 ~7건으로 tail 보정 불안정. C=0.05 정규화도 tail을 충분히 base rate로 당기지 못함.
+
+**근본 원인 3중 구조**:
+1. WINDOW=100 → tail 샘플 부족(~7건) → LogisticRegression tail 학습 불안정
+2. C=0.05 정규화 → tail sigmoid가 실측 acc 30%까지 완전히 내려오지 않음
+3. Grade A 기준(≥0.70)이 실측 정확도와 무관 → 가장 공격적 진입 모드가 가장 낮은 정확도
+
+**결정**:
+- `HCGuard`: conf≥0.65 최근 50건 acc < 42% → Grade A를 B로 자동 강등. 실측 기반 동적 차단.
+- Platt WINDOW 100→200, C 0.05→0.02: tail 샘플 확보 + 압축 강화
+- 역전 자동 경보: `_check_confidence_inversion()` — 고신뢰 acc < 저신뢰 acc-3%p 시 감지
+
+**HCGuard 차단/해제 기준**:
+- 차단: `_hc_n >= 20` AND `rolling_acc < 0.42` → grade = "B"
+- 해제: `rolling_acc >= 0.42` 회복 시 자동 해제 → grade = "A" 복원
+- 버퍼 리셋 안 함 (일일 공백에도 누적 유지)
+
+**위험 수용**: 42% 임계값은 현재 base rate(33%)와 Grade B 정확도 간 중간값. 시장 컨디션 개선 후 Grade A가 실제로 우위를 보이면 자동 해제됨. 인위 조정 불필요.
+
+---
+
 ## 2026-06-25 (EXIT stuck 해소 전략)
 
 ### [결정] _broker_confirm_count 3회 후 pending 자동 소멸

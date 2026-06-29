@@ -8,6 +8,19 @@
 
 ---
 
+## 2026-06-29 (261차 검증) [P0]
+
+### HCGuard + Platt 개선 검증
+
+- [ ] **① HCGuard 발동 확인** — 내일 장 중 conf≥0.65 예측 20건 이상 누적 후 `[HCGuard] Grade A → B 강등` WARN 로그 출현 확인
+- [ ] **② HCGuard acc 로그** — 차단 시 `고신뢰 최근 N건 acc=XX.X% < 42%` 수치 출력 확인
+- [ ] **③ Platt WINDOW=200 효과** — 1주일 후 calibration_report.md에서 `0.8~0.9: gap` 값이 0.53 → 0.45 이하로 감소 추이 확인
+- [ ] **④ 역전 경보 출력 확인** — `python scripts/generate_calibration_report.py` 실행 시 `CONF_INVERSION_ALERT` stdout 출력 + 리포트 상단 경고 섹션 확인
+- [ ] **⑤ conf_inversion JSON 키** — `calibration_metrics.json`에 `conf_inversion: {inverted: true, ...}` 포함 확인
+- [ ] **⑥ HCGuard 해제 시나리오** — 모의투자 누적 acc가 회복될 때 `[HCGuard] Grade A 차단 해제` INFO 로그 출현 확인
+
+---
+
 ## 2026-06-29 (260차 검증) [P0]
 
 ### Extreme 피처 5종 수정 검증
