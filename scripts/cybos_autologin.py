@@ -223,7 +223,7 @@ def _looks_like_login_form(parent_hwnd):
 
 
 def _physical_click_hwnd(hwnd):
-    """대상 컨트롤 중앙에 실제 클릭을 보낸다."""
+    """대상 컨트롤 중앙에 클릭을 보낸다. PostMessage 1차 → SetCursorPos 2차."""
     rect = _get_window_rect_safe(hwnd)
     if not rect:
         return False
@@ -231,18 +231,13 @@ def _physical_click_hwnd(hwnd):
     left, top, right, bottom = rect
     cx = int((left + right) / 2)
     cy = int((top + bottom) / 2)
-    try:
-        win32api.SetCursorPos((cx, cy))
-        time.sleep(0.1)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.05)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    # 부모 창 찾아 WM_NCLBUTTONDOWN 전달 시도
+    parent = win32gui.GetParent(hwnd) or hwnd
+    ok = _click_at_screen(parent, cx, cy)
+    if ok:
+        print("[INFO] Click sent: hwnd=%d text='%s'" % (hwnd, win32gui.GetWindowText(hwnd)))
         time.sleep(0.2)
-        print("[INFO] Physical click sent: hwnd=%d text='%s'" % (hwnd, win32gui.GetWindowText(hwnd)))
-        return True
-    except Exception as e:
-        print("[WARN] Physical click failed hwnd=%d: %s" % (hwnd, e))
-        return False
+    return ok
 
 
 def _find_top_left_text_control(parent_hwnd, candidate_texts):
@@ -297,6 +292,55 @@ def _post_button_click(btn_hwnd):
     except Exception as e:
         print("  [WARN] BM_CLICK 실패 hwnd=%d: %s" % (btn_hwnd, e))
         return False
+
+
+def _post_nclbclick(hwnd, screen_x, screen_y, hover_ms=0, after_ms=100):
+    """
+    PostMessage(WM_NCLBUTTONDOWN)으로 좌표 클릭 -- SetCursorPos 대체.
+
+    SetCursorPos + mouse_event는 UAC 상위 프로세스(coStarter.exe) 또는
+    UIAccess 정책 차이로 ERROR_ACCESS_DENIED(5) 실패 가능.
+    PostMessage는 메시지 큐 직접 삽입이므로 해당 제한을 우회한다.
+
+    CREON Starter 창 전체가 HTCAPTION(owner-drawn 타이틀바) 구조이므로
+    물리 마우스는 WM_NCLBUTTONDOWN으로 전달됨 → 동일 메시지 사용.
+    lParam = 화면 좌표 (WM_NCLBUTTONDOWN 규약: screen coords in lParam).
+    """
+    try:
+        lp = ((screen_y & 0xFFFF) << 16) | (screen_x & 0xFFFF)
+        if hover_ms > 0:
+            win32gui.PostMessage(hwnd, win32con.WM_NCMOUSEMOVE, win32con.HTCAPTION, lp)
+            time.sleep(hover_ms / 1000.0)
+        win32gui.PostMessage(hwnd, win32con.WM_NCLBUTTONDOWN, win32con.HTCAPTION, lp)
+        time.sleep(after_ms / 1000.0)
+        win32gui.PostMessage(hwnd, win32con.WM_NCLBUTTONUP, win32con.HTCAPTION, lp)
+        return True
+    except Exception as e:
+        print("[WARN] _post_nclbclick 실패 hwnd=%d screen(%d,%d): %s" % (hwnd, screen_x, screen_y, e))
+        return False
+
+
+def _click_at_screen(hwnd, screen_x, screen_y, hover_ms=0, after_ms=100):
+    """
+    CREON 좌표 클릭 공통 진입점.
+    1차: PostMessage(WM_NCLBUTTONDOWN) -- UAC/UIAccess 차이 우회
+    2차: SetCursorPos + mouse_event -- 표준 물리 클릭 (SetCursorPos 허용 환경)
+    """
+    ok = _post_nclbclick(hwnd, screen_x, screen_y, hover_ms=hover_ms, after_ms=after_ms)
+    if not ok:
+        try:
+            if hover_ms > 0:
+                win32api.SetCursorPos((screen_x, screen_y))
+                time.sleep(hover_ms / 1000.0)
+            win32api.SetCursorPos((screen_x, screen_y))
+            time.sleep(0.10)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(after_ms / 1000.0)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        except Exception as e:
+            print("[WARN] _click_at_screen SetCursorPos 실패 screen(%d,%d): %s" % (screen_x, screen_y, e))
+            return False
+    return True
 
 
 def _set_edit_text(edit_hwnd, text):
@@ -477,11 +521,7 @@ def _click_creon_id_tab(hwnd):
     tab_x = px + 295
     tab_y = py + 215
     print("[INFO] CREON '아이디' 탭 클릭: screen(%d,%d)" % (tab_x, tab_y))
-    win32api.SetCursorPos((tab_x, tab_y))
-    time.sleep(0.10)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.08)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    _click_at_screen(hwnd, tab_x, tab_y)
     time.sleep(0.40)  # 탭 전환 후 Edit 가시화 대기
 
 
@@ -522,11 +562,7 @@ def _click_creon_login_button(hwnd):
     print("[INFO] CREON 모의투자로그인 버튼 클릭: screen(%d,%d)" % (btn_x, btn_y))
     _force_foreground(hwnd)
     time.sleep(0.20)
-    win32api.SetCursorPos((btn_x, btn_y))
-    time.sleep(0.12)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.08)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    _click_at_screen(hwnd, btn_x, btn_y)
     time.sleep(0.30)
 
 
@@ -549,11 +585,7 @@ def _click_creon_mock_access(hwnd):
     print("[INFO] CREON 모의투자 접속 클릭: screen(%d,%d)" % (btn_x, btn_y))
     _force_foreground(hwnd)
     time.sleep(0.20)
-    win32api.SetCursorPos((btn_x, btn_y))
-    time.sleep(0.12)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.08)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    _click_at_screen(hwnd, btn_x, btn_y)
     time.sleep(0.30)
 
 
@@ -589,11 +621,7 @@ def _select_creon_plus_by_coordinate(hwnd):
     # 헤더 클릭 → 드롭다운 열기 (단 한 번)
     hdr_x, hdr_y = px + 90, py + 15
     print("[INFO] CREON Plus 드롭다운 열기: screen(%d,%d)" % (hdr_x, hdr_y))
-    win32api.SetCursorPos((hdr_x, hdr_y))
-    time.sleep(0.10)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.08)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    _click_at_screen(hwnd, hdr_x, hdr_y)
     time.sleep(1.0)
 
     # 창 이동 보정
@@ -605,11 +633,7 @@ def _select_creon_plus_by_coordinate(hwnd):
     cp_x = px + 65 + dx
     cp_y = py + 85 + dy
     print("[INFO] CREON Plus 항목 클릭: screen(%d,%d) [hover 400ms → click]" % (cp_x, cp_y))
-    win32api.SetCursorPos((cp_x, cp_y))
-    time.sleep(0.40)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.08)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    _click_at_screen(hwnd, cp_x, cp_y, hover_ms=400)
     time.sleep(0.60)
 
     print("[INFO] CREON Plus 선택 완료")
@@ -909,11 +933,23 @@ def _blind_click_security_dialog():
     print("[INFO] 블라인드 클릭 -> 모니터(x:%d~%d, y:%d~%d) 지점 (%d,%d)"
           % (l, r, t, b, cx, cy))
 
-    win32api.SetCursorPos((cx, cy))
-    time.sleep(0.15)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.08)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    try:
+        win32api.SetCursorPos((cx, cy))
+        time.sleep(0.15)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.08)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    except Exception as e:
+        print("[WARN] 블라인드 클릭 SetCursorPos 실패(%s) -- ctypes 직접 호출 시도" % e)
+        try:
+            import ctypes
+            ctypes.windll.user32.SetCursorPos(cx, cy)
+            time.sleep(0.15)
+            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+            time.sleep(0.08)
+            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
+        except Exception as e2:
+            print("[WARN] ctypes 블라인드 클릭도 실패: %s" % e2)
     time.sleep(0.2)
     return True
 

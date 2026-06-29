@@ -1,46 +1,52 @@
 # -*- coding: utf-8 -*-
 """
 Windows Credential Manager에 CREON Plus 자격증명 등록 스크립트
+- win32cred.CredWrite로 CRED_TYPE_GENERIC(1)으로 저장
+- cmdkey는 DOMAIN(Type=2)로 저장해 cybos_autologin.py가 읽지 못하는 문제를 회피
+
 사용법: conda activate py37_32 && python scripts/set_cybos_credential.py
 """
-import subprocess
 import sys
 import getpass
 
+try:
+    import win32cred
+except ImportError:
+    print("[ERROR] pywin32 미설치 -- 'pip install pywin32' 후 재시도")
+    sys.exit(1)
 
-def register_credential(target, username, password):
-    cmd = ["cmdkey", "/add:" + target, "/user:" + username, "/pass:" + password]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode == 0:
-        print(f"[OK] '{target}' 자격증명 등록 완료.")
-    else:
-        print(f"[ERROR] 등록 실패: {result.stderr.strip()}")
-        sys.exit(1)
+
+def write_generic_credential(target, username, password):
+    cred = {
+        "Type": win32cred.CRED_TYPE_GENERIC,
+        "TargetName": target,
+        "UserName": username,
+        "CredentialBlob": password,
+        "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
+        "Comment": "Mireuk auto-login credential",
+    }
+    win32cred.CredWrite(cred, 0)
+    print("[OK] '%s' GENERIC 자격증명 등록 완료." % target)
 
 
 def main():
     print("=" * 60)
-    print("  Mireuk - CREON Plus 자격증명 등록")
-    print("  Windows Credential Manager에 저장됩니다.")
+    print("  Mireuk - CREON Plus 자격증명 등록 (GENERIC Type)")
+    print("  win32cred.CredWrite 사용 -- cmdkey 대신 사용하세요.")
     print("=" * 60)
     print()
-    print("1. CREON Plus (대신증권) 로그인 정보")
-    print("   - ID: 대신증권 아이디")
-    print("   - PW: 대신증권 비밀번호 (HTS 로그인 비밀번호)")
-    print()
 
-    creon_id = input("CREON Plus ID: ").strip()
+    creon_id = input("CREON Plus ID (대신증권 아이디): ").strip()
     if not creon_id:
         print("[ERROR] ID를 입력하세요.")
         sys.exit(1)
 
-    creon_pw = getpass.getpass("CREON Plus 비밀번호: ")
+    creon_pw = getpass.getpass("CREON Plus 비밀번호 (HTS 로그인 비밀번호): ")
     if not creon_pw:
         print("[ERROR] 비밀번호를 입력하세요.")
         sys.exit(1)
 
-    print()
-    register_credential("creonplus", creon_id, creon_pw)
+    write_generic_credential("creonplus", creon_id, creon_pw)
 
     print()
     print("=" * 60)
