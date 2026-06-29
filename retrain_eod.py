@@ -78,13 +78,52 @@ def _check_env():
         sys.exit(2)
 
 
-# ── 알림 (실패 시) ───────────────────────────────────────────────
+# ── 알림 ──────────────────────────────────────────────────────
 def _notify_fail(msg: str):
     try:
         from utils.notify import notify as _nfy
         _nfy(f"[EOD재학습] 실패: {msg}", "ERROR")
     except Exception:
-        pass  # 알림 모듈 없어도 무시
+        pass
+
+
+def _notify_eod_done(horizons_ok: int, horizons_total: int, t_total: float):
+    """EOD 재학습 완료 + calibration 역전 상태를 Slack으로 통보."""
+    try:
+        from utils.notify import notify as _nfy
+
+        # calibration_metrics.json에서 역전 상태 확인
+        _metrics_path = os.path.join(_ROOT, "calibration_metrics.json")
+        _inv_line = ""
+        if os.path.exists(_metrics_path):
+            try:
+                with open(_metrics_path, "r", encoding="utf-8") as _f:
+                    _m = json.load(_f)
+                _inv = _m.get("conf_inversion") or {}
+                if _inv.get("inverted"):
+                    _hi  = float(_inv.get("high_acc", 0.0) or 0.0)
+                    _lo  = float(_inv.get("low_acc",  0.0) or 0.0)
+                    _gap = float(_inv.get("gap",      0.0) or 0.0)
+                    _ece = float(_inv.get("ece_high", 0.0) or 0.0)
+                    _inv_line = (
+                        f"\n⚠️ 신뢰도 역전 감지\n"
+                        f"  고신뢰(0.6+) acc {_hi:.1%} < 저신뢰 {_lo:.1%} (gap -{_gap:.1%}p)\n"
+                        f"  ECE_high {_ece:.3f} | HCGuard 자동 차단 중"
+                    )
+                else:
+                    _ece_overall = float((_m.get("overall") or {}).get("ece", 0.0) or 0.0)
+                    _inv_line = f"\n캘리브레이션 ECE {_ece_overall:.3f} (역전 없음 ✅)"
+            except Exception:
+                pass
+
+        _nfy(
+            f"EOD 재학습 완료 ✅\n"
+            f"호라이즌 {horizons_ok}/{horizons_total} 교체 | 소요 {t_total:.0f}s"
+            f"{_inv_line}",
+            "INFO",
+        )
+    except Exception:
+        pass
 
 
 # ── P8: EOD 스케일러 재적합 ──────────────────────────────────────
@@ -239,6 +278,9 @@ def main():
         # P8: 재학습 완료 직후 스케일러 재적합
         # 26주 기준 스케일러를 500봉 최신으로 덮어써 내일 시초 z-score 안정화
         p8_scaler_refit()
+
+        # EOD 완료 Slack 알림 (재학습 요약 + calibration 역전 상태)
+        _notify_eod_done(horizons_ok, len(result.get("horizons", {})), t_total)
 
         sys.exit(0)
 
