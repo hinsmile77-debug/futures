@@ -3,13 +3,26 @@ SETLOCAL EnableDelayedExpansion
 CHCP 65001 >NUL
 TITLE Mireuk Cybos Plus Launcher
 
+REM ============================================================
+REM  관리자 권한 확인 -- coStarter.exe 는 UAC 상승 실행되므로
+REM  UIPI(UI Privilege Isolation) 가 mouse/PostMessage 를 차단함.
+REM  이 배치 자체를 관리자로 실행해야 SetCursorPos 정상 동작.
+REM ============================================================
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    ECHO [INFO] 관리자 권한 필요 -- UAC 승인 후 재실행합니다...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c \"%~f0\"' -Verb RunAs -WorkingDirectory '%~dp0'"
+    EXIT /B
+)
+
 SET "TIMESTAMP=%DATE:~0,10% %TIME:~0,8%"
 SET "ERROR_FLAG=0"
 SET "DEFAULT_DIR=%USERPROFILE%\PycharmProjects\futures"
 
 ECHO.
 ECHO ============================================================
-ECHO   Mireuk Cybos Plus Launcher
+ECHO   Mireuk Cybos Plus Launcher  [관리자 권한으로 실행 중]
 ECHO   Start: %TIMESTAMP%
 ECHO ============================================================
 ECHO.

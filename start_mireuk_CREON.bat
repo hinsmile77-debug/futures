@@ -4,6 +4,17 @@ CHCP 65001 >NUL
 TITLE Mireuk (CREON) Launcher
 
 REM ============================================================
+REM  관리자 권한 확인 -- coStarter.exe UAC 상승 실행 → UIPI 차단 우회
+REM ============================================================
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    ECHO [INFO] 관리자 권한 필요 -- UAC 승인 후 재실행합니다...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c \"%~f0\"' -Verb RunAs -WorkingDirectory '%~dp0'"
+    EXIT /B
+)
+
+REM ============================================================
 REM  배치 자체 로그 설정
 REM  저장 위치 : logs\Mireuk_batch\launcher_YYYYMMDD_HHMMSS.log
 REM  보관 개수 : 최신 10개 (초과분 자동 삭제)
