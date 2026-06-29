@@ -1574,7 +1574,7 @@ class TradingSystem:
                     save_candle_and_features(_bar, _ts, _feats)
                 elif op == "horizon_features":
                     _, _ts, _h_name, _h_feats, _regime = item
-                    save_horizon_features(_ts, _h_name, _h_feats, _regime)
+                    save_horizon_features(_ts, _h_name, _h_feats)
                 elif op == "scaler_monitor":
                     # predict_proba()가 위임한 scaler_events 행 INSERT
                     # WAL 모드 + 배경 스레드 → main pipeline 블로킹 없음
@@ -4145,7 +4145,7 @@ class TradingSystem:
                         self._db_write_queue.put_nowait(("horizon_features", ts, _h_name, _h_feats, self.current_regime))
                     except _queue.Full:
                         logger.warning("[DBQueue] 큐 포화 — %s horizon_features 동기 write fallback", _h_name)
-                        save_horizon_features(ts, _h_name, _h_feats, self.current_regime)
+                        save_horizon_features(ts, _h_name, _h_feats)
         except Exception as _p2_err:
             logger.debug("[Phase2-STEP4] N분봉 처리 오류 (무해): %s", _p2_err)
             _p2_completed = {1: bar}
@@ -5473,8 +5473,9 @@ class TradingSystem:
                     gap_open_bars=_shs_d["gap_open_bars"],
                 )
                 log_manager.system(
-                    "[SHS-EKS] Early Kill Switch 발동 — 당일 관망 선언. "
-                    f"conf_max={_shs_d['gap_open_conf_max']*100:.1f}% bars={_shs_d['gap_open_bars']}",
+                    "[SHS-EKS] Early Kill Switch 발동 — 일시 관망 "
+                    f"conf_max={_shs_d['gap_open_conf_max']*100:.1f}% bars={_shs_d['gap_open_bars']} "
+                    "→ 스케일러·conf 회복 시 자동 재개 (09:20부터 30분 간격 평가)",
                     "CRITICAL",
                 )
                 # [C2][P3] EKS 발동 원인 — 멀티 태그 복합 분류
@@ -5520,6 +5521,7 @@ class TradingSystem:
                 _p3_scaler_age = self.model.canary_stale_age_hours()
                 _p3_z_warn     = getattr(self.model, "last_z_warn_count", 0)
                 _p3_window     = list(self._eks_recovery_conf_window)
+                _p3_conf_hits = sum(1 for c in _p3_window if c >= actual_min_conf)
                 if self.system_health.try_eks_recovery(
                     _p3_scaler_age, _p3_window, actual_min_conf, _p3_z_warn
                 ):
@@ -5528,6 +5530,12 @@ class TradingSystem:
                         f"scaler_age={_p3_scaler_age:.1f}h "
                         f"conf_window={[f'{c:.0%}' for c in _p3_window[-3:]]}",
                         "WARNING",
+                    )
+                    from utils.notify import notify_kill_switch_cleared as _nksc
+                    _nksc(
+                        scaler_age_h=_p3_scaler_age,
+                        conf_hits=_p3_conf_hits,
+                        conf_window=len(_p3_window),
                     )
                     # [232차] EKS 해제 직후 GBM 재학습 — 관망 중 누락된 당일 데이터 반영.
                     # 장전 기동 + EOD 성공 스킵 조합으로 WarmupRetrain이 실행되지 않은 경우
@@ -5548,7 +5556,7 @@ class TradingSystem:
 
         # EKS 활성 시 매분 진입 차단 로그 (방향 있을 때만)
         if self.system_health.kill_switch_active and direction != 0:
-            log_manager.signal("[SHS-EKS] 당일 관망 — 자동진입 차단")
+            log_manager.signal("[SHS-EKS] EKS 활성 — 자동진입 차단 (conf 회복 대기)")
 
         # 진입 패널 갱신 — 체크리스트 결과 + 산출 수량 (항상)
         _meta_gate = decision.get("meta_gate") or {}
