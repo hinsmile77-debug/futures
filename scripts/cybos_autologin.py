@@ -568,21 +568,45 @@ def _click_creon_login_button(hwnd):
 
 def _click_creon_mock_access(hwnd):
     """
-    CREON '모의투자 선택' 팝업의 '모의투자 접속' 버튼 좌표 클릭.
-    팝업이 in-window GDI 오버레이라 EnumWindows/FindWindow 불가.
+    CREON '모의투자 선택' 팝업의 '모의투자 접속' 버튼 좌표 클릭 (fallback).
 
-    실증 좌표: 창 origin + (365, 317)
+    우선 BM_CLICK을 시도(버튼 텍스트 탐색). 실패 시 좌표 기반 클릭.
+    hwnd: CREON 메인 데스크 창 or 모의투자 선택 팝업 hwnd 모두 허용.
+      - 팝업 hwnd인 경우: 팝업 rect 기반 좌표 = 팝업 중앙 상단
+      - 메인 창 hwnd인 경우: 메인 창 안에서 팝업이 표시되는 예상 위치 클릭
     """
     try:
-        win_rect = win32gui.GetWindowRect(hwnd)
         if not win32gui.IsWindowVisible(hwnd):
             return
+        win_rect = win32gui.GetWindowRect(hwnd)
     except Exception:
         return
+
+    # 먼저 버튼 BM_CLICK 시도 (자식 컨트롤이 있는 경우)
+    found_btns = _find_child_by_exact_text(hwnd, MOCK_ACCESS_BUTTON_TEXTS, class_name="Button")
+    if not found_btns:
+        found_btns = _find_child_by_text_contains(hwnd, [u"접속"], class_name="Button")
+    if found_btns:
+        btn_hwnd, btn_text = found_btns[0]
+        print("[INFO] CREON 모의투자 접속 BM_CLICK: hwnd=%d text='%s'" % (btn_hwnd, btn_text))
+        _post_button_click(btn_hwnd)
+        time.sleep(0.30)
+        return
+
+    # fallback: 좌표 클릭
+    # 팝업이 작은 다이얼로그(~240x340)면 중앙 상단, 메인 창이면 예상 위치
     wx, wy = win_rect[0], win_rect[1]
-    btn_x = wx + 365
-    btn_y = wy + 317
-    print("[INFO] CREON 모의투자 접속 클릭: screen(%d,%d)" % (btn_x, btn_y))
+    ww = win_rect[2] - win_rect[0]
+    wh = win_rect[3] - win_rect[1]
+    if ww < 800:
+        # 팝업 자체 hwnd -- "모의투자 접속" 버튼은 ComboBox 바로 아래 (약 130px)
+        btn_x = wx + ww // 2
+        btn_y = wy + 130
+    else:
+        # 메인 창 hwnd -- 팝업이 화면 중앙에 뜨므로 모니터 중앙 근처 클릭
+        btn_x = wx + ww // 2
+        btn_y = wy + 400
+    print("[INFO] CREON 모의투자 접속 좌표 클릭: screen(%d,%d)" % (btn_x, btn_y))
     _force_foreground(hwnd)
     time.sleep(0.20)
     _click_at_screen(hwnd, btn_x, btn_y)
@@ -1244,24 +1268,77 @@ def _handle_password_confirm_dialog(timeout=10):
 
 def _find_mock_dialog_candidates():
     """
-    '모의투자 선택' 창을 두 가지 방법으로 탐색:
-      1. 키워드 기반 EnumWindows
-      2. FindWindow 직접 탐색 (키워드 탐색 실패 시 보험)
-    중복 hwnd를 제거하여 반환한다.
-    """
-    candidates = _find_window_by_keywords(MOCK_DIALOG_KEYWORDS, require_visible=True)
-    seen = {hwnd for hwnd, _ in candidates}
+    '모의투자 선택' 창을 세 가지 방법으로 탐색:
+      1. FindWindow 직접 탐색 (최우선 — 정확한 타이틀 매치)
+      2. 키워드 기반 EnumWindows (단, CREON/CYBOS 메인 데스크 창은 제외)
+      3. CREON 메인 창 자식 다이얼로그 탐색 (child #32770 검색)
+    중복 hwnd를 제거하며, 정확한 매치를 항상 앞에 반환한다.
 
-    # FindWindow 직접 탐색 -- 키워드 정규화 오류나 인코딩 차이 대응
+    **제외 패턴**: '금융지원센터' 포함 제목은 CREON 메인 데스크이므로 무조건 제외.
+    """
+    seen = set()
+    exact_cands = []   # "모의투자 선택" 정확 매치 -- 앞에 배치
+    fuzzy_cands = []   # 키워드 부분 매치 -- 뒤에 배치
+
+    # ── ① FindWindow 직접 탐색 (최우선) ─────────────────────────────────────
     for title_exact in (u"모의투자 선택", u"모의투자선택"):
         try:
             direct_hwnd = win32gui.FindWindow(None, title_exact)
             if direct_hwnd and direct_hwnd not in seen and win32gui.IsWindowVisible(direct_hwnd):
-                candidates.append((direct_hwnd, title_exact))
+                exact_cands.append((direct_hwnd, title_exact))
                 seen.add(direct_hwnd)
         except Exception:
             pass
-    return candidates
+
+    # ── ② 키워드 기반 EnumWindows (메인 데스크 제외) ────────────────────────
+    # "금융지원센터" = CREON 메인 데스크 창 고유 마커 → 제외
+    _DESKTOP_MARKERS = [u"금융지원센터", u"크레온 데스크", u"CREON Desktop", u"CYBOS Desktop"]
+    raw = _find_window_by_keywords(MOCK_DIALOG_KEYWORDS, require_visible=True)
+    for hwnd, title in raw:
+        if hwnd in seen:
+            continue
+        if any(m in title for m in _DESKTOP_MARKERS):
+            continue  # 메인 CREON 데스크 창은 "모의투자" 포함이지만 팝업 아님
+        if title.strip() in (u"모의투자 선택", u"모의투자선택"):
+            exact_cands.append((hwnd, title))
+        else:
+            fuzzy_cands.append((hwnd, title))
+        seen.add(hwnd)
+
+    # ── ③ CREON 메인 창 자식 다이얼로그 탐색 ────────────────────────────────
+    # "모의투자 선택"이 CREON Desktop의 child dialog인 경우를 커버
+    if BROKER_TYPE == "creon":
+        creon_desk_hwnd = [None]
+        def _desk_cb(h, _):
+            try:
+                if win32gui.IsWindowVisible(h) and u"금융지원센터" in win32gui.GetWindowText(h):
+                    creon_desk_hwnd[0] = h
+            except Exception:
+                pass
+        try:
+            win32gui.EnumWindows(_desk_cb, None)
+        except Exception:
+            pass
+
+        if creon_desk_hwnd[0]:
+            def _child_cb(ch, _):
+                try:
+                    if ch in seen:
+                        return
+                    if not win32gui.IsWindowVisible(ch):
+                        return
+                    ch_title = win32gui.GetWindowText(ch).strip()
+                    if ch_title in (u"모의투자 선택", u"모의투자선택"):
+                        exact_cands.append((ch, ch_title))
+                        seen.add(ch)
+                except Exception:
+                    pass
+            try:
+                win32gui.EnumChildWindows(creon_desk_hwnd[0], _child_cb, None)
+            except Exception:
+                pass
+
+    return exact_cands + fuzzy_cands
 
 
 def _click_mock_access_button(hwnd):
@@ -1445,12 +1522,35 @@ def _wait_for_connection_and_mock(total_timeout=120):
             popup_handled = True
             break
 
-        # ④ CREON: in-window 모의투자 선택 팝업 좌표 클릭 (EnumWindows 탐지 불가)
+        # ④ CREON: 모의투자 선택 팝업 좌표 클릭 fallback
+        # -- "모의투자 선택" 창이 EnumWindows/FindWindow에 안 잡힐 경우 대비
+        # -- CREON 메인 데스크 창 또는 "모의투자 선택" 팝업 hwnd 직접 사용
         if BROKER_TYPE == "creon" and not popup_handled:
-            if _creon_starter_hwnd and (time.time() - last_blind) >= BLIND_INTERVAL and elapsed >= 3:
+            if (time.time() - last_blind) >= BLIND_INTERVAL and elapsed >= 3:
                 try:
-                    if win32gui.IsWindowVisible(_creon_starter_hwnd):
-                        _click_creon_mock_access(_creon_starter_hwnd)
+                    # 먼저 "모의투자 선택" 팝업 자체 hwnd 탐색
+                    _mock_hwnd = None
+                    for _t in (u"모의투자 선택", u"모의투자선택"):
+                        _h = win32gui.FindWindow(None, _t)
+                        if _h and win32gui.IsWindowVisible(_h):
+                            _mock_hwnd = _h
+                            break
+                    # 없으면 CREON 메인 창에서 child 탐색
+                    if not _mock_hwnd:
+                        def _f(h, _):
+                            try:
+                                if win32gui.IsWindowVisible(h):
+                                    t = win32gui.GetWindowText(h)
+                                    if u"금융지원센터" in t:
+                                        _creon_desk_ref[0] = h
+                            except Exception:
+                                pass
+                        _creon_desk_ref = [None]
+                        win32gui.EnumWindows(_f, None)
+                        _mock_hwnd = _creon_desk_ref[0]
+
+                    if _mock_hwnd and win32gui.IsWindowVisible(_mock_hwnd):
+                        _click_creon_mock_access(_mock_hwnd)
                         last_blind = time.time()
                 except Exception:
                     pass
