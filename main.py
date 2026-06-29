@@ -8344,9 +8344,8 @@ class TradingSystem:
 
         self._pre_market_done        = False
         self._pre_market_stage1_done = False
-        self._daily_close_done       = False
-        # [Bug-1] 장중 재시작 시 __init__ 에서 복원된 True를 보존.
-        # (False로 무조건 덮어쓰면 GapOffset 재복원 보호가 무효화되어 첫 수신봉 가격으로 오염됨)
+        self._daily_close_done = getattr(self, "_daily_close_done", False)
+        # preserve True restored by _restore_auto_shutdown_state() on post-market restart
         self._first_tick_notified = getattr(self, "_first_tick_notified", False)
         self._broker_sync_critical_notified = False  # broker sync CRITICAL 알림 1회 플래그
         # 프리장 warmup 상태 초기화 (앱 최초 기동 시)
