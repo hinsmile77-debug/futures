@@ -6626,6 +6626,28 @@ class TradingSystem:
         self._record_trade_result(result)
         self._refresh_pnl_history()
 
+        # ── TP1 달성 후 잔여분 손절 → 손익분기(진입가) 이동 ──────────
+        # 체결 확인 후(Chejan) 호출되므로 진짜 fill 기준으로 이동
+        # - 조건: stage==1, 아직 포지션 잔여 있음, 이동이 스톱 개선 방향일 때만
+        # - 1계약 포지션은 arm_tp1 경로에서 이미 처리됨(여기 도달 안 함)
+        if stage == 1 and self.position.status != "FLAT":
+            _mult = 1 if self.position.status == "LONG" else -1
+            _entry = self.position.entry_price
+            _prev_stop = self.position.stop_price
+            if _mult * (_entry - _prev_stop) > 0:
+                self.position.stop_price = _entry
+                self.position.last_update_reason = "tp1_breakeven"
+                self.position._save_state()
+                log_manager.system(
+                    f"[TP1-Breakeven] {self.position.status} 잔여 {self.position.quantity}계약 "
+                    f"손절 {_prev_stop:.2f} → 진입가 {_entry:.2f}",
+                    "INFO",
+                )
+                self.dashboard.append_pnl_log(
+                    f"TP1 손절이동 | {self.position.status} 잔여 {self.position.quantity}계약",
+                    f"손절 {_prev_stop:.2f} → 진입가 {_entry:.2f} (손익분기 보호)",
+                )
+
     # [SERVICE-BOUNDARY 3/4] OrderLifecycleService
     # 책임: 진입/청산 주문 전송, pending 상태관리, 체결결과 반영
     # 입력: direction/qty, _futures_code, account_no, broker API
