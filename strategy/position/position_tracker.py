@@ -656,6 +656,12 @@ class PositionTracker:
             new_stop = self.entry_price
             if mult * (new_stop - self.stop_price) > 0:
                 self.stop_price = new_stop
+        elif unrealized_pts >= atr * 0.5:
+            # 0.5ATR 이상 → 최대손실 -0.75ATR로 축소 (무방비 구간 보호)
+            # 원래 손절(-1.5ATR) 대비 절반 수준으로 당겨 휩쏘 손실 제한
+            new_stop = self.entry_price - mult * atr * 0.75
+            if mult * (new_stop - self.stop_price) > 0:
+                self.stop_price = new_stop
 
     def is_stop_hit(self, price: float) -> bool:
         if self.status == POSITION_FLAT:
@@ -791,6 +797,8 @@ class PositionTracker:
             return self.entry_price + mult * atr * 0.5
         if unrealized_pts >= atr * 1.0:
             return self.entry_price
+        if unrealized_pts >= atr * 0.5:
+            return self.entry_price - mult * atr * 0.75
         return self.entry_price - mult * atr * ATR_STOP_MULT
 
     def _sync_partial_progress(self) -> None:

@@ -616,6 +616,13 @@ HURST_RANGE_THRESHOLD  = 0.45  # 이하: 횡보장 (진입 차단)
 # 1분봉 노이즈가 ATR_STOP_MULT × ATR 손절거리를 초과 → 휩쏘 손절 급증 방지
 ATR_MIN_ENTRY = 1.0   # pt 미만이면 진입 차단 (변동성 너무 낮음)
 
+# ── 평균회귀(MR) 진입 최소 탈진 강도 ─────────────────────────
+# bull/bear_exhaustion 값: 0.0 또는 0.60~1.0 이진 구조
+#   0.60 = volume > avg_vol × 1.8 (vol_surge 최소)
+#   0.70 = volume > avg_vol × 2.1 (중강도 이상 — 약한 탈진 제거)
+#   1.0  = volume > avg_vol × 3.0
+MR_EXHAUSTION_MIN = 0.70
+
 # ── SHAP 동적 피처 관리 ────────────────────────────────────────
 SHAP_COOLDOWN_DAYS     = 3     # 교체 후 재교체 금지
 SHAP_MAX_REPLACE_DAILY = 1     # 하루 최대 교체 수

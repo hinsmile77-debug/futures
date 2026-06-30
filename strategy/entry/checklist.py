@@ -12,7 +12,7 @@ import logging
 from typing import Dict, Tuple
 
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
-from config.settings import ENTRY_GRADE, HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP, ENS_CONF_FLOOR_FOR_AUTO
+from config.settings import ENTRY_GRADE, HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP, ENS_CONF_FLOOR_FOR_AUTO, MR_EXHAUSTION_MIN
 
 logger = logging.getLogger("SIGNAL")
 
@@ -132,13 +132,17 @@ class EntryChecklist:
         if "3_vwap" in disabled:
             checks["3_vwap"] = True
         elif is_long:
-            if vwap_position < -1.5 and bear_exhaustion > 0.0:
+            # MR LONG: VWAP -1.5σ 초과 하락 + bear_exhaustion 중강도 이상(≥0.70)
+            # bear_exhaustion은 0.0 또는 0.60~1.0 — 0.70은 volume>avg×2.1 요구
+            if vwap_position < -1.5 and bear_exhaustion >= MR_EXHAUSTION_MIN:
                 checks["3_vwap"] = True
                 entry_mode = "MEAN_REVERSION"
             else:
                 checks["3_vwap"] = vwap_position > 0
         else:
-            if vwap_position > 1.5 and bull_exhaustion > 0.0:
+            # MR SHORT: VWAP +1.5σ 초과 상승 + bull_exhaustion 중강도 이상(≥0.70)
+            # bull_exhaustion은 0.0 또는 0.60~1.0 — 0.70은 volume>avg×2.1 요구
+            if vwap_position > 1.5 and bull_exhaustion >= MR_EXHAUSTION_MIN:
                 checks["3_vwap"] = True
                 entry_mode = "MEAN_REVERSION"
             else:
@@ -182,9 +186,18 @@ class EntryChecklist:
         else:
             checks["6_foreign"] = foreign_put_net > 0 and foreign_put_net > foreign_call_net
 
-        # 7. 직전 봉 (도지=0은 양쪽 모두 불통과)
+        # 7. 직전 봉
+        # 트렌드 추종: LONG=양봉만, SHORT=음봉만 (도지 불허)
+        # MR(평균회귀): 반전 직전 봉이 추세 방향 or 도지여야 정상 → 조건 완화
+        #   MR LONG : 하락 탈진 반전 → 직전 봉이 음봉(-1) 또는 도지(0) 허용
+        #   MR SHORT: 상승 탈진 반전 → 직전 봉이 양봉(+1) 또는 도지(0) 허용
         if "7_prev_bar" in disabled:
             checks["7_prev_bar"] = True
+        elif entry_mode == "MEAN_REVERSION":
+            if is_long:
+                checks["7_prev_bar"] = prev_bar_direction in (-1, 0)
+            else:
+                checks["7_prev_bar"] = prev_bar_direction in (0, 1)
         elif is_long:
             checks["7_prev_bar"] = prev_bar_direction == 1   # 양봉만
         else:
