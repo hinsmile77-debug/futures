@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-06-30 (262차 — SHORT 진입·손실청산 감사 개선 4종)
+
+**트리거**: 09:44 short 진입과 손실 청산 감사 요청.
+
+### 감사 결과 (7개 이슈 발견)
+
+SHORT 진입 3종:
+- MR SHORT `bull_exhaustion > 0.0` 임계 부재 (exhaustion 구조상 0.0 or 0.60~1.0)
+- MR 모드에서 #7 직전봉 체크가 트렌드 추종 기준 그대로 적용돼 MR 타이밍 손실
+- cvd_delta_norm SHORT 체크 단기 노이즈 (통과율 미검증 — 모니터링 과제)
+
+손실 청산 4종:
+- TP1 부분청산 후 잔여분 손절 미이동 → EV 역전 구조 (핵심)
+- 0~0.5ATR 수익 구간 트레일링 무방비 지대
+- 1계약 TP1 arm: `_ts_execute_partial_exit`에 기구현 확인 (수정 불필요)
+- 분봉 종가 기반 손절 시간 지연 (실시간 틱 연동 필요 — 중장기 과제)
+
+### 구현 내용 (커밋 b28a0cb)
+
+| 파일 | 변경 |
+|---|---|
+| `config/settings.py` | `MR_EXHAUSTION_MIN = 0.70` 신규 상수 |
+| `strategy/entry/checklist.py` | MR 탈진 임계 `>= 0.70` 적용, #7 MR 모드 분기 추가 |
+| `strategy/position/position_tracker.py` | 0.5ATR 트레일링 단계 + `get_trailing_reference_price` 동기화 |
+| `main.py` | `_post_partial_exit(stage=1)` 후 잔여분 손절 → 진입가 자동 이동 |
+
+---
+
 ## 2026-06-29 (260차 — Extreme 피처 Top5 딥다이브 이상점 5종 수정)
 
 **트리거**: 오늘 누적 extreme 피처 Top5 대시보드 스크린샷 — hurst_ready(162회), is_close_volatile(54회), toxicity_spread_stress(48회), bull_reversal_signal(30회), atr_expansion_rate(18회) 딥다이브 요청.

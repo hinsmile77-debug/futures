@@ -1,7 +1,60 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-29 (261차) — High-confidence Overconfidence 3종 개선
+> 마지막 업데이트: 2026-06-30 (262차) — SHORT 진입·손실청산 감사 개선 4종
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-30 (262차 — SHORT 진입·손실청산 감사 개선 4종)
+
+### 배경
+
+09:44 short 진입과 손실 청산 감사 요청 → 코드 딥다이브 후 7개 이슈 발견, 우선순위별 구현:
+- MR SHORT의 bull_exhaustion 임계 부재 (P1)
+- TP1 부분청산 후 잔여분 손절 미이동 (P1) — EV 역전 구조적 결함
+- #7 직전봉 체크가 MR 모드와 충돌 (P2)
+- 0~0.5ATR 수익 구간 트레일링 무방비 지대 (P2)
+
+### 수정 내용 (커밋 b28a0cb)
+
+| # | 파일 | 변경 | 효과 |
+|---|---|---|---|
+| ① | `config/settings.py` | `MR_EXHAUSTION_MIN = 0.70` 신규 상수 | 0.60(vol 1.8×) → 0.70(vol 2.1×) 중강도 이상만 허용 |
+| ② | `strategy/entry/checklist.py` | MR 탈진 임계 `> 0.0` → `>= MR_EXHAUSTION_MIN` | 약한 탈진(volume barely 1.8×) MR 오진입 제거 |
+| ③ | `strategy/entry/checklist.py` | #7 직전봉: MEAN_REVERSION 모드 분기 추가 | MR LONG: 음봉·도지 허용 / MR SHORT: 양봉·도지 허용 |
+| ④ | `strategy/position/position_tracker.py` | `update_trailing_stop` 0.5ATR 단계 추가 | 0.5~1.0ATR 구간 손절 -1.5ATR → -0.75ATR 축소 |
+| ⑤ | `strategy/position/position_tracker.py` | `get_trailing_reference_price` 0.5ATR 동기화 | 참조가 update와 일치하도록 보정 |
+| ⑥ | `main.py` | `_post_partial_exit(stage=1)` 후 손절 손익분기 이동 | TP1 체결 확인 후 잔여분 손절 → 진입가 자동 이동 |
+
+### 설계 근거
+
+**exhaustion 값 구조**: `exh_val = min(vol / (avg_vol × 3.0), 1.0)` + `vol_surge (vol > avg × 1.8)` gate
+- 발동 시 최솟값: `1.8/3.0 = 0.60`. 즉 값은 항상 0.0 또는 0.60~1.0
+- `> 0.0`과 `>= 0.60`은 동등 → 0.70 임계로 중강도 이상만 선별
+
+**TP1 잔여분 손절 이동 EV 근거**:
+```
+진입 @ 400pt, 손절 @ 397.75 (-1.5 ATR=2.25pt), TP1 @ 401pt (+1.0 ATR)
+TP1 33% 청산: +1pt × 0.33 = +0.33pt
+잔여 67% 최대손실(이동 전): -2.25pt × 0.67 = -1.51pt → 순 -1.18pt 역전
+잔여 67% 최대손실(이동 후): 0pt × 0.67 = 0pt → 최악 0pt (손익분기)
+```
+
+**0.5ATR 무방비 지대**:
+- 기존: 수익 0~1ATR 구간 손절 고정(-1.5ATR) → 최대 총손실 2.0 ATR 가능
+- 개선: 0.5ATR 구간에서 -0.75ATR로 이동 → 최대 총손실 1.25 ATR로 제한
+
+### P3 확인 (1계약 TP1 arm) — 기구현
+
+`main.py:8829-8860` `_ts_execute_partial_exit`에서 `total_qty==1 and stage==1` 분기로 이미 처리:
+```python
+protect = self.position.arm_tp1_single_contract_with_mode(price, atr, mode=protect_mode)
+```
+`_tp1_protect_mode` 기본값 `"breakeven"` → 손절 진입가 이동. 별도 수정 불필요.
+
+### 잔여 이슈 (미구현)
+
+- **P6**: 분봉 bar_high/low 기반 실시간 손절 — 현재 분봉 종가 기준이므로 intrabar 급변 시 손절 지연. 실시간 틱 피드 연동 필요 (중장기 과제)
 
 ---
 
