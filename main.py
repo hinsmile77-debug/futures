@@ -825,7 +825,7 @@ class TradingSystem:
             )
         except FileNotFoundError:
             log_manager.system(
-                f"[GBM-64] py310_64 Python 없음 ({PYTHON_64_EXEC}) — 재학습 불가", "ERROR",
+                f"[GBM-64] Python 64-bit 없음 ({PYTHON_64_EXEC}) — 재학습 불가", "ERROR",
             )
             return False
         except Exception as _pe:
@@ -7318,11 +7318,11 @@ class TradingSystem:
                 except Exception:
                     pass
 
-        # GBM 재학습 + P8 스케일러 재적합은 py310_64 장외 스케줄러(MireukiEODRetrain, 15:45)가
+        # GBM 재학습 + P8 스케일러 재적합은 base(anaconda3) 장외 스케줄러(Maitreya_EODretrain, 15:45)가
         # retrain_eod.py를 통해 수행한다 (191차~, OOM 방지).
         # daily_close()에서 retrain_now()를 직접 호출하지 않는다:
         #   - py37_32 메인 스레드 동기 실행 → 12분+ Qt 블로킹 → UI 행 상태 (오늘 실증)
-        #   - py310_64 스케줄러 완료 후 마커 파일로 성공 여부 확인
+        #   - base(anaconda3) 스케줄러 완료 후 마커 파일로 성공 여부 확인
 
         # 마커 파일 기반으로 내일 08:55 PreRetrain 스킵 신호 기록
         _eod_marker_path = os.path.join(

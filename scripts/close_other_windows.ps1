@@ -1,6 +1,6 @@
 # close_other_windows.ps1
-# 미륵이 런처 실행 전 다른 창들을 최소화하여 Cybos GUI 자동화 간섭 방지
-# 사용법: powershell -File close_other_windows.ps1 -KeepTitle "제목"
+# Minimize other windows before Mireuk launcher starts to prevent Cybos GUI automation interference
+# Usage: powershell -File close_other_windows.ps1 -KeepTitle "title"
 param(
     [string]$KeepTitle = ""
 )
@@ -44,4 +44,4 @@ $minimized = 0
     return $true
 }, [IntPtr]::Zero) | Out-Null
 
-Write-Host "[INFO] $minimized 개 창 최소화 완료."
+Write-Host "[INFO] Minimized $minimized window(s)."

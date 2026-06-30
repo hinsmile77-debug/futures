@@ -1942,6 +1942,8 @@ def _wait_for_connection_and_mock(total_timeout=120):
                         last_blind = time.time()
                     else:
                         # (c) 절대좌표 폴백: (962,509) -- 실증 확인된 "모의투자 접속" 버튼
+                        # ※ MW0601 PC 전용 (1920×1080, 팝업 top≈262).
+                        # 타 PC 배포 시 Mouse.py F11로 팝업 버튼 좌표 재실측 후 수정.
                         print("[INFO] CREON 모의투자팝업 미탐지 -- 실증좌표 (962,509) 직접 클릭")
                         try:
                             win32api.SetCursorPos((962, 509))
@@ -2090,6 +2092,8 @@ def autologin():
             # 공지사항 테이블 닫기: 실증 절대좌표 (1448,161) = CREON 데스크 공지사항 X 버튼
             if BROKER_TYPE == "creon":
                 time.sleep(1)
+                # ※ MW0601 PC 전용 좌표 (1920×1080, CREON 데스크 고정 위치).
+                # 타 PC 배포 시 Mouse.py F11로 공지사항 X 버튼 좌표 재실측 후 수정.
                 for _nt in range(3):
                     try:
                         win32api.SetCursorPos((1448, 161))

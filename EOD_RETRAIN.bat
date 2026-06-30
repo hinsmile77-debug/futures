@@ -13,10 +13,10 @@ echo  %DATE% %TIME%
 echo ============================================================
 echo.
 
-REM conda 환경 활성화 — py310_64 전용 (191차 결정, OOM 방지)
-call conda activate py310_64
-if errorlevel 1 (
-    echo [ERROR] conda activate py310_64 실패
+REM Python 64-bit 직접 호출 (py310_64는 실제 32-bit으로 사용 불가 -> base 사용)
+set PYTHON64=C:\Users\pc1\anaconda3\python.exe
+if not exist "%PYTHON64%" (
+    echo [ERROR] Python not found: %PYTHON64%
     pause
     exit /b 1
 )
@@ -25,7 +25,7 @@ REM 프로젝트 디렉토리로 이동
 cd /d "%~dp0"
 
 REM 재학습 실행
-python scripts\eod_retrain.py --phase2 --weeks 10
+"%PYTHON64%" scripts\eod_retrain.py --phase2 --weeks 10
 
 if errorlevel 1 (
     echo.

@@ -1,11 +1,11 @@
 """
-미륵이 장중 GBM 재학습 스크립트 (py310_64 전용)
------------------------------------------------
+미륵이 장중 GBM 재학습 스크립트 (base/anaconda3 전용)
+------------------------------------------------------
 32비트 main.py가 subprocess로 호출 — 64비트 환경에서 OOM 없이 실행.
 EOD retrain_eod.py와 달리 intraday 경량 모드 지원.
 
 사용:
-    py310_64\python.exe retrain_intraday.py <result_json_path> <force:0|1> <intraday:0|1>
+    C:\Users\pc1\anaconda3\python.exe retrain_intraday.py <result_json_path> <force:0|1> <intraday:0|1>
 
 인수:
     result_json_path : 완료 결과를 쓸 JSON 파일 경로 (main.py가 poll로 읽음)
@@ -55,7 +55,7 @@ def _check_env():
     log.info("미륵이 장중 재학습 시작 | Python %s %s", sys.version.split()[0], bits)
     log.info("=" * 50)
     if bits != "64-bit":
-        log.error("32-bit Python 감지 — py310_64 환경으로 실행해야 합니다. 종료.")
+        log.error("32-bit Python 감지 — base(anaconda3) 환경으로 실행해야 합니다. 종료.")
         sys.exit(2)
 
 
