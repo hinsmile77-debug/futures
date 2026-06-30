@@ -191,6 +191,63 @@ def p8_scaler_refit() -> bool:
         return False
 
 
+# ── daily_close() 완료 대기 ──────────────────────────────────────
+def _wait_for_daily_close(max_wait_min: int = 20, poll_sec: int = 30) -> bool:
+    """main.py daily_close() 완료를 확인 후 반환 — pkl 경합 방지.
+
+    daily_close()는 STEP 3 장중 GBM 재학습 완료를 최대 20분 대기한 뒤
+    _exit_normally 파일을 기록하고 종료한다.
+    이 함수는 그 파일의 날짜를 확인해 daily_close 완료를 검증한다.
+
+    반환값: True=정상 완료 확인, False=타임아웃 후 강제 진행
+    """
+    _flag = os.path.join(_ROOT, "data", "_exit_normally")
+    _today = datetime.date.today().isoformat()
+    _deadline = datetime.datetime.now() + datetime.timedelta(minutes=max_wait_min)
+
+    log.info(
+        "[WaitDC] daily_close() 완료 대기 시작 (최대 %d분, %s까지)",
+        max_wait_min, _deadline.strftime("%H:%M:%S"),
+    )
+
+    while datetime.datetime.now() < _deadline:
+        if os.path.exists(_flag):
+            try:
+                with open(_flag, "r", encoding="utf-8") as _f:
+                    _lines = _f.read().splitlines()
+                # _exit_normally 형식: line0=reason, line1=ISO timestamp
+                if len(_lines) >= 2 and _lines[1].startswith(_today):
+                    log.info(
+                        "[WaitDC] daily_close() 완료 확인 (%s) — EOD 재학습 시작",
+                        _lines[1],
+                    )
+                    return True
+            except Exception as _e:
+                log.debug("[WaitDC] 파일 읽기 실패 (재시도): %s", _e)
+
+        remaining = (_deadline - datetime.datetime.now()).seconds // 60
+        log.info(
+            "[WaitDC] daily_close() 대기 중 — 잔여 %d분 (%s까지)",
+            remaining, _deadline.strftime("%H:%M:%S"),
+        )
+        time.sleep(poll_sec)
+
+    log.warning(
+        "[WaitDC] daily_close() %d분 대기 타임아웃 — pkl 경합 위험 있으나 강제 진행",
+        max_wait_min,
+    )
+    try:
+        from utils.notify import notify as _nfy
+        _nfy(
+            f"⚠️ EOD재학습 — daily_close() {max_wait_min}분 대기 타임아웃\n"
+            "STEP 3 장중 재학습 미완료 상태로 강제 진행 (pkl 경합 가능성)",
+            "WARNING",
+        )
+    except Exception:
+        pass
+    return False
+
+
 # ── 메인 재학습 ───────────────────────────────────────────────────
 def main():
     _check_env()
@@ -199,6 +256,11 @@ def main():
     if os.path.exists(_MARKER_PATH):
         log.info("완료 마커 존재 — 오늘 재학습 이미 완료됨. 종료.")
         sys.exit(0)
+
+    # daily_close() 완료 대기 — STEP 3 장중 GBM 재학습과 pkl 경합 방지
+    # _exit_normally 파일(daily_close 마지막에 기록)의 오늘 날짜를 확인.
+    # 스케줄러가 16:10에 실행되더라도 daily_close가 늦으면 추가 대기.
+    _wait_for_daily_close(max_wait_min=20, poll_sec=30)
 
     t_start = time.perf_counter()
 
