@@ -4046,3 +4046,24 @@ W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
 - feature_names_{hz}.pkl: h_names_p2 저장 → 재기동 시 _hz_feat_indices 자동 세팅
 
 **영향 범위**: 다음 EOD 재학습 이후 자동 적용. 기존 pkl은 다음 재학습까지 유효.
+
+## 2026-06-30 — 브랜치 전략 전환 + 브로커 설정 분기
+
+### [결정] maitreya_dist → dev 통합, 향후 dev 단일 개발
+
+**배경**:
+- dev: MW0601 (CYBOS Plus) 기준 개발
+- maitreya_dist: MW0602 (CREON Plus) 배포 버전
+
+**결정**: Cybos↔Creon 차이가 설정 수준이므로 maitreya_dist를 dev에 merge,
+향후 모든 개발은 dev에서 진행. maitreya_dist는 배포 전용 브랜치로 전환
+(직접 커밋 금지, dev에서 merge만 받음).
+
+**구현 (커밋 8d2470b)**:
+- `BROKER_TYPE` env var 신설 (cybos/creon) — bat 파일 4개에서 주입
+- `settings.py`: `BROKER_TYPE = os.getenv("BROKER_TYPE", "cybos")`
+- `factory.py`: `"creon"` → `CybosBroker` alias
+- `cybos_autologin.py`: 로그 파일명 브로커별 분리
+- `set_cybos_credential.py`: cybosplus / creonplus 양쪽 지원
+
+**MW0601 영향**: 없음 — `SET BROKER_TYPE=cybos` bat 파일에서 주입, Creon 로직 비활성.

@@ -7149,3 +7149,17 @@ GBM 배치 재학습 산출물 형식을 런타임 로더와 맞추고, 좌하�
 - Platt Scaling 호라이즌별 독립 적용: Phase 3 대기
 - TRAINING_WINDOW 효과: Stage 3 (50일+) 이후 발현 예정
 - Q3 (N분봉 완성 주기): 설계 의도 — 변경 없음
+
+## 2026-06-30 — 브랜치 전략 + 설정 분기
+
+**브랜치 결정**
+- maitreya_dist(CREON) → dev merge 완료 (커밋 7170511)
+- 향후: dev = 단일 개발 기준선, maitreya_dist = 배포 전용
+
+**설정 분기 추가 (커밋 8d2470b)**
+- BROKER_TYPE env var 신설: cybos(MW0601) / creon(MW0602)
+- bat 4개에 SET BROKER_TYPE 주입
+- set_cybos_credential.py: 양쪽 자격증명 지원
+- cybos_autologin.py: 로그 파일명 BROKER_TYPE 기반으로 변경
+
+**다음 단계**: origin/dev push → MW0601 git pull 검증
