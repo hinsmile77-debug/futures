@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-06-30 (262차 검증) [P0]
+
+### SHORT 진입·손실청산 개선 4종 검증
+
+- [ ] **① TP1 손절 이동 로그 확인** — TP1 부분청산 체결 후 `[TP1-Breakeven] SHORT/LONG 잔여 N계약 손절 XXX.XX → 진입가 XXX.XX` INFO 로그 출현 확인 (2계약 이상 포지션 TP1 시)
+- [ ] **② 1계약 arm 경로 간섭 없음 확인** — 1계약 TP1 시 기존 `[SingleContractTP1] 1계약 TP1 도달 -> 보호전환` 로그만 출현하고 TP1-Breakeven 로그 미출현 확인 (별도 경로라 도달 안 함)
+- [ ] **③ 0.5ATR 트레일링 발동 확인** — 포지션 수익이 0.5~1.0 ATR 구간에서 반전 시 손절가가 -1.5ATR 아닌 -0.75ATR에서 히트되는지 로그/PnL 확인
+- [ ] **④ MR SHORT #7 완화 확인** — entry_mode=MEAN_REVERSION SHORT 진입 시 직전봉이 양봉(+1)이어도 `7_prev_bar: True` 로 체크리스트 통과 확인
+- [ ] **⑤ MR 임계 0.70 효과** — bull_exhaustion=0.60~0.69 구간(volume ~1.8~2.1×) 분봉에서 MR SHORT 미발동 확인 (VWAP 강제X 유지)
+
+---
+
 ## 2026-06-29 (261차 검증) [P0]
 
 ### HCGuard + Platt 개선 검증
