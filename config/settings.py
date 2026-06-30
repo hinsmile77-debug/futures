@@ -612,9 +612,15 @@ HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC = 5
 HURST_TREND_THRESHOLD  = 0.55  # 이상: 추세장
 HURST_RANGE_THRESHOLD  = 0.45  # 이하: 횡보장 (진입 차단)
 
-# ── ATR 진입 최소 임계값 ───────────────────────────────────────
+# ── ATR 진입 범위 임계값 ───────────────────────────────────────
 # 1분봉 노이즈가 ATR_STOP_MULT × ATR 손절거리를 초과 → 휩쏘 손절 급증 방지
 ATR_MIN_ENTRY = 1.0   # pt 미만이면 진입 차단 (변동성 너무 낮음)
+ATR_MAX_ENTRY = 3.5   # pt 초과이면 진입 차단 (손절거리 ATR×1.5 = 5.25pt 상한)
+
+# ── OPEN_VOLATILE 시가 이격 필터 ───────────────────────────────
+# 장 초반 추세추종 진입 시 시가 대비 누적 이탈이 과도하면 낙폭 소진 반등 위험 증가
+# gap_in_direction > ATR × ATR_OPEN_GAP_MULT → 진입 차단 (TREND_FOLLOW 전용)
+ATR_OPEN_GAP_MULT = 5.0  # 시가 이격 상한 배수 (ATR × 5.0 = 약 17.5pt @ ATR=3.5)
 
 # ── 평균회귀(MR) 진입 최소 탈진 강도 ─────────────────────────
 # bull/bear_exhaustion 값: 0.0 또는 0.60~1.0 이진 구조

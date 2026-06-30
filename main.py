@@ -62,7 +62,8 @@ from utils.db_utils import (
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
     HZ_DEPLOY_POLICY,
-    HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_STOP_MULT, ATR_HORIZON_TP1_MULT,
+    HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
+    ATR_STOP_MULT, ATR_HORIZON_TP1_MULT,
     CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
     SHAP_MIN_DATA_POINTS,
     FRED_API_KEY,
@@ -5709,7 +5710,24 @@ class TradingSystem:
                 f"[ReverseClamp] 청산 후 {_clamp_remain}s 이내 역방향({_last_exit_dir}→{_entry_dir_str}) 진입 금지"
             )
         _hurst_ok = features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
-        _atr_ok   = atr >= ATR_MIN_ENTRY   # ATR 너무 낮으면 노이즈 > 손절거리 → 휩쏘
+        _atr_ok   = ATR_MIN_ENTRY <= atr <= ATR_MAX_ENTRY  # 하한: 휩쏘, 상한: 과도 손절거리
+
+        # ── [A] OPEN_VOLATILE 시가 이격 필터 ─────────────────────────────────
+        # 장 초반 TREND_FOLLOW 진입 시 이미 시가 대비 ATR × N배 이상 이탈했으면
+        # 낙폭/상승폭 소진으로 반전 위험이 높아 차단한다.
+        _open_p_for_gap   = getattr(self, "_session_open_price", 0.0) or 0.0
+        _cr_entry_mode    = (_cr.get("entry_mode") if _cr else "") or ""
+        if (_open_p_for_gap > 0 and atr > 0
+                and time_zone == "OPEN_VOLATILE"
+                and _cr_entry_mode == "TREND_FOLLOW"):
+            _gap_in_dir = (
+                (_open_p_for_gap - close) if direction < 0
+                else (close - _open_p_for_gap)
+            )
+            _open_gap_ok = _gap_in_dir <= atr * ATR_OPEN_GAP_MULT
+        else:
+            _gap_in_dir  = 0.0
+            _open_gap_ok = True
         _hp = self._health_policy
         # Degraded 선제차단용 현재 사이클 지표 (1-사이클 지연 버그 수정)
         # _last_pipe_ms: 직전 사이클 지연 (현재 사이클 _pipe_ms는 STEP9 이후 확정)
@@ -5855,6 +5873,7 @@ class TradingSystem:
             and not _in_reverse_clamp
             and _hurst_ok
             and _atr_ok
+            and _open_gap_ok
             and mode_filter_passed
             and _qty_display > 0
             and not _bar_volume_zero
@@ -5878,6 +5897,7 @@ class TradingSystem:
             "reverse_clamp_ok": not _in_reverse_clamp,
             "hurst_ok":         _hurst_ok,
             "atr_ok":           _atr_ok,
+            "open_gap_ok":      _open_gap_ok,
             "mode_filter_ok":   mode_filter_passed,
             "qty_ok":           _qty_display > 0,
             "bar_volume_ok":    not _bar_volume_zero,
@@ -5940,7 +5960,19 @@ class TradingSystem:
                 _hurst_val = features.get("hurst", 0.5)
                 _entry_block_reason = f"[차단] Hurst {_hurst_val:.3f} < {HURST_RANGE_THRESHOLD} — 횡보 레짐 진입 차단"
             elif not _atr_ok:
-                _entry_block_reason = f"[차단] ATR {atr:.2f}pt < {ATR_MIN_ENTRY}pt — 변동성 부족 (휩쏘 위험)"
+                if atr < ATR_MIN_ENTRY:
+                    _entry_block_reason = f"[차단] ATR {atr:.2f}pt < {ATR_MIN_ENTRY}pt — 변동성 부족 (휩쏘 위험)"
+                else:
+                    _entry_block_reason = (
+                        f"[차단] ATR {atr:.2f}pt > {ATR_MAX_ENTRY}pt — "
+                        f"손절거리 {atr * ATR_STOP_MULT:.1f}pt 과대 (고변동성 진입 차단)"
+                    )
+            elif not _open_gap_ok:
+                _entry_block_reason = (
+                    f"[차단] OPEN_VOLATILE 시가이격 과다 — "
+                    f"방향이탈 {_gap_in_dir:.1f}pt > ATR×{ATR_OPEN_GAP_MULT}={atr * ATR_OPEN_GAP_MULT:.1f}pt "
+                    f"(시가={_open_p_for_gap:.2f} 반등위험)"
+                )
             elif not is_new_entry_allowed():
                 _entry_block_reason = "[차단] 15:00 이후 — 신규 진입 금지 구간"
             elif _auto_blocked:
@@ -6764,18 +6796,22 @@ class TradingSystem:
         # 트레일링 스톱 업데이트
         self.position.update_trailing_stop(price, atr)
 
-        # 1순위: 하드 스톱 — bar의 고저가 기준으로 체크, exit은 손절가 사용 (close가 개선)
-        if self.position.is_stop_hit(price):
-            # bar low/high가 stop을 뚫은 경우 stop_price로 청산 (close가보다 유리 또는 동등)
-            bar_low  = bar["low"]  if bar else price
-            bar_high = bar["high"] if bar else price
+        # 1순위: 하드 스톱 — 종가 + 분봉 고저가 모두 체크 (Proposal D: 인트라바 스톱)
+        # 종가가 개선돼도 bar_high(SHORT)/bar_low(LONG)가 스톱을 넘으면 즉시 청산
+        bar_low  = bar.get("low",  price) if bar else price
+        bar_high = bar.get("high", price) if bar else price
+        _stop_hit = (
+            self.position.is_stop_hit(price)
+            or self.position.is_stop_hit_intrabar(bar_low, bar_high)
+        )
+        if _stop_hit:
             if self.position.status == "LONG":
                 exit_price = max(self.position.stop_price, bar_low)   # 손절가 이상 보장
             else:
                 exit_price = min(self.position.stop_price, bar_high)  # 손절가 이하 보장
             debug_log.debug(
-                "[DBG-STOP] 하드스톱 발동: close=%.2f bar_low=%.2f stop=%.2f → exit=%.2f",
-                price, bar_low, self.position.stop_price, exit_price,
+                "[DBG-STOP] 하드스톱 발동: close=%.2f bar_low=%.2f bar_high=%.2f stop=%.2f → exit=%.2f",
+                price, bar_low, bar_high, self.position.stop_price, exit_price,
             )
             self._send_broker_exit_order(self.position.quantity)
             result = self.position.close_position(exit_price, "하드스톱")
@@ -8957,9 +8993,13 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
     if self._has_pending_order():
         return
 
-    if self.position.is_stop_hit(price):
-        bar_low = bar["low"] if bar else price
-        bar_high = bar["high"] if bar else price
+    bar_low  = bar.get("low",  price) if bar else price
+    bar_high = bar.get("high", price) if bar else price
+    _stop_hit_ts = (
+        self.position.is_stop_hit(price)
+        or self.position.is_stop_hit_intrabar(bar_low, bar_high)
+    )
+    if _stop_hit_ts:
         if self.position.status == "LONG":
             exit_price = max(self.position.stop_price, bar_low)
         else:

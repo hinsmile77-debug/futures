@@ -670,6 +670,14 @@ class PositionTracker:
             return price <= self.stop_price
         return price >= self.stop_price
 
+    def is_stop_hit_intrabar(self, bar_low: float, bar_high: float) -> bool:
+        """분봉 고저가로 스톱 히트 판단 — 종가 기준보다 빠른 감지 (Proposal D)"""
+        if self.status == POSITION_FLAT:
+            return False
+        if self.status == POSITION_LONG:
+            return bar_low <= self.stop_price
+        return bar_high >= self.stop_price
+
     def is_tp1_hit(self, price: float) -> bool:
         if self.status == POSITION_FLAT or self.partial_1_done:
             return False
