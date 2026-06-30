@@ -4,7 +4,7 @@
 윈도우 스케줄러에서 매일 15:45 자동 실행.
 main.py 종료 후 독립 프로세스로 full 재학습 수행.
 
-실행 환경: base/anaconda3 (Python 3.11.5 64-bit, scikit-learn=1.3.0)
+실행 환경: py310_64 (Python 3.10 64-bit, scikit-learn=1.0.2, joblib=1.1.1)
 저장 형식: pickle protocol=4 → py37_32 main.py 로드 호환
 
 로그: logs/retrain_eod_{YYYYMMDD}.log
@@ -74,7 +74,7 @@ def _check_env():
     log.info("=" * 55)
 
     if bits != "64-bit":
-        log.error("32-bit Python 감지 — base(anaconda3) 환경으로 실행해야 합니다. 종료.")
+        log.error("32-bit Python 감지 — py310_64 환경으로 실행해야 합니다. 종료.")
         sys.exit(2)
 
 

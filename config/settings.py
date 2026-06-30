@@ -245,9 +245,10 @@ GBM_MIN_SAMPLES_LEAF = 10   # 두 학습기 모두 이 값을 참조한다
 # ── 64비트 외부 프로세스 재학습 ─────────────────────────────────
 # 장중 GBM 재학습을 32비트 메인 프로세스 데몬 스레드 대신
 # 64비트 서브프로세스로 실행 — 32비트 OOM 완전 차단.
-# [수정] py310_64 환경은 실제로 Python 3.10.4 32-bit (환경 구성 불량) → base 사용
-# base: Python 3.11.5 64-bit, sklearn 1.3.0, HistGBM, joblib 1.2.0
-PYTHON_64_EXEC: str = r"C:\Users\pc1\anaconda3\python.exe"
+# py310_64: Python 3.10.20 64-bit, sklearn 1.0.2, joblib 1.1.1
+#   → py37_32(sklearn 1.0.2)와 완전 버전 일치 → pkl 로드 호환 보장
+#   → 구 환경(32-bit 불량) 제거 후 conda-forge win-64로 재구성 (2026-06-30)
+PYTHON_64_EXEC: str = r"C:\Users\pc1\anaconda3\envs\py310_64\python.exe"
 
 # ── 배치 재학습 데이터 기간 ───────────────────────────────────────
 # DB 보유량(2025-08-19~): 73,421행 / 43주 / 피처 스키마 안정(2025-08~)
