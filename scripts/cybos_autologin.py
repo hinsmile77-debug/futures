@@ -72,7 +72,7 @@ class _TeeStream(object):
 
 _DIAG_LOG = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "logs", "creon_autologin_diag.log"
+    "logs", "%s_autologin_diag.log" % os.getenv("BROKER_TYPE", "hts")
 )
 try:
     import datetime as _dt

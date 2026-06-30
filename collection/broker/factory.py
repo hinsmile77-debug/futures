@@ -13,6 +13,6 @@ def create_broker(name: Optional[str] = None) -> BrokerAPI:
     backend = (name or BROKER_BACKEND or "cybos").strip().lower()
     if backend == "kiwoom":
         return KiwoomBroker()
-    if backend == "cybos":
+    if backend in ("cybos", "creon"):
         return CybosBroker()
     raise ValueError(f"Unsupported broker backend: {backend}")

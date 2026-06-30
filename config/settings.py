@@ -20,6 +20,8 @@ SCALER_DIR    = os.path.join(MODEL_DIR, "scaler")
 
 # broker backend selector
 BROKER_BACKEND = os.getenv("BROKER_BACKEND", "cybos").strip().lower()
+# HTS application type: "cybos" = CYBOS Plus (MW0601), "creon" = CREON Plus (MW0602)
+BROKER_TYPE    = os.getenv("BROKER_TYPE", "cybos").strip().lower()
 
 # DB 파일 경로
 PREDICTIONS_DB  = os.path.join(DB_DIR, "predictions.db")

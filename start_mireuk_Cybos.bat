@@ -141,10 +141,11 @@ IF DEFINED CONDA_PREFIX (
 )
 
 SET BROKER_BACKEND=cybos
+SET BROKER_TYPE=cybos
 SET PYTHONUNBUFFERED=1
 SET PYTHONIOENCODING=utf-8
 SET PYTHONUTF8=1
-ECHO [INFO] BROKER_BACKEND=%BROKER_BACKEND%
+ECHO [INFO] BROKER_BACKEND=%BROKER_BACKEND%  BROKER_TYPE=%BROKER_TYPE%
 
 IF NOT EXIST "logs" MKDIR "logs" 2>NUL
 
@@ -167,7 +168,7 @@ IF %ERRORLEVEL% NEQ 0 (
     CALL :L "[INFO] CybosPlus not connected -- starting auto-login..."
     CALL :L "[INFO] Auto-login handles: security dialog, login, mock-investment popup"
     IF EXIST "%WORKDIR%\scripts\cybos_autologin.py" (
-        python "%WORKDIR%\scripts\cybos_autologin.py"
+        python "%WORKDIR%\scripts\cybos_autologin.py" --broker cybos
         IF !ERRORLEVEL! NEQ 0 (
             ECHO.
             CALL :L "[ERROR] CybosPlus auto-login failed."
@@ -348,7 +349,7 @@ python -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); sys
 IF !ERRORLEVEL! NEQ 0 (
     CALL :L "[AUTO-RESTART] Cybos 연결 끊김 -- 재로그인 시도..."
     IF EXIST "%WORKDIR%\scripts\cybos_autologin.py" (
-        python "%WORKDIR%\scripts\cybos_autologin.py"
+        python "%WORKDIR%\scripts\cybos_autologin.py" --broker cybos
         IF !ERRORLEVEL! NEQ 0 (
             CALL :L "[AUTO-RESTART] 재로그인 실패 -- 재시작 중단"
             GOTO :restart_done
