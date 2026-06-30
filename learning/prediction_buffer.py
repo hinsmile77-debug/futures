@@ -191,7 +191,7 @@ class PredictionBuffer:
             str(decision.get("checklist_reason", "")),
         )
 
-        with get_conn(PREDICTIONS_DB) as conn:
+        with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
             if pred_rows:
                 conn.executemany(
                     """INSERT INTO predictions

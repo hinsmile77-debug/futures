@@ -60,7 +60,7 @@ futures/
 ├── data/
 │   ├── *.json                   # 상태 파일 (초기화 버전)
 │   ├── *.pkl                    # ensemble_calibrator, meta_conf_state
-│   └── db/                      # [gitignore 제외] 초기 소형 DB 파일들
+│   └── db/                      # [gitignore 제외] 초기 빈 DB 파일들
 ├── scripts/                     # 모든 스크립트
 ├── features/                    # 피처 모듈
 ├── strategy/                    # 전략 모듈
@@ -76,17 +76,16 @@ futures/
 └── PROJECT_DESIGN.md
 ```
 
-### 3-2. 제외 파일 (100MB 초과, 자동 생성)
+### 3-2. 제외 파일 (배포 브랜치에도 제외)
 
 ```
-data/db/predictions.db     (523 MB) — main.py 실행 시 자동 생성
-data/db/raw_data.db        (380 MB) — 데이터 수집 시 자동 생성
-data/db/shap_tracker.db    (86 MB)  — 실행 누적
-data/db/trades.db                   — 거래 기록 누적
-config/secrets.py          — 계좌정보 (절대 Git 커밋 금지)
-logs/                      — 로그는 실행 후 생성
-data/raw/                  — 원시 데이터 (실행 시 수집)
-data/processed/            — 전처리 데이터 (실행 시 생성)
+config/secrets.py          # 계좌정보 — 타 PC에서 직접 입력
+logs/                      # 로그는 실행 후 생성
+data/raw/                  # 원시 데이터 (실행 시 수집)
+data/processed/            # 전처리 데이터 (실행 시 생성)
+data/db/*.bak_*            # DB 백업 파일
+__pycache__/
+.idea/ .vscode/ .claude/
 ```
 
 ---
@@ -96,8 +95,8 @@ data/processed/            — 전처리 데이터 (실행 시 생성)
 ### STEP 1: 저장소 클론
 
 ```bat
-git clone -b maitreya_dist https://github.com/hinsmile77-debug/futures.git %USERPROFILE%\PycharmProjects\futures
-cd %USERPROFILE%\PycharmProjects\futures
+git clone -b maitreya_dist https://github.com/hinsmile77-debug/futures.git
+cd futures
 ```
 
 ### STEP 2: Cybos Plus HTS 설치
@@ -113,21 +112,25 @@ INSTALL.bat
 ```
 
 - `py37_32` conda env 자동 생성
-- `requirements.txt` 패키지 자동 설치
+- **32-bit SSL DLL 자동 복사** (`libssl-1_1.dll` → `DLLs/`) — pip SSL 오류 선제 해결
+- `requirements.txt` 패키지 자동 설치 (`PYTHONUTF8=1` 적용)
+- `lightgbm`, `pywinauto`, `psutil` 추가 설치 (requirements.txt 외 필수 패키지)
 - `py310_64` conda env 생성 (EOD 재학습용)
 - `requirements_310.txt` 패키지 설치
 
-### STEP 4: 계좌 정보 등록
+### STEP 4: CREON 자격증명 등록 (Windows Credential Manager)
 
 ```bat
 conda activate py37_32
 python scripts\set_cybos_credential.py
 ```
 
-입력 항목:
-- Cybos Plus ID (대신증권 아이디)
-- Cybos Plus 비밀번호
-- 계좌번호, 계좌 비밀번호
+또는 직접:
+```bat
+cmdkey /add:creonplus /user:대신증권아이디 /pass:비밀번호
+```
+
+> `cybos_autologin.py --broker creon`이 `creonplus` 키를 참조하여 자동 로그인합니다.
 
 ### STEP 5: secrets.py 생성
 
@@ -137,9 +140,10 @@ copy config\secrets_example.py config\secrets.py
 
 `config\secrets.py` 편집:
 ```python
-FUTURES_CODE_PREFIX = "A01"   # 모의투자: "A01" / 실투자: "A05"
 ACCOUNT_NO   = "계좌번호"
 ACCOUNT_PWD  = "계좌비밀번호"
+BOK_API_KEY  = ""   # 선택 (거시경제 피처)
+KAKAO_TOKEN  = ""   # 선택 (알림)
 ```
 
 ### STEP 6: 첫 실행
@@ -188,25 +192,26 @@ maitreya_dist ← 배포 전용 (타 PC pull 대상)
 ### 7-1. 브랜치 생성 / 초기 설정
 
 - [x] `docs/260629_MAITREYA_DIST_DEPLOYMENT_PLAN.md` 작성
-- [x] `maitreya_dist` 브랜치 생성 (from dev)
-- [x] `.gitignore` 수정: 대용량 DB 제외 + 모델/소형 DB 포함
+- [x] `maitreya_dist` 브랜치 생성 (from dev) — 완료
+- [x] `.gitignore` 수정: `model/scaler/`, `model/horizons/`, `data/db/` 제외 줄 주석 처리 → 추적 포함
 - [x] `config/secrets_example.py` 작성
 - [x] `SETUP_GUIDE.md` 작성 (타 PC 설치 한글 가이드)
-- [x] `INSTALL.bat` 작성 (conda 환경 자동 구성)
+- [x] `INSTALL.bat` 작성 + 수정 (SSL DLL 자동 복사, lightgbm·pywinauto 추가, PYTHONUTF8=1)
 - [x] `requirements_310.txt` 작성 (py310_64 재학습 의존성)
-- [x] GitHub push 완료: `maitreya_dist` 브랜치
+- [x] `start_mireuk_CREON.bat` 신규 생성 (CREON 전용 런처, 자동 재시작 루프)
+- [x] `scripts/set_cybos_credential.py` 신규 생성 (Windows Credential Manager 자격증명 등록)
+- [x] `scripts/close_other_windows.ps1` 신규 생성 (런처 실행 전 창 최소화)
 
-### 7-2. 모델 / 데이터 파일 (완료)
+### 7-2. 모델 / 데이터 파일
 
-- [x] `model/horizons/` — GBM pkl 6개 + rf_horizons.pkl (67MB) 포함
-- [x] `model/scaler/` — scaler pkl 6개 포함
-- [x] `data/db/` — 소형 운영 DB 포함 (challenger, ensemble, mc_history 등)
-- [x] 대용량 DB 제외 (100MB 초과): predictions.db (523MB), raw_data.db (380MB), shap_tracker.db (86MB), trades.db
+- [x] `model/scaler/*.pkl` 배포 브랜치에 추가 — git ls-files로 추적 확인
+- [x] `model/horizons/*.pkl` (GBM 6종 + RF + feature_names) 추적 확인
+- [x] `data/db/` — 운영 DB 7종 + json 3종 추적 포함 (raw_data·predictions·trades 등 대용량은 gitignore 유지)
+- [ ] `data/*.json` 상태 파일 초기화 버전 검토 — 현재 운영 데이터 포함됨, 타 PC 배포 시 수동 초기화 필요
 
-### 7-3. 검증 (타 PC에서 수행 필요)
+### 7-3. 검증
 
-- [ ] 타 PC에서 `INSTALL.bat` 실행 테스트
-- [ ] `CREON_PLUS.bat` → `start_mireuk_CREON.bat` 순서 실행 테스트
+- [ ] 타 PC 에서 `INSTALL.bat` → `cmdkey 자격증명 등록` → `CREON_PLUS.bat` → `start_mireuk_CREON.bat` 순서 실행 테스트
 - [ ] 모의투자 모드 연결 확인
 - [ ] Circuit Breaker 정상 작동 확인
 
@@ -214,23 +219,84 @@ maitreya_dist ← 배포 전용 (타 PC pull 대상)
 
 ## 8. 주의 사항
 
-1. **모델 파일 크기**: `rf_horizons.pkl` 59.5MB — 경고만 있고 GitHub 업로드 정상. 향후 100MB 초과 시 Git LFS 전환 필요
+1. **모델 파일 크기**: `rf_horizons.pkl` 약 60MB — 현재 git 직접 추적 중. 100MB 미만이므로 LFS 불필요
 2. **secrets.py 절대 커밋 금지**: `.gitignore`에 `config/secrets.py` 유지
 3. **py310_64 환경**: EOD 재학습(`EOD_RETRAIN.bat`)은 py310_64 전용 — py37_32로 실행 시 OOM 발생
 4. **Cybos Plus 32-bit COM**: `py37_32` 환경만 COM 오브젝트 접근 가능
 5. **포지션 상태 초기화**: 타 PC 배포 시 `data/position_state.json`은 빈 상태(`{}`)로 초기화
-6. **대용량 DB**: `predictions.db`, `raw_data.db`는 미륵이 최초 실행 시 자동 생성됨 — 별도 복사 불필요
+6. **32-bit conda SSL 문제**: py37_32 최초 생성 후 pip SSL 오류 발생 시 → `INSTALL.bat`이 자동 처리 (`libssl-1_1.dll`을 `Library\bin\` → `DLLs\`에 복사)
+7. **CREON 자격증명**: 타 PC 최초 1회 `cmdkey /add:creonplus /user:ID /pass:PW` 또는 `python scripts\set_cybos_credential.py` 실행 필수
 
 ---
 
-## 9. 파일 크기 체크 (모델 파일)
+## 9. 레슨런 — CREON Plus 자동 로그인 (MW0602, 2026-06-29)
+
+> `scripts/cybos_autologin.py` 라이브 디버그로 확정된 좌표·흐름  
+> 실행 환경: MW0601 PC, 화면해상도 1920×1080, 로그인창 위치 (wx=599, wy=209)
+
+### 9-1. 확정 절대 좌표 (창 상대 오프셋)
+
+| 단계 | 절대좌표 | wx/wy 오프셋 | 비고 |
+|---|---|---|---|
+| CREON Plus 드롭다운 열기 | (662, 233) | wx+63, wy+24 | 좌상단 "CREON ▼" 클릭 |
+| CREON Plus 항목 선택 | (657, 298) | popup_top+52 | 팝업 rect=(615,246,755,316) |
+| 아이디 탭 클릭 | (890, 422) | wx+291, wy+213 | 좌측 패널 우단 탭바 |
+| 아이디 입력 필드 | (738, 479) | wx+139, wy+270 | |
+| 비밀번호 입력 필드 | (693, 515) | wx+94, wy+306 | |
+| 모의투자로그인 버튼 | (770, 614) | wx+171, wy+405 | 핑크 버튼 |
+| 모의투자선택 팝업 버튼 | (962, 509) | 절대좌표 | 팝업 top≈262, offset=247 |
+| 공지사항 닫기 버튼 | (1448, 161) | 절대좌표 | CREON 데스크 내 테이블 X |
+
+### 9-2. CREON Starter 창 구조 특성
+
+- **전체 창이 HTCAPTION(오너드로)**: 자식 Afx 패널은 HTTRANSPARENT → 마우스가 부모 hwnd로 전달됨
+- **드롭다운은 별도 popup hwnd**: 헤더 클릭으로 팝업 생성, `EnumWindows`로 탐지 가능
+  - 드롭다운 팝업에 `PostMessage(WM_NCLBUTTONDOWN)` to 메인창 → 팝업 즉시 닫힘 (금지)
+  - 항목 클릭은 반드시 `SetCursorPos + mouse_event` 단독 사용
+- **드롭다운 ONE 클릭 원칙**: 팝업은 첫 클릭 후 닫힘 → 한 retry에 여러 y 시도 불가, retry별 1클릭
+- **좌측 Afx 패널**: rect=(600,210,960,830), 우측: rect=(960,210,1320,830)
+
+### 9-3. Edit 가시성 상태 머신
+
+```
+coStarter 최초 기동 (CREON 선택)  : Edit visible (기본)
+CREON Plus 선택 직후              : Edit invisible  ← "공인인증서" 탭 기본
+"아이디" 탭 클릭 후               : Edit visible 재개
+coStarter 재시작 (CREON Plus 기억) : Edit invisible (마지막 상태 유지)
+※ 단, "아이디" 탭이 마지막으로 선택됐으면 재시작 후에도 Edit visible
+```
+
+**비가시 Edit 처리**: `_collect_edits()` → 가시 Edit 없으면 비가시 Edit 폴백 → `WM_SETTEXT` 직접 주입 (물리 클릭 금지)
+
+### 9-4. 주요 함정과 해결책
+
+| 함정 | 원인 | 해결 |
+|---|---|---|
+| 모의투자 팝업 버튼 오클릭 | wy+130=392 로 고정 (실제 버튼 wy+247=509) | offset 247로 수정 + 절대좌표 폴백 (962,509) |
+| COMAIN.EXE 다이얼로그 오탐 | "CREON Starter" 제목 공유, Afx 패널 없음 | '예(Y)' 버튼 감지 후 클릭, None 반환 |
+| 아이디 탭 그리드 스캔 실패 | 63~126 위치 스캔해도 CREON Plus 모드서 Edit 미가시 | 확정 좌표 (890,422) 직접 4회 시도로 교체 |
+| 모의투자 팝업 title 불일치 | `FindWindow("모의투자 선택")` 미매칭 | 소형 팝업(ww<800) 탐색 + (962,509) 절대좌표 폴백 |
+| 로그인 버튼 좌표 오차 | PW Edit 하단 + 72px 계산 불일치 | 확정 wx+171, wy+405 직접 지정 |
+
+### 9-5. 진단 방법
+
+- **실시간 로그**: `logs/creon_autologin_diag.log` (TeeStream으로 stdout 미러)
+- **진단 포인트**:
+  - `[DEBUG] 드롭다운 팝업 후보:` → 팝업 rect, hwnd 확인
+  - `[DEBUG] 비가시 Edit hwnd=... screen=(x,y)` → Edit 실제 좌표 확인
+  - `[INFO] CREON Plus 항목 클릭: retry? y_offset=? screen(?,?)` → 선택 경로 추적
+  - `[OK] CybosPlus 연결 성공 (ServerType=1)` → 모의투자 연결 확인
+
+---
+
+## 10. 파일 크기 체크 (모델 파일)
 
 배포 전 아래 명령으로 모델 파일 크기 확인:
 
 ```powershell
-Get-ChildItem "model\horizons" -Recurse | Measure-Object -Property Length -Sum
+Get-ChildItem "model\scaler" -Recurse | Measure-Object -Property Length -Sum
 # 100MB 초과 시 Git LFS 설정 필요
-# git lfs track "*.pkl"
 ```
 
-GitHub 단일 파일 제한: 100MB / 저장소 권장 한도: 1GB
+GitHub 단일 파일 제한: 100MB / 저장소 권장 한도: 1GB  
+초과 시 → `git lfs track "*.pkl"` 설정 후 커밋

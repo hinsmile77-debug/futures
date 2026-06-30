@@ -292,6 +292,20 @@ class DirectionIndicatorWidget(QWidget):
         hz_dirs  = self._fetch_latest_hz_dirs(today)
         self._apply(ensemble, hz_dirs, candles)
 
+    def push_live(self, decision: dict, ts: str) -> None:
+        """파이프라인에서 직접 앙상블 결과 주입 — DB 폴링 지연 없이 즉시 램프 갱신.
+
+        봉차트·hz스트립은 10초 폴링에서 유지된다.
+        """
+        ens = {
+            "ts":         ts,
+            "direction":  decision.get("direction", 0),
+            "confidence": decision.get("confidence", 0.0),
+            "grade":      decision.get("grade", ""),
+            "min_conf":   decision.get("min_conf", 0.25),
+        }
+        self._apply_lamp(ens)
+
     def _apply(
         self,
         ensemble: Optional[dict],
@@ -307,6 +321,36 @@ class DirectionIndicatorWidget(QWidget):
             self._draw_chart(candles, 0, _FG["flat"])
             return
 
+        self._apply_lamp(ensemble)
+
+        # 봉차트
+        d  = int(ensemble.get("direction") or 0)
+        fg = _FG["up" if d > 0 else ("dn" if d < 0 else "flat")]
+        self._draw_chart(candles, d, fg)
+
+        # 호라이즌 스트립
+        agree = 0
+        for h in _HORIZONS:
+            hd = hz_dirs.get(h, 0)
+            if hd > 0:
+                icon, hfg = "▲", _FG["up"]
+            elif hd < 0:
+                icon, hfg = "▼", _FG["dn"]
+            else:
+                icon, hfg = "—", "#8b949e"
+            self._hz_icons[h].setText(icon)
+            self._hz_icons[h].setStyleSheet(f"color:{hfg};")
+            if d != 0 and hd == d:
+                agree += 1
+
+        self._consensus_bar.setValue(agree)
+        cbg = _FG["up"] if agree >= 5 else ("#e3b341" if agree >= 3 else _FG["dn"])
+        self._consensus_bar.setStyleSheet(_STYLE_BAR.format(color=cbg))
+        self._lbl_consensus.setText(f"{agree}/6")
+        self._lbl_consensus.setStyleSheet(f"color:{cbg};")
+
+    def _apply_lamp(self, ensemble: dict) -> None:
+        """램프·바·텍스트만 갱신 (봉차트·hz스트립 불포함). push_live와 _apply 공용."""
         d     = int(ensemble.get("direction") or 0)
         conf  = float(ensemble.get("confidence") or 0.0)
         mc    = float(ensemble.get("min_conf") or 0.57)
@@ -335,31 +379,24 @@ class DirectionIndicatorWidget(QWidget):
         self._conf_bar.setValue(int(conf * 1000))
         bar_color = _FG["up"] if delta >= 0 else _FG["dn"]
         self._conf_bar.setStyleSheet(_STYLE_BAR.format(color=bar_color))
-        self._lbl_conf.setText(f"conf {conf:.3f}  mc {mc:.3f}  {delta:+.3f}")
 
-        # 봉차트
-        self._draw_chart(candles, d, fg)
-
-        # 호라이즌 스트립
-        agree = 0
-        for h in _HORIZONS:
-            hd = hz_dirs.get(h, 0)
-            if hd > 0:
-                icon, hfg = "▲", _FG["up"]
-            elif hd < 0:
-                icon, hfg = "▼", _FG["dn"]
-            else:
-                icon, hfg = "—", "#8b949e"
-            self._hz_icons[h].setText(icon)
-            self._hz_icons[h].setStyleSheet(f"color:{hfg};")
-            if d != 0 and hd == d:
-                agree += 1
-
-        self._consensus_bar.setValue(agree)
-        cbg = _FG["up"] if agree >= 5 else ("#e3b341" if agree >= 3 else _FG["dn"])
-        self._consensus_bar.setStyleSheet(_STYLE_BAR.format(color=cbg))
-        self._lbl_consensus.setText(f"{agree}/6")
-        self._lbl_consensus.setStyleSheet(f"color:{cbg};")
+        # 2분 이상 갱신 없으면 STALE 경고 표시
+        stale_sec = 9999
+        if len(ts) >= 19:
+            try:
+                ts_dt = datetime.datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S")
+                stale_sec = (datetime.datetime.now() - ts_dt).total_seconds()
+            except ValueError:
+                pass
+        if stale_sec > 120:
+            stale_min = int(stale_sec // 60)
+            self._lbl_conf.setText(
+                f"conf {conf:.3f}  mc {mc:.3f}  {delta:+.3f}  ⚠{stale_min}m STALE"
+            )
+            self._lbl_conf.setStyleSheet("color:#d29922;")  # 황색 경고
+        else:
+            self._lbl_conf.setText(f"conf {conf:.3f}  mc {mc:.3f}  {delta:+.3f}")
+            self._lbl_conf.setStyleSheet("color:#8b949e;")
 
     # ── 봉차트 렌더링 ─────────────────────────────────────────────
 

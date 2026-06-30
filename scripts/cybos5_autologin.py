@@ -399,19 +399,34 @@ def _is_connected():
 
 
 def _load_credential():
+    """Windows Credential Manager에서 ID/PW 읽기.
+
+    CredEnumerate(flags=0)는 CRED_TYPE_GENERIC을 빠뜨리는 경우가 있으므로
+    CredRead로 타입을 명시해서 순서대로 시도한다.
+      1. CRED_TYPE_GENERIC (1)  -- cmdkey /add 기본값
+      2. CRED_TYPE_DOMAIN_PASSWORD (2)  -- 도메인 자격증명 (blob 비어있을 수 있음)
+    """
     if PASSWORD_OVERRIDE:
         return "", PASSWORD_OVERRIDE
 
-    try:
-        all_creds = win32cred.CredEnumerate(None, 0) or []
-        for cred in all_creds:
-            if cred.get("TargetName") == CRED_TARGET:
-                username = cred["UserName"]
-                blob = cred.get("CredentialBlob", b"")
-                password = blob.decode("utf-16-le") if blob else ""
-                return username, password
-    except Exception as exc:
-        print("[DEBUG] CredEnumerate error: %s" % exc)
+    CRED_TYPE_GENERIC         = 1
+    CRED_TYPE_DOMAIN_PASSWORD = 2
+
+    for cred_type in (CRED_TYPE_GENERIC, CRED_TYPE_DOMAIN_PASSWORD):
+        try:
+            cred = win32cred.CredRead(CRED_TARGET, cred_type, 0)
+            username = cred.get("UserName", "")
+            blob = cred.get("CredentialBlob", b"")
+            if not blob:
+                print("[DEBUG] blob empty, skipping: Target=%s Type=%d User=%s"
+                      % (CRED_TARGET, cred_type, username))
+                continue
+            password = blob.decode("utf-16-le")
+            print("[DEBUG] Credential loaded: Target=%s Type=%d User=%s"
+                  % (CRED_TARGET, cred_type, username))
+            return username, password
+        except Exception as exc:
+            print("[DEBUG] CredRead(Type=%d) failed: %s" % (cred_type, exc))
 
     print("[ERROR] Credential not found. Register it with:")
     print("  cmdkey /add:%s /user:YOUR_ID /pass:YOUR_PASSWORD" % CRED_TARGET)

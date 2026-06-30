@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-06-24 10:34:08",
+  "generated_at": "2026-06-26 15:24:29",
   "recommended_stage": "small_size",
   "recommended_reason": "A/B 개선 확인 + calibration 양호 + meta 표본 충분",
   "gate_stats": {
-    "ensemble_decisions": 10953,
-    "meta_labels": 59100,
-    "verified_predictions": 56500
+    "ensemble_decisions": 11879,
+    "meta_labels": 62176,
+    "verified_predictions": 59576
   },
-  "ece": 0.131023,
-  "pnl_delta": 125.89,
+  "ece": 0.130434,
+  "pnl_delta": 240.09,
   "has_calibration": true,
   "has_meta_tuning": true
 }
