@@ -1,7 +1,45 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-30 (262차) — SHORT 진입·손실청산 감사 개선 4종
+> 마지막 업데이트: 2026-06-30 (263차) — EOD 재학습 pkl 경합 방지
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-06-30 (263차 — EOD 재학습 pkl 경합 방지)
+
+### 배경
+
+15:40 daily_close() 진입 시 STEP 3 장중 GBM 배치 재학습이 진행 중이었고,
+15:45 MireukiEODRetrain(윈도우 스케줄러)이 동시 실행되어 pkl 경합 위험 존재.
+오늘 로그(retrain_eod_20260630.log)로 실증 확인 후 구조적 해결.
+
+### 수정 내용 (커밋 5aed765)
+
+| 파일 | 변경 |
+|---|---|
+| `retrain_eod.py` | `_wait_for_daily_close()` 함수 추가 — `data/_exit_normally` 오늘 날짜 확인, 최대 20분 폴링(30초 간격), 타임아웃 시 슬랙 경보 후 강제 진행 |
+
+### 운영 조치
+
+- **윈도우 스케줄러**: `MireukiEODRetrain` 15:45 → **16:10** 수동 변경 완료
+- 코드: `_wait_for_daily_close(max_wait_min=20)`가 16:10에도 daily_close 미완료 시 추가 대기
+
+### 완료 마커 확인 구조
+
+```
+daily_close() 마지막 단계
+  → data/_exit_normally 기록 (reason + ISO timestamp)
+
+retrain_eod.py _wait_for_daily_close()
+  → _exit_normally 존재 AND 오늘 날짜로 시작 → 즉시 통과
+  → 없으면 30초마다 재확인 (최대 20분)
+```
+
+### 오늘 EOD 재학습 결과 (정상 완료)
+
+- 15:45:04 시작 (경합 상태였으나 결과적으로 정상)
+- 6/6 호라이즌 교체 완료, 합계 181초
+- P8 스케일러 재적합 완료, session_state 기록 완료
 
 ---
 

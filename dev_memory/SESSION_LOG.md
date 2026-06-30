@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-30 (263차 — EOD 재학습 pkl 경합 방지)
+
+**트리거**: 오후 미륵이 지연 종료 현상 조사 → daily_close STEP 3 대기 중 MireukiEODRetrain 동시 실행 경합 위험 발견.
+
+### 조사 내용
+
+- 15:40:25 daily_close() 진입, STEP 3 장중 GBM 재학습 진행 중 감지
+- 15:45 MireukiEODRetrain 실행 → pkl 동시 기록 경합 가능성 존재
+- `retrain_eod_20260630.log` 확인: 6/6 호라이즌 정상 완료 (오늘은 EOD가 마지막 기록)
+
+### 구현 (커밋 5aed765)
+
+`retrain_eod.py` — `_wait_for_daily_close(max_wait_min=20, poll_sec=30)`:
+- `data/_exit_normally` 파일의 오늘 날짜 확인 → daily_close 완료 검증
+- 미완료 시 30초 폴링, 최대 20분 대기
+- 타임아웃 시 슬랙 경보 후 강제 진행
+
+### 운영 조치
+
+- 윈도우 스케줄러 `MireukiEODRetrain` **15:45 → 16:10** 변경 완료 (1차 방어선)
+- 코드 대기 로직 (2차 안전장치)
+
+---
+
 ## 2026-06-30 (262차 — SHORT 진입·손실청산 감사 개선 4종)
 
 **트리거**: 09:44 short 진입과 손실 청산 감사 요청.
