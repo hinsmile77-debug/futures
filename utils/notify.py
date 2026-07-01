@@ -178,12 +178,22 @@ def notify_shs_alert(shs: float, components: dict) -> None:
     )
 
 
-def notify_kill_switch(gap_open_conf_max: float, gap_open_bars: int) -> None:
-    """Early Kill Switch 발동 — 당일 관망일 선언."""
+def notify_kill_switch_cleared(scaler_age_h: float, conf_hits: int, conf_window: int) -> None:
+    """EKS 자동 해제 — 진입 재개."""
     notify(
-        f"🚫 Early Kill Switch 발동 — 당일 관망일\n"
+        f"✅ Early Kill Switch 해제 — 장중 진입 재개\n"
+        f"스케일러 age: {scaler_age_h:.1f}h  conf 임계 초과: {conf_hits}/{conf_window}봉\n"
+        f"자동매매 정상화",
+        "INFO",
+    )
+
+
+def notify_kill_switch(gap_open_conf_max: float, gap_open_bars: int) -> None:
+    """Early Kill Switch 발동 — 일시 관망 (자동 회복 평가 중)."""
+    notify(
+        f"🚫 Early Kill Switch 발동 — 일시 관망\n"
         f"GAP_OPEN 구간({gap_open_bars}봉) 최대 conf: {gap_open_conf_max * 100:.1f}%\n"
         f"CORE 피처 전 구간 탈락 → 신뢰 진입 조건 없음\n"
-        f"자동 진입 전면 차단 (수동 진입은 대시보드에서 가능)",
+        f"자동 진입 차단 중 (스케일러·conf 회복 시 09:20부터 30분 간격 자동 재개 / 수동 진입은 대시보드 가능)",
         "CRITICAL",
     )

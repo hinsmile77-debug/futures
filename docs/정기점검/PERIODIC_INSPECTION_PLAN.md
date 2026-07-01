@@ -538,4 +538,17 @@ GROUP BY hurst_bucket;
 
 ---
 
+문서 구조 요약:
+
+주기	섹션	소요시간	핵심 체크
+매일	1-A~C	~5분	Platt A값, 1m DN편향 Δ, 오늘 진입 이상
+매일	2-A	~3분	MetaConf take 비율, blended avg
+매주	3-A~D	~20분	ECE 추이, GBM 피처 수 일치, conf_floor 효과, BiasReset 발동
+매주	4-A~B	~15분	CONF_HIGH 적정성, gate 차단 사유
+매주	5-A~B	~15분	호라이즌 acc 4주, 시간대·Hurst PnL
+매월	6-A~B	~30분	WalkForward 건전성, 파라미터 현황표 갱신
+
+각 섹션에 조회 SQL/Python + 이상 판정 기준 + 조정 대상 파라미터 + 조정 방향이 한 세트로 묶여 있어, 다음 세션에서 바로 실행 가능합니다.
+
+
 *마지막 갱신: 2026-06-24 | 다음 갱신 예정: 2026-06-30*
