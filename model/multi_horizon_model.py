@@ -192,7 +192,10 @@ class MultiHorizonModel:
         "macro_sp500_chg":    0.15,   # [-1,1] — S&P500 변동률 정규화값
         "macro_nasdaq_chg":   0.15,   # [-1,1]
         "macro_krw_chg":      0.10,   # [-1,1] — USD/KRW 변동률
-        "macro_us10y_chg":    0.10,   # [-1,1] — 미국 10년물 변동률
+        # 0.10→0.25 (265차): 07/01 실측 us10y_chg=0.4566(금리+1.37%) → z=4.84 폭발 확인.
+        # floor=0.25이면 z_max=(0.4566+0.03)/0.25≈1.95 < 4.0 보장.
+        # _CHG_CLIP=0.03 기준 이론 최대값 1.0 → z_max=1.0/0.25=4.0 경계.
+        "macro_us10y_chg":    0.25,   # [-1,1] — 미국 10년물 변동률
         # macro_risk_off 제거 (2026-06-25): 모델 미포함 — global scaler 보호 불필요
         "macro_risk_on":      0.50,   # 이진(0/1) — 동일 구조
         "macro_event_flag":   0.50,   # 이진(0/1) — 동일 구조
