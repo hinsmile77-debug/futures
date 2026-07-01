@@ -34,8 +34,6 @@
 |---|---|
 | `CREON_PLUS.bat` | CREON Plus API 연결 런처 (구버전) |
 | `start_mireuk_CREON.bat` | 미륵이 CREON 실행 런처 (구버전) |
-| `creon_autologin.py` | CREON 로그인 창 좌표는 MW0602 모니터 기준으로 보정됨. |
-
 
 > **구버전 런처는 로컬에 남겨도 무방하다.** 신규 통합 런처(`LAUNCH_API.bat`, `start_mireuk.bat`)로 이전 완료 후 삭제 가능.
 
@@ -46,8 +44,8 @@ MW0602 전용 수정이 생기면 해당 파일도 `machine.cfg` 와 동일하�
 
 | 파일 | 주의 사항 |
 |---|---|
-| `scripts/creon_autologin.py` | CREON 로그인 창 좌표는 MW0602 모니터 기준으로 보정됨. 화면 해상도나 배율이 MW0601 과 다를 경우 좌표 diverge 가능. |
-| `register_eod_scheduler.ps1` | Windows 작업 스케줄러 등록 경로가 PC마다 다를 수 있음. |
+| `scripts/cybos_autologin.py` | Cybos/CREON 공용 로그인 스크립트. `--broker` 인자(=machine.cfg의 BROKER)로 내부 분기하며 CREON 좌표는 MW0602 모니터 기준으로 보정됨. 별도 파일로 분리하지 않고 이 파일 하나를 양쪽 PC가 공유한다 — 화면 해상도/배율이 PC마다 다르면 좌표 diverge 가능하니 수정 시 양쪽 모두 재검증할 것. |
+| `register_eod_scheduler.ps1` | Windows 작업 스케줄러 등록 경로가 PC마다 달라 gitignore 대상 (machine.cfg 방식과 동일). |
 
 ---
 
@@ -121,7 +119,7 @@ MW0602 에만 존재해야 하는 파일이 추가되면:
 
 1. `.gitignore` 에 해당 파일명 추가
 2. 이미 추적 중인 경우: `git rm --cached <파일명>`
-3. 커밋: `git commit -m "gitignore: <creon_autologin.py> MW0602 전용으로 제외"`
+3. 커밋: `git commit -m "gitignore: <register_eod_scheduler.ps1> PC별 경로 하드코딩으로 제외"` (예시)
 4. MW0601 에 `git pull` 하면 해당 파일이 git 에서 제거됨 (로컬 파일은 유지)
 
 ---
@@ -130,18 +128,21 @@ MW0602 에만 존재해야 하는 파일이 추가되면:
 
 ```
 dev 브랜치 (공유)
-├── machine.cfg.example   ← 템플릿 (커밋됨)
-├── LAUNCH_API.bat        ← 통합 런처, machine.cfg 읽음 (커밋됨)
-├── start_mireuk.bat      ← 통합 런처, machine.cfg 읽음 (커밋됨)
+├── machine.cfg.example       ← 템플릿 (커밋됨)
+├── LAUNCH_API.bat            ← 통합 런처, machine.cfg 읽음 (커밋됨)
+├── start_mireuk.bat          ← 통합 런처, machine.cfg 읽음 (커밋됨)
+├── scripts/cybos_autologin.py ← Cybos/CREON 공용, --broker 인자로 내부 분기 (커밋됨)
 └── ... (공유 코드)
 
 MW0601 로컬만 존재 (gitignore)
-├── machine.cfg           ← BROKER=cybos
-├── CYBOS_PLUS.bat        ← 구버전 (사용 중이면 유지, 아니면 삭제 가능)
+├── machine.cfg               ← BROKER=cybos
+├── register_eod_scheduler.ps1 ← 이 PC 사용자 경로로 하드코딩
+├── CYBOS_PLUS.bat            ← 구버전 (사용 중이면 유지, 아니면 삭제 가능)
 └── start_mireuk_Cybos.bat
 
 MW0602 로컬만 존재 (gitignore)
-├── machine.cfg           ← BROKER=creon
-├── CREON_PLUS.bat        ← 구버전 (사용 중이면 유지, 아니면 삭제 가능)
+├── machine.cfg               ← BROKER=creon
+├── register_eod_scheduler.ps1 ← 이 PC 사용자 경로로 하드코딩
+├── CREON_PLUS.bat            ← 구버전 (사용 중이면 유지, 아니면 삭제 가능)
 └── start_mireuk_CREON.bat
 ```

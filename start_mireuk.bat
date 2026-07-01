@@ -325,8 +325,8 @@ CALL :L "[INFO] !BROKER! 연결 상태 확인 중..."
 "!PY32!" -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); sys.exit(0 if c.IsConnect==1 else 1)" >NUL 2>&1
 IF %ERRORLEVEL% NEQ 0 (
     CALL :L "[INFO] !BROKER! 미연결 -- 자동 로그인 시작..."
-    IF EXIST "!WORKDIR!\scripts\creon_autologin.py" (
-        "!PY32!" "!WORKDIR!\scripts\creon_autologin.py" --broker !BROKER!
+    IF EXIST "!WORKDIR!\scripts\cybos_autologin.py" (
+        "!PY32!" "!WORKDIR!\scripts\cybos_autologin.py" --broker !BROKER!
         IF !ERRORLEVEL! NEQ 0 (
             ECHO.
             CALL :L "[ERROR] !BROKER! 자동 로그인 실패."
@@ -343,7 +343,7 @@ IF %ERRORLEVEL% NEQ 0 (
         )
         CALL :L "[OK] !BROKER! 자동 로그인 완료."
     ) ELSE (
-        CALL :L "[WARN] creon_autologin.py 없음: !WORKDIR!\scripts\"
+        CALL :L "[WARN] cybos_autologin.py 없음: !WORKDIR!\scripts\"
         ECHO [WARN] !BROKER! 수동 로그인 후 아무 키나 누르세요.
         PAUSE
     )
@@ -542,8 +542,8 @@ TIMEOUT /T 10 /NOBREAK >NUL
 "!PY32!" -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); sys.exit(0 if c.IsConnect==1 else 1)" >NUL 2>&1
 IF !ERRORLEVEL! NEQ 0 (
     CALL :L "[AUTO-RESTART] !BROKER! 연결 끊김 -- 재로그인 시도..."
-    IF EXIST "!WORKDIR!\scripts\creon_autologin.py" (
-        "!PY32!" "!WORKDIR!\scripts\creon_autologin.py" --broker !BROKER!
+    IF EXIST "!WORKDIR!\scripts\cybos_autologin.py" (
+        "!PY32!" "!WORKDIR!\scripts\cybos_autologin.py" --broker !BROKER!
         IF !ERRORLEVEL! NEQ 0 (
             CALL :L "[AUTO-RESTART] 재로그인 실패 -- 재시작 중단"
             GOTO :restart_done
