@@ -49,10 +49,11 @@ class SystemHealthScore:
         self._last_alerted_shs: float = 101.0  # 아직 블록 임계 미달 적 없음
 
         # GAP_OPEN 구간 수집 (EKS 판정)
-        self._gap_open_conf_max:          float = 0.0
-        self._gap_open_core_pass_count:   int   = 0
-        self._gap_open_bar_count:         int   = 0
-        self._gap_open_delayed_count:     int   = 0   # [P2] 파이프라인 지연으로 conf 제외된 봉 수
+        self._gap_open_conf_max:             float = 0.0
+        self._gap_open_core_pass_count:      int   = 0
+        self._gap_open_bar_count:            int   = 0
+        self._gap_open_delayed_count:        int   = 0   # [P2] 파이프라인 지연으로 conf 제외된 봉 수
+        self._gap_open_policy_blocked_count: int   = 0   # [P3] HORIZON_TIME_POLICY [] 차단 봉 수
 
         # EKS 상태
         self._eks_evaluated:          bool  = False
@@ -86,17 +87,22 @@ class SystemHealthScore:
         conf: float,
         core_all_passed: bool,
         pipeline_delayed: bool = False,
+        horizon_policy_blocked: bool = False,
     ) -> None:
         """GAP_OPEN 구간(09:00~09:05) 분봉 1건 기록. EKS 판정에 사용.
 
-        pipeline_delayed=True 이면 파이프라인 지연으로 conf 신뢰 불가.
-        bar_count는 올리되 conf_max에는 반영하지 않음 — [P2] EKS 과발동 방지.
+        pipeline_delayed=True: 파이프라인 지연으로 conf 신뢰 불가 → bar_count만 올림.
+        horizon_policy_blocked=True: HORIZON_TIME_POLICY=[] 로 예측 차단(정상 cold-start) →
+            conf=0.0이 설계적 원인이므로 conf_max 산입 제외 + policy_blocked 카운트.
         """
         self._gap_open_bar_count += 1
-        if not pipeline_delayed:
-            self._gap_open_conf_max = max(self._gap_open_conf_max, float(conf))
-        else:
+        if pipeline_delayed:
             self._gap_open_delayed_count += 1
+        elif horizon_policy_blocked:
+            # 설계적 차단(cold-start) — conf=0.0이 정상이므로 conf_max 미반영
+            self._gap_open_policy_blocked_count += 1
+        else:
+            self._gap_open_conf_max = max(self._gap_open_conf_max, float(conf))
         if core_all_passed:
             self._gap_open_core_pass_count += 1
 
@@ -134,12 +140,18 @@ class SystemHealthScore:
             )
             return False
 
-        # cold-start 판별: conf_max==0.0% 이고 pipeline_delayed 봉도 없는 경우
-        # → active_horizons 초기화 지연(정상) 으로 인한 conf=0% 이므로 EKS 미발동.
-        # cold-start는 모델 붕괴가 아니라 GAP_OPEN 워밍업 구간 특성.
+        # cold-start 판별: conf_max==0.0% 이고 모든 봉이 지연·정책차단으로 설명되는 경우
+        # [P3] HORIZON_TIME_POLICY=(900,905):[] + 장시작버스트(09:00 delayed=1) 조합 시
+        #   delayed=1, policy_blocked=4, bar_count=5 → 5/5 설명됨 → cold-start 정상 판정.
+        #   기존 로직(delayed==0 조건)은 장시작버스트 1봉이 delayed_count를 1로 만들어
+        #   cold-start 탐지를 무너뜨렸음 (264차 수정).
+        _all_bars_accounted = (
+            self._gap_open_delayed_count + self._gap_open_policy_blocked_count
+            >= self._gap_open_bar_count
+        )
         _is_cold_start = (
             self._gap_open_conf_max == 0.0
-            and self._gap_open_delayed_count == 0
+            and _all_bars_accounted
         )
 
         if (
@@ -158,9 +170,11 @@ class SystemHealthScore:
             )
         elif _is_cold_start:
             logger.info(
-                "[SHS-EKS] EKS 미발동 — cold-start (conf_max=0%% delayed=%d/%d봉) "
-                "active_horizons 초기화 지연으로 판단",
+                "[SHS-EKS] EKS 미발동 — cold-start "
+                "(conf_max=0%% delayed=%d policy_blocked=%d / %d봉) "
+                "HORIZON_TIME_POLICY 차단 또는 active_horizons 초기화 지연으로 판단",
                 self._gap_open_delayed_count,
+                self._gap_open_policy_blocked_count,
                 self._gap_open_bar_count,
             )
         else:
@@ -285,8 +299,9 @@ class SystemHealthScore:
             "z_warn_count":      self._z_warn_count,
             "core_pass_rate":    round(self._core_pass_rate, 2),
             "s2_latency_sec":    round(self._s2_latency_sec, 3),
-            "gap_open_conf_max": round(self._gap_open_conf_max, 3),
-            "gap_open_bars":     self._gap_open_bar_count,
+            "gap_open_conf_max":      round(self._gap_open_conf_max, 3),
+            "gap_open_bars":          self._gap_open_bar_count,
+            "gap_open_policy_blocked": self._gap_open_policy_blocked_count,
         }
 
     # ── 일일 리셋 ────────────────────────────────────────────────
@@ -294,10 +309,11 @@ class SystemHealthScore:
     def reset_daily(self) -> None:
         """15:40 일일 마감 시 GAP_OPEN·EKS 상태 초기화.
         restart_count·z_warn_count는 세션 전체 누적이므로 유지."""
-        self._gap_open_conf_max        = 0.0
-        self._gap_open_core_pass_count = 0
-        self._gap_open_bar_count       = 0
-        self._gap_open_delayed_count   = 0
+        self._gap_open_conf_max             = 0.0
+        self._gap_open_core_pass_count      = 0
+        self._gap_open_bar_count            = 0
+        self._gap_open_delayed_count        = 0
+        self._gap_open_policy_blocked_count = 0
         self._eks_evaluated            = False
         self._eks_active               = False
         self._eks_recovery_count       = 0
