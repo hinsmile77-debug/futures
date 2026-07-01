@@ -47,6 +47,7 @@ from config.settings import (
     HEALTH_QUALITY_WARN, HEALTH_QUALITY_CRIT,
     HEALTH_CACHE_AGE_WARN_SEC, HEALTH_CACHE_AGE_CRIT_SEC,
     HEALTH_EXCEPTION_DENSITY_WARN_10M, HEALTH_EXCEPTION_DENSITY_CRIT_10M,
+    ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
@@ -2775,9 +2776,13 @@ class ExitPanel(QWidget):
                 "트레일링이 발동하면 이 값이 함께 이동합니다."
             ),
             "trail_stop": (
-                "트레일링 기준\n"
-                "현재 실행 스톱을 끌어올리는 이익 구간 기준입니다.\n"
-                "이익이 1.0 / 1.5 / 2.0 ATR 구간에 도달하면 스톱이 단계적으로 조정됩니다."
+                "트레일링 기준 (4단계)\n"
+                "수익 구간에 따라 스톱이 단계적으로 이동합니다.\n"
+                "\n"
+                "  1단계 ≥ 0.5 ATR → 손절 -0.75 ATR (무방비 지대 보호)\n"
+                "  2단계 ≥ 1.0 ATR → 손절 = 진입가 (본전 보호)\n"
+                "  3단계 ≥ 1.5 ATR → 손절 +0.5 ATR (최소 이익 확보)\n"
+                "  4단계 ≥ 2.0 ATR → 최고점(앵커) - 1.0 ATR 추적"
             ),
         }
         levels = [
@@ -2800,7 +2805,19 @@ class ExitPanel(QWidget):
             setattr(self, f"lv_{attr}", vl)
             r.addWidget(name_w)
             r.addWidget(vl)
+            if attr == "struct_stop":
+                _reason_badge = mk_badge("초기스톱", C['bg3'], C['text2'], 8)
+                self.lbl_stop_reason = _reason_badge
+                r.addWidget(_reason_badge)
+            elif attr == "trail_stop":
+                _stage_lbl = mk_label("", C['text2'], 8)
+                self.lbl_trail_stage = _stage_lbl
+                r.addWidget(_stage_lbl)
             lay.addLayout(r)
+            if attr == "struct_stop":
+                _dist_lbl = mk_label("", C['text2'], 8)
+                self.lbl_stop_distance = _dist_lbl
+                lay.addWidget(_dist_lbl)
 
         lay.addWidget(mk_sep())
 
@@ -2824,6 +2841,10 @@ class ExitPanel(QWidget):
             st = mk_badge("감시중", C['bg3'], C['text2'], 8)
             setattr(self, f"st_{attr}", st)
             r.addWidget(st)
+            if attr == "hard_trig":
+                intra_st = mk_badge("인트라바-", C['bg3'], C['text2'], 8)
+                self.st_intrabar_trig = intra_st
+                r.addWidget(intra_st)
             lay.addLayout(r)
 
         lay.addWidget(mk_sep())
@@ -2924,6 +2945,12 @@ class ExitPanel(QWidget):
             b = getattr(self, f"st_{attr}")
             b.setText("감시중")
             b.setStyleSheet(_badge_reset_ss)
+        self.st_intrabar_trig.setText("인트라바-")
+        self.st_intrabar_trig.setStyleSheet(_badge_reset_ss)
+        self.lbl_stop_reason.setText("——")
+        self.lbl_stop_reason.setStyleSheet(_badge_reset_ss)
+        self.lbl_stop_distance.setText("")
+        self.lbl_trail_stage.setText("")
         for bar_w, lbl_w in self.partial_bars:
             bar_w.setValue(0)
             lbl_w.setText("대기")
@@ -3020,6 +3047,9 @@ class ExitPanel(QWidget):
         if tp3 <= 0:
             tp3 = entry + mult * atr * 2.5
         stage_plan = tuple(pos_data.get('stage_plan', (0, 0, 0)) or (0, 0, 0))
+        stop_move_reason = str(pos_data.get('stop_move_reason', '') or '')
+        bar_low  = _as_float(pos_data.get('bar_low',  0.0), 0.0)
+        bar_high = _as_float(pos_data.get('bar_high', 0.0), 0.0)
 
         # 진입가 / 현재가
         self.entry_price.setText(f"{entry:.2f}")
@@ -3049,6 +3079,64 @@ class ExitPanel(QWidget):
         self.lv_target1.setText(f"{tp1:.2f}")
         self.lv_target2.setText(f"{tp2:.2f}")
         self.lv_target3.setText(f"{tp3:.2f}")
+
+        # ── T2-2: 손절 이동 이유 배지 ────────────────────────────────
+        _badge_ss = (
+            f"border-radius:3px;font-size:{S.f(8)}px;padding:1px 5px;"
+        )
+        if stop_move_reason == "tp1_breakeven":
+            self.lbl_stop_reason.setText("TP1→손익분기")
+            self.lbl_stop_reason.setStyleSheet(
+                f"background:{C['cyan']};color:#000;" + _badge_ss
+            )
+        elif stop_move_reason.startswith("open_position") or stop_move_reason in ("init", ""):
+            self.lbl_stop_reason.setText("초기스톱")
+            self.lbl_stop_reason.setStyleSheet(
+                f"background:{C['bg3']};color:{C['text2']};" + _badge_ss
+            )
+        else:
+            _short = stop_move_reason.split(":")[0][:10]
+            self.lbl_stop_reason.setText(_short)
+            self.lbl_stop_reason.setStyleSheet(
+                f"background:{C['bg3']};color:{C['text2']};" + _badge_ss
+            )
+
+        # ── T2-4: 스톱까지 거리 ──────────────────────────────────────
+        if stop > 0 and atr > 0:
+            _dist_pts = abs(cur - stop)
+            _dist_atr = _dist_pts / atr
+            _dist_col = (
+                C['red'] if _dist_atr < 0.5
+                else (C['orange'] if _dist_atr < 1.0 else C['text2'])
+            )
+            self.lbl_stop_distance.setText(
+                f"  스톱까지 {_dist_pts:.1f}pt ({_dist_atr:.1f} ATR)"
+            )
+            self.lbl_stop_distance.setStyleSheet(
+                f"color:{_dist_col};font-size:{S.f(8)}px;"
+            )
+        else:
+            self.lbl_stop_distance.setText("")
+
+        # ── T2-3: 트레일링 단계 표시 ────────────────────────────────
+        if atr > 0:
+            _unreal_pts = (cur - entry) * mult
+            if _unreal_pts >= atr * 2.0:
+                _stage_text, _stage_col = "4단계(앵커)", C['green']
+            elif _unreal_pts >= atr * 1.5:
+                _stage_text, _stage_col = "3단계(+0.5ATR)", C['green']
+            elif _unreal_pts >= atr * 1.0:
+                _stage_text, _stage_col = "2단계(본전)", C['cyan']
+            elif _unreal_pts >= atr * 0.5:
+                _stage_text, _stage_col = "1단계(-0.75ATR)", C['orange']
+            else:
+                _stage_text, _stage_col = "초기(-1.5ATR)", C['text2']
+            self.lbl_trail_stage.setText(_stage_text)
+            self.lbl_trail_stage.setStyleSheet(
+                f"color:{_stage_col};font-size:{S.f(8)}px;"
+            )
+        else:
+            self.lbl_trail_stage.setText("")
 
         # 부분 청산 진행
         p1 = pos_data.get('partial1', False)
@@ -3108,6 +3196,25 @@ class ExitPanel(QWidget):
             hit_tp2 = False
             hit_tp3 = False
 
+        # ── T2-1: 인트라바 스톱 배지 ────────────────────────────────
+        if bar_low > 0 and bar_high > 0 and stop > 0:
+            if status == 'LONG':
+                _intra_hit = bar_low <= stop
+                _intra_gap = bar_low - stop      # 음수 = 히트
+            else:
+                _intra_hit = bar_high >= stop
+                _intra_gap = stop - bar_high     # 음수 = 히트
+            if _intra_hit:
+                _set_trigger_badge(self.st_intrabar_trig, "인트라바↓", C['red'], "#fff")
+            elif atr > 0 and abs(_intra_gap) < atr * 0.3:
+                _set_trigger_badge(self.st_intrabar_trig,
+                                   f"근접{_intra_gap:.1f}", C['orange'], "#000")
+            else:
+                _set_trigger_badge(self.st_intrabar_trig,
+                                   f"여유{_intra_gap:.1f}", C['bg3'], C['text2'])
+        else:
+            _set_trigger_badge(self.st_intrabar_trig, "—", C['bg3'], C['text2'])
+
         # 기본 상태
         _set_trigger_state(self.st_hard_trig, TriggerBadgeState.WARNING if hit_stop else TriggerBadgeState.MONITORING)
         _set_trigger_state(self.st_signal_trig, TriggerBadgeState.PROTECT if (qty == 1 and p1) else TriggerBadgeState.WAIT)
@@ -3159,8 +3266,11 @@ class ExitPanel(QWidget):
             if "15:10" in pending_reason or "시간청산" in pending_reason:
                 _set_trigger_state(self.st_time_trig, TriggerBadgeState.EXECUTING, f"주문중{pending_progress}")
 
+        # EXIT_FULL 주문 진행 중에는 수동 버튼 비활성화 (중복 주문 방지)
+        # EXIT_PARTIAL / EXIT_MANUAL_PARTIAL은 허용 — 긴급 전량 청산이 필요할 수 있음
+        _full_exit_pending = pending_active and pending_kind == "EXIT_FULL"
         for btn in getattr(self, "manual_exit_btns", {}).values():
-            btn.setEnabled(True)
+            btn.setEnabled(not _full_exit_pending)
 
 
 # ────────────────────────────────────────────────────────────
@@ -3746,7 +3856,12 @@ class EntryPanel(QWidget):
             "candle_chk": (
                 "목적: 직전 1개 봉이 진입 방향과 같은 마감인지 확인합니다.\n"
                 "의의: 막 역행하는 순간의 진입을 줄이고 최소한의 단기 모멘텀 동조를 봅니다.\n"
-                "진입 조건: LONG이면 직전 봉이 양봉, SHORT이면 직전 봉이 음봉이어야 합니다."
+                "진입 조건: LONG이면 직전 봉이 양봉, SHORT이면 직전 봉이 음봉이어야 합니다.\n"
+                "\n"
+                "[MEAN_REVERSION 모드 완화 — 262차]\n"
+                "  MR LONG  : 음봉·도지도 허용 (반전 진입이므로 역봉이 정상)\n"
+                "  MR SHORT : 양봉·도지도 허용 (반전 진입이므로 역봉이 정상)\n"
+                "  TREND_FOLLOW: 기존 조건 그대로 (동방향 봉만 통과)"
             ),
             "time_chk": (
                 "목적: 신규 진입이 허용되는 시간대인지 확인합니다.\n"
@@ -3789,6 +3904,35 @@ class EntryPanel(QWidget):
         self._load_gate_toggles()
         for cb in self.check_toggles.values():
             cb.stateChanged.connect(self._save_gate_toggles)
+
+        # ── T3-1: 진입 게이트 필터 섹션 ─────────────────────────────
+        left_lay.addWidget(mk_sep())
+        left_lay.addWidget(mk_label("진입 게이트 필터", C['blue'], 9, True))
+        _gate_filter_items = [
+            ("ATR 범위 필터",  "atr_chk",
+             f"ATR 범위 필터 (263차)\n"
+             f"  하한 {ATR_MIN_ENTRY}pt 미만 → 변동성 부족, 휩쏘 위험 → 진입 차단\n"
+             f"  상한 {ATR_MAX_ENTRY}pt 초과 → 손절거리 {ATR_MAX_ENTRY * 1.5:.2f}pt 과대 → 진입 차단\n"
+             f"  값 표시: 현재 ATR pt + OK / ↑고변동 / ↓저변동 상태"),
+            ("OPEN_VOL 시가이격", "gap_chk",
+             f"OPEN_VOLATILE 시가이격 필터 (263차)\n"
+             f"  조건: OPEN_VOLATILE + TREND_FOLLOW 조합 시만 적용\n"
+             f"  시가 대비 방향 이탈폭 > ATR × {ATR_OPEN_GAP_MULT} → 낙폭 소진 위험으로 차단\n"
+             f"  예: ATR=3.5pt → 이격 상한 {3.5 * ATR_OPEN_GAP_MULT:.1f}pt\n"
+             f"  값 표시: 방향이탈 pt (다른 시간대·MR 모드에서는 N/A)"),
+        ]
+        for _gname, _gattr, _gtip in _gate_filter_items:
+            _gr = QHBoxLayout()
+            _gicon = mk_badge("—", C['bg3'], C['text2'], 10)
+            _gicon.setFixedWidth(22)
+            _gnl = mk_label(_gname, C['text'], 11)
+            _gnl.setToolTip(_gtip)
+            _gvl = mk_val_label("——", C['text2'], 11)
+            _gr.addWidget(_gicon)
+            _gr.addWidget(_gnl, 2)
+            _gr.addWidget(_gvl)
+            self.check_labels[_gattr] = (_gicon, _gvl)
+            left_lay.addLayout(_gr)
 
         left_lay.addStretch()
         split_lay.addWidget(left_w, 5)
@@ -4247,7 +4391,9 @@ class EntryPanel(QWidget):
     def update_data(self, signal, conf, grade, checks, qty=0, final_signal=None,
                     reverse_enabled=False, min_conf: float = 0.58,
                     ensemble_grade: str = None, checklist_grade: str = None,
-                    final_entry: bool = False, check_values: dict = None):
+                    final_entry: bool = False, check_values: dict = None,
+                    entry_block_reason: str = ""):
+        self._last_entry_block_reason = entry_block_reason
         final_signal = final_signal or signal
         col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
         final_col = C['green'] if final_signal == "매수" else C['red'] if final_signal == "매도" else C['text2']
@@ -4366,11 +4512,23 @@ class EntryPanel(QWidget):
                 f"▼ 원신호: {signal} / 실행신호: {final_signal} | {_chk_g}급 — {conf*100:.1f}% 신뢰도{reverse_tag}"
             )
         else:
-            self.entry_alert.setStyleSheet(
-                f"background:{C['bg3']};border:1px solid {C['border']};"
-                f"border-radius:4px;padding:5px;color:{C['text2']};font-size:{S.f(12)}px;"
-            )
-            self.entry_alert.setText("— 관망 | 신호 대기 중")
+            if entry_block_reason:
+                _reason_disp = (
+                    entry_block_reason
+                    .replace("[차단] ", "")
+                    .replace("[blocked] ", "")
+                )[:90]
+                self.entry_alert.setStyleSheet(
+                    f"background:#1C1A00;border:1px solid #C8A800;"
+                    f"border-radius:4px;padding:5px;color:#C8A800;font-size:{S.f(11)}px;"
+                )
+                self.entry_alert.setText(f"⊘ {_reason_disp}")
+            else:
+                self.entry_alert.setStyleSheet(
+                    f"background:{C['bg3']};border:1px solid {C['border']};"
+                    f"border-radius:4px;padding:5px;color:{C['text2']};font-size:{S.f(12)}px;"
+                )
+                self.entry_alert.setText("— 관망 | 신호 대기 중")
 
     # ── 최대허용수량 관련 메서드 ─────────────────────────────────────
     def _load_max_qty(self) -> int:
@@ -10934,7 +11092,8 @@ class DashboardAdapter:
                      qty: int = 0, final_signal: str = None,
                      reverse_enabled: bool = False, min_conf: float = 0.58,
                      ensemble_grade: str = None, checklist_grade: str = None,
-                     final_entry: bool = False, check_values: dict = None):
+                     final_entry: bool = False, check_values: dict = None,
+                     entry_block_reason: str = ""):
         """진입 관리 패널 업데이트"""
         self._win.entry_panel.update_data(
             signal, conf, grade, checks, qty=qty,
@@ -10945,6 +11104,7 @@ class DashboardAdapter:
             checklist_grade=checklist_grade,
             final_entry=final_entry,
             check_values=check_values,
+            entry_block_reason=entry_block_reason,
         )
 
     def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False) -> None:

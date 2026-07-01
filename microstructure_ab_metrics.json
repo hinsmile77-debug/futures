@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-07-01 13:46:25",
+  "generated_at": "2026-07-01 14:18:25",
   "eval_horizon": "5m",
   "baseline": {
-    "samples": 7729,
+    "samples": 7730,
     "entries": 5275,
-    "coverage": 0.6825,
+    "coverage": 0.6824,
     "directional_accuracy": 0.3452,
     "win_rate": 0.4808,
     "avg_pnl_pts": -0.1018,
@@ -12,7 +12,7 @@
     "avg_confidence": 0.4166
   },
   "enhanced": {
-    "samples": 7729,
+    "samples": 7730,
     "entries": 5161,
     "coverage": 0.6677,
     "directional_accuracy": 0.3464,

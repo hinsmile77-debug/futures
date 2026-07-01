@@ -1,14 +1,5 @@
 [
   {
-    "ts": "2026-06-22 12:46:28",
-    "ab_pnl_delta": 55.15,
-    "ab_accuracy_delta": -0.0009,
-    "calibration_ece": 0.131636,
-    "meta_count": 8257,
-    "meta_match_rate": 0.7308,
-    "rollout_stage": "small_size"
-  },
-  {
     "ts": "2026-06-22 13:01:19",
     "ab_pnl_delta": 55.15,
     "ab_accuracy_delta": -0.0009,
@@ -1077,6 +1068,15 @@
     "calibration_ece": 0.122831,
     "meta_count": 9417,
     "meta_match_rate": 0.7349,
+    "rollout_stage": "small_size"
+  },
+  {
+    "ts": "2026-07-01 14:18:26",
+    "ab_pnl_delta": 262.87,
+    "ab_accuracy_delta": 0.0012,
+    "calibration_ece": 0.122563,
+    "meta_count": 9420,
+    "meta_match_rate": 0.735,
     "rollout_stage": "small_size"
   }
 ]

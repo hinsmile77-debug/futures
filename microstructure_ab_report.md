@@ -1,12 +1,12 @@
 # Microstructure A/B Backtest
 
-- Generated at: 2026-07-01 13:46:25
+- Generated at: 2026-07-01 14:18:25
 - Eval horizon: 5m
-- Samples: 7729
+- Samples: 7730
 
 ## Baseline
 
-- Entries: 5275 (68.25%)
+- Entries: 5275 (68.24%)
 - Directional accuracy: 34.52%
 - Win rate: 48.08%
 - Avg PnL: -0.1018 pt
