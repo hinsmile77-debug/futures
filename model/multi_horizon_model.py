@@ -220,6 +220,11 @@ class MultiHorizonModel:
         # σ_floor=0.25 → z=(0-μ)/0.25 ≥ (0-0.978)/0.25 = -3.9 > -4.0 보장.
         # EOD 재학습 후 μ가 정상화(≈0.05)되면 z_max=(1-0.05)/0.25=3.8로 자연 안정화.
         "toxicity_spread_stress":   0.25,
+        # ── 투자자 수급 피처 σ 하한 (2026-07-01) ─────────────────────────────────
+        # institution_futures_net: 장 시작 첫봉에서 z=-4.22 실측(07/01 08:59).
+        # 프리장 warmup std≈0.07 → 첫봉 순매도(-0.36) 시 z≈-4.22 폭발.
+        # σ_floor=0.15 → z=(-0.36-(-0.06))/0.15≈-2.0 → AutoMask 임계 이하.
+        "institution_futures_net":  0.15,
     }
 
     GBM_PARAMS = {
@@ -1139,6 +1144,25 @@ class MultiHorizonModel:
                                 " → identity(0,1) 강제 (FLAT 100%% 방지)",
                                 horizon, _feat, _raw_std,
                             )
+
+                # [A_WARMUP 보호] 프리장 30봉은 macro 피처 all-zero →
+                # warmup refit으로 mean≈0, scale≈0 → 장 시작 후 실값 z-score 폭발.
+                # A_WARMUP 시에만 이전 스케일러(EOD) mean_/scale_을 보존해 폭발 방지.
+                # 이후 _apply_macro_scale_floor가 floor를 재적용하므로 순서 보존.
+                if trigger_type == "A_WARMUP" and _old_sc is not None and hasattr(_old_sc, "mean_"):
+                    for _mf in self._MACRO_SCALE_FLOOR:
+                        if _mf not in self.feature_names:
+                            continue
+                        _mfi = self.feature_names.index(_mf)
+                        if _mfi < len(_new_sc.mean_) and _mfi < len(_old_sc.mean_):
+                            _new_sc.mean_[_mfi]  = _old_sc.mean_[_mfi]
+                            _new_sc.scale_[_mfi] = _old_sc.scale_[_mfi]
+                            if hasattr(_new_sc, "var_") and _mfi < len(_new_sc.var_):
+                                _new_sc.var_[_mfi] = (
+                                    _old_sc.var_[_mfi]
+                                    if hasattr(_old_sc, "var_") and _mfi < len(_old_sc.var_)
+                                    else _old_sc.scale_[_mfi] ** 2
+                                )
 
                 self._apply_macro_scale_floor(_new_sc, horizon, trigger_type)
                 self.scalers[horizon] = _new_sc

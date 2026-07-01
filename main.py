@@ -5776,9 +5776,12 @@ class TradingSystem:
                     _daily_pnl_source = "broker"
                 except Exception as _pnl_e:
                     logger.warning("[PnL] 브로커 일일손익 float 변환 실패 — 내부 추정값 사용: %s", _pnl_e)
-        _size_mult_now = _cr["size_mult"] if _cr else 1.0
+        # grade X 시 size_mult=0.0을 ProfitGuard에 전달하면 Tier0(min_mult=0.6)이
+        # 불필요하게 발동해 중복 차단 로그가 쌓임 (ZeroDiag→grade X→size_mult=0 경로).
+        # Tier4(daily_pnl>=400만 완전중단) 감지는 size_mult=1.0으로도 작동하므로 대체.
+        _size_mult_for_pg = 1.0 if _final_grade == "X" else (_cr["size_mult"] if _cr else 1.0)
         _pg_allowed, _pg_reason = self.profit_guard.is_entry_allowed(
-            _daily_pnl_now, _size_mult_now
+            _daily_pnl_now, _size_mult_for_pg
         )
         if not _pg_allowed and _final_grade not in ("X",):
             _final_grade = "X"

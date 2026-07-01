@@ -688,6 +688,10 @@ class CybosAPI:
             "총평가수익률": f"{next_day_deposit_cash:.0f}",
             "추정자산": f"{prev_day_pnl:.0f}",
         }
+        # 포지션 없을 때 총평가손익=익일예탁금(대체값)이 실제 잔고처럼 보여 감사 오판 방지.
+        # 숫자 파싱(_num)은 "총평가손익" 키만 참조하므로 별도 키로 안전하게 추가.
+        if liquidation_substituted:
+            summary["총평가손익_비고"] = "익일예탁금대체(포지션없음)"
         _system_info(
             f"[CybosDailyPnl] account={account_no} "
             f"validate={header_validation} summary={summary}"
