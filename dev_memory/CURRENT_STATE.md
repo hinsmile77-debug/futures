@@ -1,7 +1,25 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-06-30 (263차) — EOD 재학습 pkl 경합 방지
+> 마지막 업데이트: 2026-07-01 (264차) — EKS 오발동·z경고 과측정 3종 근본 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-01 (264차 — EKS 오발동·z경고 과측정 3종 근본 수정)
+
+### 핵심 변경 (커밋 332e6c4)
+
+| 파일 | 변경 |
+|---|---|
+| `safety/system_health.py` | `_gap_open_policy_blocked_count` 추가. `_is_cold_start` 로직 수정: `delayed+policy_blocked>=bar_count` |
+| `model/multi_horizon_model.py` | `canary_z_warn_count`에 `_Z_WARN_EXEMPT` 필터 적용 |
+| `main.py` | `_gap_horizon_blocked=decision.get("active_horizons_blocked")` → `record_gap_open_bar` 전달. Canary refit 완료 후 `_last_canary_z_warn` 갱신 |
+
+### 운영 주의
+
+- EKS 오발동 수정: 내일 장 시작 시 `[SHS-EKS] EKS 미발동 — cold-start (conf_max=0%% delayed=1 policy_blocked=4 / 5봉)` 로그로 정상 확인
+- Canary z-warn: 오늘 이후 08:55 Canary 값이 ~10 내외로 감소 예상 (14→10 정정)
+- 30봉 window(247차)는 여전히 유효하나 오늘 z=14 원인이 _Z_WARN_EXEMPT 누락이었음 — 근본 수정 완료
 
 ---
 

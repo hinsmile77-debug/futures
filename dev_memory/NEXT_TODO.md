@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-07-01 (264차 검증) [P0]
+
+### EKS·z경고·Canary 3종 수정 검증
+
+- [ ] **① EKS cold-start 정상 판정 확인** — 내일 장 시작 09:05 분봉에서 `[SHS-EKS] EKS 미발동 — cold-start (conf_max=0%% delayed=1 policy_blocked=4 / 5봉)` INFO 로그 출현 확인 (EKS CRITICAL 로그 미출현)
+- [ ] **② Canary z 감소 확인** — 08:55 `[Canary] z경고피처=N개` 값이 이전 14개 대비 감소 (~10개 이하) 확인. `is_open_volatile`, `hurst_ready` 피처가 제외됐음을 `[Canary] 장전 재적합 완료 n=30봉 z경고 →N개 ✓ 임계 이하` 로그로 확인
+- [ ] **③ Canary refit 완료 후 z 갱신 확인** — `[Canary] 장전 재적합 완료` 로그 이후 EKS 원인 메시지의 z경고 수가 pre-refit 값이 아닌 post-refit 값으로 출력되는지 확인
+- [ ] **④ Phase1(bar3) refit 효과 가시화** — `[PreMarket] Phase1 refit 완료 n=30봉 z경고 X→Y개` 로그에서 z경고 감소(Y < X) 확인
+- [ ] **⑤ EKS 자동 회복 경로 불필요화 확인** — 오늘 수정 후 EKS가 발동되지 않으므로 09:20 회복 평가 자체가 실행 안 됨 확인 (`[SHS-EKS] EKS 자동 해제` 로그 미출현이 정상)
+
+---
+
+## 2026-06-30 (263차 검증) [P0]
+
+### 진입 안전장치 3종 검증
+
+- [ ] **① ATR 상한 차단 로그 확인** — 고변동성 분봉에서 `[차단] ATR X.XXpt > 3.5pt — 손절거리 X.Xpt 과대 (고변동성 진입 차단)` 로그 출현 확인
+- [ ] **② 시가 이격 차단 로그 확인** — OPEN_VOLATILE 구간 TREND_FOLLOW 진입 시 이격 과다로 `[차단] OPEN_VOLATILE 시가이격 과다 — 방향이탈 Xpt > ATR×5.0=Xpt (시가=XXXX.XX 반등위험)` 로그 출현 확인
+- [ ] **③ 인트라바 스톱 발동 확인** — 분봉 종가보다 먼저 bar_high(SHORT)/bar_low(LONG)가 스톱을 터치하는 케이스에서 `[DBG-STOP] 하드스톱 발동: close=X bar_low=X bar_high=X stop=X → exit=X` 로그에 bar_high가 stop 근처임을 확인
+- [ ] **④ ATR_MAX_ENTRY 임계 재조정 여부** — 1주일 후 정상 시장에서 ATR 3.5~4.0 구간 진입 기회 얼마나 차단됐는지 검토, 필요 시 4.0으로 상향
+
+---
+
 ## 2026-06-30 (262차 검증) [P0]
 
 ### SHORT 진입·손실청산 개선 4종 검증
