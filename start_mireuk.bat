@@ -29,7 +29,7 @@ REM  mouse/PostMessage 를 차단함. 배치 자체를 관리자로 실행해야
 REM ============================================================
 IF /I "!BROKER!"=="creon" (
     net session >nul 2>&1
-    IF %errorlevel% neq 0 (
+    IF !errorlevel! neq 0 (
         ECHO [INFO] 관리자 권한 필요 -- UAC 승인 후 재실행합니다...
         ECHO [INFO] UAC 프롬프트에서 [예]를 클릭하세요.
         powershell -NoProfile -ExecutionPolicy Bypass -Command ^
@@ -136,6 +136,9 @@ REM       08:45 이전  → Y 기본 (스케줄러 / 자동 기동)
 REM       15:10 이후  → N 기본 (디버그 / 수동 전용)
 REM       08:45~15:10 → 정규 장중, 확인 생략
 REM ============================================================
+REM 이전 실행의 장후 디버그 플래그는 항상 초기화 (오늘 재확인 없이 이어받지 않음)
+IF EXIST "!WORKDIR!\data\_debug_afterhours" DEL "!WORKDIR!\data\_debug_afterhours" 2>NUL
+
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "Get-Date -Format HHmm"`) DO SET "_LAUNCH_TIME=%%T"
 IF NOT DEFINED _LAUNCH_TIME SET "_LAUNCH_TIME=0900"
 IF "!_LAUNCH_TIME!"=="" SET "_LAUNCH_TIME=0900"
@@ -151,6 +154,9 @@ IF !ERRORLEVEL! EQU 2 (
     EXIT /B 0
 )
 CALL :L "[INFO] 장후 실행 승인 -- 계속 진행합니다."
+IF NOT EXIST "!WORKDIR!\data" MKDIR "!WORKDIR!\data" 2>NUL
+ECHO debug_afterhours> "!WORKDIR!\data\_debug_afterhours"
+CALL :L "[INFO] 디버그 모드 -- 이번 실행은 15:10 이후에도 AUTO-RESTART 계속됩니다."
 ECHO.
 GOTO :offhours_skip
 
@@ -319,8 +325,8 @@ CALL :L "[INFO] !BROKER! 연결 상태 확인 중..."
 "!PY32!" -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); sys.exit(0 if c.IsConnect==1 else 1)" >NUL 2>&1
 IF %ERRORLEVEL% NEQ 0 (
     CALL :L "[INFO] !BROKER! 미연결 -- 자동 로그인 시작..."
-    IF EXIST "!WORKDIR!\scripts\cybos_autologin.py" (
-        "!PY32!" "!WORKDIR!\scripts\cybos_autologin.py" --broker !BROKER!
+    IF EXIST "!WORKDIR!\scripts\creon_autologin.py" (
+        "!PY32!" "!WORKDIR!\scripts\creon_autologin.py" --broker !BROKER!
         IF !ERRORLEVEL! NEQ 0 (
             ECHO.
             CALL :L "[ERROR] !BROKER! 자동 로그인 실패."
@@ -337,7 +343,7 @@ IF %ERRORLEVEL% NEQ 0 (
         )
         CALL :L "[OK] !BROKER! 자동 로그인 완료."
     ) ELSE (
-        CALL :L "[WARN] cybos_autologin.py 없음: !WORKDIR!\scripts\"
+        CALL :L "[WARN] creon_autologin.py 없음: !WORKDIR!\scripts\"
         ECHO [WARN] !BROKER! 수동 로그인 후 아무 키나 누르세요.
         PAUSE
     )
@@ -518,8 +524,9 @@ IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 정상 종료 감지 -- 이유: 
 IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 재시작이 필요하면 start_mireuk.bat 를 다시 실행하세요."
 IF DEFINED _EXIT_REASON GOTO :restart_done
 
-IF !_NOW! GEQ 1510 CALL :L "[AUTO-RESTART] 15:10 이후 종료 -- 재시작 안 함 (오버나이트 금지)"
-IF !_NOW! GEQ 1510 GOTO :restart_done
+IF !_NOW! GEQ 1510 IF NOT EXIST "!WORKDIR!\data\_debug_afterhours" CALL :L "[AUTO-RESTART] 15:10 이후 종료 -- 재시작 안 함 (오버나이트 금지)"
+IF !_NOW! GEQ 1510 IF NOT EXIST "!WORKDIR!\data\_debug_afterhours" GOTO :restart_done
+IF !_NOW! GEQ 1510 IF EXIST "!WORKDIR!\data\_debug_afterhours" CALL :L "[AUTO-RESTART] 디버그 모드(장후 실행) -- 15:10 이후에도 재시작 계속"
 
 SET /A "_RESTART_CNT+=1"
 IF !_RESTART_CNT! GTR 5 (
@@ -535,8 +542,8 @@ TIMEOUT /T 10 /NOBREAK >NUL
 "!PY32!" -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); sys.exit(0 if c.IsConnect==1 else 1)" >NUL 2>&1
 IF !ERRORLEVEL! NEQ 0 (
     CALL :L "[AUTO-RESTART] !BROKER! 연결 끊김 -- 재로그인 시도..."
-    IF EXIST "!WORKDIR!\scripts\cybos_autologin.py" (
-        "!PY32!" "!WORKDIR!\scripts\cybos_autologin.py" --broker !BROKER!
+    IF EXIST "!WORKDIR!\scripts\creon_autologin.py" (
+        "!PY32!" "!WORKDIR!\scripts\creon_autologin.py" --broker !BROKER!
         IF !ERRORLEVEL! NEQ 0 (
             CALL :L "[AUTO-RESTART] 재로그인 실패 -- 재시작 중단"
             GOTO :restart_done

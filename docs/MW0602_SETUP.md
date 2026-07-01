@@ -34,6 +34,8 @@
 |---|---|
 | `CREON_PLUS.bat` | CREON Plus API 연결 런처 (구버전) |
 | `start_mireuk_CREON.bat` | 미륵이 CREON 실행 런처 (구버전) |
+| `creon_autologin.py` | CREON 로그인 창 좌표는 MW0602 모니터 기준으로 보정됨. |
+
 
 > **구버전 런처는 로컬에 남겨도 무방하다.** 신규 통합 런처(`LAUNCH_API.bat`, `start_mireuk.bat`)로 이전 완료 후 삭제 가능.
 
@@ -44,7 +46,7 @@ MW0602 전용 수정이 생기면 해당 파일도 `machine.cfg` 와 동일하�
 
 | 파일 | 주의 사항 |
 |---|---|
-| `scripts/cybos_autologin.py` | CREON 로그인 창 좌표는 MW0602 모니터 기준으로 보정됨. 화면 해상도나 배율이 MW0601 과 다를 경우 좌표 diverge 가능. |
+| `scripts/creon_autologin.py` | CREON 로그인 창 좌표는 MW0602 모니터 기준으로 보정됨. 화면 해상도나 배율이 MW0601 과 다를 경우 좌표 diverge 가능. |
 | `register_eod_scheduler.ps1` | Windows 작업 스케줄러 등록 경로가 PC마다 다를 수 있음. |
 
 ---
@@ -60,11 +62,7 @@ git pull origin dev
 
 ### 2. `machine.cfg` 생성
 
-```cmd
-copy machine.cfg.example machine.cfg
-```
-
-`machine.cfg` 를 메모장으로 열어 수정:
+`machine.cfg` 를 메모장으로 열어 수정완료:
 
 ```ini
 BROKER=creon
@@ -123,7 +121,7 @@ MW0602 에만 존재해야 하는 파일이 추가되면:
 
 1. `.gitignore` 에 해당 파일명 추가
 2. 이미 추적 중인 경우: `git rm --cached <파일명>`
-3. 커밋: `git commit -m "gitignore: <파일명> MW0602 전용으로 제외"`
+3. 커밋: `git commit -m "gitignore: <creon_autologin.py> MW0602 전용으로 제외"`
 4. MW0601 에 `git pull` 하면 해당 파일이 git 에서 제거됨 (로컬 파일은 유지)
 
 ---

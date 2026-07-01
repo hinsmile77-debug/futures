@@ -46,7 +46,7 @@ REM  SetCursorPos / PostMessage 정상 동작
 REM ============================================================
 IF "!NEED_ADMIN!"=="1" (
     net session >nul 2>&1
-    IF %errorlevel% neq 0 (
+    IF !errorlevel! neq 0 (
         ECHO [INFO] 관리자 권한 필요 -- UAC 승인 후 재실행합니다...
         powershell -NoProfile -ExecutionPolicy Bypass -Command ^
             "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c \"%~f0\"' -Verb RunAs -WorkingDirectory '%~dp0'"
@@ -203,8 +203,8 @@ python -c "import sys,win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); prin
 IF %ERRORLEVEL% NEQ 0 (
     ECHO [INFO] !BROKER_LABEL! 미연결 -- 자동 로그인 시작...
     ECHO [INFO] !BROKER_LABEL! not connected -- starting auto-login... >> "!LOG!"
-    IF EXIST "!WORKDIR!\scripts\cybos_autologin.py" (
-        python "!WORKDIR!\scripts\cybos_autologin.py" --broker !BROKER!
+    IF EXIST "!WORKDIR!\scripts\creon_autologin.py" (
+        python "!WORKDIR!\scripts\creon_autologin.py" --broker !BROKER!
         IF !ERRORLEVEL! NEQ 0 (
             ECHO.
             ECHO [ERROR] 자동 로그인 실패.
@@ -218,7 +218,7 @@ IF %ERRORLEVEL% NEQ 0 (
         ECHO [OK] !BROKER_LABEL! 자동 로그인 완료.
         ECHO [OK] Auto-login completed. >> "!LOG!"
     ) ELSE (
-        ECHO [WARN] cybos_autologin.py 없음: !WORKDIR!\scripts\
+        ECHO [WARN] creon_autologin.py 없음: !WORKDIR!\scripts\
         ECHO [WARN] !BROKER_LABEL! 수동 로그인 후 아무 키나 누르세요.
         PAUSE
     )
