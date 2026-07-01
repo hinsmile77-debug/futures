@@ -4878,6 +4878,28 @@ class TradingSystem:
         )
         _tz = get_time_zone()
         _zone_mc = get_zone_min_confidence(_tz)
+
+        # [268차-P1] FQAdj를 앙상블 호출 전으로 이동 — 앙상블·체크리스트 동일 mc 기준 적용.
+        # 기존: 앙상블(mc=0.352) → FQAdj → 체크리스트(mc=0.322) → grade 불일치 진입버그.
+        # 수정: FQAdj 먼저 → zone_mc=0.322로 앙상블·체크리스트 모두 동일 기준 사용.
+        _fq_score_pre = float(features.get("feature_quality_score", 0.5) or 0.5)
+        _mc_floor_pre = getattr(runtime_settings, "MC_ABS_FLOOR", 0.25)
+        _mc_ceil_pre  = getattr(runtime_settings, "MC_ABS_CEIL",  0.62)
+        if _fq_score_pre >= 0.9:
+            _fq_zone_adj = max(_zone_mc - 0.03, _mc_floor_pre)
+            if _fq_zone_adj < _zone_mc:
+                log_manager.signal(
+                    f"[FQAdj] fq={_fq_score_pre:.2f} → min_conf {_zone_mc:.2f}→{_fq_zone_adj:.2f} (완화)"
+                )
+                _zone_mc = _fq_zone_adj
+        elif _fq_score_pre < 0.6:
+            _fq_zone_adj = min(_zone_mc + 0.05, _mc_ceil_pre)
+            if _fq_zone_adj > _zone_mc:
+                log_manager.signal(
+                    f"[FQAdj] fq={_fq_score_pre:.2f} → min_conf {_zone_mc:.2f}→{_fq_zone_adj:.2f} (강화)"
+                )
+                _zone_mc = _fq_zone_adj
+
         decision = self.ensemble.compute(
             _hp_ens,
             self.current_regime,
@@ -5052,26 +5074,9 @@ class TradingSystem:
                 f"[IntradayRegime] {self.current_intraday_regime} — min_conf +{_l2_mc_adj * 100:.0f}%p → {actual_min_conf:.2f}"
             )
 
-        # ── Phase 1: feature_quality_score 기반 dynamic_mc 양방향 조정 ──
-        # 피처 품질 우수(≥0.9) → 진입 문턱 낮춤(-3%p) / 불량(<0.6) → 강화(+5%p)
-        # MC_ABS_FLOOR~MC_ABS_CEIL 범위 내 조정만 허용
-        _fq_score = float(features.get("feature_quality_score", 0.5) or 0.5)
-        _mc_floor = getattr(runtime_settings, "MC_ABS_FLOOR", 0.42)
-        _mc_ceil  = getattr(runtime_settings, "MC_ABS_CEIL",  0.62)
-        if _fq_score >= 0.9:
-            _fq_adj = max(actual_min_conf - 0.03, _mc_floor)
-            if _fq_adj < actual_min_conf:
-                log_manager.signal(
-                    f"[FQAdj] fq={_fq_score:.2f} → min_conf {actual_min_conf:.2f}→{_fq_adj:.2f} (완화)"
-                )
-                actual_min_conf = _fq_adj
-        elif _fq_score < 0.6:
-            _fq_adj = min(actual_min_conf + 0.05, _mc_ceil)
-            if _fq_adj > actual_min_conf:
-                log_manager.signal(
-                    f"[FQAdj] fq={_fq_score:.2f} → min_conf {actual_min_conf:.2f}→{_fq_adj:.2f} (강화)"
-                )
-                actual_min_conf = _fq_adj
+        # ── Phase 1: FQAdj — [268차-P1] 앙상블 호출 전으로 이동 완료, 여기서 재적용 불필요 ──
+        # zone_mc가 이미 앙상블 호출 전 FQAdj 적용됨 → actual_min_conf도 동일 기준 반영.
+        # 이중 적용 시 actual_min_conf가 과도하게 낮아지는 부작용 발생 → 블록 비활성화.
 
         # 호라이즌 방향 합의율: 6개 호라이즌 중 앙상블 최종 방향과 동일한 비율
         _hz_detail = decision.get("detail") or {}
@@ -5466,7 +5471,43 @@ class TradingSystem:
                     _cr["auto_entry"] = False
                     decision["checklist_reason"] = "coldstart"
 
+            # [268차-P2] ENS_CONF_FLOOR_FOR_AUTO 동적 연동 — actual_min_conf 기반 상향.
+            # 기존 고정 floor(0.33)가 앙상블 mc(예: 0.352)보다 낮아 최후 방어선이 허술했음.
+            # 동적 floor = max(static_floor, actual_min_conf - 0.01) 으로 mc에 근접 설정.
+            # 예: actual_min_conf=0.352 → floor=max(0.33, 0.342)=0.342 → conf 0.331 차단.
+            if _cr is not None and _cr.get("auto_entry"):
+                _ens_conf_floor_dyn = max(ENS_CONF_FLOOR_FOR_AUTO, actual_min_conf - 0.01)
+                if _ens_conf_floor_dyn > ENS_CONF_FLOOR_FOR_AUTO and confidence < _ens_conf_floor_dyn:
+                    _cr = dict(_cr)
+                    _cr["auto_entry"] = False
+                    log_manager.signal(
+                        "[P2] conf_floor dynamic=%.1f%% (static=%.1f%%) → auto_entry=OFF "
+                        "(conf=%.1f%%)",
+                        _ens_conf_floor_dyn * 100, ENS_CONF_FLOOR_FOR_AUTO * 100,
+                        confidence * 100,
+                    )
+
             _final_grade = _cr["grade"]
+
+            # [268차-P4] 단기 그룹 CVD+OFI 동시 역방향 → 자동진입 등급 상한 C.
+            # 두 CORE 지표가 모두 진입 방향과 반대이면 모멘텀이 완전 역방향으로
+            # A/B 등급 자동진입은 EV 음수 가능성이 높음 → C 이하로 강제 하향.
+            # 중기(10m·15m)·장기(30m) 그룹은 4·5번 체크가 항상 True(면제)이므로
+            # 조건 not(4) AND not(5)가 동시에 False가 되어 이 분기에 진입하지 않음.
+            if (_final_grade in ("A", "B")
+                    and _cr is not None
+                    and not _cr.get("checks", {}).get("4_cvd", True)
+                    and not _cr.get("checks", {}).get("5_ofi", True)):
+                log_manager.signal(
+                    "[P4] CVD+OFI 동시 역방향 → 등급 %s→C 강등 (자동진입 A/B 차단)",
+                    _final_grade,
+                )
+                _final_grade = "C"
+                _cr = dict(_cr)
+                _cr["grade"]      = "C"
+                _cr["size_mult"]  = runtime_settings.ENTRY_GRADE["C"]["size_mult"]
+                _cr["auto_entry"] = runtime_settings.ENTRY_GRADE["C"]["auto"]
+
             _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
             # checklist_reason: STEP7 체크리스트 X 원인 기록 (stage 8 차단사유 표시)
             if _final_grade == "X" and _cr.get("checks"):
