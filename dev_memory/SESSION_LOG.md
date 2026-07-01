@@ -4,6 +4,85 @@
 
 ---
 
+## 2026-07-01 (264차 — EKS 오발동·z경고 과측정 3종 근본 수정)
+
+**트리거**: 오늘 장 시작 로그 딥다이브 — `[09:05] EKS 발동 conf_max=0.0% bars=5` + `z경고14개` 원인 조사.
+
+### 로그 재구성 (실제 발생 경위)
+
+```
+08:45  EarlyWarmup: 30봉(어제 데이터) → refit → scaler_age=0h ✓
+08:47  Phase1 (bar3): refit → z_after(3봉) 낮음 → "성공"으로 보임
+08:49  Phase2 (bar5): refit → z_after(5봉) 낮음 → "성공"으로 보임
+08:55  Canary: n_rows=60 측정 → z=14 (임계12 초과) → Canary refit 발동
+         ← is_open_volatile·hurst_ready 등 _Z_WARN_EXEMPT 피처가 어제 봉에서 +4 과산출
+09:00  파이프라인 2447ms(장시작버스트) → delayed=True
+09:00~09:04  HORIZON_TIME_POLICY=(900,905):[] → active_horizons=[] → conf=0.0
+09:05  EKS 판정: _is_cold_start=(conf==0.0 AND delayed==0) = False → EKS 오발동!
+         ← 09:00 장시작버스트 delayed_count=1이 cold-start 탐지 무너뜨림
+```
+
+### Bug 1: EKS cold-start 오발동 — `safety/system_health.py`
+
+- **원인**: `HORIZON_TIME_POLICY=(900,905):[]`가 09:00~09:05 전 호라이즌 차단(conf=0.0 설계적). 09:00 장시작버스트가 `delayed_count=1`을 만들어 `_is_cold_start=(conf==0.0 AND delayed==0) = False` → EKS 발동.
+- **수정**: `_gap_open_policy_blocked_count` 카운터 추가. `active_horizons_blocked=True` 봉을 별도 추적. `_is_cold_start = conf==0.0 AND (delayed+policy_blocked >= bar_count)`.
+- **효과**: 오늘 케이스 — delayed=1 + policy_blocked=4 = 5 = bar_count → cold-start 정상 판정 → EKS 미발동.
+
+### Bug 2: `canary_z_warn_count` `_Z_WARN_EXEMPT` 누락 — `model/multi_horizon_model.py`
+
+- **원인**: 260차에서 `predict_proba`에 `_Z_WARN_EXEMPT={bull_reversal_signal, hurst_ready, is_close_volatile, is_open_volatile}` 추가했으나, `canary_z_warn_count`는 미적용. 60봉 윈도우에 어제 세션 봉(is_open_volatile z≈5.0, hurst_ready z≈4.5 등)이 포함되어 +4 과산출.
+- **수정**: `canary_z_warn_count`에 `predict_proba`와 동일한 `_Z_WARN_EXEMPT` 필터 적용.
+- **효과**: Canary z=14 → ~10, Phase1·2 refit 효과가 정확히 반영됨.
+
+### Bug 3: `_last_canary_z_warn` stale — `main.py`
+
+- **원인**: EKS 원인 진단 시 `_last_canary_z_warn`이 08:55 Canary refit 착수 전 값(14)으로 고정. refit 후 값이 반영되지 않아 오진단.
+- **수정**: Canary refit 완료 후 `_last_canary_z_warn`과 `system_health.update_z_warn()` 갱신.
+
+### Escape 체인 분석 (커밋 이력 기반)
+
+- **214차**: PRE_MARKET_REFIT_STEPS `{1}→{3}` — 1봉 역효과 실측(z 6→14 악화)으로 3봉부터.
+- **247차**: `PRE_MARKET_SCALER_BARS=30` — 500봉에서 30봉으로 단기화. 검증 데이터: 6/23~6/25 모두 z<12 달성.
+- **259~260차**: `_Z_WARN_EXEMPT`에 이진·시간 플래그 추가. **`canary_z_warn_count` 미반영으로 Canary 측정과 predict_proba 측정값 괴리 발생** → 오늘 7/1 z=14 (실제 ~10).
+
+### 커밋
+
+- `332e6c4` — `264차: EKS 오발동·z경고 과측정 3종 근본 수정`
+
+---
+
+## 2026-06-30 (263차 추가 — 진입 안전장치 3종: ATR상한·시가이격·인트라바스톱)
+
+**트리거**: 09:44:54 SHORT 4계약 진입 → 6분 만에 -137만원 하드스톱 손실. 사후 딥다이브 분석.
+
+### 손실 원인 분석
+
+- 당일 시가 1364.66, 진입가 1332.32 = **시가 대비 -32pt 추격 SHORT** (낙폭 소진 구간)
+- 진입 시 ATR ≈ **4.09pt** (ATR_STOP_MULT×1.5 = 손절거리 6.14pt) → 1분봉 시스템 과도
+- 하드스톱 발동 분봉(09:50)에서 청산 요청가 1338.46 → 실체결 1339.13 = **+0.67pt 슬리피지**
+- 체크리스트는 9개 항목 모두 분봉 맥락만 봤고, 당일 시가 이격을 보지 않음
+
+### 구현 (커밋 23b25ce)
+
+**[A] ATR 상한 필터** (`config/settings.py`, `main.py`)
+- `ATR_MAX_ENTRY = 3.5` 추가 — ATR > 3.5pt 시 진입 차단
+- `_atr_ok = ATR_MIN_ENTRY <= atr <= ATR_MAX_ENTRY` (기존: 하한만)
+- 오늘 케이스: ATR=4.09 > 3.5 → **차단됨**
+
+**[B] OPEN_VOLATILE 시가 이격 필터** (`config/settings.py`, `main.py`)
+- `ATR_OPEN_GAP_MULT = 5.0` 추가
+- 조건: OPEN_VOLATILE + TREND_FOLLOW + gap_in_direction > ATR×5 → 진입 차단
+- `_open_gap_ok` 플래그, `_gate_checks["open_gap_ok"]`, 진단 메시지 포함
+- 오늘 케이스: 32.3pt > 4.09×5=20.4pt → **차단됨**
+
+**[D] 인트라바 스톱 히트** (`strategy/position/position_tracker.py`, `main.py`)
+- `is_stop_hit_intrabar(bar_low, bar_high)` 메서드 추가
+- `_check_exit_triggers` + `_ts_check_exit_triggers` 양쪽 적용
+- 종가가 스톱 위에 있어도 분봉 고가(SHORT)/저가(LONG)가 스톱 터치 시 즉시 청산
+- `bar["key"]` → `bar.get("key", price)` 안전 접근으로 KeyError 방지 병행
+
+---
+
 ## 2026-06-30 (263차 — EOD 재학습 pkl 경합 방지)
 
 **트리거**: 오후 미륵이 지연 종료 현상 조사 → daily_close STEP 3 대기 중 MireukiEODRetrain 동시 실행 경합 위험 발견.
