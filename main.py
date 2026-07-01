@@ -459,6 +459,9 @@ class TradingSystem:
         self._last_real_pipeline_dt: Optional[datetime.datetime] = datetime.datetime.now()
         # [230차] TickUI 차트 업데이트 쓰로틀 — 100ms 이내 중복 minute_chart_tick 스킵
         self._last_tick_chart_update: float = 0.0
+        # [266차] tick-level 하드스톱 — COM 콜백에서 flag 세팅, S0-C에서 메인스레드 주문 전송
+        self._tick_stop_triggered: bool  = False
+        self._tick_stop_price:     float = 0.0
         # [226차] 64비트 서브프로세스 재학습 추적 — Popen·결과 경로·warmup 플래그
         self._retrain_subproc = None                     # subprocess.Popen handle
         self._retrain_subproc_is_warmup: bool = False
@@ -2643,6 +2646,20 @@ class TradingSystem:
         )
         if close > 0:
             self._last_pipeline_price = close
+            # [266차] tick-level 하드스톱 감지 — COM 콜백 내 dynamicCall 금지로 flag만 세팅.
+            # 실제 주문 전송은 run_minute_pipeline S0-C에서 메인 스레드 안전하게 처리.
+            # 조건: 포지션 보유 + pending 주문 없음 + 미감지 상태 + CB HALT 아님
+            if (not self._tick_stop_triggered
+                    and self._pending_order is None
+                    and self.position.status != "FLAT"
+                    and not self.circuit_breaker.is_halted()
+                    and self.position.is_stop_hit(close)):
+                self._tick_stop_triggered = True
+                self._tick_stop_price     = close
+                logger.warning(
+                    "[TickStop] 스톱 히트 감지 (틱) %s tick=%.2f stop=%.2f → S0-C 대기",
+                    self.position.status, close, self.position.stop_price,
+                )
             # [230차] 100ms 쓰로틀 — minute_chart_tick(chart.update) 은 heavy (348 candles paintEvent)
             _now_tick = time.perf_counter()
             _last_tick_ui = getattr(self, "_last_tick_chart_update", 0.0)
@@ -3415,6 +3432,32 @@ class TradingSystem:
         # ── [S0-B] ConstOut 재적합 완료 콜백 큐 drain — P1 QTimer 불안정 대체 ──
         # ConstOut refit worker → _deferred_callbacks.put("const_out_done") →
         # 여기서 메인 스레드 소비. GBM done은 [226차] subprocess poll로 이동.
+
+        # ── [S0-C] tick-level 하드스톱 처리 ─────────────────────────────────
+        # [266차] _on_tick_price_update(COM 콜백)에서 stop 히트 감지 시 flag 세팅.
+        # 분봉 파이프라인 진입 즉시(STEP 1 이전) 처리 → 기존 인트라바스톱(STEP 8)보다
+        # 파이프라인 내 순서가 앞서 동일 분봉 내 조기 주문 전송.
+        # 패턴: _check_exit_triggers 와 동일 (close_position 즉시 호출) →
+        #        STEP 8에서 is_stop_hit()이 FLAT 감지해 이중 발동 차단.
+        if getattr(self, "_tick_stop_triggered", False):
+            self._tick_stop_triggered = False           # 중복 처리 방지 — 결과 무관 즉시 해제
+            _tk_px   = self._tick_stop_price
+            _tk_stop = self.position.stop_price
+            if (self.position.status != "FLAT"
+                    and not self._has_pending_order()
+                    and not self.circuit_breaker.is_halted()
+                    and _tk_px > 0):
+                # PnL 기준: 손절가 사용 (실제 체결가는 broker fill이 결정)
+                _tk_exit = _tk_stop
+                log_manager.trade(
+                    f"[TickStop-S0C] 하드스톱(틱) {self.position.status} "
+                    f"{self.position.quantity}ct "
+                    f"tick={_tk_px:.2f} stop={_tk_stop:.2f} → 주문 전송"
+                )
+                self._send_broker_exit_order(self.position.quantity)
+                _tk_result = self.position.close_position(_tk_exit, "하드스톱(틱)")
+                self._post_exit(_tk_result)
+
         while True:
             try:
                 _dcb = self._deferred_callbacks.get_nowait()
