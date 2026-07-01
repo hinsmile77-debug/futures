@@ -994,7 +994,12 @@ class MultiHorizonModel:
         return max_age if found_any else 999.0
 
     def canary_z_warn_count(self, X_recent: np.ndarray) -> int:
-        """X_recent (N×F)에 현재 scaler 적용 후 극단 z피처 수 반환 (행별 최대 합산)."""
+        """X_recent (N×F)에 현재 scaler 적용 후 극단 z피처 수 반환.
+
+        predict_proba와 동일하게 _Z_WARN_EXEMPT 피처 제외.
+        이진 시간 플래그(is_open_volatile 등)가 어제 세션 봉에서 항상 z>4를
+        유발하여 pre-market refit 효과를 가리는 escape를 차단 (264차 수정).
+        """
         scaler = self.scalers.get("1m") or (
             next(iter(self.scalers.values())) if self.scalers else None
         )
@@ -1002,7 +1007,13 @@ class MultiHorizonModel:
             return 0
         try:
             z = scaler.transform(X_recent)
-            return int(np.sum((np.abs(z) > self.EXTREME_ZSCORE_THRESHOLD).any(axis=0)))
+            extreme_mask = (np.abs(z) > self.EXTREME_ZSCORE_THRESHOLD).any(axis=0)
+            # _Z_WARN_EXEMPT 피처 제외 — predict_proba의 extreme_count와 일관성 유지
+            if self._Z_WARN_EXEMPT and self.feature_names:
+                for _i, _fn in enumerate(self.feature_names):
+                    if _fn in self._Z_WARN_EXEMPT and _i < len(extreme_mask):
+                        extreme_mask[_i] = False
+            return int(np.sum(extreme_mask))
         except Exception:
             return 0
 

@@ -2681,7 +2681,7 @@ class TradingSystem:
         목적:
           ① GapOffset 사전 설정 (첫 분봉 close 기준) — 본장 z경고 원천 차단
           ② 피처 계산 → raw_data.db 동기 저장 — refit이 갭오픈 분포 자동 흡수
-          ③ PRE_MARKET_REFIT_STEPS봉마다 점진 scaler 재적합 (1·5·10·14봉)
+          ③ PRE_MARKET_REFIT_STEPS봉마다 점진 scaler 재적합 (3·5·10·14봉)
           ④ 프리장 conf 히스토리 수집 + z경고 업데이트
         """
         from config.settings import PRE_MARKET_REFIT_STEPS
@@ -2740,7 +2740,7 @@ class TradingSystem:
                 logger.debug("[PreMarket] 피처 계산 스킵: %s", _fe)
 
         # ③ PRE_MARKET_REFIT_STEPS봉마다 점진 재적합
-        # 1봉(08:45): 갭오픈 즉시 반영, 5·10·14봉: 수렴 → 09:00 GAP_OPEN 완벽 준비.
+        # 3봉(08:47): 통계 안정성 확보, 5·10·14봉: 수렴 → 09:00 GAP_OPEN 완벽 준비.
         # DB 동기 저장(②) 완료 후 스레드 기동 → race 없음.
         if n_bars in PRE_MARKET_REFIT_STEPS and not getattr(self, "_scaler_refresh_running", False):
             _phase = sorted(PRE_MARKET_REFIT_STEPS).index(n_bars) + 1
@@ -3143,6 +3143,11 @@ class TradingSystem:
                                     _pm_n = min(len(getattr(self, "_pre_market_bars", [])), 15)
                                     _z_after = self._canary_load_z_warn(n_rows=max(_pm_n, 10))
                                     _improved = _z_after < _thresh
+                                    # [P3] EKS 원인 진단값 갱신 — 재적합 후 최신값으로 덮어쓰기
+                                    # (08:55 pre-refit 값인 _last_canary_z_warn 이 EKS 원인으로
+                                    #  그대로 사용되면 stale이 됨 — 재적합 완료 시점에 업데이트)
+                                    self._last_canary_z_warn = _z_after
+                                    self.system_health.update_z_warn(_z_after)
                                     log_manager.system(
                                         f"[Canary] 장전 재적합 완료 n={len(_Xcr)}봉"
                                         f" z경고 →{_z_after}개"
@@ -5473,10 +5478,13 @@ class TradingSystem:
             # [P2] 파이프라인 지연 분봉은 conf 신뢰 불가 — EKS conf_max에서 제외
             # _pipe_t0 기준 현재까지 경과시간으로 현재 분봉 지연 여부 판정
             _gap_pipe_delayed = (time.perf_counter() - _pipe_t0) * 1000 >= 1000
+            # [P3] HORIZON_TIME_POLICY=[] 설계적 차단(cold-start) vs 파이프라인 지연 구분
+            _gap_horizon_blocked = bool(decision.get("active_horizons_blocked", False))
             self.system_health.record_gap_open_bar(
                 conf=confidence,
                 core_all_passed=_core_all_ok,
                 pipeline_delayed=_gap_pipe_delayed,
+                horizon_policy_blocked=_gap_horizon_blocked,
             )
         elif not self.system_health._eks_evaluated:
             _eks_fired = self.system_health.evaluate_early_kill_switch(
