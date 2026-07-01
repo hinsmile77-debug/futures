@@ -462,6 +462,7 @@ class TradingSystem:
         # [266차] tick-level 하드스톱 — COM 콜백에서 flag 세팅, S0-C에서 메인스레드 주문 전송
         self._tick_stop_triggered: bool  = False
         self._tick_stop_price:     float = 0.0
+        self._chejan_exit_miss_count: int = 0   # [269차] EXIT Chejan 이벤트 유실 일별 카운터
         # [226차] 64비트 서브프로세스 재학습 추적 — Popen·결과 경로·warmup 플래그
         self._retrain_subproc = None                     # subprocess.Popen handle
         self._retrain_subproc_is_warmup: bool = False
@@ -3692,6 +3693,14 @@ class TradingSystem:
                 )
                 if _since_last_fill > 10:
                     self._stuck_this_minute = True   # P3-a: stuck 발생 → 이번 분봉 학습 스킵
+                    # [269차] EXIT Chejan 이벤트 유실 카운터 — 빈도 집계 후 daily_close에서 보고
+                    self._chejan_exit_miss_count = getattr(self, "_chejan_exit_miss_count", 0) + 1
+                    log_manager.system(
+                        f"[ChejanMiss] EXIT 이벤트 유실 #{self._chejan_exit_miss_count} "
+                        f"filled={_po['filled_qty']}/{_po['qty']} order_no={_po.get('order_no','?')} "
+                        f"elapsed={_since_last_fill:.0f}s",
+                        "WARNING",
+                    )
                     log_manager.system(
                         f"[PendingOrder] EXIT 부분체결 stuck {_since_last_fill:.0f}s — "
                         f"filled={_po['filled_qty']}/{_po['qty']} "
@@ -6265,6 +6274,18 @@ class TradingSystem:
                             # 최대허용수량 클리핑 (산출수량 > 0인 경우에만, 최소 1 보장)
                             if _qty_auto > 0 and self._max_entry_qty > 0:
                                 _qty_auto = max(1, min(_qty_auto, self._max_entry_qty))
+                            # [269차] 진입 직전 체크리스트 결과 TRADE 로그 — 사후 분석용
+                            _chk_d = (_cr or {}).get("checks", {})
+                            log_manager.trade(
+                                "[진입체크] %s→%s %d계약 %s급 | %s | conf=%s" % (
+                                    raw_dir_str, final_dir_str, _qty_auto, _final_grade,
+                                    " ".join(
+                                        "%s%s" % (k.split("_", 1)[1][:4], "✅" if v else "❌")
+                                        for k, v in _chk_d.items() if not k.startswith("0_")
+                                    ),
+                                    "%.1f%%" % (confidence * 100),
+                                )
+                            )
                             # L2 통과 && 모드 필터 통과 → 진입
                             self._execute_entry(
                                 final_dir_str, close, _qty_auto, atr, _final_grade,
@@ -6336,6 +6357,18 @@ class TradingSystem:
                     log_manager.trade(
                         f"[P5 자동진입] {raw_dir_str}->{final_dir_str} {_qty_c_exp}계약 @ {close} "
                         f"C급 실험 | TrendGate active"
+                    )
+                    # [269차] C급 경로도 동일하게 체크 결과 로그
+                    _chk_d_c = (_cr or {}).get("checks", {})
+                    log_manager.trade(
+                        "[진입체크] %s→%s %d계약 C급(실험) | %s | conf=%s" % (
+                            raw_dir_str, final_dir_str, _qty_c_exp,
+                            " ".join(
+                                "%s%s" % (k.split("_", 1)[1][:4], "✅" if v else "❌")
+                                for k, v in _chk_d_c.items() if not k.startswith("0_")
+                            ),
+                            "%.1f%%" % (confidence * 100),
+                        )
                     )
                     self._execute_entry(
                         final_dir_str, close, _qty_c_exp, atr, _final_grade,
@@ -7452,6 +7485,16 @@ class TradingSystem:
             f"일일 마감 | 승={stats['wins']} 패={stats['losses']} "
             f"PnL={stats['pnl_krw']:+,.0f}원"
         )
+
+        # [269차] EXIT Chejan 이벤트 유실 일별 집계 보고 후 리셋
+        _miss_cnt = getattr(self, "_chejan_exit_miss_count", 0)
+        if _miss_cnt > 0:
+            log_manager.system(
+                f"[ChejanMiss] 금일 EXIT 이벤트 유실 총 {_miss_cnt}건"
+                + (" — 재검토 권고 (3건 이상)" if _miss_cnt >= 3 else ""),
+                "WARNING" if _miss_cnt >= 3 else "INFO",
+            )
+        self._chejan_exit_miss_count = 0
 
         # ── 챔피언-도전자 일별 집계 ─────────────────────────────
         if self.challenger_engine is not None:
