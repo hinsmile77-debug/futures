@@ -1,27 +1,27 @@
 {
-  "generated_at": "2026-07-01 12:42:25",
+  "generated_at": "2026-07-01 13:46:25",
   "eval_horizon": "5m",
   "baseline": {
-    "samples": 7727,
-    "entries": 5274,
+    "samples": 7729,
+    "entries": 5275,
     "coverage": 0.6825,
-    "directional_accuracy": 0.3451,
-    "win_rate": 0.4807,
-    "avg_pnl_pts": -0.1031,
-    "total_pnl_pts": -543.65,
+    "directional_accuracy": 0.3452,
+    "win_rate": 0.4808,
+    "avg_pnl_pts": -0.1018,
+    "total_pnl_pts": -536.81,
     "avg_confidence": 0.4166
   },
   "enhanced": {
-    "samples": 7727,
-    "entries": 5160,
-    "coverage": 0.6678,
-    "directional_accuracy": 0.3463,
-    "win_rate": 0.4837,
-    "avg_pnl_pts": -0.0544,
-    "total_pnl_pts": -280.78,
-    "avg_confidence": 0.4186
+    "samples": 7729,
+    "entries": 5161,
+    "coverage": 0.6677,
+    "directional_accuracy": 0.3464,
+    "win_rate": 0.4838,
+    "avg_pnl_pts": -0.0531,
+    "total_pnl_pts": -273.94,
+    "avg_confidence": 0.4185
   },
-  "changed_count": 5479,
+  "changed_count": 5480,
   "flat_conversions": 264,
   "blocked_count": 93,
   "changed_examples": [
@@ -60293,6 +60293,17 @@
       "enhanced_pnl_pts": -7.980000000000018,
       "gate_reason": "soft_adjust",
       "gate_strength": -0.203056
+    },
+    {
+      "ts": "2026-07-01 12:58:00",
+      "baseline_direction": -1,
+      "baseline_confidence": 0.3523,
+      "enhanced_direction": -1,
+      "enhanced_confidence": 0.354,
+      "actual": -1,
+      "enhanced_pnl_pts": 6.8400000000001455,
+      "gate_reason": "soft_adjust",
+      "gate_strength": 0.043099
     }
   ]
 }

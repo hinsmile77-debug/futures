@@ -1,185 +1,55 @@
 {
   "source": "meta_labels",
-  "count": 9404,
+  "count": 9417,
   "realized_actions": {
-    "skip": 7345,
+    "skip": 7357,
     "reduce": 622,
-    "take": 1437
+    "take": 1438
   },
-  "avg_meta_confidence": 0.4618,
+  "avg_meta_confidence": 0.4617,
   "grid_search": [
     {
       "take_threshold": 0.65,
       "reduce_threshold": 0.54,
-      "match_rate": 0.6742,
+      "match_rate": 0.6745,
       "take_count": 405,
       "reduce_count": 1048,
-      "skip_count": 7951
+      "skip_count": 7964
     },
     {
       "take_threshold": 0.67,
       "reduce_threshold": 0.56,
-      "match_rate": 0.6977,
+      "match_rate": 0.698,
       "take_count": 310,
       "reduce_count": 849,
-      "skip_count": 8245
+      "skip_count": 8258
     },
     {
       "take_threshold": 0.69,
       "reduce_threshold": 0.58,
-      "match_rate": 0.7174,
+      "match_rate": 0.7176,
       "take_count": 187,
       "reduce_count": 701,
-      "skip_count": 8516
+      "skip_count": 8529
     },
     {
       "take_threshold": 0.71,
       "reduce_threshold": 0.6,
-      "match_rate": 0.7347,
+      "match_rate": 0.7349,
       "take_count": 153,
       "reduce_count": 524,
-      "skip_count": 8727
+      "skip_count": 8740
     }
   ],
   "best_grid": {
     "take_threshold": 0.71,
     "reduce_threshold": 0.6,
-    "match_rate": 0.7347,
+    "match_rate": 0.7349,
     "take_count": 153,
     "reduce_count": 524,
-    "skip_count": 8727
+    "skip_count": 8740
   },
   "latest_samples": [
-    {
-      "ts": "2026-07-01 11:13:00",
-      "meta_confidence": 0.4231,
-      "realized_action": "skip",
-      "correct": 0,
-      "mlofi_norm": 0.0135,
-      "microprice_bias": -0.0073,
-      "queue_signal": 0.0214,
-      "cancel_add_ratio": 0.0088
-    },
-    {
-      "ts": "2026-07-01 11:18:00",
-      "meta_confidence": 0.4702,
-      "realized_action": "skip",
-      "correct": 0,
-      "mlofi_norm": 0.0686,
-      "microprice_bias": -0.0007,
-      "queue_signal": -0.0253,
-      "cancel_add_ratio": 0.0108
-    },
-    {
-      "ts": "2026-07-01 11:23:00",
-      "meta_confidence": 0.5598,
-      "realized_action": "skip",
-      "correct": 1,
-      "mlofi_norm": 0.0845,
-      "microprice_bias": 0.0018,
-      "queue_signal": -0.0707,
-      "cancel_add_ratio": 0.0011
-    },
-    {
-      "ts": "2026-07-01 11:28:00",
-      "meta_confidence": 0.6054,
-      "realized_action": "skip",
-      "correct": 0,
-      "mlofi_norm": 0.041,
-      "microprice_bias": 0.0035,
-      "queue_signal": -0.0282,
-      "cancel_add_ratio": 0.0004
-    },
-    {
-      "ts": "2026-07-01 11:33:00",
-      "meta_confidence": 0.3729,
-      "realized_action": "skip",
-      "correct": 0,
-      "mlofi_norm": 0.0287,
-      "microprice_bias": -0.0053,
-      "queue_signal": 0.0678,
-      "cancel_add_ratio": -0.0026
-    },
-    {
-      "ts": "2026-07-01 11:38:00",
-      "meta_confidence": 0.36,
-      "realized_action": "skip",
-      "correct": 0,
-      "mlofi_norm": 0.0661,
-      "microprice_bias": 0.0054,
-      "queue_signal": -0.0706,
-      "cancel_add_ratio": 0.0006
-    },
-    {
-      "ts": "2026-07-01 11:43:00",
-      "meta_confidence": 0.3598,
-      "realized_action": "skip",
-      "correct": 1,
-      "mlofi_norm": 0.0537,
-      "microprice_bias": 0.0078,
-      "queue_signal": -0.0826,
-      "cancel_add_ratio": 0.0181
-    },
-    {
-      "ts": "2026-07-01 11:48:00",
-      "meta_confidence": 0.3599,
-      "realized_action": "skip",
-      "correct": 0,
-      "mlofi_norm": -0.0171,
-      "microprice_bias": -0.0002,
-      "queue_signal": 0.0099,
-      "cancel_add_ratio": 0.0061
-    },
-    {
-      "ts": "2026-07-01 11:53:00",
-      "meta_confidence": 0.3599,
-      "realized_action": "skip",
-      "correct": 1,
-      "mlofi_norm": 0.0086,
-      "microprice_bias": -0.0006,
-      "queue_signal": -0.0072,
-      "cancel_add_ratio": 0.009
-    },
-    {
-      "ts": "2026-07-01 11:58:00",
-      "meta_confidence": 0.37,
-      "realized_action": "skip",
-      "correct": 0,
-      "mlofi_norm": 0.0824,
-      "microprice_bias": 0.0083,
-      "queue_signal": -0.1336,
-      "cancel_add_ratio": 0.0013
-    },
-    {
-      "ts": "2026-07-01 12:03:00",
-      "meta_confidence": 0.4508,
-      "realized_action": "skip",
-      "correct": 0,
-      "mlofi_norm": 0.0146,
-      "microprice_bias": -0.0025,
-      "queue_signal": 0.0654,
-      "cancel_add_ratio": -0.001
-    },
-    {
-      "ts": "2026-07-01 12:08:00",
-      "meta_confidence": 0.3699,
-      "realized_action": "skip",
-      "correct": 1,
-      "mlofi_norm": -0.0013,
-      "microprice_bias": -0.0028,
-      "queue_signal": 0.0329,
-      "cancel_add_ratio": -0.001
-    },
-    {
-      "ts": "2026-07-01 12:13:00",
-      "meta_confidence": 0.3699,
-      "realized_action": "skip",
-      "correct": 0,
-      "mlofi_norm": 0.0352,
-      "microprice_bias": -0.0036,
-      "queue_signal": 0.0644,
-      "cancel_add_ratio": -0.0009
-    },
     {
       "ts": "2026-07-01 12:18:00",
       "meta_confidence": 0.3701,
@@ -249,7 +119,137 @@
       "microprice_bias": -0.0043,
       "queue_signal": 0.0534,
       "cancel_add_ratio": 0.0042
+    },
+    {
+      "ts": "2026-07-01 12:53:00",
+      "meta_confidence": 0.355,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": -0.0491,
+      "microprice_bias": -0.0039,
+      "queue_signal": 0.0686,
+      "cancel_add_ratio": 0.0073
+    },
+    {
+      "ts": "2026-07-01 12:58:00",
+      "meta_confidence": 0.3551,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": -0.1076,
+      "microprice_bias": -0.0028,
+      "queue_signal": 0.0393,
+      "cancel_add_ratio": 0.019
+    },
+    {
+      "ts": "2026-07-01 13:03:00",
+      "meta_confidence": 0.3551,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": 0.0101,
+      "microprice_bias": 0.0044,
+      "queue_signal": -0.0905,
+      "cancel_add_ratio": -0.0002
+    },
+    {
+      "ts": "2026-07-01 13:08:00",
+      "meta_confidence": 0.3551,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": -0.006,
+      "microprice_bias": -0.0049,
+      "queue_signal": 0.066,
+      "cancel_add_ratio": 0.0085
+    },
+    {
+      "ts": "2026-07-01 13:13:00",
+      "meta_confidence": 0.3872,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": 0.015,
+      "microprice_bias": -0.0012,
+      "queue_signal": 0.0063,
+      "cancel_add_ratio": -0.0008
+    },
+    {
+      "ts": "2026-07-01 13:18:00",
+      "meta_confidence": 0.355,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": 0.0144,
+      "microprice_bias": 0.0013,
+      "queue_signal": 0.0,
+      "cancel_add_ratio": 0.0001
+    },
+    {
+      "ts": "2026-07-01 13:23:00",
+      "meta_confidence": 0.4054,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": 0.0619,
+      "microprice_bias": -0.0029,
+      "queue_signal": 0.0436,
+      "cancel_add_ratio": 0.0006
+    },
+    {
+      "ts": "2026-07-01 13:28:00",
+      "meta_confidence": 0.355,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": -0.0087,
+      "microprice_bias": 0.0016,
+      "queue_signal": -0.0353,
+      "cancel_add_ratio": 0.0032
+    },
+    {
+      "ts": "2026-07-01 13:33:00",
+      "meta_confidence": 0.355,
+      "realized_action": "skip",
+      "correct": 1,
+      "mlofi_norm": -0.0627,
+      "microprice_bias": 0.0013,
+      "queue_signal": -0.0229,
+      "cancel_add_ratio": -0.0014
+    },
+    {
+      "ts": "2026-07-01 13:38:00",
+      "meta_confidence": 0.355,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": 0.0626,
+      "microprice_bias": -0.0033,
+      "queue_signal": 0.0272,
+      "cancel_add_ratio": -0.0008
+    },
+    {
+      "ts": "2026-07-01 13:43:00",
+      "meta_confidence": 0.355,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": -0.0347,
+      "microprice_bias": -0.0031,
+      "queue_signal": 0.0628,
+      "cancel_add_ratio": 0.0005
+    },
+    {
+      "ts": "2026-07-01 13:48:00",
+      "meta_confidence": 0.3646,
+      "realized_action": "skip",
+      "correct": 0,
+      "mlofi_norm": 0.0805,
+      "microprice_bias": 0.0008,
+      "queue_signal": 0.0491,
+      "cancel_add_ratio": 0.0079
+    },
+    {
+      "ts": "2026-07-01 13:53:00",
+      "meta_confidence": 0.355,
+      "realized_action": "take",
+      "correct": 1,
+      "mlofi_norm": 0.0285,
+      "microprice_bias": -0.001,
+      "queue_signal": 0.0072,
+      "cancel_add_ratio": 0.0019
     }
   ],
-  "generated_at": "2026-07-01 12:57:17"
+  "generated_at": "2026-07-01 14:01:17"
 }

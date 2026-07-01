@@ -1,41 +1,5 @@
 [
   {
-    "ts": "2026-06-22 11:35:24",
-    "ab_pnl_delta": 39.65,
-    "ab_accuracy_delta": -0.0013,
-    "calibration_ece": 0.132952,
-    "meta_count": 8208,
-    "meta_match_rate": 0.73,
-    "rollout_stage": "small_size"
-  },
-  {
-    "ts": "2026-06-22 11:52:16",
-    "ab_pnl_delta": 39.65,
-    "ab_accuracy_delta": -0.0013,
-    "calibration_ece": 0.132664,
-    "meta_count": 8225,
-    "meta_match_rate": 0.7298,
-    "rollout_stage": "small_size"
-  },
-  {
-    "ts": "2026-06-22 12:07:24",
-    "ab_pnl_delta": 53.77,
-    "ab_accuracy_delta": -0.0009,
-    "calibration_ece": 0.132053,
-    "meta_count": 8240,
-    "meta_match_rate": 0.7302,
-    "rollout_stage": "small_size"
-  },
-  {
-    "ts": "2026-06-22 12:24:17",
-    "ab_pnl_delta": 53.77,
-    "ab_accuracy_delta": -0.0009,
-    "calibration_ece": 0.131623,
-    "meta_count": 8257,
-    "meta_match_rate": 0.7308,
-    "rollout_stage": "small_size"
-  },
-  {
     "ts": "2026-06-22 12:46:28",
     "ab_pnl_delta": 55.15,
     "ab_accuracy_delta": -0.0009,
@@ -1077,6 +1041,42 @@
     "calibration_ece": 0.123255,
     "meta_count": 9404,
     "meta_match_rate": 0.7347,
+    "rollout_stage": "small_size"
+  },
+  {
+    "ts": "2026-07-01 13:14:26",
+    "ab_pnl_delta": 262.87,
+    "ab_accuracy_delta": 0.0012,
+    "calibration_ece": 0.123264,
+    "meta_count": 9408,
+    "meta_match_rate": 0.7348,
+    "rollout_stage": "small_size"
+  },
+  {
+    "ts": "2026-07-01 13:29:18",
+    "ab_pnl_delta": 262.87,
+    "ab_accuracy_delta": 0.0012,
+    "calibration_ece": 0.122927,
+    "meta_count": 9411,
+    "meta_match_rate": 0.7349,
+    "rollout_stage": "small_size"
+  },
+  {
+    "ts": "2026-07-01 13:46:25",
+    "ab_pnl_delta": 262.87,
+    "ab_accuracy_delta": 0.0012,
+    "calibration_ece": 0.122782,
+    "meta_count": 9414,
+    "meta_match_rate": 0.735,
+    "rollout_stage": "small_size"
+  },
+  {
+    "ts": "2026-07-01 14:01:18",
+    "ab_pnl_delta": 262.87,
+    "ab_accuracy_delta": 0.0012,
+    "calibration_ece": 0.122831,
+    "meta_count": 9417,
+    "meta_match_rate": 0.7349,
     "rollout_stage": "small_size"
   }
 ]

@@ -1,25 +1,25 @@
 # Microstructure A/B Backtest
 
-- Generated at: 2026-07-01 12:42:25
+- Generated at: 2026-07-01 13:46:25
 - Eval horizon: 5m
-- Samples: 7727
+- Samples: 7729
 
 ## Baseline
 
-- Entries: 5274 (68.25%)
-- Directional accuracy: 34.51%
-- Win rate: 48.07%
-- Avg PnL: -0.1031 pt
-- Total PnL: -543.6500 pt
+- Entries: 5275 (68.25%)
+- Directional accuracy: 34.52%
+- Win rate: 48.08%
+- Avg PnL: -0.1018 pt
+- Total PnL: -536.8100 pt
 
 ## Enhanced
 
-- Entries: 5160 (66.78%)
-- Directional accuracy: 34.63%
-- Win rate: 48.37%
-- Avg PnL: -0.0544 pt
-- Total PnL: -280.7800 pt
-- Changed vs baseline: 5479
+- Entries: 5161 (66.77%)
+- Directional accuracy: 34.64%
+- Win rate: 48.38%
+- Avg PnL: -0.0531 pt
+- Total PnL: -273.9400 pt
+- Changed vs baseline: 5480
 - Flat conversions: 264
 - Gater blocks: 93
 
