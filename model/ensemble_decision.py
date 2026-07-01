@@ -772,7 +772,11 @@ class EnsembleDecision:
             # 이유: BiasReset이 uniform(=방향0=FLAT처럼 계산)을 적용하면 CoherenceGate
             #   score가 낮아져 원웨이장에서도 차단됨. BiasReset은 편향 모델을 방어하기 위한
             #   것이지 원웨이 감지를 방해하려는 게 아니므로, 해당 호라이즌은 집계 제외.
-            _bias_overrides = set(bias_override_horizons or [])
+            # [267차] ConstOut 감지 호라이즌도 분모에서 제외.
+            # ConstOut 호라이즌은 가중치=0으로 앙상블 투표에서 이미 제외되지만
+            # horizon_proba 딕셔너리에는 잔존해 CoherenceGate 분모에 포함됐음.
+            # 30m ConstOut(dir=+1) + 1m SHORT(-1) → score=1/2=0.50 < min=0.60 → 진입 전면 차단.
+            _bias_overrides = set(bias_override_horizons or []) | _const_stuck
             _active_h = [
                 h for h in horizon_proba
                 if (horizon_proba[h]

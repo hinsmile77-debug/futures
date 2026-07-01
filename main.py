@@ -466,6 +466,8 @@ class TradingSystem:
         self._retrain_subproc = None                     # subprocess.Popen handle
         self._retrain_subproc_is_warmup: bool = False
         self._retrain_subproc_result_path: str = ""
+        # [267차] 서브프로세스 stderr 파일 핸들 — py310 경고·오류 캡처 (DEVNULL 대체)
+        self._retrain_subproc_stderr_fh = None           # open() handle, 완료 후 닫힘
         # [228차] 시작 시 이전 세션의 잔류 결과 JSON 정리 — 이중 인스턴스 경합 잔류 파일 방지
         try:
             import glob as _glob
@@ -820,28 +822,45 @@ class TradingSystem:
         _force_s   = "1" if force    else "0"
         _intraday_s = "1" if intraday else "0"
 
+        # [267차] stderr → 타임스탬프 로그파일 캡처 (DEVNULL 대체)
+        # py310_64 subprocess의 Python 경고·오류가 DEVNULL로 사라지는 문제 해소.
+        # 동일 UUID 기반 경로로 결과 JSON과 쌍을 이뤄 추적 가능.
+        _stderr_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "logs",
+            f"retrain_stderr_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
+        )
+        try:
+            _stderr_fh = open(_stderr_path, "w", encoding="utf-8")
+        except Exception:
+            _stderr_fh = None  # 파일 오픈 실패 시 DEVNULL 폴백
+
         try:
             _proc = subprocess.Popen(
                 [PYTHON_64_EXEC, _script, _rpath, _force_s, _intraday_s],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=_stderr_fh if _stderr_fh is not None else subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except FileNotFoundError:
+            if _stderr_fh:
+                _stderr_fh.close()
             log_manager.system(
                 f"[GBM-64] py310_64 Python 없음 ({PYTHON_64_EXEC}) — 재학습 불가", "ERROR",
             )
             return False
         except Exception as _pe:
+            if _stderr_fh:
+                _stderr_fh.close()
             log_manager.system(f"[GBM-64] subprocess 시작 실패: {_pe}", "WARNING")
             return False
 
         self._gbm_retrain_running      = True
         self._gbm_retrain_started_at   = datetime.datetime.now()
         self._gbm_retrain_done_event.clear()
-        self._retrain_subproc          = _proc
-        self._retrain_subproc_is_warmup = is_warmup
+        self._retrain_subproc             = _proc
+        self._retrain_subproc_is_warmup   = is_warmup
         self._retrain_subproc_result_path = _rpath
+        self._retrain_subproc_stderr_fh   = _stderr_fh
         self.circuit_breaker.set_gbm_retrain_active(True)
         log_manager.learning(
             f"[GBM-64] 64비트 서브프로세스 재학습 시작 "
@@ -3418,6 +3437,27 @@ class TradingSystem:
                     except Exception as _rpe:
                         logger.warning("[GBM-64] 결과 JSON 읽기 실패: %s", _rpe)
                 _is_wu = getattr(self, "_retrain_subproc_is_warmup", False)
+                # [267차] stderr 파일 닫기 + 내용 로깅 (py310 경고 가시화)
+                _stderr_fh = getattr(self, "_retrain_subproc_stderr_fh", None)
+                if _stderr_fh is not None:
+                    try:
+                        _stderr_fh.flush()
+                        _stderr_fh.close()
+                        _spath = getattr(_stderr_fh, "name", "")
+                        if _spath and os.path.exists(_spath):
+                            _stderr_size = os.path.getsize(_spath)
+                            if _stderr_size > 0:
+                                with open(_spath, "r", encoding="utf-8", errors="replace") as _sf:
+                                    _stderr_txt = _sf.read(2000)  # 최대 2000자
+                                logger.warning(
+                                    "[GBM-64] subprocess stderr (%d bytes):\n%s",
+                                    _stderr_size, _stderr_txt,
+                                )
+                            else:
+                                os.remove(_spath)  # 빈 파일 삭제
+                    except Exception as _sfe:
+                        logger.debug("[GBM-64] stderr 파일 처리 오류: %s", _sfe)
+                    self._retrain_subproc_stderr_fh = None
                 self._retrain_subproc = None
                 self._retrain_subproc_result_path = ""
                 self._gbm_retrain_running     = False
