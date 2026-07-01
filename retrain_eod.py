@@ -195,14 +195,14 @@ def p8_scaler_refit() -> bool:
 def _wait_for_daily_close(max_wait_min: int = 20, poll_sec: int = 30) -> bool:
     """main.py daily_close() 완료를 확인 후 반환 — pkl 경합 방지.
 
-    daily_close()는 STEP 3 장중 GBM 재학습 완료를 최대 20분 대기한 뒤
-    _exit_normally 파일을 기록하고 종료한다.
-    이 함수는 그 파일의 날짜를 확인해 daily_close 완료를 검증한다.
+    daily_close() 마지막에 data/daily_close_done_YYYYMMDD.txt 를 기록한다.
+    launcher가 삭제하는 _exit_normally 와 달리 이 파일은 launcher가 건드리지 않아
+    EOD 재학습(16:10)이 안정적으로 감지할 수 있다.
 
     반환값: True=정상 완료 확인, False=타임아웃 후 강제 진행
     """
-    _flag = os.path.join(_ROOT, "data", "_exit_normally")
-    _today = datetime.date.today().isoformat()
+    _today = datetime.date.today().strftime("%Y%m%d")
+    _marker = os.path.join(_ROOT, "data", f"daily_close_done_{_today}.txt")
     _deadline = datetime.datetime.now() + datetime.timedelta(minutes=max_wait_min)
 
     log.info(
@@ -211,19 +211,14 @@ def _wait_for_daily_close(max_wait_min: int = 20, poll_sec: int = 30) -> bool:
     )
 
     while datetime.datetime.now() < _deadline:
-        if os.path.exists(_flag):
+        if os.path.exists(_marker):
             try:
-                with open(_flag, "r", encoding="utf-8") as _f:
-                    _lines = _f.read().splitlines()
-                # _exit_normally 형식: line0=reason, line1=ISO timestamp
-                if len(_lines) >= 2 and _lines[1].startswith(_today):
-                    log.info(
-                        "[WaitDC] daily_close() 완료 확인 (%s) — EOD 재학습 시작",
-                        _lines[1],
-                    )
-                    return True
+                with open(_marker, "r", encoding="utf-8") as _f:
+                    _ts = _f.read().strip()
+                log.info("[WaitDC] daily_close() 완료 확인 (%s) — EOD 재학습 시작", _ts)
+                return True
             except Exception as _e:
-                log.debug("[WaitDC] 파일 읽기 실패 (재시도): %s", _e)
+                log.debug("[WaitDC] 마커 읽기 실패 (재시도): %s", _e)
 
         remaining = (_deadline - datetime.datetime.now()).seconds // 60
         log.info(
