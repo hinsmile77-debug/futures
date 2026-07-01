@@ -5,7 +5,7 @@
 EOD retrain_eod.py와 달리 intraday 경량 모드 지원.
 
 사용:
-    C:\Users\pc1\anaconda3\python.exe retrain_intraday.py <result_json_path> <force:0|1> <intraday:0|1>
+    C:/Users/pc1/anaconda3/envs/py310_64/python.exe retrain_intraday.py <result_json_path> <force:0|1> <intraday:0|1>
 
 인수:
     result_json_path : 완료 결과를 쓸 JSON 파일 경로 (main.py가 poll로 읽음)
