@@ -1,0 +1,18 @@
+[2026-06-29 15:18:39.03] ========== BAT START ========== 
+[2026-06-29 15:18:39.03] DBG-ENTRY: bat file launched, checking admin... 
+[2026-06-29 15:18:39.06] DBG-ENTRY: NOT ADMIN -- launching elevated relaunch via PowerShell 
+[2026-06-29 15:18:39.06] DBG-ENTRY: EXIT /B -- non-admin instance ends 
+[2026-06-29 15:18:39.53] ========== BAT START ========== 
+[2026-06-29 15:18:39.53] DBG-ENTRY: bat file launched, checking admin... 
+[2026-06-29 15:18:39.56] DBG-0: ADMIN OK 
+[2026-06-29 15:18:39.80] DBG-1: log init done, _BLOG=[C:\Users\pc1\PycharmProjects\futures\logs\Mireuk_batch\launcher_20260629_151839.log] 
+[2026-06-29 15:19:00.19] DBG-2: entering STEP 0 cleanup 
+[2026-06-29 15:20:57.57] ========== BAT START ========== 
+[2026-06-29 15:20:57.57] DBG-ENTRY: bat file launched, checking admin... 
+[2026-06-29 15:20:57.61] DBG-ENTRY: NOT ADMIN -- launching elevated relaunch via PowerShell 
+[2026-06-29 15:20:57.61] DBG-ENTRY: EXIT /B -- non-admin instance ends 
+[2026-06-29 15:20:58.07] ========== BAT START ========== 
+[2026-06-29 15:20:58.07] DBG-ENTRY: bat file launched, checking admin... 
+[2026-06-29 15:20:58.10] DBG-0: ADMIN OK 
+[2026-06-29 15:20:58.33] DBG-1: log init done, _BLOG=[C:\Users\pc1\PycharmProjects\futures\logs\Mireuk_batch\launcher_20260629_152058.log] 
+[2026-06-29 15:21:17.21] DBG-2: entering STEP 0 cleanup 

@@ -6145,6 +6145,14 @@ class TradingSystem:
                          else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0))
         _dl_pct = (max(-self.position.daily_stats()["pnl_krw"], 0)
                    / max(_ts_current_sizer_balance(self), 50_000_000))
+        _atr_state = (
+            "↑고변동" if atr > ATR_MAX_ENTRY
+            else ("↓저변동" if atr < ATR_MIN_ENTRY else "OK")
+        )
+        _gap_chk_val = (
+            f"{_gap_in_dir:.1f}pt" if (time_zone == "OPEN_VOLATILE" and _open_p_for_gap > 0)
+            else "N/A"
+        )
         _check_vals = {
             "signal_chk": "UP" if direction > 0 else ("DN" if direction < 0 else "FLAT"),
             "conf_chk":   f"{confidence:.1%}",
@@ -6155,7 +6163,12 @@ class TradingSystem:
             "candle_chk": "▲" if _prev_bar_dir > 0 else ("▼" if _prev_bar_dir < 0 else "—"),
             "time_chk":   time_zone or "—",
             "risk_chk":   f"{_dl_pct:.1%}",
+            "atr_chk":    f"{atr:.2f}pt {_atr_state}",
+            "gap_chk":    _gap_chk_val,
         }
+        # 게이트 필터 결과를 checks_ui에 합산 → 대시보드 게이트 필터 섹션 V/X 아이콘 구동
+        _checks_ui["atr_chk"]  = _atr_ok
+        _checks_ui["gap_chk"]  = _open_gap_ok
         self.dashboard.update_entry(
             _raw_signal_ko,
             confidence,
@@ -6169,6 +6182,7 @@ class TradingSystem:
             checklist_grade=_checklist_grade,
             final_entry=_final_entry_ok,
             check_values=_check_vals,
+            entry_block_reason=_entry_block_reason,
         )
         self._manual_entry_ctx = {
             "price": close,
@@ -6441,6 +6455,11 @@ class TradingSystem:
             "pending_filled": int(_pending.get("filled_qty") or 0),
             "pending_qty": int(_pending.get("qty") or 0),
             "time_exit_countdown_sec": _time_left_s,
+            "stop_move_reason": _pos.last_update_reason or "",
+            "bar_low":  bar.get("low",  0.0) if bar else 0.0,
+            "bar_high": bar.get("high", 0.0) if bar else 0.0,
+            "atr_ok":      _atr_ok,
+            "open_gap_ok": _open_gap_ok,
         })
 
         # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
@@ -9442,6 +9461,11 @@ def _ts_push_exit_panel_now(self, current_price: float = None) -> None:
         "pending_filled": int(_pending.get("filled_qty") or 0),
         "pending_qty": int(_pending.get("qty") or 0),
         "time_exit_countdown_sec": _time_left_s,
+        "stop_move_reason": _pos.last_update_reason or "",
+        "bar_low":  0.0,
+        "bar_high": 0.0,
+        "atr_ok":      True,
+        "open_gap_ok": True,
     })
 
 

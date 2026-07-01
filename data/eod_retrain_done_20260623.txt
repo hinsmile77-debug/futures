@@ -1,0 +1,7 @@
+completed: 2026-06-23 15:48:12
+rows: 39859
+cols: 97
+horizons_replaced: 6/6
+t_load_s: 45.1
+t_retrain_s: 144.2
+t_total_s: 190.0
