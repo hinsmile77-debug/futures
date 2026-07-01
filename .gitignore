@@ -48,3 +48,15 @@ Thumbs.db
 *.env
 venv/
 .venv/
+
+# 머신별 브로커 설정 (machine.cfg.example 을 복사해 설정, 커밋 금지)
+machine.cfg
+
+# 머신 전용 런처 (dev 브랜치 공유 제외 -- 통합 런처: LAUNCH_API.bat, start_mireuk.bat)
+# MW0601 전용
+CYBOS_PLUS.bat
+CYBOS5.bat
+start_mireuk_Cybos.bat
+# MW0602 전용
+CREON_PLUS.bat
+start_mireuk_CREON.bat

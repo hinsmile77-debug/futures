@@ -1,0 +1,16 @@
+# =============================================================
+# machine.cfg -- PC별 브로커 설정
+# =============================================================
+# [사용법]
+#   이 파일을 machine.cfg 로 복사한 뒤 이 PC에 맞는 값으로 수정하세요.
+#   machine.cfg 는 .gitignore 대상입니다 -- 절대 커밋하지 마세요.
+#
+# [설정 값]
+#   MW0601 (Cybos Plus  대신증권) : BROKER=cybos
+#   MW0602 (CREON Plus  대신증권) : BROKER=creon
+#
+# [관련 런처]
+#   LAUNCH_API.bat    -- Cybos/CREON API 연결 (HTS 자동 로그인)
+#   start_mireuk.bat  -- 미륵이 본체 실행 (main.py 자동 재시작 포함)
+#
+BROKER=cybos
