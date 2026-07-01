@@ -7941,6 +7941,20 @@ class TradingSystem:
             f"다음 시작: 내일 08:45 이후",
             "INFO",
         )
+        # WaitDC 마커 — retrain_eod.py가 daily_close 완료를 감지하는 전용 파일.
+        # _exit_normally는 launcher가 읽은 직후 삭제하므로 EOD 재학습(16:10)이 항상 놓쳤음.
+        # 이 파일은 launcher가 건드리지 않으므로 retrain_eod.py가 안정적으로 감지 가능.
+        try:
+            _dc_marker = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "data",
+                f"daily_close_done_{datetime.date.today().strftime('%Y%m%d')}.txt",
+            )
+            with open(_dc_marker, "w", encoding="utf-8") as _f:
+                _f.write(datetime.datetime.now().isoformat() + "\n")
+        except Exception as _dcm_e:
+            logger.warning("[DailyClose] WaitDC 마커 기록 실패 (무해): %s", _dcm_e)
+
         # [233차] DailyClose 완료 즉시 _exit_normally 플래그 생성.
         # _auto_shutdown()은 Qt 타이머(15초 지연) 경유로 생성하므로
         # 타이머 미실행·예외 시 플래그가 누락돼 런처가 재시작을 시도하는 버그 방지.
