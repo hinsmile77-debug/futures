@@ -34,6 +34,18 @@ data/db/trades.db
 # 로그
 logs/
 
+# PC별 로컬 런타임 산출물 (여러 PC가 서로 pull로 동기화하므로 커밋 금지)
+data/session_state.json
+calibration_metrics.json
+calibration_report.md
+effect_monitor_history.json
+meta_gate_tuning_metrics.json
+meta_gate_tuning_report.md
+microstructure_ab_metrics.json
+microstructure_ab_report.md
+rollout_readiness_metrics.json
+rollout_readiness_report.md
+
 # IDE
 .idea/
 .vscode/

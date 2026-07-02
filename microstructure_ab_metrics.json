@@ -1,27 +1,27 @@
 {
-  "generated_at": "2026-07-01 14:18:25",
+  "generated_at": "2026-07-02 15:10:42",
   "eval_horizon": "5m",
   "baseline": {
-    "samples": 7730,
-    "entries": 5275,
-    "coverage": 0.6824,
-    "directional_accuracy": 0.3452,
+    "samples": 7742,
+    "entries": 5281,
+    "coverage": 0.6821,
+    "directional_accuracy": 0.345,
     "win_rate": 0.4808,
-    "avg_pnl_pts": -0.1018,
-    "total_pnl_pts": -536.81,
-    "avg_confidence": 0.4166
+    "avg_pnl_pts": -0.102,
+    "total_pnl_pts": -538.75,
+    "avg_confidence": 0.4165
   },
   "enhanced": {
-    "samples": 7730,
-    "entries": 5161,
+    "samples": 7742,
+    "entries": 5169,
     "coverage": 0.6677,
-    "directional_accuracy": 0.3464,
-    "win_rate": 0.4838,
-    "avg_pnl_pts": -0.0531,
-    "total_pnl_pts": -273.94,
+    "directional_accuracy": 0.3461,
+    "win_rate": 0.4837,
+    "avg_pnl_pts": -0.0554,
+    "total_pnl_pts": -286.48,
     "avg_confidence": 0.4185
   },
-  "changed_count": 5480,
+  "changed_count": 5489,
   "flat_conversions": 264,
   "blocked_count": 93,
   "changed_examples": [
@@ -60304,6 +60304,105 @@
       "enhanced_pnl_pts": 6.8400000000001455,
       "gate_reason": "soft_adjust",
       "gate_strength": 0.043099
+    },
+    {
+      "ts": "2026-07-02 09:28:00",
+      "baseline_direction": 0,
+      "baseline_confidence": 0.3901,
+      "enhanced_direction": 1,
+      "enhanced_confidence": 0.3863,
+      "actual": -1,
+      "enhanced_pnl_pts": -3.019999999999982,
+      "gate_reason": "inactive",
+      "gate_strength": 0.0
+    },
+    {
+      "ts": "2026-07-02 09:58:00",
+      "baseline_direction": 0,
+      "baseline_confidence": 0.4163,
+      "enhanced_direction": 0,
+      "enhanced_confidence": 0.4167,
+      "actual": 0,
+      "enhanced_pnl_pts": 0.0,
+      "gate_reason": "inactive",
+      "gate_strength": 0.0
+    },
+    {
+      "ts": "2026-07-02 10:28:00",
+      "baseline_direction": -1,
+      "baseline_confidence": 0.3693,
+      "enhanced_direction": -1,
+      "enhanced_confidence": 0.4165,
+      "actual": 1,
+      "enhanced_pnl_pts": -5.980000000000018,
+      "gate_reason": "soft_adjust",
+      "gate_strength": 0.133143
+    },
+    {
+      "ts": "2026-07-02 10:58:00",
+      "baseline_direction": 1,
+      "baseline_confidence": 0.4136,
+      "enhanced_direction": 1,
+      "enhanced_confidence": 0.378,
+      "actual": 0,
+      "enhanced_pnl_pts": 0.12000000000011823,
+      "gate_reason": "soft_adjust",
+      "gate_strength": -0.143575
+    },
+    {
+      "ts": "2026-07-02 11:28:00",
+      "baseline_direction": -1,
+      "baseline_confidence": 0.3356,
+      "enhanced_direction": -1,
+      "enhanced_confidence": 0.3318,
+      "actual": 0,
+      "enhanced_pnl_pts": 0.2999999999999545,
+      "gate_reason": "soft_adjust",
+      "gate_strength": -0.103454
+    },
+    {
+      "ts": "2026-07-02 11:58:00",
+      "baseline_direction": 1,
+      "baseline_confidence": 0.3323,
+      "enhanced_direction": 1,
+      "enhanced_confidence": 0.3252,
+      "actual": -1,
+      "enhanced_pnl_pts": -2.6800000000000637,
+      "gate_reason": "soft_adjust",
+      "gate_strength": -0.191423
+    },
+    {
+      "ts": "2026-07-02 13:28:00",
+      "baseline_direction": 0,
+      "baseline_confidence": 0.3546,
+      "enhanced_direction": 1,
+      "enhanced_confidence": 0.385,
+      "actual": -1,
+      "enhanced_pnl_pts": -7.579999999999927,
+      "gate_reason": "inactive",
+      "gate_strength": 0.0
+    },
+    {
+      "ts": "2026-07-02 13:58:00",
+      "baseline_direction": -1,
+      "baseline_confidence": 0.3769,
+      "enhanced_direction": -1,
+      "enhanced_confidence": 0.3722,
+      "actual": 0,
+      "enhanced_pnl_pts": -0.6800000000000637,
+      "gate_reason": "soft_adjust",
+      "gate_strength": -0.115402
+    },
+    {
+      "ts": "2026-07-02 14:28:00",
+      "baseline_direction": -1,
+      "baseline_confidence": 0.3191,
+      "enhanced_direction": -1,
+      "enhanced_confidence": 0.3213,
+      "actual": -1,
+      "enhanced_pnl_pts": 6.979999999999791,
+      "gate_reason": "soft_adjust",
+      "gate_strength": 0.05975
     }
   ]
 }
