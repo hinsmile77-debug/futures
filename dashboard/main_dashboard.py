@@ -48,6 +48,7 @@ from config.settings import (
     HEALTH_CACHE_AGE_WARN_SEC, HEALTH_CACHE_AGE_CRIT_SEC,
     HEALTH_EXCEPTION_DENSITY_WARN_10M, HEALTH_EXCEPTION_DENSITY_CRIT_10M,
     ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
+    CB_ACC30M_MIN_SAMPLES,
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
@@ -5238,7 +5239,9 @@ class LearningPanel(QWidget):
         cb_acc  = float(data.get("cb_accuracy_30m", 0.0))
         cb_n    = int(data.get("cb_samples", 0))
         cb_stk  = int(data.get("cb_streak", 0))
-        cb_col  = self._acc_col(cb_acc) if cb_n >= 5 else C['text2']
+        # HALT 판정 최소 표본(CB_ACC30M_MIN_SAMPLES=30) 미만이면 통계적으로 무의미하므로
+        # 강조색 대신 회색으로 표시 — 판정에 실제 영향 없는 5~29건 구간의 과장 표시 방지
+        cb_col  = self._acc_col(cb_acc) if cb_n >= CB_ACC30M_MIN_SAMPLES else C['text2']
         stk_col = C['red'] if cb_stk >= 3 else C['text2']
         stk_txt = f"<span style='color:{stk_col};font-weight:bold;'>{cb_stk}회</span>"
         self._lbl_cb_acc.setText(
@@ -5296,26 +5299,43 @@ class LearningPanel(QWidget):
         fitted = data.get("sgd_fitted", {})
         h_accs = data.get("horizon_accuracy", {})
         h_cnts = data.get("sgd_sample_counts", {})
+        h_acc_n = data.get("horizon_acc_samples", {})
         for hz, (acc_lbl, cnt_lbl, badge, bar) in self._hz_cards.items():
             is_fit = fitted.get(hz, False)
-            acc = float(h_accs.get(hz, 0.5))
-            cnt = int(h_cnts.get(hz, 0))
-            col = self._acc_col(acc) if is_fit else C['text2']
-            acc_lbl.setText(f"{acc:.1%}" if is_fit else "—.—%")
+            acc    = float(h_accs.get(hz, 0.5))
+            n_acc  = int(h_acc_n.get(hz, 0))
+            cnt    = int(h_cnts.get(hz, 0))
+            # is_fit(현재 모델 학습여부)와 별개로 acc_buf 표본이 5건 미만이면
+            # horizon_accuracy()가 방어적으로 0.0을 반환한다 — "정확도 0%"가 아니라
+            # "판정 불가(표본부족)" 상태이므로 구분 표시 (버그2)
+            acc_ready = is_fit and n_acc >= 5
+            col = self._acc_col(acc) if acc_ready else C['text2']
+            acc_lbl.setText(f"{acc:.1%}" if acc_ready else (f"—.—%(n{n_acc})" if is_fit else "—.—%"))
             acc_lbl.setStyleSheet(
                 f"color:{col};font-size:{S.f(16)}px;font-weight:bold;"
             )
-            bar.setValue(int(acc * 100) if is_fit else 0)
+            bar.setValue(int(acc * 100) if acc_ready else 0)
             bar.setStyleSheet(
                 f"QProgressBar{{background:{C['bg']};border:none;border-radius:2px;}}"
                 f"QProgressBar::chunk{{background:{col};}}"
             )
-            cnt_lbl.setText(f"학습 {cnt}건")
+            # sgd_sample_counts(_horizon_counts)는 BiasReset 등 부분 리셋 시에도
+            # 초기화되지 않는 누적(lifetime) 카운터 — is_fit과 별도 축이므로
+            # "누적"임을 명시해 "미학습인데 건수 있음" 오인을 방지 (버그1)
+            cnt_lbl.setText(f"누적 {cnt}건")
             cnt_lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(8)}px;")
             if is_fit:
                 badge.setText("학습됨")
                 badge.setStyleSheet(
                     f"background:{col}33;color:{col};border-radius:3px;"
+                    f"font-size:{S.f(7)}px;font-weight:bold;padding:1px 5px;"
+                )
+            elif cnt > 0:
+                # 모델이 리셋(BiasReset/SGD 붕괴복구)되어 현재는 미학습이지만
+                # 과거 누적 학습 이력은 남아있는 상태 — 순수 "미학습"과 구분
+                badge.setText("리셋됨")
+                badge.setStyleSheet(
+                    f"background:{C['orange']}33;color:{C['orange']};border-radius:3px;"
                     f"font-size:{S.f(7)}px;font-weight:bold;padding:1px 5px;"
                 )
             else:

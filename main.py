@@ -3057,13 +3057,20 @@ class TradingSystem:
             try:
                 _ss_path = self._session_state_path()
                 _ss2 = self._read_session_state()
+                # [280차] self.batch_retrainer._retrain_count는 항상 0 — 실제 재학습은
+                # _start_gbm_retrain_subprocess()가 매번 새 BatchRetrainer 인스턴스를 만드는
+                # py310_64 서브프로세스(retrain_intraday.py)에서 수행되고, 그 안의 카운터는
+                # 서브프로세스 종료와 함께 사라진다. 세션에 영속된 누적값에 +1하는 방식으로 대체.
+                _prev_count = int(_ss2.get("gbm_total_retrain_count", 0) or 0)
+                _new_count  = _prev_count + 1
                 _ss2["gbm_last_retrain"] = result.get("timestamp", "")
-                _ss2["gbm_total_retrain_count"] = self.batch_retrainer._retrain_count
+                _ss2["gbm_total_retrain_count"] = _new_count
                 with open(_ss_path, "w", encoding="utf-8") as _ssf:
                     json.dump(_ss2, _ssf, ensure_ascii=False)
+                self.batch_retrainer._retrain_count = _new_count  # get_stats() 대시보드 즉시 동기화
                 logger.info(
                     "[GBM] 재학습 이력 저장: %s (%d회)",
-                    _ss2["gbm_last_retrain"], _ss2["gbm_total_retrain_count"],
+                    _ss2["gbm_last_retrain"], _new_count,
                 )
             except Exception as _pe:
                 logger.warning("[GBM] 재학습 이력 저장 실패 (무해): %s", _pe)
@@ -7199,6 +7206,10 @@ class TradingSystem:
             hz: ol.horizon_accuracy(hz)
             for hz in ol._fitted
         }
+        h_acc_n = {
+            hz: ol.horizon_acc_samples(hz)
+            for hz in ol._fitted
+        }
 
         # CB③ 30분 정확도
         cb_status = self.circuit_breaker.status_dict()
@@ -7226,6 +7237,7 @@ class TradingSystem:
             "sgd_fitted":        dict(ol._fitted),
             "sgd_sample_counts": dict(ol._horizon_counts),
             "horizon_accuracy":  h_acc,
+            "horizon_acc_samples": h_acc_n,
             "buffer_accuracy":   buf_acc,
             "cb_accuracy_30m":   cb_status["accuracy_30m"],
             "cb_samples":        cb_status["cb3_samples"],

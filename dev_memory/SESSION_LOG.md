@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-07-02 (280차 — 자가학습 탭 표시 버그 4종 수정)
+
+**트리거**: 사용자가 중간패널 "🧠 자가학습" 탭 스크린샷을 제시하며 "SGD 온라인 자가학습
+호라이즌 별 학습/미학습 현황 및 GBM 배치 재학습 현황 정보를 확인하고 올바르게 데이터를
+반영하고 있는지 철저히 살펴보고 이상점 개선 제안해" 요청.
+
+### 조사 결과 (Explore 서브에이전트 위임)
+
+- **배지/건수 비동기**: 배지는 `OnlineLearner._fitted[hz]`(현재 학습 상태), 건수는
+  `OnlineLearner._horizon_counts[hz]`(리셋 안 되는 lifetime 카운터, `DECISION_LOG.md`
+  1593행에 qualify용으로 의도적 설계된 것 확인) — 서로 다른 축이라 "미학습인데 건수
+  있음" 조합이 발생. `_do_sgd_reset()`([online_learner.py:389](learning/online_learner.py#L389))
+  이 `_fitted`만 리셋하고 `_horizon_counts`는 그대로 두는 구조.
+- **정확도 0.0% 오인**: `horizon_accuracy()`([online_learner.py:368](learning/online_learner.py#L368))
+  가 표본 5건 미만이면 방어적으로 0.0 반환 — "판정불가" 신호를 대시보드가 "실제 0%"처럼
+  그대로 출력.
+- **GBM 재학습 횟수 0회 고정**: `_on_gbm_retrain_done()`([main.py:3061](main.py#L3061))이
+  `self.batch_retrainer._retrain_count`를 읽는데, 실제 재학습은 매번 새로 뜨는 py310_64
+  서브프로세스(`retrain_intraday.py`)의 별도 `BatchRetrainer` 인스턴스에서 일어나 메인
+  프로세스 쪽 카운터는 증가한 적 없음 — 영구 0. `retrain_eod.py`(매일 15:45 장외 스케줄러)
+  도 완료 마커만 쓰고 `session_state.json`을 안 건드려 대시보드에 전혀 반영 안 됨.
+- **CB③ 강조색 임계값 불일치**: 라벨 강조 기준 `cb_n>=5`가 실제 HALT 판정 최소표본
+  `CB_ACC30M_MIN_SAMPLES=30`(277차 가드)과 달라, 5~29건 구간 무의미한 값이 위험처럼
+  보임.
+
+### 구현
+
+- `learning/online_learner.py`: `horizon_acc_samples(hz)` 추가.
+- `main.py`: `_gather_learning_stats()`에 `horizon_acc_samples` 필드 추가.
+  `_on_gbm_retrain_done()`을 `session_state.json` 누적값 +1 방식으로 교체(서브프로세스가
+  매번 0에서 시작하는 인스턴스 카운터 대신), `batch_retrainer._retrain_count`도 동기화해
+  재시작 없이 `get_stats()`가 즉시 반영.
+- `retrain_eod.py`: 완료 마커 기록 직후 동일 `session_state.json` 키 갱신 로직 추가.
+- `dashboard/main_dashboard.py`: SGD 호라이즌 카드를 "학습됨/리셋됨/미학습" 3분기 +
+  정확도 표본부족 시 "—.—%(n건)" 표시로 교체. `CB_ACC30M_MIN_SAMPLES` import해 CB③
+  강조색 임계값 정렬.
+- 검증: `python -m py_compile`로 4개 수정 파일 구문 오류 없음 확인. 실제 PyQt5 창
+  기동·육안 확인은 미실시 — `NEXT_TODO.md` 280차에 확인 항목 기록.
+
+### 범위 외로 남긴 것
+
+- `scripts/eod_retrain.py`(EOD_RETRAIN.bat 대상 수동/백업 스크립트)는 미수정 — 자동
+  스케줄(`retrain_eod.py`)과 이중 카운트 위험 때문에 의도적으로 제외.
+
+---
+
 ## 2026-07-02 (279차 — drift_adjuster 대시보드 표시 추가)
 
 **트리거**: 사용자 질문 "DRIFT_UP, RECOVERY_DOWN 이 대시보드에 표시 되는 곳은 어디인가 —

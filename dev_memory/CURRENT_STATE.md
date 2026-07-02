@@ -1,7 +1,47 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-02 (279차) — drift_adjuster DRIFT_UP/RECOVERY_DOWN 상태 대시보드 표시 추가
+> 마지막 업데이트: 2026-07-02 (280차) — 자가학습 탭 배지·정확도·GBM 재학습 횟수 표시 버그 4종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-02 (280차 — 자가학습 탭 표시 버그 4종 수정)
+
+**결론**: 사용자가 중간패널 "🧠 자가학습" 탭 스크린샷에서 지적한 4가지 이상점을 조사 후 모두
+수정. ① 1분/3분/15분/30분이 "미학습" 배지인데 학습 건수(2·35·78건 등)가 남아있던 원인 —
+`sgd_fitted`(현재 모델 학습여부, BiasReset 시 False로 리셋)와 `sgd_sample_counts`
+(`OnlineLearner._horizon_counts`, `DECISION_LOG.md` 1593행 설계상 qualify용 lifetime
+누적치라 리셋 안 됨)가 서로 다른 축이라 배지·건수가 어긋나 보였던 것. 실제 리셋 로직은
+qualify 게이트 유지를 위한 의도된 설계라 그대로 두고, 대시보드 표시만 "리셋됨"(주황,
+cnt>0인데 미학습) / "미학습"(cnt=0) / "학습됨"으로 3분기해 오인 해소. ② 5분/10분이 "학습됨"
+인데 정확도 0.0%로 보이던 원인 — `horizon_accuracy()`가 정확도 버퍼 표본 5건 미만이면
+방어적으로 0.0을 반환(실제 0%가 아니라 "판정불가")하는데 UI가 그대로 찍어 오인. 표본 수를
+`horizon_acc_samples()`로 노출해 `is_fit and n>=5`일 때만 실제 %를 표시, 미달 시
+"—.—%(n건)"으로 구분. ③ GBM 배치 재학습 횟수가 항상 "0회"로 고정된 것 — 실제 재학습은
+`_start_gbm_retrain_subprocess()`가 매번 새 `BatchRetrainer` 인스턴스를 py310_64
+서브프로세스(`retrain_intraday.py`)에서 실행하는데, `_on_gbm_retrain_done()`이 그 서브
+프로세스와 무관한 메인 프로세스 자신의(한 번도 증가한 적 없는) `self.batch_retrainer.
+_retrain_count`를 읽어 영구히 0이었던 명백한 버그. `session_state.json`의 누적값에 +1하는
+방식으로 교체. 추가로 매일 15:45 장외 스케줄러가 실행하는 `retrain_eod.py`(full CV
+재학습)는 완료 마커 파일만 기록하고 `session_state.json`을 전혀 건드리지 않아 대시보드
+카운트에 반영되지 않던 것도 함께 수정(동일 키에 +1). ④ CB③ 30m 정확도 강조색 임계값이
+`cb_n>=5`로 하드코딩되어, 실제 HALT 판정 최소표본 `CB_ACC30M_MIN_SAMPLES=30`(277차 가드)
+과 달라 5~29건 구간의 무의미한 값이 위험처럼 빨갛게 보이던 UX 문제 — 임계값을 30으로 정렬.
+
+**코드 수정**: `learning/online_learner.py`에 `horizon_acc_samples(hz)` 추가.
+`main.py::_gather_learning_stats()`에 `horizon_acc_samples` 필드 추가,
+`_on_gbm_retrain_done()`의 재학습 카운터를 세션 누적(+1) 방식으로 교체 + `batch_retrainer.
+_retrain_count`도 동기화. `retrain_eod.py`에 완료 마커 기록 직후 동일한 session_state 키
+(`gbm_last_retrain`/`gbm_total_retrain_count`) 갱신 추가. `dashboard/main_dashboard.py`
+SGD 호라이즌 카드 렌더링을 "학습됨/리셋됨/미학습" 3분기 + 정확도 판정불가 구분 표시로 교체,
+CB③ 강조색 임계값을 `CB_ACC30M_MIN_SAMPLES` import로 정렬. `python -m py_compile`로 4개
+파일 구문 검증 완료. **실제 대시보드 창에서 배지·정확도·재학습 횟수 표시 육안 확인 필요**
+(오프스크린 렌더 테스트 미실시) — `NEXT_TODO.md` 280차.
+
+**미해결/범위 외**: `scripts/eod_retrain.py`(수동/백업용, `EOD_RETRAIN.bat` 대상)는
+session_state를 건드리지 않는 상태 그대로 둠 — 앱이 꺼진 날 수동 실행하는 보조 스크립트라
+매일 15:45 자동 스케줄(`retrain_eod.py`)과 이중 카운트될 위험을 피하기 위해 의도적으로 미수정.
+필요 시 별도 검토.
 
 ---
 

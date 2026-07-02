@@ -372,6 +372,10 @@ class OnlineLearner:
             return 0.0
         return sum(buf) / len(buf)
 
+    def horizon_acc_samples(self, horizon: str) -> int:
+        """호라이즌별 정확도 버퍼 표본 수 — horizon_accuracy()의 5건 미만 가드 판별용 (대시보드 표시)"""
+        return len(self._acc_buf.get(horizon, ()))
+
     # 기존 코드 호환 프로퍼티
     @property
     def sgd_weight(self) -> float:
