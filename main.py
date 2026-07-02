@@ -1667,10 +1667,11 @@ class TradingSystem:
         1) acc30m 버퍼 리셋 — 노후 스케일러 기반 예측은 무효
         2) GBM 재학습 예약 — scaler만 재적합해도 GBM 트리 구조 미변경 시 ConstOut 재발
         """
-        # (1) acc30m 버퍼 리셋
-        self.circuit_breaker.reset_acc30m_buffer()
+        # (1) acc30m 버퍼 리셋 (표본 부족 시 [277차] 기아 방지로 내부에서 스킵될 수 있음)
+        _acc30m_did_reset = self.circuit_breaker.reset_acc30m_buffer()
         log_manager.system(
-            f"[ConstOut] {hz} 재적합 완료 → acc30m 버퍼 리셋",
+            f"[ConstOut] {hz} 재적합 완료 → "
+            + ("acc30m 버퍼 리셋" if _acc30m_did_reset else "acc30m 버퍼 리셋 스킵(표본 누적 중)"),
             "INFO",
         )
         # (2) GBM 재학습 예약 — 상호 잠금: 이미 재학습 중이면 skip
