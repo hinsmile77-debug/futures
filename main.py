@@ -7716,12 +7716,15 @@ class TradingSystem:
 
         # ── 자가학습 일일 마감 집계 ──────────────────────────────
         _today_accuracy = self.online_learner.recent_accuracy()
+        _today_n_samples = self.online_learner.sample_count
         try:
             self.daily_consolidator.consolidate()
         except Exception as _dce:
             logger.warning("[DailyConsolidator] 집계 실패 (스킵): %s", _dce)
         try:
-            _drift_result = self.drift_adjuster.record_accuracy(_today_accuracy)
+            _drift_result = self.drift_adjuster.record_accuracy(
+                _today_accuracy, n_samples=_today_n_samples
+            )
             _new_alpha = _drift_result.get("alpha", 0.001)
             if hasattr(self.online_learner, "set_alpha"):
                 self.online_learner.set_alpha(_new_alpha)

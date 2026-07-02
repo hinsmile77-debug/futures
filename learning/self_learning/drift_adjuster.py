@@ -40,6 +40,12 @@ ALPHA_DOWN_FACTOR = 0.8   # 회복 시 0.8배 하향 (천천히)
 # 롤링 이력 유지 기간
 HISTORY_DAYS = 10
 
+# 당일 정확도 산출에 쓰인 유효 표본이 이 값 미만이면 이력 반영·alpha 조정을 스킵한다.
+# 표본이 3~4건뿐이면 1/3=33%, 1/2=50% 같은 극단값이 그대로 alpha를 흔들어
+# drift 오판(연속 하락으로 오인)을 유발한다. contrarian_mode._ACC30M_MIN_SAMPLES=15와
+# 동일 기준(1건 오답으로 오발동 방지) 적용.
+MIN_SAMPLES_REQUIRED = 15
+
 
 class DriftAdjuster:
     """
@@ -59,16 +65,30 @@ class DriftAdjuster:
         self._load()
 
     # ── 15:40 마감 시 호출 ─────────────────────────────────────
-    def record_accuracy(self, accuracy: float) -> Dict:
+    def record_accuracy(self, accuracy: float, n_samples: Optional[int] = None) -> Dict:
         """
         당일 전체 정확도를 기록하고 alpha를 갱신한다.
 
         Args:
             accuracy: 당일 전체 예측 정확도 (0.0~1.0)
+            n_samples: 이 정확도 산출에 쓰인 당일 유효 표본 수 (전 호라이즌 합산).
+                       MIN_SAMPLES_REQUIRED 미만이면 극단값이 alpha·이력에 반영되지
+                       않도록 이번 기록을 스킵한다 (None이면 가드 미적용, 호환용).
 
         Returns:
             {"alpha": float, "action": str, "history": list}
         """
+        if n_samples is not None and n_samples < MIN_SAMPLES_REQUIRED:
+            logger.info(
+                "[DriftAdjuster] 표본 부족(n=%d < %d) — acc=%.1f%% 반영 스킵, alpha=%.5f 유지",
+                n_samples, MIN_SAMPLES_REQUIRED, accuracy * 100, self._alpha,
+            )
+            return {
+                "alpha":   self._alpha,
+                "action":  "SKIP_LOW_SAMPLE",
+                "history": list(self._acc_history),
+            }
+
         self._acc_history.append(round(accuracy, 4))
         action = self._adjust_alpha()
         self._save()

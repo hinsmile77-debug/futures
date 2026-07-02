@@ -1,7 +1,23 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-02 (277차) — CB③ 재활성화는 30m 정확도(276차 근본원인) 회복 후로 보류 결정 + acc30m 버퍼 기아 방지 코드 수정(선행 과제 즉시 처리)
+> 마지막 업데이트: 2026-07-02 (278차) — drift_adjuster 표본 부족 극단값 반영 방지 최소 표본 가드 추가
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-02 (278차 — drift_adjuster 최소 표본 가드 추가)
+
+**결론**: `DriftAdjuster.record_accuracy()`가 당일 정확도를 표본 수 무관하게 그대로
+10일 이력에 반영해, 검증 표본이 소수인 날(1/3=33%, 1/2=50% 등)의 극단값이 alpha 조정
+로직(3일 연속 하락/2일 연속 회복 판정)을 왜곡시키던 문제 수정. `275차 발견 목록`의
+"drift_adjuster acc_history 노이즈" 항목 후속 조치.
+
+**코드 수정**: `learning/online_learner.py`에 `sample_count` 프로퍼티(당일 누적 검증
+표본 수) 추가. `learning/self_learning/drift_adjuster.py`에 `MIN_SAMPLES_REQUIRED=15`
+가드 추가 — 미달 시 `SKIP_LOW_SAMPLE`로 이력 기록·alpha 조정 스킵, 기존 alpha 유지.
+`main.py::daily_close()`에서 `n_samples=`로 전달하도록 연결. 단위 테스트로 스킵/기록
+경로 확인. **다음 거래일 EOD 로그 검증 필요** — `NEXT_TODO.md` 278차. 상세:
+`SESSION_LOG.md` 278차, `DECISION_LOG.md` 278차.
 
 ---
 

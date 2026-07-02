@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-07-02 (278차 — drift_adjuster 최소 표본 가드 추가)
+
+### [결정] 당일 정확도 표본이 `MIN_SAMPLES_REQUIRED=15` 미만이면 alpha 이력 반영 스킵
+
+**배경**: `DriftAdjuster.record_accuracy()`는 `online_learner.recent_accuracy()`(호라이즌별
+정확도의 단순 평균)를 표본 수와 무관하게 그대로 10일 롤링 `acc_history`에 반영해왔음.
+275차 관찰(`drift_adjuster_state.json` 최근 10개: `0.5, 0.35, 0.2648, 0.5, 0.5, 0.1562,
+0.5, 0.3333, 0.5, 0.5`)에서 `0.3333`(=1/3), 반복되는 `0.5`(=1/2 또는 무데이터 기본값)
+같은 값이 소수 표본에서 나온 것으로 판단 — 세션 재시작·`since_ts` 필터링 등으로 당일
+검증 표본이 적은 날, 이 극단값이 `DRIFT_THRESHOLD`(0.50) 3일 연속/`RECOVERY_THRESHOLD`
+(0.58) 2일 연속 판정에 노이즈로 섞여 SGD alpha를 잘못된 방향으로 흔들 위험.
+
+**결정**: `learning/online_learner.py`에 `sample_count` 프로퍼티(당일 `reset_daily()`
+이후 누적된 전 호라이즌 학습 표본 수) 추가. `drift_adjuster.py`에
+`MIN_SAMPLES_REQUIRED=15` 상수 추가, `record_accuracy(accuracy, n_samples=None)`이
+`n_samples < 15`면 `_acc_history.append()`와 `_adjust_alpha()`를 모두 스킵하고
+`action="SKIP_LOW_SAMPLE"`로 기존 alpha를 그대로 유지. `n_samples=None`(레거시 호출)은
+가드 미적용 — 유일한 호출부인 `main.py::daily_close()`는 항상 `n_samples=`를 전달하도록
+수정.
+
+**임계값 15의 근거**: 프로젝트 내 별도 실측 데이터 없이 `safety/contrarian_mode.py::
+_ACC30M_MIN_SAMPLES=15`("1건 오답으로 오발동 방지")를 그대로 차용. `CB_ACC30M_MIN_SAMPLES
+=30`(circuit_breaker.py)보다는 낮게 잡았는데, drift_adjuster는 CB③처럼 즉시 당일 정지를
+발동하는 게 아니라 학습률을 서서히(×1.5/×0.8) 조정하는 완만한 안전장치라 CB③만큼
+보수적인 표본 수를 요구할 필요는 없다고 판단. 실제 일별 `sample_count` 분포를 관찰한
+뒤 재조정 여지 있음(`NEXT_TODO.md` 278차).
+
+**위험 수용**: `n_samples < 15`인 날은 alpha가 그날의 실제 정확도와 무관하게 완전히
+고정됨 — 만약 그런 날이 연속되면 drift 감지가 계속 미뤄질 수 있음. 다만 저표본 자체가
+이미 신호로서 신뢰할 수 없는 상태이므로, 신뢰 불가능한 신호로 alpha를 흔드는 것보다
+안전한 트레이드오프로 판단.
+
+---
+
 ## 2026-07-02 (277차 — CB③ 재활성화 보류 결정: 모델 정확도 회복 선행)
 
 ### [결정] CB③ HALT 재활성화는 30m 정확도 회복 후로 보류

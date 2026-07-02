@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-07-02 (278차 — drift_adjuster 최소 표본 가드 추가)
+
+**트리거**: NEXT_TODO 275차 ④ — `acc_history` 노이즈(0.156~0.5 요동)에 최소 표본수 가드가
+필요한지 재검토 요청.
+
+### 원인 확인
+
+`DriftAdjuster.record_accuracy()`가 `online_learner.recent_accuracy()`(전 호라이즌 단순
+평균)를 표본 수와 무관하게 그대로 10일 롤링 이력에 반영하고 있었음. `recent_accuracy()`는
+호라이즌별 `sum(buf)/len(buf)`의 평균이라, 당일 검증된 예측이 소수(세션 재시작·필터링
+등으로 발생)면 1/3=33%, 1/2=50% 같은 극단값이 그대로 3일 연속 하락(DRIFT_UP)/2일 연속
+회복(RECOVERY_DOWN) 판정에 섞여 들어감. 실측 `drift_adjuster_state.json` 이력의 깔끔한
+`0.3333`, 반복되는 `0.5` 값이 소표본 기원임을 뒷받침.
+
+### 수정
+
+| 파일 | 변경 |
+|---|---|
+| `learning/online_learner.py` | `sample_count` 프로퍼티 추가 — `reset_daily()` 이후 누적된 당일 전체 학습(검증) 표본 수(전 호라이즌 합산, `learn()` 호출마다 +1되는 기존 `_sample_count` 노출) |
+| `learning/self_learning/drift_adjuster.py` | `MIN_SAMPLES_REQUIRED=15` 신규 상수(`safety/contrarian_mode.py::_ACC30M_MIN_SAMPLES=15`와 동일 기준 차용). `record_accuracy(accuracy, n_samples=None)`에 가드 추가 — `n_samples < 15`면 이력 기록·alpha 조정을 스킵(`action="SKIP_LOW_SAMPLE"`)하고 기존 alpha 유지. `n_samples=None`은 가드 미적용(하위 호환 경로) |
+| `main.py` | `daily_close()`에서 `online_learner.sample_count`를 조회해 `drift_adjuster.record_accuracy(_today_accuracy, n_samples=_today_n_samples)`로 전달 |
+
+### 검증
+
+단위 테스트로 3개 경로(n=3→스킵, n=20→기록, n=None→레거시 기록) 모두 의도대로 동작
+확인. 실거래 검증은 다음 EOD 마감(15:40) 로그에서 `[DriftAdjuster] 표본 부족(n=... < 15)
+— ... 반영 스킵` 또는 정상 기록 로그로 재확인 필요 — `NEXT_TODO.md` 278차.
+
+### 임계값 선정 근거 및 남은 판단
+
+`MIN_SAMPLES_REQUIRED=15`는 신규 도입값이라 이 프로젝트의 실측 데이터 근거는 없음 —
+`contrarian_mode.py`의 "1건 오답으로 오발동 방지" 설계 기준을 그대로 차용. 실제 일별
+`sample_count` 분포를 며칠 관찰한 뒤 임계값 재조정 여지 있음(`DECISION_LOG.md` 278차).
+
+---
+
 ## 2026-07-02 (277차 — CB③ 오늘 미발동 원인 확정: 06-25부터 하드 비활성화 상태)
 
 **트리거**: NEXT_TODO 275차 ②/276차 후속 — CB③(30분 정확도<35%→당일 정지) 오늘 실제
