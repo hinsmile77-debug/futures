@@ -1432,6 +1432,36 @@ class TradingSystem:
             logger.debug("[Canary] z_warn 로드 실패: %s", _e)
             return 0
 
+    def _canary_load_z_warn_features(self, n_rows: int = 60) -> list:
+        """raw_data.db 최근 n_rows 피처로 현재 scaler z-score 극단 피처명 목록 반환.
+
+        Phase refit 진단 전용(호출 빈도 낮음) — _canary_load_z_warn과 별도 쿼리.
+        """
+        import sqlite3 as _sq3
+        import json as _json
+        from config.settings import RAW_DATA_DB as _RAW_DB
+        if not os.path.exists(_RAW_DB):
+            return []
+        try:
+            with _sq3.connect(_RAW_DB, timeout=5) as _conn:
+                _rows = _conn.execute(
+                    "SELECT features FROM raw_features ORDER BY ts DESC LIMIT ?",
+                    (n_rows,),
+                ).fetchall()
+            if not _rows:
+                return []
+            _fn = self.model.feature_names
+            if not _fn:
+                return []
+            _X = np.array(
+                [[_json.loads(r[0]).get(k, 0.0) for k in _fn] for r in _rows],
+                dtype=float,
+            )
+            return self.model.canary_z_warn_features(_X)
+        except Exception as _e:
+            logger.debug("[Canary] z_warn 피처 로드 실패: %s", _e)
+            return []
+
     def _emit_runtime_health(self, features: dict, latency_ms: float) -> None:
         """Day10: 운영 헬스 스냅샷 생성/전파 (대시보드 + HEALTH 로그)."""
         try:
@@ -2781,7 +2811,8 @@ class TradingSystem:
         # DB 동기 저장(②) 완료 후 스레드 기동 → race 없음.
         if n_bars in PRE_MARKET_REFIT_STEPS and not getattr(self, "_scaler_refresh_running", False):
             _phase = sorted(PRE_MARKET_REFIT_STEPS).index(n_bars) + 1
-            _z_now = self._canary_load_z_warn(n_rows=n_bars)
+            _z_feats_now = self._canary_load_z_warn_features(n_rows=n_bars)
+            _z_now = len(_z_feats_now)
             self._scaler_refresh_running = True
             if n_bars == min(PRE_MARKET_REFIT_STEPS):
                 # Phase1 기동 즉시 ScalerWarmup(08:55) 스킵 예약
@@ -2790,7 +2821,7 @@ class TradingSystem:
                 f"[PreMarket] Phase{_phase} refit 기동 ({n_bars}봉 z경고={_z_now}개)",
                 "INFO",
             )
-            def _pm_refit_worker(_nb=n_bars, _ph=_phase, _z=_z_now):
+            def _pm_refit_worker(_nb=n_bars, _ph=_phase, _z=_z_now, _zf=_z_feats_now):
                 try:
                     # 단기 window 사용: 500봉은 전날 분포 위주 → 오늘 갭오픈 z경고 고착
                     # PRE_MARKET_SCALER_BARS(30봉)로 오늘 비율 최대화 (bar14: 47% today)
@@ -2804,12 +2835,17 @@ class TradingSystem:
                             trigger_type="A_WARMUP",
                             trigger_reason=f"pre_market_phase{_ph}_{_nb}bars",
                         )
-                        _z_after = self._canary_load_z_warn(n_rows=_nb)
+                        _z_feats_after = self._canary_load_z_warn_features(n_rows=_nb)
+                        _z_after = len(_z_feats_after)
                         _z_worsened = _z_after > _z + 3
+                        # 273차: refit 전후 모두 z경고인 피처 = 이번 refit이 억제 못한 피처
+                        # (Phase4가 Phase1~3와 달리 무효했던 원인 진단용, 08:59 딥다이브)
+                        _persist = sorted(set(_zf) & set(_z_feats_after))
                         log_manager.system(
                             f"[PreMarket] Phase{_ph} refit 완료 n={len(_Xpm)}봉"
                             f" z경고 {_z}→{_z_after}개"
-                            + (" ⚠ 악화 (봉 수 부족)" if _z_worsened else ""),
+                            + (" ⚠ 악화 (봉 수 부족)" if _z_worsened else "")
+                            + (f" | 잔존={','.join(_persist)}" if _persist else ""),
                             "WARNING" if _z_worsened else "INFO",
                         )
                     else:
@@ -4831,6 +4867,8 @@ class TradingSystem:
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
         _st.append(("S6", time.perf_counter()))
+        # 273차: S6(STEP6) PipePerf 병목 딥다이브용 세부 타이머 — 항상 INFO 기록
+        _s6_prof = [("t0", time.perf_counter())]
         _entry_horizon = None   # ATR 레짐별 진입 호라이즌 (STEP 6 말미에 확정)
         horizon_proba = self._apply_horizon_calibration(horizon_proba)
         _h_conf_values = [float(v.get("confidence", 0.0) or 0.0) for v in horizon_proba.values()]
@@ -4925,6 +4963,7 @@ class TradingSystem:
             zone_mc=_zone_mc,
             bias_override_horizons=self._bias_override_horizons,
         )
+        _s6_prof.append(("ensemble", time.perf_counter()))
         direction  = decision["direction"]
         confidence = decision["confidence"]
         grade      = decision["grade"]
@@ -5136,6 +5175,7 @@ class TradingSystem:
                     _pre_cl_grade = _pre_cr_cache.get("grade", grade)
                 except Exception as _pre_cl_e:
                     logger.debug("[Checklist.pre] 선행 평가 실패, 앙상블 등급 사용: %s", _pre_cl_e)
+        _s6_prof.append(("checklist_pre", time.perf_counter()))
 
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,
@@ -5151,6 +5191,7 @@ class TradingSystem:
             trend_gate_active=bool(_tp_active),   # ② TrendGate 편향패널티 비활성화
             time_zone=_tz,                        # ③ STABLE_TREND reduce_thr 완화
         )
+        _s6_prof.append(("meta_gate", time.perf_counter()))
         # selection bias 해소: skip된 비-FLAT 신호를 shadow 버퍼에 보존
         # → STEP 2에서 동일 ts 검증 결과 도착 시 record_outcome 처리
         if direction != DIRECTION_FLAT and decision["meta_gate"]["action"] == "skip":
@@ -5262,6 +5303,7 @@ class TradingSystem:
             f"앙상블: dir={direction:+d} conf={confidence:.1%} "
             f"grade={grade} micro={self.current_micro_regime}"
         )
+        _s6_prof.append(("gates", time.perf_counter()))
 
         # 대시보드 호라이즌 카드 + 신뢰도 헤더 업데이트 (매분)
         _H_MAP = {"1m":"1분","3m":"3분","5m":"5분","10m":"10분","15m":"15분","30m":"30분"}
@@ -5310,6 +5352,7 @@ class TradingSystem:
             self.dashboard.update_qualification(self._horizon_runtime_state)
         except Exception:
             pass
+        _s6_prof.append(("dashboard", time.perf_counter()))
 
         # GBM 미학습 시 모델 상태 행 재표시 (update_prediction이 행을 숨겼으므로)
         if not _gbm_ready:
@@ -5366,6 +5409,14 @@ class TradingSystem:
         # ── Phase 1: 진입0 자동 원인 진단 ───────────────────────
         if direction == 0 or grade == "X":
             self._diagnose_zero_entry(features, horizon_proba, decision)
+
+        _s6_prof.append(("tail", time.perf_counter()))
+        # 273차: S6 세부 구간 — PipePerf S6 지배(전체 80%+) 원인 특정용, 매분 INFO 기록
+        _s6_detail = " ".join(
+            f"{_s6_prof[i][0]}={(_s6_prof[i][1] - _s6_prof[i - 1][1]) * 1000:.0f}ms"
+            for i in range(1, len(_s6_prof))
+        )
+        log_manager.system(f"[S6Detail] {_s6_detail}", "INFO")
 
         # ── STEP 7: 진입 실행 ──────────────────────────────────
         _st.append(("S7", time.perf_counter()))
