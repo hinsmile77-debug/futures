@@ -400,7 +400,8 @@ REM ============================================================
 REM  7. Launch main.py -- Auto-Restart Loop (장중 자동 재시작)
 REM  - 장중(09:00~15:10) 비정상 종료 시 최대 5회 자동 재시작
 REM  - 5분 이상 정상 실행 후 종료 시 재시작 카운터 초기화 (일시적 크래시 대응)
-REM  - 15:10 이후 or 5회 초과 시 루프 종료
+REM  - 15:10 이후 종료 시 기본 종료(오버나이트 금지), 단 CHOICE Y 확인 시 디버그 모드로 재시작 계속
+REM  - 5회 초과 시 루프 종료
 REM  - AllowSetForegroundWindow(ASFW_ANY) 로 Qt 앱이 foreground 이동 가능
 REM ============================================================
 CALL :L "============================================================"
@@ -524,8 +525,25 @@ IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 정상 종료 감지 -- 이유: 
 IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 재시작이 필요하면 start_mireuk.bat 를 다시 실행하세요."
 IF DEFINED _EXIT_REASON GOTO :restart_done
 
-IF !_NOW! GEQ 1510 IF NOT EXIST "!WORKDIR!\data\_debug_afterhours" CALL :L "[AUTO-RESTART] 15:10 이후 종료 -- 재시작 안 함 (오버나이트 금지)"
-IF !_NOW! GEQ 1510 IF NOT EXIST "!WORKDIR!\data\_debug_afterhours" GOTO :restart_done
+REM 15:10 이후 종료 -- 오버나이트 금지가 기본이나, 디버깅 등 의도적 재시작은
+REM   장전(08:45 미만)/초기 장후(15:10 이후 기동) 실행처럼 Y 확인으로 계속 진행 가능.
+REM   _debug_afterhours 는 이 루프 안에서도 최초 1회 승인되면 세션 내내 재확인 없이 유지.
+REM   주의: GOTO는 절대 괄호 블록 안에 넣지 않음 (MW0602 실전 버그 -- jump table 오염으로
+REM   GOTO :restart_done 등 이후 모든 GOTO가 엉뚱한 위치로 점프, 5회 재시작 제한 무력화됨).
+SET "_AFTERHOURS_DENY="
+IF !_NOW! GEQ 1510 IF NOT EXIST "!WORKDIR!\data\_debug_afterhours" (
+    CALL :L "[AUTO-RESTART] 15:10 이후 종료 감지 -- 의도적 재시작 여부 확인."
+    CHOICE /C YN /N /T 10 /D N /M "15:10 이후 종료됨. 디버깅 등 의도적 재시작입니까? (Y=재시작 / N=종료-오버나이트 금지) [10초 후 자동 N]: "
+    IF !ERRORLEVEL! EQU 2 SET "_AFTERHOURS_DENY=1"
+)
+IF DEFINED _AFTERHOURS_DENY CALL :L "[AUTO-RESTART] 15:10 이후 종료 -- 재시작 안 함 (오버나이트 금지)"
+IF DEFINED _AFTERHOURS_DENY GOTO :restart_done
+
+IF !_NOW! GEQ 1510 IF NOT EXIST "!WORKDIR!\data\_debug_afterhours" (
+    IF NOT EXIST "!WORKDIR!\data" MKDIR "!WORKDIR!\data" 2>NUL
+    ECHO debug_afterhours> "!WORKDIR!\data\_debug_afterhours"
+    CALL :L "[AUTO-RESTART] 의도적 재시작 승인 -- 디버그 모드로 전환, 계속 진행합니다."
+)
 IF !_NOW! GEQ 1510 IF EXIST "!WORKDIR!\data\_debug_afterhours" CALL :L "[AUTO-RESTART] 디버그 모드(장후 실행) -- 15:10 이후에도 재시작 계속"
 
 SET /A "_RESTART_CNT+=1"
