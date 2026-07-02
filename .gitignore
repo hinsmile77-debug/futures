@@ -31,6 +31,22 @@ data/db/trades.db
 # model/horizons/
 # model/scaler/
 
+# PC별 실시간 상태 (멀티PC pull 시 다른 PC 상태로 덮어써지면 실거래 오작동 위험, 2026-07-02)
+data/position_state.json
+data/session_state.json
+data/ui_prefs.json
+
+# 자동생성 리포트/메트릭 (로컬 재실행으로 항상 재생성 가능, 멀티PC pull 충돌 방지, 2026-07-02)
+calibration_report.md
+calibration_metrics.json
+meta_gate_tuning_report.md
+meta_gate_tuning_metrics.json
+microstructure_ab_report.md
+microstructure_ab_metrics.json
+rollout_readiness_report.md
+rollout_readiness_metrics.json
+effect_monitor_history.json
+
 # 로그
 logs/
 
