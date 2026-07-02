@@ -2,6 +2,59 @@
 
 ---
 
+## 2026-07-02 (275차 — conf/mc 통과율 0 딥다이브: 진단 리포트 버그 2종 수정)
+
+### [결정] meta_gate_tuning 리포트를 raw confidence 폴백 대신 실제 blended meta_confidence로 그리드서치
+
+**배경**: `scripts/generate_meta_gate_tuning_report.py`의 `meta_labels` 소스 그리드서치가
+`row["meta_confidence"]`를 찾다 컬럼 부재로 매번 `predictions.confidence`(raw)로 조용히
+폴백하고 있었음. `meta_labels.meta_score`는 `learning/meta_labeling.py`의 `derive_meta_label()`이
+만드는 **사후 판정 이진 라벨(0.0/0.5/1.0 = skip/reduce/take)**이지 confidence 예측값이
+아니라서, 애초에 이 컬럼으로 임계값 그리드서치를 하는 것 자체가 설계 오류였음.
+
+**결정**: `ensemble_decisions.meta_confidence`(= `MetaGate.evaluate()`가 실제로 계산한
+blended_conf)를 `ts` 기준으로 LEFT JOIN해 사용. 동일 ts에 복수 row가 있을 수 있어
+`(SELECT ts, meta_confidence, MAX(id) AS id FROM ensemble_decisions GROUP BY ts)` 서브쿼리로
+최신 1건만 선택(SQLite의 "단일 MAX 집계 시 bare column은 그 행에서 취함" 규칙 이용).
+`ensemble_decisions`에 `horizon` 컬럼이 없어(단일 결정 테이블) `ts`만으로 조인 —
+`ensemble_fallback` 소스 분기가 이미 쓰던 것과 동일 패턴.
+
+**결과 검증**: avg_meta_confidence 0.4612→0.2171(flat_signal 스킵 시 설계상 0.0이 다수
+포함되는 게 정상 원인), best grid match율 73.59%→76.40%로 상승 — 실데이터 대비 그리드서치가
+더 정확해짐. 이 리포트의 "권장 임계값(take≥0.71 등)"은 여전히 프로덕션 `meta_gate.py`의
+등급별 blended_conf 임계(240차, take_floor 0.43~0.45)를 직접 대체하는 근거로 쓰지 않는다 —
+두 시스템은 표본 구성과 목적이 다름.
+
+### [결정] rollout_readiness 승격 판정에 conf_inversion 가드 추가
+
+**배경**: `generate_calibration_report.py`는 이미 `_check_confidence_inversion()`으로
+고신뢰(0.6+) 구간이 저신뢰(0.3~0.5) 구간보다 정확도가 3%p 이상 낮은 "역전"을 감지해
+`calibration_metrics.json`의 `conf_inversion` 필드에 기록하고 있었음. 그런데
+`generate_rollout_readiness_report.py`의 `decide_stage()`는 이 필드를 전혀 읽지 않고
+ECE 스칼라 하나(`< 0.20`)와 PnL delta만으로 `small_size` 승격을 추천 — ECE는 평균 절대
+오차라 "고신뢰일수록 더 틀리는" 역전 패턴을 못 잡는다. 딥다이브 시점 실측: overall ECE=0.1213
+(양호해 보임)이지만 실제로는 0.8~0.9 bin acc=31.36% < 0.3~0.4 bin acc=33.64%로 역전 근접
+(gap=2.85%p, 발동 임계 3%p 바로 아래).
+
+**결정**: `decide_stage()` 최상단에 `if conf_inversion: return "shadow", ...` 가드 추가.
+ECE·PnL이 아무리 좋아도 역전 감지 시 무조건 `shadow`로 강등. 사이즈 확대 여부를 "평균이
+얼마나 잘 맞는가"가 아니라 "확신할수록 더 잘 맞는가"로 판단하도록 전환.
+
+**위험 수용/미결정**: 현재 gap=2.85%p로 3%p 임계 바로 아래라 오늘 시점에는 여전히
+`small_size`가 뜬다 — 273차 EKS `EKS_TRIGGER_MARGIN` 이슈와 동일한 "임계 바로 밑에서
+안전장치 미발동" 패턴. 이 3%p 임계 자체를 낮출지는 이번 세션에서 결정하지 않았고,
+conf 하락 근본 원인 조사(NEXT_TODO 275차) 이후 판단하기로 함 — 원인 파악 전에 임계만
+낮추면 또 다른 근소 미달 사각지대를 만들 뿐이라는 판단.
+
+### 커밋 범위 판단
+
+[[feedback_git_commit_scope]] 규칙대로 `scripts/*.py` 2개만 커밋(d9bf4f0). 재생성된
+`meta_gate_tuning_report.md`/`.json`, `rollout_readiness_report.md`/`.json`,
+`calibration_metrics.json` 등은 PC별 로컬 산출물이라 커밋 제외 — 다른 PC가 pull 시 이
+PC의 로컬 진단 스냅샷으로 덮어쓰이지 않도록.
+
+---
+
 ## 2026-07-02 (274차 — 진입0 원인 딥다이브 후속 개선)
 
 ### [결정] ATR_MAX_ENTRY를 정적 3.5pt → 적응형 상한으로 전환

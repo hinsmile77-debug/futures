@@ -1,7 +1,43 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-02 (274차) — 진입0 딥다이브 + ATR 적응형 상한 · Hurst/MR 조건부 완화
+> 마지막 업데이트: 2026-07-02 (275차) — conf/mc 통과율 0 딥다이브: 모델 신뢰도 붕괴 진단 + 리포트 버그 2종 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-02 (275차 — conf/mc 통과율 0 딥다이브: 모델 신뢰도 붕괴 진단 + 리포트 버그 2종 수정)
+
+### 배경
+
+사용자 보고: "금일 conf 평균이 mc 기준보다 낮아 통과율이 거의 0". 딥다이브 결과 오늘만의
+문제가 아니라 06-29 이후 conf 평균이 지속 하락(0.45→0.39대) 중이었고, `calibration_report.md`
+최근구간 accuracy가 **32.78%**(3분류 랜덤 베이스라인 33.3%와 사실상 동일)에 **calibration bin
+역전**(고신뢰 0.8~0.9 acc=31.36% < 저신뢰 0.3~0.4 acc=33.64%)까지 확인됨. 즉 conf가 mc보다
+낮은 건 게이트 임계 문제가 아니라 **모델이 방향성 엣지를 잃었고 Platt 보정기가 그걸 정직하게
+반영해 conf를 낮추고 있는 것** — mc를 낮추는 미봉책은 위험(역상관 모델에 진입 허용).
+
+딥다이브 중 진단용 스크립트 2개에서 버그 발견, 사용자 요청으로 즉시 수정:
+
+### 수정 (커밋 d9bf4f0)
+
+| 파일 | 변경 |
+|---|---|
+| `scripts/generate_meta_gate_tuning_report.py` | `meta_labels` 소스 그리드서치가 `row["meta_confidence"]`(존재하지 않는 컬럼)를 찾다 실패해 매번 raw `predictions.confidence`로 조용히 폴백하던 버그 수정. `ensemble_decisions.meta_confidence`(실제 blended_conf)를 `ts` 기준 `MAX(id)` 서브쿼리로 LEFT JOIN해 진짜 메타 신뢰도로 튜닝하도록 변경. 재생성 결과 avg=0.46→0.2171(flat_signal 시 설계상 0.0 다수 포함, 정상), best grid match율 73.6%→76.4% |
+| `scripts/generate_rollout_readiness_report.py` | `generate_calibration_report.py`가 이미 계산해두고 방치하던 `conf_inversion`(고신뢰 구간이 저신뢰보다 3%p 이상 덜 정확하면 발동)을 `decide_stage()` 최상단 가드로 연결. ECE/PnL이 좋아도 역전 감지 시 `small_size` 승격을 막고 `shadow`로 강제. 체크리스트에 `Confidence inversion: none/DETECTED` 라인 추가 |
+
+### 발견했으나 손대지 않은 것 (다음 세션 후보)
+
+- **conf_inversion 근소 미달**: 현재 gap=**2.85%p**로 발동 임계 3%p 바로 아래라 오늘은
+  여전히 `small_size` 유지 — 273차 EKS 마진 이슈와 동일 패턴(임계 바로 밑에서 안전장치 안 걸림).
+  임계값을 낮출지는 근본 원인 조사 후 판단 예정
+- **conf 하락의 근본 원인 미조사**: 06-29 전후로 무엇이 모델을 랜덤 수준까지 깎았는지
+  (EOD 재학습 데이터 품질? canary z경고 피처? scaler refit?) 아직 특정 못함
+- **CB③(30분 정확도<35%→당일 정지)이 왜 상시 발동 안 하는지 미확인**: 30m 호라이즌 누적
+  accuracy가 32.88%로 이미 CB③ 임계 밑인데 오늘 CB③ HALT 로그 유무 미확인
+- **drift_adjuster acc_history 노이즈**: 최근 10개 값이 0.156~0.5로 요동 — 표본 부족 구간
+  가드 없이 alpha=0.0076로만 완만히 적응 중, 최소 표본수 가드 검토 여지
+
+상세: `dev_memory/SESSION_LOG.md` 275차, `dev_memory/DECISION_LOG.md` 275차, `dev_memory/NEXT_TODO.md` 275차.
 
 ---
 

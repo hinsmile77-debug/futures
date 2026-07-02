@@ -4,6 +4,72 @@
 
 ---
 
+## 2026-07-02 (275차 — conf/mc 통과율 0 딥다이브 + 진단 스크립트 버그 2종 수정)
+
+**트리거**: 사용자 보고 "금일 conf 평균이 mc 기준보다 낮아 통과율이 거의 0이다" — 딥다이브 후
+"상큼한 개선제안" 요청.
+
+### 데이터 조사
+
+- `predictions` 5m 일별 평균 confidence(06-19→07-02): 0.4498, 0.4326, 0.4207, 0.4559, 0.4320,
+  0.4953, 0.4140, 0.4322, **0.3912(07-01)**, **0.3895(07-02)** — 06-29 이후 하락 추세, 오늘만의
+  이상치 아님
+- `calibration_report.md` 최근구간: accuracy **32.78%**(3분류 랜덤 33.3%와 사실상 동일),
+  bin별 accuracy가 **역전**(0.8~0.9=31.36% < 0.3~0.4=33.64%) — 고신뢰일수록 더 틀림
+- `strategy/entry/checklist.py:115`의 `min_conf_effective`(0.56~0.58)가 `confidence`
+  (raw, oggi 0.35~0.44대)와 직접 비교되는 1차 게이트라 여기서부터 이미 거의 다 막힘
+- `drift_adjuster_state.json` acc_history 최근 10개: `0.5,0.35,0.2648,0.5,0.5,0.1562,0.5,
+  0.3333,0.5,0.5` — 표본 부족 구간에서 극단값 노이즈 큼
+- CB③(30분 정확도<35%→당일 정지) 임계와 30m 호라이즌 누적 accuracy(32.88%)가 근접 —
+  실제 오늘 CB③ 발동 여부는 로그 미확인(다음 세션 후보)
+
+### 버그 발견 ① — `scripts/generate_meta_gate_tuning_report.py`
+
+`meta_labels` 소스 그리드서치에서 `row["meta_confidence"]` 컬럼이 애초에 SELECT에 없어
+(`ml.meta_score`만 존재, 별칭 불일치) `"meta_confidence" in row.keys()`가 항상 False →
+매번 `predictions.confidence`(raw)로 조용히 폴백. 게다가 `meta_labels.meta_score`는
+`learning/meta_labeling.py`에서 보듯 연속 신뢰도가 아니라 **0.0/0.5/1.0 이진 판정 라벨**이라
+애초에 confidence 그리드서치 대상이 될 수 없는 컬럼이었음. 리포트의 "avg_meta_confidence=0.46 ↔
+권장 임계 0.65~0.71" 비교는 설계가 잘못된 산출물.
+
+### 버그 발견 ② — `rollout_readiness_report.md`의 위험 신호 누락
+
+`generate_calibration_report.py`가 이미 `conf_inversion` 감지기(고신뢰 구간이 저신뢰보다
+3%p 이상 덜 정확하면 발동)를 계산해 `calibration_metrics.json`에 기록해두고 있었는데,
+`generate_rollout_readiness_report.py`는 이 필드를 전혀 읽지 않고 ECE 스칼라 하나만으로
+`small_size` 승격을 추천 중 — ECE는 평균 오차라 이런 역전을 못 잡음.
+
+### 수정 (커밋 d9bf4f0)
+
+| 파일 | 변경 |
+|---|---|
+| `scripts/generate_meta_gate_tuning_report.py` | `meta_labels` fetch 쿼리에 `ensemble_decisions.meta_confidence`를 `(SELECT ts, meta_confidence, MAX(id) AS id FROM ensemble_decisions GROUP BY ts)` 서브쿼리로 LEFT JOIN(ts 기준, SQLite의 단일 MAX 집계 bare-column 규칙 이용해 최신 1건만). `build_metrics()`가 이 실제 blended_conf를 사용하도록 변경, ensemble_fallback 소스 분기는 미변경 |
+| `scripts/generate_rollout_readiness_report.py` | `decide_stage()` 최상단에 `conf_inversion` 가드 추가 — 감지되면 ECE/PnL 무관하게 `shadow` 강제 반환(사유 문자열에 high_acc/low_acc/gap 포함). `Checklist`에 `Confidence inversion: none/DETECTED` 라인, `metrics`에 `conf_inversion` 필드 추가 |
+
+### 검증 (수정 직후 재실행)
+
+- `generate_meta_gate_tuning_report.py 5m`: avg_meta_confidence 0.4612→**0.2171**(flat_signal
+  스킵 시 meta_confidence=0.0 다수 포함 — 정상), best grid match율 73.59%→**76.40%**
+- `generate_rollout_readiness_report.py`: 시뮬레이션으로 conf_inversion 강제 주입 시
+  ECE=0.05·PnL 양호해도 `shadow`로 정확히 강등되는 것 확인. 단 현재 실제 gap=2.85%p로
+  발동 임계(3%p) 바로 아래라 오늘 리포트는 여전히 `small_size` — 273차 EKS 마진 이슈와
+  동일 패턴(근소 미달로 안전장치 미발동)
+
+### 커밋 범위
+
+[[feedback_git_commit_scope]] 원칙에 따라 `scripts/*.py` 2개만 커밋. 재생성된
+`meta_gate_tuning_report.md`/`.json`, `rollout_readiness_report.md`/`.json`은 PC별 로컬
+런타임 산출물이라 커밋 대상에서 제외(작업트리에 M 상태로 남는 게 정상).
+
+### 남은 작업 (NEXT_TODO 275차)
+
+- conf 하락(06-29~) 근본 원인 조사 — EOD 재학습 데이터 품질/canary z경고/scaler refit 로그 대조
+- CB③ 오늘 실제 발동 여부 확인 — 30m accuracy(32.88%)가 이미 임계(35%) 밑
+- conf_inversion 임계값(3%p) 근소 미달 관찰 — 필요 시 하향 검토
+- drift_adjuster 최소 표본수 가드 검토
+
+---
+
 ## 2026-07-02 (274차 — 진입0 딥다이브 + ATR 적응형 상한 · Hurst/MR 조건부 완화)
 
 **트리거**: 07-02 09:00~12:30 장중 실거래 진입 0건 — 사용자 요청으로 원인 딥다이브.
