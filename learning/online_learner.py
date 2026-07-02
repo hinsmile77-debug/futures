@@ -350,6 +350,11 @@ class OnlineLearner:
         accs = [sum(b) / len(b) for b in self._acc_buf.values() if b]
         return sum(accs) / len(accs) if accs else 0.5
 
+    @property
+    def sample_count(self) -> int:
+        """reset_daily() 이후 누적된 당일 전체 학습(검증) 표본 수 — 호라이즌 합산"""
+        return self._sample_count
+
     def recent_accuracy_by_bucket(self) -> Dict[str, float]:
         """버킷별 정확도 — 기존 로그 호환용 (short/long 평균)"""
         short_hz = ("1m", "3m", "5m")
@@ -366,6 +371,10 @@ class OnlineLearner:
         if not buf or len(buf) < 5:
             return 0.0
         return sum(buf) / len(buf)
+
+    def horizon_acc_samples(self, horizon: str) -> int:
+        """호라이즌별 정확도 버퍼 표본 수 — horizon_accuracy()의 5건 미만 가드 판별용 (대시보드 표시)"""
+        return len(self._acc_buf.get(horizon, ()))
 
     # 기존 코드 호환 프로퍼티
     @property

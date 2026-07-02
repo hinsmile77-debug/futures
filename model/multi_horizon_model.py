@@ -1001,6 +1001,27 @@ class MultiHorizonModel:
                 found_any = True
         return max_age if found_any else 999.0
 
+    def _canary_z_warn_mask(self, X_recent: np.ndarray):
+        """X_recent (N×F)에 현재 scaler 적용 후 극단 z피처 boolean mask 반환.
+
+        _Z_WARN_EXEMPT 피처 제외. canary_z_warn_count/features 공용 헬퍼.
+        """
+        scaler = self.scalers.get("1m") or (
+            next(iter(self.scalers.values())) if self.scalers else None
+        )
+        if scaler is None:
+            return None
+        try:
+            z = scaler.transform(X_recent)
+            extreme_mask = (np.abs(z) > self.EXTREME_ZSCORE_THRESHOLD).any(axis=0)
+            if self._Z_WARN_EXEMPT and self.feature_names:
+                for _i, _fn in enumerate(self.feature_names):
+                    if _fn in self._Z_WARN_EXEMPT and _i < len(extreme_mask):
+                        extreme_mask[_i] = False
+            return extreme_mask
+        except Exception:
+            return None
+
     def canary_z_warn_count(self, X_recent: np.ndarray) -> int:
         """X_recent (N×F)에 현재 scaler 적용 후 극단 z피처 수 반환.
 
@@ -1008,22 +1029,19 @@ class MultiHorizonModel:
         이진 시간 플래그(is_open_volatile 등)가 어제 세션 봉에서 항상 z>4를
         유발하여 pre-market refit 효과를 가리는 escape를 차단 (264차 수정).
         """
-        scaler = self.scalers.get("1m") or (
-            next(iter(self.scalers.values())) if self.scalers else None
-        )
-        if scaler is None:
-            return 0
-        try:
-            z = scaler.transform(X_recent)
-            extreme_mask = (np.abs(z) > self.EXTREME_ZSCORE_THRESHOLD).any(axis=0)
-            # _Z_WARN_EXEMPT 피처 제외 — predict_proba의 extreme_count와 일관성 유지
-            if self._Z_WARN_EXEMPT and self.feature_names:
-                for _i, _fn in enumerate(self.feature_names):
-                    if _fn in self._Z_WARN_EXEMPT and _i < len(extreme_mask):
-                        extreme_mask[_i] = False
-            return int(np.sum(extreme_mask))
-        except Exception:
-            return 0
+        mask = self._canary_z_warn_mask(X_recent)
+        return int(np.sum(mask)) if mask is not None else 0
+
+    def canary_z_warn_features(self, X_recent: np.ndarray) -> list:
+        """X_recent에서 z-score 극단인 피처명 리스트 반환 (프리장 Phase refit 진단용).
+
+        Phase별 재적합 전후 잔존 피처를 비교해 refit이 실제로 억제하지 못하는
+        피처를 특정하기 위해 도입 (273차, Phase4 11→11개 무변화 딥다이브).
+        """
+        mask = self._canary_z_warn_mask(X_recent)
+        if mask is None or not self.feature_names:
+            return []
+        return [fn for fn, m in zip(self.feature_names, mask) if m]
 
     # ── 스케일러 단독 재적합 (Phase A 워밍업 / 정기 refresh) ─────────
 

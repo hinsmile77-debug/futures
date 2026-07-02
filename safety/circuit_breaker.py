@@ -497,12 +497,32 @@ class CircuitBreaker:
         if self._emergency_exit:
             self._emergency_exit()
 
-    def reset_acc30m_buffer(self) -> None:
+    def reset_acc30m_buffer(self) -> bool:
         """스케일러 재적합 완료 후 acc30m 버퍼 초기화.
 
         ConstOut 재적합 완료 시점 이전 예측은 노후 스케일러 기반 → 신뢰 불가.
         CB③ 경고 카운터도 리셋해 새 스케일러 기준에서 재카운트한다.
+
+        [277차] ConstOut 재적합이 ~30분 쿨다운마다 반복 발생하는 구간에서는
+        이 함수도 같은 주기로 호출되는데, 기존엔 호출될 때마다 무조건 clear()해
+        버퍼가 CB_ACC30M_MIN_SAMPLES(30)에 도달하기 전에 계속 리셋되는 "영구 기아"
+        상태가 됐다(P4 단계 추적·HALT 판정 모두 30표본 미만이면 평가 자체가 안 됨).
+        아직 최소 표본도 못 채운 상태면 리셋을 건너뛰고 기존 표본을 유지한다 —
+        deque(maxlen=30)이 오래된 표본을 자연스럽게 밀어내므로 몇 차례 재적합에
+        걸쳐 표본이 섞이는 정도의 사소한 대가로 기아 상태를 막는다.
+
+        Returns:
+            True  = 실제로 리셋됨
+            False = 표본 부족으로 리셋 스킵(기존 표본 유지)
         """
+        if len(self._accuracy_buf) < CB_ACC30M_MIN_SAMPLES:
+            msg = (
+                f"[CB③] acc30m 버퍼 리셋 스킵 — 기존 표본 {len(self._accuracy_buf)}건"
+                f" < 최소 {CB_ACC30M_MIN_SAMPLES}건 (기아 방지, 표본 누적 계속)"
+            )
+            logger.info(msg)
+            log_manager.system(msg, "INFO")
+            return False
         self._accuracy_buf.clear()
         self._acc30m_stage = "NORMAL"
         self._cb3_warn_count = 0
@@ -512,6 +532,7 @@ class CircuitBreaker:
         msg = "[CB③] acc30m 버퍼 리셋 (스케일러 재적합 완료 — 이전 예측 무효화, 쿨다운=15샘플)"
         logger.info(msg)
         log_manager.system(msg, "INFO")
+        return True
 
     def lift_cb3_halt(self) -> bool:
         """CB③(정확도 저하)로 발동된 HALT를 원인 해소 후 해제.

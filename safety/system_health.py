@@ -9,8 +9,14 @@ SHS = 100
 SHS < 60 → 진입 차단 + 슬랙 경고 (5점 하락마다 재알림)
 
 Early Kill Switch (09:05 1회 평가):
-  조건: GAP_OPEN(09:00~09:05) 구간 최대 conf < GAP_OPEN zone min_conf  AND  CORE 통과율 0%
+  조건: GAP_OPEN(09:00~09:05) 구간 최대 conf < (GAP_OPEN zone min_conf - EKS_TRIGGER_MARGIN)
+        AND CORE 통과율 0%
   → 일시 관망 (수동 진입은 대시보드에서 별도 허용 / 이슈 해소 시 자동 재개)
+
+  273차: 임계 바로 아래(예: conf_max=36.4% vs mc=36.9%, 0.5%p 차)에서도 발동해
+  하루 관망으로 이어지는 사례 확인 → EKS_TRIGGER_MARGIN(기본 2%p)만큼 발동 임계를
+  낮춰 근소한 미달은 발동시키지 않는 히스테리시스 적용. 회복(해제) 조건은 미변경
+  — "확실히 나쁠 때만 켜지고, 회복은 기존 기준 그대로"가 목표.
 
 EKS 동적 해제:
   간격: 30분마다 재평가 (09:20, 09:50, 10:20, 11:00, 11:30)
@@ -29,6 +35,8 @@ ENTRY_BLOCK_THRESHOLD       = 60.0   # SHS 이 이하면 진입 차단
 EKS_CONF_THRESHOLD          = 0.45   # GAP_OPEN zone mc 미전달 시 fallback (실제 기준은 DynMC)
 EKS_MIN_BARS                = 3      # EKS 판정 최솟 GAP_OPEN 봉 수
                                      # ERR-FATAL 등으로 데이터 부족 시 섣부른 당일 관망 방지
+EKS_TRIGGER_MARGIN          = 0.02   # 273차: 발동 히스테리시스 — conf_max < (mc - 마진) 이어야 발동
+                                     # (mc 바로 아래 근소 미달로 당일 관망 처리되는 것 방지)
 ALERT_DELTA                 = 5.0    # 이 이상 추가 하락 시 슬랙 재알림
 
 EKS_RECOVERY_INTERVAL_MIN   = 30     # 재평가 최소 간격 (분)
@@ -154,18 +162,24 @@ class SystemHealthScore:
             and _all_bars_accounted
         )
 
+        # 273차: 히스테리시스 — mc 바로 아래 근소 미달로는 발동하지 않도록
+        # 발동선을 EKS_TRIGGER_MARGIN만큼 낮춰 잡는다 (회복 조건은 미변경).
+        _eks_trigger_mc = max(0.0, gap_open_mc - EKS_TRIGGER_MARGIN)
+
         if (
-            self._gap_open_conf_max < gap_open_mc
+            self._gap_open_conf_max < _eks_trigger_mc
             and self._gap_open_core_pass_count == 0
             and not _is_cold_start
         ):
             self._eks_active = True
             logger.warning(
                 "[SHS-EKS] Early Kill Switch 발동 "
-                "conf_max=%.1f%% < mc=%.1f%% core_pass=0/%d봉 "
+                "conf_max=%.1f%% < 발동선=%.1f%%(mc=%.1f%%-margin%.1f%%p) core_pass=0/%d봉 "
                 "→ 일시 관망 (09:20부터 30분 간격 자동 회복 평가, 마감 11:30)",
                 self._gap_open_conf_max * 100,
+                _eks_trigger_mc * 100,
                 gap_open_mc * 100,
+                EKS_TRIGGER_MARGIN * 100,
                 self._gap_open_bar_count,
             )
         elif _is_cold_start:
@@ -175,6 +189,20 @@ class SystemHealthScore:
                 "HORIZON_TIME_POLICY 차단 또는 active_horizons 초기화 지연으로 판단",
                 self._gap_open_delayed_count,
                 self._gap_open_policy_blocked_count,
+                self._gap_open_bar_count,
+            )
+        elif (
+            self._gap_open_conf_max < gap_open_mc
+            and self._gap_open_core_pass_count == 0
+        ):
+            # 마진 내 근소 미달 — 발동은 안 하되 근접 상황을 가시화 (조용히 넘기지 않음)
+            logger.warning(
+                "[SHS-EKS] EKS 미발동 — 마진 내 근소 미달 "
+                "conf_max=%.1f%% mc=%.1f%% (발동선=%.1f%%, margin=%.1f%%p) core_pass=0/%d봉",
+                self._gap_open_conf_max * 100,
+                gap_open_mc * 100,
+                _eks_trigger_mc * 100,
+                EKS_TRIGGER_MARGIN * 100,
                 self._gap_open_bar_count,
             )
         else:

@@ -27,10 +27,16 @@ def fetch_samples(horizon: str):
             rows = conn.execute(
                 """
                 SELECT ml.ts, ml.horizon, ml.meta_action AS realized_action, ml.meta_score,
-                       p.correct, p.confidence, p.features
+                       p.correct, p.confidence, p.features,
+                       ed.meta_confidence AS blended_meta_confidence
                 FROM meta_labels ml
                 JOIN predictions p
                   ON p.ts = ml.ts AND p.horizon = ml.horizon
+                LEFT JOIN (
+                    SELECT ts, meta_confidence, MAX(id) AS id
+                    FROM ensemble_decisions
+                    GROUP BY ts
+                ) ed ON ed.ts = ml.ts
                 WHERE ml.horizon = ?
                 ORDER BY ml.id ASC
                 """,
@@ -72,10 +78,16 @@ def build_metrics(rows, source: str):
     samples = []
     for row in rows:
         features = parse_json(row["features"])
-        meta_conf = float(row["meta_confidence"]) if "meta_confidence" in row.keys() and row["meta_confidence"] is not None else float(row["confidence"] or 0.0)
         if source == "meta_labels":
             realized_action = row["realized_action"]
+            # meta_labels.meta_score is a post-hoc 0/0.5/1 label, not a confidence
+            # score — the real continuous prediction is ensemble_decisions.meta_confidence
+            # (blended_conf) at the same ts. Fall back to raw prediction confidence only
+            # when no ensemble decision was logged for that bar (e.g. flat_signal skip).
+            blended = row["blended_meta_confidence"]
+            meta_conf = float(blended) if blended is not None else float(row["confidence"] or 0.0)
         else:
+            meta_conf = float(row["meta_confidence"]) if "meta_confidence" in row.keys() and row["meta_confidence"] is not None else float(row["confidence"] or 0.0)
             correct = int(row["correct"] or 0)
             conf = float(row["confidence"] or 0.0)
             if correct and conf >= 0.67:

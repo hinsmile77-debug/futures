@@ -324,6 +324,28 @@ def main():
             )
         log.info("완료 마커 저장: %s", _MARKER_PATH)
 
+        # 재학습 이력 영속화 — main.py 대시보드(자가학습 탭)의 "마지막 재학습"·"재학습 횟수"와
+        # 동일한 session_state.json 키를 공유. EOD는 main.py 프로세스 밖(장외 스케줄러)에서
+        # 실행되므로 main.py의 _on_gbm_retrain_done()을 거치지 않는다 — 여기서 직접 갱신하지
+        # 않으면 매일 15:45 실행되는 full CV 재학습이 대시보드 카운트에 전혀 반영되지 않는다.
+        try:
+            _ss_path3 = os.path.join(_ROOT, "data", "session_state.json")
+            _ss4: dict = {}
+            if os.path.exists(_ss_path3):
+                with open(_ss_path3, "r", encoding="utf-8") as _f:
+                    _ss4 = json.load(_f)
+            _prev_cnt = int(_ss4.get("gbm_total_retrain_count", 0) or 0)
+            _ss4["gbm_last_retrain"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            _ss4["gbm_total_retrain_count"] = _prev_cnt + 1
+            with open(_ss_path3, "w", encoding="utf-8") as _f:
+                json.dump(_ss4, _f, ensure_ascii=False)
+            log.info(
+                "[EOD] 재학습 이력 저장: %s (%d회)",
+                _ss4["gbm_last_retrain"], _ss4["gbm_total_retrain_count"],
+            )
+        except Exception as _hce:
+            log.warning("[EOD] 재학습 이력 저장 실패 (무해): %s", _hce)
+
         # 이전 실패 마커 제거
         if os.path.exists(_FAIL_PATH):
             os.remove(_FAIL_PATH)

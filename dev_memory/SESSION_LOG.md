@@ -29,6 +29,324 @@
 2. 동일한 acc30m 붕괴가 ContrarianModeTracker ACTIVE를 유발 → 역방향 버튼 깜빡임은 **의도된 경고 UI**(버그 아님), 다만 근본 원인은 재학습 실패로 모델이 회복하지 못한 것
 
 `register_eod_scheduler.ps1` (커밋 `ba07c46`, PC별 경로 하드코딩으로 `.gitignore` 처리)과 동일 패턴이 `config/settings.py`에 남아있던 것 — 공유 설정 파일이라 놓침.
+## 2026-07-02 (280차 — 자가학습 탭 표시 버그 4종 수정)
+
+**트리거**: 사용자가 중간패널 "🧠 자가학습" 탭 스크린샷을 제시하며 "SGD 온라인 자가학습
+호라이즌 별 학습/미학습 현황 및 GBM 배치 재학습 현황 정보를 확인하고 올바르게 데이터를
+반영하고 있는지 철저히 살펴보고 이상점 개선 제안해" 요청.
+
+### 조사 결과 (Explore 서브에이전트 위임)
+
+- **배지/건수 비동기**: 배지는 `OnlineLearner._fitted[hz]`(현재 학습 상태), 건수는
+  `OnlineLearner._horizon_counts[hz]`(리셋 안 되는 lifetime 카운터, `DECISION_LOG.md`
+  1593행에 qualify용으로 의도적 설계된 것 확인) — 서로 다른 축이라 "미학습인데 건수
+  있음" 조합이 발생. `_do_sgd_reset()`([online_learner.py:389](learning/online_learner.py#L389))
+  이 `_fitted`만 리셋하고 `_horizon_counts`는 그대로 두는 구조.
+- **정확도 0.0% 오인**: `horizon_accuracy()`([online_learner.py:368](learning/online_learner.py#L368))
+  가 표본 5건 미만이면 방어적으로 0.0 반환 — "판정불가" 신호를 대시보드가 "실제 0%"처럼
+  그대로 출력.
+- **GBM 재학습 횟수 0회 고정**: `_on_gbm_retrain_done()`([main.py:3061](main.py#L3061))이
+  `self.batch_retrainer._retrain_count`를 읽는데, 실제 재학습은 매번 새로 뜨는 py310_64
+  서브프로세스(`retrain_intraday.py`)의 별도 `BatchRetrainer` 인스턴스에서 일어나 메인
+  프로세스 쪽 카운터는 증가한 적 없음 — 영구 0. `retrain_eod.py`(매일 15:45 장외 스케줄러)
+  도 완료 마커만 쓰고 `session_state.json`을 안 건드려 대시보드에 전혀 반영 안 됨.
+- **CB③ 강조색 임계값 불일치**: 라벨 강조 기준 `cb_n>=5`가 실제 HALT 판정 최소표본
+  `CB_ACC30M_MIN_SAMPLES=30`(277차 가드)과 달라, 5~29건 구간 무의미한 값이 위험처럼
+  보임.
+
+### 구현
+
+- `learning/online_learner.py`: `horizon_acc_samples(hz)` 추가.
+- `main.py`: `_gather_learning_stats()`에 `horizon_acc_samples` 필드 추가.
+  `_on_gbm_retrain_done()`을 `session_state.json` 누적값 +1 방식으로 교체(서브프로세스가
+  매번 0에서 시작하는 인스턴스 카운터 대신), `batch_retrainer._retrain_count`도 동기화해
+  재시작 없이 `get_stats()`가 즉시 반영.
+- `retrain_eod.py`: 완료 마커 기록 직후 동일 `session_state.json` 키 갱신 로직 추가.
+- `dashboard/main_dashboard.py`: SGD 호라이즌 카드를 "학습됨/리셋됨/미학습" 3분기 +
+  정확도 표본부족 시 "—.—%(n건)" 표시로 교체. `CB_ACC30M_MIN_SAMPLES` import해 CB③
+  강조색 임계값 정렬.
+- 검증: `python -m py_compile`로 4개 수정 파일 구문 오류 없음 확인. 실제 PyQt5 창
+  기동·육안 확인은 미실시 — `NEXT_TODO.md` 280차에 확인 항목 기록.
+
+### 범위 외로 남긴 것
+
+- `scripts/eod_retrain.py`(EOD_RETRAIN.bat 대상 수동/백업 스크립트)는 미수정 — 자동
+  스케줄(`retrain_eod.py`)과 이중 카운트 위험 때문에 의도적으로 제외.
+
+---
+
+## 2026-07-02 (279차 — drift_adjuster 대시보드 표시 추가)
+
+**트리거**: 사용자 질문 "DRIFT_UP, RECOVERY_DOWN 이 대시보드에 표시 되는 곳은 어디인가 —
+없다면 적당한 위치를 제안해" → 조사 결과 어디에도 표시되지 않음을 확인, 위치 제안 후
+사용자 승인으로 구현.
+
+### 조사 결과 (구현 전)
+
+- `drift_adjuster.py`의 `DRIFT_UP`/`RECOVERY_DOWN`/`HOLD`/`SKIP_LOW_SAMPLE` 액션은
+  `logger.info`/`logger.warning` 로그와 `data/drift_adjuster_state.json` 저장만 될 뿐,
+  `dashboard/main_dashboard.py`·`main.py` 어디에도 이 값을 읽어 표시하는 코드 없음
+  (문자열 검색 0건)
+- `main.py::_gather_learning_stats()`([main.py:7186](main.py#L7186))가 `LearningPanel`
+  (`dashboard/main_dashboard.py` "🧠 자가학습 모니터")에 넘기는 데이터 딕셔너리에
+  `sgd_accuracy_50m`·`gbm_weight`·`cb_accuracy_30m` 등은 있지만 drift 관련 필드 부재
+- 이미 있는 `CB③ 30m 정확도` 라벨(`_lbl_cb_acc`, GBM↔SGD 블렌딩 바 바로 아래)이
+  같은 그룹(자가학습 안전장치 상태)이라 이어붙이기 적합하다고 판단해 제안
+
+### 구현
+
+| 파일 | 변경 |
+|---|---|
+| `learning/self_learning/drift_adjuster.py` | `_last_action` 상태 추가(재기동 후에도 표시 유지되도록 `_save`/`_load`에서 `last_action` 필드로 영속화). `get_status()` 메서드 신규 — `{"alpha", "action", "history"}` 반환. `record_accuracy()`의 스킵 경로·정상 경로 양쪽에서 `_last_action` 갱신 |
+| `main.py` | `_gather_learning_stats()`에 `drift_status = self.drift_adjuster.get_status()` 호출 추가, 반환 딕셔너리에 `drift_alpha`/`drift_action`/`drift_history` 3개 필드 추가 |
+| `dashboard/main_dashboard.py` | `LearningPanel`의 `_lbl_cb_acc` 바로 아래에 `_lbl_drift` 라벨 신규 추가. `SGD alpha: 0.00150  정확도 하락→alpha↑  \| 이력: █▅▃██▁█▅██` 형태로 표시. 액션별 색상 매핑(DRIFT_UP=주황 `C['orange']`, RECOVERY_DOWN=녹색 `C['green']`, HOLD=회색 `C['text2']`, SKIP_LOW_SAMPLE=노랑 `C['yellow']`, 알 수 없는 값은 회색 폴백) + 안전장치 설명 툴팁 추가. 히스토리는 기존 `_spark()` 스파크라인 헬퍼 재사용 |
+
+### 검증
+
+PyQt5 `QT_QPA_PLATFORM=offscreen` 모드로 `LearningPanel.update_data()`를 직접 호출해
+6가지 경로(DRIFT_UP/RECOVERY_DOWN/HOLD/SKIP_LOW_SAMPLE/알 수 없는 액션값/`drift_*`
+필드 누락 시 기본값 폴백) 모두 크래시 없이 렌더링 확인. 실제 대시보드 창에서의 육안
+확인·EOD 마감 후 실데이터 반영 확인은 미실시 — `NEXT_TODO.md` 279차.
+
+---
+
+## 2026-07-02 (278차 — drift_adjuster 최소 표본 가드 추가)
+
+**트리거**: NEXT_TODO 275차 ④ — `acc_history` 노이즈(0.156~0.5 요동)에 최소 표본수 가드가
+필요한지 재검토 요청.
+
+### 원인 확인
+
+`DriftAdjuster.record_accuracy()`가 `online_learner.recent_accuracy()`(전 호라이즌 단순
+평균)를 표본 수와 무관하게 그대로 10일 롤링 이력에 반영하고 있었음. `recent_accuracy()`는
+호라이즌별 `sum(buf)/len(buf)`의 평균이라, 당일 검증된 예측이 소수(세션 재시작·필터링
+등으로 발생)면 1/3=33%, 1/2=50% 같은 극단값이 그대로 3일 연속 하락(DRIFT_UP)/2일 연속
+회복(RECOVERY_DOWN) 판정에 섞여 들어감. 실측 `drift_adjuster_state.json` 이력의 깔끔한
+`0.3333`, 반복되는 `0.5` 값이 소표본 기원임을 뒷받침.
+
+### 수정
+
+| 파일 | 변경 |
+|---|---|
+| `learning/online_learner.py` | `sample_count` 프로퍼티 추가 — `reset_daily()` 이후 누적된 당일 전체 학습(검증) 표본 수(전 호라이즌 합산, `learn()` 호출마다 +1되는 기존 `_sample_count` 노출) |
+| `learning/self_learning/drift_adjuster.py` | `MIN_SAMPLES_REQUIRED=15` 신규 상수(`safety/contrarian_mode.py::_ACC30M_MIN_SAMPLES=15`와 동일 기준 차용). `record_accuracy(accuracy, n_samples=None)`에 가드 추가 — `n_samples < 15`면 이력 기록·alpha 조정을 스킵(`action="SKIP_LOW_SAMPLE"`)하고 기존 alpha 유지. `n_samples=None`은 가드 미적용(하위 호환 경로) |
+| `main.py` | `daily_close()`에서 `online_learner.sample_count`를 조회해 `drift_adjuster.record_accuracy(_today_accuracy, n_samples=_today_n_samples)`로 전달 |
+
+### 검증
+
+단위 테스트로 3개 경로(n=3→스킵, n=20→기록, n=None→레거시 기록) 모두 의도대로 동작
+확인. 실거래 검증은 다음 EOD 마감(15:40) 로그에서 `[DriftAdjuster] 표본 부족(n=... < 15)
+— ... 반영 스킵` 또는 정상 기록 로그로 재확인 필요 — `NEXT_TODO.md` 278차.
+
+### 임계값 선정 근거 및 남은 판단
+
+`MIN_SAMPLES_REQUIRED=15`는 신규 도입값이라 이 프로젝트의 실측 데이터 근거는 없음 —
+`contrarian_mode.py`의 "1건 오답으로 오발동 방지" 설계 기준을 그대로 차용. 실제 일별
+`sample_count` 분포를 며칠 관찰한 뒤 임계값 재조정 여지 있음(`DECISION_LOG.md` 278차).
+
+---
+
+## 2026-07-02 (277차 — CB③ 오늘 미발동 원인 확정: 06-25부터 하드 비활성화 상태)
+
+**트리거**: NEXT_TODO 275차 ②/276차 후속 — CB③(30분 정확도<35%→당일 정지) 오늘 실제
+발동 여부 확인.
+
+### 조사 결과
+
+1. `safety/circuit_breaker.py:315-334` — CB③ HALT 트리거가 **2026-06-25부터 코드에서
+   완전히 비활성화**돼 있음(주석: "30m 모델이 need_add 피처(opt_gex_bn·opt_chain_pcr 등)
+   미탑재 상태 + 구조적 acc 저하로 오발동 반복 → 피처 탑재 + acc 회복 후 재활성화 예정").
+   임계 미달 시 `logger.debug`로 로그만 남기고 `_trigger_halt()` 호출 자체가 스킵됨.
+2. 오늘(07-02) `[DBG-CB]` 로그 실측 — 12:05~12:11 구간 `acc30m=5.9%~26.1%`(현재 실제
+   임계값은 CLAUDE.md에 적힌 35%가 아니라 **`CB_ACCURACY_MIN_30M=0.28`로 이미 완화됨**,
+   `config/settings.py:543`)까지 떨어졌는데도 `state=NORMAL` 유지 — 활성화 상태였다면
+   명백히 HALT됐을 상황.
+3. **비활성화 사유 중 "피처 미탑재"는 이미 해소 확인** — `raw_data.db raw_features_horizon`
+   직접 쿼리 결과 오늘 30m 피처에 `opt_gex_bn`(-389.28 등)·`opt_chain_pcr`(2.17 등)이
+   매 분 정상 값으로 채워짐(178차 06-15 수집 버그 수정 이후 정상 작동 중). 재활성화 조건
+   2개(①피처 탑재 ②acc 회복) 중 **①은 충족**, ②(acc 회복)만 미충족 — 276차에서 확인한
+   대로 30m accuracy가 아직 31~33%(랜덤 수준)이기 때문.
+4. **부가 발견**: `_accuracy_buf`가 스케일러 재적합마다 리셋되는데(오늘 로그 09:36·10:06·
+   10:41·11:11·11:41·12:16·12:46·13:19·13:51 — **~30분 간격**), P4 4단계 판정·HALT 판정
+   모두 `CB_ACC30M_MIN_SAMPLES=30` 표본이 필요. 리셋 주기가 30분이라 30m 예측 특성상
+   표본 30개가 채워지기 전에 계속 리셋됨 — 오늘 P4 단계 전환(`CB③-P4`) 로그가 하루 종일
+   한 번도 안 찍힌 원인. HALT를 재활성화해도 이 구조면 판정이 제대로 안 걸릴 위험.
+
+### 결론
+
+CB③ 오늘 미발동은 버그가 아니라 06-25에 의도적으로 걸어둔 하드 비활성화 상태 그대로.
+다만 비활성화 사유의 절반(피처 미탑재)은 이미 해소됐는데도 재활성화 논의가 없었던 점,
+그리고 재활성화하더라도 30분 주기 버퍼 리셋 때문에 표본이 못 쌓여 무력화될 수 있는 점은
+정리해서 판단할 필요.
+
+### 사용자 결정 (같은 날 확정)
+
+CB③ 재활성화는 **30m 정확도(276차 근본 원인)가 먼저 회복된 뒤**로 보류. 상세 결정과
+재활성화 판단 기준(30m accuracy≥0.35 5거래일 연속 + conf_inversion 미발동)은
+`DECISION_LOG.md` 277차, 모니터링 항목은 `NEXT_TODO.md` 277차 참고.
+
+### 코드 변경 — acc30m 버퍼 기아 상태 선제 수정
+
+재활성화 자체는 보류하지만, 재활성화 시점에 바로 쓸 수 있도록 위 ④번 구조 문제를
+이번 세션에서 미리 수정.
+
+**수정**: `safety/circuit_breaker.py` `reset_acc30m_buffer()` — 호출 시점에
+`len(self._accuracy_buf) < CB_ACC30M_MIN_SAMPLES(30)`이면 `clear()`를 스킵하고 기존
+표본을 유지(`deque(maxlen=30)`이 오래된 표본을 자연 만료시키므로 방치해도 안전). 실제
+리셋 여부를 `bool`로 반환하도록 시그니처 변경. `main.py:1671` `_on_const_out_refit_done()`
+호출부도 반환값에 따라 로그 문구를 "버퍼 리셋" / "버퍼 리셋 스킵(표본 누적 중)"으로 분기.
+
+**효과**: 기존엔 ConstOut 재적합이 ~30분 쿨다운마다 반복될 때마다 무조건 전체 clear →
+30표본에 도달하기 전에 계속 리셋되는 영구 기아 상태였음. 이제 표본이 30개에 못 미치면
+리셋을 건너뛰므로, 몇 차례 재적합에 걸쳐 표본이 누적돼 결국 30개에 도달할 수 있음(대가:
+드물게 재적합 전후 표본이 섞임 — 원 설계 의도였던 "재적합 직후 즉시 완전 무효화"보다는
+느슨해짐, 허용 가능한 트레이드오프로 판단).
+
+**미검증**: 오늘 장 마감 후라 실제 30분 재적합 사이클에서 표본이 30개까지 쌓이는지는
+다음 거래일 로그로 확인 필요(`[CB③] acc30m 버퍼 리셋 스킵` 로그 출현 + 이후 `[CB③-P4]`
+단계 전환 로그가 처음으로 찍히는지).
+
+---
+
+## 2026-07-02 (276차 — conf 하락 근본원인 딥다이브 완료)
+
+**트리거**: NEXT_TODO 275차 ① — conf 하락(06-29~)이 EOD 재학습 데이터 품질/canary z경고/
+scaler refit 중 무엇 때문인지 특정.
+
+### 조사 순서 및 결과
+
+1. `logs/20260626_LEARNING.log`(06-29 장 진입 전 마지막 EOD 재학습) — SHAP 주간심사
+   `하락피처=0개 CORE안전=✅`, GBM 배치 재학습 전부 정상 완료. 이상 없음.
+2. `logs/20260629_SYSTEM.log` 프리마켓 Phase1~4 refit — `z경고 0→0개` 전 구간. Canary 정상.
+   → EOD/canary/scaler 쪽은 **결백**.
+3. `data/db/predictions.db` 직접 쿼리(5m, 06-01~07-02 일별 accuracy) — 06-29 전후로
+   정확도가 꺾이는 지점 없음. 6월 내내 25~40% 사이 요동(사실상 랜덤 33.3% 근방),
+   오히려 06-26이 최고치(45.2%). **정확도 자체는 06-29에 새로 나빠진 게 아니라
+   몇 주째 원래 랜덤 수준**이었음.
+4. `learning/calibration.py` — 261차(06-29)에 Platt 보정기 `WINDOW 100→200, C 0.05→0.02`로
+   강화(코드 주석에 명시, tail을 base rate 33%로 더 세게 압축). conf 하락 시작일과 정확히 일치.
+5. `predictions.db`에서 5m 일별 예측 건수 확인 — **06-25 Q3 배포 정책**(3m/5m 완성봉
+   시점에만 배포, [[DECISION_LOG 06-25 Q3]] 참고) 이후 하루 ~300건대 → ~70건대로 급감.
+   WINDOW=200 버퍼가 이 낮아진 표본 속도로 완전히 갱신되려면 ~2.8~3거래일 소요 —
+   06-29 파라미터 변경 후 07-01~07-02까지 conf가 점진적으로 계속 낮아진 이유 설명
+   (calibration.py 주석의 "~3.4일 적응"과 일치).
+
+### 근본 원인 결론
+
+conf 하락은 데이터 품질/피처 이상이 원인이 아니라, **모델이 몇 주째 실질적 방향성
+엣지가 거의 없었는데(accuracy ≈ 랜덤) 이전의 느슨한 Platt 보정(C=0.05)이 이를 가려
+conf를 0.44~0.50대로 부풀려 보여주고 있었던 것**. 261차(06-29) 보정 강화가 의도대로
+정확히 작동해 conf를 실제 정확도 수준으로 끌어내렸고, 07-01~07-02까지 이어진 추가
+하락은 06-25 Q3 표본 감소로 인한 WINDOW 수렴 지연 때문 — 버그 아님.
+
+**코드 변경 없음** (조사만 수행, 결론이 275차 가설 — "Platt이 정직하게 반영 중" —
+을 데이터로 확정).
+
+### 남은 질문 (미조사, 별도 세션 후보)
+
+- 모델이 애초에 왜 몇 주째 실질 엣지가 거의 없는지(=근본의 근본) — 시장 레짐 변화인지,
+  피처 노후화인지, 재학습 데이터 범위 문제인지는 이번 조사 범위 밖. 규모가 커서 별도
+  세션 필요.
+- NEXT_TODO 275차 ②(CB③ 30분 정확도<35% 오늘 실제 발동 여부)는 이번 조사와 직결된
+  주제이나 미착수 — 정확도가 몇 주째 랜덤 수준이라면 CB③이 상시 발동해야 정상인데
+  안 하고 있다는 뜻이라 다음 세션 우선순위 높음.
+
+---
+
+## 2026-07-02 (275차 — conf/mc 통과율 0 딥다이브 + 진단 스크립트 버그 2종 수정)
+
+**트리거**: 사용자 보고 "금일 conf 평균이 mc 기준보다 낮아 통과율이 거의 0이다" — 딥다이브 후
+"상큼한 개선제안" 요청.
+
+### 데이터 조사
+
+- `predictions` 5m 일별 평균 confidence(06-19→07-02): 0.4498, 0.4326, 0.4207, 0.4559, 0.4320,
+  0.4953, 0.4140, 0.4322, **0.3912(07-01)**, **0.3895(07-02)** — 06-29 이후 하락 추세, 오늘만의
+  이상치 아님
+- `calibration_report.md` 최근구간: accuracy **32.78%**(3분류 랜덤 33.3%와 사실상 동일),
+  bin별 accuracy가 **역전**(0.8~0.9=31.36% < 0.3~0.4=33.64%) — 고신뢰일수록 더 틀림
+- `strategy/entry/checklist.py:115`의 `min_conf_effective`(0.56~0.58)가 `confidence`
+  (raw, oggi 0.35~0.44대)와 직접 비교되는 1차 게이트라 여기서부터 이미 거의 다 막힘
+- `drift_adjuster_state.json` acc_history 최근 10개: `0.5,0.35,0.2648,0.5,0.5,0.1562,0.5,
+  0.3333,0.5,0.5` — 표본 부족 구간에서 극단값 노이즈 큼
+- CB③(30분 정확도<35%→당일 정지) 임계와 30m 호라이즌 누적 accuracy(32.88%)가 근접 —
+  실제 오늘 CB③ 발동 여부는 로그 미확인(다음 세션 후보)
+
+### 버그 발견 ① — `scripts/generate_meta_gate_tuning_report.py`
+
+`meta_labels` 소스 그리드서치에서 `row["meta_confidence"]` 컬럼이 애초에 SELECT에 없어
+(`ml.meta_score`만 존재, 별칭 불일치) `"meta_confidence" in row.keys()`가 항상 False →
+매번 `predictions.confidence`(raw)로 조용히 폴백. 게다가 `meta_labels.meta_score`는
+`learning/meta_labeling.py`에서 보듯 연속 신뢰도가 아니라 **0.0/0.5/1.0 이진 판정 라벨**이라
+애초에 confidence 그리드서치 대상이 될 수 없는 컬럼이었음. 리포트의 "avg_meta_confidence=0.46 ↔
+권장 임계 0.65~0.71" 비교는 설계가 잘못된 산출물.
+
+### 버그 발견 ② — `rollout_readiness_report.md`의 위험 신호 누락
+
+`generate_calibration_report.py`가 이미 `conf_inversion` 감지기(고신뢰 구간이 저신뢰보다
+3%p 이상 덜 정확하면 발동)를 계산해 `calibration_metrics.json`에 기록해두고 있었는데,
+`generate_rollout_readiness_report.py`는 이 필드를 전혀 읽지 않고 ECE 스칼라 하나만으로
+`small_size` 승격을 추천 중 — ECE는 평균 오차라 이런 역전을 못 잡음.
+
+### 수정 (커밋 d9bf4f0)
+
+| 파일 | 변경 |
+|---|---|
+| `scripts/generate_meta_gate_tuning_report.py` | `meta_labels` fetch 쿼리에 `ensemble_decisions.meta_confidence`를 `(SELECT ts, meta_confidence, MAX(id) AS id FROM ensemble_decisions GROUP BY ts)` 서브쿼리로 LEFT JOIN(ts 기준, SQLite의 단일 MAX 집계 bare-column 규칙 이용해 최신 1건만). `build_metrics()`가 이 실제 blended_conf를 사용하도록 변경, ensemble_fallback 소스 분기는 미변경 |
+| `scripts/generate_rollout_readiness_report.py` | `decide_stage()` 최상단에 `conf_inversion` 가드 추가 — 감지되면 ECE/PnL 무관하게 `shadow` 강제 반환(사유 문자열에 high_acc/low_acc/gap 포함). `Checklist`에 `Confidence inversion: none/DETECTED` 라인, `metrics`에 `conf_inversion` 필드 추가 |
+
+### 검증 (수정 직후 재실행)
+
+- `generate_meta_gate_tuning_report.py 5m`: avg_meta_confidence 0.4612→**0.2171**(flat_signal
+  스킵 시 meta_confidence=0.0 다수 포함 — 정상), best grid match율 73.59%→**76.40%**
+- `generate_rollout_readiness_report.py`: 시뮬레이션으로 conf_inversion 강제 주입 시
+  ECE=0.05·PnL 양호해도 `shadow`로 정확히 강등되는 것 확인. 단 현재 실제 gap=2.85%p로
+  발동 임계(3%p) 바로 아래라 오늘 리포트는 여전히 `small_size` — 273차 EKS 마진 이슈와
+  동일 패턴(근소 미달로 안전장치 미발동)
+
+### 커밋 범위
+
+[[feedback_git_commit_scope]] 원칙에 따라 `scripts/*.py` 2개만 커밋. 재생성된
+`meta_gate_tuning_report.md`/`.json`, `rollout_readiness_report.md`/`.json`은 PC별 로컬
+런타임 산출물이라 커밋 대상에서 제외(작업트리에 M 상태로 남는 게 정상).
+
+### 남은 작업 (NEXT_TODO 275차)
+
+- conf 하락(06-29~) 근본 원인 조사 — EOD 재학습 데이터 품질/canary z경고/scaler refit 로그 대조
+- CB③ 오늘 실제 발동 여부 확인 — 30m accuracy(32.88%)가 이미 임계(35%) 밑
+- conf_inversion 임계값(3%p) 근소 미달 관찰 — 필요 시 하향 검토
+- drift_adjuster 최소 표본수 가드 검토
+
+---
+
+## 2026-07-02 (274차 — 진입0 딥다이브 + ATR 적응형 상한 · Hurst/MR 조건부 완화)
+
+**트리거**: 07-02 09:00~12:30 장중 실거래 진입 0건 — 사용자 요청으로 원인 딥다이브.
+
+### 로그 기반 퍼널 분석 (216분봉)
+
+```
+216 분봉 실행
+ → ~200 : 방향無/신뢰도 미달로 즉시 X등급 (모델이 확신 못 준 정상 관망)
+ → 9    : 등급 A/B 도달 (진짜 기회) — 09:08, 09:10, 10:21, 10:22, 10:25, 10:27, 10:28, 10:33, 10:36
+   → 2건 EKS 발동 관망 차단 (09:08, 09:10) — 의도된 안전장치, 정상
+   → 5건 ATR_MAX_ENTRY(3.5pt) 상한 차단 (10:21~10:28 연속, ATR 4.2~4.6pt)
+   → 2건 Hurst<0.45 횡보 게이트 차단 (10:33, 10:36)
+ → 실제 진입: 0건
+```
+
+### 근본 원인 ① — `ATR_MAX_ENTRY=3.5pt` 정적 상한의 만성적 시대 뒤처짐
+
+06-30(263차) 도입 당시 NEXT_TODO에 "1주일 후 재조정 검토" 항목이 이미 있었음.
+06-24~07-02 7거래일 1분봉 ATR 중앙값을 뽑아보니 3.49~6.23pt로 **거의 매일 3.5pt 문턱 근처거나 상회** —
+"예외적 고변동 상황"이 아니라 현재가 정상 레짐이고 3.5pt가 낡은 값이었음이 실증됨.
+
+### 근본 원인 ② — Hurst 게이트가 MR(평균회귀) 모드까지 함께 차단
+
+`main.py`의 `_hurst_ok`가 `entry_mode`를 구분하지 않고 전체 진입을 차단. `checklist.py`의
+`MEAN_REVERSION` 모드는 원래 Hurst가 낮은(횡보) 구간용 대응 전략인데, 발동 조건
+(`VWAP 1.5σ 이탈 AND exhaustion≥0.70` 동시충족)이 너무 빡빡해 최근 2거래일 0회 발동 —
+결과적으로 Hurst<0.45 구간은 "TF도 막히고 MR도 안 켜지는" 완전 무전략 관망 구간이었음.
 
 ### 수정 (커밋 예정)
 
@@ -42,6 +360,19 @@
 
 - 내일 장중 acc30m 붕괴 재현 시 `[GBM-64]` ERROR가 더 이상 발생하지 않는지, 재학습이 실제로 성공하는지 확인 필요
 - dev_memory 4종 파일이 264차 이후 265~272차 구간이 비어있음(git log에는 존재) — 별도 백필 필요 여부는 미결정
+| `config/settings.py` | `ATR_ADAPTIVE_MAX_WINDOW=60`·`ATR_ADAPTIVE_MAX_MULT=1.25`·`ATR_ADAPTIVE_MAX_CEILING=6.0`·`ATR_ADAPTIVE_MIN_SAMPLES=20` 추가. `MR_EXHAUSTION_MIN_WEAK=0.60`·`MR_WEAK_SIZE_MULT=0.5` 추가 |
+| `main.py` | `self._atr_recent_window`(deque maxlen=60) 신설, 매분 ATR 적재. 진입 판정 시 표본≥20이면 `상한=clamp(정적3.5, 최근60분평균×1.25, 절대상한6.0)`으로 동적 계산해 `_atr_ok`에 적용. `_hurst_ok`에 `entry_mode=="MEAN_REVERSION"` 예외 추가 — MR 모드는 Hurst 값과 무관하게 통과. 차단 로그·대시보드 `_atr_state`도 적응형 값 기준으로 갱신 |
+| `strategy/entry/checklist.py` | VWAP MR 체크를 `exhaustion≥0.70`(정상, 풀사이즈) / `0.60~0.70`(약한 MR, `_mr_weak=True`) 2단계로 분리. 약한 MR은 등급 결정 후 `size_mult *= MR_WEAK_SIZE_MULT(0.5)` 적용 |
+
+### 위험 수용
+
+- ATR 적응형 상한 상향은 손절거리(ATR×1.5)가 커지는 트레이드를 허용 — Sizer 공식이 `수량 ∝ 1/ATR`이라
+  계약 수는 자동으로 줄어듦(별도 사이즈 조정 로직 불필요). 표본 20개 미만(장 시작 직후) 구간은 기존
+  정적 3.5pt를 그대로 사용해 cold-start 리스크는 없음.
+- 약한 MR(0.60~0.70)은 사이즈 0.5배로 리스크를 억제했으나 실거래 성과는 미검증 — NEXT_TODO 274차
+  항목으로 1~2주 관찰 예정.
+
+---
 
 ## 2026-07-01 (264차 — EKS 오발동·z경고 과측정 3종 근본 수정)
 

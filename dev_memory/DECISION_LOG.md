@@ -12,6 +12,175 @@
 **결정**: `PYTHON_64_EXEC`을 하드코딩 대신 `os.environ.get("MIREUK_PYTHON_64_EXEC", os.path.join(os.path.expanduser("~"), "anaconda3", "envs", "py310_64", "python.exe"))`로 동적 해석.
 **Why**: 이 저장소는 여러 PC(`82108`, `pc1` 등)에 git pull로 공유되는데, `config/settings.py` 파일 헤더 자체가 "PC 독립적"을 표방함에도 이 상수만 특정 사용자 절대경로로 고정돼 있었음. 동일 패턴이 `register_eod_scheduler.ps1`에서도 있었고 커밋 `ba07c46`에서 `.gitignore` 처리로 해결한 전례가 있음 — 이번엔 공유 설정 파일이라 완전 제외 대신 동적 해석 + env override로 대응.
 **How to apply**: 앞으로 PC 종속 절대경로(`C:\Users\<user>\...`)가 코드에 필요할 때는 먼저 `os.path.expanduser("~")` 또는 `os.path.dirname(os.path.abspath(__file__))` 기준 동적 조합을 검토하고, PC마다 완전히 다른 값(브로커 종류 등)만 `machine.cfg` 패턴(`.gitignore` 대상)으로 분리한다.
+## 2026-07-02 (278차 — drift_adjuster 최소 표본 가드 추가)
+
+### [결정] 당일 정확도 표본이 `MIN_SAMPLES_REQUIRED=15` 미만이면 alpha 이력 반영 스킵
+
+**배경**: `DriftAdjuster.record_accuracy()`는 `online_learner.recent_accuracy()`(호라이즌별
+정확도의 단순 평균)를 표본 수와 무관하게 그대로 10일 롤링 `acc_history`에 반영해왔음.
+275차 관찰(`drift_adjuster_state.json` 최근 10개: `0.5, 0.35, 0.2648, 0.5, 0.5, 0.1562,
+0.5, 0.3333, 0.5, 0.5`)에서 `0.3333`(=1/3), 반복되는 `0.5`(=1/2 또는 무데이터 기본값)
+같은 값이 소수 표본에서 나온 것으로 판단 — 세션 재시작·`since_ts` 필터링 등으로 당일
+검증 표본이 적은 날, 이 극단값이 `DRIFT_THRESHOLD`(0.50) 3일 연속/`RECOVERY_THRESHOLD`
+(0.58) 2일 연속 판정에 노이즈로 섞여 SGD alpha를 잘못된 방향으로 흔들 위험.
+
+**결정**: `learning/online_learner.py`에 `sample_count` 프로퍼티(당일 `reset_daily()`
+이후 누적된 전 호라이즌 학습 표본 수) 추가. `drift_adjuster.py`에
+`MIN_SAMPLES_REQUIRED=15` 상수 추가, `record_accuracy(accuracy, n_samples=None)`이
+`n_samples < 15`면 `_acc_history.append()`와 `_adjust_alpha()`를 모두 스킵하고
+`action="SKIP_LOW_SAMPLE"`로 기존 alpha를 그대로 유지. `n_samples=None`(레거시 호출)은
+가드 미적용 — 유일한 호출부인 `main.py::daily_close()`는 항상 `n_samples=`를 전달하도록
+수정.
+
+**임계값 15의 근거**: 프로젝트 내 별도 실측 데이터 없이 `safety/contrarian_mode.py::
+_ACC30M_MIN_SAMPLES=15`("1건 오답으로 오발동 방지")를 그대로 차용. `CB_ACC30M_MIN_SAMPLES
+=30`(circuit_breaker.py)보다는 낮게 잡았는데, drift_adjuster는 CB③처럼 즉시 당일 정지를
+발동하는 게 아니라 학습률을 서서히(×1.5/×0.8) 조정하는 완만한 안전장치라 CB③만큼
+보수적인 표본 수를 요구할 필요는 없다고 판단. 실제 일별 `sample_count` 분포를 관찰한
+뒤 재조정 여지 있음(`NEXT_TODO.md` 278차).
+
+**위험 수용**: `n_samples < 15`인 날은 alpha가 그날의 실제 정확도와 무관하게 완전히
+고정됨 — 만약 그런 날이 연속되면 drift 감지가 계속 미뤄질 수 있음. 다만 저표본 자체가
+이미 신호로서 신뢰할 수 없는 상태이므로, 신뢰 불가능한 신호로 alpha를 흔드는 것보다
+안전한 트레이드오프로 판단.
+
+---
+
+## 2026-07-02 (277차 — CB③ 재활성화 보류 결정: 모델 정확도 회복 선행)
+
+### [결정] CB③ HALT 재활성화는 30m 정확도 회복 후로 보류
+
+**배경**: CB③ HALT 트리거는 06-25부터 코드 하드 비활성화 상태(`circuit_breaker.py:315`).
+비활성화 사유 2가지 중 "need_add 피처(opt_gex_bn·opt_chain_pcr) 미탑재"는 178차(06-15)로
+이미 해소됐지만, "구조적 acc 저하"는 276차 딥다이브로 확인한 대로 여전히 진행 중(30m
+누적 accuracy 31~33%, 사실상 랜덤). 사용자 판단: 지금 재활성화하면 acc 회복 전까지
+거의 상시 HALT가 반복되므로 순서를 뒤집지 않는다.
+
+**결정**: CB③ HALT는 **30m 호라이즌 정확도가 회복될 때까지 비활성화 유지**. 재활성화는
+276차 근본 원인(Platt 보정 강화가 드러낸 랜덤급 모델 정확도, [[SESSION_LOG 276차]])이
+해소된 뒤 진행.
+
+**재활성화 판단 기준(제안, 다음 세션에서 조정 가능)**:
+- `calibration_report.md` "최근(Platt 보정 이후)" 섹션의 30m accuracy가
+  `CB_ACC_WATCH_MIN`(0.35) 이상으로 **5거래일 연속** 유지
+- 동시에 `conf_inversion` 미발동(고신뢰 구간이 저신뢰보다 덜 정확한 역전 없음) 상태 유지
+- 두 조건 충족 시 `circuit_breaker.py:315` 주석 처리된 HALT 분기를 복원
+
+**위험 수용**: 재활성화 지연 기간 동안 CB③이 담당하던 "acc 붕괴 시 당일 정지" 안전장치는
+공백 상태. 다만 P4 4단계(NORMAL/WATCH/RESTRICTED) 추적과 `_accuracy_buf` 누적은 계속
+유지되므로 acc30m 수치 자체는 로그로 계속 관찰 가능 — 완전한 무방비는 아님.
+
+### [수정] acc30m 버퍼 기아 상태 — 재활성화 선행 과제로 이번 세션에 즉시 개선
+
+**배경**: 위 재활성화 판단 기준을 실제로 관측하려면 acc30m이 정상적으로 쌓여야 하는데,
+`reset_acc30m_buffer()`가 ConstOut 재적합마다(~30분 간격, 오늘도 하루 종일 반복) 버퍼를
+무조건 `clear()`해 `CB_ACC30M_MIN_SAMPLES=30`에 도달하기 전에 계속 리셋되는 영구 기아
+상태였음. 이 상태로는 재활성화 트리거 판단에 필요한 P4 단계(NORMAL/WATCH/RESTRICTED)
+추적조차 오늘 하루 종일 한 번도 작동하지 않았음(`[CB③-P4]` 로그 0건).
+
+**결정**: `safety/circuit_breaker.py::reset_acc30m_buffer()` — 리셋 시점에 버퍼가 이미
+`CB_ACC30M_MIN_SAMPLES` 미만이면 `clear()`를 스킵하고 기존 표본 유지. `deque(maxlen=30)`
+자체가 오래된 표본을 자연 만료시키므로 방치해도 안전. 함수가 실제 리셋 여부를 `bool`로
+반환하도록 변경, `main.py`의 `_on_const_out_refit_done()` 호출부 로그도 반환값에 맞춰
+분기.
+
+**위험 수용**: 표본이 30개 미만인 상태가 여러 재적합 주기에 걸쳐 이어지면, 서로 다른
+스케일러 버전 하에서 나온 예측이 한 버퍼에 섞일 수 있음(원래 clear()의 "재적합 직후
+즉시 완전 무효화" 의도보다 느슨해짐). ConstOut이 사실상 상시 재발하는 현재 시장
+컨디션에서는 "표본이 아예 안 쌓이는 것"보다 "약간 섞여도 쌓이는 것"이 재활성화 판단
+관측 목적에는 낫다고 판단. 표본 30개 이상 확보된 정상 상태에서는 기존과 동일하게
+매 재적합마다 완전 초기화되므로 이 트레이드오프는 기아 상태(표본 부족) 구간에서만
+적용됨.
+
+---
+
+## 2026-07-02 (275차 — conf/mc 통과율 0 딥다이브: 진단 리포트 버그 2종 수정)
+
+### [결정] meta_gate_tuning 리포트를 raw confidence 폴백 대신 실제 blended meta_confidence로 그리드서치
+
+**배경**: `scripts/generate_meta_gate_tuning_report.py`의 `meta_labels` 소스 그리드서치가
+`row["meta_confidence"]`를 찾다 컬럼 부재로 매번 `predictions.confidence`(raw)로 조용히
+폴백하고 있었음. `meta_labels.meta_score`는 `learning/meta_labeling.py`의 `derive_meta_label()`이
+만드는 **사후 판정 이진 라벨(0.0/0.5/1.0 = skip/reduce/take)**이지 confidence 예측값이
+아니라서, 애초에 이 컬럼으로 임계값 그리드서치를 하는 것 자체가 설계 오류였음.
+
+**결정**: `ensemble_decisions.meta_confidence`(= `MetaGate.evaluate()`가 실제로 계산한
+blended_conf)를 `ts` 기준으로 LEFT JOIN해 사용. 동일 ts에 복수 row가 있을 수 있어
+`(SELECT ts, meta_confidence, MAX(id) AS id FROM ensemble_decisions GROUP BY ts)` 서브쿼리로
+최신 1건만 선택(SQLite의 "단일 MAX 집계 시 bare column은 그 행에서 취함" 규칙 이용).
+`ensemble_decisions`에 `horizon` 컬럼이 없어(단일 결정 테이블) `ts`만으로 조인 —
+`ensemble_fallback` 소스 분기가 이미 쓰던 것과 동일 패턴.
+
+**결과 검증**: avg_meta_confidence 0.4612→0.2171(flat_signal 스킵 시 설계상 0.0이 다수
+포함되는 게 정상 원인), best grid match율 73.59%→76.40%로 상승 — 실데이터 대비 그리드서치가
+더 정확해짐. 이 리포트의 "권장 임계값(take≥0.71 등)"은 여전히 프로덕션 `meta_gate.py`의
+등급별 blended_conf 임계(240차, take_floor 0.43~0.45)를 직접 대체하는 근거로 쓰지 않는다 —
+두 시스템은 표본 구성과 목적이 다름.
+
+### [결정] rollout_readiness 승격 판정에 conf_inversion 가드 추가
+
+**배경**: `generate_calibration_report.py`는 이미 `_check_confidence_inversion()`으로
+고신뢰(0.6+) 구간이 저신뢰(0.3~0.5) 구간보다 정확도가 3%p 이상 낮은 "역전"을 감지해
+`calibration_metrics.json`의 `conf_inversion` 필드에 기록하고 있었음. 그런데
+`generate_rollout_readiness_report.py`의 `decide_stage()`는 이 필드를 전혀 읽지 않고
+ECE 스칼라 하나(`< 0.20`)와 PnL delta만으로 `small_size` 승격을 추천 — ECE는 평균 절대
+오차라 "고신뢰일수록 더 틀리는" 역전 패턴을 못 잡는다. 딥다이브 시점 실측: overall ECE=0.1213
+(양호해 보임)이지만 실제로는 0.8~0.9 bin acc=31.36% < 0.3~0.4 bin acc=33.64%로 역전 근접
+(gap=2.85%p, 발동 임계 3%p 바로 아래).
+
+**결정**: `decide_stage()` 최상단에 `if conf_inversion: return "shadow", ...` 가드 추가.
+ECE·PnL이 아무리 좋아도 역전 감지 시 무조건 `shadow`로 강등. 사이즈 확대 여부를 "평균이
+얼마나 잘 맞는가"가 아니라 "확신할수록 더 잘 맞는가"로 판단하도록 전환.
+
+**위험 수용/미결정**: 현재 gap=2.85%p로 3%p 임계 바로 아래라 오늘 시점에는 여전히
+`small_size`가 뜬다 — 273차 EKS `EKS_TRIGGER_MARGIN` 이슈와 동일한 "임계 바로 밑에서
+안전장치 미발동" 패턴. 이 3%p 임계 자체를 낮출지는 이번 세션에서 결정하지 않았고,
+conf 하락 근본 원인 조사(NEXT_TODO 275차) 이후 판단하기로 함 — 원인 파악 전에 임계만
+낮추면 또 다른 근소 미달 사각지대를 만들 뿐이라는 판단.
+
+### 커밋 범위 판단
+
+[[feedback_git_commit_scope]] 규칙대로 `scripts/*.py` 2개만 커밋(d9bf4f0). 재생성된
+`meta_gate_tuning_report.md`/`.json`, `rollout_readiness_report.md`/`.json`,
+`calibration_metrics.json` 등은 PC별 로컬 산출물이라 커밋 제외 — 다른 PC가 pull 시 이
+PC의 로컬 진단 스냅샷으로 덮어쓰이지 않도록.
+
+---
+
+## 2026-07-02 (274차 — 진입0 원인 딥다이브 후속 개선)
+
+### [결정] ATR_MAX_ENTRY를 정적 3.5pt → 적응형 상한으로 전환
+
+**배경**: 07-02 09:00~12:30 진입 0건 딥다이브 결과, 등급 A까지 도달한 신호 9건 중 5건이
+`ATR>3.5pt` 상한 하나로 연속 차단됨(10:21~10:28). 06-24~07-02 7거래일 ATR 중앙값을 조사하니
+3.49~6.23pt로 상시 3.5pt 문턱 근처/초과 — 06-30(263차) 도입 시점에 이미 "1주일 후 재조정
+검토" TODO가 있었고, 이번 딥다이브가 그 실증 데이터가 됨.
+
+**결정**: `ATR_MAX_ENTRY=3.5`는 적응형 상한의 하한(floor)으로 유지하고,
+`상한 = clamp(3.5, 최근60분ATR평균×1.25, 6.0)`을 진입 판정에 사용. 표본(60분 윈도우) 20개
+미만이면 정적 3.5pt로 폴백.
+
+**왜 정적 상수를 아예 올리지 않고 적응형으로 갔나**: 단순히 3.5→4.0/4.5로 올리면 "평소보다
+훨씬 큰 순간 스파이크"까지 함께 허용해버림. 최근 60분 평균 기반 배수는 "오늘 시장이 구조적으로
+변동성이 큰가"와 "이 분봉만 유난히 튀는가"를 구분해, 전자는 통과시키고 후자는 여전히 차단.
+
+**위험 수용**: 손절거리(ATR×1.5)가 커지는 트레이드가 늘어나지만, `PositionSizer.compute()`가
+`수량 = 기본리스크×배수들 / (ATR×1.5×pt_value)`로 ATR에 반비례해 계약 수를 이미 자동 축소하므로
+계좌 리스크(원화 기준)는 ATR 상승분과 무관하게 거의 일정하게 유지됨. 별도 사이즈 보정 불필요.
+
+### [결정] Hurst<0.45 진입 차단을 TREND_FOLLOW 전용으로 한정 + MR 발동 조건 2단계화
+
+**배경**: `_hurst_ok` 게이트가 `entry_mode`를 구분하지 않아 `MEAN_REVERSION`(횡보장 대응 전략)
+신호까지 함께 차단. 그런데 MR 발동 조건(`vwap 1.5σ 이탈 AND exhaustion≥0.70` 동시충족)이
+너무 엄격해 최근 2거래일 발동 0회 — Hurst<0.45 구간이 TF도 MR도 못 쓰는 무전략 관망이 되고 있었음.
+
+**결정**:
+- `_hurst_ok = (entry_mode == "MEAN_REVERSION") or (hurst >= 0.45)` — MR은 Hurst 게이트 면제
+- `MR_EXHAUSTION_MIN_WEAK=0.60` 신설. `exhaustion∈[0.60,0.70)`을 "약한 MR"로 허용하되
+  `size_mult *= 0.5`로 축소. `exhaustion≥0.70`은 기존과 동일 풀사이즈
+
+**위험 수용**: 약한 MR 진입은 실거래 성과 데이터가 아직 없음 — 사이즈 0.5배로 하방을 제한했고,
+NEXT_TODO 274차 항목으로 1~2주 관찰 후 임계값 재조정 여부 판단 예정.
 
 ---
 

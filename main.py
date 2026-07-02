@@ -64,6 +64,8 @@ from config.settings import (
     HZ_DEPLOY_POLICY,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
     ATR_STOP_MULT, ATR_HORIZON_TP1_MULT,
+    ATR_ADAPTIVE_MAX_WINDOW, ATR_ADAPTIVE_MAX_MULT, ATR_ADAPTIVE_MAX_CEILING,
+    ATR_ADAPTIVE_MIN_SAMPLES,
     CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
     SHAP_MIN_DATA_POINTS,
     FRED_API_KEY,
@@ -323,6 +325,8 @@ class TradingSystem:
         from collections import deque as _deque
         self._z_warn_5m: "_deque[int]" = _deque(maxlen=5)  # Shadow 배지용 5분 z경고 롤링
         self._eks_recovery_conf_window: "_deque[float]" = _deque(maxlen=10)  # EKS 회복 판정용 최근 conf
+        # 273차: ATR_MAX_ENTRY 적응형 상한용 — 최근 N분 ATR 롤링 윈도우
+        self._atr_recent_window: "_deque[float]" = _deque(maxlen=ATR_ADAPTIVE_MAX_WINDOW)
 
         # 현재 레짐
         self.current_regime         = "NEUTRAL"
@@ -1432,6 +1436,36 @@ class TradingSystem:
             logger.debug("[Canary] z_warn 로드 실패: %s", _e)
             return 0
 
+    def _canary_load_z_warn_features(self, n_rows: int = 60) -> list:
+        """raw_data.db 최근 n_rows 피처로 현재 scaler z-score 극단 피처명 목록 반환.
+
+        Phase refit 진단 전용(호출 빈도 낮음) — _canary_load_z_warn과 별도 쿼리.
+        """
+        import sqlite3 as _sq3
+        import json as _json
+        from config.settings import RAW_DATA_DB as _RAW_DB
+        if not os.path.exists(_RAW_DB):
+            return []
+        try:
+            with _sq3.connect(_RAW_DB, timeout=5) as _conn:
+                _rows = _conn.execute(
+                    "SELECT features FROM raw_features ORDER BY ts DESC LIMIT ?",
+                    (n_rows,),
+                ).fetchall()
+            if not _rows:
+                return []
+            _fn = self.model.feature_names
+            if not _fn:
+                return []
+            _X = np.array(
+                [[_json.loads(r[0]).get(k, 0.0) for k in _fn] for r in _rows],
+                dtype=float,
+            )
+            return self.model.canary_z_warn_features(_X)
+        except Exception as _e:
+            logger.debug("[Canary] z_warn 피처 로드 실패: %s", _e)
+            return []
+
     def _emit_runtime_health(self, features: dict, latency_ms: float) -> None:
         """Day10: 운영 헬스 스냅샷 생성/전파 (대시보드 + HEALTH 로그)."""
         try:
@@ -1633,10 +1667,11 @@ class TradingSystem:
         1) acc30m 버퍼 리셋 — 노후 스케일러 기반 예측은 무효
         2) GBM 재학습 예약 — scaler만 재적합해도 GBM 트리 구조 미변경 시 ConstOut 재발
         """
-        # (1) acc30m 버퍼 리셋
-        self.circuit_breaker.reset_acc30m_buffer()
+        # (1) acc30m 버퍼 리셋 (표본 부족 시 [277차] 기아 방지로 내부에서 스킵될 수 있음)
+        _acc30m_did_reset = self.circuit_breaker.reset_acc30m_buffer()
         log_manager.system(
-            f"[ConstOut] {hz} 재적합 완료 → acc30m 버퍼 리셋",
+            f"[ConstOut] {hz} 재적합 완료 → "
+            + ("acc30m 버퍼 리셋" if _acc30m_did_reset else "acc30m 버퍼 리셋 스킵(표본 누적 중)"),
             "INFO",
         )
         # (2) GBM 재학습 예약 — 상호 잠금: 이미 재학습 중이면 skip
@@ -2781,7 +2816,8 @@ class TradingSystem:
         # DB 동기 저장(②) 완료 후 스레드 기동 → race 없음.
         if n_bars in PRE_MARKET_REFIT_STEPS and not getattr(self, "_scaler_refresh_running", False):
             _phase = sorted(PRE_MARKET_REFIT_STEPS).index(n_bars) + 1
-            _z_now = self._canary_load_z_warn(n_rows=n_bars)
+            _z_feats_now = self._canary_load_z_warn_features(n_rows=n_bars)
+            _z_now = len(_z_feats_now)
             self._scaler_refresh_running = True
             if n_bars == min(PRE_MARKET_REFIT_STEPS):
                 # Phase1 기동 즉시 ScalerWarmup(08:55) 스킵 예약
@@ -2790,7 +2826,7 @@ class TradingSystem:
                 f"[PreMarket] Phase{_phase} refit 기동 ({n_bars}봉 z경고={_z_now}개)",
                 "INFO",
             )
-            def _pm_refit_worker(_nb=n_bars, _ph=_phase, _z=_z_now):
+            def _pm_refit_worker(_nb=n_bars, _ph=_phase, _z=_z_now, _zf=_z_feats_now):
                 try:
                     # 단기 window 사용: 500봉은 전날 분포 위주 → 오늘 갭오픈 z경고 고착
                     # PRE_MARKET_SCALER_BARS(30봉)로 오늘 비율 최대화 (bar14: 47% today)
@@ -2804,12 +2840,17 @@ class TradingSystem:
                             trigger_type="A_WARMUP",
                             trigger_reason=f"pre_market_phase{_ph}_{_nb}bars",
                         )
-                        _z_after = self._canary_load_z_warn(n_rows=_nb)
+                        _z_feats_after = self._canary_load_z_warn_features(n_rows=_nb)
+                        _z_after = len(_z_feats_after)
                         _z_worsened = _z_after > _z + 3
+                        # 273차: refit 전후 모두 z경고인 피처 = 이번 refit이 억제 못한 피처
+                        # (Phase4가 Phase1~3와 달리 무효했던 원인 진단용, 08:59 딥다이브)
+                        _persist = sorted(set(_zf) & set(_z_feats_after))
                         log_manager.system(
                             f"[PreMarket] Phase{_ph} refit 완료 n={len(_Xpm)}봉"
                             f" z경고 {_z}→{_z_after}개"
-                            + (" ⚠ 악화 (봉 수 부족)" if _z_worsened else ""),
+                            + (" ⚠ 악화 (봉 수 부족)" if _z_worsened else "")
+                            + (f" | 잔존={','.join(_persist)}" if _persist else ""),
                             "WARNING" if _z_worsened else "INFO",
                         )
                     else:
@@ -3016,13 +3057,20 @@ class TradingSystem:
             try:
                 _ss_path = self._session_state_path()
                 _ss2 = self._read_session_state()
+                # [280차] self.batch_retrainer._retrain_count는 항상 0 — 실제 재학습은
+                # _start_gbm_retrain_subprocess()가 매번 새 BatchRetrainer 인스턴스를 만드는
+                # py310_64 서브프로세스(retrain_intraday.py)에서 수행되고, 그 안의 카운터는
+                # 서브프로세스 종료와 함께 사라진다. 세션에 영속된 누적값에 +1하는 방식으로 대체.
+                _prev_count = int(_ss2.get("gbm_total_retrain_count", 0) or 0)
+                _new_count  = _prev_count + 1
                 _ss2["gbm_last_retrain"] = result.get("timestamp", "")
-                _ss2["gbm_total_retrain_count"] = self.batch_retrainer._retrain_count
+                _ss2["gbm_total_retrain_count"] = _new_count
                 with open(_ss_path, "w", encoding="utf-8") as _ssf:
                     json.dump(_ss2, _ssf, ensure_ascii=False)
+                self.batch_retrainer._retrain_count = _new_count  # get_stats() 대시보드 즉시 동기화
                 logger.info(
                     "[GBM] 재학습 이력 저장: %s (%d회)",
-                    _ss2["gbm_last_retrain"], _ss2["gbm_total_retrain_count"],
+                    _ss2["gbm_last_retrain"], _new_count,
                 )
             except Exception as _pe:
                 logger.warning("[GBM] 재학습 이력 저장 실패 (무해): %s", _pe)
@@ -4221,6 +4269,7 @@ class TradingSystem:
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
         atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
+        self._atr_recent_window.append(atr)  # 273차: 적응형 ATR 상한용 롤링 이력
 
         # SHAP 대시보드용 VIX·PCR 실측값 캐싱 (매분)
         _mv = features.get("macro_vix")
@@ -4831,6 +4880,8 @@ class TradingSystem:
 
         # ── STEP 6: 앙상블 진입 판단 ───────────────────────────
         _st.append(("S6", time.perf_counter()))
+        # 273차: S6(STEP6) PipePerf 병목 딥다이브용 세부 타이머 — 항상 INFO 기록
+        _s6_prof = [("t0", time.perf_counter())]
         _entry_horizon = None   # ATR 레짐별 진입 호라이즌 (STEP 6 말미에 확정)
         horizon_proba = self._apply_horizon_calibration(horizon_proba)
         _h_conf_values = [float(v.get("confidence", 0.0) or 0.0) for v in horizon_proba.values()]
@@ -4925,6 +4976,7 @@ class TradingSystem:
             zone_mc=_zone_mc,
             bias_override_horizons=self._bias_override_horizons,
         )
+        _s6_prof.append(("ensemble", time.perf_counter()))
         direction  = decision["direction"]
         confidence = decision["confidence"]
         grade      = decision["grade"]
@@ -5136,6 +5188,7 @@ class TradingSystem:
                     _pre_cl_grade = _pre_cr_cache.get("grade", grade)
                 except Exception as _pre_cl_e:
                     logger.debug("[Checklist.pre] 선행 평가 실패, 앙상블 등급 사용: %s", _pre_cl_e)
+        _s6_prof.append(("checklist_pre", time.perf_counter()))
 
         decision["meta_gate"] = self.meta_gate.evaluate(
             direction=direction,
@@ -5151,6 +5204,7 @@ class TradingSystem:
             trend_gate_active=bool(_tp_active),   # ② TrendGate 편향패널티 비활성화
             time_zone=_tz,                        # ③ STABLE_TREND reduce_thr 완화
         )
+        _s6_prof.append(("meta_gate", time.perf_counter()))
         # selection bias 해소: skip된 비-FLAT 신호를 shadow 버퍼에 보존
         # → STEP 2에서 동일 ts 검증 결과 도착 시 record_outcome 처리
         if direction != DIRECTION_FLAT and decision["meta_gate"]["action"] == "skip":
@@ -5262,6 +5316,7 @@ class TradingSystem:
             f"앙상블: dir={direction:+d} conf={confidence:.1%} "
             f"grade={grade} micro={self.current_micro_regime}"
         )
+        _s6_prof.append(("gates", time.perf_counter()))
 
         # 대시보드 호라이즌 카드 + 신뢰도 헤더 업데이트 (매분)
         _H_MAP = {"1m":"1분","3m":"3분","5m":"5분","10m":"10분","15m":"15분","30m":"30분"}
@@ -5310,6 +5365,7 @@ class TradingSystem:
             self.dashboard.update_qualification(self._horizon_runtime_state)
         except Exception:
             pass
+        _s6_prof.append(("dashboard", time.perf_counter()))
 
         # GBM 미학습 시 모델 상태 행 재표시 (update_prediction이 행을 숨겼으므로)
         if not _gbm_ready:
@@ -5366,6 +5422,14 @@ class TradingSystem:
         # ── Phase 1: 진입0 자동 원인 진단 ───────────────────────
         if direction == 0 or grade == "X":
             self._diagnose_zero_entry(features, horizon_proba, decision)
+
+        _s6_prof.append(("tail", time.perf_counter()))
+        # 273차: S6 세부 구간 — PipePerf S6 지배(전체 80%+) 원인 특정용, 매분 INFO 기록
+        _s6_detail = " ".join(
+            f"{_s6_prof[i][0]}={(_s6_prof[i][1] - _s6_prof[i - 1][1]) * 1000:.0f}ms"
+            for i in range(1, len(_s6_prof))
+        )
+        log_manager.system(f"[S6Detail] {_s6_detail}", "INFO")
 
         # ── STEP 7: 진입 실행 ──────────────────────────────────
         _st.append(("S7", time.perf_counter()))
@@ -5850,8 +5914,29 @@ class TradingSystem:
             log_manager.signal(
                 f"[ReverseClamp] 청산 후 {_clamp_remain}s 이내 역방향({_last_exit_dir}→{_entry_dir_str}) 진입 금지"
             )
-        _hurst_ok = features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
-        _atr_ok   = ATR_MIN_ENTRY <= atr <= ATR_MAX_ENTRY  # 하한: 휩쏘, 상한: 과도 손절거리
+        # 273차: Hurst<0.45(횡보) 게이트는 TREND_FOLLOW 전용 안전장치다.
+        # MEAN_REVERSION 모드는 원래 이 레짐(횡보/평균회귀)에서 쓰라고 만든 대응 전략이므로
+        # 같은 게이트로 함께 막으면 안 된다 — 그동안 Hurst<0.45 구간이 통째로 무전략
+        # 관망이 되어온 원인.
+        _entry_mode_for_gate = (_cr or {}).get("entry_mode", "TREND_FOLLOW")
+        _hurst_ok = (
+            _entry_mode_for_gate == "MEAN_REVERSION"
+            or features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
+        )
+
+        # 273차: 정적 3.5pt 상한이 최근 장기간 시장 ATR 중앙값(3.5~6pt대)에 만성적으로
+        # 걸려 정상 변동성에서도 A등급 신호를 연속 차단하는 문제 확인 → 최근 60분 ATR
+        # 롤링평균 × 배수로 상한을 적응시키되, 절대 상한(ceiling)과 정적 하한(ATR_MAX_ENTRY)
+        # 사이로 클램프해 순간 스파이크·표본 부족 구간의 과도한 완화는 막는다.
+        if len(self._atr_recent_window) >= ATR_ADAPTIVE_MIN_SAMPLES:
+            _atr_recent_avg = sum(self._atr_recent_window) / len(self._atr_recent_window)
+            _atr_max_adaptive = min(
+                ATR_ADAPTIVE_MAX_CEILING,
+                max(ATR_MAX_ENTRY, _atr_recent_avg * ATR_ADAPTIVE_MAX_MULT),
+            )
+        else:
+            _atr_max_adaptive = ATR_MAX_ENTRY
+        _atr_ok = ATR_MIN_ENTRY <= atr <= _atr_max_adaptive  # 하한: 휩쏘, 상한: 과도 손절거리(적응형)
 
         # ── [A] OPEN_VOLATILE 시가 이격 필터 ─────────────────────────────────
         # 장 초반 TREND_FOLLOW 진입 시 이미 시가 대비 ATR × N배 이상 이탈했으면
@@ -6108,7 +6193,7 @@ class TradingSystem:
                     _entry_block_reason = f"[차단] ATR {atr:.2f}pt < {ATR_MIN_ENTRY}pt — 변동성 부족 (휩쏘 위험)"
                 else:
                     _entry_block_reason = (
-                        f"[차단] ATR {atr:.2f}pt > {ATR_MAX_ENTRY}pt — "
+                        f"[차단] ATR {atr:.2f}pt > {_atr_max_adaptive:.2f}pt(적응형, 정적={ATR_MAX_ENTRY}) — "
                         f"손절거리 {atr * ATR_STOP_MULT:.1f}pt 과대 (고변동성 진입 차단)"
                     )
             elif not _open_gap_ok:
@@ -6146,7 +6231,7 @@ class TradingSystem:
         _dl_pct = (max(-self.position.daily_stats()["pnl_krw"], 0)
                    / max(_ts_current_sizer_balance(self), 50_000_000))
         _atr_state = (
-            "↑고변동" if atr > ATR_MAX_ENTRY
+            "↑고변동" if atr > _atr_max_adaptive
             else ("↓저변동" if atr < ATR_MIN_ENTRY else "OK")
         )
         _gap_chk_val = (
@@ -7121,9 +7206,16 @@ class TradingSystem:
             hz: ol.horizon_accuracy(hz)
             for hz in ol._fitted
         }
+        h_acc_n = {
+            hz: ol.horizon_acc_samples(hz)
+            for hz in ol._fitted
+        }
 
         # CB③ 30분 정확도
         cb_status = self.circuit_breaker.status_dict()
+
+        # DriftAdjuster — SGD alpha 조정 상태 (DRIFT_UP/RECOVERY_DOWN/HOLD/SKIP_LOW_SAMPLE)
+        drift_status = self.drift_adjuster.get_status()
 
         last_ev = ""
         if self._verified_today > 0:
@@ -7145,10 +7237,14 @@ class TradingSystem:
             "sgd_fitted":        dict(ol._fitted),
             "sgd_sample_counts": dict(ol._horizon_counts),
             "horizon_accuracy":  h_acc,
+            "horizon_acc_samples": h_acc_n,
             "buffer_accuracy":   buf_acc,
             "cb_accuracy_30m":   cb_status["accuracy_30m"],
             "cb_samples":        cb_status["cb3_samples"],
             "cb_streak":         cb_status["high_conf_wrong_streak"],
+            "drift_alpha":       drift_status["alpha"],
+            "drift_action":      drift_status["action"],
+            "drift_history":     drift_status["history"],
             "gbm_last_retrain":  gbm["last_retrain"],
             "gbm_retrain_count": gbm["retrain_count"],
             "raw_candles_count": raw,
@@ -7638,12 +7734,15 @@ class TradingSystem:
 
         # ── 자가학습 일일 마감 집계 ──────────────────────────────
         _today_accuracy = self.online_learner.recent_accuracy()
+        _today_n_samples = self.online_learner.sample_count
         try:
             self.daily_consolidator.consolidate()
         except Exception as _dce:
             logger.warning("[DailyConsolidator] 집계 실패 (스킵): %s", _dce)
         try:
-            _drift_result = self.drift_adjuster.record_accuracy(_today_accuracy)
+            _drift_result = self.drift_adjuster.record_accuracy(
+                _today_accuracy, n_samples=_today_n_samples
+            )
             _new_alpha = _drift_result.get("alpha", 0.001)
             if hasattr(self.online_learner, "set_alpha"):
                 self.online_learner.set_alpha(_new_alpha)
