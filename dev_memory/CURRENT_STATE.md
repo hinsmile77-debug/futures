@@ -1,7 +1,33 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-02 (273차) — EKS 발동 히스테리시스 + 진단 로그 3종 보강
+> 마지막 업데이트: 2026-07-02 (274차) — 진입0 딥다이브 + ATR 적응형 상한 · Hurst/MR 조건부 완화
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-02 (274차 — 진입0 딥다이브 + ATR 적응형 상한 · Hurst/MR 조건부 완화)
+
+### 배경
+
+07-02 09:00~12:30 장중 진입 0건. 로그 딥다이브로 등급 A/B 도달 신호 9건 전부가 각기 다른
+게이트(EKS 2건 정상 / ATR상한 5건 / Hurst 2건)에서 막힌 것을 확인. 그중 ATR_MAX_ENTRY=3.5pt
+정적 상한이 최근 7거래일 ATR 중앙값(3.5~6.2pt)에 만성적으로 걸리는 구조적 문제, Hurst 게이트가
+MEAN_REVERSION 모드까지 함께 막아 횡보장에 대응 전략이 사실상 죽어있는 문제 2가지를 확인·수정.
+상세: `dev_memory/SESSION_LOG.md` 274차, `dev_memory/DECISION_LOG.md` 274차.
+
+### 핵심 변경 (커밋 예정)
+
+| 파일 | 변경 |
+|---|---|
+| `config/settings.py` | `ATR_ADAPTIVE_MAX_WINDOW/MULT/CEILING/MIN_SAMPLES` 추가 — ATR 상한 적응형화. `MR_EXHAUSTION_MIN_WEAK=0.60`·`MR_WEAK_SIZE_MULT=0.5` 추가 |
+| `main.py` | `self._atr_recent_window`(60분 롤링) 신설. `_atr_ok` 상한을 `clamp(3.5, 최근60분평균×1.25, 6.0)`으로 동적화. `_hurst_ok`에 `entry_mode=="MEAN_REVERSION"` 예외 추가 |
+| `strategy/entry/checklist.py` | MR VWAP 체크를 정상(≥0.70)/약한(0.60~0.70, 사이즈×0.5) 2단계로 분리 |
+
+### 검증 예정 (NEXT_TODO 274차 참고)
+
+- 적응형 ATR 상한 로그(`적응형, 정적=3.5`)에서 실제 상한값이 올라가는지
+- `모드=MEAN_REVERSION` 로그가 실제로 찍히기 시작하는지 (최근 2일 0회였음)
+- 약한 MR 사이즈 축소가 TRADE 로그와 대조해 정확히 반영되는지
 
 ---
 

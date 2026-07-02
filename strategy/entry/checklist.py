@@ -12,7 +12,10 @@ import logging
 from typing import Dict, Tuple
 
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
-from config.settings import ENTRY_GRADE, HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP, ENS_CONF_FLOOR_FOR_AUTO, MR_EXHAUSTION_MIN
+from config.settings import (
+    ENTRY_GRADE, HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP, ENS_CONF_FLOOR_FOR_AUTO,
+    MR_EXHAUSTION_MIN, MR_EXHAUSTION_MIN_WEAK, MR_WEAK_SIZE_MULT,
+)
 
 logger = logging.getLogger("SIGNAL")
 
@@ -129,22 +132,25 @@ class EntryChecklist:
         # 3. VWAP 위치
         # LONG MR: VWAP 하방 1.5σ 초과 + 하락 압력 소진(bear_exhaustion) → 역추세 매수
         # SHORT MR: VWAP 상방 1.5σ 초과 + 상승 압력 소진(bull_exhaustion) → 역추세 매도
+        # 273차: 0.70 단일 컷오프 대신 0.60~0.70을 "약한 MR"로 허용(사이즈 축소).
+        # Hurst<0.45 횡보 구간에서 MR이 사실상 발동 0회였던 문제 완화용.
+        _mr_weak = False
         if "3_vwap" in disabled:
             checks["3_vwap"] = True
         elif is_long:
-            # MR LONG: VWAP -1.5σ 초과 하락 + bear_exhaustion 중강도 이상(≥0.70)
-            # bear_exhaustion은 0.0 또는 0.60~1.0 — 0.70은 volume>avg×2.1 요구
-            if vwap_position < -1.5 and bear_exhaustion >= MR_EXHAUSTION_MIN:
+            # MR LONG: VWAP -1.5σ 초과 하락 + bear_exhaustion 최소강도 이상(≥0.60)
+            if vwap_position < -1.5 and bear_exhaustion >= MR_EXHAUSTION_MIN_WEAK:
                 checks["3_vwap"] = True
                 entry_mode = "MEAN_REVERSION"
+                _mr_weak = bear_exhaustion < MR_EXHAUSTION_MIN
             else:
                 checks["3_vwap"] = vwap_position > 0
         else:
-            # MR SHORT: VWAP +1.5σ 초과 상승 + bull_exhaustion 중강도 이상(≥0.70)
-            # bull_exhaustion은 0.0 또는 0.60~1.0 — 0.70은 volume>avg×2.1 요구
-            if vwap_position > 1.5 and bull_exhaustion >= MR_EXHAUSTION_MIN:
+            # MR SHORT: VWAP +1.5σ 초과 상승 + bull_exhaustion 최소강도 이상(≥0.60)
+            if vwap_position > 1.5 and bull_exhaustion >= MR_EXHAUSTION_MIN_WEAK:
                 checks["3_vwap"] = True
                 entry_mode = "MEAN_REVERSION"
+                _mr_weak = bull_exhaustion < MR_EXHAUSTION_MIN
             else:
                 checks["3_vwap"] = vwap_position < 0
 
@@ -270,6 +276,14 @@ class EntryChecklist:
 
         size_mult  = ENTRY_GRADE[grade]["size_mult"]
         auto_entry = ENTRY_GRADE[grade]["auto"]
+
+        # 약한 MR(exhaustion 0.60~0.70) — 정상 진입은 허용하되 사이즈 축소
+        if _mr_weak and grade != "X":
+            size_mult = round(size_mult * MR_WEAK_SIZE_MULT, 3)
+            logger.info(
+                "[Checklist] MR 약한탈진(0.60~0.70) → 사이즈×%s 축소 (등급=%s)",
+                MR_WEAK_SIZE_MULT, grade,
+            )
 
         # conf < ENS_CONF_FLOOR_FOR_AUTO → A/B 등급이어도 자동진입 차단
         # 체크리스트 구조가 맞아도 앙상블이 33% 미만이면 EV 음수 (5일 실거래 분석 근거)

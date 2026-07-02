@@ -64,6 +64,8 @@ from config.settings import (
     HZ_DEPLOY_POLICY,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
     ATR_STOP_MULT, ATR_HORIZON_TP1_MULT,
+    ATR_ADAPTIVE_MAX_WINDOW, ATR_ADAPTIVE_MAX_MULT, ATR_ADAPTIVE_MAX_CEILING,
+    ATR_ADAPTIVE_MIN_SAMPLES,
     CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
     SHAP_MIN_DATA_POINTS,
     FRED_API_KEY,
@@ -323,6 +325,8 @@ class TradingSystem:
         from collections import deque as _deque
         self._z_warn_5m: "_deque[int]" = _deque(maxlen=5)  # Shadow 배지용 5분 z경고 롤링
         self._eks_recovery_conf_window: "_deque[float]" = _deque(maxlen=10)  # EKS 회복 판정용 최근 conf
+        # 273차: ATR_MAX_ENTRY 적응형 상한용 — 최근 N분 ATR 롤링 윈도우
+        self._atr_recent_window: "_deque[float]" = _deque(maxlen=ATR_ADAPTIVE_MAX_WINDOW)
 
         # 현재 레짐
         self.current_regime         = "NEUTRAL"
@@ -4257,6 +4261,7 @@ class TradingSystem:
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
         atr      = max(features.get("atr", 0.5), 0.5)
         atr_ratio = features.get("atr_ratio", 1.0)
+        self._atr_recent_window.append(atr)  # 273차: 적응형 ATR 상한용 롤링 이력
 
         # SHAP 대시보드용 VIX·PCR 실측값 캐싱 (매분)
         _mv = features.get("macro_vix")
@@ -5901,8 +5906,29 @@ class TradingSystem:
             log_manager.signal(
                 f"[ReverseClamp] 청산 후 {_clamp_remain}s 이내 역방향({_last_exit_dir}→{_entry_dir_str}) 진입 금지"
             )
-        _hurst_ok = features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
-        _atr_ok   = ATR_MIN_ENTRY <= atr <= ATR_MAX_ENTRY  # 하한: 휩쏘, 상한: 과도 손절거리
+        # 273차: Hurst<0.45(횡보) 게이트는 TREND_FOLLOW 전용 안전장치다.
+        # MEAN_REVERSION 모드는 원래 이 레짐(횡보/평균회귀)에서 쓰라고 만든 대응 전략이므로
+        # 같은 게이트로 함께 막으면 안 된다 — 그동안 Hurst<0.45 구간이 통째로 무전략
+        # 관망이 되어온 원인.
+        _entry_mode_for_gate = (_cr or {}).get("entry_mode", "TREND_FOLLOW")
+        _hurst_ok = (
+            _entry_mode_for_gate == "MEAN_REVERSION"
+            or features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
+        )
+
+        # 273차: 정적 3.5pt 상한이 최근 장기간 시장 ATR 중앙값(3.5~6pt대)에 만성적으로
+        # 걸려 정상 변동성에서도 A등급 신호를 연속 차단하는 문제 확인 → 최근 60분 ATR
+        # 롤링평균 × 배수로 상한을 적응시키되, 절대 상한(ceiling)과 정적 하한(ATR_MAX_ENTRY)
+        # 사이로 클램프해 순간 스파이크·표본 부족 구간의 과도한 완화는 막는다.
+        if len(self._atr_recent_window) >= ATR_ADAPTIVE_MIN_SAMPLES:
+            _atr_recent_avg = sum(self._atr_recent_window) / len(self._atr_recent_window)
+            _atr_max_adaptive = min(
+                ATR_ADAPTIVE_MAX_CEILING,
+                max(ATR_MAX_ENTRY, _atr_recent_avg * ATR_ADAPTIVE_MAX_MULT),
+            )
+        else:
+            _atr_max_adaptive = ATR_MAX_ENTRY
+        _atr_ok = ATR_MIN_ENTRY <= atr <= _atr_max_adaptive  # 하한: 휩쏘, 상한: 과도 손절거리(적응형)
 
         # ── [A] OPEN_VOLATILE 시가 이격 필터 ─────────────────────────────────
         # 장 초반 TREND_FOLLOW 진입 시 이미 시가 대비 ATR × N배 이상 이탈했으면
@@ -6159,7 +6185,7 @@ class TradingSystem:
                     _entry_block_reason = f"[차단] ATR {atr:.2f}pt < {ATR_MIN_ENTRY}pt — 변동성 부족 (휩쏘 위험)"
                 else:
                     _entry_block_reason = (
-                        f"[차단] ATR {atr:.2f}pt > {ATR_MAX_ENTRY}pt — "
+                        f"[차단] ATR {atr:.2f}pt > {_atr_max_adaptive:.2f}pt(적응형, 정적={ATR_MAX_ENTRY}) — "
                         f"손절거리 {atr * ATR_STOP_MULT:.1f}pt 과대 (고변동성 진입 차단)"
                     )
             elif not _open_gap_ok:
@@ -6197,7 +6223,7 @@ class TradingSystem:
         _dl_pct = (max(-self.position.daily_stats()["pnl_krw"], 0)
                    / max(_ts_current_sizer_balance(self), 50_000_000))
         _atr_state = (
-            "↑고변동" if atr > ATR_MAX_ENTRY
+            "↑고변동" if atr > _atr_max_adaptive
             else ("↓저변동" if atr < ATR_MIN_ENTRY else "OK")
         )
         _gap_chk_val = (
