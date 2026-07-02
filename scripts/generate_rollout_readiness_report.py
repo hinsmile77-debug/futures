@@ -45,6 +45,19 @@ def decide_stage(calib, ab, gate_stats):
     ece = float(calib.get("overall", {}).get("ece", 1.0) or 1.0)
     pnl_delta = float(ab.get("enhanced", {}).get("total_pnl_pts", 0.0) or 0.0) - float(ab.get("baseline", {}).get("total_pnl_pts", 0.0) or 0.0)
     meta_samples = int(gate_stats.get("meta_labels", 0) or 0)
+    conf_inversion = calib.get("conf_inversion")
+
+    # calibration_report가 이미 감지한 신뢰도 역전(고신뢰 구간이 저신뢰 구간보다
+    # 덜 정확함)이 있으면 ECE/PnL 지표가 좋아 보여도 사이즈 확대를 보류한다.
+    # ECE는 평균 오차라 이 역전을 못 잡음 — ECE만 보고 small_size를 추천하면
+    # 실제로는 conf가 높을수록 더 틀리는 모델에 사이즈를 키우게 된다.
+    if conf_inversion:
+        return "shadow", (
+            f"신뢰도 역전 감지 — 고신뢰(0.6+) 정확도 {conf_inversion.get('high_acc', 0):.2%}가 "
+            f"저신뢰(0.3~0.5) {conf_inversion.get('low_acc', 0):.2%}보다 "
+            f"{conf_inversion.get('gap', 0):.2%}p 낮음 (표본 {conf_inversion.get('high_n', 0)}건) "
+            f"→ ECE/PnL 양호해도 사이즈 확대 보류"
+        )
 
     if pnl_delta > 0 and ece < 0.20 and meta_samples >= 100:
         return "small_size", "A/B 개선 확인 + calibration 양호 + meta 표본 충분"
@@ -75,6 +88,7 @@ def build_report(metrics):
         f"- Meta-label dataset ready: {'yes' if metrics['gate_stats']['meta_labels'] >= 20 else 'not yet'}",
         f"- Calibration report generated: {'yes' if metrics['has_calibration'] else 'no'}",
         f"- Meta tuning report generated: {'yes' if metrics['has_meta_tuning'] else 'no'}",
+        f"- Confidence inversion: {'DETECTED' if metrics['conf_inversion'] else 'none'}",
         "",
         "## Stage Criteria",
         "",
@@ -103,6 +117,7 @@ def main():
         "pnl_delta": round(pnl_delta, 6),
         "has_calibration": bool(calib),
         "has_meta_tuning": bool(meta),
+        "conf_inversion": calib.get("conf_inversion"),
     }
     REPORT_PATH.write_text(build_report(metrics), encoding="utf-8")
     METRICS_PATH.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
