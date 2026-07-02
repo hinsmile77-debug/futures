@@ -278,6 +278,7 @@ class TradingSystem:
                 self.model.set_daily_gap_offset(_gap_open)
                 self._first_tick_notified = True       # 첫 분봉에서 덮어쓰기 방지
                 self._pre_market_gap_offset_set = True # [Bug-2] 플래그 동기화 — 이후 논리 일관성
+                self._session_open_price = _gap_open
                 logger.info("[GapOffset] 재시작 복원: today_open=%.2f", _gap_open)
             except Exception as _ge:
                 logger.warning("[GapOffset] 재시작 복원 실패: %s", _ge)
@@ -2770,6 +2771,7 @@ class TradingSystem:
                 try:
                     self.model.set_daily_gap_offset(_pre_close)
                     self._pre_market_gap_offset_set = True
+                    self._session_open_price = _pre_close
                     _lead_min = int(
                         (datetime.time(9, 0).hour * 60)
                         - (now_dt.hour * 60 + now_dt.minute)
@@ -2956,6 +2958,7 @@ class TradingSystem:
                     _today_open = float(candle.get("close", 0.0) or 0.0)
                     if _today_open > 0:
                         self.model.set_daily_gap_offset(_today_open)
+                        self._session_open_price = _today_open
                         try:
                             _gap_ss = self._read_session_state()
                             _gap_ss["today_open"] = _today_open
@@ -6235,7 +6238,8 @@ class TradingSystem:
             else ("↓저변동" if atr < ATR_MIN_ENTRY else "OK")
         )
         _gap_chk_val = (
-            f"{_gap_in_dir:.1f}pt" if (time_zone == "OPEN_VOLATILE" and _open_p_for_gap > 0)
+            f"{_gap_in_dir:.1f}pt" if (time_zone == "OPEN_VOLATILE" and _open_p_for_gap > 0
+                                        and _cr_entry_mode == "TREND_FOLLOW")
             else "N/A"
         )
         _check_vals = {
@@ -7794,6 +7798,7 @@ class TradingSystem:
         self.core_health.reset_daily()
         self.model.reset_daily_gap_offset()
         self._first_tick_notified = False        # 다음 날 첫 분봉에서 갭 오프셋 재설정
+        self._session_open_price = 0.0            # 시가이격 필터·day_ret 산정용 당일 시가 초기화
         self._intraday_startup_warmup_done = False  # 다음 날 B_INTRADAY 재발동 허용
         # 프리장 warmup 상태 일일 리셋 — 다음 날 프리장 처리 재활성
         self._pre_market_bars               = []
