@@ -5009,6 +5009,19 @@ class LearningPanel(QWidget):
         )
         root.addWidget(self._lbl_cb_acc)
 
+        # DriftAdjuster — SGD alpha 조정 상태(DRIFT_UP/RECOVERY_DOWN/HOLD/SKIP_LOW_SAMPLE)
+        self._lbl_drift = mk_label(
+            "SGD alpha: ——  |  이력: ──────────────────",
+            C['text2'], 8, align=Qt.AlignCenter,
+        )
+        self._lbl_drift.setToolTip(
+            "5일 롤링 정확도 추이로 SGD 학습률(alpha)을 자동 조정합니다.\n"
+            "DRIFT_UP: 정확도 하락 감지 → alpha 상향(빠른 적응) | "
+            "RECOVERY_DOWN: 정확도 회복 → alpha 하향(과적합 방지)\n"
+            "SKIP_LOW_SAMPLE: 당일 표본 부족(<15건) — 극단값 반영 스킵, 기존 alpha 유지"
+        )
+        root.addWidget(self._lbl_drift)
+
         # 호라이즌 카드 2행 × 3열
         grid = QGridLayout()
         grid.setSpacing(S.p(5))
@@ -5233,6 +5246,26 @@ class LearningPanel(QWidget):
             f"{cb_acc:.1%}</span>  (샘플 {cb_n}건)  |  과신 오답 연속: {stk_txt}"
         )
         self._lbl_cb_acc.setTextFormat(__import__('PyQt5.QtCore', fromlist=['Qt']).Qt.RichText)
+
+        # DriftAdjuster — SGD alpha 조정 상태
+        drift_alpha  = float(data.get("drift_alpha", 0.001))
+        drift_action = str(data.get("drift_action", "HOLD") or "HOLD")
+        drift_hist   = data.get("drift_history", []) or []
+        _DRIFT_LABELS = {
+            "DRIFT_UP":       ("정확도 하락→alpha↑", C['orange']),
+            "RECOVERY_DOWN":  ("정확도 회복→alpha↓", C['green']),
+            "HOLD":           ("유지", C['text2']),
+            "SKIP_LOW_SAMPLE": ("표본부족→스킵", C['yellow']),
+        }
+        action_txt, action_col = _DRIFT_LABELS.get(drift_action, (drift_action, C['text2']))
+        drift_spark = self._spark([float(v) for v in drift_hist[-24:]], 18)
+        self._lbl_drift.setText(
+            f"SGD alpha: <span style='color:{C['purple']};font-weight:bold;'>"
+            f"{drift_alpha:.5f}</span>  "
+            f"<span style='color:{action_col};font-weight:bold;'>{action_txt}</span>"
+            f"  |  이력: {drift_spark}"
+        )
+        self._lbl_drift.setTextFormat(__import__('PyQt5.QtCore', fromlist=['Qt']).Qt.RichText)
 
         retrain_ts = str(data.get("gbm_last_retrain", "——") or "——")
         rt_disp = "미실행"

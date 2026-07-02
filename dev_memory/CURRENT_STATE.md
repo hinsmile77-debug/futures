@@ -1,7 +1,23 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-02 (278차) — drift_adjuster 표본 부족 극단값 반영 방지 최소 표본 가드 추가
+> 마지막 업데이트: 2026-07-02 (279차) — drift_adjuster DRIFT_UP/RECOVERY_DOWN 상태 대시보드 표시 추가
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-02 (279차 — drift_adjuster 대시보드 표시 추가)
+
+**결론**: `DriftAdjuster`의 `DRIFT_UP`/`RECOVERY_DOWN`/`HOLD`/`SKIP_LOW_SAMPLE` 판정이
+로그·JSON 상태 파일에만 남고 대시보드 어디에도 표시되지 않던 것을 확인, `LearningPanel`
+("🧠 자가학습 모니터")의 CB③ 라인 바로 아래에 `SGD alpha: 0.00150  정확도 하락→alpha↑
+\| 이력: █▅▃██▁█▅██` 형태 라벨을 추가해 노출.
+
+**코드 수정**: `drift_adjuster.py`에 `_last_action` 영속화 + `get_status()` 조회 메서드
+추가. `main.py::_gather_learning_stats()`에 `drift_alpha`/`drift_action`/`drift_history`
+필드 추가. `dashboard/main_dashboard.py`에 `_lbl_drift` 라벨(액션별 색상 매핑 + 툴팁)
+추가. PyQt5 오프스크린 렌더 테스트로 6가지 경로(액션 4종 + 알 수 없는 값 + 필드 누락
+기본값) 모두 확인. **실제 대시보드 창 육안 확인·EOD 반영 확인 필요** —
+`NEXT_TODO.md` 279차. 상세: `SESSION_LOG.md` 279차.
 
 ---
 

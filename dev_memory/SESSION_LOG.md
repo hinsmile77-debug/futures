@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-07-02 (279차 — drift_adjuster 대시보드 표시 추가)
+
+**트리거**: 사용자 질문 "DRIFT_UP, RECOVERY_DOWN 이 대시보드에 표시 되는 곳은 어디인가 —
+없다면 적당한 위치를 제안해" → 조사 결과 어디에도 표시되지 않음을 확인, 위치 제안 후
+사용자 승인으로 구현.
+
+### 조사 결과 (구현 전)
+
+- `drift_adjuster.py`의 `DRIFT_UP`/`RECOVERY_DOWN`/`HOLD`/`SKIP_LOW_SAMPLE` 액션은
+  `logger.info`/`logger.warning` 로그와 `data/drift_adjuster_state.json` 저장만 될 뿐,
+  `dashboard/main_dashboard.py`·`main.py` 어디에도 이 값을 읽어 표시하는 코드 없음
+  (문자열 검색 0건)
+- `main.py::_gather_learning_stats()`([main.py:7186](main.py#L7186))가 `LearningPanel`
+  (`dashboard/main_dashboard.py` "🧠 자가학습 모니터")에 넘기는 데이터 딕셔너리에
+  `sgd_accuracy_50m`·`gbm_weight`·`cb_accuracy_30m` 등은 있지만 drift 관련 필드 부재
+- 이미 있는 `CB③ 30m 정확도` 라벨(`_lbl_cb_acc`, GBM↔SGD 블렌딩 바 바로 아래)이
+  같은 그룹(자가학습 안전장치 상태)이라 이어붙이기 적합하다고 판단해 제안
+
+### 구현
+
+| 파일 | 변경 |
+|---|---|
+| `learning/self_learning/drift_adjuster.py` | `_last_action` 상태 추가(재기동 후에도 표시 유지되도록 `_save`/`_load`에서 `last_action` 필드로 영속화). `get_status()` 메서드 신규 — `{"alpha", "action", "history"}` 반환. `record_accuracy()`의 스킵 경로·정상 경로 양쪽에서 `_last_action` 갱신 |
+| `main.py` | `_gather_learning_stats()`에 `drift_status = self.drift_adjuster.get_status()` 호출 추가, 반환 딕셔너리에 `drift_alpha`/`drift_action`/`drift_history` 3개 필드 추가 |
+| `dashboard/main_dashboard.py` | `LearningPanel`의 `_lbl_cb_acc` 바로 아래에 `_lbl_drift` 라벨 신규 추가. `SGD alpha: 0.00150  정확도 하락→alpha↑  \| 이력: █▅▃██▁█▅██` 형태로 표시. 액션별 색상 매핑(DRIFT_UP=주황 `C['orange']`, RECOVERY_DOWN=녹색 `C['green']`, HOLD=회색 `C['text2']`, SKIP_LOW_SAMPLE=노랑 `C['yellow']`, 알 수 없는 값은 회색 폴백) + 안전장치 설명 툴팁 추가. 히스토리는 기존 `_spark()` 스파크라인 헬퍼 재사용 |
+
+### 검증
+
+PyQt5 `QT_QPA_PLATFORM=offscreen` 모드로 `LearningPanel.update_data()`를 직접 호출해
+6가지 경로(DRIFT_UP/RECOVERY_DOWN/HOLD/SKIP_LOW_SAMPLE/알 수 없는 액션값/`drift_*`
+필드 누락 시 기본값 폴백) 모두 크래시 없이 렌더링 확인. 실제 대시보드 창에서의 육안
+확인·EOD 마감 후 실데이터 반영 확인은 미실시 — `NEXT_TODO.md` 279차.
+
+---
+
 ## 2026-07-02 (278차 — drift_adjuster 최소 표본 가드 추가)
 
 **트리거**: NEXT_TODO 275차 ④ — `acc_history` 노이즈(0.156~0.5 요동)에 최소 표본수 가드가

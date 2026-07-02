@@ -62,6 +62,8 @@ class DriftAdjuster:
         self._alpha: float = ALPHA_DEFAULT
         # 일별 전체 정확도 이력 (최근 HISTORY_DAYS일)
         self._acc_history: deque = deque(maxlen=HISTORY_DAYS)
+        # 마지막 record_accuracy() 판정 (대시보드 표시용, 재기동해도 유지되도록 영속화)
+        self._last_action: str = "HOLD"
         self._load()
 
     # ── 15:40 마감 시 호출 ─────────────────────────────────────
@@ -83,6 +85,8 @@ class DriftAdjuster:
                 "[DriftAdjuster] 표본 부족(n=%d < %d) — acc=%.1f%% 반영 스킵, alpha=%.5f 유지",
                 n_samples, MIN_SAMPLES_REQUIRED, accuracy * 100, self._alpha,
             )
+            self._last_action = "SKIP_LOW_SAMPLE"
+            self._save()
             return {
                 "alpha":   self._alpha,
                 "action":  "SKIP_LOW_SAMPLE",
@@ -91,6 +95,7 @@ class DriftAdjuster:
 
         self._acc_history.append(round(accuracy, 4))
         action = self._adjust_alpha()
+        self._last_action = action
         self._save()
 
         logger.info(
@@ -108,10 +113,19 @@ class DriftAdjuster:
         """현재 권장 SGD alpha 반환"""
         return self._alpha
 
+    def get_status(self) -> Dict:
+        """대시보드 조회용 — 현재 alpha·마지막 판정 액션·10일 정확도 이력 스냅샷"""
+        return {
+            "alpha":   self._alpha,
+            "action":  self._last_action,
+            "history": list(self._acc_history),
+        }
+
     def reset(self) -> None:
         """alpha를 기본값으로 초기화 (수동 개입 시)"""
         self._alpha = ALPHA_DEFAULT
         self._acc_history.clear()
+        self._last_action = "HOLD"
         self._save()
         logger.info("[DriftAdjuster] 수동 초기화 — alpha=%.5f", self._alpha)
 
@@ -151,6 +165,7 @@ class DriftAdjuster:
             "updated":     datetime.datetime.now().isoformat(),
             "alpha":       self._alpha,
             "acc_history": list(self._acc_history),
+            "last_action": self._last_action,
         }
         try:
             with open(self._path, "w", encoding="utf-8") as f:
@@ -168,9 +183,10 @@ class DriftAdjuster:
             self._acc_history = deque(
                 state.get("acc_history", []), maxlen=HISTORY_DAYS
             )
+            self._last_action = str(state.get("last_action", "HOLD"))
             logger.info(
-                "[DriftAdjuster] 로드: alpha=%.5f, 이력 %d일",
-                self._alpha, len(self._acc_history),
+                "[DriftAdjuster] 로드: alpha=%.5f, 이력 %d일, 마지막 액션=%s",
+                self._alpha, len(self._acc_history), self._last_action,
             )
         except Exception as e:
             logger.warning("[DriftAdjuster] 로드 실패 (기본값 사용): %s", e)

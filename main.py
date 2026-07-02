@@ -7203,6 +7203,9 @@ class TradingSystem:
         # CB③ 30분 정확도
         cb_status = self.circuit_breaker.status_dict()
 
+        # DriftAdjuster — SGD alpha 조정 상태 (DRIFT_UP/RECOVERY_DOWN/HOLD/SKIP_LOW_SAMPLE)
+        drift_status = self.drift_adjuster.get_status()
+
         last_ev = ""
         if self._verified_today > 0:
             acc = ol.recent_accuracy()
@@ -7227,6 +7230,9 @@ class TradingSystem:
             "cb_accuracy_30m":   cb_status["accuracy_30m"],
             "cb_samples":        cb_status["cb3_samples"],
             "cb_streak":         cb_status["high_conf_wrong_streak"],
+            "drift_alpha":       drift_status["alpha"],
+            "drift_action":      drift_status["action"],
+            "drift_history":     drift_status["history"],
             "gbm_last_retrain":  gbm["last_retrain"],
             "gbm_retrain_count": gbm["retrain_count"],
             "raw_candles_count": raw,
