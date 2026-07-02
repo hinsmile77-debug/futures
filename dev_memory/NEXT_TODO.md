@@ -165,7 +165,7 @@
 ### 진입 안전장치 3종 검증
 
 - [ ] **① ATR 상한 차단 로그 확인** — 고변동성 분봉에서 `[차단] ATR X.XXpt > 3.5pt — 손절거리 X.Xpt 과대 (고변동성 진입 차단)` 로그 출현 확인
-- [ ] **② 시가 이격 차단 로그 확인** — OPEN_VOLATILE 구간 TREND_FOLLOW 진입 시 이격 과다로 `[차단] OPEN_VOLATILE 시가이격 과다 — 방향이탈 Xpt > ATR×5.0=Xpt (시가=XXXX.XX 반등위험)` 로그 출현 확인
+- [x] **② 시가 이격 차단 로그 확인** — [발견 2026-07-02, 281차] 이 로그가 한 번도 안 찍힌 이유는 `self._session_open_price`가 대입되는 곳이 없어 필터가 상시 no-op(N/A)였기 때문. 281차에서 GapOffset 캡처 경로(`today_open`)와 연결 완료. 내일 장중 OPEN_VOLATILE 구간에서 `gap_chk` 값이 실제 pt로 표시되는지, 이격 과다 시 위 차단 로그가 뜨는지 재검증 필요
 - [ ] **③ 인트라바 스톱 발동 확인** — 분봉 종가보다 먼저 bar_high(SHORT)/bar_low(LONG)가 스톱을 터치하는 케이스에서 `[DBG-STOP] 하드스톱 발동: close=X bar_low=X bar_high=X stop=X → exit=X` 로그에 bar_high가 stop 근처임을 확인
 - [x] **④ ATR_MAX_ENTRY 임계 재조정 여부** — [DONE 2026-07-02] 07-02 딥다이브로 06-24~07-02 7거래일 ATR 중앙값이 3.5~6.2pt로 만성적으로 상한 근처/초과임을 확인, 274차에서 적응형 상한으로 교체 (아래 274차 항목 참고)
 

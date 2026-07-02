@@ -2,6 +2,17 @@
 
 ---
 
+## 2026-07-02 (281차 — 시가이격 필터 no-op 버그)
+
+### [버그] 진입관리 탭 "OPEN_VOL 시가이격" 상시 N/A → 263차 안전장치가 실전에서 무력화 상태였음
+
+**File**: `main.py:5944`(필터 판정), `main.py:6240`(대시보드 표시), `main.py:4480`(day_ret)
+**증상**: 진입관리 탭 진입 게이트 필터의 "OPEN_VOL 시가이격" 값이 종일 N/A로 고정.
+**근본 원인**: 263차에서 시가이격 필터를 `self._session_open_price` 속성 기준으로 구현했으나, 이 속성에 값을 대입하는 코드가 전체 저장소에 없었음(`getattr(self, "_session_open_price", 0.0)`로만 읽혀 항상 0.0). 당일 시가는 이미 GapOffset 경로(`today_open`, `main.py` 3곳: 프리장 첫 분봉/본장 첫 분봉/재시작 복원)에서 정상 캡처되고 있었지만 별개 속성이라 연결이 안 됨. 표시 버그로 그치지 않고, `_open_p_for_gap > 0` 조건이 상시 거짓이라 `_open_gap_ok`가 항상 `True` 고정 — 263차에 손실 방지용으로 도입한 시가이격 진입 차단이 실전에서 한 번도 작동하지 않았음. 동일하게 `_day_ret`도 상시 0.0이라 `IntradayTacticalRegime`의 day_ret 기반 CRASH/DAY_RISK_OFF 조건도 미발동 상태였음.
+**결정**: `self.model.set_daily_gap_offset(...)` 호출 3곳 모두에 `self._session_open_price = ...` 대입을 추가해 기존 GapOffset 캡처 경로에 연결. EOD 일일 리셋에도 `self._session_open_price = 0.0` 추가. 대시보드 표시 조건도 실제 필터 조건(`entry_mode == TREND_FOLLOW`)과 일치시킴.
+**Why**: 새 게이트 필터 도입 시 이미 존재하는 유사 캡처 경로를 재사용하지 않고 별도 속성을 새로 만들면서 대입 지점을 빠뜨림 — `getattr(..., default)` 패턴이 미대입을 조용히 숨겨 관측(대시보드)이나 로그 없이는 몇 달간 발견되지 않을 수 있었음.
+**How to apply**: 새 상태 속성을 `self.xxx = getattr(self, "xxx", default)` 패턴으로 읽는 코드를 추가할 때는, 반드시 `grep`으로 `self.xxx = `(대입) 코드가 실제로 존재하는지 확인한다. 특히 "당일 시가·당일 시가 대비" 류 신규 피처/필터는 기존 GapOffset(`today_open`) 경로 재사용을 우선 검토할 것.
+
 ## 2026-07-02 (273차 — PYTHON_64_EXEC PC별 경로 하드코딩)
 
 ### [버그] 자동진입 차단 + Contrarian 깜빡임의 근본 원인

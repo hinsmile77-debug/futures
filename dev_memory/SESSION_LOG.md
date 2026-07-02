@@ -4,6 +4,58 @@
 
 ---
 
+## 2026-07-02 (281차 — 진입관리 탭 "OPEN_VOL 시가이격" 필터 N/A 고정 버그 — 시가이격 필터가 사실상 no-op였음)
+
+**트리거**: 사용자 보고 — 중간패널 진입관리 탭 "진입 게이트 필터 → OPEN_VOL 시가이격" 값이 금일 내내 N/A로 표시.
+
+### 근본 원인
+
+263차(2026-06-30, `당일 시가 -32pt 추격 SHORT` 손실 사후 대응)에서 도입한 시가이격
+필터가 `self._session_open_price`(`main.py:5944`, `4480`)를 읽어 판정하는데, 이
+속성에 **값을 대입하는 코드가 프로젝트 전체에 단 한 줄도 없었다** — 항상
+`getattr(self, "_session_open_price", 0.0)` → `0.0` 기본값만 반환.
+
+한편 당일 시가는 이미 별도 경로(`today_open` / GapOffset)로 3곳에서 정상 캡처되고
+있었으나 서로 다른 속성이라 연결이 안 됨:
+- 프리장 첫 분봉 (`main.py:2767~2790`, `_pre_market_gap_offset_set`)
+- 본장 첫 분봉 (`main.py:2949~2966`, `_first_tick_notified`)
+- 재시작 복원 (`main.py:273~283`, `session_state.json`의 `today_open` 필드)
+
+세 곳 모두 `self.model.set_daily_gap_offset(...)`만 호출하고 `self._session_open_price`는
+대입하지 않음 — 263차 구현 시 시가이격 필터용 속성을 새로 추가하면서 기존 GapOffset
+캡처 경로와 연결하는 걸 빠뜨린 것으로 추정.
+
+**영향 범위 (표시 버그보다 큼)**:
+1. 대시보드 N/A 표시 (사용자가 발견한 증상)
+2. `_open_p_for_gap > 0` 조건이 상시 거짓 → `_open_gap_ok`가 항상 `True` 고정 →
+   **263차에 손실 방지용으로 도입한 시가이격 진입 차단 필터가 실전에서 한 번도
+   작동하지 않고 있었음** (표시 버그가 아니라 안전장치 자체의 무력화)
+3. `_day_ret = (close - _open_p) / _open_p`(`main.py:4480~4481`)도 동일하게 상시 `0.0` →
+   `IntradayTacticalRegime`(`collection/macro/intraday_tactical_regime.py`)의
+   day_ret 기반 CRASH 조건①(`|당일 수익률|≥1.8%`), DAY_RISK_OFF 조건①②
+   (`|당일 수익률|≥1.0%` 등)도 상시 미발동 상태였음
+
+### 수정 (main.py)
+
+`self.model.set_daily_gap_offset(...)` 호출 직후 3곳 모두에 `self._session_open_price = ...`
+대입을 추가해 시가 캡처 경로를 시가이격 필터·day_ret 계산과 연결:
+- `main.py:2772` 부근 (프리장) — `self._session_open_price = _pre_close`
+- `main.py:2958` 부근 (본장 첫 분봉) — `self._session_open_price = _today_open`
+- `main.py:278` 부근 (재시작 복원) — `self._session_open_price = _gap_open`
+- `_reset_daily_state`류 EOD 리셋(`main.py:7796` 부근)에 `self._session_open_price = 0.0` 추가 — 익일 이월 방지
+
+부수 수정: 대시보드 표시 조건(`_gap_chk_val`, `main.py:6240`)이 `entry_mode == TREND_FOLLOW`
+체크 없이 `time_zone == "OPEN_VOLATILE"`이면 값을 표시하고 있어, MEAN_REVERSION 모드에서도
+"0.0pt"가 찍혀 툴팁 설명("다른 시간대·MR 모드에서는 N/A")과 불일치할 소지 있었음 —
+실제 필터 조건(`_cr_entry_mode == "TREND_FOLLOW"`)과 동일하게 맞춤.
+
+**How to apply**: 신규 게이트 필터/속성 추가 시, 기존에 이미 존재하는 유사 캡처
+경로(GapOffset의 `today_open`처럼)가 있는지 먼저 확인하고 재사용하거나 명시적으로
+연결할 것. `getattr(self, "_new_attr", default)` 패턴은 오탈자·미대입을 조용히
+숨기므로, 새 속성 도입 시 반드시 실제 대입 코드가 존재하는지 grep으로 확인.
+
+---
+
 ## 2026-07-02 (273차 — PYTHON_64_EXEC PC별 경로 하드코딩 → 자동진입 차단·Contrarian 깜빡임 근본 원인)
 
 **트리거**: 사용자 보고 — 14:39~14:45 `[자동진입 차단] SHORT->SHORT ... degraded_conf=39%, min=62%` 반복 + 대시보드 "역방향 진입" 버튼 깜빡임.
