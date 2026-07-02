@@ -248,7 +248,13 @@ GBM_MIN_SAMPLES_LEAF = 10   # 두 학습기 모두 이 값을 참조한다
 # 장중 GBM 재학습을 32비트 메인 프로세스 데몬 스레드 대신
 # py310_64 (Python 3.10 64-bit) 서브프로세스로 실행 — 32비트 OOM 완전 차단.
 # EOD retrain_eod.py 와 동일 환경 사용 (pickle protocol=4 호환 보장).
-PYTHON_64_EXEC: str = r"C:\Users\82108\anaconda3\envs\py310_64\python.exe"
+# PC마다 사용자 홈 경로가 달라 특정 사용자명으로 고정하면 다른 PC에서
+# FileNotFoundError로 재학습이 계속 실패한다 (272차 — exception_density 급증 →
+# Degraded Mode 오발동 원인으로 확인). 홈 디렉토리 기준 동적 조합 + env override.
+PYTHON_64_EXEC: str = os.environ.get(
+    "MIREUK_PYTHON_64_EXEC",
+    os.path.join(os.path.expanduser("~"), "anaconda3", "envs", "py310_64", "python.exe"),
+)
 
 # ── 배치 재학습 데이터 기간 ───────────────────────────────────────
 # DB 보유량(2025-08-19~): 73,421행 / 43주 / 피처 스키마 안정(2025-08~)

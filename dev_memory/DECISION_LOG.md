@@ -2,6 +2,19 @@
 
 ---
 
+## 2026-07-02 (273차 — PYTHON_64_EXEC PC별 경로 하드코딩)
+
+### [버그] 자동진입 차단 + Contrarian 깜빡임의 근본 원인
+
+**File**: `config/settings.py:251`
+**증상**: 14:39~14:45 자동진입 반복 차단(`degraded_conf=39%, min=62%`) + 대시보드 "역방향 진입" 버튼 깜빡임.
+**근본 원인**: `PYTHON_64_EXEC = r"C:\Users\82108\anaconda3\envs\py310_64\python.exe"`가 다른 PC 사용자명으로 고정되어 있어, 이 PC(`pc1`)에서 장중 GBM 경량 재학습이 `FileNotFoundError`로 매번 즉시 실패. 반복 ERROR → `exception_density_10m` 급증 → Health Degraded Mode 자동 진입(최소신뢰도 0.62 요구) → 실제 신뢰도(39%대) 신호 전부 차단. 동시에 재학습 실패로 모델이 acc30m 붕괴(13%대)에서 자가교정을 못 해 ContrarianModeTracker ACTIVE → 역방향 버튼 깜빡임(이 자체는 의도된 UI, 버그 아님).
+**결정**: `PYTHON_64_EXEC`을 하드코딩 대신 `os.environ.get("MIREUK_PYTHON_64_EXEC", os.path.join(os.path.expanduser("~"), "anaconda3", "envs", "py310_64", "python.exe"))`로 동적 해석.
+**Why**: 이 저장소는 여러 PC(`82108`, `pc1` 등)에 git pull로 공유되는데, `config/settings.py` 파일 헤더 자체가 "PC 독립적"을 표방함에도 이 상수만 특정 사용자 절대경로로 고정돼 있었음. 동일 패턴이 `register_eod_scheduler.ps1`에서도 있었고 커밋 `ba07c46`에서 `.gitignore` 처리로 해결한 전례가 있음 — 이번엔 공유 설정 파일이라 완전 제외 대신 동적 해석 + env override로 대응.
+**How to apply**: 앞으로 PC 종속 절대경로(`C:\Users\<user>\...`)가 코드에 필요할 때는 먼저 `os.path.expanduser("~")` 또는 `os.path.dirname(os.path.abspath(__file__))` 기준 동적 조합을 검토하고, PC마다 완전히 다른 값(브로커 종류 등)만 `machine.cfg` 패턴(`.gitignore` 대상)으로 분리한다.
+
+---
+
 ## 2026-06-29 (261차 — High-confidence Overconfidence 개선)
 
 ### [결정] Grade A 롤링 정확도 가드 (HCGuard) 도입

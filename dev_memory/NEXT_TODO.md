@@ -8,6 +8,17 @@
 
 ---
 
+## 2026-07-02 (273차 검증) [P0]
+
+### PYTHON_64_EXEC 경로 하드코딩 수정 검증
+
+- [ ] **① GBM-64 ERROR 재발 여부** — 다음 장중 `DriftRetrain` 트리거 시 `[GBM-64] py310_64 Python 없음` ERROR가 더 이상 발생하지 않는지 SYSTEM/WARN 로그 확인
+- [ ] **② 장중 경량 재학습 실제 성공 확인** — `[GBM-64] 재학습 완료` 등 정상 완료 로그 및 `_on_gbm_retrain_done()` 호출 확인
+- [ ] **③ 82108 PC(다른 머신) 기동 검증** — 다음 그 PC에서 `git pull` 후 재기동 시 `PYTHON_64_EXEC`가 `C:\Users\82108\anaconda3\envs\py310_64\python.exe`로 자동 해석되고 재학습이 정상 동작하는지 확인 (코드 수정 불필요해야 함)
+- [ ] **④ Degraded Mode 오발동 감소 확인** — 향후 acc30m 붕괴 상황에서 재학습이 정상 작동해 Degraded Mode 진입 빈도가 줄어드는지 관찰
+
+---
+
 ## 2026-07-01 (264차 검증) [P0]
 
 ### EKS·z경고·Canary 3종 수정 검증

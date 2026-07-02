@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-07-02 (273차 — PYTHON_64_EXEC PC별 경로 하드코딩 → 자동진입 차단·Contrarian 깜빡임 근본 원인)
+
+**트리거**: 사용자 보고 — 14:39~14:45 `[자동진입 차단] SHORT->SHORT ... degraded_conf=39%, min=62%` 반복 + 대시보드 "역방향 진입" 버튼 깜빡임.
+
+### 로그 재구성 (2026-07-02 실제 발생 경위, logs/20260702_*.log)
+
+```
+14:33:00  acc30m 13.3%(n=15)로 붕괴 → DriftRetrain 조기 트리거(장중 경량 재학습)
+14:33:00  [GBM-64] py310_64 Python 없음 (C:\Users\82108\anaconda3\envs\py310_64\python.exe) — 재학습 불가 (ERROR)
+14:33:00  ContrarianModeTracker: acc30m_low + same_dir(streak=11) + NEUTRAL regime 3/3 충족 → ACTIVE
+              → dashboard.set_contrarian_hint(True) → "역방향 진입" 버튼 500ms 황색 깜빡임 시작
+14:38:00  acc30m 10.0%(n=20)로 재악화 → DriftRetrain 재시도 → 동일 GBM-64 ERROR 재발생
+14:38:00  exception_density_10m=9 (임계 6.0 초과) → Health level=WARNING 연속 2분(streak≥2)
+14:38:00  [HealthPolicy] 자동 Degraded Mode 진입 → 자동진입 최소신뢰도 0.62로 상향
+14:39~14:45  실제 앙상블 신뢰도 39%대 < 62% → 자동진입 전부 차단 (6분간)
+14:46:00  warn_ratio 하락 → Degraded Mode 자동 해제
+```
+
+### 근본 원인
+
+`config/settings.py:251` `PYTHON_64_EXEC`가 다른 PC(사용자명 `82108`)의 절대경로로 하드코딩되어 있어, 이 PC(`pc1`)에서 장중 GBM 경량 재학습 시도가 `FileNotFoundError`로 매번 즉시 실패. 모델이 acc30m 붕괴 상태에서 자가교정을 못 하며:
+1. 반복 ERROR가 `exception_density_10m`을 밀어올려 Degraded Mode를 유발 → 자동진입 차단 (안전장치는 정상 작동, 트리거 원인이 버그)
+2. 동일한 acc30m 붕괴가 ContrarianModeTracker ACTIVE를 유발 → 역방향 버튼 깜빡임은 **의도된 경고 UI**(버그 아님), 다만 근본 원인은 재학습 실패로 모델이 회복하지 못한 것
+
+`register_eod_scheduler.ps1` (커밋 `ba07c46`, PC별 경로 하드코딩으로 `.gitignore` 처리)과 동일 패턴이 `config/settings.py`에 남아있던 것 — 공유 설정 파일이라 놓침.
+
+### 수정 (커밋 예정)
+
+| 파일 | 변경 |
+|---|---|
+| `config/settings.py` | `PYTHON_64_EXEC`를 `os.path.expanduser("~")` 기준 동적 조합 + `MIREUK_PYTHON_64_EXEC` env var 오버라이드로 변경 |
+
+검증: 이 PC에서 `C:\Users\pc1\anaconda3\envs\py310_64\python.exe`로 정확히 해석되고 파일 존재 확인. 다른 PC(`82108`)에서도 코드 수정 없이 자동으로 올바른 경로로 해석됨.
+
+### 잔여 항목
+
+- 내일 장중 acc30m 붕괴 재현 시 `[GBM-64]` ERROR가 더 이상 발생하지 않는지, 재학습이 실제로 성공하는지 확인 필요
+- dev_memory 4종 파일이 264차 이후 265~272차 구간이 비어있음(git log에는 존재) — 별도 백필 필요 여부는 미결정
+
 ## 2026-07-01 (264차 — EKS 오발동·z경고 과측정 3종 근본 수정)
 
 **트리거**: 오늘 장 시작 로그 딥다이브 — `[09:05] EKS 발동 conf_max=0.0% bars=5` + `z경고14개` 원인 조사.

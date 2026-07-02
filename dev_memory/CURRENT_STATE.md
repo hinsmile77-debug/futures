@@ -1,7 +1,39 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-01 (264차) — EKS 오발동·z경고 과측정 3종 근본 수정
+> 마지막 업데이트: 2026-07-02 (273차) — PYTHON_64_EXEC PC별 경로 하드코딩 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-02 (273차 — PYTHON_64_EXEC PC별 경로 하드코딩 수정)
+
+### 배경
+
+사용자 보고: 14:39~14:45 자동진입 반복 차단(`degraded_conf=39%, min=62%`) + 대시보드 "역방향 진입" 버튼 깜빡임. 로그 추적 결과 두 증상 모두 동일 근본 원인.
+
+### 근본 원인
+
+`config/settings.py`의 `PYTHON_64_EXEC`가 `C:\Users\82108\anaconda3\envs\py310_64\python.exe`로 하드코딩되어 있었음(다른 PC 사용자 경로). 이 PC(`pc1`)에서는 장중 GBM 경량 재학습(`DriftRetrain`)이 트리거될 때마다 `FileNotFoundError`로 즉시 실패 → `[GBM-64] py310_64 Python 없음` ERROR 반복 → `exception_density_10m` 급증 → Health Degraded Mode 자동 진입(최소신뢰도 0.62 요구) → 실제 신뢰도 39%대 신호가 전부 차단됨. 동시에 acc30m이 13%대까지 붕괴하면서(재학습 실패로 자가교정 불가) ContrarianModeTracker가 ACTIVE로 전환되어 "역방향 진입" 버튼 깜빡임 발생(이 자체는 의도된 경고 UI).
+
+### 수정 (커밋 예정)
+
+| 파일 | 변경 |
+|---|---|
+| `config/settings.py` | `PYTHON_64_EXEC` → `os.environ.get("MIREUK_PYTHON_64_EXEC", os.path.join(os.path.expanduser("~"), "anaconda3", "envs", "py310_64", "python.exe"))` |
+
+### 상태
+
+| 항목 | 상태 |
+|---|---|
+| 경로 하드코딩 제거 | **완료** — 홈 디렉토리 기준 동적 해석 + env override |
+| 이 PC(`pc1`) 검증 | **완료** — 해석된 경로에 python.exe 존재 확인 |
+| 다른 PC(`82108`) 실기동 검증 | **미완료** — 다음 그 PC 기동 시 GBM-64 ERROR 미발생 확인 필요 |
+| dev_memory 265~272차 공백 | **미해결** — git log에는 존재하나 dev_memory 4종 파일 미기록, 별도 백필 여부 미결정 |
+
+### 관련 문서
+
+- 상세 로그 재구성: `SESSION_LOG.md` 273차 항목
+- 동일 패턴 선례: `register_eod_scheduler.ps1` PC별 경로 하드코딩 (커밋 `ba07c46`, `.gitignore` 처리)
 
 ---
 
