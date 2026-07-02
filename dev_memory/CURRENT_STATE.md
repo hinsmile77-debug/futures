@@ -1,7 +1,50 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-01 (264차) — EKS 오발동·z경고 과측정 3종 근본 수정
+> 마지막 업데이트: 2026-07-02 (273차) — EKS 발동 히스테리시스 + 진단 로그 3종 보강
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-02 (273차 — EKS 발동 히스테리시스 + 프리장 refit·S6·ConfTrend 진단 강화)
+
+> 265~272차는 이 파일에 기록되지 않음 (git log에는 존재 — MW0601/MW0602 배처 통합·자동로그인
+> 리네임 등 인프라 작업 위주로 추정, 필요 시 `git log --oneline` 참고). 264차 이후 공백.
+
+### 배경
+
+07-02 장중 09:05 EKS(Early Kill Switch) 발동 → 09:33까지 관망 지속. 당일 WARN/SYSTEM 로그
+전체를 딥다이브해 인과관계를 추적한 결과, 264차에서 고친 cold-start 오판별 버그와는
+별개로 **08:59 Phase4(마지막 프리장 refit)가 11→11개로 완전히 무효**했고, GAP_OPEN conf_max가
+mc 대비 **0.5%p 근소 미달**(36.4% vs 36.9%)로 EKS가 발동한 것을 확인. 부수적으로 STEP6
+파이프라인 병목과 ConfTrendWidget 진단 로그 미출력(LOG_LEVEL 버그)도 함께 발견.
+
+### 핵심 변경 (커밋 5b8ddc4)
+
+| 파일 | 변경 |
+|---|---|
+| `safety/system_health.py` | `EKS_TRIGGER_MARGIN=0.02` 추가. 발동 조건을 `conf_max < mc`→`conf_max < mc-margin`으로 변경(히스테리시스). 마진 내 근소 미달은 발동 대신 WARNING으로 노출. 회복(해제) 조건은 미변경 |
+| `model/multi_horizon_model.py` | `canary_z_warn_count`/`canary_z_warn_features` 공용 헬퍼 `_canary_z_warn_mask` 분리 + `canary_z_warn_features()` 신규(피처명 리스트 반환) |
+| `main.py` | `_canary_load_z_warn_features()` 추가. PreMarket Phase refit 로그에 `잔존=피처1,피처2` (refit 전후 모두 z경고인 피처) 추가. STEP6 구간별(`ensemble`/`checklist_pre`/`meta_gate`/`gates`/`dashboard`/`tail`) 세부 타이머 `[S6Detail]` 매분 INFO 기록 |
+| `dashboard/panels/conf_trend_widget.py` | `_do_refresh()` 세부 스텝 타이밍을 버퍼링 후 SLOW(>200ms) 시 WARNING 한 줄에 breakdown 포함 — 기존 `.debug()` 호출은 SYSTEM 로거가 `LOG_LEVEL=INFO`라 전부 드롭되고 있었음 |
+
+### 발견한 이상점 (내일 로그로 원인 특정 예정)
+
+- **Phase4 refit 무효화**: Phase1~3(3·5·10봉)은 z경고를 16→6, 12→6, 14→10으로 억제했는데
+  Phase4(14봉, 오늘 비중 47%)만 11→11로 무변화. 오늘 비중이 클수록 억제력이 떨어지는 역설 —
+  `잔존=` 로그로 내일부터 어떤 피처가 반복 걸리는지 확인
+- **STEP6 병목**: PipePerf 로그의 `S6` 라벨(=STEP6 앙상블 진입판단 본문)이 전체 파이프라인의
+  79~83%를 차지 (09:07 938/1193ms, 09:32 855/1036ms). 09:10 장시작버스트 면제 구간 이후에도
+  재현 — 상시 병목으로 추정, `[S6Detail]`로 세부 구간 분해 예정
+- **ConfTrendWidget**: 199차에서 `MAX_ROWS=30`+in-place 업데이트로 고쳤음에도 09:30~09:33
+  4분 연속 328~422ms — 캡은 걸려 있는데(rows=30) 왜 느린지는 이번 로그 레벨 수정 후
+  breakdown으로 확인 필요
+
+### 운영 주의
+
+- EKS 발동 임계가 낮아졌으므로(=발동하기 더 어려워짐) 향후 실제로 저신뢰 구간에서
+  EKS가 필요했는데 마진 때문에 안 켜지는 사례가 있는지 함께 관찰할 것
+- `[S6Detail]`·`[LiveDBG] ConfTrend SLOW ... |`·`[PreMarket] Phase... 잔존=...` 로그는
+  진단용으로 매 분/이벤트 INFO 기록됨 — 원인 특정 후 제거 검토 (199차 LiveDBG와 동일 패턴)
 
 ---
 

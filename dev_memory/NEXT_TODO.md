@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-07-02 (273차 검증) [P0]
+
+### EKS 히스테리시스 + 진단 로그 3종 검증
+
+- [ ] **① EKS 히스테리시스 로그 확인** — 09:05 GAP_OPEN 판정 시 근소 미달(margin 2%p 이내)이면
+      `[SHS-EKS] EKS 미발동 — 마진 내 근소 미달` WARNING 로그 확인 (기존처럼 CRITICAL 발동 아님).
+      반대로 conf_max가 확실히 낮으면(발동선 밑) 여전히 `Early Kill Switch 발동` 정상 확인
+- [ ] **② Phase4 잔존 피처 확인** — `[PreMarket] Phase4 refit 완료 ... | 잔존=...` 로그에서
+      08:59 refit이 못 누른 피처명 확인. Phase1~3와 겹치는 피처인지, Phase마다 다른지 비교해
+      "최신봉 비중 클수록 억제 안 됨" 가설 검증
+- [ ] **③ S6Detail 병목 특정** — `[S6Detail] ensemble=Xms checklist_pre=Yms meta_gate=Zms gates=Wms dashboard=Vms tail=Ums`
+      로그에서 어느 구간이 PipePerf S6(79~83%)의 실제 원인인지 확인. `ensemble`(ensemble.compute)이
+      유력 후보 — 크면 ensemble.compute 내부 프로파일링 추가 검토
+- [ ] **④ ConfTrend breakdown 확인** — `[LiveDBG] ConfTrend SLOW total ... | import=Xms completed_map=Yms db_query(rows=30)=Zms arithmetic=Wms table_update=Vms scroll=Ums`
+      형태로 출력되는지, 어느 구간이 300~400ms의 실제 원인인지 확인 (db_query 유력 후보 —
+      predictions.db 580MB로 커진 것과 연관 가능성)
+- [ ] **⑤ EKS 마진으로 인한 부작용 없는지 관찰** — 히스테리시스 도입으로 실제 저신뢰 구간에서
+      EKS가 필요한데 마진 때문에 안 켜지는 사례가 있는지 1~2주 관찰
+
+---
+
 ## 2026-07-01 (264차 검증) [P0]
 
 ### EKS·z경고·Canary 3종 수정 검증
