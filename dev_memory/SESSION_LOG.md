@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-03 (289차 — 틱 단위 하드스톱 AttributeError 수정: is_halted() → state != CB_STATE_HALTED)
+
+**트리거**: 틱 단위 하드스톱 감지(`_on_tick_price_update`, [266차] 도입)가 실제로는 발동하지 않는 것으로 의심되어 코드 점검.
+
+**근본 원인**: `main.py:2747`(틱 콜백 내 스톱 히트 플래그 세팅 조건)과 `main.py:3580`(S0-C, 파이프라인 진입 직후 플래그 소비부)이 `self.circuit_breaker.is_halted()`를 호출하고 있었으나, `safety/circuit_breaker.py`의 `CircuitBreaker` 클래스에는 `is_halted()` 메서드가 존재하지 않음 — `is_halted()`는 별개 클래스인 `strategy/profit_guard.py:274`에만 정의되어 있음. 매 틱마다 AttributeError가 발생해 (아마도 상위 예외 처리로) 조용히 스킵되며 틱 단위 하드스톱 감지 전체가 사실상 무력화된 상태였음.
+
+**수정**: 코드베이스 다른 곳(`main.py:1998`, `4222` 등)에서 이미 쓰이던 검증된 패턴 `self.circuit_breaker.state != CB_STATE_HALTED`로 두 지점 모두 교체. `CB_STATE_HALTED`는 `config.constants`에서 이미 import되어 있어 추가 import 불필요.
+
+**검증**: `python -m py_compile`(py37_32) 통과. **실거래/모의투자에서 틱 하드스톱이 실제로 예외 없이 발동하는지는 미검증** — 다음 장중 스톱 히트 케이스에서 `[TickStop]`/`[TickStop-S0C]` 로그가 정상 출력되는지 확인 필요(`NEXT_TODO.md` 289차 참조).
+
+**변경 파일**: `main.py`(코드 수정은 288차 커밋 `fec17c4`에 함께 반영되어 별도 diff 없음).
+
+---
+
 ## 2026-07-03 (288차 — SGD 호라이즌별 미학습 딥다이브 → P0~P5 전면 재설계)
 
 **트리거**: 사용자가 첨부한 자가학습 UI 스크린샷(1m/3m/5m/10m "미학습 0건", 15m/30m "리셋됨" 2/17건)을 보고 "호라이즌별 SGD 온라인 학습 흐름을 점검하고 UI 학습 0의 원인을 딥다이브해" 요청 → 이후 대화가 이어지며 근본원인 구조개선(P0~P5)까지 순차 구현.

@@ -1,7 +1,21 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-03 (288차) — SGD 호라이즌별 미학습 딥다이브 → P0~P5 전면 재설계
+> 마지막 업데이트: 2026-07-03 (289차) — 틱 단위 하드스톱 AttributeError 수정
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-03 (289차 — 틱 단위 하드스톱 AttributeError 수정: is_halted() → state != CB_STATE_HALTED)
+
+**계기**: [266차] 틱 단위 하드스톱 감지 기능이 실제로 발동하는지 점검.
+
+**핵심 발견**: `main.py:2747`(틱 콜백)과 `main.py:3580`(S0-C 소비부)이 `CircuitBreaker` 클래스에 존재하지 않는 `is_halted()` 메서드를 호출 — 동명 메서드는 별개 클래스인 `strategy/profit_guard.py`에만 존재. 매 틱마다 AttributeError로 스킵되어 틱 하드스톱 감지가 사실상 무력화 상태였음.
+
+**수정**: 코드베이스에서 이미 쓰이던 `self.circuit_breaker.state != CB_STATE_HALTED` 패턴으로 두 지점 교체(`config.constants`의 `CB_STATE_HALTED`는 이미 import되어 있어 추가 작업 불필요).
+
+**검증**: `py_compile`(py37_32) 통과. **실거래/모의투자에서 틱 하드스톱 실제 발동 여부는 미검증** — `NEXT_TODO.md` 289차 참조.
+
+**변경 파일**: `main.py` (코드 수정은 288차 커밋 `fec17c4`에 이미 반영됨, 이 항목은 사후 문서화).
 
 ---
 

@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-07-03 (289차 — 틱 단위 하드스톱 AttributeError로 인한 무력화)
+
+### [버그] `circuit_breaker.is_halted()` 미존재 메서드 호출 → 틱 하드스톱 감지 매 틱 예외
+
+**File**: `main.py:2747`(틱 콜백 내 스톱 히트 플래그 세팅), `main.py:3580`(S0-C 플래그 소비부)
+**증상**: [266차]에서 도입한 틱 단위 하드스톱 감지가 실제로 발동하지 않는 것으로 의심됨.
+**근본 원인**: 두 지점 모두 `self.circuit_breaker.is_halted()`를 호출했으나, `safety/circuit_breaker.py`의 `CircuitBreaker` 클래스에는 `is_halted()` 메서드가 없음. 동일 이름의 메서드는 완전히 다른 클래스인 `strategy/profit_guard.py:274`에만 존재 — 클래스를 착각해 존재하지 않는 메서드를 호출한 것으로 추정. 매 틱마다 AttributeError가 발생해 조용히 스킵되며 틱 하드스톱 기능 전체가 무력화.
+**결정**: 코드베이스 다른 곳(`main.py:1998`, `4222` 등)에서 이미 검증되어 쓰이고 있는 `self.circuit_breaker.state != CB_STATE_HALTED` 패턴으로 통일.
+**Why**: `CircuitBreaker`는 상태값(`.state`, `CB_STATE_HALTED`와 비교)으로 HALT 여부를 노출하는 설계이고, `is_halted()`라는 불린 메서드는 이 클래스의 인터페이스가 아님 — 이름이 비슷한 다른 클래스(`ProfitGuard`?)의 메서드를 착오로 가져다 쓴 전형적 케이스.
+**How to apply**: `circuit_breaker` 관련 조건을 새로 작성할 때는 반드시 기존 사용례(`main.py:1998`, `1922`, `4222` 등)의 `self.circuit_breaker.state != CB_STATE_HALTED` 패턴을 그대로 따를 것 — `is_halted()` 같은 편의 메서드가 있을 것이라 가정하고 호출하지 말 것.
+**구현**: `main.py`(288차 커밋 `fec17c4`에 함께 반영됨).
+
+---
+
 ## 2026-07-03 (288차 — SGD 온라인학습 구조 재설계: P0~P5)
 
 ### [버그] GBM 장중 재학습마다 SGD 표본이 리셋되는 영구 콜드스타트 루프
