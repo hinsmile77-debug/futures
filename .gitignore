@@ -37,6 +37,10 @@ data/zone_penalty.json
 data/position_state.json
 data/session_state.json
 data/ui_prefs.json
+# PC별 런타임 기록 파일 추가분 (2026-07-03 언트랙)
+data/profit_guard_prefs.json
+data/option_chain.json
+data/option_metrics.json
 
 # 일일 마커·자동생성 리포트·크래시 덤프
 data/daily_close_done_*.txt
