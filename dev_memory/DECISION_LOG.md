@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-07-03 (286차 — stuck exit 손익 quantity배 부풀림 버그)
+
+### [버그] `_ts_resolve_stuck_exit_pending()` 합성 기록의 pnl_pts가 quantity배 부풀려짐
+
+**File**: `main.py:10173-10264`(`_ts_resolve_stuck_exit_pending`), `main.py:9824-9857`(`_ts_agg_exit_fill`/`_ts_build_agg_exit_result`), `utils/db_utils.py:86-106`(`normalize_trade_pnl`)
+**증상**: 285차 백테스트에서 발견 — `exit_reason='stuck_exit_flat'` 3건이 이 기간 최대손실(-1,227,356원, -5,987,676원 등)을 기록. `grade` 공백, 계약수도 5~6계약으로 비정상적으로 커 보였음.
+**근본 원인**: 분할체결 중 Chejan 콜백 일부가 누락된 채(CLAUDE.md에 명시된 COM 콜백 불안정성과 연관 가능성) 브로커 잔고조회가 FLAT을 보고하면 `_ts_resolve_stuck_exit_pending()`이 발동해, 그때까지 집계된 체결분을 하나의 합성 거래로 `trades.db`에 기록한다. 집계 함수 `_ts_agg_exit_fill()`은 `agg_exit_pnl_pts += per_fill_pnl_pts × fill_qty`(가중합, `main.py:9834`)로 누적하는데, 이 값은 사용 전 `agg_qty`로 나눠 per-contract 평균으로 복원해야 한다(정상 경로 `_ts_build_agg_exit_result()`, `main.py:9846-9853`은 이 나눗셈을 정확히 수행). 그런데 `_ts_resolve_stuck_exit_pending()`은 이 나눗셈을 빠뜨리고 가중합 그대로를 `pnl_pts`로 `_record_trade_result()`에 전달했고, `normalize_trade_pnl()`(`gross_pnl_krw = pnl_pts × pt_value × quantity`)에서 quantity가 한 번 더 곱해져 최종 손익이 정확히 quantity배로 부풀려짐. 1계약 집계는 `÷1`이라 무해해 06-22 13:23 사례는 정상으로 보였고, 다계약(2·5계약) 집계에서만 발현.
+**검증**: `normalize_trade_pnl()` 직접 재현 — 버그 재현값이 실제 DB 오기록과 원 단위까지 일치(-5,987,676원, -1,227,356원), 수정 후 값이 TRADE 로그 개별 체결 수기합산과 일치(-1,205,676원≈-1,205,675원, -615,686원≈-615,684원).
+**결정**: `main.py:10206-10221`에서 `_sq_pnl_pts`/`_sq_fwd_pts` 계산 시 `_sq_filled`(agg_qty)로 나눠 정상 경로와 동일한 패턴으로 정렬.
+**Why**: 부분체결 집계값(가중합)과 per-contract 평균값은 단위가 다른데, 폴백/예외 경로를 정상 경로와 별개로 인라인 구현하면서 이 나눗셈 단계가 누락됨. 정상 경로에 이미 존재하는 검증된 로직(`_ts_build_agg_exit_result`)을 재사용하지 않고 유사 로직을 별도로 손으로 옮겨 적으면서 발생한 전형적 복붙 누락.
+**How to apply**: 집계/합산 값을 다루는 폴백 경로를 새로 작성할 때는 반드시 정상 경로의 동일 계산을 재사용하거나(권장), 부득이 인라인 구현할 경우 정상 경로 옆에 나란히 놓고 라인 단위로 대조할 것. 특히 "가중합 → 나눗셈 복원" 같은 비대칭 단위 변환은 주석만으로는 안 보이므로 실제 값으로 재현 테스트(`normalize_trade_pnl()` 직접 호출 등)까지 해야 확실히 잡힘.
+**구현**: `main.py`
+**미해결**: `trades.db` 과거 오기록 3건 보정 여부 — 사용자 확인 후 별도 결정 대기.
+
 ## 2026-07-03 (285차 — 앙상블 CoherenceGate·체크리스트 등급 불일치 시 C등급 자동진입 차단)
 
 ### [설계결정] 앙상블 grade=X(CoherenceGate)와 체크리스트 grade가 불일치할 때, C등급에 한해서만 자동진입 차단

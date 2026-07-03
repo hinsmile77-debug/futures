@@ -10205,7 +10205,19 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
         # _active_trade가 clear 전에 completed_trades로 이동해야 이력이 보존됨
         _sq_filled = int(pending.get("agg_exit_qty") or 0)
         _sq_price_x_qty = float(pending.get("agg_exit_price_x_qty") or 0.0)
-        _sq_pnl_pts = float(pending.get("agg_exit_pnl_pts") or 0.0)
+        # [285차-Fix2] agg_exit_pnl_pts/agg_exit_fwd_pts는 per-contract×fill_qty의 가중합
+        # (_ts_agg_exit_fill, main.py:9834/9836) → qty로 나눠 per-contract 복원해야 함
+        # (_ts_build_agg_exit_result의 정상 경로 main.py:9846-9853과 동일 패턴).
+        # 나눗셈 누락 시 normalize_trade_pnl()이 quantity를 다시 곱해 pnl_krw가
+        # quantity배로 부풀려짐 — 07-01 13:00 6계약 stuck exit에서 5배 부풀림 실측.
+        _sq_pnl_pts = (
+            float(pending.get("agg_exit_pnl_pts") or 0.0) / _sq_filled
+            if _sq_filled > 0 else 0.0
+        )
+        _sq_fwd_pts = (
+            float(pending.get("agg_exit_fwd_pts") or 0.0) / _sq_filled
+            if _sq_filled > 0 else _sq_pnl_pts
+        )
         _sq_pnl_krw = float(pending.get("agg_exit_pnl_krw") or 0.0)
         _sq_direction = str(pending.get("direction") or "")
         _sq_last_fill_at = pending.get("last_fill_at") or datetime.datetime.now()
@@ -10235,7 +10247,7 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
                     "quantity": _sq_filled,
                     "pnl_pts": _sq_pnl_pts,
                     "pnl_krw": _sq_pnl_krw,
-                    "forward_pnl_pts": float(pending.get("agg_exit_fwd_pts") or _sq_pnl_pts),
+                    "forward_pnl_pts": _sq_fwd_pts,
                     "forward_pnl_krw": float(pending.get("agg_exit_fwd_krw") or _sq_pnl_krw),
                     "exit_reason": "stuck_exit_flat",
                     "grade": str(pending.get("grade") or ""),

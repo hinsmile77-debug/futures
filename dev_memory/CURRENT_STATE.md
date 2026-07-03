@@ -1,7 +1,23 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-03 (285차) — 재시작 직후 진입손실 딥다이브 → 앙상블·체크리스트 등급 불일치 C등급 이중차단 규칙 추가
+> 마지막 업데이트: 2026-07-03 (286차) — stuck_exit_flat 손익 quantity배 부풀림 버그 수정 (÷qty 나눗셈 누락)
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-03 (286차 — stuck exit 손익 quantity배 부풀림 버그 딥다이브 + 수정)
+
+**계기**: 285차 백테스트 중 발견한 `exit_reason='stuck_exit_flat'/'stuck_exit_remainder'` 3건(최대손실 -1,227,356원 포함, grade 공백·계약수 이상)을 별도 딥다이브 요청.
+
+**원인**: 분할체결 콜백 일부 누락 + 브로커 FLAT 확인 시 발동하는 `_ts_resolve_stuck_exit_pending()`(`main.py:10173`)이, 부분체결 집계 함수 `_ts_agg_exit_fill()`(`main.py:9824-9838`, per-contract pnl_pts를 fill_qty로 가중합산해 누적)의 결과 `agg_exit_pnl_pts`를 **체결수량(`agg_qty`)으로 나누지 않고** 그대로 `_record_trade_result()`에 pnl_pts로 넘김. 이 값이 `normalize_trade_pnl()`(`utils/db_utils.py:98`, `gross_pnl_krw = pnl_pts × pt_value × quantity`)에서 quantity와 다시 곱해져 **손익이 정확히 quantity배로 부풀려짐**. 정상 경로인 `_ts_build_agg_exit_result()`(`main.py:9841-9857`)는 이미 `raw_pts / agg_qty`로 정상 나눗셈을 하고 있어(주석에도 명시) 이 폴백 경로만 빠뜨린 것.
+
+**검증**: `normalize_trade_pnl()` 직접 호출로 재현 — 07-01 13:00 LONG 6계약(5건 집계) 버그값 -5,987,676원(실제 DB와 원 단위 일치), 수정 후 -1,205,676원(로그 수기합산 -1,205,675원과 일치). 07-01 11:42 SHORT 2계약도 동일 검증(-1,227,356원 → -615,686원).
+
+**수정**: `main.py:10206-10221, 10250` — `_sq_pnl_pts`/`_sq_fwd_pts`를 `_sq_filled`로 나눠 per-contract 값으로 복원 후 사용.
+
+**미해결**: `trades.db`의 과거 오기록 3건(06-22 13:23, 07-01 11:42, 07-01 13:00) 보정 여부 — 일일 통계 파생값과의 정합성 우려로 사용자 확인 후 별도 진행 결정 대기 중.
+
+**변경 파일**: `main.py`.
 
 ---
 
