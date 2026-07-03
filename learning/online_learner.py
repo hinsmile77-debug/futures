@@ -2,17 +2,24 @@
 """
 매분 예측 결과가 확인되는 즉시 SGD 모델을 업데이트합니다.
 
-[Phase C 피처셋 분리 적용]
+[Phase C 피처셋 분리 적용 → P2(288차)에서 GBM과 완전 분리]
   호라이즌별 슬라이싱된 x 를 learn()/predict_proba()에서 수신.
-  GBM과 동일한 피처셋으로 학습하여 신호 일관성 확보.
+  config.settings.SGD_FEATURE_NAMES_BY_HORIZON(호라이즌별 상위 5개 IC 피처) 전용 —
+  GBM SHAP 피처셋(11~15개)과 더 이상 공유하지 않는다. 선형모델인 SGD에 GBM 전용
+  비선형 상호작용 피처(hurst·macro_vix 등, 단독 IC≈0)를 넣으면 잡음 차원이 될 뿐이라
+  main.py 쪽에서 별도 인덱스(_sgd_feat_indices)로 슬라이싱해 전달한다.
 
 [P1-B: 호라이즌별 독립 가중치]
   버킷(short/long 묶음) → 6개 호라이즌 완전 독립.
   1m 노이즈가 3m·5m 가중치에 전파되는 문제 해소.
 
-[P1-C: sample_weight FLAT 억제]
-  FLAT 실제 비율 > 50% 구간에서 FLAT 레이블 가중치 0.5, UP/DN 1.5.
-  SGD가 FLAT 편향을 흡수하지 않도록 차단.
+[P3(288차): 3클래스 → 방향 이진화]
+  FLAT은 threshold(레이블 임계값)가 이미 결정하는 몫이므로 SGD는 UP/DN 방향만
+  학습·예측한다. actual_label==FLAT인 표본은 learn()에서 그대로 스킵(기권) —
+  P1-C의 FLAT sample_weight 보정은 FLAT이 학습 대상에서 아예 빠지며 불필요해져 제거.
+  predict_proba()는 up/down만 반환하고, blend_with_gbm()은 GBM의 flat 질량을 그대로
+  보존한 채 (1-flat) 안에서 up/down 비율만 SGD 의견으로 조정한다 — SGD가 flat 여부
+  자체를 뒤집는 일은 구조적으로 불가능해짐.
 
 [P2-E: 초기 부스트 + GBM FLAT 편향 대항]
   GBM flat_score > 0.6 → 학습 건수 부족해도 SGD 20% 즉시 투입.
@@ -35,6 +42,7 @@ from sklearn.preprocessing import StandardScaler
 from config.settings import (
     SGD_WEIGHT_DEFAULT, GBM_WEIGHT_DEFAULT,
     SGD_WEIGHT_MAX, SGD_WEIGHT_MIN,
+    SGD_BLEND_DISABLED_HORIZONS,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from config.settings import HORIZONS
@@ -73,9 +81,6 @@ class OnlineLearner:
     _FLOOR_RECOVERY_DELTA    = 0.005
     _FLOOR_RECOVERY_MAX_UP   = 0.05
 
-    # P1-C: FLAT 비율 추적 윈도우
-    FLAT_TRACK_WINDOW = 50
-
     def __init__(self):
         self.models:  Dict[str, SGDClassifier] = {}
         self.scalers: Dict[str, StandardScaler] = {}
@@ -88,10 +93,6 @@ class OnlineLearner:
         # 호라이즌별 독립 정확도 버퍼
         self._acc_buf: Dict[str, deque] = {
             h: deque(maxlen=self.ACCURACY_WINDOW) for h in HORIZONS
-        }
-        # P1-C: 호라이즌별 실제 레이블 버퍼 (FLAT 비율 추적)
-        self._label_buf: Dict[str, deque] = {
-            h: deque(maxlen=self.FLAT_TRACK_WINDOW) for h in HORIZONS
         }
 
         self._sample_count: int = 0
@@ -125,49 +126,46 @@ class OnlineLearner:
     ):
         """매분 partial_fit.
 
-        x: 호라이즌 전용 슬라이싱된 피처 벡터 (Phase C 적용 시 12~15개).
-           GBM과 동일한 피처 공간에서 학습.
+        x: 호라이즌 전용 슬라이싱된 피처 벡터 (SGD_FEATURE_NAMES_BY_HORIZON, 5개).
+           GBM 피처셋과 별도 — config.settings.SGD_FEATURE_NAMES_BY_HORIZON 참조.
+
+        [P3] actual_label==FLAT이면 학습을 스킵한다. FLAT은 threshold(레이블 임계값)가
+        이미 결정한 결과이므로 SGD가 다시 배울 대상이 아니고, 방향(UP/DN) 이진분류기에
+        FLAT 레이블을 섞으면 클래스 정의 자체가 어긋난다.
         """
         if horizon not in self.models:
+            return
+        if actual_label == DIRECTION_FLAT:
             return
 
         x2d = x.reshape(1, -1)
         scaler = self.scalers[horizon]
 
-        # 피처 수 불일치 방어: Phase C 슬라이싱 전환기에 스케일러가 이전
-        # 피처 수(예: 97개)로 학습된 상태에서 새 슬라이싱 피처(11~15개)가
-        # 들어오면 partial_fit에서 ValueError → ERR-FATAL 반복 진입.
+        # 피처 수 불일치 방어: 피처셋 교체 전환기에 스케일러가 이전 피처 수로 학습된
+        # 상태에서 새 슬라이싱 피처가 들어오면 partial_fit에서 ValueError 반복 진입.
         # 불일치 감지 시 스케일러·모델을 함께 리셋해 새 피처 공간에 재적응.
-        if hasattr(scaler, "n_features_in_") and scaler.n_features_in_ != x2d.shape[1]:
+        clf = self.models[horizon]
+        classes = np.array([DIRECTION_DOWN, DIRECTION_UP])
+        _dim_mismatch   = hasattr(scaler, "n_features_in_") and scaler.n_features_in_ != x2d.shape[1]
+        # [P3] 클래스 체계 불일치 방어: 구 3클래스(-1,0,1) 모델이 남아있으면 이진 classes로
+        # partial_fit 시 sklearn이 ValueError 발생 — 배포 직후 전환기 1회성 가드.
+        _cls_mismatch   = hasattr(clf, "classes_") and set(clf.classes_.tolist()) != set(classes.tolist())
+        if _dim_mismatch or _cls_mismatch:
             logger.warning(
-                "[OnlineLearner] %s 피처 수 불일치(scaler=%d, x=%d) → 리셋",
-                horizon, scaler.n_features_in_, x2d.shape[1],
+                "[OnlineLearner] %s %s → 리셋",
+                horizon,
+                "피처 수 불일치" if _dim_mismatch else "클래스 체계 변경(3클래스→이진)",
             )
             self._do_sgd_reset(horizon)
             scaler = self.scalers[horizon]
+            clf = self.models[horizon]
 
         scaler.partial_fit(x2d)
         xs = scaler.transform(x2d)
 
-        # P1-C: FLAT 비율 기반 sample_weight
-        self._label_buf[horizon].append(actual_label)
-        buf_labels = list(self._label_buf[horizon])
-        n_buf = len(buf_labels)
-        flat_ratio = buf_labels.count(DIRECTION_FLAT) / n_buf if n_buf > 0 else 0.33
-
-        if flat_ratio > 0.50:
-            sw = 0.5 if actual_label == DIRECTION_FLAT else 1.5
-        elif flat_ratio < 0.20:
-            # UP/DN 과다 구간: FLAT 강화
-            sw = 1.3 if actual_label == DIRECTION_FLAT else 0.85
-        else:
-            sw = 1.0
-
-        classes = np.array([DIRECTION_DOWN, DIRECTION_FLAT, DIRECTION_UP])
-        self.models[horizon].partial_fit(
+        clf.partial_fit(
             xs, [actual_label],
             classes=classes,
-            sample_weight=[sw],
         )
 
         if not self._fitted[horizon]:
@@ -186,7 +184,7 @@ class OnlineLearner:
 
     # ── 예측 ────────────────────────────────────────────────────
     def predict_proba(self, horizon: str, x: np.ndarray) -> Optional[Dict]:
-        """SGD 예측.
+        """SGD 예측 — [P3] UP/DN 방향만 반환한다 (flat 키 없음, blend_with_gbm 참조).
 
         x: 호라이즌 전용 슬라이싱된 피처 벡터.
         """
@@ -208,19 +206,17 @@ class OnlineLearner:
         classes = list(clf.classes_)
         proba_map = {int(c): float(p) for c, p in zip(classes, proba)}
         result = {
-            "up":   proba_map.get(DIRECTION_UP,   0.0),
-            "down": proba_map.get(DIRECTION_DOWN, 0.0),
-            "flat": proba_map.get(DIRECTION_FLAT, 1/3),
+            "up":   proba_map.get(DIRECTION_UP,   0.5),
+            "down": proba_map.get(DIRECTION_DOWN, 0.5),
         }
 
-        # SGD 단방향 붕괴 감지: up/dn/fl > _COLLAPSE_THR 연속 _COLLAPSE_TICKS회 → 리셋
+        # SGD 단방향 붕괴 감지: up/dn > _COLLAPSE_THR 연속 _COLLAPSE_TICKS회 → 리셋
+        # [P3] flat은 SGD가 더 이상 예측하지 않으므로 붕괴 감지 대상에서 제외
         collapse_dir = None
         if result["up"]   > self._COLLAPSE_THR:
             collapse_dir = "up"
         elif result["down"] > self._COLLAPSE_THR:
             collapse_dir = "dn"
-        elif result["flat"] > self._COLLAPSE_THR:
-            collapse_dir = "fl"
 
         if collapse_dir:
             if collapse_dir == self._sgd_collapse_dir.get(horizon, ""):
@@ -253,12 +249,22 @@ class OnlineLearner:
         """GBM + SGD 블렌딩 — 호라이즌별 독립 가중치.
 
         P2-E: GBM FLAT 편향(flat_score > 0.60) 감지 시 초기 부스트 적용.
+
+        [P3] SGD는 UP/DN 방향 이진 확률만 갖고 있다(sgd_proba["up"]가 곧 방향 비율).
+        GBM의 flat 질량은 그대로 보존하고, (1-flat) 예산 안에서 up/down 배분 비율만
+        GBM·SGD 가중 평균으로 조정한다 — SGD가 flat 여부 자체를 뒤집을 수 없다.
+
+        [P5] SGD_BLEND_DISABLED_HORIZONS(1m/15m/30m)는 학습은 계속하되 블렌딩엔
+        반영하지 않는다 — 표본 부족·신호 부재로 온라인 학습이 기여할 수 없다고
+        판단된 "정직한 손절" 호라이즌. GBM 확률을 그대로 반환.
         """
-        if sgd_proba is None:
+        if sgd_proba is None or horizon in SGD_BLEND_DISABLED_HORIZONS:
             return gbm_proba
 
         h_count = self._horizon_counts.get(horizon, 0)
         gbm_flat = gbm_proba.get("flat", 1/3)
+        gbm_up   = gbm_proba.get("up", 1/3)
+        gbm_dn   = gbm_proba.get("down", 1/3)
 
         # P2-E 임계: 장기 호라이즌(10m 이상)은 FL 구조 편향이 더 강해 낮은 임계에서 SGD 투입
         _p2e_flat_thr = 0.48 if horizon in ("10m", "15m", "30m") else 0.60
@@ -276,9 +282,16 @@ class OnlineLearner:
             w_sgd = self._sgd_w.get(horizon, SGD_WEIGHT_DEFAULT)
             w_gbm = self._gbm_w.get(horizon, GBM_WEIGHT_DEFAULT)
 
+        gbm_dir_mass  = gbm_up + gbm_dn
+        gbm_up_ratio  = gbm_up / gbm_dir_mass if gbm_dir_mass > 0 else 0.5
+        sgd_up_ratio  = sgd_proba.get("up", 0.5)
+        blended_up_ratio = gbm_up_ratio * w_gbm + sgd_up_ratio * w_sgd
+
+        non_flat_mass = max(0.0, 1.0 - gbm_flat)
         blended = {
-            k: gbm_proba.get(k, 1/3) * w_gbm + sgd_proba.get(k, 1/3) * w_sgd
-            for k in ("up", "down", "flat")
+            "up":   blended_up_ratio * non_flat_mass,
+            "down": (1.0 - blended_up_ratio) * non_flat_mass,
+            "flat": gbm_flat,
         }
         total = sum(blended.values())
         if total > 0:
@@ -287,7 +300,13 @@ class OnlineLearner:
 
     # ── 가중치 조정 ─────────────────────────────────────────────
     def _adjust_weights(self, horizon: str):
-        """호라이즌별 독립 정확도 기반 SGD 비중 조정."""
+        """호라이즌별 독립 정확도 기반 SGD 비중 조정.
+
+        [P5] 블렌딩 비활성 호라이즌은 _sgd_w/_gbm_w가 애초에 안 쓰이므로
+        조정 자체를 스킵 — 안 읽히는 값을 튜닝하는 척하는 로그를 남기지 않는다.
+        """
+        if horizon in SGD_BLEND_DISABLED_HORIZONS:
+            return
         buf = self._acc_buf[horizon]
         if len(buf) < self._MIN_SAMPLES:
             return
@@ -433,7 +452,6 @@ class OnlineLearner:
         """일간 리셋 — 모델 가중치 유지, 정확도 버퍼만 초기화."""
         for h in HORIZONS:
             self._acc_buf[h].clear()
-            self._label_buf[h].clear()
             self._sgd_w[h] = SGD_WEIGHT_DEFAULT
             self._gbm_w[h] = GBM_WEIGHT_DEFAULT
             self._learn_count[h] = 0
@@ -458,7 +476,6 @@ class OnlineLearner:
             self.scalers[h] = StandardScaler()
             self._fitted[h] = False
             self._acc_buf[h].clear()
-            self._label_buf[h].clear()
             self._sgd_w[h] = SGD_WEIGHT_DEFAULT
             self._gbm_w[h] = GBM_WEIGHT_DEFAULT
             self._learn_count[h] = 0

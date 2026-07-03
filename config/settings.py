@@ -103,16 +103,48 @@ HZ_DEPLOY_POLICY = {
     "30m": {"mode": "filter_only", "max_age": 0},
 }
 
-# 2026-05-30 데이터 기반 재보정 (2026-04-28~05-29, 21 거래일, 33/34/33 목표)
-# 이전값(2026-05-16): 1m=0.0005, 3m=0.0006, 5m=0.0011, 10m=0.0016, 15m=0.0022, 30m=0.0032
-# 3m: 데이터 불충분(F1 기준 현행 우세)으로 현행 유지 — 6~8주 후 재산출
+# [P2, 288차] SGD 전용 피처셋 — GBM SHAP 기준(horizon_feature_names)과 분리.
+# 2026-06-01~ 데이터, 호라이즌별 미래수익률 대비 Spearman IC 상위 5개(quality_*/메타
+# 진단 피처 제외 — 데이터 품질 플래그일 뿐 실제 시장 신호가 아니라 스퓨리어스 상관 위험).
+# GBM은 97개 피처 비선형 상호작용을 SHAP로 고르지만, SGD는 선형 결합이라 그중 상호작용
+# 전용 피처(hurst·macro_vix 등, 단독 IC≈0)를 넣으면 순수 잡음 차원이 된다.
+# 파라미터 수 축소(11~15→5) 효과: 호라이즌당 하루 학습 표본이 적은 상황(P1 dedup 이후
+# 30m 13건/일, 3m 4~16건/일)에서 과대적합·수렴불능을 완화.
+SGD_FEATURE_NAMES_BY_HORIZON = {
+    "1m":  ["bb_position", "poc_distance", "ema_cross", "ret_15m", "poc_above"],
+    "3m":  ["poc_distance", "ret_15m", "poc_above", "ema_cross", "microprice_depth_bias"],
+    "5m":  ["poc_distance", "toxicity_score", "ret_15m", "bb_position", "ema_cross"],
+    "10m": ["poc_distance", "cvd_direction", "poc_above", "ema_cross", "macro_krw_chg"],
+    "15m": ["toxicity_flow_stress", "toxicity_score", "microprice_depth_bias",
+            "cvd_direction", "macro_us10y_chg"],
+    "30m": ["ret_15m", "in_value_area", "imbalance_slope", "bb_position", "cvd_slope"],
+}
+
+# [P5, 288차] SGD 블렌딩 비활성 호라이즌 — "정직한 손절".
+# 학습(learn())은 계속 돌려 정확도·향후 재검토용 데이터는 쌓되, 앙상블 최종 확률에는
+# 절대 반영하지 않는다(blend_with_gbm이 gbm_proba 그대로 반환, _adjust_weights도 스킵).
+#   1m : 표본 8,586건(2026-06-01~) 대비 최고 IC 0.039 — 어떤 선형모델도 학습할 신호가
+#        사실상 없음. 오늘 BiasReset 5회가 전부 1m이었던 것도 신호 부재의 증상.
+#   15m/30m: HZ_DEPLOY_POLICY(bar_plus1/filter_only) + P1 dedup 이후 독립 학습표본이
+#        하루 13~26건뿐 — 온라인(선형) 학습이 수렴하기엔 구조적으로 부족. 30m은 GBM
+#        고신뢰 구간(52~70%)에서만 conf-정확도 정합이 실측 확인된 유일한 호라이즌이라
+#        GBM+RF에 그대로 맡기는 편이 정직하다.
+#   3m/5m/10m: 표본×신호의 균형점 — SGD 온라인학습의 실질 가치가 있는 유일한 구간이라
+#        블렌딩 유지, P0~P3 개선 효과를 여기에 집중.
+SGD_BLEND_DISABLED_HORIZONS = {"1m", "15m", "30m"}
+
+# 2026-07-03 데이터 기반 재보정 (2026-06-04~07-02, 21 거래일, 33/34/33 목표) — P4
+# 이전값(2026-05-30): 1m=0.00041, 3m=0.00060, 5m=0.00092, 10m=0.00148, 15m=0.00155, 30m=0.00196
+# 5주 경과하며 변동성 확대 → 구값 기준 실측 FLAT 18.6~25.5%(목표 34% 대비 -8.7~-15.4%p)로 하락
+# 확인됨. 전 호라이즌 +40~+85% 상향으로 33/34/33 재정렬.
+# 3m: 직전 재보정(05-30)에서 표본부족으로 유지했던 값 — 이번엔 정상 재산출.
 HORIZON_THRESHOLDS = {
-    "1m":  0.00041,  # 0.041% (이전 0.050%, −22%)
-    "3m":  0.00060,  # 0.060% (현행 유지)
-    "5m":  0.00092,  # 0.092% (이전 0.110%, −20%)
-    "10m": 0.00148,  # 0.148% (이전 0.160%, −8%)
-    "15m": 0.00155,  # 0.155% (이전 0.220%, −42%)
-    "30m": 0.00196,  # 0.196% (이전 0.320%, −63%)
+    "1m":  0.00057,  # 0.057% (이전 0.00041%, +40%)
+    "3m":  0.00106,  # 0.106% (이전 0.00060%, +76%)
+    "5m":  0.00140,  # 0.140% (이전 0.00092%, +52%)
+    "10m": 0.00209,  # 0.209% (이전 0.00148%, +41%)
+    "15m": 0.00255,  # 0.255% (이전 0.00155%, +65%)
+    "30m": 0.00362,  # 0.362% (이전 0.00196%, +85%)
 }
 
 # HORIZON_THRESHOLDS_BASE: 설계 기준값 (ThresholdRecalibrator Phase A 모니터 참조용)
@@ -124,20 +156,24 @@ HORIZON_THRESHOLDS_BASE: dict = dict(HORIZON_THRESHOLDS)
 # 운영: HORIZON_THRESHOLDS (대칭) / 연구: HORIZON_THRESHOLDS_RESEARCH (비대칭)
 # threshold 교체 후 SGD 1회 완전 리셋 플래그
 # GBM 재학습 완료 시 True이면 reset_full() 호출 → 이후 자동으로 False
-SGD_FULL_RESET_PENDING: bool = False
+# 2026-07-03 P4 HORIZON_THRESHOLDS 재보정으로 레이블 체계 변경 → 1회 True (189차 선례)
+SGD_FULL_RESET_PENDING: bool = True
 
 # rolling σ 임계값 설정 (방법3)
 # threshold_h = sigma_20봉 × SIGMA_K × sqrt(h_min)
 # k=0.41 → 실측 전 기간 FLAT=33.6% (목표 34%)
 SIGMA_K:   float = 0.41   # FLAT 34% 달성 계수 (공통 fallback)
 
-# 호라이즌별 최적 σ_k (scripts/optimize_sigma_k.py 탐색 결과 — P5)
+# 호라이즌별 최적 σ_k (scripts/optimize_sigma_k.py --weeks 5 재탐색 — P4, 2026-07-03)
 # 장기 호라이즌일수록 UP/DOWN 비율 불균형이 크므로 k를 낮춰 FLAT 조정
+# 10m: 0.38→0.41 (최근 구간 재탐색 결과 FL 31.0%→33.0%로 개선, score 0.032→0.011)
+# 나머지는 최근 구간에서도 기존값이 그대로 최적 — rolling σ 방식은 매분 재계산되어
+# HORIZON_THRESHOLDS(고정값)와 달리 레짐 변화에 자연히 추종하고 있었음을 재확인.
 SIGMA_K_PER_HORIZON = {
     "1m": 0.41,
     "3m": 0.41,
     "5m": 0.41,
-    "10m": 0.38,
+    "10m": 0.41,
     "15m": 0.38,
     "30m": 0.33,
 }

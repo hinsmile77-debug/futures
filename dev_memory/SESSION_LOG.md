@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-07-03 (288차 — SGD 호라이즌별 미학습 딥다이브 → P0~P5 전면 재설계)
+
+**트리거**: 사용자가 첨부한 자가학습 UI 스크린샷(1m/3m/5m/10m "미학습 0건", 15m/30m "리셋됨" 2/17건)을 보고 "호라이즌별 SGD 온라인 학습 흐름을 점검하고 UI 학습 0의 원인을 딥다이브해" 요청 → 이후 대화가 이어지며 근본원인 구조개선(P0~P5)까지 순차 구현.
+
+### 1차 딥다이브 — UI "미학습 0건"의 직접 원인
+
+`logs/20260703_LEARNING.log` 등 최근 7거래일 실측:
+- 3단 필터가 겹쳐 학습기회가 걸러짐: ① `HZ_DEPLOY_POLICY`(호라이즌별 저장빈도 제한 — 3m/5m는 분당 1/3·1/5만, 10m/15m는 2/10·2/15만 저장) ② P2-D 신뢰도 게이트(`conf<0.52`면 `learn()` 스킵 — 3m는 오늘 최고 51.9%로 하루 종일 단 한 번도 통과 못함) ③ SGD 붕괴 자동복구(12분 연속 단방향 확신>80%) + BiasReset(1m 8분 단방향편향) 재설정 주기.
+- 파급효과 확인: `blend_with_gbm()`이 `h_count<20`이면 SGD 가중치 0으로 강제하는데, 3m는 `_horizon_counts`가 거의 항상 0 근처라 SGD 블렌딩이 사실상 영구 0%.
+
+### 2차 딥다이브 — conf 게이트 재보정 검토 (실측 기반)
+
+6/26~7/3 7거래일 confidence 분포·구간별 실측정확도 전수 분석: **conf와 정확도 상관관계가 1m/3m/5m/10m/15m에서 사실상 무관계(잡음 수준)** — 52%대 표본이 45%대 표본보다 더 정확하지 않음. 30m만 52~70%대에서 55~61% 정확도로 유의미한 캘리브레이션 신호 확인. → 호라이즌별 차등 게이트 완화 제안했으나, 사용자가 "예측 모델이 허술한데 설정값만 고쳐서 되겠는가"라고 반문 → 구조적 재설계로 전환.
+
+### 3차 딥다이브 — 근본원인 (피처 IC·레이블 구조·학습루프)
+
+`raw_features_horizon`/`raw_candles`(2026-06-01+)로 직접 계산:
+- **호라이즌별 피처 IC**: 최고 IC가 1m 0.039, 3m 0.070, 30m 0.198 수준 — 선형모델 이론 상한이 대략 52~54%.
+- **학습/예측 피처 일치도**: 대부분 corr≈1.000, 예외는 macro_vix(~0.78)·3m cvd_direction(0.59)·15m 수급 3종(0.73~0.76) — 189차 우려는 이미 대부분 해소돼 있었음.
+- **레이블 구조**: 고정 threshold(`HORIZON_THRESHOLDS`) 기준 실측 FLAT 18.6~25.5%(목표 34% 미달) — 5주 전(05-30) 재보정 이후 변동성 확대로 드리프트.
+- **영구 콜드스타트 루프**: GBM 장중 재학습이 하루 23회(7/1은 21회, 7/2는 16회) 발생하는데 매번 `online_learner.reset_daily()`가 호출돼 SGD acc_buf·가중치·표본카운트가 초기화 → `_adjust_weights()`의 `_MIN_SAMPLES=15` 문턱을 하루 종일 못 넘김.
+- **30m 레이블 중복 해머링**: `filter_only`라 매분 학습하는데 인접 두 표본의 30분 수익률 윈도우가 29/30 겹침 — 추세 구간에서 같은 방향 레이블 연타 → SGD 단방향 붕괴(오늘 8회)가 사실상 필연.
+
+### 구현 — P0~P5
+
+| 단계 | 내용 | 파일 |
+|---|---|---|
+| **P0** | GBM 재학습 완료 시 `online_learner.reset_daily()` 호출 제거(콜드스타트 루프 원인) — BiasReset 상태만 초기화, SGD 누적학습은 하루 1회 EOD에서만 리셋 | `main.py:3128` 부근(재학습 완료 콜백) |
+| **P1** | 호라이즌별 봉단위 dedup — `_sgd_learn_last_ts`로 자기 봉 길이(N분) 미만 간격이면 학습 스킵. 30m 하루 48건(97% 중복)→약 13건 독립표본으로 정리 | `main.py:584`(상태 선언), `main.py:6793` 부근(dedup 게이트) |
+| **P4** | `HORIZON_THRESHOLDS` 21거래일 재보정(전 호라이즌 +40~+85%, FLAT 18.6~25.5%→33.8~34.1%). `ThresholdRecalibrator`가 전체 11개월 이력으로 재산출해 반대방향 UPDATE 경보를 3주 연속(6/12·6/19·6/26) 내고 있던 버그 발견·수정(`LOOKBACK_TRADING_DAYS=21` 도입). `SIGMA_K_PER_HORIZON["10m"]` 0.38→0.41. `SGD_FULL_RESET_PENDING=True` 예약 | `config/settings.py`, `learning/threshold_recalibrator.py` |
+| **P2** | SGD 전용 피처셋 분리 — `SGD_FEATURE_NAMES_BY_HORIZON`(호라이즌별 IC 상위 5개, quality_*/메타 진단 피처 제외) 신설. `main.py`에 `_sgd_feat_indices`(GBM `_hz_feat_indices`와 별도) + `_rebuild_sgd_feat_indices()`(모델 리로드마다 재계산). SGD-only 부트스트랩 경로에 누락돼있던 슬라이싱도 함께 수정 | `config/settings.py`, `main.py:243`(상태), `main.py:2346`(`_rebuild_sgd_feat_indices`), `main.py:4638`·`4738-4756`·`6810`(슬라이싱 적용부 3곳) |
+| **P3** | 3클래스→방향 이진화 — `learn()`이 `actual_label==FLAT`이면 스킵(기권), P1-C FLAT sample_weight 로직·`_label_buf` 제거. `predict_proba()`는 up/down만 반환. `blend_with_gbm()`은 GBM의 flat 질량을 보존한 채 (1-flat) 예산 안에서 up/down 비율만 조정하도록 재설계. 배포 전환기 안전장치로 클래스체계(3→2) 불일치 자동리셋 가드 추가 | `learning/online_learner.py` |
+| **P5** | "정직한 손절" — `SGD_BLEND_DISABLED_HORIZONS={1m,15m,30m}` 신설. 해당 호라이즌은 학습은 계속하되 `blend_with_gbm()`이 항상 gbm_proba 그대로 반환(`_adjust_weights()`도 스킵). 대시보드 배지에 `OFF·학습됨` 등 병기해 "학습됨=기여 중" 오인 방지 | `config/settings.py`, `learning/online_learner.py`, `dashboard/main_dashboard.py` |
+
+세션 중 코드 주석에 임시로 "302~304차"라 적었던 걸 실제 세션번호(288차)로 사후 정정.
+
+### 검증
+
+- `python -m py_compile` 전체 통과(`config/settings.py`, `learning/online_learner.py`, `learning/threshold_recalibrator.py`, `main.py`, `dashboard/main_dashboard.py`).
+- `ThresholdRecalibrator.run()` 임시 DB로 실행해 재보정 후 FLAT 33.2~33.7%(정상 범위) 확인.
+- `OnlineLearner` 단위 스모크 테스트(실제 프로세스 밖에서 별도 스크립트로): FLAT 학습 스킵, 30건 이진학습 후 up+down=1.0, `blend_with_gbm` flat 질량 보존, 3클래스→이진 전환 시 차원동일/차원상이 두 케이스 모두 자동리셋 확인, SGD_BLEND_DISABLED_HORIZONS 3개 호라이즌의 blend 출력이 GBM 원본과 완전 동일함을 확인.
+- 실거래 파이프라인 통합 실행(장중)은 미실시 — `NEXT_TODO.md` 288차 참조.
+
+### 변경 파일
+
+`config/settings.py`, `main.py`, `learning/online_learner.py`, `learning/threshold_recalibrator.py`, `dashboard/main_dashboard.py`, `docs/정기점검/LABEL_THRESHOLD_RECALIBRATION_GUIDE.md`(신규).
+
+---
+
 ## 2026-07-03 (287차 — 청산 완료 후 브로커 잔고 1계약 잔존 사고 딥다이브 + 하드스톱·시간청산 pending 선등록 수정)
 
 **트리거**: "[청산 완료] PnL=-0.19pt" 로그 이후에도 UI 실시간 잔고에 1계약이 남는 현상 딥다이브 요청.

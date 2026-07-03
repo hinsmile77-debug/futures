@@ -33,6 +33,13 @@ ATR_RATIO_HI = 0.15       # ATR ratio 정상 상한
 class ThresholdRecalibrator:
     """Phase A 롤링 임계값 재보정 모니터."""
 
+    # [P4] 재보정 참조 윈도우 — 거래일 수
+    # 2026-07-03 확인: raw_candles 전체(11개월) 평균으로 재보정하면 최근 레짐(변동성 확대)이
+    # 희석되어 recalc값이 오히려 현재 base보다 작게 나옴(반대 방향 UPDATE 경보, 6/12~6/26 3주
+    # 연속). HORIZON_THRESHOLDS 수동 재보정(2026-07-03, 21거래일)과 동일 윈도우로 통일해
+    # "최근 레짐 기준"이라는 재보정 취지에 맞춘다.
+    LOOKBACK_TRADING_DAYS = 21
+
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
             from config.settings import DB_DIR
@@ -161,7 +168,10 @@ class ThresholdRecalibrator:
         horizons: Dict[str, int],
     ) -> Tuple[Dict[str, List[float]], Optional[float], Optional[float]]:
         """
-        raw_candles 전체에서 연속 1분봉 수익률 계산 후 호라이즌별 리샘플링.
+        raw_candles 최근 LOOKBACK_TRADING_DAYS 거래일에서 연속 1분봉 수익률 계산 후
+        호라이즌별 리샘플링. [P4] 전체 이력 대신 최근 레짐만 반영 — 오래된 저변동성
+        구간이 섞이면 recalc 임계값이 현재 변동성보다 작게 나와 반대 방향으로
+        오판(threshold 축소 권고)할 수 있다.
 
         Returns:
             rets_by_horizon : {"1m": [ret%,...], "5m": [...], ...}
@@ -171,11 +181,19 @@ class ThresholdRecalibrator:
         import json as _json
 
         with sqlite3.connect(raw_db, timeout=10) as conn:
+            day_rows = conn.execute(
+                "SELECT DISTINCT substr(ts,1,10) d FROM raw_candles ORDER BY d DESC "
+                "LIMIT ?",
+                (self.LOOKBACK_TRADING_DAYS,),
+            ).fetchall()
+            since = min(r[0] for r in day_rows) if day_rows else "1970-01-01"
             candle_rows = conn.execute(
-                "SELECT ts, close FROM raw_candles ORDER BY ts"
+                "SELECT ts, close FROM raw_candles WHERE ts >= ? ORDER BY ts",
+                (since + " 00:00:00",),
             ).fetchall()
             feat_rows = conn.execute(
-                "SELECT features FROM raw_features ORDER BY ts"
+                "SELECT features FROM raw_features WHERE ts >= ? ORDER BY ts",
+                (since + " 00:00:00",),
             ).fetchall()
 
         if len(candle_rows) < 200:

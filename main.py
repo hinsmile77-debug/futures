@@ -237,6 +237,11 @@ class TradingSystem:
         self._hz_feat_cache     = {}   # {h_name: np.ndarray} — 마지막 완성봉 기반 피처 벡터
         self._hz_bar_age        = {}   # {h_name: int} — 마지막 완성봉 이후 경과 분 수
         self.model             = MultiHorizonModel()
+        # [P2, 288차] SGD 전용 피처 인덱스 — GBM _hz_feat_indices와 별도 관리.
+        # config.settings.SGD_FEATURE_NAMES_BY_HORIZON을 model.feature_names 안에서
+        # 찾아 인덱스화. 모델 재학습으로 feature_names가 바뀔 때마다 재계산 필요(S0 참조).
+        self._sgd_feat_indices: dict = {}
+        self._rebuild_sgd_feat_indices()
         self.rf_model          = RFHorizonModel()
         self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
         self.ensemble          = EnsembleDecision()
@@ -570,6 +575,13 @@ class TradingSystem:
         # conf가 N분 연속 동일값일 때 WARN 로그로 GBM/SGD 분해값을 기록
         self._conf_prev: dict = {}      # {h_name: float} 직전 틱 blended conf
         self._conf_stuck: dict = {h: 0 for h in HORIZONS}  # 연속 동일 카운터
+
+        # ── [P1] SGD 학습 호라이즌별 봉단위 dedup ───────────────────────────
+        # 검증은 매분 발생하지만 같은 N분봉에서 파생된 예측은 (N-1)/N이 동일 정보의
+        # 재탕(30m: 봉당 29/30 겹침) — 매분 학습하면 같은 레이블을 반복 주입해
+        # SGD가 한 방향으로 붕괴(콜드스타트 루프의 2번째 원인). 호라이즌별 최소 학습
+        # 간격을 자기 봉 길이(N분)로 제한해 "완성봉당 최대 1회"만 학습에 반영한다.
+        self._sgd_learn_last_ts: dict = {h: "" for h in HORIZONS}
 
         # ── 호라이즌 자격 상태 (Qualification) ──────────────────────────────────
         # qualified=True: 3 사이클 완료 → 앙상블 참여 허가 (Phase 3에서 실제 필터링)
@@ -2331,6 +2343,30 @@ class TradingSystem:
             "CRITICAL" if before != after else "INFO",
         )
 
+    def _rebuild_sgd_feat_indices(self) -> None:
+        """[P2] SGD_FEATURE_NAMES_BY_HORIZON → self.model.feature_names 인덱스 재계산.
+
+        model.feature_names는 GBM 재학습으로 바뀔 수 있으므로 __init__ 최초 1회+
+        모델 리로드(S0) 시점마다 다시 호출한다. 마스터 리스트에 없는 피처명은 경고
+        후 건너뛴다(안전 방어 — 정상 운영 중이면 발생하지 않아야 함).
+        """
+        from config.settings import SGD_FEATURE_NAMES_BY_HORIZON
+        fn_list = self.model.feature_names or []
+        new_indices = {}
+        for h, names in SGD_FEATURE_NAMES_BY_HORIZON.items():
+            idx = []
+            for name in names:
+                try:
+                    idx.append(fn_list.index(name))
+                except ValueError:
+                    logger.warning(
+                        "[SGD-Feat] %s: '%s' 피처가 model.feature_names에 없음 — 제외",
+                        h, name,
+                    )
+            if idx:
+                new_indices[h] = np.array(idx, dtype=np.int64)
+        self._sgd_feat_indices = new_indices
+
     def _preload_horizon_calibration(self) -> None:
         """기동 시 DB 검증 예측(최근 3000건/호라이즌)으로 calibrator를 사전 fit.
 
@@ -2708,7 +2744,7 @@ class TradingSystem:
             if (not self._tick_stop_triggered
                     and self._pending_order is None
                     and self.position.status != "FLAT"
-                    and not self.circuit_breaker.is_halted()
+                    and self.circuit_breaker.state != CB_STATE_HALTED
                     and self.position.is_stop_hit(close)):
                 self._tick_stop_triggered = True
                 self._tick_stop_price     = close
@@ -3089,7 +3125,7 @@ class TradingSystem:
             # ATR 동적 threshold 갱신 제거 (P2) — rolling σ×k 방법3이 매분 갱신
             self._reset_rollback_active = None
 
-            # 새 GBM 기준으로 BiasReset·SGD 상태 초기화
+            # 새 GBM 기준으로 BiasReset 상태만 초기화
             # 구 GBM 편향 판정(bias_override_horizons, bias_fl_streak, bias_buf)이
             # 새 모델에 그대로 남으면 uniform fallback 고착 + SGD 대항력 약화 지속
             self._bias_override_horizons.clear()
@@ -3097,9 +3133,13 @@ class TradingSystem:
             self._bias_override_timer = {h: 0 for h in HORIZONS}
             for _bh in HORIZONS:
                 self._bias_buf[_bh].clear()
-            self.online_learner.reset_daily()
+            # [P0] online_learner.reset_daily() 호출 제거 (288차)
+            # 장중 GBM 재학습(수십 회/일)마다 SGD acc_buf·가중치·표본카운트가 매번
+            # 초기화되어 _adjust_weights()의 _MIN_SAMPLES=15 문턱을 영원히 못 넘기는
+            # 영구 콜드스타트 루프 유발 — DriftAdjuster도 매번 "표본부족→스킵" 고착.
+            # SGD 일간 리셋은 하루 1회 EOD 마감(daily_close 루틴, self.online_learner.reset_daily() 호출부)에서만 수행.
             log_manager.learning(
-                "[GBM] 재학습 완료 → BiasReset·SGD 상태 초기화 (새 GBM 기준 재평가 시작)"
+                "[GBM] 재학습 완료 → BiasReset 상태 초기화 (SGD 누적 학습은 유지)"
             )
 
             # ── ConstOut 원인 CB③ HALT 해제 시도 ──────────────────────────
@@ -3537,7 +3577,7 @@ class TradingSystem:
             _tk_stop = self.position.stop_price
             if (self.position.status != "FLAT"
                     and not self._has_pending_order()
-                    and not self.circuit_breaker.is_halted()
+                    and self.circuit_breaker.state != CB_STATE_HALTED
                     and _tk_px > 0):
                 # PnL 기준: 손절가 사용 (실제 체결가는 broker fill이 결정)
                 _tk_exit = _tk_stop
@@ -3596,6 +3636,7 @@ class TradingSystem:
                 self.rf_model.load_all()
             except Exception:
                 pass
+            self._rebuild_sgd_feat_indices()   # [P2] feature_names 교체 반영
             logger.info("[Model] 재학습 완료 모델 교체 적용 (S0)")
 
         # [S2-A] 지연 SGD 학습 변수 — S2에서 채워지고 "end" 이후에 소비
@@ -4594,8 +4635,8 @@ class TradingSystem:
             _rf_ready = self.rf_model.is_ready()
             for h_name in list(horizon_proba.keys()):
                 _sgd_fv_raw = _hz_feat_vecs[h_name] if _hz_feat_vecs else feat_vec
-                # P0-SGD: 호라이즌별 피처 슬라이싱 — GBM과 동일한 피처셋으로 학습·예측 일치
-                _sgd_h_idx  = getattr(self.model, "_hz_feat_indices", {}).get(h_name)
+                # [P2] SGD 전용 피처 슬라이싱 — GBM(_hz_feat_indices)과 별도 인덱스 사용
+                _sgd_h_idx  = self._sgd_feat_indices.get(h_name)
                 _sgd_fv     = _sgd_fv_raw[_sgd_h_idx] if _sgd_h_idx is not None else _sgd_fv_raw
                 _gbm_raw_conf = horizon_proba[h_name].get("confidence", 0.0)  # P2: blend 전 GBM conf
                 sgd_p   = self.online_learner.predict_proba(h_name, _sgd_fv)
@@ -4627,7 +4668,7 @@ class TradingSystem:
                     self._conf_stuck[h_name] = self._conf_stuck.get(h_name, 0) + 1
                     if self._conf_stuck[h_name] >= 3:
                         _sgd_str = (
-                            f"u={sgd_p['up']:.3f}/d={sgd_p['down']:.3f}/f={sgd_p['flat']:.3f}"
+                            f"u={sgd_p['up']:.3f}/d={sgd_p['down']:.3f}"  # [P3] SGD는 방향만 보유
                             if sgd_p else "None"
                         )
                         log_manager.learning(
@@ -4695,13 +4736,20 @@ class TradingSystem:
                     }
         else:
             # ─ SGD-only 또는 bootstrap 경로 (GBM 미학습) ─
+            # [P3] SGD는 UP/DN 방향만 판단 — GBM 부재 시 flat 판단 근거가 없으므로 1/3 고정
             horizon_proba = {}
             for h in HORIZONS:
-                _sgd_fv = _hz_feat_vecs[h] if _hz_feat_vecs else feat_vec
+                _sgd_fv_raw = _hz_feat_vecs[h] if _hz_feat_vecs else feat_vec
+                # [P2] SGD 전용 피처 슬라이싱 (기존엔 누락돼 있었음 — 미학습 상태라 무해했으나
+                # 학습이 시작되는 즉시 학습/예측 피처 공간 불일치가 생길 수 있어 함께 수정)
+                _sgd_h_idx = self._sgd_feat_indices.get(h)
+                _sgd_fv    = _sgd_fv_raw[_sgd_h_idx] if _sgd_h_idx is not None else _sgd_fv_raw
                 sgd_p = self.online_learner.predict_proba(h, _sgd_fv)
                 if sgd_p is None:
-                    sgd_p = {"up": 1/3, "down": 1/3, "flat": 1/3}
-                up, dn, fl = sgd_p["up"], sgd_p["down"], sgd_p["flat"]
+                    sgd_p = {"up": 0.5, "down": 0.5}
+                fl = 1 / 3
+                up = sgd_p["up"] * (1 - fl)
+                dn = sgd_p["down"] * (1 - fl)
                 best = max([(up, 1), (dn, -1), (fl, 0)], key=lambda t: t[0])
                 horizon_proba[h] = {
                     "up": round(up, 4), "down": round(dn, 4), "flat": round(fl, 4),
@@ -6731,40 +6779,38 @@ class TradingSystem:
                     f"[SGD] stuck 발생 분봉 — {len(_sgd_deferred_verified)}건 학습 스킵 (레이블 오염 방지)"
                 )
             else:
-                _sgd_h_indices = getattr(self.model, "_hz_feat_indices", {})
                 _min_conf_sgd  = 0.52   # P2-D: 저신뢰 레이블 오염 차단
-                # B군 피처 교정: 장기 호라이즌의 봉 크기 의존 피처(ATR·거래량·hurst 등)를
-                # DB 저장 1분봉값 대신 _hz_feat_cache N분봉값으로 교체.
-                # 미래 오염 없음(N분봉값 자체는 학습 시점 기준 과거 완성봉).
-                _SGD_BGROUP_FEATS = {
-                    "10m": ["hurst", "mlofi_slope", "vwap_momentum", "cvd_monotone_ratio"],
-                    "15m": ["volume_acceleration", "avg_volume", "atr_ratio", "toxicity_atr_stress"],
-                    "30m": ["atr_ratio", "toxicity_score_ma", "queue_signal_ma",
-                            "toxicity_atr_stress", "threshold_feasibility"],
-                }
                 for _dv in _sgd_deferred_verified:
                     # P2-D: 고신뢰도 필터 — conf < 0.52 예측 결과는 학습 제외
                     if float(_dv.get("confidence", 0.0)) < _min_conf_sgd:
                         continue
+                    # [P3] FLAT 결과는 SGD 학습 대상에서 제외(기권) — online_learner.learn()도
+                    # 동일 가드를 갖지만, 여기서 먼저 걸러야 아래 dedup 타임스탬프가
+                    # "실제로 학습하지 않은 분"에 소비되지 않는다.
+                    if int(_dv.get("actual", 0)) == DIRECTION_FLAT:
+                        continue
+                    _hz_learn = _dv["horizon"]
+                    # [P1] 호라이즌별 봉단위 dedup — 검증은 매분 발생하지만 같은
+                    # N분봉에서 파생된 예측은 (N-1)/N이 동일 정보 재탕(예: 30m은
+                    # 봉당 29/30 겹침). 자기 봉 길이(N분) 미만 간격이면 스킵해
+                    # 같은 레이블 반복 주입 → 단방향 붕괴를 방지한다.
+                    _last_learn_ts_s = self._sgd_learn_last_ts.get(_hz_learn, "")
+                    if _last_learn_ts_s:
+                        _gap_min = (
+                            datetime.datetime.strptime(_dv["ts"], "%Y-%m-%d %H:%M:%S")
+                            - datetime.datetime.strptime(_last_learn_ts_s, "%Y-%m-%d %H:%M:%S")
+                        ).total_seconds() / 60.0
+                        if _gap_min < HORIZONS.get(_hz_learn, 1):
+                            continue
                     _dfeat = _dv.get("features") or {}
                     _dx_full = np.array(
                         [_dfeat.get(f, 0.0) for f in self.model.feature_names],
                         dtype=np.float32,
                     )
-                    # P0-SGD: 호라이즌별 피처 슬라이싱 — GBM과 동일한 피처셋 사용
-                    _hz_learn = _dv["horizon"]
-                    # B군 피처 교정: N분봉 캐시값으로 덮어쓰기 (슬라이싱 전)
-                    _b_feats = _SGD_BGROUP_FEATS.get(_hz_learn)
-                    if _b_feats and _hz_learn in self._hz_feat_cache:
-                        _cache_vec = self._hz_feat_cache[_hz_learn]
-                        _fn_list   = self.model.feature_names
-                        for _bf in _b_feats:
-                            try:
-                                _bi = _fn_list.index(_bf)
-                                _dx_full[_bi] = float(_cache_vec[_bi])
-                            except (ValueError, IndexError):
-                                pass
-                    _h_idx_learn = _sgd_h_indices.get(_hz_learn)
+                    # [P2] SGD 전용 피처 슬라이싱 — GBM(_hz_feat_indices)과 별도.
+                    # 구 B군 N분봉 교정(hurst·atr_ratio 등)은 GBM 전용 피처였던 시절 로직 —
+                    # 새 SGD_FEATURE_NAMES_BY_HORIZON에는 해당 피처가 없어 제거함.
+                    _h_idx_learn = self._sgd_feat_indices.get(_hz_learn)
                     _dx_learn = _dx_full[_h_idx_learn] if _h_idx_learn is not None else _dx_full
                     self.online_learner.learn(
                         horizon         = _hz_learn,
@@ -6772,6 +6818,7 @@ class TradingSystem:
                         actual_label    = _dv["actual"],
                         predicted_label = _dv["predicted"],
                     )
+                    self._sgd_learn_last_ts[_hz_learn] = _dv["ts"]
             log_manager.learning(
                 f"[SGD] {len(_sgd_deferred_verified)}건 학습 | "
                 f"SGD비중={self.online_learner.sgd_weight:.0%} "
@@ -7809,7 +7856,7 @@ class TradingSystem:
                 if alerts:
                     log_manager.system(
                         f"[ThresholdRecal] 경보 발생: {alerts}  "
-                        f"docs/THRESHOLD_WFA_MONITOR.md Phase A 참조",
+                        f"docs/정기점검/LABEL_THRESHOLD_RECALIBRATION_GUIDE.md 참조",
                         "WARNING",
                     )
             except Exception as _tre:
@@ -7863,6 +7910,7 @@ class TradingSystem:
         self._bias_override_timer = {h: 0 for h in HORIZONS}
         self._conf_prev.clear()
         self._conf_stuck = {h: 0 for h in HORIZONS}
+        self._sgd_learn_last_ts = {h: "" for h in HORIZONS}
         self._ensemble_conf_cache.clear()
         self._param_corr_history.clear()
         self._shap_feature_window.clear()

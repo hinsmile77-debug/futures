@@ -1,7 +1,32 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-03 (287차) — 하드스톱/시간청산 pending 선등록 누락 수정 (브로커 잔고 1계약 잔존 사고)
+> 마지막 업데이트: 2026-07-03 (288차) — SGD 호라이즌별 미학습 딥다이브 → P0~P5 전면 재설계
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-03 (288차 — SGD 온라인학습 구조 재설계: 콜드스타트 루프 제거·봉단위 dedup·레이블 재보정·피처/클래스 분리·비활성 호라이즌 명시)
+
+**계기**: 자가학습 UI에서 1m/3m/5m/10m가 "미학습 0건"으로 표시된 것을 계기로 딥다이브 → SGD가 GBM과 레이블 정의·피처셋·학습주기를 공유하면서 생긴 구조적 문제 5개를 순차 발견·수정.
+
+**핵심 발견**:
+1. GBM 장중 재학습(하루 최대 23회)마다 `online_learner.reset_daily()`가 호출돼 SGD 표본이 `_MIN_SAMPLES=15`를 넘기지 못하고 매번 리셋되는 **영구 콜드스타트 루프**.
+2. 30m은 매분 학습하는데 인접 표본의 30분 수익률 윈도우가 29/30 겹쳐 사실상 같은 레이블을 반복 주입 — SGD 단방향 붕괴(오늘 8회)의 구조적 원인.
+3. 고정 `HORIZON_THRESHOLDS`(GBM 학습 레이블)가 5주 전 재보정 이후 변동성 확대로 드리프트해 실측 FLAT 18.6~25.5%(목표 34% 미달) — 반면 rolling σ(실시간 검증·SGD 레이블)는 매분 재계산돼 자연 추종 중이었음. 두 정의가 벌어져 있었음.
+4. 호라이즌별 피처 IC 실측 결과 최고 IC가 1m 0.039~30m 0.198 수준 — SGD가 GBM과 같은 11~15개 피처(비선형 상호작용 전용 포함)를 선형으로 쓰는 게 오히려 잡음을 늘림.
+5. 1m(신호 사실상 0)·15m/30m(독립 학습표본 하루 13~26건)는 온라인학습이 기여할 수 없는 구조 — 계속 붙잡고 있는 게 오히려 앙상블을 오염시킬 위험.
+
+**결정 및 구현 (P0~P5, 상세는 `SESSION_LOG.md`/`DECISION_LOG.md` 288차)**:
+- P0: 재학습 시 `reset_daily()` 제거 (콜드스타트 루프 차단)
+- P1: 호라이즌별 봉단위 dedup (레이블 해머링 차단)
+- P4: `HORIZON_THRESHOLDS` 재보정 + `ThresholdRecalibrator`를 21거래일 롤링 윈도우로 수정(기존엔 11개월 전체 평균이라 반대방향 경보를 냈었음) + `SGD_FULL_RESET_PENDING=True` 예약
+- P2: SGD 전용 피처셋(`SGD_FEATURE_NAMES_BY_HORIZON`, IC 상위 5개) 분리
+- P3: SGD를 3클래스→UP/DN 이진분류로 전환, FLAT은 GBM/threshold 몫으로 완전히 넘김
+- P5: `SGD_BLEND_DISABLED_HORIZONS={1m,15m,30m}` — 학습은 계속하되 앙상블 블렌딩에서 제외("정직한 손절")
+
+**검증**: 컴파일 전체 통과, `ThresholdRecalibrator` 재실행 검증(FLAT 정상범위 복귀), `OnlineLearner` 단위 스모크 테스트 다수 통과. **실거래 파이프라인 통합 실행(장중)은 미실시** — `NEXT_TODO.md` 288차 검증 항목 필요.
+
+**변경 파일**: `config/settings.py`, `main.py`, `learning/online_learner.py`, `learning/threshold_recalibrator.py`, `dashboard/main_dashboard.py`, `docs/정기점검/LABEL_THRESHOLD_RECALIBRATION_GUIDE.md`(신규 — 레이블·threshold 파라미터 검토주기·재설정 가이드).
 
 ---
 

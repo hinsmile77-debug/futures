@@ -48,7 +48,7 @@ from config.settings import (
     HEALTH_CACHE_AGE_WARN_SEC, HEALTH_CACHE_AGE_CRIT_SEC,
     HEALTH_EXCEPTION_DENSITY_WARN_10M, HEALTH_EXCEPTION_DENSITY_CRIT_10M,
     ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
-    CB_ACC30M_MIN_SAMPLES,
+    CB_ACC30M_MIN_SAMPLES, SGD_BLEND_DISABLED_HORIZONS,
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
@@ -5316,6 +5316,8 @@ class LearningPanel(QWidget):
         h_accs = data.get("horizon_accuracy", {})
         h_cnts = data.get("sgd_sample_counts", {})
         h_acc_n = data.get("horizon_acc_samples", {})
+        # [P5] 블렌딩 비활성 호라이즌 — 학습은 계속되지만 앙상블 확률에 반영 안 됨.
+        # 배지에 "OFF"를 병기해 "학습됨=기여 중"으로 오인하지 않도록 함.
         for hz, (acc_lbl, cnt_lbl, badge, bar) in self._hz_cards.items():
             is_fit = fitted.get(hz, False)
             acc    = float(h_accs.get(hz, 0.5))
@@ -5341,24 +5343,28 @@ class LearningPanel(QWidget):
             cnt_lbl.setText(f"누적 {cnt}건")
             cnt_lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(8)}px;")
             if is_fit:
-                badge.setText("학습됨")
-                badge.setStyleSheet(
-                    f"background:{col}33;color:{col};border-radius:3px;"
-                    f"font-size:{S.f(7)}px;font-weight:bold;padding:1px 5px;"
-                )
+                _badge_txt, _badge_col, _badge_bold = "학습됨", col, True
             elif cnt > 0:
                 # 모델이 리셋(BiasReset/SGD 붕괴복구)되어 현재는 미학습이지만
                 # 과거 누적 학습 이력은 남아있는 상태 — 순수 "미학습"과 구분
-                badge.setText("리셋됨")
-                badge.setStyleSheet(
-                    f"background:{C['orange']}33;color:{C['orange']};border-radius:3px;"
-                    f"font-size:{S.f(7)}px;font-weight:bold;padding:1px 5px;"
-                )
+                _badge_txt, _badge_col, _badge_bold = "리셋됨", C['orange'], True
             else:
-                badge.setText("미학습")
+                _badge_txt, _badge_col, _badge_bold = "미학습", C['text2'], False
+
+            if hz in SGD_BLEND_DISABLED_HORIZONS:
+                # [P5] 학습 상태는 참고용으로 계속 표기하되, 회색조로 통일해
+                # "블렌딩엔 반영 안 됨"을 시각적으로 명확히 함 (정직한 손절)
+                badge.setText(f"OFF·{_badge_txt}")
                 badge.setStyleSheet(
                     f"background:{C['bg3']};color:{C['text2']};border-radius:3px;"
                     f"font-size:{S.f(7)}px;padding:1px 5px;"
+                )
+            else:
+                badge.setText(_badge_txt)
+                _weight = "font-weight:bold;" if _badge_bold else ""
+                badge.setStyleSheet(
+                    f"background:{_badge_col}33;color:{_badge_col};border-radius:3px;"
+                    f"font-size:{S.f(7)}px;{_weight}padding:1px 5px;"
                 )
 
         # GBM 재학습 상태
