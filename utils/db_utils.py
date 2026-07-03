@@ -547,6 +547,46 @@ def init_raw_data_db():
             PRIMARY KEY (ts, horizon)
         )
     """)
+    # v9 처방 P1 (mireuki_v9_최종설계안_2026-07-03.md §2-2): 트리플 배리어 라벨 저장.
+    # 기존 학습 라벨(_path_conditioned_label)과 병렬 비교/검증용 — scripts/build_triple_barrier_labels.py
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS triple_barrier_labels (
+            ts            TEXT NOT NULL,
+            horizon       TEXT NOT NULL,
+            label         INTEGER NOT NULL,
+            touch_type    TEXT NOT NULL,
+            touch_minute  INTEGER NOT NULL,
+            realized_ret  REAL NOT NULL,
+            atr_at_t      REAL NOT NULL,
+            stop_mult     REAL NOT NULL,
+            profit_mult   REAL NOT NULL,
+            created_at    TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (ts, horizon)
+        )
+    """)
+
+
+def save_triple_barrier_labels(horizon: str, labels: list, stop_mult: float, profit_mult: float) -> None:
+    """트리플 배리어 라벨 일괄 저장 (scripts/build_triple_barrier_labels.py 전용)."""
+    if not labels:
+        return
+    rows = [
+        (
+            lbl["ts"], horizon, int(lbl["label"]), lbl["touch_type"],
+            int(lbl["touch_minute"]), float(lbl["realized_ret"]), float(lbl["atr_at_t"]),
+            float(stop_mult), float(profit_mult),
+        )
+        for lbl in labels
+    ]
+    with _lock:
+        with get_conn(RAW_DATA_DB) as conn:
+            conn.executemany(
+                """INSERT OR REPLACE INTO triple_barrier_labels
+                   (ts, horizon, label, touch_type, touch_minute, realized_ret,
+                    atr_at_t, stop_mult, profit_mult)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
 
 
 def save_candle(candle: dict) -> None:

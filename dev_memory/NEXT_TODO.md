@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-07-03 (290차 — v9 Phase 0 진단 결과 후속) [P0]
+
+### day_range_pct 이상치 스팟체크
+`regime_postmortem_report.md`에서 06-23(13.03%)·07-03(10.83%) 등 여러 날 일중 레인지가
+6~13%로 이례적으로 크게 나옴. 실제 거래소 CB 발동일과 겹치는지, 아니면 21차/228차 "종목코드
+불일치·이종가격 혼재" 버그 재발인지 raw_candles 원본 스팟체크로 확인 필요.
+
+### qty_ok / mode_filter_ok 근본원인 조사
+`gate_blocking_report.md`에서 18개 게이트 중 통과율 최저(9.6%/11.4%)인 두 게이트가
+`entry_block_reason` 우선순위 체인에 아예 없어 원인 불명. `_qty_display` 산출 로직과
+`mode_filter_passed`(entry_mode vs 허용 등급) 조건을 main.py에서 추적해 "왜 90%가
+차단되는가"를 규명. §13(다중게이트) 재설계 우선순위에 직결.
+
+### 트리플 배리어 라벨 W2~3 편입 여부 결정
+`triple_barrier_label_report.md`: 기존 라벨 FLAT 62~68% vs 트리플배리어 FLAT 0.04~0.6%,
+일치율 1m 66.9%→30m 31.9%. 병렬 재학습(오프라인) 후 walk-forward 손익비 비교로
+실제 편입 여부 결정 필요 — `raw_data.db.triple_barrier_labels`에 이미 저장됨.
+
+### 레짐 사후 라벨링 표본 확충
+22일 중 21일이 '추세장' 지배(1일만 '횡보장')로 TREND vs RANGE PnL 비교가 이번 창에서는
+표본 부족. `scripts/generate_regime_postmortem_report.py`를 매주 재실행해 누적, 또한
+탈진장(EXHAUSTION) 과소추정 문제(exhaustion/vwap 미반영) 해소 여부 검토.
+
+---
+
 ## 2026-07-03 (289차 검증)
 
 ### 틱 단위 하드스톱 AttributeError 수정 실기동 검증
