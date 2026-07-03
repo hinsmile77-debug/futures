@@ -1,7 +1,35 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-02 (281차) — start_mireuk.bat 15:10 이후 AUTO-RESTART 강제 차단 → 의도적 재시작(CHOICE Y) 허용으로 완화
+> 마지막 업데이트: 2026-07-03 (283차) — 증거금 미반영 진입거부 딥다이브 + 주문실패 진단 로깅/증거금 반영 진입수량 캡핑 구현
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-03 (283차 — 증거금 미반영 진입거부 사고 딥다이브 + 재발방지 2건)
+
+**결론**: 10:28:59 LONG 3계약 A급(체크리스트 9/9, 전체 게이트 통과) 신호가 `[진입체크]`
+로그까지 찍혔는데 미체결 → 로그 추적 결과 `CpTd6831`(선물주문) `BlockRequest()`가
+`ret=-1`로 거부(타임아웃 아님). 최대허용수량(대시보드 설정)만 반영했을 뿐 실제 계좌
+증거금은 전혀 확인하지 않고 산출수량을 그대로 주문에 실었던 것이 원인. 추가로 거부
+사유(GetDibStatus/GetDibMsg1)를 남기던 로그가 `logging.getLogger(__name__)`(파일
+핸들러 미연결)로만 기록돼 SYSTEM/TRADE/WARN/DEBUG 어디에도 남지 않았던 것도 확인.
+
+**구현 (사용자 요청 2건)**:
+1. `collection/cybos/api_connector.py`의 주문 실패 로그를 `system_logger`로 교체해
+   ret/status/msg가 SYSTEM.log에 남도록 수정 + `get_last_order_error()` 신설.
+2. CYBOS `CpTd6722`(선물 신규주문가능수량조회) 신규 연동 — `_ts_margin_capped_qty()`가
+   최대허용수량 클리핑 직후 실제 증거금 기준 가능수량으로 산출수량을 한 번 더 캡핑
+   (0이면 진입 차단). 대시보드 "진입 수량" 카드에 `qty_entry_final` 파라미터를 신설해
+   실제 진입에 쓰이는 최종수량을 그대로 표시.
+
+**코드 수정**: `collection/cybos/api_connector.py`, `collection/broker/cybos_broker.py`,
+`collection/broker/base.py`, `main.py`(`_ts_margin_capped_qty`, `_qty_auto` 산출부,
+`_ts_execute_entry`), `dashboard/main_dashboard.py`(`EntryPanel.update_data`).
+
+**미해결/범위 외**: `CpTd6722` 실거래 환경 첫 호출 시 실제 반환값(입력 필드·출력 인덱스)
+검증 미실시 — 공식 문서(cybosplus.github.io) 기준으로만 구현. 다음 장중 A급 자동진입
+발생 시 `[EntrySendResult]` status/msg 및 "진입 수량" 카드 확인 필요 — `NEXT_TODO.md`
+283차.
 
 ---
 

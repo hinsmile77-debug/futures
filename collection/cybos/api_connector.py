@@ -38,6 +38,11 @@ CYBOS_CONCLUSION_PROGID = "Dscbo1.CpFConclusion"
 CYBOS_FUTURES_BALANCE_PROGID = "CpTrade.CpTd0723"
 CYBOS_FUTURES_DAILY_PNL_PROGID = "CpTrade.CpTd6197"
 CYBOS_FUTURES_ORDER_PROGID = "CpTrade.CpTd6831"
+CYBOS_FUTURES_ORDER_MARGIN_QTY_PROGID = "CpTrade.CpTd6722"  # 선물/옵션 신규주문가능 수량 조회
+
+# CpTd6722 GetHeaderValue 인덱스 (cybosplus.github.io/cptrade_new_rtf_1_/cptd6722_.htm 검증)
+MARGIN_QTY_HEADER_SELL_NEW = 19   # 매도(SHORT) 신규주문가능수량
+MARGIN_QTY_HEADER_BUY_NEW = 29    # 매수(LONG) 신규주문가능수량
 
 BALANCE_SIDE_MAP = {
     "1": "매도",
@@ -325,6 +330,7 @@ class CybosAPI:
         self._fill_callbacks = []
         self._msg_callbacks = []
         self._investor_mapping_warned = set()
+        self._last_order_error: Optional[Dict[str, Any]] = None
 
     @property
     def is_connected(self) -> bool:
@@ -741,8 +747,12 @@ class CybosAPI:
                 ],
             )
         except TimeoutError as exc:
-            logger.critical(
-                "[CybosOrder] %s account=%s code=%s side=%s qty=%s",
+            self._last_order_error = {
+                "ret": -99, "status": None, "msg": str(exc),
+                "account_no": account_no, "code": _code, "side": side_code, "qty": _qty,
+            }
+            system_logger.critical(
+                "[CybosOrder] BlockRequest 타임아웃: %s account=%s code=%s side=%s qty=%s",
                 exc, account_no, _code, side_code, _qty,
             )
             self._emit_msg({
@@ -773,12 +783,80 @@ class CybosAPI:
             "qty": _qty,
         }
         self._emit_msg(payload)
-        logger.info("[CybosOrder] ret=%s status=%s msg=%s payload=%s", ret, status, msg, payload)
+        _order_failed = ret not in (0, None) or status != 0
+        if _order_failed:
+            self._last_order_error = {
+                "ret": ret, "status": status, "msg": msg,
+                "account_no": account_no, "code": _code, "side": side_code, "qty": _qty,
+            }
+            # [재발방지] 이전에는 module logger(__name__)로만 기록돼 어떤 로그 파일에도
+            # 남지 않았음 — 2026-07-03 10:28:59 LONG 3계약 주문 거부(ret=-1) 시
+            # 실제 거부 사유(GetDibMsg1)가 통째로 유실된 사고 재발 방지.
+            system_logger.error(
+                "[CybosOrder] 주문 실패 ret=%s status=%s msg=%s account=%s code=%s side=%s qty=%s",
+                ret, status, msg, account_no, _code,
+                "매수" if side_code == "2" else "매도", _qty,
+            )
+        else:
+            self._last_order_error = None
+            logger.info("[CybosOrder] ret=%s status=%s msg=%s payload=%s", ret, status, msg, payload)
         if ret not in (0, None):
             return _safe_int(ret, -1)
         if status != 0:
             return status or -1
         return 0
+
+    def get_last_order_error(self) -> Optional[Dict[str, Any]]:
+        """가장 최근 실패한 주문의 상세 정보(ret/status/msg). 성공 시 None."""
+        return self._last_order_error
+
+    def request_order_available_qty(
+        self, account_no: str, code: str, price: float,
+    ) -> Optional[Dict[str, int]]:
+        """CpTd6722: 선물 신규주문가능수량(증거금 반영) 조회.
+
+        SendOrder가 매번 최종 판정하지만, 증거금 부족으로 인한 주문 거부를
+        진입 수량 산출 단계에서 미리 걸러내기 위해 호출한다.
+        """
+        if not account_no or not code:
+            return None
+        self._ensure_trade_init()
+        _code = _normalize_code(code)
+
+        def _read_qty(obj):
+            return {
+                "sell_new_qty": _safe_int(obj.GetHeaderValue(MARGIN_QTY_HEADER_SELL_NEW)),
+                "buy_new_qty": _safe_int(obj.GetHeaderValue(MARGIN_QTY_HEADER_BUY_NEW)),
+            }
+
+        try:
+            ret, status, msg, data = _run_block_request(
+                progid=CYBOS_FUTURES_ORDER_MARGIN_QTY_PROGID,
+                input_pairs=[
+                    (0, account_no),
+                    (1, _code),
+                    (2, float(price or 0.0)),
+                    (3, ORDER_HOGA_MARKET),
+                    (4, CYBOS_GOODS_CODE_FUTURES),
+                    (5, "Y"),
+                ],
+                data_reader=_read_qty,
+                timeout_sec=5,
+            )
+        except TimeoutError as exc:
+            system_logger.warning(
+                "[CybosMarginQty] BlockRequest 타임아웃: %s account=%s code=%s",
+                exc, account_no, _code,
+            )
+            return None
+
+        if ret not in (0, None) or status != 0:
+            system_logger.warning(
+                "[CybosMarginQty] 조회 실패 ret=%s status=%s msg=%s account=%s code=%s",
+                ret, status, msg, account_no, _code,
+            )
+            return None
+        return data
 
     def create_subscription(
         self,

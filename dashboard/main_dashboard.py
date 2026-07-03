@@ -4393,7 +4393,7 @@ class EntryPanel(QWidget):
                     reverse_enabled=False, min_conf: float = 0.58,
                     ensemble_grade: str = None, checklist_grade: str = None,
                     final_entry: bool = False, check_values: dict = None,
-                    entry_block_reason: str = ""):
+                    entry_block_reason: str = "", qty_entry_final: int = None):
         self._last_entry_block_reason = entry_block_reason
         final_signal = final_signal or signal
         col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
@@ -4440,8 +4440,22 @@ class EntryPanel(QWidget):
             self.e_qty.setText("——")
             self.e_qty.setStyleSheet(f"color:{C['text2']};font-size:{S.f(14)}px;font-weight:bold;")
 
-        # 진입 수량 (산출수량 > 0인 경우에만 최대허용수량 클리핑, 최소 1 보장)
-        if qty > 0:
+        # 진입 수량 — qty_entry_final(최대허용수량+증거금 반영 최종수량)이 있으면 그대로
+        # 표시한다. 최대허용수량을 만족해도 증거금이 부족하면 브로커가 주문을 거부하므로
+        # (2026-07-03 10:28:59 LONG 3계약 ret=-1 사례) 0으로 캡핑된 경우도 그대로 노출한다
+        # — 예전처럼 max(1, ...)로 강제 1계약을 보여주면 실제로는 못 나갈 주문을 나갈
+        # 것처럼 표시하게 된다.
+        if qty_entry_final is not None:
+            if qty_entry_final > 0:
+                self.e_entry_qty.setText(f"{qty_entry_final}계약")
+                self.e_entry_qty.setStyleSheet(f"color:{C['green']};font-size:{S.f(14)}px;font-weight:bold;")
+            elif qty > 0:
+                self.e_entry_qty.setText("0(증거금부족)")
+                self.e_entry_qty.setStyleSheet(f"color:{C['red']};font-size:{S.f(14)}px;font-weight:bold;")
+            else:
+                self.e_entry_qty.setText("——")
+                self.e_entry_qty.setStyleSheet(f"color:{C['text2']};font-size:{S.f(14)}px;font-weight:bold;")
+        elif qty > 0:
             entry_qty = max(1, min(qty, self._max_qty))
             self.e_entry_qty.setText(f"{entry_qty}계약")
             self.e_entry_qty.setStyleSheet(f"color:{C['green']};font-size:{S.f(14)}px;font-weight:bold;")
@@ -11146,7 +11160,7 @@ class DashboardAdapter:
                      reverse_enabled: bool = False, min_conf: float = 0.58,
                      ensemble_grade: str = None, checklist_grade: str = None,
                      final_entry: bool = False, check_values: dict = None,
-                     entry_block_reason: str = ""):
+                     entry_block_reason: str = "", qty_entry_final: int = None):
         """진입 관리 패널 업데이트"""
         self._win.entry_panel.update_data(
             signal, conf, grade, checks, qty=qty,
@@ -11158,6 +11172,7 @@ class DashboardAdapter:
             final_entry=final_entry,
             check_values=check_values,
             entry_block_reason=entry_block_reason,
+            qty_entry_final=qty_entry_final,
         )
 
     def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False) -> None:

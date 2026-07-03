@@ -99,3 +99,9 @@ class CybosBroker(BrokerAPI):
 
     def probe_investor_ticker(self, extra_codes: Optional[List[str]] = None) -> None:
         self._api.probe_investor_ticker(extra_codes=extra_codes)
+
+    def get_last_order_error(self) -> Optional[dict]:
+        return self._api.get_last_order_error()
+
+    def get_order_available_qty(self, account_no: str, code: str, price: float) -> Optional[dict]:
+        return self._api.request_order_available_qty(account_no, code, price)
