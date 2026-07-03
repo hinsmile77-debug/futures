@@ -88,3 +88,11 @@ class BrokerAPI(ABC):
     @abstractmethod
     def probe_investor_ticker(self, extra_codes: Optional[List[str]] = None) -> None:
         ...
+
+    def get_last_order_error(self) -> Optional[dict]:
+        """가장 최근 실패한 주문의 상세(ret/status/msg). 브로커가 미지원이면 None."""
+        return None
+
+    def get_order_available_qty(self, account_no: str, code: str, price: float) -> Optional[dict]:
+        """증거금 반영 신규주문가능수량 {sell_new_qty, buy_new_qty}. 브로커가 미지원이면 None."""
+        return None

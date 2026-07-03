@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-07-03 (283차 검증) [P0]
+
+### 증거금 미반영 진입거부 재발방지 검증
+
+- [ ] **① CpTd6722 실거래 반환값 검증** — 다음 장중 grade A/B/C(auto_entry=True) 사이클에서 `[MarginCap]`/`[MarginBlock]`/`[증거금부족 차단]` 로그가 실제로 찍히는지, `buy_new_qty`/`sell_new_qty`(idx 29/19) 값이 계좌 실제 증거금 여력과 합리적으로 일치하는지 확인 (공식 문서 기준으로만 구현, 실기동 검증 없음)
+- [ ] **② 주문 거부 시 status/msg 노출 확인** — 다음 SendOrder 실패(ret≠0) 발생 시 `[EntrySendResult]`/`[Entry]` 로그에 `status=`/`msg=`가 실제로 채워지는지 (예전엔 이 정보가 통째로 유실됐음)
+- [ ] **③ 대시보드 "진입 수량" 카드 확인** — A급 자동진입 사이클에서 "진입 수량" 카드 값이 실제 `_execute_entry`에 전달된 수량과 일치하는지, 증거금 부족 시 "0(증거금부족)" 빨간색으로 표시되는지 육안 확인
+- [ ] **④ 증거금 조회 호출 빈도 확인** — grade=X 및 auto_entry=False 사이클은 건너뛰도록 게이팅했음. PipePerf 로그로 실제 CpTd6722 호출 빈도가 예상(A/B/C auto_entry 사이클만)과 일치하는지, 매분 무조건 호출되고 있지 않은지 확인
+- [ ] **⑤ Kiwoom 브로커 폴백 확인 (해당 시)** — BROKER_TYPE=kiwoom 환경이 있다면 `get_order_available_qty`가 `None`을 반환해 기존 동작(증거금 캡핑 없이 max_entry_qty만 적용)으로 안전하게 폴백하는지 확인
+
 ## 2026-07-02 (281차 검증) [P1]
 
 ### start_mireuk.bat 15:10 이후 CHOICE Y 재시작 검증

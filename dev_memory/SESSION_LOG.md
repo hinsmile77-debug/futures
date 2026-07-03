@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-07-03 (283차 — 증거금 미반영 진입거부 사고 딥다이브 + 재발방지 2건)
+
+**트리거**: 사용자 보고 — `10:28:59 [TRADE] [진입체크] LONG→LONG 3계약 A급 | ... 전부✅ | conf=38.6%` 로그가 찍혔는데 왜 실제로 진입이 안 됐는지 딥다이브 요청.
+
+### 딥다이브 결과
+
+로그를 끝까지 추적(TRADE→SIGNAL→SYSTEM→WARN.log)한 결과, 체크리스트/게이트는 전부 통과했고 `_ts_execute_entry`(main.py:11350)도 정상 실행됐으나, `_send_broker_entry_order` → CYBOS `CpTd6831`(선물주문) `BlockRequest()`가 `ret=-1`로 주문을 거부(타임아웃 -99 아님)한 것이 원인. 최대허용수량(대시보드 설정, 이 세션 기준 10)은 만족했지만 실제 계좌 증거금은 애초에 확인하지 않고 있었음.
+
+추가로, 이 거부 사유(GetDibStatus/GetDibMsg1)를 남기던 로그 호출이 `logging.getLogger(__name__)`(파일 핸들러 미연결 module logger)를 써서 SYSTEM/TRADE/WARN/DEBUG 로그 전체 어디에도 실제로 남지 않았다는 사실도 확인 — `ret=-1`이라는 결과만 알 수 있고 "왜"는 유실.
+
+### 재발 방지 구현 (사용자 요청 2건)
+
+1. **주문 실패 진단 강화** — `collection/cybos/api_connector.py`의 `send_market_order` 실패 로그를 `system_logger`(SYSTEM.log 연결됨)로 교체, `ret`/`status`/`msg`를 모두 남김. `CybosAPI.get_last_order_error()` 신설, `_ts_execute_entry`의 `[EntrySendResult]` 로그에도 연결.
+2. **증거금 반영 진입수량 산출** — CYBOS `CpTd6722`(선물 신규주문가능수량조회) TR 신규 연동(`request_order_available_qty`). `_ts_margin_capped_qty()`가 최대허용수량 클리핑 직후 실제 증거금 기준 가능수량으로 한 번 더 캡핑(0이면 진입 차단). 대시보드 "진입 수량" 카드에 `qty_entry_final` 파라미터를 신설해 실제 진입에 쓰이는 것과 동일한 최종수량을 표시("산출 수량" 카드는 raw 값 유지).
+
+### 변경 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `collection/cybos/api_connector.py` | `send_market_order` 실패 로깅 수정, `CpTd6722` 조회 함수 신규, `get_last_order_error()` 신규 |
+| `collection/broker/cybos_broker.py` | `get_last_order_error`/`get_order_available_qty` 위임 메서드 추가 |
+| `collection/broker/base.py` | 두 메서드 기본 구현(`None` 반환) 추가 — Kiwoom은 미지원으로 안전 폴백 |
+| `main.py` | `_ts_margin_capped_qty()` 신규, `_qty_auto` 산출부에 최대허용수량+증거금 캡핑 통합, `_ts_execute_entry` 실패 로그에 status/msg 연결, `dashboard.update_entry` 호출에 `qty_entry_final` 전달 |
+| `dashboard/main_dashboard.py` | `update_entry`/`EntryPanel.update_data`에 `qty_entry_final` 파라미터 추가, "진입 수량" 카드가 이 값을 우선 표시(0이면 "0(증거금부족)" 빨간색) |
+
+### 검증
+
+- `python -c "import ast; ast.parse(...)"` 로 5개 파일 문법 검증 완료.
+- 실거래 COM 환경(py37_32 + CYBOS 세션) 기동 검증은 미실시 — 다음 장중 A급 자동진입 발생 시 `[EntrySendResult]`에 status/msg가 실제로 찍히는지, "진입 수량" 카드가 증거금 캡핑값을 정확히 반영하는지 확인 필요.
+
+### 잔여 항목
+
+- `CpTd6722` 입력 필드(계좌/종목/가격/주문유형/상품관리구분/수수료포함여부)와 출력 인덱스(19=매도신규, 29=매수신규)는 공식 문서(cybosplus.github.io) 기준으로 구현했으나 실거래 환경에서 첫 호출 시 실제 반환값 검증 필요.
+- 증거금 조회는 grade=X나 auto_entry 꺼진 사이클은 건너뛰도록 게이팅했음 — 실거래에서 매분 호출 빈도가 예상(등급 A/B/C 사이클만) 범위인지 PipePerf 로그로 확인 권장.
+
 ## 2026-07-02 (281차 — 진입관리 탭 "OPEN_VOL 시가이격" 필터 N/A 고정 버그 — 시가이격 필터가 사실상 no-op였음)
 
 **트리거**: 사용자 보고 — 중간패널 진입관리 탭 "진입 게이트 필터 → OPEN_VOL 시가이격" 값이 금일 내내 N/A로 표시.

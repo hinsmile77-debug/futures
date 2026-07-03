@@ -5980,6 +5980,24 @@ class TradingSystem:
         if self._health_degraded_mode and _qty_auto > 0:
             _qty_auto = max(1, int(round(_qty_auto * float(_hp.get("degraded_size_mult", HEALTH_DEGRADED_SIZE_MULT)))))
 
+        # [재발방지] 최대허용수량을 만족해도 증거금이 부족하면 브로커가 주문을 거부한다
+        # (2026-07-03 10:28:59 LONG 3계약 ret=-1 사례). 실제 진입 실행과 패널의
+        # "진입 수량" 표시가 동일한 최종수량을 쓰도록 여기 한 곳에서만 캡핑한다.
+        # _qty_display(산출 수량, raw)는 그대로 두고 _qty_auto만 캡핑해 두 카드의
+        # "산출 수량 vs 진입 수량" 구분을 유지한다.
+        if _qty_auto > 0 and self._max_entry_qty > 0:
+            _qty_auto = max(1, min(_qty_auto, self._max_entry_qty))
+        # 증거금 조회는 CYBOS COM BlockRequest 1회를 추가로 소모하므로, grade=X(가장
+        # 흔한 무신호 상태)나 conf_floor 미달로 auto_entry가 이미 꺼진 사이클은 걸러
+        # 매분 무조건 호출을 피한다. entry_mode(auto/hybrid/manual)는 이 시점에
+        # 아직 확정 전이라 A/B/C 모두 대상에 포함 — 수동확인 케이스도 정확한
+        # 증거금 반영 수량을 볼 수 있어야 하므로 보수적으로 넓게 잡는다.
+        _margin_check_eligible = bool(_cr) and bool(_cr.get("auto_entry")) and _final_grade != "X"
+        if _qty_auto > 0 and _margin_check_eligible:
+            _margin_dir = "LONG" if direction > 0 else ("SHORT" if direction < 0 else "")
+            if _margin_dir:
+                _qty_auto = _ts_margin_capped_qty(self, _margin_dir, close, _qty_auto)
+
         # 수익 보존 가드 체크 (STEP 7 진입 직전)
         _engine_daily_pnl_now = float(self.position.daily_stats().get("pnl_krw", 0.0) or 0.0)
         _broker_daily_pnl_now = None
@@ -6264,6 +6282,7 @@ class TradingSystem:
             _final_grade,
             _checks_ui,
             qty=_qty_display,
+            qty_entry_final=_qty_auto,
             final_signal=_final_signal_ko,
             reverse_enabled=_reverse_on,
             min_conf=actual_min_conf,
@@ -6374,29 +6393,33 @@ class TradingSystem:
                                 f"[Hurst 미계산 차단] {raw_dir_str} {_qty_auto}계약 {_final_grade}급"
                             )
                         else:
-                            # 최대허용수량 클리핑 (산출수량 > 0인 경우에만, 최소 1 보장)
-                            if _qty_auto > 0 and self._max_entry_qty > 0:
-                                _qty_auto = max(1, min(_qty_auto, self._max_entry_qty))
-                            # [269차] 진입 직전 체크리스트 결과 TRADE 로그 — 사후 분석용
-                            _chk_d = (_cr or {}).get("checks", {})
-                            log_manager.trade(
-                                "[진입체크] %s→%s %d계약 %s급 | %s | conf=%s" % (
-                                    raw_dir_str, final_dir_str, _qty_auto, _final_grade,
-                                    " ".join(
-                                        "%s%s" % (k.split("_", 1)[1][:4], "✅" if v else "❌")
-                                        for k, v in _chk_d.items() if not k.startswith("0_")
-                                    ),
-                                    "%.1f%%" % (confidence * 100),
+                            # 최대허용수량·증거금 캡핑은 상단(_qty_auto 산출부)에서 이미 적용됨
+                            # (패널 표시값과 동일 기준 공유 — _ts_margin_capped_qty 참조)
+                            if _qty_auto <= 0:
+                                log_manager.signal(
+                                    f"[차단] 증거금 부족 — {raw_dir_str} 자동진입 차단"
                                 )
-                            )
-                            # L2 통과 && 모드 필터 통과 → 진입
-                            self._execute_entry(
-                                final_dir_str, close, _qty_auto, atr, _final_grade,
-                                raw_direction=raw_dir_str,
-                                reverse_enabled=reverse_on,
-                                entry_horizon=_entry_horizon,
-                            )
-                            _entry_executed_this_cycle = True
+                            else:
+                                # [269차] 진입 직전 체크리스트 결과 TRADE 로그 — 사후 분석용
+                                _chk_d = (_cr or {}).get("checks", {})
+                                log_manager.trade(
+                                    "[진입체크] %s→%s %d계약 %s급 | %s | conf=%s" % (
+                                        raw_dir_str, final_dir_str, _qty_auto, _final_grade,
+                                        " ".join(
+                                            "%s%s" % (k.split("_", 1)[1][:4], "✅" if v else "❌")
+                                            for k, v in _chk_d.items() if not k.startswith("0_")
+                                        ),
+                                        "%.1f%%" % (confidence * 100),
+                                    )
+                                )
+                                # L2 통과 && 모드 필터 통과 → 진입
+                                self._execute_entry(
+                                    final_dir_str, close, _qty_auto, atr, _final_grade,
+                                    raw_direction=raw_dir_str,
+                                    reverse_enabled=reverse_on,
+                                    entry_horizon=_entry_horizon,
+                                )
+                                _entry_executed_this_cycle = True
                 else:
                     # 모드 필터 차단
                     log_manager.signal(
@@ -6447,6 +6470,12 @@ class TradingSystem:
                     log_manager.trade(
                         f"[conf_floor 차단] {raw_dir_str} C급 {_qty_auto}계약"
                         f" (conf={confidence:.1%} floor={ENS_CONF_FLOOR_FOR_AUTO:.1%})"
+                    )
+                elif _qty_auto <= 0:
+                    # [재발방지] 증거금 부족으로 이미 0 캡핑됨(_qty_auto 산출부 참조) —
+                    # max(1, ...) 라운딩으로 인해 유령 1계약 주문이 나가지 않도록 여기서 차단
+                    log_manager.signal(
+                        f"[차단] 증거금 부족 — {raw_dir_str} C급 실험 자동진입 차단"
                     )
                 else:
                     _qty_c_exp = max(1, int(round(_qty_auto * C_AUTO_EXP_SIZE_MULT)))
@@ -11420,14 +11449,23 @@ def _ts_execute_entry(
     self._pending_order["partial_fill_count"] = 0
     self._pending_order["entry_horizon"] = entry_horizon
     ret = self._send_broker_entry_order(direction, quantity)
+    # [재발방지] ret만으로는 거부 사유를 알 수 없어 2026-07-03 10:28:59 LONG 3계약
+    # 주문 거부(ret=-1) 원인을 사후 추적할 수 없었음 — 브로커가 보관한 상세
+    # (status/msg = GetDibStatus/GetDibMsg1)를 함께 로그에 남긴다.
+    _order_err = self.broker.get_last_order_error() if ret != 0 else None
+    _order_err_suffix = (
+        f" status={_order_err.get('status')} msg={_order_err.get('msg')}"
+        if _order_err else ""
+    )
     logger.info(
-        "[Entry] send_order result ret=%s raw=%s final=%s qty=%s reverse=%s code=%s broker_sync_verified=%s",
+        "[Entry] send_order result ret=%s raw=%s final=%s qty=%s reverse=%s code=%s broker_sync_verified=%s%s",
         ret, raw_direction, direction, quantity, reverse_enabled,
-        getattr(self, "_futures_code", ""), self._broker_sync_verified,
+        getattr(self, "_futures_code", ""), self._broker_sync_verified, _order_err_suffix,
     )
     log_manager.system(
         f"[EntrySendResult] ret={ret} raw={raw_direction} final={direction} qty={quantity} "
-        f"reverse_entry={'ON' if reverse_enabled else 'OFF'} code={getattr(self, '_futures_code', '')}",
+        f"reverse_entry={'ON' if reverse_enabled else 'OFF'} code={getattr(self, '_futures_code', '')}"
+        f"{_order_err_suffix}",
         "WARNING" if ret != 0 else "INFO",
     )
     _ts_log_diag(
@@ -11468,10 +11506,10 @@ def _ts_execute_entry(
                 "WARNING",
             )
         else:
-            logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s", ret)
+            logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s%s", ret, _order_err_suffix)
             log_manager.system(
                 f"[Entry] 주문 실패로 포지션 미오픈 ret={ret} raw={raw_direction} final={direction} "
-                f"qty={quantity} reverse_entry={'ON' if reverse_enabled else 'OFF'}",
+                f"qty={quantity} reverse_entry={'ON' if reverse_enabled else 'OFF'}{_order_err_suffix}",
                 "ERROR",
             )
             self._clear_pending_order()  # pending 롤백
@@ -11524,6 +11562,49 @@ def _ts_execute_entry(
         f"[주문요청] {raw_direction}->{direction} {quantity}계약 @ {price} "
         f"등급={grade} 역방향진입={'ON' if reverse_enabled else 'OFF'} 체결대기"
     )
+
+
+def _ts_margin_capped_qty(self, direction: str, price: float, qty: int) -> int:
+    """증거금 반영 신규주문가능수량으로 산출수량을 최종 캡핑한다.
+
+    최대허용수량(UI 설정)을 만족해도 계좌 증거금이 부족하면 브로커가 주문을
+    거부한다 (2026-07-03 10:28:59 LONG 3계약 ret=-1 사례 — 산출수량은 A급
+    체크리스트를 전부 통과했지만 증거금 부족으로 SendOrder 자체가 거부됨).
+    CpTd6722(선물 신규주문가능수량조회)로 실제 주문 가능 수량을 확인해
+    그 이상은 애초에 산출하지 않는다.
+
+    브로커가 조회를 지원하지 않거나(Kiwoom) 조회 자체가 실패하면 원래 qty를
+    그대로 반환한다 — 최종 판정은 이 경우에도 여전히 SendOrder가 담당한다.
+    """
+    if qty <= 0:
+        return qty
+    account_no = self._get_active_account_no()
+    code = getattr(self, "_futures_code", "")
+    if not account_no or not code:
+        return qty
+    try:
+        margin_info = self.broker.get_order_available_qty(account_no, code, price)
+    except Exception as _mq_e:
+        logger.debug("[MarginQty] 조회 예외 — 원 산출수량 유지: %s", _mq_e)
+        return qty
+    if not margin_info:
+        return qty
+    key = "buy_new_qty" if direction == "LONG" else "sell_new_qty"
+    margin_qty = int(margin_info.get(key, 0) or 0)
+    if margin_qty <= 0:
+        log_manager.system(
+            f"[MarginBlock] {direction} 신규주문가능수량=0 — 증거금 부족 추정, 진입 차단 "
+            f"(산출수량={qty})",
+            "WARNING",
+        )
+        log_manager.trade(f"[증거금부족 차단] {direction} 산출={qty}계약 → 가능=0")
+        return 0
+    if margin_qty < qty:
+        log_manager.trade(
+            f"[MarginCap] {direction} 산출={qty}계약 → 증거금상한={margin_qty}계약으로 축소"
+        )
+        return margin_qty
+    return qty
 
 
 def _ts_manual_position_restore(self, direction: str, price: float, qty: int, atr: float) -> None:

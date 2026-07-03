@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-07-03 (283차 — 증거금 미반영 진입거부 사고 딥다이브 + 재발방지 2건)
+
+### [버그] 체크리스트 A급 통과에도 진입 미체결 — 증거금 부족으로 SendOrder 자체가 거부됨
+
+**File**: `collection/cybos/api_connector.py:send_market_order`, `main.py:_ts_execute_entry`
+**증상**: 10:28:59 LONG 3계약 A급(conf=38.6%, 체크리스트 9/9 통과, MetaGate/ToxicityGate 모두 통과) 신호가 `[진입체크]` 로그까지 찍혔는데 실제 포지션이 열리지 않음.
+**근본 원인**: `_ts_execute_entry`(main.py:11350, `TradingSystem._execute_entry`에 monkey-patch됨 — main.py:7011의 구버전 정의는 죽은 코드)가 `_send_broker_entry_order` → `CybosAPI.send_market_order`(CpTd6831)를 호출했으나 CYBOS가 `ret=-1`로 주문을 거부(타임아웃 -99 아님 = 증권사가 실제로 거부). 최대허용수량(대시보드 설정)만 반영했을 뿐 실제 계좌 증거금은 전혀 확인하지 않고 산출수량을 그대로 주문에 실어 보냈기 때문.
+**추가 발견 — 진단 정보 유실**: `send_market_order`의 실패 로그가 `logging.getLogger(__name__)`(= `collection.cybos.api_connector`, 어떤 파일 핸들러에도 안 걸린 module logger)로만 기록되어, 거부 사유(GetDibStatus/GetDibMsg1)가 SYSTEM/TRADE/WARN/DEBUG 로그 전체 어디에도 남지 않음 — `ret=-1`이라는 사실만 확인 가능하고 "왜" 거부됐는지는 영구 유실.
+**결정**:
+1. `system_logger`(`logging.getLogger("SYSTEM")`, 이미 파일 핸들러 연결됨)로 교체해 실패 시 ret/status/msg 모두 SYSTEM.log에 남도록 수정. `CybosAPI._last_order_error` + `get_last_order_error()`로 최근 실패 상세 조회 가능하게 하고, `_ts_execute_entry`의 `[EntrySendResult]`/`[Entry]` 로그에도 status/msg를 붙임.
+2. CYBOS `CpTd6722`(선물/옵션 신규주문가능수량조회, cybosplus.github.io/cptrade_new_rtf_1_/cptd6722_.htm 필드 검증) TR을 신규 연동 — `request_order_available_qty()`가 매수(idx29)/매도(idx19) 방향별 실제 주문가능수량(증거금 반영)을 반환. `_ts_margin_capped_qty()`가 최대허용수량 클리핑 직후 이 값으로 산출수량을 한 번 더 캡핑(0이면 진입 자체 차단 — 과거처럼 `max(1,...)`로 유령 1계약을 만들지 않음).
+3. 캡핑은 `_qty_auto` 산출부(main.py:5979 부근) 한 곳에서만 수행해 실제 진입 실행과 대시보드 "진입 수량" 카드가 항상 같은 최종수량을 쓰도록 통일(`qty_entry_final` 파라미터 신설 — `entry_panel.update_data`). "산출 수량" 카드는 원래 raw 값 그대로 유지해 두 카드의 의미 차이를 보존.
+**Why**: 최대허용수량은 UI 설정값일 뿐 계좌 상태와 무관 — 실제 주문 가능 여부는 증거금이 결정한다. 체크리스트/게이트를 전부 통과한 신호도 브로커 레벨에서 조용히 실패할 수 있고, 그 실패 사유를 로그로 확인할 수 없으면 재발 시마다 동일한 딥다이브를 반복해야 한다.
+**How to apply**: 브로커 COM 호출을 새로 추가할 때는 실패 로그를 반드시 `system_logger`/`log_manager`처럼 파일 핸들러가 연결된 로거로 남길 것 — `logging.getLogger(__name__)`은 조용히 유실된다. 증거금처럼 "최대허용수량 설정과 무관하게 실제로 거부될 수 있는" 브로커 제약이 있다면, 최종수량 산출 로직에 반드시 반영하고 패널 표시값도 같은 기준을 공유하도록 단일 지점에서 캡핑할 것.
+**구현**: `collection/cybos/api_connector.py`, `collection/broker/cybos_broker.py`, `collection/broker/base.py`, `main.py`, `dashboard/main_dashboard.py`
+
 ## 2026-07-02 (281차 — 시가이격 필터 no-op 버그)
 
 ### [버그] 진입관리 탭 "OPEN_VOL 시가이격" 상시 N/A → 263차 안전장치가 실전에서 무력화 상태였음
