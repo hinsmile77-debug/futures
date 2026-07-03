@@ -5,8 +5,9 @@
 # =============================================================
 
 # [CREON] 대신증권 계좌 정보
-# FUTURES_CODE_PREFIX: KOSPI200 선물은 "A05", 모의투자는 "A01"
-FUTURES_CODE_PREFIX = "A05"   # 실투자: "A05" / 모의투자: "A01"
+# FUTURES_CODE_PREFIX: 미니선물 "A05" / 일반선물 "A01" (CodeGuard 허용 계열)
+# [282차] 현재 두 머신(MW0601 Cybos / MW0602 Creon) 모두 미니선물 "A05"
+FUTURES_CODE_PREFIX = "A05"   # 미니선물: "A05" / 일반선물: "A01"
 
 # 계좌 번호 및 비밀번호
 # python scripts/set_cybos_credential.py 로 Windows Credential Manager 에 등록 권장

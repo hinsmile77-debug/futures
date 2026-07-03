@@ -175,6 +175,10 @@ class BrokerRuntimeService:
         미니선물(A05xxx)과 일반선물(A01xxx) 모두 FutureMst BlockRequest 프로브로 근월물을 확정한다.
         UI 저장값(ui_prefs.json)은 만기된 계약코드일 수 있으므로 프로브 결과를 우선한다.
         확정된 코드로 대시보드 콤보를 동기화한다.
+
+        [282차] 미니/일반 계열 판정은 secrets.FUTURES_CODE_PREFIX가 최우선.
+        ui_prefs.json은 콤보 저장값이라 타 계열 코드로 오염될 수 있고(A0169000 저장 사고),
+        UI 기준 판정 시 오염된 계열의 프로브 → CodeGuard 차단 → 기동 불가 루프에 빠진다.
         """
         broker_code = system.broker.get_nearest_futures_code()
         try:
@@ -185,7 +189,28 @@ class BrokerRuntimeService:
 
         ui_code = self._normalize_ui_code(ui_code_raw)
         ui_norm = ui_code[1:] if ui_code.startswith("A") else ui_code
-        is_mini_selected = ui_norm.startswith("05")
+
+        allowed_pfx = ""
+        try:
+            from config import secrets as _sec
+            allowed_pfx = str(getattr(_sec, "FUTURES_CODE_PREFIX", "") or "").strip()
+        except Exception as pfx_error:
+            logger.debug("[CodeGuard] FUTURES_CODE_PREFIX 조회 실패: %s", pfx_error)
+        pfx_norm = allowed_pfx[1:] if allowed_pfx.startswith("A") else allowed_pfx
+
+        if pfx_norm.startswith("05"):
+            is_mini_selected = True
+        elif pfx_norm.startswith("01"):
+            is_mini_selected = False
+        else:
+            is_mini_selected = ui_norm.startswith("05")
+
+        if ui_norm and is_mini_selected != ui_norm.startswith("05"):
+            logger.warning(
+                "[CodeGuard] UI 저장 종목(%s)이 허용 계열(%s)과 불일치 — %s 프로브로 강제 전환",
+                ui_code, allowed_pfx, "미니선물" if is_mini_selected else "일반선물",
+            )
+            ui_code = ""  # 오염된 UI 코드는 fallback 후보에서 제외
 
         if is_mini_selected:
             # 미니선물(A05xxx): FutureMst 프로브로 근월물 확정 — UI 저장값 무시
@@ -217,30 +242,32 @@ class BrokerRuntimeService:
                 )
                 code = broker_code or ui_code
 
+        if not code:
+            logger.critical(
+                "[CodeGuard] 종목 확정 실패 — 프로브·UI 코드 모두 없음 (계열=%s) — 기동 중단.",
+                "미니선물" if is_mini_selected else "일반선물",
+            )
+            return None, broker_code, ui_code_raw, ui_code, is_mini_selected
+
         # 확정된 코드로 대시보드 콤보 동기화
-        if code:
-            try:
-                system.dashboard.set_selected_symbol(code)
-            except Exception as e:
-                logger.debug("[CodeRoll] 대시보드 동기화 실패: %s", e)
+        try:
+            system.dashboard.set_selected_symbol(code)
+        except Exception as e:
+            logger.debug("[CodeRoll] 대시보드 동기화 실패: %s", e)
 
         # [235차] CodeGuard — secrets.py FUTURES_CODE_PREFIX로 허용 계열 검증
-        # 미니선물 인스턴스: "A05" / 일반선물 인스턴스(미륵이2): "A01"
+        # 미니선물 인스턴스: "A05" / 일반선물 인스턴스: "A01"
+        # [282차] 현재 두 머신(MW0601 Cybos / MW0602 Creon) 모두 "A05" 미니선물
         # 프로브 실패 등으로 허용 계열 외 코드가 확정되면 기동 중단
-        try:
-            from config import secrets as _sec
-            _allowed_pfx = str(getattr(_sec, "FUTURES_CODE_PREFIX", "") or "").strip()
-            if _allowed_pfx and code:
-                _norm = code[1:] if code.startswith("A") else code
-                if not _norm.startswith(_allowed_pfx.lstrip("A")):
-                    logger.critical(
-                        "[CodeGuard] 확정 종목(%s)이 허용 계열(%s)과 불일치 — 기동 중단. "
-                        "secrets.py FUTURES_CODE_PREFIX 또는 ui_prefs.json 종목 확인 필요.",
-                        code, _allowed_pfx,
-                    )
-                    return None, broker_code, ui_code_raw, ui_code, is_mini_selected
-        except Exception as _cg_e:
-            logger.debug("[CodeGuard] 검증 실패 (무해): %s", _cg_e)
+        if allowed_pfx:
+            _norm = code[1:] if code.startswith("A") else code
+            if not _norm.startswith(allowed_pfx.lstrip("A")):
+                logger.critical(
+                    "[CodeGuard] 확정 종목(%s)이 허용 계열(%s)과 불일치 — 기동 중단. "
+                    "secrets.py FUTURES_CODE_PREFIX 또는 ui_prefs.json 종목 확인 필요.",
+                    code, allowed_pfx,
+                )
+                return None, broker_code, ui_code_raw, ui_code, is_mini_selected
 
         return code, broker_code, ui_code_raw, ui_code, is_mini_selected
 

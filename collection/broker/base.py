@@ -38,6 +38,14 @@ class BrokerAPI(ABC):
     def get_nearest_futures_code(self) -> str:
         ...
 
+    def get_nearest_mini_futures_code(self) -> str:
+        """근월물 프로브 미지원 브로커는 빈 문자열 — 호출부가 UI/CpFutureCode fallback 처리."""
+        return ""
+
+    def get_nearest_normal_futures_code(self) -> str:
+        """근월물 프로브 미지원 브로커는 빈 문자열 — 호출부가 UI/CpFutureCode fallback 처리."""
+        return ""
+
     @abstractmethod
     def register_fill_callback(self, callback) -> None:
         ...
