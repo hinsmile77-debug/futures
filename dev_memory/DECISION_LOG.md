@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-07-03 (287차 — 하드스톱·시간청산 pending 선등록 누락으로 인한 잔고 잔존 버그)
+
+### [버그] 하드스톱/15:10 시간청산이 `_set_pending_order()`를 주문 전송 **후**에 호출 — BlockRequest race condition으로 청산 후 브로커에 잔고가 남음
+
+**File**: `main.py:9362-9396`(하드스톱), `main.py:9413-9445`(15:10 시간청산). 대조 대상: `main.py:2020-2037`(수동청산), `main.py:9295-9305`(`_execute_partial_exit`, TP청산)
+**증상**: "[청산 완료] PnL=-0.19pt" 로그가 찍혀 봇은 FLAT으로 인지했으나 UI 실시간 잔고(브로커 실제 잔고)에는 1계약이 남음. 직전 청산 주문의 체결 콜백 7건이 전부 `사유=미추적체결(pending_miss)`로 처리된 로그가 함께 관측됨.
+**근본 원인**: `_send_broker_exit_order()`는 Cybos `BlockRequest()`를 내부에서 호출하는데, 이 함수는 Windows/COM 메시지 큐를 동기적으로 펌프하므로 함수가 반환하기 전에 해당 주문의 Chejan 체결 콜백이 먼저 도착해 처리될 수 있다. 수동청산·TP청산은 이 race condition을 이미 인지하고(주석에 명시) `_set_pending_order()`를 주문 전송 **전**에 먼저 호출해 콜백이 도착했을 때 매칭할 대상이 항상 존재하도록 만들어뒀다. 그런데 하드스톱과 15:10 시간청산 두 경로는 이 수정이 적용되지 않은 채 `ret = self._send_broker_exit_order(qty)`를 먼저 호출하고 `if ret == 0:` 블록 안에서야 `_set_pending_order()`를 호출하고 있었다. 이 두 경로에서 주문 전송 도중 체결 콜백이 먼저 도착하면 `self._pending_order`가 아직 None이라 매칭에 실패해 `_ts_handle_external_fill()`("미추적체결/pending_miss", `main.py:9984`)로 처리되고, 그 경로에서 `self.position.quantity`가 줄어든 뒤 뒤늦게(줄어든 수량 기준으로) pending이 등록된다. 이후 같은 스톱히트 조건이 재평가될 때 `_has_pending_order()` 가드가 그 사이엔 참을 보장하지 못해(경합 구간이 지난 뒤에야 pending이 채워지므로) 중복 청산 주문이 한 번 더 나가고, 그 결과 실제 청산 수량이 원래 포지션보다 많아지며 브로커 쪽에 잔고(또는 반대 방향 소량 포지션)가 남는다.
+**검증**: 사용자가 제공한 실제 TRADE 로그(13:20 진입 8계약 요청 → 실제 체결 합 7계약, 13:28 청산 도중 7건 전부 pending_miss, 13:28:02 별도 하드스톱 주문 4331로 1계약 추가 매도)를 코드 흐름과 라인 단위로 대조해 재현. 수동청산/TP청산에 이미 존재하는 "pending 선등록" 주석과 하드스톱/시간청산의 구현 순서를 나란히 비교해 두 경로에만 이 패턴이 빠져 있음을 확인.
+**결정**: 하드스톱·15:10 시간청산 모두 `_set_pending_order()` → `_send_broker_exit_order()` 순서로 재배치. 수량/방향은 `self.position.quantity`/`status`를 직접 재참조하지 않고 로컬 변수(`_hs_qty`/`_hs_direction`, `_force_qty`/`_force_direction`)로 먼저 캡처해, 콜백이 race 구간에서 이미 값을 바꿔도 로그와 실제 주문 크기가 어긋나지 않게 함. 주문 실패(`ret != 0`) 시 `_clear_pending_order()` 롤백도 추가(기존엔 실패 로그만 남기고 pending을 정리하지 않아, 이후 재시도 시 `_has_pending_order()`가 계속 막고 있었을 위험도 있었음).
+**Why**: 동일한 race condition에 대한 수정이 4개의 청산 경로(수동/TP/하드스톱/시간청산) 중 2곳에만 적용되고 나머지 2곳은 개별적으로 구현되면서 최신 패턴이 전파되지 않음 — 전형적인 "같은 버그를 한 곳만 고치고 유사 경로에 반영을 놓친" 사례.
+**How to apply**: 주문 전송 계열 함수(`_send_broker_exit_order`/`_send_broker_entry_order`)를 호출하는 새 경로를 추가하거나 기존 경로를 손볼 때는, 반드시 "pending 선등록" 패턴이 이미 존재하는 자매 함수(수동청산·TP청산)와 순서를 나란히 대조할 것. `_send_broker_*_order()`가 내부적으로 `BlockRequest()`를 쓰는 이상, 주문 전송과 pending 등록 사이에는 항상 이 race condition이 잠재한다.
+**구현**: `main.py`
+**미해결**: 실거래/모의투자 환경 접근 불가로 실제 재현 테스트는 못 함 — 다음 장중 하드스톱/시간청산 실발동 케이스 로그 확인 필요.
+
 ## 2026-07-03 (286차 — stuck exit 손익 quantity배 부풀림 버그)
 
 ### [버그] `_ts_resolve_stuck_exit_pending()` 합성 기록의 pnl_pts가 quantity배 부풀려짐

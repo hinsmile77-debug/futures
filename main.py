@@ -9369,24 +9369,29 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             f"exit_price={exit_price:.2f} stop={self.position.stop_price:.2f} cur={price:.2f}",
             "WARNING",
         )
-        ret = self._send_broker_exit_order(self.position.quantity)
+        _hs_qty = self.position.quantity
+        _hs_direction = self.position.status
+        # pending을 주문 전송 전에 먼저 등록 — BlockRequest() 내부 메시지 펌프로 체결
+        # 콜백이 먼저 도착하는 race condition 방지 (수동청산·TP청산과 동일한 순서)
+        self._set_pending_order(
+            kind="EXIT_FULL",
+            direction=_hs_direction,
+            qty=_hs_qty,
+            price_hint=round(exit_price, 2),  # [B50] float 오차 방지
+            reason="하드스톱",
+        )
+        ret = self._send_broker_exit_order(_hs_qty)
         log_manager.system(
             f"[ExitSendOrderResult] ret={ret} kind=하드스톱 "
-            f"direction={self.position.status} qty={self.position.quantity}",
+            f"direction={_hs_direction} qty={_hs_qty}",
             "WARNING",
         )
         if ret == 0:
-            self._set_pending_order(
-                kind="EXIT_FULL",
-                direction=self.position.status,
-                qty=self.position.quantity,
-                price_hint=round(exit_price, 2),  # [B50] float 오차 방지
-                reason="하드스톱",
-            )
             log_manager.trade(
-                f"[주문요청] 하드스톱 청산 {self.position.status} {self.position.quantity}계약 @ {exit_price:.2f}"
+                f"[주문요청] 하드스톱 청산 {_hs_direction} {_hs_qty}계약 @ {exit_price:.2f}"
             )
         else:
+            self._clear_pending_order()
             log_manager.system(f"[Exit] 하드스톱 주문 실패 ret={ret}", "ERROR")
         return
 
@@ -9416,24 +9421,28 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
         if self.position.status != "FLAT":
             # 정상 경로: 내부 포지션 있음 — broker_cached가 더 크면 그 수량으로 청산
             _force_qty = max(_engine_qty, _broker_cached) if _broker_cached > 0 else _engine_qty
+            _force_direction = self.position.status
+            # pending을 주문 전송 전에 먼저 등록 — BlockRequest() 내부 메시지 펌프로 체결
+            # 콜백이 먼저 도착하는 race condition 방지 (수동청산·TP청산과 동일한 순서)
+            self._set_pending_order(
+                kind="EXIT_FULL",
+                direction=_force_direction,
+                qty=_force_qty,
+                price_hint=round(price, 2),  # [B50] float 오차 방지
+                reason="15:10 강제청산",
+            )
             ret = self._send_broker_exit_order(_force_qty)
             log_manager.system(
                 f"[ExitSendOrderResult] ret={ret} kind=시간청산 "
-                f"direction={self.position.status} qty={_force_qty}",
+                f"direction={_force_direction} qty={_force_qty}",
                 "WARNING",
             )
             if ret == 0:
-                self._set_pending_order(
-                    kind="EXIT_FULL",
-                    direction=self.position.status,
-                    qty=_force_qty,
-                    price_hint=round(price, 2),  # [B50] float 오차 방지
-                    reason="15:10 강제청산",
-                )
                 log_manager.trade(
-                    f"[주문요청] 시간청산 {self.position.status} {_force_qty}계약 @ {price:.2f}"
+                    f"[주문요청] 시간청산 {_force_direction} {_force_qty}계약 @ {price:.2f}"
                 )
             else:
+                self._clear_pending_order()
                 log_manager.system(f"[Exit] 시간청산 주문 실패 ret={ret}", "ERROR")
         elif _broker_cached > 0:
             # 폴백: 내부 FLAT이지만 broker 캐시에 잔량 → broker 직접 조회 후 청산
