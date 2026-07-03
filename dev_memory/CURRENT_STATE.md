@@ -1,7 +1,23 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-03 (284차) — OPEN_VOL 시가이격 gap_chk 표시 상태 4분리 (구간외/모드외/N/A 시가미캡처/pt값)
+> 마지막 업데이트: 2026-07-03 (285차) — 재시작 직후 진입손실 딥다이브 → 앙상블·체크리스트 등급 불일치 C등급 이중차단 규칙 추가
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-03 (285차 — 앙상블 CoherenceGate·체크리스트 등급 이중판정 딥다이브 + C등급 이중차단 규칙 추가)
+
+**계기**: 11:45 SHORT 진입(-5.24pt 손실)이 장중 재시작(11:39) 직후 발생 — 재시작 직후 불안정한 상태에서 어떻게 진입이 가능했는지 딥다이브 요청.
+
+**딥다이브 결과**: 재시작으로 `OnlineLearner`(SGD)·호라이즌 완성봉 캐시(`_hz_feat_cache`)·`HorizonDecorrelator`/`F1AdaptiveWeight` 가중치가 전부 인메모리 상태라 초기화됨(디스크 저장/복원 코드 없음). Restart Armistice(90초+브로커 sync 2회)는 정상 해제됐지만 이 상태는 체크 대상이 아님. 실제 11:45 신호는 앙상블 자체가 CoherenceGate(호라이즌 방향 비합의, `ensemble_decision.py:754-807`)로 `grade=X` 판정했음에도, STEP7 체크리스트(`checklist.py`)가 독립적으로 재평가해 C등급(268차-P4 CVD+OFI 동시역행 강등)으로 `auto_entry`를 허용해 체결됨 — 두 게이트가 서로의 판정을 전혀 참조하지 않는 구조였음(`main.py:5456` 진입조건엔 `direction`/`position`만 있고 `grade`는 없음).
+
+**백테스트(5/8~7/3 전체)**: `ensemble_decisions`에서 `grade='X' AND checklist_reason LIKE 'Coherence%'`(196건 후보) → `trades.db` 실체결 매칭(`MANUAL`·`stuck_exit_*` 이상거래 제외, 순수 표본 15건). **체크리스트 A/B등급 14건은 13승1패(+378만원, 승률92.9%)**로 견조했으나 **C등급은 유일 표본(오늘 11:45)이 손실(-26만원)**. "앙상블 X면 무조건 차단"은 A등급 우수 표본을 죽이므로 기각, "coherence_blocked + 체크리스트 C등급 동시발생"만 좁게 타겟팅.
+
+**구현**: `main.py:5633-5644` — CB③-P4 C등급차단 블록 바로 뒤에 `[285차-P5]` 규칙 추가. `_final_grade=="C" and decision.get("coherence_blocked")`일 때만 `_final_grade="X"`로 강제. A/B등급, coherence 정상인 C등급은 영향 없음.
+
+**부가 발견(미조치)**: 백테스트 매칭 중 `exit_reason='stuck_exit_flat'/'stuck_exit_remainder'`(대량계약·grade 공백) 3건이 이 기간 최대 손실(-1,227,356원 포함)을 낸 것 확인 — 오늘 논의와 무관한 별도 청산 메커니즘 버그로 추정, 별도 딥다이브 필요(사용자 확인 대기).
+
+**변경 파일**: `main.py`. **미검증**: 다음 장중 C등급+coherence_blocked 동시발생 시 `[P5]` 로그 확인, A/B 자동진입 영향 없음 확인 필요 — `NEXT_TODO.md` 285차.
 
 ---
 

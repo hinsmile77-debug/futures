@@ -5630,6 +5630,19 @@ class TradingSystem:
                     )
                     _final_grade = "X"
 
+                # [285차-P5] 앙상블 CoherenceGate 차단 + 체크리스트 C등급 동시 발생 → 차단.
+                # 근거: 5/8~7/3 백테스트 — 앙상블 X(Coherence↓)와 체크리스트가 동시에
+                # 발생한 케이스 중 A/B등급은 14건 13승1패(+378만원, 승률92.9%)로 견조했으나
+                # C등급은 유일 표본(07-03 11:45, SHORT)이 손실(-26만원)이었음. 두 독립 게이트
+                # (앙상블 호라이즌 합의도·체크리스트 CVD+OFI 역행)가 동시에 신호를 의심할 때만
+                # 차단 — A/B등급 자동진입은 이 조건과 무관하게 그대로 허용.
+                if _final_grade == "C" and decision.get("coherence_blocked"):
+                    log_manager.signal(
+                        "[P5] CoherenceGate+체크리스트C 동시발생 — C등급 차단 "
+                        f"(conf={confidence:.1%})"
+                    )
+                    _final_grade = "X"
+
                 kelly_result = self.kelly.compute_fraction()
                 # [5순위] CORE Health 차단 시 진입 스킵
                 _core_health = getattr(self, "core_health", None)
