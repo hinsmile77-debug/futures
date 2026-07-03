@@ -3920,7 +3920,9 @@ class EntryPanel(QWidget):
              f"  조건: OPEN_VOLATILE + TREND_FOLLOW 조합 시만 적용\n"
              f"  시가 대비 방향 이탈폭 > ATR × {ATR_OPEN_GAP_MULT} → 낙폭 소진 위험으로 차단\n"
              f"  예: ATR=3.5pt → 이격 상한 {3.5 * ATR_OPEN_GAP_MULT:.1f}pt\n"
-             f"  값 표시: 방향이탈 pt (다른 시간대·MR 모드에서는 N/A)"),
+             f"  값 표시: 방향이탈 pt (필터 적용 시)\n"
+             f"    구간외 = 09:05~10:30 밖 / 모드외 = MR 등 비TREND_FOLLOW\n"
+             f"    N/A(시가 미캡처) = GapOffset 캡처 실패 — 이상 신호"),
         ]
         for _gname, _gattr, _gtip in _gate_filter_items:
             _gr = QHBoxLayout()

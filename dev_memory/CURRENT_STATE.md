@@ -1,7 +1,25 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-03 (283차) — 증거금 미반영 진입거부 딥다이브 + 주문실패 진단 로깅/증거금 반영 진입수량 캡핑 구현
+> 마지막 업데이트: 2026-07-03 (284차) — OPEN_VOL 시가이격 gap_chk 표시 상태 4분리 (구간외/모드외/N/A 시가미캡처/pt값)
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-03 (284차 — OPEN_VOL 시가이격 gap_chk N/A 재발 오인 조사 → 표시 상태 4분리)
+
+**계기**: 사용자가 패널에서 `OPEN_VOL 시가이격` = N/A 확인 → 281차(`c7a8cdd`)에서 고친 버그의 재발 의심.
+
+**조사 결과 — 재발 아님**: 281차 픽스(`self._session_open_price` 3경로 대입)는 오늘도 정상 작동(`logs/20260703_SYSTEM.log` 08:53 프리장 캡처, 11:39 재시작 복원 확인, `session_state.json today_open=1231.0`). 사용자가 본 N/A는 ATR=2.77pt가 찍힌 **11:58**(`time_zone=OTHER`, OPEN_VOLATILE 구간 09:05~10:30 밖) 시점 — 필터 미적용이 정상 표시된 것. 문제는 "필터 버그로 인한 N/A"와 "필터 미적용이라 N/A"가 화면상 구분 불가능했던 것.
+
+**수정** (`main.py:6258-6265`): `_gap_chk_val`을 4개 상태로 분리.
+- `time_zone != OPEN_VOLATILE` → `구간외` (09:05~10:30 전용)
+- 구간 내 + `entry_mode != TREND_FOLLOW` → `모드외(TREND_FOLLOW Only)` (MR은 이격 자체가 진입 조건이라 필터 제외)
+- 구간 내 + TREND_FOLLOW + 시가 미캡처(`_session_open_price<=0`) → `N/A (시가 미캡처)` — 이제 이것만 진짜 이상 신호
+- 전부 충족 → 실제 이격 `{pt}pt` 표시
+
+`dashboard/main_dashboard.py:3918-3925` 툴팁도 4개 상태 설명 동기화.
+
+**변경 파일**: `main.py`, `dashboard/main_dashboard.py`. `_checks_ui["gap_chk"]`(V/X 아이콘용 boolean `_open_gap_ok`)는 별도 로직이라 미변경.
 
 ---
 

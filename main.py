@@ -6255,11 +6255,14 @@ class TradingSystem:
             "↑고변동" if atr > _atr_max_adaptive
             else ("↓저변동" if atr < ATR_MIN_ENTRY else "OK")
         )
-        _gap_chk_val = (
-            f"{_gap_in_dir:.1f}pt" if (time_zone == "OPEN_VOLATILE" and _open_p_for_gap > 0
-                                        and _cr_entry_mode == "TREND_FOLLOW")
-            else "N/A"
-        )
+        if time_zone != "OPEN_VOLATILE":
+            _gap_chk_val = "구간외"  # 09:05~10:30 전용 — 시간대 밖
+        elif _cr_entry_mode != "TREND_FOLLOW":
+            _gap_chk_val = "모드외(TREND_FOLLOW Only)"  # MR 등 비TREND_FOLLOW 분
+        elif _open_p_for_gap <= 0:
+            _gap_chk_val = "N/A (시가 미캡처)"  # GapOffset 캡처 실패 — 실제 이상 신호
+        else:
+            _gap_chk_val = f"{_gap_in_dir:.1f}pt"
         _check_vals = {
             "signal_chk": "UP" if direction > 0 else ("DN" if direction < 0 else "FLAT"),
             "conf_chk":   f"{confidence:.1%}",
