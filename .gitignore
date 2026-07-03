@@ -48,6 +48,14 @@ data/eod_retrain_done_*.txt
 data/daily_reports/
 bash.exe.stackdump
 
+# 정적 조사·백테스트 산출물 (일회성/재생성 가능, 2026-07-03 언트랙)
+data/fieldmap_verify.json
+data/opencode.json
+baseline_metrics.json
+baseline_ensemble_report.md
+_measure_retrain_result_*.txt
+devguide_*.txt
+
 # 자동생성 리포트/메트릭 (로컬 재실행으로 항상 재생성 가능, 멀티PC pull 충돌 방지, 2026-07-02)
 calibration_report.md
 calibration_metrics.json
