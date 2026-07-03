@@ -26,15 +26,23 @@ data/db/predictions.db
 data/db/shap_tracker.db
 data/db/trades.db
 # [maitreya_dist] data/db/(소형), model/horizons/, model/scaler/ 배포 브랜치에 포함
-# dev/main 에서 제외하려면 아래 주석 해제:
-# data/db/
-# model/horizons/
-# model/scaler/
+# PC별 학습 상태·모델 — PC마다 독립 진화하므로 pull로 서로 덮어쓰기 금지 (2026-07-03 언트랙)
+data/db/
+model/horizons/
+model/scaler/
+data/drift_adjuster_state.json
+data/zone_penalty.json
 
 # PC별 실시간 상태 (멀티PC pull 시 다른 PC 상태로 덮어써지면 실거래 오작동 위험, 2026-07-02)
 data/position_state.json
 data/session_state.json
 data/ui_prefs.json
+
+# 일일 마커·자동생성 리포트·크래시 덤프
+data/daily_close_done_*.txt
+data/eod_retrain_done_*.txt
+data/daily_reports/
+bash.exe.stackdump
 
 # 자동생성 리포트/메트릭 (로컬 재실행으로 항상 재생성 가능, 멀티PC pull 충돌 방지, 2026-07-02)
 calibration_report.md
@@ -49,18 +57,6 @@ effect_monitor_history.json
 
 # 로그
 logs/
-
-# PC별 로컬 런타임 산출물 (여러 PC가 서로 pull로 동기화하므로 커밋 금지)
-data/session_state.json
-calibration_metrics.json
-calibration_report.md
-effect_monitor_history.json
-meta_gate_tuning_metrics.json
-meta_gate_tuning_report.md
-microstructure_ab_metrics.json
-microstructure_ab_report.md
-rollout_readiness_metrics.json
-rollout_readiness_report.md
 
 # IDE
 .idea/
