@@ -50,8 +50,9 @@ class PredictionBuffer:
                 gate_signals, detail, features,
                 meta_action, meta_confidence, meta_size_mult, meta_reason,
                 toxicity_action, toxicity_score, toxicity_score_ma, toxicity_size_mult, toxicity_reason,
-                checklist_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                checklist_reason, meta_entry_quality_prob,
+                quantile_expected_pt, quantile_uncertainty_pt
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -83,6 +84,9 @@ class PredictionBuffer:
                 float((decision.get("toxicity_gate") or {}).get("size_multiplier", 0.0) or 0.0),
                 str((decision.get("toxicity_gate") or {}).get("reason", "")),
                 str(decision.get("checklist_reason", "")),
+                (decision.get("meta_gate") or {}).get("entry_quality_prob"),
+                ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("expected_pt"),
+                ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("uncertainty_pt"),
             ),
         )
 
@@ -189,6 +193,9 @@ class PredictionBuffer:
             int(bool(decision.get("entry_executed", False))),
             str(decision.get("entry_block_reason", "")),
             str(decision.get("checklist_reason", "")),
+            (decision.get("meta_gate") or {}).get("entry_quality_prob"),
+            ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("expected_pt"),
+            ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("uncertainty_pt"),
         )
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
@@ -212,8 +219,9 @@ class PredictionBuffer:
                        toxicity_size_mult, toxicity_reason,
                        entry_gate_json, entry_final_ok, entry_qty, entry_mode,
                        entry_executed, entry_block_reason,
-                       checklist_reason
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       checklist_reason, meta_entry_quality_prob,
+                       quantile_expected_pt, quantile_uncertainty_pt
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 

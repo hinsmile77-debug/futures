@@ -18,6 +18,7 @@ from features.technical.queue_dynamics import QueueDynamicsCalculator
 from features.technical.toxicity import ToxicityCalculator
 from features.technical.vwap import VWAPCalculator
 from features.technical.hurst_exponent import calculate_hurst
+from features.technical.expiry import compute_expiry_features
 from config.constants import MINI_FUTURES_TICK_SIZE as _DEFAULT_TICK_SIZE  # [235차] 미니선물 전용 기본값 0.02
 from utils.error_policy import ErrorLevel, classify_exception
 from config.settings import HORIZON_THRESHOLDS
@@ -123,6 +124,7 @@ class FeatureBuilder:
         supply_demand: Optional[Dict] = None,
         option_data: Optional[Dict] = None,
         macro_data: Optional[Dict] = None,
+        basis_data: Optional[Dict] = None,
         micro_regime: str = "혼합",
     ) -> Dict[str, float]:
         features: Dict[str, float] = {}
@@ -410,6 +412,11 @@ class FeatureBuilder:
             for k, v in option_data.items():
                 features[k] = float(v) if v is not None else 0.0
 
+        # [260704 감사 P2] 선물-현물 베이시스 — main.py의 BasisCalculator가 계산해 전달.
+        if basis_data:
+            for k, v in basis_data.items():
+                features[k] = float(v)
+
         # macro_quality_{available,stale,age_sec,fallback_used}는 아래 quality_macro_* 로 별도 저장
         # → merge 시 제외하여 managed feature set 중복 방지
         _MACRO_QUALITY_SKIP = {
@@ -516,11 +523,17 @@ class FeatureBuilder:
             features["time_cos"]          = math.cos(2.0 * math.pi * _mod / 390.0)
             features["is_open_volatile"]  = 1.0 if _mod < 30 else 0.0
             features["is_close_volatile"] = 1.0 if _mod > 360 else 0.0
+            # [260704 감사 §6-3 순위9] 만기 구조 더미 — time_sin/cos가 못 잡는 달력 효과
+            features.update(compute_expiry_features(_ts_dt))
         except Exception:
             features["time_sin"]          = 0.0
             features["time_cos"]          = 1.0
             features["is_open_volatile"]  = 0.0
             features["is_close_volatile"] = 0.0
+            features.update({
+                "is_weekly_witching": 0.0, "is_monthly_witching": 0.0,
+                "is_monthly_expiry_week": 0.0, "is_month_end_rebalance": 0.0,
+            })
 
         # ── 가격 모멘텀 ─────────────────────────────────────────
         _ch = list(self._close_history)

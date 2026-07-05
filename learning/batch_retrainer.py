@@ -259,6 +259,23 @@ def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
     return np.array([weights.get(int(lbl), 1.0) for lbl in y], dtype=np.float64)
 
 
+# ── [260704 감사 P1] Triple-barrier 섀도우 병행 학습 ─────────────────
+# 프로덕션 champion 모델(gbm_{hz}.pkl)과 완전히 분리된 디렉터리에 저장 —
+# 실거래 의사결정에 전혀 사용되지 않는 순수 병행(shadow) 트랙.
+SHADOW_TB_DIRNAME = "shadow_triple_barrier"
+
+
+def _shadow_model_factory():
+    """섀도우 학습 전용 모델 팩토리 — 프로덕션 정규 재학습과 동일 파라미터(비-intraday)."""
+    if _HIST_GBM_OK:
+        def _make():
+            return HistGradientBoostingClassifier(**HIST_GBM_PARAMS)
+    else:
+        def _make():
+            return GradientBoostingClassifier(**GBM_PARAMS)
+    return _make
+
+
 def _cusum_filter(records, close_map, h_mult=0.7):
     """
     P1: CUSUM 이벤트 필터.
@@ -887,8 +904,14 @@ class BatchRetrainer:
             close_map = {r["ts"]: float(r["close"]) for r in candle_rows}
 
             # X 행렬 구성
+            # [260704 감사 P3] 기존엔 "가장 키가 많은 1개 행"을 canonical feat_names로
+            # 썼는데, 옵션체인 피처(opt_gex_bn 등)는 5분마다만 갱신돼 그 행이 항상
+            # 최다-키 행이 된다는 보장이 없다 — 결과적으로 다른 행에만 있는 피처가
+            # use_feat_names에서 누락돼 전 구간에서 조용히 0.0으로 깔림(30m 퇴역 심사
+            # 중 opt_gex_bn이 raw_features_horizon엔 있는데 학습 피처엔 없는 원인으로 확인).
+            # 전 구간 키의 합집합(첫 등장 순서 보존)으로 교체 — 있는 피처를 못 쓰는
+            # 손실만 없앨 뿐 기존 피처 값·순서는 그대로.
             feat_names = None
-            feat_name_count = 0
             records = []
             for r in rows:
                 try:
@@ -897,11 +920,14 @@ class BatchRetrainer:
                     continue
                 if not isinstance(fd, dict):
                     continue
-                curr_keys = list(fd.keys())
-                if feat_names is None or len(curr_keys) >= feat_name_count:
-                    feat_name_count = len(curr_keys)
-                    feat_names = curr_keys
+                if feat_names is None:
+                    feat_names = dict.fromkeys(fd.keys())
+                else:
+                    for k in fd.keys():
+                        if k not in feat_names:
+                            feat_names[k] = None
                 records.append((r["ts"], fd))
+            feat_names = list(feat_names) if feat_names is not None else None
 
             if not records or feat_names is None:
                 results[hz] = {"replaced": False, "error": "피처 파싱 실패"}
@@ -1012,6 +1038,191 @@ class BatchRetrainer:
             "horizons":     results,
             "timestamp":    self._last_retrain.strftime("%Y-%m-%d %H:%M"),
         }
+
+    # ── [260704 감사 P1] Triple-barrier 섀도우 병행 학습 ─────────────
+    def retrain_shadow_triple_barrier(
+        self,
+        weeks_back: int = RETRAIN_WEEKS_BACK,
+        stop_mult: Optional[float] = None,
+        tp_mult_by_horizon: Optional[Dict[str, float]] = None,
+    ) -> Dict:
+        """
+        Triple-barrier 레이블로 호라이즌별 섀도우 모델을 학습해
+        `{model_dir}/shadow_triple_barrier/`에 저장한다.
+
+        레이블 = 진입(롱 가정) 후 {TP 배리어(ATR×tp_mult) / SL 배리어(ATR×stop_mult) /
+        시간 배리어(호라이즌 분)} 중 무엇이 먼저 닿는가 — 실제 청산 배수와 동일하게
+        맞춰 "모델 예측 = 시스템 실행"이 되도록 한다 (감사 §1-3 ①).
+
+        기존 3클래스(path-conditioned) 프로덕션 모델은 전혀 건드리지 않는다.
+        실거래 의사결정에 사용하지 말 것 — 2~4주 병행 후 예측-손익 상관으로
+        승격 여부를 별도 판정한다(ROADMAP.md Phase 5 이후 항목).
+
+        Returns:
+            {"ok": bool, "horizons": {hz: {"cv_acc", "champion_cv_acc", "n_samples", "label_dist"}}}
+        """
+        import sqlite3
+        import json as _json3
+        from config.settings import RAW_DATA_DB, ATR_STOP_MULT, ATR_HORIZON_TP1_MULT, ATR_TP1_MULT
+        from model.target_builder import build_triple_barrier_label
+        from model.multi_horizon_model import apply_robust_preprocess
+
+        if not _SKLEARN_OK:
+            return {"ok": False, "error": "scikit-learn 미설치"}
+        if not self._has_horizon_features_table():
+            return {"ok": False, "error": "raw_features_horizon 테이블 없음 — Phase2 데이터 필요"}
+
+        stop_mult = float(stop_mult) if stop_mult is not None else float(ATR_STOP_MULT)
+        tp_mult_by_horizon = tp_mult_by_horizon or ATR_HORIZON_TP1_MULT
+
+        shadow_dir = os.path.join(self.model_dir, SHADOW_TB_DIRNAME)
+        os.makedirs(shadow_dir, exist_ok=True)
+
+        raw_db = RAW_DATA_DB
+        cutoff = (
+            datetime.datetime.now() - datetime.timedelta(weeks=weeks_back)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        _make_model = _shadow_model_factory()
+
+        results = {}
+        for hz, h_min in HORIZONS.items():
+            min_bars = MIN_TRAIN_BARS_PER_HORIZON.get(hz, MIN_TRAIN_BARS)
+            try:
+                with sqlite3.connect(raw_db, timeout=10) as conn:
+                    conn.row_factory = sqlite3.Row
+                    rows = conn.execute(
+                        "SELECT ts, features FROM raw_features_horizon "
+                        "WHERE horizon=? AND ts>=? ORDER BY ts",
+                        (hz, cutoff),
+                    ).fetchall()
+                    _fallback_used = False
+                    if len(rows) < min_bars:
+                        # 1m은 설계상 raw_features_horizon에 기록되지 않음
+                        # (TRAINING_WINDOW_BARS 주석: "1m: Phase 2 미사용 (raw_features 경로)").
+                        # 감사 보고서가 "유일한 실측 엣지"로 지목한 호라이즌이므로 raw_features
+                        # (전역 피처 스냅샷, Phase 0/1 경로)로 폴백해 섀도우 검증에서 빠지지 않게 한다.
+                        rows = conn.execute(
+                            "SELECT ts, features FROM raw_features WHERE ts>=? ORDER BY ts",
+                            (cutoff,),
+                        ).fetchall()
+                        _fallback_used = True
+                    candle_rows = conn.execute(
+                        "SELECT ts, high, low, close FROM raw_candles WHERE ts>=? ORDER BY ts",
+                        (cutoff,),
+                    ).fetchall()
+            except Exception as _e:
+                logger.warning("[ShadowTB] %s DB 조회 실패: %s", hz, _e)
+                results[hz] = {"ok": False, "error": str(_e)}
+                continue
+
+            if len(rows) < min_bars:
+                logger.info("[ShadowTB] %s 데이터 부족 %d < %d — 건너뜀", hz, len(rows), min_bars)
+                results[hz] = {"ok": False, "error": "데이터 부족 (%d < %d)" % (len(rows), min_bars)}
+                continue
+            if _fallback_used:
+                logger.info("[ShadowTB] %s raw_features_horizon 데이터 없음 — raw_features 폴백 사용", hz)
+
+            close_map = {r["ts"]: float(r["close"]) for r in candle_rows}
+            high_map  = {r["ts"]: float(r["high"])  for r in candle_rows}
+            low_map   = {r["ts"]: float(r["low"])   for r in candle_rows}
+
+            records = []
+            feat_names = None
+            feat_name_count = 0
+            for r in rows:
+                try:
+                    fd = _json3.loads(r["features"])
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(fd, dict):
+                    continue
+                curr_keys = list(fd.keys())
+                if feat_names is None or len(curr_keys) >= feat_name_count:
+                    feat_name_count = len(curr_keys)
+                    feat_names = curr_keys
+                records.append((r["ts"], fd))
+
+            if not records or feat_names is None:
+                results[hz] = {"ok": False, "error": "피처 파싱 실패"}
+                continue
+
+            tp_mult = float(tp_mult_by_horizon.get(hz, ATR_TP1_MULT))
+            y_hz = []
+            for ts, fd in records:
+                atr = float(fd.get("atr", 0.0) or 0.0)
+                label = build_triple_barrier_label(
+                    ts, h_min, close_map, high_map, low_map,
+                    atr=atr, stop_mult=stop_mult, tp_mult=tp_mult,
+                )
+                y_hz.append(label)
+            y_hz = np.array(y_hz, dtype=int)
+
+            if len(np.unique(y_hz)) < 2:
+                results[hz] = {"ok": False, "error": "레이블 단일 클래스 — 학습 불가"}
+                continue
+
+            X_hz = np.array(
+                [[rec[1].get(f, 0.0) for f in feat_names] for rec in records],
+                dtype=np.float32,
+            )
+            X_hz = apply_robust_preprocess(X_hz, feat_names)
+
+            # 프로덕션과 동일하게 3폴드 시계열 CV
+            tscv = TimeSeriesSplit(n_splits=3)
+            cv_accs = []
+            for train_idx, val_idx in tscv.split(X_hz):
+                X_tr, X_val = X_hz[train_idx], X_hz[val_idx]
+                y_tr, y_val = y_hz[train_idx], y_hz[val_idx]
+                if len(np.unique(y_tr)) < 2:
+                    continue
+                scaler = StandardScaler()
+                X_tr_s = scaler.fit_transform(X_tr)
+                X_val_s = scaler.transform(X_val)
+                model = _make_model()
+                model.fit(X_tr_s, y_tr, sample_weight=_make_sample_weight(y_tr, hz))
+                cv_accs.append(accuracy_score(y_val, model.predict(X_val_s)))
+
+            cv_acc = float(np.mean(cv_accs)) if cv_accs else None
+
+            # 전체 데이터로 최종 섀도우 모델 학습 + 저장 (프로덕션 모델과 완전 분리된 경로)
+            final_scaler = StandardScaler()
+            X_scaled = final_scaler.fit_transform(X_hz)
+            final_model = _make_model()
+            final_model.fit(X_scaled, y_hz, sample_weight=_make_sample_weight(y_hz, hz))
+
+            _model_path = os.path.join(shadow_dir, f"gbm_{hz}_shadow_tb.pkl")
+            _tmp_model = _model_path + ".tmp"
+            with open(_tmp_model, "wb") as f:
+                pickle.dump(final_model, f, protocol=4)
+            os.replace(_tmp_model, _model_path)
+
+            _scaler_path = os.path.join(shadow_dir, f"scaler_{hz}_shadow_tb.pkl")
+            _tmp_scaler = _scaler_path + ".tmp"
+            with open(_tmp_scaler, "wb") as f:
+                pickle.dump(final_scaler, f, protocol=4)
+            os.replace(_tmp_scaler, _scaler_path)
+
+            _fn_path = os.path.join(shadow_dir, f"feature_names_{hz}_shadow_tb.pkl")
+            with open(_fn_path, "wb") as f:
+                pickle.dump(list(feat_names), f, protocol=4)
+
+            label_dist = {int(c): int((y_hz == c).sum()) for c in np.unique(y_hz)}
+            champion_acc = self._load_model_acc(hz)
+            logger.info(
+                "[ShadowTB] %s cv_acc=%s n=%d 레이블분포=%s (champion cv_acc=%.4f)",
+                hz, ("%.4f" % cv_acc) if cv_acc is not None else "N/A",
+                len(X_hz), label_dist, champion_acc,
+            )
+            results[hz] = {
+                "ok": True,
+                "cv_acc": round(cv_acc, 4) if cv_acc is not None else None,
+                "champion_cv_acc": champion_acc,
+                "n_samples": len(X_hz),
+                "label_dist": label_dist,
+                "source": "raw_features(fallback)" if _fallback_used else "raw_features_horizon",
+            }
+
+        return {"ok": True, "horizons": results, "shadow_dir": shadow_dir}
 
     # ── DB 로드 (raw_features + raw_candles 기반) ────────────────
     def _load_from_db(self, weeks_back: int, intraday: bool = False):

@@ -4,6 +4,88 @@
 
 ---
 
+## 2026-07-05 (290차 — 260704 종합감사 실행 로드맵 P0~P3 전체 구현)
+
+**트리거**: `docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md`(사용자 커미션 종합 감사 보고서)의
+§8 실행 로드맵을 P0→P1→P2→P3 순서로 단계별 구현. 각 항목 완료 시마다 사용자 확인 후
+다음 항목으로 진행하는 방식으로 여러 세션에 걸쳐 진행(이 로그는 마지막 세션 기준).
+
+### 구현 요약 (상세는 `ROADMAP.md`의 "260704 감사 로드맵 — ..." 각 섹션 참조)
+
+| 단계 | 항목 | 핵심 내용 |
+|---|---|---|
+| P0 | CB② 모의투자 한정 예외 | `CB_CONSEC_STOP_LIMIT=9999` 유지를 CLAUDE.md·settings.py 주석·ROADMAP.md Phase5 체크리스트에 명시적으로 문서화(실투 전 2~3 복원 필수) |
+| P0 | 거래당 순EV 리포트 | `utils/db_utils.py` EV 조회 4종 + EOD 리포트 + 대시보드 "최근20건 순EV" 타일 |
+| P1 | Triple-barrier 레이블 섀도우 | `target_builder.py:build_triple_barrier_label()` + `batch_retrainer.py:retrain_shadow_triple_barrier()`(1m raw_features 폴백 발견·추가) |
+| P1 | Meta-labeling 게이트 | `learning/meta_label_classifier.py` — meta_labels 65,183건 학습(1m AUC 0.5675, 10m 0.5871), MetaGate 섀도우 필드로 연결 |
+| P1 | MAE/MFE 분석 | `scripts/analyze_mae_mfe.py` 신규(읽기전용 진단) |
+| P1 | 신호 소멸 청산(P4.5) | `main.py:_check_exit_triggers()`에 3.5순위로 추가, 기본 ON. **`strategy/exit/exit_manager.py`가 실거래 미사용 죽은 코드임을 이때 처음 확인**(실제 로직은 main.py 인라인) |
+| P1 | 지정가 우선 집행 | Cybos CpTd6831(지정가)/CpTd6833(취소) TR 신규 구현, 기본 OFF(실브로커 수동검증 필요) |
+| P1 | 게이트 ablation 리포트 | `scripts/generate_gate_ablation_report.py` — 신호품질 게이트 6종 가상손익 집계 |
+| P2 | HistGBM 확인 + 분위회귀 | HistGBM은 이미 적용 중 확인(추가작업 불필요), `learning/quantile_regressor.py` 신규 |
+| P2 | 신규 피처 4종 | 베이시스(`features/technical/basis.py`, KOSPI200 지수 K2G01P로 정정)·VKOSPI(O2901P)·프로그램매매(CpSvr8111 필드매핑 오류 발견·수정)·외국인선물(기존 매핑 정확 확인) |
+| P2 | 챌린저 부트스트랩+heartbeat | `promotion_manager.py`에 5,000회 리샘플 판정 + Wilson CI heartbeat. CHAMPION_BASELINE 콜드스타트 구조 발견(자체 shadow 이력 없음) |
+| P2 | TP1 A/B + 레짐 배수 | `E_CHAMPION_TP1_SKIP_TRAIL` 챌린저(진입은 챔피언 미러·청산만 트레일단독) + `HURST_REGIME_ATR_MULT`(추세×1.2/평균회귀×0.85) |
+| P3 | 대시보드 상태 스트립 | `StatusStripPanel` 신규, 헤더 아래 탭무관 상시노출. `QT_QPA_PLATFORM=offscreen`으로 headless 스모크테스트 가능함을 이번에 처음 확인 |
+| P3 | 30m 퇴역 심사 | 퇴역 보류 — 대신 `batch_retrainer.py`의 실제 버그(호라이즌별 학습피처명을 "최다-키 단일 행"으로 결정, 옵션체인 피처가 실은 이미 수집중인데 학습에 반영 안 됨) 발견·수정 |
+| P3 | 다중비교 보정 | `promotion_manager.py`에 Bonferroni(α/n) 보정 추가 — 동시 챌린저 5개면 요구확률 95%→99% |
+| P3 | 트레일링 갱신순서 | 재확인 결과 이미 정상(감사가 죽은 exit_manager.py를 보고 오판한 사례) — 코드변경 없이 문서화만 |
+| P3 | 만기 구조 더미 | `features/technical/expiry.py` 신규 4종(위클리/월간 위칭데이·만기주·월말리밸런싱), 전 호라이즌 pending_validation 등록 |
+
+탭 15개→4그룹 재편만 headless 환경에서 레이아웃 회귀를 시각 확인할 수 없어 사용자 직접
+진행으로 보류.
+
+### 부수 발견 — position_state.json 오염 사고 (내 실수)
+
+P2 "레짐 조건부 ATR 배수" 검증 중 `PositionTracker().open_position('LONG', 100.0, 1, atr=2.0, ...)`을
+직접 호출하는 검증 스크립트를 여러 번 실행했는데, 마지막 케이스 뒤에 `force_flat()`을
+호출하지 않고 끝냄 — `PositionTracker`가 상태 변경마다 자동 저장하는
+`data/position_state.json`(검증 스크립트든 실제 운영 앱이든 저장소 기준 동일 파일)에
+가짜 LONG 100.00 포지션이 그대로 남아, 실제 운영 중이던 대시보드 "실시간 잔고" 패널에
+그대로 노출됨(사용자가 스크린샷으로 발견). 실제 브로커 포지션은 FLAT이었음을 사용자
+확인 후 `PositionTracker().force_flat()`으로 파일을 정상 복구. 재발방지 메모리 기록
+(`feedback_isolate_stateful_verification`) — 앞으로 이런 검증은 격리된 경로/파일을 써야 함.
+
+곁가지로 `dashboard/main_dashboard.py:PositionRestoreDialog`의 진입가 스핀박스가
+`setRange(100.0, ...)` 후 `setValue(0.0)`을 호출해 Qt가 조용히 100.0으로 clamp하던
+실재 버그도 함께 발견해 수정(이번 사고의 직접 원인은 아니었지만 별개로 유효한 버그).
+
+### 검증
+
+- `python -m py_compile` 전체 통과(터치한 모든 파일).
+- `python -m pytest tests/` 전체 통과 — 세션 시작 전부터 있던 무관 실패 1건
+  (`test_ensemble_decision.py::test_compute_returns_x_when_confidence_below_regime_threshold`,
+  `git stash`로 원본 커밋에서도 재현 확인) 제외.
+- Triple-barrier/meta-label/quantile 재학습 스크립트는 개발DB 실측으로 검증(6개 호라이즌
+  전부 성공, AUC/커버리지 수치 ROADMAP.md 기록).
+- 챌린저 부트스트랩/heartbeat/Bonferroni는 합성 SQLite DB로 표본부족/우위/열위/n=1↔n=5
+  전환 시나리오 검증.
+- 대시보드 상태 스트립은 `QT_QPA_PLATFORM=offscreen`으로 `DashboardAdapter()` 실제
+  생성 후 6개 시나리오 더미데이터 호출로 위젯 텍스트 검증.
+- 프로그램매매(CpSvr8111)·투자자별 선물(CpSvrNew7221)·VKOSPI/KOSPI200 지수코드는
+  사용자가 관리자 권한 Creon Plus 세션에서 실제 데이터로 검증.
+- 지정가 우선 집행은 이 개발환경(COM 미지원)에서 실제 브로커 검증 불가 — 기본 OFF로
+  두고 ROADMAP.md에 수동검증 체크리스트 등록.
+
+### 변경 파일
+
+`main.py`, `config/settings.py`, `dashboard/main_dashboard.py`, `dashboard/panels/challenger_panel.py`,
+`strategy/position/position_tracker.py`, `strategy/exit/exit_manager.py`(docstring만),
+`strategy/entry/meta_gate.py`, `strategy/ops/daily_exporter.py`, `model/target_builder.py`,
+`learning/batch_retrainer.py`, `learning/prediction_buffer.py`, `learning/meta_label_classifier.py`(신규),
+`learning/quantile_regressor.py`(신규), `features/feature_builder.py`, `features/technical/basis.py`(신규),
+`features/technical/expiry.py`(신규), `challenger/promotion_manager.py`, `challenger/challenger_engine.py`,
+`challenger/challenger_db.py`, `challenger/variants/base_challenger.py`,
+`challenger/variants/champion_tp1_skip_trail.py`(신규), `collection/cybos/api_connector.py`,
+`collection/broker/base.py`, `collection/broker/cybos_broker.py`, `utils/db_utils.py`,
+`tests/test_circuit_breaker.py`, `featureset by horizon/horizon_feature_sets.json`,
+`CLAUDE.md`, `ROADMAP.md`, `.gitignore`, `scripts/analyze_mae_mfe.py`(신규),
+`scripts/generate_gate_ablation_report.py`(신규), `scripts/run_shadow_triple_barrier_retrain.py`(신규),
+`scripts/train_meta_label_classifier.py`(신규), `scripts/train_quantile_regressor.py`(신규),
+`docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md`(§8 상태컬럼·§9 완료현황 추가).
+
+---
+
 ## 2026-07-03 (289차 — 틱 단위 하드스톱 AttributeError 수정: is_halted() → state != CB_STATE_HALTED)
 
 **트리거**: 틱 단위 하드스톱 감지(`_on_tick_price_update`, [266차] 도입)가 실제로는 발동하지 않는 것으로 의심되어 코드 점검.

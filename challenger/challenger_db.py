@@ -291,6 +291,34 @@ class ChallengerDB(object):
                     "total_pnl_pt": 0.0, "mdd_pt": 0.0, "sharpe": 0.0}
         return dict(row)
 
+    def get_closed_trade_pnls(self, challenger_id):
+        # type: (str) -> List[float]
+        """[260704 감사 P2] 전체 기간(레짐 무관) 종료된 가상거래의 pnl_pt 리스트.
+        부트스트랩 승격 판정(promotion_manager.evaluate_for_promotion_bootstrap)용.
+        """
+        sql = """
+        SELECT pnl_pt FROM challenger_trades
+        WHERE challenger_id=? AND exit_ts IS NOT NULL AND pnl_pt IS NOT NULL
+        ORDER BY entry_ts
+        """
+        with self._conn() as conn:
+            rows = conn.execute(sql, (challenger_id,)).fetchall()
+        return [float(r["pnl_pt"]) for r in rows]
+
+    def get_recent_closed_trades(self, challenger_id, limit=60):
+        # type: (str, int) -> List[sqlite3.Row]
+        """[260704 감사 P2] 최근 N건 종료된 가상거래(레짐 무관, entry_ts 내림차순 → 재정렬해 오름차순 반환).
+        챔피언 heartbeat(롤링 승률 CI)용.
+        """
+        sql = """
+        SELECT * FROM challenger_trades
+        WHERE challenger_id=? AND exit_ts IS NOT NULL AND pnl_pt IS NOT NULL
+        ORDER BY entry_ts DESC LIMIT ?
+        """
+        with self._conn() as conn:
+            rows = conn.execute(sql, (challenger_id, limit)).fetchall()
+        return list(reversed(rows))
+
     def get_regime_closed_trades(self, challenger_id, regime):
         # type: (str, str) -> List[sqlite3.Row]
         """특정 레짐에서의 종료된 가상 거래 전체"""

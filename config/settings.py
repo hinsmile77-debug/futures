@@ -570,6 +570,38 @@ ATR_HORIZON_TP1_MULT = {
 
 PARTIAL_EXIT_RATIOS = [0.33, 0.33, 0.34]   # 부분 청산 3단계
 
+# [260704 감사 P2] 레짐 조건부 ATR 배수 — 추세장(Hurst>=0.55)에서는 손절/목표를
+# 넓혀 추세를 태우고, 평균회귀장(Hurst<0.45)에서는 좁혀 빠르게 회수한다.
+# REGIME_SIZE_MULT와 동일한 패턴(사이징 대신 손절/목표 폭에 곱하는 배수 테이블).
+# 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §3-2 "레짐 조건부 배수"
+#   "추세장(Hurst>0.55): 스톱 넓게·TP 멀게 / 횡보장: 반대"
+# ATR_STOP_MULT·ATR_HORIZON_TP1_MULT·ATR_TP2_MULT 위에 곱해지는 추가 계수이므로
+# 스캘퍼 호라이즌별 TP1 단축 로직과 독립적으로 동작한다. 1.00 = 배수 미적용(기존과 동일).
+HURST_REGIME_ATR_MULT_ENABLED = True
+HURST_REGIME_ATR_MULT = {
+    "trend":       {"stop": 1.20, "tp1": 1.20, "tp2": 1.20},  # Hurst>=0.55
+    "neutral":     {"stop": 1.00, "tp1": 1.00, "tp2": 1.00},  # 0.45<=Hurst<0.55 (기존값)
+    "mean-revert": {"stop": 0.85, "tp1": 0.85, "tp2": 0.85},  # Hurst<0.45
+}
+
+# [260704 감사 P1] 신호 소멸 청산 — 보유 포지션과 반대 방향의 앙상블 신호가
+# zone_mc(시간대×호라이즌 동적 min_conf) 이상으로 확정되면 손절가 도달 전에 미리 청산한다.
+# 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §3-2 ①
+# "청산이 순수 가격 기반 — 보유 중 앙상블이 반대 방향 고신뢰로 전환돼도 청산 트리거가
+#  없다. 손절가까지 풀로 얻어맞는 구조."
+# 기본 ON — 모의투자 단계는 CB② 예외(위 참조)와 동일하게 검증 우선이며 실거래 자금
+# 리스크가 없어 바로 켜도 안전하다는 판단(2026-07-05). 실투 전환 전 재검토할 것.
+SIGNAL_DECAY_EXIT_ENABLED = True
+
+# [260704 감사 P1] 지정가 우선 집행 — 진입 시 시장가 대신 1틱 유리한 지정가로 먼저
+# 시도하고, N초 미체결 시 취소한다(시장가 전환 없이 다음 신호 대기 — 낙관적 포지션
+# 오픈 금지, 2026-07-05 사용자 지시). 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §2-3.
+# 기본 OFF — Cybos 지정가/취소 TR(CpTd6831 idx6='1', CpTd6833)이 이번에 처음 구현되어
+# 실제 브로커 연결로 검증되지 않았음(개발환경은 COM 미지원). 모의투자에서 직접 켜서
+# 검증 후 활성화할 것. 참조: docs/CyBos ref/CYBOS_FUTURES_ORDER_TR_MAP.md
+LIMIT_ENTRY_FIRST_ENABLED = False
+LIMIT_ENTRY_TIMEOUT_SEC = 12   # 지정가 미체결 대기시간 (감사 권고 10~15초)
+
 # ── 선물 수수료 설정 ───────────────────────────────────────────
 # 키움증권 모의투자 기준. 실전 전환 시 실제 요율로 교체.
 # 1계약 1050pt 기준: 편도 ≈ 39,375원 / 왕복 ≈ 78,750원
@@ -578,7 +610,11 @@ FUTURES_COMMISSION_RATE = 0.000015   # 0.0015% 편도 (거래대금 기준)
 # ── Circuit Breaker 설정 ───────────────────────────────────────
 CB_SIGNAL_FLIP_LIMIT   = 5     # 1분 내 신호 반전 횟수
 CB_SIGNAL_FLIP_PAUSE   = 15    # 진입 정지 (분)
-CB_CONSEC_STOP_LIMIT   = 9999     # 연속 손절 횟수 (5/15: 2회 후 재진입 손실 → 3→2 강화)
+CB_CONSEC_STOP_LIMIT   = 9999     # 연속 손절 횟수 — [모의투자 한정 예외, 2026-07-05]
+# CLAUDE.md 절대원칙 ②는 "5분 내 손절 3연속 → 당일 정지"이나, 모의투자 단계에서는
+# 거래 기회 확보·데이터 축적(레이블/SGD/SHAP 표본)이 우선이라 9999(사실상 비활성)로 완화.
+# 실투 전환 전 반드시 2~3으로 복원할 것 (ROADMAP.md Phase 5 실전 전환 체크리스트 항목).
+# 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §7-1 (P0)
 # CB③: FLAT 예측 제외 후 방향성 예측만 집계 (2026-06-02)
 # 랜덤 예측 정확도 = 50% (UP/DN 2클래스, FLAT 제외 시)
 # 0.28 = 랜덤 50%의 56% 수준 — 명백히 노이즈일 때만 정지

@@ -43,10 +43,11 @@ class ChallengerEngine(object):
             from challenger.variants.vwap_reversal    import VwapReversalChallenger
             from challenger.variants.exhaustion_regime import ExhaustionRegimeChallenger
             from challenger.variants.absorption       import AbsorptionChallenger
+            from challenger.variants.champion_tp1_skip_trail import ChampionTp1SkipTrailChallenger
 
             for cls in (CvdExhaustionChallenger, OfiReversalChallenger,
                         VwapReversalChallenger, ExhaustionRegimeChallenger,
-                        AbsorptionChallenger):
+                        AbsorptionChallenger, ChampionTp1SkipTrailChallenger):
                 inst = cls()
                 self.registry.register(inst)
                 self._open_trades[inst.challenger_id] = None

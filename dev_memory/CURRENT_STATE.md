@@ -1,7 +1,59 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-03 (289차) — 틱 단위 하드스톱 AttributeError 수정
+> 마지막 업데이트: 2026-07-05 (290차) — 260704 종합감사 실행 로드맵 P0~P3 전체 구현
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-05 (290차 — 260704 종합감사 실행 로드맵 P0~P3 전체 구현)
+
+**계기**: `docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md` §8 실행 로드맵을 P0→P1→P2→P3
+순서로 단계별 구현(사용자가 매 항목 확인 후 다음 진행 지시).
+
+**핵심 결과**: P0~P3 전 항목 구현 완료(탭 15개→4그룹 재편만 headless 환경 시각확인
+불가로 사용자 직접 진행으로 보류). 상세 내역·검증 방법은 `ROADMAP.md`의 "260704 감사
+로드맵 — ..." 각 섹션과 `SESSION_LOG.md` 290차 항목 참조. 이 세션에서 새로 발견한
+중요 사실들:
+
+1. **`strategy/exit/exit_manager.py`는 실거래 미사용 죽은 코드** — 실제 청산 로직은
+   `main.py:_check_exit_triggers()`/`_ts_check_exit_triggers()`에 인라인 구현되어
+   있음. 감사 보고서가 이 죽은 파일을 근거로 "트레일링 갱신 순서" 결함을 지적했으나,
+   실제 코드는 이미 정상(트레일링이 하드스톱/TP/시간청산보다 항상 먼저 갱신)이었음 —
+   **감사가 죽은 코드를 보고 오판한 사례**.
+2. **`CHAMPION_BASELINE_ID`는 자체 shadow 거래 이력이 없는 콜드스타트 구조** —
+   `challenger_engine.py`가 5개 variant만 등록하고 챔피언 자신은 등록하지 않음. 최초
+   승격 전까지 부트스트랩/heartbeat 판정이 "표본부족"만 반환하는 것이 정상.
+3. **30m need_add 피처(opt_gex_bn 등)가 실은 이미 수집 중이었다** — `horizon_feature_sets.json`
+   표시(need_add)만 stale. 진짜 원인은 `learning/batch_retrainer.py:_retrain_phase2()`가
+   호라이즌별 학습피처명을 "가장 키가 많은 단일 행"으로 잘못 결정하던 버그(합집합으로
+   수정) — 30m뿐 아니라 옵션체인 피처를 쓰는 전 호라이즌에 잠재적 영향.
+4. **KOSPI200 지수 코드는 네임스페이스에 따라 다르다** — `dscbo1.StockMst`(일반시세)엔
+   `K2G01P`, 선물차트 문맥엔 `00800`. 처음 00800으로 구현했다가 사용자 2차 스크린샷으로
+   정정. VKOSPI는 `O2901P`.
+5. **`Dscbo1.CpSvr8111`(프로그램매매) 기존 필드매핑이 틀려 있었다** — guess 매핑(idx0~5)을
+   공식문서 기준(idx19/37)으로 재작성, 입력값도 `ord('1')` 관례로 수정. 사용자가 관리자
+   권한 Creon Plus 세션에서 실측 검증.
+6. **이 headless 개발 세션에서도 PyQt 대시보드를 `QT_QPA_PLATFORM=offscreen`으로 실제
+   생성해 스모크테스트할 수 있다** — 이전엔 "GUI라 확인 불가"로 가정했던 게 틀렸음.
+   레이아웃/가독성까지는 확인 못 하지만 위젯 생성·업데이트 로직은 검증 가능.
+
+**부수 사고(내 실수) — position_state.json 오염**: P2 검증 스크립트가
+`PositionTracker()`(운영 앱과 동일한 저장 경로 공유)로 직접 `open_position()`을 호출한 뒤
+`force_flat()`을 누락 — 가짜 LONG 100.00 포지션이 파일에 남아 실제 운영 대시보드에
+노출됨(사용자 스크린샷으로 발견, 실제 브로커는 FLAT 확인 후 `force_flat()`으로 복구).
+재발방지 메모리 기록. 곁가지로 `PositionRestoreDialog`의 진입가 스핀박스 clamp 버그
+(`setRange(100.0,...)` + `setValue(0.0)` → Qt가 100.0으로 조용히 clamp)도 발견·수정.
+
+**검증**: `py_compile` 전체 통과, `pytest tests/` 전체 통과(세션 시작 전부터 있던 무관
+실패 1건 제외), 신규 스크립트들은 개발DB 실측 검증, 챌린저 관련은 합성DB 검증,
+대시보드는 offscreen 스모크테스트. Cybos TR 3종(프로그램매매·외국인선물·지수시세)은
+사용자가 관리자권한 세션에서 실측 검증. **지정가 우선 집행은 이 개발환경에서 실브로커
+검증 불가 — 기본 OFF, 모의투자에서 사용자 수동검증 필요**(`NEXT_TODO.md` 290차).
+
+**변경 파일**: 24개 기존 파일 수정 + 신규 파일 다수(`features/technical/basis.py`,
+`features/technical/expiry.py`, `learning/meta_label_classifier.py`,
+`learning/quantile_regressor.py`, `challenger/variants/champion_tp1_skip_trail.py`,
+`scripts/analyze_mae_mfe.py` 등). 전체 목록은 `SESSION_LOG.md` 290차 참조.
 
 ---
 

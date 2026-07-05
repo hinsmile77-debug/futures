@@ -617,6 +617,18 @@ class ChallengerPanel(QWidget):
             "누적 MDD:   %.2fpt" % m["cum_mdd_pt"],
             "Sharpe:     %.2f"   % m["sharpe"],
         ]
+        # [260704 감사 P2] 부트스트랩 승격 판정 — 점추정(위) 병행 참고용, 승격 게이트는
+        # 여전히 evaluate_for_promotion()(점추정)만 사용. 표본 부족 시 경고만 표시.
+        if self._promo is not None:
+            try:
+                bs = self._promo.evaluate_for_promotion_bootstrap(self._selected_cid)
+                lines.append("")
+                lines.append("--- 부트스트랩 판정 (병행 참고) ---")
+                for desc, ok in bs.checks.items():
+                    lines.append("%s %s" % ("✅" if ok else "❌", desc))
+            except Exception as _bs_e:
+                lines.append("")
+                lines.append("부트스트랩 판정 계산 실패: %s" % _bs_e)
         dlg = QDialog(self)
         dlg.setWindowTitle("상세 리포트")
         lay = QVBoxLayout(dlg)
