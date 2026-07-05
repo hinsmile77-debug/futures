@@ -97,6 +97,7 @@ from collection.macro.intraday_tactical_regime import (
     IntradayTacticalRegime,
     INTRADAY_NORMAL, INTRADAY_DAY_RISK_OFF, INTRADAY_CRASH,
 )
+from strategy.regime.day_regime_engine import DayRegimeEngine
 from collection.options.pcr_store import PCRStore
 from collection.options.option_chain_snapshot import OptionChainSnapshot
 from collection.options.option_chain_worker import OptionChainWorker
@@ -118,6 +119,7 @@ from strategy.entry.time_strategy_router import (
 )
 from strategy.entry.position_sizer import PositionSizer
 from strategy.entry.meta_gate import MetaGate
+from strategy.entry.soft_gate_scorer import SoftGateScorer
 from strategy.entry.trend_persistence import TrendPersistenceGate
 from strategy.entry.adaptive_kelly import AdaptiveKelly
 from strategy.exit.time_exit import TimeExitManager
@@ -232,6 +234,9 @@ class TradingSystem:
         self.regime_classifier      = RegimeClassifier()
         self.micro_regime_clf       = MicroRegimeClassifier()
         self.intraday_regime        = IntradayTacticalRegime()
+        # [v9-dev Track L1, 2026-07-05] 섀도우 전용 — 기존 3개 레짐분류기(위 2개+Hurst) 통합
+        # 애그리게이터. 정책 분기 없음, 로그·entry_gate_json 기록만.
+        self.day_regime_engine      = DayRegimeEngine()
         self.macro_fetcher          = MacroFetcher(api_key_fred=FRED_API_KEY)
         self.macro_fetcher.start()
         self.feature_builder    = FeatureBuilder()
@@ -271,6 +276,9 @@ class TradingSystem:
         # STEP 2 에서 동일 ts 검증 결과가 도착할 때 record_outcome 처리
         self._meta_shadow      = {}
         self.toxicity_gate     = ToxicityGate()
+        # [v9-dev Track L3, 2026-07-05] 섀도우 전용 — qty_ok/mode_filter_ok 병목(체크리스트+
+        # 4종 오버라이드 직렬 AND)을 점수합산으로 재해석. _final_grade/_qty_display 미개입.
+        self.soft_gate_scorer  = SoftGateScorer()
         self.trend_gate        = TrendPersistenceGate()
         self.batch_retrainer          = BatchRetrainer()
         _ss = self._read_session_state()
@@ -4611,6 +4619,30 @@ class TradingSystem:
             )
         self.dashboard.update_layer2(self.intraday_regime.status_dict())
 
+        # [v9-dev Track L1, 2026-07-05] 데이 레짐 엔진 섀도우 — 기존 3개 레짐분류기 통합
+        # 애그리게이터. 정책 분기 없이 로그·decision 기록만(entry_gate_json은 STEP7에서 병합).
+        try:
+            self._day_regime_shadow = self.day_regime_engine.update(
+                micro_regime            = _mr["regime"],
+                adx                     = _mr["adx"],
+                atr_ratio               = _mr["atr_ratio"],
+                hurst                   = float(features.get("hurst", 0.5) or 0.5),
+                day_ret                 = _day_ret,
+                ret_1m                  = _ret_1m,
+                opt_gex_bn              = float(features.get("opt_gex_bn", 0.0) or 0.0),
+                opt_chain_pcr           = float(features.get("opt_chain_pcr", 0.0) or 0.0),
+                intraday_tactical_regime= self.current_intraday_regime,
+            )
+            if self._day_regime_shadow["regime"] != getattr(self, "_prev_day_regime_shadow", None):
+                log_manager.signal(
+                    f"[DayRegimeShadow] {getattr(self, '_prev_day_regime_shadow', '-')} → "
+                    f"{self._day_regime_shadow['regime']} (conf={self._day_regime_shadow['confidence']:.0%})"
+                )
+                self._prev_day_regime_shadow = self._day_regime_shadow["regime"]
+        except Exception as _dre_e:
+            logger.debug("[DayRegimeShadow] 섀도우 갱신 실패 (무시): %s", _dre_e)
+            self._day_regime_shadow = None
+
         # ── STEP 5: 멀티 호라이즌 예측 ─────────────────────────
         _st.append(("S5", time.perf_counter()))
         _gbm_ready = self.model.is_ready()
@@ -5979,6 +6011,23 @@ class TradingSystem:
                         f"×{_l2_size:.1f} → {_qty_display}계약"
                     )
 
+            # [v9-dev Track L3, 2026-07-05] 소프트게이트 점수화 섀도우 —
+            # 위 4종 오버라이드(Degraded/ExecutionGovernor/MetaGate/ToxicityGate) 직렬 AND의
+            # 결과를 점수합산으로 재해석. _final_grade/_qty_display는 절대 건드리지 않음(읽기전용).
+            if _cr is not None:
+                try:
+                    decision["soft_gate_shadow"] = self.soft_gate_scorer.score(
+                        checklist_result=_cr,
+                        degraded_active=self._health_degraded_mode,
+                        confidence=confidence,
+                        degraded_min_conf=max(actual_min_conf, 0.30),
+                        execution_result=_exec_gate,
+                        meta_result=_meta_gate,
+                        toxicity_result=_tox_gate,
+                    )
+                except Exception as _sgs_e:
+                    logger.debug("[SoftGateScorer] 섀도우 스코어링 실패 (무시): %s", _sgs_e)
+
         # [DBG-F7] 진입 실행 조건 평가
         debug_log.debug(
             "[DBG-F7] 진입조건: pos=%s CB=%s new_entry=%s grade=%s time_zone=%s",
@@ -6274,6 +6323,18 @@ class TradingSystem:
             "kill_switch_ok":   not self.system_health.kill_switch_active,
             "ecb_observe_ok":   _ecb_observation_ok,
         }
+        # [v9-dev Track L3, 2026-07-05] 섀도우 점수화 결과 — 안전게이트(위 18종)와 별개로
+        # entry_gate_json에 함께 저장. qty_ok/mode_filter_ok 강등 여부와 무관하게 항상 기록.
+        _sgs = decision.get("soft_gate_shadow")
+        if _sgs:
+            _gate_checks["soft_gate_shadow_grade"]     = _sgs.get("soft_grade")
+            _gate_checks["soft_gate_shadow_score"]      = _sgs.get("soft_score")
+            _gate_checks["soft_gate_shadow_size_mult"]  = _sgs.get("soft_size_mult")
+        # [v9-dev Track L1, 2026-07-05] 데이 레짐 엔진 섀도우 결과도 동일하게 기록.
+        _drs = getattr(self, "_day_regime_shadow", None)
+        if _drs:
+            _gate_checks["day_regime_shadow"]            = _drs.get("regime")
+            _gate_checks["day_regime_shadow_confidence"] = _drs.get("confidence")
 
         _entry_block_reason = ""
         if direction != 0 and self.position.status == "FLAT":
@@ -8113,6 +8174,7 @@ class TradingSystem:
         self.current_micro_regime = "혼합"  # threshold_feasibility 피처에 1분 lag로 전달됨
         self.intraday_regime.reset_daily()
         self.current_intraday_regime = INTRADAY_NORMAL
+        self.day_regime_engine.reset_daily()
         self.investor_data.reset_daily()
         self.pcr_store.reset_daily()
         self.option_chain_snap.reset_daily()

@@ -76,6 +76,8 @@ data/mae_mfe_report.txt
 data/gate_ablation_report.txt
 data/validation_campaign_report.md
 data/validation_campaign_metrics.json
+data/soft_gate_shadow_report.txt
+data/day_regime_backtest_report.txt
 
 # 로그
 logs/

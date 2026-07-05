@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-07-05 (v9-dev) [Track L1/L3 섀도우 — origin/dev 머지 후속]
+
+> 상세: `docs/미륵이고도화/TODO_v9_2026-07-04.md`. [[project_v9_dev_branch_split]] 규칙상
+> v9-dev 상세 TODO는 여기가 아니라 위 파일에서 관리 — 아래는 확인 포인터만.
+
+- [ ] **모의투자 재가동 후 섀도우 필드 적재 확인** — `ensemble_decisions.entry_gate_json`에
+  `soft_gate_shadow_grade`/`soft_gate_shadow_score`/`soft_gate_shadow_size_mult`,
+  `day_regime_shadow`/`day_regime_shadow_confidence`가 매분 기록되는지 확인
+  (`strategy/entry/soft_gate_scorer.py`, `strategy/regime/day_regime_engine.py` 배선).
+- [ ] **표본 축적 후 두 리포트 재실행** — `scripts/generate_soft_gate_shadow_report.py`,
+  `scripts/generate_day_regime_backtest_report.py`. 배포 직후는 표본 0건이 정상.
+- [ ] Track L3 승격 합격선 사전등록 — dev의 `VALIDATION_CAMPAIGN` 패턴과 동일하게, 데이터를
+  보기 전에 수치 기준을 정할 것.
+- [ ] Track L1 백테스트 리포트로 레짐 분류 유의성 확인되면 Track L2(레짐조건부 프로파일)
+  착수 — 그 전까지는 블록드.
+
 ## 2026-07-05 (291차 검증) [검증 캠페인 계측·판정 자동화]
 
 > 260705 계획 문서 §1 공백 3종(합격선 사전등록·롤백 기준·스케줄 미연결) 구현 완료.

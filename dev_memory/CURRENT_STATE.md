@@ -1,7 +1,45 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-05 (290차) — 260704 종합감사 실행 로드맵 P0~P3 전체 구현
+> 마지막 업데이트: 2026-07-05 (v9-dev) — origin/dev 290/291차 머지 + v9 Track L1/L3 섀도우 구현
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-05 (v9-dev — origin/dev 290/291차 머지 + Track L1/L3 섀도우 구현)
+
+> [[project_v9_dev_branch_split]] 규칙에 따라 v9-dev 작업 상세 로그는 dev_memory 차수
+> 카운터를 쓰지 않고 `docs/미륵이고도화/`에 기록한다. 이 항목은 dev_memory 첫 화면에서
+> "무슨 일이 있었는지"만 요약하는 포인터다 — 상세는 아래 참고 문서 확인.
+
+**계기**: `docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md` 감사 로드맵을 origin/dev(MW0602)가
+290/291차로 전면 구현·머지한 것을 확인 → v2 구현계획(v9)의 스코프 대부분이 dev에 흡수됨을
+반영해 v9를 재정의하고, dev가 다루지 않는 v1 고유 3계층 아키텍처(L1/L2/L3)의 섀도우 구현에
+착수했다.
+
+**작업 내용**:
+1. `git merge origin/dev` → v9-dev (커밋 `333ff60`) — 충돌 5건(.gitignore, config/settings.py,
+   dev_memory/CURRENT_STATE.md·NEXT_TODO.md, 감사보고서 doc) 전부 해소. 이 파일과
+   `NEXT_TODO.md`의 위 항목들은 dev(MW0602) 원본을 그대로 채택한 것.
+2. **Track L3(소프트게이트 점수화, 섀도우)** — `strategy/entry/soft_gate_scorer.py` 신규.
+   qty_ok/mode_filter_ok 병목(9항목 체크리스트+Degraded/ExecutionGovernor/MetaGate/
+   ToxicityGate 4종 오버라이드 직렬 AND, 30일 A/B등급 0건)의 실제 해법 — 직렬 AND 대신
+   가중 점수 합산. `_final_grade`/`_qty_display`는 건드리지 않는 읽기 전용 섀도우.
+   main.py 배선 완료, `entry_gate_json.soft_gate_shadow_*`로 기록.
+3. **Track L1(데이 레짐 엔진, 섀도우)** — `strategy/regime/day_regime_engine.py` 신규.
+   기존 레짐분류기 3개(RegimeClassifier/MicroRegimeClassifier/IntradayTacticalRegime)를
+   재구현 대신 통합해 TREND_UP/TREND_DN/RANGE/CHAOS + 히스테리시스 산출. main.py 배선
+   완료, `entry_gate_json.day_regime_shadow`로 기록. L2(레짐조건부 프로파일)는 이 엔진의
+   백테스트 검증 완료 후 별도 세션 착수(블록드).
+4. 진단 스크립트 2종 신규: `scripts/generate_soft_gate_shadow_report.py`,
+   `scripts/generate_day_regime_backtest_report.py` — 둘 다 읽기 전용, 실행 확인 완료
+   (표본 0건 정상 — 배포 이후부터 entry_gate_json에 신규 필드가 쌓임).
+
+**참고 문서**: `docs/미륵이고도화/mireuki_v9_구현계획_v3_2026-07-05.md`(재정의 근거),
+`docs/미륵이고도화/TODO_v9_2026-07-04.md`(이관완료/신규 트랙 상세 체크리스트).
+
+**다음 확인 필요**: 모의투자 재가동 후 `entry_gate_json`에 `soft_gate_shadow_*`/
+`day_regime_shadow*` 필드가 실제로 쌓이는지 → 두 리포트 재실행 → Track L3 합격선
+사전등록 + Track L2 착수 여부 판단.
 
 ---
 
