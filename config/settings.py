@@ -602,6 +602,54 @@ SIGNAL_DECAY_EXIT_ENABLED = True
 LIMIT_ENTRY_FIRST_ENABLED = False
 LIMIT_ENTRY_TIMEOUT_SEC = 12   # 지정가 미체결 대기시간 (감사 권고 10~15초)
 
+# ── [260705 검증 캠페인] 섀도우 채널 승격 합격선 — 사전 등록 (변경 금지) ──────
+# 근거: docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3.
+# 데이터를 보기 전에 합격선을 고정한다(pre-registration). 사후 변경은 반드시
+# 과적합이므로, 바꾸려면 dev_memory/DECISION_LOG.md에 사유 기록 후 검증 시계를
+# 리셋해야 한다(같은 문서 §9-4). 판정은 scripts/generate_validation_campaign_report.py
+# 가 매주 금요일 EOD 체인(scripts/eod_retrain.py)에서 자동 수행한다.
+VALIDATION_CAMPAIGN = {
+    # §3-1 Triple-Barrier 채널: 섀도우 TB 모델의 신호(P_up-P_dn)와 실현 변동(pt)의
+    # 스피어만 IC가, 프로덕션 3클래스 신호(up_prob-down_prob)의 IC를 이겨야 한다.
+    # OOS 보장: TB 모델 파일 mtime 이후 ts만 평가 (학습 표본과 평가 표본 분리).
+    "tb": {
+        "ic_delta_min":      0.03,   # IC_TB > IC_3class + 0.03
+        "ic_abs_min":        0.05,   # 그리고 IC_TB > 0.05
+        "min_samples_hz":    800,    # 호라이즌별 최소 OOS 표본 (미달 → INSUFFICIENT)
+        "min_horizons_pass": 2,      # 6개 중 2개 이상 합격 시 채널 PASS
+        "max_retries":       2,      # 불합격 시 배리어 재조정 후 재시험 최대 횟수 (§3-1)
+    },
+    # §3-2 Meta-Gate 채널: entry_quality_prob 상위/하위 30% 분위의 실현 순EV 분리도.
+    "meta_gate": {
+        "top_ev_min_pt":     0.0,    # 상위 30% 순EV(왕복비용 차감, pt) > 0
+        "sep_cost_mult":     2.0,    # (상위30% - 하위30%) > 왕복비용 × 2
+        "min_per_tercile":   30,     # 분위별 최소 표본
+    },
+    # §3-3 분위 회귀 채널: [q10,q90] 커버리지 밴드 + 불확실성-실현폭 상관.
+    "quantile": {
+        "coverage_lo":       0.72,   # 실현값의 [q10,q90] 포함 비율 하한
+        "coverage_hi":       0.88,   # 상한 (이상적 0.80)
+        "unc_corr_min":      0.15,   # (q90-q10) vs |실현폭| 스피어만 상관 하한
+        "min_samples":       300,
+    },
+    # §3-5 ON 정책 롤백 기준 ① — 신호소멸청산 counterfactual 누적 판정.
+    # 4주 시점 "아낀 pt − 놓친 pt" 합계 < 0 → conf 임계 zone_mc+0.05 강화,
+    # 강화 후에도 음수 → OFF (리포트는 권고만 출력, 적용은 수동).
+    "signal_decay": {
+        "min_samples":       10,     # 발동 건 최소 수 (미달 → 판정 보류)
+        "cf_window_min":     30,     # counterfactual 관찰 창 (분) — 창 내 미도달 시 창끝 종가
+    },
+    # §3-5 ON 정책 롤백 기준 ② — 레짐 조건부 ATR 배수: trend 버킷 EV가 음수이면서
+    # neutral 버킷보다 나쁘면 trend 배수 1.20→1.10 후퇴 권고.
+    "hurst_regime": {
+        "min_per_bucket":    20,     # 버킷별 최소 거래 수 (미달 → 판정 보류)
+    },
+    # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
+    "slippage_ticks_per_side": 1.0,
+    # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)
+    "start_date": "2026-07-05",
+}
+
 # ── 선물 수수료 설정 ───────────────────────────────────────────
 # 키움증권 모의투자 기준. 실전 전환 시 실제 요율로 교체.
 # 1계약 1050pt 기준: 편도 ≈ 39,375원 / 왕복 ≈ 78,750원

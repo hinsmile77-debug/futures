@@ -7386,6 +7386,30 @@ class TradingSystem:
                     "[SignalDecay] 반대신호 청산: pos=%s dir=%d conf=%.3f zone_mc=%.3f",
                     self.position.status, _sd_dir, _sd_conf, _sd_zone_mc,
                 )
+                # [260705 검증 캠페인 §3-5] counterfactual 기록 — 발동 시점의
+                # 스톱/TP1 가격을 보존해 주간 리포트(generate_validation_campaign_report)가
+                # "청산 안 했으면 어느 배리어에 먼저 닿았나"를 사후 판정한다.
+                # 기록 실패는 청산 자체를 막지 않는다 (계측 전용).
+                try:
+                    execute(
+                        TRADES_DB,
+                        """INSERT INTO signal_decay_exits
+                           (ts, direction, exit_price, stop_price, tp1_price,
+                            quantity, conf, zone_mc)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                            self.position.status,
+                            float(price),
+                            float(self.position.stop_price or 0.0),
+                            float(self.position.tp1_price or 0.0),
+                            int(self.position.quantity),
+                            _sd_conf,
+                            _sd_zone_mc,
+                        ),
+                    )
+                except Exception as _sde:
+                    logger.warning("[SignalDecay] counterfactual 기록 실패 (무해): %s", _sde)
                 self._send_broker_exit_order(self.position.quantity)
                 result = self.position.close_position(price, "신호소멸청산")
                 self._post_exit(result)

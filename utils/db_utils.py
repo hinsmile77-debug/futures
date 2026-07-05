@@ -312,6 +312,11 @@ def _migrate_ensemble_decisions_db():
                 # [260704 감사 P2] 분위 회귀(q10/q50/q90) 섀도우 스코어 — 실거래 미반영
                 "quantile_expected_pt": "REAL",
                 "quantile_uncertainty_pt": "REAL",
+                # [260705 검증 캠페인] §3-3 커버리지 KPI용 원시 분위값 + 스코어링 호라이즌
+                # (expected/uncertainty만으로는 비대칭 분위에서 q10/q90 복원 불가)
+                "quantile_q10_pt": "REAL",
+                "quantile_q90_pt": "REAL",
+                "meta_gate_horizon": "TEXT",
             }
             for name, dtype in additions.items():
                 if name not in cols:
@@ -341,6 +346,30 @@ def init_trades_db():
     """
     execute(TRADES_DB, sql)
     _migrate_trades_db()
+    # [260705 검증 캠페인] §3-5 신호소멸청산 counterfactual 기록 —
+    # 발동 시점의 스톱/TP1 가격을 보존해 두고, 주간 리포트가 이후 분봉으로
+    # "청산 안 했으면 어느 배리어에 먼저 닿았나"를 사후 판정(resolve)한다.
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS signal_decay_exits (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            TEXT NOT NULL,           -- 발동 시각 (분봉)
+        direction     TEXT NOT NULL,           -- LONG/SHORT (청산된 포지션 방향)
+        exit_price    REAL NOT NULL,           -- 신호소멸청산 체결가(분봉 종가)
+        stop_price    REAL,                    -- 당시 하드스톱 가격
+        tp1_price     REAL,                    -- 당시 TP1 가격
+        quantity      INTEGER,
+        conf          REAL,                    -- 반대신호 confidence
+        zone_mc       REAL,                    -- 당시 zone_mc 임계
+        resolved      INTEGER DEFAULT 0,       -- 1=counterfactual 판정 완료
+        cf_outcome    TEXT,                    -- STOP / TP1 / NEITHER
+        cf_exit_price REAL,                    -- counterfactual 청산가
+        saved_pts     REAL,                    -- (+)=조기청산으로 아낀 pt, (-)=놓친 pt
+        created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_sde_ts ON signal_decay_exits(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,

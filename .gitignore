@@ -68,6 +68,8 @@ rollout_readiness_metrics.json
 effect_monitor_history.json
 data/mae_mfe_report.txt
 data/gate_ablation_report.txt
+data/validation_campaign_report.md
+data/validation_campaign_metrics.json
 
 # 로그
 logs/

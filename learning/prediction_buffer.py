@@ -51,8 +51,9 @@ class PredictionBuffer:
                 meta_action, meta_confidence, meta_size_mult, meta_reason,
                 toxicity_action, toxicity_score, toxicity_score_ma, toxicity_size_mult, toxicity_reason,
                 checklist_reason, meta_entry_quality_prob,
-                quantile_expected_pt, quantile_uncertainty_pt
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                quantile_expected_pt, quantile_uncertainty_pt,
+                quantile_q10_pt, quantile_q90_pt, meta_gate_horizon
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -87,6 +88,9 @@ class PredictionBuffer:
                 (decision.get("meta_gate") or {}).get("entry_quality_prob"),
                 ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("expected_pt"),
                 ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("uncertainty_pt"),
+                ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("q10"),
+                ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("q90"),
+                str((decision.get("meta_gate") or {}).get("scoring_horizon", "") or ""),
             ),
         )
 
@@ -196,6 +200,9 @@ class PredictionBuffer:
             (decision.get("meta_gate") or {}).get("entry_quality_prob"),
             ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("expected_pt"),
             ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("uncertainty_pt"),
+            ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("q10"),
+            ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("q90"),
+            str((decision.get("meta_gate") or {}).get("scoring_horizon", "") or ""),
         )
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
@@ -220,8 +227,9 @@ class PredictionBuffer:
                        entry_gate_json, entry_final_ok, entry_qty, entry_mode,
                        entry_executed, entry_block_reason,
                        checklist_reason, meta_entry_quality_prob,
-                       quantile_expected_pt, quantile_uncertainty_pt
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       quantile_expected_pt, quantile_uncertainty_pt,
+                       quantile_q10_pt, quantile_q90_pt, meta_gate_horizon
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 

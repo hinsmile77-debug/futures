@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-07-05 (291차 검증) [검증 캠페인 계측·판정 자동화]
+
+> 260705 계획 문서 §1 공백 3종(합격선 사전등록·롤백 기준·스케줄 미연결) 구현 완료.
+> 합격선: `config/settings.py:VALIDATION_CAMPAIGN` (사전 등록 — 사후 변경 금지, §9-4).
+> 판정 로직은 합성 데이터 격리 테스트로 5개 채널 전부 검증 완료(스크래치패드, 운영 DB 미접촉).
+
+- [ ] **① 금요일 EOD 캠페인 체인 첫 실행 확인** — `EOD_RETRAIN.bat`(py310_64)이
+  금요일에 재학습 후 `[검증 캠페인] 주간 스텝 5개 실행` 로그와 함께
+  ablation→판정리포트→TB재학습→분위재학습(→격주 MAE/MFE) 순으로 도는지,
+  `data/validation_campaign_report.md` 생성되는지 확인. 강제 실행: `--campaign` 플래그.
+  주의: 판정 리포트가 TB 재학습보다 **먼저** 도는 순서가 OOS 보장의 핵심 — 순서 바꾸지 말 것
+- [ ] **② 신규 로깅 3컬럼 축적 확인** — 다음 장중 `ensemble_decisions`에
+  quantile_q10_pt/quantile_q90_pt/meta_gate_horizon이 매분 기록되는지
+  (마이그레이션은 앱 기동 시 init_all_dbs()가 자동 수행, 개발PC에서 확인 완료)
+- [ ] **③ 신호소멸청산 counterfactual 행 기록 확인** — 다음 신호소멸청산 발동 시
+  trades.db `signal_decay_exits`에 스톱/TP1 가격 포함 행이 남는지, 다음 금요일
+  리포트 [4]에서 resolve(STOP/TP1/NEITHER 판정)되는지 확인
+- [ ] **④ 첫 판정 리포트는 전 채널 INSUFFICIENT가 정상** — TB는 모델 mtime 이후
+  OOS 표본이 1주 쌓여야 하고, meta/quantile은 신규 컬럼 축적 후부터. W2 리포트부터
+  수치가 나오기 시작하는 게 정상 진행. 조급하게 합격선을 건드리지 말 것
+
 ## 2026-07-05 (290차 검증) [260704 종합감사 P0~P3]
 
 ### 실기동/실브로커 검증 필요 항목

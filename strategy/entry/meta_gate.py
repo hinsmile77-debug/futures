@@ -105,6 +105,11 @@ class MetaGate:
         entry_quality_prob = self._eq_scorer.score(horizon, features)
         # [260704 감사 P2] 분위 회귀(q10/q50/q90) 섀도우 스코어 — 로깅 전용.
         quantile_estimate = self._q_scorer.score(horizon, features)
+        # [260705 검증 캠페인] 스코어링에 쓴 호라이즌을 결과에 보존 —
+        # 주간 리포트가 meta_labels(ts×horizon)와 조인할 때 필요 (§3-2·§3-3).
+        if quantile_estimate is not None:
+            quantile_estimate = dict(quantile_estimate)
+            quantile_estimate["horizon"] = horizon
 
         if direction == DIRECTION_FLAT:
             return {
@@ -112,6 +117,7 @@ class MetaGate:
                 "meta_confidence": 0.0,
                 "entry_quality_prob": entry_quality_prob,
                 "quantile_estimate": quantile_estimate,
+                "scoring_horizon": horizon,   # [260705 검증 캠페인] meta_labels 조인 키
                 "size_multiplier": 0.0,
                 "reason": "flat_signal",
                 "source": "rule",
@@ -215,6 +221,7 @@ class MetaGate:
             "meta_confidence":     round(blended_conf, 4),
             "entry_quality_prob":  entry_quality_prob,
             "quantile_estimate":   quantile_estimate,
+            "scoring_horizon":     horizon,   # [260705 검증 캠페인] meta_labels 조인 키
             "size_multiplier":     round(size_mult, 4),
             "reason":              reason,
             "source":              learned["model_source"],
