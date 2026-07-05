@@ -39,6 +39,18 @@ CYBOS_FUTURES_BALANCE_PROGID = "CpTrade.CpTd0723"
 CYBOS_FUTURES_DAILY_PNL_PROGID = "CpTrade.CpTd6197"
 CYBOS_FUTURES_ORDER_PROGID = "CpTrade.CpTd6831"
 CYBOS_FUTURES_ORDER_MARGIN_QTY_PROGID = "CpTrade.CpTd6722"  # 선물/옵션 신규주문가능 수량 조회
+# [260704 감사 P2] KOSPI200 현물지수 코드 — 사용자가 Cybos Plus 클라이언트
+# 종목코드검색으로 직접 확인 (2026-07-05). 선물-현물 베이시스 계산용.
+# 주의: 코스피200지수는 문맥에 따라 두 코드가 다르다 (둘 다 같은 지수값, TR 네임스페이스만 다름)
+#   - "00800" = 선물차트 코드(예: FutOptChart 등 선물 관련 문맥에서 참조)
+#   - "K2G01P" = 주식차트 지수코드(예: StockChart/StockMst 등 일반 시세 조회 문맥)
+# dscbo1.StockMst는 일반 시세조회 TR이므로 K2G01P를 사용한다.
+KOSPI200_INDEX_CODE = "K2G01P"
+# [260704 감사 P2] VKOSPI(코스피200변동성지수) 코드 — 사용자가 Cybos Plus 클라이언트
+# 종목코드검색("코스피 200 변동성지수")으로 직접 확인 (2026-07-05).
+# 주의: A0567은 이 지수의 "선물"(예: 2607 만기)이라 롤오버가 있음 — 만기 없는
+# 현물/지수값이 필요해 O2901P(현물지수)를 사용한다.
+VKOSPI_INDEX_CODE = "O2901P"
 
 # CpTd6722 GetHeaderValue 인덱스 (cybosplus.github.io/cptrade_new_rtf_1_/cptd6722_.htm 검증)
 MARGIN_QTY_HEADER_SELL_NEW = 19   # 매도(SHORT) 신규주문가능수량
@@ -63,7 +75,12 @@ ORDER_STATUS_MAP = {
 }
 
 ORDER_HOGA_MARKET = "2"
+ORDER_HOGA_LIMIT = "1"
 ORDER_CONDITION_DEFAULT = "0"
+CYBOS_FUTURES_CANCEL_PROGID = "CpTrade.CpTd6833"  # 선물/옵션 취소주문
+# CpTd6831 신규주문 응답 GetHeaderValue(8) = 주문번호 (정정/취소 시 원주문번호로 사용)
+# 근거: docs/CyBos ref/CYBOS_FUTURES_ORDER_TR_MAP.md §4 (공식 TR 테스트 예제 실측 캡처 기반, 2026-07-05 검증)
+ORDER_NEW_HEADER_ORDER_NO = 8
 
 # CpTd6197 header mapping is validated against raw Cybos logs in SYSTEM.log.
 # HTS is a visual cross-check only and does not override this mapping.
@@ -806,6 +823,160 @@ class CybosAPI:
             return status or -1
         return 0
 
+    def send_limit_order(
+        self,
+        *,
+        account_no: str,
+        code: str,
+        side: str,
+        qty: int,
+        price: float,
+        rqname: str,
+        screen_no: str,
+    ) -> Dict[str, Any]:
+        """지정가 신규주문 (CpTd6831, idx6='1'). send_market_order와 동일 TR — idx4/6만 다름.
+
+        [260704 감사 P1] 지정가 우선 집행용 — 반환값에 order_no를 포함해 미체결 시
+        cancel_order()로 취소할 수 있게 한다.
+
+        Returns: {"ret": int, "order_no": str} — ret=0 성공, 그 외 실패(get_last_order_error 참조)
+        """
+        del rqname, screen_no
+
+        if not account_no or not code or qty <= 0 or price <= 0:
+            return {"ret": -1, "order_no": ""}
+
+        self._ensure_trade_init()
+        side_code = ORDER_SIDE_MAP.get(_safe_str(side).upper())
+        if not side_code:
+            return {"ret": -1, "order_no": ""}
+
+        _code = _normalize_code(code)
+        _qty = int(qty)
+
+        def _read_order_no(obj):
+            return _safe_str(obj.GetHeaderValue(ORDER_NEW_HEADER_ORDER_NO))
+
+        try:
+            ret, status, msg, order_no = _run_block_request(
+                progid=CYBOS_FUTURES_ORDER_PROGID,
+                input_pairs=[
+                    (1, account_no),
+                    (2, _code),
+                    (3, _qty),
+                    (4, float(price)),
+                    (5, side_code),
+                    (6, ORDER_HOGA_LIMIT),
+                    (7, ORDER_CONDITION_DEFAULT),
+                    (8, CYBOS_GOODS_CODE_FUTURES),
+                ],
+                data_reader=_read_order_no,
+            )
+        except TimeoutError as exc:
+            self._last_order_error = {
+                "ret": -99, "status": None, "msg": str(exc),
+                "account_no": account_no, "code": _code, "side": side_code, "qty": _qty,
+            }
+            system_logger.critical(
+                "[CybosLimitOrder] BlockRequest 타임아웃: %s account=%s code=%s side=%s qty=%s price=%s",
+                exc, account_no, _code, side_code, _qty, price,
+            )
+            self._emit_msg({
+                "source": "CpTd6831",
+                "status": "TIMEOUT",
+                "status_code": -99,
+                "message": str(exc),
+                "account_no": account_no,
+                "code": _code,
+                "side": "매수" if side_code == "2" else "매도",
+                "order_gubun": "매수" if side_code == "2" else "매도",
+                "trade_gubun": side_code,
+                "qty": _qty,
+            })
+            return {"ret": -99, "order_no": ""}
+
+        payload = {
+            "source": "CpTd6831",
+            "status": "OK" if ret in (0, None) and status == 0 else "ERROR",
+            "status_code": status if status else _safe_int(ret, 0),
+            "message": msg,
+            "account_no": account_no,
+            "code": _code,
+            "side": "매수" if side_code == "2" else "매도",
+            "order_gubun": "매수" if side_code == "2" else "매도",
+            "trade_gubun": side_code,
+            "qty": _qty,
+        }
+        self._emit_msg(payload)
+        _order_failed = ret not in (0, None) or status != 0
+        if _order_failed:
+            self._last_order_error = {
+                "ret": ret, "status": status, "msg": msg,
+                "account_no": account_no, "code": _code, "side": side_code, "qty": _qty,
+            }
+            system_logger.error(
+                "[CybosLimitOrder] 지정가 주문 실패 ret=%s status=%s msg=%s account=%s code=%s side=%s qty=%s price=%s",
+                ret, status, msg, account_no, _code,
+                "매수" if side_code == "2" else "매도", _qty, price,
+            )
+            _ret_code = _safe_int(ret, -1) if ret not in (0, None) else (status or -1)
+            return {"ret": _ret_code, "order_no": ""}
+
+        self._last_order_error = None
+        logger.info("[CybosLimitOrder] ret=%s status=%s msg=%s order_no=%s payload=%s",
+                    ret, status, msg, order_no, payload)
+        return {"ret": 0, "order_no": order_no or ""}
+
+    def cancel_order(
+        self,
+        *,
+        account_no: str,
+        order_no: str,
+        code: str,
+        qty: int,
+    ) -> int:
+        """선물/옵션 취소주문 (CpTd6833). 반환: 0=성공, 그 외=실패.
+
+        [260704 감사 P1] 지정가 우선 집행 타임아웃 시 미체결 주문 취소용.
+        """
+        if not account_no or not order_no or not code or qty <= 0:
+            return -1
+
+        self._ensure_trade_init()
+        _code = _normalize_code(code)
+
+        try:
+            ret, status, msg, _ = _run_block_request(
+                progid=CYBOS_FUTURES_CANCEL_PROGID,
+                input_pairs=[
+                    (2, order_no),
+                    (3, account_no),
+                    (4, _code),
+                    (5, int(qty)),
+                    (6, CYBOS_GOODS_CODE_FUTURES),
+                ],
+            )
+        except TimeoutError as exc:
+            system_logger.critical(
+                "[CybosCancel] BlockRequest 타임아웃: %s order_no=%s account=%s code=%s qty=%s",
+                exc, order_no, account_no, _code, qty,
+            )
+            return -99
+
+        _failed = ret not in (0, None) or status != 0
+        if _failed:
+            system_logger.error(
+                "[CybosCancel] 취소 실패 ret=%s status=%s msg=%s order_no=%s account=%s code=%s qty=%s",
+                ret, status, msg, order_no, account_no, _code, qty,
+            )
+            return _safe_int(ret, -1) if ret not in (0, None) else (status or -1)
+
+        system_logger.info(
+            "[CybosCancel] 취소 성공 order_no=%s account=%s code=%s qty=%s",
+            order_no, account_no, _code, qty,
+        )
+        return 0
+
     def get_last_order_error(self) -> Optional[Dict[str, Any]]:
         """가장 최근 실패한 주문의 상세 정보(ret/status/msg). 성공 시 None."""
         return self._last_order_error
@@ -857,6 +1028,53 @@ class CybosAPI:
             )
             return None
         return data
+
+    def get_index_price(
+        self, code: str = KOSPI200_INDEX_CODE, name_contains: str = "200",
+    ) -> Optional[float]:
+        """[260704 감사 P2] 지수 현재가 조회 (dscbo1.StockMst).
+
+        기본값은 KOSPI200 현물지수(코드 "K2G01P" — 주식차트/일반시세 네임스페이스.
+        "00800"은 선물차트 네임스페이스 코드로 같은 지수값이지만 이 TR엔 부적합 —
+        사용자가 Cybos Plus 클라이언트에서 직접 확인, 2026-07-05). 선물-현물 베이시스 계산용.
+        VKOSPI(코드 "O2901P", name_contains="변동성" — 동일 방식으로 확인)에도 재사용.
+
+        종목명(idx1)에 name_contains가 없으면 잘못된 코드로 간주해 None 반환 —
+        틀린 코드가 조용히 엉뚱한 가격을 흘려보내는 사고를 방지하는 자체 검증.
+        """
+        if not code:
+            return None
+        try:
+            ret, status, msg, data = _run_block_request(
+                progid="dscbo1.StockMst",
+                input_pairs=[(0, code)],
+                data_reader=lambda obj: {
+                    "name": _safe_str(obj.GetHeaderValue(1)),
+                    "price": _safe_float(obj.GetHeaderValue(11)),
+                },
+                timeout_sec=5,
+            )
+        except TimeoutError as exc:
+            system_logger.warning("[CybosIndex] BlockRequest 타임아웃: %s code=%s", exc, code)
+            return None
+        except Exception as exc:
+            # 주기적 폴링(베이시스/VKOSPI 피처 보조용)이라 여기서 예외를 삼켜 호출부(QTimer)를
+            # 보호한다 — 주문류(send_market_order 등)와 달리 실패해도 매매에 영향 없음.
+            system_logger.warning("[CybosIndex] 조회 예외: %s code=%s", exc, code)
+            return None
+
+        if ret not in (0, None) or status != 0:
+            system_logger.warning(
+                "[CybosIndex] 조회 실패 ret=%s status=%s msg=%s code=%s", ret, status, msg, code,
+            )
+            return None
+        if not data or name_contains not in data.get("name", ""):
+            system_logger.error(
+                "[CybosIndex] 종목명 검증 실패 — code=%s name=%s (기대 포함어=%s, 값 폐기)",
+                code, data.get("name") if data else None, name_contains,
+            )
+            return None
+        return data["price"] if data["price"] > 0 else None
 
     def create_subscription(
         self,
@@ -1001,7 +1219,8 @@ class CybosAPI:
                 )
                 return None
             headers: Dict[int, str] = {}
-            for i in range(32):
+            # CpSvr8111(프로그램매매)은 idx55까지 사용(2026-07-05 검증) — 여유있게 64까지 읽음
+            for i in range(64):
                 try:
                     headers[i] = _safe_str(obj.GetHeaderValue(i))
                 except Exception:
@@ -1157,107 +1376,81 @@ class CybosAPI:
             "raw": {"open_interest": oi},
         }
 
-    def request_program_investor(self) -> Dict[str, Any]:
+    def request_program_investor(self, market: str = "1") -> Dict[str, Any]:
         """
-        Program trading summary probe.
+        프로그램매매 종합매매현황 (Dscbo1.CpSvr8111).
 
-        Official Daishin docs distinguish:
-        - Dscbo1.CpSvr8111 / 8111S / 8111KS: market summary query objects
-        - CpSysDib.CpSvr8119S: per-stock realtime subscription object
+        [260704 감사 P2] 필드 매핑을 공식 문서(cybosplus.github.io/cpdib_rtf_1_/cpsvr8111.htm)
+        기준으로 확정했다(2026-07-05, 사용자가 실제 Creon Plus 연결로 확인) — 이전 코드의
+        "guess"(h[0~2]=arb, h[3~5]=nonarb)는 완전히 틀렸었다. 실제 GetHeaderValue 레이아웃:
 
-        This helper is used by the minute investor snapshot path, so it should
-        prefer the documented 8111 summary family instead of the 8119 per-stock
-        realtime family or undocumented ProgramTrade aliases.
+            idx0=날짜, idx1=시간
+            idx2~7   = 차익매도   (위탁/자기/합계 × 수량/금액)
+            idx8~13  = 차익매수   (위탁/자기/합계 × 수량/금액)
+            idx14~19 = 차익순매수 (idx14=위탁수량,15=자기수량,16=합계수량,
+                                    17=위탁금액,18=자기금액,19=합계금액)
+            idx20~25 = 비차익매도
+            idx26~31 = 비차익매수
+            idx32~37 = 비차익순매수 (idx32=위탁수량,33=자기수량,34=합계수량,
+                                      35=위탁금액,36=자기금액,37=합계금액)
+            idx38~55 = 전체(차익+비차익 합산) 매도/매수/순매수
+
+        입력 idx0 = 거래소/코스닥 구분코드: '1'=거래소(KOSPI), '2'=코스닥.
+        KOSPI200 선물 시스템이므로 기본값 '1'.
+
+        실측(2026-07-05, 장중): Dscbo1.CpSvr8111S/8111KS는 BlockRequest 미지원
+        ("본 객체에서는 지원하지 않는 함수입니다") — 8111S는 실시간 구독 전용으로 추정,
+        조회는 8111(비실시간)만 사용한다. CpSvr8119/CpSvrNew8119는 종목별(입력 없인 전종목
+        순회) TR로 이 용도(시장 전체 요약)에 맞지 않아 후보에서 제외했다.
         """
-        candidates = [
-            ("Dscbo1.CpSvr8111", []),
-            ("Dscbo1.CpSvr8119", []),
-            ("Dscbo1.CpSvrNew8119", []),
-        ]
-        status_error_progid = ""
-        zero_response_progid = ""
-        for progid, inputs in candidates:
-            probe = self._probe_investor_tr(progid, inputs, allow_status_error=True)
-            if probe is None:
-                continue
-            if _safe_int(probe.get("status", 0)) != 0:
-                status_error_progid = progid
-                system_logger.info(
-                    "[CybosInvestorRaw] %s reachable but nonzero status=%s msg=%s",
-                    progid,
-                    probe.get("status"),
-                    probe.get("msg"),
-                )
-                continue
-            h = probe["headers"]
-            # Header layout guess: h[0~2]=arb(buy/sell/net), h[3~5]=non-arb, h[6~8]=total
-            arb_buy = _safe_int(h.get(0, "0"))
-            arb_sell = _safe_int(h.get(1, "0"))
-            arb_net = _safe_int(h.get(2, "0")) or (arb_buy - arb_sell)
-            nonarb_buy = _safe_int(h.get(3, "0"))
-            nonarb_sell = _safe_int(h.get(4, "0"))
-            nonarb_net = _safe_int(h.get(5, "0")) or (nonarb_buy - nonarb_sell)
+        ARB_NET_AMOUNT_IDX = 19       # 차익순매수체결금액 (총, KRW)
+        NONARB_NET_AMOUNT_IDX = 37    # 비차익순매수체결금액 (총, KRW)
 
-            # Distinguish "object exists but returned zeros" from true mapping-missing cases.
-            if arb_net == 0 and nonarb_net == 0 and arb_buy == 0 and nonarb_buy == 0:
-                zero_response_progid = progid
-                logger.debug(
-                    "[CybosInvestorRaw] %s all-zero payload -> market closed or no data",
-                    progid,
-                )
-                continue
-
-            _system_info(
-                f"[CybosInvestorRaw] program via {progid} "
-                f"arb={arb_net:+d} nonarb={nonarb_net:+d}"
-            )
-            return {
-                "supported": True,
-                "source": progid,
-                "reason": f"probe ok via {progid}",
-                "nets": {"foreign": arb_net + nonarb_net},
-                "raw": {"arb_net": arb_net, "nonarb_net": nonarb_net},
-            }
-
-        if status_error_progid:
+        # [260704 P2 재수정] 최초 str(market)="1" 시도가 "해당자료가 없습니다(100)"로 실패 —
+        # 같은 코드베이스의 CpSvrNew7221(request_investor_futures)이 이미 ord('1')(아스키 49)
+        # 관례를 쓰고 있어 동일하게 맞춤(2026-07-05, 실제 Creon Plus 연결로 확인).
+        probe = self._probe_investor_tr("Dscbo1.CpSvr8111", [(0, ord(str(market)))], allow_status_error=True)
+        if probe is None:
             _system_info_throttled(
-                f"[CybosInvestorRaw] program investor TR status-error via {status_error_progid}",
-                key="cybos_investor_raw_program_status_error",
+                "[CybosInvestorRaw] CpSvr8111 dispatch/request 실패",
+                key="cybos_investor_raw_program_missing",
                 min_interval_sec=600.0,
             )
             return {
                 "supported": False,
-                "source": status_error_progid,
-                "reason": "probe reachable but dib status nonzero",
+                "source": "Dscbo1.CpSvr8111",
+                "reason": "dispatch/request 실패",
                 "nets": {},
                 "raw": {"arb_net": 0, "nonarb_net": 0},
             }
 
-        if zero_response_progid:
-            _system_info_throttled(
-                f"[CybosInvestorRaw] program investor TR zero-response via {zero_response_progid}",
-                key="cybos_investor_raw_program_zero_response",
-                min_interval_sec=600.0,
+        if _safe_int(probe.get("status", 0)) != 0:
+            system_logger.info(
+                "[CybosInvestorRaw] CpSvr8111 reachable but status=%s msg=%s",
+                probe.get("status"), probe.get("msg"),
             )
             return {
                 "supported": False,
-                "source": zero_response_progid,
-                "reason": "probe ok but all-zero payload",
+                "source": "Dscbo1.CpSvr8111",
+                "reason": f"dib status={probe.get('status')} msg={probe.get('msg')}",
                 "nets": {},
                 "raw": {"arb_net": 0, "nonarb_net": 0},
             }
 
-        _system_info_throttled(
-            "[CybosInvestorRaw] program investor TR candidate not available",
-            key="cybos_investor_raw_program_missing",
-            min_interval_sec=600.0,
+        h = probe["headers"]
+        arb_net = _safe_int(h.get(ARB_NET_AMOUNT_IDX, "0"))
+        nonarb_net = _safe_int(h.get(NONARB_NET_AMOUNT_IDX, "0"))
+
+        _system_info(
+            f"[CybosInvestorRaw] program via CpSvr8111(market={market}) "
+            f"arb={arb_net:+d} nonarb={nonarb_net:+d}"
         )
         return {
-            "supported": False,
-            "source": "mapping_pending",
-            "reason": "Cybos program investor TR candidate unavailable",
-            "nets": {},
-            "raw": {"arb_net": 0, "nonarb_net": 0},
+            "supported": True,
+            "source": "Dscbo1.CpSvr8111",
+            "reason": "verified field mapping (cybosplus docs, 2026-07-05)",
+            "nets": {"foreign": arb_net + nonarb_net},
+            "raw": {"arb_net": arb_net, "nonarb_net": nonarb_net},
         }
 
     def _ensure_message_pump(self) -> None:

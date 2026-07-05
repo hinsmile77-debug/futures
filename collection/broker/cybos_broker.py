@@ -97,6 +97,47 @@ class CybosBroker(BrokerAPI):
             screen_no=screen_no,
         )
 
+    def send_limit_order(
+        self,
+        *,
+        account_no: str,
+        code: str,
+        side: str,
+        qty: int,
+        price: float,
+        rqname: str,
+        screen_no: str,
+    ) -> dict:
+        return self._api.send_limit_order(
+            account_no=account_no,
+            code=code,
+            side=side,
+            qty=qty,
+            price=price,
+            rqname=rqname,
+            screen_no=screen_no,
+        )
+
+    def cancel_order(
+        self,
+        *,
+        account_no: str,
+        order_no: str,
+        code: str,
+        qty: int,
+    ) -> int:
+        return self._api.cancel_order(
+            account_no=account_no,
+            order_no=order_no,
+            code=code,
+            qty=qty,
+        )
+
+    def get_index_price(self, code: str = "", name_contains: str = "200") -> Optional[float]:
+        if code:
+            return self._api.get_index_price(code, name_contains=name_contains)
+        return self._api.get_index_price()
+
     def probe_investor_ticker(self, extra_codes: Optional[List[str]] = None) -> None:
         self._api.probe_investor_ticker(extra_codes=extra_codes)
 

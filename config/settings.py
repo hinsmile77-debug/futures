@@ -570,6 +570,86 @@ ATR_HORIZON_TP1_MULT = {
 
 PARTIAL_EXIT_RATIOS = [0.33, 0.33, 0.34]   # 부분 청산 3단계
 
+# [260704 감사 P2] 레짐 조건부 ATR 배수 — 추세장(Hurst>=0.55)에서는 손절/목표를
+# 넓혀 추세를 태우고, 평균회귀장(Hurst<0.45)에서는 좁혀 빠르게 회수한다.
+# REGIME_SIZE_MULT와 동일한 패턴(사이징 대신 손절/목표 폭에 곱하는 배수 테이블).
+# 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §3-2 "레짐 조건부 배수"
+#   "추세장(Hurst>0.55): 스톱 넓게·TP 멀게 / 횡보장: 반대"
+# ATR_STOP_MULT·ATR_HORIZON_TP1_MULT·ATR_TP2_MULT 위에 곱해지는 추가 계수이므로
+# 스캘퍼 호라이즌별 TP1 단축 로직과 독립적으로 동작한다. 1.00 = 배수 미적용(기존과 동일).
+HURST_REGIME_ATR_MULT_ENABLED = True
+HURST_REGIME_ATR_MULT = {
+    "trend":       {"stop": 1.20, "tp1": 1.20, "tp2": 1.20},  # Hurst>=0.55
+    "neutral":     {"stop": 1.00, "tp1": 1.00, "tp2": 1.00},  # 0.45<=Hurst<0.55 (기존값)
+    "mean-revert": {"stop": 0.85, "tp1": 0.85, "tp2": 0.85},  # Hurst<0.45
+}
+
+# [260704 감사 P1] 신호 소멸 청산 — 보유 포지션과 반대 방향의 앙상블 신호가
+# zone_mc(시간대×호라이즌 동적 min_conf) 이상으로 확정되면 손절가 도달 전에 미리 청산한다.
+# 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §3-2 ①
+# "청산이 순수 가격 기반 — 보유 중 앙상블이 반대 방향 고신뢰로 전환돼도 청산 트리거가
+#  없다. 손절가까지 풀로 얻어맞는 구조."
+# 기본 ON — 모의투자 단계는 CB② 예외(위 참조)와 동일하게 검증 우선이며 실거래 자금
+# 리스크가 없어 바로 켜도 안전하다는 판단(2026-07-05). 실투 전환 전 재검토할 것.
+SIGNAL_DECAY_EXIT_ENABLED = True
+
+# [260704 감사 P1] 지정가 우선 집행 — 진입 시 시장가 대신 1틱 유리한 지정가로 먼저
+# 시도하고, N초 미체결 시 취소한다(시장가 전환 없이 다음 신호 대기 — 낙관적 포지션
+# 오픈 금지, 2026-07-05 사용자 지시). 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §2-3.
+# 기본 OFF — Cybos 지정가/취소 TR(CpTd6831 idx6='1', CpTd6833)이 이번에 처음 구현되어
+# 실제 브로커 연결로 검증되지 않았음(개발환경은 COM 미지원). 모의투자에서 직접 켜서
+# 검증 후 활성화할 것. 참조: docs/CyBos ref/CYBOS_FUTURES_ORDER_TR_MAP.md
+LIMIT_ENTRY_FIRST_ENABLED = False
+LIMIT_ENTRY_TIMEOUT_SEC = 12   # 지정가 미체결 대기시간 (감사 권고 10~15초)
+
+# ── [260705 검증 캠페인] 섀도우 채널 승격 합격선 — 사전 등록 (변경 금지) ──────
+# 근거: docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3.
+# 데이터를 보기 전에 합격선을 고정한다(pre-registration). 사후 변경은 반드시
+# 과적합이므로, 바꾸려면 dev_memory/DECISION_LOG.md에 사유 기록 후 검증 시계를
+# 리셋해야 한다(같은 문서 §9-4). 판정은 scripts/generate_validation_campaign_report.py
+# 가 매주 금요일 EOD 체인(scripts/eod_retrain.py)에서 자동 수행한다.
+VALIDATION_CAMPAIGN = {
+    # §3-1 Triple-Barrier 채널: 섀도우 TB 모델의 신호(P_up-P_dn)와 실현 변동(pt)의
+    # 스피어만 IC가, 프로덕션 3클래스 신호(up_prob-down_prob)의 IC를 이겨야 한다.
+    # OOS 보장: TB 모델 파일 mtime 이후 ts만 평가 (학습 표본과 평가 표본 분리).
+    "tb": {
+        "ic_delta_min":      0.03,   # IC_TB > IC_3class + 0.03
+        "ic_abs_min":        0.05,   # 그리고 IC_TB > 0.05
+        "min_samples_hz":    800,    # 호라이즌별 최소 OOS 표본 (미달 → INSUFFICIENT)
+        "min_horizons_pass": 2,      # 6개 중 2개 이상 합격 시 채널 PASS
+        "max_retries":       2,      # 불합격 시 배리어 재조정 후 재시험 최대 횟수 (§3-1)
+    },
+    # §3-2 Meta-Gate 채널: entry_quality_prob 상위/하위 30% 분위의 실현 순EV 분리도.
+    "meta_gate": {
+        "top_ev_min_pt":     0.0,    # 상위 30% 순EV(왕복비용 차감, pt) > 0
+        "sep_cost_mult":     2.0,    # (상위30% - 하위30%) > 왕복비용 × 2
+        "min_per_tercile":   30,     # 분위별 최소 표본
+    },
+    # §3-3 분위 회귀 채널: [q10,q90] 커버리지 밴드 + 불확실성-실현폭 상관.
+    "quantile": {
+        "coverage_lo":       0.72,   # 실현값의 [q10,q90] 포함 비율 하한
+        "coverage_hi":       0.88,   # 상한 (이상적 0.80)
+        "unc_corr_min":      0.15,   # (q90-q10) vs |실현폭| 스피어만 상관 하한
+        "min_samples":       300,
+    },
+    # §3-5 ON 정책 롤백 기준 ① — 신호소멸청산 counterfactual 누적 판정.
+    # 4주 시점 "아낀 pt − 놓친 pt" 합계 < 0 → conf 임계 zone_mc+0.05 강화,
+    # 강화 후에도 음수 → OFF (리포트는 권고만 출력, 적용은 수동).
+    "signal_decay": {
+        "min_samples":       10,     # 발동 건 최소 수 (미달 → 판정 보류)
+        "cf_window_min":     30,     # counterfactual 관찰 창 (분) — 창 내 미도달 시 창끝 종가
+    },
+    # §3-5 ON 정책 롤백 기준 ② — 레짐 조건부 ATR 배수: trend 버킷 EV가 음수이면서
+    # neutral 버킷보다 나쁘면 trend 배수 1.20→1.10 후퇴 권고.
+    "hurst_regime": {
+        "min_per_bucket":    20,     # 버킷별 최소 거래 수 (미달 → 판정 보류)
+    },
+    # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
+    "slippage_ticks_per_side": 1.0,
+    # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)
+    "start_date": "2026-07-05",
+}
+
 # ── 선물 수수료 설정 ───────────────────────────────────────────
 # 키움증권 모의투자 기준. 실전 전환 시 실제 요율로 교체.
 # 1계약 1050pt 기준: 편도 ≈ 39,375원 / 왕복 ≈ 78,750원
@@ -578,11 +658,13 @@ FUTURES_COMMISSION_RATE = 0.000015   # 0.0015% 편도 (거래대금 기준)
 # ── Circuit Breaker 설정 ───────────────────────────────────────
 CB_SIGNAL_FLIP_LIMIT   = 5     # 1분 내 신호 반전 횟수
 CB_SIGNAL_FLIP_PAUSE   = 15    # 진입 정지 (분)
-CB_CONSEC_STOP_LIMIT   = 9999     # 연속 손절 횟수 — CB② 사실상 비활성 (2026-07-04 확정: 의도적)
-# [의도적 조치, 2026-07-04] 모의투자 단계에서 거래 데이터를 최대한 축적하기 위해
-# 연속손절 당일정지를 임시 해제. CLAUDE.md 절대원칙 ②는 폐기가 아니라 유예 —
-# **실전 전환 전 반드시 2~3으로 복원** (v9 실전 전환 게이트 필수 조건,
-# docs/미륵이고도화/mireuki_v9_구현계획_v2_2026-07-04.md §0-1, TODO_v9_2026-07-04.md 참고)
+CB_CONSEC_STOP_LIMIT   = 9999     # 연속 손절 횟수 — [모의투자 한정 예외, 2026-07-05]
+# CLAUDE.md 절대원칙 ②는 "5분 내 손절 3연속 → 당일 정지"이나, 모의투자 단계에서는
+# 거래 기회 확보·데이터 축적(레이블/SGD/SHAP 표본)이 우선이라 9999(사실상 비활성)로 완화.
+# 실투 전환 전 반드시 2~3으로 복원할 것 (ROADMAP.md Phase 5 실전 전환 체크리스트 항목).
+# 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §7-1 (P0)
+# v9-dev 실전 전환 게이트에도 동일 조건 등록됨
+# (docs/미륵이고도화/mireuki_v9_구현계획_v2_2026-07-04.md §0-1, TODO_v9_2026-07-04.md 참고)
 # CB③: FLAT 예측 제외 후 방향성 예측만 집계 (2026-06-02)
 # 랜덤 예측 정확도 = 50% (UP/DN 2클래스, FLAT 제외 시)
 # 0.28 = 랜덤 50%의 56% 수준 — 명백히 노이즈일 때만 정지

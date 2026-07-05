@@ -428,6 +428,29 @@ _VAR_TIP = (
     "</div>"
 )
 
+_EV20_TIP = (
+    "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.7;"
+    "min-width:360px;'>"
+
+    "<b style='color:#FFB74D;font-size:13px;'>최근20건 순EV&nbsp;&nbsp;거래당 순기대값</b>"
+    "<hr style='border:0;border-top:1px solid #30363D;margin:4px 0 6px 0'>"
+
+    "<b style='color:#58A6FF'>① 의미</b><br>"
+    "&nbsp;&nbsp;가장 최근 체결 완료 20건의 <b>수수료 차감 후 평균 손익</b><br>"
+    "&nbsp;&nbsp;'방향 적중률'이 아니라 <b>실제로 돈이 되는가</b>를 보는 지표<br>"
+    "&nbsp;&nbsp;(260704 감사: 적중률 55%여도 EV 음수, 45%여도 EV 양수인 셋업이 존재)<br><br>"
+
+    "<b style='color:#58A6FF'>② 데이터 출처</b><br>"
+    "&nbsp;&nbsp;trades.db → net_pnl_krw (왕복 수수료 반영, 실집행 기준)<br>"
+    "&nbsp;&nbsp;체결 20건 미만이면 있는 만큼만 집계<br><br>"
+
+    "<b style='color:#F85149'>③ 참고</b><br>"
+    "&nbsp;&nbsp;등급별·호라이즌별 세부 EV는 EOD 일일 리포트"
+    "(strategy/ops/daily_exporter.py)에서 확인"
+
+    "</div>"
+)
+
 _CANDLE_MONITOR_TIP = (
     "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.75;"
     "min-width:400px;'>"
@@ -1390,7 +1413,12 @@ class PositionRestoreDialog(QDialog):
         form.addRow("방향:", self.cmb_direction)
 
         self.spn_price = QDoubleSpinBox()
-        self.spn_price.setRange(100.0, 9999.99)
+        # 하한을 0.0으로 둬야 아래 setValue(0.0)이 실제로 0.00으로 보인다.
+        # 이전엔 하한이 100.0이라 Qt가 setValue(0.0)을 100.0으로 조용히 clamp —
+        # 사용자가 가격을 입력하지 않고 [복원]을 눌러도 "100.00"이 실제 값처럼 보내져
+        # _on_position_restore_clicked()의 `price > 0` 가드를 무력화하고 포지션이
+        # 진입가 100.00으로 그대로 복원되는 사고로 이어졌다(대시보드 실잔고에서 확인).
+        self.spn_price.setRange(0.0, 9999.99)
         self.spn_price.setDecimals(2)
         self.spn_price.setSingleStep(0.05)
         self.spn_price.setValue(0.0)
@@ -7270,6 +7298,7 @@ class LogPanel(QWidget):
                     ("미실현 손익", "unrealized", C['cyan']),
                     ("일일 누적",   "daily",      C['green']),
                     ("VaR 95%",    "var",         C['orange']),
+                    ("최근20건 순EV", "ev20",     C['yellow']),
                 ]:
                     mf = QFrame()
                     mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
@@ -7282,15 +7311,23 @@ class LogPanel(QWidget):
                             f"color:{C['text2']};font-size:{S.f(10)}px;"
                             f"text-decoration:underline dotted;"
                         )
+                    elif attr == "ev20":
+                        mf.setToolTip(_EV20_TIP)
+                        title_lbl.setToolTip(_EV20_TIP)
+                        title_lbl.setStyleSheet(
+                            f"color:{C['text2']};font-size:{S.f(10)}px;"
+                            f"text-decoration:underline dotted;"
+                        )
                     mfl.addWidget(title_lbl)
-                    pb = mk_prog(mc, 4)
-                    pb.setValue(0)
                     vl = mk_val_label("——원", mc, 13, align=Qt.AlignCenter)
                     mfl.addWidget(vl)
-                    mfl.addWidget(pb)
+                    if attr != "ev20":
+                        pb = mk_prog(mc, 4)
+                        pb.setValue(0)
+                        mfl.addWidget(pb)
+                        self._pnl_bars[attr] = pb
                     mrow.addWidget(mf)
                     self._pnl_vals[attr] = vl
-                    self._pnl_bars[attr] = pb
                 pl.addLayout(mrow)
 
             elif key == "model":
@@ -7467,6 +7504,21 @@ class LogPanel(QWidget):
             if pb and attr != "var":
                 pct = min(100, max(0, int(abs(val[0]) / 50_000 * 50 + 50)))
                 pb.setValue(pct)
+
+    def update_recent_ev(self, cnt: int, avg_net_pnl_krw: float, win_rate: float) -> None:
+        """[260704 감사 P0] 최근 N건 순EV(수수료 차감 후) 타일 갱신.
+        trades.db 기록 직후 호출 — utils.db_utils.fetch_recent_ev() 결과를 그대로 전달.
+        """
+        lbl = self._pnl_vals.get("ev20")
+        if not lbl:
+            return
+        col = C['green'] if avg_net_pnl_krw >= 0 else C['red']
+        if cnt <= 0:
+            lbl.setText("——원")
+            lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(13)}px;font-weight:bold;")
+            return
+        lbl.setText(f"{avg_net_pnl_krw:+,.0f}원 ({cnt}건,승{win_rate*100:.0f}%)")
+        lbl.setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
 
     @staticmethod
     def _insert_html_left(tb: QTextEdit, html: str) -> None:
@@ -9327,6 +9379,127 @@ def _find_symbol_text(market: str, *, symbol_code: str = "", symbol_text: str = 
     return symbols[0] if symbols else ""
 
 
+class StatusStripPanel(QFrame):
+    """[260704 감사 P3] 탭 무관 상시 노출 상태 스트립.
+
+    "3초 내 시장 파악" — 포지션/당일손익/모델방향+신뢰도/차단사유/레짐 등 탭 클릭
+    없이 확인해야 할 핵심 정보만 모은다. 기존 헤더 배지(CB·헬스·레짐·포지션 등)는
+    이미 탭 무관 상시 노출이라 그대로 두고, 여기서는 탭 안에 있어 즉시 안 보이던
+    정보(당일손익 금액·스톱/TP1가·모델 신뢰도 게이지·차단사유 1줄)만 추가한다.
+
+    색 의미론은 국내 관례(이익=적색/손실=청색)를 이 스트립에 한해 적용한다.
+    기존 개별 패널(예: LONG 배지=녹색)은 범위 밖 — 전체 통일은 별도 작업으로 남김.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(
+            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
+        )
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(3)
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(18)
+        self.ss_position = mk_label("FLAT", C['text2'], 16, True)
+        self.ss_daily_pnl = mk_label("당일 ——원", C['text2'], 16, True)
+        self.ss_winloss = mk_label("승 0 / 패 0", C['text2'], 11)
+        self.ss_stop_tp = mk_label("", C['text2'], 11)
+        row1.addWidget(self.ss_position)
+        row1.addWidget(self.ss_daily_pnl)
+        row1.addWidget(self.ss_winloss)
+        row1.addWidget(self.ss_stop_tp)
+        row1.addStretch()
+        lay.addLayout(row1)
+
+        lay.addWidget(mk_sep())
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(14)
+        self.ss_model = mk_label("모델: ——", C['text2'], 11, True)
+        self.ss_conf_bar = QProgressBar()
+        self.ss_conf_bar.setRange(0, 100)
+        self.ss_conf_bar.setValue(0)
+        self.ss_conf_bar.setTextVisible(False)
+        self.ss_conf_bar.setFixedWidth(S.p(90))
+        self.ss_conf_bar.setFixedHeight(max(4, S.p(8)))
+        self.ss_conf_bar.setToolTip("모델 신뢰도 — 막대가 임계선(min_conf)을 넘으면 초록, 못 넘으면 주황")
+        self.ss_block_reason = mk_label("", C['text2'], 11)
+        self.ss_regime = mk_label("", C['text2'], 11)
+        self.ss_next_action = mk_label("다음 액션: ——", C['text2'], 11)
+        row2.addWidget(self.ss_model)
+        row2.addWidget(self.ss_conf_bar)
+        row2.addWidget(self.ss_block_reason, 1)
+        row2.addWidget(self.ss_regime)
+        row2.addWidget(self.ss_next_action)
+        lay.addLayout(row2)
+
+    def update_position(self, status: str, qty: int, entry: float, current: float,
+                         pt_value: float, stop: float, tp1: float) -> None:
+        status = str(status or "FLAT").upper()
+        if status not in ("LONG", "SHORT") or not qty:
+            self.ss_position.setText("FLAT")
+            self.ss_position.setStyleSheet(f"color:{C['text2']};font-size:{S.f(16)}px;font-weight:bold;")
+            self.ss_stop_tp.setText("")
+            return
+        mult = 1 if status == "LONG" else -1
+        unreal_pt = (float(current) - float(entry)) * mult
+        unreal_krw = unreal_pt * float(qty) * float(pt_value or 0)
+        arrow = "▲" if status == "LONG" else "▼"
+        col = C['red'] if unreal_pt >= 0 else C['blue']   # 국내 관례: 이익=적, 손실=청
+        self.ss_position.setText(
+            f"{arrow}{status} {qty}계약 {unreal_pt:+.2f}pt({unreal_krw:+,.0f}원)"
+        )
+        self.ss_position.setStyleSheet(f"color:{col};font-size:{S.f(16)}px;font-weight:bold;")
+        self.ss_stop_tp.setText(f"스톱 {float(stop):.2f} · TP1 {float(tp1):.2f}")
+
+    def update_daily_pnl(self, daily_pnl_krw: float) -> None:
+        col = C['red'] if daily_pnl_krw >= 0 else C['blue']
+        self.ss_daily_pnl.setText(f"당일 {daily_pnl_krw:+,.0f}원")
+        self.ss_daily_pnl.setStyleSheet(f"color:{col};font-size:{S.f(16)}px;font-weight:bold;")
+
+    def update_winloss(self, trades: int, wins: int) -> None:
+        losses = max(0, int(trades) - int(wins))
+        self.ss_winloss.setText(f"승 {int(wins)} / 패 {losses}")
+
+    def update_model(self, signal: str, conf: float, grade: str, min_conf: float,
+                      entry_block_reason: str, final_entry: bool) -> None:
+        arrow = {"매수": "▲", "매도": "▼"}.get(signal, "—")
+        col = C['red'] if signal == "매수" else C['blue'] if signal == "매도" else C['text2']
+        self.ss_model.setText(f"모델: {arrow}{signal or '—'} {grade or '—'}급")
+        self.ss_model.setStyleSheet(f"color:{col};font-size:{S.f(11)}px;font-weight:bold;")
+
+        conf = float(conf or 0.0)
+        min_conf = float(min_conf or 0.58)
+        self.ss_conf_bar.setValue(int(min(max(conf, 0.0), 1.0) * 100))
+        _bar_col = C['green'] if conf >= min_conf else C['orange']
+        self.ss_conf_bar.setStyleSheet(
+            f"QProgressBar{{background:{C['bg3']};border:none;border-radius:3px;}}"
+            f"QProgressBar::chunk{{background:{_bar_col};border-radius:3px;}}"
+        )
+
+        if entry_block_reason:
+            _reason = entry_block_reason.replace("[차단] ", "").replace("[blocked] ", "")[:60]
+            self.ss_block_reason.setText(f"차단: {_reason}")
+            self.ss_block_reason.setStyleSheet(f"color:{C['orange']};font-size:{S.f(11)}px;")
+            self.ss_next_action.setText("다음 액션: 진입 대기")
+            self.ss_next_action.setStyleSheet(f"color:{C['text2']};font-size:{S.f(11)}px;")
+        elif final_entry:
+            self.ss_block_reason.setText("")
+            self.ss_next_action.setText("다음 액션: 진입 실행")
+            self.ss_next_action.setStyleSheet(f"color:{C['green']};font-size:{S.f(11)}px;font-weight:bold;")
+        else:
+            self.ss_block_reason.setText("")
+            self.ss_next_action.setText("다음 액션: 관망")
+            self.ss_next_action.setStyleSheet(f"color:{C['text2']};font-size:{S.f(11)}px;")
+
+    def update_regime(self, regime: str, hurst: float = None, atr: float = None) -> None:
+        _hurst_txt = f"Hurst {float(hurst):.2f}" if hurst is not None else "Hurst ——"
+        _atr_txt = f"ATR {float(atr):.1f}pt" if atr is not None else "ATR ——"
+        self.ss_regime.setText(f"레짐: {regime or '——'} · {_hurst_txt} · {_atr_txt}")
+
+
 class MireukDashboard(QMainWindow):
     """미륵이 v8.0 풀 대시보드"""
 
@@ -9911,6 +10084,11 @@ class MireukDashboard(QMainWindow):
         header.addWidget(clk_frame)
         header.addLayout(res_box)
         root.addLayout(header)
+        root.addWidget(mk_sep())
+
+        # ── [260704 감사 P3] 탭 무관 상시 노출 상태 스트립 ──────
+        self.status_strip = StatusStripPanel()
+        root.addWidget(self.status_strip)
         root.addWidget(mk_sep())
 
         # ── 3열 메인 레이아웃 ──────────────────────────────────
@@ -11141,6 +11319,21 @@ class DashboardAdapter:
             f"background:{bg};color:{fg};border-radius:{S.p(3)}px;"
             f"font-size:{S.f(11)}px;font-weight:bold;padding:1px 6px;"
         )
+        # [260704 감사 P3] 상태 스트립 미러링
+        strip = getattr(self._win, "status_strip", None)
+        if strip is not None:
+            try:
+                strip.update_position(
+                    status,
+                    (pos_data or {}).get("qty", 0),
+                    (pos_data or {}).get("entry", 0.0),
+                    (pos_data or {}).get("current", 0.0),
+                    (pos_data or {}).get("pt_value", 0.0),
+                    (pos_data or {}).get("stop", 0.0),
+                    (pos_data or {}).get("tp1", 0.0),
+                )
+            except Exception:
+                pass
 
     def update_price(self, price: float, change: float = 0.0,
                      code: str = "F202606"):
@@ -11168,7 +11361,8 @@ class DashboardAdapter:
                      reverse_enabled: bool = False, min_conf: float = 0.58,
                      ensemble_grade: str = None, checklist_grade: str = None,
                      final_entry: bool = False, check_values: dict = None,
-                     entry_block_reason: str = "", qty_entry_final: int = None):
+                     entry_block_reason: str = "", qty_entry_final: int = None,
+                     hurst: float = None, atr: float = None, regime: str = None):
         """진입 관리 패널 업데이트"""
         self._win.entry_panel.update_data(
             signal, conf, grade, checks, qty=qty,
@@ -11182,6 +11376,17 @@ class DashboardAdapter:
             entry_block_reason=entry_block_reason,
             qty_entry_final=qty_entry_final,
         )
+        # [260704 감사 P3] 상태 스트립 미러링
+        strip = getattr(self._win, "status_strip", None)
+        if strip is not None:
+            try:
+                strip.update_model(
+                    signal, conf, checklist_grade or grade, min_conf,
+                    entry_block_reason, final_entry,
+                )
+                strip.update_regime(regime, hurst=hurst, atr=atr)
+            except Exception:
+                pass
 
     def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False) -> None:
         self._win.entry_panel.set_reverse_entry_enabled(enabled, emit_signal=emit_signal)
@@ -11232,6 +11437,13 @@ class DashboardAdapter:
     def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 갱신"""
         self._win.entry_panel.update_stats(trades, wins, pnl_pts)
+        # [260704 감사 P3] 상태 스트립 미러링
+        strip = getattr(self._win, "status_strip", None)
+        if strip is not None:
+            try:
+                strip.update_winloss(trades, wins)
+            except Exception:
+                pass
 
     def update_divergence(self, div_data: dict):
         """다이버전스 패널 업데이트"""
@@ -11357,10 +11569,21 @@ class DashboardAdapter:
             forward_unrealized_krw=forward_unrealized_krw,
             forward_daily_pnl_krw=forward_daily_pnl_krw,
         )
+        # [260704 감사 P3] 상태 스트립 미러링
+        strip = getattr(self._win, "status_strip", None)
+        if strip is not None:
+            try:
+                strip.update_daily_pnl(daily_pnl_krw)
+            except Exception:
+                pass
 
     def append_pnl_log(self, msg: str, val: str = ""):
         """창4 손익 로그"""
         self._win.log_panel.append("pnl", "PNL", msg, val)
+
+    def update_recent_ev(self, cnt: int, avg_net_pnl_krw: float, win_rate: float):
+        """[260704 감사 P0] 창4 최근20건 순EV 타일 갱신"""
+        self._win.log_panel.update_recent_ev(cnt, avg_net_pnl_krw, win_rate)
 
     def update_pnl_history(self, rows):
         """📊 손익 추이 탭 갱신 (trades.db rows)."""

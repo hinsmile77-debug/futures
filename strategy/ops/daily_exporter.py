@@ -134,6 +134,37 @@ class DailyExporter:
         except Exception as e:
             lines.append("  권고    : [계산 실패: %s]" % e)
 
+        # ── [260704 감사 P0] 거래당 순EV(수수료 차감 후) ─────────────────────
+        # "방향 적중률" 대신 "이 진입이 수수료 차감 후 돈이 되는가"를 보는 지표.
+        try:
+            from utils.db_utils import fetch_recent_ev, fetch_ev_by_grade, fetch_ev_by_horizon
+
+            lines.append("-" * 56)
+            recent = fetch_recent_ev(20)
+            if recent["cnt"] > 0:
+                lines.append(
+                    f"  최근{recent['cnt']:2d}건 순EV: 평균 {recent['avg_net_pnl_krw']:+,.0f}원  "
+                    f"승률 {recent['win_rate'] * 100:.1f}%  합계 {recent['total_net_pnl_krw']:+,.0f}원"
+                )
+            else:
+                lines.append("  최근 순EV   : 체결 데이터 없음")
+
+            grade_rows = fetch_ev_by_grade(days_back=30)
+            if grade_rows:
+                lines.append("  등급별 순EV(30일): " + "  ".join(
+                    f"{r['grade']}={r['avg_net_pnl_krw']:+,.0f}원({r['cnt']}건,승{r['win_rate'] * 100:.0f}%)"
+                    for r in grade_rows
+                ))
+
+            hz_rows = fetch_ev_by_horizon(days_back=30)
+            if hz_rows:
+                lines.append("  호라이즌별 순EV(30일): " + "  ".join(
+                    f"{r['entry_horizon']}={r['avg_net_pnl_krw']:+,.0f}원({r['cnt']}건)"
+                    for r in hz_rows
+                ))
+        except Exception as e:
+            lines.append("  거래당 순EV : [계산 실패: %s]" % e)
+
         # ── [P3] 당일 Checklist 신뢰도 차단 카운터 ──────────────────────────
         _ccf = extra_stats.get("checklist_conf_fail")
         if _ccf is not None:

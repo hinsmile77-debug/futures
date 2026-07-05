@@ -1,49 +1,59 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-03 (290차) — v9 Phase 0 진단 스크립트 3종 구현·실행 완료 (게이트 차단 집계·레짐 사후 라벨링·트리플 배리어 라벨 검증)
+> 마지막 업데이트: 2026-07-05 (290차) — 260704 종합감사 실행 로드맵 P0~P3 전체 구현
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
 
-## 2026-07-03 (290차 — v9 "추세 포식자" Phase 0 착수: 진단 스크립트 3종 구현·실행)
+## 2026-07-05 (290차 — 260704 종합감사 실행 로드맵 P0~P3 전체 구현)
 
-**배경**: `docs/미륵이고도화/mireuki_v9_최종설계안_2026-07-03.md`(사용자 승인 완료)의 W1 Phase 0
-작업 3건을 실제 코드로 구현하고 30일 실데이터로 실행했다. 신규 파일: `model/triple_barrier_label.py`,
-`scripts/build_triple_barrier_labels.py`, `scripts/generate_gate_blocking_report.py`,
-`scripts/generate_regime_postmortem_report.py`. `utils/db_utils.py`에 `triple_barrier_labels`
-테이블(raw_data.db) + `save_triple_barrier_labels()` 추가. 운영 코드(main.py, batch_retrainer.py 등)는
-전혀 건드리지 않음 — 전부 오프라인 진단/검증 스크립트.
+**계기**: `docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md` §8 실행 로드맵을 P0→P1→P2→P3
+순서로 단계별 구현(사용자가 매 항목 확인 후 다음 진행 지시).
 
-**핵심 실측 결과 (최근 30일, 2026-06-03~07-03)**:
+**핵심 결과**: P0~P3 전 항목 구현 완료(탭 15개→4그룹 재편만 headless 환경 시각확인
+불가로 사용자 직접 진행으로 보류). 상세 내역·검증 방법은 `ROADMAP.md`의 "260704 감사
+로드맵 — ..." 각 섹션과 `SESSION_LOG.md` 290차 항목 참조. 이 세션에서 새로 발견한
+중요 사실들:
 
-1. **처방 P1(트리플 배리어 라벨) 가설 확인됨** — 기존 path-conditioned 라벨은 3m~30m 호라이즌에서
-   FLAT 비율이 **62~68%**(3m: 62.0%, 30m: 67.7%)로 압도적인 반면, ATR 연동 트리플 배리어
-   라벨은 동일 구간 FLAT이 **0.04~0.6%**에 불과(거의 전부 UP/DOWN 방향 라벨). 두 라벨링의
-   일치율은 호라이즌이 길어질수록 급락(1m 66.9% → 30m 31.9%). 6월 내내 "acc가 랜덤급"이었던
-   현상이 모델 문제가 아니라 **학습 라벨 자체가 FLAT에 압도되어 방향성 신호를 거의 못 배웠을
-   가능성**을 정량적으로 뒷받침 — v9 설계안 §2 처방 P1의 최우선순위 판단이 실측으로 확인됨.
-2. **게이트 차단 30일 집계 — 예상 밖 발견**: 18개 게이트 중 마지널 통과율 최저는 Hurst(50.6%)가
-   아니라 **`qty_ok`(9.6%)와 `mode_filter_ok`(11.4%)**였다. 그런데 이 두 게이트는
-   `entry_block_reason`(사람이 읽는 차단사유 문자열)의 우선순위 체인에 **아예 등장하지 않아**,
-   현재 운영 대시보드/로그에서는 이 병목이 보이지 않는다 — 진단 가시성 자체의 공백. 등급 분포는
-   30일 전체가 `{X: 5848건, C: 1912건}`으로 **A/B 등급이 단 한 건도 없었음**.
-   결합 통과율(1.32%)이 18겹 독립가정 이론값(0.37%)보다 오히려 3.6배 높아(collapse_ratio=3.59),
-   게이트들이 순수 독립이 아니라 양의 상관관계를 가짐 — §13 "AND 직렬 붕괴" 서사가 방향은
-   맞지만 실제 병목은 Hurst/ATR/시가이격이 아니라 qty_ok/mode_filter_ok일 가능성이 큼(후속 조사 필요).
-3. **레짐 사후 라벨링(22일 유효)**: MicroRegimeClassifier(ADX+ATR만, exhaustion/vwap 미반영이라
-   탈진장 과소추정 — 리포트에 명시)로 분류 시 21일이 '추세장' 지배, 1일만 '횡보장'. 표본이
-   1건뿐이라 TREND vs RANGE PnL 비교는 이번 창에서는 통계적으로 무의미(추가 데이터 축적 필요).
-   ⚠️ **일중 레인지가 여러 날 6~13%로 이례적으로 큼**(예: 06-23 13.03%, 07-03 10.83%) — 실제
-   거래소 서킷브레이커 발동일(253~254차)과 겹치는 듯하나, 21차/228차 이력의 "종목코드 불일치·
-   봉차트 이종가격 혼재" 버그와 유사한 raw_candles 데이터 품질 이슈일 가능성도 배제 못 함 —
-   다음 세션에서 해당 날짜 원본 틱/봉 스팟체크 필요.
+1. **`strategy/exit/exit_manager.py`는 실거래 미사용 죽은 코드** — 실제 청산 로직은
+   `main.py:_check_exit_triggers()`/`_ts_check_exit_triggers()`에 인라인 구현되어
+   있음. 감사 보고서가 이 죽은 파일을 근거로 "트레일링 갱신 순서" 결함을 지적했으나,
+   실제 코드는 이미 정상(트레일링이 하드스톱/TP/시간청산보다 항상 먼저 갱신)이었음 —
+   **감사가 죽은 코드를 보고 오판한 사례**.
+2. **`CHAMPION_BASELINE_ID`는 자체 shadow 거래 이력이 없는 콜드스타트 구조** —
+   `challenger_engine.py`가 5개 variant만 등록하고 챔피언 자신은 등록하지 않음. 최초
+   승격 전까지 부트스트랩/heartbeat 판정이 "표본부족"만 반환하는 것이 정상.
+3. **30m need_add 피처(opt_gex_bn 등)가 실은 이미 수집 중이었다** — `horizon_feature_sets.json`
+   표시(need_add)만 stale. 진짜 원인은 `learning/batch_retrainer.py:_retrain_phase2()`가
+   호라이즌별 학습피처명을 "가장 키가 많은 단일 행"으로 잘못 결정하던 버그(합집합으로
+   수정) — 30m뿐 아니라 옵션체인 피처를 쓰는 전 호라이즌에 잠재적 영향.
+4. **KOSPI200 지수 코드는 네임스페이스에 따라 다르다** — `dscbo1.StockMst`(일반시세)엔
+   `K2G01P`, 선물차트 문맥엔 `00800`. 처음 00800으로 구현했다가 사용자 2차 스크린샷으로
+   정정. VKOSPI는 `O2901P`.
+5. **`Dscbo1.CpSvr8111`(프로그램매매) 기존 필드매핑이 틀려 있었다** — guess 매핑(idx0~5)을
+   공식문서 기준(idx19/37)으로 재작성, 입력값도 `ord('1')` 관례로 수정. 사용자가 관리자
+   권한 Creon Plus 세션에서 실측 검증.
+6. **이 headless 개발 세션에서도 PyQt 대시보드를 `QT_QPA_PLATFORM=offscreen`으로 실제
+   생성해 스모크테스트할 수 있다** — 이전엔 "GUI라 확인 불가"로 가정했던 게 틀렸음.
+   레이아웃/가독성까지는 확인 못 하지만 위젯 생성·업데이트 로직은 검증 가능.
 
-**출력 파일** (ROOT, git 미추적 권장 — 산출물이라 재실행 시 매번 갱신됨):
-`gate_blocking_report.md`/`.json`, `regime_postmortem_report.md`/`.json`,
-`triple_barrier_label_report.md`/`.json`.
+**부수 사고(내 실수) — position_state.json 오염**: P2 검증 스크립트가
+`PositionTracker()`(운영 앱과 동일한 저장 경로 공유)로 직접 `open_position()`을 호출한 뒤
+`force_flat()`을 누락 — 가짜 LONG 100.00 포지션이 파일에 남아 실제 운영 대시보드에
+노출됨(사용자 스크린샷으로 발견, 실제 브로커는 FLAT 확인 후 `force_flat()`으로 복구).
+재발방지 메모리 기록. 곁가지로 `PositionRestoreDialog`의 진입가 스핀박스 clamp 버그
+(`setRange(100.0,...)` + `setValue(0.0)` → Qt가 100.0으로 조용히 clamp)도 발견·수정.
 
-**다음 단계**: `NEXT_TODO.md` 290차 항목 참고 — day_range 이상치 스팟체크, qty_ok/mode_filter_ok
-근본원인 조사, W2~3(트리플 배리어 라벨 실제 재학습 편입) 착수 여부 결정.
+**검증**: `py_compile` 전체 통과, `pytest tests/` 전체 통과(세션 시작 전부터 있던 무관
+실패 1건 제외), 신규 스크립트들은 개발DB 실측 검증, 챌린저 관련은 합성DB 검증,
+대시보드는 offscreen 스모크테스트. Cybos TR 3종(프로그램매매·외국인선물·지수시세)은
+사용자가 관리자권한 세션에서 실측 검증. **지정가 우선 집행은 이 개발환경에서 실브로커
+검증 불가 — 기본 OFF, 모의투자에서 사용자 수동검증 필요**(`NEXT_TODO.md` 290차).
+
+**변경 파일**: 24개 기존 파일 수정 + 신규 파일 다수(`features/technical/basis.py`,
+`features/technical/expiry.py`, `learning/meta_label_classifier.py`,
+`learning/quantile_regressor.py`, `challenger/variants/champion_tp1_skip_trail.py`,
+`scripts/analyze_mae_mfe.py` 등). 전체 목록은 `SESSION_LOG.md` 290차 참조.
 
 ---
 

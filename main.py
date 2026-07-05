@@ -61,6 +61,8 @@ from utils.db_utils import (
 )
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
+    SIGNAL_DECAY_EXIT_ENABLED,
+    LIMIT_ENTRY_FIRST_ENABLED, LIMIT_ENTRY_TIMEOUT_SEC,
     HZ_DEPLOY_POLICY,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
     ATR_STOP_MULT, ATR_HORIZON_TP1_MULT,
@@ -103,6 +105,8 @@ from features.options.option_features import OptionFeatureCalculator
 from learning.self_learning.daily_consolidator import DailyConsolidator
 from learning.self_learning.drift_adjuster import DriftAdjuster
 from features.feature_builder import FeatureBuilder
+from features.technical.basis import BasisCalculator
+from collection.cybos.api_connector import VKOSPI_INDEX_CODE
 from features.bar_aggregator import BarAggregator
 from model.multi_horizon_model import MultiHorizonModel
 from model.rf_horizon_model import RFHorizonModel
@@ -232,6 +236,11 @@ class TradingSystem:
         self.macro_fetcher.start()
         self.feature_builder    = FeatureBuilder()
         self.feature_builder._on_core_fail = self._on_core_feature_fail
+        # [260704 감사 P2] 선물-현물 베이시스 — KOSPI200 현물지수 폴링(60s) + 계산기
+        self.basis_calc         = BasisCalculator()
+        self._last_kospi200_spot: Optional[float] = None
+        # [260704 감사 P2] VKOSPI 장중값 — 같은 60s 타이머에서 함께 폴링
+        self._last_vkospi: Optional[float] = None
         # Phase 2: 1분봉 → N분봉 집계기 + 호라이즌별 피처 벡터 캐시
         self.bar_aggregator     = BarAggregator()
         self._hz_feat_cache     = {}   # {h_name: np.ndarray} — 마지막 완성봉 기반 피처 벡터
@@ -616,6 +625,11 @@ class TradingSystem:
         self._entry_hour_bucket:  int  = 0       # 진입 시각 hour
         self._entry_was_restart:  int  = 0       # 세션 재시작 직후 진입 여부
         self._entry_had_partial:  int  = 0       # 해당 포지션에서 partial fill 발생
+        # [260704 감사 P1] 지정가 우선 집행 상태 (LIMIT_ENTRY_FIRST_ENABLED=False면 미사용)
+        self._pending_limit_is_active: bool = False
+        self._pending_limit_order_no: str = ""
+        self._pending_limit_submitted_at: Optional[float] = None
+        self._pending_limit_price: float = 0.0
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
         self._last_health_level: str = "INFO"
         self._health_degraded_mode: bool = False
@@ -2115,9 +2129,9 @@ class TradingSystem:
                 forward_commission_krw, forward_net_pnl_krw,
                 formula_version, exit_reason, grade, regime,
                 meta_action, hurst_bucket, hour_bucket,
-                was_restart_after, had_partial_fill)
+                was_restart_after, had_partial_fill, entry_horizon)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -2147,8 +2161,15 @@ class TradingSystem:
                 getattr(self, "_entry_hour_bucket",  0),
                 getattr(self, "_entry_was_restart",  0),
                 getattr(self, "_entry_had_partial",  0),
+                result.get("entry_horizon") or "",
             ),
         )
+        try:
+            from utils.db_utils import fetch_recent_ev
+            _ev = fetch_recent_ev(20)
+            self.dashboard.update_recent_ev(_ev["cnt"], _ev["avg_net_pnl_krw"], _ev["win_rate"])
+        except Exception as _ev_e:
+            logger.warning("[EV20] 대시보드 갱신 실패 (무해): %s", _ev_e)
 
     def _set_pending_order(
         self,
@@ -2676,6 +2697,32 @@ class TradingSystem:
                 )
             else:
                 logger.debug("[LiveDBG] _fetch_investor_data 완료 %.0fms", _elapsed_ms)
+
+    def _poll_kospi200_index(self) -> None:
+        """[260704 감사 P2] KOSPI200 현물지수 + VKOSPI 1분 폴링 — QTimer 콜백.
+
+        get_index_price()는 내부적으로 BlockRequest를 백그라운드 스레드에서 실행하고
+        메인 스레드는 메시지 펌프만 하므로(_run_block_request) 여기서 직접 호출해도
+        파이프라인을 블로킹하지 않는다. 실패해도 캐시된 이전 값을 유지(None으로
+        리셋하지 않음) — BasisCalculator/feature 병합부가 결측을 ready=False로 처리.
+        """
+        if not is_market_open(datetime.datetime.now()):
+            return
+        try:
+            price = self.broker.get_index_price()
+        except Exception as e:
+            logger.debug("[KOSPI200Index] 폴링 예외 (무해, 이전값 유지): %s", e)
+            price = None
+        if price:
+            self._last_kospi200_spot = price
+
+        try:
+            vkospi = self.broker.get_index_price(VKOSPI_INDEX_CODE, name_contains="변동성")
+        except Exception as e:
+            logger.debug("[VKOSPI] 폴링 예외 (무해, 이전값 유지): %s", e)
+            vkospi = None
+        if vkospi:
+            self._last_vkospi = vkospi
 
     def _poll_option_chain(self) -> None:
         """옵션 체인 5분 폴링 — QTimer 콜백.
@@ -4303,11 +4350,21 @@ class TradingSystem:
         # 이전: _chain_feats가 읽혔지만 build()에 전달되지 않아 raw_features에 저장 안 됨.
         _option_combined = dict(_option_feats)
         _option_combined.update(_chain_feats)
+        # [260704 감사 P2] 베이시스 — KOSPI200 현물지수는 _kospi200_index_timer(60s)가
+        # 캐시한 self._last_kospi200_spot을 읽는다 (1분 지연 허용, 메인 스레드 블로킹 없음).
+        _basis_feats = self.basis_calc.update(
+            float(bar.get("close", 0.0) or 0.0), self._last_kospi200_spot,
+        )
+        # [260704 감사 P2] VKOSPI 장중값 — 같은 60s 타이머가 캐시한 self._last_vkospi.
+        # 별도 계산 없이 원값 그대로 전달, 결측 시 ready=False로 표시(0 리셋 방지).
+        _basis_feats["vkospi"] = float(self._last_vkospi) if self._last_vkospi else 0.0
+        _basis_feats["vkospi_ready"] = 1.0 if self._last_vkospi else 0.0
         features = self.feature_builder.build(
             bar,
             supply_demand = supply_feats,
             macro_data    = _macro_feats,
             option_data   = _option_combined,
+            basis_data    = _basis_feats,
             micro_regime  = self.current_micro_regime,  # 직전 분 레짐 (1분 lag 허용)
         )
         # 최소 0.5pt 보장 — 재시작 직후 1개 틱만으로 계산된 비정상 소ATR 방어
@@ -5254,6 +5311,7 @@ class TradingSystem:
             checklist_grade=_pre_cl_grade,  # 체크리스트 선행 등급 (A/B/C/X)
             trend_gate_active=bool(_tp_active),   # ② TrendGate 편향패널티 비활성화
             time_zone=_tz,                        # ③ STABLE_TREND reduce_thr 완화
+            horizon=getattr(self, "_entry_horizon_pre", "1m") or "1m",  # [260704 P1] entry_quality_prob 섀도우 스코어링
         )
         _s6_prof.append(("meta_gate", time.perf_counter()))
         # selection bias 해소: skip된 비-FLAT 신호를 shadow 버퍼에 보존
@@ -6355,6 +6413,9 @@ class TradingSystem:
             final_entry=_final_entry_ok,
             check_values=_check_vals,
             entry_block_reason=_entry_block_reason,
+            hurst=float(features.get("hurst", 0.5)),
+            atr=atr,
+            regime=self.current_micro_regime,
         )
         self._manual_entry_ctx = {
             "price": close,
@@ -6482,6 +6543,7 @@ class TradingSystem:
                                     raw_direction=raw_dir_str,
                                     reverse_enabled=reverse_on,
                                     entry_horizon=_entry_horizon,
+                                    hurst_bucket=self._entry_hurst_bucket,
                                 )
                                 _entry_executed_this_cycle = True
                 else:
@@ -6571,6 +6633,7 @@ class TradingSystem:
                         raw_direction=raw_dir_str,
                         reverse_enabled=reverse_on,
                         entry_horizon=_entry_horizon,
+                        hurst_bucket=self._entry_hurst_bucket,
                     )
                     _entry_executed_this_cycle = True
 
@@ -6862,6 +6925,13 @@ class TradingSystem:
                 "atr":    features.get("atr", 1.0),
                 "regime": self.current_micro_regime,
                 "candle": bar if isinstance(bar, dict) else {},
+                # [260704 감사 P2] E_CHAMPION_TP1_SKIP_TRAIL 전용 — 진입 알파를 챔피언과
+                # 동일하게 미러링해 청산 규칙(TP1 부분청산 vs 트레일 단독) 효과만 격리한다.
+                "decision": {
+                    "direction":  direction,
+                    "confidence": confidence,
+                    "grade":      grade,
+                },
             }
             self.challenger_engine.run_shadow(features, _ctx.get("candle", {}), _ctx)
 
@@ -7053,7 +7123,13 @@ class TradingSystem:
     # 입력: direction/qty, _futures_code, account_no, broker API
     # 출력: broker ret code, pending state, 포지션/로그 동기화
     def _send_broker_entry_order(self, direction: str, qty: int) -> int:
-        """선물 진입 시장가 주문. 0=성공, 음수=오류"""
+        """선물 진입 주문. 0=성공, 음수=오류.
+
+        [260704 감사 P1] LIMIT_ENTRY_FIRST_ENABLED=True면 microprice 기준 유리한 쪽
+        1틱 지정가로 먼저 시도한다. 이 경우 즉시 체결이 보장되지 않으므로 호출부
+        (_ts_execute_entry)는 self._pending_limit_is_active를 확인해 낙관적 포지션
+        오픈을 건너뛰어야 한다 — 실제 오픈은 Chejan 체결 이벤트로만 반영된다.
+        """
         code = getattr(self, "_futures_code", "")
         if not code:
             return -1
@@ -7061,6 +7137,53 @@ class TradingSystem:
         if not account_no:
             return -1
         side = "BUY" if direction == "LONG" else "SELL"
+
+        self._pending_limit_is_active = False
+        if LIMIT_ENTRY_FIRST_ENABLED:
+            _rd = getattr(self, "realtime_data", None)
+            bid1 = float(getattr(_rd, "_last_bid1", 0.0) or 0.0)
+            ask1 = float(getattr(_rd, "_last_ask1", 0.0) or 0.0)
+            try:
+                tick = float(get_contract_spec(code).get("tick_size", 0.0) or 0.0)
+            except Exception:
+                tick = 0.0
+            if bid1 > 0 and ask1 > 0 and tick > 0:
+                limit_price = round(bid1 + tick, 4) if direction == "LONG" else round(ask1 - tick, 4)
+                logger.info(
+                    "[LimitEntry][ORDER_SENT] dir=%s qty=%d price=%.2f bid1=%.2f ask1=%.2f tick=%.2f t=%.3f",
+                    direction, qty, limit_price, bid1, ask1, tick, time.time(),
+                )
+                res = self.broker.send_limit_order(
+                    account_no=account_no,
+                    code=code,
+                    side=side,
+                    qty=qty,
+                    price=limit_price,
+                    rqname="지정가진입",
+                    screen_no="1000",
+                )
+                ret = int(res.get("ret", -1))
+                order_no = str(res.get("order_no", "") or "")
+                if ret == 0 and order_no:
+                    self._pending_limit_is_active = True
+                    self._pending_limit_order_no = order_no
+                    self._pending_limit_submitted_at = time.time()
+                    self._pending_limit_price = limit_price
+                else:
+                    logger.warning(
+                        "[LimitEntry][ORDER_SENT] 지정가 접수 실패 ret=%s order_no=%s — 시장가로 폴백",
+                        ret, order_no,
+                    )
+                    return self.broker.send_market_order(
+                        account_no=account_no, code=code, side=side, qty=qty,
+                        rqname="진입", screen_no="1000",
+                    )
+                return ret
+            logger.warning(
+                "[LimitEntry] bid1/ask1/tick_size 미확보(bid1=%.2f ask1=%.2f tick=%.2f) — 시장가로 진행",
+                bid1, ask1, tick,
+            )
+
         return self.broker.send_market_order(
             account_no=account_no,
             code=code,
@@ -7069,6 +7192,53 @@ class TradingSystem:
             rqname="진입",
             screen_no="1000",
         )
+
+    def _check_limit_entry_timeout(self) -> None:
+        """[260704 감사 P1] 지정가 진입 타임아웃 감시 (2초 주기 QTimer).
+
+        LIMIT_ENTRY_TIMEOUT_SEC 경과 시 무조건 취소만 한다 — 시장가 전환 없음
+        (2026-07-05 사용자 지시: 가정이 깨져도 안전하도록 포지션을 억지로 열지 않는다).
+        부분체결분이 있었다면 그만큼은 이미 실제 체결로 반영되어 있으므로 그대로 두고,
+        미체결 잔량만 취소한다.
+        """
+        if not getattr(self, "_pending_limit_is_active", False):
+            return
+        pending = self._pending_order
+        if not pending or not pending.get("is_limit_entry"):
+            # 이미 전량 체결되어 pending이 정리됐거나 다른 사유로 소멸 — 플래그만 리셋
+            self._pending_limit_is_active = False
+            return
+
+        submitted_at = getattr(self, "_pending_limit_submitted_at", None)
+        if submitted_at is None:
+            return
+        elapsed = time.time() - submitted_at
+        if elapsed < LIMIT_ENTRY_TIMEOUT_SEC:
+            return
+
+        order_no = str(pending.get("order_no") or getattr(self, "_pending_limit_order_no", "") or "")
+        filled = int(pending.get("filled_qty", 0) or 0)
+        target = int(pending.get("qty", 0) or 0)
+        remaining = max(target - filled, 0)
+
+        logger.info(
+            "[LimitEntry][TIMEOUT] order_no=%s filled=%d/%d elapsed=%.1fs — 취소(시장가 전환 없음) t=%.3f",
+            order_no, filled, target, elapsed, time.time(),
+        )
+        log_manager.system(
+            f"[LimitEntry] 지정가 진입 타임아웃 — 취소 filled={filled}/{target} order_no={order_no or '?'}",
+            "WARNING",
+        )
+        if order_no and remaining > 0:
+            account_no = self._get_active_account_no()
+            code = getattr(self, "_futures_code", "")
+            cancel_ret = self.broker.cancel_order(
+                account_no=account_no, order_no=order_no, code=code, qty=remaining,
+            )
+            logger.info("[LimitEntry][CANCEL] order_no=%s ret=%s t=%.3f", order_no, cancel_ret, time.time())
+
+        self._pending_limit_is_active = False
+        self._clear_pending_order()
 
     def _send_broker_exit_order(self, qty: int) -> int:
         """선물 청산 시장가 주문. 0=성공, 음수=오류, -99=BlockRequest 타임아웃"""
@@ -7196,6 +7366,54 @@ class TradingSystem:
                 and self.position.status != "FLAT"
                 and self.position.is_tp2_hit(price)):
             self._execute_partial_exit(price, stage=2)
+
+        # 3.5순위: [260704 감사 P1] 신호 소멸 청산 — 보유 포지션과 반대 방향의 앙상블
+        # 신호가 zone_mc(시간대×호라이즌 동적 min_conf) 이상 신뢰도로 확정되면
+        # 손절가 도달을 기다리지 않고 미리 청산한다.
+        # 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §3-2 ①
+        if (SIGNAL_DECAY_EXIT_ENABLED
+                and not self._has_pending_order()
+                and self.position.status != "FLAT"):
+            _sd_dir  = decision.get("direction", 0)
+            _sd_conf = float(decision.get("confidence", 0.0) or 0.0)
+            _sd_zone_mc = float(decision.get("min_conf", 1.0) or 1.0)
+            _sd_opposite = (
+                (self.position.status == "LONG" and _sd_dir == -1)
+                or (self.position.status == "SHORT" and _sd_dir == 1)
+            )
+            if _sd_opposite and _sd_conf >= _sd_zone_mc:
+                debug_log.debug(
+                    "[SignalDecay] 반대신호 청산: pos=%s dir=%d conf=%.3f zone_mc=%.3f",
+                    self.position.status, _sd_dir, _sd_conf, _sd_zone_mc,
+                )
+                # [260705 검증 캠페인 §3-5] counterfactual 기록 — 발동 시점의
+                # 스톱/TP1 가격을 보존해 주간 리포트(generate_validation_campaign_report)가
+                # "청산 안 했으면 어느 배리어에 먼저 닿았나"를 사후 판정한다.
+                # 기록 실패는 청산 자체를 막지 않는다 (계측 전용).
+                try:
+                    execute(
+                        TRADES_DB,
+                        """INSERT INTO signal_decay_exits
+                           (ts, direction, exit_price, stop_price, tp1_price,
+                            quantity, conf, zone_mc)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                            self.position.status,
+                            float(price),
+                            float(self.position.stop_price or 0.0),
+                            float(self.position.tp1_price or 0.0),
+                            int(self.position.quantity),
+                            _sd_conf,
+                            _sd_zone_mc,
+                        ),
+                    )
+                except Exception as _sde:
+                    logger.warning("[SignalDecay] counterfactual 기록 실패 (무해): %s", _sde)
+                self._send_broker_exit_order(self.position.quantity)
+                result = self.position.close_position(price, "신호소멸청산")
+                self._post_exit(result)
+                return
 
         # 4순위: 시간 강제 청산
         if self.time_exit.should_force_exit():
@@ -7714,6 +7932,22 @@ class TradingSystem:
             except Exception as _ce2:
                 logger.warning("[Challenger] update_daily_metrics 실패 (스킵): %s", _ce2)
 
+        # ── [260704 감사 P2] 챔피언 heartbeat — 일별 1회 체크 ─────
+        # 주의: CHAMPION_BASELINE_ID는 challenger_engine에 shadow 도전자로 등록되어
+        # 있지 않아(_register_default_challengers 참조) 자체 거래 이력이 없다 —
+        # 최초 승격이 일어나기 전까지는 "표본 부족"으로만 나온다(콜드스타트, 정상).
+        # 승격 후에는 새 챔피언이 도전자였을 때의 이력이 그대로 재활용된다.
+        # 사이즈 자동축소는 아직 실거래 배선에 연결하지 않았다 — 실측 데이터가
+        # 쌓여 정상 동작이 확인된 뒤 연결 여부를 별도로 결정할 것.
+        if self.promotion_manager is not None:
+            try:
+                _hb = self.promotion_manager.check_champion_heartbeat()
+                log_manager.system(
+                    f"[ChampionHeartbeat] {_hb['reason']}", "WARNING" if _hb["degraded"] else "INFO",
+                )
+            except Exception as _hb_e:
+                logger.warning("[ChampionHeartbeat] 체크 실패 (스킵): %s", _hb_e)
+
         # 개선 3: 당일 종가 버퍼를 feature_builder에 전달 → 내일 prev_day_same_hour_ret 계산
         try:
             from utils.db_utils import fetchall
@@ -7882,6 +8116,8 @@ class TradingSystem:
         self.investor_data.reset_daily()
         self.pcr_store.reset_daily()
         self.option_chain_snap.reset_daily()
+        self.basis_calc.reset_daily()
+        self._last_vkospi = None
         self.position.reset_daily()
         self.circuit_breaker.reset_daily()
         self.profit_guard.reset_daily()
@@ -8843,6 +9079,12 @@ class TradingSystem:
         self._investor_timer.timeout.connect(self._fetch_investor_data)
         self._investor_timer.start()
 
+        # [260704 감사 P2] KOSPI200 현물지수 주기 폴링 — 60초 (베이시스 계산용)
+        self._kospi200_index_timer = QTimer()
+        self._kospi200_index_timer.setInterval(60_000)
+        self._kospi200_index_timer.timeout.connect(self._poll_kospi200_index)
+        self._kospi200_index_timer.start()
+
         # 옵션 체인 주기 폴링 — 300초 (opt_chain_pcr / opt_gex_bn / opt_atm_* 수집)
         self._option_chain_timer = QTimer()
         self._option_chain_timer.setInterval(300_000)
@@ -8858,6 +9100,14 @@ class TradingSystem:
         self._effect_report_timer.setInterval(60_000)
         self._effect_report_timer.timeout.connect(self._effect_report_timer_tick)
         self._effect_report_timer.start()
+
+        # [260704 감사 P1] 지정가 우선 집행 — 분봉 주기(60s)보다 짧은 타임아웃(10~15s)을
+        # 봐야 하므로 전용 QTimer로 확인. LIMIT_ENTRY_FIRST_ENABLED=False면 매 tick
+        # 즉시 반환하므로 평상시 오버헤드는 무시할 수준.
+        self._limit_entry_timer = QTimer()
+        self._limit_entry_timer.setInterval(2_000)
+        self._limit_entry_timer.timeout.connect(self._check_limit_entry_timeout)
+        self._limit_entry_timer.start()
 
         # 대시보드 표시 + 긴급정지 버튼 연결
         self.dashboard.show()
@@ -10669,6 +10919,12 @@ def _ts_on_chejan_event(self, payload: dict) -> None:
         return
 
     pending["filled_qty"] += fill_qty
+    if pending.get("is_limit_entry"):
+        # [260704 감사 P1] 계측 — 지정가 진입의 체결 타이밍 실측 (가정 검증용, 2026-07-05)
+        logger.info(
+            "[LimitEntry][CHEJAN_EVENT] order_no=%s fill_qty=%d cumulative=%d/%d fill_price=%.2f t=%.3f",
+            order_no, fill_qty, pending["filled_qty"], pending.get("qty", 0), fill_price, time.time(),
+        )
     if pending["kind"] == "ENTRY":
         _ts_handle_entry_fill(
             self,
@@ -11471,6 +11727,7 @@ def _ts_execute_entry(
     raw_direction: str = None,
     reverse_enabled: bool = False,
     entry_horizon: str = None,
+    hurst_bucket: str = None,
 ):
     cooldown_active, cooldown_remain = _ts_in_exit_cooldown(self)
     raw_direction = raw_direction or direction
@@ -11599,6 +11856,21 @@ def _ts_execute_entry(
             )
             self._clear_pending_order()  # pending 롤백
             return
+
+    # [260704 감사 P1] 지정가 우선 집행 — 주문은 접수됐지만 즉시 체결이 보장되지
+    # 않으므로 낙관적 오픈을 건너뛴다. 실제 포지션 오픈은 Chejan 체결 이벤트로만
+    # 반영되며(apply_entry_fill의 status==FLAT 분기가 신규 오픈 처리), 타임아웃
+    # 시 QTimer(_ts_check_limit_entry_timeout)가 취소한다 — 시장가 전환 없음.
+    if getattr(self, "_pending_limit_is_active", False):
+        if self._pending_order is not None:
+            self._pending_order["order_no"] = getattr(self, "_pending_limit_order_no", "")
+            self._pending_order["is_limit_entry"] = True
+        logger.info(
+            "[LimitEntry] 낙관적 오픈 스킵 — Chejan 체결 대기 order_no=%s price=%s",
+            getattr(self, "_pending_limit_order_no", ""), getattr(self, "_pending_limit_price", ""),
+        )
+        return
+
     # Fix B: 모의투자에서 Chejan 없음 → 낙관적 오픈으로 이중진입 방지
     # Chejan 체결 시 apply_entry_fill() 가격 보정 경로로 합쳐짐 (_optimistic=True)
     try:
@@ -11612,6 +11884,7 @@ def _ts_execute_entry(
             raw_direction=raw_direction,
             reverse_entry_enabled=reverse_enabled,
             entry_horizon=entry_horizon,
+            hurst_bucket=hurst_bucket,
         )
         self.position._optimistic = True
         if self._pending_order is not None:

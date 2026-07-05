@@ -8,30 +8,57 @@
 
 ---
 
-## 2026-07-03 (290차 — v9 Phase 0 진단 결과 후속) [P0]
+## 2026-07-05 (291차 검증) [검증 캠페인 계측·판정 자동화]
 
-### day_range_pct 이상치 스팟체크
-`regime_postmortem_report.md`에서 06-23(13.03%)·07-03(10.83%) 등 여러 날 일중 레인지가
-6~13%로 이례적으로 크게 나옴. 실제 거래소 CB 발동일과 겹치는지, 아니면 21차/228차 "종목코드
-불일치·이종가격 혼재" 버그 재발인지 raw_candles 원본 스팟체크로 확인 필요.
+> 260705 계획 문서 §1 공백 3종(합격선 사전등록·롤백 기준·스케줄 미연결) 구현 완료.
+> 합격선: `config/settings.py:VALIDATION_CAMPAIGN` (사전 등록 — 사후 변경 금지, §9-4).
+> 판정 로직은 합성 데이터 격리 테스트로 5개 채널 전부 검증 완료(스크래치패드, 운영 DB 미접촉).
 
-### qty_ok / mode_filter_ok 근본원인 조사
-`gate_blocking_report.md`에서 18개 게이트 중 통과율 최저(9.6%/11.4%)인 두 게이트가
-`entry_block_reason` 우선순위 체인에 아예 없어 원인 불명. `_qty_display` 산출 로직과
-`mode_filter_passed`(entry_mode vs 허용 등급) 조건을 main.py에서 추적해 "왜 90%가
-차단되는가"를 규명. §13(다중게이트) 재설계 우선순위에 직결.
+- [ ] **① 금요일 EOD 캠페인 체인 첫 실행 확인** — `EOD_RETRAIN.bat`(py310_64)이
+  금요일에 재학습 후 `[검증 캠페인] 주간 스텝 5개 실행` 로그와 함께
+  ablation→판정리포트→TB재학습→분위재학습(→격주 MAE/MFE) 순으로 도는지,
+  `data/validation_campaign_report.md` 생성되는지 확인. 강제 실행: `--campaign` 플래그.
+  주의: 판정 리포트가 TB 재학습보다 **먼저** 도는 순서가 OOS 보장의 핵심 — 순서 바꾸지 말 것
+- [ ] **② 신규 로깅 3컬럼 축적 확인** — 다음 장중 `ensemble_decisions`에
+  quantile_q10_pt/quantile_q90_pt/meta_gate_horizon이 매분 기록되는지
+  (마이그레이션은 앱 기동 시 init_all_dbs()가 자동 수행, 개발PC에서 확인 완료)
+- [ ] **③ 신호소멸청산 counterfactual 행 기록 확인** — 다음 신호소멸청산 발동 시
+  trades.db `signal_decay_exits`에 스톱/TP1 가격 포함 행이 남는지, 다음 금요일
+  리포트 [4]에서 resolve(STOP/TP1/NEITHER 판정)되는지 확인
+- [ ] **④ 첫 판정 리포트는 전 채널 INSUFFICIENT가 정상** — TB는 모델 mtime 이후
+  OOS 표본이 1주 쌓여야 하고, meta/quantile은 신규 컬럼 축적 후부터. W2 리포트부터
+  수치가 나오기 시작하는 게 정상 진행. 조급하게 합격선을 건드리지 말 것
 
-### 트리플 배리어 라벨 W2~3 편입 여부 결정
-`triple_barrier_label_report.md`: 기존 라벨 FLAT 62~68% vs 트리플배리어 FLAT 0.04~0.6%,
-일치율 1m 66.9%→30m 31.9%. 병렬 재학습(오프라인) 후 walk-forward 손익비 비교로
-실제 편입 여부 결정 필요 — `raw_data.db.triple_barrier_labels`에 이미 저장됨.
+## 2026-07-05 (290차 검증) [260704 종합감사 P0~P3]
 
-### 레짐 사후 라벨링 표본 확충
-22일 중 21일이 '추세장' 지배(1일만 '횡보장')로 TREND vs RANGE PnL 비교가 이번 창에서는
-표본 부족. `scripts/generate_regime_postmortem_report.py`를 매주 재실행해 누적, 또한
-탈진장(EXHAUSTION) 과소추정 문제(exhaustion/vwap 미반영) 해소 여부 검토.
+### 실기동/실브로커 검증 필요 항목
 
----
+- [ ] **① 지정가 우선 집행 실브로커 검증** — `LIMIT_ENTRY_FIRST_ENABLED=True`로 전환 후
+  모의투자에서 Cybos CpTd6831(지정가)/CpTd6833(취소) TR이 실제로 정상 동작하는지,
+  타임아웃(12초) 시 시장가 전환 없이 취소만 되는지, `[LimitEntry]` 계측 로그로 실측
+  체결 타이밍 확인 (개발환경은 COM 미지원이라 미검증 상태)
+- [ ] **② 신호 소멸 청산(P4.5) 실거래 영향 확인** — `SIGNAL_DECAY_EXIT_ENABLED=True` 기본
+  ON 상태로 며칠 운영 후, 반대방향 고신뢰 전환 시 실제로 손절가 도달 전 조기청산되는지,
+  기존 청산 우선순위(하드스톱→TP1/TP2)와 충돌 없는지 로그 확인
+- [ ] **③ 30m 다음 EOD 재학습 후 정확도 재측정** — `batch_retrainer.py:_retrain_phase2()`
+  피처명 합집합 수정이 반영된 다음 재학습에서 `feature_names_30m.pkl`에 opt_gex_bn/
+  opt_chain_pcr/opt_atm_pcr/opt_atm_call_oi가 실제로 포함되는지, `gbm_30m_acc.txt`가
+  목표(0.38~0.41)에 근접하는지 확인 → 미달 시 30m 퇴역 최종 결정
+- [ ] **④ 챌린저 부트스트랩/heartbeat 콜드스타트 해소 여부 판단** — 최초 승격이 한 번
+  발생한 뒤 CHAMPION_BASELINE 자체 shadow 이력이 쌓이기 시작하는지, 그 전까지 계속
+  "표본부족"만 반환하는 게 맞는지 재확인. 실거래 브릿지(별도 설계) 필요 여부 결정
+- [ ] **⑤ TP1 스킵·트레일단독 챌린저(`E_CHAMPION_TP1_SKIP_TRAIL`) 20일 병행평가** —
+  기존 challenger_daily_metrics 집계로 자동 축적되는지 확인 후 20일 뒤 A/B 결과 검토
+- [ ] **⑥ 신규 피처 4종(베이시스·VKOSPI·프로그램매매·외인선물) + 만기더미 4종 SHAP 심사** —
+  `include_pending_validation`으로 등록만 해둔 상태 — 충분한 표본 축적 후 SHAP 심사
+  통과 시 `include`로 승격할지 판단
+- [ ] **⑦ 탭 15개→4그룹 재편** — headless 개발환경에서 레이아웃 회귀를 시각 확인할 수
+  없어 보류함. 사용자가 직접 실행하며 `UiAutoTabController` 자동포커스 로직까지 포함해
+  진행할 것 (`ROADMAP.md` §5-3 참조)
+- [ ] **⑧ position_state.json 재발 방지 확인** — 이번 세션 중 검증 스크립트가 실제
+  운영 파일을 오염시킨 사고가 있었음(290차, `force_flat()`으로 복구 완료). 프로그램
+  재시작 후 실제로 FLAT 상태가 정상 로드되는지, 이후 검증 스크립트 작성 시 격리 경로를
+  쓰는 습관이 지켜지는지 확인
 
 ## 2026-07-03 (289차 검증)
 

@@ -53,6 +53,15 @@ def main():
         "--phase2", action="store_true", default=False,
         help="Phase 2 경로: raw_features_horizon 테이블(호라이즌별 N분봉 피처)로 재학습",
     )
+    # [260705 검증 캠페인] 주간 스텝 — 기본 None = 금요일에만 자동 실행
+    parser.add_argument(
+        "--campaign", dest="campaign", action="store_true", default=None,
+        help="검증 캠페인 주간 스텝 강제 실행 (기본: 금요일 자동)",
+    )
+    parser.add_argument(
+        "--no-campaign", dest="campaign", action="store_false",
+        help="검증 캠페인 주간 스텝 실행 안 함",
+    )
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -112,10 +121,87 @@ def main():
             logger.error(
                 "→ weeks_back을 늘리거나 backfill_features.py를 실행하여 피처 DB를 채우세요."
             )
+        # 재학습이 실패해도 캠페인 판정 리포트(읽기 전용)는 실행할 가치가 있다
+        if _campaign_due(args.campaign):
+            _run_campaign_steps()
         sys.exit(1)
 
     logger.info("=" * 60)
     logger.info("완료. pkl 저장 위치: %s", os.path.join(BASE_DIR, "model", "horizons"))
+
+    # ── [260705 검증 캠페인] 주간 스텝 (금요일 자동 / --campaign 강제) ─────
+    if _campaign_due(args.campaign):
+        _run_campaign_steps()
+
+
+def _campaign_due(flag):
+    """--campaign 명시 > 금요일 자동. None=자동 판단."""
+    if flag is not None:
+        return bool(flag)
+    return datetime.date.today().weekday() == 4  # 금요일
+
+
+def _run_campaign_steps():
+    """[260705 검증 캠페인] 주간 검증 스텝 체인 자동화.
+
+    docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §4-1.
+    각 스텝은 서브프로세스로 격리 — 하나가 실패해도 나머지는 계속 실행한다.
+
+    순서가 중요하다:
+      1) 게이트 ablation 리포트 (읽기 전용)
+      2) 검증 캠페인 판정 리포트 — 반드시 섀도우 TB 재학습 **전에** 실행해야
+         이번 주 데이터가 지난주 모델 기준 OOS로 평가된다 (§3-1 OOS 보장:
+         리포트가 모델 파일 mtime 이후 ts만 평가하므로, 재학습을 먼저 돌리면
+         mtime이 오늘로 갱신돼 평가 표본이 0이 된다)
+      3) 섀도우 TB 재학습 (다음 주 평가용 모델 갱신)
+      4) 분위 회귀 재학습
+      5) 격주(짝수 ISO 주차): MAE/MFE 배리어 적정성 분석
+    """
+    import subprocess
+
+    steps = [
+        ("게이트 ablation 리포트", ["generate_gate_ablation_report.py", "--days", "7"]),
+        ("검증 캠페인 판정 리포트", ["generate_validation_campaign_report.py"]),
+        ("섀도우 TB 재학습", ["run_shadow_triple_barrier_retrain.py"]),
+        ("분위 회귀 재학습", ["train_quantile_regressor.py"]),
+    ]
+    if datetime.date.today().isocalendar()[1] % 2 == 0:
+        steps.append(("MAE/MFE 분석", ["analyze_mae_mfe.py"]))
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    logger.info("=" * 60)
+    logger.info("[검증 캠페인] 주간 스텝 %d개 실행 (§4-1)", len(steps))
+    summary = []
+    for name, cmd in steps:
+        script_path = os.path.join(script_dir, cmd[0])
+        if not os.path.exists(script_path):
+            logger.warning("[검증 캠페인] %s — 스크립트 없음: %s", name, script_path)
+            summary.append((name, "MISSING"))
+            continue
+        try:
+            proc = subprocess.run(
+                [sys.executable, script_path] + cmd[1:],
+                cwd=BASE_DIR,
+                timeout=1800,  # 스텝당 최대 30분
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            ok = proc.returncode == 0
+            tail = (proc.stdout or b"")[-2000:].decode("utf-8", errors="replace")
+            logger.info("[검증 캠페인] %s → %s (rc=%d)\n%s",
+                        name, "완료" if ok else "실패", proc.returncode, tail)
+            summary.append((name, "OK" if ok else "FAIL(rc=%d)" % proc.returncode))
+        except subprocess.TimeoutExpired:
+            logger.error("[검증 캠페인] %s — 30분 타임아웃", name)
+            summary.append((name, "TIMEOUT"))
+        except Exception as e:
+            logger.error("[검증 캠페인] %s — 실행 오류: %s", name, e)
+            summary.append((name, "ERROR"))
+
+    logger.info("[검증 캠페인] 요약: %s",
+                " | ".join("%s=%s" % (n, s) for n, s in summary))
+    logger.info("판정 리포트: %s",
+                os.path.join(BASE_DIR, "data", "validation_campaign_report.md"))
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":

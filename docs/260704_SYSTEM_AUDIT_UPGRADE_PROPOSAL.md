@@ -81,7 +81,6 @@ conf 0.7+에서 정확도가 역전되는 기현상도 이 괴리의 증상일 �
 비유하면: 지금 심사관은 "일반 상식"(문맥 통계)으로 판단하는데, 로드맵은 "이 회사의 과거 청구 6만 5천 건 실제 사례"로 전문 훈련받은 심사관을 새로 앉히자는 제안인 거죠. 후자가 훨씬 이 시스템에 특화된 판단을 할 수 있어요.
 로드맵 ②번이 제안하는 것을 이제 정확히 짚을 수 있어요: 지금 MetaConfidenceLearner는 "일반적인 문맥 신뢰도"(레짐/시간/변동성 기반)를 배우는 범용 심사관인데, derive_meta_label이 만든 6.5만 건은 **"실제로 그 신호를 따랐을 때 손익이 어땠는지"**까지 담고 있는 더 직접적인 정답지예요. 이 둘을 합치면 — 지금의 "이 상황이 일반적으로 신뢰할 만한가"에 더해 "이 구체적인 신호를 진입했으면 실제로 돈 벌었는가"까지 학습하는 훨씬 강한 필터가 될 수 있다는 거죠.
 
-
 **③ [P2] GBM → HistGradientBoosting 전환**
 - sklearn 1.0.2에서 지원, 학습 5~10배 빠름, 결측 native 처리, 성능 동급 이상.
 - py310_64 학습 → py37_32(sklearn 1.0.2 동일 버전) 로드이므로 pickle 호환 유지.
@@ -366,24 +365,92 @@ Phase 6(유전자 진화)이 코드 완성 후 장외 스케줄 미연결 상태
 
 ## 8. 실행 로드맵 요약
 
-| 순위 | 작업 | 기대 효과 | 대상 파일 |
-|---|---|---|---|
-| **P0** | CB② 복원 또는 원칙 개정 | 안전원칙 정합 | `config/settings.py:581` |
-| **P0** | 거래당 순EV 일일 리포트 + 대시보드 노출 | 평가 축 교정 | `daily_exporter.py`, 대시보드 |
-| **P1** | Triple-barrier 레이블 섀도우 병행 | 알파의 문제 정의 교정 | `target_builder.py`, `batch_retrainer.py` |
-| **P1** | Meta-labeling 게이트 승격 (체크리스트 대체) | 진입 정밀도 | `meta_gate.py`, `checklist.py` |
-| **P1** | MAE/MFE 분석 → TP/SL 재산정 | 청산 EV | `scripts/` 신설, trades.db |
-| **P1** | 신호 소멸 청산 (P4.5) | 손절 도달 전 탈출 | `exit_manager.py` |
-| **P1** | 지정가 우선 집행 + 집행비용 실측 | 거래당 1~2틱 절감 | `main.py` 주문부 |
-| **P1** | 게이트/레이어 ablation 주간 리포트 | 복잡도 부채 상환 | `shadow_evaluator.py` |
-| **P2** | HistGBM 전환, 분위 회귀 채널 | 학습 속도·정보량 | `batch_retrainer.py` |
-| **P2** | 베이시스·프로그램·외인선물·VKOSPI 피처 | 설계-구현 갭 해소 | `features/`, 수집기 |
-| **P2** | 챌린저 부트스트랩 판정 + 챔피언 heartbeat | 승격 오류율 감소 | `promotion_manager.py` |
-| **P2** | TP1 부분청산 A/B, 레짐 조건부 배수 | 청산 EV | challenger variant |
-| **P3** | 대시보드 상태 스트립 + 탭 4그룹화 | 운용 속도·실수 방지 | `main_dashboard.py` |
-| **P3** | 30m 퇴역 심사, 다중비교 보정, 만기 더미 | 정리 | 각처 |
+| 순위 | 작업 | 기대 효과 | 대상 파일 | 상태 |
+|---|---|---|---|---|
+| **P0** | CB② 복원 또는 원칙 개정 | 안전원칙 정합 | `config/settings.py:581` | ✅ 완료 |
+| **P0** | 거래당 순EV 일일 리포트 + 대시보드 노출 | 평가 축 교정 | `daily_exporter.py`, 대시보드 | ✅ 완료 |
+| **P1** | Triple-barrier 레이블 섀도우 병행 | 알파의 문제 정의 교정 | `target_builder.py`, `batch_retrainer.py` | ✅ 완료 |
+| **P1** | Meta-labeling 게이트 승격 (체크리스트 대체) | 진입 정밀도 | `meta_gate.py`, `checklist.py` | ✅ 완료 |
+| **P1** | MAE/MFE 분석 → TP/SL 재산정 | 청산 EV | `scripts/` 신설, trades.db | ✅ 완료 |
+| **P1** | 신호 소멸 청산 (P4.5) | 손절 도달 전 탈출 | `exit_manager.py` | ✅ 완료 |
+| **P1** | 지정가 우선 집행 + 집행비용 실측 | 거래당 1~2틱 절감 | `main.py` 주문부 | ✅ 완료 |
+| **P1** | 게이트/레이어 ablation 주간 리포트 | 복잡도 부채 상환 | `shadow_evaluator.py` | ✅ 완료 |
+| **P2** | HistGBM 전환, 분위 회귀 채널 | 학습 속도·정보량 | `batch_retrainer.py` | ✅ 완료 |
+| **P2** | 베이시스·프로그램·외인선물·VKOSPI 피처 | 설계-구현 갭 해소 | `features/`, 수집기 | ✅ 완료 |
+| **P2** | 챌린저 부트스트랩 판정 + 챔피언 heartbeat | 승격 오류율 감소 | `promotion_manager.py` | ✅ 완료 |
+| **P2** | TP1 부분청산 A/B, 레짐 조건부 배수 | 청산 EV | challenger variant | ✅ 완료 |
+| **P3** | 대시보드 상태 스트립 + 탭 4그룹화 | 운용 속도·실수 방지 | `main_dashboard.py` | 🟡 상태 스트립만 완료(탭 재편은 사용자 직접 진행 예정) |
+| **P3** | 30m 퇴역 심사, 다중비교 보정, 만기 더미 | 정리 | 각처 | ✅ 완료 |
 
 **5% 목표에 대한 마지막 정직한 한마디**: 현재 실측 엣지는 1m 마이크로구조(35.1%)
 하나다. 6개 호라이즌을 고르게 키우려 하지 말고, 이 엣지에 자원(피처 7번 체결
 불균형, 집행 개선, triple-barrier)을 집중한 뒤, 검증된 엣지를 3m/5m로 확장하는
 것이 — 전 구간 파라미터 튜닝보다 — 5%에 도달하는 유일하게 재현 가능한 경로다.
+
+---
+
+## 9. 구현 완료 현황 (2026-07-05)
+
+> 이 감사 보고서(§8 실행 로드맵)에 따라 P0→P1→P2→P3 순서로 구현을 진행했다.
+> 상세 구현 내역·검증 방법·changelog는 `ROADMAP.md`의 "260704 감사 로드맵 — ..." 각
+> 섹션에 항목별로 기록되어 있다 — 아래는 요약이며, 재현 가능한 검증 절차·수치는
+> ROADMAP.md 원문을 참조할 것.
+
+### P0 — 완료
+- **CB② 복원/원칙 개정**: 모의투자 단계 한정 예외로 CLAUDE.md에 명시적으로 문서화
+  (`CB_CONSEC_STOP_LIMIT=9999`). 실투 전환 전 2~3으로 복원 필수 항목을 Phase 5
+  체크리스트에 등록.
+- **거래당 순EV 리포트**: `utils/db_utils.py` EV 조회 함수 4종 + EOD 리포트 + 대시보드
+  "최근20건 순EV" 타일.
+
+### P1 — 완료
+- **Triple-barrier 레이블**: `model/target_builder.py:build_triple_barrier_label()` +
+  섀도우 재학습 파이프라인(실거래 미영향, 병행평가 대기).
+- **Meta-labeling 게이트**: `learning/meta_label_classifier.py` — meta_labels
+  65,183건으로 학습, MetaGate에 섀도우 필드로 연결(실거래 미영향).
+- **MAE/MFE 분석**: `scripts/analyze_mae_mfe.py` — 읽기전용 진단.
+- **신호 소멸 청산(P4.5)**: `main.py:_check_exit_triggers()`에 구현, 기본 ON(모의투자
+  한정, 실투 전 재검토).
+- **지정가 우선 집행**: Cybos CpTd6831/6833 TR 신규 구현, 기본 OFF(실브로커 수동검증
+  필요 — 체크리스트 ROADMAP.md에 등록).
+- **게이트 ablation 리포트**: `scripts/generate_gate_ablation_report.py`.
+
+### P2 — 완료
+- **HistGBM/분위회귀**: HistGBM은 이미 적용 중이었음(추가작업 불필요), 분위회귀
+  채널(`learning/quantile_regressor.py`) 신규 구현.
+- **신규 피처 4종**: 선물-현물 베이시스(`features/technical/basis.py`, KOSPI200 지수
+  코드 K2G01P로 정정), VKOSPI 장중값(O2901P), 프로그램매매(CpSvr8111 필드매핑 오류
+  발견·수정), 외국인선물(기존 매핑 정확함 확인). 전부 pending_validation 등록.
+- **챌린저 부트스트랩+heartbeat**: `challenger/promotion_manager.py`에 5,000회
+  리샘플 우위확률 판정 + Wilson CI 기반 챔피언 heartbeat. CHAMPION_BASELINE 콜드스타트
+  제약(자체 shadow 이력 없음) 발견 — 기존 구조적 한계, 새 버그 아님.
+- **TP1 부분청산 A/B + 레짐 조건부 배수**: 챔피언 미러 챌린저(`E_CHAMPION_TP1_SKIP_TRAIL`,
+  진입은 챔피언과 동일·청산만 트레일 단독) 신규 등록. `HURST_REGIME_ATR_MULT`
+  (추세×1.2/평균회귀×0.85) 신설.
+
+### P3 — 완료 (탭 재편 제외)
+- **대시보드 상태 스트립**: `StatusStripPanel` 신규 — 포지션/당일손익/승패/스톱·TP1/
+  모델방향+신뢰도게이지/차단사유/레짐+Hurst+ATR을 헤더 아래 탭무관 상시노출.
+  `QT_QPA_PLATFORM=offscreen`으로 실제 위젯 생성+동작 검증.
+- **탭 4그룹화**: headless 개발환경에서 레이아웃 회귀를 시각 확인할 수 없어 보류 —
+  사용자가 직접 실행하며 진행 예정.
+- **30m 퇴역 심사**: 퇴역하지 않음 — 대신 `learning/batch_retrainer.py`의 실제 버그
+  (호라이즌별 학습피처명을 "최다-키 단일 행"으로 결정하던 로직, opt_gex_bn 등
+  need_add 피처가 실은 이미 수집 중이었는데 이 버그로 학습에 반영 안 되고 있었음)를
+  발견·수정. 다음 EOD 재학습 후 재측정하여 최종 판단.
+- **다중비교 보정(Bonferroni)**: 부트스트랩 승격판정에 동시 활성 챌린저 수 기반
+  유의수준 보정(α/n) 추가.
+- **트레일링 갱신 순서**: 감사가 지목한 `exit_manager.py`는 이미 죽은 코드(P1에서
+  확인)였고, 실제 로직(`main.py:_ts_check_exit_triggers()`)은 이미 트레일링을
+  하드스톱/부분청산/시간청산보다 먼저 갱신하고 있었음 — **감사가 죽은 코드를 보고
+  오판한 사례**, 코드 변경 없이 심사 결과만 기록.
+- **만기 구조 더미 피처**: `features/technical/expiry.py` 신규 — 위클리/월간
+  위칭데이, 월간 만기주, 월말 리밸런싱 4종. 전 호라이즌 pending_validation 등록.
+
+### 남은 것 (이번 범위 밖으로 명시적으로 남긴 항목)
+- 탭 15개→4그룹 재편 (사용자 직접 진행)
+- CHAMPION_BASELINE 콜드스타트 해소 브릿지 (실거래 → challenger_trades 미러링, 별도 설계 필요)
+- 챌린저 heartbeat size_mult의 실제 사이징 체인 연결 여부 (실측 데이터 축적 후 결정)
+- 지정가 우선 집행의 실브로커 수동 검증
+- 30m 재학습 후 정확도 재측정 → 최종 퇴역 여부
+- 신규 피처(베이시스·VKOSPI·프로그램매매·외인선물·만기더미) SHAP 심사 통과 후 include 승격

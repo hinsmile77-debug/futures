@@ -15,6 +15,7 @@ from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT, FUTUR
 from config.settings import (
     ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT,
     ATR_HORIZON_TP1_MULT, FUTURES_COMMISSION_RATE,
+    HURST_REGIME_ATR_MULT_ENABLED, HURST_REGIME_ATR_MULT,
 )
 
 # 인스턴스별 pt_value를 주입받기 전 module-level fallback 으로만 사용
@@ -44,6 +45,7 @@ class PositionTracker:
         self.signal_direction: str = ""
         self.reverse_entry_enabled: bool = False
         self.entry_horizon: Optional[str] = None
+        self.entry_hurst_bucket: Optional[str] = None
 
         self.stop_price:   float = 0.0
         self.tp1_price:    float = 0.0
@@ -86,6 +88,7 @@ class PositionTracker:
         self.entry_price = 0.0
         self.quantity = 0
         self.entry_time = None
+        self.entry_hurst_bucket = None
         self.stop_price = 0.0
         self.tp1_price = 0.0
         self.tp2_price = 0.0
@@ -111,6 +114,7 @@ class PositionTracker:
         raw_direction: Optional[str] = None,
         reverse_entry_enabled: bool = False,
         entry_horizon: Optional[str] = None,
+        hurst_bucket: Optional[str] = None,
     ):
         """
         포지션 진입
@@ -124,6 +128,9 @@ class PositionTracker:
             regime:         매크로 레짐
             entry_horizon:  ATR 레짐 선택 호라이즌 ("1m"/"3m"/"5m"/None)
                             지정 시 ATR_HORIZON_TP1_MULT로 TP1 단축, None이면 ATR_TP1_MULT(1.0) 사용
+            hurst_bucket:   "trend"/"neutral"/"mean-revert" (None이면 배수 미적용)
+                            HURST_REGIME_ATR_MULT_ENABLED=True일 때 손절/TP1/TP2 폭에
+                            추가로 곱해지는 레짐 조건부 배수 (260704 감사 P2)
         """
         assert direction in (POSITION_LONG, POSITION_SHORT), f"Invalid direction: {direction}"
         assert self.status == POSITION_FLAT, "이미 포지션 보유 중"
@@ -137,14 +144,23 @@ class PositionTracker:
         self.signal_direction = raw_direction or direction
         self.reverse_entry_enabled = bool(reverse_entry_enabled)
         self.entry_horizon = entry_horizon
+        self.entry_hurst_bucket = hurst_bucket
         self.initial_quantity = quantity
         self.trailing_anchor_price = price
 
         mult = 1 if direction == POSITION_LONG else -1
         _tp1_mult = ATR_HORIZON_TP1_MULT.get(entry_horizon, ATR_TP1_MULT) if entry_horizon else ATR_TP1_MULT
-        self.stop_price = price - mult * atr * ATR_STOP_MULT
+        _stop_mult, _tp2_mult = ATR_STOP_MULT, ATR_TP2_MULT
+        _regime_mult = (
+            HURST_REGIME_ATR_MULT.get(hurst_bucket) if HURST_REGIME_ATR_MULT_ENABLED and hurst_bucket else None
+        )
+        if _regime_mult:
+            _stop_mult = ATR_STOP_MULT * _regime_mult.get("stop", 1.0)
+            _tp1_mult  = _tp1_mult     * _regime_mult.get("tp1", 1.0)
+            _tp2_mult  = ATR_TP2_MULT  * _regime_mult.get("tp2", 1.0)
+        self.stop_price = price - mult * atr * _stop_mult
         self.tp1_price  = price + mult * atr * _tp1_mult
-        self.tp2_price  = price + mult * atr * ATR_TP2_MULT
+        self.tp2_price  = price + mult * atr * _tp2_mult
 
         self.partial_1_done = False
         self.partial_2_done = False
@@ -153,10 +169,11 @@ class PositionTracker:
         self.last_update_ts = now_kst()
 
         _hz_tag = f" horizon={entry_horizon}" if entry_horizon else ""
+        _hb_tag = f" hurst={hurst_bucket}" if _regime_mult else ""
         logger.info(
             f"[Position] 진입 {direction} {quantity}계약 @ {price} "
-            f"| 손절={self.stop_price:.2f} 1차={self.tp1_price:.2f}(×{_tp1_mult}) "
-            f"2차={self.tp2_price:.2f}{_hz_tag}"
+            f"| 손절={self.stop_price:.2f} 1차={self.tp1_price:.2f}(×{_tp1_mult:.2f}) "
+            f"2차={self.tp2_price:.2f}{_hz_tag}{_hb_tag}"
         )
         self._save_state()
 
@@ -205,6 +222,7 @@ class PositionTracker:
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,
+            "entry_horizon": self.entry_horizon,
             "reverse_entry_enabled": self.reverse_entry_enabled,
         }
 
@@ -528,6 +546,7 @@ class PositionTracker:
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,
+            "entry_horizon": self.entry_horizon,
             "forward_commission": round(forward_commission, 0),
             "reverse_entry_enabled": self.reverse_entry_enabled,
         }
@@ -789,9 +808,18 @@ class PositionTracker:
             ATR_HORIZON_TP1_MULT.get(self.entry_horizon, ATR_TP1_MULT)
             if self.entry_horizon else ATR_TP1_MULT
         )
-        self.stop_price = self.entry_price - mult * atr * ATR_STOP_MULT
+        _stop_mult, _tp2_mult = ATR_STOP_MULT, ATR_TP2_MULT
+        _regime_mult = (
+            HURST_REGIME_ATR_MULT.get(self.entry_hurst_bucket)
+            if HURST_REGIME_ATR_MULT_ENABLED and self.entry_hurst_bucket else None
+        )
+        if _regime_mult:
+            _stop_mult = ATR_STOP_MULT * _regime_mult.get("stop", 1.0)
+            _tp1_mult  = _tp1_mult     * _regime_mult.get("tp1", 1.0)
+            _tp2_mult  = ATR_TP2_MULT  * _regime_mult.get("tp2", 1.0)
+        self.stop_price = self.entry_price - mult * atr * _stop_mult
         self.tp1_price = self.entry_price + mult * atr * _tp1_mult
-        self.tp2_price = self.entry_price + mult * atr * ATR_TP2_MULT
+        self.tp2_price = self.entry_price + mult * atr * _tp2_mult
         self.tp3_price = self.entry_price + mult * atr * ATR_TP3_MULT
 
     def get_trailing_reference_price(self, current_price: float, atr: float) -> float:
@@ -845,6 +873,7 @@ class PositionTracker:
                 (filled_at or now_kst()).strftime("%Y-%m-%d %H:%M:%S")
             ),
             "grade": self.grade,
+            "entry_horizon": self.entry_horizon,
             "reverse_entry_enabled": self.reverse_entry_enabled,
         }
 
@@ -958,6 +987,8 @@ class PositionTracker:
                 "regime":       self.regime,
                 "signal_direction": self.signal_direction,
                 "reverse_entry_enabled": self.reverse_entry_enabled,
+                "entry_horizon": self.entry_horizon,
+                "entry_hurst_bucket": self.entry_hurst_bucket,
                 "stop_price":   self.stop_price,
                 "tp1_price":    self.tp1_price,
                 "tp2_price":    self.tp2_price,
@@ -1008,6 +1039,8 @@ class PositionTracker:
             self.regime       = state.get("regime", "")
             self.signal_direction = state.get("signal_direction", self.status)
             self.reverse_entry_enabled = bool(state.get("reverse_entry_enabled", False))
+            self.entry_horizon = state.get("entry_horizon")
+            self.entry_hurst_bucket = state.get("entry_hurst_bucket")
             self.stop_price   = float(state.get("stop_price", 0))
             self.tp1_price    = float(state.get("tp1_price", 0))
             self.tp2_price    = float(state.get("tp2_price", 0))

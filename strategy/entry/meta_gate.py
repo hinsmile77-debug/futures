@@ -7,6 +7,8 @@ from utils.time_utils import now_kst
 
 from config.constants import DIRECTION_FLAT
 from learning.meta_confidence import MetaConfidenceLearner
+from learning.meta_label_classifier import get_entry_quality_scorer
+from learning.quantile_regressor import get_quantile_scorer
 
 logger = logging.getLogger("SIGNAL")
 
@@ -58,6 +60,12 @@ class MetaGate:
         self.learner = MetaConfidenceLearner()
         self._collapse_warn_streak = 0  # meta_conf 과소 연속 횟수
         self._direction_buf = deque(maxlen=30)  # P3: 방향 편향 감지 (최근 30예측)
+        # [260704 감사 P1] meta_labels 기반 진입품질 분류기 — 섀도우 신호 전용.
+        # action/size_multiplier에는 영향 없음. 학습: scripts/train_meta_label_classifier.py
+        self._eq_scorer = get_entry_quality_scorer()
+        # [260704 감사 P2] 분위 회귀(q10/q50/q90) — 섀도우 신호 전용.
+        # 사이징/TP 거리 미반영. 학습: scripts/train_quantile_regressor.py
+        self._q_scorer = get_quantile_scorer()
 
     def _bias_penalty(self, direction: int) -> float:
         """P3: 최근 30예측에서 동일 방향 비율 >70% 시 패널티 반환.
@@ -86,15 +94,30 @@ class MetaGate:
         checklist_grade: str = "C",        # 앙상블 등급(A/B/C/X) — STEP 6 grade 변수 전달
         trend_gate_active: bool = False,   # ② TrendGate ON → 편향패널티 비활성화
         time_zone: str = "",               # ③ STABLE_TREND/LUNCH_RECOVERY → reduce_thr 완화
+        horizon: str = "1m",                # [260704 감사 P1] entry_quality_prob 섀도우 스코어링용
     ) -> Dict:
         if now is None:
             now = now_kst()
         features = features or {}
 
+        # [260704 감사 P1] meta_labels 기반 진입품질(수익확률) 섀도우 스코어 — 로깅 전용,
+        # action/size_multiplier 결정에는 관여하지 않는다.
+        entry_quality_prob = self._eq_scorer.score(horizon, features)
+        # [260704 감사 P2] 분위 회귀(q10/q50/q90) 섀도우 스코어 — 로깅 전용.
+        quantile_estimate = self._q_scorer.score(horizon, features)
+        # [260705 검증 캠페인] 스코어링에 쓴 호라이즌을 결과에 보존 —
+        # 주간 리포트가 meta_labels(ts×horizon)와 조인할 때 필요 (§3-2·§3-3).
+        if quantile_estimate is not None:
+            quantile_estimate = dict(quantile_estimate)
+            quantile_estimate["horizon"] = horizon
+
         if direction == DIRECTION_FLAT:
             return {
                 "action": "skip",
                 "meta_confidence": 0.0,
+                "entry_quality_prob": entry_quality_prob,
+                "quantile_estimate": quantile_estimate,
+                "scoring_horizon": horizon,   # [260705 검증 캠페인] meta_labels 조인 키
                 "size_multiplier": 0.0,
                 "reason": "flat_signal",
                 "source": "rule",
@@ -196,6 +219,9 @@ class MetaGate:
         return {
             "action":              action,
             "meta_confidence":     round(blended_conf, 4),
+            "entry_quality_prob":  entry_quality_prob,
+            "quantile_estimate":   quantile_estimate,
+            "scoring_horizon":     horizon,   # [260705 검증 캠페인] meta_labels 조인 키
             "size_multiplier":     round(size_mult, 4),
             "reason":              reason,
             "source":              learned["model_source"],

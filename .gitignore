@@ -72,6 +72,10 @@ regime_postmortem_report.md
 regime_postmortem_metrics.json
 triple_barrier_label_report.md
 triple_barrier_label_metrics.json
+data/mae_mfe_report.txt
+data/gate_ablation_report.txt
+data/validation_campaign_report.md
+data/validation_campaign_metrics.json
 
 # 로그
 logs/

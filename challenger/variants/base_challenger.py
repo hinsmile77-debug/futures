@@ -45,7 +45,7 @@ class ChallengerTrade(object):
         "entry_ts", "exit_ts",
         "direction", "entry_price", "exit_price",
         "pnl_pt", "exit_reason", "grade",
-        "atr_at_entry",
+        "atr_at_entry", "trail_extreme",
     )
 
     def __init__(
@@ -69,12 +69,14 @@ class ChallengerTrade(object):
         self.exit_reason  = None
         self.grade        = grade
         self.atr_at_entry = atr_at_entry
+        self.trail_extreme = None   # 트레일 전용 변형(should_exit 오버라이드)이 갱신하는 고점/저점
 
 
 class ExitReason(object):
     TP1   = "TP1"
     TP2   = "TP2"
     SL    = "SL"
+    TRAIL = "TRAIL"   # 트레일 스톱 청산 (TP1 스킵 변형 전용)
     FORCE = "FORCE"   # 15:10 강제 청산
     TIME  = "TIME"    # 시간 청산 (EOD 전)
 

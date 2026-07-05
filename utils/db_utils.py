@@ -306,6 +306,17 @@ def _migrate_ensemble_decisions_db():
                 "entry_block_reason": "TEXT",
                 # 차단사유 축약 키 — stage 2/8 표시용
                 "checklist_reason": "TEXT",
+                # [260704 감사 P1] meta_labels 기반 진입품질 분류기 섀도우 스코어 —
+                # 실거래 의사결정 미반영, 예측-손익 상관 분석용 로깅 전용
+                "meta_entry_quality_prob": "REAL",
+                # [260704 감사 P2] 분위 회귀(q10/q50/q90) 섀도우 스코어 — 실거래 미반영
+                "quantile_expected_pt": "REAL",
+                "quantile_uncertainty_pt": "REAL",
+                # [260705 검증 캠페인] §3-3 커버리지 KPI용 원시 분위값 + 스코어링 호라이즌
+                # (expected/uncertainty만으로는 비대칭 분위에서 q10/q90 복원 불가)
+                "quantile_q10_pt": "REAL",
+                "quantile_q90_pt": "REAL",
+                "meta_gate_horizon": "TEXT",
             }
             for name, dtype in additions.items():
                 if name not in cols:
@@ -335,6 +346,30 @@ def init_trades_db():
     """
     execute(TRADES_DB, sql)
     _migrate_trades_db()
+    # [260705 검증 캠페인] §3-5 신호소멸청산 counterfactual 기록 —
+    # 발동 시점의 스톱/TP1 가격을 보존해 두고, 주간 리포트가 이후 분봉으로
+    # "청산 안 했으면 어느 배리어에 먼저 닿았나"를 사후 판정(resolve)한다.
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS signal_decay_exits (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            TEXT NOT NULL,           -- 발동 시각 (분봉)
+        direction     TEXT NOT NULL,           -- LONG/SHORT (청산된 포지션 방향)
+        exit_price    REAL NOT NULL,           -- 신호소멸청산 체결가(분봉 종가)
+        stop_price    REAL,                    -- 당시 하드스톱 가격
+        tp1_price     REAL,                    -- 당시 TP1 가격
+        quantity      INTEGER,
+        conf          REAL,                    -- 반대신호 confidence
+        zone_mc       REAL,                    -- 당시 zone_mc 임계
+        resolved      INTEGER DEFAULT 0,       -- 1=counterfactual 판정 완료
+        cf_outcome    TEXT,                    -- STOP / TP1 / NEITHER
+        cf_exit_price REAL,                    -- counterfactual 청산가
+        saved_pts     REAL,                    -- (+)=조기청산으로 아낀 pt, (-)=놓친 pt
+        created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_sde_ts ON signal_decay_exits(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,
@@ -370,6 +405,7 @@ def _migrate_trades_db():
                 "hour_bucket":        "INTEGER",
                 "was_restart_after":  "INTEGER DEFAULT 0",
                 "had_partial_fill":   "INTEGER DEFAULT 0",
+                "entry_horizon":      "TEXT",
             }
             for name, dtype in additions.items():
                 if name not in cols:
@@ -810,6 +846,91 @@ def fetch_regime_stats() -> List[sqlite3.Row]:
            GROUP BY regime
            ORDER BY regime""",
     )
+
+
+def fetch_ev_by_grade(days_back: int = 30) -> List[sqlite3.Row]:
+    """등급별 순EV(수수료 차감 후 실집행 기준) — grade, cnt, win_rate, avg_net_pnl_krw, total_net_pnl_krw.
+    [260704 감사 P0] "방향 적중률" 대신 "거래당 순기대값"을 보는 관점 — fetch_grade_stats()(pnl_pts 방향)와 병행 참고.
+    """
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days_back)).isoformat()
+    return fetchall(
+        TRADES_DB,
+        """SELECT COALESCE(NULLIF(grade, ''), '?') AS grade,
+                  COUNT(*) AS cnt,
+                  ROUND(AVG(CASE WHEN COALESCE(net_pnl_krw, pnl_krw) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+                  ROUND(AVG(COALESCE(net_pnl_krw, pnl_krw)), 0) AS avg_net_pnl_krw,
+                  ROUND(SUM(COALESCE(net_pnl_krw, pnl_krw)), 0) AS total_net_pnl_krw
+           FROM trades
+           WHERE exit_ts IS NOT NULL AND exit_ts >= ?
+           GROUP BY grade
+           ORDER BY grade""",
+        (cutoff + " 00:00:00",),
+    )
+
+
+def fetch_ev_by_horizon(days_back: int = 30) -> List[sqlite3.Row]:
+    """진입 호라이즌별 순EV — entry_horizon, cnt, win_rate, avg_net_pnl_krw, total_net_pnl_krw.
+    entry_horizon은 2026-07-05 이후 체결분부터 기록되므로 그 이전 데이터는 '?'(미기록)으로 집계된다.
+    """
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days_back)).isoformat()
+    return fetchall(
+        TRADES_DB,
+        """SELECT COALESCE(NULLIF(entry_horizon, ''), '?') AS entry_horizon,
+                  COUNT(*) AS cnt,
+                  ROUND(AVG(CASE WHEN COALESCE(net_pnl_krw, pnl_krw) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+                  ROUND(AVG(COALESCE(net_pnl_krw, pnl_krw)), 0) AS avg_net_pnl_krw,
+                  ROUND(SUM(COALESCE(net_pnl_krw, pnl_krw)), 0) AS total_net_pnl_krw
+           FROM trades
+           WHERE exit_ts IS NOT NULL AND exit_ts >= ?
+           GROUP BY entry_horizon
+           ORDER BY entry_horizon""",
+        (cutoff + " 00:00:00",),
+    )
+
+
+def fetch_ev_by_hour(days_back: int = 30) -> List[sqlite3.Row]:
+    """시간대(hour_bucket)별 순EV — hour_bucket, cnt, win_rate, avg_net_pnl_krw."""
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days_back)).isoformat()
+    return fetchall(
+        TRADES_DB,
+        """SELECT COALESCE(hour_bucket, -1) AS hour_bucket,
+                  COUNT(*) AS cnt,
+                  ROUND(AVG(CASE WHEN COALESCE(net_pnl_krw, pnl_krw) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+                  ROUND(AVG(COALESCE(net_pnl_krw, pnl_krw)), 0) AS avg_net_pnl_krw
+           FROM trades
+           WHERE exit_ts IS NOT NULL AND exit_ts >= ?
+           GROUP BY hour_bucket
+           ORDER BY hour_bucket""",
+        (cutoff + " 00:00:00",),
+    )
+
+
+def fetch_recent_ev(n: int = 20) -> Dict:
+    """최근 N건 체결 완료 거래의 순EV(수수료 차감 후) 요약 — 대시보드 상시 노출용.
+    반환: {"cnt": int, "avg_net_pnl_krw": float, "win_rate": float, "total_net_pnl_krw": float}
+    """
+    rows = fetchall(
+        TRADES_DB,
+        """SELECT COALESCE(net_pnl_krw, pnl_krw) AS net_pnl_krw
+           FROM trades
+           WHERE exit_ts IS NOT NULL
+           ORDER BY exit_ts DESC
+           LIMIT ?""",
+        (n,),
+    )
+    if not rows:
+        return {"cnt": 0, "avg_net_pnl_krw": 0.0, "win_rate": 0.0, "total_net_pnl_krw": 0.0}
+    vals = [float(r["net_pnl_krw"] or 0.0) for r in rows]
+    wins = sum(1 for v in vals if v > 0)
+    return {
+        "cnt": len(vals),
+        "avg_net_pnl_krw": sum(vals) / len(vals),
+        "win_rate": wins / len(vals),
+        "total_net_pnl_krw": sum(vals),
+    }
 
 
 def fetch_accuracy_history(limit: int = 100) -> List[sqlite3.Row]:

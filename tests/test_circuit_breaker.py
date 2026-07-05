@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from config.constants import CB_STATE_HALTED, CB_STATE_PAUSED
 from safety.circuit_breaker import CircuitBreaker
@@ -6,13 +7,19 @@ from safety.circuit_breaker import CircuitBreaker
 
 class CircuitBreakerTests(unittest.TestCase):
     def test_halts_after_three_consecutive_stop_losses(self):
-        cb = CircuitBreaker()
+        # [260704 감사 P0] CB_CONSEC_STOP_LIMIT는 모의투자 한정 예외로 9999로 완화됨
+        # (CLAUDE.md 절대원칙②, config/settings.py:CB_CONSEC_STOP_LIMIT 참조).
+        # 이 테스트는 "예외 해제 후 실투 기준(3회)"에서 CB② 메커니즘 자체가 정상
+        # 작동하는지 검증하는 것이 목적이므로, 현재 완화된 운영값과 무관하게
+        # 모듈 상수를 3으로 패치해 로직만 독립적으로 확인한다.
+        with patch("safety.circuit_breaker.CB_CONSEC_STOP_LIMIT", 3):
+            cb = CircuitBreaker()
 
-        cb.record_stop_loss()
-        cb.record_stop_loss()
-        cb.record_stop_loss()
+            cb.record_stop_loss()
+            cb.record_stop_loss()
+            cb.record_stop_loss()
 
-        self.assertEqual(cb.state, CB_STATE_HALTED)
+            self.assertEqual(cb.state, CB_STATE_HALTED)
 
     def test_pauses_on_signal_flips(self):
         cb = CircuitBreaker()
