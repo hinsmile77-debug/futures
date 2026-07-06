@@ -1,7 +1,17 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-06 (293차) — KOSPI200/VKOSPI 폴링 100% 실패 조사(U180 후보, 라이브 검증 미완)
+> 마지막 업데이트: 2026-07-06 (294차) — KOSPI200/VKOSPI: StockMst 지수 미지원 확정, MarketEye 전환 검증 대기
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-06 (294차 — KOSPI200/VKOSPI: `dscbo1.StockMst` 지수 미지원 확정, `CpSysDib.MarketEye` 전환 검증 대기)
+
+**계기**: 293차 "U180 코드 후보" 가설을 사용자가 관리자 권한 셸에서 직접 검증.
+
+**핵심 발견**: `U180`/`K2G01P`/`O2901P` 전부 `dscbo1.StockMst`에서 `71103 조회결과가 없습니다`로 동일 실패, 대조군 `A005930`(삼성전자)은 정상 응답 — **`dscbo1.StockMst`는 코드 형식과 무관하게 지수를 아예 지원하지 않는 개별종목 전용 TR**로 확정. "코드가 틀렸다"는 293차 가설은 폐기, "TR 선택이 틀렸다"가 결론.
+
+**다음 후보**: `CpSysDib.MarketEye`(주식·지수·선물옵션 통합 조회, 문서상 지수 지원 명시) — 진단 스크립트 `scripts/probe_cp_market_eye.py` 작성 완료, 사용자의 관리자 권한 실행 결과 대기 중. 확인되면 `get_index_price()`를 StockMst 기반에서 MarketEye 기반(`SetInputValue(0, field_id_list)` + `SetInputValue(1, code_list)` + `GetDataValue(pos, row)`)으로 재작성 예정.
 
 ---
 

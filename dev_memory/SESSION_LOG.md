@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-06 (294차 — KOSPI200/VKOSPI 폴링 실증: dscbo1.StockMst는 지수 미지원 확정, CpSysDib.MarketEye로 전환 대기)
+
+**트리거**: 293차에서 준비한 `probe_cp_stock_mst.py`를 사용자가 관리자 권한 셸에서 직접 실행, 결과 공유.
+
+**실측 결과**: `U180`(대신 자체 지수코드 가설)·`K2G01P`(KOSPI200)·`O2901P`(VKOSPI) 3종 모두 `dib_msg="71103 조회결과가 없습니다.(niis.stk.new.mst)"`로 완전 미인식(헤더 전부 빈값/0). 대조군 `A005930`(삼성전자)은 `dib_msg="71101 조회가 완료되었습니다"` + 종목명="삼성전자" 등 정상 반환 — `dscbo1.StockMst` 자체는 멀쩡히 작동하지만 **지수 코드는 형식에 관계없이 아예 지원하지 않는 개별종목 전용 TR**임이 확정됨. 293차의 "U180 코드 후보" 가설은 폐기.
+
+**추가 문서 조사**: `cybosplus.github.io/cpdib_rtf_1_/stockmst.htm`(이 프로젝트가 이미 신뢰하던 소스, `api_connector.py:55`에서 CpTd6722 헤더 검증에도 사용) 공식 헤더 목록에 지수 언급이 전혀 없어 실측과 일치. 대안으로 `CpSysDib.MarketEye`(주식·지수·선물옵션 통합 조회, "해외지수는 심볼코드 입력" 문서 명시)를 새 후보로 확인 — StockMst와 달리 `SetInputValue(0, field_id_list)` + `SetInputValue(1, code_list)` + `GetDataValue(pos, row)` 행 단위 인터페이스.
+
+**조치**: `scripts/probe_cp_market_eye.py` 신규 작성(K2G01P/O2901P/A005930 기본 조회, 필드타입 0~20 덤프, MarketEye 인터페이스에 맞게 배열 입력 처리). 아직 라이브 검증 전 — 사용자가 관리자 권한 셸에서 실행 필요.
+
+**변경 파일**: `scripts/probe_cp_market_eye.py`(신규).
+
+---
+
 ## 2026-07-06 (293차 — KOSPI200/VKOSPI 폴링 100% 실패 조사: U180 후보 확보, 라이브 검증은 권한 문제로 미완)
 
 **트리거**: 292차에서 발견한 "`_poll_kospi200_index()` 하루 종일 100% 실패" 신규 버그 딥다이브 요청.

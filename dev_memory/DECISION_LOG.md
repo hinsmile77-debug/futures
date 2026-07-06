@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-07-06 (294차 — KOSPI200/VKOSPI: `dscbo1.StockMst`는 지수 미지원 TR로 확정, `CpSysDib.MarketEye`로 교체 검토)
+
+### [버그, 확정] `dscbo1.StockMst`가 코드 형식과 무관하게 지수 조회를 지원하지 않음 — TR 자체가 개별종목 전용
+
+**File**: `collection/cybos/api_connector.py:1032`(`get_index_price()`)
+**증상**: 293차의 "U180(대신 자체 지수코드)이면 될 것" 가설을 실제 관리자 권한 세션에서 검증한 결과, `U180`/`K2G01P`/`O2901P` 전부 `dib_msg="71103 조회결과가 없습니다.(niis.stk.new.mst)"`로 동일하게 실패. 대조군 `A005930`(삼성전자)은 정상 응답(`71101 조회가 완료되었습니다`, 종목명 등 실값 반환).
+**결론**: 코드 문자열이 틀린 게 아니라 **TR 선택 자체가 틀렸다** — `dscbo1.StockMst`는 개별 종목(주식/ETF 등)만 지원하고 지수는 어떤 코드 형식으로도 조회되지 않는 것으로 확정. 공식 문서(`cybosplus.github.io/cpdib_rtf_1_/stockmst.htm`, `api_connector.py:55`에서 이미 신뢰하던 소스)에도 지수 언급이 없어 실측과 일치.
+**결정**: `get_index_price()`를 `CpSysDib.MarketEye`(주식·지수·선물옵션 통합 조회 TR) 기반으로 재작성하는 방향으로 진행. `SetInputValue(0, field_id_list)` + `SetInputValue(1, code_list)` + `GetDataValue(pos, row)` 인터페이스라 `StockMst`의 `GetHeaderValue` 단일조회 패턴과 다름 — 단순 문자열 치환이 아니라 함수 재작성 필요. 아직 라이브 미검증(`scripts/probe_cp_market_eye.py` 작성 완료, 사용자 실행 대기).
+**Why**: 293차 가설(U180)은 "GUI 표시 코드 ≠ COM API 코드"라는 그럴듯한 이유였지만 틀렸다 — 실제로는 "어떤 코드를 넣어도 이 TR 자체가 지수를 취급 안 한다"는 훨씬 단순한 이유였음. 대조군(A005930) 없이 코드만 바꿔가며 시도했다면 이 결론에 도달하지 못했을 것 — 가설 검증 시 반드시 "알려진 정상 케이스"를 대조군으로 같이 돌려야 함을 재확인.
+**How to apply**: Cybos COM TR 문제를 조사할 때 "코드가 틀렸다"고 단정하기 전에 "이 TR이애초에 이 종류의 종목(지수/선물/개별주)을 지원하는가"부터 공식 문서로 확인할 것. 여러 후보 코드를 시도할 때는 반드시 정상 작동이 보장된 대조군 코드를 같이 넣어 TR 자체의 정상성을 분리 검증할 것.
+**구현**: 없음(조사만, `get_index_price()` 코드 변경 없음). 관련 파일: `scripts/probe_cp_market_eye.py`(신규 진단 도구).
+
+---
+
 ## 2026-07-06 (293차 — KOSPI200/VKOSPI 폴링 100% 실패 원인 가설)
 
 ### [버그, 미확정] `dscbo1.StockMst`가 KRX 표준 지수코드(K2G01P/O2901P)를 인식하지 못하는 것으로 추정 — Cybos 자체 "U"-prefix 코드 체계 필요 가능성
