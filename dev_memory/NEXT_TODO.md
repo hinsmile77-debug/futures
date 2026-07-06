@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-07-06 (292차 검증) [옵션체인 등 8개 피처 registry 활성화]
+
+### 피처 활성화 반영 후 30m 모델 회복 확인
+
+- [ ] **① 재학습 로그에서 8개 피처 반영 확인** — 다음 자동 재학습(intraday/EOD) 로그의 `[FeatureReg] 5m/10m/15m/30m` 제외 목록에서 `opt_chain_pcr`/`opt_gex_bn`/`opt_gex_sign`/`opt_atm_call_oi`/`opt_atm_pcr`/`micro_regime_code`/`queue_directional_depletion`/`threshold_feasibility`가 사라졌는지, `피처 슬라이싱: 105 → N`에서 N이 예상대로 늘었는지 확인
+- [ ] **② acc30m 회복 확인** — `[DriftRetrain] acc30m=...` 로그가 랜덤(33%) 이상으로 올라오는지 며칠 관찰
+- [ ] **③ EOD full_cv 재학습으로 CV acc 재검증** — py310_64 EOD_RETRAIN.bat 실행 후 30m CV acc ≥ 0.33 확인되면 `model/ensemble_decision.py`의 30m 역방향 필터(Q3 블록), `safety/circuit_breaker.py`의 CB③ HALT 재활성화 검토(조건 미충족 시 비활성 유지 — 임의 재활성화 금지)
+- [ ] **④ [신규발견] KOSPI200/VKOSPI 폴링 100% 실패 조사** — `main.py:2701` `_poll_kospi200_index()` / `collection/cybos/api_connector.py:1032` `get_index_price()`가 7/6 09:01~12:52 매분 `[CybosIndex] 종목명 검증 실패`(code=K2G01P/O2901P, `GetHeaderValue(1)` 빈 문자열)로 100% 실패. `dscbo1.StockMst`에서 이 지수코드가 실제 유효한지, 혹은 다른 TR/코드 형식이 필요한지 Cybos Plus 클라이언트로 재확인 필요. 영향: `features/technical/basis.py`(선물-현물 베이시스) + VKOSPI 피처가 7/4 배포 이후 하루 종일 미작동 추정.
+- [ ] **⑤ [신규발견, 남겨둠] 나머지 3개 need_add 피처 도달 시 처리** — `opt_atm_put_oi`(3,900행, 07-07 예상), `cvd_monotone_ratio`(3,608행), `opt_pcr_extreme_bearish`(3,249행) 4,000행 도달 시 이번과 동일하게 `shap_feature_registry.json` 반영 (이번 세션 전례처럼 "계획만 하고 registry 반영 누락"이 반복되지 않도록 주의 — DECISION_LOG 292차 참조)
+
+---
+
 ## 2026-07-05 (291차 검증) [검증 캠페인 계측·판정 자동화]
 
 > 260705 계획 문서 §1 공백 3종(합격선 사전등록·롤백 기준·스케줄 미연결) 구현 완료.

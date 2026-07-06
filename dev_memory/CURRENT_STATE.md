@@ -1,7 +1,21 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-05 (290차) — 260704 종합감사 실행 로드맵 P0~P3 전체 구현
+> 마지막 업데이트: 2026-07-06 (292차) — 진입0/conf<mc 딥다이브 → 옵션체인 등 8개 피처 registry 반영
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-06 (292차 — 진입0/conf<mc 딥다이브 → 옵션체인 등 8개 피처 registry 반영)
+
+**계기**: 7/6 진입 0건 + conf<mc 반복 원인 딥다이브 요청.
+
+**핵심 발견**: 30m(+15m/10m/5m) 모델의 `acc30m`이 0~23.3%(랜덤 이하)로 붕괴된 근본 원인은 `opt_chain_pcr`/`opt_gex_bn` 등 옵션체인 파생 피처와 `micro_regime_code`·`queue_directional_depletion`·`threshold_feasibility`가 문서(`docs/260707_FEATURE_ADD_TIMING_REPORT.md`)상 이미 활성화 예정/완료로 기록됐음에도 `data/db/shap_feature_registry.json`의 `active_features`에는 실제로 반영되지 않은 채 방치된 것. 실측 결과 8개 모두 4,000행 활성화 기준을 이미 초과(최대 micro_regime_code 4,933행, queue_directional_depletion 6,693행, threshold_feasibility 7,561행).
+
+**조치**: `active_features` 97→105개로 확장, `horizon_feature_sets.json` 15개 호라이즌별 `pkl` 태그 정정. `batch_retrainer.py`가 재학습마다 registry를 디스크에서 새로 읽으므로 다음 자동 재학습부터 반영(라이브 프로세스 무중단).
+
+**미해결(별건)**: 7/4 신규 추가된 KOSPI200/VKOSPI 실시간 폴링(`main.py:2701` `_poll_kospi200_index()`)이 7/6 하루 종일 100% 실패(`[CybosIndex] 종목명 검증 실패`) — `NEXT_TODO.md` 292차 ④ 참조.
+
+**다음 확인 필요**: acc30m 회복 여부, EOD full_cv 재학습 후 30m 역방향 필터/CB③ 재활성화 조건(CV acc≥0.33) 충족 여부(`NEXT_TODO.md` 292차 ①~③).
 
 ---
 

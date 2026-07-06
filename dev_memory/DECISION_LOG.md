@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-07-06 (292차 — 피처 활성화 절차 반복 미실행 발견)
+
+### [버그] 4,000행 기준 충족 피처가 `shap_feature_registry.json`에 반영되지 않고 방치
+
+**File**: `data/db/shap_feature_registry.json`(active_features), `featureset by horizon/horizon_feature_sets.json`
+**증상**: `docs/260707_FEATURE_ADD_TIMING_REPORT.md`가 opt_chain_pcr 등 6개를 07-02~07-03, micro_regime_code를 06-29, queue_directional_depletion·threshold_feasibility를 06-23 활성화 완료로 명시했으나, raw_data.db 실측 결과 전부 4,000행 활성화 기준을 이미 넘겼음에도(micro_regime_code 4,933행, queue_directional_depletion 6,693행, threshold_feasibility 7,561행 등) registry의 `active_features`에는 끝내 반영되지 않았음. 그 결과 30m/15m/10m/5m 모델이 몇 주째 축소된 피처셋(11~15/97)으로 재학습·추론되고 있었음.
+**원인**: 활성화가 "행 수 자동 트리거"가 아니라 "행 수 확인 → registry 수동 편집 → EOD 재학습"의 수동 3단계 절차(260707 보고서 §게이트 이슈)인데, 행 수 확인·계획 문서화까지만 이뤄지고 실제 registry 편집이 여러 세션에 걸쳐 누락됨. 자동화되지 않은 수동 단계는 반드시 유실된다는 전형적 사례.
+**결정**: 이번 세션에서 8개 피처를 registry `active_features`에 일괄 반영(97→105개). 재발 방지 자동화는 미구현(P1 후보) — 필요 시 raw_features 행 수 기준으로 registry 갱신을 자동 제안하는 점검 스크립트 고려.
+**Why**: 이 누락이 30m acc30m 0~23.3%(랜덤 이하) 붕괴 및 7/6 진입0(conf<mc 226/227건)의 핵심 원인으로 추적됨 — `opt_gex_bn`(ρ=0.29)·`opt_chain_pcr`(ρ=0.245)이 30m에서 가장 강한 신호로 이미 문서상 식별돼 있었는데도 실제 모델에는 투입되지 않고 있었음.
+**How to apply**: "N행 도달 시 활성화 예정"류 계획 문서를 작성/갱신할 때는 예정일에 실제 `data/db/shap_feature_registry.json`이 갱신됐는지 별도로 재확인할 것 — 문서에 활성화 완료로 적혀 있어도 registry 파일을 직접 열어 확인하기 전엔 신뢰하지 말 것.
+**구현**: `data/db/shap_feature_registry.json`, `featureset by horizon/horizon_feature_sets.json`.
+
+---
+
 ## 2026-07-05 (290차 — 260704 종합감사 실행 로드맵 P0~P3, 발견된 버그·설계결정 모음)
 
 ### [버그] `batch_retrainer.py` 호라이즌별 학습피처명 결정이 "최다-키 단일 행" 기준 — 실제 존재하는 피처가 조용히 누락
