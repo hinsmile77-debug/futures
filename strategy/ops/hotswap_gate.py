@@ -142,9 +142,15 @@ class HotSwapGate:
     ) -> None:
         """Hot-Swap 승인 후 실행 시퀀스."""
         from config.strategy_params import PARAM_CURRENT, PARAM_HISTORY
+        from config.strategy_registry import get_registry
 
-        # 신규 버전명 생성
-        last_ver = PARAM_HISTORY[-1]["version"] if PARAM_HISTORY else "v1.0"
+        # 신규 버전명 생성 — registry(strategy_versions.is_current)를 유일한 기준으로 사용.
+        # PARAM_HISTORY[-1]로 다음 버전을 넘버링하면, 여기서 register_version()으로
+        # DB만 전진시키고 PARAM_HISTORY는 그대로 남아 두 소스가 어긋난다 — main.py가
+        # 이후 라이브 스냅샷을 기록할 때 옛 버전 태그를 계속 쓰게 되는 원인이 된다.
+        _reg = get_registry()
+        _curr_info = _reg.get_current_version()
+        last_ver = _curr_info["version"] if _curr_info else "v1.0"
         try:
             major, minor = last_ver.lstrip("v").split(".")
             new_version = "v%s.%d" % (major, int(minor) + 1)
@@ -159,10 +165,9 @@ class HotSwapGate:
                 PARAM_CURRENT[k] = new_v
                 changed[k] = {"from": old_v, "to": new_v}
 
-        # StrategyRegistry 등록
+        # StrategyRegistry 등록 (활성 버전 갱신의 유일한 지점)
         try:
-            from config.strategy_registry import get_registry
-            get_registry().register_version(
+            _reg.register_version(
                 version        = new_version,
                 changed_params = changed,
                 wfa_metrics    = wfa_metrics,
@@ -171,6 +176,22 @@ class HotSwapGate:
             logger.info("[HotSwapGate] StrategyRegistry 등록: %s", new_version)
         except Exception as e:
             logger.warning("[HotSwapGate] Registry 등록 실패: %s", e)
+
+        # PARAM_HISTORY — 사람이 읽는 변경 이력에도 동일 항목 기록 (param_optimizer.apply_best와 동일 패턴)
+        try:
+            PARAM_HISTORY.append({
+                "date":       datetime.now().strftime("%Y-%m-%d"),
+                "version":    new_version,
+                "changed":    changed,
+                "wfa_result": {
+                    "sharpe":   wfa_metrics.get("sharpe"),
+                    "mdd_pct":  wfa_metrics.get("mdd_pct"),
+                    "win_rate": wfa_metrics.get("win_rate"),
+                },
+                "note": note or "HotSwapGate 자동 승인",
+            })
+        except Exception as e:
+            logger.warning("[HotSwapGate] PARAM_HISTORY 기록 실패 (registry는 정상 갱신됨): %s", e)
 
         # DriftDetector 리셋 (새 기준선 설정)
         try:

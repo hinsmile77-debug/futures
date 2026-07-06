@@ -8423,11 +8423,17 @@ class TradingSystem:
             logger.warning("[mc-conf gap] 계산 실패 (스킵): %s", _mcg_e)
 
         # [Phase2] StrategyRegistry — 라이브 일별 스냅샷 기록
+        # [297차 후속] 활성 버전은 registry(strategy_versions.is_current) 단일 기준으로 통일.
+        # 이전엔 PARAM_HISTORY[-1]("v1.0" 고정, 갱신 안 됨)을 읽어 실거래 스냅샷이
+        # registry의 is_current(QA 시더가 남긴 "v1.2")와 다른 버전 태그에 계속 쌓였고,
+        # 그 결과 daily_exporter가 참조하는 is_current 버전엔 스냅샷이 안 보여 "1일차"가
+        # 두 달째 고정되는 문제가 있었다. 두 지점 모두 registry를 유일한 소스로 둔다.
         try:
             from config.strategy_registry import get_registry as _get_reg
-            from config.strategy_params import PARAM_HISTORY as _PH
-            _active_ver = _PH[-1]["version"] if _PH else "v1.0"
-            _get_reg().record_live_snapshot(
+            _reg_now = _get_reg()
+            _curr_ver_info = _reg_now.get_current_version()
+            _active_ver = _curr_ver_info["version"] if _curr_ver_info else "v1.0"
+            _reg_now.record_live_snapshot(
                 version = _active_ver,
                 metrics = {
                     "win_rate":      forward_stats["wins"] / max(forward_stats["trades"], 1),
