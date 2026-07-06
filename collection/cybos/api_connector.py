@@ -1032,12 +1032,20 @@ class CybosAPI:
     def get_index_price(
         self, code: str = KOSPI200_INDEX_CODE, name_contains: str = "200",
     ) -> Optional[float]:
-        """[260704 감사 P2] 지수 현재가 조회 (dscbo1.StockMst).
+        """[260704 감사 P2, 294차 TR 교체] 지수 현재가 조회 (CpSysDib.MarketEye).
 
-        기본값은 KOSPI200 현물지수(코드 "K2G01P" — 주식차트/일반시세 네임스페이스.
-        "00800"은 선물차트 네임스페이스 코드로 같은 지수값이지만 이 TR엔 부적합 —
-        사용자가 Cybos Plus 클라이언트에서 직접 확인, 2026-07-05). 선물-현물 베이시스 계산용.
-        VKOSPI(코드 "O2901P", name_contains="변동성" — 동일 방식으로 확인)에도 재사용.
+        기본값은 KOSPI200 현물지수(코드 "K2G01P"). VKOSPI(코드 "O2901P",
+        name_contains="변동성")에도 재사용. 선물-현물 베이시스 계산용.
+
+        294차 실증: dscbo1.StockMst는 K2G01P/O2901P는 물론 대신증권 자체
+        지수코드 후보(U180)로도 "71103 조회결과가 없습니다"만 반환 — 개별
+        종목(주식/ETF) 전용 TR로 확정, 코드가 아니라 TR 자체가 틀렸었음.
+        CpSysDib.MarketEye(주식·지수·선물옵션 통합 조회)로 교체 후 동일 코드
+        K2G01P/O2901P로 정상 조회 확인(종목명="코스피 200"/"코스피200 변동성",
+        관리자 권한 세션 실측). MarketEye는 필드타입 배열 + 종목코드 배열을
+        받아 GetDataValue(position, row)로 응답하는 인터페이스라 StockMst의
+        GetHeaderValue 단일조회와 다름 — field 0=종목코드, 4=현재가, 17=종목명
+        (요청한 필드 순서가 GetDataValue의 position 인자가 된다).
 
         종목명(idx1)에 name_contains가 없으면 잘못된 코드로 간주해 None 반환 —
         틀린 코드가 조용히 엉뚱한 가격을 흘려보내는 사고를 방지하는 자체 검증.
@@ -1046,11 +1054,11 @@ class CybosAPI:
             return None
         try:
             ret, status, msg, data = _run_block_request(
-                progid="dscbo1.StockMst",
-                input_pairs=[(0, code)],
+                progid="CpSysDib.MarketEye",
+                input_pairs=[(0, [0, 4, 17]), (1, [code])],
                 data_reader=lambda obj: {
-                    "name": _safe_str(obj.GetHeaderValue(1)),
-                    "price": _safe_float(obj.GetHeaderValue(11)),
+                    "name": _safe_str(obj.GetDataValue(2, 0)),
+                    "price": _safe_float(obj.GetDataValue(1, 0)),
                 },
                 timeout_sec=5,
             )

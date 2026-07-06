@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-07-06 (295차 — KOSPI200/VKOSPI 폴링 수정 완료)
+
+### [버그 수정] `get_index_price()` TR을 `dscbo1.StockMst` → `CpSysDib.MarketEye`로 교체
+
+**File**: `collection/cybos/api_connector.py:1032`
+**증상**: 7/4 배포 이후 `_poll_kospi200_index()`가 100% 실패, basis/VKOSPI 피처 미작동(292~294차 참조).
+**근본 원인**: `dscbo1.StockMst`가 개별종목(주식/ETF) 전용 TR이라 지수 코드를 어떤 형식으로도 지원하지 않음(294차에서 확정).
+**수정**: `CpSysDib.MarketEye`(주식·지수·선물옵션 통합조회)로 progid 교체. `SetInputValue(0, [0,4,17])`(필드타입: 종목코드/현재가/종목명) + `SetInputValue(1, [code])` + `GetDataValue(position, row=0)` 인터페이스로 재작성. 코드값(K2G01P/O2901P)과 `name_contains` 자체 검증 로직은 그대로 유지 — 293~294차 실측에서 이 코드들이 애초에 맞았다는 게 확인됐으므로.
+**검증**: `probe_cp_market_eye.py`(관리자 권한 세션 실측)로 동일 progid·필드순서·코드조합이 정상 동작함을 이미 확인(K2G01P→"코스피 200"/1291.43, O2901P→"코스피200 변동성"/86.54, 대조군 A005930→"삼성전자"/315500 = StockMst 실측값과 일치). `py_compile` 통과. **다만 라이브 main.py 프로세스는 재기동해야 반영됨** — 재기동 전까지는 여전히 구 코드(StockMst)로 동작.
+**Why**: 294차 결론(TR 자체가 지수 미지원)에 따른 직접 조치. 코드값을 바꾸는 게 아니라 TR과 응답 파싱 방식을 통째로 바꿔야 했던 이유는 MarketEye가 StockMst와 근본적으로 다른 호출 규약(배열 입력 + 행 기반 응답)을 쓰기 때문.
+**How to apply**: 이 프로젝트에서 Cybos 지수/복수종목 조회가 추가로 필요하면 `dscbo1.StockMst`가 아니라 `CpSysDib.MarketEye`를 기본으로 고려할 것 — 최대 200종목을 한 번에 배열로 조회 가능하므로, 여러 지수/종목을 매분 각각 별도 BlockRequest로 폴링하는 대신 한 번의 호출로 묶을 수 있는 여지도 있음(현재는 최소 변경 원칙에 따라 기존처럼 코드당 별도 호출 유지).
+**구현**: `collection/cybos/api_connector.py`.
+
+---
+
 ## 2026-07-06 (294차 — KOSPI200/VKOSPI: `dscbo1.StockMst`는 지수 미지원 TR로 확정, `CpSysDib.MarketEye`로 교체 검토)
 
 ### [버그, 확정] `dscbo1.StockMst`가 코드 형식과 무관하게 지수 조회를 지원하지 않음 — TR 자체가 개별종목 전용
