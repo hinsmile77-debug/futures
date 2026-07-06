@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-06 (293차 — KOSPI200/VKOSPI 폴링 100% 실패 조사: U180 후보 확보, 라이브 검증은 권한 문제로 미완)
+
+**트리거**: 292차에서 발견한 "`_poll_kospi200_index()` 하루 종일 100% 실패" 신규 버그 딥다이브 요청.
+
+**조사**: `collection/cybos/api_connector.py:1032`의 `get_index_price()`가 `dscbo1.StockMst`에 `K2G01P`(KOSPI200)/`O2901P`(VKOSPI)를 입력하지만 `GetHeaderValue(1)`(종목명)이 계속 빈 문자열로 반환됨. 웹 검색 결과(2건 독립 소스, 대신증권 사이보스플러스 Q&A "지수/선물 코드요청" 게시판 포함) "대신증권 API/CYBOS Plus에서 KOSPI200(KP200) 지수 코드는 **U180**"으로 확인. 반면 `K2G01P`/`O2901P`는 증권플러스(stockplus.com)에서 각각 `KOREA-K2G01P`="코스피 200", `KOREA-O2901P`="코스피200 변동성지수"로 정확히 매칭되는 **진짜 존재하는 KRX 표준 업종지수 코드**임도 확인 — 즉 코드 자체가 틀린 게 아니라, Cybos Plus의 COM TR(`dscbo1.StockMst`)이 KRX 표준 코드가 아닌 대신증권 자체 "U"-prefix 지수코드 체계를 기대하는 것으로 추정.
+
+**라이브 검증 시도 및 차단**: `probe_cp_option_mst.py`와 동일 패턴으로 `scripts/probe_cp_stock_mst.py`(dscbo1.StockMst 헤더 전체 덤프 진단 스크립트, main.py 라이브 프로세스 무관) 신규 작성 후 `--code K2G01P`로 실행 시도. `CpUtil.CpCybos.IsConnect`가 False로 나와 COM 연결 자체가 실패 — `Get-Process`로 확인한 결과 `CpStart.exe`(Cybos Plus 클라이언트, SessionId 1)와 라이브 main.py 프로세스는 실행 중이나, 이 세션의 셸은 `IsAdminRole: False`(비관리자 권한)라 DCOM 무결성 수준 불일치로 접속이 거부되는 것으로 판단(`reference_cybos_codes_and_env.md` 메모의 "로그인+관리자권한 필요" 기록과 일치). VKOSPI(O2901P)의 U-코드 대체 후보는 검색으로 못 찾음.
+
+**결론**: 코드 수정은 보류 — 사용자가 관리자 권한 셸에서 `probe_cp_stock_mst.py --code U180`을 직접 실행해 `dib_status`·종목명 헤더를 확인해야 함(`NEXT_TODO.md` 292차 ④ 참조). 자체 검증 로직(`name_contains not in name`)이 이미 걸려 있어 잘못된 코드를 시험해도 현재와 동일하게 안전하게 실패하므로 시도 리스크는 낮음.
+
+**변경 파일**: `scripts/probe_cp_stock_mst.py`(신규).
+
+---
+
 ## 2026-07-06 (292차 — 진입0/conf<mc 딥다이브 → 옵션체인 등 8개 피처 need_add 방치 발견·활성화)
 
 **트리거**: "금일 미륵이 진입0의 원인과 conf<mc의 원인을 딥다이브해" 요청.
