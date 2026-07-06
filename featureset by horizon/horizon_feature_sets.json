@@ -36,7 +36,7 @@
       {
         "name": "queue_directional_depletion",
         "rho": 0.033,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "매수/매도 큐 방향별 고갈 속도 ★"
       },
       {
@@ -72,7 +72,7 @@
       {
         "name": "micro_regime_code",
         "rho": 0.039,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "직전분 마이크로 레짐 코드 (0~4) ★"
       },
       {
@@ -411,7 +411,7 @@
       {
         "name": "opt_chain_pcr",
         "rho": 0.106,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "풋/콜 비율 ★★ 5m 최강 — 5m 전환점"
       },
       {
@@ -636,7 +636,7 @@
       {
         "name": "opt_gex_sign",
         "rho": 0.143,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "GEX 방향 부호 ★★★ 10m 전문"
       },
       {
@@ -708,7 +708,7 @@
       {
         "name": "micro_regime_code",
         "rho": null,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "레짐 코드 — 레짐 조건부 신호"
       },
       {
@@ -834,19 +834,19 @@
       {
         "name": "opt_gex_bn",
         "rho": 0.198,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "딜러 감마 헤지 방향 ★★★ 최강"
       },
       {
         "name": "opt_chain_pcr",
         "rho": 0.184,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "전체 체인 PCR ★★★"
       },
       {
         "name": "opt_atm_call_oi",
         "rho": 0.133,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "ATM 콜 OI ★★"
       },
       {
@@ -858,7 +858,7 @@
       {
         "name": "threshold_feasibility",
         "rho": 0.086,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "변동성 실현 가능성 ★ 15m 전문"
       },
       {
@@ -1076,31 +1076,31 @@
       {
         "name": "opt_gex_bn",
         "rho": 0.29,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "딜러 감마 헤지 ★★★★ 전체 최강"
       },
       {
         "name": "opt_chain_pcr",
         "rho": 0.245,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "전체 체인 PCR ★★★★"
       },
       {
         "name": "opt_atm_call_oi",
         "rho": 0.126,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "ATM 콜 OI ★★★"
       },
       {
         "name": "opt_atm_pcr",
         "rho": 0.126,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "ATM PCR (30m 유의) ★★★"
       },
       {
         "name": "threshold_feasibility",
         "rho": 0.098,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "변동성 실현 가능성 ★★"
       },
       {
@@ -1166,7 +1166,7 @@
       {
         "name": "micro_regime_code",
         "rho": null,
-        "pkl": "need_add",
+        "pkl": "in_pkl",
         "note": "레짐 코드"
       },
       {
@@ -1297,17 +1297,11 @@
     ]
   },
   "_feature_status_summary": {
-    "note": "현재 feature_names.pkl(97개) 기준 포함 여부",
-    "in_pkl_total": 97,
+    "note": "[292차 2026-07-06] shap_feature_registry.json active_features에 4,000행 기준 충족 8개 편입 (opt_chain_pcr/opt_gex_bn/opt_gex_sign/opt_atm_call_oi/opt_atm_pcr/micro_regime_code + 오표기 방치됐던 queue_directional_depletion/threshold_feasibility) — 105개",
+    "in_pkl_total": 105,
     "need_add_features": [
-      "micro_regime_code",
       "cvd_monotone_ratio",
-      "opt_chain_pcr",
-      "opt_gex_bn",
-      "opt_gex_sign",
       "opt_atm_put_oi",
-      "opt_atm_call_oi",
-      "opt_atm_pcr",
       "opt_pcr_extreme_bearish"
     ],
     "macro_relearn_required": [

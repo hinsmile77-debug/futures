@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-07-06 (292차 — 진입0/conf<mc 딥다이브 → 옵션체인 등 8개 피처 need_add 방치 발견·활성화)
+
+**트리거**: "금일 미륵이 진입0의 원인과 conf<mc의 원인을 딥다이브해" 요청.
+
+**진단**: 7/6 `[ZeroDiag]` 227건 중 226건이 conf미달(ensemble conf 최대 36.7% vs mc 35.4~57%, 전 시간대 미돌파). 근본원인 추적 결과 30m(+15m/10m/5m) 호라이즌의 `acc30m`이 0~23.3%(랜덤 33% 이하)로 붕괴 → `[ConstOut]` 6회·`[DriftRetrain]` 다수 발동해도 회복 안 됨. 원인은 `opt_chain_pcr`/`opt_gex_bn` 등 옵션체인 파생 피처가 `docs/260707_FEATURE_ADD_TIMING_REPORT.md`에서 07-02~07-03 활성화 예정으로 문서화됐으나, raw_data.db 실측 결과 이미 4,000행 기준을 넘겼음에도(opt_chain_pcr 4,181행·micro_regime_code 4,933행 등) `data/db/shap_feature_registry.json`의 `active_features`에는 반영되지 않은 채 방치된 것. 06-23 활성화 완료로 문서화됐던 `queue_directional_depletion`(6,693행)·`threshold_feasibility`(7,561행)도 동일하게 누락된 상태로 추가 발견.
+
+별건으로, 7/4(260704 P2) 신규 추가된 `_poll_kospi200_index()`(`main.py:2701`, KOSPI200 현물/VKOSPI 실시간 폴링)가 7/6 09:01~12:52 매분 100% 실패(`[CybosIndex] 종목명 검증 실패` 466건) — `get_index_price()`가 `dscbo1.StockMst`로 K2G01P/O2901P를 조회할 때 `GetHeaderValue(1)`이 계속 빈 문자열을 반환. basis/VKOSPI 피처가 배포 이후 하루 종일 미작동 상태로 추정(이번 세션에서는 미수정, `NEXT_TODO.md` 참조).
+
+**조치**: `data/db/shap_feature_registry.json`의 `active_features`에 8개 추가(97→105개): `queue_directional_depletion`, `threshold_feasibility`, `micro_regime_code`, `opt_chain_pcr`, `opt_gex_bn`, `opt_gex_sign`, `opt_atm_call_oi`, `opt_atm_pcr`. `featureset by horizon/horizon_feature_sets.json`의 해당 15개 호라이즌별 `"pkl": "need_add"` 항목을 `"in_pkl"`로 정정하고 `_feature_status_summary`를 갱신(need_add 9→3개, 잔여: `opt_atm_put_oi`/`cvd_monotone_ratio`/`opt_pcr_extreme_bearish` — 아직 4,000행 미달).
+
+**적용 방식**: `learning/batch_retrainer.py:1288`이 재학습마다 registry를 디스크에서 새로 읽으므로, 라이브 프로세스를 재시작하지 않아도 다음 자동 재학습(장중 경량 재학습·ConstOut 트리거)부터 즉시 반영된다. `horizon_feature_sets.json`의 `pkl` 필드는 `features/horizon_feature_registry.py`가 `name`만 읽고 값 자체는 어디서도 참조하지 않는 순수 문서용 필드 — 실제 기능 게이트는 `active_features` 하나뿐임을 코드로 확인.
+
+**검증**: 두 JSON 모두 파싱 성공, `active_features` 105개 중복 없음 확인. SGD 온라인러너도 `active_features`를 동적으로 추종하는 구조(`docs/SGD_FEATURE_VECTOR.md`)라 97→105 차원 변화로 인한 불일치 위험 없음 확인. **실거래 반영 후 acc30m 실제 회복 여부는 미검증** — 다음 세션에서 재학습 로그의 `[FeatureReg]` 제외 목록 소멸 및 acc30m 추이 확인 필요(`NEXT_TODO.md` 292차 참조).
+
+**변경 파일**: `data/db/shap_feature_registry.json`, `featureset by horizon/horizon_feature_sets.json`.
+
+---
+
 ## 2026-07-05 (290차 — 260704 종합감사 실행 로드맵 P0~P3 전체 구현)
 
 **트리거**: `docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md`(사용자 커미션 종합 감사 보고서)의
