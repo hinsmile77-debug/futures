@@ -65,7 +65,8 @@ from config.settings import (
     LIMIT_ENTRY_FIRST_ENABLED, LIMIT_ENTRY_TIMEOUT_SEC,
     HZ_DEPLOY_POLICY,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
-    ATR_STOP_MULT, ATR_HORIZON_TP1_MULT,
+    ATR_STOP_MULT, ATR_HORIZON_TP1_MULT, ATR_TP1_MULT,
+    HURST_REGIME_ATR_MULT, HURST_REGIME_ATR_MULT_ENABLED,
     ATR_ADAPTIVE_MAX_WINDOW, ATR_ADAPTIVE_MAX_MULT, ATR_ADAPTIVE_MAX_CEILING,
     ATR_ADAPTIVE_MIN_SAMPLES,
     CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
@@ -5237,6 +5238,9 @@ class TradingSystem:
             self._ensemble_conf_cache.pop(min(self._ensemble_conf_cache), None)
         # 시간대·레짐 두 기준 중 더 엄격한 값으로 통일 (checklist·dashboard 공용)
         # _zone_mc는 ensemble.compute() 호출 전 계산됨 (cold-start zone_mc로 전달)
+        # [297차] decision["min_conf"]가 이미 zone_mc(FQAdj 반영) 기준이므로(RISK_OFF만
+        # REGIME_MIN_CONFIDENCE와 max) 아래 max()는 RISK_OFF 강화만 실질적으로 반영하고
+        # RISK_ON/NEUTRAL에서는 zone_mc 그대로 통과한다 — FQAdj 완화가 이제 실제로 적용됨.
         actual_min_conf = max(
             decision.get("min_conf", _zone_mc),
             _zone_mc,
@@ -5761,7 +5765,12 @@ class TradingSystem:
 
             if _final_grade != "X" and self.circuit_breaker.is_entry_allowed():
                 # [P4] CB③ RESTRICTED 단계: acc30m 저하 구간 → C등급 차단, A/B만 허용
-                if _final_grade == "C" and self.circuit_breaker.is_grade_restricted():
+                # [297차] 30m 퇴역(296차) 이후 CB_ACC_RESTRICTED_MIN(0.30)이 30m의
+                # 확정된 구조적 성능(0.3052)과 거의 같아 상시 RESTRICTED로 붙박여
+                # 무관한 정상 호라이즌의 C등급까지 차단하는 부작용 확인 → 설정 플래그로
+                # 차단만 비활성(모니터링은 유지). config/settings.py 주석 참조.
+                if (runtime_settings.CB3_P4_GRADE_BLOCK_ENABLED
+                        and _final_grade == "C" and self.circuit_breaker.is_grade_restricted()):
                     log_manager.signal(
                         f"[CB③-P4] RESTRICTED(acc30m<{int(0.30*100)}%) — C등급 차단"
                         f" (acc30m={self.circuit_breaker.status_dict()['accuracy_30m']:.1%})"
@@ -6299,6 +6308,69 @@ class TradingSystem:
             and not self.system_health.kill_switch_active   # [SHS-EKS] 당일 관망일
             and _ecb_observation_ok                         # 거래소 CB 해제 후 관망 기간
         )
+
+        # [297차, P1-4] Hurst 게이트 counterfactual 섀도우 — "Hurst만 아니었으면
+        # 진입했을" 분봉의 가상 결과를 기록한다(검증 캠페인 §3-6). Hurst를 제외한
+        # 나머지 게이트가 전부 통과했고 등급도 X가 아닌 경우만 대상 — 다른 이유로
+        # 이미 죽은 신호를 섞지 않는다. 읽기 전용 계측 — 실거래 의사결정에 관여하지
+        # 않음(scripts/generate_validation_campaign_report.py가 주간 사후 판정).
+        if (direction != 0
+                and self.position.status == "FLAT"
+                and not _hurst_ok
+                and _final_grade != "X"):
+            _hgs_no_hurst_ok = (
+                _cr is not None
+                and self.circuit_breaker.is_entry_allowed()
+                and not _hc_block
+                and is_new_entry_allowed()
+                and not self._broker_sync_block_new_entries
+                and not _in_cooldown
+                and not _in_exit_cooldown
+                and not _in_armistice
+                and _integrity_ok
+                and not _in_reverse_clamp
+                and _atr_ok
+                and _open_gap_ok
+                and mode_filter_passed
+                and _qty_display > 0
+                and not _bar_volume_zero
+                and not _intraday_block
+                and not self.system_health.kill_switch_active
+                and _ecb_observation_ok
+            )
+            if _hgs_no_hurst_ok:
+                try:
+                    # HURST_REGIME_ATR_MULT["mean-revert"] — hurst<0.45일 때만
+                    # 이 블록에 도달하므로 버킷은 항상 mean-revert 고정.
+                    _hgs_mult = (
+                        HURST_REGIME_ATR_MULT.get("mean-revert", {})
+                        if HURST_REGIME_ATR_MULT_ENABLED else {}
+                    )
+                    _hgs_stop_mult = ATR_STOP_MULT * _hgs_mult.get("stop", 1.0)
+                    _hgs_tp1_mult = (
+                        ATR_HORIZON_TP1_MULT.get(_entry_horizon, ATR_TP1_MULT)
+                        * _hgs_mult.get("tp1", 1.0)
+                    )
+                    _hgs_dir_mult = 1 if direction == 1 else -1
+                    execute(
+                        TRADES_DB,
+                        """INSERT INTO hurst_gate_shadow
+                           (ts, direction, grade, hurst, conf,
+                            entry_price, stop_price, tp1_price)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                            "LONG" if direction == 1 else "SHORT",
+                            _final_grade,
+                            float(features.get("hurst", 0.5) or 0.5),
+                            float(confidence),
+                            float(close),
+                            float(close - _hgs_dir_mult * atr * _hgs_stop_mult),
+                            float(close + _hgs_dir_mult * atr * _hgs_tp1_mult),
+                        ),
+                    )
+                except Exception as _hgs_e:
+                    logger.warning("[HurstShadow] counterfactual 기록 실패 (무해): %s", _hgs_e)
 
         # ── [DashboardHistory] STEP7 마스터 게이트 — 조건별 통과 여부 + 차단사유
         # "금일 Conf → 진입단계 추적" 카드가 과거 분봉의 진입 차단 원인을 그대로
@@ -8314,6 +8386,42 @@ class TradingSystem:
         except Exception as _de:
             logger.warning("[DriftDetector] 업데이트 실패 (스킵): %s", _de)
 
+        # [297차, P1-5] mc–conf 괴리 조기경보 — 경보만 출력, mc·임계값 자동 조정 없음
+        # (§3-7). 진입후보(confidence>=min_conf) 분 수가 붕괴하면 4주 검증 캠페인
+        # 표본 자체가 희소해지므로 사용자가 조기에 알아채야 한다.
+        _mc_gap_today = 0
+        _mc_gap_avg = 0.0
+        try:
+            if getattr(runtime_settings, "MC_CONF_GAP_ALERT_ENABLED", True):
+                from utils.db_utils import fetch_entry_candidate_gap
+                _gap = fetch_entry_candidate_gap(
+                    lookback_days=runtime_settings.MC_CONF_GAP_ALERT_LOOKBACK_DAYS
+                )
+                _mc_gap_today = _gap.get("today", 0)
+                _mc_gap_avg = _gap.get("avg", 0.0)
+                _min_today = runtime_settings.MC_CONF_GAP_ALERT_MIN_TODAY
+                _min_avg   = runtime_settings.MC_CONF_GAP_ALERT_MIN_AVG
+                if _gap["days"] and _mc_gap_today < _min_today:
+                    log_manager.system(
+                        f"[경보] mc-conf 괴리: 금일 진입후보(conf≥mc) {_mc_gap_today}분"
+                        f" < 하한 {_min_today}분 — 최근 {_gap['lookback_days']}거래일 평균"
+                        f" {_gap['avg']:.0f}분/일. mc는 자동 조정하지 않음(사용자 판단 필요).",
+                        "WARNING",
+                    )
+                elif _gap["days"] and _gap["avg"] < _min_avg:
+                    log_manager.system(
+                        f"[경보] mc-conf 괴리: 최근 {_gap['lookback_days']}거래일 평균"
+                        f" 진입후보 {_gap['avg']:.0f}분/일 < 하한 {_min_avg}분 — 금일 {_mc_gap_today}분.",
+                        "WARNING",
+                    )
+                else:
+                    logger.info(
+                        "[mc-conf gap] 정상: 금일 %d분, %d일 평균 %.0f분",
+                        _mc_gap_today, _gap["lookback_days"], _gap.get("avg", 0.0),
+                    )
+        except Exception as _mcg_e:
+            logger.warning("[mc-conf gap] 계산 실패 (스킵): %s", _mcg_e)
+
         # [Phase2] StrategyRegistry — 라이브 일별 스냅샷 기록
         try:
             from config.strategy_registry import get_registry as _get_reg
@@ -8375,7 +8483,11 @@ class TradingSystem:
             # 일일 리포트 파일 저장
             _exp    = _get_exp()
             _report = _exp.build_report(
-                extra_stats={"checklist_conf_fail": _ccf_today}
+                extra_stats={
+                    "checklist_conf_fail": _ccf_today,
+                    "mc_gap_today": _mc_gap_today,
+                    "mc_gap_avg": _mc_gap_avg,
+                }
             )
             _exp.save(_report)
             logger.info("[Phase5] 일일 전략 리포트 저장 완료")

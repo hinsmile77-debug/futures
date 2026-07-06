@@ -848,7 +848,14 @@ class EnsembleDecision:
             flat_score = confidence
 
         # ── 레짐별 최소 신뢰도 기준 ──────────────────────────
-        min_conf  = REGIME_MIN_CONFIDENCE.get(regime, 0.58)
+        # [297차] zone_mc(시간대 DynMC + FQAdj 실시간 조정 반영값)를 1차 기준으로 사용.
+        # 종전에는 REGIME_MIN_CONFIDENCE[regime]만 사용해 FQAdj의 완화가 여기 반영되지
+        # 않았고, main.py의 max(min_conf, zone_mc)가 완화를 재차 무효화했다(268차 의도
+        # 무산 — FQAdj "완화" 로그는 하루 수백 회 찍히지만 실제 컷은 항상 완화 전 값).
+        # RISK_OFF만 REGIME_MIN_CONFIDENCE의 추가 강화(+10%p, update_dynamic_mc 참조)를
+        # 유지 — zone_mc는 시간대 축이라 레짐 축의 리스크오프 강화를 대체하지 못한다.
+        _regime_floor = REGIME_MIN_CONFIDENCE.get(regime, 0.58)
+        min_conf  = max(_regime_floor, zone_mc) if regime == "RISK_OFF" else zone_mc
         regime_ok = (confidence >= min_conf) and (direction != DIRECTION_FLAT)
 
         # ── 진입 등급 (체크리스트 통과 수는 entry_manager에서 계산) ──

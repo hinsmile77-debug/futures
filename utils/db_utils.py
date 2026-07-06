@@ -317,6 +317,12 @@ def _migrate_ensemble_decisions_db():
                 "quantile_q10_pt": "REAL",
                 "quantile_q90_pt": "REAL",
                 "meta_gate_horizon": "TEXT",
+                # [297차, P1-6] CoherenceGate/CascadeCoherence 실제 차단 플래그.
+                # grade=='X' AND regime_ok==1 로 역추정하면 conf미달과 동시 발생한
+                # 케이스(같은 분에 confidence<mc 이면서 coherence_blocked도 True인
+                # 경우 — 실측 존재)를 conf미달로 오분류한다. 진입 퍼널(daily_exporter)
+                # 정확도를 위해 원본 플래그를 직접 저장.
+                "coherence_blocked": "INTEGER",
             }
             for name, dtype in additions.items():
                 if name not in cols:
@@ -370,6 +376,30 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_sde_ts ON signal_decay_exits(ts)")
+    # [297차, P1-4] Hurst 게이트 counterfactual 섀도우 — signal_decay_exits와 동일 패턴.
+    # 실제로는 차단(미진입)된 분봉이므로 "가상 진입가 대비 stop/tp1 중 무엇에 먼저
+    # 닿았나"를 사후 판정해 "차단이 손실을 막았는지, 이익을 놓쳤는지"를 누적한다.
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS hurst_gate_shadow (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            TEXT NOT NULL,           -- 차단 시각 (분봉)
+        direction     TEXT NOT NULL,           -- LONG/SHORT (차단된 가상 방향)
+        grade         TEXT,                    -- 차단 당시 진입 등급 (A/B/C, Hurst 미차단 가정)
+        hurst         REAL,                    -- 차단 당시 Hurst 값
+        conf          REAL,                    -- 차단 당시 confidence
+        entry_price   REAL NOT NULL,           -- 가상 진입가 (분봉 종가)
+        stop_price    REAL,                    -- 가상 하드스톱
+        tp1_price     REAL,                    -- 가상 TP1
+        resolved      INTEGER DEFAULT 0,       -- 1=counterfactual 판정 완료
+        cf_outcome    TEXT,                    -- STOP / TP1 / NEITHER
+        cf_exit_price REAL,                    -- counterfactual 청산가
+        hyp_pnl_pts   REAL,                    -- (+)=차단 안 했으면 이득, (-)=차단이 손실 회피
+        created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_hgs_ts ON hurst_gate_shadow(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,
@@ -931,6 +961,146 @@ def fetch_recent_ev(n: int = 20) -> Dict:
         "win_rate": wins / len(vals),
         "total_net_pnl_krw": sum(vals),
     }
+
+
+def fetch_entry_candidate_gap(lookback_days: int = 5) -> Dict:
+    """[297차, P1-5] 최근 N거래일 진입후보(confidence>=min_conf) 분 수 롤링 집계.
+
+    동적 min_conf(zone_mc)는 과거 conf 분포 기반이라, conf 분포가 급락하면
+    ensemble_decisions.regime_ok=1(=진입후보) 분 수가 0에 가깝게 붕괴할 수 있다
+    (292차 진입0 딥다이브 실측). 자동으로 mc를 조정하지 않고 경보용 수치만 반환한다
+    — 판단은 사용자 몫(config.settings.MC_CONF_GAP_ALERT_*).
+
+    반환: {"days": [{"date": str, "n_candidates": int}, ...], "avg": float,
+           "today": int, "lookback_days": int}
+    거래일 자체가 없으면 avg=0.0, days=[].
+    """
+    rows = fetchall(
+        PREDICTIONS_DB,
+        """SELECT substr(ts, 1, 10) AS d,
+                  SUM(CASE WHEN regime_ok = 1 THEN 1 ELSE 0 END) AS n_cand
+           FROM ensemble_decisions
+           GROUP BY d
+           ORDER BY d DESC
+           LIMIT ?""",
+        (lookback_days,),
+    )
+    if not rows:
+        return {"days": [], "avg": 0.0, "today": 0, "lookback_days": lookback_days}
+    days = [{"date": r["d"], "n_candidates": int(r["n_cand"] or 0)} for r in rows]
+    avg = sum(d["n_candidates"] for d in days) / len(days)
+    return {
+        "days": days,
+        "avg": round(avg, 1),
+        "today": days[0]["n_candidates"],
+        "lookback_days": lookback_days,
+    }
+
+
+# [297차, P1-6] entry_block_reason(STEP7 elif-chain) 부분문자열 → 표시 라벨.
+# 순서 중요 — main.py의 우선순위 그대로 위에서부터 첫 매치를 사용한다.
+_BLOCK_REASON_CATEGORIES = [
+    ("Hurst",           "Hurst(횡보차단)"),
+    ("모드필터",          "모드필터"),
+    ("시가이격",          "시가갭(OPEN_VOLATILE)"),
+    ("ATR",             "ATR변동성"),
+    ("거래소 CB",         "거래소CB관망"),
+    ("Circuit Breaker", "CB정지"),
+    ("고신뢰 연속오답",     "HC차단"),
+    ("브로커 sync",       "브로커동기화"),
+    ("Restart Armistice", "재시작유예"),
+    ("포지션 무결성",       "무결성"),
+    ("쿨다운",            "쿨다운"),
+    ("Reverse Clamp",   "역방향클램프"),
+    ("IntradayRegime",  "장중레짐"),
+    ("15:00 이후",        "마감시간(15:00+)"),
+    ("Degraded",        "Degraded신뢰도"),
+    ("점심 휴식",          "시간대차단"),
+    ("진입 금지 시간대",     "시간대차단"),
+    ("등급X",            "체크리스트항목미달"),
+]
+
+
+def _categorize_block_reason(entry_block_reason: Optional[str], checklist_reason: Optional[str]) -> str:
+    """entry_block_reason(비어있지 않으면 우선) → 표시용 게이트 라벨."""
+    r = entry_block_reason or ""
+    if r:
+        for needle, label in _BLOCK_REASON_CATEGORIES:
+            if needle in r:
+                return label
+        return "기타(%s)" % r[:24]
+    cr = checklist_reason or ""
+    if cr:
+        # position!=FLAT(포지션 보유 중)이라 STEP7 차단문구가 안 찍힌 경우 등 —
+        # checklist_reason(콜드스타트/워밍업 단계 표시)으로 대체 분류
+        return "콜드스타트/기타(%s)" % cr
+    return "기타(미분류)"
+
+
+def fetch_daily_entry_funnel(date_str: Optional[str] = None) -> Dict:
+    """[297차, P1-6] 진입 퍼널 일일 자동 집계 — "어느 층에서 진입0이 발생했는가".
+
+    ensemble_decisions는 매분 무조건 기록되므로(STEP9, dedup 없음) 로그의
+    [ZeroDiag]/entry_block_reason 출력(직전 분과 동일하면 dedup되어 스킵)보다
+    더 정확하다. ensemble_decisions.grade 컬럼은 앙상블 단계 등급(체크리스트·
+    CB③-P4·STEP7 게이트 반영 전)이라는 점에 근거해 5단 퍼널을 재구성한다:
+
+      FLAT → conf미달 / CoherenceGate(앙상블 X) → 게이트차단(STEP7·체크리스트)
+           → 후보(entry_final_ok) → 진입(entry_executed)
+
+    coherence_blocked는 conf미달과 같은 분에 동시 발생할 수 있다(코드상 우선순위:
+    ensemble_decision.py가 coherence_blocked를 regime_ok보다 먼저 검사) — 이 함수도
+    그 우선순위를 따라 coherence_blocked를 conf미달보다 먼저 판정한다.
+    coherence_blocked 컬럼은 297차부터 저장되므로, 그 이전 날짜 데이터는 0으로
+    나온다(과소 계상 — 로그 재생 없이는 소급 복원 불가, 알려진 한계).
+
+    반환: {"date", "total", "flat", "conf_fail", "coherence_blocked",
+           "ensemble_pass", "gate_blocked", "gate_breakdown": {label: n},
+           "exec_fail", "candidate", "entered"}
+    """
+    import datetime as _dt
+    d = date_str or _dt.date.today().isoformat()
+    rows = fetchall(
+        PREDICTIONS_DB,
+        """SELECT direction, regime_ok, grade, entry_final_ok, entry_executed,
+                  entry_block_reason, checklist_reason, coherence_blocked
+           FROM ensemble_decisions
+           WHERE substr(ts, 1, 10) = ?""",
+        (d,),
+    )
+    out = {
+        "date": d, "total": len(rows),
+        "flat": 0, "conf_fail": 0, "coherence_blocked": 0,
+        "ensemble_pass": 0, "gate_blocked": 0, "gate_breakdown": {},
+        "exec_fail": 0, "candidate": 0, "entered": 0,
+    }
+    for r in rows:
+        direction = int(r["direction"] or 0)
+        if direction == 0:
+            out["flat"] += 1
+            continue
+        grade = str(r["grade"] or "")
+        if grade == "X":
+            if bool(r["coherence_blocked"]):
+                out["coherence_blocked"] += 1
+            else:
+                out["conf_fail"] += 1
+            continue
+
+        out["ensemble_pass"] += 1
+        final_ok = bool(r["entry_final_ok"])
+        executed = bool(r["entry_executed"])
+        if executed:
+            out["candidate"] += 1
+            out["entered"] += 1
+        elif final_ok:
+            out["candidate"] += 1
+            out["exec_fail"] += 1
+        else:
+            out["gate_blocked"] += 1
+            label = _categorize_block_reason(r["entry_block_reason"], r["checklist_reason"])
+            out["gate_breakdown"][label] = out["gate_breakdown"].get(label, 0) + 1
+    return out
 
 
 def fetch_accuracy_history(limit: int = 100) -> List[sqlite3.Row]:

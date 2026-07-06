@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 # 백테스트 맥락에서 EnsembleDecision ConstOut 경고 억제
 logging.getLogger("SIGNAL").setLevel(logging.ERROR)
 
-from config.settings import ENSEMBLE_WEIGHTS, PREDICTIONS_DB, RAW_DATA_DB
+from config.settings import ENSEMBLE_WEIGHTS, PREDICTIONS_DB, RAW_DATA_DB, REGIME_MIN_CONFIDENCE
 from config.constants import DIRECTION_DOWN, DIRECTION_FLAT, DIRECTION_UP
 from model.ensemble_decision import EnsembleDecision
 
@@ -198,8 +198,12 @@ def main():
             )
             for h in ENSEMBLE_WEIGHTS
         }
-        baseline = ensemble.compute(horizon_proba, "NEUTRAL", adaptive_gating=False)
-        enhanced = ensemble.compute(horizon_proba, "NEUTRAL", features=features, adaptive_gating=True)
+        # [297차] compute()의 min_conf가 zone_mc 기준으로 바뀌어 zone_mc 미지정 시
+        # 기본값(0.60)이 적용된다 — 이 백테스트는 REGIME_MIN_CONFIDENCE 캘리브레이션
+        # 기준을 그대로 유지하기 위해 명시적으로 전달한다.
+        _neutral_mc = REGIME_MIN_CONFIDENCE.get("NEUTRAL", 0.58)
+        baseline = ensemble.compute(horizon_proba, "NEUTRAL", adaptive_gating=False, zone_mc=_neutral_mc)
+        enhanced = ensemble.compute(horizon_proba, "NEUTRAL", features=features, adaptive_gating=True, zone_mc=_neutral_mc)
 
         actual = int(rows[eval_horizon]["actual"])
         entry_close = close_map[ts]

@@ -1,6 +1,7 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-06 (v9-dev) — origin/dev 296차 머지(30m 호라이즌 퇴역 최종 확정, 라이브 미검증) + v9 Track L1/L3 섀도우 유지
+> 마지막 업데이트: 2026-07-06 (v9-dev) — origin/dev 297차 머지(FQAdj/CB③-P4 배선버그
+> 2건 수정 + 재발방지 계측 6종, 라이브 미검증) + v9 Track L1/L3 섀도우 유지
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -40,6 +41,66 @@
 **다음 확인 필요**: 모의투자 재가동 후 `entry_gate_json`에 `soft_gate_shadow_*`/
 `day_regime_shadow*` 필드가 실제로 쌓이는지 → 두 리포트 재실행 → Track L3 합격선
 사전등록 + Track L2 착수 여부 판단.
+
+---
+
+## 2026-07-06 (297차 — 진입0 딥다이브 + P0 배선버그 2건 수정 + 재발방지 계측 6종)
+
+**계기**: 사용자가 금일 진입 0건의 원인 딥다이브와 260705 감사문서 개선안의
+실효성 평가를 요청 → P0 긴급수정 2건 지시 → 감사 매트릭스 정정 지시 → P1
+계측 2건 지시 → 추가개선안 2건 지시 → 딥다이브 결과 종합정리 문서화 지시.
+
+**핵심 판단**: 오늘 진입0의 1차 원인은 conf 분포 하락(중앙값 31.5%, p90 35.5%
+vs mc 36.5~37.5%) + Hurst 횡보 차단이지만, 딥다이브 과정에서 이 원인 분석과는
+별개로 **실제 배선 버그 2건**을 발견했다 — (1) FQAdj의 min_conf 완화가 268차
+이후 로그만 찍히고 실효 0으로 무효화(zone_mc가 앙상블 등급 결정에 반영 안 됨),
+(2) CB③-P4가 296차 퇴역 확정된 30m 정확도를 계속 소비해 무관한 C등급까지 상시
+차단(CB_ACC_RESTRICTED_MIN=0.30이 30m 확정 성능 0.3052와 거의 같아 상시 발동).
+전자는 하루 271분 conf미달 중 상당수가 완화 대상이었을 수 있고, 후자는 296차
+"하나의 퇴역이 여러 경로에 구멍을 남긴다"는 교훈이 CB③에서도 재현된 사례.
+
+**조치**:
+- `model/ensemble_decision.py`: 등급 결정 로직이 `zone_mc`(FQAdj 반영값)를
+  RISK_ON/NEUTRAL에서 실제로 사용하도록 수정. RISK_OFF만 레짐 강화(`max`) 유지.
+- `config/settings.py`: `CB3_P4_GRADE_BLOCK_ENABLED=False`(C등급 차단만 비활성,
+  accuracy_buf 누적·acc30m_stage 추적은 유지) + `ENTRY_STARVATION_WEEKLY_MIN`/
+  `ENTRY_STARVATION_MITIGATION_LADDER`(표본기아 완화 사다리 사전등록) +
+  `MC_CONF_GAP_ALERT_*`(mc-conf 괴리 2단계 경보) +
+  `VALIDATION_CAMPAIGN["hurst_gate_shadow"]`(Hurst counterfactual 판정기준).
+- `CLAUDE.md`: 절대원칙 §2에 CB②와 동일 패턴으로 CB③-P4 예외 문서화(날짜
+  있음) + Phase 5 진입조건 체크리스트 ⑥번(재검토 항목) 등록.
+- `docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md`: §1 매트릭스 6b행
+  신설(구형 MetaGate ON·하드차단 등재 — 신형 entry_quality_prob 섀도우와 이름
+  충돌로 누락돼 있었음), §3-2b·§3-6·§3-7·§3-8 신설, §4-1·§4-2 갱신.
+- `utils/db_utils.py`: `hurst_gate_shadow` 테이블(Hurst counterfactual),
+  `fetch_entry_candidate_gap()`(mc-conf 괴리), `fetch_daily_entry_funnel()`
+  (진입 퍼널 5단 재구성), `ensemble_decisions.coherence_blocked` 컬럼 신설
+  (구현 중 발견: 기존엔 이 값이 DB에 없어 `grade=='X' & regime_ok==1`로
+  역추정했더니 conf미달과 동시발생 케이스를 누락함을 로그 대조로 확인).
+- `learning/prediction_buffer.py`: `coherence_blocked` STEP9 저장 배선.
+- `scripts/generate_validation_campaign_report.py`: `resolve_and_eval_
+  hurst_gate()`(§3-6 KPI), `eval_sample_starvation()`(§3-8 사다리 위치 자동
+  판단 — Hurst 임계값 실측으로 3단계 적용 여부까지 자동 감지), 리포트 [0]·[6]
+  섹션 추가.
+- `strategy/ops/daily_exporter.py`: mc-conf 괴리 + 진입 퍼널 일일 섹션 추가.
+- `scripts/run_microstructure_ab_backtest.py`: FQAdj 수정에 따른 회귀 방지
+  (zone_mc 명시 전달).
+- `docs/진입0/260706_진입0_딥다이브_및_개선구현.md`: 신규 — 딥다이브 전 과정과
+  구현 6항목 종합 정리.
+
+**유지되는 것**: CB③ 자체(절대원칙), Hurst 게이트 자체(추세추종 설계 핵심
+필터), 구형 MetaGate 자체(§3-2b 판정 전까지 존치) — 이번 세션은 이들을
+비활성/제거하지 않고 "퇴역된 30m을 계속 먹이던 소비 경로 1건"과 "완화가
+무효화되던 배선 1건"만 고쳤다.
+
+**검증**: `pytest tests/` 10건 통과, 수정 파일 전체 `py_compile` 통과. 신규
+함수(hurst_gate_shadow resolve, entry_candidate_gap, daily_entry_funnel,
+sample_starvation, coherence_blocked 저장)는 전부 실제 DB(오늘 데이터 포함)로
+end-to-end 테스트, 합성 데이터로 STOP/TP1/NEITHER counterfactual 로직 수동
+계산 대조 일치 확인(테스트 데이터는 정리함). **라이브 실기동 검증은 아직
+없음** — 다음 기동 후 conf 분포 회복 여부(7/3 수준 복귀 — "모델 문제 vs 데이터
+문제" 판별의 첫 근거)와 P0 수정 효과·신규 계측 로그 정상 출력을 확인해야 함
+(`NEXT_TODO.md` 297차 항목 ①~⑧ 참조).
 
 ---
 

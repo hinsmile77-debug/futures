@@ -54,6 +54,10 @@ _SAFETY_OPERATIONAL_GATES = {
 }
 
 # 신호품질 게이트 — entry_gate_json 안에서 ablation 분석 대상.
+# [297차] hurst_ok(횡보장 진입 차단)와 meta_gate(구형 하드차단, main.py의
+# MetaGate.evaluate action=="skip" → X등급 강제)는 260705 검증 캠페인 문서
+# §3-2b·§4-2에서 "매주 반드시 판독"으로 지정된 우선 순위 게이트 — 아래
+# solo_blocked 집계에 이미 포함되어 있으므로 리포트 실행 후 이 둘부터 확인할 것.
 _SIGNAL_QUALITY_GATES = {"hurst_ok", "atr_ok", "open_gap_ok", "bar_volume_ok"}
 
 

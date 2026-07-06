@@ -171,6 +171,52 @@ class DailyExporter:
             lines.append("-" * 56)
             lines.append("  CL신뢰도차단: %d회 (앙상블 통과→conf 미달 강제 X)" % _ccf)
 
+        # ── [297차, P1-5] mc–conf 괴리 조기경보 계기판 ───────────────────────
+        _mc_gap_today = extra_stats.get("mc_gap_today")
+        _mc_gap_avg = extra_stats.get("mc_gap_avg")
+        if _mc_gap_today is not None:
+            try:
+                from config.settings import MC_CONF_GAP_ALERT_MIN_TODAY, MC_CONF_GAP_ALERT_MIN_AVG
+                _flag = (
+                    " ⚠ 하한 미달" if (
+                        _mc_gap_today < MC_CONF_GAP_ALERT_MIN_TODAY
+                        or (_mc_gap_avg or 0) < MC_CONF_GAP_ALERT_MIN_AVG
+                    ) else ""
+                )
+            except Exception:
+                _flag = ""
+            lines.append("-" * 56)
+            lines.append(
+                "  진입후보(conf≥mc): 금일 %d분  5일평균 %.0f분%s"
+                % (_mc_gap_today, _mc_gap_avg or 0.0, _flag)
+            )
+
+        # ── [297차, P1-6] 진입 퍼널 일일 자동 리포트 ─────────────────────────
+        # "진입0이 어느 층에서 발생했는가"를 매일 자동으로 남긴다(§4-2 고정 안건 ⑥).
+        try:
+            from utils.db_utils import fetch_daily_entry_funnel
+            _fn = fetch_daily_entry_funnel()
+            if _fn["total"] > 0:
+                lines.append("-" * 56)
+                lines.append("  진입 퍼널(%s, 총 %d분):" % (_fn["date"], _fn["total"]))
+                lines.append(
+                    "    FLAT %d → conf미달 %d → CoherenceGate %d"
+                    " → 게이트차단 %d → 후보 %d → 진입 %d"
+                    % (
+                        _fn["flat"], _fn["conf_fail"], _fn["coherence_blocked"],
+                        _fn["gate_blocked"], _fn["candidate"], _fn["entered"],
+                    )
+                )
+                if _fn["gate_breakdown"]:
+                    _bd = sorted(_fn["gate_breakdown"].items(), key=lambda kv: -kv[1])
+                    lines.append(
+                        "    게이트별: " + "  ".join("%s=%d" % (k, v) for k, v in _bd)
+                    )
+                if _fn["exec_fail"]:
+                    lines.append("    ⚠ 체결실패(게이트 통과 후 미체결): %d건" % _fn["exec_fail"])
+        except Exception as e:
+            lines.append("  진입 퍼널 : [계산 실패: %s]" % e)
+
         lines.append("=" * 56)
         return "\n".join(lines)
 
