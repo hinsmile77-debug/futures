@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-06 (v9-dev) — origin/dev 294차 머지(KOSPI200/VKOSPI: StockMst 지수 미지원 확정, MarketEye 전환 검증 대기) + v9 Track L1/L3 섀도우 유지
+> 마지막 업데이트: 2026-07-06 (v9-dev) — origin/dev 292~295차 머지(KOSPI200/VKOSPI 폴링 StockMst→MarketEye 수정 완료, 라이브 재기동 확인만 남음) + v9 Track L1/L3 섀도우 유지
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -40,6 +40,18 @@
 **다음 확인 필요**: 모의투자 재가동 후 `entry_gate_json`에 `soft_gate_shadow_*`/
 `day_regime_shadow*` 필드가 실제로 쌓이는지 → 두 리포트 재실행 → Track L3 합격선
 사전등록 + Track L2 착수 여부 판단.
+
+---
+
+## 2026-07-06 (295차 — KOSPI200/VKOSPI 폴링 수정 완료: `dscbo1.StockMst` → `CpSysDib.MarketEye`)
+
+**계기**: 294차에서 준비한 `probe_cp_market_eye.py`를 사용자가 관리자 권한 셸에서 실행, 정상 조회 확인.
+
+**핵심 발견**: `CpSysDib.MarketEye`에 기존 코드(K2G01P/O2901P) 그대로 조회하니 종목명·현재가가 정상 반환됨(코스피 200=1291.43, 코스피200 변동성=86.54, 대조군 삼성전자도 일치) — 코드는 처음부터 맞았고 `dscbo1.StockMst`가 지수 자체를 지원 안 하는 TR이었다는 294차 결론이 최종 확정.
+
+**조치**: `collection/cybos/api_connector.py:1032`의 `get_index_price()`를 `CpSysDib.MarketEye` 기반으로 재작성 완료(`py_compile` 통과, 호출부 시그니처 동일해 다른 파일 변경 불필요).
+
+**남은 일**: 이 수정은 소스 파일 변경일 뿐 **현재 실행 중인 main.py 프로세스에는 아직 반영 안 됨** — 다음 재기동 후 `[CybosIndex] 종목명 검증 실패` 로그 소멸 및 `basis_ready`/`vkospi_ready` 전환 확인 필요(`NEXT_TODO.md` 참조).
 
 ---
 

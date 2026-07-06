@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-06 (295차 — KOSPI200/VKOSPI 폴링 수정 완료: `dscbo1.StockMst` → `CpSysDib.MarketEye`)
+
+**트리거**: 294차에서 준비한 `probe_cp_market_eye.py`를 사용자가 관리자 권한 셸에서 실행, 결과 공유.
+
+**실측 결과**: `CpSysDib.MarketEye`에 필드타입 `[0,4,17]`(종목코드/현재가/종목명) + 코드 `["K2G01P","O2901P","A005930"]`로 조회 성공. `dib_msg="0027 조회가 완료되었습니다.(market.eye)"`. K2G01P→field17="코스피 200" field4(현재가)=1291.43, O2901P→field17="코스피200 변동성" field4=86.54, 대조군 A005930→field17="삼성전자" field4=315500(StockMst 실측값과 일치) — **기존 코드(K2G01P/O2901P) 그대로 MarketEye에서 정상 조회됨을 확정**. 293~294차의 "코드가 틀렸다" 가설은 최종적으로 폐기, "TR이 개별종목 전용(StockMst)이라 지수를 아예 취급 못 했다"가 최종 결론.
+
+**조치**: `collection/cybos/api_connector.py:1032`의 `get_index_price()`를 `dscbo1.StockMst`(`GetHeaderValue` 단일조회)에서 `CpSysDib.MarketEye`(`SetInputValue(0, [0,4,17])` + `SetInputValue(1, [code])` + `GetDataValue(position, row=0)`)로 교체. 호출부(`main.py:2701` `_poll_kospi200_index()`, `collection/broker/cybos_broker.py:136`)는 시그니처 동일해 변경 불필요. 기존 자체 검증 로직(`name_contains not in name`)은 그대로 유지.
+
+**검증**: `py_compile`(py37_32) 통과. `get_index_price()` 내부 호출 패턴이 실측 완료된 probe 호출(`probe_cp_market_eye.py`)과 진행 순서상 동일(같은 progid·같은 field 순서·같은 코드)하여 이번엔 라이브 코드까지 실증됨 — 단, **이 수정은 현재 실행 중인 main.py 프로세스에는 반영되지 않음(다음 재기동 시 적용)**, 재기동 후 `[CybosIndex] 종목명 검증 실패` 로그가 더 이상 안 뜨는지, `features/technical/basis.py`의 `basis_ready`가 True로 전환되는지 확인 필요(`NEXT_TODO.md` 참조).
+
+**변경 파일**: `collection/cybos/api_connector.py`.
+
+---
+
 ## 2026-07-06 (294차 — KOSPI200/VKOSPI 폴링 실증: dscbo1.StockMst는 지수 미지원 확정, CpSysDib.MarketEye로 전환 대기)
 
 **트리거**: 293차에서 준비한 `probe_cp_stock_mst.py`를 사용자가 관리자 권한 셸에서 직접 실행, 결과 공유.
