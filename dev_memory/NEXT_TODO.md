@@ -26,13 +26,39 @@
 
 ---
 
+## 2026-07-06 (296차 검증) [30m 호라이즌 퇴역 반영 실기동 검증]
+
+> 290차가 사전 등록한 "EOD full_cv 재학습 후 30m acc 목표(0.38~0.41) 미달 시 퇴역"
+> 기준이 296차 EOD(15:46, acc=0.3052)에서 충족되어 퇴역 확정. `model/ensemble_decision.py`
+> (CascadeCoherence·CoherenceGate 30m 제외), `config/settings.py`(ENSEMBLE_WEIGHTS류
+> 30m→0.0), `safety/circuit_breaker.py`(주석), `docs/260707_FEATURE_ADD_TIMING_REPORT.md`
+> ·`ROADMAP.md`(재활성화 조건 철회) 반영. py_compile 통과, 앱 미기동 상태에서 텍스트 편집만
+> — 라이브 미검증.
+
+- [ ] **① 다음 기동 후 CascadeCoherence/CoherenceGate 30m 제외 정상 동작 확인** — 30m
+  방향이 1m과 반대여도 더 이상 `[Ensemble] CascadeCoherence 차단`/`CoherenceGate 차단`
+  로그에 영향 주지 않는지, 과거처럼 "30m ConstOut(dir=+1) + 1m SHORT(-1) → score=0.50
+  차단" 같은 패턴이 재발하지 않는지 확인
+- [ ] **② ENSEMBLE_WEIGHTS 30m=0 반영 후 앙상블 conf 분포 변화 확인** — 나머지 5개
+  호라이즌 가중치 재분배(+0.03씩)로 conf 분포가 급변하지 않는지, MC_PERCENTILE 기반
+  동적 min_conf가 기존 대비 크게 흔들리지 않는지 며칠 관찰
+- [ ] **③ 30m predict_proba·GBM/RF 학습·CB③ P4 모니터링이 계속 정상 동작하는지 확인**
+  — 퇴역은 의사결정 반영 차단이지 예측/학습 중단이 아님. 대시보드에서 30m 카드가
+  계속 값을 표시하는지, EOD 재학습 로그에 30m GBM/RF 학습이 계속 도는지 확인
+- [ ] **④ 296차 이전 13:09~13:11 사고(292차 registry 97→105 hot-swap 중 스케일러
+  차원불일치 → 자동진입 정지 3회 → 허위 거래소CB 감지) 재발 방지 별도 검토** — 이번
+  296차 변경은 registry 피처 개수를 다시 바꾸지 않으므로 무관하나, 향후 active_features
+  개수가 바뀌는 변경 시 재기동 없이 hot-swap하지 않는 안전장치 설계 필요(미착수)
+
+---
+
 ## 2026-07-06 (292차 검증) [옵션체인 등 8개 피처 registry 활성화]
 
 ### 피처 활성화 반영 후 30m 모델 회복 확인
 
 - [ ] **① 재학습 로그에서 8개 피처 반영 확인** — 다음 자동 재학습(intraday/EOD) 로그의 `[FeatureReg] 5m/10m/15m/30m` 제외 목록에서 `opt_chain_pcr`/`opt_gex_bn`/`opt_gex_sign`/`opt_atm_call_oi`/`opt_atm_pcr`/`micro_regime_code`/`queue_directional_depletion`/`threshold_feasibility`가 사라졌는지, `피처 슬라이싱: 105 → N`에서 N이 예상대로 늘었는지 확인
 - [ ] **② acc30m 회복 확인** — `[DriftRetrain] acc30m=...` 로그가 랜덤(33%) 이상으로 올라오는지 며칠 관찰
-- [ ] **③ EOD full_cv 재학습으로 CV acc 재검증** — py310_64 EOD_RETRAIN.bat 실행 후 30m CV acc ≥ 0.33 확인되면 `model/ensemble_decision.py`의 30m 역방향 필터(Q3 블록), `safety/circuit_breaker.py`의 CB③ HALT 재활성화 검토(조건 미충족 시 비활성 유지 — 임의 재활성화 금지)
+- [x] **③ [DONE 2026-07-06] EOD full_cv 재학습으로 CV acc 재검증 완료 → 미달 확정, 퇴역 결정** — 296차 15:46 EOD(26주·105피처) 결과 30m CV acc=0.3052 (<0.33 재활성화 기준, <0.38~0.41 목표 구간, 랜덤 0.333보다도 낮음). 조건 미충족이므로 재활성화 대신 영구 퇴역으로 최종 결정(NEXT_TODO 296차 섹션·ROADMAP.md·DECISION_LOG 296차 참조)
 - [x] **④ [DONE 2026-07-06] KOSPI200/VKOSPI 폴링 수정 완료 — 재기동 후 실동작 확인만 남음** `get_index_price()`(`collection/cybos/api_connector.py:1032`)를 `dscbo1.StockMst`(개별종목 전용 TR로 확정, 지수 완전 미지원) → `CpSysDib.MarketEye`(주식·지수·선물옵션 통합 조회)로 교체 완료(295차, `py_compile` 통과). 실측(`probe_cp_market_eye.py`, 관리자 권한)으로 K2G01P/O2901P가 MarketEye에서 정상 조회됨을 확인 후 반영.
   - [ ] **재기동 후 확인**: 다음 main.py 재시작 이후 `[CybosIndex] 종목명 검증 실패` 로그가 더 이상 안 뜨는지, `_last_kospi200_spot`/`_last_vkospi`가 실제 값으로 채워지는지, `features/technical/basis.py`의 `basis_ready`/`vkospi_ready`가 True로 전환되는지 SIGNAL/SYSTEM 로그로 확인.
 - [ ] **⑤ [신규발견, 남겨둠] 나머지 3개 need_add 피처 도달 시 처리** — `opt_atm_put_oi`(3,900행, 07-07 예상), `cvd_monotone_ratio`(3,608행), `opt_pcr_extreme_bearish`(3,249행) 4,000행 도달 시 이번과 동일하게 `shap_feature_registry.json` 반영 (이번 세션 전례처럼 "계획만 하고 registry 반영 누락"이 반복되지 않도록 주의 — DECISION_LOG 292차 참조)

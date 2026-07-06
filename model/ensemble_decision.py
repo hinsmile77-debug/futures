@@ -2,12 +2,15 @@
 """
 6개 호라이즌 예측을 가중합하여 최종 방향·신뢰도·진입 등급을 결정합니다.
 
-앙상블 가중치 (설계 명세 4-3):
+앙상블 가중치 (설계 명세 4-3, 최초 기준값 — 이후 실측 기반 재조정 다수):
   기본:  1분 10% / 3분 15% / 5분 20% / 10분 20% / 15분 20% / 30분 15%
   상관관계 역수 조정(HorizonDecorrelator):
     - 30분 롤링 창에서 호라이즌 간 실측 상관계수를 추적
     - 상관이 높은 호라이즌의 가중치를 자동으로 낮춰 이중 가중을 완화
     - 데이터 부족 시 ENSEMBLE_WEIGHTS_CORR_ADJ 정적 추정치로 fallback
+
+30m 퇴역(296차, 2026-07-06): 앙상블 가중합·CascadeCoherence·CoherenceGate 전부에서
+영구 제외. predict_proba·GBM/RF 학습·CB③ 모니터링은 계속 유지(연구/재평가용).
 """
 import logging
 import math
@@ -192,13 +195,16 @@ class HorizonF1AdaptiveWeight:
 
 def compute_cascade_coherence(horizon_proba):
     # type: (Dict[str, Dict]) -> float
-    """30m→15m→…→1m 방향이 흘러내려오는 정렬도를 반환.
+    """15m→…→1m 방향이 흘러내려오는 정렬도를 반환.
 
     FL 호라이즌 제외 후 방향성 있는 호라이즌만으로 정렬 비율 계산.
-    (FL 끼임으로 인한 연속 break 방지 — 오늘 오전처럼 30m/15m/10m=DN, 5m/3m=FL 케이스)
+    (FL 끼임으로 인한 연속 break 방지 — 오늘 오전처럼 15m/10m=DN, 5m/3m=FL 케이스)
+    30m은 퇴역(296차, 2026-07-06)으로 cascade에서 제외 — 구조적 저성능(EOD full_cv
+    acc=0.3052, 랜덤 이하) 호라이즌의 노이즈 방향이 정렬도를 깨 정상 진입을 차단하는
+    부작용 방지(CoherenceGate와 동일 사유).
     반환: 0.0(완전 불일치) ~ 1.0(완전 정렬)
     """
-    cascade = ["30m", "15m", "10m", "5m", "3m", "1m"]
+    cascade = ["15m", "10m", "5m", "3m", "1m"]
     dirs = [
         (horizon_proba.get(h) or {}).get("direction", DIRECTION_FLAT)
         for h in cascade
@@ -343,7 +349,7 @@ class EnsembleDecision:
         cur_weights = self._f1_weight.apply(self._decorr.weights)
         self._decorr.push(horizon_proba)   # 이번 예측을 버퍼에 기록
 
-        # Q3: 30m 필터 전용 — 가중합에서 제외, 방향 필터로만 사용
+        # 30m 퇴역(296차) — 가중합에서 영구 제외(과거 Q3 "필터 전용" 단계를 지나 완전 퇴역).
         # Decorrelator·F1 추적은 위 push()에서 이미 반영되므로 순서 중요
         _proba_30m = horizon_proba.get("30m")
         _30m_filter_blocked = False
@@ -776,7 +782,9 @@ class EnsembleDecision:
             # ConstOut 호라이즌은 가중치=0으로 앙상블 투표에서 이미 제외되지만
             # horizon_proba 딕셔너리에는 잔존해 CoherenceGate 분모에 포함됐음.
             # 30m ConstOut(dir=+1) + 1m SHORT(-1) → score=1/2=0.50 < min=0.60 → 진입 전면 차단.
-            _bias_overrides = set(bias_override_horizons or []) | _const_stuck
+            # [296차] 30m 퇴역 — 위와 동일한 부작용(구조적 저성능 호라이즌의 노이즈
+            # 방향이 분모에 남아 정상 진입을 차단)을 근본적으로 막기 위해 분모에서 영구 제외.
+            _bias_overrides = set(bias_override_horizons or []) | _const_stuck | {"30m"}
             _active_h = [
                 h for h in horizon_proba
                 if (horizon_proba[h]
@@ -881,10 +889,13 @@ class EnsembleDecision:
 
         auto_entry = ENTRY_GRADE.get(grade, {}).get("auto", False) and regime_ok
 
-        # Q3: 30m 역방향 필터 — 비활성화 (2026-06-25)
-        # 사유: 30m 모델이 need_add 피처(opt_gex_bn·opt_chain_pcr 등) 미탑재 상태로
-        #       CV acc=0.2796(랜덤 이하)이며, 필터가 정상 진입을 차단하는 역효과 발생.
-        #       need_add 피처 탑재 + acc 회복 후 재활성화 예정.
+        # 30m 역방향 필터 — 비활성화(2026-06-25) → 퇴역 확정(296차, 2026-07-06)
+        # 250차 시점 사유: 30m 모델이 need_add 피처(opt_gex_bn·opt_chain_pcr 등) 미탑재
+        #   상태로 CV acc=0.2796(랜덤 이하)이며, 필터가 정상 진입을 차단하는 역효과 발생.
+        # 296차 확정 사유: need_add 8개 피처 탑재(292차) 후 첫 EOD full_cv 재학습 결과
+        #   CV acc=0.3052 — 재활성화 기준(≥0.33~0.38) 여전히 미달, 랜덤보다도 낮음.
+        #   "피처 부족" 가설 소진 → 구조적 저성능으로 최종 판단, 재활성화 계획 철회.
+        #   아래 플래그는 대시보드/로그 참고용으로만 유지(grade 격하 없음, 기존과 동일).
         if _proba_30m is not None and direction != DIRECTION_FLAT:
             _dir_30m = _proba_30m.get("direction", DIRECTION_FLAT)
             if _dir_30m != DIRECTION_FLAT and _dir_30m != direction:

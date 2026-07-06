@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-06 (v9-dev) — origin/dev 292~295차 머지(KOSPI200/VKOSPI 폴링 StockMst→MarketEye 수정 완료, 라이브 재기동 확인만 남음) + v9 Track L1/L3 섀도우 유지
+> 마지막 업데이트: 2026-07-06 (v9-dev) — origin/dev 296차 머지(30m 호라이즌 퇴역 최종 확정, 라이브 미검증) + v9 Track L1/L3 섀도우 유지
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -40,6 +40,43 @@
 **다음 확인 필요**: 모의투자 재가동 후 `entry_gate_json`에 `soft_gate_shadow_*`/
 `day_regime_shadow*` 필드가 실제로 쌓이는지 → 두 리포트 재실행 → Track L3 합격선
 사전등록 + Track L2 착수 여부 판단.
+
+---
+
+## 2026-07-06 (296차 — 30m 호라이즌 퇴역 최종 확정)
+
+**계기**: 사용자가 금일 운영 점검 결과(EOD full_cv acc=0.3052, 290차가 사전 등록한
+목표 0.38~0.41 미달)를 근거로 30m 퇴역을 지시.
+
+**핵심 판단**: 292차에서 need_add 피처 8개(opt_gex_bn 등)를 registry에 반영하고
+같은 날 15:46 EOD full_cv 재학습(26주·40,011행·105피처)까지 거쳤음에도 30m CV
+acc=0.3052 — 260707 보고서의 재활성화 기준(≥0.33)과 290차 목표 구간(0.38~0.41)
+모두 미달, 3클래스 랜덤(0.333)보다 낮다. "피처 부족"이라는 그동안의 가설이 이번
+EOD로 최종 소진됐으므로 재활성화를 철회하고 영구 퇴역으로 확정.
+
+**조치**:
+- `model/ensemble_decision.py`: `compute_cascade_coherence()` cascade 목록에서
+  30m 제거, CoherenceGate `_active_h` 분모에서도 30m 제외(`_bias_overrides`에 추가).
+  기존에 이미 가중합에서는 무조건 0으로 강제되고 있었으나(`cur_weights["30m"]=0.0`,
+  250차), 그 우회로였던 이 두 게이트는 이번에 처음 차단.
+- `config/settings.py`: `ENSEMBLE_WEIGHTS`/`ENSEMBLE_WEIGHTS_CORR_ADJ`의 30m을 0.0
+  으로 명시(런타임은 이미 강제 0이었으나 설정값을 실제와 일치시킴), 나머지 5개
+  호라이즌에 +0.03씩 균등 재분배(합 1.00 유지, `runpy`로 실측 검증 완료).
+- `safety/circuit_breaker.py`: CB③ 30m HALT 비활성화 주석을 "296차부로 영구"로 갱신
+  (기능 변경 없음 — 250차부터 이미 비활성).
+- `docs/260707_FEATURE_ADD_TIMING_REPORT.md`: 재활성화 조건 섹션 위에 296차 최종
+  판정 추가, 조건 미충족 확정 기록.
+- `ROADMAP.md`: "260704 감사 로드맵 — 30m 호라이즌 퇴역 심사" 체크리스트 마지막 항목
+  완료 처리 + 296차 최종 확정 서브섹션 추가.
+
+**유지되는 것**: predict_proba·GBM/RF 학습·CB③ P4 stage 모니터링은 연구/재평가용으로
+계속 유지 — 퇴역은 "의사결정 반영 차단"이지 예측/학습 중단이 아님.
+
+**검증**: `py_compile` 3개 파일 통과, `runpy`로 `config/settings.py` 실행해
+`ENSEMBLE_WEIGHTS`/`ENSEMBLE_WEIGHTS_CORR_ADJ` 합계 1.0 확인. **라이브 실기동
+검증은 아직 없음** — 앱이 꺼져 있는 상태에서 소스만 수정. 다음 기동 후 CascadeCoherence
+/CoherenceGate 로그에서 30m 노이즈로 인한 오차단이 사라지는지 확인 필요(`NEXT_TODO.md`
+296차 참조).
 
 ---
 
