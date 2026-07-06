@@ -115,6 +115,8 @@ class RegimeFingerprint:
                 self._live_buf[feat].append(float(val))
 
         if not self._training:
+            self._try_bootstrap_baseline()
+        if not self._training:
             return 0.0
 
         min_live = _N_BINS * 5   # 구간당 최소 5개
@@ -186,6 +188,27 @@ class RegimeFingerprint:
                 min_samples,
             )
         return updated
+
+    def _try_bootstrap_baseline(self) -> None:
+        """[298차] 학습 분포 최초 자동 부트스트랩.
+
+        save_training_fingerprint()(WFA 피처 분포 저장)를 호출하는 곳이 파이프라인
+        어디에도 없어 self._training이 영원히 비어 있었고, update_live()의
+        `if not self._training: return 0.0` 가드에 매번 걸려 PSI가 항상 0.000/CLEAR로
+        고정되는 문제가 있었다(data/regime_fingerprint.json 자체가 존재하지 않았음).
+
+        reset_to_live_baseline()(원래 HotSwap 이후에만 수동 호출)과 동일한 로직을
+        최소 표본이 쌓이면 자동으로 1회 수행해, "비교할 기준 분포 자체가 없는" 상태를
+        벗어난다. 이 시점 이후로는 이 스냅샷 대비 실제 라이브 분포 이동을 감지한다.
+        """
+        min_samples = _N_BINS * 5
+        if any(len(self._live_buf[f]) < min_samples for f in _CORE_FEATURES):
+            return
+        if self.reset_to_live_baseline():
+            logger.info(
+                "[RegimeFingerprint] 학습 분포 없음 — live 버퍼 %d개로 최초 자동 부트스트랩",
+                min_samples,
+            )
 
     def has_training_data(self) -> bool:
         """학습 분포 데이터 보유 여부."""

@@ -10727,6 +10727,11 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
             if _sq_filled > 0:
                 _sq_entry_price = float(getattr(self.position, "entry_price", 0.0) or 0.0)
                 _sq_entry_time = getattr(self.position, "entry_time", None) or _sq_last_fill_at
+                # [298차] grade/entry_horizon은 pending(EXIT 주문 dict — grade/entry_horizon
+                # 키 자체가 없음)이 아니라 self.position(ENTRY 시점 값 보유)에서 읽어야 한다.
+                # entry_price/entry_time은 이미 self.position에서 읽고 있던 것과 동일 패턴.
+                _sq_grade = str(getattr(self.position, "grade", "") or "")
+                _sq_entry_horizon = getattr(self.position, "entry_horizon", None)
                 _sq_result = {
                     "direction": _sq_direction,
                     "entry_price": _sq_entry_price,
@@ -10737,7 +10742,8 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
                     "forward_pnl_pts": _sq_fwd_pts,
                     "forward_pnl_krw": float(pending.get("agg_exit_fwd_krw") or _sq_pnl_krw),
                     "exit_reason": "stuck_exit_flat",
-                    "grade": str(pending.get("grade") or ""),
+                    "grade": _sq_grade,
+                    "entry_horizon": _sq_entry_horizon,
                     "entry_ts": (
                         _sq_entry_time.strftime("%Y-%m-%d %H:%M:%S")
                         if hasattr(_sq_entry_time, "strftime")

@@ -342,6 +342,54 @@ class MultiMetricDriftDetector:
         return dict(self._last_levels)
 
 
+def _calibrate_from_live_history(detector: MultiMetricDriftDetector) -> None:
+    """[298차] ref_mean/ref_std 최초 캘리브레이션.
+
+    estimate_ref_from_trades()는 정의만 되어 있고 호출부가 없어 세 DriftDetector
+    모두 생성자 기본값(ref_mean=0, ref_std=1)이 그대로 유지됐다. 그 결과
+    update(daily_pnl=원화 손익)에서 z = (daily_pnl-0)/1 ≈ daily_pnl(원화 그 자체)가
+    되어, 손실이 조금만 나도(6원 초과) CUSUM이 CRITICAL로 튀는 문제가 있었다
+    (예: 07-01 daily_pnl=-7,764,010원 → CUSUM=CRITICAL(7764009.50)로 그대로 노출).
+
+    registry의 실제 v1.0 라이브 스냅샷(daily_pnl/win_rate/profit_factor 실측치)에서
+    평균·표준편차를 추정해 세 지표 각각에 적용한다. WFA 결과는 QA 시더가 남긴 가상
+    수치라 신뢰할 수 없어 사용하지 않고, 순수 실측 라이브 히스토리만 사용한다.
+    """
+    try:
+        from config.strategy_registry import get_registry
+        reg  = get_registry()
+        curr = reg.get_current_version()
+        if not curr:
+            return
+        window  = detector.detectors["pnl"].window
+        history = reg.get_live_history(curr["version"], days=window)
+        if len(history) < 2:
+            logger.info(
+                "[DriftDetector] 라이브 히스토리 부족(%d일) — 기본값(ref_mean=0,std=1) 유지",
+                len(history),
+            )
+            return
+
+        pnls = [h["daily_pnl"]      for h in history if h.get("daily_pnl")      is not None]
+        wrs  = [h["win_rate"]       for h in history if h.get("win_rate")       is not None]
+        pfs  = [h["profit_factor"]  for h in history if h.get("profit_factor")  is not None]
+
+        if len(pnls) >= 2:
+            detector.detectors["pnl"].estimate_ref_from_trades(pnls)
+        if len(wrs) >= 2:
+            detector.detectors["wr"].estimate_ref_from_trades(wrs)
+        if len(pfs) >= 2:
+            detector.detectors["pf"].estimate_ref_from_trades(pfs)
+
+        logger.info(
+            "[DriftDetector] 최초 캘리브레이션 완료 — %s 기준 %d일 라이브 히스토리 "
+            "(pnl n=%d, wr n=%d, pf n=%d)",
+            curr["version"], len(history), len(pnls), len(wrs), len(pfs),
+        )
+    except Exception as e:
+        logger.warning("[DriftDetector] 캘리브레이션 실패 (기본값 유지): %s", e)
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # 전역 싱글턴
 # ─────────────────────────────────────────────────────────────────────────
@@ -353,4 +401,5 @@ def get_drift_detector() -> MultiMetricDriftDetector:
     global _detector
     if _detector is None:
         _detector = MultiMetricDriftDetector()
+        _calibrate_from_live_history(_detector)
     return _detector
