@@ -8,6 +8,61 @@
 
 ---
 
+## 2026-07-07 (299차) [docs/MW0601 대조 → EOD 리포터 코드버그 4건 MW0601 수준 구현]
+
+- [DONE 2026-07-07] **③-b(298차 이월) CUSUM ref_mean/ref_std 미보정 수정** —
+  298차 ③에서 "`estimate_ref_from_trades()`로 실측 표준편차를 세팅하는 배선이
+  있는지 확인 필요"로 남겨뒀던 부분. 확인 결과 배선 자체가 없었음(다른 PC
+  MW0601의 독립 딥다이브 문서, `docs/MW0601/`에서 동일 원인 재확인).
+  `strategy/param_drift_detector.py`에 `MultiMetricDriftDetector
+  .calibrate_from_live_history()` 신설 — `get_drift_detector()` 싱글턴 최초
+  생성 시 registry의 실제 라이브 히스토리(daily_pnl/win_rate/profit_factor,
+  최대 20일)로 `ref_mean`/`ref_std` 자동 추정. 격리 스크립트 검증: 보정 전
+  `ref_mean=0.0/ref_std=1.0`(상시 CRITICAL 유발) → 보정 후 실측 스케일
+  반영(`ref_mean=-184,000/ref_std=3,406,422` 예시), 동일 -100만원 손실 입력이
+  CRITICAL→CLEAR로 정상화됨을 확인.
+- [ ] **③-a(298차 이월, 미해결) CUSUM 인메모리 싱글턴 재기동 리셋** — 298차가
+  지적한 디스크 영속화 이슈는 이번 세션 범위 밖, 그대로 남음. 매일 재기동 시
+  20거래일 누적이 리셋될 수 있음.
+- [DONE 2026-07-07] **PSI 상시 0.000 고정 수정** — `save_training_fingerprint()`
+  호출부가 프로덕션 어디에도 없어 `_training`(WFA 학습분포 기준선)이 항상
+  비어있고, 그 결과 `update_live()`가 매번 조기 반환해 PSI가 영원히 0.0으로
+  고정되던 문제(`docs/MW0601/` 딥다이브로 발견, 이 PC엔 처음 확인). `strategy/
+  regime_fingerprint.py`에 `RegimeFingerprint._try_bootstrap_baseline()` 신설
+  — `update_live()` 호출 시 `_training`이 비어있고 Live 버퍼가 CORE 3피처
+  모두 50개(`_N_BINS×5`) 이상 쌓이면 그 시점 분포를 자동으로 기준선 승격
+  (`reset_to_live_baseline()` 재사용). 격리 스크립트 검증: 부트스트랩 전
+  `has_training_data=False` → 50개 누적 후 `True`, 동일분포 유지 시 PSI≈0,
+  분포를 이동시켜 주입하면 WATCHLIST→ALARM→CRITICAL로 정상 전환 확인.
+- [DONE 2026-07-07] **활성 버전 이원화 — 코드 레벨 통일 (298차 DB정리의 후속)**
+  — 298차는 `data/db/strategy_registry.db`의 `is_current`만 정정하고, `main.py`
+  (라이브 스냅샷 기록)와 `strategy/ops/hotswap_gate.py`(다음 버전 넘버링)가
+  여전히 `config.strategy_params.PARAM_HISTORY[-1]`을 별도로 읽는 구조적
+  원인은 손대지 않아, 다음 실제 Hot-Swap 때 두 소스가 다시 갈라질 위험이
+  남아있었음(`docs/MW0601/`의 독립 딥다이브가 이 코드 레벨 원인까지 지적).
+  두 파일 모두 `get_registry().get_current_version()`을 유일한 활성 버전
+  소스로 읽도록 통일, `PARAM_HISTORY`는 `hotswap_gate.py`에서 문서화용
+  이력으로만 append(`param_optimizer.apply_best()`와 동일 패턴).
+- [DONE 2026-07-07] **stuck_exit_flat grade/entry_horizon 소싱 수정** —
+  285/286차부터 "미조치"로 남아있던 항목(등급 "?" 버킷의 근본원인). `main.py
+  :_ts_resolve_stuck_exit_pending`이 `grade`를 EXIT 주문 dict(`pending`, 항상
+  빈값)가 아니라 정상 청산 경로와 동일하게 `self.position`에서 읽도록 수정,
+  누락돼 있던 `entry_horizon`도 `self.position`에서 추가.
+- [ ] **다음 실거래일 라이브 검증(최우선)** — 다음 기동일 15:40 EOD 리포트에서
+  CUSUM/PSI 값이 더 이상 상시 CRITICAL/0.000 고정이 아닌지 실제 확인. §1
+  (활성 버전 통일)은 다음 실제 Hot-Swap이 발동해야 회귀 여부를 확인 가능 —
+  그 전까지는 코드 리뷰 + 격리 스크립트 검증 수준.
+- [ ] **wr/pf DriftDetector ref_std 하한(1.0) 스케일 재검토 (범위 밖, 미해결)**
+  — `estimate_ref_from_trades()`의 `max(std, 1.0)` 0-division 가드는 원화
+  PnL 스케일을 가정한 것이라, 승률(0~1)/PF(~1) 값엔 과도하게 큰 floor로
+  작용해 wr/pf CUSUM이 사실상 항상 과소민감(CLEAR 편향)할 수 있음.
+  `docs/MW0601/`에도 언급 없던 부분이라 이번엔 그대로 두었음 — 별도 검토 필요.
+- [ ] **docs/MW0601/ 커밋 여부 결정** — 다른 PC(MW0601) 문서를 참고용으로
+  복사해온 상태로 현재 untracked. 커밋해서 공유할지, 로컬 참고용으로만
+  둘지 결정 필요.
+
+---
+
 ## 2026-07-06 (298차 검증) [v1.2 유령버전 버그 수정 후 확인 + UNDERPERFORM 신호 검토]
 
 - [ ] **① UNDERPERFORM 신호 실질 검토(최우선)** — DB 정리 후 처음 드러난 v1.0

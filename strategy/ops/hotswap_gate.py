@@ -142,9 +142,17 @@ class HotSwapGate:
     ) -> None:
         """Hot-Swap 승인 후 실행 시퀀스."""
         from config.strategy_params import PARAM_CURRENT, PARAM_HISTORY
+        from config.strategy_registry import get_registry as _get_reg_ver
 
-        # 신규 버전명 생성
-        last_ver = PARAM_HISTORY[-1]["version"] if PARAM_HISTORY else "v1.0"
+        # 신규 버전명 생성 — registry(is_current)를 유일한 활성 버전 소스로 사용.
+        # PARAM_HISTORY[-1]을 따로 보면 registry와 갈라질 수 있고, 그 경우
+        # daily_exporter(EOD 리포터)가 실거래 스냅샷을 못 찾는 "1일차 고정" 버그가
+        # 재발한다 (docs/MW0601 딥다이브 참고). PARAM_HISTORY는 아래에서 문서화용
+        # 이력으로만 append.
+        _cur_ver_info = _get_reg_ver().get_current_version()
+        last_ver = _cur_ver_info["version"] if _cur_ver_info else (
+            PARAM_HISTORY[-1]["version"] if PARAM_HISTORY else "v1.0"
+        )
         try:
             major, minor = last_ver.lstrip("v").split(".")
             new_version = "v%s.%d" % (major, int(minor) + 1)
@@ -171,6 +179,23 @@ class HotSwapGate:
             logger.info("[HotSwapGate] StrategyRegistry 등록: %s", new_version)
         except Exception as e:
             logger.warning("[HotSwapGate] Registry 등록 실패: %s", e)
+
+        # PARAM_HISTORY에도 문서화용 이력 추가 (param_optimizer.apply_best()와 동일
+        # 패턴) — 활성 버전 판정에는 쓰지 않음, registry가 유일한 소스
+        try:
+            PARAM_HISTORY.append({
+                "date":    datetime.now().strftime("%Y-%m-%d"),
+                "version": new_version,
+                "changed": changed,
+                "wfa_result": {
+                    "sharpe":   wfa_metrics.get("sharpe"),
+                    "mdd_pct":  wfa_metrics.get("mdd_pct"),
+                    "win_rate": wfa_metrics.get("win_rate"),
+                },
+                "note": note or "HotSwapGate 자동 승인",
+            })
+        except Exception as e:
+            logger.warning("[HotSwapGate] PARAM_HISTORY append 실패 (무해): %s", e)
 
         # DriftDetector 리셋 (새 기준선 설정)
         try:

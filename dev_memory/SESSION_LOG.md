@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-07-07 (299차 — docs/MW0601 대조 → EOD 리포터 코드버그 4건 MW0601 수준 구현)
+
+**트리거**: "docs/MW0601 md 파일을 읽고 MW0602 미륵이 EOD 리포터 동일문제
+여부 확인하고 최근 이 피씨 관련커밋 이력과 대조해서 차이점 보고" → 대조
+결과 4개 코드 레벨 버그가 이 PC엔 미반영 상태임을 보고 → "MW0601 수준으로
+개선 구현해" → 본 항목(dev_memory 갱신 + 커밋).
+
+**대조 결과 요약**: `docs/MW0601/`(다른 PC 작성, 이 PC엔 커밋 안 된 채
+복사만 돼 있던 문서 2건)가 코드로 고친 6개 이슈 중 §2(마이그레이션)·§4
+(데이터 없음, 정상)는 이 PC에 해당 없었으나, §1(활성버전 이원화)·§3
+(stuck_exit grade/entry_horizon)·§5(CUSUM 미보정)·§6(PSI 부트스트랩 부재)
+4건은 이 PC(MW0602) 코드에도 그대로 남아있었음. 특히 §1은 이 PC의 298차가
+독자적으로 같은 증상을 발견했지만 DB(`is_current`)만 정정하고 코드 통일은
+안 했었고, §5(CUSUM)는 298차 정정판이 "update() 호출은 있다"까지만 확인하고
+"인메모리 재기동 리셋"으로 결론을 좁혀 정작 `ref_mean`/`ref_std` 미보정이라는
+진짜 원인의 절반을 놓치고 있었음. `docs/MW0601/`가 인용한 커밋(`2ed7627`)은
+`dev`/`v9-dev` 어느 브랜치에도 없어 이 PC엔 반영된 적 없는 로컬 전용
+수정임을 `git cat-file`로 확인.
+
+**구현**: `main.py`(라이브 스냅샷 기록)·`strategy/ops/hotswap_gate.py`(다음
+버전 넘버링) — `registry.get_current_version()`으로 활성 버전 소스 통일.
+`main.py:_ts_resolve_stuck_exit_pending` — `grade`/`entry_horizon`을
+`self.position`에서 읽도록 수정. `strategy/param_drift_detector.py` —
+`calibrate_from_live_history()` 신설 + 싱글턴 생성 시 자동 호출로 CUSUM
+ref 보정. `strategy/regime_fingerprint.py` — `_try_bootstrap_baseline()`
+신설로 PSI 학습분포 자동 부트스트랩.
+
+**검증**: 격리된 스크립트(`data/regime_fingerprint.json` 등 실 상태파일
+미접촉, [[feedback_isolate_stateful_verification]] 원칙)로 §5·§6 동작
+확인 — PSI는 부트스트랩 전후 전환 및 분포이동 시 단계별 경보 상승 정상,
+CUSUM은 보정 전후 동일 손실액이 CRITICAL→CLEAR로 바뀜을 확인. 실제
+(읽기전용) DB로 `get_current_version()`이 `v1.0`/`live_days=32`를 정확히
+반환함도 확인. §1·§3은 코드 리뷰 + 이 읽기전용 확인 수준.
+
+**다음 세션**: 다음 실거래일 EOD 리포트로 라이브 검증(CUSUM/PSI 값이 더
+이상 고정 안 되는지). CUSUM 인메모리 영속화(298차 ③-a)·wr/pf ref_std
+하한 스케일 문제는 이번 범위 밖으로 남음(`NEXT_TODO.md` 299차 참조).
+dev-v9 cherry-pick 조사(298차 중단분)도 여전히 미완.
+
+---
+
 ## 2026-07-06 (298차 — daily_exporter 딥다이브 → v1.2 유령버전 버그 발견·수정 → dev-v9 cherry-pick 조사(중단))
 
 **트리거**: "daily_exporter가 무엇이고 특정 정보 확인법" 질문 → 리포트 내용

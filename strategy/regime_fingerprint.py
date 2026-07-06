@@ -115,6 +115,9 @@ class RegimeFingerprint:
                 self._live_buf[feat].append(float(val))
 
         if not self._training:
+            self._try_bootstrap_baseline()
+
+        if not self._training:
             return 0.0
 
         min_live = _N_BINS * 5   # 구간당 최소 5개
@@ -192,6 +195,21 @@ class RegimeFingerprint:
         return bool(self._training)
 
     # ─── 내부 헬퍼 ─────────────────────────────────────────────────────────
+    def _try_bootstrap_baseline(self) -> None:
+        """
+        save_training_fingerprint()가 한 번도 호출되지 않아 _training이 비어있으면
+        (HotSwap이 한 번도 발동한 적 없는 시스템에서 상시 발생) PSI가 영원히 0.0으로
+        고정된다 — Live 버퍼가 CORE 3개 피처 모두 충분히(_N_BINS×5개 이상) 쌓이면
+        그 시점 분포를 기준선으로 자동 승격해 최초 비교 기준을 확보한다
+        (docs/MW0601 딥다이브). 이후 실제 HotSwap이 발동하면 reset_to_live_baseline()
+        이 그 시점 기준으로 다시 갱신한다.
+        """
+        min_samples = _N_BINS * 5
+        if all(len(self._live_buf[feat]) >= min_samples for feat in _CORE_FEATURES):
+            if self.reset_to_live_baseline():
+                logger.info(
+                    "[RegimeFingerprint] 학습 기준선 부재 — Live 버퍼 자동 부트스트랩 완료"
+                )
     def _save_fingerprint(self) -> None:
         try:
             os.makedirs(os.path.dirname(self._fp_path), exist_ok=True)

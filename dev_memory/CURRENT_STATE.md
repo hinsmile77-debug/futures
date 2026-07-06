@@ -1,11 +1,55 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-06 (298차) — daily_exporter EOD 리포트 딥다이브 중
-> v1.2 유령버전 버그 발견(QA seed가 남긴 "현재 버전"이 실거래 v1.0과 달라
-> 판정·CUSUM 로직이 2달간 실거래 성과를 못 봄) → DB 정리로 수정, 실제
-> UNDERPERFORM 신호 노출(검토 필요). dev-v9(origin/v9-dev) cherry-pick 조사는
-> 미완(중단).
+> 마지막 업데이트: 2026-07-07 (299차) — 다른 PC(MW0601)가 EOD 리포터 딥다이브로
+> 코드까지 고친 4개 버그(활성버전 이원화 코드레벨·stuck_exit grade/entry_
+> horizon·CUSUM ref 미보정·PSI 부트스트랩 부재)를 이 PC(MW0602)와 대조해
+> 동일하게 구현. 298차는 활성버전 문제를 DB 정리로만 막았었는데, 이번에
+> 코드 레벨 원인까지 통일. 아직 커밋 전, 라이브 미검증(다음 기동 후 확인 필요).
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-07 (299차 — docs/MW0601 대조 → EOD 리포터 코드버그 4건 구현)
+
+**계기**: 사용자가 다른 PC(MW0601)에서 작성된 EOD 리포터 딥다이브 문서
+(`docs/MW0601/`, 커밋 안 된 채 이 PC에 복사되어 있었음)를 이 PC(MW0602)와
+대조 요청 → 4개 코드 레벨 버그가 이 PC엔 반영 안 된 채 그대로 있음을 확인 →
+"MW0601 수준으로 개선 구현해" 요청.
+
+**핵심 판단**: 이 PC(MW0602, `machine.cfg: BROKER=creon`)의 298차는 "활성
+버전 이원화"(§1) 버그를 `data/db/strategy_registry.db`의 `is_current` 값만
+정정하는 방식으로 막았는데, `main.py`/`hotswap_gate.py`가 여전히
+`PARAM_HISTORY[-1]`을 registry와 별도로 읽는 **구조적 원인**은 그대로였다.
+CUSUM 항목(298차 ③)도 "update() 호출은 있다"까지만 확인하고 "인메모리
+싱글턴 재기동 리셋"으로 결론을 좁혔는데, 실제로는 `ref_mean=0.0/ref_std=1.0`
+기본값이 한 번도 보정된 적이 없어 원화 손익이 그대로 z-score가 되는 게
+근본 원인이었다(다른 PC의 독립 딥다이브가 이 부분까지 짚어냄). PSI(§6)와
+stuck_exit_flat grade/entry_horizon(§3)은 이 PC에서 아예 다뤄진 적이 없었다.
+
+**구현**:
+- `main.py`(라이브 스냅샷 기록) + `strategy/ops/hotswap_gate.py`(다음 버전
+  넘버링) — `registry.get_current_version()`을 유일한 활성 버전 소스로 통일.
+- `main.py:_ts_resolve_stuck_exit_pending` — `grade`/`entry_horizon`을
+  `pending`(EXIT 주문, 항상 빈값)이 아니라 `self.position`에서 읽도록 수정.
+- `strategy/param_drift_detector.py` — `calibrate_from_live_history()` 신설,
+  `get_drift_detector()` 싱글턴 생성 시 자동 호출. registry 실측 라이브
+  이력으로 CUSUM `ref_mean`/`ref_std` 보정.
+- `strategy/regime_fingerprint.py` — `_try_bootstrap_baseline()` 신설,
+  `update_live()`에서 학습분포 없으면 Live 버퍼 50개 이상 쌓일 때 자동
+  기준선 승격.
+
+**검증**: 격리된 스크립트(`data/regime_fingerprint.json` 등 실 상태파일
+미접촉)로 §5·§6 동작 확인 — PSI는 부트스트랩 전후 `has_training_data`
+False→True 전환 및 분포이동 시 WATCHLIST→CRITICAL 정상 전환, CUSUM은 보정
+전후 동일 손실액이 CRITICAL→CLEAR로 바뀜을 확인. 실제(읽기전용) DB로
+`get_current_version()`이 `v1.0`/`live_days=32`를 정확히 반환함도 확인.
+§1·§3은 코드 리뷰 + 이 읽기전용 확인 수준 — 실거래 흐름 자체는 라이브
+미검증.
+
+**남은 사항**: CUSUM 인메모리 영속화(298차 ③-a)는 이번 범위 밖으로 남음.
+wr/pf DriftDetector의 `ref_std` 하한(1.0)이 0~1 스케일엔 과도하게 클 수
+있다는 점도 미해결(상세는 `NEXT_TODO.md` 299차 참조). 다음 기동일 EOD
+리포트로 라이브 검증 필요.
 
 ---
 

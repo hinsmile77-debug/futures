@@ -341,6 +341,46 @@ class MultiMetricDriftDetector:
         """현재 각 지표별 경보 수준 반환."""
         return dict(self._last_levels)
 
+    def calibrate_from_live_history(self) -> bool:
+        """
+        registry의 실제 라이브 히스토리(daily_pnl/win_rate/profit_factor, 최대
+        20거래일)에서 pnl/wr/pf 세 DriftDetector의 ref_mean/ref_std를 추정해 반영.
+
+        보정 전에는 ref_mean=0.0/ref_std=1.0 기본값이 유지되어 원화 손익(수백만원
+        단위)이 그대로 z-score가 되고, h_crit=6.0과 비교되어 사실상 항상 CRITICAL로
+        판정되는 문제가 있었다 (docs/MW0601 딥다이브). QA 시더가 남긴 가상 WFA
+        수치가 아니라 순수 실측 라이브 데이터만 사용한다.
+
+        Returns:
+            True if 최소 1개 지표라도 보정됨.
+        """
+        try:
+            from config.strategy_registry import get_registry
+            reg = get_registry()
+            cur_ver = reg.get_current_version()
+            version = cur_ver.get("version") if cur_ver else None
+            if not version:
+                return False
+            history = reg.get_live_history(version, days=20)
+        except Exception as e:
+            logger.warning("[MultiDrift] 라이브 히스토리 조회 실패 (기본값 유지): %s", e)
+            return False
+
+        calibrated = False
+        for key, field in (("pnl", "daily_pnl"), ("wr", "win_rate"), ("pf", "profit_factor")):
+            vals = [h[field] for h in history if h.get(field) is not None]
+            if len(vals) < 2:
+                continue
+            self.detectors[key].estimate_ref_from_trades(vals)
+            calibrated = True
+
+        if calibrated:
+            logger.info(
+                "[MultiDrift] 실측 라이브 히스토리로 기준값 캘리브레이션 완료 (버전=%s, n=%d)",
+                version, len(history),
+            )
+        return calibrated
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 전역 싱글턴
@@ -353,4 +393,5 @@ def get_drift_detector() -> MultiMetricDriftDetector:
     global _detector
     if _detector is None:
         _detector = MultiMetricDriftDetector()
+        _detector.calibrate_from_live_history()
     return _detector

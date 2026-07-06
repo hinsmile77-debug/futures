@@ -8361,10 +8361,13 @@ class TradingSystem:
             logger.warning("[mc-conf gap] 계산 실패 (스킵): %s", _mcg_e)
 
         # [Phase2] StrategyRegistry — 라이브 일별 스냅샷 기록
+        # registry.is_current를 유일한 활성 버전 소스로 사용 (PARAM_HISTORY[-1]과
+        # 별도로 갈라지면 스냅샷이 엉뚱한 버전에 쌓여 daily_exporter가 실거래
+        # 실적을 못 찾는 "1일차 고정" 버그가 재발함 — docs/MW0601 참고)
         try:
             from config.strategy_registry import get_registry as _get_reg
-            from config.strategy_params import PARAM_HISTORY as _PH
-            _active_ver = _PH[-1]["version"] if _PH else "v1.0"
+            _cur_ver_info = _get_reg().get_current_version()
+            _active_ver = _cur_ver_info["version"] if _cur_ver_info else "v1.0"
             _get_reg().record_live_snapshot(
                 version = _active_ver,
                 metrics = {
@@ -10669,7 +10672,12 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
                     "forward_pnl_pts": _sq_fwd_pts,
                     "forward_pnl_krw": float(pending.get("agg_exit_fwd_krw") or _sq_pnl_krw),
                     "exit_reason": "stuck_exit_flat",
-                    "grade": str(pending.get("grade") or ""),
+                    # [MW0601 딥다이브] grade는 EXIT 주문(pending)이 아니라 진입 시점
+                    # self.position에서 읽어야 함 — _set_pending_order가 EXIT 생성 시
+                    # grade 인자 없이 기본값 ""로 호출해 pending.get("grade")는 항상
+                    # 빈값이었음(정상 청산 경로 _build_exit_result와 동일 패턴으로 통일).
+                    "grade": str(getattr(self.position, "grade", "") or ""),
+                    "entry_horizon": getattr(self.position, "entry_horizon", None),
                     "entry_ts": (
                         _sq_entry_time.strftime("%Y-%m-%d %H:%M:%S")
                         if hasattr(_sq_entry_time, "strftime")

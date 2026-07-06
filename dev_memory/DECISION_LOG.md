@@ -2,6 +2,135 @@
 
 ---
 
+## 2026-07-07 (299차 — docs/MW0601 대조 → EOD 리포터 코드버그 4건 MW0601 수준 구현)
+
+> 배경: 다른 PC(MW0601, Cybos Plus)가 EOD 리포터를 딥다이브하며 코드까지
+> 고친 문서 2건(`docs/MW0601/`, 커밋 안 된 채 이 PC에 복사됨)을 이 PC
+> (MW0602, CREON Plus)와 대조. `dev`/`v9-dev` 어느 브랜치에도 그 커밋
+> (`2ed7627` 등)이 없어 이 PC엔 반영된 적 없는 로컬 전용 수정이었음을 확인
+> 후 동일 수준으로 구현.
+
+### [버그] 활성 버전 이원화 — 298차 DB정리가 못 고친 코드 레벨 원인
+
+**File**: `main.py`(라이브 스냅샷 기록), `strategy/ops/hotswap_gate.py`
+(`_execute_hotswap` 다음 버전 넘버링)
+**증상**: 298차에서 `data/db/strategy_registry.db`의 `is_current`를 v1.0으로
+되돌려 증상은 해소됐지만, 코드는 여전히 두 군데(`registry.is_current`,
+`config.strategy_params.PARAM_HISTORY[-1]`)를 따로 봄 — 다음 실제 Hot-Swap
+발동 시 두 소스가 다시 갈라지면 298차와 동일한 "1일차 고정" 버그가 재발할
+수 있는 상태였음.
+**원인**: `main.py`의 라이브 스냅샷 기록은 `PARAM_HISTORY[-1]["version"]`을,
+`hotswap_gate.py`의 다음 버전 넘버링도 `PARAM_HISTORY[-1]["version"]`을
+읽었음 — `daily_exporter`/`get_current_version()`이 보는 `registry.is_current`
+와 별개 경로. 298차 당시엔 우연히 둘 다 v1.0을 가리켜 증상이 없었을 뿐,
+구조적으로는 동일한 값이라는 보장이 없었음.
+**결정**: 두 파일 모두 `get_registry().get_current_version()`을 유일한
+활성 버전 소스로 읽도록 통일. `hotswap_gate.py`는 등록 성공 후
+`PARAM_HISTORY`에도 문서화용 이력을 append(`param_optimizer.apply_best()`와
+동일 패턴) — 활성 버전 판정에는 쓰이지 않고 사람이 변경 이력을 훑어볼 때만
+참고.
+**Why**: 298차는 "지금 당장의 값이 왜 틀렸는가"만 고쳤고, "왜 두 값이
+갈라질 수 있었는가"는 다루지 않았다. 다른 PC의 독립 딥다이브가 이 구조적
+원인을 코드로 고쳤고, 같은 dev 브랜치를 공유하는 이 PC도 동일하게 고치는
+것이 재발 방지에 맞다.
+**구현**: [main.py](main.py) 라이브 스냅샷 블록, [hotswap_gate.py]
+(strategy/ops/hotswap_gate.py) `_execute_hotswap`.
+**검증**: 읽기전용으로 실제 DB 대조 — `get_registry().get_current_version()`
+이 `version=v1.0, live_days=32`를 정확히 반환함을 확인, 신규 코드가 이
+값을 그대로 사용하도록 리뷰. 실제 Hot-Swap 발동 경로는 라이브 미검증(다음
+실제 발동 시점에 확인 가능).
+
+### [버그] stuck_exit_flat 합성 청산 시 grade/entry_horizon 미기록 (285/286차 이월 항목 해결)
+
+**File**: `main.py:_ts_resolve_stuck_exit_pending`
+**증상**: 등급별 순EV 집계에서 "?" 버킷이 발생(`exit_reason=
+'stuck_exit_flat'` 건 전부). 285/286차부터 "미조치"로만 기록돼 있던 항목.
+**원인**: `_sq_result`(합성 청산 결과 dict)가 `grade`를 EXIT 주문 dict인
+`pending`에서 읽었는데, EXIT 주문은 애초에 `grade` 인자 없이 기본값 `""`로
+생성되어 항상 빈값이었음. 같은 블록 바로 위에서 `entry_price`/`entry_time`은
+이미 `self.position`(진입 시점 데이터를 들고 있는 포지션 객체)에서 올바르게
+읽고 있었는데 `grade`만 잘못된 객체를 참조. 정상 청산 경로
+(`PositionTracker._build_exit_result`)는 `self.grade`로 정확히 포지션
+객체에서 읽어 이 stuck-exit 경로만 패턴을 안 따르고 있었다. `entry_horizon`
+키는 아예 `_sq_result`에 없었음(향후 stuck exit 발생 시 이 값도 "?"로 잡힐
+잠재 버그).
+**결정**: `grade`를 `getattr(self.position, "grade", "") or ""`로,
+`entry_horizon`을 `getattr(self.position, "entry_horizon", None)`으로
+수정해 정상 경로와 동일한 소스를 참조하도록 통일.
+**Why**: 합성 청산 경로가 별도로 유지보수되며 정상 경로의 데이터 소싱
+패턴을 놓친, 전형적인 "두 경로가 있는데 하나만 고쳐진" 케이스.
+**구현**: `main.py:_ts_resolve_stuck_exit_pending`의 `_sq_result` 구성부.
+`_record_trade_result`(main.py:2166 부근)는 두 키를 그대로 받아 DB에
+쓰므로 별도 수정 불필요(이미 `entry_horizon` 컬럼/바인딩 존재 확인).
+**남은 사항**: DB에 이미 남은 과거 "?" 등급 기록(06-22~07-01, 5건)은
+소급 정정되지 않음 — 필요 시 `entry_ts`로 `ensemble_decisions` 대조해
+백필 가능하나 미실시.
+
+### [버그] CUSUM ref_mean/ref_std 미보정 — 298차 정정판의 남은 절반 (해결)
+
+**File**: `strategy/param_drift_detector.py`(`MultiMetricDriftDetector`,
+`get_drift_detector()`)
+**증상**: 298차 정정판이 "`update()` 호출은 존재한다"까지 확인했지만, 진짜
+원인의 절반(ref 미보정)을 놓치고 "인메모리 싱글턴 재기동 리셋"만 남은
+문제로 좁혀 기록했었음.
+**원인**: `DriftDetector.__init__`의 `ref_daily_pnl_mean=0.0,
+ref_daily_pnl_std=1.0` 기본값을 실측치로 세팅하는 `estimate_ref_from_
+trades()`가 정의는 있으나 **호출하는 곳이 프로덕션 어디에도 없었음**
+(`reset_all()`도 실제 Hot-Swap 발동 시에만 호출되는데 이 시스템은 한 번도
+발동한 적 없음 — §1과 동일 계열의 "배선은 있는데 실행된 적 없음"). `main.py`
+는 매일 원화 손익(`daily_pnl`) 그대로를 `update()`에 투입 → `z = (daily_pnl
+- 0) / 1 ≈ daily_pnl` → `h_crit=6.0`과 비교하면 손실이 6원만 넘어도 사실상
+항상 CRITICAL.
+**결정**: `MultiMetricDriftDetector.calibrate_from_live_history()` 신설.
+registry의 실제 라이브 히스토리(daily_pnl/win_rate/profit_factor, 최대
+20거래일)에서 평균·표준편차를 추정해 pnl/wr/pf 세 `DriftDetector` 각각에
+반영. QA 시더의 가상 WFA 수치는 쓰지 않고 순수 실측 라이브 데이터만 사용.
+`get_drift_detector()` 싱글턴 최초 생성 시 자동 1회 호출.
+**Why**: 298차의 정정 자체는 정확했으나("update()가 호출은 된다"), 그
+결론에서 멈추면서 정작 값이 계산되는 스케일 문제(ref 미보정)를 다시
+놓쳤다 — 다른 PC의 독립 딥다이브가 이 부분까지 확인해 완전한 원인을 확보.
+**구현**: `strategy/param_drift_detector.py` `calibrate_from_live_history()`,
+`get_drift_detector()`.
+**검증**: 가짜 registry(원화 규모 실측과 유사한 daily_pnl 이력)로 격리
+테스트 — 보정 전 `ref_mean=0.0/ref_std=1.0` → 보정 후 `ref_mean=-184,000/
+ref_std=3,406,422`. 동일한 -100만원 손실 입력이 보정 전엔 CRITICAL 확정,
+보정 후엔 CLEAR로 정상 판정됨을 확인.
+**남은 한계**: `_cusum_neg` 누적 자체는 여전히 인메모리라 재기동 시 리셋됨
+(298차 ③-a, 이번 범위 밖). `wr`/`pf` 지표의 `ref_std` 하한(1.0)이 0~1
+스케일엔 과도하게 클 수 있다는 점도 미해결(`NEXT_TODO.md` 참조).
+
+### [버그] PSI 상시 0.000 고정 — 학습 분포 부트스트랩 부재 (해결)
+
+**File**: `strategy/regime_fingerprint.py`(`RegimeFingerprint`)
+**증상**: `update_live()`가 매분 호출되며 Live 피처를 버퍼에 계속 쌓지만,
+PSI는 예외 없이 항상 0.000 — 시장 상황과 무관하게 고정.
+**원인**: `update_live()`는 `if not self._training: return 0.0` 가드를
+갖는데, `self._training`(WFA 학습 시점 피처 분포)을 채우는
+`save_training_fingerprint()`가 **프로덕션 어디에서도 호출된 적이 없고**,
+`data/regime_fingerprint.json` 파일 자체가 존재하지 않았음(HotSwap 전용
+`reset_to_live_baseline()`도 실제 Hot-Swap이 한 번도 발동한 적 없어 미실행
+— §1·CUSUM과 동일 계열의 "배선은 있는데 실행된 적 없음").
+**결정**: `RegimeFingerprint._try_bootstrap_baseline()` 신설. `update_live()`
+에서 `self._training`이 비어있으면 호출 — Live 버퍼가 CORE 3피처(`cvd_
+divergence`/`vwap_position`/`ofi_norm`) 모두 50개(`_N_BINS×5`) 이상 쌓이면
+기존 `reset_to_live_baseline()`을 자동 1회 실행해 그 시점 라이브 분포를
+기준선으로 승격하고 디스크에 저장.
+**Why**: HotSwap이 한 번도 발동하지 않은 채 운영되는 시스템에서, 기준선을
+설정하는 유일한 경로가 그 HotSwap 시점 수동 호출뿐이었던 설계 공백. §1·CUSUM
+과 원인 계열이 동일해 같은 세션에서 함께 해결.
+**구현**: `strategy/regime_fingerprint.py` `_try_bootstrap_baseline()`,
+`update_live()` 진입부.
+**검증**: 격리된 fp_path(`data/regime_fingerprint.json` 미접촉)로 검증 —
+부트스트랩 전 `has_training_data=False` → 50개 누적 후 `True`. 동일분포
+유지 시 PSI≈0(CLEAR), 분포를 실제로 이동시켜 주입 시 PSI가 WATCHLIST→
+ALARM→CRITICAL로 단계 전환하며 최종 3.1대까지 상승함을 확인 — 개별 피처
+(`cvd_divergence`/`vwap_position`/`ofi_norm`) 모두 정상 반응.
+**남은 한계**: `_training`은 JSON에 영속되지만 `_live_buf`(원시 라이브
+버퍼)는 여전히 인메모리 — 재시작 시 재누적 필요(부트스트랩 자체는 기준
+분포가 이미 있으면 재발동하지 않으므로 문제 없음).
+
+---
+
 ## 2026-07-06 (298차 — v1.2 유령버전이 2달간 실거래 성과를 가리고 있던 버그)
 
 ### [버그] strategy_versions.is_current가 QA seed 더미 버전(v1.2)을 가리켜 실거래(v1.0) 성과가 판정·CUSUM 로직에 전혀 반영되지 않음
