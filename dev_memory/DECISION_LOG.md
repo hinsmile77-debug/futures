@@ -2,6 +2,73 @@
 
 ---
 
+## 2026-07-06 (298차 — v1.2 유령버전이 2달간 실거래 성과를 가리고 있던 버그)
+
+### [버그] strategy_versions.is_current가 QA seed 더미 버전(v1.2)을 가리켜 실거래(v1.0) 성과가 판정·CUSUM 로직에 전혀 반영되지 않음
+
+**File**: `data/db/strategy_registry.db`(데이터, 코드 아님),
+`config/strategy_registry.py`(`get_current_version()`, `_get_live_days()`),
+`scripts/qa_strategy_seeder.py`(원인 스크립트)
+**증상**: `daily_exporter` EOD 리포트가 2026-07-01/02/03/06 4일 내내
+"버전 v1.2 (1일차) / 판정 INSUFFICIENT / 롤링20일 누적 +0원"으로 전혀
+변하지 않음.
+**원인**: `qa_strategy_seeder.py --seed`가 2026-05-07 18:37 한 번에 v1.0/
+v1.1/v1.2 세 더미 버전을 `strategy_versions`에 등록하며 v1.2를
+`is_current=1`로 남겼다. 이후 실제 운영은 `config/strategy_params.py`의
+진짜 `PARAM_HISTORY`(v1.0만 존재)를 따라 계속 v1.0으로 진행됐고, `main.py`의
+`_active_ver = PARAM_HISTORY[-1]["version"]`도 항상 v1.0으로 스냅샷을
+기록했다. 하지만 `get_current_version()`은 `strategy_versions WHERE
+is_current=1`을 읽으므로 계속 v1.2(seed 당시 단 1건의 더미 live_snapshot만
+존재)를 리턴 — `_get_live_days()`가 이 1건만 세어 영원히 1일차, `_compute_
+verdict()`의 `live_days<5 → INSUFFICIENT` 조건에 걸려 판정이 절대 안 풀림.
+`strategy_events`를 대조하니 2026-05-08부터 오늘까지 거의 매 거래일 v1.2
+기준 ROLLBACK_REVIEW/WATCH 액션이 이 phantom 데이터만으로 반복 기록돼
+있었다.
+**결정**: `data/db/strategy_registry.db` 백업 후 v1.1/v1.2 관련 레코드
+전부 삭제, v1.0을 `is_current=1`로 복원. 코드는 변경하지 않음 — 원인이
+전적으로 DB 데이터 상태였고 `main.py`/`strategy_registry.py` 로직 자체는
+올바르게 동작하고 있었기 때문.
+**Why**: QA/테스트용 seed 스크립트가 프로덕션 DB(`data/db/strategy_registry
+.db`)에 직접 기록하도록 설계돼 있고, seed 실행 후 정리(rollback) 절차가
+없어 "현재 버전" 포인터가 테스트 상태에 영구히 고정된 채 방치됐다.
+**How to apply**: `qa_strategy_seeder.py --seed`처럼 프로덕션 DB에 직접
+쓰는 QA 스크립트는 (a) 별도 DB 파일에 대해서만 실행하거나 (b) 실행 후
+`is_current`를 원래 버전으로 되돌리는 정리 코드를 세트로 둘 것. "버전
+문자열이 리포트에 항상 같은 값으로 찍힌다"는 이상점은 라벨 자체가 잘못된
+대상을 가리키고 있을 가능성부터 의심할 것 — 특히 `live_days`/`판정`처럼
+누적 집계가 며칠이고 안 변하면 코드 버그보다 먼저 "지금 보고 있는 버전
+라벨이 맞는 대상인가"부터 확인.
+**구현**: DB 데이터 정리만 수행(코드 변경 없음). 백업:
+`data/db/strategy_registry.db.bak_20260706_220230`.
+**검증**: `StrategyRegistry().get_current_version()` 재실행 — v1.0(32일차),
+판정 UNDERPERFORM(Live MDD 58.6%). `DailyExporter().build_report()` 재실행 —
+정상 출력 확인.
+
+### [설계공백] CUSUM 드리프트 감시가 실거래 PnL과 연결된 적이 없음
+
+**File**: `strategy/param_drift_detector.py`(`MultiMetricDriftDetector.
+update()`), `main.py`(EOD 파이프라인)
+**증상**: 07-01 EOD 리포트에 `CUSUM CRITICAL (1181230.50)` → 07-02부터
+`CLEAR (0.00)`로 복귀, 이후 계속 CLEAR 고정.
+**원인**: 전체 코드베이스에서 `MultiMetricDriftDetector.update()`를 호출하는
+지점이 없음(grep 전수 확인) — `main.py`는 `hotswap_gate.py`를 통해
+`reset_all()`만 호출하고, 대시보드/리포트는 `get_cusum()`/`get_levels()`
+조회만 함. 즉 실거래 일별 PnL이 CUSUM에 입력된 적이 코드상 없다. 이 감지기는
+프로세스 인메모리 싱글턴이라 재시작마다 0으로 리셋되므로, 07-01의 CRITICAL
+값은 그날 프로세스 수명 중 어떤 1회성 주입(수동 테스트로 추정, 확정 못 함)이
+반영됐다가 다음날 재시작으로 사라진 것으로 보인다.
+**결정**: 이번 세션에서는 원인 확정과 기록만 하고 배선은 보류(다음 세션
+결정 필요 — `NEXT_TODO.md` 298차 ③ 참조).
+**Why**: 배선 여부 결정(EOD에 실제 daily_pnl로 `update()` 호출을 추가할지,
+아니면 CUSUM 계기판 자체를 제거할지)은 설계 판단이 필요해 이번 딥다이브
+범위를 벗어남.
+**How to apply**: 리포트/대시보드에 "항상 CLEAR/정상"으로만 찍히는 안전
+지표가 있으면, 그 지표가 실제로 무언가를 감시하고 있는지 데이터 흐름을
+먼저 추적할 것 — read-only 조회 지점만 있고 write(update) 지점이 없으면
+그 지표는 장식일 뿐이다.
+
+---
+
 ## 2026-07-06 (297차 — 진입0 딥다이브: FQAdj 배선 버그·CB③-P4 퇴역잔재 발견 + 재발방지 계측 6종)
 
 ### [버그] FQAdj(피처품질 기반 min_conf 완화)가 268차 이후 실효 0으로 무효화되어 있었음

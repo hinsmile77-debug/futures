@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-07-06 (298차 — daily_exporter 딥다이브 → v1.2 유령버전 버그 발견·수정 → dev-v9 cherry-pick 조사(중단))
+
+**트리거**: "daily_exporter가 무엇이고 특정 정보 확인법" 질문 → 리포트 내용
+설명 요청 → "daily_report 폴더 내 EOD 리포터를 모두 읽고 이상점을 정리해서
+원인을 딥다이브해" → (버전 불일치 발견 후) 처리 방향 확인 질문에 "v1.0으로
+정리, 지금까지 수정 이력 없음" 응답 → DB 정리 실행 → "dev 커밋후 MW0601에
+dev-v9 cherry-pick 문제 없나" 질문(브랜치명 확인 거쳐 `origin/v9-dev`로 특정)
+→ 조사 도중 "이 세션 dev_memory update하고 커밋해"로 전환.
+
+**딥다이브 결과 요약**: `strategy_versions.is_current`가 가리키던 v1.2는
+`qa_strategy_seeder.py --seed`가 2026-05-07 한 타임스탬프로 남긴 QA 더미
+버전이었고, 실거래 PnL은 05-08부터 계속 v1.0으로 기록되고 있었다. 그 결과
+`_get_live_days('v1.2')`가 항상 1을 반환해 2달간 "1일차"에 고정, 판정은
+영원히 INSUFFICIENT, `strategy_events`에는 05-08부터 v1.2 기준 ROLLBACK_
+REVIEW/WATCH가 오판단으로 반복 기록됨. 별개로 CUSUM 드리프트 감시
+(`MultiMetricDriftDetector.update()`)를 호출하는 지점이 프로덕션에 전혀
+없어 실거래와 연결된 적이 없다는 것도 확인(07-01 리포트의 CUSUM CRITICAL은
+원인 미상 1회성 주입으로 추정, 확정은 못 함).
+
+**조치**: `data/db/strategy_registry.db` 백업 후 v1.1/v1.2 seed 레코드 전체
+삭제(strategy_versions/param_changes/stage_results/live_snapshots), v1.0을
+is_current로 복원, v1.0의 05-07 seed 오염 스냅샷도 제거. `strategy_events`
+이력은 감사 기록으로 보존. 코드 변경 없음(순수 DB 데이터 정리).
+
+**검증**: 실제 코드(`StrategyRegistry`, `DailyExporter`) 재실행 확인 —
+v1.0(32일차), 판정 UNDERPERFORM, 롤링20일 MDD 58.6%, 권고 "교체 후보 탐색".
+이 신호는 버그가 아니라 처음 드러난 실제 상태 — 다음 세션에서 검토 필요.
+
+**dev-v9 cherry-pick 조사(미완)**: `origin/v9-dev`(로컬 미보유, 이번에 fetch)와
+`dev`는 291차(`5e1426c`)에서 분기. 상위 6개 커밋(292~297차)은 메시지가
+동일하나 patch-id가 달라 양쪽에 독립적으로 커밋된 것으로 추정 — cherry-pick
+시 제외 대상. 나머지 전용 커밋 10개(병합커밋 1개 제외)를 격리 worktree에서
+순서대로 dry-run 테스트하던 중 `b727298`(config/settings.py 충돌)에서
+사용자 요청으로 중단. 상세 진행상황은 `NEXT_TODO.md` 298차 항목 참조.
+
+**다음 세션**: UNDERPERFORM 신호 검토, dev-v9 cherry-pick 조사 재개.
+
+---
+
 ## 2026-07-06 (297차 — 진입0 딥다이브 + P0 배선버그 2건 수정 + 재발방지 계측 6종)
 
 **트리거**: "금일 진입0의 원인을 딥다이브하고 260705 감사결과 개선안으로 개선효과

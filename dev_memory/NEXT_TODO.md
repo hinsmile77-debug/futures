@@ -8,6 +8,62 @@
 
 ---
 
+## 2026-07-06 (298차 검증) [v1.2 유령버전 버그 수정 후 확인 + UNDERPERFORM 신호 검토]
+
+- [ ] **① UNDERPERFORM 신호 실질 검토(최우선)** — DB 정리 후 처음 드러난 v1.0
+  32일 실적: 판정 UNDERPERFORM, 롤링20일 MDD=58.6%(WFA 기준 14.2%). 버그로
+  가려져 있던 기간 동안 이 신호가 계속 존재했을 가능성 — 실제 롤백/교체후보
+  검토가 필요한지 사람이 직접 판단할 것.
+- [ ] **② 다음 EOD(07-07 15:40)에서 정상 동작 확인** — `daily_exporter` 리포트가
+  "버전 v1.0 (33일차)"로 정상 증가하는지, `strategy_events`에 v1.0 기준
+  액션이 새로 쌓이는지 확인.
+- [ ] **③ CUSUM 드리프트 감시 배선 여부 결정** — `MultiMetricDriftDetector.
+  update()`가 프로덕션 어디에서도 호출되지 않는다는 것을 확인함(main.py EOD
+  파이프라인에 실제 daily_pnl 연결 배선이 없음). CUSUM 계기판이 계속 CLEAR
+  (0.00)로만 찍힐 것 — 이 감시 기능 자체를 살릴지(main.py EOD 시점에
+  `update()` 호출 추가), 제거할지 결정 필요.
+- [ ] **④ backup_pull/db/strategy_registry.db 처리** — MW0602 pull 절차용
+  백업이 수정 전(phantom v1.2) 상태를 그대로 갖고 있음. 해당 절차를 다시 쓸
+  계획이면 이 백업도 함께 정리하거나 절차 자체를 건너뛸 것.
+- [ ] **⑤ dev-v9(origin/v9-dev) → MW0601 cherry-pick 검토 재개** — 조사 중
+  사용자 요청으로 중단. 아래 "dev-v9 cherry-pick 조사 현황" 참고해 이어서
+  진행할 것.
+
+### dev-v9 cherry-pick 조사 현황 (미완 — 298차 중단분)
+
+- `origin/v9-dev`는 로컬에 없던 원격 브랜치(이번에 `git fetch`로 확인).
+  merge-base는 `5e1426c`(291차).
+- v9-dev 상위 6개 커밋(292~297차 — `6cc41eb` `570929a` `00774a2` `de9dba6`
+  `bb852f7` `2a2d6c7`)은 dev와 **커밋 메시지가 동일하지만 patch-id는 다름**
+  (`git patch-id`로 확인) — 같은 작업을 두 브랜치에 독립적으로 커밋한 것으로
+  추정. 이 6개는 **cherry-pick 대상에서 제외**해야 함(이미 dev에 동등한 내용
+  존재, 재적용 시 불필요한 충돌만 유발).
+- 나머지 v9-dev 전용 커밋 11개(병합커밋 `333ff60` 제외, 실질 10개: `8fc41d7`
+  `cd1e0a4` `cddd415` `2412a15` `c16e56f` `5a21dc5` `b727298` `feb69fb`
+  `07c0c59` `0857333`, 오래된 순)를 `git worktree add --detach`로 만든 격리
+  worktree에서 dev 기준으로 순서대로 dry-run cherry-pick 테스트한 결과:
+  - `8fc41d7`에서 최초 충돌 — `.gitignore`, `dev_memory/CURRENT_STATE.md`,
+    `dev_memory/NEXT_TODO.md` (양쪽이 독립적으로 이어써온 로그 파일이라
+    발생하는 예상된 충돌, 내용만 합치면 되는 사소한 수준)
+  - `cd1e0a4` `cddd415` `2412a15` `c16e56f`는 충돌 없이 그대로 적용됨
+  - `5a21dc5`에서 `docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md` 충돌(양쪽이
+    같은 문서에 각자 절을 추가 — 수동 병합 필요)
+  - `b727298`에서 **`config/settings.py` 충돌** — CB②(사실상비활성) 관련
+    설정으로 추정, 실제 설정값 충돌이라 신중한 수동 병합이 필요. **여기서
+    사용자 요청("dev_memory update")으로 조사 중단.**
+  - `feb69fb`(docs만), `07c0c59`(main.py 62줄 변경 — v9 Track L1/L3 day
+    regime engine·soft-gate scoring shadow), `0857333`(LAUNCH_API.bat)은
+    아직 테스트 안 함.
+- **잠정 결론**: 단순 `git cherry-pick <range>` 일괄 적용은 위험 — 최소
+  3개 커밋(`8fc41d7`, `5a21dc5`, `b727298`)에서 수동 충돌 해결이 필요하고,
+  미검증 3개(`feb69fb`/`07c0c59`/`0857333`) 중 특히 `07c0c59`가 `main.py`를
+  건드려 dev의 292~297차 `main.py` 변경(118줄)과 겹칠 가능성이 있음. 재개
+  시 격리 worktree에서 10개 커밋 전부 완주 테스트 후 실제 브랜치(및
+  MW0601)에 적용 권장. 테스트에 쓴 worktree(`scratchpad/cherrypick_test`)는
+  이미 정리(`git worktree remove`)했으니 재개 시 새로 만들 것.
+
+---
+
 ## 2026-07-06 (297차 검증) [진입0 딥다이브 P0 수정 2건 + 재발방지 계측 6종 라이브 검증]
 
 > 앱 미기동 상태에서 소스만 수정 — 전부 라이브 미검증. 다음 기동(0707 장중) 후

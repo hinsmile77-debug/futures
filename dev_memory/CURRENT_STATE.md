@@ -1,9 +1,65 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-06 (297차) — 진입0 딥다이브: FQAdj/CB③-P4 배선버그
-> 2건 수정 + 재발방지 계측 6종(Hurst counterfactual·mc-conf 괴리 경보·진입
-> 퍼널 일일리포트·표본기아 완화사다리) 구현, 라이브 미검증
+> 마지막 업데이트: 2026-07-06 (298차) — daily_exporter EOD 리포트 딥다이브 중
+> v1.2 유령버전 버그 발견(QA seed가 남긴 "현재 버전"이 실거래 v1.0과 달라
+> 판정·CUSUM 로직이 2달간 실거래 성과를 못 봄) → DB 정리로 수정, 실제
+> UNDERPERFORM 신호 노출(검토 필요). dev-v9(origin/v9-dev) cherry-pick 조사는
+> 미완(중단).
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-06 (298차 — daily_exporter 딥다이브 → v1.2 유령버전 버그 발견·수정)
+
+**계기**: 사용자가 daily_exporter EOD 리포트 4건(07-01~07-03, 07-06)을 비교
+요청하며 이상점 딥다이브를 지시 — "버전 v1.2 (1일차)"가 4일 내내 고정인
+것에서 출발해 DB까지 추적.
+
+**핵심 판단**: `strategy_versions.is_current`가 가리키던 "v1.2"는
+`scripts/qa_strategy_seeder.py --seed`가 2026-05-07 18:37 한 타임스탬프로
+남긴 QA 더미 데이터였고, 실거래(05-08~) 일별 PnL은 전부 `config/strategy_
+params.py`의 실제 PARAM_HISTORY를 따라 "v1.0"으로 기록되고 있었다. 그 결과
+`_get_live_days()`가 v1.2의 단일 seed row만 세어 2달간 "1일차"에 고정 →
+`_compute_verdict()`가 `live_days<5`면 무조건 INSUFFICIENT → 버전 판정·CUSUM
+드리프트·권고 로직 전체가 실거래 32일치 성과를 전혀 반영 못 함.
+`strategy_events` 로그 대조 결과 2026-05-08부터 거의 매 거래일 v1.2 기준
+ROLLBACK_REVIEW/WATCH 액션이 이 phantom 데이터만으로 반복 기록돼 있었음.
+
+별개로, `MultiMetricDriftDetector.update()`를 호출하는 지점이 프로덕션
+코드 전체(main.py 포함)에 단 한 곳도 없음을 확인 — CUSUM 드리프트 감시는
+실거래 PnL과 연결된 적이 없는 인메모리 싱글턴이며, 07-01 리포트의 `CUSUM
+CRITICAL (1181230.50)`은 실거래 반영이 아니라 원인 미상의 1회성 주입(수동
+테스트 추정)이 그날 리포트에 찍혔다가 다음날 프로세스 재시작으로 사라진
+것으로 보인다(재현 경로는 미확정, 코드상 실거래 연결 자체가 없다는 사실만
+확정).
+
+**조치**:
+- `data/db/strategy_registry.db` 백업(`*.bak_20260706_220230`) 후 v1.1/v1.2
+  관련 레코드(`strategy_versions`·`strategy_param_changes`·
+  `strategy_stage_results`·`strategy_live_snapshots`) 전부 삭제, v1.0을
+  `is_current=1`로 복원. v1.0의 2026-05-07 seed 오염 스냅샷(더미 55,000원)도
+  제거 — 실거래는 05-08부터가 진짜 시작.
+- `strategy_events`의 v1.2 태그 이력은 감사 기록으로 보존(삭제 안 함) — 그
+  기간 이벤트는 phantom 데이터 기반 오판단이었다는 점을 감안해서 읽을 것.
+- 코드 변경 없음(순수 DB 데이터 정리) — `main.py`의 `_active_ver =
+  PARAM_HISTORY[-1]["version"]`는 이미 v1.0을 가리키고 있었으므로 원인은
+  `strategy_versions.is_current` 쪽 데이터 불일치뿐이었음.
+
+**검증**: 수정 후 `StrategyRegistry().get_current_version()` / `DailyExporter
+().build_report()`를 실제 재실행 — 버전 v1.0(32일차), 판정 UNDERPERFORM
+(Live MDD=58.6%, WFA 기준 14.2%보다 크게 나쁨), 롤링20일 누적 +6,136,142원,
+권고 "🔄 교체 후보 탐색"으로 실제 상태가 처음으로 드러남.
+
+**주의(미해결)**: `backup_pull/db/strategy_registry.db`는 손대지 않음 — 수정
+전 상태(phantom v1.2)를 그대로 갖고 있어 `MW0602 pull guide.txt` 절차를
+재실행하면 이 수정이 덮어써질 수 있음. **UNDERPERFORM 판정 자체는 버그가
+아니라 처음 드러난 진짜 신호이므로, 다음 세션에서 반드시 검토할 것**
+(`NEXT_TODO.md` 298차 항목 참조).
+
+**병행 조사(미완)**: 사용자가 "dev-v9(`origin/v9-dev`) → MW0601 cherry-pick
+문제 없나" 질문 → 격리 worktree에서 dry-run cherry-pick 테스트 진행 중
+`config/settings.py` 충돌 지점에서 사용자 요청으로 중단(`dev_memory update`로
+전환). 상세 진행상황은 `NEXT_TODO.md` 298차 항목 참조.
 
 ---
 
