@@ -649,11 +649,89 @@ VALIDATION_CAMPAIGN = {
     "hurst_regime": {
         "min_per_bucket":    20,     # 버킷별 최소 거래 수 (미달 → 판정 보류)
     },
+    # [297차, P1-4] §3-6 Hurst 게이트 counterfactual — "Hurst만으로 차단된 A/B/C급
+    # 신호"의 가상 진입 결과(hurst_gate_shadow 테이블)를 4주 누적 판정한다.
+    # 존치(PASS): 누적 hyp_pnl_pts ≤ 0 (차단이 실제로 손실을 회피).
+    # 완화 권고(FAIL): 누적 hyp_pnl_pts > 왕복비용의 2배 그리고 승률 > 기준선
+    #   → 즉시 언블록이 아니라 "차단 대신 사이징 ×0.5 허용"부터 (§3-2와 동일 원칙 — 하드
+    #   차단→사이징 완화 순서, 감사 §2-2 ③ "차단형 게이트는 이미 충분히 많다").
+    "hurst_gate_shadow": {
+        "min_samples":       20,     # 차단 건 최소 수 (미달 → 판정 보류, hurst_regime과 동일 기준)
+        "cf_window_min":     30,     # counterfactual 관찰 창 (분) — signal_decay와 동일
+    },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)
     "start_date": "2026-07-05",
 }
+
+# [297차, P1-7] 캠페인 표본 기아 조기경보 + 완화 사다리 — §3-8 사전 등록 (변경 금지).
+# 트리거: 주간(7일) 진입 체결 건수 < ENTRY_STARVATION_WEEKLY_MIN. 이 속도가 유지되면
+# 4주 캠페인 기간 내 VALIDATION_CAMPAIGN의 여러 min_samples(tb=800/hz, meta_gate=90,
+# quantile=300 등)가 확정적으로 미달된다 — "데이터가 부족해서 판정 불가"가 캠페인
+# 종료 시점에 반복되지 않도록, 무엇을 어떤 순서로 완화할지 지금(데이터를 보기 전에)
+# 고정한다(§2 사전등록 원칙 — 사후 완화는 반드시 과적합).
+#
+# 규율: 각 단계는 최소 5거래일 관찰 후에도 주간 진입이 하한을 회복하지 못해야 다음
+# 단계로 진행한다(§5 "Serial activation"과 동일 원칙 — 동시에 두 단계 금지). 단계
+# 적용은 사용자 수동 결정 + dev_memory/DECISION_LOG.md 기록 필수. 이 리스트 자체의
+# 순서·값 변경은 §9-4에 따라 사유 기록 후 검증 시계 리셋.
+ENTRY_STARVATION_WEEKLY_MIN = 10
+
+ENTRY_STARVATION_MITIGATION_LADDER = [
+    {
+        "step": 1,
+        "action": "관찰만 — FQAdj 배선 수정(297차)의 자연 회복 효과 확인",
+        "detail": (
+            "model/ensemble_decision.py의 zone_mc 적용 버그(FQAdj 완화가 실제로는 "
+            "적용되지 않던 문제)를 297차에서 수정했다 — 코드 변경 없이 이 수정만으로 "
+            "진입후보가 회복되는지부터 확인. 회복되면 2·3단계는 불필요."
+        ),
+        "auto_check": None,  # 코드 변경 없음 — 자동 감지 대상 아님, 날짜 경과로만 판단
+        "deployed_date": "2026-07-06",
+    },
+    {
+        "step": 2,
+        "action": "구형 MetaGate take_ceil(C등급) 완화: 0.570 → 0.52",
+        "detail": (
+            "strategy/entry/meta_gate.py _GRADE_CFG['C']['take_ceil']. "
+            "MetaGate 하드차단(action=skip)의 진입 문턱을 낮춘다 — 사이징 배수는 "
+            "그대로 두고 take 판정 기준만 완화(§3-2b 완화 트리거와 동일 순서: "
+            "하드차단 먼저 완화, 사이징은 그다음)."
+        ),
+        "setting": "strategy.entry.meta_gate._GRADE_CFG['C']['take_ceil']",
+        "original_value": 0.57,
+        "mitigated_value": 0.52,
+        "auto_check": None,  # config/settings.py 밖에 있어 자동 감지 불가 — 수동 확인
+    },
+    {
+        "step": 3,
+        "action": "Hurst 횡보 차단 임계값 완화 (최후 수단): 0.45 → 0.40",
+        "detail": (
+            "config/settings.py:HURST_RANGE_THRESHOLD. 1·2단계로도 회복 안 될 때만 — "
+            "추세추종 설계의 핵심 필터라 가장 마지막에 건드린다. §3-6 hurst_gate_shadow "
+            "누적 판정(FAIL 권고 시 사이징 완화)과 별개 경로 — 이건 표본 기아 대응, "
+            "그건 게이트 자체의 유효성 검증."
+        ),
+        "setting": "HURST_RANGE_THRESHOLD",
+        "original_value": 0.45,
+        "mitigated_value": 0.40,
+        "auto_check": "settings",  # config/settings.py 값이므로 자동 비교 가능
+    },
+]
+
+# [297차, P1-5] mc–conf 괴리 조기경보 — 동적 min_conf(zone_mc)는 과거 conf 분포
+# 기반이라 conf 분포가 급락하면 진입후보(confidence>=min_conf, ensemble_decisions.
+# regime_ok=1) 분 수가 0에 가깝게 붕괴할 수 있다(292차 진입0 딥다이브: 2026-07-06
+# 하루 11분 vs 직전 3주 실측 범위 72~245분/일). EOD(15:40)에 계산해 하한 미달 시
+# 경보만 출력 — mc·임계값을 자동으로 낮추지 않는다(판단은 사용자 몫).
+# 2단계 기준: ① 당일 단독 붕괴(느린 5일 평균이 못 잡는 급성 사건 — 2026-07-06처럼
+# 하루 만에 11로 떨어지는 경우) ② 5일 롤링 평균 하락(여러 날에 걸친 완만한 침식).
+# 근거: docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3-7.
+MC_CONF_GAP_ALERT_ENABLED       = True
+MC_CONF_GAP_ALERT_LOOKBACK_DAYS = 5     # 롤링 평균 산정 거래일 수
+MC_CONF_GAP_ALERT_MIN_TODAY     = 25    # 당일 단독 하한(분) — 실측 최저 정상일(72)의 1/3 미만
+MC_CONF_GAP_ALERT_MIN_AVG       = 60    # 5일 롤링 평균 하한(분/일) — 실측 최저 정상일(72)보다 낮게 설정
 
 # ── 선물 수수료 설정 ───────────────────────────────────────────
 # 키움증권 모의투자 기준. 실전 전환 시 실제 요율로 교체.
@@ -675,6 +753,17 @@ CB_ACCURACY_MIN_30M    = 0.28  # 30분 방향성 예측 최소 정확도 (0.35�
 # [P4] CB③ 4단계 acc30m 구간 (HALT 발동 전 사전 제한)
 CB_ACC_WATCH_MIN      = 0.35  # NORMAL → WATCH 경계 (임박 구간, 로그 강화)
 CB_ACC_RESTRICTED_MIN = 0.30  # WATCH → RESTRICTED 경계 (C등급 이하 차단)
+# [2026-07-06 297차, CB③-P4 C등급 차단 한시 비활성 예외] 296차가 30m을 앙상블·
+# CoherenceGate·CascadeCoherence에서 전면 퇴역 확정(EOD full_cv acc=0.3052 — 랜덤
+# 이하, 재활성화 기준 0.38~0.41 미달). 그런데 CB③-P4는 여전히 그 퇴역된 30m 정확도만
+# 집계해 RESTRICTED 판정 → 다른 정상 호라이즌의 C등급 진입까지 차단한다. 문제는
+# CB_ACC_RESTRICTED_MIN(0.30)이 30m의 확정된 구조적 성능(0.3052)과 거의 같아
+# 정상 샘플링 변동만으로도 상시 RESTRICTED에 붙박이는 상태였다(292차 진입0 딥다이브
+# 중 실측: acc30m=0.0%로 C등급 상시 차단). "정확도 열화 감지"라는 CB③의 원 설계
+# 의도에 더 이상 부합하지 않으므로 C등급 차단 적용만 끈다 — accuracy_buf 누적·
+# 대시보드 표시·acc30m_stage 추적은 그대로 유지(모니터링 단절 없음).
+# 실전 전환 전 반드시 재검토 — 30m 재도입 또는 CB③ 기준 호라이즌 교체 시 True로 복원.
+CB3_P4_GRADE_BLOCK_ENABLED = False
 # CB③ 발동 최솟 유효 샘플 수
 # 파이프라인 지연 → conf<0.38 필터 → 샘플 부족 → 0%로 허위 발동 방지
 # 기존 25에서 상향: 초기 혼란기(scaler 노후화 직후) 오답 25개만으로 당일 정지 차단

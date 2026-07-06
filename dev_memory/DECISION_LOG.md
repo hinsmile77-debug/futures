@@ -2,6 +2,137 @@
 
 ---
 
+## 2026-07-06 (297차 — 진입0 딥다이브: FQAdj 배선 버그·CB③-P4 퇴역잔재 발견 + 재발방지 계측 6종)
+
+### [버그] FQAdj(피처품질 기반 min_conf 완화)가 268차 이후 실효 0으로 무효화되어 있었음
+
+**File**: `model/ensemble_decision.py`(등급 결정부), `main.py`(zone_mc 계산부)
+**증상**: `main.py`가 fq≥0.9일 때 zone_mc를 0.37→0.34로 완화하고 `[FQAdj] fq=1.00 →
+min_conf 0.37→0.34 (완화)` 로그를 하루 363회 출력했으나, 실제 진입 컷은 항상 완화
+전 값(0.37)으로 작동 — 292차 이후에도 이 버그가 존재한 채로 conf미달 X등급이 하루
+271분 발생(292차 진입0 딥다이브 재발).
+**원인**: `ensemble_decision.py`의 등급 결정 로직(`min_conf = REGIME_MIN_CONFIDENCE
+.get(regime, 0.58)`)이 `compute()`에 인자로 전달받는 `zone_mc`(FQAdj 반영값)를
+전혀 참조하지 않고 레짐 테이블만 사용했고, `main.py`의
+`actual_min_conf = max(decision["min_conf"], zone_mc)`가 이를 다시 한번 무효화
+(둘 중 큰 값 채택 → 항상 미완화 값이 이김). 268차가 "앙상블·체크리스트 동일 mc
+기준"을 의도했으나 앙상블 내부 로직 자체는 고쳐지지 않은 채 반쪽만 구현된 상태로
+7개월(추정) 방치.
+**결정**: RISK_ON/NEUTRAL은 `zone_mc`를 그대로 min_conf로 채택, RISK_OFF만 기존처럼
+`max(REGIME_MIN_CONFIDENCE["RISK_OFF"], zone_mc)`로 강화 유지(레짐축 리스크오프
+강화는 시간대축 zone_mc가 대체 못 하므로).
+**Why**: 두 축(레짐 vs 시간대)이 서로 다른 목적의 정보를 담고 있어 단순 삭제가
+아니라 "어느 축이 어떤 상황에서 우선하는가"를 명확히 정의해야 했다 — RISK_OFF만
+예외로 남긴 이유는 이 레짐이 유일하게 "시간대와 무관하게 항상 보수적이어야 하는"
+케이스이기 때문.
+**How to apply**: 두 개의 서로 다른 min_conf 산정 경로(시간대 기반/레짐 기반)가
+공존할 때는 "final 값 = max(A, B)"처럼 값만 합치지 말고, 애초에 어느 경로가 최종
+결정권을 갖는지 코드 주석과 함께 단일 지점에서 결정할 것. 로그가 찍힌다고 그 값이
+실제로 반영된다고 가정하지 말 것 — 이번처럼 로그 메시지 자체는 정상 출력되면서
+내부적으로는 다른 값이 쓰이는 "위장 성공" 패턴이 재발 가능.
+**구현**: `model/ensemble_decision.py`, `main.py`. `scripts/run_microstructure_ab_
+backtest.py`가 이 시그니처에 암묵 의존하고 있어 회귀 방지로 `zone_mc` 명시 전달 추가.
+**검증**: 오늘 14:32 로그 재현 시나리오(conf=36.0%, zone_mc=0.34)를 `EnsembleDecision
+().compute()` 직접 호출로 재현 — 수정 전 X등급, 수정 후 grade=C·regime_ok=True 확인.
+RISK_OFF 0.65 강화 플로어 보존도 별도 시뮬레이션으로 확인. `pytest tests/` 10건 통과.
+
+### [버그] CB③-P4가 296차 퇴역 확정된 30m 정확도로 무관한 정상 신호(C등급)까지 상시 차단
+
+**File**: `config/settings.py`(CB3_P4_GRADE_BLOCK_ENABLED 신설), `main.py`(C등급
+차단 조건부 게이팅)
+**증상**: 296차가 30m을 앙상블·CoherenceGate·CascadeCoherence에서 전면 퇴역
+확정(EOD full_cv acc=0.3052 — 랜덤 이하)했으나, CB③-P4(등급 C 이하 자동차단)는
+여전히 그 퇴역된 30m 정확도만 집계해 RESTRICTED를 판정하고 있었음 — 오늘 14:37
+`acc30m=0.0%`로 무관한 C등급 진입까지 차단된 사례를 실측.
+**원인**: `CB_ACC_RESTRICTED_MIN`(0.30)이 30m의 확정된 구조적 성능(0.3052)과
+거의 같아, 정상적인 표본 변동만으로도 상시 RESTRICTED에 붙박이는 상태가 됨 —
+296차가 30m을 앙상블 가중합·CoherenceGate·CascadeCoherence 3개 경로에서는
+제외했지만, CB③-P4라는 4번째 소비 경로를 놓쳤다(296차 자신이 "하나의 퇴역이
+여러 독립 경로에 각각 구멍을 남길 수 있다"고 교훈으로 남겼던 바로 그 패턴 재발).
+**결정**: `config/settings.py:CB3_P4_GRADE_BLOCK_ENABLED = False`로 C등급 차단
+적용만 비활성 — `accuracy_buf` 누적·`acc30m_stage` 추적·대시보드 표시는 그대로
+유지(모니터링 단절 없음). CB③ 자체(절대원칙)는 건드리지 않음.
+**Why**: CB③은 CLAUDE.md의 "절대 원칙(변경 불가)"이므로 함부로 재정의하지 않고,
+CB②(모의투자 한정 예외)와 동일한 패턴 — 날짜 있는 예외 문서화 + Phase 5 체크리스트
+등재 — 로 다뤘다. 다른 3개 경로는 296차가 이미 잘랐는데 CB③-P4만 남았던 것은
+"게이트"와 "안전장치"가 이름은 비슷해도 코드 계보가 완전히 분리돼 있어 grep
+기준(가중치 dict, CoherenceGate 분모)이 CB③ 쪽 accuracy_buf 소비 경로까지
+커버하지 못했기 때문 — 296차의 "grep으로 전수 확인" 원칙에 안전장치 계열
+(CircuitBreaker) 코드가 빠져 있었다.
+**How to apply**: 특정 호라이즌/피처를 퇴역시킬 때는 앙상블·게이트뿐 아니라
+Circuit Breaker 같은 안전장치가 그 값을 별도로 소비하고 있는지도 반드시 확인할
+것. "안전장치"라서 더 건드리기 조심스럽지만, 퇴역된 입력을 계속 먹이면 안전장치
+자체가 상시 오발동하는 역효과가 난다.
+**구현**: `config/settings.py`, `main.py`, `CLAUDE.md`(절대원칙 §2 CB③-P4 예외
++ Phase 5 체크리스트 ⑥번).
+**검증**: `pytest tests/` 10건 통과, `py_compile` 통과.
+
+### [문서 공백] 감사 매트릭스에 구형 MetaGate(실차단 게이트)가 누락돼 있었음
+
+**File**: `docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md`
+**증상**: §1 매트릭스 6번 "Meta-labeling → 섀도우"가 신형 `EntryQualityScorer`
+(entry_quality_prob)만 가리키는데, 같은 "meta_gate" 용어를 쓰는 **구형 MetaGate**
+(`strategy/entry/meta_gate.py`, action=skip)가 이미 ON인 하드차단 게이트라는
+사실이 매트릭스에서 빠져 있었다. 오늘 244분이 `action=skip`으로 X등급 강제.
+**결정**: 매트릭스에 6b 행 신설(ON·하드차단 등재), §3-2b 신설(존치/완화 판정
+기준: 단독차단 표본 평균 realized_move≤0 & 승률≤기준선이면 존치, 반대면 사이징
+×0.5 완화), §4-1·§4-2에 `hurst_ok`·`meta_gate`(구형)를 "매주 반드시 판독"
+대상으로 명시.
+**Why**: 감사 §3-2가 "차단형 게이트는 이미 충분히 많다"고 스스로 진단했는데,
+정작 그 진단 대상 중 하나가 신형 섀도우 스코어러와 이름이 겹친다는 이유만으로
+논의에서 빠져 있었다 — 용어 충돌이 실제 감사 공백으로 이어진 사례.
+**How to apply**: 같은 이름(meta_gate)의 신·구 버전이 공존할 때는 감사/문서
+작성 시 반드시 코드 경로(모듈명)까지 명시해 구분할 것. "이름이 같다"는 것만으로
+같은 대상이라고 가정하지 말 것.
+**구현**: `docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md`. 코드 변경
+없음 — `scripts/generate_gate_ablation_report.py`는 290차부터 이미 `hurst_ok`·
+`meta_gate`(구형 기준) 둘 다 분석 대상에 포함하고 있었음(우선순위 명시 주석만 추가).
+
+### [계측 신설] Hurst 게이트 counterfactual + mc–conf 괴리 조기경보 + 진입 퍼널 일일 리포트 + 표본 기아 완화 사다리
+
+**File**: `utils/db_utils.py`(hurst_gate_shadow 테이블, fetch_entry_candidate_gap,
+fetch_daily_entry_funnel, coherence_blocked 컬럼), `learning/prediction_buffer.py`
+(coherence_blocked STEP9 저장), `scripts/generate_validation_campaign_report.py`
+(resolve_and_eval_hurst_gate, eval_sample_starvation), `strategy/ops/daily_exporter.py`
+(mc-conf 괴리 + 진입 퍼널 일일 섹션), `config/settings.py`(MC_CONF_GAP_ALERT_*,
+VALIDATION_CAMPAIGN["hurst_gate_shadow"], ENTRY_STARVATION_*)
+**배경**: 위 3개 버그/공백을 고치는 것만으로는 "다음에 또 같은 유형의 문제가
+생겨도 알아챌 수 있는가"가 해결되지 않는다 — 진입0의 재발 감지·근본 원인 자동
+분류·표본 부족의 조기 경보 4종을 §2 사전등록 원칙(데이터를 보기 전에 판정
+기준을 고정)에 따라 구현.
+**핵심 설계 판단**:
+1. Hurst counterfactual: "차단이 옳았는지"를 4주 표본으로 사후 판정(합격선:
+   누적 hyp_pnl_pts≤0 → 존치, 초과+승률우위 → 사이징×0.5 완화 — 즉시 언블록 금지).
+2. mc-conf 괴리: 당일 단독(<25분) + 5일 롤링평균(<60분) 2단계 — 전자가 없으면
+   오늘 같은 급성 붕괴를 5일 평균이 희석해 놓칠 뻔했다(실측: 당일 11분, 5일평균
+   137분으로 평균은 정상 판정).
+3. 진입 퍼널: `ensemble_decisions`가 매분 무조건 기록되므로(dedup 없는 로그
+   entry_block_reason보다 정확) 이를 이용해 FLAT→conf미달→CoherenceGate→
+   게이트차단→후보→진입 5단 재구성. 구현 중 `coherence_blocked`가 DB에 없어
+   `grade=='X' & regime_ok==1`로 역추정했더니 conf미달과 동시발생하는 케이스
+   (09:10:59 등, 로그 대조로 확인)를 누락함을 발견 — 원본 플래그를 컬럼으로
+   신설해 저장하도록 수정(오늘 데이터는 소급 불가, 내일부터 정확).
+4. 표본 기아 사다리: 주간 진입<10건 트리거, 완화 순서 사전 고정(① FQAdj 수정
+   자연회복 관찰 → ② MetaGate take_ceil 0.570→0.52 → ③ Hurst 0.45→0.40) —
+   §2 "사후 완화는 과적합" 원칙을 진입 게이트에도 적용.
+**Why**: 292차 진입0 딥다이브도 "이번에 원인을 찾고 고쳤다"로 끝났었는데, 오늘
+같은 유형(conf 붕괴+Hurst 차단)이 재발했다 — 원인 수정만으로는 부족하고, 재발을
+자동으로 감지·기록하는 계측이 있어야 다음 세션이 처음부터 딥다이브를 반복하지
+않는다.
+**How to apply**: 진입0/저조 조사 시 `strategy/ops/daily_exporter.py`가 매일
+생성하는 리포트에서 진입 퍼널·mc-conf 괴리 섹션을 먼저 확인할 것 — 수동 로그
+grep을 반복할 필요 없음. 주간 판정회의(§4-2 안건 ⑥)에서 퍼널 요약과 §3-8 사다리
+위치를 정기 확인할 것.
+**구현**: 위 File 목록 전체. 문서: `docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md`
+§3-6·§3-7·§3-8 신설, `docs/진입0/260706_진입0_딥다이브_및_개선구현.md`(본 세션 종합 정리).
+**검증**: 신규 함수 전부 실제 DB(오늘 데이터 포함)로 end-to-end 테스트, 합성 데이터로
+STOP/TP1/NEITHER counterfactual 로직 수동 계산 대조 일치 확인(테스트 데이터 정리함).
+`pytest tests/` 10건 통과, 전체 수정 파일 `py_compile` 통과. 아직 라이브(main.py
+재기동) 미검증 — 다음 기동 후 conf 분포 회복 여부·P0 수정 효과·계측 로그 정상
+출력 확인 필요(`NEXT_TODO.md` 297차 참조).
+
+---
+
 ## 2026-07-06 (296차 — 30m 호라이즌 퇴역 최종 확정)
 
 ### [결정] 30m을 앙상블·CoherenceGate·CascadeCoherence 전 경로에서 영구 제외

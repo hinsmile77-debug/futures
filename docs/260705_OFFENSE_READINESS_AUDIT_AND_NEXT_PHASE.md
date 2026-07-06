@@ -40,7 +40,8 @@
 | 3 | 레짐 조건부 ATR 배수 (`HURST_REGIME_ATR_MULT`) | ✅ | ✅ | **ON** | ❌ 동상 |
 | 4 | CB② 모의투자 예외 문서화 (CLAUDE.md·settings 정합) | ✅ | ✅ | 원칙 정합 | Phase 5 체크리스트 등재 ✅ |
 | 5 | Triple-barrier 레이블 (`build_triple_barrier_label` + 섀도우 재학습) | ✅ | ✅ | **섀도우** | ❌ 승격 조건 미정 |
-| 6 | Meta-labeling (`EntryQualityScorer` → meta_gate 섀도우 스코어) | ✅ | ✅ | **섀도우** | ❌ 승격 조건 미정 |
+| 6 | Meta-labeling 신형 스코어러 (`EntryQualityScorer` → entry_quality_prob 섀도우) | ✅ | ✅ | **섀도우** | ❌ 승격 조건 미정 |
+| 6b | **[297차 정정]** 구형 MetaGate (`strategy/entry/meta_gate.py`, action=take/reduce/**skip**) | ✅ | ✅ | **ON (하드차단)** | ⚠ §3-2b 신설 필요 |
 | 7 | 분위 회귀 채널 (`quantile_regressor` → 섀도우 로깅) | ✅ | ✅ | **섀도우** | ❌ 승격 조건 미정 |
 | 8 | 지정가 우선 집행 (`LIMIT_ENTRY_FIRST_ENABLED=False`) | ✅ | ✅ | **OFF** | 실브로커 검증 대기 (NEXT_TODO ①) |
 | 9 | MAE/MFE 분석기 (`scripts/analyze_mae_mfe.py`) | ✅ | — | **수동** | ⚠ 스케줄 미연결 |
@@ -70,6 +71,17 @@
    → **[구현완료 2026-07-05]** `scripts/eod_retrain.py`가 금요일 자동으로
    ablation→판정리포트→TB재학습→분위재학습(→격주 MAE/MFE) 체인 실행
    (판정이 재학습보다 먼저 — §3-1 OOS 보장 순서).
+4. **[297차 신규 발견]** 6번 행이 "meta_gate 섀도우 스코어"라고만 적혀 있어
+   **구형 MetaGate(`strategy/entry/meta_gate.py`)가 이미 실거래 하드차단 게이트로
+   ON 상태**라는 사실이 매트릭스에서 누락됐다. 292차 진입0 딥다이브 실측:
+   2026-07-06 하루 244분이 `action=skip`으로 X등급 강제 전환 — 감사 §3-2가
+   "차단형 게이트는 이미 충분히 많다"고 진단한 바로 그 유형의 게이트가 정작
+   ablation 논의에서 신형 섀도우 스코어러(entry_quality_prob)와 혼동되어
+   빠져 있었다. → **[정정 완료 2026-07-06, 297차]** 매트릭스에 6b 행 추가(ON·
+   하드차단으로 등재), §3-2b·§4-1에 Hurst 게이트와 함께 주간 ablation 대상으로
+   명시. `scripts/generate_gate_ablation_report.py`는 290차부터 이미 `hurst_ok`·
+   `meta_gate`(구형, `meta_action=="skip"` 기준) 둘 다 분석 대상에 포함하고 있었으므로
+   코드 변경은 불필요 — 이번 정정은 문서·판정기준의 누락만 메운 것.
 
 ---
 
@@ -107,6 +119,25 @@
 - **승격 형태**: 합격 시에도 하드 차단이 아니라 **사이징 배수**(상위=×1.2,
   하위=×0.5)로 먼저 투입 — 차단형 게이트는 이미 충분히 많다(감사 §2-2 ③).
 
+### 3-2b. **[297차 신설]** 구형 MetaGate 하드차단 (`meta_action=="skip"`)
+- **배경**: §1 매트릭스 6b — 3-2와 달리 이미 ON인 실차단 게이트. 292차 진입0
+  딥다이브 실측(2026-07-06): 244분 `action=skip`으로 X등급 강제, C등급 도달
+  11분 중에도 다수가 이 게이트로 추가 차단됨. Hurst 게이트(횡보장 진입 차단)와
+  함께 "차단형 게이트가 실제로 나쁜 신호만 걸러내는가"를 매주 실측해야 할
+  최우선 두 후보.
+- **KPI**: `generate_gate_ablation_report.py`가 이미 산출하는 `hurst_ok`·`meta_gate`
+  단독 차단 행의 평균 realized_move·승률(§4-1에서 매주 자동 생성) — 신규 코드
+  불필요, 리포트를 읽는 절차만 신설.
+- **합격선(게이트 존치 근거)**: 단독 차단 표본의 평균 realized_move ≤ 0 **그리고**
+  승률 ≤ 기준선(전체 통과 신호 승률) — "차단된 신호가 실제로 나쁜 방향으로
+  움직였다"가 확인되면 게이트 존치. 표본 ≥ 20건 필요(그 미만이면 판단 보류).
+- **완화 트리거**: 단독 차단 표본의 평균 realized_move > 0 **그리고** 승률이
+  기준선보다 유의하게 높은 상태가 2주 연속이면 — 하드차단(`action=skip`→X등급)을
+  §3-2와 동일하게 **사이징 배수**(예: ×0.5)로 먼저 완화, 즉시 승격은 하지 않는다.
+- **주의**: take_thr(0.570 부근)이 현재 conf 분포(중앙값 0.31~0.42대)에서 사실상
+  도달 불가 수준이라는 정황이 292차 로그에서 확인됨 — ablation과 별개로 take_thr
+  자체의 캘리브레이션 재점검이 필요할 수 있음(별도 안건, 이 KPI로 판정하지 않음).
+
 ### 3-3. 분위 회귀 채널
 - **KPI 3종**: ① q50 부호의 방향 적중률(방향성 거래만), ② (q90−q10) 폭과 실현
   |손익|의 상관, ③ 실현값이 [q10,q90] 안에 든 비율 (목표 80%±5%p — 캘리브레이션).
@@ -127,6 +158,61 @@
 - **레짐 조건부 배수**: 레짐별(trend/neutral/MR) 거래 순EV를 배수 적용 전
   구간(6월)과 비교. trend 구간 EV가 악화되면 1.20→1.10으로 후퇴.
 
+### 3-6. **[297차 신설, P1-4]** Hurst 게이트 counterfactual
+- **배경**: 오늘(2026-07-06)과 같은 횡보일 진입0은 추세추종 설계상 "의도된 동작"
+  이지만, 그 의도가 옳은지(실제로 손실을 회피하는지) 실측 근거가 없었다는 것이
+  292차 진입0 딥다이브의 공백이었다.
+- **계측**: `hurst_gate_shadow` 테이블(utils/db_utils.py) — Hurst만 아니었으면
+  진입했을(다른 모든 게이트 통과 + 등급 A/B/C) 분봉마다 가상 진입가·손절·TP1을
+  기록한다(main.py STEP7 직전, `_final_entry_ok` 계산 직후). 실제 포지션에는
+  관여하지 않는 읽기 전용 계측.
+- **KPI**: `scripts/generate_validation_campaign_report.py`의
+  `resolve_and_eval_hurst_gate()`가 signal_decay와 동일한 방식(창 30분, STOP/TP1/
+  NEITHER 판정)으로 매주 사후 판정해 `hyp_pnl_pts`(차단 안 했으면 얻었을 pt)를
+  누적한다.
+- **합격선(게이트 존치, PASS)**: 누적 `hyp_pnl_pts` ≤ 0 — 차단된 신호가 실제로
+  손실 방향이었다는 뜻. 표본 ≥ 20건 필요(§3-2b·hurst_regime과 동일 기준).
+- **완화 트리거(FAIL)**: 누적 `hyp_pnl_pts` > 왕복비용 × 2 **그리고** 승률이
+  같은 기간 실거래 승률(기준선)보다 높음 — 이때도 즉시 언블록이 아니라
+  **하드차단 → 사이징 ×0.5**로 먼저 완화(§3-2·§5 원칙과 동일, 차단형 게이트는
+  이미 충분히 많다).
+- **설정**: `config/settings.py:VALIDATION_CAMPAIGN["hurst_gate_shadow"]`.
+
+### 3-7. **[297차 신설, P1-5]** mc–conf 괴리 조기경보
+- **배경**: 동적 min_conf(zone_mc)는 과거 conf 분포 기반이라, conf 분포 자체가
+  급락하면 진입후보(confidence≥min_conf) 분 수가 0에 가깝게 붕괴할 수 있다 —
+  292차 실측: 2026-07-06 하루 11분 vs 직전 3주 정상 범위 72~245분/일.
+- **계측**: `utils/db_utils.fetch_entry_candidate_gap()` — `ensemble_decisions.
+  regime_ok=1`(conf≥min_conf) 분 수를 거래일별로 집계, 최근 5거래일 평균 산출.
+- **경보 2단계** (자동 조정 없음 — 계기판, 판단은 사용자 몫):
+  ① **당일 단독**: 금일 진입후보 < `MC_CONF_GAP_ALERT_MIN_TODAY`(25분) — 5일
+     평균은 정상이어도 급성 붕괴(오늘 사례)를 즉시 잡는다.
+  ② **5일 롤링 평균**: `MC_CONF_GAP_ALERT_MIN_AVG`(60분/일) 미달 — 여러 날에
+     걸친 완만한 침식을 잡는다.
+- **표시**: EOD(15:40) `log_manager.system(..., "WARNING")` 경보 + daily_exporter
+  리포트에 "진입후보(conf≥mc): 금일 N분 5일평균 N분" 한 줄 상시 노출.
+- **설정**: `config/settings.py:MC_CONF_GAP_ALERT_*`.
+
+### 3-8. **[297차 신설, P1-7]** 캠페인 표본 기아 조기경보 + 완화 사다리
+- **배경**: §2 원칙("사후 완화는 반드시 과적합")을 검증 KPI뿐 아니라 진입 게이트
+  자체에도 적용한다. 주간 진입이 너무 적으면 4주 뒤 §3의 여러 min_samples가
+  확정적으로 미달되는데, 그 시점에 완화 순서를 정하면 이미 데이터를 본 뒤라
+  과적합이다 — 지금(데이터를 보기 전에) 순서를 고정한다.
+- **트리거**: 주간(7일) 진입 체결 < `ENTRY_STARVATION_WEEKLY_MIN`(10건). 4주
+  투영치(주간×4)를 Meta-Gate(분위당 30건×3)·레짐 ATR 배수(버킷당 20건×2) 등
+  실현거래 기반 KPI의 min_samples와 비교해 위험 채널을 함께 보고한다.
+- **완화 사다리** (반드시 순서대로, 각 단계 최소 5거래일 관찰 후 미회복 시 다음
+  단계 — §5 Serial activation과 동일 원칙):
+  ① **관찰만** — 297차 FQAdj 배선 수정의 자연 회복 효과부터 확인(코드 변경 없음).
+  ② **구형 MetaGate take_ceil(C등급) 완화**: 0.570 → 0.52
+     (`strategy/entry/meta_gate.py _GRADE_CFG['C']['take_ceil']`).
+  ③ **Hurst 횡보 차단 완화(최후 수단)**: `HURST_RANGE_THRESHOLD` 0.45 → 0.40.
+- **판정 자동화**: `scripts/generate_validation_campaign_report.py:
+  eval_sample_starvation()`가 매주 현재 사다리 위치를 계산해 리포트 [0]에 표시.
+  적용 여부는 항상 사용자 수동 결정 + `dev_memory/DECISION_LOG.md` 기록.
+- **설정**: `config/settings.py:ENTRY_STARVATION_WEEKLY_MIN`,
+  `ENTRY_STARVATION_MITIGATION_LADDER` (사전 등록 — 순서·값 변경 금지, §9-4 참조).
+
 ---
 
 ## 4. 차원 2 — 운영 루프: 리포트 자동화와 주간 리듬
@@ -138,19 +224,28 @@
 | 주기 | 스크립트 | 산출물 |
 |---|---|---|
 | 매일 | (기존) daily_exporter 순EV 섹션 | 등급·호라이즌·게이트별 순EV |
-| 매주 금 | `generate_gate_ablation_report.py` | 게이트별 한계 기여 주간표 |
+| 매주 금 | `generate_gate_ablation_report.py` | 게이트별 한계 기여 주간표 — **[297차 명시]** `hurst_ok`(횡보장 차단)·`meta_gate`(구형 하드차단, §3-2b) 두 신호품질 게이트를 매주 우선 판독 대상으로 지정. 스크립트 자체는 290차부터 이미 둘 다 포함 |
 | 매주 금 | `run_shadow_triple_barrier_retrain.py` + IC 비교 집계 | §3-1 KPI |
-| 매주 금 | meta_gate 분위별 EV 집계 (신규 소형 스크립트 1본) | §3-2 KPI |
+| 매주 금 | entry_quality_prob 분위별 EV 집계 (신규 소형 스크립트 1본) | §3-2 KPI |
 | 매주 금 | `train_quantile_regressor.py` + 캘리브레이션 집계 | §3-3 KPI |
 | 격주 금 | `analyze_mae_mfe.py` | 배리어 적정성 추이 |
+| 매주 금 | `generate_validation_campaign_report.py`의 `resolve_and_eval_hurst_gate()` — **[297차 신규]** | §3-6 KPI (hurst_gate_shadow resolve) |
+| 매일 | `fetch_entry_candidate_gap()` EOD 경보 — **[297차 신규]** | §3-7 mc–conf 괴리 (daily_exporter 상시 노출) |
+| 매주 금 | `generate_validation_campaign_report.py`의 `eval_sample_starvation()` — **[297차 신규]** | §3-8 표본 기아 + 완화 사다리 위치 (리포트 [0]) |
+| 매일 | `fetch_daily_entry_funnel()` — **[297차 신규]** | 진입 퍼널(FLAT→conf미달→CoherenceGate→게이트차단→후보→진입, daily_exporter 상시 노출) |
 
 구현 작업은 **EOD 체인에 5줄 추가 + 집계 스크립트 1~2본** — 반나절 분량.
 py310_64 실행이므로 `retrain_eod.py` 체인이 자연스러운 위치다.
 
 ### 4-2. 주간 판정 회의 (사용자 + Claude, 금요일 리포트 기준 15분)
 
-고정 안건 5개: ① 순EV 추이(전주 대비) ② 섀도우 KPI 3종 진행률 ③ ablation에서
-음의 기여 게이트 발견 여부 ④ NEXT_TODO 검증 항목 소화 ⑤ 다음 주 변경 승인
+고정 안건 6개: ① 순EV 추이(전주 대비) ② 섀도우 KPI 3종 진행률 ③ ablation에서
+음의 기여 게이트 발견 여부 — **[297차 명시] `hurst_ok`·`meta_gate`(구형 하드차단,
+§3-2b) 두 게이트는 매주 반드시 판독**, 그 외 게이트는 음의 기여 발견 시에만
+④ NEXT_TODO 검증 항목 소화 ⑤ 다음 주 변경 승인 ⑥ **[297차 신설]** 이번 주 진입
+퍼널 요약(daily_exporter 일별 기록 review) — 진입0/저조가 있었다면 어느 층
+(FLAT/conf미달/CoherenceGate/게이트차단 중 어디)에서 발생했는지 확인 + §3-8
+표본 기아 사다리 현재 위치 확인
 (원칙: 0건이 기본값).
 
 ### 4-3. 판정 기록
