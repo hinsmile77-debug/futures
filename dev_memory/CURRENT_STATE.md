@@ -1,6 +1,6 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-06 (v9-dev) — origin/dev 292차 머지(옵션체인 등 8개 피처 registry 반영) + v9 Track L1/L3 섀도우 유지
+> 마지막 업데이트: 2026-07-06 (v9-dev) — origin/dev 293차 머지(KOSPI200/VKOSPI 폴링 U180 후보 확보, 라이브 검증 미완) + v9 Track L1/L3 섀도우 유지
 > 이 파일이 가장 먼저 읽혀야 한다.
 
 ---
@@ -40,6 +40,18 @@
 **다음 확인 필요**: 모의투자 재가동 후 `entry_gate_json`에 `soft_gate_shadow_*`/
 `day_regime_shadow*` 필드가 실제로 쌓이는지 → 두 리포트 재실행 → Track L3 합격선
 사전등록 + Track L2 착수 여부 판단.
+
+---
+
+## 2026-07-06 (293차 — KOSPI200/VKOSPI 폴링 100% 실패 조사: U180 후보 확보, 라이브 검증은 미완)
+
+**계기**: 292차에서 발견한 `_poll_kospi200_index()` 100% 실패 버그 딥다이브.
+
+**핵심 발견**: `K2G01P`/`O2901P`(현재 코드)는 실제 KRX 표준 업종지수 코드가 맞지만(stockplus.com 확인), Cybos Plus의 `dscbo1.StockMst` COM TR은 대신증권 자체 "U"-prefix 코드 체계(KOSPI200=**U180**, 웹 검색 2건 확인)를 기대하는 것으로 추정 — GUI 종목코드검색 표시 코드와 COM API 입력 코드가 다를 수 있다는 것이 가장 유력한 가설.
+
+**막힘**: `scripts/probe_cp_stock_mst.py`(신규 진단 스크립트)로 실제 검증 시도했으나 이 세션 셸이 비관리자 권한이라 `CpUtil.CpCybos.IsConnect=False`로 COM 연결 자체가 거부됨 — 라이브 main.py/Cybos Plus는 관리자 권한으로 실행 중인 것으로 추정.
+
+**코드 변경 없음**: 확인 안 된 값으로 임의 교체하지 않음. 사용자가 관리자 권한 셸에서 `probe_cp_stock_mst.py --code U180`을 직접 실행해 검증 필요(`NEXT_TODO.md` 292차 ④).
 
 ---
 
