@@ -1225,7 +1225,30 @@ opt_atm_call_oi가 모두 포함됨을 확인했다(수정 전 로직으로는 "
 - [x] "need_add" 피처의 실제 수집 여부 DB로 실측 확인 (예상과 달리 이미 수집 중)
 - [x] 근본 원인(batch_retrainer 피처명 최다-키-행 선택 버그) 특정 + 합집합으로 수정
 - [x] 실 DB 전체 30m 구간으로 수정 로직 검증 (opt_gex_bn 등 4개 모두 포함 확인)
-- [ ] 다음 EOD 재학습 후 30m 정확도 재측정 → 목표 미달 시 그때 퇴역 확정
+- [x] 다음 EOD 재학습 후 30m 정확도 재측정 → 목표 미달 시 그때 퇴역 확정
+
+### [296차, 2026-07-06] 최종 퇴역 확정
+
+292차에서 `shap_feature_registry.json` `active_features`(97→105, opt_gex_bn 등 8개)
+반영 후, 같은 날 15:46 EOD full_cv 재학습(26주·40,011행·105피처) 결과:
+
+| 항목 | 값 |
+|---|---|
+| 30m 피처 수 (need_add 8개 반영 후) | 11 → 17개 |
+| 30m EOD CV acc | **0.3052** |
+| 목표 구간(`target_acc`) | 0.38~0.41 |
+| 260707 보고서 재활성화 기준 | ≥ 0.33 |
+
+두 기준 모두 미달, 3클래스 랜덤(0.333)보다도 낮다. "need_add 피처 탑재 후에도 acc
+회복 실패 시 퇴역"이라는 당초 감사 전제가 이번 EOD로 검증 완료됐으므로 **퇴역을
+최종 확정**한다. 나머지 5개 호라이즌(1m 47.1%/3m 51.9%/5m 46.9%/10m 41.9%/15m 42.7%)은
+모두 정상 범위 — 30m만 구조적으로 이탈.
+
+**반영**: `model/ensemble_decision.py`(CascadeCoherence·CoherenceGate에서도 30m 제외),
+`config/settings.py`(ENSEMBLE_WEIGHTS류 30m→0.0 명시), `safety/circuit_breaker.py`
+(주석 갱신), `docs/260707_FEATURE_ADD_TIMING_REPORT.md`(재활성화 조건 철회). predict_proba·
+GBM/RF 학습·CB③ P4 모니터링은 연구/재평가용으로 유지 — 향후 CORE 피처 구조 자체가
+바뀌는 등 근본적 재설계 없이는 재활성화하지 않는다.
 
 ## 260704 감사 로드맵 — 다중비교 보정 (Bonferroni) (P3, 완료)
 

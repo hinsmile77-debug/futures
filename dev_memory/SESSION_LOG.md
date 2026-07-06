@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-07-06 (296차 — 금일 운영 점검 + 30m 호라이즌 퇴역 최종 확정)
+
+**트리거**: "금일 미륵이 작동상황을 점검·보고" 요청 → 이어서 "30m 퇴역으로 결정하고
+관련 파일 반영" 지시.
+
+**점검 결과 요약(별도 보고 완료)**: 08:40 정상 기동 → 13:08 장중 재학습으로 registry
+97→105피처 반영 → 13:09~13:11 스케일러 차원불일치(`X has 97 features, but
+StandardScaler is expecting 105`) 3분 연속 크래시 → watchdog가 이를 "거래소 CB 감지"
+(재개 예상 13:41)로 오판정 → 13:12 사용자 수동 재기동으로 정상화. 295차(14:20) MarketEye
+수정은 그 이후 재기동이 없어 금일 라이브에는 전혀 반영되지 않음(`[CybosIndex]` 실패
+785건이 15:34까지 계속됨). 금일 진입 0건(Hurst 필터 188회 차단이 최대 원인). 15:45~15:46
+EOD full_cv 재학습 6/6 호라이즌 성공, P8 스케일러 재적합 성공.
+
+**30m 퇴역 판단 근거**: 위 EOD 로그에서 30m CV acc=0.3052 확인 — 250차가 임시 비활성화
+당시 등록해둔 재활성화 조건(need_add 피처 탑재 + acc≥0.33, `docs/260707_FEATURE_ADD_TIMING_REPORT.md`)
+과 290차가 사전 등록한 목표 구간(0.38~0.41, `docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md`
+로드맵 P3)을 292차가 피처 8개를 반영한 뒤에도 모두 미달. "피처 부족" 가설이 최종
+소진됐다고 판단해 사용자가 퇴역을 지시.
+
+**구현**: `model/ensemble_decision.py`(`compute_cascade_coherence()` cascade 목록에서
+30m 제거, CoherenceGate `_active_h` 계산의 `_bias_overrides`에 `{"30m"}` 추가 — 기존
+가중합 강제 0(250차)만으로는 이 두 게이트를 통한 간접 차단 경로가 남아있었음을 코드
+확인 후 대응), `config/settings.py`(`ENSEMBLE_WEIGHTS`/`ENSEMBLE_WEIGHTS_CORR_ADJ`
+30m→0.0, 나머지 5개 +0.03씩 재분배), `safety/circuit_breaker.py`(주석 갱신, 기능
+변경 없음 — 250차부터 이미 비활성), `docs/260707_FEATURE_ADD_TIMING_REPORT.md`·
+`ROADMAP.md`(재활성화 조건 철회, 최종 확정 기록).
+
+**검증**: `py_compile` 3개 파일 통과. `runpy`로 `config/settings.py` 단독 실행해
+`ENSEMBLE_WEIGHTS`/`ENSEMBLE_WEIGHTS_CORR_ADJ` 합계가 정확히 1.0임을 확인. **라이브
+재기동 검증은 아직 없음** — 이번 세션은 앱이 종료된 상태에서 소스 편집만 수행. 다음
+기동 후 CoherenceGate/CascadeCoherence 로그에서 30m 노이즈로 인한 오차단이 실제로
+사라지는지 확인 필요(`NEXT_TODO.md` 296차 참조). predict_proba·GBM/RF 학습·CB③ P4
+모니터링은 연구/재평가용으로 계속 유지 — 학습 자체는 끄지 않음.
+
+**변경 파일**: `model/ensemble_decision.py`, `config/settings.py`,
+`safety/circuit_breaker.py`, `docs/260707_FEATURE_ADD_TIMING_REPORT.md`, `ROADMAP.md`,
+`dev_memory/{NEXT_TODO,CURRENT_STATE,DECISION_LOG,SESSION_LOG}.md`.
+
+---
+
 ## 2026-07-06 (295차 — KOSPI200/VKOSPI 폴링 수정 완료: `dscbo1.StockMst` → `CpSysDib.MarketEye`)
 
 **트리거**: 294차에서 준비한 `probe_cp_market_eye.py`를 사용자가 관리자 권한 셸에서 실행, 결과 공유.

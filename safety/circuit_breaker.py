@@ -312,11 +312,11 @@ class CircuitBreaker:
             else:
                 self._cb3_reset_cooldown_samples = 0  # 쿨다운 해제
 
-        # CB③ acc30m HALT 트리거 — 비활성화 (2026-06-25)
-        # 사유: 30m 모델이 need_add 피처(opt_gex_bn·opt_chain_pcr 등) 미탑재 상태.
-        #       구조적 acc 저하(CV 0.2796)로 CB③가 오발동 → 당일 정지 반복.
-        #       피처 탑재 + acc 회복 후 재활성화 예정.
-        #       _accuracy_buf 누적·P4 stage 추적·DriftRetrain은 그대로 유지.
+        # CB③ acc30m HALT 트리거 — 비활성화(2026-06-25) → 30m 퇴역 확정(296차, 2026-07-06)
+        # 250차 시점 사유: need_add 피처 미탑재로 CV acc=0.2796, CB③ 오발동 반복.
+        # 296차 확정 사유: 피처 8개 탑재(292차) 후 EOD full_cv 결과도 acc=0.3052로
+        #   재활성화 기준 미달 — 30m은 앙상블·CB③ 모두에서 영구 제외로 최종 결정.
+        #   _accuracy_buf 누적·P4 stage 추적·DriftRetrain은 모니터링용으로 계속 유지.
         if len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES:
             acc = sum(self._accuracy_buf) / len(self._accuracy_buf)
             _n_samples = len(self._accuracy_buf)

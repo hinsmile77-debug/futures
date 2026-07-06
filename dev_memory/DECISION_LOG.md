@@ -2,6 +2,48 @@
 
 ---
 
+## 2026-07-06 (296차 — 30m 호라이즌 퇴역 최종 확정)
+
+### [결정] 30m을 앙상블·CoherenceGate·CascadeCoherence 전 경로에서 영구 제외
+
+**File**: `model/ensemble_decision.py`, `config/settings.py`, `safety/circuit_breaker.py`
+**배경**: 250차에서 30m 역방향 필터·CB③ HALT를 "임시 비활성화"(재활성화 조건: need_add
+피처 4,000행 달성 + EOD CV acc ≥ 0.33)로 처리했음. 292차에서 need_add 피처 8개를
+`shap_feature_registry.json`에 반영(97→105개, 30m은 11→17개 피처)해 조건 ①을 충족.
+**증상/근거**: 같은 날(2026-07-06) 15:46 EOD full_cv 재학습(26주·40,011행) 결과
+30m CV acc=**0.3052** — 조건②(≥0.33) 미달, 290차가 사전 등록한 목표 구간(0.38~0.41)
+미달, 3클래스 랜덤(0.333)보다도 낮음. 나머지 5개 호라이즌(1m 47.1%/3m 51.9%/5m 46.9%/
+10m 41.9%/15m 42.7%)은 전부 정상 범위 — 30m만 구조적으로 이탈.
+**결정**: "need_add 피처 탑재 후에도 acc 회복 실패 시 퇴역"이라는 250차·260704감사·290차가
+공통으로 사전 등록해둔 조건이 이번 EOD로 충족되어, 재활성화를 철회하고 영구 퇴역 확정.
+**조치**:
+1. `compute_cascade_coherence()`의 cascade 목록에서 "30m" 제거 (`["15m","10m","5m","3m","1m"]`).
+2. CoherenceGate `_active_h` 분모 계산의 `_bias_overrides`에 `{"30m"}` 추가 — 노이즈
+   방향이 분모에 남아 정상 진입을 차단하던 경로(과거 "30m ConstOut(dir=+1)+1m SHORT(-1)
+   → score=0.50 차단" 사례와 동일 메커니즘) 원천 차단.
+3. `ENSEMBLE_WEIGHTS["30m"]`/`ENSEMBLE_WEIGHTS_CORR_ADJ["30m"]`을 0.0으로 명시(런타임은
+   `ensemble_decision.py:357` 부근에서 이미 무조건 0으로 덮어써지고 있었으나 — 이는
+   ConstOut 전체 붕괴 시 `dict(ENSEMBLE_WEIGHTS)` 그대로 fallback하는 예외 경로가 있어
+   설정값 자체도 0이어야 그 경로에서도 30m이 되살아나지 않음), 나머지 5개 호라이즌에
+   +0.03씩 균등 재분배.
+**Why**: 가중합에서의 배제(250차)만으로는 불충분했다 — CoherenceGate·CascadeCoherence는
+horizon_proba 딕셔너리를 직접 순회하며 가중치와 무관하게 30m의 "방향"만 보고 판단하는
+별도 경로였기 때문에, 구조적으로 저성능(랜덤 이하)인 30m의 노이즈가 그 경로들을 통해
+여전히 정상 진입을 막을 수 있었다. 하나의 "퇴역"이 여러 독립 경로에 각각 구멍을 남길 수
+있다는 것을 실제 코드로 확인 — 향후 호라이즌/피처 하나를 끌 때는 "가중치"뿐 아니라
+"그 값을 직접 읽는 모든 게이트"를 함께 점검할 것.
+**How to apply**: 이 프로젝트에서 특정 호라이즌·피처를 "비활성화"할 때는 앙상블 가중합
+경로 하나만 고치고 끝내지 말고, `horizon_proba`/해당 값을 직접 참조하는 다른 게이트
+(CoherenceGate, CascadeCoherence, CB③ 등)까지 grep으로 전수 확인할 것.
+**구현**: `model/ensemble_decision.py`, `config/settings.py`, `safety/circuit_breaker.py`,
+`docs/260707_FEATURE_ADD_TIMING_REPORT.md`, `ROADMAP.md`. predict_proba·GBM/RF 학습·
+CB③ P4 모니터링(연구/재평가용)은 유지 — 학습 자체를 끄지는 않음.
+**검증**: `py_compile` 3개 파일 통과, `runpy`로 두 가중치 dict 합계 1.0 확인. **라이브
+미검증** — 다음 기동 후 CoherenceGate/CascadeCoherence 로그에서 30m발 오차단이 사라지는지
+확인 필요.
+
+---
+
 ## 2026-07-06 (295차 — KOSPI200/VKOSPI 폴링 수정 완료)
 
 ### [버그 수정] `get_index_price()` TR을 `dscbo1.StockMst` → `CpSysDib.MarketEye`로 교체
