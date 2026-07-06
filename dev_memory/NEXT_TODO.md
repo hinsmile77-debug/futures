@@ -17,11 +17,15 @@
 - [ ] **② 다음 EOD(07-07 15:40)에서 정상 동작 확인** — `daily_exporter` 리포트가
   "버전 v1.0 (33일차)"로 정상 증가하는지, `strategy_events`에 v1.0 기준
   액션이 새로 쌓이는지 확인.
-- [ ] **③ CUSUM 드리프트 감시 배선 여부 결정** — `MultiMetricDriftDetector.
-  update()`가 프로덕션 어디에서도 호출되지 않는다는 것을 확인함(main.py EOD
-  파이프라인에 실제 daily_pnl 연결 배선이 없음). CUSUM 계기판이 계속 CLEAR
-  (0.00)로만 찍힐 것 — 이 감시 기능 자체를 살릴지(main.py EOD 시점에
-  `update()` 호출 추가), 제거할지 결정 필요.
+- [ ] **③ CUSUM 드리프트 감시 영속화/스케일 결정 (정정: 배선은 이미 있음)** —
+  최초 조사에서 "배선 자체가 없다"고 잘못 결론냈다가 정정함(`main.py:8310-
+  8325`에 `get_drift_detector().update(daily_pnl=...)` 실호출 존재, 멀티라인
+  호출이라 grep이 놓쳤었음). 진짜 남은 문제 둘: (a) `MultiMetricDriftDetector`
+  가 인메모리 싱글턴이라 매일 재기동 시 CUSUM 누적이 리셋될 수 있음 — 디스크
+  영속화(재기동해도 상태 유지) 추가 여부 결정. (b) `ref_std`가 기본 하한(1.0)에
+  걸려있어 하루 PnL(수십만~수백만원)이 그대로 거대한 z-score로 환산되는 것으로
+  보임(07-01 CRITICAL 1181230.50이 그 증거) — `estimate_ref_from_trades()`로
+  WFA 실측 표준편차를 실제로 세팅하는 배선이 있는지 확인 필요.
 - [ ] **④ backup_pull/db/strategy_registry.db 처리** — MW0602 pull 절차용
   백업이 수정 전(phantom v1.2) 상태를 그대로 갖고 있음. 해당 절차를 다시 쓸
   계획이면 이 백업도 함께 정리하거나 절차 자체를 건너뛸 것.

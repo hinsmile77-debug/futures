@@ -25,13 +25,15 @@ params.py`의 실제 PARAM_HISTORY를 따라 "v1.0"으로 기록되고 있었다
 `strategy_events` 로그 대조 결과 2026-05-08부터 거의 매 거래일 v1.2 기준
 ROLLBACK_REVIEW/WATCH 액션이 이 phantom 데이터만으로 반복 기록돼 있었음.
 
-별개로, `MultiMetricDriftDetector.update()`를 호출하는 지점이 프로덕션
-코드 전체(main.py 포함)에 단 한 곳도 없음을 확인 — CUSUM 드리프트 감시는
-실거래 PnL과 연결된 적이 없는 인메모리 싱글턴이며, 07-01 리포트의 `CUSUM
-CRITICAL (1181230.50)`은 실거래 반영이 아니라 원인 미상의 1회성 주입(수동
-테스트 추정)이 그날 리포트에 찍혔다가 다음날 프로세스 재시작으로 사라진
-것으로 보인다(재현 경로는 미확정, 코드상 실거래 연결 자체가 없다는 사실만
-확정).
+별개로 CUSUM 드리프트 감시를 조사했는데, **최초 결론("배선 자체가 없다")은
+오류였다** — `main.py:8310-8325`에 `get_drift_detector().update(daily_pnl=
+forward_stats["pnl_krw"], ...)` 실호출이 존재한다(멀티라인 호출이라 최초
+grep이 놓침, 정정 경위는 `DECISION_LOG.md` 298차 참조). 진짜 문제는
+`MultiMetricDriftDetector`가 인메모리 싱글턴이고 디스크 영속화 로직이
+없어서, 이 시스템처럼 매일 재기동되는 운영이면 CUSUM의 20거래일 누적이
+매일 리셋될 수 있다는 것. 07-01 리포트의 `CUSUM CRITICAL (1181230.50)`은
+조작이 아니라 그날의 실제 daily_pnl이 `ref_std` 하한(1.0) 때문에 그대로
+z-score처럼 커져 찍힌 것으로 추정(ref_std 산정 로직 별도 확인 필요).
 
 **조치**:
 - `data/db/strategy_registry.db` 백업(`*.bak_20260706_220230`) 후 v1.1/v1.2

@@ -18,10 +18,12 @@ dev-v9 cherry-pick 문제 없나" 질문(브랜치명 확인 거쳐 `origin/v9-d
 버전이었고, 실거래 PnL은 05-08부터 계속 v1.0으로 기록되고 있었다. 그 결과
 `_get_live_days('v1.2')`가 항상 1을 반환해 2달간 "1일차"에 고정, 판정은
 영원히 INSUFFICIENT, `strategy_events`에는 05-08부터 v1.2 기준 ROLLBACK_
-REVIEW/WATCH가 오판단으로 반복 기록됨. 별개로 CUSUM 드리프트 감시
-(`MultiMetricDriftDetector.update()`)를 호출하는 지점이 프로덕션에 전혀
-없어 실거래와 연결된 적이 없다는 것도 확인(07-01 리포트의 CUSUM CRITICAL은
-원인 미상 1회성 주입으로 추정, 확정은 못 함).
+REVIEW/WATCH가 오판단으로 반복 기록됨. 별개로 CUSUM 드리프트 감시를
+조사하다 **한 차례 잘못된 결론을 냈다가 정정**했다 — 처음엔 "`update()`
+호출 지점이 전혀 없다"고 봤으나(멀티라인 호출을 놓친 grep 실수),
+실제로는 `main.py:8310-8325`에 실호출이 있고 진짜 문제는 DriftDetector가
+인메모리 싱글턴이라 매일 재기동 시 CUSUM 누적이 리셋될 수 있다는 것(상세는
+`DECISION_LOG.md` 298차 정정판 참조).
 
 **조치**: `data/db/strategy_registry.db` 백업 후 v1.1/v1.2 seed 레코드 전체
 삭제(strategy_versions/param_changes/stage_results/live_snapshots), v1.0을

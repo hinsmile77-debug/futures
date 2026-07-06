@@ -44,28 +44,44 @@ verdict()`의 `live_days<5 → INSUFFICIENT` 조건에 걸려 판정이 절대 �
 판정 UNDERPERFORM(Live MDD 58.6%). `DailyExporter().build_report()` 재실행 —
 정상 출력 확인.
 
-### [설계공백] CUSUM 드리프트 감시가 실거래 PnL과 연결된 적이 없음
+### [설계공백] CUSUM 드리프트 감시가 인메모리 싱글턴이라 매일 재기동 시 누적이 리셋될 수 있음 (최초 진단 오류 정정)
 
-**File**: `strategy/param_drift_detector.py`(`MultiMetricDriftDetector.
-update()`), `main.py`(EOD 파이프라인)
+> **정정**: 이 항목은 최초 작성 시 "`MultiMetricDriftDetector.update()`를
+> 호출하는 지점이 프로덕션에 전혀 없다"고 잘못 기록했다. 원인은 grep 패턴
+> (`get_drift_detector\(\)\.update\(` 등)이 한 줄짜리 매치만 찾았는데, 실제
+> 호출부(`main.py:8313`)가 `_get_dd().update(\n    daily_pnl = ...`처럼 여러
+> 줄에 걸쳐 있어 놓쳤다. `scripts/diagnose_strategy_version_integrity.py`를
+> 만들어 재검증하는 과정에서 발견해 바로잡음. 아래가 정정된 내용이다.
+
+**File**: `main.py:8310-8325`(EOD 배선, 실재함), `strategy/param_drift_
+detector.py`(`MultiMetricDriftDetector`/`DriftDetector`, 영속화 없음)
 **증상**: 07-01 EOD 리포트에 `CUSUM CRITICAL (1181230.50)` → 07-02부터
 `CLEAR (0.00)`로 복귀, 이후 계속 CLEAR 고정.
-**원인**: 전체 코드베이스에서 `MultiMetricDriftDetector.update()`를 호출하는
-지점이 없음(grep 전수 확인) — `main.py`는 `hotswap_gate.py`를 통해
-`reset_all()`만 호출하고, 대시보드/리포트는 `get_cusum()`/`get_levels()`
-조회만 함. 즉 실거래 일별 PnL이 CUSUM에 입력된 적이 코드상 없다. 이 감지기는
-프로세스 인메모리 싱글턴이라 재시작마다 0으로 리셋되므로, 07-01의 CRITICAL
-값은 그날 프로세스 수명 중 어떤 1회성 주입(수동 테스트로 추정, 확정 못 함)이
-반영됐다가 다음날 재시작으로 사라진 것으로 보인다.
-**결정**: 이번 세션에서는 원인 확정과 기록만 하고 배선은 보류(다음 세션
-결정 필요 — `NEXT_TODO.md` 298차 ③ 참조).
-**Why**: 배선 여부 결정(EOD에 실제 daily_pnl로 `update()` 호출을 추가할지,
-아니면 CUSUM 계기판 자체를 제거할지)은 설계 판단이 필요해 이번 딥다이브
-범위를 벗어남.
-**How to apply**: 리포트/대시보드에 "항상 CLEAR/정상"으로만 찍히는 안전
-지표가 있으면, 그 지표가 실제로 무언가를 감시하고 있는지 데이터 흐름을
-먼저 추적할 것 — read-only 조회 지점만 있고 write(update) 지점이 없으면
-그 지표는 장식일 뿐이다.
+**원인**: `main.py`는 매일 EOD 시점에 `get_drift_detector().update(daily_pnl=
+forward_stats["pnl_krw"], ...)`을 **실제로 호출**하고 있어 배선 자체는
+존재한다. 문제는 `get_drift_detector()`가 반환하는 `MultiMetricDriftDetector`
+가 모듈 전역 변수(`_detector`)로 보관되는 **순수 인메모리 싱글턴**이고,
+`param_drift_detector.py` 어디에도 디스크 영속화(pickle/json 등) 로직이 없다는
+것. 이 시스템은 매일 재기동되는 운영 구조로 보이므로(08:55 매크로 수집 시작 ·
+게이트 브레이크다운에 "재시작유예" 항목 존재 등 정황), 매 거래일 새 프로세스가
+시작될 때마다 `_cusum_neg`가 0부터 다시 시작 → 그날 EOD의 `update()` 1회 호출
+결과가 곧 "그날 하루치 z-score 근사값"이 되어버리고, `window=20`거래일에 걸쳐
+누적되도록 설계된 CUSUM의 취지(서서히 나빠지는 추세 감지)가 실질적으로
+무력화된다. 07-01의 CRITICAL(1,181,230.50)은 조작된 값이 아니라 `ref_std`가
+기본 하한(1.0)에 걸린 채로 그날의 실제 daily_pnl(≈-118만원대)이 그대로
+z-score처럼 커진 것 — 등록된 WFA 기준 표준편차가 `estimate_ref_from_trades()`
+등으로 제대로 세팅되지 않았을 가능성이 있다(별도 확인 필요, `NEXT_TODO.md`
+298차 ③ 참조).
+**결정**: 이번 세션에서는 원인 재확정(배선은 있음, 영속화가 없음 + ref_std
+스케일 의심)까지만 하고 실제 수정(디스크 영속화 추가 또는 ref_std 재계산 배선)은
+보류(다음 세션 결정 필요 — `NEXT_TODO.md` 298차 ③ 참조).
+**Why**: 영속화 방식(파일 저장/DB 저장/앱이 정말 24시간 유지되는지 재확인)과
+`ref_std` 산정 로직 수정은 설계 판단이 필요해 이번 딥다이브 범위를 벗어난다.
+**How to apply**: (1) grep으로 "호출부 없음"을 결론 낼 때는 멀티라인 호출·
+별칭 import(`as _get_dd`)를 반드시 감안할 것 — 이번처럼 한 줄짜리 정규식이
+실제 존재하는 호출을 놓칠 수 있다. (2) "항상 CLEAR/정상"으로만 찍히는 안전
+지표를 볼 때도 "호출이 없다"와 "호출은 있지만 상태가 안 쌓인다"를 구분해서
+확인할 것 — 이번 사례는 후자였다.
 
 ---
 
