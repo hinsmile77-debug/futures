@@ -324,6 +324,35 @@ def main():
             )
         log.info("완료 마커 저장: %s", _MARKER_PATH)
 
+        # RegimeFingerprint 학습분포 갱신 — 이번 EOD(26주) 재학습에 실제 사용된
+        # CORE 3피처(cvd_divergence/vwap_position/ofi_norm) 분포를 PSI 기준선으로 저장.
+        # 299차가 만든 "_try_bootstrap_baseline() 당일 50분 스냅샷" 임시방편을
+        # 실제 WFA 학습분포로 대체 — main.py는 다음 재기동 시 이 파일을 읽어 사용.
+        try:
+            from strategy.regime_fingerprint import get_fingerprint, _CORE_FEATURES
+            _core_idx = {
+                f: feature_names.index(f)
+                for f in _CORE_FEATURES
+                if f in feature_names
+            }
+            if len(_core_idx) == len(_CORE_FEATURES):
+                _wfa_features = [
+                    {f: float(X[i, idx]) for f, idx in _core_idx.items()}
+                    for i in range(X.shape[0])
+                ]
+                get_fingerprint().save_training_fingerprint(_wfa_features)
+                log.info(
+                    "[RegimeFingerprint] 학습분포 갱신 완료 — %d행 기준 (CORE 3피처 전부 확보)",
+                    len(_wfa_features),
+                )
+            else:
+                log.warning(
+                    "[RegimeFingerprint] CORE 피처 일부 누락(%s) — 학습분포 갱신 스킵",
+                    [f for f in _CORE_FEATURES if f not in _core_idx],
+                )
+        except Exception as _fp_e:
+            log.warning("[RegimeFingerprint] 학습분포 갱신 실패 (무해): %s", _fp_e)
+
         # 재학습 이력 영속화 — main.py 대시보드(자가학습 탭)의 "마지막 재학습"·"재학습 횟수"와
         # 동일한 session_state.json 키를 공유. EOD는 main.py 프로세스 밖(장외 스케줄러)에서
         # 실행되므로 main.py의 _on_gbm_retrain_done()을 거치지 않는다 — 여기서 직접 갱신하지
