@@ -8252,6 +8252,123 @@ CORE 피처가 `feature_names`에서 일부 누락된 경우(managed feature set
 재기동(0708) 후 PSI가 개장 초반부터 CRITICAL에 고착되지 않고 정상적으로
 오르내리는지**가 최우선 확인 대상(`NEXT_TODO.md` 302차 참조).
 
+### 후속 관찰 — c5f2c03 커밋 이후 같은 날 13:56 재시작 발생
+
+커밋 직후 사용자 요청으로 재시작 이후 현재까지 진입0 현황을 재분석. 두 가지
+발견:
+
+1. **13:50~14:21(31분) 실거래소 서킷브레이커/단일가 최초 실전 확인** —
+   `raw_candles` 1분봉 공백을 실측(13:50:00→14:21:00). 로그상 시스템이
+   `파이프라인 미실행 경고 2단계 → [ExchangeCB] 4분00초 미수신 + Cybos 연결
+   정상 → 거래소 halt 조기 확정(예상 재개≈14:26) → 13:56:55 자동 재시작(재기동
+   #1)` 순서로 대응했고, 실제 재개(14:21)와 재개 직후 급등 캔들(14:29,
+   +14.2pt)이 예측과 대체로 부합 — "연결 문제"와 "진짜 거래소 halt"를 구분해
+   조기 확정한 안전장치가 실전에서 처음 발동한 사례로 판단(정상 동작, 버그
+   아님). 같은 시간대 `[CybosIndex] 종목명 검증 실패`(VKOSPI, 295차가 고쳤다는
+   그 증상)가 반복됐는데 halt 데이터공백과 정확히 겹쳐 halt의 부수효과로
+   추정 — halt 없는 시간대 재발 여부로 295차 회귀 여부를 판별해야 함(미확정).
+2. **재시작 후 PSI 재발 여부는 표본 부족으로 미확인** — 13:56:55 재시작으로
+   인메모리 라이브 버퍼가 리셋되며 PSI가 우연히 재출발했으나(`regime_
+   fingerprint.json`은 여전히 09:49:59 스냅샷 그대로 — 이 재시작은 302차
+   수정의 효과가 아니라 순전히 버퍼 초기화의 우연한 부수효과), 재개~15:08
+   파이프라인 정지까지 `regime_ok=1` 통과가 단 2분뿐이고 그마저 halt 재개
+   직후 변동성 스파이크로 인한 ATR 고변동성 게이트(정상 동작)에 막혀 재발
+   여부를 관찰할 표본 자체가 없었음. 진짜 검증은 여전히 다음 재기동(0708)
+   이후로 남음.
+
+두 관찰 모두 `NEXT_TODO.md` 302차 "후속 관찰" 항목으로 등록.
+
+### 후속 조치 — VKOSPI mojibake 근본원인 특정 + 수정, daily_close() 크래시 딥다이브
+
+사용자가 "①VKOSPI halt 상관 여부, ②main.py 크래시 원인, ③EOD 재학습 로그" 3건을
+직접 점검 요청. 확인 결과:
+
+1. **VKOSPI mojibake는 halt와 무관한 상시 100% 실패로 재확인** — 09:00~15:34
+   전체 393회(사실상 매분) `code=O2901P`(VKOSPI)만 실패, `code=K2G01P`
+   (KOSPI200)는 0건. 실측 디코딩으로 근본원인 확정:
+   `"ÄÚ½ºÇÇ200 º¯µ¿¼º".encode('latin1').decode('cp949') == "코스피200 변동성"`
+   — `CpSysDib.MarketEye`가 반환한 한글 종목명이 이 환경에서 CP949→Latin-1
+   오디코딩됨. VKOSPI 검증 문자열("변동성")은 한글이라 매번 걸리지만 KOSPI200
+   검증 문자열("200")은 ASCII라 같은 손상에도 우연히 통과 — 295차의 TR 교체
+   자체는 유효했으나 이 한글 디코딩 버그 때문에 VKOSPI만 사실상 계속
+   미작동이었던 것으로 보임.
+   - **수정**: `collection/cybos/api_connector.py`에 `_fix_mojibake_kr()` 추가
+     — Latin-1 인코드 후 CP949로 재디코드하는 왕복 변환. 정상적으로 디코딩된
+     한글은 U+AC00~D7A3 범위라 Latin-1 인코드 자체가 `UnicodeEncodeError`로
+     실패하므로 원본 그대로 반환되는 자기복구 설계(실제로 깨진 문자열만
+     복구, 정상 문자열/ASCII/빈 문자열은 안전하게 통과). `get_index_price()`의
+     `name` 필드 파싱에 적용. 격리 테스트로 4케이스(mojibake 복구/정상 한글
+     보존/ASCII 보존/빈 문자열) 전부 확인, `py_compile` 통과. **라이브
+     미검증** — 내일(0708) 기동 후 검증 필요.
+   - 동일 패턴(`GetDataValue`로 한글 종목명 읽기)이 `api_connector.py:565`
+     (선물잔고 조회)에도 있으나 검증 로직이 없어 지금까지 깨져도 티가 안 났을
+     가능성 — 표시/로그용이라 매매엔 영향 없어 이번 수정 범위 밖으로 남김.
+
+2. **daily_close() 크래시 딥다이브 — 07-06 정상 종료 흐름과 대조** — main.py가
+   15:40:27 `[CB] 일간 리셋 완료` 직후, `notify()` 호출 전 트레이스백 없이
+   종료. 07-02/03/06은 `[Shutdown] 정상 종료 플래그 기록`이 매번 정확히 2회
+   찍히는데 오늘만 0회 — daily_close()가 이번에 처음으로 미완료. 런처가
+   stderr까지 캡처하는데 트레이스백이 없어 Python 예외가 아닌 네이티브
+   크래시(직전 `QObject::connect: Cannot queue arguments of type 'QTextCursor'`
+   경고와 정황상 부합, CLAUDE.md가 이미 아는 COM/Qt 스레드 크래시 계열)로 추정.
+   - **정량적 근거**: 헬스 모니터 `exceptions_10m`(최근 10분 SYSTEM 레이어
+     WARNING+ERROR+CRITICAL 수, 임계 12.0)과 CRITICAL Health 발생 횟수 비교 —
+     07-02 최대10(CRITICAL 0회)·07-03 최대9(0회)·07-06 최대4(0회) 대비
+     **07-07 최대13·CRITICAL 51회**. 오늘만 VKOSPI(ERROR 393회)+PSI
+     FP-CRITICAL(WARNING 다발) 두 버그가 겹쳐 로그 볼륨이 비정상적으로
+     높았던 것과 크래시 사이의 상관관계는 강하게 확인되나, 정확한 크래시
+     메커니즘(어느 GUI 콘솔 업데이트 경로인지)은 미확증.
+   - **사용자 정정**: 12:56:41 재시작은 크래시가 아니라 커밋 반영을 위한
+     수동 재시작이었음(당초 원인불명 재시작으로 오판) — 오늘의 실제 이상
+     이벤트는 13:56(실거래소 halt, 정상 동작)과 15:40(daily_close 크래시,
+     이상 동작) 둘뿐으로 정정.
+   - **결론**: 정확한 크래시 지점은 미확증이나, 오늘 시스템을 스트레스
+     상태로 몰아넣은 근본 원인(VKOSPI+PSI)은 이미 특정·수정됐으므로 이번
+     수정이 재발 위험을 낮추는 가장 직접적인 조치로 판단. 재발 시 `log_manager`
+     → dashboard 콘솔 위젯 크로스스레드 경로를 별도 딥다이브해야 함.
+
+3. **PSI EOD 학습분포 갱신 확인** — `retrain_eod_20260707.log`에
+   `[RegimeFingerprint] 학습분포 갱신 완료 — 39939행 기준` 확인,
+   `regime_fingerprint.json`의 `saved_at`도 `09:49:59`(50개 스냅샷) →
+   `16:07:10`(26주 3만9939행)로 정상 갱신됨. 302차 수정이 의도대로 동작 —
+   실제 PSI 정상화 여부는 여전히 다음 재기동(0708) 확인 대상.
+
+### 후속 — `crash_fault.log` 확인으로 크래시 메커니즘 확정 + 재발 진단 계측 추가
+
+위 2번에서 "정확한 크래시 메커니즘 미확증"으로 남겼던 부분을 사용자가
+`logs/crash_fault.log`(런처 stderr 캡처와는 별개 파일 — 230차가 심어둔
+`faulthandler.enable(all_threads=True)` + `dump_traceback_later(30,
+repeat=True)`, main.py가 직접 fd에 30초 주기로 전 스레드 Python 스택을 기록)
+확인 요청으로 사실상 확정:
+
+- 15:40:27 크래시 직전 스냅샷에서 **`_run_daily_close`(main.py:9477)가 GUI
+  메인 스레드가 아니라 별도 `threading.Thread`로 실행 중**이었고, 그 안에서
+  `daily_close()`(8197) → `circuit_breaker.reset_daily()`(602) →
+  `log_manager.system()`(65) → 대시보드 콜백 → `append()`(7583) →
+  `_insert_html_left()`(7536)까지 내려가 **`QTextCursor`를 직접 조작**하고
+  있었음. PyQt에서 GUI 위젯을 GUI 스레드 밖에서 만지는 건 정의되지 않은
+  동작(드물게 크래시)이고, 직전 관찰된 `QObject::connect: Cannot queue
+  arguments of type 'QTextCursor'` 경고와 정확히 부합 — 상관관계였던 걸
+  확정적 메커니즘 증거로 격상. (다만 이 스냅샷 자체가 크래시의 직접 원인인지,
+  크래시 직전 우연히 포착된 정상 실행 구간인지는 여전히 확률적 추정 — 실제
+  Qt 내부 손상은 이 호출 직후 어느 시점에 일어났을 것으로 추정.)
+- **재발 진단 계측 추가**: `logging_system/log_manager.py`의 `LogManager.log()`
+  — SYSTEM/SIGNAL/TRADE/LEARNING/DEBUG/HEALTH 전 레이어의 유일한 공통
+  진입점 — 에 `threading.current_thread() is threading.main_thread()` 체크를
+  추가. GUI 스레드가 아니면 `logs/cross_thread_gui.log`(신설)에 스레드명 +
+  `traceback.format_stack()` 전체 콜스택을 기록. `log_manager` 자체를 다시
+  타지 않는 별도 `logging.FileHandler`로 격리해 무한 재귀를 피했고, 같은
+  스레드는 5초 쿨다운으로 반복 스팸을 막음. 실행 경로·기존 동작은 전혀
+  바꾸지 않는 순수 진단 계측 — 격리 스크립트로 background thread 호출은
+  기록되고 main thread 호출은 기록 안 되는 것을 확인, `py_compile` 통과.
+- **범위 밖으로 남긴 것**: 진짜 근본 수정(로깅 콜백을 `pyqtSignal`+
+  `Qt.QueuedConnection`으로 GUI 스레드에 마샬링)은 `daily_close()`뿐 아니라
+  `_db_write_worker`/`macro_fetcher._loop`/`slack_queue._run` 등 다른 백그라운드
+  스레드도 전부 `log_manager`를 호출하고 있어 로깅 경로 전체에 걸친 구조
+  변경이 필요함 — 라이브 트레이딩 시스템의 핵심 로깅 경로라 신중한 설계가
+  필요해 이번엔 진단 계측만 추가하고 착수하지 않음. 새 계측으로 크로스스레드
+  호출 빈도를 며칠 관찰한 뒤 착수 여부 결정.
+
 ### 부수 관찰 (조치 안 함)
 
 격리 테스트 중 "완전 동일 분포"를 재현해도 PSI가 예상보다 높게(0.3~0.4대) 나오는
