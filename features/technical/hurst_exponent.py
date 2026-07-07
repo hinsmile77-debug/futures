@@ -55,90 +55,6 @@ def calculate_hurst(price_series, max_lag: int = 20) -> float:
     return float(np.clip(hurst_h, 0.0, 1.0))
 
 
-def classify_market_state(h: float) -> dict:
-    """
-    Hurst 값을 시장 상태로 분류
-
-    Returns:
-        {state, action, confidence_modifier, description}
-    """
-    if h > 0.55:
-        return {
-            "state":               "추세장",
-            "action":              "추세추종 허용",
-            "confidence_modifier": +0.10,   # 신뢰도 +10%
-            "description":        f"H={h:.3f} — 추세 지속, 진입 우호적",
-        }
-    elif h < 0.45:
-        return {
-            "state":               "횡보장",
-            "action":              "진입 차단",
-            "confidence_modifier": -0.99,   # 사실상 차단
-            "description":        f"H={h:.3f} — 평균 회귀, MDD 위험",
-        }
-    else:
-        return {
-            "state":               "혼합 (데드존)",
-            "action":              "신중 진입",
-            "confidence_modifier": -0.10,   # 신뢰도 -10%
-            "description":        f"H={h:.3f} — 방향 불명확",
-        }
-
-
-def hurst_with_regime_synergy(h: float, adx: float, atr_ratio: float) -> dict:
-    """
-    Hurst + v6.5 미시 레짐 결합 시너지
-
-    Args:
-        h:         Hurst 지수
-        adx:       ADX 값 (추세 강도)
-        atr_ratio: ATR / ATR_평균 (변동성 비율)
-
-    Returns:
-        결합 판단 결과
-    """
-    hurst_state = classify_market_state(h)
-
-    # ADX > 25 AND H > 0.55 → 강한 추세 확인
-    if adx > 25 and h > 0.55:
-        return {
-            "verdict":             "강한 추세 확인",
-            "confidence_boost":    +0.15,
-            "reason":              f"ADX={adx:.1f}(추세) + H={h:.2f}(지속성) 이중 확인",
-        }
-
-    # ADX > 25 BUT H < 0.45 → 가짜 추세 경고
-    elif adx > 25 and h < 0.45:
-        return {
-            "verdict":             "가짜 추세 경고",
-            "confidence_boost":    -0.99,
-            "reason":              f"ADX={adx:.1f}(추세 외형) + H={h:.2f}(평균회귀) 불일치",
-        }
-
-    # ADX < 20 AND H < 0.45 → 명확 횡보
-    elif adx < 20 and h < 0.45:
-        return {
-            "verdict":             "명확 횡보 — 역추세만",
-            "confidence_boost":    -0.99,
-            "reason":              f"ADX={adx:.1f} + H={h:.2f} 횡보 이중 확인",
-        }
-
-    # 급변장 (ATR 2배 이상)
-    elif atr_ratio > 2.0:
-        return {
-            "verdict":             "급변장 — 거래 중단",
-            "confidence_boost":    -0.99,
-            "reason":              f"ATR비율={atr_ratio:.1f}배 급변 + H={h:.2f}",
-        }
-
-    else:
-        return {
-            "verdict":             "표준 앙상블",
-            "confidence_boost":    0.0,
-            "reason":              "혼합 레짐, 기본값 적용",
-        }
-
-
 if __name__ == "__main__":
     # ── 동작 테스트 ───────────────────────────────────────────
     import random
@@ -147,13 +63,9 @@ if __name__ == "__main__":
     # 추세 시뮬레이션
     trend_prices = [390 + i * 0.05 + random.gauss(0, 0.1) for i in range(60)]
     h_trend = calculate_hurst(trend_prices)
-    print(f"[추세 시뮬] H = {h_trend:.3f} → {classify_market_state(h_trend)['state']}")
+    print(f"[추세 시뮬] H = {h_trend:.3f}")
 
     # 횡보 시뮬레이션
     range_prices = [390 + random.gauss(0, 0.3) for _ in range(60)]
     h_range = calculate_hurst(range_prices)
-    print(f"[횡보 시뮬] H = {h_range:.3f} → {classify_market_state(h_range)['state']}")
-
-    # 레짐 결합 테스트
-    combined = hurst_with_regime_synergy(h=0.62, adx=28.5, atr_ratio=1.1)
-    print(f"[레짐 결합] {combined['verdict']} | {combined['reason']}")
+    print(f"[횡보 시뮬] H = {h_range:.3f}")

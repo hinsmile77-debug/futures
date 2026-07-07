@@ -12,7 +12,7 @@ raw_features에 INSERT한다.
   cvd_direction            — close > open → +1, 반대 → -1
   cvd_slope                — 최근 5봉 cvd_direction 합산
   avg_volume               — 최근 20봉 volume 이동평균
-  hurst                    — 최근 30봉 종가로 R/S 근사
+  hurst                    — calculate_hurst() (실거래와 동일 공식, 최근 60봉 종가 버퍼)
 
 불가 피처 (호가/수급/매크로/옵션 없음):
   ofi_*, microprice_*, mlofi_*, queue_*
@@ -46,6 +46,7 @@ import sqlite3
 from features.technical.atr import ATRCalculator
 from features.technical.vwap import VWAPCalculator
 from features.technical.volume_profile import VolumeProfileCalculator
+from features.technical.hurst_exponent import calculate_hurst
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,32 +107,6 @@ FEATURE_KEYS_ALL = [
     # 개선 3 잔여 방향성 피처 (2026-06-01 추가)
     "volume_acceleration", "vwap_momentum", "prev_day_same_hour_ret",
 ]
-
-
-def _hurst_rs(prices: list) -> float:
-    """R/S 통계 기반 허스트 지수 근사 (Python 3.7 호환, scipy 불필요)"""
-    n = len(prices)
-    if n < 10:
-        return 0.5
-    try:
-        import numpy as np
-        arr = np.array(prices, dtype=float)
-        ret = np.diff(arr)
-        if len(ret) < 2:
-            return 0.5
-        mean_r = ret.mean()
-        std_r = ret.std()
-        if std_r < 1e-12:
-            return 0.5
-        dev = ret - mean_r
-        cum_dev = np.cumsum(dev)
-        rs = (cum_dev.max() - cum_dev.min()) / std_r
-        if rs <= 0:
-            return 0.5
-        h = math.log(rs) / math.log(n)
-        return round(float(max(0.0, min(1.0, h))), 4)
-    except Exception:
-        return 0.5
 
 
 def load_missing_dates(conn) -> list:
@@ -199,8 +174,10 @@ def process_day(date_str: str, candles: list) -> list:
         avg_vol = float(sum(vol_buf) / len(vol_buf)) if vol_buf else 0.0
 
         # ── Hurst ────────────────────────────────────────────────
+        # 실거래(feature_builder.py)와 동일한 calculate_hurst() 사용 — 별도 근사식 쓰면
+        # 소급 학습 데이터와 실거래 수집값의 hurst 의미가 달라짐(train/serve skew)
         close_buf.append(c)
-        hurst = _hurst_rs(list(close_buf)) if len(close_buf) >= 20 else 0.5
+        hurst = calculate_hurst(list(close_buf), max_lag=20)
 
         # ── 시간대 피처 ─────────────────────────────────────────
         try:

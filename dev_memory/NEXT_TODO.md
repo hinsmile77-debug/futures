@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-07-07 (301차) [Hurst 산출 흐름 점검 및 배선 수정]
+
+- [DONE 2026-07-07] **`hurst_override` 배선 + backfill Hurst 공식 통일 +
+  shadow_evaluator 경계값 정합 + 죽은 코드 제거** — 상세:
+  `dev_memory/SESSION_LOG.md`/`DECISION_LOG.md` 301차 항목.
+- [ ] **탈진 레짐 Hurst 우회 라이브 검증** — `main.py:6055-6059`에
+  `current_micro_regime == REGIME_EXHAUSTION` 조건 추가. 다음 기동 후
+  `[MicroRegime] * → 탈진` 로그가 뜬 분봉에서 Hurst<0.45라도 진입이 차단되지
+  않는지 확인. (탈진 레짐 자체가 드물게 발생하므로 며칠간 관찰 필요할 수 있음)
+- [ ] **backfill_features.py 재실행 여부 결정** — Hurst 공식을 `calculate_hurst()`로
+  통일했으나, 이미 DB에 적재된 과거(2026-04-28 이전 소급 또는 이전
+  `--update-features` 실행분) `hurst` 값은 소급 정정되지 않음. 학습 데이터
+  일관성이 실제로 문제가 될 만큼 중요하면 `--update-features`로 재실행 검토.
+
+---
+
 ## 2026-07-05 (v9-dev) [Track L1/L3 섀도우 — origin/dev 머지 후속]
 
 > 상세: `docs/미륵이고도화/TODO_v9_2026-07-04.md`. [[project_v9_dev_branch_split]] 규칙상

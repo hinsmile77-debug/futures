@@ -1,8 +1,34 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-06 (v9-dev) — origin/dev 297차 머지(FQAdj/CB③-P4 배선버그
-> 2건 수정 + 재발방지 계측 6종, 라이브 미검증) + v9 Track L1/L3 섀도우 유지
+> 마지막 업데이트: 2026-07-07 (v9-dev) — origin/dev 301차 머지(Hurst 산출 흐름 점검 →
+> `hurst_override` 미소비 배선, backfill Hurst 공식 불일치, shadow_evaluator 경계값
+> 3건 수정 + 죽은 코드 제거, 라이브 미검증) + v9 Track L1/L3 섀도우 유지
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-07 (301차 — Hurst 산출 흐름 점검 및 배선 수정)
+
+**계기**: 사용자 요청으로 hurst(허스트 지수) 산출부터 소비처까지 전체 흐름 점검.
+
+**발견 및 수정** (상세: `dev_memory/DECISION_LOG.md` 301차 항목):
+1. `hurst_override` 플래그(탈진 레짐 시 Hurst 차단 무효화 의도)가 산출만 되고
+   `main.py`에서 소비되지 않던 배선 누락 → `_hurst_ok` 게이트에
+   `current_micro_regime == REGIME_EXHAUSTION` 조건 추가(`main.py:6055-6059`)
+2. `scripts/backfill_features.py`가 실거래(`calculate_hurst()`)와 다른 자체
+   공식(`_hurst_rs()`)으로 hurst를 계산해온 train/serve skew 수정 — 공용 함수로 교체
+3. `strategy/shadow_evaluator.py`의 Hurst 게이트 경계값(`<=`→`<`)을 실거래
+   게이트(`>=`)와 일치
+4. `features/technical/hurst_exponent.py`의 미사용 헬퍼
+   `classify_market_state()`/`hurst_with_regime_synergy()` 삭제(죽은 코드)
+
+**미검증**: 4개 파일 문법 검사만 통과, 라이브 동작 미확인. 다음 기동 후
+① 탈진 레짐 로그 시 Hurst 우회 실제 동작, ② backfill 재실행 시 hurst 분포
+정합성 확인 필요.
+
+**손대지 않은 것**: `hurst_exponent.py` `__main__` 자체테스트의 추세 시뮬레이션
+데모 결함(결정론적 드리프트라 H≈0으로 나옴) — 프로덕션 미접촉, 순수 데모 가치라
+사용자 판단으로 보류.
 
 ---
 
