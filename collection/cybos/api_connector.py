@@ -249,6 +249,24 @@ def _safe_str(value: Any) -> str:
     return str(value).strip()
 
 
+def _fix_mojibake_kr(value: str) -> str:
+    """CP949 한글 바이트가 Latin-1로 오디코딩된 mojibake 복구.
+
+    [302차] `CpSysDib.MarketEye` 등 일부 COM TR이 이 환경에서 한글 종목명을
+    Latin-1로 잘못 디코딩해 반환하는 현상 확인(예: "코스피200 변동성" →
+    "ÄÚ½ºÇÇ200 º¯µ¿¼º" — VKOSPI 조회가 매분 100% 실패하던 원인).
+    정상적으로 디코딩된 한글 문자열은 U+AC00~U+D7A3 범위라 Latin-1(0~255)로
+    encode 자체가 실패하므로, 이 경우 원본을 그대로 반환 — 실제로 깨진
+    문자열만 복구되는 안전한 왕복 변환.
+    """
+    if not value:
+        return value
+    try:
+        return value.encode("latin1").decode("cp949")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+
+
 def _bool_nonblank(values: List[Any]) -> bool:
     return any(_safe_str(v) for v in values)
 
@@ -1057,7 +1075,7 @@ class CybosAPI:
                 progid="CpSysDib.MarketEye",
                 input_pairs=[(0, [0, 4, 17]), (1, [code])],
                 data_reader=lambda obj: {
-                    "name": _safe_str(obj.GetDataValue(2, 0)),
+                    "name": _fix_mojibake_kr(_safe_str(obj.GetDataValue(2, 0))),
                     "price": _safe_float(obj.GetDataValue(1, 0)),
                 },
                 timeout_sec=5,

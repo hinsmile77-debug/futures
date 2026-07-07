@@ -4936,6 +4936,82 @@ W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
 기록 2026-05-11)이나 AGENTS.md는 여전히 유효한 아키텍처/원칙 문서라 갱신 유지,
 Codex 전용 세션 시작 루틴은 더 이상 쓰이지 않아 아카이브.
 
+## 2026-07-07 (302차, 후속2) — 크래시 재발 시 진단 우선(스레딩 구조 수정은 보류)
+
+### [설계 결정] `log_manager` 크로스스레드 GUI 크래시 — 즉시 수정 대신 진단 계측만 추가
+
+**배경**: 사용자 요청으로 `logs/crash_fault.log`(230차가 심어둔 faulthandler
+30초 주기 전 스레드 덤프)를 확인해 15:40:27 크래시 메커니즘을 사실상 확정 —
+`_run_daily_close`가 별도 `threading.Thread`에서 `log_manager.system()` →
+대시보드 콜백 → `QTextCursor` 직접 조작까지 내려가고 있었음(GUI 위젯을 GUI
+스레드 밖에서 조작 = PyQt 정의되지 않은 동작). `daily_close()`뿐 아니라
+`_db_write_worker`/`macro_fetcher._loop`/`slack_queue._run` 등 다른 백그라운드
+스레드도 전부 `log_manager`를 호출하므로, 이건 daily_close() 하나의 문제가
+아니라 **로깅 경로 전체에 걸친 구조적 크로스스레드 위험**임.
+
+**검토한 옵션**:
+1. 즉시 구조 수정 — `log_manager` 콜백을 `pyqtSignal`+`Qt.QueuedConnection`으로
+   GUI 스레드에 마샬링
+2. 진단 계측만 추가 — 크로스스레드 호출을 감지·기록만 하고 실행 경로는 그대로 둠
+3. 아무 조치 없이 기록만
+
+**결정**: 옵션2. **이유**: (a) 라이브 트레이딩 시스템의 핵심 로깅 경로(전
+레이어 로그가 다 거침)라 구조 변경의 blast radius가 크고, 신중한 설계·테스트
+없이 손대면 오히려 새로운 회귀 위험, (b) 크래시 자체가 지금까지 관측된 유일한
+사례(07-02/03/06엔 없었음)라 실제 재발 빈도를 먼저 파악하는 게 우선, (c) 오늘
+크래시의 스트레스 원인(VKOSPI+PSI 로그 폭증)은 이미 같은 세션에서 수정됐으므로
+재발 확률 자체가 크게 낮아짐 — 근본 스레딩 수정에 들이는 리스크 대비 지금
+당장의 기대 이득이 작음.
+
+**구현**: `logging_system/log_manager.py:LogManager.log()`(전 레이어 공통
+진입점)에 `threading.current_thread() is threading.main_thread()` 체크 추가.
+GUI 스레드가 아니면 `logs/cross_thread_gui.log`(신설, `log_manager`와 분리된
+별도 `FileHandler` — 무한 재귀 방지)에 스레드명+전체 콜스택 기록, 5초
+쿨다운으로 스팸 방지. 실행 경로·기존 동작 변경 없음. 격리 테스트로 background/
+main thread 분기 동작 확인, `py_compile` 통과.
+
+**재검토 조건**: 새 계측(`cross_thread_gui.log`)으로 실제 크로스스레드 호출
+빈도를 관찰해, 드물면 현행 유지, 잦으면(daily_close() 외 다른 경로에서도
+반복 확인되면) 옵션1(구조 수정) 착수.
+
+## 2026-07-07 (302차, 후속) — VKOSPI mojibake 근본수정 vs 크래시 원인 추가조사 중 조사 우선 선택 → 조사 후 수정 진행
+
+### [버그] `CpSysDib.MarketEye` 한글 종목명이 CP949→Latin-1 오디코딩되어 VKOSPI 검증 상시 실패
+
+**File**: `collection/cybos/api_connector.py`(`_fix_mojibake_kr()` 신설 + `get_index_price()` 적용)
+
+**증상**: `[CybosIndex] 종목명 검증 실패 — code=O2901P`가 09:00~15:34 사이 393회
+(사실상 매분) 발생, halt 구간 밖에서도 동일 빈도 — halt 부수효과 가설 기각.
+
+**근본 원인**: `"ÄÚ½ºÇÇ200 º¯µ¿¼º".encode('latin1').decode('cp949') ==
+"코스피200 변동성"`로 실측 확정 — MarketEye가 반환한 한글 종목명이 이 환경에서
+Latin-1로 잘못 디코딩됨. VKOSPI 검증 문자열("변동성")은 한글이라 매번 걸리지만
+KOSPI200 검증 문자열("200")은 ASCII라 같은 손상에도 우연히 통과 — 295차 TR
+교체(dscbo1.StockMst→MarketEye)는 유효했으나 이 한글 디코딩 버그로 VKOSPI만
+계속 미작동이었을 가능성.
+
+**검토한 옵션**(사용자 요청 순서):
+1. VKOSPI 인코딩 버그만 바로 수정
+2. **크래시 원인(daily_close() 15:40:27 무결과 종료) 추가조사 먼저** ← 사용자 선택
+3. 둘 다 기록만
+
+**진행**: 옵션2로 크래시를 07-02/03/06 정상 종료 흐름과 대조 딥다이브한 결과,
+`exceptions_10m`/CRITICAL Health 발생 횟수가 오늘만 이상 급증(07-02/03/06 CRITICAL
+0회 vs 07-07 51회)했고 그 원인이 VKOSPI(ERROR 393회)+PSI(WARNING 다발) 두 버그의
+로그 볼륨이라는 상관관계를 확인 — 정확한 크래시 메커니즘(Qt 콘솔 크로스스레드
+추정, 미확증)은 못 밝혔지만, 크래시를 유발한 스트레스 원인 자체는 VKOSPI 버그로
+좁혀졌으므로 **조사 완료 후 이어서 옵션1(VKOSPI 수정)을 진행**하기로 함(사용자
+지시). 조사 과정에서 12:56:41 재시작이 크래시가 아니라 커밋 반영용 수동
+재시작이었다는 사용자 정정을 반영 — 오늘의 실제 이상 이벤트는 13:56(실거래소
+halt, 정상)·15:40(daily_close 크래시, 이상) 둘로 좁혀짐.
+
+**수정**: `_fix_mojibake_kr()` — Latin-1 인코드 후 CP949 재디코드하는 왕복 변환.
+정상 한글(U+AC00~D7A3)은 Latin-1 인코드가 실패해 원본 그대로 반환되므로 실제로
+깨진 문자열만 복구되는 자기복구 설계 — 별도 "이게 mojibake인지" 판별 로직 없이
+try/except만으로 안전하게 동작. `get_index_price()`의 `name` 필드에 적용, 동일
+패턴이 있는 `api_connector.py:565`(선물잔고 조회 종목명, 표시용이라 매매 영향
+없음)는 이번 범위 밖으로 남김.
+
 ## 2026-07-07 (302차) — PSI FP-CRITICAL 단조증가 버그: 근본수정 vs 임시완화 중 근본수정 선택
 
 ### [버그] `_try_bootstrap_baseline()` 스냅샷이 영구 기준선으로 고착 → PSI 단조 증가
