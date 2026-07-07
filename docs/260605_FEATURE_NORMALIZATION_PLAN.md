@@ -1,5 +1,9 @@
 # 피처 절대값 → 상대값 정규화 구현 계획
 
+> **진행 현황(정리 시점 확인)**: 묶음 1·2(Task 2-A~D, 3-A~B)는 2026-06-05~06-08 사이 완료 확인.
+> **묶음 3 — Task 2-E(`quality_investor_age_sec`/`quality_macro_age_sec` 제거)는 아직 미착수** —
+> 다음 세션에서 `dev_memory/NEXT_TODO.md`로 진행 여부 확인 후 처리 필요.
+
 > 작성일: 2026-06-05  
 > 배경: Extreme 피처 Top5 분석 → 91개 피처 전수 조사 결과  
 > 문제: 절대가격/절대값 피처 16개가 상대값 변환 없이 StandardScaler에 직접 투입됨  

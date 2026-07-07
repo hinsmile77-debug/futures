@@ -1,11 +1,30 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-07 (299차) — 다른 PC(MW0601)가 EOD 리포터 딥다이브로
-> 코드까지 고친 4개 버그(활성버전 이원화 코드레벨·stuck_exit grade/entry_
-> horizon·CUSUM ref 미보정·PSI 부트스트랩 부재)를 이 PC(MW0602)와 대조해
-> 동일하게 구현. 298차는 활성버전 문제를 DB 정리로만 막았었는데, 이번에
-> 코드 레벨 원인까지 통일. 아직 커밋 전, 라이브 미검증(다음 기동 후 확인 필요).
+> 마지막 업데이트: 2026-07-07 (300차) — 루트/docs에 쌓여있던 개발계획 문서·1회성
+> 스크립트를 정리(아카이브/삭제/갱신/재작성). 코드 변경 없음, 순수 문서 정리.
+> 299차(코드 4건 수정)는 여전히 라이브 미검증 상태로 이어짐 — 다음 기동 후 확인 필요.
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-07 (300차 — 루트/docs 문서·스크립트 정리)
+
+**계기**: 루트와 `docs/`에 개발 초기부터 쌓인 계획서·리뷰·1회성 스크립트가
+정리 안 된 채 남아있어 사용자가 정리 요청. planning mode로 범위를 확정한 뒤
+승인받아 실행.
+
+**한 일**:
+- 루트에 `_archive/`(root_scripts/plans/sub_docs/docs) 신설 후 완료된 계획·리뷰
+  문서와 1회성 진단 스크립트 이동, 죽은 중복 파일(`adaptive_kelly.py`·
+  `hurst_exponent.py`·`Mouse.py`) 삭제, `backup_pull/` 삭제
+- `CLAUDE.md`/`README.md`/`AGENTS.md`/`CORE.md`/`ENSEMBLE_SIGNAL_UPGRADE_PLAN.md`/
+  `STRATEGY_PARAMS_GUIDE.md` 갱신 — 30m 호라이즌 퇴역·CB②/CB③-P4 한시 예외·
+  Codex→Claude Code 전환 반영, PC 하드코딩 경로 제거
+- `MIREUKI_OVERVIEW.md` 전면 재작성 (구식 2026-05-08 버전 → 299차 기준)
+- 상세 내역은 `dev_memory/SESSION_LOG.md` 2026-07-07 (300차) 항목 참조
+
+**미결 메모(액션 아님)**: `maitreya_dist` 브랜치 존치 여부, `docs/정기점검/
+PERIODIC_INSPECTION_PLAN.md` 자동화 여부 — 다음 세션에서 결정 필요
 
 ---
 

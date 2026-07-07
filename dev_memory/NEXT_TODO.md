@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-07-07 (300차) [루트/docs 문서·스크립트 정리]
+
+- [DONE 2026-07-07] **루트/docs 정리 실행** — `_archive/` 신설 후 완료된 계획·리뷰
+  문서·1회성 스크립트 이동, 죽은 중복 파일(`adaptive_kelly.py`/`hurst_exponent.py`/
+  `Mouse.py`) 삭제, `backup_pull/` 삭제, `CLAUDE.md`/`README.md`/`AGENTS.md`/`CORE.md`/
+  `ENSEMBLE_SIGNAL_UPGRADE_PLAN.md`/`STRATEGY_PARAMS_GUIDE.md` 갱신,
+  `MIREUKI_OVERVIEW.md` 재작성. 상세: `dev_memory/SESSION_LOG.md` 300차 항목.
+- [ ] **`maitreya_dist` 브랜치 존치 여부 결정** — 배포 계획서(`_archive/docs/
+  260629_MAITREYA_DIST_DEPLOYMENT_PLAN.md`)는 아카이브했으나 브랜치 자체는 로컬/
+  원격에 그대로 존재. 실제로 안 쓰는 게 맞으면 삭제, 여전히 배포용으로 쓴다면
+  `docs/MW0602_SETUP.md`와의 관계를 문서로 명확히 할 것.
+- [ ] **`docs/정기점검/PERIODIC_INSPECTION_PLAN.md` 처리 방향 결정** — SQL 기반
+  점검 루틴이 실제로 기계적으로 실행된 흔적이 없고, 292/297/298/299차식 수시
+  딥다이브 + 검증캠페인(`docs/260705_...`)으로 대체 운영 중인 것으로 보임.
+  다음 정기점검 때 자동화할지, 현재 방식을 공식 대체 문서로 재정리할지 결정 필요.
+
 ## 2026-07-07 (299차) [docs/MW0601 대조 → EOD 리포터 코드버그 4건 MW0601 수준 구현]
 
 - [DONE 2026-07-07] **③-b(298차 이월) CUSUM ref_mean/ref_std 미보정 수정** —

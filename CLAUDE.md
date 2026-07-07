@@ -8,7 +8,7 @@ KOSPI 200 선물 1분봉 기반 방향 예측 + 자동매매 시스템 (별칭: 
 ```
 @CORE.md          (핵심 판단 규칙 — 코딩 전 반드시 확인)
 @ROADMAP.md       (Phase별 구현 계획 + 마일스톤 체크리스트)
-@PROJECT_DESIGN.md (전체 설계 명세 — 상세 참고용)
+@_archive/plans/PROJECT_DESIGN.md (2026-04 v1.0 설계 브레인스토밍 — 30m 호라이즌 등 구식 내용 포함, 사료적 참고용만)
 ```
 
 ---

@@ -22,7 +22,15 @@
 - `meta_labels >= 20` 이상 시 `alert_only` 재평가, `meta_labels >= 100` 이상 시 `small_size` 검토를 시작한다.
 - rollout 단계는 `shadow -> alert_only -> small_size -> full` 순서를 지킨다.
 
-## Update Status (2026-05-08)
+## Update Status (2026-07-06, `rollout_readiness_report.md` 기준)
+
+- `recommended_stage`: **small_size** (2026-05-08 시점 `shadow`에서 격상됨)
+  - Verified predictions 63,588건 / Ensemble decisions 13,342건 / Meta labels 66,188건 누적
+  - Overall ECE 0.126, enhanced vs baseline PnL delta +226.25pt, confidence inversion 없음
+- 아래 "Update Status (2026-05-08)" 섹션은 초기 구현 완료 시점 기록으로 보존하되, 현재 롤아웃 단계 판단은 위 최신 수치를 따른다.
+- 30m 호라이즌은 296차부터 앙상블에서 전면 퇴역(계산은 유지, 판단 미사용) — 아래 "6개 호라이즌 고정 가중치 합산" 서술은 현재 5개(1·3·5·10·15m) 기준으로 읽는다.
+
+## Update Status (2026-05-08, 최초 구현 완료 기록)
 
 ### 구현 완료
 
@@ -101,11 +109,11 @@
 
 관련 현재 코드:
 
-- [model/ensemble_decision.py](C:/Users/82108/PycharmProjects/futures/model/ensemble_decision.py:22)
-- [model/multi_horizon_model.py](C:/Users/82108/PycharmProjects/futures/model/multi_horizon_model.py:95)
-- [strategy/entry/checklist.py](C:/Users/82108/PycharmProjects/futures/strategy/entry/checklist.py:22)
-- [features/technical/ofi.py](C:/Users/82108/PycharmProjects/futures/features/technical/ofi.py:19)
-- [collection/kiwoom/realtime_data.py](C:/Users/82108/PycharmProjects/futures/collection/kiwoom/realtime_data.py:348)
+- model/ensemble_decision.py
+- model/multi_horizon_model.py
+- strategy/entry/checklist.py
+- features/technical/ofi.py
+- collection/kiwoom/realtime_data.py
 
 ## 목표 상태
 

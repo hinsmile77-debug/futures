@@ -1,0 +1,46 @@
+MW0602 pull 최종 가이드 (오늘 커밋 5건 반영)
+push 대기 5건: 51e5b23(모델 pkl·DB 언트랙) · 34d28b0(크래시 수정) · f90e936(런타임 3종) · 8657b8a(daily_reports 25종) · 1491858(정적 8종). MW0602가 pull하면 이 중 4건의 언트랙 커밋이 그쪽 워킹트리 파일을 삭제하려 합니다. 아래 절차대로 진행하세요.
+
+
+# ═══ 사전: MW0601(이 PC)에서 git push / MW0602는 미륵이 종료 상태에서 진행 ═══
+#     (장중 금지 — 15:10 청산 이후 또는 장 시작 전 권장)
+
+# ── 1) pull 전 백업 (필수) ─────────────────────────────────────
+New-Item -ItemType Directory -Force backup_pull\db | Out-Null
+Copy-Item -Recurse -Force model\horizons, model\scaler backup_pull\
+# 대용량 4종은 원래 미추적이라 pull 영향 없음 → 제외 (시간 절약)
+Copy-Item -Force data\db\* backup_pull\db\ -Exclude raw_data.db*, predictions.db, trades.db, shap_tracker.db
+Copy-Item -Force data\drift_adjuster_state.json, data\zone_penalty.json backup_pull\
+Copy-Item -Force data\profit_guard_prefs.json, data\option_chain.json, data\option_metrics.json backup_pull\
+# (선택) 일자별 리포트 — 지워져도 무방하면 생략
+Copy-Item -Recurse -Force data\daily_reports backup_pull\
+
+# ── 2) pull ───────────────────────────────────────────────────
+git pull
+# ▸ "Your local changes ... would be overwritten"으로 거부되면 (가장 흔한 경우):
+#     git stash          ← -u 금지 (미추적 대용량 DB까지 스태시됨)
+#     git pull
+#     git stash drop     ← 백업이 원본이므로 drop 안전
+
+# ── 3) modify/delete 충돌 시에만 (MW0602에 미푸시 커밋이 있을 때) ──
+git diff --name-only --diff-filter=U |
+  Where-Object { $_ -match '^(data/db/|model/horizons/|model/scaler/|data/(drift_adjuster_state|zone_penalty|profit_guard_prefs|option_chain|option_metrics)|data/daily_reports/)' } |
+  ForEach-Object { git rm --cached $_ }
+# 위 패턴 밖의 충돌(코드·문서)은 내용 보고 일반 해소
+git commit        # ← pathspec 없이! (경로 지정 시 삭제 취소 함정)
+git push
+
+# ── 4) 복원 (충돌 여부와 무관하게 실행해도 안전 — 자기 상태 재복사일 뿐) ──
+Copy-Item -Recurse -Force backup_pull\horizons, backup_pull\scaler model\
+Copy-Item -Force backup_pull\db\* data\db\
+Copy-Item -Force backup_pull\drift_adjuster_state.json, backup_pull\zone_penalty.json data\
+Copy-Item -Force backup_pull\profit_guard_prefs.json, backup_pull\option_chain.json, backup_pull\option_metrics.json data\
+
+# ── 5) 기동 전 검증 ────────────────────────────────────────────
+(Get-ChildItem model\horizons\*.pkl).Count            # 15개 내외 (gbm 6 + feature_names 7 + rf 등)
+(Get-ChildItem model\scaler\*.pkl).Count              # 6개 (호라이즌별)
+Test-Path data\db\challenger.db, data\ui_prefs.json, data\profit_guard_prefs.json   # 모두 True
+git ls-files -i -c --exclude-standard                 # 출력 없어야 정상 (tracked-but-ignored 0건)
+git status --short                                    # 런타임 파일이 ?? 로도 안 뜨면 정상 (ignore 동작)
+
+# ── 6) 미륵이 기동 → 대시보드에서 진입등급·L2·ProfitGuard 설정값 육안 확인

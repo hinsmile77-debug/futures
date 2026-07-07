@@ -1,5 +1,7 @@
 # AGENTS.md — 미륵이 (KOSPI 200 선물 자동매매)
 
+> 마지막 갱신: 299차 (2026-07-07) 기준. 항상 CLAUDE.md 절대 원칙(§변경 가능한 한시 예외 포함)을 최신 소스로 우선한다.
+
 ## 실행 환경
 
 - **Python 3.7 32-bit** (`conda env: py37_32`) — 절대 변경 불가, 키움/Cybos COM OCX 요구사항
@@ -33,11 +35,12 @@ start_mireuk_cybos_test.bat  # 테스트용 런처 (동일 구성, 명시적 테
 ## 절대 원칙 (from CLAUDE.md)
 
 1. **오버나이트 금지** — 15:10 강제 청산, 예외 없음
-2. **CORE 피처 3개 변경 불가** — CVD (`features/technical/cvd.py`), VWAP (`features/technical/vwap.py`), OFI (`features/technical/ofi.py`)
+2. **CORE 피처는 호라이즌 그룹별로 분리 (변경 불가)** — 단기(1·3·5m): CVD(`features/technical/cvd.py`)·VWAP(`features/technical/vwap.py`)·OFI(`features/technical/ofi.py`), 중기(10·15m): VWAP, 장기(30m): opt_chain_pcr. **30m 호라이즌은 296차부터 앙상블/CoherenceGate/CascadeCoherence에서 전면 퇴역**(full_cv acc=0.3052, 구조적으로 랜덤 이하) — 예측 계산 자체는 유지되나 진입 판단에는 미사용
 3. **COM 콜백 안전** — `_on_receive_tr_data` 등 콜백 내부에서는 상태 저장 + `QEventLoop.quit()`만 허용. `dynamicCall`, `pyqtSignal.emit()` 금지 → `0xC0000409` 크래시 유발
 4. **PyQt5 QApplication을 키움 OCX보다 먼저 생성** — `main.py:35-37` 참조
 5. **GetRepeatCnt / GetCommData 파라미터 구분** — 2번째 인자가 `record_name` vs `rq_name`으로 다름
 6. **알파 리서치 봇 자동 통합 절대 금지** — 사용자 검토 필수
+7. **[모의투자 한정 한시 예외]** CB②(`CB_CONSEC_STOP_LIMIT=9999`, 사실상 비활성)와 CB③-P4(`CB3_P4_GRADE_BLOCK_ENABLED=False`)는 실투 전환 전 반드시 복원 검토 대상 — 상세 사유·복원 조건은 CLAUDE.md §절대 원칙 참조
 
 ## 아키텍처
 
@@ -80,10 +83,12 @@ start_mireuk_cybos_test.bat  # 테스트용 런처 (동일 구성, 명시적 테
 ## 세션 연속성
 
 `dev_memory/`에 세션 로그, 현재 상태, 다음 할 일이 추적됨. 작업 재개 시 읽는 순서:
-1. `dev_memory/CODEX_STARTUP_ROUTINE.md`
+1. `CLAUDE.md` (절대 원칙 + 한시 예외 현황)
 2. `dev_memory/CURRENT_STATE.md`
 3. `dev_memory/NEXT_TODO.md`
 4. `logs/` 최신 파일
+
+> `dev_memory/CODEX_STARTUP_ROUTINE.md`는 Codex 협업 시절(~5월) 루틴으로 2026-05-11 이후 갱신 없음 — 현재는 Claude Code 기반으로 운영되므로 위 순서를 따른다.
 
 ## Git
 
@@ -97,4 +102,4 @@ start_mireuk_cybos_test.bat  # 테스트용 런처 (동일 구성, 명시적 테
 - `CLAUDE.md` — 전체 운영 규칙, 파이프라인, Phase 현황
 - `CORE.md` — 핵심 판단 규칙 (매매 근거, 확률 임계값)
 - `ROADMAP.md` — 단계별 구현 계획과 마일스톤 체크리스트
-- `PROJECT_DESIGN.md` — 전체 설계 명세
+- `_archive/plans/PROJECT_DESIGN.md` — 2026-04 v1.0 설계 명세 (30m 호라이즌 등 구식 내용 포함, 사료적 참고용만)

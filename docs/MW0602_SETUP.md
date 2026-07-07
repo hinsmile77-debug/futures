@@ -11,6 +11,10 @@
 
 두 PC 는 **동일한 `dev` 브랜치**를 공유하고, PC별 차이는 gitignore 된 `machine.cfg` 한 파일로 분기한다.
 
+> 이 방식이 실제 채택된 접근이다. 별도 브랜치(`maitreya_dist`)로 배포 설정을 분리하는 초기 계획
+> (`_archive/docs/260629_MAITREYA_DIST_DEPLOYMENT_PLAN.md`)은 공유-`dev`-브랜치 + `machine.cfg`
+> 분기 방식으로 대체 운영 중이다.
+
 ---
 
 ## 머신 전용 파일 목록 (gitignore 대상)

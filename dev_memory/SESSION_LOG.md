@@ -8271,3 +8271,60 @@ GBM 배치 재학습 산출물 형식을 런타임 로더와 맞추고, 좌하�
 - cybos_autologin.py: 로그 파일명 BROKER_TYPE 기반으로 변경
 
 **다음 단계**: origin/dev push → MW0601 git pull 검증
+
+## 2026-07-07 (300차) — 루트/docs 문서·스크립트 정리
+
+### 배경
+
+299차까지 오면서 루트와 `docs/`에 4월 초기 설계 문서부터 완료된 감사·계획 문서,
+1회성 진단 스크립트가 정리 없이 계속 쌓였다. 그 사이 30m 호라이즌 전면 퇴역(296차),
+Kiwoom→Cybos/Creon 주 브로커 전환, Codex→Claude Code 협업 전환, CB②/CB③-P4
+모의투자 한정 예외 등 시스템 원칙이 크게 바뀌어 오래된 문서 일부가 CLAUDE.md와
+어긋난 상태였다. 사용자 요청으로 planning mode에서 정리 범위를 확정한 뒤 실행.
+
+### 작업 내용
+
+- 루트에 `_archive/` 신설(`root_scripts/`, `plans/`, `sub_docs/`, `docs/` 하위 분류) —
+  1회성 진단 스크립트 5개(`_check_7212.py` 등), 구식 계획·리뷰 문서(`PROJECT_DESIGN.md`,
+  `CYBOS_PLUS_REFACTOR_PLAN.md`, `REVIEW_REPORT_v6.5/v7.0.md`, `CODEX_SESSION_START.md`),
+  `sub_docs/` 전체, `docs/` 내 완료 확인된 계획·감사 문서 8건을 이동
+- 죽은 중복 파일 삭제: `adaptive_kelly.py`·`hurst_exponent.py`(루트, `strategy/entry`·
+  `features/technical`의 최신본과 중복/구버전), `Mouse.py`(빈 껍데기, `scripts/
+  show_mouse_position.py`로 대체됨), `backup_pull/`(MW0602 pull 동기화 완료된 임시 백업)
+- `CLAUDE.md`/`README.md`: 아카이브된 문서 참조 경로를 `_archive/plans/...`로 수정,
+  README의 PC별 하드코딩 경로(`C:\Users\82108\...`) 제거
+- `AGENTS.md`: 299차 기준으로 갱신 — CORE 피처 호라이즌 그룹 분리·30m 퇴역·
+  CB②/CB③-P4 한시 예외·Codex→Claude Code 전환 반영
+- `CORE.md`: CLAUDE.md §3(CORE 피처 체계)로의 참조 안내 추가
+- `ENSEMBLE_SIGNAL_UPGRADE_PLAN.md`: 2026-05-08 시점 상태를 `rollout_readiness_report.md`
+  기준 최신 상태(`small_size` 단계)로 갱신, PC 하드코딩 경로(markdown 링크) 제거
+- `STRATEGY_PARAMS_GUIDE.md`: 30m 퇴역·`cb_consec_stop_limit` 9999 예외 각주 추가
+- `docs/260605_FEATURE_NORMALIZATION_PLAN.md`: 잔여 항목(Task 2-E, `*_age_sec` 제거
+  미착수) 상단 메모 추가
+- `docs/MW0602_SETUP.md`: `maitreya_dist` 배포 계획 대신 채택된 접근이라는 메모 추가
+- `docs/260715_CVD_DIRECTION_ANALYSIS.md` → `docs/260625_CVD_DIRECTION_ANALYSIS.md`
+  파일명 오탈자 정정(내용 자체는 2026-06-25/250차 작성)
+- `MIREUKI_OVERVIEW.md` 전면 재작성 — 2026-05-08 시점 다른 모델("gpt-oss:20b-cloud")
+  작성본이 30m 호라이즌 등 구식 서술을 담고 있어 299차 기준 1페이지 개요로 교체
+
+### 손대지 않은 것
+
+`dev_memory/` 4대 로그·기타 세션 기록, `ROADMAP.md`, 살아있는 레퍼런스 문서
+(`docs/CyBos ref/`, `docs/정기점검/LABEL_THRESHOLD_RECALIBRATION_GUIDE.md`,
+`docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md`, `docs/진입0/0707할일.txt` 등),
+`commit/` 패치노트 아카이브, `data/`·`machine.cfg`(PC별 gitignore 대상)
+
+### 참고용 메모 (미결정, 액션 아님)
+
+- `maitreya_dist` 브랜치가 로컬/원격에 여전히 존재 — 배포 계획서는 아카이브했지만
+  브랜치 자체 삭제/유지는 별도 결정 필요
+- `docs/정기점검/PERIODIC_INSPECTION_PLAN.md`의 SQL 기반 점검 루틴이 실제로 기계적
+  실행된 흔적이 없고 292/297/298/299차식 수시 딥다이브 + 검증캠페인으로 대체
+  운영되는 것으로 보임 — 다음 정기점검 때 자동화 여부 또는 공식 대체 문서화 결정 권장
+
+### 검증
+
+파일 이동은 `git mv`(추적 파일)/`mv`(미추적 파일)로 수행해 git 이력 보존.
+`git status`로 의도한 파일만 변경됐는지 확인(과정에서 `git add -A`가 무관한
+`data/`, `docs/CyBos ref/` 등을 함께 스테이징한 실수 발견 → `git reset`으로 즉시
+언스테이지, 워킹트리는 영향 없음). 코드 변경 없음(문서/스크립트 정리만).

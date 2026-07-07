@@ -1,6 +1,5 @@
 # KOSPI 200 선물 자동매매 시스템 — 미륵이
 
-- 프로젝트 경로: C:\Users\82108\PycharmProjects\futures
 - 실행 환경: Python 3.7 32-bit (Windows 전용, COM/OCX)
 - 기본 브로커 백엔드: cybos (BROKER_BACKEND)
 
@@ -56,8 +55,8 @@ start_mireuk_cybos_test.bat
 - 운영 규칙: AGENTS.md, CLAUDE.md
 - 핵심 판단 규칙: CORE.md
 - 로드맵: ROADMAP.md
-- 설계 명세: PROJECT_DESIGN.md
-- Cybos 리팩터링 계획: CYBOS_PLUS_REFACTOR_PLAN.md
+- 설계 명세(구식, 사료용): _archive/plans/PROJECT_DESIGN.md
+- Cybos 리팩터링 계획(구식, 사료용): _archive/plans/CYBOS_PLUS_REFACTOR_PLAN.md
 
 ## 초기 설정
 
