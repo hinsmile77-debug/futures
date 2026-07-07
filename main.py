@@ -92,7 +92,7 @@ from config import secrets as _secrets
 # ── 핵심 모듈 ──────────────────────────────────────────────────
 from collection.broker import create_broker
 from collection.macro.regime_classifier import RegimeClassifier
-from collection.macro.micro_regime import MicroRegimeClassifier
+from collection.macro.micro_regime import MicroRegimeClassifier, REGIME_EXHAUSTION
 from collection.macro.macro_fetcher import MacroFetcher
 from collection.macro.intraday_tactical_regime import (
     IntradayTacticalRegime,
@@ -6049,9 +6049,12 @@ class TradingSystem:
         # MEAN_REVERSION 모드는 원래 이 레짐(횡보/평균회귀)에서 쓰라고 만든 대응 전략이므로
         # 같은 게이트로 함께 막으면 안 된다 — 그동안 Hurst<0.45 구간이 통째로 무전략
         # 관망이 되어온 원인.
+        # [hurst 점검] REGIME_EXHAUSTION_PARAMS.hurst_override=True 의도대로, 탈진 레짐도
+        # MEAN_REVERSION과 동일하게 Hurst 차단을 무효화한다 (기존에는 정의만 되고 미소비).
         _entry_mode_for_gate = (_cr or {}).get("entry_mode", "TREND_FOLLOW")
         _hurst_ok = (
             _entry_mode_for_gate == "MEAN_REVERSION"
+            or self.current_micro_regime == REGIME_EXHAUSTION
             or features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
         )
 

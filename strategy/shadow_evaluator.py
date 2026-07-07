@@ -187,9 +187,10 @@ class ShadowEvaluator:
             return
         if grade == "X":
             return
-        # Hurst 횡보장 필터 (hurst_range_threshold 이하이면 차단)
+        # Hurst 횡보장 필터 — main.py 실거래 게이트(hurst >= threshold 면 통과)와
+        # 경계값 일치시킴 (기존 <= 는 hurst==threshold일 때 실거래와 다르게 차단됐음)
         hurst_range = self.params.get("hurst_range_threshold", 0.45)
-        if hurst <= hurst_range:
+        if hurst < hurst_range:
             return
 
         # 사이즈: 간단하게 1계약 (shadow는 성과 비교용이므로 고정)

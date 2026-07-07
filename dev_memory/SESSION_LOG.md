@@ -8328,3 +8328,68 @@ Kiwoom→Cybos/Creon 주 브로커 전환, Codex→Claude Code 협업 전환, CB
 `git status`로 의도한 파일만 변경됐는지 확인(과정에서 `git add -A`가 무관한
 `data/`, `docs/CyBos ref/` 등을 함께 스테이징한 실수 발견 → `git reset`으로 즉시
 언스테이지, 워킹트리는 영향 없음). 코드 변경 없음(문서/스크립트 정리만).
+
+## 2026-07-07 (301차) — Hurst 산출 흐름 점검 → 배선 버그 2건 + 경계값 불일치 1건 수정 + 죽은 코드 제거
+
+### 배경
+
+사용자 요청으로 hurst(허스트 지수) 산출부터 소비처까지 전체 흐름을 점검(Explore
+서브에이전트 + 직접 조사 병행). `calculate_hurst()` 계산 자체(variance 기반
+log-log 회귀)는 이전에 이미 정상화된 상태였으나, 22개 소비 파일을 추적하는
+과정에서 실제 배선 문제 2건과 경계값 불일치 1건, 죽은 코드를 발견해 수정.
+
+### 발견 및 수정
+
+1. **`hurst_override` 플래그 미소비** — `collection/macro/micro_regime.py`
+   (탈진 레짐 감지 시 `hurst_override=True` 산출), `config/settings.py`의
+   `REGIME_EXHAUSTION_PARAMS`, `challenger/variants/exhaustion_regime.py` 세 곳
+   모두 "탈진 레짐 시 Hurst 차단 무효화"라는 의도로 이 플래그를 만들어냈지만
+   `main.py` 어디에서도 이 플래그를 읽지 않았음. 실제 우회는
+   `entry_mode=="MEAN_REVERSION"` 경로로만 되어 있어, MicroRegimeClassifier가
+   탈진을 감지해도 checklist.py의 독립적인 VWAP+exhaustion 조건이 안 맞으면
+   Hurst 차단이 실제로는 풀리지 않는 상태였음.
+   - 수정: `main.py:6055-6059` `_hurst_ok` 게이트에
+     `self.current_micro_regime == REGIME_EXHAUSTION` 조건 추가
+     (`REGIME_EXHAUSTION` import: `main.py:95`). 별도 dict 키를 새로 배선하는
+     대신 checklist.py가 이미 쓰는 것과 동일한 `current_micro_regime` 상태를
+     재사용해 이중 소스를 피함.
+
+2. **`scripts/backfill_features.py`의 Hurst 알고리즘 불일치** — 이 스크립트가
+   `raw_features` 테이블(GBM 학습 소스)에 직접 INSERT/UPDATE하는데, 자체
+   `_hurst_rs()`(고전 단일윈도우 R/S, 최소 10봉)를 써서 실거래
+   `feature_builder.py`가 쓰는 `calculate_hurst()`(다중랙 variance 회귀, 최소
+   40봉)와 전혀 다른 공식으로 값을 채우고 있었음 — 2026-04-28 이전 소급 구간
+   학습 데이터의 `hurst` 값이 실거래 수집값과 의미가 다른 train/serve skew.
+   - 수정: `_hurst_rs()` 삭제, `features/technical/hurst_exponent.py`의
+     `calculate_hurst()`를 그대로 import해서 사용 (`scripts/backfill_features.py:49,180`).
+     버퍼(`close_buf`, maxlen=60)는 이미 feature_builder.py와 동일 크기라
+     그대로 재사용 가능했음.
+
+3. **`strategy/shadow_evaluator.py` 경계값 불일치** — 섀도 평가기가
+   `hurst <= threshold`면 차단했는데, 실거래 게이트(`main.py`)는
+   `hurst >= threshold`면 통과 — `hurst == 0.45` 정확히 그 지점에서만 두 로직이
+   어긋남(실질 영향은 미미하나 섀도 평가 결과와 실거래 결과가 근소하게
+   달라질 수 있는 경계 버그).
+   - 수정: `strategy/shadow_evaluator.py:193` `<=` → `<`로 변경, 실거래 게이트와
+     경계 일치.
+
+4. **죽은 코드 제거** — `features/technical/hurst_exponent.py`의
+   `classify_market_state()`, `hurst_with_regime_synergy()`는 정의만 되고
+   레포 어디서도 호출되지 않는 함수였음(모든 소비처가 원시 hurst 값을 읽어
+   각자 임계값을 재구현). 두 함수와 `__main__` 자체테스트의 관련 호출부 삭제.
+
+### 부수 발견 (조치 안 함)
+
+`hurst_exponent.py`의 `__main__` 자체테스트 중 "추세 시뮬레이션"이 결정론적
+드리프트+시점별 독립 노이즈로 구성돼 있어 증분 자기상관이 없고, 그 결과
+H≈0으로 나와 문서가 기대하는 "H>0.55" 데모가 실패함(횡보 시뮬레이션은 원래도
+의도대로 낮게 나와 문제 없음). AR(1) 누적 방식으로 바꾸면 H≈0.57로 정상
+데모되는 것을 확인했으나, 프로덕션 경로 미접촉·순수 데모 가치라 사용자 판단으로
+이번엔 보류.
+
+### 검증
+
+4개 파일 모두 `ast.parse` 문법 검증 통과. **라이브 미검증** — 다음 기동 후
+① `[MicroRegime] * → 탈진` 로그 발생 시 그 분봉에서 Hurst<0.45라도 진입이
+차단되지 않는지, ② 다음 EOD 재학습/backfill 재실행 시 `hurst` 분포가 실거래
+수집값과 정합적인지 확인 필요(`NEXT_TODO.md` 참조).

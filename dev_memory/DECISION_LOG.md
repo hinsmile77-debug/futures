@@ -4935,3 +4935,78 @@ W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
 **이유**: 협업 도구가 Codex에서 Claude Code로 전환된 지 오래(마지막 Codex 세션
 기록 2026-05-11)이나 AGENTS.md는 여전히 유효한 아키텍처/원칙 문서라 갱신 유지,
 Codex 전용 세션 시작 루틴은 더 이상 쓰이지 않아 아카이브.
+
+## 2026-07-07 (301차) — Hurst 산출 흐름 점검 결과 배선 수정
+
+### [버그] `hurst_override` 플래그가 정의만 되고 어디서도 소비되지 않음
+
+**File**: `main.py:6055-6059`(게이트), `collection/macro/micro_regime.py:31,130`
+(플래그 산출), `config/settings.py:896`(`REGIME_EXHAUSTION_PARAMS`),
+`challenger/variants/exhaustion_regime.py:82`
+
+**증상**: `MicroRegimeClassifier.push_1m_candle()`이 탈진 레짐(`REGIME_EXHAUSTION`)
+감지 시 반환 dict에 `"hurst_override": True`를 넣지만, `main.py`는 이 dict에서
+`regime`/`adx`/`atr_ratio`/`regime_duration`/`warmup`만 꺼내 쓰고 `hurst_override`
+키는 읽지 않음. "탈진 레짐 시 Hurst<0.45 차단 무효화"라는 설계 의도
+(`checklist.py:63` 주석에도 명시)가 실제로는 배선되지 않은 상태였음.
+
+**근본 원인**: 탈진 레짐의 Hurst 우회는 실제로는 다른 경로
+(`_entry_mode_for_gate == "MEAN_REVERSION"`, checklist.py가 VWAP+exhaustion
+조건으로 독립 판단)로만 동작했음. `hurst_override` 플래그는 아마 설계 단계에서
+의도했다가 실제 구현은 다른 방식(entry_mode 우회)으로 진행되며 플래그 자체는
+그대로 방치된 것으로 보임 — 두 메커니즘이 항상 같은 결과를 내는 게 아니라서
+(MicroRegimeClassifier가 탈진을 감지해도 checklist의 VWAP+exhaustion 조건이
+안 맞으면 entry_mode는 MEAN_REVERSION이 안 됨), 탈진 레짐 판정과 실제 Hurst
+우회 사이에 갭이 있었음.
+
+**수정**: 새 dict 키를 따로 배선하는 대신, checklist.py가 이미 쓰고 있는
+`self.current_micro_regime == REGIME_EXHAUSTION` 체크를 `_hurst_ok` 조건에
+`or`로 추가(`main.py:95`에 `REGIME_EXHAUSTION` import 추가). 상태 소스를
+하나로 유지하는 것을 우선시함 — `_mr.get("hurst_override")`를 별도로 저장해
+쓰는 방안도 검토했으나, `current_micro_regime`이 이미 1분 지연 허용까지 포함해
+레포 전역에서 쓰이는 단일 소스이므로 이를 재사용하는 게 더 일관적이라고 판단.
+
+**라이브 미검증**: 다음 기동 후 `[MicroRegime] * → 탈진` 로그가 뜬 분봉에서
+Hurst<0.45라도 진입 차단이 실제로 풀리는지 확인 필요.
+
+### [버그] `scripts/backfill_features.py`가 실거래와 다른 Hurst 공식 사용 (train/serve skew)
+
+**File**: `scripts/backfill_features.py:49,180`(수정 후), `features/technical/hurst_exponent.py:15`
+
+**증상**: 이 스크립트는 `raw_features` 테이블(GBM 배치학습 소스)에 과거 캔들
+기반 피처를 소급 INSERT/UPDATE하는데, 자체 `_hurst_rs()`(고전 단일윈도우
+R/S 통계, `h=log(RS)/log(n)`, 최소 10봉)로 `hurst`를 계산했음. 실거래
+`feature_builder.py`는 `calculate_hurst()`(다중랙 variance log-log 회귀,
+최소 40봉)를 씀 — 서로 다른 공식.
+
+**영향**: `hurst`는 `active_features`(GBM 학습 피처, 현재 105개)에 포함된
+실사용 피처. 2026-04-28 이전 소급 구간 또는 `--update-features` 재실행 구간의
+학습 데이터에서는 `hurst` 값의 의미가 실거래 수집분과 달라, 모델이 이 피처에
+대해 일관되지 않은 신호를 학습했을 가능성.
+
+**수정**: `_hurst_rs()` 삭제, `calculate_hurst()`를 그대로 import해 사용.
+버퍼 크기(`close_buf` maxlen=60)가 이미 feature_builder.py와 동일해 그대로
+호환됨.
+
+**후속 필요**: 이미 DB에 적재된 과거 `hurst` 값 자체는 이번 수정으로 소급
+정정되지 않음(코드만 수정). 과거 구간을 실제로 다시 계산하려면
+`--update-features`로 재실행 필요 — 재실행 여부/범위는 별도 결정 사항
+(`NEXT_TODO.md` 참조).
+
+### [정정] `strategy/shadow_evaluator.py` Hurst 게이트 경계값을 실거래 게이트와 일치시킴
+
+**File**: `strategy/shadow_evaluator.py:193`
+
+기존 `hurst <= threshold`(차단)를 `hurst < threshold`로 변경. `main.py`의
+실거래 게이트가 `hurst >= threshold`면 통과이므로, `hurst == threshold`
+정확히 그 값일 때만 섀도 평가가 실거래와 다른 판정을 내리던 경계 불일치를
+제거. 실질 영향은 거의 없었으나(부동소수 정확히 일치할 확률이 낮음) 두
+게이트가 같은 것을 측정한다고 문서·주석에 쓰여 있는 만큼 경계도 같아야 한다고
+판단.
+
+### [정리] `hurst_exponent.py`의 미사용 헬퍼 `classify_market_state()`/
+`hurst_with_regime_synergy()` 제거
+
+레포 전체에서 이 두 함수를 호출하는 곳이 없음을 grep으로 확인(모든 소비처가
+`features.get("hurst")` 원시값을 읽어 각자 임계값을 재구현). 삭제로 인한
+동작 변화 없음 — 순수 죽은 코드 제거.
