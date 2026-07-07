@@ -4700,6 +4700,48 @@ W20 사례: trade 단위 -6,997,034원 → 일별 집계 -5,616,847원.
 
 **MW0601 영향**: 없음 — `SET BROKER_TYPE=cybos` bat 파일에서 주입, Creon 로직 비활성.
 
+## 2026-07-07 (302차) — PSI FP-CRITICAL 단조증가 버그: 근본수정 vs 임시완화 중 근본수정 선택
+
+### [버그] `_try_bootstrap_baseline()` 스냅샷이 영구 기준선으로 고착 → PSI 단조 증가
+
+**File**: `strategy/regime_fingerprint.py`(로직 자체는 미변경), `retrain_eod.py`(수정)
+
+**증상**: 오늘 진입후보 99분 중 49분(49%)이 `FP-CRITICAL`로 차단. SIGNAL 로그 확인
+결과 PSI가 10:07(0.317)부터 12:39(1.840)까지 단조 증가만 하고 회복이 전혀 없음.
+
+**근본 원인**: 299차가 "PSI 상시 0.000 고정" 버그를 고치며 추가한
+`_try_bootstrap_baseline()`이, `save_training_fingerprint()`(진짜 WFA 학습분포
+저장 함수)가 여전히 프로덕션에서 호출되지 않는 상태를 메우기 위해 그날그날의
+첫 50분 라이브 스냅샷을 기준선으로 자동 승격하는 안전망이었음. 문제는 이
+스냅샷이 실제 HotSwap 전까지(또는 파일이 남아있는 한 재기동 후에도) 계속
+재사용되고, `update_live()`는 이를 하루 종일 누적되는 라이브 버퍼와 비교함 —
+"학습분포 vs 라이브"가 아니라 "오늘 개장 50분 vs 그 이후 누적 전체" 비교가
+되어, 장중 추세가 조금만 있어도 필연적으로 PSI가 우상향해 CRITICAL에서 못
+내려오는 구조였음. 즉 299차 수정이 "PSI=0 고정"을 고치며 "PSI=CRITICAL 고착"
+이라는 반대 방향 버그를 만든 것.
+
+**검토한 옵션**:
+1. **근본수정** — `save_training_fingerprint()`를 EOD 재학습(WFA 26주) 완료
+   시점에 실제로 호출해 원래 설계대로 "학습분포 vs 라이브" 비교 복원
+2. **임시완화** — 매일 08:55 `regime_fingerprint.json` 리셋 + 라이브 버퍼
+   슬라이딩 윈도우화(오늘 같은 재발은 막지만 "오늘 아침 vs 나머지" 구조는 유지)
+3. 오늘은 기록만 남기고 다음 세션에서 결정
+
+**결정**: 사용자가 옵션1(근본수정) 선택 — "이미 알려진 공백(299차가 지적한
+`save_training_fingerprint()` 미호출)을 메우는 것이 맞다"는 판단.
+
+**수정**: `retrain_eod.py` — `retrain_now()` 성공 직후, 이미 로드된 `X`/
+`feature_names`에서 CORE 3피처를 추출해 `save_training_fingerprint()` 호출.
+`regime_fingerprint.py`의 `_try_bootstrap_baseline()`은 그대로 둠 — EOD가 아직
+한 번도 안 돈 시스템(신규 배포 등)을 위한 안전망 역할은 유효하고, `_training`이
+채워지면 기존 로직(`if not self._training:`)이 알아서 비활성화하므로 중복
+로직 추가 없이 자연스럽게 해소됨. `strategy/regime_fingerprint.py` 자체(PSI
+계산·구간 설계)는 이번 범위 밖 — 격리 테스트 중 "동일분포"에서도 PSI가
+예상보다 높게 나오는 현상을 관찰했으나(균등폭 10구간 히스토그램이 표본 적은
+꼬리 구간에 과민 반응하는 특성으로 추정), 이번 수정(기준선 소스 배선)과는
+별개 문제라 302차 수정 효과를 먼저 확인한 뒤 필요하면 재검토하기로 함
+(`SESSION_LOG.md`/`NEXT_TODO.md` 302차 참조).
+
 ## 2026-07-07 (301차) — Hurst 산출 흐름 점검 결과 배선 수정
 
 ### [버그] `hurst_override` 플래그가 정의만 되고 어디서도 소비되지 않음

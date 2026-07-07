@@ -8190,6 +8190,77 @@ GBM 배치 재학습 산출물 형식을 런타임 로더와 맞추고, 좌하�
 
 **다음 단계**: origin/dev push → MW0601 git pull 검증
 
+## 2026-07-07 (302차) — 진입0 재발 딥다이브 → PSI FP-CRITICAL 단조증가 버그 발견+수정
+
+### 배경
+
+사용자 요청으로 오늘(0707) 진입0 원인과 PSI 경보 조치 필요 여부를 분석.
+297차가 예고한 대로 conf 분포는 회복됐으나(median 33.5%→33.8%, `regime_ok`
+11→106분/반나절, "데이터 품질 문제" 가설 지지), 진입은 여전히 0건이라 딥다이브.
+
+### 원인 분석
+
+`predictions.db`의 `ensemble_decisions`에서 오늘 `regime_ok=1 & grade=C` 99분을
+전수 분해:
+
+| 차단 사유 | 건수 | 시간대 |
+|---|---|---|
+| `checklist_reason=FP-CRITICAL` | 49 (49%) | 10:07~12:41, 거의 전 구간 |
+| Hurst 횡보차단 | 27 | 산발적(292차부터 알려진 이슈) |
+| RegimeOverride/σ미수집/조건부구간 | 23 | 09:00~09:51, 정상 콜드스타트 |
+
+99분 전량이 이 5개 사유로 막혀 후보(`entry_final_ok`) 0건. `FP-CRITICAL`이
+새로 등장한 지배적 원인이라 SIGNAL 로그 대조: PSI가 10:07(0.317)부터
+12:39(1.840)까지 **단조 증가만 하고 한 번도 CLEAR로 안 돌아옴** — 정상적인
+드리프트 지표라면 오르내림이 있어야 하는데 계측 결함으로 판단.
+
+### 발견 — bootstrap 임시 기준선이 "오늘 아침 vs 그 이후 누적"으로 고착
+
+`data/regime_fingerprint.json`을 확인하니 `saved_at: 2026-07-07 09:49:59`,
+feature당 표본 n=50. 299차가 "PSI 상시 0.000 고정" 버그 수정으로 추가한
+`_try_bootstrap_baseline()`이 오늘 개장 후 딱 50분치 라이브 데이터로 기준
+분포를 자동 생성했고, 이후 `update_live()`는 이 스냅샷을 하루 종일(그리고
+재기동 전까지 다음날들도) 계속 누적되는 라이브 버퍼와 비교하고 있었음. 즉
+"학습분포 vs 라이브" 비교가 아니라 **"오늘 개장 50분 vs 그 이후 누적 전체"**
+비교가 되어버려, 장중에 조금이라도 추세가 있으면 필연적으로 PSI가 우상향해
+CRITICAL에서 못 내려오는 구조. `save_training_fingerprint()`(진짜 WFA
+학습분포를 저장하는 함수)는 299차 시점에 이미 "프로덕션 어디서도 호출된 적
+없음"으로 지적됐던 공백인데, 이번에도 그대로였음 — 즉 299차는 "PSI=0 고정"을
+고쳤지만 그 수정이 "PSI=CRITICAL 고착"이라는 반대 방향 버그를 새로 만든 것.
+
+### 수정
+
+`retrain_eod.py` — EOD 재학습(`retrain_now`) 성공 직후, 이미 로드된 `X`/
+`feature_names`에서 CORE 3피처(`cvd_divergence`/`vwap_position`/`ofi_norm`)를
+추출해 `strategy.regime_fingerprint.get_fingerprint().save_training_fingerprint()`
+로 실제 26주 WFA 학습분포를 저장하도록 배선. `strategy/regime_fingerprint.py`
+자체는 손대지 않음 — `_try_bootstrap_baseline()`은 EOD 재학습이 한 번도
+안 돈 시스템을 위한 안전망으로 그대로 두되, `_training`이 채워지면(EOD 성공
+시) 자동으로 비활성화되는 기존 로직(`if not self._training:`)을 그대로 활용.
+CORE 피처가 `feature_names`에서 일부 누락된 경우(managed feature set에서
+빠진 경우)는 경고 로그만 남기고 스킵 — 예외 발생 시에도 EOD 재학습 자체는
+중단되지 않도록 `try/except`로 감쌈(기존 P8 스케일러 재적합과 동일 패턴).
+
+### 검증
+
+격리 스크립트(scratch 경로의 별도 `RegimeFingerprint` 인스턴스, 실제
+`data/regime_fingerprint.json` 미접촉)로 CORE 3피처 추출 로직과
+`save_training_fingerprint()` 호출 자체가 정상 동작함을 확인. `py_compile`
+통과. **라이브 미검증** — 오늘 15:45 EOD 재학습 실행 시 로그에
+`[RegimeFingerprint] 학습분포 갱신 완료`가 찍히는지, `regime_fingerprint.json`의
+`saved_at`이 15:4x로 갱신되고 표본 수가 26주치로 바뀌는지, 그리고 **다음
+재기동(0708) 후 PSI가 개장 초반부터 CRITICAL에 고착되지 않고 정상적으로
+오르내리는지**가 최우선 확인 대상(`NEXT_TODO.md` 302차 참조).
+
+### 부수 관찰 (조치 안 함)
+
+격리 테스트 중 "완전 동일 분포"를 재현해도 PSI가 예상보다 높게(0.3~0.4대) 나오는
+현상을 관찰 — 균등폭 10구간 히스토그램이 표본 수가 적은 꼬리 구간에 과민 반응하는
+특성으로 보임(로그 스케일 특성상 count가 0에 가까운 구간의 비율 변화가 PSI 공식에서
+과대 계상됨). 이번 수정 범위(기준선 소스 배선)와는 별개 문제라 이번엔 손대지
+않음 — 302차 수정 후에도 PSI가 여전히 자주 CRITICAL을 찍으면 이 계산 자체의
+구간 설계(균등폭 대신 분위수 기반 구간 등)를 재검토할 필요가 있음.
+
 ## 2026-07-07 (301차) — Hurst 산출 흐름 점검 → 배선 버그 2건 + 경계값 불일치 1건 수정 + 죽은 코드 제거
 
 ### 배경
