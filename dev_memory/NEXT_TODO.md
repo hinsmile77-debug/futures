@@ -28,6 +28,17 @@
   라이브 값이 조금만 벗어나도 PSI가 크게 튀는 구조적 결함 의심 — 재설계 후
   차단 비활성 기간 쌓인 라이브 PSI 데이터로 "정상 구간에서 실제로 오르내리는지"
   검증 후 재활성화 여부 결정.
+- [ ] **[P0 보류] log_manager 크로스스레드 구조수정(`pyqtSignal`+
+  `Qt.QueuedConnection`) 착수 여부 재검토** — 오늘 `logs/cross_thread_gui.log`
+  첫 데이터(6건, 08:45~08:58 워밍업 창, `_pm_refit_worker` 등 daily_close
+  외 3개 경로)로 302차의 "구조적 위험" 가설은 뒷받침됐으나, 정작 크래시가
+  확정됐던 `_run_daily_close`(15:40) 경로 자체는 아직 미재현이라 오늘은
+  손대지 않기로 결정. 상세·재검토 조건: `DECISION_LOG.md` 303차 후속 항목.
+  - 재검토 조건: ① 오늘 15:40 daily_close에서도 재현되는지 확인 ② 1~2일
+    추가 관찰로 빈도·경로 다양성 재확인 → 둘 다 채워지면 다음 세션에서
+    `_ShutdownSignal`(142차) 패턴 재사용한 구조 변경 착수 여부 최종 결정.
+  - 참고(설계 리스크 낮음 확인됨): GUI 접점은 `log_panel.append()` 단일
+    지점(`dashboard/main_dashboard.py`)로 수렴, 142차에 검증된 선례 존재.
 
 ---
 
@@ -91,10 +102,14 @@
   정상 동작으로 판단**(버그 아님, 조치 불필요). 다만 halt→재시작이 실제로
   몇 번째 있었던 일인지, 항상 이렇게 깔끔하게 복구됐는지는 이번이 처음 관측된
   사례라 더 지켜볼 것.
-  - [ ] **`daily_exporter` EOD 리포트에 거래소 halt 감지 이력 노출 검토** — 오늘처럼
-    데이터 공백 구간이 halt 때문인지 다른 원인(API 지연·연결 끊김)인지 매번
-    로그를 뒤져 판별하는 대신, `[ExchangeCB]` 감지 이벤트를 EOD 리포트 한 줄로
-    자동 요약하면 향후 진입0 원인분석 시간을 단축할 수 있음(미착수, 제안 단계).
+  - [DONE 2026-07-08 (303차 후속)] **`daily_exporter` EOD 리포트에 거래소 halt 감지
+    이력 노출** — `utils/db_utils.py`에 `exchange_cb_halts` 테이블(RAW_DATA_DB) +
+    `record_exchange_cb_halt`/`fetch_daily_exchange_cb_halts`/`purge_old_exchange_cb_halts`
+    추가. `main.py` ExchangeCB 해제 시점(`_exchange_cb_start`가 None 되기 직전)에
+    halt 구간 1건 영속 기록, EOD 정리 루틴에 30일 초과분 purge 배선.
+    `daily_exporter.py`가 당일 halt 구간을 `거래소CB halt: N건, 총 M분 (HH:MM~HH:MM(m분), ...)`
+    한 줄로 요약. 기존에는 halt 여부가 `[ExchangeCB]` 로그 문자열로만 존재해
+    DB/구조화 저장이 전혀 없었음(계측 부재) — 계측을 신설한 뒤 EOD 요약에 배선.
 - [DONE 2026-07-07] **VKOSPI `[CybosIndex] 종목명 검증 실패` — halt와 무관한 상시
   100% 실패로 재확인 + 근본원인 특정 + 수정** — halt 상관 가설은 틀렸음:
   09:00~15:34 전체 393회 발생(사실상 매분, halt 구간 밖에서도 동일 빈도) —

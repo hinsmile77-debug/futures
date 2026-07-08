@@ -4940,3 +4940,85 @@ CB③-P4 완화와 동일 근거)에 부합하고, 계측 재설계에 필요한
 
 **실투 전환 전 반드시 재검토** — PSI 계측을 분위수 기반 bin 등으로 재설계하고
 정상 구간에서 PSI가 오르내리는 것을 실측 확인한 뒤 `True`로 복원할 것.
+
+---
+
+## 2026-07-08 (303차, 후속) — log_manager 크로스스레드 구조수정 착수 여부 검토 → 보류(관찰 지속)
+
+### [결정] `pyqtSignal`+`Qt.QueuedConnection` 마샬링 구조 변경, 오늘은 착수하지 않음
+
+**배경**: 302차가 `logs/cross_thread_gui.log` 진단 계측만 추가하고 "며칠 관찰 후
+착수 여부 결정"으로 미뤘던 근본 수정(`log_manager` 콜백을 GUI 스레드로
+마샬링)에 대해, 오늘 첫 라이브 데이터가 쌓여 착수 여부를 재검토.
+
+**오늘 관측 데이터** (`logs/cross_thread_gui.log`, 0708):
+- 총 6건, 전부 08:45~08:58 13분 창(장전 워밍업 구간)에 집중. 09:00 장 시작
+  이후 검토 시점(11:05)까지 0건.
+- 호출 경로 3종 — `_pm_refit_worker`(×4)·`_early_warmup_worker`(×1)·
+  `_canary_refit_worker`(×1), 전부 `daily_close()`와 무관한 별개 백그라운드
+  스레드(`main.py`). → 302차가 daily_close 하나의 문제가 아니라 "로깅 경로
+  전체의 구조적 위험"이라 본 가설을 뒷받침하는 증거.
+- 반대로 정작 크래시가 실측 확정됐던 `_run_daily_close`(15:40:27) 경로
+  자체는 검토 시점 기준 오늘 아직 미도래(daily_close 전) — 핵심 경로에서의
+  재현 여부는 여전히 미확인.
+- 콜백 배선 재확인: `log_manager.subscribe()`는 SYSTEM/TRADE/LEARNING/HEALTH
+  4개 레이어만 등록(`main.py:657-672`), 4곳 모두 결국 단일 지점
+  `self._win.log_panel.append(...)`로 수렴(`dashboard/main_dashboard.py:11537,
+  11552,11668,11679`) — 302차 결정 당시 우려했던 것보다 GUI 접점(blast
+  radius)이 좁음. 또한 142차 `_ShutdownSignal(QObject)`가 동일 패턴(비-Qt
+  스레드 → `pyqtSignal`+`QueuedConnection` → 메인 스레드 처리)의 검증된
+  선례로 이미 존재해 설계 리스크도 처음 우려보다 낮음.
+
+**검토한 옵션**: ① 오늘 바로 구조 변경 착수(142차 패턴 재사용) ② 관찰 지속,
+설계만 준비해두고 장외 시간 배포 ③ 계속 보류.
+
+**결정**: 옵션②(사실상 보류, 코드는 손대지 않음). **이유**: (a) 오늘 확보한
+표본이 daily_close 크래시가 실제로 일어났던 시각대(15:40 부근)를 아직
+커버하지 못해 "핵심 경로에서도 재현되는지"가 미확인 — 302차가 명시한
+재검토 조건("며칠 관찰")에 비해 표본이 13분 창 1회뿐으로 이르다. (b)
+`LogManager.log()`는 전 레이어·전 모듈의 유일한 공통 진입점이라 여기서
+회귀가 나면 라이브 매매 중 로그 유실·대시보드 먹통 등 원래 막으려는 드문
+크래시보다 파급력이 클 수 있다. (c) `QueuedConnection`은 이벤트루프가
+살아있을 때만 안전하므로 daily_close/셧다운처럼 이벤트루프가 죽어가는
+시점과 맞물리면 새로운 메시지 유실 엣지케이스가 생길 여지가 있어, 장중
+배포보다 EOD 이후 배포 + 다음날 관찰이 안전하다.
+
+**재검토 조건**: ① 오늘 15:40 daily_close에서도 크로스스레드 경고가
+재현되는지(특히 `_run_daily_close` 경로 자체) 확인, ② 최소 1~2일 추가
+관찰로 빈도·경로 다양성 재확인. 두 조건이 채워지면 다음 세션에서
+`_ShutdownSignal` 패턴을 재사용한 구조 변경(단일 접점 `log_panel.append`
+마샬링) 착수 여부를 최종 결정 — 배포는 장외 시간대 권장.
+
+## 2026-07-08 (303차, 후속) — EOD 리포트에 거래소 CB halt 이력 요약 추가 (302차 이월 항목 구현)
+
+### [결정] `[ExchangeCB]` 감지 이벤트를 구조화 저장 후 EOD 리포트에 자동 요약
+
+**배경**: 302차 후속 관찰(`NEXT_TODO.md` 2026-07-07 항목)에서 13:50~14:21(31분)
+실거래소 서킷브레이커/단일가 구간이 실전 최초 관측됨. 정상 동작으로 판단했으나,
+"halt로 인한 데이터 공백"과 "API 지연·연결 끊김으로 인한 공백"을 구분하려면
+매번 로그를 뒤져야 하는 문제가 있어 "EOD 리포트에 halt 이력 요약 추가"를
+제안 단계(미착수)로 남겨두었음.
+
+**조사 결과**: `ExchangeCB`는 Circuit Breaker(CB①~⑤, `safety/circuit_breaker.py`)와
+무관한 별개 개념 — "거래소 자체 서킷브레이커/단일가매매를 분봉 미수신+Cybos
+연결정상 조합으로 감지하는 상태머신"(`main.py` `_exchange_cb_mode`/`_exchange_cb_start`,
+감지 8688행대, 해제 2998행대). 감지 시 `logger.warning`/`log_manager.system` 텍스트
+로그로만 남고, DB·JSON 등 구조화 저장소가 전혀 없었음(계측 부재) — `daily_exporter.py`가
+읽을 데이터 자체가 없는 상태.
+
+**구현**: [[feedback_instrument_before_wiring]] 원칙대로 계측을 먼저 신설한 뒤 배선.
+- `utils/db_utils.py`: `exchange_cb_halts` 테이블(RAW_DATA_DB, `regime_history`와
+  동일 패턴) + `record_exchange_cb_halt`/`fetch_daily_exchange_cb_halts`/
+  `purge_old_exchange_cb_halts` 3종 함수 추가.
+- `main.py`: ExchangeCB 해제 처리부(`_exchange_cb_start`를 None으로 리셋하기 직전)에서
+  halt 시작·종료 시각·gap_min을 기록. EOD 정리 루틴(`purge_old_regime_history` 호출부
+  옆)에 30일 초과분 purge 배선.
+- `strategy/ops/daily_exporter.py`: `build_report()`에 당일 halt 구간을
+  `거래소CB halt: N건, 총 M분 (HH:MM~HH:MM(m분), ...)` 한 줄로 요약하는 섹션 추가
+  (진입 퍼널 섹션 뒤).
+
+임시 SQLite DB로 record/fetch(날짜 필터·정렬·INSERT OR REPLACE 멱등성)/purge 동작을
+격리 검증 완료(`py_compile` 통과 + 기능 테스트 통과, 실거래 DB 파일 미접촉).
+
+**효과**: 향후 진입0 등 원인분석 시 로그 grep 없이 EOD 리포트 한 줄로 그 날 halt
+발생 여부·구간·총 공백 시간을 즉시 확인 가능.
