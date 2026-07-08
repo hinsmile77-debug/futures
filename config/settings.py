@@ -827,6 +827,15 @@ HEALTH_CACHE_AGE_CRIT_SEC = 300.0
 HEALTH_EXCEPTION_DENSITY_WARN_10M = 6.0
 HEALTH_EXCEPTION_DENSITY_CRIT_10M = 12.0
 
+# [304차] exceptions_10m이 실제 예외가 아니라 정책성 WARNING 상태통지 로그(예: PSI CRITICAL
+# 고착 버그로 매분 찍히는 [RegimeFingerprint])까지 세어 Degraded Mode를 오발동시키는 문제
+# 확인 (07-08, 09:58부터 종일 Degraded ON 고착 → 자동진입 conf 62% 요구로 A~C등급 전부 차단).
+# 정상 운영 중 주기적으로 찍히는 상태 통지 태그는 예외 밀도 집계에서 제외.
+HEALTH_EXCEPTION_EXCLUDE_TAGS = [
+    "[RegimeFingerprint]", "[ScalerRefresh]", "[ConfTrend", "[Canary]",
+    "[ConstOut]", "[DriftRetrain]", "[LiveDBG]", "[Health]", "[HealthPolicy]",
+]
+
 # 헬스 탭 미니 스파크라인 표기 범위 (최근 N분)
 HEALTH_TREND_WINDOW_MIN = 30
 

@@ -5258,3 +5258,58 @@ CB③-P4 완화와 동일 근거)에 부합하고, 계측 재설계에 필요한
 
 **효과**: 향후 진입0 등 원인분석 시 로그 grep 없이 EOD 리포트 한 줄로 그 날 halt
 발생 여부·구간·총 공백 시간을 즉시 확인 가능.
+
+## 2026-07-08 (303차, 후속) — HealthPolicy Degraded Mode 오발동 원인: exceptions_10m이 정책성 WARNING 로그까지 오집계
+
+### [버그] RegimeFingerprint PSI CRITICAL 로그가 무관한 HealthPolicy 예외밀도 지표를 오염시켜 자동진입 상시 차단
+
+**File**: `main.py:_emit_runtime_health`(1502행), `main.py:6149`(선제차단 lookahead),
+`logging_system/log_manager.py:get_level_counts`, `config/settings.py`
+
+**증상**: 사용자 보고 — UI 진입관리 패널에서 "C 등급진입" 자동진입이 켜져 있는데도
+13:02~14:21 내내 `[자동진입 차단] ... A급/C급 (degraded_conf=33~37%, min=62.0%)`가
+반복. 로그 확인 결과 `[HealthPolicy] 자동 Degraded Mode 진입`이 09:58:57에 발동한
+뒤 14:38 확인 시점까지 4시간 40분째 해제되지 않고 유지.
+
+**원인**: `_emit_runtime_health()`가 계산하는 `exception_density_10m`(main.py:1513-1518)은
+실제 예외(Exception/Traceback)가 아니라 SYSTEM 레이어에 찍힌 WARNING+ERROR+CRITICAL
+"로그 줄 수"를 그대로 센다. 09:49부터 `[RegimeFingerprint] PSI=4.2 CRITICAL`이 매분
+찍히고 있었는데(303차에서 이미 `FP_CRITICAL_GRADE_BLOCK_ENABLED=False`로 RegimeFingerprint
+자체 게이트의 진입차단만 비활성화해둔 그 계측 결함), 이 WARNING 로그 한 종류만으로도
+10분 창에서 10건씩 쌓여 `HEALTH_EXCEPTION_DENSITY_WARN_10M`(6)·`_CRIT_10M`(12) 임계를
+넘김. 여기에 Health 자신의 CRITICAL 로그가 SYSTEM 레이어에 다시 기록되며 자기순환적으로
+가산되어 `exceptions_10m`이 10~15대에 고착 → `HEALTH_DEGRADED_EXIT_RATIO`(0.5, 5분 창)
+조건을 못 채워 하루 종일 Degraded Mode 유지. Degraded Mode 중에는
+`_is_degraded_entry_blocked()`(main.py:1766-1771)가 등급(A/B/C) 필터보다 먼저 평가되어,
+고정 `HEALTH_DEGRADED_MIN_CONF=0.62` 미달 시 등급과 무관하게 자동진입 자체를 차단한다 —
+UI의 "C 등급진입" 설정은 이 게이트를 통과한 이후에만 적용되는 하위 필터라 전혀 개입할
+수 없었다.
+
+**결정**: `config/settings.py`에 `HEALTH_EXCEPTION_EXCLUDE_TAGS` 신설 —
+`[RegimeFingerprint]`, `[ScalerRefresh]`, `[ConfTrend`, `[Canary]`, `[ConstOut]`,
+`[DriftRetrain]`, `[LiveDBG]`, `[Health]`, `[HealthPolicy]` 등 "정상 운영 중 주기적으로
+찍히는 상태 통지" 태그를 예외 밀도 집계에서 제외. `log_manager.get_level_counts()`에
+`exclude_prefixes` 파라미터를 추가해 메시지 접두사 기준으로 필터링하고, `main.py`의
+두 호출부(정식 헬스 판정 1515행 부근, 선제차단 lookahead 6149행 부근) 모두에 배선.
+
+**Why**: 303차 FP-CRITICAL 예외 조치는 "RegimeFingerprint 자체 게이트가 진입을 막는
+것"만 차단했을 뿐, 같은 PSI CRITICAL 로그가 완전히 별개인 HealthPolicy 헬스 지표로
+새어 들어가 Degraded Mode라는 다른 경로로 우회 차단하는 부작용까지는 예상하지 못했다.
+"로그 레벨"과 "실제 예외 발생"을 동일시한 최초 설계(Day10-2/Day11)가 정책성 WARNING
+태그가 늘어날 때마다 계속 재발할 수 있는 구조적 결함이었다.
+
+**구현**: `config/settings.py`(HEALTH_EXCEPTION_EXCLUDE_TAGS 신설),
+`logging_system/log_manager.py`(get_level_counts exclude_prefixes 파라미터), `main.py`
+(import 추가, `_build_health_policy`에 `exception_exclude_tags` 항목 추가,
+`_emit_runtime_health`·진입 직전 lookahead 두 호출부 배선).
+
+**검증**: `ast.parse`로 3개 파일 문법 확인 완료. **라이브 미검증** — 이 수정은
+`importlib.reload(runtime_settings)` 핫리로드만으로는 반영되지 않고 **앱 재시작이
+필요**(신규 import는 프로세스 시작 시에만 로드됨). 다음 재시작 후 `exceptions_10m`이
+PSI CRITICAL 반복과 무관하게 낮게 유지되는지, Degraded Mode가 정상적으로
+해제/재진입하는지 확인 필요.
+
+**위험 수용**: 제외 대상 태그 중 극히 드물게 진짜 장애(예: HealthPolicy 자체 로직
+버그로 인한 CRITICAL)가 섞일 가능성이 있으나, 이 태그들은 모두 주기적 상태 통지용으로
+설계된 구조화 로그이고 진짜 예외는 별도로 ERROR 레벨 로그나 Traceback을 통해 여전히
+잡힌다.

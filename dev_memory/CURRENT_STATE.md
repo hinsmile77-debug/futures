@@ -1,10 +1,35 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-08 (303차) — ATR 게이트 상한에 만기(D-2~D+1) 캘린더
-> 예외(×1.5) 추가 + 저빈도(1~2주) 사람검토 재보정 제안 모니터
-> (`learning/atr_ceiling_recalibrator.py`) 신설, 자동 반영 없이 Slack 알림만.
-> 라이브 미검증(다음 금요일 EOD·다음 만기 확인 필요).
+> 마지막 업데이트: 2026-07-08 (303차, 후속) — HealthPolicy Degraded Mode가
+> exceptions_10m 오집계(정책성 WARNING 로그를 예외로 오인)로 09:58부터 하루 종일
+> 고착, A~C 전 등급 자동진입을 상시 차단하던 버그 수정. `HEALTH_EXCEPTION_EXCLUDE_TAGS`
+> 신설로 정책 로그 제외. **라이브 미검증 — 앱 재시작 필요**(핫리로드로는 미반영).
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-08 (303차 후속 — HealthPolicy Degraded Mode 오발동 수정: exceptions_10m 정책로그 오집계)
+
+**계기**: 사용자 보고 — C등급 자동진입 켜둔 상태에서 13:02~14:21 내내
+`degraded_conf=33~37% < min=62.0%`로 자동진입 반복 차단.
+
+**원인**: `exception_density_10m`(main.py:1513)이 실제 예외가 아니라 SYSTEM 레이어
+WARNING+ERROR+CRITICAL 로그 줄 수를 그대로 집계. 09:49부터 매분 찍히는
+`[RegimeFingerprint] PSI CRITICAL`(계측 결함으로 상시 CRITICAL 고착, 303차에서
+진입차단만 비활성화해둔 상태)이 10분 창에서 단독 10건 이상 쌓여 CRIT 임계(12)
+초과 → 09:58:57 Degraded Mode 진입 후 자기순환(Health 자신의 CRITICAL 로그도
+집계됨)으로 하루 종일 해제 안 됨. Degraded Mode 중엔 등급(A/B/C) 필터보다 먼저
+고정 `HEALTH_DEGRADED_MIN_CONF=0.62` 체크가 실행되어, UI의 "C등급 자동진입" 설정과
+무관하게 conf 33~37% 신호가 전부 차단됨.
+
+**변경**: `config/settings.py`(`HEALTH_EXCEPTION_EXCLUDE_TAGS` 9종 신설),
+`logging_system/log_manager.py`(`get_level_counts` exclude_prefixes 파라미터),
+`main.py`(두 호출부 배선: `_emit_runtime_health`, 6149행 lookahead).
+
+**미검증**: `ast.parse` 통과만 확인. **라이브 미검증** — 앱 재시작 필요(핫리로드
+미적용 대상: 신규 import).
+
+상세: `dev_memory/SESSION_LOG.md`·`DECISION_LOG.md` 303차 후속 항목.
 
 ---
 
