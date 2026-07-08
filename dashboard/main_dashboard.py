@@ -48,6 +48,8 @@ from config.settings import (
     HEALTH_CACHE_AGE_WARN_SEC, HEALTH_CACHE_AGE_CRIT_SEC,
     HEALTH_EXCEPTION_DENSITY_WARN_10M, HEALTH_EXCEPTION_DENSITY_CRIT_10M,
     ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
+    ATR_ADAPTIVE_MAX_CEILING, ATR_EXPIRY_CEILING_MULT,
+    ATR_EXPIRY_CEILING_DAYS_BEFORE, ATR_EXPIRY_CEILING_DAYS_AFTER,
     CB_ACC30M_MIN_SAMPLES, SGD_BLEND_DISABLED_HORIZONS,
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
@@ -3939,9 +3941,13 @@ class EntryPanel(QWidget):
         left_lay.addWidget(mk_label("진입 게이트 필터", C['blue'], 9, True))
         _gate_filter_items = [
             ("ATR 범위 필터",  "atr_chk",
-             f"ATR 범위 필터 (263차)\n"
+             f"ATR 범위 필터 (263차, 273차 적응형, 303차 만기예외)\n"
              f"  하한 {ATR_MIN_ENTRY}pt 미만 → 변동성 부족, 휩쏘 위험 → 진입 차단\n"
-             f"  상한 {ATR_MAX_ENTRY}pt 초과 → 손절거리 {ATR_MAX_ENTRY * 1.5:.2f}pt 과대 → 진입 차단\n"
+             f"  상한: 최근 60분 ATR 롤링평균×1.25, 정적하한 {ATR_MAX_ENTRY}pt~절대상한 "
+             f"{ATR_ADAPTIVE_MAX_CEILING}pt 사이에서 적응\n"
+             f"  만기 D-{ATR_EXPIRY_CEILING_DAYS_BEFORE}~D+{ATR_EXPIRY_CEILING_DAYS_AFTER}: 절대상한 ×"
+             f"{ATR_EXPIRY_CEILING_MULT} 일시 확대(→{ATR_ADAPTIVE_MAX_CEILING * ATR_EXPIRY_CEILING_MULT:.1f}pt) "
+             f"— 롤오버·프로그램매매 변동성 예외 처리\n"
              f"  값 표시: 현재 ATR pt + OK / ↑고변동 / ↓저변동 상태"),
             ("OPEN_VOL 시가이격", "gap_chk",
              f"OPEN_VOLATILE 시가이격 필터 (263차)\n"

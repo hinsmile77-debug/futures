@@ -1,10 +1,38 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-07 (301차) — Hurst 산출 흐름 점검 → `hurst_override`
-> 미소비 배선, backfill Hurst 공식 불일치, shadow_evaluator 경계값 3건 수정 +
-> 죽은 코드 제거. **라이브 미검증** — 다음 기동 후 탈진 레짐 Hurst 우회 동작 확인 필요.
-> 299차(코드 4건 수정)도 여전히 라이브 미검증 상태로 이어짐.
+> 마지막 업데이트: 2026-07-08 (303차) — ATR 게이트 상한에 만기(D-2~D+1) 캘린더
+> 예외(×1.5) 추가 + 저빈도(1~2주) 사람검토 재보정 제안 모니터
+> (`learning/atr_ceiling_recalibrator.py`) 신설, 자동 반영 없이 Slack 알림만.
+> 라이브 미검증(다음 금요일 EOD·다음 만기 확인 필요).
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-08 (303차 — ATR 게이트 상한 만기주 예외 + 재보정 제안 모니터 신설)
+
+**계기**: 07-08 만기(7/9) 전날 딥다이브에서 ATR 피크 10.22pt가 절대상한(6.0pt)을
+크게 초과해 신규진입 다수 차단 확인. "1~2주 롤링 캡"으로 완전 자동화하는 안은
+시뮬레이션 결과 변동성 상승 초입에 오히려 차단율이 더 커지는 역효과가 확인되어
+기각하고, 사용자 결정으로 ①만기 캘린더 예외 ②저빈도 사람검토 재보정(알파봇과
+동일 "제안만, 자동반영 금지" 원칙)으로 대체.
+
+**변경**:
+1. `features/technical/expiry.py`: `is_near_monthly_expiry()` 신규(만기 D-2~D+1
+   판정). `config/settings.py`: `ATR_EXPIRY_CEILING_*` 4종 추가.
+   `main.py:6115` 부근 ATR 적응형 상한 계산에서 만기 D-2~D+1이면 절대상한
+   6.0→9.0pt(×1.5) 일시 확대. 대시보드 툴팁 갱신.
+2. `learning/atr_ceiling_recalibrator.py` 신규 (`ThresholdRecalibrator` 패턴
+   재사용) — 최근 15거래일(만기 제외) ATR로 floor/ceiling 제안값 산출,
+   `atr_ceiling_monitor.db` 기록, WATCHLIST 이상 시 Slack 알림만
+   (`utils.notify`). **자동 반영 없음** — config/settings.py 수동 수정 필요.
+   `daily_close()` 금요일 게이트 + 내부 10일 간격 게이트로 사실상 1~2주 주기
+   (`main.py:8251`).
+
+**미검증**: 5개 파일 `py_compile` 통과, 재보정기 드라이런(임시 DB)으로 만기 제외
+로직·간격 게이트 확인. **라이브 미검증** — 다음 금요일 EOD Slack 알림 수신 여부,
+다음 만기(8월 둘째 목요일) 전후 실제 게이트 완화 동작 확인 필요.
+
+상세: `dev_memory/SESSION_LOG.md` 303차.
 
 ---
 
