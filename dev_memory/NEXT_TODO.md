@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-07-08 (303차, 후속) [HealthPolicy Degraded Mode 오발동 수정 — exceptions_10m 정책로그 오집계]
+
+> `[RegimeFingerprint] PSI CRITICAL` 등 정책성 WARNING 로그가 HealthPolicy 예외밀도
+> 지표로 오집계되어 09:58부터 Degraded Mode가 하루 종일 해제되지 않고 자동진입(A~C
+> 전 등급)을 상시 차단하던 버그 수정. 상세: `DECISION_LOG.md`/`SESSION_LOG.md` 303차
+> 후속.
+
+- [DONE 2026-07-08] **`HEALTH_EXCEPTION_EXCLUDE_TAGS` 신설 + `get_level_counts`
+  exclude_prefixes 배선** — `config/settings.py`, `logging_system/log_manager.py`,
+  `main.py`(`_emit_runtime_health`·lookahead 두 호출부). `ast.parse` 문법 확인 완료.
+- [ ] **다음 재기동 후 라이브 검증(최우선)** — 앱 재시작 필요(핫리로드로는 신규
+  import 미반영). 재시작 후 (1) `exceptions_10m`이 PSI CRITICAL 반복과 무관하게
+  낮게 유지되는지, (2) Degraded Mode가 정상적으로 해제되는지, (3) C등급 자동진입이
+  실제로 재개되는지 확인.
+- [ ] **FP-CRITICAL PSI 계측 재설계는 이번 범위 밖** — 기존 303차 항목("균등폭→
+  분위수 bin 재설계") 그대로 유지, 이번 수정과 별개로 진행.
+
+---
+
 ## 2026-07-08 (303차) [정기점검 → FP-CRITICAL 진입차단 한시 비활성]
 
 > 정기점검 중 302차 수정 이후에도 진입0이 계속됨을 확인 — PSI가 07-08 09:49부터

@@ -167,15 +167,27 @@ class LogManager:
         all_entries.sort(key=lambda e: e.ts)
         return all_entries[-n:]
 
-    def get_level_counts(self, since_sec: int = 600, layer: Optional[str] = None) -> Dict[str, int]:
-        """최근 구간 레벨 카운트 집계 (기본 10분)."""
+    def get_level_counts(
+        self,
+        since_sec: int = 600,
+        layer: Optional[str] = None,
+        exclude_prefixes: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """최근 구간 레벨 카운트 집계 (기본 10분).
+
+        exclude_prefixes: 이 접두사로 시작하는 메시지(정책성 상태 통지 태그 등)는
+        실제 예외가 아니므로 집계에서 제외한다.
+        """
         cutoff = datetime.datetime.now() - datetime.timedelta(seconds=max(0, int(since_sec)))
         counts = {"INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+        prefixes = tuple(exclude_prefixes) if exclude_prefixes else ()
 
         layers = [layer] if layer in self._buffers else list(self._buffers.keys())
         for lay in layers:
             for entry in self._buffers.get(lay, []):
                 if getattr(entry, "created_at", cutoff) < cutoff:
+                    continue
+                if prefixes and str(getattr(entry, "message", "")).startswith(prefixes):
                     continue
                 lv = str(getattr(entry, "level", "INFO") or "INFO").upper()
                 if lv == "WARN":

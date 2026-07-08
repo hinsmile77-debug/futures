@@ -78,6 +78,7 @@ from config.settings import (
     HEALTH_QUALITY_WARN, HEALTH_QUALITY_CRIT,
     HEALTH_CACHE_AGE_WARN_SEC, HEALTH_CACHE_AGE_CRIT_SEC,
     HEALTH_EXCEPTION_DENSITY_WARN_10M, HEALTH_EXCEPTION_DENSITY_CRIT_10M,
+    HEALTH_EXCEPTION_EXCLUDE_TAGS,
     HEALTH_TREND_WINDOW_MIN,
     HEALTH_DEGRADED_ENABLED, HEALTH_DEGRADED_ENTER_STREAK, HEALTH_DEGRADED_EXIT_STREAK,
     HEALTH_DEGRADED_WINDOW, HEALTH_DEGRADED_EXIT_RATIO,
@@ -699,6 +700,7 @@ class TradingSystem:
             "cache_age_crit_sec": float(getattr(mod, "HEALTH_CACHE_AGE_CRIT_SEC", HEALTH_CACHE_AGE_CRIT_SEC)),
             "exception_warn_10m": float(getattr(mod, "HEALTH_EXCEPTION_DENSITY_WARN_10M", HEALTH_EXCEPTION_DENSITY_WARN_10M)),
             "exception_crit_10m": float(getattr(mod, "HEALTH_EXCEPTION_DENSITY_CRIT_10M", HEALTH_EXCEPTION_DENSITY_CRIT_10M)),
+            "exception_exclude_tags": list(getattr(mod, "HEALTH_EXCEPTION_EXCLUDE_TAGS", HEALTH_EXCEPTION_EXCLUDE_TAGS)),
             "trend_window_min": int(getattr(mod, "HEALTH_TREND_WINDOW_MIN", HEALTH_TREND_WINDOW_MIN)),
             "degraded_enabled": bool(getattr(mod, "HEALTH_DEGRADED_ENABLED", HEALTH_DEGRADED_ENABLED)),
             "degraded_enter_streak": int(getattr(mod, "HEALTH_DEGRADED_ENTER_STREAK", HEALTH_DEGRADED_ENTER_STREAK)),
@@ -1518,7 +1520,11 @@ class TradingSystem:
             investor_age = float(features.get("quality_investor_age_sec", -1) or -1)
             cache_age_sec = max(macro_cache_age, investor_age, 0.0)
 
-            level_counts = log_manager.get_level_counts(since_sec=600, layer="SYSTEM")
+            level_counts = log_manager.get_level_counts(
+                since_sec=600,
+                layer="SYSTEM",
+                exclude_prefixes=p.get("exception_exclude_tags", HEALTH_EXCEPTION_EXCLUDE_TAGS),
+            )
             exception_density_10m = float(
                 level_counts.get("WARNING", 0)
                 + level_counts.get("ERROR", 0)
@@ -6189,7 +6195,11 @@ class TradingSystem:
         _dg_latency_ms  = float(getattr(self, "_last_pipe_ms", 0.0) or 0.0)
         _dg_quality     = float(features.get("feature_quality_score", 1.0) or 1.0)
         _dg_cache_age   = float(features.get("quality_investor_age_sec", 0.0) or 0.0)
-        _dg_level_counts = log_manager.get_level_counts(since_sec=600, layer="SYSTEM")
+        _dg_level_counts = log_manager.get_level_counts(
+            since_sec=600,
+            layer="SYSTEM",
+            exclude_prefixes=_hp.get("exception_exclude_tags", HEALTH_EXCEPTION_EXCLUDE_TAGS),
+        )
         _dg_exc_density = float(
             _dg_level_counts.get("WARNING", 0)
             + _dg_level_counts.get("ERROR", 0)

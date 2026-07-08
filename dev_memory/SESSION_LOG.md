@@ -8484,3 +8484,33 @@ H≈0으로 나와 문서가 기대하는 "H>0.55" 데모가 실패함(횡보 �
 - 5개 파일 모두 `py_compile` 통과. **라이브 미검증** — 다음 금요일 EOD에서
   Slack 알림 수신 여부, 다음 만기(8월 둘째 목요일) 전후 실제 게이트 완화 동작
   확인 필요.
+
+---
+
+## 2026-07-08 (303차, 후속) — HealthPolicy Degraded Mode 오발동 딥다이브 → exceptions_10m 정책로그 오집계 수정
+
+**트리거**: 사용자가 대시보드 스크린샷과 TRADE 로그(13:02~14:21
+`[자동진입 차단] ... degraded_conf=33~37%, min=62.0%` 반복)를 제시하며 "UI에서
+C등급까지 자동진입 켜놨는데 왜 차단되는지" 질문.
+
+**진단**: `_is_degraded_entry_blocked()`가 등급(A/B/C) 필터보다 먼저 평가되는 구조를
+확인 → 로그에서 09:58:57 `[HealthPolicy] 자동 Degraded Mode 진입` 이후 14:38까지
+미해제 확인 → `exception_density_10m` 계산부가 실제 예외가 아니라 SYSTEM 레이어
+WARNING/ERROR/CRITICAL "로그 줄 수"를 세는 것을 발견 → 09:49부터 매분 찍히는
+`[RegimeFingerprint] PSI CRITICAL`(303차에 진입차단만 비활성화해둔 그 계측 결함)이
+10분 창에서 단독으로 10건씩 쌓여 CRIT 임계(12)를 넘기고, Health 자신의 CRITICAL
+로그까지 자기순환 가산되며 고착됨을 확인.
+
+**구현**: `config/settings.py`에 `HEALTH_EXCEPTION_EXCLUDE_TAGS`(정책성 상태통지 태그
+9종) 신설. `logging_system/log_manager.py::get_level_counts()`에 `exclude_prefixes`
+파라미터 추가. `main.py`의 정식 헬스 판정(`_emit_runtime_health`)과 진입 직전
+선제차단 lookahead(6149행 부근) 두 호출부 모두에 배선.
+
+**검증**: `ast.parse`로 3개 파일 문법 확인. **라이브 미검증** — 핫리로드로는 반영
+안 되고 앱 재시작 필요(신규 import는 프로세스 기동 시에만 로드). 다음 세션에서
+재시작 후 exceptions_10m 수치, Degraded Mode 해제 여부 확인.
+
+**다음 세션**: 재시작 후 (1) exceptions_10m이 PSI CRITICAL 반복과 무관하게 낮게
+유지되는지, (2) Degraded Mode가 자동 해제되는지, (3) C등급 자동진입이 정상적으로
+재개되는지 확인. FP-CRITICAL PSI 계측 재설계(균등폭→분위수 bin) 자체는 이번 범위
+밖으로 남음(기존 `NEXT_TODO.md` 303차 항목 참조).
