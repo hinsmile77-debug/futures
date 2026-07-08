@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-07-08 (304차 후속) [daily_close() 백그라운드 스레드 Qt 위젯 직접조작 access violation 크래시 루프 수정]
+
+> 0708 15:40~15:43 실측 크래시 루프(4회 연속) 원인 규명 + 수정. 상세:
+> `SESSION_LOG.md`/`DECISION_LOG.md` 304차 후속.
+
+- [DONE 2026-07-08] **`_daily_close_ui_sig` 큐드커넥션 신설 + daily_close 4개
+  대시보드 호출부 메인 스레드로 위임** — `main.py`.
+- [DONE 2026-07-08] **`log_manager.log()` 콜백 디스패치 스레드-안전화** —
+  `logging_system/log_manager.py`(`_LogDispatchBridge`).
+- [ ] **다음 재기동 후 라이브 검증(최우선)** — 내일 08:45 자동 시작 또는 다음 수동
+  재시작 이후, 15:40 daily_close 시점에 (1) access violation 없이 1회에 완주하는지,
+  (2) `logs/crash_fault.log`에 신규 항목이 없는지, (3) 대시보드 전략운용현황/추이
+  탭·거래소CB 배지가 정상적으로 갱신되는지(큐드 지연으로 인한 누락 없는지) 확인.
+
+---
+
 ## 2026-07-08 (304차) [진입관리 탭 UI 정리 — 원신호/실행신호 폭 축소+차단사유/레짐 이전, 상태스트립·자격현황 카드 제거, 방향인디케이터 카드 축소]
 
 > 오프스크린(`QT_QPA_PLATFORM=offscreen`) 렌더링으로 레이아웃 수치(카드 폭 비율,
