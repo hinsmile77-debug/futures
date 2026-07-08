@@ -5357,16 +5357,25 @@ class TradingSystem:
             logger.debug("[RegimeOverride] 적용 실패 (스킵): %s", _ro_e)
 
         # [§19] RegimeFingerprint CRITICAL — 피처 분포 심각 변화 시 진입 차단
+        # [303차] 부활 후 이틀 연속 상시 CRITICAL 고착(계측 결함 의심)으로 차단만
+        # 한시 비활성 — config/settings.py FP_CRITICAL_GRADE_BLOCK_ENABLED 주석 참조.
+        # PSI 계산·로그는 그대로 유지(모니터링 단절 없음).
         try:
             from strategy.regime_fingerprint import get_fingerprint as _get_fp2
             if _get_fp2().get_level() >= 3:  # DriftLevel.CRITICAL = 3
-                direction = 0
-                grade     = "X"
-                decision["checklist_reason"] = "FP-CRITICAL"
-                log_manager.signal(
-                    f"[RegimeFingerprint] PSI={_get_fp2().get_psi():.3f} CRITICAL "
-                    f"— 시장 구조 변화로 진입 차단"
-                )
+                if runtime_settings.FP_CRITICAL_GRADE_BLOCK_ENABLED:
+                    direction = 0
+                    grade     = "X"
+                    decision["checklist_reason"] = "FP-CRITICAL"
+                    log_manager.signal(
+                        f"[RegimeFingerprint] PSI={_get_fp2().get_psi():.3f} CRITICAL "
+                        f"— 시장 구조 변화로 진입 차단"
+                    )
+                else:
+                    log_manager.signal(
+                        f"[RegimeFingerprint] PSI={_get_fp2().get_psi():.3f} CRITICAL "
+                        f"— 감시전용(차단 비활성), 계측만 기록"
+                    )
         except Exception as _fp2_e:
             logger.debug("[RegimeFingerprint] STEP6 스킵: %s", _fp2_e)
 
