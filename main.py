@@ -6163,6 +6163,7 @@ class TradingSystem:
                 max(ATR_MAX_ENTRY, _atr_recent_avg * ATR_ADAPTIVE_MAX_MULT),
             )
         else:
+            _atr_recent_avg = None
             _atr_max_adaptive = ATR_MAX_ENTRY
         _atr_ok = ATR_MIN_ENTRY <= atr <= _atr_max_adaptive  # 하한: 휩쏘, 상한: 과도 손절거리(적응형)
 
@@ -6556,6 +6557,19 @@ class TradingSystem:
             "↑고변동" if atr > _atr_max_adaptive
             else ("↓저변동" if atr < ATR_MIN_ENTRY else "OK")
         )
+        # 두 시간창(현재 14분 ATR vs 상한 산출용 60분 롤링평균)을 한 줄로 노출 —
+        # "3.91>3.50인데 왜?" 질문에 대시보드만 보고 답 나오게.
+        if _atr_recent_avg is not None:
+            _atr_expiry_tag = "·만기캡" if _atr_ceiling_effective > ATR_ADAPTIVE_MAX_CEILING else ""
+            _atr_chk_detail = (
+                f"14m ATR {atr:.2f}pt → 상한 {_atr_max_adaptive:.2f}pt "
+                f"(60m평균 {_atr_recent_avg:.2f}×{ATR_ADAPTIVE_MAX_MULT}{_atr_expiry_tag})"
+            )
+        else:
+            _atr_chk_detail = (
+                f"14m ATR {atr:.2f}pt → 상한 {_atr_max_adaptive:.2f}pt "
+                f"(표본{len(self._atr_recent_window)}<{ATR_ADAPTIVE_MIN_SAMPLES} 정적)"
+            )
         if time_zone != "OPEN_VOLATILE":
             _gap_chk_val = "구간외"  # 09:05~10:30 전용 — 시간대 밖
         elif _cr_entry_mode != "TREND_FOLLOW":
@@ -6575,6 +6589,7 @@ class TradingSystem:
             "time_chk":   time_zone or "—",
             "risk_chk":   f"{_dl_pct:.1%}",
             "atr_chk":    f"{atr:.2f}pt {_atr_state}",
+            "atr_chk_detail": _atr_chk_detail,
             "gap_chk":    _gap_chk_val,
         }
         # 게이트 필터 결과를 checks_ui에 합산 → 대시보드 게이트 필터 섹션 V/X 아이콘 구동

@@ -3970,6 +3970,14 @@ class EntryPanel(QWidget):
             _gr.addWidget(_gvl)
             self.check_labels[_gattr] = (_gicon, _gvl)
             left_lay.addLayout(_gr)
+            if _gattr == "atr_chk":
+                # 303차: ATR 게이트는 두 개의 서로 다른 시간창(14분 현재ATR vs
+                # 60분 롤링평균 기반 적응상한)을 함께 보므로, 값만으로는 왜
+                # OK/차단인지 알 수 없다 — 계산 근거를 서브라인으로 노출.
+                self.atr_gate_detail = mk_label("——", C['text2'], 9, False)
+                self.atr_gate_detail.setWordWrap(False)
+                self.atr_gate_detail.setContentsMargins(24, 0, 0, 2)
+                left_lay.addWidget(self.atr_gate_detail)
 
         left_lay.addStretch()
         split_lay.addWidget(left_w, 5)
@@ -4543,6 +4551,9 @@ class EntryPanel(QWidget):
                 )
                 vl.setText(_cv.get(attr, "——"))
                 vl.setStyleSheet(f"color:{C['red']};font-size:{S.f(10)}px;")
+
+        if getattr(self, "atr_gate_detail", None) is not None:
+            self.atr_gate_detail.setText(_cv.get("atr_chk_detail", "——"))
 
         if signal == "매수":
             self.entry_alert.setStyleSheet(
