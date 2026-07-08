@@ -1,11 +1,41 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-08 (304차) — 진입관리 탭 UI 정리(원신호/실행신호 폭
-> 절반 축소+우측정렬, 차단사유/레짐 2줄 카드 신설, 상단 상태스트립·호라이즌 자격현황
-> 카드 전체 제거, 방향인디케이터 lamp 카드 130→92px 축소). **오프스크린 렌더 수치만
-> 확인 — 실제 GUI 육안 확인 필요**. 303차 후속 HealthPolicy Degraded Mode 수정도
-> 앱 재시작 후 라이브 검증 아직 미완료 — 다음 재기동 시 두 변경사항 모두 함께 반영됨.
+> 마지막 업데이트: 2026-07-08 (304차 후속) — daily_close() 백그라운드 스레드가
+> 대시보드 Qt 위젯을 직접 조작해 발생한 access violation 크래시 루프 수정
+> (0708 15:40~15:43 실측: daily_close 재진입마다 크래시 → AUTO-RESTART → 재크래시
+> 4회 반복). `_daily_close_ui_sig` 큐드커넥션 신설 + `log_manager.py` 콜백 디스패치를
+> 메인 스레드로 위임하도록 근본 수정. **라이브 미검증** — 다음 재기동(내일 08:45 또는
+> 수동 재시작) 후 daily_close가 크래시 없이 완주하는지 확인 필요. 304차 UI 정리·
+> 303차 후속 HealthPolicy 수정도 함께 라이브 검증 대기 중.
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-08 (304차 후속 — daily_close() 백그라운드 스레드 Qt 위젯 직접조작 access violation 크래시 루프 수정)
+
+**계기**: 15:40 종료 흐름 점검 중 `logs/20260708_SYSTEM.log`에서 daily_close()가
+15:40:29→15:41:25→15:42:20→15:43:15에 걸쳐 4회 연속 크래시-재시작을 반복하는 것을
+실측(15:44:25에 우연히 통과해 정상 종료 — 재시작 불필요, 포지션 FLAT 확인).
+
+**원인**: `crash_fault.log`에서 access violation 스택 확인 —
+`daily_close()`(백그라운드 스레드 `_run_daily_close`) → `dashboard.update_strategy_ops`
+→ `set_fingerprint_level` → `refresh`(QWidget.setText/setStyleSheet). daily_close()가
+대시보드 Qt 위젯을 GUI 스레드 밖에서 직접 조작 — PyQt 미정의 동작. 같은 근본원인이
+`logging_system/log_manager.py`의 `_warn_cross_thread` 계측(302차, 0707 크래시
+딥다이브)에도 이미 지목돼 있었으나 계측만 하고 실제 배선은 안 된 상태였음.
+
+**변경**: `main.py`에 `_daily_close_ui_sig`(Qt `QueuedConnection`, `_shutdown_sig`와
+동일 패턴) 신설 — `daily_close()` 내 `update_exchange_cb_badge`/`update_strategy_ops`/
+`update_trend`/`_refresh_pnl_history` 4곳을 메인 스레드로 위임. `log_manager.py`의
+`log()` 콜백 디스패치도 non-main 스레드 호출 시 `QueuedConnection` 브릿지로 메인
+스레드에 위임하도록 근본 수정(daily_close 외 GBM 재학습·DB 라이터 등 다른 백그라운드
+스레드의 동일 크래시 경로도 함께 차단).
+
+**검증**: offscreen PyQt 스모크테스트로 백그라운드 스레드 emit → 메인 스레드 실행
+확인, `main.py`/`log_manager.py` import 정상. **라이브 미검증** — 다음 재기동 후
+daily_close가 크래시 없이 완주하는지 확인 필요.
+
+상세: `dev_memory/SESSION_LOG.md`·`DECISION_LOG.md` 304차 후속.
 
 ---
 

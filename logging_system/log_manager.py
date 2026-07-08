@@ -18,6 +18,27 @@ from typing import Dict, List, Callable, Optional
 
 from utils.logger import get_logger
 
+# [304차 후속] 백그라운드 스레드(DailyClose, GBM 재학습, DB 라이터 등)에서 log()를
+# 호출하면 구독 콜백(대시보드 append_*_log — QTextEdit 직접 조작)이 GUI 스레드 밖에서
+# 실행된다. PyQt는 GUI 위젯을 GUI 스레드 밖에서 조작하면 정의되지 않은 동작(access
+# violation)이 될 수 있음 — 0707·0708 daily_close 크래시 딥다이브에서 실측된 근본
+# 원인 중 하나(_warn_cross_thread 계측이 302차부터 지목해왔으나 계측만 하고 실제
+# 배선은 하지 않았던 부분). QueuedConnection으로 메인 스레드에 위임해 근본 해결한다.
+try:
+    from PyQt5.QtCore import QObject, pyqtSignal, Qt
+    _HAS_QT = True
+except Exception:
+    _HAS_QT = False
+
+
+if _HAS_QT:
+    class _LogDispatchBridge(QObject):
+        dispatch = pyqtSignal(str, object)
+
+    _bridge = _LogDispatchBridge()
+else:
+    _bridge = None
+
 # [302차] 크로스스레드 GUI 콜백 진단 전용 로거 — log_manager를 거치지 않고
 # 별도 파일 핸들러로만 기록해 무한 재귀·동일 크래시 경로 재사용을 피한다.
 # 배경: 0707 15:40:27 daily_close() 크래시 딥다이브 중 crash_fault.log
@@ -93,11 +114,24 @@ class LogManager:
             return
         entry = LogEntry(layer, level, message)
         self._buffers[layer].append(entry)
-        if self._callbacks[layer] and threading.current_thread() is not threading.main_thread():
-            self._warn_cross_thread(layer)
-        for cb in self._callbacks[layer]:
-            cb(entry)
         self._write_to_file(layer, message, level)
+        if not self._callbacks[layer]:
+            return
+        if _bridge is not None and threading.current_thread() is not threading.main_thread():
+            # [304차 후속] 대시보드 콜백은 GUI 위젯을 직접 건드리므로 메인 스레드로 위임
+            self._warn_cross_thread(layer)
+            _bridge.dispatch.emit(layer, entry)
+        else:
+            for cb in self._callbacks[layer]:
+                cb(entry)
+
+    def _dispatch_to_callbacks(self, layer: str, entry: "LogEntry") -> None:
+        """[304차 후속] _bridge.dispatch(QueuedConnection)가 메인 스레드에서 호출하는 슬롯."""
+        for cb in self._callbacks.get(layer, []):
+            try:
+                cb(entry)
+            except Exception:
+                pass
 
     def _warn_cross_thread(self, layer: str) -> None:
         """[302차] 대시보드 콜백이 GUI(main) 스레드가 아닌 곳에서 실행되는
@@ -199,3 +233,8 @@ class LogManager:
 
 # 전역 싱글톤
 log_manager = LogManager()
+
+if _bridge is not None:
+    # 모듈 최초 import(메인 스레드)에서 연결 — QueuedConnection이므로 emit()이 어느
+    # 스레드에서 호출되든 슬롯은 반드시 메인 이벤트 루프에서 실행된다.
+    _bridge.dispatch.connect(log_manager._dispatch_to_callbacks, Qt.QueuedConnection)

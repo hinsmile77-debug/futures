@@ -5077,3 +5077,76 @@ PSI CRITICAL 반복과 무관하게 낮게 유지되는지, Degraded Mode가 정
 버그로 인한 CRITICAL)가 섞일 가능성이 있으나, 이 태그들은 모두 주기적 상태 통지용으로
 설계된 구조화 로그이고 진짜 예외는 별도로 ERROR 레벨 로그나 Traceback을 통해 여전히
 잡힌다.
+
+## 2026-07-08 (304차 후속) — daily_close() 백그라운드 스레드의 대시보드 직접조작으로 인한 access violation 크래시 루프
+
+### [버그] daily_close()가 백그라운드 스레드에서 Qt 위젯을 직접 조작해 간헐적 access violation → 종료 절차가 크래시-재시작을 반복
+
+**File**: `main.py:daily_close`(구 8413행 `update_strategy_ops` 호출부 등 4곳),
+`main.py:_run_daily_close`, `logging_system/log_manager.py:log`
+
+**증상**: "15:40 종료 흐름 점검" 요청으로 `logs/20260708_SYSTEM.log`를 실측 대조하던
+중, 그 세션이 진행되는 동안 실제로 daily_close()가 15:40:29→15:41:25→15:42:20→
+15:43:15에 걸쳐 4회 연속 크래시-재시작을 반복하고 있는 것을 포착. 15:44:25에
+다섯 번째 시도가 우연히 통과해 정상 종료됨. 포지션은 전 구간 FLAT이라 실거래
+리스크는 없었으나, 정상 1회 완료되어야 할 종료 절차가 반복 크래시로 수 분 지연되고
+Slack 알림·로그가 매 사이클 중복 발생.
+
+**원인**: `logs/crash_fault.log`(faulthandler dump)에서 스택 확보:
+`daily_close`(백그라운드 스레드 `_run_daily_close`) → `dashboard.update_strategy_ops`
+→ `set_fingerprint_level` → `refresh`(QWidget.setText/setStyleSheet) →
+`Windows fatal exception: access violation`. `daily_close()`는 EOD 재학습 대기·
+DB pruning 등 블로킹 작업을 메인 Qt 스레드에서 떼어내기 위해 통째로 백그라운드
+스레드(`threading.Thread(target=_run_daily_close, ...)`)에서 실행되는데, 그 함수
+내부의 `update_exchange_cb_badge`/`update_strategy_ops`/`update_trend`/
+`_refresh_pnl_history` 4곳이 대시보드 QWidget을 GUI 스레드 밖에서 직접 호출하고
+있었다. PyQt에서 GUI 위젯을 소유 스레드 밖에서 조작하는 것은 정의되지 않은 동작이며
+드물게 access violation으로 나타난다.
+
+이 근본 원인은 이미 절반쯤 진단되어 있었다 — `logging_system/log_manager.py`의
+`_warn_cross_thread()`(302차)가 "0707 15:40:27 daily_close() 크래시 딥다이브 중
+... 백그라운드 스레드가 circuit_breaker.reset_daily() → log_manager.system() →
+대시보드 콜백(QTextCursor 직접 조작) 경로를 실행 중이었음을 확인"이라고 이미
+기록해두고 있었다. 다만 그 계측은 스스로 "그 자체로 수정이 아니다"라고 명시한
+진단 전용 장치였고, 실제 스레드-안전 배선(큐드 커넥션)은 되어 있지 않았다. 즉
+동일한 버그가 두 경로로 존재했다 — ① daily_close의 dashboard 직접 호출(오늘
+실측된 경로), ② log_manager.log() 콜백 디스패치(302차가 진단한 경로, daily_close
+외 다른 백그라운드 스레드에서도 발생 가능).
+
+**결정**: 두 경로 모두 수정. `main.py`에 기존 `_shutdown_sig`(DailyClose→메인 스레드
+종료 예약)와 동일한 `QueuedConnection` 패턴으로 `_daily_close_ui_sig` 신설 —
+인자 없는 callable(lambda)을 실어 보내는 범용 시그널로 설계해 daily_close 내
+4개 호출부를 메인 스레드로 위임. `log_manager.py`의 `log()`도 non-main 스레드
+호출 시 `_LogDispatchBridge`(QueuedConnection)로 메인 스레드에 위임하도록 수정 —
+daily_close뿐 아니라 GBM 재학습·DB 라이터 등 다른 백그라운드 스레드의 동일 크래시
+경로도 함께 차단.
+
+**Why**: 302차가 근본 원인을 정확히 짚었음에도 "검증 불가 비동기 로직은 계측→
+안전기본값→실측치교체" 원칙([[feedback_instrument_before_wiring]])에 따라 계측만
+먼저 배선하고 실제 수정(배선)은 다음으로 미뤄둔 상태였는데, 그 사이 오늘 실제로
+재발해 사용자가 눈치채기 전에 세션 도중 실시간으로 목격됨. 이번엔 크래시 스택이
+명확히 재현되어 "언제 어느 경로가 원인인지" 특정할 수 있었으므로 계측 단계를
+졸업하고 실제 배선으로 넘어갈 근거가 충분했다.
+
+**구현**: `main.py`(`_DailyCloseUiSignal`/`_daily_close_ui_sig` 신설,
+`_apply_dashboard_call` 슬롯, daily_close 내 4개 호출부 lambda-emit으로 교체 —
+`_refresh_pnl_history`/`_gather_trend_stats` 자체는 다른 main-thread 호출부가 많아
+메서드는 건드리지 않고 daily_close 호출 지점만 위임), `logging_system/log_manager.py`
+(`_LogDispatchBridge` QObject + `pyqtSignal(str, object)` 신설, `log()`에서 non-main
+스레드일 때 큐드 디스패치로 분기, 메인 스레드 호출은 기존과 동일하게 즉시 동기 실행
+유지 — 동작 변경 없음). 기존 `_warn_cross_thread` 계측은 존치(스레드별 호출 추적
+가치).
+
+**검증**: `QT_QPA_PLATFORM=offscreen` 스모크테스트로 (1) 백그라운드 스레드에서
+`log_manager.system()` 호출 시 구독 콜백이 실제 `MainThread`에서 실행됨을 확인,
+(2) `_daily_close_ui_sig`와 동일한 콜러블-시그널 패턴도 백그라운드 emit → 메인
+스레드 실행 확인. `python -c "import main"`(offscreen)으로 모듈 레벨 초기화 통과,
+`ast.parse`로 양쪽 파일 구문 확인. **라이브 미검증** — 실제 daily_close() 사이클이
+크래시 없이 완주하는지는 다음 재기동(내일 08:45 또는 수동 재시작) 후 15:40 종료
+시점에 확인 필요. 오늘 크래시 루프를 겪던 프로세스는 15:44:25에 이미 자체적으로
+정상 종료되어 별도 재시작은 필요하지 않았다.
+
+**위험 수용**: `log_manager.log()`의 non-main 스레드 경로가 동기 즉시 실행에서
+큐드(다음 이벤트루프 tick) 실행으로 바뀌어 대시보드 로그 표시가 수 ms~수십 ms
+지연될 수 있으나, 이는 순수 UI 타이밍이며 트레이딩 로직(주문·청산·게이트 판단)은
+전부 파일 로거(`_write_to_file`)와 별개 경로로 동기 기록되어 영향 없음.

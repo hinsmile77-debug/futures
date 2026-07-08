@@ -199,6 +199,30 @@ class _ShutdownSignal(QObject):
 _shutdown_sig = _ShutdownSignal()  # 모듈 로드(메인 스레드)에서 생성 — thread affinity = main
 
 
+class _DailyCloseUiSignal(QObject):
+    """DailyClose 스레드 → 메인 Qt 스레드 대시보드 갱신 (스레드-안전).
+
+    daily_close()는 백그라운드 스레드(_run_daily_close)에서 실행되는데
+    update_strategy_ops/update_trend/update_exchange_cb_badge 등 대시보드 위젯을
+    거기서 직접 호출하면 GUI 스레드 밖에서 위젯을 조작하게 되어 PyQt에서
+    정의되지 않은 동작(access violation)이 발생한다.
+    ([304차 후속] 0708 15:40~15:43 daily_close 재진입마다 access violation →
+    launcher AUTO-RESTART → daily_close 재실행이 반복되는 크래시 루프 실측.
+    crash_fault.log: main.py:8413 daily_close → dashboard.update_strategy_ops →
+    set_fingerprint_level → refresh 스택에서 크래시. log_manager.py의
+    _warn_cross_thread 계측(302차)이 지목한 근본 원인과 동일 — GUI 콜백은
+    반드시 메인 스레드에서 실행되어야 한다.)
+    QueuedConnection으로 연결하면 emit()을 어느 스레드에서 호출해도
+    슬롯은 반드시 메인 이벤트 루프에서 실행된다.
+    payload는 인자 없이 호출 가능한 callable(주로 lambda) — 대시보드 위젯을
+    건드리는 코드 조각을 통째로 메인 스레드로 옮길 수 있게 한다.
+    """
+    request = pyqtSignal(object)
+
+
+_daily_close_ui_sig = _DailyCloseUiSignal()  # 모듈 로드(메인 스레드)에서 생성 — thread affinity = main
+
+
 def _is_deployable(hz, bar_aggregator):
     # type: (str, object) -> bool
     """호라이즌별 배포 정책에 따라 이번 분에 predict_proba를 앙상블에 반영할지 결정.
@@ -430,6 +454,8 @@ class TradingSystem:
         self.dashboard.set_ui_startup_mode()
         # 스레드-안전 종료 예약: DailyClose 스레드가 emit() → 메인 스레드에서 _schedule_shutdown 호출
         _shutdown_sig.request.connect(self._schedule_shutdown, Qt.QueuedConnection)
+        # 스레드-안전 대시보드 갱신: DailyClose 스레드가 emit() → 메인 스레드에서 위젯 갱신 실행
+        _daily_close_ui_sig.request.connect(self._apply_dashboard_call, Qt.QueuedConnection)
         if self.challenger_engine is not None:
             try:
                 self.dashboard.set_challenger_engine(
@@ -8405,7 +8431,8 @@ class TradingSystem:
         self._exchange_cb_start = None
         self._ecb_observation_until = None
         try:
-            self.dashboard.update_exchange_cb_badge("NORMAL")
+            # [304차 후속] daily_close()는 백그라운드 스레드 실행 — 직접 호출 금지, 메인 스레드로 위임
+            _daily_close_ui_sig.request.emit(lambda: self.dashboard.update_exchange_cb_badge("NORMAL"))
         except Exception:
             pass
 
@@ -8472,7 +8499,12 @@ class TradingSystem:
             if _drift_level >= _DL.WATCHLIST:
                 log_manager.system("[경보] DriftDetector: " + _drift_msg)
             # 전략 운용현황 탭에 CUSUM 드리프트 수준 반영
-            self.dashboard.update_strategy_ops({"drift_level": _drift_level})
+            # [304차 후속] daily_close()는 백그라운드 스레드 실행 — 직접 호출 금지, 메인 스레드로 위임
+            # (0708 15:40~15:43 access violation 크래시 루프 실측: main.py daily_close →
+            # update_strategy_ops → set_fingerprint_level → refresh 스택)
+            _daily_close_ui_sig.request.emit(
+                lambda _dl=_drift_level: self.dashboard.update_strategy_ops({"drift_level": _dl})
+            )
         except Exception as _de:
             logger.warning("[DriftDetector] 업데이트 실패 (스킵): %s", _de)
 
@@ -8535,8 +8567,13 @@ class TradingSystem:
         except Exception as _re:
             logger.warning("[Registry] live_snapshot 기록 실패 (스킵): %s", _re)
 
-        self._refresh_pnl_history()
-        self.dashboard.update_trend(self._gather_trend_stats())
+        # [304차 후속] daily_close()는 백그라운드 스레드 실행 — 아래 두 메서드는 내부에서
+        # 대시보드 위젯을 직접 건드리므로 메인 스레드로 위임한다.
+        _daily_close_ui_sig.request.emit(self._refresh_pnl_history)
+        _trend_stats = self._gather_trend_stats()  # DB 조회 — Qt 미사용, 백그라운드에서 계산해도 안전
+        _daily_close_ui_sig.request.emit(
+            lambda _ts=_trend_stats: self.dashboard.update_trend(_ts)
+        )
 
         # [Phase5] 일일 전략 상태 요약 export + 경보 판정
         try:
@@ -8759,6 +8796,17 @@ class TradingSystem:
         )
         # _exit_normally 미생성 → AUTO-RESTART 루프가 재시작 처리
         _qt_app.quit()
+
+    def _apply_dashboard_call(self, fn) -> None:
+        """[304차 후속] DailyClose 스레드가 emit()한 대시보드 갱신을 메인 스레드에서 대신 실행.
+
+        _daily_close_ui_sig.request 시그널(QueuedConnection)을 통해 호출되므로
+        DailyClose 스레드에서 emit() 해도 이 메서드는 메인 이벤트 루프에서 실행된다.
+        """
+        try:
+            fn()
+        except Exception as _dc_ui_e:
+            logger.warning("[DailyCloseUI] 대시보드 갱신 실패: %s", _dc_ui_e)
 
     def _schedule_shutdown(self) -> None:
         """자동 종료 15초 예약 — 반드시 메인 Qt 스레드에서 실행.
