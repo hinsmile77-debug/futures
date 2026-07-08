@@ -4266,15 +4266,21 @@ class TradingSystem:
 
         # [DriftRetrain] 방향 드리프트 감지 → 자동 장중 재학습
         # 오전/오후 시장 방향이 전환될 때 GBM이 오전 편향을 유지하는 문제 대응.
-        # 조건A: 30분 정확도 25% 미만 + 최소 20건 집계 + 마지막 재학습 60분 이상 경과
-        # 조건B(조기): 30분 정확도 15% 미만 + 최소 15건 + 30분 이상 경과 (극단 혼란 시 조기화)
+        # 조건A: 5분 정확도 25% 미만 + 최소 20건 집계 + 마지막 재학습 60분 이상 경과
+        # 조건B(조기): 5분 정확도 15% 미만 + 최소 15건 + 30분 이상 경과 (극단 혼란 시 조기화)
         # 근거: 6/12 13:51 CB③ 발동 — acc30m=6.7%, 마지막 재학습 11:10 (약 2.5시간 전)
+        # [P1, 303차 후속] 기준 호라이즌을 30m→5m으로 교체.
+        #   296차로 30m은 앙상블·CB③·CascadeCoherence에서 전면 퇴역(EOD full_cv acc=0.3052,
+        #   랜덤 이하)됐음에도 DriftRetrain은 CB의 30m 전용 accuracy_buf를 그대로 읽고
+        #   있었음 — 실거래에 반영되지 않는 호라이즌의 잡음성 저하로 재학습을 반복
+        #   트리거하는 낭비. 5m은 단기 CORE(CVD/VWAP/OFI)로 앙상블에 실제 반영되는
+        #   활성 호라이즌 — online_learner._acc_buf(호라이즌별 100분 롤링, 일간 리셋,
+        #   conf>=0.52·봉단위 dedup 적용)를 그대로 조회해 DB 쿼리 추가 없이 대체.
         # 부작용 방어:
-        #   n >= 20(A)/15(B) 조건: _accuracy_buf 비어있으면 0/1=0.0 → 오발동 방지
-        #   (세션 초기·재시작 직후 n=0인 상태에서 acc30m=0.0으로 잘못 감지되는 현상)
-        _dr_cb_status = self.circuit_breaker.status_dict()
-        _dr_acc30m    = _dr_cb_status.get("accuracy_30m", 1.0)
-        _dr_acc30m_n  = _dr_cb_status.get("cb3_samples",  0)
+        #   n >= 20(A)/15(B) 조건: 표본 부족(<5) 시 horizon_accuracy()가 0.0을 반환해도
+        #   n 게이트가 먼저 막아 오발동 방지 (세션 초기·재시작 직후 n=0 상태 포함)
+        _dr_acc5m     = self.online_learner.horizon_accuracy("5m")
+        _dr_acc5m_n   = self.online_learner.horizon_acc_samples("5m")
         _dr_last_rt   = getattr(self.batch_retrainer, "_last_retrain", None)
         _dr_mins = (
             (datetime.datetime.now() - _dr_last_rt).total_seconds() / 60
@@ -4293,8 +4299,8 @@ class TradingSystem:
         # 조건A: 표준 — acc<25% + n>=20 + 60분 경과
         _drift_trigger_a = (
             _not_halted
-            and _dr_acc30m < 0.25
-            and _dr_acc30m_n >= 20
+            and _dr_acc5m < 0.25
+            and _dr_acc5m_n >= 20
             and _dr_mins >= 60.0
             and _not_running
             and _drift_cooldown_ok
@@ -4302,8 +4308,8 @@ class TradingSystem:
         # 조건B: 조기 — acc<15% + n>=15 + 30분 경과 (UP/DN 혼재 극단 혼란)
         _drift_trigger_b = (
             _not_halted
-            and _dr_acc30m < 0.15
-            and _dr_acc30m_n >= 15
+            and _dr_acc5m < 0.15
+            and _dr_acc5m_n >= 15
             and _dr_mins >= 30.0
             and _not_running
             and _drift_cooldown_ok
@@ -4311,9 +4317,9 @@ class TradingSystem:
         _drift_trigger = _drift_trigger_a or _drift_trigger_b
         if _drift_trigger:
             _dt_reason = (
-                f"acc30m={_dr_acc30m:.1%}(n={_dr_acc30m_n}) < 15% → 조기 트리거 ({_dr_mins:.0f}분 경과)"
+                f"acc5m={_dr_acc5m:.1%}(n={_dr_acc5m_n}) < 15% → 조기 트리거 ({_dr_mins:.0f}분 경과)"
                 if _drift_trigger_b
-                else f"acc30m={_dr_acc30m:.1%}(n={_dr_acc30m_n}) < 25% ({_dr_mins:.0f}분 경과)"
+                else f"acc5m={_dr_acc5m:.1%}(n={_dr_acc5m_n}) < 25% ({_dr_mins:.0f}분 경과)"
             )
             log_manager.system(
                 f"[DriftRetrain] {_dt_reason} → 장중 경량 재학습 트리거",
