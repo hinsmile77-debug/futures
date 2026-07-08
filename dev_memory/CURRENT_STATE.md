@@ -1,10 +1,35 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-08 (303차, 후속) — HealthPolicy Degraded Mode가
-> exceptions_10m 오집계(정책성 WARNING 로그를 예외로 오인)로 09:58부터 하루 종일
-> 고착, A~C 전 등급 자동진입을 상시 차단하던 버그 수정. `HEALTH_EXCEPTION_EXCLUDE_TAGS`
-> 신설로 정책 로그 제외. **라이브 미검증 — 앱 재시작 필요**(핫리로드로는 미반영).
+> 마지막 업데이트: 2026-07-08 (304차) — 진입관리 탭 UI 정리(원신호/실행신호 폭
+> 절반 축소+우측정렬, 차단사유/레짐 2줄 카드 신설, 상단 상태스트립·호라이즌 자격현황
+> 카드 전체 제거, 방향인디케이터 lamp 카드 130→92px 축소). **오프스크린 렌더 수치만
+> 확인 — 실제 GUI 육안 확인 필요**. 303차 후속 HealthPolicy Degraded Mode 수정도
+> 앱 재시작 후 라이브 검증 아직 미완료 — 다음 재기동 시 두 변경사항 모두 함께 반영됨.
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-08 (304차 — 진입관리 탭 UI 정리: 원신호/실행신호 폭 축소+차단사유/레짐 이전, 상태스트립·자격현황 카드 제거, 방향인디케이터 카드 축소)
+
+**계기**: 사용자가 진입관리 탭·상단 상태스트립·좌측 방향인디케이터 스크린샷을 순차
+제시하며 UI 정리 4건 요청.
+
+**변경** (상세: `dev_memory/SESSION_LOG.md` 304차):
+1. `EntryPanel` row0에 차단사유+레짐 2줄 카드 신설(원신호 카드 자리), 원신호/실행신호
+   폭을 stretch 2:1:1로 절반 축소하며 우측 정렬. `update_data()`에 hurst/atr/regime
+   배선 추가.
+2. `StatusStripPanel` 클래스·인스턴스화·`DashboardAdapter` 미러링 4곳 전체 제거
+   (헤더 배지·진입관리 탭에 이미 중복 노출되던 정보라 손실 없음).
+3. 호라이즌 자격 현황(Qualification Monitor) 카드·`update_qualification()` 경로 전체
+   제거(`main.py:5514` 호출부 포함). `_horizon_runtime_state` 자체는 다른 로직에서
+   계속 사용되어 유지.
+4. `DirectionIndicatorWidget._build_lamp()` 고정 높이 130→92px, 폰트/여백 비례 축소.
+
+**미검증**: 오프스크린(`QT_QPA_PLATFORM=offscreen`) 렌더링으로 stretch 비율·텍스트·
+sizeHint 수치만 확인, `py_compile` 통과. **라이브 미검증** — 실제 창 기동 후 육안
+확인 필요.
+
+상세: `dev_memory/SESSION_LOG.md` 304차.
 
 ---
 
