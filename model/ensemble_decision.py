@@ -469,6 +469,14 @@ class EnsembleDecision:
         # 비활성 호라이즌은 fallback 상수값으로 ConstOut을 허위 트리거하므로 버퍼 업데이트 제외
         _active_set_co = set(active_horizons) if active_horizons is not None else set(HORIZONS.keys())
         for _h in list(cur_weights.keys()):
+            # [P1, 303차 후속] 30m 퇴역(296차) — 가중치는 이미 0으로 앙상블 투표에서
+            # 제외되지만, 이 루프는 active_horizons(시간대 정책)만 걸러 30m을 그대로
+            # 순회했음. 그 결과 앙상블에 전혀 기여하지 않는 30m 단독 상수 출력만으로도
+            # main.py의 스케일러 재적합 + GBM 재학습 강제 예약(force=True)이 반복
+            # 트리거되는 낭비가 있었음 — 위 30m 가중치 제외(352행)와 동일한 취지로
+            # 감지 대상에서도 영구 제외.
+            if _h == "30m":
+                continue
             _res_h = horizon_proba.get(_h) or {}
             if not _res_h:
                 continue
