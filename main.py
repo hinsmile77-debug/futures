@@ -2999,10 +2999,25 @@ class TradingSystem:
         # CB 대기 모드 중 분봉이 재수신되면 해제 후처리 실행
         if self._exchange_cb_mode:
             self._exchange_cb_mode = False
+            _ecb_start_dt = self._exchange_cb_start
             _gap_min = int(
-                (now - self._exchange_cb_start).total_seconds() / 60
-            ) if self._exchange_cb_start else 0
+                (now - _ecb_start_dt).total_seconds() / 60
+            ) if _ecb_start_dt else 0
             self._exchange_cb_start = None
+            # [303차] EOD 리포트 halt 요약용 — halt 구간 1건 영속 기록
+            if _ecb_start_dt:
+                try:
+                    from utils.db_utils import record_exchange_cb_halt
+                    record_exchange_cb_halt(
+                        _ecb_start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        now.strftime("%Y-%m-%d %H:%M:%S"),
+                        _gap_min,
+                    )
+                except Exception as _ecb_rec_e:
+                    log_manager.system(
+                        f"[ExchangeCB] halt 이력 기록 실패 (무해): {_ecb_rec_e}",
+                        "WARNING",
+                    )
             # [227차] CB⑤ 임계 복원 — ExchangeCB 진입 시 완화했던 것 해제
             # GBM 재학습이 이미 시작되면 set_gbm_retrain_active(True)가 유지됨
             if not getattr(self, "_gbm_retrain_running", False):
@@ -8471,6 +8486,13 @@ class TradingSystem:
             purge_old_regime_history(keep_days=30)
         except Exception as _prh_e:
             logger.warning("[RegimeHistory] 정리 실패 (무해): %s", _prh_e)
+
+        # [303차] 오래된 거래소 CB halt 이력 정리 (30일 초과분 삭제)
+        try:
+            from utils.db_utils import purge_old_exchange_cb_halts
+            purge_old_exchange_cb_halts(keep_days=30)
+        except Exception as _pech_e:
+            logger.warning("[ExchangeCB] halt 이력 정리 실패 (무해): %s", _pech_e)
 
         # ── WAL 체크포인트 — 장중 누적된 WAL 파일 강제 플러시 ────────
         # WAL auto-checkpoint(1000 page)는 장중 파이프라인 타이밍에 걸릴 수 있음.

@@ -603,6 +603,14 @@ def init_raw_data_db():
             regime TEXT NOT NULL
         )
     """)
+    # [303차] 거래소 CB(단일가/서킷브레이커) 감지 이력 — EOD 리포트 halt 요약용
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS exchange_cb_halts (
+            start_ts TEXT PRIMARY KEY,
+            end_ts   TEXT NOT NULL,
+            gap_min  INTEGER NOT NULL
+        )
+    """)
     # Phase 2: N분봉 완성봉 집계 캐시 (backfill 및 검증용)
     execute(RAW_DATA_DB, """
         CREATE TABLE IF NOT EXISTS raw_candles_aggregated (
@@ -1266,6 +1274,52 @@ def purge_old_regime_history(keep_days: int = 30) -> None:
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(days=keep_days)).isoformat()
     execute(RAW_DATA_DB, "DELETE FROM regime_history WHERE ts < ?", (cutoff,))
+
+
+def record_exchange_cb_halt(start_ts: str, end_ts: str, gap_min: int) -> None:
+    """[303차] 거래소 CB(단일가/서킷브레이커) 해제 시점에 halt 구간 1건 기록.
+
+    분봉 미수신 + Cybos 연결 정상 조합으로 감지된 구간만 기록되므로(main.py
+    ExchangeCB 상태머신), API 지연·연결 끊김으로 인한 공백과는 구분된다.
+    """
+    if not start_ts or not end_ts:
+        return
+    execute(
+        RAW_DATA_DB,
+        "INSERT OR REPLACE INTO exchange_cb_halts (start_ts, end_ts, gap_min) VALUES (?, ?, ?)",
+        (start_ts, end_ts, int(gap_min)),
+    )
+
+
+def fetch_daily_exchange_cb_halts(date_str: Optional[str] = None) -> Dict:
+    """[303차] 오늘(또는 date_str) 거래소 CB halt 구간 요약 — EOD 리포트용.
+
+    반환: {"date", "count", "total_gap_min", "events": [{"start","end","gap_min"}, ...]}
+    """
+    import datetime as _dt
+    d = date_str or _dt.date.today().isoformat()
+    rows = fetchall(
+        RAW_DATA_DB,
+        "SELECT start_ts, end_ts, gap_min FROM exchange_cb_halts WHERE start_ts LIKE ? ORDER BY start_ts",
+        (d + "%",),
+    )
+    events = [
+        {"start": r["start_ts"], "end": r["end_ts"], "gap_min": int(r["gap_min"])}
+        for r in rows
+    ]
+    return {
+        "date": d,
+        "count": len(events),
+        "total_gap_min": sum(e["gap_min"] for e in events),
+        "events": events,
+    }
+
+
+def purge_old_exchange_cb_halts(keep_days: int = 30) -> None:
+    """keep_days 이전 거래소 CB halt 이력 삭제 (EOD 마감 시 1회 호출)."""
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=keep_days)).isoformat()
+    execute(RAW_DATA_DB, "DELETE FROM exchange_cb_halts WHERE start_ts < ?", (cutoff,))
 
 
 def init_all_dbs():

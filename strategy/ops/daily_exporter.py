@@ -217,6 +217,30 @@ class DailyExporter:
         except Exception as e:
             lines.append("  진입 퍼널 : [계산 실패: %s]" % e)
 
+        # ── [303차] 거래소 CB(단일가/서킷브레이커) halt 이력 요약 ─────────────
+        # "halt로 인한 데이터 공백"과 "API 지연·연결 끊김"을 로그 없이 구분하기 위함
+        # (302차 후속: 진입0 원인분석 시간 단축 목적, dev_memory/NEXT_TODO.md 302차 항목).
+        try:
+            from utils.db_utils import fetch_daily_exchange_cb_halts
+            _ecb = fetch_daily_exchange_cb_halts()
+            if _ecb["count"] > 0:
+                lines.append("-" * 56)
+                lines.append(
+                    "  거래소CB halt: %d건, 총 %d분 (%s)"
+                    % (
+                        _ecb["count"],
+                        _ecb["total_gap_min"],
+                        ", ".join(
+                            "%s~%s(%d분)" % (
+                                e["start"][11:16], e["end"][11:16], e["gap_min"]
+                            )
+                            for e in _ecb["events"]
+                        ),
+                    )
+                )
+        except Exception as e:
+            lines.append("  거래소CB halt: [계산 실패: %s]" % e)
+
         lines.append("=" * 56)
         return "\n".join(lines)
 
