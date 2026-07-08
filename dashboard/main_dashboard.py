@@ -3379,7 +3379,6 @@ class EntryPanel(QWidget):
             "manual": "C 등급진입",
         }
         self._max_qty = self._load_max_qty()
-        self._qualify_cards: dict = {}  # {horizon: {"frame", "status_lbl", "cycles_lbl"}}
         self._build()
         self._load_entry_mode()         # _build() 완료 후 위젯 존재 보장 상태에서 복원
         self._setup_time_zone_timer()
@@ -3449,68 +3448,6 @@ class EntryPanel(QWidget):
         self._update_mode_desc()
         lay.addWidget(mk_sep())
 
-        # 호라이즌 자격 현황 (Qualification Monitor) — Phase 1 dry-run 표시
-        _QUALIFY_TIP = (
-            "  ◆ 호라이즌 자격 현황 (Qualification Monitor)\n"
-            "\n"
-            "  각 호라이즌이 앙상블에 참여할 자격을 갖췄는지 추적합니다.\n"
-            "  자격 조건: 이번 세션에서 검증(v) 3회 + 학습(t) 3회 이상\n"
-            "\n"
-            "  ── 카드 표시 설명 ───────────────────────────────────\n"
-            "  상태 (색상)\n"
-            "    WAIT       (회색)   — 자격 미달 (v/t 3회 미만)\n"
-            "    ACTIVE     (녹색)   — 자격 획득, 앙상블 참여 허가\n"
-            "    PENALIZED  (주황)   — 자격 있으나 합의도 페널티 적용 중\n"
-            "    BLOCKED    (빨강)   — 일시 차단 (품질 게이트 미통과)\n"
-            "\n"
-            "  vN/tN  — verified(검증) / trained(학습) 사이클 수\n"
-            "  acc=N% — 해당 호라이즌의 최근 예측 적중률\n"
-            "\n"
-            "  ── acc(정확도) 상세 ─────────────────────────────────\n"
-            "  · 정의: 이번 세션 학습 샘플 중 '실제 방향 == 예측 방향' 비율\n"
-            "  · 윈도우: 최근 150건 (5건 미만이면 0% 표시)\n"
-            "  · 호라이즌별 독립 측정 → 1m/3m/5m/10m/15m/30m 각각 집계\n"
-            "\n"
-            "  ── recent_accuracy()와의 차이 ───────────────────────\n"
-            "  · recent_accuracy()  : short(1m~5m) / long(10m~30m) 버킷 평균\n"
-            "                         → SGD 비중 자동 조절 트리거에 사용\n"
-            "  · acc (이 카드)       : 호라이즌 개별 측정\n"
-            "                         → 자격 카드 표시 전용, SGD 비중 조절 무관\n"
-            "\n"
-            "  ※ 30m 호라이즌은 하루 최대 9사이클 → acc 5건 충족에 약 1주 소요\n"
-            "  ※ 현재 Phase 1·2: 상태 추적 + UI 표시만 (앙상블 필터링 미적용)\n"
-            "     Phase 3 활성화 후 WAIT 호라이즌은 앙상블에서 제외됩니다."
-        )
-        _qual_title_lbl = mk_label("호라이즌 자격 현황 (사이클 추적)", C['cyan'], 9, True)
-        _qual_title_lbl.setToolTip(_QUALIFY_TIP)
-        lay.addWidget(_qual_title_lbl)
-        _qual_grid = QGridLayout()
-        _qual_grid.setSpacing(3)
-        _HORIZONS_ORDER = ["1m", "3m", "5m", "10m", "15m", "30m"]
-        for _qi, _qh in enumerate(_HORIZONS_ORDER):
-            _qframe = QFrame()
-            _qframe.setStyleSheet(
-                f"QFrame{{background:{C['bg3']};border:1px solid {C['text2']};"
-                f"border-radius:4px;}}"
-            )
-            _qinner = QVBoxLayout(_qframe)
-            _qinner.setContentsMargins(4, 3, 4, 3)
-            _qinner.setSpacing(1)
-            _qh_lbl  = mk_label(_qh, C['text2'], 9, True)
-            _qs_lbl  = mk_label("WAIT", C['text2'], 8)
-            _qc_lbl  = mk_label("0/3", C['text2'], 8)
-            _qinner.addWidget(_qh_lbl)
-            _qinner.addWidget(_qs_lbl)
-            _qinner.addWidget(_qc_lbl)
-            _qual_grid.addWidget(_qframe, _qi // 3, _qi % 3)
-            self._qualify_cards[_qh] = {
-                "frame":      _qframe,
-                "h_lbl":      _qh_lbl,
-                "status_lbl": _qs_lbl,
-                "cycles_lbl": _qc_lbl,
-            }
-        lay.addLayout(_qual_grid)
-        lay.addWidget(mk_sep())
 
         # 앙상블 + 신뢰도 (row0: 2카드, row1: 3카드, row2: 수량)
         info_vlay = QVBoxLayout()
@@ -3635,13 +3572,29 @@ class EntryPanel(QWidget):
             "\n"
             "  '진입' 상태 시 테두리가 녹색으로 깜빡입니다."
         )
+        # 차단사유 + 레짐 카드 (구 원신호 카드 자리) — row0 좌측을 채움 (stretch=2)
+        _f_status = QFrame()
+        _f_status.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
+        _fl_status = QVBoxLayout(_f_status)
+        _fl_status.setContentsMargins(6, 3, 6, 3)
+        _fl_status.setSpacing(1)
+        _lbl_block_reason = mk_label("", C['text2'], 10)
+        _lbl_block_reason.setWordWrap(True)
+        _lbl_regime = mk_label("", C['text2'], 10)
+        _lbl_regime.setWordWrap(True)
+        self.e_block_reason = _lbl_block_reason
+        self.e_regime = _lbl_regime
+        _fl_status.addWidget(_lbl_block_reason)
+        _fl_status.addWidget(_lbl_regime)
+        info_row0.addWidget(_f_status, 2)
+
         kv_top = [
-            ("원신호",    "signal",      "대기", info_row0, _TIP_RAW_SIGNAL),
-            ("실행 신호", "final_signal","대기", info_row0, _TIP_FINAL_SIGNAL),
-            ("앙상블 등급","ens_grade",  "대기", info_row1, _TIP_ENS_GRADE),
-            ("체크리스트 등급", "chk_grade",  "대기", info_row1, _TIP_CONF),
+            ("원신호",    "signal",      "대기", info_row0, _TIP_RAW_SIGNAL, 1),
+            ("실행 신호", "final_signal","대기", info_row0, _TIP_FINAL_SIGNAL, 1),
+            ("앙상블 등급","ens_grade",  "대기", info_row1, _TIP_ENS_GRADE, 0),
+            ("체크리스트 등급", "chk_grade",  "대기", info_row1, _TIP_CONF, 0),
         ]
-        for lbl, attr, init, row_lay, tip in kv_top:
+        for lbl, attr, init, row_lay, tip, stretch in kv_top:
             f = QFrame()
             f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
             fl = QVBoxLayout(f)
@@ -3656,7 +3609,7 @@ class EntryPanel(QWidget):
             # 추세 게이트 깜빡임 대상 프레임 참조 저장
             if attr in ("ens_grade", "chk_grade"):
                 setattr(self, f"_{attr}_frame", f)
-            row_lay.addWidget(f)
+            row_lay.addWidget(f, stretch)
 
         # 최종진입 카드 (row1 우측 끝) — 앙상블+체크리스트 종합 진입 판정
         _f_final = QFrame()
@@ -4437,9 +4390,22 @@ class EntryPanel(QWidget):
                     reverse_enabled=False, min_conf: float = 0.58,
                     ensemble_grade: str = None, checklist_grade: str = None,
                     final_entry: bool = False, check_values: dict = None,
-                    entry_block_reason: str = "", qty_entry_final: int = None):
+                    entry_block_reason: str = "", qty_entry_final: int = None,
+                    hurst: float = None, atr: float = None, regime: str = None):
         self._last_entry_block_reason = entry_block_reason
         final_signal = final_signal or signal
+
+        # 차단사유 + 레짐
+        if entry_block_reason:
+            _reason = entry_block_reason.replace("[차단] ", "").replace("[blocked] ", "")[:60]
+            self.e_block_reason.setText(f"차단: {_reason}")
+            self.e_block_reason.setStyleSheet(f"color:{C['orange']};font-size:{S.f(10)}px;")
+        else:
+            self.e_block_reason.setText("")
+        _hurst_txt = f"Hurst {float(hurst):.2f}" if hurst is not None else "Hurst ——"
+        _atr_txt = f"ATR {float(atr):.1f}pt" if atr is not None else "ATR ——"
+        self.e_regime.setText(f"레짐: {regime or '——'} · {_hurst_txt} · {_atr_txt}")
+        self.e_regime.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
         col = C['green'] if signal == "매수" else C['red'] if signal == "매도" else C['text2']
         final_col = C['green'] if final_signal == "매수" else C['red'] if final_signal == "매도" else C['text2']
         self.e_signal.setText(signal)
@@ -4830,49 +4796,6 @@ class EntryPanel(QWidget):
             ]
 
         self._layer2_log.setPlainText("\n".join(lines))
-
-    def update_qualification(self, state: dict) -> None:
-        """호라이즌 자격 상태 카드 갱신.
-
-        state: {horizon: {"verified_cycles", "trained_cycles",
-                          "qualified", "status", "recent_accuracy"}}
-        """
-        _STATUS_COLOR = {
-            "active":        C['green'],
-            "not_qualified": C['text2'],
-            "penalized":     C['orange'],
-            "blocked":       C['red'],
-        }
-        _STATUS_TEXT = {
-            "active":        "ACTIVE",
-            "not_qualified": "WAIT",
-            "penalized":     "PENALIZED",
-            "blocked":       "BLOCKED",
-        }
-        for h, card in self._qualify_cards.items():
-            qs = state.get(h, {})
-            if not qs:
-                continue
-            status  = qs.get("status", "not_qualified")
-            vc      = qs.get("verified_cycles", 0)
-            tc      = qs.get("trained_cycles", 0)
-            acc     = qs.get("recent_accuracy", 0.0)
-            col     = _STATUS_COLOR.get(status, C['text2'])
-            s_txt   = _STATUS_TEXT.get(status, status.upper())
-            c_txt   = f"v{vc}/t{tc} acc={acc:.0%}"
-            card["status_lbl"].setText(s_txt)
-            card["status_lbl"].setStyleSheet(
-                f"color:{col};font-size:{S.f(8)}px;font-weight:bold;"
-            )
-            card["cycles_lbl"].setText(c_txt)
-            card["cycles_lbl"].setStyleSheet(
-                f"color:{C['text2']};font-size:{S.f(7)}px;"
-            )
-            border_col = col if status == "active" else C['text2']
-            card["frame"].setStyleSheet(
-                f"QFrame{{background:{C['bg3']};border:1px solid {border_col};"
-                f"border-radius:4px;}}"
-            )
 
 
 # ────────────────────────────────────────────────────────────
@@ -9396,127 +9319,6 @@ def _find_symbol_text(market: str, *, symbol_code: str = "", symbol_text: str = 
     return symbols[0] if symbols else ""
 
 
-class StatusStripPanel(QFrame):
-    """[260704 감사 P3] 탭 무관 상시 노출 상태 스트립.
-
-    "3초 내 시장 파악" — 포지션/당일손익/모델방향+신뢰도/차단사유/레짐 등 탭 클릭
-    없이 확인해야 할 핵심 정보만 모은다. 기존 헤더 배지(CB·헬스·레짐·포지션 등)는
-    이미 탭 무관 상시 노출이라 그대로 두고, 여기서는 탭 안에 있어 즉시 안 보이던
-    정보(당일손익 금액·스톱/TP1가·모델 신뢰도 게이지·차단사유 1줄)만 추가한다.
-
-    색 의미론은 국내 관례(이익=적색/손실=청색)를 이 스트립에 한해 적용한다.
-    기존 개별 패널(예: LONG 배지=녹색)은 범위 밖 — 전체 통일은 별도 작업으로 남김.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet(
-            f"background:{C['bg2']};border:1px solid {C['border']};border-radius:5px;"
-        )
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 6)
-        lay.setSpacing(3)
-
-        row1 = QHBoxLayout()
-        row1.setSpacing(18)
-        self.ss_position = mk_label("FLAT", C['text2'], 16, True)
-        self.ss_daily_pnl = mk_label("당일 ——원", C['text2'], 16, True)
-        self.ss_winloss = mk_label("승 0 / 패 0", C['text2'], 11)
-        self.ss_stop_tp = mk_label("", C['text2'], 11)
-        row1.addWidget(self.ss_position)
-        row1.addWidget(self.ss_daily_pnl)
-        row1.addWidget(self.ss_winloss)
-        row1.addWidget(self.ss_stop_tp)
-        row1.addStretch()
-        lay.addLayout(row1)
-
-        lay.addWidget(mk_sep())
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(14)
-        self.ss_model = mk_label("모델: ——", C['text2'], 11, True)
-        self.ss_conf_bar = QProgressBar()
-        self.ss_conf_bar.setRange(0, 100)
-        self.ss_conf_bar.setValue(0)
-        self.ss_conf_bar.setTextVisible(False)
-        self.ss_conf_bar.setFixedWidth(S.p(90))
-        self.ss_conf_bar.setFixedHeight(max(4, S.p(8)))
-        self.ss_conf_bar.setToolTip("모델 신뢰도 — 막대가 임계선(min_conf)을 넘으면 초록, 못 넘으면 주황")
-        self.ss_block_reason = mk_label("", C['text2'], 11)
-        self.ss_regime = mk_label("", C['text2'], 11)
-        self.ss_next_action = mk_label("다음 액션: ——", C['text2'], 11)
-        row2.addWidget(self.ss_model)
-        row2.addWidget(self.ss_conf_bar)
-        row2.addWidget(self.ss_block_reason, 1)
-        row2.addWidget(self.ss_regime)
-        row2.addWidget(self.ss_next_action)
-        lay.addLayout(row2)
-
-    def update_position(self, status: str, qty: int, entry: float, current: float,
-                         pt_value: float, stop: float, tp1: float) -> None:
-        status = str(status or "FLAT").upper()
-        if status not in ("LONG", "SHORT") or not qty:
-            self.ss_position.setText("FLAT")
-            self.ss_position.setStyleSheet(f"color:{C['text2']};font-size:{S.f(16)}px;font-weight:bold;")
-            self.ss_stop_tp.setText("")
-            return
-        mult = 1 if status == "LONG" else -1
-        unreal_pt = (float(current) - float(entry)) * mult
-        unreal_krw = unreal_pt * float(qty) * float(pt_value or 0)
-        arrow = "▲" if status == "LONG" else "▼"
-        col = C['red'] if unreal_pt >= 0 else C['blue']   # 국내 관례: 이익=적, 손실=청
-        self.ss_position.setText(
-            f"{arrow}{status} {qty}계약 {unreal_pt:+.2f}pt({unreal_krw:+,.0f}원)"
-        )
-        self.ss_position.setStyleSheet(f"color:{col};font-size:{S.f(16)}px;font-weight:bold;")
-        self.ss_stop_tp.setText(f"스톱 {float(stop):.2f} · TP1 {float(tp1):.2f}")
-
-    def update_daily_pnl(self, daily_pnl_krw: float) -> None:
-        col = C['red'] if daily_pnl_krw >= 0 else C['blue']
-        self.ss_daily_pnl.setText(f"당일 {daily_pnl_krw:+,.0f}원")
-        self.ss_daily_pnl.setStyleSheet(f"color:{col};font-size:{S.f(16)}px;font-weight:bold;")
-
-    def update_winloss(self, trades: int, wins: int) -> None:
-        losses = max(0, int(trades) - int(wins))
-        self.ss_winloss.setText(f"승 {int(wins)} / 패 {losses}")
-
-    def update_model(self, signal: str, conf: float, grade: str, min_conf: float,
-                      entry_block_reason: str, final_entry: bool) -> None:
-        arrow = {"매수": "▲", "매도": "▼"}.get(signal, "—")
-        col = C['red'] if signal == "매수" else C['blue'] if signal == "매도" else C['text2']
-        self.ss_model.setText(f"모델: {arrow}{signal or '—'} {grade or '—'}급")
-        self.ss_model.setStyleSheet(f"color:{col};font-size:{S.f(11)}px;font-weight:bold;")
-
-        conf = float(conf or 0.0)
-        min_conf = float(min_conf or 0.58)
-        self.ss_conf_bar.setValue(int(min(max(conf, 0.0), 1.0) * 100))
-        _bar_col = C['green'] if conf >= min_conf else C['orange']
-        self.ss_conf_bar.setStyleSheet(
-            f"QProgressBar{{background:{C['bg3']};border:none;border-radius:3px;}}"
-            f"QProgressBar::chunk{{background:{_bar_col};border-radius:3px;}}"
-        )
-
-        if entry_block_reason:
-            _reason = entry_block_reason.replace("[차단] ", "").replace("[blocked] ", "")[:60]
-            self.ss_block_reason.setText(f"차단: {_reason}")
-            self.ss_block_reason.setStyleSheet(f"color:{C['orange']};font-size:{S.f(11)}px;")
-            self.ss_next_action.setText("다음 액션: 진입 대기")
-            self.ss_next_action.setStyleSheet(f"color:{C['text2']};font-size:{S.f(11)}px;")
-        elif final_entry:
-            self.ss_block_reason.setText("")
-            self.ss_next_action.setText("다음 액션: 진입 실행")
-            self.ss_next_action.setStyleSheet(f"color:{C['green']};font-size:{S.f(11)}px;font-weight:bold;")
-        else:
-            self.ss_block_reason.setText("")
-            self.ss_next_action.setText("다음 액션: 관망")
-            self.ss_next_action.setStyleSheet(f"color:{C['text2']};font-size:{S.f(11)}px;")
-
-    def update_regime(self, regime: str, hurst: float = None, atr: float = None) -> None:
-        _hurst_txt = f"Hurst {float(hurst):.2f}" if hurst is not None else "Hurst ——"
-        _atr_txt = f"ATR {float(atr):.1f}pt" if atr is not None else "ATR ——"
-        self.ss_regime.setText(f"레짐: {regime or '——'} · {_hurst_txt} · {_atr_txt}")
-
-
 class MireukDashboard(QMainWindow):
     """미륵이 v8.0 풀 대시보드"""
 
@@ -10101,11 +9903,6 @@ class MireukDashboard(QMainWindow):
         header.addWidget(clk_frame)
         header.addLayout(res_box)
         root.addLayout(header)
-        root.addWidget(mk_sep())
-
-        # ── [260704 감사 P3] 탭 무관 상시 노출 상태 스트립 ──────
-        self.status_strip = StatusStripPanel()
-        root.addWidget(self.status_strip)
         root.addWidget(mk_sep())
 
         # ── 3열 메인 레이아웃 ──────────────────────────────────
@@ -11336,22 +11133,6 @@ class DashboardAdapter:
             f"background:{bg};color:{fg};border-radius:{S.p(3)}px;"
             f"font-size:{S.f(11)}px;font-weight:bold;padding:1px 6px;"
         )
-        # [260704 감사 P3] 상태 스트립 미러링
-        strip = getattr(self._win, "status_strip", None)
-        if strip is not None:
-            try:
-                strip.update_position(
-                    status,
-                    (pos_data or {}).get("qty", 0),
-                    (pos_data or {}).get("entry", 0.0),
-                    (pos_data or {}).get("current", 0.0),
-                    (pos_data or {}).get("pt_value", 0.0),
-                    (pos_data or {}).get("stop", 0.0),
-                    (pos_data or {}).get("tp1", 0.0),
-                )
-            except Exception:
-                pass
-
     def update_price(self, price: float, change: float = 0.0,
                      code: str = "F202606"):
         """
@@ -11392,18 +11173,10 @@ class DashboardAdapter:
             check_values=check_values,
             entry_block_reason=entry_block_reason,
             qty_entry_final=qty_entry_final,
+            hurst=hurst,
+            atr=atr,
+            regime=regime,
         )
-        # [260704 감사 P3] 상태 스트립 미러링
-        strip = getattr(self._win, "status_strip", None)
-        if strip is not None:
-            try:
-                strip.update_model(
-                    signal, conf, checklist_grade or grade, min_conf,
-                    entry_block_reason, final_entry,
-                )
-                strip.update_regime(regime, hurst=hurst, atr=atr)
-            except Exception:
-                pass
 
     def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False) -> None:
         self._win.entry_panel.set_reverse_entry_enabled(enabled, emit_signal=emit_signal)
@@ -11424,9 +11197,6 @@ class DashboardAdapter:
         """Layer 2 Intraday Gate 패널 갱신 — IntradayTacticalRegime.status_dict() 를 넘겨줌."""
         self._win.entry_panel.update_layer2(status_dict, min_conf_base=min_conf_base)
 
-    def update_qualification(self, state: dict) -> None:
-        """호라이즌 자격 상태 카드 갱신 — _horizon_runtime_state 를 넘겨줌."""
-        self._win.entry_panel.update_qualification(state)
 
     def is_layer2_gate_enabled(self) -> bool:
         """Layer 2 게이트 UI 토글 상태 반환."""
@@ -11454,13 +11224,6 @@ class DashboardAdapter:
     def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 갱신"""
         self._win.entry_panel.update_stats(trades, wins, pnl_pts)
-        # [260704 감사 P3] 상태 스트립 미러링
-        strip = getattr(self._win, "status_strip", None)
-        if strip is not None:
-            try:
-                strip.update_winloss(trades, wins)
-            except Exception:
-                pass
 
     def update_divergence(self, div_data: dict):
         """다이버전스 패널 업데이트"""
@@ -11586,13 +11349,6 @@ class DashboardAdapter:
             forward_unrealized_krw=forward_unrealized_krw,
             forward_daily_pnl_krw=forward_daily_pnl_krw,
         )
-        # [260704 감사 P3] 상태 스트립 미러링
-        strip = getattr(self._win, "status_strip", None)
-        if strip is not None:
-            try:
-                strip.update_daily_pnl(daily_pnl_krw)
-            except Exception:
-                pass
 
     def append_pnl_log(self, msg: str, val: str = ""):
         """창4 손익 로그"""

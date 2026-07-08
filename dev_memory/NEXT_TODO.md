@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-07-08 (304차) [진입관리 탭 UI 정리 — 원신호/실행신호 폭 축소+차단사유/레짐 이전, 상태스트립·자격현황 카드 제거, 방향인디케이터 카드 축소]
+
+> 오프스크린(`QT_QPA_PLATFORM=offscreen`) 렌더링으로 레이아웃 수치(카드 폭 비율,
+> sizeHint 등)만 확인 완료 — 실제 GUI 육안 확인 전무. 상세: `SESSION_LOG.md`/
+> `CURRENT_STATE.md` 304차.
+
+- [DONE 2026-07-08] **진입관리 탭 row0 재구성** — 차단사유/레짐 2줄 카드 신설,
+  원신호/실행신호 폭 절반 축소+우측정렬. `EntryPanel.update_data()` hurst/atr/regime
+  배선. `dashboard/main_dashboard.py`.
+- [DONE 2026-07-08] **`StatusStripPanel` 전체 제거** — 클래스·인스턴스화·
+  `DashboardAdapter` 미러링 4곳. `dashboard/main_dashboard.py`.
+- [DONE 2026-07-08] **호라이즌 자격 현황 카드 제거** — `EntryPanel`/`DashboardAdapter`
+  `update_qualification()` 경로, `main.py:5514` 호출부. `_horizon_runtime_state`는 유지.
+- [DONE 2026-07-08] **`DirectionIndicatorWidget` lamp 카드 130→92px 축소** —
+  `dashboard/panels/direction_indicator_dialog.py`.
+- [ ] **다음 앱 기동 후 GUI 육안 확인(최우선)** — (1) 진입관리 탭 원신호/실행신호
+  카드가 실제로 절반 폭+우측정렬로 보이는지, 차단사유/레짐 2줄 텍스트가 잘리지
+  않는지, (2) 상태스트립 제거 후 헤더 아래 레이아웃에 빈 공간·깨짐이 없는지,
+  (3) 방향인디케이터 lamp 카드(92px)에서 화살표·SHORT/LONG·메타·conf 상세줄이
+  잘리지 않는지 — 창 크기/DPI 스케일 여러 값에서 확인.
+
+---
+
 ## 2026-07-08 (303차, 후속) [HealthPolicy Degraded Mode 오발동 수정 — exceptions_10m 정책로그 오집계]
 
 > `[RegimeFingerprint] PSI CRITICAL` 등 정책성 WARNING 로그가 HealthPolicy 예외밀도

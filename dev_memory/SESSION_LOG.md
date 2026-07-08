@@ -8514,3 +8514,50 @@ WARNING/ERROR/CRITICAL "로그 줄 수"를 세는 것을 발견 → 09:49부터 
 유지되는지, (2) Degraded Mode가 자동 해제되는지, (3) C등급 자동진입이 정상적으로
 재개되는지 확인. FP-CRITICAL PSI 계측 재설계(균등폭→분위수 bin) 자체는 이번 범위
 밖으로 남음(기존 `NEXT_TODO.md` 303차 항목 참조).
+
+---
+
+## 2026-07-08 (304차 — 진입관리 탭 UI 정리: 원신호/실행신호 폭 축소+차단사유/레짐 이전, 상태스트립·자격현황 카드 제거, 방향인디케이터 카드 축소)
+
+**트리거**: 사용자가 진입관리 탭·상단 상태스트립·좌측 방향인디케이터 스크린샷을
+순차 제시하며 4건 요청 — ①원신호/실행신호 카드 폭 절반 축소+우측정렬, 그 자리에
+차단사유/레짐 2줄 표시 ②상단 상시노출 상태스트립(FLAT/당일손익/승패, 모델/신뢰도바/
+다음액션) 전체 제거 ③호라이즌 자격 현황(사이클 추적) 카드 제거 ④좌측 방향 인디케이터
+lamp 카드 상하 폭 축소.
+
+### 구현
+
+1. **진입관리 탭 row0 재구성** ([main_dashboard.py](dashboard/main_dashboard.py))
+   `EntryPanel` row0에 차단사유(`e_block_reason`)+레짐(`e_regime`) 2줄 카드를 신설해
+   원신호 카드 자리에 배치, stretch 비율 2:1:1(상태카드:원신호:실행신호)로 원신호/
+   실행신호 폭을 절반으로 줄이며 자연스럽게 우측 정렬. `EntryPanel.update_data()`에
+   `hurst`/`atr`/`regime` 파라미터 추가하고 `DashboardAdapter.update_entry()`에서
+   배선(기존엔 status_strip에만 전달되고 entry_panel엔 안 갔음).
+2. **`StatusStripPanel` 클래스 전체 제거** — row1(FLAT/당일손익/승패/스톱·TP1)·
+   row2(모델/신뢰도바/차단사유/레짐/다음액션) 전부. 메인 윈도우의 인스턴스화 코드,
+   `DashboardAdapter`의 4개 미러링 지점(`update_position`/`update_entry`/
+   `update_entry_stats`/`update_pnl_metrics`)도 함께 정리. 표시 정보(포지션·차단사유·
+   레짐·승패)가 헤더 배지·진입관리 탭에 이미 중복 노출되어 정보 손실 없음.
+3. **호라이즌 자격 현황(Qualification Monitor) 카드 제거** — `EntryPanel`의
+   `_qualify_cards`/`update_qualification()`, `DashboardAdapter.update_qualification()`
+   삭제. `main.py:5514` 매분 파이프라인의 호출부도 제거. 단 상태 자체
+   (`_horizon_runtime_state`)는 다른 로직(main.py 3998·7041·8325행)에서도 쓰여 그대로
+   유지 — UI 표시만 제거.
+4. **`DirectionIndicatorWidget._build_lamp()` 높이 최적화**
+   ([direction_indicator_dialog.py](dashboard/panels/direction_indicator_dialog.py))
+   — 고정 높이 130→92px(29% 축소). margins(16,12,16,10)→(14,8,14,6), spacing 5→3,
+   화살표 52→38pt(폭 56→44), 방향라벨 24→18pt, 메타라벨 11→10pt, conf_bar 8→6px,
+   conf 상세줄 9→8pt로 축소해 내용은 그대로 유지하면서 아래 캔들차트·호라이즌
+   스트립에 여유 공간 확보.
+
+### 검증
+
+- 오프스크린(`QT_QPA_PLATFORM=offscreen`)으로 단계별 실측: `EntryPanel` 단독
+  렌더링 후 카드 stretch 비율(446:223:223 = 2:1:1)과 텍스트 정상 확인, `StatusStripPanel`
+  제거 후 `DashboardAdapter` 전체 경로(`update_position`/`update_entry`/
+  `update_entry_stats`/`update_pnl_metrics`) 예외 없이 동작 확인, `DirectionIndicatorWidget`
+  lamp의 실제 sizeHint(90px)가 고정 높이(92px) 내에 잘림 없이 들어감을 확인.
+- `python -m py_compile`로 `main.py`·`main_dashboard.py`·`direction_indicator_dialog.py`
+  구문 오류 없음 확인.
+- **라이브 미검증** — 오프스크린 수치 확인만 실시, 실제 PyQt5 창 기동 후 육안 확인은
+  미실시. `NEXT_TODO.md` 304차에 확인 항목 기록.

@@ -87,27 +87,27 @@ class DirectionIndicatorWidget(QWidget):
 
     def _build_lamp(self) -> QFrame:
         self._lamp = QFrame()
-        self._lamp.setFixedHeight(130)
+        self._lamp.setFixedHeight(92)
         lay = QVBoxLayout(self._lamp)
-        lay.setSpacing(5)
-        lay.setContentsMargins(16, 12, 16, 10)
+        lay.setSpacing(3)
+        lay.setContentsMargins(14, 8, 14, 6)
 
         dir_row = QHBoxLayout()
         dir_row.setSpacing(10)
 
         self._lbl_arrow = QLabel("—")
-        self._lbl_arrow.setFont(QFont("Arial", 52, QFont.Bold))
+        self._lbl_arrow.setFont(QFont("Arial", 38, QFont.Bold))
         self._lbl_arrow.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-        self._lbl_arrow.setFixedWidth(56)
+        self._lbl_arrow.setFixedWidth(44)
 
         info_col = QVBoxLayout()
         info_col.setSpacing(2)
 
         self._lbl_dir = QLabel("대기")
-        self._lbl_dir.setFont(QFont("Arial", 24, QFont.Bold))
+        self._lbl_dir.setFont(QFont("Arial", 18, QFont.Bold))
 
         self._lbl_meta = QLabel("")
-        self._lbl_meta.setFont(QFont("Arial", 11))
+        self._lbl_meta.setFont(QFont("Arial", 10))
         self._lbl_meta.setStyleSheet("color:#8b949e;")
 
         info_col.addStretch()
@@ -121,13 +121,13 @@ class DirectionIndicatorWidget(QWidget):
         lay.addLayout(dir_row)
 
         self._conf_bar = QProgressBar()
-        self._conf_bar.setFixedHeight(8)
+        self._conf_bar.setFixedHeight(6)
         self._conf_bar.setTextVisible(False)
         self._conf_bar.setRange(0, 1000)
         lay.addWidget(self._conf_bar)
 
         self._lbl_conf = QLabel("conf —  mc —  ±—")
-        self._lbl_conf.setFont(QFont("Consolas", 9))
+        self._lbl_conf.setFont(QFont("Consolas", 8))
         self._lbl_conf.setStyleSheet("color:#8b949e;")
         lay.addWidget(self._lbl_conf)
 

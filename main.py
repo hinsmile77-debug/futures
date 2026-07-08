@@ -5546,11 +5546,6 @@ class TradingSystem:
         self.dashboard.update_prediction(close, _preds_ui, _params_ui, confidence,
                                          corr=_corr_str, min_conf=actual_min_conf,
                                          bar_ages=self._hz_bar_age)
-        # [Qualify] 자격 현황 카드 갱신
-        try:
-            self.dashboard.update_qualification(self._horizon_runtime_state)
-        except Exception:
-            pass
         _s6_prof.append(("dashboard", time.perf_counter()))
 
         # GBM 미학습 시 모델 상태 행 재표시 (update_prediction이 행을 숨겼으므로)
