@@ -69,6 +69,8 @@ from config.settings import (
     HURST_REGIME_ATR_MULT, HURST_REGIME_ATR_MULT_ENABLED,
     ATR_ADAPTIVE_MAX_WINDOW, ATR_ADAPTIVE_MAX_MULT, ATR_ADAPTIVE_MAX_CEILING,
     ATR_ADAPTIVE_MIN_SAMPLES,
+    ATR_EXPIRY_CEILING_ENABLED, ATR_EXPIRY_CEILING_DAYS_BEFORE,
+    ATR_EXPIRY_CEILING_DAYS_AFTER, ATR_EXPIRY_CEILING_MULT,
     CB_HIGH_CONF_THRESHOLD, MAX_CONTRACTS,
     SHAP_MIN_DATA_POINTS,
     FRED_API_KEY,
@@ -108,6 +110,7 @@ from learning.self_learning.daily_consolidator import DailyConsolidator
 from learning.self_learning.drift_adjuster import DriftAdjuster
 from features.feature_builder import FeatureBuilder
 from features.technical.basis import BasisCalculator
+from features.technical.expiry import is_near_monthly_expiry
 from collection.cybos.api_connector import VKOSPI_INDEX_CODE
 from features.bar_aggregator import BarAggregator
 from model.multi_horizon_model import MultiHorizonModel
@@ -134,6 +137,7 @@ from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
 from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAIN_BARS
 from learning.threshold_recalibrator import ThresholdRecalibrator
+from learning.atr_ceiling_recalibrator import ATRCeilingRecalibrator
 from learning.shap.shap_tracker import ShapTracker
 from safety.circuit_breaker import CircuitBreaker
 from safety.kill_switch import KillSwitch
@@ -306,6 +310,7 @@ class TradingSystem:
             except Exception as _ge:
                 logger.warning("[GapOffset] 재시작 복원 실패: %s", _ge)
         self.threshold_recalibrator   = ThresholdRecalibrator()
+        self.atr_ceiling_recalibrator = ATRCeilingRecalibrator()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
         self.pcr_store          = PCRStore()
         self.option_chain_snap  = OptionChainSnapshot(
@@ -6111,10 +6116,20 @@ class TradingSystem:
         # 걸려 정상 변동성에서도 A등급 신호를 연속 차단하는 문제 확인 → 최근 60분 ATR
         # 롤링평균 × 배수로 상한을 적응시키되, 절대 상한(ceiling)과 정적 하한(ATR_MAX_ENTRY)
         # 사이로 클램프해 순간 스파이크·표본 부족 구간의 과도한 완화는 막는다.
+        # 303차: 옵션/선물 만기 전후는 롤오버·프로그램매매로 ATR이 구조적으로 튀는 캘린더
+        # 이벤트(07-08 만기 전날 딥다이브, 실측 피크 10.22pt). 장기 롤링 캡은 변동성
+        # "상승 초입"에 과거 낮은 레벨에 발목 잡혀 오히려 차단율이 커지는 역효과가
+        # 시뮬레이션으로 확인됐으므로, 원인이 뚜렷한 만기는 롤링 대신 캘린더 예외로
+        # 절대 상한 자체를 일시 확대한다(평소 상한 × ATR_EXPIRY_CEILING_MULT).
+        _atr_ceiling_effective = ATR_ADAPTIVE_MAX_CEILING
+        if ATR_EXPIRY_CEILING_ENABLED and is_near_monthly_expiry(
+            _now_dt, ATR_EXPIRY_CEILING_DAYS_BEFORE, ATR_EXPIRY_CEILING_DAYS_AFTER
+        ):
+            _atr_ceiling_effective = ATR_ADAPTIVE_MAX_CEILING * ATR_EXPIRY_CEILING_MULT
         if len(self._atr_recent_window) >= ATR_ADAPTIVE_MIN_SAMPLES:
             _atr_recent_avg = sum(self._atr_recent_window) / len(self._atr_recent_window)
             _atr_max_adaptive = min(
-                ATR_ADAPTIVE_MAX_CEILING,
+                _atr_ceiling_effective,
                 max(ATR_MAX_ENTRY, _atr_recent_avg * ATR_ADAPTIVE_MAX_MULT),
             )
         else:
@@ -6468,8 +6483,9 @@ class TradingSystem:
                 if atr < ATR_MIN_ENTRY:
                     _entry_block_reason = f"[차단] ATR {atr:.2f}pt < {ATR_MIN_ENTRY}pt — 변동성 부족 (휩쏘 위험)"
                 else:
+                    _expiry_tag = "만기캡 " if _atr_ceiling_effective > ATR_ADAPTIVE_MAX_CEILING else ""
                     _entry_block_reason = (
-                        f"[차단] ATR {atr:.2f}pt > {_atr_max_adaptive:.2f}pt(적응형, 정적={ATR_MAX_ENTRY}) — "
+                        f"[차단] ATR {atr:.2f}pt > {_atr_max_adaptive:.2f}pt({_expiry_tag}적응형, 정적={ATR_MAX_ENTRY}) — "
                         f"손절거리 {atr * ATR_STOP_MULT:.1f}pt 과대 (고변동성 진입 차단)"
                     )
             elif not _open_gap_ok:
@@ -8231,6 +8247,27 @@ class TradingSystem:
                     )
             except Exception as _tre:
                 logger.warning("[ThresholdRecal] 실행 실패 (스킵): %s", _tre)
+
+        # ── ATR 게이트 상/하한 재보정 제안 모니터 (303차, 금요일 + 최근 실행 후
+        #    10일 이상 경과 시에만 — 사실상 1~2주 주기). 자동 반영 없음, 제안만
+        #    기록 + WATCHLIST 이상이면 Slack 알림(utils.notify) — 알파봇과 동일하게
+        #    사람이 config/settings.py를 검토 후 수동 반영한다.
+        if now.weekday() == 4:   # 금요일
+            try:
+                _atr_recal = self.atr_ceiling_recalibrator.run_if_due(
+                    today=now.date().isoformat()
+                )
+                if _atr_recal and _atr_recal["alert"] != "CLEAR":
+                    log_manager.system(
+                        f"[ATRCeilingRecal] {_atr_recal['alert']} — "
+                        f"floor {_atr_recal['current_floor']}→{_atr_recal['suggested_floor']}pt "
+                        f"({_atr_recal['floor_delta_pct']:+.0f}%), "
+                        f"ceiling {_atr_recal['current_ceiling']}→{_atr_recal['suggested_ceiling']}pt "
+                        f"({_atr_recal['ceiling_delta_pct']:+.0f}%) — Slack 알림 발송, 수동 검토 필요",
+                        "WARNING",
+                    )
+            except Exception as _atre:
+                logger.warning("[ATRCeilingRecal] 실행 실패 (스킵): %s", _atre)
 
         # 일일 리셋
         if hasattr(self, "_investor_timer"):

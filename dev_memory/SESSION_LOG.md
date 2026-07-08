@@ -8442,3 +8442,45 @@ H≈0으로 나와 문서가 기대하는 "H>0.55" 데모가 실패함(횡보 �
 ① `[MicroRegime] * → 탈진` 로그 발생 시 그 분봉에서 Hurst<0.45라도 진입이
 차단되지 않는지, ② 다음 EOD 재학습/backfill 재실행 시 `hurst` 분포가 실거래
 수집값과 정합적인지 확인 필요(`NEXT_TODO.md` 참조).
+
+## 2026-07-08 (303차 — ATR 게이트 상한 만기주 예외 + 재보정 제안 모니터 신설)
+
+**트리거**: 07-08 만기(7/9) 전날 딥다이브에서 ATR 피크 10.22pt로 절대상한(6.0pt)을
+크게 초과, 신규진입 다수 차단 확인. 후속 논의에서 "1~2주 롤링 캡"을 시뮬레이션한
+결과 변동성 상승 초입엔 오히려 과거 낮은 레벨에 발목 잡혀 차단율이 더 커지는
+역효과가 확인됨(06-24 30.4%→76.4%, 06-26 14.8%→54.7%). 사용자 결정: 롤링 대신
+①캘린더 기반 만기 예외 + ②저빈도 사람검토 재보정(알파봇과 동일 "제안만, 자동반영
+금지" 원칙)으로 대체.
+
+### 구현
+
+1. **만기 캘린더 예외** — `features/technical/expiry.py`에
+   `is_near_monthly_expiry(ts_dt, days_before, days_after)` 신규(월간 만기 D-2~D+1
+   판정, 달력일 근사). `config/settings.py`에 `ATR_EXPIRY_CEILING_ENABLED`,
+   `ATR_EXPIRY_CEILING_DAYS_BEFORE=2`, `_DAYS_AFTER=1`, `_MULT=1.5` 추가.
+   `main.py:6115` 부근 적응형 상한 계산에서 만기 D-2~D+1이면
+   `ATR_ADAPTIVE_MAX_CEILING`(6.0)을 ×1.5(9.0pt)로 일시 확대. 대시보드 ATR 필터
+   툴팁(`dashboard/main_dashboard.py:3941`)에 예외 설명 추가.
+
+2. **재보정 제안 모니터** — `learning/atr_ceiling_recalibrator.py` 신규
+   (`ThresholdRecalibrator` 패턴 그대로 재사용). 최근 15거래일(만기 D-2~D+1
+   제외 — 이중 반영 방지)의 raw_features ATR로 floor 제안(일별평균 중앙값),
+   ceiling 제안(분봉 p95) 산출, 현재 settings 대비 델타 ±15%↑WATCHLIST /
+   ±30%↑UPDATE. `atr_ceiling_monitor.db`에 로그, WATCHLIST 이상이면
+   `utils.notify.notify(level="WARNING")`로 Slack 발송. **자동 반영 없음** —
+   사람이 config/settings.py를 직접 수정해야 적용됨. `daily_close()`에
+   금요일 게이트로 연결(`main.py:8251`), `run_if_due()`가 내부적으로 마지막
+   실행 후 10일 미만이면 스킵해 사실상 1~2주 주기.
+
+### 검증
+
+- `is_near_monthly_expiry`: 07-07~07-10(D-2~D+1) True, 07-06/07-11 False로
+  경계값 확인.
+- `ATRCeilingRecalibrator.run()` 임시 DB로 드라이런 — 07-08 자체와 06월 만기
+  주간을 정상적으로 제외하고 최근 13거래일/4,698봉로 floor=3.5(현재와 동일),
+  ceiling=6.5(현재 6.0 대비 +8.3%, WATCHLIST 미만) 산출 확인.
+- `should_run`/`run_if_due` 간격 게이트: 최초 True → 당일 재호출 False → +5일
+  False → +11일 True로 확인.
+- 5개 파일 모두 `py_compile` 통과. **라이브 미검증** — 다음 금요일 EOD에서
+  Slack 알림 수신 여부, 다음 만기(8월 둘째 목요일) 전후 실제 게이트 완화 동작
+  확인 필요.

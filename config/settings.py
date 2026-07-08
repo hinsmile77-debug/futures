@@ -849,6 +849,17 @@ ATR_ADAPTIVE_MAX_MULT    = 1.25  # 최근 ATR 롤링평균 대비 허용 배수
 ATR_ADAPTIVE_MAX_CEILING = 6.0   # 적응형 상한의 절대 상한 (폭주 방지)
 ATR_ADAPTIVE_MIN_SAMPLES = 20    # 이 미만이면 롤링평균 신뢰 불가 → 정적 ATR_MAX_ENTRY 사용
 
+# ── ATR 만기주 캡 예외 (303차) ───────────────────────────────────
+# 2026-07-08 만기(7/9) 전날 딥다이브: 실측 ATR 피크 10.22pt로 절대상한(6.0)을
+# 크게 초과, 해당일 신규진입 다수가 ATR상한 차단(dev_memory 07-08 딥다이브 참고).
+# 장기(1~2주) 롤링 캡은 변동성 "상승 초입"에 오히려 과거 낮은 레벨에 발목 잡혀
+# 차단율이 더 커지는 역효과가 시뮬레이션으로 확인됨 → 원인이 뚜렷한 캘린더
+# 이벤트(만기)는 롤링으로 뭉뚱그리지 않고 예외로 분리 처리.
+ATR_EXPIRY_CEILING_ENABLED     = True
+ATR_EXPIRY_CEILING_DAYS_BEFORE = 2     # 만기 D-2 ~ D-1 적용
+ATR_EXPIRY_CEILING_DAYS_AFTER  = 1     # 만기 D+1(정산 여파)까지 적용
+ATR_EXPIRY_CEILING_MULT        = 1.5   # 평소 절대상한(ATR_ADAPTIVE_MAX_CEILING) × 배수 → 9.0pt
+
 # ── OPEN_VOLATILE 시가 이격 필터 ───────────────────────────────
 # 장 초반 추세추종 진입 시 시가 대비 누적 이탈이 과도하면 낙폭 소진 반등 위험 증가
 # gap_in_direction > ATR × ATR_OPEN_GAP_MULT → 진입 차단 (TREND_FOLLOW 전용)

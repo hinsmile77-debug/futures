@@ -48,3 +48,20 @@ def compute_expiry_features(ts_dt: datetime.datetime) -> Dict[str, float]:
         "is_monthly_expiry_week": is_monthly_expiry_week,
         "is_month_end_rebalance": is_month_end_rebalance,
     }
+
+
+def is_near_monthly_expiry(
+    ts_dt: datetime.datetime,
+    days_before: int = 2,
+    days_after: int = 1,
+) -> bool:
+    """월간 만기(그 달 두 번째 목요일) 기준 D-days_before ~ D+days_after 이내 여부.
+
+    is_monthly_expiry_week(월~일 캘린더 주 전체)보다 좁은 범위 — ATR 게이트처럼
+    "만기 임박 며칠"에만 예외를 걸고 싶은 용도. 달력일 근사(휴장일 미반영)는
+    compute_expiry_features()와 동일 원칙.
+    """
+    d = ts_dt.date()
+    monthly_expiry = _nth_weekday(d.year, d.month, 3, 2)
+    delta = (d - monthly_expiry).days
+    return -days_before <= delta <= days_after
