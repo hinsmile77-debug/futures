@@ -3677,8 +3677,17 @@ class TradingSystem:
         # [266차] _on_tick_price_update(COM 콜백)에서 stop 히트 감지 시 flag 세팅.
         # 분봉 파이프라인 진입 즉시(STEP 1 이전) 처리 → 기존 인트라바스톱(STEP 8)보다
         # 파이프라인 내 순서가 앞서 동일 분봉 내 조기 주문 전송.
-        # 패턴: _check_exit_triggers 와 동일 (close_position 즉시 호출) →
-        #        STEP 8에서 is_stop_hit()이 FLAT 감지해 이중 발동 차단.
+        # [2026-07-09 실사고 수정] 과거엔 pending 미등록 상태로 주문만 보내고
+        # close_position()을 즉시(낙관적으로) 호출해 포지션을 먼저 FLAT 처리했다.
+        # 이 경우 뒤늦게 도착하는 실체결이 pending 매칭 실패로 "미추적체결
+        # (pending_miss)" 경로로 빠져 반대방향 유령 포지션을 새로 여는 사고가
+        # 발생(0709 두 차례, 손실 약 6.75M원 — dev_memory 305차). 수동청산·TP청산·
+        # 정규 하드스톱(_ts_check_exit_triggers)과 동일하게 주문 전송 "전"에 pending을
+        # 선등록하도록 수정 — close_position()/_post_exit()는 더 이상 여기서 즉시
+        # 호출하지 않고, 실제 Chejan 체결이 pending과 매칭돼 정상 ExitFillFlow
+        # 경로로 마감되도록 위임한다. 이중 발동 차단은 STEP 8
+        # (_ts_check_exit_triggers 최상단의 `_has_pending_order()` 조기 반환)이
+        # position.status==FLAT 대신 pending 존재 여부로 그대로 보장한다.
         if getattr(self, "_tick_stop_triggered", False):
             self._tick_stop_triggered = False           # 중복 처리 방지 — 결과 무관 즉시 해제
             _tk_px   = self._tick_stop_price
@@ -3689,14 +3698,37 @@ class TradingSystem:
                     and _tk_px > 0):
                 # PnL 기준: 손절가 사용 (실제 체결가는 broker fill이 결정)
                 _tk_exit = _tk_stop
+                _tk_qty = self.position.quantity
+                _tk_direction = self.position.status
                 log_manager.trade(
-                    f"[TickStop-S0C] 하드스톱(틱) {self.position.status} "
-                    f"{self.position.quantity}ct "
+                    f"[TickStop-S0C] 하드스톱(틱) {_tk_direction} "
+                    f"{_tk_qty}ct "
                     f"tick={_tk_px:.2f} stop={_tk_stop:.2f} → 주문 전송"
                 )
-                self._send_broker_exit_order(self.position.quantity)
-                _tk_result = self.position.close_position(_tk_exit, "하드스톱(틱)")
-                self._post_exit(_tk_result)
+                # pending을 주문 전송 전에 먼저 등록 — BlockRequest() 내부 메시지
+                # 펌프로 체결 콜백이 먼저 도착하는 race condition 방지
+                # (수동청산·TP청산·정규 하드스톱과 동일한 순서).
+                self._set_pending_order(
+                    kind="EXIT_FULL",
+                    direction=_tk_direction,
+                    qty=_tk_qty,
+                    price_hint=round(_tk_exit, 2),
+                    reason="하드스톱(틱)",
+                )
+                ret = self._send_broker_exit_order(_tk_qty)
+                log_manager.system(
+                    f"[ExitSendOrderResult] ret={ret} kind=하드스톱(틱) "
+                    f"direction={_tk_direction} qty={_tk_qty}",
+                    "WARNING",
+                )
+                if ret == 0:
+                    log_manager.trade(
+                        f"[주문요청] 하드스톱(틱) 청산 {_tk_direction} {_tk_qty}계약 "
+                        f"@ {_tk_exit:.2f} 체결대기"
+                    )
+                else:
+                    self._clear_pending_order()
+                    log_manager.system(f"[Exit] 하드스톱(틱) 주문 실패 ret={ret}", "ERROR")
 
         while True:
             try:
@@ -7547,128 +7579,6 @@ class TradingSystem:
             f"진입 | {direction} {quantity}계약 @ {price}  등급={grade}",
             f"손절 {self.position.stop_price:.2f}  1차 {self.position.tp1_price:.2f}",
         )
-
-    def _check_exit_triggers(self, price: float, features: dict, decision: dict, bar: dict = None):
-        """청산 트리거 감시 (우선순위 1~4)"""
-        atr = features.get("atr", 0.5)
-
-        # [DBG-F8] 매분 포지션 현황 스냅샷 — 손절·TP 거리 + 미실현 손익
-        if self.position.status != "FLAT":
-            _mult     = 1 if self.position.status == "LONG" else -1
-            _upnl     = self.position.unrealized_pnl_pts(price)
-            _stop_dist = (price - self.position.stop_price) * _mult
-            _tp1_dist  = (self.position.tp1_price  - price) * _mult
-            _tp2_dist  = (self.position.tp2_price  - price) * _mult
-            debug_log.debug(
-                "[DBG-F8] %s %dct @%.2f cur=%.2f upnl=%+.2fpt"
-                " | stop_dist=%.2f tp1=%.2f tp2=%.2f | stop=%.2f | p1=%s p2=%s",
-                self.position.status, self.position.quantity,
-                self.position.entry_price, price, _upnl,
-                _stop_dist, _tp1_dist, _tp2_dist,
-                self.position.stop_price,
-                "✓" if self.position.partial_1_done else "○",
-                "✓" if self.position.partial_2_done else "○",
-            )
-
-        # 트레일링 스톱 업데이트
-        self.position.update_trailing_stop(price, atr)
-
-        # 1순위: 하드 스톱 — 종가 + 분봉 고저가 모두 체크 (Proposal D: 인트라바 스톱)
-        # 종가가 개선돼도 bar_high(SHORT)/bar_low(LONG)가 스톱을 넘으면 즉시 청산
-        bar_low  = bar.get("low",  price) if bar else price
-        bar_high = bar.get("high", price) if bar else price
-        _stop_hit = (
-            self.position.is_stop_hit(price)
-            or self.position.is_stop_hit_intrabar(bar_low, bar_high)
-        )
-        if _stop_hit:
-            if self.position.status == "LONG":
-                exit_price = max(self.position.stop_price, bar_low)   # 손절가 이상 보장
-            else:
-                exit_price = min(self.position.stop_price, bar_high)  # 손절가 이하 보장
-            debug_log.debug(
-                "[DBG-STOP] 하드스톱 발동: close=%.2f bar_low=%.2f bar_high=%.2f stop=%.2f → exit=%.2f",
-                price, bar_low, bar_high, self.position.stop_price, exit_price,
-            )
-            self._send_broker_exit_order(self.position.quantity)
-            result = self.position.close_position(exit_price, "하드스톱")
-            self._post_exit(result)
-            return
-
-        # 3순위: 부분 청산 (pending 가드 + is_tp1_hit/is_tp2_hit 내부 partial_done 이중 체크)
-        if (not self._has_pending_order()
-                and self.position.status != "FLAT"
-                and self.position.is_tp1_hit(price)):
-            self._execute_partial_exit(price, stage=1)
-
-        if (not self._has_pending_order()
-                and self.position.status != "FLAT"
-                and self.position.is_tp2_hit(price)):
-            self._execute_partial_exit(price, stage=2)
-
-        # 3.5순위: [260704 감사 P1] 신호 소멸 청산 — 보유 포지션과 반대 방향의 앙상블
-        # 신호가 zone_mc(시간대×호라이즌 동적 min_conf) 이상 신뢰도로 확정되면
-        # 손절가 도달을 기다리지 않고 미리 청산한다.
-        # 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §3-2 ①
-        if (SIGNAL_DECAY_EXIT_ENABLED
-                and not self._has_pending_order()
-                and self.position.status != "FLAT"):
-            _sd_dir  = decision.get("direction", 0)
-            _sd_conf = float(decision.get("confidence", 0.0) or 0.0)
-            _sd_zone_mc = float(decision.get("min_conf", 1.0) or 1.0)
-            _sd_opposite = (
-                (self.position.status == "LONG" and _sd_dir == -1)
-                or (self.position.status == "SHORT" and _sd_dir == 1)
-            )
-            if _sd_opposite and _sd_conf >= _sd_zone_mc:
-                debug_log.debug(
-                    "[SignalDecay] 반대신호 청산: pos=%s dir=%d conf=%.3f zone_mc=%.3f",
-                    self.position.status, _sd_dir, _sd_conf, _sd_zone_mc,
-                )
-                # [260705 검증 캠페인 §3-5] counterfactual 기록 — 발동 시점의
-                # 스톱/TP1 가격을 보존해 주간 리포트(generate_validation_campaign_report)가
-                # "청산 안 했으면 어느 배리어에 먼저 닿았나"를 사후 판정한다.
-                # 기록 실패는 청산 자체를 막지 않는다 (계측 전용).
-                try:
-                    execute(
-                        TRADES_DB,
-                        """INSERT INTO signal_decay_exits
-                           (ts, direction, exit_price, stop_price, tp1_price,
-                            quantity, conf, zone_mc)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
-                            self.position.status,
-                            float(price),
-                            float(self.position.stop_price or 0.0),
-                            float(self.position.tp1_price or 0.0),
-                            int(self.position.quantity),
-                            _sd_conf,
-                            _sd_zone_mc,
-                        ),
-                    )
-                except Exception as _sde:
-                    logger.warning("[SignalDecay] counterfactual 기록 실패 (무해): %s", _sde)
-                self._send_broker_exit_order(self.position.quantity)
-                result = self.position.close_position(price, "신호소멸청산")
-                self._post_exit(result)
-                return
-
-        # 4순위: 시간 강제 청산
-        if self.time_exit.should_force_exit():
-            _b_cached = int(getattr(self, "_integrity_broker_qty", 0) or 0)
-            if self.position.status != "FLAT":
-                _fq = max(self.position.quantity, _b_cached) if _b_cached > 0 else self.position.quantity
-                self._send_broker_exit_order(_fq)
-                result = self.position.close_position(price, "15:10 강제청산")
-                self._post_exit(result)
-            elif _b_cached > 0:
-                # 내부 FLAT이지만 broker 캐시에 잔량 → BrokerDirect 청산
-                log_manager.system(
-                    f"[BarExit] 내부FLAT broker_cached={_b_cached}계약 — BrokerDirect 청산",
-                    "ERROR",
-                )
-                _ts_broker_direct_force_exit(self, price, "15:10 분봉FLAT불일치 강제청산")
 
     def _post_exit(self, result: dict, filled_at=None):
         """청산 후 처리.
