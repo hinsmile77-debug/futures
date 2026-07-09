@@ -2,6 +2,63 @@
 
 ---
 
+## 2026-07-09 (306차 — 정기점검 딥다이브: 틱 하드스톱(S0-C) 청산주문 pending 미등록 → 유령 포지션 생성 버그 발견·수정 + 죽은 코드 제거)
+
+### [버그] S0-C 틱 레벨 하드스톱이 청산주문을 pending 미등록 상태로 전송 → 실체결이 반대방향 유령 포지션으로 오인식
+
+**File**: `main.py:3676-3730` (`run_minute_pipeline` S0-C 블록)
+**증상**: 07-09 10:44·10:55 두 차례, 하드스톱 청산 직후 완전히 새로운 반대방향
+포지션이 "체결동기화 외부진입"(`grade=MANUAL`)으로 자동 생성됨. 10:44 SHORT 10계약
+하드스톱 청산(-3,192,234원) 직후 LONG 8계약 유령 포지션이 생겨 10:55 재차 하드스톱
+(-7,502,180원), 그 청산 직후 다시 SHORT 6계약 유령 포지션 생성(우연히 11:01~11:04
++754,222원 익절로 마감). 유령 포지션 두 건만으로 약 -6.75M원 스윙 — 당일 마감 PnL
+-6,450,988원의 사실상 전부를 설명.
+**원인**: S0-C(`[266차]` 추가, `_on_tick_price_update` 콜백에서 플래그만 세팅 후
+`run_minute_pipeline` 최상단에서 처리)가 `_send_broker_exit_order()`로 청산주문을
+보내면서 `_set_pending_order()` 사전등록 없이 곧바로 `close_position()`을 호출해
+포지션을 낙관적으로 즉시 FLAT 처리했음. 이후 실제 Chejan 체결이 도착하면
+`pending='NONE'`(매칭 실패)이고 포지션은 이미 FLAT이라, "미추적체결(pending_miss)"
+폴백(`_ts_handle_external_fill`)이 이 체결들을 반대방향 신규 포지션으로 해석. 동일
+클래스의 버그가 수동청산·TP청산·정규 하드스톱 경로엔 이미 "pending 선등록" 패턴으로
+수정 적용돼 있었으나(본 로그 이전 세션의 "하드스톱·시간청산 pending 선등록 수정"
+항목 — `NEXT_TODO.md` 하단에 검증 대기 상태로 남아있던 바로 그 계열 버그),
+`[266차]`에 나중에 추가된 S0-C 틱 레벨 경로만 그 패턴을 물려받지 못한 채 남아있었음.
+**딥다이브 부산물**: `_check_exit_triggers`(`main.py:7551`, 클래스 본문)에 동일한
+미등록 하드스톱 분기가 남아있었으나, `TradingSystem._check_exit_triggers =
+_ts_check_exit_triggers`(모듈 레벨 몽키패치, 현 12496줄)로 완전히 덮어써진 **죽은
+코드**임을 확인 — 실제 라이브 구현(`_ts_check_exit_triggers`)은 이미 pending을 정상
+선등록하고 있어 이 경로는 버그와 무관. 혼동 방지 및 향후 실수(몽키패치 존재를 모르고
+이 죽은 코드를 "고치는" 헛수고) 예방을 위해 122줄 전체 삭제.
+**결정/수정**: `main.py:3676-3730` — 수동청산·TP청산·정규 하드스톱
+(`_ts_check_exit_triggers`)과 동일한 순서로 통일: `_set_pending_order(kind=
+"EXIT_FULL", ...)` 선등록 → `_send_broker_exit_order()` 전송 → 결과 로깅 → 실패 시
+`_clear_pending_order()` 롤백. `close_position()`/`_post_exit()`는 더 이상 여기서
+동기 호출하지 않고, 실제 Chejan 체결이 pending과 매칭돼 기존 `ExitFillFlow` 경로로
+정상 마감되도록 위임. 이중 발동 차단은 STEP 8(`_ts_check_exit_triggers` 최상단
+`_has_pending_order()` 조기 반환)이 `position.status==FLAT` 대신 pending 존재
+여부로 그대로 보장.
+**Why**: "동일 race condition에 대한 수정이 일부 청산 경로에만 적용되고 나머지엔
+전파되지 않는" 패턴이 이번에도 반복됐다 — 다만 이번엔 기존 경로가 아니라 *나중에
+추가된 신규 경로*가 원인이었다는 점이 다르다. `_send_broker_exit_order()`를 호출하는
+새 경로를 추가할 때는 반드시 pending 선등록 자매 함수와 순서를 나란히 대조해야
+한다는 기존 교훈이 이번엔 "새 경로 추가 시점"에 지켜지지 않은 사례.
+**How to apply**: `_send_broker_exit_order()`/`_send_broker_entry_order()`를 호출하는
+코드를 새로 추가하거나 발견할 때는 예외 없이 pending 선등록 패턴 준수 여부를 먼저
+확인할 것. 클래스 본문에 정의된 메서드를 코드베이스에서 그대로 신뢰하지 말고, 파일
+하단에 동일 이름의 모듈 레벨 몽키패치(`ClassName.method = _ts_method`)가 있는지 항상
+확인할 것(`grep "\.method_name = "`) — 이 코드베이스는 `_ts_` 접두사 함수로 다수의
+클래스 메서드를 사후 오버라이드하는 패턴을 광범위하게 사용.
+**구현**: `main.py` (S0-C 블록 수정 + `_check_exit_triggers` 죽은 코드 122줄 삭제)
+**검증**: `py_compile` 통과. `_ts_resolve_stuck_exit_pending`이 `kind in (EXIT_FULL,
+EXIT_PARTIAL, EXIT_MANUAL_PARTIAL)`을 처리 대상으로 삼아 신규 `kind="EXIT_FULL"`과
+호환 확인. `pending_kind`/`pending_reason` UI 표시 필드 전수 검색 — 하드코딩된
+reason 문자열 분기 없음 확인. **라이브 미검증** — 다음 장중 실제 하드스톱 발동 시
+(1) `PendingOrder set {kind: EXIT_FULL}` 로그가 `[TickStop-S0C]` 직후 찍히는지,
+(2) 실체결이 `pending_matched=True`로 정상 `ExitFillFlow`를 타고 "미추적체결" 로그가
+더 이상 발생하지 않는지, (3) `[청산 완료]` PnL이 정상 반영되는지 확인 필요.
+
+---
+
 ## 2026-07-07 (299차 — docs/MW0601 대조 → EOD 리포터 코드버그 4건 MW0601 수준 구현)
 
 > 배경: 다른 PC(MW0601, Cybos Plus)가 EOD 리포터를 딥다이브하며 코드까지
