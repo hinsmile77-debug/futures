@@ -5490,3 +5490,219 @@ daily_close뿐 아니라 GBM 재학습·DB 라이터 등 다른 백그라운드 
 큐드(다음 이벤트루프 tick) 실행으로 바뀌어 대시보드 로그 표시가 수 ms~수십 ms
 지연될 수 있으나, 이는 순수 UI 타이밍이며 트레이딩 로직(주문·청산·게이트 판단)은
 전부 파일 로거(`_write_to_file`)와 별개 경로로 동기 기록되어 영향 없음.
+
+## 2026-07-09 (308차) — Chejan 체결 콜백 유실로 부분체결 이익 통째 누락 (딥다이브 + 1~3단계 즉시조치)
+
+### [버그] EXIT_FULL 다계약 청산 중 Chejan 콜백 유실 시 이미 확정된 부분체결 손익이 trades.db에 영구 누락
+
+**File**: `main.py:_ts_on_chejan_event_cybos_safe`, `main.py:_clear_pending_order`,
+`main.py:_record_trade_result`, `main.py:_ts_resolve_stuck_exit_pending`,
+`collection/cybos/api_connector.py:_extract_fill_payload`, `_CybosSubscriptionEvent.OnReceived`
+
+**증상**: 07-09 세션 딥다이브(사용자 요청 "손익 PnL 탭 vs 손익추이 탭 불일치") 중,
+UI 숫자 불일치의 실제 원인이 두 겹이라는 것을 확인. ①은 `restore_daily_stats()`의
+수수료 재계산이 컬럼명 오조회(`"commission"` vs 실제 `"commission_krw"`) +
+`_calc_commission()` 호출 시 `pt_value` 미전달로 정규선물 기본값(250,000)이 쓰여
+미니선물(50,000) 대비 5배 부풀려지는 문제(추후 별도 처리 필요, 이번 세션 미수정).
+②는 훨씬 심각 — 10:55~11:04 SHORT 포지션 청산(order_no=3110) 중 6번째(마지막)
+체결의 Chejan 콜백이 완전히 유실(`[ChejanMiss] EXIT 이벤트 유실 #1 filled=5/6`),
+그 앞의 5건 부분체결(합계 +2,206,345원, TRADE.log 실측)이 trades.db에 단 한 줄도
+기록되지 못하고 사라짐. 브로커 정산 실현손익(+1,361,000원, Cybos CpTd6197)과
+내부 trades.db 합계(-8,657,359원)의 약 1,000만원 격차 중 최소 220만원이 이 경로로
+설명됨.
+
+**원인** (3중 구조, 근본원인 로그로 실증):
+1. **dedup 키 퇴화**: `_ts_on_chejan_event_cybos_safe`의 이벤트 중복판정 키가
+   `(gubun, order_no, fill_no, order_status, filled_qty, fill_price, unfilled_qty)`인데,
+   Cybos `CpFConclusion`은 `fill_no`·`unfilled_qty`를 항상 빈값/0으로 고정 반환
+   (`_extract_fill_payload`, 키움 시절엔 이 두 필드가 체결마다 유일해 안전했으나
+   Cybos 전환(2026-05-11) 후 무력화됨 — `1df33a9`, 2026-05-06 도입). 다계약 시장가
+   주문에서 "같은 가격에 1계약씩 연속 체결"되는 정상 케이스를 키가 구별하지 못해
+   조용히 폐기해온 것으로 추정(직접 증거: 오늘 하루 전체 로그에 "동일 주문·동일
+   수량·동일가 연속체결" 패턴이 전무 — dedup이 소비 중임을 방증). 오늘 유실된
+   3개 주문(2440/2940/3110) 모두 이벤트 수신 합계가 주문 수량보다 정확히 2·2·1건
+   부족했고, 그 차이가 브로커 실측 잔고와 정합.
+2. **stuck-exit 복구 로직의 flush 누락**: `_ts_resolve_stuck_exit_pending()`은
+   브로커가 "완전 FLAT"을 보고하는 분기(`broker_row is None`)에서만 누적
+   `agg_exit_*` 합계를 `_record_trade_result()`로 flush했고, "브로커가 아직 같은
+   방향으로 일부 보유 중"인 분기(3회 재확인 후 `_clear_pending_order()`만 호출,
+   구 10956~10972행)에는 flush 로직 자체가 없었다. 오늘 사고가 정확히 이 분기.
+3. (참고, 이번엔 미수정) **콜백 자체가 메인스레드 블로킹과 겹칠 가능성** —
+   11:01:03~08 구간에 `request_futures_balance` 100ms대 호출 4회, `ConfTrendWidget.
+   refresh` 328~390ms가 겹쳐 있어 COM 이벤트 펌프 지연 → 후속 이벤트가 동일 최신
+   payload로 덮어써져 ①의 dedup에 의해 추가로 폐기됐을 가능성(구조적 가설, 이번
+   차수에서는 관측 로그만 배선하고 수정은 보류).
+
+**결정**: 5단 해결안(L1 잔고기준 self-healing 대사 / L2 dedup 보강+콜백 경량화 /
+L3 `_clear_pending_order()` flush 인바리언트 / 관측로그 / 원인분석) 중 즉시
+적용 가능한 관측로그·L2·L3만 이번 차수에서 구현. L1(잔고필드 idx46 semantics
+실측 필요)과 L2의 콜백 큐잉(구조 변경, 검증 필요)은 보류.
+
+**Why**: L3(flush 인바리언트)를 최우선으로 둔 이유는 dedup 키를 아무리 보강해도
+"콜백 자체가 원천적으로 안 옴"(순수 COM 이벤트 유실, 근본원인 미해결)은 막을 수
+없기 때문 — 어떤 원인으로 pending이 미완결로 소멸하든 "이미 아는 부분체결
+합계는 반드시 DB에 남긴다"는 방어선을 결과 계층에 두는 것이 재발 방지의
+최종 안전망. dedup 키 보강(L2)은 오늘 사고의 가장 유력한 직접 원인이라
+반드시 함께 고쳐야 하지만, 그 자체로 미래의 모든 유실 경로를 막는다고
+확신할 수 없어 L3와 이중 방어로 구성.
+
+**구현**:
+- `main.py:_record_trade_result()` 끝에서 성공적으로 INSERT되면
+  `self._pending_order["agg_flushed"] = True` 마킹 — `_post_exit`/
+  `_post_partial_exit`/`_ts_record_nonfinal_exit`/`_ts_resolve_stuck_exit_pending`의
+  기존 수동 flush 경로 전부가 결국 이 함수를 거치므로 한 곳에서 중복 flush를
+  방지.
+- `main.py:_clear_pending_order()`에 안전망 추가: EXIT* pending이 `agg_flushed`
+  안 된 채(`agg_exit_qty > 0`) 소멸하면 신설 `_flush_unrecorded_exit_agg()` 호출.
+  기존 "brokery_row is None" 분기 등 3개 분기를 개별 수정하는 대신 소멸 지점
+  한 곳에 인바리언트를 심어 향후 새 소멸 경로가 추가돼도 자동 커버.
+- `main.py:_flush_unrecorded_exit_agg()` 신설 — `pending["agg_exit_*"]` 합계로
+  합성 result를 만들어 `_record_trade_result()` 호출(entry_price/grade/
+  entry_horizon은 `self.position`에서 best-effort로 가져옴, exit_reason에
+  `_유실복구` 접미사로 표식). commission 재계산이 entry_price 기준 선형이라
+  개별 fill별 net_pnl_krw 합계와 aggregate 재계산이 수학적으로 일치함을 확인
+  (`normalize_trade_pnl`이 `entry_price * agg_qty * pt_value * RATE * 2` 형태로
+  이미 aggregate 방식과 동일 공식 사용 중이었음 — 새 불일치 유입 없음).
+- `main.py:_ts_on_chejan_event_cybos_safe` dedup 키에 `position_qty`(체결
+  시점 잔고, CpFConclusion idx46) 추가 — 체결마다 반드시 변하므로 진짜 중복
+  (잔고까지 동일)만 걸러지고 정상 연속체결은 더 이상 폐기되지 않음. dedup으로
+  폐기될 때 `[ChejanDedup]` WARNING 로그 추가(기존엔 무증상 폐기).
+- `main.py:_ts_on_chejan_event_cybos_safe`의 `ChejanFlow` 진단 로그에
+  `position_qty`/`closable_qty`/`sell_balance`/`buy_balance`/`balance_side_code`
+  추가 — L1(잔고기준 대사) 설계에 필요한 idx46 등 semantics를 모의투자에서
+  실측하기 위한 선행 계측.
+- `collection/cybos/api_connector.py:_CybosSubscriptionEvent.OnReceived`에서
+  fill 이벤트만 `[CybosEvent]` 로그를 DEBUG→INFO로 승격(tick/hoga는 초당
+  다회 발생이라 DEBUG 유지) — "원시 수신"(OnReceived) vs "처리"(ChejanFlow)
+  vs "폐기"(ChejanDedup) 3단 카운터를 만들어 다음 유실 재현 시 유실 지점이
+  (a) 콜백 자체가 안 옴 (b) dedup 폐기 (c) 처리 후 다른 로직에서 유실 중
+  어디인지 즉시 구분 가능하게 함.
+
+**검증**: `python -m py_compile main.py collection/cybos/api_connector.py` 통과.
+**라이브 미검증** — 실제 다계약 청산 중 Chejan 유실이 재현되는 장중 케이스에서
+(1) `[ChejanDedup]` 로그가 더 이상 오늘 같은 정상 연속체결을 폐기하지 않는지,
+(2) 유실이 재발하더라도 `[PendingOrder] EXIT agg flush 안전망 기록`(CRITICAL)이
+찍히고 trades.db에 해당 분이 실제로 반영되는지 다음 장중 확인 필요.
+
+**위험 수용**: `_flush_unrecorded_exit_agg()`가 기록하는 entry_price/grade/
+entry_horizon은 flush 시점의 `self.position` 스냅샷이라, 그 사이 브로커
+동기화 등으로 값이 바뀌었다면 100% 정확하지 않을 수 있음(exit_reason에
+`_유실복구` 표식을 남겨 사후 구분 가능하게 함). dedup 키에 `position_qty`
+추가는 이론상 진짜 중복 콜백(잔고까지 동일)만 막고 다른 유실 경로(콜백
+자체 미수신)는 막지 못함 — L1(잔고기준 self-healing 대사)이 그 자리를
+메울 다음 단계로 남음.
+
+**미해결 (다음 차수 후보)**:
+- L1: `position_qty`(idx46) 등 잔고 필드의 실전 semantics를 이번 차수가
+  추가한 `ChejanFlow` 로그로 며칠 관측한 뒤, 델타 카운트 대신 잔고 자체를
+  기준으로 대사하는 self-healing 구조로 전환.
+- L2 후속: fill 콜백 처리 체인(`_ts_handle_exit_fill` 등)이 콜백 컨텍스트
+  안에서 동기 잔고 TR·DB 기록까지 수행하는 구조를 큐잉으로 분리 — 절대원칙
+  §4(COM 콜백 내 dynamicCall·emit 금지)와 같은 취지이나 Cybos 체결 콜백
+  경로에는 아직 적용 안 됨.
+- 버그①(재시작 복원 시 실행 통계 수수료 5배 과다계산, `restore_daily_stats()`)
+  은 이번 차수에서 미수정 — 별도 차수로 처리 필요.
+
+## 2026-07-09 (308차 후속) — fill 콜백 경량화(L2 후속) 구현
+
+### [개선] Cybos 체결(fill) COM 콜백에서 무거운 동기 처리를 이벤트루프 밖으로 분리
+
+**File**: `collection/cybos/api_connector.py` — `CybosAPI.__init__`,
+`_handle_subscription_event`, 신설 `_schedule_fill_drain`/`_drain_fill_queue`
+
+**배경**: 308차 딥다이브에서 짚은 3번째(관측만 하고 보류했던) 원인 가설 —
+`_ts_on_chejan_event_cybos_safe` 이하 처리 체인이 COM `OnReceived` 콜백의
+호출 스택 안에서 동기로 실행되고, 그 체인 안에는 DB INSERT·대시보드 갱신 등
+수십~수백 ms가 걸릴 수 있는 작업이 섞여 있어, 처리 중 다음 체결 이벤트가
+도착하면 (a) `PumpWaitingMessages()`가 지연되며 CpFConclusion 공유 버퍼가
+최신값으로 덮어써지거나 (b) 콜백 재진입 자체가 절대원칙 §4가 경계하는
+COM STA 재진입 위험 패턴이 된다.
+
+**결정**: `OnReceived`(→`_handle_subscription_event`) 안에서는 `_extract_fill_
+payload()`(공유 버퍼가 아직 유효할 때 반드시 동기로 읽어야 하는 부분)까지만
+수행하고 결과를 `deque` 큐에 적재, 실제 처리(`_emit_fill` → 등록된 콜백들,
+즉 `TradingSystem._on_chejan_event`)는 `QTimer.singleShot(0, ...)`으로 COM
+콜백 스택을 완전히 벗어난 다음 이벤트루프 tick에서 실행하도록 변경.
+
+**Why**: 절대원칙 §4("콜백 내부는 상태 저장 + QEventLoop.quit()만, dynamicCall·
+emit 금지")가 원래 키움 TR 콜백을 겨냥해 명문화됐지만, 그 취지(COM 콜백
+스택 안에서 무거운 재진입 위험 작업을 하지 않는다)는 Cybos 체결 콜백에도
+동일하게 적용돼야 한다. `deque.append()`는 순수 상태 저장이고
+`QTimer.singleShot(0, ...)`은 COM 객체를 건드리지 않는 Qt 호출이라 원칙이
+허용하는 패턴 그대로다.
+
+**구현**: `CybosAPI.__init__`에 `self._fill_queue = deque()`,
+`self._fill_drain_scheduled = False` 추가. `_handle_subscription_event`의
+fill 분기를 payload 추출 후 큐 적재 + `_schedule_fill_drain()` 호출로 변경
+(기존 `self._emit_fill(...)` 직접 호출 제거). `_schedule_fill_drain()`은
+이미 예약돼 있으면 중복 예약하지 않고, `_drain_fill_queue()`는 큐가 빌 때까지
+FIFO로 하나씩 꺼내 `_emit_fill()`(기존 콜백 디스패치, 변경 없음)에 넘긴다.
+드레인이 실행되는 시점엔 이미 COM 콜백 스택을 벗어나 있으므로, 그 사이 추가로
+도착한 체결 이벤트도 새 `OnReceived` 안에서 큐에 안전하게 추가되고 같은
+드레인(또는 새로 예약된 드레인)이 순서대로 처리한다 — 순서 보장은 deque의
+append/popleft만으로 유지됨.
+
+**검증**: `python -m py_compile collection/cybos/api_connector.py` 통과.
+**라이브 미검증** — 다음 장중 다계약 체결에서 (1) 체결 순서가 뒤섞이지 않는지
+(`TRADE.log`의 체결가 순서가 브로커 체결 순서와 일치하는지), (2) pending
+매칭·집계(`agg_exit_*`)가 큐잉 이전과 동일하게 동작하는지, (3) `[ChejanMiss]`/
+`[ChejanDedup]` 발생 빈도가 줄어드는지(메인스레드 블로킹이 줄어 콜백 처리
+지연이 짧아지므로 C2 경로의 유실이 감소할 것으로 기대) 확인 필요.
+
+**위험 수용**: `QTimer.singleShot(0, ...)`은 "다음 이벤트루프 tick"이지 즉시
+실행이 아니므로, 처리에 수 ms 지연이 생긴다(체결 확정 자체가 아니라 그 이후
+로깅/DB/대시보드 반영 타이밍만 영향받음 — 트레이딩 판단에 쓰는 `self.position`
+갱신은 여전히 이 처리 안에서 일어나므로 지연 구간에 새 파이프라인 틱이
+겹치면 그 틱은 구 포지션 상태를 볼 수 있음. 기존에도 QTimer.singleShot(800)
+등으로 이미 일부 지연이 존재했던 패턴이라 신규 리스크는 아니고 폭이 ms 단위로
+좁아 실질 영향은 미미할 것으로 판단하나, 모의투자 며칠 관측 후 실거래
+전환 여부 재확인 권장.
+
+## 2026-07-09 (309차) — 버그①(재시작 복원 수수료 5배 과다계산) 수정
+
+### [버그] `restore_daily_stats()`가 trades.db 컬럼명을 잘못 조회해 매번 재계산 분기로 빠지고, 재계산 시 계약 종류를 반영하지 못함
+
+**File**: `strategy/position/position_tracker.py:PositionTracker.restore_daily_stats`
+
+**증상**: 308차 딥다이브에서 발견, 그 차수에서는 미수정으로 남겨둔 버그.
+재시작 시 당일 통계를 trades.db에서 복원할 때 `_daily_commission`(실행 통계
+탭 표시용)이 실제 수수료의 5배로 부풀려짐. `_daily_forward_commission`(순방향
+통계)은 영향 없음 — 저장된 `forward_commission_krw`를 정상 조회했기 때문에
+우연히 버그를 피해감.
+
+**원인**: 두 가지가 겹침.
+1. `fetch_today_trades()`(`utils/db_utils.py`)가 SELECT하는 실제 컬럼명은
+   `commission_krw`인데, `restore_daily_stats()`는 `row["commission"]`(존재하지
+   않는 컬럼)을 조회 → `"commission" in row.keys()`가 항상 False → 저장된 값이
+   있어도 매번 폴백(재계산) 분기로 진입.
+2. 재계산 분기가 `_calc_commission(ep, qty)`를 `pt_value` 인자 없이 호출 →
+   모듈 레벨 기본값 `FUTURES_PT_VALUE`(정규선물 250,000원)가 쓰임. 실전은
+   미니선물(50,000원) 운용 중이라 5배(250,000/50,000) 과다계상.
+
+**결정**: 컬럼명을 `commission_krw`로 정정하고, 폴백 재계산 시
+`self._pt_value`(계약 종류에 맞게 `set_pt_value()`로 주입된 값)를 전달.
+`net_pnl_krw` 직접 사용으로 재계산 자체를 없애는 대안도 검토했으나, 저장된
+`commission_krw`가 있으면 그대로 쓰고 없을 때만(구버전 행 등) 폴백하는 현재
+구조가 이미 방어적이라 폴백 로직 자체는 유지하고 버그만 수정.
+
+**Why**: `forward_commission_krw` 조회는 컬럼명이 처음부터 맞았기 때문에
+정상 동작해왔다는 점이 재현 확인의 근거 — 동일 함수 안에서 한쪽만 깨진
+비대칭 버그였음.
+
+**구현**: `restore_daily_stats()`에서
+```python
+commission = float(
+    row["commission_krw"]
+    if "commission_krw" in row.keys() and row["commission_krw"] is not None
+    else 0.0
+)
+if commission == 0.0 and "entry_price" in row.keys():
+    ep = float(row["entry_price"] or 0.0)
+    commission = _calc_commission(ep, qty, self._pt_value) * 2
+```
+
+**검증**: `python -m py_compile strategy/position/position_tracker.py` 통과.
+**라이브 미검증** — 다음 재시작 시 "실행" 탭 일일 수수료가 "순방향" 탭과
+동일 계약수 기준으로 정합하는지(둘 다 같은 `commission_krw`/
+`forward_commission_krw` 저장값 기반이므로 리버스 진입이 없는 거래는 두
+수수료가 같아야 함) 확인 필요.

@@ -8,6 +8,44 @@
 
 ---
 
+## 2026-07-09 (308차 — Chejan 체결 콜백 유실 딥다이브 + 1~3단계 즉시조치)
+
+> 07-09 실사고(부분체결 +2,206,345원 trades.db 누락) 딥다이브 후 관측로그·dedup
+> 키 보강·flush 안전망 구현. 상세: `DECISION_LOG.md` 308차 항목.
+
+- [ ] **다음 다계약 청산 실기동 확인(최우선)** — 시장가 다계약(2계약 이상) 주문이
+  여러 체결로 쪼개지는 케이스에서 `[ChejanDedup]` 로그가 정상 연속체결까지
+  폐기하지 않는지, `ChejanFlow` 로그의 체결 이벤트 수신 건수 합이 주문 수량과
+  일치하는지 확인
+- [ ] **flush 안전망 발동 여부 확인** — Chejan 유실이 재발하는 경우
+  `[PendingOrder] EXIT agg flush 안전망 기록`(CRITICAL) 로그가 찍히고,
+  trades.db에 `exit_reason`이 `..._유실복구`로 끝나는 행이 실제로 생기며
+  그 `pnl_krw`가 TRADE.log의 개별 체결 합계와 일치하는지 확인
+- [ ] **잔고 필드 semantics 실측(L1 선행)** — `ChejanFlow` 로그에 추가한
+  `position_qty`(idx46)/`closable_qty`(idx47)/`sell_balance`(idx13)/
+  `buy_balance`(idx18)이 체결마다 실제로 어떻게 변하는지 며칠 관측 —
+  이후 델타 카운트 대신 잔고 자체 기준 self-healing 대사(L1)로 전환할
+  근거 데이터로 사용
+- [ ] **원시 수신 vs 처리 vs 폐기 3단 카운터 대조** — `logs/*_SYSTEM.log`에서
+  `[CybosEvent] recv` (INFO 승격, fill만) 건수, `[ChejanFlow]` 처리 건수,
+  `[ChejanDedup]` 폐기 건수를 하루 합산해 셋의 관계로 남은 유실이 (a) 콜백
+  자체 미수신 (b) dedup 폐기 (c) 처리 후 하위 로직 유실 중 어디인지 판정
+- [DONE 2026-07-09] **버그① 수정** — `restore_daily_stats()` 컬럼명
+  `"commission"` → `"commission_krw"` 정정 + `_calc_commission()`에
+  `self._pt_value` 전달. 309차. 상세: `DECISION_LOG.md` 309차 항목.
+  라이브 검증 필요(재시작 후 실행/순방향 수수료 정합 확인).
+- [DONE 2026-07-09] **L2 후속(fill 콜백 경량화) 구현** —
+  `collection/cybos/api_connector.py`. `OnReceived`는 payload 추출 후 큐
+  적재만, 실제 처리(`_emit_fill`)는 `QTimer.singleShot(0, ...)`으로 COM
+  콜백 스택 밖에서 실행. 상세: `DECISION_LOG.md` 308차 후속 항목.
+- [ ] **fill 큐잉 도입 후 실기동 확인** — 다음 다계약 체결에서 (1)
+  `TRADE.log` 체결가 순서가 실제 브로커 체결 순서와 뒤섞이지 않는지,
+  (2) `agg_exit_*` 집계가 큐잉 이전과 동일하게 동작하는지, (3)
+  `[ChejanMiss]`/`[ChejanDedup]` 빈도가 줄어드는지(메인스레드 블로킹 완화로
+  C2 경로 유실 감소 기대) 확인
+
+---
+
 ## 2026-07-09 (307차 — HealthPolicy exceptions_10m 주문흐름 진단 태그 exclude 추가)
 
 > 306차 딥다이브 중 발견한 관찰 2번(오늘 10:46~11:15 Degraded Mode 오발동)의 근본

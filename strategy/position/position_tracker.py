@@ -949,11 +949,15 @@ class PositionTracker:
             self._daily_forward_trades += 1
             if forward_pnl_pts > 0:
                 self._daily_forward_wins += 1
-            # trades.db에 commission 컬럼이 있으면 복원, 없으면 재계산
-            commission = float(row["commission"] if "commission" in row.keys() else 0.0)
+            # trades.db에 commission_krw 컬럼이 있으면 복원, 없으면 재계산
+            commission = float(
+                row["commission_krw"]
+                if "commission_krw" in row.keys() and row["commission_krw"] is not None
+                else 0.0
+            )
             if commission == 0.0 and "entry_price" in row.keys():
                 ep = float(row["entry_price"] or 0.0)
-                commission = _calc_commission(ep, qty) * 2
+                commission = _calc_commission(ep, qty, self._pt_value) * 2
             self._daily_commission += commission
             forward_commission = float(
                 row["forward_commission_krw"]
