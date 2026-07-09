@@ -8,6 +8,43 @@
 
 ---
 
+## 2026-07-09 (305차 정기점검) [기동~EOD+P8 로그 점검 → 302~304차 라이브 검증 3건 + 체결실패 라벨링 개선]
+
+> `docs/정기점검/dailycheck_prompt.txt` 절차로 07-09 전체 로그(SYSTEM/WARN/TRADE/
+> SIGNAL/retrain_eod/retrain_intraday)와 `data/daily_reports/strategy_report_
+> 20260709_154001.txt`를 커밋이력·dev_memory와 대조. 302~304차에서 "다음 재기동
+> 확인 필요"로 남겨둔 항목 3건을 실측 검증 완료(위 3개 섹션에 각각 반영). 그 과정에서
+> 신규 이슈 1건 발견·즉시 수정, 관찰 항목 2건 추가.
+
+- [DONE 2026-07-09] **EOD 리포트 "체결실패" 라벨링 오해 소지 수정** — `entry_final_ok
+  =True`인데 `entry_executed=False`인 건이 실제로는 대부분(07-08 13건, 07-09 12~13건)
+  체크리스트 통과 *이후* JointGateBlock(MetaGate×ToxGate 결합확률 게이트)이 진입을
+  막은 것인데, `entry_block_reason`이 그 시점에 기록되지 않아 "체결실패(게이트 통과
+  후 미체결)"로만 뭉뚱그려져 마치 주문 체결 자체가 실패한 것처럼 보였음.
+  `main.py`(JointGateBlock/Hurst미계산/증거금부족 3개 분기에 `_entry_block_reason`
+  기록 추가), `utils/db_utils.py`(`_BLOCK_REASON_CATEGORIES`에 3개 라벨 추가,
+  `fetch_daily_entry_funnel`에 `exec_fail_breakdown` 집계 추가),
+  `strategy/ops/daily_exporter.py`(리포트 라인을 "2차게이트차단(체크리스트 통과 후
+  미진입)"으로 개명 + 원인별 상세 브레이크다운 라인 추가)로 수정.
+  `_categorize_block_reason` 라벨 매핑 단위테스트로 5개 케이스(JointGateBlock/
+  Hurst미계산/증거금부족/Hurst횡보차단/Degraded신뢰도) 충돌 없음 확인, `ast.parse`
+  3파일 구문 확인 완료. **라이브 미검증** — 다음 거래일 15:40 리포트에서
+  `exec_fail_breakdown`에 `JointGateBlock=N` 등이 정상 표기되는지 확인 필요.
+- [ ] **다음 재기동 후 라이브 검증** — 위 수정이 실제 EOD 리포트에 반영되는지
+  (`data/daily_reports/strategy_report_YYYYMMDD_*.txt`의 "2차게이트차단" 라인과
+  `└ 상세:` 브레이크다운 확인).
+- [ ] **OrderSync `pending_miss` 레이스 관찰** — 07-09 10:43~10:46 사이 연속
+  하드스톱→재진입 구간에서 3회(order_no=2441, 2673×2) `pending='NONE'`인데 체결이
+  먼저 들어와 사후 반영(`반영 완료`)되는 패턴 발생. 포지션 정합·실거래 손실은
+  없었으나, 연속 청산-재진입이 빠르게 겹칠 때 pending 상태가 Chejan 체결보다 먼저
+  지워지는 타이밍 갭 존재 가능성. 재발 빈도 늘면 원인 추적.
+- [ ] **Canary 08:55 초기 z경고 폭증 원인 확인** — 07-09 08:55:00 z경고 피처
+  15개(임계 12개, EarlyWarmup 완화 적용 중)로 감지 → 08:55:01 재적합 후 5개로
+  즉시 해소(P1 설계대로 09:00 전 완료). 자동 해소는 정상이나 초기치 15개가 평소
+  대비 큰 편인지 며칠 더 관찰 후 판단.
+
+---
+
 ## 2026-07-08 (304차 후속) [daily_close() 백그라운드 스레드 Qt 위젯 직접조작 access violation 크래시 루프 수정]
 
 > 0708 15:40~15:43 실측 크래시 루프(4회 연속) 원인 규명 + 수정. 상세:
@@ -17,10 +54,10 @@
   대시보드 호출부 메인 스레드로 위임** — `main.py`.
 - [DONE 2026-07-08] **`log_manager.log()` 콜백 디스패치 스레드-안전화** —
   `logging_system/log_manager.py`(`_LogDispatchBridge`).
-- [ ] **다음 재기동 후 라이브 검증(최우선)** — 내일 08:45 자동 시작 또는 다음 수동
-  재시작 이후, 15:40 daily_close 시점에 (1) access violation 없이 1회에 완주하는지,
-  (2) `logs/crash_fault.log`에 신규 항목이 없는지, (3) 대시보드 전략운용현황/추이
-  탭·거래소CB 배지가 정상적으로 갱신되는지(큐드 지연으로 인한 누락 없는지) 확인.
+- [DONE 2026-07-09] **다음 재기동 후 라이브 검증** — 07-09 15:40 daily_close가
+  `[DailyClose] 진입` 로그 **단 1회**로 완주(15:40:00→15:40:16 정상 종료), 어제 같은
+  4회 크래시-재시작 재발 없음. `crash_fault.log`도 `[CLEAN EXIT]` 마커만 존재.
+  **크래시 수정 확인됨.** 대시보드 배지 갱신 여부는 육안 미확인(로그 기반 검증만).
 
 ---
 
@@ -57,10 +94,10 @@
 - [DONE 2026-07-08] **`HEALTH_EXCEPTION_EXCLUDE_TAGS` 신설 + `get_level_counts`
   exclude_prefixes 배선** — `config/settings.py`, `logging_system/log_manager.py`,
   `main.py`(`_emit_runtime_health`·lookahead 두 호출부). `ast.parse` 문법 확인 완료.
-- [ ] **다음 재기동 후 라이브 검증(최우선)** — 앱 재시작 필요(핫리로드로는 신규
-  import 미반영). 재시작 후 (1) `exceptions_10m`이 PSI CRITICAL 반복과 무관하게
-  낮게 유지되는지, (2) Degraded Mode가 정상적으로 해제되는지, (3) C등급 자동진입이
-  실제로 재개되는지 확인.
+- [DONE 2026-07-09] **다음 재기동 후 라이브 검증** — 07-09 하루 종일 PSI CRITICAL
+  이 321회 반복 로그됐지만 `exceptions_10m`은 대부분 0~8 저수준 유지, 10:52~10:55만
+  733ms 실제 지연 스파이크와 연동해 8→10~11로 상승 후 11:00 자동 Degraded 해제.
+  정책로그 오집계 재발 없음 — **수정 확인됨.**
 - [ ] **FP-CRITICAL PSI 계측 재설계는 이번 범위 밖** — 기존 303차 항목("균등폭→
   분위수 bin 재설계") 그대로 유지, 이번 수정과 별개로 진행.
 
@@ -78,9 +115,11 @@
   갱신은 그대로 유지, 진입 차단(direction/grade/checklist_reason)만 비활성.
   `CLAUDE.md` 절대원칙 §2·실전전환기준 ⑦번 문서화 완료. `py_compile` 통과.
   **라이브 미검증** — 다음 기동 후 확인 필요.
-- [ ] **다음 재기동 후 실제 진입 재개 확인(최우선)** — PSI CRITICAL 로그가
-  `— 감시전용(차단 비활성), 계측만 기록`으로 바뀌는지, grade=C/B/A 분봉에서
-  실제로 진입이 이뤄지는지(다른 게이트에 안 걸리는 조건일 때) 확인.
+- [DONE 2026-07-09] **다음 재기동 후 실제 진입 재개 확인** — 07-08(비활성 적용 첫날
+  일부)은 진입 퍼널 게이트차단 사유에 `FP-CRITICAL=43건`이 남아있었고 진입 0건.
+  07-09(비활성 전일 적용)은 게이트 사유 목록에서 FP-CRITICAL이 완전히 사라졌고
+  **진입 3건 발생**(체크리스트 통과 후 정상 체결, 세부는 `TRADE.log` 참조).
+  **비활성화 의도대로 동작 확인.**
 - [ ] **PSI 계측 재설계 검토** — 균등폭 10-bin → 분위수(quantile) 기반 bin 등.
   `ofi_norm` 학습분포가 한 구간에 98%+ 몰리는 첨봉 분포라 균등폭 bin에서는
   라이브 값이 조금만 벗어나도 PSI가 크게 튀는 구조적 결함 의심 — 재설계 후

@@ -967,7 +967,12 @@ def fetch_entry_candidate_gap(lookback_days: int = 5) -> Dict:
 
 # [297차, P1-6] entry_block_reason(STEP7 elif-chain) 부분문자열 → 표시 라벨.
 # 순서 중요 — main.py의 우선순위 그대로 위에서부터 첫 매치를 사용한다.
+# [305차] JointGateBlock/Hurst미계산/증거금부족은 체크리스트(final_ok) 통과 *이후*
+# 2차 실행단계에서 걸리는 차단이라 "Hurst" 등 일반 needle보다 먼저 와야 오분류 방지.
 _BLOCK_REASON_CATEGORIES = [
+    ("JointGateBlock",  "JointGateBlock"),
+    ("Hurst 미계산",      "Hurst미계산(워밍업)"),
+    ("증거금 부족",        "증거금부족"),
     ("Hurst",           "Hurst(횡보차단)"),
     ("모드필터",          "모드필터"),
     ("시가이격",          "시가갭(OPEN_VOLATILE)"),
@@ -1024,7 +1029,13 @@ def fetch_daily_entry_funnel(date_str: Optional[str] = None) -> Dict:
 
     반환: {"date", "total", "flat", "conf_fail", "coherence_blocked",
            "ensemble_pass", "gate_blocked", "gate_breakdown": {label: n},
-           "exec_fail", "candidate", "entered"}
+           "exec_fail", "exec_fail_breakdown": {label: n}, "candidate", "entered"}
+
+    exec_fail_breakdown: [305차] entry_final_ok=True인데 entry_executed=False인 건
+    (체크리스트 통과 후 2차 실행단계 차단 — JointGateBlock/Hurst미계산/증거금부족/
+    Degraded신뢰도 등)을 gate_breakdown과 동일한 방식으로 원인별 집계한다. 기존에는
+    "체결실패(게이트 통과 후 미체결)" 건수만 보여 실제 원인(대부분 JointGateBlock)이
+    가려졌다 — 원인 미표기 시 마치 주문 체결 자체가 실패한 것처럼 오해하기 쉬움.
     """
     import datetime as _dt
     d = date_str or _dt.date.today().isoformat()
@@ -1040,7 +1051,7 @@ def fetch_daily_entry_funnel(date_str: Optional[str] = None) -> Dict:
         "date": d, "total": len(rows),
         "flat": 0, "conf_fail": 0, "coherence_blocked": 0,
         "ensemble_pass": 0, "gate_blocked": 0, "gate_breakdown": {},
-        "exec_fail": 0, "candidate": 0, "entered": 0,
+        "exec_fail": 0, "exec_fail_breakdown": {}, "candidate": 0, "entered": 0,
     }
     for r in rows:
         direction = int(r["direction"] or 0)
@@ -1064,6 +1075,8 @@ def fetch_daily_entry_funnel(date_str: Optional[str] = None) -> Dict:
         elif final_ok:
             out["candidate"] += 1
             out["exec_fail"] += 1
+            label = _categorize_block_reason(r["entry_block_reason"], r["checklist_reason"])
+            out["exec_fail_breakdown"][label] = out["exec_fail_breakdown"].get(label, 0) + 1
         else:
             out["gate_blocked"] += 1
             label = _categorize_block_reason(r["entry_block_reason"], r["checklist_reason"])
