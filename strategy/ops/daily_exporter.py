@@ -213,7 +213,16 @@ class DailyExporter:
                         "    게이트별: " + "  ".join("%s=%d" % (k, v) for k, v in _bd)
                     )
                 if _fn["exec_fail"]:
-                    lines.append("    ⚠ 체결실패(게이트 통과 후 미체결): %d건" % _fn["exec_fail"])
+                    # [305차] "체결실패"는 주문 미체결로 오해되기 쉬움 — 실제로는 체크리스트
+                    # 통과 후 JointGateBlock 등 2차 게이트가 진입 자체를 차단한 것이 대부분.
+                    lines.append(
+                        "    ⚠ 2차게이트차단(체크리스트 통과 후 미진입): %d건" % _fn["exec_fail"]
+                    )
+                    if _fn.get("exec_fail_breakdown"):
+                        _efbd = sorted(_fn["exec_fail_breakdown"].items(), key=lambda kv: -kv[1])
+                        lines.append(
+                            "      └ 상세: " + "  ".join("%s=%d" % (k, v) for k, v in _efbd)
+                        )
         except Exception as e:
             lines.append("  진입 퍼널 : [계산 실패: %s]" % e)
 

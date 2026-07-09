@@ -6735,6 +6735,13 @@ class TradingSystem:
                             f"[JointGateBlock 차단] {raw_dir_str} {_qty_auto}계약 {_final_grade}급 "
                             f"(meta={_meta_size:.2f} tox={_tox_size:.2f} joint={_joint_mult:.3f})"
                         )
+                        # [EOD리포트 진단용] 체크리스트 통과 후 2차 게이트(JointGateBlock)
+                        # 차단임을 entry_block_reason에 기록 — 미기록 시 EOD 리포트에서
+                        # "체결실패"로만 뭉뚱그려져 원인이 JointGateBlock인지 구분 불가.
+                        _entry_block_reason = (
+                            f"[차단] JointGateBlock — meta={_meta_size:.2f} tox={_tox_size:.2f} "
+                            f"joint={_joint_mult:.3f} < 0.50"
+                        )
                     else:
                         # [237차] Hurst 미계산 진입 차단 — 워밍업 미완료(데이터 부족·오류) 시 손실 방지
                         if not features.get("hurst_ready", False):
@@ -6745,6 +6752,9 @@ class TradingSystem:
                             log_manager.trade(
                                 f"[Hurst 미계산 차단] {raw_dir_str} {_qty_auto}계약 {_final_grade}급"
                             )
+                            _entry_block_reason = (
+                                f"[차단] Hurst 미계산 — 워밍업 중 (hurst={features.get('hurst', 0.5):.3f})"
+                            )
                         else:
                             # 최대허용수량·증거금 캡핑은 상단(_qty_auto 산출부)에서 이미 적용됨
                             # (패널 표시값과 동일 기준 공유 — _ts_margin_capped_qty 참조)
@@ -6752,6 +6762,7 @@ class TradingSystem:
                                 log_manager.signal(
                                     f"[차단] 증거금 부족 — {raw_dir_str} 자동진입 차단"
                                 )
+                                _entry_block_reason = "[차단] 증거금 부족 — 자동진입 차단"
                             else:
                                 # [269차] 진입 직전 체크리스트 결과 TRADE 로그 — 사후 분석용
                                 _chk_d = (_cr or {}).get("checks", {})
