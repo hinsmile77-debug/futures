@@ -2217,6 +2217,12 @@ class TradingSystem:
         except Exception as _ev_e:
             logger.warning("[EV20] 대시보드 갱신 실패 (무해): %s", _ev_e)
 
+        # [308차] EXIT pending의 부분체결 합계가 이 결과로 DB에 반영됐음을 표시.
+        # _clear_pending_order()의 안전망 flush가 여기서 이미 기록된 합계를
+        # 중복으로 다시 기록하지 않도록 한다.
+        if self._pending_order is not None:
+            self._pending_order["agg_flushed"] = True
+
     def _set_pending_order(
         self,
         kind: str,
@@ -2279,6 +2285,16 @@ class TradingSystem:
                     "[EntryCooldown] ENTRY 미체결 소멸 → 2분 재진입 금지 until %s",
                     self._entry_cooldown_until.strftime("%H:%M:%S"),
                 )
+            # [308차] EXIT pending이 부분체결 합계를 DB에 flush하지 못한 채 소멸하는
+            # 경우의 안전망. Chejan 이벤트 유실로 마지막 체결이 끝내 도착하지 않으면
+            # 정상 완결 경로(_post_exit 등)가 한 번도 안 불려 이미 확정된 부분체결
+            # 이익/손실이 그대로 증발한다(2026-07-09 실사고, +2,206,345원 유실).
+            if (
+                _cleared_kind.startswith("EXIT")
+                and not self._pending_order.get("agg_flushed")
+                and int(self._pending_order.get("agg_exit_qty") or 0) > 0
+            ):
+                self._flush_unrecorded_exit_agg(self._pending_order)
         # 완료된 주문번호를 보관 → 중복 chejan 콜백이 _ts_handle_external_fill 오호출하는 것을 방지
         _done_no = str((self._pending_order or {}).get("order_no") or "").strip()
         if _done_no:
@@ -2311,6 +2327,79 @@ class TradingSystem:
                     "[IntrabarTPSchedule] price=0 → 스케줄 취소 (entry_price=%.2f)",
                     self.position.entry_price or 0.0,
                 )
+
+    def _flush_unrecorded_exit_agg(self, pending: dict) -> None:
+        """[308차] EXIT pending 소멸 시 미기록 부분체결 합계를 trades.db에 안전망 기록.
+
+        _ts_agg_exit_fill()이 누적한 agg_exit_*는 정상적으로는 마지막 체결에서
+        _post_exit()/_post_partial_exit()/_ts_record_nonfinal_exit()를 통해 DB에
+        반영된다. 하지만 마지막 체결의 Chejan 콜백이 유실되면 그 경로가 한 번도
+        불리지 않아 이미 확정된 앞선 부분체결 전부가 조용히 사라진다. 여기서는
+        pending이 어떤 사유로든 소멸하는 순간 그 시점까지의 합계를 최선껏 기록해
+        "0건 기록"보다 "이미 아는 부분만이라도 기록"을 보장한다.
+        entry_price/grade 등은 self.position이 이미 sync_from_broker() 등으로
+        갱신됐을 수 있어 100% 정확하지 않을 수 있으므로 exit_reason에 표식을 남긴다.
+        """
+        agg_qty = int(pending.get("agg_exit_qty") or 0)
+        if agg_qty <= 0:
+            return
+        price_x_qty = float(pending.get("agg_exit_price_x_qty") or 0.0)
+        avg_price = (
+            price_x_qty / agg_qty if agg_qty > 0 and price_x_qty > 0
+            else float(pending.get("price_hint") or 0.0)
+        )
+        if avg_price <= 0:
+            logger.error(
+                "[PendingOrder] EXIT agg flush 실패 — 평균가 계산 불가 pending=%s", pending
+            )
+            return
+        raw_pts = float(pending.get("agg_exit_pnl_pts") or 0.0)
+        raw_fwd = float(pending.get("agg_exit_fwd_pts") or 0.0)
+        entry_price = float(getattr(self.position, "entry_price", 0.0) or 0.0)
+        entry_time = (
+            getattr(self.position, "entry_time", None)
+            or pending.get("last_fill_at") or datetime.datetime.now()
+        )
+        last_fill_at = pending.get("last_fill_at") or datetime.datetime.now()
+        result = {
+            "direction": pending.get("direction", ""),
+            "raw_direction": pending.get("raw_direction", pending.get("direction", "")),
+            "executed_direction": pending.get("direction", ""),
+            "reverse_entry_enabled": pending.get("reverse_entry_enabled", False),
+            "entry_price": entry_price,
+            "exit_price": round(avg_price, 4),
+            "quantity": agg_qty,
+            "pnl_pts": round(raw_pts / agg_qty, 4) if agg_qty > 0 else 0.0,
+            "pnl_krw": round(float(pending.get("agg_exit_pnl_krw") or 0.0), 0),
+            "forward_pnl_pts": round(raw_fwd / agg_qty, 4) if agg_qty > 0 else 0.0,
+            "forward_pnl_krw": round(
+                float(pending.get("agg_exit_fwd_krw") or pending.get("agg_exit_pnl_krw") or 0.0), 0
+            ),
+            "exit_reason": f"{pending.get('reason','')}_유실복구",
+            "grade": str(getattr(self.position, "grade", "") or ""),
+            "entry_horizon": getattr(self.position, "entry_horizon", None),
+            "entry_ts": (
+                entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                if hasattr(entry_time, "strftime") else str(entry_time)
+            ),
+            "exit_ts": (
+                last_fill_at.strftime("%Y-%m-%d %H:%M:%S")
+                if hasattr(last_fill_at, "strftime") else str(last_fill_at)
+            ),
+        }
+        try:
+            self._record_trade_result(result)
+            self._refresh_pnl_history()
+            log_manager.system(
+                f"[PendingOrder] EXIT agg flush 안전망 기록: {result['direction']} {agg_qty}계약 "
+                f"@ {avg_price:.2f} pnl={result['pnl_pts']:+.2f}pt ({result['pnl_krw']:+,.0f}원) "
+                f"order_no={pending.get('order_no','?')} filled={pending.get('filled_qty')}/{pending.get('qty')}",
+                "CRITICAL",
+            )
+        except Exception as _flush_e:
+            logger.error(
+                "[PendingOrder] EXIT agg flush 실패 pending=%s err=%s", pending, _flush_e
+            )
 
     def _has_pending_order(self) -> bool:
         return self._pending_order is not None
@@ -12357,6 +12446,14 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
     if _gubun not in ("0", "1"):
         return
 
+    # [308차] Cybos CpFConclusion은 fill_no/unfilled_qty를 항상 빈값/0으로
+    # 채워 반환한다(_extract_fill_payload). 그 결과 원래 dedup 키가
+    # (gubun, order_no, status, filled_qty, fill_price)로 퇴화해, 다계약
+    # 시장가 주문에서 "같은 가격에 1계약씩 연속 체결"되는 정상 케이스를
+    # 서로 구별하지 못하고 두 번째 이후를 전부 중복으로 폐기해왔다
+    # (2026-07-09 실사고 — 체결 3건 연속 유실, 진단 로그 참조:
+    # dev_memory/DECISION_LOG.md 308차). position_qty(체결 시점 잔고,idx46)는
+    # 체결마다 반드시 바뀌므로 키에 추가해 진짜 중복(잔고까지 동일)만 걸러낸다.
     event_key = (
         payload.get("gubun"),
         payload.get("order_no"),
@@ -12365,8 +12462,14 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
         payload.get("filled_qty"),
         payload.get("fill_price"),
         payload.get("unfilled_qty"),
+        payload.get("position_qty"),
     )
     if event_key == self._last_order_event_key:
+        log_manager.system(
+            f"[ChejanDedup] 동일 이벤트 폐기 order_no={payload.get('order_no','?')} "
+            f"key={event_key}",
+            "WARNING",
+        )
         return
     self._last_order_event_key = event_key
 
@@ -12383,6 +12486,9 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
         not status and fill_qty > 0 and fill_price > 0
     )
 
+    # [308차 관측용] 브로커가 이벤트에 실어 보내는 체결 시점 잔고 스냅샷을
+    # 그대로 로그에 남긴다 — 콜백 유실/중복 시 "내부 카운트 vs 브로커 잔고"
+    # 대조가 가능해야 L1(잔고 기준 self-healing 대사) 설계의 실측 근거가 된다.
     _ts_log_diag(
         self,
         "ChejanFlow",
@@ -12395,6 +12501,11 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
         fill_qty=fill_qty,
         fill_price=fill_price,
         unfilled_qty=unfilled_qty,
+        position_qty=payload.get("position_qty"),
+        closable_qty=payload.get("closable_qty"),
+        sell_balance=payload.get("sell_balance"),
+        buy_balance=payload.get("buy_balance"),
+        balance_side_code=payload.get("balance_side_code"),
         pending=_ts_get_pending_snapshot(self),
         position=_ts_get_position_snapshot(self),
     )

@@ -4,6 +4,7 @@ import logging
 import platform
 import threading
 import time
+from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 from logging_system.log_manager import log_manager
 
@@ -288,8 +289,16 @@ class _CybosSubscriptionEvent:
         owner = getattr(self, "_owner", None)
         if owner is None:
             return
+        # [308차] fill(체결통보)만 INFO로 승격 — tick/hoga 구독은 초당 다회 발생해
+        # DEBUG로 유지. fill은 드물고(하루 수백건 이하) "원시 수신 횟수"를 남겨야
+        # main.py의 ChejanFlow(처리 횟수)·ChejanDedup(폐기 횟수)와 3분할 대조가
+        # 가능해진다 — 콜백 유실이 (a) 애초에 안 옴 (b) 왔는데 dedup에 폐기됨
+        # (c) 왔고 처리도 됐는데 그 이후 로직에서 유실, 셋 중 어디인지 구분하는
+        # 유일한 방법이 이 원시 카운터다.
+        _is_fill = getattr(self, "_event_name", "") == "fill"
+        _log = system_logger.info if _is_fill else system_logger.debug
         try:
-            system_logger.debug(
+            _log(
                 "[CybosEvent] recv begin progid=%s event=%s owner=%s",
                 getattr(self, "_progid", ""),
                 getattr(self, "_event_name", ""),
@@ -299,7 +308,7 @@ class _CybosSubscriptionEvent:
             pass
         owner._handle_subscription_event(self._event_name, self)
         try:
-            system_logger.debug(
+            _log(
                 "[CybosEvent] recv end progid=%s event=%s owner=%s",
                 getattr(self, "_progid", ""),
                 getattr(self, "_event_name", ""),
@@ -366,6 +375,14 @@ class CybosAPI:
         self._msg_callbacks = []
         self._investor_mapping_warned = set()
         self._last_order_error: Optional[Dict[str, Any]] = None
+        # [308차 후속] fill 콜백 경량화 — OnReceived(COM 콜백) 안에서는 payload
+        # 추출(공유 버퍼가 다음 이벤트로 덮어써지기 전에 반드시 동기로 읽어야 함)
+        # 까지만 하고 큐에 적재, 실제 처리(_emit_fill → DB 기록·잔고 TR 등 무거운
+        # 동기 작업)는 QTimer.singleShot(0)으로 COM 콜백 스택 밖(다음 이벤트루프
+        # tick)에서 실행한다. 절대원칙 §4(콜백 내부는 상태저장만, dynamicCall
+        # 금지)와 같은 취지를 Cybos 체결 콜백 경로에도 적용.
+        self._fill_queue: "deque[Dict[str, Any]]" = deque()
+        self._fill_drain_scheduled = False
 
     @property
     def is_connected(self) -> bool:
@@ -1527,7 +1544,31 @@ class CybosAPI:
         if com_object is None:
             com_object = getattr(sink, "_oleobj_", None)
         if event_name == "fill":
-            self._emit_fill(self._extract_fill_payload(self._fill_subscription.com_object))
+            # payload 추출은 반드시 여기서(COM 콜백 스택 안, 동기) 수행한다 —
+            # CpFConclusion은 공유 버퍼라 다음 이벤트가 도착하면 값이 덮어써진다.
+            # 추출 이후의 처리(_emit_fill → TradingSystem 콜백 체인의 DB 기록·
+            # 잔고 TR 등)는 무겁고 때로 동기 BlockRequest를 포함할 수 있어
+            # COM 콜백 스택 안에서 실행하면 재진입 위험이 있다 — 큐에 적재만
+            # 하고 실제 처리는 _drain_fill_queue로 미룬다.
+            payload = self._extract_fill_payload(self._fill_subscription.com_object)
+            self._fill_queue.append(payload)
+            self._schedule_fill_drain()
+
+    def _schedule_fill_drain(self) -> None:
+        if self._fill_drain_scheduled:
+            return
+        if QTimer is None:
+            # QTimer 불가 환경(예외적) — 유실보다 즉시 처리가 안전하므로 폴백.
+            self._drain_fill_queue()
+            return
+        self._fill_drain_scheduled = True
+        QTimer.singleShot(0, self._drain_fill_queue)
+
+    def _drain_fill_queue(self) -> None:
+        self._fill_drain_scheduled = False
+        while self._fill_queue:
+            payload = self._fill_queue.popleft()
+            self._emit_fill(payload)
 
     def _extract_fill_payload(self, obj) -> Dict[str, Any]:
         side_code = _safe_str(obj.GetHeaderValue(12))
