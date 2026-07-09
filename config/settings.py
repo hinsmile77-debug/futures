@@ -4,6 +4,7 @@
 계좌 정보·API 키는 config/secrets.py에 별도 관리 (Git 제외).
 """
 import os
+import re
 import logging
 
 # ── 경로 설정 ──────────────────────────────────────────────────
@@ -913,7 +914,27 @@ SHAP_MIN_DATA_POINTS   = 100   # 최소 누적 데이터
 # 우선순위: secrets.py > 환경변수 SLACK_BOT_TOKEN (Git 미포함)
 SLACK_BOT_TOKEN  = _SECRET_SLACK_TOKEN or os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "C0AUYD4RHHD")   # #maitreya
-SLACK_PC_NAME    = os.getenv("SLACK_PC_NAME",    "MW0601")
+
+
+def _detect_pc_name() -> str:
+    """Slack 알림 헤더용 PC명.
+
+    우선순위: SLACK_PC_NAME 환경변수(명시적 오버라이드, start_mireuk.bat가
+    machine.cfg의 SLACK_PC_NAME= 항목을 읽어 전달) > COMPUTERNAME 자동감지
+    (신규 PC 배포시 설정 없이도 동작) > "UNKNOWN-PC".
+    """
+    explicit = os.getenv("SLACK_PC_NAME", "").strip()
+    if explicit:
+        return explicit
+
+    computer_name = os.getenv("COMPUTERNAME", "").strip()
+    if computer_name:
+        m = re.search(r"[A-Za-z]+\d+$", computer_name)  # "DESKTOP-MW0602" -> "MW0602"
+        return m.group(0) if m else computer_name
+    return "UNKNOWN-PC"
+
+
+SLACK_PC_NAME = _detect_pc_name()
 
 # ── 챔피언-도전자 시스템 ───────────────────────────────────────
 PROMOTION_CRITERIA = {

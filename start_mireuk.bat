@@ -23,6 +23,21 @@ IF "!BROKER!"=="" (
 )
 
 REM ============================================================
+REM  machine.cfg 읽기 -- SLACK_PC_NAME (선택, Slack 알림 헤더용)
+REM  미설정이면 SET 하지 않음 -- python 쪽(config/settings.py)이
+REM  COMPUTERNAME 으로 자동 감지하므로 신규 PC 는 설정 없이도 동작.
+REM ============================================================
+SET "SLACK_PC_NAME="
+IF EXIST "%~dp0machine.cfg" (
+    FOR /F "usebackq eol=# tokens=1,* delims==" %%A IN ("%~dp0machine.cfg") DO (
+        SET "_MC_K=%%A"
+        SET "_MC_K=!_MC_K: =!"
+        IF /I "!_MC_K!"=="SLACK_PC_NAME" SET "SLACK_PC_NAME=%%B"
+    )
+    IF DEFINED SLACK_PC_NAME FOR /F "tokens=1" %%V IN ("!SLACK_PC_NAME!") DO SET "SLACK_PC_NAME=%%V"
+)
+
+REM ============================================================
 REM  관리자 권한 확인 (CREON 전용)
 REM  coStarter.exe 는 UAC 상승 실행 → UIPI(UI Privilege Isolation) 가
 REM  mouse/PostMessage 를 차단함. 배치 자체를 관리자로 실행해야 정상 동작.
@@ -209,15 +224,18 @@ REM  여기서 SETLOCAL 과 핵심 변수(WORKDIR, _BLOG, BROKER)를 복원.
 REM ============================================================
 SETLOCAL EnableDelayedExpansion
 
-REM BROKER 복원 (machine.cfg 재읽기)
+REM BROKER / SLACK_PC_NAME 복원 (machine.cfg 재읽기)
 SET "BROKER="
+SET "SLACK_PC_NAME="
 IF EXIST "%~dp0machine.cfg" (
     FOR /F "usebackq eol=# tokens=1,* delims==" %%A IN ("%~dp0machine.cfg") DO (
         SET "_MC_K=%%A"
         SET "_MC_K=!_MC_K: =!"
         IF /I "!_MC_K!"=="BROKER" SET "BROKER=%%B"
+        IF /I "!_MC_K!"=="SLACK_PC_NAME" SET "SLACK_PC_NAME=%%B"
     )
     IF DEFINED BROKER FOR /F "tokens=1" %%V IN ("!BROKER!") DO SET "BROKER=%%V"
+    IF DEFINED SLACK_PC_NAME FOR /F "tokens=1" %%V IN ("!SLACK_PC_NAME!") DO SET "SLACK_PC_NAME=%%V"
 )
 IF "!BROKER!"=="" SET "BROKER=cybos"
 
@@ -313,7 +331,11 @@ SET "BROKER_TYPE=!BROKER!"
 SET PYTHONUNBUFFERED=1
 SET PYTHONIOENCODING=utf-8
 SET PYTHONUTF8=1
-ECHO [INFO] BROKER=!BROKER!  BROKER_BACKEND=!BROKER_BACKEND!  BROKER_TYPE=!BROKER_TYPE!
+IF DEFINED SLACK_PC_NAME (
+    ECHO [INFO] BROKER=!BROKER!  BROKER_BACKEND=!BROKER_BACKEND!  BROKER_TYPE=!BROKER_TYPE!  SLACK_PC_NAME=!SLACK_PC_NAME! (machine.cfg)
+) ELSE (
+    ECHO [INFO] BROKER=!BROKER!  BROKER_BACKEND=!BROKER_BACKEND!  BROKER_TYPE=!BROKER_TYPE!  SLACK_PC_NAME=(auto: COMPUTERNAME=%COMPUTERNAME%)
+)
 
 IF NOT EXIST "logs" MKDIR "logs" 2>NUL
 
