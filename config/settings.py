@@ -832,9 +832,23 @@ HEALTH_EXCEPTION_DENSITY_CRIT_10M = 12.0
 # 고착 버그로 매분 찍히는 [RegimeFingerprint])까지 세어 Degraded Mode를 오발동시키는 문제
 # 확인 (07-08, 09:58부터 종일 Degraded ON 고착 → 자동진입 conf 62% 요구로 A~C등급 전부 차단).
 # 정상 운영 중 주기적으로 찍히는 상태 통지 태그는 예외 밀도 집계에서 제외.
+#
+# [307차] 위 수정 이후에도 07-09 10:36~10:44 사이 정상적인 진입·청산·부분청산이 짧은
+# 시간에 몰리자(체결마다 찍히는 주문흐름 진단 로그가 전부 WARNING) exceptions_10m=19~24로
+# 치솟아 10:46~11:15 약 29분간 Degraded Mode가 오발동. 아래 14개 태그는 main.py에서
+# _ts_log_diag() 또는 동등 호출부를 통해 "항상 WARNING 고정"으로만 기록되는 정상 주문
+# 흐름 진단 로그임을 전수 확인(같은 태그로 ERROR/CRITICAL이 찍히는 사례 없음) — 실제
+# 이상 신호([PendingOrder] EXIT stuck 등 CRITICAL, [FixB]/[ExitAttempt]의 ERROR 분기,
+# [ChejanCodeMismatch]/[OrderSync]의 방향불일치 CRITICAL 등)와 태그를 공유하는 항목은
+# 오탐지를 놓치지 않도록 의도적으로 제외 목록에서 뺐다.
 HEALTH_EXCEPTION_EXCLUDE_TAGS = [
     "[RegimeFingerprint]", "[ScalerRefresh]", "[ConfTrend", "[Canary]",
     "[ConstOut]", "[DriftRetrain]", "[LiveDBG]", "[Health]", "[HealthPolicy]",
+    "[EntryAttempt]", "[EntrySendOrderResult]", "[EntryPendingCreated]",
+    "[EntryFillFlow]", "[ExitFillFlow]", "[ExitSendOrderResult]",
+    "[ChejanFlow]", "[ChejanMatch]", "[ChejanAccountIgnored]",
+    "[BalanceChejanFlow]", "[BrokerSyncFlatPlaceholder]",
+    "[PartialExitAttempt]", "[PartialExitSendOrderResult]", "[PartialExitSkipped]",
 ]
 
 # 헬스 탭 미니 스파크라인 표기 범위 (최근 N분)

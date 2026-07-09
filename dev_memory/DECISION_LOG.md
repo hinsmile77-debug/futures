@@ -2,6 +2,53 @@
 
 ---
 
+## 2026-07-09 (307차 — HealthPolicy exceptions_10m 주문흐름 진단 태그 exclude 추가)
+
+### [설계결정] 정상 주문흐름 진단 로그(WARNING)가 예외 밀도에 혼입돼 Degraded Mode 오발동
+
+**File**: `config/settings.py` (`HEALTH_EXCEPTION_EXCLUDE_TAGS`)
+**증상**: 07-09 10:36~10:44 정상적인 진입·부분청산·청산이 짧은 시간에 몰리자(체결
+1건마다 `EntryAttempt`/`PendingOrder`/`ChejanFlow`/`ChejanMatch` 등 주문흐름 진단
+로그가 다수 WARNING으로 찍힘) `exceptions_10m`이 19~24까지 치솟아 10:46~11:15 약
+29분간 Degraded Mode가 오발동(이 구간엔 실제 진입 차단 사례는 없었음, 306차 정기점검
+관찰 항목).
+**원인**: 303차 후속이 `[RegimeFingerprint]` 등 9개 "정책성 상태통지" 태그는 예외
+밀도 집계에서 제외했지만, 체결마다 찍히는 "주문흐름 진단" 태그는 애초에 정책성
+로그와 다른 카테고리라 그때 검토 대상이 아니었음 — 정상 운영 중에도 체결이 몰리면
+저절로 exceptions_10m이 튀는 구조적 공백이 그대로 남아있었음.
+**결정**: 코드베이스 전수 스캔으로 각 후보 태그가 "항상 WARNING 고정"으로만
+기록되는지(같은 태그로 ERROR/CRITICAL이 찍히는 사례가 있는지) 확인한 뒤, **안전한
+14개만** exclude에 추가: `EntryAttempt`, `EntrySendOrderResult`, `EntryPendingCreated`,
+`EntryFillFlow`, `ExitFillFlow`, `ExitSendOrderResult`, `ChejanFlow`, `ChejanMatch`,
+`ChejanAccountIgnored`, `BalanceChejanFlow`, `BrokerSyncFlatPlaceholder`,
+`PartialExitAttempt`, `PartialExitSendOrderResult`, `PartialExitSkipped`. 겉보기엔
+후보처럼 보였던 5개는 **의도적으로 제외**: `PendingOrder`("EXIT stuck 3회 브로커
+확인" CRITICAL 변형 — 07-09 11:04 실제 발생), `FixB`("open_position 실패" ERROR
+변형), `ExitAttempt`("내부FLAT broker_cached=N 불일치" ERROR 변형),
+`ChejanCodeMismatch`(체결 코드 불일치로 포지션 반영 자체를 거부하는 실질적 이상
+신호), `OrderSync`("엔트리 방향 불일치"/"side mismatch" CRITICAL 변형).
+**Why**: 태그 이름만 보고 "주문 관련이니 노이즈겠지"로 뭉뚱그려 exclude하면, 같은
+태그를 공유하는 진짜 이상 신호(스턱 주문, 낙관적 오픈 실패, 코드/방향 불일치)까지
+조용히 묻혀 오히려 HealthPolicy의 감시 기능 자체가 무력화된다 — 303차 후속의
+"정책성 로그 vs 진짜 예외" 구분 원칙을 "태그 단위"가 아니라 "그 태그가 실제로
+찍히는 모든 호출부의 레벨"까지 내려가서 검증해야 함을 재확인.
+**How to apply**: 앞으로 `HEALTH_EXCEPTION_EXCLUDE_TAGS`에 태그를 추가할 때는 반드시
+`grep`으로 해당 태그의 모든 호출부를 찾아 로그 레벨이 100% WARNING(또는 exclude
+대상 레벨)로 고정인지 확인할 것 — 하나라도 ERROR/CRITICAL 변형이 있으면 그 태그는
+제외 대상에서 빼고, 필요하면 태그를 세분화(예: 같은 태그를 쓰지 말고 상황별로 다른
+태그를 붙이는 리팩터링)하는 방향을 검토할 것.
+**구현**: `config/settings.py` (`HEALTH_EXCEPTION_EXCLUDE_TAGS` 14개 태그 추가, 근거
+주석 포함). `main.py`의 기존 두 호출부(1552·6254줄)가 이미 이 리스트를 참조하고
+있어 추가 배선 불필요.
+**검증**: `py_compile` 통과. 14개 태그 전부 `_ts_log_diag()`(항상 WARNING 고정
+헬퍼) 또는 동등 직접 호출로만 기록되며 동일 태그로 ERROR/CRITICAL이 찍히는 사례가
+없음을 스크립트로 전수 확인. 제외 5개 태그는 실제 ERROR/CRITICAL 변형 라인을 직접
+읽어 확인. **라이브 미검증** — 다음 재기동 후 바쁜 체결 구간에서 `exceptions_10m`이
+낮게 유지되는지, Degraded Mode가 정상 체결만으로는 더 이상 오발동하지 않는지 확인
+필요.
+
+---
+
 ## 2026-07-09 (306차 — 정기점검 딥다이브: 틱 하드스톱(S0-C) 청산주문 pending 미등록 → 유령 포지션 생성 버그 발견·수정 + 죽은 코드 제거)
 
 ### [버그] S0-C 틱 레벨 하드스톱이 청산주문을 pending 미등록 상태로 전송 → 실체결이 반대방향 유령 포지션으로 오인식

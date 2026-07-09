@@ -8,6 +8,32 @@
 
 ---
 
+## 2026-07-09 (307차 — HealthPolicy exceptions_10m 주문흐름 진단 태그 exclude 추가)
+
+> 306차 딥다이브 중 발견한 관찰 2번(오늘 10:46~11:15 Degraded Mode 오발동)의 근본
+> 원인을 마저 손봄. 상세: `DECISION_LOG.md` 307차 항목.
+
+- [DONE 2026-07-09] **`HEALTH_EXCEPTION_EXCLUDE_TAGS`에 주문흐름 진단 태그 14개 추가**
+  — `config/settings.py`. `EntryAttempt`/`EntrySendOrderResult`/`EntryPendingCreated`/
+  `EntryFillFlow`/`ExitFillFlow`/`ExitSendOrderResult`/`ChejanFlow`/`ChejanMatch`/
+  `ChejanAccountIgnored`/`BalanceChejanFlow`/`BrokerSyncFlatPlaceholder`/
+  `PartialExitAttempt`/`PartialExitSendOrderResult`/`PartialExitSkipped` — 전부
+  `_ts_log_diag()` 등을 통해 항상 WARNING 고정으로만 찍히는 정상 주문흐름 로그임을
+  전수 확인(동일 태그로 ERROR/CRITICAL 찍히는 사례 없음). `main.py`의 기존 두 호출부
+  (1552·6254줄)가 이미 이 리스트를 참조하고 있어 추가 배선 불필요.
+- [DONE 2026-07-09] **의도적 미포함 태그 5개 확인** — `PendingOrder`(EXIT stuck
+  CRITICAL 변형), `FixB`(open_position 실패 ERROR 변형), `ExitAttempt`(내부FLAT
+  broker_cached 불일치 ERROR 변형), `ChejanCodeMismatch`(체결 코드 불일치 반영거부),
+  `OrderSync`(방향불일치 CRITICAL 변형) — 같은 태그 아래 진짜 이상 신호가 섞여 있어
+  exclude에서 제외, 계속 예외 밀도에 집계되도록 유지.
+- [ ] **다음 재기동 후 라이브 검증(최우선)** — 바쁜 체결 구간(진입/부분청산/청산이
+  짧은 시간에 몰리는 상황)에서 `exceptions_10m`이 낮게 유지되는지, 306차에서 고친
+  S0-C 유령 포지션 버그와 별개로 정상적인 다건 체결만으로는 더 이상 Degraded Mode가
+  오발동하지 않는지 확인. 핫리로드 미적용(신규 import는 아니지만 리스트 값 변경) 시
+  앱 재시작 필요 여부도 함께 확인.
+
+---
+
 ## 2026-07-09 (306차 — 정기점검 딥다이브: 틱 하드스톱(S0-C) 유령 포지션 버그 수정 + 죽은 코드 제거)
 
 > 305차 정기점검 중 TRADE/WARN 로그를 원인 단위로 재구성하다 07-09 10:44·10:55 두 차례
