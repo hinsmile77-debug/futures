@@ -4603,7 +4603,7 @@ class TradingSystem:
             if _fp_psi > 0.30:
                 log_manager.system(
                     f"[RegimeFingerprint] PSI={_fp_psi:.3f} CRITICAL — "
-                    f"시장 구조 변화 감지, 신규 진입 차단 검토",
+                    f"시장 구조 변화 감지, 감시전용(차단 비활성)",
                     "WARNING",
                 )
             elif _fp_psi > 0.20:
