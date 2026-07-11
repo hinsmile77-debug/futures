@@ -5486,6 +5486,7 @@ class TradingSystem:
                         entry_horizon      = getattr(self, "_entry_horizon_pre", "1m") or "1m",
                         macro_vix          = float(features.get("macro_vix", 0.5) or 0.5),
                         opt_chain_pcr      = float(features.get("opt_chain_pcr", 0.0) or 0.0),
+                        ensemble_grade     = grade,
                     )
                     _pre_cl_grade = _pre_cr_cache.get("grade", grade)
                 except Exception as _pre_cl_e:
@@ -5824,6 +5825,7 @@ class TradingSystem:
                         entry_horizon     = _entry_horizon or "1m",
                         macro_vix         = float(features.get("macro_vix", 0.5) or 0.5),
                         opt_chain_pcr     = float(features.get("opt_chain_pcr", 0.0) or 0.0),
+                        ensemble_grade    = grade,
                     )
 
             # [Phase 1] cold-start 구간 최소 pass 수 강화 (HORIZON_COLDSTART_MIN_PASS)
