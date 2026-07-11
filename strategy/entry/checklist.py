@@ -44,6 +44,7 @@ class EntryChecklist:
         entry_horizon: str = "1m",
         macro_vix: float = 0.5,
         opt_chain_pcr: float = 0.0,
+        ensemble_grade: str = None,
     ) -> Dict:
         """
         Args:
@@ -66,6 +67,8 @@ class EntryChecklist:
             entry_horizon:   ATR 기반 진입 호라이즌 ("1m"~"30m") — CORE 그룹 결정에 사용
             macro_vix:       VIX 정규화값 [0,1] — 중기/장기 CORE 체크용
             opt_chain_pcr:   PCR 실측값 — 장기 CORE 체크용 (0이면 미가용)
+            ensemble_grade:  앙상블 자체 등급(A/B/C/X) — X인데 체크리스트가 A/B로
+                             승격시키려는 경우 정렬 강도(pass_count>=7) 추가 요구용
 
         Returns:
             {pass_count, grade, checks, size_mult, auto_entry, entry_mode}
@@ -276,6 +279,20 @@ class EntryChecklist:
 
         size_mult  = ENTRY_GRADE[grade]["size_mult"]
         auto_entry = ENTRY_GRADE[grade]["auto"]
+
+        # [311차] ensemble_grade=X인데 체크리스트가 A/B로 승격 — 정렬강도(pass_count>=7) 요구.
+        # 근거: X→A 재구성 backtest(06-15~07-10, n=124)에서 pass=6(A 최저컷)은 +15m 평균
+        # -0.50pt(t=-0.31, 승률50%)로 음수인 반면 pass>=7은 +2.57pt(승률61%)로 반전 확인.
+        # CoherenceGate/CascadeCoherence가 앙상블을 X로 막은 근거(호라이즌 간 불일치)와
+        # 체크리스트의 오더플로 정렬 근거가 충돌할 때, 최소 정렬 수준만 걸러 꼬리위험 완화.
+        if ensemble_grade == "X" and grade in ("A", "B") and pass_count < 7:
+            logger.info(
+                "[Checklist] ensemble=X 승격 차단 — pass_count=%d < 7 (원등급=%s) → X",
+                pass_count, grade,
+            )
+            grade      = "X"
+            size_mult  = 0
+            auto_entry = False
 
         # 약한 MR(exhaustion 0.60~0.70) — 정상 진입은 허용하되 사이즈 축소
         if _mr_weak and grade != "X":

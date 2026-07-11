@@ -195,21 +195,23 @@ class HorizonF1AdaptiveWeight:
 
 def compute_cascade_coherence(horizon_proba):
     # type: (Dict[str, Dict]) -> float
-    """15m→…→1m 방향이 흘러내려오는 정렬도를 반환.
+    """15m→…→3m 방향이 흘러내려오는 정렬도를 반환.
 
     FL 호라이즌 제외 후 방향성 있는 호라이즌만으로 정렬 비율 계산.
     (FL 끼임으로 인한 연속 break 방지 — 오늘 오전처럼 15m/10m=DN, 5m/3m=FL 케이스)
     30m은 퇴역(296차, 2026-07-06)으로 cascade에서 제외 — 구조적 저성능(EOD full_cv
     acc=0.3052, 랜덤 이하) 호라이즌의 노이즈 방향이 정렬도를 깨 정상 진입을 차단하는
     부작용 방지(CoherenceGate와 동일 사유).
+    [311차] 1m도 동일 사유로 제외 — 무스킬(방향예측 정확도 45~51%, 기준선과 구분불가)
+    호라이즌을 정렬도의 기준점(target)으로 삼고 있었던 게 더 심각한 문제. 3m을 새 기준점으로 사용.
     반환: 0.0(완전 불일치) ~ 1.0(완전 정렬)
     """
-    cascade = ["15m", "10m", "5m", "3m", "1m"]
+    cascade = ["15m", "10m", "5m", "3m"]
     dirs = [
         (horizon_proba.get(h) or {}).get("direction", DIRECTION_FLAT)
         for h in cascade
     ]
-    target = dirs[-1]  # 1m 방향 기준
+    target = dirs[-1]  # 3m 방향 기준
     if target == DIRECTION_FLAT:
         return 0.5    # FLAT → 중립
     directional = [d for d in dirs if d != DIRECTION_FLAT]
@@ -792,7 +794,12 @@ class EnsembleDecision:
             # 30m ConstOut(dir=+1) + 1m SHORT(-1) → score=1/2=0.50 < min=0.60 → 진입 전면 차단.
             # [296차] 30m 퇴역 — 위와 동일한 부작용(구조적 저성능 호라이즌의 노이즈
             # 방향이 분모에 남아 정상 진입을 차단)을 근본적으로 막기 위해 분모에서 영구 제외.
-            _bias_overrides = set(bias_override_horizons or []) | _const_stuck | {"30m"}
+            # [311차] 1m도 동일 사유로 제외 — conf-층화 검증(06-15~07-10)에서 1m 방향예측
+            # 정확도 45~51%(기준선 50%와 통계적으로 구분 불가, 무스킬)로 확인됨. 재구성
+            # 백테스트 결과 1m 단독/다수 반대표로 인한 오차단이 317건(전체 결정의 6.4%) —
+            # CoherenceGate 원 취지(호라이즌 간 진짜 불일치 감지)를 무스킬 호라이즌의
+            # 노이즈가 대체하고 있었음.
+            _bias_overrides = set(bias_override_horizons or []) | _const_stuck | {"30m", "1m"}
             _active_h = [
                 h for h in horizon_proba
                 if (horizon_proba[h]
