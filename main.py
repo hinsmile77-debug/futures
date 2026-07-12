@@ -62,6 +62,7 @@ from utils.db_utils import (
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
     SIGNAL_DECAY_EXIT_ENABLED,
+    TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     LIMIT_ENTRY_FIRST_ENABLED, LIMIT_ENTRY_TIMEOUT_SEC,
     HZ_DEPLOY_POLICY,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
@@ -131,7 +132,9 @@ from strategy.runtime.broker_runtime_service import BrokerRuntimeService
 from strategy.runtime.execution_governor import ExecutionGovernor
 from strategy.runtime.session_recovery_service import SessionRecoveryService
 from strategy.profit_guard import ProfitGuard, ProfitGuardConfig
-from learning.calibration import MultiHorizonCalibrator
+from learning.calibration import (
+    MultiHorizonCalibrator, MultiHorizonExtremityCorrector, compute_extremity_hinge,
+)
 from learning.online_learner import OnlineLearner
 from learning.prediction_buffer import PredictionBuffer
 from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAIN_BARS
@@ -292,6 +295,13 @@ class TradingSystem:
         self.time_exit         = TimeExitManager()
         self.online_learner    = OnlineLearner()
         self.horizon_calibrator = MultiHorizonCalibrator(list(HORIZONS.keys()))
+        # [311차 후속 B안] GBM 꼬리과적합(극단 피처→과신) 느린-재적합 보정 레이어 —
+        # horizon_calibrator(빠른 WINDOW=200)와 분리, fit_all()은 daily_close()에서만 호출.
+        # [311차 후속 30m 전용 축소] Phase 3 워크포워드 종합검증(06-01~07-10 전기간)에서
+        # 30m 외 호라이즌은 기존 빠른層이 이미 실제정확도에 근접해 있어(3m 오차 0.003 등)
+        # 극단성 보정이 오히려 ECE를 악화시킴(6개 호라이즌 전부 ECE 상승, 30m만 일관 개선).
+        # 검증된 30m만 적용 — 나머지 호라이즌 확대는 별도 재검증 후 결정.
+        self.extremity_corrector = MultiHorizonExtremityCorrector(["30m"])
         self._preload_horizon_calibration()          # DB에서 사전 fit → 첫 tick부터 보정 효과
         self.ensemble.calibrator = self.horizon_calibrator   # 앙상블 2차 압축 연결
         self.pred_buffer       = PredictionBuffer()
@@ -300,7 +310,10 @@ class TradingSystem:
         # key=ts_str, value=[(meta_features, confidence), ...]
         # STEP 2 에서 동일 ts 검증 결과가 도착할 때 record_outcome 처리
         self._meta_shadow      = {}
-        self.toxicity_gate     = ToxicityGate()
+        self.toxicity_gate     = ToxicityGate(
+            severe_spread_block_ticks=TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
+            severe_spread_block_enabled=TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED,
+        )
         self.trend_gate        = TrendPersistenceGate()
         self.batch_retrainer          = BatchRetrainer()
         _ss = self._read_session_state()
@@ -658,6 +671,9 @@ class TradingSystem:
         self._entry_hour_bucket:  int  = 0       # 진입 시각 hour
         self._entry_was_restart:  int  = 0       # 세션 재시작 직후 진입 여부
         self._entry_had_partial:  int  = 0       # 해당 포지션에서 partial fill 발생
+        # [311차 후속] 진입 출처 태그 — trades.entry_source에 그대로 기록되어
+        # 유령/정상 레코드를 사후 구분한다(306차 pending_miss 유령 포지션 사후분석 대응).
+        self._entry_source:       str  = "SYSTEM_AUTO"
         # [260704 감사 P1] 지정가 우선 집행 상태 (LIMIT_ENTRY_FIRST_ENABLED=False면 미사용)
         self._pending_limit_is_active: bool = False
         self._pending_limit_order_no: str = ""
@@ -1981,6 +1997,8 @@ class TradingSystem:
             f"[수동진입] 버튼 클릭 → {direction} {qty}계약 @ {price} 등급={grade}"
         )
         self._execute_entry(direction, price, qty, atr, grade)
+        # _execute_entry() 내부에서 기본값(SYSTEM_AUTO)으로 설정되므로 호출 후 덮어씀
+        self._entry_source = "OPERATOR_MANUAL"
 
     def _on_instant_exit_requested(self) -> None:
         """즉시청산 버튼 클릭 — 보유 포지션 전량 즉시 청산."""
@@ -2168,9 +2186,9 @@ class TradingSystem:
                 forward_commission_krw, forward_net_pnl_krw,
                 formula_version, exit_reason, grade, regime,
                 meta_action, hurst_bucket, hour_bucket,
-                was_restart_after, had_partial_fill, entry_horizon)
+                was_restart_after, had_partial_fill, entry_horizon, entry_source)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -2201,6 +2219,7 @@ class TradingSystem:
                 getattr(self, "_entry_was_restart",  0),
                 getattr(self, "_entry_had_partial",  0),
                 result.get("entry_horizon") or "",
+                getattr(self, "_entry_source", "SYSTEM_AUTO"),
             ),
         )
         try:
@@ -2471,6 +2490,7 @@ class TradingSystem:
             return
 
         entry_time_hint = self.position.entry_time or self.position.peek_saved_entry_time(side)
+        self._entry_source = "BROKER_SYNC_RECOVERY"
         self.position.sync_from_broker(
             direction=side,
             price=avg_price,
@@ -2524,23 +2544,33 @@ class TradingSystem:
         """
         from utils.db_utils import fetchall
         from config.settings import PREDICTIONS_DB as _PRED_DB
+        import json as _json_cal
         try:
             rows = fetchall(
                 _PRED_DB,
-                """SELECT horizon, confidence, correct
+                """SELECT horizon, direction, confidence, correct, features
                    FROM predictions
                    WHERE actual IS NOT NULL
                    ORDER BY ts DESC
                    LIMIT 18000""",   # 호라이즌 6개 × 최대 3000건
             )
             for row in rows:
-                self.horizon_calibrator.record(
-                    str(row["horizon"]),
-                    float(row["confidence"] or 0.0),
-                    bool(int(row["correct"] or 0)),
-                )
+                _h = str(row["horizon"])
+                _conf = float(row["confidence"] or 0.0)
+                _correct = bool(int(row["correct"] or 0))
+                self.horizon_calibrator.record(_h, _conf, _correct)
+                try:
+                    _feat = _json_cal.loads(row["features"]) if row["features"] else {}
+                except (ValueError, TypeError):
+                    _feat = {}
+                _extra = compute_extremity_hinge(_feat, int(row["direction"] or 0))
+                self.extremity_corrector.record(_h, _conf, _extra, _correct)
             self.horizon_calibrator.fit_all()
-            logger.info("[Calib] 기동 사전 학습 완료: %d건", len(rows))
+            _ext_fit = self.extremity_corrector.fit_all()
+            logger.info(
+                "[Calib] 기동 사전 학습 완료: %d건 (극단성보정 live=%s)",
+                len(rows), _ext_fit.get("live", {}),
+            )
         except Exception as exc:
             logger.warning("[Calib] 기동 사전 학습 실패 (보정 비활성): %s", exc)
 
@@ -2598,7 +2628,7 @@ class TradingSystem:
         except Exception as exc:
             logger.warning("[DynMC] _recalibrate_mc 실패: %s", exc)
 
-    def _apply_horizon_calibration(self, horizon_proba: dict) -> dict:
+    def _apply_horizon_calibration(self, horizon_proba: dict, features: dict = None) -> dict:
         calibrated = {}
         for horizon, probs in horizon_proba.items():
             res = dict(probs)
@@ -2614,6 +2644,24 @@ class TradingSystem:
                 if _calibrated_raw < _floor:
                     logger.debug("[Calib] %s Platt 하한 %.3f→%.3f", horizon, _calibrated_raw, _floor)
                     _calibrated_raw = _floor
+            # [311차 후속 B안] 극단성 보정(②규칙 안전망 + ①섀도우 학습모델) — 10m/15m
+            # 하한 보정 *뒤에* 적용해야 함(먼저 적용하면 위 하한 로직이 되돌려버림).
+            # bb_position/vwap_position이 예측방향 반대편 극단일 때 과신을 추가로 깎는다.
+            # correct_with_floor()는 max(floor, live)만 실제 반영, shadow는 로그 전용.
+            _ext_extra = compute_extremity_hinge(features or {}, direction)
+            if np.any(_ext_extra > 0):
+                _ext_result = self.extremity_corrector.correct_with_floor(
+                    horizon, raw_conf, _calibrated_raw, _ext_extra
+                )
+                if _ext_result["applied_penalty"] > 0:
+                    logger.debug(
+                        "[ExtremityCorrector] %s conf=%.3f→%.3f "
+                        "(floor=%.3f live=%.3f shadow참고=%.3f)",
+                        horizon, _calibrated_raw, _ext_result["calibrated_prob"],
+                        _ext_result["floor_penalty"], _ext_result["live_penalty"],
+                        _ext_result["shadow_penalty"],
+                    )
+                _calibrated_raw = _ext_result["calibrated_prob"]
             cal_conf = float(np.clip(_calibrated_raw, 0.0, 0.85))
             if _calibrated_raw > 0.85:
                 logger.debug("[Calib] %s clipped %.3f→0.85", horizon, _calibrated_raw)
@@ -4108,6 +4156,9 @@ class TradingSystem:
                     eks_active=self.system_health.kill_switch_active,
                 )
             self.horizon_calibrator.record(v["horizon"], _conf, v["correct"])
+            # [311차 후속 B안] 극단성 보정기 기록 — fit()은 daily_close()에서만(느린層)
+            _ext_extra = compute_extremity_hinge(v.get("features") or {}, _pred_dir)
+            self.extremity_corrector.record(v["horizon"], _conf, _ext_extra, v["correct"])
             # 앙상블 보정기: 1m 결과를 앙상블 정확도 대리 지표로 사용
             # (1m이 가장 빠른 피드백 — 당시 앙상블 conf와 적중 여부로 보정기 학습)
             # 단, 당시 앙상블에 1m가 포함됐을 때만 유효 — OFF 중 결과로 학습하면
@@ -5182,7 +5233,7 @@ class TradingSystem:
         # 273차: S6(STEP6) PipePerf 병목 딥다이브용 세부 타이머 — 항상 INFO 기록
         _s6_prof = [("t0", time.perf_counter())]
         _entry_horizon = None   # ATR 레짐별 진입 호라이즌 (STEP 6 말미에 확정)
-        horizon_proba = self._apply_horizon_calibration(horizon_proba)
+        horizon_proba = self._apply_horizon_calibration(horizon_proba, features=features)
         _h_conf_values = [float(v.get("confidence", 0.0) or 0.0) for v in horizon_proba.values()]
         _gov_conf = (sum(_h_conf_values) / len(_h_conf_values)) if _h_conf_values else 0.0
         _gov_quality = float(features.get("feature_quality_score", 1.0) or 0.0)
@@ -5293,7 +5344,9 @@ class TradingSystem:
 
         # [MaskedFallback] 격리 예측 채택 — 정상 앙상블이 FLAT이고 격리 예측이 더 높을 때
         if direction == 0 and _masked_hp_blended and self.model.last_masked_features:
-            _mhp_cal  = self._apply_horizon_calibration(_masked_hp_blended)
+            _mhp_cal  = self._apply_horizon_calibration(
+                _masked_hp_blended, features=self.model.last_masked_features
+            )
             _mhp_filt = {
                 h: v for h, v in _mhp_cal.items()
                 if float(v.get("confidence", 0.0)) >= _zone_h_confs.get(h, 0.0)
@@ -5756,6 +5809,7 @@ class TradingSystem:
         _final_grade = grade
         _checks_ui   = {}   # 빈 dict → 대시보드에서 "—" 표시
         _qty_display = 0
+        _kelly_advised_skip = False  # [311차 후속] 켈리가 목표자본 대비 1계약도 부적절하다고 판단했는지
         _cr          = None
 
         if direction != 0 and self.position.status == "FLAT":
@@ -5979,6 +6033,7 @@ class TradingSystem:
                 )
                 _qty_display = size_result["quantity"]
                 _qty_sizer_raw = _qty_display  # 게이트 조정 전 Sizer 원본값 보존
+                _kelly_advised_skip = bool(size_result.get("kelly_advised_skip", False))
 
                 # [DBG-F7b] 사이저 입력/출력 확인
                 debug_log.debug(
@@ -6717,6 +6772,7 @@ class TradingSystem:
             hurst=float(features.get("hurst", 0.5)),
             atr=atr,
             regime=self.current_micro_regime,
+            kelly_advised_skip=_kelly_advised_skip,
         )
         self._manual_entry_ctx = {
             "price": close,
@@ -7587,6 +7643,9 @@ class TradingSystem:
         quantity: int, atr: float, grade: str,
     ):
         """진입 실행"""
+        # [311차 후속] 정상 진입 경로(자동/수동 버튼) 공용 진입점 — 유령/브로커동기화
+        # 경로(각각 별도 지점에서 태깅)와 구분되도록 기본값으로 복원.
+        self._entry_source = "SYSTEM_AUTO"
         if not self.dashboard.is_server_match():
             log_manager.system(
                 "[Entry] 서버 모드 불일치 — 라디오 버튼 선택과 실접속 서버가 다릅니다. 진입 차단.",
@@ -8333,6 +8392,13 @@ class TradingSystem:
         self.circuit_breaker.reset_daily()
         self.profit_guard.reset_daily()
         self.online_learner.reset_daily()
+        # [311차 후속 B안] 극단성 보정기 — GBM 배치재학습과 같은 리듬(일 1회)으로 재적합.
+        # reset_daily 없음 — 버퍼(BATCH_SIZE=5000)는 날짜 경계와 무관하게 계속 누적.
+        try:
+            _ext_fit = self.extremity_corrector.fit_all()
+            log_manager.learning(f"[ExtremityCorrector] 일일 재적합: {_ext_fit}")
+        except Exception as _ext_e:
+            logger.warning("[ExtremityCorrector] daily fit_all 실패 (무해): %s", _ext_e)
         self.market_dna.reset_daily()
         self.core_health.reset_daily()
         self.model.reset_daily_gap_offset()
@@ -10624,6 +10690,9 @@ def _ts_handle_external_fill(
             QTimer.singleShot(1200, lambda: _ts_refresh_dashboard_balance(self))
 
     if remaining_fill > 0:
+        # [311차 후속] pending 미등록 상태로 들어온 체결 → 306차 이전 근본원인
+        # 재발 시 사후 식별 가능하도록 유령 진입으로 명시 태깅.
+        self._entry_source = "GHOST_PENDING_MISS"
         result = self.position.apply_entry_fill(
             direction=side,
             price=fill_price,
@@ -10736,6 +10805,7 @@ def _ts_resolve_stuck_entry_pending(self) -> bool:
 
     before_qty = self.position.quantity
     # 브로커 실수량으로 포지션 sync (이벤트 유실로 인한 수량 불일치 해소)
+    self._entry_source = "BROKER_SYNC_RECOVERY"
     self.position.sync_from_broker(
         direction=broker_side,
         price=broker_avg,
@@ -10956,6 +11026,7 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
     prev_pos_qty = self.position.quantity
 
     entry_time_hint = self.position.entry_time or self.position.peek_saved_entry_time(side)
+    self._entry_source = "BROKER_SYNC_RECOVERY"
     self.position.sync_from_broker(
         direction=side,
         price=avg_price,
@@ -11870,6 +11941,7 @@ def _ts_sync_position_from_broker(self) -> None:
         )
         return
 
+    self._entry_source = "BROKER_SYNC_RECOVERY"
     self.position.sync_from_broker(
         direction=side,
         price=avg_price,
@@ -11973,6 +12045,7 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         )
         return
 
+    self._entry_source = "BROKER_SYNC_RECOVERY"
     self.position.sync_from_broker(
         direction=side,
         price=avg_price,
@@ -12262,6 +12335,7 @@ def _ts_manual_position_restore(self, direction: str, price: float, qty: int, at
         "WARNING",
     )
     try:
+        self._entry_source = "OPERATOR_RESTORE"
         result = self.position.sync_from_broker(
             direction=direction,
             price=price,

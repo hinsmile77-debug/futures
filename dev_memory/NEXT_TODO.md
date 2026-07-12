@@ -29,22 +29,112 @@
 **311차 딥다이브 중 발견했으나 미구현 — 잔여 리스크 4건** (07-09·07-10 대형 손실
 사후분석에서 나온 항목, 위 CoherenceGate 수정과는 별개 트랙):
 
-- [ ] **[P0] trades.db 유령 트레이드 오염 정리** — 07-09 Chejan echo 루프(306차에서
+- [DONE 2026-07-12] **[P0] trades.db 유령 트레이드 오염 정리** — 07-09 Chejan echo 루프(306차에서
   근본원인은 수정됐으나 과거 기록은 미정리)로 생긴 유령 레코드(-18.72pt 등
   `grade=MANUAL`, 반대편 "이익" 레코드 포함)가 실전 전환 기준①(모의 4주 수익률
   누적치)과 EOD 리포트·학습 통계를 오염시키는 중. 07-09 하루만 daily_stats 기준
   -750만원이 허수(브로커 실측은 +136만원). 유령 레코드 식별·플래그 처리 또는
   `daily_broker_pnl` 기준 보정 필요.
-- [ ] **분석 스크립트 pnl_pts 합산 방식 표준화** — `trades.pnl_pts`는 계약당(1계약
+  → `trades.entry_source` 컬럼 신설(`GHOST_PENDING_MISS` 등 5종 태깅, `main.py`
+  8개 진입경로 배선) + 과거 18건 백필 완료. 대시보드 추이 집계(`fetch_trend_*`,
+  `fetch_recent_ev`)에서 유령 레코드 제외 확인(07-09 -6,450,988원 → -1,909,384원).
+  06-10·06-25·06-29에도 동일 패턴 미기록 유령 클러스터 추가 발견·정리.
+- [DONE 2026-07-12] **분석 스크립트 pnl_pts 합산 방식 표준화** — `trades.pnl_pts`는 계약당(1계약
   기준) 손익이라 수량 미가중 단순 합산(예: 06-15~ 128건 "+275.67pt")은 실손익과
   부호까지 달라질 수 있음(net_pnl_krw는 동기간 -514만원 — 부호 반대). 향후 리포트·
   딥다이브 스크립트는 `pnl_pts × quantity` 또는 `net_pnl_krw` 기준으로 통일.
-- [ ] **모의투자 사이징 파라미터 검증 불능 상태 해소** — 모의 잔고 4.9억 규모 탓에
-  켈리 산출이 사실상 "캡 10계약 아니면 최소 3계약"의 이진값으로 수렴하고, conf
-  구간별 신뢰도배수(`position_sizer.py: CONFIDENCE_MULT_TABLE`)는 사실상 0.6 고정
-  (실측 앙상블 conf 0.25~0.45가 전 구간 최하단에 몰려 있어 죽은 파라미터).
-  실전 자본 규모로 모의 잔고를 낮추거나 `ACCOUNT_BASE_RISK`를 축소해야 켈리 로직
-  자체의 검증이 가능해짐.
+  → 실제 버그는 `generate_baseline_ensemble_report.py` 1건뿐(나머지는 이미
+  quantity-weighted이거나 daily_stats 재사용이라 무관). 수정 후 `total_pnl_pts`
+  부호가 `total_pnl_krw`와 일치(+275pt→-73.67pt, krw -409만원과 방향 일치).
+- [DONE 2026-07-12] **모의투자 사이징 파라미터 검증 불능 상태 해소** —
+  모의 잔고 4.9억 규모 탓에 base_risk/stop_risk 생비율≈19.4로 상한(10계약) 쏠림
+  구조 규명. `PositionSizer`에 `SIZING_TARGET_CAPITAL_KRW`(목표자본, 절대값)
+  설정을 추가해 사이징 계산에만 축소된 자본을 쓰는 안 설계 완료 — 시뮬레이션상
+  1억원 근방 + `MINI_MIN_CONTRACTS` 하한 3→1 완화를 병행해야 의미 있는 변동폭
+  확보(1억원 단독으로는 여전히 하한 쏠림).
+  **[311차 후속 딥다이브로 우선순위 재조정]** SizerMatch 로그 분석 결과 최종
+  진입수량은 PositionSizer 단독이 아니라 `PositionSizer × ExecutionGovernor ×
+  MetaGate × ToxicityGate × IntradayRegime(L2)` 5단 곱셈 구조이고, 89.6%의
+  진입시도를 MetaGate가 reduce/skip(ToxicityGate 58.8% reduce)시켜 실질적
+  변동성 대부분은 이 두 게이트가 만듦 — PositionSizer 목표자본 구현의 체감효과는
+  제한적일 수 있음. 아래 3개 하위 항목이 이 딥다이브에서 파생됨.
+  **[311차 후속 Phase 0 재검증 — 중요 수정]** 몬테카를로 추정(conf/grade/kelly
+  독립 샘플링)은 raw_qty<1(켈리 "진입가치 없음") 비율을 19.6%로 예상했으나, 실거래
+  111건에 진입시점 conf/grade/regime을 조인하고 kelly_mult를 워크포워드로
+  재현한 결과 **실제 비율은 50.5%**(56/111) — conf·grade·kelly가 실전에서는
+  독립이 아니라 연속손실 구간에서 동시에 나빠지는 상관관계(kelly=0.10 하한과
+  conf 최하단 배수가 함께 옴)를 반영 못 한 과소추정이었음. **RM 분석**: 스킵후보군
+  (raw_qty<1, n=56)이 승률은 유지군과 큰 차이 없음(73.2% vs 76.4%)에도
+  net_krw=-8,314,996원으로 이번 표본 손실의 사실상 전부를 차지(유지군은
+  +7,086,964원 순수익) — 07-01·07-09·07-10의 기존에 다뤘던 대형 손실 사건들이
+  전부 이 버킷에 몰려 있음. 켈리의 raw_qty<1 신호가 단순 소음이 아니라 "연속
+  손실 국면 경고"로 실제로 유효할 가능성을 뒷받침 — 최소1계약 유지+로그만 남기는
+  현재 결정을 재확인시키는 근거이자, 향후 실제 진입스킵 로직 도입 우선순위를
+  높이는 근거로 기록.
+  → **구현 완료**: `config/settings.py`에 `SIZING_TARGET_CAPITAL_ENABLED=True`,
+  `SIZING_TARGET_CAPITAL_KRW=100,000,000`, `MINI_MIN_CONTRACTS=1`(하드코딩 3 제거).
+  `PositionSizer.compute()`에 `sizing_balance`(목표자본, 마진체크·대시보드 표시용
+  실제잔고와 분리) + `kelly_advised_skip` 플래그(raw_qty<1이어도 최소체결, 스킵은
+  안 함 — 위 RM분석 근거로 데이터만 축적) 구현. 실제 코드로 재현 검증: MAX(10) 클램프
+  0%로 완전 해소, 다만 MIN(1) 클램프가 82.0%로 새로 나타남(원래 "항상10"이 "대부분1,
+  가끔2~4"로 바뀐 것 — 완전한 파라미터 민감도 회복은 아님, 1억원은 사용자 결정으로
+  유지하고 `SIZING_TARGET_CAPITAL_KRW`는 설정으로 언제든 조정 가능). 대시보드
+  "산출 수량" 카드 옆에 켈리 스킵 배지(`e_kelly_skip_badge`, 주황 "켈리↓") 추가.
+  `CLAUDE.md` 실전 전환 기준 ⑧에 `SIZING_TARGET_CAPITAL_ENABLED` 재검토 항목 등록.
+  다음 모의투자 세션에서 `[Sizer]` 로그·배지 실측 관찰 필요(Phase 5, 미착수).
+- [ ] **MetaGate 판별력 자체가 통계적으로 무의미함을 확인 — 근본원인은 conf 자체의
+  역보정** — take/reduce/skip 액션별 실제 realized_move(meta_labels 조인) 차이가
+  전부 유의하지 않음(take vs skip t=0.50 p=0.62, take vs reduce t=0.41 p=0.68).
+  원인 추적 결과 MetaGate가 소비하는 blended_conf가 이미 계통적으로 역보정된
+  ensemble confidence를 60~75% 가중 반영 — 근본원인은 GBM이 훈련데이터에 드문
+  극단 피처(bb_position/vwap_position 반대극단)에서 과신하는 꼬리과적합
+  (`docs/레슨런/0711.txt` 참조). **이 근본원인은 30m 호라이즌에 한해서만 해결**
+  (`learning/calibration.py: ExtremityCorrector`, 아래 항목) — 나머지 호라이즌은
+  MetaGate가 소비하는 conf가 여전히 미보정 상태라 MetaGate 자체 재검토는 그
+  호라이즌들 conf 보정이 확대된 뒤로 미루는 게 순서상 맞음(안 그러면 미보정
+  conf 위에 튜닝하는 꼴).
+- [DONE 2026-07-12] **호라이즌 conf 보정기 고신뢰구간 계통적 역행 — 30m 한정 해결** —
+  Platt/Isotonic이 원리상 단조변환이라 "raw conf 상승↔실제정확도 하락"(비단조,
+  conf<0.55에선 무관하다가 conf≥0.55에서만 강하게 나타나는 상호작용 패턴)을
+  구조적으로 못 고침. `bb_position`/`vwap_position`을 예측방향 부호로 정렬한
+  힌지(hinge) + `raw_prob×hinge` 상호작용항으로 검증(30m 실측: hinge>0 그룹
+  acc=0.234 vs hinge=0 그룹 acc=0.426, t=-5.38, p<0.0001). 전체 호라이즌 적용 시
+  ECE가 오히려 전부 악화되어(기존 빠른層 calibrator가 이미 대부분 흡수 중이었음)
+  **30m 전용으로 축소**(`MultiHorizonExtremityCorrector(["30m"])`). 2단 구조
+  (`PredictionCalibrator` 빠른層 WINDOW=200 + `ExtremityCorrector` 느린層,
+  `daily_close()`에서 일 1회 재적합) + 규칙기반 floor(-0.05, conf≥0.55&hinge>0
+  안전망, ①섀도우 학습모델은 로그전용) 병행 배선 완료, 워크포워드 종합검증
+  (06-01~07-10 전기간)으로 30m conf≥0.55 구간 |오차| 0.019→0.008(58%↓) 확인.
+  다음 모의투자 세션에서 `[ExtremityCorrector]` 로그 실측 확인 필요(Phase 4 섀도우
+  관찰), 다른 호라이즌 확대는 별도 재검증 후 결정.
+- [DONE 2026-07-12] **ExecutionGovernor 전 기간 발동 0건 — "인프라 장애 전용
+  비상정지"로 확정, 재설계 안 함** — `feature_quality_score`(95.9%가 0.94+)와
+  latency_score(정상 틱지연 시 항상 1.0)만으로 tradability 기본값이 ~0.60이라
+  pass_threshold(0.65)를 넘기는 데 confidence≥0.125만 있으면 충분 — 실측
+  confidence는 항상 이보다 훨씬 높아 confidence 항(가중치 40%)이 사실상
+  판정에 무관여. 실측 재현(06-15~07-10, n=6,911) tradability 최솟값 0.671로
+  100% pass. 데이터결손·지연급증 등 진짜 인프라 장애 시에만 발동하는 비상
+  서킷브레이커로 기능이 확정됨 — `strategy/runtime/execution_governor.py`
+  docstring에 결정근거 기록, 코드 변경 없음.
+- [DONE 2026-07-12] **IntradayRegime(L2) 사이즈축소 0건 원인 확인 — 토글 OFF,
+  현행 유지 + 데이터 수집만** — `data/ui_prefs.json: layer2_gate_enabled=false`
+  확인. 실측(06-15~07-10, 18거래일): CRASH 레짐이 하루 27.4%(평균 107분, 215
+  에피소드, 평균지속 8.9분)를 차지하고 그 76.5%(176/230)가 가격이 아니라
+  `z_warn_count≥3` 단독 트리거. 실제 CRASH 기간 진입 14건은 승률 78.6%로
+  NORMAL(76.6%)과 대등해 현재 임계값의 위험감지 실효성은 의심스러움. 다만
+  `DECISION_LOG.md` 62차(2026-05-19) 확인 결과 이 트리거는 **실제 폭락일(-1.8%,
+  ATR ratio 1.33)에 가격/ATR 신호만으로는 급변장 판정이 0회였던 사고**의
+  대응으로 도입된 것으로, 완전 제거는 기각. `_l2_gate_on`이 OFF여도
+  `intraday_regime.update()`(분류)·`dashboard.update_layer2()`(로깅)는 게이트와
+  무관하게 매분 계속 실행되므로 **추가 코드 변경 없이 이미 "OFF+데이터 수집"
+  상태** — 재검토 트리거: 유사 변동성 이벤트(5/19급) 재발 시 그 시점
+  z_warn_count 실측값으로 임계값(현재 3) 재보정. 데이터 없이 임계값만 바꾸지
+  말 것.
+- [ ] **ToxicityGate reduce 58.8% 비율 타당성 미검토** — `strategy/risk/toxicity_gate.py`
+  reduce_threshold=0.58, reduce 배수 0.7이 둘 다 실측 toxicity_score 분포 검증
+  없는 값. MetaGate와 함께 진입시도의 대부분(58.8%)을 축소시키는 주 원인이라
+  우선순위 있으나, MetaGate와 마찬가지로 근본원인(conf 역보정)이 30m 외
+  호라이즌에서 미해결 상태라 재검토는 뒤로 미루는 걸 권장.
 - [ ] **entry_horizon(ATR 기반) 선택 로직에 호라이즌 스킬 정보 반영 검토** — 최초
   "5m 귀책" 가설은 311차 딥다이브로 기각(TP1 폭 산정에만 관여, 등급 산출과 무관 —
   실귀책은 CoherenceGate 1m 오차단, 위 항목들로 수정 완료). 다만 별개로 conf-층화

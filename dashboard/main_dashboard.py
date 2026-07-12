@@ -3698,6 +3698,19 @@ class EntryPanel(QWidget):
         qty_row_lay.addWidget(_mk_info_card("산출 수량", "e_qty", "대기", _TIP_QTY), 1)
         qty_row_lay.addWidget(_mk_info_card("진입 수량", "e_entry_qty", "대기", _TIP_ENTRY), 1)
 
+        # [311차 후속] 켈리 스킵 권고 배지 — 목표자본(SIZING_TARGET_CAPITAL_KRW) 기준
+        # raw_qty<1(켈리가 "1계약도 부적절"이라 판단)이었지만 최소계약으로 진입한 경우 표시.
+        # 진입 자체는 스킵하지 않고 데이터만 축적 — 근거: dev_memory/NEXT_TODO.md 311차.
+        self.e_kelly_skip_badge = QLabel("")
+        self.e_kelly_skip_badge.setAlignment(Qt.AlignCenter)
+        self.e_kelly_skip_badge.setFixedWidth(46)
+        self.e_kelly_skip_badge.setToolTip(
+            "켈리(최근 20건 실적 기준)가 목표자본 대비 이 진입은 1계약도 적절하지 "
+            "않다고 판단했지만, 최소 계약수로 진입했습니다."
+        )
+        self.e_kelly_skip_badge.setVisible(False)
+        qty_row_lay.addWidget(self.e_kelly_skip_badge, 0)
+
         max_f = QFrame()
         max_f.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
         max_fl = QVBoxLayout(max_f)
@@ -4391,7 +4404,8 @@ class EntryPanel(QWidget):
                     ensemble_grade: str = None, checklist_grade: str = None,
                     final_entry: bool = False, check_values: dict = None,
                     entry_block_reason: str = "", qty_entry_final: int = None,
-                    hurst: float = None, atr: float = None, regime: str = None):
+                    hurst: float = None, atr: float = None, regime: str = None,
+                    kelly_advised_skip: bool = False):
         self._last_entry_block_reason = entry_block_reason
         final_signal = final_signal or signal
 
@@ -4449,6 +4463,17 @@ class EntryPanel(QWidget):
         else:
             self.e_qty.setText("——")
             self.e_qty.setStyleSheet(f"color:{C['text2']};font-size:{S.f(14)}px;font-weight:bold;")
+
+        # [311차 후속] 켈리 스킵 권고 배지
+        if kelly_advised_skip:
+            self.e_kelly_skip_badge.setText("켈리↓")
+            self.e_kelly_skip_badge.setStyleSheet(
+                f"background:{C['orange']};color:#fff;border-radius:3px;"
+                f"font-size:{S.f(9)}px;font-weight:bold;padding:2px;"
+            )
+            self.e_kelly_skip_badge.setVisible(True)
+        else:
+            self.e_kelly_skip_badge.setVisible(False)
 
         # 진입 수량 — qty_entry_final(최대허용수량+증거금 반영 최종수량)이 있으면 그대로
         # 표시한다. 최대허용수량을 만족해도 증거금이 부족하면 브로커가 주문을 거부하므로
@@ -11160,7 +11185,8 @@ class DashboardAdapter:
                      ensemble_grade: str = None, checklist_grade: str = None,
                      final_entry: bool = False, check_values: dict = None,
                      entry_block_reason: str = "", qty_entry_final: int = None,
-                     hurst: float = None, atr: float = None, regime: str = None):
+                     hurst: float = None, atr: float = None, regime: str = None,
+                     kelly_advised_skip: bool = False):
         """진입 관리 패널 업데이트"""
         self._win.entry_panel.update_data(
             signal, conf, grade, checks, qty=qty,
@@ -11176,6 +11202,7 @@ class DashboardAdapter:
             hurst=hurst,
             atr=atr,
             regime=regime,
+            kelly_advised_skip=kelly_advised_skip,
         )
 
     def set_reverse_entry_enabled(self, enabled: bool, emit_signal: bool = False) -> None:

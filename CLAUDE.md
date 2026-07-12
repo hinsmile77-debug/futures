@@ -187,5 +187,10 @@ STEP 9: 예측 DB 저장
 ⑦ FP-CRITICAL 재검토 — `FP_CRITICAL_GRADE_BLOCK_ENABLED` False → PSI 계측(균등폭 10-bin)을
    분위수 기반 등으로 재설계하고, 정상 구간에서 PSI가 오르내리는 것을 실측 확인한 뒤 True로
    복원 (절대원칙 §2 참조)
+⑧ SIZING_TARGET_CAPITAL_ENABLED 재검토 — `config/settings.py:SIZING_TARGET_CAPITAL_ENABLED`
+   True(모의투자 한정) → 실전 자본 규모에 맞게 `SIZING_TARGET_CAPITAL_KRW`(현재 1억원)를
+   재설정한 뒤 False로 전환(사이징 계산에 실제 브로커 잔고를 그대로 사용). 모의 잔고(4.9억)가
+   실전 자본과 크게 다르면 PositionSizer의 base_risk가 왜곡돼 계약수 산출이 부정확해지므로
+   실전 전환 시 반드시 재검토 (근거: 311차 후속, `dev_memory/NEXT_TODO.md` 참조)
 → 실전 첫 1개월: 최대 사이즈의 30%로 시작
 ```

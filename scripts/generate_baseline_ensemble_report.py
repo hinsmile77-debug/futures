@@ -35,6 +35,7 @@ def get_trade_rows(limit: int = 20):
                pnl_pts, pnl_krw, exit_reason, grade, regime
         FROM trades
         WHERE exit_ts IS NOT NULL
+              AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
         ORDER BY entry_ts DESC
         LIMIT ?
         """,
@@ -65,12 +66,19 @@ def assign_time_zone(ts_text: str) -> str:
 
 def summarize_trades(rows):
     rows = list(rows)
+    # [311차 후속] trades.pnl_pts는 계약당(1계약 기준) 손익 — quantity로 가중하지 않으면
+    # 실손익(pnl_krw)과 부호까지 어긋날 수 있다(예: MANUAL 등급 17건이 단순합=+46.19pt인데
+    # 수량가중=-77.27pt로 pnl_krw=-391만원과 부호가 일치). 승/패 판정은 계약당 부호가
+    # quantity와 무관하게 동일하므로 pnl_pts 그대로 사용해도 무방.
     pnl_pts = [float(r["pnl_pts"] or 0.0) for r in rows]
+    weighted_pts = [float(r["pnl_pts"] or 0.0) * int(r["quantity"] or 1) for r in rows]
     pnl_krw = [float(r["pnl_krw"] or 0.0) for r in rows]
     wins = sum(1 for x in pnl_pts if x > 0)
     zones = defaultdict(list)
     for row in rows:
-        zones[assign_time_zone(row["entry_ts"])].append(float(row["pnl_pts"] or 0.0))
+        zones[assign_time_zone(row["entry_ts"])].append(
+            float(row["pnl_pts"] or 0.0) * int(row["quantity"] or 1)
+        )
 
     zone_stats = {}
     for zone, values in zones.items():
@@ -83,7 +91,7 @@ def summarize_trades(rows):
     cumulative = 0.0
     peak = 0.0
     max_drawdown = 0.0
-    for value in reversed(pnl_pts):
+    for value in reversed(weighted_pts):
         cumulative += value
         peak = max(peak, cumulative)
         max_drawdown = min(max_drawdown, cumulative - peak)
@@ -92,13 +100,13 @@ def summarize_trades(rows):
         "count": len(rows),
         "wins": wins,
         "win_rate": round(wins / len(rows), 4) if rows else 0.0,
-        "avg_pnl_pts": round(mean(pnl_pts), 4) if pnl_pts else 0.0,
-        "total_pnl_pts": round(sum(pnl_pts), 4),
+        "avg_pnl_pts": round(mean(weighted_pts), 4) if weighted_pts else 0.0,
+        "total_pnl_pts": round(sum(weighted_pts), 4),
         "total_pnl_krw": round(sum(pnl_krw), 0),
         "profit_factor": round(
-            sum(x for x in pnl_pts if x > 0) / abs(sum(x for x in pnl_pts if x < 0)),
+            sum(x for x in weighted_pts if x > 0) / abs(sum(x for x in weighted_pts if x < 0)),
             4,
-        ) if any(x < 0 for x in pnl_pts) else None,
+        ) if any(x < 0 for x in weighted_pts) else None,
         "max_drawdown_pts": round(max_drawdown, 4),
         "time_zone_stats": zone_stats,
     }

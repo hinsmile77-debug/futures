@@ -62,6 +62,25 @@ TICK_SIZE     = 0.02         # KOSPI 200 미니선물 1틱 = 0.02pt (일반선�
 DAILY_LOSS_LIMIT_PCT = 0.02   # 일일 최대 손실 2%
 ACCOUNT_BASE_RISK    = 0.01   # 기본 리스크 1% (켈리 기준)
 
+# [2026-07-12 311차 후속, 모의투자 사이징 파라미터 검증 불능 해소]
+# 모의 잔고(4.9억)가 실전 예정 자본보다 훨씬 커서 base_risk/stop_risk 생비율≈19.4로
+# 켈리 산출이 상한(MAX_CONTRACTS)에 항상 쏠리고 conf_mult/kelly_mult 등 사이징
+# 파라미터가 사실상 검증 불가능한 죽은 값이 되는 문제 대응. PositionSizer.compute()의
+# base_risk 계산에만 이 목표자본을 쓰고(마진체크·대시보드 잔고 표시는 실제 브로커
+# 잔고 그대로 사용), 시뮬레이션상 1억원 근방에서 raw_qty가 3~10 클램프 사이에서
+# 의미 있게 갈리기 시작함을 확인(단, MINI_MIN_CONTRACTS 하한 완화와 병행 필요).
+# 모의투자 한정 — CB②/CB③-P4/FP-CRITICAL과 같은 패턴, 실전 전환 전 반드시 재검토
+# (실전 자본 규모에 맞게 값 조정 또는 비활성화 — 실전에선 실제 잔고를 그대로 써야 함).
+SIZING_TARGET_CAPITAL_ENABLED = True
+SIZING_TARGET_CAPITAL_KRW     = 100_000_000
+
+# [2026-07-12 311차 후속] 미니선물 최소 진입 계약 수 — 기존 3의 도입 근거가
+# dev_memory에 없어(2026-05-12 커밋에 조용히 끼워 넣어짐), TP1/TP2/TP3 분할청산도
+# qty=1(단일계약 보호전환)·qty=2(1+1)를 이미 우아하게 처리하도록 설계돼 있어
+# 3이어야 할 구조적 이유가 없음을 확인. SIZING_TARGET_CAPITAL_KRW(1억원)와 하한 3을
+# 병행하면 여전히 하한에 쏠려 사이징 파라미터 검증이 안 되므로 1로 완화.
+MINI_MIN_CONTRACTS = 1
+
 # ── 시장 시간 ──────────────────────────────────────────────────
 MARKET_OPEN         = "09:00"
 MARKET_CLOSE        = "15:35"   # 선물 종가 (만기일은 15:20 — time_utils.is_market_open 참고)
@@ -781,6 +800,23 @@ CB3_P4_GRADE_BLOCK_ENABLED = False
 # 실전 전환 전 반드시 재검토 — 계측 재설계 완료 및 정상 구간에서 PSI가 오르내리는
 # 것을 확인 후 True로 복원할 것.
 FP_CRITICAL_GRADE_BLOCK_ENABLED = False
+
+# [2026-07-12 311차 후속, ToxicityGate 극단 스프레드 block 조건 — 섀도우 검증 대기]
+# 기존 toxicity_score 합성지표(atr/spread/flow/queue/cancel 가중합)는 실측 최댓값이
+# 0.393으로 reduce_threshold(0.58)에 전혀 못 미쳐 사실상 죽어있고, 실제 reduce
+# 발동(58.8%)은 spread_ticks>=severe_spread_ticks(8.0) 단일 폴백 조건이 전담 —
+# 이 조건은 실거래 교차검증으로 유효성 확인됨(spread>=8 그룹 승률64.5%/-122만원
+# vs <8 그룹 승률78.8%/손익분기 근접). 반면 block(0.78)은 한 번도 발동한 적 없어
+# 진짜 극단 상황(spread_ticks 최댓값 108 실측)에 대한 안전장치가 사실상 부재.
+# 슬리피지 경제성 역산(ATR 중앙값 3.371pt 기준) + 전체 분봉표본(n=7,275) 백분위
+# 교차검증 결과 spread_ticks>=20(p90)에서 1m 호라이즌 TP1 목표의 40%가 스프레드
+# 비용만으로 잠식 — 이 지점을 block 후보 임계값으로 제안. ToxicityGate가
+# entry_horizon 확정 전에 호출되는 구조적 제약으로 호라이즌별 차등 적용은 보류하고
+# 가장 취약한 1m 기준 단일 임계값으로 보수적 설계(311차 결정).
+# 실거래 표본(n=8~19)만으로는 노이즈가 커 이 정확한 컷을 검증 못함 — 섀도우 로그로
+# 먼저 관찰 후 활성화할 것. 활성화 전 반드시 재검토.
+TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED = False
+TOXICITY_SEVERE_SPREAD_BLOCK_TICKS   = 20.0
 
 # CB③ 발동 최솟 유효 샘플 수
 # 파이프라인 지연 → conf<0.38 필터 → 샘플 부족 → 0%로 허위 발동 방지
