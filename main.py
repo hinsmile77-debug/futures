@@ -1086,12 +1086,18 @@ class TradingSystem:
             and len(all_feat_rows) >= SHAP_MIN_DATA_POINTS
         ):
             horizon_model = self.model.models.get("1m")
-            if horizon_model is None:
-                horizon_model = next(iter(self.model.models.values()), None)
-            if horizon_model is not None:
+            # [312차] ShapTracker는 "1m" 호라이즌 피처 서브셋(h_names_1m, 예: 12개)으로
+            # 생성되는데(_ensure_shap_tracker) 여기서 self.model.feature_names(전체
+            # 피처, 예: 97개)로 X를 만들면 TreeExplainer가 컬럼수만큼(97) 중요도를
+            # 반환해 tracker.feature_names(12개)와 길이가 안 맞아 get_current_ranking()
+            # 에서 IndexError로 초기화 전체가 크래시함. 반드시 tracker 자신의
+            # feature_names로 슬라이싱하고, "1m" 모델이 없으면 다른 호라이즌으로
+            # fallback하지 않는다(다른 호라이즌 모델은 애초에 tracker 피처셋과 무관).
+            h_names_1m = list(getattr(self._shap_tracker, "feature_names", []) or [])
+            if horizon_model is not None and h_names_1m:
                 restored_vectors = np.array(
                     [
-                        [float(feat.get(name, 0.0) or 0.0) for name in self.model.feature_names]
+                        [float(feat.get(name, 0.0) or 0.0) for name in h_names_1m]
                         for feat in all_feat_rows[-self._shap_feature_window.maxlen:]
                     ],
                     dtype=np.float32,

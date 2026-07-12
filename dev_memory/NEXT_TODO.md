@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-07-12 (312차 — SHAP 복원 크래시 수정, 라이브 검증 대기)
+
+> 19:51 재기동 로그에서 `TradingSystem.__init__` 크래시(`IndexError`,
+> `shap_tracker.py:534`) 실측 후 근본원인 수정. 상세: `DECISION_LOG.md` 동일 날짜
+> 항목.
+
+- [ ] **다음 재기동 시 SHAP 복원 크래시 재발 없음 확인** — `main.py:_restore_analysis_buffers()`
+  가 `IndexError` 없이 완료되고 `[AnalysisRestore] SHAP 복원 계산: ok=...` 로그가
+  정상 출력되는지 확인. `_cached_shap_importance`가 비어있지 않은지도 확인.
+- [ ] **`start_mireuk.bat` ASCII 미변환 (낮은 우선순위, 비차단)** — 실행 로그에
+  `'하므로' is not recognized...`, `'?' is not recognized...` 같은 명령 인식 오류가
+  찍힘(스크립트는 계속 진행되어 fatal은 아님). "bat 파일은 한글 UTF-8 있으면
+  cmd.exe가 CP949로 오독해 파싱 깨짐(2026-06-29 확인, ExitCode=255 유발 전례)" 규칙에
+  따라 `start_mireuk_CREON.bat`는 이미 순수 ASCII로 변환됐지만, 실제 사용 중인
+  `start_mireuk.bat`(banner에 `Broker :` 문구 있는 쪽)는 한글 UTF-8이 그대로 남아있음
+  (비ASCII 바이트 5853개). 여유 있을 때 동일 ASCII 변환 적용 검토.
+
+---
+
 ## 2026-07-12 (311차 후속2 딥다이브 — 8_time 이상신호 진단 결론)
 
 > `data/db/predictions.db`(ensemble_decisions + meta_labels horizon=15m, 06-15~07-10,

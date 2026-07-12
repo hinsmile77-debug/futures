@@ -6500,3 +6500,58 @@ feature_degraded 분포, 결측)를 별도 점검 필요(재론 조건과 무관
 염두에 둘 것 — 예컨대 `MIN_SAMPLES_PER_ZONE`만 낮추면 노이즈가 커지고,
 `POOL_MIN_DAYS`만 낮추면 좀비 방지 효과가 약해진다.
 **관련**: `NEXT_TODO.md` "DailyConsolidator(zone_penalty) 개선" 섹션.
+
+---
+
+## 2026-07-12 (312차) — 311차 후속10의 SHAP 피처스코프 수정이 재시작 복원 경로를 놓쳐 `TradingSystem.__init__` 크래시 (기동 로그 실측)
+
+### [버그] `_restore_analysis_buffers()`가 전체 97개 피처로 만든 X를 1m 12개 서브셋
+`ShapTracker`에 넣어 `get_current_ranking()`이 `IndexError`로 초기화 전체를 죽임
+
+**File**: `main.py:_restore_analysis_buffers()` (1088-1104), `learning/shap/shap_tracker.py:_calc_importance()`/`get_current_ranking()`
+**증상**: 19:51 수동 재기동(`start_mireuk.bat`, creon, 장후 디버그 모드) 로그 실측 —
+`TradingSystem.__init__` → `_restore_analysis_buffers()` → `self._shap_tracker.
+get_current_ranking()`에서 `IndexError: list index out of range`
+(`shap_tracker.py:534`, `for i in range(len(idx))` 루프에서
+`self.feature_names[idx[i]]`). 초기화 전체가 예외로 죽어 AUTO-RESTART 루프 진입
+(RestartCnt 증가, `main.py` 재기동 반복).
+**원인**: 311차 후속10이 `_ensure_shap_tracker()`(`ShapTracker` 생성 시 전체 97개가
+아니라 `get_available_feature_set("1m", ...)`의 12개 서브셋 사용)와
+`_refresh_shap_state()`(매분 라이브 경로, `_prep_shap_xy()`로 12개 컬럼만 슬라이싱)는
+고쳤지만, **재시작 복원 경로인 `_restore_analysis_buffers()`는 그대로 뒀음** — 거기서
+`restored_vectors`를 `self.model.feature_names`(전체 97개)로 만들어 12개짜리
+`ShapTracker.update()`에 그대로 넘겼다. 게다가 `horizon_model`도 `self.model.models.
+get("1m")`이 없으면 아무 호라이즌 모델이나 fallback으로 썼음(1m 전용 tracker와
+무관한 모델). 311차 후속10 커밋 메시지가 `_shap_feature_window`(구 버퍼)를 "무해한
+죽은 코드로 방치"라 명시했는데, 실제로는 `_restore_analysis_buffers()`가 여전히
+이 버퍼를 소비하는 살아있는 경로였음 — 판단이 틀렸다. 추가로 `_calc_importance()`의
+TreeExplainer 경로(1단계)만 유일하게 결과 길이를 `self._n_features`와 검증하지
+않아(2/3/4단계는 전부 검증함), 컬럼수가 안 맞는 X가 들어와도 조용히 길이가 다른
+importance를 반환해 크래시를 숨기지 못하고 그대로 전파시켰다.
+**Why**: "이 버퍼/경로를 지금 안 쓰는 것 같다"는 판단은 grep으로 실제 호출부
+전수 확인 없이는 신뢰할 수 없다 — `_shap_feature_window`는 `_refresh_shap_state()`
+에서는 안 쓰였지만 `_restore_analysis_buffers()`에서는 여전히 채워지고
+소비되는 별개의 살아있는 호출부였다. "무해한 죽은 코드"라고 판단하기 전에
+전체 사용처를 다시 확인했어야 함.
+**결정**:
+1. `main.py:_restore_analysis_buffers()` — `restored_vectors`를
+   `self._shap_tracker.feature_names`(실제 tracker가 생성될 때 쓴 1m 12개
+   서브셋)로 만들도록 수정. `horizon_model`도 "1m" 모델이 없으면 그냥 skip하도록
+   변경(다른 호라이즌 fallback 제거) — `_refresh_shap_state()`와 동일한 원칙으로
+   통일.
+2. `learning/shap/shap_tracker.py:_calc_importance()` — TreeExplainer 경로(1단계)에
+   `len(imp) != self._n_features`면 skip하고 `_tree_explainer_ok=False`로 전환하는
+   길이 검증 추가(2/3/4단계와 동일한 방어 패턴으로 통일).
+3. `learning/shap/shap_tracker.py:get_current_ranking()` — 방어적 길이 체크 추가.
+   디스크에서 로드되는 외부 상태(히스토리 JSON)를 다루는 시스템 경계이므로,
+   향후 다른 호출부에서 같은 종류의 불일치가 재발해도 `TradingSystem.__init__`
+   전체가 죽지 않고 빈 랭킹 반환 + 경고 로그로 격리되도록 함.
+**How to apply**: `ShapTracker`에 X를 넘기는 새 호출부를 추가할 때는 반드시
+`tracker.feature_names`(생성 시점에 고정된 실제 피처 리스트)로 컬럼을 맞출 것 —
+`self.model.feature_names`(전체 피처)를 그대로 쓰면 이번과 동일한 길이 불일치가
+재발한다. "이 코드 경로는 이제 안 쓴다"고 판단할 때는 grep으로 모든 호출부를
+확인하기 전까지 코드를 남겨두더라도 "죽은 코드"라 단정하지 말 것.
+**검증**: `py_compile` 통과. **라이브 미검증** — 다음 재기동 시
+`TradingSystem.__init__`이 `IndexError` 없이 완료되고, `_restore_analysis_buffers()`
+로그(`[AnalysisRestore] SHAP 복원 계산: ok=...`)가 정상 출력되는지 확인 필요.
+**관련**: `NEXT_TODO.md` 동일 날짜 항목, 311차 후속9·후속10 SHAP 계측 수정.

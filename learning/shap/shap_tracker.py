@@ -184,11 +184,24 @@ class ShapTracker:
                 # 다중 클래스: list[n_classes] 또는 3D array (shap 버전 의존)
                 if isinstance(shap_vals, list):
                     shap_vals = np.mean([np.abs(sv) for sv in shap_vals], axis=0)
-                    return shap_vals.mean(axis=0)
+                    imp = shap_vals.mean(axis=0)
                 elif shap_vals.ndim == 3:
-                    return np.abs(shap_vals).mean(axis=(0, 2))
+                    imp = np.abs(shap_vals).mean(axis=(0, 2))
                 else:
-                    return np.abs(shap_vals).mean(axis=0)
+                    imp = np.abs(shap_vals).mean(axis=0)
+                # [312차] TreeExplainer는 다른 경로(2/3/4단계)와 달리 길이 검증이
+                # 없었음 — X 컬럼수가 self._n_features와 다르면(호출부 버그로 잘못된
+                # 폭의 X가 들어온 경우) 길이가 안 맞는 importance가 그대로
+                # _current_importance에 저장되고, get_current_ranking()이
+                # feature_names로 인덱싱할 때 IndexError로 죽는다.
+                if len(imp) != self._n_features:
+                    logger.warning(
+                        "[SHAP] TreeExplainer 결과 길이 불일치: %d != %d (X.shape=%s) — skip",
+                        len(imp), self._n_features, getattr(X, "shape", None),
+                    )
+                    self._tree_explainer_ok = False
+                else:
+                    return imp
             except Exception as e:
                 _emsg = str(e)
                 if "binary classification" in _emsg.lower():
@@ -526,6 +539,12 @@ class ShapTracker:
 
     def get_current_ranking(self) -> List[dict]:
         if self._current_importance is None:
+            return []
+        if len(self._current_importance) != self._n_features:
+            logger.warning(
+                "[SHAP] _current_importance 길이 불일치: %d != %d — ranking skip",
+                len(self._current_importance), self._n_features,
+            )
             return []
         idx = np.argsort(-self._current_importance)
         return [
