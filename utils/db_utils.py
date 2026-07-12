@@ -436,6 +436,12 @@ def _migrate_trades_db():
                 "was_restart_after":  "INTEGER DEFAULT 0",
                 "had_partial_fill":   "INTEGER DEFAULT 0",
                 "entry_horizon":      "TEXT",
+                # [311차 후속] 진입 출처 태그 — SYSTEM_AUTO/OPERATOR_MANUAL/
+                # BROKER_SYNC_RECOVERY/OPERATOR_RESTORE/GHOST_PENDING_MISS.
+                # 기존 grade='MANUAL'이 유령 pending_miss 체결과 정상 수동매매를
+                # 구분 못 해 실전 전환 기준① 등 성과 집계가 오염된 문제(306차 유령
+                # 포지션 사후분석) 대응. NULL=구버전 레코드(출처 미상).
+                "entry_source":       "TEXT",
             }
             for name, dtype in additions.items():
                 if name not in cols:
@@ -955,6 +961,7 @@ def fetch_recent_ev(n: int = 20) -> Dict:
         """SELECT COALESCE(net_pnl_krw, pnl_krw) AS net_pnl_krw
            FROM trades
            WHERE exit_ts IS NOT NULL
+                 AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
            ORDER BY exit_ts DESC
            LIMIT ?""",
         (n,),
@@ -1185,6 +1192,7 @@ def fetch_trend_daily(days_back: int = 30) -> List[dict]:
                ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
         FROM trades
         WHERE exit_ts IS NOT NULL AND entry_ts >= ?
+              AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
         GROUP BY date(entry_ts)
         ORDER BY date(entry_ts) DESC
         LIMIT 30
@@ -1218,6 +1226,7 @@ def fetch_trend_weekly(weeks_back: int = 12) -> List[dict]:
                ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
         FROM trades
         WHERE exit_ts IS NOT NULL AND entry_ts >= ?
+              AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
         GROUP BY strftime('%Y-W%W', entry_ts)
         ORDER BY week DESC
         LIMIT 12
@@ -1237,6 +1246,7 @@ def fetch_trend_monthly(months_back: int = 12) -> List[dict]:
                ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
         FROM trades
         WHERE exit_ts IS NOT NULL AND entry_ts >= ?
+              AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
         GROUP BY strftime('%Y-%m', entry_ts)
         ORDER BY month DESC
         LIMIT 12
@@ -1254,6 +1264,7 @@ def fetch_trend_yearly() -> List[dict]:
                ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
         FROM trades
         WHERE exit_ts IS NOT NULL
+              AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
         GROUP BY strftime('%Y', entry_ts)
         ORDER BY year DESC
     """)]

@@ -6,7 +6,8 @@
   기본 리스크: 계좌의 1%
   신뢰도 배수: 0.6 ~ 1.5
   레짐 배수:   RISK_ON=1.0 / NEUTRAL=0.8 / RISK_OFF=0.5
-  미니선물:    켈리 산출값이 3 미만이면 3으로 올림 (최소 3계약)
+  미니선물:    켈리 산출값이 MINI_MIN_CONTRACTS 미만이면 그 값으로 올림
+               (config.settings — 311차 후속 3→1 완화, 근거는 해당 설정 주석 참조)
 """
 import logging
 from typing import Optional
@@ -14,6 +15,8 @@ from typing import Optional
 from config.constants import FUTURES_PT_VALUE, MINI_FUTURES_PT_VALUE
 from config.settings import (
     ACCOUNT_BASE_RISK, ATR_STOP_MULT, REGIME_SIZE_MULT, MAX_CONTRACTS,
+    MINI_MIN_CONTRACTS,
+    SIZING_TARGET_CAPITAL_ENABLED, SIZING_TARGET_CAPITAL_KRW,
 )
 
 logger = logging.getLogger("TRADE")
@@ -33,9 +36,6 @@ def _confidence_mult(confidence: float) -> float:
         if confidence >= threshold:
             return mult
     return 0.6
-
-
-MINI_MIN_CONTRACTS = 3   # 미니선물 최소 진입 계약 수
 
 
 class PositionSizer:
@@ -102,6 +102,7 @@ class PositionSizer:
                 "stop_distance": atr * ATR_STOP_MULT,
                 "core_health_mult": 0.0,
                 "safety_note": "CORE Health 진입 차단",
+                "kelly_advised_skip": False,
             }
 
         # [3순위] 재시작 루프 완전 차단
@@ -116,6 +117,7 @@ class PositionSizer:
                 "stop_distance": atr * ATR_STOP_MULT,
                 "core_health_mult": core_health_mult,
                 "safety_note": "재시작 루프 브레이커 차단",
+                "kelly_advised_skip": False,
             }
 
         if balance <= 0:
@@ -128,9 +130,13 @@ class PositionSizer:
                 "stop_distance": atr * ATR_STOP_MULT,
                 "core_health_mult": core_health_mult,
                 "safety_note": "계좌 잔고 미설정 — 기본 1계약",
+                "kelly_advised_skip": False,
             }
 
-        base_risk       = balance * ACCOUNT_BASE_RISK
+        # [311차 후속] base_risk는 사이징 전용 목표자본을 쓰고(모의투자 한정),
+        # balance(실제 브로커 잔고)는 마진체크·대시보드 표시 등 다른 용도에 그대로 사용.
+        sizing_balance  = SIZING_TARGET_CAPITAL_KRW if SIZING_TARGET_CAPITAL_ENABLED else balance
+        base_risk       = sizing_balance * ACCOUNT_BASE_RISK
         conf_mult       = _confidence_mult(confidence)
         regime_mult     = REGIME_SIZE_MULT.get(regime, 0.8)
         stop_distance   = atr * ATR_STOP_MULT
@@ -152,32 +158,42 @@ class PositionSizer:
             safety_parts.append(f"DNA×{dna_mult}")
         safety_note = " ".join(safety_parts) if safety_parts else "정상"
 
+        # [311차 후속] 켈리가 "자본 대비 1계약도 적절하지 않다"고 판단한 순간을 기록.
+        # 진입 자체를 스킵하진 않고(min_qty로 항상 최소체결) 플래그만 남겨, 향후 실제
+        # 스킵 로직 도입 여부를 판단할 데이터로 축적한다(Phase 0 RM분석: 이 플래그가
+        # True였던 과거 실거래 표본에서 손실이 압도적으로 몰려있었음을 확인 — 근거는
+        # dev_memory/NEXT_TODO.md 311차 항목).
+        kelly_advised_skip = False
         if stop_risk <= 0:
             quantity = min_qty
         else:
             raw_qty = (base_risk * conf_mult * regime_mult * grade_mult
                        * adaptive_kelly_mult * safety_mults) / stop_risk
+            kelly_advised_skip = raw_qty < 1.0
             quantity = max(min_qty, min(int(raw_qty), MAX_CONTRACTS))
 
         logger.info(
-            "[Sizer] %s선물 잔고=%s 기본리스크=%s 신뢰도배수=%s 레짐배수=%s "
-            "안전배수=%.2f(%s) → %d계약 (최소=%d)",
+            "[Sizer] %s선물 실효잔고=%s(실제잔고=%s) 기본리스크=%s 신뢰도배수=%s 레짐배수=%s "
+            "안전배수=%.2f(%s) → %d계약 (최소=%d)%s",
             "미니" if is_mini else "일반",
-            f"{balance:,.0f}", f"{base_risk:,.0f}",
+            f"{sizing_balance:,.0f}", f"{balance:,.0f}", f"{base_risk:,.0f}",
             conf_mult, regime_mult,
             safety_mults, safety_note,
             quantity, min_qty,
+            " [KellyAdvisedSkip]" if kelly_advised_skip else "",
         )
 
         return {
-            "quantity":          quantity,
-            "base_risk":         round(base_risk, 0),
-            "conf_mult":         conf_mult,
-            "regime_mult":       regime_mult,
-            "kelly_mult":        adaptive_kelly_mult,
-            "stop_distance":     round(stop_distance, 4),
-            "core_health_mult":  core_health_mult,
-            "safety_note":       safety_note,
+            "quantity":            quantity,
+            "base_risk":           round(base_risk, 0),
+            "conf_mult":           conf_mult,
+            "regime_mult":         regime_mult,
+            "kelly_mult":          adaptive_kelly_mult,
+            "stop_distance":       round(stop_distance, 4),
+            "core_health_mult":    core_health_mult,
+            "safety_note":         safety_note,
+            "kelly_advised_skip":  kelly_advised_skip,
+            "sizing_balance":      round(sizing_balance, 0),
         }
 
     def calc_size(

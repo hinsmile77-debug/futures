@@ -7,6 +7,22 @@ class ExecutionGovernor:
     """Runtime tradability gate: confidence + data quality + API latency.
 
     toxicity는 ToxicityGate가 전담하므로 여기서 제외 (이중 차감 방지).
+
+    [311차 후속 결정] 이 게이트는 "저신뢰도 시 사이즈 축소"가 아니라 **인프라 장애
+    전용 비상정지**로 운영하기로 확정됨. 실측(06-15~07-10) 근거:
+      - feature_quality_score는 정상 운영 중 95.9%가 0.94 이상(데이터원 정상이면
+        페널티 0, feature_builder.py의 quality_penalty 참조)이라 quality×0.35 항이
+        거의 항상 최대치.
+      - latency_score도 정상 틱 수신 지연(<0.3초)이면 항상 1.0이라 latency×0.25도
+        거의 항상 최대치.
+      - 즉 quality+latency만으로 tradability 기본값이 ~0.60이고, pass_threshold
+        (0.65)를 넘기려면 confidence×0.40이 0.05만 넘으면 되는데(confidence≥0.125)
+        실측 confidence는 항상 이보다 훨씬 높아 **confidence 항은 사실상 판정에
+        관여하지 못함**(같은 기간 실측 tradability 최솟값 0.671 > 0.65, pass 100%).
+      - 이 기간 실제 데이터 결손·지연 급증이 없어 발동 0건이었을 뿐이며, docstring
+        문구("confidence + quality + latency"가 대등하게 반영된다는 인상)와 실제
+        동작(quality/latency 급락 시에만 사실상 발동) 사이의 괴리를 인지한 상태로
+        현 구조를 유지하기로 결정 — 재설계하지 않음.
     """
 
     def __init__(
