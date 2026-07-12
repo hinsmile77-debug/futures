@@ -6420,3 +6420,83 @@ feature_degraded 분포, 결측)를 별도 점검 필요(재론 조건과 무관
 품질 이슈 자체는 조사 가치 있음 — `NEXT_TODO.md`에 신규 항목 등록).
 **관련**: `NEXT_TODO.md` "2026-07-12 (311차 후속2 딥다이브 — 사이징 꼬리위험
 이상신호 진단 결론)" 섹션.
+
+---
+
+## 2026-07-12 (311차 후속3 구현) — DailyConsolidator zone_penalty 개선 6건 구현 (P0×2, P1×2, P2×2)
+
+### [구현완료] 좀비 패널티·2클래스 임계 불일치·일단위 노이즈·표본 부족·acc→기대손익 전환
+
+**File**: `learning/self_learning/daily_consolidator.py`, `learning/prediction_buffer.py`,
+`main.py:4248-4256`
+
+**배경**: `17d4b3b`(311차 후속3)가 07-10 로그의 zone별 정확도 극심한 변동 딥다이브에서
+도출해 `NEXT_TODO.md`에 등록만 하고 미착수였던 6건(P0 2건, P1 2건, P2 2건)을 이번
+세션에서 구현.
+
+**구현 내용**:
+1. **좀비 패널티 차단(P0)** — `_history`를 `float` 리스트에서 `{n, wins, sum, sumsq} |
+   None` 스냅샷 리스트로 변경. 당일 표본이 `MIN_SAMPLES_PER_ZONE`(5) 미달(0건 포함)이면
+   `None`을 기록해 "갱신 안 됨"을 명시적으로 표시. 패널티 판정은 최근
+   `POOL_WINDOW_DAYS`(5)일 중 `None`이 아닌 날만 모아 풀링하므로, 표본이 구조적으로
+   적은 zone(EXIT_ONLY 10분·GAP_OPEN 5분)은 창이 밀려나며 자연히 "판정 보류(패널티
+   0)"로 수렴 — 하드코딩된 제외 리스트 없이 범용적으로 해결.
+2. **패널티 기준선 교정(P0)** — `record()`에 `predicted_dir` 인자를 추가해 FLAT(0)
+   예측을 CB③과 동일한 방식으로 집계 자체에서 제외(2클래스화). 원래 후보였던
+   "PENALTY_THRESHOLD를 33%로 재설정" 안은 채택하지 않음 — 판정 기준 자체가
+   accuracy에서 기대손익 CI(항목 5)로 바뀌어 accuracy 임계값이 더 이상 결정변수가
+   아니게 됐기 때문. `PENALTY_THRESHOLD` 상수 제거.
+3. **일단위 → 풀링 판정 전환(P1)** — `_mean_upper_bound()`(정규근사 95% CI, `docs/Ref/
+   Wilson 하한.txt`와 동일 발상을 realized_move 연속값에 적용) 신설. 최근
+   `POOL_WINDOW_DAYS`(5)일 중 유효일이 `POOL_MIN_DAYS`(3) 이상일 때만 풀링해 판정 —
+   기존 "2일 연속 미만 전부" AND 조건(단발 노이즈에 취약)을 대체.
+4. **표본 확충(P1)** — `main.py` STEP1 검증 루프의 zone 기록 대상을 `5m` 단독 →
+   `3m`+`5m` 합산으로 확대. 원 항목은 "1m·3m·5m 합산"이었으나, 311차 후속6에서 1m이
+   유의한 역스킬(acc 47.75%, n=3,904, z=-2.82, p=0.0048)로 확정된 새 근거를 반영해
+   1m은 제외 — 무스킬이 아니라 "확정된 역스킬" 신호를 zone 정확도/기대손익 집계에
+   섞으면 다른 zone의 판정까지 오염시킬 위험이 있다고 판단.
+5. **acc → 기대손익(realized_move) 전환(P2)** — `learning/prediction_buffer.py`의
+   `verified` dict에 이미 계산되던 `meta["realized_move"]`(pt, 방향부호 반영, 기존
+   `meta_labels` INSERT에만 쓰이고 있었음)를 추가 노출. `daily_consolidator.record()`가
+   이를 받아 하루/풀링 단위로 합·제곱합을 누적하고, 패널티 판정은 "풀링된
+   realized_move 평균의 95% CI 상단이 0 미만인가"로 전환(정확도는 로그 표시용으로만
+   유지). accuracy 기반 임계값 비교 방식은 완전히 폐기.
+6. **대표 호라이즌 5m→3m 교체 검토(P2)** — 항목 4(표본 확충)와 동일한 3m+5m 합산
+   배선으로 처리, 순수 "5m→3m 단독 교체"는 적용하지 않음. 이 항목 자체가 "현재
+   상태에서는 zone별 우열을 논할 스킬을 가진 호라이즌 자체가 없다"(311차 후속5~8
+   z-test로 5m은 고신뢰구간 역보정, 3m은 무스킬·비유의로 각각 확정)고 명시했던
+   선행 조건이 여전히 미해결이므로, 특정 단일 호라이즌에 과도히 의존하지 않도록
+   합산을 택함.
+
+**부가 발견(범위 밖, 신규 등록)**: 구현 중 `get_penalty()`/`get_all_penalties()`를
+전 코드베이스에서 검색한 결과 호출부가 전혀 없음을 확인 — 패널티는 계산·저장만 되고
+어떤 진입 로직(체크리스트·MetaGate 등)도 다음 날 이를 소비하지 않는 상태. 이번
+6건은 "패널티가 산출되는 로직" 자체의 개선이라 이 미배선 상태와 독립적으로 유효하나,
+실제 진입 기준에 반영되려면 별도 배선 작업이 필요 — `NEXT_TODO.md`에 신규 항목으로
+등록.
+
+**구 데이터 마이그레이션**: 기존 `data/zone_penalty.json`의 `history`는 구 포맷
+(`zone → [accuracy_float, ...]`)이라 새 스냅샷 구조로 재구성 불가 — `_load()`에서
+첫 항목이 `dict`가 아니면 해당 zone 이력을 폐기(로그: "구 포맷 이력 N개 구간 폐기")하고
+풀링을 새로 시작하도록 처리. `penalties`(현재 적용 중인 패널티 값)는 그대로 유지되며
+다음 `consolidate()`(15:40)에서 새 로직으로 재산출됨.
+
+**Why**: 6건이 서로 독립적이라기보다 실제로는 하나의 스냅샷 구조 재설계로 함께
+풀리는 문제였음(좀비 방지를 위한 None 마킹이 풀링 창의 전제 조건이고, 풀링을 하려면
+일별로 wins/n/sum/sumsq를 보존해야 하고, FLAT 필터링은 accuracy·realized_move 양쪽
+모두의 정확도를 위해 필요) — 개별 패치보다 스냅샷 스키마를 한 번에 바꾸는 편이
+일관성 있었음.
+
+**검증**: `py_compile`(daily_consolidator.py·main.py·prediction_buffer.py) 통과.
+격리 스모크 테스트 4종 직접 실행 확인 — (1) FLAT 예측 집계 제외, (2) 표본 미달일
+`None` 마킹, (3) 지속적 음의 realized_move 입력 시 CI 상단<0으로 패널티 발동, (4) 그
+후 여러 표본미달일 경과 시 유효 풀 크기가 0으로 줄며 패널티가 자동 0으로 복귀(좀비
+해소), (5) 구 포맷 JSON 로드 시 크래시 없이 폐기·재시작. **라이브 미검증** — 다음
+15:40 EOD 마감에서 새 `[Consolidator]` 로그 포맷 정상 출력, 3m+5m 합산으로 zone당
+표본 수 증가, 구 데이터 마이그레이션 로그 정상 출현 확인 필요.
+
+**How to apply**: 이 패널티 산출 로직에 추가로 손댈 일이 생기면(예: `get_penalty()`
+배선), `POOL_WINDOW_DAYS`/`POOL_MIN_DAYS`/`MIN_SAMPLES_PER_ZONE`이 서로 맞물려 있음을
+염두에 둘 것 — 예컨대 `MIN_SAMPLES_PER_ZONE`만 낮추면 노이즈가 커지고,
+`POOL_MIN_DAYS`만 낮추면 좀비 방지 효과가 약해진다.
+**관련**: `NEXT_TODO.md` "DailyConsolidator(zone_penalty) 개선" 섹션.
