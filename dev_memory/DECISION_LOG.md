@@ -5593,3 +5593,458 @@ predictions 테이블로 06-15~ 전체 재현 시 1m을 30m처럼 분모에서 �
 로그가 실제로 찍히는지, (2) CoherenceGate 발동 빈도가 유의미하게 감소하는지,
 (3) 1m 제외 후 GBM 앙상블 가중치 계산 자체(coherence 집계와 무관)는 영향받지
 않는지(1m은 여전히 up/down_score 가중합에는 참여 — coherence 분모에서만 제외).
+
+---
+
+## 2026-07-12 (311차 후속5) — 5개 호라이즌(1m·3m·5m·10m·15m) conf-층화 재검증: 5m만 30m급 역보정 확정, 나머지는 무스킬/불명확
+
+### [분석] Phase 0 — 호라이즌별 고신뢰구간 역보정 여부 개별 재검정
+
+**배경**: 311차 "핵심 발견 1"(전 호라이즌 무스킬 또는 역보정)과 `NEXT_TODO.md`의
+"[근본원인, 미착수] 호라이즌 conf 보정기의 고신뢰 구간 계통적 역보정" 항목은 6개
+호라이즌을 뭉뚱그려 "문제 있음"으로만 서술했고, 어느 호라이즌이 30m과 같은 유형
+(역보정, hinge 보정으로 고칠 수 있는 문제)이고 어느 게 그냥 무스킬(정보 자체가 없어
+보정으로 못 고치는 문제)인지는 미분리 상태였음. 이 구분 없이 311차 후속4가
+`ExtremityCorrector`를 전체 호라이즌에 일괄 적용했다가 ECE가 오히려 전부 악화돼
+30m 전용으로 축소한 전례가 있어(`NEXT_TODO.md` 96번 항목 `[DONE 2026-07-12]`),
+재발 방지를 위해 호라이즌별로 개별 재검정.
+
+**방법**: `data/db/predictions.db`의 `predictions` 테이블(06-15~07-10, `direction!=0
+AND actual!=0`로 방향성 표본만 필터링)에서 conf<0.55 vs conf≥0.55 방향적중률을
+two-proportion z-test로 호라이즌별 비교. 1m 결과(기준선 47.8%, conf 0.55~0.60구간
+37.5%)가 311차 인용 수치("45~51%", "35.8%")와 근접해 방법론 정합성 확인 완료.
+
+**결과**:
+
+| 호라이즌 | conf<0.55 acc(n) | conf≥0.55 acc(n) | z | p | 판정 |
+|---|---|---|---|---|---|
+| 1m | 47.8%(3876) | 35.7%(28) | -1.28 | 0.201 | 무스킬 |
+| 3m | 51.2%(1544) | 54.0%(50) | +0.39 | 0.693 | 무스킬 |
+| 5m | 50.3%(1106) | 34.9%(106) | -3.02 | **0.0025** | **역보정(유의)** |
+| 10m | 49.0%(1120) | 61.0%(59) | +1.80 | 0.072 | 무스킬(양의 방향, 근소 미달) |
+| 15m | 49.0%(910) | 45.3%(190) | -0.94 | 0.347 | 무스킬 |
+| 30m(대조) | 48.2%(2480) | 40.3%(258) | -2.42 | 0.015 | 역보정(기존 확인·수정됨) |
+
+6개 동시검정에 Bonferroni 보정(α=0.05/6=0.0083)을 적용해도 5m(p=0.0025)만 통과.
+30m(p=0.0154)은 이 단일 z-test만으로는 근소 미달이나, 30m은 이미 별도 hinge 분해
+(`compute_extremity_hinge`, t=-5.38 p<0.0001, 5,278건)와 워크포워드로 추가 검증
+완료된 상태라 무관. 5m의 conf-bucket accuracy는 51%→40%→36%→32%→30%로 conf
+0.50부터 이미 단조 하락하는 깔끔한 패턴 — 30m처럼 극단 tail(0.65+)에서만 튀는
+형태와 다름.
+
+**판단**: NEXT_TODO의 "나머지 호라이즌 conf 보정 확대"는 4개(3m·5m·10m·15m)
+전부가 아니라 **5m 하나만 대상**으로 좁힌다. 1m·3m·15m은 이번 윈도우 기준 유의한
+역보정 근거 없음(종결). 10m은 p=0.072로 근소 미달인 데다 방향이 오히려 양(+)이라
+"watch"로만 남기고 재검토하지 않는다. 이 재분류가 후속4의 "일괄 적용 시 ECE 전부
+악화" 결과를 설명해준다 — 문제 없는 호라이즌(1m·3m·10m·15m)에 보정항을 추가해
+멀쩡한 걸 건드려 악화시킨 것으로 추정.
+
+**다음**: 5m에 대해 30m과 동일한 hinge 분해(`compute_extremity_hinge`,
+bb_position/vwap_position 극단 정렬) 재현해 같은 메커니즘인지 확인 (Phase 1).
+
+**한계**: `predictions.db` 단일 윈도우(06-15~07-10, 약 4주) 기준 진단. 10m의 근소
+미달(p=0.072)은 표본이 늘면 뒤집힐 수 있어 재검정 여지 있음. z-test는 상관관계
+확인이지 GBM 원인 규명은 아님(그건 Phase 1의 역할). 재현 스크립트는 세션
+스크래치패드 산출물이라 리포지토리에 저장되지 않음 — 필요 시 위에 기록한 SQL
+필터(`direction!=0 AND actual!=0`, 06-15~ 윈도우)·bucket 경계(0.55)·z-test
+방법론 그대로 재현 가능.
+
+### [분석] Phase 1 — 5m hinge 원인 피처 탐색: bb/vwap·CVD/OFI 전부 미확인 (원인 미규명 상태로 보류)
+
+**방법**: `compute_extremity_hinge()`(30m에서 검증된 방식)를 5m 데이터에 그대로
+재현 — conf≥0.55 구간(n=106)에서 bb_position/vwap_position 극단 정렬(hinge>0) vs
+정상범위(hinge=0) 그룹 간 정확도 z-test.
+
+**결과 1 — bb/vwap hinge는 5m에서 재현 안 됨**: hinge>0 n=42 acc=38.1% vs
+hinge=0 n=64 acc=32.8%(z=+0.56, p=0.577) — **30m과 부호가 반대**(30m은 hinge>0
+acc=23.4% ≪ hinge=0 acc=42.6%로 hinge>0이 더 나빴음). 5m은 hinge 여부와 무관하게
+고conf 구간 전체가 고르게 나쁨 — 30m식 "극단 피처 → 국소적 과신" 메커니즘이 아님.
+
+**결과 2 — 5m CORE 피처(cvd_delta_norm/ofi_pressure/ofi_norm) 반대신호 가설도 미확인**:
+같은 conf≥0.55(n=106) 구간에서 예측방향과 반대(contra) vs 동의(agree) 그룹 비교 —
+cvd_delta_norm: contra n=64 acc=29.7% vs agree n=42 acc=42.9%(z=-1.39, p=0.164,
+방향은 가설과 일치하나 유의하지 않음), ofi_pressure/ofi_norm: contra n=57
+acc=35.1% vs agree n=49 acc=34.7%(z=+0.04, p=0.966, 완전 무관). 하위 25%
+"강한 반대신호"로 좁혀도 유의성 없음(z=-0.20, p=0.843).
+
+**판단**: 5m의 conf≥0.55 역보정(z=-3.02, p=0.0025로 확정)은 원인 피처를 4종
+(bb_position/vwap_position/cvd_delta_norm/ofi_pressure) 시도했으나 전부 통계적
+유의성 미달 — cvd_delta_norm이 방향은 가장 근접하나(p=0.164) n=106(하위그룹
+42~64건)로 결론 내기엔 표본이 얇음. **30m처럼 "원인 피처 특정 → hinge 보정 배선"
+경로를 5m에 지금 적용할 근거가 없음** — 원인 미규명 상태에서 보정기를 만들면
+후속4의 일괄적용 실패(문제 없는 곳을 건드려 악화)를 다른 형태로 반복할 위험.
+**결정: 5m ExtremityCorrector 신설은 보류.** 표본 누적(현재 고conf 106건/4주,
+하루 ~4건 페이스) 또는 전체 114개 피처에 대한 체계적 탐색(로지스틱 회귀로
+correct ~ conf×feature 상호작용항 스크리닝 등) 중 하나가 선행돼야 함.
+
+---
+
+## 2026-07-12 (311차 후속6) — 1m·3m·15m 무스킬 근본원인: 학술·업계 조사 + 신규 실측(1m 역스킬 확정) + 딥다이브/개선 계획 수립
+
+### [분석+계획] 무스킬 3개 호라이즌의 병리가 서로 다름을 확정 — 1m은 무스킬이 아니라 유의한 역스킬
+
+**전체 보고서**: `docs/미륵이고도화2/무스킬_근본원인_학술업계조사_딥다이브계획_2026-07-12.md`
+(학술·업계 조사 전문 + H1~H6 가설 트리 + 조건부 개선 계획 + 출처 18건)
+
+**신규 실측 (이 세션에서 추가 확정)**: Phase 0(후속5)과 동일 표본(06-15~07-10,
+`direction!=0 AND actual!=0`)으로 방향적중률의 vs-50% 단일표본 검정 실행:
+- **1m: 47.75%(n=3,904), z=-2.82, p=0.0048 — 동전던지기보다 유의하게 나쁨(역스킬)**.
+  정보 부재가 아니라 부호가 체계적으로 반대 — "GBM이 모멘텀을 학습했는데 1분
+  스케일 실제는 평균회귀(호가 반등)"라는 문헌 예측과 부합하는 패턴.
+- 3m: 51.25%(n=1,594), p=0.316 — 약한 양(+)이나 비유의.
+- 15m: 48.36%(n=1,100), p=0.278 — 진짜 무스킬.
+- 피처 사망 여부도 점검: bb_position/ofi_pressure/cvd_delta_norm 등 주요 피처
+  분산 정상(상수화 아님) — 무스킬 원인이 "피처 죽음"은 아님.
+
+**학술·업계 조사 핵심 (상세는 보고서)**:
+1. 1분 호라이즌은 미시구조 잡음 지배 — OHLCV 파생 지표 기반 신호의 구조적 한계
+   (MNQ 반증 연구 등). 미륵이 114개 피처 대부분이 여기 해당.
+2. fixed-time horizon σ-threshold 레이블의 경로 무시(path-independence) 결함 —
+   triple-barrier/trend-scanning이 문헌 표준.
+3. 업계에서 분 단위 방향 알파의 원천은 사실상 서명된 주문흐름(Cont식 best bid/ask
+   이벤트 OFI) 하나 — 그런데 미륵이는 Cybos buy_vol 편향(98.6% buy>sell, 6/25
+   문서화)으로 cvd_direction 상수화 → price-action 기반 cvd_delta_norm 대체 이력
+   = 단기군 CORE가 진짜 주문흐름이 아닐 가능성.
+4. 메타레이블링 정론: 메타 모델은 1차 모델과 독립적인 피처를 소비해야 함 —
+   MetaGate가 blended_conf(오염된 ens conf 60~75% 가중)를 소비하는 현 구조와 어긋남.
+5. 현실적 기대치: 분 단위 방향 hit rate 51~53%가 업계 상한권(주문흐름 인프라
+   전제). "1m 방향의 conf 층화" 목표 자체가 과욕일 수 있음.
+
+**수립한 딥다이브 계획 (H1~H6, 상세는 보고서 §2)**: H1(1m 역스킬=평균회귀 역학습,
+반나절) / H2(단기군 CORE 주문흐름 품질 — 가장 중요, FutureJpBid 기반 Cont식 OFI
+오프라인 재구성 비교) / H3(1m 레이블 threshold vs 틱·스프레드, 1시간) / H4(15m
+중첩 보정 유효표본+피처 스크리닝) / H5(conf를 방향마진 (up-down)/(up+down)으로
+재정의 시 층화 부활 여부 — 저비용·고효과 후보) / H6(30분 장중 재학습의 잡음 추적
+여부). **권장 순서: H3→H1→H5→H2→H4→H6** — 앞 3개는 한 세션 분량이고 "1m 퇴역
+여부"와 "conf 재정의" 갈림길을 결정.
+
+**개선 계획은 전부 조건부 분기** (보고서 §3): H1 확정 시 1m 방향 퇴역/역할 전환
+(신호 반전 사용은 금지 — 취약 엣지), H2 확정 시 진짜 OFI 재구축(CORE 원칙 개정
+필요 — 사용자 승인 필수), H3 확정 시 1m 레이블 재설계(SGD 리셋 동반), H5 확정 시
+방향마진 conf 도입, 이후 MetaGate 재설계(독립 피처 소비). 공통 게이트: purged
+워크포워드 + 다중검정 보정 통과 전 라이브 배선 금지(275차·311차 후속4 교훈 명문화).
+
+---
+
+## 2026-07-12 (311차 후속7) — H3·H1·H5 저비용 가설 3종 전부 기각: "싸게 고칠 원인" 배제, H2(주문흐름 데이터 품질)로 무게중심 이동
+
+### [분석] H3 — 1m 레이블=호가잡음 가설 기각
+
+`meta_labels.threshold_move`(horizon=1m, 06-15~) 실측: 평균 0.87pt(std 0.44,
+범위 0.24~3.95pt). `TICK_SIZE=0.02pt` 기준 평균 43.7틱, 최솟값도 12틱. 동일
+구간 `spread_ticks` 실측 중앙값 6틱(p90=16틱)과 비교하면 레이블 threshold가
+스프레드의 7배 이상 — **"threshold≈스프레드+1~2틱이면 호가반등 분류"라는 가설
+기각**. 1m 레이블은 스프레드보다 충분히 큰 실질적 가격이동을 요구하고 있음.
+
+### [분석] H1 — 1m 역스킬=모멘텀모델×평균회귀시장 가설 기각 (3개 하위검정 전부)
+
+`predictions.features.ret_1m`(직전 1분 수익률, 06-15~, n=3,904) 이용:
+- **(i) 예측방향-직전수익률 부호 일치율 49.82%**(vs 50%, z=-0.23, p=0.82) — 모델이
+  모멘텀을 추종하지도 역행하지도 않음(우연 수준). "GBM이 모멘텀을 학습했다"는
+  전제 자체가 성립 안 함. 모멘텀추종 그룹(acc=48.9%) vs 역행 그룹(acc=46.5%)
+  차이도 비유의(z=+1.48, p=0.14).
+- **(ii) 1분 수익률 lag-1 자기상관 r=-0.0102**(p=0.52, Pearson), Spearman도
+  +0.0104(p=0.51) — 시장 자체가 1분 스케일에서 모멘텀도 평균회귀도 아닌 거의
+  순수 무작위보행. "1분 스케일은 평균회귀"라는 시장측 전제도 이 표본에서는
+  근거 없음.
+- **(iii) 반전(sign-flip) 정확도 52.25%**는 이진분류 산술항등식(1-acc)이라 독립
+  증거 아님(참고용으로만 기록). 대신 원 저성능(47.75%)의 기간 안정성 확인:
+  전반(06-15~06-30, n=2,196) 47.54% vs 후반(07-01~07-10, n=1,708) 48.01% —
+  거의 동일, 일회성 이벤트가 아니라 4주 내내 일관된 지속적 패턴.
+
+**판단**: H1이 제시한 구체적 메커니즘(모멘텀 학습 모델 vs 평균회귀 시장)은
+데이터로 지지되지 않음. 저성능은 실재하고 안정적이지만, 원인은 이 단순한
+스토리가 아님.
+
+### [분석] H5 — conf 정의(FLAT 오염) 가설 기각 + 15m 부수 발견
+
+먼저 가설 전제 검증: `flat_prob > max(up_prob, down_prob)`인데 `direction!=0`으로
+강제 배정된 사례가 **0/3,904건**(1m) — "FLAT이 실제 1위인데 방향예측으로 우회됨"
+현상 자체가 없음. `confidence` 컬럼은 항상 `max(up_prob, down_prob)`와 100% 일치
+(`direction`이 순수 argmax). 가설의 전제부터 반증됨.
+
+그럼에도 방향마진 `|up_prob-down_prob|/(up_prob+down_prob)`으로 재정의해
+1m/3m/15m 재층화(point-biserial 상관 + 사분위 비교):
+- **1m**: margin 상관 r=+0.0021(p=0.89) — 기존 conf 상관(r=-0.0043, p=0.79)과
+  사실상 동일. 고마진(상위25%) acc=47.7% vs 저마진(하위25%) acc=47.8%, z=-0.05,
+  p=0.96 — **완전히 동일, 숨은 스킬 없음**.
+- **3m**: margin 상관 r=+0.0235(p=0.35) — 기존과 거의 동일, 여전히 약한 양(+)
+  비유의.
+- **15m (부수 발견)**: margin 상관 **r=-0.0836(p=0.0056)** — 기존 conf 상관
+  (r=-0.0622, p=0.039)보다 오히려 더 유의한 음의 상관. bucket이 U자형(margin
+  [0,0.2)=55.4%, [0.2,0.4)=45.2%, [0.4,0.6)=39.9%, [0.6,0.8)=42.9%,
+  [0.8,1.0)=55.6%, n=45로 얇음)이라 Phase 0의 단순 0.55-threshold 이분검정
+  (z=-0.94, p=0.35, 비유의)이 놓친 비선형 관계일 가능성. 다만 고마진/저마진
+  사분위 직접비교는 비유의(z=-1.45, p=0.147) — 선형상관과 사분위검정의 결과가
+  엇갈려 확정적이지 않음.
+
+**판단**: conf 정의(FLAT 오염) 가설은 기각. 1m/3m은 margin으로 재정의해도 추가
+정보 없음 — "무스킬"이 conf 정의 문제가 아니라 진짜임을 재확인. 15m은 "완전
+무스킬"보다 "약한 비선형 역보정"일 가능성이 새로 제기됨 — 확정 아님, 별도
+후속 필요(아래 NEXT_TODO 참조).
+
+### 종합 판단 — 권장순서 저비용 3종 전부 기각, H2로 무게중심 이동
+
+H3(레이블잡음)·H1(모멘텀×평균회귀)·H5(conf정의) 모두 "싸게 고칠 수 있는" 가설
+이었는데 전부 데이터로 기각됨. 학술조사 §1-1(d)의 "저S/N 환경 GBM 과적합"과
+§1-2(a)의 "단기 알파는 진짜 서명 주문흐름에서만 나온다"는 두 관찰이 상대적으로
+설득력을 얻음 — 1m의 저성능(-2.82z, 안정적)이 단순한 레이블/모멘텀/conf 결함이
+아니라면, 남은 큰 후보는 (1) 단기군 CORE(OFI/CVD) 피처 자체가 진짜 정보가 아닌
+가격 파생물이라 GBM이 노이즈를 학습(H2), 또는 (2) 위 셋 모두 아닌 제3의 원인
+(피처 전면 스크리닝 필요, H4 방법론을 1m/3m에도 확장 검토). **다음 착수는
+계획대로 H2** — 우선순위·기대효과가 가장 크다는 애초 판단 유지.
+
+---
+
+## 2026-07-12 (311차 후속8) — H2 확정: 현 CORE(OFI/CVD) 무정보 재확인 + 이미 구현된 미사용 LOB피처(microprice_bias)에서 일관된 잔여신호 발견
+
+### [분석] H2(i) — 가격통제 후 부분상관: 현 CORE 전멸, microprice_bias만 3개 호라이즌 전부 유의
+
+**방법**: `meta_labels`(1m/3m/5m, 06-15~)에서 타겟 = `future_close - target_close`
+(raw, 예측방향과 무관한 순수 미래가격변화). 통제변수 = `ret_1m/ret_5m/vwap_momentum`
+(직전 가격모멘텀, `predictions.features`/`meta_labels.features`에 이미 존재).
+후보 14종을 통제변수에 회귀한 잔차끼리 상관(부분상관)으로 "가격모멘텀으로
+설명 안 되는 잔여 예측력"만 분리 측정.
+
+**결과**:
+- **현 CORE(ofi_norm/ofi_pressure/ofi_imbalance/cvd_delta_norm) — 3개 호라이즌
+  전부 사실상 무정보**: partial_p 대부분 0.3~0.95 (3m의 cvd_delta_norm만 p=0.043로
+  경계선, 단일 호라이즌·단일 후보라 재현성 없음). H2 가설("단기군 CORE가 진짜
+  주문흐름이 아니다") 데이터로 확인.
+- **microprice_bias(기존 CORE 미포함, `features/technical/microprice.py`) — 1m/3m/5m
+  전부 유의**: 1m p=0.0091(r=+0.032), 3m p=0.0168(r=+0.039), 5m p=0.0015(r=+0.056).
+  세 독립 표본에서 반복 재현된 유일한 피처.
+- **mlofi_norm/mlofi_slope(기존 CORE 미포함, `features/technical/mlofi.py`) — 3m·5m
+  유의**: mlofi_norm 3m p=0.011, 5m p=0.011; mlofi_slope 1m p=0.025, 5m p=0.045.
+
+**핵심 발견**: `features/technical/microprice.py`(microprice = 호가 큐 수량가중
+중간가, Stoikov 정의)·`mlofi.py`(다층 OFI, Cont-Kukanov-Stoikov `_level_contribution`
+로직 그대로 구현 — price improve/same/worse에 따라 qty/qty델타/-prev_qty 부호
+분기)·`queue_dynamics.py`(큐 고갈·리필 동역학)가 **실시간 호가 큐 수량
+(bid_qtys/ask_qtys, update_hoga)으로 이미 정확히 계산돼 predictions/meta_labels의
+features JSON에 저장까지 되고 있는데, CORE 피처 목록(CLAUDE.md 단기군: cvd_delta_norm/
+vwap_position/ofi_pressure)에는 전혀 포함돼 있지 않았음**. 애초 H2(ii)로 계획했던
+"FutureJpBid로 Cont식 OFI 재구성"은 **불필요로 판명** — `mlofi.py`가 이미 그 구현.
+
+**한계(과신 금지)**: 효과크기 작음(r=0.03~0.06, 설명분산 0.1~0.3%). 14피처×3호라이즌
+=42회 동시검정이라 개별 p값 대부분이 Bonferroni(α=0.05/42=0.00119) 미통과.
+다만 microprice_bias가 **독립 표본 3개 전부에서 재현**된 것은 우연 대비 강한
+근거(3개 모두 p<0.05일 우연확률 0.05³=0.000125). 그러나 이는 선형 부분상관일
+뿐 — 실제 GBM 재학습 후 conf-층화 정확도가 개선되는지는 미검증.
+
+**판단**: H2 확정. 다음 단계는 (1) microprice_bias·mlofi_norm/slope를 실제 GBM
+피처셋에 투입해 재학습 후 1m/3m/5m conf-층화 정확도 개선 여부를 purged
+워크포워드로 검증, (2) 개선 확인 시 CORE 교체는 CLAUDE.md CORE 원칙 개정
+사안이라 사용자 승인 필요(절대원칙 §3). 현재는 "가설 지지 증거 확보" 단계이지
+"교체 확정" 단계 아님 — 라이브 반영 전 반드시 (1) 통과 필요.
+
+### [분석] H2 재학습 계획 착수 전 SHAP 재확인 — "재학습 계획" 자체가 전제 오류였음을 발견
+
+착수 전 `data/db/shap_tracker.db`로 실제 라이브 모델의 피처 기여도를 확인한 결과,
+당초 계획("microprice_bias를 피처셋에 투입 후 재학습")의 전제가 잘못됐음이 드러남.
+
+**발견 1 — microprice_bias는 1m/3m 모델에 이미 포함돼 있음(재학습 불필요 부분)**:
+`featureset by horizon/horizon_feature_sets.json`(`features/horizon_feature_registry.py`
+가 실제 로드하는 라이브 레지스트리, 스텁 문서 아님) 확인: 1m은 microprice_bias·
+mlofi_slope·queue_directional_depletion이 이미 `pkl='in_pkl'`(학습된 모델에 포함).
+3m도 microprice_bias 포함. **5m만 전부 미포함** — 5m에 한해서만 "추가 후 재학습"이
+유효한 계획.
+
+**발견 2 (핵심) — 1m 모델은 이미 포함된 microprice_bias/mlofi/cvd_delta_norm(CORE
+포함)을 SHAP상 사실상 전부 무시하고 ofi_norm 하나에만 의존**: `shap_tracker.db`
+(06-15~07-10, n=6,580/피처) 확인 — `ofi_norm` nonzero 90.3%(mean|shap|=0.0246)
+vs `microprice_bias`/`mlofi_slope`/`mlofi_norm`/**`cvd_delta_norm`(현재 CORE)**
+전부 nonzero 5.2%(mean|shap|=0.00007~0.00079, 사실상 죽은 가중치). "CORE는
+무시되고 대안은 안 써봐서 모른다"가 아니라 **CORE든 대안 후보든 GBM이 ofi_norm
+외엔 거의 다 무시하는 구조**임이 드러남. 부수: SHAP 추적 자체가 3m/5m엔 기록
+없음(1m만 로깅 — 운영 공백, 별도 기록).
+
+**발견 3 — ofi_norm 의존은 "그럴듯해 보여서"가 아님, 선형상관으로 설명 안 되는
+역설**: `model/horizons/gbm_1m.pkl`(sklearn `HistGradientBoostingClassifier`,
+07-10 15:45 EOD 재학습, `l2_regularization=0.0`(과잉규제 아님), `max_iter=300`
+중 `n_iter_=62`에서 조기종료, 12개 입력피처) 하이퍼파라미터 확인 후, 모델이
+실제 학습하는 훈련레이블(`predictions.actual`, 3-class)과 4종 피처의 직접상관
+검정(06-15~07-10, n=6,668): **ofi_norm(SHAP 90% 의존)은 훈련레이블과도 무상관
+(r=+0.0032, p=0.795)** — H2의 미래가격 부분상관(p=0.72~0.85)과 정확히 같은
+결론. 반대로 **microprice_bias(SHAP 5%, 거의 무시됨)는 훈련레이블과 오히려
+유의한 상관**(r=+0.0251, p=0.041). "그리디 부스팅이 훈련 초반 그럴듯해 보이는
+피처에 쏠린다"는 단순 설명으로는 이 역전(정작 안 쓰는 피처가 더 상관 있음)을
+설명 못함 — 비선형/구간별 상호작용을 트리가 포착했거나, 이 pkl의 실제 학습
+윈도우(전체 4주가 아니라 최근 며칠일 가능성)에서만 존재했던 일시적 패턴일
+가능성. `TRAINING_WINDOW` 류 정확한 설정을 grep으로 특정 못함 — **읽기전용
+세션의 한계**(재학습 로그·정확한 학습 윈도우 재현에는 실행 접근 필요).
+
+**판단**: 당초 계획("microprice_bias 투입 후 재학습")은 1m/3m엔 **무의미**
+(이미 포함, 이미 무시됨 — 다시 넣어도 같은 결과 예상) — **5m에서만 유효**.
+1m/3m의 진짜 문제는 "후보 피처 부재"가 아니라 "**GBM이 이미 가진 다양한
+신호를 활용 못하고 무정보 피처(ofi_norm) 하나에 붕괴돼 있는 것**" — 이는
+피처 추가로는 안 풀리고 모델 자체(정규화/조기종료 기준/피처 상호작용 포착
+능력)를 봐야 하는 별개의 더 깊은 문제. 사용자 판단으로 오프라인 진단에서
+세션 종료, 실제 재학습(.pkl 교체, py310_64 필요)은 별도 착수 시점으로 이연.
+
+---
+
+## 2026-07-12 (311차 후속9) — 실제 재학습·훈련로그 접근 진단: "ofi_norm 지배" 관측 자체가 깨진 SHAP 계측기 산출물이었음을 확인 (읽기전용, 프로덕션 .pkl 무변경)
+
+### [분석] py310_64 인메모리 진단 — 프로덕션 파이프라인 정확 재현 (저장 없음)
+
+**방법**: `model/horizons/gbm_1m.pkl` 로드 대신, 프로덕션 학습 코드 경로
+(`BatchRetrainer._load_from_db(26)` → `apply_robust_preprocess` →
+`get_available_feature_set("1m")` → `StandardScaler` → `_make_sample_weight`
+→ `HistGradientBoostingClassifier(**HIST_GBM_PARAMS)`)를 `learning/batch_retrainer.py`
+소스로 정확히 재현해 **인메모리로만** 재학습(`model/horizons/*.pkl` 저장,
+`session_state.json` 갱신, Slack 알림 전부 미실행 — `BatchRetrainer.retrain_now()`/
+`_train_horizon()` 직접 호출 회피, `HistGradientBoostingClassifier.fit()`만
+스크립트 로컬 변수로 실행). `RETRAIN_WEEKS_BACK=26`(전체 26주, 40,608봉) 확인 —
+"학습윈도우가 실제로는 좁을 것"이라는 초기 가설 기각.
+
+**중간 발견 — `_make_sample_weight`(halflife=70봉) 오독 정정**: 처음엔 "동적
+recency 가중치로 최근 수백봉에 99% 집중"으로 오독했으나, 실제 코드는 decay를
+**클래스별 역빈도 가중치의 스칼라 산정에만** 사용하고 최종 반환값은 봉별이
+아니라 **클래스(FLAT/UP/DOWN)별 균일 가중치**(범위 0.72~0.88)임을 재확인 —
+recency 붕괴 가설도 기각.
+
+**결과 — permutation_importance(held-out, sklearn 표준기법)로 재현한 1m 피처
+중요도 순위**: microprice_bias **2위**(+0.0057), mlofi_slope **4위**(+0.0021),
+반면 **ofi_norm은 9위**(-0.00007, 사실상 무의미), cvd_direction 8위(-0.00002).
+**프로덕션 SHAP 히스토리("ofi_norm 90% nonzero 지배, 나머지 전부 죽음")와
+정반대** — 두 시도(v1: 무보정 랜덤분할, v2: 프로덕션 정확 재현) 모두 SHAP의
+ofi_norm 지배 패턴을 재현하지 못함.
+
+### [분석] SHAP 계측 자체의 구조적 결함 확인 — "ofi_norm 지배" 관측이 깨진 계측기 산출물
+
+`learning/shap/shap_tracker.py:_calc_importance()`의 3단계 fallback을 소스
+레벨로 검증(py37_32 `shap==0.41.0` 확인 완료):
+1. **TreeExplainer**: shap 0.41은 다중클래스(3-class) 미지원 — 코드 주석에도
+   "알려진 제한"으로 명시, 실패 확정.
+2. **per-class 트리 중요도**: `hasattr(model, "estimators_")` 체크 — 실제
+   학습 모델인 `HistGradientBoostingClassifier`는 **이 속성이 없음**(GIL-free
+   위해 도입한 신형 모델, `estimators_[i][k]` 구조를 쓰는 구형
+   `GradientBoostingClassifier` 전용 로직) — 건너뜀.
+3. **`feature_importances_`**: HistGradientBoostingClassifier는 **이 속성도
+   없음**(sklearn이 히스토그램 기반 부스팅에서 이 지표 자체를 비신뢰로 판단해
+   의도적으로 미제공) — 건너뜀.
+
+**3단계 전부 현재 모델 타입(HistGradientBoostingClassifier)에서 구조적으로
+실패하도록 코드 자체가 짜여 있음** — `_calc_importance()`는 `None`을 반환해야
+하고, `main.py:_refresh_shap_state()`의 `if not updated: return`(1230~1237)에
+걸려 `save_shap_scores()`(1249)까지 도달하면 안 됨. 그런데 `shap_tracker.db`에는
+6,580건(06-15~07-10)의 값이 실존 — 현재 모델 체제에서 신뢰할 수 있는 산출물이
+아니라 **구형 GradientBoostingClassifier 시절(2단계 경로가 유효했던 시기)의
+잔재이거나 별도 경로의 산물로 추정** — 정확한 유입 경로는 미확정(추가 코드
+추적 필요, 읽기전용 세션 한계).
+
+**부수 확정**: `main.py:1222`(`self.model.models.get("1m")`)·`1249`
+(`save_shap_scores(ts, "1m", ...)`) — 호라이즌이 **하드코딩**돼 있어 3m/5m에
+SHAP 레코드가 0건인 이유가 "운영 공백 추정"에서 "코드 원인 확정"으로 격상.
+
+**부수 확정 2**: `featureset by horizon/horizon_feature_sets.json`의 1m
+include 목록이 `cvd_direction`(2026-06-25 이전 구 CORE, Cybos buy_vol 편향으로
+상수화 확인된 피처)을 그대로 쓰고 있음 — CLAUDE.md가 명시한 CORE 교체
+(`cvd_direction`→`cvd_delta_norm`)가 **`CORE_FEATURES_BY_GROUP`(체크리스트
+게이팅용)에만 반영되고 `horizon_feature_sets.json`(실제 GBM 학습 피처
+레지스트리)에는 전파 안 됨** — 1m GBM은 지금까지 `cvd_delta_norm`을 단 한 번도
+학습에 쓴 적이 없음.
+
+**종합 판단 — 이번 딥다이브 체인(H3→H1→H5→H2) 전체의 재해석 필요**: H2의
+"현 CORE 무정보, microprice_bias 유의" 부분상관 결과(311차 후속8)는 원본
+DB 컬럼(`predictions.features`) 값 자체로 계산한 것이라 **여전히 유효**하다.
+다만 그 결과를 "GBM이 실제로 이 신호를 못 쓰고 있다"는 실행 증거로 보강하려
+했던 **SHAP 근거는 무효**임이 이번 진단으로 확인됐고, 오히려 정식
+permutation_importance 재현은 H2 결과와 **같은 방향**(microprice_bias 유의,
+ofi_norm 무의미)으로 나왔다 — 즉 GBM이 실제로 microprice_bias를 어느 정도
+활용하고 있을 가능성이 SHAP 근거보다 오히려 permutation_importance 근거로
+더 높아졌다. "1m이 ofi_norm 하나에 붕괴돼 있다"는 이전 결론은 **철회**한다.
+
+---
+
+## 2026-07-12 (311차 후속10) — SHAP 계측 구조적 결함 + cvd_direction 레지스트리 버그 구현 (우선순위 순)
+
+### [구현] ①SHAP permutation_importance fallback ②호라이즌 하드코딩 해소 ③cvd_direction→cvd_delta_norm 레지스트리 수정
+
+**배경**: 311차 후속9에서 확인한 두 가지 구조적 결함(SHAP 3단계 fallback이
+`HistGradientBoostingClassifier`에서 전부 실패, `horizon_feature_sets.json`의
+1m/3m가 구 CORE `cvd_direction` 사용)을 우선순위 순으로 구현. **프로덕션
+`.pkl`/`session_state.json` 등 런타임 산출물은 전혀 저장·변경하지 않음** —
+전 과정 인메모리 진단 + 소스 코드 수정만.
+
+**추가로 확인된 근본원인 (구현 착수 전)**: `ShapTracker`가 예전에는 전체
+97개 피처명으로 생성됐는데(`_ensure_shap_tracker()`가 `self.model.feature_names`
+그대로 사용) 실제 1m GBM 모델은 Phase C 호라이즌 슬라이싱으로 **12개 피처만
+소비**(`n_features_in_=12`) — `_calc_importance()`의 길이체크(`len(fi) ==
+self._n_features`(97))가 애초에 통과 불가능한 구조였음. HGB의
+estimators_/feature_importances_ 부재보다 **먼저** 걸리는 1차 원인.
+
+**구현 내용**:
+
+1. **`learning/shap/shap_tracker.py`**:
+   - 모듈 함수 `_permutation_importance_fallback(model, X, y, n_features)` 신설
+     — `sklearn.inspection.permutation_importance`(n_repeats=5, random_state=42)
+     기반, 음수는 0 클리핑.
+   - `_calc_importance()`에 4단계로 추가(1~3단계는 그대로 유지, 다른 모델
+     타입에서의 기존 동작 불변) — y가 주어지면 1~3 전부 실패 시 마지막
+     fallback으로 시도.
+   - `update()`/`_calc_importance()`에 `y: Optional[np.ndarray]` 파라미터
+     추가(기본값 None — 하위호환 100% 유지, 기존 호출부는 그대로 동작).
+   - 모듈 함수 `compute_horizon_importance(model, X, y, feature_names)` 신설
+     — `ShapTracker`의 상태(주간 히스토리·후보교체 로직)와 완전히 분리된
+     단발 계산. 3m/5m용(아래 참조), 실패 시 `feature_importances_`로 추가
+     fallback.
+
+2. **`main.py`**:
+   - `_ensure_shap_tracker()`: `ShapTracker` 생성 시 전체 97개가 아니라
+     `get_available_feature_set("1m", feature_names)`(12개)로 생성하도록 수정
+     — 위 "추가로 확인된 근본원인" 해소.
+   - `self._shap_labeled_window: Dict[str, deque]` 신설(`{"1m","3m","5m"}`,
+     각 maxlen=240) — STEP 1 검증 루프(`for v in verified:`)에서
+     `(raw_97피처벡터, 실제레이블)` 쌍을 각 호라이즌별로 누적. 재시작 시 DB
+     복원 없음 — 이번 세션 라이브 검증만으로 채워짐(`SHAP_MIN_DATA_POINTS=100`
+     건 ≈ 100분 내 충족, 재시작 직후 SHAP 지연 발생은 감수).
+   - `_prep_shap_xy(horizon, h_names)` 신설 — `apply_robust_preprocess` →
+     `self.model.scalers[horizon].transform` → 컬럼 슬라이싱, **`_train_horizon()`
+     학습시 전처리 순서와 정확히 일치**하도록 구현(순서가 틀리면
+     permutation_importance가 무의미해짐 — 검증 시 특히 주의).
+   - `_refresh_shap_state()` 재작성: 1m은 기존 `ShapTracker`(주간심사·후보교체
+     상태 유지)로 y 포함 `update()` 호출. **3m/5m 신규**: `self.model.models.get(_h)`
+     로 하드코딩 탈피 → `for _h in ("3m","5m")` 루프, `compute_horizon_importance()`로
+     상태 없이 계산 후 `save_shap_scores(ts, _h, ...)` 직접 저장 — 1m 전용
+     `ShapTracker` 단일 인스턴스를 공유하면 매분 서로 다른 호라이즌 데이터로
+     `_history`/`_current_importance`를 덮어써 주간심사·후보교체 로직이
+     오염되므로 의도적으로 상태 분리(10m/15m/30m은 이번 범위 밖 — 필요시 동일
+     패턴으로 확장 가능).
+   - 일일 리셋 루틴에 `self._shap_labeled_window` 전체 clear 추가(기존
+     `_shap_feature_window.clear()` 옆) — EOD 재학습 후 피처 스키마가 바뀌어도
+     이전 세션의 정렬 안 맞는 벡터가 남지 않도록.
+   - `_shap_feature_window`(구, 라벨 없는 버퍼)는 이제 `_refresh_shap_state`가
+     안 쓰지만 **제거하지 않고 그대로 둠** — 여러 곳(재시작 복원·매분 append)에
+     걸쳐 있어 완전 제거 시 위험 대비 가치가 낮다고 판단, 무해한 죽은 코드로
+     방치(향후 정리 후보로만 기록).
+
+3. **`featureset by horizon/horizon_feature_sets.json`**: 1m·3m의
+   `cvd_direction` 항목을 `cvd_delta_norm`으로 교체(`pkl` 상태도 `in_pkl`→
+   `need_add`로 정정 — **다음 재학습 전까지는 여전히 구 `cvd_direction` 기반
+   .pkl이 라이브에서 쓰인다**, 이 JSON 수정만으로 즉시 반영되지 않음에 주의).
+   10m의 `cvd_direction`(CORE 아님, "ρ=0.031 — 경계선")은 CLAUDE.md CORE
+   교체 범위(§3, 단기군 한정) 밖이라 손대지 않음.
+
+**검증**: `py_compile`(py37_32·py310_64 양쪽) 통과. 실제 검증은 여기서 그치지
+않고 **프로덕션 데이터·프로덕션 함수를 그대로 호출**해 확인 — `BatchRetrainer.
+_load_from_db(26)`으로 로드한 실제 26주 데이터에 프로덕션과 동일 전처리
+(`apply_robust_preprocess`+`StandardScaler`+`_make_sample_weight`)를 적용해
+`HistGradientBoostingClassifier`를 인메모리 학습한 뒤, **수정된**
+`ShapTracker.update()`/`compute_horizon_importance()`를 직접 호출:
+- `get_available_feature_set("1m"/"3m", ...)` → `cvd_direction` 잔존 0, `cvd_delta_norm` 포함 확인.
+- **`ShapTracker.update()` 반환값 = `True`**(수정 전이었다면 구조적으로
+  항상 `False`) — 상위피처: time_sin/vwap_position/cancel_add_ratio/
+  microprice_bias/mlofi_slope.
+- **`compute_horizon_importance()`(3m/5m) 둘 다 성공** — None 아닌 실제
+  중요도 딕셔너리 반환 확인.
+파일 저장·DB 쓰기는 검증 스크립트에서도 전혀 없음(인메모리 전용).
+
+**미검증(다음 모의투자 세션 필수 확인)**: (1) 실제 라이브 파이프라인에서
+`_refresh_shap_state()`가 매분 정상 호출되며 `[SHAP] 중요도 갱신 완료` 로그가
+찍히는지, (2) `shap_scores` 테이블에 3m/5m 레코드가 실제로 쌓이기 시작하는지,
+(3) `SHAP_MIN_DATA_POINTS=100` 충족까지 재시작 후 지연(최대 ~100분) 체감 영향,
+(4) permutation_importance 매분 계산이 파이프라인 타이밍(CB⑤ API 지연 임계
+등)에 부하를 주지 않는지 — HGB predict는 GIL-free/고속이라 예상 영향 적음이나
+실측 필요. 이 PC는 Cybos Plus 연결 없어 라이브 실행 자체가 불가.

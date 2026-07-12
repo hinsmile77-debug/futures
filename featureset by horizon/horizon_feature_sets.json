@@ -46,10 +46,10 @@
         "note": "호가 중간값 편향"
       },
       {
-        "name": "cvd_direction",
+        "name": "cvd_delta_norm",
         "rho": 0.019,
-        "pkl": "in_pkl",
-        "note": "당분봉 체결 방향 (CORE)"
+        "pkl": "need_add",
+        "note": "당분봉 체결 방향 (CORE, 2026-06-25 cvd_direction 교체 — Cybos buy_vol 편향으로 cvd_direction 상수화, 311차 후속9에서 미전파 확인 후 정정)"
       },
       {
         "name": "toxicity_score",
@@ -236,10 +236,10 @@
     "target_metric": "Precision+Recall 동시 개선",
     "include": [
       {
-        "name": "cvd_direction",
+        "name": "cvd_delta_norm",
         "rho": 0.032,
-        "pkl": "in_pkl",
-        "note": "CVD 방향 지속성 (CORE)"
+        "pkl": "need_add",
+        "note": "CVD 방향 지속성 (CORE, 2026-06-25 cvd_direction 교체 — Cybos buy_vol 편향으로 cvd_direction 상수화, 311차 후속9에서 미전파 확인 후 정정)"
       },
       {
         "name": "cvd_divergence",
