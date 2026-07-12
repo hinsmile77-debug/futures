@@ -114,7 +114,7 @@ from features.technical.basis import BasisCalculator
 from features.technical.expiry import is_near_monthly_expiry
 from collection.cybos.api_connector import VKOSPI_INDEX_CODE
 from features.bar_aggregator import BarAggregator
-from model.multi_horizon_model import MultiHorizonModel
+from model.multi_horizon_model import MultiHorizonModel, apply_robust_preprocess
 from model.rf_horizon_model import RFHorizonModel
 from model.ensemble_decision import EnsembleDecision, select_entry_horizon
 from strategy.position.position_tracker import PositionTracker
@@ -140,7 +140,8 @@ from learning.prediction_buffer import PredictionBuffer
 from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAIN_BARS
 from learning.threshold_recalibrator import ThresholdRecalibrator
 from learning.atr_ceiling_recalibrator import ATRCeilingRecalibrator
-from learning.shap.shap_tracker import ShapTracker
+from learning.shap.shap_tracker import ShapTracker, compute_horizon_importance
+from features.horizon_feature_registry import get_available_feature_set
 from safety.circuit_breaker import CircuitBreaker
 from safety.kill_switch import KillSwitch
 from safety.emergency_exit import EmergencyExit
@@ -692,6 +693,12 @@ class TradingSystem:
         self._health_policy_last_reload_check: float = 0.0
         self._param_corr_history = deque(maxlen=120)
         self._shap_feature_window = deque(maxlen=240)
+        # [311차 후속9] 라벨(검증완료 실제 방향) 있는 SHAP용 (X, y) 버퍼 —
+        # permutation_importance 계산에 필요. 재시작 시 DB 복원 없이 이번 세션
+        # 라이브 검증만으로 채워짐(SHAP_MIN_DATA_POINTS=100건 ≈ 100분 내 충족).
+        self._shap_labeled_window: dict = {
+            h: deque(maxlen=240) for h in ("1m", "3m", "5m")
+        }
         self._shap_tracker = None
         self._shap_last_update_minute = None
         self._cached_shap_importance = {}
@@ -754,10 +761,16 @@ class TradingSystem:
         }
 
     def _ensure_shap_tracker(self) -> None:
-        feature_names = list(self.model.feature_names or [])
-        if not feature_names:
+        all_feature_names = list(self.model.feature_names or [])
+        if not all_feature_names:
             return
         self._sync_feature_registry_with_model()
+        # [311차 후속9] ShapTracker는 실제 1m GBM 모델(호라이즌 슬라이싱된 12개
+        # 피처)을 대상으로 계산하는데 예전엔 전체 97개 피처명으로 생성돼 있었음
+        # (self._n_features=97 vs 실제 model.n_features_in_=12 불일치) — 1~3단계
+        # 중요도 계산이 길이 체크(len(fi)==self._n_features)에서 전부 실패하는
+        # 구조적 원인 중 하나. 1m 전용 피처 서브셋으로 생성해 정합성 확보.
+        feature_names = get_available_feature_set("1m", all_feature_names) or all_feature_names
         if self._shap_tracker is None:
             self._shap_tracker = ShapTracker(feature_names)
             return
@@ -1200,11 +1213,36 @@ class TradingSystem:
         vec = [float(features.get(name, 0.0) or 0.0) for name in self.model.feature_names]
         self._shap_feature_window.append(vec)
 
+    def _prep_shap_xy(self, horizon: str, h_names: list):
+        """[311차 후속9] _shap_labeled_window[horizon]을 프로덕션 학습과 동일한
+        전처리(robust_preprocess → 호라이즌 스케일러 → 컬럼 슬라이싱)로 변환.
+
+        `learning/batch_retrainer.py:_train_horizon()`의 전처리 순서와 반드시
+        일치해야 함 — 순서가 틀리면 permutation_importance가 모델이 실제 학습한
+        피처공간과 다른 입력을 채점하게 되어 결과가 무의미해짐.
+        """
+        window = self._shap_labeled_window.get(horizon)
+        if not window or len(window) < SHAP_MIN_DATA_POINTS:
+            return None, None
+        vecs, labels = zip(*window)
+        X_raw = np.array(vecs, dtype=np.float64)
+        y = np.array(labels, dtype=np.int64)
+        try:
+            X_proc = apply_robust_preprocess(X_raw, self.model.feature_names)
+        except Exception as e:
+            logger.debug("[ShapRefresh] %s robust_preprocess 실패: %s", horizon, e)
+            return None, None
+        scaler = self.model.scalers.get(horizon)
+        X_scaled = scaler.transform(X_proc) if scaler is not None else X_proc
+        try:
+            h_idx = [self.model.feature_names.index(n) for n in h_names]
+        except ValueError:
+            return None, None
+        return X_scaled[:, h_idx], y
+
     def _refresh_shap_state(self, ts: str) -> None:
         self._ensure_shap_tracker()
         if not self.model.is_ready() or self._shap_tracker is None:
-            return
-        if len(self._shap_feature_window) < SHAP_MIN_DATA_POINTS:
             return
 
         minute_key = str(ts or "")[:16]
@@ -1212,35 +1250,48 @@ class TradingSystem:
             return
         self._shap_last_update_minute = minute_key
 
+        # ── 1m: 기존 ShapTracker(주간 심사·후보교체 상태 유지) ──────
         horizon_model = self.model.models.get("1m")
-        if horizon_model is None:
-            horizon_model = next(iter(self.model.models.values()), None)
-        if horizon_model is None:
-            return
+        h_names_1m = list(getattr(self._shap_tracker, "feature_names", []) or [])
+        if horizon_model is not None and h_names_1m:
+            X_1m, y_1m = self._prep_shap_xy("1m", h_names_1m)
+            if X_1m is not None:
+                sample_n = min(120, len(X_1m))
+                updated = self._shap_tracker.update(
+                    horizon_model, X_1m, y_1m, sample_size=sample_n,
+                )
+                if updated:
+                    ranking = self._shap_tracker.get_current_ranking()
+                    if ranking:
+                        score_map = {row["feature"]: float(row["importance"]) for row in ranking}
+                        self._cached_shap_importance = score_map
+                        self._live_shap_ready = True
+                        save_shap_scores(ts, "1m", score_map)
+                        self._update_shap_dashboard()
+                else:
+                    logger.debug(
+                        "[ShapRefresh] 1m update() False — n=%d, tracker_feat=%d",
+                        len(X_1m), len(h_names_1m),
+                    )
 
-        X_recent = np.array(list(self._shap_feature_window), dtype=np.float32)
-        updated = self._shap_tracker.update(horizon_model, X_recent, sample_size=min(120, len(X_recent)))
-        if not updated:
-            logger.warning(
-                "[ShapRefresh] update() False — window=%d, model_feat=%d, tracker_feat=%d",
-                len(X_recent),
-                len(self.model.feature_names or []),
-                len(getattr(self._shap_tracker, "feature_names", []) or []),
-            )
-            return
-
-        ranking = self._shap_tracker.get_current_ranking()
-        if not ranking:
-            return
-
-        score_map = {
-            row["feature"]: float(row["importance"])
-            for row in ranking
-        }
-        self._cached_shap_importance = score_map
-        self._live_shap_ready = True
-        save_shap_scores(ts, "1m", score_map)
-        self._update_shap_dashboard()
+        # ── 3m/5m: [311차 후속9 신규] ShapTracker 상태와 분리된 단발 계산 ──
+        # 1m 전용 ShapTracker 인스턴스(_history/_current_importance/주간심사)를
+        # 공유하면 서로 다른 호라이즌 데이터로 매분 덮어써 오염되므로
+        # compute_horizon_importance()로 상태 없이 계산 후 DB만 직접 저장.
+        for _h in ("3m", "5m"):
+            _model_h = self.model.models.get(_h)
+            if _model_h is None:
+                continue
+            _h_names = get_available_feature_set(_h, self.model.feature_names) or []
+            if not _h_names:
+                continue
+            X_h, y_h = self._prep_shap_xy(_h, _h_names)
+            if X_h is None:
+                continue
+            _idx = np.random.choice(len(X_h), min(120, len(X_h)), replace=False)
+            _score_map = compute_horizon_importance(_model_h, X_h[_idx], y_h[_idx], _h_names)
+            if _score_map:
+                save_shap_scores(ts, _h, _score_map)
 
     def _update_shap_dashboard(self) -> None:
         self._ensure_shap_tracker()
@@ -4159,6 +4210,17 @@ class TradingSystem:
             # [311차 후속 B안] 극단성 보정기 기록 — fit()은 daily_close()에서만(느린層)
             _ext_extra = compute_extremity_hinge(v.get("features") or {}, _pred_dir)
             self.extremity_corrector.record(v["horizon"], _conf, _ext_extra, v["correct"])
+            # [311차 후속9] SHAP 중요도용 라벨 있는 (X, y) 버퍼 — permutation_importance는
+            # 검증완료 실제 레이블이 있어야 계산 가능(TreeExplainer/feature_importances_와
+            # 달리 라벨 없이는 동작 불가). 1m/3m/5m만 추적(단기군 CORE 딥다이브 대상).
+            if v["horizon"] in self._shap_labeled_window and self.model.feature_names:
+                _shap_vec = [
+                    float((v.get("features") or {}).get(name, 0.0) or 0.0)
+                    for name in self.model.feature_names
+                ]
+                self._shap_labeled_window[v["horizon"]].append(
+                    (_shap_vec, int(v.get("actual", 0)))
+                )
             # 앙상블 보정기: 1m 결과를 앙상블 정확도 대리 지표로 사용
             # (1m이 가장 빠른 피드백 — 당시 앙상블 conf와 적중 여부로 보정기 학습)
             # 단, 당시 앙상블에 1m가 포함됐을 때만 유효 — OFF 중 결과로 학습하면
@@ -8427,6 +8489,8 @@ class TradingSystem:
         self._ensemble_conf_cache.clear()
         self._param_corr_history.clear()
         self._shap_feature_window.clear()
+        for _h in self._shap_labeled_window:
+            self._shap_labeled_window[_h].clear()
         self._shap_last_update_minute = None
         self._restored_corr_str = ""
         self._live_shap_ready = False

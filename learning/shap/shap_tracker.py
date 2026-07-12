@@ -27,6 +27,12 @@ try:
 except ImportError:
     _SHAP_OK = False
 
+try:
+    from sklearn.inspection import permutation_importance as _permutation_importance
+    _PERM_IMP_OK = True
+except ImportError:
+    _PERM_IMP_OK = False
+
 from config.constants import CORE_FEATURES, DYNAMIC_FEATURES_POOL
 from config.settings import (
     SHAP_COOLDOWN_DAYS, SHAP_MAX_REPLACE_DAILY,
@@ -36,6 +42,33 @@ from config.settings import (
 # SHAP 전용 로거: LEARNING 레이어 파일 핸들러 없이 독립 실행되는 문제를 방지하기 위해
 # LEARNING 로거를 사용한다. shap 패키지 오류가 LEARNING.log에 기록된다.
 logger = logging.getLogger("LEARNING")
+
+
+def _permutation_importance_fallback(
+    model, X: np.ndarray, y: np.ndarray, n_features: int,
+) -> Optional[np.ndarray]:
+    """[311차 후속9] HistGradientBoostingClassifier 전용 중요도 계산.
+
+    TreeExplainer(shap 0.41: 다중클래스 미지원)와 estimators_/feature_importances_
+    (HistGradientBoostingClassifier엔 둘 다 없음 — sklearn이 히스토그램 기반 부스팅에서
+    이 속성들을 의도적으로 미제공)가 전부 실패하는 모델 타입에서 유일하게 동작하는 경로.
+    라벨(y) 필요 — 검증 완료된 (X, actual) 쌍이 있을 때만 호출할 것.
+    """
+    if not _PERM_IMP_OK or y is None or len(y) != len(X):
+        return None
+    if len(np.unique(y)) < 2:
+        return None
+    try:
+        result = _permutation_importance(
+            model, X, y, n_repeats=5, random_state=42, n_jobs=1,
+        )
+        imp = np.clip(result.importances_mean, 0.0, None)
+        if len(imp) != n_features:
+            return None
+        return imp
+    except Exception as e:
+        logger.debug("[SHAP] permutation_importance 실패: %s", e)
+        return None
 
 
 class ShapTracker:
@@ -77,13 +110,19 @@ class ShapTracker:
         self._load_history()
 
     # ── SHAP 계산 ─────────────────────────────────────────────────
-    def update(self, model, X: np.ndarray, sample_size: int = 500) -> bool:
+    def update(
+        self, model, X: np.ndarray, y: Optional[np.ndarray] = None, sample_size: int = 500,
+    ) -> bool:
         """
         모델과 최근 데이터로 SHAP 중요도 계산 후 히스토리 추가
 
         Args:
             model:       학습된 GBM 모델 (sklearn)
             X:           최근 N개 분봉 피처 행렬
+            y:           [311차 후속9] X와 짝지어진 검증완료 실제 레이블(있으면
+                         permutation_importance fallback 활성화 — HistGradientBoosting
+                         Classifier 등 estimators_/feature_importances_ 없는 모델 전용).
+                         None이면 기존 동작(TreeExplainer/per-class/global) 그대로.
             sample_size: SHAP 계산 샘플 수 (속도 제어)
 
         Returns:
@@ -94,11 +133,12 @@ class ShapTracker:
             logger.debug(f"[SHAP] 데이터 부족 ({len(X)} < {SHAP_MIN_DATA_POINTS})")
             return False
 
-        # 샘플링
+        # 샘플링 — y가 있으면 동일 idx로 짝을 유지해야 함
         idx = np.random.choice(len(X), min(sample_size, len(X)), replace=False)
         X_s = X[idx]
+        y_s = y[idx] if y is not None and len(y) == len(X) else None
 
-        importance = self._calc_importance(model, X_s)
+        importance = self._calc_importance(model, X_s, y_s)
         if importance is None:
             return False
 
@@ -125,11 +165,16 @@ class ShapTracker:
             logger.debug("[SHAP] 중요도 갱신 (n=%d, week=%s)", len(X_s), current_week)
         return True
 
-    def _calc_importance(self, model, X: np.ndarray) -> Optional[np.ndarray]:
-        """중요도 계산 3단계 우선순위:
+    def _calc_importance(
+        self, model, X: np.ndarray, y: Optional[np.ndarray] = None,
+    ) -> Optional[np.ndarray]:
+        """중요도 계산 4단계 우선순위:
         1) SHAP TreeExplainer (이진 모델 / shap 미래 버전에서 다중 클래스 지원 시 자동 활성)
         2) per-class 트리 중요도 (GBM 다중 클래스 전용 — 방향별 기여도 max 집계)
-        3) global feature_importances_ (최종 fallback)
+        3) global feature_importances_
+        4) [311차 후속9] permutation_importance (y 필요) — HistGradientBoostingClassifier
+           전용 최종 fallback. 1~3은 이 모델 타입에서 구조적으로 전부 실패한다
+           (estimators_/feature_importances_ 속성 자체가 없음, shap 0.41 다중클래스 미지원).
         """
         # ── 1) SHAP TreeExplainer ───────────────────────────────────
         if _SHAP_OK and self._tree_explainer_ok:
@@ -189,7 +234,7 @@ class ShapTracker:
             except Exception as e:
                 logger.debug("[SHAP] per-class 트리 중요도 실패: %s", e)
 
-        # ── 3) global feature_importances_ (최종 fallback) ────────
+        # ── 3) global feature_importances_ ─────────────────────────
         if hasattr(model, "feature_importances_"):
             imp = model.feature_importances_
             if len(imp) == self._n_features:
@@ -199,9 +244,20 @@ class ShapTracker:
                 len(imp), self._n_features,
             )
 
+        # ── 4) permutation_importance (최종 fallback, y 필요) ──────
+        # [311차 후속9] HistGradientBoostingClassifier는 1~3 전부 구조적으로 실패
+        # (estimators_/feature_importances_ 없음, shap 0.41 다중클래스 미지원) —
+        # y(검증완료 실제 레이블)가 있을 때만 활성화되는 유일한 동작 경로.
+        imp = _permutation_importance_fallback(model, X, y, self._n_features)
+        if imp is not None:
+            logger.debug("[SHAP] permutation_importance 경로 사용 (n=%d)", len(X))
+            return imp
+
         logger.warning(
-            "[SHAP] 중요도 계산 불가: SHAP=%s, feature_importances_=%s",
+            "[SHAP] 중요도 계산 불가: SHAP=%s, feature_importances_=%s, "
+            "permutation_importance=%s(y=%s)",
             _SHAP_OK, hasattr(model, "feature_importances_"),
+            _PERM_IMP_OK, y is not None,
         )
         return None
 
@@ -553,6 +609,31 @@ class ShapTracker:
         if limit <= 0:
             return []
         return list(self._replace_log)[-int(limit):]
+
+
+def compute_horizon_importance(
+    model, X: np.ndarray, y: np.ndarray, feature_names: List[str],
+) -> Optional[Dict[str, float]]:
+    """[311차 후속9] 단발성 호라이즌별 중요도 계산 — ShapTracker의 주간 히스토리/
+    교체추천 상태(_history, weekly_review 등)와 완전히 분리된 순수 계산 함수.
+
+    현재 ShapTracker는 1m 전용 단일 인스턴스로 대시보드·SHAP 심사·후보교체 로직에
+    깊이 얽혀 있어(main.py: _pick_shap_candidate 등), 3m/5m을 같은 인스턴스에
+    update() 하면 매분 서로 다른 호라이즌 데이터로 _current_importance/_history를
+    덮어써 그 로직들을 오염시킨다. 이 함수는 상태 없이 DB 관측용 스냅샷만 계산해
+    save_shap_scores()로 직접 저장하는 용도 — 1m 주간심사 체계와 별개.
+    """
+    n_features = len(feature_names)
+    if n_features == 0 or len(X) == 0:
+        return None
+    imp = _permutation_importance_fallback(model, X, y, n_features)
+    if imp is None and hasattr(model, "feature_importances_"):
+        fi = model.feature_importances_
+        if len(fi) == n_features:
+            imp = np.asarray(fi, dtype=float)
+    if imp is None:
+        return None
+    return {name: float(val) for name, val in zip(feature_names, imp)}
 
 
 if __name__ == "__main__":
