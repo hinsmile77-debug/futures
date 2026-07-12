@@ -4245,10 +4245,15 @@ class TradingSystem:
                     int(v.get("predicted", 0)),
                     int(v.get("actual", 0)),
                 )
-            # 시간대별 정확도 기록 (15:40 DailyConsolidator.consolidate()에서 집계)
-            if v["horizon"] == "5m":
+            # 시간대별 정확도/기대손익 기록 (15:40 DailyConsolidator.consolidate()에서 집계)
+            # [311차 후속3] 표본 확충: 5m 단독 → 3m+5m 합산(하루 표본 66%↑, P1).
+            # 1m은 후속6 딥다이브에서 유의한 역스킬(acc 47.75%, p=0.0048) 확정돼 제외.
+            if v["horizon"] in ("3m", "5m"):
                 _zone = get_time_zone(datetime.datetime.strptime(v["ts"], "%Y-%m-%d %H:%M:%S"))
-                self.daily_consolidator.record(_zone, bool(v["correct"]))
+                self.daily_consolidator.record(
+                    _zone, bool(v["correct"]), predicted_dir=_pred_dir,
+                    realized_move=float(v.get("realized_move", 0.0)),
+                )
             _dir_map = {1: "UP", -1: "DN", 0: "FL"}
             _pred_str   = _dir_map.get(v.get("predicted", 0), "?")
             _actual_str = _dir_map.get(v.get("actual",    0), "?")

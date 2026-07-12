@@ -393,6 +393,7 @@ class PredictionBuffer:
                         "features":   feat_dict,
                         "meta_label": meta["meta_action"],
                         "meta_score": meta["meta_score"],
+                        "realized_move": meta["realized_move"],
                     })
                     logger.debug(
                         "[Buffer] %s 검증: pred=%s actual=%s (%s) "
