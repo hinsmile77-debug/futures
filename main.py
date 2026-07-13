@@ -511,6 +511,7 @@ class TradingSystem:
         # worker 완료 시 (tag, *args) 를 put → 매분 S0 drain → 메인 스레드에서 안전 실행.
         self._deferred_callbacks: _queue.Queue = _queue.Queue()
         self._auto_entry_enabled: bool = True   # Auto On/Off 토글 상태
+        self._auto_entry_disabled_until: object = None  # FATAL 정책이 끈 자동진입 자동복구 시각
         self._manual_entry_ctx: dict = {}        # 마지막 파이프라인 산출값 (수동 진입 버튼용)
         self._last_order_event_key = None
         self._broker_sync_verified: bool = False
@@ -2064,6 +2065,10 @@ class TradingSystem:
     def _on_auto_mode_changed(self, enabled: bool) -> None:
         """Auto On/Off 토글 — 자동 진입 활성화 여부 전환."""
         self._auto_entry_enabled = bool(enabled)
+        # 사용자가 직접 토글을 조작하면 FATAL 정책의 15분 자동복구 타이머는 무의미
+        # (수동 결정이 우선) — 남겨두면 사용자가 의도적으로 끈 OFF를 나중에 타이머가
+        # 되돌리거나, 반대로 이미 ON인데 불필요한 복구 로그가 남을 수 있음.
+        self._auto_entry_disabled_until = None
         log_manager.system(
             f"[EntryConfig] 자동진입={'ON' if enabled else 'OFF (수동 전환)'}",
             "WARNING" if not enabled else "INFO",
@@ -6329,6 +6334,21 @@ class TradingSystem:
                         f"[IntradayRegime] {self.current_intraday_regime} 사이즈 축소 "
                         f"×{_l2_size:.1f} → {_qty_display}계약"
                     )
+
+        # [313차 후속] FATAL 정책이 끈 자동진입 — 15분 경과 시 자동 복구.
+        # 수동 토글 재조작이나 프로세스 재시작 없이는 당일 내내 MANUAL_CONFIRM에
+        # 묶이던 문제(2026-07-13 09:02:56 실사고) 재발 방지.
+        if (
+            not self._auto_entry_enabled
+            and self._auto_entry_disabled_until is not None
+            and datetime.datetime.now() >= self._auto_entry_disabled_until
+        ):
+            self._auto_entry_enabled = True
+            self._auto_entry_disabled_until = None
+            log_manager.system(
+                "[EntryConfig] FATAL 자동진입OFF 15분 쿨다운 경과 → 자동 복구(ON)",
+                "WARNING",
+            )
 
         # [DBG-F7] 진입 실행 조건 평가
         debug_log.debug(

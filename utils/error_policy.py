@@ -47,6 +47,11 @@ def apply_error_policy(
     try:
         system._auto_entry_enabled = False
         system._entry_cooldown_until = datetime.datetime.now() + datetime.timedelta(minutes=15)
+        # _entry_cooldown_until은 ENTRY 타임아웃 등 다른 쿨다운 사유와 공유되는
+        # 필드라 도중에 덮어써질 수 있음 — 자동진입 자동복구는 별도 타임스탬프로
+        # 추적해 15분 후 반드시 복원되도록 한다(수동 토글/재시작 없이는 영구 OFF
+        # 로 남던 313차 실사고 재발 방지).
+        system._auto_entry_disabled_until = datetime.datetime.now() + datetime.timedelta(minutes=15)
         system._last_block_reason = f"fatal:{context}"
     except Exception:
         pass
