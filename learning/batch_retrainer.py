@@ -673,8 +673,12 @@ class BatchRetrainer:
         with open(_tmp_scaler, "wb") as f:
             pickle.dump(scaler, f, protocol=4)  # py37_32 호환 상한
         os.replace(_tmp_scaler, scaler_path)
-        with open(acc_path, "w") as f:
-            f.write(str(acc))
+        # intraday 재학습(CV 없음)은 acc=nan — 파일을 덮어쓰면 다음 재학습의
+        # old_acc 로그가 무의미해지므로(연쇄 nan), 유효한 값일 때만 갱신하고
+        # 그 외에는 EOD 전체 재학습(CV 있음)의 마지막 실측값을 그대로 보존한다.
+        if not np.isnan(acc):
+            with open(acc_path, "w") as f:
+                f.write(str(acc))
         # Phase C 원자성 보장: 모델 저장 직후 feature_names_{h}.pkl도 함께 저장.
         # 외부 호출자(_train_horizon 이후)의 _save_feature_names와 중복이지만 무해.
         # subprocess 타임아웃 강제 종료 시 모델은 저장되지만 외부 _save_feature_names는

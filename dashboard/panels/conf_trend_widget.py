@@ -241,7 +241,13 @@ class ConfTrendWidget(QWidget):
         _s = _t2.monotonic()
         self._table.setUpdatesEnabled(False)
         self._table.setRowCount(len(rows))
+        # [진단] 세션 경과에 따른 table_update 완만한 증가 원인 특정용 —
+        # 순수 Python 계산(row_calc/tooltip_calc)과 Qt 위젯 호출(qt_apply)을 분리 계측.
+        _row_calc_ms = 0.0
+        _tooltip_calc_ms = 0.0
+        _qt_apply_ms = 0.0
         for i, r in enumerate(rows):
+            _rc0 = _t2.monotonic()
             conf  = ema_list[i]
             mc    = float(r["min_conf"] or fallback_mc)
             delta = conf - mc
@@ -256,9 +262,6 @@ class ConfTrendWidget(QWidget):
             completed = self._lookup_completed_entry(completed_entries, str(r["ts"]))
             stage, stage_reason = self._resolve_stage(r, conf, mc, completed)
             block_reason = self._resolve_block_reason(r, stage, stage_reason)
-            gate_tip = self._entry_gate_tooltip(
-                r["entry_gate_json"] if "entry_gate_json" in r.keys() else ""
-            )
 
             conf_bg, conf_fg = self._conf_colors(conf, mc)
             cell_data = [
@@ -273,6 +276,15 @@ class ConfTrendWidget(QWidget):
                 (block_reason,        self._stage_color(stage),                 None,                      False),
                 (stage,               self._stage_color(stage),                 None,                      True),
             ]
+            _row_calc_ms += (_t2.monotonic() - _rc0) * 1000
+
+            _tc0 = _t2.monotonic()
+            gate_tip = self._entry_gate_tooltip(
+                r["entry_gate_json"] if "entry_gate_json" in r.keys() else ""
+            )
+            _tooltip_calc_ms += (_t2.monotonic() - _tc0) * 1000
+
+            _qa0 = _t2.monotonic()
             for j, (text, fg, bg, bold) in enumerate(cell_data):
                 it = self._table.item(i, j)
                 if it is None:
@@ -291,8 +303,12 @@ class ConfTrendWidget(QWidget):
                     it.setToolTip(self._entry_complete_tooltip(completed))
                 elif j in (8, 9) and gate_tip:
                     it.setToolTip(gate_tip)
+            _qt_apply_ms += (_t2.monotonic() - _qa0) * 1000
         self._table.setUpdatesEnabled(True)
         _steps.append(("table_update", (_t2.monotonic()-_s)*1000))
+        _steps.append(("row_calc", _row_calc_ms))
+        _steps.append(("tooltip_calc", _tooltip_calc_ms))
+        _steps.append(("qt_apply", _qt_apply_ms))
 
         # 최신 행(맨 아래)이 항상 보이도록 스크롤
         _s = _t2.monotonic()

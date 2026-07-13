@@ -5507,20 +5507,35 @@ class TradingSystem:
                     "WARNING",
                 )
                 def _const_out_refit_worker(_hz=_const_hz, _tts=ts):
+                    # [진단] PipePerf S0 스파이크와의 상관관계 확인용 — 백그라운드
+                    # 스레드의 CPU 집약 구간(로드/fit)이 GIL을 통해 메인 스레드
+                    # S0 구간을 지연시키는지 타임스탬프로 직접 대조하기 위함.
                     _refit_ok = False
+                    _w_t0 = time.perf_counter()
+                    log_manager.system(f"[ConstOut][Worker] 시작 hz={_hz}", "INFO")
                     try:
                         from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+                        _w_load0 = time.perf_counter()
                         _Xco, _fnco = self.batch_retrainer.load_features_for_warmup(
                             lookback_bars=SCALER_WARMUP_LOOKBACK_BARS
                         )
+                        _w_load_ms = (time.perf_counter() - _w_load0) * 1000
                         if _Xco is not None:
+                            _w_fit0 = time.perf_counter()
                             self.model.refit_scalers_only(
                                 _Xco, _fnco,
                                 trigger_ts=_tts,
                                 trigger_type="D_FORCE",
                                 trigger_reason=f"const_output={_hz}",
                             )
+                            _w_fit_ms = (time.perf_counter() - _w_fit0) * 1000
                             _refit_ok = True
+                            log_manager.system(
+                                f"[ConstOut][Worker] 완료 hz={_hz} "
+                                f"load={_w_load_ms:.0f}ms fit={_w_fit_ms:.0f}ms "
+                                f"total={(time.perf_counter()-_w_t0)*1000:.0f}ms",
+                                "INFO",
+                            )
                     except Exception as _co_e:
                         logger.warning("[ConstOut] 스케일러 재적합 실패: %s", _co_e)
                     finally:
@@ -6027,8 +6042,7 @@ class TradingSystem:
                     and not _cr.get("checks", {}).get("4_cvd", True)
                     and not _cr.get("checks", {}).get("5_ofi", True)):
                 log_manager.signal(
-                    "[P4] CVD+OFI 동시 역방향 → 등급 %s→C 강등 (자동진입 A/B 차단)",
-                    _final_grade,
+                    f"[P4] CVD+OFI 동시 역방향 → 등급 {_final_grade}→C 강등 (자동진입 A/B 차단)"
                 )
                 _final_grade = "C"
                 _cr = dict(_cr)
