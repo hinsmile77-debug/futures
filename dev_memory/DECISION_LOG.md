@@ -6387,3 +6387,57 @@ nan도 그대로 씀. 다음 재학습의 `_load_model_acc()`(746행)는 `float(
 연속 발생 시 두 번째 로그의 `old_acc`가 nan이 아니라 직전 EOD 실측값(또는 첫
 intraday 재학습 이전 값)을 유지하는지 확인 필요.
 **관련**: `NEXT_TODO.md` 동일 날짜 항목.
+
+---
+
+## 2026-07-14 (318차) — hurst_ready GBM 학습 피처 미편입 재진단 + 3중 원인 수정
+
+### [버그/설계공백] hurst_ready가 "0.0으로 채워짐"이 아니라 애초에 학습 피처 후보에 편입된 적이 없었음
+
+**File**: `scripts/backfill_features.py`(`FEATURE_KEYS_ALL`), `learning/batch_retrainer.py`
+(`_load_from_db`), `config/constants.py`(`DYNAMIC_FEATURES_POOL`)
+**증상**: 317차가 남긴 "hurst_ready가 `_Z_WARN_EXEMPT`에 등록된 실제 학습 피처인데
+`FEATURE_KEYS_ALL`에 없어 0.0 기본값으로 채워진다"는 진단을, 다음 세션에서 실측
+검증 없이 그대로 구현 계획에 반영하려다 재확인 과정에서 진단 자체가 틀렸음을 발견.
+**원인**: 모델 아티팩트를 직접 열어 확인한 결과 `model/horizons/feature_names.pkl`
+(97개)·`feature_names_{1,3,5,10,15,30}m.pkl`(전 호라이즌)·
+`data/db/shap_feature_registry.json:active_features`(97개) **어디에도 hurst_ready가
+없었음**(`hurst`는 있음) — 즉 "학습은 되는데 값이 0.0으로 뭉개진다"가 아니라
+"GBM이 이 피처를 입력 컬럼으로 받아본 적이 한 번도 없다"가 정확한 진단. `_Z_WARN_EXEMPT`
+등록(260차)은 `predict_proba`의 스케일러 극단치 모니터가 학습에 쓰이는 97개가 아니라
+raw feature dict 전체(115개+)를 스캔하기 때문에 걸린 z-경보 노이즈를 지운 것일 뿐,
+학습 피처 편입과는 무관했음(`SESSION_LOG.md` 260차 항목의 "Bug 2" 참조).
+근본 원인은 3중 구조: ① `scripts/backfill_features.py:FEATURE_KEYS_ALL`(99키,
+2026-06-01 기준 리스트, 실측 시 이미 116키로 드리프트)에 hurst_ready가 없어 백필
+재계산 시 키 자체가 JSON에서 빠짐. ② `learning/batch_retrainer.py::_load_from_db`
+(Phase1/전역·1m 재학습 경로)가 "키 개수가 가장 많은 단일 행"을 `feat_names`로
+채택하는 옛 로직을 그대로 쓰고 있었음 — 260704 감사(P3)가 Phase2(`raw_features_horizon`
+경로)만 "전 구간 키 합집합" 방식으로 고치고 Phase1은 놓쳤음(같은 클래스의 버그가
+Phase1에 남아있었던 것). ③ `shap_feature_registry.json:active_features` 화이트리스트
+— `_load_from_db`가 ①②를 통과한 피처도 이 목록에 없으면 다시 걸러내는데, 이 목록은
+`main.py:_sync_feature_registry_with_model()`이 **현재 모델의 feature_names를 그대로
+미러링**할 뿐이고 새 피처를 편입하는 유일한 경로는 `_pick_shap_candidate()` →
+`shap_tracker._suggest_replacement()`가 `config/constants.py:DYNAMIC_FEATURES_POOL`에서
+후보를 뽑아 대시보드에서 사람이 수동 승인(`_on_apply_shap_candidate_requested`)하는
+것뿐인데, hurst_ready는 이 풀에도 등록된 적이 없어 애초에 후보로 뽑힐 수조차 없었음.
+**결정/수정**: (1) `FEATURE_KEYS_ALL`에 hurst_ready 추가 + hurst와 동일한 3단계
+워밍업 산식(`n<HURST_WARMUP_COLDSTART_MIN`→False, 적응형 구간/고정구간→True)으로
+`feat["hurst_ready"]` 채움. (2) `_load_from_db`의 feat_names 선정을 Phase2와 동일한
+합집합 방식으로 통일. (3) `DYNAMIC_FEATURES_POOL`에 hurst_ready 등록 — 이건 주간
+SHAP 심사가 "교체 후보"로 제안할 수 있게 문을 여는 것일 뿐, `active_features`를
+직접 편집해 강제 편입하지는 않음(자동 통합 금지 원칙, CLAUDE.md §6과 동일 취지).
+**Why**: 이전 세션의 진단(dev_memory 기록)을 코드 재확인 없이 그대로 신뢰하면 안
+된다는 걸 재확인한 사례 — "실제 학습 피처"라는 표현이 근거 없이 남아있었던 것이
+착시의 근원이었고, 아티팩트(pkl/json)를 직접 열어보는 실측 검증 한 번으로 바로잡힘.
+**How to apply**: dev_memory에 "~인데 어떻게 됨"류 진단이 남아있어도, 실제 구현
+전에는 관련 아티팩트(모델 pkl, registry json 등)를 직접 열어 현재 상태를 재확인할 것
+— 특히 몇 세션 전 기록일수록 그 사이 다른 변경으로 전제가 무효화됐을 가능성이 있음.
+**구현**: `scripts/backfill_features.py`, `learning/batch_retrainer.py:_load_from_db`,
+`config/constants.py:DYNAMIC_FEATURES_POOL`.
+**검증**: `py_compile` 통과. `process_day()`에 합성 랜덤워크 95봉 주입해 hurst_ready
+전이 시점(n=39→False, n=40→True)이 라이브(`feature_builder.py`)와 정확히 일치함을
+확인. Phase1 union 로직은 축소 재현 케이스(최다-키 행에 없고 소수-키 행에만 있는
+키가 구방식에선 누락, 신방식에선 보존)로 별도 검증. **라이브 미검증** — 다음 정기
+재학습(EOD/26주 WFA) 후 (1) 기존 97개 피처가 그대로 보존되는지, (2) hurst_ready가
+SHAP 교체 후보로 실제 제안되는지 확인 필요.
+**관련**: `NEXT_TODO.md` 동일 날짜(318차) 항목, 317차 항목(원 진단 정정).

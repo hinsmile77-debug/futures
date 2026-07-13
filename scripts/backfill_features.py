@@ -12,7 +12,7 @@ raw_features에 INSERT한다.
   cvd_direction            — close > open → +1, 반대 → -1
   cvd_slope                — 최근 5봉 cvd_direction 합산
   avg_volume               — 최근 20봉 volume 이동평균
-  hurst                    — calculate_hurst() (317차 3단계 워밍업 스케줄까지 실거래와
+  hurst, hurst_ready       — calculate_hurst() (317차 3단계 워밍업 스케줄까지 실거래와
                               동일하게 재현, 최근 HURST_WINDOW_N봉 종가 버퍼)
 
 불가 피처 (호가/수급/매크로/옵션 없음):
@@ -34,10 +34,15 @@ raw_features에 INSERT한다.
     `feature_builder.reset_daily()` 수정분(317차, `_close_history.clear()` 추가)과
     동등한 효과가 이미 구조적으로 보장된다(전날 데이터가 섞이는 오염 불가) — 별도
     조치 불필요, 최초 설계부터 그렇게 돼 있었음.
-  - [별개 발견, 이번 세션 스코프 밖] `hurst_ready`가 `model/multi_horizon_model.py`
-    `_Z_WARN_EXEMPT`에 등록된 실제 학습 피처인데 `FEATURE_KEYS_ALL`에 없어 항상 0.0으로
-    채워짐(batch_retrainer의 `rec.get(f, 0.0)` 기본값) — 317차 이전부터의 기존 이슈,
-    다음 세션에서 별도 검토.
+  - [318차 수정] `hurst_ready`가 `FEATURE_KEYS_ALL`에 없어 이 스크립트가 재계산하는
+    모든 행에서 키 자체가 통째로 빠지는 문제를 발견 — `_Z_WARN_EXEMPT` 등록은 스케일러
+    z-경보 노이즈 제거용일 뿐 실제 학습 피처 편입과 무관했음(재조사 결과 GBM
+    `feature_names.pkl`·`shap_feature_registry.json` 어디에도 `hurst_ready`가 없었음,
+    즉 "0.0 기본값"이 아니라 애초에 학습 후보에도 오른 적이 없었던 상태). `FEATURE_KEYS_ALL`에
+    추가하고 `hurst`와 동일한 3단계 워밍업 산식으로 `feat["hurst_ready"]`를 채우도록 수정.
+    학습 피처 편입 자체는 `config/constants.py:DYNAMIC_FEATURES_POOL` 등록 + 주간 SHAP
+    심사·수동 승인(`main.py:_on_apply_shap_candidate_requested`)을 거쳐야 하며 이 스크립트
+    수정만으로 자동 편입되지 않는다.
 
 사용법:
   python scripts/backfill_features.py             # 전체 소급
@@ -82,7 +87,8 @@ logger = logging.getLogger("backfill")
 
 RAW_DATA_DB = os.path.join(BASE_DIR, "data", "db", "raw_data.db")
 
-# 현재 raw_features에서 사용 중인 99개 키 (2026-06-01 기준)
+# 현재 raw_features에서 사용 중인 키 목록 (318차: hurst_ready 추가, 실제 116개 —
+# 기존 "99개" 주석은 2026-06-01 이후 드리프트된 값이라 실측치로 정정)
 # 계산 가능한 것 외에는 모두 0.0
 FEATURE_KEYS_ALL = [
     "above_vwap", "atr", "atr_ratio", "avg_volume",
@@ -93,7 +99,7 @@ FEATURE_KEYS_ALL = [
     "feature_degraded", "feature_quality_score", "feature_recoverable_errors",
     "foreign_call_net", "foreign_futures_net", "foreign_put_net",
     "foreign_retail_divergence",
-    "hurst", "imbalance_slope", "institution_futures_net",
+    "hurst", "hurst_ready", "imbalance_slope", "institution_futures_net",
     "macro_event_flag", "macro_krw_chg", "macro_nasdaq_chg",
     "macro_quality_age_sec", "macro_quality_available",
     "macro_quality_fallback_used", "macro_quality_source_code",
@@ -208,12 +214,14 @@ def process_day(date_str: str, candles: list) -> list:
         _n_buf = len(close_buf)
         if _n_buf < HURST_WARMUP_COLDSTART_MIN:
             hurst = 0.5
+            hurst_ready = False
         else:
             if _n_buf < HURST_WINDOW_N:
                 _lag_eff = max(HURST_WARMUP_LAG_FLOOR, round(_n_buf * HURST_WARMUP_LAG_RATIO))
             else:
                 _lag_eff = HURST_MAX_LAG
             hurst = calculate_hurst(list(close_buf), max_lag=_lag_eff)
+            hurst_ready = True
 
         # ── 시간대 피처 ─────────────────────────────────────────
         try:
@@ -293,6 +301,7 @@ def process_day(date_str: str, candles: list) -> list:
         feat["cvd_slope"]     = cvd_slope
         feat["avg_volume"]    = round(avg_vol, 2)
         feat["hurst"]         = hurst
+        feat["hurst_ready"]   = hurst_ready
         feat["feature_quality_score"] = 0.3  # 소급 데이터 마커
 
         feat["time_sin"]          = time_sin

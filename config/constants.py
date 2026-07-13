@@ -148,6 +148,11 @@ DYNAMIC_FEATURES_POOL = [
     "vpin",
     "cancel_ratio",
     "round_number_distance",
+    # 318차 추가 — hurst_ready(워밍업 완료 플래그, 237차부터 진입 게이트로는 이미 사용 중이나
+    # GBM 학습 피처로는 편입된 적 없음). 여기 등록은 주간 SHAP 심사에서 "교체 후보"로만
+    # 제안되게 할 뿐, 자동 편입은 아님 — 실제 편입은 사람이 대시보드에서 승인해야 함
+    # (main.py:_on_apply_shap_candidate_requested, CLAUDE.md §6 자동 통합 금지 원칙과 동일 취지).
+    "hurst_ready",
 ]
 
 # ── 시장 레짐 ─────────────────────────────────────────────────
