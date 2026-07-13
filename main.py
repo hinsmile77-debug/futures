@@ -4472,6 +4472,7 @@ class TradingSystem:
                         features=_meta_feats,
                         now=_v_ts,
                         recent_accuracy=self.online_learner.recent_accuracy(),
+                        context="verify",  # [316차] STEP1 검증 재평가 — 실거래 게이팅 아님, skip 로그 DEBUG로 격하
                     )
                     self.meta_gate.record_outcome(
                         _meta_eval.get("meta_features", []),
@@ -5672,6 +5673,7 @@ class TradingSystem:
             trend_gate_active=bool(_tp_active),   # ② TrendGate 편향패널티 비활성화
             time_zone=_tz,                        # ③ STABLE_TREND reduce_thr 완화
             horizon=getattr(self, "_entry_horizon_pre", "1m") or "1m",  # [260704 P1] entry_quality_prob 섀도우 스코어링
+            context="live",  # [316차] STEP6 실거래 게이팅 — skip 로그 SIGNAL.log(INFO)에 유지
         )
         _s6_prof.append(("meta_gate", time.perf_counter()))
         # selection bias 해소: skip된 비-FLAT 신호를 shadow 버퍼에 보존

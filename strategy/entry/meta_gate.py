@@ -95,6 +95,9 @@ class MetaGate:
         trend_gate_active: bool = False,   # ② TrendGate ON → 편향패널티 비활성화
         time_zone: str = "",               # ③ STABLE_TREND/LUNCH_RECOVERY → reduce_thr 완화
         horizon: str = "1m",                # [260704 감사 P1] entry_quality_prob 섀도우 스코어링용
+        context: str = "live",              # [316차] "live"=STEP6 실거래 게이팅, "verify"=STEP2
+                                             # 검증루프 카운터팩추얼 재평가 — skip 로그 태그 구분용
+                                             # (SIGNAL.log grep 시 두 모집단이 섞여 집계되는 문제 방지)
     ) -> Dict:
         if now is None:
             now = now_kst()
@@ -206,10 +209,12 @@ class MetaGate:
             action    = "skip"
             size_mult = 0.0
             reason    = "meta_skip"
-            logger.info(
-                "[MetaGate] skip: blended=%.3f reduce_thr=%.3f take_thr=%.3f "
+            _tag = "LIVE" if context == "live" else "VERIFY"
+            _log_fn = logger.info if context == "live" else logger.debug
+            _log_fn(
+                "[MetaGate][%s] skip: blended=%.3f reduce_thr=%.3f take_thr=%.3f "
                 "(grade=%s min_conf=%.3f ens=%.3f meta_raw=%.3f ens_w=%.2f)",
-                blended_conf, reduce_thr, take_thr,
+                _tag, blended_conf, reduce_thr, take_thr,
                 checklist_grade, min_conf, float(confidence), meta_conf, cfg["ens_w"],
             )
 
