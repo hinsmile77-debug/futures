@@ -12,7 +12,8 @@ raw_features에 INSERT한다.
   cvd_direction            — close > open → +1, 반대 → -1
   cvd_slope                — 최근 5봉 cvd_direction 합산
   avg_volume               — 최근 20봉 volume 이동평균
-  hurst                    — calculate_hurst() (실거래와 동일 공식, 최근 60봉 종가 버퍼)
+  hurst                    — calculate_hurst() (317차 3단계 워밍업 스케줄까지 실거래와
+                              동일하게 재현, 최근 HURST_WINDOW_N봉 종가 버퍼)
 
 불가 피처 (호가/수급/매크로/옵션 없음):
   ofi_*, microprice_*, mlofi_*, queue_*
@@ -20,10 +21,30 @@ raw_features에 INSERT한다.
   macro_*, opt_*, toxicity_*
   → 모두 0.0 으로 채움 (batch_retrainer에서 rec.get(f, 0.0) 처리와 동일)
 
+[317차] hurst 재보정 소급 반영 시 유의사항 — 이 스크립트의 hurst 재계산은 "GBM
+재학습용 학습 피처를 새 공식으로 재구성"하는 것이지, "과거에 실제로 나갔던 진입/청산
+신호를 다시 쓴다"는 뜻이 아니다. 실거래는 당시 배포돼 있던 파라미터(예: N=60/max_lag=20)
+기준으로 이미 확정적으로 발생했고 trades.db·ensemble_decisions.db 등 실거래 기록은
+그대로 유지된다. 이 스크립트가 건드리는 건 raw_features(재학습 입력)뿐이다.
+  - 콜드스타트/워밍업 재현: 라이브(feature_builder.py)와 동일한 317차 3단계 스케줄
+    (n<HURST_WARMUP_COLDSTART_MIN 중립 / 적응형 max_lag / n>=HURST_WINDOW_N 고정)을
+    `process_day()`에서 그대로 재현한다 — 이걸 빠뜨리면(예: 항상 고정 max_lag만 사용)
+    라이브 파이프라인과 값이 달라져 소급 데이터 자체가 새로운 불일치 원인이 된다.
+  - 일자 경계 리셋: `process_day()`가 날짜별로 `close_buf`를 새로 생성하므로
+    `feature_builder.reset_daily()` 수정분(317차, `_close_history.clear()` 추가)과
+    동등한 효과가 이미 구조적으로 보장된다(전날 데이터가 섞이는 오염 불가) — 별도
+    조치 불필요, 최초 설계부터 그렇게 돼 있었음.
+  - [별개 발견, 이번 세션 스코프 밖] `hurst_ready`가 `model/multi_horizon_model.py`
+    `_Z_WARN_EXEMPT`에 등록된 실제 학습 피처인데 `FEATURE_KEYS_ALL`에 없어 항상 0.0으로
+    채워짐(batch_retrainer의 `rec.get(f, 0.0)` 기본값) — 317차 이전부터의 기존 이슈,
+    다음 세션에서 별도 검토.
+
 사용법:
   python scripts/backfill_features.py             # 전체 소급
   python scripts/backfill_features.py --dry-run   # 건수만 확인
   python scripts/backfill_features.py --from 2026-01-01  # 특정 날짜 이후만
+  python scripts/backfill_features.py --update-features --from 2026-04-28
+      # 317차 hurst 재보정 반영 — 기존 raw_features 행을 새 공식으로 재계산해 UPDATE
 
 Python 3.7 32-bit 호환
 """
@@ -47,6 +68,10 @@ from features.technical.atr import ATRCalculator
 from features.technical.vwap import VWAPCalculator
 from features.technical.volume_profile import VolumeProfileCalculator
 from features.technical.hurst_exponent import calculate_hurst
+from config.settings import (
+    HURST_WINDOW_N, HURST_MAX_LAG,
+    HURST_WARMUP_COLDSTART_MIN, HURST_WARMUP_LAG_FLOOR, HURST_WARMUP_LAG_RATIO,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -135,7 +160,7 @@ def process_day(date_str: str, candles: list) -> list:
     vwap_calc = VWAPCalculator()
     vp_calc   = VolumeProfileCalculator(n=60, bins=20)
 
-    close_buf    = deque(maxlen=60)   # hurst/볼린저/모멘텀용
+    close_buf    = deque(maxlen=HURST_WINDOW_N)   # hurst/볼린저/모멘텀용
     cvd_dir_buf  = deque(maxlen=5)    # cvd_slope용
     vol_buf      = deque(maxlen=20)   # avg_volume용
     vol_buf10    = deque(maxlen=10)   # volume_acceleration용
@@ -174,10 +199,21 @@ def process_day(date_str: str, candles: list) -> list:
         avg_vol = float(sum(vol_buf) / len(vol_buf)) if vol_buf else 0.0
 
         # ── Hurst ────────────────────────────────────────────────
-        # 실거래(feature_builder.py)와 동일한 calculate_hurst() 사용 — 별도 근사식 쓰면
-        # 소급 학습 데이터와 실거래 수집값의 hurst 의미가 달라짐(train/serve skew)
+        # 317차: feature_builder.py와 동일한 3단계 워밍업 스케줄까지 그대로 재현
+        # (콜드스타트만 다르게 처리하면 라이브와 값이 어긋나 소급 데이터가 새로운
+        # train/serve 불일치 원인이 됨). close_buf는 날짜마다 process_day() 호출 시
+        # 새로 생성되므로(위 함수 시작부) reset_daily() 수정분과 동등하게 이미
+        # 일자 경계에서 항상 비어 있다.
         close_buf.append(c)
-        hurst = calculate_hurst(list(close_buf), max_lag=20)
+        _n_buf = len(close_buf)
+        if _n_buf < HURST_WARMUP_COLDSTART_MIN:
+            hurst = 0.5
+        else:
+            if _n_buf < HURST_WINDOW_N:
+                _lag_eff = max(HURST_WARMUP_LAG_FLOOR, round(_n_buf * HURST_WARMUP_LAG_RATIO))
+            else:
+                _lag_eff = HURST_MAX_LAG
+            hurst = calculate_hurst(list(close_buf), max_lag=_lag_eff)
 
         # ── 시간대 피처 ─────────────────────────────────────────
         try:

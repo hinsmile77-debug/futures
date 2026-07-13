@@ -55,6 +55,54 @@ def calculate_hurst(price_series, max_lag: int = 20) -> float:
     return float(np.clip(hurst_h, 0.0, 1.0))
 
 
+def correct_hurst_bias(h_raw: float, n: int, deshrink_table: dict) -> float:
+    """
+    317차 후속: calculate_hurst()의 소표본 하향편향을 선형 de-shrinkage로 보정.
+
+    N/max_lag 재보정(317차)은 편향의 "크기"만 줄였을 뿐 임계값(0.45/0.55)은 그대로라,
+    정상운영 구간조차 진짜 랜덤워크(H=0.5)가 평균 0.446으로 찍혀 여전히 구조적으로
+    임계값을 못 넘는 문제가 남는다.
+
+    1차 시도(H=0.5 지점만 기준으로 한 상수 이동, H_corrected=H_raw-bias)는 60거래일
+    실측 검증에서 FalsePass가 14.4%→30.6%로 급악화해 폐기됨 — 편향이 H_true에 따라
+    다르기 때문(H_true=0.3→0.5→0.7로 갈수록 편향이 커짐, 상수 이동은 이미 편향이
+    작던 0.3 부근을 과보정해 0.55 위로 밀어올림). 대신 H_true=0.3/0.7 두 기준점으로
+    선형모델(H_raw = a + b*H_true)을 적합하고 역산(H_true_est = (H_raw - a) / b)하는
+    de-shrinkage로 교체 — 0.3·0.7 양끝은 정확히 복원되고 0.5도 크게 개선된다.
+
+    deshrink_table: {n: (a, b)}. n이 테이블 키 사이 값이면 a·b 각각 선형보간,
+    범위 밖이면 최근접 끝값 사용.
+
+    Args:
+        h_raw:          calculate_hurst() 원시 반환값
+        n:               계산에 실제로 쓰인 표본 크기(버퍼 길이)
+        deshrink_table:  config.settings.HURST_DESHRINK_TABLE 등, {n: (a, b)} 딕셔너리
+
+    Returns:
+        float: 보정된 Hurst 지수 (0.0~1.0으로 클립)
+    """
+    keys = sorted(deshrink_table.keys())
+    if not keys:
+        return h_raw
+    if n <= keys[0]:
+        a, b = deshrink_table[keys[0]]
+    elif n >= keys[-1]:
+        a, b = deshrink_table[keys[-1]]
+    else:
+        a, b = deshrink_table[keys[0]]
+        for lo, hi in zip(keys, keys[1:]):
+            if lo <= n <= hi:
+                t = (n - lo) / float(hi - lo)
+                a_lo, b_lo = deshrink_table[lo]
+                a_hi, b_hi = deshrink_table[hi]
+                a = a_lo * (1 - t) + a_hi * t
+                b = b_lo * (1 - t) + b_hi * t
+                break
+    if abs(b) < 1e-6:
+        return h_raw
+    return float(np.clip((h_raw - a) / b, 0.0, 1.0))
+
+
 if __name__ == "__main__":
     # ── 동작 테스트 ───────────────────────────────────────────
     import random
