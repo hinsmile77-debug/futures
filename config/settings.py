@@ -949,6 +949,17 @@ HURST_DESHRINK_TABLE = {
     85: (0.0252, 0.8470), 90: (0.0215, 0.8512),
 }
 
+# 320차 — Trend Efficiency Ratio(Kaufman 1995): 직선거리/총이동거리, 0(잡음)~1(완벽한 추세).
+# Hurst와 취지(추세 지속성)는 겹치나 계산방식(경로비율 vs variance-scaling)이 달라 상관 1이
+# 아닐 것으로 기대 — GBM 보완 신호 후보. window=10은 Kaufman 원 논문 KAMA 기본값 그대로 채용
+# (별도 그리드서치 없음 — 필요 시 향후 SHAP 기여도 확인 후 조정).
+TREND_EFFICIENCY_WINDOW = 10
+
+# 320차 — Kyle's Lambda(Kyle 1985): 가격충격계수. 최근 N분봉의 (분당 가격변화, 분당 순매수량)
+# 단순회귀 기울기. window=20은 OFI/MLOFI 계열과 달리 별도 튜닝 없이 "노이즈에 흔들리지 않을
+# 최소 표본"으로 임의 채택 — 향후 SHAP 기여도 확인 후 조정 대상.
+KYLE_LAMBDA_WINDOW = 20
+
 # ── ATR 진입 범위 임계값 ───────────────────────────────────────
 # 1분봉 노이즈가 ATR_STOP_MULT × ATR 손절거리를 초과 → 휩쏘 손절 급증 방지
 ATR_MIN_ENTRY = 1.0   # pt 미만이면 진입 차단 (변동성 너무 낮음)

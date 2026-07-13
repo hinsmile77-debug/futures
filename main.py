@@ -537,6 +537,10 @@ class TradingSystem:
         # [266차] tick-level 하드스톱 — COM 콜백에서 flag 세팅, S0-C에서 메인스레드 주문 전송
         self._tick_stop_triggered: bool  = False
         self._tick_stop_price:     float = 0.0
+        # [320차] VPIN 배선 — bar 누적 buy_vol/sell_vol의 틱 델타로 개별 체결 복원용
+        self._vpin_bar_ts: Optional[datetime.datetime] = None
+        self._vpin_prev_buy_vol:  float = 0.0
+        self._vpin_prev_sell_vol: float = 0.0
         self._chejan_exit_miss_count: int = 0   # [269차] EXIT Chejan 이벤트 유실 일별 카운터
         # [226차] 64비트 서브프로세스 재학습 추적 — Popen·결과 경로·warmup 플래그
         self._retrain_subproc = None                     # subprocess.Popen handle
@@ -3016,6 +3020,24 @@ class TradingSystem:
         if self.realtime_data is None:
             return
         close = float(bar.get("close", 0) or 0.0)
+        # [320차] VPIN 배선 — bar는 분봉 누적치라 buy_vol/sell_vol의 틱간 델타로
+        # 이번 틱 단독 체결량·매수/매도 방향을 복원해 VPINCalculator에 전달.
+        _vpin_bar_ts = bar.get("ts")
+        if _vpin_bar_ts != self._vpin_bar_ts:
+            self._vpin_bar_ts = _vpin_bar_ts
+            self._vpin_prev_buy_vol = 0.0
+            self._vpin_prev_sell_vol = 0.0
+        _vpin_cur_buy = float(bar.get("buy_vol", 0.0) or 0.0)
+        _vpin_cur_sell = float(bar.get("sell_vol", 0.0) or 0.0)
+        _vpin_d_buy = max(0.0, _vpin_cur_buy - self._vpin_prev_buy_vol)
+        _vpin_d_sell = max(0.0, _vpin_cur_sell - self._vpin_prev_sell_vol)
+        self._vpin_prev_buy_vol = _vpin_cur_buy
+        self._vpin_prev_sell_vol = _vpin_cur_sell
+        if close > 0 and (_vpin_d_buy + _vpin_d_sell) > 0:
+            self.feature_builder.update_tick(
+                price=close, volume=_vpin_d_buy + _vpin_d_sell,
+                is_buy=(_vpin_d_buy >= _vpin_d_sell),
+            )
         logger.info(
             "[TickUI] begin code=%s close=%.2f ts=%s",
             self.realtime_data.code,

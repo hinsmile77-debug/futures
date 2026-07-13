@@ -16,14 +16,20 @@ from features.technical.ofi import OFICalculator
 from features.technical.ofi_reversal import OfiReversalCalculator
 from features.technical.queue_dynamics import QueueDynamicsCalculator
 from features.technical.toxicity import ToxicityCalculator
+from features.supply_demand.vpin import VPINCalculator
 from features.technical.vwap import VWAPCalculator
 from features.technical.hurst_exponent import calculate_hurst
+from features.technical.trend_efficiency import calculate_trend_efficiency
+from features.technical.kyle_lambda import KyleLambdaCalculator
+from features.technical.multi_timeframe import MultiTimeframeAnalyzer
+from features.technical.round_number import nearest_round_distance_symmetric
 from features.technical.expiry import compute_expiry_features
 from config.constants import MINI_FUTURES_TICK_SIZE as _DEFAULT_TICK_SIZE  # [235차] 미니선물 전용 기본값 0.02
 from utils.error_policy import ErrorLevel, classify_exception
 from config.settings import (
     HORIZON_THRESHOLDS, HURST_WINDOW_N, HURST_MAX_LAG,
     HURST_WARMUP_COLDSTART_MIN, HURST_WARMUP_LAG_FLOOR, HURST_WARMUP_LAG_RATIO,
+    TREND_EFFICIENCY_WINDOW, KYLE_LAMBDA_WINDOW,
 )
 
 logger = logging.getLogger("SIGNAL")
@@ -47,6 +53,9 @@ class FeatureBuilder:
         self.mlofi = MLOFICalculator(levels=5, window=5)
         self.queue = QueueDynamicsCalculator(window=20, minute_window=5)
         self.toxicity = ToxicityCalculator(window=20)
+        self.vpin_calc = VPINCalculator(bucket_size=1000)
+        self.kyle_lambda_calc = KyleLambdaCalculator(window=KYLE_LAMBDA_WINDOW)
+        self.multi_timeframe = MultiTimeframeAnalyzer()
         self._last_features: Dict[str, float] = {}
         self._last_hoga_snapshot: Dict[str, Any] = {}
         self._micro_tick_count = 0
@@ -120,6 +129,12 @@ class FeatureBuilder:
                 round(float(mlofi_tick), 4) if mlofi_tick is not None else None,
                 queue_tick,
             )
+
+    def update_tick(self, price: float, volume: float, is_buy: Optional[bool] = None) -> None:
+        """체결 틱마다 VPIN 버킷 누적 (main.py:_on_tick_price_update에서 호출)."""
+        if price <= 0 or volume <= 0:
+            return
+        self.vpin_calc.update_tick(price=price, volume=volume, is_buy=is_buy)
 
     def build(
         self,
@@ -337,6 +352,22 @@ class FeatureBuilder:
                              "queue_refill_rate": 0.5, "queue_directional_depletion": 0.0,
                              "imbalance_slope": 0.0, "cancel_add_ratio": 0.0})
 
+        # VPIN — update_tick()이 매 체결 틱마다 누적한 값을 그대로 읽기만 함(버킷 미완성 시
+        # 직전 완성 버킷값 유지, bucket_size=1000계약 미달 시 0.0).
+        features["vpin"] = float(self.vpin_calc.get_current_vpin())
+
+        # Kyle's Lambda — 분봉 단위(close·buy_vol·sell_vol)만으로 계산, 틱 배선 불필요.
+        # 틱 사이즈로 정규화(브로커·미니/일반선물 tick_size 차이 흡수) 후 안전 클리핑.
+        try:
+            kyle_result = self.kyle_lambda_calc.update(close=close, buy_vol=buy_vol, sell_vol=sell_vol)
+            features["kyle_lambda"] = float(np.clip(
+                kyle_result["kyle_lambda"] / self._tick_size, -5.0, 5.0
+            ))
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            logger.warning("[FeatureBuilder] Kyle's Lambda 오류 — 기본값 사용: %s", _exc)
+            features["kyle_lambda"] = 0.0
+
         try:
             atr_result = self.atr.update(high=high, low=low, close=close)
             features["atr"]       = float(atr_result["atr"])
@@ -383,6 +414,17 @@ class FeatureBuilder:
             logger.warning("[FeatureBuilder] Hurst 오류 — 기본값 0.5 사용: %s", _exc)
             features["hurst"] = 0.5
             features["hurst_ready"] = False
+
+        # Trend Efficiency Ratio(Kaufman) — Hurst와 취지(추세 지속성)는 겹치나 계산방식이
+        # 달라(경로비율 vs variance-scaling) 상관 1이 아닐 것으로 기대되는 보완 신호.
+        features["trend_efficiency"] = calculate_trend_efficiency(
+            list(self._close_history), window=TREND_EFFICIENCY_WINDOW,
+        )
+
+        # 마디가(Round Number) 거리 — 방향 인자 없이 상/하 최근접 레벨 중 더 가까운 쪽만 사용
+        # (nearest_round_distance()는 direction 인자가 필요해 피처 생성 시점엔 사용 불가).
+        # 상태 없는 순수 함수라 reset_daily() 대상 아님.
+        features["round_number_distance"] = nearest_round_distance_symmetric(close)
 
         try:
             bid1 = float(bar.get("bid1") or 0.0)
@@ -568,6 +610,22 @@ class FeatureBuilder:
         features["ret_15m"] = float(np.clip(
             (_ch[-1] - _ch[-16]) / (_ch[-16] + 1e-9) if _n >= 16 else 0.0, -0.05, 0.05))
 
+        # ── 멀티 타임프레임 추세(이산값) ───────────────────────────
+        # ret_5m/15m(연속 수익률)과 달리 -1/0/+1 레짐 이산화 — GBM에 보완적 표현 기대.
+        # push_1m_candle()이 내부에서 5분봉·15분봉을 자동 집계하므로 매 확정 1분봉마다 1회만
+        # 호출하면 됨(build()가 이미 그 호출 빈도).
+        try:
+            _open = float(bar.get("open") or close)
+            mtf_result = self.multi_timeframe.push_1m_candle(
+                open_=_open, high=high, low=low, close=close, volume=vol,
+            )
+            features["multi_timeframe_5m"]  = float(mtf_result["trend_5m"])
+            features["multi_timeframe_15m"] = float(mtf_result["trend_15m"])
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            logger.warning("[FeatureBuilder] MultiTimeframe 오류 — 기본값 사용: %s", _exc)
+            features.update({"multi_timeframe_5m": 0.0, "multi_timeframe_15m": 0.0})
+
         # ── EMA cross ────────────────────────────────────────────
         if close > 0:
             if not self._ema_initialized:
@@ -726,6 +784,9 @@ class FeatureBuilder:
         self.mlofi.reset_daily()
         self.queue.reset_daily()
         self.toxicity.reset_daily()
+        self.vpin_calc.reset_daily()
+        self.kyle_lambda_calc.reset_daily()
+        self.multi_timeframe.reset_daily()
         self._last_features = {}
         self._last_hoga_snapshot = {}
         self._micro_tick_count = 0
