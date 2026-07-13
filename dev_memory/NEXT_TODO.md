@@ -217,6 +217,41 @@
   **후속 필요**: GBM 재학습 검증(재학습 후 hurst 관련 SHAP 기여도·IC 재확인) — 이번
   세션은 raw_features 재구성까지만, 재학습 자체는 다음 정기 재학습 주기에 자연 반영됨.
 
+- [ ] **[배포 필수] MW0601(라이브 운영 PC)에서 backfill 재실행** — 위 219일·81,762행
+  재계산은 **이 개발 PC의 로컬 `data/db/raw_data.db`에만 적용됨**. `data/db/`는
+  `.gitignore` 대상(PC별 런타임 산출물, [[feedback_git_commit_scope]])이라 커밋
+  19ad0c3에 포함되지 않았고, 실제 라이브가 도는 MW0601은 자기 자신의 `raw_data.db`에
+  대해 **별도로 이 스크립트를 직접 실행**해야 그 PC의 GBM 학습 데이터가 새 Hurst
+  공식(N=90/max_lag=9 + 3단계 워밍업)을 반영한다. 코드(config/settings.py 등)는
+  git pull로 반영되지만 **backfill 자체는 자동화돼 있지 않다 — 사람이 한 번 실행**해야 함.
+
+  **실행 시점(중요)**: 장중(09:00~15:40) 실행 금지 — `utils/db_utils.py`의
+  `save_candle_and_features()`가 매분 `raw_data.db`의 `raw_features`에
+  `INSERT OR REPLACE` 하는 라이브 프로세스와 SQLite 쓰기 경합 위험. **15:40 EOD 마감
+  이후 ~ 다음날 08:40 자동기동 전** 사이에 실행할 것(`[[project_v9_dev_branch_split]]`
+  의 "실시간 파이프라인 영향 커밋은 15:40 이후에만 v9-dev 반영" 원칙과 같은 취지).
+
+  **절차**:
+  1. `git pull origin v9-dev` — 커밋 `19ad0c3`(317차) 포함 확인.
+  2. `conda activate py37_32` — 이 백필은 단순 재계산이라 py37_32로 충분
+     (그리드서치용 py310_64와 달리 무거운 Monte Carlo 없음).
+  3. (선택) `python scripts/backfill_features.py --dry-run --update-features`
+     — 실제 반영 전 대상 날짜 수만 먼저 확인.
+  4. `python scripts/backfill_features.py --update-features` 실행 — 개발 PC 기준
+     219일·약 90초였음(MW0601 보유 데이터 기간에 따라 다를 수 있음).
+  5. 검증: 로그 마지막 줄 "UPDATE 완료: 총 N행" 확인. 필요시 아래로 콜드스타트
+     비율·분포 재확인(이 세션에서 쓴 방식과 동일):
+     ```python
+     import sqlite3, json, numpy as np
+     con = sqlite3.connect("data/db/raw_data.db")
+     rows = con.execute("select features from raw_features").fetchall()
+     h = np.array([json.loads(r[0])["hurst"] for r in rows])
+     print(len(h), h.mean(), h.std(), (h == 0.5).mean())
+     ```
+     개발 PC 기준값: mean≈0.452, std≈0.107, 콜드스타트(=0.5) 비율≈10.4% — 크게
+     벗어나면(예: mean이 여전히 0.33~0.36대) 재실행이 반영 안 된 것이니 재확인.
+  6. MW0602(dev 브랜치, V8 운영)는 이번 v9-dev 전용 변경과 무관 — **backfill 불필요**.
+
 ### Phase 5 — 주기적 재검증 편입 (5단계)
 - [ ] 별도 분기 캘린더 신설 대신 기존 26주 Walk-Forward 재검증 주기(CLAUDE.md 실전전환기준 ③)에
   편입 — 관리 포인트 증가로 방치되는 패턴(FP-CRITICAL·CB②와 동일 위험) 방지.
