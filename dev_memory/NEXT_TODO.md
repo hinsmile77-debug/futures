@@ -8,6 +8,48 @@
 
 ---
 
+## 2026-07-14 (318차 — hurst_ready 학습 피처 미편입 원인 조사 + 3단계 수정)
+
+> 317차가 남긴 "별개 발견" 항목(hurst_ready가 0.0으로 채워진다는 진단) 재조사 →
+> 진단 자체가 부정확했음을 확인(단순 기본값 문제가 아니라 애초에 학습 후보 편입 이력이
+> 없었음) 후 근본 3중 원인을 모두 수정. 상세: `DECISION_LOG.md` 동일 날짜(318차) 항목,
+> [[project_hurst_ready_feature_gap]].
+
+- [DONE 2026-07-14] **재진단**: `feature_names.pkl`(97개)·`feature_names_{hz}.pkl`(전
+  호라이즌)·`shap_feature_registry.json:active_features`(97개) 전부 실제 열어 확인 —
+  `hurst_ready` 어디에도 없음. `hurst`는 있음. 즉 "0.0 기본값 오염"이 아니라 "학습
+  피처 후보로 오른 적이 없는 상태"가 정확한 진단. `main.py:7033`/`7105`의 237차 진입
+  게이트는 인메모리 `features` dict를 직접 읽어 이 문제와 무관하게 항상 정상 작동
+  중이었음(실거래 안전에는 영향 없었음, ML 학습 신호 손실만 있었던 것).
+- [DONE 2026-07-14] **Phase 0 (예방)** — `scripts/backfill_features.py`:
+  `FEATURE_KEYS_ALL`에 `hurst_ready` 추가 + `hurst`와 동일한 3단계 워밍업 산식으로
+  `feat["hurst_ready"]` 채우도록 수정. MW0601이 아직 백필을 한 번도 실행 안 한 상태임을
+  사용자가 확인해줘서(이 개발 PC에서만 317차 백필 실행됨), 예방 조치로 충분 — MW0601은
+  이 수정이 반영된 채로 최초 배포·백필을 받게 됨(재백필 불필요).
+- [DONE 2026-07-14] **Phase 1 (구조 수정)** — `learning/batch_retrainer.py::_load_from_db`
+  (Phase1/전역·1m 재학습 경로)의 `feat_names` 선정 로직을 "키 개수 최다 단일 행" 방식에서
+  Phase2(`raw_features_horizon` 경로, 260704 감사 P3)와 동일한 "전 구간 키 합집합(첫 등장
+  순서 보존)" 방식으로 통일. 260704 감사가 Phase2만 고치고 Phase1(실제 정기 26주
+  재학습이 도는 주경로)은 놓쳤던 것 — hurst_ready 외에 향후 새 피처가 같은 방식으로
+  조용히 누락되는 것도 구조적으로 예방.
+- [DONE 2026-07-14] **Phase 2 (편입 경로 개방, 자동 편입 아님)** — `config/constants.py:
+  DYNAMIC_FEATURES_POOL`에 `hurst_ready` 등록. 이걸로 주간 SHAP 심사
+  (`shap_tracker.weekly_review()`)가 기존 하위권 피처의 "교체 후보"로 `hurst_ready`를
+  제안할 수 있게 됐을 뿐, `shap_feature_registry.json`을 직접 편집해 강제 편입하지는
+  않음 — 실제 편입은 대시보드에서 사람이 승인(`main.py:_on_apply_shap_candidate_requested`)
+  해야 함(CLAUDE.md §6 알파 자동 통합 금지 원칙과 동일 취지).
+- [ ] **후속 필요**: 다음 정기 재학습(EOD/26주 WFA) 이후 (1) Phase 1 리팩터링이 기존
+  97개 피처 목록을 그대로 보존하는지(회귀 없는지), (2) `hurst_ready`가 SHAP 하위권
+  피처의 교체 후보로 실제 제안되는지, (3) 제안됐다면 SHAP 기여도가 유의미한지 관찰.
+  기여도가 낮으면(가능성 있음 — 게이트가 이미 저신뢰 구간을 걸러내므로 모델이 배울
+  잔여 신호가 적을 수 있음) 자연 탈락이 정상이며 추가 조치 불필요.
+- [ ] `config/constants.py:DYNAMIC_FEATURES_POOL`의 `"hurst_exponent"` 항목이 실제
+  raw feature 키(`"hurst"`)와 이름이 달라 `_get_recent_available_feature_names()`
+  가용성 체크를 절대 통과 못 하는 별개의 네이밍 불일치를 발견(이번 세션 스코프 밖,
+  이번 수정과 무관 — 다음 세션 후보로만 기록).
+
+---
+
 ## 2026-07-13 (317차 — Hurst 지수 추정 방법론 재검토 계획 수립, 코드 변경 없음)
 
 > 배경: 316차가 발견한 "grade=C 83건 중 52건(63%) HurstGate 차단" 딥다이브 중, 이 세션에서
@@ -211,11 +253,12 @@
   정상 재현(프리마켓 08:45~ 포함 39봉 미만 구간 정확히 0.5, 전체의 10.4%로 일별
   ~39/380봉 비율과 일치), 전체 분포 mean=0.452 std=0.107(구 공식 대비 0.5에 훨씬 근접,
   예상과 일치).
-  **별개 발견(스코프 밖, 다음 세션 후보)**: `hurst_ready`가 `model/multi_horizon_model.py`
-  `_Z_WARN_EXEMPT`에 등록된 실제 학습 피처인데 `FEATURE_KEYS_ALL`에 빠져 있어 항상
-  0.0으로 채워짐(batch_retrainer `rec.get(f,0.0)` 기본값) — 317차 이전부터의 기존 이슈.
-  **후속 필요**: GBM 재학습 검증(재학습 후 hurst 관련 SHAP 기여도·IC 재확인) — 이번
-  세션은 raw_features 재구성까지만, 재학습 자체는 다음 정기 재학습 주기에 자연 반영됨.
+  **별개 발견 — 318차에서 조사·수정 완료**([[project_hurst_ready_feature_gap]] 참조).
+  당초 "`_Z_WARN_EXEMPT`에 등록된 실제 학습 피처인데 0.0으로 채워짐"이라고 적었던 진단이
+  부정확했음이 재조사로 드러남 — 실제로는 `feature_names.pkl`(97개)·
+  `shap_feature_registry.json:active_features`(97개) 어디에도 `hurst_ready`가 없어,
+  "0.0 기본값"이 아니라 **애초에 GBM 학습 후보에 편입된 적이 자체가 없는 상태**였음.
+  `_Z_WARN_EXEMPT` 등록(260차)은 스케일러 z-경보 노이즈 제거용일 뿐 학습 피처 편입과 무관.
 
 - [ ] **[배포 필수] MW0601(라이브 운영 PC)에서 backfill 재실행** — 위 219일·81,762행
   재계산은 **이 개발 PC의 로컬 `data/db/raw_data.db`에만 적용됨**. `data/db/`는
@@ -224,6 +267,12 @@
   대해 **별도로 이 스크립트를 직접 실행**해야 그 PC의 GBM 학습 데이터가 새 Hurst
   공식(N=90/max_lag=9 + 3단계 워밍업)을 반영한다. 코드(config/settings.py 등)는
   git pull로 반영되지만 **backfill 자체는 자동화돼 있지 않다 — 사람이 한 번 실행**해야 함.
+
+  **[318차 확인]** 사용자 확인 결과 MW0601은 아직 `git pull`도, backfill 스크립트 실행도
+  전혀 안 된 상태(이 항목 등록 이후 지금까지 미착수) — 즉 318차의 `FEATURE_KEYS_ALL`
+  hurst_ready 수정([[project_hurst_ready_feature_gap]])이 MW0601이 최초로 배포·백필을
+  받을 때 이미 반영된 채로 적용되므로 별도 재실행(2회 백필) 없이 1회로 끝남. 아래 절차
+  그대로 진행하면 됨.
 
   **실행 시점(중요)**: 장중(09:00~15:40) 실행 금지 — `utils/db_utils.py`의
   `save_candle_and_features()`가 매분 `raw_data.db`의 `raw_features`에

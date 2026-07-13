@@ -1270,9 +1270,14 @@ class BatchRetrainer:
             close_map = {r["ts"]: float(r["close"]) for r in candle_rows}
 
             # X 행렬 구성
+            # [318차] 기존엔 "가장 키가 많은 1개 행"을 canonical feat_names로 썼는데,
+            # 5분마다만 갱신되는 옵션체인 피처처럼 항상 최다-키 행이 된다는 보장이 없는
+            # 피처가 있으면 다른 행에만 있는 피처가 조용히 누락됨(260704 감사 P3가
+            # Phase2/raw_features_horizon 경로에서 이미 확인한 것과 같은 클래스의 버그 —
+            # 여기 Phase1/global 경로는 그때 함께 고쳐지지 않고 남아있었음, hurst_ready
+            # 학습 피처 미편입의 원인 중 하나). 전 구간 키의 합집합(첫 등장 순서 보존)으로 교체.
             records = []
             feat_names = None
-            feat_name_count = 0
             for r in feat_rows:
                 try:
                     fd = _json.loads(r["features"])
@@ -1280,11 +1285,14 @@ class BatchRetrainer:
                     continue
                 if not isinstance(fd, dict):
                     continue
-                curr_keys = list(fd.keys())
-                if feat_names is None or len(curr_keys) >= feat_name_count:
-                    feat_name_count = len(curr_keys)
-                    feat_names = curr_keys
+                if feat_names is None:
+                    feat_names = dict.fromkeys(fd.keys())
+                else:
+                    for k in fd.keys():
+                        if k not in feat_names:
+                            feat_names[k] = None
                 records.append((r["ts"], fd))
+            feat_names = list(feat_names) if feat_names is not None else None
 
             if not records or feat_names is None:
                 return None, None, None
