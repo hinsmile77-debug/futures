@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-07-13 (313차 정기점검 — MaskedFallback 크래시 수정 + 대폭락장 관찰)
+
+> 오늘 기동(08:41)~11:20 로그 전수 점검. 주요 발견: (1) MaskedFallback 극단성보정
+> `features` 인자 오적용으로 09:02:56 실크래시 1건(자동진입 15분 OFF) → 즉시 수정.
+> (2) KOSPI200 선물(A0568) 08:45 1197.28 → 11:20 1133.76, 약 2.5시간 -5.3% 급락 —
+> RegimeFingerprint PSI CRITICAL 18회, Brier 과신경고 17회 발생했으나 실체결 0건
+> (A등급 1건 MetaGate skip 유일). 상세: `DECISION_LOG.md` 동일 날짜 항목(버그만).
+
+- [ ] **[최우선] MaskedFallback 크래시 수정 라이브 검증** — 다음 `direction==0`
+  + AutoMasked/chronic 동시발생 시 (1) `'list' object has no attribute 'get'`
+  크래시 재발 없음, (2) `[ExtremityCorrector]`/`[MaskedFallback]` 로그 정상 출력
+  확인. `main.py:5419-5424`.
+- [ ] **CB④(ATR 3배 급등 정지) 완만한 지속하락 사각지대 검토** — 오늘 -5.3%/2.5h
+  급락에도 `record_atr()`(순간 3배 또는 3분 중앙값 2.1배) 기준 CB④ 미발동
+  (`logs/20260713_WARN.log`에 CB 관련 로그 0건). ATR은 봉단위 변동폭이라
+  완만한 누적 하락 추세는 스파이크로 안 잡힐 가능성 — 대신 ScalerRefresh의
+  `D_PRICE_MOMENTUM`(5분 누적 수익률 기준, 오늘 7회 트리거)이 사실상 그 역할을
+  대신하고 있었음. CB④를 5분 누적 기준으로 보완할지, 현재처럼 역할분리(CB=순간
+  변동성, ScalerRefresh=추세)를 유지할지 설계 재검토 필요.
+- [ ] **무거래일(실체결 0건) 사후 검토** — 대폭락장에서 grade=A 1건(10:33:57,
+  `[MetaGate] skip: blended=0.351 reduce_thr=0.360`)만 근소하게 불발, B등급 0건,
+  C등급 94건(자동진입 대상 아님), X등급 253건. 시스템이 고변동성 레짐에서
+  의도대로 보수적으로 관망한 것인지, 혹은 실제 유효했을 방향성을 게이트가 과도하게
+  걸러낸 것인지 `predictions.db`로 사후 검증 가치 있음(레슨런 방법론 — overlap
+  보정 필수, 표본 1일뿐이므로 결론은 유보).
+- [ ] **312차 SHAP 복원 크래시 수정 — 재계산 분기 미실행으로 부분검증만 완료**
+  오늘 재기동 로그(`[AnalysisRestore] live_corr=0 restored_corr=yes live_shap=240
+  live_ready=no`)에서 크래시는 재발하지 않았으나, `_cached_shap_importance`가
+  이미 채워진 상태로 시작해 실제 취약했던 재계산 분기(`main.py:1097-1119`,
+  `[AnalysisRestore] SHAP 복원 계산: ok=...` 로그)가 이번엔 실행되지 않음 —
+  완전한 검증은 `_cached_shap_importance`가 비어있는 진짜 cold-start 재기동에서
+  재확인 필요.
+
+---
+
 ## 2026-07-12 (311차 후속2 딥다이브 — 8_time 이상신호 진단 결론)
 
 > `data/db/predictions.db`(ensemble_decisions + meta_labels horizon=15m, 06-15~07-10,

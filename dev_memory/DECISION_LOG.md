@@ -6264,3 +6264,52 @@ feature_degraded 분포, 결측)를 별도 점검 필요(재론 조건과 무관
 염두에 둘 것 — 예컨대 `MIN_SAMPLES_PER_ZONE`만 낮추면 노이즈가 커지고,
 `POOL_MIN_DAYS`만 낮추면 좀비 방지 효과가 약해진다.
 **관련**: `NEXT_TODO.md` "DailyConsolidator(zone_penalty) 개선" 섹션.
+
+---
+
+## 2026-07-13 (313차 정기점검) — MaskedFallback 극단성보정 features 인자 오적용 라이브 크래시 발견·수정
+
+### [버그] compute_extremity_hinge()에 피처 dict 대신 마스킹 피처 "이름" 리스트를 전달해 진입단계 크래시
+
+**File**: `main.py:5419-5424` (MaskedFallback 블록)
+**증상**: 07-13 09:02:56 `[ERR-FATAL] minute_pipeline: 'list' object has no attribute
+'get'` CRITICAL 발생 → 자동진입 OFF + 15분 쿨다운(`apply_error_policy` FATAL 처리).
+Traceback: `run_minute_pipeline` → `_apply_horizon_calibration` →
+`compute_extremity_hinge`(`learning/calibration.py:291`) →
+`features.get("bb_position", ...)`에서 AttributeError.
+**원인**: `main.py:5421`(수정 전)이 `_apply_horizon_calibration(_masked_hp_blended,
+features=self.model.last_masked_features)`로 호출. `self.model.last_masked_features`는
+`model/multi_horizon_model.py:604-629`에서 보듯 마스킹 대상 피처 "이름" 문자열
+리스트(`_chronic` 또는 `_auto_mask_feats`, 예: `['ret_1m', 'volume_acceleration',
+'threshold_feasibility']`)이지 피처값 dict가 아님 — 로깅 전용(`main.py:5456`
+`f"[MaskedFallback] {self.model.last_masked_features} 격리..."`)으로만 쓰이던
+변수를 `features=` 인자에 실수로 재사용. 정상 호출부(`main.py:5309`)는 동일 함수에
+`features=features`(현재 분봉의 실제 피처값 dict, `main.py:4667`에서 생성)를
+넘김 — 변수명이 유사(`last_masked_features` vs `features`)해 발생한 오적용으로 추정.
+**트리거 조건**: `direction==0`(정상 앙상블 FLAT) AND `_masked_hp_blended` truthy
+(격리 예측 존재) AND `self.model.last_masked_features` truthy(이상값 피처 3개↑
+동시 발생 또는 chronic 스트릭) — 세 조건이 겹쳐야만 재현. 오늘 AutoMasked는 3회
+발동(09:02:56, 09:03:26, 11:06:57)했으나 크래시는 1회만 재현 — 나머지는 direction≠0
+이었을 것으로 추정.
+**도입 경위**: 어제(07-12) 311차 후속4 커밋(`cd9d122`)이
+`MultiHorizonExtremityCorrector`/`compute_extremity_hinge`를 신규 배선하며
+`_apply_horizon_calibration`에 `features` 인자를 추가했을 때, 기존 MaskedFallback
+호출부(`main.py:5420`)를 업데이트하며 잘못된 변수를 전달한 것으로 보임 — 배선
+당일에는 트리거 조건이 안 맞아 미발현, 다음 거래일(오늘) 장중 처음 재현됨.
+**결정/수정**: `main.py:5421` `features=self.model.last_masked_features` →
+`features=features`(지역변수, 5309 호출부와 동일 값 사용).
+**Why**: 변수명이 `last_masked_features`(이름 리스트, 로깅용) vs `features`(값
+dict, 계산용)로 유사해 함수 시그니처만 보고는 타입 불일치를 알아채기 어려움 —
+새 인자를 기존 호출부에 배선할 때는 반드시 그 인자의 실제 런타임 타입(dict vs
+list)을 호출부별로 확인해야 함.
+**How to apply**: `_apply_horizon_calibration`처럼 여러 호출부를 가진 내부 함수에
+새 kwarg를 추가할 때는, 모든 호출부에서 동일한 지역변수(또는 동등한 타입)를
+전달하는지 grep으로 전수 확인할 것. 특히 `self.model.*` 네임스페이스에 "features"를
+포함하는 이름(`last_masked_features`, `feature_names` 등)이 다수 존재하는 이
+코드베이스에서는 변수명 유사성에 의한 오적용 위험이 상존.
+**구현**: `main.py:5419-5424`.
+**검증**: `py_compile` 통과. 정상 호출부(5309)와 동일한 `features` 지역변수를
+사용하도록 통일 확인. **라이브 미검증** — 다음 `direction==0` + AutoMasked/chronic
+동시발생 시 크래시 재발 없음과 `[ExtremityCorrector]`/`[MaskedFallback]` 로그가
+정상 출력되는지 확인 필요.
+**관련**: `NEXT_TODO.md` 동일 날짜 항목.
