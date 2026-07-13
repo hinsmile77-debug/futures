@@ -463,12 +463,15 @@ class ConfTrendWidget(QWidget):
             return "5. Meta skip", ""
         if ta == "block":
             return "6. Toxic block", ""
-        if ta == "reduce":
-            return "6. Toxic reduce", ""
+        # ta == "reduce"는 사이즈만 축소(×0.7)할 뿐 차단이 아니므로(main.py 6308-6318
+        # _tox_action=="reduce" → _qty_display만 축소, grade는 그대로) 퍼널을 멈추지
+        # 않고 이후 단계(auto_entry/entry_final_ok)까지 계속 평가한다.
         if ae == 0:
             return "7. Auto 불가", ""
         if fo == 0:
             return "8. STEP7 차단", ebr
+        if ta == "reduce":
+            return "9. 진입후보(Toxic축소) ▶", ""
         return "9. 진입후보(최종) ▶", ""
 
     def _resolve_block_reason(self, row, stage: str, detail: str) -> str:
@@ -505,6 +508,8 @@ class ConfTrendWidget(QWidget):
             cr = str(row["checklist_reason"] or "") if "checklist_reason" in _keys else ""
             return ("Chk X — " + cr) if cr else "STEP7 차단 (상세 미수집)"
         if stage.startswith("9."):
+            if "Toxic축소" in stage:
+                return "모든 조건 통과 — ToxicityGate reduce로 사이즈만 축소, 진입 대기/실행 중"
             return "모든 조건 통과 — 진입 대기/실행 중"
         if stage.startswith("10."):
             return "체결 완료"
