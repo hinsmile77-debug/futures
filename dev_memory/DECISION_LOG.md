@@ -6604,3 +6604,77 @@ list)을 호출부별로 확인해야 함.
 동시발생 시 크래시 재발 없음과 `[ExtremityCorrector]`/`[MaskedFallback]` 로그가
 정상 출력되는지 확인 필요.
 **관련**: `NEXT_TODO.md` 동일 날짜 항목.
+
+---
+
+## 2026-07-13 (314차) — log_manager.signal() 위치인자 오바인딩으로 P4 로그 %s 미치환
+
+### [버그] log_manager 편의 메서드가 표준 logger처럼 *args %-포맷을 지원하지 않아 위치인자가 level로 오바인딩
+
+**File**: `main.py:6025`(호출부), `logging_system/log_manager.py:170`(`signal()` 시그니처)
+**증상**: `[P4] CVD+OFI 동시 역방향 → 등급 %s→C 강등 (자동진입 A/B 차단)` 로그가
+07-13 하루에만 14회 전부 `%s`가 원본 그대로 출력(등급 A/B 구분 불가). 오늘 전체
+로그(`logs/20260713_*.log`) 중 미치환 `%s/%d` 패턴은 이 콜사이트가 유일.
+**원인**: `log_manager.signal(self, msg: str, level: str = "INFO", **_kwargs)`은
+표준 `logging.Logger.info(msg, *args)`와 달리 `*args`를 받지 않는다(`**_kwargs`는
+키워드 인자만 흡수, 5/22 TypeError 방지 가드). 호출부가
+`log_manager.signal("...%s...", _final_grade)`처럼 2번째 위치인자를 넘기면
+`_final_grade`가 %-포맷 인자가 아니라 `level` 파라미터에 바인딩됨. `_write_to_file()`
+(154행)이 `getattr(logging, str(level).upper(), logging.INFO)`로 유효하지 않은
+level 문자열도 조용히 INFO로 대체해 예외 없이 넘어가, 겉보기엔 정상 동작처럼
+보였음(로그 레벨도 실제로는 항상 INFO로 강제됐을 뿐 크래시는 없었음).
+**결정/수정**: 호출부(`main.py:6025-6027`)를 f-string으로 교체해 메시지를 미리
+완성한 뒤 단일 인자로 전달. `log_manager.signal()` 시그니처 자체는 변경하지
+않음 — 현재 파악된 문제 콜사이트는 이 한 곳뿐이라(오늘 로그 전수 확인) wrapper를
+표준 `*args` 지원으로 바꾸는 광범위한 변경보다 범위가 좁은 수정을 택함.
+**Why**: wrapper 시그니처를 표준 logger와 다르게 설계한 것 자체는 5/22 가드의
+의도된 선택(호출부가 예상치 못한 키워드 인자를 추가해도 TypeError로 죽지 않게)
+이라 그대로 두되, 이 시그니처 차이를 모르고 %-스타일로 호출하면 위치인자가
+`level`로 조용히 흡수된다는 함정이 있음을 문서화할 가치가 있음.
+**How to apply**: `log_manager.signal/system/trade/health()`를 호출할 때는
+`%s` 위치인자 방식이 아니라 f-string으로 메시지를 완성해서 단일 인자로 넘길 것
+— 이 wrapper는 `*args` lazy-format을 지원하지 않는다. 향후 대규모 점검 시
+`log_manager\.(signal|system|trade|health)\(` 호출부 중 메시지에 `%s/%d` 등이
+있고 2번째 인자로 리터럴 `"INFO"/"WARNING"`이 아닌 변수가 오는 패턴을 grep으로
+재검사할 가치 있음(이번엔 시간 제약으로 이 한 콜사이트만 실측 확인, 전수조사는
+아님).
+**구현**: `main.py:6025-6027`.
+**검증**: `py_compile` 통과. 오늘 로그 전체에서 미치환 `%s/%d` 패턴이 이 콜사이트
+말고는 없음을 확인(간접 검증). **라이브 미검증** — 다음 CVD+OFI 동시 역방향
+발생 시 로그에 실제 등급(A 또는 B)이 정상 표시되는지 확인 필요.
+**관련**: `NEXT_TODO.md` 동일 날짜 항목.
+
+---
+
+## 2026-07-13 (314차) — intraday 재학습이 acc.txt를 nan으로 덮어써 old_acc 로그 연쇄 오염
+
+### [버그] CV 없는 장중 재학습의 acc=nan이 다음 재학습의 old_acc 비교값으로 그대로 전파
+
+**File**: `learning/batch_retrainer.py:632-654`(`_train_horizon`), `:660-677`
+(`_save_model`)
+**증상**: 07-13 09:52 장중 재학습 로그는 `old_acc=0.4062` 등 실측값을 표시했으나,
+같은 날 10:28 재학습은 전 호라이즌 `old_acc=nan`으로 출력.
+**원인**: intraday 재학습은 CV를 생략하므로 `cv_acc=None` → `_disp_acc=nan`
+(637행). `_save_model(..., _disp_acc, ...)`이 `acc_path`(`gbm_{hz}_acc.txt`)에
+`str(acc)`를 조건 없이 기록(수정 전 676-677행) — intraday 여부를 구분하지 않고
+nan도 그대로 씀. 다음 재학습의 `_load_model_acc()`(746행)는 `float("nan")`을
+예외 없이 파싱(751행 `except ValueError`에 안 걸림)해 그대로 `old_acc`로 반환,
+로그에 연쇄 전파. 모델 교체 게이팅(636행 `if intraday or force or ...`)은
+`old_acc` 값과 무관하게 무조건 교체이므로 실거래 로직에는 영향 없음 — 순수하게
+진단 로그의 정보 가치만 상실.
+**결정/수정**: `_save_model()`에서 `acc`가 NaN이면 `acc.txt`를 덮어쓰지 않고
+기존 파일(직전 EOD 전체 재학습의 실측값)을 그대로 보존하도록 가드 추가
+(`if not np.isnan(acc): ...`). 모델/스케일러 pkl 저장과 교체 여부 판정 로직은
+변경하지 않음.
+**Why**: 교체 게이팅을 건드리지 않고 로그 필드만 복원하는 것이 목표라, 가장
+좁은 범위의 변경(저장 시점 가드 하나)으로 충분했음 — `_train_horizon()`의
+비교/치환 로직까지 바꾸면 게이팅 동작에 의도치 않은 영향을 줄 위험이 있었음.
+**How to apply**: intraday 재학습은 하루 중 여러 번(오늘 2회) 반복되므로,
+"성능이 실측 대비 개선/악화됐는가"를 로그로 판단해야 하는 경우 EOD 전체
+재학습(CV 있음) 직후의 값만 신뢰할 것 — intraday 사이클의 `cv_acc=None`은
+설계상 항상 그렇다.
+**구현**: `learning/batch_retrainer.py` `_save_model()`.
+**검증**: `py_compile` 통과. **라이브 미검증** — 다음 intraday 재학습 2회
+연속 발생 시 두 번째 로그의 `old_acc`가 nan이 아니라 직전 EOD 실측값(또는 첫
+intraday 재학습 이전 값)을 유지하는지 확인 필요.
+**관련**: `NEXT_TODO.md` 동일 날짜 항목.

@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-07-13 (314차 — 로그 포맷 버그 2건 수정 + 진단 계측 2건 추가, 라이브 검증 대기)
+
+> 313차(동시 진행된 별도 세션)와 별개로 이 대화창에서 독립 수행한 정기점검.
+> 상세: `DECISION_LOG.md`/`SESSION_LOG.md` 동일 날짜(314차) 항목.
+
+- [ ] **[P4 로그 수정 검증]** — 다음 CVD+OFI 동시 역방향(단기 그룹) 발생 시
+  `[P4] CVD+OFI 동시 역방향 → 등급 {A 또는 B}→C 강등` 로그에 실제 등급이
+  표시되는지 확인 (`main.py:6025`).
+- [ ] **[old_acc nan 가드 검증]** — 같은 날 intraday 재학습이 2회 이상 발생할 때
+  두 번째부터 `old_acc`가 nan이 아니라 직전 실측값을 유지하는지 확인
+  (`learning/batch_retrainer.py:_save_model`).
+- [ ] **[ConfTrend table_update 분해 계측 확인]** — `[LiveDBG] ConfTrend SLOW`
+  로그에 새로 추가된 `row_calc`/`tooltip_calc`/`qt_apply` 세 항목 중 세션 경과에
+  따라 증가하는 구간을 특정해 근본원인 좁히기 (`dashboard/panels/
+  conf_trend_widget.py`). 204차가 고친 3원인(db_query/completed_map)과는 무관한
+  별개 구간.
+- [ ] **[ConstOut Worker 타이밍 ↔ PipePerf S0 상관관계 확인]** — 다음
+  `[ConstOut]` 트리거 시 `[ConstOut][Worker] 시작/완료 load=Xms fit=Yms` 로그의
+  시각을 그 전후 `[PipePerf][CB임박]`/`[CB⑤]` 경고 타임스탬프와 대조해 GIL 경합
+  가설을 검증 (`main.py:_const_out_refit_worker`).
+
+---
+
 ## 2026-07-13 (313차 정기점검 — MaskedFallback 크래시 수정 + 대폭락장 관찰)
 
 > 오늘 기동(08:41)~11:20 로그 전수 점검. 주요 발견: (1) MaskedFallback 극단성보정

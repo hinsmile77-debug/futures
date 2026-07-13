@@ -4,6 +4,61 @@
 
 ---
 
+## 2026-07-13 (314차 — 이 세션: 정기점검 중 로그 포맷 버그 2건 발견·수정 + 진단 계측 2건 추가)
+
+**트리거**: 사용자의 정기점검 요청("금일 미륵이 작동상황을 프로그램 시작부터 현재
+동작기록까지 살펴보고 dev_memory상 할일과 점검할 일을 커밋이력을 반영해서 철저히
+점검하고 이상점과 추가 개선점을 면밀히 살펴보고 보고해") — 313차(동시 진행된 별도
+세션)와 별개로 이 대화창에서 독립적으로 수행.
+
+**Work**: 08:41 기동~11:17 로그(SYSTEM/WARN/SIGNAL/TRADE) 전수 점검 + trades.db
+조회 + 어제(07-12) 커밋 이력 대조. 이후 사용자 지시로 발견한 이상점 중 2건은 즉시
+수정, 2건은 근본원인 미확정이라 진단 계측만 추가.
+
+**발견 1 — 로그 포맷 버그(수정)**: `[P4] CVD+OFI 동시 역방향 → 등급 %s→C 강등`
+로그가 오늘 14회 모두 `%s` 미치환 상태로 출력. `log_manager.signal(msg, level=
+"INFO", **_kwargs)`(표준 `logger.info(msg, *args)`와 달리 위치인자로 %-포맷을
+받지 않음)에 `log_manager.signal("...%s...", _final_grade)`처럼 2번째 위치인자를
+넘겨 `_final_grade`가 `level` 파라미터로 오바인딩됨. `main.py`의 해당 호출부를
+f-string으로 교체. 상세: `DECISION_LOG.md` 동일 날짜 항목.
+
+**발견 2 — 재학습 진단정보 유실(수정)**: 장중 intraday 재학습(CV 없음)이
+`gbm_{hz}_acc.txt`에 `nan`을 무조건 덮어써, 같은 날 다음 intraday 재학습부터
+`old_acc=nan`이 연쇄 전파 — 교체 게이팅(항상 강제 교체)에는 영향 없으나 "이전 대비
+성능" 로그가 그날 EOD까지 무의미해짐. `learning/batch_retrainer.py`
+`_save_model()`에 `acc`가 NaN이면 acc.txt를 덮어쓰지 않는 가드 추가. 상세:
+`DECISION_LOG.md` 동일 날짜 항목.
+
+**발견 3·4 — 근본원인 미확정, 진단 계측만 추가**:
+- `ConfTrendWidget.refresh`의 `table_update` 구간이 세션 경과에 따라 09:31
+  234ms → 11:15 400ms대로 완만히 우상향(204차가 고친 3개 원인은 오늘도 여전히
+  0ms대로 유지되어 재발 아님, 별개 구간). `MAX_ROWS=30` 고정이라 행수 증가는
+  원인이 아니고 헬퍼 함수들도 정적으로는 누적 상태를 못 찾음 — `table_update`를
+  `row_calc`/`tooltip_calc`/`qt_apply` 3구간으로 분해 계측만 추가(`dashboard/
+  panels/conf_trend_widget.py`), 다음 SLOW 로그에서 원인 구간 특정 예정.
+- `PipePerf` S0(파이프라인 시작 전 대기구간)가 오늘 2회(09:52:50, 10:28:50)
+  3000ms대로 튀어 CB⑤ 경고 + HealthPolicy Degraded 선제차단 발동, 둘 다 직전
+  `[ConstOut]` 스케일러 재적합 트리거(~2분 전)와 시간대가 겹침 — 백그라운드
+  스레드의 CPU 작업이 GIL 경합으로 메인 스레드를 지연시켰을 가능성. `main.py`
+  `_const_out_refit_worker`에 시작/완료 로그 + load/fit 개별 소요시간 계측 추가,
+  다음 ConstOut 발생 시 PipePerf 타임스탬프와 직접 대조 예정.
+
+**부가 관찰**: 이 조사 도중 별도 세션(313차, 11:27 커밋 `576d21b`)이 동시에 같은
+정기점검을 더 철저히 수행해 09:02:56 실크래시(`MaskedFallback` `features` 인자
+오적용)를 발견·수정하고 오늘 KOSPI200 선물 -5.3%(2.5시간) 급락도 포착한 것을
+뒤늦게 확인 — 이 세션은 SYSTEM.log(19MB) 전수 스캔 없이 WARN/SIGNAL 로그 위주로
+점검해 그 크래시를 놓쳤음. **교훈**: 다음 정기점검부터는 `logs/*_WARN.log` 외에
+`logs/*_SYSTEM.log`에서 `ERR-FATAL`/`Traceback` 패턴도 반드시 별도로 grep할 것
+— WARN.log의 "CRITICAL"은 RegimeFingerprint PSI 같은 정상 감시성 메시지와
+혼재해 크래시 탐지에 충분하지 않았음.
+
+**구현**: `main.py`(P4 로그 + ConstOut 계측), `learning/batch_retrainer.py`
+(old_acc nan 가드), `dashboard/panels/conf_trend_widget.py`(table_update 분해).
+**검증**: `py_compile` 3개 파일 통과. **라이브 미검증** — 다음 장중 각 트리거
+발생 시 로그 확인 필요(`NEXT_TODO.md` 동일 날짜 항목).
+
+---
+
 ## 2026-07-13 (313차 — 정기점검: 기동~11:20 로그 전수 점검)
 
 **트리거**: "금일 미륵이 프로그램 시작부터 현재까지 동작기록을 살펴보고 dev_memory
