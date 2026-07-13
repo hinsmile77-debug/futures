@@ -9038,7 +9038,7 @@ class TradingSystem:
                     f"⏸ 미륵이 거래소 CB 대기 — {elapsed_str} 분봉 미수신\n"
                     f"예상: 20분 중단→10분 단일가→정규매매 재개 ≈ {_ecb_resume_est_300}"
                 )
-                self._shadow_tracker.mark_exchange_cb(True)
+                self.shadow_session.mark_exchange_cb(True)
                 # [227차] CB⑤ 임계 완화 — CB 모드 중 파이프라인 지연 오발동 방지
                 self.circuit_breaker.set_gbm_retrain_active(True)
                 try:
@@ -9081,7 +9081,7 @@ class TradingSystem:
                     f"⏸ 미륵이 거래소 CB 감지 — {elapsed_str} 미수신\n"
                     f"예상: 20분 중단→10분 단일가→정규매매 재개 ≈ {_ecb_resume_est}"
                 )
-                self._shadow_tracker.mark_exchange_cb(True)
+                self.shadow_session.mark_exchange_cb(True)
                 self.circuit_breaker.set_gbm_retrain_active(True)
                 try:
                     self.dashboard.update_exchange_cb_badge("CB_ACTIVE", resume_est=_ecb_resume_est)
@@ -9121,8 +9121,8 @@ class TradingSystem:
           ⑤ D_PRICE_MOMENTUM 쿨다운 리셋 (CB 직후 급변 구간에서 즉시 트리거 허용)
         """
         # ① ShadowSession — CB 해제이므로 core_health 조건 면제하고 LIVE 복귀
-        self._shadow_tracker.mark_exchange_cb(False)
-        self._shadow_tracker.force_live(reason=f"exchange_cb_resume gap={gap_min}m")
+        self.shadow_session.mark_exchange_cb(False)
+        self.shadow_session.force_live(reason=f"exchange_cb_resume gap={gap_min}m")
 
         # ② acc30m 버퍼 리셋 — CB 전 예측은 전혀 다른 시장 상황
         self.circuit_breaker._accuracy_buf.clear()
@@ -9293,7 +9293,7 @@ class TradingSystem:
                     "WARNING",
                 )
                 notify(f"⏸ 미륵이 거래소 CB 대기 — 실 분봉 {int(_real_elapsed//60)}분 미수신 (강제 진입)")
-                self._shadow_tracker.mark_exchange_cb(True)
+                self.shadow_session.mark_exchange_cb(True)
                 self.circuit_breaker.set_gbm_retrain_active(True)
             return
 
@@ -9316,7 +9316,7 @@ class TradingSystem:
                     f"[ExchangeCB] 복구 포기({age_s}s) + 장중 → 거래소 CB 추정, 재개 대기 모드 진입",
                     "WARNING",
                 )
-                self._shadow_tracker.mark_exchange_cb(True)
+                self.shadow_session.mark_exchange_cb(True)
                 self.circuit_breaker.set_gbm_retrain_active(True)
             if self.position.status != "FLAT":
                 log_manager.system(
