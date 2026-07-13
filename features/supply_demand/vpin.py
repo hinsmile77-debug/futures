@@ -48,19 +48,23 @@ class VPINCalculator:
         # 이전 틱 가격 (틱 규칙용)
         self._prev_price: Optional[float] = None
 
-    def update_tick(self, price: float, volume: float) -> Optional[dict]:
+    def update_tick(self, price: float, volume: float, is_buy: Optional[bool] = None) -> Optional[dict]:
         """
         체결 틱 업데이트
 
         Args:
             price:  체결가
             volume: 체결량 (계약 수)
+            is_buy: 매수/매도 구분이 이미 있으면(브로커 체결플래그 등) 전달 —
+                    틱 규칙(가격 비교) 추정보다 정확. None이면 기존 틱 규칙 fallback.
 
         Returns:
             버킷 완성 시 VPIN 결과, 아니면 None
         """
+        if is_buy is not None:
+            direction = 1 if is_buy else -1
         # 틱 규칙: 가격 상승 → 매수, 하락 → 매도, 동일 → 이전과 동일
-        if self._prev_price is None:
+        elif self._prev_price is None:
             direction = 1
         elif price > self._prev_price:
             direction = 1

@@ -116,18 +116,26 @@ MACRO_FEATURES = [
 ]
 
 DYNAMIC_FEATURES_POOL = [
-    "tick_imbalance",
-    "atr_regime",
-    "trend_efficiency",
+    # 322차: tick_imbalance·atr_regime·support_resistance_distance·volume_surge_ratio 제거 —
+    # 계산 모듈이 존재한 적 없는 순수 미구현 개념이었고(319차 audit), 각각 ofi_imbalance/
+    # cvd_direction, atr_ratio+toxicity_atr_stress+micro_regime_code, poc_distance+
+    # round_number, volume_acceleration과 개념·계산이 사실상 중복돼 신규 구현 실익이 낮다고
+    # 판단(321차 검토). "microprice"(원시값)도 함께 제거 — 115차에 StandardScaler z-score
+    # 폭발로 의도적으로 제거된 값이라 재도입은 그 버그를 되살리는 회귀이므로 배선 대상에서
+    # 원천 배제(microprice_bias/slope/depth_bias로 완전 대체된 채 유지).
+    "trend_efficiency",  # 321차: features/technical/trend_efficiency.py 신규 구현 + 배선 완료
+                         # (feature_builder.py — Kaufman Efficiency Ratio, close_history 기반).
     "poc_distance",
-    "support_resistance_distance",
-    "kyle_lambda",
+    "kyle_lambda",  # 321차: features/technical/kyle_lambda.py 신규 구현 + 배선 완료
+                    # (feature_builder.py — 분봉 단위 회귀, 틱 배선 불필요).
     "rv_iv_spread",
-    "bollinger_position",
-    "momentum_5m",
-    "volume_surge_ratio",
+    "bb_position",  # 322차: "bollinger_position" 오기 수정 — 실제 raw feature 키는
+                    # "bb_position"(feature_builder.py:587). 이미 활성 피처셋(97개)에
+                    # 포함돼 있어 hurst와 동일하게 used 필터로 걸러지지만, 향후 SHAP
+                    # 심사로 밀려나면 정상적으로 재편입 후보가 될 수 있도록 이름만 일치시켜둠.
+    "ret_5m",  # 322차: "momentum_5m" 오기 수정 — 실제 raw feature 키는 "ret_5m"
+               # (feature_builder.py:566). 위와 동일한 이유로 이름만 실제 키와 일치시켜둠.
     # v5 추가
-    "microprice",
     "microprice_bias",
     "microprice_slope",
     "microprice_depth_bias",
@@ -139,19 +147,34 @@ DYNAMIC_FEATURES_POOL = [
     "queue_refill_rate",
     "imbalance_slope",
     "cancel_add_ratio",
-    "lob_imbalance_decay",
+    # 326차: "lob_imbalance_decay" 제거 — features/technical/lob_imbalance.py는 배선해도
+    # 실제 반환 키가 "lob_imbalance"/"lob_imb_ma"라 이름부터 불일치했고(319차), 그 계산 공식
+    # (호가 레벨 1/(i+1) 가중 매수/매도 잔량 비율)이 이미 활성 피처인 microprice_depth_bias
+    # (features/technical/microprice.py)와 수학적으로 사실상 동일 — 최대 호가 단계 수(5 vs
+    # 10)만 다를 뿐이고 실시간 호가 피드 자체가 5단계까지만 옴(collection/cybos/
+    # realtime_data.py:_handle_hoga). 신규 구현 실익 없음으로 판단(321차 검토).
     # v6.5 추가
-    "multi_timeframe_5m",
-    "multi_timeframe_15m",
+    "multi_timeframe_5m",  # 324차: features/technical/multi_timeframe.py 배선 완료
+                           # (feature_builder.py:multi_timeframe — push_1m_candle()의
+                           # trend_5m를 그대로 노출). 이산값(-1/0/+1) 레짐 표현.
+    "multi_timeframe_15m",  # 324차: 위와 동일 — trend_15m 노출.
     # v7.0 추가
     "hurst",  # 319차: "hurst_exponent" 오기 수정 — 실제 raw feature 키는 "hurst"
               # (features/feature_builder.py). 현재 활성 피처셋에 이미 포함돼 있어
               # _suggest_replacement()의 used 필터로 걸러지므로 지금은 후보로 뜨지
               # 않지만, 향후 SHAP 심사로 hurst가 활성셋에서 밀려나면 정상적으로
               # 재편입 후보가 될 수 있도록 이름을 실제 키와 일치시켜둠.
-    "vpin",
-    "cancel_ratio",
-    "round_number_distance",
+    "vpin",  # 320차: features/supply_demand/vpin.py 배선 완료 (feature_builder.py:vpin_calc,
+              # main.py:_on_tick_price_update 틱 델타 역산). raw_features에 실제로 쓰이는 키가 됨.
+    "cancel_ratio",  # 미배선 유지 — 320차 후속 재조사 완료: Cybos Plus 취소/정정 TR
+                     # (CpTd6832/6833 등)은 전부 "내 계좌" 전용이라 시장 전체 취소 이벤트
+                     # 자체가 없음(Level-3 주문흐름 미제공, 구현 불가 확정). 대안(FutOptRest
+                     # 건수/건수증감 기반 근사)은 실측 캡처 선행 필요 —
+                     # docs/미륵이고도화2/cancel_ratio_Cybos_데이터가용성_재조사_2026-07-14.md 참조.
+    "round_number_distance",  # 325차: features/technical/round_number.py에 신규 함수
+                              # nearest_round_distance_symmetric() 작성 + 배선 완료
+                              # (feature_builder.py — 기존 nearest_round_distance()는 direction
+                              # 인자가 필요해 피처 생성 시점엔 사용 불가했음, 방향 무관 버전 신설).
     # 318차 추가 — hurst_ready(워밍업 완료 플래그, 237차부터 진입 게이트로는 이미 사용 중이나
     # GBM 학습 피처로는 편입된 적 없음). 여기 등록은 주간 SHAP 심사에서 "교체 후보"로만
     # 제안되게 할 뿐, 자동 편입은 아님 — 실제 편입은 사람이 대시보드에서 승인해야 함

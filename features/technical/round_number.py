@@ -131,6 +131,36 @@ def nearest_round_distance(price: float, direction: int) -> dict:
     }
 
 
+def nearest_round_distance_symmetric(price: float, intervals: List[float] = None) -> float:
+    """
+    현재가에서 가장 가까운 마디가까지의 거리(포인트, 방향 무관) — GBM 피처용 ⭐320차대.
+
+    `nearest_round_distance()`는 direction 인자가 필요한데, 피처 생성 시점엔 아직 예측
+    방향·목표가가 정해지지 않아(닭-달걀 문제) 그대로 쓸 수 없다. 이 함수는 방향 인자 없이
+    상/하 양쪽 최근접 레벨을 모두 확인해 더 가까운 쪽의 거리만 반환한다.
+
+    Args:
+        price:     현재가
+        intervals: 마디가 간격 리스트 (기본: ROUND_INTERVALS = [5.0, 2.5])
+
+    Returns:
+        가장 가까운 마디가까지의 거리(포인트, 0 이상). intervals 중 가장 촘촘한 간격의
+        절반이 이론적 상한(기본 2.5pt 간격 기준 최대 1.25pt).
+    """
+    if intervals is None:
+        intervals = ROUND_INTERVALS
+    if price <= 0:
+        return 0.0
+
+    dists = []
+    for itv in intervals:
+        lower = np.floor(price / itv) * itv
+        upper = np.ceil(price / itv) * itv
+        dists.append(min(abs(price - lower), abs(price - upper)))
+
+    return float(round(min(dists), 4))
+
+
 if __name__ == "__main__":
     # 마디가 2개 있는 구간
     r = find_round_numbers_in_range(entry_price=391.3, target_price=395.8)
@@ -147,3 +177,7 @@ if __name__ == "__main__":
     # 다음 마디가 거리
     d = nearest_round_distance(price=391.3, direction=1)
     print(f"위 방향 — 5pt 마디: {d['level_5pt']} (거리 {d['dist_5pt']}pt), 2.5pt: {d['level_2pt5']} (거리 {d['dist_2pt5']}pt)")
+
+    # 방향 무관 최근접 마디가 거리 (GBM 피처용)
+    for p in (391.3, 390.0, 392.5):
+        print(f"price={p} -> round_number_distance={nearest_round_distance_symmetric(p):.4f}pt")

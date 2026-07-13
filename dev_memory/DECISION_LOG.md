@@ -6773,3 +6773,309 @@ SHAP 교체 후보로 실제 제안되는지 확인 필요.
 **구현**: `config/constants.py:DYNAMIC_FEATURES_POOL` (`"hurst_exponent"` → `"hurst"`).
 **검증**: 문자열 리터럴 치환뿐이라 별도 실행 검증 불필요. `py_compile` 통과 확인.
 **관련**: `NEXT_TODO.md` 2026-07-14(318차) 항목, [[project_hurst_ready_feature_gap]].
+
+---
+
+## 2026-07-14 (320차) — DYNAMIC_FEATURES_POOL "vpin" 배선 (계산모듈은 있었으나 미연결)
+
+### [기능] VPINCalculator를 FeatureBuilder에 연결해 `"vpin"`을 실제 학습 피처로 편입
+
+**배경**: 319차 감사에서 `"vpin"`이 `features/supply_demand/vpin.py`(VPINCalculator, 완성된 모듈)를
+`feature_builder.py`가 애초에 import하지 않아 raw_features에 한 번도 쓰인 적 없는 "죽은 풀 항목"으로
+확인됨(319차 조사 범위 밖으로 NEXT_TODO에만 기록). 이번 차수에서 실제 배선.
+
+**핵심 이슈**: VPIN은 체결 틱 단위(개별 체결가·체결량)가 필요한데, 기존 파이프라인은
+`update_hoga()`(호가 스냅샷, 분당 다회)만 있었고 틱 단위 체결 콜백은 대시보드 갱신용
+`main.py:_on_tick_price_update(bar)`뿐이었음 — 이 콜백은 브로커 레이어(`collection/cybos/realtime_data.py`)가
+**분봉 누적치**(`bar["buy_vol"]`/`bar["sell_vol"]`가 그 분의 누적 합계)를 매 틱마다 재전달하는
+구조라, 개별 틱의 체결량·매수/매도 방향이 직접 노출되지 않음.
+
+**결정/구현**:
+1. `features/supply_demand/vpin.py:VPINCalculator.update_tick()`에 `is_buy: Optional[bool] = None`
+   파라미터 추가 — 브로커가 이미 판별한 매수/매도 플래그를 직접 받으면 그걸 우선 사용하고,
+   없으면 기존 가격비교 틱 규칙(fallback)을 그대로 사용. (하위 호환 유지 — 기존 `__main__` 데모는
+   그대로 동작)
+2. `features/feature_builder.py`: `self.vpin_calc = VPINCalculator(bucket_size=1000)` 추가,
+   `update_tick(price, volume, is_buy)` 퍼사드 메서드 신설(체결 틱마다 호출), `build()`에서
+   `features["vpin"] = self.vpin_calc.get_current_vpin()`로 최근 완성 버킷값을 매분 그대로 읽음
+   (버킷 미완성 구간엔 직전 완성값 유지 — OFI/Microprice와 동일한 "누적→분당 flush" 패턴),
+   `reset_daily()`에 `vpin_calc.reset_daily()` 추가.
+3. `main.py:_on_tick_price_update(bar)`: 브로커 레이어를 건드리지 않고, 이미 넘어오는
+   `bar["buy_vol"]`/`bar["sell_vol"]`(분봉 누적치)의 **틱 간 델타**로 이번 틱 단독 체결량과
+   매수/매도 방향을 역산해(`_vpin_prev_buy_vol`/`_vpin_prev_sell_vol` 상태 추적, `bar["ts"]` 변경 시
+   분봉 롤오버로 판단해 리셋) `feature_builder.update_tick()`에 전달. `collection/broker/*`·
+   `collection/cybos/realtime_data.py`에는 손대지 않음(신규 콜백 배선 없이 기존 `on_tick` 재사용).
+
+**Why**: 3중 대안 중 "브로커 레이어에 신규 틱 콜백 추가"(더 정확하지만 base.py·cybos_broker.py·
+realtime_data.py 3개 파일 변경 필요) 대신 "이미 흐르는 bar 누적치를 델타로 역산"을 선택 —
+브로커 프로토콜 변경 없이 기존 `on_tick` 훅 하나만 재사용해 회귀 위험을 최소화. 정확도 손실은
+없음(`_update_bar()`가 매 틱마다 buy_vol XOR sell_vol 중 하나만 증가시키므로 델타가 곧 그 틱의
+체결량과 방향).
+
+**검증**: `py_compile` 통과. `FeatureBuilder` 단독 스모크 테스트로 (1) `update_tick()` 반복 호출 후
+`build()`가 `"vpin"` 키를 정상 포함하는지, (2) bucket_size(1000계약)×10버킷 워밍업 시나리오에서
+매수 편향 합성 틱 주입 시 `vpin`이 0→1.0으로 정상 반응하는지, (3) `reset_daily()` 후 0.0으로
+정상 리셋되는지 확인 완료. 실거래 스모크(실제 Cybos 틱 피드 연결)는 미실행 — 다음 장중 세션에서
+`vpin` 값이 raw_features DB에 정상 저장되는지, `main.py:_on_tick_price_update` 델타 로직이 실제
+버퍼 재생/스톨 틱 상황(316차 이력 참조)에서도 음수 델타 없이 동작하는지 확인 필요.
+
+**영향**: `DYNAMIC_FEATURES_POOL`의 `"vpin"`이 이제 raw_features에 실제로 쓰이는 키가 되어
+`main.py:_get_recent_available_feature_names()` 가용성 체크를 정상 통과 가능 — 향후 SHAP 주간
+심사에서 정상적으로 교체 후보로 뜰 수 있는 상태가 됨(자동 편입은 여전히 사람 승인 필요,
+CLAUDE.md §6). 현재 active_features(97개)엔 없으므로 즉시 아무 것도 바뀌지 않음 — 다음 GBM
+재학습부터 raw_features에 `vpin` 컬럼이 쌓이기 시작하고, 그 데이터가 충분히 누적된 뒤 SHAP
+심사 사이클에서 비로소 후보로 등장할 수 있음.
+**구현**: `features/supply_demand/vpin.py`(`update_tick` is_buy 파라미터),
+`features/feature_builder.py`(`vpin_calc` 배선), `main.py:_on_tick_price_update`(틱 델타 역산).
+**관련**: 319차(죽은 풀 항목 최초 발견), [[project_hurst_ready_feature_gap]].
+
+---
+
+## 2026-07-14 (321차) — DYNAMIC_FEATURES_POOL "trend_efficiency"·"kyle_lambda" 신규 구현 + 배선
+
+### [기능] 계산 모듈 자체가 없던 두 완전 미구현 항목을 신규 모듈로 작성해 편입
+
+**배경**: 319차 감사에서 `trend_efficiency`·`kyle_lambda`는 (미구현 vpin/cancel_ratio와 달리)
+계산 모듈조차 코드베이스 어디에도 존재한 적 없는 순수 미구현 개념으로 분류됨. 이후 검토에서
+둘 다 (1) 다른 활성 피처와 개념적 중복이 낮고, (2) 이미 흐르는 데이터(종가 이력·분봉
+buy_vol/sell_vol)만으로 계산 가능해 신규 브로커 배선 없이 저비용 구현 가능하다고 판단.
+
+**구현**:
+1. `features/technical/trend_efficiency.py` (신규) — Kaufman Efficiency Ratio.
+   `calculate_trend_efficiency(closes, window)` 순수 함수: `|close[t]-close[t-N]| / Σ|Δclose_i|`,
+   0(잡음)~1(완벽한 추세). Hurst와 취지(추세 지속성)는 겹치나 계산방식(경로비율 vs
+   variance-scaling 회귀)이 달라 상관 1이 아닐 것으로 기대되는 보완 신호. 별도 계산기 클래스
+   불필요 — Hurst와 동일한 `self._close_history` 버퍼를 그대로 재사용.
+2. `features/technical/kyle_lambda.py` (신규) — Kyle's Lambda(가격충격계수).
+   `KyleLambdaCalculator`: 최근 N분봉의 (분당 가격변화, 분당 순매수량=buy_vol-sell_vol) 쌍에
+   대한 단순회귀 기울기. **틱 단위 데이터 불필요** — VPIN(320차)과 달리 분봉 단위 값만으로
+   계산되므로 `main.py`/브로커 레이어 변경 없이 `feature_builder.py`만으로 완결.
+3. `config/settings.py`: `TREND_EFFICIENCY_WINDOW=10`(Kaufman 원 논문 KAMA 기본값),
+   `KYLE_LAMBDA_WINDOW=20`(임의 채택 — 향후 SHAP 기여도 확인 후 조정 대상) 추가.
+4. `features/feature_builder.py`: 두 계산기 배선.
+   `features["trend_efficiency"]`는 Hurst 블록 직후(같은 `_close_history` 사용) 배치.
+   `features["kyle_lambda"]`는 VPIN 블록 직후 배치, 원시 λ를 `self._tick_size`로 정규화(미니/
+   일반선물 tick_size 차이 흡수) 후 `±5.0`으로 안전 클리핑(microprice 원시값 z-폭발 전례 재발
+   방지). `reset_daily()`에 `kyle_lambda_calc.reset_daily()` 추가(trend_efficiency는 상태 없는
+   순수 함수라 리셋 대상 아님 — `_close_history` 리셋만으로 충분).
+
+**Why**: kyle_lambda를 분봉 단위(틱 아님)로 설계한 것이 핵심 결정 — OFI/CVD가 이미 틱 단위
+매수/매도 볼륨을 분봉에 누적해 `buy_vol`/`sell_vol`로 제공하므로, 이를 그대로 재사용하면
+VPIN처럼 브로커 레이어 변경(main.py 틱 델타 역산 등) 없이 순수 feature_builder 내부 변경만으로
+완결됨 — 회귀 위험이 훨씬 낮음.
+
+**검증**: `py_compile` 통과. 각 모듈 단독 데모(`__main__`)로 (1) trend_efficiency가 완벽한
+직선 추세에서 1.0에 근접, 랜덤워크에서 낮은 값을 반환하는지, (2) kyle_lambda가 합성
+`Δprice = 0.002 × net_volume` 시나리오에서 tick_size=0.02 정규화 후 λ=0.1(=0.002/0.02)로
+회귀계수를 정확히 복원하는지 확인. `FeatureBuilder` 통합 스모크 테스트로 `build()` 출력에
+두 키가 정상 포함되고, `reset_daily()` 후 kyle_lambda가 표본 부족(`ready=False`) 상태로
+정상 복귀하는지까지 확인 완료. 실거래 라이브 검증(실제 분봉 데이터로 두 값의 분포·SHAP
+기여도)은 미실행 — 다음 GBM 재학습 이후 raw_features 축적을 기다려야 함.
+
+**영향**: `active_features`(97개)에 없으므로 즉시 아무 것도 바뀌지 않음 — raw_features에
+두 컬럼이 쌓이기 시작하고, 충분히 누적된 뒤 SHAP 심사 사이클에서 교체 후보로 등장 가능한
+상태가 됨(자동 편입은 여전히 사람 승인 필요, CLAUDE.md §6).
+**구현**: `features/technical/trend_efficiency.py`(신규), `features/technical/kyle_lambda.py`
+(신규), `config/settings.py`(`TREND_EFFICIENCY_WINDOW`·`KYLE_LAMBDA_WINDOW`),
+`features/feature_builder.py`(두 계산기 배선).
+**관련**: 319차(죽은 풀 항목 최초 발견), 320차(vpin 배선 — 동일 시리즈).
+
+---
+
+## 2026-07-14 (322차) — DYNAMIC_FEATURES_POOL 실익 없는 죽은 항목 5개 제거
+
+### [정리] 신규 구현 실익이 낮다고 판단된 항목을 풀에서 삭제
+
+**배경**: 319차 감사로 발견된 죽은 풀 항목 중, 320~321차에서 `vpin`·`trend_efficiency`·
+`kyle_lambda`는 구현·배선을 마쳤다. 나머지 완전 미구현 항목(D 카테고리) 중 아래 5개는
+검토 결과 "새로 만들 실익이 낮다"고 판단돼 이번 차수에서 풀에서 제거.
+
+**제거 항목과 사유**:
+- `tick_imbalance` — 계산 모듈이 존재한 적 없음. 이미 활성인 `ofi_imbalance`·`cvd_direction`·
+  `cvd_delta_norm`과 "매수/매도 우위 측정"이라는 개념이 사실상 중복.
+- `atr_regime` — 계산 모듈 없음. `atr_ratio`·`atr_expansion_rate`·`toxicity_atr_stress`·
+  `micro_regime_code`가 이미 사실상 이 레짐 개념을 커버(GBM 트리 모델이 스스로 구간화 가능).
+- `support_resistance_distance` — 계산 모듈 없음. `poc_distance`(거래량 프로파일)·
+  round_number(마디가, 미배선이지만 개념은 존재)와 "가격 근처 저항/지지"라는 개념이 겹침.
+- `volume_surge_ratio` — 계산 모듈 없음. 이미 활성인 `volume_acceleration`(최근 3봉/이전
+  3봉 평균 비율)과 개념·계산이 사실상 동일.
+- `microprice`(원시값) — 계산기 자체는 이미 내부에 있음(매분 계산 중)이나, 115차에
+  "절대가격이 StandardScaler μ와 드리프트 시 z-score 폭발"로 **의도적으로 제거**된 값
+  (`feature_builder.py` 주석 "microprice 절대값 제거 — Phase 2-C" 참조). 재도입은 이미 고친
+  버그를 되살리는 회귀이므로 원천 배제 — `microprice_bias`/`microprice_slope`/
+  `microprice_depth_bias`(정규화된 대체 피처)는 그대로 유지.
+
+**Why**: 무조건 "쓰던 아이디어는 다 구현"하는 대신, 각 후보를 활성 피처셋과의 개념적
+중복도·구현 비용·회귀 위험 기준으로 심사해 실익 있는 것만 남김(321차 검토 결과 반영) —
+DYNAMIC_FEATURES_POOL이 다시 죽은 후보로 채워지는 걸 막는 게 목적.
+
+**영향**: 다섯 항목 모두 애초에 raw_features에 쓰인 적 없는 죽은 후보였으므로, 제거로 인해
+지금 실거래 동작이 바뀌는 건 전혀 없음(순수 리스트 정리). 향후 주간 SHAP 심사가 이 다섯
+개로 교체 후보 슬롯을 낭비할 가능성만 사라짐.
+**구현**: `config/constants.py:DYNAMIC_FEATURES_POOL` (5개 항목 삭제 + 사유 주석).
+**참고**: `research_bot/alpha_gene.py:AVAILABLE_FEATURES`에도 `"microprice"`가 별도로
+남아있으나, 그건 알파 유전자 풀(CLAUDE.md §6 자동 통합 금지 대상)로 이번 스코프 밖 — 손대지 않음.
+**관련**: 319차(최초 발견), 320~321차(구현 완료분과의 대조).
+
+---
+
+## 2026-07-14 (323차) — DYNAMIC_FEATURES_POOL "bollinger_position"·"momentum_5m" 네이밍 불일치 수정
+
+### [버그] hurst_exponent(319차)와 완전히 동일한 패턴 — 이름만 다르고 실제로는 이미 존재하는 피처
+
+**증상**: `"bollinger_position"`·`"momentum_5m"`이 실제 raw feature 키(`feature_builder.py`가
+쓰는 딕셔너리 키)와 이름이 달라 `main.py:_get_recent_available_feature_names()` 가용성
+체크를 절대 통과할 수 없는 죽은 후보였음(319차 audit에서 E 카테고리로 분류, 321차 검토에서
+"구현 불필요 — 순수 개명만 하면 됨" 확인 완료).
+**원인**: 두 피처 모두 **이미 계산 중이고 이미 활성 피처셋(97개)에 포함**돼 있었음 —
+`bb_position`(볼린저 밴드 위치, `feature_builder.py:587`), `ret_5m`(5분 수익률,
+`feature_builder.py:566`). 풀 항목명만 개념명 그대로 써서 실제 키와 어긋났던 단순 오기.
+**결정/수정**: `"bollinger_position"` → `"bb_position"`, `"momentum_5m"` → `"ret_5m"`로
+이름만 수정. 둘 다 이미 활성 피처셋에 있어 `_suggest_replacement()`의 `used` 필터에 걸러져
+지금 당장은 후보로 뜨지 않는 것이 정상 동작 — 향후 SHAP 심사로 활성셋에서 밀려나는 시점이
+오면 그때는 이름이 실제 키와 일치하므로 가용성 체크도 정상 통과해 재편입 후보로 다시 제안될
+수 있음(hurst 수정과 동일한 논리, 319차 참조).
+**Why**: 319차에서 확립한 원칙("풀 항목명은 raw_features DB에 실제로 쓰이는 dict 키와 문자
+그대로 일치해야 함")을 그대로 적용 — 별도 구현 없이 이름 교체만으로 완결되는 무위험 수정.
+**검증**: `py_compile` 통과. `DYNAMIC_FEATURES_POOL`에 중복 없음, 신규 키가 정상 포함되고
+구 오기 문자열이 완전히 사라졌는지 확인 완료. 문자열 리터럴 치환뿐이라 별도 실행 검증 불필요.
+**구현**: `config/constants.py:DYNAMIC_FEATURES_POOL`
+(`"bollinger_position"`→`"bb_position"`, `"momentum_5m"`→`"ret_5m"`).
+**관련**: 319차(원 패턴 최초 발견 및 hurst 수정), 321차(E 카테고리 검토 — 구현 불필요 결론),
+322차(같은 시리즈의 제거 작업).
+
+---
+
+## 2026-07-14 (324차) — DYNAMIC_FEATURES_POOL "multi_timeframe_5m"·"multi_timeframe_15m" 배선
+
+### [기능] MultiTimeframeAnalyzer를 FeatureBuilder에 연결
+
+**배경**: 319차 감사에서 `multi_timeframe_5m`·`multi_timeframe_15m`는 C 카테고리(계산 모듈은
+존재하나 미배선 + 배선해도 풀 항목명과 실제 반환 키가 애초에 다름)로 분류됨.
+`features/technical/multi_timeframe.py:MultiTimeframeAnalyzer`가 반환하는 키는
+`trend_1m/trend_5m/trend_15m/multiplier/block_long_entry/block_short_entry/reason`이지
+"multi_timeframe_5m/15m"라는 키 자체가 없었음. 321차 검토에서 "구현 비용 낮음(이미 build()가
+받는 OHLCV만으로 계산 가능) + 기존 ret_5m/15m(연속 수익률)과 겹치지 않는 이산 레짐 표현이라
+중복도 낮음"으로 1순위 구현 후보로 선정.
+
+**구현**: `features/feature_builder.py`
+1. `MultiTimeframeAnalyzer` 임포트, `__init__`에 `self.multi_timeframe` 인스턴스 생성.
+2. `build()`의 "가격 모멘텀"(ret_1m/5m/15m) 블록 직후에 `push_1m_candle(open_, high, low,
+   close, volume)` 호출 — `bar.get("open")`만 새로 추출(기존엔 close/high/low/volume만
+   추출하고 있었음), 나머지는 이미 top에서 추출된 값 재사용. 반환된 `trend_5m`/`trend_15m`
+   (이산값 -1/0/+1)을 각각 `features["multi_timeframe_5m"]`/`features["multi_timeframe_15m"]`
+   로 노출 — 모듈 내부 키 이름은 그대로 두고 feature_builder.py에서 pool이 요구하는 이름으로
+   매핑(OFI의 `imbalance_ratio`→`ofi_imbalance` 매핑과 동일 패턴).
+3. `push_1m_candle()`이 내부적으로 5분봉·15분봉을 자동 집계하므로 매 확정 1분봉(=build() 호출
+   1회)마다 정확히 1회만 호출하면 됨 — VPIN처럼 틱 단위 배선이나 main.py 변경 불필요, 순수
+   feature_builder.py 내부 변경만으로 완결.
+4. `reset_daily()`에 `self.multi_timeframe.reset_daily()` 추가.
+
+**참고(사이드 발견, 이번 구현 범위 아님)**: 이 모듈은 원래 `block_long_entry`/
+`block_short_entry`/`multiplier`로 **진입 게이트 역할까지 설계**돼 있었는데(v6.5, "정확도
++3~5%, 거짓신호 -30%" 기대), `strategy/entry/checklist.py`에 전혀 연결된 적이 없었음(321차
+검토에서 발견). 이번 구현은 GBM 피처 노출까지만 — entry gate 통합은 별도 검토 필요.
+
+**검증**: `py_compile` 통과. `FeatureBuilder` 스모크 테스트로 20분간 지속 상승하는 합성
+1분봉을 주입해 (1) `multi_timeframe_5m`이 워밍업(5분봉 3개) 후 1.0(상승 동조)으로 정상
+반응, `multi_timeframe_15m`은 15분봉이 아직 1개뿐이라 판정 불가로 0.0 유지(모듈의
+`periods=2` 요구 미충족 — 워밍업 정상 동작), (2) `reset_daily()` 후 두 값 모두 0.0으로
+정상 복귀하는지 확인 완료. 실거래 라이브 검증(장중 실제 추세 구간에서의 반응, 15분봉 완성
+이후 판정)은 미실행.
+
+**영향**: `active_features`(97개)에 없으므로 즉시 아무 것도 바뀌지 않음 — raw_features에
+두 컬럼이 쌓이기 시작하고, 충분히 누적된 뒤 SHAP 심사 사이클에서 교체 후보로 등장 가능한
+상태가 됨(자동 편입은 여전히 사람 승인 필요, CLAUDE.md §6).
+**구현**: `features/feature_builder.py`(`multi_timeframe` 배선),
+`config/constants.py`(주석 갱신, 항목명은 변경 없음 — 애초에 pool 이름이 맞았고 배선만
+빠져있었음).
+**관련**: 319차(C 카테고리 최초 분류), 321차(1순위 구현 후보 선정), 320차(vpin — 배선
+패턴의 원형).
+
+---
+
+## 2026-07-14 (325차) — DYNAMIC_FEATURES_POOL "round_number_distance" 신규 함수 작성 + 배선
+
+### [기능] 방향 인자 없는 대칭형 마디가 거리 함수 신설
+
+**배경**: 319차 감사에서 `round_number_distance`는 C 카테고리(계산 모듈은 존재하나 미배선 +
+배선해도 풀 항목명과 실제 반환 키가 다름)로 분류됨. `features/technical/round_number.py`의
+기존 함수 `find_round_numbers_in_range(entry_price, target_price)`는 목표가를 인자로
+요구하고, `nearest_round_distance(price, direction)`는 방향 인자를 요구하는데, 피처 생성
+시점엔 아직 예측 방향·목표가가 정해지지 않아(닭-달걀 문제) 둘 다 그대로는 쓸 수 없었음.
+321차 검토에서 "방향 인자 없이 상/하 양쪽을 모두 확인하는 신규 함수 작성 필요"로 결론.
+
+**구현**:
+1. `features/technical/round_number.py`에 `nearest_round_distance_symmetric(price, intervals)`
+   신규 함수 추가 — 기존 `ROUND_INTERVALS`([5.0, 2.5]) 각 간격에 대해 상/하 최근접 레벨과의
+   거리를 계산한 뒤 전체 최솟값 반환. 방향 인자 없이 상태도 없는 순수 함수. `intervals`가
+   여러 개일 때 가장 촘촘한 간격(2.5pt)이 사실상 5pt 레벨을 포함하는 상위집합이라 최솟값이
+   자연스럽게 그 안에서 결정됨 — 별도 강도 가중치 없이 단순 최솟값만 사용(과설계 방지).
+2. `features/feature_builder.py`: `build()`의 Hurst·trend_efficiency 블록 직후에
+   `features["round_number_distance"] = nearest_round_distance_symmetric(close)` 추가.
+   상태 없는 순수 함수라 `reset_daily()` 변경 불필요.
+
+**Why**: 기존 두 함수(`find_round_numbers_in_range`/`nearest_round_distance`)를 억지로
+재사용하려 하지 않고, "피처 생성 시점엔 방향·목표가가 없다"는 근본적 제약에 맞는 별도
+함수를 신설 — 기존 함수들은 전략 실행 시점(entry gate, 방향·목표가가 이미 정해진 후)에는
+그대로 유효하므로 손대지 않음.
+
+**검증**: `py_compile` 통과. `round_number.py` 단독 데모로 (1) 정확히 레벨 위에 있을 때
+거리 0.0, (2) 391.3pt처럼 애매한 위치에서 5pt/2.5pt 그리드 각각의 거리 중 최솟값(1.2pt)이
+정확히 계산되는지 확인. `FeatureBuilder` 통합 스모크 테스트로 `build()` 출력의
+`round_number_distance` 값이 독립 함수 계산과 일치하는지 확인 완료.
+
+**참고(사이드 발견, 이번 구현 범위 아님)**: `round_number.py`도 multi_timeframe.py(324차)와
+같은 패턴 — 원래 `find_round_numbers_in_range()`가 `block_entry`/`grade_penalty`로 **진입
+게이트 역할까지 설계**돼 있었는데(v7.0, "헛 진입 -15%" 기대), `strategy/entry/checklist.py`에
+전혀 연결된 적이 없었음(321차 검토에서 발견). 이번 구현은 GBM 피처 노출까지만.
+
+**영향**: `active_features`(97개)에 없으므로 즉시 아무 것도 바뀌지 않음 — raw_features에
+컬럼이 쌓이기 시작하고, 충분히 누적된 뒤 SHAP 심사 사이클에서 교체 후보로 등장 가능한
+상태가 됨(자동 편입은 여전히 사람 승인 필요, CLAUDE.md §6).
+**구현**: `features/technical/round_number.py`(`nearest_round_distance_symmetric` 신규),
+`features/feature_builder.py`(배선), `config/constants.py`(주석 갱신).
+**관련**: 319차(C 카테고리 최초 분류), 321차(신규 함수 필요 판단), 324차(같은 시리즈 —
+multi_timeframe, entry gate 미연결 동일 패턴).
+
+319차 audit에서 발견된 DYNAMIC_FEATURES_POOL 죽은 항목 16/30 중 여기까지의 조치 현황:
+구현+배선 완료 5건(vpin·trend_efficiency·kyle_lambda·multi_timeframe_5m/15m·
+round_number_distance), 이름 교체 완료 3건(hurst·bb_position·ret_5m), 제거 완료 5건
+(tick_imbalance·atr_regime·support_resistance_distance·volume_surge_ratio·microprice),
+재조사 후 구현불가 확정 1건(cancel_ratio), 별도 스코프로 보류 1건(rv_iv_spread).
+**미결 1건**: `lob_imbalance_decay`(326차에서 마저 제거 — 아래 참조).
+
+---
+
+## 2026-07-14 (326차) — DYNAMIC_FEATURES_POOL "lob_imbalance_decay" 제거
+
+### [정리] 활성 피처와 공식상 사실상 중복 확인돼 제거
+
+**배경**: 319차 감사에서 `lob_imbalance_decay`는 C 카테고리(계산 모듈 `features/technical/
+lob_imbalance.py:LOBImbalanceCalculator`는 존재하나 미배선 + 배선해도 풀 항목명과 실제
+반환 키가 애초에 다름 — `lob_imbalance`/`lob_imb_ma`)로 분류됨. 321차 검토에서 이 계산기의
+공식(호가 1~10단계를 `1/(i+1)` 가중해 `(bid_vol-ask_vol)/(bid_vol+ask_vol)`)을 뜯어본 결과,
+이미 활성 피처인 `microprice_depth_bias`(`features/technical/microprice.py`)와 수학적으로
+사실상 동일한 공식임을 확인 — 차이는 최대 호가 단계 수(10 vs 5)뿐인데, 실시간 호가 피드
+자체가 5단계까지만 옴(`collection/cybos/realtime_data.py:_handle_hoga` — ask/bid 각각 5개
+인덱스만 파싱). 즉 10단계로 확장해봐야 6~10호가 데이터 자체가 없어 5단계로 계산한
+`microprice_depth_bias`와 사실상 같은 값이 나올 수밖에 없음 — 신규 구현 실익 없음으로
+결론(321차), 이번 차수에서 실제 제거 실행.
+
+**결정/수정**: `config/constants.py:DYNAMIC_FEATURES_POOL`에서 `"lob_imbalance_decay"` 삭제
++ 사유 주석 추가.
+**Why**: 322차와 같은 원칙 — 활성 피처셋과의 개념적·수식적 중복도가 높고 구현 실익이
+낮은 항목은 "일단 만들어보자"가 아니라 제거해 SHAP 심사 슬롯 낭비를 막는다.
+**영향**: 애초에 raw_features에 쓰인 적 없는 죽은 후보였으므로 실거래 동작 변화 없음
+(순수 리스트 정리).
+**검증**: `py_compile` 통과. `DYNAMIC_FEATURES_POOL`에서 항목이 실제로 사라졌는지 확인
+(24개로 감소).
+**구현**: `config/constants.py:DYNAMIC_FEATURES_POOL` (항목 삭제 + 사유 주석).
+**관련**: 319차(최초 분류), 321차(중복 판단 근거), 322차(같은 시리즈의 제거 작업 원칙).
+
+이로써 319차 audit에서 발견된 죽은 항목 16/30 전수에 대한 1차 조치가 모두 완료됨 — 구현+배선
+5건, 이름 교체 3건, 제거 6건(tick_imbalance·atr_regime·support_resistance_distance·
+volume_surge_ratio·microprice·lob_imbalance_decay), 구현불가 확정 1건(cancel_ratio),
+별도 스코프 보류 1건(rv_iv_spread). 남은 잔여 이슈는 코드 정리가 아니라 별도 기능
+검토(multi_timeframe·round_number의 entry gate 미연결 — 321차·324차·325차 사이드 발견)와
+rv_iv_spread 착수 여부 결정뿐.
