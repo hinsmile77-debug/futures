@@ -5417,8 +5417,12 @@ class TradingSystem:
 
         # [MaskedFallback] 격리 예측 채택 — 정상 앙상블이 FLAT이고 격리 예측이 더 높을 때
         if direction == 0 and _masked_hp_blended and self.model.last_masked_features:
+            # [313차] features= 인자에 self.model.last_masked_features(마스킹된
+            # 피처 "이름" 리스트, 로깅용)를 잘못 넘겨 compute_extremity_hinge()가
+            # list.get() 호출로 크래시(09:02:56 실크래시, ERR-FATAL). 실제 피처
+            # 값 dict인 지역변수 features를 넘겨야 함(라인 5309 호출부와 동일).
             _mhp_cal  = self._apply_horizon_calibration(
-                _masked_hp_blended, features=self.model.last_masked_features
+                _masked_hp_blended, features=features
             )
             _mhp_filt = {
                 h: v for h, v in _mhp_cal.items()
