@@ -21,7 +21,10 @@ from features.technical.hurst_exponent import calculate_hurst
 from features.technical.expiry import compute_expiry_features
 from config.constants import MINI_FUTURES_TICK_SIZE as _DEFAULT_TICK_SIZE  # [235차] 미니선물 전용 기본값 0.02
 from utils.error_policy import ErrorLevel, classify_exception
-from config.settings import HORIZON_THRESHOLDS
+from config.settings import (
+    HORIZON_THRESHOLDS, HURST_WINDOW_N, HURST_MAX_LAG,
+    HURST_WARMUP_COLDSTART_MIN, HURST_WARMUP_LAG_FLOOR, HURST_WARMUP_LAG_RATIO,
+)
 
 logger = logging.getLogger("SIGNAL")
 micro_log = logging.getLogger("MICRO")
@@ -53,7 +56,7 @@ class FeatureBuilder:
         self._core_fail_streak: Dict[str, int] = {"cvd": 0, "vwap": 0, "ofi": 0}
         self._core_fail_notified: Dict[str, bool] = {"cvd": False, "vwap": False, "ofi": False}
         self._on_core_fail: Optional[Any] = None  # 외부 CB 경보 콜백 (main.py에서 주입)
-        self._close_history: deque = deque(maxlen=60)  # Hurst 계산용 종가 버퍼
+        self._close_history: deque = deque(maxlen=HURST_WINDOW_N)  # Hurst 계산용 종가 버퍼
         # CVD 모노톤 비율 계산용 — 20구간(21개 포인트) 이력
         self._cvd_history: deque = deque(maxlen=21)
         # 방향성 고도화 피처용
@@ -349,12 +352,32 @@ class FeatureBuilder:
         _raw_expansion = (_cur_atr - _prev_atr) / (_prev_atr + 1e-9) if _prev_atr > 1e-6 else 0.0
         features["atr_expansion_rate"] = float(np.clip(_raw_expansion, -0.5, 0.5))
 
-        # Hurst Exponent — 종가 버퍼에 추가 후 계산 (40봉 이상 시 실계산, 미만 시 0.5)
+        # Hurst Exponent — 317차 3단계 워밍업 스케줄(n=버퍼 크기, reset_daily 후 경과 분봉수):
+        #   ① n<HURST_WARMUP_COLDSTART_MIN: 미신뢰 구간 → H=0.5 + hurst_ready=False
+        #      (237차 자동진입 차단 유지 — max_lag 20→9 축소로 콜드스타트가 40→18분으로
+        #      의도치 않게 줄던 것을 복원)
+        #   ② COLDSTART<=n<HURST_WINDOW_N: 적응형 max_lag=max(FLOOR,round(n*RATIO))
+        #      (n_min 스윕 실측: 이 시점 bias가 이미 구 운영값(N=60/max_lag=20)보다 낫다)
+        #   ③ n>=HURST_WINDOW_N: 검증된 정상 운영값(HURST_MAX_LAG) 고정
         if close > 0:
             self._close_history.append(close)
+        _n_buf = len(self._close_history)
         try:
-            features["hurst"] = calculate_hurst(list(self._close_history), max_lag=20)
-            features["hurst_ready"] = True
+            if _n_buf < HURST_WARMUP_COLDSTART_MIN:
+                features["hurst"] = 0.5
+                features["hurst_ready"] = False
+            else:
+                if _n_buf < HURST_WINDOW_N:
+                    _lag_eff = max(HURST_WARMUP_LAG_FLOOR, round(_n_buf * HURST_WARMUP_LAG_RATIO))
+                else:
+                    _lag_eff = HURST_MAX_LAG
+                # 317차 후속: 잔여 편향(n=90에서 -0.044) 보정을 상수이동·선형
+                # de-shrinkage 두 방식 모두 시도했으나, 60거래일 실측 검증에서 둘 다
+                # FalsePass를 14.4%→30~33%로 악화시켜(실제 횡보장 분봉이 합성데이터의
+                # H_true=0.3만큼 깊지 않은 경우가 많아, 보정이 그 구간까지 과도하게
+                # 밀어올림) 채택 보류 — 원시 H 그대로 사용(dev_memory 317차 항목 참조).
+                features["hurst"] = calculate_hurst(list(self._close_history), max_lag=_lag_eff)
+                features["hurst_ready"] = True
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] Hurst 오류 — 기본값 0.5 사용: %s", _exc)
@@ -707,4 +730,7 @@ class FeatureBuilder:
         self._last_hoga_snapshot = {}
         self._micro_tick_count = 0
         self._micro_minute_count = 0
+        # 317차: 누락돼있던 Hurst 종가 버퍼 리셋 — 개장 후 최초 ~40분간 전일/주말
+        # 종가가 창에 섞여 들어가 Hurst가 비정상적으로 낮게 나오던 원인(316차 딥다이브).
+        self._close_history.clear()
         logger.info("[FeatureBuilder] daily reset complete")

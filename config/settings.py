@@ -906,8 +906,47 @@ HEALTH_POLICY_HOT_RELOAD_ENABLED = True
 HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC = 5
 
 # ── Hurst Exponent ─────────────────────────────────────────────
+# 317차: N=60/max_lag=20이 소표본 하향편향(순수 랜덤워크도 평균 H≈0.33~0.36)으로
+# grade=C 신호의 63%를 잘못 차단하던 문제를 발견 → 합성데이터 그리드서치(Phase 1) +
+# 60거래일 실전 OOS 검증(Phase 2, MicroRegimeClassifier ADX/ATR 라벨 대조) + 안정성
+# 체크(Phase 3, ±10~20% 파라미터·고저변동 구간 분리)를 거쳐 N=90/max_lag=9로 재보정.
+# 실측: FalseBlock(진짜 추세를 횡보로 오판해 차단하는 비율) 72.3%→48.9%로 개선,
+# 두 변동성 국면 모두에서 재현됨(dev_memory/NEXT_TODO.md 317차 항목 참조).
+# 임계값(0.45/0.55)은 이 파라미터 그대로 검증됐으므로 변경하지 않음. 알고리즘도
+# variance-scaling 공식 그대로 유지(R/S·DFA1 대비 우월 확인, 알고리즘 교체 불필요).
 HURST_TREND_THRESHOLD  = 0.55  # 이상: 추세장
 HURST_RANGE_THRESHOLD  = 0.45  # 이하: 횡보장 (진입 차단)
+HURST_WINDOW_N   = 90  # 계산에 사용하는 1분봉 종가 개수 (deque maxlen) — 317차: 60→90
+HURST_MAX_LAG    = 9   # variance-scaling 회귀에 사용하는 최대 lag — 317차: 20→9
+
+# 317차 워밍업 스케줄 — max_lag가 20→9로 줄면서 콜드스타트 컷오프(len<max_lag*2)가
+# 40분→18분으로 의도치 않게 줄던 문제를 복원 + n_min 스윕(hurst_nmin_search.py) 결과로
+# 18~90분 구간의 정확도까지 개선. `scripts/hurst_nmin_search.py` 실측(LAG_FLOOR=8 계열):
+#   n<40: bias -0.10~-0.24(신뢰 불가) → hurst_ready=False로 237차 기존 차단 유지
+#   40<=n<90: max_lag=max(8,round(n/10)) 적응형 — n=40 시점 bias(-0.101)가 이미
+#             구 운영값(N=60/max_lag=20, bias -0.160)보다 낫다
+#   n>=90: HURST_MAX_LAG(9) 고정 — 검증된 안정 구간
+HURST_WARMUP_COLDSTART_MIN = 40    # 이 미만은 hurst_ready=False(237차 자동진입 차단 유지)
+HURST_WARMUP_LAG_FLOOR     = 8     # 적응형 구간 max_lag 절대하한
+HURST_WARMUP_LAG_RATIO     = 0.1   # 적응형 구간 max_lag 비율상한(=1/10)
+
+# 317차 후속 — [미채택/REFERENCE ONLY, 라이브 코드 어디에서도 참조하지 않음]
+# 잔여 편향(n=90 정상운영 구간조차 진짜 랜덤워크 H=0.5가 평균 0.446으로 찍히는 문제,
+# 사용자 1차 지적) 보정을 상수이동(H_corrected=H_raw-bias)과 이 선형 de-shrinkage
+# (H_true_est=(H_raw-a)/b, H_true=0.3/0.7 두 점으로 직선 적합 후 역산) 둘 다 시도했으나,
+# 60거래일 실측 검증에서 **둘 다 FalsePass를 14.4%→30~33%로 악화**시켜 폐기(사용자 2차
+# 지적으로 실측 검증까지 진행해 발견). 원인: 실제 ADX/ATR 기준 "횡보장" 분봉이 합성데이터의
+# H_true=0.3만큼 깊게 평균회귀하지 않는 경우가 많은데, 보정(특히 b<1로 나누는 선형 방식)이
+# 이 구간의 편차를 오히려 증폭시켜 0.55 위로 과도하게 밀어올림. 결론: 원시 H를 그대로 사용
+# (`feature_builder.py`는 보정 미적용). 이 테이블은 향후 부분 가중치(w*correction, w<1)
+# 등 완화된 보정을 재시도할 경우의 원자재로 남겨둠 — 상세: dev_memory/NEXT_TODO.md 317차.
+HURST_DESHRINK_TABLE = {
+    # n: (a, b) — H_true_est = (H_raw - a) / b
+    40: (0.0192, 0.7368), 45: (0.0421, 0.7098), 50: (0.0352, 0.7492),
+    55: (0.0438, 0.7513), 60: (0.0406, 0.7788), 65: (0.0200, 0.8250),
+    70: (0.0284, 0.8248), 75: (0.0394, 0.8027), 80: (0.0308, 0.8340),
+    85: (0.0252, 0.8470), 90: (0.0215, 0.8512),
+}
 
 # ── ATR 진입 범위 임계값 ───────────────────────────────────────
 # 1분봉 노이즈가 ATR_STOP_MULT × ATR 손절거리를 초과 → 휩쏘 손절 급증 방지
