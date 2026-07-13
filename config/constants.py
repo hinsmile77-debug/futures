@@ -144,7 +144,11 @@ DYNAMIC_FEATURES_POOL = [
     "multi_timeframe_5m",
     "multi_timeframe_15m",
     # v7.0 추가
-    "hurst_exponent",
+    "hurst",  # 319차: "hurst_exponent" 오기 수정 — 실제 raw feature 키는 "hurst"
+              # (features/feature_builder.py). 현재 활성 피처셋에 이미 포함돼 있어
+              # _suggest_replacement()의 used 필터로 걸러지므로 지금은 후보로 뜨지
+              # 않지만, 향후 SHAP 심사로 hurst가 활성셋에서 밀려나면 정상적으로
+              # 재편입 후보가 될 수 있도록 이름을 실제 키와 일치시켜둠.
     "vpin",
     "cancel_ratio",
     "round_number_distance",

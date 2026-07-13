@@ -2,14 +2,6 @@
 dev_memory상 할일 과 점검할 일을 커밋이력을 반영해서 철저히 점검하고
 이상점과 추가 개선점을 면밀히 살펴보고 보고해
 
-[316차 이후 주의] 진입0/게이트차단 원인 파악 시 SIGNAL.log를 직접 grep해 카운트하지
-말 것 — [MetaGate] skip 로그는 STEP6 실거래 게이팅(LIVE)과 STEP2 검증루프 카운터팩추얼
-재평가(VERIFY, 호라이즌별 다회 발생)가 같은 문자열을 공유해 과표집되기 쉽다(실측:
-2026-07-13 SIGNAL.log grep 기준 305건 중 실제 라이브 skip은 1건뿐, 나머지는 VERIFY).
-316차부터 `[MetaGate][LIVE]`/`[MetaGate][VERIFY]`로 태그 분리 + VERIFY는 DEBUG로 격하
-했으니 그 이후 로그는 grep해도 되지만, 어느 게이트가 실제로 진입을 막았는지는
-`data/daily_reports/strategy_report_*.txt`의 "진입 퍼널" 섹션(`fetch_daily_entry_funnel()`,
-grade별 실제 gate_breakdown)을 1차 근거로 삼을 것.
 
 trades.db 확인 결과 오늘 거래 0건, daily_close() 로그도 승=0 패=0 PnL=+0원. 
 C등급 신호 368건 중 305건이 MetaGate 최소신뢰도(0.570) 미달로 
@@ -19,3 +11,7 @@ C등급 신호 368건 중 305건이 MetaGate 최소신뢰도(0.570) 미달로
 
 진입0의 원인을 딥다이브하고
 313차 등록 방법론 적용해서 사후검증해(predictions.db)
+
+
+분기 단위 제안에 동의하되, 
+이 프로젝트엔 이미 26주 Walk-Forward 재검증 주기(CLAUDE.md 실전전환기준 ③)가 있으니 별도 캘린더를 새로 만들기보다 그 주기에 얹는 걸 권합니다. 관리 포인트가 늘어날수록 다른 임계값들처럼 "재검토하기로 했는데 안 함" 상태로 방치될 위험이 커집니다(FP-CRITICAL·CB②가 딱 그 패턴).

@@ -6732,3 +6732,44 @@ SHAP 심사가 "교체 후보"로 제안할 수 있게 문을 여는 것일 뿐,
 재학습(EOD/26주 WFA) 후 (1) 기존 97개 피처가 그대로 보존되는지, (2) hurst_ready가
 SHAP 교체 후보로 실제 제안되는지 확인 필요.
 **관련**: `NEXT_TODO.md` 동일 날짜(318차) 항목, 317차 항목(원 진단 정정).
+
+---
+
+## 2026-07-14 (319차) — DYNAMIC_FEATURES_POOL "hurst_exponent" 네이밍 불일치 수정
+
+### [버그] 풀 항목명이 실제 raw feature 키와 달라 SHAP 교체 후보로 영구 통과 불가
+
+**File**: `config/constants.py`(`DYNAMIC_FEATURES_POOL`)
+**증상**: 318차가 "다음 세션 후보"로만 기록해둔 항목 — `DYNAMIC_FEATURES_POOL`의
+`"hurst_exponent"`가 실제 raw feature 키(`features["hurst"]`, `feature_builder.py`)와
+이름이 달라, `shap_tracker._suggest_replacement()`는 통과(모델 `feature_names`에
+"hurst_exponent"라는 문자열이 없으므로)하지만 `main.py:_get_recent_available_feature_names()`
+가용성 체크(raw_features DB에 실제 존재하는 키 대조)는 절대 통과할 수 없는 죽은 후보였음.
+**원인**: v7.0 추가 당시 피처 개념명("Hurst Exponent")을 그대로 풀 항목명으로 썼을 뿐,
+`feature_builder.py`가 실제로 쓰는 딕셔너리 키(`"hurst"`)와 대조하지 않았던 단순 오기.
+조사 중 동일 패턴(풀 항목명이 raw_features에 한 번도 쓰인 적 없는 문자열)의 추가 사례도
+발견: `"microprice"`(115차에 제거되어 지금은 `microprice_bias`/`microprice_slope`/
+`microprice_depth_bias`로 완전 대체됨), `"vpin"`·`"cancel_ratio"`(계산 모듈
+`features/supply_demand/vpin.py`·`cancel_ratio.py`는 존재하나 `feature_builder.py`가
+애초에 import하지 않아 raw features에 쓰인 적이 없음) — 이번 수정 범위 밖이라 그대로
+남겨두고 `NEXT_TODO.md`에 후속 후보로만 기록.
+**영향**: 주간 SHAP 심사(`weekly_review()`)의 교체 후보 슬롯(최대 3개)이 이런 죽은
+항목으로 소모되면, 정작 적용 가능한 후보가 있어도 우선순위 슬롯을 뺏기거나(더 낮은
+우선순위 하락 피처가 대신 선택됨) 최악의 경우 그 사이클 전체가 "실데이터에 존재하는
+대체 후보 없음"으로 막힐 수 있음. 실거래 안전에는 영향 없음(적용 버튼 경로
+`_pick_shap_candidate()`가 가용성 재검증을 하므로 잘못된 값이 실제로 편입되지는 않음).
+**결정/수정**: `"hurst_exponent"` → `"hurst"`로 이름만 수정. `"hurst"`는 이미 활성
+피처셋(97개)에 포함돼 있어 `_suggest_replacement()`의 `used` 필터(현재 모델
+`feature_names`에 있으면 후보에서 제외)에 걸러지므로, 지금 당장은 후보로 뜨지 않는
+것이 정상 동작(죽은 후보가 사라지는 효과). 향후 SHAP 심사로 `hurst`가 활성셋에서
+밀려나는 시점이 오면, 그때는 이름이 실제 키와 일치하므로 가용성 체크도 정상 통과해
+재편입 후보로 다시 제안될 수 있음 — 이름 일치가 곧 미래 재편입 경로를 살려두는 것.
+**Why**: 후보 풀의 항목명은 "사람이 이해하는 개념명"이 아니라 "raw_features DB에
+실제로 쓰이는 dict 키"와 문자 그대로 일치해야만 가용성 체크·향후 재편입 경로가
+정상 작동한다는 것을 재확인 — 이 프로젝트의 다른 다이나믹 피처들도 동일 원칙 적용 대상.
+**How to apply**: 앞으로 `DYNAMIC_FEATURES_POOL`에 새 항목을 추가할 때는 반드시
+`feature_builder.py`에서 해당 피처가 실제로 `features[...]` 딕셔너리에 쓰이는 키
+문자열을 그대로 복사해 넣을 것 — 개념명이나 계산 모듈 파일명을 그대로 쓰지 말 것.
+**구현**: `config/constants.py:DYNAMIC_FEATURES_POOL` (`"hurst_exponent"` → `"hurst"`).
+**검증**: 문자열 리터럴 치환뿐이라 별도 실행 검증 불필요. `py_compile` 통과 확인.
+**관련**: `NEXT_TODO.md` 2026-07-14(318차) 항목, [[project_hurst_ready_feature_gap]].

@@ -43,10 +43,10 @@
   피처의 교체 후보로 실제 제안되는지, (3) 제안됐다면 SHAP 기여도가 유의미한지 관찰.
   기여도가 낮으면(가능성 있음 — 게이트가 이미 저신뢰 구간을 걸러내므로 모델이 배울
   잔여 신호가 적을 수 있음) 자연 탈락이 정상이며 추가 조치 불필요.
-- [ ] `config/constants.py:DYNAMIC_FEATURES_POOL`의 `"hurst_exponent"` 항목이 실제
-  raw feature 키(`"hurst"`)와 이름이 달라 `_get_recent_available_feature_names()`
-  가용성 체크를 절대 통과 못 하는 별개의 네이밍 불일치를 발견(이번 세션 스코프 밖,
-  이번 수정과 무관 — 다음 세션 후보로만 기록).
+- [DONE 2026-07-14] `config/constants.py:DYNAMIC_FEATURES_POOL`의 `"hurst_exponent"`
+  항목이 실제 raw feature 키(`"hurst"`)와 이름이 달라 `_get_recent_available_feature_names()`
+  가용성 체크를 절대 통과 못 하는 네이밍 불일치 — 319차에서 `"hurst"`로 수정. 상세:
+  `DECISION_LOG.md` 319차 항목.
 
 ---
 
