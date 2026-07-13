@@ -112,7 +112,7 @@ class ContrarianModeTracker:
             if cond_count >= 2:
                 self._state = CONTRA_ARMED
                 logger.info(
-                    "[Contrarian] ARMED | 조건 %d/3 | acc30m=%.1%% streak=%d regime=%s",
+                    "[Contrarian] ARMED | 조건 %d/3 | acc30m=%.1f%% streak=%d regime=%s",
                     cond_count, acc30m, self._same_dir_streak, regime,
                 )
 
