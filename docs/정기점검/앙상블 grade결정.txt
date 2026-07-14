@@ -1,12 +1,20 @@
 앙상블 자체 등급(STEP6, model/ensemble_decision.py: compute()) 결정 조건
-체크리스트(STEP7)와는 완전히 별개 시스템입니다. confidence 값 자체가 아니라 "그 confidence를 믿을 수 있는가"를 먼저 게이트로 거른 뒤, 남은 신호만 confidence 구간으로 등급을 매깁니다.
+체크리스트(STEP7)와는 완전히 별개 시스템입니다. confidence 값 자체가 아니라 
+"그 confidence를 믿을 수 있는가"를 먼저 게이트로 거른 뒤, 남은 신호만 confidence 구간으로 등급을 매깁니다.
 
 1단계 — 선행 차단 게이트 (통과 못 하면 무조건 X)
 게이트	조건	위치
-CoherenceGate	FLAT 아닌 활성 호라이즌 중 최종 direction과 같은 방향인 비율 < _coherence_min(기본 0.60, GAP_OPEN·TrendGate 중엔 0.50)	ensemble_decision.py:754-807, 임계값 config/settings.py:207 COHERENCE_GATE_MIN=0.60
-CascadeCoherence	장기→단기 호라이즌 방향 정렬 점수 compute_cascade_coherence() < 0.25 (CoherenceGate 통과 시에만 검사)	ensemble_decision.py:812-821
-regime_ok	confidence >= REGIME_MIN_CONFIDENCE[regime] 이면서 direction != FLAT	ensemble_decision.py:843-844, 레짐별 기준값 config/settings.py:508-511(RISK_ON/NEUTRAL=0.25, RISK_OFF=0.65 — DynMC가 매 재보정마다 갱신)
+CoherenceGate	FLAT 아닌 활성 호라이즌 중 최종 direction과 같은 방향인 비율 < _coherence_min(기본 0.60, GAP_OPEN·TrendGate 중엔 0.50)	
+ensemble_decision.py:754-807, 임계값 config/settings.py:207 COHERENCE_GATE_MIN=0.60
+
+CascadeCoherence	장기→단기 호라이즌 방향 정렬 점수 compute_cascade_coherence() < 0.25 (CoherenceGate 통과 시에만 검사)	
+ensemble_decision.py:812-821
+
+regime_ok	confidence >= REGIME_MIN_CONFIDENCE[regime] 이면서 direction != FLAT	
+ensemble_decision.py:843-844, 레짐별 기준값 config/settings.py:508-511(RISK_ON/NEUTRAL=0.25, RISK_OFF=0.65 — DynMC가 매 재보정마다 갱신)
 → coherence_blocked(coherence 또는 cascade 실패) 또는 not regime_ok면 바로 grade="X", 아래 confidence 구간 판정은 건너뜁니다(ensemble_decision.py:848-851).
+
+
 
 2단계 — confidence 구간 등급 (1단계 통과 시에만)
 confidence	grade	비고
@@ -16,9 +24,9 @@ min_conf~0.60	C
 < min_conf	X	
 (ensemble_decision.py:852-880)
 
+
 3단계 — HCGuard (A등급 전용 실측 정확도 가드)
 고신뢰(conf≥0.70) 예측의 최근 실측 정확도가 기준 미달이면 A를 B로 강제 강등:
-
 표본 _HC_GUARD_MIN_N = 20건 이상 쌓여야 가드 활성 (초기 cold-start 보호)
 최근 정확도 _HC_GUARD_ACC_THR = 0.42 미만이면 A→B 강등
 근거 주석: "conf 0.7+ 실측 acc ~29-31%가 conf 0.4대 33%보다 낮은 역전 현상 대응" (ensemble_decision.py:259-261, 852-874)
@@ -27,4 +35,7 @@ min_conf~0.60	C
 auto_entry = ENTRY_GRADE.get(grade, {}).get("auto", False) and regime_ok
 (ensemble_decision.py:882) — ENTRY_GRADE 딕셔너리(config/settings.py:489-494)는 체크리스트(STEP7)와 공유하는 설정이지만, 등급을 매기는 기준(여기는 confidence 구간, 체크리스트는 9개 중 pass_count)은 서로 다릅니다.
 
-핵심 요약: 앙상블 등급은 "얼마나 확신하는가(confidence)"보다 **"그 확신이 여러 호라이즌에 걸쳐 일관됐는가(Coherence)"**를 먼저 보고, 그다음에야 confidence 구간으로 세분화합니다. 오늘 11:45 케이스가 X를 받은 이유는 confidence(33.99%)가 낮아서가 아니라(사실 min_conf 0.346보다 살짝 높았음), CoherenceGate 단계에서 이미 걸렸기 때문입니다 — 1단계에서 X 확정되면 2단계 confidence 구간 판정 자체가 무의미해지는 구조입니다.
+핵심 요약: 앙상블 등급은 "얼마나 확신하는가(confidence)"보다 **"그 확신이 여러 호라이즌에 걸쳐 일관됐는가(Coherence)"**를 먼저 보고, 
+그다음에야 confidence 구간으로 세분화합니다. 오늘 11:45 케이스가 X를 받은 이유는 confidence(33.99%)가 
+낮아서가 아니라(사실 min_conf 0.346보다 살짝 높았음), CoherenceGate 단계에서 이미 걸렸기 때문입니다 
+— 1단계에서 X 확정되면 2단계 confidence 구간 판정 자체가 무의미해지는 구조입니다.

@@ -364,4 +364,69 @@ if acc < effective_min:
 P2	옵션체인 피처 확보 (opt_gex_bn 등 4종)	07-02 이후 4000행 달성	30m 피처 다양성 확보
 P3	30m 피처 목록에 빠른-변화 피처 추가	피처 엔지니어링	ConstOut 자체 발생 빈도 감소
 
+---
+
+## [UPDATE 2026-07-08] raw_features 실측 재검토 — need_add 잔여 3종 + 260704 P2/P3 신규군 + program 계열 제외 확정
+
+292차(07-06) 이후 `shap_feature_registry.json`(105개)·`horizon_feature_sets.json`은 이미 8개 반영 완료 상태였음.
+`_feature_status_summary.need_add_features`에 남은 잔여 3종과, 260704 P2/P3에서 신규 추가된
+베이시스·VKOSPI·프로그램매매·만기더미 계열을 `data/db/raw_data.db` `raw_features` 테이블에서
+직접 SQL 실측하여 재검토함(총 79,890행, 2025-08-19~2026-07-08).
+
+### ① 즉시 활성화 권장 — `opt_atm_put_oi`
+
+- **4,708행 확보 (4,000행 기준 이미 초과)**
+- 적용 호라이즌: **10m**(rho=0.153, 해당 호라이즌 최강 신호), **15m**(rho=0.098)
+- 절차: `shap_feature_registry.json` active_features 추가 → `horizon_feature_sets.json` 10m/15m
+  need_add→in_pkl → EOD full_cv 재학습 → acc 변화 확인
+
+### ② 임박 (1~2거래일 내 도달 예상) — ①과 일괄 재학습 권장
+
+| 피처 | 실측 행수(07-08) | 일평균 증가 | 적용 호라이즌 |
+|---|---|---|---|
+| `cvd_monotone_ratio` | 3,917 | ~100~150/일 | 3m, 5m, 10m |
+| `opt_pcr_extreme_bearish` | 3,742 | ~150~300/일 | 15m, 30m |
+
+①과 별개로 재학습을 두 번 하기보다, 이 둘이 4,000행을 넘는 시점(7/9~7/10 예상)에 ①과 함께
+**일괄** in_pkl 전환 후 한 번에 EOD 재학습하는 편이 재학습 낭비가 적음.
+
+### ③ 아직 시기상조 — 260704 P2/P3 신규군 (290차, 07-04 배포, 실측 시점 기준 거래일 3일차)
+
+- `basis_pt`/`basis_change_pt`: 706행, **basis_ready 비율 63%**(706/1122)로 KOSPI200 현물지수
+  폴링 자체가 불안정 — 표본 부족보다 **수집 안정성**이 먼저 해소돼야 할 문제.
+- `vkospi`: 368행, **ready 비율 33%**(368/1122)로 더 낮음 — 293~295차 지수 폴링 이슈
+  (dscbo1.StockMst→CpSysDib.MarketEye 교체)가 완전히 해소됐는지 재확인 필요.
+- `is_weekly_witching`/`is_monthly_expiry_week`: 정상 누적 중, 서두를 필요 없음.
+- `is_monthly_witching`/`is_month_end_rebalance`: 0행 — 배포 이후 해당 월간 이벤트(2번째
+  목요일/월말 3일)가 아직 한 번도 없었을 뿐 정상. 이벤트 자체가 희소해 유의미한 표본까지
+  몇 달 소요 예상.
+
+### ④ 활성화 후보에서 제외 확정 — `program_arb_net` / `program_non_arb_net`
+
+이미 baseline 97개 피처에 포함(in_pkl)된 상태이나, **전체 이력 79,890행 전 구간에서 값이
+사실상 항상 0/None**으로 실측됨. 원인은 "TR을 못 찾은 것"이 아니라 **찾아놓고 라이브
+파이프라인에서 꺼놓은 것**:
+
+- `collection/cybos/investor_data.py:151` `request_program_investor()`가 `Dscbo1.CpSvr8111`을
+  호출하고, 260704 P2(290차)에서 idx19(차익)/idx37(비차익) 필드 매핑을 공식문서 기준으로
+  검증까지 마쳤음.
+- 그러나 `main.py:2712`, `main.py:3591` 두 호출 지점 모두
+  `self.investor_data.fetch_all(include_program=False)`로 고정돼 있어 **라이브 파이프라인은
+  이 함수를 아예 호출하지 않음**. `investor_data.py:87` 주석: `"program probe loop disabled
+  in live timer"`.
+- `dev_memory/CURRENT_STATE.md` 108차(2026-06-04) 기록: `-2147221005` dispatch 반복 실패가
+  로그 폭주·CB⑤/HealthPolicy Degraded Mode 오발동에 일조해 의도적으로 운영 타이머에서
+  제외한 이력. 07-05 필드매핑 수정은 "매핑이 맞는지"만 검증했을 뿐, "dispatch 자체가 되는지"
+  (별개 실패 모드)는 `include_program=True`로 재검증된 적이 없음.
+- 부가 결함: `request_program_investor()` 반환값은 `"nets": {"foreign": arb_net + nonarb_net}`
+  뿐이라 `program_individual_net_krw`/`program_institution_net_krw`는 TR이 살아나도 코드
+  추가 수정 없인 계속 0.
+- 전체 이력에서 실제 값이 한 번도 없어 **rho(상관계수)조차 계산된 적이 없음** — 다른
+  need_add 피처(①②)와 달리 기대 효과를 추정할 근거 자체가 없고, 이미 작동 중인
+  `foreign_futures_net`(CpSvrNew7221)과 정보 중복 가능성도 있음.
+
+**결론**: 기댓값 불확실 + 재발 리스크(CB⑤ 노이즈) + 공수 대비, `CLAUDE.md` 실전 전환
+기준(CB②/CB③-P4/FP-CRITICAL 복원)보다 우선순위가 낮음. **활성화 후보에서 제외**하고,
+필요 시 정식 재학습 파이프라인과 분리된 별도 probe로 dispatch 성공률부터 격리 검증할 것.
+
 
