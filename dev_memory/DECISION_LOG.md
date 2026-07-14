@@ -7412,3 +7412,47 @@ hyp_pnl_pts=42.4895pt(왕복비용×2=0.1516pt 대비 압도적 초과), 승률7
 **관련**: 297차(hurst_gate_shadow 계측 신설), 317차(Hurst 추정기 재보정), `data/
 validation_campaign_report.md` 2026-07-15 리포트, `dev_memory/NEXT_TODO.md` 동일
 날짜 항목.
+
+---
+
+## 2026-07-15 (333차 후속2) — 검증 캠페인 리포트 [0]/[5]/[6]/[7] 유령거래(GHOST_PENDING_MISS) 필터 누락 수정
+
+### [버그·수정] `generate_validation_campaign_report.py`만 311차 유령거래 제외 컨벤션이 안 걸려있었음
+
+**증상**: 사용자가 `data/validation_campaign_report.md`(2026-07-15 07:25 생성) 검토를
+요청, 채널 [5] `trend` 버킷 평균 순EV가 -1,332,574원으로 `neutral`(-73원)과 자릿수가
+달라 이상점으로 지목. `trades.db`를 직접 대조한 결과 원인은 id=137
+(2026-07-09 10:44:01 LONG 8계약, `entry_source='GHOST_PENDING_MISS'`, `grade='MANUAL'`,
+-7,502,196원)이었음 — 실제 체결가 급락(1198→1177, 진짜 시장 데이터)은 맞지만, 이
+거래 자체가 pending 미등록 상태에서 사후 매칭된 유령 체결.
+
+**원인**: 311차(2026-07-12)가 유령거래 오염 문제(§ 2026-07-12 P0 항목, `NEXT_TODO.md`)에
+대응해 `trades.entry_source` 컬럼을 신설하고 대시보드 집계(`fetch_trend_*`,
+`fetch_recent_ev`)와 `generate_baseline_ensemble_report.py`엔 `GHOST_PENDING_MISS`
+제외 필터를 반영했으나, 나중에 신설된 `scripts/generate_validation_campaign_report.py`
+(297차, 260705 감사 대응)는 이 컨벤션을 상속받지 못해 4개 쿼리 모두 필터 누락 상태로
+남아있었음.
+
+**영향 실측**: 필터 적용 전/후 비교(2026-07-05~07-15 캠페인 창):
+- [0] 주간 진입 건수: 17건 → 15건 (하한 10건 판정 자체는 안 바뀜)
+- [5] `trend` 버킷: n=8 평균 -1,332,574원(누적 -10,660,592원) → n=6 평균 -652,103원
+  (누적 -3,912,617원) — 여전히 음수지만 왜곡폭이 절반 이하로 감소
+- [6]/[7] baseline 승률: 58.8% → 60.0% (소폭이라 [6] FAIL 판정·333차후속 조치는
+  안 뒤집힘 — 재검증 완료)
+
+[5]는 버킷당 20건 미달로 아직 INSUFFICIENT라 실질적 정책 오판은 없었으나, 표본이
+쌓여 임계치를 넘기 전에 고쳐야 향후 "trend 배수 1.20→1.10 후퇴" 같은 자동 권고가
+유령거래발 허수로 나오는 걸 막을 수 있음.
+
+**수정**: `scripts/generate_validation_campaign_report.py`에 공용 상수
+`_NOT_GHOST_SQL = "COALESCE(entry_source,'') != 'GHOST_PENDING_MISS'"` 신설 후
+`eval_sample_starvation()`(주간 진입 카운트), `eval_hurst_regime()`([5] 버킷 집계),
+`resolve_and_eval_hurst_gate()`/`resolve_and_eval_joint_gate()`([6]/[7] baseline
+승률) 4개 쿼리에 적용. `generate_baseline_ensemble_report.py`와 동일 필터 표현.
+
+**검증**: `py_compile` 통과. `data/db/trades.db` 대상 재실행 결과 [0]=15건,
+[5] trend n=6 EV=-652,103원으로 사전 수동 계산과 일치 확인. [6]/[7] 판정 불변 확인.
+
+**관련**: 311차(entry_source 컬럼 신설, `NEXT_TODO.md` 2026-07-12 P0 항목),
+`generate_baseline_ensemble_report.py`(선행 컨벤션), 333차/333차후속(이 리포트의
+[1]/[6] 딥다이브).

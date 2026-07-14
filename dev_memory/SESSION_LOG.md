@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-15 (333차 후속2 — 검증 캠페인 리포트 유령거래 필터 누락 수정)
+
+**트리거**: 사용자가 `data/validation_campaign_report.md` 검토·이상점 확인을 요청.
+
+**Work**: 리포트 [5] `trend` 버킷 평균 순EV(-1,332,574원)가 `neutral`(-73원)과
+자릿수가 달라 딥다이브. `trades.db` 대조 결과 id=137(2026-07-09 10:44 LONG 8계약,
+-750만원)이 `entry_source='GHOST_PENDING_MISS'`(유령 체결)로 확인됨. 311차가
+이미 대시보드·`generate_baseline_ensemble_report.py`엔 유령거래 제외 필터를
+반영했으나 `generate_validation_campaign_report.py`만 누락돼 [0]/[5]/[6]/[7]
+집계가 오염되고 있었음. 사용자 승인 하에 4개 쿼리에 필터 추가.
+
+**구현**: `scripts/generate_validation_campaign_report.py` — `_NOT_GHOST_SQL`
+상수 신설 후 `eval_sample_starvation`/`eval_hurst_regime`/
+`resolve_and_eval_hurst_gate`/`resolve_and_eval_joint_gate`에 적용.
+
+**검증**: `py_compile` 통과. 재실행 결과 [0] 17→15건, [5] trend n=8→6
+평균EV -1,332,574원→-652,103원, [6]/[7] baseline 승률 58.8%→60.0%(판정 불변)
+확인. 상세: `DECISION_LOG.md` 동일 날짜(333차 후속2) 항목.
+
+---
+
 ## 2026-07-13 (315차 — 정기점검: 기동(08:41)~EOD+P8(15:48) 전일 로그 전수 점검, 코드 변경 없음)
 
 **트리거**: 사용자의 정기점검 요청("금일 미륵이 작동상황을 프로그램 시작부터

@@ -55,6 +55,11 @@ _TS_FMT = "%Y-%m-%d %H:%M:%S"
 # 호라이즌당 replay 상한 — 모델 mtime이 오래됐을 때 메모리/시간 폭주 방지
 _MAX_REPLAY_ROWS = 12000
 
+# 유령 진입(pending 미등록 상태로 들어온 외부체결) 제외 — baseline_ensemble_report.py와
+# 동일 컨벤션. 미제외 시 [0]/[5]/[6]/[7]의 표본·EV·승률 집계가 오염된다(NEXT_TODO.md
+# 2026-07-12 P0 항목 참조).
+_NOT_GHOST_SQL = "COALESCE(entry_source,'') != 'GHOST_PENDING_MISS'"
+
 
 # ──────────────────────────────────────────────────────────────
 # 공통 유틸
@@ -124,7 +129,8 @@ def eval_sample_starvation() -> dict:
                 datetime.datetime.now() - datetime.timedelta(days=7)
             ).strftime(_TS_FMT)
             n_weekly = conn.execute(
-                "SELECT COUNT(*) AS n FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ?",
+                "SELECT COUNT(*) AS n FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ?"
+                " AND " + _NOT_GHOST_SQL,
                 (cutoff,),
             ).fetchone()["n"]
     except Exception as e:
@@ -709,7 +715,8 @@ def resolve_and_eval_hurst_gate() -> dict:
             baseline = conn.execute(
                 """SELECT AVG(CASE WHEN COALESCE(net_pnl_krw, pnl_krw) > 0
                                    THEN 1.0 ELSE 0.0 END) AS wr
-                   FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ?""",
+                   FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ? AND %s"""
+                % _NOT_GHOST_SQL,
                 (_campaign_start(),),
             ).fetchone()
     except Exception as e:
@@ -856,7 +863,8 @@ def resolve_and_eval_joint_gate() -> dict:
             baseline = conn.execute(
                 """SELECT AVG(CASE WHEN COALESCE(net_pnl_krw, pnl_krw) > 0
                                    THEN 1.0 ELSE 0.0 END) AS wr
-                   FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ?""",
+                   FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ? AND %s"""
+                % _NOT_GHOST_SQL,
                 (_campaign_start(),),
             ).fetchone()
             # meta_size 구간별(<0.55 / >=0.55) 분리 집계 — tox_size 상수 구조 의문 검증용
@@ -933,8 +941,8 @@ def eval_hurst_regime() -> dict:
                           SUM(net_pnl_krw) AS total_ev,
                           AVG(CASE WHEN net_pnl_krw > 0 THEN 1.0 ELSE 0.0 END) AS wr
                    FROM trades
-                   WHERE exit_ts >= ? AND net_pnl_krw IS NOT NULL
-                   GROUP BY bucket""",
+                   WHERE exit_ts >= ? AND net_pnl_krw IS NOT NULL AND %s
+                   GROUP BY bucket""" % _NOT_GHOST_SQL,
                 (_campaign_start(),),
             ).fetchall()
     except Exception as e:
