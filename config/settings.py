@@ -958,6 +958,17 @@ HURST_WARMUP_COLDSTART_MIN = 40    # 이 미만은 hurst_ready=False(237차 자�
 HURST_WARMUP_LAG_FLOOR     = 8     # 적응형 구간 max_lag 절대하한
 HURST_WARMUP_LAG_RATIO     = 0.1   # 적응형 구간 max_lag 비율상한(=1/10)
 
+# [333차 후속, §3-6 FAIL 완화] Hurst<0.45 하드차단 대신 사이징 ×0.5로 완화.
+# 근거: hurst_gate_shadow counterfactual n=111(≥20), 누적 hyp_pnl=42.49pt(>왕복비용×2=
+# 0.1516pt), 승률73.9%(>기준선62.5%) — §3-6 FAIL 조건 동시충족(2026-07-15 검증캠페인 리포트).
+# 317차(N=60/lag20→90/9 재보정, 07-13) 이후 구간(n=16)도 동일 방향 재확인(0.526pt/건,
+# 승률75%) — 317차는 오탐 "빈도" 개선(FalseBlock 72.3%→48.9%), 본 항목은 차단 "심도" 완화라
+# 서로 보완관계이며 317차 개선이 이번 FAIL 판정을 무효화하지 않음(dev_memory/DECISION_LOG.md
+# 333차 후속 항목 참조). 즉시 언블록 아님(§3-6 사전등록 원칙) — 사이징만 완화, 0.45 임계값
+# 자체는 유지.
+HURST_SOFT_BLOCK_ENABLED   = True
+HURST_SOFT_BLOCK_SIZE_MULT = 0.5
+
 # 317차 후속 — [미채택/REFERENCE ONLY, 라이브 코드 어디에서도 참조하지 않음]
 # 잔여 편향(n=90 정상운영 구간조차 진짜 랜덤워크 H=0.5가 평균 0.446으로 찍히는 문제,
 # 사용자 1차 지적) 보정을 상수이동(H_corrected=H_raw-bias)과 이 선형 de-shrinkage

@@ -7342,3 +7342,73 @@ OOS 오염 방지 설계(모델 mtime 이후 데이터만 채점)상 [1] 판정�
 
 **관련**: 226차(py310_64/py37_32 재학습 환경 분리 결정), 260704 감사 P1(섀도우 TB
 병행 학습 신설 배경), 2026-06-30 py310_64 재구성(sklearn 1.0.2 고정 결정).
+
+---
+
+## 2026-07-15 (333차 후속) — 검증 캠페인 리포트 [6] Hurst 게이트 FAIL 판정 → 하드차단을 사이징 ×0.5로 완화
+
+### [설계결정] §3-6 사전등록 프로토콜의 완화 트리거 조건 충족 확인 후 실행
+
+**File**: `config/settings.py`(`HURST_SOFT_BLOCK_ENABLED`, `HURST_SOFT_BLOCK_SIZE_MULT`),
+`main.py`(`_hurst_ok` 계산 직후 사이즈축소 블록 신설, `_final_entry_ok`·실주문 실행
+게이트 2곳의 AND-체인 완화, 차단사유 로그 분기 수정)
+
+**배경**: `data/validation_campaign_report.md`(2026-07-15 생성) 채널 [6] Hurst 게이트
+counterfactual이 `config/settings.py:VALIDATION_CAMPAIGN["hurst_gate_shadow"]`에
+사전등록된 완화 트리거 조건을 실측으로 충족: 누적 판정 n=111(기준 20건 이상), 누적
+hyp_pnl_pts=42.4895pt(왕복비용×2=0.1516pt 대비 압도적 초과), 승률73.9%(기준선
+62.5% 대비 우위). 즉 Hurst<0.45 하드차단이 실제로는 기준선보다 나은 신호를 걸러내고
+있었음이 4주 섀도우 계측으로 확인됨. §3-6 프로토콜은 이 조건 충족 시 "즉시 언블록이
+아니라 하드차단→사이징×0.5 완화부터" 실행하도록 사전에 못박아 두었음(사후 완화는
+과적합이라는 §2 원칙에 따라, 데이터를 보기 전에 조치 순서를 고정해둔 것).
+
+**연관성 검토(구현 전 필수 확인)**: 317차(2026-07-13)가 Hurst 추정기 자체(N=60/lag20
+→90/9 재보정)로 FalseBlock(진짜 추세를 횡보로 오판해 차단하는 비율)을 72.3%→48.9%로
+개선한 바 있어, 이번 FAIL 판정이 이미 고쳐진 문제의 잔재(구파라미터 기간) 데이터에
+오염된 것일 가능성을 `data/db/trades.db:hurst_gate_shadow`를 날짜로 분리해 직접
+검증함. 결과: 구파라미터 기간(~07-13, n=95) 건당 hyp_pnl 0.359pt/승률73.7%, 317차
+반영 이후 신파라미터 기간(07-14~, n=16, 자체로는 min_samples=20 미달) 건당 0.526pt/
+승률75.0% — **양쪽 다 같은 방향, 같은 크기 이상의 신호**. 317차는 오탐 "빈도"를
+줄였을 뿐(72.3%→48.9%), [6]이 잡아낸 문제는 차단될 때마다의 "심도"이므로 서로 다른
+문제이며 상충하지 않음(보완 관계) — 317차 개선이 이번 FAIL 판정을 무효화하지 않는다고
+판단, 사용자 확인 하에 구현 진행.
+
+**구현**:
+1. `config/settings.py` — `HURST_SOFT_BLOCK_ENABLED=True`, `HURST_SOFT_BLOCK_SIZE_MULT=
+   0.5` 신설(HURST_WARMUP 설정 직후에 배치, 근거 주석 포함).
+2. `main.py` — `_hurst_ok` 계산 직후(구 6453~6457행 부근) `_hurst_size` 블록 신설.
+   meta_gate/toxicity_gate/execution_governor가 쓰는 것과 동일한 "reduce, not block"
+   패턴(`_qty_display = max(1, int(round(_qty_display * mult)))`)을 그대로 따름 —
+   `direction != 0 and self.position.status == "FLAT" and _qty_display > 0` 가드 하에
+   `not _hurst_ok`이면 `_qty_display`를 ×0.5. `_qty_display`는 이후 `_qty_auto`로
+   그대로 이어지므로 실제 주문 수량에 자동 반영됨.
+3. `_final_entry_ok` 계산과 별개로 존재하는 **두 번째** AND-체인(실제 주문 실행 게이트,
+   `_final_entry_ok`와 조건이 대부분 중복되지만 독립적으로 유지되는 코드)에도 동일하게
+   `and _hurst_ok` → `and (_hurst_ok or HURST_SOFT_BLOCK_ENABLED)` 적용 — 한쪽만
+   고치면 실제 주문에는 반영되지 않는 구조라 반드시 둘 다 수정 필요했음.
+4. 차단사유 로그 분기(`elif not _hurst_ok:`)에 `and not HURST_SOFT_BLOCK_ENABLED` 추가
+   — 플래그 켜진 상태에서는 이 사유로 더 이상 차단되지 않으므로 분기가 자연히 스킵.
+5. **손절/TP1 정합성은 코드 변경 없이 자동 확보**: `_entry_hurst_bucket` 버킷팅(main.py,
+   `_hurst_now < 0.45` → `"mean-revert"`)은 이미 순수 raw hurst 값 기준이라, 새로
+   풀린 TREND_FOLLOW 거래도 자동으로 `"mean-revert"` 버킷을 받고
+   `HURST_REGIME_ATR_MULT["mean-revert"]`(손절/TP1 배수)가 그대로 적용됨 — 이는
+   counterfactual 계측(`hurst_gate_shadow` INSERT 로직)이 애초에 가정했던 것과 동일한
+   조건이므로 검증된 엣지와 정합적.
+
+**부작용(의도된 것)**: Hurst 섀도우 counterfactual 계측(`hurst_gate_shadow` INSERT,
+`self.position.status == "FLAT"` 조건부)은 완화 적용 이후 해당 population(다른 게이트
+다 통과 + hurst만 실패)이 실제로 체결되어 더 이상 FLAT로 안 남으므로 **신규 행 적재가
+자연히 멈춘다**. §3-6 프로토콜이 예정한 결과(FAIL 판정→조치 이후 counterfactual 채널의
+소임이 끝남)이므로 향후 검증 리포트 [6]의 n_resolved 정체를 이상신호로 오인하지 말 것.
+
+**즉시 언블록은 아님**: 0.45/0.55 임계값 자체, MEAN_REVERSION/REGIME_EXHAUSTION 면제
+로직은 그대로 유지. 하드차단→사이징 완화라는 §3-6 1단계 조치만 실행.
+
+**검증**: `py_compile` 통과 예정. `grep -n "_hurst_ok" main.py`로 전 참조 지점 재확인.
+**라이브 미검증** — 다음 장중 세션에서 `[HurstGate] 하드차단 대신 사이즈축소` 로그가
+실제로 찍히고 주문 수량이 절반이 되는지, 수 주 후 `entry_hurst_bucket='mean-revert'`
+(TREND_FOLLOW) 실거래 EV가 counterfactual 예측에 부합하는지 확인 필요.
+
+**관련**: 297차(hurst_gate_shadow 계측 신설), 317차(Hurst 추정기 재보정), `data/
+validation_campaign_report.md` 2026-07-15 리포트, `dev_memory/NEXT_TODO.md` 동일
+날짜 항목.

@@ -8,6 +8,28 @@
 
 ---
 
+## 2026-07-15 (333차 후속 — 검증 캠페인 [6] Hurst 게이트 FAIL → 하드차단을 사이징 ×0.5로 완화)
+
+> 상세: `DECISION_LOG.md` 2026-07-15(333차 후속) 항목. `config/settings.py:
+> HURST_SOFT_BLOCK_ENABLED/HURST_SOFT_BLOCK_SIZE_MULT` + `main.py` `_hurst_ok` 관련
+> 게이트 3곳 수정 완료(즉시 언블록 아님, 사이징만 완화).
+
+- [DONE 2026-07-15] **§3-6 FAIL 조건(n=111, hyp_pnl=42.49pt, 승률73.9%>기준선62.5%)
+  확인 후 구현** — 하드차단 대신 사이징×0.5로 완화. 317차 Hurst 추정기 재보정
+  (07-13)이 이 판정을 무효화하는지 `hurst_gate_shadow`를 날짜로 분리해 검증 —
+  구파라미터(n=95, 0.359pt/건) 신파라미터(n=16, 0.526pt/건) 모두 동일 방향 확인,
+  317차(빈도 개선)와 본 조치(심도 완화)는 보완관계로 판단.
+- [ ] **라이브 검증** — 다음 장중 hurst<0.45 TREND_FOLLOW 신호에서 `[HurstGate]
+  하드차단 대신 사이즈축소` 로그가 실제로 찍히고 주문 수량이 절반이 되는지 확인.
+- [ ] **수 주 후 사후평가** — `trades` DB에서 `entry_hurst_bucket='mean-revert'`
+  (TREND_FOLLOW) 실거래 EV가 counterfactual 예측(승률 73.9%대)에 부합하는지 확인 →
+  ×0.5가 적정했는지, 추가완화(언블록) 또는 롤백 여부 판단 근거로 사용.
+- [ ] **주의** — `hurst_gate_shadow` 신규 적재가 이 조치 이후 자연히 멈추는 것은
+  정상(해당 population이 이제 실제 체결되어 FLAT로 안 남음). 향후 검증 리포트 [6]의
+  n_resolved 정체를 이상신호로 오인하지 말 것.
+
+---
+
 ## 2026-07-15 (333차 — 검증 캠페인 [1] Triple-Barrier 모델 로드 실패 딥다이브)
 
 > 상세: `DECISION_LOG.md` 2026-07-15(333차) 항목.
