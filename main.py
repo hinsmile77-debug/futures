@@ -1102,10 +1102,16 @@ class TradingSystem:
             horizon_model = self.model.models.get("1m")
             if horizon_model is None:
                 horizon_model = next(iter(self.model.models.values()), None)
-            if horizon_model is not None:
+            tracker_feat_names = list(getattr(self._shap_tracker, "feature_names", []) or [])
+            if horizon_model is not None and tracker_feat_names:
+                # [332차] ShapTracker는 "1m" 서브셋(tracker_feat_names)으로 생성되는데
+                # 이전엔 self.model.feature_names(전체 호라이즌 슈퍼셋)로 벡터를 만들어
+                # horizon_model(1m 모델, 서브셋 입력 기대)과 열 개수가 어긋났음 —
+                # TreeExplainer는 길이 검증 없이 X 열 개수 그대로 importance를 반환하므로
+                # get_current_ranking()에서 idx가 feature_names 범위를 넘어 IndexError 발생.
                 restored_vectors = np.array(
                     [
-                        [float(feat.get(name, 0.0) or 0.0) for name in self.model.feature_names]
+                        [float(feat.get(name, 0.0) or 0.0) for name in tracker_feat_names]
                         for feat in all_feat_rows[-self._shap_feature_window.maxlen:]
                     ],
                     dtype=np.float32,

@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-07-14 (332차 — 재기동 크래시 2건 수정: SHAP 복원 IndexError + TreeExplainer 네이티브 힙손상)
+
+> 상세: `DECISION_LOG.md` 2026-07-14(332차) 항목.
+
+- [DONE 2026-07-14] **SHAP 복원 경로 IndexError 수정** — `main.py:_restore_
+  analysis_buffers()`가 `self.model.feature_names`(전체 슈퍼셋)로 벡터를 만들어
+  `self._shap_tracker`(1m 서브셋)와 열 개수가 어긋나던 버그 수정. `shap_tracker.py`
+  `get_current_ranking()`/`weekly_review()`에 길이 불일치 방어 가드 추가.
+- [DONE 2026-07-14] **TreeExplainer HGB 네이티브 크래시 회피** — `shap_tracker.py:
+  _calc_importance()` 1순위(TreeExplainer) 진입에 `hasattr(model, "estimators_")`
+  가드 추가. shap 0.41 TreeExplainer가 `HistGradientBoostingClassifier`에서 정상
+  예외 대신 `0xc0000374`(STATUS_HEAP_CORRUPTION) 네이티브 크래시로 프로세스를
+  통째로 죽이던 경로 차단(`try/except`로 못 잡던 크래시).
+- [ ] **라이브 검증** — 다음 기동(장후 디버그 또는 정규 08:55)에서
+  `_restore_analysis_buffers()`/`_refresh_shap_state()`가 크래시 없이 완주하는지,
+  `crash_fault.log`에 `0xc0000374` 재발이 없는지, SHAP 순위(`_cached_shap_importance`)
+  가 실제로 채워지는지 확인.
+
+---
+
 ## 2026-07-14 (331차 — 무스킬 피처셋 딥다이브 §5 권고 실행: 피처셋 개편 + 배선 버그 2건 수리)
 
 > `docs/미륵이고도화2/무스킬_피처셋_딥다이브_보고서_2026-07-13.md` §5 권고 실행 순서를
