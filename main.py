@@ -8697,9 +8697,17 @@ class TradingSystem:
         self._sigma_20 = 0.0
         self._pre_retrain_done = False   # 내일 첫 재학습 완료 전까지 보수 사이즈 재활성
 
+        _gross_sign_dc = "+" if stats["gross_krw"] >= 0 else ""
+        _net_sign_dc = "+" if stats["pnl_krw"] >= 0 else ""
         notify(
-            f"일일 마감\n승:{stats['wins']} 패:{stats['losses']}\n"
-            f"PnL:{stats['pnl_krw']:+,.0f}원",
+            f"📊 미륵이 일일 마감 집계\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"거래: {stats['trades']}회 (승 {stats['wins']} / 패 {stats['losses']})\n"
+            f"총손익: {_gross_sign_dc}{stats['gross_krw']:,.0f}원  "
+            f"(수수료 -{stats['commission']:,.0f}원)\n"
+            f"순손익: {_net_sign_dc}{stats['pnl_krw']:,.0f}원\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"정산·재학습 마무리 중 — 완료 시 종료 알림 예정",
             "INFO",
         )
 
@@ -8925,12 +8933,16 @@ class TradingSystem:
             else "재학습: 미완료 (내일 PreRetrain 보완)"
         )
         win_rate = stats["wins"] / max(stats["trades"], 1)
+        gross_sign = "+" if stats["gross_krw"] >= 0 else ""
         pnl_sign = "+" if stats["pnl_krw"] >= 0 else ""
         notify(
             f"🏁 미륵이 일일 마감 완료 — 자동 종료 예정\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"거래: {stats['trades']}회 (승 {stats['wins']} / 패 {stats['losses']})\n"
-            f"승률: {win_rate:.0%}  PnL: {pnl_sign}{stats['pnl_krw']:,.0f}원\n"
+            f"거래: {stats['trades']}회 (승 {stats['wins']} / 패 {stats['losses']})  "
+            f"승률: {win_rate:.0%}\n"
+            f"총손익: {gross_sign}{stats['gross_krw']:,.0f}원  "
+            f"(수수료 -{stats['commission']:,.0f}원)\n"
+            f"순손익: {pnl_sign}{stats['pnl_krw']:,.0f}원\n"
             f"{retrain_str}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"15초 후 프로그램 자동 종료\n"

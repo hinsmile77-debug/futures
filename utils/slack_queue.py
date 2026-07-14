@@ -36,7 +36,30 @@ class SlackQueueManager:
         self._worker         = threading.Thread(target=self._run, daemon=True, name="slack-worker")
         self._worker.start()
         self._initialized    = True
+        self._last_failure_warn_ts = 0.0
         logger.debug("[SlackQueue] 워커 스레드 시작")
+
+    def _warn_failure(self, error: str) -> None:
+        """반복 실패를 대시보드/WARN.log에 쿨다운 두고 노출.
+
+        "SLACK" 로거는 파일 핸들러가 연결돼 있지 않아 실패가 launcher 콘솔
+        로그에만 남고 SYSTEM/WARN.log·대시보드에는 전혀 보이지 않았다
+        (2026-07-13~14 message_limit_exceeded가 하루 종일 실패했는데도
+        3일간 미탐지된 원인). 매 실패마다 알리면 스팸이 되므로 10분 쿨다운.
+        """
+        now = time.time()
+        if now - self._last_failure_warn_ts < 600:
+            return
+        self._last_failure_warn_ts = now
+        try:
+            from logging_system.log_manager import log_manager
+            log_manager.system(
+                f"[SlackQueue] Slack 알림 전송 실패 지속 중: {error} "
+                f"— 워크스페이스 메시지 한도/토큰 확인 필요",
+                "WARNING",
+            )
+        except Exception:
+            pass
 
     def enqueue(self, message: str, channel: Optional[str] = None) -> None:
         """메시지를 큐에 추가 (즉시 반환)."""
@@ -73,9 +96,12 @@ class SlackQueueManager:
                     if res.get("ok"):
                         time.sleep(1.0)   # Slack rate-limit: 1 req/sec per channel
                     else:
-                        logger.warning("[SlackQueue] API 오류: %s", res.get("error", res))
+                        _err = res.get("error", res)
+                        logger.warning("[SlackQueue] API 오류: %s", _err)
+                        self._warn_failure(str(_err))
                 except Exception as e:
                     logger.warning("[SlackQueue] 전송 예외: %s", e)
+                    self._warn_failure(str(e))
                     time.sleep(5)
 
                 self._queue.task_done()
