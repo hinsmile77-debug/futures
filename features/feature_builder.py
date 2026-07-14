@@ -23,13 +23,14 @@ from features.technical.trend_efficiency import calculate_trend_efficiency
 from features.technical.kyle_lambda import KyleLambdaCalculator
 from features.technical.multi_timeframe import MultiTimeframeAnalyzer
 from features.technical.round_number import nearest_round_distance_symmetric
+from features.technical.realized_vol import RealizedVolCalculator
 from features.technical.expiry import compute_expiry_features
 from config.constants import MINI_FUTURES_TICK_SIZE as _DEFAULT_TICK_SIZE  # [235차] 미니선물 전용 기본값 0.02
 from utils.error_policy import ErrorLevel, classify_exception
 from config.settings import (
     HORIZON_THRESHOLDS, HURST_WINDOW_N, HURST_MAX_LAG,
     HURST_WARMUP_COLDSTART_MIN, HURST_WARMUP_LAG_FLOOR, HURST_WARMUP_LAG_RATIO,
-    TREND_EFFICIENCY_WINDOW, KYLE_LAMBDA_WINDOW,
+    TREND_EFFICIENCY_WINDOW, KYLE_LAMBDA_WINDOW, RV_IV_WINDOW,
 )
 
 logger = logging.getLogger("SIGNAL")
@@ -55,6 +56,7 @@ class FeatureBuilder:
         self.toxicity = ToxicityCalculator(window=20)
         self.vpin_calc = VPINCalculator(bucket_size=1000)
         self.kyle_lambda_calc = KyleLambdaCalculator(window=KYLE_LAMBDA_WINDOW)
+        self.rv_calc = RealizedVolCalculator(window=RV_IV_WINDOW)
         self.multi_timeframe = MultiTimeframeAnalyzer()
         self._last_features: Dict[str, float] = {}
         self._last_hoga_snapshot: Dict[str, Any] = {}
@@ -482,6 +484,29 @@ class FeatureBuilder:
             for k, v in basis_data.items():
                 features[k] = float(v)
 
+        # rv_iv_spread(328차) — RV(실현변동성) - IV(내재변동성) 스프레드.
+        # IV 측은 Cybos OptionMst 개별종목 IV 필드(108)가 미검증 "추정" 단계라
+        # 대신 main.py가 이미 실시간 검증·운영 중인 VKOSPI(KRX 공식 지수, basis_data 위에서
+        # 병합된 "vkospi"/"vkospi_ready")를 IV 프록시로 재사용한다(features/technical/
+        # realized_vol.py 모듈 docstring 참조).
+        try:
+            _rv = self.rv_calc.update(close)
+            _vkospi = features.get("vkospi", 0.0)
+            _vkospi_ready = features.get("vkospi_ready", 0.0) > 0.0
+            features["realized_vol_ann"] = _rv["realized_vol_ann"]
+            if _rv["ready"] and _vkospi_ready and _vkospi > 0:
+                features["rv_iv_spread"] = _rv["realized_vol_ann"] - _vkospi
+                features["rv_iv_spread_ready"] = True
+            else:
+                features["rv_iv_spread"] = 0.0
+                features["rv_iv_spread_ready"] = False
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            logger.warning("[FeatureBuilder] rv_iv_spread 오류 — 기본값 사용: %s", _exc)
+            features["realized_vol_ann"] = 0.0
+            features["rv_iv_spread"] = 0.0
+            features["rv_iv_spread_ready"] = False
+
         # macro_quality_{available,stale,age_sec,fallback_used}는 아래 quality_macro_* 로 별도 저장
         # → merge 시 제외하여 managed feature set 중복 방지
         _MACRO_QUALITY_SKIP = {
@@ -786,6 +811,7 @@ class FeatureBuilder:
         self.toxicity.reset_daily()
         self.vpin_calc.reset_daily()
         self.kyle_lambda_calc.reset_daily()
+        self.rv_calc.reset_daily()
         self.multi_timeframe.reset_daily()
         self._last_features = {}
         self._last_hoga_snapshot = {}

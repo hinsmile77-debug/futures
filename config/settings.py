@@ -679,6 +679,19 @@ VALIDATION_CAMPAIGN = {
         "min_samples":       20,     # 차단 건 최소 수 (미달 → 판정 보류, hurst_regime과 동일 기준)
         "cf_window_min":     30,     # counterfactual 관찰 창 (분) — signal_decay와 동일
     },
+    # [327차] §3-7 JointGateBlock counterfactual — MetaGate×ToxicityGate 합산 mult<0.50
+    # 차단 신호(joint_gate_shadow 테이블)의 가상 진입 결과를 4주 누적 판정한다.
+    # 존치(PASS): 누적 hyp_pnl_pts ≤ 0 (차단이 실제로 손실을 회피).
+    # 완화 권고(FAIL): 누적 hyp_pnl_pts > 왕복비용의 2배 그리고 승률 > 기준선
+    #   → hurst_gate_shadow와 동일 순서로 즉시 언블록이 아니라 임계값(0.50) 완화부터 검토.
+    #   ToxicityGate reduce의 size_multiplier가 상수 0.7이라 joint_mult이 사실상
+    #   meta_size 단일 임계와 동치라는 구조적 의문(07-14 실측 분석,
+    #   docs/Ref/jointfateBlock.txt)이 있어, 표본이 쌓이면 meta_size 구간별
+    #   승률도 함께 확인할 것(joint_gate_shadow.meta_size 컬럼).
+    "joint_gate_shadow": {
+        "min_samples":       20,     # 차단 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
+        "cf_window_min":     30,     # counterfactual 관찰 창 (분) — signal_decay와 동일
+    },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)
@@ -958,6 +971,12 @@ TREND_EFFICIENCY_WINDOW = 10
 # 단순회귀 기울기. window=20은 OFI/MLOFI 계열과 달리 별도 튜닝 없이 "노이즈에 흔들리지 않을
 # 최소 표본"으로 임의 채택 — 향후 SHAP 기여도 확인 후 조정 대상.
 KYLE_LAMBDA_WINDOW = 20
+
+# 328차 — RV(실현변동성) 연율화 계산 창(분). rv_iv_spread(RV-IV) 산출용 RV 측 입력
+# (features/technical/realized_vol.py). window=30은 위 두 항목과 동일하게 별도
+# 그리드서치 없이 "노이즈에 흔들리지 않을 최소 표본"으로 채택 — 향후 SHAP 기여도
+# 확인 후 조정 대상.
+RV_IV_WINDOW = 30
 
 # ── ATR 진입 범위 임계값 ───────────────────────────────────────
 # 1분봉 노이즈가 ATR_STOP_MULT × ATR 손절거리를 초과 → 휩쏘 손절 급증 방지

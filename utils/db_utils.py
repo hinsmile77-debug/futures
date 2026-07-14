@@ -400,6 +400,34 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_hgs_ts ON hurst_gate_shadow(ts)")
+    # [327차] JointGateBlock(MetaGate×ToxicityGate 결합) counterfactual 섀도우 —
+    # hurst_gate_shadow와 동일 패턴. meta_size/tox_size/joint_mult을 함께 저장해
+    # "차단이 손실을 막았는지"뿐 아니라 "차단 여부가 joint_mult 값과 실제로
+    # 상관있는지"(tox_size가 상수 0.7이라 사실상 meta_size 단일 임계와 동치라는
+    # 구조적 의문, 07-14 실측 분석 참조)까지 사후 분석할 수 있게 한다.
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS joint_gate_shadow (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            TEXT NOT NULL,           -- 차단 시각 (분봉)
+        direction     TEXT NOT NULL,           -- LONG/SHORT (차단된 가상 방향)
+        grade         TEXT,                    -- 차단 당시 진입 등급 (A/B/C)
+        meta_size     REAL,                    -- 차단 당시 MetaGate size_multiplier
+        tox_size      REAL,                    -- 차단 당시 ToxicityGate size_multiplier
+        joint_mult    REAL,                    -- meta_size × tox_size
+        conf          REAL,                    -- 차단 당시 confidence
+        entry_price   REAL NOT NULL,           -- 가상 진입가 (분봉 종가)
+        stop_price    REAL,                    -- 가상 하드스톱
+        tp1_price     REAL,                    -- 가상 TP1
+        resolved      INTEGER DEFAULT 0,       -- 1=counterfactual 판정 완료
+        cf_outcome    TEXT,                    -- STOP / TP1 / NEITHER
+        cf_exit_price REAL,                    -- counterfactual 청산가
+        hyp_pnl_pts   REAL,                    -- (+)=차단 안 했으면 이득, (-)=차단이 손실 회피
+        created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_jgs_ts ON joint_gate_shadow(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,

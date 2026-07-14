@@ -1,0 +1,53 @@
+실측 ATR 분포 × grade_mult × regime_mult × conf_mult(0.6 고정, 실측값)
+
+최소(C등급×RISK_OFF): 0.6 × 0.6 × 0.5 = 0.18
+최대(A등급×RISK_ON): 0.6 × 1.5 × 1.0 = 0.90
+
+
+=================================
+
+단계별 분해
+1. base_risk (분자, 고정 리스크 금액)
+
+
+base_risk = 잔고 × ACCOUNT_BASE_RISK = 490,000,000 × 0.01 = 4,900,000원
+2. stop_risk (분모, 1계약당 손절 손실액)
+
+
+stop_risk = ATR × ATR_STOP_MULT(1.5) × pt_value(50,000원)
+          = 3.37(실측 중앙값) × 1.5 × 50,000 = 252,750원
+3. 배수 적용 전 "생 비율" — 이게 핵심입니다
+
+
+base_risk / stop_risk = 4,900,000 / 252,750 ≈ 19.4
+즉 등급·신뢰도·레짐 배수를 곱하기도 전에, "이 잔고로 이 손절폭이면 몇 계약이 적절한가"의 원점 자체가 이미 19.4계약입니다. MAX_CONTRACTS=10의 거의 2배죠.
+
+4. 여기에 배수(conf_mult × grade_mult × regime_mult)를 곱함
+실측 conf가 0.25~0.45라 conf_mult는 항상 0.6 고정, 나머지 배수 조합 범위:
+
+최소(C등급×RISK_OFF): 0.6 × 0.6 × 0.5 = 0.18
+최대(A등급×RISK_ON): 0.6 × 1.5 × 1.0 = 0.90
+5. 결과
+
+
+19.4 × 0.18(최소조합) ≈ 3.5   ← 옛 하한(3)에 겨우 걸침
+19.4 × 0.60(B등급×NEUTRAL 정도) ≈ 11.6   ← 이미 상한 초과
+19.4 × 0.90(최대조합) ≈ 17.4   ← 상한을 70%나 초과=====================================
+
+
+
+최종수량 = PositionSizer(3~10, 클램프)
+         × ExecutionGovernor  {0.0 / 0.6 / 0.7 / 1.0}   ← conf+품질+지연 가중점수, 이산값
+         × MetaGate           {0.0 / 0.35~0.75 / 0.9~1.25}  ← 유일하게 연속적, 학습기반
+         × ToxicityGate       {0.0 / 0.7(고정) / 1.0}    ← 미시구조 독성점수, 이산값
+         × IntradayRegime(L2) {~0.3 / 0.5 / 1.0}         ← 일중 레짐 lookup, 이산값
+         × (HealthDegraded, pre-retrain 등 조건부 배수)
+         → 마진capped(_ts_margin_capped_qty) 최종 클램프
+각 게이트를 읽어보니:
+
+게이트	size_multiplier 산출 방식	실질 다양성
+PositionSizer	conf_mult/grade_mult/regime_mult 이산 테이블 + kelly(연속이나 실측상 0.1~0.5대 고착)	낮음 (지난 분석대로)
+ExecutionGovernor	tradability_score(conf×0.4+품질×0.35+지연×0.25) → 4단계 lookup	이산 4단계뿐
+ToxicityGate	toxicity_score → 3단계, reduce는 0.7 하드코딩 상수	이산 3단계뿐, reduce는 사실상 상수
+IntradayRegime	레짐(NORMAL/DAY_RISK_OFF/CRASH) → 고정 lookup	이산 3단계뿐
+MetaGate	blended_conf(앙상블×등급가중 + 학습된 meta_conf) vs 등급별 임계값, learned["size_multiplier"]를 구간에 clip	유일하게 진짜 연속값

@@ -1,0 +1,7 @@
+feature_builder.py 안에서 실제로 features["이름"] = 계산값 형태로 
+딕셔너리에 값을 써넣는 코드가 있어야만 
+그 이름의 데이터가 만들어지고 DB(raw_features)에 쌓여요.
+feature_builder.py는 실제 조립 라인이고, 
+DYNAMIC_FEATURES_POOL 같은 목록은 그냥 "앞으로 만들 수도 있는 
+제품 후보 리스트"예요.
+

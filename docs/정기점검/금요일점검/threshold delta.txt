@@ -1,0 +1,58 @@
+threshold_delta 가 무엇인가
+
+
+threshold_delta는 GBM 학습에 쓰이는 현재 고정 임계값(current_base, HORIZON_THRESHOLDS)이 최근 21거래일 실측으로 재계산한 임계값(recalc_sym)과 비교해 몇 % 벗어났는지를 나타내는 지표입니다.
+
+learning/threshold_recalibrator.py:121:
+
+
+delta_pct = (recalc_sym - current_base * 100.0) / (current_base * 100.0) * 100.0
+즉:
+
+
+threshold_delta = (재산출값 - 현재 설정값) / 현재 설정값 × 100
+current_base = 지금 config/settings.py의 HORIZON_THRESHOLDS에 박혀있는 고정값 (예: 10m는 0.209%)
+recalc_sym = 최근 21거래일 실제 가격 움직임(33/34/33 percentile 기반 UP/FLAT/DOWN 분할)으로 오늘 다시 계산한 "지금 시장이면 이 정도가 맞다"는 값 (10m는 0.21925%)
+10m 예시: (0.21925 - 0.209) / 0.209 × 100 ≈ +4.9%
+의미:
+
+양수(+): 실측 변동성이 현재 설정값보다 커졌다 → 임계값을 올려야 함(현재 설정이 너무 민감해서 FLAT을 UP/DOWN으로 과다 판정 중일 수 있음)
+음수(-): 실측 변동성이 현재 설정값보다 작아졌다 → 임계값을 내려야 함
+**|δ|≥15%**면 UPDATE(재보정 강력 권고), 그 미만이면 WATCHLIST나 CLEAR
+07-03 재보정 전엔 δ가 -30~-49%(현재값이 실측보다 지나치게 컸음, 즉 threshold를 낮췄어야 했는데 안 낮춰서 FLAT 비율이 목표 34%보다 훨씬 높게 튀었던 상태), 재보정 후 오늘은 +4.8~+10.6%로 훨씬 작아졌다는 게 지난 보고의 요지였습니다.
+
+
+
+
+ThresholdRecal은 미륵이 자체에 내장된 자동 주간 점검 루프입니다. 흐름을 정리하면:
+
+1. 실행 트리거
+main.py:8321-8335, daily_close() 내부:
+
+
+매주 금요일 15:40 (일일 마감 로직의 일부, 별도 스케줄러 없음)
+  → now.weekday() == 4 조건 충족 시에만 ThresholdRecalibrator.run() 호출
+평일(월~목) 마감 시에는 아예 실행되지 않습니다 — 로그·DB에 남는 건 금요일 기록뿐.
+
+2. 점검 내용 (learning/threshold_recalibrator.py)
+데이터: raw_candles에서 최근 21거래일(LOOKBACK_TRADING_DAYS) 1분봉만 로드
+재계산: 호라이즌별(1m~30m) 수익률 분포의 33/67분위로 "지금 레짐이면 맞는" 대칭 임계값(recalc_sym) 산출
+비교: 현재 HORIZON_THRESHOLDS_BASE(고정값) 대비
+flat_drift = 현재 임계값으로 쟀을 때 FLAT 비율이 목표 34%에서 얼마나 벗어났나
+threshold_delta = 현재값과 재산출값이 몇 % 차이나는가 (앞서 설명한 지표)
+atr_ratio = 임계값이 ATR 대비 정상 대역(0.05~0.15) 안에 있는가
+판정: CLEAR / WATCHLIST(|flat_drift|≥6%p 또는 ATR 이탈) / UPDATE(|delta|≥15%)
+3. 보고 경로 — 3곳에 남고, 자동 반영은 없음
+경로	내용
+SYSTEM 로그	항상 [ThresholdRecal] {날짜} 재보정 결과 요약(INFO, 6개 호라이즌 한 줄씩) + 경보 있으면 main.py가 별도로 WARNING 한 줄([ThresholdRecal] 경보 발생: {...}) 추가
+DB 영구 저장	data/db/threshold_monitor.db의 threshold_log 테이블에 (date, horizon) PK로 매주 누적 — 이번에 제가 조회했던 그 테이블
+대시보드 패널	dashboard/panels/threshold_monitor_panel.py — threshold_monitor.db 최근 50행을 카드+테이블+경보 배지로 표시하는 전용 탭
+중요한 차이점: 바로 아래(8341행)에 있는 자매 모니터 ATRCeilingRecal은 WATCHLIST 이상이면 Slack 알림까지 쏘는데, ThresholdRecal은 Slack 알림이 없습니다 — 로그나 대시보드를 사람이 직접 봐야 인지됩니다. 이건 코드상 확인된 비대칭이라, 원하시면 ATR 모니터와 동일하게 Slack 알림을 추가하는 것도 검토해볼 만합니다.
+
+4. 사람이 해야 할 후속 액션
+docs/정기점검/LABEL_THRESHOLD_RECALIBRATION_GUIDE.md §4·§5 기준:
+
+WATCHLIST: 정보성, 관찰만. 2주 연속이면 재보정 실행
+UPDATE: 즉시 재보정 권고
+재보정은 항상 수동(HORIZON_THRESHOLDS는 레이블 체계 전체에 영향이라 자동 반영 금지가 설계 원칙)
+지난 보고에서 언급한 "다음주 금요일(07-17) 재확인"이 바로 이 흐름을 따른 것입니다 — 자동으로는 로그/DB/대시보드에 쌓이기만 하고, 2주 연속 여부 판단과 재보정 실행은 사람(또는 저)이 매주 금요일마다 확인해야 합니다.
