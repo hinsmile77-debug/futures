@@ -7456,3 +7456,67 @@ validation_campaign_report.md` 2026-07-15 리포트, `dev_memory/NEXT_TODO.md` �
 **관련**: 311차(entry_source 컬럼 신설, `NEXT_TODO.md` 2026-07-12 P0 항목),
 `generate_baseline_ensemble_report.py`(선행 컨벤션), 333차/333차후속(이 리포트의
 [1]/[6] 딥다이브).
+
+---
+
+## 2026-07-15 (333차 후속3) — MW0601 섀도우 TB 최초 재학습 + §4-1 주간 자동화 체인 미배선 발견
+
+### [작업+중대 발견] 재학습은 완료, 그런데 "매주 금요일 자동 실행"이 이 머신에서 한 번도 발동한 적 없었음
+
+**배경**: 사용자가 "[1] 모델 디렉토리 없음"이 이 계정도 재학습이 필요한 상황인지
+검토·재학습·데이터 생성 점검을 요청. 컴퓨터명 확인 결과 이 세션이 실행 중인 계정
+(`82108`)의 호스트명이 **`DeskTop-MW0601`**로 확인됨 — 즉 이전 333차 항목에서
+"다른 PC(`pc1`)가 재학습했다"고 기록한 그 PC와 **이 세션이 실행 중인 MW0601은 서로
+다른 물리 머신**(pc1은 추정 MW0602)이었고, MW0601 자체엔 섀도우 TB가 한 번도
+학습된 적이 없었음(단순 "리포트가 최신 상태 미반영" 문제가 아니라 실제 공백).
+
+**작업**: `raw_features_horizon` 데이터 가용성 확인(1m 82,134행~30m 821행, 전
+호라이즌 확보) 후 `"C:/Users/82108/anaconda3/envs/py310_64/python.exe" scripts/
+run_shadow_triple_barrier_retrain.py --weeks 26`로 재학습(전체 경로 명시 호출 —
+333차가 발견한 PATH 오작동 패턴 재발 방지). 6/6 호라이즌 성공, 전 호라이즌
+champion 대비 cv_acc 우위(예: 30m 0.8439 vs 0.2101, 1m 0.5434 vs 0.3643).
+`generate_validation_campaign_report.py` 재실행 결과 [1]이 "모델 디렉토리 없음"
+→ "OOS 표본 0건(모델 mtime 이후 데이터 대기)"로 정상 전환 확인 — 데이터 생성
+파이프라인 자체는 정상 작동.
+
+**중대 발견 — §4-1 주간 자동화 체인이 MW0601에서 설계 의도대로 배선 안 됨**:
+`docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md` §4-1은 섀도우 TB
+재학습·게이트 ablation·분위회귀 재학습 등을 "금요일 15:40 EOD 체인"에 연결하도록
+설계했고, 코드 자체 주석(`scripts/eod_retrain.py` 238행 원본 문서)도 "py310_64
+실행이므로 `retrain_eod.py` 체인이 자연스러운 위치"라고 명시. 그런데 291차 구현은
+이 체인(`_run_campaign_steps()`, 금요일 자동 판단)을 `scripts/eod_retrain.py`
+(→ `EOD_RETRAIN.bat`로 수동/스케줄 실행 가정)에 넣었음. **실제 이 머신에 등록된
+Windows 작업 스케줄러 `MireukiEODRetrain`(매일 15:45, `LastTaskResult=0` 정상
+실행 중, `NextRunTime` 확인됨)은 프로젝트 루트의 `retrain_eod.py`를 직접
+호출**(`py310_64\python.exe "...\futures\retrain_eod.py"`) — `scripts\
+eod_retrain.py`/`EOD_RETRAIN.bat`는 전혀 관여하지 않음. 루트 `retrain_eod.py`
+전체 411행을 grep해도 "campaign"/"shadow_triple_barrier" 문자열 0건. `schtasks`
+전수 조회 결과도 `scripts/eod_retrain.py`나 `EOD_RETRAIN.bat`를 호출하는 작업
+없음. `logs/` 전체를 `[검증 캠페인]`으로 grep해도 매치 0건 — 즉 **§4-1이 설계한
+금요일 자동 체인(섀도우 TB·게이트 ablation·분위회귀·격주 MAE/MFE) 전체가 이
+라이브 머신에서 자동으로는 단 한 번도 실행된 적이 없음**. 지금까지 나온
+`data/validation_campaign_report.md`는 전부(333차·333차후속·오늘 포함) 수동
+실행 결과였음.
+
+이 사실은 333차 항목이 "bat 파일·스케줄 작업 모두 이 스크립트를 호출하지 않아
+자동화 결함이 아니라 수동 실행 시 env 활성화 누락"이라고 판단한 것과 배치됨 —
+설계 문서(§4-1)가 명시적으로 자동화를 의도했으므로 이건 **설계 의도와 실제 배선의
+괴리(자동화 결함)**로 재평가 필요.
+
+**조치 안 함(의도적)**: 스케줄된 작업이나 `retrain_eod.py`(루트) 수정은 라이브
+트레이딩 머신의 운영 경로에 영향을 주는 판단이 필요한 사안이라 코드 변경 없이
+기록만 남김 — 사용자 요청대로 주간회의 안건으로 상정.
+
+**주간회의 결정 필요 (3안)**:
+1. `_run_campaign_steps()`를 실제 스케줄된 루트 `retrain_eod.py`에 병합
+2. Task Scheduler에 금요일 전용 `scripts/eod_retrain.py --campaign`(또는
+   `EOD_RETRAIN.bat`) 항목 별도 추가
+3. 수동 실행을 공식 운영 관행으로 채택(자동화 시도 폐기) — 이 경우 §4-1 문서
+   자체를 "수동" 명시로 갱신 필요
+
+**검증**: 재학습 6/6 성공 로그 확인, 리포트 재실행 정상 전환 확인. MW0602(pc1
+추정)도 동일 배선 공백 여부는 미확인(다음 점검 시 hostname 확인 권장).
+
+**관련**: 333차(pc1/MW0602 추정 머신에서의 별개 PATH 버그 수정),
+`docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md` §4-1,
+`project_machine_instances`(MW0601/MW0602 구성).
