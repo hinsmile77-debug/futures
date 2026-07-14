@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-07-15 (333차 — 검증 캠페인 [1] Triple-Barrier 모델 로드 실패 딥다이브)
+
+> 상세: `DECISION_LOG.md` 2026-07-15(333차) 항목.
+
+- [DONE 2026-07-15] **섀도우 TB 모델 sklearn 버전 불일치 수정** — 2026-07-05 재학습이
+  py310_64 env 활성화 없이 실행되어 PATH상의 base anaconda(sklearn 1.3.0)로 pickle
+  저장됨(`sklearn._loss.loss` 모듈은 py310_64의 sklearn 1.0.2엔 없음). py310_64 전체
+  경로로 6개 호라이즌 재학습 완료, 정상 로드 확인.
+- [ ] **[1] Triple-Barrier 판정 재확인** — OOS 표본이 재학습 시각(2026-07-15) 이후
+  데이터로 다시 쌓여야 하므로, 며칠 뒤 `generate_validation_campaign_report.py`에서
+  6개 호라이즌 중 몇 개가 합격선(기준 2개)을 통과하는지 확인.
+
+---
+
 ## 2026-07-14 (332차 — 재기동 크래시 2건 수정: SHAP 복원 IndexError + TreeExplainer 네이티브 힙손상)
 
 > 상세: `DECISION_LOG.md` 2026-07-14(332차) 항목.
