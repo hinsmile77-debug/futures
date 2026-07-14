@@ -7250,3 +7250,179 @@ Slack 전송 실패 발생 시 확인 필요(현재는 Slack 워크스페이스 
 검증 가능).
 **관련**: 이번 세션 앞선 항목(일일 마감 슬랙 포맷 개선, `docs/레슨런/미결모음.txt`
 캡처 조사)과 같은 세션에서 사용자가 "슬랙 알림이 안 온다"고 재보고해 발견.
+
+---
+
+## 2026-07-14 (331차) — 무스킬 피처셋 딥다이브 §5 권고 실행: 1m·3m·15m 피처셋 개편 + 배선 버그 2건 수리
+
+### [피처셋] `horizon_feature_sets.json` 1m·3m·15m include 개편 — IC 실측 반영
+
+**File**: `featureset by horizon/horizon_feature_sets.json`
+**배경**: `docs/미륵이고도화2/무스킬_피처셋_딥다이브_보고서_2026-07-13.md`(§4)가 06-01~07-10
+6주 Spearman IC 재측정으로 (1) 라이브 피처 과반이 무정보(F2), (2) 실측 최강 신호인
+'포지셔닝 블록'(bb_position·poc_distance·poc_above·ema_cross·ret_5m/15m·cvd_divergence)을
+설계가 1m·15m에서 배제(F3), (3) 설계문서의 옵션구조 ρ가 최신구간에서 재현 안 됨(F4,
+opt_gex_bn 0.198→0.013, opt_chain_pcr 0.184→0.002)을 확인. 보고서 §5 권고 순서(P1-1/1-2/1-3)에
+따라 이번 차수에서 실제 JSON 편집.
+**결정/수정**:
+- **1m**: 무정보 6개(ofi_norm·mlofi_slope·microprice_bias·ret_1m·time_sin·time_cos) include→
+  exclude 이동. bb_position·poc_distance 신규 편입. 다음 재학습 시 실제 학습 피처
+  12→8개(master 97-feature 교집합 기준, `queue_directional_depletion`·`micro_regime_code`는
+  여전히 미가용 — P0-1 대기).
+- **3m**: 무정보 5개(va_bandwidth·is_open_volatile·time_sin·time_cos·macro_vix) 제거.
+  poc_distance·bb_position·ema_cross·vwap_position·microprice_depth_bias(음의 부호, 설계가
+  "3m 잡음"으로 배제했으나 실측 반증) 5개 신규 편입. 실효 12→12개(구성 교체).
+- **15m**: 무정보 9개(time_sin·toxicity_atr_stress·atr_ratio·opt_pcr_extreme·opt_pcr_norm·
+  foreign_put_net·volume_acceleration·avg_volume·macro_vix) 제거. 포지셔닝 블록 7개
+  (poc_distance·ret_15m·bb_position·ema_cross·poc_above·ret_5m·cvd_divergence) 신규 편입.
+  F4로 재현 실패한 magnitude 계열(opt_gex_bn·opt_chain_pcr·opt_atm_call_oi·opt_atm_put_oi·
+  threshold_feasibility)은 include→include_pending_validation 강등, 대신 부분 생존 확인된
+  sign/ratio 계열(opt_gex_sign·opt_atm_pcr)을 신규 pending 후보로 승격 — 전부 P0-1(레지스트리
+  복구) 선행 필요. 실효 15→13개.
+- 전부 master 97-feature(`shap_feature_registry.json:active_features`, 이 PC 기준) 교집합
+  확인 완료(`get_available_feature_set()` 실측 재현) — 다음 재학습부터 바로 반영, 코드 변경
+  없이 JSON 편집만으로 완결.
+**Why**: `learning/batch_retrainer.py:_load_from_db`가 이 JSON의 include 목록을
+`get_available_feature_set()`으로 마스터 피처와 교집합해 호라이즌별 학습 X를 슬라이싱하는 것을
+코드 추적으로 확인(라인 453~484) — JSON 편집이 다음 재학습에 실제로 반영됨을 보장.
+**How to apply**: 이번 편입은 IC 재측정(단변량, 다중검정 보정 포함) 근거일 뿐 — 보고서
+§1 한계 고지대로 다음 재학습 후 반드시 purged Walk-Forward 게이트 통과를 확인할 것.
+CORE 피처(`CORE_FEATURES_BY_GROUP`) 자체는 변경하지 않음 — GBM 학습 피처셋 변경일 뿐
+체크리스트 게이팅 로직과는 무관.
+**검증**: JSON 파싱·재직렬화 후 `get_available_feature_set()` 재현 스크립트로 1m 8개·3m 12개·
+15m 13개가 정확히 의도한 구성으로 나오는지 확인. 라이브 미검증 — 다음 EOD/장중 재학습
+후 `feature_names_{1,3,15}m.pkl` 갱신 확인 필요.
+**미착수(사용자 결정 대기)**: P0-1(레지스트리 97→선별 복구, 멀티PC 전파 방식), 1m 방향투표
+앙상블 가중치 강등 여부(§4-1④) — 둘 다 이번 차수에서 손대지 않음.
+
+### [버그] `program_arb_net`/`program_non_arb_net` raw_features 상수 0 — 108차 비활성화가 07-05 수정 후에도 되살아나지 않음
+
+**File**: `main.py:_fetch_investor_data`
+**증상**: 딥다이브 보고서(F5)가 program_arb_net/program_non_arb_net이 커버리지 99.6%인데
+값이 전부 0(상수)임을 실측(06-01~07-10). CpSvr8111 필드 매핑은 2026-07-05(260704 감사 P2)에
+실제 Creon 연결로 검증 완료된 상태였는데도 재현됨.
+**원인**: `_fetch_investor_data()`(60초 QTimer, 유일한 주기 호출 경로)가
+`investor_data.fetch_all(include_program=False)`로 호출 — 이 `False`는 108차(2026-06-04)에
+`CpSysDib.ProgramTrade`/`8119` 계열의 반복 실패 로그 비용 때문에 내려진 결정이었음. 그런데
+260704 감사 P2가 `request_program_investor()`를 완전히 재작성해 검증된 `Dscbo1.CpSvr8111`
+단발 조회(idx19/37)로 바꾼 뒤에도, 이 런타임 비활성 플래그는 갱신되지 않고 그대로 남아
+`fetch_program_investor()` 자체가 60초 타이머에서 한 번도 호출되지 않는 상태가 계속됨.
+**결정/수정**: `include_program=False` → `True`. PreOpen 워밍업 호출(장 시작 전, 프로그램매매
+데이터 자체가 무의미한 시점)은 그대로 `False` 유지.
+**Why**: 108차 우려(로그 폭주)의 근거였던 옛 TR 경로(`ProgramTrade`/`8119` 후보 순회)는 이미
+`CpSvr8111` 단일 조회로 대체됐고, 실패 시에도 `api_connector.py`의
+`_system_info_throttled`(600초 쿨다운)가 로그 폭주를 이미 막고 있어 108차 우려가 구조적으로
+해소된 상태 — 재활성화의 안전장치가 이미 갖춰져 있음.
+**How to apply**: 오래된 "런타임에서 비활성화" 결정을 볼 때는, 그 비활성화 사유가 된
+하위 구현이 이후 다른 세션에서 재작성/수정됐는지 반드시 재확인할 것 — 원인이 된 코드는
+고쳐졌는데 그걸 우회하려고 켜둔 스위치만 그대로 남는 패턴(hurst_ready 3중 원인의 318차와
+유사 계열).
+**검증**: `py_compile`(py37_32·py310_64) 통과. COM 실연결 없이는 라이브 검증 불가 — 다음
+장중 세션에서 `raw_features.program_arb_net`/`program_non_arb_net`이 0 아닌 값으로 갱신되는지
+확인 필요.
+**관련**: 108차(원 비활성화 결정), 292차/328차(idx19/37 매핑 검증 기록).
+
+### [버그] `prev_day_same_hour_ret` raw_features 상수 0 — 인메모리 버퍼가 일일 재기동 때마다 유실
+
+**File**: `main.py:__init__` (신규 `_load_prev_day_closes_at_startup`), `features/feature_builder.py`
+**증상**: 딥다이브 보고서(F5)가 `prev_day_same_hour_ret`이 관측 기간(2025-08-19~) 내내 상수
+0임을 확인.
+**원인**: `feature_builder._prev_day_close_buf`는 `daily_close()`(15:xx)에서만 당일 종가로
+채워지는 순수 인메모리 딕셔너리 — 다음날 STEP4가 이를 참조해 전일 동시간대 수익률을
+계산하는데(`main.py:4671` 가드), 이 시스템은 매 거래일 아침 프로세스가 새로 기동되는
+운영 패턴이라 `daily_close()` 실행 후 프로세스가 종료되면 버퍼가 그대로 유실되고, 다음날
+기동 시 빈 딕셔너리로 시작해 가드를 항상 통과하지 못함 — 결과적으로 이 피처가 단 한 번도
+0이 아닌 값을 가져본 적이 없었음.
+**결정/수정**: `main.py`에 `_load_prev_day_closes_at_startup()` 신설, `feature_builder` 생성
+직후(`__init__`) 1회 호출. DB에서 `MAX(ts) < 오늘날짜` 조건으로 가장 최근 과거 거래일을
+찾아(주말·휴장 자동 스킵) 그날의 ts→close 맵을 `feature_builder.set_prev_day_closes()`에
+주입 — `daily_close()`를 기다리지 않고 당일 첫 분봉부터 정상 계산 가능.
+**Why**: 기존 설계(`daily_close()`에서만 채움)는 "프로세스가 자정을 넘겨 계속 실행됨"을
+암묵 전제했는데, 실제 운영은 매일 재기동 — 전제 자체가 이 시스템 운영 패턴과 맞지 않았음.
+DB에는 이미 매일 raw_candles가 누적되므로 프로세스 상태에 의존하지 않고 기동 시점에
+직접 조회하는 편이 근본적으로 견고함(daily_close() 경로는 그대로 유지 — 같은 프로세스가
+자정을 넘겨 계속 실행되는 예외적 경우의 이중 안전장치로 남김).
+**How to apply**: 인메모리 버퍼로 "다음날 쓸 상태"를 넘기는 설계를 볼 때는, 이 프로세스가
+실제로 자정을 넘겨 연속 실행되는지 운영 패턴을 확인할 것 — 매일 재기동되는 배치형 운영
+패턴에서는 반드시 DB 등 영구 저장소에서 기동 시 재구성하는 경로를 병행해야 함.
+**검증**: `py_compile`(py37_32·py310_64) 통과. 쿼리 로직을 실제 `raw_data.db`에 대해 단독
+실행해 2026-07-10(마지막 거래일) 종가 385봉이 정상 조회됨을 확인. 라이브 미검증 — 다음
+기동 시 로그(`[FeatureBuilder] 기동 시 전일(...) 종가 버퍼 로드: N봉`) 및 당일
+`prev_day_same_hour_ret` 실측값이 0 아닌 값으로 나오는지 확인 필요.
+**관련**: 딥다이브 보고서 F5, [[project_hurst_ready_feature_gap]](유사 "설계 전제가
+실제 운영 패턴과 어긋난" 계열).
+
+### [설계 결정] P0-1 처리 방식 — active_features 직접 편집 대신 DYNAMIC_FEATURES_POOL 정식 경로만 승격
+
+**File**: `config/constants.py`
+**결정**: 사용자 확인 결과 — `shap_feature_registry.json:active_features` 직접 편집(292차
+편입 8종의 v9-dev 1회성 재적용)은 하지 않고, `opt_gex_sign`·`opt_atm_pcr`(F4에서 부분 생존
+확인된 sign/ratio 계열)만 `DYNAMIC_FEATURES_POOL`에 등록해 318차가 확인한 정식 경로
+(DYNAMIC_FEATURES_POOL 등록 → 주간 SHAP 심사 후보 제안 → 대시보드 수동 승인)를 태우기로
+결정. 나머지 6종(opt_chain_pcr·opt_gex_bn·opt_atm_call_oi·opt_atm_put_oi·micro_regime_code·
+queue_directional_depletion·threshold_feasibility)은 F4(설계 ρ 재현 실패) 또는 아직 실측
+근거 부족으로 이번엔 등록하지 않음 — `horizon_feature_sets.json`의 15m
+include_pending_validation에는 참고용으로 그대로 남겨둠.
+**Why**: `active_features`는 PC별 런타임 산출물(모델 상태 미러링용, [[feedback_git_commit_scope]]
+커밋 금지 대상)이라 직접 편집은 "자동 통합 절대 금지"(CLAUDE.md §6) 원칙과 충돌할 위험 —
+사람이 검토 없이 새 피처를 편입시키는 지름길이 될 수 있음. 정식 경로를 태우면 주간 SHAP
+심사가 실제 하락 피처를 발견했을 때만 후보로 제안하고, 최종 편입도 대시보드에서 사람이
+승인해야 하므로 원칙을 그대로 지킴.
+**검증**: `py_compile`(py37_32·py310_64) 통과. `DYNAMIC_FEATURES_POOL` 임포트 후 두 항목
+포함·중복 없음 확인.
+**관련**: 딥다이브 보고서 F1·F4, 318차(정식 경로 최초 확인), 331차(이번 세션 앞선 항목).
+
+---
+
+## 2026-07-14 (331차 후속) — purged Walk-Forward CV 검증 도구 신규 구현 + 1m/3m/15m 개편안 1차 실측
+
+### [신규 도구] `scripts/validate_feature_set_purged_cv.py` — 이 프로젝트 최초의 purge 적용 피처셋 CV
+
+**File**: `scripts/validate_feature_set_purged_cv.py` (신규)
+**배경**: 331차 보고서(§8-1)가 "다음 재학습 후 반드시 purged WFA 게이트로 검증"이라고
+권고했는데, 사용자가 "purged WFA의 의미와 언제 실행되고 어떻게 확인하는가"를 질의해
+코드 추적한 결과 **이 표현이 오해 소지가 있었음을 확인**: `learning/batch_retrainer.py`가
+매 재학습마다 돌리는 `TimeSeriesSplit(n_splits=3)` CV는 purge/embargo가 **없고**,
+`backtest/walk_forward.py`는 이름이 비슷하지만 실제 체결 거래 PnL로 전략 파라미터를
+검증하는 완전히 다른 도구(CLAUDE.md "실전 전환 기준 ③")임 — "피처셋 변경을 purge 적용
+CV로 검증"하는 자동화는 이 프로젝트에 존재한 적이 없었음.
+**결정/구현**: 읽기 전용(raw_data.db만 읽음, 모델·DB·설정 어디에도 안 씀) 오프라인 검증
+스크립트 신규 작성. 프로덕션과 최대한 동일 재현 — 레이블은
+`learning.batch_retrainer._path_conditioned_label`(고정 임계값 `HORIZON_THRESHOLDS` +
+`PATH_LABEL_RATIO_BY_HZ`), 전처리는 `model.multi_horizon_model.apply_robust_preprocess`,
+모델·가중치는 `HistGradientBoostingClassifier(**HIST_GBM_PARAMS)` + `_make_sample_weight`
+— 전부 프로덕션 함수 직접 재사용(재구현 아님, 로직 드리프트 방지). 여기에 PURGE 로직만
+추가: `TimeSeriesSplit(n_splits=3)`의 각 폴드 학습셋 꼬리에서, 레이블 산정 구간이 검증
+구간 시작점과 겹치는 표본(`train_idx + h_min >= test_start`)을 제거. 이 분할 구조는
+학습이 항상 검증보다 앞서므로 embargo(반대 방향 유출 방지)는 불필요하다고 판단해 생략.
+**Why**: AFML(López de Prado)이 지적하는 핵심 유출 경로는 "검증 구간과 레이블 산정 기간이
+겹치는 학습 표본"인데, 이 시스템의 호라이즌 레이블(N분 후 가격 기반, 15m는 15분씩 겹침)이
+정확히 그 취약점을 갖고 있음 — 275차·311차 후속4가 세운 "모든 라이브 배선 전 purged
+워크포워드 필수" 원칙을 실제로 실행 가능한 도구로 만든 것.
+**한계(스크립트 docstring에 명시)**: (1) 3폴드 단발 실행이라 폴드별 편차가 큼 — 아래 실측
+결과 참조. (2) 피처 자체의 lookback(예: hurst 90봉 워밍업)에서 오는 유출은 다루지 않음 —
+레이블 룩어헤드만 purge. (3) 결과가 좋아도 라이브 성능을 보장하지 않음.
+**검증**: `py_compile`(py37_32·py310_64) 통과. 실제 실행해 아래 1차 실측 결과 산출.
+
+### [실측] 331차 피처셋 개편안(NEW) vs 현재 배포(OLD) — 1차 purged CV 결과
+
+**데이터**: `raw_data.db` 최근 30,000봉(2026-03-16~07-14), 프로덕션과 동일 `TimeSeriesSplit`
+3폴드, 각 폴드 purge 적용.
+
+| 호라이즌 | OLD 방향적중률 | NEW 방향적중률 | 변화 | 폴드별 일관성 |
+|---|---|---|---|---|
+| 1m | 0.3165 | 0.3113 | -0.52%p | 2/3 하락, 사실상 무변화 |
+| 3m | 0.3565 | 0.3295 | **-2.70%p** | 2/3 하락 |
+| 15m | 0.2442 | 0.2942 | **+5.00%p** | **3/3 전부 OLD 이상** |
+
+**해석**: 15m은 3개 폴드 전부에서 방향적중률이 개선돼 포지셔닝 블록 편입(331차)이 실제
+도움이 된다는 첫 정량 신호(§4-3 예측과 정합). 3m은 2/3 폴드에서 방향 하락 — 이번 개편
+(microprice_depth_bias·vwap_position 추가, 또는 cvd_direction→cvd_delta_norm 전환)이
+기대와 다르게 작동할 가능성. 단, OLD가 배포 pkl 기준이라 cvd_direction(상수화됨)을 그대로
+쓰고 있어 CVD 교체 효과와 포지셔닝 블록 효과가 섞여 있음 — 순수 분리 재검증 필요. 1m은
+거의 무변화로 "51~53% 구조적 상한" 진단(§2-1)과 정합.
+**How to apply**: 단일 3폴드 결과이므로 이 수치만으로 라이브 반영을 확정하지 말 것. 3m은
+개편 항목을 하나씩 넣고 빼며 어떤 추가가 방향적중률을 갉아먹는지 분해 재실행 권장. 15m은
+다음 실제 재학습 우선순위로 승격 검토 가치가 있으나 여전히 모의투자 라이브 관찰까지 거쳐야
+최종 판단 가능.
+**관련**: 딥다이브 보고서 §9(2026-07-14 331차 후속), 331차(피처셋 개편 원 항목).

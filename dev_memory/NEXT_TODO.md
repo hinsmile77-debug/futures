@@ -8,6 +8,70 @@
 
 ---
 
+## 2026-07-14 (331차 — 무스킬 피처셋 딥다이브 §5 권고 실행: 피처셋 개편 + 배선 버그 2건 수리)
+
+> `docs/미륵이고도화2/무스킬_피처셋_딥다이브_보고서_2026-07-13.md` §5 권고 실행 순서를
+> 따라 진행. 상세: `DECISION_LOG.md` 2026-07-14(331차) 항목.
+
+- [DONE 2026-07-14] **P0-1 사용자 결정** — active_features 직접 편집(292차 1회성
+  재적용)은 하지 않고, 정식 경로(DYNAMIC_FEATURES_POOL 등록→주간 SHAP 심사 후보→대시보드
+  수동 승인)만 태우기로 결정. `opt_gex_sign`·`opt_atm_pcr`을 `config/constants.py:
+  DYNAMIC_FEATURES_POOL`에 등록 완료.
+- [ ] **P0-1 후속 — 라이브 확인** — 다음 주간 SHAP 심사(`weekly_review()`)에서
+  opt_gex_sign/opt_atm_pcr이 실제로 교체 후보로 제안되는지 확인(하락 중인 활성 피처가
+  있어야 제안됨 — 조건 미충족 시 몇 주 더 걸릴 수 있음). 제안되면 대시보드에서 실측
+  가치 재검토 후 승인 여부 판단.
+- [ ] **P0-2 (사용자 결정 불요, 라이브 확인만)** — 다음 EOD/장중 재학습에서
+  `feature_names_1m.pkl`/`feature_names_3m.pkl`에 `cvd_delta_norm`이 실제로 반영되는지
+  확인 (4998e09 후속, 이번 차수 미착수).
+- [DONE 2026-07-14] **P1-1/1-2/1-3 피처셋 JSON 개편** — `featureset by horizon/
+  horizon_feature_sets.json`의 1m·3m·15m include/exclude/pending 재구성 완료(무정보
+  피처 정리 + 포지셔닝 블록 편입 + F4 강등). 코드 변경 없이 JSON만 편집 — 다음 재학습부터
+  자동 반영.
+- [ ] **라이브 검증** — 다음 재학습(EOD 15:45 또는 장중) 후
+  `feature_names_{1,3,15}m.pkl`이 의도한 구성(1m 8개·3m 12개·15m 13개, master 97 교집합
+  기준)으로 갱신되는지 확인.
+- [DONE 2026-07-14] **purged Walk-Forward CV 도구 신규 구현 + 1차 실측** —
+  `scripts/validate_feature_set_purged_cv.py` 신설(이 프로젝트 최초, 기존엔 자동화된 적
+  없었음 — `TimeSeriesSplit(n_splits=3)` 프로덕션 CV엔 purge/embargo 없음). 결과: 15m
+  방향적중률 **+5.0%p(3/3 폴드 일관 개선)**, 3m **-2.7%p(2/3 폴드 하락, 재검토 필요)**,
+  1m -0.5%p(무변화). 상세: `DECISION_LOG.md` 2026-07-14(331차 후속) 항목,
+  딥다이브 보고서 §9.
+- [ ] **3m 재검토** — poc_distance·bb_position·ema_cross·vwap_position·
+  microprice_depth_bias 5개 신규 추가 중 어느 것이 방향적중률을 갉아먹는지
+  `scripts/validate_feature_set_purged_cv.py`로 개별 기여도 분해 실행. cvd_direction→
+  cvd_delta_norm 교체 효과와 포지셔닝 블록 효과가 섞여 있어 분리 재검증도 필요.
+- [ ] **15m 우선순위 승격 검토** — purged CV에서 3/3 폴드 일관 개선 확인됐으나, 단일
+  3폴드 결과이므로 실제 재학습 우선순위로 승격하되 최종 확정은 모의투자 라이브 관찰까지
+  거칠 것.
+- [DONE 2026-07-14] **1m 방향투표 앙상블 강등 여부 — 사용자 결정** — "개편 후 재평가"로
+  확정(즉시 강등 아님). 딥다이브 보고서 §4-1④. purged CV에서도 거의 무변화(-0.52%p)로
+  확인 — 51~53% 구조적 상한 진단과 정합, 피처 조정만으로는 해소 안 될 가능성.
+- [ ] **1m 강등 재평가 (위 결정에 따른 후속)** — 다음 실제 재학습 결과까지 확인한 뒤,
+  역스킬(-2.82z)이 여전히 해소 안 되면 그때 30m 퇴역(296차) 선례를 따라 앙상블 방향투표
+  강등 여부를 재논의.
+- [DONE 2026-07-14] **`program_arb_net`/`program_non_arb_net` 상수 0 수리** —
+  `main.py:_fetch_investor_data`의 `include_program=False`→`True` (108차 비활성화가
+  07-05 TR 재작성 이후에도 되살아나지 않았던 것).
+- [ ] **라이브 검증** — 다음 장중 세션에서 `raw_features.program_arb_net`/
+  `program_non_arb_net`이 0 아닌 값으로 갱신되는지, COM 실패 로그가 폭주하지 않는지
+  (10분 쿨다운 확인) 관찰 필요.
+- [DONE 2026-07-14] **`prev_day_same_hour_ret` 상수 0 수리** — `main.py.__init__`에
+  `_load_prev_day_closes_at_startup()` 신설, 기동 시 DB에서 직전 거래일 종가맵을 직접
+  로드하도록 변경(기존 `daily_close()`만 채우던 인메모리 버퍼가 매일 재기동 운영 패턴에서
+  유실되던 문제).
+- [ ] **라이브 검증** — 다음 기동 시 로그(`[FeatureBuilder] 기동 시 전일(...) 종가 버퍼
+  로드: N봉`) 확인 + 당일 `prev_day_same_hour_ret`이 0 아닌 값으로 계산되는지 확인.
+- [ ] **P2-1** — basis_pt 4주 데이터 축적 후 전 호라이즌 정식 IC 검증 (현재 커버리지
+  17.3%, 세 호라이즌 모두 실측 IC 최상위권 — 축적 대기 중, 미착수).
+- [ ] **P2-3** — H4(15m 무스킬 = 레이블 중첩) 착수 — 삼중배리어 타깃 교체 실험 포함
+  (미착수).
+- [ ] **P2-4** — 320~328차 신규 배선 7종(vpin·kyle_lambda·trend_efficiency·
+  multi_timeframe_5m/15m·round_number_distance·rv_iv_spread) 데이터 축적(~4주) 후
+  호라이즌별 IC 검증 (미착수, raw_features 축적 대기).
+
+---
+
 ## 2026-07-14 (330차 — Slack 알림 message_limit_exceeded 무음 실패 재발방지)
 
 > 7/13~14 이틀간 Slack 알림이 전량 실패(`message_limit_exceeded`, 워크스페이스 메시지
