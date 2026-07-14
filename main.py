@@ -68,6 +68,7 @@ from config.settings import (
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
     ATR_STOP_MULT, ATR_HORIZON_TP1_MULT, ATR_TP1_MULT,
     HURST_REGIME_ATR_MULT, HURST_REGIME_ATR_MULT_ENABLED,
+    HURST_SOFT_BLOCK_ENABLED, HURST_SOFT_BLOCK_SIZE_MULT,
     ATR_ADAPTIVE_MAX_WINDOW, ATR_ADAPTIVE_MAX_MULT, ATR_ADAPTIVE_MAX_CEILING,
     ATR_ADAPTIVE_MIN_SAMPLES,
     ATR_EXPIRY_CEILING_ENABLED, ATR_EXPIRY_CEILING_DAYS_BEFORE,
@@ -6456,6 +6457,21 @@ class TradingSystem:
             or features.get("hurst", 0.5) >= HURST_RANGE_THRESHOLD
         )
 
+        # [333차 후속, §3-6 FAIL 완화] hurst_gate_shadow counterfactual n=111, 누적
+        # hyp_pnl=42.49pt(>왕복비용×2), 승률73.9%(>기준선62.5%) — 하드차단 대신 사이징
+        # ×0.5로 완화(즉시 언블록 아님, 사전등록 원칙). 손절/TP1은 _entry_hurst_bucket이
+        # 그대로 raw hurst 기준으로 "mean-revert" 버킷을 매겨 HURST_REGIME_ATR_MULT가
+        # counterfactual 계측과 동일한 조건으로 자동 적용된다(코드 변경 불필요).
+        _hurst_size = 1.0
+        if (HURST_SOFT_BLOCK_ENABLED and not _hurst_ok
+                and direction != 0 and self.position.status == "FLAT" and _qty_display > 0):
+            _hurst_size = HURST_SOFT_BLOCK_SIZE_MULT
+            _qty_display = max(1, int(round(_qty_display * _hurst_size)))
+            log_manager.signal(
+                f"[HurstGate] 하드차단 대신 사이즈축소: hurst={features.get('hurst', 0.5):.3f} "
+                f"< {HURST_RANGE_THRESHOLD} size_mult={_hurst_size:.2f} (§3-6 FAIL 완화, 333차 후속)"
+            )
+
         # 273차: 정적 3.5pt 상한이 최근 장기간 시장 ATR 중앙값(3.5~6pt대)에 만성적으로
         # 걸려 정상 변동성에서도 A등급 신호를 연속 차단하는 문제 확인 → 최근 60분 ATR
         # 롤링평균 × 배수로 상한을 적응시키되, 절대 상한(ceiling)과 정적 하한(ATR_MAX_ENTRY)
@@ -6665,7 +6681,7 @@ class TradingSystem:
             and not _in_armistice
             and _integrity_ok
             and not _in_reverse_clamp
-            and _hurst_ok
+            and (_hurst_ok or HURST_SOFT_BLOCK_ENABLED)  # 333차: 하드차단→사이징 완화
             and _atr_ok
             and _open_gap_ok
             and mode_filter_passed
@@ -6813,7 +6829,7 @@ class TradingSystem:
                     f"ATR={_idf.get('atr_ratio', 0):.2f} "
                     f"z={_idf.get('z_warn_count', 0)})"
                 )
-            elif not _hurst_ok:
+            elif not _hurst_ok and not HURST_SOFT_BLOCK_ENABLED:
                 _hurst_val = features.get("hurst", 0.5)
                 _entry_block_reason = f"[차단] Hurst {_hurst_val:.3f} < {HURST_RANGE_THRESHOLD} — 횡보 레짐 진입 차단"
             elif not _atr_ok:
@@ -6940,7 +6956,7 @@ class TradingSystem:
             and not _in_armistice                  # P1-a: 재시작 유예
             and _integrity_ok                      # P1-b: 포지션 무결성
             and not _in_reverse_clamp              # P3-b: 역방향 클램프
-            and _hurst_ok                          # 횡보 레짐 진입 차단 (Hurst < 0.45)
+            and (_hurst_ok or HURST_SOFT_BLOCK_ENABLED)  # 333차: 하드차단→사이징 완화
             and _atr_ok                            # 변동성 너무 낮음 진입 차단
             and _final_grade not in ("X",)
             and _qty_display > 0
