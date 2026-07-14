@@ -1,6 +1,18 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-13 (315차) — 08:41 기동~EOD+P8(15:48) 전일 로그
+> 마지막 업데이트: 2026-07-14 (332차) — 장후(18:28) 디버그 재기동 크래시 2건
+> 진단·수정. ①`main.py:_restore_analysis_buffers()`가 `self.model.feature_names`
+> (전체 슈퍼셋)로 SHAP 복원 벡터를 만들어 `self._shap_tracker`(1m 서브셋)와
+> 어긋나 `IndexError`로 `TradingSystem.__init__` 자체가 실패하던 버그 수정.
+> ②그 수정 후에도 Python 예외 없이 프로세스가 조용히 죽어 `crash_fault.log`를
+> 보니 `0xc0000374`(STATUS_HEAP_CORRUPTION) 네이티브 크래시 확인 — shap 0.41
+> `TreeExplainer`가 `HistGradientBoostingClassifier`(배치 재학습 주 경로 모델)를
+> 정상 예외 대신 힙 손상으로 처리, `try/except`로 못 잡던 경로였음.
+> `_calc_importance()`에 `hasattr(model, "estimators_")` 가드 추가로 회피.
+> **라이브 미검증** — 다음 기동에서 크래시 없이 완주하는지 확인 필요. 상세:
+> `DECISION_LOG.md`/`NEXT_TODO.md` 2026-07-14(332차) 항목.
+>
+> 마지막 정규 기동 확인: 2026-07-13 (315차) — 08:41 기동~EOD+P8(15:48) 전일 로그
 > 전수 점검, 신규 버그 없음. 313차/314차가 그날 발견·수정한 4건(MaskedFallback
 > 크래시·P4 로그 %s 미치환·intraday old_acc=nan·FATAL 자동복구 부재)이 이후
 > 하루 종일 재발 없음 확인. 오늘 -8.4% 급락으로 13:33경 실제 KRX 서킷브레이커가

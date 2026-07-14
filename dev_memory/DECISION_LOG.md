@@ -7533,3 +7533,61 @@ DYNAMIC_FEATURES_POOL→주간 SHAP 심사 경로로 수동 편입 검토.
 pandas/numpy Spearman 구현이라 32bit DLL 충돌 없음).
 **관련**: 딥다이브 보고서 §10-3(2026-07-14 331차 후속2), 319차(DYNAMIC_FEATURES_POOL
 명명 원칙), hurst_gate_shadow/joint_gate_shadow(섀도우 계측 패턴 원형).
+
+---
+
+## 2026-07-14 (332차) — 재기동 크래시 2건 딥다이브: SHAP 복원 경로 피처 열 불일치 IndexError + TreeExplainer 네이티브 힙손상 크래시
+
+### 배경
+
+사용자가 장후(18:28) 디버그 모드로 수동 기동했다가 `TradingSystem.__init__` 실패로
+즉시 크래시. 원인 규명 후 1차 수정했으나 재기동 시 Python 예외 없이 프로세스가
+조용히 죽는 2차 증상 발견 — `logs/crash_fault.log`의 스레드 덤프로 실제 원인 확인.
+
+### [버그 1] SHAP 복원 경로가 ShapTracker 서브셋이 아닌 전체 피처 슈퍼셋으로 벡터 구성
+
+**File**: `main.py:_restore_analysis_buffers()`
+**증상**: `IndexError: list index out of range` (`shap_tracker.py:get_current_ranking()`,
+`self.feature_names[idx[i]]`) → `TradingSystem.__init__` 자체가 실패해 기동 불가.
+**원인**: `_ensure_shap_tracker()`가 `ShapTracker`를 "1m" 전용 서브셋(예: 12개)으로
+생성하는데, 복원 블록은 `restored_vectors`를 `self.model.feature_names`(전체 호라이즌
+슈퍼셋, 예: 97개)로 만들어 `horizon_model`(1m 모델, 서브셋 입력 기대)에 넘겼음.
+`_calc_importance()`의 1순위(SHAP TreeExplainer) 경로는 길이 검증 없이 X의 열 개수
+그대로 importance 벡터를 반환하므로 `self.feature_names`(12개) 범위를 넘는 인덱스가
+발생. 정상 동작하는 라이브 경로(`_refresh_shap_state`, main.py:1269 부근)는 이미
+`self._shap_tracker.feature_names`를 써서 이 어긋남이 애초에 없었음 — 복원 경로만
+다르게 짜여 있던 회귀.
+**수정**: `restored_vectors` 구성 시 `self.model.feature_names` → `self._shap_tracker.
+feature_names`(tracker가 실제로 들고 있는 서브셋)로 교체.
+**방어 추가**: `learning/shap/shap_tracker.py`의 `get_current_ranking()`·`weekly_review()`
+에 `len(self._current_importance) != len(self.feature_names)` 가드 신설 — 향후 비슷한
+상태 불일치가 재발해도 전체 기동이 죽는 대신 빈 결과로 안전 복귀(경고 로그만 남김).
+
+### [버그 2] shap 0.41 TreeExplainer가 HistGradientBoostingClassifier에서 정상 예외
+대신 네이티브 힙 손상으로 프로세스 자체를 죽임
+
+**증상**: 버그 1 수정 후에도 재기동 시 Python 트레이스백 없이 프로세스가 조용히 종료.
+`logs/crash_fault.log`에서 `Windows fatal exception: code 0xc0000374
+(STATUS_HEAP_CORRUPTION)` 확인 — 스택이 정확히 `shap_tracker.py:_calc_importance()`
+(1순위 TreeExplainer 블록)에서 멈춤.
+**원인**: `learning/batch_retrainer.py`의 재학습 주 경로가 `HistGradientBoostingClassifier`
+를 우선 사용(HGB 가용 시, 272행/566행)하므로 런타임에 로드되는 "1m" 모델 실체가 HGB일
+가능성이 높음. `_calc_importance()`의 기존 주석(311차 후속9)은 이미 "estimators_/
+feature_importances_ 속성 자체가 없어 1~3단계가 이 모델 타입에서 전부 구조적으로
+실패한다"고 알고 있었지만, TreeExplainer의 실패 방식이 "binary classification" 류의
+**정상 Python 예외**일 것으로 가정하고 `try/except`로만 방어했음. 실제로는 shap 0.41이
+HGB의 내부 트리 구조(GBM의 `estimators_` 2차원 배열과 다른 히스토그램 기반 레이아웃)를
+잘못 해석하면서 Cython/C 레벨에서 힙을 손상시켜 **Windows SEH 예외로 프로세스를
+즉시 종료** — Python `try/except`가 원천적으로 잡을 수 없는 크래시 경로였음.
+**수정**: `_calc_importance()`의 TreeExplainer 진입 조건에 `hasattr(model,
+"estimators_")` 가드 추가(2순위 per-class 경로와 동일한 판별 기준). `estimators_`가
+없는 모델(HGB)에서는 TreeExplainer를 아예 호출하지 않고 2→3→4(permutation_importance)
+로 바로 넘어가 위험한 네이티브 호출 자체를 회피.
+**검증**: `ast.parse`로 `main.py`/`shap_tracker.py` 구문 확인. **라이브 미검증** — 다음
+재기동에서 `_restore_analysis_buffers()`/`_refresh_shap_state()`가 크래시 없이 완주하는지,
+`exec_1m_shadow`류와 마찬가지로 실제 SHAP 순위가 채워지는지 확인 필요(이 PC는 장후라
+브로커 연결 없이 디버그 재기동만 반복 확인함).
+**관련**: 311차 후속9(permutation_importance fallback 신설 배경), 302차/304차
+(Qt 크로스스레드 콜백이 원인이던 이전 access violation 크래시 — 이번 것은 다른 근본
+원인이지만 "Python 예외 없이 프로세스가 죽는다"는 증상 패턴은 동일해 crash_fault.log
+확인이 항상 1순위 진단 경로여야 함을 재확인).

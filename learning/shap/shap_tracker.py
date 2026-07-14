@@ -177,7 +177,13 @@ class ShapTracker:
            (estimators_/feature_importances_ 속성 자체가 없음, shap 0.41 다중클래스 미지원).
         """
         # ── 1) SHAP TreeExplainer ───────────────────────────────────
-        if _SHAP_OK and self._tree_explainer_ok:
+        # [332차] HistGradientBoostingClassifier(배치 재학습 주 경로 모델)에서
+        # shap 0.41 TreeExplainer.shap_values()가 "binary classification" 류의
+        # 정상 Python 예외가 아니라 Windows 0xc0000374(STATUS_HEAP_CORRUPTION)
+        # 네이티브 크래시로 죽어 try/except가 못 잡고 프로세스 전체가 종료됨
+        # (실사고: crash_fault.log). estimators_ 없는 모델(HGB)은 TreeExplainer가
+        # 애초에 지원하는 구조가 아니므로 2)와 동일한 hasattr 게이트로 아예 스킵.
+        if _SHAP_OK and self._tree_explainer_ok and hasattr(model, "estimators_"):
             try:
                 explainer  = _shap.TreeExplainer(model)
                 shap_vals  = explainer.shap_values(X)
@@ -290,6 +296,8 @@ class ShapTracker:
         """
         if self._current_importance is None:
             return {"error": "SHAP 데이터 없음"}
+        if len(self._current_importance) != len(self.feature_names):
+            return {"error": "SHAP importance/feature_names 길이 불일치"}
 
         # 현재 순위표
         rank_idx   = np.argsort(-self._current_importance)
