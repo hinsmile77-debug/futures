@@ -11,6 +11,12 @@
 
 30m 퇴역(296차, 2026-07-06): 앙상블 가중합·CascadeCoherence·CoherenceGate 전부에서
 영구 제외. predict_proba·GBM/RF 학습·CB③ 모니터링은 계속 유지(연구/재평가용).
+
+1m 퇴역(331차 후속2, 2026-07-14): conf-층화 재검정(311차 후속5~6)에서 1m 방향적중률
+47.75%(z=-2.82, 역스킬 확정) + 331차 피처셋 개편 후 purged CV로도 무변화(-0.52%p) 확인,
+30m과 동일하게 앙상블 가중합에서 영구 제외. CoherenceGate 분모 제외는 311차가 이미
+선행 조치했음(위 30m과 같은 취지, 아래 _bias_overrides 참조). predict_proba·GBM/RF
+학습은 계속 유지(연구/재평가용, SGD 블렌딩은 250차부터 이미 제외 — SGD_BLEND_DISABLED_HORIZONS).
 """
 import logging
 import math
@@ -366,6 +372,22 @@ class EnsembleDecision:
                 _proba_30m.get("confidence", 0.0) * 100,
             )
 
+        # 1m 퇴역(331차 후속2, 2026-07-14) — 30m과 동일 패턴. ENSEMBLE_WEIGHTS를 이미
+        # 0.0으로 설정했지만, Decorrelator·F1AdaptiveWeight가 매분 실측 상관계수·F1로
+        # 가중치를 동적 재계산하므로(위 self._f1_weight.apply/self._decorr.weights) 설정값
+        # 0.0이 그대로 유지된다는 보장이 없다 — 30m 때와 동일한 안전망으로 명시적 강제.
+        _proba_1m = horizon_proba.get("1m")
+        if _proba_1m is not None and "1m" in cur_weights:
+            cur_weights["1m"] = 0.0
+            _tw_no1m = sum(cur_weights.values())
+            if _tw_no1m > 1e-9:
+                cur_weights = {h: w / _tw_no1m for h, w in cur_weights.items()}
+            logger.debug(
+                "[Ensemble] 1m 필터 전용: dir=%+d conf=%.1f%% (앙상블 가중합 제외)",
+                _proba_1m.get("direction", 0),
+                _proba_1m.get("confidence", 0.0) * 100,
+            )
+
         # ── 시간대 정책: 비활성 호라이즌 가중치 0 ────────────────────
         # HORIZON_TIME_POLICY 기반 active_horizons가 주어진 경우 적용
         if active_horizons is not None:
@@ -477,7 +499,8 @@ class EnsembleDecision:
             # main.py의 스케일러 재적합 + GBM 재학습 강제 예약(force=True)이 반복
             # 트리거되는 낭비가 있었음 — 위 30m 가중치 제외(352행)와 동일한 취지로
             # 감지 대상에서도 영구 제외.
-            if _h == "30m":
+            # [331차 후속2] 1m 퇴역 — 동일 취지로 감지 대상에서도 영구 제외.
+            if _h == "30m" or _h == "1m":
                 continue
             _res_h = horizon_proba.get(_h) or {}
             if not _res_h:
@@ -675,9 +698,13 @@ class EnsembleDecision:
             confidence = flat_score
 
         # ── ShortHorizonOverride: FLAT 고착 시 단기 호라이즌 우선 ──
-        # dir=FLAT 5봉+ 연속이고 1m/3m 방향이 일치하면 단기 호라이즌으로 방향 결정.
+        # dir=FLAT 5봉+ 연속이고 3m/5m 방향이 일치하면 단기 호라이즌으로 방향 결정.
         # 이유: 15m/30m FLAT 고착이 단기 방향 신호를 묻어버리는 구조 해소.
         # 안전장치: OFI/CVD 중 하나라도 동방향이어야 채택 (피처 기반 검증).
+        # [331차 후속2] "1m" 제거 — 1m은 단순 무정보가 아니라 역스킬(z=-2.82, 체계적으로
+        # 반대 방향)로 확정됐으므로, 이 override가 OFI/CVD 동의를 조건으로 걸어도 1m
+        # 자신의 방향을 그대로 채택하는 것은 이론상 유해할 수 있다(ENSEMBLE_WEIGHTS·
+        # ConstOut 감지에서 1m을 퇴역시킨 것과 동일 취지 — 30m 퇴역 선례 적용).
         if direction == DIRECTION_FLAT:
             self._flat_streak += 1
         else:
@@ -686,8 +713,8 @@ class EnsembleDecision:
         _short_override_applied = False
         if direction == DIRECTION_FLAT and self._flat_streak >= 5:
             # 활성 호라이즌 중 가장 짧은 두 개를 단기 쌍으로 선택
-            # (1m OFF 시 3m+5m, 1m+3m OFF 시 5m+10m 등 자동 대체)
-            _HZ_SHORT_PREF = ["1m", "3m", "5m", "10m", "15m", "30m"]
+            # (3m OFF 시 5m+10m 등 자동 대체). 1m은 역스킬 확정으로 영구 제외(331차 후속2).
+            _HZ_SHORT_PREF = ["3m", "5m", "10m", "15m", "30m"]
             _short_pair = [h for h in _HZ_SHORT_PREF if horizon_proba.get(h)][:2]
             if len(_short_pair) >= 2:
                 _h1, _h2 = _short_pair

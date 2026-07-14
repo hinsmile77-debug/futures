@@ -7426,3 +7426,110 @@ CV로 검증"하는 자동화는 이 프로젝트에 존재한 적이 없었음.
 다음 실제 재학습 우선순위로 승격 검토 가치가 있으나 여전히 모의투자 라이브 관찰까지 거쳐야
 최종 판단 가능.
 **관련**: 딥다이브 보고서 §9(2026-07-14 331차 후속), 331차(피처셋 개편 원 항목).
+
+---
+
+## 2026-07-14 (331차 후속2) — 1m 앙상블 방향투표 퇴역 (30m 퇴역 선례 적용)
+
+### [설계 결정] ENSEMBLE_WEIGHTS/CORR_ADJ에서 1m 완전 제외 + ensemble_decision.py 안전망 미러링
+
+**File**: `config/settings.py`, `model/ensemble_decision.py`
+**결정**: 사용자가 §8-3에서 유보했던 "개편 후 재평가"를 마치고 1m 방향투표 강등을 확정.
+30m 퇴역(296차)과 정확히 같은 패턴으로 구현:
+1. `ENSEMBLE_WEIGHTS["1m"]`: 0.15 → 0.0. 나머지 4개 활성 호라이즌(3m·5m·10m·15m)에
+   **비례 재분배**(스케일=1/0.85=1.1765) — 30m 때(균등 +0.03)와 달리 비례를 택한 이유는
+   기존 비중(5m·10m 0.25 vs 3m 0.11)이 이미 실측 기반 조정 결과라 균등 분배는 그 조정을
+   무의미하게 만들기 때문. 결과: 3m=0.13, 5m=0.30(반올림 잔차 반영), 10m=0.29, 15m=0.28,
+   합계 1.00 유지.
+2. `ENSEMBLE_WEIGHTS_CORR_ADJ["1m"]`: 0.24 → 0.0, 동일 비례 재분배(스케일=1/0.76=1.3158) →
+   3m=0.26, 5m=0.24, 10m=0.24, 15m=0.26.
+3. `model/ensemble_decision.py::compute()`: 30m 강제 가중치 0 블록(354~367행) 바로 뒤에
+   1m용 동일 블록 신설 — Decorrelator·F1AdaptiveWeight가 매분 동적 재계산하므로 설정값
+   0.0이 유지된다는 보장이 없어 명시적 안전망 필요(30m과 동일 이유).
+4. ConstOut 감지 루프(480행)에 `_h == "1m"` 추가 — 30m과 동일 이유(퇴역 호라이즌 단독
+   상수 출력이 스케일러 재적합·GBM 강제재학습을 낭비 트리거하는 것 방지, 303차 후속 패턴).
+**Why**: conf-층화 재검정(311차 후속5~6)에서 1m 방향적중률 47.75%(z=-2.82, p=0.0048) —
+동전던지기보다 유의하게 나쁜 "역스킬" 확정. 331차 피처셋 개편(무정보 6개 제거+포지셔닝
+블록 2개 편입) 후 purged CV 재검증(331차 후속1)에서도 방향적중률 -0.52%p(사실상 무변화)
+로 확인 — 피처 조정으로 해소 가능한 문제가 아님이 재확인돼 퇴역을 결정.
+**선행 조치와의 관계**: 311차가 이미 CoherenceGate 분모에서 1m을 제외해뒀음
+(`_bias_overrides = ... | {"30m", "1m"}`, 797행) — 이번 조치는 그 선행 조치를 가중합
+계산에까지 완결하는 것. 즉 이번이 "1m 퇴역의 시작"이 아니라 "이미 부분적으로 시작된
+퇴역의 완결"임.
+**검증**: `py_compile`(py37_32·py310_64) 통과. `ENSEMBLE_WEIGHTS`/`ENSEMBLE_WEIGHTS_CORR_ADJ`
+합계가 각각 정확히 1.0임을 확인.
+**미해결 — 잔여 위험 발견**: `ensemble_decision.py`의 `ShortHorizonOverride`
+(677~727행, `_HZ_SHORT_PREF = ["1m", "3m", "5m", ...]`)가 여전히 1m을 최우선 후보로
+사용 — 이 메커니즘은 `horizon_proba.get(h)`의 **존재 여부**(해당 분 예측이 있는가)만
+보고 `ENSEMBLE_WEIGHTS`(가중치)는 보지 않으므로, 1m은 `HZ_DEPLOY_POLICY="always"`라
+항상 이 목록의 1순위로 뽑힌다. dir=FLAT 5봉+ 연속 시 1m+3m 방향이 일치하고
+OFI/CVD 중 하나가 동의하면 **1m 자신의 방향이 최종 방향을 그대로 결정** — 이번 가중치
+퇴역과 무관하게 살아있는 경로. 1m이 단순히 "무정보"가 아니라 "역스킬"(체계적으로 반대
+방향)이므로, 이 경로에서 1m 방향을 그대로 신뢰하는 것은 이론상 유해할 수 있음.
+**사용자 확인 필요** — `_HZ_SHORT_PREF`에서 "1m" 제거(3m+5m부터 시작) 여부를 결정할 것.
+**관련**: 296차(30m 퇴역 원 사례), 311차(CoherenceGate 1m 제외 선행 조치), 331차·331차
+후속1(피처셋 개편 및 purged CV 재검증), 딥다이브 보고서 §4-1④.
+
+---
+
+## 2026-07-14 (331차 후속3) — `_HZ_SHORT_PREF` 1m 제거 + 1m 활용방안 A·C 섀도우 구현
+
+### [수정] `ShortHorizonOverride`에서 "1m" 완전 제거
+
+**File**: `model/ensemble_decision.py`
+**결정**: 사용자 확인 완료 — `_HZ_SHORT_PREF`를 `["1m", "3m", "5m", "10m", "15m", "30m"]`
+→ `["3m", "5m", "10m", "15m", "30m"]`로 수정. FLAT 5봉+ 고착 해소 시 이제 3m+5m 쌍부터
+검토(그중 하나가 비활성이면 자동으로 다음 쌍 대체, 기존 로직 그대로 유지).
+**Why**: 331차 후속2에서 발견한 잔여 위험 그대로 — 이 override는 `ENSEMBLE_WEIGHTS`가
+아니라 `horizon_proba.get(h)`의 존재 여부만 보므로, 1m이 퇴역됐어도 여전히 최종 방향을
+그대로 결정할 수 있었음. 1m은 무정보가 아니라 역스킬(z=-2.82)이므로 이 경로에서
+1m 방향을 신뢰하는 것은 이론상 유해 — 30m 퇴역과 동일한 완전 배제 원칙 적용.
+**검증**: `py_compile`(py37_32·py310_64) 통과.
+
+### [신규 구현] 1m 활용방안 A — 집행/타이밍 진단 섀도우 (`exec_1m_shadow`)
+
+**File**: `utils/db_utils.py`(`exec_1m_shadow` 테이블), `main.py`(`_log_exec_1m_shadow`
+메서드 신설 + 자동진입 경로 2곳에 호출 배선)
+**결정**: 실제 체결된 진입마다 1m 마이크로구조 피처(spread_ticks·toxicity_score·
+cancel_add_ratio)와 1m GBM 자체 예측(방향·confidence), 기존 `ToxicityGate` 판정을
+`exec_1m_shadow`(TRADES_DB)에 기록. `hurst_gate_shadow`/`joint_gate_shadow`와 달리
+**실제 체결된** 진입에 태그를 붙이는 것이라 counterfactual 가격 시뮬레이션(resolved/
+cf_outcome)이 불필요 — `entry_ts`로 `trades` 테이블과 조인하면 실제 승패/pnl을 그대로
+가져올 수 있음. 라이브 게이트·사이징 어디에도 이 결과를 소비하는 코드 없음(순수 진단).
+**Why**: 딥다이브 보고서 §10-3 활용방안 A(집행/타이밍 필터) — 방향 예측 대신 1m을
+"지금 체결하기 좋은 순간인가" 진단에 재활용하자는 제안을 실제 검증 가능한 형태로
+구현. 몇 주 축적 후 `hz1m_agrees`(1m 자신의 예측이 실제 진입 방향과 일치했는지)·
+`tox_gate_action`·`spread_ticks` 버킷별 승률/pnl을 분석해 실제 게이트로 승격할 가치가
+있는지 판단할 수 있게 됨.
+**구현 세부**: 자동진입 두 경로(일반 auto, C등급 실험) 모두에 `self._execute_entry()`
+직후 `self._log_exec_1m_shadow(final_dir_str, _final_grade, features, horizon_proba)`
+호출 추가. `features`·`horizon_proba`는 이미 같은 함수 스코프에서 STEP4~7 전체에
+걸쳐 흐르는 지역변수라 시그니처 변경 없이 그대로 재사용 가능함을 코드 추적으로 확인.
+**검증**: `py_compile`(py37_32·py310_64) 통과. 라이브 미검증(COM 연결 필요) — 다음
+자동진입 발생 시 `exec_1m_shadow`에 행이 쌓이는지 확인 필요.
+
+### [신규 구현] 1m 활용방안 C — 신규 알파 카나리아 IC 모니터 (`compute_canary_1m_ic.py`)
+
+**File**: `scripts/compute_canary_1m_ic.py`(신규), `utils/db_utils.py`
+(`canary_1m_ic_scores` 테이블), `main.py`(`_start_effect_report_worker`에 1일 1회
+게이트로 배선)
+**결정**: `DYNAMIC_FEATURES_POOL`(26개) 후보 피처 전부의 1m 전방수익률 대비 Spearman
+IC를 28일 롤링 창으로 계산해 `canary_1m_ic_scores`(SHAP_DB)에 매일 누적. 기존
+`main.py`의 `EffectReports` 15분 주기 워커(`_start_effect_report_worker`)에 날짜
+게이트(`self._canary_1m_last_run_date`)를 얹어 하루 1회만 실행 — 28일 롤링 IC가
+15분마다 다시 돌려도 값이 거의 안 바뀌어 계산 낭비이기 때문.
+**Why**: 딥다이브 보고서 §10-3 활용방안 C — 진짜 마이크로구조 알파가 존재한다면
+다중 호라이즌 감쇠 곡선상 가장 먼저 1m에서 신호가 보일 것이므로, 신규 피처 후보의
+"어느 것부터 검증할지" 우선순위를 정하는 진단 자료. 게이트·학습 피처셋 어디에도
+자동 반영되지 않음(자동 통합 금지 원칙, CLAUDE.md §6) — 사람이 이 누적 결과를 보고
+DYNAMIC_FEATURES_POOL→주간 SHAP 심사 경로로 수동 편입 검토.
+**실측(첫 실행, 2026-07-14)**: 26개 후보 중 24개 유효. **`vpin`이 IC=+0.110(p=0.035,
+유의)로 최상위** — 320차에 배선된 지 얼마 안 돼 커버리지 5%(369표본)뿐인데도 신호가
+보임, 향후 축적 후 재확인 가치 높음. `opt_atm_pcr`(+0.081, p=0.12)·`kyle_lambda`
+(-0.076, p=0.15)도 관찰 대상. `bb_position`·`poc_distance`·`ret_5m`(이미 활성 피처,
+커버리지 100%)은 유의하나 신규 후보가 아니므로 참고용.
+**검증**: `py_compile`(py37_32·py310_64) 통과. 실제 실행해 `canary_1m_ic_scores`에
+26행 정상 적재 확인(py37_32·py310_64 양쪽에서 실행 성공 — scipy 미사용 순수
+pandas/numpy Spearman 구현이라 32bit DLL 충돌 없음).
+**관련**: 딥다이브 보고서 §10-3(2026-07-14 331차 후속2), 319차(DYNAMIC_FEATURES_POOL
+명명 원칙), hurst_gate_shadow/joint_gate_shadow(섀도우 계측 패턴 원형).

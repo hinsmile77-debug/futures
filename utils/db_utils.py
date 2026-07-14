@@ -428,6 +428,33 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_jgs_ts ON joint_gate_shadow(ts)")
+    # [331차 후속2, 2026-07-14] 1m 앙상블 방향투표 퇴역(역스킬 확정) 이후 "1m 활용방안 A"
+    # (집행/타이밍 필터) 후보 검증용 섀도우 계측 — hurst_gate_shadow와 달리 차단된
+    # 가상 진입이 아니라 **실제로 체결된** 진입에 진단 태그를 붙이는 것이라 counterfactual
+    # 가격 시뮬레이션(resolved/cf_outcome)이 불필요함 — entry_ts로 trades 테이블과 조인해
+    # 실제 pnl을 그대로 가져다 쓸 수 있음. 목적: 1m GBM 자체 예측(방향·신뢰도)이나 1m
+    # 마이크로구조 피처(spread_ticks·toxicity_score)가 실제 체결 품질/승패와 상관이
+    # 있는지 라이브 개입 없이 누적 관찰 — 상관이 확인되면 그때 실제 게이트로 승격 검토.
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS exec_1m_shadow (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts               TEXT NOT NULL,           -- 진입 시각 (분봉, trades.entry_ts와 조인)
+        direction        TEXT NOT NULL,           -- LONG/SHORT (실제 진입 방향)
+        grade            TEXT,                    -- 진입 등급 (A/B/C)
+        spread_ticks     REAL,                    -- 진입 시점 1m 스프레드(틱)
+        toxicity_score   REAL,                    -- 진입 시점 1m 독성 점수
+        cancel_add_ratio REAL,                    -- 진입 시점 1m 취소/추가 비율
+        tox_gate_action  TEXT,                    -- ToxicityGate 판정(block/reduce/pass) 참고용
+        tox_gate_score   REAL,                    -- ToxicityGate 산출 score
+        hz1m_direction   INTEGER,                 -- 1m GBM 자체 예측 방향 (-1/0/+1)
+        hz1m_confidence  REAL,                    -- 1m GBM 자체 confidence
+        hz1m_agrees      INTEGER,                 -- 1=1m 예측이 실제 진입방향과 동일, 0=반대/FLAT
+        created_at       TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_e1s_ts ON exec_1m_shadow(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,
@@ -558,6 +585,27 @@ def init_shap_db():
     execute(SHAP_DB, sql)
     execute(SHAP_DB,
             "CREATE INDEX IF NOT EXISTS idx_feature ON shap_scores(feature)")
+    # [331차 후속2] 1m 활용방안 C(신규 알파 카나리아 호라이즌) — DYNAMIC_FEATURES_POOL
+    # 후보 피처들의 IC를 1m 레이블 기준으로 주기 계산해 누적한다. 진짜 알파가 있다면
+    # 다중 호라이즌 감쇠 곡선상 가장 먼저(가장 강하게) 1m에서 신호가 보일 것이므로,
+    # 신규 피처 후보의 "테스트 우선순위"를 정하는 진단 자료 — 게이트·학습 어디에도
+    # 이 결과를 소비하는 코드 없음(scripts/compute_canary_1m_ic.py가 주기 실행해 적재).
+    execute(SHAP_DB, """
+    CREATE TABLE IF NOT EXISTS canary_1m_ic_scores (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date    TEXT NOT NULL,      -- 계산 실행일 (YYYY-MM-DD)
+        feature     TEXT NOT NULL,      -- DYNAMIC_FEATURES_POOL 후보 피처명
+        ic          REAL,               -- Spearman IC (1m 전방수익률 기준)
+        p_value     REAL,
+        n_samples   INTEGER,
+        coverage    REAL,               -- 표본 내 non-null 비율
+        created_at  TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(SHAP_DB,
+            "CREATE INDEX IF NOT EXISTS idx_canary_feature ON canary_1m_ic_scores(feature)")
+    execute(SHAP_DB,
+            "CREATE INDEX IF NOT EXISTS idx_canary_run_date ON canary_1m_ic_scores(run_date)")
 
 
 def save_shap_scores(ts: str, horizon: str, score_map: Dict[str, float]) -> None:

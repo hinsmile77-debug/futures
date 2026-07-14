@@ -47,9 +47,28 @@
 - [DONE 2026-07-14] **1m 방향투표 앙상블 강등 여부 — 사용자 결정** — "개편 후 재평가"로
   확정(즉시 강등 아님). 딥다이브 보고서 §4-1④. purged CV에서도 거의 무변화(-0.52%p)로
   확인 — 51~53% 구조적 상한 진단과 정합, 피처 조정만으로는 해소 안 될 가능성.
-- [ ] **1m 강등 재평가 (위 결정에 따른 후속)** — 다음 실제 재학습 결과까지 확인한 뒤,
-  역스킬(-2.82z)이 여전히 해소 안 되면 그때 30m 퇴역(296차) 선례를 따라 앙상블 방향투표
-  강등 여부를 재논의.
+- [DONE 2026-07-14] **1m 앙상블 방향투표 퇴역 실행 (331차 후속2)** — 30m 퇴역(296차)
+  선례 그대로 적용. `config/settings.py:ENSEMBLE_WEIGHTS/ENSEMBLE_WEIGHTS_CORR_ADJ`
+  1m→0.0(비례 재분배), `model/ensemble_decision.py`에 30m과 동일한 강제 가중치 0
+  안전망 + ConstOut 감지 제외 미러링. 상세: `DECISION_LOG.md` 2026-07-14(331차 후속2).
+- [DONE 2026-07-14] **`ShortHorizonOverride` 잔여 위험 — 사용자 확인 완료, 제거** —
+  `_HZ_SHORT_PREF`에서 "1m" 제거(`["3m","5m","10m","15m","30m"]`로 변경, 331차 후속3).
+- [ ] **라이브 검증** — 다음 장중 세션에서 1m 가중치 0 반영 확인(로그
+  `[Ensemble] 1m 필터 전용` 출력 확인) + ENSEMBLE_WEIGHTS 재분배 이후 3m/5m/10m/15m
+  비중 확대가 실제 진입 등급·방향 결정에 미치는 영향 관찰.
+- [DONE 2026-07-14] **1m 활용방안 A(집행/타이밍 섀도우)·C(카나리아 IC) 구현 완료
+  (331차 후속3)** — A: `exec_1m_shadow` 테이블 + `main.py:_log_exec_1m_shadow()`,
+  자동진입 2경로에 배선. C: `scripts/compute_canary_1m_ic.py` 신규(1일 1회 자동 실행,
+  `canary_1m_ic_scores` 테이블) — 첫 실행에서 `vpin` IC=+0.110(p=0.035, 유의) 확인.
+  B(MetaGate 독립 피처)는 MetaGate 재설계 자체가 보류 중이라 이번엔 미착수.
+- [ ] **라이브 검증 — exec_1m_shadow** — 다음 자동진입 시 행이 정상 적재되는지,
+  이후 몇 주 축적 후 `hz1m_agrees`/`tox_gate_action`/`spread_ticks` 버킷별 승률·pnl과
+  실제 상관이 있는지 분석(trades 테이블과 entry_ts로 조인) — 상관이 확인되면 실제
+  게이트 승격 검토.
+- [ ] **라이브 검증 — canary_1m_ic_scores** — 매일 자동 실행되는지, vpin 등 신규
+  피처의 IC가 표본 축적에 따라 어떻게 변하는지(특히 vpin은 현재 5% 커버리지로 불안정)
+  주기적으로 리뷰. 유의한 후보는 DYNAMIC_FEATURES_POOL→주간 SHAP 심사 경로로 수동
+  편입 검토(자동 통합 금지 원칙 유지).
 - [DONE 2026-07-14] **`program_arb_net`/`program_non_arb_net` 상수 0 수리** —
   `main.py:_fetch_investor_data`의 `include_program=False`→`True` (108차 비활성화가
   07-05 TR 재작성 이후에도 되살아나지 않았던 것).
