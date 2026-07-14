@@ -128,7 +128,11 @@ DYNAMIC_FEATURES_POOL = [
     "poc_distance",
     "kyle_lambda",  # 321차: features/technical/kyle_lambda.py 신규 구현 + 배선 완료
                     # (feature_builder.py — 분봉 단위 회귀, 틱 배선 불필요).
-    "rv_iv_spread",
+    "rv_iv_spread",  # 328차: features/technical/realized_vol.py 신규 구현 + 배선 완료
+                     # (feature_builder.py — RV는 close_history 기반 연율화 실현변동성,
+                     # IV는 Cybos OptionMst 미검증 IV 필드(108) 대신 이미 실시간 검증
+                     # 운영 중인 VKOSPI를 프록시로 재사용). 데이터 부족/VKOSPI 미수신 시
+                     # rv_iv_spread_ready=False로 0.0 반환(hurst_ready와 동일 패턴).
     "bb_position",  # 322차: "bollinger_position" 오기 수정 — 실제 raw feature 키는
                     # "bb_position"(feature_builder.py:587). 이미 활성 피처셋(97개)에
                     # 포함돼 있어 hurst와 동일하게 used 필터로 걸러지지만, 향후 SHAP
@@ -166,10 +170,13 @@ DYNAMIC_FEATURES_POOL = [
               # 재편입 후보가 될 수 있도록 이름을 실제 키와 일치시켜둠.
     "vpin",  # 320차: features/supply_demand/vpin.py 배선 완료 (feature_builder.py:vpin_calc,
               # main.py:_on_tick_price_update 틱 델타 역산). raw_features에 실제로 쓰이는 키가 됨.
-    "cancel_ratio",  # 미배선 유지 — 320차 후속 재조사 완료: Cybos Plus 취소/정정 TR
+    "cancel_ratio",  # 미배선 유지 — 320차 후속 재조사 + 실측 캡처 완료: Cybos Plus 취소/정정 TR
                      # (CpTd6832/6833 등)은 전부 "내 계좌" 전용이라 시장 전체 취소 이벤트
-                     # 자체가 없음(Level-3 주문흐름 미제공, 구현 불가 확정). 대안(FutOptRest
-                     # 건수/건수증감 기반 근사)은 실측 캡처 선행 필요 —
+                     # 자체가 없음(Level-3 주문흐름 미제공, 구현 불가 확정). 대안으로 검토한
+                     # Dscbo1.FutOptRest도 2026-07-14 실계정 BlockRequest 실측 결과
+                     # "고객님의 계좌등급으로는 FutOptRest 시세데이터를 받는 데는 제한이 있습니다"
+                     # (InputCheck 에러, 파라미터 무관 항상 발생) — 현재 계좌등급으로 조회 자체가
+                     # 불가해 대안도 구현 불가로 최종 확정. 완전 사장 처리 —
                      # docs/미륵이고도화2/cancel_ratio_Cybos_데이터가용성_재조사_2026-07-14.md 참조.
     "round_number_distance",  # 325차: features/technical/round_number.py에 신규 함수
                               # nearest_round_distance_symmetric() 작성 + 배선 완료

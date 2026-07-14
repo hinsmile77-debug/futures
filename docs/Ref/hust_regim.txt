@@ -1,0 +1,33 @@
+Regim 산출
+    day_regime_engine/strategy/regime/day_regime_engine.py:1-15
+        shadow
+    STEP7에서 _hurst_ok/entry_mode(TREND_FOLLOW/MEAN_REVERSION)
+        strategy/entry/checklist.py:112-158의 VWAP 위치 + exhaustion 신호 기반 별도 로직
+    exhaustion 예외에 쓰이는 current_micro_regime/MicroRegimeClassifier(ADX/ATR 5분류)
+
+    신호	라이브 게이팅 여부	입력
+MicroRegimeClassifier	✅ (exhaustion 예외)	ADX/ATR
+checklist.entry_mode	✅ (MEAN_REVERSION 예외)	VWAP위치+exhaustion
+features["hurst"] (HurstGate)	✅ (직접 차단)	60봉 가격
+DayRegimeEngine	❌ 섀도우만	위 셋 + hurst + day_ret + 옵션체인
+
+
+day_regime_engine은 아직 "섀도우 전용"이다
+strategy/regime/day_regime_engine.py:1-15 자체 docstring에 명시돼 있습니다:
+
+섀도우 전용 — main.py 호출부는 결과를 로그·entry_gate_json에만 기록한다. L2(레짐조건부 프로파일) 분기는 이 엔진의 백테스트 검증 완료 후 별도 세션에서 연결한다.
+
+즉 TREND_UP/TREND_DN/RANGE/CHAOS 판정은 계산은 되지만 어떤 진입 로직도 이 결과를 참조하지 않습니다. 실제로 STEP7에서 _hurst_ok 계산에 쓰이는 entry_mode(TREND_FOLLOW/MEAN_REVERSION)는 day_regime_engine이 아니라 strategy/entry/checklist.py:112-158의 VWAP 위치 + exhaustion 신호 기반 별도 로직에서 나옵니다. 그리고 exhaustion 예외에 쓰이는 current_micro_regime도 day_regime_engine이 아니라 MicroRegimeClassifier(ADX/ATR 5분류)입니다.
+
+정리하면 지금 코드에는 레짐 관련 신호가 4개나 병렬로 존재합니다:
+
+신호	라이브 게이팅 여부	입력
+MicroRegimeClassifier	✅ (exhaustion 예외)	ADX/ATR
+checklist.entry_mode	✅ (MEAN_REVERSION 예외)	VWAP위치+exhaustion
+features["hurst"] (HurstGate)	✅ (직접 차단)	60봉 가격
+DayRegimeEngine	❌ 섀도우만	위 셋 + hurst + day_ret + 옵션체인
+그럼 Hurst를 왜 별도로 넣었나
+features/technical/hurst_exponent.py 서두 주석에 원래 의도가 적혀 있습니다: "실증: 횡보 구간(H<0.45) 진입 차단만으로 MDD -25~40%" — ADX/ATR 기반 레짐분류나 VWAP 기반 MR 판정과는 별개로, 가격 자체의 추세지속성(fractal 성질)을 직접 재는 독립 안전장치로 설계됐습니다. ADX/ATR은 "변동성 크기"를 보고 VWAP+exhaustion은 "얼마나 벗어났나/소진됐나"를 보는데, Hurst는 그와 다른 축인 "이 가격 움직임에 기억(memory)이 있는가, 아니면 순수 잡음/왕복인가"를 봅니다. 즉 다른 게이트들과 상관관계가 낮은 별도 필터를 하나 더 얹어서 MDD를 줄이자는 게 원 설계 취지 — 이 프로젝트가 ATR 게이트, OPEN_VOLATILE 시가이격 게이트 등을 하나로 통합하지 않고 STEP7에 계속 독립적으로 쌓아온 패턴과 같은 계열입니다.
+
+지난 답변과 연결되는 함정
+DayRegimeEngine._classify()(day_regime_engine.py:147,157)는 Hurst 값을 자기 입력으로도 그대로 받습니다(hurst>=0.55→TREND, hurst<0.45→RANGE, 동일 임계값). 즉 이 엔진이 나중에 L2로 실제 연결되더라도, 지금 발견한 소표본 편향(순수 잡음도 H≈0.33으로 읽는 문제)은 그대로 상속됩니다 — HurstGate만 고친다고 끝나는 게 아니라 DayRegimeEngine도 같은 오염된 입력을 쓰고 있다는 뜻입니다. L2를 연결하기 전에 Hurst 추정기부터 정상화해야 두 레이어 모두 의미 있는 값을 갖게 됩니다.

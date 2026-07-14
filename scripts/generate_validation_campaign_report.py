@@ -753,6 +753,171 @@ def resolve_and_eval_hurst_gate() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [7] JointGateBlock counterfactual — resolve + 누적 판정 (§3-7, 327차)
+# ──────────────────────────────────────────────────────────────
+
+def resolve_and_eval_joint_gate() -> dict:
+    """joint_gate_shadow(main.py에서 기록) resolve + PASS/FAIL 판정.
+    hurst_gate_shadow와 완전히 동일한 판정 로직 — 대상 테이블만 다르다.
+
+    PASS = 게이트 존치 (차단된 신호가 실제로 손실 방향이었거나 완화 기준 미충족).
+    FAIL = 완화 권고 (하드차단→임계값 0.50 완화부터 검토, 즉시 언블록 아님 — §3-7).
+
+    추가로 meta_size 구간별(< 0.55 / ≥ 0.55) 승률·hyp_pnl_pts를 함께 집계한다 —
+    ToxicityGate reduce의 size_multiplier가 상수 0.7이라 joint_mult이 사실상
+    meta_size 단일 임계와 동치라는 구조적 의문(07-14 실측 분석,
+    docs/Ref/jointfateBlock.txt)을 표본이 쌓이면 검증할 수 있게 하기 위함.
+    """
+    cr = VALIDATION_CAMPAIGN["joint_gate_shadow"]
+    window_min = int(cr.get("cf_window_min", 30))
+    out = {"verdict": "INSUFFICIENT", "resolved_now": 0}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            unresolved = conn.execute(
+                "SELECT * FROM joint_gate_shadow WHERE resolved = 0 ORDER BY ts"
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    if unresolved:
+        earliest = min(r["ts"] for r in unresolved)
+        close_map, high_map, low_map = _load_candle_maps(earliest)
+        now = datetime.datetime.now()
+        updates = []
+        for r in unresolved:
+            base = datetime.datetime.strptime(r["ts"], _TS_FMT)
+            if now < base + datetime.timedelta(minutes=window_min + 2):
+                continue
+            is_long = str(r["direction"]) == "LONG"
+            stop_p = float(r["stop_price"] or 0.0)
+            tp1_p = float(r["tp1_price"] or 0.0)
+            cf_outcome, cf_price = "NEITHER", None
+            last_close = None
+            for m in range(1, window_min + 1):
+                mid = base + datetime.timedelta(minutes=m)
+                if mid.time() > datetime.time(15, 10):
+                    break
+                mid_ts = mid.strftime(_TS_FMT)
+                hi = high_map.get(mid_ts)
+                lo = low_map.get(mid_ts)
+                if hi is None or lo is None:
+                    continue
+                last_close = close_map.get(mid_ts, last_close)
+                if is_long:
+                    hit_stop = stop_p > 0 and lo <= stop_p
+                    hit_tp = tp1_p > 0 and hi >= tp1_p
+                else:
+                    hit_stop = stop_p > 0 and hi >= stop_p
+                    hit_tp = tp1_p > 0 and lo <= tp1_p
+                # 동시 터치 → 보수적으로 STOP 우선 (signal_decay·hurst_gate와 동일 관례)
+                if hit_stop:
+                    cf_outcome, cf_price = "STOP", stop_p
+                    break
+                if hit_tp:
+                    cf_outcome, cf_price = "TP1", tp1_p
+                    break
+            if cf_price is None:
+                if last_close is None:
+                    continue  # 분봉 데이터 자체가 없음 — 다음 실행에서 재시도
+                cf_price = last_close
+            entry_p = float(r["entry_price"])
+            # hyp_pnl_pts: (+) = 차단 안 했으면 이득이었다(완화 근거), (-) = 차단이 손실 회피
+            hyp = (cf_price - entry_p) if is_long else (entry_p - cf_price)
+            updates.append((cf_outcome, cf_price, round(hyp, 4), r["id"]))
+
+        if updates:
+            with _conn(TRADES_DB) as conn:
+                conn.executemany(
+                    """UPDATE joint_gate_shadow
+                       SET resolved=1, cf_outcome=?, cf_exit_price=?, hyp_pnl_pts=?
+                       WHERE id=?""",
+                    updates,
+                )
+                conn.commit()
+            out["resolved_now"] = len(updates)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            agg = conn.execute(
+                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
+                          AVG(entry_price) AS avg_price,
+                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win,
+                          SUM(CASE WHEN cf_outcome='STOP' THEN 1 ELSE 0 END) AS n_stop,
+                          SUM(CASE WHEN cf_outcome='TP1' THEN 1 ELSE 0 END) AS n_tp1,
+                          SUM(CASE WHEN cf_outcome='NEITHER' THEN 1 ELSE 0 END) AS n_neither
+                   FROM joint_gate_shadow WHERE resolved=1 AND ts >= ?""",
+                (_campaign_start(),),
+            ).fetchone()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM joint_gate_shadow WHERE resolved=0"
+            ).fetchone()["n"]
+            baseline = conn.execute(
+                """SELECT AVG(CASE WHEN COALESCE(net_pnl_krw, pnl_krw) > 0
+                                   THEN 1.0 ELSE 0.0 END) AS wr
+                   FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ?""",
+                (_campaign_start(),),
+            ).fetchone()
+            # meta_size 구간별(<0.55 / >=0.55) 분리 집계 — tox_size 상수 구조 의문 검증용
+            meta_split = conn.execute(
+                """SELECT CASE WHEN meta_size >= 0.55 THEN 'high' ELSE 'low' END AS bucket,
+                          COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
+                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win
+                   FROM joint_gate_shadow
+                   WHERE resolved=1 AND ts >= ?
+                   GROUP BY bucket""",
+                (_campaign_start(),),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    n = int(agg["n"] or 0)
+    total_hyp = float(agg["total_hyp"] or 0.0)
+    avg_price = float(agg["avg_price"] or 0.0) or 300.0
+    win_rate = (int(agg["n_win"] or 0) / n) if n else 0.0
+    baseline_wr = (
+        float(baseline["wr"]) if baseline and baseline["wr"] is not None else None
+    )
+    out.update({
+        "n_resolved": n,
+        "n_pending": int(pending),
+        "total_hyp_pnl_pts": round(total_hyp, 4),
+        "win_rate": round(win_rate, 4),
+        "baseline_win_rate": round(baseline_wr, 4) if baseline_wr is not None else None,
+        "cf_stop": int(agg["n_stop"] or 0),
+        "cf_tp1": int(agg["n_tp1"] or 0),
+        "cf_neither": int(agg["n_neither"] or 0),
+        "meta_size_split": {
+            row["bucket"]: {
+                "n": int(row["n"] or 0),
+                "total_hyp_pnl_pts": round(float(row["total_hyp"] or 0.0), 4),
+                "win_rate": round((int(row["n_win"] or 0) / row["n"]), 4) if row["n"] else 0.0,
+            }
+            for row in meta_split
+        },
+    })
+    if n < int(cr["min_samples"]):
+        out["reason"] = "차단 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        return out
+
+    cost_pt = _roundtrip_cost_pt(avg_price)
+    out["cost_pt"] = round(cost_pt, 4)
+    mitigate = (
+        total_hyp > cost_pt * 2.0
+        and baseline_wr is not None
+        and win_rate > baseline_wr
+    )
+    out["verdict"] = "FAIL" if mitigate else "PASS"
+    if mitigate:
+        out["recommendation"] = (
+            "JointGateBlock 임계값 0.50 → 완화 검토 (즉시 언블록 금지, §3-7)"
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [5] 레짐 조건부 ATR 배수 — hurst_bucket별 순EV
 # ──────────────────────────────────────────────────────────────
 
@@ -818,6 +983,7 @@ def build_report(days: int) -> tuple:
     sd = resolve_and_eval_signal_decay()
     hr = eval_hurst_regime()
     hg = resolve_and_eval_hurst_gate()
+    jg = resolve_and_eval_joint_gate()
 
     metrics = {
         "generated_at": now_str,
@@ -826,6 +992,7 @@ def build_report(days: int) -> tuple:
         "sample_starvation": ss,
         "tb": tb, "meta_gate": mg, "quantile": qt,
         "signal_decay": sd, "hurst_regime": hr, "hurst_gate_shadow": hg,
+        "joint_gate_shadow": jg,
     }
 
     L = []
@@ -861,6 +1028,10 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(hg["verdict"]), hg.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (hg["win_rate"] * 100)) if "win_rate" in hg else "—",
         hg.get("n_resolved", 0), hg.get("n_pending", 0)))
+    L.append("| [7] JointGateBlock counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
+        _fmt_verdict(jg["verdict"]), jg.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (jg["win_rate"] * 100)) if "win_rate" in jg else "—",
+        jg.get("n_resolved", 0), jg.get("n_pending", 0)))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -974,6 +1145,30 @@ def build_report(days: int) -> tuple:
         L.append("- **권고**: %s" % hg["recommendation"])
     if hg.get("reason"):
         L.append("- %s" % hg["reason"])
+    L.append("")
+
+    # [7] JointGateBlock counterfactual 상세
+    L.append("## [7] JointGateBlock counterfactual (§3-7, 327차)")
+    L.append("")
+    L.append("- 이번 실행 resolve: %d건 / 누적 판정 %s건 (미판정 %s건)" % (
+        jg.get("resolved_now", 0), jg.get("n_resolved", 0), jg.get("n_pending", 0)))
+    L.append("- counterfactual 분포: STOP %s / TP1 %s / NEITHER %s" % (
+        jg.get("cf_stop", 0), jg.get("cf_tp1", 0), jg.get("cf_neither", 0)))
+    L.append("- 누적 hyp_pnl_pts(차단 안 했으면 얻었을 pt): **%s pt** / 승률 %s (기준선 %s)" % (
+        jg.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (jg["win_rate"] * 100)) if "win_rate" in jg else "—",
+        ("%.1f%%" % (jg["baseline_win_rate"] * 100)) if jg.get("baseline_win_rate") is not None else "—",
+    ))
+    if jg.get("meta_size_split"):
+        L.append("- meta_size 구간별(tox_size 상수 구조 검증용):")
+        for bucket, v in sorted(jg["meta_size_split"].items()):
+            L.append("  - %s(meta%s0.55): n=%d hyp=%spt 승률=%.1f%%" % (
+                bucket, "≥" if bucket == "high" else "<",
+                v["n"], v["total_hyp_pnl_pts"], v["win_rate"] * 100))
+    if jg.get("recommendation"):
+        L.append("- **권고**: %s" % jg["recommendation"])
+    if jg.get("reason"):
+        L.append("- %s" % jg["reason"])
     L.append("")
     L.append("---")
     L.append("")

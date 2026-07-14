@@ -1,0 +1,50 @@
+DYNAMIC_FEATURES_POOL 전수 감사 결과
+참고)   AVAILABLE_FEATURES
+        active_features(97개)
+        SHAP 후보
+
+config/constants.py의 DYNAMIC_FEATURES_POOL 총 30개 항목을 features/feature_builder.py가 실제로 만드는 features[...] 딕셔너리 키, 그리고 관련 계산 모듈 존재 여부와 전수 대조했습니다. 결과: 16/30(53%)이 죽은 후보입니다 — main.py:_get_recent_available_feature_names()(raw_features DB 실존 키)와 영원히 매칭될 수 없어, _pick_shap_candidate()에서 항상 스킵됩니다.
+
+A. 정상 (14개) — 문제없음
+poc_distance, microprice_bias/slope/depth_bias, mlofi_norm/slope, queue_signal/momentum/depletion_speed/refill_rate, imbalance_slope, cancel_add_ratio, hurst(319차 수정 완료), hurst_ready
+
+B. 기존 확인 사례 (319차 문서화, 3개)
+microprice(115차 제거·대체됨), vpin, cancel_ratio(모듈은 있으나 feature_builder.py가 import 안 함)
+
+C. 신규 발견 — 계산 모듈 존재하나 배선 안 됨 + 배선해도 이름 자체가 불일치 (4개)
+같은 vpin/cancel_ratio 패턴인데, 한 겹 더 심각합니다. 모듈을 지금 당장 연결해도 풀 항목명과 실제 반환 키가 다릅니다.
+
+풀 항목명	존재하는 모듈	모듈이 실제로 반환하는 키
+lob_imbalance_decay	features/technical/lob_imbalance.py	lob_imbalance (미배선)
+multi_timeframe_5m / multi_timeframe_15m	features/technical/multi_timeframe.py	trend_1m/trend_5m/trend_15m/multiplier/block_long_entry/block_short_entry/reason (미배선, "multi_timeframe_5m"류 키 자체가 없음)
+round_number_distance	features/technical/round_number.py	round_numbers/count_5pt/count_2pt5/total_count/block_entry/grade_penalty/reason ("round_number_distance"라는 키 자체가 없음)
+D. 신규 발견 — 계산 모듈 자체가 존재한 적 없음 (완전 미구현 개념, 7개)
+tick_imbalance, atr_regime, trend_efficiency, support_resistance_distance, kyle_lambda, rv_iv_spread, volume_surge_ratio
+→ 코드베이스 전체(.py/.json/.md/.txt)에서 config/constants.py 외 단 한 곳도 참조 없음. 계산 로직이 아예 작성된 적이 없는 "아이디어만 있던" 항목으로 추정됩니다.
+
+E. 신규 발견 — hurst_exponent와 완전히 동일한 패턴 (개념명 vs 실제 키 오기, 2개)
+풀 항목명	실제 존재하는 유사 피처
+bollinger_position	bb_position (feature_builder.py:587)
+momentum_5m	ret_5m (feature_builder.py:566, 개념상 근접)
+영향
+319차와 동일한 메커니즘 — weekly_review() 교체 후보 슬롯(최대 3개)이 죽은 항목으로 소모되면 유효한 대체 후보가 밀려남. 다만 이번엔 53%가 죽어있어 슬롯 낭비 확률이 훨씬 높습니다. 실거래 안전에는 영향 없음(_pick_shap_candidate()가 가용성 재검증하므로 잘못된 값이 실제로 편입되지는 않음).
+
+덤 발견 — 별도 시스템의 동일 클래스 버그
+research_bot/alpha_gene.py:AVAILABLE_FEATURES(알파 유전자 풀, 주석엔 "feature_builder와 동기화"라고 되어 있음)도 microprice, lob_imbalance, cancel_ratio, mtf_5m_trend, mtf_15m_trend, htf_pivot_dist, round_number_dist, vpin, vwap_dev, atr_norm 등 다수가 실제 feature_builder 키와 이름이 다릅니다. genetic_searcher.py/random_searcher.py가 여기서 유전자를 뽑으므로 탐색 사이클 낭비 가능성이 있으나, CLAUDE.md §6(알파 리서치 봇 자동 통합 금지) 대상 시스템이라 이번 audit 범위 밖으로 기록만 해둡니다.
+
+C/E 항목은 319차처럼 이름 교체만으로 되지 않고(모듈 배선 or 실제 구현이 필요), D는 아예 빈 개념이라 풀에서 제거가 맞는 방향으로 보입니다. 어떻게 진행할지 정해주시면(예: D+B는 즉시 제거, C/E는 NEXT_TODO 후속 과제로만 기록) DECISION_LOG/constants.py 반영하겠습니다.
+
+
+
+vpin은 active_features(97개)에 없어 지금 당장 아무것도 바뀌지 않고, raw_features DB에 데이터가 쌓이기 시작해 향후 SHAP 심사에서 정상적으로 후보 등장할 수 있는 상태가 된 것뿐입니다. 
+
+
+
+
+
+
+
+
+
+
+

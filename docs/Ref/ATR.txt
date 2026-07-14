@@ -1,0 +1,15 @@
+features.get("atr")가 ATRCalculator.update()(features/technical/atr.py:21-63)의 출력이므로, 답은 다음과 같습니다.
+
+1. ATR 범위 필터가 진입 가부를 결정하는가 — 예, 결정한다.
+
+main.py:6122 _atr_ok = ATR_MIN_ENTRY <= atr <= _atr_max_adaptive 가 진입 게이트 판정에 직접 들어가고, _atr_ok가 False면 main.py:6467-6474에서 _entry_block_reason이 채워져 해당 분봉 진입이 차단됩니다.
+하한: ATR_MIN_ENTRY = 1.0pt 미만 → 변동성 부족(휩쏘 위험)으로 차단
+상한: _atr_max_adaptive 초과 → 손절거리 과대로 차단 (정적 하한 ATR_MAX_ENTRY=3.5pt이며, 273차부터 최근 60분 ATR 롤링평균 기반 적응형 상한을 적용 — main.py:6110-6121)
+화면의 "9.12pt ↑고변동"은 main.py:6509-6512 로직대로 현재 ATR이 _atr_max_adaptive를 초과했을 때 뜨는 상태 표시입니다. 즉 지금 이 신호는 ATR 상한 초과로 진입이 막혀 있다는 뜻입니다.
+2. 범위 산출 기준 — 당일 고점/저점도 아니고 전일 종가도 아닙니다.
+
+ATR 값 자체는 features/technical/atr.py의 ATRCalculator.update(high, low, close)가 계산합니다.
+True Range = max(고가-저가, |고가-직전 1분봉 종가|, |저가-직전 1분봉 종가|) — 여기서 "직전 종가"는 바로 이전 1분봉의 종가이며 전일 종가가 아닙니다.
+atr = 이 TR을 최근 14개(period) 1분봉 윈도우로 단순평균한 값 (Wilder 방식)
+상한 산출은 여기서 한 단계 더 나아가, main.py:6114-6121에서 "최근 60분 ATR 롤링평균 × 배수"를 정적 하한(3.5pt)·절대 상한(ceiling) 사이로 클램프해 _atr_max_adaptive를 구합니다. 이 롤링평균도 당일 장중 1분봉 ATR들의 이동평균이지, 당일 고저폭이나 전일 종가를 직접 참조하지 않습니다.
+요약: ATR은 순수하게 최근 1분봉들의 True Range 이동평균이며, "전일 종가"나 "당일 고점/저점 전체 범위"가 아니라 매 분마다 갱신되는 직전 봉 종가 기준 True Range 시계열입니다.

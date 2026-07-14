@@ -1,0 +1,24 @@
+
+
+
+7/14 완결
+ multi_timeframe/round_number가 원래 entry gate로 설계됐는데 checklist.py에 미연결된 사이드 이슈,
+ rv_iv_spread — 328차에 구현+배선 완료(dev_memory/DECISION_LOG.md 328차 항목). IV 서브시스템
+ 신규 구축 없이 기존 VKOSPI(실시간 검증 운영 중)를 IV 프록시로 재사용해 해결.
+
+
+
+
+
+===================================
+참고사항
+앞으로 매분 JointGateBlock이 발동할 때마다 자동으로 기록되고, 
+금요일 EOD 체인이 4주 누적 판정을 리포트에 자동 반영합니다 
+— 수동 분석 없이도 표본이 쌓입니다. PASS/FAIL 판정은 항상 권고일 뿐이며 
+임계값 변경은 기존 원칙대로 수동 결정 + DECISION_LOG.md 기록이 필요
+
+
+
+
+
+

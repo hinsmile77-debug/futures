@@ -1940,6 +1940,28 @@ class DivergencePanel(QWidget):
             setattr(self, f"chain_{attr}_val", cv)
             chain_grid.addWidget(cf, 1, col_i)
 
+        # 3행: 실현변동성(RV) | VKOSPI(IV) | RV-IV 스프레드 (328차)
+        _row2 = [
+            ("실현변동성(RV)", "rv_ann",       C['cyan'],   "연율화 %"),
+            ("VKOSPI(IV)",     "iv_vkospi",    C['orange'], "KRX 지수"),
+            ("RV-IV 스프레드", "rv_iv_spread", C['text2'],  "RV−IV"),
+        ]
+        for col_i, (title, attr, col, sub) in enumerate(_row2):
+            cf = QFrame()
+            cf.setStyleSheet(
+                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;}}"
+            )
+            cfl = QVBoxLayout(cf)
+            cfl.setContentsMargins(4, 2, 4, 2)
+            cfl.setSpacing(0)
+            cfl.addWidget(mk_label(title, C['text2'], 8))
+            cv = mk_val_label("——", col, 12)
+            cfl.addWidget(cv)
+            if sub:
+                cfl.addWidget(mk_label(sub, C['text2'], 7))
+            setattr(self, f"chain_{attr}_val", cv)
+            chain_grid.addWidget(cf, 2, col_i)
+
         lay.addLayout(chain_grid)
 
     def update_data(self, div):
@@ -2130,6 +2152,34 @@ class DivergencePanel(QWidget):
             self.chain_status_lbl.setText("● 미수집")
             self.chain_status_lbl.setStyleSheet(
                 f"color:{C['text2']};font-size:{S.f(8)}px;"
+            )
+
+    def update_rv_iv(self, features: dict) -> None:
+        """RV(실현변동성)-VKOSPI(IV) 스프레드 카드 갱신 (328차).
+
+        features는 feature_builder.build() 반환값 그대로 — "vkospi"/"vkospi_ready"는
+        basis_data 병합으로, "realized_vol_ann"/"rv_iv_spread"/"rv_iv_spread_ready"는
+        feature_builder.py의 RV-IV 계산 블록에서 채워진다.
+        """
+        rv_ann  = float(features.get("realized_vol_ann", 0.0) or 0.0)
+        vkospi  = float(features.get("vkospi", 0.0) or 0.0)
+        spread  = float(features.get("rv_iv_spread", 0.0) or 0.0)
+        ready   = bool(features.get("rv_iv_spread_ready", False))
+
+        self.chain_rv_ann_val.setText(f"{rv_ann:.2f}%" if ready else "——")
+        self.chain_iv_vkospi_val.setText(f"{vkospi:.2f}" if vkospi > 0 else "——")
+
+        if ready:
+            # RV > IV: 시장이 변동성을 과소평가(저평가) → green. RV < IV: 과대평가(고평가) → red.
+            spread_col = C['green'] if spread > 0 else (C['red'] if spread < 0 else C['text2'])
+            self.chain_rv_iv_spread_val.setText(f"{spread:+.2f}")
+            self.chain_rv_iv_spread_val.setStyleSheet(
+                f"color:{spread_col};font-size:{S.f(12)}px;font-weight:bold;"
+            )
+        else:
+            self.chain_rv_iv_spread_val.setText("——")
+            self.chain_rv_iv_spread_val.setStyleSheet(
+                f"color:{C['text2']};font-size:{S.f(12)}px;font-weight:bold;"
             )
 
 
@@ -11263,6 +11313,13 @@ class DashboardAdapter:
         except Exception:
             pass
         self._update_gamma_badge(chain_feats)
+
+    def update_rv_iv_spread(self, features: dict) -> None:
+        """RV-IV 스프레드 카드 업데이트 (328차, 매분 STEP4 이후 호출)"""
+        try:
+            self._win.div_panel.update_rv_iv(features)
+        except Exception:
+            pass
 
     # ±1B 이내를 플립 경계(GEX 중립선 근접)로 판정
     _GEX_FLIP_THRESHOLD = 1.0

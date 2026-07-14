@@ -6788,3 +6788,65 @@ volume_surge_ratio·microprice·lob_imbalance_decay), 구현불가 확정 1건(c
 별도 스코프 보류 1건(rv_iv_spread). 남은 잔여 이슈는 코드 정리가 아니라 별도 기능
 검토(multi_timeframe·round_number의 entry gate 미연결 — 321차·324차·325차 사이드 발견)와
 rv_iv_spread 착수 여부 결정뿐.
+
+---
+
+## 2026-07-14 (328차) — rv_iv_spread(IV 서브시스템) 신규 구현 + 배선
+
+### [신규] RV-IV 스프레드 — IV 측을 신규 옵션 수집 대신 기존 VKOSPI로 대체
+
+**배경**: 326차까지 `rv_iv_spread`는 "IV 서브시스템 신규 구축이 필요"하다는 이유로 별도
+스코프 보류 항목이었음(319차 audit C 카테고리 — 계산 모듈이 존재한 적 없는 완전 미구현
+개념). 사용자가 착수를 요청해 구현 범위를 조사한 결과, 애초 우려했던 "IV 서브시스템
+신규 구축"이 불필요함을 확인:
+- Cybos `OptionMst`의 개별종목 IV 후보 필드(HeaderValue 108, `scripts/collect_option_metrics.py`
+  주석 "내재변동성 — 종목별 상이, **추정**")는 2026-05-13 `CYBOS_OPTION_PROBE` 세션 이후
+  단 한 번도 실측 교차검증(`scripts/verify_option_mst_fieldmap.py`)이 로그에 남지 않은
+  미검증 필드 — 이걸 그대로 프로덕션 IV로 쓰면 검증 안 된 값이 진입 피처에 들어가는
+  위험이 있음.
+- 반면 `main.py`는 260704 감사 이후 이미 VKOSPI(KRX 공식 KOSPI200 내재변동성 지수)를
+  60초 폴링으로 실시간 검증·운영 중(`main.py:_last_vkospi` → `basis_data["vkospi"]`/
+  `"vkospi_ready"`, `collection.cybos.api_connector.VKOSPI_INDEX_CODE`). VKOSPI 자체가
+  이미 "시장이 값매긴 내재변동성"이므로 IV 프록시로 그대로 재사용 가능 — 신규 옵션
+  체인 확장(개별종목 IV 수집·검증) 없이 기존에 검증된 데이터 소스만으로 구현 가능함을
+  확인.
+
+**결정/구현**:
+1. `features/technical/realized_vol.py` 신규 — `RealizedVolCalculator`: 1분봉 종가
+   로그수익률의 표준편차를 연율화(× `sqrt(390 × 252)` × 100, %)해 RV(실현변동성) 산출.
+   trend_efficiency/kyle_lambda와 동일하게 상태를 가진 계산기 클래스로 구현(`update()`/
+   `reset_daily()`).
+2. `config/settings.py:RV_IV_WINDOW = 30` — RV 계산 창(분). 별도 그리드서치 없이
+   trend_efficiency/kyle_lambda와 동일 원칙으로 채택.
+3. `features/feature_builder.py` — `self.rv_calc` 인스턴스 추가, `build()`의 `basis_data`
+   병합 직후(그래야 `features["vkospi"]`가 이미 채워져 있음) `rv_iv_spread = RV - vkospi`
+   계산. RV 미준비(표본 부족) 또는 VKOSPI 미수신(`vkospi_ready=0`) 시 `rv_iv_spread=0.0` +
+   `rv_iv_spread_ready=False`로 반환(`hurst_ready`와 동일한 가용성 플래그 패턴). 진단용
+   `realized_vol_ann`도 함께 노출. `reset_daily()`에 `self.rv_calc.reset_daily()` 추가.
+4. `config/constants.py:DYNAMIC_FEATURES_POOL` — `rv_iv_spread` 항목에 구현 완료 주석 추가.
+
+**Why**: 개별종목 IV 필드 검증(라이브 Cybos 연결 필요, 장중에만 가능)에 이 세션의 스코프를
+묶어두는 대신, 이미 검증된 VKOSPI를 재사용해 즉시 구현 가능한 경로를 택함 — 미검증 COM
+필드를 프로덕션 피처에 바로 쓰는 위험을 피하면서도 "RV-IV 스프레드"라는 원래 취지(실현
+변동성 vs 시장 내재변동성 괴리)는 그대로 달성.
+
+**영향**: `rv_iv_spread`는 신규 raw_feature 키. 다른 320~326차 신규 구현 피처(trend_efficiency,
+kyle_lambda 등)와 동일하게 지금 당장 어느 호라이즌 모델에도 강제 편입되지 않음 — 주간 SHAP
+심사(`learning/shap/shap_tracker.py:_suggest_replacement()`)가 하락 피처 교체 후보로 자동
+추천할 때만 `DYNAMIC_FEATURES_POOL` 순번에 따라 후보로 오르고, 최종 편입은 여전히 인간 검토
+필수(자동 교체 금지 원칙 그대로). CORE 피처·entry gate·CB 로직 변경 없음.
+`scripts/backfill_features.py`(2025-08-19~2026-04-28 소급 구간)의 `FEATURE_KEYS_ALL`에는
+trend_efficiency/kyle_lambda 등 기존 신규 피처들과 동일하게 추가하지 않음 — 그 구간은
+VKOSPI(basis_data) 자체가 없어 어차피 계산 불가하고, 기존 신규 피처들도 같은 이유로
+이 스크립트를 건드리지 않은 전례를 따름.
+
+**검증**: `py_compile` 통과(4개 수정 파일). `features/technical/realized_vol.py` 단독 실행
+스모크 테스트로 저변동/급변 구간 RV 값 정상 산출 확인. `FeatureBuilder().build()`에 더미
+바+`basis_data={"vkospi":14.5,"vkospi_ready":1.0}`를 35회 주입해 `rv_iv_spread_ready`가
+표본 확보 후 `True`로 전환되고 `rv_iv_spread`가 매 분 갱신됨을 확인. Cybos 라이브 연결
+없이는 실제 VKOSPI 실측값 기준 스프레드 분포까지는 검증 불가 — 다음 장중 세션에서
+`rv_iv_spread`/`realized_vol_ann` 실측값 대시보드 확인 권장.
+
+**구현**: `features/technical/realized_vol.py`(신규), `features/feature_builder.py`,
+`config/settings.py`, `config/constants.py`.
+**관련**: 319차(최초 C카테고리 분류), 326차(직전 정리 마무리), 260704 감사(VKOSPI 폴링 도입).

@@ -4713,6 +4713,8 @@ class TradingSystem:
         _pcr = features.get("opt_chain_pcr")
         if _pcr and float(_pcr) > 0:
             self._last_opt_chain_pcr = float(_pcr)
+        # RV-IV 스프레드 대시보드 표시 (328차)
+        self.dashboard.update_rv_iv_spread(features)
 
         # ── CORE 3종 피처 NaN/Inf 가드 ──────────────────────────
         # 진입 체크리스트가 직접 사용하는 피처만 방어 (다른 피처는 앙상블에서 0으로 처리됨)
@@ -7050,6 +7052,44 @@ class TradingSystem:
                             f"[차단] JointGateBlock — meta={_meta_size:.2f} tox={_tox_size:.2f} "
                             f"joint={_joint_mult:.3f} < 0.50"
                         )
+                        # [327차] JointGateBlock counterfactual 섀도우 — hurst_gate_shadow와
+                        # 동일 패턴(§3-6). tox_size가 상수(0.7)라 joint_mult이 사실상
+                        # meta_size 단일 임계와 동치라는 구조적 의문(07-14 실측 분석,
+                        # docs/Ref/jointfateBlock.txt)을 누적 검증한다. 읽기 전용 계측 —
+                        # 실거래 의사결정에 관여하지 않음(scripts/generate_validation_
+                        # campaign_report.py가 주간 사후 판정).
+                        try:
+                            _jgs_mult = (
+                                HURST_REGIME_ATR_MULT.get(self._entry_hurst_bucket, {})
+                                if HURST_REGIME_ATR_MULT_ENABLED else {}
+                            )
+                            _jgs_stop_mult = ATR_STOP_MULT * _jgs_mult.get("stop", 1.0)
+                            _jgs_tp1_mult = (
+                                ATR_HORIZON_TP1_MULT.get(_entry_horizon, ATR_TP1_MULT)
+                                * _jgs_mult.get("tp1", 1.0)
+                            )
+                            _jgs_dir_mult = 1 if direction == 1 else -1
+                            execute(
+                                TRADES_DB,
+                                """INSERT INTO joint_gate_shadow
+                                   (ts, direction, grade, meta_size, tox_size, joint_mult,
+                                    conf, entry_price, stop_price, tp1_price)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (
+                                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                                    raw_dir_str,
+                                    _final_grade,
+                                    float(_meta_size),
+                                    float(_tox_size),
+                                    float(_joint_mult),
+                                    float(confidence),
+                                    float(close),
+                                    float(close - _jgs_dir_mult * atr * _jgs_stop_mult),
+                                    float(close + _jgs_dir_mult * atr * _jgs_tp1_mult),
+                                ),
+                            )
+                        except Exception as _jgs_e:
+                            logger.warning("[JointGateShadow] counterfactual 기록 실패 (무해): %s", _jgs_e)
                     else:
                         # [237차] Hurst 미계산 진입 차단 — 워밍업 미완료(데이터 부족·오류) 시 손실 방지
                         if not features.get("hurst_ready", False):

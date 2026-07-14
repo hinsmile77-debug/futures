@@ -1,0 +1,37 @@
+JointGateBlock 차단 흐름
+위치: main.py:6720-6737
+
+1. 두 게이트가 독립적으로 먼저 평가됨
+MetaGate (strategy/entry/meta_gate.py): 앙상블 confidence + meta_confidence를 
+등급별 가중치로 블렌딩(blended_conf)해서 take_thr/reduce_thr와 비교 → take/reduce/skip 판정.
+ reduce일 때 size_multiplier는 meta_gate.py:203에서 max(0.35, min(0.75, ...)) 범위로 결정됨. 
+ 로그의 meta=0.50/0.52가 이 값.
+
+ToxicityGate (strategy/risk/toxicity_gate.py): toxicity_score가 reduce_threshold(0.58) 
+이상이면 reduce + 고정 size_multiplier=0.7 (toxicity_gate.py:55). 
+로그의 tox=0.70이 항상 같은 값인 이유가 여기 — reduce 밴드에서는 스코어 크기와 무관하게 고정값.
+
+2. JointGateBlock 최종 판정 (main.py:6723-6728)
+
+_joint_mult = _meta_size * _tox_size
+_joint_blocked = (
+    _meta_action == "reduce"
+    and _tox_action == "reduce"
+    and _joint_mult < 0.50
+)
+두 게이트가 동시에 reduce 판정을 내렸고, 곱한 값(joint)이 0.50 미만이면 진입 자체를 차단 
+(사이즈 축소가 아니라 완전 스킵).
+
+설계 의도(주석): 각 게이트가 "독립적으로 위험 신호"를 냈으므로 둘 다 reduce인데 곱까지 낮으면 
+진입 실익이 없다고 판단 — 6/18, 6/24 손실 케이스 근거로 240차 전후 도입.
+
+3. 이번 로그(11:38~11:49) 해석
+meta=0.50~0.52, tox=0.70 고정, joint=0.350~0.365 — 계속 0.50 미만이라 SHORT A급 신호가 
+9분 넘게 계속 차단됨.
+tox가 0.70으로 고정된 채 안 변한다는 건 toxicity_score가 reduce 밴드(0.58~0.78) 안에서만 
+머물고 있다는 뜻(block 밴드 0.78 이상은 아님).
+meta가 0.500.52 근처에 붙어있는 건 blended_conf가 reduce_thr 바로 위 구간에 머물러 있다는 뜻 
+— A급인데도 meta reduce 밴드 최하단(size_mult 0.350.75 범위의 low-mid)에 갇혀있는 상태.
+
+즉 이 구간은 "체크리스트 등급은 A인데, 메타 신뢰도와 시장 미시구조 독성이 둘 다 애매하게 나쁜" 상태가 
+지속되면서 실제 체결 없이 반복 차단만 로그에 남는 상황입니다.

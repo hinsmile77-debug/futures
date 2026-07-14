@@ -1,0 +1,24 @@
+ExecutionGovernor 흐름 정리
+배선 구조 (단일 호출점)
+
+main.py:5254-5267 (STEP 6 시작부, 분당 1회)
+  _gov_conf    = 전체 활성 호라이즌 confidence의 단순평균
+  _gov_quality = features["feature_quality_score"]  (STEP 4 산출)
+  _gov_latency = self.latency_sync.offset_sec        (틱 수신 지연 이동평균)
+  → self.execution_governor.evaluate(...) 1회 호출
+  → decision["execution_governor"] = 그 결과 (main.py:5591)
+  → main.py STEP 7에서 action=="reduce"/"block"일 때만 사이즈 축소/차단 적용
+판정식
+
+tradability = confidence×0.40 + quality_score×0.35 + latency_score×0.25
+pass(≥0.65) / reduce(0.45~0.65, ×0.6) / block(<0.45, ×0.0)
++ latency_sec≥5.0초면 무조건 hard block
+왜 0%인지 — 실측으로 확인한 구조적 원인
+feature_quality_score(06-15~, n=7,275): 73.3%가 정확히 1.0, 95.9%가 0.94 이상. feature_builder.py:459를 보면 옵션/매크로/수급 데이터원이 살아있는 한 페널티가 전혀 안 붙는 구조라 정상 운영 중엔 항상 1.0 근처입니다.
+
+latency_sec(LatencySync.offset_sec): 틱 수신 지연 이동평균 — 정상 네트워크 상태면 0.3초 미만이라 latency_score=1.0이 사실상 기본값입니다.
+
+실제 tradability 재현(같은 기간, quality 실측값 × 평균 confidence 실측값 × latency_score=1.0 가정, n=6,911): 최솟값이 0.671로, pass_threshold(0.65)보다 항상 높습니다. 즉 quality(0.35)+latency(0.25)만으로 이미 0.60이 기본 깔리고, confidence(가중치 0.40)는 0.125 이상만 되면 되는데 실측 confidence가 항상 그보다 훨씬 높아서, confidence가 이 게이트의 판정에 사실상 아무 영향을 주지 못하는 구조입니다.
+
+결론
+이건 버그로 인한 "죽은 게이트"가 아니라, 가중치 설계(conf 40%)가 실제로는 quality/latency의 구조적 근사-상수 특성(거의 항상 1.0)에 압도당해 의미를 못 내는 설계상 사각지대입니다. 이 기간에 데이터 결손이나 심각한 지연이 없었을 뿐이고, 진짜 장애(옵션/매크로 데이터 끊김, API 지연 급증) 상황에서는 정상 작동할 걸로 보입니다 — 즉 "평상시엔 거의 항상 통과, 진짜 인프라 장애 때만 발동"하는 비상 서킷브레이커로서는 의도대로 동작 중이라고 볼 수 있습니다. 다만 docstring이 "confidence + data quality + API latency"를 대등하게 묶어놓은 것과 실제 동작(confidence는 사실상 무의미)이 어긋나 있어, "저신뢰도 상황에서 사이즈를 줄인다"는 의도였다면 재설계가 필요하고, "인프라 장애 전용 비상정지"가 원래 의도였다면 지금 상태로 두되 문서/이름을 명확히 하는 정도로 충분합니다.

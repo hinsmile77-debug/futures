@@ -1,0 +1,71 @@
+decision["grade"] 산출 흐름 (EnsembleDecision.compute())
+
+model.predict_proba() → horizon_proba (6개 호라이즌별 up/down/flat 확률)
+        │
+        ▼
+① 가중치 결합 [line 349-365]
+   cur_weights = Decorrelator(상관관계 역수) × F1적응가중치
+   30m은 영구 제외(weight=0, 296차 퇴역 확정)
+        │
+        ▼
+② 시간대 정책 필터 [369-399]
+   HORIZON_TIME_POLICY로 비활성 호라이즌 weight=0
+   활성 호라이즌 전무 → 즉시 FLAT/grade=X 반환 (cold-start)
+        │
+        ▼
+③ 가중합 점수 산출 [~528-544]
+   up_score = Σ(호라이즌 up확률 × weight) / total_weight
+   down_score, flat_score도 동일 방식
+        │
+        ▼
+④ 방향 편향 조기 감쇠 [410-441]
+   단일 방향 50%+ 10분 지속 → 해당 weight×0.2 (재계산)
+        │
+        ▼
+⑤ 1차 방향 확정 [614-622]
+   direction = argmax(up_score, down_score, flat_score)
+   confidence = 해당 score
+        │
+        ▼
+⑥ EnsembleGater 적용 [631-651]
+   적응형 게이팅으로 점수 재조정 → 방향·conf 재확정 (동일 argmax 로직)
+        │
+        ▼
+⑦ 방향 고착 감쇠 [656~] / TrendGate 부스트 [565-601]
+   NEUTRAL+동방향 8회+&acc30m<38% → 점수 감쇠
+   TrendGate active → up/down_score +0.07 부스트(cap 0.58), flat_score 상한 0.38
+        │
+        ▼
+⑧ Ensemble Calibrator [843-850]
+   Platt 보정 (raw confidence → 보정된 confidence, cap 0.85)
+        │
+        ▼
+⑨ regime_ok 판정 [858-867]
+   min_conf = zone_mc (RISK_OFF면 REGIME_MIN_CONFIDENCE와 max)
+   regime_ok = (confidence >= min_conf) AND (direction != FLAT)
+        │
+        ▼
+⑩ CoherenceGate [765-825]
+   coherence_score = 방향 일치 호라이즌 수 / 활성(비FLAT) 호라이즌 수
+   score < min(보통 0.60, 추세중 0.50) → coherence_blocked=True
+   (TrendGate 강한 추세면 면제)
+        │
+        ▼
+⑪ CascadeCoherence [828-836]
+   장기→단기 방향 정렬 검증, score<0.25 → 마찬가지로 coherence_blocked=True
+        │
+        ▼
+⑫ 최종 grade 결정 [871-903]  ← 여기가 실제 등급 산출부
+   if coherence_blocked:        grade = "X"   ← conf 무관, 최우선
+   elif not regime_ok:          grade = "X"   ← conf < min_conf
+   elif confidence >= 0.70:
+       HCGuard(고신뢰 롤링 정확도 < 임계) 통과 시 grade="A", 미달 시 "B"
+   elif confidence >= 0.60:     grade = "B"
+   elif confidence >= min_conf: grade = "C"
+   else:                        grade = "X"   (이론상 도달 불가 — regime_ok가 이미 걸러줌)
+핵심 요약
+grade는 conf 구간 매핑(0.70/0.60/min_conf 3단 문턱)이 기본이지만, 그 앞에 두 개의 독립 차단 게이트가 conf와 무관하게 우선 적용돼:
+
+CoherenceGate/CascadeCoherence — "6개 호라이즌이 서로 방향에 동의하는가" (호라이즌 간 정합성)
+regime_ok — "conf가 시간대·레짐별 문턱을 넘는가" (conf 임계값)
+둘 중 하나만 걸려도 conf가 아무리 높아도 X야. 그리고 이 두 게이트는 체크리스트(9개 오더플로 항목)와 완전히 다른 신호를 보기 때문에, 지난 분석에서 확인한 X→A 승격(210/222건)은 대부분 ⑩번 CoherenceGate가 "호라이즌끼리 의견이 갈린다"고 막았는데 체크리스트는 "지금 오더플로는 방향이 정렬돼 있다"고 판단해 뒤집은 케이스였어.
