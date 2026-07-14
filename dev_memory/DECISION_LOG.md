@@ -7300,3 +7300,45 @@ HGB의 내부 트리 구조(GBM의 `estimators_` 2차원 배열과 다른 히스
 (Qt 크로스스레드 콜백이 원인이던 이전 access violation 크래시 — 이번 것은 다른 근본
 원인이지만 "Python 예외 없이 프로세스가 죽는다"는 증상 패턴은 동일해 crash_fault.log
 확인이 항상 1순위 진단 경로여야 함을 재확인).
+
+---
+
+## 2026-07-15 (333차) — 검증 캠페인 리포트 [1] Triple-Barrier 전 호라이즌 "모델 로드 실패" 딥다이브
+
+### [버그·수정] 섀도우 TB 재학습이 py310_64가 아닌 base anaconda(sklearn 1.3.0)로 실행되어 pickle 버전 불일치
+
+**증상**: `scripts/generate_validation_campaign_report.py --days 28`을 py310_64에서
+실행해도 `[1] Triple-Barrier` 6개 호라이즌 전부 `모델 로드 실패: No module named
+'sklearn._loss.loss'`로 INSUFFICIENT 고착.
+
+**원인**: 이 PC 셸 PATH에서 `python`은 `.venv` → base anaconda(`C:\Users\pc1\anaconda3
+\python.exe`, sklearn **1.3.0**) → py37_32 순으로 해석되며 **py310_64는 PATH에 아예
+없음**. `model/horizons/shadow_triple_barrier/gbm_*.pkl` 6개 파일의 mtime이 모두
+2026-07-05 09:55~09:56로, `run_shadow_triple_barrier_retrain.py`(스크립트 지침상
+`conda activate py310_64` 후 실행 대상)가 그날 env 활성화 없이 PATH 우선순위대로
+base anaconda(sklearn 1.3.0)에서 실행된 것으로 확인됨. `HistGradientBoostingClassifier`
+는 sklearn 1.1+에서 도입된 `sklearn._loss.loss` 모듈 경로로 손실함수 객체를 pickle에
+저장하는데, py310_64는 [[project_py310_64_env]] 결정에 따라 sklearn **1.0.2 고정**이라
+그 모듈 자체가 없어 언피클 시 `ModuleNotFoundError`. bat 파일·스케줄 작업 모두 이
+스크립트를 호출하지 않아(전수 검색 결과 無) 자동화 결함이 아니라 수동 실행 시 env
+활성화 누락으로 판단.
+
+**검증**: `"C:/Users/pc1/anaconda3/python.exe"`(base, sklearn 1.3.0)로 동일 pkl을
+로드하면 정상 로드됨(`HistGradientBoostingClassifier` 타입 확인) → 버전 불일치 가설 확정.
+
+**수정**: `"C:/Users/pc1/anaconda3/envs/py310_64/python.exe" scripts/
+run_shadow_triple_barrier_retrain.py --weeks 26`로 6개 호라이즌 재학습(전체 경로 명시
+호출로 sklearn 1.0.2 보장). 재학습 후 cv_acc가 champion 대비 전 호라이즌 우위
+(예: 1m 0.5347 vs 0.4262, 30m 0.8458 vs 0.3710). 리포트 재실행 결과 `모델 로드 실패`가
+`OOS 표본 0건(모델 mtime 이후 데이터 대기)`로 전환 확인 — 정상 동작 경로 진입.
+OOS 오염 방지 설계(모델 mtime 이후 데이터만 채점)상 [1] 판정은 재학습 시각부터 다시
+표본이 쌓여야 하므로 향후 며칠간 INSUFFICIENT로 보여도 정상(시계 리셋).
+
+**재발 방지**: py310_64 전용 스크립트(`retrain_eod.py`, `retrain_intraday.py`,
+`run_shadow_triple_barrier_retrain.py`, `generate_validation_campaign_report.py` 등)는
+`conda activate py310_64` 확인이 어려우면 항상 전체 경로 python.exe로 호출할 것.
+`No module named 'sklearn._loss...'` 형태의 로드 오류는 이 PATH 오작동 패턴을 최우선
+의심할 것 (Claude 메모리: feedback_conda_env_python_path).
+
+**관련**: 226차(py310_64/py37_32 재학습 환경 분리 결정), 260704 감사 P1(섀도우 TB
+병행 학습 신설 배경), 2026-06-30 py310_64 재구성(sklearn 1.0.2 고정 결정).
