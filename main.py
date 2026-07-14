@@ -275,6 +275,7 @@ class TradingSystem:
         self.macro_fetcher.start()
         self.feature_builder    = FeatureBuilder()
         self.feature_builder._on_core_fail = self._on_core_feature_fail
+        self._load_prev_day_closes_at_startup()
         # [260704 감사 P2] 선물-현물 베이시스 — KOSPI200 현물지수 폴링(60s) + 계산기
         self.basis_calc         = BasisCalculator()
         self._last_kospi200_spot: Optional[float] = None
@@ -2914,7 +2915,15 @@ class TradingSystem:
         _t0 = time.perf_counter()
         logger.debug("[LiveDBG] _fetch_investor_data 시작 (메인 스레드 점유 시작)")
         try:
-            self.investor_data.fetch_all(include_program=False)
+            # [2026-07-14 딥다이브 P2-2] include_program=False(108차, 2026-06-04)는 당시
+            # CpSysDib.ProgramTrade/8119 계열의 반복 실패 로그 비용 때문이었음 — 그 이후
+            # 260704 감사 P2(2026-07-05, 실제 Creon 연결로 검증)가 request_program_investor()를
+            # 완전히 재작성해 검증된 필드 매핑(Dscbo1.CpSvr8111 idx19/37)만 단발 조회하도록
+            # 바꿨는데, 이 런타임 플래그는 그 이후로도 갱신되지 않아 program_arb_net/
+            # program_non_arb_net이 raw_features에 07-05 이후로도 계속 상수 0으로 남아있었음
+            # (무스킬_피처셋_딥다이브_보고서_2026-07-13.md F5). 실패 시에도 api_connector.py의
+            # _system_info_throttled(600s)가 로그 폭주를 막으므로 108차 우려는 이미 해소됨.
+            self.investor_data.fetch_all(include_program=True)
             # FutureCurOnly 틱에서 실시간으로 수집된 미결제약정 동기화
             rt = getattr(self, "realtime_data", None)
             if rt is not None:
@@ -8355,6 +8364,45 @@ class TradingSystem:
                 log_manager.signal("[ZeroDiag] 진입X 원인: {}".format(" / ".join(reasons)))
         except Exception as _de:
             logger.debug("[ZeroDiag] 진단 실패: %s", _de)
+
+    def _load_prev_day_closes_at_startup(self) -> None:
+        """[2026-07-14 딥다이브 P2-2] 기동 시 DB에서 가장 최근 과거 거래일 종가맵을 로드.
+
+        daily_close()가 당일 종가 버퍼를 feature_builder에 채워 다음날 prev_day_same_hour_ret
+        계산에 쓰는데, 이 버퍼는 순수 인메모리 상태 — 프로세스가 매 거래일 아침 새로
+        기동되는 이 시스템의 실제 운영 패턴에서는 daily_close() 실행 후 프로세스가 종료되면
+        버퍼가 유실돼 다음날 STEP4가 빈 버퍼를 보고 갱신을 건너뛴다(main.py:4671 가드).
+        그 결과 prev_day_same_hour_ret이 raw_features에서 관측 기간 내내(2025-08-19~) 상수
+        0으로 남아있었음(무스킬_피처셋_딥다이브_보고서_2026-07-13.md F5). 기동 시점에 DB에서
+        직접 전전일(주말/휴장 자동 스킵 — MAX(ts) < 오늘 날짜)을 조회해 채우면 daily_close()를
+        기다리지 않고도 당일 첫 분봉부터 정상 계산된다.
+        """
+        try:
+            from config.settings import RAW_DATA_DB as _RDB
+            import sqlite3 as _sqlite3
+            today_str = datetime.datetime.now().date().isoformat()
+            with _sqlite3.connect(_RDB, timeout=10) as _conn:
+                _conn.row_factory = _sqlite3.Row
+                _row = _conn.execute(
+                    "SELECT MAX(ts) AS ts FROM raw_candles WHERE ts < ?", (today_str,)
+                ).fetchone()
+                _prev_day = (_row["ts"] or "")[:10] if _row else ""
+                if not _prev_day:
+                    logger.info("[FeatureBuilder] 기동 시 전일 종가 없음(초기 DB) — 스킵")
+                    return
+                _rows = _conn.execute(
+                    "SELECT ts, close FROM raw_candles WHERE ts >= ? AND ts < ? ORDER BY ts",
+                    (_prev_day, _prev_day + "Z"),
+                ).fetchall()
+            _prev_closes = {r["ts"]: float(r["close"]) for r in _rows}
+            if _prev_closes:
+                self.feature_builder.set_prev_day_closes(_prev_closes)
+                logger.info(
+                    "[FeatureBuilder] 기동 시 전일(%s) 종가 버퍼 로드: %d봉",
+                    _prev_day, len(_prev_closes),
+                )
+        except Exception as _e:
+            logger.warning("[FeatureBuilder] 기동 시 전일 종가 버퍼 로드 실패: %s", _e)
 
     # ── 일일 마감 (15:40) ─────────────────────────────────────
     def daily_close(self):

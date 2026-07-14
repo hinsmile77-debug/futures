@@ -187,6 +187,24 @@ DYNAMIC_FEATURES_POOL = [
     # 제안되게 할 뿐, 자동 편입은 아님 — 실제 편입은 사람이 대시보드에서 승인해야 함
     # (main.py:_on_apply_shap_candidate_requested, CLAUDE.md §6 자동 통합 금지 원칙과 동일 취지).
     "hurst_ready",
+    # [2026-07-14 딥다이브 P0-1] opt_gex_sign·opt_atm_pcr — 15m 옵션구조 CORE의 정식 편입
+    # 경로 승격. 292차(2026-07-06)에 dev PC(MW0602)에서 active_features에 편입됐다는 8종 중
+    # 2개인데, shap_feature_registry.json이 PC별 런타임 산출물(모델 미러링용, 커밋 금지
+    # 대상)이라 이 PC(v9-dev)에는 전파된 적이 없었음(무스킬_피처셋_딥다이브_보고서_
+    # 2026-07-13.md F1). 나머지 6종(opt_chain_pcr·opt_gex_bn·opt_atm_call_oi·opt_atm_put_oi·
+    # micro_regime_code·queue_directional_depletion·threshold_feasibility)과 달리 이 둘만
+    # 여기 등록하는 이유: 06-01~07-10 최신구간 재실측(F4)에서 opt_gex_bn(설계 rho=0.198->실측
+    # IC=0.013)·opt_chain_pcr(0.184->0.002) 등 magnitude 계열은 재현 실패했지만, 이 둘(부호·
+    # 비율 계열)은 부분 생존 확인(opt_gex_sign IC=0.035 p=0.006, opt_atm_pcr IC=0.051
+    # p<1e-4, 15m 삼중배리어 타깃에서도 재현) — "재현될 때까지 sign/ratio 계열로 대체"
+    # 원칙(딥다이브 보고서 4-5)에 따라 이 둘만 우선 후보로 승격. featureset by horizon/
+    # horizon_feature_sets.json 의 15m include_pending_validation에도 동일 사유로 등록해둠 —
+    # 여기(DYNAMIC_FEATURES_POOL) 등록은 주간 SHAP 심사가 "교체 후보"로 제안할 수 있게
+    # 문을 여는 것뿐, active_features 직접 편집은 하지 않음(자동 통합 금지 원칙, CLAUDE.md
+    # 6). 실제 편입은 여전히 사람이 대시보드에서 승인해야 함
+    # (main.py:_on_apply_shap_candidate_requested).
+    "opt_gex_sign",
+    "opt_atm_pcr",
 ]
 
 # ── 시장 레짐 ─────────────────────────────────────────────────
