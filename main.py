@@ -601,6 +601,7 @@ class TradingSystem:
         self._last_sizer_balance: float = 100_000_000.0
         self._effect_report_tick: int = 0
         self._effect_report_running: bool = False
+        self._canary_1m_last_run_date: object = None  # [331차 후속2] 1일 1회 실행 게이트
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
         self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
 
@@ -7141,6 +7142,9 @@ class TradingSystem:
                                     entry_horizon=_entry_horizon,
                                     hurst_bucket=self._entry_hurst_bucket,
                                 )
+                                self._log_exec_1m_shadow(
+                                    final_dir_str, _final_grade, features, horizon_proba,
+                                )
                                 _entry_executed_this_cycle = True
                 else:
                     # 모드 필터 차단
@@ -7230,6 +7234,9 @@ class TradingSystem:
                         reverse_enabled=reverse_on,
                         entry_horizon=_entry_horizon,
                         hurst_bucket=self._entry_hurst_bucket,
+                    )
+                    self._log_exec_1m_shadow(
+                        final_dir_str, _final_grade, features, horizon_proba,
                     )
                     _entry_executed_this_cycle = True
 
@@ -7908,6 +7915,47 @@ class TradingSystem:
             f"손절 {self.position.stop_price:.2f}  1차 {self.position.tp1_price:.2f}",
         )
 
+    def _log_exec_1m_shadow(
+        self, direction: str, grade: str,
+        features: Optional[dict], horizon_proba: Optional[dict],
+    ) -> None:
+        """[331차 후속2] 1m 활용방안 A(집행/타이밍 필터) 후보 검증용 섀도우 계측.
+
+        실제 체결된 진입에 1m 마이크로구조 피처·1m GBM 자체 예측을 진단 태그로
+        붙여 exec_1m_shadow에 기록한다. 라이브 의사결정에는 전혀 관여하지 않음
+        (게이트·사이징 어디에도 이 결과를 소비하는 코드 없음) — 축적 후
+        trades 테이블과 entry_ts로 조인해 승패/pnl과의 상관을 사후 분석하는 용도.
+        """
+        try:
+            _feat = features or {}
+            _hp1m = (horizon_proba or {}).get("1m") or {}
+            _tox = self.toxicity_gate.evaluate(_feat)
+            _dir_sign = 1 if direction == "LONG" else (-1 if direction == "SHORT" else 0)
+            _hz1m_dir = int(_hp1m.get("direction", 0) or 0)
+            _hz1m_agrees = 1 if (_hz1m_dir != 0 and _hz1m_dir == _dir_sign) else 0
+            execute(
+                TRADES_DB,
+                """INSERT INTO exec_1m_shadow
+                   (ts, direction, grade, spread_ticks, toxicity_score, cancel_add_ratio,
+                    tox_gate_action, tox_gate_score, hz1m_direction, hz1m_confidence, hz1m_agrees)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                    direction,
+                    grade,
+                    float(_feat.get("spread_ticks", 0.0) or 0.0),
+                    float(_feat.get("toxicity_score", 0.0) or 0.0),
+                    float(_feat.get("cancel_add_ratio", 0.0) or 0.0),
+                    str(_tox.get("action", "")),
+                    float(_tox.get("score", 0.0) or 0.0),
+                    _hz1m_dir,
+                    float(_hp1m.get("confidence", 0.0) or 0.0),
+                    _hz1m_agrees,
+                ),
+            )
+        except Exception as _e1s_e:
+            logger.warning("[Exec1mShadow] 기록 실패 (무해): %s", _e1s_e)
+
     def _post_exit(self, result: dict, filled_at=None):
         """청산 후 처리.
         filled_at: Cybos Chejan 콜백에서 전달된 실제 체결 시각 (None이면 now() 사용)
@@ -8140,6 +8188,12 @@ class TradingSystem:
                 self._run_effect_report_script("generate_rollout_readiness_report.py")
                 if run_backtest:
                     self._run_effect_report_script("run_microstructure_ab_backtest.py")
+                # [331차 후속2] 1m 활용방안 C(카나리아) — 하루 1회만. 28일 롤링 IC는
+                # 15분 주기로 다시 돌려도 값이 거의 안 바뀌어 계산 낭비이므로 날짜 게이트.
+                _today = datetime.date.today()
+                if self._canary_1m_last_run_date != _today:
+                    if self._run_effect_report_script("compute_canary_1m_ic.py"):
+                        self._canary_1m_last_run_date = _today
                 self._append_effect_monitor_history()
             finally:
                 self._effect_report_running = False
