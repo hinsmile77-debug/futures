@@ -7781,3 +7781,56 @@ _final_grade != "X":`로 조건 추가. X등급은 이제 6920을 건너뛰고 6
 2026-07-12(311차 후속2) 항목. 커밋: `8401d5c`(코드 수정 — 차수 표기 없이
 선커밋됨, v9-dev 원칙상 dev_memory 4개 파일 미반영이었으나 사용자 요청으로
 335차 소급 부여 + 본 항목으로 사후 반영).
+
+## 2026-07-15 (336차) — STEP7 차단사유 "상세 미수집" 3개 조건 누락 보강
+
+### [버그수정] entry_block_reason 산출 elif 체인이 _final_entry_ok AND조건 19개 중 3개를 누락
+
+**File**: `main.py:6928-6953`
+
+**증상**: 대시보드 "금일 conf → 진입단계 추적" 위젯에서 `entry_final_ok=0`
+(stage="8. STEP7 차단")인 행인데도 차단사유란에 `"STEP7 차단 (상세 미수집)"`만
+표시되는 사례 발견(사용자가 11:07~11:10 4연속 C등급 행에서 관찰).
+
+**원인**: `_final_entry_ok`(`main.py:6727-6747`)는 AND 조건 19개로 최종 진입
+가능 여부를 판정하는데, `_entry_block_reason`을 채우는 elif 체인
+(`main.py:6849~6939`, 335차 수정 이전 기준)은 이 19개 중 16개만 대응 분기가
+있었고 3개가 누락돼 있었다: `_qty_display > 0`(사이저 산출 수량 0),
+`not _bar_volume_zero`(Guard-C3 거래량 0봉), `not
+system_health.kill_switch_active`(SHS-EKS 당일 관망). 이 3개 중 하나 때문에
+`_final_entry_ok`가 False가 되면, 앞선 elif들은 전부 통과(mode_filter_passed
+True, `_cr` not None, grade≠X)해버려 최종 `else: _entry_block_reason = ""`로
+떨어졌다. 대시보드 쪽(`dashboard/panels/conf_trend_widget.py:518-525`)은
+stage 8일 때 `entry_block_reason`이 비면 `checklist_reason`으로 폴백하는데,
+이 필드는 등급X 체크리스트 전용이라 grade≠X 상황에선 항상 비어 있어 결국
+"상세 미수집" 하드코딩 문자열이 그대로 노출됐다.
+
+**수정**: `elif not mode_filter_passed and _final_grade != "X":` 분기 뒤,
+`elif _cr is None:` 분기 앞에 3개 elif를 `_final_entry_ok`와 동일 순서로
+추가 — `_qty_display <= 0` / `_bar_volume_zero` / `kill_switch_active`.
+추가로 최종 `else` 분기에 `logger.warning("[EntryBlockReason] fo=0인데
+사유 미매칭...")`을 넣어, 향후 `_final_entry_ok`에 조건이 추가되면서 이
+elif 체인 갱신을 또 빠뜨려도 "상세 미수집"으로 조용히 묻히지 않고
+`WARN.log`에서 바로 드러나게 함.
+
+**Why**: `_final_entry_ok`와 `_entry_block_reason` elif 체인은 서로 다른
+코드 블록에서 같은 조건 목록을 수동으로 복제·유지하는 구조라, 한쪽에
+조건을 추가/변경할 때 다른 쪽 동기화를 깜빡하기 쉽다(335차의 elif 순서
+버그도 같은 계열의 유지보수 리스크). "상세 미수집"이라는 조용한 폴백
+문자열이 있으면 이런 누락이 드러나지 않고 방치되기 쉬우므로, 근본적으로는
+두 코드가 같은 조건 목록에서 파생되도록 리팩터링하는 게 이상적이나 이번엔
+범위를 좁혀 누락분만 보강하고 재발 감지용 WARNING을 추가하는 선에서 마무리.
+
+**How to apply**: `_final_entry_ok`의 AND 조건을 추가/삭제할 때는 반드시
+`_entry_block_reason` elif 체인도 같은 순서로 동기화할 것. 두 목록이
+어긋나면 그 즉시 "상세 미수집"류의 조용한 폴백이 아니라 `WARN.log`에
+찍히는지로 회귀 여부를 확인할 수 있다(이번에 추가한 catch-all WARNING).
+
+**검증**: `python -m py_compile main.py` 통과. **라이브 미검증** — 다음 실
+UI 기동 후 SHS-EKS 관망 활성 구간·거래량 0봉·사이저 qty=0 상황에서
+"STEP7 차단" 사유란에 각각 정확한 문구가 뜨는지, "상세 미수집"이 더 이상
+나타나지 않는지(나타나면 `WARN.log`의 `[EntryBlockReason]`으로 원인 특정)
+육안 확인 필요.
+
+**관련**: 335차(같은 elif 체인의 순서 버그), `dashboard/panels/
+conf_trend_widget.py:436-442,518-525`(gate/차단사유 컬럼 표시 로직).

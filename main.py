@@ -6925,6 +6925,14 @@ class TradingSystem:
                     f"[차단] 모드필터 — {_final_grade}급 신호 vs {entry_mode} 모드"
                     f"({allowed_grades.get(entry_mode, ['A','B','C'])} 만 허용)"
                 )
+            elif _qty_display <= 0:
+                _entry_block_reason = "[차단] 사이저 산출 수량 0 — 리스크 한도/신뢰도 기준 미달"
+            elif _bar_volume_zero:
+                _entry_block_reason = "[차단] 거래량 0봉 — Guard-C3 진입 차단"
+            elif self.system_health.kill_switch_active:
+                _entry_block_reason = (
+                    f"[차단] SHS-EKS 당일 관망 활성 — {getattr(self.system_health, '_eks_reason', '')}"
+                )
             elif _cr is None:
                 _entry_block_reason = ""
             elif _final_grade == "X":
@@ -6937,6 +6945,12 @@ class TradingSystem:
                     _entry_block_reason = f"[차단] 등급X — 미통과 항목: {', '.join(_failed)}"
             else:
                 _entry_block_reason = ""
+                logger.warning(
+                    "[EntryBlockReason] fo=0인데 사유 미매칭 — _final_entry_ok 조건 점검 필요 "
+                    "(grade=%s qty=%d vol0=%s eks=%s)",
+                    _final_grade, _qty_display, _bar_volume_zero,
+                    self.system_health.kill_switch_active,
+                )
 
         _entry_executed_this_cycle = False
 
