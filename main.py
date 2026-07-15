@@ -786,7 +786,18 @@ class TradingSystem:
         # (self._n_features=97 vs 실제 model.n_features_in_=12 불일치) — 1~3단계
         # 중요도 계산이 길이 체크(len(fi)==self._n_features)에서 전부 실패하는
         # 구조적 원인 중 하나. 1m 전용 피처 서브셋으로 생성해 정합성 확보.
-        feature_names = get_available_feature_set("1m", all_feature_names) or all_feature_names
+        # [337차] get_available_feature_set()은 horizon_feature_sets.json의 "다음 재학습
+        # 계획"(예: 331차 딥다이브 P0-1, 미탑재 상태)을 그대로 읽어온다 — 실제 배포된
+        # gbm_1m.pkl이 아직 구 피처셋으로 학습된 채면 여기서 만든 X가 모델이 기대하는
+        # 입력 shape와 어긋나 permutation_importance가 매분 예외로 조용히 실패한다
+        # (동적피처 탭이 몇 시간째 갱신 안 되는 증상의 원인). 모델 로드 시 이미
+        # n_features_in_로 검증된 self.model.horizon_feature_names(실제 배포 모델의
+        # 피처셋)를 최우선으로 쓰고, 없을 때만 레지스트리 기반 선택으로 fallback.
+        feature_names = (
+            list(self.model.horizon_feature_names.get("1m") or [])
+            or get_available_feature_set("1m", all_feature_names)
+            or all_feature_names
+        )
         if self._shap_tracker is None:
             self._shap_tracker = ShapTracker(feature_names)
             return

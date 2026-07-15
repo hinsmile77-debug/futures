@@ -58,6 +58,18 @@ def _permutation_importance_fallback(
         return None
     if len(np.unique(y)) < 2:
         return None
+    # [337차] X 열 수가 모델이 실제로 학습된 입력 차원과 다르면 permutation_importance가
+    # 내부적으로 model.predict(X)를 호출하다 ValueError로 실패한다 — 레지스트리(다음
+    # 재학습 계획)와 배포된 모델의 피처셋이 어긋났을 때 발생(동적피처 탭 장시간 미갱신의
+    # 원인이었던 패턴). 조용히 매분 재시도하는 대신 원인을 명확히 남긴다.
+    _model_n_in = getattr(model, "n_features_in_", None)
+    if _model_n_in is not None and X.shape[1] != _model_n_in:
+        logger.warning(
+            "[SHAP] permutation_importance 스킵: X 피처 수(%d) != 모델 학습 피처 수(%d) "
+            "— 레지스트리/배포 모델 피처셋 불일치 의심",
+            X.shape[1], _model_n_in,
+        )
+        return None
     try:
         result = _permutation_importance(
             model, X, y, n_repeats=5, random_state=42, n_jobs=1,
@@ -67,7 +79,7 @@ def _permutation_importance_fallback(
             return None
         return imp
     except Exception as e:
-        logger.debug("[SHAP] permutation_importance 실패: %s", e)
+        logger.warning("[SHAP] permutation_importance 실패: %s", e)
         return None
 
 

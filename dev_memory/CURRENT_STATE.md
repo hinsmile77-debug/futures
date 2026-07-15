@@ -1,6 +1,24 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-15 (335차) — 대시보드 "진입단계추적" 위젯의 "모드필터"
+> 마지막 업데이트: 2026-07-15 (337차) — 대시보드 중간 패널 "동적피처" 탭 데이터가
+> 몇 시간째 갱신되지 않는 문제 수정. `featureset by horizon/horizon_feature_sets.json`의
+> `"1m".include`가 2026-07-13/14 딥다이브에서 신규 피처 목록으로 갱신됐으나
+> (문서 자체에 "P0-1 완료 전까지 미탑재 상태 유지"라 명시) 실제 배포된
+> `gbm_1m.pkl`은 구 12피처 세트로 학습된 채였음. `main.py:_ensure_shap_tracker()`가
+> 배포 모델이 아니라 이 레지스트리로 ShapTracker 피처셋(8개)을 구성해 실제
+> 모델(12피처 기대)과 shape mismatch가 발생, `permutation_importance()`가
+> 매분 조용히(DEBUG 레벨) 실패 → "동적 SHAP TOP3"/"전체 피처 순위" 패널이
+> 08:41부터 3시간+ 갱신 안 됨(`logs/20260715_LEARNING.log` 실측 확인).
+> `self.model.horizon_feature_names["1m"]`(모델 로드 시 `n_features_in_`으로
+> 이미 검증된 실제 배포 피처셋)을 우선 사용하도록 수정하고,
+> `_permutation_importance_fallback()`에 shape 사전체크 + WARNING 로그 상향을
+> 추가(향후 재발 시 즉시 드러나도록). `_shap_labeled_window["1m"]`가 이미
+> 누적돼 있어 재적립 대기 없이 즉시 효과가 나야 함. **라이브 미검증** — 다음
+> 실 UI 기동/장중에서 동적피처 탭이 채워지는지, `[SHAP] 중요도 계산 불가`
+> 경고가 사라지는지 확인 필요. 상세: `DECISION_LOG.md`/`NEXT_TODO.md`
+> 2026-07-15(337차) 항목.
+>
+> 이전 업데이트: 2026-07-15 (335차) — 대시보드 "진입단계추적" 위젯의 "모드필터"
 > 차단사유가 X등급 신호를 항상 오분류하던 라벨링 버그 수정. `allowed_grades`
 > (auto→A, hybrid→A/B, manual→A/B/C)가 어느 모드에도 "X"를 포함하지 않아,
 > `_final_grade=="X"`일 때 `mode_filter_passed`가 모드 설정과 무관하게 항상

@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-07-15 (337차 — 동적피처 탭 데이터 미갱신: SHAP 피처 레지스트리/배포 모델 불일치 수정)
+
+> 상세: `DECISION_LOG.md` 2026-07-15(337차) 항목.
+
+- [DONE 2026-07-15] `main.py:_ensure_shap_tracker()`가 `horizon_feature_sets.json`
+  레지스트리(다음 재학습 계획 문서) 대신 실제 배포 모델의
+  `self.model.horizon_feature_names["1m"]`(모델 로드 시 `n_features_in_`으로
+  이미 검증된 값)을 우선 사용하도록 수정. 레지스트리가 신규 8피처, 실제 배포
+  모델(`gbm_1m.pkl`)은 구 12피처라 shape mismatch로 `permutation_importance`가
+  매분 조용히(DEBUG 레벨) 실패하며 동적피처 탭이 3시간+ 갱신 안 되던 문제.
+  `learning/shap/shap_tracker.py:_permutation_importance_fallback()`에 shape
+  사전체크 + WARNING 로그 상향도 함께 추가.
+- [ ] **다음 실 UI 기동/장중 확인** — 동적피처 탭(중간 패널, CORE·동적
+  SHAP TOP3·전체 순위)이 실제로 채워지는지, `LEARNING.log`에
+  `[SHAP] 중요도 계산 불가` 경고가 더 이상 매분 반복되지 않는지 육안·로그
+  확인. 여전히 실패하면 새 WARNING(`X 피처 수(%d) != 모델 학습 피처 수(%d)`
+  또는 `permutation_importance 실패: %s`)으로 원인 바로 특정 가능.
+- [ ] **`horizon_feature_sets.json` 갱신 시 재확인** — 3m/5m 등 다른 호라이즌도
+  같은 구조적 위험(레지스트리 개편 후 실제 재학습 전까지 SHAP 경로 shape
+  mismatch)을 안고 있음. 다음 레지스트리 개편(P0-1 등) 시 동일 증상 재발
+  여부 확인.
+
+---
+
 ## 2026-07-15 (336차 — STEP7 차단사유 "상세 미수집" 3개 조건 누락 보강)
 
 > 상세: `DECISION_LOG.md` 2026-07-15(336차) 항목.
