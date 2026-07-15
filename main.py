@@ -6917,7 +6917,10 @@ class TradingSystem:
                 _entry_block_reason = "[차단] 15:00 이후 — 신규 진입 금지 구간"
             elif _auto_blocked:
                 _entry_block_reason = f"[차단] 자동진입 Degraded 최소신뢰도 {_deg_min_conf:.1%} 미달"
-            elif not mode_filter_passed:
+            elif not mode_filter_passed and _final_grade != "X":
+                # allowed_grades는 A/B/C만 포함 — grade=="X"는 모드 설정과 무관하게
+                # 항상 mode_filter_passed=False가 되어 진짜 사유(등급X/체크리스트
+                # 미통과)를 가리는 오분류가 났었다. X는 아래 등급X 분기로 넘긴다.
                 _entry_block_reason = (
                     f"[차단] 모드필터 — {_final_grade}급 신호 vs {entry_mode} 모드"
                     f"({allowed_grades.get(entry_mode, ['A','B','C'])} 만 허용)"
