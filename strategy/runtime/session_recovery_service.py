@@ -107,7 +107,7 @@ class SessionRecoveryService:
                 "count": 0,
                 "reverse_entry_enabled": bool(data.get("reverse_entry_enabled", False)),
                 "tp1_single_contract_mode": str(
-                    data.get("tp1_single_contract_mode", "breakeven") or "breakeven"
+                    data.get("tp1_single_contract_mode", "atr_profit") or "atr_profit"
                 ).strip().lower(),
                 "auto_shutdown_done_date": "",
             }
@@ -115,7 +115,7 @@ class SessionRecoveryService:
         data["count"] = data.get("count", 0) + 1
         data["reverse_entry_enabled"] = bool(system._reverse_entry_enabled)
         data["tp1_single_contract_mode"] = str(
-            getattr(system, "_tp1_protect_mode", "breakeven") or "breakeven"
+            getattr(system, "_tp1_protect_mode", "atr_profit") or "atr_profit"
         ).strip().lower()
         system._write_session_state(data)
         return int(data["count"])

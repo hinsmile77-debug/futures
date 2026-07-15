@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-07-16 (339차 — 7/15 진입 딥다이브: TP1 보호모드 기본값 전환 + 신호소멸청산 섀도우 복구)
+
+> 상세: `DECISION_LOG.md` 2026-07-16(339차) 항목.
+
+- [DONE 2026-07-16] TP1 1계약 보호모드 기본값 `breakeven`→`atr_profit` 8개 지점
+  통일(`main.py`/`dashboard/main_dashboard.py`/`strategy/runtime/session_recovery_service.py`/
+  `data/session_state.json`).
+- [DONE 2026-07-16] 신호소멸청산 shadow-only 기록 복구(`main.py:_ts_check_exit_triggers`
+  3.5순위) — 290차 원안(즉시 실청산)이 몽키패치로 죽어있던 함수에 구현돼 07/05~09
+  나흘간 한 번도 실행 안 된 채 306차에서 삭제됐던 것을 규명, `signal_decay_exits`
+  테이블 취지대로 기록 전용으로 복구.
+- [ ] **다음 장중 라이브 검증 2건**
+  - TP1 히트 케이스에서 `[SingleContractTP1] ... mode=atr_profit` 로그로 손절가가
+    본전이 아니라 진입가+ATR×0.25로 이동하는지 확인.
+  - 반대신호 발생 시 `[SignalDecayShadow]` DEBUG 로그 + `signal_decay_exits` 테이블
+    신규 행 적재 확인(실제 포지션은 청산되지 않고 유지되는 게 정상).
+- [ ] **신호소멸청산 표본 축적 모니터링 — 매주 금요일 검증캠페인 리포트 확인**
+  `data/validation_campaign_report.md` [4]번 항목이 `min_samples=10` 도달 후 첫
+  PASS/FAIL 판정을 낼 때까지 "표본 부족" 보류가 정상. 10건 이상 쌓인 뒤에도 계속
+  보류로 나오면 섀도우 기록 코드 자체를 재점검할 것.
+- [ ] **[주간회의 안건] 신호소멸청산 채택(실거래 청산 액션 전환) 여부 — 매주 금요일**
+  `resolve_and_eval_signal_decay()` 판정 결과(PASS=유지 관찰 계속 / FAIL=conf 임계
+  zone_mc+0.05 강화 권고, 재음수 시 OFF 권고)를 보고 실거래 반영 여부를 수동 결정.
+  4주 누적("아낀 pt − 놓친 pt")이 기준이므로 최소 4주는 shadow로 관찰 후 판단 —
+  CB②/FP-CRITICAL처럼 "재검토하기로 했는데 안 함" 상태로 방치되지 않도록 이 항목이
+  DONE 처리되기 전엔 삭제하지 말 것.
+
+---
+
 ## 2026-07-15 (337차 — 동적피처 탭 데이터 미갱신: SHAP 피처 레지스트리/배포 모델 불일치 수정)
 
 > 상세: `DECISION_LOG.md` 2026-07-15(337차) 항목.

@@ -8170,3 +8170,98 @@ Cybos `CpSvrNew7212`가 투자자별 콜/풋 순매수를 행사가(모니니스
 
 **관련**: 328차(rv_iv_spread 구현, VKOSPI 재사용 결정), CURRENT_STATE.md "투자자 포지션
 매트릭스 개선"/"옵션 구간별 거래량 UI 연결" 항목(원래 수정·한계 문서화 지점).
+
+---
+
+## 2026-07-16 (339차) — 7/15 진입 0승패 딥다이브에서 발견한 리스크/리워드 비대칭 2건 수정: TP1 보호모드 기본값 전환 + 신호소멸청산 섀도우 복구
+
+> 배경: 7/15 운영 점검(진입 8건 4승4패, PF=0.36) 딥다이브 중, 손실은 항상 풀사이즈
+> (ATR×1.5) 손절인데 이익은 대부분 본전+α 수준에서 캡되는 구조적 비대칭을 발견.
+> 원인 2건을 각각 수정.
+
+### [설계개선] 1계약 TP1 보호모드 기본값 `breakeven` → `atr_profit`
+
+**File**: `main.py:496`(초기값), `main.py:2038-2041`(`_restore_tp1_protect_mode_setting`),
+`main.py:2119-2122`(`_on_tp1_protect_mode_changed`), `main.py:10238`(실행시점 getattr
+fallback), `dashboard/main_dashboard.py:2602,2851,2853`(ExitPanel 기본값/fallback),
+`strategy/runtime/session_recovery_service.py:109-110,117-118`(세션 복구 fallback),
+`data/session_state.json`(`tp1_single_contract_mode` 실제 저장값).
+
+**증상**: 계좌 사이징이 항상 1계약으로 바닥나(기본리스크 300,000원 × 신뢰도/레짐배수 <
+계약당 리스크) `PARTIAL_EXIT_RATIOS`(33/33/34%) 3단 분할청산이 사실상 죽은 로직이 됨 —
+1계약 상황에서 TP1(ATR×0.7, 5m 기준) 도달 시 `arm_tp1_single_contract_with_mode()`가
+호출되는데 기본 모드 `"breakeven"`은 손절가를 진입가(실현이익 0)로만 옮김. 그 결과
+①TP1도 못 찍고 반전=풀손절(-1.5R), ②TP1 찍고 반전=본전 수준(+0~0.2R),
+③TP2까지 논스톱=풀익절(+1.5R) 3갈래뿐 — 손실은 항상 최대 리스크단위, 이익은 대부분
+0.1~0.2R로 캡되는 비대칭. 7/15 8건 중 손실 4건 전부 -4~5pt대(고정폭), 승리는 TP2
+전량 1건(+3.94pt) 제외 나머지 0.3~1.6pt대.
+
+**수정**: 8개 지점의 `"breakeven"` 기본값/fallback을 전부 `"atr_profit"`으로 통일.
+`atr_profit` 모드는 이미 구현돼 있던 옵션으로, TP1 도달 시 손절가를 진입가가 아니라
+`진입가 + ATR×TP1_PROTECT_ATR_LOCK_MULT(0.25)`로 이동 — 반전해도 스크래치(0)가 아니라
+소액 확정이익으로 마감되도록 함. `data/session_state.json`의 실제 저장값도 함께
+갱신(코드 기본값만 바꾸면 이미 저장된 `"breakeven"`을 그대로 로드하므로 다음 재기동에
+반영 안 됨).
+
+**How to apply**: UI 토글 버튼(대시보드 "TP1 1계약 보호전환 설정")으로 사용자가 언제든
+다른 모드로 수동 전환 가능 — 이번 변경은 기본값만 바꾼 것. 🥈🥉로 남겨둔 나머지
+개선안(TP1/Stop 배수 재조정, 회계적 분할청산, 사이징 파라미터 재검토)은 미착수.
+
+**검증**: `py_compile` 통과. **라이브 미검증** — 다음 TP1 히트 케이스에서
+`[SingleContractTP1] ... mode=atr_profit` 로그로 확인 필요.
+
+### [기능복구] 신호소멸청산 — 실거래 액션이 아니라 shadow counterfactual 기록으로 복구
+
+**File**: `main.py:_ts_check_exit_triggers()`(TP3 체크 직후, 시간강제청산 직전 —
+3.5순위), `main.py:__init__`(`_signal_decay_shadow_key` 신규), `config/settings.py:
+SIGNAL_DECAY_EXIT_ENABLED` 주석 갱신.
+
+**원인 규명(딥다이브)**: `SIGNAL_DECAY_EXIT_ENABLED=True`인데 7/15 8건 전부 청산사유가
+하드스톱/TP2뿐이고 "신호소멸청산"은 0건. `git log -S`로 전체 이력 추적한 결과:
+① **2026-05-06**(`1df33a9`) — `_ts_check_exit_triggers()`가 클래스 밖에 별도 정의되고
+파일 최하단에서 `TradingSystem._check_exit_triggers = _ts_check_exit_triggers`로
+몽키패치. 이 시점부터 클래스 본문 안의 원래 `_check_exit_triggers` 메서드는 이미
+죽은 코드(몽키패치가 마지막에 덮어써 절대 실행 안 됨).
+② **2026-07-05**(290차, `f5f116c`) — 260704 감사 로드맵 구현 중 "신호소멸청산"을
+**바로 그 죽어있던 클래스 본문 메서드에** 3.5순위로 추가 — 작성된 순간부터 이미
+실행 경로 밖(몽키패치 존재를 놓치고 잘못된 함수에 기능을 넣은 것으로 추정).
+③ **2026-07-09**(306차, `09389ec`) — 틱 하드스톱 pending 버그 수정 중 "클래스 본문
+`_check_exit_triggers`가 몽키패치로 완전히 덮어써져 실행되지 않는 죽은 코드"임을
+발견하고 122줄을 통째로 삭제(정당한 정리) — 그 안에 신호소멸청산 로직이 있다는 걸
+알아채지 못해 활성 함수로 이식하지 않고 그대로 삭제됨.
+결과: 이 기능은 세상에 존재한 기간이 07/05~07/09 나흘뿐이었고, 그 나흘도 몽키패치
+때문에 단 한 번도 실행된 적이 없었음. `signal_decay_exits` DB 테이블·검증캠페인
+주간 리포트([4]번 항목, `resolve_and_eval_signal_decay()`)는 계속 살아있어 빈 테이블을
+상대로 "발동 표본 부족" 판정만 반복하고 있었음.
+
+**수정 방향(사용자 지시)**: 290차 원안(즉시 실청산)이 아니라 **shadow 기록으로만
+복구** — `signal_decay_exits` 테이블 자체 주석("리포트 전용 계측 테이블 — 실거래
+의사결정에 관여하지 않는다", `utils/db_utils.py`)과 `VALIDATION_CAMPAIGN["signal_decay"]`
+(§3-5, 이미 `min_samples=10`/`cf_window_min=30`으로 사전등록돼 있었음)가 애초에
+shadow-first 설계였으므로, 그 설계대로 되돌림. `_ts_check_exit_triggers()`에 반대신호
+감지 시 `signal_decay_exits`에 INSERT만 하고 `_send_broker_exit_order`/
+`close_position`은 호출하지 않는 블록을 추가. 같은 포지션(`entry_time` 기준)당 1회만
+기록하도록 `_signal_decay_shadow_key`로 중복 적재 방지.
+
+**주간 검토 체계(이미 존재 — 새로 안 만듦)**: `scripts/generate_validation_campaign_report.py`
+의 `resolve_and_eval_signal_decay()`가 매주 금요일 EOD 체인에서 자동으로 counterfactual을
+판정(STOP/TP1/NEITHER 중 무엇에 먼저 닿았는지)하고 `data/validation_campaign_report.md`
+[4]번 항목에 PASS(누적 saved_pts≥0, 유지)/FAIL(음수 — "conf 임계 zone_mc+0.05 강화 후
+2주 재관찰" 권고)/INSUFFICIENT(n<10, 판정 보류)를 출력한다. **채택(실거래 청산 액션
+전환) 여부는 이 리포트를 보고 주간회의에서 수동 결정** — 지금은 shadow 기록만 하므로
+`SIGNAL_DECAY_EXIT_ENABLED=True`여도 실제 청산은 코드 어디에도 없음.
+
+**How to apply**: 앞으로 파일 안에 이름이 비슷하거나 역할이 겹치는 함수/메서드가
+두 벌 있고 몽키패치·재할당으로 한쪽이 덮어써지는 구조를 발견하면, 그 죽은 쪽에
+새 기능을 추가하는 실수가 반복될 수 있음 — 338차(다이버전스 패널 2차 호출 덮어쓰기)와
+동일 계열 사고. 죽은 코드를 정리할 때는 그 안에 아직 이식 안 된 기능이 있는지
+먼저 확인할 것.
+
+**검증**: `py_compile` 통과. **라이브 미검증** — 다음 장중 반대신호 발생 시
+`[SignalDecayShadow]` DEBUG 로그와 `signal_decay_exits` 테이블 신규 행 적재 확인 필요.
+최소 10건(`min_samples`) 쌓여야 검증캠페인 리포트가 첫 판정을 낸다 — 그 전까지는
+[4]번 항목이 계속 "표본 부족" 보류로 나오는 게 정상.
+
+**관련**: 290차(`f5f116c`, 최초 구현), 306차(`09389ec`, 오삭제), CLAUDE.md §2
+FP-CRITICAL·CB②와 같은 "재검토하기로 했는데 방치" 패턴이 되지 않도록 아래
+NEXT_TODO에 표본 축적 확인 항목 등록.

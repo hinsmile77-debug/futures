@@ -493,7 +493,13 @@ class TradingSystem:
                 )
         self.dashboard.set_minute_chart_post_reload_hook(_chart_reload_hook)
         self._reverse_entry_enabled: bool = False
-        self._tp1_protect_mode: str = "breakeven"
+        # [339차] 1계약 TP1 보호모드 기본값 breakeven → atr_profit — 손절은 항상
+        # 풀사이즈(ATR×1.5)로 나가는데 TP1은 본전(+0원)에서 캡되던 비대칭 완화.
+        # atr_profit은 TP1 도달 시 ATR×0.25만큼 확정 이익을 잠근다(그대로 반전해도 소액 실현승).
+        self._tp1_protect_mode: str = "atr_profit"
+        # [339차] 신호소멸청산 섀도우 기록 — 같은 포지션(entry_time)당 1회만 기록해
+        # 반대신호 조건이 여러 분봉에 걸쳐 지속돼도 signal_decay_exits에 중복 적재 방지.
+        self._signal_decay_shadow_key = None
         self._auto_shutdown_done_today: bool = False
         self._skip_post_close_cycle_today: bool = False
         self._feature_registry_path = os.path.join(DB_DIR, "shap_feature_registry.json")
@@ -2035,9 +2041,9 @@ class TradingSystem:
 
     def _restore_tp1_protect_mode_setting(self) -> None:
         state = self._read_session_state()
-        mode = str(state.get("tp1_single_contract_mode", "breakeven") or "breakeven").strip().lower()
+        mode = str(state.get("tp1_single_contract_mode", "atr_profit") or "atr_profit").strip().lower()
         if mode not in {"breakeven", "breakeven_plus", "atr_profit"}:
-            mode = "breakeven"
+            mode = "atr_profit"
         self._tp1_protect_mode = mode
         self.dashboard.set_tp1_protect_mode(mode, emit_signal=False)
 
@@ -2116,9 +2122,9 @@ class TradingSystem:
         )
 
     def _on_tp1_protect_mode_changed(self, mode: str) -> None:
-        mode = str(mode or "breakeven").strip().lower()
+        mode = str(mode or "atr_profit").strip().lower()
         if mode not in {"breakeven", "breakeven_plus", "atr_profit"}:
-            mode = "breakeven"
+            mode = "atr_profit"
         self._tp1_protect_mode = mode
         state = self._read_session_state()
         state["tp1_single_contract_mode"] = mode
@@ -10232,7 +10238,7 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
     total_qty = self.position.quantity
     if total_qty == 1 and stage == 1:
         atr = _ts_get_reference_atr(self)
-        protect_mode = str(getattr(self, "_tp1_protect_mode", "breakeven") or "breakeven").strip().lower()
+        protect_mode = str(getattr(self, "_tp1_protect_mode", "atr_profit") or "atr_profit").strip().lower()
         protect = self.position.arm_tp1_single_contract_with_mode(
             price,
             atr,
@@ -10396,6 +10402,58 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             and self.position.status != "FLAT"
             and self.position.is_tp3_hit(price)):
         self._execute_partial_exit(price, stage=3)
+
+    # 3.5순위: [260704 감사 P1, 339차 섀도우 복구] 신호소멸청산 counterfactual —
+    # 보유 포지션과 반대 방향의 앙상블 신호가 zone_mc(시간대×호라이즌 동적 min_conf)
+    # 이상 신뢰도로 확정되는 시점을 "기록"만 한다. 실제 청산은 하지 않는다(shadow-only).
+    # [이력] 290차가 이 로직을 실거래 즉시청산으로 구현했으나, main.py 최하단의
+    # `TradingSystem._check_exit_triggers = _ts_check_exit_triggers` 몽키패치로 이미
+    # 대체돼 있던 클래스 본문 메서드에 넣는 바람에 작성 즉시 죽은 코드였고, 306차가
+    # 그 죽은 코드를 정리하며 통째로 삭제 — 실제로는 단 한 번도 실행된 적이 없었다
+    # (dev_memory 339차 딥다이브). signal_decay_exits 테이블 자체 주석("리포트 전용
+    # 계측 테이블 — 실거래 의사결정에 관여하지 않는다", utils/db_utils.py)과
+    # VALIDATION_CAMPAIGN["signal_decay"](§3-5, config/settings.py)가 애초에 shadow
+    # counterfactual 전제로 사전등록돼 있었으므로, 이번 복구는 원안(즉시 실청산)이
+    # 아니라 그 설계대로 기록만 되살린다. 매주 금요일 검증캠페인 리포트 [4]번 항목이
+    # 자동으로 PASS/FAIL/보류를 판정하며, 실거래 반영 여부는 주간회의에서 수동 결정한다.
+    if (SIGNAL_DECAY_EXIT_ENABLED
+            and not self._has_pending_order()
+            and self.position.status != "FLAT"
+            and getattr(self, "_signal_decay_shadow_key", None) != self.position.entry_time):
+        _sd_dir     = decision.get("direction", 0)
+        _sd_conf    = float(decision.get("confidence", 0.0) or 0.0)
+        _sd_zone_mc = float(decision.get("min_conf", 1.0) or 1.0)
+        _sd_opposite = (
+            (self.position.status == "LONG" and _sd_dir == -1)
+            or (self.position.status == "SHORT" and _sd_dir == 1)
+        )
+        if _sd_opposite and _sd_conf >= _sd_zone_mc:
+            debug_log.debug(
+                "[SignalDecayShadow] 반대신호 감지(기록만, 실청산 없음): "
+                "pos=%s dir=%d conf=%.3f zone_mc=%.3f",
+                self.position.status, _sd_dir, _sd_conf, _sd_zone_mc,
+            )
+            try:
+                execute(
+                    TRADES_DB,
+                    """INSERT INTO signal_decay_exits
+                       (ts, direction, exit_price, stop_price, tp1_price,
+                        quantity, conf, zone_mc)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                        self.position.status,
+                        float(price),
+                        float(self.position.stop_price or 0.0),
+                        float(self.position.tp1_price or 0.0),
+                        int(self.position.quantity),
+                        _sd_conf,
+                        _sd_zone_mc,
+                    ),
+                )
+            except Exception as _sde:
+                logger.warning("[SignalDecayShadow] counterfactual 기록 실패 (무해): %s", _sde)
+            self._signal_decay_shadow_key = self.position.entry_time
 
     if not self._has_pending_order() and self.time_exit.should_force_exit():
         _engine_qty  = self.position.quantity
