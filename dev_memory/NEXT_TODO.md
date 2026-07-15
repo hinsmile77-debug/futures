@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-07-15 (336차 — STEP7 차단사유 "상세 미수집" 3개 조건 누락 보강)
+
+> 상세: `DECISION_LOG.md` 2026-07-15(336차) 항목.
+
+- [DONE 2026-07-15] `main.py:6928-6953` `_entry_block_reason` elif 체인에
+  `_qty_display<=0`(사이저 수량0) / `_bar_volume_zero`(거래량0봉) /
+  `kill_switch_active`(SHS-EKS 관망) 3개 분기 추가. `_final_entry_ok`(19개
+  AND조건) 대비 대응 분기가 없어 fo=0인데도 사유가 빈 채로 "STEP7 차단
+  (상세 미수집)"로만 뜨던 케이스 보강. 최종 `else`에 재발 감지용
+  `logger.warning("[EntryBlockReason] fo=0인데 사유 미매칭...")` 추가.
+- [ ] **다음 실 UI 기동 시 확인** — SHS-EKS 관망 활성/거래량0봉/사이저
+  qty=0 상황에서 "진입단계추적" 위젯 차단사유란에 각각 정확한 문구가
+  뜨는지, "상세 미수집"이 더 이상 나타나지 않는지 육안 확인. 여전히
+  나타나면 `WARN.log`의 `[EntryBlockReason]` 로그로 어떤 조건이 또
+  빠졌는지 바로 특정 가능.
+
+---
+
 ## 2026-07-15 (335차 — 모드필터 차단사유 X등급 오분류 수정)
 
 > 상세: `DECISION_LOG.md` 2026-07-15(335차) 항목,
