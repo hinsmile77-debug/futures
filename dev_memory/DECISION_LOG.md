@@ -7604,3 +7604,42 @@ RegimeFingerprint 학습분포 갱신만 수행하며, §4-1이 말하는 검증
 `logs/retrain_eod_20260923.log`에서 확인 필요.
 
 **관련**: 333차 후속2(캠페인 체인 retrain_eod.py 이식).
+
+---
+
+## 2026-07-15 (333차 후속4) — 캠페인 체인 중복 제거: `scripts/campaign_steps.py` 공용 모듈로 분리
+
+### [설계결정] `scripts/eod_retrain.py` 삭제 검토 → 삭제 불가 확인 후 중복만 리팩터링
+
+**File**: `scripts/campaign_steps.py`(신설), `retrain_eod.py`(수정), `scripts/eod_retrain.py`(수정)
+
+**배경**: 사용자가 "캠페인 체인을 `retrain_eod.py`로 통합했으니 `scripts/eod_retrain.py`를
+지워도 되는지" 검토 요청. 확인 결과 **삭제 불가** — `scripts/eod_retrain.py`는 캠페인
+체인 외에도 `retrain_eod.py`에 없는 기능(`--weeks`/`--no-force`/`--phase2` CLI 옵션,
+Phase 2 호라이즌별 재학습)을 갖고 있고, `EOD_RETRAIN.bat`·`SETUP_GUIDE.md` §10·
+`scripts/aggregate_and_backfill.py:235`·`docs/정기점검/PERIODIC_INSPECTION_PLAN.md:234`
+네 곳에서 특정 플래그 조합으로 직접 참조하는 문서화된 수동/백업 도구임
+(`dev_memory/CURRENT_STATE.md` 705행에도 "수동/백업용"으로 명시).
+
+대신 진짜 문제는 캠페인 체인 3함수(`_week_last_trading_day`/`_campaign_due`/
+`_run_campaign_steps`)가 333차 후속2~3에서 두 파일에 그대로 복사돼, 후속3의 휴장일
+보정을 두 곳에 각각 손으로 적용해야 했던 것 — 이 중복을 없애는 리팩터링 진행.
+
+**구현**: `scripts/campaign_steps.py` 신설(`week_last_trading_day`/`campaign_due`/
+`run_campaign_steps(logger, base_dir)` — 로거·루트경로를 인자로 받는 순수 함수로
+일반화). `retrain_eod.py`·`scripts/eod_retrain.py` 양쪽 다 중복 정의를 제거하고
+`from scripts.campaign_steps import campaign_due as _campaign_due` +
+`run_campaign_steps`를 얇은 래퍼(`_run_campaign_steps()`)로 감싸 자신의
+로거(`log`/`logger`)와 루트경로(`_ROOT`/`BASE_DIR`)를 넘기도록 수정. 각 파일의
+고유 기능(스케줄 자동 실행 vs CLI 옵션·Phase2)은 그대로 유지.
+
+**검증**: `py_compile`(base·py310_64) 통과. 두 스크립트를 서브프로세스에서 실제
+`exec_module`로 임포트해 `_campaign_due`/`_run_campaign_steps`/`main`이 정상
+정의되고 `_campaign_due()` 호출이 예외 없이 동작함을 확인(2026-07-15 수요일 기준
+`retrain_eod.py`의 `_campaign_due()`→False, `scripts/eod_retrain.py`의
+`_campaign_due(True)`→True 확인). `week_last_trading_day()`를 공용 모듈에서
+직접 호출해 후속3에서 검증한 한글날·크리스마스·추석연휴 케이스와 동일한 결과
+재확인(회귀 없음). **라이브 미검증**은 333차 후속2·후속3과 동일(다음 금요일
+07-17, 다음 휴장 이월 케이스 09-23).
+
+**관련**: 333차 후속2(캠페인 체인 retrain_eod.py 이식), 333차 후속3(휴장일 보정).

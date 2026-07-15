@@ -134,96 +134,15 @@ def main():
         _run_campaign_steps()
 
 
-def _week_last_trading_day(friday):
-    """그 주(월~금) 중 실제 마지막 거래일을 반환.
-
-    금요일이 KRX 휴장일이면 목요일, 목요일도 휴장이면 수요일... 순으로 뒤로
-    물러난다(예: 추석 연휴처럼 목·금이 연속 휴장인 주). retrain_eod.py의
-    동명 함수와 동일 — 333차 후속3.
-    """
-    from config.krx_holidays import is_krx_holiday
-
-    d = friday
-    monday = friday - datetime.timedelta(days=4)
-    while d >= monday and (d.weekday() >= 5 or is_krx_holiday(d)):
-        d -= datetime.timedelta(days=1)
-    return d
-
-
-def _campaign_due(flag):
-    """--campaign 명시 > 금요일(휴장 시 그 주 마지막 거래일) 자동. None=자동 판단."""
-    if flag is not None:
-        return bool(flag)
-    from config.krx_holidays import is_krx_holiday
-
-    today = datetime.date.today()
-    if today.weekday() >= 5 or is_krx_holiday(today):
-        return False
-    this_friday = today + datetime.timedelta(days=4 - today.weekday())
-    return _week_last_trading_day(this_friday) == today
+# [333차 후속4] 캠페인 체인 로직은 scripts/campaign_steps.py 공용 모듈로 이동
+# (retrain_eod.py와 중복 유지되던 것을 통합 — 후속3의 휴장일 보정을 두 파일에
+# 각각 손으로 적용해야 했던 유지보수 비용 확인 후 리팩터링).
+from scripts.campaign_steps import campaign_due as _campaign_due
+from scripts.campaign_steps import run_campaign_steps as _run_campaign_steps_impl
 
 
 def _run_campaign_steps():
-    """[260705 검증 캠페인] 주간 검증 스텝 체인 자동화.
-
-    docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §4-1.
-    각 스텝은 서브프로세스로 격리 — 하나가 실패해도 나머지는 계속 실행한다.
-
-    순서가 중요하다:
-      1) 게이트 ablation 리포트 (읽기 전용)
-      2) 검증 캠페인 판정 리포트 — 반드시 섀도우 TB 재학습 **전에** 실행해야
-         이번 주 데이터가 지난주 모델 기준 OOS로 평가된다 (§3-1 OOS 보장:
-         리포트가 모델 파일 mtime 이후 ts만 평가하므로, 재학습을 먼저 돌리면
-         mtime이 오늘로 갱신돼 평가 표본이 0이 된다)
-      3) 섀도우 TB 재학습 (다음 주 평가용 모델 갱신)
-      4) 분위 회귀 재학습
-      5) 격주(짝수 ISO 주차): MAE/MFE 배리어 적정성 분석
-    """
-    import subprocess
-
-    steps = [
-        ("게이트 ablation 리포트", ["generate_gate_ablation_report.py", "--days", "7"]),
-        ("검증 캠페인 판정 리포트", ["generate_validation_campaign_report.py"]),
-        ("섀도우 TB 재학습", ["run_shadow_triple_barrier_retrain.py"]),
-        ("분위 회귀 재학습", ["train_quantile_regressor.py"]),
-    ]
-    if datetime.date.today().isocalendar()[1] % 2 == 0:
-        steps.append(("MAE/MFE 분석", ["analyze_mae_mfe.py"]))
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    logger.info("=" * 60)
-    logger.info("[검증 캠페인] 주간 스텝 %d개 실행 (§4-1)", len(steps))
-    summary = []
-    for name, cmd in steps:
-        script_path = os.path.join(script_dir, cmd[0])
-        if not os.path.exists(script_path):
-            logger.warning("[검증 캠페인] %s — 스크립트 없음: %s", name, script_path)
-            summary.append((name, "MISSING"))
-            continue
-        try:
-            proc = subprocess.run(
-                [sys.executable, script_path] + cmd[1:],
-                cwd=BASE_DIR,
-                timeout=1800,  # 스텝당 최대 30분
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            )
-            ok = proc.returncode == 0
-            tail = (proc.stdout or b"")[-2000:].decode("utf-8", errors="replace")
-            logger.info("[검증 캠페인] %s → %s (rc=%d)\n%s",
-                        name, "완료" if ok else "실패", proc.returncode, tail)
-            summary.append((name, "OK" if ok else "FAIL(rc=%d)" % proc.returncode))
-        except subprocess.TimeoutExpired:
-            logger.error("[검증 캠페인] %s — 30분 타임아웃", name)
-            summary.append((name, "TIMEOUT"))
-        except Exception as e:
-            logger.error("[검증 캠페인] %s — 실행 오류: %s", name, e)
-            summary.append((name, "ERROR"))
-
-    logger.info("[검증 캠페인] 요약: %s",
-                " | ".join("%s=%s" % (n, s) for n, s in summary))
-    logger.info("판정 리포트: %s",
-                os.path.join(BASE_DIR, "data", "validation_campaign_report.md"))
-    logger.info("=" * 60)
+    _run_campaign_steps_impl(logger, BASE_DIR)
 
 
 if __name__ == "__main__":
