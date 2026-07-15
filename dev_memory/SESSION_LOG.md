@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-15 (335차) — 모드필터 차단사유 X등급 오분류 수정
+
+**트리거**: 사용자가 대시보드 "진입단계추적" 위젯의 `[차단] 모드필터 — X급
+신호 vs manual 모드` 표시를 보고 "모드필터" 차단사유가 무슨 뜻인지 질문 →
+manual 모드는 A/B/C를 이미 다 허용하는데도 X급 신호가 모드필터로 뜨는 게
+모순이라는 걸 짚어 딥다이브 요청.
+
+**진행**: `main.py`의 `allowed_grades`(auto→A, hybrid→A/B, manual→A/B/C)가
+세 모드 어디에도 "X"를 포함하지 않아, `_final_grade=="X"`이면 `mode_filter_
+passed`가 모드 설정과 무관하게 항상 False가 됨을 발견. `_entry_block_reason`
+elif 체인(`main.py:6848~6939`)에서 모드필터 분기(6920)가 진짜 등급X 사유
+분기(6930)보다 먼저 와서, X등급 차단이 전부 "모드필터"로 오분류되고 있었음
+— DB 저장/대시보드 표시·리포트 집계에만 영향, 실제 진입 실행 경로는 무관.
+`elif not mode_filter_passed:`에 `and _final_grade != "X"` 조건을 추가해 수정.
+
+**검증**: `python -m ast`로 `main.py` 구문 확인. 라이브 미검증 — 상세:
+`DECISION_LOG.md`/`NEXT_TODO.md` 335차 항목. 커밋: `8401d5c`(코드 수정,
+사용자 요청으로 335차 소급 부여 후 dev_memory 사후 반영).
+
+---
+
 ## 2026-07-15 (334차) — 대시보드 호라이즌 on/off 체크박스 제거 → config/settings.py:HORIZON_ENABLED로 일원화
 
 **트리거**: 사용자가 대시보드 좌측 중단 "1분~30분" 체크박스 카드를 지우고
