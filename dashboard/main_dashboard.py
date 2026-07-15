@@ -50,7 +50,7 @@ from config.settings import (
     ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
     ATR_ADAPTIVE_MAX_CEILING, ATR_EXPIRY_CEILING_MULT,
     ATR_EXPIRY_CEILING_DAYS_BEFORE, ATR_EXPIRY_CEILING_DAYS_AFTER,
-    CB_ACC30M_MIN_SAMPLES, SGD_BLEND_DISABLED_HORIZONS,
+    CB_ACC30M_MIN_SAMPLES, SGD_BLEND_DISABLED_HORIZONS, HORIZON_ENABLED,
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
@@ -996,66 +996,18 @@ def card(title, widget, color=C['blue'], header_widget=None):
 # 패널 1: 멀티 호라이즌 예측 + 파라미터 분석
 # ────────────────────────────────────────────────────────────
 class PredictionPanel(QWidget):
-    hz_filter_changed = pyqtSignal()
-
-    def __init__(self):
-        super().__init__()
-        self._hz_labels = {}
-        self._hz_enabled = {}
-        self._build()
-
     _HZ_KEY_MAP = {
         "1분": "1m", "3분": "3m", "5분": "5m",
         "10분": "10m", "15분": "15m", "30분": "30m",
     }
 
+    def __init__(self):
+        super().__init__()
+        self._build()
+
     def get_enabled_horizons(self) -> set:
-        return {self._HZ_KEY_MAP[h] for h, cb in self._hz_enabled.items() if cb.isChecked()}
-
-    def _save_hz_filter(self):
-        try:
-            _f = os.path.join(DATA_DIR, "ui_prefs.json")
-            p = {}
-            if os.path.exists(_f):
-                with open(_f, "r", encoding="utf-8") as fp:
-                    p = json.load(fp)
-            p["hz_filter"] = {hname: cb.isChecked() for hname, cb in self._hz_enabled.items()}
-            with open(_f, "w", encoding="utf-8") as fp:
-                json.dump(p, fp, ensure_ascii=False)
-        except Exception:
-            pass
-
-    def _load_hz_filter(self):
-        try:
-            _f = os.path.join(DATA_DIR, "ui_prefs.json")
-            if not os.path.exists(_f):
-                return
-            with open(_f, "r", encoding="utf-8") as fp:
-                saved = json.load(fp).get("hz_filter", {})
-            for hname, cb in self._hz_enabled.items():
-                if hname in saved:
-                    cb.blockSignals(True)
-                    cb.setChecked(bool(saved[hname]))
-                    cb.blockSignals(False)
-        except Exception:
-            pass
-        # 로드 후 시각 상태 동기화 (OFF 항목 dim 처리); 초기화 시점이므로 signal emit 생략
-        self._on_hz_filter_changed(emit=False)
-
-    def _on_hz_filter_changed(self, emit=True):
-        for hname, cb in self._hz_enabled.items():
-            if hname not in self._hz_labels:
-                continue
-            frame, arr, pct = self._hz_labels[hname]
-            if not cb.isChecked():
-                frame.setStyleSheet(
-                    f"QFrame{{background:{C['bg']};border:1px dashed {C['border']};"
-                    f"border-radius:6px;}}"
-                )
-                arr.setStyleSheet(f"color:{C['text2']};font-size:{S.f(22)}px;font-weight:bold;")
-                pct.setStyleSheet(f"color:{C['text2']};font-size:{S.f(12)}px;")
-        if emit:
-            self.hz_filter_changed.emit()
+        """config/settings.py:HORIZON_ENABLED 기준 — False인 호라이즌은 앙상블 투표 제외."""
+        return {h for h, enabled in HORIZON_ENABLED.items() if enabled}
 
     def _make_report_tab(self, title: str, accent: str):
         frame = QFrame()
@@ -1103,9 +1055,7 @@ class PredictionPanel(QWidget):
         lay.addWidget(self._dir_indicator)
         lay.addWidget(mk_sep())
 
-        # ── 2. 멀티 호라이즌 예측 카드 ───────────────────────────
-
-        # 모델 상태 행 (학습 대기 / 재학습중) — model.is_ready() 시 숨김
+        # ── 2. 모델 상태 행 (학습 대기 / 재학습중) — model.is_ready() 시 숨김 ──
         self._model_row = QWidget()
         _mrow = QHBoxLayout(self._model_row)
         _mrow.setContentsMargins(0, 2, 0, 2)
@@ -1118,126 +1068,6 @@ class PredictionPanel(QWidget):
         _mrow.addWidget(self._lbl_model_state)
         _mrow.addWidget(self._model_prog, 2)
         _mrow.addWidget(self._lbl_model_detail, 1)
-        # lay.add는 hgrid 아래로 이동
-
-        # ── 섹션: 호라이즌 On/Off ─────────────────────────────────
-        hgrid = QGridLayout()
-        hgrid.setSpacing(4)
-        _HZ_STALE_TIP = {
-            "5분":  ("2.5분", "age &gt; 2.5분"),
-            "10분": ("5분",   "age &gt; 5분"),
-            "15분": ("7.5분", "age &gt; 7.5분"),
-            "30분": ("15분",  "age &gt; 15분"),
-        }
-        _HZ_CARD_TIP_BASE = (
-            "<div style='font-family:Consolas,monospace;font-size:11px;"
-            "line-height:1.8;min-width:310px;'>"
-            "<b style='color:#58A6FF;'>{hname} 호라이즌 예측 카드</b>"
-            "<hr style='border:0;border-top:1px solid #30363D;margin:4px 0 6px 0'>"
-            "<b style='color:#E6EDF3;'>테두리·색상 의미</b><br>"
-            "<table style='border-collapse:collapse;font-size:11px;margin-left:4px;'>"
-            "<tr><td style='color:#F85149;font-weight:bold;padding-right:8px;'>■ 빨간 solid</td>"
-            "<td style='color:#E6EDF3;'>하락(▼) 신호 활성화</td></tr>"
-            "<tr><td style='color:#3FB950;font-weight:bold;padding-right:8px;'>■ 초록 solid</td>"
-            "<td style='color:#E6EDF3;'>상승(▲) 신호 활성화</td></tr>"
-            "<tr><td style='color:#8B949E;font-weight:bold;padding-right:8px;'>■ 회색 solid</td>"
-            "<td style='color:#E6EDF3;'>횡보 또는 중립</td></tr>"
-            "<tr><td style='color:#8B949E;font-weight:bold;padding-right:8px;'>- - 점선</td>"
-            "<td style='color:#E6EDF3;'>앙상블에서 비활성화(체크박스 OFF)</td></tr>"
-            "{stale_row}"
-            "</table>"
-            "{stale_note}"
-            "<hr style='border:0;border-top:1px solid #30363D;margin:5px 0 4px 0'>"
-            "<span style='color:#8B949E;font-size:10px;'>"
-            "% 수치 = 해당 방향 확률 (GBM+SGD 블렌딩)"
-            "</span></div>"
-        )
-        _STALE_ROW = (
-            "<tr><td style='color:#D29922;font-weight:bold;padding-right:8px;'>■ 황색 점선</td>"
-            "<td style='color:#E6EDF3;'>완성봉 스태일 경고 ({cond})</td></tr>"
-        )
-        _STALE_NOTE = (
-            "<div style='margin-top:5px;color:#D29922;font-size:11px;'>"
-            "⚠ <b>Xm전</b> = 완성봉 확정 후 경과 분<br>"
-            "&nbsp;&nbsp;예측값은 유효하나 입력 신선도 저하 — 진입 시 주의"
-            "</div>"
-        )
-        for i, hname in enumerate(["1분","3분","5분","10분","15분","30분"]):
-            _stale_info = _HZ_STALE_TIP.get(hname)
-            _tip = _HZ_CARD_TIP_BASE.format(
-                hname=hname,
-                stale_row=_STALE_ROW.format(cond=_stale_info[1]) if _stale_info else "",
-                stale_note=_STALE_NOTE if _stale_info else "",
-            )
-            frame = QFrame()
-            frame.setFixedHeight(72)
-            frame.setStyleSheet(
-                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
-                f"border-radius:6px;}}"
-            )
-            frame.setToolTip(_tip)
-            fl = QVBoxLayout(frame)
-            fl.setContentsMargins(6, 4, 6, 4)
-            hl = mk_label(hname, C['text2'], 10, align=Qt.AlignCenter)
-            if hname == "30분":
-                hl.setToolTip(
-                    "30분 예측 — FLAT 기준 설명\n\n"
-                    "━━ FLAT 관련 설정 (2026-06-02 개선) ━━\n\n"
-                    "① CB③ FLAT 예측 제외\n"
-                    "   direction=0(FLAT) 예측은 CB③ 집계 제외\n"
-                    "   방향성 예측(UP/DN)만 30분 정확도로 평가\n"
-                    "   이유: FLAT 고착 시 acc 급락 → CB③ 오발동\n\n"
-                    "② CB_ACCURACY_MIN_30M: 0.35 → 0.28\n"
-                    "   FLAT 제외 후 랜덤 기준 = 50% (UP/DN 2클래스)\n"
-                    "   0.28 = 랜덤의 56% — 명백한 역방향만 정지\n\n"
-                    "③ PATH_LABEL_RATIO: 0.45 → 0.55\n"
-                    "   학습 레이블 생성 시 FLAT 분류 기준 완화\n"
-                    "   임계값의 55% 이상 역행 시만 FLAT 처리\n"
-                    "   (기존 45%) → FLAT 레이블 비율 감소\n\n"
-                    "④ _CW_30M: {FL:1.00} → {FL:0.70, UP:1.15, DN:1.15}\n"
-                    "   GBM 학습 시 FLAT 가중치 낮춤\n"
-                    "   UP/DN 예측 강화 → 반전 시 FLAT 고착 방지"
-                )
-            arr = mk_label("—", C['text2'], 22, True, Qt.AlignCenter)
-            pct = mk_label("—%", C['text2'], 10, align=Qt.AlignCenter)
-            fl.addWidget(hl)
-            fl.addWidget(arr)
-            fl.addWidget(pct)
-            self._hz_labels[hname] = (frame, arr, pct)
-            # 카드 프레임은 레이아웃 비표시 (update_data 로직 보존용으로만 유지)
-
-            cb = QCheckBox()
-            cb.setChecked(True)
-            cb.setToolTip(f"{hname} 호라이즌을 앙상블 신뢰도/등급 판정에 포함")
-            cb.setStyleSheet(
-                "QCheckBox{margin:0px;}"
-                "QCheckBox::indicator{width:11px;height:11px;border-radius:2px;}"
-                f"QCheckBox::indicator:checked{{background:{C['green']};"
-                f"border:1px solid {C['green']};}}"
-                f"QCheckBox::indicator:unchecked{{background:{C['bg']};"
-                f"border:1px solid {C['border']};}}"
-            )
-            cb.stateChanged.connect(self._on_hz_filter_changed)
-            cb.stateChanged.connect(self._save_hz_filter)
-            self._hz_enabled[hname] = cb
-
-            cb_wrap = QWidget()
-            cb_lay = QVBoxLayout(cb_wrap)
-            cb_lay.setContentsMargins(0, 2, 0, 0)
-            cb_lay.setSpacing(2)
-            name_lbl = mk_label(hname, C['text2'], 9, align=Qt.AlignCenter)
-            cb_row = QWidget()
-            cb_row_lay = QHBoxLayout(cb_row)
-            cb_row_lay.setContentsMargins(0, 0, 0, 0)
-            cb_row_lay.setSpacing(0)
-            cb_row_lay.addStretch()
-            cb_row_lay.addWidget(cb)
-            cb_row_lay.addStretch()
-            cb_lay.addWidget(name_lbl)
-            cb_lay.addWidget(cb_row)
-            hgrid.addWidget(cb_wrap, 0, i)
-        self._load_hz_filter()
-        lay.addLayout(hgrid)
 
         lay.addStretch(1)
 
@@ -1254,12 +1084,14 @@ class PredictionPanel(QWidget):
                 f"font-size:{S.f(13)}px;font-weight:bold;"
             )
 
-        # 앙상블 방향 (활성화된 호라이즌만 투표)
-        _enabled_ui = {h for h, cb in self._hz_enabled.items() if cb.isChecked()} if self._hz_enabled else None
-        _total = len(_enabled_ui) if _enabled_ui else 6
-        _threshold = max(1, _total // 2 + 1)
-        ups = sum(1 for h, v in preds.items() if (_enabled_ui is None or h in _enabled_ui) and v['signal'] == 1)
-        dns = sum(1 for h, v in preds.items() if (_enabled_ui is None or h in _enabled_ui) and v['signal'] == -1)
+        # 앙상블 방향 (config/settings.py:HORIZON_ENABLED 기준으로 투표)
+        # preds는 한글 호라이즌명("1분" 등) 키 — _HZ_KEY_MAP으로 영문 키 변환 후 대조
+        _enabled_ui = self.get_enabled_horizons()
+        _threshold = max(1, len(_enabled_ui) // 2 + 1)
+        ups = sum(1 for h, v in preds.items()
+                  if self._HZ_KEY_MAP.get(h, h) in _enabled_ui and v['signal'] == 1)
+        dns = sum(1 for h, v in preds.items()
+                  if self._HZ_KEY_MAP.get(h, h) in _enabled_ui and v['signal'] == -1)
         if ups >= _threshold:
             self.lbl_signal.setText("▲ 매수")
             self.lbl_signal.setStyleSheet(f"color:{C['green']};font-size:{S.f(16)}px;font-weight:bold;")
@@ -1269,59 +1101,6 @@ class PredictionPanel(QWidget):
         else:
             self.lbl_signal.setText("— 관망")
             self.lbl_signal.setStyleSheet(f"color:{C['text2']};font-size:{S.f(16)}px;font-weight:bold;")
-
-        # 호라이즌 카드
-        _HZ_MIN = {"1분":1,"3분":3,"5분":5,"10분":10,"15분":15,"30분":30}
-        for hname, pred in preds.items():
-            if hname not in self._hz_labels:
-                continue
-            frame, arr, pct = self._hz_labels[hname]
-            _is_enabled = self._hz_enabled.get(hname)
-            _active = (_is_enabled is None) or _is_enabled.isChecked()
-            if pred['signal'] == 1:
-                arr.setText("▲")
-                _pct_base = f"{pred['up']*100:.1f}%"
-                if _active:
-                    col = C['green']
-                    frame.setStyleSheet(
-                        f"QFrame{{background:#0D2818;border:1px solid {C['green']};border-radius:6px;}}")
-                else:
-                    col = C['text2']
-                    frame.setStyleSheet(
-                        f"QFrame{{background:{C['bg']};border:1px dashed {C['border']};border-radius:6px;}}")
-            elif pred['signal'] == -1:
-                arr.setText("▼")
-                _pct_base = f"{pred['dn']*100:.1f}%"
-                if _active:
-                    col = C['red']
-                    frame.setStyleSheet(
-                        f"QFrame{{background:#2D0D0D;border:1px solid {C['red']};border-radius:6px;}}")
-                else:
-                    col = C['text2']
-                    frame.setStyleSheet(
-                        f"QFrame{{background:{C['bg']};border:1px dashed {C['border']};border-radius:6px;}}")
-            else:
-                arr.setText("—")
-                _pct_base = "횡보"
-                col = C['text2']
-                _border = "solid" if _active else "dashed"
-                frame.setStyleSheet(
-                    f"QFrame{{background:{C['bg2']};border:1px {_border} {C['border']};border-radius:6px;}}")
-            # Phase 2: bar_age 표시 — 완성봉 이후 경과 분 수 (1m봉은 제외)
-            _h_key = self._HZ_KEY_MAP.get(hname, hname)
-            _h_min = _HZ_MIN.get(hname, 1)
-            _age = (bar_ages or {}).get(_h_key, 0)
-            if _age > 0 and _h_min > 1:
-                pct.setText(f"{_pct_base} {_age}m전")
-                if _age > _h_min // 2 and _active:
-                    frame.setStyleSheet(
-                        f"QFrame{{background:{C['bg2']};border:2px dashed {C['orange']};"
-                        f"border-radius:6px;}}")
-                    col = C['orange']
-            else:
-                pct.setText(_pct_base)
-            arr.setStyleSheet(f"color:{col};font-size:{S.f(22)}px;font-weight:bold;")
-            pct.setStyleSheet(f"color:{col};font-size:{S.f(12)}px;")
 
 
     def set_model_status(self, state, detail="", progress=-1, price=None,
@@ -10006,7 +9785,9 @@ class MireukDashboard(QMainWindow):
             from dashboard.panels.conf_trend_widget import make_conf_trend_card
             self._conf_trend_card = make_conf_trend_card(parent=None)
             left_split.addWidget(self._conf_trend_card)
-            left_split.setSizes([200, 500, 280])
+            # 340차: 호라이즌 on/off 체크박스 그리드 제거로 pred_panel 하단 여백이
+            # 늘어난 만큼 진입단계 카드 쪽으로 배분 (500→420, 280→360)
+            left_split.setSizes([200, 420, 360])
         except Exception as _cte:
             logger.warning("[Dashboard] ConfTrendCard 로드 실패: %s", _cte)
             left_split.setSizes([200, 740])

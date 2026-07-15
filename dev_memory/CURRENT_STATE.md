@@ -1,6 +1,21 @@
 # 미륵이 (futures) 현재 개발 상태
 
-> 마지막 업데이트: 2026-07-15 (333차 후속3) — **[주간회의 안건] MW0601 라이브
+> 마지막 업데이트: 2026-07-15 (334차) — 대시보드 좌측 중단 "1분~30분" 호라이즌
+> on/off 체크박스 카드 제거, `config/settings.py:HORIZON_ENABLED`로 일원화.
+> 이 체크박스는 단순 표시용이 아니라 `main.py:5396-5407`에서
+> `pred_panel.get_enabled_horizons()`로 실제 앙상블 진입 판단(호라이즌 수동
+> 배제)에 쓰이던 기능이라, 무단 제거 대신 사용자 확인(AskUserQuestion) 후
+> 기능까지 함께 제거→설정화로 진행. `PredictionPanel`의 체크박스 그리드·
+> 툴팁·`ui_prefs.json` 저장/로드·이미 죽어있던 invisible 프레임 루프까지
+> 정리(~240줄 삭제), `get_enabled_horizons()`는 `HORIZON_ENABLED` 읽기로
+> 단순화(`main.py` 호출부 무변경). 좌측 스플리터 크기
+> `[200,500,280]`→`[200,420,360]`로 재배분해 "진입단계" 카드(conf_trend_card)
+> 확장. `QT_QPA_PLATFORM=offscreen` 스모크테스트로 대시보드 전체 생성 +
+> 호라이즌 배제 시 투표 결과 변화까지 직접 실행 확인. **라이브 미검증** —
+> 다음 실 UI 기동 시 카드 배치·`HORIZON_ENABLED` False 반영 여부 육안 확인
+> 필요. 상세: `DECISION_LOG.md`/`NEXT_TODO.md` 2026-07-15(334차) 항목.
+>
+> 이전 업데이트: 2026-07-15 (333차 후속3) — **[주간회의 안건] MW0601 라이브
 > 머신에서 §4-1 금요일 자동화 체인이 한 번도 실행된 적 없었음 발견**. 실제
 > Windows 작업 스케줄러 `MireukiEODRetrain`(매일 15:45)은 프로젝트 루트
 > `retrain_eod.py`를 호출하는데, 여기엔 섀도우 TB 재학습·게이트 ablation·분위회귀
@@ -37,6 +52,20 @@
 > 종료됨을 확인. 15:48 EOD 재학습도 6/6 호라이즌 정상 교체 + P8 스케일러
 > 재적합까지 에러 없이 완료.
 > 이 파일이 가장 먼저 읽혀야 한다.
+
+---
+
+## 2026-07-14 (332차) — 장후(18:28) 디버그 재기동 크래시 2건 진단·수정
+
+①`main.py:_restore_analysis_buffers()`가 `self.model.feature_names`(전체
+슈퍼셋)로 SHAP 복원 벡터를 만들어 `self._shap_tracker`(1m 서브셋)와 어긋나
+`IndexError`로 `TradingSystem.__init__` 자체가 실패하던 버그 수정.
+②그 수정 후에도 Python 예외 없이 프로세스가 조용히 죽어 `crash_fault.log`를
+보니 `0xc0000374`(STATUS_HEAP_CORRUPTION) 네이티브 크래시 확인 — shap 0.41
+`TreeExplainer`가 `HistGradientBoostingClassifier`(배치 재학습 주 경로 모델)를
+정상 예외 대신 힙 손상으로 처리, `try/except`로 못 잡던 경로였음.
+`_calc_importance()`에 `hasattr(model, "estimators_")` 가드 추가로 회피.
+라이브 검증 여부: `DECISION_LOG.md`/`NEXT_TODO.md` 2026-07-14(332차) 항목 참조.
 
 ---
 

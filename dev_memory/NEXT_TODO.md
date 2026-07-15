@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-07-15 (334차 — 대시보드 호라이즌 체크박스 제거 → HORIZON_ENABLED 설정화)
+
+> 상세: `DECISION_LOG.md` 2026-07-15(334차) 항목.
+
+- [DONE 2026-07-15] `config/settings.py`에 `HORIZON_ENABLED` 딕셔너리 추가,
+  `dashboard/main_dashboard.py` PredictionPanel의 호라이즌 on/off 체크박스
+  그리드 제거 후 설정 기반으로 일원화. 좌측 "진입단계" 카드 레이아웃 개선
+  (`left_split.setSizes([200,500,280])`→`[200,420,360]`).
+- [ ] **다음 실 UI 기동 시 확인** — 좌측 중단 카드 배치가 의도대로 여백 없이
+  보이는지, `HORIZON_ENABLED`에서 특정 호라이즌을 False로 바꿨을 때 실제
+  앙상블 진입 판단에서 제외되는지 육안 확인.
+
+---
+
 ## 2026-07-15 (333차 후속5 — RegimeFingerprint PSI CRITICAL 로그 대시보드 경보탭 노출 제거)
 
 > 상세: `DECISION_LOG.md` 2026-07-15(333차 후속5) 항목. v9-dev에 310차(5분 쓰로틀)가

@@ -7675,3 +7675,46 @@ CLAUDE.md에도 균등폭 10-bin PSI 계측 결함(실투 전환 전 재검토 �
 
 **관련**: CLAUDE.md FP-CRITICAL 한시 예외, 303차(FP-CRITICAL 진입차단 비활성),
 303차 후속(HealthPolicy exceptions_10m 오집계 수정 — 별개 배선).
+
+## 2026-07-15 (334차) — 대시보드 호라이즌 on/off 체크박스 제거 → config/settings.py:HORIZON_ENABLED로 일원화 + 진입단계 카드 레이아웃 개선
+
+### [설계결정] PredictionPanel 체크박스 그리드가 실거래 앙상블 필터링을 겸하고 있어 UI 정리 시 기능 손실 위험을 사용자 확인 후 진행
+
+**File**: `config/settings.py`, `dashboard/main_dashboard.py`
+
+**배경**: 사용자가 대시보드 좌측 중단의 "1분~30분" 초록 체크박스 카드를 제거하고
+그 아래 "진입단계" 카드(conf_trend_card)를 위로 당겨 여백을 줄여달라고 요청.
+코드 확인 결과 이 체크박스 그리드(`PredictionPanel._build()`의 hgrid)는 단순
+표시용이 아니라 `main.py:5396-5407`에서 `pred_panel.get_enabled_horizons()`를
+호출해 실제 앙상블 진입 판단에서 특정 호라이즌을 수동 배제하는 데 쓰이고
+있었음. 무단 제거 시 실거래 제어 기능이 함께 사라지므로 사용자에게 확인
+(AskUserQuestion) — "기능도 함께 제거"로 답변, 이후 "settings에 정의해서
+호라이즌별 enable=true/false로 제어" 요청으로 구체화.
+
+**구현**:
+- `config/settings.py`에 `HORIZON_ENABLED = {"1m": True, ..., "30m": True}` 추가
+  (`HORIZONS` 바로 아래). 개별 호라이즌을 False로 바꾸면 앙상블 투표에서 제외.
+- `PredictionPanel`에서 체크박스 그리드(hgrid)·툴팁 문자열·`ui_prefs.json`
+  저장/로드(`_save_hz_filter`/`_load_hz_filter`)·`hz_filter_changed` 시그널·
+  화면에 표시되지 않던 invisible 프레임 루프(`update_data`의 "호라이즌 카드"
+  구간, 이미 이전 세션에서 레이아웃 비표시 처리된 죽은 코드)까지 함께 정리
+  (~240줄 삭제).
+- `get_enabled_horizons()`는 이제 `HORIZON_ENABLED`를 읽어 반환하도록 단순화
+  (영문 키 집합 반환 — `main.py:5400` 호출부는 변경 없이 그대로 동작).
+- `update_data()`의 ups/dns 투표 집계는 `preds`가 한글 키("1분" 등)를 쓰는 점을
+  감안해 기존 `_HZ_KEY_MAP`(한글→영문)으로 `HORIZON_ENABLED` 대조.
+- 좌측 스플리터 크기 `left_split.setSizes([200, 500, 280])` →
+  `[200, 420, 360]`로 조정 — 체크박스 그리드가 차지하던 여백만큼 "진입단계"
+  카드(conf_trend_card) 쪽에 재배분.
+
+**검증**: `QT_QPA_PLATFORM=offscreen`으로 `MireukDashboard` 전체 생성 확인,
+`PredictionPanel.get_enabled_horizons()`가 `HORIZON_ENABLED` 변경에 맞춰
+정상 반환하는지, `update_data()`가 특정 호라이즌 비활성화 시 투표에서
+실제로 제외되는지(5개 중 3표 매수 임계 충족 케이스) 직접 실행 확인.
+`ast.parse`로 `main.py`/`dashboard/main_dashboard.py` 구문 확인.
+**라이브 미검증** — 실제 장중 기동 후 `HORIZON_ENABLED`를 False로 바꿔
+해당 호라이즌이 실제로 앙상블 진입 판단에서 제외되는지, 대시보드
+"진입단계" 카드 배치가 의도대로 여백 없이 보이는지 육안 확인 필요.
+
+**관련**: `main.py:5396-5407`(호라이즌 필터 소비부), CLAUDE.md에는 직접
+언급 없음(대시보드 UI/설정 정리, 절대원칙 변경 아님).
