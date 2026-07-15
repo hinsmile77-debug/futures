@@ -250,11 +250,34 @@ def _wait_for_daily_close(max_wait_min: int = 20, poll_sec: int = 30) -> bool:
 # (retrain_eod.py)을 실행할 뿐 scripts/eod_retrain.py(캠페인 체인 보유)는 스케줄된 적이
 # 없어 §4-1 자동화가 죽어있었음(07-05 단 1회, 0바이트 로그) — 여기로 이식해 실제
 # 스케줄에 연결한다. 로직은 scripts/eod_retrain.py의 동명 함수와 동일.
+def _week_last_trading_day(friday: datetime.date) -> datetime.date:
+    """그 주(월~금) 중 실제 마지막 거래일을 반환.
+
+    금요일이 KRX 휴장일이면 목요일, 목요일도 휴장이면 수요일... 순으로 뒤로
+    물러난다(예: 추석 연휴처럼 목·금이 연속 휴장인 주). Windows 작업 스케줄러는
+    시장 휴장일을 모르고 요일로만 트리거하므로(월~금 매일 15:45 실행), 파이썬
+    레벨에서 "이번 주 실제 마지막 거래일"을 판단해야 한다.
+    """
+    from config.krx_holidays import is_krx_holiday
+
+    d = friday
+    monday = friday - datetime.timedelta(days=4)
+    while d >= monday and (d.weekday() >= 5 or is_krx_holiday(d)):
+        d -= datetime.timedelta(days=1)
+    return d
+
+
 def _campaign_due(flag=None):
-    """--campaign 명시 > 금요일 자동. None=자동 판단."""
+    """--campaign 명시 > 금요일(휴장 시 그 주 마지막 거래일) 자동. None=자동 판단."""
     if flag is not None:
         return bool(flag)
-    return datetime.date.today().weekday() == 4  # 금요일
+    from config.krx_holidays import is_krx_holiday
+
+    today = datetime.date.today()
+    if today.weekday() >= 5 or is_krx_holiday(today):
+        return False  # 오늘 자체가 휴장일이면 실행하지 않음
+    this_friday = today + datetime.timedelta(days=4 - today.weekday())
+    return _week_last_trading_day(this_friday) == today
 
 
 def _run_campaign_steps():

@@ -134,11 +134,33 @@ def main():
         _run_campaign_steps()
 
 
+def _week_last_trading_day(friday):
+    """그 주(월~금) 중 실제 마지막 거래일을 반환.
+
+    금요일이 KRX 휴장일이면 목요일, 목요일도 휴장이면 수요일... 순으로 뒤로
+    물러난다(예: 추석 연휴처럼 목·금이 연속 휴장인 주). retrain_eod.py의
+    동명 함수와 동일 — 333차 후속3.
+    """
+    from config.krx_holidays import is_krx_holiday
+
+    d = friday
+    monday = friday - datetime.timedelta(days=4)
+    while d >= monday and (d.weekday() >= 5 or is_krx_holiday(d)):
+        d -= datetime.timedelta(days=1)
+    return d
+
+
 def _campaign_due(flag):
-    """--campaign 명시 > 금요일 자동. None=자동 판단."""
+    """--campaign 명시 > 금요일(휴장 시 그 주 마지막 거래일) 자동. None=자동 판단."""
     if flag is not None:
         return bool(flag)
-    return datetime.date.today().weekday() == 4  # 금요일
+    from config.krx_holidays import is_krx_holiday
+
+    today = datetime.date.today()
+    if today.weekday() >= 5 or is_krx_holiday(today):
+        return False
+    this_friday = today + datetime.timedelta(days=4 - today.weekday())
+    return _week_last_trading_day(this_friday) == today
 
 
 def _run_campaign_steps():
