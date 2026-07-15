@@ -64,7 +64,9 @@ KOSPI 200 선물 1분봉 기반 방향 예측 + 자동매매 시스템 (별칭: 
 > (근거: 292차·296차·297차 커밋, 진입0 딥다이브)
 
 > **[2026-07-08 한시 예외] FP-CRITICAL** — `config/settings.py:FP_CRITICAL_GRADE_BLOCK_ENABLED = False`
-> (RegimeFingerprint PSI CRITICAL 시 진입 차단만 비활성, PSI 계산·로그·대시보드 표시는 유지).
+> (RegimeFingerprint PSI CRITICAL 시 진입 차단만 비활성, PSI 계산·file 로그·strategy_ops
+> 패널 표시는 유지. 단 333차 후속5부터 이 WARNING 로그가 대시보드 "2 경보" 탭에
+> 반복 표시되던 것은 제거 — file 로그만 남기는 셰도우 모니터링으로 전환).
 > 사유: 이 게이트는 2026-05-07 배선됐으나 학습분포 저장 함수가 프로덕션에서 호출된 적이
 > 없어 2026-07-07(299차)까지 약 2개월간 PSI=0.0 고정(사실상 죽은 코드, 미발동)이었음.
 > 299차가 임시 부트스트랩 기준선을, 302차가 실제 WFA 26주 기준선을 배선해 "부활"시켰으나,

@@ -698,6 +698,7 @@ class TradingSystem:
         self._pending_limit_price: float = 0.0
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
         self._last_health_level: str = "INFO"
+        self._fp_last_logged_level: Optional[int] = None
         self._health_degraded_mode: bool = False
         self._health_warn_streak: int = 0
         self._health_info_streak: int = 0
@@ -4773,18 +4774,33 @@ class TradingSystem:
             _fp      = _get_fp()
             _fp_psi  = _fp.update_live(features)
             _fp_lv   = _fp.get_level()
+            # 레벨이 유지되는 동안 매분 동일 WARN이 반복 적재되는 것을 방지 —
+            # 레벨 전환 시점은 즉시 로그, 그 외에는 5분 간격 하트비트로 축소.
+            _fp_lv_changed = _fp_lv != self._fp_last_logged_level
+            self._fp_last_logged_level = _fp_lv
+            # [303차] PSI 계측 결함(균등폭 10-bin 첨봉 분포)으로 CRITICAL/ALARM이
+            # 상시 고착 — 차단은 이미 비활성(FP_CRITICAL_GRADE_BLOCK_ENABLED=False)이고
+            # 실제로 라이브에 반영되지 않는 계측치이므로 대시보드 경보 탭에는 올리지
+            # 않는다(오탐지성 반복 경보로 실제 이상 신호를 파묻음). file 로거로만 남겨
+            # 셰도우 모니터링(사후 grep·재설계 검증용)은 유지 — CLAUDE.md FP-CRITICAL 참조.
             if _fp_psi > 0.30:
-                log_manager.system(
-                    f"[RegimeFingerprint] PSI={_fp_psi:.3f} CRITICAL — "
-                    f"시장 구조 변화 감지, 신규 진입 차단 검토",
-                    "WARNING",
-                )
+                if _fp_lv_changed or _ts_should_emit_throttled(
+                    self, "fp_psi_critical", min_interval_sec=300.0
+                ):
+                    logger.warning(
+                        "[RegimeFingerprint] PSI=%.3f CRITICAL — "
+                        "시장 구조 변화 감지, 감시전용(차단 비활성, 대시보드 미표시)",
+                        _fp_psi,
+                    )
             elif _fp_psi > 0.20:
-                log_manager.system(
-                    f"[RegimeFingerprint] PSI={_fp_psi:.3f} ALARM — "
-                    f"param_optimizer 예약 권장",
-                    "WARNING",
-                )
+                if _fp_lv_changed or _ts_should_emit_throttled(
+                    self, "fp_psi_alarm", min_interval_sec=300.0
+                ):
+                    logger.warning(
+                        "[RegimeFingerprint] PSI=%.3f ALARM — "
+                        "param_optimizer 예약 권장(대시보드 미표시)",
+                        _fp_psi,
+                    )
             # 대시보드 strategy_ops 탭에 PSI 수준 실시간 반영
             self.dashboard.update_strategy_ops({
                 "psi_val":   _fp_psi,

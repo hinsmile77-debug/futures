@@ -7643,3 +7643,35 @@ Phase 2 호라이즌별 재학습)을 갖고 있고, `EOD_RETRAIN.bat`·`SETUP_G
 07-17, 다음 휴장 이월 케이스 09-23).
 
 **관련**: 333차 후속2(캠페인 체인 retrain_eod.py 이식), 333차 후속3(휴장일 보정).
+
+## 2026-07-15 (333차 후속5) — RegimeFingerprint PSI CRITICAL 로그가 대시보드 "2 경보" 탭에 매 주기 반복 표시되던 것을 파일 전용으로 전환
+
+### [버그] SYSTEM 레이어 WARNING 로그가 자동으로 경보 탭에 복사되는 배선 때문에 이미 알려진 계측 결함이 실시간 경보처럼 계속 노출됨
+
+**File**: `main.py`(4763-4795행)
+
+**배경**: 사용자가 `[RegimeFingerprint] PSI=7.355 CRITICAL — 시장 구조 변화 감지,
+감시전용(차단 비활성)` 로그가 대시보드 경보에 주기마다 올라온다고 보고. 확인 결과
+`FP_CRITICAL_GRADE_BLOCK_ENABLED=False`(303차)로 진입 차단에는 이미 영향이 없고,
+CLAUDE.md에도 균등폭 10-bin PSI 계측 결함(실투 전환 전 재검토 대상)으로 문서화된
+알려진 이슈임을 재확인. 문제는 이 로그가 `log_manager.system(msg, "WARNING")`로
+찍혀 SYSTEM 레이어로 들어가고, `main.py:721-723`의 구독 배선(`append_sys_log_tagged`)과
+`dashboard/main_dashboard.py:7576-7579`의 "WARN/ERROR/CRITICAL → 경보탭 전용" 규칙에
+의해 5분 스로틀에도 불구하고 계속 "2 경보 ⚠" 탭에 자동 복사되던 것.
+(303차 후속의 `HEALTH_EXCEPTION_EXCLUDE_TAGS`는 HealthPolicy 예외밀도 지표 오집계만
+막았을 뿐, 이 대시보드 경보 탭 노출 경로는 그때 손대지 않은 별개 배선이었음.)
+
+**구현**: PSI CRITICAL(>0.30)·ALARM(>0.20) 두 로그 호출을 `log_manager.system(...)`
+대신 `logger.warning(...)`(모듈 최상단 `logging.getLogger("SYSTEM")`, `log_manager`가
+내부적으로 파일 기록에 쓰는 것과 동일한 SYSTEM 로거)로 교체. `logs/SYSTEM.log`에는
+그대로 남아 셰도우 모니터링(사후 grep·계측 재설계 검증용)이 유지되지만, `log_manager`의
+버퍼/콜백 디스패치를 타지 않으므로 대시보드 "1 시스템"·"2 경보" 탭 어디에도 더 이상
+표시되지 않음. `strategy_ops` 탭의 PSI 값/레벨 실시간 표시(`update_strategy_ops`)는
+상태 계기판이라 그대로 유지.
+
+**검증**: 코드 리뷰 수준(로그 호출부 라우팅 변경만, 로직 분기·차단 여부는 무변경).
+다음 재기동 후 PSI CRITICAL 발생 시 경보 탭에 더 이상 안 뜨는지, `logs/SYSTEM.log`에는
+여전히 찍히는지 육안 확인 권장.
+
+**관련**: CLAUDE.md FP-CRITICAL 한시 예외, 303차(FP-CRITICAL 진입차단 비활성),
+303차 후속(HealthPolicy exceptions_10m 오집계 수정 — 별개 배선).
