@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-07-15 (333차 후속5 — RegimeFingerprint PSI CRITICAL 로그 대시보드 경보탭 노출 제거)
+
+> 상세: `DECISION_LOG.md` 2026-07-15(333차 후속5) 항목.
+
+- [DONE 2026-07-15] `main.py` PSI CRITICAL/ALARM 로그를 `log_manager.system(...)`→
+  `logger.warning(...)`로 교체해 대시보드 "1 시스템"/"2 경보" 탭 노출 제거,
+  `logs/SYSTEM.log` 파일 기록(셰도우 모니터링)은 유지.
+- [ ] **다음 재기동 후 확인** — PSI CRITICAL 발생 시 경보 탭에 더 이상 안 뜨는지,
+  `logs/SYSTEM.log`에는 여전히 찍히는지 육안 확인.
+
+---
+
 ## 2026-07-15 (333차 후속4 — 캠페인 체인 중복 제거: scripts/campaign_steps.py 분리)
 
 > 상세: `DECISION_LOG.md` 2026-07-15(333차 후속4) 항목.
