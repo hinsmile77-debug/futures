@@ -7520,3 +7520,50 @@ eod_retrain.py`/`EOD_RETRAIN.bat`는 전혀 관여하지 않음. 루트 `retrain
 **관련**: 333차(pc1/MW0602 추정 머신에서의 별개 PATH 버그 수정),
 `docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md` §4-1,
 `project_machine_instances`(MW0601/MW0602 구성).
+
+---
+
+## 2026-07-15 (dev 브랜치 333차 후속2, cherry-pick) — §4-1 검증 캠페인 주간 자동화가 실제 스케줄러에 연결된 적 없었음 발견 + 수정
+
+### [버그] 사용자가 "매주 금요일 자동 리포트" 시점을 묻자 재점검하다 발견 — 죽은 자동화
+
+**File**: `retrain_eod.py`(루트, 수정), `scripts/eod_retrain.py`(원본 로직, 변경 없음)
+
+**증상**: 사용자에게 "다음 주간 판정 회의는 07-17(금) EOD 자동생성 리포트 기준"이라고
+답했으나, `retrain_eod.py`가 매 EOD마다 `generate_validation_campaign_report.py`를
+자동 호출한다는 전제 자체가 틀렸음을 사용자 재점검 요청으로 발견.
+
+**원인**: Windows 작업 스케줄러(`Get-ScheduledTask`로 확인)에 등록된 실제 자동 작업은
+`Maitreya_EODretrain`(평일 15:45 트리거) 하나뿐이고, 이 작업이 실행하는 건 저장소
+루트의 **`retrain_eod.py`**다. 이 스크립트는 GBM 전체 재학습 + P8 스케일러 재적합 +
+RegimeFingerprint 학습분포 갱신만 수행하며, §4-1이 말하는 검증 캠페인 체인
+(`generate_gate_ablation_report.py`·`generate_validation_campaign_report.py`·
+`run_shadow_triple_barrier_retrain.py`·`train_quantile_regressor.py`·격주
+`analyze_mae_mfe.py`)은 전혀 호출하지 않는다. 그 체인은 **`scripts/eod_retrain.py`**
+(다른 파일, `_run_campaign_steps()` + 금요일 게이트 `_campaign_due()`)에만 구현돼
+있는데, 이 스크립트는 스케줄러에 등록된 적이 없다. `EOD_RETRAIN.bat`이 이 스크립트를
+호출하긴 하지만 `SETUP_GUIDE.md` §10에 "선택(수동 실행)"으로만 문서화돼 있어 자동
+실행 경로가 아니다.
+
+**로그로 실측 확인**: `logs/retrain_eod_YYYYMMDD.log`(루트 스크립트, 실제 스케줄됨)는
+06-30~07-14 평일마다 정상 생성. `logs/20260705_EOD_RETRAIN.log`(`scripts/eod_retrain.py`,
+캠페인 체인 보유)는 **07-05 단 한 번, 0바이트(빈 로그)** — 캠페인 시작일 이후 단 한 번도
+자동으로 성공 실행된 적이 없음. 지금까지 나온 모든 `validation_campaign_report.md`는
+수동 실행 결과였음(예: 333차의 수동 진단 실행).
+
+**수정**: `scripts/eod_retrain.py`의 `_campaign_due()`/`_run_campaign_steps()`를
+동일 로직으로 `retrain_eod.py`에 이식(로거만 `log`로 교체, `_ROOT` 기준 경로 사용).
+`main()`의 성공 경로(`_notify_eod_done()` 직후, `sys.exit(0)` 전)와 실패 경로
+(`_notify_fail()` 직후, `sys.exit(1)` 전) 양쪽에서 `_campaign_due()`(금요일 자동)일 때
+호출 — 원본 스크립트와 동일하게 "GBM 재학습이 실패해도 캠페인 판정 리포트는 실행할
+가치가 있다"는 설계를 유지. 스케줄러 작업(`Maitreya_EODretrain`) 자체는 변경하지
+않음 — 이미 스케줄된 스크립트 안에 로직을 이식하는 쪽을 선택(사용자 결정, 스케줄러
+변경보다 리스크 낮음).
+
+**검증**: `py_compile`(base anaconda·py310_64 양쪽) 통과. **라이브 미검증** — 다음
+금요일(2026-07-17) 15:45 스케줄 실행 후 `logs/retrain_eod_20260717.log`에
+"[검증 캠페인] 주간 스텝 5개 실행" 로그와 `data/validation_campaign_report.md` mtime
+갱신이 실제로 발생하는지 확인 필요.
+
+**관련**: `docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md` §4-1/§4-2,
+333차 후속(Hurst 게이트 완화 논의 중 사용자가 회의 시점을 물어보며 발견).

@@ -19,6 +19,7 @@ import time
 import datetime
 import json
 import logging
+import subprocess
 import traceback
 
 # ── 프로젝트 루트 설정 ────────────────────────────────────────────
@@ -243,6 +244,77 @@ def _wait_for_daily_close(max_wait_min: int = 20, poll_sec: int = 30) -> bool:
     return False
 
 
+# ── [333차 후속] 검증 캠페인 주간 스텝 ────────────────────────────
+# docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §4-1이 "매주 금 EOD 체인에
+# 연결"하도록 설계했으나, 실제 Windows 작업 스케줄러(Maitreya_EODretrain)는 이 파일
+# (retrain_eod.py)을 실행할 뿐 scripts/eod_retrain.py(캠페인 체인 보유)는 스케줄된 적이
+# 없어 §4-1 자동화가 죽어있었음(07-05 단 1회, 0바이트 로그) — 여기로 이식해 실제
+# 스케줄에 연결한다. 로직은 scripts/eod_retrain.py의 동명 함수와 동일.
+def _campaign_due(flag=None):
+    """--campaign 명시 > 금요일 자동. None=자동 판단."""
+    if flag is not None:
+        return bool(flag)
+    return datetime.date.today().weekday() == 4  # 금요일
+
+
+def _run_campaign_steps():
+    """[260705 검증 캠페인] 주간 검증 스텝 체인 자동화 (§4-1).
+
+    각 스텝은 서브프로세스로 격리 — 하나가 실패해도 나머지는 계속 실행한다.
+    순서가 중요하다:
+      1) 게이트 ablation 리포트 (읽기 전용)
+      2) 검증 캠페인 판정 리포트 — 반드시 섀도우 TB 재학습 **전에** 실행해야
+         이번 주 데이터가 지난주 모델 기준 OOS로 평가된다(§3-1 OOS 보장: 리포트가
+         모델 파일 mtime 이후 ts만 평가하므로, 재학습을 먼저 돌리면 mtime이 오늘로
+         갱신돼 평가 표본이 0이 된다)
+      3) 섀도우 TB 재학습 (다음 주 평가용 모델 갱신)
+      4) 분위 회귀 재학습
+      5) 격주(짝수 ISO 주차): MAE/MFE 배리어 적정성 분석
+    """
+    steps = [
+        ("게이트 ablation 리포트", ["generate_gate_ablation_report.py", "--days", "7"]),
+        ("검증 캠페인 판정 리포트", ["generate_validation_campaign_report.py"]),
+        ("섀도우 TB 재학습", ["run_shadow_triple_barrier_retrain.py"]),
+        ("분위 회귀 재학습", ["train_quantile_regressor.py"]),
+    ]
+    if datetime.date.today().isocalendar()[1] % 2 == 0:
+        steps.append(("MAE/MFE 분석", ["analyze_mae_mfe.py"]))
+
+    script_dir = os.path.join(_ROOT, "scripts")
+    log.info("=" * 55)
+    log.info("[검증 캠페인] 주간 스텝 %d개 실행 (§4-1)", len(steps))
+    summary = []
+    for name, cmd in steps:
+        script_path = os.path.join(script_dir, cmd[0])
+        if not os.path.exists(script_path):
+            log.warning("[검증 캠페인] %s — 스크립트 없음: %s", name, script_path)
+            summary.append((name, "MISSING"))
+            continue
+        try:
+            proc = subprocess.run(
+                [sys.executable, script_path] + cmd[1:],
+                cwd=_ROOT,
+                timeout=1800,  # 스텝당 최대 30분
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            ok = proc.returncode == 0
+            tail = (proc.stdout or b"")[-2000:].decode("utf-8", errors="replace")
+            log.info("[검증 캠페인] %s → %s (rc=%d)\n%s",
+                      name, "완료" if ok else "실패", proc.returncode, tail)
+            summary.append((name, "OK" if ok else "FAIL(rc=%d)" % proc.returncode))
+        except subprocess.TimeoutExpired:
+            log.error("[검증 캠페인] %s — 30분 타임아웃", name)
+            summary.append((name, "TIMEOUT"))
+        except Exception as e:
+            log.error("[검증 캠페인] %s — 실행 오류: %s", name, e)
+            summary.append((name, "ERROR"))
+
+    log.info("[검증 캠페인] 요약: %s",
+              " | ".join("%s=%s" % (n, s) for n, s in summary))
+    log.info("판정 리포트: %s", os.path.join(_ROOT, "data", "validation_campaign_report.md"))
+    log.info("=" * 55)
+
+
 # ── 메인 재학습 ───────────────────────────────────────────────────
 def main():
     _check_env()
@@ -390,6 +462,10 @@ def main():
         # EOD 완료 Slack 알림 (재학습 요약 + calibration 역전 상태)
         _notify_eod_done(horizons_ok, len(result.get("horizons", {})), t_total)
 
+        # [333차 후속] §4-1 검증 캠페인 주간 스텝 (금요일 자동)
+        if _campaign_due():
+            _run_campaign_steps()
+
         sys.exit(0)
 
     except Exception as exc:
@@ -404,6 +480,11 @@ def main():
             )
 
         _notify_fail(str(exc))
+
+        # GBM 재학습이 실패해도 캠페인 판정 리포트(읽기 전용)는 실행할 가치가 있다
+        if _campaign_due():
+            _run_campaign_steps()
+
         sys.exit(1)
 
 

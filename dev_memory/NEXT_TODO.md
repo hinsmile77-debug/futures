@@ -27,6 +27,28 @@
   (`scripts/eod_retrain.py --campaign`) 별도 추가 ③수동 실행을 공식 관행으로 채택
   (§4-1 문서 갱신). 코드 변경 없이 대기 중 — 라이브 스케줄 변경이라 사용자 결정 필요.
 - [ ] MW0602(pc1 추정) 머신도 동일 배선 공백인지 hostname 확인 후 점검 필요.
+- [DONE 2026-07-15] **위 3안 중 ①로 결정·구현됨** — dev 브랜치 333차 후속2가
+  `_run_campaign_steps()`를 스케줄된 루트 `retrain_eod.py`에 병합하는 방식으로
+  cherry-pick됨. 아래 "dev 브랜치 333차 후속2" 항목 참조.
+
+---
+
+## 2026-07-15 (dev 브랜치 333차 후속2, cherry-pick — §4-1 검증 캠페인 주간 자동화가 스케줄러에 연결된 적 없었음 발견 + 수정)
+
+> 상세: `DECISION_LOG.md` 2026-07-15(333차 후속2) 항목.
+
+- [DONE 2026-07-15] **원인 규명 + 수정** — 실제 스케줄된 작업(`Maitreya_EODretrain`,
+  평일 15:45)은 루트 `retrain_eod.py`를 실행하는데, 이 스크립트는 GBM 재학습만 하고
+  §4-1 캠페인 체인(ablation·검증리포트·섀도우TB·분위회귀)은 안 부름 — 그 체인은
+  `scripts/eod_retrain.py`에만 있고 이건 스케줄된 적이 없음(07-05 단 1회, 0바이트
+  로그). `_campaign_due()`/`_run_campaign_steps()`를 `retrain_eod.py`로 이식해
+  금요일 자동 실행되도록 수정.
+- [ ] **라이브 검증** — 다음 금요일(2026-07-17) 15:45 스케줄 실행 후
+  `logs/retrain_eod_20260717.log`에 "[검증 캠페인] 주간 스텝 5개 실행" 로그가
+  찍히고 `data/validation_campaign_report.md` mtime이 그 시각으로 갱신되는지 확인.
+- [ ] **소급 확인** — 07-17 실행 결과가 정상이면, 그동안(07-05~07-16) 수동 실행분만
+  있던 `validation_campaign_report.md`가 앞으로는 매주 자동 최신화됨을 §4-2 주간
+  회의에서 전제로 삼을 것.
 
 ---
 
