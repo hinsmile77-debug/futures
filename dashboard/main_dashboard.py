@@ -1619,6 +1619,11 @@ class DivergencePanel(QWidget):
         # 옵션 구간별 거래량
         lay.addWidget(mk_label("옵션 구간별 거래량 (ITM·ATM·OTM)", C['cyan'], 9, True))
         lay.addWidget(self.option_status_label)
+        lay.addWidget(mk_label(
+            "※ ITM/OTM 투자자별 구간 데이터는 Cybos API가 행사가 단위로 제공하지 않아 수집 불가 "
+            "(전량 ATM으로 집계) — N/A 표시",
+            C['text2'], 7,
+        ))
         zone_lay = QHBoxLayout()
         zone_lay.setSpacing(2)
         for zone in ["ITM", "ATM", "OTM"]:
@@ -1835,13 +1840,19 @@ class DivergencePanel(QWidget):
                 if widget is None:
                     continue
                 b, vl = widget
-                if option_supported:
+                if not option_supported:
+                    b.setValue(0)
+                    vl.setText("--")
+                elif zone in ("ITM", "OTM"):
+                    # Cybos CpSvrNew7212는 투자자별 콜/풋 순매수를 행사가 단위로
+                    # 세분화하지 않음 — 구조적으로 항상 0이라 "0%"로 표시하면
+                    # 실측 데이터처럼 오인될 수 있어 N/A로 구분 표시.
+                    b.setValue(0)
+                    vl.setText("N/A")
+                else:
                     pct = zd.get(inv, 0)
                     b.setValue(pct)
                     vl.setText(f"{pct}%")
-                else:
-                    b.setValue(0)
-                    vl.setText("--")
 
         # freshness 게이지 매분 갱신
         self._tick_chain_freshness()
