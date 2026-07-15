@@ -8017,3 +8017,73 @@ UI 기동 후 SHS-EKS 관망 활성 구간·거래량 0봉·사이저 qty=0 상�
 
 **관련**: 335차(같은 elif 체인의 순서 버그), `dashboard/panels/
 conf_trend_widget.py:436-442,518-525`(gate/차단사유 컬럼 표시 로직).
+
+---
+
+## 2026-07-15 (337차) — 동적피처 탭 데이터 미갱신: SHAP 피처 레지스트리와 배포 모델 피처셋 불일치로 permutation_importance 매분 조용히 실패
+
+### [버그수정] `_ensure_shap_tracker()`가 배포 모델이 아닌 "다음 재학습 계획" 레지스트리로 SHAP 피처셋을 구성
+
+**File**: `main.py:779-802`, `learning/shap/shap_tracker.py:47-73`
+
+**증상**: 사용자가 UI 중간 패널 "동적피처" 탭 데이터가 올라오지 않는다고 보고.
+`logs/20260715_LEARNING.log` 확인 결과 08:41부터 최소 11:25까지(3시간+) 매분
+`[SHAP] 중요도 계산 불가: SHAP=True, feature_importances_=False,
+permutation_importance=True(y=True)` 반복 — 라벨 데이터(`y`)는 충분한데도
+계속 실패, 즉 흔히 있는 "재시작 후 100분 데이터 재적립 대기"가 아니라 매분
+실제 연산이 조용히 깨지고 있었음.
+
+**원인**: `featureset by horizon/horizon_feature_sets.json`의 `"1m".include`가
+2026-07-13/14 딥다이브에서 신규 10개 피처 목록으로 갱신됐음(파일 `_meta.notes`에
+"전부 P0-1(레지스트리 97→선별 복구, 사용자 결정 대기) 완료 전까지 미탑재 상태
+유지. 다음 재학습부터 반영"이라 명시 — 즉 이 문서는 아직 배포되지 않은 계획).
+하지만 실제 배포된 `model/horizons/feature_names_1m.pkl`(`gbm_1m.pkl`이 실제
+학습된 입력)은 여전히 구 12피처 세트(`ofi_norm`/`mlofi_slope`/`microprice_bias`/
+`ret_1m`/`time_sin`/`time_cos` 등 포함 — 신규 목록에선 "2026-07-13 딥다이브
+실측 IC 무정보"로 전부 제외된 피처들)로 학습된 그대로였음. 그런데
+`main.py:_ensure_shap_tracker()`는 `get_available_feature_set("1m",
+all_feature_names)`(레지스트리 include 목록을 그대로 반영, 로그 실측 8개)로
+ShapTracker의 피처셋을 구성해 `_refresh_shap_state()`가 8열짜리 X를 만들었고,
+이를 실제로는 12열을 기대하는 `self.model.models["1m"]`(HistGradientBoosting
+Classifier)에 넣어 `sklearn.inspection.permutation_importance()`를 호출 →
+내부 `model.predict(X)`가 shape mismatch `ValueError`를 던짐. 이 예외가
+`_permutation_importance_fallback()`의 `except Exception: logger.debug(...)`로만
+잡혀 WARNING 레벨 로그에는 "실패했다"는 결과만 보이고 원인은 전혀 드러나지
+않았음 → `_calc_importance()` None 반환 → `ShapTracker.update()` 매분 `False`
+→ `_refresh_shap_state()`가 `_update_shap_dashboard()`를 호출하지 못해 대시보드
+"동적 SHAP TOP3"/"전체 피처 순위" 섹션이 갱신되지 않음.
+
+**수정**:
+1. `main.py:_ensure_shap_tracker()` — ShapTracker 피처셋을 레지스트리
+   (`get_available_feature_set`)보다 모델 로드 시 이미 `n_features_in_`으로
+   검증된 `self.model.horizon_feature_names.get("1m")`(실제 배포 모델의 진짜
+   입력 피처셋)을 우선 사용하도록 변경. 모델에 1m 전용 pkl이 없을 때만
+   레지스트리 기반 선택 → 전체 피처셋 순으로 fallback.
+2. `learning/shap/shap_tracker.py:_permutation_importance_fallback()` —
+   `permutation_importance()` 호출 전 `X.shape[1]` vs `model.n_features_in_`
+   사전 체크 추가, 불일치 시 정확한 수치를 WARNING으로 남김. 일반 예외 로그도
+   `debug`→`warning`으로 상향(재발 시 즉시 드러나도록).
+
+**Why**: `horizon_feature_sets.json`은 "다음 재학습 대상 계획" 문서이지 실제
+배포 모델의 입력 스펙이 아닌데, SHAP 계산 경로만 이 구분 없이 레지스트리를
+그대로 신뢰하고 있었음. `model/multi_horizon_model.py:_load_all()`에는 이미
+레지스트리/모델 불일치를 `n_features_in_` 비교로 방어하는 로직이 있었으나
+(`h_fn_path` 불일치 시 무효화·백업), SHAP 경로만 그 방어를 우회해 조용히
+실패하는 구멍이 남아 있었음.
+
+**How to apply**: 앞으로 `horizon_feature_sets.json`의 include 목록을 갱신할
+때마다, 실제 재학습(P0-1 등)이 완료되기 전까지는 이 레지스트리를 참조하는
+모든 코드 경로(전처리·모니터링뿐 아니라 SHAP/permutation_importance 같은
+진단 경로 포함)가 배포 모델과 어긋날 수 있음을 감안할 것. 가능하면 "배포된
+모델의 실제 피처셋"을 1차 소스로 삼고 레지스트리는 fallback으로만 사용.
+
+**검증**: `ast.parse`로 `main.py`/`learning/shap/shap_tracker.py` 구문 확인.
+**라이브 미검증** — `_shap_labeled_window["1m"]`가 이미 08:41부터 누적돼 있어
+재적립 대기 없이 다음 `_refresh_shap_state()` 호출에서 바로 효과가 나야 하나,
+다음 실 UI 기동/장중에서 동적피처 탭이 실제로 채워지는지, `LEARNING.log`에
+`[SHAP] 중요도 계산 불가` 경고가 더 이상 매분 반복되지 않는지 확인 필요.
+
+**관련**: 311차 후속9(permutation_importance fallback 신설 배경), 332차
+(TreeExplainer HGB 힙손상 크래시 수정 — 같은 계열의 "라이브 미검증" 후속),
+2026-07-13/14 딥다이브 보고서(무스킬_피처셋_딥다이브_보고서, P0-1 레지스트리
+갱신 배경).
