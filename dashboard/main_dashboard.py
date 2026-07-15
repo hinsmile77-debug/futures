@@ -2599,7 +2599,7 @@ class ExitPanel(QWidget):
 
     def __init__(self):
         super().__init__()
-        self._tp1_protect_mode = "breakeven"
+        self._tp1_protect_mode = "atr_profit"
         self._build()
 
     def _build(self):
@@ -2848,9 +2848,9 @@ class ExitPanel(QWidget):
             btn.setStatusTip(tip)
 
     def set_tp1_protect_mode(self, mode: str, emit_signal: bool = True):
-        mode = str(mode or "breakeven").strip().lower()
+        mode = str(mode or "atr_profit").strip().lower()
         if mode not in getattr(self, "tp1_mode_btns", {}):
-            mode = "breakeven"
+            mode = "atr_profit"
         self._tp1_protect_mode = mode
         self._sync_tp1_mode_buttons()
         if emit_signal:
