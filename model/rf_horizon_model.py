@@ -177,3 +177,16 @@ class RFHorizonModel:
 
     def get_oob_scores(self) -> Dict[str, float]:
         return dict(self._oob)
+
+    def get_model(self, horizon: str):
+        """[346차] EOD 모델가드 비교용 — 특정 호라이즌의 학습된 모델 객체 반환."""
+        return self._models.get(horizon)
+
+    def override_horizon(self, horizon: str, model, oob: float) -> None:
+        """[346차] EOD 모델가드 — 신규 학습 결과가 허용 하락폭을 초과할 때 그
+        호라이즌만 구모델(model)/구 OOB(oob)로 되돌린다. 나머지 호라이즌은
+        새로 학습된 모델을 그대로 유지 — rf_horizons.pkl이 6개 호라이즌을 한
+        파일에 묶어 저장하는 구조라(GBM처럼 호라이즌별 개별 파일이 아님) 저장
+        직전에 슬롯 단위로 교체해야 한다."""
+        self._models[horizon] = model
+        self._oob[horizon] = oob

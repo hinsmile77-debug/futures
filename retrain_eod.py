@@ -296,8 +296,13 @@ def main():
         )
 
         gc.collect()
+        # [346차] force=True → False. 기존엔 CV acc가 구모델보다 크게 나빠져도
+        # 무조건 교체됐다(0715진입청산검토.md 딥다이브 — 1m/3m/5m CV acc 하락에도
+        # 강제 교체된 사례 확인). force=False로 바꾸면 batch_retrainer.py의
+        # 호라이즌별 EOD 모델가드(EOD_MODEL_GUARD_DROP_TOLERANCE)가 살아나
+        # 하락폭이 허용치를 넘는 호라이즌만 구모델 유지 + 참고용 저장 + 알림한다.
         log.info(
-            "재학습 시작: force=True, intraday=False, full_cv=True  "
+            "재학습 시작: force=False(346차 EOD 모델가드 적용), intraday=False, full_cv=True  "
             "(절단 없음, 300그루, 3-fold CV)"
         )
         t2 = time.perf_counter()
@@ -305,7 +310,7 @@ def main():
             X=X,
             y_dict=y_dict,
             feature_names=feature_names,
-            force=True,
+            force=False,
             intraday=False,
             full_cv=True,
         )
@@ -318,10 +323,16 @@ def main():
         horizons_ok = sum(
             1 for r in result.get("horizons", {}).values() if r.get("replaced")
         )
+        # [346차] 가드로 교체가 보류된 호라이즌 수 — 0이 정상, >0이면 요약에서
+        # 바로 눈에 띄도록 별도 표기(전체 로그를 훑지 않아도 발동 여부를 알 수 있게).
+        horizons_guarded = sum(
+            1 for r in result.get("horizons", {}).values() if r.get("guard_rejected")
+        )
         log.info(
-            "재학습 완료: 호라이즌 교체=%d/%d  재학습=%.1fs  로드=%.1fs  합계=%.1fs",
+            "재학습 완료: 호라이즌 교체=%d/%d  가드보류=%d  재학습=%.1fs  로드=%.1fs  합계=%.1fs",
             horizons_ok,
             len(result.get("horizons", {})),
+            horizons_guarded,
             t_retrain,
             t_load,
             t_total,

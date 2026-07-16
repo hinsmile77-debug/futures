@@ -51,8 +51,10 @@ from config.settings import (
     MODEL_DIR, HORIZON_DIR, HORIZONS, DB_DIR,
     GBM_WEIGHT_DEFAULT, GBM_MIN_SAMPLES_LEAF,
     RETRAIN_WEEKS_BACK, MAX_TRAIN_BARS, RAW_DATA_PRUNE_WEEKS,
+    EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
+from learning.eod_model_guard import evaluate_model_replace
 
 logger = logging.getLogger("LEARNING")
 
@@ -514,6 +516,40 @@ class BatchRetrainer:
                 rf_model = RFHorizonModel(self.model_dir)
                 rf_model.train(X, y_dict, feature_names)
                 if rf_model.is_ready():
+                    # [346차] EOD 모델가드 — GBM과 동일 원칙을 OOB에 적용. rf_horizons.pkl은
+                    # 6개 호라이즌이 한 파일에 묶여 있어(GBM처럼 호라이즌별 개별 파일이 아님)
+                    # 저장 직전에 호라이즌 슬롯 단위로 override_horizon()해 부분 유지한다.
+                    if not force:
+                        _old_rf = RFHorizonModel(self.model_dir)
+                        _old_rf_loaded = _old_rf.load_all()
+                        _old_oob = _old_rf.get_oob_scores() if _old_rf_loaded else {}
+                        for _hz, _new_oob in rf_model.get_oob_scores().items():
+                            _rf_old_acc = _old_oob.get(_hz, 0.0)
+                            _rf_ok, _rf_reason = evaluate_model_replace(
+                                _hz, _new_oob, _rf_old_acc,
+                                EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
+                            )
+                            if not _rf_ok:
+                                logger.warning(
+                                    "[Retrain] RF %s 교체 보류(EOD 모델가드) — %s — "
+                                    "참고용 저장, 구모델 유지", _hz, _rf_reason,
+                                )
+                                self._save_rejected_rf_model(
+                                    _hz, rf_model.get_model(_hz), _new_oob, _rf_old_acc,
+                                )
+                                if _old_rf_loaded and _old_rf.get_model(_hz) is not None:
+                                    rf_model.override_horizon(
+                                        _hz, _old_rf.get_model(_hz), _rf_old_acc,
+                                    )
+                                try:
+                                    from utils.notify import notify
+                                    notify(
+                                        "[EOD 모델가드] RF %s 교체 보류 — %s (참고용 저장, 구모델 유지)"
+                                        % (_hz, _rf_reason),
+                                        level="WARNING",
+                                    )
+                                except Exception as _rne:
+                                    logger.debug("[Retrain] RF 알림 실패 (무해): %s", _rne)
                     rf_model.save_all()
                     logger.info("[Retrain] RF 학습 완료 OOB=%s", rf_model.get_oob_scores())
             except Exception as _rf_exc:
@@ -631,9 +667,20 @@ class BatchRetrainer:
         # 기존 모델과 성능 비교
         old_acc  = self._load_model_acc(horizon_key)
         replaced = False
+        guard_rejected = False
 
-        # intraday=True: CV 없으므로 cv_acc=None → force로 취급 (기존 모델 보호 로직 비적용)
-        if intraday or force or (cv_acc is not None and cv_acc > old_acc - 0.01):
+        # [346차] intraday/force는 가드 자체를 건너뜀(기존 동작 그대로) — intraday는
+        # CV 없음(cv_acc=None), force는 명시적 강제 요구(웜업 복구 등). 그 외(EOD 정규
+        # 재학습, force=False)만 호라이즌별 허용 하락폭으로 판정한다.
+        if intraday or force:
+            _guard_ok, _guard_reason = True, "intraday" if intraday else "force"
+        else:
+            _guard_ok, _guard_reason = evaluate_model_replace(
+                horizon_key, cv_acc, old_acc,
+                EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
+            )
+
+        if _guard_ok:
             _disp_acc = cv_acc if cv_acc is not None else float("nan")
             self._save_model(horizon_key, final_model, final_scaler, _disp_acc, feature_names)
             replaced = True
@@ -645,15 +692,32 @@ class BatchRetrainer:
             else:
                 logger.info(f"[Retrain] {horizon_key} 교체 (acc {old_acc:.4f}→{_disp_acc:.4f})")
         else:
+            guard_rejected = True
             _disp_acc = cv_acc if cv_acc is not None else float("nan")
-            logger.info(f"[Retrain] {horizon_key} 유지 (acc {_disp_acc:.4f} < {old_acc:.4f})")
+            logger.warning(
+                "[Retrain] %s 교체 보류(EOD 모델가드) — %s — 참고용 저장, 구모델 유지",
+                horizon_key, _guard_reason,
+            )
+            self._save_rejected_model(
+                horizon_key, final_model, final_scaler, _disp_acc, old_acc, feature_names,
+            )
+            try:
+                from utils.notify import notify
+                notify(
+                    "[EOD 모델가드] %s 교체 보류 — %s (참고용 저장, 구모델 유지)"
+                    % (horizon_key, _guard_reason),
+                    level="WARNING",
+                )
+            except Exception as _ne:
+                logger.debug("[Retrain] 알림 실패 (무해): %s", _ne)
 
         return {
-            "ok":       True,
-            "cv_acc":   round(cv_acc, 4) if cv_acc is not None else None,
-            "old_acc":  round(old_acc, 4),
-            "replaced": replaced,
-            "n_samples":len(X),
+            "ok":             True,
+            "cv_acc":         round(cv_acc, 4) if cv_acc is not None else None,
+            "old_acc":        round(old_acc, 4),
+            "replaced":       replaced,
+            "guard_rejected": guard_rejected,
+            "n_samples":      len(X),
         }
 
     # ── 모델 저장/로드 ────────────────────────────────────────────
@@ -708,6 +772,76 @@ class BatchRetrainer:
             with open(_tmp_fn, "wb") as f:
                 pickle.dump(list(feature_names), f, protocol=4)
             os.replace(_tmp_fn, h_fn_path)
+
+    def _save_rejected_model(
+        self, horizon_key: str, model, scaler, new_acc: float, old_acc: float,
+        feature_names: List[str],
+    ) -> None:
+        """[346차] EOD 모델가드가 교체를 보류한 신규 모델을 참고용으로 보관한다.
+
+        프로덕션 gbm_{horizon}.pkl은 건드리지 않는다(구모델 그대로 유지) — 이건
+        "이번에 뭘 새로 학습했었는지" 사후 분석용 별도 사본이다. 타임스탬프를
+        파일명에 넣어 여러 번의 보류 이력을 모두 남긴다(관찰 목적 — 지금 극단
+        변동성 구간에서 실제로 몇 번 발동하는지 보는 게 이 가드를 넣은 이유 중 하나).
+        """
+        try:
+            rejected_dir = os.path.join(self.model_dir, "rejected")
+            os.makedirs(rejected_dir, exist_ok=True)
+            _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            _base = f"gbm_{horizon_key}_{_ts}"
+            with open(os.path.join(rejected_dir, f"{_base}.pkl"), "wb") as f:
+                pickle.dump(model, f, protocol=4)
+            with open(os.path.join(rejected_dir, f"{_base}_scaler.pkl"), "wb") as f:
+                pickle.dump(scaler, f, protocol=4)
+            with open(os.path.join(rejected_dir, f"{_base}_features.pkl"), "wb") as f:
+                pickle.dump(list(feature_names), f, protocol=4)
+            import json
+            _tol = EOD_MODEL_GUARD_DROP_TOLERANCE.get(
+                horizon_key, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT
+            )
+            with open(os.path.join(rejected_dir, f"{_base}.json"), "w", encoding="utf-8") as f:
+                json.dump({
+                    "horizon": horizon_key,
+                    "ts": _ts,
+                    "new_acc": round(new_acc, 4) if new_acc is not None else None,
+                    "old_acc": round(old_acc, 4),
+                    "drop": round(old_acc - new_acc, 4) if new_acc is not None else None,
+                    "tolerance": _tol,
+                }, f, ensure_ascii=False, indent=2)
+            logger.info("[Retrain] %s 보류 모델 참고용 저장: %s/", horizon_key, rejected_dir)
+        except Exception as _se:
+            logger.warning("[Retrain] %s 보류 모델 저장 실패 (무해 — 구모델은 정상 유지): %s",
+                            horizon_key, _se)
+
+    def _save_rejected_rf_model(
+        self, horizon_key: str, model, new_oob: float, old_oob: float,
+    ) -> None:
+        """[346차] RF 버전 _save_rejected_model() — rf_horizons.pkl은 6개 호라이즌이
+        한 파일에 묶여 있어 개별 호라이즌만 따로 pkl로 뽑아 참고용 보관한다."""
+        try:
+            rejected_dir = os.path.join(self.model_dir, "rejected")
+            os.makedirs(rejected_dir, exist_ok=True)
+            _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            _base = f"rf_{horizon_key}_{_ts}"
+            with open(os.path.join(rejected_dir, f"{_base}.pkl"), "wb") as f:
+                pickle.dump(model, f, protocol=2)  # RF는 protocol=2 (py37_32 호환, save_all과 동일)
+            import json
+            _tol = EOD_MODEL_GUARD_DROP_TOLERANCE.get(
+                horizon_key, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT
+            )
+            with open(os.path.join(rejected_dir, f"{_base}.json"), "w", encoding="utf-8") as f:
+                json.dump({
+                    "horizon": horizon_key,
+                    "ts": _ts,
+                    "new_oob": round(new_oob, 4) if new_oob is not None else None,
+                    "old_oob": round(old_oob, 4),
+                    "drop": round(old_oob - new_oob, 4) if new_oob is not None else None,
+                    "tolerance": _tol,
+                }, f, ensure_ascii=False, indent=2)
+            logger.info("[Retrain] RF %s 보류 모델 참고용 저장: %s/", horizon_key, rejected_dir)
+        except Exception as _se:
+            logger.warning("[Retrain] RF %s 보류 모델 저장 실패 (무해 — 구모델은 정상 유지): %s",
+                            horizon_key, _se)
 
     def _save_feature_names(self, feature_names: List[str], horizon_key: str = None) -> None:
         """feature_names 저장.

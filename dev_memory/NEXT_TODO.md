@@ -8,6 +8,37 @@
 
 ---
 
+## 2026-07-16 (346차 — EOD 모델 교체 가드: CV acc/OOB 하락 시 교체 보류 + 참고용 저장 + 알림)
+
+> 상세: `DECISION_LOG.md` 2026-07-16(346차) 항목.
+
+- [DONE 2026-07-16] `learning/eod_model_guard.py`(신규, `evaluate_model_replace()`
+  순수함수) + `config/settings.py:EOD_MODEL_GUARD_DROP_TOLERANCE`(호라이즌별 세분화:
+  단기 0.025/중기 0.03/장기 0.05). `batch_retrainer.py`의 기존 `-0.01` 플랫 가드를
+  이걸로 교체하고, GBM·RF 양쪽에 실제 적용. RF는 `rf_horizons.pkl`이 6개 호라이즌
+  통합 저장이라 `RFHorizonModel.get_model()`/`override_horizon()`을 신규 추가해
+  호라이즌 단위 부분 유지를 구현.
+- [DONE 2026-07-16] **실제 매일 자동 실행 스크립트가 `scripts/eod_retrain.py`가
+  아니라 루트 `retrain_eod.py`(Windows 스케줄러 15:45)임을 재확인 후 발견** — 직전
+  설명 턴에서 지목했던 파일이 틀렸었음. 두 파일 모두 수정(`retrain_eod.py`
+  `force=True`→`False`, `scripts/eod_retrain.py` `--no-force`→`--force` 반전).
+- [DONE 2026-07-16] `py310_64` 통합테스트 — 실제 sklearn 학습 2회 연속(콜드스타트→
+  전부교체, 무작위라벨 재학습→GBM 6/6·RF 6/6 전부 가드 발동), 배포 pkl이 구모델
+  값 유지 확인, `rejected/`에 GBM·RF 파일 실제 생성 확인, `force=True` 우회 회귀
+  없음 확인. `py_compile` 6파일 통과.
+- [ ] **다음 EOD(2026-07-16 저녁) 라이브 검증** — 실제로 가드가 발동하는지,
+  `[EOD 모델가드]` Slack 알림이 뜨는지(현재 `message_limit_exceeded`로 막혀있어
+  안 뜰 수 있음 — 그 자체도 확인 포인트), `retrain_eod.py` 로그의 "가드보류=N"
+  요약이 정상 출력되는지, `model/horizons/rejected/`에 파일이 실제로 쌓이는지 확인.
+- [ ] **임계값 재검토 — 몇 주 관찰 후** — `EOD_MODEL_GUARD_DROP_TOLERANCE`(단기
+  0.025/중기 0.03/장기 0.05)가 과도하게 자주 발동(정상적인 날에도 노이즈로 계속
+  보류)하거나 반대로 전혀 발동 안 하는지 `rejected/` 폴더 누적량으로 확인 후 조정.
+- [ ] **[선택, 낮은 우선순위] 08:55 PreRetrain도 가드 적용 검토** — 현재는
+  `force=True`라 이번 가드와 무관. EOD에서 몇 주간 가드가 잘 동작함을 확인한 뒤,
+  PreRetrain도 `force=False`로 바꿔 같은 보호를 받게 할지 별도 결정.
+
+---
+
 ## 2026-07-16 (345차 — 마감 근접 신규진입 컷: 14:50으로 10분 앞당김)
 
 > 상세: `DECISION_LOG.md` 2026-07-16(345차) 항목.

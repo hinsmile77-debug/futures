@@ -352,6 +352,28 @@ MC_LOOKBACK_DAYS: int = 5  # conf 분포 측정 기간 (거래일)
 FQADJ_ACC_MIN_SAMPLES: int = 15       # 이 미만 표본이면 게이트 건너뜀(None, "모른다"≠"나쁘다")
 FQADJ_ACC_FREEZE_MIN: float = 0.45    # 미만이면 완화 동결 (단기 CUT_THR 하한과 정합)
 FQADJ_ACC_STRENGTHEN_MIN: float = 0.40  # 미만이면 fq 무관 강화 (랜덤 0.50 대비 뚜렷한 하회)
+
+# [346차] EOD 모델 교체 가드 — CV acc(GBM)/OOB(RF)가 구모델 대비 허용 하락폭을
+# 넘으면 교체를 보류하고 구모델을 유지한다(호라이즌별 독립 판정). 신규 학습 결과는
+# 버리지 않고 model/horizons/rejected/에 참고용으로 저장 + notify() 알림.
+# 근거: 7/15 EOD 재학습에서 1m/3m/5m CV acc가 각각 -0.0298/-0.0311/-0.0525
+# 하락했는데도 retrain_eod.py의 force=True가 기존 -0.01 가드(batch_retrainer.py
+# _train_horizon)를 무력화해 그대로 교체됨(0715진입청산검토.md 딥다이브 발견).
+# 임계값은 SGD 온라인학습 `_CUT_THR`(1m/3m 0.45, 5m 0.47, 10m 0.48, 15m 0.50,
+# 30m 0.42 — `learning/online_learner.py`)와 동일한 스타일(호라이즌별 세분화)로
+# 설계했다 — 단, `_CUT_THR`는 절대 정확도 하한이고 이 값은 "하락폭" 기준이라
+# 숫자를 그대로 가져오지 않고 CORE 그룹(CLAUDE.md 단기/중기/장기)별 상대적
+# 엄격도만 참고했다: 단기(1m/3m/5m)는 실거래에 가장 직접 영향을 주므로 가장
+# 엄격(0.025 — 7/15 세 호라이즌 하락폭을 전부 걸러내는지 검증됨), 중기(10m/15m)는
+# 사용자 예시값(0.03) 그대로, 장기(30m)는 296차에 이미 CoherenceGate·앙상블·
+# CascadeCoherence에서 전면 퇴역 확정(구조적 랜덤 이하 확정)돼 실거래 의사결정에
+# 관여하지 않으므로 완화(0.05).
+EOD_MODEL_GUARD_DROP_TOLERANCE = {
+    "1m": 0.025, "3m": 0.025, "5m": 0.025,   # 단기 CORE — 가장 엄격
+    "10m": 0.03, "15m": 0.03,                 # 중기
+    "30m": 0.05,                              # 장기 — 296차 퇴역 확정, 완화
+}
+EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT = 0.03  # 미등록 호라이즌 기본값
 MC_STEP_LIMIT: float = (
     0.08  # 1회 갱신 최대 변화폭 (±8%p — 0.03 시 기동→목표 5시간 소요로 복원)
 )
