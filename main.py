@@ -2523,96 +2523,6 @@ class TradingSystem:
             code = code[1:]
         return code
 
-    def _sync_position_from_broker(self) -> None:
-        account_no = str(_secrets.ACCOUNT_NO or "").strip()
-        code = self._normalize_broker_code(getattr(self, "_futures_code", ""))
-        if not account_no or not code:
-            return
-
-        before = (
-            "FLAT" if self.position.status == "FLAT"
-            else f"{self.position.status} {self.position.quantity}계약 @ {self.position.entry_price:.2f}"
-        )
-        result = self.broker.request_futures_balance(account_no)
-        if result is None:
-            log_manager.system("[BrokerSync] 브로커 잔고 TR 조회 실패로 startup sync를 건너뜁니다.", "WARNING")
-            return
-
-        rows = result.get("rows") or []
-        broker_row = None
-        for row in rows:
-            row_code = self._normalize_broker_code(
-                row.get("종목코드") or row.get("code") or ""
-            )
-            if row_code == code:
-                broker_row = row
-                break
-
-        if not broker_row:
-            if self.position.status != "FLAT":
-                self.position.sync_flat_from_broker()
-                self.dashboard.minute_chart_clear_active_position()
-                self._clear_pending_order()
-                log_manager.system(
-                    f"[BrokerSync] startup sync: 브로커 잔고 없음 -> {before} => FLAT",
-                    "CRITICAL",
-                )
-            else:
-                log_manager.system("[BrokerSync] startup sync: 브로커/로컬 모두 FLAT")
-            return
-
-        qty_text = (
-            broker_row.get("잔고수량")
-            or "0"
-        )
-        price_text = (
-            broker_row.get("매입단가")
-            or broker_row.get("현재가")
-            or broker_row.get("평가금액")
-            or "0"
-        )
-        side_text = broker_row.get("매매구분", "")
-
-        try:
-            qty = int(str(qty_text).replace(",", "").strip() or "0")
-        except ValueError:
-            qty = 0
-        try:
-            avg_price = float(str(price_text).replace(",", "").strip() or "0")
-        except ValueError:
-            avg_price = 0.0
-
-        side = _ts_order_side_to_direction(side_text)
-        if qty <= 0 or side not in ("LONG", "SHORT"):
-            log_manager.system(
-                f"[BrokerSync] startup sync 응답 해석 실패 code={code} qty={qty_text} side={side_text}",
-                "WARNING",
-            )
-            return
-
-        entry_time_hint = self.position.entry_time or self.position.peek_saved_entry_time(side)
-        self._entry_source = "BROKER_SYNC_RECOVERY"
-        self.position.sync_from_broker(
-            direction=side,
-            price=avg_price,
-            quantity=qty,
-            atr=max(_ts_get_reference_atr(self), 0.5),
-            synced_at=entry_time_hint,
-            grade="BROKER",
-            regime=self.current_regime or "BROKER_SYNC",
-        )
-        self.dashboard.minute_chart_sync_active_position(
-            side,
-            avg_price,
-            self.position.entry_time,
-        )
-        self._clear_pending_order()
-        after = f"{self.position.status} {self.position.quantity}계약 @ {self.position.entry_price:.2f}"
-        log_manager.system(
-            f"[BrokerSync] startup sync 완료: {before} -> {after}",
-            "CRITICAL" if before != after else "INFO",
-        )
-
     def _rebuild_sgd_feat_indices(self) -> None:
         """[P2] SGD_FEATURE_NAMES_BY_HORIZON → self.model.feature_names 인덱스 재계산.
 
@@ -7806,30 +7716,6 @@ class TradingSystem:
             except Exception as _hg_e:
                 logger.debug("[HotSwapGate] 스킵: %s", _hg_e)
 
-    def _execute_partial_exit(self, price: float, stage: int) -> None:
-        """TP{stage} 부분 청산 — 수량 계산 → API 주문 → 수량 감소 → PnL 기록."""
-        total_qty   = self.position.quantity
-        ratio       = PARTIAL_EXIT_RATIOS[stage - 1]
-        partial_qty = max(1, round(total_qty * ratio))
-        reason      = f"TP{stage} 부분청산 {ratio:.0%}"
-
-        if partial_qty >= total_qty:
-            # 잔여가 부분 청산 불가 (1계약 포지션 등) → 전량 청산으로 전환
-            self._send_broker_exit_order(total_qty)
-            result = self.position.close_position(price, f"TP{stage}(전량)")
-            self._post_exit(result)
-            return
-
-        self._send_broker_exit_order(partial_qty)
-        result = self.position.partial_close(price, partial_qty, reason)
-
-        if stage == 1:
-            self.position.partial_1_done = True
-        else:
-            self.position.partial_2_done = True
-
-        self._post_partial_exit(result, stage)
-
     def _post_partial_exit(self, result: dict, stage: int) -> None:
         """부분 청산 후처리 — CB/Kelly 통계, 대시보드, DB 기록."""
         pnl = result["pnl_pts"]
@@ -8045,48 +7931,6 @@ class TradingSystem:
             except Exception as _cb_delay_e:
                 logger.warning("[CB] check_api_delay 예외 (스킵): %s", _cb_delay_e)
         return ret
-
-    def _execute_entry(
-        self, direction: str, price: float,
-        quantity: int, atr: float, grade: str,
-    ):
-        """진입 실행"""
-        # [311차 후속] 정상 진입 경로(자동/수동 버튼) 공용 진입점 — 유령/브로커동기화
-        # 경로(각각 별도 지점에서 태깅)와 구분되도록 기본값으로 복원.
-        self._entry_source = "SYSTEM_AUTO"
-        if not self.dashboard.is_server_match():
-            log_manager.system(
-                "[Entry] 서버 모드 불일치 — 라디오 버튼 선택과 실접속 서버가 다릅니다. 진입 차단.",
-                "WARNING",
-            )
-            return
-        ret = self._send_broker_entry_order(direction, quantity)
-        if ret != 0:
-            logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s", ret)
-            log_manager.system(
-                f"[Entry] 주문 실패로 포지션 미오픈 ret={ret} dir={direction} qty={quantity}",
-                "ERROR",
-            )
-            return
-        self.position.open_position(
-            direction = direction,
-            price     = price,
-            quantity  = quantity,
-            atr       = atr,
-            grade     = grade,
-            regime    = self.current_regime,
-        )
-        log_manager.trade(
-            f"[진입] {direction} {quantity}계약 @ {price} "
-            f"등급={grade} 레짐={self.current_regime}"
-        )
-        # 수익 보존 가드 — 오후 진입 카운터 업데이트
-        self.profit_guard.on_entry()
-        # PnL 탭 진입 이벤트 기록 [B28]
-        self.dashboard.append_pnl_log(
-            f"진입 | {direction} {quantity}계약 @ {price}  등급={grade}",
-            f"손절 {self.position.stop_price:.2f}  1차 {self.position.tp1_price:.2f}",
-        )
 
     def _log_exec_1m_shadow(
         self, direction: str, grade: str,
@@ -10358,36 +10202,6 @@ def _ts_on_order_message(self, payload: dict) -> None:
             "ERROR",
         )
         self._clear_pending_order()
-
-
-def _ts_execute_entry(self, direction: str, price: float, quantity: int, atr: float, grade: str):
-    if self._has_pending_order():
-        return
-    ret = self._send_broker_entry_order(direction, quantity)
-    if ret != 0:
-        logger.error("[Entry] SendOrder 실패로 내부 포지션 오픈을 취소합니다. ret=%s", ret)
-        log_manager.system(
-            f"[Entry] 주문 실패로 포지션 미오픈 ret={ret} dir={direction} qty={quantity}",
-            "ERROR",
-        )
-        return
-    self._set_pending_order(
-        kind="ENTRY",
-        direction=direction,
-        qty=quantity,
-        price_hint=price,
-        reason="진입",
-        atr=atr,
-        grade=grade,
-    )
-    # 투기적 포지션 오픈 — Chejan 없는 환경(모의투자)에서도 이중진입을 방지.
-    # 실서버에서 Chejan이 도착하면 apply_entry_fill()이 _optimistic=True를 감지해
-    # 수량 증가 없이 체결가만 보정한다.
-    self.position.open_position(direction, price, quantity, atr, grade, self.current_regime)
-    self.position._optimistic = True
-    log_manager.trade(
-        f"[주문요청] {direction} {quantity}계약 @ {price} 등급={grade} 체결대기"
-    )
 
 
 def _ts_execute_partial_exit(self, price: float, stage: int) -> None:

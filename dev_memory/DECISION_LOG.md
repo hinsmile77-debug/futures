@@ -8708,3 +8708,61 @@ p95 근방을 잡아 개장 초반(자연히 높음)은 대부분 통과시키�
 추격 필터 — 동일한 소프트 게이트 철학), 348차(같은 날 발견한 S0-C 구조,
 §4 COM 콜백 안전성 판단 기준 공유), `HURST_REGIME_ATR_MULT`(260704 감사 P2 —
 손절/TP 배수 조건부 적용의 기존 선례).
+
+## 2026-07-16 (350차) — 349차 후속: 몬키패치 그림자 죽은 코드 4곳 제거
+
+**배경**: 349차 작업 중 `main.py:7951 _execute_entry`(5-param 구버전)가
+`main.py:13159`(현 13012줄) `TradingSystem._execute_entry = _ts_execute_entry`
+몬키패치에 덮어써지는 죽은 코드임을 발견하고, 실제 살아있는 `_ts_execute_entry`
+쪽에 배선한 뒤 정리는 NEXT_TODO로 미뤘다. 사용자가 "이미 찾았으면 왜 지금
+정리 안 하냐"고 되물어, 파일 전체를 대상으로 이 패턴(`TradingSystem.X =
+_ts_X` 몬키패치)이 몇 곳에 더 있는지, 죽은 중복 정의가 남은 곳이 몇 곳인지
+전수 조사한 뒤 이번 차수에서 전부 정리했다.
+
+**전수 조사 결과**: 파일 하단에 이 몬키패치 패턴이 총 **12개** 메서드에
+쓰이고 있었다(`_on_order_message`/`_on_chejan_event`/`_set_broker_sync_status`/
+`_push_balance_to_dashboard`/`_refresh_dashboard_balance`/
+`_refresh_dashboard_balance_ui_only`/`_sync_position_from_broker`/
+`_manual_position_restore`/`_execute_entry`/`_execute_partial_exit`/
+`_check_exit_triggers`/`_intrabar_tp_check`). 각각에 대해 클래스 본문 안에
+같은 이름의 죽은 중복 정의가 남아있는지 `grep -c "    def {name}("`로 전수
+확인한 결과, **3곳**(`_sync_position_from_broker`/`_execute_entry`/
+`_execute_partial_exit`)에 죽은 중복이 남아 있었다(`_check_exit_triggers`는
+306차에서 이미 같은 방식으로 정리된 선례). 추가로 `_execute_entry`는 모듈
+레벨에서도 동명 함수가 **두 번** 정의돼 있어(10142줄 구버전, 12433줄 신버전)
+Python의 "마지막 바인딩이 이긴다" 규칙으로 몬키패치가 실제로는 항상 뒤쪽
+정의를 가리켰다 — 총 **4개**의 죽은 정의(클래스본문 3개 + 모듈레벨 1개)를
+발견해 전부 제거했다.
+
+**File**: `main.py` 4곳 순수 삭제, 총 186줄(로직 변경 없음).
+- `_sync_position_from_broker` 클래스본문 정의(2518~2606, 89줄) — 실제
+  구현(`_ts_sync_position_from_broker`, 210줄)은 장외 가드·BlockRequest 타이밍
+  진단·모의투자 blank-row 처리 등을 갖춘 훨씬 정교한 버전.
+- `_execute_partial_exit` 클래스본문 정의(7658~7680, 23줄) — 실제 구현은
+  339차 TP1 단일계약 보호전환(synthetic partial)·진단로그를 포함.
+- `_execute_entry` 클래스본문 정의(7874~7914, 41줄) + 모듈레벨 구버전
+  (10142~10169, 28줄) — 실제 구현(12433줄)은 305차 pending 선등록 순서 수정·
+  `raw_direction`/`entry_horizon`/`hurst_bucket`/`extra_stop_mult`(349차)
+  전부 포함.
+
+**안전성 판단**: 각 쌍을 라인 단위로 대조해 죽은 버전이 예외 없이 더 단순하고
+최신 안전장치(305차 pending 선등록, 339차 TP1 보호전환, 349차 스톱확대 등)가
+빠진 구버전임을 확인 — 실거래 로그 문구(예: "horizon=5m hurst=mean-revert",
+"blank-as-flat decision")가 정확히 라이브 버전과 일치함으로 라이브 경로를
+재확인. `TradingSystem()` 인스턴스화(13322줄 부근)가 몬키패치 대입 블록
+(13004~13015줄)보다 뒤에 있어, 삭제 전에도 죽은 클래스본문 정의는 100%
+실행 불가능했음을 AST로 확인(어떤 인스턴스도 몬키패치 이전 상태의 클래스
+속성을 참조할 수 없는 구조).
+
+**검증**: 삭제 후 AST로 3개 메서드명 전부 클래스본문 0개·모듈레벨(`_ts_` 접두)
+정확히 1개로 정리됐는지 확인, 몬키패치 대입 12줄 전부 그대로인지 확인,
+`run_minute_pipeline`(3845~7656)·`_has_pending_order`·`_normalize_broker_code`
+·`_rebuild_sgd_feat_indices`·`_post_partial_exit`·`_send_broker_entry_order`
+·`_log_exec_1m_shadow` 등 인접 메서드 경계가 삭제 전후로 정상 유지됨을
+재확인(348차에서 유사 편집 중 메서드 경계가 잘못 삽입돼 구조가 파괴된 사고가
+있어 이번엔 매 삭제 직후 AST 확인을 습관화). `py37_32`(실제 런타임)
+`py_compile` 통과. 순수 삭제라 동작 변화가 전혀 없어 라이브 검증 항목 없음.
+
+**관련**: 349차(이 정리의 발단), 306차(`_check_exit_triggers` 동일 패턴 선례,
+같은 접근 — "실제 라이브 구현은 그대로 유지, 동작 변화 없음"), 348차(같은
+날 AST로 메서드 경계 파괴를 잡아낸 교훈 재적용).
