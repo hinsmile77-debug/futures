@@ -153,7 +153,7 @@ from safety.system_health import SystemHealthScore
 from logging_system.log_manager import log_manager
 from utils.time_utils import (
     is_market_open, is_trading_day, get_time_zone, is_force_exit_time, is_new_entry_allowed,
-    is_pre_market,
+    is_pre_market, NEW_ENTRY_CUTOFF,
 )
 from utils.notify import (
     notify,
@@ -6949,7 +6949,9 @@ class TradingSystem:
                     f"(시가={_open_p_for_gap:.2f} 반등위험)"
                 )
             elif not is_new_entry_allowed():
-                _entry_block_reason = "[차단] 15:00 이후 — 신규 진입 금지 구간"
+                _entry_block_reason = (
+                    f"[차단] {NEW_ENTRY_CUTOFF.strftime('%H:%M')} 이후 — 신규 진입 금지 구간 (345차)"
+                )
             elif _auto_blocked:
                 _entry_block_reason = f"[차단] 자동진입 Degraded 최소신뢰도 {_deg_min_conf:.1%} 미달"
             elif not mode_filter_passed and _final_grade != "X":

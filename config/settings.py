@@ -106,7 +106,10 @@ MINI_MIN_CONTRACTS = 1
 MARKET_OPEN = "09:00"
 MARKET_CLOSE = "15:35"  # 선물 종가 (만기일은 15:20 — time_utils.is_market_open 참고)
 FORCE_EXIT_TIME = "15:10"  # 강제 청산 절대원칙
-NEW_ENTRY_CUTOFF = "15:00"  # 신규 진입 금지 이후
+# [345차] 14:50으로 10분 앞당김 — 실제 판정 로직은 utils/time_utils.py:
+# NEW_ENTRY_CUTOFF(datetime.time)/is_new_entry_allowed()가 담당하며 이 문자열은
+# 문서/표시용(현재 미참조 — 아래 값과 반드시 동기화할 것).
+NEW_ENTRY_CUTOFF = "14:50"  # 신규 진입 금지 이후
 
 # 시간대별 전략 구간 (v6.7 — PRE_MARKET 추가)
 TIME_ZONES = {

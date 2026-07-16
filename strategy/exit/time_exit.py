@@ -20,8 +20,10 @@ class TimeExitManager:
 
     # 강제 청산: 15:10
     FORCE_EXIT = datetime.time(15, 10)
-    # 신규 진입 금지: 15:00
-    NO_ENTRY   = datetime.time(15, 0)
+    # 신규 진입 금지: 14:50 (345차 — utils/time_utils.py:NEW_ENTRY_CUTOFF와 동기화.
+    # 이 클래스의 should_block_entry()는 현재 호출처 없음 — 실제 판정은
+    # utils.time_utils.is_new_entry_allowed()가 담당)
+    NO_ENTRY   = datetime.time(14, 50)
     # 최종 마감: 15:18 (슬리피지 감안)
     FINAL_CLOSE = datetime.time(15, 18)
 
