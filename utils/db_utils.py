@@ -455,6 +455,32 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_e1s_ts ON exec_1m_shadow(ts)")
+    # [339차 후속, 2026-07-16] 1계약 TP1 회계적 분할청산(synthetic partial) 기록 —
+    # Cybos 최소 체결단위가 1계약이라 물리적으로 못 쪼개는 포지션이 TP1에 도달했을 때
+    # "PARTIAL_EXIT_RATIOS[0](33%)를 그 가격에서 확정했다"고 회계상으로만 남긴다.
+    # exec_1m_shadow와 같은 이유로 counterfactual 시뮬레이션(resolved/cf_outcome)이
+    # 불필요함 — 차단된 가상 시나리오가 아니라 실제로 TP1에 도달한 사실 그 자체이므로,
+    # entry_ts로 trades 테이블과 조인해 최종 실현 pnl과 나란히 비교하면 된다.
+    # 리포트 전용 계측 테이블 — 실거래 의사결정(CB/Kelly/사이징)에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS synthetic_partial_exits (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                 TEXT NOT NULL,           -- 발동 시각 (분봉)
+        entry_ts           TEXT,                    -- 포지션 진입 시각 (trades.entry_ts 조인 키)
+        direction          TEXT NOT NULL,           -- LONG/SHORT
+        entry_price        REAL NOT NULL,
+        synthetic_price    REAL NOT NULL,           -- TP1 도달 시점 가격(회계상 확정가)
+        synthetic_fraction REAL NOT NULL,           -- 회계상 확정 비중 (PARTIAL_EXIT_RATIOS[0])
+        synthetic_pnl_pts  REAL NOT NULL,           -- (synthetic_price - entry_price) * mult
+        protect_mode       TEXT,                    -- atr_profit 등 (참고용)
+        stop_after         REAL,                    -- arm 이후 실제 스탑가(물리적 리스크 관리는 그대로 유지)
+        created_at         TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_spe_ts ON synthetic_partial_exits(ts)")
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_spe_entry_ts ON synthetic_partial_exits(entry_ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,

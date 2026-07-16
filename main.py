@@ -10328,10 +10328,41 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
             f"mode={protect_mode} price={price:.2f} stop={protect['prev_stop_price']:.2f}->{protect['new_stop_price']:.2f}",
             "WARNING",
         )
+        _syn_pnl = protect.get("synthetic_tp1_pnl_pts")
+        _syn_frac = protect.get("synthetic_tp1_fraction")
         self.dashboard.append_pnl_log(
             f"TP1 보호전환 | {self.position.status} 1계약 @ {price:.2f}",
-            f"{protect_mode} | stop {protect['prev_stop_price']:.2f} -> {protect['new_stop_price']:.2f}",
+            f"{protect_mode} | stop {protect['prev_stop_price']:.2f} -> {protect['new_stop_price']:.2f}"
+            + (f" | 회계상 확정 {_syn_frac:.0%} {_syn_pnl:+.2f}pt(물리 미체결)"
+               if _syn_pnl is not None else ""),
         )
+        # [339차 후속] 회계적 분할청산(synthetic partial) 기록 — signal_decay_exits와
+        # 동일하게 리포트 전용 계측 테이블일 뿐 실거래 의사결정(CB/Kelly/사이징)에는
+        # 절대 반영하지 않는다. 아직 물리적으로 열려 있는 1계약의 리스크 노출은
+        # 위 stop 이동(atr_profit 등)이 유일한 실제 관리 수단이며, 이 INSERT는 그
+        # 판단이 "TP1까지는 왔었다"는 사후 분석용 사실 기록일 뿐이다.
+        try:
+            execute(
+                TRADES_DB,
+                """INSERT INTO synthetic_partial_exits
+                   (ts, entry_ts, direction, entry_price, synthetic_price,
+                    synthetic_fraction, synthetic_pnl_pts, protect_mode, stop_after)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                    (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                     if self.position.entry_time else None),
+                    self.position.status,
+                    float(self.position.entry_price),
+                    float(protect.get("synthetic_tp1_price") or price),
+                    float(_syn_frac or 0.0),
+                    float(_syn_pnl or 0.0),
+                    protect_mode,
+                    float(protect["new_stop_price"]),
+                ),
+            )
+        except Exception as _spe:
+            logger.warning("[SyntheticPartial] 기록 실패 (무해): %s", _spe)
         return
     ratio = PARTIAL_EXIT_RATIOS[stage - 1]
     target_qty = self.position.get_stage_exit_qty(stage)
