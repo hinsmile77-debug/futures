@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-07-16 (344차 — FQAdj 완화 방향 오류 수정: 실측 정확도 게이트 추가)
+
+> 상세: `DECISION_LOG.md` 2026-07-16(344차) 항목.
+
+- [DONE 2026-07-16] `learning/online_learner.py:short_horizon_accuracy(min_samples=15)`
+  신설 — 1m/3m/5m 합산 실측 정확도, 30m 등 장기호라이즌 오염 차단, 표본부족 시 None.
+  `strategy/entry/fq_accuracy_gate.py`(신규) `compute_fq_adjusted_min_conf()` 순수함수로
+  판정 로직 분리(COM 미의존, 단위테스트 가능). `config/settings.py:FQADJ_ACC_MIN_SAMPLES`
+  (15)/`FQADJ_ACC_FREEZE_MIN`(0.45)/`FQADJ_ACC_STRENGTHEN_MIN`(0.40) 추가.
+  `main.py`의 FQAdj 블록을 새 함수 호출로 교체 — fq 높아도 실측 단기정확도가 기준
+  미달이면 완화 동결, 심각히 낮으면(랜덤 수준) fq 무관 강화.
+- [DONE 2026-07-16] `.venv`/`py310_64` 격리 검증 — `compute_fq_adjusted_min_conf()`
+  9개 시나리오(7/15 실측값 재현 시 강화로 정확히 전환 포함) 전부 통과,
+  `short_horizon_accuracy()`가 30m 오염 완전 차단·표본부족 None·정상 케이스 회귀없음
+  모두 확인.
+- [ ] **다음 장중 라이브 검증** — `[FQAdj] ... (강화, 실측acc=...)` 및
+  `(완화 동결, ...)` 로그가 실제 저정확도 구간에서 발동하는지, 정상 구간에서는
+  기존과 동일하게 `(완화)` 로그가 계속 나오는지(회귀 없음) 확인.
+- [ ] **임계값 재검토 — 4주 관찰 후** — `FQADJ_ACC_FREEZE_MIN`(0.45)/
+  `FQADJ_ACC_STRENGTHEN_MIN`(0.40)이 `_CUT_THR`(1m/3m 0.45, 5m 0.47) 대비 정합적으로
+  선택됐으나 실거래 검증은 아직 없음. 동결/강화 발동 빈도가 과도(상시 발동)하거나
+  전무한지 로그로 확인 후 조정 검토.
+
+---
+
 ## 2026-07-16 (343차 — 연장 추격 필터(anti-chasing): EntryChecklist 10번 항목 신설)
 
 > 상세: `DECISION_LOG.md` 2026-07-16(343차) 항목.

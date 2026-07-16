@@ -395,6 +395,23 @@ class OnlineLearner:
         """호라이즌별 정확도 버퍼 표본 수 — horizon_accuracy()의 5건 미만 가드 판별용 (대시보드 표시)"""
         return len(self._acc_buf.get(horizon, ()))
 
+    def short_horizon_accuracy(self, min_samples: int = 15) -> Optional[float]:
+        """1m/3m/5m 합산 표본 기준 단기 호라이즌 실측 정확도 (344차 FQAdj 정확도 게이트용).
+
+        recent_accuracy_by_bucket()["short"]와 달리 합산 표본 수가 min_samples
+        미만이면 None을 반환한다 — 소수 표본(예: 세션 초반 1~2건)의 우연한 결과로
+        min_conf 완화/강화 판단이 흔들리는 것을 방지(pred_buffer.recent_accuracy()의
+        min_samples 가드와 동일 취지). 30m 등 구조적으로 랜덤 이하인 장기 호라이즌은
+        섞지 않는다 — recent_accuracy()(전 호라이즌 평균)를 그대로 쓰면 30m 저성능이
+        단기 정확도 판정을 오염시킨다.
+        """
+        short_hz = ("1m", "3m", "5m")
+        bufs = [self._acc_buf[h] for h in short_hz if self._acc_buf.get(h)]
+        n = sum(len(b) for b in bufs)
+        if n < min_samples:
+            return None
+        return sum(sum(b) for b in bufs) / n
+
     # 기존 코드 호환 프로퍼티
     @property
     def sgd_weight(self) -> float:
