@@ -8,6 +8,28 @@
 
 ---
 
+## 2026-07-16 (345차 — 마감 근접 신규진입 컷: 14:50으로 10분 앞당김)
+
+> 상세: `DECISION_LOG.md` 2026-07-16(345차) 항목.
+
+- [DONE 2026-07-16] `utils/time_utils.py:NEW_ENTRY_CUTOFF`(신규) + `is_new_entry_allowed()`
+  15:00→14:50. `main.py` import·`_entry_block_reason` 메시지 동적 참조로 변경.
+  동일 개념의 미사용 중복 상수(`config/settings.py:NEW_ENTRY_CUTOFF` 문자열,
+  `strategy/exit/time_exit.py:TimeExitManager.NO_ENTRY` — 둘 다 호출처 없는
+  죽은 코드) 값도 14:50으로 동기화(혼동 방지).
+- [DONE 2026-07-16] `.venv` 격리 검증 — 7/15 #8 재현(14:57 진입 차단 확인),
+  경계값(14:49:59/14:50:00), CLOSE_VOLATILE 존 자체는 불변 확인, 정상 시간대
+  회귀 없음, 15:00 이후 기존과 동일 차단 — 6개 카테고리 전부 통과.
+- [ ] **다음 장중 라이브 검증** — 14:50~15:00 구간에서 `[EntryBlockReason]`에
+  "14:50 이후 — 신규 진입 금지 구간 (345차)" 문구 정상 출력, 14:00~14:49는
+  기존처럼 정상 진입되는지 확인.
+- [ ] **[별도 과제, 우선순위 낮음] 신규진입 컷오프 3중 중복 통합** — `is_new_entry_
+  allowed()`가 유일한 실제 경로이고 `config.settings.NEW_ENTRY_CUTOFF`(문자열)·
+  `TimeExitManager.NO_ENTRY`는 죽은 코드. 리팩터링해 단일 소스로 합칠지 검토
+  (이번 345차는 값 동기화만 하고 통합은 범위 밖으로 미룸).
+
+---
+
 ## 2026-07-16 (344차 — FQAdj 완화 방향 오류 수정: 실측 정확도 게이트 추가)
 
 > 상세: `DECISION_LOG.md` 2026-07-16(344차) 항목.

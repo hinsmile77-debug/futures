@@ -12,6 +12,11 @@ KST = datetime.timezone(datetime.timedelta(hours=9))
 PRE_MARKET_START = datetime.time(8, 45)
 PRE_MARKET_END   = datetime.time(9,  0)
 
+# [345차] 신규진입 컷오프 — CLOSE_VOLATILE(14:00~15:00) 막바지 진입 리스크.
+# 기존 15:00 컷으로는 14:57 진입(15:10 강제청산까지 13분)이 그대로 허용됐다
+# (0715진입청산검토.md #8 트레이드). 10분 앞당겨 14:50으로 조정.
+NEW_ENTRY_CUTOFF = datetime.time(14, 50)
+
 
 def now_kst() -> datetime.datetime:
     """현재 KST 시각을 naive datetime으로 반환 (기존 naive 비교 코드와 호환)."""
@@ -80,10 +85,10 @@ def is_force_exit_time(dt: Optional[datetime.datetime] = None) -> bool:
 
 
 def is_new_entry_allowed(dt: Optional[datetime.datetime] = None) -> bool:
-    """신규 진입 허용 여부 (15:00 이후 금지)"""
+    """신규 진입 허용 여부 (NEW_ENTRY_CUTOFF=14:50 이후 금지, 345차)"""
     if dt is None:
         dt = now_kst()
-    return dt.time() < datetime.time(15, 0)
+    return dt.time() < NEW_ENTRY_CUTOFF
 
 
 def get_time_zone(dt: Optional[datetime.datetime] = None) -> str:
