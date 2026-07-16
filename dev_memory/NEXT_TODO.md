@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-07-16 (343차 — 연장 추격 필터(anti-chasing): EntryChecklist 10번 항목 신설)
+
+> 상세: `DECISION_LOG.md` 2026-07-16(343차) 항목.
+
+- [DONE 2026-07-16] `config/settings.py:CHASE_FILTER_*` 4개 상수 추가
+  (`ENABLED`/`LOOKBACK_MIN=10`/`ATR_THRESHOLD=2.0`/`ATR_THRESHOLD_MEANREV=1.5`).
+  `features/feature_builder.py`에 `price_extension_atr` 피처 신설(기존
+  `_close_history` 버퍼 재사용, signed, 워밍업 시 0.0). `strategy/entry/checklist.py`
+  10번 항목 추가 — 연장 방향과 진입 방향이 같고(추격) 임계 초과 시 실패, Hurst
+  평균회귀 구간은 임계값을 1.5로 더 엄격하게. 하드 차단이 아니라 pass_count 반영만
+  (기존 4_cvd·5_ofi와 동일한 소프트 게이트).
+- [DONE 2026-07-16] `py310_64` 격리 검증 — `EntryChecklist.evaluate()` 7개 시나리오
+  (추격/역추세/경계값/양쪽 킬스위치/pass_count 정확히 1 감소) 전부 통과.
+  `FeatureBuilder.build()`에 11개 합성 봉(10분 +20pt 단조상승) 투입 — 10번째 봉까지
+  워밍업 0.0, 11번째 봉에서 `price_extension_atr≈8.46` 정상 계산 확인.
+- [ ] **다음 장중 라이브 검증** — 실제 추격 상황에서 `[Checklist] 연장추격 감지`
+  INFO 로그와 등급 하락이 발생하는지, 정상 트렌드 추종 진입에 오탐이 없는지 확인.
+- [ ] **UI 시각화 후속** — `dashboard/main_dashboard.py`에 `chase_chk` 위젯·토글
+  체크박스가 없어 현재 대시보드에 표시되지 않음(안전하게 무시됨). 필요 시
+  `check_labels`/`check_toggles`/`_ATTR_TO_INTERNAL`에 추가.
+- [ ] **`ensemble_grade=X` 승격 pass_count>=7 임계값 재검토** (`main.py:288`, 311차) —
+  9개→10개 항목 전환으로 상대 엄격도가 77.8%→70%로 완화됨. 다음 26주
+  Walk-Forward 재검증 시 8로 상향할지 검토.
+- [ ] **효과 측정 — 4주 관찰 후 회고** — 7/15와 유사한 휩쏘 장에서 10_chase가
+  실제로 몇 건을 걸러냈는지, 그 중 진짜 손실 회피였는지 정상 추세진입 오차단이었는지
+  주간 점검 시 `[Checklist] 연장추격 감지` 로그 빈도로 확인.
+
+---
+
 ## 2026-07-16 (341차 — "유령 하드스톱" 수정: 트레일링 갱신 후 스톱을 과거 봉고저가에 소급 적용하던 버그)
 
 > 상세: `DECISION_LOG.md` 2026-07-16(341차) 항목.

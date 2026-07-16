@@ -5701,6 +5701,8 @@ class TradingSystem:
                         macro_vix          = float(features.get("macro_vix", 0.5) or 0.5),
                         opt_chain_pcr      = float(features.get("opt_chain_pcr", 0.0) or 0.0),
                         ensemble_grade     = grade,
+                        hurst              = float(features.get("hurst", 0.5) or 0.5),
+                        price_extension_atr = float(features.get("price_extension_atr", 0.0) or 0.0),
                     )
                     _pre_cl_grade = _pre_cr_cache.get("grade", grade)
                 except Exception as _pre_cl_e:
@@ -5963,7 +5965,7 @@ class TradingSystem:
             "3_vwap":"vwap_chk",    "4_cvd":"cvd_chk",
             "5_ofi":"ofi_chk",      "6_foreign":"fi_chk",
             "7_prev_bar":"candle_chk","8_time":"time_chk",
-            "9_risk":"risk_chk",
+            "9_risk":"risk_chk",   "10_chase":"chase_chk",
         }
 
         # 체크리스트: FLAT + 방향 있을 때 항상 평가 (CB·시간 조건 무관)
@@ -6042,6 +6044,8 @@ class TradingSystem:
                         macro_vix         = float(features.get("macro_vix", 0.5) or 0.5),
                         opt_chain_pcr     = float(features.get("opt_chain_pcr", 0.0) or 0.0),
                         ensemble_grade    = grade,
+                        hurst             = float(features.get("hurst", 0.5) or 0.5),
+                        price_extension_atr = float(features.get("price_extension_atr", 0.0) or 0.0),
                     )
 
             # [Phase 1] cold-start 구간 최소 pass 수 강화 (HORIZON_COLDSTART_MIN_PASS)
