@@ -8706,3 +8706,60 @@ model, oob)`를 신규 추가해, `save_all()` 호출 직전에 가드가 발동
 0715진입청산검토.md(7/15 EOD 로그에서 1m/3m/5m CV acc 하락 발견 원본),
 344차(순수함수 분리 설계 패턴 공유), 345차(NEW_ENTRY_CUTOFF 3중 중복 발견과 동일한
 "실제 실행 경로 재확인" 교훈).
+
+## 2026-07-16 (347차) — 336차 잔여: entry_block_reason 오탐 경고 + 빈 사유 8건 근본 해결
+
+**배경**: 7/15 전일 점검에서 336차(STEP7 차단사유 보강)가 여전히 두 갈래 문제를
+안고 있음을 발견 — ① 14:17/14:27/14:36/14:57처럼 진입이 **성공**한 분마다
+`[EntryBlockReason] fo=0인데 사유 미매칭` 경고가 오탐으로 찍힘, ② 14:09~14:39
+사이 8건은 진입이 **실패**했는데도(`entry_executed=0`) `entry_block_reason`이
+빈 문자열로 남음. 둘 다 같은 `main.py` STEP7 `_entry_block_reason` elif 체인
+말단(`_cr is None` 이후)의 동일한 `else` 블록에서 비롯된 문제라 한 번에 진단·수정.
+
+**File**: `main.py:6912~6943` (`_entry_block_reason` elif 체인 말단).
+
+**근본 원인**: `_final_entry_ok`(fo, main.py:6713)의 19개 AND 조건과 이 elif
+체인은 조건 대부분이 1:1 대응하지만, **`_cr["auto_entry"]`(체크리스트가 최종
+반환하는 자동진입 가능 여부)는 `_final_entry_ok`에 전혀 포함되지 않는다** —
+`strategy/entry/checklist.py` 말미의 `if auto_entry and confidence <
+ENS_CONF_FLOOR_FOR_AUTO: auto_entry = False`와 `main.py:6088`의 동적 floor
+버전(`_ens_conf_floor_dyn`) 둘 다 **grade는 A/B/C로 그대로 두고 `auto_entry`만
+False로 끄는** 설계다. 그 결과 실제 진입 실행부(`if _cr["auto_entry"] and
+self._auto_entry_enabled:`)는 조용히 스킵되는데(entry_executed=0), fo 자체는
+True라서 elif 체인 어디에도 걸리지 않고 grade≠X이니 X분기도 아니라서 **마지막
+`else`로 떨어져 "fo=0"이라는 잘못된 전제로 경고가 찍히고 사유는 빈 문자열로
+남았다**. 반대로 `auto_entry=True`이고 나머지 조건도 전부 통과하는 **정상
+성공 케이스**도 구조적으로 똑같이 이 `else`에 도달하므로, 성공한 진입마다도
+같은 경고가 오탐으로 찍혔다 — 즉 이 `else`는 애초에 "이례적 상황"이 아니라
+"차단 사유가 없는 정상 상태"(성공 또는 auto_entry=False)를 뭉뚱그려 받는
+자리였는데, 코드가 이를 전부 "버그"로 오인하고 있었다.
+
+**실측 검증**: 7/15 빈 사유 8건(14:09/14:11/14:14/14:19/14:20/14:30/14:32/14:39)
+전부 `grade='C'`이고 `confidence`가 32.9~35.3%로 `ENS_CONF_FLOOR_FOR_AUTO`(33%)
+경계에 정확히 몰려 있었음을 `predictions.db`로 직접 조회해 확인 — 가설을
+확정지음.
+
+**수정**: `_final_grade == "X"` 분기 뒤에 elif 2개를 추가하고 최종 `else`를
+"정상"으로 재정의:
+1. `elif not self._auto_entry_enabled:` — 자동매매 전역 토글 OFF (STEP7 게이트
+   자체와 무관한 별도 사유).
+2. `elif not _cr.get("auto_entry", True):` — 체크리스트 conf_floor 미달(정적·
+   동적 두 경로 공통), `conf={confidence:.1%}` 포함해 정확한 수치 표시.
+3. 최종 `else`는 이제 "위 모든 차단 조건을 통과 = fo=1, 진입 정상 진행"인 경우만
+   남으므로 경고를 완전히 제거하고 `""`만 반환.
+
+**검증**: `py_compile` 통과. main.py가 COM 의존이라 직접 단위테스트 불가 —
+elif 체인 말단부(`_cr is None` 이후, 이번에 수정한 부분 전체)를 그대로 복제한
+격리 스크립트로 검증(6개 케이스): (1) 7/15 14:09 실측값(conf=34.4%) 그대로
+재현 시 conf_floor 사유가 정확히 채워짐, (2) 7/15 14:17 실측 성공 케이스
+(conf=47.3%, auto_entry=True) 재현 시 사유가 빈 문자열이고 경고 없음(오탐
+해소 확인), (3) 자동매매 전역 비활성 케이스 정상 문구 출력, (4)(5) grade=X
+기존 두 분기(점심시간·일반 미통과항목) 회귀 없음 확인, (6) 7/15 빈 사유 8건의
+정확한 confidence 값 8개를 일괄 투입해 전부 conf_floor 사유로 정확히 분류됨을
+확인. **라이브 미검증** — 다음 장중 conf_floor 경계 부근 C등급 신호에서 새
+문구가 정상 출력되고, 진입 성공 분마다 `[EntryBlockReason]` 경고가 더 이상
+찍히지 않는지 로그로 확인 필요.
+
+**관련**: `docs/정기점검/매일점검/0715진입청산검토.md`(§2 딥다이브에서 이 잔여
+갭 최초 발견), 335차·336차(원래 STEP7 차단사유 보강 작업), 268차-P2(동적
+conf_floor 도입), 239차(정적 `ENS_CONF_FLOOR_FOR_AUTO` 도입).
