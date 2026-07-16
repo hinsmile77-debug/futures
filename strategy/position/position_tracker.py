@@ -16,6 +16,7 @@ from config.settings import (
     ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT,
     ATR_HORIZON_TP1_MULT, FUTURES_COMMISSION_RATE,
     HURST_REGIME_ATR_MULT_ENABLED, HURST_REGIME_ATR_MULT,
+    PARTIAL_EXIT_RATIOS,
 )
 
 # 인스턴스별 pt_value를 주입받기 전 module-level fallback 으로만 사용
@@ -58,6 +59,16 @@ class PositionTracker:
         self.partial_3_done: bool = False
         self.initial_quantity: int = 0
 
+        # [2026-07-16 339차 후속] 1계약 TP1 회계적 분할청산(synthetic partial) —
+        # Cybos 최소 체결단위가 1계약이라 물리적으로 못 쪼개는 상황에서, TP1 도달
+        # 시점 가격을 "포지션의 33%를 여기서 확정했다고 치는" 회계상 기록으로만
+        # 남긴다. 실제 계약수·리스크 노출은 변경하지 않음 — arm_tp1_single_contract_
+        # with_mode()의 스탑 이동(물리적 리스크 관리)과 완전히 별개.
+        self.synthetic_tp1_price:    Optional[float] = None
+        self.synthetic_tp1_pnl_pts:  Optional[float] = None
+        self.synthetic_tp1_fraction: Optional[float] = None
+        self.synthetic_tp1_ts:       Optional[datetime.datetime] = None
+
         self._optimistic: bool = False  # True = open_position() called speculatively; Chejan will correct price
 
         self._daily_pnl_pts:   float = 0.0
@@ -98,6 +109,10 @@ class PositionTracker:
         self.partial_2_done = False
         self.partial_3_done = False
         self.initial_quantity = 0
+        self.synthetic_tp1_price = None
+        self.synthetic_tp1_pnl_pts = None
+        self.synthetic_tp1_fraction = None
+        self.synthetic_tp1_ts = None
         self._optimistic = False
         self.last_update_reason = reason
         self.last_update_ts = now_kst()
@@ -624,6 +639,17 @@ class PositionTracker:
             self.stop_price = protected_stop
 
         self.partial_1_done = True
+
+        # [339차 후속] 회계적 분할청산(synthetic partial) — 실제로는 못 쪼개는 1계약을
+        # "TP1 도달가에서 PARTIAL_EXIT_RATIOS[0](33%)를 확정했다"고 회계상으로만 기록.
+        # 물리적 계약수·스탑 관리(위 protected_stop)와는 완전히 별개이며, 이 값은
+        # CB/Kelly 등 실시간 리스크 판단에는 전달하지 않고(부록 참조) DB·대시보드
+        # 표시용으로만 쓴다.
+        self.synthetic_tp1_price = round(current_price, 4)
+        self.synthetic_tp1_pnl_pts = round((current_price - self.entry_price) * mult, 4)
+        self.synthetic_tp1_fraction = PARTIAL_EXIT_RATIOS[0]
+        self.synthetic_tp1_ts = now_kst()
+
         self._sync_partial_progress()
         self.last_update_reason = f"arm_tp1_single_contract:{mode}"
         self.last_update_ts = now_kst()
@@ -631,7 +657,8 @@ class PositionTracker:
 
         logger.info(
             f"[Position] 1계약 TP1 보호전환 @ {current_price:.2f} "
-            f"| mode={mode} | stop {prev_stop:.2f} -> {self.stop_price:.2f}"
+            f"| mode={mode} | stop {prev_stop:.2f} -> {self.stop_price:.2f} "
+            f"| 회계상 확정 {self.synthetic_tp1_fraction:.0%} @ {self.synthetic_tp1_pnl_pts:+.2f}pt"
         )
         return {
             "direction": self.status,
@@ -644,6 +671,9 @@ class PositionTracker:
             "tp1_price": round(self.tp1_price, 4),
             "tp2_price": round(self.tp2_price, 4),
             "quantity": self.quantity,
+            "synthetic_tp1_price": self.synthetic_tp1_price,
+            "synthetic_tp1_pnl_pts": self.synthetic_tp1_pnl_pts,
+            "synthetic_tp1_fraction": self.synthetic_tp1_fraction,
         }
 
     def update_trailing_stop(self, current_price: float, atr: float):
@@ -896,6 +926,10 @@ class PositionTracker:
         self.partial_2_done = False
         self.partial_3_done = False
         self.initial_quantity = 0
+        self.synthetic_tp1_price = None
+        self.synthetic_tp1_pnl_pts = None
+        self.synthetic_tp1_fraction = None
+        self.synthetic_tp1_ts = None
         self._optimistic = False
         self.last_update_ts = self.last_update_ts or now_kst()
         self._save_state()
@@ -1002,6 +1036,12 @@ class PositionTracker:
                 "partial_1_done": self.partial_1_done,
                 "partial_2_done": self.partial_2_done,
                 "partial_3_done": self.partial_3_done,
+                "synthetic_tp1_price": self.synthetic_tp1_price,
+                "synthetic_tp1_pnl_pts": self.synthetic_tp1_pnl_pts,
+                "synthetic_tp1_fraction": self.synthetic_tp1_fraction,
+                "synthetic_tp1_ts": (
+                    self.synthetic_tp1_ts.isoformat() if self.synthetic_tp1_ts else None
+                ),
                 "last_update_reason": self.last_update_reason,
                 "last_update_ts": (
                     self.last_update_ts.isoformat() if self.last_update_ts else None
@@ -1054,6 +1094,13 @@ class PositionTracker:
             self.partial_1_done = bool(state.get("partial_1_done", False))
             self.partial_2_done = bool(state.get("partial_2_done", False))
             self.partial_3_done = bool(state.get("partial_3_done", False))
+            self.synthetic_tp1_price = state.get("synthetic_tp1_price")
+            self.synthetic_tp1_pnl_pts = state.get("synthetic_tp1_pnl_pts")
+            self.synthetic_tp1_fraction = state.get("synthetic_tp1_fraction")
+            self.synthetic_tp1_ts = (
+                datetime.datetime.fromisoformat(state["synthetic_tp1_ts"])
+                if state.get("synthetic_tp1_ts") else None
+            )
             if self.tp3_price == 0.0 and self.stop_price and self.tp1_price and self.tp2_price:
                 atr = abs(self.entry_price - self.stop_price) / ATR_STOP_MULT if ATR_STOP_MULT else 0.0
                 mult = 1 if self.status == POSITION_LONG else -1

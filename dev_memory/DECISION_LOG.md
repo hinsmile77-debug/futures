@@ -8207,8 +8207,10 @@ fallback), `dashboard/main_dashboard.py:2602,2851,2853`(ExitPanel 기본값/fall
 다른 모드로 수동 전환 가능 — 이번 변경은 기본값만 바꾼 것. 🥈🥉로 남겨둔 나머지
 개선안(TP1/Stop 배수 재조정, 회계적 분할청산, 사이징 파라미터 재검토)은 미착수.
 
-**검증**: `py_compile` 통과. **라이브 미검증** — 다음 TP1 히트 케이스에서
-`[SingleContractTP1] ... mode=atr_profit` 로그로 확인 필요.
+**검증**: `py_compile` 통과. **라이브 검증 완료(2026-07-16 장중)** — 오늘 5회 발동
+(10:22/11:10/11:34/13:22/13:37, 전부 SHORT). `TRADE.log`의 "1계약 TP1 보호전환" 메시지와
+`WARN.log`의 `[SingleContractTP1Arm]`/`[SingleContractTP1] ... mode=atr_profit` 로그가
+stop 가격까지 정확히 일치(예: 10:22 stop 1076.88→1074.17 = 진입가+ATR×0.25). 예외 없음.
 
 ### [기능복구] 신호소멸청산 — 실거래 액션이 아니라 shadow counterfactual 기록으로 복구
 
@@ -8257,11 +8259,68 @@ shadow-first 설계였으므로, 그 설계대로 되돌림. `_ts_check_exit_tri
 동일 계열 사고. 죽은 코드를 정리할 때는 그 안에 아직 이식 안 된 기능이 있는지
 먼저 확인할 것.
 
-**검증**: `py_compile` 통과. **라이브 미검증** — 다음 장중 반대신호 발생 시
-`[SignalDecayShadow]` DEBUG 로그와 `signal_decay_exits` 테이블 신규 행 적재 확인 필요.
-최소 10건(`min_samples`) 쌓여야 검증캠페인 리포트가 첫 판정을 낸다 — 그 전까지는
-[4]번 항목이 계속 "표본 부족" 보류로 나오는 게 정상.
+**검증**: `py_compile` 통과. **라이브 검증 완료(2026-07-16 장중)** — 13:05:58에 1건 발동
+(`pos=SHORT dir=1 conf=0.363 zone_mc=0.313`). `DEBUG.log`의 `[SignalDecayShadow]` 로그와
+`data/db/trades.db`의 `signal_decay_exits` 신규 행(동일 타임스탬프·동일 값)이 정확히
+일치, INSERT 예외 없음(포지션은 청산되지 않고 그대로 유지 — 설계대로). 누적 1건으로
+아직 `min_samples=10` 미달 — 검증캠페인 리포트 [4]번 항목은 계속 "표본 부족" 보류가
+정상이며, 표본 축적은 계속 모니터링 필요.
 
 **관련**: 290차(`f5f116c`, 최초 구현), 306차(`09389ec`, 오삭제), CLAUDE.md §2
 FP-CRITICAL·CB②와 같은 "재검토하기로 했는데 방치" 패턴이 되지 않도록 아래
 NEXT_TODO에 표본 축적 확인 항목 등록.
+
+### [설계개선] 사이징 파라미터 조정(5천만원/3%) + TP1 회계적 분할청산(synthetic partial)
+
+**배경**: 0715진입청산검토.md §3 개선예정 3건 중 ⓐ사이징 파라미터, 🥈synthetic partial
+2건을 사용자 지시로 구현. ②"1계약 산출 시 전용 경로" 항목은 이미 339차에서 구현돼
+있음을 확인(`main.py:10239` `total_qty==1 and stage==1` 분기가 `arm_tp1_single_
+contract_with_mode()`로 이미 라우팅) — 추가 작업 없음.
+
+**File**: `config/settings.py`(`ACCOUNT_BASE_RISK`, `SIZING_TARGET_CAPITAL_KRW`),
+`strategy/position/position_tracker.py`(synthetic 필드·`arm_tp1_single_contract_
+with_mode()`·저장/복원), `main.py:_ts_execute_partial_exit()`(DB 기록·대시보드 로그),
+`utils/db_utils.py:init_trades_db()`(`synthetic_partial_exits` 테이블 신설).
+
+**① 사이징 파라미터**: `ACCOUNT_BASE_RISK` 1%→3%, `SIZING_TARGET_CAPITAL_KRW`
+3천만→5천만원. 오늘 실측 켈리 시나리오로 검산: 켈리 정상(0.6)·A등급·ATR≈3.5 조건에서
+raw_qty 1.02→3.05(1계약→**3계약**), 켈리 저하(0.3) 조건에서도 raw_qty 0.62→1.79
+(→2계약 근접). 켈리가 심하게 저하된 구간(0.10대)은 의도적으로 여전히 1계약대에
+머무름 — `AdaptiveKelly`(`strategy/entry/adaptive_kelly.py`)가 최근 20회 성적으로
+사이즈를 축소한 안전장치이므로 이 값을 더 올려 억지로 상쇄하지 않기로 결정.
+
+**② TP1 회계적 분할청산 — qty==1에 한정, qty≥2는 기존 물리적 분할청산 그대로 유지**:
+`main.py:10271`(qty≥2)는 이미 실제 브로커 주문으로 분할청산하고 `_ts_handle_
+exit_fill`이 체결 확인 후 CB/Kelly까지 정상 반영함 — 리스크를 실제로 줄이는 동작이라
+그대로 둠. synthetic partial은 qty==1일 때만 적용: `arm_tp1_single_contract_with_
+mode()`가 기존 스탑 이동(물리적 리스크 관리, 불변)에 더해 `synthetic_tp1_price`/
+`synthetic_tp1_pnl_pts`(=(TP1가-진입가)×방향)/`synthetic_tp1_fraction`(=
+`PARTIAL_EXIT_RATIOS[0]`=0.33)을 계산해 인스턴스 필드로 저장, `_save_state()`/
+`load_state()`로 재시작 내구성 확보, `_reset_position()`에서 초기화.
+
+**CB/Kelly 배선 방식(제안·구현) — 의도적으로 연결하지 않음**: 최초 계획은 TP1
+synthetic 시점에 `circuit_breaker.record_win()`/`kelly.record()`를 별도 호출하는
+것이었으나, `AdaptiveKelly.record()`가 `deque(maxlen=20)`으로 "최근 20회 실전
+성적"을 관리하는 걸 확인하고 계획을 수정했다. synthetic TP1은 포지션이 실제로는
+전혀 청산되지 않은 상태(물리적 리스크 노출 100% 유지)라, 이걸 "승리"로 카운트에
+넣으면 실제로 청산된 적 없는 사건이 향후 사이징을 결정하는 20슬롯 윈도우를 오염시켜
+`AdaptiveKelly`가 슬럼프를 정확히 감지하는 능력을 훼손할 위험이 있음(오늘 kelly_mult
+가 0.10까지 내려간 것도 이 메커니즘이 정상 작동한 결과). 그래서 `signal_decay_exits`
+와 동일한 원칙 — **리포트 전용 계측, 실거래 의사결정 절대 미관여** — 을 그대로 적용해
+CB/Kelly는 건드리지 않고 `synthetic_partial_exits` 테이블(entry_ts로 `trades`와 조인
+가능, counterfactual 판정 불필요 — `exec_1m_shadow`와 같은 이유로 이미 일어난 사실의
+기록일 뿐)에만 적재. 대시보드 "TP1 보호전환" 로그에도 "회계상 확정 X%pt(물리 미체결)"
+을 병기해 실제 체결과 혼동되지 않도록 함.
+
+**검증**: `py_compile` 4파일 통과. `init_trades_db()` 실행해 `synthetic_partial_exits`
+테이블·인덱스 실제 생성 확인. 격리 스크립트(임시 `_STATE_FILE`)로 PositionTracker
+단위 검증 — TP1 히트 시 `synthetic_tp1_pnl_pts>0`·`fraction==0.33`, 저장→복원 라운드
+트립 일치, `apply_exit_fill()` 최종 청산 시 `_reset_position()`으로 synthetic 필드
+`None` 초기화 확인. 실제 INSERT 문도 테스트 행 삽입→조회→삭제로 별도 검증(라이브
+DB에 잔존 데이터 없음 확인). **라이브 미검증** — 다음 장중 (1) 사이징 로그에서
+정상 켈리 조건 시 raw_qty가 실제로 2~3계약으로 나오는지, (2) qty==1 TP1 히트 시
+`synthetic_partial_exits` 신규 행과 대시보드 "회계상 확정" 문구 동시 확인, (3) 최종
+청산 시 CB/Kelly 카운트가 기존과 동일하게 딱 1회만 늘어나는지(이중계산 없음) 확인 필요.
+
+**관련**: 339차(`0715진입청산검토.md` §3 개선예정 3건 중 2건 구현), `signal_decay_
+exits`(같은 리포트 전용 계측 원칙).
