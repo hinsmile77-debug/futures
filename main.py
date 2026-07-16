@@ -10437,6 +10437,10 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             "O" if self.position.partial_3_done else "X",
         )
 
+    # 트레일링 갱신 전 스톱을 보존 — 갱신 후 스톱을 이 봉의 과거 고저가에 소급
+    # 적용하면 "유령 하드스톱"(아직 조여지지 않았던 시점의 고저가로 방금 조인
+    # 스톱을 때리는 오판정)이 발생한다 (2026-07-15 #7 트레이드 딥다이브).
+    _prev_stop_price = self.position.stop_price
     self.position.update_trailing_stop(price, atr)
 
     if self._has_pending_order():
@@ -10444,18 +10448,22 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
 
     bar_low  = bar.get("low",  price) if bar else price
     bar_high = bar.get("high", price) if bar else price
-    _stop_hit_ts = (
-        self.position.is_stop_hit(price)
-        or self.position.is_stop_hit_intrabar(bar_low, bar_high)
+    _close_stop_hit = self.position.is_stop_hit(price)
+    _intrabar_stop_hit = self.position.is_stop_hit_intrabar(
+        bar_low, bar_high, stop_price=_prev_stop_price
     )
+    _stop_hit_ts = _close_stop_hit or _intrabar_stop_hit
     if _stop_hit_ts:
+        # 종가 히트는 방금 갱신된(최신) 스톱 기준, 봉중 히트는 그 봉 동안
+        # 실제로 유효했던(갱신 전) 스톱 기준으로 청산가를 계산한다.
+        _effective_stop = self.position.stop_price if _close_stop_hit else _prev_stop_price
         if self.position.status == "LONG":
-            exit_price = max(self.position.stop_price, bar_low)
+            exit_price = max(_effective_stop, bar_low)
         else:
-            exit_price = min(self.position.stop_price, bar_high)
+            exit_price = min(_effective_stop, bar_high)
         log_manager.system(
             f"[ExitAttempt] 하드스톱 {self.position.status} {self.position.quantity}ct "
-            f"exit_price={exit_price:.2f} stop={self.position.stop_price:.2f} cur={price:.2f}",
+            f"exit_price={exit_price:.2f} stop={_effective_stop:.2f} cur={price:.2f}",
             "WARNING",
         )
         _hs_qty = self.position.quantity
