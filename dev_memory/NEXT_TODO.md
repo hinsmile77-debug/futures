@@ -8,41 +8,33 @@
 
 ---
 
-## 2026-07-17 (354차 — OPEN_VOLATILE 시가이격 필터(P2-d) 재설계: 관찰 조건부, 주간 검증캠페인 [8]번 채널로 자동 트리거 등록)
+## 2026-07-17 (355차 — 354차 구현: 주간 검증캠페인 [9]번 open_gap_shadow 채널 실장)
 
-> 상세: `DECISION_LOG.md` 2026-07-17(354차) 항목. 순수 등록(코드 변경 없음)
-> — dailycheck P2-d(OPEN_VOLATILE 기준점 고정 문제) 검토 결과.
+> 상세: `DECISION_LOG.md` 2026-07-17(355차) 항목. **채널 번호 정정**: 354차
+> 등록 시 "[8]번"으로 표기했으나 [8]은 342차(KellyAdvisedSkip)가 이미 점유
+> — 실제로는 [9]번으로 신설.
 
-- [ ] **재설계 자체는 보류** — 7/16 딥다이브에서 이 필터가 실제로 A/B등급
-  신호를 단독으로 막은 사례가 아직 관측되지 않음(16건 전부 conf미달과
-  중복 차단). 353차(확신도 고착 부스트) 라이브 관찰로 OPEN_VOLATILE 구간
-  진짜 신호가 늘면 이 필터가 다음 병목이 될 가능성은 있으나, 근거 없이
-  기준점(VWAP? 세션 시가?)·임계값을 새로 설계하면 사후 캘리브레이션
-  리스크가 큼 — 실측 근거가 쌓일 때까지 대기.
-- [ ] **[신규 제안] 주간 검증캠페인 [8]번 채널 신설 — `open_gap_shadow`
-  counterfactual** — `hurst_gate_shadow`([6])·`joint_gate_shadow`([7])와
-  완전히 동일한 패턴(`docs/validation campain/validation capain.txt`,
-  `scripts/generate_validation_campaign_report.py`)으로 "OPEN_VOLATILE
-  gap 필터만 아니었으면 진입했을 신호"의 가상 결과를 자동 누적·판정하도록
-  구현하면, 4주 후 FAIL 판정이 곧 재검토 트리거가 되어 사용자가 매주
-  금요일 여는 `data/validation_campaign_report.md`에서 자동으로 인지
-  가능 — 로그를 뒤져 우연히 발견할 필요 없음. 설계안:
-  - 테이블: `open_gap_shadow` (Hurst shadow와 동일 컬럼셋 — ts/direction/
-    grade/conf/entry_price/stop_price/tp1_price/resolved 등 + gap_pt·
-    atr_at_block 추가)
-  - 기록 위치: `main.py` — `not _open_gap_ok`이고 나머지 `_final_entry_ok`
-    조건 전부 충족하는 순간(`_hgs_no_hurst_ok` 패턴, main.py:6768-6791
-    그대로 복제해 조건만 gap으로 교체)
-  - 판정 함수: `scripts/generate_validation_campaign_report.py:
-    resolve_and_eval_open_gap()` — `resolve_and_eval_joint_gate()`를
-    거의 그대로 복제("hurst_gate_shadow와 완전히 동일한 판정 로직 —
-    대상 테이블만 다르다" 기존 패턴)
-  - config 등록: `VALIDATION_CAMPAIGN["open_gap_shadow"] = {"min_samples":
-    20, "cf_window_min": 30}` (기존 두 채널과 동일 기준)
-  - PASS(존치)=누적 가상pnl≤0, FAIL(완화 권고)=가상pnl>왕복비용×2 AND
-    가상승률>기준선 — FAIL 시에만 그 실측값을 근거로 기준점/임계 재설계
-    착수(지금 미리 설계하지 않음)
-  - **구현 여부는 별도 확인 필요** — 사용자 승인 후 진행.
+- [DONE 2026-07-17] `utils/db_utils.py`(`open_gap_shadow` 테이블 DDL),
+  `config/settings.py`(`VALIDATION_CAMPAIGN["open_gap_shadow"]`,
+  `min_samples=20`·`cf_window_min=30`), `main.py`(섀도우 기록 블록 — Hurst
+  섀도우 바로 뒤, `not _open_gap_ok`이고 나머지 게이트 전부 통과 시 기록.
+  손절/TP1 배수는 Hurst 섀도우처럼 고정값이 아니라 `self._entry_hurst_
+  bucket` 실제값 사용), `scripts/generate_validation_campaign_report.py`
+  (`resolve_and_eval_open_gap()` + `build_report()` 배선 — 요약표 [9]행 +
+  `## [9]` 상세 섹션, `avg_gap_pt`/`avg_atr_at_block` 표시 추가). 전부
+  `hurst_gate_shadow`([6])·`joint_gate_shadow`([7])와 동일 패턴 재사용.
+- [DONE 2026-07-17] `py37_32`·`py310_64` 양쪽 `py_compile` 4파일 통과.
+  `init_trades_db()`를 격리 임시 DB에 직접 실행해 테이블·인덱스가 정확한
+  스키마로 생성됨을 확인(정적 분석이 아닌 실제 DDL 실행). `resolve_and_eval_
+  open_gap()`도 격리 임시 DB로 직접 호출 — 합성 데이터 25건 투입 시 집계·
+  FAIL 판정·권고 문구 정상, 5건(min_samples 미달) 투입 시 INSUFFICIENT
+  정상 확인. `main.py` INSERT 컬럼 목록이 테이블 스키마 순서와 일치함을
+  재확인.
+- [ ] **다음 OPEN_VOLATILE 차단 발생 시 라이브 확인** — 실제 섀도우 레코드가
+  `open_gap_shadow`에 기록되는지 확인.
+- [ ] **다음 금요일 자동 실행 확인** — `data/validation_campaign_report.md`에
+  [9]번 채널이 정상 출력되는지 확인(최소 20건 누적까지 수 주 소요 예상 —
+  그전까진 INSUFFICIENT로 계속 표시되는 게 정상).
 
 ---
 

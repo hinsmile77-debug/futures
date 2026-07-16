@@ -428,6 +428,34 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_jgs_ts ON joint_gate_shadow(ts)")
+    # [354차] OPEN_VOLATILE 시가이격 필터(§14, ATR×5) counterfactual 섀도우 —
+    # hurst_gate_shadow·joint_gate_shadow와 완전히 동일한 패턴. 이 필터는 09:05~10:30
+    # 구간에서 세션 시가(고정 기준점) 대비 gap이 ATR×5를 넘는 TREND_FOLLOW 신호를
+    # 차단하는데, 기준점이 고정이고 임계 자체도 장중 ATR 압축으로 좁아지는 구조적
+    # 결함이 있다고 판단됐으나(2026-07-16 정기점검 P2-d) 실측 피해 사례가 아직 없어
+    # 재설계는 보류하고 이 채널로 "차단이 실제로 손실을 회피했는지"를 자동 관찰한다.
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS open_gap_shadow (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            TEXT NOT NULL,           -- 차단 시각 (분봉)
+        direction     TEXT NOT NULL,           -- LONG/SHORT (차단된 가상 방향)
+        grade         TEXT,                    -- 차단 당시 진입 등급 (A/B/C, gap 미차단 가정)
+        gap_pt        REAL,                    -- 차단 당시 방향이탈(gap_in_dir) pt
+        atr_at_block  REAL,                    -- 차단 당시 ATR
+        conf          REAL,                    -- 차단 당시 confidence
+        entry_price   REAL NOT NULL,           -- 가상 진입가 (분봉 종가)
+        stop_price    REAL,                    -- 가상 하드스톱
+        tp1_price     REAL,                    -- 가상 TP1
+        resolved      INTEGER DEFAULT 0,       -- 1=counterfactual 판정 완료
+        cf_outcome    TEXT,                    -- STOP / TP1 / NEITHER
+        cf_exit_price REAL,                    -- counterfactual 청산가
+        hyp_pnl_pts   REAL,                    -- (+)=차단 안 했으면 이득, (-)=차단이 손실 회피
+        created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_ogs_ts ON open_gap_shadow(ts)")
     # [331차 후속2, 2026-07-14] 1m 앙상블 방향투표 퇴역(역스킬 확정) 이후 "1m 활용방안 A"
     # (집행/타이밍 필터) 후보 검증용 섀도우 계측 — hurst_gate_shadow와 달리 차단된
     # 가상 진입이 아니라 **실제로 체결된** 진입에 진단 태그를 붙이는 것이라 counterfactual

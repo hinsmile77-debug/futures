@@ -918,6 +918,155 @@ def resolve_and_eval_joint_gate() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [9] OPEN_VOLATILE 시가이격 필터 counterfactual — resolve + 누적 판정 (§14, 354차)
+# ──────────────────────────────────────────────────────────────
+
+def resolve_and_eval_open_gap() -> dict:
+    """open_gap_shadow(main.py에서 기록) resolve + PASS/FAIL 판정.
+    hurst_gate_shadow와 완전히 동일한 판정 로직 — 대상 테이블만 다르다.
+
+    PASS = 게이트 존치 (차단된 신호가 실제로 손실 방향이었거나 완화 기준 미충족).
+    FAIL = 재설계 검토 권고 (2026-07-16 정기점검 P2-d — 세션 시가 고정 기준점 +
+    ATR 압축으로 임계가 좁아지는 구조적 결함이 실제로 피해를 낸다는 실측 근거가
+    이번에 처음 확보됐다는 뜻. 즉시 언블록이 아니라 그때의 실측 gap_pt/atr_at_block
+    값을 근거로 기준점(예: 최근 N분 VWAP)·임계 재설계 착수).
+    """
+    cr = VALIDATION_CAMPAIGN["open_gap_shadow"]
+    window_min = int(cr.get("cf_window_min", 30))
+    out = {"verdict": "INSUFFICIENT", "resolved_now": 0}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            unresolved = conn.execute(
+                "SELECT * FROM open_gap_shadow WHERE resolved = 0 ORDER BY ts"
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    if unresolved:
+        earliest = min(r["ts"] for r in unresolved)
+        close_map, high_map, low_map = _load_candle_maps(earliest)
+        now = datetime.datetime.now()
+        updates = []
+        for r in unresolved:
+            base = datetime.datetime.strptime(r["ts"], _TS_FMT)
+            if now < base + datetime.timedelta(minutes=window_min + 2):
+                continue
+            is_long = str(r["direction"]) == "LONG"
+            stop_p = float(r["stop_price"] or 0.0)
+            tp1_p = float(r["tp1_price"] or 0.0)
+            cf_outcome, cf_price = "NEITHER", None
+            last_close = None
+            for m in range(1, window_min + 1):
+                mid = base + datetime.timedelta(minutes=m)
+                if mid.time() > datetime.time(15, 10):
+                    break
+                mid_ts = mid.strftime(_TS_FMT)
+                hi = high_map.get(mid_ts)
+                lo = low_map.get(mid_ts)
+                if hi is None or lo is None:
+                    continue
+                last_close = close_map.get(mid_ts, last_close)
+                if is_long:
+                    hit_stop = stop_p > 0 and lo <= stop_p
+                    hit_tp = tp1_p > 0 and hi >= tp1_p
+                else:
+                    hit_stop = stop_p > 0 and hi >= stop_p
+                    hit_tp = tp1_p > 0 and lo <= tp1_p
+                # 동시 터치 → 보수적으로 STOP 우선 (signal_decay·hurst_gate와 동일 관례)
+                if hit_stop:
+                    cf_outcome, cf_price = "STOP", stop_p
+                    break
+                if hit_tp:
+                    cf_outcome, cf_price = "TP1", tp1_p
+                    break
+            if cf_price is None:
+                if last_close is None:
+                    continue  # 분봉 데이터 자체가 없음 — 다음 실행에서 재시도
+                cf_price = last_close
+            entry_p = float(r["entry_price"])
+            # hyp_pnl_pts: (+) = 차단 안 했으면 이득이었다(재설계 근거), (-) = 차단이 손실 회피
+            hyp = (cf_price - entry_p) if is_long else (entry_p - cf_price)
+            updates.append((cf_outcome, cf_price, round(hyp, 4), r["id"]))
+
+        if updates:
+            with _conn(TRADES_DB) as conn:
+                conn.executemany(
+                    """UPDATE open_gap_shadow
+                       SET resolved=1, cf_outcome=?, cf_exit_price=?, hyp_pnl_pts=?
+                       WHERE id=?""",
+                    updates,
+                )
+                conn.commit()
+            out["resolved_now"] = len(updates)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            agg = conn.execute(
+                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
+                          AVG(entry_price) AS avg_price,
+                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win,
+                          SUM(CASE WHEN cf_outcome='STOP' THEN 1 ELSE 0 END) AS n_stop,
+                          SUM(CASE WHEN cf_outcome='TP1' THEN 1 ELSE 0 END) AS n_tp1,
+                          SUM(CASE WHEN cf_outcome='NEITHER' THEN 1 ELSE 0 END) AS n_neither,
+                          AVG(gap_pt) AS avg_gap_pt, AVG(atr_at_block) AS avg_atr
+                   FROM open_gap_shadow WHERE resolved=1 AND ts >= ?""",
+                (_campaign_start(),),
+            ).fetchone()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM open_gap_shadow WHERE resolved=0"
+            ).fetchone()["n"]
+            baseline = conn.execute(
+                """SELECT AVG(CASE WHEN COALESCE(net_pnl_krw, pnl_krw) > 0
+                                   THEN 1.0 ELSE 0.0 END) AS wr
+                   FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ?""",
+                (_campaign_start(),),
+            ).fetchone()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    n = int(agg["n"] or 0)
+    total_hyp = float(agg["total_hyp"] or 0.0)
+    avg_price = float(agg["avg_price"] or 0.0) or 300.0
+    win_rate = (int(agg["n_win"] or 0) / n) if n else 0.0
+    baseline_wr = (
+        float(baseline["wr"]) if baseline and baseline["wr"] is not None else None
+    )
+    out.update({
+        "n_resolved": n,
+        "n_pending": int(pending),
+        "total_hyp_pnl_pts": round(total_hyp, 4),
+        "win_rate": round(win_rate, 4),
+        "baseline_win_rate": round(baseline_wr, 4) if baseline_wr is not None else None,
+        "cf_stop": int(agg["n_stop"] or 0),
+        "cf_tp1": int(agg["n_tp1"] or 0),
+        "cf_neither": int(agg["n_neither"] or 0),
+        "avg_gap_pt": round(float(agg["avg_gap_pt"] or 0.0), 2),
+        "avg_atr_at_block": round(float(agg["avg_atr"] or 0.0), 2),
+    })
+    if n < int(cr["min_samples"]):
+        out["reason"] = "차단 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        return out
+
+    cost_pt = _roundtrip_cost_pt(avg_price)
+    out["cost_pt"] = round(cost_pt, 4)
+    mitigate = (
+        total_hyp > cost_pt * 2.0
+        and baseline_wr is not None
+        and win_rate > baseline_wr
+    )
+    out["verdict"] = "FAIL" if mitigate else "PASS"
+    if mitigate:
+        out["recommendation"] = (
+            "OPEN_VOLATILE 시가이격 필터 재설계 검토 권고 — 실측 gap_pt/atr_at_block "
+            "근거로 기준점(예: 최근 N분 VWAP)·임계 재설계 착수 (즉시 언블록 금지, P2-d)"
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [5] 레짐 조건부 ATR 배수 — hurst_bucket별 순EV
 # ──────────────────────────────────────────────────────────────
 
@@ -1077,6 +1226,7 @@ def build_report(days: int) -> tuple:
     hg = resolve_and_eval_hurst_gate()
     jg = resolve_and_eval_joint_gate()
     ks = eval_kelly_skip_grade_c()
+    og = resolve_and_eval_open_gap()
 
     metrics = {
         "generated_at": now_str,
@@ -1085,7 +1235,7 @@ def build_report(days: int) -> tuple:
         "sample_starvation": ss,
         "tb": tb, "meta_gate": mg, "quantile": qt,
         "signal_decay": sd, "hurst_regime": hr, "hurst_gate_shadow": hg,
-        "joint_gate_shadow": jg, "kelly_skip": ks,
+        "joint_gate_shadow": jg, "kelly_skip": ks, "open_gap_shadow": og,
     }
 
     L = []
@@ -1130,6 +1280,10 @@ def build_report(days: int) -> tuple:
         format(ks["total_pnl_krw"], ",.0f") if "total_pnl_krw" in ks else "—",
         ("%.1f%%" % (ks["win_rate"] * 100)) if "win_rate" in ks else "—",
         ks.get("n", 0)))
+    L.append("| [9] OPEN_VOLATILE 시가이격 counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
+        _fmt_verdict(og["verdict"]), og.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (og["win_rate"] * 100)) if "win_rate" in og else "—",
+        og.get("n_resolved", 0), og.get("n_pending", 0)))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -1293,6 +1447,27 @@ def build_report(days: int) -> tuple:
         L.append("- **권고**: %s" % ks["recommendation"])
     if ks.get("reason"):
         L.append("- %s" % ks["reason"])
+    L.append("")
+
+    # [9] OPEN_VOLATILE 시가이격 counterfactual 상세
+    L.append("## [9] OPEN_VOLATILE 시가이격 counterfactual (§14, 354차)")
+    L.append("")
+    L.append("- 이번 실행 resolve: %d건 / 누적 판정 %s건 (미판정 %s건)" % (
+        og.get("resolved_now", 0), og.get("n_resolved", 0), og.get("n_pending", 0)))
+    L.append("- counterfactual 분포: STOP %s / TP1 %s / NEITHER %s" % (
+        og.get("cf_stop", 0), og.get("cf_tp1", 0), og.get("cf_neither", 0)))
+    L.append("- 누적 hyp_pnl_pts(차단 안 했으면 얻었을 pt): **%s pt** / 승률 %s (기준선 %s)" % (
+        og.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (og["win_rate"] * 100)) if "win_rate" in og else "—",
+        ("%.1f%%" % (og["baseline_win_rate"] * 100)) if og.get("baseline_win_rate") is not None else "—",
+    ))
+    if "avg_gap_pt" in og:
+        L.append("- 평균 gap_pt=%s / 평균 atr_at_block=%s (기준점 재설계 시 캘리브레이션 근거)" % (
+            og["avg_gap_pt"], og["avg_atr_at_block"]))
+    if og.get("recommendation"):
+        L.append("- **권고**: %s" % og["recommendation"])
+    if og.get("reason"):
+        L.append("- %s" % og["reason"])
     L.append("")
     L.append("---")
     L.append("")

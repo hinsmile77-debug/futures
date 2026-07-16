@@ -926,6 +926,19 @@ VALIDATION_CAMPAIGN = {
     "kelly_skip": {
         "min_samples": 20,  # C등급+KellySkip 조합 최소 체결 건수 (미달 → 판정 보류)
     },
+    # [354차 신설] OPEN_VOLATILE 시가이격 필터(§14, ATR×5) counterfactual —
+    # "gap 필터만 아니었으면 진입했을" 09:05~10:30 TREND_FOLLOW 신호(open_gap_shadow
+    # 테이블)의 가상 결과를 4주 누적 판정한다. hurst_gate_shadow·joint_gate_shadow와
+    # 동일 기준·동일 판정 로직(resolve_and_eval_open_gap()).
+    # 존치(PASS): 누적 hyp_pnl_pts ≤ 0 (차단이 실제로 손실을 회피).
+    # 완화 권고(FAIL): 누적 hyp_pnl_pts > 왕복비용의 2배 그리고 승률 > 기준선
+    #   → 즉시 언블록이 아니라 그때의 실측 gap·ATR 값을 근거로 기준점(예: VWAP)·
+    #   임계값 재설계 착수 (2026-07-16 정기점검 P2-d, 근거 없는 선제 재설계는
+    #   보류하기로 결정 — dev_memory/DECISION_LOG.md 354차 항목).
+    "open_gap_shadow": {
+        "min_samples": 20,  # 차단 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
+        "cf_window_min": 30,  # counterfactual 관찰 창 (분) — hurst_gate_shadow와 동일
+    },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)
