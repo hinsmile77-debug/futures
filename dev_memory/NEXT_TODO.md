@@ -8,6 +8,39 @@
 
 ---
 
+## 2026-07-17 (353차 — 확신도 고착 임시 부스트: 5m 고착 시 3m 가중치 이전, P2-b 옵션 c)
+
+> 상세: `DECISION_LOG.md` 2026-07-17(353차) 항목. 7/16 정기점검 P2-b 3안
+> 비교(SGD 게이트 완화 / 구조 분리 / 동적 가중치) 결과 사용자가 가장 낮은
+> 리스크인 (c)를 선택해 구현.
+
+- [DONE 2026-07-17] `config/settings.py:CONF_STUCK_BOOST_*` 6개 신규
+  (`ENABLED`/`SOURCE="5m"`/`TARGET="3m"`/`MIN_STREAK=3`/`TRANSFER_RATIO=0.5`/
+  `TARGET_MIN_ACC=0.35`). `model/ensemble_decision.py:EnsembleDecision.
+  compute()`에 `conf_stuck_streak`/`target_recent_acc` 파라미터 신규 — 기존
+  `self._conf_stuck`(main.py, `[CONF⚠]` 로그 근거) 재사용해 5m이 3분+ 고착
+  이고 3m 최근 정확도가 임계 이상(표본부족=None은 허용)이면 5m 가중치의
+  50%를 3m으로 이전. `main.py`에서 `horizon_acc_samples()`로 표본부족을
+  먼저 걸러 `horizon_accuracy()`의 "표본부족=0.0" 함정을 방어(None 전달).
+- [DONE 2026-07-17] `py37_32` `py_compile` 3파일 통과. `py310_64`에서
+  `EnsembleDecision.compute()` 직접 실행으로 5개 시나리오 검증(미발동/발동/
+  타깃저정확도 억제/스트릭부족 미발동/콜드스타트 조기반환 경로 무충돌) +
+  부스트 on/off 비교로 실제 confidence·direction이 바뀌는 것을 수치로 확인
+  (FLAT→SHORT 전환 재현).
+- [ ] **다음 장중 라이브 검증(최우선)** — 실제 5m 고착 발생 시
+  `[ConfStuckBoost]` 로그와 `[Ensemble] ... [ConfStuckBoost]` 태그가
+  정상 출력되는지, 해당 사이클 confidence/방향이 실제로 개선되는지,
+  이후 며칠 실거래 승패에 긍정적 영향이 있는지 관찰.
+- [ ] **[별도 과제] MaskedFallback 경로(main.py 2차 `ensemble.compute()`
+  호출)에도 동일 배선 필요한지 검토** — 이번엔 주 의사결정 경로에만 적용,
+  보조 경로는 성격이 달라 범위 밖으로 남김.
+- [ ] **[조건부] P2-b (a)·(b) 재검토** — (c) 라이브 관찰 후에도 5m 고착이
+  여전히 문제라면, 그때 (a)(SGD 게이트 아침 한정 완화, 저리스크 버전)를
+  먼저 시도. (b)(구조적 분리)는 `_min_conf_sgd=0.52` 게이트 도입 배경을
+  dev_memory에서 먼저 확인한 뒤에만 검토.
+
+---
+
 ## 2026-07-16 (352차 — HORIZON_TIME_POLICY 09:05~09:10 사각지대 수정: "1m만" → "3m만")
 
 > 상세: `DECISION_LOG.md` 2026-07-16(352차) 항목. 7/16 정기점검 P2 딥다이브

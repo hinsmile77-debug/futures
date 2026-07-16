@@ -649,6 +649,24 @@ SGD_WEIGHT_MIN = 0.10
 SGD_BOOST_THRESHOLD = 0.62  # 이상 → SGD 비중 +2%
 SGD_CUT_THRESHOLD = 0.48  # 이하 → SGD 비중 -2%
 
+# [353차] 확신도 고착 시 임시 가중치 부스트 (2026-07-16 정기점검 P2-b 옵션 c) —
+# 5m GBM은 5분마다만 갱신되는 구조라 SGD 온라인블렌드가 그 공백을 못 메우면
+# (main.py:_min_conf_sgd=0.52 저신뢰 필터로 5m 학습기회 자체가 희소) 같은
+# 확신도가 3~4분씩 얼어붙는다([CONF⚠] 로그, 실측상 하루 종일 5m에서만 발생).
+# SGD 학습 게이트를 건드리면 저신뢰 레이블 오염 재발 위험이 있어(P2-D 취지
+# 훼손), 대신 "이번 순간만" 정체된 호라이즌의 가중치 일부를 항상 정상
+# 갱신되는 호라이즌으로 옮기는 국소·가역적 개입을 택했다 — 학습 파이프라인
+# 무변경, 소스가 갱신되면 다음 분 자동 원복. 현재는 오늘 실측에서 이 현상이
+# 유일하게 관찰된 5m→3m 단일 쌍만 다룬다(다른 호라이즌 일반화는 아직 근거
+# 없음).
+CONF_STUCK_BOOST_ENABLED = True
+CONF_STUCK_BOOST_SOURCE = "5m"           # 정체 감지 대상 호라이즌
+CONF_STUCK_BOOST_TARGET = "3m"           # 가중치를 옮겨받을 호라이즌
+CONF_STUCK_BOOST_MIN_STREAK = 3          # main.py [CONF⚠] 로그와 동일 임계(3분+ 고착)
+CONF_STUCK_BOOST_TRANSFER_RATIO = 0.5    # 소스 가중치의 50%를 타깃으로 이전
+CONF_STUCK_BOOST_TARGET_MIN_ACC = 0.35   # 타깃 최근 정확도가 이 미만이면 부스트 억제
+                                          # (표본 부족으로 판단 불가 시엔 허용 — main.py에서 None 전달)
+
 # 호라이즌 자격 획득 기준 (Phase 1: 상태 추적 / Phase 3: 앙상블 필터링 적용)
 HORIZON_QUALIFY_MIN_CYCLES = 3  # verified_cycles 최소값 (전 호라이즌 공통)
 # trained_cycles 최소값 — 호라이즌별 별도 설정
