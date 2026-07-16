@@ -8,6 +8,42 @@
 
 ---
 
+## 2026-07-16 (349차 — 급변장 사전 가드: 분당 틱수·1분 변화폭 동시 초과 시 스킵/사이즈축소+스톱확대)
+
+> 상세: `DECISION_LOG.md` 2026-07-16(349차) 항목.
+
+- [DONE 2026-07-16] `collection/cybos/realtime_data.py:_update_bar`에 봉당
+  `tick_count`(틱 메시지 수) 누적 신설. `config/settings.py:VOLATILITY_BURST_*`
+  6개 추가(`GUARD_ENABLED`/`TICK_RATE_MIN=600`/`ATR_RATIO_MIN=1.8`/
+  `ACTION="reduce"`/`SIZE_MULT=0.5`/`STOP_WIDEN_MULT=1.5`) — 임계값은 7/16
+  실측 분당 틱수 분포(p50=200/p90=500/p95=600/p99=1000) 기반. `main.py` STEP7
+  ToxicityGate 직후에 `tick_count≥600 AND atr_ratio≥1.8` 동시 초과 시
+  스킵(`ACTION="skip"`) 또는 사이즈×0.5+스톱×1.5(기본값 `"reduce"`) 게이트
+  추가. `Position.open_position()`/`_recalculate_levels()`에 `extra_stop_mult`
+  관통(체결보정·브로커동기화·재시작복원에서도 유지).
+- [DONE 2026-07-16] 구현 중 `main.py:7951 _execute_entry`가 `main.py:13159`의
+  몬키패치(`TradingSystem._execute_entry = _ts_execute_entry`, 12582줄 정의)에
+  덮어써지는 **죽은 코드**임을 발견 — 실제 살아있는 구현(`_ts_execute_entry`)
+  쪽에 정확히 배선함. 7951의 죽은 코드는 이번 범위 밖이라 미정리(별도 과제).
+- [DONE 2026-07-16] `py37_32`(실제 런타임) `py_compile` 4파일 통과. `py310_64`
+  격리 스크립트로 `PositionTracker` 직접 실행 검증 3건(손절폭 1.5배 정확히
+  적용/TP 불변, 체결보정 후에도 유지, save/load 라운드트립 정확 복원). AST로
+  `run_minute_pipeline`/`_execute_entry` 메서드 경계 삽입 후에도 온전함 재확인.
+- [ ] **다음 장중 라이브 검증** — 실제 급변 구간에서 `[VolatilityBurst]` 로그
+  발동 여부, `[Position] 진입 ... stop×N.NN(VolBurst)` 태그 출력, 정상 구간
+  (특히 개장 초반 — 틱수만 자연히 높은 시간대) 오탐 여부, size_mult·stop_widen
+  동시 적용된 트레이드의 실제 승패 결과 확인.
+- [ ] **임계값 재검토 — 몇 주 관찰 후** — `VOLATILITY_BURST_TICK_RATE_MIN`(600)/
+  `ATR_RATIO_MIN`(1.8)이 7/16 단 하루치 분포로 산출된 값이라 과도하게 자주
+  발동하거나(정상적인 변동성 확대까지 축소) 전혀 발동 안 하는지 로그 빈도로
+  확인 후 조정.
+- [ ] **[별도 과제, 낮은 우선순위] `main.py:7951 _execute_entry` 죽은 코드 정리**
+  — `TradingSystem._execute_entry = _ts_execute_entry`(13159줄) 몬키패치에
+  항상 덮어써져 실행되지 않는 5-param 구버전 정의. 삭제하거나 왜 이런 구조인지
+  (핫리로드/구조 목적) 문서화 필요.
+
+---
+
 ## 2026-07-16 (348차 — 틱 하드스톱 최대 60초 지연 제거: QTimer.singleShot(0, ...) 즉시 처리)
 
 > 상세: `DECISION_LOG.md` 2026-07-16(348차) 항목.

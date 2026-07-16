@@ -8634,3 +8634,77 @@ dynamicCall도 emit도 아니라 "다음 이벤트루프 패스에서 실행 예
 과거 버그 수정 이력). 340차 사이징 상향(기본리스크 ×5)이 이 지연 문제와 결합되면
 손실 규모가 비례 확대될 위험이 있다고 정기점검에서 지적됨 — 사이징 임계값
 재검토는 별도 과제로 NEXT_TODO에 등록.
+
+## 2026-07-16 (349차) — 급변장 사전 가드: 분당 틱수·1분 변화폭 동시 초과 시 스킵/사이즈축소+스톱확대
+
+**배경**: 7/16 정기점검(Claude, dailycheck_prompt.txt) P1 제안. 기존 RegimeOverride
+(§14, `config/strategy_params.py`)는 `MicroRegimeClassifier`가 "완결된 봉"의
+ATR비/ADX로만 급변장을 판정해, 급변이 **막 시작되는 봉 자체**는 걸러내지 못한다
+— 7/16 14:10:01 진입(급변 직전, 정상으로 보이던 시점)이 정확히 이 사각지대였다.
+이 게이트는 방금 완결된 봉의 틱수(주문흐름 폭주)와 atr_ratio(1분 변화폭)를 함께
+봐서 RegimeOverride보다 한 박자 이른 신호로 판단한다.
+
+**File**: `collection/cybos/realtime_data.py`(`_update_bar`, `tick_count` 신규
+누적), `config/settings.py`(`VOLATILITY_BURST_*` 6개), `main.py`(STEP7 게이트
++ `_ts_execute_entry`/두 실제 진입 호출부에 `extra_stop_mult` 관통),
+`strategy/position/position_tracker.py`(`open_position`/`_recalculate_levels`/
+`__init__`/`force_flat`/`_reset_position`/`_save_state`/`load_state` 8곳).
+
+**임계값 산출**: 7/16 BAR-CLOSE 로그를 분(minute-bucket) 단위로 집계한 실측
+분당 틱수 분포 — p50=200, p90=500, p95=600, p99=1000, max=1400(09:01 개장).
+14:11(사고 발생 봉)=800틱으로 p99 근방. `VOLATILITY_BURST_TICK_RATE_MIN=600`은
+p95 근방을 잡아 개장 초반(자연히 높음)은 대부분 통과시키되 진짜 이상치만
+포착한다. `atr_ratio` 임계 1.8은 `MicroRegimeClassifier`의 급변장 하한(1.5)보다
+엄격하게 잡아 RegimeOverride보다 좁은 진짜 극단만 추가로 잡는다(중복 차단
+최소화). 두 조건 **모두** 초과해야 발동 — 오탐(개장 직후처럼 틱수만 자연히
+높은 정상 구간) 최소화 목적.
+
+**틱수 계측 신설**: `bar["volume"]`(체결량)과 별개로 `bar["tick_count"]`를
+`_update_bar` 호출마다(=틱 메시지 1건마다) 누적하는 필드를 신규 추가. 체결량은
+크기가 다른 소수의 대량 체결로도 커질 수 있어 "주문흐름 자체의 폭주" 신호로는
+부정확하다고 판단, 순수 메시지 빈도를 별도로 추적.
+
+**RegimeOverride와의 관계 — 의도적 이중 게이트**: RegimeOverride는 기존 유지,
+이 게이트는 그보다 좁고(atr_ratio 1.8 vs 1.5) 이른 신호로 추가된 것이라 서로
+대체 관계가 아니다. 두 게이트 모두 §9 "차단형 게이트는 이미 충분히 많다"
+원칙에 따라 하드 스킵은 config 기본값에서 비활성(`VOLATILITY_BURST_ACTION=
+"reduce"`)이고, MetaGate/ToxicityGate와 동일한 사이즈 축소 패턴을 기본으로
+사용한다.
+
+**스톱 확대 배선 — `_execute_entry`가 사실은 죽은 코드였던 발견**: 처음에
+`main.py:7951 def _execute_entry(...)`(5-param 시그니처)를 수정하려 했으나,
+`main.py:13159 TradingSystem._execute_entry = _ts_execute_entry`가 이후에
+실행돼 **클래스 메서드를 모듈 함수로 몬키패치**하고 있음을 발견 — 실제로 살아
+있는 구현은 `main.py:12582`(이후 두 번째로 정의된 동명 함수, Python의 "마지막
+바인딩이 이긴다" 규칙으로 `_execute_entry`가 실제로 가리키는 대상)의
+`_ts_execute_entry`다(`raw_direction`/`entry_horizon`/`hurst_bucket` 키워드
+인자를 실제로 받는 쪽과 오늘 실거래 로그의 `horizon=5m hurst=mean-revert`
+문구가 정확히 일치함으로 확인). `_ts_execute_entry` → `position.open_position()`
+호출 경로에 `extra_stop_mult`를 관통시켰고, 7951의 죽은 `_execute_entry`
+정의는 이번 작업 범위 밖이라 손대지 않음(별도 정리 과제로 NEXT_TODO 등록 검토).
+
+**체결보정·브로커동기화에서도 유지**: `Position.open_position()`이 `_extra_stop_mult`
+를 `self.entry_extra_stop_mult` 인스턴스 속성으로 저장하고,
+`_recalculate_levels()`(체결보정 `apply_entry_fill`의 optimistic-correction
+경로, `sync_from_broker`)가 이 속성을 재사용하도록 해 스톱 확대가 체결가 보정
+이후에도 사라지지 않는다(TP는 건드리지 않아 위험:보상비는 더 보수적으로
+변하나, 사이즈 축소로 절대 리스크는 상쇄). `_save_state()`/`load_state()`에도
+필드를 추가해 재시작 복원 시에도 유지되도록 함(`entry_horizon`/
+`entry_hurst_bucket`과 동일한 기존 패턴).
+
+**검증**: `py37_32`(실제 런타임) `py_compile` 4파일 통과. `py310_64`로
+`PositionTracker` 격리 임포트 후 3개 시나리오 직접 실행: (1) `extra_stop_mult=1.5`
+적용 시 손절거리가 정확히 1.5배(TP1은 불변) 확인, (2) `_optimistic` 체결보정
+경로(`apply_entry_fill`) 통과 후에도 1.5배 손절폭이 그대로 유지됨 확인,
+(3) `_save_state()`→`load_state()` 라운드트립에서 `entry_extra_stop_mult`와
+`stop_price` 모두 정확히 복원됨 확인. AST로 `run_minute_pipeline`/`_execute_entry`
+메서드 경계가 삽입 후에도 온전함을 재확인. COM 의존이라 `tick_count`/게이트
+발동 자체는 라이브 없이 검증 불가. **라이브 미검증** — 다음 장중 실제 급변
+구간에서 `[VolatilityBurst]` 로그 발동 여부, `[Position] 진입 ... stop×N.NN
+(VolBurst)` 태그 출력, 정상 구간(개장 포함) 오탐 여부, size_mult·stop_widen
+동시 적용된 트레이드의 실제 승패 결과 확인 필요.
+
+**관련**: 7/16 정기점검(Claude, dailycheck_prompt.txt) P1 지적, 343차(연장
+추격 필터 — 동일한 소프트 게이트 철학), 348차(같은 날 발견한 S0-C 구조,
+§4 COM 콜백 안전성 판단 기준 공유), `HURST_REGIME_ATR_MULT`(260704 감사 P2 —
+손절/TP 배수 조건부 적용의 기존 선례).
