@@ -760,6 +760,29 @@ CHASE_FILTER_LOOKBACK_MIN = 10             # 연장 측정 룩백 (분)
 CHASE_FILTER_ATR_THRESHOLD = 2.0           # 기본 임계값 (추세·중립 구간)
 CHASE_FILTER_ATR_THRESHOLD_MEANREV = 1.5   # Hurst<0.45(평균회귀) 임계값 — 더 엄격
 
+# [349차] 급변장 사전 가드 — 7/16 정기점검(dailycheck_prompt.txt P1)에서 지적된
+# 문제: 기존 RegimeOverride(config/strategy_params.py, 급변장 진입 금지)는
+# MicroRegimeClassifier가 완결된 봉의 ATR비/ADX로만 판정해 "이미 급변한 다음
+# 봉"부터 반응한다 — 14:10:01 진입(급변 직전, 정상으로 보이던 시점)처럼 급변이
+# "이번에 막 시작되는" 봉 자체는 걸러내지 못한다. 이 게이트는 방금 완결된 봉의
+# 틱수(주문흐름 폭주 — collection/cybos/realtime_data.py:_update_bar가 매 틱마다
+# 누적하는 tick_count)와 atr_ratio(features/technical/atr.py, "1분 변화폭" —
+# 이번 봉 ATR/평균 ATR)를 함께 봐서 RegimeOverride보다 더 이른 신호로 판단한다.
+# 두 조건 모두 초과(BOTH) 시에만 발동해 오탐(둘 중 하나만 튀는 정상적 순간 —
+# 예: 개장 직후 틱수만 자연히 높은 구간)을 최소화한다.
+# 임계값 산출 근거: 7/16 전 거래일 분당 틱수 분포 실측(BAR-CLOSE 로그 기준,
+# minute-bucket) — p50=200, p90=500, p95=600, p99=1000, max=1400(09:01 개장).
+# 14:11(사고 발생 봉)=800틱으로 p99 근방. VOLATILITY_BURST_TICK_RATE_MIN=600은
+# p95 근방을 잡아 개장 초반(자연히 높음)은 대부분 통과시키되 진짜 이상치만 포착.
+# atr_ratio 임계 1.8은 MicroRegimeClassifier의 급변장 하한(1.5)보다 엄격하게 잡아
+# RegimeOverride보다 좁은 진짜 극단만 추가로 잡는다(중복 차단 최소화).
+VOLATILITY_BURST_GUARD_ENABLED = True
+VOLATILITY_BURST_TICK_RATE_MIN = 600       # 직전 봉 tick_count 임계 (분당 틱수)
+VOLATILITY_BURST_ATR_RATIO_MIN = 1.8       # 직전 봉 atr_ratio 임계 (1분 변화폭)
+VOLATILITY_BURST_ACTION = "reduce"         # "skip"(신규진입 완전차단) | "reduce"(사이즈축소+스톱확대)
+VOLATILITY_BURST_SIZE_MULT = 0.5           # action="reduce"일 때 사이즈 배수
+VOLATILITY_BURST_STOP_WIDEN_MULT = 1.5     # action="reduce"일 때 스톱 거리 확대 배수
+
 # [260704 감사 P1] 신호 소멸 청산 — 보유 포지션과 반대 방향의 앙상블 신호가
 # zone_mc(시간대×호라이즌 동적 min_conf) 이상으로 확정되는 시점을 기록한다.
 # 근거: _archive/docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §3-2 ①

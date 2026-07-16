@@ -367,6 +367,9 @@ class CybosRealtimeData:
                 "ask_qty": ask_q,
                 "hoga_levels": dict(self._last_hoga_snapshot),
                 "oi": oi,
+                # [349차] 분당 틱수 급변장 사전 가드용 — 이 봉에서 수신한 틱 메시지 수
+                # (체결량과 별개로, 주문흐름 자체의 폭주 여부를 보는 지표).
+                "tick_count": 1,
             }
             self._current_min = bar_min
         else:
@@ -383,6 +386,7 @@ class CybosRealtimeData:
             bar["ask_qty"] = ask_q
             bar["hoga_levels"] = dict(self._last_hoga_snapshot)
             bar["oi"] = oi
+            bar["tick_count"] = bar.get("tick_count", 0) + 1
 
         if self._on_tick is not None:
             self._on_tick(dict(self._current_bar))

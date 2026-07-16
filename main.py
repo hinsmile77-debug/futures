@@ -6010,6 +6010,7 @@ class TradingSystem:
         _checks_ui   = {}   # 빈 dict → 대시보드에서 "—" 표시
         _qty_display = 0
         _kelly_advised_skip = False  # [311차 후속] 켈리가 목표자본 대비 1계약도 부적절하다고 판단했는지
+        _vb_stop_widen_mult = 1.0  # [349차] 급변장 사전 가드가 "reduce" 발동 시에만 >1.0
         _cr          = None
 
         if direction != 0 and self.position.status == "FLAT":
@@ -6429,6 +6430,40 @@ class TradingSystem:
                     f"ma={_tox_gate.get('score_ma', 0.0):.2f} size_mult={_tox_size:.2f} "
                     f"reason={_tox_gate.get('reason', '')}"
                 )
+
+            # ── [349차] 급변장 사전 가드 — 분당 틱수·1분 변화폭(atr_ratio) 동시 초과 ──
+            # 기존 RegimeOverride(§14, config/strategy_params.py)는 MicroRegimeClassifier가
+            # "완결된 봉"의 ATR비/ADX로만 판정해 급변이 막 시작되는 봉 자체(예: 7/16
+            # 14:10:01 진입 — 급변 직전)는 걸러내지 못한다. 이 게이트는 방금 완결된
+            # 봉의 tick_count(주문흐름 폭주, collection/cybos/realtime_data.py:_update_bar
+            # 누적)와 atr_ratio(features/technical/atr.py, "1분 변화폭")를 함께 봐서
+            # RegimeOverride보다 더 이른 신호로 판단한다. 두 조건 모두 초과해야 발동
+            # (오탐 최소화 — 개장 직후처럼 틱수만 자연히 높은 정상 구간 배제).
+            if runtime_settings.VOLATILITY_BURST_GUARD_ENABLED and _qty_display > 0:
+                _vb_tick = int(bar.get("tick_count", 0) or 0)
+                _vb_atr_ratio = float(features.get("atr_ratio", 1.0) or 1.0)
+                if (_vb_tick >= runtime_settings.VOLATILITY_BURST_TICK_RATE_MIN
+                        and _vb_atr_ratio >= runtime_settings.VOLATILITY_BURST_ATR_RATIO_MIN):
+                    if runtime_settings.VOLATILITY_BURST_ACTION == "skip":
+                        _final_grade = "X"
+                        _qty_display = 0
+                        log_manager.signal(
+                            f"[VolatilityBurst] 신규 진입 차단 — tick={_vb_tick}"
+                            f"(임계{runtime_settings.VOLATILITY_BURST_TICK_RATE_MIN}) "
+                            f"atr_ratio={_vb_atr_ratio:.2f}"
+                            f"(임계{runtime_settings.VOLATILITY_BURST_ATR_RATIO_MIN})"
+                        )
+                    else:
+                        _vb_stop_widen_mult = float(runtime_settings.VOLATILITY_BURST_STOP_WIDEN_MULT)
+                        _qty_display = max(
+                            1, int(round(_qty_display * runtime_settings.VOLATILITY_BURST_SIZE_MULT))
+                        )
+                        log_manager.signal(
+                            f"[VolatilityBurst] 사이즈 축소 ×{runtime_settings.VOLATILITY_BURST_SIZE_MULT:.2f} "
+                            f"+ 스톱 확대 ×{_vb_stop_widen_mult:.2f} — tick={_vb_tick} "
+                            f"atr_ratio={_vb_atr_ratio:.2f}"
+                        )
+
             # Layer 2 사이즈 축소 — DAY_RISK_OFF=×0.5 / CRASH=×0.3 (마지막 단계 적용)
             # UI L2 OFF이면 우회
             if _l2_gate_on:
@@ -7215,6 +7250,7 @@ class TradingSystem:
                                     reverse_enabled=reverse_on,
                                     entry_horizon=_entry_horizon,
                                     hurst_bucket=self._entry_hurst_bucket,
+                                    extra_stop_mult=_vb_stop_widen_mult,
                                 )
                                 self._log_exec_1m_shadow(
                                     final_dir_str, _final_grade, features, horizon_proba,
@@ -7309,6 +7345,7 @@ class TradingSystem:
                         reverse_enabled=reverse_on,
                         entry_horizon=_entry_horizon,
                         hurst_bucket=self._entry_hurst_bucket,
+                        extra_stop_mult=_vb_stop_widen_mult,
                     )
                     self._log_exec_1m_shadow(
                         final_dir_str, _final_grade, features, horizon_proba,
@@ -12590,6 +12627,7 @@ def _ts_execute_entry(
     reverse_enabled: bool = False,
     entry_horizon: str = None,
     hurst_bucket: str = None,
+    extra_stop_mult: float = 1.0,
 ):
     cooldown_active, cooldown_remain = _ts_in_exit_cooldown(self)
     raw_direction = raw_direction or direction
@@ -12747,6 +12785,7 @@ def _ts_execute_entry(
             reverse_entry_enabled=reverse_enabled,
             entry_horizon=entry_horizon,
             hurst_bucket=hurst_bucket,
+            extra_stop_mult=extra_stop_mult,
         )
         self.position._optimistic = True
         if self._pending_order is not None:
