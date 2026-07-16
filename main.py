@@ -6980,14 +6980,28 @@ class TradingSystem:
                     _entry_block_reason = f"[차단] 진입 금지 시간대 ({time_zone}) — 체크리스트 8_time 실패"
                 else:
                     _entry_block_reason = f"[차단] 등급X — 미통과 항목: {', '.join(_failed)}"
-            else:
-                _entry_block_reason = ""
-                logger.warning(
-                    "[EntryBlockReason] fo=0인데 사유 미매칭 — _final_entry_ok 조건 점검 필요 "
-                    "(grade=%s qty=%d vol0=%s eks=%s)",
-                    _final_grade, _qty_display, _bar_volume_zero,
-                    self.system_health.kill_switch_active,
+            elif not self._auto_entry_enabled:
+                # [347차] 자동진입 전역 비활성 — grade는 A/B/C로 정상 산출됐지만
+                # 사용자가 자동매매 토글을 꺼둔 상태. _final_entry_ok(fo)는 이 토글과
+                # 무관하게 True일 수 있어(STEP7 게이트 자체는 통과) 기존 elif 체인
+                # 어디에도 안 걸리고 else로 빠지며 "fo=0인데 사유 미매칭"으로 오탐 처리됐다.
+                _entry_block_reason = "[차단] 자동진입 비활성화 — 사용자 설정으로 자동매매 꺼짐 (수동 진입만 가능)"
+            elif not _cr.get("auto_entry", True):
+                # [347차] 체크리스트 conf_floor(ENS_CONF_FLOOR_FOR_AUTO, 동적 상향 포함)
+                # 미달 — grade는 A/B/C 그대로 유지한 채 auto_entry만 False로 꺼진 케이스
+                # (checklist.py 말미 및 main.py:6088 동적 floor 두 경로 모두 해당).
+                # 7/15 14시대 빈 사유 8건 전부 conf 32.9~35.3%로 floor(33%) 바로 위/아래
+                # 경계에 몰려 있었음 — 딱 이 케이스.
+                _entry_block_reason = (
+                    f"[차단] 자동진입 conf_floor 미달 — conf={confidence:.1%} "
+                    f"(기준≈{ENS_CONF_FLOOR_FOR_AUTO:.1%}, 동적 상향 가능) "
+                    f"— 등급={_final_grade} 유지, 수동확인 필요"
                 )
+            else:
+                # 위 모든 차단 조건을 통과했다는 뜻 — 즉 fo=1이고 진입이 정상 진행되는
+                # 케이스다(경고 대상 아님). 336차가 "상세 미수집"을 보강하며 넣었던
+                # 이 자리의 경고가 진입 성공 분마다 오탐으로 찍히던 문제 수정.
+                _entry_block_reason = ""
 
         _entry_executed_this_cycle = False
 
