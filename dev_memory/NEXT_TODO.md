@@ -8,6 +8,44 @@
 
 ---
 
+## 2026-07-17 (354차 — OPEN_VOLATILE 시가이격 필터(P2-d) 재설계: 관찰 조건부, 주간 검증캠페인 [8]번 채널로 자동 트리거 등록)
+
+> 상세: `DECISION_LOG.md` 2026-07-17(354차) 항목. 순수 등록(코드 변경 없음)
+> — dailycheck P2-d(OPEN_VOLATILE 기준점 고정 문제) 검토 결과.
+
+- [ ] **재설계 자체는 보류** — 7/16 딥다이브에서 이 필터가 실제로 A/B등급
+  신호를 단독으로 막은 사례가 아직 관측되지 않음(16건 전부 conf미달과
+  중복 차단). 353차(확신도 고착 부스트) 라이브 관찰로 OPEN_VOLATILE 구간
+  진짜 신호가 늘면 이 필터가 다음 병목이 될 가능성은 있으나, 근거 없이
+  기준점(VWAP? 세션 시가?)·임계값을 새로 설계하면 사후 캘리브레이션
+  리스크가 큼 — 실측 근거가 쌓일 때까지 대기.
+- [ ] **[신규 제안] 주간 검증캠페인 [8]번 채널 신설 — `open_gap_shadow`
+  counterfactual** — `hurst_gate_shadow`([6])·`joint_gate_shadow`([7])와
+  완전히 동일한 패턴(`docs/validation campain/validation capain.txt`,
+  `scripts/generate_validation_campaign_report.py`)으로 "OPEN_VOLATILE
+  gap 필터만 아니었으면 진입했을 신호"의 가상 결과를 자동 누적·판정하도록
+  구현하면, 4주 후 FAIL 판정이 곧 재검토 트리거가 되어 사용자가 매주
+  금요일 여는 `data/validation_campaign_report.md`에서 자동으로 인지
+  가능 — 로그를 뒤져 우연히 발견할 필요 없음. 설계안:
+  - 테이블: `open_gap_shadow` (Hurst shadow와 동일 컬럼셋 — ts/direction/
+    grade/conf/entry_price/stop_price/tp1_price/resolved 등 + gap_pt·
+    atr_at_block 추가)
+  - 기록 위치: `main.py` — `not _open_gap_ok`이고 나머지 `_final_entry_ok`
+    조건 전부 충족하는 순간(`_hgs_no_hurst_ok` 패턴, main.py:6768-6791
+    그대로 복제해 조건만 gap으로 교체)
+  - 판정 함수: `scripts/generate_validation_campaign_report.py:
+    resolve_and_eval_open_gap()` — `resolve_and_eval_joint_gate()`를
+    거의 그대로 복제("hurst_gate_shadow와 완전히 동일한 판정 로직 —
+    대상 테이블만 다르다" 기존 패턴)
+  - config 등록: `VALIDATION_CAMPAIGN["open_gap_shadow"] = {"min_samples":
+    20, "cf_window_min": 30}` (기존 두 채널과 동일 기준)
+  - PASS(존치)=누적 가상pnl≤0, FAIL(완화 권고)=가상pnl>왕복비용×2 AND
+    가상승률>기준선 — FAIL 시에만 그 실측값을 근거로 기준점/임계 재설계
+    착수(지금 미리 설계하지 않음)
+  - **구현 여부는 별도 확인 필요** — 사용자 승인 후 진행.
+
+---
+
 ## 2026-07-17 (353차 — 확신도 고착 임시 부스트: 5m 고착 시 3m 가중치 이전, P2-b 옵션 c)
 
 > 상세: `DECISION_LOG.md` 2026-07-17(353차) 항목. 7/16 정기점검 P2-b 3안
