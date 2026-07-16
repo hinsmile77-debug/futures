@@ -719,13 +719,20 @@ class PositionTracker:
             return price <= self.stop_price
         return price >= self.stop_price
 
-    def is_stop_hit_intrabar(self, bar_low: float, bar_high: float) -> bool:
-        """분봉 고저가로 스톱 히트 판단 — 종가 기준보다 빠른 감지 (Proposal D)"""
+    def is_stop_hit_intrabar(self, bar_low: float, bar_high: float, stop_price: float = None) -> bool:
+        """분봉 고저가로 스톱 히트 판단 — 종가 기준보다 빠른 감지 (Proposal D)
+
+        stop_price를 명시하지 않으면 현재 self.stop_price를 사용한다. 봉 내에서
+        트레일링 스톱이 이미 갱신된 뒤 호출하는 경우, 그 봉의 고저가는 갱신 전
+        스톱 기준으로 형성된 것이므로 호출측에서 갱신 전 stop_price를 넘겨야
+        "유령 하드스톱"(갱신된 스톱을 과거 고저가에 소급 적용)을 피할 수 있다.
+        """
         if self.status == POSITION_FLAT:
             return False
+        _stop = self.stop_price if stop_price is None else stop_price
         if self.status == POSITION_LONG:
-            return bar_low <= self.stop_price
-        return bar_high >= self.stop_price
+            return bar_low <= _stop
+        return bar_high >= _stop
 
     def is_tp1_hit(self, price: float) -> bool:
         if self.status == POSITION_FLAT or self.partial_1_done:
