@@ -8434,3 +8434,92 @@ CLOSE_VOLATILE로 불변 확인), 14:49:59/14:50:00 경계값 정확히 분기, 
 
 **관련**: `docs/정기점검/매일점검/0715진입청산검토.md`(원본 딥다이브 #8 트레이드),
 341~344차(같은 딥다이브 개선 시리즈).
+
+## 2026-07-16 (346차) — EOD 모델 교체 가드: CV acc/OOB 하락 시 교체 보류 + 참고용 저장 + 알림
+
+**배경**: dailycheck_prompt.txt [P2] "EOD 모델 교체 가드" 제안 후속. 이전 턴(구현 전)에서
+현황을 먼저 설명했고, 사용자가 4가지 지침을 확정: ① 적용범위는 eod_retrain.py의
+force 기본값 전환만, ② 임계값은 SGD `_CUT_THR`처럼 호라이즌별 세분화, ③ RF도
+OOB 기준으로 동일 가드 적용, ④ "보류"=신모델을 버리지 않고 참고용으로 저장, ⑤ 알림은
+기존 `notify()` 재사용(Slack 한도 이슈는 별도 해소 예정이라 현상유지).
+
+**중대 발견 — 설명 단계에서 지목한 파일이 실제 운영 경로가 아니었음**: 직전 턴에서
+"`scripts/eod_retrain.py`의 `--no-force` 기본값을 바꾸면 된다"고 설명했으나, 구현
+착수 전 재확인 결과 **매일 15:45 Windows 스케줄러가 실제로 실행하는 스크립트는
+루트의 `retrain_eod.py`**였다(7/15 로그의 `"retrain_eod.py P8 — GBM 재학습 직후..."`
+문구가 `retrain_eod.py:157`의 `trigger_reason` 문자열과 정확히 일치, RegimeFingerprint
+학습분포 갱신 로그 문구도 동일 파일에서만 발견— `scripts/eod_retrain.py`에는 이
+문구들이 없음). `retrain_eod.py`(root)는 `force=True`가 **하드코딩**돼 있어 CLI
+플래그 자체가 없었다 — `EOD_RETRAIN.bat`가 부르는 `scripts/eod_retrain.py`는 별도의
+수동 트리거 경로(CLAUDE.md가 "191차 결정"으로 언급하는 그 파일이지만, 매일 자동
+실행되는 쪽은 아님). 두 파일 모두 수정해 두 경로가 서로 다른 안전 수준으로
+갈라지지 않게 했다 — 345차의 `NEW_ENTRY_CUTOFF` 3중 중복 발견과 같은 패턴("이름만
+보고 짐작하면 틀린다, 실제 실행 경로를 로그로 대조 확인해야 한다")이 이번에도
+반복됨.
+
+**File**: `config/settings.py`(`EOD_MODEL_GUARD_DROP_TOLERANCE` 등), `learning/
+eod_model_guard.py`(신규 — `evaluate_model_replace()` 순수함수), `learning/
+batch_retrainer.py`(`_train_horizon()` GBM 가드 + RF 학습 블록 가드 + `_save_rejected_
+model()`/`_save_rejected_rf_model()` 신규), `model/rf_horizon_model.py`(`get_model()`/
+`override_horizon()` 신규), `retrain_eod.py`(root, `force=True`→`False`), `scripts/
+eod_retrain.py`(`--no-force`→`--force`, 기본값 반전).
+
+**기존에 이미 -0.01 가드가 있었다는 사실 자체가 핵심 발견**: `batch_retrainer.py:636`
+(수정 전)에 `if intraday or force or (cv_acc is not None and cv_acc > old_acc - 0.01):`
+로 이미 구현돼 있었다 — 문제는 EOD 경로가 항상 `force=True`를 넘겨 이 비교 자체가
+한 번도 평가되지 않았던 것. 즉 "새 기능을 만든" 게 아니라 "이미 있던 안전장치를
+깨우고, 임계값을 호라이즌별로 정교화하고, RF에도 같은 걸 이식"한 작업.
+
+**임계값 설계**: `EOD_MODEL_GUARD_DROP_TOLERANCE = {"1m":0.025,"3m":0.025,"5m":0.025,
+"10m":0.03,"15m":0.03,"30m":0.05}`. `_CUT_THR`는 절대 정확도 하한이고 이 값은
+"하락폭" 기준이라 숫자를 그대로 가져오지 않고, CLAUDE.md CORE 그룹(단기 1m/3m/5m,
+중기 10m/15m, 장기 30m)별 상대적 엄격도만 참고했다: 단기가 실거래에 가장 직접
+영향을 주므로 가장 엄격(0.025 — 7/15 세 호라이즌의 실제 하락폭 0.0298/0.0311/0.0525를
+전부 걸러내는지 검증됨), 중기는 사용자 예시값(0.03) 그대로, 장기(30m)는 296차에
+CoherenceGate·앙상블·CascadeCoherence에서 전면 퇴역 확정(구조적 랜덤 이하)돼
+실거래 의사결정에 관여하지 않으므로 완화(0.05).
+
+**RF 가드의 구조적 제약과 해법**: GBM은 호라이즌별 개별 pkl 파일(`gbm_{hz}.pkl`)이라
+호라이즌 단위로 독립 교체/유지가 자연스러운데, RF는 `rf_horizons.pkl` 한 파일에
+6개 호라이즌이 전부 묶여 있어(`RFHorizonModel.save_all()`) 원래는 all-or-nothing
+저장이었다. `RFHorizonModel`에 `get_model(horizon)`/`override_horizon(horizon,
+model, oob)`를 신규 추가해, `save_all()` 호출 직전에 가드가 발동한 호라이즌만
+구모델 슬롯으로 되돌리는 방식으로 부분 유지를 구현 — 나머지 호라이즌은 새로
+학습된 모델을 그대로 유지한다.
+
+**"참고용 저장"의 구체적 형태**: `model/horizons/rejected/{gbm|rf}_{horizon}_
+{YYYYMMDD_HHMMSS}.pkl`(+GBM은 `_scaler.pkl`/`_features.pkl` 추가) + 같은 이름의
+`.json` 사이드카(horizon/ts/new_acc/old_acc/drop/tolerance)에 타임스탬프를 붙여
+매 보류 이벤트마다 누적 보관한다 — "지금이 관찰 적기"라는 애초 제안 취지대로,
+앞으로 몇 주간 실제로 몇 번 발동하는지 이력을 전부 남기기 위함(덮어쓰기 아님).
+
+**알림**: 기존 `utils.notify.notify(..., level="WARNING")`을 ChampionHeartbeat와
+동일한 패턴으로 그대로 재사용(신규 알림 인프라 없음). Slack `message_limit_exceeded`
+이슈는 사용자 확인대로 별도 해소 예정이라 이번 작업에서는 손대지 않음.
+
+**force=True 경로는 완전히 보존**: 08:55 PreRetrain(`main.py:3805`)·웜업 복구
+(`main.py:2896` 등)는 이번 변경과 무관 — `retrain_now()` 자체의 가드는
+`intraday or force` 조건이 그대로 먼저 평가되므로, force=True를 넘기는 모든
+기존 호출부는 이전과 동일하게 가드를 우회한다. 오직 `retrain_eod.py`(root)·
+`scripts/eod_retrain.py --force` 미지정 시에만 새 가드가 실제로 평가된다.
+
+**검증**: `py_compile` 6파일 통과. `py310_64`에서 임시 `model_dir`(라이브 모델
+디렉토리 미접촉)로 실제 sklearn 학습을 돌리는 end-to-end 통합테스트 —
+(1) `evaluate_model_replace()` 순수함수 단위테스트: 7/15 실측값(1m/3m/5m 하락,
+10m/15m/30m 유지·개선) 6개 케이스 + 콜드스타트 케이스 전부 정확히 판정.
+(2) 실제 GBM+RF 풀 파이프라인 2회 연속 학습(1차: 신호 있는 데이터로 콜드스타트
+학습 → 전부 교체 확인, 2차: 라벨을 완전 무작위로 섞은 데이터로 재학습) — GBM
+6/6 호라이즌·RF 6/6 호라이즌 전부 가드 발동 확인, 배포된 `gbm_{hz}_acc.txt`가
+1차 학습값을 그대로 유지(2차로 갱신되지 않음) 확인, RF `rf_horizons.pkl`의 OOB도
+`override_horizon()`으로 1차 값이 정확히 복원됨 확인, `rejected/`에 GBM
+12개+RF 12개 파일(pkl+json, 호라이즌×보류횟수) 실제 생성 확인.
+(3) 동일 나쁜 데이터로 `force=True` 재실행 — 가드 완전 우회, 전부 정상 교체
+(회귀 없음) 확인.
+**라이브 미검증** — 다음 EOD(오늘 7/16 저녁)에서 실제로 발동하는지, 발동 시
+`[EOD 모델가드]` Slack 알림·`rejected/` 파일·요약 로그의 "가드보류=N" 수치가
+정상 출력되는지 확인 필요.
+
+**관련**: 직전 턴의 설명(같은 세션, dailycheck_prompt.txt [P2] 원 제안 상세 분석),
+0715진입청산검토.md(7/15 EOD 로그에서 1m/3m/5m CV acc 하락 발견 원본),
+344차(순수함수 분리 설계 패턴 공유), 345차(NEW_ENTRY_CUTOFF 3중 중복 발견과 동일한
+"실제 실행 경로 재확인" 교훈).

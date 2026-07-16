@@ -5,7 +5,7 @@
     conda activate py37_32
     python scripts/eod_retrain.py
     python scripts/eod_retrain.py --weeks 10
-    python scripts/eod_retrain.py --weeks 10 --no-force
+    python scripts/eod_retrain.py --weeks 10 --force  # 346차: 기본 False, 강제교체는 명시
 
 미륵이 종료 상태에서 실행하는 전용 스크립트.
 미륵이 실행 중에는 15:40 daily_close()가 자동으로 동일 작업을 실행함.
@@ -45,9 +45,16 @@ def main():
         "--weeks", type=int, default=10,
         help="학습 기간 (주). 기본 10 — 약 16,000봉 (MIN_TRAIN_BARS=15,000 통과 기준)",
     )
+    # [346차] 기본값 반전 — force=True→False. 예전엔 CV acc가 구모델보다 크게
+    # 나빠져도 무조건 교체됐다(0715진입청산검토.md 딥다이브). 기본 False로
+    # 바꿔 batch_retrainer.py의 호라이즌별 EOD 모델가드(EOD_MODEL_GUARD_
+    # DROP_TOLERANCE)가 실제로 동작하게 하고, "수동 복구 목적"으로 강제
+    # 교체가 필요하면 --force로 명시하게 했다(플래그명 --no-force→--force로
+    # 반전 — 기본이 이미 안전이라 "no"를 앞에 붙이는 게 더 헷갈림).
     parser.add_argument(
-        "--no-force", dest="force", action="store_false", default=True,
-        help="성능 저하 시 교체 금지 (기본: force=True로 강제 교체)",
+        "--force", dest="force", action="store_true", default=False,
+        help="성능 저하여도 강제 교체 (기본 False — 호라이즌별 허용 하락폭 "
+             "초과 시 구모델 유지 + 참고용 저장 + 알림, 346차)",
     )
     parser.add_argument(
         "--phase2", action="store_true", default=False,
