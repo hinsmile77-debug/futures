@@ -8763,3 +8763,57 @@ elif 체인 말단부(`_cr is None` 이후, 이번에 수정한 부분 전체)�
 **관련**: `docs/정기점검/매일점검/0715진입청산검토.md`(§2 딥다이브에서 이 잔여
 갭 최초 발견), 335차·336차(원래 STEP7 차단사유 보강 작업), 268차-P2(동적
 conf_floor 도입), 239차(정적 `ENS_CONF_FLOOR_FOR_AUTO` 도입).
+
+## 2026-07-16 (348차) — 틱 하드스톱 최대 60초 지연 제거: QTimer.singleShot(0, ...)으로 즉시 처리 위임
+
+**배경**: 7/16 정기점검(Claude, dailycheck_prompt.txt)이 P0로 지목한 구조적 결함.
+S0-C 하드스톱(틱)이 실제로는 COM 틱 콜백에서 breach를 감지해 flag만 세팅하고,
+실주문 전송은 `run_minute_pipeline`이 다음 분봉 롤오버(첫 틱 도착) 시점까지
+미뤄지는 구조라 최악 약 60초 지연됐다. 7/16 14:10 진입건이 실측 근거: 14:11:1x경
+스톱(1082.51) 돌파 → 가격이 14:11:53까지 1087.82로 폭등하는 동안 flag만 대기 →
+실제 주문은 14:12:00 분봉 롤오버에서야 전송돼 체결가 1088.88, 슬리피지 6.37pt
+(해당 트레이드 PnL -9.38pt 중 대부분을 차지, 당일 손절 4건 슬리피지 합 약 9.6pt로
+당일 순손실 -4.68pt의 2배 이상).
+
+**File**: `main.py` — `_on_tick_price_update`(3081줄 부근), 신규 `_process_tick_stop`
+(3122줄, `_on_tick_price_update` 직후 독립 메서드로 배치), `run_minute_pipeline`
+S0-C 호출부(4001줄 부근, 폴백으로 축소).
+
+**근본 원인 재확인**: `_on_tick_price_update`는 `OnReceived`(COM 이벤트)→
+`_handle_subscription_event`→`_handle_tick`→`_update_bar` 체인을 통해 호출되는데,
+이 체인 자체가 `api_connector.py:_ensure_message_pump`가 50ms 간격 QTimer로 도는
+`pythoncom.PumpWaitingMessages()` 안에서 동기 디스패치된다 — 즉 이미 메인 Qt
+스레드 위에서 실행 중이라 [225차/L519]의 "데몬 스레드에서 singleShot 미보장"
+캐비어트는 해당 없음. 다만 §4(콜백 내 dynamicCall·emit 금지, 0xC0000409 크래시
+방지)는 여전히 유효 — 266차가 이 때문에 flag-only로 설계했었고, 그 소비 시점이
+"다음 분봉"이라는 저빈도 지점밖에 없었던 것이 지연의 진짜 원인이었다.
+
+**수정**: 기존 S0-C 로직(pending 선등록→`_send_broker_exit_order`, 2026-07-09
+실사고 수정분 포함) 100% 동일하게 `_process_tick_stop()` 독립 메서드로 추출.
+`_on_tick_price_update`가 flag를 세팅하는 바로 그 지점에서
+`QTimer.singleShot(0, self._process_tick_stop)`을 추가 호출 — `QTimer.singleShot`은
+dynamicCall도 emit도 아니라 "다음 이벤트루프 패스에서 실행 예약"일 뿐이며, 실제
+콜백은 `_on_tick_price_update`의 콜 스택이 완전히 풀린 뒤 별도 디스패치 사이클에서
+실행되므로 §4가 금지하는 "콜백 내부에서 즉시 COM 호출"과 다르다(이미 `main.py`
+여러 곳에서 검증된 0ms/300ms singleShot 패턴과 동일 계열). `run_minute_pipeline`의
+기존 S0-C 호출부는 `_process_tick_stop()` 한 줄 호출로 유지 — 싱글샷이 이벤트루프
+기아 등으로 못 돌 경우의 폴백 안전망. `_process_tick_stop()`이 맨 위에서 flag를
+즉시 클리어하는 멱등 설계라 두 경로가 겹쳐도 중복 주문은 없다.
+
+**검증**: AST 파싱으로 메서드 경계 재확인(`run_minute_pipeline`이 3935~7709줄로
+온전히 유지, `_process_tick_stop`이 3122~3186줄로 올바르게 독립 배치됨 — 최초
+편집 시도에서 메서드 정의가 `run_minute_pipeline` 본문 중간에 잘못 삽입돼
+이후 STEP1~9 전체가 그 메서드에 흡수되는 심각한 구조 파괴가 있었으나 AST로
+즉시 발견해 재수정함). `py37_32`(실제 런타임 환경) `py_compile` 통과. COM 연결이
+필요해 지연 단축 자체를 오프라인으로 측정할 수는 없었다. **라이브 미검증** —
+다음 장중 하드스톱 발동 시 `[TickStop] ... → 즉시 처리 예약` 로그와
+`[TickStop-S0C] ... → 주문 전송` 로그 사이 시간차가 기존 최대 60초에서
+밀리초~1초 이내로 줄었는지, 폴백 경로(run_minute_pipeline S0-C)가 정상 상황에서
+더 이상 발동하지 않는지(싱글샷이 항상 먼저 처리) 확인 필요.
+
+**관련**: 7/16 정기점검(Claude, dailycheck_prompt.txt) P0 지적 및 진입 딥다이브,
+266차(tick-level 하드스톱 flag 설계 원안), 2026-07-09 실사고 수정(305차, pending
+선등록 순서 — 이번 작업이 그대로 보존한 핵심 안전장치), 306차(같은 S0-C 영역의
+과거 버그 수정 이력). 340차 사이징 상향(기본리스크 ×5)이 이 지연 문제와 결합되면
+손실 규모가 비례 확대될 위험이 있다고 정기점검에서 지적됨 — 사이징 임계값
+재검토는 별도 과제로 NEXT_TODO에 등록.

@@ -3081,7 +3081,16 @@ class TradingSystem:
         if close > 0:
             self._last_pipeline_price = close
             # [266차] tick-level 하드스톱 감지 — COM 콜백 내 dynamicCall 금지로 flag만 세팅.
-            # 실제 주문 전송은 run_minute_pipeline S0-C에서 메인 스레드 안전하게 처리.
+            # [348차] 과거엔 실제 주문 전송을 run_minute_pipeline S0-C(다음 분봉
+            # 롤오버 시점)까지 미뤄 최악 60초 지연 → 그 사이 급변장에서 슬리피지
+            # 누적(2026-07-16 14:12 사고 실측 -6.37pt). QTimer.singleShot(0, ...)은
+            # dynamicCall/emit이 아니라 "다음 이벤트루프 패스에서 실행 예약"일 뿐이라
+            # §4 위반이 아니며, 이 콜백 자체가 이미 메인 스레드(50ms 간격
+            # _pump_messages 타이머가 PumpWaitingMessages를 호출하는 구조 —
+            # api_connector.py:_ensure_message_pump)에서 실행 중이므로 daemon
+            # thread 전달 미보장 문제(225차, L519 주석)도 해당 없음. singleShot
+            # 콜백은 현재 콜 스택(OnReceived→...→_on_tick_price_update)이 완전히
+            # 풀린 뒤 실행되므로 COM 콜백 내부 직접 호출과 다르다.
             # 조건: 포지션 보유 + pending 주문 없음 + 미감지 상태 + CB HALT 아님
             if (not self._tick_stop_triggered
                     and self._pending_order is None
@@ -3091,9 +3100,10 @@ class TradingSystem:
                 self._tick_stop_triggered = True
                 self._tick_stop_price     = close
                 logger.warning(
-                    "[TickStop] 스톱 히트 감지 (틱) %s tick=%.2f stop=%.2f → S0-C 대기",
+                    "[TickStop] 스톱 히트 감지 (틱) %s tick=%.2f stop=%.2f → 즉시 처리 예약",
                     self.position.status, close, self.position.stop_price,
                 )
+                QTimer.singleShot(0, self._process_tick_stop)
             # [230차] 100ms 쓰로틀 — minute_chart_tick(chart.update) 은 heavy (348 candles paintEvent)
             _now_tick = time.perf_counter()
             _last_tick_ui = getattr(self, "_last_tick_chart_update", 0.0)
@@ -3108,6 +3118,72 @@ class TradingSystem:
             code   = self.realtime_data.code,
         )
         logger.info("[TickUI] end code=%s close=%.2f", self.realtime_data.code, float(bar["close"]))
+
+    def _process_tick_stop(self) -> None:
+        """[266차] tick-level 하드스톱 실주문 전송 — 메인 스레드에서만 호출.
+        COM 콜백(_on_tick_price_update) 내부에서 직접 호출 금지(§4) — 감지는
+        그쪽에서 flag만 세팅하고 QTimer.singleShot(0, ...)으로 이 메서드를
+        예약([348차] 다음 분봉 롤오버까지 최악 60초 걸리던 것을 다음 이벤트루프
+        패스로 단축). run_minute_pipeline S0-C에서도 폴백으로 호출되나, 이
+        메서드 자체가 멱등(맨 위에서 flag를 즉시 클리어)이라 두 경로가 겹쳐도
+        중복 주문은 없다.
+
+        분봉 파이프라인 진입 즉시(STEP 1 이전) 처리 → 기존 인트라바스톱(STEP 8)보다
+        파이프라인 내 순서가 앞서 동일 분봉 내 조기 주문 전송.
+        [2026-07-09 실사고 수정] 과거엔 pending 미등록 상태로 주문만 보내고
+        close_position()을 즉시(낙관적으로) 호출해 포지션을 먼저 FLAT 처리했다.
+        이 경우 뒤늦게 도착하는 실체결이 pending 매칭 실패로 "미추적체결
+        (pending_miss)" 경로로 빠져 반대방향 유령 포지션을 새로 여는 사고가
+        발생(0709 두 차례, 손실 약 6.75M원 — dev_memory 305차). 수동청산·TP청산·
+        정규 하드스톱(_ts_check_exit_triggers)과 동일하게 주문 전송 "전"에 pending을
+        선등록하도록 수정 — close_position()/_post_exit()는 더 이상 여기서 즉시
+        호출하지 않고, 실제 Chejan 체결이 pending과 매칭돼 정상 ExitFillFlow
+        경로로 마감되도록 위임한다. 이중 발동 차단은 STEP 8
+        (_ts_check_exit_triggers 최상단의 `_has_pending_order()` 조기 반환)이
+        position.status==FLAT 대신 pending 존재 여부로 그대로 보장한다.
+        """
+        if not getattr(self, "_tick_stop_triggered", False):
+            return
+        self._tick_stop_triggered = False           # 중복 처리 방지 — 결과 무관 즉시 해제
+        _tk_px   = self._tick_stop_price
+        _tk_stop = self.position.stop_price
+        if (self.position.status != "FLAT"
+                and not self._has_pending_order()
+                and self.circuit_breaker.state != CB_STATE_HALTED
+                and _tk_px > 0):
+            # PnL 기준: 손절가 사용 (실제 체결가는 broker fill이 결정)
+            _tk_exit = _tk_stop
+            _tk_qty = self.position.quantity
+            _tk_direction = self.position.status
+            log_manager.trade(
+                f"[TickStop-S0C] 하드스톱(틱) {_tk_direction} "
+                f"{_tk_qty}ct "
+                f"tick={_tk_px:.2f} stop={_tk_stop:.2f} → 주문 전송"
+            )
+            # pending을 주문 전송 전에 먼저 등록 — BlockRequest() 내부 메시지
+            # 펌프로 체결 콜백이 먼저 도착하는 race condition 방지
+            # (수동청산·TP청산·정규 하드스톱과 동일한 순서).
+            self._set_pending_order(
+                kind="EXIT_FULL",
+                direction=_tk_direction,
+                qty=_tk_qty,
+                price_hint=round(_tk_exit, 2),
+                reason="하드스톱(틱)",
+            )
+            ret = self._send_broker_exit_order(_tk_qty)
+            log_manager.system(
+                f"[ExitSendOrderResult] ret={ret} kind=하드스톱(틱) "
+                f"direction={_tk_direction} qty={_tk_qty}",
+                "WARNING",
+            )
+            if ret == 0:
+                log_manager.trade(
+                    f"[주문요청] 하드스톱(틱) 청산 {_tk_direction} {_tk_qty}계약 "
+                    f"@ {_tk_exit:.2f} 체결대기"
+                )
+            else:
+                self._clear_pending_order()
+                log_manager.system(f"[Exit] 하드스톱(틱) 주문 실패 ret={ret}", "ERROR")
 
     def _on_hoga_update(
         self,
@@ -3922,62 +3998,14 @@ class TradingSystem:
         # ConstOut refit worker → _deferred_callbacks.put("const_out_done") →
         # 여기서 메인 스레드 소비. GBM done은 [226차] subprocess poll로 이동.
 
-        # ── [S0-C] tick-level 하드스톱 처리 ─────────────────────────────────
-        # [266차] _on_tick_price_update(COM 콜백)에서 stop 히트 감지 시 flag 세팅.
-        # 분봉 파이프라인 진입 즉시(STEP 1 이전) 처리 → 기존 인트라바스톱(STEP 8)보다
-        # 파이프라인 내 순서가 앞서 동일 분봉 내 조기 주문 전송.
-        # [2026-07-09 실사고 수정] 과거엔 pending 미등록 상태로 주문만 보내고
-        # close_position()을 즉시(낙관적으로) 호출해 포지션을 먼저 FLAT 처리했다.
-        # 이 경우 뒤늦게 도착하는 실체결이 pending 매칭 실패로 "미추적체결
-        # (pending_miss)" 경로로 빠져 반대방향 유령 포지션을 새로 여는 사고가
-        # 발생(0709 두 차례, 손실 약 6.75M원 — dev_memory 305차). 수동청산·TP청산·
-        # 정규 하드스톱(_ts_check_exit_triggers)과 동일하게 주문 전송 "전"에 pending을
-        # 선등록하도록 수정 — close_position()/_post_exit()는 더 이상 여기서 즉시
-        # 호출하지 않고, 실제 Chejan 체결이 pending과 매칭돼 정상 ExitFillFlow
-        # 경로로 마감되도록 위임한다. 이중 발동 차단은 STEP 8
-        # (_ts_check_exit_triggers 최상단의 `_has_pending_order()` 조기 반환)이
-        # position.status==FLAT 대신 pending 존재 여부로 그대로 보장한다.
-        if getattr(self, "_tick_stop_triggered", False):
-            self._tick_stop_triggered = False           # 중복 처리 방지 — 결과 무관 즉시 해제
-            _tk_px   = self._tick_stop_price
-            _tk_stop = self.position.stop_price
-            if (self.position.status != "FLAT"
-                    and not self._has_pending_order()
-                    and self.circuit_breaker.state != CB_STATE_HALTED
-                    and _tk_px > 0):
-                # PnL 기준: 손절가 사용 (실제 체결가는 broker fill이 결정)
-                _tk_exit = _tk_stop
-                _tk_qty = self.position.quantity
-                _tk_direction = self.position.status
-                log_manager.trade(
-                    f"[TickStop-S0C] 하드스톱(틱) {_tk_direction} "
-                    f"{_tk_qty}ct "
-                    f"tick={_tk_px:.2f} stop={_tk_stop:.2f} → 주문 전송"
-                )
-                # pending을 주문 전송 전에 먼저 등록 — BlockRequest() 내부 메시지
-                # 펌프로 체결 콜백이 먼저 도착하는 race condition 방지
-                # (수동청산·TP청산·정규 하드스톱과 동일한 순서).
-                self._set_pending_order(
-                    kind="EXIT_FULL",
-                    direction=_tk_direction,
-                    qty=_tk_qty,
-                    price_hint=round(_tk_exit, 2),
-                    reason="하드스톱(틱)",
-                )
-                ret = self._send_broker_exit_order(_tk_qty)
-                log_manager.system(
-                    f"[ExitSendOrderResult] ret={ret} kind=하드스톱(틱) "
-                    f"direction={_tk_direction} qty={_tk_qty}",
-                    "WARNING",
-                )
-                if ret == 0:
-                    log_manager.trade(
-                        f"[주문요청] 하드스톱(틱) 청산 {_tk_direction} {_tk_qty}계약 "
-                        f"@ {_tk_exit:.2f} 체결대기"
-                    )
-                else:
-                    self._clear_pending_order()
-                    log_manager.system(f"[Exit] 하드스톱(틱) 주문 실패 ret={ret}", "ERROR")
+        # ── [S0-C] tick-level 하드스톱 처리 (폴백 안전망) ────────────────────
+        # [348차] 실제 주문 전송 경로는 이제 _on_tick_price_update에서 직접
+        # QTimer.singleShot(0, ...)으로 예약 — 최악 60초(다음 분봉 롤오버)
+        # 지연되던 것을 다음 이벤트루프 패스(수십ms)로 단축. 이 블록은 그
+        # 싱글샷이 어떤 이유로든(이벤트루프 기아 등) 못 돈 경우를 대비한
+        # 폴백일 뿐이며, _process_tick_stop() 내부에서 flag를 즉시 클리어하는
+        # 멱등 설계라 두 경로가 겹쳐도 중복 주문은 발생하지 않는다.
+        self._process_tick_stop()
 
         while True:
             try:
