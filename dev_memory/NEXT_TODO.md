@@ -29,6 +29,36 @@
 
 ---
 
+## 2026-07-16 (342차 — KellyAdvisedSkip 계측→게이트 승격 검토: 주간 검증캠페인 [8]번 항목 신설)
+
+> 상세: `DECISION_LOG.md` 2026-07-16(342차) 항목.
+
+- [DONE 2026-07-16] `trades` 테이블에 `kelly_advised_skip INTEGER DEFAULT 0` 컬럼
+  추가(`utils/db_utils.py:_migrate_trades_db()`). `main.py`에 `self._entry_kelly_
+  advised_skip` 셋업 컨텍스트 태그 신설, 자동진입 주경로(`main.py:7018`)와 C등급
+  실험 자동진입 경로(`main.py:7169`) 양쪽에서 태깅, `_record_trade_result()`가
+  청산 시점에 `trades.kelly_advised_skip`으로 기록.
+- [DONE 2026-07-16] `config/settings.py:VALIDATION_CAMPAIGN["kelly_skip"]`
+  (`min_samples=20`) 사전등록. `scripts/generate_validation_campaign_report.py`에
+  `eval_kelly_skip_grade_c()` 신설 — `grade='C' AND kelly_advised_skip=1` 누적
+  `net_pnl_krw` 4주 판정(FAIL=음수 확정 시 진입 차단 단계 도입 검토 권고만 출력,
+  자동 차단 아님), 리포트 `[8]` 섹션·요약표 배선.
+- [DONE 2026-07-16] `.venv`/`py310_64` 격리 스크립트(임시 sqlite, 라이브 DB 미접촉)
+  검증 3건 — 컬럼 생성+31컬럼 INSERT 라운드트립, FAIL/INSUFFICIENT 판정 전환,
+  `build_report()` 전체 파이프라인 스모크(빈 DB에서도 예외 없이 완주, `[8]`
+  섹션·`metrics["kelly_skip"]` 정상 출력) 모두 통과.
+- [ ] **다음 장중 라이브 검증** — C등급 KellySkip 진입 발생 시 `trades.
+  kelly_advised_skip=1`로 실제 저장되는지 DB로 확인.
+- [ ] **다음 금요일 검증캠페인 리포트 확인** — `data/validation_campaign_report.md`
+  `[8]` 섹션이 정상 출력되는지, `min_samples=20` 도달 전까지는 "표본 부족" 보류가
+  정상.
+- [ ] **[주간회의 안건, 4주 후~] C등급+KellySkip 차단 채택 여부** — `eval_kelly_
+  skip_grade_c()` FAIL 판정(20건 이상 누적 순손실 확정) 시 진입 차단(사이징 0 또는
+  등급 강등)을 단계 도입할지 수동 결정. signal_decay와 동일하게 이 항목이 DONE
+  처리되기 전엔 삭제하지 말 것(CB②/FP-CRITICAL처럼 방치 금지).
+
+---
+
 ## 2026-07-16 (339차 — 7/15 진입 딥다이브: TP1 보호모드 기본값 전환 + 신호소멸청산 섀도우 복구)
 
 > 상세: `DECISION_LOG.md` 2026-07-16(339차) 항목.

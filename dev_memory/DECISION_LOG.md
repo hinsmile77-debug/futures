@@ -8189,3 +8189,62 @@ COM 의존 없음)로 두 케이스 격리 재현:
 
 **관련**: `docs/정기점검/매일점검/0715진입청산검토.md`(7/15 진입 딥다이브),
 339차·340차(같은 딥다이브에서 파생된 리스크/리워드 비대칭 개선 시리즈).
+
+## 2026-07-16 (342차) — KellyAdvisedSkip 계측→게이트 승격 검토: 주간 검증캠페인 [8]번 항목 신설 (shadow-first)
+
+**배경**: 7/15 전일 점검에서 그날 진입 8건 전부가 `[KellyAdvisedSkip]`(켈리가
+"자본 대비 1계약도 부적절"이라 판단한 상태)였는데도 `MINI_MIN_CONTRACTS` 최소수량
+강제로 그대로 체결됐고, 결과가 PF 0.36 순손실이었다는 딥다이브 후속. 사용자 지시:
+"Kelly skip 상태 진입"의 누적 PnL을 신호소멸청산([4]번)과 동일한 shadow-first
+패턴으로 주간 검증캠페인에 추가하고, 4주 누적 음수 확정 시 C등급+KellySkip 조합만
+차단하는 단계 도입을 검토할 수 있도록 지금은 데이터만 축적.
+
+**File**: `strategy/entry/position_sizer.py`(변경 없음 — `kelly_advised_skip`은
+이미 311차 후속에서 계산·반환되고 있었음), `main.py`(`__init__` 초기화 +
+2개 진입 경로에서 태깅 + `_record_trade_result()` INSERT), `utils/db_utils.py`
+(`_migrate_trades_db()` 컬럼 추가), `config/settings.py`(`VALIDATION_CAMPAIGN
+["kelly_skip"]`), `scripts/generate_validation_campaign_report.py`
+(`eval_kelly_skip_grade_c()` + 리포트 [8]번 섹션).
+
+**설계**: `kelly_advised_skip`은 `PositionSizer.compute()`가 이미 계산해 대시보드
+로그(`[Sizer] ... [KellyAdvisedSkip]`)에만 쓰고 버리던 값이었음(dashboard.update_entry
+전달 UI 전용, DB 미저장). 이번에 두 가지를 했다:
+1. `main.py`에 `self._entry_kelly_advised_skip`을 신설하고(다른 `_entry_*` 셋업
+   컨텍스트 태그와 동일 패턴), 자동진입 주경로(`main.py:7018` 블록)와 C등급 실험
+   자동진입 경로(`main.py:7169` `ENTRY_GRADE_C_AUTO_EXP` 블록) 양쪽에서 진입 시점의
+   `_kelly_advised_skip` 로컬 변수 값을 대입.
+2. `trades` 테이블에 `kelly_advised_skip INTEGER DEFAULT 0` 컬럼을 추가하고
+   `_record_trade_result()`가 청산 시점에 그대로 기록.
+
+**counterfactual 시뮬레이션 불필요 — exec_1m_shadow·synthetic_partial_exits와
+동일 계열**: hurst_gate_shadow·joint_gate_shadow(차단된 가상 신호)와 달리
+KellySkip 트레이드는 min_qty로 **실제 체결된** 진입이므로, 별도 섀도우 테이블 없이
+`trades.kelly_advised_skip` 컬럼 하나로 실현 `net_pnl_krw`를 그대로 집계하면 된다.
+`eval_kelly_skip_grade_c()`는 캠페인 시작일 이후 `grade='C' AND kelly_advised_skip=1`
+누적 순PnL·승률을 계산하고, 비교용으로 `grade='C' AND kelly_advised_skip=0`
+베이스라인과 `kelly_advised_skip=1` 전체의 등급별 분포(`grade_split`, A/B급 참고용)도
+함께 산출한다.
+
+**판정 기준(사전등록)**: `VALIDATION_CAMPAIGN["kelly_skip"]["min_samples"]=20`
+미달 시 INSUFFICIENT(판정 보류). 20건 이상 누적 시 총 `net_pnl_krw` 음수면 FAIL —
+권고 문구만 출력("C등급+KellySkip 조합 진입 차단(사이징 0 또는 등급 강등) 단계
+도입 검토"), **자동 차단 아님**. 채택 여부는 signal_decay와 동일하게 주간회의에서
+수동 결정하고 DECISION_LOG에 기록.
+
+**검증**: `py_compile` 4파일 통과. `.venv`/`py310_64` 격리 스크립트(임시 sqlite
+DB, 라이브 `trades.db` 미접촉) 3건:
+(1) `init_trades_db()` 실행 후 `kelly_advised_skip` 컬럼 실제 생성 확인 +
+`_record_trade_result()`와 동일한 31개 컬럼 INSERT 문 라운드트립(삽입→조회) 일치.
+(2) `eval_kelly_skip_grade_c()` 단위 검증 — C등급+KellySkip 20건(순손실 -665,000원)
+주입 시 FAIL 판정 + 권고문구 정상, `min_samples=30`으로 올리면 같은 데이터에서
+INSUFFICIENT로 정상 전환, baseline(kelly_advised_skip=0)·grade_split(A급 포함)도
+정확히 분리 집계됨을 확인.
+(3) `build_report()` 전체 파이프라인 스모크 — 빈 DB에서도 예외 없이 완주,
+리포트 텍스트에 `## [8] KellyAdvisedSkip × C등급 누적 성과` 섹션과 표본 부족
+문구가 정상 출력되고 `metrics["kelly_skip"]` 키가 JSON에 포함됨을 확인.
+**라이브 미검증** — 다음 장중 C등급 KellySkip 진입 시 `trades.kelly_advised_skip=1`로
+실제 저장되는지, 다음 금요일 검증캠페인 리포트에 [8]번이 정상 출력되는지 확인 필요.
+
+**관련**: `docs/정기점검/매일점검/0715진입청산검토.md`(진입 8건 딥다이브 원본),
+341차(같은 딥다이브의 유령 하드스톱 수정), 311차 후속(`kelly_advised_skip` 최초
+계산 도입), signal_decay([4]번, 동일 shadow-first 원칙).
