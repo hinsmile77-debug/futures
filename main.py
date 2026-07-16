@@ -5398,6 +5398,16 @@ class TradingSystem:
             )
         _zone_mc = _zone_mc_new
 
+        # [353차] 확신도 고착 임시 부스트(P2-b 옵션 c) 입력값 — 타깃 호라이즌
+        # 최근 정확도는 표본 5건 미만이면 None(판단 불가 → ensemble_decision.py가
+        # 허용 처리)으로 전달, horizon_accuracy() 자체는 표본 부족 시 0.0을 반환해
+        # "정확도 0%"로 오인될 수 있어 여기서 samples 체크로 방어한다.
+        _csb_target = getattr(runtime_settings, "CONF_STUCK_BOOST_TARGET", "3m")
+        _csb_target_samples = self.online_learner.horizon_acc_samples(_csb_target)
+        _csb_target_acc = (
+            self.online_learner.horizon_accuracy(_csb_target)
+            if _csb_target_samples >= 5 else None
+        )
         decision = self.ensemble.compute(
             _hp_ens,
             self.current_regime,
@@ -5413,8 +5423,20 @@ class TradingSystem:
             ),
             zone_mc=_zone_mc,
             bias_override_horizons=self._bias_override_horizons,
+            conf_stuck_streak=dict(self._conf_stuck),
+            target_recent_acc=_csb_target_acc,
         )
         _s6_prof.append(("ensemble", time.perf_counter()))
+        if decision.get("conf_stuck_boost_applied"):
+            log_manager.signal(
+                "[ConfStuckBoost] {}→{} 가중치 부스트 적용 (고착 {}분, {} 최근acc={})".format(
+                    runtime_settings.CONF_STUCK_BOOST_SOURCE,
+                    _csb_target,
+                    self._conf_stuck.get(runtime_settings.CONF_STUCK_BOOST_SOURCE, 0),
+                    _csb_target,
+                    "{:.1%}".format(_csb_target_acc) if _csb_target_acc is not None else "N/A",
+                )
+            )
         direction  = decision["direction"]
         confidence = decision["confidence"]
         grade      = decision["grade"]

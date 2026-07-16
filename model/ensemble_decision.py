@@ -26,6 +26,9 @@ from typing import Dict, Optional, Tuple
 from config.settings import (
     ENSEMBLE_WEIGHTS, ENSEMBLE_WEIGHTS_CORR_ADJ, HORIZONS,
     REGIME_MIN_CONFIDENCE, ENTRY_GRADE, COHERENCE_GATE_MIN,
+    CONF_STUCK_BOOST_ENABLED, CONF_STUCK_BOOST_SOURCE, CONF_STUCK_BOOST_TARGET,
+    CONF_STUCK_BOOST_MIN_STREAK, CONF_STUCK_BOOST_TRANSFER_RATIO,
+    CONF_STUCK_BOOST_TARGET_MIN_ACC,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from model.ensemble_gater import AdaptiveEnsembleGater
@@ -312,6 +315,8 @@ class EnsembleDecision:
         active_horizons: Optional[list] = None,
         zone_mc: float = 0.60,
         bias_override_horizons: Optional[set] = None,
+        conf_stuck_streak: Optional[Dict[str, int]] = None,
+        target_recent_acc: Optional[float] = None,
     ) -> Dict:
         """
         Args:
@@ -349,6 +354,7 @@ class EnsembleDecision:
                 "const_output_horizons": [],
                 "active_horizons_blocked": False,
                 "30m_filter_blocked": False,
+                "conf_stuck_boost_applied": False,
             }
 
         # ── 가중합 (상관관계 역수 × F1 적응형 가중치 적용) ──────────
@@ -423,12 +429,52 @@ class EnsembleDecision:
                     "const_output_horizons": [],
                     "active_horizons_blocked": True,
                     "30m_filter_blocked": False,
+                    "conf_stuck_boost_applied": False,
                 }
             cur_weights = {h: w / _tw for h, w in cur_weights.items()}
             logger.debug(
                 "[Ensemble] 시간대 정책 active=%s | weights=%s",
                 active_horizons,
                 {k: round(v, 3) for k, v in cur_weights.items() if v > 0},
+            )
+
+        # ── [353차] 확신도 고착 임시 부스트 (P2-b 옵션 c) ────────────────
+        # 5m GBM은 5분마다만 갱신되는 구조라(bar_age), SGD 온라인블렌드가 그
+        # 공백을 못 메우면(저신뢰 예측은 학습 게이트로 걸러져 SGD 자체가
+        # 5m에서 학습 기회가 희소함) 같은 확신도가 3~4분씩 얼어붙는다
+        # (2026-07-16 정기점검 P2 딥다이브 — [CONF⚠] 로그 기준 하루 112건
+        # 전부 5m에서만 실측). SGD 학습 게이트(0.52)를 건드리면 저신뢰
+        # 레이블이 학습에 섞이는 부작용(P2-D가 막으려던 것)이 재발할 수
+        # 있어, 그 대신 "이번 순간만" 정체된 호라이즌의 가중치 일부를 항상
+        # 정상 갱신되는 호라이즌으로 옮기는 국소·가역적 개입을 택했다 —
+        # 학습 파이프라인은 전혀 건드리지 않으며, 소스가 갱신되는 즉시(다음
+        # 분) 자동으로 정상 가중치로 복귀한다. 타깃의 최근 정확도가 낮으면
+        # (표본 부족으로 판단 불가한 경우는 허용) 부스트를 억제해 "정체된
+        # 신호를 다른 노이즈로 대체"하는 상황을 방지한다.
+        _stuck_boost_applied = False
+        if (
+            CONF_STUCK_BOOST_ENABLED
+            and conf_stuck_streak
+            and conf_stuck_streak.get(CONF_STUCK_BOOST_SOURCE, 0) >= CONF_STUCK_BOOST_MIN_STREAK
+            and cur_weights.get(CONF_STUCK_BOOST_SOURCE, 0.0) > 0.0
+            and cur_weights.get(CONF_STUCK_BOOST_TARGET, 0.0) > 0.0
+            and (
+                target_recent_acc is None
+                or target_recent_acc >= CONF_STUCK_BOOST_TARGET_MIN_ACC
+            )
+        ):
+            _boost_amt = cur_weights[CONF_STUCK_BOOST_SOURCE] * CONF_STUCK_BOOST_TRANSFER_RATIO
+            cur_weights[CONF_STUCK_BOOST_SOURCE] -= _boost_amt
+            cur_weights[CONF_STUCK_BOOST_TARGET]  += _boost_amt
+            _stuck_boost_applied = True
+            logger.debug(
+                "[Ensemble] ConfStuckBoost %s(%d분 고착) → %s +%.3f "
+                "(target_acc=%s)",
+                CONF_STUCK_BOOST_SOURCE,
+                conf_stuck_streak.get(CONF_STUCK_BOOST_SOURCE, 0),
+                CONF_STUCK_BOOST_TARGET,
+                _boost_amt,
+                f"{target_recent_acc:.1%}" if target_recent_acc is not None else "N/A(허용)",
             )
 
         # ── 방향 편향 조기 감쇠: 단일 방향 50%+ 10분 → weight×0.2 ─
@@ -982,12 +1028,14 @@ class EnsembleDecision:
             "f1_adaptive":           self._f1_weight.get_f1_status(),
             "const_output_horizons": sorted(_const_stuck),
             "30m_filter_blocked":    _30m_filter_blocked,
+            "conf_stuck_boost_applied": _stuck_boost_applied,
         }
 
         logger.info(
             f"[Ensemble] dir={direction:+d} conf={confidence:.1%} "
             f"grade={grade} regime={regime}"
             + (" [30m역방향차단]" if _30m_filter_blocked else "")
+            + (" [ConfStuckBoost]" if _stuck_boost_applied else "")
         )
         return result
 
