@@ -129,6 +129,7 @@ from strategy.entry.meta_gate import MetaGate
 from strategy.entry.soft_gate_scorer import SoftGateScorer
 from strategy.entry.trend_persistence import TrendPersistenceGate
 from strategy.entry.adaptive_kelly import AdaptiveKelly
+from strategy.entry.fq_accuracy_gate import compute_fq_adjusted_min_conf
 from strategy.exit.time_exit import TimeExitManager
 from strategy.risk.toxicity_gate import ToxicityGate
 from strategy.runtime.broker_runtime_service import BrokerRuntimeService
@@ -5466,23 +5467,30 @@ class TradingSystem:
         # [268차-P1] FQAdj를 앙상블 호출 전으로 이동 — 앙상블·체크리스트 동일 mc 기준 적용.
         # 기존: 앙상블(mc=0.352) → FQAdj → 체크리스트(mc=0.322) → grade 불일치 진입버그.
         # 수정: FQAdj 먼저 → zone_mc=0.322로 앙상블·체크리스트 모두 동일 기준 사용.
+        # [344차] fq(데이터 품질)만으로 완화를 결정하면 "데이터는 깨끗하지만 모델이
+        # 요즘 못 맞히는" 날에도 완화되는 방향 오류가 생긴다(7/15 진입0 딥다이브 실측
+        # 사례) — 실측 단기 정확도(1m/3m/5m)를 함께 반영해 완화를 동결/강화로 전환한다.
         _fq_score_pre = float(features.get("feature_quality_score", 0.5) or 0.5)
         _mc_floor_pre = getattr(runtime_settings, "MC_ABS_FLOOR", 0.25)
         _mc_ceil_pre  = getattr(runtime_settings, "MC_ABS_CEIL",  0.62)
-        if _fq_score_pre >= 0.9:
-            _fq_zone_adj = max(_zone_mc - 0.03, _mc_floor_pre)
-            if _fq_zone_adj < _zone_mc:
-                log_manager.signal(
-                    f"[FQAdj] fq={_fq_score_pre:.2f} → min_conf {_zone_mc:.2f}→{_fq_zone_adj:.2f} (완화)"
-                )
-                _zone_mc = _fq_zone_adj
-        elif _fq_score_pre < 0.6:
-            _fq_zone_adj = min(_zone_mc + 0.05, _mc_ceil_pre)
-            if _fq_zone_adj > _zone_mc:
-                log_manager.signal(
-                    f"[FQAdj] fq={_fq_score_pre:.2f} → min_conf {_zone_mc:.2f}→{_fq_zone_adj:.2f} (강화)"
-                )
-                _zone_mc = _fq_zone_adj
+        _short_acc_pre = self.online_learner.short_horizon_accuracy(
+            min_samples=getattr(runtime_settings, "FQADJ_ACC_MIN_SAMPLES", 15)
+        )
+        _zone_mc_new, _fq_action, _fq_reason = compute_fq_adjusted_min_conf(
+            fq_score=_fq_score_pre,
+            zone_mc=_zone_mc,
+            short_horizon_acc=_short_acc_pre,
+            mc_floor=_mc_floor_pre,
+            mc_ceil=_mc_ceil_pre,
+            acc_freeze_min=getattr(runtime_settings, "FQADJ_ACC_FREEZE_MIN", 0.45),
+            acc_strengthen_min=getattr(runtime_settings, "FQADJ_ACC_STRENGTHEN_MIN", 0.40),
+        )
+        if _fq_action != "none":
+            _fq_action_ko = {"relax": "완화", "tighten": "강화", "freeze": "완화 동결"}[_fq_action]
+            log_manager.signal(
+                f"[FQAdj] {_fq_reason} → min_conf {_zone_mc:.2f}→{_zone_mc_new:.2f} ({_fq_action_ko})"
+            )
+        _zone_mc = _zone_mc_new
 
         decision = self.ensemble.compute(
             _hp_ens,

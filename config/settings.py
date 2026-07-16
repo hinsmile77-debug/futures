@@ -336,6 +336,18 @@ MC_ABS_CEIL: float = 0.62  # base_mc 절대 상한 (0.75→0.62: 오전 급등 �
 MC_ZONE_MAX: float = 0.65  # zone_mc 절대 상한 — restore 경로 포함 적용
 MC_EMA_ALPHA: float = 0.30  # 주기2 EMA 감쇠 (0.30 = 최근 ~3거래일 반영)
 MC_LOOKBACK_DAYS: int = 5  # conf 분포 측정 기간 (거래일)
+
+# [344차] FQAdj 실측 정확도 게이트 — feature_quality_score(데이터 품질)가 높아도
+# 최근 실측 정확도(1m/3m/5m 합산, OnlineLearner.short_horizon_accuracy())가 기준
+# 미달이면 완화를 동결하고, 심각히 낮으면(랜덤 수준) fq와 무관하게 강화한다.
+# 근거: 7/15 진입0 딥다이브 — 당일 실측 정확도가 랜덤 수준인데도 fq=1.00으로
+# min_conf가 완화된 사례(방향 반대). SGD 온라인학습 기존 임계값(1m/3m/5m CUT=
+# 0.45~0.47, `learning/online_learner.py:_CUT_THR`)이 이미 "단기호라이즌 정확도<0.45
+# 내외는 저성능"으로 취급하고 있어 그 기준선에 맞춰 FREEZE_MIN을 정했다.
+# `strategy/entry/fq_accuracy_gate.py:compute_fq_adjusted_min_conf()` 참조.
+FQADJ_ACC_MIN_SAMPLES: int = 15       # 이 미만 표본이면 게이트 건너뜀(None, "모른다"≠"나쁘다")
+FQADJ_ACC_FREEZE_MIN: float = 0.45    # 미만이면 완화 동결 (단기 CUT_THR 하한과 정합)
+FQADJ_ACC_STRENGTHEN_MIN: float = 0.40  # 미만이면 fq 무관 강화 (랜덤 0.50 대비 뚜렷한 하회)
 MC_STEP_LIMIT: float = (
     0.08  # 1회 갱신 최대 변화폭 (±8%p — 0.03 시 기동→목표 5시간 소요로 복원)
 )
