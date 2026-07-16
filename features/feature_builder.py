@@ -31,6 +31,7 @@ from config.settings import (
     HORIZON_THRESHOLDS, HURST_WINDOW_N, HURST_MAX_LAG,
     HURST_WARMUP_COLDSTART_MIN, HURST_WARMUP_LAG_FLOOR, HURST_WARMUP_LAG_RATIO,
     TREND_EFFICIENCY_WINDOW, KYLE_LAMBDA_WINDOW, RV_IV_WINDOW,
+    CHASE_FILTER_LOOKBACK_MIN,
 )
 
 logger = logging.getLogger("SIGNAL")
@@ -422,6 +423,20 @@ class FeatureBuilder:
         features["trend_efficiency"] = calculate_trend_efficiency(
             list(self._close_history), window=TREND_EFFICIENCY_WINDOW,
         )
+
+        # [343차] 연장 추격 필터용 signed 확장폭 — (현재가 - N분전 종가) / ATR.
+        # 부호는 연장 방향(양수=상승 연장, 음수=하락 연장)을 그대로 인코딩해
+        # EntryChecklist가 신규 진입 방향과 비교(추격 여부 판정)할 수 있게 한다.
+        # 워밍업 구간(버퍼 부족)이나 atr<=0이면 0.0(체크 자동 통과) 반환.
+        _ch_ext = list(self._close_history)
+        _atr_now = features.get("atr", 0.0)
+        if len(_ch_ext) > CHASE_FILTER_LOOKBACK_MIN and _atr_now > 1e-6:
+            _close_n_ago = _ch_ext[-(CHASE_FILTER_LOOKBACK_MIN + 1)]
+            features["price_extension_atr"] = float(
+                np.clip((close - _close_n_ago) / _atr_now, -10.0, 10.0)
+            )
+        else:
+            features["price_extension_atr"] = 0.0
 
         # 마디가(Round Number) 거리 — 방향 인자 없이 상/하 최근접 레벨 중 더 가까운 쪽만 사용
         # (nearest_round_distance()는 direction 인자가 필요해 피처 생성 시점엔 사용 불가).

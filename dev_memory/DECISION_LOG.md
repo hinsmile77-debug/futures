@@ -8248,3 +8248,69 @@ INSUFFICIENT로 정상 전환, baseline(kelly_advised_skip=0)·grade_split(A급 
 **관련**: `docs/정기점검/매일점검/0715진입청산검토.md`(진입 8건 딥다이브 원본),
 341차(같은 딥다이브의 유령 하드스톱 수정), 311차 후속(`kelly_advised_skip` 최초
 계산 도입), signal_decay([4]번, 동일 shadow-first 원칙).
+
+## 2026-07-16 (343차) — 연장 추격 필터(anti-chasing) — EntryChecklist 10번 항목 신설
+
+**배경**: 7/15 진입 8건 딥다이브(`0715진입청산검토.md`)에서 4패 전부가 공통 패턴을
+가짐을 확인 — "직전 10~15분간 이미 1.5~2ATR 이상 한 방향으로 연장된 뒤의 늦은
+추격 진입"(#2 반등꼭지 매수, #3 저점 숏, #4 고점 매수, #8 급등 초입 숏). 사용자
+지시: `|price − price(10분전)| / ATR > 2`면 진입 보류(또는 등급 하락) 체크리스트
+항목을 추가하고, Hurst 평균회귀(mean-revert) 판정일수록 더 엄격하게 적용.
+
+**File**: `config/settings.py`(`CHASE_FILTER_*` 4개 상수), `features/feature_builder.py`
+(`price_extension_atr` 피처 신설), `strategy/entry/checklist.py`(10번 항목·`hurst`·
+`price_extension_atr` 파라미터), `main.py`(`_CHK_MAP`에 10_chase 매핑, 두 checklist
+호출지에 신규 파라미터 배선).
+
+**설계 — 하드 차단이 아니라 기존 4_cvd·5_ofi와 동일한 소프트 게이트**: CLAUDE.md·
+검증캠페인 설계 전반에 깔린 "차단형 게이트는 이미 충분히 많다"(§327차 JointGateBlock
+결정문) 원칙을 따라, 이 필터도 별도 하드 X등급 강제가 아니라 EntryChecklist의
+10번째 pass/fail 항목으로 추가했다 — 실패 시 `pass_count`가 1 줄어 등급이 자연히
+낮아진다(6→5면 A→B, 등급 경계 근처가 아니면 무영향). `ENTRY_GRADE`의 `min_pass`
+값(A=6/B=4/C=2)은 절대 개수라 10개 중 6개로 재해석돼도 그대로 유지 — 문서만 "9개"→
+"10개"로 갱신.
+
+**피처 계산(`price_extension_atr`)**: `(현재 종가 - N분전 종가) / ATR`, signed(부호가
+연장 방향 인코딩). `FeatureBuilder._close_history`(Hurst용 버퍼, maxlen=90)를 재사용
+— 별도 버퍼 불필요. 워밍업(버퍼 길이 ≤ `CHASE_FILTER_LOOKBACK_MIN`) 또는 ATR≈0이면
+0.0(체크 자동 통과) 반환. `np.clip(±10)`으로 폭발 방지.
+
+**체크리스트 판정 로직**: `_is_chasing_dir = (price_extension_atr > 0) == is_long`
+(연장 방향과 진입 방향이 같아야 "추격") AND `abs(price_extension_atr) > threshold`.
+임계값은 `hurst < HURST_RANGE_THRESHOLD`(0.45, 평균회귀)면
+`CHASE_FILTER_ATR_THRESHOLD_MEANREV`(1.5), 아니면 `CHASE_FILTER_ATR_THRESHOLD`(2.0) —
+사용자 지시의 "hurst mean-revert 판정일수록 강하게"를 임계값 하향으로 구현. 역추세
+진입(연장 방향과 반대 방향 진입, 예: VWAP MR 반전 매매)은 애초에 `_is_chasing_dir`이
+False라 이 필터의 영향을 받지 않는다 — MR 로직(3번 VWAP 항목의 bear/bull_exhaustion
+분기)과 충돌하지 않음.
+
+**킬스위치 2중**: `CHASE_FILTER_ENABLED`(전역 config) / `disabled_gates={"10_chase"}`
+(런타임 UI 토글 경로는 아직 미배선 — `_ATTR_TO_INTERNAL`에 매핑 없음, 필요 시 후속
+작업). `main.py:_CHK_MAP`에 `"10_chase":"chase_chk"` 추가해 대시보드 `_checks_ui`
+딕셔너리에는 들어가지만, `check_labels`에 `chase_chk` 위젯이 없어 현재는 UI에
+표시되지 않음(안전 — 없는 키 조회는 무시됨, 크래시 없음) — 시각화는 후속 과제.
+
+**알려진 상호작용(재검토 필요)**: `main.py:288`(311차) `ensemble_grade=="X"인데
+체크리스트가 A/B로 승격 시 pass_count>=7 요구` 임계값은 원래 9개 항목 기준으로
+백테스트 보정된 값(X→A 재구성 backtest, pass=6 대비 pass=7 우위 확인). 10개 항목
+체계에서는 상대적 엄격도가 7/9(77.8%)에서 7/10(70%)로 약간 완화된다 — 10번 항목이
+대부분의 분봉에서 기본 True(체이싱 미해당)라 실질 영향은 작을 것으로 예상되나,
+다음 재검증(26주 Walk-Forward 등) 시 이 임계값을 8로 올릴지 재검토할 것.
+
+**검증**: `py_compile` 4파일 통과. `py310_64` 격리 스크립트 2건(라이브 DB·모델
+미접촉, 순수 로직 검증):
+(1) `EntryChecklist.evaluate()` 7개 시나리오 — 추격LONG(상승연장+LONG)→실패,
+역추세SHORT(상승연장+SHORT)→통과(방향 불일치라 추격 아님), 경계값 ext=1.7ATR가
+중립(임계2.0)에서 통과·평균회귀(임계1.5)에서 실패로 정확히 갈림, 전역
+`CHASE_FILTER_ENABLED=False`와 `disabled_gates` 개별 비활성 둘 다 항상 통과,
+동일 조건에서 추격 유무에 따라 `pass_count`가 정확히 1만 차이나는 것 확인.
+(2) `FeatureBuilder.build()`에 11개 합성 봉(10분간 +20pt 단조 상승) 순차 투입 —
+10번째 봉까지는 워밍업으로 0.0, 11번째 봉(10분 경과 시점)에서 비로소
+`price_extension_atr≈8.46`(양수, 연장 방향 정확) 계산됨을 확인. 첫 봉(워밍업)은
+항상 0.0 확인. **라이브 미검증** — 다음 장중 실제 추격 상황에서 `[Checklist]
+연장추격 감지` INFO 로그와 등급 하락이 실제로 발생하는지, 정상 트렌드 추종
+진입은 오탐 없이 통과하는지 확인 필요.
+
+**관련**: `docs/정기점검/매일점검/0715진입청산검토.md`(원본 딥다이브), 341차·342차
+(같은 딥다이브에서 파생된 개선 시리즈), 327차 JointGateBlock 결정문(소프트 게이트
+설계 철학 공유), 311차(`ensemble_grade=X` 승격 pass_count>=7 임계값, 위 재검토 항목).

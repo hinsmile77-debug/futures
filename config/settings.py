@@ -708,6 +708,20 @@ HURST_REGIME_ATR_MULT = {
     "mean-revert": {"stop": 0.85, "tp1": 0.85, "tp2": 0.85},  # Hurst<0.45
 }
 
+# [343차] 연장 추격 필터(anti-chasing) — 7/15 진입 딥다이브(0715진입청산검토.md)에서
+# 4패 전부가 "직전 CHASE_FILTER_LOOKBACK_MIN분간 이미 ≥2ATR 연장된 뒤 같은 방향으로
+# 순방향(추격) 진입"이었던 패턴을 확인했다. |price - price(N분전)| / ATR가 임계값을
+# 넘고 그 연장 방향이 신규 진입 방향과 같으면(추격) EntryChecklist 10번 항목이
+# 실패 처리되어 pass_count가 1 줄어든다 — 하드 차단이 아니라 기존 4_cvd·5_ofi와
+# 동일한 소프트 게이트(등급 자연 강등)로 도입한다(§9 "차단형 게이트는 이미 충분히
+# 많다" 원칙, JointGateBlock·hurst_gate와 동일 철학).
+# Hurst 평균회귀 구간(<HURST_RANGE_THRESHOLD)은 이미 연장된 가격이 반전할 가능성이
+# 커 추격 진입의 리스크가 더 크므로 임계값을 더 좁게(엄격하게) 적용한다.
+CHASE_FILTER_ENABLED = True
+CHASE_FILTER_LOOKBACK_MIN = 10             # 연장 측정 룩백 (분)
+CHASE_FILTER_ATR_THRESHOLD = 2.0           # 기본 임계값 (추세·중립 구간)
+CHASE_FILTER_ATR_THRESHOLD_MEANREV = 1.5   # Hurst<0.45(평균회귀) 임계값 — 더 엄격
+
 # [260704 감사 P1] 신호 소멸 청산 — 보유 포지션과 반대 방향의 앙상블 신호가
 # zone_mc(시간대×호라이즌 동적 min_conf) 이상으로 확정되는 시점을 기록한다.
 # 근거: _archive/docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §3-2 ①

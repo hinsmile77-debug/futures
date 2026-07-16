@@ -1,8 +1,8 @@
-# strategy/entry/checklist.py — 9개 진입 전 체크리스트
+# strategy/entry/checklist.py — 10개 진입 전 체크리스트
 """
-9개 항목을 평가하여 통과 수와 등급을 결정합니다.
+10개 항목을 평가하여 통과 수와 등급을 결정합니다.
 
-등급 기준:
+등급 기준(min_pass는 절대 개수 — 10번 항목 추가 후에도 그대로, §343차 참조):
   A: 6개 이상 → ×1.5 자동 진입
   B: 4~5개   → ×1.0 자동 진입
   C: 2~3개   → ×0.6 자동 진입 (UI 'C 자동' 토글로 ON/OFF)
@@ -15,6 +15,8 @@ from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from config.settings import (
     ENTRY_GRADE, HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP, ENS_CONF_FLOOR_FOR_AUTO,
     MR_EXHAUSTION_MIN, MR_EXHAUSTION_MIN_WEAK, MR_WEAK_SIZE_MULT,
+    CHASE_FILTER_ENABLED, CHASE_FILTER_ATR_THRESHOLD, CHASE_FILTER_ATR_THRESHOLD_MEANREV,
+    HURST_RANGE_THRESHOLD,
 )
 
 logger = logging.getLogger("SIGNAL")
@@ -45,6 +47,8 @@ class EntryChecklist:
         macro_vix: float = 0.5,
         opt_chain_pcr: float = 0.0,
         ensemble_grade: str = None,
+        hurst: float = 0.5,
+        price_extension_atr: float = 0.0,
     ) -> Dict:
         """
         Args:
@@ -69,6 +73,9 @@ class EntryChecklist:
             opt_chain_pcr:   PCR 실측값 — 장기 CORE 체크용 (0이면 미가용)
             ensemble_grade:  앙상블 자체 등급(A/B/C/X) — X인데 체크리스트가 A/B로
                              승격시키려는 경우 정렬 강도(pass_count>=7) 추가 요구용
+            hurst:           Hurst 지수 [0,1] — 10번 연장추격 필터 임계값 결정용
+            price_extension_atr: (현재가-N분전가)/ATR, signed — 양수=상승 연장,
+                             음수=하락 연장. 10번 연장추격 필터 입력값
 
         Returns:
             {pass_count, grade, checks, size_mult, auto_entry, entry_mode}
@@ -217,6 +224,29 @@ class EntryChecklist:
 
         # 9. 리스크 한도 (일일 손실 < 2%)
         checks["9_risk"] = "9_risk" in disabled or daily_loss_pct < 0.02
+
+        # 10. 연장 추격 필터(anti-chasing, 343차) — 직전 CHASE_FILTER_LOOKBACK_MIN분간
+        # 이미 임계 ATR 이상 같은 방향으로 연장된 뒤 순방향(추격) 진입인지 확인.
+        # 7/15 진입 딥다이브: 4패 전부가 이 패턴(직전 연장 ≥2ATR 후 순방향 진입)이었음.
+        # Hurst 평균회귀(<HURST_RANGE_THRESHOLD) 구간은 반전 리스크가 커 임계값을 더 좁힌다.
+        # 하드 차단이 아니라 pass_count 반영만 — 등급이 자연히 낮아진다(4_cvd·5_ofi와 동일).
+        if "10_chase" in disabled or not CHASE_FILTER_ENABLED:
+            checks["10_chase"] = True
+        else:
+            _chase_threshold = (
+                CHASE_FILTER_ATR_THRESHOLD_MEANREV if hurst < HURST_RANGE_THRESHOLD
+                else CHASE_FILTER_ATR_THRESHOLD
+            )
+            _is_chasing_dir = (price_extension_atr > 0) == is_long
+            _chase_triggered = _is_chasing_dir and abs(price_extension_atr) > _chase_threshold
+            checks["10_chase"] = not _chase_triggered
+            if _chase_triggered:
+                logger.info(
+                    "[Checklist] 연장추격 감지 — |ext|=%.2fATR > %.2f (hurst=%.3f, dir=%s)"
+                    " → pass_count-1",
+                    abs(price_extension_atr), _chase_threshold, hurst,
+                    "LONG" if is_long else "SHORT",
+                )
 
         pass_count = sum(1 for v in checks.values() if v)
 
