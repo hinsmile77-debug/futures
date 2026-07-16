@@ -9126,3 +9126,50 @@ TARGET_MIN_ACC`(0.35) 이상(또는 표본부족으로 판단불가=None)이면,
 344차(`short_horizon_accuracy()` 의 표본부족→None 분리 패턴 재사용),
 352차(같은 날 발견된 인접 이슈, HORIZON_TIME_POLICY 사각지대 — 이 353차와
 함께 오전 알파구간 참여력 개선의 두 축).
+
+## 2026-07-17 (354차) — OPEN_VOLATILE 시가이격 필터(P2-d) 재설계 보류 + 주간 검증캠페인 [8]번 채널 신설안 등록
+
+**배경**: dailycheck P2-d(OPEN_VOLATILE 시가이격 필터가 세션 시가에 고정된
+기준점을 쓰고, ATR×5 임계 자체도 장중 ATR 압축으로 시간이 갈수록 좁아지는
+"가위 효과" 구조적 결함) 검토. 사용자가 재설계 이득·손실 검토 및 구현여부
+제안을 요청.
+
+**판단 — 지금은 재설계 보류**: 7/16 딥다이브에서 이 필터가 관여한 16건
+전부(표본 확인분) 이미 `conf미달`로 차단이 확정된 신호에 얹힌 부차 로그였음
+— 이 필터가 "이것만 아니었으면 들어갔을" A/B등급 신호를 실제로 차단한
+사례는 아직 관측된 바 없다. 353차(확신도 고착 부스트)가 라이브 검증되면
+OPEN_VOLATILE 구간에 진짜 신호가 늘어 이 필터가 다음 병목이 될 가능성은
+있으나 이는 예측이지 관측된 사실이 아니다. 대체 기준점(최근 N분 VWAP?
+세션 누적 VWAP?)·임계값 보정 방식 둘 다 캘리브레이션이 필요한 설계 결정인데
+검증할 실측 근거가 없는 상태 — 이 저장소의 기존 수정(346·348·352·353차)이
+전부 구체적 피해 실측을 근거로 이뤄진 것과 대조하면, 근거 없는 선제 재설계는
+오히려 유효한 안전장치를 잘못 느슨하게 만들 위험이 있다고 판단.
+
+**대신 제안 — 주간 검증캠페인 [8]번 채널로 "관찰"을 자동화**: `docs/
+validation campain/validation capain.txt` + `config/settings.py:
+VALIDATION_CAMPAIGN` + `scripts/generate_validation_campaign_report.py`에
+이미 정확히 이 문제 구조("이 게이트만 아니었으면 진입했을 신호"의 가상
+결과를 누적 판정)를 다루는 선례가 2건 있다 — `[6] hurst_gate_shadow`
+(297차), `[7] joint_gate_shadow`(327차), 둘 다 `min_samples=20·
+cf_window_min=30`, PASS(존치)=누적가상pnl≤0, FAIL(완화권고)=가상pnl>
+왕복비용×2 AND 가상승률>기준선 기준. 매주 금요일 자동 실행(`scripts/
+eod_retrain.py` weekday()==4)돼 `data/validation_campaign_report.md`에
+쌓이고, 사용자가 이미 매주 여는 그 파일이 "인식 메커니즘"으로 자연스럽게
+작동한다 — 로그를 뒤져 우연히 발견할 필요가 없다.
+
+**제안 설계(미구현, 등록만)**: `open_gap_shadow` 테이블(Hurst shadow와
+동일 컬럼셋 + gap_pt·atr_at_block), 기록 위치는 `main.py`의
+`_hgs_no_hurst_ok` 패턴(6768~6791줄)을 그대로 복제해 조건만 `not
+_open_gap_ok`로 교체, 판정 함수는 `resolve_and_eval_joint_gate()`를
+"대상 테이블만 다르게" 복제(기존 두 채널이 이미 이 관계임), config는
+`VALIDATION_CAMPAIGN["open_gap_shadow"] = {"min_samples": 20,
+"cf_window_min": 30}`로 기존과 동일 기준.
+
+**결정**: 이번 턴은 순수 등록만 — 실제 shadow 테이블·로깅·판정 함수 구현은
+사용자 승인 후 별도로 진행. NEXT_TODO에 재설계 자체(보류)와 신규 채널
+제안(구현 대기) 두 항목으로 등록.
+
+**관련**: 7/16 정기점검(Claude, dailycheck_prompt.txt) P2-d 지적,
+297차(hurst_gate_shadow 원안), 327차(joint_gate_shadow — 동일 패턴 2번째
+적용 선례), 353차(이 필터가 다음 병목이 될 수 있다는 전제가 된 확신도
+고착 부스트 구현).
