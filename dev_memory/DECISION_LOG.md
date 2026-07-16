@@ -8990,3 +8990,56 @@ _open_gap_ok`로 교체, 판정 함수는 `resolve_and_eval_joint_gate()`를
 297차(hurst_gate_shadow 원안), 327차(joint_gate_shadow — 동일 패턴 2번째
 적용 선례), 353차(이 필터가 다음 병목이 될 수 있다는 전제가 된 확신도
 고착 부스트 구현).
+
+## 2026-07-17 (355차) — 354차 구현: 주간 검증캠페인 [9]번 open_gap_shadow 채널 실장
+
+**배경**: 354차에서 등록한 "OPEN_VOLATILE 시가이격 필터 counterfactual" 채널
+설계안을 사용자가 승인해 실제 구현. **채널 번호 정정**: 354차 등록 당시
+"[8]번"으로 표기했으나 확인 결과 [8]번은 이미 342차(KellyAdvisedSkip×C등급)가
+점유 중이었음 — 실제로는 **[9]번**으로 신설.
+
+**File**: `utils/db_utils.py`(`open_gap_shadow` 테이블 DDL, `init_trades_db()`
+내부 — `joint_gate_shadow` 바로 뒤), `config/settings.py`(`VALIDATION_
+CAMPAIGN["open_gap_shadow"]`), `main.py`(섀도우 기록 블록 — Hurst 섀도우
+바로 뒤), `scripts/generate_validation_campaign_report.py`(`resolve_and_eval_
+open_gap()` + `build_report()` 배선 — 요약표 [9]행 + 상세 섹션 `## [9]`).
+
+**설계 — 기존 두 채널과 완전히 동일한 패턴 재사용**: `hurst_gate_shadow`
+([6], 297차)·`joint_gate_shadow`([7], 327차)의 테이블 스키마·resolve 함수·
+리포트 배선을 거의 그대로 복제("hurst_gate_shadow와 완전히 동일한 판정
+로직 — 대상 테이블만 다르다"는 기존 관례를 세 번째로 적용). 차이점만:
+- 테이블에 `gap_pt`(차단 당시 방향이탈 pt)·`atr_at_block`(차단 당시 ATR)
+  2개 컬럼 추가 — FAIL 판정 시 재설계 캘리브레이션 근거로 쓰기 위함
+  (§14 딥다이브에서 지적한 "기준점·임계값을 뭘로 재설계할지 실측 근거 없음"
+  문제를 이 두 컬럼이 직접 해결한다).
+- `main.py` 기록 조건은 Hurst 섀도우의 정확한 미러 — `not _open_gap_ok`가
+  기록 트리거이고, 나머지 게이트(Hurst 포함) 전부 통과해야 기록. 손절/TP1
+  배수는 Hurst 섀도우처럼 "mean-revert 고정"이 아니라 `self._entry_hurst_
+  bucket`(실제 값)을 그대로 사용 — 이 섀도우 컨텍스트에선 Hurst가 정상
+  통과했으므로 버킷이 trend/neutral/mean-revert 어느 쪽이든 될 수 있어,
+  실제 체결이었다면 쓰였을 배수를 정확히 반영해야 하기 때문.
+- 리포트 상세 섹션에 `avg_gap_pt`/`avg_atr_at_block` 표시 추가(기존 두
+  채널엔 없는 필드) — 재설계 착수 시 즉시 참고할 수 있도록.
+
+**PASS/FAIL 기준**: 기존 두 채널과 동일 — 존치(PASS)=누적 hyp_pnl_pts≤0,
+완화 권고(FAIL)=누적 hyp_pnl_pts>왕복비용×2 AND 가상승률>기준선,
+`min_samples=20`·`cf_window_min=30`(hurst_gate_shadow와 동일 기준).
+
+**검증**: `py37_32`·`py310_64` 양쪽 `py_compile` 4파일 통과. `main.py`
+AST로 `run_minute_pipeline` 경계 유지 확인. **실제 `init_trades_db()`를
+격리 임시 DB에 대해 직접 실행**해 `open_gap_shadow` 테이블·인덱스가 정확한
+스키마로 생성됨을 컬럼 목록 assert로 확인(정적 분석이 아니라 실제 DDL
+실행 검증). `resolve_and_eval_open_gap()`도 격리 임시 DB로 직접 호출 —
+(1) 사전 resolved된 합성 데이터 25건(승21 대 패7 상당, 가중치 조정한 표본)
+투입 시 집계(n_resolved/total_hyp_pnl_pts/win_rate/cf_outcome 분포/
+avg_gap_pt)가 정확히 계산되고 FAIL 판정+권고 문구가 정상 출력됨을 확인,
+(2) 표본 5건(min_samples 20 미만) 투입 시 INSUFFICIENT 판정과 사유 문구가
+정확히 출력됨을 확인. `main.py`의 INSERT 컬럼 목록(9개)이 테이블 스키마
+순서와 정확히 일치함을 재확인. **라이브 미검증** — 다음 OPEN_VOLATILE
+차단 발생 시 실제 섀도우 레코드가 기록되는지, 다음 금요일 자동 실행 시
+`data/validation_campaign_report.md`에 [9]번 채널이 정상 출력되는지 확인
+필요(최소 20건 누적까지는 수 주 소요 예상).
+
+**관련**: 354차(이 구현의 설계 등록), 297차(hurst_gate_shadow 원안),
+327차(joint_gate_shadow — 동일 패턴 재사용 2번째 선례), 342차(kelly_skip —
+[8]번 채널, 이번 번호 정정의 계기).

@@ -6839,6 +6839,71 @@ class TradingSystem:
                 except Exception as _hgs_e:
                     logger.warning("[HurstShadow] counterfactual 기록 실패 (무해): %s", _hgs_e)
 
+        # [354차] OPEN_VOLATILE 시가이격 필터 counterfactual 섀도우 — "gap 필터만
+        # 아니었으면 진입했을" 분봉의 가상 결과를 기록한다(검증 캠페인 [9], §14).
+        # Hurst 섀도우와 동일 패턴 — gap을 제외한 나머지 게이트가 전부 통과했고
+        # 등급도 X가 아닌 경우만 대상. 읽기 전용 계측 — 실거래 의사결정에 관여하지
+        # 않음(scripts/generate_validation_campaign_report.py가 주간 사후 판정).
+        if (direction != 0
+                and self.position.status == "FLAT"
+                and not _open_gap_ok
+                and _final_grade != "X"):
+            _ogs_no_gap_ok = (
+                _cr is not None
+                and self.circuit_breaker.is_entry_allowed()
+                and not _hc_block
+                and is_new_entry_allowed()
+                and not self._broker_sync_block_new_entries
+                and not _in_cooldown
+                and not _in_exit_cooldown
+                and not _in_armistice
+                and _integrity_ok
+                and not _in_reverse_clamp
+                and _atr_ok
+                and _hurst_ok
+                and mode_filter_passed
+                and _qty_display > 0
+                and not _bar_volume_zero
+                and not _intraday_block
+                and not self.system_health.kill_switch_active
+                and _ecb_observation_ok
+            )
+            if _ogs_no_gap_ok:
+                try:
+                    # 실제 체결이었다면 사용됐을 hurst_bucket 배수 그대로 사용
+                    # (Hurst 섀도우와 달리 여기선 hurst가 정상 통과했으므로 버킷이
+                    # trend/neutral/mean-revert 어느 쪽이든 될 수 있음).
+                    _ogs_mult = (
+                        HURST_REGIME_ATR_MULT.get(self._entry_hurst_bucket, {})
+                        if HURST_REGIME_ATR_MULT_ENABLED and self._entry_hurst_bucket else {}
+                    )
+                    _ogs_stop_mult = ATR_STOP_MULT * _ogs_mult.get("stop", 1.0)
+                    _ogs_tp1_mult = (
+                        ATR_HORIZON_TP1_MULT.get(_entry_horizon, ATR_TP1_MULT)
+                        * _ogs_mult.get("tp1", 1.0)
+                    )
+                    _ogs_dir_mult = 1 if direction == 1 else -1
+                    execute(
+                        TRADES_DB,
+                        """INSERT INTO open_gap_shadow
+                           (ts, direction, grade, gap_pt, atr_at_block, conf,
+                            entry_price, stop_price, tp1_price)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                            "LONG" if direction == 1 else "SHORT",
+                            _final_grade,
+                            float(_gap_in_dir),
+                            float(atr),
+                            float(confidence),
+                            float(close),
+                            float(close - _ogs_dir_mult * atr * _ogs_stop_mult),
+                            float(close + _ogs_dir_mult * atr * _ogs_tp1_mult),
+                        ),
+                    )
+                except Exception as _ogs_e:
+                    logger.warning("[OpenGapShadow] counterfactual 기록 실패 (무해): %s", _ogs_e)
+
         # ── [DashboardHistory] STEP7 마스터 게이트 — 조건별 통과 여부 + 차단사유
         # "금일 Conf → 진입단계 추적" 카드가 과거 분봉의 진입 차단 원인을 그대로
         # 복원할 수 있도록 ensemble_decisions DB에 함께 저장한다 (STEP 9에서 사용).
