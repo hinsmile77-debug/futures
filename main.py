@@ -8369,7 +8369,21 @@ class TradingSystem:
                 if fn
             ]
             if _outlier_feats:
-                reasons.append("이상값피처({})".format(",".join(_outlier_feats[:3])))
+                # [350차 후속] 극단 z-score 스캔은 호라이즌별 실사용 슬라이스가 아니라
+                # 공유 스케일러 기준 전체 피처(SHAP 후보 포함)를 본다 — DYNAMIC_FEATURES_POOL
+                # 후보(예: opt_atm_pcr, 아직 어떤 호라이즌의 active_features에도 미편입)의
+                # 노이즈가 실거래에 쓰이는 이상값과 구분 없이 찍혀 트러블슈팅 시 혼동을 준다
+                # (2026-07-16 정기점검 P2-c 딥다이브). 어떤 호라이즌에도 편입 안 된 이름에
+                # "(candidate)" 태그를 붙여 실사용 여부를 로그만 보고 구분할 수 있게 한다.
+                _active_feat_names = set()
+                for _hz_names in (getattr(self.model, "horizon_feature_names", None) or {}).values():
+                    _active_feat_names.update(_hz_names)
+                _tagged_feats = [
+                    fn if (not _active_feat_names or fn in _active_feat_names)
+                    else f"{fn}(candidate)"
+                    for fn in _outlier_feats[:3]
+                ]
+                reasons.append("이상값피처({})".format(",".join(_tagged_feats)))
             if reasons:
                 log_manager.signal("[ZeroDiag] 진입X 원인: {}".format(" / ".join(reasons)))
         except Exception as _de:
