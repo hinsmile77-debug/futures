@@ -523,6 +523,11 @@ def _migrate_trades_db():
                 # 구분 못 해 실전 전환 기준① 등 성과 집계가 오염된 문제(306차 유령
                 # 포지션 사후분석) 대응. NULL=구버전 레코드(출처 미상).
                 "entry_source":       "TEXT",
+                # [342차] 켈리가 "자본 대비 1계약도 부적절"이라 판단했는데
+                # min_qty로 강제 진입된 경우 1. 실거래 의사결정에는 미관여 —
+                # VALIDATION_CAMPAIGN["kelly_skip"] 주간 리포트 전용 계측
+                # (signal_decay와 동일한 shadow-first 패턴). NULL=구버전 레코드.
+                "kelly_advised_skip": "INTEGER DEFAULT 0",
             }
             for name, dtype in additions.items():
                 if name not in cols:

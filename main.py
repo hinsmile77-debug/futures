@@ -686,6 +686,10 @@ class TradingSystem:
         self._entry_hour_bucket:  int  = 0       # 진입 시각 hour
         self._entry_was_restart:  int  = 0       # 세션 재시작 직후 진입 여부
         self._entry_had_partial:  int  = 0       # 해당 포지션에서 partial fill 발생
+        # [342차] 켈리가 "자본 대비 1계약도 부적절"이라 판단했는데 min_qty로
+        # 강제 진입된 경우를 태깅 — 실거래 의사결정에는 미관여, 리포트 전용 계측
+        # (VALIDATION_CAMPAIGN["kelly_skip"], eval_kelly_skip_grade_c() 참조).
+        self._entry_kelly_advised_skip: int = 0
         # [311차 후속] 진입 출처 태그 — trades.entry_source에 그대로 기록되어
         # 유령/정상 레코드를 사후 구분한다(306차 pending_miss 유령 포지션 사후분석 대응).
         self._entry_source:       str  = "SYSTEM_AUTO"
@@ -2272,9 +2276,10 @@ class TradingSystem:
                 forward_commission_krw, forward_net_pnl_krw,
                 formula_version, exit_reason, grade, regime,
                 meta_action, hurst_bucket, hour_bucket,
-                was_restart_after, had_partial_fill, entry_horizon, entry_source)
+                was_restart_after, had_partial_fill, entry_horizon, entry_source,
+                kelly_advised_skip)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -2306,6 +2311,7 @@ class TradingSystem:
                 getattr(self, "_entry_had_partial",  0),
                 result.get("entry_horizon") or "",
                 getattr(self, "_entry_source", "SYSTEM_AUTO"),
+                getattr(self, "_entry_kelly_advised_skip", 0),
             ),
         )
         try:
@@ -7039,6 +7045,7 @@ class TradingSystem:
                     self._entry_hour_bucket  = datetime.datetime.now().hour
                     self._entry_was_restart  = 1 if self._session_no > 1 else 0
                     self._entry_had_partial  = 0   # 진입 시 초기화, 체결 후 갱신
+                    self._entry_kelly_advised_skip = 1 if _kelly_advised_skip else 0
                     # [SizerMatch] Sizer 제안 vs 실제 진입 수량 불일치 감지
                     _qty_sizer_raw_val = locals().get("_qty_sizer_raw", _qty_auto)
                     if _qty_sizer_raw_val != _qty_auto:
@@ -7187,6 +7194,7 @@ class TradingSystem:
                 self._entry_hour_bucket = datetime.datetime.now().hour
                 self._entry_was_restart = 1 if self._session_no > 1 else 0
                 self._entry_had_partial = 0
+                self._entry_kelly_advised_skip = 1 if _kelly_advised_skip else 0
                 # [237차] Hurst 미계산 시 C급 진입도 차단
                 if not features.get("hurst_ready", False):
                     log_manager.signal(

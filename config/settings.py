@@ -804,6 +804,19 @@ VALIDATION_CAMPAIGN = {
         "min_samples":       20,     # 차단 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
         "cf_window_min":     30,     # counterfactual 관찰 창 (분) — signal_decay와 동일
     },
+    # [342차 신설] KellyAdvisedSkip × C등급 게이트 승격 검토 — 켈리(PositionSizer)가
+    # "자본 대비 1계약도 부적절"이라 판단했는데(kelly_advised_skip=True) MINI_MIN_CONTRACTS
+    # 최소수량 강제로 그대로 체결된 트레이드의 누적 성과를 추적한다(trades.kelly_advised_skip
+    # 컬럼, main.py에서 진입 시점 태깅). hurst_gate_shadow·joint_gate_shadow와 달리 실제로
+    # 체결된 진입(exec_1m_shadow·synthetic_partial_exits와 동일 계열)이므로 counterfactual
+    # 시뮬레이션이 불필요 — trades.net_pnl_krw를 그대로 집계한다.
+    # signal_decay와 동일한 shadow-first 원칙: 지금은 계측만 하고, 4주 누적 순손실이
+    # 확정되면 C등급+KellySkip 조합 진입 차단(사이징 0 또는 등급 강등)을 단계 도입 검토한다.
+    # 즉시 자동 차단이 아니며, 적용 여부는 주간회의에서 수동 결정(§9 사전등록 원칙).
+    # 근거: dev_memory/DECISION_LOG.md 342차 항목, docs/정기점검/매일점검/0715진입청산검토.md.
+    "kelly_skip": {
+        "min_samples": 20,  # C등급+KellySkip 조합 최소 체결 건수 (미달 → 판정 보류)
+    },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)

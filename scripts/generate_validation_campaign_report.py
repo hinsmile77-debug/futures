@@ -964,6 +964,98 @@ def eval_hurst_regime() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [8] KellyAdvisedSkip × C등급 누적 성과 — 게이트 승격 검토 (341차 신설)
+# ──────────────────────────────────────────────────────────────
+
+def eval_kelly_skip_grade_c() -> dict:
+    """켈리(PositionSizer)가 "자본 대비 1계약도 부적절"이라 판단했는데
+    (kelly_advised_skip=1) MINI_MIN_CONTRACTS 최소수량 강제로 그대로 체결된
+    C등급 트레이드의 누적 성과를 4주 단위로 판정한다.
+
+    signal_decay·hurst_gate_shadow·joint_gate_shadow와 달리 실제로 체결된
+    진입(exec_1m_shadow·synthetic_partial_exits와 동일 계열)이므로
+    counterfactual 시뮬레이션이 불필요 — trades 테이블의 실현 net_pnl_krw를
+    그대로 집계하면 된다.
+
+    PASS = 현행 유지 (C+KellySkip 조합이 특별히 나쁘지 않음, 또는 표본 부족).
+    FAIL = 4주 누적 순손실 확정 → C등급+KellySkip 조합 진입 차단(사이징 0 또는
+    등급 강등)을 단계 도입 검토 — 즉시 자동 차단이 아니라 권고만 출력(§9 원칙).
+    """
+    cr = VALIDATION_CAMPAIGN["kelly_skip"]
+    out = {"verdict": "INSUFFICIENT"}
+    try:
+        with _conn(TRADES_DB) as conn:
+            target = conn.execute(
+                """SELECT COUNT(*) AS n,
+                          SUM(net_pnl_krw) AS total_pnl,
+                          AVG(net_pnl_krw) AS avg_pnl,
+                          AVG(CASE WHEN net_pnl_krw > 0 THEN 1.0 ELSE 0.0 END) AS wr
+                   FROM trades
+                   WHERE exit_ts >= ? AND net_pnl_krw IS NOT NULL
+                         AND grade = 'C' AND kelly_advised_skip = 1""",
+                (_campaign_start(),),
+            ).fetchone()
+            baseline = conn.execute(
+                """SELECT COUNT(*) AS n,
+                          AVG(net_pnl_krw) AS avg_pnl,
+                          AVG(CASE WHEN net_pnl_krw > 0 THEN 1.0 ELSE 0.0 END) AS wr
+                   FROM trades
+                   WHERE exit_ts >= ? AND net_pnl_krw IS NOT NULL
+                         AND grade = 'C' AND COALESCE(kelly_advised_skip, 0) = 0""",
+                (_campaign_start(),),
+            ).fetchone()
+            grade_split = conn.execute(
+                """SELECT COALESCE(NULLIF(grade,''),'?') AS grade, COUNT(*) AS n,
+                          SUM(net_pnl_krw) AS total_pnl,
+                          AVG(CASE WHEN net_pnl_krw > 0 THEN 1.0 ELSE 0.0 END) AS wr
+                   FROM trades
+                   WHERE exit_ts >= ? AND net_pnl_krw IS NOT NULL
+                         AND kelly_advised_skip = 1
+                   GROUP BY grade""",
+                (_campaign_start(),),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    n = int(target["n"] or 0)
+    total_pnl = float(target["total_pnl"] or 0.0)
+    base_n = int(baseline["n"] or 0)
+    base_avg = float(baseline["avg_pnl"] or 0.0) if base_n else None
+    base_wr = float(baseline["wr"] or 0.0) if base_n else None
+
+    out.update({
+        "n": n,
+        "total_pnl_krw": round(total_pnl, 0),
+        "avg_pnl_krw": round(float(target["avg_pnl"] or 0.0), 0),
+        "win_rate": round(float(target["wr"] or 0.0), 4),
+        "baseline_n": base_n,
+        "baseline_avg_pnl_krw": round(base_avg, 0) if base_avg is not None else None,
+        "baseline_win_rate": round(base_wr, 4) if base_wr is not None else None,
+        "grade_split": {
+            row["grade"]: {
+                "n": int(row["n"] or 0),
+                "total_pnl_krw": round(float(row["total_pnl"] or 0.0), 0),
+                "win_rate": round((int(row["n"] or 0) and float(row["wr"] or 0.0)), 4),
+            }
+            for row in grade_split
+        },
+    })
+
+    if n < int(cr["min_samples"]):
+        out["reason"] = "C등급+KellySkip 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        return out
+
+    out["verdict"] = "FAIL" if total_pnl < 0 else "PASS"
+    if out["verdict"] == "FAIL":
+        out["recommendation"] = (
+            "C등급+KellySkip 조합 누적 순손실 확정 — 진입 차단(사이징 0 또는 등급 "
+            "강등) 단계 도입 검토 (§9 사전등록 원칙에 따라 적용은 수동 결정)"
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # 리포트 생성
 # ──────────────────────────────────────────────────────────────
 
@@ -984,6 +1076,7 @@ def build_report(days: int) -> tuple:
     hr = eval_hurst_regime()
     hg = resolve_and_eval_hurst_gate()
     jg = resolve_and_eval_joint_gate()
+    ks = eval_kelly_skip_grade_c()
 
     metrics = {
         "generated_at": now_str,
@@ -992,7 +1085,7 @@ def build_report(days: int) -> tuple:
         "sample_starvation": ss,
         "tb": tb, "meta_gate": mg, "quantile": qt,
         "signal_decay": sd, "hurst_regime": hr, "hurst_gate_shadow": hg,
-        "joint_gate_shadow": jg,
+        "joint_gate_shadow": jg, "kelly_skip": ks,
     }
 
     L = []
@@ -1032,6 +1125,11 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(jg["verdict"]), jg.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (jg["win_rate"] * 100)) if "win_rate" in jg else "—",
         jg.get("n_resolved", 0), jg.get("n_pending", 0)))
+    L.append("| [8] KellyAdvisedSkip×C등급 | %s | 누적 순PnL=%s원 승률=%s (n=%s) |" % (
+        _fmt_verdict(ks["verdict"]),
+        format(ks["total_pnl_krw"], ",.0f") if "total_pnl_krw" in ks else "—",
+        ("%.1f%%" % (ks["win_rate"] * 100)) if "win_rate" in ks else "—",
+        ks.get("n", 0)))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -1169,6 +1267,32 @@ def build_report(days: int) -> tuple:
         L.append("- **권고**: %s" % jg["recommendation"])
     if jg.get("reason"):
         L.append("- %s" % jg["reason"])
+    L.append("")
+
+    # [8] KellyAdvisedSkip × C등급 상세
+    L.append("## [8] KellyAdvisedSkip × C등급 누적 성과 (341차 신설)")
+    L.append("")
+    L.append("- C등급+KellySkip 체결 n=%s | 누적 순PnL=%s원 | 평균=%s원 | 승률=%s" % (
+        ks.get("n", 0),
+        format(ks["total_pnl_krw"], ",.0f") if "total_pnl_krw" in ks else "—",
+        format(ks["avg_pnl_krw"], ",.0f") if "avg_pnl_krw" in ks else "—",
+        ("%.1f%%" % (ks["win_rate"] * 100)) if "win_rate" in ks else "—",
+    ))
+    if ks.get("baseline_n"):
+        L.append("- 비교(C등급, KellySkip 아님) n=%s | 평균=%s원 | 승률=%s" % (
+            ks["baseline_n"],
+            format(ks["baseline_avg_pnl_krw"], ",.0f") if ks.get("baseline_avg_pnl_krw") is not None else "—",
+            ("%.1f%%" % (ks["baseline_win_rate"] * 100)) if ks.get("baseline_win_rate") is not None else "—",
+        ))
+    if ks.get("grade_split"):
+        L.append("- 등급별(KellySkip=1 전체, 참고용):")
+        for grade, v in sorted(ks["grade_split"].items()):
+            L.append("  - %s급: n=%d 누적PnL=%s원 승률=%.1f%%" % (
+                grade, v["n"], format(v["total_pnl_krw"], ",.0f"), v["win_rate"] * 100))
+    if ks.get("recommendation"):
+        L.append("- **권고**: %s" % ks["recommendation"])
+    if ks.get("reason"):
+        L.append("- %s" % ks["reason"])
     L.append("")
     L.append("---")
     L.append("")
