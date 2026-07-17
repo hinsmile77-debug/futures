@@ -1310,7 +1310,7 @@ SHAP_MIN_DATA_POINTS = 100  # 최소 누적 데이터
 # ── Slack 알림 ─────────────────────────────────────────────────
 # 우선순위: secrets.py > 환경변수 SLACK_BOT_TOKEN (Git 미포함)
 SLACK_BOT_TOKEN = _SECRET_SLACK_TOKEN or os.getenv("SLACK_BOT_TOKEN", "")
-SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "C0AUYD4RHHD")  # #maitreya
+SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "C0BHHF80NET")  # #maitreya [2026-07-17 워크스페이스 교체, 356차]
 
 
 def _detect_pc_name() -> str:

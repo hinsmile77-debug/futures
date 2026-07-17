@@ -9226,3 +9226,28 @@ avg_gap_pt)가 정확히 계산되고 FAIL 판정+권고 문구가 정상 출력
 **관련**: 354차(이 구현의 설계 등록), 297차(hurst_gate_shadow 원안),
 327차(joint_gate_shadow — 동일 패턴 재사용 2번째 선례), 342차(kelly_skip —
 [8]번 채널, 이번 번호 정정의 계기).
+
+---
+
+## 2026-07-17 (356차) — Slack 워크스페이스/토큰/채널 교체 (330차 message_limit_exceeded 조치)
+
+### [운영조치] 구 워크스페이스 메시지 한도 문제로 신규 Slack 앱 발급 — 토큰·채널ID 교체 + 실전송 검증
+
+**File**: `config/secrets.py`(`SLACK_BOT_TOKEN`), `config/settings.py`(`SLACK_CHANNEL_ID` 기본값)
+**배경**: 330차(2026-07-14)에서 진단한 `message_limit_exceeded`(구 워크스페이스 무료
+요금제 메시지 한도 도달 추정)가 사용자 확인 결과 그대로였음 — 신규 Slack 워크스페이스에
+새 앱을 만들어 봇 토큰 재발급 + 채널 ID 변경으로 조치.
+**변경**: `SLACK_BOT_TOKEN`을 신규 토큰(`xoxb-9533323658514-...`)으로 교체,
+`SLACK_CHANNEL_ID` 기본값을 `C0AUYD4RHHD` → `C0BHHF80NET`으로 교체. `secrets.py`는
+`.gitignore` 대상이라 이 커밋에는 미포함(로컬 파일만 갱신) — 멀티 PC(MW0601/MW0602)
+운영 중이므로 다른 PC도 각자 `config/secrets.py`를 동일하게 갱신해야 함(자동 동기화
+안 됨, 52차·git commit scope 규칙과 동일 이유).
+**검증**: 신규 토큰/채널로 `chat.postMessage` 직접 호출 2회 + `utils.notify.notify()`
+프로덕션 경로 1회, 총 3회 테스트 메시지 발송 — 전부 `ok:true`, 유효한 `ts` 반환,
+`error` 없음 확인. 330차에서 추가한 `SlackQueueManager._warn_failure()` 안전장치는
+그대로 유지(신규 워크스페이스에서도 향후 유사 실패 시 10분 쿨다운으로 대시보드/
+WARN.log에 노출됨).
+**Why**: 코드 변경 없이 자격증명만 교체 — 330차 진단대로 근본 원인이 Slack 서버 측
+한도였으므로 코드 수정이 아닌 워크스페이스 이전이 맞는 조치였음.
+**관련**: 330차(원인 진단 — 무음 실패 재발방지 코드 추가), 52차(별개 이슈지만 손익
+표기 관련 Slack 문구 개선 — 329차).
