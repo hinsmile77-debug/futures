@@ -371,9 +371,21 @@ def eval_meta_gate_channel(days: int) -> dict:
                    WHERE ts >= ? AND target_close IS NOT NULL AND future_close IS NOT NULL""",
                 (cutoff,),
             ).fetchall()
+            # [357차] 계측 생존 점검 — 최근 7일 소스 컬럼 적재량(방향 무관).
+            # 0이면 "표본 대기"가 아니라 스코어러 사망(모델 로드 실패 등) 의심.
+            _7d = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime(_TS_FMT)
+            src_7d = conn.execute(
+                """SELECT COUNT(*) AS n FROM ensemble_decisions
+                   WHERE meta_entry_quality_prob IS NOT NULL AND ts >= ?""",
+                (_7d,),
+            ).fetchone()["n"]
     except Exception as e:
         out["error"] = str(e)
         return out
+
+    out["src_nonnull_7d"] = int(src_7d)
+    if src_7d == 0:
+        out["no_data"] = True
 
     move_map = {(m["ts"], m["horizon"]): float(m["future_close"]) - float(m["target_close"])
                 for m in mrows}
@@ -396,6 +408,9 @@ def eval_meta_gate_channel(days: int) -> dict:
     out["cost_pt"] = round(cost_pt, 4)
     if len(samples) < 3 * int(cr["min_per_tercile"]):
         out["reason"] = "표본 부족 (%d < %d)" % (len(samples), 3 * cr["min_per_tercile"])
+        if out.get("no_data"):
+            out["reason"] += (" — **최근 7일 소스(meta_entry_quality_prob) 적재 0건**: "
+                              "스코어러 모델 로드 실패 등 계측 사망 의심, 표본 대기가 아님 (357차)")
         return out
 
     samples.sort(key=lambda s: s[0])
@@ -457,9 +472,20 @@ def eval_quantile_channel(days: int) -> dict:
                    WHERE ts >= ? AND target_close IS NOT NULL AND future_close IS NOT NULL""",
                 (cutoff,),
             ).fetchall()
+            # [357차] 계측 생존 점검 — [2]와 동일 취지 (분위 스코어러 사망 감지)
+            _7d = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime(_TS_FMT)
+            src_7d = conn.execute(
+                """SELECT COUNT(*) AS n FROM ensemble_decisions
+                   WHERE quantile_q10_pt IS NOT NULL AND ts >= ?""",
+                (_7d,),
+            ).fetchone()["n"]
     except Exception as e:
         out["error"] = str(e)
         return out
+
+    out["src_nonnull_7d"] = int(src_7d)
+    if src_7d == 0:
+        out["no_data"] = True
 
     move_map = {(m["ts"], m["horizon"]): float(m["future_close"]) - float(m["target_close"])
                 for m in mrows}
@@ -478,6 +504,9 @@ def eval_quantile_channel(days: int) -> dict:
     out["n_samples"] = n
     if n < int(cr["min_samples"]):
         out["reason"] = "표본 부족 (%d < %d)" % (n, cr["min_samples"])
+        if out.get("no_data"):
+            out["reason"] += (" — **최근 7일 소스(quantile_q10_pt) 적재 0건**: "
+                              "스코어러 모델 로드 실패 등 계측 사망 의심, 표본 대기가 아님 (357차)")
         return out
 
     coverage = float(np.mean(covered))
@@ -1215,6 +1244,16 @@ def _fmt_verdict(v: str) -> str:
     }.get(v, "⏳ INSUFFICIENT")
 
 
+def _fmt_channel_verdict(out: dict) -> str:
+    """[357차] INSUFFICIENT(표본 축적 대기)와 NO-DATA(소스 적재 자체가 0 — 계측
+    사망 의심)를 구분 표기. [2]/[3] 채널이 스코어러 로드 실패로 캠페인 전 기간
+    표본 0이었는데 '표본 부족'으로만 표시돼 2주간 발견되지 못한 재발 방지.
+    판정값(metrics json의 verdict)은 사전등록 어휘 그대로 유지 — 표시만 구분."""
+    if out.get("no_data"):
+        return "🔴 NO-DATA(계측 점검 필요)"
+    return _fmt_verdict(out.get("verdict", ""))
+
+
 def build_report(days: int) -> tuple:
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ss = eval_sample_starvation()
@@ -1255,10 +1294,10 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(tb["verdict"]), tb.get("n_pass", 0),
         VALIDATION_CAMPAIGN["tb"]["min_horizons_pass"]))
     L.append("| [2] Meta-Gate | %s | 상위EV=%s 분리도=%s (필요 %s) |" % (
-        _fmt_verdict(mg["verdict"]), mg.get("top_ev_pt", "—"),
+        _fmt_channel_verdict(mg), mg.get("top_ev_pt", "—"),
         mg.get("separation_pt", "—"), mg.get("required_sep_pt", "—")))
     L.append("| [3] 분위 회귀 | %s | 커버리지=%s (밴드 %s) 상관=%s |" % (
-        _fmt_verdict(qt["verdict"]), qt.get("coverage", "—"),
+        _fmt_channel_verdict(qt), qt.get("coverage", "—"),
         qt.get("coverage_band", "—"), qt.get("unc_corr", "—")))
     L.append("| [4] 신호소멸청산 | %s | 누적 saved=%spt (n=%s, 보류 %s) |" % (
         _fmt_verdict(sd["verdict"]), sd.get("total_saved_pts", "—"),
@@ -1321,6 +1360,12 @@ def build_report(days: int) -> tuple:
     if tb.get("error"):
         L.append("")
         L.append("> ⚠ %s" % tb["error"])
+    L.append("")
+    L.append("> [357차 해석 확정] 1m은 앙상블 가중치 영구 0 퇴역(331차 후속2) 상태 —")
+    L.append("> 1m이 IC 기준을 합격해도 \"1m 앙상블 복귀\"가 아니라 1m 활용방안 A·C")
+    L.append("> (331차 후속3, 섀도우 경로)의 근거로만 사용한다. **실질 승격 검토 대상은")
+    L.append("> 3m/5m로 한정** (30m은 296차 퇴역, 10m/15m은 표본 도달까지 수개월 소요).")
+    L.append("> 합격선 자체는 불변 — 해석만 확정(시계 리셋 불요).")
     L.append("")
 
     # [2] Meta-Gate 상세

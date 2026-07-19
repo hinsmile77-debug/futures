@@ -165,6 +165,9 @@ class EntryQualityScorer:
     def __init__(self, model_dir: str = _MODEL_SUBDIR):
         self._model_dir = model_dir
         self._cache: Dict[str, Optional[tuple]] = {}  # hz -> (model, scaler, feat_names) 또는 None(미존재 캐시)
+        # [357차] 스코어링 실패 무음 방지 — 호라이즌당 최초 1회만 WARNING, 이후 debug.
+        # ([2] Meta-Gate 채널이 로드 실패 debug 무음으로 캠페인 전 기간 표본 0이었던 재발 방지)
+        self._score_warned: set = set()
 
     def _load(self, horizon: str):
         if horizon in self._cache:
@@ -203,7 +206,11 @@ class EntryQualityScorer:
             x_s = scaler.transform(x)
             return float(model.predict_proba(x_s)[0, 1])
         except Exception as e:
-            logger.debug("[MetaLabelClf] %s 스코어링 실패: %s", horizon, e)
+            if horizon not in self._score_warned:
+                self._score_warned.add(horizon)
+                logger.warning("[MetaLabelClf] %s 스코어링 실패(세션 최초 1회 경고): %s", horizon, e)
+            else:
+                logger.debug("[MetaLabelClf] %s 스코어링 실패: %s", horizon, e)
             return None
 
     def reload(self, horizon: Optional[str] = None) -> None:

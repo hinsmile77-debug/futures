@@ -9251,3 +9251,95 @@ WARN.log에 노출됨).
 한도였으므로 코드 수정이 아닌 워크스페이스 이전이 맞는 조치였음.
 **관련**: 330차(원인 진단 — 무음 실패 재발방지 코드 추가), 52차(별개 이슈지만 손익
 표기 관련 Slack 문구 개선 — 329차).
+
+---
+
+## 2026-07-19 (357차) — 주간회의(7/5 안건, 7/16 데이터) 판정 + 권고안 구현: [2]/[3] 채널 부활·NO-DATA 생존점검·7/17 휴장 소급 등록
+
+> 전체 안건별 분석·수치 근거: `docs/정기점검/금요일점검/0719_주간회의_검토보고.md`
+> (안건 ①~⑥ 판독 + 제안 7건 이득/손실). 사용자 승인 지침 2건: ① 7/17은 공식
+> 휴장일이었음을 감안, ② P3(TB 1m 합격 시 승격 대상은 3m/5m로 한정) 해석 확정.
+
+### [주간회의 판정 — DECISION_LOG 기록 (§4-3)]
+
+- **① 순EV**: 캠페인 누적 -102,281원 (W1 +102,729 → W2 -205,010). **A등급 23건
+  -1,975,968원 vs C등급 10건 +1,144,891원 등급 역전** — 단 A 손실의 -296만원이
+  "하드스톱(틱)" 18건에 집중, 348차(틱스톱 지연)·343차(추격필터)가 겨냥한 원인.
+  → **등급-사이징 수술 보류, 7/24 실측 재집계 후 재검토** (P1 채택).
+- **③ hurst_ok**: [6] FAIL 지속(n=126, hyp +43.6pt, 승률 73.8%>기준선 58.3%) —
+  ×0.5 완화(333차 후속)는 유지, **추가 완화(0.45→0.40)는 기각**. 근거: counterfactual
+  은 슬리피지 미반영 낙관 추정 + 실측 mean-revert 버킷 -31.5만원 + 7일 창
+  ablation(7/19 갱신)에서 완화 후 차단 잔량 n=4 avg=-0.53pt("차단이 이득" 방향).
+  half-size 실측 20건 누적 시 대조 판정.
+- **③ 구형 meta_gate**: ablation avg +0.0178pt(n=1378, 60일) — 왕복비용 미만,
+  판정 보류 유지. **[7] JointGateBlock**: hyp -8.9pt(n=9) — 차단이 이득, 현행 유지.
+- **⑥ 퍼널**: 표본 기아 사다리 정상(주간 24건≥10). Hurst 완화 실반영 확인
+  (차단 7/10 56건→7/16 0건). 최대 2차 병목은 JointGateBlock(7/14 27건) — [7]이
+  차단 정당성을 지지하므로 유지, 20건 도달 시 정식 판정.
+
+### [버그수정·구현] P0-1: 캠페인 [2] Meta-Gate·[3] 분위회귀 채널 부활 (캠페인 전 기간 무음 사망)
+
+**File**: `learning/meta_label_classifier.py`(스코어 실패 warning 상향),
+`learning/quantile_regressor.py`(`_strip_random_state()` 신설 + 스코어 실패 warning),
+`scripts/campaign_steps.py`(메타라벨 재학습 스텝 추가),
+`config/krx_holidays.py`(2026-07-17 소급 등록),
+`scripts/generate_validation_campaign_report.py`(NO-DATA 생존점검 + TB 해석 주석),
+`model/horizons/meta_gate/*`·`model/horizons/quantile/*`(재학습 산출물).
+
+**진단(이 세션 실측)**: `predictions.db:ensemble_decisions`의 `meta_entry_quality_prob`·
+`quantile_{expected,uncertainty,q10,q90}_pt` 5개 컬럼이 **전 기간(16,238행) non-null
+0건** — INSERT 배선(`learning/prediction_buffer.py:88-92`)과 스코어러 호출
+(`strategy/entry/meta_gate.py:108-110`)은 정상인데, 스코어러 모델 로드가 실패:
+`[MetaLabelClf] 1m 모델 로드 실패: No module named 'sklearn._loss.loss'`(sklearn≥1.1
+환경에서 학습된 pkl — base anaconda PATH 함정 재발 추정, 7/5 10:13 생성),
+`[QuantileReg] ... __randomstate_ctor() takes from 0 to 1 positional arguments`
+(numpy 버전 불일치). 로드 실패는 세션당 WARNING 1회, score() 실패는 debug라 무음 —
+299차 FP-PSI·339차 신호소멸청산·337차 SHAP과 동일한 "무음 사망 계측" 4번째 반복.
+추가 결함: `train_meta_label_classifier.py`가 주간 체인(`campaign_steps.py`)에
+아예 미편입 — 체인이 정상 가동돼도 [2]는 영구 사망 구조였음.
+
+**수정**:
+1. 두 스코어러를 `py310_64` 전체경로로 재학습(sklearn 1.0.2 — 런타임과 동일 버전).
+   메타라벨 AUC 0.48~0.56(6개 호라이즌), 분위회귀 pinball 0.37~2.31.
+2. **분위회귀 GBR 크로스 로드 함정 발견·해결**: sklearn 1.0.2 `GradientBoostingRegressor`
+   는 fit 시 `_rng`와 각 트리의 `random_state`에 numpy RandomState **객체**를 저장 —
+   numpy 1.26(py310_64)에서 피클된 RandomState는 numpy 1.21(py37_32)에서 언피클 불가.
+   `_strip_random_state()`(predict 미사용 RNG를 int/None 치환) 를 저장 경로에 삽입하고
+   기학습 pkl 18개도 후처리. HistGB(메타라벨)는 int 시드만 저장해 무관.
+3. `campaign_steps.py`에 "메타라벨 분류기 재학습" 스텝 추가(리포트 생성 뒤 — §3-1
+   OOS 순서 유지).
+4. score() 실패 로그 debug→warning(호라이즌당 세션 최초 1회 쓰로틀) 상향.
+
+**검증**: `py37_32`(실제 런타임)에서 두 스코어러 직접 로드+스코어링 — 메타라벨 6개
+호라이즌 전부 float 반환, 분위회귀 6개 호라이즌 전부 q10/q50/q90 dict 반환(ALL_OK).
+`py_compile` 양쪽 환경 통과. **라이브 미검증** — 다음 장중 `ensemble_decisions`
+5개 컬럼 non-null 적재 시작 확인 필요(NEXT_TODO 등록).
+
+### [구현] P2: 캠페인 리포트 "계측 생존 점검" — NO-DATA 표기
+
+`generate_validation_campaign_report.py` [2]/[3] eval 함수에 최근 7일 소스 컬럼
+non-null 카운트(`src_nonnull_7d`)를 추가, 표본 미달이면서 최근 7일 적재도 0이면
+요약표 판정을 `⏳ INSUFFICIENT` 대신 `🔴 NO-DATA(계측 점검 필요)`로 구분 표기
+(`_fmt_channel_verdict()`). 사전등록 합격선·verdict 어휘는 불변 — 표시만 구분이라
+시계 리셋 불요. 실행 검증: 7/19 재생성 리포트에서 [2]/[3]가 NO-DATA로 정확히 표기됨.
+
+### [해석 확정] P3: TB 채널 [1] 승격 대상 — 3m/5m 한정 (사용자 지침)
+
+1m은 앙상블 가중치 영구 0 퇴역(331차 후속2) — 1m이 IC 합격선을 넘어도 "1m 앙상블
+복귀"가 아니라 1m 활용방안 A·C(331차 후속3 섀도우)의 근거로만 사용. **실질 승격
+검토 대상은 3m/5m로 한정**(30m 퇴역, 10m/15m 표본 수개월). 합격선 불변 — 해석만
+확정(시계 리셋 불요). 리포트 [1] 섹션에 해석 주석 자동 출력 추가.
+
+### [운영조치] 7/17 공식 휴장일 소급 등록 + 주간 체인 수동 소급
+
+7/17(금)은 공식 휴장일(사용자 확인)인데 `config/krx_holidays.py`에 미등록 —
+333차 후속3의 휴장 이월 로직(`campaign_due()`)이 7/16(목)에 체인을 돌렸어야 하나
+휴장일을 몰라 불발. 2026-07-17 소급 등록(향후 휴장 주 이월 정상화). 이번 주 체인은
+수동 소급 실행: ablation 리포트(7일 창) → 캠페인 판정 리포트(NO-DATA 검증 겸) →
+섀도우 TB 재학습(cv_acc 0.54~0.84, 순서 준수 — 리포트 후 재학습) → 분위회귀·메타라벨
+재학습. MAE/MFE는 홀수 ISO 주라 미해당.
+
+**관련**: 0719_주간회의_검토보고.md(전체 분석), 333차(TB 채널 동일 계열 사망 수정),
+299차·337차·339차(무음 사망 계측 선례), 342·355차(다음 기동 시 kelly_advised_skip
+컬럼·open_gap_shadow 테이블 생성 확인 필요 — 아직 미생성 실측), 331차 후속2~3(1m
+퇴역 — P3 해석의 근거), 344차(py310_64 전체경로 실행 규칙).
