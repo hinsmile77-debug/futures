@@ -2789,10 +2789,12 @@ class TradingSystem:
             and not _late_restart
         ):
             self._warmup_retrain_pending = False
-            self._gbm_retrain_running = True
-            self._gbm_retrain_started_at = datetime.datetime.now()  # P1-B: 타임아웃 추적
-            self._gbm_retrain_done_event.clear()
-            self.circuit_breaker.set_gbm_retrain_active(True)   # CB⑤ 임계 완화
+            # [P0 260719] 여기서 _gbm_retrain_running=True 등을 미리 세팅하면 바로 아래
+            # _start_gbm_retrain_subprocess()의 최초 가드(이미 실행 중이면 스킵)가 이
+            # 자기 자신의 사전 세팅을 "이미 실행 중"으로 오인해 subprocess를 한 번도
+            # 실제로 띄우지 못하고 매번 자기 발목을 잡던 버그(0719 정기점검 발견) —
+            # 상태 세팅은 _start_gbm_retrain_subprocess() 내부(성공적으로 Popen한 뒤)에서만
+            # 하도록 위임한다. 실패 시(py310_64 미탐지 등)에도 플래그가 고착되지 않는 부수 이득.
             self.dashboard.set_model_status("GBM 장중 재학습중...")
             _rt_gap_tag = (
                 f" ({_mins_since_last_rt:.0f}분 경과, {_last_rt.strftime('%H:%M')} 이후)"
