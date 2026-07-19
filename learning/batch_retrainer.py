@@ -48,7 +48,7 @@ except ImportError:
     _HIST_GBM_OK = False
 
 from config.settings import (
-    MODEL_DIR, HORIZON_DIR, HORIZONS, DB_DIR,
+    MODEL_DIR, HORIZON_DIR, SCALER_DIR, HORIZONS, DB_DIR,
     GBM_WEIGHT_DEFAULT, GBM_MIN_SAMPLES_LEAF,
     RETRAIN_WEEKS_BACK, MAX_TRAIN_BARS, RAW_DATA_PRUNE_WEEKS,
     EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
@@ -350,9 +350,17 @@ class BatchRetrainer:
         result    = retrainer.retrain_now(weeks_back=RETRAIN_WEEKS_BACK)
     """
 
-    def __init__(self, model_dir: str = HORIZON_DIR):
+    def __init__(self, model_dir: str = HORIZON_DIR, scaler_dir: str = SCALER_DIR):
         self.model_dir = model_dir
         os.makedirs(model_dir, exist_ok=True)
+
+        # [P0 260719] scaler_dir을 model_dir과 별개로 항상 전역 SCALER_DIR에 고정하던
+        # 버그 수정 — 346차 통합테스트가 model_dir만 임시경로로 격리하고 스케일러는
+        # 격리 못 해 라이브 model/scaler/*.pkl에 10피처 합성테스트 스케일러가 새어나가
+        # 프로덕션 6개 호라이즌 전부가 무력화된 사고(0719 정기점검 발견) 재발 방지.
+        # 기본값은 기존과 동일한 SCALER_DIR — 운영 경로에는 영향 없음.
+        self.scaler_dir = scaler_dir
+        os.makedirs(scaler_dir, exist_ok=True)
 
         self._last_retrain:  Optional[datetime.datetime] = None
         self._retrain_count: int = 0
@@ -724,7 +732,7 @@ class BatchRetrainer:
     def _save_model(self, horizon_key: str, model, scaler, acc: float, feature_names: List[str]):
         path       = os.path.join(self.model_dir, f"gbm_{horizon_key}.pkl")
         acc_path   = os.path.join(self.model_dir, f"gbm_{horizon_key}_acc.txt")
-        scaler_dir = os.path.join(MODEL_DIR, "scaler")
+        scaler_dir = self.scaler_dir
         scaler_path = os.path.join(scaler_dir, f"scaler_{horizon_key}.pkl")
         os.makedirs(scaler_dir, exist_ok=True)
         # [S2-D] 원자 쓰기: .tmp 에 먼저 쓴 뒤 os.replace() 로 교체
