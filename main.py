@@ -2791,7 +2791,8 @@ class TradingSystem:
         )
         _late_restart = _rst_now.time() >= datetime.time(14, 30)   # 14:30 이후 재학습 무의미
         if (
-            datetime.time(9, 0) <= _rst_now.time() < datetime.time(15, 10)
+            is_trading_day(_rst_now)
+            and datetime.time(9, 0) <= _rst_now.time() < datetime.time(15, 10)
             and not self._gbm_retrain_running
             and not _already_retrained_today
             and not _late_restart

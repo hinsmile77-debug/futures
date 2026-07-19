@@ -47,10 +47,10 @@ class BrokerRuntimeService:
         print("[DBG CK-2] login() 성공", flush=True)
 
         broker_name = getattr(system.broker, "name", "")
+        server = system.broker.get_login_info("GetServerGubun")
         if broker_name == "cybos":
-            server_label = "Cybos 실서버"
+            server_label = "Cybos 모의투자" if server == "1" else "Cybos 실서버"
         else:
-            server = system.broker.get_login_info("GetServerGubun")
             server_label = "모의투자" if server == "1" else "실서버"
             if server == "1":
                 logger.info("[System] 모의투자 서버 접속 - A0166000 SetRealReg 실시간 수신 사용")
