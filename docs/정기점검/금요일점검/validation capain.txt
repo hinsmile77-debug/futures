@@ -1,0 +1,46 @@
+VALIDATION_CAMPAIGN — 전체 구조 정리
+배경
+docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3에서 사전 등록(pre-registration)한 섀도우 채널 승격 기준입니다. 
+아이디어는: 실험적/개선 컴포넌트를 바로 실거래에 반영하지 않고, 
+별도 계측 테이블에 "가상 결과"를 쌓은 뒤 사전에 정해둔 합격선을 넘기면 그때 사람이 검토해서 수동으로 켜거나 끈다 
+— 데이터를 보기 전에 기준을 고정해야 사후 과적합(합격선을 결과에 맞춰 조정)을 막을 수 있다는 원칙입니다. 
+기준값은 config/settings.py:VALIDATION_CAMPAIGN에 있고 "변경 금지" 주석이 붙어 있습니다(바꾸려면 
+DECISION_LOG에 사유 기록 + 검증 시계 리셋).
+
+채널 7개 (진행 중인 항목)
+#	채널	무엇을 검증하나	판정 기준(합격선)	판정 시 조치
+0	표본 기아 경보	주간 체결 건수가 §3-8 하한(10건) 미만인지	STARVED(하한 미달) / OK	미달 지속 시 3단계 완화 사다리(관찰→MetaGate 완화→Hurst 임계값 완화) 권고, 자동 적용 없음
+1	Triple-Barrier	섀도우 TB 모델 신호 IC vs 프로덕션 3클래스 IC	IC_TB가 3class+0.03 이상 그리고 절대값 0.05 이상, 호라이즌별 800건↑, 6개 중 2개 이상 합격	PASS 시 TB 모델 승격 검토
+2	Meta-Gate	entry_quality_prob 상위/하위 30% 순EV 분리도	상위 30% 순EV>0, (상위-하위)>왕복비용×2, 분위당 30건↑	분리 확인되면 게이트 강화/완화 검토
+3	분위 회귀	예측구간 [q10,q90] 커버리지·불확실성-실현폭 상관	커버리지 0.72~0.88, 상관 0.15↑, 300건↑	캘리브레이션 재조정 검토
+4	신호소멸청산	반대 신호 시 조기청산이 손절보다 나은지	누적 "아낀pt-놓친pt" 4주 후 음수면 조건 강화, 강화 후도 음수면 OFF	자동 OFF 아님 — 권고만
+5	레짐 ATR 배수	trend/neutral/mean-revert 버킷별 실거래 순EV	trend 버킷 EV 음수 & neutral보다 나쁘면 배수 1.20→1.10 후퇴 권고, 버킷당 20건↑	배수 완화 검토
+6	Hurst 게이트 counterfactual	어제 확인한 그 항목 — Hurst만 막은 신호의 가상 결과	20건↑, 가상 hyp_pnl 합계 > 왕복비용×2 그리고 가상승률 > 실제거래승률(baseline)이면 FAIL(완화 권고)	FAIL이어도 즉시 해제 아님 — "하드차단→사이징×0.5"부터
+공통 원칙: 판정이 나와도 시스템이 자동으로 정책을 바꾸지 않습니다. 전부 "권고"만 출력하고, 실제 적용은 사용자가 수동으로 하고 dev_memory/DECISION_LOG.md에 기록하게 되어 있습니다.
+
+판정 실행 시점
+scripts/generate_validation_campaign_report.py가 실행 로직
+자동: scripts/eod_retrain.py가 매주 금요일에만 자동으로 이 스크립트를 호출 (scripts\eod_retrain.py:141 weekday()==4 체크)
+수동: python scripts/generate_validation_campaign_report.py --days 28 또는 eod_retrain.py --campaign으로 강제 실행 가능 
+(제가 어제 한 것처럼 개별 채널 함수만 따로 호출하는 것도 가능)
+& "C:\Users\pc1\anaconda3\envs\py310_64\python.exe" "C:\Users\pc1\PycharmProjects\futures\scripts\generate_validation_campaign_report.py" --days 28
+
+
+
+
+사용자가 결과를 받는 방법
+파일로 저장: 실행할 때마다 data/validation_campaign_report.md(사람이 읽는 표+설명 형식)와 
+data/validation_campaign_metrics.json(원본 수치)에 덮어쓰기 저장됩니다.
+
+콘솔 출력: 실행 시 리포트 전문이 그대로 콘솔에도 출력됩니다.
+대시보드에는 노출되지 않습니다 — main.py에는 이 모듈에 대한 주석만 있고 UI 패널로 연결된 배선이 없습니다. 
+즉 지금 구조에서 결과를 확인하려면 금요일 이후 data/validation_campaign_report.md를 직접 열어보거나, 
+저처럼 스크립트를 실행해서 콘솔/파일을 확인해야 합니다 — 별도 알림(로그 경고, 대시보드 배지 등)은 없습니다.
+
+두 산출 파일 모두 .gitignore 대상(PC별 로컬 산출물, 재생성 가능) — 커밋되지 않고 각 PC에 로컬로만 쌓입니다.
+
+어제 한 작업과의 관계
+어제 실행한 건 이 7개 채널 중 [6]번 하나만 따로 골라 resolve_and_eval_hurst_gate() 함수를 직접 호출한 것이고, 
+전체를 다 돌리려면 build_report()/main() 경로(=전체 스크립트 실행)를 타야 [0]~[6] 전 채널이 한번에 리포트에 담깁니다. 
+다른 채널(특히 [1] TB, [2] Meta-Gate)은 모델 pickle 로딩 등 더 무거운 의존성이 있어 미리 확인 없이 돌리기보다, 
+필요하시면 전체 리포트를 한번 생성해서 지금 상태를 종합적으로 보여드릴 수 있습니다.
