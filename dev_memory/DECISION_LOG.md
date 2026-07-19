@@ -9227,3 +9227,87 @@ W1 손실 구조(대형 사이즈 × 틱스톱 결함)를 고친 수정(341·348
 
 **관련**: 357차(MW0602 자매 세션), 341·343·348차(이번에 라이브 검증 대상이 된
 결함 수정), 340차(동시 라이브 리스크의 다른 축), 306차(유령 레코드 태깅 컨벤션).
+
+---
+
+## 2026-07-19 (dev 브랜치 358차, cherry-pick, MW0602 세션) — 프로덕션 스케일러 6개 손상 발견·복구 + 원인 코드버그 2건 수정
+
+**배경**: 0719 정기점검(일일 로그 점검, MW0602 12:19 주말 테스트 기동)에서 6개
+호라이즌 전부 `[Model] {hz} 피처 불일치 — feature_names=105 scaler=10 → 호라이즌
+비활성화`로 진입 완전 불가 상태를 발견. `model/scaler/scaler_*.pkl` 6개를 py37_32
+sklearn으로 직접 로드해 확인한 결과 전부 `n_features_in_=10`(정상 105) —
+2026-07-16 17:29 작성. 같은 날 15:45~15:47 EOD 재학습은 정상적으로 105피처 스케일러를
+저장했음(`logs/retrain_eod_20260716.log`로 확인)이 이후 17:29에 무언가가 덮어씀.
+
+**원인**: 같은 날 17:32 커밋된 346차("EOD 모델 교체 가드")의 `DECISION_LOG.md` 기록에
+"임시 model_dir(라이브 모델 디렉토리 **미접촉**)로 통합테스트"라 적혀 있었으나 실제로는
+격리가 불완전했음. `learning/batch_retrainer.py`의 `_save_model()`이 GBM pkl 저장은
+`self.model_dir`(인스턴스 오버라이드 가능)을 쓰면서, 스케일러 저장 경로만
+`os.path.join(MODEL_DIR, "scaler")`로 전역 상수를 직접 참조 — 346차 통합테스트가
+무작위 라벨 합성데이터(피처 10개)로 학습을 돌렸을 때 GBM pkl은 임시 디렉토리로
+안전하게 격리됐지만 **스케일러만 라이브 `model/scaler/*.pkl`로 새어나가** 직전
+EOD 재학습의 정상 105피처 스케일러를 덮어씀. 7/17이 뒤늦게 공휴일로 소급 등록되고
+7/18-19가 주말이라 거래일이 한 번도 없어 오늘까지 발견되지 않았음.
+
+**2차 버그(독립, 복합 위험)**: `main.py`의 장중 재시작 WarmupRetrain 경로가
+`_start_gbm_retrain_subprocess()` 호출 **직전에** `self._gbm_retrain_running=True`를
+먼저 세팅해, 그 함수 자신의 최초 가드("이미 실행 중이면 스킵")가 이 사전 세팅을
+보고 매번 자기 자신을 스킵 — 장중 재시작 교정 재학습이 한 번도 실제로 subprocess를
+띄운 적이 없었고, 실패 시에도 플래그가 영구 고착되는 부작용까지 있었음(오늘 로그의
+"WarmupRetrain 예약" 직후 "GBM-64 스킵"이 그 증거). 이 버그 때문에 정상 거래일이었어도
+장중 재시작만으로는 스케일러 손상이 자동 복구되지 않았을 것.
+
+**위험도**: 월요일(7/20) 08:55 PreRetrain 스킵 로직(`main.py` — 마지막 EOD 성공일이
+1~5영업일 이내면 스킵)이 7/16 EOD 성공을 "최근"으로 인식해 자동 재학습을 스킵할
+예정이었음 — 시스템이 스스로 복구하지 못하고 손상된 스케일러로 그대로 개장했을 상황.
+
+**File**: `learning/batch_retrainer.py`(`__init__`에 `scaler_dir` 파라미터 추가,
+기본값 `SCALER_DIR`로 기존과 동일 — 프로덕션 무인자 호출은 영향 없음. `_save_model()`이
+`self.scaler_dir` 사용), `main.py`(WarmupRetrain 블록의 사전 플래그 세팅 4줄 제거 —
+상태 세팅을 `_start_gbm_retrain_subprocess()` 내부, Popen 성공 이후로 위임).
+커밋 `14b7ca9`(dev).
+
+**데이터 복구(MW0602만, 커밋 범위 밖)**: `model/scaler/*.pkl`은 `.gitignore` 대상(로컬
+모델 상태)이라 위 커밋에 미포함. `retrain_eod.py`의 P8 스텝과 완전히 동일한 프로덕션
+경로(`BatchRetrainer.load_features_for_warmup()` + `MultiHorizonModel.refit_scalers_only()`,
+py310_64, GBM/RF 미접촉)를 그대로 재사용해 `raw_data.db` 최근 500봉 실데이터로 재적합.
+MW0601에서 손상 확인 시 동일하게 쓸 수 있도록 실행한 스크립트 전문(임시 스크래치패드
+파일이라 저장소 밖 — 다른 PC에서 재현하려면 아래를 그대로 py310_64로 실행):
+```python
+import sys, os, datetime
+sys.path.insert(0, r"C:\경로\futures")   # 프로젝트 루트로 교체
+os.chdir(r"C:\경로\futures")
+
+from learning.batch_retrainer import BatchRetrainer
+from model.multi_horizon_model import MultiHorizonModel
+from config.settings import SCALER_WARMUP_LOOKBACK_BARS
+
+retrainer = BatchRetrainer()
+X, feature_names = retrainer.load_features_for_warmup(lookback_bars=SCALER_WARMUP_LOOKBACK_BARS)
+model = MultiHorizonModel()
+result = model.refit_scalers_only(
+    X, feature_names,
+    trigger_ts=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    trigger_type="E_EOD",
+    trigger_reason="[P0] 346차 통합테스트 스케일러 격리 버그로 손상된 프로덕션 스케일러 수동 복구",
+)
+print(result)   # {'ok': True, 'horizons': ['1m','3m','5m','10m','15m','30m'], ...} 기대
+```
+실행 후 반드시 `MultiHorizonModel().validate_and_resync()` → `[]` 확인까지 마칠 것
+(스케일러가 부분적으로만 갱신되고 실패한 호라이즌이 있어도 이 함수 없이는 안 보임).
+
+**검증**: 복구 후 py37_32에서 6개 전부 `n_features_in_=105` 확인. `MultiHorizonModel()`
+재로드 → `validate_and_resync()` → `BAD HORIZONS: []`, 6개 전부 `fitted=True`
+(182차와 동일한 검증 패턴). 실제 `predict_proba()`를 최근 데이터 1행으로 호출해
+6개 호라이즌 전부 정상 확률분포(합≈1.0, NaN 없음) 확인.
+
+**MW0601 조치 필요 — 미완료, `NEXT_TODO.md` 등록**: 두 PC 모두 `dev` 단일 브랜치
+(260630 브랜치 통합, 5000행대 기록)라 커밋 `14b7ca9`는 pull로 전파되지만, 이건
+"앞으로 같은 사고 재발 방지" 코드일 뿐 MW0601의 **기존** `model/scaler/*.pkl`이 실제로
+손상됐는지는 이 세션에서 확인 불가(346차 통합테스트가 어느 PC에서 실행됐는지 기록
+없음, MW0601 파일시스템 미접근). 356차 Slack secrets와 동일한 이유(gitignore 대상은
+자동 동기화 안 됨)로 MW0601에서 별도 확인·조치 필요.
+
+**관련**: 346차(원인 커밋), 356차(gitignore 대상 로컬 파일의 멀티 PC 동기화 규칙 선례),
+182차(`validate_and_resync()` 검증 패턴 선례), 357차 후속(MW0601/MW0602 PC 구분
+로그 관례).
