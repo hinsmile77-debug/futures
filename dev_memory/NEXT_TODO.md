@@ -8,6 +8,43 @@
 
 ---
 
+## 2026-07-19 (358차 — 프로덕션 스케일러 6개 손상 발견·복구 + 원인 코드버그 2건 수정)
+
+> 상세: `DECISION_LOG.md` 2026-07-19(358차) 항목.
+
+- [ ] **[최우선] MW0601 — 358차 커밋(14b7ca9) pull 필수** — `learning/batch_retrainer.py`
+  스케일러 저장경로 격리 버그(346차 통합테스트가 라이브 `model/scaler/*.pkl`을
+  10피처 합성테스트 스케일러로 덮어쓴 사고의 원인) + `main.py` WarmupRetrain
+  자기스킵 버그 수정. pull 안 하면 MW0601에서 같은 종류의 통합테스트를 돌릴 때
+  동일 사고 재발 가능.
+- [ ] **[최우선] MW0601 — `model/scaler/*.pkl` 6개 손상 여부 직접 확인** — MW0602는
+  전부 손상(`n_features_in_=10`, 정상 105) 확인 후 복구 완료했으나, 346차 통합테스트가
+  어느 PC에서 실행됐는지 기록이 없어 MW0601 상태는 미확인. 확인 방법:
+  ```
+  py37_32 python -c "import pickle; sc=pickle.load(open('model/scaler/scaler_1m.pkl','rb')); print(sc.n_features_in_)"
+  ```
+  6개 파일(1m/3m/5m/10m/15m/30m) 전부 확인 — 105가 아니면 손상. 또는 mtime이
+  2026-07-16 17:29 근처인지로도 정황 확인 가능(`model/horizons/feature_names.pkl`은
+  105로 정상이니 대조군으로 사용).
+- [ ] **MW0601 — 손상 확인 시 복구** — 위 pull 이후(코드 수정 반영 상태에서),
+  다음 중 하나:
+  ① 가장 간단: 다음 EOD 재학습(평일 15:45 스케줄러)이 자동으로 정상 105피처
+  스케일러를 다시 저장하므로 자연 복구 대기 가능(단 그 사이 거래일은 6개 호라이즌
+  전부 비활성 상태로 진입 불가).
+  ② 즉시 필요 시: `retrain_eod.py`의 `p8_scaler_refit()`과 동일한 두 함수
+  (`BatchRetrainer.load_features_for_warmup()` + `MultiHorizonModel.refit_scalers_only()`)를
+  py310_64 전체경로로 직접 호출하는 스크립트 실행 — MW0602에서 쓴 복구 스크립트
+  패턴은 이 358차 DECISION_LOG 항목 참조. 복구 후 `MultiHorizonModel().validate_and_resync()`
+  → `BAD HORIZONS: []` 확인 필수(182차와 동일 검증 패턴).
+- [ ] **PreRetrain 5영업일 스킵 로직 재검토(저우선)** — `main.py`의 08:55 PreRetrain이
+  마지막 EOD 성공일을 1~5영업일 이내로 보면 스킵하는 로직이, 이번처럼 EOD는 성공했지만
+  그 직후 스케일러가 외부 요인(통합테스트 등)으로 손상된 경우를 감지 못해 자동 복구
+  기회를 놓침(358차에서 실측). 당장 코드 변경은 안 했음 — 몇 주 관찰 후 스케일러
+  차원 자체를 기동 시 상시 검증(`validate_and_resync()`)해 이상 시 스킵 로직을
+  무시하고 강제 재학습하도록 개선할지 결정.
+
+---
+
 ## 2026-07-19 (357차 — 주간회의 권고안 구현: [2]/[3] 채널 부활 + NO-DATA 계측 생존 점검 + 7/17 휴장 소급 등록)
 
 > 상세: `DECISION_LOG.md` 2026-07-19(357차) 항목 +
