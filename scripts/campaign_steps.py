@@ -63,6 +63,10 @@ def run_campaign_steps(logger, base_dir: str) -> None:
         ("검증 캠페인 판정 리포트", ["generate_validation_campaign_report.py"]),
         ("섀도우 TB 재학습", ["run_shadow_triple_barrier_retrain.py"]),
         ("분위 회귀 재학습", ["train_quantile_regressor.py"]),
+        # [357차] 메타라벨 분류기(entry_quality_prob 스코어러)가 어떤 스케줄에도
+        # 연결돼 있지 않아 [2] Meta-Gate 채널이 갱신 불가였던 결함 수정 —
+        # 분위 회귀와 동일하게 리포트 생성 **뒤**에 재학습(§3-1 OOS 보장 순서).
+        ("메타라벨 분류기 재학습", ["train_meta_label_classifier.py"]),
     ]
     if datetime.date.today().isocalendar()[1] % 2 == 0:
         steps.append(("MAE/MFE 분석", ["analyze_mae_mfe.py"]))

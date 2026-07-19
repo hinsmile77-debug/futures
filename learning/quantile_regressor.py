@@ -103,6 +103,28 @@ def _future_return_pts(ts: str, h_min: int, close_map: Dict[str, float]) -> Opti
     return cf - c0
 
 
+def _strip_random_state(model):
+    """[357차] py37_32 크로스 로드 호환 — 피클 전 RandomState 객체 참조 제거.
+
+    sklearn 1.0.2 GBR은 fit 시 `_rng`(numpy RandomState)를 인스턴스에 저장하고,
+    각 트리(`estimators_`의 DecisionTreeRegressor)의 `random_state`에도 동일
+    RandomState 객체를 전달한다. numpy 1.26(py310_64 학습환경)에서 피클된
+    RandomState는 numpy 1.21(py37_32 런타임)에서 `__randomstate_ctor` 시그니처
+    불일치로 언피클 불가 → 스코어러 로드가 전 호라이즌 실패했다(357차 실측).
+    predict 경로는 이 RNG들을 전혀 사용하지 않으므로 int/None으로 치환해도 안전.
+    """
+    if isinstance(getattr(model, "random_state", None), np.random.RandomState):
+        model.random_state = 0
+    if getattr(model, "_rng", None) is not None:
+        model._rng = None
+    ests = getattr(model, "estimators_", None)
+    if ests is not None:
+        for est in np.asarray(ests).ravel():
+            if isinstance(getattr(est, "random_state", None), np.random.RandomState):
+                est.random_state = 0
+    return model
+
+
 def train_quantile_models(weeks_back: int = 26, min_rows: int = MIN_ROWS_PER_HORIZON) -> Dict:
     """호라이즌별 q10/q50/q90 분위 회귀 학습 + 저장.
 
@@ -163,6 +185,7 @@ def train_quantile_models(weeks_back: int = 26, min_rows: int = MIN_ROWS_PER_HOR
         for q in QUANTILES:
             model = GradientBoostingRegressor(loss="quantile", alpha=q, **GBR_PARAMS)
             model.fit(X_scaled, y)
+            _strip_random_state(model)
             _tag = int(round(q * 100))
             _path = os.path.join(_MODEL_SUBDIR, f"{hz}_q{_tag}.pkl")
             _tmp = _path + ".tmp"
@@ -204,6 +227,9 @@ class QuantileScorer:
     def __init__(self, model_dir: str = _MODEL_SUBDIR):
         self._model_dir = model_dir
         self._cache: Dict[str, Optional[tuple]] = {}
+        # [357차] 스코어링 실패 무음 방지 — 호라이즌당 최초 1회만 WARNING, 이후 debug.
+        # ([3] 분위회귀 채널이 로드 실패 무음으로 캠페인 전 기간 표본 0이었던 재발 방지)
+        self._score_warned: set = set()
 
     def _load(self, horizon: str):
         if horizon in self._cache:
@@ -250,7 +276,11 @@ class QuantileScorer:
                 "uncertainty_pt": q90 - q10,
             }
         except Exception as e:
-            logger.debug("[QuantileReg] %s 스코어링 실패: %s", horizon, e)
+            if horizon not in self._score_warned:
+                self._score_warned.add(horizon)
+                logger.warning("[QuantileReg] %s 스코어링 실패(세션 최초 1회 경고): %s", horizon, e)
+            else:
+                logger.debug("[QuantileReg] %s 스코어링 실패: %s", horizon, e)
             return None
 
     def reload(self, horizon: Optional[str] = None) -> None:
