@@ -5,6 +5,12 @@ param(
     [string]$KeepTitle = ""
 )
 
+# start_mireuk.bat이 CHCP 65001(UTF-8)로 콘솔을 전환해 두지만, Windows PowerShell 5.1은
+# -File로 실행된 자식 프로세스의 Write-Host 출력에 이를 상속하지 않고 시스템 기본
+# codepage(CP949)로 인코딩한다 — 부모 cmd 콘솔이 이를 UTF-8로 해석해 한글이 깨짐
+# (실측 확인, 0720 재시동 로그 점검).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
