@@ -971,6 +971,20 @@ VALIDATION_CAMPAIGN = {
         "min_samples": 20,  # 차단 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
         "cf_window_min": 30,  # counterfactual 관찰 창 (분) — hurst_gate_shadow와 동일
     },
+    # [361차 신설] §10 TP2 홀드 A/B counterfactual — 0720 정기점검 "TP3 도달 0건" 딥다이브.
+    # 원인은 트레일링 폭이 아니라 qty=2 스테이지 배분(TP2에서 잔량 100% 종료, TP3 몫이
+    # 항상 0)이었음이 확인됨(dev_memory/DECISION_LOG.md 361차 항목). TP2 전량종료 시점을
+    # tp2_hold_shadow에 기록해 "홀드했다면 TP3/트레일링까지 갔을 때 어땠을지"를 당일
+    # 15:10까지 분봉으로 사후 시뮬레이션한다(resolve_and_eval_tp2_hold()).
+    # 존치(PASS): 누적 hyp_pnl_pts ≤ 0 (홀드가 평균적으로 손해 — 현행 TP2 전량종료 유지).
+    # 채택 검토(FAIL): 누적 hyp_pnl_pts > 왕복비용의 2배
+    #   → 즉시 코드 변경이 아니라 qty=2 stage_plan 재배분(TP1만 정리 후 TP3/트레일링까지
+    #   보유) 채택을 주간회의에서 검토(§9 사전등록 원칙과 동일 순서).
+    # cf_window_min 없음(다른 채널과 차이점) — "얼마나 오래 들고 가야 TP3에 닿는지"가
+    # 관심사이므로 고정 관찰 창 대신 당일 강제청산 시각(15:10)까지 전부 스캔한다.
+    "tp2_hold_shadow": {
+        "min_samples": 15,  # TP2 전량종료 건 최소 수 (미달 → 판정 보류)
+    },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)

@@ -33,6 +33,50 @@ _STATE_FILE = os.path.join(
 )
 
 
+def compute_trailing_stop_tier(
+    entry_price: float,
+    direction: str,
+    atr: float,
+    current_price: float,
+    prev_anchor: float,
+    prev_stop: float,
+) -> Tuple[float, float]:
+    """[361차] PositionTracker.update_trailing_stop()의 4단계 티어 계산을 순수함수로
+    분리 — scripts/generate_validation_campaign_report.py의 tp2_hold_shadow 리졸버가
+    동일 로직을 import해 재사용한다. 라이브 트레일링과 계측용 카운터팩추얼 시뮬레이션이
+    복붙으로 갈라져 드리프트하는 것을 막기 위함(단일 소스 유지).
+
+    반환: (new_anchor, new_stop). direction은 POSITION_LONG/POSITION_SHORT 문자열.
+    """
+    mult = 1 if direction == POSITION_LONG else -1
+    unrealized_pts = (current_price - entry_price) * mult
+
+    anchor = prev_anchor if prev_anchor > 0 else entry_price
+    if direction == POSITION_LONG:
+        anchor = max(anchor, current_price)
+    else:
+        anchor = min(anchor, current_price)
+
+    stop = prev_stop
+    candidate = None
+    if unrealized_pts >= atr * 2.0:
+        # 2ATR 이상 수익 → 최고점 추적 (1ATR 간격)
+        candidate = anchor - mult * atr
+    elif unrealized_pts >= atr * 1.5:
+        # 1.5ATR 이상 → +0.5ATR 보장
+        candidate = entry_price + mult * atr * 0.5
+    elif unrealized_pts >= atr * 1.0:
+        # 1ATR 이상 → 본전 손절
+        candidate = entry_price
+    elif unrealized_pts >= atr * 0.5:
+        # 0.5ATR 이상 → 최대손실 -0.75ATR로 축소 (무방비 구간 보호)
+        candidate = entry_price - mult * atr * 0.75
+
+    if candidate is not None and mult * (candidate - stop) > 0:
+        stop = candidate
+    return anchor, stop
+
+
 class PositionTracker:
     """단일 포지션 상태 관리"""
 
@@ -718,36 +762,10 @@ class PositionTracker:
         if self.status == POSITION_FLAT:
             return
 
-        mult = 1 if self.status == POSITION_LONG else -1
-        unrealized_pts = (current_price - self.entry_price) * mult
-        if self.trailing_anchor_price <= 0:
-            self.trailing_anchor_price = self.entry_price
-        if self.status == POSITION_LONG:
-            self.trailing_anchor_price = max(self.trailing_anchor_price, current_price)
-        else:
-            self.trailing_anchor_price = min(self.trailing_anchor_price, current_price)
-
-        if unrealized_pts >= atr * 2.0:
-            # 2ATR 이상 수익 → 최고점 추적 (1ATR 간격)
-            new_stop = self.trailing_anchor_price - mult * atr
-            if mult * (new_stop - self.stop_price) > 0:
-                self.stop_price = new_stop
-        elif unrealized_pts >= atr * 1.5:
-            # 1.5ATR 이상 → +0.5ATR 보장
-            new_stop = self.entry_price + mult * atr * 0.5
-            if mult * (new_stop - self.stop_price) > 0:
-                self.stop_price = new_stop
-        elif unrealized_pts >= atr * 1.0:
-            # 1ATR 이상 → 본전 손절
-            new_stop = self.entry_price
-            if mult * (new_stop - self.stop_price) > 0:
-                self.stop_price = new_stop
-        elif unrealized_pts >= atr * 0.5:
-            # 0.5ATR 이상 → 최대손실 -0.75ATR로 축소 (무방비 구간 보호)
-            # 원래 손절(-1.5ATR) 대비 절반 수준으로 당겨 휩쏘 손실 제한
-            new_stop = self.entry_price - mult * atr * 0.75
-            if mult * (new_stop - self.stop_price) > 0:
-                self.stop_price = new_stop
+        self.trailing_anchor_price, self.stop_price = compute_trailing_stop_tier(
+            self.entry_price, self.status, atr, current_price,
+            self.trailing_anchor_price, self.stop_price,
+        )
 
     def is_stop_hit(self, price: float) -> bool:
         if self.status == POSITION_FLAT:
