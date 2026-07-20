@@ -68,6 +68,7 @@ class PositionSizer:
         brier_mult: float = 1.0,
         restart_mult: float = 1.0,
         dna_mult: float = 1.0,
+        max_qty_override: Optional[int] = None,
     ) -> dict:
         """
         포지션 사이즈 계산
@@ -83,6 +84,12 @@ class PositionSizer:
             brier_mult:          [2순위] Brier 과신 패널티 배수 (0.5/1.0)
             restart_mult:        [3순위] 재시작 루프 브레이커 배수 (0.0/0.5/1.0)
             dna_mult:            [4순위] 장초반 DNA 조심 배수 (0.25/1.0)
+            max_qty_override:    [360차] 역추세 진입 캡 등 — 지정 시 최종 수량을 이
+                                  값 이하로 강제 클램프. raw_qty/kelly_advised_skip
+                                  계산에는 관여하지 않는다(그 값들의 원래 의미 —
+                                  "켈리가 자본 대비 이 사이즈를 지지하는가" —
+                                  가 방향성 게이트 사유로 오염되지 않도록 최종
+                                  단계에서만 적용).
 
         Returns:
             {quantity, base_risk, conf_mult, regime_mult, kelly_mult, stop_distance,
@@ -171,6 +178,12 @@ class PositionSizer:
                        * adaptive_kelly_mult * safety_mults) / stop_risk
             kelly_advised_skip = raw_qty < 1.0
             quantity = max(min_qty, min(int(raw_qty), MAX_CONTRACTS))
+
+        # [360차] 역추세 진입 캡 — raw_qty/kelly_advised_skip 계산 완료 후 최종 단계에서만
+        # 클램프. size_mult(grade_mult)를 깎는 방식 대신 여기서 처리하는 이유는 위 docstring
+        # max_qty_override 설명 참조 — kelly_advised_skip 의미 오염 방지.
+        if max_qty_override is not None:
+            quantity = min(quantity, int(max_qty_override))
 
         logger.info(
             "[Sizer] %s선물 실효잔고=%s(실제잔고=%s) 기본리스크=%s 신뢰도배수=%s 레짐배수=%s "
