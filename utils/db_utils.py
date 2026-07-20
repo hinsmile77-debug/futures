@@ -509,6 +509,34 @@ def init_trades_db():
             "CREATE INDEX IF NOT EXISTS idx_spe_ts ON synthetic_partial_exits(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_spe_entry_ts ON synthetic_partial_exits(entry_ts)")
+    # [361차] TP2 홀드 A/B 섀도우 — 0720 정기점검 "TP3 도달 0건" 딥다이브 결과, 트레일링
+    # 폭이 아니라 qty=2 스테이지 배분(get_stage_plan()이 (1,1,0) 하드코딩, TP2에서 잔량
+    # 100% 종료)이 원인으로 확인됨. TP2가 실제로 전량 종료되는 순간 "이 계약을 홀드해서
+    # TP3/트레일링까지 갔다면 어땠을까"를 hurst_gate_shadow와 동일한 패턴(발동 시점 상태
+    # 기록 → 주간 리포트가 이후 분봉으로 사후 판정)으로 계측한다. 실제 청산 수량/시점은
+    # 전혀 바꾸지 않는 순수 부가 기록 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS tp2_hold_shadow (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                 TEXT NOT NULL,           -- TP2 발동(실제 전량청산) 시각
+        direction          TEXT NOT NULL,           -- LONG/SHORT
+        entry_price        REAL NOT NULL,
+        tp2_price          REAL NOT NULL,           -- 실제 TP2 청산가 (baseline)
+        tp3_price          REAL NOT NULL,           -- 당시 TP3 목표가
+        stop_price_at_hook REAL NOT NULL,           -- 당시(TP1 이후) 트레일링 스톱
+        atr_at_hook        REAL NOT NULL,           -- 시뮬레이션에 쓸 고정 ATR(단순화)
+        grade              TEXT,
+        entry_horizon      TEXT,
+        resolved           INTEGER DEFAULT 0,       -- 1=counterfactual 판정 완료
+        cf_outcome         TEXT,                    -- TP3 / TRAIL_STOP / FORCE_EXIT
+        cf_exit_price      REAL,
+        cf_hold_minutes    INTEGER,
+        hyp_pnl_pts        REAL,                    -- (+)=홀드가 이득, (-)=TP2 조기청산이 나았음
+        created_at         TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_t2h_ts ON tp2_hold_shadow(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,

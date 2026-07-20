@@ -10446,6 +10446,33 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
     send_qty = total_qty if is_full_close else target_qty
     reason = f"TP{stage}(전량)" if is_full_close else f"TP{stage} 부분청산 {ratio:.0%}"
 
+    # [361차] TP2 홀드 A/B 섀도우 — qty=2 포지션이 TP2에서 잔량 1계약을 100% 종료하는
+    # 순간, "이 계약을 홀드해서 TP3/트레일링까지 갔다면 어땠을까"를 counterfactual로
+    # 기록한다. 실제 주문(아래 _send_broker_exit_order)은 그대로 실행 — 실거래 영향 없음.
+    # 근거: 0720 정기점검 TP3 도달 0건 딥다이브(트레일링 아니라 qty 사이징 구조가 원인).
+    if stage == 2 and is_full_close and total_qty == 2:
+        try:
+            execute(
+                TRADES_DB,
+                """INSERT INTO tp2_hold_shadow
+                   (ts, direction, entry_price, tp2_price, tp3_price, stop_price_at_hook,
+                    atr_at_hook, grade, entry_horizon)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                    self.position.status,
+                    float(self.position.entry_price),
+                    float(price),
+                    float(self.position.tp3_price),
+                    float(self.position.stop_price),
+                    float(_ts_get_reference_atr(self)),
+                    self.position.grade,
+                    self.position.entry_horizon,
+                ),
+            )
+        except Exception as _t2h_e:
+            logger.warning("[TP2HoldShadow] 기록 실패 (무해): %s", _t2h_e)
+
     # pending을 주문 전에 먼저 등록 — BlockRequest() 메시지 펌프 race condition 방지
     # (수동 청산과 동일한 순서: pending 선등록 → 주문 → 실패 시 롤백)
     self._set_pending_order(

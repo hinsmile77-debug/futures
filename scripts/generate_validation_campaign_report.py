@@ -48,6 +48,7 @@ from config.settings import (
     HURST_RANGE_THRESHOLD,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN
+from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
 
 SHADOW_TB_DIR = os.path.join(MODEL_DIR, "horizons", "shadow_triple_barrier")
 _TS_FMT = "%Y-%m-%d %H:%M:%S"
@@ -1096,6 +1097,154 @@ def resolve_and_eval_open_gap() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [10] TP2 홀드 A/B counterfactual — resolve + 누적 판정 (361차)
+# ──────────────────────────────────────────────────────────────
+
+def resolve_and_eval_tp2_hold() -> dict:
+    """tp2_hold_shadow(main.py에서 기록) resolve + PASS/FAIL 판정.
+
+    0720 정기점검 "TP3 도달 0건" 딥다이브 결과: 원인은 트레일링 폭이 아니라
+    qty=2 스테이지 배분(TP2에서 잔량 1계약 전량 종료, TP3 몫이 항상 0)이었음.
+    이 채널은 그 순간 "홀드했다면 TP3/트레일링까지 갔을 때 어땠을지"를 당일
+    15:10까지 분봉으로 사후 시뮬레이션한다. 트레일링 티어는
+    strategy.position.position_tracker.compute_trailing_stop_tier()를 그대로
+    재사용(라이브 로직과 동일 소스, 드리프트 방지). ATR은 훅 시점 값을 고정
+    사용(단순화 — 봉별 ATR 재계산은 하지 않음), 가상 트레일링 anchor는 TP1 이후
+    상태를 정확히 재현하지 않고 TP2 시점부터 entry_price 기준으로 새로 시작한다
+    (둘 다 §3-5류 채널들의 "고정 스톱/TP 기준" 단순화와 동일 원칙).
+
+    PASS = 현행(TP2 전량종료) 유지 — 홀드가 평균적으로 손해.
+    FAIL = 재배분(TP1만 정리 후 TP3/트레일링까지 보유) 채택 검토 권고
+           (즉시 코드 변경 아님 — 주간회의 수동 결정, §9 사전등록 원칙).
+    """
+    cr = VALIDATION_CAMPAIGN["tp2_hold_shadow"]
+    out = {"verdict": "INSUFFICIENT", "resolved_now": 0}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            unresolved = conn.execute(
+                "SELECT * FROM tp2_hold_shadow WHERE resolved = 0 ORDER BY ts"
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    if unresolved:
+        earliest = min(r["ts"] for r in unresolved)
+        close_map, high_map, low_map = _load_candle_maps(earliest)
+        now = datetime.datetime.now()
+        updates = []
+        for r in unresolved:
+            base = datetime.datetime.strptime(r["ts"], _TS_FMT)
+            day_end = base.replace(hour=15, minute=10, second=0, microsecond=0)
+            if now < day_end + datetime.timedelta(minutes=2):
+                continue  # 당일 장 마감까지 아직 안 지남 — 다음 실행에서 재시도
+            is_long = str(r["direction"]) == "LONG"
+            direction = "LONG" if is_long else "SHORT"
+            entry_p = float(r["entry_price"])
+            tp3_p = float(r["tp3_price"] or 0.0)
+            atr = float(r["atr_at_hook"] or 0.0)
+
+            anchor = entry_p
+            stop = float(r["stop_price_at_hook"] or entry_p)
+            cf_outcome, cf_price, cf_minutes = None, None, 0
+            last_close, last_m = None, 0
+            m = 0
+            while True:
+                m += 1
+                mid = base + datetime.timedelta(minutes=m)
+                if mid.time() > datetime.time(15, 10):
+                    break
+                mid_ts = mid.strftime(_TS_FMT)
+                hi = high_map.get(mid_ts)
+                lo = low_map.get(mid_ts)
+                cl = close_map.get(mid_ts)
+                if hi is None or lo is None or cl is None:
+                    continue
+                last_close, last_m = cl, m
+                # 라이브와 동일하게 매분 종가로만 트레일링 1회 갱신
+                anchor, stop = compute_trailing_stop_tier(
+                    entry_p, direction, atr, cl, anchor, stop
+                )
+                hit_tp3 = tp3_p > 0 and (hi >= tp3_p if is_long else lo <= tp3_p)
+                hit_stop = lo <= stop if is_long else hi >= stop
+                # 동시 터치 → 보수적으로 STOP 우선 (기존 섀도 채널들과 동일 관례)
+                if hit_stop:
+                    cf_outcome, cf_price, cf_minutes = "TRAIL_STOP", stop, m
+                    break
+                if hit_tp3:
+                    cf_outcome, cf_price, cf_minutes = "TP3", tp3_p, m
+                    break
+            if cf_price is None:
+                if last_close is None:
+                    continue  # 분봉 데이터 자체가 없음 — 다음 실행에서 재시도
+                cf_outcome, cf_price, cf_minutes = "FORCE_EXIT", last_close, last_m
+            tp2_p = float(r["tp2_price"])
+            # hyp_pnl_pts: (+) = 홀드가 이득(재배분 근거), (-) = TP2 조기청산이 나았음
+            hyp = (cf_price - tp2_p) if is_long else (tp2_p - cf_price)
+            updates.append((cf_outcome, cf_price, cf_minutes, round(hyp, 4), r["id"]))
+
+        if updates:
+            with _conn(TRADES_DB) as conn:
+                conn.executemany(
+                    """UPDATE tp2_hold_shadow
+                       SET resolved=1, cf_outcome=?, cf_exit_price=?,
+                           cf_hold_minutes=?, hyp_pnl_pts=?
+                       WHERE id=?""",
+                    updates,
+                )
+                conn.commit()
+            out["resolved_now"] = len(updates)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            agg = conn.execute(
+                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
+                          AVG(entry_price) AS avg_price,
+                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win,
+                          SUM(CASE WHEN cf_outcome='TP3' THEN 1 ELSE 0 END) AS n_tp3,
+                          SUM(CASE WHEN cf_outcome='TRAIL_STOP' THEN 1 ELSE 0 END) AS n_stop,
+                          SUM(CASE WHEN cf_outcome='FORCE_EXIT' THEN 1 ELSE 0 END) AS n_force
+                   FROM tp2_hold_shadow WHERE resolved=1 AND ts >= ?""",
+                (_campaign_start(),),
+            ).fetchone()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM tp2_hold_shadow WHERE resolved=0"
+            ).fetchone()["n"]
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    n = int(agg["n"] or 0)
+    total_hyp = float(agg["total_hyp"] or 0.0)
+    avg_price = float(agg["avg_price"] or 0.0) or 300.0
+    win_rate = (int(agg["n_win"] or 0) / n) if n else 0.0
+    out.update({
+        "n_resolved": n,
+        "n_pending": int(pending),
+        "total_hyp_pnl_pts": round(total_hyp, 4),
+        "win_rate": round(win_rate, 4),
+        "cf_tp3": int(agg["n_tp3"] or 0),
+        "cf_trail_stop": int(agg["n_stop"] or 0),
+        "cf_force_exit": int(agg["n_force"] or 0),
+    })
+    if n < int(cr["min_samples"]):
+        out["reason"] = "TP2 전량종료 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        return out
+
+    cost_pt = _roundtrip_cost_pt(avg_price)
+    out["cost_pt"] = round(cost_pt, 4)
+    adopt = total_hyp > cost_pt * 2.0
+    out["verdict"] = "FAIL" if adopt else "PASS"
+    if adopt:
+        out["recommendation"] = (
+            "qty=2 스테이지 재배분(TP1만 정리 후 TP3/트레일링까지 보유) 채택 검토 "
+            "— 주간회의 수동 결정 (§9 사전등록 원칙)"
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [5] 레짐 조건부 ATR 배수 — hurst_bucket별 순EV
 # ──────────────────────────────────────────────────────────────
 
@@ -1266,6 +1415,7 @@ def build_report(days: int) -> tuple:
     jg = resolve_and_eval_joint_gate()
     ks = eval_kelly_skip_grade_c()
     og = resolve_and_eval_open_gap()
+    t2 = resolve_and_eval_tp2_hold()
 
     metrics = {
         "generated_at": now_str,
@@ -1275,6 +1425,7 @@ def build_report(days: int) -> tuple:
         "tb": tb, "meta_gate": mg, "quantile": qt,
         "signal_decay": sd, "hurst_regime": hr, "hurst_gate_shadow": hg,
         "joint_gate_shadow": jg, "kelly_skip": ks, "open_gap_shadow": og,
+        "tp2_hold_shadow": t2,
     }
 
     L = []
@@ -1323,6 +1474,12 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(og["verdict"]), og.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (og["win_rate"] * 100)) if "win_rate" in og else "—",
         og.get("n_resolved", 0), og.get("n_pending", 0)))
+    L.append("| [10] TP2 홀드 counterfactual (qty=2 재배분 A/B) | %s | 누적 hyp=%spt 승률=%s "
+              "(n=%s, 보류 %s) TP3=%s건 트레일=%s건 강제청산=%s건 |" % (
+        _fmt_verdict(t2["verdict"]), t2.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (t2["win_rate"] * 100)) if "win_rate" in t2 else "—",
+        t2.get("n_resolved", 0), t2.get("n_pending", 0),
+        t2.get("cf_tp3", "—"), t2.get("cf_trail_stop", "—"), t2.get("cf_force_exit", "—")))
     L.append("")
 
     # [0] 표본 기아 경보 상세

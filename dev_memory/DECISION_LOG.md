@@ -9612,3 +9612,73 @@ COM/브로커 없이 `EntryChecklist`/`PositionSizer` 단독으로 4개 시나�
 
 **관련**: 343차(연장추격필터 10번 항목 — 대칭 선례), 360차 손절 계단화(같은 세션,
 같은 판단 근거로 즉시 활성화).
+
+---
+
+## 2026-07-20 (361차) — "TP3 도달 0건" 원인 규명 + qty=2 재배분 섀도 A/B("tp2_hold_shadow") 구현
+
+**배경**: `docs/정기점검/매일점검/dailycheck_prompt.txt` 안건 — "TP3 도달 0건 원인 규명,
+트레일링스톱이 항상 TP2 전에 먼저 잡는지 확인 후 트레일링 폭 완화 A/B 실험". 가설(트레일링
+스톱이 TP2 전에 먼저 잡는다)을 검증하러 들어갔으나 **가설 자체가 사실이 아니었음**.
+
+**원인**: `trades.db` 전수 확인(8주치, 포지션 56건) — 초기 진입 수량이 단 한 번도 3계약에
+도달한 적이 없음(qty=1 36건, qty=2 20건, qty≥3 0건). `strategy/position/position_tracker.py
+::get_stage_plan()`이 `qty==1 → (1,0,0)`, `qty==2 → (1,1,0)`으로 하드코딩(815-822행) —
+두 경우 모두 TP3(3단계) 몫이 항상 0. qty=2는 TP1이 1계약 정리 후 TP2가 나머지 1계약을
+"전량" 종료(`is_full_close`, `main.py:10445`)해 TP3가 발동할 계약 자체가 안 남고, qty=1은
+TP1이 물리적 청산이 아니라 `arm_tp1_single_contract_with_mode()`(보호전환)뿐이고 TP2에서
+남은 1계약이 전량 종료돼 역시 TP3 전에 소진. 이 설계는 우연이 아니라 339차 후속
+(`config/settings.py:99-103`)이 "TP1/TP2/TP3가 qty=1·qty=2(1+1)를 이미 우아하게 처리하도록
+설계돼 있어 [최소진입계약수가] 3이어야 할 구조적 이유가 없음"이라며 의도적으로 내린 결정.
+다만 그 이후 실제 raw_qty 분포가 3에 단 한 번도 도달하지 않아 TP3가 100% 죽은 경로가 됐다.
+**트레일링 폭을 완화해도 TP3 도달률에는 전혀 영향이 없다** — 가격이 TP3에 닿기도 전에 이미
+계약이 남아있지 않기 때문.
+
+**결정**: 사용자 확인 하에 "qty=2 스테이지 재배분"(TP1에서 1계약만 정리, 나머지 1계약은
+TP2를 건너뛰고 TP3/트레일링까지 보유) 방향으로 A/B 진행. 실거래 청산 시점/수량을 바꾸는
+변경이라 즉시 반영하지 않고, 이 코드베이스의 기존 섀도 카운터팩추얼 관례
+(`hurst_gate_shadow`/`signal_decay_exits` 등, `utils/db_utils.py`)를 그대로 따라 먼저
+계측만 한다.
+
+**구현**:
+1. `strategy/position/position_tracker.py` — `update_trailing_stop()`의 4단계 티어 계산
+   (0.5/1.0/1.5/2.0×ATR)을 모듈 레벨 순수함수 `compute_trailing_stop_tier()`로 추출(동작
+   100% 동일 — 리팩터 전후 동일 입력에 동일 출력 확인). 리졸버가 라이브와 동일 소스를
+   import해 재사용하도록 해 드리프트 방지.
+2. `utils/db_utils.py::init_trades_db()` — `tp2_hold_shadow` 테이블 신설(TP2 발동 시점의
+   entry/tp2/tp3/stop/atr/grade/entry_horizon + `resolved`/`cf_outcome`/`cf_exit_price`/
+   `cf_hold_minutes`/`hyp_pnl_pts`).
+3. `main.py::_ts_execute_partial_exit`(10445행 `is_full_close` 직후, 실주문 전송 전) —
+   `stage==2 and is_full_close and total_qty==2`일 때만 INSERT. **실제 주문 흐름은 무변경**
+   (순수 부가 기록).
+4. `scripts/generate_validation_campaign_report.py::resolve_and_eval_tp2_hold()` 신설 —
+   `hurst_gate_shadow`류와 동일 골격이나, 고정 관찰 창(`cf_window_min`) 대신 **당일 15:10
+   강제청산까지** 분봉을 스캔(이 채널만의 차이 — "얼마나 오래 들고 가야 TP3에 닿는지"가
+   관심사). `compute_trailing_stop_tier()`를 import해 매분 종가로 가상 트레일링을 갱신,
+   고저가로 TP3/트레일스톱 터치를 판정(동시 터치는 STOP 우선 — 기존 관례). ATR은 훅
+   시점 값 고정 사용, 가상 anchor는 TP2 시점부터 entry_price 기준 재시작(둘 다 단순화,
+   주석 명시). `build_report()`에 `[10] TP2 홀드 counterfactual` 행 추가.
+5. `config/settings.py:VALIDATION_CAMPAIGN["tp2_hold_shadow"] = {"min_samples": 15}` 신규
+   등록(다른 채널과 동일 "사전 등록" 원칙). PASS=현행(TP2 전량종료) 유지, FAIL=재배분
+   채택 검토 권고(즉시 코드 변경 아님, 주간회의 수동 결정).
+
+**검증**: `py_compile` 5개 파일 통과. `python scripts/generate_validation_campaign_report.py`
+드라이런(표본 0) — 크래시 없이 `[10]` 행이 `⏳ INSUFFICIENT (n=0)`으로 정상 출력 확인.
+격리 테스트(scratchpad에 `trades.db`/`raw_data.db` 복사본 + 리포트 모듈의 `TRADES_DB`/
+`RAW_DATA_DB` 이름만 교체 — 실DB 미접촉, `feedback_isolate_stateful_verification` 원칙
+준수) — LONG TP3 도달, LONG 트레일스톱 조기 청산, SHORT TP3 도달 3개 시나리오 모두
+기대한 `cf_outcome`/`hyp_pnl_pts`로 정확히 판정됨을 확인.
+
+**Why**: 사용자가 제시한 가설(트레일링스톱 원인)을 그대로 받아 트레일링 폭만 완화했다면
+아무 효과 없는 변경을 배포하고 "안 됐네" 하며 다음 원인을 찾는 데 시간을 더 썼을 것.
+데이터(trades.db 전수, get_stage_plan 코드)로 가설을 먼저 검증한 뒤 방향을 사용자에게
+재확인하고 진행한 것이 핵심.
+
+**How to apply**: 사용자가 특정 메커니즘(트레일링, 특정 게이트 등)을 원인으로 지목해도
+"그 메커니즘이 실제로 작동을 막았는지"를 로그/DB 실측으로 먼저 확인할 것 — 이번처럼 다른
+층(사이징/스테이지 배분)이 진짜 원인이면 지목된 메커니즘을 아무리 튜닝해도 효과가 없다.
+
+**관련**: 339차 후속(`MINI_MIN_CONTRACTS` 3→1 완화 결정, 이번 문제의 근본 배경),
+360차/360차 후속(같은 세션 — 손절 계단화·역추세 캡, get_stage_plan 주변 최근 변경 이력),
+297차/354차(hurst_gate_shadow·open_gap_shadow — 이번에 재사용한 섀도 카운터팩추얼 원형),
+`feedback_isolate_stateful_verification`(검증-실거래 DB 격리 메모리 원칙).
