@@ -814,6 +814,19 @@ CHASE_FILTER_LOOKBACK_MIN = 10             # 연장 측정 룩백 (분)
 CHASE_FILTER_ATR_THRESHOLD = 2.0           # 기본 임계값 (추세·중립 구간)
 CHASE_FILTER_ATR_THRESHOLD_MEANREV = 1.5   # Hurst<0.45(평균회귀) 임계값 — 더 엄격
 
+# [360차] 역추세 진입 캡(anti-countertrend) — 0720 유일 손실(포지션6, hurst=trend,
+# SHORT 2계약, -523,099원, 당일 총손익의 56% 잠식)이 근거. price_extension_atr(10번
+# 추격필터와 동일 피처, 부호 있음)의 연장 방향과 진입 방향이 반대이고 hurst>=
+# HURST_TREND_THRESHOLD(추세 지속 확인)이면 EntryChecklist 11번 항목이 실패 처리되어
+# pass_count가 1 줄고(10번과 동일한 소프트 게이트), 수량이 COUNTERTREND_MAX_QTY로
+# 캡된다(size_mult를 깎는 방식은 kelly_advised_skip을 오염시켜 채택하지 않음 —
+# strategy/entry/position_sizer.py의 별도 max_qty_override 파라미터로 처리).
+# entry_mode=MEAN_REVERSION(의도적 역추세 전략)은 예외 — 3_vwap의 exhaustion 기반
+# 사이징과 충돌 방지.
+COUNTERTREND_CAP_ENABLED = True
+COUNTERTREND_ATR_THRESHOLD = 2.0   # CHASE_FILTER_ATR_THRESHOLD와 동일 스케일(보정 데이터 없어 우선 동일값)
+COUNTERTREND_MAX_QTY = 1
+
 # [349차] 급변장 사전 가드 — 7/16 정기점검(dailycheck_prompt.txt P1)에서 지적된
 # 문제: 기존 RegimeOverride(config/strategy_params.py, 급변장 진입 금지)는
 # MicroRegimeClassifier가 완결된 봉의 ATR비/ADX로만 판정해 "이미 급변한 다음

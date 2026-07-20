@@ -1,8 +1,8 @@
-# strategy/entry/checklist.py — 10개 진입 전 체크리스트
+# strategy/entry/checklist.py — 11개 진입 전 체크리스트
 """
-10개 항목을 평가하여 통과 수와 등급을 결정합니다.
+11개 항목을 평가하여 통과 수와 등급을 결정합니다.
 
-등급 기준(min_pass는 절대 개수 — 10번 항목 추가 후에도 그대로, §343차 참조):
+등급 기준(min_pass는 절대 개수 — 10·11번 항목 추가 후에도 그대로, §343차·360차 참조):
   A: 6개 이상 → ×1.5 자동 진입
   B: 4~5개   → ×1.0 자동 진입
   C: 2~3개   → ×0.6 자동 진입 (UI 'C 자동' 토글로 ON/OFF)
@@ -16,14 +16,15 @@ from config.settings import (
     ENTRY_GRADE, HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP, ENS_CONF_FLOOR_FOR_AUTO,
     MR_EXHAUSTION_MIN, MR_EXHAUSTION_MIN_WEAK, MR_WEAK_SIZE_MULT,
     CHASE_FILTER_ENABLED, CHASE_FILTER_ATR_THRESHOLD, CHASE_FILTER_ATR_THRESHOLD_MEANREV,
-    HURST_RANGE_THRESHOLD,
+    HURST_RANGE_THRESHOLD, HURST_TREND_THRESHOLD,
+    COUNTERTREND_CAP_ENABLED, COUNTERTREND_ATR_THRESHOLD, COUNTERTREND_MAX_QTY,
 )
 
 logger = logging.getLogger("SIGNAL")
 
 
 class EntryChecklist:
-    """9개 진입 전 체크리스트"""
+    """11개 진입 전 체크리스트"""
 
     def evaluate(
         self,
@@ -97,6 +98,7 @@ class EntryChecklist:
                 "size_mult":  0,
                 "auto_entry": False,
                 "entry_mode": "NO_ENTRY",
+                "max_qty_override": None,
             }
 
         # FLAT 신호는 방향 없음 → SHORT로 오분류되어 8/9 통과 후 A등급 AUTO진입이
@@ -110,6 +112,7 @@ class EntryChecklist:
                 "size_mult":  0,
                 "auto_entry": False,
                 "entry_mode": "NO_ENTRY",
+                "max_qty_override": None,
             }
 
         is_long = direction == DIRECTION_UP
@@ -117,6 +120,7 @@ class EntryChecklist:
 
         checks = {}
         entry_mode = "TREND_FOLLOW"
+        _countertrend_cap_triggered = False  # [360차] 11번 항목에서 갱신
 
         # 1. 앙상블 신호 방향 확인
         checks["1_signal"] = "1_signal" in disabled or direction in (DIRECTION_UP, DIRECTION_DOWN)
@@ -137,6 +141,7 @@ class EntryChecklist:
                 "auto_entry":        False,
                 "entry_mode":        entry_mode,
                 "conf_check_failed": True,   # [P3] 신뢰도 차단 식별 플래그
+                "max_qty_override":  None,
             }
 
         # 3. VWAP 위치
@@ -248,6 +253,33 @@ class EntryChecklist:
                     "LONG" if is_long else "SHORT",
                 )
 
+        # 11. 역추세 진입 필터(anti-countertrend, 360차) — hurst>=HURST_TREND_THRESHOLD
+        # (추세 지속 확인) 구간에서 price_extension_atr(10번과 동일 피처) 연장 방향과
+        # 반대로 진입하는지 확인. 0720 유일 손실(포지션6, hurst=trend, SHORT 2계약,
+        # -523,099원)이 이 패턴 — 추세 지속이 확인된 구간에서 그 추세를 거스르면 지속
+        # 추세에 계속 밀릴 위험이 크다. entry_mode=MEAN_REVERSION(3번 VWAP 분기, 의도적
+        # 역추세 전략)은 예외 — exhaustion 기반 사이징과 충돌 방지. 10번과 동일하게
+        # 하드 차단이 아니라 pass_count만 반영하고, 트리거 시 수량은 이후
+        # PositionSizer.compute(max_qty_override=COUNTERTREND_MAX_QTY)로 캡된다.
+        if ("11_countertrend" in disabled or not COUNTERTREND_CAP_ENABLED
+                or entry_mode == "MEAN_REVERSION"):
+            checks["11_countertrend"] = True
+        else:
+            _is_countertrend_dir = (price_extension_atr > 0) != is_long
+            _countertrend_cap_triggered = (
+                hurst >= HURST_TREND_THRESHOLD
+                and _is_countertrend_dir
+                and abs(price_extension_atr) > COUNTERTREND_ATR_THRESHOLD
+            )
+            checks["11_countertrend"] = not _countertrend_cap_triggered
+            if _countertrend_cap_triggered:
+                logger.info(
+                    "[Checklist] 역추세 진입 감지 — hurst=%.3f ext=%.2fATR(반대) > %.2f dir=%s"
+                    " → pass_count-1, 수량 %d계약 캡",
+                    hurst, abs(price_extension_atr), COUNTERTREND_ATR_THRESHOLD,
+                    "LONG" if is_long else "SHORT", COUNTERTREND_MAX_QTY,
+                )
+
         pass_count = sum(1 for v in checks.values() if v)
 
         # VWAP 강제 X — 그룹별 적용 여부 결정
@@ -272,6 +304,7 @@ class EntryChecklist:
                     "size_mult":  0,
                     "auto_entry": False,
                     "entry_mode": entry_mode,
+                    "max_qty_override": None,
                 }
             else:
                 logger.info(
@@ -342,9 +375,15 @@ class EntryChecklist:
                 confidence * 100, ENS_CONF_FLOOR_FOR_AUTO * 100, grade,
             )
 
+        # [360차] 역추세 진입 캡 — 11번 항목에서 트리거된 경우 수량 상한을 반환값에 싣는다.
+        # size_mult는 건드리지 않는다(kelly_advised_skip 오염 방지, 상세 근거는
+        # position_sizer.py 참조) — PositionSizer.compute()가 별도 파라미터로 적용.
+        max_qty_override = COUNTERTREND_MAX_QTY if _countertrend_cap_triggered else None
+
         logger.info(
-            "[Checklist] 통과 %d/9 → 등급 %s (자동=%s, 배수×%s, 모드=%s, group=%s)",
+            "[Checklist] 통과 %d/11 → 등급 %s (자동=%s, 배수×%s, 모드=%s, group=%s)%s",
             pass_count, grade, auto_entry, size_mult, entry_mode, _core_group,
+            f" [역추세캡 {max_qty_override}계약]" if max_qty_override else "",
         )
 
         return {
@@ -354,4 +393,5 @@ class EntryChecklist:
             "size_mult":  size_mult,
             "auto_entry": auto_entry,
             "entry_mode": entry_mode,
+            "max_qty_override": max_qty_override,
         }

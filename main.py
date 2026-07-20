@@ -6251,6 +6251,7 @@ class TradingSystem:
                     restart_mult        = self.circuit_breaker.restart_size_mult,
                     dna_mult            = (self.market_dna.diagnose().get("size_mult", 1.0)
                                           if self.market_dna.is_ready() else 1.0),
+                    max_qty_override    = _cr.get("max_qty_override"),
                 )
                 _qty_display = size_result["quantity"]
                 _qty_sizer_raw = _qty_display  # 게이트 조정 전 Sizer 원본값 보존

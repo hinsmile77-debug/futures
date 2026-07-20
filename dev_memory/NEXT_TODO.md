@@ -34,6 +34,20 @@
   STOP_LIMIT` 9999→2~3 복원) 재검토 시 임계값 해석에 이 변화를 반영할 것. 이 항목이 DONE
   처리되기 전엔 삭제하지 말 것.
 
+> **후속(같은 세션) — 역추세 진입 캡(Countertrend Cap)**: 같은 0720 딥다이브에서 사용자가
+> 제안한 두 번째 개선안 "`hurst_bucket=trend` 구간에서 역추세 방향 진입 시 사이즈 1계약
+> 캡"을 구현. `strategy/entry/checklist.py`에 10번(연장추격필터, 343차)과 대칭인 11번
+> 항목을 추가(같은 피처 `price_extension_atr`를 반대 방향으로 비교, entry_mode=
+> MEAN_REVERSION은 예외) + `strategy/entry/position_sizer.py`에 `max_qty_override`
+> 파라미터 신설(size_mult를 깎는 방식은 `kelly_advised_skip` 플래그를 오염시켜 채택
+> 안 함 — 상세는 DECISION_LOG 참조).
+
+- [ ] **[360차] 역추세 진입 캡 라이브 첫 발동 검증** — `[Checklist] 역추세 진입 감지`
+  로그 발동 시 실제 진입 수량이 `COUNTERTREND_MAX_QTY`(1계약)로 캡됐는지, `trades.db`의
+  `kelly_advised_skip`이 원래 값 그대로인지(오염 없음) 확인. `scripts/
+  verify_countertrend_cap.py` 오프라인 시나리오 4개는 전부 통과(구현 당일 확인) — 이
+  항목은 실제 라이브 체결 기준 재확인 전용. 이 항목이 DONE 처리되기 전엔 삭제하지 말 것.
+
 ---
 
 ## 2026-07-20 (359차 — 0720 정기점검 딥다이브 후속 3건 구현, 전부 라이브 미검증)

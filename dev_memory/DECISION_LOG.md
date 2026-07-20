@@ -9445,3 +9445,56 @@ stop_price로 정상 청산되는지, ④ qty==1 대상 제외, ⑤ LONG 방향 
 **관련**: 339차(원 비대칭 발견 + TP1 절반 수정), 0720 오후 실거래 딥다이브(포지션6
 사례), CB②/FP-CRITICAL(추적 부재로 방치된 선례 — 이번엔 그 실수를 반복하지 않도록
 가드 문구 명시 등록).
+
+## 2026-07-20 (360차 후속) — 역추세 진입 캡(Countertrend Cap) 구현
+
+**배경**: 같은 0720 딥다이브에서 사용자가 제안한 두 번째 개선안 — "`hurst_bucket='trend'`
+(추세 지속 확인 구간)에서 역추세 방향으로 진입하면 수량을 1계약으로 캡(또는 등급
+A→B 하향)". 근거는 손절 계단화와 동일한 사례: 포지션6(hurst=trend, SHORT 2계약,
+-523,099원).
+
+**핵심 발견**: Hurst 지수 자체(`features/technical/hurst_exponent.py`)는 추세 "지속성의
+크기"만 측정하고 방향은 담지 않는다 — 방향 판정에는 이미 존재하는 부호 있는 피처
+`price_extension_atr`(양수=상승 연장, 음수=하락 연장)가 필요한데, 이 피처는 343차
+연장추격필터(checklist.py 10번 항목)가 이미 쓰고 있어 **새 피처 계산이 전혀 필요
+없었다** — 같은 입력을 반대 방향으로 비교하기만 하면 됐다.
+
+**설계**: 두 개의 기존 패턴을 그대로 재사용.
+1. 10번 항목과 정확히 대칭인 신규 11번 항목 — `(price_extension_atr>0) != is_long`
+   (연장방향과 진입방향이 반대) AND `hurst >= HURST_TREND_THRESHOLD`(0.55, 기존 상수)
+   이면 소프트 게이트로 pass_count-1(10번과 동일 철학 — 하드 차단 아님).
+   `entry_mode == "MEAN_REVERSION"`(VWAP±1.5σ+exhaustion, 3번 항목)은 예외 — MR은
+   설계상 이미 "의도적 역추세" 전략이라 새 게이트와 정면충돌하므로 반드시 제외.
+2. `_mr_weak`(약한 MR 사이즈 축소, 327-333행)와 유사한 자리이나, `size_mult`를 깎는
+   대신 `PositionSizer.compute()`에 신설한 `max_qty_override` 파라미터로 최종 수량을
+   직접 클램프.
+
+**발견한 함정 — size_mult를 극단적으로 낮추는 방식을 쓰지 않은 이유**: `size_mult`를
+0에 가깝게 낮춰 `min_qty` 바닥으로 강제하는 방법도 산술적으로는 1계약을 만들지만,
+`raw_qty < 1.0` 조건으로 `kelly_advised_skip=True`가 항상 같이 찍힌다
+(`position_sizer.py`). 이 플래그는 `trades.db.kelly_advised_skip` 컬럼에 저장되고
+`NEXT_TODO.md`에 등록된 "C등급+KellySkip 차단 채택 여부" 주간회의 안건의 판단 근거로
+쓰이는데, "켈리가 자본 대비 이 사이즈를 지지하지 않음"이라는 원래 의미와 "방향성
+게이트가 강제로 캡함"이라는 이번 사유가 뒤섞이면 그 분석이 오염된다. 그래서
+`grade_mult`/`size_mult` 경로를 건드리지 않고 `max_qty_override`를 raw_qty/
+kelly_advised_skip 계산 **이후** 최종 단계에서만 적용해 오염을 원천 차단했다.
+
+**File**: `config/settings.py`(`COUNTERTREND_CAP_ENABLED`/`COUNTERTREND_ATR_THRESHOLD`/
+`COUNTERTREND_MAX_QTY` 3개 상수), `strategy/entry/checklist.py`(11번 항목,
+`max_qty_override` 반환값 — 조기 반환 3곳 포함 전 경로에 키 추가), `strategy/entry/
+position_sizer.py`(`compute()`에 `max_qty_override` 파라미터, quantity 계산 최종
+단계에서만 클램프), `main.py`(6210행 `self.sizer.compute()` 호출에 `max_qty_override=
+_cr.get("max_qty_override")` 한 줄 추가 — `_cr`/`_pre_cr_cache`가 이미 캐시·재사용되는
+구조라 추가 배선 불요).
+
+**검증**: `py_compile` 통과(4개 파일). `scripts/verify_countertrend_cap.py` 신규 —
+COM/브로커 없이 `EntryChecklist`/`PositionSizer` 단독으로 4개 시나리오(① hurst=trend+
+역추세 LONG → 캡 발동, ② 동일조건 순방향 SHORT 대조군 → 캡 미발동, ③ MEAN_REVERSION
+모드는 조건 충족해도 예외, ④ Sizer가 A등급 raw_qty≥2 상황에서도 max_qty_override=1로
+정확히 클램프하고 kelly_advised_skip은 오염 없이 원래 값 유지) 전부 통과.
+`COUNTERTREND_CAP_ENABLED=True`로 즉시 배포(손절 계단화와 동일 판단 근거 — 이미
+검증된 10번 게이트의 대칭 확장이며, 트리거돼도 손실이 아니라 "사이즈 1계약 제한"뿐이라
+하방 리스크가 낮음). 라이브 첫 발동은 `NEXT_TODO.md` 2026-07-20(360차) 항목으로 추적.
+
+**관련**: 343차(연장추격필터 10번 항목 — 대칭 선례), 360차 손절 계단화(같은 세션,
+같은 판단 근거로 즉시 활성화).
