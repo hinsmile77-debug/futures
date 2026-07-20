@@ -3322,7 +3322,7 @@ class TradingSystem:
                     "WARNING",
                 )
                 try:
-                    self.exit_manager.force_exit(_ecb_close, reason="ExchangeCB_해제_즉시청산")
+                    _ts_broker_direct_force_exit(self, _ecb_close, "ExchangeCB_해제_즉시청산")
                 except Exception as _ecb_ex:
                     log_manager.system(
                         f"[ExchangeCB] 즉시 청산 실패: {_ecb_ex} — 수동 확인 필요",
@@ -11750,7 +11750,7 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
             f"[PendingOrder] EXIT잔여 반대포지션({side} {qty}계약) → 즉시 긴급청산 @ {_force_price:.2f}",
             "CRITICAL",
         )
-        self.exit_manager.force_exit(_force_price, reason="EXIT잔여 반대포지션 긴급청산")
+        _ts_broker_direct_force_exit(self, _force_price, "EXIT잔여 반대포지션 긴급청산")
     return True
 
 
