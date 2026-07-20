@@ -3528,7 +3528,7 @@ class TradingSystem:
     def pre_market_setup(self):
         """1단계 (08:55): macro seed fetch + PreRetrain 시작.
         SP500·KRW chg는 첫 fetch에서 항상 0.0(설계된 동작)이므로
-        레짐 확정은 _pre_market_stage2()에서 2회차 fetch(08:58) 후 실행한다."""
+        레짐 확정은 _pre_market_stage2_fetch()에서 2회차 fetch(08:58) 후 실행한다."""
         logger.info("[System] 장 전 매크로 수집 시작 (1단계 — seed fetch)")
         log_manager.system("장 전 매크로 수집 시작")
 
@@ -3748,6 +3748,7 @@ class TradingSystem:
                     _days_ago = (datetime.date.today() - _eod_d).days
                     if 1 <= _days_ago <= 5:   # 주말·공휴일 포함 최대 5 영업일 이내
                         self._eod_retrain_ok = True
+                        self._eod_retrain_gap_date = _eod_d   # [359차] 최종 스킵 로그용 보존
                         log_manager.system(
                             f"[PreRetrain] EOD 재학습 날짜 복원: {_eod_date_str} "
                             f"({_days_ago}일 전) → PreRetrain 스킵 검토",
@@ -3766,6 +3767,7 @@ class TradingSystem:
                     _mf = os.path.join(_mdir, f"eod_retrain_done_{_prev.strftime('%Y%m%d')}.txt")
                     if os.path.exists(_mf):
                         self._eod_retrain_ok = True
+                        self._eod_retrain_gap_date = _prev   # [359차] 최종 스킵 로그용 보존
                         log_manager.system(
                             f"[PreRetrain] EOD 마커 파일 직접 확인 ({_d}일 전: {_prev}) "
                             f"→ PreRetrain 스킵 (session_state 미기록 보완)",
@@ -3780,8 +3782,20 @@ class TradingSystem:
         ):
             self._warmup_retrain_pending = False
             if getattr(self, "_eod_retrain_ok", False):
+                # [359차] "전날" 하드코딩 → 실제 경과 영업일 반영 (휴장 낀 재시동 시 혼동 방지)
+                _gap_date = getattr(self, "_eod_retrain_gap_date", None)
+                if _gap_date:
+                    _today_d = datetime.date.today()
+                    _gap_biz_days = sum(
+                        1 for _gi in range(1, 6)
+                        if (_gap_date + datetime.timedelta(days=_gi)) <= _today_d
+                        and is_trading_day(_gap_date + datetime.timedelta(days=_gi))
+                    ) or 1
+                    _gap_tag = f"{_gap_biz_days}영업일 전({_gap_date})"
+                else:
+                    _gap_tag = "전날"
                 log_manager.system(
-                    "[PreRetrain] 08:55 사전 재학습 스킵 — 전날 EOD 재학습 성공 (동일 데이터 중복 불필요)",
+                    f"[PreRetrain] 08:55 사전 재학습 스킵 — {_gap_tag} EOD 재학습 성공 (동일 데이터 중복 불필요)",
                     "INFO",
                 )
             else:
@@ -3794,51 +3808,69 @@ class TradingSystem:
                     force=True, reason="08:55 PreRetrain", is_warmup=True, intraday=False,
                 )
 
-    def _pre_market_stage2(self):
-        """2단계 (08:58): 2회차 macro fetch → SP500·KRW 실수치 반영 → 레짐 확정.
-        MacroFetcher._first_fetch_done=True 상태에서 호출되므로 chg가 실제값으로 계산된다."""
-        self.macro_fetcher.manual_fetch()  # 강제 2회차 fetch
-        _fetched = self.macro_fetcher.get_features()
-        # MacroFetcher는 변동률을 소수 형태(0.005 = 0.5%)로 반환하고
-        # RegimeClassifier는 퍼센트 단위(0.5 = 0.5%)를 기대하므로 ×100 변환한다.
-        macro_data = {
-            "vix":             _fetched.get("vix", 20.0),
-            "sp500_chg_pct":   round(_fetched.get("sp500_chg", 0.0) * 100, 4),
-            "nasdaq_chg_pct":  round(_fetched.get("nasdaq_chg", 0.0) * 100, 4),
-            "usd_krw_chg_pct": round(_fetched.get("usd_krw_chg", 0.0) * 100, 4),
-            "us10y_chg":       _fetched.get("us10y_chg", 0.0),
-        }
-        logger.info(
-            "[System] 매크로 수집 완료 | VIX=%.1f SP500=%+.2f%% KRW=%+.2f%%",
-            macro_data["vix"], macro_data["sp500_chg_pct"], macro_data["usd_krw_chg_pct"],
-        )
+    def _pre_market_stage2_fetch(self):
+        """[359차] 2단계(08:58) 실제 fetch — 백그라운드 스레드 전용.
+        macro fetch(최대 5회 순차 blocking requests)와 investor fetch(COM BlockRequest
+        폴링 대기)가 도합 3~4초 이상 걸려 메인스레드(Qt 이벤트루프)를 정체시키던 것을
+        `_b_intraday_worker`와 동일한 threading.Thread+플래그폴링 패턴으로 이관한다.
+        여기서는 Qt 위젯을 절대 건드리지 않는다 — 대시보드 반영은 _pre_market_stage2_apply()가
+        다음 하트비트 틱에서 메인스레드로 수행."""
+        try:
+            self.macro_fetcher.manual_fetch()  # 강제 2회차 fetch
+            _fetched = self.macro_fetcher.get_features()
+            # MacroFetcher는 변동률을 소수 형태(0.005 = 0.5%)로 반환하고
+            # RegimeClassifier는 퍼센트 단위(0.5 = 0.5%)를 기대하므로 ×100 변환한다.
+            macro_data = {
+                "vix":             _fetched.get("vix", 20.0),
+                "sp500_chg_pct":   round(_fetched.get("sp500_chg", 0.0) * 100, 4),
+                "nasdaq_chg_pct":  round(_fetched.get("nasdaq_chg", 0.0) * 100, 4),
+                "usd_krw_chg_pct": round(_fetched.get("usd_krw_chg", 0.0) * 100, 4),
+                "us10y_chg":       _fetched.get("us10y_chg", 0.0),
+            }
+            logger.info(
+                "[System] 매크로 수집 완료 | VIX=%.1f SP500=%+.2f%% KRW=%+.2f%%",
+                macro_data["vix"], macro_data["sp500_chg_pct"], macro_data["usd_krw_chg_pct"],
+            )
 
-        result = self.regime_classifier.classify(**macro_data)
-        self.current_regime = result["regime"]
+            result = self.regime_classifier.classify(**macro_data)
+            self.current_regime = result["regime"]
 
-        logger.info("[System] 레짐 확정: %s | %s", self.current_regime, result["description"])
-        log_manager.system(f"레짐: {self.current_regime} | {result['description']}")
+            logger.info("[System] 레짐 확정: %s | %s", self.current_regime, result["description"])
+            log_manager.system(f"레짐: {self.current_regime} | {result['description']}")
 
+            # 투자자 warmup fetch — _last_fetch 초기화로 09:00 첫 파이프라인 z-score 폭발 방지.
+            # _last_fetch=None 상태에서는 age_sec=9999 → quality_investor_stale z-score +27 발생.
+            # 장전 fetch라 nets={}가 예상되지만 _last_fetch 설정만으로도 효과가 있다.
+            try:
+                self.investor_data.fetch_all(include_program=False)
+                logger.info("[System] PreOpen 투자자 warmup fetch 완료 (age_sec 초기화)")
+                log_manager.system("PreOpen 투자자 warmup fetch 완료")
+            except Exception as _e:
+                logger.warning("[System] PreOpen 투자자 warmup fetch 실패 (무해): %s", _e)
+
+            notify_premarket_ready(self.current_regime, getattr(self, "_futures_code", "?"))
+
+            self._stage2_result = {"macro_data": macro_data, "description": result["description"]}
+        except Exception as _s2_e:
+            logger.warning(
+                "[PreMarketStage2] fetch 실패 (무해, 09:05까지 다음 하트비트에서 재시도): %s", _s2_e
+            )
+        finally:
+            self._pre_market_stage2_running = False
+
+    def _pre_market_stage2_apply(self, _res: dict):
+        """[359차] Qt 위젯 반영 전용 — 반드시 메인스레드(하트비트)에서만 호출할 것."""
+        _macro = _res["macro_data"]
         self.dashboard.update_supply_macro(
-            vix=macro_data["vix"],
-            sp500_chg=macro_data["sp500_chg_pct"] / 100,
-            usd_krw=macro_data["usd_krw_chg_pct"],
+            vix=_macro["vix"],
+            sp500_chg=_macro["sp500_chg_pct"] / 100,
+            usd_krw=_macro["usd_krw_chg_pct"],
             regime=self.current_regime,
         )
         self.dashboard.append_sys_log(
-            f"레짐 확정: {self.current_regime} | {result['description']}"
+            f"레짐 확정: {self.current_regime} | {_res['description']}"
         )
         self.dashboard.set_ui_ready_mode()
-
-        # 투자자 warmup fetch — _last_fetch 초기화로 09:00 첫 파이프라인 z-score 폭발 방지.
-        # _last_fetch=None 상태에서는 age_sec=9999 → quality_investor_stale z-score +27 발생.
-        # 장전 fetch라 nets={}가 예상되지만 _last_fetch 설정만으로도 효과가 있다.
-        try:
-            self.investor_data.fetch_all(include_program=False)
-            logger.info("[System] PreOpen 투자자 warmup fetch 완료 (age_sec 초기화)")
-            log_manager.system("PreOpen 투자자 warmup fetch 완료")
-        except Exception as _e:
-            logger.warning("[System] PreOpen 투자자 warmup fetch 실패 (무해): %s", _e)
 
     # [SERVICE-BOUNDARY 2/4] MinutePipelineService
     # 책임: 분봉 단위 의사결정(검증→학습→피처→예측→진입/청산→기록)
@@ -4832,6 +4864,7 @@ class TradingSystem:
             z_warn_count     = getattr(self.model, "last_z_warn_count", 0),
         )
         self.current_micro_regime = _mr["regime"]
+        self._micro_regime_instability = _mr.get("instability_10m", 0)   # [359차]
         self.dashboard.update_micro_regime(
             _mr["regime"], _mr["adx"], _mr["atr_ratio"], _mr["regime_duration"]
         )
@@ -5621,6 +5654,24 @@ class TradingSystem:
             log_manager.signal(
                 f"[IntradayRegime] {self.current_intraday_regime} — min_conf +{_l2_mc_adj * 100:.0f}%p → {actual_min_conf:.2f}"
             )
+
+        # [359차] 레짐 불안정도(휩쏘) 게이트 — 0720 정기점검: MicroRegime 분당 급변 구간에서
+        # 1m/3m/5m/10m 예측정확도가 랜덤 이하로 붕괴 확인(predictions.db 실측). 검증 없이
+        # 켠 게이트가 FP-CRITICAL·CB③-P4처럼 오발동한 선례가 있어 섀도 모드로 먼저 배선
+        # (config/settings.py INSTABILITY_GATE_ENABLED=False 기본 — 로그만, min_conf 불변).
+        _instab = getattr(self, "_micro_regime_instability", 0)
+        if _instab >= runtime_settings.INSTABILITY_TRANSITION_THRESHOLD:
+            if runtime_settings.INSTABILITY_GATE_ENABLED:
+                actual_min_conf = min(0.90, actual_min_conf + runtime_settings.INSTABILITY_MC_BOOST)
+                log_manager.signal(
+                    f"[InstabilityGate] 레짐전환 {_instab}회/{runtime_settings.INSTABILITY_WINDOW_MIN}분 "
+                    f"→ min_conf +{runtime_settings.INSTABILITY_MC_BOOST * 100:.0f}%p → {actual_min_conf:.2f}"
+                )
+            else:
+                log_manager.signal(
+                    f"[InstabilityGate] (섀도) 레짐전환 {_instab}회/{runtime_settings.INSTABILITY_WINDOW_MIN}분 "
+                    f"— 활성 시 min_conf +{runtime_settings.INSTABILITY_MC_BOOST * 100:.0f}%p 예상(미적용)"
+                )
 
         # ── Phase 1: FQAdj — [268차-P1] 앙상블 호출 전으로 이동 완료, 여기서 재적용 불필요 ──
         # zone_mc가 이미 앙상블 호출 전 FQAdj 적용됨 → actual_min_conf도 동일 기준 반영.
@@ -9788,8 +9839,10 @@ class TradingSystem:
         # 대시보드 서버 모드 동기화 (라디오 버튼 불일치 시 진입 차단)
         self.dashboard.set_server_mode("simul" if _is_simul else "real")
 
-        self._pre_market_done        = False
-        self._pre_market_stage1_done = False
+        self._pre_market_done          = False
+        self._pre_market_stage1_done   = False
+        self._pre_market_stage2_running = False   # [359차]
+        self._stage2_result            = None     # [359차]
         self._daily_close_done = getattr(self, "_daily_close_done", False)
         # preserve True restored by _restore_auto_shutdown_state() on post-market restart
         self._first_tick_notified = getattr(self, "_first_tick_notified", False)
@@ -10045,18 +10098,24 @@ class TradingSystem:
                 log_manager.system("[PreOpen] 09:00 대비 실시간 구독 사전 시작 (08:55~)", "INFO")
 
         # 2단계 (08:58~09:05): 2회차 macro fetch → SP500·KRW 실수치 → 레짐 확정
-        # 08:58 이후 최초 heartbeat에서 1회 실행. 폴백 상한 09:05로 GAP_OPEN 이내 보장.
+        # 08:58 이후 최초 heartbeat에서 1회 트리거. 폴백 상한 09:05로 GAP_OPEN 이내 보장.
+        # [359차] macro(순차 requests 최대 5회)+investor(COM BlockRequest 폴링) fetch가
+        # 3~4초대 메인스레드 정체를 일으켜(0720 정기점검 관측) 백그라운드 스레드로 이관.
+        # 결과 적용(Qt 위젯)은 fetch 완료 후 다음 하트비트 틱에서 메인스레드가 수행.
         if (
             getattr(self, "_pre_market_stage1_done", False)
             and not self._pre_market_done
+            and not getattr(self, "_pre_market_stage2_running", False)
             and is_trading_day(now)
             and datetime.time(8, 58) <= now.time() < datetime.time(9, 5)
         ):
-            self._pre_market_stage2()
-            notify_premarket_ready(
-                self.current_regime,
-                getattr(self, "_futures_code", "?"),
-            )
+            self._pre_market_stage2_running = True
+            threading.Thread(target=self._pre_market_stage2_fetch, daemon=True).start()
+
+        _s2_result = getattr(self, "_stage2_result", None)
+        if _s2_result is not None:
+            self._pre_market_stage2_apply(_s2_result)
+            self._stage2_result = None
             self._pre_market_done = True
 
         # [PreOpen-이상점4] 장 시작 직전(08:58~08:59:30) broker sync 선실행
@@ -10108,8 +10167,10 @@ class TradingSystem:
                     log_manager.system(f"[DailyClose] 예외 → 강제 종료 예약: {_dc_exc}", "ERROR")
                 finally:
                     self._daily_close_running = False
-                    self._pre_market_done        = False
-                    self._pre_market_stage1_done = False
+                    self._pre_market_done          = False
+                    self._pre_market_stage1_done   = False
+                    self._pre_market_stage2_running = False   # [359차]
+                    self._stage2_result            = None     # [359차]
                     if not _emit_done:
                         _shutdown_sig.request.emit()
 
