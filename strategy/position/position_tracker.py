@@ -17,6 +17,7 @@ from config.settings import (
     ATR_HORIZON_TP1_MULT, FUTURES_COMMISSION_RATE,
     HURST_REGIME_ATR_MULT_ENABLED, HURST_REGIME_ATR_MULT,
     PARTIAL_EXIT_RATIOS,
+    LOSS_TIER1_STOP_FRACTION, LOSS_TIER1_CUT_RATIO,
 )
 
 # 인스턴스별 pt_value를 주입받기 전 module-level fallback 으로만 사용
@@ -59,6 +60,10 @@ class PositionTracker:
         self.partial_2_done: bool = False
         self.partial_3_done: bool = False
         self.initial_quantity: int = 0
+
+        # [360차] 손절 계단화 1차 — entry~stop 거리의 50% 지점(진입 시 1회 계산, 고정)
+        self.loss_tier1_price: float = 0.0
+        self.loss_tier1_done: bool = False
 
         # [2026-07-16 339차 후속] 1계약 TP1 회계적 분할청산(synthetic partial) —
         # Cybos 최소 체결단위가 1계약이라 물리적으로 못 쪼개는 상황에서, TP1 도달
@@ -111,6 +116,8 @@ class PositionTracker:
         self.partial_2_done = False
         self.partial_3_done = False
         self.initial_quantity = 0
+        self.loss_tier1_price = 0.0
+        self.loss_tier1_done = False
         self.synthetic_tp1_price = None
         self.synthetic_tp1_pnl_pts = None
         self.synthetic_tp1_fraction = None
@@ -187,10 +194,16 @@ class PositionTracker:
         self.stop_price = price - mult * atr * _stop_mult
         self.tp1_price  = price + mult * atr * _tp1_mult
         self.tp2_price  = price + mult * atr * _tp2_mult
+        # [360차] 손절 계단화 1차 — entry~stop 사이 선형보간 50% 지점(진입 시 1회 계산,
+        # 고정). LONG/SHORT 방향(mult)과 무관하게 entry→stop 벡터의 절반이므로 부호
+        # 분기가 필요 없다. HURST_REGIME_ATR_MULT·extra_stop_mult가 이미 반영된
+        # stop_price를 기준으로 삼아 별도 배수 재계산 없이 실제 손절 거리를 따라간다.
+        self.loss_tier1_price = price + (self.stop_price - price) * LOSS_TIER1_STOP_FRACTION
 
         self.partial_1_done = False
         self.partial_2_done = False
         self.partial_3_done = False
+        self.loss_tier1_done = False
         self.last_update_reason = f"open_position:{direction}"
         self.last_update_ts = now_kst()
 
@@ -380,8 +393,18 @@ class PositionTracker:
         quantity: int,
         reason: str,
         filled_at: Optional[datetime.datetime] = None,
+        shrink_initial: bool = False,
     ) -> Dict:
-        """Chejan 체결 기준으로 포지션을 부분/전량 청산한다."""
+        """Chejan 체결 기준으로 포지션을 부분/전량 청산한다.
+
+        shrink_initial: [360차] True면 quantity 차감과 동시에 initial_quantity도
+        같은 폭만큼 줄인다. 손절 계단화 1차 축소처럼 "TP 단계 진행과 무관한 이유"로
+        수량이 줄었을 때, _sync_partial_progress()의 목표수량 매칭이 우연히 맞아떨어져
+        partial_1_done이 오염되는 것을 막는다(잔여 포지션이 "처음부터 이 수량이었던
+        새 포지션"처럼 TP 진행률 0으로 유지되어 TP1을 정상적으로 다시 노릴 수 있다).
+        기존 호출부(TP1/2/3, 외부체결 동기화 등)는 이 인자를 넘기지 않으므로 기본값
+        False로 동작 100% 보존.
+        """
         assert self.status != POSITION_FLAT, "포지션 없음"
         assert 0 < quantity <= self.quantity, (
             f"Invalid exit fill quantity: fill={quantity} total={self.quantity}"
@@ -431,6 +454,8 @@ class PositionTracker:
             self._reset_position()
         else:
             self.quantity -= quantity
+            if shrink_initial:
+                self.initial_quantity = max(0, self.initial_quantity - quantity)
             self._sync_partial_progress()
             self.last_update_reason = f"apply_exit_fill_partial:{reason}"
             self.last_update_ts = filled_at or now_kst()
@@ -767,6 +792,26 @@ class PositionTracker:
             return price >= self.tp3_price
         return price <= self.tp3_price
 
+    def is_loss_tier1_hit(self, price: float) -> bool:
+        """[360차] 손절 계단화 1차 — entry~stop 절반 지점 도달 여부.
+
+        qty==1은 물리적으로 분할 불가하므로 대상에서 제외(339차 atr_profit 보호와
+        영역이 겹치지 않는다).
+        """
+        if (self.status == POSITION_FLAT or self.loss_tier1_done
+                or self.quantity <= 1 or self.loss_tier1_price <= 0):
+            return False
+        if self.status == POSITION_LONG:
+            return price <= self.loss_tier1_price
+        return price >= self.loss_tier1_price
+
+    def get_loss_tier1_exit_qty(self) -> int:
+        """[360차] 손절 계단화 1차 축소 수량 — 최소 1계약 잔여 보장(전량청산 금지)."""
+        if self.quantity <= 1:
+            return 0
+        cut = max(1, round(self.quantity * LOSS_TIER1_CUT_RATIO))
+        return min(cut, self.quantity - 1)
+
     def get_stage_plan(self) -> Tuple[int, int, int]:
         total_qty = int(self.initial_quantity or self.quantity or 0)
         if total_qty <= 0:
@@ -949,6 +994,8 @@ class PositionTracker:
         self.partial_2_done = False
         self.partial_3_done = False
         self.initial_quantity = 0
+        self.loss_tier1_price = 0.0
+        self.loss_tier1_done = False
         self.synthetic_tp1_price = None
         self.synthetic_tp1_pnl_pts = None
         self.synthetic_tp1_fraction = None
@@ -1060,6 +1107,8 @@ class PositionTracker:
                 "partial_1_done": self.partial_1_done,
                 "partial_2_done": self.partial_2_done,
                 "partial_3_done": self.partial_3_done,
+                "loss_tier1_price": self.loss_tier1_price,
+                "loss_tier1_done": self.loss_tier1_done,
                 "synthetic_tp1_price": self.synthetic_tp1_price,
                 "synthetic_tp1_pnl_pts": self.synthetic_tp1_pnl_pts,
                 "synthetic_tp1_fraction": self.synthetic_tp1_fraction,
@@ -1119,6 +1168,8 @@ class PositionTracker:
             self.partial_1_done = bool(state.get("partial_1_done", False))
             self.partial_2_done = bool(state.get("partial_2_done", False))
             self.partial_3_done = bool(state.get("partial_3_done", False))
+            self.loss_tier1_price = float(state.get("loss_tier1_price", 0.0) or 0.0)
+            self.loss_tier1_done = bool(state.get("loss_tier1_done", False))
             self.synthetic_tp1_price = state.get("synthetic_tp1_price")
             self.synthetic_tp1_pnl_pts = state.get("synthetic_tp1_pnl_pts")
             self.synthetic_tp1_fraction = state.get("synthetic_tp1_fraction")
