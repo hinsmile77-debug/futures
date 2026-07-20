@@ -43,6 +43,7 @@ class MicroRegimeClassifier:
     ATR_EXHAUSTION_MIN = 1.2   # 탈진장 ATR 하한 (상한은 ATR_VOLATILE_MULT)
     VWAP_EXHAUSTION_MIN = 1.5
     MIN_CANDLES_FOR_ATR = 5
+    INSTABILITY_WINDOW_MIN = 10   # [359차] 휩쏘 계측 창 — 최근 N분 내 레짐 전환 횟수
 
     def __init__(self, atr_window: int = 20, adx_window: int = 14):
         self.atr_window = atr_window
@@ -118,6 +119,13 @@ class MicroRegimeClassifier:
         self._regime_history.append(new_regime)
         trend_strength = float(np.clip((adx - 10.0) / 40.0, 0.0, 1.0))
 
+        # [359차] 레짐 불안정도(휩쏘) 계측 — 최근 N분 내 레짐 라벨 전환 횟수.
+        # _regime_history는 매분 1개씩만 쌓이므로 최근 N개 슬라이스의 인접 비교로 충분.
+        _window = list(self._regime_history)[-self.INSTABILITY_WINDOW_MIN:]
+        instability = sum(
+            1 for _i in range(1, len(_window)) if _window[_i] != _window[_i - 1]
+        )
+
         return {
             "regime": new_regime,
             "adx": round(adx, 2),
@@ -129,6 +137,7 @@ class MicroRegimeClassifier:
             "trend_strength": round(trend_strength, 3),
             "hurst_override": new_regime == REGIME_EXHAUSTION,
             "warmup": self.get_warmup_status(),
+            "instability_10m": instability,
         }
 
     def _classify(

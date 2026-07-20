@@ -743,6 +743,16 @@ REGIME_MIN_CONFIDENCE = {
     "RISK_OFF": 0.65,
 }
 
+# ── 레짐 불안정도(휩쏘) 게이트 [섀도 모드, 359차] ──
+# 0720 정기점검: MicroRegime이 분당 급변(35회+/1h50m)한 날 1m/3m/5m/10m 예측정확도가
+# 랜덤(≈33%) 이하로 붕괴 확인(predictions.db 실측). 실거래 미반영 상태로 먼저 로그만
+# 쌓아 오탐률을 관찰한 뒤 True 전환 검토 — 검증 없이 켠 게이트가 FP-CRITICAL·CB③-P4처럼
+# 오발동해 두 달 뒤 비활성화된 선례를 반복하지 않기 위함(CLAUDE.md 절대원칙 §2 참조).
+INSTABILITY_GATE_ENABLED: bool = False
+INSTABILITY_WINDOW_MIN: int = 10
+INSTABILITY_TRANSITION_THRESHOLD: int = 4   # 10분 내 전환 4회 이상 = 불안정
+INSTABILITY_MC_BOOST: float = 0.05          # L2 DAY_RISK_OFF(+5%p)와 동일 스케일
+
 REGIME_SIZE_MULT = {
     "RISK_ON": 1.0,
     "NEUTRAL": 0.8,

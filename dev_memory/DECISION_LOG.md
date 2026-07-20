@@ -9311,3 +9311,62 @@ print(result)   # {'ok': True, 'horizons': ['1m','3m','5m','10m','15m','30m'], .
 **관련**: 346차(원인 커밋), 356차(gitignore 대상 로컬 파일의 멀티 PC 동기화 규칙 선례),
 182차(`validate_and_resync()` 검증 패턴 선례), 357차 후속(MW0601/MW0602 PC 구분
 로그 관례).
+
+---
+
+## 2026-07-20 (359차) — 0720 정기점검 딥다이브 후속 3건 구현 (섀도 모드·비동기화·로그 정밀화)
+
+**배경**: 0720 08:41~10:30 동작기록 정기점검. 체결 0건(MetaGate/사이저 정상 차단),
+predictions.db 사후검증상 1m/3m/5m/10m 정확도가 20~31%(3클래스 랜덤≈33% 이하)로
+붕괴 — 같은 구간 MicroRegime이 35회+ 전환(분당 급변)한 휩쏘장이었음을 확인. 이
+관찰을 바탕으로 3건의 개선안을 도출·구현.
+
+**① 08:58 pre_market_stage2 메인스레드 블로킹**: `[LiveDBG] _scheduler_tick 지연
+3333ms #34 (live 중단 원인 후보)`가 08:58:06에 관측됨 — 원인은 매크로 2단계
+fetch(`MacroFetcher._fetch_all()`, 최대 5개 순차 blocking `requests.get()`)와
+투자자 warmup fetch(`CybosInvestorData.fetch_all()` → `_run_block_request()`의
+`done.wait()+PumpWaitingMessages()` 폴링)가 하트비트 콜백에서 동기 실행되던 것.
+장전(08:58, 09:00 개장 전)이라 오늘은 무해했으나 장중 재시작 시나리오(WarmupRetrain
+09:00~15:10 분기)와 겹치면 체결 타이밍에 영향 가능. **결정**: 신규 코드/인프라
+없이 이미 확립된 `threading.Thread(daemon=True)` + 플래그폴링 관례(`_b_intraday_worker`,
+`main.py:9999` 선례)를 재사용 — `_pre_market_stage2()`를 `_pre_market_stage2_fetch()`
+(백그라운드, Qt 미접촉)와 `_pre_market_stage2_apply()`(메인스레드, 대시보드 위젯
+전용)로 분리. 하트비트는 08:58 최초 틱에 스레드만 기동(`_pre_market_stage2_running`
+가드로 중복 방지)하고, 다음 틱에서 `self._stage2_result`를 폴링해 적용.
+
+**② 레짐 불안정도(휩쏘) 게이트 — 섀도 모드**: 오늘 데이터가 보여준 패턴(레짐 전환
+빈발 구간 = 단기호라이즌 정확도 붕괴)을 신호화. 사용자 메모리 `계측 먼저, 그다음
+배선`과 FP-CRITICAL/CB③-P4 선례(검증 없이 켠 채 배선했다가 두 달 뒤 오탐으로
+비활성화, 절대원칙 §2 참조)를 따라 **처음부터 `INSTABILITY_GATE_ENABLED=False`로
+배선** — `MicroRegimeClassifier._regime_history`(기존 `deque(maxlen=60)`, 신규
+상태 불필요)로 최근 10분 전환 횟수(`instability_10m`)를 계산해 반환값에 추가,
+`main.py`가 `self._micro_regime_instability`로 저장, min_conf 체인(L2
+IntradayRegime 직후, FQAdj 재적용 이전 지점)에서 전환 4회/10분 이상이면 활성 시
+`+5%p`(L2 DAY_RISK_OFF와 동일 스케일) 예정치를 로그만 남김 — `actual_min_conf` 실값은
+불변. 호라이즌별(단기그룹 1m/3m/5m) 정밀화는 이번 1차에서 보류: 이 min_conf 체인
+시점(`main.py:5319` 부근)엔 `_entry_horizon`이 아직 `None`(확정은 `5903`)이라
+전역 적용으로 시작 — 섀도 로그 축적 후 후속 차수에서 분리 검토.
+
+**③ PreRetrain 스킵 로그 "전날" 하드코딩**: `session_state`/EOD 마커 두 폴백 분기가
+각각 지역변수로 실제 경과일을 계산해 자기 분기 로그에만 쓰고, 최종 스킵 로그는
+그 값을 참조하지 않고 "전날"을 항상 출력 — 휴장 낀 재시동(오늘처럼 4일=1영업일
+전)에서 혼동 소지. 계산값을 `self._eod_retrain_gap_date`로 스코프 탈출시켜 보존,
+최종 로그에서 `is_trading_day()` 루프(최대 5회, 기존 폴백 루프와 동일 비용)로
+영업일수를 세어 `"N영업일 전(YYYY-MM-DD)"`로 출력. 판단 로직(스킵 여부)은 무변경.
+
+**File**: `main.py`(①③ 전체, ② 일부), `collection/macro/micro_regime.py`(②),
+`config/settings.py`(② 상수 4개, `runtime_settings.` 경유 hot-reload 가능하도록
+`FP_CRITICAL_GRADE_BLOCK_ENABLED`와 동일 컨벤션 사용).
+
+**검증**: 3개 파일 `py_compile` 통과. ②는 `INSTABILITY_GATE_ENABLED=False`이므로
+로그 추가 외 기존 동작 100% 보존(정적으로 보장). ①③은 시각조건부(08:55/08:58)라
+이 세션에서 실행경로를 못 탐 — **라이브 미검증**, `NEXT_TODO.md` 2026-07-20(359차)
+항목 등록. 다음 실장(익일 08:55~09:05) 로그로 확인 필요.
+
+**Why**: 이번 세션에서 매매 로직에 새 게이트(②)를 추가하면서 FP-CRITICAL/CB③-P4의
+"검증 없이 켠 채 배선 → 오탐 → 비활성화 → 재검토 부채로 방치" 패턴을 반복하지
+않도록 처음부터 섀도 모드로 시작한 것이 이번 차수의 핵심 판단. 앞으로도 사후
+관찰 데이터가 없는 신규 임계값 게이트는 기본값 OFF로 배선하고 로그만 먼저 쌓을 것.
+
+**관련**: 303차(FP-CRITICAL 섀도 전환 선례), 296차(CB③-P4 섀도 전환 선례),
+`main.py:9999`(`_b_intraday_worker` 스레드+폴링 패턴 선례), 358차(직전 정기점검).
