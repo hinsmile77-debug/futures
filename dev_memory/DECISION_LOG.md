@@ -9370,3 +9370,78 @@ IntradayRegime 직후, FQAdj 재적용 이전 지점)에서 전환 4회/10분 �
 
 **관련**: 303차(FP-CRITICAL 섀도 전환 선례), 296차(CB③-P4 섀도 전환 선례),
 `main.py:9999`(`_b_intraday_worker` 스레드+폴링 패턴 선례), 358차(직전 정기점검).
+
+## 2026-07-20 (360차) — 손절 계단화(Loss Tier1) 구현: 339차 미착수 부채 해소
+
+**배경**: 0720 오후 실거래 6건(4승2패, +935,444원) 딥다이브 중 유일한 손실(포지션6,
+14:33 SHORT 2계약, hurst=trend, -523,099원 — 당일 총손익의 56% 잠식)이 TP1도 못 찍고
+진입 직후 계속 불리하게 움직여 2계약 풀사이즈가 조기 축소 없이 그대로 ATR×1.5
+하드스톱까지 흘러간 사례였다. 사용자가 "손절 계단화는 이미 개선된 걸로 아는데 왜
+아직도 상존하냐"고 질문해 dev_memory·커밋이력을 역추적한 결과, 339차(0716, 커밋
+`99ebe3f`)가 "손실은 항상 풀사이즈인데 이익은 33/33/34% 계단식" 비대칭을 발견했지만
+실제로 고친 건 절반(TP1 캡을 `breakeven`→`atr_profit`로 승격, **qty==1 한정**)뿐이었고,
+"TP1/Stop 배수 재조정...은 미착수"라고 스스로 기록한 나머지 절반이 `NEXT_TODO.md`에
+DONE 가드 문구 없이 등록되지 않아 이후 어떤 세션에서도 다시 집히지 않았음을 확인했다 —
+CB②/FP-CRITICAL과 같은 "재검토하기로 했는데 안 함" 패턴이 추적 채널조차 없이 더
+조용히 묻힌 케이스.
+
+**설계**: 이익 측 TP1(0.3~0.7×ATR)/TP2(1.5×ATR)/TP3(2.5×ATR) 33/33/34% 분할청산과
+`update_trailing_stop()` 4단계 트레일링(0.5/1.0/1.5/2.0×ATR)에 대칭되도록, 손실
+방향에도 최종 손절 도달 전 1차 조기 축소 지점을 추가했다. 새 ATR 배수를 따로 만들지
+않고 **entry~stop 거리의 50% 지점**(`entry_price + (stop_price - entry_price) × 0.5`)을
+1차 축소가로 정의 — `HURST_REGIME_ATR_MULT`(추세장 스톱 1.2배 확대)·`entry_extra_stop_
+mult`(349차 급변장 가드)가 이미 반영된 실제 손절 거리를 자동으로 따라간다. 축소 비율은
+50%(qty=2 → 1), qty==1은 물리적 분할 불가로 대상 제외(339차 `atr_profit` 보호와 영역
+겹치지 않음).
+
+**발견한 2개의 함정 — 기존 TP 인프라 재사용 시 정확히 걸리는 문제**:
+1. `PositionTracker._sync_partial_progress()`(892행)는 `initial_quantity - quantity`
+   (청산량)를 TP 단계 목표수량과 단순 비교해 `partial_1_done`을 결정 — 손실 축소로
+   수량이 줄어도 우연히 TP1 목표수량과 일치하면(qty=2→1개 축소 = TP1 목표 1개) 진짜
+   TP1가 도달 없이도 `partial_1_done=True`로 오염되어, 이후 가격이 실제 회복해도 TP1
+   부분청산(과 qty==1 `atr_profit` 보호 전환)이 영구히 막힌다.
+   → `apply_exit_fill()`에 `shrink_initial: bool=False` 옵션 추가. 손실1차 축소가 이
+   옵션을 켜고 호출하면 `quantity`와 `initial_quantity`를 같은 폭만큼 줄여, 잔여
+   포지션이 "처음부터 이 수량이었던 새 포지션"처럼 TP 진행률 0으로 유지된다. 기존
+   호출부는 파라미터 미전달로 기본값 False, 동작 100% 보존.
+2. `_post_partial_exit(result, stage)`의 stage==1 특수 로직(main.py:7845, "TP1 달성 후
+   잔여분 손절을 진입가로 이동")은 가격이 진입가보다 유리해졌다는 전제로만 안전하다.
+   손실1차 축소는 반대로 가격이 진입가보다 불리한 상태에서 일어나므로 그대로 재사용하면
+   손절가가 진입가로 이동해 현재가가 이미 그 지점을 지나친 상태가 되어 잔여 포지션이
+   바로 다음 체크에서 전량 강제청산된다 — "조기축소 후 잔여는 원래 폭까지 태운다"는
+   설계 의도가 완전히 무너짐.
+   → `_post_partial_exit`를 재사용하지 않고 전용 함수 `_post_loss_tier1_exit(result)`를
+   신설해 stop_price는 절대 건드리지 않는다.
+
+**File**: `config/settings.py`(`LOSS_TIER1_ENABLED`/`LOSS_TIER1_STOP_FRACTION`/
+`LOSS_TIER1_CUT_RATIO` 3개 상수), `strategy/position/position_tracker.py`
+(`loss_tier1_price`/`loss_tier1_done` 필드, `is_loss_tier1_hit`/`get_loss_tier1_exit_qty`
+메서드, `open_position`의 loss_tier1_price 계산, `apply_exit_fill`의 `shrink_initial`
+옵션, `_save_state`/`load_state` 영속화), `main.py`(`_ts_check_exit_triggers`에 하드스톱
+직후·TP1 이전 체크 삽입, 신규 `_ts_execute_loss_tier1_exit`+`TradingSystem._execute_
+loss_tier1_exit` 몽키패치, `_ts_handle_exit_fill`의 `EXIT_LOSS_TIER1` 신규 분기, 신규
+`_post_loss_tier1_exit` 메서드).
+
+**검증**: `py_compile` 통과(3개 파일). `scripts/verify_loss_tier1.py` 신규 — COM/브로커
+없이 `PositionTracker` 단독으로 5개 시나리오(① SHORT qty=2 손실1차 축소 후 quantity/
+initial_quantity/partial_1_done 상태, ② 잔여의 TP1 재도달 가능 여부, ③ 잔여가 원래
+stop_price로 정상 청산되는지, ④ qty==1 대상 제외, ⑤ LONG 방향 loss_tier1_price 위치)
+전부 통과 — 특히 "손실1차 축소 후 partial_1_done이 False로 유지되고 TP1 재도달 시
+`is_tp1_hit`가 True"가 이번 설계의 핵심 회귀 방지 포인트였는데 정상 확인됨.
+`LOSS_TIER1_ENABLED=True`로 즉시 배포(사용자 결정 — 새 예측 게이트가 아니라 기존
+트레일링 로직의 대칭 확장이라 FP-CRITICAL/CB③-P4류 섀도 우선 원칙과는 리스크 성격이
+다르다고 판단). 라이브 첫 발동은 `NEXT_TODO.md` 2026-07-20(360차) 항목으로 별도 추적.
+
+**CB/Kelly 영향**: `_post_loss_tier1_exit`도 TP 부분청산과 동일하게 매 단계 CB/Kelly에
+기록(`record_stop_loss`+`kelly.record(win=False,...)`)하므로, 포지션 하나가 손실
+이벤트를 최대 2회(1차+최종) 만들 수 있게 됨 — CB②(현재 9999로 비활성) 복원 시 감안
+필요, NEXT_TODO에 주간회의 안건으로 별도 등록.
+
+**Why**: "이미 개선된 줄 알았다"는 사용자 질문이 정확했던 건 절반뿐이었다 — 339차가
+문제의 절반(TP1 캡)만 고치고 나머지 절반(손절 계단화 자체)을 프로즈로만 남긴 채
+추적 없이 방치한 것이 근본 원인. 이번 차수는 (1) 방치됐던 절반을 실제 구현하고,
+(2) 이번엔 NEXT_TODO에 DONE 가드 문구를 달아 등록해 같은 패턴이 반복되지 않도록 했다.
+
+**관련**: 339차(원 비대칭 발견 + TP1 절반 수정), 0720 오후 실거래 딥다이브(포지션6
+사례), CB②/FP-CRITICAL(추적 부재로 방치된 선례 — 이번엔 그 실수를 반복하지 않도록
+가드 문구 명시 등록).

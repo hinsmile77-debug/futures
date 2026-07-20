@@ -62,6 +62,7 @@ from utils.db_utils import (
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
     SIGNAL_DECAY_EXIT_ENABLED,
+    LOSS_TIER1_ENABLED,
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     LIMIT_ENTRY_FIRST_ENABLED, LIMIT_ENTRY_TIMEOUT_SEC,
     HZ_DEPLOY_POLICY,
@@ -7921,6 +7922,54 @@ class TradingSystem:
                     f"손절 {_prev_stop:.2f} → 진입가 {_entry:.2f} (손익분기 보호)",
                 )
 
+    def _post_loss_tier1_exit(self, result: dict) -> None:
+        """[360차] 손절 계단화 1차 후처리 — CB/Kelly 통계, 대시보드, DB 기록.
+
+        _post_partial_exit()과 달리 stop_price는 절대 건드리지 않는다 — 잔여 포지션은
+        기존 stop_price(전체 ATR×1.5 폭) 그대로 유지해야 "조기축소 후 잔여는 원래 폭까지
+        태운다"는 설계 의도가 지켜진다(TP1의 손익분기 이동 로직을 여기서 재사용하면
+        안 되는 이유는 이 함수를 별도로 둔 것 자체가 그 답).
+        """
+        pnl = result["pnl_pts"]
+        qty = result["quantity"]
+
+        if pnl > 0:
+            self.circuit_breaker.record_win()
+            self.kelly.record(win=True, pnl_pts=pnl)
+        else:
+            self.circuit_breaker.record_stop_loss()
+            self.kelly.record(win=False, pnl_pts=pnl)
+
+        log_manager.trade(
+            f"[손절1차 조기축소] {qty}계약 @ {result['exit_price']:.2f} "
+            f"PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원) "
+            f"잔여={result['remaining']}계약"
+        )
+        _cum_pnl = self.position.daily_stats()["pnl_krw"]
+        self.dashboard.append_pnl_log(
+            f"손절1차 조기축소 | {result['direction']} {qty}계약 @ {result['exit_price']}",
+            f"PnL {pnl:+.2f}pt  {result['pnl_krw']:+,.0f}원  잔여 {result['remaining']}계약  │ 금일 {_cum_pnl:+,.0f}원",
+        )
+        self.dashboard.minute_chart_record_exit(
+            result["exit_price"],
+            datetime.datetime.now(),
+            finalize=False,
+            pnl_pts=result.get("pnl_pts"),
+            reason="손절1차 조기축소",
+            direction=result.get("direction", ""),
+        )
+        _daily = self.position.daily_stats()
+        _forward_daily = self.position.daily_forward_stats()
+        self.dashboard.update_pnl_metrics(
+            self.position.unrealized_pnl_pts(result["exit_price"]) * self._pt_value,
+            _daily["pnl_krw"],
+            0.0,
+            forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * self._pt_value,
+            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+        )
+        self._record_trade_result(result)
+        self._refresh_pnl_history()
+
     # [SERVICE-BOUNDARY 3/4] OrderLifecycleService
     # 책임: 진입/청산 주문 전송, pending 상태관리, 체결결과 반영
     # 입력: direction/qty, _futures_code, account_no, broker API
@@ -10495,6 +10544,41 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
     )
 
 
+def _ts_execute_loss_tier1_exit(self, price: float) -> None:
+    """[360차] 손절 계단화 1차 — entry~stop 절반 지점 조기 축소 주문 전송.
+
+    _ts_execute_partial_exit(TP1/2/3)와 같은 뼈대(pending 선등록 → 주문 → 실패 시
+    롤백)이나 kind="EXIT_LOSS_TIER1"로 별도 처리한다 — EXIT_PARTIAL로 보내면
+    _ts_handle_exit_fill()의 stage 기반 partial_N_done 강제설정과 _post_partial_exit()의
+    stage==1 손익분기 이동(이익 전제)이 손실 케이스에 오적용된다.
+    """
+    if self._has_pending_order():
+        return
+    cut_qty = self.position.get_loss_tier1_exit_qty()
+    if cut_qty <= 0:
+        return
+    direction = self.position.status
+    self._set_pending_order(
+        kind="EXIT_LOSS_TIER1",
+        direction=direction,
+        qty=cut_qty,
+        price_hint=round(price, 2),
+        reason="손절1차 조기축소",
+    )
+    ret = self._send_broker_exit_order(cut_qty)
+    log_manager.system(
+        f"[ExitSendOrderResult] ret={ret} kind=손절1차 direction={direction} qty={cut_qty}",
+        "WARNING",
+    )
+    if ret == 0:
+        log_manager.trade(
+            f"[주문요청] 손절1차 조기축소 {direction} {cut_qty}계약 @ {price} 체결대기"
+        )
+    else:
+        self._clear_pending_order()
+        log_manager.system(f"[Exit] 손절1차 주문 실패 ret={ret}", "ERROR")
+
+
 def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, bar: dict = None):
     atr = features.get("atr", 0.5)
 
@@ -10571,6 +10655,16 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             self._clear_pending_order()
             log_manager.system(f"[Exit] 하드스톱 주문 실패 ret={ret}", "ERROR")
         return
+
+    # [360차] 손절 계단화 1차 — 하드스톱(위 블록)이 우선이라 return으로 이미 빠지지
+    # 않은 경우에만 평가된다. entry~stop 절반 지점 도달 시 조기 축소, 잔여는 기존
+    # stop_price(전체 폭) 그대로 유지 — TP1/2/3 체크와 동일하게 _has_pending_order()로
+    # 보호되므로 발동한 틱엔 아래 TP 체크가 자동으로 건너뛴다.
+    if (LOSS_TIER1_ENABLED
+            and not self._has_pending_order()
+            and self.position.status != "FLAT"
+            and self.position.is_loss_tier1_hit(price)):
+        self._execute_loss_tier1_exit(price)
 
     if (not self._has_pending_order()
             and self.position.status != "FLAT"
@@ -11109,11 +11203,30 @@ def _ts_handle_exit_fill(
         quantity=fill_qty,
         reason=pending["reason"],
         filled_at=filled_at,
+        # [360차] 손절1차 조기축소는 TP 단계 진행과 무관한 수량감소이므로
+        # initial_quantity도 같이 줄여 잔여 포지션의 TP1 재도달을 보존한다.
+        shrink_initial=(pending["kind"] == "EXIT_LOSS_TIER1"),
     )
 
     # 분할체결 집계 (CB/Kelly 통계 중복 방지: 마지막 체결에서만 반영)
     _ts_agg_exit_fill(pending, result, fill_price, fill_qty)
     is_last_fill = pending["filled_qty"] >= pending["qty"]
+
+    if pending["kind"] == "EXIT_LOSS_TIER1":
+        if not is_last_fill:
+            log_manager.trade(
+                f"[손절1차 분할체결] {result.get('direction','')} {fill_qty}계약 @ {fill_price:.2f} "
+                f"| 잔여포지션={result.get('remaining', '?')}계약"
+            )
+            QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
+            return
+        # partial_1_done은 여기서 건드리지 않는다 — apply_exit_fill(shrink_initial=True)가
+        # initial_quantity도 같이 줄여놓아 _sync_partial_progress()가 정확히 계산한다.
+        self.position.loss_tier1_done = True
+        agg_result = _ts_build_agg_exit_result(result, pending)
+        self._post_loss_tier1_exit(agg_result)
+        QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
+        return
 
     if pending["kind"] == "EXIT_PARTIAL":
         if pending.get("stage") == 1:
@@ -13242,6 +13355,7 @@ TradingSystem._sync_position_from_broker = _ts_sync_position_from_broker
 TradingSystem._manual_position_restore = _ts_manual_position_restore
 TradingSystem._execute_entry = _ts_execute_entry
 TradingSystem._execute_partial_exit = _ts_execute_partial_exit
+TradingSystem._execute_loss_tier1_exit = _ts_execute_loss_tier1_exit
 TradingSystem._check_exit_triggers = _ts_check_exit_triggers
 TradingSystem._intrabar_tp_check = _ts_intrabar_tp_check
 
