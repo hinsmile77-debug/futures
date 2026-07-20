@@ -424,16 +424,20 @@ ShadowSession.is_blocked() → True이면 진입 추가 차단 검토
 
 ## STEP 8 — 청산 트리거 감시
 
-**파일**: `main.py:3104`
+**파일**: `main.py:10518` (`_ts_check_exit_triggers`, `TradingSystem._check_exit_triggers`
+몽키패치 — 구 `strategy/exit/exit_manager.py`의 P1~P6 문서는 실제로 인스턴스화된 적
+없는 죽은 코드였으며 362차에서 삭제됨. 아래가 실제 우선순위)
 
 ```
-P1 강제청산      15:10 오버나이트 금지
-P2 TP1/TP2 도달  1차·2차 목표가
-P3 Trail Stop    고점/저점 대비 추적
-P4 Time Exit     TimeExitManager (장중 시간 기반)
-P5 ProfitGuard   일일 수익 보존 한도
-P6 CB 긴급청산   CB⑤ API 지연 또는 CB② 손절 연속
+1순위 하드스톱        손절가 도달 (인트라바 포함)
+2순위 손절 계단화      Loss Tier1 조기 축소 (entry~stop 50% 지점, qty>1)
+3순위 TP1→TP2→TP3     단계별 부분청산 (_execute_partial_exit)
+4순위 15:10 강제청산   오버나이트 절대 금지
+5순위 15:18 FINAL_CLOSE  안전망 (broker 직접조회 후 잔량 무조건 청산)
 ```
+
+(신호소멸청산은 반대신호 조건을 기록만 하는 섀도 계측이며 실제 청산 액션은 없음 —
+`config/settings.py:SIGNAL_DECAY_EXIT_ENABLED` 주석 참조 — 위 우선순위에서 제외)
 
 ---
 

@@ -9568,3 +9568,68 @@ TP2를 건너뛰고 TP3/트레일링까지 보유) 방향으로 A/B 진행. 실�
 360차/360차 후속(같은 세션 — 손절 계단화·역추세 캡, get_stage_plan 주변 최근 변경 이력),
 297차/354차(hurst_gate_shadow·open_gap_shadow — 이번에 재사용한 섀도 카운터팩추얼 원형),
 `feedback_isolate_stateful_verification`(검증-실거래 DB 격리 메모리 원칙).
+
+---
+
+## 2026-07-20 (362차) — 청산 P1~P6 문서-코드 불일치 정리 중 숨은 AttributeError 버그 발견·수정 + exit_manager.py 제거
+
+**배경**: 사용자가 "CLAUDE.md의 P1~P6 서술을 실제 구현으로 갱신하거나 죽은
+`strategy/exit/exit_manager.py` 제거"를 제안. 조사 과정에서 문서 불일치보다 심각한
+문제를 발견.
+
+**발견 1 — 문서 3중 불일치**: `CLAUDE.md:144`("P1~P6 우선순위"), `exit_manager.py:12-18`
+(자기 파일 주석이 "실제로는 이렇게 다르다"며 적어놓은 또 다른 순서 — 그 주석조차
+stale), `docs/PIPELINE_FLOW.md:425-436`(세 번째 변형, `main.py:3104` 참조도 stale)
+— 셋 다 서로 다르고 셋 다 실제 구현(`main.py::_ts_check_exit_triggers`, 10518행)과
+불일치.
+
+**발견 2 — 살아있는 버그**: `ExitManager` 클래스는 `main.py` 어디서도 인스턴스화되지
+않는데(`self.exit_manager = ...` 대입 0건, 전수 검색 확인), `self.exit_manager.
+force_exit(...)`를 호출하는 곳이 두 군데 남아 있었음(`main.py:3325`, `11753`) —
+호출되는 순간 무조건 `AttributeError`. 둘 다 "다른 안전장치가 이미 실패했을 때
+마지막으로 기대는 안전망"이라 위험도가 높음:
+- `3325행`(ExchangeCB 해제 직후 포지션 열려있으면 즉시청산): `try/except`로 앱은 안
+  죽지만 CRITICAL 로그만 남기고 실제 청산 미실행.
+- `11753행`(EXIT stuck 후 브로커에 반대포지션 잔존 시 긴급청산): try/except 없음,
+  예외가 그대로 위로 전파.
+바로 아래(`11757행`)에 정확히 같은 용도(`price`, `reason` 시그니처)로 이미 검증되고
+실사용 중인(15:10/15:18 강제청산, `10739`·`10749행`) `_ts_broker_direct_force_exit`가
+있었음 — ExitManager→BrokerDirect 전환 리팩터링 때 이 두 곳만 마이그레이션 누락으로
+추정.
+
+**결정/수정**:
+1. `main.py:3325`·`11753` — `self.exit_manager.force_exit(price, reason=...)` →
+   `_ts_broker_direct_force_exit(self, price, reason)`로 교체(기존 실사용 호출부와
+   동일 시그니처·동일 관례). 3325행의 `try/except`는 방어적 이중 안전장치로 유지,
+   11753행은 10739·10749행과 동일하게 bare 호출(해당 함수는 모든 실패를 `False` 반환
+   으로 처리하고 예외를 던지지 않음).
+2. `strategy/exit/exit_manager.py` 삭제 — 전수 검색으로 `ExitManager` 임포트/인스턴스화
+   0건 확인(1번 수정 후 `exit_manager` 문자열 자체도 main.py에서 0건). 이 파일이
+   임포트하던 `TimeExitManager`(`strategy/exit/time_exit.py`)는 별도 파일의 별도
+   클래스로 `main.py:300`에서 독립적으로 실사용 중이라 영향 없음.
+3. `CLAUDE.md:144`, `docs/PIPELINE_FLOW.md:425-436` — 실제 5단계(하드스톱→손절계단화
+   →TP1~TP3→15:10강제청산→15:18안전망)로 갱신, PIPELINE_FLOW.md의 stale 파일 참조도
+   `main.py:10518`로 정정.
+
+**검증**: `py_compile main.py` 통과, `grep exit_manager main.py` 잔여 0건.
+`QT_QPA_PLATFORM=offscreen` + py37_32로 `import main` 스모크테스트 통과(모듈 레벨
+싱글턴 초기화까지 정상 완료 — DynMC 기동복원 로그 정상 출력). **라이브 미검증** —
+두 수정 지점(ExchangeCB 해제, EXIT stuck 반대포지션)은 조건부 분기라 평상시 기동으로는
+실행경로를 타지 않음, 실제 발동 시 로그 확인 필요(`NEXT_TODO.md` 2026-07-20(362차)
+항목 등록).
+
+**Why**: "죽은 코드 정리"로 접근했으면 `exit_manager.py`만 지우고 끝났을 것 — 그런데
+그 파일이 "죽었다"는 게 클래스 인스턴스화 기준이었을 뿐, 그 클래스의 메서드를 호출하는
+쪽(`main.py`)에는 여전히 참조가 남아있어 실제로는 "아무도 안 쓰는 코드"가 아니라
+"호출되면 반드시 깨지는 코드"였다.
+
+**How to apply**: 어떤 클래스/모듈을 "미사용"으로 판단할 때는 그 클래스 자체의
+인스턴스화 여부만 볼 게 아니라, 그 클래스의 인스턴스가 담길 것으로 기대되는 속성명
+(`self.exit_manager` 같은)을 별도로 전체 검색해서 "그 속성을 참조하는 죽은 호출부"가
+남아있지 않은지 반드시 함께 확인할 것 — 리팩터링이 클래스는 교체했지만 호출부 마이그레이션
+을 빠뜨리는 패턴은 이번이 처음이 아님(306차 S0-C 사례와 유사 계열).
+
+**관련**: 361차(같은 세션, 직전 커밋 — get_stage_plan 관련 딥다이브),
+306차(리팩터링 시 호출부 마이그레이션 누락 선례 — 다른 사례지만 동일 패턴),
+`docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md`(exit_manager.py가 애초에 죽은
+코드임을 2026-07-05에 처음 발견한 근거 문서).

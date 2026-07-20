@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-07-20 (362차 — 청산 P1~P6 문서-코드 불일치 정리 중 숨은 AttributeError 버그 발견·수정 + exit_manager.py 제거)
+
+> 상세: `DECISION_LOG.md` 2026-07-20(362차) 항목.
+
+- [ ] **[라이브 미검증] ExchangeCB 해제 즉시청산 경로** — `main.py:3325`
+  (`_ts_broker_direct_force_exit`로 교체, 구 `self.exit_manager.force_exit(...)`는
+  호출 즉시 `AttributeError`가 나던 죽은 참조였음). 실제 거래소 서킷브레이커 발동→해제
+  시나리오가 발생해야 이 분기를 타므로, 다음 실제 발동 시 `[BrokerDirectExit]`/
+  `[ExchangeCB] 즉시 청산` 로그가 정상 찍히는지 확인 필요.
+- [ ] **[라이브 미검증] EXIT stuck 반대포지션 긴급청산 경로** — `main.py:11753`
+  (동일 교체). 청산주문이 stuck 상태로 3회 연속 브로커 확인 후에도 반대포지션이 남는
+  드문 시나리오라야 실행경로를 탐 — 발생 시 `[PendingOrder] EXIT잔여 반대포지션` +
+  `[BrokerDirectExit]` 로그로 정상 작동 확인.
+- [ ] **CLAUDE.md/PIPELINE_FLOW.md STEP 8 갱신 반영 확인** — 다음에 청산 로직을 다시
+  만질 때 두 문서가 실제 5단계 우선순위(하드스톱→손절계단화→TP1~TP3→15:10→15:18)와
+  여전히 일치하는지 재확인(문서가 다시 stale해지지 않도록).
+
+---
+
 ## 2026-07-20 (361차 — "TP3 도달 0건" 원인 규명 + qty=2 재배분 섀도 A/B 구현)
 
 > 상세: `DECISION_LOG.md` 2026-07-20(361차) 항목.
