@@ -7403,6 +7403,9 @@ class TradingSystem:
                                     )
                                 )
                                 # L2 통과 && 모드 필터 통과 → 진입
+                                # [363차 후속] 진입 순간 quantile 기대엣지 스냅샷 — 사후
+                                # 분석(loss_tier1_qty1_shadow 등) 전용, 리스크 판단 무관여
+                                _q_est = (decision.get("meta_gate") or {}).get("quantile_estimate") or {}
                                 self._execute_entry(
                                     final_dir_str, close, _qty_auto, atr, _final_grade,
                                     raw_direction=raw_dir_str,
@@ -7410,6 +7413,8 @@ class TradingSystem:
                                     entry_horizon=_entry_horizon,
                                     hurst_bucket=self._entry_hurst_bucket,
                                     extra_stop_mult=_vb_stop_widen_mult,
+                                    quantile_expected_pt=_q_est.get("expected_pt"),
+                                    quantile_uncertainty_pt=_q_est.get("uncertainty_pt"),
                                 )
                                 self._log_exec_1m_shadow(
                                     final_dir_str, _final_grade, features, horizon_proba,
@@ -7498,6 +7503,7 @@ class TradingSystem:
                             "%.1f%%" % (confidence * 100),
                         )
                     )
+                    _q_est_c = (decision.get("meta_gate") or {}).get("quantile_estimate") or {}
                     self._execute_entry(
                         final_dir_str, close, _qty_c_exp, atr, _final_grade,
                         raw_direction=raw_dir_str,
@@ -7505,6 +7511,8 @@ class TradingSystem:
                         entry_horizon=_entry_horizon,
                         hurst_bucket=self._entry_hurst_bucket,
                         extra_stop_mult=_vb_stop_widen_mult,
+                        quantile_expected_pt=_q_est_c.get("expected_pt"),
+                        quantile_uncertainty_pt=_q_est_c.get("uncertainty_pt"),
                     )
                     self._log_exec_1m_shadow(
                         final_dir_str, _final_grade, features, horizon_proba,
@@ -10538,6 +10546,14 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
             )
         except Exception as _spe:
             logger.warning("[SyntheticPartial] 기록 실패 (무해): %s", _spe)
+        # [363차 후속, 0721 딥다이브 제안4 편입] qty=1 TP1 이후 트레일 폭 섀도 —
+        # 361차 tp2_hold_shadow와 같은 패턴(발동 시점 상태 기록 → 주간 리포트가
+        # compute_trailing_stop_tier로 사후 시뮬레이션). qty=1은 TP1 이후 4단계
+        # 트레일링(update_trailing_stop) 대신 이 static ATR-lock 1회 보호전환만
+        # 받는데, 그 정적 보호가 이후 되돌림에 너무 타이트한지(0721 딥다이브: 승리
+        # 3건이 TP1 직후 곧바로 보호손절가로 되돌아온 패턴 반복)를 "그때부터 qty=2와
+        # 동일한 4단계 트레일링을 계속 적용했다면"과 실현치를 대조해 계측한다.
+        self._record_tp1_trail_shadow(price, atr, protect, protect_mode)
         return
     ratio = PARTIAL_EXIT_RATIOS[stage - 1]
     target_qty = self.position.get_stage_exit_qty(stage)
@@ -10617,6 +10633,39 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
     )
 
 
+def _ts_record_tp1_trail_shadow(self, price: float, atr: float, protect: dict, protect_mode: str) -> None:
+    """[363차 후속] qty=1 TP1 이후 트레일 폭 섀도 기록 — hurst_gate_shadow/
+    tp2_hold_shadow와 동일 패턴(발동 시점 상태만 기록, 실거래 액션 없음).
+
+    resolve_and_eval_tp1_trail_shadow()가 compute_trailing_stop_tier()로 "그때부터
+    qty=2와 동일한 4단계 트레일링을 계속 적용했다면"을 사후 시뮬레이션하고, entry_ts
+    조인으로 실거래 실현 pnl_pts와 대조한다.
+    """
+    try:
+        execute(
+            TRADES_DB,
+            """INSERT INTO tp1_trail_shadow
+               (ts, entry_ts, direction, entry_price, tp1_price,
+                protect_stop_at_hook, atr_at_hook, protect_mode, grade, entry_horizon)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                 if self.position.entry_time else None),
+                self.position.status,
+                float(self.position.entry_price),
+                float(price),
+                float(protect["new_stop_price"]),
+                float(atr),
+                protect_mode,
+                self.position.grade,
+                self.position.entry_horizon,
+            ),
+        )
+    except Exception as _t1t_e:
+        logger.warning("[Tp1TrailShadow] 기록 실패 (무해): %s", _t1t_e)
+
+
 def _ts_execute_loss_tier1_exit(self, price: float) -> None:
     """[360차] 손절 계단화 1차 — entry~stop 절반 지점 조기 축소 주문 전송.
 
@@ -10669,8 +10718,9 @@ def _ts_record_loss_tier1_qty1_shadow(self, price: float) -> None:
             TRADES_DB,
             """INSERT INTO loss_tier1_qty1_shadow
                (ts, entry_ts, direction, entry_price, loss_tier1_price, stop_price,
-                grade, entry_horizon, cf_outcome, cf_exit_price)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                grade, entry_horizon, cf_outcome, cf_exit_price,
+                quantile_expected_pt, quantile_uncertainty_pt)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
                 (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -10683,6 +10733,8 @@ def _ts_record_loss_tier1_qty1_shadow(self, price: float) -> None:
                 self.position.entry_horizon,
                 "EARLY_CUT",
                 float(self.position.loss_tier1_price),
+                self.position.entry_quantile_expected_pt,
+                self.position.entry_quantile_uncertainty_pt,
             ),
         )
     except Exception as _lt1q1_e:
@@ -12906,6 +12958,8 @@ def _ts_execute_entry(
     entry_horizon: str = None,
     hurst_bucket: str = None,
     extra_stop_mult: float = 1.0,
+    quantile_expected_pt: float = None,
+    quantile_uncertainty_pt: float = None,
 ):
     cooldown_active, cooldown_remain = _ts_in_exit_cooldown(self)
     raw_direction = raw_direction or direction
@@ -13064,6 +13118,8 @@ def _ts_execute_entry(
             entry_horizon=entry_horizon,
             hurst_bucket=hurst_bucket,
             extra_stop_mult=extra_stop_mult,
+            quantile_expected_pt=quantile_expected_pt,
+            quantile_uncertainty_pt=quantile_uncertainty_pt,
         )
         self.position._optimistic = True
         if self._pending_order is not None:
@@ -13477,6 +13533,7 @@ TradingSystem._execute_entry = _ts_execute_entry
 TradingSystem._execute_partial_exit = _ts_execute_partial_exit
 TradingSystem._execute_loss_tier1_exit = _ts_execute_loss_tier1_exit
 TradingSystem._record_loss_tier1_qty1_shadow = _ts_record_loss_tier1_qty1_shadow
+TradingSystem._record_tp1_trail_shadow = _ts_record_tp1_trail_shadow
 TradingSystem._check_exit_triggers = _ts_check_exit_triggers
 TradingSystem._intrabar_tp_check = _ts_intrabar_tp_check
 

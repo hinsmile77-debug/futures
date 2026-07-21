@@ -557,13 +557,60 @@ def init_trades_db():
         cf_exit_price      REAL,                    -- = loss_tier1_price
         actual_pnl_pts     REAL,                    -- 실거래(trades.pnl_pts) 실현치
         hyp_pnl_pts        REAL,                    -- (+)=조기청산이 유리, (-)=현행(무조치) 유지가 나았음
+        quantile_expected_pt    REAL,                -- [363차 후속] 진입 시점 분위 기대엣지(pt)
+        quantile_uncertainty_pt REAL,                -- [363차 후속] 진입 시점 분위 불확실성(pt)
         created_at         TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
+    # [363차 후속] 위 CREATE TABLE에 없던 컬럼을 나중에 추가할 때의 관례
+    # (ensemble_decisions ALTER 패턴과 동일) — 이미 옛 스키마로 생성된 PC/DB에서도
+    # 안전하게 따라잡는다. 신규 설치는 위 CREATE TABLE에 이미 포함돼 있어 no-op.
+    with get_conn(TRADES_DB) as _lt1q1_conn:
+        _lt1q1_cols = {r[1] for r in _lt1q1_conn.execute(
+            "PRAGMA table_info(loss_tier1_qty1_shadow)").fetchall()}
+        for _col, _dtype in (
+            ("quantile_expected_pt", "REAL"),
+            ("quantile_uncertainty_pt", "REAL"),
+        ):
+            if _col not in _lt1q1_cols:
+                _lt1q1_conn.execute(
+                    f"ALTER TABLE loss_tier1_qty1_shadow ADD COLUMN {_col} {_dtype}")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_lt1q1_ts ON loss_tier1_qty1_shadow(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_lt1q1_entry_ts ON loss_tier1_qty1_shadow(entry_ts)")
+    # [363차 후속] qty=1 TP1 이후 트레일 폭 섀도 — 0721 정기점검 딥다이브 제안4 편입,
+    # 361차 tp2_hold_shadow와 동일한 "발동 시점 상태 기록 → 주간 리포트가 사후
+    # 시뮬레이션 판정" 패턴. qty=1은 TP1 이후 update_trailing_stop() 4단계 트레일링
+    # 대신 static ATR-lock 1회 보호전환(arm_tp1_single_contract_with_mode)만 받는데,
+    # 그게 이후 되돌림에 너무 타이트한지를 "그때부터 qty=2와 동일한 4단계 트레일링을
+    # 계속 적용했다면"과 실현치를 대조해 계측한다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS tp1_trail_shadow (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                   TEXT NOT NULL,      -- TP1 보호전환(실제 static lock) 발동 시각
+        entry_ts             TEXT NOT NULL,      -- trades.entry_ts 조인 키
+        direction            TEXT NOT NULL,      -- LONG/SHORT
+        entry_price          REAL NOT NULL,
+        tp1_price            REAL NOT NULL,      -- TP1 도달가(훅 시점 current_price)
+        protect_stop_at_hook REAL NOT NULL,      -- 실제 적용된 static lock 손절가
+        atr_at_hook          REAL NOT NULL,
+        protect_mode         TEXT,               -- 'atr_profit' 등
+        grade                TEXT,
+        entry_horizon        TEXT,
+        resolved             INTEGER DEFAULT 0,  -- 1=사후 시뮬레이션+실거래 대조 완료
+        cf_outcome           TEXT,               -- TRAIL_STOP / FORCE_EXIT
+        cf_exit_price        REAL,
+        cf_hold_minutes      INTEGER,
+        actual_pnl_pts       REAL,               -- 실거래(trades.pnl_pts) 실현치
+        hyp_pnl_pts          REAL,               -- (+)=4단계 트레일링 지속이 유리, (-)=현행 정적락 유지가 나았음
+        created_at           TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_t1t_ts ON tp1_trail_shadow(ts)")
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_t1t_entry_ts ON tp1_trail_shadow(entry_ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,

@@ -111,6 +111,11 @@ class PositionTracker:
         # [363차] qty=1 손실1차 섀도 — 물리적 분할 불가라 실제 축소는 안 하지만,
         # "그 시점에 전량 조기청산했다면"의 counterfactual 기록 여부(포지션당 1회).
         self.loss_tier1_qty1_shadow_logged: bool = False
+        # [363차 후속] 진입 시점 quantile 기대엣지 — ensemble_decisions에는 매분
+        # 찍히지만 "이 포지션이 진입한 바로 그 순간의 값"을 그대로 들고 있어야
+        # loss_tier1_qty1_shadow 등 사후 분석에서 재조인 없이 바로 쓸 수 있다.
+        self.entry_quantile_expected_pt: Optional[float] = None
+        self.entry_quantile_uncertainty_pt: Optional[float] = None
 
         # [2026-07-16 339차 후속] 1계약 TP1 회계적 분할청산(synthetic partial) —
         # Cybos 최소 체결단위가 1계약이라 물리적으로 못 쪼개는 상황에서, TP1 도달
@@ -166,6 +171,8 @@ class PositionTracker:
         self.loss_tier1_price = 0.0
         self.loss_tier1_done = False
         self.loss_tier1_qty1_shadow_logged = False
+        self.entry_quantile_expected_pt = None
+        self.entry_quantile_uncertainty_pt = None
         self.synthetic_tp1_price = None
         self.synthetic_tp1_pnl_pts = None
         self.synthetic_tp1_fraction = None
@@ -188,6 +195,8 @@ class PositionTracker:
         entry_horizon: Optional[str] = None,
         hurst_bucket: Optional[str] = None,
         extra_stop_mult: float = 1.0,
+        quantile_expected_pt: Optional[float] = None,
+        quantile_uncertainty_pt: Optional[float] = None,
     ):
         """
         포지션 진입
@@ -209,6 +218,10 @@ class PositionTracker:
                             hurst_bucket 배수와 별개로 손절 거리에만 곱해진다 —
                             TP는 건드리지 않아 위험:보상비가 더 보수적으로 변한다
                             (사이즈 축소로 절대 리스크는 상쇄).
+            quantile_expected_pt/quantile_uncertainty_pt: [363차 후속] 진입 결정 순간의
+                            분위 회귀 기대값/불확실성(pt) 스냅샷 — 리스크 관리에는
+                            관여하지 않고 loss_tier1_qty1_shadow 등 사후 분석 계측
+                            전용(None 허용, 미전달 시 그대로 None).
         """
         assert direction in (POSITION_LONG, POSITION_SHORT), f"Invalid direction: {direction}"
         assert self.status == POSITION_FLAT, "이미 포지션 보유 중"
@@ -226,6 +239,12 @@ class PositionTracker:
         self.entry_extra_stop_mult = float(extra_stop_mult or 1.0)
         self.initial_quantity = quantity
         self.trailing_anchor_price = price
+        self.entry_quantile_expected_pt = (
+            float(quantile_expected_pt) if quantile_expected_pt is not None else None
+        )
+        self.entry_quantile_uncertainty_pt = (
+            float(quantile_uncertainty_pt) if quantile_uncertainty_pt is not None else None
+        )
 
         mult = 1 if direction == POSITION_LONG else -1
         _tp1_mult = ATR_HORIZON_TP1_MULT.get(entry_horizon, ATR_TP1_MULT) if entry_horizon else ATR_TP1_MULT
@@ -1033,6 +1052,8 @@ class PositionTracker:
         self.loss_tier1_price = 0.0
         self.loss_tier1_done = False
         self.loss_tier1_qty1_shadow_logged = False
+        self.entry_quantile_expected_pt = None
+        self.entry_quantile_uncertainty_pt = None
         self.synthetic_tp1_price = None
         self.synthetic_tp1_pnl_pts = None
         self.synthetic_tp1_fraction = None
@@ -1147,6 +1168,8 @@ class PositionTracker:
                 "loss_tier1_price": self.loss_tier1_price,
                 "loss_tier1_done": self.loss_tier1_done,
                 "loss_tier1_qty1_shadow_logged": self.loss_tier1_qty1_shadow_logged,
+                "entry_quantile_expected_pt": self.entry_quantile_expected_pt,
+                "entry_quantile_uncertainty_pt": self.entry_quantile_uncertainty_pt,
                 "synthetic_tp1_price": self.synthetic_tp1_price,
                 "synthetic_tp1_pnl_pts": self.synthetic_tp1_pnl_pts,
                 "synthetic_tp1_fraction": self.synthetic_tp1_fraction,
@@ -1209,6 +1232,8 @@ class PositionTracker:
             self.loss_tier1_price = float(state.get("loss_tier1_price", 0.0) or 0.0)
             self.loss_tier1_done = bool(state.get("loss_tier1_done", False))
             self.loss_tier1_qty1_shadow_logged = bool(state.get("loss_tier1_qty1_shadow_logged", False))
+            self.entry_quantile_expected_pt = state.get("entry_quantile_expected_pt")
+            self.entry_quantile_uncertainty_pt = state.get("entry_quantile_uncertainty_pt")
             self.synthetic_tp1_price = state.get("synthetic_tp1_price")
             self.synthetic_tp1_pnl_pts = state.get("synthetic_tp1_pnl_pts")
             self.synthetic_tp1_fraction = state.get("synthetic_tp1_fraction")

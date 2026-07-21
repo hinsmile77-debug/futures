@@ -1270,6 +1270,12 @@ def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
     PASS = 현행(qty=1 조기청산 없음) 유지 — 조기청산이 평균적으로 이득 아님.
     FAIL = qty=1 조기청산 정책 채택 검토 권고 (즉시 코드 변경 아님 — 주간회의 수동
            결정, §9 사전등록 원칙 — hurst_gate_shadow·open_gap_shadow와 동일 순서).
+
+    [363차 후속, 0721 딥다이브 제안3 편입] 진입 시점 quantile 기대엣지/불확실성
+    (main.py:_ts_execute_entry가 캡처)도 함께 저장돼, edge_ratio(=|expected_pt|/
+    uncertainty_pt)와 실현 pnl_pts의 스피어만 상관을 보조 지표로 보고한다 — 이
+    상관 자체는 PASS/FAIL 게이트가 아니라 참고용(§9와 동일 원칙, 표본이 쌓인 뒤
+    등급/사이징 강화 여부는 사람이 별도 판단).
     """
     cr = VALIDATION_CAMPAIGN["loss_tier1_qty1_shadow"]
     out = {"verdict": "INSUFFICIENT", "resolved_now": 0}
@@ -1345,6 +1351,34 @@ def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
         "total_hyp_pnl_pts": round(total_hyp, 4),
         "win_rate": round(win_rate, 4),
     })
+
+    # [363차 후속, §11-보조] quantile 기대엣지/불확실성 비율 vs 실현 pnl 상관 —
+    # 정책 게이트 아님, 참고용 상관관계만 보고한다. "체크리스트/메타 등급과 무관하게
+    # edge_ratio가 낮았던 진입이 실제로도 더 나쁜 결과를 냈는가"(0721 딥다이브 관찰)를
+    # 표본이 쌓이는 대로 실측 확인 — 등급/사이징 강화 여부는 이 상관이 충분히 쌓인
+    # 뒤 별도로 사람이 판단(§9와 동일 원칙, 이 값 자체가 자동으로 아무것도 바꾸지 않음).
+    try:
+        with _conn(TRADES_DB) as conn:
+            edge_rows = conn.execute(
+                """SELECT quantile_expected_pt AS exp_pt, quantile_uncertainty_pt AS unc_pt,
+                          actual_pnl_pts AS pnl
+                   FROM loss_tier1_qty1_shadow
+                   WHERE resolved=1 AND ts >= ?
+                     AND quantile_expected_pt IS NOT NULL
+                     AND quantile_uncertainty_pt IS NOT NULL
+                     AND quantile_uncertainty_pt > 0""",
+                (_campaign_start(),),
+            ).fetchall()
+    except Exception:
+        edge_rows = []
+    edge_ratios = [abs(float(r["exp_pt"])) / float(r["unc_pt"]) for r in edge_rows]
+    edge_pnls = [float(r["pnl"]) for r in edge_rows]
+    out["n_edge_samples"] = len(edge_ratios)
+    if len(edge_ratios) >= 10:
+        _ec = _spearman(edge_ratios, edge_pnls)
+        out["edge_uncertainty_corr"] = None if np.isnan(_ec) else round(_ec, 4)
+        out["edge_ratio_mean"] = round(float(np.mean(edge_ratios)), 4)
+
     if n < int(cr["min_samples"]):
         out["reason"] = "tier1 터치 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
         return out
@@ -1356,6 +1390,163 @@ def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
     if adopt:
         out["recommendation"] = (
             "qty=1 손실1차 조기청산 정책 채택 검토 — 주간회의 수동 결정 (§9 사전등록 원칙)"
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# [12] qty=1 TP1 이후 트레일 폭 counterfactual — resolve + 누적 판정 (363차 후속)
+# ──────────────────────────────────────────────────────────────
+
+def resolve_and_eval_tp1_trail_shadow() -> dict:
+    """tp1_trail_shadow(main.py에서 기록) resolve + PASS/FAIL 판정.
+
+    0721 정기점검 딥다이브 제안4 편입 — 361차 tp2_hold_shadow와 동일한 패턴·판정
+    로직이며 트레일링 시뮬레이션도 같은 순수함수(compute_trailing_stop_tier)를
+    재사용한다(단일 소스 유지, 라이브 로직과 계측 시뮬레이션 드리프트 방지).
+    qty=1은 TP1 이후 update_trailing_stop() 4단계 트레일링 대신 static ATR-lock
+    1회 보호전환만 받는데, "그때부터 qty=2와 동일한 4단계 트레일링을 계속 적용
+    했다면" 당일 15:10까지 분봉으로 사후 시뮬레이션하고, 실거래(trades 테이블)가
+    최종적으로 낸 pnl_pts를 entry_ts 근사 조인(±10초, loss_tier1_qty1_shadow와
+    동일 방식)으로 가져와 그대로 대조한다 — anchor 시작값은 tp2_hold_shadow의
+    "entry_price로 단순화"와 달리 훅 시점에 이미 도달이 확인된 tp1_price를 사용
+    (아는 값을 굳이 버릴 이유가 없음, stop 시작값은 실제 적용된 static lock).
+
+    hyp_pnl_pts = (4단계 트레일링 지속 시뮬레이션 pt) − (실제 실현 pt).
+    PASS = 현행(static lock) 유지 — 트레일링 지속이 평균적으로 이득 아님.
+    FAIL = qty=1도 4단계 트레일링 적용 채택 검토 권고 (즉시 코드 변경 아님 —
+           주간회의 수동 결정, §9 사전등록 원칙 — tp2_hold_shadow와 동일 순서).
+    """
+    cr = VALIDATION_CAMPAIGN["tp1_trail_shadow"]
+    out = {"verdict": "INSUFFICIENT", "resolved_now": 0}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            unresolved = conn.execute(
+                "SELECT * FROM tp1_trail_shadow WHERE resolved = 0 ORDER BY ts"
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    if unresolved:
+        earliest = min(r["ts"] for r in unresolved)
+        close_map, high_map, low_map = _load_candle_maps(earliest)
+        now = datetime.datetime.now()
+        updates = []
+        with _conn(TRADES_DB) as conn:
+            for r in unresolved:
+                base = datetime.datetime.strptime(r["ts"], _TS_FMT)
+                day_end = base.replace(hour=15, minute=10, second=0, microsecond=0)
+                if now < day_end + datetime.timedelta(minutes=2):
+                    continue  # 당일 장 마감까지 아직 안 지남 — 다음 실행에서 재시도
+                # 실거래 실현 pnl 먼저 확인 — entry_ts 근사 조인(±10초)
+                match = conn.execute(
+                    """SELECT pnl_pts FROM trades
+                       WHERE direction = ?
+                         AND ABS((julianday(entry_ts) - julianday(?)) * 86400) <= 10
+                         AND exit_ts IS NOT NULL
+                       ORDER BY ABS((julianday(entry_ts) - julianday(?)) * 86400)
+                       LIMIT 1""",
+                    (r["direction"], r["entry_ts"], r["entry_ts"]),
+                ).fetchone()
+                if match is None:
+                    continue  # 실거래가 아직 청산 전 — 다음 실행에서 재시도
+                actual_pnl = float(match["pnl_pts"] or 0.0)
+
+                is_long = str(r["direction"]) == "LONG"
+                direction = "LONG" if is_long else "SHORT"
+                entry_p = float(r["entry_price"])
+                atr = float(r["atr_at_hook"] or 0.0)
+                anchor = float(r["tp1_price"])
+                stop = float(r["protect_stop_at_hook"])
+                cf_outcome, cf_price, cf_minutes = None, None, 0
+                last_close, last_m = None, 0
+                m = 0
+                while True:
+                    m += 1
+                    mid = base + datetime.timedelta(minutes=m)
+                    if mid.time() > datetime.time(15, 10):
+                        break
+                    mid_ts = mid.strftime(_TS_FMT)
+                    hi = high_map.get(mid_ts)
+                    lo = low_map.get(mid_ts)
+                    cl = close_map.get(mid_ts)
+                    if hi is None or lo is None or cl is None:
+                        continue
+                    last_close, last_m = cl, m
+                    anchor, stop = compute_trailing_stop_tier(
+                        entry_p, direction, atr, cl, anchor, stop
+                    )
+                    hit_stop = lo <= stop if is_long else hi >= stop
+                    if hit_stop:
+                        cf_outcome, cf_price, cf_minutes = "TRAIL_STOP", stop, m
+                        break
+                if cf_price is None:
+                    if last_close is None:
+                        continue  # 분봉 데이터 자체가 없음 — 다음 실행에서 재시도
+                    cf_outcome, cf_price, cf_minutes = "FORCE_EXIT", last_close, last_m
+                cf_pnl = (cf_price - entry_p) if is_long else (entry_p - cf_price)
+                hyp = cf_pnl - actual_pnl
+                updates.append((
+                    round(actual_pnl, 4), cf_outcome, round(cf_price, 4),
+                    cf_minutes, round(hyp, 4), r["id"],
+                ))
+
+        if updates:
+            with _conn(TRADES_DB) as conn:
+                conn.executemany(
+                    """UPDATE tp1_trail_shadow
+                       SET resolved=1, actual_pnl_pts=?, cf_outcome=?, cf_exit_price=?,
+                           cf_hold_minutes=?, hyp_pnl_pts=?
+                       WHERE id=?""",
+                    updates,
+                )
+                conn.commit()
+            out["resolved_now"] = len(updates)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            agg = conn.execute(
+                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
+                          AVG(entry_price) AS avg_price,
+                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win,
+                          SUM(CASE WHEN cf_outcome='TRAIL_STOP' THEN 1 ELSE 0 END) AS n_stop,
+                          SUM(CASE WHEN cf_outcome='FORCE_EXIT' THEN 1 ELSE 0 END) AS n_force
+                   FROM tp1_trail_shadow WHERE resolved=1 AND ts >= ?""",
+                (_campaign_start(),),
+            ).fetchone()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM tp1_trail_shadow WHERE resolved=0"
+            ).fetchone()["n"]
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    n = int(agg["n"] or 0)
+    total_hyp = float(agg["total_hyp"] or 0.0)
+    avg_price = float(agg["avg_price"] or 0.0) or 300.0
+    win_rate = (int(agg["n_win"] or 0) / n) if n else 0.0
+    out.update({
+        "n_resolved": n,
+        "n_pending": int(pending),
+        "total_hyp_pnl_pts": round(total_hyp, 4),
+        "win_rate": round(win_rate, 4),
+        "cf_trail_stop": int(agg["n_stop"] or 0),
+        "cf_force_exit": int(agg["n_force"] or 0),
+    })
+    if n < int(cr["min_samples"]):
+        out["reason"] = "TP1 보호전환 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        return out
+
+    cost_pt = _roundtrip_cost_pt(avg_price)
+    out["cost_pt"] = round(cost_pt, 4)
+    adopt = total_hyp > cost_pt * 2.0
+    out["verdict"] = "FAIL" if adopt else "PASS"
+    if adopt:
+        out["recommendation"] = (
+            "qty=1도 4단계 트레일링(update_trailing_stop) 적용 채택 검토 "
+            "— 주간회의 수동 결정 (§9 사전등록 원칙)"
         )
     return out
 
@@ -1533,6 +1724,7 @@ def build_report(days: int) -> tuple:
     og = resolve_and_eval_open_gap()
     t2 = resolve_and_eval_tp2_hold()
     lt1 = resolve_and_eval_loss_tier1_qty1_shadow()
+    t1t = resolve_and_eval_tp1_trail_shadow()
 
     metrics = {
         "generated_at": now_str,
@@ -1543,6 +1735,7 @@ def build_report(days: int) -> tuple:
         "signal_decay": sd, "hurst_regime": hr, "hurst_gate_shadow": hg,
         "joint_gate_shadow": jg, "kelly_skip": ks, "open_gap_shadow": og,
         "tp2_hold_shadow": t2, "loss_tier1_qty1_shadow": lt1,
+        "tp1_trail_shadow": t1t,
     }
 
     L = []
@@ -1601,6 +1794,12 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(lt1["verdict"]), lt1.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (lt1["win_rate"] * 100)) if "win_rate" in lt1 else "—",
         lt1.get("n_resolved", 0), lt1.get("n_pending", 0)))
+    L.append("| [12] qty=1 TP1 이후 트레일 폭 counterfactual | %s | 누적 hyp=%spt 승률=%s "
+              "(n=%s, 보류 %s) 트레일스톱=%s건 강제청산=%s건 |" % (
+        _fmt_verdict(t1t["verdict"]), t1t.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (t1t["win_rate"] * 100)) if "win_rate" in t1t else "—",
+        t1t.get("n_resolved", 0), t1t.get("n_pending", 0),
+        t1t.get("cf_trail_stop", "—"), t1t.get("cf_force_exit", "—")))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -1806,6 +2005,33 @@ def build_report(days: int) -> tuple:
         L.append("- **권고**: %s" % lt1["recommendation"])
     if lt1.get("reason"):
         L.append("- %s" % lt1["reason"])
+    if "edge_uncertainty_corr" in lt1:
+        L.append("- [제안3 편입, 참고용] edge_ratio(=|기대엣지|/불확실성, n=%s, 평균=%s) vs "
+                  "실현 pt 스피어만 상관: **%s** (게이트 아님 — 등급/사이징 강화 여부는 "
+                  "표본이 더 쌓인 뒤 별도 검토)" % (
+            lt1.get("n_edge_samples", "—"), lt1.get("edge_ratio_mean", "—"),
+            lt1.get("edge_uncertainty_corr", "—")))
+    elif lt1.get("n_edge_samples", 0) > 0:
+        L.append("- [제안3 편입] edge_ratio 표본 %s건 — 상관 계산 최소치(10건) 미달, 축적 대기" %
+                  lt1.get("n_edge_samples", 0))
+    L.append("")
+
+    # [12] qty=1 TP1 이후 트레일 폭 counterfactual 상세
+    L.append("## [12] qty=1 TP1 이후 트레일 폭 counterfactual (363차 후속, 0721 제안4 편입)")
+    L.append("")
+    L.append("- 이번 실행 resolve: %d건 / 누적 판정 %s건 (미판정 %s건)" % (
+        t1t.get("resolved_now", 0), t1t.get("n_resolved", 0), t1t.get("n_pending", 0)))
+    L.append("- counterfactual 분포: TRAIL_STOP %s / FORCE_EXIT %s" % (
+        t1t.get("cf_trail_stop", 0), t1t.get("cf_force_exit", 0)))
+    L.append("- 누적 hyp_pnl_pts(4단계 트레일링 지속 vs 실제 static lock 실현 pt 차이): "
+              "**%s pt** / 승률 %s" % (
+        t1t.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (t1t["win_rate"] * 100)) if "win_rate" in t1t else "—",
+    ))
+    if t1t.get("recommendation"):
+        L.append("- **권고**: %s" % t1t["recommendation"])
+    if t1t.get("reason"):
+        L.append("- %s" % t1t["reason"])
     L.append("")
     L.append("---")
     L.append("")

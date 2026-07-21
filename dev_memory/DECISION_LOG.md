@@ -9773,3 +9773,89 @@ scripts/generate_validation_campaign_report.py scripts/verify_loss_tier1.py` 통
 시뮬레이션을 쓰는 이유가 대비되는 유사 채널), §9 사전등록 원칙 선례 5건
 (signal_decay_exits/hurst_gate_shadow/joint_gate_shadow/open_gap_shadow/
 tp2_hold_shadow), `docs/정기점검/매일점검/0721.txt`(이번 딥다이브 계기).
+
+---
+
+## 2026-07-21 (363차 후속 — 0721 딥다이브 제안3·4를 360/361차 계열 캠페인에 편입)
+
+### [설계결정] quantile 기대엣지 필터·qty=1 TP1 이후 트레일 폭을 별도 신설 대신 기존 캠페인에 컬럼/자매채널로 편입
+
+**배경**: 0721 정기점검 딥다이브 리포트에서 제안한 4건 중 1·2번(Loss Tier1 사각지대)은
+363차로 구현 완료. 사용자가 남은 3번(quantile 기대엣지 기반 등급/사이징 필터)·4번
+(qty=1 TP1 이후 트레일 폭)을 "361차/360차가 이미 진행 중인 검증 캠페인에 편입"하도록
+지시. 4번은 361차 tp2_hold_shadow와 방향이 명확히 겹쳐(둘 다 "TP 도달 후 트레일링
+정책") 자매 채널로 만들면 된다는 게 즉시 분명했으나, 3번(quantile 기반 등급 필터)이
+어느 기존 캠페인에 붙는지는 애매해 사용자에게 확인(AskUserQuestion) — "360→363차
+loss_tier1_qty1_shadow에 컬럼 추가"로 결정됨(신규 kelly_skip류 독립 채널 신설이나
+보류 대신).
+
+**결정/수정**:
+
+1. **제안3 — loss_tier1_qty1_shadow에 quantile 컬럼 편입** (신규 채널 아님):
+   - `PositionTracker`에 `entry_quantile_expected_pt`/`entry_quantile_uncertainty_pt`
+     신설(6개 터치포인트: init/force_flat/open_position/_reset_position/save/load) —
+     `open_position()`이 진입 결정 순간의 스냅샷을 그대로 보관.
+   - `main.py`: STEP7 자동진입 두 콜사이트(`decision["meta_gate"]["quantile_estimate"]`
+     추출) → `_execute_entry()` → `open_position()`으로 스레딩. 수동진입 경로(1개
+     콜사이트)는 `decision` 스코프가 없어 미배선 — quantile 필드 None으로 자연스럽게
+     빠짐(의도적, 수동진입은 애초에 모집단 밖).
+   - `loss_tier1_qty1_shadow` 테이블에 `quantile_expected_pt`/`quantile_uncertainty_pt`
+     2컬럼 추가 — CREATE TABLE(신규 설치용) + `PRAGMA table_info` 확인 후 `ALTER TABLE
+     ADD COLUMN`(기존 설치 따라잡기, `ensemble_decisions` 마이그레이션과 동일 관례)
+     양쪽 다 반영해 이 세션에서 이미 만들어둔 이 PC의 옛 스키마도 안전하게 갱신.
+   - `resolve_and_eval_loss_tier1_qty1_shadow()`에 edge_ratio(=|기대엣지|/불확실성)와
+     실현 pnl_pts의 스피어만 상관을 보조 지표로 추가(`n_edge_samples≥10`일 때만 계산).
+     **PASS/FAIL 게이트 아님** — §9 원칙대로 참고용 상관관계만 리포트에 노출, 등급/
+     사이징 강화 여부는 표본이 더 쌓인 뒤 별도로 사람이 판단.
+
+2. **제안4 — tp1_trail_shadow 신규 자매 채널** (361차 tp2_hold_shadow와 동일 패턴):
+   - qty=1은 TP1 도달 시 `arm_tp1_single_contract_with_mode()`(static ATR-lock 1회
+     보호전환, `main.py:_ts_execute_partial_exit`의 `total_qty==1 and stage==1` 분기)
+     만 받고, qty=2처럼 이후 `update_trailing_stop()` 4단계 트레일링을 계속 받지
+     못함 — 0721 딥다이브가 관찰한 "승리 3건이 TP1 직후 곧바로 보호손절가로
+     되돌아온 패턴"의 구조적 원인. 이 static lock 발동 시점을 `tp1_trail_shadow`
+     테이블(신규, `utils/db_utils.py`)에 기록(`main.py::_ts_record_tp1_trail_shadow`).
+   - `resolve_and_eval_tp1_trail_shadow()`: "그때부터 qty=2와 동일한 4단계 트레일링을
+     계속 적용했다면"을 당일 15:10까지 분봉으로 사후 시뮬레이션 — tp2_hold_shadow가
+     이미 쓰는 순수함수 `compute_trailing_stop_tier()`를 **그대로 재사용**(시뮬레이션
+     로직 복붙 없음, 라이브·계측 드리프트 방지 원칙 유지). anchor 시작값은
+     tp2_hold_shadow의 "entry_price로 단순화"와 달리 훅 시점에 이미 확인된
+     `tp1_price`를 사용(아는 값을 버릴 이유 없음) — 유일하게 의도적으로 갈라진 지점,
+     주석에 근거 남김. 실거래 실현 pnl_pts는 loss_tier1_qty1_shadow와 동일하게
+     entry_ts 근사 조인(±10초)으로 가져와 캔들 시뮬레이션 없이 그대로 대조.
+   - `VALIDATION_CAMPAIGN["tp1_trail_shadow"]`(min_samples=15, tp2_hold_shadow와 동일
+     기준) 사전등록. 리포트 `[12]`번 채널로 요약행+상세 섹션 추가.
+   - PASS = 현행(static lock) 유지, FAIL = qty=1도 4단계 트레일링 적용 채택 검토
+     권고(즉시 코드 변경 아님 — 주간회의 수동 결정, tp2_hold_shadow와 동일 순서).
+
+**검증**: `py_compile` 전체 통과. 신규 테이블 스키마·ALTER 마이그레이션을 실제
+`data/db/trades.db`(프로덕션, 이 세션에서 만든 이전 스키마) 대상 `init_all_dbs()`
+재실행으로 확인(멱등, 데이터 손실 없음 — 두 테이블 다 기존 0행). 두 resolver를
+py310_64로 실행해 빈 테이블 대상 INSUFFICIENT 정상 출력 확인. **격리된 스크래치
+DB**(`data/db/_scratch_test_tp1_trail.db`, 테스트 후 삭제)에 합성 tier1_trail_shadow
+행 + 합성 trades 행을 넣고 `_load_candle_maps`를 가짜 분봉으로 monkeypatch해
+`resolve_and_eval_tp1_trail_shadow()`를 종단간 실행 — join·트레일링 시뮬레이션·
+hyp_pnl_pts 계산(4.5pt = cf_pnl 5.0 − actual_pnl 0.5, 수기 검산과 일치)까지 전부
+의도대로 동작 확인. **라이브 미검증** — 다음 실제 (a) qty=1 진입, (b) qty=1 TP1
+보호전환 발동 시 각각 `loss_tier1_qty1_shadow`/`tp1_trail_shadow`에 정상 기록되는지
+확인 필요(둘 다 최소 표본 15~20건 쌓일 때까지는 리포트가 INSUFFICIENT로 보류
+표시 — 정상).
+
+**Why**: 제안 3·4를 각각 독립된 새 채널로 만들면 "제안 하나당 새 검증 트랙 하나"가
+무한정 늘어나 §9 원칙이 의도한 관리 포인트 억제 효과가 오히려 역전된다 — 사용자가
+"기존 캠페인에 편입"을 명시적으로 요구한 이유. 반대로 아무 캠페인에나 억지로
+끼워 맞추면(예: 제안3을 tp2_hold_shadow에 넣기) 그 채널의 원래 질문(TP2 재배분
+여부)과 무관한 데이터가 섞여 판정 자체가 흐려진다 — 그래서 애매한 제안3은 임의로
+정하지 않고 사용자에게 확인했다.
+
+**How to apply**: 향후 딥다이브에서 나온 개선 아이디어가 기존 섀도 캠페인과
+"같은 질문의 다른 표본집단"(제안4=트레일링 정책 질문의 qty=1 버전)이면 자매
+채널로, "다른 질문이지만 같은 이벤트에서 관측 가능"(제안3=같은 tier1 터치 이벤트에
+추가 피처를 얹음)이면 기존 테이블에 컬럼 추가로 편입할 것 — 어느 쪽에도 안
+맞으면(완전히 다른 이벤트, 다른 질문) 새 채널 신설이 맞다. 판단이 애매하면 이번처럼
+사용자에게 확인 — 코드 규모·스키마 변경 폭이 실제로 달라지는 진짜 분기점이다.
+
+**관련**: 363차(같은 날 앞선 세션 — Loss Tier1 사각지대 해소, 이 후속의 기반),
+361차(tp2_hold_shadow — compute_trailing_stop_tier 공급원, 편입 대상), 360차
+(Loss Tier1 원 구현), §9 사전등록 원칙, `docs/정기점검/매일점검/0721.txt`(제안
+3·4의 원 출처인 딥다이브 리포트).

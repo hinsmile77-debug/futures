@@ -1011,6 +1011,23 @@ VALIDATION_CAMPAIGN = {
     "loss_tier1_qty1_shadow": {
         "min_samples": 20,  # tier1 터치 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
     },
+    # [363차 후속, 0721 정기점검 딥다이브 제안4 편입] §12 qty=1 TP1 이후 트레일 폭
+    # counterfactual — 361차 tp2_hold_shadow와 동일한 패턴·판정 로직(존치/채택 순서도
+    # 동일). qty=1은 TP1 이후 4단계 트레일링(update_trailing_stop) 대신 static
+    # ATR-lock 1회 보호전환만 받는데, 오늘 딥다이브에서 승리 3건이 TP1 직후 곧바로
+    # 그 보호손절가로 되돌아온 패턴이 반복됨을 관찰(tp1_trail_shadow 테이블,
+    # main.py::_ts_record_tp1_trail_shadow()). TP1 보호전환 시점을 기록해 "그때부터
+    # qty=2와 동일한 4단계 트레일링을 계속 적용했다면"을 당일 15:10까지 분봉으로
+    # 사후 시뮬레이션(resolve_and_eval_tp1_trail_shadow(), compute_trailing_stop_tier
+    # 재사용 — tp2_hold_shadow와 동일 소스, 시뮬레이션 로직 복붙 없음)하고, 실거래
+    # (trades 테이블, entry_ts 조인) 실현 pnl_pts와 대조한다.
+    # 존치(PASS): 누적 hyp_pnl_pts ≤ 0 (현행 static lock이 평균적으로 낫거나 동등).
+    # 채택 검토(FAIL): 누적 hyp_pnl_pts > 왕복비용의 2배
+    #   → 즉시 코드 변경이 아니라 qty=1도 4단계 트레일링 적용 채택을 주간회의에서
+    #   검토(§9 사전등록 원칙 — tp2_hold_shadow와 동일 순서).
+    "tp1_trail_shadow": {
+        "min_samples": 15,  # TP1 보호전환 건 최소 수 (미달 → 판정 보류, tp2_hold_shadow와 동일 기준)
+    },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)

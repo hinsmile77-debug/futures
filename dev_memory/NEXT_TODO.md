@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-07-21 (363차 후속 — 0721 딥다이브 제안3·4를 360/361차 계열 캠페인에 편입)
+
+> 상세: `DECISION_LOG.md` 2026-07-21(363차 후속) 항목.
+
+- [ ] **[363차 후속] loss_tier1_qty1_shadow quantile 컬럼 라이브 확인** — 다음 실제
+  qty=1 자동진입 시 `entry_quantile_expected_pt`/`entry_quantile_uncertainty_pt`가
+  `position` 객체에 정상 캡처되고(수동진입은 None이 정상), 이후 tier1 터치 시
+  `loss_tier1_qty1_shadow` INSERT에 값이 채워지는지 확인. `n_edge_samples>=10` 쌓이면
+  리포트 `[11]`행에 edge_ratio 상관이 뜨는지도 확인(게이트 아님, 참고용).
+- [ ] **[363차 후속] tp1_trail_shadow 라이브 첫 기록 확인** — 다음 qty=1 포지션이 TP1
+  도달(`[SingleContractTP1] 1계약 TP1 도달` 로그)할 때 `tp1_trail_shadow`에 정상
+  INSERT되는지 확인. 최소 15건(설정: `config/settings.py:
+  VALIDATION_CAMPAIGN["tp1_trail_shadow"]["min_samples"]`) 쌓일 때까지는 리포트
+  `[12]`행이 INSUFFICIENT로 보류 표시됨 — 정상.
+- [ ] **[주간] 금요일 캠페인 리포트 `[11]`/`[12]` 확인** — `[12]`가 FAIL(qty=1도
+  4단계 트레일링 적용이 유리)로 뜨면 `strategy/position/position_tracker.py::
+  arm_tp1_single_contract_with_mode()` 경로를 qty=2와 동일한 `update_trailing_stop()`
+  경로로 통합할지 주간회의에서 검토(§9 사전등록 원칙, 즉시 자동 적용 금지).
+  `[11]`의 edge_ratio 상관이 표본이 쌓이며 뚜렷해지면(참고용 — 자동 판정 없음)
+  quantile 기대엣지를 등급 판정에 반영하는 방안을 별도로 검토.
+
+---
+
 ## 2026-07-21 (363차 — 0721 정기점검 딥다이브: 손절계단화(Loss Tier1) 사각지대 2건 해소)
 
 > 상세: `DECISION_LOG.md` 2026-07-21(363차) 항목.
