@@ -787,6 +787,15 @@ LOSS_TIER1_ENABLED = True
 LOSS_TIER1_STOP_FRACTION = 0.5   # entry~stop 거리의 50% 지점에서 1차 축소
 LOSS_TIER1_CUT_RATIO = 0.5       # 조기 축소 비율 (qty==1은 적용 제외 — 물리적 분할 불가)
 
+# [363차, 0721 정기점검 딥다이브 후속] tick-level 손절1차 감지 — 분당 STEP8 체크만으로는
+# 급락이 한 틱/한 분 안에 tier1과 풀스톱을 동시에 뚫을 때 tier1이 관측될 기회 자체가
+# 없었음(0721 트레이드③ 39초 내 직행 실측). _process_tick_stop(266차, 이미 라이브 검증됨)
+# 과 완전히 동일한 패턴으로 확장한 것뿐이며 컷 비율·가격 산식은 무변경 — LOSS_TIER1_ENABLED
+# 와 별도 킬스위치로 분리해, 문제 발생 시 기존에 이미 검증된 분당 경로(LOSS_TIER1_ENABLED)는
+# 그대로 두고 이 틱 확장분만 즉시 되돌릴 수 있게 한다. 다음 실제 급락 손절 시
+# [TickLossTier1] 로그로 라이브 첫 발동 확인 필요 — dev_memory/NEXT_TODO.md 363차 항목.
+LOSS_TIER1_TICK_ENABLED = True
+
 # [260704 감사 P2] 레짐 조건부 ATR 배수 — 추세장(Hurst>=0.55)에서는 손절/목표를
 # 넓혀 추세를 태우고, 평균회귀장(Hurst<0.45)에서는 좁혀 빠르게 회수한다.
 # REGIME_SIZE_MULT와 동일한 패턴(사이징 대신 손절/목표 폭에 곱하는 배수 테이블).
@@ -985,6 +994,23 @@ VALIDATION_CAMPAIGN = {
     # 관심사이므로 고정 관찰 창 대신 당일 강제청산 시각(15:10)까지 전부 스캔한다.
     "tp2_hold_shadow": {
         "min_samples": 15,  # TP2 전량종료 건 최소 수 (미달 → 판정 보류)
+    },
+    # [363차 신설] §11 qty=1 손실1차(Loss Tier1) 조기청산 counterfactual — 0721 정기점검
+    # 딥다이브. is_loss_tier1_hit()는 qty<=1을 물리적 분할 불가로 원천 제외하는데, 오늘
+    # 실손실 2건이 (a) qty=1이라 대상 제외 또는 (b) 급락이 틱 하나로 tier1·풀스톱을
+    # 동시에 뚫어 분당 체크가 관측 기회 자체를 못 가진 케이스였음(loss_tier1_qty1_shadow
+    # 테이블, main.py:_ts_record_loss_tier1_qty1_shadow()). qty=1 포지션이 tier1가에
+    # 도달하는 순간을 기록하고, 실거래(trades 테이블, entry_ts 조인)가 최종적으로 낸
+    # pnl_pts와 "그때 전량 조기청산했다면"의 pt를 사후 비교한다
+    # (resolve_and_eval_loss_tier1_qty1_shadow()). tp2_hold_shadow와 달리 실제 포지션이
+    # 그대로 진행되므로 별도 캔들 시뮬레이션 불필요 — 실현치를 그대로 대조.
+    # hyp_pnl_pts = tier1가 조기청산 pt − 실제 실현 pt (양수=조기청산이 유리했음).
+    # 존치(PASS): 누적 hyp_pnl_pts ≤ 0 (조기청산 안 하는 현행이 평균적으로 낫거나 동등).
+    # 채택 검토(FAIL): 누적 hyp_pnl_pts > 왕복비용의 2배
+    #   → 즉시 코드 변경(qty=1 조기청산을 실거래 정책화)이 아니라 주간회의에서 채택
+    #   여부를 수동 결정(§9 사전등록 원칙 — hurst_gate_shadow·open_gap_shadow와 동일 순서).
+    "loss_tier1_qty1_shadow": {
+        "min_samples": 20,  # tier1 터치 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
     },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,

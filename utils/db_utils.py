@@ -537,6 +537,33 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_t2h_ts ON tp2_hold_shadow(ts)")
+    # [363차] qty=1 손실1차(Loss Tier1) 조기청산 섀도 — 0721 정기점검 딥다이브. hurst_gate_
+    # shadow/open_gap_shadow와 동일한 "발동 시점 상태 기록 → 주간 리포트가 사후 판정" 패턴.
+    # tp2_hold_shadow와 달리 실제 포지션이 계속 진행되므로 별도 캔들 시뮬레이션이 필요
+    # 없다 — resolver가 entry_ts로 trades 테이블과 조인해 실현 pnl_pts를 그대로 대조한다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS loss_tier1_qty1_shadow (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                 TEXT NOT NULL,           -- tier1 터치(기록) 시각
+        entry_ts           TEXT NOT NULL,           -- trades.entry_ts 조인 키
+        direction          TEXT NOT NULL,           -- LONG/SHORT
+        entry_price        REAL NOT NULL,
+        loss_tier1_price   REAL NOT NULL,           -- entry~stop 50% 지점 (조기청산 가정가)
+        stop_price         REAL NOT NULL,           -- 당시 최종 손절가
+        grade              TEXT,
+        entry_horizon      TEXT,
+        resolved           INTEGER DEFAULT 0,       -- 1=실거래 결과와 대조 완료
+        cf_outcome         TEXT,                    -- 'EARLY_CUT' 고정(항상 tier1가에서 자름)
+        cf_exit_price      REAL,                    -- = loss_tier1_price
+        actual_pnl_pts     REAL,                    -- 실거래(trades.pnl_pts) 실현치
+        hyp_pnl_pts        REAL,                    -- (+)=조기청산이 유리, (-)=현행(무조치) 유지가 나았음
+        created_at         TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_lt1q1_ts ON loss_tier1_qty1_shadow(ts)")
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_lt1q1_entry_ts ON loss_tier1_qty1_shadow(entry_ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,

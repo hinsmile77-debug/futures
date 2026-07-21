@@ -9787,3 +9787,103 @@ NEXT_TODO.md 안에서만 존재하는 합의가 되어, 정확히 FP-CRITICAL·
 exit_manager.py 문서-코드 불일치 정리, 동일 원칙 재확인 계기), 절대원칙 §2
 CB②/CB③-P4/FP-CRITICAL(선례 3건), `docs/정기점검/금요일점검/주간회의.txt`(§4-2
 6개 고정 안건, 안건 ④가 이 항목의 실제 소화 경로).
+
+---
+
+## 2026-07-21 (363차 — 0721 정기점검 딥다이브: 손절계단화(Loss Tier1) 사각지대 2건 해소)
+
+### [설계결정] 오늘 실손실 2건 다 Loss Tier1(360차)이 못 뜬 원인 규명 + tick-level 확장(라이브) + qty=1 대체안 섀도 계측
+
+**배경**: 0721 정기점검(오늘 동작흐름·predictions.db 사후검증 딥다이브) 중 오늘
+실체결 6건(4승2패, 순손익 -21,363원 — 승률 67%인데 순손실)을 딥다이브하다가, 두
+손실(트레이드③ -1.99pt qty=2, 트레이드⑥ -2.78pt qty=1)에서 360차가 구현한 손절
+계단화(Loss Tier1)가 **한 번도 발동하지 않았음**을 확인. 원인 두 가지가 겹쳐 있었음.
+
+**원인 1 — qty=1 원천 배제**: `PositionTracker.is_loss_tier1_hit()`가 `quantity<=1`
+이면 무조건 False(물리적 분할 불가가 이유, 360차 원 설계). 트레이드⑥은 qty=1이라
+애초에 대상이 아니었음 — 오늘 진입 6건 중 4건이 qty=1이라 다수 케이스에서 이
+안전장치가 구조적으로 무력.
+
+**원인 2 — tick 하드스톱과의 경쟁에서 항상 짐**: `main.py:_process_tick_stop`(266차,
+실시간 tick 콜백 기반)은 `position.stop_price`(전체 손절가)만 감시하고 분당 파이프라인
+(STEP8, `_ts_check_exit_triggers`)보다 먼저 실행되는데, Loss Tier1(entry~stop 중간
+지점) 체크는 오직 STEP8에서 **분당 1회만** 평가됐음. 트레이드③처럼 진입 후 39초
+만에 중간지점과 최종 손절가를 동시에 뚫는 급락에서는 분당 체크가 중간지점을 관측할
+기회 자체가 없어 tick 하드스톱이 항상 먼저 전량 청산 — Loss Tier1이 설계된 바로 그
+목적(빠르게 뒤집히는 손실 조기 차단)에 정작 구조적으로 무력했던 것.
+
+**결정/수정**: 이 레포의 §9 사전등록 원칙(선례: `signal_decay_exits`/
+`hurst_gate_shadow`/`joint_gate_shadow`/`open_gap_shadow`/`tp2_hold_shadow`)에
+따라 두 항목을 성격이 다르게 취급했다.
+
+1. **tick-level Loss Tier1 확장(원인 2 해소, 라이브)** — 이미 라이브 승인된 정책
+   (qty≥2, 컷 비율·가격 산식 무변경)의 탐지 사각지대를 메우는 보정이라 판단해 즉시
+   적용. `main.py:_on_tick_price_update`에 기존 풀스톱 tick 감지(`if`)와 **상호
+   배타(elif)**로 tier1 tick 감지를 추가(`_tick_loss_tier1_triggered`/
+   `_tick_loss_tier1_price`, `QTimer.singleShot(0, self._process_tick_loss_tier1)`)
+   — 풀스톱이 같은 틱에서 이미 뚫렸다면 tier1 경로는 평가되지 않아 STEP8의 우선순위
+   (풀스톱 먼저)와 동일하게 맞춤. 신규 `_process_tick_loss_tier1()`은
+   `_process_tick_stop`과 동일한 뼈대(flag 최상단 즉시 클리어로 멱등)이나, 주문
+   전송 로직은 새로 작성하지 않고 STEP8이 이미 쓰는
+   `self._execute_loss_tier1_exit()`(=`_ts_execute_loss_tier1_exit`, pending
+   선등록→주문→실패 시 롤백 내장, `_has_pending_order()` 가드로 풀스톱 경로와의
+   이중발동도 막힘)을 그대로 재사용 — 주문 전송 로직 복붙 없음. 기존
+   `LOSS_TIER1_ENABLED`와 별도로 `LOSS_TIER1_TICK_ENABLED`(신규, 기본 True) 킬스위치
+   분리 — 문제 발생 시 이미 검증된 분당 경로는 그대로 두고 이 틱 확장분만 되돌릴 수
+   있게 함.
+2. **qty=1 대체안(원인 1 해소, 섀도 계측 전용)** — qty=1의 실효 손절폭을 절반으로
+   좁히는 새 정책 결정이라 판단, 즉시 실거래 정책화하지 않고 hurst_gate_shadow와
+   동일한 패턴(발동 시점 상태 기록 → 주간 리포트가 사후 판정)으로 계측만 먼저 구현.
+   `PositionTracker.is_loss_tier1_qty1_shadow_hit()`(qty=1에서만 True, 포지션당 1회
+   `loss_tier1_qty1_shadow_logged`로 중복 방지) → `main.py:_ts_check_exit_triggers`
+   STEP8에서 `_record_loss_tier1_qty1_shadow()`(=`_ts_record_loss_tier1_qty1_shadow`)
+   호출 → 신규 `loss_tier1_qty1_shadow` 테이블(`utils/db_utils.py`)에 기록. 실제
+   포지션이 그대로 진행되므로 tp2_hold_shadow처럼 별도 캔들 시뮬레이션이 필요 없다 —
+   `scripts/generate_validation_campaign_report.py::resolve_and_eval_loss_tier1_qty1_shadow()`
+   가 entry_ts 근사 조인(±10초, 체결보정 타이밍 오차 흡수)으로 `trades` 테이블의
+   실현 pnl_pts를 가져와 "그때 tier1가에서 조기청산했다면"과 대조한다.
+   `config/settings.py:VALIDATION_CAMPAIGN["loss_tier1_qty1_shadow"]`(min_samples=20,
+   hurst_gate_shadow와 동일 기준) 사전등록. hyp_pnl_pts>왕복비용×2 누적 시 FAIL(채택
+   검토 권고) — 즉시 코드 변경 아니라 주간회의 수동 결정. 리포트 `[11]`번 채널로
+   요약행+상세 섹션 추가(테이블 신설이라 실행 시 자동 생성, `init_all_dbs()`로 이미
+   프로덕션 `data/db/trades.db`에도 생성 확인).
+
+**검증**: `scripts/verify_loss_tier1.py`에 시나리오 6(qty=1 섀도 판정: qty=1만
+True·qty=2는 항상 False·1회 기록 후 재발동 안 함)·7(풀스톱·tier1 동시 만족 가격에서
+`is_stop_hit`가 실제로 True가 됨 — main.py elif 우선순위의 전제조건) 추가, 전체
+7개 시나리오(기존 5 + 신규 2) 전부 통과. `py_compile main.py
+strategy/position/position_tracker.py config/settings.py utils/db_utils.py
+scripts/generate_validation_campaign_report.py scripts/verify_loss_tier1.py` 통과.
+신규 테이블 SQL·entry_ts 근사 조인 SQL을 임시 sqlite3 커넥션으로 별도 검증,
+`resolve_and_eval_loss_tier1_qty1_shadow()`를 py310_64로 실제 프로덕션
+`trades.db`(현재 0행) 대상 실행해 INSUFFICIENT 판정이 정상 출력됨을 확인.
+**라이브 미검증** — (1) tick-level 확장: 다음 실제 급락 손절 시 `[TickLossTier1]`
+로그로 첫 발동 확인 필요(main.py의 QTimer 콜백 배선 자체는 Qt 이벤트루프가 필요해
+오프라인 스크립트로 검증 불가 — 다른 tick 경로 항목들과 동일한 제약). (2) qty=1
+섀도: 다음 qty=1 손실 포지션이 tier1가에 도달할 때 `loss_tier1_qty1_shadow`에
+정상 기록되는지, 이후 실거래 종료 후 resolver가 정상 매칭해 `hyp_pnl_pts`를
+채우는지 라이브 확인 필요.
+
+**Why**: "손절계단화를 구현했다"와 "손절계단화가 실제로 손실을 줄인다"는 서로 다른
+주장인데, 360차 커밋 이후 두 번(0720, 0721) 연속 같은 유형의 손실에서 정작 이
+안전장치가 한 번도 발동하지 못했다는 사실이 오늘 딥다이브 전까지 아무도 실측
+확인하지 않은 채 방치돼 있었음 — "구현 완료"와 "실제로 작동" 사이의 간극을 라이브
+로그 부재만으로는 알아챌 수 없다(발동 자체가 없으니 에러 로그도 없다). 동시에 qty=1
+대체안처럼 실거래 손절폭 자체를 바꾸는 결정은, 알아낸 문제가 아무리 명확해 보여도
+검증 없이 바로 정책화하면 CLAUDE.md 절대원칙 §6("검증 없는 알파 자동 통합 절대
+금지")과 같은 실수를 반복하는 것 — "버그 커버리지 확장"과 "새 리스크 정책"을
+같은 세션에서 섞어 다루더라도 반드시 다르게 취급해야 한다.
+
+**How to apply**: 이미 라이브 승인된 정책의 탐지/커버리지 사각지대를 메우는 변경
+(원래 의도된 실행 경로를 더 안정적으로 타게 하는 것뿐)은 기존 실행 primitive를
+100% 재사용하는 조건 하에 직접 라이브 적용 가능(단 독립 킬스위치는 항상 분리).
+반면 리스크 파라미터(손절폭, 사이징, 임계값) 자체를 바꾸는 결정은 표본이 아무리
+설득력 있어 보여도 §9 사전등록 원칙(섀도 계측 → 주간 캠페인 PASS/FAIL 누적판정 →
+주간회의 수동 채택)을 반드시 거칠 것 — "버그를 발견했으니 바로 고친다"는 직관이
+정책 변경에는 적용되지 않는다는 것을 이번에도 재확인.
+
+**관련**: 360차(Loss Tier1 원 구현, 손절 계단화), 339차(TP1/Stop 배수 재조정 미착수
+부채 — 360차가 해소한 원 배경), 361차(tp2_hold_shadow — entry_ts 조인 대신 캔들
+시뮬레이션을 쓰는 이유가 대비되는 유사 채널), §9 사전등록 원칙 선례 5건
+(signal_decay_exits/hurst_gate_shadow/joint_gate_shadow/open_gap_shadow/
+tp2_hold_shadow), `docs/정기점검/매일점검/0721.txt`(이번 딥다이브 계기).

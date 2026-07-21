@@ -8,6 +8,40 @@
 
 ---
 
+## 2026-07-21 (363차 — 0721 정기점검 딥다이브: 손절계단화(Loss Tier1) 사각지대 2건 해소)
+
+> 상세: `DECISION_LOG.md` 2026-07-21(363차) 항목.
+
+- [ ] **[363차] tick-level 손절1차(TickLossTier1) 라이브 첫 발동 검증** — 다음 실제
+  급락 손절 시 `[TickLossTier1] 손절1차 히트 감지 (틱)` 로그가 정상 찍히고,
+  `[ExitSendOrderResult] kind=손절1차`/`[손절1차 분할체결]` 로그와 `trades.db`
+  "손절1차 조기축소" 행이 (a) tick 경로로도 정상 생성되는지, (b) 풀스톱과 동시에
+  뚫린 경우 풀스톱(`하드스톱(틱)`)만 실행되고 tier1 경로는 실행되지 않는지(elif
+  상호배타 확인) 확인. `scripts/verify_loss_tier1.py` 오프라인 시나리오 7개는 전부
+  통과(구현 당일 확인) — 이 항목은 실제 라이브 체결 기준 재확인 전용. 문제 발생 시
+  `config/settings.py:LOSS_TIER1_TICK_ENABLED`를 False로 돌리면 기존에 이미 검증된
+  분당 경로(`LOSS_TIER1_ENABLED`)는 그대로 유지된 채 이 틱 확장분만 되돌아감. 이
+  항목이 DONE 처리되기 전엔 삭제하지 말 것(339차 "TP1/Stop 배수 재조정 미착수"가
+  NEXT_TODO 미등록으로 방치된 전례 반복 금지).
+- [ ] **[363차] qty=1 손실1차 섀도(loss_tier1_qty1_shadow) 표본 축적·라이브 확인** —
+  qty=1 포지션이 entry~stop 중간지점에 도달할 때마다 `main.py::
+  _ts_check_exit_triggers`에서 자동 기록됨. 다음 qty=1 손실 포지션 발생 시 (a)
+  `loss_tier1_qty1_shadow`에 정상 INSERT되는지, (b) 그 실거래가 청산된 후
+  `scripts/generate_validation_campaign_report.py::
+  resolve_and_eval_loss_tier1_qty1_shadow()`가 entry_ts 조인으로 `actual_pnl_pts`/
+  `hyp_pnl_pts`를 정상 채우는지 확인. 최소 20건(설정:
+  `config/settings.py:VALIDATION_CAMPAIGN["loss_tier1_qty1_shadow"]["min_samples"]`)
+  쌓일 때까지는 주간 리포트 `[11]`행이 INSUFFICIENT로 보류 표시됨 — 정상. **실거래
+  정책화(qty=1 조기청산 실제 적용) 여부는 이 섀도 판정을 거치기 전엔 절대 코드로
+  옮기지 말 것** — §9 사전등록 원칙, 즉시 자동 적용 금지.
+- [ ] **[주간] 금요일 캠페인 리포트 `[11] qty=1 손실1차 조기청산 counterfactual`
+  확인** — PASS(현행 유지, 조기청산 정책 미채택)/FAIL(채택 검토 권고) 판정이 뜨면
+  주간회의에서 수동 결정. FAIL이면 `strategy/position/position_tracker.py::
+  is_loss_tier1_hit()`의 `quantity<=1` 배제 조건을 qty=1도 포함하도록 실제 변경할지
+  검토(즉시 자동 적용 금지 — hurst_gate_shadow/tp2_hold_shadow와 동일 순서).
+
+---
+
 ## 2026-07-20 (362차 — 청산 P1~P6 문서-코드 불일치 정리 중 숨은 AttributeError 버그 발견·수정 + exit_manager.py 제거)
 
 > 상세: `DECISION_LOG.md` 2026-07-20(362차) 항목.
