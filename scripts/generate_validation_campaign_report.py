@@ -1253,6 +1253,114 @@ def resolve_and_eval_tp2_hold() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [11] qty=1 손실1차(Loss Tier1) 조기청산 counterfactual — resolve + 누적 판정 (363차)
+# ──────────────────────────────────────────────────────────────
+
+def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
+    """loss_tier1_qty1_shadow(main.py에서 기록) resolve + PASS/FAIL 판정.
+
+    0721 정기점검 딥다이브: is_loss_tier1_hit()가 qty<=1을 물리적 분할 불가로 원천
+    제외해, qty=1 손실 포지션은 entry~stop 절반 지점을 지나도 아무 조치 없이 최종
+    손절가까지 그대로 노출된다. tp2_hold_shadow와 달리 이 채널은 실제 포지션이
+    그대로 진행되므로 candle 시뮬레이션이 필요 없다 — 실거래(trades 테이블)가
+    최종적으로 낸 pnl_pts를 entry_ts 근사 조인(±10초, 체결보정 타이밍 오차 흡수)으로
+    가져와 "그 시점에 tier1가에서 전량 조기청산했다면"과 그대로 대조한다.
+
+    hyp_pnl_pts = tier1 조기청산 pt − 실제 실현 pt (양수 = 조기청산이 유리했음).
+    PASS = 현행(qty=1 조기청산 없음) 유지 — 조기청산이 평균적으로 이득 아님.
+    FAIL = qty=1 조기청산 정책 채택 검토 권고 (즉시 코드 변경 아님 — 주간회의 수동
+           결정, §9 사전등록 원칙 — hurst_gate_shadow·open_gap_shadow와 동일 순서).
+    """
+    cr = VALIDATION_CAMPAIGN["loss_tier1_qty1_shadow"]
+    out = {"verdict": "INSUFFICIENT", "resolved_now": 0}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            unresolved = conn.execute(
+                "SELECT * FROM loss_tier1_qty1_shadow WHERE resolved = 0 ORDER BY ts"
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    if unresolved:
+        updates = []
+        with _conn(TRADES_DB) as conn:
+            for r in unresolved:
+                # entry_ts 근사 조인(±10초) — position.entry_time(섀도 기록 시각 기준)과
+                # trades.entry_ts(체결보정 후 확정)가 완전히 동일하지 않을 수 있음.
+                match = conn.execute(
+                    """SELECT pnl_pts FROM trades
+                       WHERE direction = ?
+                         AND ABS((julianday(entry_ts) - julianday(?)) * 86400) <= 10
+                         AND exit_ts IS NOT NULL
+                       ORDER BY ABS((julianday(entry_ts) - julianday(?)) * 86400)
+                       LIMIT 1""",
+                    (r["direction"], r["entry_ts"], r["entry_ts"]),
+                ).fetchone()
+                if match is None:
+                    continue  # 실거래가 아직 청산 전 — 다음 실행에서 재시도
+                actual_pnl = float(match["pnl_pts"] or 0.0)
+                is_long = str(r["direction"]) == "LONG"
+                entry_p = float(r["entry_price"])
+                tier1_p = float(r["loss_tier1_price"])
+                tier1_cut_pts = (tier1_p - entry_p) if is_long else (entry_p - tier1_p)
+                hyp = tier1_cut_pts - actual_pnl
+                updates.append((round(actual_pnl, 4), round(hyp, 4), r["id"]))
+
+        if updates:
+            with _conn(TRADES_DB) as conn:
+                conn.executemany(
+                    """UPDATE loss_tier1_qty1_shadow
+                       SET resolved=1, actual_pnl_pts=?, hyp_pnl_pts=?
+                       WHERE id=?""",
+                    updates,
+                )
+                conn.commit()
+            out["resolved_now"] = len(updates)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            agg = conn.execute(
+                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
+                          AVG(entry_price) AS avg_price,
+                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win
+                   FROM loss_tier1_qty1_shadow WHERE resolved=1 AND ts >= ?""",
+                (_campaign_start(),),
+            ).fetchone()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM loss_tier1_qty1_shadow WHERE resolved=0"
+            ).fetchone()["n"]
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    n = int(agg["n"] or 0)
+    total_hyp = float(agg["total_hyp"] or 0.0)
+    avg_price = float(agg["avg_price"] or 0.0) or 300.0
+    win_rate = (int(agg["n_win"] or 0) / n) if n else 0.0
+    out.update({
+        "n_resolved": n,
+        "n_pending": int(pending),
+        "total_hyp_pnl_pts": round(total_hyp, 4),
+        "win_rate": round(win_rate, 4),
+    })
+    if n < int(cr["min_samples"]):
+        out["reason"] = "tier1 터치 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        return out
+
+    cost_pt = _roundtrip_cost_pt(avg_price)
+    out["cost_pt"] = round(cost_pt, 4)
+    adopt = total_hyp > cost_pt * 2.0
+    out["verdict"] = "FAIL" if adopt else "PASS"
+    if adopt:
+        out["recommendation"] = (
+            "qty=1 손실1차 조기청산 정책 채택 검토 — 주간회의 수동 결정 (§9 사전등록 원칙)"
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [5] 레짐 조건부 ATR 배수 — hurst_bucket별 순EV
 # ──────────────────────────────────────────────────────────────
 
@@ -1424,6 +1532,7 @@ def build_report(days: int) -> tuple:
     ks = eval_kelly_skip_grade_c()
     og = resolve_and_eval_open_gap()
     t2 = resolve_and_eval_tp2_hold()
+    lt1 = resolve_and_eval_loss_tier1_qty1_shadow()
 
     metrics = {
         "generated_at": now_str,
@@ -1433,7 +1542,7 @@ def build_report(days: int) -> tuple:
         "tb": tb, "meta_gate": mg, "quantile": qt,
         "signal_decay": sd, "hurst_regime": hr, "hurst_gate_shadow": hg,
         "joint_gate_shadow": jg, "kelly_skip": ks, "open_gap_shadow": og,
-        "tp2_hold_shadow": t2,
+        "tp2_hold_shadow": t2, "loss_tier1_qty1_shadow": lt1,
     }
 
     L = []
@@ -1488,6 +1597,10 @@ def build_report(days: int) -> tuple:
         ("%.1f%%" % (t2["win_rate"] * 100)) if "win_rate" in t2 else "—",
         t2.get("n_resolved", 0), t2.get("n_pending", 0),
         t2.get("cf_tp3", "—"), t2.get("cf_trail_stop", "—"), t2.get("cf_force_exit", "—")))
+    L.append("| [11] qty=1 손실1차 조기청산 counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
+        _fmt_verdict(lt1["verdict"]), lt1.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (lt1["win_rate"] * 100)) if "win_rate" in lt1 else "—",
+        lt1.get("n_resolved", 0), lt1.get("n_pending", 0)))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -1678,6 +1791,21 @@ def build_report(days: int) -> tuple:
         L.append("- **권고**: %s" % og["recommendation"])
     if og.get("reason"):
         L.append("- %s" % og["reason"])
+    L.append("")
+
+    # [11] qty=1 손실1차 조기청산 counterfactual 상세
+    L.append("## [11] qty=1 손실1차(Loss Tier1) 조기청산 counterfactual (363차)")
+    L.append("")
+    L.append("- 이번 실행 resolve: %d건 / 누적 판정 %s건 (미판정 %s건)" % (
+        lt1.get("resolved_now", 0), lt1.get("n_resolved", 0), lt1.get("n_pending", 0)))
+    L.append("- 누적 hyp_pnl_pts(tier1가 조기청산 vs 실제 실현 pt 차이): **%s pt** / 승률 %s" % (
+        lt1.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (lt1["win_rate"] * 100)) if "win_rate" in lt1 else "—",
+    ))
+    if lt1.get("recommendation"):
+        L.append("- **권고**: %s" % lt1["recommendation"])
+    if lt1.get("reason"):
+        L.append("- %s" % lt1["reason"])
     L.append("")
     L.append("---")
     L.append("")

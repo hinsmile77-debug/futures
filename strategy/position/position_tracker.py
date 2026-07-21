@@ -108,6 +108,9 @@ class PositionTracker:
         # [360차] 손절 계단화 1차 — entry~stop 거리의 50% 지점(진입 시 1회 계산, 고정)
         self.loss_tier1_price: float = 0.0
         self.loss_tier1_done: bool = False
+        # [363차] qty=1 손실1차 섀도 — 물리적 분할 불가라 실제 축소는 안 하지만,
+        # "그 시점에 전량 조기청산했다면"의 counterfactual 기록 여부(포지션당 1회).
+        self.loss_tier1_qty1_shadow_logged: bool = False
 
         # [2026-07-16 339차 후속] 1계약 TP1 회계적 분할청산(synthetic partial) —
         # Cybos 최소 체결단위가 1계약이라 물리적으로 못 쪼개는 상황에서, TP1 도달
@@ -162,6 +165,7 @@ class PositionTracker:
         self.initial_quantity = 0
         self.loss_tier1_price = 0.0
         self.loss_tier1_done = False
+        self.loss_tier1_qty1_shadow_logged = False
         self.synthetic_tp1_price = None
         self.synthetic_tp1_pnl_pts = None
         self.synthetic_tp1_fraction = None
@@ -248,6 +252,7 @@ class PositionTracker:
         self.partial_2_done = False
         self.partial_3_done = False
         self.loss_tier1_done = False
+        self.loss_tier1_qty1_shadow_logged = False
         self.last_update_reason = f"open_position:{direction}"
         self.last_update_ts = now_kst()
 
@@ -830,6 +835,19 @@ class PositionTracker:
         cut = max(1, round(self.quantity * LOSS_TIER1_CUT_RATIO))
         return min(cut, self.quantity - 1)
 
+    def is_loss_tier1_qty1_shadow_hit(self, price: float) -> bool:
+        """[363차] qty=1 손실1차 섀도 — is_loss_tier1_hit()가 qty<=1이라 제외하는 바로 그
+        케이스를 계측 전용으로 별도 판정한다. 실거래 액션은 전혀 없음(기록만) — §9
+        사전등록 원칙에 따라 VALIDATION_CAMPAIGN 누적판정 후 채택 여부를 수동 결정한다.
+        포지션당 1회만 True(loss_tier1_qty1_shadow_logged로 중복 기록 방지).
+        """
+        if (self.status == POSITION_FLAT or self.loss_tier1_qty1_shadow_logged
+                or self.quantity != 1 or self.loss_tier1_price <= 0):
+            return False
+        if self.status == POSITION_LONG:
+            return price <= self.loss_tier1_price
+        return price >= self.loss_tier1_price
+
     def get_stage_plan(self) -> Tuple[int, int, int]:
         total_qty = int(self.initial_quantity or self.quantity or 0)
         if total_qty <= 0:
@@ -1014,6 +1032,7 @@ class PositionTracker:
         self.initial_quantity = 0
         self.loss_tier1_price = 0.0
         self.loss_tier1_done = False
+        self.loss_tier1_qty1_shadow_logged = False
         self.synthetic_tp1_price = None
         self.synthetic_tp1_pnl_pts = None
         self.synthetic_tp1_fraction = None
@@ -1127,6 +1146,7 @@ class PositionTracker:
                 "partial_3_done": self.partial_3_done,
                 "loss_tier1_price": self.loss_tier1_price,
                 "loss_tier1_done": self.loss_tier1_done,
+                "loss_tier1_qty1_shadow_logged": self.loss_tier1_qty1_shadow_logged,
                 "synthetic_tp1_price": self.synthetic_tp1_price,
                 "synthetic_tp1_pnl_pts": self.synthetic_tp1_pnl_pts,
                 "synthetic_tp1_fraction": self.synthetic_tp1_fraction,
@@ -1188,6 +1208,7 @@ class PositionTracker:
             self.partial_3_done = bool(state.get("partial_3_done", False))
             self.loss_tier1_price = float(state.get("loss_tier1_price", 0.0) or 0.0)
             self.loss_tier1_done = bool(state.get("loss_tier1_done", False))
+            self.loss_tier1_qty1_shadow_logged = bool(state.get("loss_tier1_qty1_shadow_logged", False))
             self.synthetic_tp1_price = state.get("synthetic_tp1_price")
             self.synthetic_tp1_pnl_pts = state.get("synthetic_tp1_pnl_pts")
             self.synthetic_tp1_fraction = state.get("synthetic_tp1_fraction")
