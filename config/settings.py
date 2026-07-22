@@ -844,6 +844,21 @@ CHASE_FILTER_LOOKBACK_MIN = 10             # 연장 측정 룩백 (분)
 CHASE_FILTER_ATR_THRESHOLD = 2.0           # 기본 임계값 (추세·중립 구간)
 CHASE_FILTER_ATR_THRESHOLD_MEANREV = 1.5   # Hurst<0.45(평균회귀) 임계값 — 더 엄격
 
+# [368차 신설] ChaseForeignComboGuard(섀도) — 10_chase+6_foreign 동시 실패 조합 감시.
+# 배경: 0722 정기점검 딥다이브(MW0601 실측) — 09:32~09:53 21분 사이 이 조합(나머지
+# 9개 항목 전부 통과, A/A/A등급)이 동일하게 3회 발화, 3회 전부 하드스톱
+# (-181,704/-160,696/-193,697원, 합계 -536,097원 — 이날 최대 손실뭉치
+# -742,800원의 72%). 7/21 동일 조합 2건(1승4패)까지 포함하면 n=5, 합계
+# -304,298원. P4(CVD+OFI 동시 역방향, 268차)와 동일 계열 논리(가격은 이미
+# 추세방향으로 과다 연장(10_chase)됐는데 외인 옵션 수급은 그 방향을 지지하지
+# 않음(6_foreign) → 되돌림에 취약)이나, 표본이 아직 작아(n=5) P4처럼 즉시
+# 강제 강등하지 않고 GradeEVGuard·INSTABILITY_GATE와 동일한 §9 사전등록
+# 순서로 섀도 로그만 남긴다. 검증캠페인 [16] chase_foreign_combo_watch로
+# 표본을 쌓아 재확인 후 수동으로 True 전환.
+# 근거: dev_memory/DECISION_LOG.md 368차 항목.
+CHASE_FOREIGN_COMBO_GUARD_ENABLED: bool = False  # 기본 비활성 — 섀도 로그만 (§9 원칙)
+CHASE_FOREIGN_COMBO_DEMOTE_TO: str = "C"  # 강등 목표 등급 (P4와 동일)
+
 # [360차] 역추세 진입 캡(anti-countertrend) — 0720 유일 손실(포지션6, hurst=trend,
 # SHORT 2계약, -523,099원, 당일 총손익의 56% 잠식)이 근거. price_extension_atr(10번
 # 추격필터와 동일 피처, 부호 있음)의 연장 방향과 진입 방향이 반대이고 hurst>=
@@ -1083,6 +1098,14 @@ VALIDATION_CAMPAIGN = {
     # (거래 완결을 기다릴 필요 없이) 관찰하기 위한 선행지표.
     "fast_reversal_watch": {
         "fast_exit_max_sec": 150,  # 이 시간(초) 이내 하드스톱 청산만 "급행" 분류
+    },
+    # [368차 신설] §16 chase+foreign 조합 관찰 채널 — 0722 정기점검 딥다이브(MW0601).
+    # CHASE_FOREIGN_COMBO_GUARD_ENABLED(섀도) 판정 근거가 될 표본을 [진입체크] 로그
+    # 파싱으로 축적한다(fast_reversal_watch와 동일 방식 — trades.db에 체크리스트
+    # 개별 항목이 저장되지 않아 entry_ts로 TRADE.log와 매칭). 정책 게이트가 아직
+    # 없어(섀도 단계) 순수 관찰용 — PASS/FAIL 판정 없음, verdict 항상 OBSERVE.
+    "chase_foreign_combo_watch": {
+        "lookback_days": 28,  # 로그 보존기간(20일 안팎) 안에서 최대한 넓게
     },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,

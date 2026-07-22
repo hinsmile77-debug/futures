@@ -6202,6 +6202,34 @@ class TradingSystem:
                             f"(미적용): {_ge_diag}"
                         )
 
+            # [368차 신설] ChaseForeignComboGuard(섀도) — 10_chase+6_foreign 동시
+            # 실패 조합 감시. 0722 정기점검 딥다이브(MW0601): 이 조합(나머지 9개
+            # 항목 전부 통과)이 09:32~09:53 21분 사이 3회 발화해 3회 전부 하드스톱
+            # (-536,097원, 그날 최대 손실뭉치의 72%) — P4(CVD+OFI)와 동일 계열이나
+            # 표본이 작아(n=5, 7/21 포함) 즉시 강제 강등이 아니라 섀도 로그만
+            # (§9 사전등록 원칙). 검증캠페인 [16] chase_foreign_combo_watch로
+            # 표본 축적 후 CHASE_FOREIGN_COMBO_GUARD_ENABLED 수동 전환 검토.
+            if (_final_grade in ("A", "B")
+                    and _cr is not None
+                    and not _cr.get("checks", {}).get("10_chase", True)
+                    and not _cr.get("checks", {}).get("6_foreign", True)):
+                _cfc_demote = getattr(runtime_settings, "CHASE_FOREIGN_COMBO_DEMOTE_TO", "C")
+                if getattr(runtime_settings, "CHASE_FOREIGN_COMBO_GUARD_ENABLED", False):
+                    log_manager.signal(
+                        f"[ChaseForeignComboGuard] chase+foreign 동시 실패 → "
+                        f"등급 {_final_grade}→{_cfc_demote} 강등"
+                    )
+                    _final_grade = _cfc_demote
+                    _cr = dict(_cr)
+                    _cr["grade"]      = _cfc_demote
+                    _cr["size_mult"]  = runtime_settings.ENTRY_GRADE[_cfc_demote]["size_mult"]
+                    _cr["auto_entry"] = runtime_settings.ENTRY_GRADE[_cfc_demote]["auto"]
+                else:
+                    log_manager.signal(
+                        f"[ChaseForeignComboGuard] (섀도) chase+foreign 동시 실패, "
+                        f"등급={_final_grade} → {_cfc_demote} 강등 후보 (미적용)"
+                    )
+
             _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
             # checklist_reason: STEP7 체크리스트 X 원인 기록 (stage 8 차단사유 표시)
             if _final_grade == "X" and _cr.get("checks"):

@@ -1592,6 +1592,94 @@ def eval_fast_reversal_watch(days: int) -> dict:
     return out
 
 
+# [16] chase+foreign 조합 관찰 채널 (368차, 관찰 전용 — PASS/FAIL 판정 없음)
+def eval_chase_foreign_combo_watch() -> dict:
+    """10_chase(연장추격)와 6_foreign(외인 옵션 수급) 두 체크리스트 항목이 동시에
+    실패(나머지 항목 무관)한 진입의 등급별 발생률·손익을 집계한다.
+
+    0722 정기점검 딥다이브(MW0601 실측): 09:32~09:53 21분 사이 이 조합(나머지 9개
+    항목 전부 통과)이 3회 발화해 3회 전부 하드스톱(-536,097원, 그날 최대
+    손실뭉치 -742,800원의 72%). trades.db에 체크리스트 개별 항목이 저장되지
+    않아 fast_reversal_watch(367차)와 동일 방식으로 entry_ts를 키 삼아
+    TRADE.log의 [진입체크] 라인과 매칭한다.
+
+    CHASE_FOREIGN_COMBO_GUARD_ENABLED(섀도) 판정 근거 표본 축적용 — 아직
+    이 조합을 강등할 정책이 섀도 단계라 PASS/FAIL 판정은 하지 않는다
+    (fast_reversal_watch와 동일 원칙). verdict는 항상 OBSERVE로 고정.
+    """
+    days = int(VALIDATION_CAMPAIGN["chase_foreign_combo_watch"]["lookback_days"])
+    out = {"verdict": "OBSERVE", "lookback_days": days}
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(_TS_FMT)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                """SELECT entry_ts, exit_ts, direction, grade, quantity,
+                          pnl_pts, net_pnl_krw
+                   FROM trades
+                   WHERE entry_ts >= ? AND exit_ts IS NOT NULL""",
+                (cutoff,),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    by_date = {}
+    for r in rows:
+        date_key = r["entry_ts"][:10].replace("-", "")
+        by_date.setdefault(date_key, []).append(r)
+
+    log_dir = os.path.join(ROOT, "logs")
+    by_grade = {}
+    n_matched = 0
+    for date_key, items in by_date.items():
+        log_path = os.path.join(log_dir, f"{date_key}_TRADE.log")
+        try:
+            with open(log_path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue  # 로그 유실 — 이 채널은 관찰용이라 보수적 취급 없이 스킵
+
+        entry_lines = [ln for ln in lines if "[진입체크]" in ln]
+        for r in items:
+            # entry_ts는 [Position]체결 시각(초 단위로 [진입체크]보다 0~수초 늦음) —
+            # 정확히 같은 초가 아닐 수 있어 직전 5초 이내 가장 가까운 [진입체크] 채택.
+            try:
+                r_dt = datetime.datetime.strptime(r["entry_ts"][:19], _TS_FMT)
+            except (TypeError, ValueError):
+                continue
+            match, best_diff = None, None
+            for ln in entry_lines:
+                try:
+                    ln_dt = datetime.datetime.strptime(ln[:19], _TS_FMT)
+                except ValueError:
+                    continue
+                diff = (r_dt - ln_dt).total_seconds()
+                if 0 <= diff <= 5 and (best_diff is None or diff < best_diff):
+                    match, best_diff = ln, diff
+            if match is None:
+                continue
+            n_matched += 1
+            if "chas❌" in match and "fore❌" in match:
+                g = (r["grade"] or "?") or "?"
+                slot = by_grade.setdefault(g, {"n": 0, "total_pnl_krw": 0.0, "n_loss": 0})
+                slot["n"] += 1
+                slot["total_pnl_krw"] += float(r["net_pnl_krw"] or 0.0)
+                if float(r["net_pnl_krw"] or 0.0) < 0:
+                    slot["n_loss"] += 1
+
+    out["n_matched"] = n_matched
+    out["by_grade"] = {
+        g: {"n": v["n"], "total_pnl_krw": round(v["total_pnl_krw"], 0), "n_loss": v["n_loss"]}
+        for g, v in by_grade.items()
+    }
+    out["n_combo"] = sum(v["n"] for v in by_grade.values())
+    out["total_pnl_krw"] = round(sum(v["total_pnl_krw"] for v in by_grade.values()), 0)
+    if out["n_combo"] == 0:
+        out["reason"] = "관찰 대상(chase+foreign 동시 실패) 0건"
+    return out
+
+
 # ──────────────────────────────────────────────────────────────
 # [12] qty=1 TP1 이후 트레일 폭 counterfactual — resolve + 누적 판정 (363차 후속)
 # ──────────────────────────────────────────────────────────────
@@ -2001,6 +2089,7 @@ def build_report(days: int) -> tuple:
     gei = eval_grade_ev_inversion()
     lt2 = resolve_and_eval_loss_tier2_remainder_shadow()
     frw = eval_fast_reversal_watch(days)
+    cfc = eval_chase_foreign_combo_watch()
 
     metrics = {
         "generated_at": now_str,
@@ -2013,6 +2102,7 @@ def build_report(days: int) -> tuple:
         "tp2_hold_shadow": t2, "loss_tier1_qty1_shadow": lt1,
         "tp1_trail_shadow": t1t, "grade_ev_inversion": gei,
         "loss_tier2_remainder_shadow": lt2, "fast_reversal_watch": frw,
+        "chase_foreign_combo_watch": cfc,
     }
 
     L = []
@@ -2095,6 +2185,11 @@ def build_report(days: int) -> tuple:
         frw.get("n_fast_hardstop", 0), frw.get("n_no_tp1", 0),
         _frw_a.get("n", 0),
         format(_frw_a["total_pnl_krw"], ",.0f") if _frw_a else "—"))
+    L.append("| [16] chase+foreign 조합 관찰 | %s | 동시실패=%s건 누적=%s원 (매칭=%s건) |" % (
+        _fmt_verdict(cfc["verdict"]),
+        cfc.get("n_combo", 0),
+        format(cfc["total_pnl_krw"], ",.0f") if cfc.get("n_combo") else "—",
+        cfc.get("n_matched", 0)))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -2395,6 +2490,29 @@ def build_report(days: int) -> tuple:
     L.append("- 이 채널은 PASS/FAIL을 판정하지 않는다 — 이 패턴 자체를 차단할 정책이")
     L.append("  아직 없어 판정이 무의미하다. GradeEVGuard·loss_tier1_qty1_shadow·")
     L.append("  loss_tier2_remainder_shadow가 다루는 문제의 선행지표로만 참고할 것.")
+    L.append("")
+
+    # [16] chase+foreign 조합 관찰 상세
+    L.append("## [16] chase+foreign 조합 관찰 (368차, 관찰 전용 — 정책 게이트 아님)")
+    L.append("")
+    L.append("- 관찰 기준: [진입체크] 로그에서 `10_chase`·`6_foreign` 두 항목만 동시 실패"
+              " (나머지 항목 무관)")
+    L.append("- 로그-DB 매칭 %s건 중 동시실패 %s건" % (
+        cfc.get("n_matched", 0), cfc.get("n_combo", 0)))
+    if cfc.get("by_grade"):
+        L.append("")
+        L.append("| 등급 | n | 누적 순PnL(원) | 손실건수 |")
+        L.append("|---|---|---|---|")
+        for g, v in sorted(cfc["by_grade"].items()):
+            L.append("| %s | %d | %s | %d |" % (
+                g, v["n"], format(v["total_pnl_krw"], ",.0f"), v["n_loss"]))
+    if cfc.get("reason"):
+        L.append("- %s" % cfc["reason"])
+    if cfc.get("error"):
+        L.append("- ⚠ %s" % cfc["error"])
+    L.append("- CHASE_FOREIGN_COMBO_GUARD_ENABLED(config/settings.py, 섀도) 활성화 여부")
+    L.append("  판단 근거 표본 축적용. P4(CVD+OFI, 268차)와 동일 계열 논리이나 표본이")
+    L.append("  작아(368차 등록 시점 n=5) 즉시 정책화하지 않는다 — §9 사전등록 원칙.")
     L.append("")
     L.append("---")
     L.append("")
