@@ -1,0 +1,22 @@
+
+7/24(금): 주간 체인 첫 자동실행(6개 스텝) + P1(A등급 역전) 실측 재집계
+
+
+
+
+7/21
+
+커밋 7eb7562 완료 (359차, 5개 파일). dev_memory/NEXT_TODO.md와 DECISION_LOG.md에도 359차 항목이 등록
+구현 내역 3건 라이브 검증해
+
+③ PreRetrain 스킵 로그 영업일 반영 (main.py)
+"전날" 하드코딩 → is_trading_day() 기반 실제 영업일 수 계산해 "N영업일 전(YYYY-MM-DD)"로 출력. 실행 흐름(스킵 판단) 자체는 무변경, 로그 문구만 정확해짐.
+
+② 레짐 불안정도 섀도 게이트 (micro_regime.py / main.py / settings.py)
+
+MicroRegimeClassifier가 매분 instability_10m(최근 10분 내 레짐 전환 횟수) 계산해 반환
+config/settings.py에 INSTABILITY_GATE_ENABLED=False(기본 비활성) 등 4개 상수 추가
+min_conf 체인(L2 IntradayRegime 직후)에 게이트 삽입 — 비활성 상태라 actual_min_conf는 전혀 바뀌지 않고, 전환 4회/10분 이상일 때 [InstabilityGate] (섀도) 로그만 남김. 며칠 관찰 후 오탐률 확인되면 INSTABILITY_GATE_ENABLED=True로 켤 수 있음.
+① pre_market_stage2 비동기화 (main.py)
+_pre_market_stage2()를 _pre_market_stage2_fetch()(백그라운드 스레드 — macro/investor fetch + 레짐 계산 + Slack notify)와 _pre_market_stage2_apply()(메인스레드 — 대시보드 위젯 반영만)로 분리. 하트비트가 08:58 최초 틱에 스레드만 기동하고, 다음 틱에서 결과를 폴링해 적용 — 기존 _b_intraday_worker와 동일한 스레드+플래그폴링 관례 재사용. 
+데일리 리셋 지점(기동 시·daily_close) 2곳에도 신규 플래그 초기화 추가.
