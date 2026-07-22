@@ -6650,23 +6650,44 @@ class PnlHistoryPanel(QWidget):
         pkrw  = sum(r[krw_key] for r in rows)
         return n, wins, n - wins, round(ppts, 2), round(pkrw, 0)
 
+    def _daily_bucket(self, rows):
+        """거래 목록을 날짜(YYYY-MM-DD) → 거래 리스트로 묶는다."""
+        from collections import defaultdict
+        d = defaultdict(list)
+        for r in rows:
+            d[r["entry_ts"][:10]].append(r)
+        return d
+
+    def _effective_day_krw(self, date_str, day_rows):
+        """해당 날짜의 브로커 정산 실현손익이 있으면 그 값을, 없으면 거래 원시
+        pnl_krw 합계를 반환. 일별/주별/월별/요약 카드가 모두 이 값을 기준으로
+        삼아야 누적·MDD·샤프가 서로 어긋나지 않는다."""
+        broker_krw = self._broker_pnl.get(date_str)
+        if broker_krw is not None:
+            return broker_krw
+        return sum(r["pnl_krw"] for r in day_rows)
+
+    def _group_effective_krw(self, grp):
+        """grp(여러 날짜에 걸친 거래 목록)의 날짜별 브로커 정산 우선 합계."""
+        day_rows = self._daily_bucket(grp)
+        return sum(self._effective_day_krw(d, rs) for d, rs in day_rows.items())
+
     def _mdd(self, rows, krw_key="pnl_krw"):
+        """전체 거래의 날짜별 브로커 정산 우선 손익 기준 MDD."""
+        day_rows = self._daily_bucket(rows)
         eq, peak, mdd = 0.0, 0.0, 0.0
-        for r in sorted(rows, key=lambda x: x["entry_ts"]):
-            eq  += r[krw_key]
+        for date_str in sorted(day_rows):
+            eq  += self._effective_day_krw(date_str, day_rows[date_str])
             peak = max(peak, eq)
             mdd  = min(mdd, eq - peak)
         return round(mdd, 0)
 
     def _mdd_daily(self, grp) -> float:
-        """일별 DB pnl_krw 기준 MDD — 거래 단위 진동 제거 (broker 정산 미적용)."""
-        from collections import defaultdict
-        day_rows = defaultdict(list)
-        for r in grp:
-            day_rows[r["entry_ts"][:10]].append(r)
+        """일별 손익(브로커 정산 우선) 기준 MDD — 거래 단위 진동 제거."""
+        day_rows = self._daily_bucket(grp)
         eq, peak, mdd = 0.0, 0.0, 0.0
         for date_str in sorted(day_rows):
-            v = sum(r["pnl_krw"] for r in day_rows[date_str])
+            v = self._effective_day_krw(date_str, day_rows[date_str])
             eq += v
             peak = max(peak, eq)
             mdd = min(mdd, eq - peak)
@@ -6721,10 +6742,8 @@ class PnlHistoryPanel(QWidget):
         return self._sharpe(list(dp.values()))
 
     def _sharpe_grp(self, grp):
-        dp = {}
-        for r in grp:
-            d = r["entry_ts"][:10]
-            dp[d] = dp.get(d, 0) + r["pnl_krw"]
+        day_rows = self._daily_bucket(grp)
+        dp = {d: self._effective_day_krw(d, rs) for d, rs in day_rows.items()}
         return self._sharpe(list(dp.values()))
 
     def _load_cb_prefs(self):
@@ -6820,14 +6839,15 @@ class PnlHistoryPanel(QWidget):
         groups  = self._group(self._week_key)[-13:]
         cum_map, c = {}, 0.0
         for wk, grp in groups:
-            _, _, _, _, pkrw = self._stats(grp)
-            c += pkrw
+            eff_krw = self._group_effective_krw(grp)
+            c += eff_krw
             cum_map[wk] = c
 
         tbl = self.tbl_weekly
         tbl.setRowCount(len(groups))
         for r_idx, (wk, grp) in enumerate(reversed(groups)):
-            n, wins, losses, ppts, pkrw = self._stats(grp)
+            n, wins, losses, ppts, _ = self._stats(grp)
+            pkrw      = self._group_effective_krw(grp)
             mdd       = self._mdd_daily(grp)
             cum       = cum_map[wk]
             disp_krw  = pkrw
@@ -6856,14 +6876,15 @@ class PnlHistoryPanel(QWidget):
         groups  = self._group(lambda ts: ts[:7])
         cum_map, c = {}, 0.0
         for mon, grp in groups:
-            _, _, _, _, pkrw = self._stats(grp)
-            c += pkrw
+            eff_krw = self._group_effective_krw(grp)
+            c += eff_krw
             cum_map[mon] = c
 
         tbl = self.tbl_monthly
         tbl.setRowCount(len(groups))
         for r_idx, (mon, grp) in enumerate(reversed(groups)):
-            n, wins, losses, ppts, pkrw = self._stats(grp)
+            n, wins, losses, ppts, _ = self._stats(grp)
+            pkrw      = self._group_effective_krw(grp)
             cum       = cum_map[mon]
             disp_krw  = pkrw
             sharpe    = self._sharpe_grp(grp)
@@ -6902,18 +6923,8 @@ class PnlHistoryPanel(QWidget):
         trades = len(active)
         wins   = sum(1 for r in active if r["pnl_pts"] > 0)
         wr     = wins / trades * 100 if trades else 0
-        total  = sum(r["pnl_krw"] for r in active)
-        # 총 손익: 브로커 정산값이 있는 날은 그 합계 사용
-        # 주의: 행(row) 단위가 아닌 고유 날짜 단위로 합산해야 중복 계산 방지
-        if self._broker_pnl:
-            broker_days = {r["entry_ts"][:10] for r in active
-                           if r["entry_ts"][:10] in self._broker_pnl}
-            broker_total = sum(self._broker_pnl[d] for d in broker_days)
-            missing_total = sum(r["pnl_krw"] for r in active
-                                if r["entry_ts"][:10] not in self._broker_pnl)
-            disp_total = broker_total + missing_total
-        else:
-            disp_total = total
+        # 총 손익: 브로커 정산값이 있는 날은 그 합계 사용 (일별/주별/월별과 동일 기준)
+        disp_total = self._group_effective_krw(active)
 
         mdd = self._mdd(active)
 

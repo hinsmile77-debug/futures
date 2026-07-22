@@ -2,6 +2,48 @@
 
 ---
 
+## 2026-07-22 (365차 — 손익 추이 패널 주별/월별 탭 브로커 정산값 미반영 버그 수정)
+
+### [버그] `PnlHistoryPanel` 주별/월별 탭이 브로커 정산값을 반영하지 않아 일별/요약과 누적 손익 불일치
+
+**File**: `dashboard/main_dashboard.py` (`PnlHistoryPanel`)
+**증상**: 사용자가 우측 패널 "손익 추이" 탭의 일별·주별·월별 스크린샷을 나란히
+비교해 흐름 점검을 요청 — 일별 탭 최종 누적(2026-07-21 기준 -79,000원)과 요약
+카드 "총 손익"(-79,000원)은 서로 일치하지만, 주별 탭 최종 주(2026-W30) 누적은
+-478,465원, 월별 탭 최종 월(2026-07) 누적도 -478,465원으로 나와 세 탭이
+서로 다른 숫자를 보여주고 있었음(차이 399,465원). 세 탭 모두 총 거래건수는
+71건으로 동일해 표본 누락이 아니라 집계 로직 자체의 불일치였음.
+**원인**: `refresh()`가 `utils.db_utils.fetch_broker_daily_pnl_map()`으로
+브로커 정산 실현손익(`daily_broker_pnl` 테이블 — 거래 원시 `pnl_krw` 합계보다
+우선하는 "정답" 값)을 가져와 `_build_daily()`와 `_build_summary()`에서는
+날짜별로 `self._broker_pnl.get(date_str)`를 우선 적용했으나, `_build_weekly()`/
+`_build_monthly()`는 이 override를 전혀 참조하지 않고 `_stats(grp)`의 원시
+`pnl_krw` 합계만 사용 — 정산일이 포함된 주/월에서 P/L원·누적·MDD·샤프가 전부
+실제(브로커 정산 기준)와 어긋남.
+**결정/수정**: `_effective_day_krw(date_str, day_rows)`(정산값이 있으면 그
+값, 없으면 원시 합계)와 `_group_effective_krw(grp)`(여러 날짜에 걸친 거래
+묶음을 날짜별로 쪼개 우선순위 적용 후 재합산) 두 헬퍼를 추가해
+`_build_weekly`/`_build_monthly`의 P/L원·누적, `_mdd_daily`(주별 MDD),
+`_sharpe_grp`(월별 샤프), `_mdd`(요약 카드 MDD)까지 전부 이 기준으로 통일.
+`_build_summary()`의 중복 브로커 분기 로직도 `_group_effective_krw(active)`
+한 줄로 축약.
+**Why**: 정산값 override를 탭마다 따로 구현하면서 일부만 반영하면, 같은
+패널 안에서 "어느 탭을 보느냐"에 따라 손익이 달라 보이는 신뢰도 문제가
+생긴다 — 향후 이 패널에 새 집계 뷰(예: 분기별)를 추가할 때도 반드시 이
+헬퍼를 경유해야 함.
+**How to apply**: 손익 집계 로직을 건드릴 때는 `_broker_pnl` override가
+모든 뷰(일/주/월/요약/MDD/샤프)에 일관되게 적용되는지 항상 확인할 것.
+**검증**: `QT_QPA_PLATFORM=offscreen` PyQt 스모크테스트(py37_32) — 특정
+날짜에 정산값 override가 원시 값과 다르게 설정된 가짜 거래 3건으로
+`PnlHistoryPanel`을 실제 생성·`refresh()` 호출, 일별/주별/월별/요약 4곳의
+최종 누적이 모두 동일(+70,000원)함을 직접 확인. `python -m ast`로
+`main.py` 구문 확인(대상 파일은 `dashboard/main_dashboard.py`). 라이브
+미검증 — 다음 실 UI 기동 시 실제 `daily_broker_pnl` 정산 데이터가 있는
+날짜가 포함된 주/월에서 주별/월별 누적이 일별 탭 및 요약 카드와 정확히
+일치하는지 육안 확인 필요.
+
+---
+
 ## 2026-07-09 (307차 — HealthPolicy exceptions_10m 주문흐름 진단 태그 exclude 추가)
 
 ### [설계결정] 정상 주문흐름 진단 로그(WARNING)가 예외 밀도에 혼입돼 Degraded Mode 오발동
