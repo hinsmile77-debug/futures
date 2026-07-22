@@ -111,6 +111,12 @@ class PositionTracker:
         # [363차] qty=1 손실1차 섀도 — 물리적 분할 불가라 실제 축소는 안 하지만,
         # "그 시점에 전량 조기청산했다면"의 counterfactual 기록 여부(포지션당 1회).
         self.loss_tier1_qty1_shadow_logged: bool = False
+        # [367차] Tier1 발동 후 잔여계약 2단계 조기청산 섀도 — Tier1이 qty=2 중 1계약만
+        # 잘라내고 남은 1계약은 원래 stop_price까지 무방비로 노출되는 사각지대(0722
+        # 딥다이브에서 확인) 계측용. Tier1 체결가(fill_price) ~ 원래 stop_price 구간의
+        # 50% 지점 — main.py:_ts_handle_exit_fill()의 loss_tier1_done=True 시점에 계산.
+        self.loss_tier2_price: float = 0.0
+        self.loss_tier2_shadow_logged: bool = False
         # [363차 후속] 진입 시점 quantile 기대엣지 — ensemble_decisions에는 매분
         # 찍히지만 "이 포지션이 진입한 바로 그 순간의 값"을 그대로 들고 있어야
         # loss_tier1_qty1_shadow 등 사후 분석에서 재조인 없이 바로 쓸 수 있다.
@@ -171,6 +177,8 @@ class PositionTracker:
         self.loss_tier1_price = 0.0
         self.loss_tier1_done = False
         self.loss_tier1_qty1_shadow_logged = False
+        self.loss_tier2_price = 0.0
+        self.loss_tier2_shadow_logged = False
         self.entry_quantile_expected_pt = None
         self.entry_quantile_uncertainty_pt = None
         self.synthetic_tp1_price = None
@@ -272,6 +280,8 @@ class PositionTracker:
         self.partial_3_done = False
         self.loss_tier1_done = False
         self.loss_tier1_qty1_shadow_logged = False
+        self.loss_tier2_price = 0.0
+        self.loss_tier2_shadow_logged = False
         self.last_update_reason = f"open_position:{direction}"
         self.last_update_ts = now_kst()
 
@@ -867,6 +877,22 @@ class PositionTracker:
             return price <= self.loss_tier1_price
         return price >= self.loss_tier1_price
 
+    def is_loss_tier2_shadow_hit(self, price: float) -> bool:
+        """[367차] Tier1 발동 후 잔여계약 2단계 조기청산 섀도 — Tier1이 qty=2 중
+        1계약만 잘라내고 남은 1계약은 원래 stop_price까지 그대로 노출되는 사각지대
+        (0722 딥다이브: 07-22 10:26 사례에서 형제계약 tier1 성공 후 잔여 1계약이
+        추가 방어 없이 하드스톱까지 밀림)를 계측 전용으로 기록한다. 실거래 액션
+        없음(기록만) — loss_tier1_qty1_shadow와 동일 원칙. loss_tier2_price는
+        Tier1 체결 시점(main.py:_ts_handle_exit_fill)에 계산되므로, 그 전에는
+        0.0으로 자연히 비활성.
+        """
+        if (self.status == POSITION_FLAT or not self.loss_tier1_done
+                or self.loss_tier2_shadow_logged or self.loss_tier2_price <= 0):
+            return False
+        if self.status == POSITION_LONG:
+            return price <= self.loss_tier2_price
+        return price >= self.loss_tier2_price
+
     def get_stage_plan(self) -> Tuple[int, int, int]:
         total_qty = int(self.initial_quantity or self.quantity or 0)
         if total_qty <= 0:
@@ -1052,6 +1078,8 @@ class PositionTracker:
         self.loss_tier1_price = 0.0
         self.loss_tier1_done = False
         self.loss_tier1_qty1_shadow_logged = False
+        self.loss_tier2_price = 0.0
+        self.loss_tier2_shadow_logged = False
         self.entry_quantile_expected_pt = None
         self.entry_quantile_uncertainty_pt = None
         self.synthetic_tp1_price = None
