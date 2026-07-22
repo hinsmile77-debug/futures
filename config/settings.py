@@ -725,6 +725,26 @@ ENTRY_GRADE = {
     "X": {"min_pass": 0, "size_mult": 0.0, "auto": False},
 }
 
+# [366차 신설] GradeEVGuard — 등급 A 롤링 실현EV 가드.
+# 배경: 0722 정기점검 딥다이브 — A등급 순EV가 최소 3주 이상(07-15/07-16/07-22
+# 스냅샷 비교, 표본 31→40→60건) 지속 음수인 반면 C등급은 지속 양수(7→10→17건).
+# 로그 직접 파싱(07-02~07-22, 53건)으로도 A=-16,063원/건(승률57.5%) vs
+# C=+68,861원/건(승률84.6%) 재확인, pt 단위(사이징 효과 제거)로도 A=+0.387pt/계약
+# vs C=+1.261pt/계약 — krw 사이징 효과가 아니라 원본 방향성 엣지 자체가 약함.
+# 평균 신뢰도는 A=37.4% vs C=35.9%로 거의 동일 — 신뢰도가 아니라 체크리스트
+# pass_count(등급) 자체가 실현 엣지와 반비례하는 구조적 문제로 진단.
+# HCGuard(conf≥0.65 롤링 정확도 가드, 261차)와 동일한 원칙을 "신뢰도" 대신
+# "등급"에 적용 — 이미 검증된 패턴을 재사용해 구현 리스크를 낮춘다.
+# §9 사전등록 원칙: 초기값은 비활성(섀도 로그만) — 표본이 더 쌓여 재확인된 뒤
+# 사용자가 수동으로 True 전환. INSTABILITY_GATE_ENABLED와 동일한 도입 순서.
+# 근거: dev_memory/DECISION_LOG.md 366차 항목.
+GRADE_EV_GUARD_ENABLED: bool = False  # 기본 비활성 — 섀도 로그만 (§9 원칙)
+GRADE_EV_GUARD_LOOKBACK_DAYS: int = 30  # 롤링 관찰창(일) — 일일 리포트와 동일 기준
+GRADE_EV_GUARD_MIN_N: int = 30  # 이 건수 이상 쌓여야 가드 활성 (cold-start 보호)
+GRADE_EV_GUARD_EV_THR_KRW: float = 0.0  # 이 값 미만(평균 순EV)이면 강등
+GRADE_EV_GUARD_DEMOTE_TO: str = "B"  # 강등 목표 등급
+GRADE_EV_GUARD_REFRESH_SEC: int = 300  # DB 재조회 주기(초) — 매분 파이프라인 부하 방지
+
 # 앙상블 conf가 이 값 미만이면 체크리스트 A/B 등급이라도 auto_entry=False 강제
 # 분석근거: conf<33% 신호는 5일 실거래 기준 EV=-34K/건 (승률55% but 손실>이익 38%)
 # 32~33%로 설정 시 6/22·6/23 수익 케이스는 유지하면서 6/24 14:04 같은 대형손실 차단
@@ -1027,6 +1047,41 @@ VALIDATION_CAMPAIGN = {
     #   검토(§9 사전등록 원칙 — tp2_hold_shadow와 동일 순서).
     "tp1_trail_shadow": {
         "min_samples": 15,  # TP1 보호전환 건 최소 수 (미달 → 판정 보류, tp2_hold_shadow와 동일 기준)
+    },
+    # [366차 신설] §13 등급별 순EV 역전 감시 — 0722 정기점검 딥다이브. kelly_skip(341차)과
+    # 동일 계열 — 실제로 체결된 진입(trades 테이블)의 실현 net_pnl_krw를 등급별로 그대로
+    # 집계하면 되므로 counterfactual 시뮬레이션 불필요. A등급이 C등급보다 순EV가 낮은
+    # "역전" 현상이 07-15/07-16/07-22 3주간 지속(A 31→40→60건 누적 음수, C 7→10→17건
+    # 누적 양수)됨을 확인 — 평균 신뢰도는 A/C 거의 동일(37.4%/35.9%)이라 신뢰도가 아니라
+    # 체크리스트 pass_count(등급) 자체가 원인으로 추정.
+    # 존치(PASS): A등급 평균 순EV ≥ 0 (역전 해소 또는 애초에 미발생).
+    # 강등 검토(FAIL): A등급 평균 순EV < 0 이고 표본이 min_samples 이상
+    #   → 즉시 코드 변경이 아니라 GradeEVGuard(config: GRADE_EV_GUARD_ENABLED) 활성화
+    #   여부를 주간회의에서 수동 결정(§9 사전등록 원칙 — kelly_skip과 동일 순서).
+    "grade_ev_inversion": {
+        "min_samples_per_grade": 20,  # 등급별 최소 체결 건수 (미달 → 판정 보류)
+    },
+    # [367차 신설] §14 Tier1 발동 후 잔여계약 2단계 조기청산 counterfactual —
+    # loss_tier1_qty1_shadow(363차)와 동일 계열. Tier1이 qty=2 중 1계약만 잘라내고
+    # 남은 1계약은 원래 stop_price까지 그대로 노출되는 사각지대(0722 정기점검
+    # 딥다이브, 07-22 10:26 사례에서 형제계약 tier1 성공 후 잔여 1계약이 -124,719원
+    # 추가손실)를 계측한다.
+    # 존치(PASS): 누적 hyp_pnl_pts ≤ 0 (2단계 조기청산이 평균적으로 이득 아님).
+    # 채택 검토(FAIL): 누적 hyp_pnl_pts > 왕복비용의 2배
+    #   → 즉시 코드 변경이 아니라 잔여계약 2단계 Tier1 실거래 정책화 여부를
+    #   주간회의에서 검토(§9 사전등록 원칙 — loss_tier1_qty1_shadow와 동일 순서).
+    "loss_tier2_remainder_shadow": {
+        "min_samples": 20,  # tier2 터치 건 최소 수 (미달 → 판정 보류, loss_tier1_qty1_shadow와 동일 기준)
+    },
+    # [367차 신설] §15 급행 풀스톱(TP1 미도달) 관찰 채널 — 0722 정기점검 딥다이브.
+    # 하드스톱 청산인데 (a) 보유시간이 짧고(fast_exit_max_sec 이내) (b) TP1 보호전환이
+    # 한 번도 발동하지 않은 포지션의 비율·손익을 등급별로 집계한다. 정책 게이트가
+    # 아니라 순수 관찰용(참고: kelly_skip·grade_ev_inversion과 달리 PASS/FAIL 판정을
+    # 내리지 않음 — 이 패턴 자체를 "차단"할 방법이 아직 없어 판정이 무의미하기 때문).
+    # GradeEVGuard·loss_tier1_qty1_shadow가 다루는 문제의 하위 메커니즘을 더 빠르게
+    # (거래 완결을 기다릴 필요 없이) 관찰하기 위한 선행지표.
+    "fast_reversal_watch": {
+        "fast_exit_max_sec": 150,  # 이 시간(초) 이내 하드스톱 청산만 "급행" 분류
     },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,

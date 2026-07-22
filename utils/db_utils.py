@@ -579,6 +579,34 @@ def init_trades_db():
             "CREATE INDEX IF NOT EXISTS idx_lt1q1_ts ON loss_tier1_qty1_shadow(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_lt1q1_entry_ts ON loss_tier1_qty1_shadow(entry_ts)")
+    # [367차] Tier1 발동 후 잔여계약 2단계 조기청산 섀도 — loss_tier1_qty1_shadow와
+    # 동일한 "발동 시점 상태 기록 → 주간 리포트가 사후 판정" 패턴. Tier1이 qty=2 중
+    # 1계약만 잘라내고 남은 1계약은 원래 stop_price까지 그대로 노출되는 사각지대
+    # (0722 정기점검 딥다이브, 07-22 10:26 사례)를 계측한다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS loss_tier2_remainder_shadow (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                 TEXT NOT NULL,           -- tier2 터치(기록) 시각
+        entry_ts           TEXT NOT NULL,           -- trades.entry_ts 조인 키(원 포지션)
+        direction          TEXT NOT NULL,           -- LONG/SHORT
+        entry_price        REAL NOT NULL,           -- 원 포지션 진입가
+        loss_tier2_price   REAL NOT NULL,           -- tier1 체결가~stop 50% 지점(조기청산 가정가)
+        stop_price         REAL NOT NULL,           -- 당시 최종 손절가 (잔여계약 기준)
+        remaining_qty      INTEGER NOT NULL,        -- tier1 이후 잔여 계약수
+        grade              TEXT,
+        entry_horizon      TEXT,
+        resolved           INTEGER DEFAULT 0,       -- 1=실거래 결과와 대조 완료
+        cf_outcome         TEXT,                    -- 'EARLY_CUT' 고정(항상 tier2가에서 자름)
+        cf_exit_price      REAL,                    -- = loss_tier2_price
+        actual_pnl_pts     REAL,                    -- 실거래(trades.pnl_pts, 잔여계약분) 실현치
+        hyp_pnl_pts        REAL,                    -- (+)=조기청산이 유리, (-)=현행(무조치) 유지가 나았음
+        created_at         TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_lt2_ts ON loss_tier2_remainder_shadow(ts)")
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_lt2_entry_ts ON loss_tier2_remainder_shadow(entry_ts)")
     # [363차 후속] qty=1 TP1 이후 트레일 폭 섀도 — 0721 정기점검 딥다이브 제안4 편입,
     # 361차 tp2_hold_shadow와 동일한 "발동 시점 상태 기록 → 주간 리포트가 사후
     # 시뮬레이션 판정" 패턴. qty=1은 TP1 이후 update_trailing_stop() 4단계 트레일링

@@ -1395,6 +1395,212 @@ def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [14] Tier1 발동 후 잔여계약 2단계 조기청산 counterfactual — resolve + 누적 판정 (367차)
+# ──────────────────────────────────────────────────────────────
+
+def resolve_and_eval_loss_tier2_remainder_shadow() -> dict:
+    """loss_tier2_remainder_shadow(main.py에서 기록) resolve + PASS/FAIL 판정.
+
+    loss_tier1_qty1_shadow와 동일한 패턴이나, 조인 대상이 "원 포지션 전체"가 아니라
+    "Tier1 이후 남은 잔여계약의 최종 청산 레그"다 — Tier1 체결 시 trades 테이블에
+    별도 행(exit_reason='손절1차 조기축소')이 하나 생기고, 잔여계약은 그 뒤 별도
+    행으로 최종 청산되므로 그 행만 골라 조인한다(direction+entry_ts+quantity로
+    특정, tier1 레그 자체는 exit_reason으로 제외).
+
+    hyp_pnl_pts = tier2가 조기청산 pt − 실제(잔여계약) 실현 pt (양수=조기청산 유리).
+    PASS = 현행(잔여계약 추가조치 없음) 유지 — 조기청산이 평균적으로 이득 아님.
+    FAIL = 잔여계약 2단계 조기청산 정책 채택 검토 권고 (즉시 코드 변경 아님 —
+           주간회의 수동 결정, §9 사전등록 원칙 — loss_tier1_qty1_shadow와 동일 순서).
+    """
+    cr = VALIDATION_CAMPAIGN["loss_tier2_remainder_shadow"]
+    out = {"verdict": "INSUFFICIENT", "resolved_now": 0}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            unresolved = conn.execute(
+                "SELECT * FROM loss_tier2_remainder_shadow WHERE resolved = 0 ORDER BY ts"
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    if unresolved:
+        updates = []
+        with _conn(TRADES_DB) as conn:
+            for r in unresolved:
+                match = conn.execute(
+                    """SELECT pnl_pts FROM trades
+                       WHERE direction = ? AND quantity = ?
+                             AND exit_reason != '손절1차 조기축소'
+                             AND ABS((julianday(entry_ts) - julianday(?)) * 86400) <= 10
+                             AND exit_ts IS NOT NULL
+                       ORDER BY ABS((julianday(entry_ts) - julianday(?)) * 86400)
+                       LIMIT 1""",
+                    (r["direction"], r["remaining_qty"], r["entry_ts"], r["entry_ts"]),
+                ).fetchone()
+                if match is None:
+                    continue  # 잔여계약이 아직 청산 전 — 다음 실행에서 재시도
+                actual_pnl = float(match["pnl_pts"] or 0.0)
+                is_long = str(r["direction"]) == "LONG"
+                entry_p = float(r["entry_price"])
+                tier2_p = float(r["loss_tier2_price"])
+                # entry_price는 원 포지션 진입가 — tier2_cut_pts는 "그 진입가 기준"
+                # 실현 pt와 같은 기준(entry_price 대비)으로 맞춰야 actual_pnl(마찬가지로
+                # trades.pnl_pts, entry_price 기준)과 동일 척도로 비교 가능.
+                tier2_cut_pts = (tier2_p - entry_p) if is_long else (entry_p - tier2_p)
+                hyp = tier2_cut_pts - actual_pnl
+                updates.append((round(actual_pnl, 4), round(hyp, 4), r["id"]))
+
+        if updates:
+            with _conn(TRADES_DB) as conn:
+                conn.executemany(
+                    """UPDATE loss_tier2_remainder_shadow
+                       SET resolved=1, actual_pnl_pts=?, hyp_pnl_pts=?
+                       WHERE id=?""",
+                    updates,
+                )
+                conn.commit()
+            out["resolved_now"] = len(updates)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            agg = conn.execute(
+                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
+                          AVG(entry_price) AS avg_price,
+                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win
+                   FROM loss_tier2_remainder_shadow WHERE resolved=1 AND ts >= ?""",
+                (_campaign_start(),),
+            ).fetchone()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM loss_tier2_remainder_shadow WHERE resolved=0"
+            ).fetchone()["n"]
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    n = int(agg["n"] or 0)
+    total_hyp = float(agg["total_hyp"] or 0.0)
+    avg_price = float(agg["avg_price"] or 0.0) or 300.0
+    win_rate = (int(agg["n_win"] or 0) / n) if n else 0.0
+    out.update({
+        "n_resolved": n,
+        "n_pending": int(pending),
+        "total_hyp_pnl_pts": round(total_hyp, 4),
+        "win_rate": round(win_rate, 4),
+    })
+
+    if n < int(cr["min_samples"]):
+        out["reason"] = "tier2 터치 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        return out
+
+    cost_pt = _roundtrip_cost_pt(avg_price)
+    out["cost_pt"] = round(cost_pt, 4)
+    adopt = total_hyp > cost_pt * 2.0
+    out["verdict"] = "FAIL" if adopt else "PASS"
+    if adopt:
+        out["recommendation"] = (
+            "잔여계약 2단계 조기청산 정책 채택 검토 — 주간회의 수동 결정 (§9 사전등록 원칙)"
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# [15] 급행 풀스톱(TP1 미도달) 관찰 채널 (367차, 관찰 전용 — PASS/FAIL 판정 없음)
+# ──────────────────────────────────────────────────────────────
+
+def eval_fast_reversal_watch(days: int) -> dict:
+    """하드스톱 청산 중 (a) 보유시간이 짧고(fast_exit_max_sec 이내) (b) TP1 보호전환이
+    한 번도 발동하지 않은 포지션의 등급별 발생률·손익을 집계한다.
+
+    0722 정기점검 딥다이브(4주 9건 사례, -2,161,020원 — A등급 4주 누적손실의 84%)에서
+    발견한 패턴을 지속 관찰하기 위한 채널. GradeEVGuard·loss_tier1_qty1_shadow처럼
+    거래가 완결돼야 표본이 쌓이는 채널과 달리, "TP1 도달 여부"는 로그에서 직접 읽을
+    수 있어 정책 게이트 없이도 등급별 추세를 빠르게 볼 수 있다.
+
+    PASS/FAIL 판정을 내리지 않는다 — 이 패턴 자체를 "차단"할 기존 메커니즘이 없어
+    (즉 완화 정책이 아직 없어) 판정이 의미가 없기 때문. 순수 관찰용 — kelly_skip·
+    grade_ev_inversion과 달리 verdict는 항상 "OBSERVE"로 고정.
+    """
+    fast_max_sec = int(VALIDATION_CAMPAIGN["fast_reversal_watch"]["fast_exit_max_sec"])
+    out = {"verdict": "OBSERVE", "fast_exit_max_sec": fast_max_sec}
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(_TS_FMT)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                """SELECT entry_ts, exit_ts, direction, grade, quantity,
+                          pnl_pts, net_pnl_krw
+                   FROM trades
+                   WHERE entry_ts >= ? AND exit_ts IS NOT NULL
+                         AND exit_reason LIKE '%하드스톱%'""",
+                (cutoff,),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    candidates = []
+    for r in rows:
+        try:
+            t0 = datetime.datetime.strptime(r["entry_ts"], _TS_FMT)
+            t1 = datetime.datetime.strptime(r["exit_ts"], _TS_FMT)
+        except (TypeError, ValueError):
+            continue
+        hold_sec = (t1 - t0).total_seconds()
+        if hold_sec <= fast_max_sec:
+            candidates.append((r, hold_sec))
+
+    out["n_fast_hardstop"] = len(candidates)
+    if not candidates:
+        out["reason"] = "관찰 대상(급행 하드스톱) 0건"
+        return out
+
+    # TP1 도달 여부 — 같은 날짜의 TRADE.log에서 entry_ts~exit_ts 구간에 "TP1"
+    # 문자열이 등장하는지 확인(main.py가 TP1 보호전환/부분청산 시 항상 이 문자열을
+    # 남김 — synthetic_tp1(qty=1)·실제 부분청산(qty>=2) 모두 커버).
+    by_date = {}
+    for r, hold_sec in candidates:
+        date_key = r["entry_ts"][:10].replace("-", "")
+        by_date.setdefault(date_key, []).append((r, hold_sec))
+
+    log_dir = os.path.join(ROOT, "logs")
+    by_grade = {}
+    for date_key, items in by_date.items():
+        log_path = os.path.join(log_dir, f"{date_key}_TRADE.log")
+        try:
+            with open(log_path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except OSError:
+            lines = None  # 로그 유실 — TP1 판정 불가로 보수적으로 "도달함" 취급(과다경보 방지)
+        for r, hold_sec in items:
+            reached_tp1 = True
+            if lines is not None:
+                reached_tp1 = any(
+                    r["entry_ts"] <= ln[:19] <= r["exit_ts"] and "TP1" in ln
+                    for ln in lines
+                )
+            if reached_tp1:
+                continue  # TP1 도달 후 짧게 청산된 건 이 채널의 관심사가 아님(정상 동작)
+            g = (r["grade"] or "?") or "?"
+            slot = by_grade.setdefault(g, {"n": 0, "total_pnl_krw": 0.0, "n_loss": 0})
+            slot["n"] += 1
+            slot["total_pnl_krw"] += float(r["net_pnl_krw"] or 0.0)
+            if float(r["net_pnl_krw"] or 0.0) < 0:
+                slot["n_loss"] += 1
+
+    out["by_grade"] = {
+        g: {
+            "n": v["n"],
+            "total_pnl_krw": round(v["total_pnl_krw"], 0),
+            "n_loss": v["n_loss"],
+        }
+        for g, v in by_grade.items()
+    }
+    out["n_no_tp1"] = sum(v["n"] for v in by_grade.values())
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [12] qty=1 TP1 이후 트레일 폭 counterfactual — resolve + 누적 판정 (363차 후속)
 # ──────────────────────────────────────────────────────────────
 
@@ -1689,6 +1895,80 @@ def eval_kelly_skip_grade_c() -> dict:
     return out
 
 
+def eval_grade_ev_inversion() -> dict:
+    """[366차 신설] §13 등급별 순EV 역전 감시 — A등급(체크리스트 pass_count≥6)의
+    누적 순EV가 C등급보다 낮은 "역전" 현상을 캠페인 시작일 이후 누적 판정한다.
+
+    kelly_skip과 동일 계열 — 실제로 체결된 진입(trades 테이블)이므로
+    counterfactual 시뮬레이션이 불필요. 0722 정기점검 딥다이브에서 A등급 평균
+    신뢰도(37.4%)가 C등급(35.9%)과 거의 동일한데도 순EV는 정반대(A 음수·C
+    양수)임을 확인 — 신뢰도가 아니라 체크리스트 pass_count(등급) 자체가
+    실현 엣지와 반비례하는 구조적 문제로 진단.
+
+    PASS = A등급 평균 순EV ≥ 0 (역전 해소 또는 애초에 미발생).
+    FAIL = A등급 평균 순EV < 0 이고 A/C 모두 표본 충분 → GradeEVGuard
+    (config.settings.GRADE_EV_GUARD_ENABLED) 활성화를 주간회의에서 검토
+    (§9 사전등록 원칙 — 즉시 자동 적용 아님).
+    """
+    cr = VALIDATION_CAMPAIGN["grade_ev_inversion"]
+    out = {"verdict": "INSUFFICIENT"}
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                """SELECT COALESCE(NULLIF(grade,''),'?') AS grade,
+                          COALESCE(net_pnl_krw, pnl_krw) AS pnl
+                   FROM trades
+                   WHERE exit_ts >= ? AND grade IN ('A','B','C')""",
+                (_campaign_start(),),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    # [367차, 제안4 편입] min(최대손실)·표준편차 보강 — 평균만으로는 "고르게 나쁨"과
+    # "소수 초대형 손실이 평균을 끌어내리는 fat-tail"을 구분할 수 없다(0722 딥다이브:
+    # A등급 4주 손실의 84%가 급행 풀스톱 9건에 집중). SQLite에 STDEV가 없어 Python에서
+    # 계산 — numpy(이미 상단에서 import).
+    from collections import defaultdict
+    pnl_by_grade = defaultdict(list)
+    for row in rows:
+        pnl_by_grade[row["grade"]].append(float(row["pnl"] or 0.0))
+
+    by_grade = {}
+    for g, pnls in pnl_by_grade.items():
+        arr = np.array(pnls, dtype=float)
+        by_grade[g] = {
+            "n": len(pnls),
+            "avg_pnl_krw": round(float(arr.mean()), 0),
+            "total_pnl_krw": round(float(arr.sum()), 0),
+            "win_rate": round(float((arr > 0).mean()), 4),
+            "min_pnl_krw": round(float(arr.min()), 0),
+            "stdev_pnl_krw": round(float(arr.std(ddof=1)) if len(pnls) > 1 else 0.0, 0),
+        }
+    out["by_grade"] = by_grade
+
+    min_n = int(cr["min_samples_per_grade"])
+    a = by_grade.get("A")
+    c = by_grade.get("C")
+    if not a or a["n"] < min_n or not c or c["n"] < min_n:
+        _a_n = a["n"] if a else 0
+        _c_n = c["n"] if c else 0
+        out["reason"] = (
+            "등급별 표본 부족 (A=%d, C=%d, 각각 %d 필요) — 판정 보류" %
+            (_a_n, _c_n, min_n)
+        )
+        return out
+
+    out["verdict"] = "FAIL" if a["avg_pnl_krw"] < 0 else "PASS"
+    if out["verdict"] == "FAIL":
+        out["recommendation"] = (
+            "A등급 누적 순EV 음수 확정(C등급은 양수) — GradeEVGuard "
+            "(config.settings.GRADE_EV_GUARD_ENABLED) 활성화를 주간회의에서 검토"
+            " (§9 사전등록 원칙에 따라 적용은 수동 결정)"
+        )
+    return out
+
+
 # ──────────────────────────────────────────────────────────────
 # 리포트 생성
 # ──────────────────────────────────────────────────────────────
@@ -1697,6 +1977,7 @@ def _fmt_verdict(v: str) -> str:
     return {
         "PASS": "✅ PASS", "FAIL": "❌ FAIL",
         "OK": "✅ OK", "STARVED": "🚨 STARVED",
+        "OBSERVE": "👁 OBSERVE",  # [367차] 순수 관찰 채널(정책 게이트 없음) — PASS/FAIL 미판정
     }.get(v, "⏳ INSUFFICIENT")
 
 
@@ -1725,6 +2006,9 @@ def build_report(days: int) -> tuple:
     t2 = resolve_and_eval_tp2_hold()
     lt1 = resolve_and_eval_loss_tier1_qty1_shadow()
     t1t = resolve_and_eval_tp1_trail_shadow()
+    gei = eval_grade_ev_inversion()
+    lt2 = resolve_and_eval_loss_tier2_remainder_shadow()
+    frw = eval_fast_reversal_watch(days)
 
     metrics = {
         "generated_at": now_str,
@@ -1735,7 +2019,8 @@ def build_report(days: int) -> tuple:
         "signal_decay": sd, "hurst_regime": hr, "hurst_gate_shadow": hg,
         "joint_gate_shadow": jg, "kelly_skip": ks, "open_gap_shadow": og,
         "tp2_hold_shadow": t2, "loss_tier1_qty1_shadow": lt1,
-        "tp1_trail_shadow": t1t,
+        "tp1_trail_shadow": t1t, "grade_ev_inversion": gei,
+        "loss_tier2_remainder_shadow": lt2, "fast_reversal_watch": frw,
     }
 
     L = []
@@ -1800,6 +2085,24 @@ def build_report(days: int) -> tuple:
         ("%.1f%%" % (t1t["win_rate"] * 100)) if "win_rate" in t1t else "—",
         t1t.get("n_resolved", 0), t1t.get("n_pending", 0),
         t1t.get("cf_trail_stop", "—"), t1t.get("cf_force_exit", "—")))
+    _gei_a = gei.get("by_grade", {}).get("A", {})
+    _gei_c = gei.get("by_grade", {}).get("C", {})
+    L.append("| [13] 등급별 순EV 역전 감시 | %s | A=%s원(n=%s, 최대손실=%s원) C=%s원(n=%s) |" % (
+        _fmt_verdict(gei["verdict"]),
+        format(_gei_a["avg_pnl_krw"], ",.0f") if _gei_a else "—", _gei_a.get("n", 0),
+        format(_gei_a["min_pnl_krw"], ",.0f") if _gei_a else "—",
+        format(_gei_c["avg_pnl_krw"], ",.0f") if _gei_c else "—", _gei_c.get("n", 0)))
+    L.append("| [14] Tier1 잔여계약 2단계 조기청산 counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
+        _fmt_verdict(lt2["verdict"]), lt2.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (lt2["win_rate"] * 100)) if "win_rate" in lt2 else "—",
+        lt2.get("n_resolved", 0), lt2.get("n_pending", 0)))
+    _frw_a = frw.get("by_grade", {}).get("A", {})
+    L.append("| [15] 급행 풀스톱(TP1 미도달) 관찰 | %s | 급행하드스톱=%s건 중 TP1미도달=%s건"
+              " (A: n=%s 누적=%s원) |" % (
+        _fmt_verdict(frw["verdict"]),
+        frw.get("n_fast_hardstop", 0), frw.get("n_no_tp1", 0),
+        _frw_a.get("n", 0),
+        format(_frw_a["total_pnl_krw"], ",.0f") if _frw_a else "—"))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -2032,6 +2335,74 @@ def build_report(days: int) -> tuple:
         L.append("- **권고**: %s" % t1t["recommendation"])
     if t1t.get("reason"):
         L.append("- %s" % t1t["reason"])
+    L.append("")
+
+    # [13] 등급별 순EV 역전 감시 상세
+    L.append("## [13] 등급별 순EV 역전 감시 (366차, 0722 정기점검 딥다이브)")
+    L.append("")
+    if gei.get("by_grade"):
+        L.append("| 등급 | n | 평균 순EV(원) | 누적(원) | 승률 | 최대손실(원) | 표준편차(원) |")
+        L.append("|---|---|---|---|---|---|---|")
+        for g in ("A", "B", "C"):
+            v = gei["by_grade"].get(g)
+            if not v:
+                continue
+            L.append("| %s | %d | %s | %s | %.1f%% | %s | %s |" % (
+                g, v["n"], format(v["avg_pnl_krw"], ",.0f"),
+                format(v["total_pnl_krw"], ",.0f"), v["win_rate"] * 100,
+                format(v["min_pnl_krw"], ",.0f"), format(v["stdev_pnl_krw"], ",.0f")))
+        L.append("")
+        L.append("> [367차, 제안4 편입] 최대손실·표준편차 보강 — 평균만으로는 \"등급 전체가")
+        L.append("> 고르게 나쁨\"과 \"소수 초대형 손실(fat-tail)이 평균을 끌어내림\"을 구분할")
+        L.append("> 수 없다. 0722 딥다이브: A등급 4주 누적손실의 84%가 [15]에서 관찰하는")
+        L.append("> \"TP1 도달 전 급행 풀스톱\" 9건에 집중돼 있었음 — 표준편차가 크고")
+        L.append("> 최대손실이 평균의 여러 배면 이 fat-tail 구조를 의심할 것.")
+    if gei.get("recommendation"):
+        L.append("- **권고**: %s" % gei["recommendation"])
+    if gei.get("reason"):
+        L.append("- %s" % gei["reason"])
+    if gei.get("error"):
+        L.append("- ⚠ %s" % gei["error"])
+    L.append("")
+
+    # [14] Tier1 잔여계약 2단계 조기청산 counterfactual 상세
+    L.append("## [14] Tier1 잔여계약 2단계 조기청산 counterfactual (367차)")
+    L.append("")
+    L.append("- 이번 실행 resolve: %d건 / 누적 판정 %s건 (미판정 %s건)" % (
+        lt2.get("resolved_now", 0), lt2.get("n_resolved", 0), lt2.get("n_pending", 0)))
+    L.append("- 누적 hyp_pnl_pts(tier2가 조기청산 vs 실제 잔여계약 실현 pt 차이): **%s pt** / 승률 %s" % (
+        lt2.get("total_hyp_pnl_pts", "—"),
+        ("%.1f%%" % (lt2["win_rate"] * 100)) if "win_rate" in lt2 else "—",
+    ))
+    if lt2.get("recommendation"):
+        L.append("- **권고**: %s" % lt2["recommendation"])
+    if lt2.get("reason"):
+        L.append("- %s" % lt2["reason"])
+    if lt2.get("error"):
+        L.append("- ⚠ %s" % lt2["error"])
+    L.append("")
+
+    # [15] 급행 풀스톱(TP1 미도달) 관찰 상세
+    L.append("## [15] 급행 풀스톱(TP1 미도달) 관찰 (367차, 관찰 전용 — 정책 게이트 아님)")
+    L.append("")
+    L.append("- 관찰 기준: 하드스톱 청산 + 보유시간 ≤ %s초 + 진입~청산 구간에 TP1 관련 로그"
+              " 없음" % frw.get("fast_exit_max_sec", "—"))
+    L.append("- 급행 하드스톱 %s건 중 TP1 미도달 %s건" % (
+        frw.get("n_fast_hardstop", 0), frw.get("n_no_tp1", 0)))
+    if frw.get("by_grade"):
+        L.append("")
+        L.append("| 등급 | n | 누적 순PnL(원) | 손실건수 |")
+        L.append("|---|---|---|---|")
+        for g, v in sorted(frw["by_grade"].items()):
+            L.append("| %s | %d | %s | %d |" % (
+                g, v["n"], format(v["total_pnl_krw"], ",.0f"), v["n_loss"]))
+    if frw.get("reason"):
+        L.append("- %s" % frw["reason"])
+    if frw.get("error"):
+        L.append("- ⚠ %s" % frw["error"])
+    L.append("- 이 채널은 PASS/FAIL을 판정하지 않는다 — 이 패턴 자체를 차단할 정책이")
+    L.append("  아직 없어 판정이 무의미하다. GradeEVGuard·loss_tier1_qty1_shadow·")
+    L.append("  loss_tier2_remainder_shadow가 다루는 문제의 선행지표로만 참고할 것.")
     L.append("")
     L.append("---")
     L.append("")

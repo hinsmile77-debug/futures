@@ -2,6 +2,212 @@
 
 ---
 
+## 2026-07-22 (367차 — "TP1 도달 전 급행 풀스톱" 4주 딥다이브 + Tier2 잔여계약 섀도·검증캠페인[14]/[15] 신설·[13] 보강)
+
+### [결정] 366차 후속 딥다이브 — 4주 9건 급행손실 근본원인 정량화 + 3개 개선안 구현
+
+**배경**: 366차가 발견한 "A등급 순EV 역전"의 메커니즘을 규명하기 위해, 오늘
+11:30(A급)·14:49(C급) 같은 "TP1 도달 전 수분 내 풀스톱 직행" 패턴을 최근 4주
+전체(trades.db, 06-24~, 83건)로 확장 조사. 하드스톱 청산 61건 중 보유시간
+150초 이내 17건을 추출, 각 건의 `logs/*_TRADE.log`를 entry_ts~exit_ts 구간
+grep해 "TP1" 문자열 등장 여부로 TP1 도달 여부를 판정한 결과 12건이 TP1 미도달
+(그중 A등급 11건, C등급 1건, 손실 9건 손실합계 -2,161,020원).
+
+**핵심 발견 1 — 84% 집중**: 이 9건 손실 합계(-2,161,020원)가 A등급 4주 누적손실
+(-2,559,211원, 366차)의 84.4%를 차지. "A등급이 전반적으로 조금씩 나쁨"이 아니라
+"A등급 손실의 대부분이 이 한 메커니즘(TP1 도달 전 급행 풀스톱)에서 나온다"는
+훨씬 정밀한 진단.
+
+**핵심 발견 2 — 등급 쏠림은 base rate 보정 시 완만함**: A등급 비중이 전체거래
+72.3%→전체손실 85.3%→이 12건 91.7%로, "TP1 미도달 급행" 자체가 A에 유난히 더
+쏠린 별개 패턴은 아니고(이미 A가 손실의 다수를 차지하는 상황의 연장) 그냥 A등급
+문제의 "가장 큰 단일 표출 형태"임. 과장 방지를 위해 base rate와 나란히 기록.
+
+**핵심 발견 3 — 기존 Loss Tier1(363차)이 이 9건을 거의 못 막았던 이유**: 6건은
+Tier1 도입(07-20) 이전, 1건(07-21 13:03)은 틱확장(363차, 17:31 배포) 3시간 전,
+qty=1 6건은애초 tier1 제외 대상(물리적 분할 불가) — 즉 "이미 배포된 tier1이
+막을 수 있었는데 못 막은" 케이스는 사실상 0건. loss_tier1_qty1_shadow(채널
+[11])가 아직 표본 4건뿐인 것과 정합.
+
+**핵심 발견 4 — 회고적 tier1 소급 적용 시뮬레이션(선택편향 있음, 정책 근거
+아님)**: 이 9건에 tier1(50% 지점 1계약 조기컷)을 소급 적용하면 손실이
+-1,111,717원으로 개선(+1,049,303원) — 단 "이미 진 손실만" 골라 계산한 것이라
+회복된 포지션을 tier1이 잘랐을 손실(오늘 실측 4건 중 2건이 실제로 그랬음)은
+표본에서 빠짐. 정책화 근거로 쓰지 말 것 — 채널[11] min_samples(20) 도달까지
+계속 관찰.
+
+**핵심 발견 5(신규) — Tier1의 잔여계약 사각지대**: 07-22 10:26 사례(qty=2,
+형제계약 tier1 성공 후 잔여 1계약이 추가 방어 없이 -124,719원 손실)에서, 현재
+tier1은 qty=2 중 1계약만 자르고 **남은 계약은 원래 stop_price까지 그대로
+노출**됨을 확인 — 기존 loss_tier1_qty1_shadow·loss_tier1_hit 둘 다 커버하지
+않는 별개의 사각지대.
+
+**구현 — 3건, 전부 §9 사전등록 원칙(섀도/관찰 전용, 실거래 액션 없음)**:
+
+1. **`loss_tier2_remainder_shadow`(신규 섀도 테이블, 검증캠페인 [14])** — 발견5
+   대응. Tier1 체결 시점(`main.py:_ts_handle_exit_fill`, `loss_tier1_done=True`
+   직후)에 `PositionTracker.loss_tier2_price`(tier1 체결가~원래 stop 50%
+   지점)를 계산, `_ts_check_exit_triggers`에서 `is_loss_tier2_shadow_hit()`가
+   True면 `_ts_record_loss_tier2_shadow()`로 기록만 한다(실제 청산 없음).
+   `resolve_and_eval_loss_tier2_remainder_shadow()`가 loss_tier1_qty1_shadow와
+   동일 패턴으로 주간 판정(PASS/FAIL, min_samples=20).
+2. **검증캠페인 `[13]` 보강** — 등급별 최대손실(min)·표준편차 컬럼 추가
+   (`eval_grade_ev_inversion()`, numpy 사용). 평균만으로는 "고르게 나쁨"과
+   "fat-tail 집중"을 구분 못 하는 문제(발견1) 대응 — A n=43 avg=-33,084원
+   min=-638,449원 stdev=221,974원 vs C n=17 avg=+76,718원 min=-210,640원
+   stdev=168,932원으로, A가 평균도 나쁘고 꼬리도 훨씬 두꺼움을 한눈에 확인 가능.
+3. **검증캠페인 `[15]` 신설 — 급행 풀스톱(TP1 미도달) 관찰 채널** —
+   `eval_fast_reversal_watch()`. 다른 채널과 달리 실거래 완결을 기다릴 필요 없이
+   "하드스톱 + 보유시간≤150초 + TP1 로그 없음"만으로 등급별 발생률·손익을
+   집계하는 순수 관찰 채널(PASS/FAIL 판정 없음, verdict 항상 OBSERVE) —
+   GradeEVGuard(366차)·loss_tier1_qty1_shadow(363차)가 다루는 문제의 더 빠른
+   선행지표. 로그 유실 시 "TP1 도달함(보수적)"으로 처리해 과다경보 방지.
+   실행 검증: 로그파싱 재현 결과가 수동 딥다이브(A n=11 -1,325,122원, C n=1
+   -210,640원)와 정확히 일치.
+
+**미착수(관찰 전용, 즉시 조치 금지, §9 원칙)**: "11개 체크리스트 항목별 개별
+기여도 정밀분석"(로지스틱 회귀 등)은 366차에서 이미 watch로 등록됐고, 오늘
+chas(10번) 단독원인 가설이 3일 표본에서 뒤집힌 전례가 있어 최소 수주~수개월
+표본 축적 후에만 재검토 — 이번 367차 구현 범위에서 제외.
+
+**Why**: 세 조치 전부 "이미 검증된 패턴"(loss_tier1_qty1_shadow의 발동시점기록
+→사후판정 구조, kelly_skip의 실현치 직접집계 구조)을 재사용해 신규 리스크를
+최소화했다 — [15]만 예외적으로 로그파싱을 쓰는데, 이는 "TP1 도달 여부"가
+trades.db 단독으로는(qty=1 다수 케이스에서) 판별 불가능하기 때문이며, 오프라인
+읽기전용 스크립트 내부에서만 동작해 라이브 거래 경로에는 전혀 영향이 없다.
+
+**How to apply**: `loss_tier2_price`는 `main.py:_ts_handle_exit_fill()`의
+`EXIT_LOSS_TIER1` 마지막 체결 분기(11356행 부근)에서만 계산된다 — 이 흐름을
+다시 만질 때 `loss_tier1_done=True`와 `loss_tier2_price` 계산 순서가 흐트러지지
+않는지 확인할 것. `[15]` 채널은 `logs/{date}_TRADE.log` 파일 존재에 의존하므로
+로그 로테이션 정책이 바뀌면(현재 20일 분량 정도만 보존) 오래된 구간은 자동으로
+"TP1 도달함" 보수적 처리로 넘어간다는 점 인지할 것.
+
+**구현**: `strategy/position/position_tracker.py`(`loss_tier2_price`,
+`loss_tier2_shadow_logged`, `is_loss_tier2_shadow_hit()`, 4곳 리셋),
+`main.py`(`_ts_handle_exit_fill` tier2_price 계산, `_ts_check_exit_triggers`
+훅, `_ts_record_loss_tier2_shadow`, 몽키패치 등록), `utils/db_utils.py`
+(`loss_tier2_remainder_shadow` CREATE TABLE), `config/settings.py`
+(`VALIDATION_CAMPAIGN["loss_tier2_remainder_shadow"]`,
+`["fast_reversal_watch"]`), `scripts/generate_validation_campaign_report.py`
+(`resolve_and_eval_loss_tier2_remainder_shadow()`, `eval_fast_reversal_watch()`,
+`eval_grade_ev_inversion()` min/stdev 보강, `_fmt_verdict()`에 OBSERVE 추가,
+`build_report()` 배선).
+
+**검증**: `py_compile` 5개 파일 전부 통과. `init_all_dbs()` 실행해
+`loss_tier2_remainder_shadow` 테이블 정상 생성 확인. 캠페인 스크립트 실제
+실행 — `[13]`(min/stdev 정상 출력) `[14]`(표본 0건, INSUFFICIENT 정상)
+`[15]`(급행하드스톱 17건 중 TP1미도달 12건, A n=11 -1,325,122원/C n=1
+-210,640원 — 딥다이브 수동 계산과 정확히 일치) 전부 정상 출력, 기존 [0]~[12]
+채널 회귀 없음. **라이브 미검증** — 다음 실제 qty=2 포지션이 tier1 발동 후에도
+잔여 1계약이 손실 방향으로 tier2 가격에 도달하는 시나리오에서
+`[LossTier2Shadow]` 기록이 정상 동작하는지 확인 필요(qty=2 진입 자체가
+364차가 지적한 사이징 압축으로 드물어 표본 축적에 시간이 걸릴 것으로 예상).
+
+**관련**: `NEXT_TODO.md` 동일 날짜(367차) 항목, 366차(GradeEVGuard·[13] 원
+구현), 363차/363차후속(loss_tier1_qty1_shadow·tp1_trail_shadow 원 패턴),
+364차(qty=1 압축 — tier2 표본이 느리게 쌓일 것으로 예상되는 근거).
+
+---
+
+## 2026-07-22 (366차 — 0722 정기점검 딥다이브: A/C등급 순EV 역전 근본원인 규명 + GradeEVGuard·검증캠페인[13] 신설)
+
+### [결정] 등급 A 롤링 실현EV 가드(GradeEVGuard, 섀도) + 검증캠페인 [13] 등급별 순EV 역전 감시 채널 신설
+
+**배경**: 0722 정기점검 딥다이브 중 "A등급 순EV가 30일 누적 -42,654원(60건,
+승52%)인 반면 C등급은 +76,718원(17건,승82%)"이라는 EOD 리포트 수치를 발견.
+07-15(A -88,355원/31건)·07-16(A -77,814원/40건)·07-22(A -42,654원/60건)
+3주간 스냅샷을 비교해 표본이 계속 늘어나는데도(31→40→60건) 부호가 바뀌지
+않는 지속적 구조 문제임을 확인. `logs/*_TRADE.log`의 `[진입체크]` 로그
+61건(07-02~07-22)을 정규식 파싱해 `trades.db`와 entry_ts로 직접 매칭한
+독립 표본(A=40건, C=13건)으로도 동일 패턴 재확인: A=-16,063원/건(승률
+57.5%) vs C=+68,861원/건(승률84.6%). 사이징 효과를 제거한 pt 단위(계약당
+평균)로도 A=+0.387pt/계약 vs C=+1.261pt/계약 — krw 착시가 아니라 원본
+방향성 엣지 자체가 A가 C의 약 1/3. 그런데 두 등급의 평균 신뢰도는
+A=37.42%·C=35.89%로 거의 동일 — `calibration_report.md`의 기존 "신뢰도
+역전"(고신뢰 0.6+ acc 28.7% < 저신뢰 acc 33.1%) 문제와 같은 계열이지만,
+그 문제의 기존 완화책 `HCGuard`(261차, conf≥0.65 롤링 정확도 가드)는 conf
+축에서만 작동해 오늘 A등급 진입들의 실제 conf(36~40%대)는 애초에 그
+가드의 사정권 밖이었음.
+
+**중간 가설 기각 기록(313차 방법론 준수)**: 처음엔 오늘 하루만 보고
+"체크리스트 10번(연장추격) 항목 실패가 원인"이라는 가설을 세웠으나(오늘
+큰 손실 3건이 전부 chas❌), 이 체크가 로그에 남기 시작한 07-20~07-22
+3거래일 전체로 표본을 넓히자 기각됨 — chas❌ 그룹(8건) 순손익 +221,117원
+vs chas✅ 그룹(13건) +436,427원으로 오히려 chas✅가 더 좋았고, 애초에
+"anti-chase" 필터를 만들게 한 07-20 최대손실(-523,099원)도 07-21 두
+번째 큰 손실(-140,624원)도 전부 chas✅(통과)였음. 하루 표본으로 성급히
+결론 내리면 안 된다는 313차 원칙을 스스로 재확인한 사례로 남긴다.
+
+**hurst_bucket·hour_bucket 혼입 배제**: 06-20 이후 A(n=60)·C(n=17) 거래의
+hurst_bucket 비율(둘 다 neutral/mean-revert 위주)과 hour_bucket 분포(둘 다
+10~14시 집중)가 유사해, "등급이 다른 레짐/시간대의 대리변수라서 그렇다"는
+혼입 가설도 배제됨. 즉 이 역전은 등급을 결정하는 **체크리스트 pass_count
+합산 방식 자체**(11개 항목 중 몇 개가 동시에 통과했는지)가 실제 forward
+엣지와 반비례하는 구조적 문제로 진단 — "여러 채널이 동시에 정렬"됐다는
+것이 이 종목·이 호라이즌에서는 오히려 소진(exhaustion) 직전 신호일
+가능성. 이 직관 자체는 새롭지 않음(P4: CVD+OFI 동시 역방향 → 강제 C강등,
+10번 anti-chase·11번 anti-countertrend 체크가 전부 같은 계열) — 다만 그
+안전장치들은 좁은 개별 조합만 잡고, pass_count 합산은 "몇 개나 맞았는가"를
+단순 총합으로 취급해 이 소진 신호를 등급/사이즈 결정에 반영하지 못하고
+있었음.
+
+**결정 — 두 가지 조치, 둘 다 §9 사전등록 원칙(즉시 자동 적용 금지)**:
+
+1. **`GradeEVGuard`(섀도)** — `HCGuard`(신뢰도 축)와 동일 원칙을 등급 축에
+   적용. `model/ensemble_decision.py`의 인메모리 deque 방식 대신
+   `trades.db`를 롤링창(기본 30일)으로 직접 집계하는 방식을 택함(실현
+   거래는 하루 몇 건뿐이라 HCGuard처럼 매분 검증 이벤트로 채워지는 버퍼는
+   표본이 쌓이기까지 수주가 걸려 비현실적 — DB 집계는 프로세스 재시작에도
+   값이 유지되는 부수 이점도 있음). `GRADE_EV_GUARD_ENABLED=False`(기본)
+   상태에서는 조건 충족 시 `[GradeEVGuard] (섀도) ... 미적용` 로그만 남기고
+   등급은 그대로 — `INSTABILITY_GATE_ENABLED`와 동일한 도입 순서.
+2. **검증캠페인 `[13] 등급별 순EV 역전 감시`** — `kelly_skip`(341차)과 동일
+   계열(실제 체결분이라 counterfactual 시뮬레이션 불필요, `trades.net_pnl_krw`
+   그대로 집계). PASS=A등급 평균 순EV≥0, FAIL=A<0 이고 A/C 모두
+   `min_samples_per_grade`(20) 이상 → GradeEVGuard 활성화를 주간회의에서
+   검토하라는 권고만 출력.
+
+**구현**:
+- `config/settings.py`: `GRADE_EV_GUARD_ENABLED/LOOKBACK_DAYS/MIN_N/EV_THR_KRW/
+  DEMOTE_TO/REFRESH_SEC` 6개 상수(ENTRY_GRADE 직후). `VALIDATION_CAMPAIGN
+  ["grade_ev_inversion"]` 블록(`min_samples_per_grade=20`) 추가.
+- `main.py`: `_ts_grade_ev_guard_check(self)` 신규 함수(`fetch_ev_by_grade()`
+  재사용, `GRADE_EV_GUARD_REFRESH_SEC` 주기로 인스턴스 캐싱) + P4 CVD+OFI
+  강등 블록 직후(`_final_grade == "A"`일 때만) 게이트 호출 삽입.
+- `scripts/generate_validation_campaign_report.py`: `eval_grade_ev_inversion()`
+  신규 함수(kelly_skip과 동일 패턴) + `build_report()`에 메트릭·요약표
+  `[13]`행·상세 섹션 `## [13]` 배선.
+
+**Why**: HCGuard라는 이미 검증된 패턴을 재사용해 새 게이트의 구현 리스크를
+낮추면서도, "실현 거래는 드물다"는 이 게이트만의 특성 때문에 저장 방식은
+HCGuard(인메모리 deque)를 그대로 복사하지 않고 DB 롤링 집계로 다르게
+설계했다 — 패턴은 재사용하되 그 패턴이 성립하는 전제(표본 밀도)가 다르면
+구현을 맹목적으로 복사하지 말 것.
+
+**How to apply**: 등급/사이징 로직을 다시 만질 때는 이 GradeEVGuard와 P4
+CVD+OFI 강등이 같은 지점(`_final_grade` 확정 직후)에서 순차 적용됨을 항상
+확인할 것 — 두 게이트가 서로의 존재를 모른 채 독립 작동해 364차가 지적한
+"EntryGate×MetaGate 사이즈 감쇠 중첩"과 같은 우연한 누적효과가 나지 않는지
+주의.
+
+**검증**: `py_compile main.py config/settings.py
+scripts/generate_validation_campaign_report.py` 전부 통과. 캠페인 스크립트
+직접 실행해 `[13]`행이 요약표·상세 섹션에 정상 출력되고(A n=43 avg=-33,084원,
+C n=17 avg=+76,718원, C 표본 20 미달로 INSUFFICIENT 정상 처리) 기존
+`[0]~[12]` 채널 출력에 회귀가 없음을 확인. `fetch_ev_by_grade(days_back=30)`
+직접 호출로 GradeEVGuard가 참조할 값(A: n=60, avg=-42,654원)이 EOD
+리포트와 일치함을 확인. **라이브 미검증** — 다음 실 장중 A등급 신호 발생 시
+`[GradeEVGuard] (섀도) ... 미적용` 로그가 정상 출력되는지, 다음 금요일
+EOD 체인(`scripts/eod_retrain.py`)이 캠페인 리포트를 재생성할 때 `[13]`행이
+포함되는지 확인 필요.
+
+**관련**: `NEXT_TODO.md` 동일 날짜(366차) 항목, HCGuard(261차 —
+`model/ensemble_decision.py`), P4(268차 — CVD+OFI 동시 역방향 강등),
+kelly_skip(341차 — 검증캠페인 [8], 동일 패턴 원출처).
+
+---
+
 ## 2026-07-22 (365차 — 손익 추이 패널 주별/월별 탭 브로커 정산값 미반영 버그 수정)
 
 ### [버그] `PnlHistoryPanel` 주별/월별 탭이 브로커 정산값을 반영하지 않아 일별/요약과 누적 손익 불일치

@@ -6210,6 +6210,30 @@ class TradingSystem:
                 _cr["size_mult"]  = runtime_settings.ENTRY_GRADE["C"]["size_mult"]
                 _cr["auto_entry"] = runtime_settings.ENTRY_GRADE["C"]["auto"]
 
+            # [366차 신설] GradeEVGuard — 등급 A 롤링 실현EV 가드.
+            # HCGuard(conf 기반, 261차)와 동일 원칙을 등급 축에 적용 — A등급 순EV가
+            # 롤링 관찰창(기본 30일) 동안 임계 미달 + 표본 충분이면 강등.
+            # GRADE_EV_GUARD_ENABLED=False(기본)면 섀도 로그만 남기고 등급은 그대로
+            # (§9 사전등록 원칙 — INSTABILITY_GATE_ENABLED와 동일한 도입 순서).
+            if _final_grade == "A":
+                _ge_blocked, _ge_diag = _ts_grade_ev_guard_check(self)
+                if _ge_blocked:
+                    _ge_demote = getattr(runtime_settings, "GRADE_EV_GUARD_DEMOTE_TO", "B")
+                    if getattr(runtime_settings, "GRADE_EV_GUARD_ENABLED", False):
+                        log_manager.signal(
+                            f"[GradeEVGuard] 등급 A→{_ge_demote} 강등: {_ge_diag}"
+                        )
+                        _final_grade = _ge_demote
+                        _cr = dict(_cr)
+                        _cr["grade"]      = _ge_demote
+                        _cr["size_mult"]  = runtime_settings.ENTRY_GRADE[_ge_demote]["size_mult"]
+                        _cr["auto_entry"] = runtime_settings.ENTRY_GRADE[_ge_demote]["auto"]
+                    else:
+                        log_manager.signal(
+                            f"[GradeEVGuard] (섀도) 등급 A→{_ge_demote} 강등 조건 충족"
+                            f"(미적용): {_ge_diag}"
+                        )
+
             _checks_ui   = {_CHK_MAP.get(k, k): v for k, v in _cr["checks"].items()}
             # checklist_reason: STEP7 체크리스트 X 원인 기록 (stage 8 차단사유 표시)
             if _final_grade == "X" and _cr.get("checks"):
@@ -10741,6 +10765,40 @@ def _ts_record_loss_tier1_qty1_shadow(self, price: float) -> None:
         logger.warning("[LossTier1Qty1Shadow] 기록 실패 (무해): %s", _lt1q1_e)
 
 
+def _ts_record_loss_tier2_shadow(self, price: float) -> None:
+    """[367차] Tier1 발동 후 잔여계약 2단계 조기청산 섀도 — loss_tier1_qty1_shadow와
+    동일 패턴(발동 시점 상태만 기록 → 주간 리포트가 사후 판정). Tier1이 qty=2 중
+    1계약만 잘라내고 남은 1계약은 원래 stop_price까지 그대로 노출되는 사각지대
+    (0722 딥다이브 07-22 10:26 사례)를 계측한다 — 실제 청산 액션은 없다(잔여 계약은
+    기존 stop_price 그대로 유지, 기존 동작 무변경).
+    """
+    self.position.loss_tier2_shadow_logged = True
+    try:
+        execute(
+            TRADES_DB,
+            """INSERT INTO loss_tier2_remainder_shadow
+               (ts, entry_ts, direction, entry_price, loss_tier2_price, stop_price,
+                remaining_qty, grade, entry_horizon, cf_outcome, cf_exit_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                 if self.position.entry_time else None),
+                self.position.status,
+                float(self.position.entry_price),
+                float(self.position.loss_tier2_price),
+                float(self.position.stop_price),
+                int(self.position.quantity),
+                self.position.grade,
+                self.position.entry_horizon,
+                "EARLY_CUT",
+                float(self.position.loss_tier2_price),
+            ),
+        )
+    except Exception as _lt2_e:
+        logger.warning("[LossTier2Shadow] 기록 실패 (무해): %s", _lt2_e)
+
+
 def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, bar: dict = None):
     atr = features.get("atr", 0.5)
 
@@ -10837,6 +10895,14 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             and self.position.status != "FLAT"
             and self.position.is_loss_tier1_qty1_shadow_hit(price)):
         self._record_loss_tier1_qty1_shadow(price)
+
+    # [367차] Tier1 발동 후 잔여계약 2단계 조기청산 섀도 — 0722 딥다이브에서 확인한
+    # "Tier1이 qty=2 중 1계약만 자르고 남은 1계약은 원래 stop까지 무방비" 사각지대를
+    # 계측 전용으로 기록(실거래 액션 없음). loss_tier1_qty1_shadow와 동일 원칙.
+    if (LOSS_TIER1_ENABLED
+            and self.position.status != "FLAT"
+            and self.position.is_loss_tier2_shadow_hit(price)):
+        self._record_loss_tier2_shadow(price)
 
     if (not self._has_pending_order()
             and self.position.status != "FLAT"
@@ -11395,6 +11461,16 @@ def _ts_handle_exit_fill(
         # partial_1_done은 여기서 건드리지 않는다 — apply_exit_fill(shrink_initial=True)가
         # initial_quantity도 같이 줄여놓아 _sync_partial_progress()가 정확히 계산한다.
         self.position.loss_tier1_done = True
+        # [367차] Tier1 발동 후 잔여계약 2단계 조기청산 섀도 가격 계산 — 실제 체결가
+        # (fill_price) 기준, "방금 체결된 tier1가 ~ 원래 stop_price" 구간의 50% 지점.
+        # apply_exit_fill()이 이미 quantity를 잔여치로 줄여놓았으므로(shrink_initial=
+        # True) 여기서 quantity>=1이면 잔여 포지션이 남아있다는 뜻.
+        if self.position.quantity >= 1:
+            self.position.loss_tier2_price = (
+                fill_price
+                + (self.position.stop_price - fill_price)
+                * runtime_settings.LOSS_TIER1_STOP_FRACTION
+            )
         agg_result = _ts_build_agg_exit_result(result, pending)
         self._post_loss_tier1_exit(agg_result)
         QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
@@ -12227,6 +12303,52 @@ def _ts_current_sizer_balance(self) -> float:
         return cached
 
     return float(getattr(self.sizer, "account_balance", 0.0) or 0.0)
+
+
+def _ts_grade_ev_guard_check(self):
+    """[366차 신설] GradeEVGuard — 등급 A 롤링 실현EV 가드 판정.
+
+    HCGuard(conf≥0.65 롤링 정확도 가드, 261차, model/ensemble_decision.py)와
+    동일 원칙을 "신뢰도" 대신 "체크리스트 등급"에 적용한다. 0722 정기점검
+    딥다이브: A등급 순EV가 최소 3주 지속 음수(C등급은 지속 양수)이면서 평균
+    신뢰도는 A/C 거의 동일 — 신뢰도가 아니라 pass_count(등급) 자체가 원인.
+
+    fetch_ev_by_grade() 결과를 GRADE_EV_GUARD_REFRESH_SEC 주기로 인스턴스에
+    캐싱해 매분 파이프라인마다 DB를 반복 조회하지 않는다(HCGuard의 인메모리
+    deque와 달리 실현 거래는 하루 몇 건뿐이라 trades.db 롤링창 집계가 더
+    안정적 — 프로세스 재시작에도 값이 유지됨).
+
+    Returns:
+        (blocked, diag): blocked=True면 A등급 최근 실현EV가 임계 미달 +
+        표본 충분. diag는 로그용 진단 문자열.
+    """
+    _now = datetime.datetime.now()
+    _refresh_sec = getattr(runtime_settings, "GRADE_EV_GUARD_REFRESH_SEC", 300)
+    _cache = getattr(self, "_grade_ev_guard_cache", None)
+    if _cache is None or (_now - _cache["ts"]).total_seconds() >= _refresh_sec:
+        from utils.db_utils import fetch_ev_by_grade
+        _lookback = getattr(runtime_settings, "GRADE_EV_GUARD_LOOKBACK_DAYS", 30)
+        try:
+            _rows = fetch_ev_by_grade(days_back=_lookback)
+            _a_row = next((r for r in _rows if r["grade"] == "A"), None)
+            _cache = {
+                "ts": _now,
+                "a_n": int(_a_row["cnt"]) if _a_row else 0,
+                "a_avg": float(_a_row["avg_net_pnl_krw"]) if _a_row else 0.0,
+            }
+        except Exception as _e:
+            logger.debug("[GradeEVGuard] 조회 실패(무해, 다음 주기 재시도): %s", _e)
+            _cache = {"ts": _now, "a_n": 0, "a_avg": 0.0}
+        self._grade_ev_guard_cache = _cache
+
+    _min_n = getattr(runtime_settings, "GRADE_EV_GUARD_MIN_N", 30)
+    _thr_krw = getattr(runtime_settings, "GRADE_EV_GUARD_EV_THR_KRW", 0.0)
+    _blocked = _cache["a_n"] >= _min_n and _cache["a_avg"] < _thr_krw
+    _diag = "A등급 최근 %d일 n=%d 평균순EV=%.0f원" % (
+        getattr(runtime_settings, "GRADE_EV_GUARD_LOOKBACK_DAYS", 30),
+        _cache["a_n"], _cache["a_avg"],
+    )
+    return _blocked, _diag
 
 
 def _ts_force_balance_flat_ui(self, reason: str) -> None:
@@ -13533,6 +13655,7 @@ TradingSystem._execute_entry = _ts_execute_entry
 TradingSystem._execute_partial_exit = _ts_execute_partial_exit
 TradingSystem._execute_loss_tier1_exit = _ts_execute_loss_tier1_exit
 TradingSystem._record_loss_tier1_qty1_shadow = _ts_record_loss_tier1_qty1_shadow
+TradingSystem._record_loss_tier2_shadow = _ts_record_loss_tier2_shadow
 TradingSystem._record_tp1_trail_shadow = _ts_record_tp1_trail_shadow
 TradingSystem._check_exit_triggers = _ts_check_exit_triggers
 TradingSystem._intrabar_tp_check = _ts_intrabar_tp_check
