@@ -2,6 +2,111 @@
 
 ---
 
+## 2026-07-23 (369차 — 0723 정기점검: 운영 이상 없음 확인 + 청산 체결 슬리피지 미계측 발견·검증캠페인[17] 신설)
+
+### [점검] 오늘(0723) EOD+P8 동작흐름 — 크래시/에러 없음, 진입후보 급감은 실제 저변동성 장 때문(모델 이상 아님)
+
+**배경**: dailycheck_prompt.txt 정기점검. 08:40 런처 자동기동~15:40 DailyClose~15:47
+retrain_eod.py(P8 스케일러 재적합 포함)까지 전 구간 로그(SYSTEM/TRADE/SIGNAL/WARN/
+retrain_eod)를 Explore 서브에이전트로 점검(별도 확인)하고, 그 결과로 나온 의문점
+("진입후보 8분, 5일평균 47분 대비 하한 미달")을 직접 predictions.db·raw_data.db로
+재현·검증했다.
+
+**확인 사실**:
+- ERROR/Exception/Traceback 0건, 재시작 흔적 없음. "CRITICAL" 로그는 전부
+  `[RegimeFingerprint] PSI=x.xx CRITICAL`(FP-CRITICAL, CLAUDE.md 절대원칙 §2에
+  이미 등록된 계측결함, 차단 비활성) — 오늘 최대 PSI=5.041도 07-16(5.207)·
+  07-20(5.393) 대비 특별히 이상치 아님(과거에도 2~5.4대 반복 확인).
+- 진입후보 급감 원인 재구성: 오늘 방향성 신호(133분) 평균 confidence=29.8%
+  (직전 4거래일 33.4~35.3%보다 낮음) vs dynamic min_conf 평균 38.3%(중앙값
+  32.5%, 일부 구간 44~62%). raw_candles로 실측한 오늘 일중 레인지 33.18pt는
+  최근 5거래일(07-16~07-22, 평균 54.66pt) 중 최저 — **모델 신뢰도 저하가
+  아니라 그날 시장 변동성 자체가 최근 중 가장 낮았던 정상적 반응**으로 결론.
+- EOD 재학습(15:45~15:47) 정상 완료, GBM 1/6 교체(나머지는 모델가드 보류 —
+  설계된 정상 동작), RF 6/6 정상, P8 스케일러 재적합 정상.
+
+**결정 — item1 구현(저위험 진단 보강)**: `utils/db_utils.py::
+fetch_realized_volatility_context()` 신설(raw_candles 기반 당일 vs 직전 5거래일
+레인지·평균 1분변동폭 비교) + `strategy/ops/daily_exporter.py`의 "mc-conf 괴리"
+경보(⚠ 하한 미달) 발생 시에만 이 컨텍스트를 리포트에 자동 첨부. 오늘 이 원인
+규명을 위해 raw_candles를 수동으로 반복 조회해야 했던 절차를 자동화 — 다음부터
+"모델 이상 vs 그냥 조용한 장"을 리포트만 보고 즉시 구분 가능. 정책에는 미관여.
+
+### [발견] TP1 ATR보호전환 이후 하드스톱(틱) 체결 슬리피지가 확정 이익을 순손실로 뒤집음 — 청산 체결가 실측 인프라 부재
+
+**배경**: 313차 원칙(하루 표본 성급한 결론 금지)에 따라 오늘 유일 거래(09:47:55
+LONG 1계약 @1122.14, A급, horizon=5m)만으로 결론 내리지 않고 최근 10거래일
+(07-01~07-23, n=76건) trades.db를 함께 훑었다. 오늘 거래 자체는 TRADE.log상
+09:48:55 TP1 도달 → ATR×0.25 이익잠금(mode=atr_profit) 보호전환(stop
+1120.02→1122.49, 회계상 확정 +1.64pt/33%)까지는 설계대로 동작했으나, 1분31초 뒤
+09:50:26 TickStop-S0C가 `tick=1122.34 stop=1122.49`로 정상 트리거해 주문가
+1122.49로 전송했음에도 **실제 체결가는 1122.12**(0.37pt≈18.5틱 불리) — 결과
+PnL -0.02pt(-2,683원)로 순손실 확정. `commission_krw` 차감 전 gross만 보면
+0원(0722 10:41 SHORT 1135.0 사례와 동일 패턴)이 아니라 이미 gross 자체가
+-1,000원이었다 — TP1 보호 설계가 노린 "그대로 반전해도 소액 실현승"이 체결
+슬리피지 하나로 무너진 사례.
+
+**핵심 발견**: `config/settings.py:VALIDATION_CAMPAIGN["slippage_ticks_per_side"]
+= 1.0`(0.02pt/편도)이 **캠페인 [1]~[16] 전 채널의 왕복비용(_roundtrip_cost_pt)
+계산에 공통으로 쓰이는데**, 이 상수가 실제 체결 슬리피지를 측정한 적이 단
+한 번도 없는 순수 가정치였다. 오늘 사례 1건만으로도 실측(0.37pt)이 가정
+(0.02pt)의 약 18배 — 표본 1건으로 이 상수를 바꿀 근거는 전혀 못 되지만
+(313차 원칙), "측정 인프라 자체가 없었다"는 사실은 그 자체로 갭이다.
+main.py의 `_ts_on_chejan_event_cybos_safe`(실거래 바인딩 경로,
+`_ts_on_chejan_event`는 미바인딩 죽은 코드로 확인)가 청산 체결 시점에
+`pending["price_hint"]`(주문 전송 시 의도가)와 Chejan `fill_price`(실체결가)를
+이미 둘 다 갖고 있으면서도 그 괴리를 어디에도 기록하지 않고 있었다.
+
+**결정 — item2 구현(§9 사전등록, 순수 계측 채널 신설)**:
+1. `exit_fill_slippage` 테이블 신설(`utils/db_utils.py`) — 모든 청산 유형
+   (하드스톱/TP1~3/손절1차/강제청산 등) 체결마다 direction·reason·price_hint·
+   fill_price·slippage_pts(방향보정, +=불리) 기록.
+2. `main.py::_ts_record_exit_fill_slippage()` 신설, `_ts_on_chejan_event_cybos_safe`의
+   exit-fill 분기(`_ts_handle_exit_fill` 호출 직전, fill_price/price_hint가
+   아직 병합되지 않은 원본 상태)에 배선. 실거래 액션 없음(§4 콜백 제약 준수 —
+   여기서는 emit/dynamicCall 없이 DB INSERT만).
+3. 검증캠페인 `[17] exit_fill_slippage_watch` 신설
+   (`scripts/generate_validation_campaign_report.py::eval_exit_fill_slippage_watch()`) —
+   fast_reversal_watch·chase_foreign_combo_watch와 동일 원칙(관찰 전용, verdict
+   항상 OBSERVE, PASS/FAIL 판정 없음). 표본이 `min_samples_for_note`(20)
+   이상 쌓이고 평균 슬리피지가 가정치를 초과하면 "재보정 검토 note"만 노출 —
+   `slippage_ticks_per_side`는 캠페인 전 채널의 공통 가정이라 이 note만으로
+   자동 변경하지 않는다(§3 사전등록 원칙 — 바꾸려면 검증 시계 리셋 필요).
+
+**주의 — DB 백필 안 함**: tp1_trail_shadow 등 기존 섀도 테이블 전례를 따라
+오늘 발견의 계기가 된 09:50:26 사례 자체는 테이블에 수동 삽입하지 않았다
+(코드가 그 시점엔 아직 라이브가 아니었으므로 "실측"이 아니라 "재구성"이라
+계기 사례는 이 문서 서술로만 남기고, 테이블은 다음 실거래부터 organic하게
+채운다 — 다른 섀도 채널과 동일 관례).
+
+**File**: `utils/db_utils.py`(테이블+`fetch_realized_volatility_context`),
+`main.py`(`_ts_record_exit_fill_slippage`+바인딩+호출부),
+`config/settings.py`(VALIDATION_CAMPAIGN 항목),
+`scripts/generate_validation_campaign_report.py`(eval 함수+리포트 3곳 배선),
+`strategy/ops/daily_exporter.py`(변동성 컨텍스트 첨부).
+**검증**: `py_compile` 전 파일 통과. `init_trades_db()` 직접 실행해 스키마
+생성 확인. `eval_exit_fill_slippage_watch()`에 합성 행(0723 사례 값 그대로)을
+임시 INSERT해 정상 집계·리포트 렌더링 확인 후 삭제(테이블은 빈 상태로 커밋).
+`fetch_realized_volatility_context()`는 오늘 실제 raw_candles로 호출해 수동
+계산치(레인지 33.18pt, 평균이동 1.28pt)와 일치 확인. **라이브 미검증** —
+다음 실제 청산 체결 시 `exit_fill_slippage`에 정상 INSERT되는지, 다음 mc-conf
+괴리 경보 발생일에 변동성 컨텍스트 줄이 정상 출력되는지 확인 필요.
+
+**보류 — 정책화하지 않음(§9)**: ATR_LOCK_MULT(TP1 보호이익 잠금폭, 0.25) 확대나
+슬리피지 감안 버퍼 추가는 표본 n=1로는 근거 부족 — `[17]` 채널이 표본을 쌓은
+뒤 주간회의에서 검토. 이번 세션이 리스크/리워드 비대칭 관련해 제안하는
+"나이스한" 아이디어(청산 사유별 슬리피지 프로파일을 보고 손절 주문을 시장가
+대신 상황별 지정가/IOC로 바꿀지 검토 등)도 동일하게 즉시 미착수, NEXT_TODO에
+watch 항목으로만 등록.
+
+**관련**: `NEXT_TODO.md` 동일 날짜 항목, 348차(틱 하드스톱 지연 제거 — 이번
+사례는 그 이후에도 남는 "지연 아닌 순수 체결가 슬리피지"라는 점에서 구분됨),
+367차(fast_reversal_watch — 이번 세션 [15] 재확인: A등급 급행풀스톱 11건
+-1,325,122원, 8패, 07-22 368차 대비 표본 소폭 증가), 313차(단일일 표본 성급한
+결론 금지 원칙).
+
+---
+
 ## 2026-07-22 (368차 — MW0601 대형 손실 딥다이브: ChaseForeignComboGuard(섀도) 신설 + 검증캠페인[16] + 체크리스트 항목별 순EV 회귀분석 스크립트)
 
 ### [결정] 0722 정기점검 재점검(MW0601 실측) — 10_chase+6_foreign 동시실패 조합 섀도 게이트 + 체크리스트 회귀분석 도구 신설

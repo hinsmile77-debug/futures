@@ -190,6 +190,23 @@ class DailyExporter:
                 "  진입후보(conf≥mc): 금일 %d분  5일평균 %.0f분%s"
                 % (_mc_gap_today, _mc_gap_avg or 0.0, _flag)
             )
+            # [369차, 0723 정기점검] 하한 미달 시 "모델 이상 vs 시장 자체가 조용함"을
+            # 즉시 구분하도록 실측 변동성 컨텍스트를 덧붙인다 — 순수 진단용, 권고/판정에는 미반영.
+            if _flag:
+                try:
+                    from utils.db_utils import fetch_realized_volatility_context
+                    _vol = fetch_realized_volatility_context(lookback_days=5)
+                    if _vol:
+                        lines.append(
+                            "    └ 변동성(참고): 당일 레인지 %.1fpt(%d일평균 %.1fpt)  "
+                            "1분평균변동 %.2fpt(%d일평균 %.2fpt)"
+                            % (
+                                _vol["today_range"], _vol["n_days"], _vol["avg_range"],
+                                _vol["today_mean_abs_move"], _vol["n_days"], _vol["avg_mean_abs_move"],
+                            )
+                        )
+                except Exception as _vol_e:
+                    lines.append("    └ 변동성(참고): [계산 실패: %s]" % _vol_e)
 
         # ── [297차, P1-6] 진입 퍼널 일일 자동 리포트 ─────────────────────────
         # "진입0이 어느 층에서 발생했는가"를 매일 자동으로 남긴다(§4-2 고정 안건 ⑥).

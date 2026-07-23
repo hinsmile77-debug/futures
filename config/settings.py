@@ -1106,6 +1106,21 @@ VALIDATION_CAMPAIGN = {
     "chase_foreign_combo_watch": {
         "lookback_days": 28,  # 로그 보존기간(20일 안팎) 안에서 최대한 넓게
     },
+    # [369차 신설] §17 청산 주문 체결 슬리피지 관찰 채널 — 0723 정기점검 딥다이브.
+    # 0723 유일 거래: TP1 ATR보호전환(+0.35pt 확정 예정)이 하드스톱(틱) 체결
+    # 슬리피지(주문가 1122.49 → 체결가 1122.12, 0.37pt≈18틱 불리)로 순손실
+    # (-0.02pt)로 뒤집힘. 아래 slippage_ticks_per_side=1.0(0.02pt)이 실측과
+    # 맞는지 검증할 실측 데이터가 지금까지 전혀 없었다(exit_fill_slippage
+    # 테이블, main.py::_ts_record_exit_fill_slippage() 신설). fast_reversal_watch·
+    # chase_foreign_combo_watch와 동일하게 순수 관찰용 — PASS/FAIL 판정 없음,
+    # verdict 항상 OBSERVE. 표본이 쌓이면(reason='하드스톱(틱)' 등 유형별 평균
+    # slippage_pts) slippage_ticks_per_side 재보정 여부를 주간회의에서 검토
+    # (§9 사전등록 원칙 — 즉시 자동 변경 금지, 이 상수는 캠페인 전 채널의 왕복비용
+    # 계산에 쓰이므로 바꾸려면 dev_memory/DECISION_LOG.md에 사유 기록 후 검증
+    # 시계를 리셋해야 한다는 §3 원칙 그대로 적용).
+    "exit_fill_slippage_watch": {
+        "min_samples_for_note": 20,  # 이 이상 쌓이면 리포트에 재보정 검토 note 노출(판정 아님)
+    },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)

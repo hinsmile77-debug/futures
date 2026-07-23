@@ -10718,6 +10718,53 @@ def _ts_record_tp1_trail_shadow(self, price: float, atr: float, protect: dict, p
         logger.warning("[Tp1TrailShadow] 기록 실패 (무해): %s", _t1t_e)
 
 
+def _ts_record_exit_fill_slippage(self, pending: dict, fill_price: float) -> None:
+    """[369차, 0723 정기점검 딥다이브] 청산 주문 체결 슬리피지 계측 — 검증캠페인
+    §17 exit_fill_slippage_watch. 순수 계측 채널, 정책/실거래 판단에 관여하지 않음.
+
+    price_hint(주문 전송 시점 의도가 — 손절가/목표가)와 실제 체결가(fill_price)의
+    괴리를 방향 보정해 기록한다. 계기: 0723 유일 거래에서 TP1 ATR보호전환
+    (+0.35pt 확정 예정)이 체결 슬리피지(price_hint=1122.49 → fill=1122.12,
+    0.37pt≈18틱 불리)로 순손실(-0.02pt)로 뒤집힘 — VALIDATION_CAMPAIGN 전 채널의
+    왕복비용 계산이 가정하는 slippage_ticks_per_side=1.0(0.02pt)과 실측 간
+    괴리 가능성을 처음 발견, 실측치를 쌓기 위해 신설.
+
+    direction은 "청산 대상 포지션"의 방향(LONG/SHORT, pending["direction"])이지
+    주문 매수/매도 방향이 아니다 — LONG 청산(매도)은 fill < price_hint가 불리,
+    SHORT 청산(매수)은 fill > price_hint가 불리하므로 부호를 반대로 계산한다.
+    """
+    try:
+        direction = str(pending.get("direction") or "").strip().upper()
+        price_hint = float(pending.get("price_hint") or 0.0)
+        if direction not in ("LONG", "SHORT") or price_hint <= 0 or fill_price <= 0:
+            return
+        slippage_pts = (
+            (price_hint - fill_price) if direction == "LONG"
+            else (fill_price - price_hint)
+        )
+        entry_ts = (
+            self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+            if getattr(self.position, "entry_time", None) else None
+        )
+        execute(
+            TRADES_DB,
+            """INSERT INTO exit_fill_slippage
+               (ts, entry_ts, direction, reason, price_hint, fill_price, slippage_pts)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                entry_ts,
+                direction,
+                str(pending.get("reason") or ""),
+                round(price_hint, 2),
+                round(float(fill_price), 2),
+                round(slippage_pts, 4),
+            ),
+        )
+    except Exception as _efs_e:
+        logger.warning("[ExitFillSlippage] 기록 실패 (무해): %s", _efs_e)
+
+
 def _ts_execute_loss_tier1_exit(self, price: float) -> None:
     """[360차] 손절 계단화 1차 — entry~stop 절반 지점 조기 축소 주문 전송.
 
@@ -13656,6 +13703,10 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
             filled_at,
         )
     else:
+        # [369차] 실체결가(fill_price)와 주문 의도가(price_hint)가 아직 분리된
+        # 상태일 때만 슬리피지를 계측할 수 있다 — 아래 _ts_handle_exit_fill 호출은
+        # 폴백 병합값을 넘기므로 그 전에 원본 fill_price로 기록한다.
+        _ts_record_exit_fill_slippage(self, pending, fill_price)
         _ts_handle_exit_fill(
             self,
             pending,
@@ -13685,6 +13736,7 @@ TradingSystem._execute_loss_tier1_exit = _ts_execute_loss_tier1_exit
 TradingSystem._record_loss_tier1_qty1_shadow = _ts_record_loss_tier1_qty1_shadow
 TradingSystem._record_loss_tier2_shadow = _ts_record_loss_tier2_shadow
 TradingSystem._record_tp1_trail_shadow = _ts_record_tp1_trail_shadow
+TradingSystem._record_exit_fill_slippage = _ts_record_exit_fill_slippage
 TradingSystem._check_exit_triggers = _ts_check_exit_triggers
 TradingSystem._intrabar_tp_check = _ts_intrabar_tp_check
 

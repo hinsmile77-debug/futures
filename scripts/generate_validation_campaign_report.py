@@ -1688,6 +1688,72 @@ def eval_chase_foreign_combo_watch() -> dict:
     return out
 
 
+# [17] 청산 주문 체결 슬리피지 관찰 채널 (369차, 관찰 전용 — PASS/FAIL 판정 없음)
+def eval_exit_fill_slippage_watch(days: int) -> dict:
+    """청산 주문의 의도가(price_hint)와 실체결가(fill_price) 괴리를 청산 사유별로
+    집계한다(exit_fill_slippage 테이블, main.py::_ts_record_exit_fill_slippage()).
+
+    0723 정기점검 딥다이브 계기: TP1 ATR보호전환(+0.35pt 확정 예정)이 하드스톱(틱)
+    체결 슬리피지(주문가 1122.49 → 체결가 1122.12, 0.37pt≈18틱 불리)로 순손실
+    (-0.02pt)로 뒤집힌 사례를 발견했으나, VALIDATION_CAMPAIGN 전 채널의 왕복비용
+    계산이 가정하는 slippage_ticks_per_side(=1.0, 0.02pt)이 실측과 맞는지 검증할
+    데이터가 그때까지 전혀 없었다.
+
+    fast_reversal_watch·chase_foreign_combo_watch와 동일 원칙 — 이 실측치로
+    slippage_ticks_per_side를 "즉시 자동 재보정"하지 않는다(캠페인 전 채널의
+    공통 가정이므로 바꾸려면 §3 사전등록 원칙에 따라 검증 시계 리셋이 필요).
+    verdict는 항상 OBSERVE로 고정, min_samples_for_note 이상 쌓이면 재보정
+    검토가 필요하다는 note만 노출한다.
+    """
+    days_cfg = VALIDATION_CAMPAIGN.get("exit_fill_slippage_watch", {})
+    min_note = int(days_cfg.get("min_samples_for_note", 20))
+    out = {"verdict": "OBSERVE", "assumed_ticks_per_side": float(
+        VALIDATION_CAMPAIGN.get("slippage_ticks_per_side", 1.0))}
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(_TS_FMT)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                """SELECT reason, slippage_pts FROM exit_fill_slippage
+                   WHERE ts >= ?""",
+                (cutoff,),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    out["n"] = len(rows)
+    if not rows:
+        out["reason"] = "체결 슬리피지 기록 0건"
+        return out
+
+    vals = [float(r["slippage_pts"]) for r in rows]
+    out["avg_slippage_pts"] = round(sum(vals) / len(vals), 4)
+    out["max_slippage_pts"] = round(max(vals), 4)
+    out["assumed_slippage_pts_per_side"] = round(
+        out["assumed_ticks_per_side"] * TICK_SIZE, 4)
+
+    by_reason = {}
+    for r in rows:
+        reason = str(r["reason"] or "?") or "?"
+        slot = by_reason.setdefault(reason, {"n": 0, "sum_pts": 0.0})
+        slot["n"] += 1
+        slot["sum_pts"] += float(r["slippage_pts"])
+    out["by_reason"] = {
+        k: {"n": v["n"], "avg_pts": round(v["sum_pts"] / v["n"], 4)}
+        for k, v in by_reason.items()
+    }
+
+    if out["n"] >= min_note and out["avg_slippage_pts"] > out["assumed_slippage_pts_per_side"]:
+        out["note"] = (
+            f"실측 평균슬리피지({out['avg_slippage_pts']:.3f}pt)가 캠페인 가정"
+            f"({out['assumed_slippage_pts_per_side']:.3f}pt)을 초과 — "
+            f"slippage_ticks_per_side 재보정 여부를 주간회의에서 검토할 가치 있음"
+            f"(§3 사전등록 원칙 — 즉시 자동 변경 금지)"
+        )
+    return out
+
+
 # ──────────────────────────────────────────────────────────────
 # [12] qty=1 TP1 이후 트레일 폭 counterfactual — resolve + 누적 판정 (363차 후속)
 # ──────────────────────────────────────────────────────────────
@@ -2098,6 +2164,7 @@ def build_report(days: int) -> tuple:
     lt2 = resolve_and_eval_loss_tier2_remainder_shadow()
     frw = eval_fast_reversal_watch(days)
     cfc = eval_chase_foreign_combo_watch()
+    efs = eval_exit_fill_slippage_watch(days)
 
     metrics = {
         "generated_at": now_str,
@@ -2110,7 +2177,7 @@ def build_report(days: int) -> tuple:
         "tp2_hold_shadow": t2, "loss_tier1_qty1_shadow": lt1,
         "tp1_trail_shadow": t1t, "grade_ev_inversion": gei,
         "loss_tier2_remainder_shadow": lt2, "fast_reversal_watch": frw,
-        "chase_foreign_combo_watch": cfc,
+        "chase_foreign_combo_watch": cfc, "exit_fill_slippage_watch": efs,
     }
 
     L = []
@@ -2198,6 +2265,11 @@ def build_report(days: int) -> tuple:
         cfc.get("n_combo", 0),
         format(cfc["total_pnl_krw"], ",.0f") if cfc.get("n_combo") else "—",
         cfc.get("n_matched", 0)))
+    L.append("| [17] 청산 체결 슬리피지 관찰 | %s | n=%s 평균=%spt (가정 %spt) |" % (
+        _fmt_verdict(efs["verdict"]),
+        efs.get("n", 0),
+        efs.get("avg_slippage_pts", "—"),
+        efs.get("assumed_slippage_pts_per_side", "—")))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -2521,6 +2593,33 @@ def build_report(days: int) -> tuple:
     L.append("- CHASE_FOREIGN_COMBO_GUARD_ENABLED(config/settings.py, 섀도) 활성화 여부")
     L.append("  판단 근거 표본 축적용. P4(CVD+OFI, 268차)와 동일 계열 논리이나 표본이")
     L.append("  작아(368차 등록 시점 n=5) 즉시 정책화하지 않는다 — §9 사전등록 원칙.")
+    L.append("")
+
+    # [17] 청산 체결 슬리피지 관찰 상세
+    L.append("## [17] 청산 체결 슬리피지 관찰 (369차, 0723 정기점검, 관찰 전용 — 정책 게이트 아님)")
+    L.append("")
+    L.append("- 관찰 대상: 모든 청산 주문의 의도가(price_hint) vs 실체결가(fill_price)")
+    L.append("  (exit_fill_slippage 테이블, main.py::_ts_record_exit_fill_slippage())")
+    L.append("- 표본 n=%s, 평균 슬리피지 %s pt, 최대 %s pt (캠페인 가정 %s pt/편도)" % (
+        efs.get("n", 0), efs.get("avg_slippage_pts", "—"),
+        efs.get("max_slippage_pts", "—"), efs.get("assumed_slippage_pts_per_side", "—")))
+    if efs.get("by_reason"):
+        L.append("")
+        L.append("| 청산사유 | n | 평균 슬리피지(pt) |")
+        L.append("|---|---|---|")
+        for reason, v in sorted(efs["by_reason"].items(), key=lambda kv: -kv[1]["n"]):
+            L.append("| %s | %d | %s |" % (reason, v["n"], v["avg_pts"]))
+    if efs.get("note"):
+        L.append("- ⚠ **%s**" % efs["note"])
+    if efs.get("reason"):
+        L.append("- %s" % efs["reason"])
+    if efs.get("error"):
+        L.append("- ⚠ %s" % efs["error"])
+    L.append("- 계기: 0723 유일 거래에서 TP1 ATR보호전환(+0.35pt 확정 예정)이 체결")
+    L.append("  슬리피지로 순손실(-0.02pt)로 뒤집힘. slippage_ticks_per_side(현재 1.0,")
+    L.append("  0.02pt)는 캠페인 전 채널의 왕복비용 계산에 쓰이는 공통 가정이므로,")
+    L.append("  이 채널의 실측치가 그 가정과 다르더라도 즉시 자동 재보정하지 않는다")
+    L.append("  — 바꾸려면 §3 사전등록 원칙에 따라 검증 시계를 리셋해야 한다.")
     L.append("")
     L.append("---")
     L.append("")

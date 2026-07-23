@@ -639,6 +639,31 @@ def init_trades_db():
             "CREATE INDEX IF NOT EXISTS idx_t1t_ts ON tp1_trail_shadow(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_t1t_entry_ts ON tp1_trail_shadow(entry_ts)")
+    # [369차, 0723 정기점검 딥다이브] 청산 주문 체결 슬리피지 계측 — 검증캠페인
+    # §17 exit_fill_slippage_watch. 0723 유일 거래(TP1 ATR보호전환 후 하드스톱(틱))
+    # 실측: 주문 전송가(price_hint) 1122.49 vs 실체결가 1122.12 — 0.37pt(≈18틱)
+    # 불리한 슬리피지가 확정 순이익(+0.35pt 예정)을 순손실(-0.02pt)로 뒤집음.
+    # VALIDATION_CAMPAIGN 모든 채널의 왕복비용 계산이 가정하는
+    # slippage_ticks_per_side=1.0(0.02pt)이 실측과 맞는지 검증할 근거 데이터가
+    # 없었다 — 이 테이블이 그 실측치를 쌓는다. 모든 청산 유형(하드스톱/TP1~3/
+    # 손절1차/강제청산 등)의 체결마다 기록하며, 정책에는 관여하지 않는다(§9).
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS exit_fill_slippage (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            TEXT NOT NULL,      -- 체결 확인 시각
+        entry_ts      TEXT,               -- trades.entry_ts 조인 키(가능한 경우)
+        direction     TEXT NOT NULL,      -- LONG/SHORT (청산 대상 포지션 방향)
+        reason        TEXT,               -- 청산 사유 (하드스톱(틱)/TP1/TP2(전량)/15:10 강제청산 등)
+        price_hint    REAL NOT NULL,      -- 주문 전송 시점 의도가(손절가/목표가)
+        fill_price    REAL NOT NULL,      -- 실제 체결가
+        slippage_pts  REAL NOT NULL,      -- 방향보정 후 (+)=불리, (-)=유리 (pt)
+        created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_efs_ts ON exit_fill_slippage(ts)")
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_efs_entry_ts ON exit_fill_slippage(entry_ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,
@@ -1394,6 +1419,62 @@ def fetch_daily_entry_funnel(date_str: Optional[str] = None) -> Dict:
             label = _categorize_block_reason(r["entry_block_reason"], r["checklist_reason"])
             out["gate_breakdown"][label] = out["gate_breakdown"].get(label, 0) + 1
     return out
+
+
+def fetch_realized_volatility_context(date_str: Optional[str] = None, lookback_days: int = 5) -> Dict:
+    """[369차, 0723 정기점검] mc-conf 괴리 경보(진입후보 하한 미달)가 뜰 때,
+    원인이 "모델 이상"인지 "그날 시장 자체가 조용했음"인지 즉시 구분하기 위한
+    실측 변동성 컨텍스트. raw_candles(1분봉 close)로 당일 레인지·평균 1분 변동폭을
+    계산해 직전 lookback_days 영업일 평균과 대조한다.
+
+    딥다이브를 위해 매번 수동으로 raw_candles를 조회해야 했던 절차
+    (0723 정기점검에서 실제로 이 계산을 손으로 반복함)를 리포트에 상시 포함시켜
+    자동화한다 — 정책 판단에는 관여하지 않는 순수 진단 보조 지표.
+
+    반환: {"today_range": float, "today_mean_abs_move": float,
+           "avg_range": float, "avg_mean_abs_move": float, "n_days": int}
+    실패/데이터부족 시 빈 dict.
+    """
+    import datetime as _dt
+    d = date_str or _dt.date.today().isoformat()
+
+    def _day_stats(day: str) -> Optional[tuple]:
+        rows = fetchall(
+            RAW_DATA_DB,
+            "SELECT close FROM raw_candles WHERE substr(ts, 1, 10) = ? ORDER BY ts",
+            (day,),
+        )
+        closes = [r["close"] for r in rows if r["close"] is not None]
+        if len(closes) < 5:
+            return None
+        moves = [abs(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+        return (max(closes) - min(closes), sum(moves) / len(moves))
+
+    today_stats = _day_stats(d)
+    if today_stats is None:
+        return {}
+
+    prior_ranges, prior_moves = [], []
+    cursor = _dt.date.fromisoformat(d)
+    scanned = 0
+    while len(prior_ranges) < lookback_days and scanned < lookback_days * 3:
+        cursor -= _dt.timedelta(days=1)
+        scanned += 1
+        stat = _day_stats(cursor.isoformat())
+        if stat is not None:
+            prior_ranges.append(stat[0])
+            prior_moves.append(stat[1])
+
+    if not prior_ranges:
+        return {}
+
+    return {
+        "today_range": today_stats[0],
+        "today_mean_abs_move": today_stats[1],
+        "avg_range": sum(prior_ranges) / len(prior_ranges),
+        "avg_mean_abs_move": sum(prior_moves) / len(prior_moves),
+        "n_days": len(prior_ranges),
+    }
 
 
 def fetch_accuracy_history(limit: int = 100) -> List[sqlite3.Row]:
