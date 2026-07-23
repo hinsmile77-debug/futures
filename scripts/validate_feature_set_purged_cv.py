@@ -58,7 +58,7 @@ from model.multi_horizon_model import apply_robust_preprocess  # noqa: E402
 from features.horizon_feature_registry import get_available_feature_set  # noqa: E402
 from config.constants import DIRECTION_FLAT  # noqa: E402
 
-HORIZONS_MIN = {"1m": 1, "3m": 3, "15m": 15}
+HORIZONS_MIN = {"1m": 1, "3m": 3, "5m": 5, "15m": 15}
 MAX_ROWS = 30000  # 런타임 방어 (프로덕션 MAX_TRAIN_BARS=50000의 축소판)
 
 

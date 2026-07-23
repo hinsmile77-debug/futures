@@ -10,7 +10,8 @@
       "opt_chain_*, opt_gex_*, opt_atm_* 피처: 코드 계산되지만 현재 pkl 미포함 (Phase C에서 추가)",
       "quality_* / feature_degraded / entry_ok 등 메타 피처는 모델 입력 제외",
       "macro_vix_chg: Phase A 수집은 완료, transformer 출력 추가 필요 (현재는 macro_vix로 대체)",
-      "[2026-07-13/14 딥다이브] 무스킬_피처셋_딥다이브_보고서_2026-07-13.md §4 반영 — 1m/3m/15m include 개편(무정보 피처 정리 + 포지셔닝 블록 편입). opt_gex_bn/opt_chain_pcr/opt_atm_call_oi/opt_atm_put_oi/threshold_feasibility는 최신구간 ρ 재현 실패(F4)로 include→include_pending_validation 강등, opt_gex_sign/opt_atm_pcr(sign/ratio 계열, 부분 생존)로 대체 후보 승격. 전부 P0-1(레지스트리 97→선별 복구, 사용자 결정 대기) 완료 전까지 미탑재 상태 유지. 다음 재학습부터 반영, purged WFA 게이트 통과 확인 필요."
+      "[2026-07-13/14 딥다이브] 무스킬_피처셋_딥다이브_보고서_2026-07-13.md §4 반영 — 1m/3m/15m include 개편(무정보 피처 정리 + 포지셔닝 블록 편입). opt_gex_bn/opt_chain_pcr/opt_atm_call_oi/opt_atm_put_oi/threshold_feasibility는 최신구간 ρ 재현 실패(F4)로 include→include_pending_validation 강등, opt_gex_sign/opt_atm_pcr(sign/ratio 계열, 부분 생존)로 대체 후보 승격. 전부 P0-1(레지스트리 97→선별 복구, 사용자 결정 대기) 완료 전까지 미탑재 상태 유지. 다음 재학습부터 반영, purged WFA 게이트 통과 확인 필요.",
+      "[2026-07-23 373차 딥다이브] 5m은 07-13/14 딥다이브 범위 밖(H2 후속-B로만 언급, 미착수)이었으나 0723 실거래 8건 전부가 entry_horizon=5m이라 처음 실측. 기존 include 중 cvd_monotone_ratio·va_bandwidth·macro_vix·opt_pcr_slope_norm(06-15 설계 당시 SHAP↑/유의로 등록됐던 것들) 4개가 06-01~07-23 최신 구간에서 전부 무정보(p 0.079~0.54)로 재현 실패해 exclude로 이동. ema_cross(부호일치율 53.7%)·bb_position·poc_distance·ret_15m·poc_above·vwap_position·cvd_slope는 동일 검증에서 전부 유의·반분안정 확인돼 그대로 유지. purged WFA CV 결과는 DECISION_LOG 373차 후속 항목 참조."
     ]
   },
   "1m": {
@@ -474,12 +475,6 @@
         "note": "VWAP 상하 플래그"
       },
       {
-        "name": "cvd_monotone_ratio",
-        "rho": null,
-        "pkl": "need_add",
-        "note": "CVD 단조 비율 (SHAP↑)"
-      },
-      {
         "name": "is_open_volatile",
         "rho": 0.061,
         "pkl": "in_pkl",
@@ -498,28 +493,10 @@
         "note": "가치영역 내 여부"
       },
       {
-        "name": "va_bandwidth",
-        "rho": 0.047,
-        "pkl": "in_pkl",
-        "note": "가치영역 폭"
-      },
-      {
-        "name": "macro_vix",
-        "rho": 0.051,
-        "pkl": "in_pkl",
-        "note": "VIX 레벨 (★p=0.0003) — 5m 전문"
-      },
-      {
-        "name": "opt_pcr_slope_norm",
-        "rho": null,
-        "pkl": "in_pkl",
-        "note": "PCR 기울기 정규화 (SHAP↑)"
-      },
-      {
         "name": "cvd_slope",
         "rho": null,
         "pkl": "in_pkl",
-        "note": "CVD 기울기 (SHAP↑)"
+        "note": "CVD 기울기 (SHAP↑) — [373차 딥다이브] 실측 IC=+0.034(p=0.0001, Bonferroni 통과, 반분 안정) 확인, 유지"
       }
     ],
     "include_pending_validation": [
@@ -626,6 +603,22 @@
       {
         "name": "macro_krw_chg",
         "reason": "동일"
+      },
+      {
+        "name": "cvd_monotone_ratio",
+        "reason": "[373차 딥다이브] 실측 IC=+0.009(p=0.29) 무정보 — 06-01~07-23, n=13,243. 설계 당시(06-15, 05-11~06-12 기준) 'SHAP↑'로 등록됐으나 최신 구간 재현 실패(15m opt_gex_bn 등과 동일한 비정상성 패턴)"
+      },
+      {
+        "name": "va_bandwidth",
+        "reason": "[373차 딥다이브] 실측 IC=+0.011(p=0.23) 무정보 — 06-01~07-23. 설계 당시 ρ=0.047로 등록됐으나 최신 구간 재현 실패"
+      },
+      {
+        "name": "macro_vix",
+        "reason": "[373차 딥다이브] 실측 IC=+0.005(p=0.54) 무정보 — 06-01~07-23. 설계 당시 'p=0.0003 5m 전문'으로 등록됐으나 최신 구간 완전히 무정보로 재현 실패(F4형 비정상성)"
+      },
+      {
+        "name": "opt_pcr_slope_norm",
+        "reason": "[373차 딥다이브] 실측 IC=+0.015(p=0.079) 무정보(경계선) — 06-01~07-23. 설계 당시 'SHAP↑'로 등록됐으나 최신 구간 재현 실패"
       }
     ]
   },
