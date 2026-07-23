@@ -2,6 +2,86 @@
 
 ---
 
+## 2026-07-23 (375차 — entry_horizon 경계값 주간 재보정 모니터 신설 — ThresholdRecalibrator/atr_ceiling_recalibrator와 동일 원칙으로 통합)
+
+### [설계] `EntryHorizonRecalibrator` 신설 — 374차가 고친 ENTRY_HORIZON_B1/B2가 다시 고착되지 않는지 매주 감시 (자동 반영 없음)
+
+**배경**: 사용자가 374차 재보정(정적 상수 3.5/4.0)이 시간이 지나면 다시
+어긋날 수 있다는 점을 지적, "손익 검토 후 주기 결정"을 요청. 검토 결과
+①이 프로젝트엔 이미 동일한 문제(임계값이 시장과 어긋남)를 다루는 두
+선례(`ThresholdRecalibrator` — 매주 금요일, 21거래일 롤링, 자동반영 금지;
+`ATRCeilingRecalibrator`(303차) — 금요일+7일 경과 시, 동일 원칙)가 있고
+②`threshold_monitor.db` 실측상 이 시장은 06-19~07-03 사이 **3주 연속
+"UPDATE"급 경보**가 날 만큼 몇 주 단위로 흔들린다는 근거로, 26주 WFA
+주기(Hurst·PSI 임계값 방식)가 아니라 **매주, 자동반영 없이 감시만**하는
+쪽으로 결정(상세 근거는 사용자와의 논의 기록 참조, 이 세션 앞부분).
+
+**결정/구현**: `learning/entry_horizon_recalibrator.py` 신설 —
+`ThresholdRecalibrator`를 구조·명명·로그 포맷까지 그대로 미러링, 재실행
+간격 관리는 `ATRCeilingRecalibrator.run_if_due()`(마지막 실행일 + 7일
+경과 시에만 재실행)를 채용 — 374차 조사 중 `threshold_monitor.db`가
+2026-07-17(금) 하루 세션 자체가 없어(휴장 추정) 그 주 재보정이 통째로
+누락됐던 걸 발견했기 때문에, "정확히 금요일에만" 대신 "마지막 실행 후
+7일 이상"으로 처음부터 설계해 재발 방지.
+
+**동작**:
+1. `raw_candles`(close)+`raw_features`(atr) 최근 21거래일을 ts로 조인해
+   `threshold_feasibility`를 **"지금" 설정된** `HORIZON_THRESHOLDS["1m"]`
+   기준으로 매번 재계산(저장된 과거값을 신뢰하지 않음 — `HORIZON_THRESHOLDS`
+   자체가 `ThresholdRecalibrator`로 바뀔 수 있어서 항상 최신 기준 재산출).
+2. 33/67 분위수로 새 경계값 후보 산출, 동시에 **현재 경계값을 그대로
+   적용했을 때 1m/3m/5m 버킷 실제 비중**을 계산 — 374차는 5m=99.0%
+   고착이었으므로 델타%보다 이 비중이 "고착"을 더 직접 드러냄.
+3. 경보 기준(ThresholdRecalibrator의 DELTA_ALARM=15% 관행 준용):
+   WATCHLIST=버킷비중 [13%,54%] 밖 또는 |경계값δ|≥15%, UPDATE=버킷비중
+   [3%,74%] 밖(374차 수준 고착 조짐) 또는 |경계값δ|≥30%.
+4. `threshold_monitor.db:entry_horizon_log`(같은 DB 파일, 신규 테이블)에
+   저장, WATCHLIST/UPDATE 시에만 `log_manager.system(..., "WARNING")` —
+   **`ENTRY_HORIZON_B1`/`B2`(`model/ensemble_decision.py`)는 자동 교체
+   안 함, 사람이 확인 후 수동 반영**.
+5. `model/ensemble_decision.py`의 매직넘버(3.5/4.0)를 `ENTRY_HORIZON_B1`/
+   `ENTRY_HORIZON_B2` 모듈 상수로 승격 — 재보정 모니터가 이 값을 직접
+   import해서 비교하고, 사람이 수동 반영할 때도 이 두 값만 고치면 됨.
+   `main.py:355`(인스턴스화)·`main.py:9030`대(금요일 실행 블록, `[EntryHorizonRecal]`
+   태그)에 `ThresholdRecalibrator`/`ATRCeilingRecalibrator`와 동일한 자리에 배선.
+
+**검증(오프라인 실행)**: 실제 DB로 `.run(today="2026-07-23")` 직접 호출 —
+정상 동작 확인. 그런데 **최근 21거래일만 보면 이미 경계=3.50/4.00 →
+재계산 4.26/5.94(δ+21.8%/+48.4%), 버킷비중 1m=18.9%/3m=9.0%/5m=72.1%로
+"UPDATE" 경보가 첫 실행부터 발생**했다 — 374차가 06-01~07-23(약 8주)
+전체로 계산한 삼분위수(3.54/3.98)보다, 가장 최근 21거래일만 보면 변동성이
+한 단계 더 높아져 있다는 뜻. **이 커밋에서는 ENTRY_HORIZON_B1/B2를 이
+결과로 즉시 갱신하지 않는다** — 그게 이 모니터를 만든 원칙(자동반영 금지,
+매주 감시하며 사람이 판단) 그 자체이기 때문. 다음 사용자 검토에서
+4.26/5.94로 반영할지, 한 주 더 지켜볼지 결정할 것.
+
+**Why**: `ThresholdRecalibrator`가 이미 "이 임계값은 레이블 체계 전체에
+영향을 주므로 자동 반영 안 함"이라는 원칙을 세워뒀고, `entry_horizon`
+경계값도 모든 진입의 TP1 폭에 영향을 주는 동급 파라미터라 같은 원칙을
+그대로 적용하는 게 일관적 — 374차 자체가 "정적 상수가 몇 주 만에 죽는다"는
+걸 보여준 사례이므로, 이번엔 처음부터 감시 체계를 만들되 완전자동화는
+피해 같은 실패를 반복하지 않으면서도 "몰래 이상하게 바뀌는" 새 리스크도
+들이지 않는 쪽을 택함.
+
+**How to apply**: 매주 금요일 `[EntryHorizonRecal]` 로그를 확인하고,
+UPDATE 경보가 뜨면 `entry_horizon_recalibrator.recent_log()`로 추이를
+보고(1회성 튐인지 추세인지) `model/ensemble_decision.py`의
+`ENTRY_HORIZON_B1`/`B2`를 수동 갱신할 것 — `ThresholdRecalibrator` 검토
+절차와 동일하게 취급.
+
+**구현**: `learning/entry_horizon_recalibrator.py`(신규),
+`model/ensemble_decision.py`(매직넘버→모듈 상수 승격), `main.py`
+(import·인스턴스화·금요일 실행 블록).
+
+**검증**: `py_compile` 통과. 실제 DB로 오프라인 `.run()` 실행 확인(위 결과).
+**라이브 미검증** — 다음 금요일(2026-07-24 또는 그 다음 정상 개장 금요일)
+`daily_close()`에서 `[EntryHorizonRecal]` 로그가 정상 출력되는지, DB에
+`entry_horizon_log` 행이 쌓이는지 확인 필요.
+
+**관련**: `NEXT_TODO.md` 동일 날짜(375차) 항목. 선행: 374차.
+
+---
+
 ## 2026-07-23 (374차 — select_entry_horizon() 3-way 분류기가 "5m" 고정으로 죽어있던 버그 발견·손익검증·재보정)
 
 ### [버그] `select_entry_horizon()` 경계값(0.8/1.5/2.5)이 현재 ATR 분포와 어긋나 "1m"/"3m" 버킷이 죽은 코드였음 — TP1이 상시 ATR×0.7(최대폭)로 고정돼 손실 확대

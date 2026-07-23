@@ -145,6 +145,7 @@ from learning.prediction_buffer import PredictionBuffer
 from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAIN_BARS
 from learning.threshold_recalibrator import ThresholdRecalibrator
 from learning.atr_ceiling_recalibrator import ATRCeilingRecalibrator
+from learning.entry_horizon_recalibrator import EntryHorizonRecalibrator
 from learning.shap.shap_tracker import ShapTracker, compute_horizon_importance
 from features.horizon_feature_registry import get_available_feature_set
 from safety.circuit_breaker import CircuitBreaker
@@ -354,6 +355,7 @@ class TradingSystem:
                 logger.warning("[GapOffset] 재시작 복원 실패: %s", _ge)
         self.threshold_recalibrator   = ThresholdRecalibrator()
         self.atr_ceiling_recalibrator = ATRCeilingRecalibrator()
+        self.entry_horizon_recalibrator = EntryHorizonRecalibrator()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
         self.pcr_store          = PCRStore()
         self.option_chain_snap  = OptionChainSnapshot(
@@ -9041,6 +9043,31 @@ class TradingSystem:
                     )
             except Exception as _atre:
                 logger.warning("[ATRCeilingRecal] 실행 실패 (스킵): %s", _atre)
+
+        # ── entry_horizon(select_entry_horizon) 경계값 재보정 모니터 (375차,
+        #    금요일 + 최근 실행 후 7일 이상 경과 시에만). 374차가 발견한
+        #    "경계값 고착"(61건 실거래 전부 5m 분류) 재발 여부를 매주 확인.
+        #    자동 반영 없음 — ThresholdRecal/ATRCeilingRecal과 동일하게 제안만
+        #    기록, model/ensemble_decision.py의 ENTRY_HORIZON_B1/B2는 사람이
+        #    검토 후 수동 반영한다.
+        if now.weekday() == 4:   # 금요일
+            try:
+                _eh_recal = self.entry_horizon_recalibrator.run_if_due(
+                    today=now.date().isoformat()
+                )
+                if _eh_recal and _eh_recal["alert"] != "CLEAR":
+                    log_manager.system(
+                        f"[EntryHorizonRecal] {_eh_recal['alert']} — "
+                        f"경계 {_eh_recal['current_b1']}/{_eh_recal['current_b2']} → "
+                        f"재계산 {_eh_recal['recalc_b1']}/{_eh_recal['recalc_b2']} "
+                        f"(δ{_eh_recal['b1_delta_pct']:+.0f}%/{_eh_recal['b2_delta_pct']:+.0f}%), "
+                        f"버킷비중(1m/3m/5m)="
+                        f"{_eh_recal['bucket_1m_pct']:.0f}%/{_eh_recal['bucket_3m_pct']:.0f}%/"
+                        f"{_eh_recal['bucket_5m_pct']:.0f}% — 수동 검토 필요",
+                        "WARNING",
+                    )
+            except Exception as _ehe:
+                logger.warning("[EntryHorizonRecal] 실행 실패 (스킵): %s", _ehe)
 
         # 일일 리셋
         if hasattr(self, "_investor_timer"):
