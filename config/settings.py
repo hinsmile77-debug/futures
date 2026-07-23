@@ -517,12 +517,19 @@ SCALER_CLIP_FEATURES: dict = {
     # 근본 해결은 Phase 2(피처 제거)지만, 그 전까지 현실 범위로 cap
     "microprice": (1150.0, 1500.0),
     "vwap": (1150.0, 1500.0),
-    # toxicity_cancel_stress: [0,1] bounded이나 σ=0.002 → 0.016 입력만으로 z=7.0
-    # 0.5 = cancel_add_ratio=1.0에 해당하는 극단 상한
-    "toxicity_cancel_stress": (0.0, 0.5),
-    # toxicity_atr_stress: [0,1] bounded — atr_ratio=3.0 → atr_stress=1.0 → z>4 (고변동성 장)
-    # 0.75 = atr_ratio=2.5에 해당 (정상 범위 상한). cancel_stress와 동일 패턴.
-    "toxicity_atr_stress": (0.0, 0.75),
+    # [380차] toxicity_cancel_stress/atr_stress 재설계(features/technical/toxicity.py)로
+    # 원 클립 상한(0.5/0.75)의 전제가 깨짐 — 그 값들은 "σ가 거의 0(계측 결함으로 score가
+    # 사실상 상수)이라 작은 입력에도 z가 튀던" 구 공식 기준이었다. 재설계 후에는 σ 자체가
+    # 커져(07-14~23 클린 데이터 n=2690: atr_stress p99=0.606·cancel_stress(proxy) p99=0.683)
+    # 실제 z-explosion 방어 필요성이 사라졌고, 옛 상한을 그대로 두면 재설계로 되살린
+    # 꼬리 신호(atr_stress 0.75~1.0, cancel_stress 0.5~1.0 구간)를 GBM 입력 직전에
+    # 다시 깎아버린다. 두 값 모두 toxicity.py 공식 자체가 이미 [0,1]로 클리핑하므로
+    # (0.0, 1.0)은 사실상 no-op 안전판. 배포 직후 스케일러가 다음 정기 refit(최대 60분,
+    # SCALER_GBM_REFRESH_INTERVAL_MIN) 전까지 일시적 z경보가 뜰 수 있으나
+    # SCALER_FORCE_EXTREME_CONSEC(동일 피처 극단 z 3분 연속)이 조기 재적합을 트리거하도록
+    # 이미 설계돼 있어 별도 조치 불필요.
+    "toxicity_cancel_stress": (0.0, 1.0),
+    "toxicity_atr_stress": (0.0, 1.0),
     # quality_investor_age_sec: feature_builder가 min(age,300)/300 으로 [0,1] 정규화 출력.
     # 구 설정 (0.0, 180.0)은 원시 초 단위 기준이라 정규화값에 clip이 무효했던 버그.
     # 0.60 = 180s/300s — is_stale threshold(180s)와 일치, 이상은 모두 "완전 stale" 동일 취급.

@@ -81,6 +81,7 @@ class QueueDynamicsCalculator:
                 "queue_directional_depletion": 0.0,
                 "imbalance_slope": 0.0,
                 "cancel_add_ratio": 0.0,
+                "cancel_churn_ratio": 0.0,
                 "direction": 0,
             }
             self._minute_signal_buf.append(mean_signal)
@@ -102,6 +103,16 @@ class QueueDynamicsCalculator:
             (s["bid_cancel_add_ratio"] + s["ask_cancel_add_ratio"]) / 2.0
             for s in self._tick_stats
         ]))
+        # [380차] cancel_add_ratio는 부호 있는 평균이라 "한쪽은 취소 우세·반대쪽은 추가
+        # 우세"인 전형적 방향성 이탈(가격이 한쪽으로 급하게 뚫릴 때 흔한 패턴)에서 두
+        # 부호가 상쇄돼 0 근처로 사라진다. cancel_churn_ratio는 절대값으로 합산해 방향과
+        # 무관하게 "양쪽 호가창이 얼마나 어수선한지"만 측정 — ToxicityGate 전용 입력
+        # (cancel_add_ratio는 EnsembleGater·GBM·SGD가 방향성 신호로 그대로 사용 중이라
+        # 의미를 바꾸지 않고 별도 필드로 분리).
+        cancel_churn_ratio = float(np.mean([
+            (abs(s["bid_cancel_add_ratio"]) + abs(s["ask_cancel_add_ratio"])) / 2.0
+            for s in self._tick_stats
+        ]))
 
         direction = 1 if signal_ma > 0.15 else -1 if signal_ma < -0.15 else 0
         # 총량 대비 비율 — 유동성 수준 독립 (Phase 3-B)
@@ -119,6 +130,7 @@ class QueueDynamicsCalculator:
             "queue_directional_depletion": round(directional_depletion, 4),
             "imbalance_slope": round(imbalance_slope, 6),
             "cancel_add_ratio": round(cancel_add_ratio, 4),
+            "cancel_churn_ratio": round(cancel_churn_ratio, 4),
             "direction": direction,
         }
 
