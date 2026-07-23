@@ -1168,14 +1168,37 @@ class TradingSystem:
         except Exception as _vpe:
             logger.warning("[VPRestore] VP 버퍼 복원 실패 — cold start 유지: %s", _vpe)
 
+        # [371차] RegimeFingerprint 라이브 버퍼 워밍업 — _live_buf는 디스크에
+        # 영속화된 적이 없어 매 거래일 재기동마다 비어서 시작했고, 그 결과
+        # PSI가 min_live(50분) 문턱을 막 넘긴 장 시작 직후 소표본 노이즈로
+        # 크게 튀는 문제(0723 PSI=18 관측)가 있었다. raw_features(수개월치
+        # 보관)에서 최근 값을 읽어와 재시작 직후에도 다표본으로 시작시킨다.
+        _fp_warmed = 0
+        try:
+            from strategy.regime_fingerprint import get_fingerprint as _get_fp_restore
+            from strategy.regime_fingerprint import _LIVE_WIN_MINS as _FP_WIN
+            _fp_rows = fetch_recent_raw_features(limit=_FP_WIN)
+            _fp_feat_rows = []
+            for _frow in _fp_rows:
+                try:
+                    _fd = json.loads(_frow["features"])
+                except Exception:
+                    continue
+                if isinstance(_fd, dict):
+                    _fp_feat_rows.append(_fd)
+            _fp_warmed = _get_fp_restore().warm_live_buffer(_fp_feat_rows)
+        except Exception as _fpe:
+            logger.warning("[AnalysisRestore] RegimeFingerprint 라이브버퍼 복원 실패 — cold start 유지: %s", _fpe)
+
         logger.info(
-            "[AnalysisRestore] live_corr=%d restored_corr=%s live_shap=%d live_ready=%s shap_features=%d vp_bars=%d",
+            "[AnalysisRestore] live_corr=%d restored_corr=%s live_shap=%d live_ready=%s shap_features=%d vp_bars=%d fp_live=%d",
             len(self._param_corr_history),
             "yes" if self._restored_corr_str else "no",
             len(self._shap_feature_window),
             "yes" if self._live_shap_ready else "no",
             len(self._cached_shap_importance),
             _vp_restored,
+            _fp_warmed,
         )
 
     def _record_param_corr_snapshot(self, features: dict) -> None:

@@ -8,6 +8,36 @@
 
 ---
 
+## 2026-07-23 (371차 — PSI 균등폭bin·라이브버퍼 미영속 2대 결함 수정)
+
+> 상세: `DECISION_LOG.md` 2026-07-23(371차) 항목.
+
+- [ ] **[371차 최우선] 다음 재기동 시 워밍업 로그 확인** — `[AnalysisRestore]
+  ... fp_live=N` 로그(`main.py:_restore_analysis_buffers()`)에서 N이 0이 아닌
+  수천 단위로 뜨는지 확인. 0이면 `fetch_recent_raw_features`/
+  `warm_live_buffer` 연결에 문제가 있는 것.
+- [ ] **[371차] 다음 EOD 이후 `data/regime_fingerprint.json` 분위수 edges로
+  교체 확인** — 오늘자 파일은 아직 구형 균등폭 그대로(런타임 산출물이라 이번
+  커밋 미포함). `retrain_eod.py`가 다음 실행될 때 `save_training_fingerprint()`
+  가 새 `_build_histogram()`(분위수 기반)로 갱신하는지, edges가 균등폭이
+  아니라 분위수 기반(구간별 학습비중이 비슷하게)으로 바뀌는지 확인.
+- [ ] **[371차] 실측 PSI 며칠 관찰 후 CLAUDE.md §2 FP-CRITICAL 재검토** —
+  재현 시뮬레이션(0.02~0.50 범위, 시장 상황과 합리적으로 연동 확인됨)은
+  과거 DB 재생이라 라이브 경로 미검증. 다음 주 정도 실측 PSI가 시뮬레이션과
+  비슷한 범위·패턴으로 나오는지 지켜본 뒤, `FP_CRITICAL_GRADE_BLOCK_ENABLED`
+  를 `True`로 복원할지 CLAUDE.md 실전전환기준 ⑦ 절차대로 판단할 것 — 이번
+  수정만으로 즉시 복원하지 말 것(라이브 미검증 상태).
+- [ ] **[371차, 범위 밖으로 분리] `cvd_divergence`·`ofi_norm` 91% 정확히
+  0.0인 점질량 원인 조사** — 분위수 비닝으로도 해소 안 되는 잔여 이슈.
+  `features/feature_builder.py:172-193`(buy_vol/sell_vol 미가용 시 가격기반
+  추정, high==low인 flat bar에서 buy_vol=sell_vol=0 강제되는 경로)이 원인
+  후보. `cvd_direction`이 과거 유사 사례(+0.5 고착 98.6%, 2026-06-25
+  `cvd_delta_norm`으로 교체)였던 전례가 있어 동일 패턴 가능성 — 단
+  CORE 피처 자체를 건드리는 사안이라 별도 세션에서 충분한 검증 후 진행할 것
+  (CLAUDE.md §3 CORE 피처 교체 금지 원칙).
+
+---
+
 ## 2026-07-23 (370차 — OPEN_VOLATILE/SHS-EKS/거래소CB관망 실행게이트 미배선 버그 수정)
 
 > 상세: `DECISION_LOG.md` 2026-07-23(370차) 항목.
