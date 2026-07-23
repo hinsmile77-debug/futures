@@ -872,6 +872,25 @@ COUNTERTREND_CAP_ENABLED = True
 COUNTERTREND_ATR_THRESHOLD = 2.0   # CHASE_FILTER_ATR_THRESHOLD와 동일 스케일(보정 데이터 없어 우선 동일값)
 COUNTERTREND_MAX_QTY = 1
 
+# [379차 신설] RegimeExhaustionGate(섀도) — 0723 정기점검 딥다이브 3항에서 제안한
+# "탈진 반전" 조기감지 채널. 10_chase(연장추격, CHASE_FILTER_LOOKBACK_MIN=10분)는
+# 직전 10분만 보므로, 여러 다리에 걸쳐 서서히 진행된 탈진(0723 11:41 SHORT — 직전
+# 10분은 안정됐지만 이전 90분간 -35pt 하락한 뒤였음)을 놓친다는 게 0723 딥다이브의
+# 핵심 발견. price_extension_atr과 동일 산식을 60분 룩백으로 별도 계산해
+# "느린 연장폭"을 포착하고, hurst<0.45(평균회귀) + 10_chase 또는 11_countertrend
+# 소프트 실패까지 동시 성립하면 "탈진 반전 위험" 카운터팩추얼로 기록한다.
+# hurst_gate_shadow·open_gap_shadow와 동일 패턴(§9 사전등록) — 하드 차단 아님,
+# 검증캠페인 [18] regime_exhaustion_watch로 표본 축적(목표 20건·2주 관찰) 후
+# 수동으로 REGIME_EXHAUSTION_GATE_ENABLED 전환 검토.
+# 임계값(1.5)은 COUNTERTREND_ATR_THRESHOLD와 같은 스케일을 우선 채택한 초기값
+# — 60분 룩백 특성(변동 누적폭이 10분보다 커지는 경향)을 반영한 재보정은 표본
+# 축적 후 진행.
+# 근거: dev_memory/DECISION_LOG.md 379차 항목(0723 정기점검 딥다이브 3항 후속).
+REGIME_EXHAUSTION_LOOKBACK_MIN = 60
+REGIME_EXHAUSTION_EXT_ATR_THRESHOLD = 1.5   # 초기값, 표본 축적 후 재보정 검토
+REGIME_EXHAUSTION_GATE_ENABLED: bool = False  # 기본 비활성 — 섀도 로그만 (§9 원칙)
+REGIME_EXHAUSTION_DEMOTE_TO: str = "C"  # 강등 목표 등급 (전환 시에만 사용, ChaseForeignComboGuard와 동일)
+
 # [349차] 급변장 사전 가드 — 7/16 정기점검(dailycheck_prompt.txt P1)에서 지적된
 # 문제: 기존 RegimeOverride(config/strategy_params.py, 급변장 진입 금지)는
 # MicroRegimeClassifier가 완결된 봉의 ATR비/ADX로만 판정해 "이미 급변한 다음
@@ -1121,6 +1140,20 @@ VALIDATION_CAMPAIGN = {
     # 시계를 리셋해야 한다는 §3 원칙 그대로 적용).
     "exit_fill_slippage_watch": {
         "min_samples_for_note": 20,  # 이 이상 쌓이면 리포트에 재보정 검토 note 노출(판정 아님)
+    },
+    # [379차 신설] §18 RegimeExhaustionGate counterfactual — hurst_gate_shadow·
+    # open_gap_shadow와 동일 패턴(regime_exhaustion_shadow 테이블,
+    # main.py::_ts_record_regime_exhaustion_shadow() 대응 INSERT). "탈진 반전 위험"
+    # 신호(hurst<0.45 + 60분 느린 연장폭 + 10_chase/11_countertrend 소프트 실패)가
+    # 발동한 시점의 가상 진입가·스톱·TP1을 기록해 cf_window_min 이내에 실제로
+    # 반전(스톱 도달)했는지 사후 판정한다.
+    # 존치(PASS): 누적 hyp_pnl_pts ≤ 0 (신호 방향대로 갔으면 평균적으로 손해 —
+    #   "탈진 반전" 가설 지지, REGIME_EXHAUSTION_GATE_ENABLED 전환 검토 근거 축적).
+    # 채택 검토(FAIL): 누적 hyp_pnl_pts > 왕복비용의 2배 (신호가 오히려 방향을
+    #   맞췄다는 뜻 — 게이트 채택 대신 신규 진입 시그널 방향 전환(3-2 제안) 검토).
+    "regime_exhaustion_watch": {
+        "min_samples": 20,  # hurst_gate_shadow·open_gap_shadow와 동일 기준(20건·2주 관찰)
+        "cf_window_min": 30,  # counterfactual 관찰 창 (분) — 동일 계열과 동일
     },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,

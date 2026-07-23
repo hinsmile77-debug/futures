@@ -45,7 +45,7 @@ from config.settings import (
     PREDICTIONS_DB, TRADES_DB, RAW_DATA_DB, DATA_DIR, MODEL_DIR,
     HORIZONS, VALIDATION_CAMPAIGN, FUTURES_COMMISSION_RATE, TICK_SIZE,
     ENTRY_STARVATION_WEEKLY_MIN, ENTRY_STARVATION_MITIGATION_LADDER,
-    HURST_RANGE_THRESHOLD,
+    HURST_RANGE_THRESHOLD, REGIME_EXHAUSTION_EXT_ATR_THRESHOLD,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
@@ -1097,6 +1097,156 @@ def resolve_and_eval_open_gap() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [18] RegimeExhaustionGate counterfactual — resolve + 판정 (379차)
+# ──────────────────────────────────────────────────────────────
+
+def resolve_and_eval_regime_exhaustion() -> dict:
+    """regime_exhaustion_shadow(main.py에서 기록) resolve + 판정.
+
+    hurst_gate_shadow·open_gap_shadow와 resolve 메커니즘은 동일(발동 시점의
+    가상 진입가·스톱·TP1이 cf_window_min 이내에 무엇에 먼저 닿았는지)이나,
+    이 채널은 "게이트가 이미 차단 중인데 그게 옳았나"가 아니라 "탈진 반전
+    가설 자체가 유효한가"를 묻는 것이라 PASS/FAIL 의미가 반대로 뒤집힌다:
+
+    hyp_pnl_pts = 신호 방향(연장·추격 방향)으로 갔을 때의 결과.
+      (+) = 신호 방향이 맞았음(탈진이 아니라 진짜 추세 지속) → 가설 반증 쪽.
+      (-) = 신호 방향이 반전(스톱)에 먼저 닿음 → "탈진 반전" 가설 지지.
+
+    SUPPORTS_GATE = 누적 hyp_pnl_pts가 유의하게 음수(왕복비용의 2배 이상 손실)
+      — 이 방향으로 계속 갔으면 평균적으로 손해였다는 뜻. REGIME_EXHAUSTION_
+      GATE_ENABLED 전환(등급 강등) 또는 3-2 제안(반대방향 신규 시그널)의 근거로
+      쌓인다. 단 이 리포트는 권고만 — 즉시 자동 전환 없음(§9 사전등록 원칙).
+    REJECTS_GATE = 누적 hyp_pnl_pts가 유의하게 양수 — 신호가 오히려 방향을
+      맞췄다는 뜻. 가설 기각, 게이트 개발 중단 권고.
+    OBSERVE = 표본은 충분하나 방향이 애매(왕복비용 2배 미만) — 계속 관찰.
+    """
+    cr = VALIDATION_CAMPAIGN["regime_exhaustion_watch"]
+    window_min = int(cr.get("cf_window_min", 30))
+    out = {"verdict": "INSUFFICIENT", "resolved_now": 0}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            unresolved = conn.execute(
+                "SELECT * FROM regime_exhaustion_shadow WHERE resolved = 0 ORDER BY ts"
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    if unresolved:
+        earliest = min(r["ts"] for r in unresolved)
+        close_map, high_map, low_map = _load_candle_maps(earliest)
+        now = datetime.datetime.now()
+        updates = []
+        for r in unresolved:
+            base = datetime.datetime.strptime(r["ts"], _TS_FMT)
+            if now < base + datetime.timedelta(minutes=window_min + 2):
+                continue
+            is_long = str(r["direction"]) == "LONG"
+            stop_p = float(r["stop_price"] or 0.0)
+            tp1_p = float(r["tp1_price"] or 0.0)
+            cf_outcome, cf_price = "NEITHER", None
+            last_close = None
+            for m in range(1, window_min + 1):
+                mid = base + datetime.timedelta(minutes=m)
+                if mid.time() > datetime.time(15, 10):
+                    break
+                mid_ts = mid.strftime(_TS_FMT)
+                hi = high_map.get(mid_ts)
+                lo = low_map.get(mid_ts)
+                if hi is None or lo is None:
+                    continue
+                last_close = close_map.get(mid_ts, last_close)
+                if is_long:
+                    hit_stop = stop_p > 0 and lo <= stop_p
+                    hit_tp = tp1_p > 0 and hi >= tp1_p
+                else:
+                    hit_stop = stop_p > 0 and hi >= stop_p
+                    hit_tp = tp1_p > 0 and lo <= tp1_p
+                if hit_stop:
+                    cf_outcome, cf_price = "STOP", stop_p
+                    break
+                if hit_tp:
+                    cf_outcome, cf_price = "TP1", tp1_p
+                    break
+            if cf_price is None:
+                if last_close is None:
+                    continue
+                cf_price = last_close
+            entry_p = float(r["entry_price"])
+            hyp = (cf_price - entry_p) if is_long else (entry_p - cf_price)
+            updates.append((cf_outcome, cf_price, round(hyp, 4), r["id"]))
+
+        if updates:
+            with _conn(TRADES_DB) as conn:
+                conn.executemany(
+                    """UPDATE regime_exhaustion_shadow
+                       SET resolved=1, cf_outcome=?, cf_exit_price=?, hyp_pnl_pts=?
+                       WHERE id=?""",
+                    updates,
+                )
+                conn.commit()
+            out["resolved_now"] = len(updates)
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            agg = conn.execute(
+                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
+                          AVG(entry_price) AS avg_price,
+                          SUM(CASE WHEN cf_outcome='STOP' THEN 1 ELSE 0 END) AS n_stop,
+                          SUM(CASE WHEN cf_outcome='TP1' THEN 1 ELSE 0 END) AS n_tp1,
+                          SUM(CASE WHEN cf_outcome='NEITHER' THEN 1 ELSE 0 END) AS n_neither,
+                          AVG(ext_atr_60m) AS avg_ext60m, AVG(hurst) AS avg_hurst,
+                          SUM(chase_failed) AS n_chase_failed,
+                          SUM(countertrend_failed) AS n_ctr_failed
+                   FROM regime_exhaustion_shadow WHERE resolved=1 AND ts >= ?""",
+                (_campaign_start(),),
+            ).fetchone()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM regime_exhaustion_shadow WHERE resolved=0"
+            ).fetchone()["n"]
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    n = int(agg["n"] or 0)
+    total_hyp = float(agg["total_hyp"] or 0.0)
+    avg_price = float(agg["avg_price"] or 0.0) or 300.0
+    out.update({
+        "n_resolved": n,
+        "n_pending": int(pending),
+        "total_hyp_pnl_pts": round(total_hyp, 4),
+        "cf_stop": int(agg["n_stop"] or 0),
+        "cf_tp1": int(agg["n_tp1"] or 0),
+        "cf_neither": int(agg["n_neither"] or 0),
+        "avg_ext_atr_60m": round(float(agg["avg_ext60m"] or 0.0), 3),
+        "avg_hurst": round(float(agg["avg_hurst"] or 0.0), 3),
+        "n_chase_failed": int(agg["n_chase_failed"] or 0),
+        "n_countertrend_failed": int(agg["n_ctr_failed"] or 0),
+    })
+    if n < int(cr["min_samples"]):
+        out["verdict"] = "INSUFFICIENT"
+        out["reason"] = "표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        return out
+
+    cost_pt = _roundtrip_cost_pt(avg_price)
+    out["cost_pt"] = round(cost_pt, 4)
+    if total_hyp < -cost_pt * 2.0:
+        out["verdict"] = "SUPPORTS_GATE"
+        out["recommendation"] = (
+            "탈진 반전 가설 지지 — REGIME_EXHAUSTION_GATE_ENABLED 전환(등급 강등) 또는 "
+            "반대방향 신규 진입 시그널(3-2 제안) 개발을 주간회의에서 검토 (§9 사전등록 원칙 — "
+            "즉시 자동 전환 금지)"
+        )
+    elif total_hyp > cost_pt * 2.0:
+        out["verdict"] = "REJECTS_GATE"
+        out["recommendation"] = "가설 기각 — 신호 방향이 오히려 우세, 게이트 개발 중단 권고"
+    else:
+        out["verdict"] = "OBSERVE"
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [10] TP2 홀드 A/B counterfactual — resolve + 누적 판정 (361차)
 # ──────────────────────────────────────────────────────────────
 
@@ -2124,6 +2274,10 @@ def _fmt_verdict(v: str) -> str:
         "PASS": "✅ PASS", "FAIL": "❌ FAIL",
         "OK": "✅ OK", "STARVED": "🚨 STARVED",
         "OBSERVE": "👁 OBSERVE",  # [367차] 순수 관찰 채널(정책 게이트 없음) — PASS/FAIL 미판정
+        # [379차] RegimeExhaustionGate 전용 — 하드 차단이 없어 PASS/FAIL 대신 가설
+        # 지지/기각으로 표기(resolve_and_eval_regime_exhaustion() 참조)
+        "SUPPORTS_GATE": "🔶 SUPPORTS_GATE",
+        "REJECTS_GATE": "🔷 REJECTS_GATE",
     }.get(v, "⏳ INSUFFICIENT")
 
 
@@ -2157,6 +2311,7 @@ def build_report(days: int) -> tuple:
     frw = eval_fast_reversal_watch(days)
     cfc = eval_chase_foreign_combo_watch()
     efs = eval_exit_fill_slippage_watch(days)
+    reg = resolve_and_eval_regime_exhaustion()
 
     metrics = {
         "generated_at": now_str,
@@ -2170,6 +2325,7 @@ def build_report(days: int) -> tuple:
         "tp1_trail_shadow": t1t, "grade_ev_inversion": gei,
         "loss_tier2_remainder_shadow": lt2, "fast_reversal_watch": frw,
         "chase_foreign_combo_watch": cfc, "exit_fill_slippage_watch": efs,
+        "regime_exhaustion_watch": reg,
     }
 
     L = []
@@ -2262,6 +2418,12 @@ def build_report(days: int) -> tuple:
         efs.get("n", 0),
         efs.get("avg_slippage_pts", "—"),
         efs.get("assumed_slippage_pts_per_side", "—")))
+    L.append("| [18] RegimeExhaustionGate(탈진반전) | %s | 발동=%s건 누적hyp=%spt "
+              "(STOP=%s/TP1=%s/NEITHER=%s) |" % (
+        _fmt_verdict(reg["verdict"]),
+        reg.get("n_resolved", 0),
+        reg.get("total_hyp_pnl_pts", "—"),
+        reg.get("cf_stop", 0), reg.get("cf_tp1", 0), reg.get("cf_neither", 0)))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -2612,6 +2774,39 @@ def build_report(days: int) -> tuple:
     L.append("  0.02pt)는 캠페인 전 채널의 왕복비용 계산에 쓰이는 공통 가정이므로,")
     L.append("  이 채널의 실측치가 그 가정과 다르더라도 즉시 자동 재보정하지 않는다")
     L.append("  — 바꾸려면 §3 사전등록 원칙에 따라 검증 시계를 리셋해야 한다.")
+    L.append("")
+
+    # [18] RegimeExhaustionGate 상세
+    L.append("## [18] RegimeExhaustionGate 탈진 반전 counterfactual (379차, 관찰 전용 — 정책 게이트 아님)")
+    L.append("")
+    L.append("- 발동 조건: hurst<%.2f(평균회귀) AND 60분 느린 연장폭(price_extension_atr_60m)"
+              " |값|>%.1fATR AND (10_chase 또는 11_countertrend 소프트 실패)" % (
+        HURST_RANGE_THRESHOLD, REGIME_EXHAUSTION_EXT_ATR_THRESHOLD))
+    L.append("- 계기: 0723 정기점검 딥다이브 — 진입 직후 반복 반전 패턴 3항. 10_chase"
+              "(10분 룩백)는 여러 다리에 걸친 느린 탈진을 놓친다는 게 핵심 발견"
+              "(0723 11:41 SHORT — 직전 10분은 안정, 이전 90분간 -35pt).")
+    L.append("- 해석: hyp_pnl_pts는 **신호 방향(추격 방향)대로 갔을 때의 결과** — "
+              "다른 섀도 채널과 부호 해석이 반대다. 음수 우세면 탈진 반전 가설 지지.")
+    L.append("- 표본: 해결=%s건 대기중=%s건, 누적 hyp_pnl_pts=%spt "
+              "(STOP=%s / TP1=%s / NEITHER=%s)" % (
+        reg.get("n_resolved", 0), reg.get("n_pending", 0),
+        reg.get("total_hyp_pnl_pts", "—"),
+        reg.get("cf_stop", 0), reg.get("cf_tp1", 0), reg.get("cf_neither", 0)))
+    if "avg_ext_atr_60m" in reg:
+        L.append("- 평균 60분 연장폭=%spt(ATR배수) 평균 hurst=%s "
+                  "(chase실패=%s건 / countertrend실패=%s건)" % (
+            reg.get("avg_ext_atr_60m"), reg.get("avg_hurst"),
+            reg.get("n_chase_failed", 0), reg.get("n_countertrend_failed", 0)))
+    if reg.get("recommendation"):
+        L.append("- **%s**" % reg["recommendation"])
+    if reg.get("reason"):
+        L.append("- %s" % reg["reason"])
+    if reg.get("error"):
+        L.append("- ⚠ %s" % reg["error"])
+    L.append("- REGIME_EXHAUSTION_GATE_ENABLED(config/settings.py, 섀도) 활성화 여부")
+    L.append("  판단 근거 표본 축적용(목표 min_samples=%d, hurst_gate_shadow·"
+              "open_gap_shadow와 동일 기준) — §9 사전등록 원칙, 즉시 자동 전환 없음." % (
+        VALIDATION_CAMPAIGN["regime_exhaustion_watch"]["min_samples"]))
     L.append("")
     L.append("---")
     L.append("")

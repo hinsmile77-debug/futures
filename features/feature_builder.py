@@ -31,7 +31,7 @@ from config.settings import (
     HORIZON_THRESHOLDS, HURST_WINDOW_N, HURST_MAX_LAG,
     HURST_WARMUP_COLDSTART_MIN, HURST_WARMUP_LAG_FLOOR, HURST_WARMUP_LAG_RATIO,
     TREND_EFFICIENCY_WINDOW, KYLE_LAMBDA_WINDOW, RV_IV_WINDOW,
-    CHASE_FILTER_LOOKBACK_MIN,
+    CHASE_FILTER_LOOKBACK_MIN, REGIME_EXHAUSTION_LOOKBACK_MIN,
 )
 
 logger = logging.getLogger("SIGNAL")
@@ -437,6 +437,19 @@ class FeatureBuilder:
             )
         else:
             features["price_extension_atr"] = 0.0
+
+        # [379차] RegimeExhaustionGate용 느린(60분) 연장폭 — price_extension_atr과
+        # 동일 산식이나 룩백만 60분으로 늘려 여러 다리에 걸쳐 서서히 진행된 탈진을
+        # 포착한다. 0723 딥다이브: 직전 10분 룩백(price_extension_atr)은 11:41 SHORT
+        # 진입 시점에 이미 안정돼 chase 미감지였으나, 그 전 90분간의 하락은 컸음 —
+        # 10분 룩백 하나로는 못 잡는 "느린 탈진"을 별도 신호로 분리.
+        if len(_ch_ext) > REGIME_EXHAUSTION_LOOKBACK_MIN and _atr_now > 1e-6:
+            _close_60m_ago = _ch_ext[-(REGIME_EXHAUSTION_LOOKBACK_MIN + 1)]
+            features["price_extension_atr_60m"] = float(
+                np.clip((close - _close_60m_ago) / _atr_now, -10.0, 10.0)
+            )
+        else:
+            features["price_extension_atr_60m"] = 0.0
 
         # 마디가(Round Number) 거리 — 방향 인자 없이 상/하 최근접 레벨 중 더 가까운 쪽만 사용
         # (nearest_round_distance()는 direction 인자가 필요해 피처 생성 시점엔 사용 불가).
