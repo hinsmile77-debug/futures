@@ -7244,6 +7244,11 @@ class TradingSystem:
             and not _in_reverse_clamp              # P3-b: 역방향 클램프
             and (_hurst_ok or HURST_SOFT_BLOCK_ENABLED)  # 333차: 하드차단→사이징 완화
             and _atr_ok                            # 변동성 너무 낮음 진입 차단
+            and _open_gap_ok                  # [370차 수정] 263차 OPEN_VOLATILE 시가이격 필터 —
+                                               # _final_entry_ok에만 있고 실행 게이트엔 누락돼 있던 버그
+            and not self.system_health.kill_switch_active  # [370차 수정] 86차 SHS-EKS 킬스위치 —
+                                                             # 동일 누락 버그
+            and _ecb_observation_ok           # [370차 수정] 254차 거래소CB 해제 후 관망 — 동일 누락 버그
             and _final_grade not in ("X",)
             and _qty_display > 0
             and not _bar_volume_zero          # Guard-C3: volume=0 분봉 진입 차단
