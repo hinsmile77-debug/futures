@@ -664,6 +664,35 @@ def init_trades_db():
             "CREATE INDEX IF NOT EXISTS idx_efs_ts ON exit_fill_slippage(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_efs_entry_ts ON exit_fill_slippage(entry_ts)")
+    # [379차 신설] RegimeExhaustionGate(§18) counterfactual 섀도우 — hurst_gate_shadow·
+    # open_gap_shadow와 동일 패턴. "hurst<0.45(평균회귀) + 60분 느린 연장폭 임계 초과 +
+    # 10_chase/11_countertrend 소프트 실패" 동시성립 시점의 가상 진입가·스톱·TP1을
+    # 기록해 사후 판정(resolve_and_eval_regime_exhaustion())한다. 0723 정기점검
+    # 딥다이브 3항(진입 직후 반전 패턴) 후속 제안 — 리포트 전용 계측 테이블,
+    # 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS regime_exhaustion_shadow (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                TEXT NOT NULL,           -- 발동 시각 (분봉)
+        direction         TEXT NOT NULL,           -- LONG/SHORT (가상 방향, 연장 방향과 동일=추격)
+        grade             TEXT,                    -- 발동 당시 진입 등급 (A/B/C)
+        hurst             REAL,                    -- 발동 당시 Hurst 값
+        ext_atr_60m       REAL,                    -- 발동 당시 60분 느린 연장폭 (signed, ATR 배수)
+        chase_failed      INTEGER,                 -- 10_chase 소프트 실패 여부 (0/1)
+        countertrend_failed INTEGER,                -- 11_countertrend 소프트 실패 여부 (0/1)
+        conf              REAL,                    -- 발동 당시 confidence
+        entry_price       REAL NOT NULL,           -- 가상 진입가 (분봉 종가)
+        stop_price        REAL,                    -- 가상 하드스톱
+        tp1_price         REAL,                    -- 가상 TP1
+        resolved          INTEGER DEFAULT 0,       -- 1=counterfactual 판정 완료
+        cf_outcome        TEXT,                    -- STOP / TP1 / NEITHER
+        cf_exit_price     REAL,                    -- counterfactual 청산가
+        hyp_pnl_pts       REAL,                    -- (+)=신호 방향이 맞았음, (-)=탈진 반전 가설 지지(스톱)
+        created_at        TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_res_ts ON regime_exhaustion_shadow(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,

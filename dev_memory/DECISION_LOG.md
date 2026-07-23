@@ -2,6 +2,89 @@
 
 ---
 
+## 2026-07-23 (379차 — RegimeExhaustionGate(섀도) 신규 구현 — 검증캠페인 [18] regime_exhaustion_watch)
+
+### [신설] 0723 딥다이브 3-2 제안 구현 — 60분 느린 연장폭 + hurst 평균회귀 + chase/countertrend 소프트실패 동시성립 시 "탈진 반전" counterfactual 기록
+
+**배경**: 사용자가 3-2 제안("RegimeExhaustionGate(신규, 섀도) — hurst<0.45 AND
+price_extension_atr(60분 느린버전) > 임계 AND chase(10번) 또는 countertrend(11번)
+실패가 동시 성립하면 카운터팩추얼 채널로 기록")의 구현을 요청. 제안 원문은
+"검증캠페인 [17]"로 적었으나, [17]은 이미 369차 exit_fill_slippage_watch가
+쓰고 있어 **[18]로 정정**해 등록(hurst_gate_shadow·open_gap_shadow·
+chase_foreign_combo_watch 등 기존 §9 사전등록 계열과 동일 원칙 — 하드 차단
+아님, 표본 축적 후 수동 결정).
+
+**구현 5곳**:
+1. **`features/feature_builder.py`**: `price_extension_atr_60m` 신규 —
+   기존 `price_extension_atr`(10분 룩백, 343차)와 동일 산식이나 룩백만
+   `REGIME_EXHAUSTION_LOOKBACK_MIN=60`분으로 확장. `_close_history` 버퍼는
+   이미 `HURST_WINDOW_N=90`(317차 재보정)이라 60분 룩백을 충분히 수용.
+   0723 딥다이브 근거: 11:41 SHORT 진입 시점엔 직전 10분(10_chase 룩백)이
+   이미 안정돼 chase 미감지였지만, 그 전 90분간 -35pt 하락 뒤였음 — 10분
+   룩백 하나로 못 잡는 "느린 탈진"을 별도 신호로 분리.
+2. **`config/settings.py`**: `REGIME_EXHAUSTION_LOOKBACK_MIN=60`,
+   `REGIME_EXHAUSTION_EXT_ATR_THRESHOLD=1.5`(초기값, `COUNTERTREND_ATR_
+   THRESHOLD`와 같은 스케일 우선 채택 — 60분 룩백 특성 반영한 재보정은
+   표본 축적 후), `REGIME_EXHAUSTION_GATE_ENABLED=False`(섀도),
+   `REGIME_EXHAUSTION_DEMOTE_TO="C"`. `VALIDATION_CAMPAIGN["regime_
+   exhaustion_watch"]` 채널 등록(`min_samples=20`·`cf_window_min=30` —
+   hurst_gate_shadow·open_gap_shadow와 동일 기준).
+3. **`utils/db_utils.py`**: `regime_exhaustion_shadow` 테이블 신설
+   (hurst_gate_shadow와 동일 스키마 + `ext_atr_60m`·`chase_failed`·
+   `countertrend_failed` 진단 필드 추가). `init_trades_db()`로 실제
+   `data/db/trades.db`에도 생성 확인(idempotent, `CREATE TABLE IF NOT
+   EXISTS`).
+4. **`main.py`**: STEP6 tail(`open_gap_shadow` 블록 직후)에 발동 조건
+   평가 + INSERT 블록 신설. hurst_gate_shadow·open_gap_shadow와 달리
+   "특정 게이트 하나를 무시했다면"이 아니라 "이 복합 경고 신호 자체가
+   유효한가"를 묻는 것이라, 별도의 "무시 가정" 서브조건 없이 발동 시점을
+   그대로 기록(chase_foreign_combo_watch의 "발동=기록" 철학과 유사, 다만
+   로그 재파싱이 아니라 직접 DB INSERT). hurst<0.45가 이미 보장되므로
+   `HURST_REGIME_ATR_MULT["mean-revert"]`로 stop/tp1 배수 고정(hurst_gate_
+   shadow와 동일 근거).
+5. **`scripts/generate_validation_campaign_report.py`**:
+   `resolve_and_eval_regime_exhaustion()` 신설 — resolve 메커니즘은
+   `resolve_and_eval_open_gap()`과 동일(cf_window_min 이내 스톱/TP1 터치
+   판정)이나 **PASS/FAIL 의미가 반대로 뒤집힘**을 명시: hyp_pnl_pts는
+   "신호 방향(추격 방향)대로 갔을 때의 결과"이므로, 음수 우세(스톱 우세)면
+   "탈진 반전" 가설을 **지지**(`SUPPORTS_GATE`), 양수 우세면 가설
+   **기각**(`REJECTS_GATE`) — 다른 채널의 PASS=차단유지/FAIL=차단해제
+   의미와 혼동 방지 위해 별도 verdict 어휘 사용. `_fmt_verdict()`에 두
+   어휘 추가, 요약표/상세 섹션([18]) 추가.
+
+**검증**: `py_compile` 5개 파일 전부 통과. `init_trades_db()` 실행으로 실제
+`trades.db`에 테이블 생성 확인(스키마 17개 컬럼 정확). `python scripts/
+generate_validation_campaign_report.py --days 28` 전체 실행 — 채널 [18]이
+`n=0, INSUFFICIENT`로 정상 렌더링(에러 없음, 아직 라이브 미기동이라 발동
+이력 없는 게 정상). **라이브 미검증** — 다음 장중 실제 조건 발동 시
+`[RegimeExhaustionGate] (섀도) ...` 로그와 `regime_exhaustion_shadow`
+DB 행 적재 확인 필요.
+
+**Why**: 기존 5개 shadow 테이블(hurst_gate·joint_gate·open_gap·tp2_hold·
+tp1_trail 등)이 전부 같은 스키마·resolve 패턴을 쓰는 이유는 "여러 팀원이
+아니라 한 사람이 반복 설계해도 매번 새로 짜지 않고 검증된 패턴을 복붙"하는
+것 — 이번에도 동일 원칙 적용. 단 PASS/FAIL 의미가 뒤집히는 지점만큼은
+반드시 명시적으로 다른 어휘(SUPPORTS_GATE/REJECTS_GATE)를 써서, 나중에
+누군가 이 채널의 verdict를 다른 채널과 같은 방향으로 오독하는 것을 원천
+차단했다.
+
+**How to apply**: 2주 후(또는 min_samples=20 도달 시) `resolve_and_eval_
+regime_exhaustion()` 결과를 확인 — SUPPORTS_GATE로 나오면 ①
+`REGIME_EXHAUSTION_GATE_ENABLED` 전환(등급 강등) ② 3-2가 함께 제안한
+"반대방향 신규 진입 시그널" 개발 두 갈래를 주간회의에서 검토할 것. 임계값
+`REGIME_EXHAUSTION_EXT_ATR_THRESHOLD=1.5`는 초기 추정치라, 표본이 쌓이면
+`avg_ext_atr_60m` 실측 분포로 재보정 여부도 함께 판단.
+
+**구현**: `features/feature_builder.py`(신규 피처), `config/settings.py`
+(상수 4개+캠페인 채널), `utils/db_utils.py`(테이블), `main.py`(발동+기록
+로직), `scripts/generate_validation_campaign_report.py`(resolve+리포트).
+
+**관련**: `NEXT_TODO.md` 동일 날짜(379차) 항목. 선행: 0723 정기점검
+딥다이브 3항(진입 직후 반전 패턴), 343차(10_chase 원안), 360차(countertrend
+원안), 297차/354차(hurst_gate_shadow/open_gap_shadow 패턴 원조).
+
+---
+
 ## 2026-07-23 (378차 — 377차 "EOD 체인 미연결" 결론 정정: 이미 07-15(333차 후속2)에 고쳐졌고, 그 뒤 유일한 금요일(07-17)이 미등록 휴장일이라 검증 기회가 아직 없었을 뿐)
 
 ### [정정] 자동화가 "안 됨"이 아니라 "고친 뒤 검증 기회가 아직 없었음" — 코드 재확인으로 확정

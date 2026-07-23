@@ -90,6 +90,7 @@ from config.settings import (
     HEALTH_POLICY_HOT_RELOAD_ENABLED, HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC,
     ENTRY_GRADE_C_AUTO_EXP, C_AUTO_EXP_SIZE_MULT, C_AUTO_EXP_ZONES,  # [P5]
     ENS_CONF_FLOOR_FOR_AUTO,                                          # [239차] C급 conf_floor
+    REGIME_EXHAUSTION_EXT_ATR_THRESHOLD,                              # [379차]
 )
 import config.settings as runtime_settings
 from config.constants import MINI_FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED, DIRECTION_FLAT
@@ -7081,6 +7082,73 @@ class TradingSystem:
                     )
                 except Exception as _ogs_e:
                     logger.warning("[OpenGapShadow] counterfactual 기록 실패 (무해): %s", _ogs_e)
+
+        # [379차 신설] RegimeExhaustionGate(섀도) — hurst<0.45(평균회귀) + 60분 느린
+        # 연장폭(price_extension_atr_60m) 임계 초과 + 10_chase/11_countertrend 소프트
+        # 실패 동시성립 시 "탈진 반전 위험" counterfactual 기록. hurst_gate_shadow·
+        # open_gap_shadow와 달리 "특정 게이트 하나를 무시했다면"이 아니라 "이 복합
+        # 경고 신호 자체가 유효한가"를 묻는 것이라, 별도의 "무시 가정" 조건 없이
+        # 신호 발동 시점 자체를 그대로 기록한다(chase_foreign_combo_watch와 같은
+        # "발동=기록" 철학, 다만 이쪽은 direct DB 기록이라 로그 재파싱이 불필요).
+        # 검증캠페인 [18] regime_exhaustion_watch — §9 사전등록 원칙, 하드 차단 아님.
+        # 읽기 전용 계측 — 실거래 의사결정에 관여하지 않음.
+        _reg_ext_60m = float(features.get("price_extension_atr_60m", 0.0) or 0.0)
+        _reg_hurst_now = float(features.get("hurst", 0.5) or 0.5)
+        _reg_is_chasing_60m = (_reg_ext_60m > 0) == (direction == 1)
+        _reg_chase_failed = not _cr.get("checks", {}).get("10_chase", True) if _cr else False
+        _reg_ctr_failed = not _cr.get("checks", {}).get("11_countertrend", True) if _cr else False
+        _reg_exhaustion_cond = (
+            direction != 0
+            and self.position.status == "FLAT"
+            and _final_grade != "X"
+            and _cr is not None
+            and _reg_hurst_now < HURST_RANGE_THRESHOLD
+            and _reg_is_chasing_60m
+            and abs(_reg_ext_60m) > REGIME_EXHAUSTION_EXT_ATR_THRESHOLD
+            and (_reg_chase_failed or _reg_ctr_failed)
+        )
+        if _reg_exhaustion_cond:
+            try:
+                # hurst<0.45 조건이 이미 보장하므로 버킷은 항상 mean-revert 고정
+                # (hurst_gate_shadow와 동일 근거).
+                _res_mult = (
+                    HURST_REGIME_ATR_MULT.get("mean-revert", {})
+                    if HURST_REGIME_ATR_MULT_ENABLED else {}
+                )
+                _res_stop_mult = ATR_STOP_MULT * _res_mult.get("stop", 1.0)
+                _res_tp1_mult = (
+                    ATR_HORIZON_TP1_MULT.get(_entry_horizon, ATR_TP1_MULT)
+                    * _res_mult.get("tp1", 1.0)
+                )
+                _res_dir_mult = 1 if direction == 1 else -1
+                execute(
+                    TRADES_DB,
+                    """INSERT INTO regime_exhaustion_shadow
+                       (ts, direction, grade, hurst, ext_atr_60m, chase_failed,
+                        countertrend_failed, conf, entry_price, stop_price, tp1_price)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                        "LONG" if direction == 1 else "SHORT",
+                        _final_grade,
+                        _reg_hurst_now,
+                        _reg_ext_60m,
+                        int(_reg_chase_failed),
+                        int(_reg_ctr_failed),
+                        float(confidence),
+                        float(close),
+                        float(close - _res_dir_mult * atr * _res_stop_mult),
+                        float(close + _res_dir_mult * atr * _res_tp1_mult),
+                    ),
+                )
+                log_manager.signal(
+                    f"[RegimeExhaustionGate] (섀도) 탈진 반전 위험 감지 — "
+                    f"hurst={_reg_hurst_now:.3f} ext60m={_reg_ext_60m:+.2f}ATR "
+                    f"chase={'X' if _reg_chase_failed else 'O'} "
+                    f"countertrend={'X' if _reg_ctr_failed else 'O'} (계측만, 미적용)"
+                )
+            except Exception as _res_e:
+                logger.warning("[RegimeExhaustionGate] counterfactual 기록 실패 (무해): %s", _res_e)
 
         # ── [DashboardHistory] STEP7 마스터 게이트 — 조건별 통과 여부 + 차단사유
         # "금일 Conf → 진입단계 추적" 카드가 과거 분봉의 진입 차단 원인을 그대로

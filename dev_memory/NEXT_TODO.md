@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-07-23 (379차 — RegimeExhaustionGate(섀도) 신설, 검증캠페인 [18])
+
+> 상세: `DECISION_LOG.md` 2026-07-23(379차) 항목. 선행: 0723 정기점검 딥다이브 3항.
+
+- [ ] **[379차 최우선] 다음 장중 라이브 첫 발동 확인** — `[RegimeExhaustionGate]
+  (섀도) 탈진 반전 위험 감지...` 로그와 `data/db/trades.db:
+  regime_exhaustion_shadow` 행 적재 확인. 발동 조건(hurst<0.45 + 60분 연장폭
+  >1.5ATR + chase/countertrend 실패)이 실제로 얼마나 자주 걸리는지도 함께
+  관찰(설계 시 "8건 중 3~4건" 추정이었음).
+- [ ] **[379차] n=20(또는 2주) 도달 시 `resolve_and_eval_regime_exhaustion()`
+  판정 확인** — `python scripts/generate_validation_campaign_report.py`로
+  채널 [18] 결과 확인. `SUPPORTS_GATE`면 ①`REGIME_EXHAUSTION_GATE_ENABLED`
+  전환(등급 강등) ②반대방향 신규 진입 시그널 개발(3-2 제안) 두 갈래를
+  주간회의 안건으로.
+- [ ] **[379차] `REGIME_EXHAUSTION_EXT_ATR_THRESHOLD=1.5` 초기값 재보정
+  검토** — `COUNTERTREND_ATR_THRESHOLD`값을 그대로 가져온 추정치. 표본
+  쌓이면 `avg_ext_atr_60m`(리포트 [18] 상세) 실측 분포로 재보정 여부 판단.
+
+---
+
 ## 2026-07-23 (377차 — ChaseForeignComboGuard 표본 체크포인트 n=8/20 등재)
 
 > 상세: `DECISION_LOG.md` 2026-07-23(377차) 항목. 선행: 368차.
