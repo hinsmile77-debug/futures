@@ -15,8 +15,13 @@ class ToxicityGate:
 
     def __init__(
         self,
-        block_threshold: float = 0.78,
-        reduce_threshold: float = 0.58,
+        # [380차] toxicity_score 계측 재설계(features/technical/toxicity.py)에 맞춘
+        # 재보정값. 구값(0.78/0.58)은 원 계측이 실측 최댓값 0.393에 묶여 block이 이력상
+        # 단 한 번도 발동한 적 없던 죽은 임계값이었음(dev_memory 311차, 07-23 딥다이브로
+        # 재확인). 07-14~23 클린 라이브 데이터(n=2690) 백테스트 기준 toxic=0.45→전체의
+        # 0.7%(하루 1~7분), warning=0.28→11.8%(하루 20~100분) 발동하도록 선정.
+        block_threshold: float = 0.45,
+        reduce_threshold: float = 0.28,
         severe_spread_ticks: float = 8.0,
         severe_spread_block_ticks: float = 20.0,
         severe_spread_block_enabled: bool = False,

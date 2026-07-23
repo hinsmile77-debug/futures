@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-07-23 (380차 — toxicity_score 계측 재설계: 5개 stress 공식 재보정 + cancel_churn_ratio 신규)
+
+> 상세: `DECISION_LOG.md` 2026-07-23(380차) 항목. 선행: 311차, 317차·371~372차.
+
+- [ ] **[380차 최우선] 다음 장중 라이브 첫 배선 확인** — `toxicity_score`/
+  `toxicity_regime_code`가 재보정된 임계값(warning=0.28, toxic=0.45)대로 실제
+  급변장에서 반응하는지, `[ToxicityGate] action=reduce/block` 로그가
+  `spread_ticks>=8` 우회 조건이 아니라 score 자체로도 발동하는지 확인.
+- [ ] **[380차] 2~3주 라이브 섀도 관찰 후 `cancel_churn_ratio` ceiling(0.08)
+  재보정 검토 — 주간회의 안건으로.** 신규 피처(`queue_dynamics.py`
+  bid/ask 절대값 합산)라 과거 데이터로 재현검증이 불가능했던 잠정치.
+  `features["cancel_churn_ratio"]` 실측 분포(p90/p95/p99)가 몇 주 쌓인 뒤
+  `toxicity.py`의 `/0.08` 정규화가 여전히 적절한 ceiling인지 확인하고, 필요시
+  317차 Hurst·371~372차 PSI와 동일 절차(그리드서치→실측검증)로 재보정.
+- [ ] **[380차] `queue_stress` 판별력 잔여 의문 별도 조사** — 공식 버그(비율에
+  속도용 나눗셈을 적용해 최댓값 0.333 캡)는 고쳤으나, `queue_depletion_ratio`
+  자체가 급변장에서도 거의 안 움직임(평균편차 0.00057, 07-14~23 클린 데이터).
+  `queue_dynamics.py` 틱단위 depletion/refill 카운팅 로직 자체에 잔여 이슈가
+  있는지 재검토 필요(이번 세션 범위 밖).
+- [ ] **[380차] 2026-06-25~07-13 spread_ticks 등 대량 0.0 결측 구간 원인 조사** —
+  재보정 표본에서 그 구간만 제외했을 뿐 근본원인은 미조사. `collection/cybos/
+  realtime_data.py` 등 bid1/ask1 소스 쪽 문제로 추정되나 확인 필요.
+
+---
+
 ## 2026-07-23 (379차 — RegimeExhaustionGate(섀도) 신설, 검증캠페인 [18])
 
 > 상세: `DECISION_LOG.md` 2026-07-23(379차) 항목. 선행: 0723 정기점검 딥다이브 3항.

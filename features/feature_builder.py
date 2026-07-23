@@ -347,13 +347,17 @@ class FeatureBuilder:
             features["queue_directional_depletion"]   = float(queue_result["queue_directional_depletion"])
             features["imbalance_slope"]               = float(queue_result["imbalance_slope"])
             features["cancel_add_ratio"]              = float(queue_result["cancel_add_ratio"])
+            # [380차] ToxicityGate 전용 무방향 취소폭주 지표 — cancel_add_ratio(부호 있는
+            # 평균)와 달리 bid/ask 절대값 합산이라 반대부호 상쇄가 없다.
+            features["cancel_churn_ratio"]            = float(queue_result["cancel_churn_ratio"])
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] QueueDynamics 오류 — 기본값 사용: %s", _exc)
             features.update({"queue_signal": 0.0, "queue_signal_ma": 0.0,
                              "queue_momentum": 0.0, "queue_depletion_speed": 0.5,
                              "queue_refill_rate": 0.5, "queue_directional_depletion": 0.0,
-                             "imbalance_slope": 0.0, "cancel_add_ratio": 0.0})
+                             "imbalance_slope": 0.0, "cancel_add_ratio": 0.0,
+                             "cancel_churn_ratio": 0.0})
 
         # VPIN — update_tick()이 매 체결 틱마다 누적한 값을 그대로 읽기만 함(버킷 미완성 시
         # 직전 완성 버킷값 유지, bucket_size=1000계약 미달 시 0.0).
@@ -464,8 +468,8 @@ class FeatureBuilder:
                 atr_ratio=features.get("atr_ratio", 1.0),
                 spread_ticks=spread_ticks,
                 mlofi_norm=features.get("mlofi_norm", 0.0),
-                queue_depletion_speed=features.get("queue_depletion_speed", 0.0),
-                cancel_add_ratio=features.get("cancel_add_ratio", 0.0),
+                queue_depletion_ratio=features.get("queue_depletion_speed", 0.5),
+                cancel_churn_ratio=features.get("cancel_churn_ratio", 0.0),
             )
             features["spread_ticks"]          = float(spread_ticks)
             features["toxicity_score"]        = float(toxicity_result["toxicity_score"])

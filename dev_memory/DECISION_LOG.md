@@ -2,6 +2,86 @@
 
 ---
 
+## 2026-07-23 (380차 — toxicity_score 계측 재설계: atr/spread/queue/cancel stress 5종 재보정 + cancel_churn_ratio 신규)
+
+### [재설계] toxicity_score 계측 결함 딥다이브 + 5개 하위성분 데이터 기반 재보정
+
+**배경**: 사용자가 0723 정기점검 딥다이브 3-2 제안("toxicity_score 재검정 후 진입
+필터로 승격 검토 — 오늘처럼 반전이 격렬한 날 스코어가 낮게 유지된 게 계측 결함인지
+확인")을 요청. `raw_data.db`의 `raw_features`(0723, n=385)로 실측한 결과 하루 종일
+`toxicity_regime_code`가 385/385분 전부 "normal"(0), `micro_regime_code`="급변장"
+(4, n=20) 평균 score(0.254)와 "횡보장"(0, n=111) 평균(0.245) 차이가 0.009에 불과 —
+사실상 무구분. `settings.py:1284` 주석(311차, 07-12)이 이미 "실측 최댓값 0.393으로
+reduce_threshold(0.58)에 전혀 못 미쳐 사실상 죽어있고 실제 reduce는 spread_ticks>=8
+단일 폴백이 전담"이라 기록해둔 것과 정확히 일치 — **11일 전에 이미 진단됐으나 근본
+계측은 미수정 상태로 남아있던 결함**.
+
+**원인 3종(features/technical/toxicity.py 원 공식)**:
+1. `atr_stress`: ceiling이 `atr_ratio=3.0`(CB④ 하드정지 임계와 동일)이라 정지
+   직전까지 거의 0.
+2. `spread_stress`: ceiling이 5틱 — 이 시장 평상 스프레드(07-14~23 클린 라이브
+   데이터 n=2690, p50=9.0틱)에서 하루 종일 포화(1.0 고정, 07-14~23 평균 0.9744).
+3. `queue_stress`: 실제 입력값은 [0,1] 비율(`queue_depletion_ratio`, 0.5=균형)인데
+   무한 속도값 전제의 `/3.0`을 그대로 적용 — 수학적으로 최댓값 0.333 영구 캡 +
+   평시에도 0.167 유령 바닥값. Phase 3-B(06-05/06, `queue_dynamics.py`가 절대속도→
+   비율로 교체) 때 이 공식이 갱신 안 된 회귀 버그로 추정.
+4. (부가 발견) `cancel_add_ratio`는 bid/ask 부호 있는 평균이라, 가격이 한쪽으로
+   급하게 뚫릴 때 흔한 "한쪽 취소 우세·반대쪽 추가 우세" 패턴에서 상쇄돼 0 근처로
+   사라지는 구조적 사각지대.
+
+**별도 발견(계산 과정 중)**: 2026-06-25~07-13(3주)은 `spread_ticks`/`mlofi_norm`/
+`queue_depletion_ratio`/`cancel_add_ratio`가 95~100% 행에서 정확히 0.0으로 죽어있다가
+07-14부터 0%로 급격히 정상화됨(원인 미조사, 이번 범위 밖 — bid1/ask1 소스 쪽 문제로
+추정). 재보정 표본은 이 구간을 제외한 07-14~23(n=2690)만 사용.
+
+**구현 5곳**:
+1. `features/technical/toxicity.py` — 5개 stress 공식 전부 데이터 기반 재보정
+   (atr floor=1.0/ceiling=2.0, spread floor=1틱/ceiling=20틱[311차 슬리피지 역산
+   p90=20과 일치], flow floor=0/ceiling=0.12[|mlofi_norm| p99], queue floor=0.5/
+   ceiling=deviation 0.05[|ratio-0.5| max], cancel은 신규 `cancel_churn_ratio`
+   사용/ceiling=0.08[잠정]). regime 임계 0.78/0.58 → 0.45/0.28(07-14~23
+   백테스트로 toxic 0.7%·warning 11.8% 발동하도록 선정).
+2. `features/technical/queue_dynamics.py` — 신규 `cancel_churn_ratio`(bid/ask
+   절대값 합산, 무방향) 추가. 기존 `cancel_add_ratio`(부호 있음, EnsembleGater
+   weight 0.10·GBM/SGD 피처로 이미 사용 중)는 완전히 그대로 보존.
+3. `features/feature_builder.py` — `cancel_churn_ratio` 배선, `ToxicityCalculator.
+   update()` 키워드 인자명(`queue_depletion_ratio`/`cancel_churn_ratio`) 정합화.
+4. `strategy/risk/toxicity_gate.py` — `block_threshold`/`reduce_threshold`
+   0.78/0.58 → 0.45/0.28.
+5. `config/settings.py` — `SCALER_CLIP_FEATURES`의 `toxicity_atr_stress`(0.75)·
+   `toxicity_cancel_stress`(0.5) 클립 상한이 재보정으로 되살린 꼬리신호를 GBM
+   입력 직전에 도로 깎던 문제 발견 → (0.0, 1.0)로 완화(공식 자체가 이미 [0,1]
+   보장이라 사실상 no-op 안전판).
+
+**검증**: 재보정 후 실제 raw_features 재생(07-14~23, n=2690) — 급변장(regime=4)
+평균 score 0.257 vs 횡보장(regime=0) 0.177·추세장(regime=2) 0.176로 뚜렷이 분리
+(구 공식 0.254 vs 0.245 무구분과 대비). `ToxicityCalculator`/`ToxicityGate` 모듈
+단위 smoke test로 calm/violent 시나리오, 빈 틱 분기 모두 정상 동작 확인. **라이브
+미검증**(코드 변경만, 다음 장중 실배선 후 실측 필요).
+
+**Why**: 하드코딩된 계측값을 그대로 쓰기보다, 이 시장의 실제 분포(07-14~23 클린
+라이브 데이터)로 floor/ceiling을 재도출 — CLAUDE.md에 이미 문서화된 Hurst(317차)·
+PSI(371차) 재보정 방법론과 동일 원칙("이론적 도메인 범위가 아니라 실측 분포로
+캘리브레이션").
+
+**How to apply**: `queue_stress`는 공식은 고쳤지만 `queue_depletion_ratio` 자체의
+실측 변동폭이 급변장에서도 매우 좁아(평균편차 0.00057, 추세장 0.00104보다도 작음)
+재설계 후에도 판별력이 약할 수 있음 — `queue_dynamics.py` 틱단위 계산 자체의 잔여
+이슈 가능성은 별도 조사 필요(이번 범위 밖). `cancel_churn_ratio` ceiling(0.08)은
+신규 피처라 과거 데이터로 재현검증 불가한 잠정치 — **2~3주 라이브 섀도 관찰 후
+재보정 필요(317차 Hurst·371~372차 PSI와 동일 절차) — 주간회의 안건으로**.
+2026-06-25~07-13 구간의 spread_ticks 등 대량 0.0 결측은 원인 미상, 별도 조사
+필요(이번 세션 범위 밖).
+
+**구현**: `features/technical/toxicity.py`, `features/technical/queue_dynamics.py`,
+`features/feature_builder.py`, `strategy/risk/toxicity_gate.py`, `config/
+settings.py`.
+
+**관련**: `NEXT_TODO.md` 동일 날짜(380차) 항목. 선행: 311차(원 결함 최초 진단),
+317차·371~372차(동일 재보정 방법론 선례).
+
+---
+
 ## 2026-07-23 (379차 — RegimeExhaustionGate(섀도) 신규 구현 — 검증캠페인 [18] regime_exhaustion_watch)
 
 ### [신설] 0723 딥다이브 3-2 제안 구현 — 60분 느린 연장폭 + hurst 평균회귀 + chase/countertrend 소프트실패 동시성립 시 "탈진 반전" counterfactual 기록
