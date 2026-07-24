@@ -2,6 +2,61 @@
 
 ---
 
+## 2026-07-24 (381차 — EOD 재학습 "크래시" 딥다이브: Task Scheduler 30분 강제종료 확인 + 킬 이후 스텝 수동완료 + 캠페인 스크립트 mojibake 근본원인 수정)
+
+### [진단] 0724 분위회귀재학습 "크래시"는 코드 예외가 아니라 Task Scheduler ExecutionTimeLimit(30분) 강제종료
+
+**배경**: 사용자가 `logs/retrain_eod_20260724.log`가 분위 회귀 재학습 도중 끊긴 것을
+보고 크래시 원인 딥다이브를 요청.
+**발견**: 로그 마지막 줄의 `rc=3221225786`은 `0xC000013A`(`STATUS_CONTROL_C_EXIT`)
+— 파이썬 예외가 아니라 OS 강제종료 코드. `schtasks /Query /TN MireukiEODRetrain
+/XML`로 확인한 결과 `<ExecutionTimeLimit>PT30M</ExecutionTimeLimit>`이 15:45:00
+시작 기준 16:15:00에 정확히 걸림(로그 종료 시각과 초 단위 일치). 오늘은
+`daily_close()` 완료 확인이 평소(15:40대)보다 20분 늦은 16:00:17에 찍혀 30분
+예산의 절반 이상을 대기가 이미 소모했고, 이후 EOD 재학습+검증캠페인 6스텝
+(게이트ablation/판정리포트/섀도TB재학습/분위회귀재학습/메타라벨분류기재학습/
+격주MAE·MFE)을 남은 시간 안에 못 마치고 분위회귀재학습(15m 호라이즌 학습 중)
+단계에서 프로세스 트리 전체가 강제종료됨. `retrain_eod_*.log` 전수조사 결과
+"주간 스텝 6개 실행"이 실제로 끝까지 실행된 로그는 오늘이 최초 — 이 주간
+캠페인 체인이 15:45 자동 스케줄에서 처음 전체 실행되며 처음 드러난 시간예산
+충돌로 판단.
+**후속 조치**: 사용자 요청으로 킬 이후 잔여 스텝(메타라벨 분류기 재학습, 격주
+MAE/MFE 분석 — ISO 30주차 짝수라 대상)을 py310_64로 수동 실행(둘 다 rc=0),
+오늘자 로그에 "수동재개"로 명시해 이어붙임(자동실행으로 위장하지 않음).
+분위회귀 15m/30m는 재실행하지 않음 — 다음 금요일 자동 실행에서 갱신 예정.
+**결정**: 코드 변경 없음(진단·수동 완료 전용). `ExecutionTimeLimit` 30분→1시간
+상향은 사용자에게 GUI/schtasks 적용 방법을 안내했으나 **이번 세션에서는
+미적용** — 다음 금요일(주간 캠페인 재실행) 전에 반드시 적용 필요(NEXT_TODO
+381차 항목).
+**관련**: `scripts/campaign_steps.py`(스텝별 개별 timeout=1800s이나 Task
+Scheduler 전체 한도 30분과 불일치가 근본 구조), 379~380차(같은 주 앞선 세션,
+이 진단과는 무관).
+
+### [수정] 검증캠페인 서브프로세스 6개 스크립트 mojibake 근본원인 수정 — stderr UTF-8 미설정
+
+**File**: `scripts/generate_gate_ablation_report.py`,
+`generate_validation_campaign_report.py`, `analyze_mae_mfe.py`,
+`train_quantile_regressor.py`, `run_shadow_triple_barrier_retrain.py`,
+`train_meta_label_classifier.py`
+**증상**: 오늘 로그의 섀도TB재학습 구간에 `ȣ������   ����` 같은 깨진 한글 출력.
+**원인**: `campaign_steps.py`가 각 스텝의 stdout+stderr(`stderr=subprocess.STDOUT`)를
+병합해 UTF-8로 decode하는데, `run_shadow_triple_barrier_retrain.py`/
+`train_meta_label_classifier.py`는 `sys.stdout.reconfigure(encoding="utf-8")`
+블록 자체가 누락돼 있었고, 이미 그 블록이 있던 4개 스크립트도
+`logging.basicConfig`의 기본 스트림인 `sys.stderr`는 reconfigure하지 않아
+콘솔 기본 codepage(cp949 추정)로 인코딩된 채 나갔음(logger.info 메시지에
+한글이 포함될 때만 증상 발현 — 이래서 일부 스크립트는 우연히 무증상이었음).
+**수정**: 6개 스크립트 전부에 `sys.stdout.reconfigure`+`sys.stderr.reconfigure`를
+함께 적용(누락 2개는 블록 신규 추가, 기존 4개는 stderr 라인 보강).
+**검증**: `train_meta_label_classifier.py`·`run_shadow_triple_barrier_retrain.py`
+재실행(py310_64)으로 한글 정상 출력 확인, 모델 산출값은 재실행 전과 동일
+(재현성 문제 아님). 오늘자 로그의 과거 깨진 줄은 원본 그대로 보존하고,
+원인·수정 사실만 새 줄로 추가.
+**관련**: `data/validation_campaign_metrics.json`(관련 리포트 산출물, 커밋
+대상 아님).
+
+---
+
 ## 2026-07-23 (380차 — toxicity_score 계측 재설계: atr/spread/queue/cancel stress 5종 재보정 + cancel_churn_ratio 신규)
 
 ### [재설계] toxicity_score 계측 결함 딥다이브 + 5개 하위성분 데이터 기반 재보정
