@@ -34,6 +34,7 @@ if str(ROOT) not in sys.path:
 # Windows 콘솔 cp949 코드페이지에서 한글 출력 시 UnicodeEncodeError 방지
 try:
     sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
