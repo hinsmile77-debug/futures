@@ -12,12 +12,12 @@
 
 > 상세: `DECISION_LOG.md` 2026-07-24(381차) 항목.
 
-- [ ] **[381차 최우선] `MireukiEODRetrain` 스케줄 작업 `ExecutionTimeLimit`
-  30분→1시간 상향 적용 필요** — 아직 미적용 상태. 오늘 분위회귀재학습이 15m
-  호라이즌 학습 중 30분 한도로 강제종료(`STATUS_CONTROL_C_EXIT`)됐음. 다음
-  금요일(주간 검증캠페인 자동 실행) 전에 반드시 적용하지 않으면 동일 재발
-  — `schtasks /Change /TN MireukiEODRetrain ...` 또는 작업 스케줄러 GUI
-  "설정" 탭에서 변경.
+- [DONE 2026-07-24] **`MireukiEODRetrain` 스케줄 작업 `ExecutionTimeLimit` 상향**
+  — 사용자가 GUI로 "2시간"으로 변경했다고 알렸으나, `schtasks /Query ... /XML`
+  실측 결과 실제 적용값은 `PT1H`(1시간). 기능적으로는 문제 없음(권장했던
+  1시간 이상 조건 충족, 오늘 실측 예산 초과분(daily_close 대기 20분 지연 +
+  캠페인 6스텝)을 충분히 흡수 가능) — 다만 사용자가 의도한 값(2시간)과
+  실제 반영값(1시간)이 다르다는 점은 알려드림, 2시간을 원하시면 재설정 필요.
 - [ ] **[381차] 분위 회귀 재학습 15m/30m 미갱신 상태** — 오늘 킬로
   1m/3m/5m/10m만 갱신, 15m/30m는 구모델(또는 미생성) 유지. 다음 금요일
   자동 실행으로 갱신되나, 급하면 `python scripts/train_quantile_regressor.py`
