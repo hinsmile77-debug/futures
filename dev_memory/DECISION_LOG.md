@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-07-26 (382차 — ThresholdRecalibrator에 run_if_due() 패턴 적용, 375차 지적 사각지대 해소)
+
+### [수정] ThresholdRecalibrator "정확히 금요일에만" 실행 구조를 atr_ceiling/entry_horizon_recalibrator와 동일한 run_if_due() 패턴으로 통일
+
+**File**: `learning/threshold_recalibrator.py`, `main.py:9078`
+**배경**: 375차가 조사 중 `ThresholdRecalibrator`가 07-17(금) 세션 누락(휴장
+추정)으로 그 주 재보정이 통째로 빠진 것을 발견했고, `entry_horizon_recalibrator`는
+이미 `run_if_due()`(마지막 실행 후 7일 경과 시에만 실행)로 이 사각지대에
+강건하지만 원조인 `ThresholdRecalibrator` 자체는 고쳐지지 않은 채 남아있음을
+지적했다(NEXT_TODO 375차 항목). 사용자가 이번 세션에서 동일 패턴 적용을 요청.
+**수정**: `ThresholdRecalibrator`에 `RUN_INTERVAL_CAL_DAYS=7`,
+`_last_run_date()`(`threshold_log` 테이블 `MAX(date)` 조회), `should_run()`,
+`run_if_due()`를 `ATRCeilingRecalibrator`/`EntryHorizonRecalibrator`와 동일한
+형태로 추가. `main.py:9081` 호출부를 `self.threshold_recalibrator.run(...)` →
+`.run_if_due(...)`로 교체(금요일 게이트 자체는 유지 — 다른 두 재보정기와 동일
+구조: `daily_close()`가 그 금요일에 아예 안 돌면 다음 금요일에 elapsed>=7로
+자동 캐치업된다).
+**검증**: `python -m py_compile learning/threshold_recalibrator.py main.py`
+통과. 코드 변경만이라 라이브 미검증 — 다음 정상 개장 금요일에 `[ThresholdRecal]`
+로그 정상 출력 확인 필요.
+**관련**: 375차(사각지대 원 발견), 303차(`ATRCeilingRecalibrator` 최초 도입,
+`run_if_due` 원형), `NEXT_TODO.md` 382차 항목.
+
+---
+
 ## 2026-07-24 (381차 — EOD 재학습 "크래시" 딥다이브: Task Scheduler 30분 강제종료 확인 + 킬 이후 스텝 수동완료 + 캠페인 스크립트 mojibake 근본원인 수정)
 
 ### [진단] 0724 분위회귀재학습 "크래시"는 코드 예외가 아니라 Task Scheduler ExecutionTimeLimit(30분) 강제종료

@@ -39,6 +39,11 @@ class ThresholdRecalibrator:
     # 연속). HORIZON_THRESHOLDS 수동 재보정(2026-07-03, 21거래일)과 동일 윈도우로 통일해
     # "최근 레짐 기준"이라는 재보정 취지에 맞춘다.
     LOOKBACK_TRADING_DAYS = 21
+    # [376차] 주 1회, 휴장 등으로 특정 금요일 세션이 없었던 경우를 대비해
+    # "마지막 실행 후 7일 이상 경과 시"로 재트리거 (atr_ceiling/entry_horizon
+    # _recalibrator와 동일 패턴). 종전엔 "정확히 금요일"에만 run()을 호출해
+    # 그 금요일 daily_close 자체가 안 돌면 해당 주가 통째로 누락됐다(07-17 공백).
+    RUN_INTERVAL_CAL_DAYS = 7
 
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
@@ -47,6 +52,30 @@ class ThresholdRecalibrator:
             db_path = os.path.join(DB_DIR, "threshold_monitor.db")
         self.db_path = db_path
         self._init_db()
+
+    # ── 실행 간격 게이트 ─────────────────────────────────────────
+    def _last_run_date(self) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT MAX(date) FROM threshold_log").fetchone()
+        return row[0] if row and row[0] else None
+
+    def should_run(self, today: str) -> bool:
+        last = self._last_run_date()
+        if last is None:
+            return True
+        elapsed = (
+            datetime.date.fromisoformat(today) - datetime.date.fromisoformat(last)
+        ).days
+        return elapsed >= self.RUN_INTERVAL_CAL_DAYS
+
+    def run_if_due(self, today: Optional[str] = None) -> Dict[str, dict]:
+        """간격 조건을 만족할 때만 run() 실행. 아니면 {}(스킵)."""
+        if today is None:
+            today = datetime.date.today().isoformat()
+        if not self.should_run(today):
+            logger.debug("[ThresholdRecal] 재실행 간격 미도달 — 스킵")
+            return {}
+        return self.run(today)
 
     # ── DB 초기화 ────────────────────────────────────────────────
     def _init_db(self):
