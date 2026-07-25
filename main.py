@@ -9014,10 +9014,13 @@ class TradingSystem:
         except Exception as _dae:
             logger.warning("[DriftAdjuster] 갱신 실패 (스킵): %s", _dae)
 
-        # ── Phase A 임계값 재보정 모니터 (매주 금요일만 실행) ────────
+        # ── Phase A 임계값 재보정 모니터 (376차, 금요일 + 최근 실행 후 7일
+        #    이상 경과 시에만 — atr_ceiling/entry_horizon_recalibrator와 동일
+        #    패턴으로 교체. 종전엔 "정확히 금요일"에만 run()해 휴장 등으로 그
+        #    금요일 세션이 없으면 해당 주가 통째로 누락됐다(07-17 공백 확인).
         if now.weekday() == 4:   # 금요일
             try:
-                recal_results = self.threshold_recalibrator.run(
+                recal_results = self.threshold_recalibrator.run_if_due(
                     today=now.date().isoformat()
                 )
                 alerts = {h: r["alert"] for h, r in recal_results.items() if r["alert"] != "CLEAR"}

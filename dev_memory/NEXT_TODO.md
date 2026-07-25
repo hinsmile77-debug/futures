@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-07-26 (382차 — ThresholdRecalibrator에 run_if_due() 패턴 적용)
+
+> 상세: `DECISION_LOG.md` 2026-07-26(382차) 항목. 선행: 375차.
+
+- [DONE 2026-07-26] **[375차 항목 처리] ThresholdRecalibrator를
+  entry_horizon_recalibrator와 동일한 `run_if_due()` 패턴으로 통일** —
+  `learning/threshold_recalibrator.py`에 `RUN_INTERVAL_CAL_DAYS=7`/
+  `should_run()`/`run_if_due()` 추가, `main.py:9081` 호출부를 `.run()` →
+  `.run_if_due()`로 교체.
+- [ ] **[382차] 다음 정상 개장 금요일 라이브 검증** — `[ThresholdRecal]` 로그
+  정상 출력, `threshold_monitor.db:threshold_log` 행 적재 확인.
+
+---
+
 ## 2026-07-24 (381차 — EOD 재학습 킬 딥다이브 + 검증캠페인 스크립트 mojibake 수정)
 
 > 상세: `DECISION_LOG.md` 2026-07-24(381차) 항목.
@@ -144,12 +158,13 @@
   로그 정상 출력, `threshold_monitor.db:entry_horizon_log`에 행 적재
   확인. 374차 항목에도 있던 "다음 장중 entry_horizon 다양성 확인"과
   함께 볼 것.
-- [ ] **[375차] `ThresholdRecalibrator` 07-17(금) 세션 누락 확인** — 375차
-  조사 중 발견(로그 파일 자체가 없어 휴장으로 추정, 코드 버그는 아닌 것으로
-  판단했으나 확정은 아님). `entry_horizon_recalibrator`는 `run_if_due()`로
-  이미 이 문제에 강건하게 설계했지만, `ThresholdRecalibrator`는 여전히
-  "정확히 금요일에만" 방식이라 같은 휴장 사각지대가 남아있음 — 여유 있을 때
-  동일한 `run_if_due()` 패턴으로 통일할지 검토.
+- [x] **[375차 항목, 382차에서 처리] `ThresholdRecalibrator` 07-17(금) 세션
+  누락 확인** — 375차 조사 중 발견(로그 파일 자체가 없어 휴장으로 추정, 코드
+  버그는 아닌 것으로 판단했으나 확정은 아님). `entry_horizon_recalibrator`는
+  `run_if_due()`로 이미 이 문제에 강건하게 설계했지만, `ThresholdRecalibrator`는
+  여전히 "정확히 금요일에만" 방식이라 같은 휴장 사각지대가 남아있음 — 여유
+  있을 때 동일한 `run_if_due()` 패턴으로 통일할지 검토. → **382차가 동일
+  패턴으로 통일 완료**, 아래 382차 항목 참조.
 
 ---
 
