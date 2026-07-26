@@ -1,0 +1,38 @@
+"모드필터" 차단 사유 설명
+위치: main.py:6692-6703, 7038-7043 (STEP7 진입 게이트의 2순위 체크)
+
+동작 원리
+대시보드에는 진입 모드(auto / hybrid / manual) 토글이 있고, 이 모드에 따라 자동진입을 허용하는 신호 등급이 다릅니다.
+
+
+entry_mode = self.dashboard.get_entry_mode()   # 현재 대시보드에서 선택된 모드
+allowed_grades = {
+    "auto":   ["A"],           # A급만 자동진입
+    "hybrid": ["A", "B"],      # A·B급 자동진입
+    "manual": ["A", "B", "C"], # A·B·C급 전부 자동진입
+}
+mode_filter_passed = _final_grade in allowed_grades.get(entry_mode, ["A", "B", "C"])
+즉 신호 자체(체크리스트·게이트)는 다 통과했더라도, 신호 등급이 지금 선택된 모드가 허용하는 등급보다 낮으면 여기서 걸러집니다. 차단되면 다음 로그가 남습니다.
+
+
+[모드필터] {등급}급 신호 → {entry_mode} 모드({허용등급리스트}) 불일치 — 진입 차단
+STEP7 게이트 안에서의 위치
+main.py의 STEP7(진입 판단)은 16가지 조건을 순서대로 검사하는데, 모드필터는 1순위 L2(수익 보존) 체크 통과 후 2순위로 걸리는 조건입니다 (docs/Ref/앙상블진입판단_진입실행_흐름상세.md:119 참조). 화면의 "8. STEP7 차단"은 파이프라인 STEP7 단계에서, 그리고 16조건 중 모드필터 조건에서 최종적으로 막혔다는 뜻입니다.
+
+스크린샷 10:25 행 해석
+grade=C 신호가 차단됐다는 건, 그 시점 대시보드 진입 모드가 auto(A급만 허용) 또는 hybrid(A·B급만 허용) 로 설정돼 있어 C등급 신호가 허용 리스트 밖이었다는 의미입니다. manual 모드였다면 C급도 통과했을 겁니다. 진입 모드는 dashboard/main_dashboard.py:4228의 current_mode 값이며, 대시보드 상단의 모드 토글 버튼으로 전환합니다.
+
+시점(시간대)별 구분은 없습니다. 모드필터의 허용 등급 테이블은 하루 종일 고정된 값 하나뿐입니다.
+
+
+# main.py:6698-6703, 7038-7043 — 완전히 동일한 딕셔너리가 두 곳에 중복 정의됨
+allowed_grades = {
+    "auto":   ["A"],
+    "hybrid": ["A", "B"],
+    "manual": ["A", "B", "C"],
+}
+mode_filter_passed = _final_grade in allowed_grades.get(entry_mode, ["A", "B", "C"])
+entry_mode는 대시보드 토글(dashboard.get_entry_mode())로만 바뀌고, time_zone(OPENING/STABLE_TREND/LUNCH_RECOVERY 등 장중 구간)이나 시각 값은 전혀 참조하지 않습니다.
+코드 전체에서 allowed_grades를 참조하는 곳은 main.py의 이 두 지점뿐이고 (main.py:6698, 7038, 그리고 로그 출력부 6923/7190/7194), 둘 다 완전히 동일한 고정 리스트입니다.
+time_zone은 다른 로직(예: 5411 get_horizon_min_confs, 5441 get_zone_min_confidence, 5731 checklist의 STABLE_TREND reduce_thr 완화)에는 영향을 주지만, 모드필터의 허용 등급 자체에는 관여하지 않습니다.
+즉 auto=A만/hybrid=A·B/manual=A·B·C 규칙은 09:00~15:10 내내 동일하게 적용되며, 개장 초반이든 점심시간이든 등급 허용 기준이 달라지지 않습니다.

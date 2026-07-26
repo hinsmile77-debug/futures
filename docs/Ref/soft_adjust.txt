@@ -1,0 +1,35 @@
+soft_adjust는 model/ensemble_gater.py AdaptiveEnsembleGater.apply()의 미시구조 게이트가 내리는 3가지 판정 중 하나입니다.
+
+동작 원리 (ensemble_gater.py:88-100)
+
+미시구조 신호 6개(micro_bias, mlofi_norm, queue_signal, cancel_add_ratio, depth_bias, mlofi_slope)를 예측 방향에 맞춰 정렬한 뒤 가중합해서 gate_strength를 계산하고, 그 강도에 따라 셋 중 하나로 분기합니다.
+
+reason	조건	처리
+blocked_by_microstructure	gate_strength ≤ -0.28 AND 강한 역행 신호(≥0.6) 2개 이상	conf 최대 -0.12 페널티
+boosted_by_microstructure	gate_strength ≥ 0.22 AND 강한 지지 신호(≥0.6) 2개 이상	conf 최대 +0.12 부스트
+soft_adjust	위 두 조건 다 미충족 (애매한 구간)	delta = clip(gate_strength × 0.04, -0.04, +0.04)
+즉 soft_adjust는 "확실히 막을 정도도, 확실히 밀어줄 정도도 아닌" 애매한 미시구조 상태에서, gate_strength 부호·크기에 비례해 conf를 ±0.04 이내로만 살짝 다듬는 경우입니다. 차단(block)도 부스트(boost)도 아닌 기본값에 가까운 미세 조정이라고 보시면 됩니다.
+
+스크린샷의 10:52·10:55 행(UP, C등급)은 이 soft_adjust가 적용돼 conf가 소폭만 흔들린 케이스입니다.
+
+
+1. "pass"의 의미
+
+DB에 저장된 gate_reason이 "inactive"이거나 아예 비어있을 때 대시보드가 대체로 찍는 문자열입니다. 즉 미시구조 게이트가 신호를 평가해서 "통과시켰다"는 뜻이 아니라, 애초에 그 봉에서는 게이트가 작동 자체를 안 했다(inactive) 는 뜻입니다.
+
+inactive가 나오는 조건은 model/ensemble_gater.py:59-70의 apply() 진입부입니다:
+
+
+if direction not in (DIRECTION_UP, DIRECTION_DOWN) or not features:
+    ...
+    "reason": "inactive",
+즉 최종 방향이 FLAT이거나(방향성 없음), 또는 미시구조 features 자체가 비어있을 때 게이트를 건너뛰고 즉시 "inactive"를 반환합니다.
+
+2. 미시구조와 무관한 pass가 맞는지
+
+맞습니다. 스크린샷에서 dir=F(flat)인 두 행(10:49, 10:53)이 gate=pass였고, dir=UP인 행(10:52, 10:55)만 soft_adjust가 찍힌 것이 정확히 이 로직과 일치합니다.
+
+dir=F → ensemble_decision.py:657-664에서 gater.apply()가 호출되긴 하지만, direction이 UP/DOWN이 아니므로 즉시 "inactive" → 대시보드는 "pass"로 표시
+dir=UP → 게이트가 실제로 미시구조 신호 6종을 평가 → soft_adjust/boosted_by_microstructure/blocked_by_microstructure/neutral_noop 중 하나로 판정
+정리하면: pass는 "미시구조 게이트가 검사해서 무해하다고 판단한 결과"가 아니라 "이번 봉은 방향이 FLAT이라 게이트 대상이 아니었다"는 표시입니다. 실제로 게이트가 평가에 관여한 흔적을 보려면 soft_adjust / boosted_by_microstructure / blocked_by_microstructure / neutral_noop 값을 봐야 합니다.
+

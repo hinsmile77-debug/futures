@@ -1,0 +1,3 @@
+
+
+& "C:\Users\82108\anaconda3\envs\py310_64\python.exe" "C:\Users\82108\PycharmProjects\futures\scripts\generate_validation_campaign_report.py" --days 28 
