@@ -29,6 +29,7 @@ from config.settings import (
     CONF_STUCK_BOOST_ENABLED, CONF_STUCK_BOOST_SOURCE, CONF_STUCK_BOOST_TARGET,
     CONF_STUCK_BOOST_MIN_STREAK, CONF_STUCK_BOOST_TRANSFER_RATIO,
     CONF_STUCK_BOOST_TARGET_MIN_ACC,
+    ENTRY_HORIZON_LOW_BLOCK, ENTRY_HORIZON_B1, ENTRY_HORIZON_B2,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from model.ensemble_gater import AdaptiveEnsembleGater
@@ -230,23 +231,8 @@ def compute_cascade_coherence(horizon_proba):
     return aligned / len(directional)
 
 
-# [374차 재보정] 원래 경계(0.8/1.5/2.5)는 entry_horizon 필드가 기록되기
-# 시작한 2026-07-09부터 07-23까지 61건 실거래 전부를 "5m"로만 분류했음
-# (1m/3m 버킷 0건) — 06-01~07-23 실측 threshold_feasibility 분포(p1=2.50,
-# p50=3.75, p90=4.75)가 옛 경계보다 훨씬 위에서 형성돼 "1m"/"3m" 버킷이
-# 죽은 코드였음. TP1이 상시 ATR×0.7(5m 배수)로 고정된 결과를 반영해 TP1을
-# 못 찍고 전량 손절된 38개 포지션을 1분봉 경로로 재구성한 결과, 76%(29/38)가
-# TP1=ATR×0.3(1m 배수)였다면 손절 전에 이익구간을 지났을 것으로 확인(합계
-# 개선 약 +738,680원, 2주 표본). 아래 값은 06-01~07-23 표본의 삼분위수
-# (p33=3.54, p66=3.98)로 재설정 — 3-way 적응형 분류를 다시 실제로 작동시킴.
-# 저변동성 차단(LOW_BLOCK)은 최근 표본에서 도달한 적이 없어 안전판으로 유지.
-#
-# [375차] learning/entry_horizon_recalibrator.py가 매주 금요일 이 두 값을
-# 최근 21거래일 기준으로 재계산해 경보만 남긴다(ThresholdRecalibrator와
-# 동일 원칙 — 자동 반영 없음, 사용자 확인 후 이 상수를 수동 갱신할 것).
-ENTRY_HORIZON_LOW_BLOCK = 0.8   # 저변동성 → 진입 차단
-ENTRY_HORIZON_B1        = 3.5   # 1m/3m 경계 [374차: 1.5→3.5]
-ENTRY_HORIZON_B2        = 4.0   # 3m/5m 경계 [374차: 2.5→4.0]
+# [374차/375차] entry_horizon 경계값(ENTRY_HORIZON_LOW_BLOCK/B1/B2)은
+# config/settings.py로 이전됨 — HORIZON_THRESHOLDS_BASE 옆 참조(재보정 이력 주석 포함).
 
 
 def select_entry_horizon(atr, threshold_1m):

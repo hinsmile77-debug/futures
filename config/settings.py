@@ -221,6 +221,23 @@ HORIZON_THRESHOLDS = {
 # rolling σ 방법3 도입 후 ATR 동적 갱신 제거 (P2) — BASE는 참조 기준으로 유지
 HORIZON_THRESHOLDS_BASE: dict = dict(HORIZON_THRESHOLDS)
 
+# entry_horizon(select_entry_horizon) 3-way 분류 경계값 — feasibility =
+# atr / (HORIZON_THRESHOLDS["1m"] × close) 를 1m/3m/5m TP1 목표폭(ATR×0.3/0.5/0.7)
+# 버킷으로 나누는 기준. [374차] 원 설계값(0.8/1.5/2.5)이 06-01~07-23 실측 분포와
+# 어긋나 61건 실거래 전부 "5m" 고정으로 죽어있던 버그를 발견, 손익검증(38건,
+# 개선 약 +738,680원, 2주 표본) 후 06-01~07-23 표본의 삼분위수(p33=3.54, p66=3.98)로
+# 재설정 — 3-way 적응형 분류를 다시 실제로 작동시킴. 저변동성 차단(LOW_BLOCK)은
+# 최근 표본에서 도달한 적이 없어 안전판으로 유지.
+# [375차] learning/entry_horizon_recalibrator.py가 매주 금요일 이 두 값을 최근
+# 21거래일 기준으로 재계산해 경보만 남긴다(ThresholdRecalibrator와 동일 원칙 —
+# 자동 반영 없음, 사용자 확인 후 이 상수를 수동 갱신할 것).
+# [원래 model/ensemble_decision.py 모듈 상수였으나, HORIZON_THRESHOLDS와 동일한
+# "재보정 대상 값은 config/settings.py에 둔다" 관행에 맞춰 이전 — HORIZON_THRESHOLDS_BASE
+# 바로 옆에 두어 두 값이 한 몸(feasibility 분자/분모)임을 드러냄.]
+ENTRY_HORIZON_LOW_BLOCK = 0.8   # 저변동성 → 진입 차단
+ENTRY_HORIZON_B1        = 3.5   # 1m/3m 경계 [374차: 1.5→3.5]
+ENTRY_HORIZON_B2        = 4.0   # 3m/5m 경계 [374차: 2.5→4.0]
+
 # 연구용 비대칭 임계값 — 고정값, ATR 동적 갱신 대상 아님
 # 2026-04-28~05-29 상승 추세 구간 산출. 추세 소멸 후 재검토 필요.
 # 운영: HORIZON_THRESHOLDS (대칭) / 연구: HORIZON_THRESHOLDS_RESEARCH (비대칭)
