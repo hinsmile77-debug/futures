@@ -11,7 +11,8 @@
       "quality_* / feature_degraded / entry_ok 등 메타 피처는 모델 입력 제외",
       "macro_vix_chg: Phase A 수집은 완료, transformer 출력 추가 필요 (현재는 macro_vix로 대체)",
       "[2026-07-13/14 딥다이브] 무스킬_피처셋_딥다이브_보고서_2026-07-13.md §4 반영 — 1m/3m/15m include 개편(무정보 피처 정리 + 포지셔닝 블록 편입). opt_gex_bn/opt_chain_pcr/opt_atm_call_oi/opt_atm_put_oi/threshold_feasibility는 최신구간 ρ 재현 실패(F4)로 include→include_pending_validation 강등, opt_gex_sign/opt_atm_pcr(sign/ratio 계열, 부분 생존)로 대체 후보 승격. 전부 P0-1(레지스트리 97→선별 복구, 사용자 결정 대기) 완료 전까지 미탑재 상태 유지. 다음 재학습부터 반영, purged WFA 게이트 통과 확인 필요.",
-      "[2026-07-23 373차 딥다이브] 5m은 07-13/14 딥다이브 범위 밖(H2 후속-B로만 언급, 미착수)이었으나 0723 실거래 8건 전부가 entry_horizon=5m이라 처음 실측. 기존 include 중 cvd_monotone_ratio·va_bandwidth·macro_vix·opt_pcr_slope_norm(06-15 설계 당시 SHAP↑/유의로 등록됐던 것들) 4개가 06-01~07-23 최신 구간에서 전부 무정보(p 0.079~0.54)로 재현 실패해 exclude로 이동. ema_cross(부호일치율 53.7%)·bb_position·poc_distance·ret_15m·poc_above·vwap_position·cvd_slope는 동일 검증에서 전부 유의·반분안정 확인돼 그대로 유지. purged WFA CV 결과는 DECISION_LOG 373차 후속 항목 참조."
+      "[2026-07-23 373차 딥다이브] 5m은 07-13/14 딥다이브 범위 밖(H2 후속-B로만 언급, 미착수)이었으나 0723 실거래 8건 전부가 entry_horizon=5m이라 처음 실측. 기존 include 중 cvd_monotone_ratio·va_bandwidth·macro_vix·opt_pcr_slope_norm(06-15 설계 당시 SHAP↑/유의로 등록됐던 것들) 4개가 06-01~07-23 최신 구간에서 전부 무정보(p 0.079~0.54)로 재현 실패해 exclude로 이동. ema_cross(부호일치율 53.7%)·bb_position·poc_distance·ret_15m·poc_above·vwap_position·cvd_slope는 동일 검증에서 전부 유의·반분안정 확인돼 그대로 유지. purged WFA CV 결과는 DECISION_LOG 373차 후속 항목 참조.",
+      "[2026-07-26 고도화2 진행점검] 07-24 EOD 재학습으로 1m/3m/5m/15m 개편(331차·373차)이 실제로 라이브 배포됨을 pkl 직접 로드로 확인(feature_names_{1,3,5,15}m.pkl). P0-2(cvd_direction->cvd_delta_norm)·P2-2(program_arb_net/prev_day_same_hour_ret 배선수리) 전부 라이브 확인 완료. 단 1m include의 queue_directional_depletion·micro_regime_code는 여전히 이 PC 레지스트리(97개)에 없어 라이브 8피처에서 누락 확인(위 pkl 필드 정정, DYNAMIC_FEATURES_POOL 등록 완료). 3m/5m 개편은 사후 분해분석(scripts/feature_ablation_purged_cv.py) 완료 — 5m은 va_bandwidth 단독이 하락 원인이고 제거가 옳았음을 확인, macro_vix/cvd_monotone_ratio/opt_pcr_slope_norm은 중립. 3m은 ema_cross·vwap_position이 순기여, poc_distance/bb_position/microprice_depth_bias는 중립~약한 역기여, cvd_delta_norm 단독 교체는 음(-2.72%p)이나 5개 추가 총합이 상쇄해 순계는 양(+1.14%p). basis_pt/basis_change_pt는 표본 확대(2,953행, ~8거래일) 후 재검증 결과 전 호라이즌 무정보(p 0.42~0.94)로 재현 실패 — 07-13 보고서의 초기 유의 신호는 소표본 우연으로 판정, 승격 보류. vkospi는 3m~15m에서 호라이즌 증가에 따라 IC가 단조 증가하며 유의(p<0.05~0.0001)해 유망 후보로 재확인. 상세: dev_memory/DECISION_LOG.md 2026-07-26 항목, scripts/ic_probe_pending_features.py."
     ]
   },
   "1m": {
@@ -26,8 +27,8 @@
       {
         "name": "queue_directional_depletion",
         "rho": 0.033,
-        "pkl": "in_pkl",
-        "note": "매수/매도 큐 방향별 고갈 속도 ★"
+        "pkl": "need_add",
+        "note": "매수/매도 큐 방향별 고갈 속도 ★ [2026-07-26 정정] 이 PC(v9-dev) active_features(97개)에 없어 실제로는 라이브 8피처에서 빠져있었음(pkl 상태 오기, in_pkl->need_add). DYNAMIC_FEATURES_POOL에 등록 완료, 주간 SHAP 심사 대기"
       },
       {
         "name": "cvd_delta_norm",
@@ -56,8 +57,8 @@
       {
         "name": "micro_regime_code",
         "rho": 0.039,
-        "pkl": "in_pkl",
-        "note": "직전분 마이크로 레짐 코드 (0~4) ★"
+        "pkl": "need_add",
+        "note": "직전분 마이크로 레짐 코드 (0~4) ★ [2026-07-26 정정] 이 PC(v9-dev) active_features(97개)에 없어 실제로는 라이브 8피처에서 빠져있었음(pkl 상태 오기, in_pkl->need_add). DYNAMIC_FEATURES_POOL에 등록 완료, 주간 SHAP 심사 대기"
       },
       {
         "name": "vwap_position",

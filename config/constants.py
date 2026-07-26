@@ -205,6 +205,18 @@ DYNAMIC_FEATURES_POOL = [
     # (main.py:_on_apply_shap_candidate_requested).
     "opt_gex_sign",
     "opt_atm_pcr",
+    # [2026-07-26 고도화2 점검] micro_regime_code·queue_directional_depletion — 1m
+    # horizon_feature_sets.json include에 "pkl":"in_pkl"로 잘못 표기돼 있었으나 실측
+    # 결과 이 PC(v9-dev) active_features(97개)에 애초에 없어 1m 라이브 모델(8피처)에서
+    # 조용히 빠져 있던 걸 확인(F1과 동일한 PC간 레지스트리 미전파 유형, 단 opt_gex_bn류처럼
+    # F4 재현실패로 의도적 배제된 게 아니라 단순 누락). opt_gex_sign/opt_atm_pcr과 동일한
+    # 이유로 여기 등록 — 주간 SHAP 심사가 "교체 후보"로 제안할 수 있게 문을 여는 것뿐,
+    # active_features 직접 편집은 하지 않음(자동 통합 금지 원칙, CLAUDE.md 6). 실제 편입은
+    # 여전히 사람이 대시보드에서 승인해야 함(main.py:_on_apply_shap_candidate_requested).
+    # threshold_feasibility는 동일 누락이지만 F4 재검증에서 부호 반전(rho=0.086 -> IC=-0.024)
+    # 확인돼 있어 여기 등록하지 않음(재현 실패 카테고리, opt_gex_bn류와 동일 취급).
+    "micro_regime_code",
+    "queue_directional_depletion",
 ]
 
 # ── 시장 레짐 ─────────────────────────────────────────────────

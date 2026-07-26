@@ -8,6 +8,48 @@
 
 ---
 
+## 2026-07-26 (389차 — 고도화2 계획 진행점검 5항목 실측 + 분해분석 + H4 그라운드워크)
+
+> 상세: `DECISION_LOG.md` 2026-07-26(389차) 항목. 선행: 292차·318차·331차·337차·373~376차.
+> `docs/미륵이고도화2/` 3개 문서 대비 진행상황을 pkl/registry/DB 직접 로드로 재점검.
+
+- [DONE 2026-07-26] **P0-2/P1-1/P1-2/P1-3/P2-2 라이브 반영 전수 확인** — 07-24 EOD
+  재학습 산출물(`feature_names_{1,3,5,15}m.pkl`)을 직접 로드해 전부 확인 완료. 이전
+  판단("3m/15m 미착수, 방치")은 오판이었음 — 실제로는 이미 배포됨.
+- [DONE 2026-07-26] **1m 레지스트리 갭 발견+조치** — `queue_directional_depletion`·
+  `micro_regime_code`가 이 PC(v9-dev) `active_features`(97개)에 없어 라이브 1m(8피처)에서
+  누락 확인. `horizon_feature_sets.json` pkl 필드 정정 + `DYNAMIC_FEATURES_POOL` 등록 완료.
+- [ ] **[389차 최우선] 다음 주간 SHAP 심사에서 신규 등록 2종이 후보로 뜨는지 확인** —
+  `queue_directional_depletion`/`micro_regime_code`가 대시보드 "동적 피처(SHAP)" 탭
+  "추천 적용" 후보로 표시되는지. 표시되면 실측 가치 재검토 후 승인 여부 결정(사용자 승인 필수,
+  자동 통합 금지 원칙).
+- [DONE 2026-07-26] **P2-1 basis_pt/basis_change_pt 재검증 — 재현 실패, 승격 보류
+  확정** — 표본 2,953행(~8거래일)로 확대 재검증한 결과 전 호라이즌·양 피처 비유의
+  (p 0.11~1.00). 07-13 보고서의 초기 소표본 신호는 소멸 — 더 이상 이 피처를 우선순위로
+  추적하지 않음. `scripts/ic_probe_pending_features.py`(신규) 참조.
+- [ ] **[389차] vkospi 우선순위 격상 검토** — 재검증 결과 3m~15m 전부 유의, 호라이즌
+  증가에 따라 IC 단조 증가(3m +0.046*→15m +0.089*, n=2,837~2,949). 다음 딥다이브에서
+  10m/15m/30m `include_pending_validation`의 vkospi를 최우선 검증 후보로 승격 검토.
+- [ ] **[389차] program_arb_net/program_non_arb_net/prev_day_same_hour_ret — 표본
+  축적 후 재검증** — 배선 수리는 라이브 확인됐으나(07-15부터 nonzero) 표본
+  2,208~2,572건뿐이라 IC 전부 경계선. 2~3주 후 `scripts/ic_probe_pending_features.py`
+  재실행.
+- [DONE 2026-07-26] **P1-2/P1-3 사후 분해분석 완료** (`scripts/feature_ablation_purged_cv.py`
+  신규) — 5m: va_bandwidth 제거가 376차 "-1.46%p 혼조"의 유일한 원인이었고 제거 결정은
+  옳았음 확인(나머지 3개는 중립). 3m: ema_cross·vwap_position이 순기여, cvd_delta_norm
+  단독 교체는 역기여(-2.72%p)이나 전체 번들 순계는 +1.14%p로 개선.
+- [ ] **[389차] 3m poc_distance/bb_position 개별 유지 여부 재검토** — 이번 창(05-27~
+  07-24)에서 개별로는 약한 역기여(-1.34%p/-0.36%p)로 나왔음. 단일 3폴드 실행이라 확정 아님
+  — 폴드 수 늘려 재검증 또는 다음 정기 재학습 데이터로 재실행 권고.
+- [DONE 2026-07-26] **H4 그라운드워크 — 15m triple-barrier 유효표본 정량화** — 평균
+  touch_minute=8.87분(고정 15분 대비), effective_n 고정호라이즌 근사 515 vs
+  triple-barrier 근사 871(+69%). triple-barrier가 실제로 유효표본을 늘린다는 최초 근거.
+- [ ] **[389차, H4 다음 단계] 15m GBM 학습 타깃을 고정호라이즌→triple-barrier로 교체하는
+  실험 착수** — 그라운드워크만 완료, 실제 재학습 타깃 교체 실험은 별도 세션 필요(가장 큰
+  미착수 항목).
+
+---
+
 ## 2026-07-26 (387차 — HORIZON_THRESHOLDS·entry_horizon 경계값 주간 재보정 반영)
 
 > 상세: `DECISION_LOG.md` 2026-07-26(387차) 항목. 선행: 288차, 374/375차.

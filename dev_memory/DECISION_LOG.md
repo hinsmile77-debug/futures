@@ -2,6 +2,90 @@
 
 ---
 
+## 2026-07-26 (389차 — 고도화2 계획 진행점검 + 우선순위 5항목 실측 검증)
+
+### [점검+구현] `docs/미륵이고도화2/` 3개 문서(311~331차 무스킬 개편 계획) 대비 실제 라이브 반영 여부를 파일 직접 로드로 확인, basis_pt·vkospi 재검증, 3m/5m 분해분석, H4 그라운드워크
+
+**배경**: 사용자가 고도화2 폴더 진행상황 점검 후 우선순위 5항목(15m 승격·3m/5m 분해·basis_pt 재검증·P0-2/P2-2 라이브 확인·H4 착수)을 "꼼꼼히 점검하고 구현계획 수립해서 구현 진행"하라고 요청. 이전 세션(같은 날 앞선 대화)은 DECISION_LOG/NEXT_TODO 텍스트 검색만으로 "3m/15m 미착수, basis_pt 추적 끊김" 등으로 결론냈는데, 이번엔 실제 pkl·registry·DB 파일을 직접 열어 재확인한 결과 상당 부분 **이미 07-24 EOD 재학습으로 라이브 반영돼 있었음**이 드러남 — 텍스트 로그 검색만으로는 실제 배포 상태를 확정할 수 없다는 재확인(337차 교훈과 동일 패턴: `horizon_feature_sets.json`은 계획 문서지 배포 스펙이 아님).
+
+**File**: `model/horizons/feature_names_{1,3,5,10,15,30}m.pkl`(읽기전용 확인), `data/db/shap_feature_registry.json`(읽기전용 확인), `config/constants.py`(`DYNAMIC_FEATURES_POOL` 2개 추가), `featureset by horizon/horizon_feature_sets.json`(pkl 상태 오기 2건 정정 + `_meta.notes` 갱신), `scripts/ic_probe_pending_features.py`(신규), `scripts/feature_ablation_purged_cv.py`(신규)
+
+#### 1. P0-2/P1-1/P1-2/P1-3/P2-2 — 라이브 반영 여부, pkl 직접 로드로 전수 확인
+
+07-24 15:10(1m/3m/5m)·16:0x(10m/15m/30m) EOD 재학습 산출물을 `pickle.load()`로 직접 열어 확인:
+
+| 항목 | 계획(331차/373차) | 실측 결과 |
+|---|---|---|
+| P0-2 (cvd_direction→cvd_delta_norm) | 다음 재학습 반영 확인 필요 | **라이브 확인 완료** — 1m·3m `feature_names_*.pkl`에 `cvd_delta_norm` 존재, `cvd_direction` 없음 |
+| P1-3 (1m 12→8 축소) | JSON 편집만, 재학습 대기 | **라이브 확인 완료** — `feature_names_1m.pkl` 정확히 8개(단, 아래 §2 참조) |
+| P1-2 (3m 개편 5개 추가) | JSON 편집만, 재학습 대기 | **라이브 확인 완료** — `feature_names_3m.pkl`에 poc_distance·bb_position·ema_cross·vwap_position·microprice_depth_bias 전부 존재(단 need_add였던 cvd_monotone_ratio는 레지스트리 미탑재로 자동 필터링돼 12개, 계획상 13개보다 1개 적음 — 정상 동작) |
+| P1-1 (15m 포지셔닝 블록) | purged CV 3/3폴드 개선(+5.0%p) 확인됐으나 승격 여부 미결 상태로 방치돼 있다고 판단했었음 | **실제로는 이미 라이브 반영 완료** — `feature_names_15m.pkl`에 poc_distance·ret_15m·bb_position·ema_cross·poc_above·ret_5m·cvd_divergence(포지셔닝 블록 7개) 전부 존재. "방치"가 아니라 JSON 편집이 누적돼 있다가 07-24 정기 EOD 재학습이 자동으로 픽업한 것 |
+| P2-2 (program_arb_net 등 배선수리) | 코드 수정 완료, 라이브 미검증 | **라이브 확인 완료** — `raw_features` 최근 500행 중 483행 nonzero(07-15부터, 이전엔 100% 0이었음). `prev_day_same_hour_ret`도 동일(483/500 nonzero, 07-15부터) |
+
+**중요 수정**: 지난 검토(같은 세션 앞부분)에서 "3m/15m 재학습 반영 안 됨, P1-1/P1-2 방치"로 보고한 것은 **오판이었음** — DECISION_LOG/NEXT_TODO의 "[ ]" 미체크 항목(라이브 검증 대기 표시)이 실제로 몇 주 후 자동으로 해소됐는데, 그 사실이 별도로 기록되지 않아 텍스트 검색으로는 드러나지 않았다. **앞으로 이런 "JSON 편집 → 다음 정기 재학습이 자동 픽업" 패턴은, 실제 재학습 후 파일을 직접 열어 확인하기 전까지는 완료로 간주하지 말 것**(337차가 이미 지적한 "계획 문서 ≠ 배포 스펙" 원칙의 연장).
+
+#### 2. 신규 발견 — 1m 레지스트리 갭: `queue_directional_depletion`·`micro_regime_code`가 여전히 이 PC(v9-dev) `active_features`(97개)에 없음
+
+`shap_feature_registry.json:active_features`(97개, 파일 직접 로드로 확인)에 `queue_directional_depletion`·`micro_regime_code`가 없어, `horizon_feature_sets.json`의 1m include가 "pkl":"in_pkl"로 잘못 표기하고 있었음에도 실제 라이브 1m 모델(8피처)에는 존재하지 않았다. 292차가 dev PC(MW0602)에서 8종을 편입했다는 기록과 달리 이 PC(v9-dev)는 여전히 97개 — F1(레지스트리 PC간 미전파)이 이 두 피처에도 그대로 적용되는 사례. 단, `opt_gex_bn`류(F4 재현실패로 의도적 배제)와 달리 이 둘은 IC 재검증이 아예 없었던 순수 누락.
+
+**조치**: (1) `horizon_feature_sets.json` 1m include 두 항목의 `pkl` 필드를 `in_pkl`→`need_add`로 정정 + 사유 주석 추가. (2) `config/constants.py:DYNAMIC_FEATURES_POOL`에 두 피처 등록(331차 opt_gex_sign/opt_atm_pcr과 동일 패턴 — 주간 SHAP 심사가 "교체 후보"로 제안할 수 있는 문만 여는 것, `active_features` 직접 편집은 하지 않음, CLAUDE.md §6 자동 통합 금지 원칙 준수). `threshold_feasibility`는 F4에서 부호 반전(rho=0.086→IC=-0.024) 확인된 재현실패 케이스라 등록하지 않음(opt_gex_bn류와 동일 취급, 331차 선례 그대로).
+
+#### 3. P2-1 basis_pt 재검증 — 재현 실패, 승격 보류 권고 (표본 확대 후 이전 신호가 사라짐)
+
+07-13 보고서는 basis_pt(당시 표본 07-14 하루치, 커버리지 17.3%)가 1m/3m/15m에서 IC +0.048~+0.099(전부 명목 유의, 호라이즌 단조 증가)로 유망 후보라 판단했다. 이번에 `scripts/ic_probe_pending_features.py`(신규, 읽기전용)로 표본을 07-14~07-24(2,953행, 약 8거래일)까지 확대해 재검증한 결과:
+
+| 호라이즌 | 1m | 3m | 5m | 10m | 15m |
+|---|---|---|---|---|---|
+| basis_pt IC | -0.0014 (p=0.94) | +0.0125 (p=0.50) | +0.0150 (p=0.42) | +0.0296 (p=0.11) | +0.0118 (p=0.53) |
+| basis_change_pt IC | -0.0119 (p=0.52) | -0.0123 (p=0.51) | -0.0028 (p=0.88) | +0.0002 (p=0.99) | +0.0001 (p=1.00) |
+
+**전 호라이즌·양 피처 전부 비유의**. 07-13 보고서의 초기 신호(소표본 단조성)는 재현되지 않음 — 이 프로젝트가 F4에서 이미 여러 번 확인한 "단면 소표본 상관의 비정상성" 패턴과 동일 사례로 판정. **P2-1 결론: basis_pt/basis_change_pt는 승격 보류, 추가 축적으로도 신호가 나타날 근거 약함(방향 전환 없이 계속 0에 수렴 중)**. 4주(원래 목표) 축적을 마저 기다릴 가치보다, 다른 P2-4 후보에 리소스를 돌리는 게 합리적.
+
+같은 스크립트로 P2-4 후보 중 `vkospi`도 함께 재검증 — **호라이즌이 길어질수록 IC가 단조 증가하며 3m부터 유의**(3m +0.046* p=0.013, 5m +0.053* p=0.0045, 10m +0.077* p<0.0001, 15m +0.089* p<0.0001, n=2,837~2,949). `horizon_feature_sets.json`의 10m/15m/30m `include_pending_validation`에 이미 등록돼 있는 상태 — 다음 딥다이브 우선순위로 격상 권고.
+
+`program_arb_net`/`program_non_arb_net`/`prev_day_same_hour_ret`는 배선 자체는 확인됐으나(§1) 07-15부터 표본 2,572~2,208건뿎이라 IC는 전부 경계선(p 0.05~0.65) — 결론 내리기엔 이름, 몇 주 더 축적 필요.
+
+#### 4. P1-2/P1-3 사후 분해분석 (`scripts/feature_ablation_purged_cv.py` 신규) — 07-24 라이브 반영 이후 사후검증
+
+373/376차가 요청했던 "개편 항목을 하나씩 넣고 빼며 분해"를 실행(이미 라이브 반영된 뒤라 "게이트"가 아니라 "사후 검증" 성격). purged CV(3폴드, 05-27~07-24 15,000행), 방향적중률(non-FLAT) 기준:
+
+**5m** — 제거된 4개(va_bandwidth·macro_vix·cvd_monotone_ratio·opt_pcr_slope_norm)를 현재 배포 12개에 하나씩 되돌려 추가:
+- BASE(현재 12개): 27.98%
+- +va_bandwidth 복원: 27.05% (**-0.93%p, 되돌리면 악화 — 제거가 옳았음을 확인**)
+- +macro_vix 복원: 27.98% (변화 없음, 중립)
+- +cvd_monotone_ratio 복원: 27.98% (변화 없음 — 단 이 PC 레지스트리에 없어 자동 필터링된 결과라 판단 자체가 무효, 참고만)
+- +opt_pcr_slope_norm 복원: 27.98% (변화 없음, 중립)
+- **결론: 376차의 "-1.46%p 혼조"는 va_bandwidth 단독이 원인이었고, va_bandwidth 제거 결정은 정확했음. 나머지 3개는 있으나 없으나 무해 — 5m 개편은 사후검증 통과로 판정, 추가 조치 불필요.**
+
+**3m** — 공통 6개(BASE)에 cvd_direction/cvd_delta_norm 및 신규 5개를 각각 단독으로 얹어 한계기여도 측정 (BASE 기준 24.13%):
+- cvd_delta_norm 단독 교체: 21.41% (**-2.72%p, 단독으로는 악화** — H2가 이미 확인한 "cvd_delta_norm 자체도 거의 무정보"와 정합)
+- +poc_distance: 22.79% (-1.34%p, 약한 역기여)
+- +bb_position: 23.77% (-0.36%p, 중립~약한 역기여)
+- +ema_cross: 26.05% (**+1.92%p, 최고 순기여**)
+- +vwap_position: 25.75% (+1.62%p, 순기여)
+- +microprice_depth_bias: 24.13% (0.00%p, 중립)
+- 현재 라이브(cvd_delta_norm + 5개 전체): 25.27% (**+1.14%p vs true BASE — CVD 교체의 손실을 ema_cross·vwap_position이 상쇄해 순계는 개선**)
+- **결론: 3m 개편은 순계 긍정적이나 전적으로 ema_cross·vwap_position 두 피처의 기여이고, poc_distance·bb_position은 이 창(15,000행, 05-27~07-24)에서 오히려 약한 역기여 — 다음 재검증 때 poc_distance/bb_position 개별 유지 여부를 한 번 더 확인할 가치 있음. 단일 3폴드 실행이라 확정 아님(스크립트 자체 한계 고지 그대로 적용).**
+
+#### 5. H4 그라운드워크 — 15m 레이블 중첩 유효표본 정량화 (triple-barrier가 실제로 개선하는지 최초 실측)
+
+`triple_barrier_labels`(46,688행 누적) 중 horizon='15m' 7,727건의 `touch_minute` 분포 확인: 평균 8.87분(중앙값 8), `touch_type` 비중 lower 53.2%/time 26.1%/upper 20.7%. 이는 15분 레이블 대부분이 만기(15분)까지 가지 않고 평균 8.9분 만에 배리어에 닿아 조기 확정된다는 뜻 — AFML 유효표본 근사(n/평균중첩길이)로 계산하면:
+
+- 고정호라이즌(현 배포) 근사: effective_n ≈ 7,727/15 ≈ 515
+- triple-barrier 근사: effective_n ≈ 7,727/8.87 ≈ 871 (**약 +69% 개선**)
+
+**결론(그라운드워크만, H4 미완결)**: triple-barrier 레이블이 고정호라이즌보다 유효표본을 실질적으로 늘린다는 최초의 정량적 근거 확보. 다음 단계(미착수)는 15m GBM의 학습 타깃을 고정호라이즌→triple-barrier로 실제 교체하는 실험(§4-3⑥에서 이미 제안됐던 방향) — 이번엔 근거 수치만 만들었고 실제 재학습 교체 실험은 별도 세션 필요.
+
+**검증**: 전부 읽기전용 오프라인 분석(raw_data.db만 읽음, 모델·설정·DB 어디에도 쓰지 않음). `config/constants.py`(`py_compile` 통과), `horizon_feature_sets.json`(`json.load` 통과) 2개 파일만 실제 편집. **라이브 미검증**: DYNAMIC_FEATURES_POOL 신규 2종이 다음 주간 SHAP 심사에서 실제로 후보 제안 형태로 뜨는지는 다음 세션 확인 필요.
+
+**Why**: 텍스트 로그(DECISION_LOG/NEXT_TODO) 검색만으로 "완료/미완료"를 판단하면 이번처럼 오판할 수 있다 — `horizon_feature_sets.json` 편집과 실제 배포 사이엔 "다음 정기 재학습"이라는 비동기 지연이 있고, 그 완료가 별도로 기록되지 않으면 영원히 "대기 중"으로 보인다.
+
+**How to apply**: 앞으로 "라이브 반영 확인 필요" 항목을 재점검할 때는 반드시 `model/horizons/feature_names_*.pkl`을 직접 `pickle.load()`해서 확인할 것 — dev_memory 텍스트에 근거하지 말 것. basis_pt류의 "초기 소표본 유의 → 표본 확대 후 소멸" 패턴은 이 프로젝트에서 반복되는 함정(F4와 동일 유형)이므로, 신규 피처 후보를 문서화할 때 표본 크기를 항상 함께 표기하고, 표본이 4주 미만이면 "예비" 딱지를 붙여 성급한 승격 판단을 막을 것.
+
+**관련**: 292차·318차·331차(레지스트리 F1), 337차(계획문서≠배포스펙), 373~376차(5m/3m 분해분석 요청), `docs/미륵이고도화2/` 3개 문서.
+
+---
+
 ## 2026-07-26 (387차 — HORIZON_THRESHOLDS·entry_horizon 경계값 주간 재보정 반영)
 
 ### [설계결정] HORIZON_THRESHOLDS 6개 값 + ENTRY_HORIZON_B1/B2를 07-26 재보정값으로 갱신, SGD 완전 리셋 예약
