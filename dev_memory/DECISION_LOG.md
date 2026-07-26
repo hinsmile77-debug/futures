@@ -2,6 +2,84 @@
 
 ---
 
+## 2026-07-26 (386차 — "📐 재보정 모니터" 통합 탭 신설: 5개 재보정/재검증 모니터 한 화면에)
+
+### [신설] threshold/atr_ceiling/entry_horizon 3개 재보정기를 한 탭으로 통합 + ATR배수 3종 발동률 모니터·26주 WFA 재검증 알림 신규 추가
+
+**배경**: 사용자가 세 재보정기(threshold/atr_ceiling/entry_horizon)의 UI 인프라
+완성도가 제각각(대시보드 패널 유무·Slack 알림 유무)임을 확인 후, "잊지 않게
+수시로 탭에 들어가 상태를 파악해서 미륵이 상태를 인지"할 목적으로 통합 탭을
+요청. 이어서 같은 성격(시장 실측치로 캘리브레이션되지만 감시장치가 없는 값)의
+추가 후보를 요청받아 코드 전수조사 — CLAUDE.md에 이미 "주기적 재검증 항목"으로
+등록됐지만 자동 감시가 전혀 없는 Hurst/PSI 2개, 그리고 코드 주석에 "보정 데이터
+없어 임시 채택"이라고 스스로 인정한 ATR배수 임계값 3종(4타깃)을 발견.
+
+**구현**:
+1. **재보정기 통합 탭**(`dashboard/panels/recalibrator_monitor_panel.py`) — 기존
+   단독 "📐 임계값 모니터" 탭을 제거하고, 하위 탭 5개로 구성된 "📐 재보정 모니터"
+   탭으로 대체(`dashboard/main_dashboard.py`).
+2. **`dashboard/panels/atr_ceiling_monitor_panel.py`**(신규) — `ATRCeilingRecalibrator`
+   전용 UI(그동안 대시보드 패널이 없었음). 현재/제안 하한·상한 카드 + 이력 테이블.
+3. **`dashboard/panels/entry_horizon_monitor_panel.py`**(신규) — `EntryHorizonRecalibrator`
+   전용 UI(그동안 대시보드 패널이 없었음). B1/B2 카드 + 1m/3m/5m 버킷비중 카드
+   (고착 시 빨간색) + 이력 테이블.
+4. **`learning/atr_multiple_recalibrator.py`**(신규) — `CHASE_FILTER_ATR_THRESHOLD`/
+   `_MEANREV`/`COUNTERTREND_ATR_THRESHOLD`/`REGIME_EXHAUSTION_EXT_ATR_THRESHOLD`
+   4개 대상. **다른 3개와 달리 percentile 기반 "재산출 권장값"을 제안하지 않음**
+   — 이 4개는 "N등분" 목표가 없는 희귀사건 트리거라 percentile 역산이 통계적으로
+   부적절하다고 판단, 대신 "지금 이 임계값이면 최근 21거래일 실측 데이터에서
+   얼마나 자주 발동하는가"(발동률)를 매주 기록해 **직전 기록 대비 발동률 변화**로만
+   경보(WATCHLIST ±8%p / UPDATE ±15%p)한다. `dashboard/panels/
+   atr_multiple_monitor_panel.py`(신규 UI) + `main.py`(인스턴스화 + 금요일
+   실행 블록, entry_horizon_recalibrator와 동일 패턴).
+5. **`dashboard/panels/wfa_recheck_panel.py`**(신규) — Hurst(317차)/PSI(372차)
+   26주 WFA 재검증 캘린더 알림. 다른 4개와 근본적으로 다른 설계 — 매주 시장
+   데이터를 재계산하는 게 아니라(실제 재검증은 `hurst_oos_validation.py` 등을
+   사람이 수동 실행해야 하는 별도 분석 작업), `config/settings.py:WFA_RECHECK_
+   ITEMS`의 `last_check` 날짜 + 26주 경과 여부만 계산하는 순수 캘린더 카운트다운
+   (DB 미사용). 실제 재검증 완료 후 `last_check`를 사람이 오늘 날짜로 수동 갱신.
+
+**실측 결과(첫 실행, 06-25~07-24 21거래일 window, n=1924/385)**: ATR배수
+발동률이 예상보다 훨씬 높게 나옴 — `chase`/`countertrend` 36.0%, `chase_meanrev`
+49.4%, `regime_exhaustion` 60분 60%↑. 최근 3주가 구조적으로 변동성이 높았던
+기간(7/24 딥다이브에서 이미 확인)이라는 정황과 일치 — 다만 이번이 첫 실행이라
+비교 기준(직전 기록)이 없어 alert는 전부 CLEAR로 기록됨. 다음 주 실행부터
+델타가 잡히기 시작한다.
+
+**Why**: 3개 재보정기가 "제안만, 자동반영 없음" 원칙은 공유하면서도 UI/알림
+완성도가 제각각이었던 것 자체가, CLAUDE.md가 CB②/CB③-P4/FP-CRITICAL에서
+이미 겪은 "재검토하기로 했는데 안 함" 패턴의 축소판 — 특히 Hurst/PSI는 공식
+문서에 재검증 의무가 적혀 있는데도 감시장치가 전혀 없었던 게 가장 심각한 공백.
+ATR배수 3종은 percentile 역산으로 "권장값"을 자신 있게 제안할 통계적 근거가
+없는데 억지로 숫자를 냈다면 313차 원칙("근거 없는 숫자를 통계적으로 검증됐다고
+포장하지 말 것")을 어기는 셈이라, 발동률 드리프트 감시로 범위를 좁힘.
+
+**How to apply**: 매주 "📐 재보정 모니터" 탭을 확인 — ①ATR배수 3종에서 WATCHLIST/
+UPDATE 뜨면 왜 발동률이 급변했는지(진짜 레짐 변화 vs 계측 결함) 딥다이브,
+②26주 WFA 탭이 WATCHLIST(4주 전)로 넘어가면 그 전에 재검증 스크립트 실행 일정
+잡을 것. `atr_multiple_monitor.db`가 매주 쌓이면서 "발동률 자체의 정상 변동폭"
+경험치가 생기므로, WATCHLIST/UPDATE 임계(±8%p/±15%p)가 너무 민감/둔감한지도
+몇 주 관찰 후 재검토 대상.
+
+**구현**: `dashboard/panels/{recalibrator_monitor_panel,atr_ceiling_monitor_panel,
+entry_horizon_monitor_panel,atr_multiple_monitor_panel,wfa_recheck_panel}.py`,
+`dashboard/main_dashboard.py`, `learning/atr_multiple_recalibrator.py`,
+`config/settings.py`, `main.py`.
+
+**검증**: 6개 파일 전부 `py_compile` 통과. offscreen PyQt 스모크테스트로 5탭
+전체 생성 확인, 실제 DB 데이터(threshold_log/atr_ceiling_log/entry_horizon_log
+기존 데이터 + atr_multiple_log 신규 첫 실행분)로 카드·색상·경보·이력테이블
+정상 렌더링 확인(entry_horizon 탭의 5m=81.2% UPDATE 빨간색 등 실제 알려진
+값과 일치). `run_if_due()` 7일 간격 게이팅 로직도 today 파라미터로 경계값
+검증(6일=스킵, 7일=실행). **라이브 미검증** — 다음 금요일 daily_close()에서
+`[ATRMultipleRecal]` 로그 정상 출력 및 실 UI 탭 배치 확인 필요.
+
+**관련**: `NEXT_TODO.md` 동일 날짜(386차) 항목. 선행: 303차(ATRCeilingRecalibrator),
+374/375차(entry_horizon), 317차(Hurst), 372차(PSI), 349/368/379차(ATR배수
+3종 대상 각각의 원 신설 근거).
+
+---
+
 ## 2026-07-26 (385차 — toxicity_block_shadow 신설: ToxicityGate action="block" counterfactual 채널, 검증캠페인 [19])
 
 ### [신설] open_gap_shadow와 동일 원리(TP1/STOP 시뮬레이션)로 toxicity 차단 신호도 정식 계측
