@@ -39,6 +39,24 @@ _MICRO_COLOR = {
     "혼합":   ("#1a1a2a", "#8888ff"),
     "탈진":   ("#2a0a2a", "#ce93d8"),
 }
+# features/technical/atr.py:ATRCalculator._classify()와 동일 임계값(2.0/1.5/0.7) —
+# 그동안 계산만 되고 어디에도 표시되지 않던 atr_ratio 4단계 분류를 대시보드에 연결.
+_ATR_REGIME_COLOR = {
+    "급변장": "#ff4444",
+    "고변동": "#ffb300",
+    "표준":   "#8b949e",
+    "저변동": "#4fc3f7",
+}
+
+
+def _classify_atr_ratio(ratio: float) -> str:
+    if ratio > 2.0:
+        return "급변장"
+    if ratio > 1.5:
+        return "고변동"
+    if ratio < 0.7:
+        return "저변동"
+    return "표준"
 
 
 def _badge(parent, bg, fg, text, font_size=14, bold=True):
@@ -270,7 +288,12 @@ class RegimePanel(QWidget):
             f"background:{bg}; color:{fg}; border-radius:4px; padding:4px 10px;"
             "font-weight:bold;"
         )
-        self._lbl_mc_detail.setText(f"ADX={adx:.1f}  ATR비={atr_ratio:.2f}")
+        _atr_regime = _classify_atr_ratio(atr_ratio)
+        _atr_color  = _ATR_REGIME_COLOR[_atr_regime]
+        self._lbl_mc_detail.setText(
+            f"ADX={adx:.1f}  ATR비={atr_ratio:.2f} [ATR:{_atr_regime}]"
+        )
+        self._lbl_mc_detail.setStyleSheet(f"color:{_atr_color}; font-size:10px;")
 
     # ── 내부 ──────────────────────────────────────────────────────
 
