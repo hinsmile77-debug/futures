@@ -2,6 +2,68 @@
 
 ---
 
+## 2026-07-26 (384차 — 383차 구조결함 해법 구현: 검증캠페인 [1] 채널 판정 유지(carry-forward) + 재학습 호라이즌별 조건부 skip)
+
+### [구현] 제안 (a) "재학습 주기와 평가창 분리" 채택 — tb_verdict_log 신설로 호라이즌별 최근 판정을 이어받고, 미달 호라이즌은 재학습을 보류해 OOS 누적 보존
+
+**File**: `utils/db_utils.py`(`tb_verdict_log` 테이블 + `save_tb_verdict`/`fetch_latest_tb_verdicts`/`fetch_tb_verdicts_judged_on`), `scripts/generate_validation_campaign_report.py`(`eval_tb_channel()` carry-forward 분기 + [1] 섹션 렌더링), `learning/batch_retrainer.py`(`retrain_shadow_triple_barrier()` 호라이즌별 skip 게이트), `scripts/run_shadow_triple_barrier_retrain.py`(CLI 출력 skip 케이스).
+
+**배경**: 383차가 규명한 구조결함 — 매주 "리포트 생성 → 섀도우 TB 재학습"이 무조건 실행돼 `eval_start`(모델 mtime 기준)가 매주 리셋, 5m~30m이 `min_samples_hz`(800)에 영원히 도달 불가. 사용자가 제안한 해법(부족분을 "해당 주 이전 26주"에서 랜덤 백필)을 검토한 결과, 26주가 정확히 섀도우 모델의 학습 윈도우(`RETRAIN_WEEKS_BACK=26`, `batch_retrainer.py:1228 cutoff=now-26주`)와 겹쳐 그 자체가 학습표본 재사용(leakage)이 됨을 지적(백필 비중이 30m 기준 93%에 달해 "임시 부트스트랩"이 아니라 영구 상태가 됨도 함께 지적) — 논의 끝에 사용자가 원안 (a) "재학습 주기와 평가창 분리" 방향으로 확정하고, "매주 이전 모델로 계속 평가만 누적하다 호라이즌별로 목표수량 도달 시에만 그 호라이즌만 재학습" 메커니즘 + "최근 판정 유지"(채널 집계 시 최신 판정을 다음 판정이 나올 때까지 유효하게 취급하는 1번 방식) 채택.
+
+**구현**:
+1. `tb_verdict_log` 테이블(TRADES_DB) 신설 — 호라이즌이 그 주 처음으로 OOS n≥800에 도달했을 때만 판정(PASS/FAIL) + IC + eval_start/model_mtime을 기록. `ThresholdRecalibrator`의 `threshold_log`(`run_if_due` 패턴)와 동일한 관례를 그대로 따름.
+2. `eval_tb_channel()`: n<800일 때 곧바로 INSUFFICIENT 처리하던 것을, `fetch_latest_tb_verdicts()`로 해당 호라이즌의 최근 판정이 있으면 그 판정(status/ic_tb/ic_3class)을 이어받아 채널 집계(`n_pass`)에 반영하도록 변경. n≥800이면 기존대로 신선하게 IC 계산 후 `save_tb_verdict()`로 영속화. `n_pass`/`verdict` 집계 코드 자체는 `res["status"]`만 보므로 무변경 — carry-forward가 자연스럽게 녹아든다.
+3. `retrain_shadow_triple_barrier()`: 호라이즌 루프 진입 시 "모델 파일이 이미 있고 오늘 `tb_verdict_log`에 판정 기록이 없는" 호라이즌은 재학습을 건너뛰고 기존 모델 파일(과 mtime)을 그대로 둔다 — `campaign_steps.py`가 리포트를 재학습보다 먼저 실행하는 기존 순서를 그대로 이용(순서 변경 불요). `tb_verdict_log` 조회 자체가 실패하면(예: DB 잠금) 안전측으로 이번 회차는 전 호라이즌 재학습을 보류(기존 always-retrain으로 되돌아가 383차 버그가 재발하는 것보다, 일시적으로 모델이 갱신 안 되는 쪽이 안전하다고 판단).
+4. 리포트 [1] 섹션 표에 `PASS (유지, 2026-07-19 판정)` 형태로 carry-forward임을 명시, 안내 문구에 384차 메커니즘 설명 추가.
+
+**검증**: `python -m py_compile`(변경 4개 파일, py37_32) 통과. 스크래치 DB/모델 디렉토리로 3개 통합 스모크 테스트 직접 실행:
+  - `tb_verdict_log` save/fetch/judged_on 기본 동작 + 최신 판정으로 superseded 확인.
+  - `eval_tb_channel()`: n=5(<800)에 기존 PASS 판정(07-19)이 있을 때 status=PASS·carried=True·n_pass=1로 정확히 이어받고, tb_verdict_log에 새 행이 쓰이지 않음(진짜 판정이 아니므로) 확인.
+  - `retrain_shadow_triple_barrier()`: "오늘 미판정 + 모델파일 존재" 호라이즌(30m)은 `skipped=True`+파일 mtime 불변, "오늘 판정됨" 호라이즌(3m)은 정상적으로 학습 로직에 진입(데이터 부족으로 실패했지만 스킵 분기를 타지 않음) 확인.
+**라이브 미검증** — 다음 금요일 EOD 체인(`campaign_steps.py`)에서 실제로 `tb_verdict_log`에 행이 쌓이고, 800 미달 호라이즌의 모델 파일 mtime이 그대로 유지되는지 확인 필요.
+
+**관련**: 383차(구조결함 원 발견), 357차(§3-1 "3m/5m 한정" 해석 확정 — 이번 구현으로 5m도 실질적으로 판정 가능해짐), `ThresholdRecalibrator`(`run_if_due` 패턴 참고 선례), §9 사전등록 원칙(임계값 자체는 무변경 — `ic_delta_min`/`ic_abs_min`/`min_samples_hz`/`min_horizons_pass` 그대로, 판정 메커니즘만 버그 수정이라 시계 리셋 불요로 판단. 단 `tb_verdict_log`가 신규 테이블이라 과거 FAIL 이력은 자연히 사라지고 이번 구현 이후 판정부터 새로 쌓임), `NEXT_TODO.md` 384차 항목.
+
+---
+
+## 2026-07-26 (383차 — 검증캠페인 [1] Triple-Barrier 채널 구조적 미달 원인 규명: 평가창이 매주 재학습으로 리셋되어 3m 제외 전 호라이즌 영구 INSUFFICIENT)
+
+### [발견] eval_start가 섀도우 TB 모델 mtime 기준인데, 리포트 생성 직후 매주 무조건 재학습이 실행돼 평가창이 최대 ~영업일 5일로 영구 고정 — 10m/15m/30m은 "수개월 뒤 도달"이 아니라 이 설계가 유지되는 한 수학적으로 영원히 min_samples_hz(800) 도달 불가
+
+**File**: `scripts/generate_validation_campaign_report.py:218-225`(`eval_start = max(mtime, campaign_start, now-days)` — 모델 mtime 이후만 OOS로 인정), `scripts/campaign_steps.py:63-64`(주간 체인 순서: "검증 캠페인 판정 리포트" → "섀도우 TB 재학습" — `campaign_due()` 주기마다 지난 판정 PASS/FAIL/INSUFFICIENT와 무관하게 무조건 실행), `config/settings.py:966-967`(`min_samples_hz=800`, `min_horizons_pass=2`, 사전등록값).
+
+**증상**: `data/validation_campaign_report.md`(생성 2026-07-24 16:03, 분석창 28일)에서 채널 [1]이 FAIL(합격 호라이즌 0개) — 6개 호라이즌 중 1m만 표본 충분(1847건)하나 IC 자체 FAIL(-0.0112), 나머지는 전부 OOS 표본 미달로 INSUFFICIENT:
+
+| 호라이즌 | OOS n (07-24 리포트) | 800 도달까지 필요 거래일수 |
+|---|---|---|
+| 3m | 610 | 6.6일 |
+| 5m | 364 | 11.0일 (≈2.2주) |
+| 10m | 179 | 22.3일 (≈4.5주) |
+| 15m | 115 | 34.0일 (≈6.8주) |
+| 30m | 55 | 69.6일 (≈14주) |
+
+`raw_features_horizon`(2026-07-01~ 최근 17거래일) 실측 일평균 적재량: 3m=121.2건/일, 5m=72.6건/일, 10m=35.9건/일, 15m=23.5건/일, 30m=11.5건/일. 이 적재율로 "영업일 5일치"를 역산한 예상치(606/363/179.5/117.5/57.5)가 실제 리포트 OOS n(610/364/179/115/55)과 거의 정확히 일치 — 이번 주만 우연히 창이 짧았던 게 아니라, 항상 이 정도(≈영업일 5일치)에서 멈추는 구조.
+
+**원인**: `campaign_steps.py`의 주간 스텝 순서가 "리포트 생성 → 섀도우 TB 재학습"이고, 재학습은 지난 판정 결과와 무관하게 매주 무조건 실행된다. 재학습이 끝나면 `gbm_*_shadow_tb.pkl`의 mtime이 갱신되고, 리포트의 `eval_start`는 항상 "가장 최근 모델 mtime 이후"만 OOS로 인정하므로(학습-평가 표본 분리라는 취지 자체는 타당), 다음 주 리포트가 볼 수 있는 평가창은 매번 "지난주 재학습 시점 ~ 이번 리포트 생성 시점"(≈영업일 5일)으로 리셋된다. 즉 각 호라이즌 OOS n은 "누적"이 아니라 "주간 리셋 후 재적립"이며, 800건 도달에 필요한 일수가 재학습 주기(≈영업일 5~7일)보다 긴 호라이즌은 몇 주가 지나도 항상 그 주 적재량에서 멈춘다:
+- 3m(6.6일 필요): 재학습 주기보다 짧아 "운 좋은 주"엔 턱걸이 가능하나 안정적 PASS는 아님.
+- 5m(11.0일)~30m(69.6일): 필요일수가 리셋 주기보다 항상 길어 **구조적으로 영원히 미달** — "더 기다리면 언젠가 도달"이 성립하지 않는다.
+- 1m(일 385건 추정)만 매주 여유 있게 800을 넘지만, 1m은 331차 후속2로 앙상블에서 영구 퇴역된 호라이즌이라 승격 판정 대상이 아니다(357차가 이미 "실질 승격 검토 대상은 3m/5m로 한정"이라 확정).
+
+**357차와의 차이**: 357차(2026-07-19)도 "10m/15m은 표본 도달까지 수개월 소요"라고 관찰했으나, 그때는 암묵적으로 "시간이 지나면 표본이 단조 누적된다"는 전제였다. 이번에 `eval_start` 로직과 스텝 순서를 직접 코드로 추적한 결과, 표본이 누적되는 게 아니라 **매주 재학습 시점으로 리셋**되고 있어 "수개월 뒤 도달"이 아니라 "이 설계가 유지되는 한 절대 도달 불가"임이 확인됨 — 357차 진단보다 한 단계 더 근본적인 결함.
+
+**결정**: 이번 세션은 진단·기록 전용, 코드 변경 없음(§9 사전등록 원칙 — 캠페인 판정 로직 변경은 즉시 자동 수정 대상이 아니라 사용자 검토 후 결정 필요한 사안). 다음 세션(사용자가 세션을 바꿔 계속 논의하기로 함)에서 개선 방향 결정 예정, 후보:
+  (a) 재학습 주기와 평가창 분리 — 호라이즌별로 800건 채울 때까지는 재학습을 보류하고 계속 같은 모델로 평가만 누적. 호라이즌마다 도달 시점이 다르므로 "모델 파일 단위로 학습 완료 후 평가 전용 기간" 개념 도입 필요.
+  (b) `eval_start`를 "가장 최근 mtime"이 아니라 "N번째 이전 mtime" 또는 고정 캘린더 앵커로 바꿔 여러 주에 걸쳐 데이터를 계속 축적. 단 그 사이 재학습된 모델이 여러 세대 섞이므로 "어느 세대 모델의 예측을 채점하는가"가 불명확해져 진짜 OOS 순수성이 흐려질 위험.
+  (c) 호라이즌별로 재학습 주기 자체를 표본 소요기간에 맞춰 차등화(3m/5m는 주간 유지, 10m/15m/30m은 월간·분기 재학습).
+  (d) `min_samples_hz=800`을 호라이즌별로 차등화(적재 느린 호라이즌은 더 낮은 표본 기준). 단 §9 사전등록 원칙상 사후 임계값 변경은 과적합 위험 — 신중 필요.
+어느 방향이든 §9-4 원칙에 따라 변경 시 시계 리셋 + DECISION_LOG 기록 필요.
+
+**검증**: `raw_features_horizon` 직접 SQL 집계로 일일 적재율 실측(위 표), 코드 직접 읽기(`generate_validation_campaign_report.py`/`campaign_steps.py`/`config/settings.py`)로 eval_start 로직·스텝 순서·임계값 확인. 코드 변경 없어 라이브 검증 해당 없음.
+
+**관련**: 357차(§3-1 TB 채널 부활 + "3m/5m 한정" 해석 확정 — 이번 발견이 그 표본 소요 추정을 근본적으로 정정), 331차 후속2~3(1m 앙상블 퇴역), §9 사전등록 원칙, `NEXT_TODO.md` 383차 항목.
+
+---
+
 ## 2026-07-26 (382차 — ThresholdRecalibrator에 run_if_due() 패턴 적용, 375차 지적 사각지대 해소)
 
 ### [수정] ThresholdRecalibrator "정확히 금요일에만" 실행 구조를 atr_ceiling/entry_horizon_recalibrator와 동일한 run_if_due() 패턴으로 통일

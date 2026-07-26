@@ -1230,8 +1230,36 @@ class BatchRetrainer:
         ).strftime("%Y-%m-%d %H:%M:%S")
         _make_model = _shadow_model_factory()
 
+        # [384차] 383차가 규명한 구조결함(평가창이 매주 재학습으로 리셋돼 5m~30m이
+        # min_samples_hz 영구 미달) 해법: 검증캠페인 리포트(generate_validation_
+        # campaign_report.py, campaign_steps.py 순서상 이 재학습보다 먼저 실행됨)가
+        # 오늘 새로 판정한 호라이즌만 tb_verdict_log에 기록한다 — 그 목록에 없는
+        # 호라이즌(아직 OOS n이 min_samples_hz 미달)은 기존 모델 파일을 그대로 두어
+        # mtime을 보존하고, 다음 주에도 진짜 OOS가 계속 누적되게 한다. 최초 부트스트랩
+        # (모델 파일 자체가 없는 호라이즌)은 이 게이트와 무관하게 항상 학습한다.
+        try:
+            from utils.db_utils import fetch_tb_verdicts_judged_on
+            _today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+            _judged_today = set(fetch_tb_verdicts_judged_on(_today_str))
+        except Exception as _e:
+            logger.warning(
+                "[ShadowTB] tb_verdict_log 조회 실패(%s) — 이번 회차는 안전하게 "
+                "전 호라이즌 재학습 보류(기존 모델 유지)", _e)
+            _judged_today = set()
+
         results = {}
         for hz, h_min in HORIZONS.items():
+            _existing_model_p = os.path.join(shadow_dir, "gbm_%s_shadow_tb.pkl" % hz)
+            if os.path.exists(_existing_model_p) and hz not in _judged_today:
+                logger.info(
+                    "[ShadowTB] %s 재학습 보류(스킵) — 오늘(%s) 판정 미도달, "
+                    "기존 모델 유지(OOS 누적 보존)", hz, _today_str)
+                results[hz] = {
+                    "ok": True, "skipped": True,
+                    "reason": "판정 미도달 — 기존 모델 유지(OOS 누적 보존)",
+                }
+                continue
+
             min_bars = MIN_TRAIN_BARS_PER_HORIZON.get(hz, MIN_TRAIN_BARS)
             try:
                 with sqlite3.connect(raw_db, timeout=10) as conn:
