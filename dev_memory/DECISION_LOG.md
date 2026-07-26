@@ -2,6 +2,76 @@
 
 ---
 
+## 2026-07-26 (385차 — toxicity_block_shadow 신설: ToxicityGate action="block" counterfactual 채널, 검증캠페인 [19])
+
+### [신설] open_gap_shadow와 동일 원리(TP1/STOP 시뮬레이션)로 toxicity 차단 신호도 정식 계측
+
+**배경**: 사용자가 0724 정기점검 딥다이브(7/24 진입 급감 원인 분석) 중 "380차가
+toxicity_score 계측을 재설계·재보정해 실제로 작동하는지는 확인했지만, block이
+실제로 옳은 차단이었는지는 근사(단순 종가 방향적중률)로만 추정했을 뿐 정식
+검증 수단이 없다"는 갭을 지적, 신설을 요청. `open_gap_shadow`(354/355차)가
+이미 같은 문제(OPEN_VOLATILE 차단이 옳았는지)를 TP1/STOP 시뮬레이션으로
+검증하는 선례를 갖고 있어 그대로 이식.
+
+**구현**:
+1. `utils/db_utils.py` — `toxicity_block_shadow` 테이블 신설(open_gap_shadow와
+   동형 스키마: ts/direction/grade/entry_price/stop_price/tp1_price/resolved/
+   cf_outcome/cf_exit_price/hyp_pnl_pts, toxicity_score·toxicity_score_ma만
+   gap_pt·atr_at_block 대신 사용).
+2. `main.py` — `strategy/risk/toxicity_gate.py::ToxicityGate.evaluate()`가
+   `action="block"`을 반환해 `_final_grade`/`_qty_display`가 X/0으로 바뀌기
+   **직전**(6565행대)에 `_tox_grade_before`/`_tox_qty_before` 스냅샷을 캡처.
+   이후 open_gap_shadow·RegimeExhaustionGate와 같은 위치(STEP7 마스터게이트
+   직전)에서, 캡처해둔 스냅샷 기준 "toxicity가 X로 만들기 전엔 정상이었고
+   (`_tox_grade_before != 'X'`), toxicity를 제외한 나머지 게이트(OPEN_VOLATILE
+   `_open_gap_ok` 포함, ATR·Hurst·모드필터·거래소CB관망·EKS 등)가 전부
+   통과했을 것"만 걸러 가상 진입가·스톱·TP1을 기록. `action="reduce"`는
+   사이즈만 축소될 뿐 실제 체결이 `trades`에 그대로 남으므로(카운터팩추얼이
+   아니라 실거래 데이터 이미 존재) 대상에서 제외 — `action="block"`만 계측.
+3. `config/settings.py` — `VALIDATION_CAMPAIGN["toxicity_block_shadow"]`
+   등록(min_samples=20, cf_window_min=30 — open_gap_shadow와 동일 기준).
+4. `scripts/generate_validation_campaign_report.py` — `resolve_and_eval_
+   toxicity_block()` 신설(`resolve_and_eval_open_gap()`과 완전히 동일한
+   resolve/판정 로직, 대상 테이블만 다름). 검증캠페인 **[19]**로 요약표·
+   상세섹션 등록.
+
+**구현 중 발견·수정한 버그**: 기존에 채널 [1] Triple-Barrier 결과를 담는
+변수명이 이미 `tb`(`eval_tb_channel()` 반환값)였는데, 처음에 제 새 리졸버
+변수도 같은 이름 `tb`로 선언해 `metrics` dict 조립 전에 [1] 결과를 덮어쓸
+뻔했음 — `txb`로 즉시 개명해 해결, 실제 리포트 재생성으로 [1]/[19] 둘 다
+정상 분리 출력됨을 확인.
+
+**Why**: "차단형 게이트 신설 → 섀도 계측 → 주간 판정 → 승격/재설계" 패턴을
+이 프로젝트가 일관되게 지켜온 것(open_gap_shadow·hurst_gate_shadow·
+regime_exhaustion_shadow 등 선례 다수)과 동일하게, toxicity block도 "차단
+문구가 뜬다"가 아니라 "실제로 돈을 아꼈는지"를 실측해야 함 — 372차/374차가
+반복해서 짚은 "근사치·감으로 임계값을 판단하면 안 된다"는 원칙의 연장선.
+
+**How to apply**: 다음 장중 세션에서 `[ToxicityGate] action=block` 발동 시
+`toxicity_block_shadow`에 행이 실제로 쌓이는지, 30분 뒤(cf_window_min) 정상
+resolve되는지 라이브 확인 필요. n≥20 도달 시 `resolve_and_eval_toxicity_
+block()` 판정(PASS=존치/FAIL=block_threshold 0.45 재검토 권고)을
+`scripts/generate_validation_campaign_report.py` 실행으로 확인 — open_gap_
+shadow·hurst_gate_shadow와 동일하게 §9 사전등록 원칙(즉시 자동 반영 없음,
+FAIL 시에도 재설계만 검토 착수).
+
+**검증**: `py_compile` 통과(4개 파일). `init_all_dbs()`로 실제 DB에 테이블
+생성 확인. 엔드투엔드 리졸브 테스트 — 07-24 09:47 실제 종가(1088.62)로 합성
+행 삽입 후 리졸버 실행 → TP1(1086.62) 도달로 정상 판정(+2.0pt), 같은 시각의
+실제 `open_gap_shadow` 기록과 정합적(둘 다 그 시점 하락 추세를 올바르게
+포착) — 테스트 후 즉시 삭제해 실데이터 오염 없음. 전체 리포트 생성 정상
+완료, [19] 행이 요약표·상세섹션 모두 올바르게 출력됨을 확인. **라이브
+미검증** — 실제 `action=block` 발동 케이스로는 아직 미확인.
+
+**구현**: `utils/db_utils.py`, `main.py`, `config/settings.py`, `scripts/
+generate_validation_campaign_report.py`.
+
+**관련**: `NEXT_TODO.md` 동일 날짜(385차) 항목. 선행: 354/355차(open_gap_shadow
+원 패턴), 379차(regime_exhaustion_shadow, 동일 패턴 최근 선례), 380차
+(toxicity_score 계측 재설계 — 이번 채널이 메우는 검증 갭의 배경).
+
+---
+
 ## 2026-07-26 (384차 — 383차 구조결함 해법 구현: 검증캠페인 [1] 채널 판정 유지(carry-forward) + 재학습 호라이즌별 조건부 skip)
 
 ### [구현] 제안 (a) "재학습 주기와 평가창 분리" 채택 — tb_verdict_log 신설로 호라이즌별 최근 판정을 이어받고, 미달 호라이즌은 재학습을 보류해 OOS 누적 보존

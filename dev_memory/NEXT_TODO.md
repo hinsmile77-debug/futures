@@ -8,6 +8,23 @@
 
 ---
 
+## 2026-07-26 (385차 — toxicity_block_shadow 신설: 검증캠페인 [19])
+
+> 상세: `DECISION_LOG.md` 2026-07-26(385차) 항목. 선행: 354/355차(open_gap_shadow),
+> 379차(regime_exhaustion_shadow), 380차(toxicity_score 재설계).
+
+- [ ] **[385차 최우선] 다음 장중 라이브 첫 배선 확인** — `[ToxicityGate]
+  action=block` 발동 시 `data/db/trades.db:toxicity_block_shadow`에 실제로
+  행이 쌓이는지, 30분(cf_window_min) 뒤 정상 resolve(cf_outcome/hyp_pnl_pts
+  채워짐)되는지 확인.
+- [ ] **[385차] n=20 도달 시 `resolve_and_eval_toxicity_block()` 판정 확인** —
+  `python scripts/generate_validation_campaign_report.py`로 채널 [19] 결과
+  확인. FAIL(재설계 권고) 시에도 즉시 완화 금지 — §9 사전등록 원칙대로
+  `strategy/risk/toxicity_gate.py`의 `block_threshold`(0.45) 재검토만
+  주간회의 안건으로 상정.
+
+---
+
 ## 2026-07-26 (384차 — 검증캠페인 [1] 채널 carry-forward 구현: 383차 해법 적용)
 
 > 상세: `DECISION_LOG.md` 2026-07-26(384차) 항목. 선행: 383차.

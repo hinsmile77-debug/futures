@@ -456,6 +456,35 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_ogs_ts ON open_gap_shadow(ts)")
+    # [신설] ToxicityGate(strategy/risk/toxicity_gate.py) action="block" counterfactual
+    # 섀도우 — open_gap_shadow와 완전히 동일한 패턴(발동 시점 가상 진입가·스톱·TP1
+    # 기록 → resolve_and_eval_toxicity_block()이 주간 사후 판정). 380차가 toxicity_score
+    # 계측 자체는 재설계·재보정했지만 "block이 실제로 옳은 차단이었는지"는 아직
+    # 검증 수단이 없었다(근사치 방향적중률뿐) — 이 채널로 TP1/STOP 시뮬레이션 기반
+    # 정식 계측을 추가한다. action="reduce"는 사이즈만 축소될 뿐 실제 체결이 그대로
+    # 발생해 trades 테이블에 실거래로 남으므로 별도 섀도우 불필요(action="block"만 대상).
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS toxicity_block_shadow (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts             TEXT NOT NULL,           -- 차단 시각 (분봉)
+        direction      TEXT NOT NULL,           -- LONG/SHORT (차단된 가상 방향)
+        grade          TEXT,                    -- 차단 당시 진입 등급 (A/B/C, toxicity 미차단 가정)
+        toxicity_score REAL,                    -- 차단 당시 toxicity_score
+        toxicity_score_ma REAL,                 -- 차단 당시 toxicity_score_ma
+        conf           REAL,                    -- 차단 당시 confidence
+        entry_price    REAL NOT NULL,           -- 가상 진입가 (분봉 종가)
+        stop_price     REAL,                    -- 가상 하드스톱
+        tp1_price      REAL,                    -- 가상 TP1
+        resolved       INTEGER DEFAULT 0,       -- 1=counterfactual 판정 완료
+        cf_outcome     TEXT,                    -- STOP / TP1 / NEITHER
+        cf_exit_price  REAL,                    -- counterfactual 청산가
+        hyp_pnl_pts    REAL,                    -- (+)=차단 안 했으면 이득, (-)=차단이 손실 회피
+        created_at     TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_tbs_ts ON toxicity_block_shadow(ts)")
     # [331차 후속2, 2026-07-14] 1m 앙상블 방향투표 퇴역(역스킬 확정) 이후 "1m 활용방안 A"
     # (집행/타이밍 필터) 후보 검증용 섀도우 계측 — hurst_gate_shadow와 달리 차단된
     # 가상 진입이 아니라 **실제로 체결된** 진입에 진단 태그를 붙이는 것이라 counterfactual

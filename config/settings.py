@@ -1081,6 +1081,20 @@ VALIDATION_CAMPAIGN = {
         "min_samples": 20,  # 차단 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
         "cf_window_min": 30,  # counterfactual 관찰 창 (분) — hurst_gate_shadow와 동일
     },
+    # [신설] ToxicityGate(strategy/risk/toxicity_gate.py) action="block" counterfactual —
+    # "toxicity만 없었다면 진입했을" 신호(toxicity_block_shadow 테이블)의 가상 결과를
+    # 누적 판정한다. open_gap_shadow·hurst_gate_shadow와 동일 기준·동일 판정 로직
+    # (resolve_and_eval_toxicity_block()). 380차가 toxicity_score 계측 자체(atr/spread/
+    # queue/cancel stress 5종)는 재설계·재보정했지만 "block이 실제로 옳았는지"는 근사
+    # 방향적중률뿐이었던 갭을 메운다.
+    # 존치(PASS): 누적 hyp_pnl_pts ≤ 0 (차단이 실제로 손실을 회피).
+    # 완화 권고(FAIL): 누적 hyp_pnl_pts > 왕복비용의 2배 그리고 승률 > 기준선
+    #   → 즉시 완화가 아니라 그때의 실측 toxicity_score 근거로 block_threshold(0.45)
+    #   재검토 착수(§9 사전등록 원칙).
+    "toxicity_block_shadow": {
+        "min_samples": 20,  # 차단 건 최소 수 (미달 → 판정 보류, open_gap_shadow와 동일 기준)
+        "cf_window_min": 30,  # counterfactual 관찰 창 (분) — open_gap_shadow와 동일
+    },
     # [361차 신설] §10 TP2 홀드 A/B counterfactual — 0720 정기점검 "TP3 도달 0건" 딥다이브.
     # 원인은 트레일링 폭이 아니라 qty=2 스테이지 배분(TP2에서 잔량 100% 종료, TP3 몫이
     # 항상 0)이었음이 확인됨(dev_memory/DECISION_LOG.md 361차 항목). TP2 전량종료 시점을
