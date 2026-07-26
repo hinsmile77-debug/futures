@@ -2,6 +2,33 @@
 
 ---
 
+## 2026-07-26 (387차 — HORIZON_THRESHOLDS·entry_horizon 경계값 주간 재보정 반영)
+
+### [설계결정] HORIZON_THRESHOLDS 6개 값 + ENTRY_HORIZON_B1/B2를 07-26 재보정값으로 갱신, SGD 완전 리셋 예약
+
+**File**: `config/settings.py`(`HORIZON_THRESHOLDS`, `ENTRY_HORIZON_B1`/`ENTRY_HORIZON_B2`, `SGD_FULL_RESET_PENDING`)
+
+**배경**: 사용자가 7/3(288차) 재보정 이후 경과를 재점검 요청. `ThresholdRecalibrator`를 라이브 데이터로 직접 재실행(21거래일, 2026-06-25~07-24)한 결과 6개 호라이즌 전부 UPDATE 경보(δ +28.5~+31.4%, FLAT 실측 25.7~26.9% vs 목표 34%) — 자동 주간 로그(07-24 실행분, `threshold_monitor.db`)와 완전히 일치 확인. 7/3때(+40~+85%, 호라이즌별 편차 큼)와 달리 이번엔 전 호라이즌이 고르게 +29~31%로 상향돼야 해, 특정 호라이즌 드리프트가 아니라 시장 변동성 자체의 전반적 재확대로 해석.
+
+entry_horizon 경계값(B1/B2)도 같은 창으로 점검 — `EntryHorizonRecalibrator`가 feasibility 분모로 쓰는 `HORIZON_THRESHOLDS["1m"]`이 위 재보정으로 바뀌므로 새 1m값(0.00075)을 반영해 재계산해야 정합된다(반영 없이 옛 B1/B2=3.5/4.0만 유지하면 1m=42.0%/3m=15.2%/5m=42.8%로 다시 편중 — 374차가 고쳤던 버킷 고착 패턴 재발 조짐). 자동 주간 로그(`entry_horizon_log`, 07-24 실행분)의 recalc_b1/b2(4.844/6.713)는 지금 라이브 재실행으로 재현되지 않음(4.177/5.790, n=7,702로 표본수는 동일) — `raw_candles` 기반 ThresholdRecalibrator 쪽은 완전히 재현되는 것과 대비돼 `raw_features`(atr) 쪽에 07-24 이후 백필/보정이 있었을 가능성이 있으나 원인 규명은 이번 세션 범위 밖. 재현 가능한 라이브 값을 기준으로 채택.
+
+**결정**:
+1. `HORIZON_THRESHOLDS`: 1m 0.00057→0.00075, 3m 0.00106→0.00136, 5m 0.00140→0.00182, 10m 0.00209→0.00273, 15m 0.00255→0.00328, 30m 0.00362→0.00476 (`HORIZON_THRESHOLDS_BASE`는 `dict(HORIZON_THRESHOLDS)`라 자동 반영, 별도 수정 불필요).
+2. `ENTRY_HORIZON_B1` 3.5→3.2, `ENTRY_HORIZON_B2` 4.0→4.4 — 새 1m 임계값을 반영한 21거래일 실측 삼분위수(p33=3.19, p66=4.42). 검증: 새 B1/B2를 신규 feasibility 분포에 적용하면 1m=33.0%/3m=34.0%/5m=33.0%로 정상 3등분 복원. `ENTRY_HORIZON_LOW_BLOCK=0.8`은 도달 샘플 0.013%(7,702건 중 1건)뿐이라 안전판으로 유지.
+3. `SGD_FULL_RESET_PENDING=True` 예약 — 레이블 체계 변경이므로 189차·288차 선례대로 다음 GBM 재학습 완료 시 1회 `reset_full()`.
+
+**Why**: HORIZON_THRESHOLDS와 entry_horizon 경계값은 같은 축(1m 임계값)을 분모로 공유하는 한 몸 — 한쪽만 갱신하면 다른 쪽이 즉시 재왜곡된다(374차가 겪은 것과 동일한 구조의 문제).
+
+**How to apply**: 향후 HORIZON_THRESHOLDS 재보정 시 entry_horizon B1/B2도 반드시 같은 세션에서 함께 재계산할 것 — `EntryHorizonRecalibrator._load_feasibilities()`는 항상 "지금" 설정된 `HORIZON_THRESHOLDS["1m"]`을 읽으므로 순서(threshold 먼저 확정 → feasibility 재계산)를 지켜야 한다.
+
+**구현**: `config/settings.py`
+
+**검증**: py_compile 통과 + import 재확인(6개 값·B1/B2·SGD 플래그 정상 로드). **라이브 미검증** — 다음 GBM 재학습에서 `[SGD] threshold 교체 후 완전 리셋 완료 (1회)` 로그 확인 필요.
+
+**관련**: `NEXT_TODO.md` 동일 날짜(387차) 항목. 선행: 288차(HORIZON_THRESHOLDS 최초 롤링 재보정 체계 도입), 374/375차(entry_horizon 경계값 도입·모니터 신설).
+
+---
+
 ## 2026-07-26 (386차 — "📐 재보정 모니터" 통합 탭 신설: 5개 재보정/재검증 모니터 한 화면에)
 
 ### [신설] threshold/atr_ceiling/entry_horizon 3개 재보정기를 한 탭으로 통합 + ATR배수 3종 발동률 모니터·26주 WFA 재검증 알림 신규 추가
