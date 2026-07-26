@@ -50,6 +50,9 @@ from config.settings import (
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
+from utils.db_utils import (  # [384차] TB 채널 판정 유지(carry-forward)
+    save_tb_verdict, fetch_latest_tb_verdicts,
+)
 
 SHADOW_TB_DIR = os.path.join(MODEL_DIR, "horizons", "shadow_triple_barrier")
 _TS_FMT = "%Y-%m-%d %H:%M:%S"
@@ -192,6 +195,11 @@ def eval_sample_starvation() -> dict:
 # ──────────────────────────────────────────────────────────────
 
 def eval_tb_channel(days: int) -> dict:
+    """[384차] 383차가 규명한 구조결함(평가창이 매주 재학습으로 리셋돼 5m~30m이
+    min_samples_hz 영구 미달) 해법: 호라이즌별로 실제 OOS n이 min_samples_hz에
+    도달한 주에만 신선하게 판정하고 tb_verdict_log에 기록한다. 그 아래 주는 그
+    "최근 판정"을 그대로 이어받아(carry-forward) 채널 집계에 반영 — n_pass/verdict
+    계산 로직 자체는 res["status"]만 보므로 변경 불요."""
     cr = VALIDATION_CAMPAIGN["tb"]
     out = {"horizons": {}, "verdict": "INSUFFICIENT", "n_pass": 0}
 
@@ -204,6 +212,14 @@ def eval_tb_channel(days: int) -> dict:
     except Exception as e:
         out["error"] = "apply_robust_preprocess 임포트 실패: %s" % e
         return out
+
+    try:
+        carried_verdicts = fetch_latest_tb_verdicts()
+    except Exception as e:
+        carried_verdicts = {}
+        print("[TB채널] tb_verdict_log 조회 실패: %s" % e)
+
+    now_dt = datetime.datetime.now()
 
     for hz, h_min in HORIZONS.items():
         res = {"status": "INSUFFICIENT"}
@@ -285,7 +301,19 @@ def eval_tb_channel(days: int) -> dict:
         n = len(X_list)
         res["n_samples"] = n
         if n < int(cr["min_samples_hz"]):
-            res["reason"] = "OOS 표본 부족 (%d < %d)" % (n, cr["min_samples_hz"])
+            cv = carried_verdicts.get(hz)
+            if cv is not None:
+                res["status"] = cv["verdict"]
+                res["carried"] = True
+                res["judged_at"] = cv["judged_at"]
+                res["ic_tb"] = cv["ic_tb"]
+                res["ic_3class"] = cv["ic_3class"]
+                res["reason"] = (
+                    "누적중 (%d/%d) — 최근 판정 유지: %s (%s 판정, n=%d)"
+                    % (n, cr["min_samples_hz"], cv["verdict"], cv["judged_at"][:10], cv["n_samples"])
+                )
+            else:
+                res["reason"] = "OOS 표본 부족 (%d < %d) — 첫 판정 대기" % (n, cr["min_samples_hz"])
             continue
 
         try:
@@ -335,6 +363,16 @@ def eval_tb_channel(days: int) -> dict:
 
         passed = (ic_tb > ic_3c + cr["ic_delta_min"]) and (ic_tb > cr["ic_abs_min"])
         res["status"] = "PASS" if passed else "FAIL"
+        res["carried"] = False
+        res["judged_at"] = now_dt.strftime(_TS_FMT)
+        try:
+            save_tb_verdict(
+                horizon=hz, judged_at=res["judged_at"], eval_start=eval_start,
+                model_mtime=mtime.strftime(_TS_FMT), n_samples=n,
+                ic_tb=res["ic_tb"], ic_3class=res["ic_3class"], verdict=res["status"],
+            )
+        except Exception as e:
+            res["reason"] = (res.get("reason", "") + " (판정 기록 실패: %s)" % e).strip()
 
     n_pass = sum(1 for r in out["horizons"].values() if r.get("status") == "PASS")
     n_judged = sum(1 for r in out["horizons"].values() if r.get("status") in ("PASS", "FAIL"))
@@ -2464,8 +2502,11 @@ def build_report(days: int) -> tuple:
     L.append("|---|---|---|---|---|---|")
     for hz in HORIZONS:
         r = tb["horizons"].get(hz, {})
+        _status = r.get("status", "—")
+        if r.get("carried"):
+            _status = "%s (유지, %s 판정)" % (_status, str(r.get("judged_at", ""))[:10])
         L.append("| %s | %s | %s | %s | %s | %s |" % (
-            hz, r.get("status", "—"), r.get("ic_tb", "—"), r.get("ic_3class", "—"),
+            hz, _status, r.get("ic_tb", "—"), r.get("ic_3class", "—"),
             r.get("n_samples", "—"), r.get("reason", "")))
     if tb.get("error"):
         L.append("")
@@ -2474,8 +2515,13 @@ def build_report(days: int) -> tuple:
     L.append("> [357차 해석 확정] 1m은 앙상블 가중치 영구 0 퇴역(331차 후속2) 상태 —")
     L.append("> 1m이 IC 기준을 합격해도 \"1m 앙상블 복귀\"가 아니라 1m 활용방안 A·C")
     L.append("> (331차 후속3, 섀도우 경로)의 근거로만 사용한다. **실질 승격 검토 대상은")
-    L.append("> 3m/5m로 한정** (30m은 296차 퇴역, 10m/15m은 표본 도달까지 수개월 소요).")
-    L.append("> 합격선 자체는 불변 — 해석만 확정(시계 리셋 불요).")
+    L.append("> 3m/5m로 한정** (30m은 296차 퇴역). 합격선 자체는 불변 — 해석만 확정")
+    L.append("> (시계 리셋 불요).")
+    L.append("> [384차] 383차가 규명한 구조결함(평가창이 매주 재학습으로 리셋돼 5m~30m이")
+    L.append("> min_samples_hz 영구 미달) 해법 적용 — 이제 호라이즌별 실제 OOS n이")
+    L.append("> min_samples_hz에 도달한 주에만 신선하게 판정하고, 그 아래 주는 `tb_verdict_log`의")
+    L.append("> 최근 판정을 그대로 유지(위 표의 \"(유지, YYYY-MM-DD 판정)\")한다. 10m/15m/30m은")
+    L.append("> 판정 주기 자체가 몇 주~십수 주 단위로 길 뿐 표본은 끊기지 않고 계속 누적된다.")
     L.append("")
 
     # [2] Meta-Gate 상세

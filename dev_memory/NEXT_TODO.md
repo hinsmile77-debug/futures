@@ -8,6 +8,44 @@
 
 ---
 
+## 2026-07-26 (384차 — 검증캠페인 [1] 채널 carry-forward 구현: 383차 해법 적용)
+
+> 상세: `DECISION_LOG.md` 2026-07-26(384차) 항목. 선행: 383차.
+
+- [DONE 2026-07-26] `tb_verdict_log` 테이블 + carry-forward 판정 로직 + 재학습
+  호라이즌별 skip 게이트 구현 (`utils/db_utils.py`,
+  `scripts/generate_validation_campaign_report.py`,
+  `learning/batch_retrainer.py`, `scripts/run_shadow_triple_barrier_retrain.py`).
+  py_compile 통과 + 스크래치 DB/모델 디렉토리 스모크 테스트 3종(저장/조회,
+  carry-forward 분기, 재학습 skip 게이트) 통과.
+- [ ] **[384차] 다음 금요일 EOD 체인 라이브 검증** — `data/db/trades.db:tb_verdict_log`에
+  실제로 행이 쌓이는지, 800 미달 호라이즌(5m/10m/15m/30m) 모델 파일 mtime이
+  재학습을 건너뛰고 그대로 유지되는지, 리포트 [1] 섹션에 "(유지, YYYY-MM-DD
+  판정)" 표시가 정상 노출되는지 확인.
+- [ ] **[384차] 몇 주~몇 달 누적 후 5m/10m/15m/30m이 실제로 min_samples_hz(800)에
+  도달해 첫 신선 판정이 나오는지 추적** — 30m은 설계상 ~14주(3.5개월) 소요
+  예상이므로 장기 관찰 항목으로 등록.
+
+---
+
+## 2026-07-26 (383차 — 검증캠페인 [1] Triple-Barrier 채널 평가창 리셋 구조결함 규명)
+
+> 상세: `DECISION_LOG.md` 2026-07-26(383차) 항목. 사용자가 다음 세션에서 계속
+> 논의하기로 함 — 아래 개선 방향 후보 (a)~(d) 중 결정 필요.
+
+- [ ] **[383차] 검증캠페인 [1] Triple-Barrier 채널 개선 방향 결정 (다음 세션)**
+  — `scripts/campaign_steps.py`(리포트→재학습 순서로 매주 mtime 갱신) +
+  `scripts/generate_validation_campaign_report.py:218-225`(eval_start가 최신
+  mtime 기준이라 평가창이 매주 ≈영업일 5일로 리셋)이 맞물려, 5m~30m은
+  `min_samples_hz=800`(config/settings.py)에 구조적으로 영원히 도달 불가함을
+  코드 추적 + `raw_features_horizon` 실측으로 확인. 개선 후보: (a) 호라이즌별
+  800건 도달까지 재학습 보류하고 평가만 누적, (b) eval_start를 여러 세대 전
+  mtime/캘린더 앵커로 변경(단 세대 혼입으로 OOS 순수성 저하 위험), (c) 호라이즌별
+  재학습 주기 차등화, (d) min_samples_hz 호라이즌별 차등화(사후 임계값 변경이라
+  신중 필요). 결정 후 §9-4 원칙대로 시계 리셋 + DECISION_LOG 기록.
+
+---
+
 ## 2026-07-26 (382차 — ThresholdRecalibrator에 run_if_due() 패턴 적용)
 
 > 상세: `DECISION_LOG.md` 2026-07-26(382차) 항목. 선행: 375차.

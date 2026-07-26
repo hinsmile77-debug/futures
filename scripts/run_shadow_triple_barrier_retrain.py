@@ -50,6 +50,9 @@ def main():
     print(f"섀도우 모델 저장 위치: {result['shadow_dir']}")
     print(f"{'호라이즌':6s} {'상태':6s} {'cv_acc':>8s} {'champion':>8s} {'n':>8s}  {'출처':22s}  레이블분포")
     for hz, r in result["horizons"].items():
+        if r.get("skipped"):
+            print(f"{hz:6s} {'보류':6s}  {r.get('reason', '')}")  # [384차]
+            continue
         if not r.get("ok"):
             print(f"{hz:6s} {'실패':6s}  {r.get('error', '')}")
             continue

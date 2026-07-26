@@ -693,6 +693,31 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_res_ts ON regime_exhaustion_shadow(ts)")
+    # [384차 신설] 검증캠페인 [1] Triple-Barrier 채널 판정 이력 — 383차가 규명한
+    # "평가창이 매주 재학습으로 리셋돼 5m~30m이 min_samples_hz(800) 영구 미달"
+    # 구조결함의 해법(제안 (a): 재학습 주기와 평가창 분리). 호라이즌별로 실제
+    # OOS n이 800에 도달한 주에만 판정을 내려 여기 기록하고, 그 아래 주는 이
+    # 로그의 "최근 판정"을 그대로 유지(carry-forward)해 채널 집계에 반영한다.
+    # 재학습 실행부(batch_retrainer.retrain_shadow_triple_barrier)도 이 로그에서
+    # "오늘 판정된 호라이즌"만 골라 재학습하고 나머지는 모델 파일을 건드리지 않아
+    # OOS 누적이 끊기지 않게 한다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS tb_verdict_log (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        horizon       TEXT NOT NULL,           -- 1m/3m/5m/10m/15m/30m
+        judged_at     TEXT NOT NULL,           -- 판정(리포트 생성) 시각
+        eval_start    TEXT,                    -- 이번 판정 OOS 구간 시작 (= 판정 당시 모델 mtime)
+        model_mtime   TEXT,                    -- 판정에 쓰인 모델 파일 mtime
+        n_samples     INTEGER,                 -- 판정 시점 OOS 표본 수 (>= min_samples_hz)
+        ic_tb         REAL,
+        ic_3class     REAL,
+        verdict       TEXT NOT NULL,           -- PASS / FAIL
+        created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_tvl_horizon_judged "
+            "ON tb_verdict_log(horizon, judged_at)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,
@@ -1759,6 +1784,47 @@ def purge_old_exchange_cb_halts(keep_days: int = 30) -> None:
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(days=keep_days)).isoformat()
     execute(RAW_DATA_DB, "DELETE FROM exchange_cb_halts WHERE start_ts < ?", (cutoff,))
+
+
+def save_tb_verdict(
+    horizon: str, judged_at: str, eval_start: str, model_mtime: str,
+    n_samples: int, ic_tb: Optional[float], ic_3class: Optional[float], verdict: str,
+) -> None:
+    """[384차] 검증캠페인 [1] 채널 — 호라이즌이 이번 판정에서 OOS n>=min_samples_hz에
+    도달했을 때만 호출. 이 로그의 "해당 호라이즌 최신 행"이 다음 판정(재도달) 전까지
+    캠페인 집계에 쓰이는 유효 판정(carry-forward)이 된다."""
+    execute(
+        TRADES_DB,
+        """INSERT INTO tb_verdict_log
+           (horizon, judged_at, eval_start, model_mtime, n_samples, ic_tb, ic_3class, verdict)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (horizon, judged_at, eval_start, model_mtime, n_samples, ic_tb, ic_3class, verdict),
+    )
+
+
+def fetch_latest_tb_verdicts() -> Dict[str, sqlite3.Row]:
+    """[384차] 호라이즌별 가장 최근 tb_verdict_log 행 (carry-forward 조회용)."""
+    rows = fetchall(
+        TRADES_DB,
+        """SELECT t.* FROM tb_verdict_log t
+           INNER JOIN (
+               SELECT horizon, MAX(judged_at) AS max_judged_at
+               FROM tb_verdict_log GROUP BY horizon
+           ) m ON t.horizon = m.horizon AND t.judged_at = m.max_judged_at""",
+    )
+    return {r["horizon"]: r for r in rows}
+
+
+def fetch_tb_verdicts_judged_on(date_str: str) -> List[str]:
+    """[384차] 해당 날짜(YYYY-MM-DD)에 새로 판정된 호라이즌 목록 — 섀도우 TB
+    재학습(batch_retrainer.retrain_shadow_triple_barrier)이 이 목록에 있는
+    호라이즌만 재학습하고 나머지는 모델 파일을 건드리지 않아 OOS 누적을 보존한다."""
+    rows = fetchall(
+        TRADES_DB,
+        "SELECT DISTINCT horizon FROM tb_verdict_log WHERE judged_at LIKE ?",
+        (date_str + "%",),
+    )
+    return [r["horizon"] for r in rows]
 
 
 def init_all_dbs():
