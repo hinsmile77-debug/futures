@@ -14,7 +14,7 @@ select_entry_horizon()(model/ensemble_decision.py)은 ATR/1m임계값 비율
      (저장된 과거 threshold_feasibility 값이 아니라 항상 "지금" 설정 기준으로
      재산출 — HORIZON_THRESHOLDS 자체가 ThresholdRecalibrator로 바뀔 수 있어서)
   2. 33/67 분위수로 새 경계값(b1/b2) 후보 산출
-  3. 현재 경계값(model.ensemble_decision.ENTRY_HORIZON_B1/B2) 적용 시 각
+  3. 현재 경계값(config.settings.ENTRY_HORIZON_B1/B2) 적용 시 각
      버킷(1m/3m/5m) 실제 비중을 직접 계산 — "고착"은 델타%보다 이 비중으로
      더 직접 드러남(374차는 5m=99.0%로 확정)
   4. 경보 수준 판단 및 threshold_monitor.db:entry_horizon_log 저장
@@ -113,8 +113,7 @@ class EntryHorizonRecalibrator:
 
     # ── 메인 실행 ────────────────────────────────────────────────
     def run(self, today: Optional[str] = None) -> Optional[dict]:
-        from config.settings import RAW_DATA_DB
-        from model.ensemble_decision import ENTRY_HORIZON_B1, ENTRY_HORIZON_B2
+        from config.settings import RAW_DATA_DB, ENTRY_HORIZON_B1, ENTRY_HORIZON_B2
 
         if today is None:
             today = datetime.date.today().isoformat()

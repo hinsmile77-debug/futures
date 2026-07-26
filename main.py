@@ -9058,7 +9058,7 @@ class TradingSystem:
         #    금요일 + 최근 실행 후 7일 이상 경과 시에만). 374차가 발견한
         #    "경계값 고착"(61건 실거래 전부 5m 분류) 재발 여부를 매주 확인.
         #    자동 반영 없음 — ThresholdRecal/ATRCeilingRecal과 동일하게 제안만
-        #    기록, model/ensemble_decision.py의 ENTRY_HORIZON_B1/B2는 사람이
+        #    기록, config/settings.py의 ENTRY_HORIZON_B1/B2는 사람이
         #    검토 후 수동 반영한다.
         if now.weekday() == 4:   # 금요일
             try:
