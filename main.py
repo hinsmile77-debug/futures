@@ -6562,6 +6562,12 @@ class TradingSystem:
                     f"[MetaGate] action={_meta_action} meta_conf={_meta_gate.get('meta_confidence', 0.0):.1%} "
                     f"size_mult={_meta_size:.2f} reason={_meta_gate.get('reason', '')}"
                 )
+            # [신설] toxicity_block_shadow 카운터팩추얼용 스냅샷 — grade/qty가
+            # 아래에서 X/0으로 바뀌기 직전(즉 exec/meta 등 앞선 게이트는 통과한
+            # 상태) 값을 남겨, "toxicity만 없었다면"을 나중(open_gap_shadow와
+            # 같은 위치)에 판단할 때 쓴다.
+            _tox_grade_before = _final_grade
+            _tox_qty_before = _qty_display
             if _tox_action == "block":
                 _final_grade = "X"
                 _qty_display = 0
@@ -7149,6 +7155,71 @@ class TradingSystem:
                 )
             except Exception as _res_e:
                 logger.warning("[RegimeExhaustionGate] counterfactual 기록 실패 (무해): %s", _res_e)
+
+        # [신설] ToxicityGate action="block" counterfactual 섀도우 — "toxicity만
+        # 없었다면 진입했을" 분봉의 가상 결과를 기록한다(검증 캠페인 [19]).
+        # open_gap_shadow와 동일 패턴 — toxicity를 제외한 나머지 게이트(OPEN_VOLATILE
+        # 포함)가 전부 통과했고 앞선 게이트(exec/meta 등, _tox_grade_before로 확인)도
+        # 이 신호를 이미 X로 죽이지 않은 경우만 대상. 읽기 전용 계측 — 실거래
+        # 의사결정에 관여하지 않음(scripts/generate_validation_campaign_report.py가
+        # 주간 사후 판정). action="reduce"는 실제 축소 체결로 trades에 남으므로 대상 아님.
+        if (direction != 0
+                and self.position.status == "FLAT"
+                and _tox_action == "block"
+                and _tox_grade_before != "X"):
+            _tgs_no_tox_ok = (
+                _cr is not None
+                and self.circuit_breaker.is_entry_allowed()
+                and not _hc_block
+                and is_new_entry_allowed()
+                and not self._broker_sync_block_new_entries
+                and not _in_cooldown
+                and not _in_exit_cooldown
+                and not _in_armistice
+                and _integrity_ok
+                and not _in_reverse_clamp
+                and _atr_ok
+                and _hurst_ok
+                and _open_gap_ok
+                and mode_filter_passed
+                and _tox_qty_before > 0
+                and not _bar_volume_zero
+                and not _intraday_block
+                and not self.system_health.kill_switch_active
+                and _ecb_observation_ok
+            )
+            if _tgs_no_tox_ok:
+                try:
+                    _tgs_mult = (
+                        HURST_REGIME_ATR_MULT.get(self._entry_hurst_bucket, {})
+                        if HURST_REGIME_ATR_MULT_ENABLED and self._entry_hurst_bucket else {}
+                    )
+                    _tgs_stop_mult = ATR_STOP_MULT * _tgs_mult.get("stop", 1.0)
+                    _tgs_tp1_mult = (
+                        ATR_HORIZON_TP1_MULT.get(_entry_horizon, ATR_TP1_MULT)
+                        * _tgs_mult.get("tp1", 1.0)
+                    )
+                    _tgs_dir_mult = 1 if direction == 1 else -1
+                    execute(
+                        TRADES_DB,
+                        """INSERT INTO toxicity_block_shadow
+                           (ts, direction, grade, toxicity_score, toxicity_score_ma, conf,
+                            entry_price, stop_price, tp1_price)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                            "LONG" if direction == 1 else "SHORT",
+                            _tox_grade_before,
+                            float(_tox_gate.get("score", 0.0) or 0.0),
+                            float(_tox_gate.get("score_ma", 0.0) or 0.0),
+                            float(confidence),
+                            float(close),
+                            float(close - _tgs_dir_mult * atr * _tgs_stop_mult),
+                            float(close + _tgs_dir_mult * atr * _tgs_tp1_mult),
+                        ),
+                    )
+                except Exception as _tgs_e:
+                    logger.warning("[ToxicityShadow] counterfactual 기록 실패 (무해): %s", _tgs_e)
 
         # ── [DashboardHistory] STEP7 마스터 게이트 — 조건별 통과 여부 + 차단사유
         # "금일 Conf → 진입단계 추적" 카드가 과거 분봉의 진입 차단 원인을 그대로
