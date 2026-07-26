@@ -1,0 +1,71 @@
+PSI 값이 높은 원인을 딥다이브해
+1. PSI 값 산출에 사용하는 피쳐가 적정한지
+2. PSI 값 산출흐름은 올바른지 
+3. 종합적으로 산출과정과 방식을 검토해서 
+그원인을 상세히 파헤쳐
+
+20거래일치 라이브 버퍼
+
+
+PSI 값이 미륵이에게는 방향 정확성 흔들림의 척도로도 진입 효율성에따른 손익의  척도로도 의미있는 지표가 아닐 수 있다는 분석이 아닌가
+그렇다면 이값을 사용하는 이득이 무엇인가
+
+
+
+방법론 자체(손익검증 + 313차 z-test로 임계값 재보정)는 옳은 방향
+
+
+=====================
+2-4. 수익률 향상 / 고도화 제안 (2항)
+min_confidence/ENS_CONF_FLOOR_FOR_AUTO(현 0.33) 재검토 — 3분류 무작위 기준선(33.3%)과 사실상 같은 값이라 사실상 게이트 역할을 못 함. 
+다만 CLAUDE.md 원칙(하드차단보다 사이징 배수 우선)에 맞춰, 하드 상향보다는 min_conf_effective 구간별 사이징 배수 축소(예: conf<40%는 size×0.5)를 먼저 제안합니다.
+
+checklist pass_count 등급과 원시confidence 등급의 괴리를 대시보드에 노출 — 지금은 TRADE.log의 "A급"만 보여 원시 confidence가 33%대라는 사실이 가려짐. 
+"체크리스트 A / 확신도 C" 같이 두 등급을 병기하면 사용자(수동 확인 단계)가 오늘 같은 날 진입을 보류할 근거가 생깁니다.
+
+CB③-P4 재검토를 앞당길 근거 축적 — 오늘 12:38 RESTRICTED 발동 이후에도 C급 진입(14:45)이 나가 손실. 
+CLAUDE.md 실전전환기준 ⑥ 항목(호라이즌 재도입/교체 시 복원)과 별개로, "RESTRICTED 상태에서의 C급 손익"을 섀도 계측 채널로 별도 추적해두면 다음 주간회의 판단 근거가 쌓입니다.
+
+
+========================
+
+3-2. 신규 진입시그널로 육성하는 방안
+바로 실거래에 태우지 않고, 프로젝트의 기존 문화(섀도우 → 카운터팩추얼 계측 → 주간 판정 → 승격)를 그대로 따르는 3단계 로드맵을 제안합니다.
+
+RegimeExhaustionGate(신규, 섀도) — hurst<0.45(mean-revert) AND price_extension_atr(60분 느린버전) > 임계 AND chase(10번) 
+또는 countertrend(11번) 실패가 동시 성립하면 "탈진 반전 위험" 카운터팩추얼 채널로 기록. 
+오늘 데이터로 역산하면 8건 중 3~4건이 이 조건에 걸렸을 것으로 추정 — 검증캠페인 [17]로 신규 등록해 2주 관찰.
+
+"체크리스트 A + 원시확신도 C" 조합 자체를 소프트 게이트로 승격 — 지금은 pass_count만으로 A가 나오지만, raw_confidence < ensemble grade C 임계이면 
+자동으로 사이징×0.5(하드차단 아님, 366차 원칙 그대로 적용). 
+이건 새 피처 발굴이 아니라 이미 계산해 저장만 하고 안 쓰는 ensemble_decisions.grade를 checklist 등급과 결합하는 것이라 구현 비용이 가장 낮습니다.
+
+toxicity_score 재검정 후 진입 필터로 승격 검토 — 오늘처럼 반전이 격렬한 날 스코어가 낮게 유지된 게 계측 결함인지 확인
+(60거래일 백테스트로 CHOP/Hurst와 상관관계 대조) 후 승격 여부 결정.
+
+============================================
+웹에서 확인한 보강 후보(검증된 개념)
+
+Choppiness Index(CHOP): ATR 합/가격범위 기반, 0~100에서 높을수록 횡보·저효율. trend_efficiency(Kaufman ER)와 철학은 겹치지만 계산식이 달라 상호검증용으로 유용.
+VPIN(Volume-Synchronized PIN): "정보거래자 비율" 추정치 — 이미 있는 toxicity_score가 이 계열로 추정되나, 오늘 실패한 걸 보면 거래량 동기화 시간축(volume bar) 기반으로 재구현하는 게 표준 VPIN에 더 가깝고 개선 여지가 있어 보입니다.
+Sources:
+
+Chop Zone Indicator: Identifying Choppy vs Trending Markets
+Choppiness Index (CHOP) — TradingView
+Understanding Order Flow Toxicity — Medium
+당시 맥락: CHOP은 "이미 있는데 활용이 약한 것"(price_extension_atr·hurst·toxicity_score)에 대한 외부 보강 후보로 제안했고, 기존 trend_efficiency(Kaufman ER)와 개념은 겹치지만 계산식이 달라 상호검증용으로 쓸 수 있다는 취지였습니다. 이후 실제 구현으로는 이어지지 않았고, 대신 그 자리를 379차의 price_extension_atr_60m + RegimeExhaustionGate가 대체하는 방향으로 진행됐습니다 — CHOP 자체를 별도로 구현할지는 아직 미결정 상태입니다.
+
+CHOP을 지금 구현해볼까요, 아니면 참고만 하고 넘어갈까요?
+==============================
+
+
+
+
+
+
+3m은 피처 개편이 오히려 악화(-2.70%p)로 나와 후속 재검토가 미완료로 남아있습니다.
+
+
+왜 1m/3m/5m가 상시로 역스킬인가
+
+

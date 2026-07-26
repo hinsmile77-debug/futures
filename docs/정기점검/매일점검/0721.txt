@@ -20,3 +20,13 @@ min_conf 체인(L2 IntradayRegime 직후)에 게이트 삽입 — 비활성 상�
 ① pre_market_stage2 비동기화 (main.py)
 _pre_market_stage2()를 _pre_market_stage2_fetch()(백그라운드 스레드 — macro/investor fetch + 레짐 계산 + Slack notify)와 _pre_market_stage2_apply()(메인스레드 — 대시보드 위젯 반영만)로 분리. 하트비트가 08:58 최초 틱에 스레드만 기동하고, 다음 틱에서 결과를 폴링해 적용 — 기존 _b_intraday_worker와 동일한 스레드+플래그폴링 관례 재사용. 
 데일리 리셋 지점(기동 시·daily_close) 2곳에도 신규 플래그 초기화 추가.
+
+---
+
+MW0601
+
+83b9745 359차: 0720 정기점검 후속 3건 — 전부 라이브 미검증
+
+pre_market_stage2 비동기화: _pre_market_stage2_fetch(백그라운드 스레드)/_pre_market_stage2_apply(메인스레드) 분리 신설 — 08:58 _scheduler_tick 지연 완화 목적
+레짐 불안정도 섀도 게이트: INSTABILITY_GATE_ENABLED=False(섀도 모드, 현재 실거래 영향 없음) — 휩쏘 구간 감지용, 관찰 후 활성화 검토
+PreRetrain 영업일 로그: _gap_biz_days 계산으로 스킵 로그 문구 정확도 개선

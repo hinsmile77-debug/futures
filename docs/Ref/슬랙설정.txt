@@ -1,0 +1,41 @@
+채널ID
+C0BHHF80NET
+
+Bot User OAuth Token
+<REDACTED — 실제 값은 별도 안전한 곳(비밀관리자/로컬 .env)에 보관, git에 커밋 금지>
+<REDACTED — 실제 값은 별도 안전한 곳(비밀관리자/로컬 .env)에 보관, git에 커밋 금지>
+
+슬랙 홈 접속 후 로그인 
+hinsmile77@gmail.com
+https://slack.com/intl/ko-kr
+
+설치할 워크스페이스로 이동
+예)hanryang
+워크스페이스에 채널 생성
+예)한량이, 미륵이
+
+
+기존 Stock Auto 앱 이동 설치
+api.slack.com/apps 이동
+Stock Auto 클릭
+왼쪽 사이드바의 App Manifest 로 이동 
+App Manifest Json 카피 해 놓음
+
+api.slack.com/apps 이동
+오른쪽 위 Create an app 클릭
+from a manifest 클릭
+워크스페이스 선택
+카피 해 놓은 App Manifest Json 붙여넣고 next
+권한(Scopes) 설정
+왼쪽 메뉴 "OAuth & Permissions" → "Bot Token Scopes"에서 기존 Stock Auto가 쓰던 권한과 동일하게 추가하세요. 메시지 전송용이면 최소 chat:write는 꼭 필요합니다. (기존 Stock Auto의 Scopes 목록을 참고해서 똑같이 맞추시면 됩니다.)
+6. Install App → hanryang에 설치
+왼쪽 메뉴 "Install App" 클릭 → "Install to hanryang" 버튼 클릭 → 권한 승인.
+
+
+
+
+
+
+
+
+
