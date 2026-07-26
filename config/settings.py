@@ -313,9 +313,12 @@ HORIZON_THRESHOLDS_RESEARCH: dict = {
 # 기존 비중에 비례해 재분배(30m처럼 균등 아님 — 이미 비균등 가중이 실측 기반 조정 결과라
 # 균등 재분배는 그 조정을 무의미하게 만듦. 스케일 = 1/(1-0.15)=1.1765, 반올림 후 잔차 5m에 반영).
 ENSEMBLE_WEIGHTS = {
-    "1m": 0.0,                             # 1m 퇴역(331차 후속2) — 앙상블 가중합 영구 제외
-    "3m": 0.13, "5m": 0.30,                # 3m: 0.11×1.1765≈0.13 / 5m: 0.25×1.1765≈0.29+잔차0.01
-    "10m": 0.29, "15m": 0.28, "30m": 0.0,  # 30m 퇴역(296차) — 앙상블 가중합 영구 제외
+    "1m": 0.0,  # 1m 퇴역(331차 후속2) — 앙상블 가중합 영구 제외
+    "3m": 0.13,
+    "5m": 0.30,  # 3m: 0.11×1.1765≈0.13 / 5m: 0.25×1.1765≈0.29+잔차0.01
+    "10m": 0.29,
+    "15m": 0.28,
+    "30m": 0.0,  # 30m 퇴역(296차) — 앙상블 가중합 영구 제외
 }
 
 # 상관관계 역수 가중치 (M2 이중 가중 완화 — 실데이터 전 정적 추정치)
@@ -338,9 +341,12 @@ ENSEMBLE_WEIGHTS = {
 # 1m 퇴역(331차 후속2, 2026-07-14): ENSEMBLE_WEIGHTS와 동일 사유(역스킬 확정, 위 주석
 # 참조) — 0.24 → 0.0, 나머지 활성 4개에 비례 재분배(스케일=1/(1-0.24)=1.3158).
 ENSEMBLE_WEIGHTS_CORR_ADJ = {
-    "1m": 0.0,                             # 1m 퇴역(331차 후속2) — 앙상블 가중합 영구 제외
-    "3m": 0.26, "5m": 0.24,
-    "10m": 0.24, "15m": 0.26, "30m": 0.0,
+    "1m": 0.0,  # 1m 퇴역(331차 후속2) — 앙상블 가중합 영구 제외
+    "3m": 0.26,
+    "5m": 0.24,
+    "10m": 0.24,
+    "15m": 0.26,
+    "30m": 0.0,
 }
 
 # 호라이즌 방향 코히어런스 게이트 (P3b)
@@ -366,9 +372,13 @@ MC_LOOKBACK_DAYS: int = 5  # conf 분포 측정 기간 (거래일)
 # 0.45~0.47, `learning/online_learner.py:_CUT_THR`)이 이미 "단기호라이즌 정확도<0.45
 # 내외는 저성능"으로 취급하고 있어 그 기준선에 맞춰 FREEZE_MIN을 정했다.
 # `strategy/entry/fq_accuracy_gate.py:compute_fq_adjusted_min_conf()` 참조.
-FQADJ_ACC_MIN_SAMPLES: int = 15       # 이 미만 표본이면 게이트 건너뜀(None, "모른다"≠"나쁘다")
-FQADJ_ACC_FREEZE_MIN: float = 0.45    # 미만이면 완화 동결 (단기 CUT_THR 하한과 정합)
-FQADJ_ACC_STRENGTHEN_MIN: float = 0.40  # 미만이면 fq 무관 강화 (랜덤 0.50 대비 뚜렷한 하회)
+FQADJ_ACC_MIN_SAMPLES: int = (
+    15  # 이 미만 표본이면 게이트 건너뜀(None, "모른다"≠"나쁘다")
+)
+FQADJ_ACC_FREEZE_MIN: float = 0.45  # 미만이면 완화 동결 (단기 CUT_THR 하한과 정합)
+FQADJ_ACC_STRENGTHEN_MIN: float = (
+    0.40  # 미만이면 fq 무관 강화 (랜덤 0.50 대비 뚜렷한 하회)
+)
 
 # [346차] EOD 모델 교체 가드 — CV acc(GBM)/OOB(RF)가 구모델 대비 허용 하락폭을
 # 넘으면 교체를 보류하고 구모델을 유지한다(호라이즌별 독립 판정). 신규 학습 결과는
@@ -386,9 +396,12 @@ FQADJ_ACC_STRENGTHEN_MIN: float = 0.40  # 미만이면 fq 무관 강화 (랜덤 
 # CascadeCoherence에서 전면 퇴역 확정(구조적 랜덤 이하 확정)돼 실거래 의사결정에
 # 관여하지 않으므로 완화(0.05).
 EOD_MODEL_GUARD_DROP_TOLERANCE = {
-    "1m": 0.025, "3m": 0.025, "5m": 0.025,   # 단기 CORE — 가장 엄격
-    "10m": 0.03, "15m": 0.03,                 # 중기
-    "30m": 0.05,                              # 장기 — 296차 퇴역 확정, 완화
+    "1m": 0.025,
+    "3m": 0.025,
+    "5m": 0.025,  # 단기 CORE — 가장 엄격
+    "10m": 0.03,
+    "15m": 0.03,  # 중기
+    "30m": 0.05,  # 장기 — 296차 퇴역 확정, 완화
 }
 EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT = 0.03  # 미등록 호라이즌 기본값
 MC_STEP_LIMIT: float = (
@@ -685,12 +698,12 @@ SGD_CUT_THRESHOLD = 0.48  # 이하 → SGD 비중 -2%
 # 유일하게 관찰된 5m→3m 단일 쌍만 다룬다(다른 호라이즌 일반화는 아직 근거
 # 없음).
 CONF_STUCK_BOOST_ENABLED = True
-CONF_STUCK_BOOST_SOURCE = "5m"           # 정체 감지 대상 호라이즌
-CONF_STUCK_BOOST_TARGET = "3m"           # 가중치를 옮겨받을 호라이즌
-CONF_STUCK_BOOST_MIN_STREAK = 3          # main.py [CONF⚠] 로그와 동일 임계(3분+ 고착)
-CONF_STUCK_BOOST_TRANSFER_RATIO = 0.5    # 소스 가중치의 50%를 타깃으로 이전
-CONF_STUCK_BOOST_TARGET_MIN_ACC = 0.35   # 타깃 최근 정확도가 이 미만이면 부스트 억제
-                                          # (표본 부족으로 판단 불가 시엔 허용 — main.py에서 None 전달)
+CONF_STUCK_BOOST_SOURCE = "5m"  # 정체 감지 대상 호라이즌
+CONF_STUCK_BOOST_TARGET = "3m"  # 가중치를 옮겨받을 호라이즌
+CONF_STUCK_BOOST_MIN_STREAK = 3  # main.py [CONF⚠] 로그와 동일 임계(3분+ 고착)
+CONF_STUCK_BOOST_TRANSFER_RATIO = 0.5  # 소스 가중치의 50%를 타깃으로 이전
+CONF_STUCK_BOOST_TARGET_MIN_ACC = 0.35  # 타깃 최근 정확도가 이 미만이면 부스트 억제
+# (표본 부족으로 판단 불가 시엔 허용 — main.py에서 None 전달)
 
 # 호라이즌 자격 획득 기준 (Phase 1: 상태 추적 / Phase 3: 앙상블 필터링 적용)
 HORIZON_QUALIFY_MIN_CYCLES = 3  # verified_cycles 최소값 (전 호라이즌 공통)
@@ -724,7 +737,10 @@ QUALIFY_QUALITY_MIN_SAMPLES = 10  # 품질 게이트 평가 최소 샘플 수
 HORIZON_TIME_POLICY = {
     (900, 905): [],  # cold-start — 전 호라이즌 차단
     (905, 910): ["3m"],  # cold-start 2단계: 3m만 (1m은 331차로 앙상블 영구퇴역)
-    (910, 915): ["1m", "3m"],  # 1m은 여전히 가중치 0(퇴역) — 실질 3m 단독과 동일, 표기만 유지
+    (910, 915): [
+        "1m",
+        "3m",
+    ],  # 1m은 여전히 가중치 0(퇴역) — 실질 3m 단독과 동일, 표기만 유지
     (915, 930): ["1m", "3m", "5m"],  # 개장 초 — 단기 3개만
     (930, 1500): None,  # 전 호라이즌 정상 가동
     (1500, 1510): ["1m", "3m"],  # 마감 청산 집중 (look-ahead 방지)
@@ -795,8 +811,8 @@ REGIME_MIN_CONFIDENCE = {
 # 오발동해 두 달 뒤 비활성화된 선례를 반복하지 않기 위함(CLAUDE.md 절대원칙 §2 참조).
 INSTABILITY_GATE_ENABLED: bool = False
 INSTABILITY_WINDOW_MIN: int = 10
-INSTABILITY_TRANSITION_THRESHOLD: int = 4   # 10분 내 전환 4회 이상 = 불안정
-INSTABILITY_MC_BOOST: float = 0.05          # L2 DAY_RISK_OFF(+5%p)와 동일 스케일
+INSTABILITY_TRANSITION_THRESHOLD: int = 4  # 10분 내 전환 4회 이상 = 불안정
+INSTABILITY_MC_BOOST: float = 0.05  # L2 DAY_RISK_OFF(+5%p)와 동일 스케일
 
 REGIME_SIZE_MULT = {
     "RISK_ON": 1.0,
@@ -828,8 +844,8 @@ PARTIAL_EXIT_RATIOS = [0.33, 0.33, 0.34]  # 부분 청산 3단계
 # "TP1/Stop 배수 재조정"을 미착수로 남긴 채 NEXT_TODO에 등록하지 않아 방치됐던 부채를
 # 이번에 해소한다 — 근거: DECISION_LOG.md 2026-07-16(339차)·2026-07-20(360차).
 LOSS_TIER1_ENABLED = True
-LOSS_TIER1_STOP_FRACTION = 0.5   # entry~stop 거리의 50% 지점에서 1차 축소
-LOSS_TIER1_CUT_RATIO = 0.5       # 조기 축소 비율 (qty==1은 적용 제외 — 물리적 분할 불가)
+LOSS_TIER1_STOP_FRACTION = 0.5  # entry~stop 거리의 50% 지점에서 1차 축소
+LOSS_TIER1_CUT_RATIO = 0.5  # 조기 축소 비율 (qty==1은 적용 제외 — 물리적 분할 불가)
 
 # [363차, 0721 정기점검 딥다이브 후속] tick-level 손절1차 감지 — 분당 STEP8 체크만으로는
 # 급락이 한 틱/한 분 안에 tier1과 풀스톱을 동시에 뚫을 때 tier1이 관측될 기회 자체가
@@ -864,9 +880,9 @@ HURST_REGIME_ATR_MULT = {
 # Hurst 평균회귀 구간(<HURST_RANGE_THRESHOLD)은 이미 연장된 가격이 반전할 가능성이
 # 커 추격 진입의 리스크가 더 크므로 임계값을 더 좁게(엄격하게) 적용한다.
 CHASE_FILTER_ENABLED = True
-CHASE_FILTER_LOOKBACK_MIN = 10             # 연장 측정 룩백 (분)
-CHASE_FILTER_ATR_THRESHOLD = 2.0           # 기본 임계값 (추세·중립 구간)
-CHASE_FILTER_ATR_THRESHOLD_MEANREV = 1.5   # Hurst<0.45(평균회귀) 임계값 — 더 엄격
+CHASE_FILTER_LOOKBACK_MIN = 10  # 연장 측정 룩백 (분)
+CHASE_FILTER_ATR_THRESHOLD = 2.0  # 기본 임계값 (추세·중립 구간)
+CHASE_FILTER_ATR_THRESHOLD_MEANREV = 1.5  # Hurst<0.45(평균회귀) 임계값 — 더 엄격
 
 # [368차 신설] ChaseForeignComboGuard(섀도) — 10_chase+6_foreign 동시 실패 조합 감시.
 # 배경: 0722 정기점검 딥다이브(MW0601 실측) — 09:32~09:53 21분 사이 이 조합(나머지
@@ -893,7 +909,9 @@ CHASE_FOREIGN_COMBO_DEMOTE_TO: str = "C"  # 강등 목표 등급 (P4와 동일)
 # entry_mode=MEAN_REVERSION(의도적 역추세 전략)은 예외 — 3_vwap의 exhaustion 기반
 # 사이징과 충돌 방지.
 COUNTERTREND_CAP_ENABLED = True
-COUNTERTREND_ATR_THRESHOLD = 2.0   # CHASE_FILTER_ATR_THRESHOLD와 동일 스케일(보정 데이터 없어 우선 동일값)
+COUNTERTREND_ATR_THRESHOLD = (
+    2.0  # CHASE_FILTER_ATR_THRESHOLD와 동일 스케일(보정 데이터 없어 우선 동일값)
+)
 COUNTERTREND_MAX_QTY = 1
 
 # [379차 신설] RegimeExhaustionGate(섀도) — 0723 정기점검 딥다이브 3항에서 제안한
@@ -911,9 +929,11 @@ COUNTERTREND_MAX_QTY = 1
 # 축적 후 진행.
 # 근거: dev_memory/DECISION_LOG.md 379차 항목(0723 정기점검 딥다이브 3항 후속).
 REGIME_EXHAUSTION_LOOKBACK_MIN = 60
-REGIME_EXHAUSTION_EXT_ATR_THRESHOLD = 1.5   # 초기값, 표본 축적 후 재보정 검토
+REGIME_EXHAUSTION_EXT_ATR_THRESHOLD = 1.5  # 초기값, 표본 축적 후 재보정 검토
 REGIME_EXHAUSTION_GATE_ENABLED: bool = False  # 기본 비활성 — 섀도 로그만 (§9 원칙)
-REGIME_EXHAUSTION_DEMOTE_TO: str = "C"  # 강등 목표 등급 (전환 시에만 사용, ChaseForeignComboGuard와 동일)
+REGIME_EXHAUSTION_DEMOTE_TO: str = (
+    "C"  # 강등 목표 등급 (전환 시에만 사용, ChaseForeignComboGuard와 동일)
+)
 
 # [349차] 급변장 사전 가드 — 7/16 정기점검(dailycheck_prompt.txt P1)에서 지적된
 # 문제: 기존 RegimeOverride(config/strategy_params.py, 급변장 진입 금지)는
@@ -932,11 +952,13 @@ REGIME_EXHAUSTION_DEMOTE_TO: str = "C"  # 강등 목표 등급 (전환 시에만
 # atr_ratio 임계 1.8은 MicroRegimeClassifier의 급변장 하한(1.5)보다 엄격하게 잡아
 # RegimeOverride보다 좁은 진짜 극단만 추가로 잡는다(중복 차단 최소화).
 VOLATILITY_BURST_GUARD_ENABLED = True
-VOLATILITY_BURST_TICK_RATE_MIN = 600       # 직전 봉 tick_count 임계 (분당 틱수)
-VOLATILITY_BURST_ATR_RATIO_MIN = 1.8       # 직전 봉 atr_ratio 임계 (1분 변화폭)
-VOLATILITY_BURST_ACTION = "reduce"         # "skip"(신규진입 완전차단) | "reduce"(사이즈축소+스톱확대)
-VOLATILITY_BURST_SIZE_MULT = 0.5           # action="reduce"일 때 사이즈 배수
-VOLATILITY_BURST_STOP_WIDEN_MULT = 1.5     # action="reduce"일 때 스톱 거리 확대 배수
+VOLATILITY_BURST_TICK_RATE_MIN = 600  # 직전 봉 tick_count 임계 (분당 틱수)
+VOLATILITY_BURST_ATR_RATIO_MIN = 1.8  # 직전 봉 atr_ratio 임계 (1분 변화폭)
+VOLATILITY_BURST_ACTION = (
+    "reduce"  # "skip"(신규진입 완전차단) | "reduce"(사이즈축소+스톱확대)
+)
+VOLATILITY_BURST_SIZE_MULT = 0.5  # action="reduce"일 때 사이즈 배수
+VOLATILITY_BURST_STOP_WIDEN_MULT = 1.5  # action="reduce"일 때 스톱 거리 확대 배수
 
 # [260704 감사 P1] 신호 소멸 청산 — 보유 포지션과 반대 방향의 앙상블 신호가
 # zone_mc(시간대×호라이즌 동적 min_conf) 이상으로 확정되는 시점을 기록한다.
@@ -1030,8 +1052,8 @@ VALIDATION_CAMPAIGN = {
     #   docs/Ref/jointfateBlock.txt)이 있어, 표본이 쌓이면 meta_size 구간별
     #   승률도 함께 확인할 것(joint_gate_shadow.meta_size 컬럼).
     "joint_gate_shadow": {
-        "min_samples":       20,     # 차단 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
-        "cf_window_min":     30,     # counterfactual 관찰 창 (분) — signal_decay와 동일
+        "min_samples": 20,  # 차단 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
+        "cf_window_min": 30,  # counterfactual 관찰 창 (분) — signal_decay와 동일
     },
     # [342차 신설] KellyAdvisedSkip × C등급 게이트 승격 검토 — 켈리(PositionSizer)가
     # "자본 대비 1계약도 부적절"이라 판단했는데(kelly_advised_skip=True) MINI_MIN_CONTRACTS
@@ -1432,10 +1454,10 @@ HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC = 5
 # 두 변동성 국면 모두에서 재현됨(dev_memory/NEXT_TODO.md 317차 항목 참조).
 # 임계값(0.45/0.55)은 이 파라미터 그대로 검증됐으므로 변경하지 않음. 알고리즘도
 # variance-scaling 공식 그대로 유지(R/S·DFA1 대비 우월 확인, 알고리즘 교체 불필요).
-HURST_TREND_THRESHOLD  = 0.55  # 이상: 추세장
-HURST_RANGE_THRESHOLD  = 0.45  # 이하: 횡보장 (진입 차단)
-HURST_WINDOW_N   = 90  # 계산에 사용하는 1분봉 종가 개수 (deque maxlen) — 317차: 60→90
-HURST_MAX_LAG    = 9   # variance-scaling 회귀에 사용하는 최대 lag — 317차: 20→9
+HURST_TREND_THRESHOLD = 0.55  # 이상: 추세장
+HURST_RANGE_THRESHOLD = 0.45  # 이하: 횡보장 (진입 차단)
+HURST_WINDOW_N = 90  # 계산에 사용하는 1분봉 종가 개수 (deque maxlen) — 317차: 60→90
+HURST_MAX_LAG = 9  # variance-scaling 회귀에 사용하는 최대 lag — 317차: 20→9
 
 # 317차 워밍업 스케줄 — max_lag가 20→9로 줄면서 콜드스타트 컷오프(len<max_lag*2)가
 # 40분→18분으로 의도치 않게 줄던 문제를 복원 + n_min 스윕(hurst_nmin_search.py) 결과로
@@ -1444,9 +1466,9 @@ HURST_MAX_LAG    = 9   # variance-scaling 회귀에 사용하는 최대 lag — 
 #   40<=n<90: max_lag=max(8,round(n/10)) 적응형 — n=40 시점 bias(-0.101)가 이미
 #             구 운영값(N=60/max_lag=20, bias -0.160)보다 낫다
 #   n>=90: HURST_MAX_LAG(9) 고정 — 검증된 안정 구간
-HURST_WARMUP_COLDSTART_MIN = 40    # 이 미만은 hurst_ready=False(237차 자동진입 차단 유지)
-HURST_WARMUP_LAG_FLOOR     = 8     # 적응형 구간 max_lag 절대하한
-HURST_WARMUP_LAG_RATIO     = 0.1   # 적응형 구간 max_lag 비율상한(=1/10)
+HURST_WARMUP_COLDSTART_MIN = 40  # 이 미만은 hurst_ready=False(237차 자동진입 차단 유지)
+HURST_WARMUP_LAG_FLOOR = 8  # 적응형 구간 max_lag 절대하한
+HURST_WARMUP_LAG_RATIO = 0.1  # 적응형 구간 max_lag 비율상한(=1/10)
 
 # [333차 후속, §3-6 FAIL 완화] Hurst<0.45 하드차단 대신 사이징 ×0.5로 완화.
 # 근거: hurst_gate_shadow counterfactual n=111(≥20), 누적 hyp_pnl=42.49pt(>왕복비용×2=
@@ -1456,7 +1478,7 @@ HURST_WARMUP_LAG_RATIO     = 0.1   # 적응형 구간 max_lag 비율상한(=1/10
 # 서로 보완관계이며 317차 개선이 이번 FAIL 판정을 무효화하지 않음(dev_memory/DECISION_LOG.md
 # 333차 후속 항목 참조). 즉시 언블록 아님(§3-6 사전등록 원칙) — 사이징만 완화, 0.45 임계값
 # 자체는 유지.
-HURST_SOFT_BLOCK_ENABLED   = True
+HURST_SOFT_BLOCK_ENABLED = True
 HURST_SOFT_BLOCK_SIZE_MULT = 0.5
 
 # 317차 후속 — [미채택/REFERENCE ONLY, 라이브 코드 어디에서도 참조하지 않음]
@@ -1471,10 +1493,17 @@ HURST_SOFT_BLOCK_SIZE_MULT = 0.5
 # 등 완화된 보정을 재시도할 경우의 원자재로 남겨둠 — 상세: dev_memory/NEXT_TODO.md 317차.
 HURST_DESHRINK_TABLE = {
     # n: (a, b) — H_true_est = (H_raw - a) / b
-    40: (0.0192, 0.7368), 45: (0.0421, 0.7098), 50: (0.0352, 0.7492),
-    55: (0.0438, 0.7513), 60: (0.0406, 0.7788), 65: (0.0200, 0.8250),
-    70: (0.0284, 0.8248), 75: (0.0394, 0.8027), 80: (0.0308, 0.8340),
-    85: (0.0252, 0.8470), 90: (0.0215, 0.8512),
+    40: (0.0192, 0.7368),
+    45: (0.0421, 0.7098),
+    50: (0.0352, 0.7492),
+    55: (0.0438, 0.7513),
+    60: (0.0406, 0.7788),
+    65: (0.0200, 0.8250),
+    70: (0.0284, 0.8248),
+    75: (0.0394, 0.8027),
+    80: (0.0308, 0.8340),
+    85: (0.0252, 0.8470),
+    90: (0.0215, 0.8512),
 }
 
 # 320차 — Trend Efficiency Ratio(Kaufman 1995): 직선거리/총이동거리, 0(잡음)~1(완벽한 추세).
