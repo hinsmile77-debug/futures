@@ -145,6 +145,7 @@ from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS as _MIN_TRAI
 from learning.threshold_recalibrator import ThresholdRecalibrator
 from learning.atr_ceiling_recalibrator import ATRCeilingRecalibrator
 from learning.entry_horizon_recalibrator import EntryHorizonRecalibrator
+from learning.atr_multiple_recalibrator import ATRMultipleRecalibrator
 from learning.shap.shap_tracker import ShapTracker, compute_horizon_importance
 from features.horizon_feature_registry import get_available_feature_set
 from safety.circuit_breaker import CircuitBreaker
@@ -349,6 +350,7 @@ class TradingSystem:
         self.threshold_recalibrator   = ThresholdRecalibrator()
         self.atr_ceiling_recalibrator = ATRCeilingRecalibrator()
         self.entry_horizon_recalibrator = EntryHorizonRecalibrator()
+        self.atr_multiple_recalibrator = ATRMultipleRecalibrator()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
         self.pcr_store          = PCRStore()
         self.option_chain_snap  = OptionChainSnapshot(
@@ -9149,6 +9151,27 @@ class TradingSystem:
                     )
             except Exception as _ehe:
                 logger.warning("[EntryHorizonRecal] 실행 실패 (스킵): %s", _ehe)
+
+        # ── ATR배수 임계값 3종(CHASE_FILTER×2/COUNTERTREND/REGIME_EXHAUSTION)
+        #    발동률 드리프트 모니터 (신설, 금요일 + 최근 실행 후 7일 이상
+        #    경과 시에만 — 나머지 3개 재보정기와 동일 패턴). 재계산 "권장값"이
+        #    아니라 "지금 임계값이면 얼마나 자주 발동하는가"만 추적, 자동 반영
+        #    없음 — 대상 임계값은 사람이 config/settings.py에서 직접 검토.
+        if now.weekday() == 4:   # 금요일
+            try:
+                _am_recal = self.atr_multiple_recalibrator.run_if_due(
+                    today=now.date().isoformat()
+                )
+                if _am_recal:
+                    _am_alerts = {k: v["alert"] for k, v in _am_recal.items() if v["alert"] != "CLEAR"}
+                    if _am_alerts:
+                        log_manager.system(
+                            f"[ATRMultipleRecal] 경보 발생: {_am_alerts} — "
+                            f"발동률 급변, config/settings.py:ATR_MULTIPLE_RECAL_TARGETS 수동 검토",
+                            "WARNING",
+                        )
+            except Exception as _ame:
+                logger.warning("[ATRMultipleRecal] 실행 실패 (스킵): %s", _ame)
 
         # 일일 리셋
         if hasattr(self, "_investor_timer"):

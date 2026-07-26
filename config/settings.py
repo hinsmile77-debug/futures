@@ -1634,6 +1634,62 @@ REGIME_EXHAUSTION_PARAMS = {
     "hurst_override": True,
 }
 
+# ── 26주 Walk-Forward 재검증 주기 알림 (CLAUDE.md 실전전환기준 ③, 주기적 재검증 항목) ──
+# 시장 실측치로 캘리브레이션된 파라미터가 "재검토하기로 했는데 안 함" 상태로 방치되는
+# 걸 막기 위한 가벼운 캘린더 알림 — 매주 재계산하는 게 아니라 "마지막 재검증일 + 26주"
+# 경과 여부만 추적한다. 실제 재검증(hurst_oos_validation.py 등 수동 실행) 완료 후에는
+# last_check를 사람이 수동으로 오늘 날짜로 갱신할 것.
+WFA_RECHECK_CYCLE_WEEKS = 26
+WFA_RECHECK_ITEMS = {
+    "hurst": {
+        "label": "Hurst 파라미터 (HURST_WINDOW_N/HURST_MAX_LAG)",
+        "last_check": "2026-07-13",  # 317차 재보정일
+        "note": "scripts/hurst_oos_validation.py, hurst_stability_check.py 재실행",
+    },
+    "psi": {
+        "label": "PSI 경보 임계값 (_PSI_WATCH/_PSI_ALARM/_PSI_CRIT)",
+        "last_check": "2026-07-23",  # 372차 재검토 시도일(근거 부족으로 임계값 미변경 결론)
+        "note": "손익검증+313차 z-test 방법론(372차) 재실행 — 일자단위 상관·이상치 분해 우선 확인",
+    },
+}
+
+# ── ATR배수 임계값 3종 재보정 모니터 (CHASE_FILTER/COUNTERTREND/REGIME_EXHAUSTION) ──
+# 셋 다 price_extension_atr(10분)/price_extension_atr_60m(60분) 연장폭 비율에 대한
+# 정적 배수 임계값인데, COUNTERTREND_ATR_THRESHOLD·REGIME_EXHAUSTION_EXT_ATR_THRESHOLD는
+# 주석에 이미 "보정 데이터 없어 CHASE_FILTER와 동일값 채택"/"초기값, 표본 축적 후 재보정
+# 검토"라고 명시돼 있어 entry_horizon(374차)과 동일한 "설계 당시 가정과 실측 분포가
+# 어긋나 조용히 죽어있을 위험"이 있다. 다만 ThresholdRecalibrator류와 달리 이 임계값들은
+# "3등분" 같은 명확한 목표 비율이 없는 희귀사건 트리거라 percentile 역산으로 "권장값"을
+# 제안하는 게 부적절 — 대신 "지금 이 임계값이면 실측 데이터에서 얼마나 자주 발동하는가"
+# (발동률)를 매주 추적해, 발동률 자체가 직전 기록 대비 크게 바뀌면 경보만 낸다(자동
+# 반영 없음, 사람이 재검토).
+ATR_MULTIPLE_RECAL_LOOKBACK_DAYS = 21   # ThresholdRecalibrator와 동일 윈도
+ATR_MULTIPLE_RECAL_RUN_INTERVAL_DAYS = 7  # 주 1회(휴장 대비 "마지막 실행 후 7일" 패턴)
+ATR_MULTIPLE_RECAL_TARGETS = {
+    "chase": {
+        "label": "10_chase 추격필터 (추세·중립)",
+        "feature": "price_extension_atr",
+        "setting": "CHASE_FILTER_ATR_THRESHOLD",
+    },
+    "chase_meanrev": {
+        "label": "10_chase 추격필터 (평균회귀, Hurst<0.45)",
+        "feature": "price_extension_atr",
+        "setting": "CHASE_FILTER_ATR_THRESHOLD_MEANREV",
+    },
+    "countertrend": {
+        "label": "11_countertrend 역추세캡",
+        "feature": "price_extension_atr",
+        "setting": "COUNTERTREND_ATR_THRESHOLD",
+    },
+    "regime_exhaustion": {
+        "label": "RegimeExhaustionGate(섀도, 60분)",
+        "feature": "price_extension_atr_60m",
+        "setting": "REGIME_EXHAUSTION_EXT_ATR_THRESHOLD",
+    },
+}
+ATR_MULTIPLE_RECAL_DELTA_WATCH = 8.0   # 발동률 %p 변화 — WATCHLIST
+ATR_MULTIPLE_RECAL_DELTA_UPDATE = 15.0  # 발동률 %p 변화 — UPDATE
+
 # ── 로깅 설정 ──────────────────────────────────────────────────
 LOG_LEVEL = logging.INFO
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

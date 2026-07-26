@@ -9893,15 +9893,16 @@ class MireukDashboard(QMainWindow):
         if self.experiment_gate_panel is not None:
             self.mid_tabs.addTab(self._wrap(self.experiment_gate_panel), "🧪 실험 게이트")
 
-        # Phase A 임계값 모니터 패널
+        # 재보정 모니터 통합 패널 — 임계값/ATR상하한/진입호라이즌 3개 재보정기를
+        # 하위 탭으로 묶음 (기존 단독 "📐 임계값 모니터" 탭을 대체).
         try:
-            from dashboard.panels.threshold_monitor_panel import ThresholdMonitorPanel as _TMP
-            self.threshold_monitor_panel = _TMP()
-        except Exception as _tme:
-            logger.warning("[Dashboard] ThresholdMonitorPanel 로드 실패: %s", _tme)
-            self.threshold_monitor_panel = None
-        if self.threshold_monitor_panel is not None:
-            self.mid_tabs.addTab(self._wrap(self.threshold_monitor_panel), "📐 임계값 모니터")
+            from dashboard.panels.recalibrator_monitor_panel import RecalibratorMonitorPanel as _RMP
+            self.recalibrator_monitor_panel = _RMP()
+        except Exception as _rmpe:
+            logger.warning("[Dashboard] RecalibratorMonitorPanel 로드 실패: %s", _rmpe)
+            self.recalibrator_monitor_panel = None
+        if self.recalibrator_monitor_panel is not None:
+            self.mid_tabs.addTab(self._wrap(self.recalibrator_monitor_panel), "📐 재보정 모니터")
 
         # 섹션 9: 스케일러 상태 모니터 패널
         try:
