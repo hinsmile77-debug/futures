@@ -22,12 +22,11 @@ from PyQt5.QtWidgets import (
     QFrame, QSizePolicy,
 )
 
+from config.settings import TRADES_DB
+
 logger = logging.getLogger("SYSTEM")
 
-_BASE_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "..")
-)
-_DB_PATH = os.path.join(_BASE_DIR, "data", "trades.db")
+_DB_PATH = TRADES_DB
 
 # ── 색상 팔레트 ───────────────────────────────────────────────────
 C = {
