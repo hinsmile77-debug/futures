@@ -3466,6 +3466,69 @@ class TradingSystem:
                 dashboard_logger=log_manager.system,
             )
 
+    def _poll_gbm_retrain_subprocess(self) -> None:
+        """[381차 후속] GBM 재학습 64비트 서브프로세스 완료 여부를 즉시 확인.
+
+        run_minute_pipeline()의 S0-A와 동일한 poll() 로직을 별도 메서드로 분리해
+        daily_close()에서도 재사용한다. 07-24 실측: 15:09:59에 시작한 마지막 장중
+        재학습이 15:10:29에 이미 끝났는데도, 완료 감지가 run_minute_pipeline() 호출
+        시점(S0-A)에만 일어나고 15:10 강제청산 이후로는 분봉 파이프라인 자체가
+        더 이상 돌지 않아(그날 SIGNAL 로그 15:10:07 이후 활동 없음) 감지 기회가
+        영영 오지 않았다. 그 결과 daily_close()가 15:40:13에 진입하며 이미 29분
+        전에 끝난 재학습을 "진행 중"으로 오판해 20분을 헛되이 대기(16:00:13 강제
+        진행)했고, 그 20분이 EOD 검증캠페인 6스텝의 시간예산을 잠식해 분위회귀
+        재학습(15m)이 Task Scheduler 시간제한으로 강제종료됐다. daily_close()가
+        대기에 들어가기 전 이 메서드를 한 번 더 호출해 상태를 재확인하면, 이미
+        끝난 재학습을 기다리는 낭비 자체가 사라진다.
+        """
+        _subproc = getattr(self, "_retrain_subproc", None)
+        if _subproc is None:
+            return
+        _rc = _subproc.poll()
+        if _rc is None:
+            return
+        _result = {"ok": _rc == 0, "error": f"exit={_rc}"}
+        _rpath  = getattr(self, "_retrain_subproc_result_path", "")
+        if _rpath and os.path.exists(_rpath):
+            try:
+                with open(_rpath, "r", encoding="utf-8") as _rf:
+                    _result = json.load(_rf)
+                os.remove(_rpath)
+            except Exception as _rpe:
+                logger.warning("[GBM-64] 결과 JSON 읽기 실패: %s", _rpe)
+        _is_wu = getattr(self, "_retrain_subproc_is_warmup", False)
+        # [267차] stderr 파일 닫기 + 내용 로깅 (py310 경고 가시화)
+        _stderr_fh = getattr(self, "_retrain_subproc_stderr_fh", None)
+        if _stderr_fh is not None:
+            try:
+                _stderr_fh.flush()
+                _stderr_fh.close()
+                _spath = getattr(_stderr_fh, "name", "")
+                if _spath and os.path.exists(_spath):
+                    _stderr_size = os.path.getsize(_spath)
+                    if _stderr_size > 0:
+                        with open(_spath, "r", encoding="utf-8", errors="replace") as _sf:
+                            _stderr_txt = _sf.read(2000)  # 최대 2000자
+                        logger.warning(
+                            "[GBM-64] subprocess stderr (%d bytes):\n%s",
+                            _stderr_size, _stderr_txt,
+                        )
+                    else:
+                        os.remove(_spath)  # 빈 파일 삭제
+            except Exception as _sfe:
+                logger.debug("[GBM-64] stderr 파일 처리 오류: %s", _sfe)
+            self._retrain_subproc_stderr_fh = None
+        self._retrain_subproc = None
+        self._retrain_subproc_result_path = ""
+        self._gbm_retrain_running     = False
+        self._gbm_retrain_started_at  = None
+        self._gbm_retrain_done_event.set()
+        self.circuit_breaker.set_gbm_retrain_active(False)
+        log_manager.learning(
+            f"[GBM-64] subprocess 완료 (returncode={_rc}) → _on_gbm_retrain_done 호출"
+        )
+        self._on_gbm_retrain_done(_result, _is_wu)
+
     def _on_gbm_retrain_done(self, result: dict, is_warmup: bool) -> None:
         """GBM 재학습 daemon thread 완료 콜백 — 메인 스레드에서 실행."""
         self._gbm_retrain_running = False
@@ -3966,52 +4029,9 @@ class TradingSystem:
 
         # ── [S0-A] 64비트 GBM subprocess 완료 체크 ────────────────────────
         # [226차] poll()은 non-blocking — subprocess가 완료되면 returncode 반환.
-        # 완료 즉시 결과 JSON 읽고 _on_gbm_retrain_done() 호출 (메인 스레드 안전).
-        _subproc = getattr(self, "_retrain_subproc", None)
-        if _subproc is not None:
-            _rc = _subproc.poll()
-            if _rc is not None:
-                _result = {"ok": _rc == 0, "error": f"exit={_rc}"}
-                _rpath  = getattr(self, "_retrain_subproc_result_path", "")
-                if _rpath and os.path.exists(_rpath):
-                    try:
-                        with open(_rpath, "r", encoding="utf-8") as _rf:
-                            _result = json.load(_rf)
-                        os.remove(_rpath)
-                    except Exception as _rpe:
-                        logger.warning("[GBM-64] 결과 JSON 읽기 실패: %s", _rpe)
-                _is_wu = getattr(self, "_retrain_subproc_is_warmup", False)
-                # [267차] stderr 파일 닫기 + 내용 로깅 (py310 경고 가시화)
-                _stderr_fh = getattr(self, "_retrain_subproc_stderr_fh", None)
-                if _stderr_fh is not None:
-                    try:
-                        _stderr_fh.flush()
-                        _stderr_fh.close()
-                        _spath = getattr(_stderr_fh, "name", "")
-                        if _spath and os.path.exists(_spath):
-                            _stderr_size = os.path.getsize(_spath)
-                            if _stderr_size > 0:
-                                with open(_spath, "r", encoding="utf-8", errors="replace") as _sf:
-                                    _stderr_txt = _sf.read(2000)  # 최대 2000자
-                                logger.warning(
-                                    "[GBM-64] subprocess stderr (%d bytes):\n%s",
-                                    _stderr_size, _stderr_txt,
-                                )
-                            else:
-                                os.remove(_spath)  # 빈 파일 삭제
-                    except Exception as _sfe:
-                        logger.debug("[GBM-64] stderr 파일 처리 오류: %s", _sfe)
-                    self._retrain_subproc_stderr_fh = None
-                self._retrain_subproc = None
-                self._retrain_subproc_result_path = ""
-                self._gbm_retrain_running     = False
-                self._gbm_retrain_started_at  = None
-                self._gbm_retrain_done_event.set()
-                self.circuit_breaker.set_gbm_retrain_active(False)
-                log_manager.learning(
-                    f"[GBM-64] subprocess 완료 (returncode={_rc}) → _on_gbm_retrain_done 호출"
-                )
-                self._on_gbm_retrain_done(_result, _is_wu)
+        # [381차 후속] 로직을 _poll_gbm_retrain_subprocess()로 추출 — daily_close()도
+        # 동일 로직을 재사용해 15:10~15:40 무분봉 구간의 완료 감지 공백을 메운다.
+        self._poll_gbm_retrain_subprocess()
 
         # ── [S0-B] ConstOut 재적합 완료 콜백 큐 drain — P1 QTimer 불안정 대체 ──
         # ConstOut refit worker → _deferred_callbacks.put("const_out_done") →
@@ -8985,6 +9005,12 @@ class TradingSystem:
         # 장중 마지막 30분 배치 재학습이 아직 실행 중이면 완료될 때까지 기다린다.
         # 대기 없이 retrain_now()를 동시 호출하면 pkl 경합 + 미완료 상태로 종료됨.
         # 15:40 이후 분봉 파이프라인은 없으므로 메인 스레드 블로킹 허용.
+        # [381차 후속] 15:10 강제청산 이후로는 run_minute_pipeline()이 더 이상 호출되지
+        # 않아 _gbm_retrain_running이 "이미 끝난 재학습"인 채로 굳어있을 수 있다(07-24
+        # 실측: 15:09:59 시작 재학습이 15:10:29에 끝났는데도 감지 기회가 없어 daily_close가
+        # 15:40:13에 이를 "진행 중"으로 오판, 20분을 헛되이 대기했다). 대기 여부를 판단하기
+        # 전에 한 번 더 폴링해 굳은 플래그를 먼저 해소한다.
+        self._poll_gbm_retrain_subprocess()
         # [I] 진입 시 retrain 상태 항상 기록 — _gbm_retrain_running=False 경로도 추적 가능
         _retrain_at_dc = "진행중" if getattr(self, "_gbm_retrain_running", False) else "완료/미시작"
         log_manager.system(
