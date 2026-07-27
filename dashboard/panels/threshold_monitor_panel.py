@@ -8,6 +8,13 @@ ThresholdMonitorPanel:
 
 5분 주기 자동 갱신.
 daily_close() 에서 ThresholdRecalibrator.run() 호출 후 DB에 기록된 값을 읽어 표시.
+
+[391차] "현재BASE%"(DB)는 recalibrator가 마지막으로 실행된 시점(금요일 15:40)의
+config.settings.HORIZON_THRESHOLDS 스냅샷이라, 그 이후 사람이 settings.py를
+수동으로 바꿔도(예: 387차 07-26 일요일 반영) 다음 금요일 재실행 전까지는 DB가
+갱신되지 않아 이미 반영된 UPDATE 권고가 계속 "미반영"처럼 보이는 사각지대가 있었다
+(390차 조사). 각 호라이즌 카드에 config.settings.HORIZON_THRESHOLDS 라이브값을
+추가로 표시하고 DB 스냅샷과 다르면 "반영됨" 배지를 띄워 이 오독을 막는다.
 """
 import logging
 import os
@@ -156,8 +163,11 @@ class ThresholdMonitorPanel(QWidget):
         # Phase A 경보 설명 라벨
         tip = QLabel(
             "WATCHLIST: |Drift| >= 6%p    UPDATE: |delta| >= 15%    "
-            "재산출 권고 시 수동 확인 후 settings.py 반영"
+            "재산출 권고 시 수동 확인 후 settings.py 반영    "
+            "호라이즌 카드 하단 '설정' 줄 = 현재 settings.py 라이브값 "
+            "(DB 스냅샷과 다르면 이미 수동반영된 것)"
         )
+        tip.setWordWrap(True)
         tip.setStyleSheet(f"color:{_COL['muted']};font-size:10px;")
         glay2.addWidget(tip)
         root.addWidget(grp2)
@@ -208,12 +218,18 @@ class ThresholdMonitorPanel(QWidget):
         lbl_alert.setAlignment(Qt.AlignCenter)
         lbl_alert.setStyleSheet(f"color:{_COL['green']};font-size:10px;font-weight:bold;")
 
+        lbl_live = QLabel("—")
+        lbl_live.setAlignment(Qt.AlignCenter)
+        lbl_live.setWordWrap(True)
+        lbl_live.setStyleSheet(f"color:{_COL['muted']};font-size:9px;")
+
         lay.addWidget(lbl_h)
         lay.addWidget(lbl_flat)
         lay.addWidget(lbl_drift)
         lay.addWidget(lbl_alert)
+        lay.addWidget(lbl_live)
 
-        return {"frame": frame, "flat": lbl_flat, "drift": lbl_drift, "alert": lbl_alert}
+        return {"frame": frame, "flat": lbl_flat, "drift": lbl_drift, "alert": lbl_alert, "live": lbl_live}
 
     # ── 갱신 ─────────────────────────────────────────────────────────
     def _update_next_refresh(self):
@@ -272,27 +288,48 @@ class ThresholdMonitorPanel(QWidget):
         )
 
         # 호라이즌별 카드 갱신
-        for h, r in latest.items():
+        from config.settings import HORIZON_THRESHOLDS
+        for h in _HORIZONS:
             card = self._horizon_cards.get(h)
             if not card:
                 continue
-            flat_actual  = r[4] or 0.0
-            flat_drift   = r[5] or 0.0
-            alert        = r[8] or "CLEAR"
-            alert_col    = _ALERT_COLOR.get(alert, _COL["muted"])
-            # FLAT 색상: 목표±6%p 범위면 green, 벗어나면 alert 색상
-            flat_col = (
-                _COL["red"]    if abs(flat_drift) >= _FLAT_ALARM * 1.5 else
-                _COL["orange"] if abs(flat_drift) >= _FLAT_ALARM else
-                _COL["green"]
-            )
-            card["flat"].setText(f"{flat_actual:.1f}%")
-            card["flat"].setStyleSheet(f"color:{flat_col};font-size:14px;font-weight:bold;")
-            drift_sign = "+" if flat_drift >= 0 else ""
-            card["drift"].setText(f"drift {drift_sign}{flat_drift:.1f}%p")
-            card["drift"].setStyleSheet(f"color:{alert_col};font-size:10px;")
-            card["alert"].setText(alert)
-            card["alert"].setStyleSheet(f"color:{alert_col};font-size:10px;font-weight:bold;")
+            r = latest.get(h)
+            db_base = None
+            if r is not None:
+                flat_actual  = r[4] or 0.0
+                flat_drift   = r[5] or 0.0
+                alert        = r[8] or "CLEAR"
+                alert_col    = _ALERT_COLOR.get(alert, _COL["muted"])
+                db_base      = r[2]
+                # FLAT 색상: 목표±6%p 범위면 green, 벗어나면 alert 색상
+                flat_col = (
+                    _COL["red"]    if abs(flat_drift) >= _FLAT_ALARM * 1.5 else
+                    _COL["orange"] if abs(flat_drift) >= _FLAT_ALARM else
+                    _COL["green"]
+                )
+                card["flat"].setText(f"{flat_actual:.1f}%")
+                card["flat"].setStyleSheet(f"color:{flat_col};font-size:14px;font-weight:bold;")
+                drift_sign = "+" if flat_drift >= 0 else ""
+                card["drift"].setText(f"drift {drift_sign}{flat_drift:.1f}%p")
+                card["drift"].setStyleSheet(f"color:{alert_col};font-size:10px;")
+                card["alert"].setText(alert)
+                card["alert"].setStyleSheet(f"color:{alert_col};font-size:10px;font-weight:bold;")
+
+            # [391차] 라이브 settings.py 값 vs DB 스냅샷(current_base) 비교
+            live_ratio = HORIZON_THRESHOLDS.get(h)
+            live_pct = live_ratio * 100.0 if live_ratio is not None else None
+            if live_pct is None:
+                card["live"].setText("설정값 없음")
+                card["live"].setStyleSheet(f"color:{_COL['muted']};font-size:9px;")
+            elif db_base is None:
+                card["live"].setText(f"설정 {live_pct:.4f}% (DB기록없음)")
+                card["live"].setStyleSheet(f"color:{_COL['muted']};font-size:9px;")
+            elif abs(round(live_pct, 4) - round(db_base, 4)) < 1e-6:
+                card["live"].setText(f"설정 {live_pct:.4f}% (DB와 동일)")
+                card["live"].setStyleSheet(f"color:{_COL['muted']};font-size:9px;")
+            else:
+                card["live"].setText(f"✓ 설정 {live_pct:.4f}%로 반영됨")
+                card["live"].setStyleSheet(f"color:{_COL['green']};font-size:9px;font-weight:bold;")
 
         # 이력 테이블 갱신
         display_rows = [r for r in rows if r[0] in all_dates[:4 * 7]]   # 최근 4주

@@ -9,6 +9,13 @@ EntryHorizonMonitorPanel:
 daily_close() 에서 EntryHorizonRecalibrator.run_if_due() 호출 후
 threshold_monitor.db:entry_horizon_log 에 기록된 값을 읽어 표시.
 자동 반영 없음 — 제안만(model/ensemble_decision.py::select_entry_horizon() 참조).
+
+[391차] "경계 B1/B2" 카드는 recalibrator 마지막 실행 시점(금요일 15:40)의
+config.settings 스냅샷이라, 그 이후 사람이 ENTRY_HORIZON_B1/B2를 수동으로 바꿔도
+(예: 387차 07-26 일요일 반영) 다음 금요일 재실행 전까지 DB가 갱신 안 돼 이미
+반영된 UPDATE 권고가 계속 "미반영"처럼 보이는 사각지대가 있었다(390차 조사).
+카드에 config.settings 라이브값을 추가로 표시하고 DB 스냅샷과 다르면 "반영됨"
+배지를 띄워 이 오독을 막는다.
 """
 import logging
 import os
@@ -152,7 +159,8 @@ class EntryHorizonMonitorPanel(QWidget):
         tip = QLabel(
             "WATCHLIST: 버킷비중 [13%,54%] 밖 또는 |δ|>=15%    "
             "UPDATE: 버킷비중 [3%,74%] 밖 또는 |δ|>=30%    "
-            "재산출 권고 시 수동 확인 후 model/ensemble_decision.py의 ENTRY_HORIZON_B1/B2 반영"
+            "재산출 권고 시 수동 확인 후 config/settings.py의 ENTRY_HORIZON_B1/B2 반영    "
+            "경계 카드 하단 '설정' 줄 = 현재 settings.py 라이브값 (DB 스냅샷과 다르면 이미 수동반영된 것)"
         )
         tip.setWordWrap(True)
         tip.setStyleSheet(f"color:{_COL['muted']};font-size:10px;")
@@ -229,13 +237,28 @@ class EntryHorizonMonitorPanel(QWidget):
         (date, b1, b2, rb1, rb2, b1d, b2d, p1, p3, p5, alert, n) = latest
         alert = alert or "CLEAR"
 
+        # [391차] 라이브 settings.py 값 vs DB 스냅샷(current_b1/b2) 비교
+        from config.settings import ENTRY_HORIZON_B1, ENTRY_HORIZON_B2
+
+        def _live_sub(db_val, live_val):
+            if db_val is None or live_val is None:
+                return "", _COL["muted"]
+            if abs(round(live_val, 4) - round(db_val, 4)) < 1e-6:
+                return f"설정 {live_val:.2f} (DB와 동일)", _COL["muted"]
+            return f"✓ 설정 {live_val:.2f}로 반영됨", _COL["green"]
+
+        sub1_text, sub1_col = _live_sub(b1, ENTRY_HORIZON_B1)
+        sub2_text, sub2_col = _live_sub(b2, ENTRY_HORIZON_B2)
+
         self._lbl_b1.setText(
             f"<b style='color:{_COL['muted']};font-size:10px;'>경계 B1 (1m/3m)</b>"
             f"<br><span style='color:{_COL['cyan']};font-size:15px;font-weight:bold;'>{b1:.2f}</span>"
+            + (f"<br><span style='color:{sub1_col};font-size:9px;'>{sub1_text}</span>" if sub1_text else "")
         )
         self._lbl_b2.setText(
             f"<b style='color:{_COL['muted']};font-size:10px;'>경계 B2 (3m/5m)</b>"
             f"<br><span style='color:{_COL['cyan']};font-size:15px;font-weight:bold;'>{b2:.2f}</span>"
+            + (f"<br><span style='color:{sub2_col};font-size:9px;'>{sub2_text}</span>" if sub2_text else "")
         )
         self._lbl_last.setText(
             f"<b style='color:{_COL['muted']};font-size:10px;'>마지막 실행</b>"
