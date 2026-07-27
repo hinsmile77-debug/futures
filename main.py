@@ -6705,13 +6705,23 @@ class TradingSystem:
         # 그대로 raw hurst 기준으로 "mean-revert" 버킷을 매겨 HURST_REGIME_ATR_MULT가
         # counterfactual 계측과 동일한 조건으로 자동 적용된다(코드 변경 불필요).
         _hurst_size = 1.0
+        # [396차 후속, 관측성] hurst_ok=False라도 entry_gate_json엔 다른 하드게이트와
+        # 동일한 "_ok" 명명으로만 남아 "게이트가 뚫렸다"는 오독을 유발해온 문제(id=200
+        # 딥다이브에서 확인) — 소프트차단이 실제로 적용됐는지, 그리고 사이징이 이미
+        # 최소단위(1계약)라 ×0.5가 수치상 무의미(no-op)했는지를 별도 필드로 남긴다.
+        _hurst_soft_block_applied = False
+        _hurst_soft_block_noop = None
         if (HURST_SOFT_BLOCK_ENABLED and not _hurst_ok
                 and direction != 0 and self.position.status == "FLAT" and _qty_display > 0):
             _hurst_size = HURST_SOFT_BLOCK_SIZE_MULT
+            _qty_before_hurst = _qty_display
             _qty_display = max(1, int(round(_qty_display * _hurst_size)))
+            _hurst_soft_block_applied = True
+            _hurst_soft_block_noop = (_qty_display == _qty_before_hurst)
             log_manager.signal(
                 f"[HurstGate] 하드차단 대신 사이즈축소: hurst={features.get('hurst', 0.5):.3f} "
                 f"< {HURST_RANGE_THRESHOLD} size_mult={_hurst_size:.2f} (§3-6 FAIL 완화, 333차 후속)"
+                + (" [no-op: 이미 최소단위]" if _hurst_soft_block_noop else "")
             )
 
         # 273차: 정적 3.5pt 상한이 최근 장기간 시장 ATR 중앙값(3.5~6pt대)에 만성적으로
@@ -7208,6 +7218,11 @@ class TradingSystem:
             "integrity_ok":     _integrity_ok,
             "reverse_clamp_ok": not _in_reverse_clamp,
             "hurst_ok":         _hurst_ok,
+            # [396차 후속] hurst_ok=False는 하드차단이 아니라 사이징 완화(333차 후속,
+            # 위 형제 키들과 달리 소프트게이트) — 실제 적용 여부/최소단위 no-op 여부를
+            # 별도로 남겨 "게이트가 뚫렸다"는 오독을 방지한다.
+            "hurst_soft_block_applied": _hurst_soft_block_applied,
+            "hurst_soft_block_noop":    _hurst_soft_block_noop,
             "atr_ok":           _atr_ok,
             "open_gap_ok":      _open_gap_ok,
             "mode_filter_ok":   mode_filter_passed,
