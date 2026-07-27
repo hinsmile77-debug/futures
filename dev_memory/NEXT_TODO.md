@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-07-27 (395차 — 389차·337차 "계획문서≠배포스펙" 고질 패턴 6개 호라이즌 전수 감사)
+
+> 상세: `DECISION_LOG.md` 2026-07-27(395차) 항목. 선행: 337차·389차·331차.
+
+- [DONE 2026-07-27] **`horizon_feature_sets.json` pkl 필드 6개 호라이즌 전수
+  대조 — 17건 불일치 발견·전부 정정** — 배포 pkl(`model/horizons/
+  feature_names_*.pkl`) 직접 로드 대조로 승격 성공 4건(need_add→in_pkl)·강등
+  후 표기잔존 13건(in_pkl→need_add) 확인, 전부 정정 완료. 재검증 스크립트로
+  불일치 0건 확인.
+- [ ] **[395차] `cvd_direction`(10m include_pending_validation) 항목 제거
+  검토** — 2026-06-25 project-wide CORE 교체(→`cvd_delta_norm`) 이후에도
+  10m 후보 목록에 폐기 대상이 그대로 남아있었음. 삭제는 사용자 승인 필요
+  사안이라 이번엔 표기만 정정(in_pkl→need_add) — 다음 딥다이브에서 항목
+  자체 제거 여부 결정.
+- [ ] **[395차] `_feature_status_summary`(파일 말미, 292차 스냅샷) 갱신
+  필요** — `in_pkl_total: 105` 등 전역 요약이 이번 per-호라이즌 감사와
+  별개로 낡아 보임. `shap_feature_registry.json:active_features`와 재대사
+  하는 별도 작업 필요 — 이번 세션 범위 밖으로 분리.
+- [ ] **[395차] 정정된 5m/10m/15m/30m pending 항목 7종의 "전사 추정" 원인
+  재확인** — `vwap_momentum`·`cvd_divergence`(5m), `foreign_futures_net`
+  (10m), `threshold_feasibility`·`opt_atm_call_oi`·`opt_chain_pcr`·
+  `opt_gex_bn`·`macro_sp500_chg`·`macro_us10y_chg`(15m), `macro_us10y_chg`·
+  `macro_sp500_chg`(30m) — "다른 호라이즌 배포분이 잘못 전사됐다"는 것은
+  이번 세션의 정황 추정이며, JSON 편집 이력을 직접 대조한 확정 근거는
+  아님. 여유 있을 때 `git log -p -- "featureset by horizon/
+  horizon_feature_sets.json"`으로 실제 편집 시점 대조해 추정 검증 권고.
+
+---
+
 ## 2026-07-27 (391차 — "재보정 모니터" 라이브 반영 사각지대 규명 + 라이브값 배지 구현)
 
 > 상세: `DECISION_LOG.md` 2026-07-27(391차) 항목. 선행: 386차(모니터 신설),
@@ -62,10 +91,17 @@
 - [DONE 2026-07-26] **1m 레지스트리 갭 발견+조치** — `queue_directional_depletion`·
   `micro_regime_code`가 이 PC(v9-dev) `active_features`(97개)에 없어 라이브 1m(8피처)에서
   누락 확인. `horizon_feature_sets.json` pkl 필드 정정 + `DYNAMIC_FEATURES_POOL` 등록 완료.
-- [ ] **[389차 최우선] 다음 주간 SHAP 심사에서 신규 등록 2종이 후보로 뜨는지 확인** —
-  `queue_directional_depletion`/`micro_regime_code`가 대시보드 "동적 피처(SHAP)" 탭
-  "추천 적용" 후보로 표시되는지. 표시되면 실측 가치 재검토 후 승인 여부 결정(사용자 승인 필수,
-  자동 통합 금지 원칙).
+- [DONE 2026-07-27] **[389차 최우선] 신규 등록 2종 라이브 반영 확인 — "후보 제안"
+  단계를 넘어 이미 실배포됨** — `model/horizons/feature_names_1m.pkl`(07-27 15:45
+  재생성) 직접 로드로 두 피처가 이미 1m 배포 모델(10피처)에 포함 확인. `shap_tracker.db`
+  에도 오늘 하루(00:00~15:09, 270분봉) 매분 정상 스코어링 — 평균 중요도
+  `queue_directional_depletion`=0.0069(10개 중 9위), `micro_regime_code`=0.0050(10위),
+  0은 아니나 하위권. "주간 심사 후보 제안" 경로를 거치지 않고 이미 재학습에 포함된 것으로
+  보임(311차 후속10 P0-1 결정과 동일하게 `include` 목록에 있던 항목이라 정식 경로 위반은
+  아님 — DYNAMIC_FEATURES_POOL 등록 자체가 형식 요건이었을 뿐). **잔여 조치**:
+  `featureset by horizon/horizon_feature_sets.json`의 두 항목 `"pkl": "need_add"`가
+  실제 배포 상태(`in_pkl`)와 어긋남 — 표기만 정정 필요(계획문서≠배포스펙 패턴 재발,
+  337차·389차 동일 교훈). 방향예측 알파 가치는 별도 IC 재검증(Phase 3) 대상으로 남음.
 - [DONE 2026-07-26] **P2-1 basis_pt/basis_change_pt 재검증 — 재현 실패, 승격 보류
   확정** — 표본 2,953행(~8거래일)로 확대 재검증한 결과 전 호라이즌·양 피처 비유의
   (p 0.11~1.00). 07-13 보고서의 초기 소표본 신호는 소멸 — 더 이상 이 피처를 우선순위로
@@ -1377,14 +1413,18 @@
   매분 조용히(DEBUG 레벨) 실패하며 동적피처 탭이 3시간+ 갱신 안 되던 문제.
   `learning/shap/shap_tracker.py:_permutation_importance_fallback()`에 shape
   사전체크 + WARNING 로그 상향도 함께 추가.
-- [ ] **다음 실 UI 기동/장중 확인** — 동적피처 탭(중간 패널, CORE·동적
-  SHAP TOP3·전체 순위)이 실제로 채워지는지, `LEARNING.log`에
-  `[SHAP] 중요도 계산 불가` 경고가 더 이상 매분 반복되지 않는지 육안·로그
-  확인. 여전히 실패하면 새 WARNING(`X 피처 수(%d) != 모델 학습 피처 수(%d)`
-  또는 `permutation_importance 실패: %s`)으로 원인 바로 특정 가능.
-- [ ] **`horizon_feature_sets.json` 갱신 시 재확인** — 3m/5m 등 다른 호라이즌도
-  같은 구조적 위험(레지스트리 개편 후 실제 재학습 전까지 SHAP 경로 shape
-  mismatch)을 안고 있음. 다음 레지스트리 개편(P0-1 등) 시 동일 증상 재발
+- [DONE 2026-07-27] **다음 실 UI 기동/장중 확인** — `data/db/shap_tracker.db`
+  (`shap_scores` 테이블) 직접 조회로 확인: 오늘(07-27) 00:00~15:09 270분봉 동안
+  1m 10개 피처 전부 매분 정상 스코어링, 갱신 공백 없음. `shap_tracker_history.json`
+  주간 이력도 3주 연속(07-16·07-24·07-27) `n_samples=120`으로 끊김 없이 기록됨.
+  "매분 조용히 실패" 재발 흔적 없음 — 311차(구조적 계측 실패)→332차(복원 IndexError)
+  →337차(레지스트리/배포모델 불일치) 계보의 **핵심 계측 실패 자체는 회복 확인**.
+  상세 근거: `DECISION_LOG.md` 2026-07-27 항목 참조.
+- [x] **(참고) `horizon_feature_sets.json` 갱신 시 재확인** — 이번(389차, 1m
+  8→10피처 확장: `queue_directional_depletion`·`micro_regime_code` 추가)
+  인스턴스에서는 shape mismatch 재발하지 않음 확인(위 항목 근거와 동일). 단 이
+  항목 자체는 "레지스트리 개편할 때마다" 적용되는 상시 점검 성격이라 완전히
+  닫지는 않음 — 다음 개편 시 동일 확인 반복 필요.
   여부 확인.
 
 ---

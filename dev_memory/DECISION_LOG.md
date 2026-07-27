@@ -2,6 +2,140 @@
 
 ---
 
+## 2026-07-27 (395차 — 389차·337차 지목 "계획문서≠배포스펙" 고질 패턴 전 호라이즌 전수 감사·정정)
+
+### [정합성 감사·수정] `horizon_feature_sets.json` pkl 필드 — 6개 호라이즌 전수 대조, 17건 불일치 발견·수정
+
+**배경**: 389차(1m 레지스트리 갭)와 337차(SHAP 레지스트리/배포모델 불일치)가 각각
+개별 사례로 지목했던 "계획 문서(`horizon_feature_sets.json`)의 pkl 필드가 실제
+배포 모델과 어긋난다"는 패턴이 우연한 개별 버그가 아니라 구조적으로 반복되는
+고질 패턴인지 확인하기 위해, 이번엔 1m 한 호라이즌이 아니라 **6개 호라이즌
+전체**를 동일 방법(실제 배포 pkl 직접 로드 대조)으로 전수 감사했다.
+
+**방법**: `model/horizons/feature_names_{1,3,5,10,15,30}m.pkl`(전부 07-27 당일
+재학습분, 14:37~15:46) 6개를 전부 직접 로드해 실제 배포 피처 목록을 확보하고,
+`horizon_feature_sets.json`의 `include`/`include_pending_validation` 전 항목
+(합계 105개 슬롯)의 `pkl` 필드 선언값과 실측 배포 여부를 1:1 대조했다.
+
+**결과 — 17건 불일치 확인, 두 가지 뚜렷한 하위 패턴으로 구분됨**:
+
+1. **"승격 성공, 표기 누락" 패턴(4건, `include` 섹션)** — `need_add`로 표기돼
+   있었으나 실제로는 이미 배포됨: 1m `queue_directional_depletion`·
+   `cvd_delta_norm`·`micro_regime_code`, 3m `cvd_delta_norm`. 389차가 지목한
+   패턴과 동일 — 정식 재학습이 조용히 반영을 완료했는데 문서만 못 따라감.
+   `shap_tracker.db` 대조로 실제 매분 스코어링되고 있음도 재확인(1m 두 신규
+   피처 평균 중요도 0.0069/0.0050, 10개 중 9·10위).
+
+2. **"강등 후 표기 잔존" 패턴(13건, 전부 `include_pending_validation` 섹션)** —
+   `in_pkl`로 표기돼 있었으나 실제로는 배포에서 빠져 있음: 1m
+   `ofi_reversal_speed`(1), 5m `vwap_momentum`·`cvd_divergence`(2), 10m
+   `foreign_futures_net`·`cvd_direction`(2), 15m `threshold_feasibility`·
+   `opt_atm_call_oi`·`opt_chain_pcr`·`opt_gex_bn`·`macro_sp500_chg`·
+   `macro_us10y_chg`(6), 30m `macro_us10y_chg`·`macro_sp500_chg`(2). 이 중
+   15m의 옵션 magnitude 4종은 07-13 딥다이브 F4(재현실패) 결론과 정확히
+   일치 — 331차가 15m 메인 include에서 `include_pending_validation`으로
+   강등시킬 때 `pkl` 필드를 `in_pkl`인 채로 남겨둔 것으로 보인다. 나머지
+   (5m/10m/15m/30m의 macro_* 계열, foreign_futures_net, vwap_momentum,
+   cvd_divergence)는 **다른 호라이즌의 실제 배포값(같은 이름이 10m/30m
+   등에서는 진짜 in_pkl)이 해당 항목에 잘못 전사(copy-paste)된 것으로
+   추정** — 예: 5m의 `vwap_momentum`/`cvd_divergence`는 10m/3m·15m
+   CORE 배포분을, 15m의 옵션 4종·macro 2종은 30m·10m 배포분을 그대로
+   베낀 흔적. 10m의 `cvd_direction`은 추가로 2026-06-25 project-wide
+   CORE 교체(→`cvd_delta_norm`) 이후에도 후보 목록에 여전히 남아있던
+   폐기 대상 잔존 항목.
+
+**수정**: 위 17건 전부 `pkl` 필드를 실측 배포 상태로 정정하고, 각 항목
+`note`에 `[2026-07-27 395차 정정]` 태그로 근거(대조한 배포 pkl 피처 목록,
+추정 원인)를 남겼다. `cvd_direction`(10m pending)은 정정에 더해 "다음
+딥다이브에서 항목 자체 제거 검토 권고" 메모를 추가(사용자 승인 필요 사안이라
+이번엔 삭제하지 않고 표기만).
+
+**범위 밖으로 남긴 것**: `horizon_feature_sets.json` 말미의
+`_feature_status_summary` 블록(292차 스냅샷, `in_pkl_total: 105` 등)은 이번
+per-호라이즌 `include` 감사와 별개의 전역 요약이며 마찬가지로 낡아 보이나,
+`shap_feature_registry.json:active_features`와의 재대사가 필요한 더 큰
+작업이라 이번 세션 범위 밖으로 분리 — `NEXT_TODO.md`에 별도 등록.
+
+**검증**: `python`으로 6개 `feature_names_*.pkl` + JSON 직접 로드해 대조하는
+1회성 감사 스크립트 실행, 수정 후 재실행해 불일치 0건 확인. `json.load()`로
+파일 전체 파싱 재확인(문법 오류 없음). 코드(런타임) 변경 없음 — 계획 문서
+정정 전용이라 py_compile/라이브 검증 해당 없음.
+
+**관련**: 337차, 389차, 331차(15m 개편), `docs/미륵이고도화2/
+무스킬_피처셋_딥다이브_보고서_2026-07-13.md`(F4), `docs/미륵이고도화3/
+CORE피처_딥다이브_및_신규발굴_2026-07-27.md`.
+
+---
+
+## 2026-07-27 (394차 — 311차 SHAP 구조적 계측 실패 최종 회복 확인 + 이상점 이력 CLEAR)
+
+### [검증완료] 311차가 지목한 "ofi_norm 지배" 관측의 원인이었던 SHAP 계측 구조적 실패 — 실측으로 회복 확인, 관련 이상점 이력 종결
+
+**배경**: 311차 후속9/10(2026-07-12, `docs/미륵이고도화2/무스킬_근본원인_학술업계조사_딥다이브계획_2026-07-12.md`)
+가 "ofi_norm 지배"라는 관측 자체가 SHAP 계측기의 구조적 결함(TreeExplainer
+다중클래스 미지원 + `HistGradientBoostingClassifier`엔 `feature_importances_`
+속성 부재 + 피처 길이체크 실패) 산출물이었음을 규명하고, `learning/shap/
+shap_tracker.py`에 `_permutation_importance_fallback()`을 신설해 수정했다
+(당일 직접 함수 호출로 `ShapTracker.update()` True 반환·3m/5m 계산 성공은
+자체 검증 완료). 그러나 수정 직후 같은 하위시스템에서 후속 결함이 연쇄
+발견됐다 — 332차(07-14) SHAP 복원 경로 IndexError, 337차(07-15) 레지스트리
+(계획문서)와 실제 배포모델 피처셋 불일치로 `permutation_importance`가 매분
+조용히(DEBUG) 실패하며 동적피처 탭이 3시간+ 미갱신되던 문제. 337차 수정
+자체는 코드에 반영됐으나 `NEXT_TODO.md`의 "다음 실 UI 기동/장중 확인" 항목이
+미체크(`[ ]`) 상태로 남아, 311차~337차 계보의 "구조적 계측 실패가 실제로
+회복됐는지"가 공식적으로 확인 종결된 적이 없었다.
+
+**실측 확인(이번 세션, 2026-07-27)**: 코드 추정이 아니라 실제 라이브 산출물을
+직접 열어 확인했다.
+1. `data/db/shap_tracker.db`(`shap_scores` 테이블, 1,204,799행) — 오늘
+   00:00~15:09(270분봉) 1m 10개 피처 전부 매분 정상 스코어링, 공백 없음.
+2. `data/db/shap_tracker_history.json` — 최근 3주(07-16·07-24·07-27)
+   연속으로 `n_samples=120`(최소기준 충족) 주간 계산이 끊김 없이 기록.
+3. importance 값이 대부분 0.0인 것은 버그가 아니라 `shap_tracker.py:77`의
+   `np.clip(importances_mean, 0.0, None)` 설계(음수 permutation importance,
+   즉 노이즈보다 못한 기여를 0으로 클리핑) — 고도화3가 63피처 Bonferroni
+   스크리닝으로 확정한 "대부분 피처 무정보" 결론과 정합적인 정직한 결과였음.
+4. 389차가 등록한 신규 2종(`queue_directional_depletion`·`micro_regime_code`)도
+   `model/horizons/feature_names_1m.pkl`(07-27 15:45 재생성, 10피처) 직접
+   로드로 이미 배포 모델에 포함 확인 — SHAP 트래커도 이를 매분 정상
+   스코어링 중(오늘 평균 중요도 0.0069/0.0050, 10개 중 9·10위이나 0은 아님).
+   이는 337차가 걱정했던 "레지스트리 개편 후 shape mismatch" 재발 없이
+   1m 8→10피처 확장이 이번엔 정상 반영됐다는 방증이기도 하다.
+
+**결론**: 311차가 지목한 SHAP 계측 구조적 실패(다중클래스 미지원·HGB 속성
+부재·길이체크 실패) 자체와, 그 직접 재발이었던 337차의 "매분 조용히 실패"
+패턴은 **오늘 실측 기준으로 회복 확인됨**. 이 계보의 이상점 이력을 CLEAR한다.
+
+**이번에 CLEAR한 항목** (`NEXT_TODO.md`):
+- 337차(2026-07-15) "다음 실 UI 기동/장중 확인" → `[DONE 2026-07-27]`
+- 337차(2026-07-15) "`horizon_feature_sets.json` 갱신 시 재확인" → 이번
+  인스턴스(1m 8→10 확장)에 한해 재발 없음 확인 표기, 단 상시 점검 성격상
+  완전히 닫지는 않음(다음 레지스트리 개편 시 재확인 필요 문구 유지)
+- 389차(2026-07-26) "다음 주간 SHAP 심사에서 신규 등록 2종이 후보로 뜨는지
+  확인" → `[DONE 2026-07-27]`(단순 후보 제안이 아니라 이미 실배포 확인)
+
+**CLEAR 범위 밖(별도 사안, 손대지 않음)**: 312차(07-12)·332차(07-14)의
+SHAP **복원 경로**(cold-start `IndexError`/재기동 크래시) 관련 미확인 TODO는
+이번 조사 범위 밖이다 — 이는 "계측 계산 자체의 구조적 실패"가 아니라 앱
+재기동 시 캐시 복원 분기의 별개 코드 경로 버그이며, 오늘 확인한 것은 이미
+가동 중인 프로세스의 지속 스코어링이지 진짜 cold-start(`_cached_shap_
+importance` 완전 공백) 재기동 시나리오가 아니다. 이 부분은 계속 미확인
+상태로 남겨둔다.
+
+**잔여 조치**: `featureset by horizon/horizon_feature_sets.json`의
+`queue_directional_depletion`/`micro_regime_code` 두 항목이 여전히
+`"pkl": "need_add"`로 표기돼 실제 배포 상태(`in_pkl`)와 어긋남 — 계획문서
+갱신만 남음(알파 가치 자체는 별도 IC 재검증 대상, 이번 확인 범위 아님).
+
+**검증**: `sqlite3`로 `shap_tracker.db` 직접 쿼리(읽기 전용), `shap_tracker_
+history.json`·`feature_names_1m.pkl` 직접 로드. 코드 변경 없음(문서·TODO
+정리 전용).
+
+**관련**: 311차 후속9/10, 332차, 337차, 389차, `docs/미륵이고도화2/
+무스킬_근본원인_학술업계조사_딥다이브계획_2026-07-12.md`.
+
+---
+
 ## 2026-07-27 (393차 — 392차 커밋 번호 충돌·재정렬 과정 기록 — "차수 번호는 로컬 git log가 아니라 원격 fetch 기준으로 정하기")
 
 ### [프로세스 교훈] 세션 시작 시 로컬 git log만 보고 다음 차수를 정했다가 원격에 이미 390·391차가 존재해 번호 충돌 — amend로 정정 시도 중 이미 push된 커밋을 rewrite해 두 번째 충돌 발생
