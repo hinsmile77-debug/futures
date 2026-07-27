@@ -34,7 +34,15 @@ logger = logging.getLogger(__name__)
 _CORE_FEATURES = ("cvd_divergence", "vwap_position", "ofi_norm")   # CORE 3개 피처 키
 _N_BINS        = 10                                  # PSI 히스토그램 구간 수
 _LIVE_WIN_MINS = 5000                                # Live 버퍼 크기 (≈ 20 거래일 × 250분)
-_EPS           = 1e-6                                # ln(0) 방지 소수점 하한
+_EPS           = 1e-6                                # bin 경계 폭 하한(ln(0) 방지용과는 별개)
+
+# [392차] PSI 확률 하한(floor) — 기존 1e-6은 지나치게 작아 라이브 표본이 적을 때
+# (예: 장 시작 직후 min_live 문턱을 막 넘긴 시점) 칸 하나가 비기만 해도 그 칸
+# 혼자 학습비중 p×ln(1/floor) ≈ p×13.8의 PSI를 얹어 실제 분포차와 무관하게
+# 폭주했다(371차가 남긴 "0723 장시작 직후 PSI=18" 현상의 잔여 메커니즘). PSI
+# 실무 관행값인 1e-4(p×9.2)로 완화 — 여전히 충분히 작아 진짜 드리프트 탐지력은
+# 유지한다.
+_PSI_FLOOR = 1e-4
 
 _PSI_WATCH = 0.10
 _PSI_ALARM = 0.20
@@ -53,7 +61,7 @@ class RegimeFingerprint:
     Attributes:
         _training    : 피처명 → (bin_edges, proportions) — WFA 학습 분포
         _live_buf    : 피처명 → deque[float] — 최근 Live 값 버퍼
-        _current_psi : 최근 계산된 최대 PSI
+        _current_psi : 최근 계산된 대표 PSI (CORE 3개 중 중앙값 — 아래 참조)
         _current_level: 현재 경보 수준 (DriftLevel)
     """
 
@@ -108,7 +116,7 @@ class RegimeFingerprint:
             features: 피처 dict (feature_builder.build() 반환값)
 
         Returns:
-            현재 최대 PSI (CORE 3개 중 최고값)
+            현재 대표 PSI (CORE 3개 피처 중 중앙값 — 아래 "Why 중앙값" 참조)
         """
         for feat in _CORE_FEATURES:
             val = features.get(feat)
@@ -122,7 +130,7 @@ class RegimeFingerprint:
             return 0.0
 
         min_live = _N_BINS * 5   # 구간당 최소 5개
-        psi_max  = 0.0
+        psi_vals: List[float] = []
         for feat, (edges, train_props) in self._training.items():
             live_vals = list(self._live_buf[feat])
             if len(live_vals) < min_live:
@@ -130,15 +138,34 @@ class RegimeFingerprint:
             live_props = _compute_proportions(live_vals, edges)
             psi = _compute_psi(train_props, live_props)
             self._per_feature_psi[feat] = psi
-            psi_max = max(psi_max, psi)
+            psi_vals.append(psi)
 
-        self._current_psi   = psi_max
-        self._current_level = _psi_to_level(psi_max)
+        # [392차] 대표값을 max(전체 중 최고) 대신 중앙값(median)으로 변경.
+        # Why 중앙값: 2026-07-27 실측 — ofi_norm은 학습표본 91%가 정확히 0.0인
+        # 점질량(371차가 "잔여 이슈"로 남김) 때문에 분위수 비닝으로도 폭
+        # 0.01pt 안팎의 razor-thin 메가빈이 재발해, 이 칸 근처의 부동소수 수준
+        # 흔들림만으로도 ofi_norm 단독 PSI가 1.85까지 치솟는다(같은 시각
+        # cvd_divergence=0.556·vwap_position=0.116으로 정상). CORE 피처 자체를
+        # 손대는 건 371차가 이미 범위 밖으로 분리했으므로(§3 CORE 교체 금지),
+        # 이 감지기 쪽에서 "피처 3개 중 1개가 구조적으로 시끄럽다고 해서 전체를
+        # CRITICAL로 몰아가면 안 된다"는 원칙으로 대응한다 — max(3개 중 최고)는
+        # 정의상 노이즈가 큰 단일 피처 하나에 의해 상시 좌우되지만, 중앙값(3개
+        # 중 가운데값)은 최소 2개 피처가 동의해야 그 수준으로 올라간다(1개
+        # 이상치에 대한 내성, breakdown point 33%). 검증(dev_memory DECISION_LOG
+        # 392차 항목): 과거 7개 날짜(평온~극단변동성) 재현에서 max 방식은 전부
+        # CRITICAL로 고착됐으나 중앙값 방식은 06-16(calm)~07-27(오늘, 극단변동성)
+        # 구간에서 WATCHLIST~ALARM로 시장 상황에 맞춰 오르내림을 확인.
+        # 참고: 개별 피처의 원값은 get_per_feature_psi()로 그대로 조회 가능 —
+        # ofi_norm이 유독 시끄럽다는 진단 정보 자체는 숨기지 않는다.
+        psi_rep = _median(psi_vals) if psi_vals else 0.0
+
+        self._current_psi   = psi_rep
+        self._current_level = _psi_to_level(psi_rep)
 
         if self._current_level >= DriftLevel.WATCHLIST:
             logger.warning(
-                "[RegimeFingerprint] PSI=%.3f → %s | %s",
-                psi_max,
+                "[RegimeFingerprint] PSI=%.3f(중앙값) → %s | %s",
+                psi_rep,
                 DriftLevel.name(self._current_level),
                 " | ".join(
                     "%s=%.3f" % (f, self._per_feature_psi.get(f, 0.0))
@@ -146,18 +173,18 @@ class RegimeFingerprint:
                 ),
             )
 
-        return psi_max
+        return psi_rep
 
     def get_level(self) -> int:
         """현재 경보 수준 (DriftLevel 호환)."""
         return self._current_level
 
     def get_psi(self) -> float:
-        """현재 최대 PSI 값."""
+        """현재 대표 PSI 값 (CORE 3개 중 중앙값)."""
         return self._current_psi
 
     def get_per_feature_psi(self) -> Dict[str, float]:
-        """피처별 PSI 값 반환."""
+        """피처별 PSI 값 반환(원값 — 대표값 집계 전, 진단용)."""
         return dict(self._per_feature_psi)
 
     def reset_to_live_baseline(self) -> bool:
@@ -286,6 +313,14 @@ def _build_histogram(
     ofi_norm 97.47%가 10구간 중 1구간에 집중, dev_memory DECISION_LOG 371차
     항목). 분위수 기반은 학습 시점 기준 정의상 메가빈이 생기지 않는다.
 
+    [392차] 91% 정확히 0.0인 진짜 점질량은 분위수 비닝으로도 없어지지 않아
+    (경계가 그 값 주변에서 겹쳐 결국 razor-thin한 칸에 재집중) 이 함수 층위의
+    binning 자체로는 완전히 해소 불가 — 등호매칭 atom 분리도 시도했으나 학습
+    파이프라인의 "정확히 0.0" 강제와 라이브 파이프라인의 "0에 매우 가까운 값"이
+    서로 달라 오히려 더 악화됨을 실측 확인(dev_memory DECISION_LOG 392차,
+    "시도했으나 기각" 절 참조). 최종 대응은 `update_live()`의 집계 방식(중앙값)
+    쪽에서 처리한다 — CORE 피처 계산 자체(§3 교체 금지)는 건드리지 않는다.
+
     Returns:
         (bin_edges, proportions) — edges: 최대 n_bins+1개(동일값이 많아 구간이
         저절로 합쳐지면 그보다 적을 수 있음), props: edges와 짝 맞음(합=1)
@@ -353,10 +388,22 @@ def _compute_psi(train_props: List[float], live_props: List[float]) -> float:
     psi = 0.0
     n   = min(len(train_props), len(live_props))
     for i in range(n):
-        a = max(train_props[i], _EPS)
-        b = max(live_props[i],  _EPS)
+        a = max(train_props[i], _PSI_FLOOR)
+        b = max(live_props[i],  _PSI_FLOOR)
         psi += (a - b) * math.log(a / b)
     return psi
+
+
+def _median(vals: List[float]) -> float:
+    """CORE 피처별 PSI 리스트의 중앙값. n=3이 기본 상정 케이스(§392차)."""
+    s = sorted(vals)
+    n = len(s)
+    if n == 0:
+        return 0.0
+    mid = n // 2
+    if n % 2 == 1:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2.0
 
 
 def _psi_to_level(psi: float) -> int:
