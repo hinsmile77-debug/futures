@@ -27,14 +27,14 @@
       {
         "name": "queue_directional_depletion",
         "rho": 0.033,
-        "pkl": "need_add",
-        "note": "매수/매도 큐 방향별 고갈 속도 ★ [2026-07-26 정정] 이 PC(v9-dev) active_features(97개)에 없어 실제로는 라이브 8피처에서 빠져있었음(pkl 상태 오기, in_pkl->need_add). DYNAMIC_FEATURES_POOL에 등록 완료, 주간 SHAP 심사 대기"
+        "pkl": "in_pkl",
+        "note": "매수/매도 큐 방향별 고갈 속도 ★ [2026-07-27 395차 재정정] feature_names_1m.pkl(07-27 15:45 재학습) 직접 로드로 실제 배포 확인 — need_add->in_pkl. shap_tracker.db에도 오늘 하루(270분봉) 매분 정상 스코어링, 평균 중요도 0.0069(10개 중 9위, 0은 아님)"
       },
       {
         "name": "cvd_delta_norm",
         "rho": 0.019,
-        "pkl": "need_add",
-        "note": "당분봉 체결 방향 (CORE, 2026-06-25 cvd_direction 교체 — Cybos buy_vol 편향으로 cvd_direction 상수화, 311차 후속9에서 미전파 확인 후 정정)"
+        "pkl": "in_pkl",
+        "note": "당분봉 체결 방향 (CORE, 2026-06-25 cvd_direction 교체 — Cybos buy_vol 편향으로 cvd_direction 상수화, 311차 후속9에서 미전파 확인 후 정정). [2026-07-27 395차] feature_names_1m.pkl 직접 로드로 배포 확인 — need_add->in_pkl"
       },
       {
         "name": "toxicity_score",
@@ -57,8 +57,8 @@
       {
         "name": "micro_regime_code",
         "rho": 0.039,
-        "pkl": "need_add",
-        "note": "직전분 마이크로 레짐 코드 (0~4) ★ [2026-07-26 정정] 이 PC(v9-dev) active_features(97개)에 없어 실제로는 라이브 8피처에서 빠져있었음(pkl 상태 오기, in_pkl->need_add). DYNAMIC_FEATURES_POOL에 등록 완료, 주간 SHAP 심사 대기"
+        "pkl": "in_pkl",
+        "note": "직전분 마이크로 레짐 코드 (0~4) ★ [2026-07-27 395차 재정정] feature_names_1m.pkl(07-27 15:45 재학습) 직접 로드로 실제 배포 확인 — need_add->in_pkl. shap_tracker.db에도 오늘 하루(270분봉) 매분 정상 스코어링, 평균 중요도 0.0050(10개 중 10위, 0은 아님)"
       },
       {
         "name": "vwap_position",
@@ -88,8 +88,8 @@
     "include_pending_validation": [
       {
         "name": "ofi_reversal_speed",
-        "pkl": "in_pkl",
-        "note": "OFI 방향 전환 속도 — SHAP↑ 확인, Walk-Forward 검증 후 확정"
+        "pkl": "need_add",
+        "note": "OFI 방향 전환 속도 — SHAP↑ 확인, Walk-Forward 검증 후 확정. [2026-07-27 395차 정정] feature_names_1m.pkl(10피처: queue_directional_depletion·cvd_delta_norm·toxicity_score·cancel_add_ratio·spread_ticks·micro_regime_code·vwap_position·is_open_volatile·bb_position·poc_distance) 직접 로드 결과 미포함 확인 — in_pkl->need_add. 331차 1m 8피처 개편 이후 실제로 배포된 적 없는 것으로 보이나 최초 in_pkl 표기 근거는 불명, 재검증 필요"
       },
       {
         "name": "basis_pt",
@@ -241,8 +241,8 @@
       {
         "name": "cvd_delta_norm",
         "rho": 0.032,
-        "pkl": "need_add",
-        "note": "CVD 방향 지속성 (CORE, 2026-06-25 cvd_direction 교체 — Cybos buy_vol 편향으로 cvd_direction 상수화, 311차 후속9에서 미전파 확인 후 정정)"
+        "pkl": "in_pkl",
+        "note": "CVD 방향 지속성 (CORE, 2026-06-25 cvd_direction 교체 — Cybos buy_vol 편향으로 cvd_direction 상수화, 311차 후속9에서 미전파 확인 후 정정). [2026-07-27 395차] feature_names_3m.pkl 직접 로드로 배포 확인 — need_add->in_pkl"
       },
       {
         "name": "cvd_divergence",
@@ -503,13 +503,13 @@
     "include_pending_validation": [
       {
         "name": "vwap_momentum",
-        "pkl": "in_pkl",
-        "note": "경계선 — 10m 전용으로 분류했으나 5m 검증 필요"
+        "pkl": "need_add",
+        "note": "경계선 — 10m 전용으로 분류했으나 5m 검증 필요. [2026-07-27 395차 정정] feature_names_5m.pkl(13피처: opt_chain_pcr·bb_position·ema_cross·ret_5m·ret_15m·poc_distance·poc_above·vwap_position·above_vwap·is_open_volatile·is_close_volatile·in_value_area·cvd_slope) 직접 로드 결과 미포함 확인 — in_pkl->need_add. 기존 표기는 10m 배포분(실제 in_pkl)을 5m 항목에 잘못 전사한 것으로 추정"
       },
       {
         "name": "cvd_divergence",
-        "pkl": "in_pkl",
-        "note": "5m CVD 다이버전스 — SHAP 확인 필요"
+        "pkl": "need_add",
+        "note": "5m CVD 다이버전스 — SHAP 확인 필요. [2026-07-27 395차 정정] feature_names_5m.pkl 직접 로드 결과 미포함 확인 — in_pkl->need_add. 기존 표기는 3m/15m CORE cvd_divergence(실제 in_pkl)를 5m 항목에 잘못 전사한 것으로 추정"
       },
       {
         "name": "basis_pt",
@@ -726,13 +726,13 @@
     "include_pending_validation": [
       {
         "name": "foreign_futures_net",
-        "pkl": "in_pkl",
-        "note": "[260704 P2] D+0 지연 감안 10m부터 유효 가능 — CpSvrNew7221 row=2(선물)/col=5(외인순매수) 매핑은 2026-07-05 실제 Creon 연결로 값 대조 검증 완료(기존 추정이 맞았음). IC 통계검증은 별도로 필요"
+        "pkl": "need_add",
+        "note": "[260704 P2] D+0 지연 감안 10m부터 유효 가능 — CpSvrNew7221 row=2(선물)/col=5(외인순매수) 매핑은 2026-07-05 실제 Creon 연결로 값 대조 검증 완료(기존 추정이 맞았음). IC 통계검증은 별도로 필요. [2026-07-27 395차 정정] feature_names_10m.pkl(13피처: opt_gex_sign·vwap_momentum·poc_above·poc_distance·mlofi_slope·vwap_position·opt_pcr_extreme·macro_sp500_chg·macro_us10y_chg·macro_krw_chg·macro_vix·micro_regime_code·hurst) 직접 로드 결과 미포함 확인 — in_pkl->need_add. IC 검증 미완료 상태와 일치(애초 in_pkl 표기가 오기였던 것으로 추정)"
       },
       {
         "name": "cvd_direction",
-        "pkl": "in_pkl",
-        "note": "ρ=0.031 — 경계선"
+        "pkl": "need_add",
+        "note": "ρ=0.031 — 경계선. [2026-07-27 395차 정정] feature_names_10m.pkl 직접 로드 결과 미포함 확인 — in_pkl->need_add. 2026-06-25 CVD 계열 CORE 교체(cvd_direction→cvd_delta_norm, Cybos buy_vol 편향으로 상수화 확인) 이후 project-wide 폐기 대상이었던 피처라 애초 승격 후보로 부적절 — 다음 딥다이브에서 이 항목 자체를 제거할지 검토 권고"
       },
       {
         "name": "basis_pt",
@@ -935,8 +935,8 @@
       {
         "name": "threshold_feasibility",
         "rho": 0.086,
-        "pkl": "in_pkl",
-        "note": "[2026-07-13 딥다이브] 설계 ρ=0.086★ → 실측 IC=-0.024(p=0.02, 부호 반전). P0-1 대기"
+        "pkl": "need_add",
+        "note": "[2026-07-13 딥다이브] 설계 ρ=0.086★ → 실측 IC=-0.024(p=0.02, 부호 반전). P0-1 대기. [2026-07-27 395차 정정] feature_names_15m.pkl(13피처: va_bandwidth·opt_pcr_slope_norm·retail_futures_net·foreign_retail_divergence·in_value_area·is_close_volatile·poc_distance·ret_15m·bb_position·ema_cross·poc_above·ret_5m·cvd_divergence) 직접 로드 결과 미포함 확인 — in_pkl->need_add. 30m 배포분(threshold_feasibility는 30m CORE로 실제 in_pkl)이 15m 항목에 잘못 전사된 것으로 추정, 부호반전 재현실패 결론과도 일치"
       },
       {
         "name": "opt_atm_put_oi",
@@ -947,30 +947,30 @@
       {
         "name": "opt_atm_call_oi",
         "rho": 0.133,
-        "pkl": "in_pkl",
-        "note": "[2026-07-13 딥다이브] 설계 ρ=0.133★★ → 15m 실측 IC=-0.054(통과하나 부호 반전). P0-1 대기"
+        "pkl": "need_add",
+        "note": "[2026-07-13 딥다이브] 설계 ρ=0.133★★ → 15m 실측 IC=-0.054(통과하나 부호 반전). P0-1 대기. [2026-07-27 395차 정정] feature_names_15m.pkl 직접 로드 결과 미포함 확인 — in_pkl->need_add. 30m 배포분이 잘못 전사된 것으로 추정"
       },
       {
         "name": "opt_chain_pcr",
         "rho": 0.184,
-        "pkl": "in_pkl",
-        "note": "[2026-07-13 딥다이브] 설계 ρ=0.184★★★ → 실측 IC=0.002(p=0.90) 재현 실패. 동일 사유 보류"
+        "pkl": "need_add",
+        "note": "[2026-07-13 딥다이브] 설계 ρ=0.184★★★ → 실측 IC=0.002(p=0.90) 재현 실패. 동일 사유 보류. [2026-07-27 395차 정정] feature_names_15m.pkl 직접 로드 결과 미포함 확인 — in_pkl->need_add. 30m CORE 배포분(실제 in_pkl, CLAUDE.md §3)이 15m 항목에 잘못 전사된 것으로 추정, 재현실패 결론과도 일치"
       },
       {
         "name": "opt_gex_bn",
         "rho": 0.198,
-        "pkl": "in_pkl",
-        "note": "[2026-07-13 딥다이브] 설계 ρ=0.198★★★ → 최신구간 실측 IC=0.013(p=0.28) 재현 실패. P0-1(레지스트리 복구) + 재현 확인 전까지 보류"
+        "pkl": "need_add",
+        "note": "[2026-07-13 딥다이브] 설계 ρ=0.198★★★ → 최신구간 실측 IC=0.013(p=0.28) 재현 실패. P0-1(레지스트리 복구) + 재현 확인 전까지 보류. [2026-07-27 395차 정정] feature_names_15m.pkl 직접 로드 결과 미포함 확인 — in_pkl->need_add. 30m 배포분이 잘못 전사된 것으로 추정"
       },
       {
         "name": "macro_sp500_chg",
-        "pkl": "in_pkl",
-        "note": "장 레짐 연동 — 15m부터 유효 검증 필요"
+        "pkl": "need_add",
+        "note": "장 레짐 연동 — 15m부터 유효 검증 필요. [2026-07-27 395차 정정] feature_names_15m.pkl 직접 로드 결과 미포함 확인 — in_pkl->need_add. 10m 배포분(실제 in_pkl)이 잘못 전사된 것으로 추정"
       },
       {
         "name": "macro_us10y_chg",
-        "pkl": "in_pkl",
-        "note": "동일"
+        "pkl": "need_add",
+        "note": "동일. [2026-07-27 395차 정정] feature_names_15m.pkl 직접 로드 결과 미포함 확인 — in_pkl->need_add. 10m 배포분(실제 in_pkl)이 잘못 전사된 것으로 추정"
       },
       {
         "name": "vkospi",
@@ -1224,13 +1224,13 @@
     "include_pending_validation": [
       {
         "name": "macro_us10y_chg",
-        "pkl": "in_pkl",
-        "note": "금리 변화 30m 레짐 반영 — 백필 후 검증"
+        "pkl": "need_add",
+        "note": "금리 변화 30m 레짐 반영 — 백필 후 검증. [2026-07-27 395차 정정] feature_names_30m.pkl(17피처: opt_gex_bn·opt_chain_pcr·opt_atm_call_oi·opt_atm_pcr·threshold_feasibility·in_value_area·opt_pcr_slope_norm·opt_pcr_bearish·toxicity_score_ma·atr_ratio·above_vwap·queue_signal_ma·toxicity_atr_stress·time_cos·micro_regime_code·macro_vix·macro_krw_chg) 직접 로드 결과 미포함 확인 — in_pkl->need_add. 10m 배포분(실제 in_pkl)이 잘못 전사된 것으로 추정"
       },
       {
         "name": "macro_sp500_chg",
-        "pkl": "in_pkl",
-        "note": "전날 S&P 방향 — 30m 레짐 연동 검증"
+        "pkl": "need_add",
+        "note": "전날 S&P 방향 — 30m 레짐 연동 검증. [2026-07-27 395차 정정] feature_names_30m.pkl 직접 로드 결과 미포함 확인 — in_pkl->need_add. 10m 배포분(실제 in_pkl)이 잘못 전사된 것으로 추정"
       },
       {
         "name": "vkospi",
