@@ -7593,14 +7593,22 @@ class TradingSystem:
                     )
             elif (
                 # [P5] C등급 실험적 자동 진입
-                # OFF 기본값 — settings.ENTRY_GRADE_C_AUTO_EXP = True 로 명시 활성화 필요
+                # [2026-07-27 396차 정정] settings.ENTRY_GRADE_C_AUTO_EXP 기본값은
+                # True(기본 ON) — 이 주석이 "OFF 기본값"이라 주장하던 것 자체가
+                # config/settings.py 실제 값과 어긋난 297차류 stale 주석이었음
                 ENTRY_GRADE_C_AUTO_EXP
                 and _final_grade == "C"
                 and self._auto_entry_enabled
                 and not _auto_blocked                              # Degraded 차단 없음
                 and _tp_active                                     # TrendGate active + 방향 일치
                 and time_zone in C_AUTO_EXP_ZONES                 # STABLE_TREND / LUNCH_RECOVERY
-                and not self.circuit_breaker.is_grade_restricted() # P4 RESTRICTED 아님
+                # [2026-07-27 396차] CB③-P4 우회경로 수정(297차 패턴 재발 — Phase0/
+                # Phase1 §6-1 발견, 사용자 승인 완료) — CB3_P4_GRADE_BLOCK_ENABLED=False인
+                # 지금은 이 조건이 항상 통과해야 하는데, 플래그 게이트 없이 is_grade_
+                # restricted()를 직접 불러 main.py:6305(플래그 게이트 있음)와 어긋나
+                # 퇴역된 30m 정확도로 C급 실험적 자동진입이 계속 억제되고 있었음
+                and (not runtime_settings.CB3_P4_GRADE_BLOCK_ENABLED
+                     or not self.circuit_breaker.is_grade_restricted())  # P4 RESTRICTED 아님
             ):
                 # [237차] P2-b 셋업 컨텍스트 — C급 경로에도 동일 설정 (hurst_bucket 공백 방지)
                 _hurst_now_c = float(features.get("hurst", 0.5) or 0.5)
