@@ -2,6 +2,65 @@
 
 ---
 
+## 2026-07-27 (391차 — "재보정 모니터" 라이브 반영 사각지대 규명 + 라이브값 배지 구현)
+
+### [원인규명+구현] 임계값/진입호라이즌 재보정 모니터 탭이 settings.py 수동 변경을 반영하지 못하던 구조적 공백 — 라이브 vs DB 스냅샷 비교 배지 추가
+
+**배경**: 390차 정기점검에서 사용자가 "UI 중간 패널의 재보정모니터 탭이 변경된
+settings를 반영하고 있지 않다"고 지적 — 387차(2026-07-26, 일요일)가 수동으로
+`HORIZON_THRESHOLDS`(1m 0.00057→0.00075 등)·`ENTRY_HORIZON_B1/B2`(3.5→3.2,
+4.0→4.4)를 재보정 반영했는데, "📐 재보정 모니터"(386차 신설) 탭의 "임계값"/
+"진입호라이즌" 하위 탭이 여전히 구값을 보여주고 있었다.
+
+**File**: `dashboard/panels/threshold_monitor_panel.py`,
+`dashboard/panels/entry_horizon_monitor_panel.py` (조사만, 코드 원인은
+`main.py:9155-9159,9197-9201`·`learning/threshold_recalibrator.py`·
+`learning/entry_horizon_recalibrator.py`)
+
+**원인**: 두 패널 모두 `config/settings.py`를 직접 읽지 않고, `data/db/
+threshold_monitor.db`(`threshold_log`/`entry_horizon_log` 테이블)의 DB 스냅샷만
+5분 주기로 재조회한다. 이 DB는 `ThresholdRecalibrator.run()`/
+`EntryHorizonRecalibrator.run()`이 쓰는데, 이 함수들은 `main.py:9155`/`9199`의
+`if now.weekday()==4:`(금요일 전용) 게이트 안에서만 호출된다 — 382차가 추가한
+`run_if_due()`의 "마지막 실행 후 7일 경과 시 재실행" 로직도 이 금요일 게이트
+안쪽에 있어 실질적으로 여전히 금요일에만 실행됨. 마지막 실제 실행은 07-24(금)
+— 이때 DB에 기록된 `current_base`/`current_b1`/`current_b2`는 그 시점
+settings.py 값(구값)이다. 387차의 수동 반영은 07-26(일), 자동 주기 밖에서
+일어났으므로 다음 실행일(07-31 금)까지 DB가 갱신되지 않아, 이미 적용된 UPDATE
+권고가 계속 "미반영"인 것처럼 보이는 최대 1주일 사각지대가 생긴다. 버그라기보다
+설계 사각지대 — 이 모니터들은 "주간 자동 사이클 안에서 현재값→권고값 드리프트를
+추적"하도록 설계돼 있어, 사람이 그 사이클 밖에서 먼저 settings.py를 고치는
+경로에 대한 반영 훅이 없었다.
+
+**조치(옵션 A 채택)**: DB에 새 행을 강제로 쓰거나 재보정 주기를 바꾸는 대신,
+두 패널에 `config.settings.HORIZON_THRESHOLDS`/`ENTRY_HORIZON_B1`/
+`ENTRY_HORIZON_B2`를 매 refresh(5분)마다 라이브로 읽어 DB의 `current_base`/
+`current_b1`/`current_b2`와 비교하는 배지를 추가:
+  - 라이브값과 DB 스냅샷이 같으면 "설정 X (DB와 동일)" — 회색, 아직 반영 안 됨.
+  - 다르면 "✓ 설정 X로 반영됨" — 초록, 이미 수동반영됨을 명시.
+`threshold_monitor_panel.py`는 호라이즌별 카드에 새 줄 추가(호라이즌별 카드
+갱신 루프를 `latest.items()`가 아니라 `_HORIZONS` 전체 순회로 변경 — DB 행이
+없는 호라이즌도 라이브값은 항상 표시), `entry_horizon_monitor_panel.py`는
+B1/B2 헤더 카드에 서브라인 추가. 두 파일 하단 안내 문구(tip)도 이 새 표시를
+설명하도록 갱신, `entry_horizon_monitor_panel.py`의 낡은 안내("model/
+ensemble_decision.py의 ENTRY_HORIZON_B1/B2 반영")도 실제 위치인
+`config/settings.py`로 정정(그 상수는 이미 이전에 옮겨졌으나 이 tip 문구만
+안 고쳐져 있었음).
+
+**검증**: `QT_QPA_PLATFORM=offscreen`으로 두 패널을 실제 인스턴스화해
+`refresh()` 호출 후 라이브 배지 텍스트 확인 — 6개 호라이즌 전부
+"✓ 설정 N%로 반영됨"(초록), B1/B2 둘 다 "✓ 설정 3.20/4.40로 반영됨"으로 정확히
+표시됨을 확인(387차가 이미 반영한 상태이므로 전부 "반영됨"이 나오는 것이 정상).
+py_compile 통과. **라이브 UI 미검증** — 다음 실제 대시보드 기동 시 "📐 재보정
+모니터" 탭 육안 확인 필요.
+
+**관련**: 386차(재보정 모니터 통합 탭 신설), 387차(이번에 반영 지연이 드러난
+재보정), 382차(`run_if_due()` 7일 패턴, 이번 사각지대와는 다른 문제 — 그쪽은
+"실행 자체가 누락되는 것" 방지, 이번은 "실행 전에 사람이 먼저 값을 바꾸는 것"의
+반영 지연), 390차(정기점검 중 이 문제 최초 발견).
+
+---
+
 ## 2026-07-26 (389차 — 고도화2 계획 진행점검 + 우선순위 5항목 실측 검증)
 
 ### [점검+구현] `docs/미륵이고도화2/` 3개 문서(311~331차 무스킬 개편 계획) 대비 실제 라이브 반영 여부를 파일 직접 로드로 확인, basis_pt·vkospi 재검증, 3m/5m 분해분석, H4 그라운드워크
