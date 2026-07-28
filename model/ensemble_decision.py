@@ -30,6 +30,7 @@ from config.settings import (
     CONF_STUCK_BOOST_MIN_STREAK, CONF_STUCK_BOOST_TRANSFER_RATIO,
     CONF_STUCK_BOOST_TARGET_MIN_ACC,
     ENTRY_HORIZON_LOW_BLOCK, ENTRY_HORIZON_B1, ENTRY_HORIZON_B2,
+    WEIGHT_COLLAPSE_HONEST_MODE,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from model.ensemble_gater import AdaptiveEnsembleGater
@@ -308,6 +309,8 @@ class EnsembleDecision:
         # Grade A 롤링 정확도 가드: conf ≥ _HC_GUARD_CONF_THR 예측 결과 버퍼
         self._hc_buf: deque = deque(maxlen=self._HC_GUARD_WINDOW)
         self._hc_grade_a_blocked: bool = False  # 현재 차단 상태 (로그용)
+        # [conf(ema) 딥다이브, 개선안1] 실질 가중합 0 붕괴 연속 카운터 — WeightCollapse 계측용
+        self._weight_collapse_streak: int = 0
 
     def compute(
         self,
@@ -629,8 +632,28 @@ class EnsembleDecision:
             down_score /= _score_sum
             flat_score /= _score_sum
         # 안전망: 합계가 0인 극단 케이스 (모든 호라이즌 missing)
-        if _score_sum <= 1e-9:
+        # [conf(ema) 딥다이브, 개선안1] 콜드스타트 좁은 활성창(HORIZON_TIME_POLICY)에서
+        # 유일한 활성 호라이즌이 Q3 bar_only 정책(HZ_DEPLOY_POLICY)으로 그 분에
+        # horizon_proba에서 빠지면 여기로 떨어진다 — cur_weights상 가중치는 있지만
+        # 실제 res가 없어 총가중합이 0인 경우. 이 붕괴가 인위적 flat_score=1.0을 만들고
+        # 그게 그대로 Platt 보정을 거치면 "확신도 고착"처럼 보이는 게 실측 확인됨
+        # (2026-07-28 conf(ema) 딥다이브). 발생 빈도를 계량하기 위해 계측만 추가하고
+        # (아래 로그 + weight_collapsed 플래그 → DB 저장), 실제 동작 변경은
+        # WEIGHT_COLLAPSE_HONEST_MODE(개선안4)/COLDSTART_BAR_ONLY_RELAX_ENABLED(개선안5)
+        # 플래그로 별도 게이트한다(기본 비활성 — 이 블록 자체는 동작 무변화).
+        _weight_collapsed = _score_sum <= 1e-9
+        if _weight_collapsed:
             flat_score = 1.0
+            self._weight_collapse_streak += 1
+            _wc_expected = sorted(h for h, w in cur_weights.items() if w > 1e-9)
+            _wc_missing  = sorted(h for h in _wc_expected if not horizon_proba.get(h))
+            logger.warning(
+                "[WeightCollapse] 실질 가중합 0 (%d연속) — 활성기대=%s 중 미배포=%s "
+                "→ flat_score=1.0 안전망 발동 (active_horizons=%s)",
+                self._weight_collapse_streak, _wc_expected, _wc_missing, active_horizons,
+            )
+        else:
+            self._weight_collapse_streak = 0
 
         # ── P0-A: TrendGate 추세 부스트 ─────────────────────────────
         # TrendGate streak(10분+)이 active이면 해당 방향 점수를 직접 올린다.
@@ -928,19 +951,31 @@ class EnsembleDecision:
         #   → 방향 전환 시 calibration 불연속(conf 급등락) 제거
         # P3 블렌딩(calibration.py)으로 is_fitted 전환 점프 완화
         _confidence_raw = confidence
-        if self.ensemble_calibrator.is_fitted:
+        if _weight_collapsed and WEIGHT_COLLAPSE_HONEST_MODE:
+            # [conf(ema) 딥다이브, 개선안4 — 기본 비활성] 실질 신호 0인 붕괴 케이스는
+            # 인위적 raw=1.0을 캘리브레이터에 넣지 않고 "판단불가"를 정직하게 confidence=0.0
+            # 으로 표시한다. 캘리브레이터 fit 여부와 무관하게 항상 이 분기 우선.
+            confidence = 0.0
+        elif self.ensemble_calibrator.is_fitted:
             _cal = self.ensemble_calibrator.calibrate(confidence)
+            confidence = min(max(float(_cal), 0.0), 0.85)
         elif self.calibrator is not None:
             _cal = self.calibrator.calibrate("3m", confidence)
+            confidence = min(max(float(_cal), 0.0), 0.85)
         else:
-            _cal = confidence
-        confidence = min(max(float(_cal), 0.0), 0.85)
+            confidence = min(max(float(confidence), 0.0), 0.85)
+        # [conf(ema) 딥다이브, 개선안3] 보정은 direction에 해당하는 스코어 하나만
+        # 갱신하고 나머지 두 값은 보정 이전(raw) 값이 그대로 남아 up+down+flat 합이
+        # 1이 아니게 되던 버그 수정 — 나머지 두 값을 remainder로 비례 재분배한다.
         if direction == DIRECTION_UP:
             up_score = confidence
+            down_score, flat_score = self._fill_remainder(confidence, down_score, flat_score)
         elif direction == DIRECTION_DOWN:
             down_score = confidence
+            up_score, flat_score = self._fill_remainder(confidence, up_score, flat_score)
         else:
             flat_score = confidence
+            up_score, down_score = self._fill_remainder(confidence, up_score, down_score)
 
         # ── 레짐별 최소 신뢰도 기준 ──────────────────────────
         # [297차] zone_mc(시간대 DynMC + FQAdj 실시간 조정 반영값)를 1차 기준으로 사용.
@@ -1036,6 +1071,7 @@ class EnsembleDecision:
             "const_output_horizons": sorted(_const_stuck),
             "30m_filter_blocked":    _30m_filter_blocked,
             "conf_stuck_boost_applied": _stuck_boost_applied,
+            "weight_collapsed":      _weight_collapsed,
         }
 
         logger.info(
@@ -1043,8 +1079,22 @@ class EnsembleDecision:
             f"grade={grade} regime={regime}"
             + (" [30m역방향차단]" if _30m_filter_blocked else "")
             + (" [ConfStuckBoost]" if _stuck_boost_applied else "")
+            + (" [WeightCollapse]" if _weight_collapsed else "")
         )
         return result
+
+    @staticmethod
+    def _fill_remainder(primary: float, a: float, b: float) -> Tuple[float, float]:
+        """[conf(ema) 딥다이브, 개선안3] confidence 보정 후 나머지 두 스코어를
+
+        remainder(1 - primary)로 비례 재분배해 up+down+flat 합=1을 보장한다.
+        기존 상대비(a:b)를 유지하며, 둘 다 0이면 remainder를 균등 분배한다.
+        """
+        remainder = max(0.0, 1.0 - primary)
+        total = a + b
+        if total > 1e-9:
+            return remainder * (a / total), remainder * (b / total)
+        return remainder / 2.0, remainder / 2.0
 
     def record_ensemble_outcome(self, raw_conf: float, correct: bool) -> None:
         """앙상블 보정기에 결과 누적 — STEP 1 검증 시 main.py에서 호출."""
@@ -1066,6 +1116,7 @@ class EnsembleDecision:
         self._hz_stuck = {h: False for h in HORIZONS}
         self._flat_streak = 0
         self._fl_streak = {h: 0 for h in HORIZONS}
+        self._weight_collapse_streak = 0
         # HCGuard 버퍼는 일일 리셋 안 함 — 누적 데이터가 가드 품질의 핵심
         # (장 사이 하루만 공백이어도 50건 버퍼가 유효하므로 유지)
 

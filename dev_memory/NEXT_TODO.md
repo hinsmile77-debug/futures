@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-07-28 (398차 — conf(ema) 딥다이브: WeightCollapse 근본원인 규명 + 개선안 1~5 구현)
+
+> 상세: `DECISION_LOG.md` 2026-07-28(398차) 항목. 선행: 352차, Q3(06-25), 353차.
+
+- [DONE 2026-07-28] **개선안1 WeightCollapse 계측 신설** — `model/ensemble_decision.py`
+  안전망(`_score_sum<=1e-9`) 발동 시 `[WeightCollapse]` 경고 로그 + 연속 카운터.
+- [DONE 2026-07-28] **개선안2 계측 공백 해소** — `confidence_raw`/`confidence_smoothed`/
+  `weight_collapsed`를 `ensemble_decisions` 테이블에 실제 저장.
+- [DONE 2026-07-28] **개선안3 삼중값 정합성 버그 수정** — Platt 보정 후 `up+down+flat=1`
+  항상 보장(`_fill_remainder()`), UP/DOWN/FLAT 전 방향 공통.
+- [DONE 2026-07-28] **개선안4·5 구현(기본 False, shadow)** — `WEIGHT_COLLAPSE_HONEST_MODE`,
+  `COLDSTART_BAR_ONLY_RELAX_ENABLED`. 둘 다 플래그 꺼진 상태라 기본 동작 무변화.
+- [ ] **[398차 최우선, 주간회의 안건 등록 — §4-2 ④·⑤]** 라이브 확인 —
+  `[WeightCollapse]` 발생 빈도 실측 → 다음 금요일 주간회의에서 개선안4·5
+  전환 여부 판단. 장중 09:05~09:30에 이 로그가 하루 몇 분·몇 회 발생하는지,
+  `ensemble_decisions.weight_collapsed` 컬럼 집계와 일치하는지 이번 주 관찰
+  → 그 실측치를 들고 ④(NEXT_TODO 항목 리뷰)에서 규모를 확인하고, ⑤(다음 주
+  변경 승인)에서 `WEIGHT_COLLAPSE_HONEST_MODE`(우선)/`COLDSTART_BAR_ONLY_
+  RELAX_ENABLED`(후순위) True 전환 여부를 최종 결정할 것 — CB②·CB③-P4·
+  FP-CRITICAL 예외 3건과 동일하게, 실측 없이 임의로 켜지 말 것.
+- [ ] **[398차] 개선안4 전환 시 HCGuard 등 confidence 직접소비처 영향 확인** —
+  `WEIGHT_COLLAPSE_HONEST_MODE=True` 전환을 검토하게 되면, 붕괴 시 confidence가
+  0.28대→0.0으로 바뀌는 게 HCGuard 롤링 버퍼(`_hc_buf`, conf≥0.65만 담아 붕괴
+  케이스는 애초에 버퍼 밖이라 무영향으로 추정되나 재확인 필요) 등 다른 소비처에
+  실제로 영향이 없는지 확인.
+- [ ] **[398차] 개선안5 채택 여부는 개선안4보다 후순위로 검토** — 완화가 Q3의
+  "학습/추론 분포 불일치" 우려를 하루 최대 25분 재도입하므로, 최우선 실측(위 항목)
+  결과 붕괴 빈도가 유의미하게 크고 개선안4만으로는 부족하다고 판단될 때만 검토.
+- [ ] **[398차] `save_ensemble_decision()`(learning/prediction_buffer.py, 미사용
+  레거시 경로)는 이번 컬럼 확장 대상에서 제외** — 실제 라이브 경로는
+  `save_step9_batch()` 단일 경로(main.py STEP9)뿐임을 호출부 grep으로 확인,
+  죽은 코드까지 손대지 않음. 향후 이 함수가 실제로 다시 쓰이게 되면 함께 갱신할 것.
+
+---
+
 ## 2026-07-27 (396차 — 297차 "퇴역 시 소비경로 누락" 패턴 전수조사 + CB③-P4 우회경로 수정)
 
 > 상세: `DECISION_LOG.md` 2026-07-27(396차) 항목. 선행: 297차, 296차, 331차 후속2,

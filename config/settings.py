@@ -169,6 +169,35 @@ HZ_DEPLOY_POLICY = {
     "30m": {"mode": "filter_only", "max_age": 0},
 }
 
+# ── [conf(ema) 딥다이브, 2026-07-28] 앙상블 실질가중치 붕괴 대응 (개선안 4·5) ──
+# 배경: 콜드스타트 좁은 활성창(HORIZON_TIME_POLICY 09:05~09:30)과 위 HZ_DEPLOY_POLICY의
+# bar_only(3m/5m, age=0 엄격) 정책이 겹치면, 그 구간 유일한 활성 호라이즌이 봉 미완성
+# 분마다 horizon_proba에서 통째로 사라져(main.py `del horizon_proba[h]`) 실질 가중합이
+# 0에 수렴한다. 이 경우 model/ensemble_decision.py 안전망이 "인위적 flat_score=1.0"을
+# 만들고, Platt 보정기가 그 인위적 확신을 시스템의 실제(랜덤급) 적중률 기저선 부근
+# (0.28~0.31)으로 압착해 "확신도 고착"처럼 보이는 현상이 실측 확인됨(09:12~09:44 raw
+# confidence 3단 고착, DB detail JSON 대조로 원인 특정). 아래 두 개선안 모두 §1
+# WeightCollapse 계측(model/ensemble_decision.py의 [WeightCollapse] 로그)으로 실제
+# 발생 빈도·영향 규모를 먼저 재고, 사용자 승인 후 True 전환할 것 — 기본은 비활성
+# (기존 동작 100% 유지, CLAUDE.md §6/§9 사전등록 원칙과 동일한 도입 순서).
+# 근거: dev_memory/DECISION_LOG.md 2026-07-28(conf(ema) 딥다이브) 항목.
+
+# 개선안4 — 붕괴 시 "정직한 무신호"(confidence=0.0)로 반환, Platt 보정 생략.
+# True 전환 시 실거래 동작(진입 여부)은 사실상 무영향(붕괴 시 confidence는 원래도
+# min_conf 미달이라 진입 안 됨) — HCGuard 롤링 정확도 버퍼 등 confidence를 직접
+# 입력으로 쓰는 다른 소비처의 값만 바뀌므로, True 전환 전 그 영향까지 확인할 것.
+WEIGHT_COLLAPSE_HONEST_MODE: bool = False
+
+# 개선안5 — 콜드스타트 구간(위 윈도우) 한정으로 bar_only(3m/5m)의 age 완화(0→1).
+# Q3(2026-06-25, DECISION_LOG 참조)가 "완성봉 직후만 배포 → 기회손실 미미"라 판단한
+# 전제는 6개 호라이즌이 전부 가동 중인 09:30 이후를 상정한 것이라 이 좁은 창에서는
+# 깨진다. 다만 완화하면 Q3가 애초에 막으려던 "학습/추론 분포 불일치"를 하루 최대
+# 25분 재도입하는 트레이드오프가 있어 개선안4(정직한 무신호 표시)보다 우선순위가
+# 낮다 — 더 안전한 4번을 먼저 검토·적용 권고.
+COLDSTART_BAR_ONLY_RELAX_ENABLED: bool = False
+COLDSTART_BAR_ONLY_RELAX_WINDOWS = [(905, 910), (910, 915), (915, 930)]  # HORIZON_TIME_POLICY와 동일 구간
+COLDSTART_BAR_ONLY_RELAX_MAX_AGE = 1  # bar_only age 상한 0 → 1
+
 # [P2, 288차] SGD 전용 피처셋 — GBM SHAP 기준(horizon_feature_names)과 분리.
 # 2026-06-01~ 데이터, 호라이즌별 미래수익률 대비 Spearman IC 상위 5개(quality_*/메타
 # 진단 피처 제외 — 데이터 품질 플래그일 뿐 실제 시장 신호가 아니라 스퓨리어스 상관 위험).
