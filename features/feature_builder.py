@@ -32,10 +32,14 @@ from config.settings import (
     HURST_WARMUP_COLDSTART_MIN, HURST_WARMUP_LAG_FLOOR, HURST_WARMUP_LAG_RATIO,
     TREND_EFFICIENCY_WINDOW, KYLE_LAMBDA_WINDOW, RV_IV_WINDOW,
     CHASE_FILTER_LOOKBACK_MIN, REGIME_EXHAUSTION_LOOKBACK_MIN,
+    EXHAUSTION_RESTORE_MODE,
 )
 
 logger = logging.getLogger("SIGNAL")
 micro_log = logging.getLogger("MICRO")
+
+# [394차] 소진 교정값을 라이브 키에 반영할지 여부. 기본 False(섀도 관측만).
+_EXHAUSTION_LIVE = str(EXHAUSTION_RESTORE_MODE).lower() == "live"
 
 
 class FeatureBuilder:
@@ -47,6 +51,9 @@ class FeatureBuilder:
         self._tick_size: float = _DEFAULT_TICK_SIZE
         self.cvd = CVDCalculator(window=10)
         self.cvd_exhaustion_calc = CvdExhaustionCalculator()
+        # [394차] 교정판 — 원시 누적 CVD를 추세제거해 입력. 기본은 섀도(관측 전용)이며
+        # EXHAUSTION_RESTORE_MODE="live"일 때만 라이브 키를 대체한다.
+        self.cvd_exhaustion_fixed = CvdExhaustionCalculator(detrend=True)
         self.vwap = VWAPCalculator()
         self.ofi = OFICalculator(window=5)
         self.ofi_reversal_calc = OfiReversalCalculator()
@@ -181,6 +188,7 @@ class FeatureBuilder:
             buy_vol  = vol * max(close - low,  0.0) / _rng
             sell_vol = vol * max(high - close, 0.0) / _rng
 
+        cvd_result: Dict[str, Any] = {}   # CVD 실패 시에도 아래 소진 블록이 참조 가능하도록
         try:
             cvd_result = self.cvd.update_from_bar(
                 close=close, buy_vol=buy_vol, sell_vol=sell_vol,
@@ -224,18 +232,32 @@ class FeatureBuilder:
         else:
             features["cvd_monotone_ratio"] = 0.5  # 초기 중립값
 
+        # [394차] 소진 6종 — 종전 경로(정규화값 입력)와 교정 경로(원시 CVD + 추세제거)를
+        # 나란히 계산한다. 종전 경로는 cvd_norm이 상시 +1.0 포화라 bear측이 구조적으로
+        # 발화 불가였다(Phase 0 실측). 어느 쪽이 라이브 키를 채울지는
+        # EXHAUSTION_RESTORE_MODE가 결정하며, 교정값은 항상 *_shadow 키로도 기록해
+        # 섀도 관측이 끊기지 않게 한다. 상세: config/settings.py 동 상수 주석.
         try:
             exh_result = self.cvd_exhaustion_calc.compute(
                 cvd_raw   = features.get("cvd", 0.0),    # 이미 cvd_norm [-1,1]
                 cvd_slope = features.get("cvd_slope", 0.0),  # 이미 cvd_slope_norm
                 volume    = vol,
             )
-            features["bear_exhaustion"]        = float(exh_result["bear_exhaustion"])
-            features["bull_exhaustion"]        = float(exh_result["bull_exhaustion"])
-            features["bear_exhaustion_signal"] = float(exh_result["bear_exhaustion_signal"])
-            features["bull_exhaustion_signal"] = float(exh_result["bull_exhaustion_signal"])
-            features["cvd_exhaustion"]         = float(exh_result["exhaustion"])        # deprecated
-            features["cvd_exhaustion_signal"]  = float(exh_result["exhaustion_signal"]) # deprecated
+            exh_fixed = self.cvd_exhaustion_fixed.compute(
+                cvd_raw   = float(cvd_result.get("cvd", 0.0)),        # 원시 누적 CVD
+                cvd_slope = float(cvd_result.get("cvd_slope", 0.0)),  # detrend 모드에선 미사용
+                volume    = vol,
+            )
+            features["bear_exhaustion_shadow"] = float(exh_fixed["bear_exhaustion"])
+            features["bull_exhaustion_shadow"] = float(exh_fixed["bull_exhaustion"])
+
+            _exh_live = exh_fixed if _EXHAUSTION_LIVE else exh_result
+            features["bear_exhaustion"]        = float(_exh_live["bear_exhaustion"])
+            features["bull_exhaustion"]        = float(_exh_live["bull_exhaustion"])
+            features["bear_exhaustion_signal"] = float(_exh_live["bear_exhaustion_signal"])
+            features["bull_exhaustion_signal"] = float(_exh_live["bull_exhaustion_signal"])
+            features["cvd_exhaustion"]         = float(_exh_live["exhaustion"])        # deprecated
+            features["cvd_exhaustion_signal"]  = float(_exh_live["exhaustion_signal"]) # deprecated
         except Exception as _exc:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] CVD exhaustion 오류 — 기본값 사용: %s", _exc)
@@ -243,6 +265,7 @@ class FeatureBuilder:
                 "bear_exhaustion": 0.0, "bull_exhaustion": 0.0,
                 "bear_exhaustion_signal": 0.0, "bull_exhaustion_signal": 0.0,
                 "cvd_exhaustion": 0.0, "cvd_exhaustion_signal": 0.0,
+                "bear_exhaustion_shadow": 0.0, "bull_exhaustion_shadow": 0.0,
             })
 
         try:
@@ -833,6 +856,7 @@ class FeatureBuilder:
     def reset_daily(self) -> None:
         self.cvd.reset_daily()
         self.cvd_exhaustion_calc.reset_daily()
+        self.cvd_exhaustion_fixed.reset_daily()
         self.vwap.reset_daily()
         self.ofi.reset_daily()
         self.ofi_reversal_calc.reset_daily()
