@@ -248,13 +248,22 @@ class MacroFetcher:
     def _fetch_yahoo_daily(self) -> Dict[str, float]:
         """Yahoo v8 chart API — 일봉 (1d interval은 crumb 불필요, 429 없음).
 
-        S&P500, US10Y(^TNX) 수집. range=5d로 2일치 close 확보.
+        S&P500, 나스닥(^IXIC), US10Y(^TNX) 수집. range=5d로 2일치 close 확보.
         """
         result: Dict[str, float] = {}
         targets = [
             ("^GSPC", "sp500"),
+            ("^IXIC", "nasdaq"),   # [394차] 아래 참조
             ("^TNX",  "us10y"),
         ]
+        # [394차] 나스닥 추가 경위: ^IXIC는 종전까지 _fetch_yfinance() 경로에만 있었고
+        # 그 경로는 `if _YFINANCE_OK and not raw:` 조건이라 다른 소스가 하나라도
+        # 성공하면 호출되지 않았다. Cboe VIX가 상시 성공하므로 사실상 영구 미호출 —
+        # macro_nasdaq_chg가 2026-05~07 전 기간 0.0으로 고착된 원인이다.
+        # 이미 정상 동작 중인 이 경로로 옮겨 신규 의존성 없이 복구한다.
+        # 진입 로직 영향 없음: RegimeClassifier.classify()는 nasdaq_chg_pct를 인자로
+        # 받기만 하고 점수 계산에 쓰지 않으며(collection/macro/regime_classifier.py),
+        # 모델 피처로만 쓰인다. 근거: docs/미륵이고도화2/Phase0_검증결과_2026-07-27.md §2-2
         for sym, key in targets:
             try:
                 url = (
