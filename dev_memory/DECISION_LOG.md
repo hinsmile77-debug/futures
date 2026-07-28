@@ -2,6 +2,95 @@
 
 ---
 
+## 2026-07-28 (399차 — 정기점검 수익률 향상 제안 구현 착수: 관측성 필드 2종 신설 + 분석 스크립트 2종 — 실측 결과 사이징 변경 근거 부족으로 보류)
+
+### [배경] 정기점검(7/28)이 제안한 "수익률 향상 방안" 5건을 실제 구현하기 전에, 각 제안의 전제(근거 데이터)가 실제로 유효한지 코드/DB로 먼저 재검증
+
+정기점검 딥다이브(398차 이후 별도 세션)가 오늘 4건(3승1패) 진입을 분석하며 제안한
+5개 항목 중 제안1("mean-revert hurst_bucket 사이징 축소")과 제안2("[P4] CVD+OFI
+동시역행 강등 신호 사이징 축소, 단 발동분 승률/손익 먼저 집계")를 실제 구현하려고
+코드를 추적한 결과, 두 제안 모두 "곧바로 사이징 로직을 바꾸면 안 된다"는 결론에
+도달했다 — 313차 원칙(소표본/비유의 결과로 정책 변경 금지)이 그대로 재확인된 사례.
+
+### [재검증 1] 제안1 "mean-revert 사이징 축소"는 이미 333차가 구현·검증해 배포된
+기능이었음 — 신규 구현 시 중복
+
+`main.py:6711-6748`(`_hurst_soft_block_applied`/`HURST_SOFT_BLOCK_SIZE_MULT`)을 추적한
+결과, hurst<0.45(mean-revert) 진입 시 하드차단 대신 사이징 ×0.5로 완화하는 로직이
+**333차 후속**에서 이미 구현되어 `hurst_gate_shadow` counterfactual(n=111,
+hyp_pnl=42.49pt, 승률73.9%)로 검증까지 마치고 배포된 상태였다. 정기점검이 제안1을
+"신규 아이디어"로 낸 것은 `trades.hurst_bucket`(hurst<0.45→"mean-revert" 분류)과
+이 sizing 완화 메커니즘의 연결고리를 모르고 관찰만으로 재발견한 것 — 그대로 구현했다면
+이미 있는 기능을 중복 구현할 뻔했다.
+
+**추가로 밝혀진 사실**: `_hurst_soft_block_applied`는 `_entry_mode_for_gate ==
+"TREND_FOLLOW"`일 때만 적용된다(273차 결정 — MEAN_REVERSION 모드·REGIME_EXHAUSTION
+미시레짐은 애초에 이 게이트 대상이 아님, `main.py:6711-6721`). 즉 정기점검이 지목한
+"2주 풀링 32건 mean-revert 버킷 손익 저조"의 상당수는 이 sizing 완화 메커니즘이
+아예 발동조차 하지 않는 MEAN_REVERSION/REGIME_EXHAUSTION 경로일 가능성이 높다 —
+`scripts/hurst_softblock_noop_analysis.py`로 2주 풀링 실측한 결과 `entry_executed=1`
+AND `hurst_soft_block_applied=True`인 사례는 **n=2**(둘 다 오늘, 11:00 실제 사이징
+축소 적용 승리 +182,548원 / 14:00 no-op 패배 -183,441원)뿐 — "sizing no-op이 mean-
+revert 저조의 원인"이라는 가설을 검증하기엔 표본이 극단적으로 작아 결론 보류.
+
+### [재검증 2] 제안2 "P4 CVD+OFI 동시역행 강등 신호 사이징 축소"는 2주 풀링 실측과
+정반대 — 실제로는 평균 손익이 양수
+
+`scripts/p4_cvd_ofi_demotion_analysis.py`로 2026-07-14~07-28 `logs/*_SIGNAL.log`의
+"[P4] CVD+OFI 동시 역방향" 발동 시각(67건, 체결 무관)을 `trades.db`(grade='C' 실체결
+17건)와 분 단위로 조인한 결과:
+
+| 그룹 | n | 승률 | 평균손익 | 합계 |
+|---|---|---|---|---|
+| P4 강등분 | 14 | 71.4% | **+20,641원** | +288,970원 |
+| organic C(비강등) | 3 | 66.7% | +136,337원 | +409,011원 |
+
+오늘 유일 손실(14:00, -183,441원)이 준 인상과 달리, 2주 풀링에서 P4 강등분은
+평균적으로 **양수** 손익이었다 — 오늘 사례는 표본 내 이상치로 보이며, "P4 강등 신호는
+사이징을 축소해야 한다"는 제안2의 전제와 실측이 반대 방향이다. n=14·3 모두 통계적
+유의성을 논하기엔 작은 표본이라 "P4 강등이 유리하다"는 결론도 내리지 않는다 — 다만
+현재 근거로는 사이징 축소를 실행할 근거가 없다는 것은 명확하다.
+
+### [결정] 사이징/진입 로직은 변경하지 않고, 대신 향후 판단에 필요한 관측성 필드만 신설
+
+**구현 완료**:
+1. `main.py:6233-6238`(신설), `:6245`(set) — `_p4_cvd_ofi_demoted` 플래그 신설.
+2. `main.py:7239-7263`의 `_gate_checks` dict(→`entry_gate_json`으로 저장)에
+   `p4_cvd_ofi_demoted`, `cb3_restricted_at_entry`(`self.circuit_breaker.
+   is_grade_restricted()`) 2개 필드 추가 — `hurst_soft_block_applied/noop`
+   (396차 후속)과 동일한 관측 전용 패턴, 진입 판정 로직에는 전혀 관여하지 않음.
+   이전까지는 두 상태 모두 SIGNAL.log 텍스트로만 남아 사후분석 시 로그 파싱이
+   필요했던 공백(위 재검증 2가 실제로 이 파싱을 거쳐야 했음)을 메움 — 내일부터는
+   `entry_gate_json`을 SQL/JSON 파싱만으로 직접 조회 가능.
+3. `scripts/hurst_softblock_noop_analysis.py`, `scripts/p4_cvd_ofi_demotion_analysis.py`
+   신설(읽기 전용 분석 스크립트, 위 표는 이 스크립트들의 실제 실행 결과).
+4. 제안4(TP/Stop 비대칭)는 339~340차가 이미 구현한 개선(TP1 atr_profit 모드)의
+   우선순위 재확인일 뿐 신규 구현 대상이 아니라 코드 변경 없음. 제안5(등급 A vs C
+   손익 역전, p=0.34로 비유의)는 정책 반영 없이 `NEXT_TODO.md`에 26주 WFA 재검증
+   대상으로만 등록.
+
+**Why**: CLAUDE.md 알파 통합 원칙과 313차 원칙(소표본/비유의 결과로 정책 변경 금지)이
+요구하는 바가 정확히 이 상황이다 — "그럴듯한 제안"이라도 실측이 뒷받침하지 않거나
+표본이 너무 작으면 실거래 로직을 바꾸지 않고, 대신 판단에 필요한 데이터가 더 잘
+쌓이도록 관측성만 개선한다. CB②·CB③-P4·FP-CRITICAL 한시예외와 동일한 "실측 없이
+임의로 켜지 말 것" 원칙의 연장.
+
+**How to apply**: 다음에 이런 "딥다이브가 제안한 개선안을 구현하라"는 요청을 받으면,
+제안이 근거로 든 관찰이 (a) 이미 구현된 기능의 재발견인지 grep으로 먼저 확인하고,
+(b) 표본을 확대했을 때도 방향이 유지되는지 재검증한 뒤에만 실제 동작을 바꿀 것 —
+제안을 문자 그대로 구현부터 하면 이번처럼 중복 구현이나 실측과 반대되는 변경을
+만들 위험이 있다.
+
+**구현**: `main.py:6233-6250`, `main.py:7239-7266`, `scripts/hurst_softblock_noop_analysis.py`,
+`scripts/p4_cvd_ofi_demotion_analysis.py`.
+**검증**: `py37_32` `py_compile main.py` 통과. 두 분석 스크립트 실행 완료(위 표가 실제
+출력). **라이브 미검증** — 신설된 `entry_gate_json` 2개 필드가 내일 장중 정상 기록되는지,
+`ensemble_decisions.entry_gate_json`에 `p4_cvd_ofi_demoted`/`cb3_restricted_at_entry`
+키가 실제로 채워지는지 확인 필요.
+**관련**: `NEXT_TODO.md` 동일 날짜(399차) 항목.
+
+---
+
 ## 2026-07-28 (398차 — conf(ema) 딥다이브: 확신도 고착 근본원인 규명 + 개선안 1~5 구현)
 
 ### [딥다이브] 콜드스타트 구간 confidence 고착 — WeightCollapse 근본원인 규명

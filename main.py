@@ -6262,6 +6262,12 @@ class TradingSystem:
 
             _final_grade = _cr["grade"]
 
+            # [399차, 관측성] P4 강등 발동 여부를 entry_gate_json에 남겨 사후분석이
+            # SIGNAL.log 텍스트 스크래핑 없이 DB만으로 P4 강등분의 승률/손익을 집계할
+            # 수 있게 한다(hurst_soft_block_applied/noop과 동일한 관측 패턴, 397차
+            # 딥다이브에서 이 값이 DB에 없어 로그 파싱이 필요했던 공백을 메움).
+            _p4_cvd_ofi_demoted = False
+
             # [268차-P4] 단기 그룹 CVD+OFI 동시 역방향 → 자동진입 등급 상한 C.
             # 두 CORE 지표가 모두 진입 방향과 반대이면 모멘텀이 완전 역방향으로
             # A/B 등급 자동진입은 EV 음수 가능성이 높음 → C 이하로 강제 하향.
@@ -6275,6 +6281,7 @@ class TradingSystem:
                     f"[P4] CVD+OFI 동시 역방향 → 등급 {_final_grade}→C 강등 (자동진입 A/B 차단)"
                 )
                 _final_grade = "C"
+                _p4_cvd_ofi_demoted = True
                 _cr = dict(_cr)
                 _cr["grade"]      = "C"
                 _cr["size_mult"]  = runtime_settings.ENTRY_GRADE["C"]["size_mult"]
@@ -7302,6 +7309,11 @@ class TradingSystem:
             "intraday_ok":      not _intraday_block,
             "kill_switch_ok":   not self.system_health.kill_switch_active,
             "ecb_observe_ok":   _ecb_observation_ok,
+            # [399차, 관측성] 398차 정기점검 딥다이브에서 P4 강등·CB③-P4 RESTRICTED
+            # 여부가 DB에 남지 않아 SIGNAL.log 텍스트 파싱이 필요했던 공백을 메움 —
+            # 둘 다 읽기전용 관측 필드이며 진입 판정 로직에는 영향을 주지 않는다.
+            "p4_cvd_ofi_demoted":     _p4_cvd_ofi_demoted,
+            "cb3_restricted_at_entry": bool(self.circuit_breaker.is_grade_restricted()),
         }
         # [v9-dev Track L3, 2026-07-05] 섀도우 점수화 결과 — 안전게이트(위 18종)와 별개로
         # entry_gate_json에 함께 저장. qty_ok/mode_filter_ok 강등 여부와 무관하게 항상 기록.
