@@ -2,6 +2,96 @@
 
 ---
 
+## 2026-07-28 (398차 — conf(ema) 딥다이브: 확신도 고착 근본원인 규명 + 개선안 1~5 구현)
+
+### [딥다이브] 콜드스타트 구간 confidence 고착 — WeightCollapse 근본원인 규명
+
+**배경**: 정기점검 중 대시보드 "conf(ema)" 표시 흐름을 점검하다, 2026-07-28 09:12~
+09:44(30분+) 동안 raw confidence가 0.285/0.300/0.305 3단만 오가며 사실상 정지된 것을
+발견. 개별 호라이즌 정체 감시(353차 `CONF_STUCK_BOOST`)는 이 구간 동안 단 한 번도
+발동 로그가 없어 — 기존 안전망의 사각지대로 판단하고 코드 추적으로 근본원인을 확정.
+
+**근본원인 (3개의 독립적으로 타당한 설계가 좁은 콜드스타트 창에서 조합됨)**:
+1. `HORIZON_TIME_POLICY`(config/settings.py)가 09:05~09:30 콜드스타트 구간의 활성
+   호라이즌을 3m(→+5m) 단독으로 좁힘(352차 선행 수정 이후 상태).
+2. `HZ_DEPLOY_POLICY`(Q3, 2026-06-25 결정) "bar_only" 정책이 3m/5m을 봉 완성 그 1분
+   에만 살려두고 나머지는 `horizon_proba`에서 완전 삭제(`main.py: del horizon_proba[h]`).
+   Q3 당시 "기회손실 미미"라는 판단은 6개 호라이즌이 전부 가동 중인 09:30 이후를
+   전제한 것이라 좁은 콜드스타트 창과의 상호작용은 검토 대상이 아니었음.
+3. 유일 활성 호라이즌이 사라지는 분마다 `ensemble_decision.py`의 안전망
+   (`_score_sum<=1e-9 → flat_score=1.0`)이 "인위적 100% FLAT 확신"을 만들고, P1
+   설계(FLAT도 UP/DN과 동일 Platt 보정 경로 통과)에 따라 그 인위적 raw=1.0이
+   보정기를 거쳐 시스템의 실제(랜덤급) 적중률 기저선(0.28~0.31)으로 압착됨 — 이
+   붕괴가 반복될 때마다 거의 동일한 입력이 같은 보정기를 통과해 "고착"처럼 보임.
+   DB `detail` JSON 대조로 "3m이 사라지는 분에만 값이 얼어붙는다"는 정확한 대응관계
+   확인.
+
+**부수 발견**: 보정 후 `direction`에 해당하는 스코어 하나만 갱신하고 나머지 두 값은
+보정 이전(raw) 값이 그대로 남아 `up_score+down_score+flat_score` 합이 1이 되지
+않는 버그(모든 방향에 공통, FLAT만의 문제가 아니었음). `confidence_raw`/
+`confidence_smoothed`도 계산은 되지만 DB(`ensemble_decisions`)에 저장되지 않아
+이번 근본원인 재구성이 코드 추적으로만 가능했음(계측 공백).
+
+**구현(개선안 1~5, 전부 py37_32 py_compile 통과 + 격리 검증 스크립트 통과)**:
+1. **WeightCollapse 계측** — `ensemble_decision.py` 안전망 발동 시
+   `[WeightCollapse]` 경고 로그(활성기대/미배포 호라이즌 명시) + 연속 카운터
+   신설. 동작 무변화, 순수 계측.
+2. **계측 공백 해소** — `confidence_raw`/`confidence_smoothed`/`weight_collapsed`
+   3개 컬럼을 `ensemble_decisions` 테이블에 실제 저장(`utils/db_utils.py` 마이그레이션
+   + `learning/prediction_buffer.py:save_step9_batch` INSERT 확장, 45개 컬럼/
+   플레이스홀더/튜플 길이 일치 확인).
+3. **삼중값 정합성 버그 수정** — Platt 보정 후 `_fill_remainder()` 헬퍼로 나머지
+   두 스코어를 remainder 비례 재분배, `up+down+flat=1` 항상 보장(UP/DOWN/FLAT
+   전 방향 공통 수정). 위 부수발견 버그의 해법.
+4. **`WEIGHT_COLLAPSE_HONEST_MODE`(기본 False, shadow)** — 활성화 시 붕괴
+   케이스를 Platt 보정 없이 정직하게 confidence=0.0으로 반환. 격리 검증으로
+   `auto_entry`/`regime_ok` 등 진입가능여부는 무변화, confidence 값만 0.0으로
+   바뀜을 확인.
+5. **`COLDSTART_BAR_ONLY_RELAX_ENABLED`(기본 False, shadow)** — 활성화 시
+   콜드스타트 3개 창(09:05~09:30) 한정으로 `_is_deployable()`의 bar_only age
+   상한을 0→1 완화. Q3가 막으려던 "학습/추론 분포 불일치"를 하루 최대 25분
+   재도입하는 트레이드오프가 있어 개선안4보다 우선순위 낮음 — 사용자에게도
+   4번을 우선 검토하도록 권고.
+
+**설계 원칙**: 4·5번 모두 CLAUDE.md §6/§9 사전등록 원칙(초기값 비활성, 실거래
+동작 변경은 사용자 승인 후)을 그대로 적용 — 기본값에서는 다섯 개 항목 전부
+합쳐도 실거래 동작이 100% 동일하다(1·2·3번은 계측/정합성 수정이라 애초에
+진입 로직 무영향, 4·5번은 플래그가 꺼져 있어 분기 자체를 타지 않음).
+
+**검증**: `py37_32`(실제 런타임) `py_compile` — `main.py`·`model/ensemble_decision.py`·
+`config/settings.py`·`learning/prediction_buffer.py`·`utils/db_utils.py` 전부 통과.
+격리 검증 스크립트(`py310_64`, `data/db/predictions.db` 직접 사본에서만 수행 —
+실거래 DB 비접촉)로: ① 마이그레이션이 3개 컬럼을 정상 추가하는지, ②
+`save_step9_batch` 라운드트립이 세 값을 정확히 저장·조회하는지, ③
+`EnsembleDecision.compute()`에 콜드스타트 붕괴를 합성 재현해 WeightCollapse
+감지·삼중값 합=1·개선안4 on/off 동작·정상(비붕괴) 케이스 무회귀를 확인, ④
+`_is_deployable()` 개선안5 로직을 함수 단위 재현해 기본 비활성 시 회귀 없음·
+활성 시 콜드스타트 창 한정 완화를 확인 — 전부 통과. **라이브 미검증** — 다음
+장중 09:05~09:30에 `[WeightCollapse]` 로그 발생 빈도를 먼저 관찰할 것(개선안
+4·5는 그 실측 없이는 켜지 않음 — 기본 False 그대로 유지 권고).
+
+**주간회의 안건 등록**: 개선안4·5(`WEIGHT_COLLAPSE_HONEST_MODE`/`COLDSTART_
+BAR_ONLY_RELAX_ENABLED`) True 전환 여부를 `docs/정기점검/금요일점검/
+주간회의.txt` §4-2 안건 ④(NEXT_TODO 항목 리뷰)·⑤(다음 주 변경 승인)로
+`NEXT_TODO.md` 398차 항목에 태그해 등록 — CB②·CB③-P4·FP-CRITICAL 예외 3건과
+동일하게, 이번 주 WeightCollapse 실측치 없이는 다음 금요일 회의에서도
+보류 판정이 기본값.
+
+**Why**: 297차 교훈("퇴역 시 여러 소비경로에 구멍")의 변종 — 이번엔 하나의
+변경이 아니라 "각각 타당한 두 정책(콜드스타트 시간창 + Q3 배포정책)이 좁은
+교집합에서 상호작용해 사각지대를 만든" 패턴. 개별 정책 리뷰만으로는 못
+잡고, 실제 라이브 confidence 시계열을 DB에서 직접 대조해야 발견 가능했음.
+
+**How to apply**: 시간대 기반 정책과 배포/캐시 기반 정책을 별도로 설계할 때,
+"각 정책이 단독으로 타당한가"뿐 아니라 "두 정책의 활성 구간이 겹칠 때 실질
+투표권자가 0이 되는 교집합이 있는가"를 항상 함께 확인할 것.
+
+**관련**: 352차(콜드스타트 시간정책 1차 수정), Q3(2026-06-25, bar_only 배포정책
+원 결정), 353차(개별 호라이즌 정체 감시 — 이번 사각지대의 감시범위 밖이었음),
+297차(퇴역 시 소비경로 누락 — 동일 계보의 다른 변종).
+
+---
+
 ## 2026-07-27 (396차 — 297차 지목 "퇴역 시 소비경로 누락" 패턴 전수조사 + CB③-P4 우회경로 수정)
 
 ### [버그수정] main.py:7603 C등급 실험적 자동진입이 플래그 게이트 없이 is_grade_restricted() 직접 소비 — 297차 패턴 재발 확정 수정

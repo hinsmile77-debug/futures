@@ -323,6 +323,15 @@ def _migrate_ensemble_decisions_db():
                 # 경우 — 실측 존재)를 conf미달로 오분류한다. 진입 퍼널(daily_exporter)
                 # 정확도를 위해 원본 플래그를 직접 저장.
                 "coherence_blocked": "INTEGER",
+                # [conf(ema) 딥다이브, 2026-07-28, 개선안2] 지금까지 ensemble_decision.py가
+                # 계산은 하지만 DB에 저장되지 않아 코드 추적으로만 재구성 가능했던 두 값을
+                # 실제 저장 — 근본원인 재확인 시 쿼리 한 번으로 확인 가능하게 한다.
+                "confidence_raw": "REAL",       # 캘리브레이션 이전 원본 confidence
+                "confidence_smoothed": "REAL",  # P4 display용 EMA(span=20)
+                # [conf(ema) 딥다이브, 개선안1] 실질 가중합 0 붕괴(WeightCollapse) 발동 여부.
+                # 콜드스타트 좁은 활성창에서 유일 활성 호라이즌이 그 분에 배포되지 않아
+                # 안전망(flat_score=1.0)이 발동한 케이스 표시 — 발생 빈도 계량용.
+                "weight_collapsed": "INTEGER",
             }
             for name, dtype in additions.items():
                 if name not in cols:

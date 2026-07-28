@@ -66,6 +66,8 @@ from config.settings import (
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     LIMIT_ENTRY_FIRST_ENABLED, LIMIT_ENTRY_TIMEOUT_SEC,
     HZ_DEPLOY_POLICY,
+    COLDSTART_BAR_ONLY_RELAX_ENABLED, COLDSTART_BAR_ONLY_RELAX_WINDOWS,
+    COLDSTART_BAR_ONLY_RELAX_MAX_AGE,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
     ATR_STOP_MULT, ATR_HORIZON_TP1_MULT, ATR_TP1_MULT,
     HURST_REGIME_ATR_MULT, HURST_REGIME_ATR_MULT_ENABLED,
@@ -233,9 +235,13 @@ class _DailyCloseUiSignal(QObject):
 _daily_close_ui_sig = _DailyCloseUiSignal()  # 모듈 로드(메인 스레드)에서 생성 — thread affinity = main
 
 
-def _is_deployable(hz, bar_aggregator):
-    # type: (str, object) -> bool
+def _is_deployable(hz, bar_aggregator, hhmm=None):
+    # type: (str, object, Optional[int]) -> bool
     """호라이즌별 배포 정책에 따라 이번 분에 predict_proba를 앙상블에 반영할지 결정.
+
+    Args:
+        hhmm: 현재 시각(HHMM 정수, 예 905). [개선안5] 콜드스타트 완화 판정에만 쓰인다 —
+            None이면(호출부 전달 누락 등) 완화 없이 기존 동작 그대로.
 
     Returns:
         True  → predict_proba() 결과를 앙상블에 포함
@@ -251,6 +257,19 @@ def _is_deployable(hz, bar_aggregator):
         # 앙상블 가중합에서 제외하되 30m 필터로 전달 — ensemble_decision 내부에서 차단
         return True
     # "bar_only" or "bar_plus1"
+    # [conf(ema) 딥다이브, 개선안5 — 기본 비활성] 콜드스타트 좁은 활성창(HORIZON_TIME_
+    # POLICY 09:05~09:30)에서는 bar_only(3m/5m)가 사실상 유일한 투표권자인데, age=0
+    # 엄격 적용 시 3분 중 2분(3m)·5분 중 4분(5m) 통째로 사라져 앙상블 실질 가중합이
+    # 0으로 붕괴한다(WeightCollapse, model/ensemble_decision.py 참조). §1 계측으로
+    # 실제 발생 빈도를 먼저 재고 사용자 승인 후에만 활성화할 것 — 기본 False라
+    # COLDSTART_BAR_ONLY_RELAX_ENABLED가 꺼져 있는 한 아래 분기는 절대 타지 않는다.
+    if (
+        mode == "bar_only"
+        and COLDSTART_BAR_ONLY_RELAX_ENABLED
+        and hhmm is not None
+        and any(start <= hhmm < end for start, end in COLDSTART_BAR_ONLY_RELAX_WINDOWS)
+    ):
+        max_age = max(max_age, COLDSTART_BAR_ONLY_RELAX_MAX_AGE)
     return bar_aggregator.is_bar_fresh(hz, max_age=max_age)
 
 
@@ -5243,8 +5262,11 @@ class TradingSystem:
             # Q3: 배포 정책 미충족 호라이즌 앙상블에서 제거
             # bar_only (3m/5m): age>0 제거, bar_plus1 (10m/15m): age>1 제거
             # filter_only (30m): 항상 통과 — 앙상블 내부에서 직접 진입 차단
+            # [개선안5] hhmm 전달 — COLDSTART_BAR_ONLY_RELAX_ENABLED(기본 False)일 때만
+            # 콜드스타트 구간 bar_only 완화 판정에 쓰인다.
+            _dp_hhmm = _ts_dt_obj.hour * 100 + _ts_dt_obj.minute if hasattr(_ts_dt_obj, "hour") else None
             for _h_dp in list(horizon_proba.keys()):
-                if not _is_deployable(_h_dp, self.bar_aggregator):
+                if not _is_deployable(_h_dp, self.bar_aggregator, hhmm=_dp_hhmm):
                     _dp_age = self.bar_aggregator.get_bar_age(_h_dp)
                     del horizon_proba[_h_dp]
                     logger.debug(

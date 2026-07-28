@@ -204,6 +204,11 @@ class PredictionBuffer:
             ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("q90"),
             str((decision.get("meta_gate") or {}).get("scoring_horizon", "") or ""),
             int(bool(decision.get("coherence_blocked", False))),
+            # [conf(ema) 딥다이브, 2026-07-28, 개선안2] 계산은 되지만 그동안 저장 안
+            # 되던 두 값 + 개선안1 WeightCollapse 플래그를 실제로 저장.
+            (decision.get("confidence_raw")),
+            (decision.get("confidence_smoothed")),
+            int(bool(decision.get("weight_collapsed", False))),
         )
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
@@ -230,8 +235,9 @@ class PredictionBuffer:
                        checklist_reason, meta_entry_quality_prob,
                        quantile_expected_pt, quantile_uncertainty_pt,
                        quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
-                       coherence_blocked
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       coherence_blocked,
+                       confidence_raw, confidence_smoothed, weight_collapsed
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 
