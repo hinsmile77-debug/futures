@@ -1144,6 +1144,244 @@ def resolve_and_eval_open_gap() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [21] 방향별 순EV 감시 (402차 후속5) — [13] grade_ev_inversion의 미러
+# ──────────────────────────────────────────────────────────────
+
+def eval_direction_ev_watch() -> dict:
+    """LONG/SHORT 방향별 실현 순EV를 캠페인 시작일 이후 누적 판정한다.
+
+    [13] grade_ev_inversion과 동일 구조(축만 등급→방향). 실제 체결의 net_pnl_krw를
+    그대로 집계하므로 counterfactual 시뮬레이션 불필요.
+
+    **[13]과 필터가 다르다(의도적)**: [13]은 `grade IN ('A','B','C')`이라
+    구버전 entry_source=NULL·OPERATOR_MANUAL 행이 포함되지만, 이 채널은
+    `entry_source='SYSTEM_AUTO'` 한정이다 — 방향 편향은 시스템 판단의 문제이므로
+    수동·레거시 진입을 섞으면 안 된다. 두 채널의 표본 수가 다른 것은 결함이 아니다
+    (config/settings.py:VALIDATION_CAMPAIGN['direction_ev_watch'] 주석 참조).
+
+    또한 trades는 부분청산을 같은 entry_ts로 여러 행에 나눠 기록하므로 그대로 세면
+    TP1/TP2 부분청산이 각각 '승리'로 집계돼 승률이 부풀려진다(402차가 실제로 이
+    함정에 걸렸다). 여기서는 **진입 1건 단위**로 묶어 집계한다.
+
+    PASS = 두 방향 모두 평균 순EV ≥ 0, 또는 두 방향 모두 < 0(방향이 아니라 전반 문제).
+    FAIL = 한 방향만 평균 순EV < 0 이고 양쪽 표본 충분 → 그 방향 min_conf 상향/사이징
+    축소를 **섀도로** 먼저 검증할지 주간회의에서 결정(§9 — 즉시 적용 아님).
+    """
+    cr = VALIDATION_CAMPAIGN.get("direction_ev_watch", {})
+    src = cr.get("entry_source", "SYSTEM_AUTO")
+    min_n = int(cr.get("min_samples_per_direction", 20))
+    out = {"verdict": "INSUFFICIENT", "entry_source_filter": src}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                """SELECT entry_ts, direction,
+                          COALESCE(net_pnl_krw, pnl_krw) AS pnl
+                     FROM trades
+                    WHERE exit_ts IS NOT NULL AND exit_ts >= ?
+                      AND COALESCE(entry_source,'') = ?
+                      AND direction IN ('LONG','SHORT')""",
+                (_campaign_start(), src),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    # 진입 1건 단위로 병합 — 부분청산 행 중복 제거(합산이 그 진입의 실현 손익)
+    from collections import defaultdict
+    merged = defaultdict(lambda: {"dir": None, "pnl": 0.0})
+    for r in rows:
+        k = (r["entry_ts"], r["direction"])
+        merged[k]["dir"] = r["direction"]
+        merged[k]["pnl"] += float(r["pnl"] or 0.0)
+
+    by_dir = defaultdict(list)
+    for v in merged.values():
+        by_dir[v["dir"]].append(v["pnl"])
+
+    stats = {}
+    for d, pnls in by_dir.items():
+        arr = np.array(pnls, dtype=float)
+        stats[d] = {
+            "n": len(pnls),
+            "avg_pnl_krw": round(float(arr.mean()), 0),
+            "total_pnl_krw": round(float(arr.sum()), 0),
+            "win_rate": round(float((arr > 0).mean()), 4),
+            "min_pnl_krw": round(float(arr.min()), 0),
+            "stdev_pnl_krw": round(float(arr.std(ddof=1)) if len(pnls) > 1 else 0.0, 0),
+        }
+    out["by_direction"] = stats
+    out["n_entries_merged"] = len(merged)
+    out["n_rows_raw"] = len(rows)
+
+    lo = stats.get("LONG")
+    sh = stats.get("SHORT")
+    if not lo or not sh or lo["n"] < min_n or sh["n"] < min_n:
+        out["reason"] = ("방향별 표본 부족 (LONG %d / SHORT %d, 각 %d 필요) — 판정 보류"
+                         % (lo["n"] if lo else 0, sh["n"] if sh else 0, min_n))
+        return out
+
+    neg = [d for d in ("LONG", "SHORT") if stats[d]["avg_pnl_krw"] < 0]
+    if len(neg) == 1:
+        d = neg[0]
+        out["verdict"] = "FAIL"
+        out["recommendation"] = (
+            "%s 방향만 평균 순EV 음수(%s원, n=%d, 최대손실 %s원, 표준편차 %s원) — "
+            "해당 방향 min_conf 상향/사이징 축소를 섀도로 먼저 검증할지 주간회의에서 "
+            "결정(즉시 적용 아님). 최대손실·표준편차로 단일건 지배 여부를 먼저 확인할 것."
+            % (d, format(stats[d]["avg_pnl_krw"], ",.0f"), stats[d]["n"],
+               format(stats[d]["min_pnl_krw"], ",.0f"),
+               format(stats[d]["stdev_pnl_krw"], ",.0f"))
+        )
+    else:
+        out["verdict"] = "PASS"
+        if len(neg) == 2:
+            out["reason"] = "두 방향 모두 평균 순EV 음수 — 방향 편향이 아니라 전반 성능 문제"
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# [22] MFE 캡처율 관찰 (402차 후속5) — verdict 항상 OBSERVE
+# ──────────────────────────────────────────────────────────────
+
+def eval_mfe_capture_watch() -> dict:
+    """캡처율 = 실현 pt / 진입 후 최대 유리폭(MFE) pt 를 누적 관찰한다.
+
+    fast_reversal_watch·exit_fill_slippage_watch와 동일한 관찰 계열 — verdict는 항상
+    OBSERVE 고정이며 이 수치로 정책을 바꾸지 않는다. 이 지표로 내릴 결정
+    ("청산을 더 늦춰라")은 이미 [12] tp1_trail_shadow가 판정 중이므로, 이 채널은
+    그 판정을 해석할 맥락("캡처율이 이렇게 낮은데도 트레일링이 안 낫다")만 제공한다.
+
+    두 가지를 함께 낸다:
+      capture_in_hold  실현 / 보유구간(진입~청산) MFE — "고점에서 나왔나"
+      capture_to_close 실현 / 진입~15:10 MFE        — "더 들고 갈 수 있었나"
+
+    집계 단위는 진입 1건(부분청산 행 병합, 수량가중 평균 실현 pt).
+    """
+    cr = VALIDATION_CAMPAIGN.get("mfe_capture_watch", {})
+    src = cr.get("entry_source", "SYSTEM_AUTO")
+    min_note = int(cr.get("min_samples_for_note", 20))
+    out = {"verdict": "OBSERVE", "entry_source_filter": src}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                """SELECT entry_ts, exit_ts, direction, entry_price,
+                          pnl_pts, quantity
+                     FROM trades
+                    WHERE exit_ts IS NOT NULL AND exit_ts >= ?
+                      AND COALESCE(entry_source,'') = ?
+                      AND direction IN ('LONG','SHORT')
+                    ORDER BY entry_ts""",
+                (_campaign_start(), src),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+    if not rows:
+        out["reason"] = "표본 없음"
+        return out
+
+    from collections import defaultdict
+    merged = {}
+    for r in rows:
+        k = (r["entry_ts"], r["direction"], round(float(r["entry_price"] or 0.0), 2))
+        m = merged.setdefault(k, {"pts_w": 0.0, "qty": 0, "exit_ts": r["exit_ts"]})
+        q = int(r["quantity"] or 1)
+        m["pts_w"] += float(r["pnl_pts"] or 0.0) * q
+        m["qty"] += q
+        if (r["exit_ts"] or "") > (m["exit_ts"] or ""):
+            m["exit_ts"] = r["exit_ts"]
+
+    earliest = min(k[0] for k in merged)[:10] + " 00:00:00"
+    _, high_map, low_map = _load_candle_maps(earliest)
+
+    def mfe(entry_ts, until_ts, ep, is_long):
+        t = datetime.datetime.strptime(entry_ts[:19], _TS_FMT).replace(second=0)
+        end = datetime.datetime.strptime(until_ts[:19], _TS_FMT).replace(second=0)
+        best = 0.0
+        seen = False
+        while t <= end:
+            t += datetime.timedelta(minutes=1)
+            key = t.strftime(_TS_FMT)
+            hi = high_map.get(key)
+            lo = low_map.get(key)
+            if hi is None or lo is None:
+                continue
+            seen = True
+            fav = (hi - ep) if is_long else (ep - lo)
+            if fav > best:
+                best = fav
+        return best if seen else None
+
+    samples = []
+    for (ets, d, ep), m in sorted(merged.items()):
+        if not m["qty"]:
+            continue
+        realized = m["pts_w"] / m["qty"]
+        is_long = d == "LONG"
+        cutoff = ets[:10] + " 15:10:00"
+        mfe_hold = mfe(ets, m["exit_ts"], ep, is_long)
+        mfe_close = mfe(ets, cutoff, ep, is_long)
+        samples.append({"ts": ets, "dir": d, "realized_pt": round(realized, 3),
+                        "mfe_hold_pt": round(mfe_hold, 3) if mfe_hold is not None else None,
+                        "mfe_close_pt": round(mfe_close, 3) if mfe_close is not None else None})
+
+    out["n_entries"] = len(merged)
+    out["n_rows_raw"] = len(rows)
+
+    # [402차 후속5] 캡처율은 **비율의 평균이 아니라 풀링 비율**로 낸다.
+    # 손실 거래는 분자가 음수인데 분모(MFE)가 0에 가까워 개별 비율이 폭발한다
+    # (초안이 실제로 -672.9%를 출력했다). ΣRealized/ΣMFE는 그 특이점이 없다.
+    # 아울러 pt 단위 "미실현 잔여(MFE-실현)"를 함께 낸다 — 비율보다 해석이 직관적이고
+    # 합산이 되며, 애초에 F 제안이 물었던 "얼마나 흘렸나"에 직접 답한다.
+    def pooled(key):
+        pair = [(s["realized_pt"], s[key]) for s in samples
+                if s[key] is not None and s[key] > 0]
+        if not pair:
+            return None, None, 0
+        num = sum(p[0] for p in pair)
+        den = sum(p[1] for p in pair)
+        left = [p[1] - p[0] for p in pair]
+        return (round(num / den, 4) if den else None,
+                round(float(np.mean(left)), 3), len(pair))
+
+    ch, lh, nh = pooled("mfe_hold_pt")
+    cc, lc, nc = pooled("mfe_close_pt")
+    out["capture_in_hold_pooled"] = ch
+    out["avg_left_in_hold_pt"] = lh
+    out["n_hold"] = nh
+    out["capture_to_close_pooled"] = cc
+    out["avg_left_to_close_pt"] = lc
+    out["n_close"] = nc
+
+    # 승리 거래만의 캡처율 — "이겼을 때 고점 대비 얼마나 챙겼나".
+    # 손실 거래의 캡처율은 의미가 없으므로(음수/양수 비율) 분리해서 본다.
+    win = [s for s in samples if s["realized_pt"] > 0 and s["mfe_close_pt"]]
+    if win:
+        out["capture_to_close_pooled_winners"] = round(
+            sum(s["realized_pt"] for s in win) / sum(s["mfe_close_pt"] for s in win), 4)
+        out["n_winners"] = len(win)
+
+    _mh = [s["mfe_hold_pt"] for s in samples if s["mfe_hold_pt"] is not None]
+    _mc = [s["mfe_close_pt"] for s in samples if s["mfe_close_pt"] is not None]
+    if _mh:
+        out["avg_mfe_hold_pt"] = round(float(np.mean(_mh)), 3)
+    if _mc:
+        out["avg_mfe_close_pt"] = round(float(np.mean(_mc)), 3)
+    out["avg_realized_pt"] = (round(float(np.mean([s["realized_pt"] for s in samples])), 3)
+                              if samples else None)
+    # 상위 5건은 비율이 아니라 **잔여 pt**로 정렬 — 가장 많이 흘린 순
+    out["most_left5"] = sorted(
+        [s for s in samples if s["mfe_close_pt"] is not None],
+        key=lambda s: -(s["mfe_close_pt"] - s["realized_pt"]))[:5]
+    if nc < min_note:
+        out["reason"] = ("표본 %d < %d — 참고 수치만 (관찰 채널이라 판정은 없음)"
+                         % (nc, min_note))
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [20] BAR_ONLY_RELAX 수용/롤백 감시 (402차 후속)
 # ──────────────────────────────────────────────────────────────
 
@@ -2634,6 +2872,8 @@ def build_report(days: int) -> tuple:
     efs = eval_exit_fill_slippage_watch(days)
     reg = resolve_and_eval_regime_exhaustion()
     wcw = eval_weight_collapse_watch(days)
+    dev = eval_direction_ev_watch()
+    mcw = eval_mfe_capture_watch()
 
     metrics = {
         "generated_at": now_str,
@@ -2649,6 +2889,7 @@ def build_report(days: int) -> tuple:
         "chase_foreign_combo_watch": cfc, "exit_fill_slippage_watch": efs,
         "regime_exhaustion_watch": reg, "toxicity_block_shadow": txb,
         "weight_collapse_watch": wcw,
+        "direction_ev_watch": dev, "mfe_capture_watch": mcw,
     }
 
     L = []
@@ -2758,6 +2999,18 @@ def build_report(days: int) -> tuple:
         float(VALIDATION_CAMPAIGN.get("weight_collapse_watch", {}).get("target_ratio", 0.20)) * 100,
         float(VALIDATION_CAMPAIGN.get("weight_collapse_watch", {}).get("target_tolerance", 0.07)) * 100,
         wcw.get("n_days_pre", 0), wcw.get("n_days_post", 0)))
+    _dv = dev.get("by_direction", {})
+    L.append("| [21] 방향별 순EV (SYSTEM_AUTO) | %s | %s |" % (
+        _fmt_verdict(dev["verdict"]),
+        " / ".join("%s: n=%d 평균=%s원 최대손실=%s원" % (
+            d, _dv[d]["n"], format(_dv[d]["avg_pnl_krw"], ",.0f"),
+            format(_dv[d]["min_pnl_krw"], ",.0f"))
+            for d in ("LONG", "SHORT") if d in _dv) or "표본 없음"))
+    L.append("| [22] MFE 캡처율 관찰 | %s | 풀링캡처 보유내=%s 종가까지=%s / 평균잔여 %s pt (진입 %s건) |" % (
+        _fmt_verdict(mcw["verdict"]),
+        ("%.1f%%" % (mcw["capture_in_hold_pooled"] * 100)) if mcw.get("capture_in_hold_pooled") is not None else "—",
+        ("%.1f%%" % (mcw["capture_to_close_pooled"] * 100)) if mcw.get("capture_to_close_pooled") is not None else "—",
+        mcw.get("avg_left_to_close_pt", "—"), mcw.get("n_entries", 0)))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -3219,6 +3472,87 @@ def build_report(days: int) -> tuple:
     L.append("> min_days(기본 3거래일) 미만에서는 판정을 보류한다(313차 원칙).")
     L.append("> 롤백은 `config/settings.py:BAR_ONLY_RELAX_ENABLED = False` 1줄로 즉시 가역.")
     L.append("> 일 단위 확인은 `scripts/weight_collapse_monitor.py`.")
+    L.append("")
+
+    # [21] 방향별 순EV 상세
+    L.append("## [21] 방향별 순EV 감시 (402차 후속5, [13]의 방향 축 미러)")
+    L.append("")
+    if dev.get("error"):
+        L.append("> ⚠ %s" % dev["error"])
+    else:
+        L.append("- 필터: `entry_source='%s'` — 진입 %s건(원본 %s행, 부분청산 병합)"
+                  % (dev.get("entry_source_filter", "?"),
+                     dev.get("n_entries_merged", 0), dev.get("n_rows_raw", 0)))
+        L.append("")
+        L.append("| 방향 | n | 평균 순EV(원) | 누적(원) | 승률 | 최대손실(원) | 표준편차(원) |")
+        L.append("|---|---|---|---|---|---|---|")
+        for d in ("LONG", "SHORT"):
+            v = _dv.get(d)
+            if not v:
+                continue
+            L.append("| %s | %d | %s | %s | %.1f%% | %s | %s |" % (
+                d, v["n"], format(v["avg_pnl_krw"], ",.0f"),
+                format(v["total_pnl_krw"], ",.0f"), v["win_rate"] * 100,
+                format(v["min_pnl_krw"], ",.0f"), format(v["stdev_pnl_krw"], ",.0f")))
+        if dev.get("recommendation"):
+            L.append("")
+            L.append("- **권고**: %s" % dev["recommendation"])
+        if dev.get("reason"):
+            L.append("")
+            L.append("- %s" % dev["reason"])
+    L.append("")
+    L.append("> **[13]과 필터가 다르다(의도적)**. [13]은 `grade IN ('A','B','C')`이라")
+    L.append("> 구버전 `entry_source=NULL`·`OPERATOR_MANUAL` 행이 포함되지만, 이 채널은")
+    L.append("> `SYSTEM_AUTO` 한정이다 — 방향 편향은 시스템 판단의 문제이므로 수동·레거시")
+    L.append("> 진입을 섞으면 안 된다. 두 채널의 표본 수가 다른 것은 결함이 아니다.")
+    L.append("> 또한 부분청산 행 중복을 진입 1건 단위로 병합한다 — 그대로 세면 TP1/TP2")
+    L.append("> 부분청산이 각각 '승리'로 집계돼 승률이 부풀려진다(402차 실제 오류 사례).")
+    L.append("")
+
+    # [22] MFE 캡처율 상세
+    L.append("## [22] MFE 캡처율 관찰 (402차 후속5, 관찰 전용 — 판정 없음)")
+    L.append("")
+    if mcw.get("error"):
+        L.append("> ⚠ %s" % mcw["error"])
+    else:
+        L.append("- 필터: `entry_source='%s'` — 진입 %s건(원본 %s행 병합)"
+                  % (mcw.get("entry_source_filter", "?"),
+                     mcw.get("n_entries", 0), mcw.get("n_rows_raw", 0)))
+        L.append("- 평균 실현 %s pt / 보유구간 MFE %s pt / 15:10까지 MFE %s pt" % (
+            mcw.get("avg_realized_pt", "—"), mcw.get("avg_mfe_hold_pt", "—"),
+            mcw.get("avg_mfe_close_pt", "—")))
+        L.append("- **풀링 캡처율**(ΣRealized/ΣMFE) 보유구간 %s (n=%s) / 15:10까지 %s (n=%s)" % (
+            ("%.1f%%" % (mcw["capture_in_hold_pooled"] * 100)) if mcw.get("capture_in_hold_pooled") is not None else "—",
+            mcw.get("n_hold", 0),
+            ("%.1f%%" % (mcw["capture_to_close_pooled"] * 100)) if mcw.get("capture_to_close_pooled") is not None else "—",
+            mcw.get("n_close", 0)))
+        L.append("- **승리 거래만** 15:10까지 풀링 캡처율 %s (n=%s)" % (
+            ("%.1f%%" % (mcw["capture_to_close_pooled_winners"] * 100))
+            if mcw.get("capture_to_close_pooled_winners") is not None else "—",
+            mcw.get("n_winners", 0)))
+        L.append("- **평균 미실현 잔여**(MFE−실현) 보유구간 %s pt / 15:10까지 %s pt" % (
+            mcw.get("avg_left_in_hold_pt", "—"), mcw.get("avg_left_to_close_pt", "—")))
+        if mcw.get("most_left5"):
+            L.append("")
+            L.append("가장 많이 흘린 5건 (15:10 MFE − 실현):")
+            L.append("")
+            L.append("| 진입 | 방향 | 실현pt | 보유MFE | 15:10MFE | 잔여pt |")
+            L.append("|---|---|---|---|---|---|")
+            for s in mcw["most_left5"]:
+                L.append("| %s | %s | %s | %s | %s | %.2f |" % (
+                    s["ts"], s["dir"], s["realized_pt"],
+                    s["mfe_hold_pt"] if s["mfe_hold_pt"] is not None else "—",
+                    s["mfe_close_pt"] if s["mfe_close_pt"] is not None else "—",
+                    s["mfe_close_pt"] - s["realized_pt"]))
+        if mcw.get("reason"):
+            L.append("")
+            L.append("- %s" % mcw["reason"])
+    L.append("")
+    L.append("> 이 채널은 **판정하지 않는다**(verdict 항상 OBSERVE). 여기서 나올 결정")
+    L.append("> (\"청산을 더 늦춰라\")은 이미 [12] tp1_trail_shadow가 판정 중이므로, 이")
+    L.append("> 수치는 그 판정을 해석할 맥락(\"캡처율이 이렇게 낮은데도 트레일링이 안")
+    L.append("> 낫다\"가 성립하는지)만 제공한다. 단일일 극단 사례로 결론 내지 말 것")
+    L.append("> (2026-07-29 캡처율 7.7%는 -15.6% 폭락일 1건이다 — 313차 원칙).")
     L.append("")
     L.append("---")
     L.append("")
