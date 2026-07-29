@@ -36,7 +36,12 @@
   `utils/db_utils.py`에 컬럼을 추가했으나 그 검증은 MW0602에서 이뤄졌고, MW0601의
   `data/db/trades.db`에는 **아직 컬럼이 없다**. 다음 기동 시 `_migrate_trades_db()`가
   자동 추가하는지 `PRAGMA table_info(trades)`로 확인할 것.
-- [ ] **[402차] MW0601 `joint_gate_shadow` 미해결 52건 backlog 해소 후 재판정** —
+- [DONE 2026-07-29] **MW0601 `joint_gate_shadow` 미해결 52건 backlog 해소 후 재판정** —
+  `generate_validation_campaign_report.py --days 28`(py310_64) 실행으로 10개 섀도
+  테이블 backlog 일괄 해소. **[7] JointGateBlock = PASS(존치)** 확정
+  (n=87, 누적 hyp=-6.2166pt, 가상승률 69.0%). 코드 변경 없음.
+  상세·강건성 단서는 `DECISION_LOG.md` 2026-07-29(MW0601 402차 후속) 항목.
+  ※ 아래는 해소 전(등록 시점) 기록 — 판정이 실행 시점에 좌우되던 상태의 근거로 보존:
   MW0601은 resolved 35건/미해결 52건(07-27:6, 07-28:37, 07-29:9) 상태이고, 이
   35건만으로 캠페인 판정식을 돌리면 누적 hyp=+8.42pt·가상승률 74.3%>기준선 49.3%로
   **FAIL(완화 권고)**가 나온다. 미해결 52건을 동일 규칙으로 계산하면 -14.64pt라
@@ -44,6 +49,22 @@
   backlog 처리 여부에 좌우되는 상태다. `scripts/generate_validation_campaign_report.py`를
   MW0601에서 먼저 실행해 backlog를 해소한 뒤 판정을 읽을 것. (401차의 n=48/PASS는
   MW0602 기준이므로 MW0601 판정을 대체하지 않는다.)
+- [ ] **[402차 후속] JointGateBlock PASS는 knife-edge — 다음 판정 시 leave-one-out 필수** —
+  10일 중 3일(07-15·07-27·07-28)을 각각 하나만 빼도 PASS가 FAIL로 뒤집힌다.
+  지금 조치는 하지 않되(313차 원칙) 표본을 계속 쌓고, 다음 캠페인 판정 시
+  이진 PASS/FAIL만 읽지 말고 leave-one-day-out을 함께 확인할 것.
+- [ ] **[402차 후속] `main.py` JointGateBlock 주석 정정 검토** — "두 게이트가 각각
+  독립적으로 위험하다고 판단한 상황"이라는 설명이 사실과 다름이 n=87 전수로 확정됐다
+  (`tox_size`가 87/87 전량 0.7 상수, `meta_size` 최댓값 0.714=0.50/0.7 → `joint_mult<0.50`
+  은 `meta_size<0.714`와 수학적 완전 동치). 통계가 아니라 산술적 사실이므로 표본 축적
+  불필요 — 주석·설계문서를 실제 동작에 맞게 고칠지 결정할 것. 임계값 자체는 변경 대상 아님.
+- [ ] **[402차 후속] meta_size 구간별 재검토는 표본 축적 후** — high(meta≥0.55) n=14
+  hyp=+5.49pt가 "완화하면 이득"으로 보이지만 t=+0.422로 비유의(두 구간 Welch t=+0.557).
+  n≥30 확보 후 재확인할 것. 그 전에는 임계(0.50) 변경 금지.
+- [ ] **[402차 후속] 다른 캠페인 항목 판정 갱신분 확인** — 이번 backlog 해소로
+  [6] Hurst 게이트는 FAIL(완화 권고) 유지(n=226, 누적 hyp=+28.23pt, 승률 69.0%),
+  [18] RegimeExhaustionGate가 처음 집계됨(n=11, 누적 hyp=-21.60pt, 아직 INSUFFICIENT),
+  [9] OPEN_VOLATILE n=18(-15.83pt, 판정 보류). Hurst 완화 권고는 여전히 주간회의 안건.
 - [ ] **[402차] 차단사유 문구 신설 시 분류표 동반 갱신을 체크리스트화 검토** —
   이번에 드러난 미매핑 4종(347차 2건·401차 1건·사이저0 1건)은 전부 "문구는
   추가했는데 분류표는 안 고침" 패턴이다. `_entry_block_reason` 문구를 추가·변경할 때
