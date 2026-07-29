@@ -639,8 +639,9 @@ class EnsembleDecision:
         # 그게 그대로 Platt 보정을 거치면 "확신도 고착"처럼 보이는 게 실측 확인됨
         # (2026-07-28 conf(ema) 딥다이브). 발생 빈도를 계량하기 위해 계측만 추가하고
         # (아래 로그 + weight_collapsed 플래그 → DB 저장), 실제 동작 변경은
-        # WEIGHT_COLLAPSE_HONEST_MODE(개선안4)/COLDSTART_BAR_ONLY_RELAX_ENABLED(개선안5)
-        # 플래그로 별도 게이트한다(기본 비활성 — 이 블록 자체는 동작 무변화).
+        # WEIGHT_COLLAPSE_HONEST_MODE(개선안4)/BAR_ONLY_RELAX_ENABLED(개선안5, 401차부터
+        # 상시 적용으로 확장·기본 활성화) 플래그로 별도 게이트한다(이 블록 자체는
+        # 동작 무변화 — 계측 전용).
         _weight_collapsed = _score_sum <= 1e-9
         if _weight_collapsed:
             flat_score = 1.0

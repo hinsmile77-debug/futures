@@ -66,8 +66,7 @@ from config.settings import (
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     LIMIT_ENTRY_FIRST_ENABLED, LIMIT_ENTRY_TIMEOUT_SEC,
     HZ_DEPLOY_POLICY,
-    COLDSTART_BAR_ONLY_RELAX_ENABLED, COLDSTART_BAR_ONLY_RELAX_WINDOWS,
-    COLDSTART_BAR_ONLY_RELAX_MAX_AGE,
+    BAR_ONLY_RELAX_ENABLED, BAR_ONLY_RELAX_MAX_AGE,
     HURST_RANGE_THRESHOLD, ATR_MIN_ENTRY, ATR_MAX_ENTRY, ATR_OPEN_GAP_MULT,
     ATR_STOP_MULT, ATR_HORIZON_TP1_MULT, ATR_TP1_MULT,
     HURST_REGIME_ATR_MULT, HURST_REGIME_ATR_MULT_ENABLED,
@@ -233,13 +232,9 @@ class _DailyCloseUiSignal(QObject):
 _daily_close_ui_sig = _DailyCloseUiSignal()  # 모듈 로드(메인 스레드)에서 생성 — thread affinity = main
 
 
-def _is_deployable(hz, bar_aggregator, hhmm=None):
-    # type: (str, object, Optional[int]) -> bool
+def _is_deployable(hz, bar_aggregator):
+    # type: (str, object) -> bool
     """호라이즌별 배포 정책에 따라 이번 분에 predict_proba를 앙상블에 반영할지 결정.
-
-    Args:
-        hhmm: 현재 시각(HHMM 정수, 예 905). [개선안5] 콜드스타트 완화 판정에만 쓰인다 —
-            None이면(호출부 전달 누락 등) 완화 없이 기존 동작 그대로.
 
     Returns:
         True  → predict_proba() 결과를 앙상블에 포함
@@ -255,19 +250,13 @@ def _is_deployable(hz, bar_aggregator, hhmm=None):
         # 앙상블 가중합에서 제외하되 30m 필터로 전달 — ensemble_decision 내부에서 차단
         return True
     # "bar_only" or "bar_plus1"
-    # [conf(ema) 딥다이브, 개선안5 — 기본 비활성] 콜드스타트 좁은 활성창(HORIZON_TIME_
-    # POLICY 09:05~09:30)에서는 bar_only(3m/5m)가 사실상 유일한 투표권자인데, age=0
-    # 엄격 적용 시 3분 중 2분(3m)·5분 중 4분(5m) 통째로 사라져 앙상블 실질 가중합이
-    # 0으로 붕괴한다(WeightCollapse, model/ensemble_decision.py 참조). §1 계측으로
-    # 실제 발생 빈도를 먼저 재고 사용자 승인 후에만 활성화할 것 — 기본 False라
-    # COLDSTART_BAR_ONLY_RELAX_ENABLED가 꺼져 있는 한 아래 분기는 절대 타지 않는다.
-    if (
-        mode == "bar_only"
-        and COLDSTART_BAR_ONLY_RELAX_ENABLED
-        and hhmm is not None
-        and any(start <= hhmm < end for start, end in COLDSTART_BAR_ONLY_RELAX_WINDOWS)
-    ):
-        max_age = max(max_age, COLDSTART_BAR_ONLY_RELAX_MAX_AGE)
+    # [conf(ema) 딥다이브, 개선안5 — 401차 상시 적용으로 확장] bar_only(3m/5m)의
+    # age=0 엄격 적용은 3분 중 2분(3m)·5분 중 4분(5m) 통째로 사라져 앙상블 실질
+    # 가중합이 0으로 붕괴한다(WeightCollapse, model/ensemble_decision.py 참조).
+    # 398차는 콜드스타트 30분 구간에서만 관찰했으나, 401차 계측 첫 라이브 데이터에서
+    # 장중 내내 43~47%로 발생함을 확인해 시간창 제한을 제거하고 상시 적용한다.
+    if mode == "bar_only" and BAR_ONLY_RELAX_ENABLED:
+        max_age = max(max_age, BAR_ONLY_RELAX_MAX_AGE)
     return bar_aggregator.is_bar_fresh(hz, max_age=max_age)
 
 
@@ -2331,9 +2320,9 @@ class TradingSystem:
                 formula_version, exit_reason, grade, regime,
                 meta_action, hurst_bucket, hour_bucket,
                 was_restart_after, had_partial_fill, entry_horizon, entry_source,
-                kelly_advised_skip)
+                kelly_advised_skip, raw_grade)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -2366,6 +2355,7 @@ class TradingSystem:
                 result.get("entry_horizon") or "",
                 getattr(self, "_entry_source", "SYSTEM_AUTO"),
                 getattr(self, "_entry_kelly_advised_skip", 0),
+                getattr(self, "_entry_raw_grade", ""),
             ),
         )
         try:
@@ -5228,13 +5218,11 @@ class TradingSystem:
                     }
 
             # Q3: 배포 정책 미충족 호라이즌 앙상블에서 제거
-            # bar_only (3m/5m): age>0 제거, bar_plus1 (10m/15m): age>1 제거
+            # bar_only (3m/5m): age>0 제거(BAR_ONLY_RELAX_ENABLED 시 age>1로 완화,
+            # 401차부터 상시 적용), bar_plus1 (10m/15m): age>1 제거
             # filter_only (30m): 항상 통과 — 앙상블 내부에서 직접 진입 차단
-            # [개선안5] hhmm 전달 — COLDSTART_BAR_ONLY_RELAX_ENABLED(기본 False)일 때만
-            # 콜드스타트 구간 bar_only 완화 판정에 쓰인다.
-            _dp_hhmm = _ts_dt_obj.hour * 100 + _ts_dt_obj.minute if hasattr(_ts_dt_obj, "hour") else None
             for _h_dp in list(horizon_proba.keys()):
-                if not _is_deployable(_h_dp, self.bar_aggregator, hhmm=_dp_hhmm):
+                if not _is_deployable(_h_dp, self.bar_aggregator):
                     _dp_age = self.bar_aggregator.get_bar_age(_h_dp)
                     del horizon_proba[_h_dp]
                     logger.debug(
@@ -7393,6 +7381,14 @@ class TradingSystem:
                 # 케이스다(경고 대상 아님). 336차가 "상세 미수집"을 보강하며 넣었던
                 # 이 자리의 경고가 진입 성공 분마다 오탐으로 찍히던 문제 수정.
                 _entry_block_reason = ""
+        elif direction != 0:
+            # [401차] 포지션 보유중이라 이 분에는 신규진입 평가 자체가 생략된 케이스를
+            # 명시. 이전엔 direction==0(무신호)과 구분 없이 entry_block_reason=""로
+            # 남아, 사후 분석에서 "게이트가 수량을 0으로 깎았다"로 오독하기 쉬웠다
+            # (401차 정기점검에서 실제로 이 오독이 발생 — entry_qty=0 3건을 사이징
+            # 스택 감쇠로 오분류했다가 TRADE.log 대조로 정정). 진입 판정 로직 무영향,
+            # 순수 관측 필드.
+            _entry_block_reason = "[정보] 포지션 보유중 — 신규진입 평가 생략"
 
         _entry_executed_this_cycle = False
 
@@ -7522,6 +7518,9 @@ class TradingSystem:
                     # P2-b: 셋업 컨텍스트 저장 (trade 기록 시 태그로 사용)
                     _hurst_now = float(features.get("hurst", 0.5) or 0.5)
                     self._entry_meta_action  = str(_meta_action or "")
+                    # [401차, 372차 제안 반영] 체크리스트 등급(_final_grade)과 별개로
+                    # 원시 확신도 등급(grade, EnsembleDecision.compute() 산출)을 보존
+                    self._entry_raw_grade    = str(grade or "")
                     self._entry_hurst_bucket = (
                         "trend"       if _hurst_now >= 0.55
                         else "neutral" if _hurst_now >= 0.45
@@ -7626,10 +7625,18 @@ class TradingSystem:
                                 _entry_block_reason = "[차단] 증거금 부족 — 자동진입 차단"
                             else:
                                 # [269차] 진입 직전 체크리스트 결과 TRADE 로그 — 사후 분석용
+                                # [401차, 372차 제안 반영] 체크리스트 등급(_final_grade)과
+                                # 원시 확신도 등급(grade)이 다를 때만 "(원시X)"로 병기 —
+                                # "체크리스트 A / 확신도 C" 괴리를 진입 순간 로그에서부터
+                                # 바로 보이게 한다. 같으면 기존 표기와 동일(잡음 방지).
                                 _chk_d = (_cr or {}).get("checks", {})
+                                _raw_grade_tag = (
+                                    "(원시%s)" % grade if grade and grade != _final_grade else ""
+                                )
                                 log_manager.trade(
-                                    "[진입체크] %s→%s %d계약 %s급 | %s | conf=%s" % (
+                                    "[진입체크] %s→%s %d계약 %s급%s | %s | conf=%s" % (
                                         raw_dir_str, final_dir_str, _qty_auto, _final_grade,
+                                        _raw_grade_tag,
                                         " ".join(
                                             "%s%s" % (k.split("_", 1)[1][:4], "✅" if v else "❌")
                                             for k, v in _chk_d.items() if not k.startswith("0_")
