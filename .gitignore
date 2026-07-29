@@ -16,9 +16,9 @@ build/
 .eggs/
 *.egg
 
-# 데이터 (용량)
-
+# 데이터 (용량) — PC별 런타임 산출물, 전체 미커밋
 data/
+
 data/raw/
 data/processed/
 # 자동생성 대용량 DB (실행 시 자동 생성, 100MB 초과)
