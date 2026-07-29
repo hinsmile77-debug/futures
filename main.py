@@ -6134,6 +6134,14 @@ class TradingSystem:
         _kelly_advised_skip = False  # [311차 후속] 켈리가 목표자본 대비 1계약도 부적절하다고 판단했는지
         _vb_stop_widen_mult = 1.0  # [349차] 급변장 사전 가드가 "reduce" 발동 시에만 >1.0
         _cr          = None
+        # [402차] _final_grade가 "X"로 확정된 출처 — entry_block_reason 분기에서만 쓰는
+        # 순수 관측 변수(진입 판정 무관). 체크리스트 자체가 X를 준 경우엔 빈 문자열로
+        # 남고, 체크리스트 통과 후 게이트가 강등한 경우에만 그 게이트 이름이 들어간다.
+        # 401차까지는 `_qty_display <= 0` 분기가 `_final_grade == "X"` 분기보다 앞서
+        # 있어 X 사유가 전부 "사이저 산출 수량 0"으로 뭉개졌다(2026-07-29 실측 50건).
+        # 400차 UnboundLocalError와 같은 사고를 막기 위해 반드시 여기(조건분기 밖)에서
+        # 초기화한다 — 아래 강등 지점들은 전부 조건부라 그 안에서만 대입하면 안 된다.
+        _grade_x_source = ""
         _p4_cvd_ofi_demoted = False  # [400차 긴급수정] _gate_checks(7266)가 매분 무조건
         # 참조하는데, 기존 초기화(6237)는 "direction!=0 and FLAT" 블록 안에서만 실행돼
         # direction==0 이거나 포지션 보유 중이면 UnboundLocalError로 파이프라인 전체가
@@ -6149,6 +6157,7 @@ class TradingSystem:
                     "[StartupWarmup] 재가동 초기화 대기 중 — grade=X 강제 (약 %d분 남음)", _warmup_remain
                 )
                 _final_grade = "X"
+                _grade_x_source = _grade_x_source or "StartupWarmup 재가동 초기화 대기(약 %d분 남음)" % _warmup_remain
                 decision["checklist_reason"] = "Warmup대기"
                 _cr = {
                     "grade": "X", "pass_count": 0, "checks": {},
@@ -6381,6 +6390,7 @@ class TradingSystem:
                         f" (acc30m={self.circuit_breaker.status_dict()['accuracy_30m']:.1%})"
                     )
                     _final_grade = "X"
+                    _grade_x_source = _grade_x_source or "CB③-P4 RESTRICTED C등급 차단"
 
                 # [285차-P5] 앙상블 CoherenceGate 차단 + 체크리스트 C등급 동시 발생 → 차단.
                 # 근거: 5/8~7/3 백테스트 — 앙상블 X(Coherence↓)와 체크리스트가 동시에
@@ -6394,6 +6404,7 @@ class TradingSystem:
                         f"(conf={confidence:.1%})"
                     )
                     _final_grade = "X"
+                    _grade_x_source = _grade_x_source or "CoherenceGate+체크리스트C 동시발생"
 
                 kelly_result = self.kelly.compute_fraction()
                 # [5순위] CORE Health 차단 시 진입 스킵
@@ -6403,6 +6414,7 @@ class TradingSystem:
                         f"[CoreHealth] 건강점수={_core_health.score} < 70 — 진입 차단"
                     )
                     _final_grade = "X"
+                    _grade_x_source = _grade_x_source or "CoreHealth 건강점수 %s < 70" % _core_health.score
                 else:
                     pass
                 size_result  = self.sizer.compute(
@@ -6569,6 +6581,9 @@ class TradingSystem:
                 if confidence < _dg_mc:
                     _final_grade = "X"
                     _qty_display = 0
+                    _grade_x_source = _grade_x_source or (
+                        "HealthPolicy Degraded conf=%.1f%% < %.1f%%" % (confidence * 100, _dg_mc * 100)
+                    )
                     log_manager.signal(
                         f"[HealthPolicy] Degraded Mode 차단: conf={confidence:.1%} < {_dg_mc:.1%} (zone_mc 기준)"
                     )
@@ -6588,6 +6603,9 @@ class TradingSystem:
             if _exec_action == "block":
                 _final_grade = "X"
                 _qty_display = 0
+                _grade_x_source = _grade_x_source or "ExecutionGovernor action=block (score=%.2f)" % float(
+                    _exec_gate.get("tradability_score", 0.0) or 0.0
+                )
             elif _qty_display > 0 and _exec_action == "reduce":
                 _qty_display = max(1, int(round(_qty_display * _exec_size)))
             if _exec_action != "pass":
@@ -6598,6 +6616,9 @@ class TradingSystem:
             if _meta_action == "skip":
                 _final_grade = "X"
                 _qty_display = 0
+                _grade_x_source = _grade_x_source or "MetaGate action=skip (meta_conf=%.1f%%)" % (
+                    float(_meta_gate.get("meta_confidence", 0.0) or 0.0) * 100
+                )
             elif _qty_display > 0:
                 _qty_display = max(1, int(round(_qty_display * _meta_size)))
             if _meta_action:
@@ -6614,6 +6635,10 @@ class TradingSystem:
             if _tox_action == "block":
                 _final_grade = "X"
                 _qty_display = 0
+                _grade_x_source = _grade_x_source or "ToxicityGate action=block (score=%.2f ma=%.2f)" % (
+                    float(_tox_gate.get("score", 0.0) or 0.0),
+                    float(_tox_gate.get("score_ma", 0.0) or 0.0),
+                )
             elif _qty_display > 0 and _tox_action == "reduce":
                 _qty_display = max(1, int(round(_qty_display * _tox_size)))
             if _tox_action != "pass":
@@ -6639,6 +6664,10 @@ class TradingSystem:
                     if runtime_settings.VOLATILITY_BURST_ACTION == "skip":
                         _final_grade = "X"
                         _qty_display = 0
+                        _grade_x_source = _grade_x_source or (
+                            "VolatilityBurstGuard skip (tick=%d atr_ratio=%.2f)"
+                            % (_vb_tick, _vb_atr_ratio)
+                        )
                         log_manager.signal(
                             f"[VolatilityBurst] 신규 진입 차단 — tick={_vb_tick}"
                             f"(임계{runtime_settings.VOLATILITY_BURST_TICK_RATE_MIN}) "
@@ -6906,6 +6935,7 @@ class TradingSystem:
         )
         if not _pg_allowed and _final_grade not in ("X",):
             _final_grade = "X"
+            _grade_x_source = _grade_x_source or "ProfitGuard 진입 차단 (%s)" % _pg_reason
             log_manager.signal(f"[ProfitGuard] 진입 차단: {_pg_reason}")
             _broker_str = "n/a" if _broker_daily_pnl_now is None else f"{_broker_daily_pnl_now:+,.0f}"
             log_manager.signal(
@@ -6934,6 +6964,7 @@ class TradingSystem:
         if direction > 0 and not _intraday_long_ok:
             _intraday_block = True
             _final_grade = "X"
+            _grade_x_source = _grade_x_source or "IntradayRegime %s 신규 롱 금지" % self.current_intraday_regime
             log_manager.signal(
                 f"[IntradayRegime] {self.current_intraday_regime} — 신규 롱 금지 "
                 f"(day={self.intraday_regime._last_factors.get('day_ret', 0)*100:+.2f}%)",
@@ -6951,6 +6982,7 @@ class TradingSystem:
             else:
                 _intraday_block = True
                 _final_grade = "X"
+                _grade_x_source = _grade_x_source or "IntradayRegime %s 신규 숏 금지" % self.current_intraday_regime
                 log_manager.signal(
                     f"[IntradayRegime] {self.current_intraday_regime} — 신규 숏 금지 "
                     f"(grade={_final_grade} day={self.intraday_regime._last_factors.get('day_ret', 0)*100:+.2f}%)",
@@ -7402,8 +7434,6 @@ class TradingSystem:
                     f"[차단] 모드필터 — {_final_grade}급 신호 vs {entry_mode} 모드"
                     f"({allowed_grades.get(entry_mode, ['A','B','C'])} 만 허용)"
                 )
-            elif _qty_display <= 0:
-                _entry_block_reason = "[차단] 사이저 산출 수량 0 — 리스크 한도/신뢰도 기준 미달"
             elif _bar_volume_zero:
                 _entry_block_reason = "[차단] 거래량 0봉 — Guard-C3 진입 차단"
             elif self.system_health.kill_switch_active:
@@ -7411,15 +7441,54 @@ class TradingSystem:
                     f"[차단] SHS-EKS 당일 관망 활성 — {getattr(self.system_health, '_eks_reason', '')}"
                 )
             elif _cr is None:
-                _entry_block_reason = ""
+                # [402차] 체크리스트 미산출 구간 — 등급X 분해가 불가하므로, 이 경우에
+                # 한해 사이저 수량0 정보만이라도 남긴다. 402차가 아래 `_qty_display<=0`
+                # 분기를 등급X 뒤로 옮기면서 이 분기가 먼저 걸리게 됐는데, 그대로 두면
+                # 기존에 "사이저 산출 수량 0"으로 찍히던 케이스가 빈 문자열로 사라져
+                # 정보가 후퇴한다.
+                _entry_block_reason = (
+                    "[차단] 사이저 산출 수량 0 — 체크리스트 미산출 구간"
+                    if _qty_display <= 0 else ""
+                )
             elif _final_grade == "X":
+                # [402차] 401차까지 이 분기는 사실상 도달 불가능한 죽은 코드였다 —
+                # `_qty_display <= 0`이 바로 위에 있었고, X로 강등되는 모든 경로
+                # (HealthPolicy Degraded / ExecutionGovernor block / MetaGate skip /
+                # ToxicityGate block / VolatilityBurstGuard skip)가 예외 없이
+                # _qty_display도 0으로 만들기 때문이다. 그래서 X 사유가 전부 "사이저
+                # 산출 수량 0 — 리스크 한도/신뢰도 기준 미달"로 뭉개졌다(2026-07-29
+                # 실측 50건 전량: 체크리스트 자체가 X 45건 + 체크리스트 통과 후
+                # ToxicityGate block 강등 5건). 347차가 "X는 아래 등급X 분기로
+                # 넘긴다"고 적어둔 의도를 복원하되, 체크리스트가 X를 준 것인지 통과 후
+                # 게이트가 강등한 것인지를 _grade_x_source로 구분한다 — 전자에 후자를
+                # 섞으면 "미통과 항목: (없음)"이라는 새로운 오해가 생긴다.
                 _failed = [k for k, v in _cr["checks"].items() if not v]
                 if "8_time" in _failed and time_zone == "OTHER":
                     _entry_block_reason = "[차단] 점심 휴식 구간 (11:50~13:00 OTHER) — 체크리스트 8_time 실패"
                 elif "8_time" in _failed:
                     _entry_block_reason = f"[차단] 진입 금지 시간대 ({time_zone}) — 체크리스트 8_time 실패"
-                else:
+                elif str(_cr.get("grade", "")) != "X" and _grade_x_source:
+                    # 체크리스트는 A/B/C를 줬는데 이후 게이트가 X로 강등한 케이스
+                    _entry_block_reason = (
+                        f"[차단] 게이트 강등 X — {_grade_x_source} "
+                        f"(체크리스트 등급={_cr.get('grade', '?')}, 통과 {_cr.get('pass_count', '?')}개)"
+                    )
+                elif _failed:
                     _entry_block_reason = f"[차단] 등급X — 미통과 항목: {', '.join(_failed)}"
+                else:
+                    # 체크리스트 checks가 비어있는 구간(Warmup 등) — 출처가 있으면 병기
+                    _entry_block_reason = (
+                        f"[차단] 등급X — {_grade_x_source}" if _grade_x_source
+                        else "[차단] 등급X — 체크리스트 항목 미수집"
+                    )
+            elif _qty_display <= 0:
+                # [402차] 등급X 분기 뒤로 이동. 여기까지 왔다는 것은 "_final_grade는
+                # A/B/C인데 수량만 0"이라는 뜻으로, 실제로는 사이저(PositionSizer)가
+                # 직접 0을 반환한 경우로 좁혀진다 — 원래 이 문구가 뜻하던 바 그대로다.
+                _entry_block_reason = (
+                    f"[차단] 사이저 산출 수량 0 — 리스크 한도/신뢰도 기준 미달 "
+                    f"(등급={_final_grade} conf={confidence:.1%} kelly_skip={int(_kelly_advised_skip)})"
+                )
             elif not self._auto_entry_enabled:
                 # [347차] 자동진입 전역 비활성 — grade는 A/B/C로 정상 산출됐지만
                 # 사용자가 자동매매 토글을 꺼둔 상태. _final_entry_ok(fo)는 이 토글과
