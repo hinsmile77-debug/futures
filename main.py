@@ -7266,7 +7266,19 @@ class TradingSystem:
                 and _atr_ok
                 and _hurst_ok
                 and _open_gap_ok
-                and mode_filter_passed
+                # [402차 후속3] 여기서 mode_filter_passed(7003)를 그대로 쓰면 이 채널은
+                # 구조적으로 절대 기록되지 않는다 — ToxicityGate block이 위(6635)에서
+                # _final_grade를 "X"로 강등하고, mode_filter_passed는 그 강등된 등급으로
+                # 계산되는 파생값이라 allowed_grades(A/B/C)에 걸려 항상 False가 된다.
+                # 즉 "기록하려는 그 사건이 기록 조건을 파괴"하는 자기모순이었고, 실제로
+                # 385차 신설 이후 누적 0건이었다(2026-07-29 실측: block 129건 중 등급
+                # 조건을 통과한 7건조차 전부 mode_filter_ok=False로 탈락).
+                # _tox_grade_before/_tox_qty_before가 이미 "tox 적용 직전" 스냅샷이므로
+                # 모드필터도 같은 시점 등급으로 판정한다(새 상태 변수 추가 불필요).
+                # hurst_gate_shadow·open_gap_shadow는 해당 게이트가 등급을 강등하지
+                # 않아(별도 _hurst_ok/_open_gap_ok 플래그) 같은 문제가 없다 — 이 결함은
+                # "등급을 X로 강등하는 게이트에 붙은 섀도"에만 발생한다.
+                and _tox_grade_before in allowed_grades.get(entry_mode, ["A", "B", "C"])
                 and _tox_qty_before > 0
                 and not _bar_volume_zero
                 and not _intraday_block
