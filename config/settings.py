@@ -187,15 +187,18 @@ HZ_DEPLOY_POLICY = {
 # 입력으로 쓰는 다른 소비처의 값만 바뀌므로, True 전환 전 그 영향까지 확인할 것.
 WEIGHT_COLLAPSE_HONEST_MODE: bool = False
 
-# 개선안5 — 콜드스타트 구간(위 윈도우) 한정으로 bar_only(3m/5m)의 age 완화(0→1).
+# 개선안5 — bar_only(3m/5m)의 age 완화(0→1), 상시 적용.
 # Q3(2026-06-25, DECISION_LOG 참조)가 "완성봉 직후만 배포 → 기회손실 미미"라 판단한
-# 전제는 6개 호라이즌이 전부 가동 중인 09:30 이후를 상정한 것이라 이 좁은 창에서는
-# 깨진다. 다만 완화하면 Q3가 애초에 막으려던 "학습/추론 분포 불일치"를 하루 최대
-# 25분 재도입하는 트레이드오프가 있어 개선안4(정직한 무신호 표시)보다 우선순위가
-# 낮다 — 더 안전한 4번을 먼저 검토·적용 권고.
-COLDSTART_BAR_ONLY_RELAX_ENABLED: bool = False
-COLDSTART_BAR_ONLY_RELAX_WINDOWS = [(905, 910), (910, 915), (915, 930)]  # HORIZON_TIME_POLICY와 동일 구간
-COLDSTART_BAR_ONLY_RELAX_MAX_AGE = 1  # bar_only age 상한 0 → 1
+# 전제(6개 호라이즌 전부 가동 중인 09:30 이후)는 애초부터 원래 성립하지 않았다 —
+# 398차는 콜드스타트 30분 구간에서만 WeightCollapse를 관찰했으나, 401차 정기점검이
+# weight_collapsed 계측 첫 라이브 데이터(2026-07-29)로 대조한 결과 장중 내내
+# 43~47%(collapse의 97%가 1m+30m 조합만 활성 — 둘 다 ENSEMBLE_WEIGHTS=0인 은퇴
+# 호라이즌) 발생함을 확인했다. 콜드스타트 시간창 한정이던 스코프를 상시 적용으로
+# 확장(사용자 승인, 2026-07-29) — Q3가 막으려던 "학습/추론 분포 불일치"를 상시
+# 재도입하는 트레이드오프가 있으나, 붕괴 규모가 예상보다 훨씬 커 완화 쪽이 우선.
+# 근거: dev_memory/DECISION_LOG.md 2026-07-29(401차) 항목.
+BAR_ONLY_RELAX_ENABLED: bool = True
+BAR_ONLY_RELAX_MAX_AGE = 1  # bar_only(3m/5m) age 상한 0 → 1, 상시 적용
 
 # [P2, 288차] SGD 전용 피처셋 — GBM SHAP 기준(horizon_feature_names)과 분리.
 # 2026-06-01~ 데이터, 호라이즌별 미래수익률 대비 Spearman IC 상위 5개(quality_*/메타

@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-07-29 (401차 — 정기점검 딥다이브 우선순위 구현 4건)
+
+> 상세: `DECISION_LOG.md` 2026-07-29(401차) 항목. 선행: 400차, 398차, 364차, 372차, 327차.
+
+- [DONE 2026-07-29] **WeightCollapse 완화(개선안5) 콜드스타트 한정 → 상시 적용
+  확장** — `config/settings.py:BAR_ONLY_RELAX_ENABLED=True`(구
+  `COLDSTART_BAR_ONLY_RELAX_ENABLED`), `main.py:_is_deployable()` 시간창 조건
+  제거. `py37_32` `py_compile` 통과.
+- [ ] **[401차 최우선] 다음 라이브 세션에서 WeightCollapse 비율 실측 재확인** —
+  완화 전 43~47%(요일 평균)였던 `weight_collapsed` 비율이 이론치(~14%)에
+  근접하는지, A/B/C 등급 신호 빈도가 회복되는지 `ensemble_decisions.
+  weight_collapsed`/`grade` 시간대별 집계로 확인. 예상보다 여전히 높으면
+  10m/15m(bar_plus1)까지 완화 확대 여부 재검토.
+- [ ] **[401차] BAR_ONLY_RELAX_ENABLED 활성화 이후 학습/추론 분포 불일치
+  부작용 관찰** — Q3가 원래 막으려던 문제를 상시 재도입한 트레이드오프이므로,
+  3m/5m 호라이즌 방향적중률이 완화 전후로 유의하게 나빠지지 않는지 1~2주
+  누적 후 확인(313차 원칙 — 단일일 판단 금지).
+- [DONE 2026-07-29] **entry_block_reason 포지션보유중 관측성 보정** —
+  `direction!=0`이고 `position.status!=FLAT`일 때
+  `"[정보] 포지션 보유중 — 신규진입 평가 생략"` 명시. 진입 로직 무변화.
+- [DONE 2026-07-29] **raw_grade(원시확신도등급) 컬럼·TRADE.log 병기 신설** —
+  `utils/db_utils.py` 마이그레이션 + `main.py` INSERT 확장 + `[진입체크]` 로그
+  `(원시X)` 태그. `py310_64`로 `init_all_dbs()` 실행해 프로덕션
+  `data/db/trades.db`에 컬럼 추가 확인(기존 행 NULL, 신규 진입부터 채워짐).
+- [ ] **[401차] 다음 실거래 체결에서 raw_grade 정상 기록 확인** — `trades`
+  테이블 신규 행의 `raw_grade`가 채워지는지, `TRADE.log` `[진입체크]` 라인에
+  `grade != checklist_grade`인 경우 `(원시X)` 태그가 실제로 찍히는지 확인.
+- [DONE 2026-07-29] **JointGateBlock(toxicity) 임계값 재검정 — 캠페인 이미
+  충분(n=48), 조사 완료** — `scripts/generate_validation_campaign_report.py`
+  실행 결과 누적 hyp_pnl_pts=-37.35pt(PASS, 존치), 별도 채널 신설 불필요.
+  이번 딥다이브에서 "1건 적중"으로 제기했던 재검토 필요성은 4주 누적
+  데이터로 기각됨.
+
+---
+
 ## 2026-07-29 (400차 — 399차 회귀: `_p4_cvd_ofi_demoted` UnboundLocalError 긴급 수정)
 
 > 상세: `DECISION_LOG.md` 2026-07-29(400차) 항목. 선행: 399차(원인 커밋 a603dc6).

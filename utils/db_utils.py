@@ -803,6 +803,13 @@ def _migrate_trades_db():
                 # VALIDATION_CAMPAIGN["kelly_skip"] 주간 리포트 전용 계측
                 # (signal_decay와 동일한 shadow-first 패턴). NULL=구버전 레코드.
                 "kelly_advised_skip": "INTEGER DEFAULT 0",
+                # [401차, 372차 제안 반영] 체크리스트 등급(grade, pass_count 기준)과
+                # 별개로 진입 시점 원시 확신도 등급(EnsembleDecision.compute()의
+                # confidence 임계 기준)을 함께 저장 — "체크리스트 A / 확신도 C" 같은
+                # 괴리(0721·372차 지목, 366차 grade_ev_inversion 캠페인의 A등급
+                # 순EV 역전과도 연결되는 후보 원인)를 사후분석에서 구분할 수 있게
+                # 한다. 진입 판정에는 영향 없는 순수 관측 컬럼. NULL=구버전 레코드.
+                "raw_grade": "TEXT",
             }
             for name, dtype in additions.items():
                 if name not in cols:

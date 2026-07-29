@@ -2,6 +2,129 @@
 
 ---
 
+## 2026-07-29 (401차 — 정기점검 딥다이브 4건 우선순위 구현: WeightCollapse 상시완화·qty=0 오진단 정정·등급 병기·JointGateBlock 캠페인 확인)
+
+### [배경] 7/29 매일점검 중 실측한 4건을 우선순위 순으로 구현
+
+400차 크래시 수정(09:12 재시작) 이후 하루 전체 로그·`predictions.db`·`trades.db`를
+딥다이브해 이상점 4건을 찾고, 사용자 승인 하에 우선순위대로 구현했다.
+
+### [1순위, 구현] WeightCollapse 완화(개선안5)를 콜드스타트 한정에서 상시 적용으로 확장
+
+**배경**: 398차는 09:12~09:44 콜드스타트 30분 구간에서만 WeightCollapse(bar_only
+3m/5m가 봉 미완성 분마다 horizon_proba에서 사라지고, 남는 1m/30m은 둘 다
+`ENSEMBLE_WEIGHTS=0`인 은퇴 호라이즌이라 실질 가중합이 0으로 붕괴 → 인위적
+flat_score=1.0 → Platt압착으로 확신도 고착)를 발견하고 계측 컬럼
+(`weight_collapsed`)만 신설했다(기본 비활성, 콜드스타트 한정 완화 스위치는
+`COLDSTART_BAR_ONLY_RELAX_ENABLED=False`). 이 계측이 오늘 처음 라이브 데이터를
+남겼는데, 실측 결과 collapse 비율이 09시(47.9%)뿐 아니라 10~15시 전 구간에서
+43~47%로 사실상 상시 발생함을 확인했다(collapse 148건 중 143건이 정확히
+`('1m','30m')` 조합만 활성). 398차의 스코프 가정(콜드스타트 30분 한정)이
+틀렸다는 뜻이다.
+
+**수정**: `config/settings.py`의 `COLDSTART_BAR_ONLY_RELAX_ENABLED`/
+`COLDSTART_BAR_ONLY_RELAX_WINDOWS`/`COLDSTART_BAR_ONLY_RELAX_MAX_AGE`를
+`BAR_ONLY_RELAX_ENABLED`(기본 **True**, 사용자 승인으로 즉시 활성화)/
+`BAR_ONLY_RELAX_MAX_AGE`로 정리하고 시간창 변수를 제거했다. `main.py:
+_is_deployable()`에서 `hhmm` 파라미터와 시간창 조건을 완전히 제거해 `mode ==
+"bar_only" and BAR_ONLY_RELAX_ENABLED`이면 age 상한을 항상 0→1로 완화하도록
+단순화(호출부 `_dp_hhmm` 계산도 죽은 코드라 함께 제거). `model/
+ensemble_decision.py`의 관련 주석도 새 이름으로 정정.
+
+**트레이드오프**: Q3(2026-06-25)가 bar_only로 막으려던 "학습/추론 분포 불일치"를
+상시 재도입한다 — 다만 붕괴 규모(43~47%)가 그 트레이드오프보다 명백히 크다고
+판단해 우선 완화를 택함. 다음 며칠 라이브에서 collapse 비율이 이론치(약 14%,
+3m/5m age 완화 후 (1/3)(3/5)(8/10)(13/15) 근사)에 근접하는지, 그리고 A/B/C 등급
+신호 빈도가 회복되는지 확인 필요.
+
+### [2순위, 재조사 후 정정] "사이징 스택 qty=0" 가설은 오진단 — 실제 원인은 포지션 보유중 관측성 공백
+
+**배경**: 딥다이브 리포트에서 10:47/10:50/10:51 세 C등급 후보가 "사이저 산출
+수량 0"으로 차단됐다고 보고했고, 이를 "EntryGate×MetaGate×사이저 곱 감쇠가
+qty=0까지 만든다(364차 발견의 심화판)"로 해석해 섀도 계측 채널을 구현하려
+했다.
+
+**정정**: 구현 착수 전 `main.py:6520`~ 사이징 감쇠 체인을 직접 읽어보니
+`meta_size`/`tox_size`/`exec_size`/`L2_size` reduce 계열은 전부
+`max(1, round(qty*mult))`로 **1에서 바닥**을 잡아 곱셈만으로는 절대 0이 될 수
+없음(364차가 "qty=1로 수렴"이라 정확히 표현한 그대로 — 0 수렴이 아니다).
+qty=0은 오직 (a) HealthPolicy Degraded 미달, (b) ExecutionGovernor block, (c)
+MetaGate skip, (d) ToxicityGate block, (e) VolatilityBurst skip 5가지 명시적
+`=0` 대입, 또는 (f) `position.status != "FLAT"`(포지션 보유중이라 이 분엔
+사이징 자체를 평가 안 함)에서만 나온다. `logs/20260729_TRADE.log`를 대조한
+결과 10:46:45~10:51:45는 정확히 10:46:45 진입~10:51:45 청산 구간과 일치 —
+10:47/10:50/10:51의 qty=0은 (f), 즉 이미 보유 중이던 포지션(10:46 진입)과
+같은 신호를 중복 카운트한 것일 뿐 별도의 차단 기회비용이 아니었다. 딥다이브
+리포트의 "+49.5pt 기회비용" 추정치는 이 3건이 이중계산돼 과대추정됐다(정정:
+실질적으로 놓친 후보는 10:41 쿨다운·10:44 JointGateBlock·10:53 쿨다운 3건,
+약 +27.6pt).
+
+**대체 구현**: 가짜 섀도 채널을 만드는 대신, 이 오진단을 유발한 진짜 공백을
+메웠다 — `_entry_block_reason`이 `direction==0`(무신호)과 `position.status!=
+FLAT`(보유중이라 평가 생략)을 구분 없이 둘 다 빈 문자열로 남기던 것을,
+`elif direction != 0: _entry_block_reason = "[정보] 포지션 보유중 — 신규진입
+평가 생략"`로 명시(진입 판정 로직 무영향, 순수 관측). `ensemble_decisions.
+entry_block_reason` 사후분석 시 앞으로는 이 두 케이스가 헷갈리지 않는다.
+
+**Why**: 데이터를 볼 때 "차단 사유가 비어있다"를 항상 "위험 없이 통과"로
+읽었는데, 실제로는 "차단 판정 자체가 생략됐다"는 세 번째 의미가 숨어 있었다
+— 이번엔 그게 나 자신의 딥다이브 리포트를 오염시킨 사례. 관측 필드를 새로
+추가할 때는 "이 값이 비어있을 수 있는 모든 이유"를 먼저 나열해야 한다는
+397차·399차 교훈의 반복.
+
+### [3순위, 구현] 체크리스트등급/원시확신도등급 병기 (372차 제안)
+
+**확인**: 라이브 대시보드 "진입 관리 패널"(`EntryPanel.update_data()`,
+`dashboard/main_dashboard.py:4242`)은 이미 `ensemble_grade`/`checklist_grade`
+두 값을 받아 "앙상블 등급 카드"(`e_ens_grade`)·"진입 등급 카드"(`e_chk_grade`)
+로 **각자 따로 실시간 표시**하고 있었다 — 372차가 지적한 병기 자체는 이미
+구현돼 있었다(제안 시점 미확인 상태였을 뿐). 372차가 정확히 짚은 공백은
+`TRADE.log`와 `trades.db`(사후 분석용 영구 기록) 두 곳 — 둘 다 체크리스트
+등급(`_final_grade`)만 남기고 원시confidence 등급(`grade`)은 버려지고 있었다.
+
+**구현**:
+1. `utils/db_utils.py:_migrate_trades_db()` — `trades` 테이블에 `raw_grade`
+   컬럼 신설(다른 컬럼과 동일한 ALTER TABLE 마이그레이션 패턴, NULL=구버전
+   레코드).
+2. `main.py` — 진입 시점 터치포인트(`_entry_meta_action` 대입 직후)에
+   `self._entry_raw_grade = str(grade or "")` 스냅샷 추가, `INSERT INTO
+   trades`에 `raw_grade` 컬럼·값 추가.
+3. `main.py` — `[진입체크]` TRADE.log 라인에 `grade != _final_grade`일 때만
+   `%s급(원시%s)` 형태로 병기(같으면 잡음 방지를 위해 기존 표기 유지). 오늘
+   두 체결(10:38/10:46) 기준으로는 "A급(원시C)"로 찍혔을 것.
+
+**검증**: `py37_32` `py_compile` 전체 통과. `py310_64`로 `init_all_dbs()` 실행해
+`data/db/trades.db`(프로덕션)에 `raw_grade` 컬럼이 정상 추가됨을
+`PRAGMA table_info` + 오늘 거래 2건 조회로 확인(기존 행은 NULL, 신규 진입부터
+채워짐 — 다음 체결에서 실측 확인 필요).
+
+### [4순위, 코드 변경 불필요] JointGateBlock 검증캠페인 — 이미 표본 충분, 즉시 판정 확인
+
+**배경**: 딥다이브에서 10:44 JointGateBlock(toxicity=0.70) 차단 1건이 방향
+적중(5분 후 SHORT +10.3pt 추정)이라 "toxicity 임계값 재검정 표본 축적 필요"로
+제안했다.
+
+**확인**: `scripts/generate_validation_campaign_report.py --days 28`을
+`py310_64`로 실행해보니 `joint_gate_shadow`(327차)가 이미 누적 48건(min_samples
+20 초과)으로 판정 가능 상태였다 — 새 채널을 만들 필요가 없었다. 결과:
+**누적 hyp_pnl_pts = -37.35pt (≤0) → 존치(PASS)**, 승률 56.2%(기준선 61.6%
+이하). 즉 오늘 하루 관찰(1건 적중)과 달리 4주 누적으로는 JointGateBlock이
+차단하지 않았다면 평균적으로 더 나빴을 것 — 313차 원칙(단일일 표본으로
+정책 결론 금지)이 이번에도 스스로 맞아떨어진 사례. 임계값(0.50) 변경 불필요.
+
+같은 리포트 실행에서 **[6] Hurst 게이트**는 반대로 FAIL(누적 +18.7pt, 승률
+69.5%>기준선) — "하드차단→사이징×0.5 완화 권고" 상태가 계속 유지 중임을
+재확인(이번 세션 범위 밖, 기존 권고 그대로 주간회의 안건).
+
+**검증**: 리포트 실행 자체가 읽기 전용에 가까운 기존 승인된 주간 작업(매주
+금요일 EOD 체인에서 자동 수행)을 수동으로 앞당겨 실행한 것 — 코드 변경 없음.
+
+**관련**: 398차(WeightCollapse 최초 발견, 콜드스타트 스코프), 364차(qty=1
+수렴 곱셈감쇠 원 발견), 372차(등급 병기 제안), 327차(joint_gate_shadow 원
+구현), 397차·399차(관측 필드 공백 패턴), 400차(같은 날 앞선 크래시 수정).
+
+---
+
 ## 2026-07-29 (400차 — 399차 회귀: `_p4_cvd_ofi_demoted` UnboundLocalError로 라이브 파이프라인 전량 크래시 긴급 수정)
 
 ### [배경] 매일점검 도중 오늘자 라이브 WARN 로그에서 진행 중인 크래시를 실시간 발견
