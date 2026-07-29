@@ -6114,6 +6114,10 @@ class TradingSystem:
         _kelly_advised_skip = False  # [311차 후속] 켈리가 목표자본 대비 1계약도 부적절하다고 판단했는지
         _vb_stop_widen_mult = 1.0  # [349차] 급변장 사전 가드가 "reduce" 발동 시에만 >1.0
         _cr          = None
+        _p4_cvd_ofi_demoted = False  # [400차 긴급수정] _gate_checks(7266)가 매분 무조건
+        # 참조하는데, 기존 초기화(6237)는 "direction!=0 and FLAT" 블록 안에서만 실행돼
+        # direction==0 이거나 포지션 보유 중이면 UnboundLocalError로 파이프라인 전체가
+        # 매분 크래시하던 버그 (399차 a603dc6 회귀, 2026-07-29 라이브 중 발견)
 
         if direction != 0 and self.position.status == "FLAT":
             # 재가동 cold-start 워밍업 — elapsed=infmin 이후 3분간 진입 차단
