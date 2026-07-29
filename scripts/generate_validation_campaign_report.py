@@ -1144,6 +1144,132 @@ def resolve_and_eval_open_gap() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [20] BAR_ONLY_RELAX 수용/롤백 감시 (402차 후속)
+# ──────────────────────────────────────────────────────────────
+
+# 401차 커밋(2026-07-29 16:26)이 장 마감 후라 발효는 다음 세션부터.
+BAR_ONLY_RELAX_EFFECTIVE_DATE = "2026-07-30"
+
+
+def eval_weight_collapse_watch(days: int) -> dict:
+    """BAR_ONLY_RELAX 활성화(401차)의 효과·부작용을 일자 단위로 감시한다.
+
+    fast_reversal_watch·exit_fill_slippage_watch와 동일한 관찰 계열 —
+    자동으로 롤백하지 않고 판정 문구만 노출한다(§9 사전등록 원칙).
+
+    효과 지표는 `ensemble_decisions.weight_collapsed` 일별 비율,
+    부작용 지표는 완화 대상 호라이즌(3m/5m)의 일별 방향 적중률이다.
+    Q3(2026-06-25)가 bar_only로 막으려던 "학습/추론 분포 불일치"가 실제로
+    해를 끼치면 그 두 호라이즌 적중률에 먼저 나타난다.
+
+    주의: `weight_collapsed`는 398차(2026-07-28 저녁) 배포분부터 기록되므로,
+    그 이전 일자는 컬럼이 NULL이다 — "collapse 0건"이 아니라 "미계측"이라
+    집계에서 제외한다. 완화 전 기준선이 단일일(2026-07-29)뿐이라는 뜻이므로
+    판정에 min_days를 둔다(313차 원칙).
+    """
+    cfg = VALIDATION_CAMPAIGN.get("weight_collapse_watch", {})
+    out = {"verdict": "OBSERVE", "effective_date": BAR_ONLY_RELAX_EFFECTIVE_DATE}
+    min_days = int(cfg.get("min_days", 3))
+    target = float(cfg.get("target_ratio", 0.20))
+    tol = float(cfg.get("target_tolerance", 0.07))
+    ineff = float(cfg.get("ineffective_ratio_min", 0.40))
+    over = float(cfg.get("overrelax_ratio_max", 0.05))
+    floors = dict(cfg.get("hz_acc_floor", {}))
+    streak_need = int(cfg.get("regression_streak_days", 3))
+    since = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+
+    daily = {}
+    try:
+        with _conn(PREDICTIONS_DB) as conn:
+            for r in conn.execute(
+                """SELECT substr(ts,1,10) d, COUNT(*) n,
+                          SUM(CASE WHEN weight_collapsed IS NULL THEN 1 ELSE 0 END) n_null,
+                          SUM(COALESCE(weight_collapsed,0)) n_wc
+                     FROM ensemble_decisions
+                    WHERE substr(ts,1,10) >= ?
+                    GROUP BY d ORDER BY d""", (since,)
+            ):
+                n_meas = int(r["n"]) - int(r["n_null"])
+                if n_meas <= 0:
+                    continue          # 미계측일 — 집계 제외
+                daily[r["d"]] = {"n": n_meas, "wc": int(r["n_wc"]),
+                                 "ratio": float(r["n_wc"]) / n_meas, "acc": {}}
+            for r in conn.execute(
+                """SELECT substr(ts,1,10) d, horizon, AVG(CAST(correct AS FLOAT)) acc,
+                          COUNT(*) n
+                     FROM predictions
+                    WHERE substr(ts,1,10) >= ? AND correct IS NOT NULL
+                      AND horizon IN ('3m','5m')
+                    GROUP BY d, horizon""", (since,)
+            ):
+                if r["d"] in daily:
+                    daily[r["d"]]["acc"][r["horizon"]] = round(float(r["acc"]), 4)
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    pre = {d: v for d, v in daily.items() if d < BAR_ONLY_RELAX_EFFECTIVE_DATE}
+    post = {d: v for d, v in daily.items() if d >= BAR_ONLY_RELAX_EFFECTIVE_DATE}
+    out["n_days_pre"] = len(pre)
+    out["n_days_post"] = len(post)
+    out["baseline_ratio"] = (round(sum(v["ratio"] for v in pre.values()) / len(pre), 4)
+                             if pre else None)
+    out["daily"] = {d: {"ratio": round(v["ratio"], 4), "n": v["n"], "acc": v["acc"]}
+                    for d, v in sorted(daily.items())}
+
+    if len(post) < min_days:
+        out["reason"] = ("완화 후 계측일 %d일 < 최소 %d일 — 판정 보류 (발효 %s)"
+                         % (len(post), min_days, BAR_ONLY_RELAX_EFFECTIVE_DATE))
+        out["verdict"] = "INSUFFICIENT"
+        return out
+
+    mean_post = sum(v["ratio"] for v in post.values()) / len(post)
+    out["post_ratio"] = round(mean_post, 4)
+
+    if mean_post >= ineff:
+        effect = "INEFFECTIVE"
+    elif mean_post <= over:
+        effect = "OVER_RELAXED"
+    elif abs(mean_post - target) <= tol:
+        effect = "ON_TARGET"
+    else:
+        effect = "OFF_TARGET"
+    out["effect"] = effect
+
+    regressed = []
+    for hz, floor in sorted(floors.items()):
+        streak = worst = 0
+        for d in sorted(post):
+            a = post[d]["acc"].get(hz)
+            if a is None:
+                streak = 0
+                continue
+            if a < float(floor):
+                streak += 1
+                worst = max(worst, streak)
+            else:
+                streak = 0
+        if worst >= streak_need:
+            regressed.append("%s %d일연속<%.0f%%" % (hz, worst, float(floor) * 100))
+    out["regressed"] = regressed
+
+    if regressed:
+        out["verdict"] = "ROLLBACK_REVIEW"
+        out["recommendation"] = (
+            "Q3 분포 불일치 부작용 의심(%s) — `BAR_ONLY_RELAX_ENABLED=False` 롤백을 "
+            "주간회의에서 검토(즉시 자동 롤백 아님)" % " / ".join(regressed))
+    elif effect == "ON_TARGET":
+        out["verdict"] = "ACCEPT"
+        out["recommendation"] = "효과 목표 구간·부작용 없음 — 완화 존치 수용"
+    elif effect == "INEFFECTIVE":
+        out["verdict"] = "INVESTIGATE"
+        out["recommendation"] = (
+            "완화가 듣지 않음(%.1f%% ≥ %.1f%%) — 원인이 bar age가 아닐 가능성. "
+            "롤백보다 원인 재조사 우선" % (mean_post * 100, ineff * 100))
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [19] ToxicityGate action="block" counterfactual — resolve + 누적 판정 (신설)
 # ──────────────────────────────────────────────────────────────
 
@@ -2507,6 +2633,7 @@ def build_report(days: int) -> tuple:
     cfc = eval_chase_foreign_combo_watch()
     efs = eval_exit_fill_slippage_watch(days)
     reg = resolve_and_eval_regime_exhaustion()
+    wcw = eval_weight_collapse_watch(days)
 
     metrics = {
         "generated_at": now_str,
@@ -2521,6 +2648,7 @@ def build_report(days: int) -> tuple:
         "loss_tier2_remainder_shadow": lt2, "fast_reversal_watch": frw,
         "chase_foreign_combo_watch": cfc, "exit_fill_slippage_watch": efs,
         "regime_exhaustion_watch": reg, "toxicity_block_shadow": txb,
+        "weight_collapse_watch": wcw,
     }
 
     L = []
@@ -2623,6 +2751,13 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(txb["verdict"]), txb.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (txb["win_rate"] * 100)) if "win_rate" in txb else "—",
         txb.get("n_resolved", 0), txb.get("n_pending", 0)))
+    L.append("| [20] BAR_ONLY_RELAX 수용/롤백 | %s | 완화후 collapse=%s (기준선 %s, 목표 %.0f%%±%.0f%%p) 계측일 전%s/후%s |" % (
+        _fmt_verdict(wcw["verdict"]),
+        ("%.1f%%" % (wcw["post_ratio"] * 100)) if wcw.get("post_ratio") is not None else "—",
+        ("%.1f%%" % (wcw["baseline_ratio"] * 100)) if wcw.get("baseline_ratio") is not None else "—",
+        float(VALIDATION_CAMPAIGN.get("weight_collapse_watch", {}).get("target_ratio", 0.20)) * 100,
+        float(VALIDATION_CAMPAIGN.get("weight_collapse_watch", {}).get("target_tolerance", 0.07)) * 100,
+        wcw.get("n_days_pre", 0), wcw.get("n_days_post", 0)))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -3037,6 +3172,53 @@ def build_report(days: int) -> tuple:
         L.append("- %s" % txb["reason"])
     L.append("- action=\"reduce\"는 실제 축소 체결로 trades에 남으므로 이 채널 대상 아님 —"
               " action=\"block\"만 계측(open_gap_shadow와 동일 원칙).")
+    L.append("")
+
+    # [20] BAR_ONLY_RELAX 수용/롤백 상세
+    L.append("## [20] BAR_ONLY_RELAX 수용/롤백 감시 (402차 후속, 관찰 전용 — 자동 롤백 아님)")
+    L.append("")
+    if wcw.get("error"):
+        L.append("> ⚠ %s" % wcw["error"])
+    else:
+        L.append("- 발효일 **%s** (401차 커밋이 2026-07-29 장 마감 후라 다음 세션부터 적용)"
+                  % wcw.get("effective_date", "—"))
+        L.append("- 계측일: 완화 전 %s일 / 완화 후 %s일"
+                  % (wcw.get("n_days_pre", 0), wcw.get("n_days_post", 0)))
+        L.append("- collapse 비율: 기준선 %s → 완화 후 %s (목표 %s±%s)" % (
+            ("%.1f%%" % (wcw["baseline_ratio"] * 100)) if wcw.get("baseline_ratio") is not None else "—",
+            ("%.1f%%" % (wcw["post_ratio"] * 100)) if wcw.get("post_ratio") is not None else "—",
+            "%.0f%%" % (float(VALIDATION_CAMPAIGN.get("weight_collapse_watch", {}).get("target_ratio", 0.20)) * 100),
+            "%.0f%%p" % (float(VALIDATION_CAMPAIGN.get("weight_collapse_watch", {}).get("target_tolerance", 0.07)) * 100),
+        ))
+        if wcw.get("effect"):
+            L.append("- 효과 판정: **%s**" % wcw["effect"])
+        if wcw.get("regressed"):
+            L.append("- **회귀 감지(Q3 분포 불일치 부작용 의심)**: %s" % " / ".join(wcw["regressed"]))
+        if wcw.get("daily"):
+            L.append("")
+            L.append("| 일자 | 계측 분봉 | collapse% | 3m 적중 | 5m 적중 | 구분 |")
+            L.append("|---|---|---|---|---|---|")
+            for d, v in sorted(wcw["daily"].items()):
+                _a3 = v["acc"].get("3m")
+                _a5 = v["acc"].get("5m")
+                L.append("| %s | %d | %.1f%% | %s | %s | %s |" % (
+                    d, v["n"], v["ratio"] * 100,
+                    ("%.1f%%" % (_a3 * 100)) if _a3 is not None else "—",
+                    ("%.1f%%" % (_a5 * 100)) if _a5 is not None else "—",
+                    "완화후" if d >= wcw.get("effective_date", "") else "완화전"))
+        if wcw.get("recommendation"):
+            L.append("")
+            L.append("- **권고**: %s" % wcw["recommendation"])
+        if wcw.get("reason"):
+            L.append("")   # 표 직후 리스트가 붙으면 Markdown 표 렌더링이 깨진다
+            L.append("- %s" % wcw["reason"])
+    L.append("")
+    L.append("> `weight_collapsed`는 398차(2026-07-28 저녁) 배포분부터 기록된다 — 그 이전")
+    L.append("> 일자는 컬럼이 NULL이라 \"collapse 0건\"이 아니라 \"미계측\"이므로 집계에서")
+    L.append("> 제외한다. 완화 전 기준선이 사실상 2026-07-29 단일일이라는 뜻이므로,")
+    L.append("> min_days(기본 3거래일) 미만에서는 판정을 보류한다(313차 원칙).")
+    L.append("> 롤백은 `config/settings.py:BAR_ONLY_RELAX_ENABLED = False` 1줄로 즉시 가역.")
+    L.append("> 일 단위 확인은 `scripts/weight_collapse_monitor.py`.")
     L.append("")
     L.append("---")
     L.append("")

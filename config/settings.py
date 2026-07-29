@@ -1259,6 +1259,44 @@ VALIDATION_CAMPAIGN = {
         "min_samples": 20,  # hurst_gate_shadow·open_gap_shadow와 동일 기준(20건·2주 관찰)
         "cf_window_min": 30,  # counterfactual 관찰 창 (분) — 동일 계열과 동일
     },
+    # [402차 후속 신설] §20 BAR_ONLY_RELAX 수용/롤백 감시 — 401차가
+    # `BAR_ONLY_RELAX_ENABLED`를 콜드스타트 30분 한정에서 상시 적용·기본 True로 확장
+    # (2026-07-29 장 마감 후 커밋 → 발효 2026-07-30 세션부터)했는데, 그 커밋에는
+    # 수용/롤백 기준도 관찰 항목도 없었다. 게다가 398차가 만든 `weight_collapsed`
+    # 컬럼은 DB 저장 외에 소비처가 전혀 없어(캠페인·대시보드·EOD 모두 없음) 확인하려면
+    # 매번 수동 SQL이 필요했다 — 이 채널이 그 공백을 메운다.
+    # verdict는 fast_reversal_watch·exit_fill_slippage_watch와 동일하게 관찰 계열이며,
+    # 자동으로 롤백하지 않는다(§9 사전등록 원칙 — 적용/롤백은 주간회의 수동 결정).
+    # 일 단위 확인은 scripts/weight_collapse_monitor.py, 주간 자동 판정은 이 채널.
+    #
+    # 기준값 근거(전부 관측 **전**에 고정 — 관측 후 조정 금지):
+    #   baseline_ratio 0.448  — 2026-07-29 실측 145/324분. 단 398차 계측이 그날 처음
+    #                           배포돼 **기준선은 단일일 표본**이다(그 이전은 컬럼 NULL).
+    #   target_ratio   0.20   — HZ_DEPLOY_POLICY 산술: 3m/5m age 0→1 완화 시 4개 활성
+    #                           호라이즌이 모두 빠지는 분이 60분 중 12분(20.0%).
+    #                           401차는 별도 근사로 ~14%를 예상했는데, 두 추정이 다르므로
+    #                           tolerance를 ±7%p로 넓게 잡아 둘 다 수용 구간에 포함시킨다.
+    #   ineffective_ratio_min 0.40 — 완화 전(44.8%)과 사실상 차이가 없는 수준.
+    #                           이 이상이면 원인이 bar age가 아니므로 롤백이 아니라 재조사.
+    #   overrelax_ratio_max   0.05 — 산술 하한(20%)의 1/4 미만. 의도 밖 경로가 함께
+    #                           열렸을 가능성을 의심할 구간.
+    #   hz_acc_floor          — Q3가 bar_only로 막으려던 "학습/추론 분포 불일치"의
+    #                           부작용 감시. 3m/5m은 완화 대상 호라이즌 자신이다.
+    #                           2026-07-29 실측 3m 33.0% / 5m 25.8%, 최근 1개월 기저
+    #                           대략 34%. 바닥선을 그보다 낮게(3m 0.30 / 5m 0.28) 잡아
+    #                           정상 변동에는 걸리지 않고 실제 악화만 잡도록 한다.
+    #   regression_streak_days 3 / min_days 3 — 313차 원칙(단일일 판정 금지).
+    # 근거: dev_memory/DECISION_LOG.md 2026-07-29(MW0601 402차 후속2) 항목.
+    "weight_collapse_watch": {
+        "baseline_ratio": 0.448,
+        "target_ratio": 0.20,
+        "target_tolerance": 0.07,
+        "ineffective_ratio_min": 0.40,
+        "overrelax_ratio_max": 0.05,
+        "hz_acc_floor": {"3m": 0.30, "5m": 0.28},
+        "regression_streak_days": 3,
+        "min_days": 3,
+    },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)
