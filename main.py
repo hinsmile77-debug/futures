@@ -2810,13 +2810,16 @@ class TradingSystem:
             if _cal.load(ENSEMBLE_CALIBRATOR_PATH):
                 _span = getattr(_cal, "output_span", None)
                 _auc = getattr(_cal, "rank_auc", None)
+                _out_max = getattr(_cal, "output_max", None)
                 logger.info(
                     "[Calibration] 앙상블 보정기 복원 완료 n=%d fitted=%s "
-                    "degenerate=%s span=%s auc=%s",
+                    "degenerate=%s unreachable=%s span=%s auc=%s out_max=%s",
                     _cal.n_samples, _cal.is_fitted,
                     getattr(_cal, "is_degenerate", None),
+                    getattr(_cal, "is_unreachable", None),
                     ("%.5f" % _span) if _span is not None else "N/A",
                     ("%.3f" % _auc) if _auc is not None else "N/A",
+                    ("%.4f" % _out_max) if _out_max is not None else "N/A",
                 )
             else:
                 logger.info("[Calibration] 앙상블 보정기 저장본 없음 — 신규 누적으로 시작")
