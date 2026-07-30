@@ -87,6 +87,10 @@ class ConfTrendWidget(QWidget):
         self._log_today  = ""        # 날짜 변경 감지
         self._log_offset = 0         # 마지막 읽은 파일 offset (전체 재읽기 방지)
         self._log_cache  = {}        # 누적 진입완료 맵
+        # [402차 후속7 P1-4] _fill_table_cells()가 남기는 구간 계측 (SLOW 로그 breakdown용)
+        self._last_row_calc_ms = 0.0
+        self._last_tooltip_calc_ms = 0.0
+        self._last_qt_apply_ms = 0.0
         self.refresh()
 
     def showEvent(self, event):
@@ -241,8 +245,57 @@ class ConfTrendWidget(QWidget):
         _s = _t2.monotonic()
         self._table.setUpdatesEnabled(False)
         self._table.setRowCount(len(rows))
-        # [진단] 세션 경과에 따른 table_update 완만한 증가 원인 특정용 —
-        # 순수 Python 계산(row_calc/tooltip_calc)과 Qt 위젯 호출(qt_apply)을 분리 계측.
+        # [402차 후속7 P1-4] 셀 기록 동안 모델 변경신호 차단.
+        # 배경(2026-07-30 실측): 30행×10열=300셀 갱신에 qt_apply가 236~368ms —
+        # 셀당 ~1ms로 setText/setForeground 자체 비용의 수십 배. 원인은 헤더의
+        # 0~6열 ResizeToContents + 7~9열 Stretch 조합이다. Qt는 dataChanged가
+        # 올 때마다 해당 섹션을 재측정하는데 sizeHintForColumn()이 그 열의 전 행을
+        # 훑으므로 셀 1개 갱신이 O(rows) 작업이 되어 전체가 O(rows²×cols)로 커진다.
+        # 기존 setUpdatesEnabled(False)는 '페인팅'만 막고 이 레이아웃 재계산은
+        # 막지 못한다 — 그래서 이미 적용돼 있었음에도 250ms대가 유지됐다.
+        # 모델 신호를 막아 일괄 기록한 뒤 layoutChanged 1회로 뷰를 갱신하면
+        # 재측정이 300회 → 1회가 된다.
+        _model = self._table.model()
+        try:
+            _model.blockSignals(True)
+            self._fill_table_cells(rows, ema_list, fallback_mc, completed_entries)
+        finally:
+            _model.blockSignals(False)
+            # 뷰가 캐시를 버리고 전체를 다시 읽게 함 → 열 폭 재계산도 여기서 1회만 발생.
+            # try/finally: 루프 중 예외가 나도 신호 차단·페인팅 정지가 영구화되지
+            # 않도록 보장(종전 코드는 예외 시 setUpdatesEnabled(True)에 도달하지 못해
+            # 테이블이 그대로 얼어붙을 수 있었다).
+            try:
+                _model.layoutChanged.emit()
+            except Exception:
+                pass
+            self._table.setUpdatesEnabled(True)
+        _steps.append(("table_update", (_t2.monotonic()-_s)*1000))
+        _steps.append(("row_calc", self._last_row_calc_ms))
+        _steps.append(("tooltip_calc", self._last_tooltip_calc_ms))
+        _steps.append(("qt_apply", self._last_qt_apply_ms))
+
+        # 최신 행(맨 아래)이 항상 보이도록 스크롤
+        _s = _t2.monotonic()
+        self._table.scrollToBottom()
+        _steps.append(("scroll", (_t2.monotonic()-_s)*1000))
+        # 200ms 초과 시에만 WARNING (30초마다 정상 동작을 WARNING으로 오염 방지)
+        _total_ms = (_t2.monotonic()-_d0)*1000
+        if _total_ms > 200:
+            _breakdown = " ".join(f"{lbl}={ms:.0f}ms" for lbl, ms in _steps)
+            _lg.getLogger("SYSTEM").warning(
+                "[LiveDBG] ConfTrend SLOW total %.0fms rows=%d | %s", _total_ms, len(rows), _breakdown
+            )
+        else:
+            _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend total %.0fms rows=%d", _total_ms, len(rows))
+
+    def _fill_table_cells(self, rows, ema_list, fallback_mc, completed_entries):
+        """[402차 후속7 P1-4] 셀 기록 루프 — 모델 신호 차단 구간에서만 호출.
+
+        구간별 소요는 self._last_*_ms에 남겨 호출부가 기존과 동일한 breakdown을
+        출력할 수 있게 한다(계측 포맷 유지 — 로그 파서 호환).
+        """
+        import time as _t2
         _row_calc_ms = 0.0
         _tooltip_calc_ms = 0.0
         _qt_apply_ms = 0.0
@@ -304,25 +357,10 @@ class ConfTrendWidget(QWidget):
                 elif j in (8, 9) and gate_tip:
                     it.setToolTip(gate_tip)
             _qt_apply_ms += (_t2.monotonic() - _qa0) * 1000
-        self._table.setUpdatesEnabled(True)
-        _steps.append(("table_update", (_t2.monotonic()-_s)*1000))
-        _steps.append(("row_calc", _row_calc_ms))
-        _steps.append(("tooltip_calc", _tooltip_calc_ms))
-        _steps.append(("qt_apply", _qt_apply_ms))
 
-        # 최신 행(맨 아래)이 항상 보이도록 스크롤
-        _s = _t2.monotonic()
-        self._table.scrollToBottom()
-        _steps.append(("scroll", (_t2.monotonic()-_s)*1000))
-        # 200ms 초과 시에만 WARNING (30초마다 정상 동작을 WARNING으로 오염 방지)
-        _total_ms = (_t2.monotonic()-_d0)*1000
-        if _total_ms > 200:
-            _breakdown = " ".join(f"{lbl}={ms:.0f}ms" for lbl, ms in _steps)
-            _lg.getLogger("SYSTEM").warning(
-                "[LiveDBG] ConfTrend SLOW total %.0fms rows=%d | %s", _total_ms, len(rows), _breakdown
-            )
-        else:
-            _lg.getLogger("SYSTEM").debug("[LiveDBG] ConfTrend total %.0fms rows=%d", _total_ms, len(rows))
+        self._last_row_calc_ms = _row_calc_ms
+        self._last_tooltip_calc_ms = _tooltip_calc_ms
+        self._last_qt_apply_ms = _qt_apply_ms
 
     # ── 헬퍼: 영구 read 연결 ─────────────────────────────────────
 

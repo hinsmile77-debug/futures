@@ -8,6 +8,7 @@
   Layer 5 (DEBUG)    — 피처·모델 상세 디버그
   Layer 6 (WARN)     — WARNING 이상 전용 경보 로그
   Layer 7 (DATA)     — 수급·투자자 TR 수집 로그
+  Layer 8 (HEALTH)   — 운영 헬스 스냅샷 전용 (INFO~CRITICAL 한 파일, 레벨 분리 없음)
 """
 import logging
 import logging.handlers
@@ -28,6 +29,13 @@ LAYER_DATA     = "DATA"     # 수급·투자자 TR 수집 로그
 LAYER_PROBE    = "PROBE"    # 실시간 FID 탐색 진단 (투자자ticker 등)
 LAYER_HOGA     = "HOGA"     # 선물호가잔량 1~5레벨 전용 디버그 로그
 LAYER_MICRO    = "MICRO"    # microprice / MLOFI / queue dynamics 전용 디버그 로그
+# [402차 후속7 P1-6] 운영 헬스 전용 레이어.
+# 종전에는 log_manager가 HEALTH를 SYSTEM으로 합류시켰고(_FILE_LOGGER_LAYER),
+# SYSTEM 로거는 다시 _MaxLevelFilter로 INFO는 SYSTEM.log·WARNING 이상은 WARN.log로
+# 갈라졌다. 그래서 헬스 타임라인 하나를 보려면 두 파일을 합쳐야 했고, 그중 SYSTEM.log는
+# TickUI 로그 55만 줄에 파묻혀 있었다(2026-07-30 딥다이브에서 실제로 겪은 마찰).
+# HEALTH.log는 레벨 분리 없이 INFO~CRITICAL을 시간순 한 파일로 남긴다.
+LAYER_HEALTH   = "HEALTH"
 
 _initialized = False
 
@@ -58,7 +66,7 @@ def setup_logging():
     formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
 
     layers = [LAYER_SYSTEM, LAYER_SIGNAL, LAYER_TRADE, LAYER_LEARNING, LAYER_DEBUG,
-              LAYER_DATA, LAYER_PROBE, LAYER_HOGA, LAYER_MICRO]
+              LAYER_DATA, LAYER_PROBE, LAYER_HOGA, LAYER_MICRO, LAYER_HEALTH]
 
     for layer in layers:
         logger = logging.getLogger(layer)
@@ -83,12 +91,16 @@ def setup_logging():
     warn_fh.setFormatter(formatter)
     warn_fh.setLevel(logging.WARNING)
     logging.getLogger(LAYER_SYSTEM).addHandler(warn_fh)
+    # [402차 후속7 P1-6] HEALTH도 WARN.log에 계속 합류시킨다 — HEALTH.log 분리는
+    # "헬스 타임라인을 한 파일에서 본다"는 목적이고, WARN.log의 "오늘 이상했던 것
+    # 전부" 성격은 그대로 유지해야 하므로 둘 다 남기는 편이 맞다.
+    logging.getLogger(LAYER_HEALTH).addHandler(warn_fh)
 
-    # 루트 콘솔 핸들러 (SYSTEM·SIGNAL·TRADE만 콘솔 출력)
+    # 루트 콘솔 핸들러 (SYSTEM·SIGNAL·TRADE·HEALTH만 콘솔 출력)
     console = logging.StreamHandler()
     console.setFormatter(formatter)
     console.setLevel(logging.INFO)
-    for layer in [LAYER_SYSTEM, LAYER_SIGNAL, LAYER_TRADE]:
+    for layer in [LAYER_SYSTEM, LAYER_SIGNAL, LAYER_TRADE, LAYER_HEALTH]:
         logging.getLogger(layer).addHandler(console)
 
     # PROBE 전용 콘솔 핸들러 — DEBUG 레벨 전부 출력 (진단 시 즉시 확인용)

@@ -24,6 +24,7 @@ import math
 import json
 import importlib
 import queue as _queue
+import statistics
 import subprocess
 import threading
 from collections import deque
@@ -181,6 +182,10 @@ _PARAM_FEAT_MAP = {
     "다이버전스 지수": "foreign_retail_divergence",
     "프로그램 비차익": "program_non_arb_net",
 }
+
+# [402차 후속7 P0-1b] SHAP 라이브 갱신 라운드로빈 순서 — _refresh_shap_state() 참조.
+# 매분 전량 계산이 S6 병목의 실질 전량이었음(07-30 헬스 CRITICAL 딥다이브).
+_SHAP_RR_HORIZONS = ("1m", "3m", "5m")
 
 EFFECT_MONITOR_HISTORY_PATH = os.path.join(BASE_DIR, "effect_monitor_history.json")
 TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
@@ -725,6 +730,11 @@ class TradingSystem:
         self._health_warn_streak: int = 0
         self._health_info_streak: int = 0
         self._health_level_history: deque = deque(maxlen=10)
+        # [402차 후속7 P2-7] 파이프라인 지연 일중 누적증가 조기경보 상태
+        self._health_lat_baseline_buf: list = []   # 기준선 표본 (freeze 전까지만 누적)
+        self._health_lat_baseline: Optional[float] = None
+        self._health_lat_recent: deque = deque(maxlen=60)
+        self._health_lat_trend_alerted_at: Optional[datetime.datetime] = None
         self._health_policy: dict = self._build_health_policy()
         self._health_settings_path: str = os.path.join(BASE_DIR, "config", "settings.py")
         self._health_settings_mtime: float = 0.0
@@ -737,8 +747,13 @@ class TradingSystem:
         self._shap_labeled_window: dict = {
             h: deque(maxlen=240) for h in ("1m", "3m", "5m")
         }
+        # [402차 후속7 P1-5] TickUI 생존 하트비트 상태 (_on_tick_price_update 참조)
+        self._tickui_ticks: int = 0
+        self._tickui_last_heartbeat: float = 0.0
         self._shap_tracker = None
         self._shap_last_update_minute = None
+        # [402차 후속7 P0-1b] 라운드로빈 커서 — 매분 _SHAP_RR_HORIZONS 중 1개만 계산
+        self._shap_rr_idx: int = 0
         self._cached_shap_importance = {}
         self._restored_corr_str: str = ""
         self._live_shap_ready: bool = False
@@ -796,7 +811,83 @@ class TradingSystem:
             "const_out_heavy_cooldown_sec": float(getattr(mod, "CONST_OUT_HEAVY_COOLDOWN_SEC", 180.0)),
             "hot_reload_enabled": bool(getattr(mod, "HEALTH_POLICY_HOT_RELOAD_ENABLED", HEALTH_POLICY_HOT_RELOAD_ENABLED)),
             "hot_reload_interval_sec": float(getattr(mod, "HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC", HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC)),
+            # [402차 후속7 P0-3] 장중 GBM 재학습 창 latency 임계 완화 (settings 주석 참조)
+            "retrain_relax_enabled": bool(getattr(mod, "HEALTH_RETRAIN_RELAX_ENABLED", True)),
+            "retrain_latency_warn_mult": float(getattr(mod, "HEALTH_RETRAIN_LATENCY_WARN_MULT", 5.0)),
+            "retrain_latency_crit_mult": float(getattr(mod, "HEALTH_RETRAIN_LATENCY_CRIT_MULT", 2.0)),
         }
+
+    def _check_latency_trend(self, latency_ms: float) -> None:
+        """[402차 후속7 P2-7] 파이프라인 지연의 '일중 누적 증가' 조기경보.
+
+        절대 임계(1000ms)를 넘기 전에 "오늘의 자기 자신 대비 몇 배가 됐는가"로
+        추세를 잡는다. 판정·표본 제외 근거는 config/settings.py의
+        HEALTH_LATENCY_TREND_* 주석 참조.
+        """
+        mod = runtime_settings
+        if not bool(getattr(mod, "HEALTH_LATENCY_TREND_ENABLED", True)):
+            return
+        if latency_ms <= 0:
+            return
+        # 구조적으로 느린 것이 정상인 구간은 기준선·최근창 양쪽에서 제외
+        _now_t = datetime.datetime.now().time()
+        if _now_t < datetime.time(9, 10) or self._is_gbm_retrain_window():
+            return
+
+        baseline_n = int(getattr(mod, "HEALTH_LATENCY_TREND_BASELINE_N", 20) or 20)
+        if self._health_lat_baseline is None:
+            self._health_lat_baseline_buf.append(float(latency_ms))
+            if len(self._health_lat_baseline_buf) >= baseline_n:
+                self._health_lat_baseline = float(
+                    statistics.median(self._health_lat_baseline_buf)
+                )
+                log_manager.health(
+                    "[HealthTrend] 세션 지연 기준선 확정: %.0fms (표본 %d분)"
+                    % (self._health_lat_baseline, len(self._health_lat_baseline_buf)),
+                    "INFO",
+                )
+            return
+
+        window_n = int(getattr(mod, "HEALTH_LATENCY_TREND_WINDOW_N", 10) or 10)
+        self._health_lat_recent.append(float(latency_ms))
+        recent = list(self._health_lat_recent)[-window_n:]
+        if len(recent) < window_n:
+            return
+
+        recent_med = float(statistics.median(recent))
+        base = max(1.0, float(self._health_lat_baseline))
+        mult = float(getattr(mod, "HEALTH_LATENCY_TREND_MULT", 3.0) or 3.0)
+        min_ms = float(getattr(mod, "HEALTH_LATENCY_TREND_MIN_MS", 300.0) or 0.0)
+        if recent_med < base * mult or recent_med < min_ms:
+            return
+
+        cooldown_min = float(getattr(mod, "HEALTH_LATENCY_TREND_COOLDOWN_MIN", 30) or 0.0)
+        now_dt = datetime.datetime.now()
+        last = self._health_lat_trend_alerted_at
+        if last is not None and (now_dt - last).total_seconds() < cooldown_min * 60.0:
+            return
+        self._health_lat_trend_alerted_at = now_dt
+        log_manager.health(
+            "[HealthTrend] 파이프라인 지연 일중 누적증가 — 최근 %d분 중앙값 %.0fms "
+            "= 세션 기준선 %.0fms의 %.1f배 (임계 %.1f배). 절대 임계(%.0fms) 도달 전 "
+            "선제 경보 — [S6Detail] 구간별 소요 확인 권장"
+            % (
+                window_n, recent_med, base, recent_med / base, mult,
+                float(self._health_policy.get("latency_warn_ms", HEALTH_LATENCY_WARN_MS)),
+            ),
+            "WARNING",
+        )
+
+    def _is_gbm_retrain_window(self) -> bool:
+        """[402차 후속7 P0-3] 장중 GBM 재학습 subprocess 실행 중 여부.
+
+        circuit_breaker가 CB⑤ 임계 완화 판단에 쓰는 것과 동일한 플래그를 그대로
+        읽어 두 경로의 판정이 어긋나지 않게 한다.
+        """
+        try:
+            return bool(getattr(self.circuit_breaker, "_gbm_retrain_active", False))
+        except Exception:
+            return False
 
     def _ensure_shap_tracker(self) -> None:
         all_feature_names = list(self.model.feature_names or [])
@@ -1319,6 +1410,21 @@ class TradingSystem:
         return X_scaled[:, h_idx], y
 
     def _refresh_shap_state(self, ts: str) -> None:
+        """[402차 후속7 P0-1b] 라운드로빈: 매분 1개 호라이즌만 계산.
+
+        배경(07-30 헬스 CRITICAL 딥다이브): 이 함수는 매분 1m/3m/5m 세 호라이즌
+        전부에 대해 permutation_importance(n_repeats=5)를 파이프라인 임계경로에서
+        동기 실행해왔다. 라벨 100건(SHAP_MIN_DATA_POINTS)이 채워지는 10:40경부터
+        S6 소요가 5ms → 160ms로 계단 점프하고 장 후반 850ms까지 자라 파이프라인
+        전체의 70%를 차지, CB⑤ 경고(>1000ms)를 상시 유발했다.
+
+        SHAP 점수는 대시보드 표시·주간 심사·DB 관측용이며 그 분(minute)의 매매
+        판단에는 쓰이지 않으므로, 매분 전량 대신 호라이즌을 번갈아 1개씩 갱신해도
+        정보 손실이 사실상 없다(각 호라이즌 3분 주기 갱신). 예상 효과 ≈ 1/3.
+
+        ShapTracker._history는 주 단위 dedup이라 갱신 빈도 저하의 영향 없음.
+        SHAP_REFRESH_ROUND_ROBIN=False로 종전(매분 전량) 동작 복원 가능.
+        """
         self._ensure_shap_tracker()
         if not self.model.is_ready() or self._shap_tracker is None:
             return
@@ -1328,48 +1434,66 @@ class TradingSystem:
             return
         self._shap_last_update_minute = minute_key
 
-        # ── 1m: 기존 ShapTracker(주간 심사·후보교체 상태 유지) ──────
+        _round_robin = bool(getattr(runtime_settings, "SHAP_REFRESH_ROUND_ROBIN", True))
+        if _round_robin:
+            _targets = (_SHAP_RR_HORIZONS[self._shap_rr_idx % len(_SHAP_RR_HORIZONS)],)
+            self._shap_rr_idx = (self._shap_rr_idx + 1) % len(_SHAP_RR_HORIZONS)
+        else:
+            _targets = _SHAP_RR_HORIZONS
+
+        for _h in _targets:
+            if _h == "1m":
+                self._refresh_shap_1m(ts)
+            else:
+                self._refresh_shap_horizon(ts, _h)
+
+    def _refresh_shap_1m(self, ts: str) -> None:
+        """1m: 기존 ShapTracker(주간 심사·후보교체 상태 유지) 경로."""
         horizon_model = self.model.models.get("1m")
         h_names_1m = list(getattr(self._shap_tracker, "feature_names", []) or [])
-        if horizon_model is not None and h_names_1m:
-            X_1m, y_1m = self._prep_shap_xy("1m", h_names_1m)
-            if X_1m is not None:
-                sample_n = min(120, len(X_1m))
-                updated = self._shap_tracker.update(
-                    horizon_model, X_1m, y_1m, sample_size=sample_n,
-                )
-                if updated:
-                    ranking = self._shap_tracker.get_current_ranking()
-                    if ranking:
-                        score_map = {row["feature"]: float(row["importance"]) for row in ranking}
-                        self._cached_shap_importance = score_map
-                        self._live_shap_ready = True
-                        save_shap_scores(ts, "1m", score_map)
-                        self._update_shap_dashboard()
-                else:
-                    logger.debug(
-                        "[ShapRefresh] 1m update() False — n=%d, tracker_feat=%d",
-                        len(X_1m), len(h_names_1m),
-                    )
+        if horizon_model is None or not h_names_1m:
+            return
+        X_1m, y_1m = self._prep_shap_xy("1m", h_names_1m)
+        if X_1m is None:
+            return
+        sample_n = min(120, len(X_1m))
+        updated = self._shap_tracker.update(
+            horizon_model, X_1m, y_1m, sample_size=sample_n,
+        )
+        if updated:
+            ranking = self._shap_tracker.get_current_ranking()
+            if ranking:
+                score_map = {row["feature"]: float(row["importance"]) for row in ranking}
+                self._cached_shap_importance = score_map
+                self._live_shap_ready = True
+                save_shap_scores(ts, "1m", score_map)
+                self._update_shap_dashboard()
+        else:
+            logger.debug(
+                "[ShapRefresh] 1m update() False — n=%d, tracker_feat=%d",
+                len(X_1m), len(h_names_1m),
+            )
 
-        # ── 3m/5m: [311차 후속9 신규] ShapTracker 상태와 분리된 단발 계산 ──
-        # 1m 전용 ShapTracker 인스턴스(_history/_current_importance/주간심사)를
-        # 공유하면 서로 다른 호라이즌 데이터로 매분 덮어써 오염되므로
-        # compute_horizon_importance()로 상태 없이 계산 후 DB만 직접 저장.
-        for _h in ("3m", "5m"):
-            _model_h = self.model.models.get(_h)
-            if _model_h is None:
-                continue
-            _h_names = get_available_feature_set(_h, self.model.feature_names) or []
-            if not _h_names:
-                continue
-            X_h, y_h = self._prep_shap_xy(_h, _h_names)
-            if X_h is None:
-                continue
-            _idx = np.random.choice(len(X_h), min(120, len(X_h)), replace=False)
-            _score_map = compute_horizon_importance(_model_h, X_h[_idx], y_h[_idx], _h_names)
-            if _score_map:
-                save_shap_scores(ts, _h, _score_map)
+    def _refresh_shap_horizon(self, ts: str, _h: str) -> None:
+        """3m/5m: [311차 후속9] ShapTracker 상태와 분리된 단발 계산.
+
+        1m 전용 ShapTracker 인스턴스(_history/_current_importance/주간심사)를
+        공유하면 서로 다른 호라이즌 데이터로 덮어써 오염되므로
+        compute_horizon_importance()로 상태 없이 계산 후 DB만 직접 저장.
+        """
+        _model_h = self.model.models.get(_h)
+        if _model_h is None:
+            return
+        _h_names = get_available_feature_set(_h, self.model.feature_names) or []
+        if not _h_names:
+            return
+        X_h, y_h = self._prep_shap_xy(_h, _h_names)
+        if X_h is None:
+            return
+        _idx = np.random.choice(len(X_h), min(120, len(X_h)), replace=False)
+        _score_map = compute_horizon_importance(_model_h, X_h[_idx], y_h[_idx], _h_names)
+        if _score_map:
+            save_shap_scores(ts, _h, _score_map)
 
     def _update_shap_dashboard(self) -> None:
         self._ensure_shap_tracker()
@@ -1702,6 +1826,9 @@ class TradingSystem:
                 exception_density_10m=exception_density_10m,
             )
             self._update_degraded_mode(health_level, latency_ms=latency_ms)
+            # [402차 후속7 P2-7] 절대 임계와 무관한 '누적 증가' 조기경보 —
+            # 경보 전용이며 health_level·Degraded 판정에는 관여하지 않는다.
+            self._check_latency_trend(latency_ms)
 
             self.dashboard.update_runtime_health({
                 "latency_ms": latency_ms,
@@ -1725,8 +1852,14 @@ class TradingSystem:
 
             # HEALTH 로그는 상태 변경 또는 비정상 구간에서만 발행해 노이즈를 줄인다.
             if health_level != self._last_health_level or health_level != "INFO":
+                # [402차 후속7 P0-3] 완화가 적용된 분은 반드시 로그에 남긴다 —
+                # 4000ms인데 WARNING이 아닌 이유를 사후에 추적할 수 없으면 안 됨.
+                _relax_tag = (
+                    " [GBM재학습중→lat임계 %.0f/%.0fms]" % self._effective_latency_thresholds()
+                    if self._is_gbm_retrain_window() else ""
+                )
                 log_manager.health(
-                    "[Health] level=%s degraded=%s | latency=%.0fms | quality=%.2f | cache_age=%.0fs | exceptions_10m=%.0f"
+                    "[Health] level=%s degraded=%s | latency=%.0fms | quality=%.2f | cache_age=%.0fs | exceptions_10m=%.0f%s"
                     % (
                         health_level,
                         "ON" if self._health_degraded_mode else "OFF",
@@ -1734,6 +1867,7 @@ class TradingSystem:
                         quality_score,
                         cache_age_sec,
                         exception_density_10m,
+                        _relax_tag,
                     ),
                     health_level,
                 )
@@ -1750,21 +1884,41 @@ class TradingSystem:
         exception_density_10m: float,
     ) -> str:
         p = self._health_policy
+        _lat_warn, _lat_crit = self._effective_latency_thresholds()
         if (
-            latency_ms >= float(p.get("latency_crit_ms", HEALTH_LATENCY_CRIT_MS))
+            latency_ms >= _lat_crit
             or quality_score < float(p.get("quality_crit", HEALTH_QUALITY_CRIT))
             or cache_age_sec >= float(p.get("cache_age_crit_sec", HEALTH_CACHE_AGE_CRIT_SEC))
             or exception_density_10m >= float(p.get("exception_crit_10m", HEALTH_EXCEPTION_DENSITY_CRIT_10M))
         ):
             return "CRITICAL"
         if (
-            latency_ms >= float(p.get("latency_warn_ms", HEALTH_LATENCY_WARN_MS))
+            latency_ms >= _lat_warn
             or quality_score < float(p.get("quality_warn", HEALTH_QUALITY_WARN))
             or cache_age_sec >= float(p.get("cache_age_warn_sec", HEALTH_CACHE_AGE_WARN_SEC))
             or exception_density_10m >= float(p.get("exception_warn_10m", HEALTH_EXCEPTION_DENSITY_WARN_10M))
         ):
             return "WARNING"
         return "INFO"
+
+    def _effective_latency_thresholds(self) -> tuple:
+        """[402차 후속7 P0-3] 현재 시점에 적용할 (latency_warn_ms, latency_crit_ms).
+
+        장중 GBM 재학습 창에서는 CPU 경합으로 파이프라인이 구조적으로 3~4초대까지
+        느려지는 것이 정상이므로 임계를 완화한다 — CB⑤가 같은 창에서 PAUSE 임계를
+        ×2로 완화하는 것과 동일한 취지. 완화 배수 근거는 config/settings.py의
+        HEALTH_RETRAIN_LATENCY_*_MULT 주석 참조.
+        """
+        p = self._health_policy
+        warn = float(p.get("latency_warn_ms", HEALTH_LATENCY_WARN_MS))
+        crit = float(p.get("latency_crit_ms", HEALTH_LATENCY_CRIT_MS))
+        if not bool(p.get("retrain_relax_enabled", True)):
+            return warn, crit
+        if not self._is_gbm_retrain_window():
+            return warn, crit
+        warn *= float(p.get("retrain_latency_warn_mult", 5.0))
+        crit *= float(p.get("retrain_latency_crit_mult", 2.0))
+        return warn, crit
 
     def _update_degraded_mode(self, health_level: str, latency_ms: float = 0.0) -> None:
         p = self._health_policy
@@ -3028,12 +3182,36 @@ class TradingSystem:
                 price=close, volume=_vpin_d_buy + _vpin_d_sell,
                 is_buy=(_vpin_d_buy >= _vpin_d_sell),
             )
-        logger.info(
+        # [402차 후속7 P1-5] 틱 단위 추적 로그를 DEBUG로 강등하고 INFO 하트비트로 대체.
+        # 배경: 아래 4줄([TickUI] begin/minute_chart_tick/update_price/end)이 틱마다
+        #   (≈25줄/초) INFO로 기록돼 2026-07-30 SYSTEM.log의 99.4%
+        #   (552,482줄 / 47MB, logs 폴더 누적 6.1GB)를 차지했다. 파일 write는 이
+        #   콜백이 도는 메인(GUI) 스레드에서 동기 수행되므로 같은 날 62건 관측된
+        #   _tick_header 블로킹(최대 9.5초)에도 직접 기여한다.
+        # 원래 목적("TickUI 5분 침묵 → 폭발" 조기감지 — collection/cybos/
+        #   api_connector.py:201 주석)은 유지해야 하므로, 매 틱 대신
+        #   TICKUI_HEARTBEAT_SEC 주기로 생존 1줄을 INFO로 남긴다. 침묵 감지에는
+        #   이것으로 충분하다. 틱 단위 전량 추적은 TICKUI_TRACE_ENABLED=True로 복원.
+        # getattr 기본값: 이 경로는 COM 콜백이라 예기치 않은 AttributeError가
+        # 곧바로 콜백 예외로 이어진다 — 기존 _last_tick_chart_update와 같은 방어 패턴.
+        self._tickui_ticks = getattr(self, "_tickui_ticks", 0) + 1
+        _tick_trace = bool(getattr(runtime_settings, "TICKUI_TRACE_ENABLED", False))
+        _tick_log = logger.info if _tick_trace else logger.debug
+        _tick_log(
             "[TickUI] begin code=%s close=%.2f ts=%s",
             self.realtime_data.code,
             close,
             bar.get("ts"),
         )
+        _hb_sec = float(getattr(runtime_settings, "TICKUI_HEARTBEAT_SEC", 60.0) or 0.0)
+        if _hb_sec > 0:
+            _hb_now = time.monotonic()
+            if _hb_now - getattr(self, "_tickui_last_heartbeat", 0.0) >= _hb_sec:
+                self._tickui_last_heartbeat = _hb_now
+                logger.info(
+                    "[TickUI] alive ticks=%d code=%s close=%.2f",
+                    self._tickui_ticks, self.realtime_data.code, close,
+                )
         if close > 0:
             self._last_pipeline_price = close
             # [266차] tick-level 하드스톱 감지 — COM 콜백 내 dynamicCall 금지로 flag만 세팅.
@@ -3084,15 +3262,15 @@ class TradingSystem:
             _last_tick_ui = getattr(self, "_last_tick_chart_update", 0.0)
             if _now_tick - _last_tick_ui >= 0.10:   # 100ms 미만이면 스킵
                 self._last_tick_chart_update = _now_tick
-                logger.info("[TickUI] minute_chart_tick code=%s close=%.2f", self.realtime_data.code, close)
+                _tick_log("[TickUI] minute_chart_tick code=%s close=%.2f", self.realtime_data.code, close)
                 self.dashboard.minute_chart_tick(close, bar.get("ts"))
-        logger.info("[TickUI] update_price code=%s close=%.2f", self.realtime_data.code, float(bar["close"]))
+        _tick_log("[TickUI] update_price code=%s close=%.2f", self.realtime_data.code, float(bar["close"]))
         self.dashboard.update_price(
             price  = bar["close"],
             change = bar["close"] - bar.get("open", bar["close"]),
             code   = self.realtime_data.code,
         )
-        logger.info("[TickUI] end code=%s close=%.2f", self.realtime_data.code, float(bar["close"]))
+        _tick_log("[TickUI] end code=%s close=%.2f", self.realtime_data.code, float(bar["close"]))
 
     def _process_tick_stop(self) -> None:
         """[266차] tick-level 하드스톱 실주문 전송 — 메인 스레드에서만 호출.
@@ -6004,19 +6182,28 @@ class TradingSystem:
             f"{_CORR_SHORT.get(p, p)}+{v:.2f}"
             for p, v in _corr_items if v > 0
         )[:60]  # 레이블 넘침 방지
+        # [402차 후속7 P0-1a] 종전 단일 "dashboard" 마커를 4개로 분해.
+        # 배경: 07-30 헬스 CRITICAL 딥다이브에서 S6가 파이프라인의 70%(855ms)를
+        # 차지하고 그 전량이 "dashboard" 한 마커에 몰려 있었으나, 이 마커가
+        # get_feature_importance / _refresh_shap_state / _get_param_corr_display /
+        # update_prediction 4개를 한 덩어리로 재고 있어 원인 분해가 불가능했다.
+        _s6_prof.append(("imp", time.perf_counter()))
 
         self._refresh_shap_state(ts)
+        _s6_prof.append(("shap", time.perf_counter()))
+
         if _gbm_ready and self._cached_shap_importance:
             _params_ui = {
                 pname: self._cached_shap_importance.get(fname, 0.0)
                 for pname, fname in _PARAM_FEAT_MAP.items()
             }
         _corr_str = self._get_param_corr_display()
+        _s6_prof.append(("corr", time.perf_counter()))
 
         self.dashboard.update_prediction(close, _preds_ui, _params_ui, confidence,
                                          corr=_corr_str, min_conf=actual_min_conf,
                                          bar_ages=self._hz_bar_age)
-        _s6_prof.append(("dashboard", time.perf_counter()))
+        _s6_prof.append(("dash_ui", time.perf_counter()))
 
         # GBM 미학습 시 모델 상태 행 재표시 (update_prediction이 행을 숨겼으므로)
         if not _gbm_ready:
@@ -9415,6 +9602,11 @@ class TradingSystem:
         self._restored_corr_str = ""
         self._live_shap_ready = False
         self._cached_shap_importance = {}
+        # [402차 후속7 P2-7] 지연 추세 기준선은 '그날의 자기 자신' 기준이므로 일일 리셋 필수
+        self._health_lat_baseline_buf = []
+        self._health_lat_baseline = None
+        self._health_lat_recent.clear()
+        self._health_lat_trend_alerted_at = None
         self._verified_today = 0
         for _h in self._horizon_runtime_state:
             self._horizon_runtime_state[_h] = {

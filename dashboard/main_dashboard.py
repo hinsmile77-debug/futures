@@ -6957,6 +6957,14 @@ class PnlHistoryPanel(QWidget):
 
 class LogPanel(QWidget):
     _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+    # [402차 후속7 P2-8] 탭별 로그 QTextEdit 보관 블록 상한.
+    # QTextEdit은 QPlainTextEdit과 달리 setMaximumBlockCount()가 없어 문서가
+    # 무제한으로 자란다 — 세션이 길어질수록 리치텍스트 문서 메모리가 단조 증가한다.
+    # 2000줄이면 어느 탭이든 반나절 이력을 덮으며, 그보다 오래된 것은 어차피
+    # logs/*.log 파일에서 봐야 한다(대시보드는 실시간 관찰용).
+    # 주: 2026-07-30 실측에서 Qt 연산시간 자체는 종일 평탄했으므로 이 항목은
+    #     당일 지연의 원인이 아니라 장시간 세션의 메모리 누적 대비다.
+    _MAX_LOG_BLOCKS = 2000
 
     def __init__(self):
         super().__init__()
@@ -7336,8 +7344,29 @@ class LogPanel(QWidget):
         lbl.setText(f"{avg_net_pnl_krw:+,.0f}원 ({cnt}건,승{win_rate*100:.0f}%)")
         lbl.setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
 
-    @staticmethod
-    def _insert_html_left(tb: QTextEdit, html: str) -> None:
+    @classmethod
+    def _trim_log_blocks(cls, tb: QTextEdit) -> None:
+        """[402차 후속7 P2-8] 문서가 _MAX_LOG_BLOCKS를 넘으면 오래된 블록부터 삭제.
+
+        QTextEdit에는 QPlainTextEdit.setMaximumBlockCount()에 해당하는 기능이
+        없어 직접 잘라낸다. 삽입은 1줄씩 일어나므로 통상 1블록만 제거된다.
+        스크롤은 삽입부에서 항상 맨 아래로 보정하므로 위치가 튀지 않는다.
+        """
+        try:
+            doc = tb.document()
+            extra = doc.blockCount() - cls._MAX_LOG_BLOCKS
+            if extra <= 0:
+                return
+            cursor = QTextCursor(doc)
+            cursor.movePosition(QTextCursor.Start)
+            cursor.movePosition(QTextCursor.NextBlock, QTextCursor.KeepAnchor, extra)
+            cursor.removeSelectedText()
+            cursor.deleteChar()   # 선택 삭제 후 남는 빈 블록 제거
+        except Exception:
+            pass
+
+    @classmethod
+    def _insert_html_left(cls, tb: QTextEdit, html: str) -> None:
         """QTextEdit에 HTML을 좌측 정렬 블록으로 삽입.
 
         tb.append()는 이전 블록의 alignment를 상속하므로
@@ -7351,11 +7380,13 @@ class LogPanel(QWidget):
         cursor.insertBlock(fmt)
         cursor.insertHtml(html)
 
+        cls._trim_log_blocks(tb)
+        cursor.movePosition(QTextCursor.End)
         tb.setTextCursor(cursor)
         tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
 
-    @staticmethod
-    def _insert_html_center(tb: QTextEdit, html: str) -> None:
+    @classmethod
+    def _insert_html_center(cls, tb: QTextEdit, html: str) -> None:
         """HTML을 가운데 정렬 블록으로 삽입 (구분선용)."""
         fmt = QTextBlockFormat()
         fmt.setAlignment(Qt.AlignCenter)
@@ -7365,6 +7396,8 @@ class LogPanel(QWidget):
         cursor.insertBlock(fmt)
         cursor.insertHtml(html)
 
+        cls._trim_log_blocks(tb)
+        cursor.movePosition(QTextCursor.End)
         tb.setTextCursor(cursor)
         tb.verticalScrollBar().setValue(tb.verticalScrollBar().maximum())
 

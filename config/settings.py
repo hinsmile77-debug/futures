@@ -1540,6 +1540,25 @@ HEALTH_CACHE_AGE_CRIT_SEC = 300.0
 HEALTH_EXCEPTION_DENSITY_WARN_10M = 6.0
 HEALTH_EXCEPTION_DENSITY_CRIT_10M = 12.0
 
+# [402차 후속7 P0-3] 장중 GBM 재학습 창(circuit_breaker._gbm_retrain_active=True) 동안
+# 헬스 latency 임계 완화 배수.
+# 배경: retrain_intraday.py는 64비트 독립 subprocess(main.py:_start_gbm_retrain_subprocess)로
+#   20000행 × 6호라이즌을 ~35초간 학습하며 CPU를 점유한다. 그 창에서 파이프라인이
+#   3.1~4.4초로 튀는 것은 구조적·예측 가능한 정상 동작이며, CB⑤는 이미 PAUSE 임계를
+#   ×2(5000→10000ms)로 완화해 오발동을 막고 있다(circuit_breaker.record_pipe_latency).
+#   그러나 _classify_health_level()에는 같은 완화가 없어 30분마다 확정적으로 헬스
+#   WARNING이 찍히고, 그것이 Degraded 선제차단 streak을 채웠다
+#   (2026-07-30 실측: 09:38·10:36·11:14·11:44·12:14·13:38 6회 전부 재학습 직후).
+# 값 근거:
+#   WARN ×5.0 → 5000ms. 관측된 재학습 창 최대 지연 4385ms를 덮으면서, 그 이상은
+#              재학습으로 설명되지 않는 진짜 이상으로 보고 경고를 유지한다.
+#   CRIT ×2.0 → 10000ms. CB⑤가 재학습 중 실제로 PAUSE를 발동하는 임계
+#              (CB_PIPE_PAUSE_MS × 2)와 정확히 일치시켜, 헬스 CRITICAL이 "실제 조치가
+#              일어나는 지점"과 어긋나지 않도록 한다.
+HEALTH_RETRAIN_RELAX_ENABLED = True
+HEALTH_RETRAIN_LATENCY_WARN_MULT = 5.0
+HEALTH_RETRAIN_LATENCY_CRIT_MULT = 2.0
+
 # [304차] exceptions_10m이 실제 예외가 아니라 정책성 WARNING 상태통지 로그(예: PSI CRITICAL
 # 고착 버그로 매분 찍히는 [RegimeFingerprint])까지 세어 Degraded Mode를 오발동시키는 문제
 # 확인 (07-08, 09:58부터 종일 Degraded ON 고착 → 자동진입 conf 62% 요구로 A~C등급 전부 차단).
@@ -1553,7 +1572,23 @@ HEALTH_EXCEPTION_DENSITY_CRIT_10M = 12.0
 # 이상 신호([PendingOrder] EXIT stuck 등 CRITICAL, [FixB]/[ExitAttempt]의 ERROR 분기,
 # [ChejanCodeMismatch]/[OrderSync]의 방향불일치 CRITICAL 등)와 태그를 공유하는 항목은
 # 오탐지를 놓치지 않도록 의도적으로 제외 목록에서 뺐다.
+#
+# [402차 후속7 P0-2] [PipePerf]·[CB⑤] 추가 — 예외밀도의 latency 자기중복 제거.
+# 근거(2026-07-30 헬스 CRITICAL 딥다이브, 실측):
+#   · 이 둘은 동일한 조건(_pipe_ms > HEALTH_LATENCY_WARN_MS)에서 각각 1건씩
+#     log_manager 버퍼에 WARNING을 넣는다(main.py:_run_minute_pipeline 말미 +
+#     circuit_breaker.record_pipe_latency) → "느린 1분 = exceptions +2".
+#     즉 exceptions_10m ≥ 12 ⟺ 10분 중 6분이 1000ms 초과 ⟺ 이미 WARNING인 상태.
+#   · 07-30 SYSTEM 레이어 WARNING+ 중 제외태그를 뺀 나머지 230건의 94%(216건)가
+#     이 두 태그였고, 그 결과 헬스 CRITICAL 30건 전부가 exceptions_10m 단독 발동
+#     (30건 모두 latency 896~4084ms로 CRIT 임계 5000ms 미달, quality 1.00,
+#      cache_age 최대 165s로 CRIT 300s 미달)이었다.
+#   · latency는 이미 _classify_health_level()의 첫 번째 조건으로 직접 반영되므로
+#     제외해도 정보 손실이 없다. 제외 후 CRITICAL은 설계의도대로
+#     "latency ≥ 5000ms(CB⑤ 실발동) 또는 진짜 예외 12건"에서만 발동한다.
 HEALTH_EXCEPTION_EXCLUDE_TAGS = [
+    "[PipePerf]",
+    "[CB⑤]",
     "[RegimeFingerprint]",
     "[ScalerRefresh]",
     "[ConfTrend",
@@ -1581,6 +1616,24 @@ HEALTH_EXCEPTION_EXCLUDE_TAGS = [
 
 # 헬스 탭 미니 스파크라인 표기 범위 (최근 N분)
 HEALTH_TREND_WINDOW_MIN = 30
+
+# [402차 후속7 P2-7] 파이프라인 지연 "일중 누적 증가" 조기경보
+# 문제의식: 2026-07-30 사고의 본질은 "09:00부터 자라던 지연을 13:45 CRITICAL이
+#   터지고 나서야 알았다"는 점이다. S6는 09시 29ms → 14:30 855ms로 30배 커졌지만
+#   절대 임계(1000ms)를 넘기 전까지 어떤 경보도 없었고, 세부 계측([S6Detail])은
+#   INFO로만 남아 대시보드에 보이지 않았다. 절대값이 아니라 "그날의 자기 자신 대비
+#   몇 배가 됐는가"를 보면 임계 도달 2~3시간 전에 잡힌다.
+# 판정: 세션 기준선(장 초반 안정 구간의 중앙값) 대비 최근 창 중앙값이 MULT배 이상
+#   이고 동시에 MIN_MS 이상이면 1회 경고. 중앙값을 쓰는 이유는 30분 주기 GBM 재학습
+#   스파이크(3~4초) 한두 개에 평균이 끌려가지 않게 하기 위함.
+# 표본 제외: 09:10 이전(장 시작 버스트)과 GBM 재학습 창은 양쪽 버퍼 모두에서 제외 —
+#   구조적으로 느린 것이 정상인 구간이라 기준선도 최근값도 오염시키면 안 된다.
+HEALTH_LATENCY_TREND_ENABLED = True
+HEALTH_LATENCY_TREND_BASELINE_N = 20    # 기준선 표본 수(분) — 09:10 이후 20분
+HEALTH_LATENCY_TREND_WINDOW_N = 10      # 최근 창 크기(분)
+HEALTH_LATENCY_TREND_MULT = 3.0         # 기준선 대비 배수
+HEALTH_LATENCY_TREND_MIN_MS = 300.0     # 절대 하한 — 5ms→20ms 같은 잡음 경보 방지
+HEALTH_LATENCY_TREND_COOLDOWN_MIN = 30  # 동일 경보 재발행 쿨다운(분)
 
 # 자동 Degraded Mode 정책
 HEALTH_DEGRADED_ENABLED = True
@@ -1759,6 +1812,18 @@ SHAP_MAX_REPLACE_DAILY = 1  # 하루 최대 교체 수
 SHAP_RANK_IMPROVE_MIN = 3  # 최소 순위 개선폭
 SHAP_MIN_DATA_POINTS = 100  # 최소 누적 데이터
 
+# [402차 후속7 P0-1b] 라이브 SHAP 갱신 라운드로빈
+# True  : 매분 1m/3m/5m 중 1개 호라이즌만 갱신 (각 호라이즌 3분 주기)
+# False : 종전 동작 — 매분 3개 호라이즌 전량 갱신
+# 배경: 매분 전량 permutation_importance가 파이프라인 임계경로(STEP6)에서 동기
+#       실행돼 장 후반 S6 855ms(파이프라인의 70%) → CB⑤ 상시 경고 → 예외밀도
+#       누적 → 헬스 CRITICAL 30건·Degraded 63분(2026-07-30) 유발.
+#       SHAP 점수는 대시보드·주간심사·DB 관측 전용이라 분 단위 실시간성 불필요.
+# 롤백: False로 되돌리면 종전 동작. HEALTH_POLICY_HOT_RELOAD_ENABLED=True면
+#       _maybe_reload_health_policy()가 settings 모듈 전체를 importlib.reload 하므로
+#       재기동 없이 다음 분봉부터 반영된다.
+SHAP_REFRESH_ROUND_ROBIN = True
+
 # ── Slack 알림 ─────────────────────────────────────────────────
 # 우선순위: secrets.py > 환경변수 SLACK_BOT_TOKEN (Git 미포함)
 SLACK_BOT_TOKEN = _SECRET_SLACK_TOKEN or os.getenv("SLACK_BOT_TOKEN", "")
@@ -1861,5 +1926,15 @@ ATR_MULTIPLE_RECAL_DELTA_UPDATE = 15.0  # 발동률 %p 변화 — UPDATE
 
 # ── 로깅 설정 ──────────────────────────────────────────────────
 LOG_LEVEL = logging.INFO
+
+# [402차 후속7 P1-5] TickUI 추적 로그 정책 (main.py:_on_tick_price_update)
+# TICKUI_TRACE_ENABLED : True면 틱마다 begin/minute_chart_tick/update_price/end 4줄을
+#   INFO로 기록(종전 동작). 2026-07-30 실측으로 이 4줄이 SYSTEM.log 552,482줄 중
+#   99.4%를 차지하고 47MB/일을 생성, 메인(GUI) 스레드 동기 write로 틱 핸들러
+#   블로킹에도 기여함이 확인돼 기본 False(DEBUG로 강등)로 전환.
+# TICKUI_HEARTBEAT_SEC : 강등 후에도 "틱 수신 침묵" 조기감지를 유지하기 위한
+#   생존 로그 주기(초). 0이면 하트비트 없음. 60초 → 하루 약 390줄.
+TICKUI_TRACE_ENABLED = False
+TICKUI_HEARTBEAT_SEC = 60.0
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
