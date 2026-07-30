@@ -2,6 +2,158 @@
 
 ---
 
+## 2026-07-30 (MW0601 402차 후속7 — 운영헬스 CRITICAL 딥다이브 + 개선 8건 구현)
+
+### [사건] 07-30 헬스 CRITICAL 30건 · Degraded ON 63분 — 직전 8거래일은 0
+
+| 일자 | CRITICAL | WARNING | Degraded ON |
+|---|---|---|---|
+| 07-20 ~ 07-29 (8거래일) | 0~1건 | 9~15건 | **0분** |
+| **07-30** | **30건** | **63건** | **63분** |
+
+만성적으로 쌓이던 문제가 이날 임계선을 넘은 것. 실매매 손실은 사실상 없었으나
+(차단 32건 모두 conf 28~41%로 정상 zone 임계에도 미달) 신호가 강한 날이면
+`HEALTH_DEGRADED_MIN_CONF=0.62` 요구로 A~C등급 전부가 차단되는 구조였다.
+
+### [근본원인 1] CRITICAL 등급이 latency의 자기중복 계수였다 (설계의도 무력화)
+
+CRITICAL 30건 **전수**가 `exceptions_10m ≥ 12` 단독 발동이었다. 실측 검증:
+- 30건 모두 latency 896~4084ms (CRIT 임계 5000ms **미달**), quality 1.00,
+  cache_age 최대 165s (CRIT 300s 미달) — 즉 latency/quality/cache 조건은 0건.
+- `exceptions_10m`의 94%(216/230건)가 `[PipePerf]`+`[CB⑤]` 두 태그. 이 둘은
+  **동일 조건**(`_pipe_ms > HEALTH_LATENCY_WARN_MS`)에서 각각 1건씩 log_manager
+  버퍼에 WARNING을 넣는다(main.py 파이프라인 말미 + `circuit_breaker.record_pipe_latency`).
+- 따라서 `exceptions_10m ≥ 12` ⟺ **10분 중 6분이 1000ms 초과** ⟺ 이미 WARNING인 상태.
+  CRITICAL이 WARNING 대비 새로운 정보를 0비트도 담고 있지 않았다.
+
+실측 시퀀스가 이 산수 그대로 움직였다 — 13:44 WARNING(lat=1166, exc=11) →
+13:45 **CRITICAL(lat=914, exc=12)**. latency가 오히려 내려갔는데 등급은 올라갔다.
+
+**Why**: 304차(RegimeFingerprint)·307차(주문흐름 로그)가 고쳤던 것과 정확히 같은
+계열의 자기참조 오염이고, 이번엔 오염원이 **latency 자신**이었다. 상태 통지성
+로그를 예외로 세는 위험은 이미 두 번 학습했는데, "지표 A의 경고 로그가 지표 A의
+2차 판정에 다시 입력된다"는 형태는 놓치고 있었다.
+
+**How to apply**: 헬스/경보 지표를 추가할 때 "이 카운터에 들어오는 로그가 이미
+같은 판정식의 다른 항으로 반영되고 있지 않은가"를 먼저 확인할 것. 특히 임계
+초과 시 자동으로 로그를 남기는 지표는 그 로그가 다른 임계식의 입력이 되면
+자기증폭 루프가 된다.
+
+### [근본원인 2] STEP6 내 SHAP가 세션 내내 단조 증가 (5ms → 850ms)
+
+`[S6Detail]` 30분 버킷 집계 — S6가 파이프라인의 70%를 차지:
+
+```
+버킷    total  S4   S5   S6
+09:00    291   64  163   29
+11:00    468   56  113  167
+13:00    738   60  126  513
+14:30   1216   87  127  855
+```
+
+S6 내부는 `dashboard` 마커 단독(나머지 `checklist_pre`/`ensemble`/`gates`/
+`meta_gate`는 종일 2~6ms 평탄). 그 마커의 시계열:
+
+```
+09:00~10:35    5ms
+10:40        161ms   ← 30배 계단 점프
+12:30        410ms
+14:30        842ms
+```
+
+**10:40 계단이 결정적 증거** — `SHAP_MIN_DATA_POINTS=100`이 채워지는 시점과
+정확히 일치. 그 전까지 `_prep_shap_xy`가 None을 반환해 스킵되던 경로가 켜진다.
+`_refresh_shap_state`가 매분 1m/3m/5m 세 호라이즌에 대해
+`permutation_importance(n_repeats=5)`를 **파이프라인 임계경로에서 동기 실행**하고
+있었다. 대시보드 표시·DB 관측용 지표가 매매 판단 경로를 막고 있던 구조.
+
+**기각한 가설**: "세션 경과에 따른 Qt/GUI 노후화". ConfTrend `qt_apply`가 행수 30
+고정에서 종일 368→236→251ms로 **평탄/감소** — Qt 자체는 느려지지 않았다.
+
+### [근본원인 3] 재학습 창 3.1~4.4초 스파이크가 헬스에서만 완화되지 않았다
+
+09:37·10:35·11:13·11:43·12:13·13:37·14:14·14:52 — 전부
+`retrain_intraday_*.log` 실행시각 직후. `record_pipe_latency`는 이 창에서 CB⑤
+PAUSE 임계를 ×2로 완화하는데 `_classify_health_level`에는 같은 완화가 없어
+30분마다 확정적으로 헬스 WARNING이 찍히고 Degraded 선제차단 streak을 채웠다.
+
+부수 확인: `circuit_breaker.py`의 완화 사유 주석이 "sklearn GIL 간헐 보유"였으나
+현 구조는 `_start_gbm_retrain_subprocess()`가 띄우는 **64비트 독립 subprocess**라
+GIL을 공유하지 않는다. 실제 원인은 20000행×6호라이즌 학습(~35초)의 CPU 경합.
+
+### [결정] 개선 8건 구현 — 전부 실측 재생으로 효과 검증
+
+| # | 항목 | 파일 | 검증 결과 |
+|---|---|---|---|
+| P0-1a | S6 `dashboard` 마커 → `imp`/`shap`/`corr`/`dash_ui` 4분해 | main.py | 원인 분해 가능해짐 |
+| P0-1b | SHAP 매분 3호라이즌 전량 → **분당 1호라이즌 라운드로빈** | main.py, settings | 예상 ≈ 1/3 |
+| P0-2 | `HEALTH_EXCEPTION_EXCLUDE_TAGS`에 `[PipePerf]`·`[CB⑤]` | settings | **CRITICAL 30건 → 0건** |
+| P0-3 | 재학습 창 latency 임계 완화 (WARN ×5=5000 / CRIT ×2=10000) | main.py, settings | **스파이크 8건 전부 INFO화** |
+| P1-4 | ConfTrend 셀 기록 중 모델 신호 차단 + layoutChanged 1회 | conf_trend_widget | **245.5ms → 8.0ms (-96.7%)** |
+| P1-5 | TickUI 4줄 DEBUG 강등 + 60초 생존 하트비트 | main.py, settings | 552,482줄 → 약 390줄/일 |
+| P1-6 | HEALTH 전용 로그 파일 분리 (WARN.log 합류는 유지) | utils/logger, log_manager | 타임라인 단일 파일화 |
+| P2-7 | 지연 **일중 누적증가** 조기경보 (`[HealthTrend]`) | main.py, settings | **13:19 발화 = 첫 CRITICAL 26분 전** |
+| P2-8 | 로그 QTextEdit 블록 상한 2000 트리밍 | main_dashboard | 장시간 세션 메모리 누적 대비 |
+
+### [설계근거] P0-2가 탐지력을 잃지 않는 이유
+
+`latency`는 이미 `_classify_health_level`의 **첫 번째 조건**으로 직접 반영된다.
+또 진짜 CB⑤ PAUSE가 나면 `_trigger_pause`가 남기는 `[CB]` 태그는 제외하지 않았고
+(prefix가 `[CB⑤]`와 다름), latency ≥ 5000ms 경로로도 CRITICAL이 잡힌다. 즉 제외해도
+정보 손실 0. 재생 검증에서 latency 기인 WARNING 61건은 그대로 유지됨을 확인.
+
+### [설계근거] P0-3 완화 배수
+
+- WARN ×5.0 → 5000ms: 관측된 재학습 창 최대 지연 4385ms를 덮되, 그 이상은
+  재학습으로 설명되지 않는 진짜 이상으로 보고 경고를 유지.
+- CRIT ×2.0 → 10000ms: CB⑤가 재학습 중 **실제로 PAUSE를 발동하는 임계**
+  (`CB_PIPE_PAUSE_MS × 2`)와 정확히 일치 — 헬스 CRITICAL이 "실제 조치가 일어나는
+  지점"과 어긋나지 않게 함.
+- 완화가 적용된 분은 `[Health]` 로그에 `[GBM재학습중→lat임계 …]` 태그를 붙여
+  "4000ms인데 왜 WARNING이 아닌가"를 사후 추적 가능하게 했다.
+
+### [설계근거] P1-4 — `setUpdatesEnabled(False)`가 왜 효과가 없었나
+
+이미 적용돼 있었는데도 30행×10열=300셀 갱신에 236~368ms(셀당 ~1ms)가 걸렸다.
+원인은 헤더의 0~6열 `ResizeToContents` + 7~9열 `Stretch`. Qt는 `dataChanged`마다
+해당 섹션을 재측정하고 `sizeHintForColumn()`은 그 열의 전 행을 훑으므로 셀 1개
+갱신이 O(rows) 작업이 되어 전체가 O(rows²×cols)가 된다.
+`setUpdatesEnabled(False)`는 **페인팅만** 막고 이 레이아웃 재계산은 막지 못한다.
+모델 신호를 막아 일괄 기록 후 `layoutChanged` 1회로 재측정을 300회 → 1회로 축소.
+오프스크린 Qt 벤치가 프로덕션 수치(245.5ms)를 그대로 재현했고 8.0ms로 떨어졌다.
+
+**Why**: "이미 최적화 주석이 붙어 있다"가 "최적화가 실제로 동작한다"를 뜻하지
+않는다. Qt에서 페인팅 억제와 레이아웃/모델 신호 억제는 다른 레이어다.
+
+### [설계근거] P2-7 — 절대 임계가 아니라 "그날의 자기 자신 대비"
+
+이 사건의 본질은 "09:00부터 자라던 지연을 13:45 CRITICAL이 터지고 나서야 알았다"는
+점이다. S6는 30배 커졌지만 절대 임계(1000ms) 도달 전까지 어떤 경보도 없었고,
+`[S6Detail]`은 INFO로만 남아 대시보드에 보이지 않았다.
+세션 기준선(09:10 이후 20분 중앙값) 대비 최근 10분 중앙값이 3배 이상 + 300ms 이상이면
+경보. 오늘 시계열 재생 시 **09:29 기준선 237ms 확정 → 13:19 경보(중앙값 794ms,
+3.3배)**, 첫 CRITICAL보다 **26분 앞선다**. 그 시점 latency는 아직 794ms로 절대
+임계 미달이었다 — 설계 목적 그대로.
+중앙값을 쓰는 이유는 30분 주기 재학습 스파이크 한두 개에 평균이 끌려가지 않게 하기
+위함이고, 09:10 이전·재학습 창은 기준선과 최근창 양쪽에서 제외한다.
+
+### [검증]
+
+- `python -m pytest tests/` 10 passed
+- `scripts/validate_health_policy_hotreload.py` → RESULT: PASS (신규 정책 키 포함)
+- 오늘 실측 로그 재생 검증 20항목 전부 통과 (WARN.log·SYSTEM.log 파싱 기반)
+- 오프스크린 Qt 런타임 검증 8항목 전부 통과 (P1-4 성능, P2-8 트리밍 정합성)
+- py37_32(3.7.13 32bit)에서 전 파일 컴파일 확인
+
+### [롤백 스위치]
+
+`SHAP_REFRESH_ROUND_ROBIN`, `HEALTH_RETRAIN_RELAX_ENABLED`,
+`HEALTH_LATENCY_TREND_ENABLED`, `TICKUI_TRACE_ENABLED` — 전부 settings 플래그이며
+`HEALTH_POLICY_HOT_RELOAD`가 settings 모듈 전체를 `importlib.reload` 하므로
+재기동 없이 다음 분봉부터 반영된다.
+
+---
+
 ## 2026-07-29 (MW0601 402차 후속6 — Slack 알림 복구 보류 결정, 재론 금지)
 
 ### [결정] 사용자 결정 — Slack 알림(`message_limit_exceeded`) 복구는 당분간 보류

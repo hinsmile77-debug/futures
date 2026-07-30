@@ -419,8 +419,14 @@ class CircuitBreaker:
 
         예외1: 09:00~09:10 장 시작 직후는 EarlyWarmup·GBM PreRetrain이 겹쳐 느림.
                이 구간은 9000ms로 완화.
-        예외2: GBM 재학습 스레드 실행 중(_gbm_retrain_active=True)은 sklearn GIL
-               간헐 보유로 S2가 구조적으로 ~5s 블로킹. CB_PIPE_PAUSE_MS × 2로 완화.
+        예외2: 장중 GBM 재학습 실행 중(_gbm_retrain_active=True)은 파이프라인이
+               구조적으로 3~5초대까지 느려진다. CB_PIPE_PAUSE_MS × 2로 완화.
+               [402차 후속7 주석 정정] 종전 주석은 원인을 "sklearn GIL 간헐 보유"로
+               설명했으나, 재학습은 main.py:_start_gbm_retrain_subprocess()가 띄우는
+               64비트 **독립 subprocess**라 GIL을 공유하지 않는다. 실제 원인은
+               20000행 × 6호라이즌 학습(~35초)이 코어를 점유하는 CPU 경합이다.
+               완화 조치 자체는 그대로 타당하며 값도 변경하지 않는다.
+               (2026-07-30 실측: 재학습 직후 분 파이프라인 3116~4385ms)
         """
         # DBG-CB latency 필드 갱신 — status_dict()의 last_latency가 0.0 고착되던 문제 수정
         # record_api_latency가 Cybos에서 호출 안 됨 → pipe_ms를 초 단위로 대입

@@ -67,14 +67,19 @@ def _get_cross_thread_logger() -> logging.Logger:
         _cross_thread_logger = logger
     return _cross_thread_logger
 
-# 대시보드 레이어 → 파일 로거 레이어 매핑 (HEALTH는 전용 파일이 없어 SYSTEM으로 합류)
+# 대시보드 레이어 → 파일 로거 레이어 매핑
+# [402차 후속7 P1-6] HEALTH → 전용 파일(YYYYMMDD_HEALTH.log)로 분리.
+# 종전 "HEALTH → SYSTEM" 합류는 SYSTEM 로거의 _MaxLevelFilter를 타면서 헬스
+# 타임라인을 SYSTEM.log(INFO)와 WARN.log(WARNING+) 두 파일로 쪼갰고, SYSTEM.log
+# 쪽은 TickUI 55만 줄에 파묻혀 사후 추적이 사실상 불가능했다(2026-07-30 딥다이브).
+# WARNING 이상은 utils/logger에서 WARN.log에도 계속 합류하므로 경보 가시성은 유지된다.
 _FILE_LOGGER_LAYER = {
     "SYSTEM":   "SYSTEM",
     "SIGNAL":   "SIGNAL",
     "TRADE":    "TRADE",
     "LEARNING": "LEARNING",
     "DEBUG":    "DEBUG",
-    "HEALTH":   "SYSTEM",
+    "HEALTH":   "HEALTH",
 }
 
 
