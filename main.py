@@ -64,6 +64,7 @@ from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
     SIGNAL_DECAY_EXIT_ENABLED,
     LOSS_TIER1_ENABLED, LOSS_TIER1_TICK_ENABLED,
+    TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     LIMIT_ENTRY_FIRST_ENABLED, LIMIT_ENTRY_TIMEOUT_SEC,
     HZ_DEPLOY_POLICY,
@@ -330,6 +331,11 @@ class TradingSystem:
         self.extremity_corrector = MultiHorizonExtremityCorrector(["30m"])
         self._preload_horizon_calibration()          # DB에서 사전 fit → 첫 tick부터 보정 효과
         self.ensemble.calibrator = self.horizon_calibrator   # 앙상블 2차 압축 연결
+        # [403차 종합 P0-1] 앙상블 Platt 보정기 복원 — 종전에는 _scaler_warmup_worker()
+        # 안에 있어 프리장 refit이 끝나 있으면(=매일) 도달하지 못했다. 기동 경로 중
+        # 유일하게 "항상 1회" 보장되는 __init__으로 옮긴다. 장중 재시작도 여기를 지난다
+        # (pre_market_setup()은 08:55~09:00에만 호출되므로 그쪽에 두면 재시작에서 또 누락).
+        self._restore_ensemble_calibrator()
         self.pred_buffer       = PredictionBuffer()
         self.meta_gate         = MetaGate()
         # selection bias 해소: skip된 신호의 meta_features 임시 보관
@@ -570,6 +576,10 @@ class TradingSystem:
         # 자체가 없었음(0721 트레이드③ 39초 내 직행). 풀스톱과 동일한 패턴으로 확장.
         self._tick_loss_tier1_triggered: bool  = False
         self._tick_loss_tier1_price:     float = 0.0
+        # [403차 종합 P1-5] tick-level TP1 — 손실 방향만 틱 감지가 있고 이익 방향은
+        # 분당 1회(:33초)라 최악 60초 지연되던 비대칭을 해소. 위 두 형제와 동일 패턴.
+        self._tick_tp1_triggered: bool  = False
+        self._tick_tp1_price:     float = 0.0
         # [320차] VPIN 배선 — bar 누적 buy_vol/sell_vol의 틱 델타로 개별 체결 복원용
         self._vpin_bar_ts: Optional[datetime.datetime] = None
         self._vpin_prev_buy_vol:  float = 0.0
@@ -2782,6 +2792,37 @@ class TradingSystem:
         except Exception as exc:
             logger.warning("[Calib] 기동 사전 학습 실패 (보정 비활성): %s", exc)
 
+    def _restore_ensemble_calibrator(self) -> None:
+        """[403차 종합 P0-1] 앙상블 Platt 보정기를 디스크에서 복원한다.
+
+        __init__에서 1회 호출 — 기동 경로 중 "항상 실행"이 보장되는 유일한 지점이다.
+        종전 위치(_scaler_warmup_worker 내부)는 _pre_market_scaler_refitted=True면
+        워커 자체가 돌지 않아 9거래일 연속 미실행이었고, 그 결과 저장 n이 누적되지
+        않고 매일 300건 안팎에서 다시 시작했다(MW0601·MW0602 동시 실측).
+        pre_market_setup()도 08:55~09:00에만 호출되므로 장중 재시작을 놓친다.
+
+        복원 실패는 치명적이지 않다 — 보정기가 미fit 상태로 남으면 calibrate()가
+        raw를 그대로 돌려주므로 진입이 막히지 않는다(보수적 fallback).
+        """
+        try:
+            from config.settings import ENSEMBLE_CALIBRATOR_PATH
+            _cal = self.ensemble.ensemble_calibrator
+            if _cal.load(ENSEMBLE_CALIBRATOR_PATH):
+                _span = getattr(_cal, "output_span", None)
+                _auc = getattr(_cal, "rank_auc", None)
+                logger.info(
+                    "[Calibration] 앙상블 보정기 복원 완료 n=%d fitted=%s "
+                    "degenerate=%s span=%s auc=%s",
+                    _cal.n_samples, _cal.is_fitted,
+                    getattr(_cal, "is_degenerate", None),
+                    ("%.5f" % _span) if _span is not None else "N/A",
+                    ("%.3f" % _auc) if _auc is not None else "N/A",
+                )
+            else:
+                logger.info("[Calibration] 앙상블 보정기 저장본 없음 — 신규 누적으로 시작")
+        except Exception as _cal_e:
+            logger.warning("[Calibration] 보정기 복원 실패 (무해, raw 통과): %s", _cal_e)
+
     def _recalibrate_mc(self, trigger: str = "RETRAIN") -> None:
         """
         동적 min_conf 재보정.
@@ -3265,6 +3306,39 @@ class TradingSystem:
                     self.position.status, close, self.position.loss_tier1_price,
                 )
                 QTimer.singleShot(0, self._process_tick_loss_tier1)
+            # ── [403차 종합 P1-5] tick-level TP1 감지 ─────────────────────
+            # 여기까지 오면 풀스톱·손절1차 둘 다 미발동이다(elif 체인). 그 다음 순위가
+            # TP1인 것은 STEP8 파이프라인(_ts_check_exit_triggers: 풀스톱 → tier1 →
+            # TP1 → TP2 → TP3)과 동일한 우선순위를 그대로 옮긴 것이다.
+            #
+            # 왜 필요한가 — 07-30 두 PC 공통으로 확인된 리스크/리워드 비대칭:
+            #   손실 방향(하드스톱·손절1차)은 266차·363차에 걸쳐 틱 감지가 배선됐는데
+            #   이익 방향(TP1/TP2/TP3)은 매분 STEP8(:33초)에서만 평가된다. 결과적으로
+            #   손절은 밀리초, 익절은 최악 60초 지연이었다.
+            #   MW0601 #206 실측: 진입 877.20 → 09:49~50에 872.80(MFE +4.40pt) 도달했으나
+            #   TP1(875.22) 감지가 09:50:33 분봉 스캔까지 밀렸고, 그때 가격은 이미 874.00.
+            #   5초 뒤 877.22로 되돌아 본전 스톱 체결 → 실현 +0.08pt(캡처율 1.8%).
+            #   06-01~07-30 SYSTEM_AUTO 57건 누적 MFE 197.39pt vs 실현 19.15pt(9.7%).
+            #
+            # TP1만 승격하고 TP2/TP3는 그대로 둔다 — TP1은 qty=1에서 보호전환(주문 없음),
+            # qty>1에서 부분청산으로 "되돌림에 가장 취약한" 지점이라 지연 비용이 가장 크다.
+            # TP2/TP3까지 한꺼번에 옮기면 변경면이 넓어져 회귀 위험이 커진다(별건).
+            #
+            # §4 준수: 콜백 안에서는 flag만 세우고 QTimer.singleShot(0, ...)으로 예약한다
+            # — 위 하드스톱(348차)·손절1차(363차)와 동일 패턴이며 dynamicCall/emit 없음.
+            elif (TP1_TICK_ENABLED
+                    and not self._tick_tp1_triggered
+                    and self._pending_order is None
+                    and self.position.status != "FLAT"
+                    and self.circuit_breaker.state != CB_STATE_HALTED
+                    and self.position.is_tp1_hit(close)):
+                self._tick_tp1_triggered = True
+                self._tick_tp1_price     = close
+                logger.warning(
+                    "[TickTP1] TP1 도달 감지 (틱) %s tick=%.2f tp1=%.2f → 즉시 처리 예약",
+                    self.position.status, close, self.position.tp1_price,
+                )
+                QTimer.singleShot(0, self._process_tick_tp1)
             # [230차] 100ms 쓰로틀 — minute_chart_tick(chart.update) 은 heavy (348 candles paintEvent)
             _now_tick = time.perf_counter()
             _last_tick_ui = getattr(self, "_last_tick_chart_update", 0.0)
@@ -3366,6 +3440,39 @@ class TradingSystem:
                 and self.circuit_breaker.state != CB_STATE_HALTED
                 and price > 0):
             self._execute_loss_tier1_exit(price)
+
+    def _process_tick_tp1(self) -> None:
+        """[403차 종합 P1-5] TP1 도달 tick-level 처리 — 메인 스레드에서만 호출.
+
+        _process_tick_loss_tier1과 동일한 뼈대다: flag를 최상단에서 즉시 클리어해
+        멱등을 보장하고, 상태를 재확인한 뒤 분당 파이프라인(STEP8)이 이미 쓰는
+        self._execute_partial_exit(price, stage=1)을 그대로 재사용한다 — 주문/보호전환
+        로직을 두 곳에 복붙하지 않기 위함.
+
+        _execute_partial_exit는 내부에 self._has_pending_order() 조기반환이 있고,
+        qty==1이면 주문을 보내지 않고 보호스톱 전환(arm_tp1_single_contract_with_mode)만
+        수행한다. qty>1이면 pending 선등록 → 주문 → 실패 시 롤백까지 그 함수가 담당한다.
+        중복 발동은 position.partial_1_done 플래그가 막는다(is_tp1_hit이 self.partial_1_done
+        을 먼저 확인하므로, 한 번 처리되면 이 경로도 STEP8 경로도 재진입하지 않는다).
+
+        ⚠ 보호 강도는 이 수정의 범위가 아니다 — 실제로 얼마를 지키느냐는
+        session_state의 tp1_single_contract_mode(현재 'breakeven')가 결정한다.
+        여기서 바꾸는 것은 "언제 감지하느냐"(최악 60초 → 틱)뿐이다.
+        """
+        if not getattr(self, "_tick_tp1_triggered", False):
+            return
+        self._tick_tp1_triggered = False   # 중복 처리 방지 — 결과 무관 즉시 해제
+        price = self._tick_tp1_price
+        if (self.position.status != "FLAT"
+                and not self._has_pending_order()
+                and self.circuit_breaker.state != CB_STATE_HALTED
+                and price > 0
+                and self.position.is_tp1_hit(price)):   # 예약~실행 사이 상태변화 재확인
+            log_manager.trade(
+                f"[TickTP1] TP1 처리 (틱) {self.position.status} "
+                f"tick={price:.2f} tp1={self.position.tp1_price:.2f} qty={self.position.quantity}"
+            )
+            self._execute_partial_exit(price, stage=1)
 
     def _on_hoga_update(
         self,
@@ -4016,17 +4123,13 @@ class TradingSystem:
                         self._recalibrate_mc(trigger="DAILY_WARMUP")
                     except Exception as _mc_e2:
                         logger.warning("[DynMC] 워밍업 후 mc 재보정 실패: %s", _mc_e2)
-                    # [Platt] 앙상블 보정기 복원 — 재시동마다 100건 재누적 방지
-                    try:
-                        from config.settings import ENSEMBLE_CALIBRATOR_PATH
-                        if self.ensemble.ensemble_calibrator.load(ENSEMBLE_CALIBRATOR_PATH):
-                            log_manager.system(
-                                f"[Calibration] 앙상블 보정기 복원 완료 "
-                                f"n={self.ensemble.ensemble_calibrator.n_samples}",
-                                "INFO",
-                            )
-                    except Exception as _cal_e:
-                        logger.warning("[Calibration] 보정기 복원 실패 (무해): %s", _cal_e)
+                    # [403차 종합 P0-1] 여기 있던 "[Platt] 앙상블 보정기 복원" 블록은
+                    # __init__(_restore_ensemble_calibrator)으로 이동했다. 이 워커는
+                    # _pre_market_scaler_refitted=True면 아예 실행되지 않는데(3989행),
+                    # 프리장 refit이 매일 08:47/08:49/08:55에 정상 수행돼 그 플래그가
+                    # 항상 True가 되므로 복원 코드가 9거래일 연속 도달 불가였다
+                    # (MW0601·MW0602 동시 실측: 복원 로그 0건, 저장 n이 매일 300대로 리셋).
+                    # 297차·396차 "소비경로 누락" 패턴 — 기동 시 무조건 실행되는 경로로 옮긴다.
                 except Exception as _sw_e:
                     logger.warning("[ScalerWarmup] 실패 (무해): %s", _sw_e)
                 finally:
@@ -7451,7 +7554,14 @@ class TradingSystem:
                 and _integrity_ok
                 and not _in_reverse_clamp
                 and _atr_ok
-                and _hurst_ok
+                # [403차 종합] 여기가 `and _hurst_ok`(하드)였다. 실제 진입 마스터게이트
+                # (7225행)는 `(_hurst_ok or HURST_SOFT_BLOCK_ENABLED)`라 소프트인데 섀도만
+                # 하드로 요구해, 라이브에서 진입을 전혀 막지 않는 조건이 이 채널에서만
+                # 기록을 삭제하고 있었다. MW0601 07-30 실측: hurst_ok=False가 370분봉 중
+                # 147건(39.7%)이고, 그날 ToxicityGate block 2건이 전부 여기서 탈락 —
+                # 402차 후속3이 mode_filter_passed 자기모순을 고친 직후 병목이 한 줄
+                # 옆으로 옮겨간 것이다(같은 계열 결함). 마스터게이트와 표현을 일치시킨다.
+                and (_hurst_ok or HURST_SOFT_BLOCK_ENABLED)
                 and _open_gap_ok
                 # [402차 후속3] 여기서 mode_filter_passed(7003)를 그대로 쓰면 이 채널은
                 # 구조적으로 절대 기록되지 않는다 — ToxicityGate block이 위(6635)에서
@@ -7538,6 +7648,35 @@ class TradingSystem:
             "p4_cvd_ofi_demoted":     _p4_cvd_ofi_demoted,
             "cb3_restricted_at_entry": bool(self.circuit_breaker.is_grade_restricted()),
         }
+        # [403차 종합 P1-7, 관측성] 보정 전(raw) 확신도였다면 진입 하한을 넘었는지.
+        # 07-30 사고에서 확인된 것: 운영 conf는 Platt 보정 후 값인데 그 보정기가 축퇴해
+        # 출력이 기저율(~0.30)에 고착했고, 결과적으로 min_conf·conf_floor를 오후 내내
+        # 단 한 번도 넘지 못했다(MW0601 249분·MW0602 100분 연속). 당시엔 "보정기가
+        # 막은 것"과 "신호가 원래 약한 것"을 DB만으로 구분할 수 없었다.
+        # 이 두 필드는 그 구분을 남긴다 — 읽기 전용이며 진입 판정에 일절 관여하지 않는다.
+        # P1-8(conf_floor 재보정)은 보정기 정상화 이후 이 필드로 재산출한다.
+        try:
+            _conf_raw_obs = decision.get("confidence_raw")
+            _min_conf_obs = decision.get("min_conf")
+            if _conf_raw_obs is not None:
+                _gate_checks["conf_raw"] = round(float(_conf_raw_obs), 4)
+                if _min_conf_obs is not None:
+                    _gate_checks["conf_raw_ge_min_conf"] = (
+                        float(_conf_raw_obs) >= float(_min_conf_obs)
+                    )
+                _gate_checks["conf_raw_ge_floor"] = (
+                    float(_conf_raw_obs) >= float(ENS_CONF_FLOOR_FOR_AUTO)
+                )
+            _ens_cal_obs = getattr(self.ensemble, "ensemble_calibrator", None)
+            if _ens_cal_obs is not None:
+                _gate_checks["cal_degenerate"] = bool(
+                    getattr(_ens_cal_obs, "is_degenerate", False)
+                )
+                _cal_out_max = getattr(_ens_cal_obs, "output_max", None)
+                if _cal_out_max is not None and _ens_cal_obs.is_fitted:
+                    _gate_checks["cal_out_max"] = round(float(_cal_out_max), 4)
+        except Exception as _crw_e:
+            logger.debug("[P1-7] conf_raw 관측필드 기록 실패 (무해): %s", _crw_e)
         # [v9-dev Track L3, 2026-07-05] 섀도우 점수화 결과 — 안전게이트(위 18종)와 별개로
         # entry_gate_json에 함께 저장. qty_ok/mode_filter_ok 강등 여부와 무관하게 항상 기록.
         _sgs = decision.get("soft_gate_shadow")

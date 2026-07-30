@@ -42,6 +42,49 @@ class PredictionCalibrator:
     # 200으로 복원: tail 샘플 ~15건 확보, 시장 컨디션 적응(~3.4일)과 tail 안정성 균형.
     WINDOW        = 200    # 슬라이딩 윈도우 (최근 N개만 사용)
 
+    # ── [403차 종합 P0-2] 축퇴(degenerate) 가드 ──────────────────────
+    # 배경 — 2026-07-30 두 PC 동시 사고:
+    #   MW0601  coef_=0.002502  출력 0.3047~0.3052 (폭 0.05pp)  기저율 0.3050과 일치
+    #   MW0602  coef_=0.063551  출력 0.2880~0.3012 (폭 1.3pp)
+    # 학습표본의 raw↔적중률 관계가 비단조(MW0601 톱니 15.4→54.5→32.9→21.7→31.2 /
+    # MW0602 U자)라 단조 로지스틱인 Platt이 기울기를 버리고 기저율만 출력하는 축퇴
+    # 해로 수렴했다. 모델 성능 결함이 아니라 보정기 함수형(functional form) 결함이다.
+    #
+    # 임계값 근거 (py310_64 실측, n=200 · C=0.02 · raw 0.24~0.80 합성표본):
+    #   무정보(acc .33 상수)  coef .026  span 0.55pp  AUC .556
+    #   중간 정보(.25→.55)    coef .059  span 1.45pp  AUC .610
+    #   강한 정보(.20→.75)    coef .118  span 2.88pp  AUC .722
+    #   매우 강함(.10→.90)    coef .134  span 3.33pp  AUC .753
+    #   톱니(MW0601 형태)     coef .009  span 0.18pp  AUC .513
+    #   MW0601 실제 저장윈도  coef .006  span 0.13pp  AUC .491
+    #
+    # ★ 초안의 "출력폭 5pp 미만" 기준은 폐기했다 — C=0.02 규제 하에서는 매우 강한
+    #   신호조차 3.33pp에 그쳐, 5pp로 잡으면 정상 보정기까지 전부 오탐으로 걸러
+    #   보정 기능을 영구 비활성화하게 된다(실측으로 반증됨).
+    #
+    # 그래서 주 판정을 AUC(raw가 적중/오답을 순위로 가르는 능력)로 바꾸고, 출력폭은
+    # 보조 조건으로만 쓴다. AUC<0.53은 통계적 검정이 아니라 "순위 정보가 사실상 없다"를
+    # 걸러내는 느슨한 스크리닝이다(n=200에서 H0 하 SE≈0.041이므로 약 0.7σ).
+    # 두 조건을 AND로 묶어, 표본 노이즈로 AUC만 낮게 나온 경우를 배제한다.
+    DEGENERATE_AUC_MIN  = 0.53
+    DEGENERATE_SPAN_MIN = 0.02
+    # 축퇴 점검용 스윕 지점 (raw 확률 0~1)
+    _SPAN_PROBE_POINTS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+    #
+    # ▣ 이 가드가 잡는 것 / 못 잡는 것 (테스트로 확인한 계약)
+    #   잡는다  : 순위 정보 상실 — AUC≈0.5. MW0601 07-30 실제 저장본(AUC 0.491)과
+    #             순증 성분이 없는 U자 표본(AUC 0.495)이 모두 걸린다.
+    #   못 잡는다: 비단조지만 순증 성분이 남아 있는 형태(합성 톱니 AUC 0.547 통과).
+    #             부분적 비단조를 걸러내려면 Isotonic/구간별 보정으로 함수형을 바꾸는
+    #             쪽이 맞다 — 이 가드의 목적이 아니다(별건, 섀도 사전등록 대상).
+    #
+    # ⚠ 이 가드는 "진입 봉쇄"를 해결하지 못한다 — 별개 문제다.
+    #   기저율이 ~0.30인 이상 정상 보정기도 출력이 0.30 근처에 모이므로
+    #   ENS_CONF_FLOOR_FOR_AUTO(0.33)를 넘지 못한다. 즉 봉쇄의 원인은 축퇴가 아니라
+    #   "하한이 보정된 3-클래스 확률이 도달할 수 있는 범위 밖에 있다"는 스케일 불일치다.
+    #   그 결정(하한 인하 vs 보정 함수형 교체)은 §9 사전등록 대상이라 코드가 임의로
+    #   내리지 않는다 — ensemble_decision._check_conf_floor_consistency()가 경보만 남긴다.
+
     def __init__(self, method: str = "platt"):
         """
         Args:
@@ -57,6 +100,13 @@ class PredictionCalibrator:
         self._model: Optional[object] = None
 
         self._transition_steps: int = 0  # P3: is_fitted 전환 후 블렌딩 카운터
+
+        # [403차 종합 P0-2] 마지막 fit/load 시점의 진단값 (None = 미측정).
+        # 소비처: main.py 기동 로그, ensemble_decision.py 임계값 정합성 경보.
+        self._last_span: Optional[float] = None
+        self._last_out_max: Optional[float] = None
+        self._last_auc: Optional[float] = None
+        self._degenerate: bool = False
 
         if _SKLEARN_OK:
             if method == "isotonic":
@@ -84,6 +134,67 @@ class PredictionCalibrator:
         if self._n % 5 == 0 and self._n >= self.MIN_SAMPLES:
             self.fit()
 
+    def _measure_span(self):
+        """[403차 종합 P0-2] 현재 _model이 raw 0~1 전 구간에서 내는 출력폭 측정.
+
+        calibrate()가 아니라 모델을 직접 호출한다 — _transition_steps 블렌딩이
+        섞이면 "보정기 자체가 납작한가"를 볼 수 없기 때문이다.
+
+        Returns: (span, out_max). 측정 불가 시 (None, None).
+        """
+        if not _SKLEARN_OK or self._model is None:
+            return None, None
+        try:
+            pts = list(self._SPAN_PROBE_POINTS)
+            if self.method == "isotonic":
+                outs = [float(v) for v in self._model.predict(np.array(pts))]
+            else:
+                X_probe = np.array(pts).reshape(-1, 1)
+                outs = [float(v) for v in self._model.predict_proba(X_probe)[:, 1]]
+            return (max(outs) - min(outs)), max(outs)
+        except Exception as e:
+            logger.debug("[Calibration] span 측정 실패 (무해): %s", e)
+            return None, None
+
+    def _measure_auc(self):
+        """[403차 종합 P0-2] 현재 윈도에서 raw 확률의 적중 순위변별력(AUC).
+
+        AUC≈0.5 = raw conf가 "맞은 예측"과 "틀린 예측"을 전혀 가르지 못함
+        → 어떤 단조 보정을 씌워도 순위 정보가 없으므로 Platt이 잡을 신호가 없다.
+        축퇴 판정의 주 근거. 라벨이 한쪽뿐이면 계산 불가(None).
+
+        Returns: auc 또는 None.
+        """
+        if not _SKLEARN_OK:
+            return None
+        try:
+            labels = np.array(list(self._labels))
+            if len(np.unique(labels)) < 2:
+                return None
+            from sklearn.metrics import roc_auc_score
+            return float(roc_auc_score(labels, np.array(list(self._probs))))
+        except Exception as e:
+            logger.debug("[Calibration] AUC 측정 실패 (무해): %s", e)
+            return None
+
+    def _evaluate_degeneracy(self):
+        """[403차 종합 P0-2] 축퇴 여부 판정 + 진단값 갱신.
+
+        Returns: (is_degenerate: bool, detail: str)
+        """
+        span, out_max = self._measure_span()
+        auc = self._measure_auc()
+        self._last_span, self._last_out_max, self._last_auc = span, out_max, auc
+        detail = "span=%s auc=%s out_max=%s" % (
+            ("%.5f" % span) if span is not None else "N/A",
+            ("%.3f" % auc) if auc is not None else "N/A",
+            ("%.4f" % out_max) if out_max is not None else "N/A",
+        )
+        if span is None or auc is None:
+            return False, detail          # 측정 불가 → 기존 동작 유지(보수적)
+        return (auc < self.DEGENERATE_AUC_MIN
+                and span < self.DEGENERATE_SPAN_MIN), detail
+
     def fit(self):
         """보정 모델 학습"""
         if not _SKLEARN_OK:
@@ -102,6 +213,34 @@ class PredictionCalibrator:
                 # Platt: 로지스틱 회귀 (확률 → 로짓 공간 변환)
                 X = probs.reshape(-1, 1)
                 self._model.fit(X, labels)
+
+            # [403차 종합 P0-2] 축퇴 가드 — 학습은 성공했지만 입력을 무시하는
+            # 상수 함수로 수렴했다면 fit을 인정하지 않는다(calibrate()가 raw 반환).
+            # _model은 지우지 않는다 — 진단(coef 확인)과 다음 fit 재사용에 필요.
+            _prev_degen = self._degenerate
+            _is_degen, _detail = self._evaluate_degeneracy()
+            if _is_degen:
+                _was_fitted = self._fitted
+                self._degenerate = True
+                self._fitted = False
+                self._transition_steps = 0
+                if not _prev_degen:
+                    logger.warning(
+                        "[Calibration] 축퇴 감지 — %s (기준 auc<%.2f and span<%.3f, "
+                        "기저율=%.4f n=%d) → 보정 미적용, raw 통과%s",
+                        _detail, self.DEGENERATE_AUC_MIN, self.DEGENERATE_SPAN_MIN,
+                        float(labels.mean()), len(probs),
+                        " [기존 fitted 해제]" if _was_fitted else "",
+                    )
+                else:
+                    logger.debug("[Calibration] 축퇴 지속 — %s (n=%d)", _detail, len(probs))
+                return
+
+            if _prev_degen:
+                logger.info(
+                    "[Calibration] 축퇴 해소 — %s (n=%d) → 보정 재적용", _detail, len(probs)
+                )
+            self._degenerate = False
 
             # P3: 첫 fitted 전환 시 블렌딩 카운터 설정 (conf 점프 완화)
             if not self._fitted:
@@ -211,7 +350,27 @@ class PredictionCalibrator:
                 self._probs.append(p)
             for lb in state.get("labels", []):
                 self._labels.append(lb)
-            logger.info("[Calibration] 보정기 복원 완료 (n=%d method=%s)", self._n, self.method)
+            # [403차 종합 P0-2] 저장본에도 동일 축퇴 가드 적용.
+            # 이게 없으면 P0-1(복원 배선 수정)이 오히려 해롭다 — 어제 축퇴한 보정기를
+            # 오늘 아침 그대로 되살려 09:00부터 진입을 봉쇄하게 된다(오늘까지는 복원이
+            # 죽어 있어서 오전에만 우연히 살아 있었던 것).
+            _is_degen, _detail = self._evaluate_degeneracy()
+            if _is_degen:
+                self._degenerate = True
+                self._fitted = False
+                self._transition_steps = 0
+                logger.warning(
+                    "[Calibration] 복원한 보정기가 축퇴 상태 — %s (n=%d) → 보정 "
+                    "미적용으로 시작, raw 통과. 표본이 새로 쌓여 순위변별력이 "
+                    "회복되면 fit()에서 자동 재적용된다.",
+                    _detail, self._n,
+                )
+            else:
+                self._degenerate = False
+            logger.info(
+                "[Calibration] 보정기 복원 완료 (n=%d method=%s fitted=%s %s)",
+                self._n, self.method, self._fitted, _detail,
+            )
             return True
         except Exception as e:
             logger.warning("[Calibration] load 실패: %s", e)
@@ -224,6 +383,27 @@ class PredictionCalibrator:
     @property
     def n_samples(self) -> int:
         return self._n
+
+    # ── [403차 종합 P0-2] 축퇴 진단 노출 ──────────────────────────
+    @property
+    def output_span(self) -> Optional[float]:
+        """마지막 fit/load 시점의 raw 0~1 전 구간 출력폭 (None = 미측정)."""
+        return self._last_span
+
+    @property
+    def output_max(self) -> Optional[float]:
+        """마지막 fit/load 시점의 출력 상한. 진입 하한과의 정합성 검사에 쓴다."""
+        return self._last_out_max
+
+    @property
+    def rank_auc(self) -> Optional[float]:
+        """마지막 fit/load 시점 윈도의 raw 순위변별력(AUC). 0.5 = 정보 없음."""
+        return self._last_auc
+
+    @property
+    def is_degenerate(self) -> bool:
+        """축퇴 가드가 발동해 보정을 미적용 중인가."""
+        return self._degenerate
 
 
 class MultiHorizonCalibrator:
