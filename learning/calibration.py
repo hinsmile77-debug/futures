@@ -107,6 +107,9 @@ class PredictionCalibrator:
         self._last_out_max: Optional[float] = None
         self._last_auc: Optional[float] = None
         self._degenerate: bool = False
+        # [MW0602 403차 후속] 축퇴는 아니지만 출력상한이 자동진입 하한 아래라
+        # 보정을 미적용 중인 상태. _degenerate와 독립적으로 관리한다.
+        self._unreachable: bool = False
 
         if _SKLEARN_OK:
             if method == "isotonic":
@@ -195,6 +198,35 @@ class PredictionCalibrator:
         return (auc < self.DEGENERATE_AUC_MIN
                 and span < self.DEGENERATE_SPAN_MIN), detail
 
+    def _evaluate_unreachable(self):
+        """[MW0602 403차 후속] 보정 적용 시 자동진입 하한 도달이 불가능한지 판정.
+
+        축퇴 가드(AUC/span)와 **독립**이다. 축퇴가 아니어도 출력상한이 하한보다
+        낮으면 그 보정기를 적용하는 순간 자동진입 확률이 0으로 확정된다.
+        적용하지 않으면 raw가 그대로 나가므로, "미적용"이 "적용"을 지배한다.
+
+        MW0602 07-30 저장본이 정확히 이 경우다 — auc=0.536/span=0.0132로 축퇴
+        가드는 통과(AND 조건 불성립)하지만 출력상한 0.3012 < 하한 0.33.
+
+        _measure_span()이 이미 갱신한 _last_out_max를 쓴다(중복 측정 없음) —
+        반드시 _evaluate_degeneracy() 뒤에 호출할 것.
+
+        Returns: (is_unreachable: bool, detail: str)
+        """
+        try:
+            from config.settings import (
+                CAL_UNREACHABLE_FALLBACK_ENABLED, ENS_CONF_FLOOR_FOR_AUTO,
+            )
+        except Exception:
+            return False, "설정 로드 실패 → 미적용"
+        if not CAL_UNREACHABLE_FALLBACK_ENABLED:
+            return False, "비활성"
+        out_max = self._last_out_max
+        if out_max is None:
+            return False, "out_max 미측정 → 보수적 통과"
+        need = float(ENS_CONF_FLOOR_FOR_AUTO)
+        return out_max < need, "out_max=%.4f < conf_floor=%.4f" % (out_max, need)
+
     def fit(self):
         """보정 모델 학습"""
         if not _SKLEARN_OK:
@@ -241,6 +273,29 @@ class PredictionCalibrator:
                     "[Calibration] 축퇴 해소 — %s (n=%d) → 보정 재적용", _detail, len(probs)
                 )
             self._degenerate = False
+
+            # [MW0602 403차 후속] 도달불가 폴백 — 축퇴가 아니어도 출력상한이
+            # 자동진입 하한 아래면 적용하지 않는다(적용 시 진입 0건 확정).
+            _prev_unreach = self._unreachable
+            _is_unreach, _ureason = self._evaluate_unreachable()
+            if _is_unreach:
+                self._unreachable = True
+                self._fitted = False
+                self._transition_steps = 0
+                if not _prev_unreach:
+                    logger.warning(
+                        "[Calibration] 하한 도달불가 — %s (%s, 기저율=%.4f n=%d) → 보정 "
+                        "미적용, raw 통과. 축퇴 가드와 별개 사유다(auc/span은 정상 범위).",
+                        _ureason, _detail, float(labels.mean()), len(probs),
+                    )
+                else:
+                    logger.debug("[Calibration] 도달불가 지속 — %s (n=%d)", _ureason, len(probs))
+                return
+            if _prev_unreach:
+                logger.info(
+                    "[Calibration] 도달불가 해소 — %s (n=%d) → 보정 재적용", _ureason, len(probs)
+                )
+            self._unreachable = False
 
             # P3: 첫 fitted 전환 시 블렌딩 카운터 설정 (conf 점프 완화)
             if not self._fitted:
@@ -367,9 +422,28 @@ class PredictionCalibrator:
                 )
             else:
                 self._degenerate = False
+                # [MW0602 403차 후속] 축퇴 가드를 통과한 저장본이라도 출력상한이
+                # 자동진입 하한 아래면 적용하지 않는다. MW0602 07-30 저장본이
+                # 정확히 이 경로다(auc=0.536 통과, out_max=0.3012 < 0.33).
+                # 이 검사가 없으면 P0-1 복원 배선이 09:00부터 진입을 봉쇄한다.
+                _is_unreach, _ureason = self._evaluate_unreachable()
+                if _is_unreach:
+                    self._unreachable = True
+                    self._fitted = False
+                    self._transition_steps = 0
+                    logger.warning(
+                        "[Calibration] 복원한 보정기가 하한 도달불가 — %s (%s, n=%d) → "
+                        "보정 미적용으로 시작, raw 통과. 축퇴(auc/span)와 별개 사유이며, "
+                        "표본이 쌓여 출력상한이 하한 위로 올라오면 fit()에서 자동 재적용된다.",
+                        _ureason, _detail, self._n,
+                    )
+                else:
+                    self._unreachable = False
             logger.info(
-                "[Calibration] 보정기 복원 완료 (n=%d method=%s fitted=%s %s)",
-                self._n, self.method, self._fitted, _detail,
+                "[Calibration] 보정기 복원 완료 (n=%d method=%s fitted=%s degenerate=%s "
+                "unreachable=%s %s)",
+                self._n, self.method, self._fitted, self._degenerate,
+                self._unreachable, _detail,
             )
             return True
         except Exception as e:
@@ -404,6 +478,15 @@ class PredictionCalibrator:
     def is_degenerate(self) -> bool:
         """축퇴 가드가 발동해 보정을 미적용 중인가."""
         return self._degenerate
+
+    @property
+    def is_unreachable(self) -> bool:
+        """[MW0602 403차 후속] 도달불가 폴백이 발동해 보정을 미적용 중인가.
+
+        is_degenerate와 배타적이지 않다 — 둘 다 "보정 미적용" 사유이지만
+        원인이 다르므로(순위정보 상실 vs 스케일 불일치) 따로 노출한다.
+        """
+        return self._unreachable
 
 
 class MultiHorizonCalibrator:
