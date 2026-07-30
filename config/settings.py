@@ -901,6 +901,26 @@ LOSS_TIER1_CUT_RATIO = 0.5  # 조기 축소 비율 (qty==1은 적용 제외 — 
 # [TickLossTier1] 로그로 라이브 첫 발동 확인 필요 — dev_memory/NEXT_TODO.md 363차 항목.
 LOSS_TIER1_TICK_ENABLED = True
 
+# [403차 종합 P1-5] tick-level TP1 감지 킬스위치.
+# 손실 방향은 266차(하드스톱)·363차(손절1차)에 걸쳐 틱 감지가 배선됐는데 이익 방향
+# (TP1/TP2/TP3)은 매분 STEP8(:33초)에서만 평가돼, 손절은 밀리초 / 익절은 최악 60초
+# 지연되는 비대칭이 있었다. 07-30 두 PC 정기점검에서 그 비용이 실측됨:
+#   MW0601 #206 — 진입 877.20, 09:49~50에 872.80(MFE +4.40pt) 도달했으나 TP1(875.22)
+#     감지가 09:50:33 분봉 스캔까지 밀림. 그때 가격 874.00, 5초 뒤 877.22 되돌림으로
+#     본전 스톱 체결 → 실현 +0.08pt (캡처율 1.8%).
+#   MW0601 06-01~07-30 SYSTEM_AUTO 57건 — 누적 MFE 197.39pt vs 실현 19.15pt (9.7%).
+#   MW0602 06-30~07-30 84포지션 — 하드스톱(틱) 46건 PF 0.09, 그 채널 하나가 TP2가
+#     번 돈을 거의 전부 상계. 이익 18건 평균 +0.55pt = 사실상 본전 긁기.
+# LOSS_TIER1_TICK_ENABLED와 같은 취지로 별도 킬스위치를 둔다 — 문제 시 이미 검증된
+# 분당 경로(STEP8)는 그대로 두고 이 틱 확장분만 1줄로 되돌릴 수 있다.
+#
+# ※ 이 플래그는 "언제 감지하느냐"만 바꾼다. 실제로 얼마를 지키느냐는
+#   session_state의 tp1_single_contract_mode(현재 'breakeven' — UI 토글로 저장된
+#   사용자 설정, 코드 기본값은 'atr_profit')가 결정한다. qty=1에서 'breakeven'이면
+#   TP1 도달 후 상방이 사실상 0으로 캡되므로, 틱 감지만으로는 캡처율이 크게
+#   오르지 않을 수 있다 — 07-31 라이브에서 [TickTP1] 로그와 실현손익을 함께 볼 것.
+TP1_TICK_ENABLED = True
+
 # [260704 감사 P2] 레짐 조건부 ATR 배수 — 추세장(Hurst>=0.55)에서는 손절/목표를
 # 넓혀 추세를 태우고, 평균회귀장(Hurst<0.45)에서는 좁혀 빠르게 회수한다.
 # REGIME_SIZE_MULT와 동일한 패턴(사이징 대신 손절/목표 폭에 곱하는 배수 테이블).
@@ -1352,6 +1372,49 @@ VALIDATION_CAMPAIGN = {
     "mfe_capture_watch": {
         "min_samples_for_note": 20,  # exit_fill_slippage_watch와 동일 기준
         "entry_source": "SYSTEM_AUTO",
+    },
+    # ── [403차 종합 P1-6 신설] §23 TP1/손절 기하 A/B — 사전등록 (관측 전 확정) ──
+    # 계기: 07-30 두 PC 점검에서 손절:TP1 비율이 구조적으로 역전돼 있음이 확인됐다.
+    #   stop = ATR × ATR_STOP_MULT(1.5)       × hurst_mult
+    #   TP1  = ATR × ATR_HORIZON_TP1_MULT[hz] × hurst_mult     ← 같은 배수가 곱해짐
+    # hurst 배수가 양쪽에 동일하게 곱해져 비율에서 약분되므로, 비율은 오직 호라이즌이
+    # 결정하며 전 레짐·전 버킷에 상시 적용된다:
+    #   1m 5.00:1   3m 3.00:1   5m 2.14:1
+    # MW0602 리포트가 이를 "trend 배수 탓"으로 진단했으나 실측 검산 결과 오진이었다
+    # (MW0601 #207 hurst=mean-revert·3m: stop 7.13 / TP1 2.38 = 3.00:1로 동일).
+    #
+    # 게다가 MW0601 SYSTEM_AUTO 57건 중 56건(98%)이 qty=1이라 TP1은 물리적 부분청산이
+    # 불가능하고 보호스톱 전환만 일어난다. 즉 실질 페이오프는
+    #   상방: TP1 도달 → 본전(또는 atr_profit lock) → TP2까지 가야 실익, 되돌리면 +0
+    #   하방: −1.5×ATR
+    # 로 상방이 사실상 0에 캡된다. 누적 캡처율 9.7%(MFE 197.39pt vs 실현 19.15pt)와
+    # 틱 하드스톱 채널 PF 0.07(MW0601)·0.09(MW0602)가 같은 뿌리에서 나온다.
+    #
+    # 판정 (관측 전 고정 — 관측 후 기준을 고치면 검증이 무의미해진다, §9):
+    #   PASS(현행 유지): 대안 기하의 누적 순손익(왕복비용 차감 후)이 현행 이하.
+    #   FAIL(변경 검토): 대안이 현행보다 누적 순손익 우위 + min_days/streak 충족
+    #     → 즉시 적용이 아니라 주간회의 수동 결정(§9). 특히 스톱 축소안은 노이즈
+    #       스톱아웃 증가를 동반하므로 승률·최대손실·표준편차를 반드시 병기할 것.
+    #
+    # 주의 — 이미 기각된 방향과 혼동 금지: [12] tp1_trail_shadow가 "TP1 이후 더 느슨한
+    # 트레일링"을 이미 기각했다(MW0602 n=16, 실제 +38.22 vs 가정 −6.96). 이 채널이
+    # 묻는 것은 트레일 폭이 아니라 **TP1/스톱의 초기 기하**다.
+    #
+    # 구현은 라이브 코드가 아니라 오프라인 스크립트다(scripts/tp1_geometry_shadow.py).
+    # trades(진입가·방향·호라이즌·hurst) + ensemble_decisions.features(atr) +
+    # raw_candles만으로 전부 재구성되므로 진입 경로에 계측을 심을 필요가 없다 —
+    # 라이브 회귀 위험 0.
+    "tp1_geometry_shadow": {
+        "min_samples": 20,   # 진입 건수 (부분청산 병합 후). 미달 → 판정 보류
+        "min_days": 3,       # 313차 원칙 — 단일일 판정 금지
+        "entry_source": "SYSTEM_AUTO",
+        # 대안 기하 후보 (stop_mult, tp1_mult). None = 현행값 사용
+        "variants": {
+            "current":      {"stop_mult": None, "tp1_mult": None},
+            "stop_1.0":     {"stop_mult": 1.0,  "tp1_mult": None},
+            "tp1_x2":       {"stop_mult": None, "tp1_mult": 2.0},
+            "sym_1.0_1.0":  {"stop_mult": 1.0,  "tp1_mult": 1.0},
+        },
     },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,

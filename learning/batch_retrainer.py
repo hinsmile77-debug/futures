@@ -614,6 +614,9 @@ class BatchRetrainer:
                 return GradientBoostingClassifier(**_params)
 
         cv_accs = []
+        # [403차 종합 P0-4] 각 폴드의 검증 인덱스를 모아 둔다 — 현행 프로덕션 모델을
+        # "신규 모델과 똑같은 데이터"로 재채점하기 위함(아래 _measure_incumbent_acc).
+        _val_idx_all = []
         if not intraday:
             # 정규 재학습: 시계열 교차검증 3폴드
             # full_cv=False (기본): 32-bit Python 메모리 방어 — fold 훈련 세트를 20k행으로 절단
@@ -645,6 +648,7 @@ class BatchRetrainer:
                 model.fit(X_tr_s, y_tr, sample_weight=_make_sample_weight(y_tr, horizon_key))
                 acc = accuracy_score(y_val, model.predict(X_val_s))
                 cv_accs.append(acc)
+                _val_idx_all.extend(list(val_idx))   # [403차 종합 P0-4]
 
             if not cv_accs:
                 return {"ok": False, "error": "교차검증 실패"}
@@ -676,6 +680,37 @@ class BatchRetrainer:
         old_acc  = self._load_model_acc(horizon_key)
         replaced = False
         guard_rejected = False
+
+        # ── [403차 종합 P0-4] old_acc 재측정 (섀도 로깅 전용, 판정 무영향) ──────
+        # 현행 가드는 acc.txt에 적힌 수치를 old_acc로 쓰는데, 그 수치에는 두 겹의
+        # 문제가 있다(MW0601 07-30 실측으로 확인):
+        #   ① 분포 불일치 — acc.txt는 그 모델이 교체되던 날의 CV 정확도다. 오늘의
+        #      cv_acc는 폭락 4일이 포함된 오늘 데이터에서 나왔다. 데이터가 어려워지면
+        #      신규 모델은 구조적으로 항상 진다 → 레짐 전환기에 6/6 전량 보류
+        #      (07-30 MW0601: 1m .3805 / 3m .4651 vs 오늘 .2807 / .3196).
+        #   ② 대상 부존재 — intraday 재학습은 가드를 건너뛰고(687행) gbm_{h}.pkl을
+        #      덮어쓰지만 acc.txt는 보존한다(_save_model, 의도된 동작). 07-30 실측
+        #      gbm_*.pkl mtime은 14:52(마지막 intraday)인데 3m의 acc.txt는 7/22자였다.
+        #      즉 가드가 비교한 상대는 이미 8회 덮어써져 존재하지 않는 모델이었다.
+        # 여기서는 현행 프로덕션 모델을 "신규와 똑같은 검증 폴드"로 재채점해 그
+        # 왜곡의 크기를 로그로 드러낸다. 판정에는 아직 쓰지 않는다(§9) — 최소 1주
+        # 관측 후 교체 여부를 결정한다.
+        _old_acc_live, _live_note = self._measure_incumbent_acc(
+            horizon_key, X, y, X_full, h_idx, feature_names, _val_idx_all,
+        )
+        if not intraday and cv_acc is not None:
+            if _old_acc_live is not None:
+                logger.info(
+                    "[GuardShadow] %s old_acc(acc.txt)=%.4f vs old_acc(동일폴드 재측정)=%.4f "
+                    "| new(cv)=%.4f | 왜곡=%+.4f — 판정에는 acc.txt를 사용(섀도)",
+                    horizon_key, old_acc, _old_acc_live, cv_acc,
+                    old_acc - _old_acc_live,
+                )
+            else:
+                logger.info(
+                    "[GuardShadow] %s 재측정 불가 (%s) — acc.txt=%.4f new(cv)=%.4f",
+                    horizon_key, _live_note, old_acc, cv_acc,
+                )
 
         # [346차] intraday/force는 가드 자체를 건너뜀(기존 동작 그대로) — intraday는
         # CV 없음(cv_acc=None), force는 명시적 강제 요구(웜업 복구 등). 그 외(EOD 정규
@@ -888,6 +923,56 @@ class BatchRetrainer:
                 return pickle.load(f)
         except (IOError, OSError, pickle.UnpicklingError):
             return []
+
+    def _measure_incumbent_acc(
+        self, horizon_key, X, y, X_full, h_idx, feature_names, val_idx_all,
+    ):
+        """[403차 종합 P0-4] 현행 프로덕션 모델을 신규와 동일한 검증 폴드로 재채점.
+
+        acc.txt(과거 날짜·과거 분포)가 아니라 "오늘 데이터에서 지금 모델이 실제로
+        몇 %인가"를 측정한다. 읽기 전용이며 어떤 파일도 쓰지 않는다.
+
+        피처셋이 바뀌었으면(오늘 슬라이싱 결과 != 저장된 feature_names_{h}.pkl)
+        비교 자체가 무의미하므로 측정하지 않고 사유를 돌려준다.
+
+        ⚠ 한계 — 완전히 공정한 비교는 아니다. 이 검증 폴드는 현행 모델이 어제
+        학습할 때 이미 본 구간을 상당 부분 포함하므로 현행 모델에 유리하다
+        (즉 여기서 측정된 왜곡은 실제 왜곡의 하한이다). 진짜 공정한 비교는 두
+        모델 모두 학습에 쓰지 않은 최근 홀드아웃 구간이 필요하며, 그건 학습
+        파이프라인 구조 변경이라 별건으로 남긴다.
+
+        Returns: (acc: float | None, note: str)
+        """
+        if not val_idx_all:
+            return None, "검증 폴드 없음"
+        try:
+            import pickle as _pk
+            _mp = os.path.join(self.model_dir, "gbm_%s.pkl" % horizon_key)
+            _sp = os.path.join(self.scaler_dir, "scaler_%s.pkl" % horizon_key)
+            _fp = os.path.join(self.model_dir, "feature_names_%s.pkl" % horizon_key)
+            if not (os.path.exists(_mp) and os.path.exists(_sp)):
+                return None, "구모델/스케일러 pkl 없음"
+            with open(_mp, "rb") as f:
+                _model = _pk.load(f)
+            with open(_sp, "rb") as f:
+                _scaler = _pk.load(f)
+            if os.path.exists(_fp):
+                with open(_fp, "rb") as f:
+                    _saved_names = list(_pk.load(f))
+                if list(feature_names) != _saved_names:
+                    return None, ("피처셋 변경 %d→%d개"
+                                  % (len(_saved_names), len(feature_names)))
+            _idx = np.array(sorted(set(int(i) for i in val_idx_all)))
+            _src = X_full if X_full is not None else X
+            _Xv = _scaler.transform(_src[_idx])
+            if h_idx is not None:
+                _Xv = _Xv[:, h_idx]
+            _nfeat = getattr(_model, "n_features_in_", None)
+            if _nfeat is not None and _Xv.shape[1] != _nfeat:
+                return None, "피처 수 불일치 %d vs %d" % (_Xv.shape[1], _nfeat)
+            return float(accuracy_score(y[_idx], _model.predict(_Xv))), "ok"
+        except Exception as e:
+            return None, "측정 예외: %s" % e
 
     def _load_model_acc(self, horizon_key: str) -> float:
         acc_path = os.path.join(self.model_dir, f"gbm_{horizon_key}_acc.txt")

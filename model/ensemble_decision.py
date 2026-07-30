@@ -31,6 +31,7 @@ from config.settings import (
     CONF_STUCK_BOOST_TARGET_MIN_ACC,
     ENTRY_HORIZON_LOW_BLOCK, ENTRY_HORIZON_B1, ENTRY_HORIZON_B2,
     WEIGHT_COLLAPSE_HONEST_MODE,
+    ENS_CONF_FLOOR_FOR_AUTO,   # [403차 종합 P0-2b] 하한↔보정기 정합성 경보용
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from model.ensemble_gater import AdaptiveEnsembleGater
@@ -311,6 +312,48 @@ class EnsembleDecision:
         self._hc_grade_a_blocked: bool = False  # 현재 차단 상태 (로그용)
         # [conf(ema) 딥다이브, 개선안1] 실질 가중합 0 붕괴 연속 카운터 — WeightCollapse 계측용
         self._weight_collapse_streak: int = 0
+        # [403차 종합 P0-2b] 진입 하한 ↔ 보정기 출력범위 정합성 경보 상태.
+        # 마지막으로 경보한 (도달가능여부) 를 기억해 상태가 바뀔 때만 로그를 남긴다.
+        self._conf_floor_reachable: Optional[bool] = None
+
+    def _check_conf_floor_consistency(self, min_conf: float) -> None:
+        """[403차 종합 P0-2b] 자동진입 하한이 보정기 출력범위 안에 있는지 점검.
+
+        2026-07-30 두 PC 공통 사고: 보정기가 축퇴해 출력 상한이 0.3012~0.3052로
+        내려앉았는데 ENS_CONF_FLOOR_FOR_AUTO는 정적 0.33 그대로였다. 두 값이 서로
+        다른 규칙으로 움직이는데(하나는 상수, 하나는 학습결과) 어긋남을 감지하는
+        계측이 없어, "어떤 신호도 하한을 넘을 수 없는" 상태가 하루 종일 조용히
+        유지됐다. min_conf(동적)까지 셋을 함께 본다.
+
+        판정만 로그로 남긴다 — 임계값을 자동으로 조정하지 않는다(§9 사전등록 원칙).
+        """
+        try:
+            _cal = self.ensemble_calibrator
+            if not _cal.is_fitted:
+                return          # 미fit이면 raw가 그대로 나가므로 도달 가능
+            _out_max = _cal.output_max
+            if _out_max is None:
+                return
+            _need = max(float(ENS_CONF_FLOOR_FOR_AUTO), float(min_conf or 0.0))
+            _reachable = _out_max >= _need
+            if _reachable == self._conf_floor_reachable:
+                return          # 상태 무변화 — 로그 억제
+            self._conf_floor_reachable = _reachable
+            if not _reachable:
+                logger.warning(
+                    "[ConfFloorGuard] 자동진입 하한 도달 불가 — 보정기 출력상한 %.4f < "
+                    "필요 %.4f (conf_floor=%.3f, min_conf=%.3f, span=%s). "
+                    "이 상태에서는 어떤 신호도 자동진입 하한을 넘을 수 없다.",
+                    _out_max, _need, float(ENS_CONF_FLOOR_FOR_AUTO), float(min_conf or 0.0),
+                    ("%.4f" % _cal.output_span) if _cal.output_span is not None else "N/A",
+                )
+            else:
+                logger.info(
+                    "[ConfFloorGuard] 하한 도달 가능 복구 — 출력상한 %.4f ≥ 필요 %.4f",
+                    _out_max, _need,
+                )
+        except Exception as _cfg_e:
+            logger.debug("[ConfFloorGuard] 점검 실패 (무해): %s", _cfg_e)
 
     def compute(
         self,
@@ -988,6 +1031,9 @@ class EnsembleDecision:
         _regime_floor = REGIME_MIN_CONFIDENCE.get(regime, 0.58)
         min_conf  = max(_regime_floor, zone_mc) if regime == "RISK_OFF" else zone_mc
         regime_ok = (confidence >= min_conf) and (direction != DIRECTION_FLAT)
+
+        # [403차 종합 P0-2b] 하한 ↔ 보정기 출력범위 정합성 점검 (상태 변화 시에만 로그)
+        self._check_conf_floor_consistency(min_conf)
 
         # ── 진입 등급 (체크리스트 통과 수는 entry_manager에서 계산) ──
         # 코히어런스 게이트 차단 시 최우선 X
