@@ -219,6 +219,51 @@ def is_untradeable_now(
     return out
 
 
+def is_at_daily_limit(price, limits, direction, tick: float = 0.0) -> dict:
+    """[404차 후속6] 진입 방향이 당일 가격제한선에 막혀 있는가.
+
+    ## `is_untradeable_now()`가 못 잡는 구멍을 메운다
+
+    거래불능 감지는 "체결이 붕괴한 뒤"에야 발동한다(연속 N분 필요). 그래서 **아직
+    유동적인 상태에서 상한가에 진입**하는 것은 못 막는다 — 2026-07-31 14:17 LONG이
+    정확히 그 사례로, 그 분봉은 vol 109로 멀쩡했고 게이트는 14:26부터 발동했다.
+    그때 진입했다면 TP1(1037.07)이 상한(1036.28) 밖이라 채워질 수 없고 스톱만 맞는
+    구조였다(섀도 counterfactual 실측 −2.366pt).
+
+    이 함수는 그 구멍을 **방향별로** 막는다: 상한가에서 LONG은 상방 여지가 물리적으로
+    0이므로 차단하고, SHORT는 막지 않는다(되돌림 베팅은 상한선과 무관하다). 하한가는 반대.
+
+    Args:
+        price:     현재가
+        limits:    {"upper": float, "lower": float} — 0.0/None이면 정보 없음 → 차단 안 함
+        direction: "LONG" | "SHORT" (대소문자 무관)
+        tick:      호가 단위. >0이면 "상한가 1틱 이내"까지 포함해 판정한다
+                   (정확히 상한가에 붙기 직전도 상방 여지가 1틱뿐이라 의미가 없다)
+
+    Returns:
+        {"blocked": bool, "reason": str, "limit": float|None}
+    """
+    out = {"blocked": False, "reason": "", "limit": None}
+    try:
+        px = float(price or 0.0)
+    except (TypeError, ValueError):
+        return out
+    if px <= 0 or not limits:
+        return out
+    d = str(direction or "").upper()
+    eps = max(0.0, float(tick or 0.0))
+
+    up = float(limits.get("upper") or 0.0)
+    dn = float(limits.get("lower") or 0.0)
+    if d == "LONG" and up > 0 and px >= up - eps:
+        out.update({"blocked": True, "limit": up,
+                    "reason": "상한가 %.2f 도달(현재가 %.2f) — LONG 상방 여지 없음" % (up, px)})
+    elif d == "SHORT" and dn > 0 and px <= dn + eps:
+        out.update({"blocked": True, "limit": dn,
+                    "reason": "하한가 %.2f 도달(현재가 %.2f) — SHORT 하방 여지 없음" % (dn, px)})
+    return out
+
+
 if __name__ == "__main__":
     # 3번 조건(유동 뒷받침)이 실제로 동작하는지 합성 표본 회귀 테스트.
     # 실데이터에서는 min_bars가 먼저 걸러 무효과라 이 경로가 검증되지 않는다.
@@ -248,4 +293,16 @@ if __name__ == "__main__":
               for i in range(4)]
              + [{"ts": "2026-01-02 09:05:00", "high": 111.0, "low": 108.0, "volume": 500}])
     assert is_untradeable_now(mixed)["blocked"] is False, "전일 분봉이 당일 판정에 혼입"
+
+    # is_at_daily_limit — 07-31 14:17 실제 케이스 재현 (상한 1036.28, 진입가 1036.28)
+    L = {"upper": 1036.28, "lower": 863.56}
+    assert is_at_daily_limit(1036.28, L, "LONG")["blocked"] is True
+    assert is_at_daily_limit(1036.28, L, "SHORT")["blocked"] is False  # 되돌림은 무관
+    assert is_at_daily_limit(1034.45, L, "LONG")["blocked"] is False   # 14:07 진입은 정상
+    assert is_at_daily_limit(1036.26, L, "LONG", tick=0.02)["blocked"] is True  # 1틱 이내
+    assert is_at_daily_limit(1036.26, L, "LONG", tick=0.0)["blocked"] is False
+    assert is_at_daily_limit(863.56, L, "SHORT")["blocked"] is True
+    # 정보 없음(인덱스 미실측) → 절대 차단하지 않는다
+    assert is_at_daily_limit(1036.28, {"upper": 0.0, "lower": 0.0}, "LONG")["blocked"] is False
+    assert is_at_daily_limit(1036.28, None, "LONG")["blocked"] is False
     print("utils/market_state.py 자체 테스트 통과")
