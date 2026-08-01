@@ -255,12 +255,30 @@ def is_at_daily_limit(price, limits, direction, tick: float = 0.0) -> dict:
 
     up = float(limits.get("upper") or 0.0)
     dn = float(limits.get("lower") or 0.0)
-    if d == "LONG" and up > 0 and px >= up - eps:
-        out.update({"blocked": True, "limit": up,
-                    "reason": "상한가 %.2f 도달(현재가 %.2f) — LONG 상방 여지 없음" % (up, px)})
-    elif d == "SHORT" and dn > 0 and px <= dn + eps:
-        out.update({"blocked": True, "limit": dn,
-                    "reason": "하한가 %.2f 도달(현재가 %.2f) — SHORT 하방 여지 없음" % (dn, px)})
+
+    # ── 초과 방어: 가격이 제한선을 **넘어서** 있으면 차단하지 않는다 ──────────
+    # 진짜 제한선은 정의상 넘을 수 없다. 넘었다면 그 값이 오래됐거나(단계 확대 미반영)
+    # 이 종목에 안 맞는 값이라는 뜻이므로, 그걸 근거로 막으면 오차단이 된다.
+    #
+    # 왜 필요한가 — 2026-08-01 실측에서 [17]=기준가×1.20(확대됨) / [18]=기준가×0.92
+    # (1단계)로 **비대칭**이었다. 상한은 그날 실제로 닿아서 3단계까지 확대됐고 하한은
+    # 닿지 않아 1단계에 머문 것으로 보이는데, "닿은 쪽만 확대"인지 "양쪽 확대인데 보고만
+    # 이런지"는 확인되지 않았다. 만약 하한이 −8%로 고정이라면 07-28(−11.64%) 같은
+    # 폭락일에 종가가 하한선 아래에 놓여 SHORT가 하루 종일 잘못 막힌다.
+    # 이 가드가 있으면 그 경우 px < dn 이 되어 자동으로 차단이 해제되므로,
+    # 하한 필드의 동적 여부를 몰라도 안전하다.
+    if d == "LONG" and up > 0:
+        if px > up:
+            out["reason"] = "상한가(%.2f)를 현재가(%.2f)가 초과 — 값 신뢰 불가, 차단 안 함" % (up, px)
+        elif px >= up - eps:
+            out.update({"blocked": True, "limit": up,
+                        "reason": "상한가 %.2f 도달(현재가 %.2f) — LONG 상방 여지 없음" % (up, px)})
+    elif d == "SHORT" and dn > 0:
+        if px < dn:
+            out["reason"] = "하한가(%.2f)를 현재가(%.2f)가 하회 — 값 신뢰 불가, 차단 안 함" % (dn, px)
+        elif px <= dn + eps:
+            out.update({"blocked": True, "limit": dn,
+                        "reason": "하한가 %.2f 도달(현재가 %.2f) — SHORT 하방 여지 없음" % (dn, px)})
     return out
 
 
@@ -305,4 +323,11 @@ if __name__ == "__main__":
     # 정보 없음(인덱스 미실측) → 절대 차단하지 않는다
     assert is_at_daily_limit(1036.28, {"upper": 0.0, "lower": 0.0}, "LONG")["blocked"] is False
     assert is_at_daily_limit(1036.28, None, "LONG")["blocked"] is False
+
+    # 초과 방어 — 제한선을 넘어선 값이면 신뢰 불가로 보고 차단하지 않는다.
+    # 07-28(-11.64%) 재현: 기준가 1070.62 기준 하한이 -8%(984.97)로 고정돼 있었다면
+    # 종가 946.02 는 그 아래다. 이때 SHORT 를 막으면 폭락일 내내 오차단이 된다.
+    L28 = {"upper": 1070.62 * 1.20, "lower": 1070.62 * 0.92}
+    assert is_at_daily_limit(946.02, L28, "SHORT")["blocked"] is False, "폭락일 SHORT 오차단"
+    assert is_at_daily_limit(1200.00, L, "LONG")["blocked"] is False, "상한 초과 시 차단 금지"
     print("utils/market_state.py 자체 테스트 통과")
