@@ -8,6 +8,32 @@
 
 ---
 
+## 2026-08-01 (MW0602 404차 — GuardShadow DB 영속화, [23] 채널 신설)
+
+> 상세: `DECISION_LOG.md` 2026-08-01(MW0602 404차) 항목.
+> 선행: MW0601 403차 종합(`827bd04`)의 GuardShadow(P0-4), MW0602 403차 후속의
+> 07-31 정기점검 로그 분석(6개 호라이즌 중 3개 acc.txt 기준 오판정 발견).
+
+- [DONE 2026-08-01] **`guard_shadow_log` 테이블 + `[23]` 검증캠페인 채널 신설**
+  — GuardShadow(old_acc_live vs new(cv) 공정비교)를 로그 대신 DB에 영속화.
+  07-31 실측 데이터(6행) 백필로 `missed_upgrade_rate=50%(3m/5m/10m)` 재현 확인.
+  `min_samples=18`(6호라이즌×3일) 미달이라 아직 `INSUFFICIENT`.
+
+### 다음 EOD(08-03 또는 다음 거래일)부터 확인할 것
+
+- [ ] **`guard_shadow_log`에 그날 EOD 호라이즌 수만큼(보통 6행) 새로 쌓이는지**
+      — `learning/batch_retrainer.py:_train_horizon()` 삽입 지점이 실제
+      라이브 EOD 경로에서 예외 없이 도달하는지 첫 확인.
+- [ ] **3거래일(18건) 도달 후 `[23]` 채널이 INSUFFICIENT를 벗어나는지** —
+      `data/validation_campaign_report.md`에서 확인. FAIL이면 `evaluate_model_replace()`
+      의 `old_acc` 인자를 `old_acc_live`로 교체할지 주간회의 안건으로 등록할 것
+      (§9 사전등록 원칙 — 이 리포트 자체는 자동 적용 안 함).
+- [ ] **`live_note != "ok"` 비율** — 재측정 실패가 잦으면(`n_live_measure_failed`)
+      "판정기준 전면 교체"가 성립하지 않는다는 뜻이므로, fallback 설계 착수
+      여부를 별도 판단할 것.
+
+---
+
 ## 2026-07-29 (MW0602 402차 — PC명 커밋 컨벤션 CLAUDE.md 편입)
 
 > 상세: `DECISION_LOG.md` 2026-07-29(MW0602 402차) 항목. 선행: 401차(반영 누락 사례).

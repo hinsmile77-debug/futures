@@ -756,6 +756,33 @@ def init_trades_db():
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_tvl_horizon_judged "
             "ON tb_verdict_log(horizon, judged_at)")
+
+    # [404차, P0-4 후속] EOD 모델가드 GuardShadow 영속화 — old_acc(acc.txt, 판정에
+    # 실제 쓰는 값)와 old_acc_live(동일폴드 재측정값)가 서로 다른 시점 데이터로 채점된
+    # 값이라 acc.txt vs new(cv) 비교는 불공정하다(learning/batch_retrainer.py
+    # _measure_incumbent_acc 주석 참조). old_acc_live vs new(cv)만 동일폴드라 공정
+    # 비교 자격이 있다. 07-31 최초 라이브 관측에서 이 로그 한 줄로만 존재하던 값이라
+    # 사후 추적이 불가능했음 — DB 영속화로 generate_validation_campaign_report.py가
+    # "acc.txt 기준 실제 판정이 공정비교와 얼마나 자주 어긋나는지" 누적 판정할 수 있게 한다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS guard_shadow_log (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts              TEXT NOT NULL,           -- EOD 재학습 실행 시각
+        horizon         TEXT NOT NULL,           -- 1m/3m/5m/10m/15m/30m
+        acc_txt         REAL NOT NULL,           -- 판정에 실제 사용된 old_acc(acc.txt)
+        old_acc_live    REAL,                    -- 동일폴드 재측정값 (측정 불가 시 NULL)
+        new_cv          REAL NOT NULL,           -- 오늘 신모델 3폴드 평균 CV 정확도
+        live_note       TEXT,                    -- "ok" 또는 재측정 실패 사유
+        distortion      REAL,                    -- acc_txt - old_acc_live (NULL 가능)
+        actual_verdict  TEXT NOT NULL,           -- REPLACE/HOLD — acc.txt 기준 실제 가드 판정
+        fair_verdict    TEXT,                    -- REPLACE/HOLD — old_acc_live 기준 공정 판정 (NULL 가능)
+        n_samples       INTEGER,                 -- 이번 재학습 학습표본 수(len(X))
+        created_at      TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_gsl_horizon_ts ON guard_shadow_log(horizon, ts)")
+
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
     execute(TRADES_DB,
@@ -1823,6 +1850,32 @@ def save_tb_verdict(
            (horizon, judged_at, eval_start, model_mtime, n_samples, ic_tb, ic_3class, verdict)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (horizon, judged_at, eval_start, model_mtime, n_samples, ic_tb, ic_3class, verdict),
+    )
+
+
+def save_guard_shadow(
+    ts: str, horizon: str, acc_txt: float, old_acc_live: Optional[float],
+    new_cv: float, live_note: str, actual_verdict: str, n_samples: int,
+) -> None:
+    """[404차, P0-4 후속] EOD 모델가드 GuardShadow 1행 저장.
+
+    fair_verdict/distortion은 old_acc_live가 있을 때만 계산한다(측정 불가 시
+    "검증 폴드 없음"·"피처셋 변경" 등으로 None) — acc.txt vs new(cv)는 서로 다른
+    시점 데이터로 채점돼 비교 자격이 없으므로 fair_verdict을 그 값으로 대체하지
+    않는다(learning/batch_retrainer.py:_measure_incumbent_acc 한계 참조)."""
+    distortion = (acc_txt - old_acc_live) if old_acc_live is not None else None
+    fair_verdict = (
+        ("REPLACE" if new_cv > old_acc_live else "HOLD")
+        if old_acc_live is not None else None
+    )
+    execute(
+        TRADES_DB,
+        """INSERT INTO guard_shadow_log
+           (ts, horizon, acc_txt, old_acc_live, new_cv, live_note,
+            distortion, actual_verdict, fair_verdict, n_samples)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (ts, horizon, acc_txt, old_acc_live, new_cv, live_note,
+         distortion, actual_verdict, fair_verdict, n_samples),
     )
 
 

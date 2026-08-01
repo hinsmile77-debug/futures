@@ -2,6 +2,81 @@
 
 ---
 
+## 2026-08-01 (MW0602 404차 — GuardShadow(P0-4) DB 영속화: [23] 채널 신설)
+
+### [배경] GuardShadow가 로그 한 줄로만 존재해 사후 추적이 불가능했다
+
+403차 종합(MW0601)이 신설한 GuardShadow(`_measure_incumbent_acc`)는 EOD 모델가드가
+실제 판정에 쓰는 `acc.txt`(교체 시점이 제각각인 값)와, 지금 배포된 모델을 오늘
+검증폴드로 재채점한 `old_acc_live`를 나란히 로그로만 찍는다. 07-31 정기점검에서
+이 로그를 직접 읽어 분석한 결과 6개 호라이즌 중 3개(3m/5m/10m)가 `acc.txt` 기준
+으로는 보류(HOLD)였으나, `old_acc_live` vs `new(cv)` 공정비교로는 신모델이 우세
+(REPLACE)했음을 확인했다 — acc.txt는 서로 다른 시점 데이터로 채점된 값이라
+`new(cv)`와 직접 비교할 자격이 없는데, 가드는 그 불공정한 쌍으로 판정하고 있었다.
+
+문제는 이 발견 자체가 재현 불가능한 방식으로 이뤄졌다는 것 — GuardShadow는
+`_train_horizon()`의 반환 딕셔너리에도 `old_acc_live`가 빠져 있고, DB 테이블도
+없어 `logs/retrain_eod_YYYYMMDD.log`를 사람이 직접 열어 grep해야만 볼 수 있었다.
+"3거래일 관측 후 판정 기준 교체 여부 결정"(403차 후속 제안)이 원칙적으로 불가능한
+상태였다.
+
+### [구현] `guard_shadow_log` 테이블 신설 + 검증캠페인 [23] 채널
+
+- `utils/db_utils.py`: `guard_shadow_log` 테이블(`tb_verdict_log`와 동일 패턴)
+  + `save_guard_shadow()` writer. `fair_verdict`(old_acc_live 기준 공정판정)와
+  `distortion`(acc_txt − old_acc_live)을 저장 시점에 계산 — old_acc_live 측정
+  실패(`live_note != "ok"`) 시 `fair_verdict`는 NULL로 남겨 acc.txt로 대체하지
+  않는다(공정비교 자격이 없는 값이므로).
+- `learning/batch_retrainer.py`: `_train_horizon()`의 `_guard_ok` 확정 직후,
+  기존 GuardShadow 로그와 동일 조건(`not intraday and cv_acc is not None`)으로
+  DB에 1행 저장. `actual_verdict`는 `_guard_ok`(실제 가드가 acc.txt로 내린 결정)
+  그대로 기록 — 판정 로직 자체는 무변경, 읽기 전용 계측 추가일 뿐이다.
+- `config/settings.py`: `VALIDATION_CAMPAIGN["guard_shadow"]` 사전등록.
+  판정지표 `missed_upgrade_rate` = (fair_verdict=REPLACE ∧ actual_verdict=HOLD)
+  비율. 임계값(`missed_upgrade_rate_max=0.30`)은 07-31 관측치(50%)에 맞추지
+  않고 독립적으로 고정 — 313차 원칙(관측 후 기준을 관측치에 맞추면 검증 무의미).
+  `min_samples=18`(6호라이즌×3거래일), `min_days=3`.
+- `scripts/generate_validation_campaign_report.py`: `eval_guard_shadow_channel()`
+  신설 + 요약표/상세 `[23]` 섹션 추가.
+
+### [검증]
+
+- `py_compile` py37_32·py310_64 양쪽 통과, `utils.db_utils`/`learning.batch_retrainer`
+  양쪽 env import 확인.
+- `init_trades_db()`를 즉시 1회 실행해 라이브 `data/db/trades.db`에
+  `guard_shadow_log` 테이블을 지금 생성 완료(다음 main.py 재시작을 기다리지
+  않아도 오늘부터 기록됨).
+- 07-31 `logs/retrain_eod_20260731.log`의 `[GuardShadow]` 6줄을 그대로 백필해
+  실측 검증: `eval_guard_shadow_channel()`이 `missed_upgrade_rate=50.0%(3/6)`,
+  대상 호라이즌 `3m/5m/10m`을 정확히 재현. 표본 1일뿐이라 `min_days=3` 미달로
+  `INSUFFICIENT` 정상 반환(가드 우회 없음).
+- `build_report(28)` 전체 파이프라인 실행해 `[23]` 섹션이 요약표·상세 양쪽에
+  깨짐 없이 렌더링됨을 확인.
+
+### [한계 — 의도적으로 남김]
+
+- **아직 판정에 쓰이지 않는다.** 이 채널은 3거래일(18건) 쌓일 때까지 계속
+  `INSUFFICIENT`다 — `evaluate_model_replace()`의 `old_acc` 인자를 `acc.txt`에서
+  `old_acc_live`로 교체할지는 이 채널이 FAIL을 낸 뒤 주간회의 수동 결정 대상
+  (§9). 지금 구현은 "판단할 수 있게" 만든 것이지 판단을 자동화한 게 아니다.
+- **old_acc_live 측정 실패 시 fallback 미설계.** `live_note != "ok"`(검증 폴드
+  없음·피처셋 변경 등)가 잦으면 `old_acc`를 `old_acc_live`로 전면 교체하는
+  안 자체가 성립하지 않는다 — 그 경우의 대안(예: 측정 실패 시 acc.txt 유지)은
+  별건.
+- 07-31 백필 데이터의 `ts`는 6개 호라이즌 모두 `15:45:26`으로 단일화했다(실제
+  로그는 15:45:26~15:46:12로 흩어져 있음) — `n_days` 집계(날짜만 씀)에는
+  영향 없다.
+
+**Why**: 402차 후속3의 `toxicity_block_shadow` 교훈("계측 채널을 만들었다"와
+"실제로 값이 쌓인다"는 다른 문제)을 이번엔 처음부터 DB 영속화로 피해갔다 —
+로그 전용 계측은 사람이 매번 파일을 열어야만 재현 가능해, 그 자체로 402차 후속3과
+같은 "계측 사망을 아무도 모르는" 위험을 안고 있었다.
+
+**관련**: MW0601 403차 종합(`827bd04`), MW0602 403차 후속(`e594cee`), 402차 후속3
+(계측 자기모순 패턴), 313차·§9 원칙.
+
+---
+
 ## 2026-07-31 (MW0602 403차 후속 — 403차 종합(MW0601) 검토: 축퇴 가드가 MW0602를 통과함을 실측 확인 + 도달불가 폴백 신설)
 
 ### [실측] MW0601 403차 종합이 남긴 미확정 항목의 답 — "가드는 MW0602를 못 잡는다"

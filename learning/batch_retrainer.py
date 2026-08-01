@@ -754,6 +754,27 @@ class BatchRetrainer:
             except Exception as _ne:
                 logger.debug("[Retrain] 알림 실패 (무해): %s", _ne)
 
+        # [404차, P0-4 후속] GuardShadow 영속화 — 지금까지 로그 한 줄로만 존재해
+        # 사후 추적이 불가능했다(dev_memory/DECISION_LOG.md 404차 항목). old_acc_live
+        # vs new(cv) 공정비교를 DB에 남겨 generate_validation_campaign_report.py가
+        # "acc.txt 기준 실제 판정이 공정비교와 얼마나 자주 어긋나는지" 누적 판정할 수
+        # 있게 한다. 로그 발생 조건(701행)과 동일하게 EOD 경로에서만 기록한다.
+        if not intraday and cv_acc is not None:
+            try:
+                from utils.db_utils import save_guard_shadow
+                save_guard_shadow(
+                    ts=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    horizon=horizon_key,
+                    acc_txt=old_acc,
+                    old_acc_live=_old_acc_live,
+                    new_cv=cv_acc,
+                    live_note=_live_note,
+                    actual_verdict="REPLACE" if _guard_ok else "HOLD",
+                    n_samples=len(X),
+                )
+            except Exception as _gs_e:
+                logger.debug("[GuardShadow] DB 저장 실패 (무해): %s", _gs_e)
+
         return {
             "ok":             True,
             "cv_acc":         round(cv_acc, 4) if cv_acc is not None else None,
