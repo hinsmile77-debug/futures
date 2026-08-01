@@ -9420,9 +9420,18 @@ class TradingSystem:
             return {"blocked": False, "reason": "비활성"}
         try:
             rt = getattr(self, "realtime_data", None)
-            limits = getattr(rt, "daily_limits", None) if rt else None
+            limits = dict(getattr(rt, "daily_limits", None) or {}) if rt else {}
             if not limits:
                 return {"blocked": False, "reason": "상한가 정보 없음"}
+            # [404차 후속8] 세션 고가/저가를 함께 넘겨 **단계 래칫**을 성립시킨다.
+            # 한 번 확대된 제한폭은 당일 축소되지 않는데, 현재가만으로 단계를 재계산하면
+            # 가격이 되돌릴 때 단계가 역행해 과잉 차단이 난다(07-31 재생에서 10.8%).
+            _today = datetime.datetime.now().strftime("%Y-%m-%d")
+            _bars = [b for b in fetch_recent_raw_candles(limit=400)
+                     if str(b["ts"])[:10] == _today and str(b["ts"])[11:16] >= "09:00"]
+            if _bars:
+                limits["session_high"] = max(float(b["high"]) for b in _bars)
+                limits["session_low"] = min(float(b["low"]) for b in _bars)
             spec = get_contract_spec(self._futures_code or "")
             return is_at_daily_limit(
                 price, limits, direction, tick=float(spec.get("tick_size", 0.0) or 0.0))
