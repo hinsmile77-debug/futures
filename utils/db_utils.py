@@ -785,17 +785,38 @@ def init_trades_db():
         actual_verdict  TEXT NOT NULL,           -- REPLACE/HOLD — 실제 적용된 결정
         fair_verdict    TEXT,                    -- REPLACE/HOLD — old_acc_live 기준 공정 판정 (NULL 가능)
         n_samples       INTEGER,                 -- 이번 재학습 학습표본 수(len(X))
+        pc              TEXT,                    -- MW0601/MW0602 — 405차, PC별 분리 판정용
+        -- [405차 P1-1] 공정 홀드아웃 섀도: 최신 fair_hold_bars행을 학습에서 완전히
+        -- 제외한 도전자 vs 현행 pkl을 같은 구간으로 채점한 값. 판정 무영향.
+        fair_new        REAL,
+        fair_old        REAL,
+        fair_hold_bars  INTEGER,
+        fair_note       TEXT,
         created_at      TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
     # [404차 후속] source 컬럼 — 기존 설치(위 CREATE TABLE 이전 스키마)에서도 안전하게
     # 따라잡는다(loss_tier1_qty1_shadow와 동일 관례). 신규 설치는 위에 이미 포함돼 no-op.
+    #
+    # [MW0601 405차 / P0-5] pc 컬럼 — [23] missed_upgrade_rate가 두 PC에서 정반대로
+    # 나온다(MW0601 0% : 6개 호라이즌 전부 공정비교로도 HOLD / MW0602 50% : 3개는
+    # 신모델 우세). 합산하면 상반된 신호가 상쇄돼 무의미한 값이 되므로 PC별로 나눠
+    # 판정해야 한다. [23-B] tp1_x2(+32.78 vs -19.04)에 이은 두 번째 PC간 부호 역전이며
+    # 313차 원칙상 두 PC를 한 표본으로 합칠 수 없다.
+    # 근거: docs/정기점검/금요일점검/0801_MW0601xMW0602_교차검토_및_미결개선계획.md §2-4.
     with get_conn(TRADES_DB) as _gsl_conn:
         _gsl_cols = {r[1] for r in _gsl_conn.execute(
             "PRAGMA table_info(guard_shadow_log)").fetchall()}
         if "source" not in _gsl_cols:
             _gsl_conn.execute(
                 "ALTER TABLE guard_shadow_log ADD COLUMN source TEXT NOT NULL DEFAULT 'eod'")
+        if "pc" not in _gsl_cols:
+            _gsl_conn.execute("ALTER TABLE guard_shadow_log ADD COLUMN pc TEXT")
+        for _c, _t in (("fair_new", "REAL"), ("fair_old", "REAL"),
+                       ("fair_hold_bars", "INTEGER"), ("fair_note", "TEXT")):
+            if _c not in _gsl_cols:
+                _gsl_conn.execute(
+                    "ALTER TABLE guard_shadow_log ADD COLUMN %s %s" % (_c, _t))
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_gsl_horizon_ts ON guard_shadow_log(horizon, ts)")
     execute(TRADES_DB,
@@ -1871,10 +1892,32 @@ def save_tb_verdict(
     )
 
 
+def pc_id() -> str:
+    """[MW0601 405차 / P0-5] 이 PC의 식별자 — 호스트명에서 `MW####`를 추출.
+
+    두 운영 머신의 호스트명이 `DeskTop-MW0601` / `DeskTop-MW0602` 형태라 정규식
+    한 줄로 뽑힌다. 매칭 실패 시 호스트명 원문(최대 32자)을 그대로 쓰고, 그마저
+    실패하면 "UNKNOWN". config 상수로 두지 않는 이유는 PC별로 다른 값을 git에
+    커밋할 수 없기 때문이다(멀티 PC pull 호환성 — feedback_git_commit_scope).
+    """
+    try:
+        import platform as _pf
+        import re as _re
+        host = _pf.node() or ""
+        m = _re.search(r"(MW\d{4})", host, _re.IGNORECASE)
+        if m:
+            return m.group(1).upper()
+        return host[:32] if host else "UNKNOWN"
+    except Exception:
+        return "UNKNOWN"
+
+
 def save_guard_shadow(
     ts: str, horizon: str, acc_txt: float, old_acc_live: Optional[float],
     new_cv: float, live_note: str, actual_verdict: str, n_samples: int,
     source: str = "eod",
+    fair_new: Optional[float] = None, fair_old: Optional[float] = None,
+    fair_hold_bars: Optional[int] = None, fair_note: Optional[str] = None,
 ) -> None:
     """[404차, P0-4 후속] EOD/intraday 모델가드 GuardShadow 1행 저장.
 
@@ -1896,10 +1939,12 @@ def save_guard_shadow(
         TRADES_DB,
         """INSERT INTO guard_shadow_log
            (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
-            distortion, actual_verdict, fair_verdict, n_samples)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            distortion, actual_verdict, fair_verdict, n_samples, pc,
+            fair_new, fair_old, fair_hold_bars, fair_note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
-         distortion, actual_verdict, fair_verdict, n_samples),
+         distortion, actual_verdict, fair_verdict, n_samples, pc_id(),
+         fair_new, fair_old, fair_hold_bars, fair_note),
     )
 
 

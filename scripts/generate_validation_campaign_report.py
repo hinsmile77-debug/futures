@@ -96,6 +96,121 @@ def _roundtrip_cost_pt(avg_price: float) -> float:
     return 2.0 * avg_price * FUTURES_COMMISSION_RATE + 2.0 * slip * TICK_SIZE
 
 
+def _pc_id() -> str:
+    """[MW0601 405차 / P0-5] 이 PC 식별자. utils.db_utils.pc_id()와 동일 규약."""
+    try:
+        from utils.db_utils import pc_id as _p
+        return _p()
+    except Exception:
+        try:
+            import platform as _pf
+            import re as _re
+            host = _pf.node() or ""
+            m = _re.search(r"(MW\d{4})", host, _re.IGNORECASE)
+            return m.group(1).upper() if m else (host[:32] or "UNKNOWN")
+        except Exception:
+            return "UNKNOWN"
+
+
+def _pearson_r(a, b):
+    """BLAS를 타지 않는 피어슨 상관계수 — `np.corrcoef` 대체.
+
+    **`np.corrcoef`/`np.cov`를 이 스크립트에서 쓰지 말 것.** 이 스크립트는 EOD 체인에서
+    py310_64로 실행되는데, MW0601의 py310_64에서 `np.cov` 내부 matmul이 네이티브
+    크래시한다(`0xc06d007f` DELAYLOAD_FAILURE — 프로세스가 traceback 없이 즉사하므로
+    try/except로도 못 잡는다). 317차 Phase 1에서 이미 확인된 환경 제약이며
+    `scripts/hurst_*.py` 3종이 docstring에 "py37_32에서 실행" 경고를 달아둔 그 이슈다.
+
+    404차 후속3이 [24] 채널에 `np.corrcoef`를 넣으면서 이 제약이 리포트 생성 경로로
+    유입됐다 — MW0602에서는 재현되지 않아 발견될 수 없었던 PC 환경차다. 여기서는
+    합/평균만 쓰는 정의식으로 직접 계산한다(py37_32 `np.corrcoef`와 값 일치 확인:
+    0.9933992677987828). 표준편차가 0이거나 표본이 2 미만이면 None.
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    if a.size < 2 or a.size != b.size:
+        return None
+    am = a - a.mean()
+    bm = b - b.mean()
+    denom = float(np.sqrt(float((am * am).sum()) * float((bm * bm).sum())))
+    if denom <= 0.0:
+        return None
+    return float((am * bm).sum() / denom)
+
+
+def _shadow_qty_profile(table: str) -> dict:
+    """[MW0601 405차 / P0-3] 섀도 채널의 진입시점 계약수 분포 + qty 가중 hyp 합계.
+
+    `hyp_pnl_pts`는 1계약 기준이라 실현 기여도를 과대/과소 표시할 수 있다. 여기서
+    `ensemble_decisions.entry_qty`(사이저가 그 시점에 제안한 계약수)를 ts로 붙여
+    "만약 제안 수량대로 진입했다면"의 가중 합계를 **참고값으로만** 계산한다.
+
+    **판정에 쓰지 않는다.** 합격선을 qty 가중으로 바꾸면 §9-4 검증 시계가 리셋되고,
+    무엇보다 섀도의 질문("차단 안 했으면 얼마였나")은 게이트 성능을 재는 것이라
+    사이저 성능을 섞으면 두 개가 뒤엉킨다. 표시 전용이다.
+
+    MW0601 실측: [6] hurst_gate_shadow는 비가중 +37.72 → 가중 +26.27pt(0.70배)로
+    30% 희석되고, [7] joint_gate_shadow는 entry_qty가 전부 1이라 차이가 없다.
+    """
+    out = {"table": table}
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                'SELECT ts, hyp_pnl_pts FROM "%s" WHERE resolved=1 AND ts >= ?' % table,
+                (_campaign_start(),),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+    if not rows:
+        out["n"] = 0
+        return out
+    try:
+        with _conn(PREDICTIONS_DB) as pconn:
+            qmap = {r["ts"]: int(r["entry_qty"] or 1) for r in pconn.execute(
+                "SELECT ts, entry_qty FROM ensemble_decisions "
+                "WHERE entry_qty IS NOT NULL AND ts >= ?", (_campaign_start(),))}
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    dist, unw, wtd, matched = {}, 0.0, 0.0, 0
+    for r in rows:
+        h = float(r["hyp_pnl_pts"] or 0.0)
+        q = qmap.get(r["ts"])
+        if q is None:
+            continue
+        matched += 1
+        dist[q] = dist.get(q, 0) + 1
+        unw += h
+        wtd += h * q
+    out["n"] = len(rows)
+    out["n_qty_matched"] = matched
+    out["qty_dist"] = dict(sorted(dist.items()))
+    out["unweighted_hyp_pt"] = round(unw, 4)
+    out["qty_weighted_hyp_pt"] = round(wtd, 4)
+    if abs(unw) > 1e-9:
+        out["weight_ratio"] = round(wtd / unw, 4)
+    return out
+
+
+def _render_qty_profile(table: str) -> list:
+    """[MW0601 405차 / P0-3] 섀도 채널 상세절에 붙일 계약수 프로파일 줄 (표시 전용)."""
+    p = _shadow_qty_profile(table)
+    if p.get("error") or not p.get("n_qty_matched"):
+        return []
+    lines = ["- 진입시점 계약수 분포: %s (매칭 %d/%d건)" % (
+        ", ".join("%d계약×%d" % (q, c) for q, c in p["qty_dist"].items()),
+        p["n_qty_matched"], p["n"])]
+    if p.get("weight_ratio") is not None:
+        lines.append(
+            "  - **참고(판정 미반영)**: 비가중 %s pt → 사이저 제안 수량 가중 %s pt "
+            "(%.2f배). 판정은 비가중 1계약 기준을 그대로 쓴다 — 게이트 성능에 "
+            "사이저 성능을 섞지 않기 위해서다(§9-4 합격선 무변경)." % (
+                p["unweighted_hyp_pt"], p["qty_weighted_hyp_pt"], p["weight_ratio"]))
+    return lines
+
+
 def _campaign_start() -> str:
     return VALIDATION_CAMPAIGN.get("start_date", "2026-07-05") + " 00:00:00"
 
@@ -1524,6 +1639,15 @@ def eval_guard_shadow_channel(days: int) -> dict:
     07-31 최초 라이브 관측(6개 호라이즌 중 3개, dev_memory/DECISION_LOG.md
     404차 항목)이 이 채널을 만든 계기이지만, PASS/FAIL 임계값은 그 단일일
     관측치에 맞추지 않고 독립적으로 고정했다(313차 원칙).
+
+    [MW0601 405차 / P0-5] **PC별로 분리 판정한다.** 이 채널은 두 PC에서 정반대로
+    나온다 — 07-31 실측 기준 MW0601은 6개 호라이즌 전부 공정비교로도 HOLD여서
+    missed_upgrade_rate=0%인데, MW0602는 3개(3m/5m/10m)가 신모델 우세라 50%다.
+    합산하면 상반된 신호가 상쇄돼 무의미한 값이 되므로, verdict는 **이 PC의 행만으로**
+    계산하고 다른 PC 행은 참고용으로만 표시한다([23-B] tp1_x2 +32.78 vs -19.04에
+    이은 두 번째 PC간 부호 역전 — 313차 원칙상 한 표본으로 합칠 수 없다).
+    현재 두 머신은 각자 로컬 trades.db를 쓰므로 실질 필터링은 no-op이지만,
+    DB를 합치거나 옮기는 순간 조용히 오염되는 것을 막는 방어선이다.
     """
     cr = VALIDATION_CAMPAIGN["guard_shadow"]
     out = {"verdict": "INSUFFICIENT", "n_samples": 0, "n_days": 0}
@@ -1533,9 +1657,10 @@ def eval_guard_shadow_channel(days: int) -> dict:
     )
     try:
         with _conn(TRADES_DB) as conn:
-            rows = conn.execute(
+            all_rows = conn.execute(
                 """SELECT ts, horizon, acc_txt, old_acc_live, new_cv, live_note,
-                          distortion, actual_verdict, fair_verdict
+                          distortion, actual_verdict, fair_verdict, pc,
+                          fair_new, fair_old, fair_hold_bars
                      FROM guard_shadow_log
                     WHERE ts >= ? AND source = 'eod'
                     ORDER BY ts""",
@@ -1545,10 +1670,39 @@ def eval_guard_shadow_channel(days: int) -> dict:
         out["error"] = str(e)
         return out
 
+    # pc=NULL은 405차 이전 기록 — 로컬 DB이므로 이 PC 것으로 간주(하위호환).
+    _me = _pc_id()
+    out["pc"] = _me
+    rows = [r for r in all_rows if (r["pc"] or _me) == _me]
+    _other = {}
+    for r in all_rows:
+        _p = r["pc"] or _me
+        if _p != _me:
+            _other[_p] = _other.get(_p, 0) + 1
+    if _other:
+        out["other_pc_rows_excluded"] = _other
+
     out["n_samples"] = len(rows)
     out["n_days"] = len({r["ts"][:10] for r in rows})
     _live_fail = [r for r in rows if r["fair_verdict"] is None]
     out["n_live_measure_failed"] = len(_live_fail)
+
+    # [MW0601 405차 / P1-1] 공정 홀드아웃 섀도 요약 — **판정 미반영, 표시 전용**.
+    # 위 fair_verdict은 "현행이 이미 학습한 폴드"로 잰 값이라 현행에 유리하다.
+    # fair_new/fair_old는 최신 구간을 학습에서 완전히 뺀 도전자와 현행을 같은
+    # 구간으로 채점한 값이다(현행 pkl은 intraday가 덮어써 여전히 유리할 수 있어
+    # 격차는 하한이다 — batch_retrainer._measure_fair_holdout 주석 참조).
+    _fair = [r for r in rows
+             if r["fair_new"] is not None and r["fair_old"] is not None]
+    if _fair:
+        _gaps = [float(r["fair_new"]) - float(r["fair_old"]) for r in _fair]
+        out["fair_holdout"] = {
+            "n": len(_fair),
+            "n_new_better": sum(1 for g in _gaps if g > 0),
+            "mean_gap": round(float(np.mean(_gaps)), 4),
+            "hold_bars": int(_fair[-1]["fair_hold_bars"] or 0),
+            "note": "판정 미반영 — 3거래일 관측 후 old_acc 인자 교체 여부를 주간회의 결정(§9)",
+        }
 
     fair_rows = [r for r in rows if r["fair_verdict"] is not None]
     if len(rows) < cr["min_samples"] or out["n_days"] < cr["min_days"]:
@@ -1579,6 +1733,157 @@ def eval_guard_shadow_channel(days: int) -> dict:
     out["verdict"] = (
         "FAIL" if out["missed_upgrade_rate"] >= cr["missed_upgrade_rate_max"] else "PASS"
     )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# [28]/[29] 사이징 역예측 · mean-revert 사이즈 (MW0601 405차) — 사전등록
+# ──────────────────────────────────────────────────────────────
+
+def _merged_positions(extra_cols=""):
+    """진입 1건(entry_ts) 단위로 병합한 SYSTEM_AUTO 포지션 목록.
+
+    [21]·[13]과 동일 관례 — trades는 부분청산을 같은 entry_ts로 여러 행에 나눠
+    기록하므로 그대로 세면 승률이 부풀려진다(402차가 실제로 걸린 함정).
+    수량은 그 포지션에서 관측된 **최대** 계약수를 쓴다(부분청산으로 줄어들기 전
+    원래 진입 규모가 사이징 판단의 대상이므로).
+    """
+    cols = "entry_ts, quantity, COALESCE(net_pnl_krw, pnl_krw) AS pnl"
+    if extra_cols:
+        cols += ", " + extra_cols
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                "SELECT %s FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ? "
+                "AND COALESCE(entry_source,'') = ?" % cols,
+                (_campaign_start(), "SYSTEM_AUTO"),
+            ).fetchall()
+    except Exception:
+        return []
+    merged = {}
+    for r in rows:
+        k = r["entry_ts"]
+        m = merged.setdefault(k, {"entry_ts": k, "pnl": 0.0, "qty": 0})
+        m["pnl"] += float(r["pnl"] or 0.0)
+        m["qty"] = max(m["qty"], int(r["quantity"] or 1))
+        for c in [c.strip() for c in extra_cols.split(",") if c.strip()]:
+            if c not in m:
+                m[c] = r[c]
+    return list(merged.values())
+
+
+def _bucket_stats(pnls):
+    arr = np.array(pnls, dtype=float)
+    return {
+        "n": int(arr.size),
+        "avg_pnl_krw": round(float(arr.mean()), 0),
+        "total_pnl_krw": round(float(arr.sum()), 0),
+        "win_rate": round(float((arr > 0).mean()), 4),
+        "min_pnl_krw": round(float(arr.min()), 0),
+    }
+
+
+def eval_sizing_inversion_watch() -> dict:
+    """[28] 사이징 역예측 감시 (MW0601 405차 / P1-2) — 사전등록.
+
+    계약수 구간별 실현 순EV가 역전(사이즈를 키울수록 나빠짐)돼 있는지 누적 판정한다.
+    상세 근거·판정 규약은 config.settings:VALIDATION_CAMPAIGN["sizing_inversion_watch"]
+    주석 참조. **자동 조치 없음** — MAX_CONTRACTS 인하는 주간회의 수동 결정(§9).
+    """
+    cr = VALIDATION_CAMPAIGN.get("sizing_inversion_watch", {})
+    min_n = int(cr.get("min_samples_per_bucket", 20))
+    min_d = int(cr.get("min_days", 5))
+    gap = float(cr.get("inversion_gap_krw", 200000))
+    out = {"verdict": "INSUFFICIENT", "entry_source_filter": cr.get("entry_source", "SYSTEM_AUTO")}
+
+    pos = _merged_positions()
+    if not pos:
+        out["reason"] = "표본 없음"
+        return out
+    out["n_positions"] = len(pos)
+    out["n_days"] = len({p["entry_ts"][:10] for p in pos})
+
+    buckets = {"qty1": [], "qty2": [], "qty3plus": []}
+    for p in pos:
+        key = "qty1" if p["qty"] <= 1 else ("qty2" if p["qty"] == 2 else "qty3plus")
+        buckets[key].append(p["pnl"])
+    out["by_bucket"] = {k: _bucket_stats(v) for k, v in buckets.items() if v}
+
+    # 계약수 상한 카운터팩추얼 — "상한 N이었다면 얼마였나"는 계산할 수 없다
+    # (사이즈가 달랐으면 체결·청산 경로도 달랐을 것). 대신 상한 초과분을 제외한
+    # 부분합만 제시한다 — 해석은 "그 거래들을 아예 안 했다면"이다.
+    out["excl_above_cap_krw"] = {
+        str(cap): round(sum(p["pnl"] for p in pos if p["qty"] <= cap), 0)
+        for cap in (1, 2, 3)
+    }
+    out["all_krw"] = round(sum(p["pnl"] for p in pos), 0)
+
+    b1, b3 = out["by_bucket"].get("qty1"), out["by_bucket"].get("qty3plus")
+    if out["n_days"] < min_d:
+        out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
+        return out
+    if not b1 or not b3 or b1["n"] < min_n or b3["n"] < min_n:
+        out["reason"] = "구간 표본 부족 (qty1=%d, qty3+=%d, 각각 %d 필요) — 판정 보류" % (
+            (b1 or {}).get("n", 0), (b3 or {}).get("n", 0), min_n)
+        return out
+
+    out["gap_krw"] = round(b1["avg_pnl_krw"] - b3["avg_pnl_krw"], 0)
+    out["verdict"] = "FAIL" if out["gap_krw"] >= gap else "PASS"
+    if out["verdict"] == "FAIL":
+        out["recommendation"] = (
+            "계약수 역예측 확정 (qty=1 평균 %s원 vs qty≥3 평균 %s원, 격차 %s원) — "
+            "MAX_CONTRACTS 인하를 주간회의에서 검토 (즉시 변경 금지, §9)" % (
+                format(b1["avg_pnl_krw"], ",.0f"), format(b3["avg_pnl_krw"], ",.0f"),
+                format(out["gap_krw"], ",.0f")))
+    return out
+
+
+def eval_mean_revert_size_watch() -> dict:
+    """[29] mean-revert 레짐 사이즈 축소 감시 (MW0601 405차 / P1-3) — 사전등록.
+
+    hurst_bucket='mean-revert' 진입의 승률·순EV가 나머지 버킷보다 유의하게 낮은지
+    누적 판정한다. 상세 근거는 config.settings의 채널 주석 참조.
+    **"진입 차단"이 아니라 사이즈/등급 축 처방 가설이다**(317차 FalseBlock 교훈).
+    """
+    cr = VALIDATION_CAMPAIGN.get("mean_revert_size_watch", {})
+    min_n = int(cr.get("min_samples_per_bucket", 20))
+    min_d = int(cr.get("min_days", 5))
+    gap_max = float(cr.get("win_rate_gap_max", 0.15))
+    out = {"verdict": "INSUFFICIENT", "entry_source_filter": cr.get("entry_source", "SYSTEM_AUTO")}
+
+    pos = _merged_positions(extra_cols="hurst_bucket")
+    if not pos:
+        out["reason"] = "표본 없음"
+        return out
+    out["n_positions"] = len(pos)
+    out["n_days"] = len({p["entry_ts"][:10] for p in pos})
+
+    mr = [p["pnl"] for p in pos if p.get("hurst_bucket") == "mean-revert"]
+    oth = [p["pnl"] for p in pos if p.get("hurst_bucket") in ("neutral", "trend")]
+    out["by_bucket"] = {}
+    if mr:
+        out["by_bucket"]["mean_revert"] = _bucket_stats(mr)
+    if oth:
+        out["by_bucket"]["neutral_trend"] = _bucket_stats(oth)
+
+    if out["n_days"] < min_d:
+        out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
+        return out
+    if len(mr) < min_n or len(oth) < min_n:
+        out["reason"] = "버킷 표본 부족 (mean-revert=%d, 그 외=%d, 각각 %d 필요) — 판정 보류" % (
+            len(mr), len(oth), min_n)
+        return out
+
+    a, b = out["by_bucket"]["mean_revert"], out["by_bucket"]["neutral_trend"]
+    out["win_rate_gap"] = round(b["win_rate"] - a["win_rate"], 4)
+    out["avg_gap_krw"] = round(b["avg_pnl_krw"] - a["avg_pnl_krw"], 0)
+    out["verdict"] = "FAIL" if out["win_rate_gap"] >= gap_max else "PASS"
+    if out["verdict"] == "FAIL":
+        out["recommendation"] = (
+            "mean-revert 열위 확정 (승률 %.1f%% vs %.1f%%, 격차 %.1f%%p) — 처방은 "
+            "사이즈 축소가 아니라 **등급 강등/임계값 이동** 축으로 설계할 것 "
+            "(qty=1에서 사이즈 축소는 no-op, sizing_prescription_axis 결정 참조)" % (
+                a["win_rate"] * 100, b["win_rate"] * 100, out["win_rate_gap"] * 100))
     return out
 
 
@@ -1645,7 +1950,10 @@ def eval_tp1_protect_giveback_watch() -> dict:
     if np.median(p) > 0:
         out["median_giveback_rate"] = round(float(np.median(g) / np.median(p)), 4)
     if len(rows) > 2 and o.std() > 0 and g.std() > 0:
-        out["offset_vs_give_corr"] = round(float(np.corrcoef(o, g)[0, 1]), 4)
+        # [MW0601 405차] np.corrcoef → _pearson_r (py310_64 네이티브 크래시 회피, 값 동일)
+        _r = _pearson_r(o, g)
+        if _r is not None:
+            out["offset_vs_give_corr"] = round(_r, 4)
     modes = {}
     for r in rows:
         modes[r["mode"]] = modes.get(r["mode"], 0) + 1
@@ -3471,7 +3779,8 @@ def eval_grade_ev_inversion() -> dict:
     try:
         with _conn(TRADES_DB) as conn:
             rows = conn.execute(
-                """SELECT COALESCE(NULLIF(grade,''),'?') AS grade,
+                """SELECT entry_ts,
+                          COALESCE(NULLIF(grade,''),'?') AS grade,
                           COALESCE(net_pnl_krw, pnl_krw) AS pnl
                    FROM trades
                    WHERE exit_ts >= ? AND grade IN ('A','B','C')""",
@@ -3485,10 +3794,31 @@ def eval_grade_ev_inversion() -> dict:
     # "소수 초대형 손실이 평균을 끌어내리는 fat-tail"을 구분할 수 없다(0722 딥다이브:
     # A등급 4주 손실의 84%가 급행 풀스톱 9건에 집중). SQLite에 STDEV가 없어 Python에서
     # 계산 — numpy(이미 상단에서 import).
+    #
+    # [MW0601 405차 / P0-4] **진입 1건 단위로 병합.** trades는 부분청산을 같은 entry_ts로
+    # 여러 행에 나눠 기록하므로 그대로 세면 TP1/TP2 부분청산이 각각 '승리' 표본으로 잡혀
+    # 승률이 부풀려진다 — [21] direction_ev_watch가 이미 같은 이유로 병합하며 docstring에
+    # "402차가 실제로 이 함정에 걸렸다"까지 적어뒀는데, 그 미러인 이 채널에는 적용이
+    # 누락돼 있었다. 편향은 랜덤이 아니라 **한 방향**이다: 부분청산은 TP1에 닿은 포지션에서만
+    # 생기므로(손실은 하드스톱 한 번으로 끝나 항상 1행) 잉여 표본이 승자 쪽에 쏠린다.
+    # MW0601 실측(캠페인 구간): C등급 승률 47.1%→42.9%, 표본 A 56→52 / C 17→14.
+    # **판정식(A 평균 순EV < 0 → FAIL)은 무변경** — 집계 단위 정정은 계측 버그 수정이지
+    # 합격선 변경이 아니므로 §9-4 검증 시계 리셋 대상이 아니다(404차 후속11의 캠페인
+    # 상시 전환이 같은 논리로 처리된 전례). 표본 축소로 min_samples 미달이 나면 그것이
+    # 정상이며 되돌리지 말 것 — 원래 판정할 표본이 없었던 것이다.
+    # 근거: docs/정기점검/매일점검/MW0601-20260731-점검리포트.md §9-2.
     from collections import defaultdict
-    pnl_by_grade = defaultdict(list)
+    _merged = defaultdict(lambda: {"grade": None, "pnl": 0.0})
     for row in rows:
-        pnl_by_grade[row["grade"]].append(float(row["pnl"] or 0.0))
+        k = (row["entry_ts"], row["grade"])
+        _merged[k]["grade"] = row["grade"]
+        _merged[k]["pnl"] += float(row["pnl"] or 0.0)
+
+    pnl_by_grade = defaultdict(list)
+    for v in _merged.values():
+        pnl_by_grade[v["grade"]].append(v["pnl"])
+    out["n_entries_merged"] = len(_merged)
+    out["n_exit_events"] = len(rows)
 
     by_grade = {}
     for g, pnls in pnl_by_grade.items():
@@ -3600,6 +3930,8 @@ def build_report(days: int) -> tuple:
     tpg = eval_tp1_protect_giveback_watch()
     lpw = eval_limit_pin_watch()
     ucw = eval_unreachable_cf_watch()
+    siw = eval_sizing_inversion_watch()      # [28] MW0601 405차 P1-2
+    mrs = eval_mean_revert_size_watch()      # [29] MW0601 405차 P1-3
     off = eval_offline_geometry_channels()
 
     metrics = {
@@ -3620,6 +3952,7 @@ def build_report(days: int) -> tuple:
         "guard_shadow": gsc, "intraday_cv_watch": icw,
         "tp1_protect_giveback_watch": tpg,
         "limit_pin_watch": lpw, "unreachable_cf_watch": ucw,
+        "sizing_inversion_watch": siw, "mean_revert_size_watch": mrs,
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
         "quantile_tp_shadow": off.get("quantile_tp_shadow"),
@@ -3790,7 +4123,50 @@ def build_report(days: int) -> tuple:
          % (ucw.get("n_unreachable", 0),
             ", ".join("%s=%d" % kv for kv in (ucw.get("by_table") or {}).items()) or "—",
             ucw.get("excluded_hyp_pnl_pts", "—")))))
+    _sb = siw.get("by_bucket") or {}
+    L.append("| [28] 사이징 역예측 감시 | %s | %s |" % (
+        _fmt_verdict(siw["verdict"]),
+        siw.get("reason") or (" / ".join(
+            "%s: n=%d 승률=%.1f%% 평균=%s원" % (
+                k, v["n"], v["win_rate"] * 100, format(v["avg_pnl_krw"], ",.0f"))
+            for k, v in sorted(_sb.items())) or "표본 없음")))
+    _mb = mrs.get("by_bucket") or {}
+    L.append("| [29] mean-revert 레짐 사이즈 | %s | %s |" % (
+        _fmt_verdict(mrs["verdict"]),
+        mrs.get("reason") or (" / ".join(
+            "%s: n=%d 승률=%.1f%% 평균=%s원" % (
+                k, v["n"], v["win_rate"] * 100, format(v["avg_pnl_krw"], ",.0f"))
+            for k, v in sorted(_mb.items())) or "표본 없음")))
+
+    # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
+    # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
+    # counterfactual 채널은 hyp_pnl_pts — **1계약 기준·TP1 상한·미실현 시뮬레이션**이다.
+    # 이 사실이 어디에도 표기돼 있지 않아 `+32.78pt`가 실현손익과 같은 단위로 읽혔다.
+    #
+    # 계측은 결함이 아니다 — "차단 안 했으면 얼마였나"는 1계약 기준으로 재는 것이 맞고,
+    # 사이저 출력을 섞으면 게이트 성능과 사이징 성능이 뒤엉킨다. 문제는 라벨이었다.
+    # 실측 근거(MW0601): [6] Hurst는 1계약 기준 +37.72pt인데 진입시점 entry_qty로
+    # 가중하면 +26.27pt(0.70배)다 — 고계약수 신호를 차단한 공로가 1계약 표기에서
+    # 30% 희석된다. [7] JointGate는 entry_qty가 전부 1이라 차이가 없다(채널마다 다르다).
+    # TP1 상한도 같은 방향의 계통 편향이다 — 하방은 stop까지 온전히 세면서 상방은
+    # TP1에서 자른다(실거래 TP2 평균 +5.85pt / TP3 +8.00pt). 404차 후속9가 [7]에
+    # MFE/MAE를 병기해 이 편향이 결론을 뒤집지는 않음을 확인했으나 [7]에서만 확인됐다.
+    #
+    # **표시만 바꾼다 — 판정식·합격선·verdict에 일절 관여하지 않는다.**
+    _PT_BADGE = " `[1계약·TP1상한·미실현 시뮬]`"
+    for _i in range(len(L) - 1, -1, -1):
+        _row = L[_i]
+        if not _row.startswith("| ["):
+            if _row.startswith("| 채널 |"):
+                break
+            continue
+        if "hyp=" in _row and _PT_BADGE not in _row:
+            L[_i] = _row.rstrip()[:-1].rstrip() + _PT_BADGE + " |"
     L.append("")
+    L.append("> `[1계약·TP1상한·미실현 시뮬]` 배지가 붙은 채널의 `hyp=…pt`는 **실현손익이 아니다** — "
+             "계약수를 곱하지 않은 1계약 기준이고, TP1에서 끊는 가상 청산이며, 실제로는 "
+             "일어나지 않은 거래다. 배지 없는 원(₩) 단위 채널([13]·[21]·[5]·[8])과 "
+             "직접 더하거나 비교하지 말 것. 채널별 진입시점 계약수 분포는 각 채널 상세 절 참조.")
 
     # [0] 표본 기아 경보 상세
     L.append("## [0] 캠페인 표본 기아 경보 + 완화 사다리 (§3-8)")
@@ -3985,6 +4361,7 @@ def build_report(days: int) -> tuple:
         ("%.1f%%" % (hg["win_rate"] * 100)) if "win_rate" in hg else "—",
         ("%.1f%%" % (hg["baseline_win_rate"] * 100)) if hg.get("baseline_win_rate") is not None else "—",
     ))
+    L.extend(_render_qty_profile("hurst_gate_shadow"))
     if hg.get("recommendation"):
         L.append("- **권고**: %s" % hg["recommendation"])
     if hg.get("reason"):
@@ -4009,10 +4386,56 @@ def build_report(days: int) -> tuple:
             L.append("  - %s(meta%s0.55): n=%d hyp=%spt 승률=%.1f%%" % (
                 bucket, "≥" if bucket == "high" else "<",
                 v["n"], v["total_hyp_pnl_pts"], v["win_rate"] * 100))
+    L.extend(_render_qty_profile("joint_gate_shadow"))
     if jg.get("recommendation"):
         L.append("- **권고**: %s" % jg["recommendation"])
     if jg.get("reason"):
         L.append("- %s" % jg["reason"])
+    L.append("")
+
+    # [28]/[29] MW0601 405차 신설 채널 상세
+    L.append("## [28] 사이징 역예측 감시 (MW0601 405차, P1-2)")
+    L.append("")
+    L.append("> 계약수를 키울수록 실현 순EV가 나빠지는가. 0801 점검 §9-3에서 3계약 이상 "
+             "16전 1승 -2,642만원(이항검정 p=5.07e-07)이 확인됐으나 이를 보는 채널이 "
+             "하나도 없었다. **자동 조치 없음** — MAX_CONTRACTS 인하는 주간회의 수동 결정(§9).")
+    L.append("")
+    L.append("- 포지션 %s건 / %s일 (부분청산 병합, entry_source=SYSTEM_AUTO)" % (
+        siw.get("n_positions", "—"), siw.get("n_days", "—")))
+    for k, v in sorted((siw.get("by_bucket") or {}).items()):
+        L.append("  - **%s**: n=%d 승률 %.1f%% 평균 %s원 누적 %s원 (최대손실 %s원)" % (
+            k, v["n"], v["win_rate"] * 100, format(v["avg_pnl_krw"], ",.0f"),
+            format(v["total_pnl_krw"], ",.0f"), format(v["min_pnl_krw"], ",.0f")))
+    if siw.get("excl_above_cap_krw"):
+        L.append("- 계약수 상한별 부분합(그 초과 거래를 **아예 안 했다면**): %s / 전체 %s원" % (
+            " / ".join("상한%s=%s원" % (c, format(v, ",.0f"))
+                       for c, v in sorted(siw["excl_above_cap_krw"].items())),
+            format(siw.get("all_krw", 0), ",.0f")))
+        L.append("  - ⚠ 진짜 counterfactual이 아니다 — 사이즈가 달랐으면 체결·청산 경로도 "
+                 "달랐을 것이므로 \"상한 N이었다면\"이 아니라 \"그 거래들을 제외하면\"으로 읽을 것.")
+    if siw.get("recommendation"):
+        L.append("- **권고**: %s" % siw["recommendation"])
+    if siw.get("reason"):
+        L.append("- %s" % siw["reason"])
+    L.append("")
+
+    L.append("## [29] mean-revert 레짐 사이즈 (MW0601 405차, P1-3)")
+    L.append("")
+    L.append("> 0801 점검 §6-3의 313차 z검정 5개 세그먼트 중 **유일하게 Bonferroni 생존**한 축 "
+             "(mean-revert 승률 45.7% vs 69.1%, z=-2.61 p=0.00911, n=35/152, 일자 분산 9일). "
+             "n=35·최다일 40%로 경계선이라 누적 확인이 필요하다. "
+             "**\"진입 차단\"이 아니라 사이즈/등급 축 처방 가설**이다(317차 FalseBlock 교훈).")
+    L.append("")
+    L.append("- 포지션 %s건 / %s일 (부분청산 병합, entry_source=SYSTEM_AUTO)" % (
+        mrs.get("n_positions", "—"), mrs.get("n_days", "—")))
+    for k, v in sorted((mrs.get("by_bucket") or {}).items()):
+        L.append("  - **%s**: n=%d 승률 %.1f%% 평균 %s원 누적 %s원" % (
+            k, v["n"], v["win_rate"] * 100, format(v["avg_pnl_krw"], ",.0f"),
+            format(v["total_pnl_krw"], ",.0f")))
+    if mrs.get("recommendation"):
+        L.append("- **권고**: %s" % mrs["recommendation"])
+    if mrs.get("reason"):
+        L.append("- %s" % mrs["reason"])
 
     # [404차 후속9 / P1-D] MFE 병기 — counterfactual 자기편향 계측
     if jg.get("n_with_mfe"):
@@ -4534,6 +4957,29 @@ def build_report(days: int) -> tuple:
                     ("%+.2f" % v["delta_vs_current"]) if v["delta_vs_current"] is not None else "—"))
         L.append("")
         L.append("- **판정: %s** — %s" % (_g23.get("verdict"), _g23.get("reason")))
+        # [MW0601 405차 / P1-4] OOS 부분집계 — 표시 전용, 판정 미반영
+        _oos = _g23.get("oos") or {}
+        if _oos:
+            L.append("")
+            L.append("### [23-B-OOS] 가설 수립 이후 신규분만 (%s~) — **판정 미반영**"
+                     % _oos.get("oos_start", "—"))
+            L.append("")
+            _opv = _oos.get("per_variant") or {}
+            if not _opv:
+                L.append("- %s" % _oos.get("note", "표본 없음"))
+            else:
+                L.append("| 변형 | n | 승률 | 누적pt | 현행 대비 |")
+                L.append("|---|---|---|---|---|")
+                for k, v in _opv.items():
+                    L.append("| %s | %d | %.1f%% | %+.2f | %s |" % (
+                        k, v["n"], v["win_rate"] * 100, v["total_pt"],
+                        ("%+.2f" % v["delta_vs_current"])
+                        if v.get("delta_vs_current") is not None else "—"))
+                L.append("")
+                L.append("> %s" % _oos.get("note", ""))
+                L.append("> 누적 표(위)는 **가설을 세운 그 기간을 포함**한다(403차 P1-6이 55건/11일로")
+                L.append("> 처음 실행하며 이 대안들을 정의했다). 이 절은 그 이후 신규분만 세어 같은")
+                L.append("> 방향이 유지되는지를 본다 — 표본이 쌓이기 전에는 해석하지 말 것(313차).")
     L.append("")
     L.append("> 종전에는 `scripts/tp1_geometry_shadow.py`를 따로 실행해야만 보여 주간회의에")
     L.append("> 노출되지 않았다(403차 신설 이후). 404차 후속3에서 계산부를 `compute()`/")

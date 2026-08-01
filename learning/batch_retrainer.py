@@ -52,6 +52,7 @@ from config.settings import (
     GBM_WEIGHT_DEFAULT, GBM_MIN_SAMPLES_LEAF,
     RETRAIN_WEEKS_BACK, MAX_TRAIN_BARS, RAW_DATA_PRUNE_WEEKS,
     EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
+    EOD_GUARD_FAIR_HOLDOUT,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from learning.eod_model_guard import evaluate_model_replace
@@ -813,6 +814,30 @@ class BatchRetrainer:
                     horizon_key, _live_note, old_acc, cv_acc,
                 )
 
+        # ── [MW0601 405차 P1-1] 공정 홀드아웃 섀도 (판정 무영향) ──────────────
+        # 위 GuardShadow는 "현행이 이미 학습한 폴드"로 재채점하므로 현행에 유리하다.
+        # 여기서는 최신 구간을 학습에서 완전히 뺀 도전자를 따로 학습해 둘 다 그
+        # 구간으로 채점한다. 3거래일 관측 후 old_acc 인자 교체 여부를 수동 결정(§9).
+        _fair_new = _fair_old = None
+        _fair_n, _fair_note = 0, "미실행"
+        if not intraday and cv_acc is not None:
+            _fair_new, _fair_old, _fair_n, _fair_note = self._measure_fair_holdout(
+                horizon_key, X, y, X_full, h_idx, feature_names,
+                _make_model, _make_sample_weight,
+            )
+            if _fair_new is not None and _fair_old is not None:
+                logger.info(
+                    "[GuardFair] %s 공정홀드아웃(최신 %d봉, 양쪽 미학습 목표) "
+                    "new=%.4f vs old=%.4f | 격차=%+.4f | acc.txt=%.4f new(cv)=%.4f | %s "
+                    "— 판정 무영향(섀도)",
+                    horizon_key, _fair_n, _fair_new, _fair_old,
+                    _fair_new - _fair_old, old_acc, cv_acc, _fair_note,
+                )
+            else:
+                logger.info(
+                    "[GuardFair] %s 측정 불가 (%s)", horizon_key, _fair_note,
+                )
+
         # [346차] intraday/force는 가드 자체를 건너뜀(기존 동작 그대로) — intraday는
         # CV 없음(cv_acc=None), force는 명시적 강제 요구(웜업 복구 등). 그 외(EOD 정규
         # 재학습, force=False)만 호라이즌별 허용 하락폭으로 판정한다.
@@ -872,6 +897,9 @@ class BatchRetrainer:
                     live_note=_live_note,
                     actual_verdict="REPLACE" if _guard_ok else "HOLD",
                     n_samples=len(X),
+                    # [405차 P1-1] 공정 홀드아웃 섀도 — 판정 무영향, 누적 관찰용
+                    fair_new=_fair_new, fair_old=_fair_old,
+                    fair_hold_bars=(_fair_n or None), fair_note=_fair_note,
                 )
             except Exception as _gs_e:
                 logger.debug("[GuardShadow] DB 저장 실패 (무해): %s", _gs_e)
@@ -912,6 +940,91 @@ class BatchRetrainer:
         }
 
     # ── 모델 저장/로드 ────────────────────────────────────────────
+    def _measure_fair_holdout(
+        self, horizon_key, X, y, X_full, h_idx, feature_names,
+        make_model, make_sample_weight,
+    ):
+        """[MW0601 405차 / P1-1] 공정 홀드아웃 섀도 — **판정 무영향, 로그·DB 전용**.
+
+        `_measure_incumbent_acc`(403차 P0-4)는 현행 모델을 신규와 "같은 검증 폴드"로
+        재채점하지만, 그 폴드는 현행 모델이 이미 학습한 구간과 겹쳐 현행에 유리하다
+        (그 함수 docstring이 스스로 명시한 한계). 404차는 그 값을 DB에 영속화했을
+        뿐 비교 자체는 그대로였고, 결과는 12거래일 연속 교체 0건이었다.
+
+        여기서는 최신 `holdout_bars`행을 **학습에서 완전히 제외**한 도전자를 따로
+        학습해, 도전자·현행 둘 다 그 구간으로 채점한다. 도전자에게는 완전 OOS다.
+
+        ⚠ **여전히 완전히 공정하지는 않다.** 현행 pkl은 intraday 재학습이 매일
+        덮어쓰므로(403차 교차검증 #6, mtime 실측) 홀드아웃 구간을 이미 학습했을 수
+        있다. 즉 측정된 격차는 실제의 **하한**이며, 판단 재료로 pkl mtime을 함께
+        돌려준다. 이 한계를 없애려면 현행 모델의 학습 컷오프를 메타데이터로 남기는
+        별건 작업이 필요하다.
+
+        데이터는 시간순 정렬이 보장된다(TimeSeriesSplit·`X[-N:]`=최신 관례가 이미
+        그 전제 위에 있다). 타임스탬프가 이 경로까지 전달되지 않으므로 홀드아웃은
+        **행 위치 기준**으로 자른다.
+
+        Returns: (new_acc, old_acc, n_holdout, note) — 측정 불가 시 (None, None, 0, 사유)
+        """
+        cfg = EOD_GUARD_FAIR_HOLDOUT or {}
+        if not cfg.get("enabled", False):
+            return None, None, 0, "비활성"
+        H = int(cfg.get("holdout_bars", 1850))
+        min_hold = int(cfg.get("min_holdout_bars", 300))
+        min_train = int(cfg.get("min_train_bars_after_holdout", 10000))
+        n = len(X)
+        if H < min_hold:
+            return None, None, 0, "홀드아웃 설정 과소 (%d < %d)" % (H, min_hold)
+        if n - H < min_train:
+            return None, None, 0, ("홀드아웃 후 학습표본 부족 (%d-%d=%d < %d)"
+                                   % (n, H, n - H, min_train))
+        try:
+            import pickle as _pk
+            src = X_full if X_full is not None else X
+            tr_src, ho_src = src[:-H], src[-H:]
+            y_tr, y_ho = y[:-H], y[-H:]
+
+            # 도전자 — 홀드아웃을 뺀 구간으로만 스케일러·모델을 새로 학습
+            sc = StandardScaler()
+            tr_scaled = sc.fit_transform(tr_src)
+            ho_scaled = sc.transform(ho_src)
+            if h_idx is not None:
+                tr_scaled = tr_scaled[:, h_idx]
+                ho_scaled = ho_scaled[:, h_idx]
+            ch = make_model()
+            ch.fit(tr_scaled, y_tr, sample_weight=make_sample_weight(y_tr, horizon_key))
+            new_acc = float((ch.predict(ho_scaled) == y_ho).mean())
+
+            # 현행 프로덕션 모델 — 자기 스케일러로 같은 홀드아웃 채점
+            mp = os.path.join(self.model_dir, "gbm_%s.pkl" % horizon_key)
+            sp = os.path.join(self.scaler_dir, "scaler_%s.pkl" % horizon_key)
+            fp = os.path.join(self.model_dir, "feature_names_%s.pkl" % horizon_key)
+            if not (os.path.exists(mp) and os.path.exists(sp)):
+                return new_acc, None, H, "구모델/스케일러 pkl 없음"
+            with open(mp, "rb") as f:
+                old_model = _pk.load(f)
+            with open(sp, "rb") as f:
+                old_scaler = _pk.load(f)
+            if os.path.exists(fp):
+                with open(fp, "rb") as f:
+                    saved = list(_pk.load(f))
+                if list(feature_names) != saved:
+                    return new_acc, None, H, ("피처셋 변경 %d→%d개"
+                                              % (len(saved), len(feature_names)))
+            ho_old = old_scaler.transform(ho_src)
+            if h_idx is not None:
+                ho_old = ho_old[:, h_idx]
+            nf = getattr(old_model, "n_features_in_", None)
+            if nf is not None and ho_old.shape[1] != nf:
+                return new_acc, None, H, ("피처 수 불일치 %d vs %d"
+                                          % (ho_old.shape[1], nf))
+            old_acc = float((old_model.predict(ho_old) == y_ho).mean())
+            mt = datetime.datetime.fromtimestamp(
+                os.path.getmtime(mp)).strftime("%Y-%m-%d %H:%M")
+            return new_acc, old_acc, H, "ok (구모델 pkl mtime=%s)" % mt
+        except Exception as e:
+            return None, None, 0, "측정 실패: %s" % e
+
     def _save_model(self, horizon_key: str, model, scaler, acc: float, feature_names: List[str]):
         path       = os.path.join(self.model_dir, f"gbm_{horizon_key}.pkl")
         acc_path   = os.path.join(self.model_dir, f"gbm_{horizon_key}_acc.txt")
