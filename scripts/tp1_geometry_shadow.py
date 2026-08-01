@@ -175,6 +175,10 @@ def compute(since: str = "2026-06-01", horizon=None) -> dict:
 
     variants = _CR.get("variants", {"current": {"stop_mult": None, "tp1_mult": None}})
     res = {name: [] for name in variants}
+    # [MW0601 405차 / P1-4] 행별 entry_ts를 res와 같은 순서로 병렬 보관 — OOS 분리용.
+    # res의 튜플 형태를 바꾸면 이 파일의 언팩 지점 8곳과 main() 출력이 전부 영향을
+    # 받으므로, 기존 구조는 그대로 두고 평행 리스트만 추가한다(회귀 위험 0).
+    res_ts = {name: [] for name in variants}
     days, skipped = set(), 0
 
     for t in trades:
@@ -193,6 +197,7 @@ def compute(since: str = "2026-06-01", horizon=None) -> dict:
             if outcome is None:
                 continue
             res[name].append((outcome, pts - _COST_PTS))
+            res_ts[name].append(ets)
 
     return {
         "variants": list(variants),
@@ -201,6 +206,7 @@ def compute(since: str = "2026-06-01", horizon=None) -> dict:
         "n_days": len(days),
         "cost_pts": _COST_PTS,
         "rows": res,
+        "rows_ts": res_ts,
         "since": since,
     }
 
@@ -245,10 +251,58 @@ def summarize(out: dict) -> dict:
                 if k != "current" and (v["delta_vs_current"] or 0) > 0]
         verdict = "FAIL" if beat else "PASS"
         reason = ("현행 초과 대안: %s" % ", ".join(beat)) if beat else "모든 대안이 현행 이하"
+    # [MW0601 405차 / P1-4] OOS 부분집계 — **판정 미반영, 표시 전용**.
+    #
+    # 왜 필요한가: 이 채널의 대안(특히 tp1_x2)이 현행을 크게 앞선다는 결과는
+    # **가설을 세운 그 기간의 in-sample**이다(403차 P1-6이 55건/11일로 처음 실행).
+    # 403차가 이미 두 한계를 명시했다 — (a) in-sample (b) qty=1 TP1 보호전환을
+    # "TP1 전량청산"으로 단순화한 시뮬이라 current의 절대값이 실현손익과 다르다.
+    # 게다가 [23-B]는 PC간 부호가 뒤집혔다(MW0601 +32.78 vs MW0602 -19.04) —
+    # 404차 후속11이 "FAIL이지만 미적용"으로 확정한 이유다.
+    # 그래서 가설 수립 이후(oos_start) 신규 발생분만 따로 세어, 같은 방향이 유지되는지를
+    # 별도로 누적 관찰한다. **누적 verdict는 종전 기준 그대로 계산된다** —
+    # 합격선을 바꾸면 §9-4 검증 시계가 리셋되므로 여기서는 숫자만 병기한다.
+    oos_start = str(_CR.get("oos_start", "")) or None
+    if oos_start:
+        ts_map = out.get("rows_ts") or {}
+        oos = {}
+        for name in out["variants"]:
+            rows = res.get(name, [])
+            tss = ts_map.get(name, [])
+            if not rows or len(tss) != len(rows):
+                continue
+            pts = [p for (_, p), t in zip(rows, tss) if t >= oos_start]
+            if pts:
+                oos[name] = {
+                    "n": len(pts),
+                    "total_pt": round(sum(pts), 4),
+                    "avg_pt": round(sum(pts) / len(pts), 4),
+                    "win_rate": round(sum(1 for p in pts if p > 0) / len(pts), 4),
+                }
+        if oos:
+            _ob = oos.get("current", {}).get("total_pt")
+            for name, v in oos.items():
+                v["delta_vs_current"] = (round(v["total_pt"] - _ob, 4)
+                                         if _ob is not None else None)
+            out_oos = {
+                "oos_start": oos_start,
+                "per_variant": oos,
+                "n_days": len({t for tss in ts_map.values() for t in tss
+                               if t >= oos_start}),
+                "note": ("가설 수립(%s) 이후 신규 발생분만 — **판정 미반영, 표시 전용**. "
+                         "누적 verdict는 in-sample 포함 종전 기준 그대로다(§9-4)." % oos_start),
+            }
+        else:
+            out_oos = {"oos_start": oos_start, "per_variant": {},
+                       "note": "OOS 구간 표본 없음 (%s 이후 진입 0건)" % oos_start}
+    else:
+        out_oos = None
+
     return {
         "verdict": verdict, "reason": reason, "per_variant": per,
         "n_trades": out["n_trades"], "n_days": out["n_days"],
         "n_skipped": out["n_skipped"], "min_samples": min_n, "min_days": min_d,
+        "oos": out_oos,
     }
 
 
