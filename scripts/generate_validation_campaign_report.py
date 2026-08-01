@@ -47,6 +47,7 @@ from config.settings import (
     HORIZONS, VALIDATION_CAMPAIGN, FUTURES_COMMISSION_RATE, TICK_SIZE,
     ENTRY_STARVATION_WEEKLY_MIN, ENTRY_STARVATION_MITIGATION_LADDER,
     HURST_RANGE_THRESHOLD, REGIME_EXHAUSTION_EXT_ATR_THRESHOLD,
+    VALIDATION_CAMPAIGN_DECISIONS,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
@@ -3540,6 +3541,25 @@ def _fmt_verdict(v: str) -> str:
     }.get(v, "⏳ INSUFFICIENT")
 
 
+def _dm(key: str) -> str:
+    """[404차 후속11] 확정 결정 인라인 마커 — 요약표 '핵심 수치' 끝에 덧붙인다.
+
+    왜 필요한가: 캠페인 리포트의 권고·판정은 **조치 여부와 무관하게 매주 재출력**된다.
+    [6] hurst_gate_shadow는 2026-07-15에 완화가 배포돼 라이브 중인데도 3주째 "완화
+    권고"가 그대로 찍혔고, 0801 결산 초안이 그걸 신규 안건으로 잘못 올렸다. 반대로
+    "FAIL이지만 일부러 적용하지 않기로 했다"는 결정은 아무 데도 남지 않아 다음 세션이
+    같은 FAIL을 보고 적용을 재시도할 위험이 있었다.
+
+    판정 로직에는 관여하지 않는다 — verdict는 사전등록 기준으로만 계산되고, 이 마커는
+    "그래서 사람이 무엇을 결정했나"만 덧붙인다. 출처는 config.settings의
+    VALIDATION_CAMPAIGN_DECISIONS이며 결정이 바뀌면 그쪽을 갱신할 것(§9).
+    """
+    d = VALIDATION_CAMPAIGN_DECISIONS.get(key)
+    if not d:
+        return ""
+    return "  📌 **%s** (%s)" % (d["decision"], d["date"])
+
+
 def _fmt_channel_verdict(out: dict) -> str:
     """[357차] INSUFFICIENT(표본 축적 대기)와 NO-DATA(소스 적재 자체가 0 — 계측
     사망 의심)를 구분 표기. [2]/[3] 채널이 스코어러 로드 실패로 캠페인 전 기간
@@ -3612,6 +3632,13 @@ def build_report(days: int) -> tuple:
         now_str, days, VALIDATION_CAMPAIGN.get("start_date")))
     L.append("- 합격선: `config/settings.py:VALIDATION_CAMPAIGN` (사전 등록 — 변경 금지)")
     L.append("- 근거: `docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md` §3")
+    if VALIDATION_CAMPAIGN.get("mode") == "standing":
+        L.append("- **운영 모드: 상시(standing)** — %s 전환. 4주 기한 없이 계속 생성하며, "
+                 "채널별로 min_samples 도달 시점에 개별 판정한다. **합격선·판정문은 무변경**"
+                 "(§9-4 — 상시 전환은 거버넌스 결정이지 판정 기준 변경이 아니다)."
+                 % VALIDATION_CAMPAIGN.get("mode_changed_on", "—"))
+    L.append("- 📌 표시가 붙은 채널은 **주간회의에서 확정된 결정이 있다** — 하단 "
+             "\"확정 결정 레지스트리\" 참조. 판정(verdict)과 결정은 별개다.")
     L.append("")
     L.append("| 채널 | 판정 | 핵심 수치 |")
     L.append("|---|---|---|")
@@ -3621,9 +3648,9 @@ def build_report(days: int) -> tuple:
     L.append("| [1] Triple-Barrier | %s | 합격 호라이즌 %d개 (기준 %d개) |" % (
         _fmt_verdict(tb["verdict"]), tb.get("n_pass", 0),
         VALIDATION_CAMPAIGN["tb"]["min_horizons_pass"]))
-    L.append("| [2] Meta-Gate | %s | 상위EV=%s 분리도=%s (필요 %s) |" % (
+    L.append("| [2] Meta-Gate | %s | 상위EV=%s 분리도=%s (필요 %s)%s |" % (
         _fmt_channel_verdict(mg), mg.get("top_ev_pt", "—"),
-        mg.get("separation_pt", "—"), mg.get("required_sep_pt", "—")))
+        mg.get("separation_pt", "—"), mg.get("required_sep_pt", "—"), _dm("meta_gate")))
     L.append("| [3] 분위 회귀 | %s | 커버리지=%s (밴드 %s) 상관=%s |" % (
         _fmt_channel_verdict(qt), qt.get("coverage", "—"),
         qt.get("coverage_band", "—"), qt.get("unc_corr", "—")))
@@ -3635,9 +3662,9 @@ def build_report(days: int) -> tuple:
         _qd.get("n", 0),
         ("%.1f%%" % (_qd["conf_top30_hit"] * 100)) if _qd.get("conf_top30_hit") is not None else "—",
         ("%.1f%%" % (_qd["q50_pos_share"] * 100)) if _qd.get("q50_pos_share") is not None else "—"))
-    L.append("| [3-B] 분위회귀 TP1 거리 A/B | %s | %s (진입 %s건/%s일) |" % (
+    L.append("| [3-B] 분위회귀 TP1 거리 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g3b.get("verdict", "")), _g3b.get("reason", _g3b.get("error", "—")),
-        _g3b.get("n_trades", "—"), _g3b.get("n_days", "—")))
+        _g3b.get("n_trades", "—"), _g3b.get("n_days", "—"), _dm("quantile_tp_shadow")))
     L.append("| [4] 신호소멸청산 | %s | 누적 saved=%spt (n=%s, 보류 %s) |" % (
         _fmt_verdict(sd["verdict"]), sd.get("total_saved_pts", "—"),
         sd.get("n_resolved", 0), sd.get("n_pending", 0)))
@@ -3645,10 +3672,10 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(hr["verdict"]),
         " / ".join("%s: n=%d EV=%s원" % (b, v["n"], format(v["avg_ev_krw"], ",.0f"))
                    for b, v in sorted(hr.get("buckets", {}).items())) or "거래 없음"))
-    L.append("| [6] Hurst 게이트 counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
+    L.append("| [6] Hurst 게이트 counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s)%s |" % (
         _fmt_verdict(hg["verdict"]), hg.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (hg["win_rate"] * 100)) if "win_rate" in hg else "—",
-        hg.get("n_resolved", 0), hg.get("n_pending", 0)))
+        hg.get("n_resolved", 0), hg.get("n_pending", 0), _dm("hurst_gate_shadow")))
     L.append("| [7] JointGateBlock counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
         _fmt_verdict(jg["verdict"]), jg.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (jg["win_rate"] * 100)) if "win_rate" in jg else "—",
@@ -3680,11 +3707,12 @@ def build_report(days: int) -> tuple:
         t1t.get("cf_trail_stop", "—"), t1t.get("cf_force_exit", "—")))
     _gei_a = gei.get("by_grade", {}).get("A", {})
     _gei_c = gei.get("by_grade", {}).get("C", {})
-    L.append("| [13] 등급별 순EV 역전 감시 | %s | A=%s원(n=%s, 최대손실=%s원) C=%s원(n=%s) |" % (
+    L.append("| [13] 등급별 순EV 역전 감시 | %s | A=%s원(n=%s, 최대손실=%s원) C=%s원(n=%s)%s |" % (
         _fmt_verdict(gei["verdict"]),
         format(_gei_a["avg_pnl_krw"], ",.0f") if _gei_a else "—", _gei_a.get("n", 0),
         format(_gei_a["min_pnl_krw"], ",.0f") if _gei_a else "—",
-        format(_gei_c["avg_pnl_krw"], ",.0f") if _gei_c else "—", _gei_c.get("n", 0)))
+        format(_gei_c["avg_pnl_krw"], ",.0f") if _gei_c else "—", _gei_c.get("n", 0),
+        _dm("grade_ev_inversion")))
     L.append("| [14] Tier1 잔여계약 2단계 조기청산 counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
         _fmt_verdict(lt2["verdict"]), lt2.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (lt2["win_rate"] * 100)) if "win_rate" in lt2 else "—",
@@ -3741,16 +3769,16 @@ def build_report(days: int) -> tuple:
         gsc.get("missed_upgrade_n", "—"), gsc.get("n_fair", "—"), gsc.get("n_days", 0)))
     _g23 = off.get("tp1_geometry_shadow") or {}
     _g25 = off.get("tp1_protect_offset_shadow") or {}
-    L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일) |" % (
+    L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
-        _g23.get("n_trades", "—"), _g23.get("n_days", "—")))
+        _g23.get("n_trades", "—"), _g23.get("n_days", "—"), _dm("tp1_geometry_shadow")))
     L.append("| [24] TP1 보호전환 반납 관찰 | %s | 중앙값 반납=%s pt (반납 %s / 달림 %s, n=%s) |" % (
         _fmt_verdict(tpg.get("verdict", "OBSERVE")),
         tpg.get("median_give_pt", "—"), tpg.get("n_gaveback", "—"),
         tpg.get("n_ranfurther", "—"), tpg.get("n", 0)))
-    L.append("| [25] TP1 보호전환 offset A/B | %s | %s (전환 %s건/%s일) |" % (
+    L.append("| [25] TP1 보호전환 offset A/B | %s | %s (전환 %s건/%s일)%s |" % (
         _fmt_verdict(_g25.get("verdict", "")), _g25.get("reason", _g25.get("error", "—")),
-        _g25.get("n_hooks", "—"), _g25.get("n_days", "—")))
+        _g25.get("n_hooks", "—"), _g25.get("n_days", "—"), _dm("tp1_protect_offset_shadow")))
     L.append("| [26] 거래불능(가격상한 고착) 구간 | %s | %s |" % (
         _fmt_verdict(lpw.get("verdict", "OBSERVE")),
         (lpw.get("reason") or "고착 %s분봉 / %s일  · MFE오염 %s"
@@ -4657,6 +4685,31 @@ def build_report(days: int) -> tuple:
     L.append("> 0.000pt다. 표본이 더 쌓일 때까지 **현행 유지가 합리적**이다.")
     L.append("> ⚠ [12] tp1_trail_shadow가 기각한 \"TP1 **이후** 트레일 폭\"과 다른 질문이다")
     L.append("> — 이건 TP1 **시점**의 초기 보호 offset이다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # [404차 후속11] 확정 결정 레지스트리 — 판정과 결정을 분리해 보여준다
+    L.append("## 확정 결정 레지스트리 (주간회의 수동 결정 이력)")
+    L.append("")
+    if not VALIDATION_CAMPAIGN_DECISIONS:
+        L.append("- 등록된 결정 없음")
+    else:
+        for _k, _d in sorted(VALIDATION_CAMPAIGN_DECISIONS.items(),
+                             key=lambda x: (x[1].get("date", ""), x[0])):
+            L.append("### `%s` — %s *(%s)*" % (_k, _d["decision"], _d["date"]))
+            L.append("")
+            L.append("%s" % _d.get("note", ""))
+            L.append("")
+    L.append("> **판정(verdict)과 결정은 별개다.** 판정은 사전등록 기준으로 매주 자동")
+    L.append("> 재계산되므로, 사람이 \"보고 나서 일부러 적용하지 않기로\" 한 채널도 FAIL이")
+    L.append("> 계속 뜬다. 그 FAIL을 미조치로 오독하지 말 것 — 위 표에 결정이 있으면 이미")
+    L.append("> 검토가 끝난 것이고, 뒤집으려면 새 근거가 필요하다.")
+    L.append("> 반대 방향의 사고도 실제로 있었다: [6] Hurst 완화 권고는 2026-07-15에 이미")
+    L.append("> 배포됐는데 리포트가 3주째 같은 권고를 찍어, 0801 결산 초안이 그것을 신규")
+    L.append("> 승인 안건으로 잘못 올렸다(코드 확인 후 철회). 이 레지스트리가 그 재발 방지책이다.")
+    L.append("> 출처: `config/settings.py:VALIDATION_CAMPAIGN_DECISIONS`. 결정 변경 시")
+    L.append("> 그쪽을 갱신하고 `dev_memory/DECISION_LOG.md`에도 기록할 것(§9).")
     L.append("")
     L.append("---")
     L.append("")
