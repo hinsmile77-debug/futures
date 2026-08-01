@@ -53,6 +53,9 @@ from strategy.position.position_tracker import compute_trailing_stop_tier  # [36
 from utils.db_utils import (  # [384차] TB 채널 판정 유지(carry-forward)
     save_tb_verdict, fetch_latest_tb_verdicts,
 )
+from utils.market_state import (  # [404차 후속5] 거래불능(가격상한 고착) 구간
+    detect_limit_pin_bars, LIMIT_PIN_LIQUID_VOL_MIN, SESSION_OPEN_HHMM,
+)
 
 SHADOW_TB_DIR = os.path.join(MODEL_DIR, "horizons", "shadow_triple_barrier")
 _TS_FMT = "%Y-%m-%d %H:%M:%S"
@@ -101,12 +104,45 @@ def _campaign_start() -> str:
     return VALIDATION_CAMPAIGN.get("start_date", "2026-07-05") + " 00:00:00"
 
 
-def _load_candle_maps(cutoff_ts: str):
+def _load_candle_maps(cutoff_ts: str, exclude_untradeable: bool = False):
+    """분봉 맵 3종. `exclude_untradeable=True`면 거래불능(가격상한 고착) 분봉을 뺀다.
+
+    [404차 후속5 / P0-B(a)]
+
+    ## 왜 기본값이 False이고 호출부마다 켜야 하는가
+
+    처음에는 이 함수 안에서 무조건 제외하도록 짰다가 **레이블이 망가지는 것을
+    실측으로 잡았다.** [1] Triple-Barrier 채널은 이 맵을 청산 시뮬이 아니라
+    **레이블 생성**(N분 뒤 가격이 얼마였나)에 쓴다. 고착 분봉이라도 그 시각의
+    가격은 진짜 1036.28이므로, 빼면 정답을 지우는 셈이고 실제로 OOS 표본이
+    3m 584→572 / 5m 346→339 / 10m 170→166 / 15m 107→104 / 30m 50→48로 깎였다.
+
+    구분 기준은 **그 분봉을 무엇에 쓰는가**다:
+      - 체결 시뮬(스톱/TP 도달 판정, MFE) → 제외 O. 체결 불가한 분에 청산했다고
+        가정하면 안 된다.
+      - 가격 조회·레이블(그 시각 가격이 얼마였나) → 제외 X. 가격은 실재했다.
+
+    제외 semantics는 **결측 분봉과 동일**이라 소비처를 고칠 필요가 없다. 소비처는
+    전부 `high_map.get(ts)` 가 None이면 `continue` 하도록 이미 작성돼 있다(원본
+    DB에 실제 결측 분봉이 있기 때문). 시뮬 루프에서 건너뛰면 "그 분에는 청산하지
+    못했다 = 포지션 유지"가 되어 의도와 일치한다.
+
+    ⚠ 켠 상태에서도 실측 효과는 **현재 표본에서 0**이다(리포트 전문 diff 확인).
+    가격이 상한에 붙으려면 먼저 유동적으로 그 가격에 도달해야 하므로 고착 분봉은
+    새로운 극단을 만들지 못하고, 07-31의 두 거래도 고착 시작(14:21) 전에 청산됐다.
+    그럼에도 유지하는 이유는 갭 상한가 직행처럼 **유동 분봉 없이 극단이 생기는
+    경우**에 대한 구조적 보험이기 때문이다. 효과가 0이라는 사실 자체를 기록해 둔다
+    — 나중에 이 필터가 뭔가를 바꾸면 그건 새로운 시장 상황이라는 신호다.
+    """
     with _conn(RAW_DATA_DB) as conn:
-        rows = conn.execute(
-            "SELECT ts, high, low, close FROM raw_candles WHERE ts >= ? ORDER BY ts",
+        rows = [dict(r) for r in conn.execute(
+            "SELECT ts, high, low, close, volume FROM raw_candles "
+            "WHERE ts >= ? ORDER BY ts",
             (cutoff_ts,),
-        ).fetchall()
+        )]
+    if exclude_untradeable:
+        pinned = detect_limit_pin_bars(rows)
+        rows = [r for r in rows if r["ts"] not in pinned]
     close_map = {r["ts"]: float(r["close"]) for r in rows}
     high_map = {r["ts"]: float(r["high"]) for r in rows}
     low_map = {r["ts"]: float(r["low"]) for r in rows}
@@ -280,6 +316,9 @@ def eval_tb_channel(days: int) -> dict:
             res["reason"] = "OOS 표본 0건 (모델 mtime 이후 데이터 대기)"
             continue
 
+        # [404차 후속5 / P0-B(a)] 여기는 **레이블 생성**(N분 뒤 실현 가격)이라
+        # 거래불능 분봉을 빼면 안 된다 — 체결 가능 여부와 무관하게 그 시각 가격은
+        # 실재했다. 실제로 켜봤더니 OOS 표본이 3m 584→572 등으로 깎였다.
         close_map, _hi, _lo = _load_candle_maps(eval_start)
 
         ts_list, X_list, y_list = [], [], []
@@ -591,7 +630,9 @@ def resolve_and_eval_signal_decay() -> dict:
 
     if unresolved:
         earliest = min(r["ts"] for r in unresolved)
-        close_map, high_map, low_map = _load_candle_maps(earliest)
+        # 체결 시뮬 경로 — 거래불능 분봉 제외 [404차 후속5 / P0-B(a)]
+        close_map, high_map, low_map = _load_candle_maps(
+            earliest, exclude_untradeable=True)
         now = datetime.datetime.now()
         updates = []
         for r in unresolved:
@@ -711,7 +752,9 @@ def resolve_and_eval_hurst_gate() -> dict:
 
     if unresolved:
         earliest = min(r["ts"] for r in unresolved)
-        close_map, high_map, low_map = _load_candle_maps(earliest)
+        # 체결 시뮬 경로 — 거래불능 분봉 제외 [404차 후속5 / P0-B(a)]
+        close_map, high_map, low_map = _load_candle_maps(
+            earliest, exclude_untradeable=True)
         now = datetime.datetime.now()
         updates = []
         for r in unresolved:
@@ -859,7 +902,9 @@ def resolve_and_eval_joint_gate() -> dict:
 
     if unresolved:
         earliest = min(r["ts"] for r in unresolved)
-        close_map, high_map, low_map = _load_candle_maps(earliest)
+        # 체결 시뮬 경로 — 거래불능 분봉 제외 [404차 후속5 / P0-B(a)]
+        close_map, high_map, low_map = _load_candle_maps(
+            earliest, exclude_untradeable=True)
         now = datetime.datetime.now()
         updates = []
         for r in unresolved:
@@ -1023,7 +1068,9 @@ def resolve_and_eval_open_gap() -> dict:
 
     if unresolved:
         earliest = min(r["ts"] for r in unresolved)
-        close_map, high_map, low_map = _load_candle_maps(earliest)
+        # 체결 시뮬 경로 — 거래불능 분봉 제외 [404차 후속5 / P0-B(a)]
+        close_map, high_map, low_map = _load_candle_maps(
+            earliest, exclude_untradeable=True)
         now = datetime.datetime.now()
         updates = []
         for r in unresolved:
@@ -1294,7 +1341,8 @@ def eval_mfe_capture_watch() -> dict:
             m["exit_ts"] = r["exit_ts"]
 
     earliest = min(k[0] for k in merged)[:10] + " 00:00:00"
-    _, high_map, low_map = _load_candle_maps(earliest)
+    # MFE 계산 — 체결 가능했던 분봉만 [404차 후속5 / P0-B(a)]
+    _, high_map, low_map = _load_candle_maps(earliest, exclude_untradeable=True)
 
     def mfe(entry_ts, until_ts, ep, is_long):
         t = datetime.datetime.strptime(entry_ts[:19], _TS_FMT).replace(second=0)
@@ -1522,6 +1570,227 @@ def eval_tp1_protect_giveback_watch() -> dict:
         modes[r["mode"]] = modes.get(r["mode"], 0) + 1
     out["by_mode"] = modes
     return out
+
+
+# ──────────────────────────────────────────────────────────────
+# [26] 거래불능(가격상한 고착) 구간 관찰 (404차 후속5) — verdict 항상 OBSERVE
+# ──────────────────────────────────────────────────────────────
+
+def eval_limit_pin_watch() -> dict:
+    """가격이 일중 극단에 붙은 채 거래량이 붕괴한 구간을 계측한다.
+
+    계기: 0731 정기점검 §1-C 이상점 3이 "14:20~15:06 가격 고착 46분 → MFE·캡처율·
+    PSI 계측이 오염된다"고 지적했다. 그 가설을 검증하려면 먼저 구간을 기계적으로
+    특정해야 한다(`utils/market_state.detect_limit_pin_bars`).
+
+    ## 이 채널이 내는 핵심 수치는 "고착 분봉 수"가 아니라 `extreme_liquid_touches`다
+
+    고착 분봉의 high/low가 MFE를 오염시키려면 **그 극단을 고착 분봉만이 만들었어야**
+    한다. 그런데 가격이 상한에 붙으려면 먼저 유동적으로 그 가격에 도달해야 하므로,
+    보통은 유동 분봉이 이미 같은 극단을 만들어 둔다 — 그러면 고착 분봉을 전부
+    지워도 MFE는 한 틱도 안 변한다(max 연산이라 중복은 무해).
+
+    2026-07-31 실측: 고착 29분봉, 그러나 1036.28을 유동 분봉 13개(최대 vol 642)가
+    이미 터치 → **MFE 오염 0**. 리포트가 지목한 오염은 실측으로 기각된다.
+    `extreme_liquid_touches == 0`인 날이 나오면 그때는 진짜 오염이므로 경고한다
+    (갭 상한가 직행 등 — 현 표본엔 없음).
+
+    실제 오염은 counterfactual의 진입가·목표가 쪽이며 [27]이 계측한다.
+    """
+    out = {"verdict": "OBSERVE"}
+    try:
+        with _conn(RAW_DATA_DB) as conn:
+            bars = [dict(r) for r in conn.execute(
+                "SELECT ts, high, low, volume FROM raw_candles WHERE ts >= ? ORDER BY ts",
+                (_campaign_start(),))]
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+    if not bars:
+        out["reason"] = "분봉 없음"
+        return out
+
+    flagged = detect_limit_pin_bars(bars)
+    out["n_session_bars"] = sum(1 for b in bars if b["ts"][11:16] >= SESSION_OPEN_HHMM)
+    out["n_pinned_bars"] = len(flagged)
+    if not flagged:
+        out["reason"] = "캠페인 기간 중 가격상한 고착 구간 없음"
+        return out
+
+    by_day = {}
+    for ts, side in flagged.items():
+        by_day.setdefault((ts[:10], side), []).append(ts)
+
+    days, contaminated = [], []
+    for (day, side), tss in sorted(by_day.items()):
+        tss.sort()
+        sess = [b for b in bars if b["ts"][:10] == day
+                and b["ts"][11:16] >= SESSION_OPEN_HHMM]
+        field = "high" if side == "UP" else "low"
+        extreme = (max(b["high"] for b in sess) if side == "UP"
+                   else min(b["low"] for b in sess))
+        # 그 극단을 '유동' 분봉이 터치했는가 — 오염 실재 여부의 직접 지표
+        liquid = [b for b in sess if float(b[field]) == float(extreme)
+                  and int(b["volume"] or 0) >= LIMIT_PIN_LIQUID_VOL_MIN]
+        # 구간 내 결측 분봉 수 (거래 자체가 없던 분)
+        t0 = datetime.datetime.strptime(tss[0], _TS_FMT)
+        t1 = datetime.datetime.strptime(tss[-1], _TS_FMT)
+        span = int((t1 - t0).total_seconds() // 60) + 1
+        rec = {
+            "date": day, "side": side, "price": round(float(extreme), 2),
+            "n_bars": len(tss), "from": tss[0][11:16], "to": tss[-1][11:16],
+            "span_min": span, "n_missing_bars": span - len(tss),
+            "extreme_liquid_touches": len(liquid),
+            "max_liquid_vol": max((int(b["volume"] or 0) for b in liquid), default=0),
+        }
+        days.append(rec)
+        if not liquid:
+            contaminated.append(rec)
+
+    out["days"] = days
+    out["n_days"] = len(days)
+    out["mfe_contaminated_days"] = contaminated
+    out["mfe_contamination"] = bool(contaminated)
+    return out
+
+
+# 가격상한 고착이 있었던 날의 (일자 → 상한가격) 맵. [27]과 counterfactual 제외에서 공용.
+_LIMIT_DAYS_CACHE = None
+
+
+def _limit_price_by_day() -> dict:
+    global _LIMIT_DAYS_CACHE
+    if _LIMIT_DAYS_CACHE is not None:
+        return _LIMIT_DAYS_CACHE
+    _LIMIT_DAYS_CACHE = _limit_price_by_day_uncached()
+    return _LIMIT_DAYS_CACHE
+
+
+def _limit_price_by_day_uncached() -> dict:
+    try:
+        with _conn(RAW_DATA_DB) as conn:
+            bars = [dict(r) for r in conn.execute(
+                "SELECT ts, high, low, volume FROM raw_candles WHERE ts >= ? ORDER BY ts",
+                (_campaign_start(),))]
+    except Exception:
+        return {}
+    flagged = detect_limit_pin_bars(bars)
+    out = {}
+    for ts, side in flagged.items():
+        day = ts[:10]
+        bar = next((b for b in bars if b["ts"] == ts), None)
+        if bar is None:
+            continue
+        out.setdefault(day, {})[side] = float(bar["high"])
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# [27] counterfactual 도달불가 목표가 감시 (404차 후속5) — verdict 항상 OBSERVE
+# ──────────────────────────────────────────────────────────────
+
+def eval_unreachable_cf_watch() -> dict:
+    """목표가가 그날 가격상한 밖이었던 counterfactual 행을 세고 **민감도만** 낸다.
+
+    ## 이 채널은 판정을 바꾸지 않는다 — 그 이유가 핵심이다
+
+    초안에서는 이런 행을 "이길 수 있는 경우의 수가 0인 가상거래"로 보고 판정에서
+    자동 제외(resolved 1→2)하도록 짰다가 **되돌렸다.** 전제가 틀렸기 때문이다:
+
+      2026-07-31 14:17 시점 시장은 유동적이었고(분봉 vol 109), 그때 실제로 LONG
+      진입했다면 체결됐을 것이다. 그리고 TP1 1037.07은 상한(1036.28) 밖이라
+      **정말로 안 채워지고** 스톱만 맞았을 것이다. 즉 counterfactual은 모델링
+      결함이 아니라 **나쁜 거래를 충실히 시뮬레이션**한 것이고, 게이트가 막은 것은
+      실제 손실 회피가 맞다. 이런 행을 빼면 게이트의 정당한 공로를 지우게 된다.
+
+    남는 진짜 질문은 측정 오류가 아니라 **공로의 출처**다: 게이트가 자기 로직
+    (meta·tox 점수)으로 막은 게 아니라, 신호가 우연히 가격상한에서 발생해 구조적으로
+    질 수밖에 없었던 케이스라면, 그 이득은 게이트 알파가 아니라 시장 구조에서 온다.
+    "옳았지만 이유는 달랐다"는 판정 오류가 아니라 **해석의 문제**이므로, 판정을
+    조용히 바꾸지 않고 민감도만 병기해 주간회의에 올린다(§9 사전등록 원칙).
+
+    실제로 이 5건을 빼면 [18] RegimeExhaustionGate 판정이 SUPPORTS_GATE →
+    REJECTS_GATE로 **뒤집힌다**(누적 hyp −1.75 → +6.85, n 28 → 25). 표본 3건이
+    권고를 뒤집는다는 사실 자체가 그 채널의 결론이 얼마나 얇은 근거 위에 있는지를
+    보여주는 소득이다 — 372차 이상치 분해와 같은 교훈.
+
+    verdict는 항상 OBSERVE. DB를 쓰지 않는 읽기 전용 분석이다.
+    """
+    out = {"verdict": "OBSERVE"}
+    limits = _limit_price_by_day()
+    out["limit_days"] = {d: v for d, v in limits.items()}
+    if not limits:
+        out["reason"] = "가격상한 고착일 없음 — 도달불가 목표가 발생 여지 없음"
+        return out
+
+    tables = ["hurst_gate_shadow", "joint_gate_shadow", "open_gap_shadow",
+              "regime_exhaustion_shadow", "toxicity_block_shadow"]
+    hits, by_table, sens = [], {}, {}
+    try:
+        with _conn(TRADES_DB) as conn:
+            for t in tables:
+                try:
+                    rows = conn.execute(
+                        "SELECT ts, direction, entry_price, tp1_price, cf_outcome, "
+                        "hyp_pnl_pts FROM %s WHERE resolved=1 AND ts >= ?" % t,
+                        (_campaign_start(),)).fetchall()
+                except Exception:
+                    continue
+                bad = []
+                for r in rows:
+                    lim = limits.get(str(r["ts"])[:10])
+                    if lim and _cf_target_unreachable(r["direction"], r["tp1_price"], lim):
+                        bad.append(r)
+                        hits.append({
+                            "table": t, "ts": r["ts"], "dir": r["direction"],
+                            "entry": r["entry_price"], "tp1": r["tp1_price"],
+                            "limit": lim.get("UP") or lim.get("DOWN"),
+                            "cf_outcome": r["cf_outcome"],
+                            "hyp_pnl_pts": r["hyp_pnl_pts"],
+                        })
+                if not bad:
+                    continue
+                by_table[t] = len(bad)
+                tot = sum(float(r["hyp_pnl_pts"] or 0.0) for r in rows)
+                rm = sum(float(r["hyp_pnl_pts"] or 0.0) for r in bad)
+                sens[t] = {
+                    "n": len(rows), "n_excluded": len(bad),
+                    "total_hyp_pnl_pts": round(tot, 4),
+                    "total_if_excluded": round(tot - rm, 4),
+                    "delta": round(-rm, 4),
+                }
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    out["n_unreachable"] = len(hits)
+    out["by_table"] = by_table
+    out["rows"] = hits
+    out["sensitivity"] = sens
+    out["excluded_hyp_pnl_pts"] = round(
+        sum(float(h["hyp_pnl_pts"] or 0.0) for h in hits), 4)
+    if not hits:
+        out["reason"] = "도달불가 목표가 행 없음"
+    return out
+
+
+def _cf_target_unreachable(direction, tp1_price, limits: dict) -> bool:
+    """counterfactual 목표가가 그날 가격상한 밖인가 (도달 불가).
+
+    limits: {'UP': 상한가} / {'DOWN': 하한가} — 그날 고착이 확인된 쪽만 들어온다.
+    상한 고착일의 LONG TP가 상한 초과, 하한 고착일의 SHORT TP가 하한 미만이면 True.
+    """
+    try:
+        tp = float(tp1_price)
+    except (TypeError, ValueError):
+        return False
+    d = str(direction or "").upper()
+    up, dn = limits.get("UP"), limits.get("DOWN")
+    if d == "LONG" and up is not None and tp > float(up):
+        return True
+    if d == "SHORT" and dn is not None and tp < float(dn):
+        return True
+    return False
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1762,7 +2031,9 @@ def resolve_and_eval_toxicity_block() -> dict:
 
     if unresolved:
         earliest = min(r["ts"] for r in unresolved)
-        close_map, high_map, low_map = _load_candle_maps(earliest)
+        # 체결 시뮬 경로 — 거래불능 분봉 제외 [404차 후속5 / P0-B(a)]
+        close_map, high_map, low_map = _load_candle_maps(
+            earliest, exclude_untradeable=True)
         now = datetime.datetime.now()
         updates = []
         for r in unresolved:
@@ -1921,7 +2192,9 @@ def resolve_and_eval_regime_exhaustion() -> dict:
 
     if unresolved:
         earliest = min(r["ts"] for r in unresolved)
-        close_map, high_map, low_map = _load_candle_maps(earliest)
+        # 체결 시뮬 경로 — 거래불능 분봉 제외 [404차 후속5 / P0-B(a)]
+        close_map, high_map, low_map = _load_candle_maps(
+            earliest, exclude_untradeable=True)
         now = datetime.datetime.now()
         updates = []
         for r in unresolved:
@@ -2067,7 +2340,9 @@ def resolve_and_eval_tp2_hold() -> dict:
 
     if unresolved:
         earliest = min(r["ts"] for r in unresolved)
-        close_map, high_map, low_map = _load_candle_maps(earliest)
+        # 체결 시뮬 경로 — 거래불능 분봉 제외 [404차 후속5 / P0-B(a)]
+        close_map, high_map, low_map = _load_candle_maps(
+            earliest, exclude_untradeable=True)
         now = datetime.datetime.now()
         updates = []
         for r in unresolved:
@@ -2719,7 +2994,9 @@ def resolve_and_eval_tp1_trail_shadow() -> dict:
 
     if unresolved:
         earliest = min(r["ts"] for r in unresolved)
-        close_map, high_map, low_map = _load_candle_maps(earliest)
+        # 체결 시뮬 경로 — 거래불능 분봉 제외 [404차 후속5 / P0-B(a)]
+        close_map, high_map, low_map = _load_candle_maps(
+            earliest, exclude_untradeable=True)
         now = datetime.datetime.now()
         updates = []
         with _conn(TRADES_DB) as conn:
@@ -3105,6 +3382,8 @@ def build_report(days: int) -> tuple:
     gsc = eval_guard_shadow_channel(days)
     icw = eval_intraday_cv_watch(days)
     tpg = eval_tp1_protect_giveback_watch()
+    lpw = eval_limit_pin_watch()
+    ucw = eval_unreachable_cf_watch()
     off = eval_offline_geometry_channels()
 
     metrics = {
@@ -3124,6 +3403,7 @@ def build_report(days: int) -> tuple:
         "direction_ev_watch": dev, "mfe_capture_watch": mcw,
         "guard_shadow": gsc, "intraday_cv_watch": icw,
         "tp1_protect_giveback_watch": tpg,
+        "limit_pin_watch": lpw, "unreachable_cf_watch": ucw,
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
     }
@@ -3263,6 +3543,17 @@ def build_report(days: int) -> tuple:
     L.append("| [25] TP1 보호전환 offset A/B | %s | %s (전환 %s건/%s일) |" % (
         _fmt_verdict(_g25.get("verdict", "")), _g25.get("reason", _g25.get("error", "—")),
         _g25.get("n_hooks", "—"), _g25.get("n_days", "—")))
+    L.append("| [26] 거래불능(가격상한 고착) 구간 | %s | %s |" % (
+        _fmt_verdict(lpw.get("verdict", "OBSERVE")),
+        (lpw.get("reason") or "고착 %s분봉 / %s일  · MFE오염 %s"
+         % (lpw.get("n_pinned_bars", 0), lpw.get("n_days", 0),
+            "있음 ⚠" if lpw.get("mfe_contamination") else "없음"))))
+    L.append("| [27] counterfactual 도달불가 목표가 | %s | %s |" % (
+        _fmt_verdict(ucw.get("verdict", "OBSERVE")),
+        (ucw.get("reason") or "해당 %s건 (%s) · hyp합 %s pt — 판정 미반영, 민감도만"
+         % (ucw.get("n_unreachable", 0),
+            ", ".join("%s=%d" % kv for kv in (ucw.get("by_table") or {}).items()) or "—",
+            ucw.get("excluded_hyp_pnl_pts", "—")))))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -3930,6 +4221,81 @@ def build_report(days: int) -> tuple:
     L.append("> 주는 전형적 사례이므로 평균만 인용하지 말 것(372차 원칙).")
     L.append("> 소스(`synthetic_partial_exits`)는 339차부터 쌓였으나 404차 후속3까지 **캠페인")
     L.append("> 소비처가 없어 방치**돼 있었다 — 402차 후속3 `toxicity_block_shadow`와 같은 계열.")
+    L.append("")
+
+    # [26] 거래불능(가격상한 고착) 구간
+    L.append("## [26] 거래불능(가격상한 고착) 구간 (404차 후속5, 관찰 전용 — 판정 없음)")
+    L.append("")
+    if lpw.get("error"):
+        L.append("> ⚠ %s" % lpw["error"])
+    elif lpw.get("reason"):
+        L.append("- %s" % lpw["reason"])
+    else:
+        L.append("- 고착 **%s분봉** / %s일 (세션 분봉 %s개 중)"
+                 % (lpw.get("n_pinned_bars", 0), lpw.get("n_days", 0),
+                    lpw.get("n_session_bars", 0)))
+        L.append("")
+        L.append("| 일자 | 방향 | 가격 | 고착분봉 | 구간 | 결측분봉 | 극단 유동터치 | 최대 유동vol |")
+        L.append("|---|---|---|---|---|---|---|---|")
+        for d in lpw.get("days", []):
+            L.append("| %s | %s | %s | %d | %s~%s | %d | **%d** | %d |" % (
+                d["date"], d["side"], d["price"], d["n_bars"], d["from"], d["to"],
+                d["n_missing_bars"], d["extreme_liquid_touches"], d["max_liquid_vol"]))
+    L.append("")
+    L.append("> **핵심 열은 '극단 유동터치'다.** 이 값이 0보다 크면 그 극단을 유동 분봉이")
+    L.append("> 이미 만들었다는 뜻이고, 고착 분봉을 전부 지워도 **MFE는 변하지 않는다**")
+    L.append("> (max 연산이라 중복 무해). 0731 리포트 §1-C 이상점 3이 제기한 \"MFE·캡처율")
+    L.append("> 오염\" 가설은 이 지표로 **기각**된다 — 07-31 고착 29분봉이 있었지만 1036.28을")
+    L.append("> 유동 분봉 13개(최대 vol 642)가 이미 터치했고, 리포트 전문 before/after diff에서")
+    L.append("> 실제로 단 한 글자도 바뀌지 않았다.")
+    L.append(">")
+    L.append("> 이 값이 **0인 날이 나오면 그때는 진짜 오염**이다(갭 상한가 직행 등).")
+    L.append("> 진짜 오염은 목표가 쪽이며 [27]이 계측한다.")
+    L.append("")
+
+    # [27] counterfactual 도달불가 목표가
+    L.append("## [27] counterfactual 도달불가 목표가 (404차 후속5, 관찰 전용 — 판정 없음)")
+    L.append("")
+    if ucw.get("error"):
+        L.append("> ⚠ %s" % ucw["error"])
+    elif ucw.get("reason"):
+        L.append("- %s" % ucw["reason"])
+    else:
+        L.append("- 해당 행 **%s건** (%s) · 합계 %s pt"
+                 % (ucw.get("n_unreachable", 0),
+                    ", ".join("%s=%d" % kv for kv in (ucw.get("by_table") or {}).items()) or "—",
+                    ucw.get("excluded_hyp_pnl_pts", "—")))
+        L.append("")
+        L.append("| 테이블 | 시각 | 방향 | 진입가 | 목표가 | 그날 상한 | 결과 | hyp pnl |")
+        L.append("|---|---|---|---|---|---|---|---|")
+        for h in ucw.get("rows", [])[:12]:
+            L.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                h["table"], str(h["ts"])[11:16], h["dir"], h["entry"], h["tp1"],
+                h["limit"], h["cf_outcome"], h["hyp_pnl_pts"]))
+        L.append("")
+        L.append("**민감도 — 이 행들을 뺐다면 (참고용, 실제 판정에는 미반영):**")
+        L.append("")
+        L.append("| 채널 | n | 제외 | 현행 누적 hyp | 제외 시 | 차이 |")
+        L.append("|---|---|---|---|---|---|")
+        for t, v in sorted((ucw.get("sensitivity") or {}).items()):
+            L.append("| %s | %d | %d | %s | %s | %+.4f |" % (
+                t, v["n"], v["n_excluded"], v["total_hyp_pnl_pts"],
+                v["total_if_excluded"], v["delta"]))
+    L.append("")
+    L.append("> **이 채널은 판정을 바꾸지 않는다.** 초안에서는 \"이길 수 없는 가상거래\"로 보고")
+    L.append("> 자동 제외하도록 짰다가 되돌렸다 — 전제가 틀렸다. 07-31 14:17 시장은 유동적이었고")
+    L.append("> (vol 109) 실제로 진입했다면 체결됐을 것이며, TP1이 상한 밖이라 정말로 스톱만")
+    L.append("> 맞았을 것이다. counterfactual은 모델링 결함이 아니라 **나쁜 거래를 충실히")
+    L.append("> 시뮬레이션**한 것이고, 게이트의 손실 회피는 진짜다.")
+    L.append(">")
+    L.append("> 남는 질문은 측정 오류가 아니라 **공로의 출처**다 — 게이트가 자기 로직으로 막은")
+    L.append("> 것인지, 신호가 우연히 가격상한에서 나와 구조적으로 질 수밖에 없었던 것인지.")
+    L.append("> \"옳았지만 이유는 달랐다\"는 해석 문제라 판정을 조용히 바꾸지 않고 민감도만")
+    L.append("> 병기해 주간회의에 올린다(§9).")
+    L.append(">")
+    L.append("> ⚠ **[18] RegimeExhaustionGate는 3건에 판정이 뒤집힌다**(SUPPORTS→REJECTS,")
+    L.append("> 누적 hyp −1.75 → +6.85). 표본 3건이 권고를 뒤집는다는 사실 자체가 그 채널")
+    L.append("> 결론의 근거가 얼마나 얇은지를 보여준다(372차 이상치 분해와 같은 교훈).")
     L.append("")
 
     # [25] TP1 보호전환 offset A/B
