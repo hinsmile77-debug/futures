@@ -2,6 +2,81 @@
 
 ---
 
+## 2026-08-01 (MW0602 404차 후속4 — P1-E: ConfFloorGuard 오탐 억제)
+
+### [확정] 07-31 11:50:57 WARNING은 결함이 아니라 설계된 점심 블랙아웃이다
+
+0731 정기점검 §1-C 이상점 1을 실측으로 재확인했다. `logs/20260731_SIGNAL.log`의
+ConfFloorGuard 로그는 **정확히 3줄**이고, 그 시각 배치가 원인을 그대로 지목한다:
+
+```
+09:49:57 [INFO]    복구 — 출력상한 0.3428 ≥ 필요 0.3300
+11:50:57 [WARNING] 도달 불가 — 출력상한 0.3705 < 필요 0.6200 (min_conf=0.620)
+13:00:57 [INFO]    복구 — 출력상한 0.3523 ≥ 필요 0.3300
+```
+
+WARNING 구간이 `TIME_ZONES`의 **미정의 공백(11:50~13:00)** 과 1분 단위로 일치한다.
+`STABLE_TREND` 종료가 11:50, `LUNCH_RECOVERY` 시작이 13:00이라 그 사이는
+`get_zone()`이 `OTHER`를 반환하고, `OTHER`는 `allow_new_entry=False` +
+`min_confidence=0.65`(MC_ABS_CEIL 0.62로 클램프 → 로그의 0.620)다. 즉 **min_conf
+자체가 진입을 막기 위한 블랙아웃 장치**이므로 보정기 출력상한(≈0.37)이 그 값을
+못 넘는 것은 정상이다.
+
+이 가드의 진짜 표적은 07-30 두 PC 공통 사고인 **"하한(상수 0.33) ↔ 보정기
+출력범위(학습결과)의 스케일 불일치"** 인데, 블랙아웃 구간에서는 그 불일치와 무관한
+값끼리 비교하게 된다. 403차 NEXT_TODO가 이 경보를 "P1-8 착수 신호"로 규정한 것은
+**오독이며 폐기**한다.
+
+### [설계] 계층 역전 대신 boolean 주입
+
+`model/ensemble_decision.py`가 `allow_new_entry`를 알려면 `strategy/entry/`를
+import해야 하는데, 현재 코드베이스에 `model/`→`strategy/` import는 **한 건도 없다**
+(grep 확인). 계층 역전의 첫 사례를 만드는 대신 main.py가 boolean을 주입한다:
+
+- `strategy/entry/time_strategy_router.py` — `is_entry_zone(zone)` 공개 헬퍼 신설.
+  `_ZONE_PARAMS`의 실제 `allow_new_entry`를 읽으므로, 나중에 존 정책이 바뀌어도
+  가드가 따로 드리프트하지 않는다(상수 집합을 별도 하드코딩하지 않은 이유).
+- `model/ensemble_decision.py` — `compute(zone_allows_entry=True)` kwarg 추가 →
+  `_check_conf_floor_consistency()`가 False면 판정 자체를 스킵(DEBUG만 기록).
+  **상태(`_conf_floor_reachable`)도 갱신하지 않는다** — 그래서 블랙아웃 진입/이탈만으로
+  짝지어 발생하던 오탐 WARNING과 복구 INFO가 **둘 다** 사라진다.
+- `main.py` — 앙상블 호출부에 `zone_allows_entry=is_entry_zone(_tz)` 전달.
+
+### [함정] 폴백 호출부가 같은 인스턴스를 공유한다
+
+`main.py`의 ensemble.compute 호출부는 **2곳**이다(5841 주경로, 5907 masked fallback).
+둘 다 같은 `self.ensemble` 인스턴스를 쓰므로 폴백만 기본값(True)으로 두면 그 분에
+가드가 재차 오탐한다. AST로 두 호출부 모두 kwarg 전달을 확인했다
+(`[(5841, True), (5907, True)]`).
+
+### [검증] 07-31 시퀀스 재현 + 대조군
+
+py37_32에서 실측값으로 재현:
+
+| 시각 | zone | 수정 전 | 수정 후 |
+|---|---|---|---|
+| 09:49 | OPEN_VOLATILE | INFO 복구 | INFO 복구 (유지) |
+| 11:50 | **OTHER** | **WARNING** | DEBUG 스킵 |
+| 12:30 | **OTHER** | (상태고정) | DEBUG 스킵 |
+| 13:00 | LUNCH_RECOVERY | **INFO 복구** | 로그 없음 (상태 무변화) |
+
+**대조군**: 진입 허용 존(min_conf=0.330)에서 07-30 실제 축퇴 저장본
+(출력상한 0.3012, span 0.0008)을 넣으면 **WARNING이 그대로 발생** — 진짜 표적을
+탐지하는 능력은 훼손되지 않았다.
+
+> 검증 중 최초 픽스처가 11:49 min_conf을 `STABLE_TREND` 정적값 0.54로 넣어 인위적
+> 상태 반전을 만들었다. 실제 라이브는 DynMC 기동복원치(≈0.350)라 실효 필요치는
+> `conf_floor`(0.330)가 지배한다(09:49 로그의 "필요 0.3300"이 근거). 정적 dict 값이
+> 곧 런타임 값이 아니라는 점은 이 시스템에서 반복되는 함정이다.
+
+### [범위] 14:50 컷오프는 일부러 제외
+
+`utils.time_utils.is_new_entry_allowed()`(14:50 신규진입 컷오프)는 반영하지 않았다.
+`CLOSE_VOLATILE`의 min_conf(0.62)는 **실제 진입 임계**라 그 구간의 도달 불가는 진짜
+결함 신호다. 시간대 존 축 한정이 §9 사전등록(P1-E) 범위와도 일치한다.
+
+---
+
 ## 2026-08-01 (MW0602 404차 후속3 — 청산 기하 계측 전수조사: [24]·[25] 신설, [23-B] 리포트 편입)
 
 ### [조사] 청산 기하 10개 차원 중 4개가 미측정, 2개는 측정하되 노출 안 됨
