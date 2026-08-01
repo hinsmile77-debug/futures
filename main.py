@@ -129,6 +129,7 @@ from strategy.entry.time_strategy_router import (
     get_zone_min_confidence, get_horizon_min_confs, update_dynamic_mc,
     is_entry_zone,
 )
+from utils.market_state import is_untradeable_now   # [404차 후속5] 거래불능 구간
 from strategy.entry.position_sizer import PositionSizer
 from strategy.entry.meta_gate import MetaGate
 from strategy.entry.trend_persistence import TrendPersistenceGate
@@ -8026,8 +8027,25 @@ class TradingSystem:
                         except Exception as _jgs_e:
                             logger.warning("[JointGateShadow] counterfactual 기록 실패 (무해): %s", _jgs_e)
                     else:
+                        # [404차 후속5 / P0-B(b)] 거래불능 구간 신규진입 보류.
+                        # `high==low` + 거래량 붕괴가 N분 연속이면 어느 방향이든 체결을
+                        # 기대할 수 없다(2026-07-31 14:21~15:06 상한가 고착 실측).
+                        # Hurst 체크보다 앞에 두는 이유: 체결 자체가 불가능한 상태가
+                        # 워밍업 여부보다 더 근본적인 차단 사유다.
+                        _untr = self._check_untradeable_now()
+                        if _untr.get("blocked"):
+                            log_manager.signal(
+                                f"[차단] 거래불능 구간 — {_untr.get('reason', '')}"
+                            )
+                            log_manager.trade(
+                                f"[거래불능 차단] {raw_dir_str} {_qty_auto}계약 "
+                                f"{_final_grade}급 ({_untr.get('reason', '')})"
+                            )
+                            _entry_block_reason = (
+                                f"[차단] 거래불능 구간 — {_untr.get('reason', '')}"
+                            )
                         # [237차] Hurst 미계산 진입 차단 — 워밍업 미완료(데이터 부족·오류) 시 손실 방지
-                        if not features.get("hurst_ready", False):
+                        elif not features.get("hurst_ready", False):
                             log_manager.signal(
                                 f"[차단] Hurst 미계산 — 워밍업 중 자동진입 차단"
                                 f" (hurst={features.get('hurst', 0.5):.3f})"
@@ -9286,6 +9304,26 @@ class TradingSystem:
             logger.warning("[Shadow] shadow_candidate.json 로드 실패: %s", _e)
 
     # ── Phase 1 헬퍼 메서드 ──────────────────────────────────────
+
+    def _check_untradeable_now(self) -> dict:
+        """[404차 후속5 / P0-B(b)] 지금이 거래불능 구간인가.
+
+        판정 로직은 `utils/market_state.is_untradeable_now()`에 있고 여기서는 최근
+        분봉을 넘겨주기만 한다. 60봉을 읽는 이유는 판정에 필요한 연속 구간(기본 5봉)
+        보다 넉넉히 두되 세션 극단 참고값(at_session_extreme)도 의미 있게 나오도록
+        하기 위함이다 — 날짜 혼입은 판정 함수가 최근 일자만 남겨 처리한다.
+
+        예외는 전부 삼키고 `blocked=False`를 반환한다. 이 계측이 실패했다고 진입
+        경로가 죽으면 안 된다(부가 안전장치이지 필수 경로가 아니다).
+        """
+        if not getattr(runtime_settings, "LIMIT_PIN_ENTRY_BLOCK_ENABLED", False):
+            return {"blocked": False, "reason": "비활성"}
+        try:
+            bars = fetch_recent_raw_candles(limit=60)
+            return is_untradeable_now(bars)
+        except Exception as _ut_e:
+            logger.debug("[Untradeable] 판정 실패 (무해, 진입 허용): %s", _ut_e)
+            return {"blocked": False, "reason": "판정 실패"}
 
     def _get_active_horizons(self, hhmm):
         # type: (int) -> list
