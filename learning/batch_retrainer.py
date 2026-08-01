@@ -182,7 +182,26 @@ HIST_GBM_PARAMS_INTRADAY = {
 MIN_TRAIN_BARS = 15000
 
 # 장중 재학습 최대 봉 수: 최근 ~2.5주 (최신 데이터 우선 + 속도 우선)
-MAX_TRAIN_BARS_INTRADAY = 20_000
+#
+# [404차 후속2] 20,000 → 4,800으로 정정. 20,000봉은 실측 54거래일(10.8주)로
+# 위 주석의 의도(2.5주)와 4배 어긋나 있었다 — 데이터가 누적되면서 같은 상수가
+# 뜻하는 기간이 늘어난 것. 그 결과 "오늘"이 학습표본의 1.5%, 연속 재학습 간
+# 신규분은 0.29%뿐이라 DriftRetrain이 목표하는 "장중 레짐 변화 반영"이
+# 구조적으로 불가능했다. 4,800 = 12.5거래일 × 384봉(최근 15거래일 중앙값).
+#   근거: dev_memory/DECISION_LOG.md 2026-08-01(404차 후속2) 항목.
+#   롤백: 이 값을 20_000으로 되돌리면 즉시 종전 동작.
+MAX_TRAIN_BARS_INTRADAY = 4_800
+
+# [404차 후속2] CV 폴드 학습셋 상한 — 32-bit Python 메모리 방어 전용.
+#
+# 원래 이 목적에도 MAX_TRAIN_BARS_INTRADAY를 재사용하고 있었으나, 두 상수는
+# 목적이 다르다(학습 창 크기 vs OOM 방어). 분리하지 않고 위 값을 4,800으로
+# 낮추면 PreRetrain(08:55, intraday=False·full_cv=False)의 CV 폴드 학습셋까지
+# 20,000→4,800으로 조용히 축소돼 의도치 않은 회귀가 된다 — 실제 호출 경로
+# 확인 결과 retrain_intraday.py가 full_cv를 넘기지 않아(기본 False) 해당됨.
+# 여기서 종전 값(20,000)을 그대로 유지해 그 경로의 동작을 보존한다.
+# (EOD는 full_cv=True라 이 캡 자체를 타지 않는다 — 영향 없음)
+MAX_CV_FOLD_BARS = 20_000
 
 # Phase 2: 호라이즌별 학습 최소 데이터 — 시간 등가 기준 (72k 봉 기준 전 호라이즌 충족)
 MIN_TRAIN_BARS_PER_HORIZON = {
@@ -216,24 +235,61 @@ _FLAT_CAP = {
     "1m": 0.75, "3m": 0.55, "5m": 0.55,
     "10m": 0.65, "15m": 0.60, "30m": 0.55,
 }
-_DYN_HALFLIFE   = 70    # 시간감쇠 반감기: 100→70봉 — 최근 70분 데이터 더 강조
+_DYN_HALFLIFE   = 70    # (구값·하한 전용) 165차 도입 100 → 186차 70. 아래 주석 참조.
 _DYN_CLIP_RATIO = 3.0   # 최대 가중치 = 중간값 × 배율 (역보정 폭발 방지)
+
+# [404차 후속2] 시간감쇠 반감기를 절대 봉수 → 학습창 길이 비례로 전환.
+#
+# 무엇이 문제였나 (설계 의도 자체는 정상 — 오해 주의):
+#   decay는 per-sample 가중치가 아니라 **클래스 빈도를 최근 구간 기준으로 추정**
+#   하는 데만 쓰인다. 이는 165차(커밋 88cf7fd) "동적 역빈도+시간감쇠 class weight"의
+#   명시적 설계이며 구현 누락이 아니다. 반환되는 per-sample 값은 라벨별 클래스
+#   가중치이고, 그게 sklearn sample_weight의 올바른 사용법이다.
+#
+#   진짜 결함은 반감기 70봉이 **유효표본 101봉**밖에 되지 않는다는 점이다. 그
+#   101봉에서 추정한 클래스 가중치가 학습창 전체(4,800~39,209봉)에 적용된다.
+#   가장 오래된 표본의 감쇠 가중치는 EOD 기준 2^-560으로 언더플로해 0이 된다.
+#   실측(연속 재학습 5시점, 58봉 간격):
+#     5m DOWN 가중치 1.217~2.142 (범위 0.925, ±38%)
+#     1m DOWN 가중치 0.857~1.419 (범위 0.562)
+#   즉 재학습마다 클래스 가중치가 요동쳐 모델 예측이 함께 흔들린다 — 404차 후속이
+#   측정한 "연속 재학습 간 예측 불일치 16~22%"의 원인 중 하나.
+#
+# 해결: 반감기를 max(n × _DYN_HALFLIFE_FRAC, _DYN_HALFLIFE)로 계산한다.
+#   - 학습창이 커지면 반감기도 비례해 커져 유효표본이 창의 약 36%로 유지된다
+#     (기하급수 합: ESS ≈ hl/ln2 = 0.361n when hl = n/4).
+#   - 소표본(n < 280)에서는 하한 70이 그대로 적용돼 종전 동작과 동일 —
+#     온라인/테스트 경로 회귀 없음.
+#   - "최근 분포를 반영한다"는 165차 의도는 유지된다(여전히 최근 가중).
+#   근거: dev_memory/DECISION_LOG.md 2026-08-01(404차 후속2) 항목.
+#   롤백: _DYN_HALFLIFE_FRAC = 0.0 으로 두면 하한 70만 남아 종전 동작 복원.
+_DYN_HALFLIFE_FRAC = 0.25
+
+
+def _resolve_halflife(n: int) -> float:
+    """[404차 후속2] 학습창 길이에 비례한 시간감쇠 반감기.
+
+    n이 작으면 하한(_DYN_HALFLIFE=70)이 적용돼 종전 동작을 그대로 보존한다.
+    multi_horizon_model._resolve_halflife 와 동일 로직 유지 필수.
+    """
+    return max(float(n) * _DYN_HALFLIFE_FRAC, float(_DYN_HALFLIFE), 1.0)
 
 
 def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
     """
-    P0: 동적 역빈도 + 시간감쇠 sample_weight.
+    P0: 동적 역빈도 + 시간감쇠 class weight (반환은 per-sample 배열).
 
     y는 시간순 정렬 레이블 (DB ORDER BY ts 보장).
-    최근 데이터 우선(halflife=100봉), DOWN 과다 시 DN 가중치 자동 감소.
-    클리핑 = 중간값×3으로 역보정 폭발 방지.
+    decay는 **클래스 빈도 추정에만** 쓰인다(per-sample 감쇠가 아님 — 165차 설계).
+    DOWN 과다 시 DN 가중치 자동 감소. 클리핑 = 중간값×3으로 역보정 폭발 방지.
+    반감기는 _resolve_halflife(n) — 학습창 비례(404차 후속2).
     multi_horizon_model._make_sample_weight 와 동일 로직 유지 필수.
     """
     n = len(y)
     if n == 0:
         return np.ones(0, dtype=np.float64)
 
-    decay = np.exp(-np.arange(n)[::-1] * (np.log(2) / max(_DYN_HALFLIFE, 1)))
+    decay = np.exp(-np.arange(n)[::-1] * (np.log(2) / _resolve_halflife(n)))
 
     weighted_counts = {}
     for cls in [DIRECTION_FLAT, DIRECTION_UP, DIRECTION_DOWN]:
@@ -438,9 +494,18 @@ class BatchRetrainer:
         if X is None or y_dict is None:
             X, y_dict, feature_names = self._load_from_db(weeks_back, intraday=intraday)
 
-        if X is None or len(X) < MIN_TRAIN_BARS:
+        # [404차 후속2] intraday는 학습창 자체가 MAX_TRAIN_BARS_INTRADAY로 설계돼
+        # 있으므로 MIN_TRAIN_BARS(15,000 — 26주 전량 로드 기준)를 그대로 요구하면
+        # 구조적으로 항상 미달한다. 창 크기를 20,000→4,800으로 정정하면서 드러난
+        # 결합이다(종전에는 20,000 > 15,000이라 우연히 통과하고 있었을 뿐).
+        # _load_from_db가 절단 **전에** 이미 MIN_TRAIN_BARS를 검사하므로(하단 참조)
+        # 여기서 확인할 것은 "완전한 장중 창을 확보했는가"뿐이다.
+        # 이 정정이 없으면 DriftRetrain·WarmupRetrain·EKS해제·ExchangeCB 재학습 등
+        # 모든 intraday 경로가 ok=False로 전량 실패한다(실측으로 확인).
+        _min_required = MAX_TRAIN_BARS_INTRADAY if intraday else MIN_TRAIN_BARS
+        if X is None or len(X) < _min_required:
             msg = "학습 데이터 부족 ({} < {})".format(
-                len(X) if X is not None else 0, MIN_TRAIN_BARS
+                len(X) if X is not None else 0, _min_required
             )
             logger.warning("[Retrain] %s", msg)
             return {"ok": False, "error": msg}
@@ -602,9 +667,13 @@ class BatchRetrainer:
             X_tr, X_val = X[train_idx], X[val_idx]
             y_tr, y_val = y[train_idx], y[val_idx]
 
-            if not full_cv and len(X_tr) > MAX_TRAIN_BARS_INTRADAY:
-                X_tr = X_tr[-MAX_TRAIN_BARS_INTRADAY:]
-                y_tr = y_tr[-MAX_TRAIN_BARS_INTRADAY:]
+            # [404차 후속2] MAX_TRAIN_BARS_INTRADAY → MAX_CV_FOLD_BARS로 교체.
+            # 이 절단은 "장중 학습 창 크기"가 아니라 32-bit OOM 방어가 목적이라
+            # 상수를 분리했다(상수 정의부 주석 참조). 값은 종전과 동일(20,000)이라
+            # 이 지점의 동작은 변하지 않는다.
+            if not full_cv and len(X_tr) > MAX_CV_FOLD_BARS:
+                X_tr = X_tr[-MAX_CV_FOLD_BARS:]
+                y_tr = y_tr[-MAX_CV_FOLD_BARS:]
 
             if len(np.unique(y_tr)) < 2:
                 continue

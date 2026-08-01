@@ -85,17 +85,30 @@ _FLAT_CAP = {
     "1m": 0.75, "3m": 0.55, "5m": 0.55,
     "10m": 0.65, "15m": 0.60, "30m": 0.55,
 }
-_DYN_HALFLIFE   = 70   # batch_retrainer와 동기화 (100→70, 최근 70분 강조)
+_DYN_HALFLIFE   = 70   # batch_retrainer와 동기화 (하한 전용 — 아래 FRAC 참조)
 _DYN_CLIP_RATIO = 3.0
+# [404차 후속2] batch_retrainer._DYN_HALFLIFE_FRAC 와 동기화 필수.
+# 절대 반감기 70봉은 유효표본 101봉에 불과해, 그 101봉으로 추정한 클래스 가중치가
+# 학습창 전체에 적용되며 재학습마다 ±38%까지 요동쳤다(실측). 학습창 비례로 전환.
+# 상세 근거·롤백 방법은 learning/batch_retrainer.py 동일 상수 주석 참조.
+_DYN_HALFLIFE_FRAC = 0.25
+
+
+def _resolve_halflife(n: int) -> float:
+    """[404차 후속2] 학습창 길이 비례 반감기. batch_retrainer와 동일 로직 유지 필수."""
+    return max(float(n) * _DYN_HALFLIFE_FRAC, float(_DYN_HALFLIFE), 1.0)
 
 
 def _make_sample_weight(y: np.ndarray, horizon: str) -> np.ndarray:
-    """P0: 동적 역빈도 + 시간감쇠 sample_weight. batch_retrainer와 동일 로직."""
+    """P0: 동적 역빈도 + 시간감쇠 class weight. batch_retrainer와 동일 로직.
+
+    decay는 클래스 빈도 추정에만 쓰인다(per-sample 감쇠 아님 — 165차 설계).
+    """
     n = len(y)
     if n == 0:
         return np.ones(0, dtype=np.float64)
 
-    decay = np.exp(-np.arange(n)[::-1] * (np.log(2) / max(_DYN_HALFLIFE, 1)))
+    decay = np.exp(-np.arange(n)[::-1] * (np.log(2) / _resolve_halflife(n)))
 
     weighted_counts = {}
     for cls in [DIRECTION_FLAT, DIRECTION_UP, DIRECTION_DOWN]:
