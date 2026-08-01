@@ -316,7 +316,9 @@ class EnsembleDecision:
         # 마지막으로 경보한 (도달가능여부) 를 기억해 상태가 바뀔 때만 로그를 남긴다.
         self._conf_floor_reachable: Optional[bool] = None
 
-    def _check_conf_floor_consistency(self, min_conf: float) -> None:
+    def _check_conf_floor_consistency(
+        self, min_conf: float, zone_allows_entry: bool = True
+    ) -> None:
         """[403차 종합 P0-2b] 자동진입 하한이 보정기 출력범위 안에 있는지 점검.
 
         2026-07-30 두 PC 공통 사고: 보정기가 축퇴해 출력 상한이 0.3012~0.3052로
@@ -326,8 +328,27 @@ class EnsembleDecision:
         유지됐다. min_conf(동적)까지 셋을 함께 본다.
 
         판정만 로그로 남긴다 — 임계값을 자동으로 조정하지 않는다(§9 사전등록 원칙).
+
+        [404차 후속4 / P1-E] zone_allows_entry=False 구간은 판정 자체를 건너뛴다.
+        PRE_MARKET·EXIT_ONLY·OTHER(점심 공백 11:50~13:00 등)는 min_confidence가
+        0.65~1.01로 설정된 **설계된 진입 블랙아웃**이라, 보정기 출력상한(≈0.30~0.37)이
+        그 값을 못 넘는 것이 정상이다. 이를 경보하면 "하한↔보정기 스케일 불일치"라는
+        이 가드의 진짜 표적과 무관한 오탐이 된다 — 2026-07-31 11:50:57 WARNING이
+        정확히 그 사례이며, 403차 NEXT_TODO는 이를 "P1-8 착수 신호"로 잘못 규정했다.
+        상태(_conf_floor_reachable)도 갱신하지 않으므로, 블랙아웃 구간 진입/이탈만으로
+        생기던 짝지어진 오탐 WARNING·복구 INFO가 둘 다 사라진다.
+
+        범위 주: 14:50 신규진입 컷오프(utils.time_utils.is_new_entry_allowed)는
+        여기에 반영하지 않는다 — CLOSE_VOLATILE의 min_conf(0.62)는 실제 진입 임계라
+        그 구간의 도달 불가는 진짜 결함 신호다(§9 사전등록 범위 = 시간대 존 축 한정).
         """
         try:
+            if not zone_allows_entry:
+                logger.debug(
+                    "[ConfFloorGuard] 진입 금지 시간대 — 정합성 판정 스킵 (min_conf=%.3f)",
+                    float(min_conf or 0.0),
+                )
+                return
             _cal = self.ensemble_calibrator
             if not _cal.is_fitted:
                 return          # 미fit이면 raw가 그대로 나가므로 도달 가능
@@ -370,6 +391,7 @@ class EnsembleDecision:
         bias_override_horizons: Optional[set] = None,
         conf_stuck_streak: Optional[Dict[str, int]] = None,
         target_recent_acc: Optional[float] = None,
+        zone_allows_entry: bool = True,
     ) -> Dict:
         """
         Args:
@@ -1033,7 +1055,8 @@ class EnsembleDecision:
         regime_ok = (confidence >= min_conf) and (direction != DIRECTION_FLAT)
 
         # [403차 종합 P0-2b] 하한 ↔ 보정기 출력범위 정합성 점검 (상태 변화 시에만 로그)
-        self._check_conf_floor_consistency(min_conf)
+        # [404차 후속4 / P1-E] 진입 허용 시간대에서만 판정 — 블랙아웃 구간 오탐 억제
+        self._check_conf_floor_consistency(min_conf, zone_allows_entry)
 
         # ── 진입 등급 (체크리스트 통과 수는 entry_manager에서 계산) ──
         # 코히어런스 게이트 차단 시 최우선 X

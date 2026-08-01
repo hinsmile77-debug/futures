@@ -128,6 +128,7 @@ from strategy.position.position_tracker import PositionTracker
 from strategy.entry.checklist import EntryChecklist
 from strategy.entry.time_strategy_router import (
     get_zone_min_confidence, get_horizon_min_confs, update_dynamic_mc,
+    is_entry_zone,
 )
 from strategy.entry.position_sizer import PositionSizer
 from strategy.entry.meta_gate import MetaGate
@@ -5886,6 +5887,9 @@ class TradingSystem:
             bias_override_horizons=self._bias_override_horizons,
             conf_stuck_streak=dict(self._conf_stuck),
             target_recent_acc=_csb_target_acc,
+            # [404차 후속4 / P1-E] ConfFloorGuard 오탐 억제 — 진입 금지 존
+            # (PRE_MARKET·EXIT_ONLY·OTHER)은 min_conf가 블랙아웃 장치라 정합성 판정 제외
+            zone_allows_entry=is_entry_zone(_tz),
         )
         _s6_prof.append(("ensemble", time.perf_counter()))
         if decision.get("conf_stuck_boost_applied"):
@@ -5943,6 +5947,10 @@ class TradingSystem:
                         if hasattr(_ts_dt_obj, "hour") else 930
                     ),
                     zone_mc=_zone_mc,
+                    # [404차 후속4 / P1-E] 이 폴백 경로도 같은 self.ensemble 인스턴스를
+                    # 공유하므로 기본값(True)으로 두면 진입 금지 존에서 ConfFloorGuard가
+                    # 재차 오탐한다 — 주 호출부(5841)와 동일 값을 반드시 전달할 것
+                    zone_allows_entry=is_entry_zone(_tz),
                 )
                 _mdir  = _mdec["direction"]
                 _mconf = _mdec["confidence"]

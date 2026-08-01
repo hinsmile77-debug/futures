@@ -431,6 +431,17 @@ def get_zone_min_confidence(zone: str) -> float:
     return _ZONE_PARAMS.get(zone, _ZONE_PARAMS["OTHER"])["min_confidence"]
 
 
+def is_entry_zone(zone: str) -> bool:
+    """시간대 코드 → 신규 진입 허용 여부 (미정의 zone은 OTHER 기준 = 금지).
+
+    [404차 후속4 / P1-E] PRE_MARKET·EXIT_ONLY·OTHER는 min_confidence 자체가
+    블랙아웃 장치(0.65~1.01)라, 진입 하한 관련 정합성 경보를 그대로 적용하면
+    "설계된 금지"를 "결함"으로 오탐한다(2026-07-31 11:50:57 ConfFloorGuard 사례).
+    _ZONE_PARAMS의 실제 allow_new_entry를 읽어 상수 중복·드리프트를 방지한다.
+    """
+    return bool(_ZONE_PARAMS.get(zone, _ZONE_PARAMS["OTHER"])["allow_new_entry"])
+
+
 def get_horizon_min_confs(zone: str) -> dict:
     """
     시간대 코드 → 호라이즌별 min_conf 딕셔너리 반환 (P4 2D 표).
