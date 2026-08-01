@@ -1445,6 +1445,32 @@ VALIDATION_CAMPAIGN = {
             "sym_1.0_1.0":  {"stop_mult": 1.0,  "tp1_mult": 1.0},
         },
     },
+    # [404차 신설] EOD 모델가드 판정 괴리 감시 — 가드가 실제 판정에 쓰는 acc.txt
+    # (교체 시점이 제각각인 값)와, old_acc_live(동일폴드 재측정값) vs new(cv)의
+    # 공정비교가 얼마나 자주 엇갈리는지 누적 판정한다(guard_shadow_log 테이블,
+    # learning/batch_retrainer.py:_measure_incumbent_acc·utils/db_utils.py:
+    # save_guard_shadow). 07-31 최초 라이브 관측에서 6개 호라이즌 중 3개
+    # (3m/5m/10m)가 acc.txt 기준으로는 보류였으나 공정비교로는 신모델이 우세했다
+    # (dev_memory/DECISION_LOG.md 404차 항목). 아래 임계값은 그 07-31 단일일
+    # 관측치(50%)에 맞춘 게 아니라 독립적으로 고른 값이다 — 관측 이후 기준을
+    # 관측치에 맞추면 검증이 무의미해진다(313차 원칙).
+    #
+    # 판정 지표 missed_upgrade_rate = count(fair_verdict='REPLACE' AND
+    #   actual_verdict='HOLD') / count(fair_verdict가 있는 행) — "공정비교로는
+    #   신모델이 나은데 acc.txt 때문에 가드가 구모델을 유지시킨" 비율.
+    #
+    # 판정 (관측 전 고정, §9):
+    #   PASS(acc.txt 기준 유지 타당): missed_upgrade_rate < 0.30
+    #   FAIL(판정기준을 old_acc_live로 교체 검토): missed_upgrade_rate >= 0.30
+    #     → 즉시 코드 변경이 아니라 evaluate_model_replace() 호출부의 old_acc
+    #       인자를 acc.txt 대신 old_acc_live로 바꿀지 주간회의 수동 결정(§9).
+    #       old_acc_live 측정 실패(live_note != "ok")가 잦으면 전환 보류 —
+    #       측정 불가 시 fallback 설계가 먼저 필요하므로 그건 별건이다.
+    "guard_shadow": {
+        "min_samples": 18,   # 6호라이즌 × 3거래일분 — 313차 원칙(단일일 판정 금지)
+        "min_days": 3,
+        "missed_upgrade_rate_max": 0.30,
+    },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)

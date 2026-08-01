@@ -1382,6 +1382,78 @@ def eval_mfe_capture_watch() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [23] EOD 모델가드 판정 괴리 감시 (404차 신설)
+# ──────────────────────────────────────────────────────────────
+
+def eval_guard_shadow_channel(days: int) -> dict:
+    """가드가 실제 판정에 쓰는 acc.txt 기준 결과(actual_verdict)와, old_acc_live
+    (동일폴드 재측정) vs new(cv)의 공정비교 결과(fair_verdict)가 얼마나 자주
+    어긋나는지 누적 판정한다(guard_shadow_log 테이블).
+
+    missed_upgrade = fair_verdict가 REPLACE인데 actual_verdict가 HOLD인 행 —
+    "공정비교로는 신모델이 나은데 acc.txt 때문에 가드가 구모델을 유지시킨" 경우.
+    07-31 최초 라이브 관측(6개 호라이즌 중 3개, dev_memory/DECISION_LOG.md
+    404차 항목)이 이 채널을 만든 계기이지만, PASS/FAIL 임계값은 그 단일일
+    관측치에 맞추지 않고 독립적으로 고정했다(313차 원칙).
+    """
+    cr = VALIDATION_CAMPAIGN["guard_shadow"]
+    out = {"verdict": "INSUFFICIENT", "n_samples": 0, "n_days": 0}
+    cutoff = max(
+        (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(_TS_FMT),
+        _campaign_start(),
+    )
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                """SELECT ts, horizon, acc_txt, old_acc_live, new_cv, live_note,
+                          distortion, actual_verdict, fair_verdict
+                     FROM guard_shadow_log
+                    WHERE ts >= ?
+                    ORDER BY ts""",
+                (cutoff,),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    out["n_samples"] = len(rows)
+    out["n_days"] = len({r["ts"][:10] for r in rows})
+    _live_fail = [r for r in rows if r["fair_verdict"] is None]
+    out["n_live_measure_failed"] = len(_live_fail)
+
+    fair_rows = [r for r in rows if r["fair_verdict"] is not None]
+    if len(rows) < cr["min_samples"] or out["n_days"] < cr["min_days"]:
+        out["reason"] = "표본 부족 (%d건/%d일 < %d건/%d일)" % (
+            len(rows), out["n_days"], cr["min_samples"], cr["min_days"])
+        return out
+    if not fair_rows:
+        out["reason"] = "공정비교 가능 표본 없음 (동일폴드 재측정 전부 실패)"
+        return out
+
+    missed = [r for r in fair_rows
+              if r["fair_verdict"] == "REPLACE" and r["actual_verdict"] == "HOLD"]
+    out["n_fair"] = len(fair_rows)
+    out["missed_upgrade_n"] = len(missed)
+    out["missed_upgrade_rate"] = round(len(missed) / len(fair_rows), 4)
+    _dist = [r["distortion"] for r in fair_rows if r["distortion"] is not None]
+    if _dist:
+        out["mean_distortion"] = round(float(np.mean(_dist)), 4)
+
+    by_hz = {}
+    for r in fair_rows:
+        b = by_hz.setdefault(r["horizon"], {"n": 0, "missed": 0})
+        b["n"] += 1
+        if r["fair_verdict"] == "REPLACE" and r["actual_verdict"] == "HOLD":
+            b["missed"] += 1
+    out["by_horizon"] = by_hz
+
+    out["verdict"] = (
+        "FAIL" if out["missed_upgrade_rate"] >= cr["missed_upgrade_rate_max"] else "PASS"
+    )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [20] BAR_ONLY_RELAX 수용/롤백 감시 (402차 후속)
 # ──────────────────────────────────────────────────────────────
 
@@ -2874,6 +2946,7 @@ def build_report(days: int) -> tuple:
     wcw = eval_weight_collapse_watch(days)
     dev = eval_direction_ev_watch()
     mcw = eval_mfe_capture_watch()
+    gsc = eval_guard_shadow_channel(days)
 
     metrics = {
         "generated_at": now_str,
@@ -2890,6 +2963,7 @@ def build_report(days: int) -> tuple:
         "regime_exhaustion_watch": reg, "toxicity_block_shadow": txb,
         "weight_collapse_watch": wcw,
         "direction_ev_watch": dev, "mfe_capture_watch": mcw,
+        "guard_shadow": gsc,
     }
 
     L = []
@@ -3011,6 +3085,10 @@ def build_report(days: int) -> tuple:
         ("%.1f%%" % (mcw["capture_in_hold_pooled"] * 100)) if mcw.get("capture_in_hold_pooled") is not None else "—",
         ("%.1f%%" % (mcw["capture_to_close_pooled"] * 100)) if mcw.get("capture_to_close_pooled") is not None else "—",
         mcw.get("avg_left_to_close_pt", "—"), mcw.get("n_entries", 0)))
+    L.append("| [23] EOD 모델가드 판정 괴리 | %s | missed_upgrade=%s (n=%s/%s, %d일) |" % (
+        _fmt_channel_verdict(gsc),
+        ("%.1f%%" % (gsc["missed_upgrade_rate"] * 100)) if gsc.get("missed_upgrade_rate") is not None else "—",
+        gsc.get("missed_upgrade_n", "—"), gsc.get("n_fair", "—"), gsc.get("n_days", 0)))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -3553,6 +3631,40 @@ def build_report(days: int) -> tuple:
     L.append("> 수치는 그 판정을 해석할 맥락(\"캡처율이 이렇게 낮은데도 트레일링이 안")
     L.append("> 낫다\"가 성립하는지)만 제공한다. 단일일 극단 사례로 결론 내지 말 것")
     L.append("> (2026-07-29 캡처율 7.7%는 -15.6% 폭락일 1건이다 — 313차 원칙).")
+    L.append("")
+
+    # [23] EOD 모델가드 판정 괴리 상세
+    L.append("## [23] EOD 모델가드 판정 괴리 감시 (404차 신설)")
+    L.append("")
+    if gsc.get("error"):
+        L.append("> ⚠ %s" % gsc["error"])
+    elif gsc.get("reason"):
+        L.append("- %s" % gsc["reason"])
+    else:
+        L.append("- 표본 %s건 / %s거래일 (재측정 실패 %s건 별도 제외)" % (
+            gsc.get("n_samples", 0), gsc.get("n_days", 0),
+            gsc.get("n_live_measure_failed", 0)))
+        L.append("- **missed_upgrade_rate** (공정비교=REPLACE인데 acc.txt 기준=HOLD였던 비율): "
+                  "**%s** (n=%s/%s)" % (
+                      ("%.1f%%" % (gsc["missed_upgrade_rate"] * 100))
+                      if gsc.get("missed_upgrade_rate") is not None else "—",
+                      gsc.get("missed_upgrade_n", "—"), gsc.get("n_fair", "—")))
+        if gsc.get("mean_distortion") is not None:
+            L.append("- 평균 왜곡(acc.txt − 동일폴드 재측정) = %+.4f" % gsc["mean_distortion"])
+        if gsc.get("by_horizon"):
+            L.append("")
+            L.append("| 호라이즌 | n | missed_upgrade |")
+            L.append("|---|---|---|")
+            for hz, v in sorted(gsc["by_horizon"].items()):
+                L.append("| %s | %d | %d |" % (hz, v["n"], v["missed"]))
+    L.append("")
+    L.append("> **판정 기준**(관측 전 고정, §9): missed_upgrade_rate ≥ %.0f%% → FAIL"
+              "(판정기준을 old_acc_live로 교체할지 주간회의 검토), 미만 → PASS(acc.txt 유지)."
+              % (VALIDATION_CAMPAIGN["guard_shadow"]["missed_upgrade_rate_max"] * 100))
+    L.append("> 07-31 최초 라이브 관측(6개 호라이즌 중 3개 불일치)이 이 채널을 만든 계기이나,")
+    L.append("> 임계값은 그 단일일 관측치에 맞추지 않고 독립적으로 고정했다 — 이 리포트가")
+    L.append("> 그 계기가 된 날의 데이터를 포함하더라도 임계값 자체는 사후 조정이 아니다.")
+    L.append("> (근거: `dev_memory/DECISION_LOG.md` 404차 항목, 313차·§9 원칙)")
     L.append("")
     L.append("---")
     L.append("")
