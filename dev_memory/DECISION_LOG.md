@@ -2,6 +2,114 @@
 
 ---
 
+## 2026-08-01 (MW0602 404차 후속 — intraday GBM 재학습: CV 도입은 계측 전용, 교체 Guard 도입은 반대)
+
+### [배경] "intraday에도 EOD처럼 CV+Guard를 붙여야 하는가"
+
+404차가 EOD 모델가드 GuardShadow를 DB에 영속화한 직후, 같은 질문이 intraday
+재학습(하루 5~6회, DriftRetrain 등으로 발동)에도 적용됐다 — intraday는 CV 자체가
+없어(`intraday=True`면 3폴드 루프 전체를 건너뜀) 품질을 검증하지도, 하락 시
+막지도 않는다. 도입 여부를 판단하기 전에 4가지를 실측했다.
+
+### [실측 A] 순수 모델 분산이 EOD 가드 허용폭을 넘는다 — 결정적
+
+동일 20,000봉 데이터로 `random_state`만 바꿔 재학습(정보량 0 증가):
+
+| 호라이즌 | 예측 불일치 | 정확도 변화 | EOD 가드 허용폭 | 배율 |
+|---|---|---|---|---|
+| 1m | 10.1% | +2.34%p | 0.025 | 0.9배 |
+| 5m | 15.3% | **+8.83%p** | 0.025 | **3.5배** |
+
+정보가 전혀 늘지 않았는데 5m 정확도가 8.83%p 흔들린다 — `EOD_MODEL_GUARD_
+DROP_TOLERANCE`(2.5~3.0%p)를 그대로 intraday에 적용하면 판정의 대부분이
+신호가 아니라 시드 재현 잡음이 된다.
+
+### [실측 B] 연속 재학습 간 데이터 변화(58봉=0.29%)가 시드 잡음과 구분 안 됨
+
+| 호라이즌 | 예측 불일치 | 정확도 변화 |
+|---|---|---|
+| 1m | 21.6% | −4.94%p |
+| 5m | 16.6% | +2.08%p |
+
+실측 A(시드만 바꿈)와 같은 크기 — "새 정보를 배웠다"와 "주사위를 다시
+굴렸다"가 관측상 구분되지 않는다.
+
+### [실측 C] CV 지표 자체의 안정성·비용 — 3-fold가 홀드아웃보다 낫다
+
+07-31 실제 재학습 간격(0/58/63/57/80봉)으로 연속 5개 시점 측정:
+
+| 지표 | 1m σ | 5m σ | 비용/호라이즌 |
+|---|---|---|---|
+| 3-fold TimeSeriesSplit CV | 1.71%p | 2.45%p | 1.31~1.47s |
+| 최근 120봉 홀드아웃 | 4.88%p | 6.06%p | 0.37~0.48s |
+
+"값싼 최근 홀드아웃" 대안을 먼저 검토했으나 표본(n=120)이 작아 CV보다 3배
+불안정 — 자체 기각. **CV를 도입한다면 3-fold가 맞다.**
+
+### [발견] 선결 결함 2건 — CV/Guard 논의보다 앞서는 문제
+
+- **`MAX_TRAIN_BARS_INTRADAY=20,000`이 주석 의도(2.5주)의 4배**(실측 10.8주,
+  54거래일). "오늘"이 학습표본의 1.5%, 재학습 간 신규분은 0.29%뿐이라
+  드리프트 대응이 구조적으로 어려운 창 크기다.
+- **`_make_sample_weight`의 시간감쇠가 docstring과 다르게 구현돼 있다** —
+  `decay`(halflife 70봉) 배열은 클래스 균형(FLAT/UP/DOWN 3개 가중치)에만
+  쓰이고 반환값(per-sample weight)에는 시간감쇠가 실리지 않는다. 54거래일
+  전 봉과 오늘 봉이 같은 클래스면 완전히 동일 가중치다.
+- 이 두 결함은 값 변경이 필요해 §9 사전등록 대상 — 이번엔 구현하지 않고
+  `NEXT_TODO.md`에 등록만 한다.
+
+### [결정] CV: 계측 전용 도입 / 교체 Guard: 도입 안 함
+
+- **CV 도입**: `learning/batch_retrainer.py`의 `_train_horizon()` 내 EOD 전용
+  3폴드 루프를 `_run_cv_folds()`로 순수 추출(동작 무변화 리팩터링) 후, intraday
+  경로에서 같은 함수를 **별도 변수**(`_intraday_cv_accs`/`_intraday_val_idx`)로
+  호출한다. `cv_acc`/`_val_idx_all`/`_save_model()`(→`acc.txt` 갱신)에는
+  절대 연결하지 않는다 — 실측 A·B가 보여준 잡음 크기 때문에 지금 게이트를
+  달면 판정 대부분이 잡음 판정이 된다.
+- **교체 Guard 미도입** 근거 4가지: ①잡음이 허용폭의 3.5배 ②`old_acc`(acc.txt)
+  참조 자체가 EOD와 동일한 "존재하지 않는 모델 참조" 결함을 하루 5~6회로
+  증폭 ③DriftRetrain(정확도 낮아서 발동) × Guard(교체 차단) 조합은 EOD까지
+  탈출구 없는 교착을 만든다 ④intraday의 실질은 "새 정보 학습"이 아니라
+  분산 재추첨에 가깝다는 게 실측 A·B의 해석인데, Guard는 정확히 그 재추첨을
+  막는다(해석이지 증명은 아님 — §9 판단 재료로만 사용).
+
+### [구현]
+
+- `utils/db_utils.py`: `guard_shadow_log`에 `source TEXT NOT NULL DEFAULT 'eod'`
+  컬럼 추가(`loss_tier1_qty1_shadow`와 동일 ALTER TABLE 마이그레이션 관례).
+  `save_guard_shadow()`에 `source` 파라미터 추가.
+- `learning/batch_retrainer.py`: `_run_cv_folds()` 신설(기존 EOD 루프 추출),
+  intraday 계측 CV 블록 추가 — try/except로 완전 격리(실패해도 재학습 자체는
+  무영향). intraday 로그는 `actual_verdict="REPLACE"` 고정(실제로 항상 무조건
+  교체됨을 그대로 기록), `fair_verdict`은 참고값.
+- `scripts/generate_validation_campaign_report.py`: `[23]` 채널 SQL에
+  `source='eod'` 필터 명시(intraday 행 혼입으로 기존 판정 왜곡 방지).
+  `eval_intraday_cv_watch()` 신설 — `[23-부속]`, verdict 항상 OBSERVE.
+
+### [검증]
+
+- `py_compile` 통과.
+- **회귀 검증(핵심)**: 6개 호라이즌 `gbm_*.pkl`/`gbm_*_acc.txt`/`scaler_*.pkl`
+  백업 후 `retrain_now(intraday=True)` 실라이브 실행(28.6초, 이전 대비 CV
+  계측분 +8~9초 반영). 결과 `cv_acc=None`·`replaced=True`(전 호라이즌) —
+  기존 반환 형태와 완전 동일. **`acc.txt` 6개 파일 전부 실행 전후 바이트
+  동일(md5 일치)** — production 판정 경로 무영향 확인. 이후 모델 파일 원복.
+- `guard_shadow_log`에 `source='intraday'` 6행 정상 적재 확인 — 이 실행에서
+  6개 호라이즌 전부 `fair_verdict='HOLD'`로 나왔다(공교롭게도, 실측 A·B가
+  경고한 잡음의 실사례 — 이 한 번의 결과로 어떤 결론도 내리지 않는다).
+- `build_report(28)` 전체 파이프라인 — `[23]`(6건/1일, 여전히 INSUFFICIENT,
+  intraday 혼입 없이 정상)과 `[23-부속]`(intraday 6건 관찰) 둘 다 정상 렌더링.
+
+**Why**: "게이트를 걸기 전에 게이트가 잡으려는 신호가 잡음보다 큰지부터
+재라"는 313차·§9 원칙을 그대로 적용했다. 사용자가 CV/Guard 도입의 손익을
+물었을 때 직관("CV+Guard는 당연히 안전장치니까 좋다")으로 답하지 않고 실측
+먼저 — 그 결과 Guard는 반대, CV는 절반만(계측) 채택하는 비대칭 결론이 나왔다.
+
+**관련**: 404차(EOD GuardShadow DB 영속화), 313차(소표본/재현 잡음 판정 금지),
+§9 사전등록 원칙.
+
+---
+
 ## 2026-08-01 (MW0602 404차 — GuardShadow(P0-4) DB 영속화: [23] 채널 신설)
 
 ### [배경] GuardShadow가 로그 한 줄로만 존재해 사후 추적이 불가능했다

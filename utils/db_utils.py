@@ -767,21 +767,32 @@ def init_trades_db():
     execute(TRADES_DB, """
     CREATE TABLE IF NOT EXISTS guard_shadow_log (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        ts              TEXT NOT NULL,           -- EOD 재학습 실행 시각
+        ts              TEXT NOT NULL,           -- 재학습 실행 시각
         horizon         TEXT NOT NULL,           -- 1m/3m/5m/10m/15m/30m
+        source          TEXT NOT NULL DEFAULT 'eod',  -- eod/intraday — 404차 후속
         acc_txt         REAL NOT NULL,           -- 판정에 실제 사용된 old_acc(acc.txt)
         old_acc_live    REAL,                    -- 동일폴드 재측정값 (측정 불가 시 NULL)
-        new_cv          REAL NOT NULL,           -- 오늘 신모델 3폴드 평균 CV 정확도
+        new_cv          REAL NOT NULL,           -- 이번 재학습 3폴드 평균 CV 정확도
         live_note       TEXT,                    -- "ok" 또는 재측정 실패 사유
         distortion      REAL,                    -- acc_txt - old_acc_live (NULL 가능)
-        actual_verdict  TEXT NOT NULL,           -- REPLACE/HOLD — acc.txt 기준 실제 가드 판정
+        actual_verdict  TEXT NOT NULL,           -- REPLACE/HOLD — 실제 적용된 결정
         fair_verdict    TEXT,                    -- REPLACE/HOLD — old_acc_live 기준 공정 판정 (NULL 가능)
         n_samples       INTEGER,                 -- 이번 재학습 학습표본 수(len(X))
         created_at      TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
+    # [404차 후속] source 컬럼 — 기존 설치(위 CREATE TABLE 이전 스키마)에서도 안전하게
+    # 따라잡는다(loss_tier1_qty1_shadow와 동일 관례). 신규 설치는 위에 이미 포함돼 no-op.
+    with get_conn(TRADES_DB) as _gsl_conn:
+        _gsl_cols = {r[1] for r in _gsl_conn.execute(
+            "PRAGMA table_info(guard_shadow_log)").fetchall()}
+        if "source" not in _gsl_cols:
+            _gsl_conn.execute(
+                "ALTER TABLE guard_shadow_log ADD COLUMN source TEXT NOT NULL DEFAULT 'eod'")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_gsl_horizon_ts ON guard_shadow_log(horizon, ts)")
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_gsl_source_ts ON guard_shadow_log(source, ts)")
 
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_entry_ts ON trades(entry_ts)")
@@ -1896,13 +1907,19 @@ def save_tb_verdict(
 def save_guard_shadow(
     ts: str, horizon: str, acc_txt: float, old_acc_live: Optional[float],
     new_cv: float, live_note: str, actual_verdict: str, n_samples: int,
+    source: str = "eod",
 ) -> None:
-    """[404차, P0-4 후속] EOD 모델가드 GuardShadow 1행 저장.
+    """[404차, P0-4 후속] EOD/intraday 모델가드 GuardShadow 1행 저장.
 
     fair_verdict/distortion은 old_acc_live가 있을 때만 계산한다(측정 불가 시
     "검증 폴드 없음"·"피처셋 변경" 등으로 None) — acc.txt vs new(cv)는 서로 다른
     시점 데이터로 채점돼 비교 자격이 없으므로 fair_verdict을 그 값으로 대체하지
-    않는다(learning/batch_retrainer.py:_measure_incumbent_acc 한계 참조)."""
+    않는다(learning/batch_retrainer.py:_measure_incumbent_acc 한계 참조).
+
+    [404차 후속] source="intraday"는 계측 전용이다 — intraday는 가드 자체가
+    없어 actual_verdict은 항상 "REPLACE"로 기록되며(실제로 항상 무조건 교체됨을
+    그대로 반영), fair_verdict은 "만약 EOD처럼 가드를 걸었다면 통과했을지"를
+    보여주는 참고값일 뿐 어떤 결정에도 관여하지 않는다."""
     distortion = (acc_txt - old_acc_live) if old_acc_live is not None else None
     fair_verdict = (
         ("REPLACE" if new_cv > old_acc_live else "HOLD")
@@ -1911,10 +1928,10 @@ def save_guard_shadow(
     execute(
         TRADES_DB,
         """INSERT INTO guard_shadow_log
-           (ts, horizon, acc_txt, old_acc_live, new_cv, live_note,
+           (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
             distortion, actual_verdict, fair_verdict, n_samples)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (ts, horizon, acc_txt, old_acc_live, new_cv, live_note,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
          distortion, actual_verdict, fair_verdict, n_samples),
     )
 
