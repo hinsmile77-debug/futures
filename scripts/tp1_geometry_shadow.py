@@ -151,15 +151,18 @@ def _simulate(entry_ts, is_long, entry_px, stop_pts, tp1_pts, hi, lo, cl):
     return "TIMEOUT", (last - entry_px) if is_long else (entry_px - last)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--since", default="2026-06-01")
-    ap.add_argument("--horizon", default=None)
-    args = ap.parse_args()
+def compute(since: str = "2026-06-01", horizon=None) -> dict:
+    """[404차 후속3, 23-B] 계산부 — main()의 출력과 분리해 재사용 가능하게 추출.
 
-    hi, lo, cl = _load_candles(args.since)
-    atr_map = _load_atr_map(args.since)
-    trades = _load_trades(args.since, args.horizon)
+    generate_validation_campaign_report.py가 이 함수를 import해 `[23]` 채널로
+    노출한다(종전에는 이 스크립트를 따로 실행해야만 결과가 보여, 주간회의에서
+    사실상 아무도 보지 않는 상태였다). 계산 로직·판정 기준 무변경 — 순수 추출.
+
+    Returns: {variants, n_trades, n_skipped, n_days, cost_pts, rows: {name: [(outcome, pts)]}}
+    """
+    hi, lo, cl = _load_candles(since)
+    atr_map = _load_atr_map(since)
+    trades = _load_trades(since, horizon)
 
     variants = _CR.get("variants", {"current": {"stop_mult": None, "tp1_mult": None}})
     res = {name: [] for name in variants}
@@ -182,13 +185,81 @@ def main():
                 continue
             res[name].append((outcome, pts - _COST_PTS))
 
+    return {
+        "variants": list(variants),
+        "n_trades": len(trades) - skipped,
+        "n_skipped": skipped,
+        "n_days": len(days),
+        "cost_pts": _COST_PTS,
+        "rows": res,
+        "since": since,
+    }
+
+
+def summarize(out: dict) -> dict:
+    """[404차 후속3, 23-B] compute() 결과 → 리포트용 요약 dict.
+
+    판정 기준은 사전등록(VALIDATION_CAMPAIGN['tp1_geometry_shadow']) 그대로:
+    PASS = 모든 대안이 현행 이하 / FAIL = 현행 초과 대안 존재.
+    표본 미달이면 INSUFFICIENT (313차 원칙).
+    """
+    res = out["rows"]
+    base = res.get("current", [])
+    base_total = sum(p for _, p in base) if base else None
+    per = {}
+    for name in out["variants"]:
+        rows = res.get(name, [])
+        if not rows:
+            continue
+        pts = [p for _, p in rows]
+        per[name] = {
+            "n": len(pts),
+            "total_pt": round(sum(pts), 4),
+            "avg_pt": round(sum(pts) / len(pts), 4),
+            "win_rate": round(sum(1 for p in pts if p > 0) / len(pts), 4),
+            "max_loss_pt": round(min(pts), 4),
+            "n_tp1": sum(1 for o, _ in rows if o == "TP1"),
+            "n_stop": sum(1 for o, _ in rows if o == "STOP"),
+            "n_timeout": sum(1 for o, _ in rows if o == "TIMEOUT"),
+            "delta_vs_current": (round(sum(pts) - base_total, 4)
+                                 if base_total is not None else None),
+        }
+    min_n = int(_CR.get("min_samples", 20))
+    min_d = int(_CR.get("min_days", 3))
+    n_cur = len(base)
+    if n_cur < min_n or out["n_days"] < min_d:
+        verdict = "INSUFFICIENT"
+        reason = "표본 부족 (n=%d<%d 또는 거래일=%d<%d)" % (
+            n_cur, min_n, out["n_days"], min_d)
+    else:
+        beat = [k for k, v in per.items()
+                if k != "current" and (v["delta_vs_current"] or 0) > 0]
+        verdict = "FAIL" if beat else "PASS"
+        reason = ("현행 초과 대안: %s" % ", ".join(beat)) if beat else "모든 대안이 현행 이하"
+    return {
+        "verdict": verdict, "reason": reason, "per_variant": per,
+        "n_trades": out["n_trades"], "n_days": out["n_days"],
+        "n_skipped": out["n_skipped"], "min_samples": min_n, "min_days": min_d,
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--since", default="2026-06-01")
+    ap.add_argument("--horizon", default=None)
+    args = ap.parse_args()
+
+    out = compute(args.since, args.horizon)
+    res, variants = out["rows"], out["variants"]
+    days, skipped, trades = out["n_days"], out["n_skipped"], out["n_trades"]
+
     print("=" * 90)
     print("TP1/손절 초기 기하 A/B 카운터팩추얼   기간 %s~   호라이즌 %s"
           % (args.since, args.horizon or "전체"))
     print("사전등록 기준: config/settings.py VALIDATION_CAMPAIGN['tp1_geometry_shadow']")
     print("=" * 90)
     print("진입 %d건 (atr 결측으로 제외 %d건) / 거래일 %d일   왕복비용 가정 %.2fpt"
-          % (len(trades) - skipped, skipped, len(days), _COST_PTS))
+          % (trades, skipped, days, _COST_PTS))
     print()
     print("%-14s %5s %7s %7s %7s %9s %9s %9s %9s"
           % ("변형", "n", "TP1", "STOP", "만료", "승률", "누적pt", "평균pt", "최대손실"))
@@ -224,9 +295,9 @@ def main():
     n_cur = len(res.get("current", []))
     min_n = int(_CR.get("min_samples", 20))
     min_d = int(_CR.get("min_days", 3))
-    if n_cur < min_n or len(days) < min_d:
+    if n_cur < min_n or days < min_d:
         print("판정: INSUFFICIENT — n=%d(<%d) 또는 거래일=%d(<%d). "
-              "313차 원칙상 결론 내지 않는다." % (n_cur, min_n, len(days), min_d))
+              "313차 원칙상 결론 내지 않는다." % (n_cur, min_n, days, min_d))
     else:
         print("판정 근거는 위 표의 '누적pt'다. 사전등록 기준(PASS=현행 이하 / "
               "FAIL=현행 초과)에 따라 주간회의에서 수동 결정할 것 — 이 스크립트는 "

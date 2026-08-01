@@ -3459,8 +3459,13 @@ class TradingSystem:
         을 먼저 확인하므로, 한 번 처리되면 이 경로도 STEP8 경로도 재진입하지 않는다).
 
         ⚠ 보호 강도는 이 수정의 범위가 아니다 — 실제로 얼마를 지키느냐는
-        session_state의 tp1_single_contract_mode(현재 'breakeven')가 결정한다.
-        여기서 바꾸는 것은 "언제 감지하느냐"(최악 60초 → 틱)뿐이다.
+        session_state의 tp1_single_contract_mode가 결정한다. 여기서 바꾸는 것은
+        "언제 감지하느냐"(최악 60초 → 틱)뿐이다.
+
+        ⚠ [404차 후속3 정정] 원래 "현재 'breakeven'"으로 단정돼 있었으나
+        `data/session_state.json`은 gitignore 대상 PC 로컬 파일이라 PC마다 다르다
+        (MW0602 실측 'atr_profit' / MW0601 403차 기록 'breakeven'). 각 PC에서
+        직접 확인할 것 — 상세는 config/settings.py:TP1_TICK_ENABLED 주석 참조.
         """
         if not getattr(self, "_tick_tp1_triggered", False):
             return

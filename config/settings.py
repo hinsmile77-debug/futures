@@ -944,10 +944,20 @@ LOSS_TIER1_TICK_ENABLED = True
 # 분당 경로(STEP8)는 그대로 두고 이 틱 확장분만 1줄로 되돌릴 수 있다.
 #
 # ※ 이 플래그는 "언제 감지하느냐"만 바꾼다. 실제로 얼마를 지키느냐는
-#   session_state의 tp1_single_contract_mode(현재 'breakeven' — UI 토글로 저장된
-#   사용자 설정, 코드 기본값은 'atr_profit')가 결정한다. qty=1에서 'breakeven'이면
-#   TP1 도달 후 상방이 사실상 0으로 캡되므로, 틱 감지만으로는 캡처율이 크게
-#   오르지 않을 수 있다 — 07-31 라이브에서 [TickTP1] 로그와 실현손익을 함께 볼 것.
+#   session_state의 tp1_single_contract_mode가 결정한다(breakeven / breakeven_plus /
+#   atr_profit, 코드 기본값 'atr_profit').
+#
+#   ⚠ [404차 후속3 정정] 이 주석은 원래 "현재 'breakeven'"이라고 단정했으나,
+#   `data/session_state.json`은 **gitignore 대상 PC 로컬 파일**이라 PC마다 다르다 —
+#   git 추적 문서에 특정 PC의 로컬 설정을 공통값처럼 적은 것이었다(402차 "공유
+#   문서에는 PC 구분 명시" 원칙 위반). 실측: MW0602는 'atr_profit'(session_state·
+#   런타임 로그·synthetic_partial_exits 23건 세 소스 일치), MW0601은 403차 기록상
+#   'breakeven'. **각 PC에서 `data/session_state.json`을 직접 확인할 것.**
+#
+#   qty=1에서 'breakeven'이면 TP1 도달 후 상방이 사실상 0으로 캡되므로 틱 감지만으로는
+#   캡처율이 크게 오르지 않을 수 있다. MW0602 23건 재생 실측에서 'breakeven'은 현행
+#   'atr_profit' 대비 건별 우세 0/23으로 열위였다(대부분 본전 복귀로 0.00 종료) —
+#   상세는 검증캠페인 [25] 및 dev_memory/DECISION_LOG.md 404차 후속3 항목.
 TP1_TICK_ENABLED = True
 
 # [260704 감사 P2] 레짐 조건부 ATR 배수 — 추세장(Hurst>=0.55)에서는 손절/목표를
@@ -1470,6 +1480,47 @@ VALIDATION_CAMPAIGN = {
         "min_samples": 18,   # 6호라이즌 × 3거래일분 — 313차 원칙(단일일 판정 금지)
         "min_days": 3,
         "missed_upgrade_rate_max": 0.30,
+    },
+    # ── [404차 후속3 신설] §25 TP1 보호전환 offset A/B — 사전등록 ──────────────
+    # 계기: 0731 케이스① — qty=1 SHORT가 TP1 도달(+1.46pt) 5초 만에 보호스톱에 걸려
+    # +0.58pt로 끝났고, 그 직후 가격은 +6.58pt까지 갔다(캡처율 8.8%). 보호 offset은
+    #   protected_stop = entry_price ± offset      (position_tracker:arm_tp1_single_contract_with_mode)
+    #     breakeven=0 / breakeven_plus=0.20 / atr_profit=ATR×0.25(현행)
+    # 이며 이 폭이 "TP1 이후 얼마를 지키느냐"를 결정한다. 청산 기하 10개 차원 중
+    # 이 차원(D)만 통째로 미계측이었고, 정작 소스 데이터(synthetic_partial_exits)는
+    # 23건 쌓인 채 소비처가 없었다 — 402차 후속3 toxicity_block_shadow와 같은 계열.
+    #
+    # 구현은 라이브가 아니라 오프라인 스크립트다(scripts/tp1_protect_offset_shadow.py).
+    # synthetic_partial_exits + raw_candles만으로 전부 재구성되므로 진입 경로에 섀도
+    # INSERT가 불필요하고 — 라이브 회귀 위험 0 + 과거 표본 소급 적용(즉시 판정 가능).
+    # tp1_geometry_shadow(403차 P1-6)와 동일 설계.
+    #
+    # ⚠ 사전등록 정직성 고지: `breakeven` 변형의 결과는 이 채널 신설 **전에**
+    #   404차 후속3 조사에서 이미 1회 측정됐다(23건, 현행이 22/23 우세). 따라서
+    #   breakeven은 재확인용이며 사전등록된 검증이 아니다. 이 채널의 사전등록
+    #   가치는 아직 측정된 적 없는 atr_lock_0.50 / atr_lock_0.75 / bar_range에 있다.
+    #
+    # 판정 (관측 전 고정 — 관측 후 기준을 고치면 검증이 무의미해진다, §9):
+    #   PASS(현행 유지): 모든 대안의 누적 순손익이 현행 이하.
+    #   FAIL(변경 검토): 현행을 초과하는 대안 존재 + min_samples/min_days 충족
+    #     → 즉시 적용이 아니라 주간회의 수동 결정. 특히 offset 확대안은 "지키는 폭"이
+    #       커지는 대신 스톱이 멀어져 되돌림 손실이 커지므로 승률·최대손실·건별
+    #       우세건수(beats_current_n)를 반드시 병기해 읽을 것.
+    #
+    # 주의 — 이미 기각된 방향과 혼동 금지: [12] tp1_trail_shadow가 "TP1 **이후**
+    # 더 느슨한 트레일링"을 기각했다(-3.83pt). 이 채널이 묻는 것은 트레일 폭이
+    # 아니라 **TP1 시점의 초기 보호 offset**이다.
+    "tp1_protect_offset_shadow": {
+        "min_samples": 20,   # 보호전환 건수. 미달 → 판정 보류
+        "min_days": 3,       # 313차 원칙 — 단일일 판정 금지
+        "variants": [
+            "current",          # ATR × 0.25 (TP1_PROTECT_ATR_LOCK_MULT)
+            "breakeven",        # offset 0 — 재확인용(사전등록 아님, 위 고지 참조)
+            "breakeven_plus",   # 0.20pt 고정
+            "atr_lock_0.50",    # ATR × 0.50
+            "atr_lock_0.75",    # ATR × 0.75
+            "bar_range",        # max(ATR×0.25, 직전 3봉 평균레인지 × 0.5)
+        ],
     },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
