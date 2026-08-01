@@ -1174,6 +1174,7 @@ class CybosAPI:
         from config import settings as _s
         _UPPER_IDX = getattr(_s, "CYBOS_FUTUREMST_UPPER_LIMIT_IDX", None)
         _LOWER_IDX = getattr(_s, "CYBOS_FUTUREMST_LOWER_LIMIT_IDX", None)
+        _BASE_IDX = getattr(_s, "CYBOS_FUTUREMST_BASE_PRICE_IDX", None)
 
         def _read_snapshot(obj):
             return {
@@ -1196,6 +1197,10 @@ class CybosAPI:
                 # 차단한다(2026-05-10 B51 사고와 같은 계열).
                 "upper_limit": _read_opt_idx(obj, _UPPER_IDX),
                 "lower_limit": _read_opt_idx(obj, _LOWER_IDX),
+                # 기준가격(전일 정산가격). 가격제한 단계를 산술로 유도하는 근거라
+                # 상·하한 스냅샷값보다 중요하다 — 단계는 장중에 확대되지만 기준가격은
+                # 하루 동안 고정이다(규정 §1).
+                "base_price": _read_opt_idx(obj, _BASE_IDX),
             }
 
         try:

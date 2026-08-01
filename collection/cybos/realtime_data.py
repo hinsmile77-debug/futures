@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Callable, Deque, Dict, List, Optional
 
 from collection.cybos.api_connector import CybosAPI, _safe_float, _safe_int, _safe_str
+from utils.market_state import PRICE_LIMIT_STAGES   # [404차 후속8] 가격제한 3단계
 
 logger = logging.getLogger(__name__)
 sys_log = logging.getLogger("SYSTEM")
@@ -65,20 +66,24 @@ class CybosRealtimeData:
         # [404차 후속6] 당일 상한가/하한가 (FutureMst 스냅샷에서 1회 확보, 0.0=미확보)
         self._upper_limit: float = 0.0
         self._lower_limit: float = 0.0
+        self._base_price: float = 0.0   # 기준가격(전일 정산가격) — 단계 유도의 근거
 
     @property
     def daily_limits(self) -> Dict[str, float]:
         """[404차 후속6] 당일 상한가/하한가. 미확보 시 0.0.
 
         `_prime_from_snapshot()`이 FutureMst 스냅샷에서 채운다. 인덱스
-        (`CYBOS_FUTUREMST_*_LIMIT_IDX`)가 실측 전이면 0.0이 유지되고, 소비처는
+        (`CYBOS_FUTUREMST_*_IDX`)가 실측 전이면 0.0이 유지되고, 소비처는
         "상한가 정보 없음"으로 처리해 기존 동작을 그대로 유지한다.
 
-        하루 중 바뀌지 않는 값이라 기동 시 1회 조회로 충분하다(가격제한폭 단계
-        확대가 일어나면 달라지지만, 그 경우도 재기동 전까지는 보수적으로 좁은
-        값을 유지하므로 과잉 차단이 아니라 과소 차단 방향이라 안전하다).
+        `base`(기준가격 = 전일 정산가격)를 함께 낸다 — **소비처는 이쪽을 우선**해
+        지금 유효한 단계를 산출한다. 가격제한폭은 장중에 ±8%→±15%→±20%로 확대되는데
+        이 스냅샷은 기동 시(08:45~08:55, 항상 1단계) 1회뿐이라 upper/lower는 확대를
+        반영하지 못한다. 기준가격은 하루 동안 고정이라 이 문제가 없다
+        (규정 §1·§2, `utils/market_state.effective_price_limits`).
         """
-        return {"upper": self._upper_limit, "lower": self._lower_limit}
+        return {"upper": self._upper_limit, "lower": self._lower_limit,
+                "base": self._base_price}
 
     @property
     def candles(self) -> Deque[Dict]:
@@ -182,6 +187,7 @@ class CybosRealtimeData:
         _up = _safe_float(snapshot.get("upper_limit", 0.0))
         _dn = _safe_float(snapshot.get("lower_limit", 0.0))
         _px = _safe_float(snapshot.get("price", 0.0))
+        _base = _safe_float(snapshot.get("base_price", 0.0))
         if _up > 0 and _dn > 0 and _up > _dn and (not _px or _dn <= _px <= _up):
             self._upper_limit, self._lower_limit = _up, _dn
             logger.info("[DailyLimit] 상한가=%.2f 하한가=%.2f (현재가=%.2f)", _up, _dn, _px)
@@ -190,6 +196,19 @@ class CybosRealtimeData:
                 "[DailyLimit] 값 모순으로 미채택 — upper=%.2f lower=%.2f price=%.2f. "
                 "CYBOS_FUTUREMST_*_LIMIT_IDX 인덱스를 재확인할 것"
                 "(scripts/probe_cybos_limit_price.py)", _up, _dn, _px)
+        # 기준가격은 상·하한과 독립적으로 채택한다 — 실제 판정은 이 값에서 단계를
+        # 유도하므로, 상·하한 스냅샷이 모순이어도 기준가격만 있으면 게이트가 동작한다.
+        # 교차검증: 상한 스냅샷이 있으면 기준가×1.20과 일치해야 한다(규정 3단계 상한).
+        if _base > 0:
+            self._base_price = _base
+            if _up > 0:
+                _expect = _base * (1.0 + PRICE_LIMIT_STAGES[-1])
+                if abs(_up - _expect) > max(0.05, _expect * 0.001):
+                    logger.warning(
+                        "[DailyLimit] 기준가(%.2f)×1.20=%.2f 인데 상한 스냅샷은 %.2f "
+                        "— 인덱스 매핑 재확인 필요", _base, _expect, _up)
+            logger.info("[DailyLimit] 기준가=%.2f → 1단계 %.2f~%.2f / 3단계 %.2f~%.2f",
+                        _base, _base * 0.92, _base * 1.08, _base * 0.80, _base * 1.20)
 
     def _handle_tick(self, obj) -> None:
         price = _safe_float(obj.GetHeaderValue(1))

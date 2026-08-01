@@ -219,6 +219,83 @@ def is_untradeable_now(
     return out
 
 
+# KRX 파생 일일 가격제한폭 3단계 (기준가격 = 전일 정산가격 대비).
+# 근거: docs/CyBos ref/코스피200_미니선물_가격제한_규정.md §1
+# 미니선물도 정규 코스피200선물과 동일하다(사이즈만 1/5).
+PRICE_LIMIT_STAGES = (0.08, 0.15, 0.20)
+
+
+def effective_price_limits(base: float, price: float,
+                           session_high: float = 0.0,
+                           session_low: float = 0.0) -> dict:
+    """[404차 후속8] 기준가격과 현재가로 **지금 유효한** 상·하한을 산출한다.
+
+    ## 왜 스냅샷 값을 그대로 쓰면 안 되는가
+
+    가격제한폭은 고정이 아니라 **장중에 확대된다** — 상·하한가 도달 후 5분이 지나면
+    다음 단계로 열린다(±8% → ±15% → ±20%). 그런데 이 시스템은 FutureMst 스냅샷을
+    **기동 시 1회**만 읽는다(`_prime_from_snapshot`). 기동 시각(08:45~08:55)에는 항상
+    1단계(±8%)이므로, 장중에 확대되면 캐시가 낡아 **정작 상한가 날에 기능이 조용히
+    무력화**된다. COM 재조회는 BlockRequest가 최대 30초 파이프라인을 막을 수 있어
+    매분 돌리기에 위험하다.
+
+    기준가격은 하루 동안 바뀌지 않고 단계 비율은 규정 상수이므로, **추가 조회 없이
+    산술로 유도**할 수 있다. 확대는 "이미 도달한 단계의 다음"으로만 열리므로, 지금
+    유효한 상한은 **현재가 이상인 가장 낮은 단계**다.
+
+    ## 방향별 독립
+
+    규정 §2-① "확대는 **한 방향으로만** 적용 — 상승 쪽 제한폭이 열려도 하락 쪽은 기존
+    단계 유지". 그래서 상·하한을 각자 계산한다. 2026-08-01 실측이 정확히 이 모습이었다
+    (상한 +20% 확대 / 하한 -8% 1단계 유지).
+
+    ## 왜 현재가가 아니라 세션 고가/저가로 단계를 정하는가 — 래칫
+
+    한 번 확대된 제한폭은 **당일 중 축소되지 않는다.** 현재가만으로 재계산하면 가격이
+    되돌릴 때 단계가 역행한다 — 07-31 재생에서 09:11에 3단계로 열린 뒤 09:17에 종가가
+    993.10으로 밀리자 2단계로 되돌아갔고, 그 결과 LONG 차단이 353분봉 중 38개(10.8%)로
+    과잉 발생했다. 실제로는 그 시점 상한이 1036.30이라 상방 여지가 충분했다.
+
+    확대는 "제한선 **도달**"로 발동하므로 **세션 고가**가 그 도달 이력을 그대로 보존한다.
+    고가 기준으로 단계를 정하면 별도 상태 없이 래칫이 성립한다(하한은 세션 저가).
+    고가/저가가 없으면 현재가로 폴백한다.
+
+    Args:
+        base:         기준가격(전일 정산가격). FutureMst [13].
+        price:        현재가 (고가/저가 미제공 시 폴백)
+        session_high: 당일 세션 고가 — 상한 단계 판정용
+        session_low:  당일 세션 저가 — 하한 단계 판정용
+    Returns:
+        {"upper": float, "lower": float, "upper_stage": int, "lower_stage": int}
+        (base<=0 이면 전부 0.0 / 0)
+    """
+    out = {"upper": 0.0, "lower": 0.0, "upper_stage": 0, "lower_stage": 0}
+    try:
+        b, px = float(base or 0.0), float(price or 0.0)
+        hi = float(session_high or 0.0) or px
+        lo = float(session_low or 0.0) or px
+    except (TypeError, ValueError):
+        return out
+    if b <= 0:
+        return out
+    hi = max(hi, px)          # 현재가가 기록된 고가를 넘어섰으면 그쪽이 최신이다
+    lo = min(lo, px) if lo > 0 else px
+
+    # 상한: 세션 고가 이상인 가장 낮은 단계. 전부 밑돌면 최종단계(더 열릴 곳이 없다).
+    for n, r in enumerate(PRICE_LIMIT_STAGES, start=1):
+        cap = b * (1.0 + r)
+        if hi <= cap or n == len(PRICE_LIMIT_STAGES):
+            out["upper"], out["upper_stage"] = cap, n
+            break
+    # 하한: 세션 저가 이하인 가장 높은 단계.
+    for n, r in enumerate(PRICE_LIMIT_STAGES, start=1):
+        flr = b * (1.0 - r)
+        if lo >= flr or n == len(PRICE_LIMIT_STAGES):
+            out["lower"], out["lower_stage"] = flr, n
+            break
+    return out
+
+
 def is_at_daily_limit(price, limits, direction, tick: float = 0.0) -> dict:
     """[404차 후속6] 진입 방향이 당일 가격제한선에 막혀 있는가.
 
@@ -235,15 +312,19 @@ def is_at_daily_limit(price, limits, direction, tick: float = 0.0) -> dict:
 
     Args:
         price:     현재가
-        limits:    {"upper": float, "lower": float} — 0.0/None이면 정보 없음 → 차단 안 함
+        limits:    {"upper": float, "lower": float, "base": float}
+                   `base`(기준가격)가 있으면 **그쪽을 우선**해 지금 유효한 단계를
+                   산출한다(`effective_price_limits`). 기동 시 1회 읽은 upper/lower는
+                   장중 단계 확대를 반영하지 못하기 때문이다. 전부 0.0/None이면
+                   정보 없음으로 보고 차단하지 않는다.
         direction: "LONG" | "SHORT" (대소문자 무관)
         tick:      호가 단위. >0이면 "상한가 1틱 이내"까지 포함해 판정한다
                    (정확히 상한가에 붙기 직전도 상방 여지가 1틱뿐이라 의미가 없다)
 
     Returns:
-        {"blocked": bool, "reason": str, "limit": float|None}
+        {"blocked": bool, "reason": str, "limit": float|None, "source": str}
     """
-    out = {"blocked": False, "reason": "", "limit": None}
+    out = {"blocked": False, "reason": "", "limit": None, "source": ""}
     try:
         px = float(price or 0.0)
     except (TypeError, ValueError):
@@ -253,8 +334,17 @@ def is_at_daily_limit(price, limits, direction, tick: float = 0.0) -> dict:
     d = str(direction or "").upper()
     eps = max(0.0, float(tick or 0.0))
 
-    up = float(limits.get("upper") or 0.0)
-    dn = float(limits.get("lower") or 0.0)
+    eff = effective_price_limits(
+        limits.get("base"), px,
+        session_high=limits.get("session_high") or 0.0,
+        session_low=limits.get("session_low") or 0.0)
+    if eff["upper"] > 0:
+        up, dn = eff["upper"], eff["lower"]
+        out["source"] = "기준가 유도(%d/%d단계)" % (eff["upper_stage"], eff["lower_stage"])
+    else:
+        up = float(limits.get("upper") or 0.0)
+        dn = float(limits.get("lower") or 0.0)
+        out["source"] = "스냅샷 캐시"
 
     # ── 초과 방어: 가격이 제한선을 **넘어서** 있으면 차단하지 않는다 ──────────
     # 진짜 제한선은 정의상 넘을 수 없다. 넘었다면 그 값이 오래됐거나(단계 확대 미반영)
@@ -323,6 +413,40 @@ if __name__ == "__main__":
     # 정보 없음(인덱스 미실측) → 절대 차단하지 않는다
     assert is_at_daily_limit(1036.28, {"upper": 0.0, "lower": 0.0}, "LONG")["blocked"] is False
     assert is_at_daily_limit(1036.28, None, "LONG")["blocked"] is False
+
+    # ── 단계 확대 유도 (규정 §1·§2) — 2026-07-31 A0568000 실측 재현 ──────────
+    B = 863.58                       # 기준가(전일 정산가) = FutureMst [13]
+    e = effective_price_limits(B, B * 1.08)      # 시가 = 1단계 상한에 붙은 상태
+    assert e["upper_stage"] == 1 and abs(e["upper"] - B * 1.08) < 1e-9, e
+    e = effective_price_limits(B, B * 1.10)      # 1단계 돌파 → 2단계가 유효
+    assert e["upper_stage"] == 2, e
+    e = effective_price_limits(B, B * 1.20)      # 최종단계 도달
+    assert e["upper_stage"] == 3 and abs(e["upper"] - B * 1.20) < 1e-9, e
+    # 하한은 상승과 무관하게 1단계 유지 — 규정 "같은 방향으로만 확대"
+    assert effective_price_limits(B, B * 1.20)["lower_stage"] == 1
+
+    # 래칫 — 한 번 3단계로 열리면 가격이 되돌려도 축소되지 않는다.
+    # 07-31 09:11 고가 997.26(2단계 상한 993.12 초과)으로 3단계 개방 후,
+    # 09:17 종가가 993.10으로 밀렸을 때 2단계로 역행하면 안 된다.
+    e = effective_price_limits(B, 993.10, session_high=997.26)
+    assert e["upper_stage"] == 3, ("래칫 실패 — 단계 역행", e)
+    assert is_at_daily_limit(993.10, {"base": B, "session_high": 997.26},
+                             "LONG", tick=0.02)["blocked"] is False, "역행으로 인한 과잉차단"
+
+    BL = {"base": B}
+    # 09:00~09:04 실측 재현: 932.66(=+8%)에 고착 → LONG 상방 없음
+    assert is_at_daily_limit(B * 1.08, BL, "LONG")["blocked"] is True
+    # 09:05 돌파 후에는 2단계까지 여지가 생겨 차단 해제
+    assert is_at_daily_limit(B * 1.10, BL, "LONG")["blocked"] is False
+    # 종가 1036.28(=+20%, 최종단계) → 다시 차단
+    assert is_at_daily_limit(B * 1.20, BL, "LONG")["blocked"] is True
+    # 같은 시점에 SHORT는 하한(-8%)과 한참 떨어져 있어 통과
+    assert is_at_daily_limit(B * 1.20, BL, "SHORT")["blocked"] is False
+    # base가 있으면 낡은 스냅샷 upper(1단계)보다 우선한다 — 이 케이스가 핵심
+    stale = {"base": B, "upper": B * 1.08, "lower": B * 0.92}
+    assert is_at_daily_limit(B * 1.15, stale, "LONG")["blocked"] is True   # 2단계 상한
+    assert is_at_daily_limit(B * 1.12, stale, "LONG")["blocked"] is False  # 2단계 여지 있음
+    assert "기준가 유도" in is_at_daily_limit(B * 1.12, stale, "LONG")["source"]
 
     # 초과 방어 — 제한선을 넘어선 값이면 신뢰 불가로 보고 차단하지 않는다.
     # 07-28(-11.64%) 재현: 기준가 1070.62 기준 하한이 -8%(984.97)로 고정돼 있었다면
