@@ -1445,6 +1445,103 @@ def eval_guard_shadow_channel(days: int) -> dict:
     return out
 
 
+# ──────────────────────────────────────────────────────────────
+# [24] TP1 보호전환 반납 관찰 (404차 후속3) — verdict 항상 OBSERVE
+# ──────────────────────────────────────────────────────────────
+
+def eval_tp1_protect_giveback_watch() -> dict:
+    """qty=1 TP1 보호전환에서 "장부이익 대비 실제로 얼마를 지켰는가"를 관찰한다.
+
+    소스는 synthetic_partial_exits — 보호전환 시점의 TP1 장부이익(synthetic_pnl_pts)과
+    보호스톱(stop_after)이 기록돼 있는데 **캠페인 소비처가 하나도 없어 방치돼 있었다**
+    (402차 후속3 toxicity_block_shadow와 같은 계열의 사각지대).
+
+    청산 기하 10개 차원 중 "보호전환 offset 폭"(차원 D)이 통째로 미계측이었고,
+    이 채널이 그 눈을 뜬다. 처방(offset을 얼마로 할지) 검증은 [25]가 맡는다 —
+    여기서는 판정하지 않는다(verdict 항상 OBSERVE).
+
+    평균이 아니라 **중앙값**을 주 지표로 낸다: 0729 폭락일 2건이 평균을 5배 끌어올려
+    "평균 반납 0.21pt(8%)"와 "중앙값 반납 1.00pt"가 정반대 인상을 준다(372차 원칙).
+    """
+    out = {"verdict": "OBSERVE"}
+    try:
+        with _conn(TRADES_DB) as conn:
+            hooks = conn.execute(
+                """SELECT ts, entry_ts, direction, entry_price, synthetic_price,
+                          synthetic_pnl_pts, protect_mode, stop_after
+                     FROM synthetic_partial_exits
+                    WHERE ts >= ? ORDER BY ts""", (_campaign_start(),)).fetchall()
+            rows = []
+            for h in hooks:
+                real = conn.execute(
+                    """SELECT sum(pnl_pts*quantity)/sum(quantity) FROM trades
+                        WHERE entry_ts = ? AND exit_ts IS NOT NULL""",
+                    (h["entry_ts"],)).fetchone()[0]
+                if real is None:
+                    continue
+                paper = float(h["synthetic_pnl_pts"] or 0.0)
+                rows.append({
+                    "ts": h["ts"], "mode": h["protect_mode"], "paper": paper,
+                    "real": float(real), "give": paper - float(real),
+                    "offset": abs(float(h["stop_after"]) - float(h["entry_price"])),
+                })
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    out["n"] = len(rows)
+    out["n_days"] = len({r["ts"][:10] for r in rows})
+    if not rows:
+        out["reason"] = "표본 없음"
+        return out
+
+    g = np.array([r["give"] for r in rows])
+    o = np.array([r["offset"] for r in rows])
+    p = np.array([r["paper"] for r in rows])
+    out["n_gaveback"] = int((g > 0).sum())
+    out["n_ranfurther"] = int((g < 0).sum())
+    out["mean_give_pt"] = round(float(g.mean()), 4)
+    out["median_give_pt"] = round(float(np.median(g)), 4)
+    out["mean_paper_pt"] = round(float(p.mean()), 4)
+    out["median_paper_pt"] = round(float(np.median(p)), 4)
+    out["mean_offset_pt"] = round(float(o.mean()), 4)
+    if np.median(p) > 0:
+        out["median_giveback_rate"] = round(float(np.median(g) / np.median(p)), 4)
+    if len(rows) > 2 and o.std() > 0 and g.std() > 0:
+        out["offset_vs_give_corr"] = round(float(np.corrcoef(o, g)[0, 1]), 4)
+    modes = {}
+    for r in rows:
+        modes[r["mode"]] = modes.get(r["mode"], 0) + 1
+    out["by_mode"] = modes
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# [25] TP1 보호전환 offset A/B (404차 후속3) — 오프라인 스크립트 위임
+# [23] TP1/손절 초기 기하 A/B (403차 P1-6) — 오프라인 스크립트 위임
+# ──────────────────────────────────────────────────────────────
+
+def eval_offline_geometry_channels() -> dict:
+    """[404차 후속3, 23-B/25] 오프라인 A/B 스크립트 2종을 리포트에 편입한다.
+
+    두 스크립트 모두 라이브 계측이 아니라 저장된 데이터 재생이라 리포트 생성
+    시점에 그대로 호출하면 된다. 종전에는 별도 실행해야만 결과가 보여 주간회의
+    에서 사실상 아무도 보지 않았다(§23은 403차 신설 이후 리포트 미노출).
+
+    스크립트 실패가 리포트 전체를 죽이면 안 되므로 각각 격리한다.
+    """
+    out = {}
+    for key, mod in (("tp1_geometry_shadow", "scripts.tp1_geometry_shadow"),
+                     ("tp1_protect_offset_shadow", "scripts.tp1_protect_offset_shadow")):
+        try:
+            import importlib
+            m = importlib.import_module(mod)
+            out[key] = m.summarize(m.compute(_campaign_start()[:10]))
+        except Exception as e:
+            out[key] = {"verdict": "INSUFFICIENT", "error": "%s: %s" % (type(e).__name__, e)}
+    return out
+
+
 def eval_intraday_cv_watch(days: int) -> dict:
     """[404차 후속] intraday 계측 CV(source='intraday') 관찰 — 판정 없음.
 
@@ -2999,6 +3096,8 @@ def build_report(days: int) -> tuple:
     mcw = eval_mfe_capture_watch()
     gsc = eval_guard_shadow_channel(days)
     icw = eval_intraday_cv_watch(days)
+    tpg = eval_tp1_protect_giveback_watch()
+    off = eval_offline_geometry_channels()
 
     metrics = {
         "generated_at": now_str,
@@ -3016,6 +3115,9 @@ def build_report(days: int) -> tuple:
         "weight_collapse_watch": wcw,
         "direction_ev_watch": dev, "mfe_capture_watch": mcw,
         "guard_shadow": gsc, "intraday_cv_watch": icw,
+        "tp1_protect_giveback_watch": tpg,
+        "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
+        "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
     }
 
     L = []
@@ -3141,6 +3243,18 @@ def build_report(days: int) -> tuple:
         _fmt_channel_verdict(gsc),
         ("%.1f%%" % (gsc["missed_upgrade_rate"] * 100)) if gsc.get("missed_upgrade_rate") is not None else "—",
         gsc.get("missed_upgrade_n", "—"), gsc.get("n_fair", "—"), gsc.get("n_days", 0)))
+    _g23 = off.get("tp1_geometry_shadow") or {}
+    _g25 = off.get("tp1_protect_offset_shadow") or {}
+    L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일) |" % (
+        _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
+        _g23.get("n_trades", "—"), _g23.get("n_days", "—")))
+    L.append("| [24] TP1 보호전환 반납 관찰 | %s | 중앙값 반납=%s pt (반납 %s / 달림 %s, n=%s) |" % (
+        _fmt_verdict(tpg.get("verdict", "OBSERVE")),
+        tpg.get("median_give_pt", "—"), tpg.get("n_gaveback", "—"),
+        tpg.get("n_ranfurther", "—"), tpg.get("n", 0)))
+    L.append("| [25] TP1 보호전환 offset A/B | %s | %s (전환 %s건/%s일) |" % (
+        _fmt_verdict(_g25.get("verdict", "")), _g25.get("reason", _g25.get("error", "—")),
+        _g25.get("n_hooks", "—"), _g25.get("n_days", "—")))
     L.append("")
 
     # [0] 표본 기아 경보 상세
@@ -3743,6 +3857,105 @@ def build_report(days: int) -> tuple:
     L.append("> 이 표의 σ(cv_acc)가 크게 나오는 것은 결함이 아니라 그 잡음이 실측되는 것이다.")
     L.append("> `fair_would_hold`가 높다고 즉시 intraday 가드를 도입하지 말 것 — 표본이")
     L.append("> 충분히(수 주) 쌓여 잡음이 아닌 추세인지 확인한 뒤 사람이 판단한다(§9).")
+    L.append("")
+
+    # [23-B] TP1/손절 초기 기하 A/B 상세 (403차 P1-6 — 404차 후속3에서 리포트 편입)
+    L.append("## [23-B] TP1/손절 초기 기하 A/B (403차 P1-6, 404차 후속3 리포트 편입)")
+    L.append("")
+    if _g23.get("error"):
+        L.append("> ⚠ 스크립트 실행 실패: %s" % _g23["error"])
+    else:
+        L.append("- 진입 %s건 (ATR 결측 제외 %s건) / 거래일 %s일"
+                  % (_g23.get("n_trades", "—"), _g23.get("n_skipped", "—"),
+                     _g23.get("n_days", "—")))
+        pv = _g23.get("per_variant") or {}
+        if pv:
+            L.append("")
+            L.append("| 변형 | n | TP1 | STOP | 승률 | 누적pt | 현행 대비 |")
+            L.append("|---|---|---|---|---|---|---|")
+            for k, v in pv.items():
+                L.append("| %s | %d | %d | %d | %.1f%% | %+.2f | %s |" % (
+                    k, v["n"], v["n_tp1"], v["n_stop"], v["win_rate"] * 100,
+                    v["total_pt"],
+                    ("%+.2f" % v["delta_vs_current"]) if v["delta_vs_current"] is not None else "—"))
+        L.append("")
+        L.append("- **판정: %s** — %s" % (_g23.get("verdict"), _g23.get("reason")))
+    L.append("")
+    L.append("> 종전에는 `scripts/tp1_geometry_shadow.py`를 따로 실행해야만 보여 주간회의에")
+    L.append("> 노출되지 않았다(403차 신설 이후). 404차 후속3에서 계산부를 `compute()`/")
+    L.append("> `summarize()`로 추출해 이 리포트가 직접 호출한다 — 판정 기준·로직 무변경.")
+    L.append("> ⚠ `current`의 절대값은 실현손익이 아니다(qty=1 보호전환을 'TP1 전량청산'으로")
+    L.append("> 단순화). **변형 간 상대비교 전용.**")
+    L.append("> ⚠ 이 채널은 MW0601에서 `tp1_x2` **+32.78pt**(현행 초과=FAIL 방향)가 나왔으나")
+    L.append("> MW0602에서는 **−19.04pt**(PASS 방향)로 **부호가 뒤집힌다.** 두 PC의 거래집합이")
+    L.append("> 달라서이며(protect mode 무관 — 이 시뮬은 protect mode를 쓰지 않는다), n≈60·12일")
+    L.append("> 로는 기하를 결정할 수 없다는 뜻이다(313차).")
+    L.append("")
+
+    # [24] TP1 보호전환 반납 관찰
+    L.append("## [24] TP1 보호전환 반납 관찰 (404차 후속3, 관찰 전용 — 판정 없음)")
+    L.append("")
+    if tpg.get("error"):
+        L.append("> ⚠ %s" % tpg["error"])
+    elif tpg.get("reason"):
+        L.append("- %s" % tpg["reason"])
+    else:
+        L.append("- 보호전환 %s건 / %s거래일 (모드 분포: %s)"
+                  % (tpg.get("n", 0), tpg.get("n_days", 0),
+                     ", ".join("%s=%d" % kv for kv in (tpg.get("by_mode") or {}).items()) or "—"))
+        L.append("- **반납 %s건 / 더 달림 %s건**"
+                  % (tpg.get("n_gaveback", "—"), tpg.get("n_ranfurther", "—")))
+        L.append("- TP1 장부이익 평균 %s pt / 중앙값 %s pt   |   평균 보호폭 %s pt"
+                  % (tpg.get("mean_paper_pt", "—"), tpg.get("median_paper_pt", "—"),
+                     tpg.get("mean_offset_pt", "—")))
+        L.append("- **반납 중앙값 %s pt** (평균 %s pt) → 중앙값 기준 반납률 %s"
+                  % (tpg.get("median_give_pt", "—"), tpg.get("mean_give_pt", "—"),
+                     ("%.0f%%" % (tpg["median_giveback_rate"] * 100))
+                     if tpg.get("median_giveback_rate") is not None else "—"))
+        if tpg.get("offset_vs_give_corr") is not None:
+            L.append("- 보호폭 vs 반납 상관계수 **%.3f** (음수 = 좁은 보호폭일수록 더 반납)"
+                      % tpg["offset_vs_give_corr"])
+    L.append("")
+    L.append("> **판정하지 않는다**(verdict 항상 OBSERVE). 처방(offset을 얼마로 할지)은 [25]가 맡는다.")
+    L.append("> **평균이 아니라 중앙값을 볼 것** — 0729 폭락일 2건이 평균을 5배 끌어올려")
+    L.append("> 평균 반납은 무해해 보이는데 중앙값은 그 몇 배다. 두 수치가 정반대 인상을")
+    L.append("> 주는 전형적 사례이므로 평균만 인용하지 말 것(372차 원칙).")
+    L.append("> 소스(`synthetic_partial_exits`)는 339차부터 쌓였으나 404차 후속3까지 **캠페인")
+    L.append("> 소비처가 없어 방치**돼 있었다 — 402차 후속3 `toxicity_block_shadow`와 같은 계열.")
+    L.append("")
+
+    # [25] TP1 보호전환 offset A/B
+    L.append("## [25] TP1 보호전환 offset A/B (404차 후속3 신설)")
+    L.append("")
+    if _g25.get("error"):
+        L.append("> ⚠ 스크립트 실행 실패: %s" % _g25["error"])
+    else:
+        L.append("- 보호전환 %s건 (제외 %s건) / 거래일 %s일"
+                  % (_g25.get("n_hooks", "—"), _g25.get("n_skipped", "—"),
+                     _g25.get("n_days", "—")))
+        pv = _g25.get("per_variant") or {}
+        if pv:
+            L.append("")
+            L.append("| 변형 | n | STOP | TP2 | 승률 | 누적pt | 중앙값 | 현행 대비 | 건별 우세 |")
+            L.append("|---|---|---|---|---|---|---|---|---|")
+            for k, v in pv.items():
+                L.append("| %s | %d | %d | %d | %.1f%% | %+.2f | %+.3f | %s | %s |" % (
+                    k, v["n"], v["n_stop"], v["n_tp2"], v["win_rate"] * 100,
+                    v["total_pt"], v["median_pt"],
+                    ("%+.2f" % v["delta_vs_current"]) if v["delta_vs_current"] is not None else "—",
+                    ("%s/%d" % (v["beats_current_n"], v["n"])) if v.get("beats_current_n") is not None else "—"))
+        L.append("")
+        L.append("- **판정: %s** — %s" % (_g25.get("verdict"), _g25.get("reason")))
+    L.append("")
+    L.append("> ⚠ **사전등록 정직성 고지**: `breakeven` 변형은 이 채널 신설 **전에** 404차")
+    L.append("> 후속3 조사에서 이미 1회 측정됐다(현행이 22/23 우세) — 재확인용이지 사전등록된")
+    L.append("> 검증이 아니다. 사전등록 가치는 `atr_lock_0.50/0.75`·`bar_range`에 있다.")
+    L.append("> ⚠ **FAIL이 떠도 즉시 적용 금지** — 372차 이상치 분해상 현행 초과 대안들은")
+    L.append("> **최대 기여 1건만 빼면 부호가 역전**된다(atr_lock_0.75 +0.92→−1.33pt,")
+    L.append("> bar_range +0.81→−0.29pt). 건별 우세도 8/23·7/23으로 소수이고 중앙값 차이는")
+    L.append("> 0.000pt다. 표본이 더 쌓일 때까지 **현행 유지가 합리적**이다.")
+    L.append("> ⚠ [12] tp1_trail_shadow가 기각한 \"TP1 **이후** 트레일 폭\"과 다른 질문이다")
+    L.append("> — 이건 TP1 **시점**의 초기 보호 offset이다.")
     L.append("")
     L.append("---")
     L.append("")
