@@ -946,18 +946,27 @@ def resolve_and_eval_joint_gate() -> dict:
             entry_p = float(r["entry_price"])
             # hyp_pnl_pts: (+) = 차단 안 했으면 이득이었다(완화 근거), (-) = 차단이 손실 회피
             hyp = (cf_price - entry_p) if is_long else (entry_p - cf_price)
-            updates.append((cf_outcome, cf_price, round(hyp, 4), r["id"]))
+            # [404차 후속9 / P1-D] 창 전체 MFE/MAE 병기 — 위 루프는 스톱/TP에서 break
+            # 하므로 "얼마나 갈 수 있었나"는 따로 걸어야 한다(§2-E 자기편향 계측).
+            _mfe, _mae = _mfe_mae(r["ts"], entry_p, is_long, window_min,
+                                  high_map, low_map)
+            updates.append((cf_outcome, cf_price, round(hyp, 4), _mfe, _mae, r["id"]))
 
         if updates:
+            _ensure_shadow_mfe_columns("joint_gate_shadow")
             with _conn(TRADES_DB) as conn:
                 conn.executemany(
                     """UPDATE joint_gate_shadow
-                       SET resolved=1, cf_outcome=?, cf_exit_price=?, hyp_pnl_pts=?
+                       SET resolved=1, cf_outcome=?, cf_exit_price=?, hyp_pnl_pts=?,
+                           mfe_30m=?, mae_30m=?
                        WHERE id=?""",
                     updates,
                 )
                 conn.commit()
             out["resolved_now"] = len(updates)
+
+    # [404차 후속9 / P1-D] 컬럼 신설 이전에 확정된 과거 행 소급 계산 (멱등)
+    out["mfe_backfilled"] = _backfill_shadow_mfe("joint_gate_shadow", window_min)
 
     try:
         with _conn(TRADES_DB) as conn:
@@ -991,9 +1000,52 @@ def resolve_and_eval_joint_gate() -> dict:
                    GROUP BY bucket""",
                 (_campaign_start(),),
             ).fetchall()
+            # [404차 후속9 / P1-D] MFE/MAE 병기 — counterfactual 자기편향 계측
+            mfe_rows = conn.execute(
+                """SELECT ts, direction, hyp_pnl_pts, mfe_30m, mae_30m, cf_outcome
+                   FROM joint_gate_shadow
+                   WHERE resolved=1 AND mfe_30m IS NOT NULL AND ts >= ?
+                   ORDER BY mfe_30m DESC""",
+                (_campaign_start(),),
+            ).fetchall()
     except Exception as e:
         out["error"] = str(e)
         return out
+
+    # ── MFE 대비 counterfactual 포착률 ────────────────────────────────────
+    # 핵심 지표는 `cf_capture_of_mfe` = Σhyp / ΣMFE 다. TP1 가정이 "갈 수 있었던 폭"의
+    # 몇 %를 잡아냈는지 보여준다 — 이 값이 낮을수록 §2-E가 지적한 과소평가가 크다.
+    # 비율의 평균이 아니라 **풀링**으로 낸다(402차 후속5 원칙 — 분모가 0에 가까운 건이
+    # 개별 비율을 폭발시킨다).
+    if mfe_rows:
+        _mf = [float(r["mfe_30m"] or 0.0) for r in mfe_rows]
+        _ma = [float(r["mae_30m"] or 0.0) for r in mfe_rows]
+        _hy = [float(r["hyp_pnl_pts"] or 0.0) for r in mfe_rows]
+        _sum_mfe = sum(_mf)
+        out["n_with_mfe"] = len(mfe_rows)
+        out["avg_mfe_30m"] = round(float(np.mean(_mf)), 4)
+        out["median_mfe_30m"] = round(float(np.median(_mf)), 4)
+        out["avg_mae_30m"] = round(float(np.mean(_ma)), 4)
+        out["total_mfe_30m"] = round(_sum_mfe, 4)
+        out["total_mae_30m"] = round(sum(_ma), 4)
+        if _sum_mfe > 0:
+            out["cf_capture_of_mfe"] = round(sum(_hy) / _sum_mfe, 4)
+        # MFE만 보면 "차단이 비쌌다"로 읽히지만 MAE를 함께 봐야 판정이 선다.
+        # 차단 신호가 유리하게 간 폭보다 불리하게 간 폭이 크면 차단은 옳았던 쪽이다.
+        out["n_mfe_gt_mae"] = int(sum(1 for f, a in zip(_mf, _ma) if f > a))
+        out["n_mae_ge_mfe"] = int(sum(1 for f, a in zip(_mf, _ma) if a >= f))
+        # MFE가 크게 났는데(추세) TP1 가정이 1pt 남짓으로 눌러버린 건 — §2-E 표의 패턴
+        _big = [r for r in mfe_rows
+                if float(r["mfe_30m"] or 0.0) >= 5.0
+                and float(r["hyp_pnl_pts"] or 0.0) < float(r["mfe_30m"] or 0.0) * 0.3]
+        out["n_trend_underestimated"] = len(_big)
+        out["trend_underestimated_top5"] = [
+            {"ts": r["ts"], "dir": r["direction"],
+             "mfe": round(float(r["mfe_30m"] or 0.0), 2),
+             "mae": round(float(r["mae_30m"] or 0.0), 2),
+             "hyp": round(float(r["hyp_pnl_pts"] or 0.0), 2),
+             "cf": r["cf_outcome"]}
+            for r in _big[:5]]
 
     n = int(agg["n"] or 0)
     total_hyp = float(agg["total_hyp"] or 0.0)
@@ -1772,6 +1824,118 @@ def eval_unreachable_cf_watch() -> dict:
     if not hits:
         out["reason"] = "도달불가 목표가 행 없음"
     return out
+
+
+def _ensure_shadow_mfe_columns(table: str) -> bool:
+    """[404차 후속9 / P1-D] 섀도 테이블에 `mfe_30m`/`mae_30m` 컬럼을 보장한다(멱등).
+
+    스키마 원본은 `utils/db_utils.py`지만 거기서 바꾸면 **기존 DB가 자동으로 갱신되지
+    않는다**(CREATE TABLE IF NOT EXISTS라 이미 있는 테이블은 건드리지 않는다). 두 PC가
+    각자 로컬 DB를 갖고 있으므로 ALTER를 여기서 멱등 실행한다.
+    """
+    try:
+        with _conn(TRADES_DB) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(%s)" % table)}
+            for c in ("mfe_30m", "mae_30m"):
+                if c not in cols:
+                    conn.execute("ALTER TABLE %s ADD COLUMN %s REAL" % (table, c))
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def _mfe_mae(base_ts: str, entry_p: float, is_long: bool, window_min: int,
+             high_map: dict, low_map: dict):
+    """진입 후 `window_min`분간 최대 유리폭(MFE)·최대 불리폭(MAE)을 pt로 반환.
+
+    ## 왜 counterfactual 루프와 따로 도는가
+
+    resolve 루프는 스톱/TP에 닿으면 `break`로 조기 종료한다. 그런데 이 채널이 답해야
+    할 질문은 "그 가상거래가 **얼마나 갈 수 있었나**"이므로 청산 시점과 무관하게
+    **창 전체**를 걸어야 한다. 그래서 별도 walk다.
+
+    ## 무엇을 교정하는가 (0731 리포트 §2-E)
+
+    `hyp_pnl_pts`는 차단 신호를 현행 TP1(ATR×0.3~0.5)로 청산했다고 가정해 계산한다.
+    그 TP1이 너무 좁다는 것이 같은 리포트 §2-C의 결론이므로, counterfactual이
+    **자기 편향적**이다 — 추세일의 차단 비용을 구조적으로 과소평가한다. 실측 예:
+
+        13:16 신호  MFE +17.72 / MAE −0.12  인데  TP1 기준 hyp = +1.01
+
+    MFE를 병기하면 "차단이 이득이었다"는 판정이 TP1 가정에 얼마나 기대고 있는지가
+    드러난다. **처방이 아니라 계측**이다 — "TP만 넓히면 된다"는 처방은 §2-E가 이미
+    직접 재계산으로 기각했다(대칭 TP 적용 시 −9.87pt로 현행 +4.92pt보다 나쁨).
+
+    거래불능 분봉은 호출부가 `exclude_untradeable=True`로 이미 제외한 맵을 넘긴다
+    (체결 불가한 분의 고저로 "갈 수 있었다"를 주장하면 안 된다 — 404차 후속5).
+
+    Returns:
+        (mfe, mae) — 둘 다 0 이상의 pt. 분봉이 하나도 없으면 (None, None).
+    """
+    try:
+        base = datetime.datetime.strptime(str(base_ts)[:19], _TS_FMT)
+    except (TypeError, ValueError):
+        return None, None
+    mfe = mae = 0.0
+    seen = False
+    for m in range(1, int(window_min) + 1):
+        mid = base + datetime.timedelta(minutes=m)
+        if mid.time() > datetime.time(15, 10):
+            break
+        key = mid.strftime(_TS_FMT)
+        hi, lo = high_map.get(key), low_map.get(key)
+        if hi is None or lo is None:
+            continue
+        seen = True
+        fav = (hi - entry_p) if is_long else (entry_p - lo)
+        adv = (entry_p - lo) if is_long else (hi - entry_p)
+        if fav > mfe:
+            mfe = fav
+        if adv > mae:
+            mae = adv
+    if not seen:
+        return None, None
+    return round(mfe, 4), round(mae, 4)
+
+
+def _backfill_shadow_mfe(table: str, window_min: int) -> int:
+    """이미 resolved=1로 확정된 과거 행의 MFE/MAE를 소급 계산한다. 반환: 채운 행 수.
+
+    resolve 루프는 `resolved=0`만 처리하므로, 컬럼 신설 이전에 확정된 행들은 영원히
+    비어 있게 된다. 캠페인 표본 대부분이 그쪽이라 소급이 필수다. 멱등(NULL만 채움).
+    """
+    if not _ensure_shadow_mfe_columns(table):
+        return 0
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                "SELECT id, ts, direction, entry_price FROM %s "
+                "WHERE resolved=1 AND mfe_30m IS NULL AND ts >= ? ORDER BY ts" % table,
+                (_campaign_start(),)).fetchall()
+    except Exception:
+        return 0
+    if not rows:
+        return 0
+    earliest = min(str(r["ts"]) for r in rows)
+    _c, high_map, low_map = _load_candle_maps(earliest, exclude_untradeable=True)
+    ups = []
+    for r in rows:
+        mfe, mae = _mfe_mae(r["ts"], float(r["entry_price"] or 0.0),
+                            str(r["direction"]) == "LONG", window_min, high_map, low_map)
+        if mfe is None:
+            continue
+        ups.append((mfe, mae, r["id"]))
+    if not ups:
+        return 0
+    try:
+        with _conn(TRADES_DB) as conn:
+            conn.executemany(
+                "UPDATE %s SET mfe_30m=?, mae_30m=? WHERE id=?" % table, ups)
+            conn.commit()
+    except Exception:
+        return 0
+    return len(ups)
 
 
 def _cf_target_unreachable(direction, tp1_price, limits: dict) -> bool:
@@ -3705,6 +3869,53 @@ def build_report(days: int) -> tuple:
         L.append("- **권고**: %s" % jg["recommendation"])
     if jg.get("reason"):
         L.append("- %s" % jg["reason"])
+
+    # [404차 후속9 / P1-D] MFE 병기 — counterfactual 자기편향 계측
+    if jg.get("n_with_mfe"):
+        L.append("")
+        L.append("### MFE 병기 — counterfactual이 얼마나 과소평가하는가 (P1-D)")
+        L.append("")
+        L.append("- 30분 창 MFE 평균 **%s pt**(중앙값 %s) · MAE 평균 **%s pt** (n=%s%s)"
+                 % (jg.get("avg_mfe_30m", "—"), jg.get("median_mfe_30m", "—"),
+                    jg.get("avg_mae_30m", "—"), jg.get("n_with_mfe", 0),
+                    (", 소급 %d건" % jg["mfe_backfilled"]) if jg.get("mfe_backfilled") else ""))
+        L.append("- **MFE>MAE %s건 vs MAE≥MFE %s건** (ΣMFE %s / ΣMAE %s pt)"
+                 % (jg.get("n_mfe_gt_mae", "—"), jg.get("n_mae_ge_mfe", "—"),
+                    jg.get("total_mfe_30m", "—"), jg.get("total_mae_30m", "—")))
+        if jg.get("cf_capture_of_mfe") is not None:
+            L.append("- counterfactual 포착률 Σhyp/ΣMFE = %.1f%% "
+                     "(음수 = TP1 가정의 순손익이 마이너스라는 뜻이지 '비율'로 읽지 말 것)"
+                     % (jg["cf_capture_of_mfe"] * 100))
+        L.append("- 추세형 과소평가 건수(MFE≥5pt 이면서 hyp<MFE의 30%%): **%s건**"
+                 % jg.get("n_trend_underestimated", 0))
+        if jg.get("trend_underestimated_top5"):
+            L.append("")
+            L.append("| 시각 | 방향 | MFE(30분) | MAE(30분) | TP1 기준 hyp | cf |")
+            L.append("|---|---|---|---|---|---|")
+            for r in jg["trend_underestimated_top5"]:
+                L.append("| %s | %s | **+%s** | −%s | %s | %s |" % (
+                    str(r["ts"])[5:16], r["dir"], r["mfe"], r["mae"], r["hyp"], r["cf"]))
+        L.append("")
+        L.append("> **계측이지 처방이 아니다.** `hyp_pnl_pts`는 차단 신호를 현행 TP1")
+        L.append("> (ATR×0.3~0.5)로 청산했다고 가정하는데, 그 TP1이 너무 좁다는 것이 0731")
+        L.append("> 리포트 §2-C의 결론이다 — 즉 counterfactual이 자기 편향적이라 추세일의")
+        L.append("> 차단 비용을 구조적으로 과소평가한다. 포착률이 낮을수록 위 \"차단이")
+        L.append("> 이득\" 판정이 TP1 가정에 크게 기대고 있다는 뜻이다.")
+        L.append(">")
+        L.append("> ⚠ 이 수치로 **TP를 넓히자는 결론을 내면 안 된다** — §2-E가 차단 19건에")
+        L.append("> 대칭 TP(1:1)를 직접 적용해 −9.87pt(현행 +4.92pt)로 **이미 기각**했다.")
+        L.append("> 이기는 거래가 더 버는 만큼 지는 거래도 커진다. MFE는 \"차단 판정이")
+        L.append("> 어떤 가정 위에 서 있는지\"를 드러낼 뿐이다.")
+        L.append(">")
+        L.append("> ⚠ **MFE만 보면 정반대로 읽힌다 — MAE를 반드시 함께 볼 것.** 이 표본에서")
+        L.append("> MAE 평균이 MFE 평균보다 **크다**. 차단된 신호들은 유리하게 간 폭보다")
+        L.append("> 불리하게 간 폭이 더 컸다는 뜻이고, 그건 차단이 옳았던 쪽 증거다.")
+        L.append("> \"추세일 차단 비용 과소평가\"는 개별 추세 건에서는 사실이지만 표본")
+        L.append("> 전체로는 반대 방향 증거가 더 크다.")
+        L.append(">")
+        L.append("> ⚠ **MFE/MAE는 순서를 모른다.** 위 07-27 09:49 SHORT처럼 MFE +23.96인데")
+        L.append("> cf=STOP인 건은, 스톱이 먼저 맞은 뒤에 유리하게 갔다는 뜻일 수 있다.")
+        L.append("> \"이만큼 벌 수 있었다\"의 상한이지 실현 가능한 값이 아니다.")
     L.append("")
 
     # [8] KellyAdvisedSkip × C등급 상세

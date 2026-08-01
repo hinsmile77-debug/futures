@@ -432,6 +432,13 @@ def init_trades_db():
         cf_outcome    TEXT,                    -- STOP / TP1 / NEITHER
         cf_exit_price REAL,                    -- counterfactual 청산가
         hyp_pnl_pts   REAL,                    -- (+)=차단 안 했으면 이득, (-)=차단이 손실 회피
+        -- [404차 후속9 / P1-D] 30분 창 최대 유리폭·불리폭. hyp_pnl_pts가 현행 TP1
+        -- (ATR×0.3~0.5) 청산을 가정해 추세일 차단 비용을 과소평가하는 문제를 계측한다
+        -- (0731 리포트 §2-E). resolve 시점에 채워지며, 기존 DB는 리포트 스크립트의
+        -- _ensure_shadow_mfe_columns()가 ALTER로 보강한다(CREATE IF NOT EXISTS는
+        -- 이미 있는 테이블을 갱신하지 않으므로 이 정의만으로는 부족하다).
+        mfe_30m       REAL,
+        mae_30m       REAL,
         created_at    TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
