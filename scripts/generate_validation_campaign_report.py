@@ -1400,7 +1400,7 @@ def eval_guard_shadow_channel(days: int) -> dict:
                 """SELECT ts, horizon, acc_txt, old_acc_live, new_cv, live_note,
                           distortion, actual_verdict, fair_verdict
                      FROM guard_shadow_log
-                    WHERE ts >= ?
+                    WHERE ts >= ? AND source = 'eod'
                     ORDER BY ts""",
                 (cutoff,),
             ).fetchall()
@@ -1442,6 +1442,65 @@ def eval_guard_shadow_channel(days: int) -> dict:
     out["verdict"] = (
         "FAIL" if out["missed_upgrade_rate"] >= cr["missed_upgrade_rate_max"] else "PASS"
     )
+    return out
+
+
+def eval_intraday_cv_watch(days: int) -> dict:
+    """[404차 후속] intraday 계측 CV(source='intraday') 관찰 — 판정 없음.
+
+    mfe_capture_watch·exit_fill_slippage_watch와 동일한 순수 관찰 채널이다.
+    실측(dev_memory/DECISION_LOG.md 404차 후속 §1): 동일 데이터·시드만 다른
+    재현 분산이 5m 기준 8.83%p로 EOD 가드 허용폭(2.5%p)의 3.5배 — 이 채널의
+    수치로 자동 게이트를 걸면 신호가 아니라 모델 재현 잡음을 판정하게 된다.
+    지금은 "intraday cv_acc가 실제로 하락 추세인가"를 판단할 표본을 쌓는
+    용도로만 쓴다. 다음 결정(게이트 도입 여부)은 이 관찰이 최소 수 주 쌓인
+    뒤 사람이 내린다(§9).
+    """
+    out = {"verdict": "OBSERVE", "n_samples": 0, "n_days": 0}
+    cutoff = max(
+        (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(_TS_FMT),
+        _campaign_start(),
+    )
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                """SELECT ts, horizon, old_acc_live, new_cv, distortion, fair_verdict
+                     FROM guard_shadow_log
+                    WHERE ts >= ? AND source = 'intraday'
+                    ORDER BY ts""",
+                (cutoff,),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    out["n_samples"] = len(rows)
+    out["n_days"] = len({r["ts"][:10] for r in rows})
+    if not rows:
+        out["reason"] = "표본 없음"
+        return out
+
+    by_hz = {}
+    for r in rows:
+        b = by_hz.setdefault(r["horizon"], {"cv": [], "dist": [], "hold_n": 0})
+        b["cv"].append(r["new_cv"])
+        if r["distortion"] is not None:
+            b["dist"].append(r["distortion"])
+        if r["fair_verdict"] == "HOLD":
+            b["hold_n"] += 1
+
+    out["by_horizon"] = {
+        hz: {
+            "n": len(v["cv"]),
+            "mean_cv": round(float(np.mean(v["cv"])), 4),
+            "std_cv": round(float(np.std(v["cv"])), 4) if len(v["cv"]) > 1 else None,
+            "mean_distortion": round(float(np.mean(v["dist"])), 4) if v["dist"] else None,
+            # fair_would_hold: "EOD처럼 가드를 걸었다면 통과 못 했을" 비율 — 참고용,
+            # 판정 아님(§1 실측: 이 신호 자체가 시드 재현 잡음에 파묻혀 있음).
+            "fair_would_hold_rate": round(v["hold_n"] / len(v["cv"]), 4),
+        }
+        for hz, v in by_hz.items()
+    }
     return out
 
 
@@ -2939,6 +2998,7 @@ def build_report(days: int) -> tuple:
     dev = eval_direction_ev_watch()
     mcw = eval_mfe_capture_watch()
     gsc = eval_guard_shadow_channel(days)
+    icw = eval_intraday_cv_watch(days)
 
     metrics = {
         "generated_at": now_str,
@@ -2955,7 +3015,7 @@ def build_report(days: int) -> tuple:
         "regime_exhaustion_watch": reg, "toxicity_block_shadow": txb,
         "weight_collapse_watch": wcw,
         "direction_ev_watch": dev, "mfe_capture_watch": mcw,
-        "guard_shadow": gsc,
+        "guard_shadow": gsc, "intraday_cv_watch": icw,
     }
 
     L = []
@@ -3657,6 +3717,32 @@ def build_report(days: int) -> tuple:
     L.append("> 임계값은 그 단일일 관측치에 맞추지 않고 독립적으로 고정했다 — 이 리포트가")
     L.append("> 그 계기가 된 날의 데이터를 포함하더라도 임계값 자체는 사후 조정이 아니다.")
     L.append("> (근거: `dev_memory/DECISION_LOG.md` 404차 항목, 313차·§9 원칙)")
+    L.append("")
+
+    # [23-부속] intraday 계측 CV 관찰 (판정 없음)
+    L.append("### [23-부속] intraday 계측 CV 관찰 (404차 후속, 관찰 전용 — 판정 없음)")
+    L.append("")
+    if icw.get("error"):
+        L.append("> ⚠ %s" % icw["error"])
+    elif icw.get("reason"):
+        L.append("- %s" % icw["reason"])
+    elif icw.get("by_horizon"):
+        L.append("- 표본 %s건 / %s거래일" % (icw.get("n_samples", 0), icw.get("n_days", 0)))
+        L.append("")
+        L.append("| 호라이즌 | n | 평균 cv_acc | σ(cv_acc) | 평균 왜곡 | fair_would_hold |")
+        L.append("|---|---|---|---|---|---|")
+        for hz, v in sorted(icw["by_horizon"].items()):
+            L.append("| %s | %d | %.4f | %s | %s | %s |" % (
+                hz, v["n"], v["mean_cv"],
+                ("%.4f" % v["std_cv"]) if v["std_cv"] is not None else "—",
+                ("%+.4f" % v["mean_distortion"]) if v["mean_distortion"] is not None else "—",
+                ("%.0f%%" % (v["fair_would_hold_rate"] * 100))))
+    L.append("")
+    L.append("> **판정하지 않는다**(verdict 항상 OBSERVE). 실측(404차 후속 §1): 동일 데이터·")
+    L.append("> 시드만 다른 재현 분산이 5m 기준 8.83%p로 EOD 가드 허용폭(2.5%p)의 3.5배 —")
+    L.append("> 이 표의 σ(cv_acc)가 크게 나오는 것은 결함이 아니라 그 잡음이 실측되는 것이다.")
+    L.append("> `fair_would_hold`가 높다고 즉시 intraday 가드를 도입하지 말 것 — 표본이")
+    L.append("> 충분히(수 주) 쌓여 잡음이 아닌 추세인지 확인한 뒤 사람이 판단한다(§9).")
     L.append("")
     L.append("---")
     L.append("")

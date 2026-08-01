@@ -584,6 +584,48 @@ class BatchRetrainer:
         return summary
 
     # ── 개별 호라이즌 학습 ────────────────────────────────────────
+    def _run_cv_folds(self, X, y, X_full, h_idx, horizon_key, full_cv, make_model):
+        """[404차 후속] TimeSeriesSplit(3) 폴드 학습·검증 — `_train_horizon()`의
+        기존 EOD 전용 CV 루프를 그대로 추출한 순수 함수다(동작 무변화 리팩터링).
+
+        intraday 계측 CV(§1 아래)가 이 함수를 재사용할 수 있도록 분리했다 —
+        이 함수 자체는 반환값을 어디에 쓸지 모르고, 모델 저장·acc.txt 갱신 등
+        어떤 부작용도 일으키지 않는다. 호출부가 결과를 판정에 연결할지
+        계측에만 쓸지 결정한다.
+
+        Returns: (cv_accs: List[float], val_idx_all: List[int])
+        """
+        cv_accs = []
+        val_idx_all = []
+        tscv = TimeSeriesSplit(n_splits=3)
+        for train_idx, val_idx in tscv.split(X):
+            X_tr, X_val = X[train_idx], X[val_idx]
+            y_tr, y_val = y[train_idx], y[val_idx]
+
+            if not full_cv and len(X_tr) > MAX_TRAIN_BARS_INTRADAY:
+                X_tr = X_tr[-MAX_TRAIN_BARS_INTRADAY:]
+                y_tr = y_tr[-MAX_TRAIN_BARS_INTRADAY:]
+
+            if len(np.unique(y_tr)) < 2:
+                continue
+
+            # 스케일러는 항상 전체 97개 피처 기준 (predict_proba 경로와 일치)
+            X_tr_full = X_full[train_idx][-len(X_tr):] if X_full is not None else X_tr
+            X_val_full = X_full[val_idx] if X_full is not None else X_val
+            scaler = StandardScaler()
+            X_tr_full_s = scaler.fit_transform(X_tr_full)
+            X_val_full_s = scaler.transform(X_val_full)
+            # GBM은 스케일된 전체 피처에서 호라이즌 전용 열만 추출
+            X_tr_s = X_tr_full_s[:, h_idx] if h_idx is not None else X_tr_full_s
+            X_val_s = X_val_full_s[:, h_idx] if h_idx is not None else X_val_full_s
+
+            model = make_model()
+            model.fit(X_tr_s, y_tr, sample_weight=_make_sample_weight(y_tr, horizon_key))
+            acc = accuracy_score(y_val, model.predict(X_val_s))
+            cv_accs.append(acc)
+            val_idx_all.extend(list(val_idx))
+        return cv_accs, val_idx_all
+
     def _train_horizon(
         self,
         horizon_key: str,
@@ -622,38 +664,28 @@ class BatchRetrainer:
             # full_cv=False (기본): 32-bit Python 메모리 방어 — fold 훈련 세트를 20k행으로 절단
             #   (Cybos+Qt+데이터수집 동시 실행 구간 — 장중·프리마켓)
             # full_cv=True: Cybos 단절 후 장 마감 재학습 전용 — 캡 해제, 전체 데이터로 정직한 CV
-            tscv = TimeSeriesSplit(n_splits=3)
-            for train_idx, val_idx in tscv.split(X):
-                X_tr, X_val = X[train_idx], X[val_idx]
-                y_tr, y_val = y[train_idx], y[val_idx]
-
-                if not full_cv and len(X_tr) > MAX_TRAIN_BARS_INTRADAY:
-                    X_tr = X_tr[-MAX_TRAIN_BARS_INTRADAY:]
-                    y_tr = y_tr[-MAX_TRAIN_BARS_INTRADAY:]
-
-                if len(np.unique(y_tr)) < 2:
-                    continue
-
-                # 스케일러는 항상 전체 97개 피처 기준 (predict_proba 경로와 일치)
-                X_tr_full = X_full[train_idx][-len(X_tr):] if X_full is not None else X_tr
-                X_val_full = X_full[val_idx] if X_full is not None else X_val
-                scaler = StandardScaler()
-                X_tr_full_s = scaler.fit_transform(X_tr_full)
-                X_val_full_s = scaler.transform(X_val_full)
-                # GBM은 스케일된 전체 피처에서 호라이즌 전용 열만 추출
-                X_tr_s = X_tr_full_s[:, h_idx] if h_idx is not None else X_tr_full_s
-                X_val_s = X_val_full_s[:, h_idx] if h_idx is not None else X_val_full_s
-
-                model = _make_model()
-                model.fit(X_tr_s, y_tr, sample_weight=_make_sample_weight(y_tr, horizon_key))
-                acc = accuracy_score(y_val, model.predict(X_val_s))
-                cv_accs.append(acc)
-                _val_idx_all.extend(list(val_idx))   # [403차 종합 P0-4]
-
+            cv_accs, _val_idx_all = self._run_cv_folds(
+                X, y, X_full, h_idx, horizon_key, full_cv, _make_model,
+            )
             if not cv_accs:
                 return {"ok": False, "error": "교차검증 실패"}
 
         cv_acc = float(np.mean(cv_accs)) if cv_accs else None
+
+        # [404차 후속] intraday 계측 전용 CV — cv_acc/_val_idx_all(판정·_save_model
+        # 경로)에는 절대 연결하지 않는다. 실측 근거(dev_memory/DECISION_LOG.md
+        # 404차 후속 §1): 동일 데이터·시드만 다른 재현 분산이 5m 기준 8.83%p로
+        # EOD 가드 허용폭(2.5%p)의 3.5배 — 지금 intraday에 가드를 걸면 신호가
+        # 아니라 모델 재현 잡음을 판정하게 된다. 그래서 게이트 없이 관찰만 한다.
+        # 실패해도 재학습 자체는 절대 막지 않는다(try/except로 완전 격리).
+        _intraday_cv_accs, _intraday_val_idx = [], []
+        if intraday:
+            try:
+                _intraday_cv_accs, _intraday_val_idx = self._run_cv_folds(
+                    X, y, X_full, h_idx, horizon_key, False, _make_model,
+                )
+            except Exception as _icv_e:
+                logger.debug("[GuardShadow] intraday CV 계측 실패 (무해): %s", _icv_e)
 
         # 전체 데이터로 최종 학습 (장중 모드: CV 없이 여기만 실행)
         # 스케일러는 97개 전체 피처 기준 — predict_proba의 scaler.transform(97개) 경로와 일치
@@ -774,6 +806,32 @@ class BatchRetrainer:
                 )
             except Exception as _gs_e:
                 logger.debug("[GuardShadow] DB 저장 실패 (무해): %s", _gs_e)
+
+        # [404차 후속] intraday 계측 CV 영속화 — source="intraday"로 EOD 행과
+        # 분리 저장한다. actual_verdict은 항상 "REPLACE"다(intraday는 가드 자체가
+        # 없어 무조건 교체되므로 있는 그대로 기록). fair_verdict은 "EOD처럼
+        # 가드를 걸었다면 통과했을지"를 보여주는 참고값일 뿐 어떤 결정에도
+        # 관여하지 않는다 — §1 결론(가드 도입 반대)에 따라 지금은 관찰만 한다.
+        if intraday and _intraday_cv_accs:
+            try:
+                _intraday_cv_acc = float(np.mean(_intraday_cv_accs))
+                _intraday_old_live, _intraday_note = self._measure_incumbent_acc(
+                    horizon_key, X, y, X_full, h_idx, feature_names, _intraday_val_idx,
+                )
+                from utils.db_utils import save_guard_shadow
+                save_guard_shadow(
+                    ts=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    horizon=horizon_key,
+                    acc_txt=old_acc,
+                    old_acc_live=_intraday_old_live,
+                    new_cv=_intraday_cv_acc,
+                    live_note=_intraday_note,
+                    actual_verdict="REPLACE",
+                    n_samples=len(X),
+                    source="intraday",
+                )
+            except Exception as _igs_e:
+                logger.debug("[GuardShadow] intraday DB 저장 실패 (무해): %s", _igs_e)
 
         return {
             "ok":             True,

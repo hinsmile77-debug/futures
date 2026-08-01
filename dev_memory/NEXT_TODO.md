@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-08-01 (MW0602 404차 후속 — intraday CV 계측 도입, 교체 Guard는 미도입)
+
+> 상세: `DECISION_LOG.md` 2026-08-01(MW0602 404차 후속) 항목.
+> 선행: 404차(EOD GuardShadow DB 영속화).
+
+- [DONE 2026-08-01] **intraday 재학습에 3-fold CV 계측 전용 도입**
+  (`guard_shadow_log.source='intraday'`) — 교체 Guard는 실측 근거로 도입
+  반대 결정(잡음이 허용폭의 3.5배). 회귀 검증: `acc.txt` 6개 파일 md5 불변,
+  production 판정 경로 무영향 확인.
+- [ ] **선결 결함 재검토 — `MAX_TRAIN_BARS_INTRADAY=20,000`이 주석 의도(2.5주)
+  의 4배(실측 10.8주)** — 재학습 간 신규 데이터 비중이 0.29%뿐이라 드리프트
+  대응이 사실상 안 됨. 값 변경은 §9 사전등록 대상 — 사용자 판단 필요.
+- [ ] **선결 결함 재검토 — `_make_sample_weight`의 시간감쇠가 docstring과
+  다르게 구현됨** — `decay`(halflife 70봉)가 클래스 균형에만 쓰이고
+  per-sample 가중치엔 미반영. 위 항목과 같은 뿌리라 함께 판단할 것.
+- [ ] **`[23-부속]` intraday CV 관찰이 수 주 쌓인 뒤** — `fair_would_hold_rate`
+  추세가 잡음(σ 1.7~2.5%p CV, 8.83%p 시드 재현 분산)을 벗어나는지 확인 후
+  intraday Guard 도입 여부 재논의(§9, 지금은 시기상조).
+
+---
+
 ## 2026-08-01 (MW0602 404차 — GuardShadow DB 영속화, [23] 채널 신설)
 
 > 상세: `DECISION_LOG.md` 2026-08-01(MW0602 404차) 항목.
