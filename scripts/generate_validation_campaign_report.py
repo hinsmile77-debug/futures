@@ -523,6 +523,36 @@ def eval_meta_gate_channel(days: int) -> dict:
 # [3] 분위 회귀 채널 — 커버리지 + 불확실성 상관
 # ──────────────────────────────────────────────────────────────
 
+def _quantile_direction_stats(pairs) -> dict:
+    """[3-A, 404차 후속10] q50 부호의 방향 적중률 — **관찰 전용, 판정 미반영**.
+
+    감사 §3-3은 분위회귀 KPI를 3종으로 정의했다 — ① q50 부호의 방향 적중률,
+    ② 폭-실현 상관, ③ 커버리지. 그런데 **합격선은 ②③만** 채택돼 ①은 사전등록만 되고
+    한 번도 렌더링되지 않았다. 그 결과 [3] PASS가 "방향을 맞춘다"로 오독될 여지가
+    있었다 — 실제로는 "불확실성 폭을 잘 맞춘다"는 뜻뿐이다.
+
+    따라서 이 함수는 §3-3에 이미 등록돼 있던 KPI ①을 **표시만** 복원한다. 합격선
+    (coverage_lo/hi·unc_corr_min)은 무변경이므로 §9-4가 금지하는 "판정 기준 사후 변경"이
+    아니다. eval_quantile_channel()의 verdict 계산에 이 결과를 절대 넣지 말 것.
+
+    conf_top30은 "모델이 강하게 말할 때는 맞는가"를 본다 — |q50| 상위 30% 부분집합의
+    적중률이 전체와 같으면 q50의 크기에 정보가 없다는 뜻이다.
+    """
+    n = len(pairs)
+    out = {"n": n}
+    if n == 0:
+        return out
+    hits = [1.0 if (q > 0) == (m > 0) else 0.0 for q, m in pairs]
+    out["hit_rate"] = round(float(np.mean(hits)), 4)
+    out["q50_pos_share"] = round(sum(1 for q, _ in pairs if q > 0) / float(n), 4)
+    k = max(1, int(n * 0.30))
+    top = sorted(pairs, key=lambda x: -abs(x[0]))[:k]
+    out["conf_top30_n"] = len(top)
+    out["conf_top30_hit"] = round(
+        float(np.mean([1.0 if (q > 0) == (m > 0) else 0.0 for q, m in top])), 4)
+    return out
+
+
 def eval_quantile_channel(days: int) -> dict:
     cr = VALIDATION_CAMPAIGN["quantile"]
     out = {"verdict": "INSUFFICIENT"}
@@ -540,6 +570,7 @@ def eval_quantile_channel(days: int) -> dict:
                 return out
             rows = conn.execute(
                 """SELECT ts, quantile_q10_pt AS q10, quantile_q90_pt AS q90,
+                          quantile_expected_pt AS q50,
                           COALESCE(NULLIF(meta_gate_horizon, ''), '1m') AS hz
                    FROM ensemble_decisions
                    WHERE quantile_q10_pt IS NOT NULL AND quantile_q90_pt IS NOT NULL
@@ -570,6 +601,7 @@ def eval_quantile_channel(days: int) -> dict:
                 for m in mrows}
 
     covered, widths, abs_moves = [], [], []
+    dir_pairs = []   # [3-A] (q50, 실현변동) — 방향 적중률 관찰용 (판정 미반영)
     for r in rows:
         mv = move_map.get((r["ts"], r["hz"]))
         if mv is None:
@@ -578,6 +610,10 @@ def eval_quantile_channel(days: int) -> dict:
         covered.append(1.0 if (q10 <= mv <= q90) else 0.0)
         widths.append(q90 - q10)
         abs_moves.append(abs(mv))
+        if r["q50"] is not None and float(r["q50"]) != 0.0 and mv != 0.0:
+            dir_pairs.append((float(r["q50"]), mv))
+
+    out["dir"] = _quantile_direction_stats(dir_pairs)
 
     n = len(covered)
     out["n_samples"] = n
@@ -1965,7 +2001,11 @@ def eval_offline_geometry_channels() -> dict:
     """
     out = {}
     for key, mod in (("tp1_geometry_shadow", "scripts.tp1_geometry_shadow"),
-                     ("tp1_protect_offset_shadow", "scripts.tp1_protect_offset_shadow")):
+                     ("tp1_protect_offset_shadow", "scripts.tp1_protect_offset_shadow"),
+                     # [404차 후속10, 3-B] 분위회귀 기반 TP1 거리 A/B. 위 둘과 동일 설계
+                     # (오프라인 재생·compute()/summarize() 규약)이라 같은 배관을 쓴다.
+                     # ⚠ 이 채널의 verdict는 [3] 본채널 verdict와 무관하다(§9-4).
+                     ("quantile_tp_shadow", "scripts.quantile_tp_shadow")):
         try:
             import importlib
             m = importlib.import_module(mod)
@@ -3562,6 +3602,7 @@ def build_report(days: int) -> tuple:
         "limit_pin_watch": lpw, "unreachable_cf_watch": ucw,
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
+        "quantile_tp_shadow": off.get("quantile_tp_shadow"),
     }
 
     L = []
@@ -3586,6 +3627,17 @@ def build_report(days: int) -> tuple:
     L.append("| [3] 분위 회귀 | %s | 커버리지=%s (밴드 %s) 상관=%s |" % (
         _fmt_channel_verdict(qt), qt.get("coverage", "—"),
         qt.get("coverage_band", "—"), qt.get("unc_corr", "—")))
+    _qd = qt.get("dir") or {}
+    _g3b = off.get("quantile_tp_shadow") or {}
+    L.append("| [3-A] q50 방향 적중률 (관찰) | %s | 적중=%s (n=%s) 상위30%%=%s q50양수비율=%s |" % (
+        _fmt_verdict("OBSERVE"),
+        ("%.1f%%" % (_qd["hit_rate"] * 100)) if _qd.get("hit_rate") is not None else "—",
+        _qd.get("n", 0),
+        ("%.1f%%" % (_qd["conf_top30_hit"] * 100)) if _qd.get("conf_top30_hit") is not None else "—",
+        ("%.1f%%" % (_qd["q50_pos_share"] * 100)) if _qd.get("q50_pos_share") is not None else "—"))
+    L.append("| [3-B] 분위회귀 TP1 거리 A/B | %s | %s (진입 %s건/%s일) |" % (
+        _fmt_verdict(_g3b.get("verdict", "")), _g3b.get("reason", _g3b.get("error", "—")),
+        _g3b.get("n_trades", "—"), _g3b.get("n_days", "—")))
     L.append("| [4] 신호소멸청산 | %s | 누적 saved=%spt (n=%s, 보류 %s) |" % (
         _fmt_verdict(sd["verdict"]), sd.get("total_saved_pts", "—"),
         sd.get("n_resolved", 0), sd.get("n_pending", 0)))
@@ -3787,6 +3839,78 @@ def build_report(days: int) -> tuple:
         qt.get("unc_corr", "—"), VALIDATION_CAMPAIGN["quantile"]["unc_corr_min"]))
     if qt.get("reason"):
         L.append("- %s" % qt["reason"])
+    L.append("")
+
+    # [3-A] q50 방향 적중률 (404차 후속10) — 관찰 전용, [3] 판정 미반영
+    L.append("### [3-A] q50 방향 적중률 (404차 후속10, 관찰 전용 — 판정 없음)")
+    L.append("")
+    if not _qd or not _qd.get("n"):
+        L.append("- 표본 없음 (q50 또는 실현 레이블 결측)")
+    else:
+        L.append("| 구분 | n | 방향 적중률 |")
+        L.append("|---|---|---|")
+        L.append("| 전체 | %d | %.1f%% |" % (_qd["n"], _qd["hit_rate"] * 100))
+        L.append("| \\|q50\\| 상위 30%% | %d | %.1f%% |" % (
+            _qd.get("conf_top30_n", 0), (_qd.get("conf_top30_hit") or 0) * 100))
+        L.append("")
+        L.append("- q50 > 0 비율: **%.1f%%** (50%%에서 크게 벗어나면 방향 편향)"
+                 % (_qd["q50_pos_share"] * 100))
+    L.append("")
+    L.append("> **판정하지 않는다**(§3 합격선 무변경). 감사 §3-3은 분위회귀 KPI를 **3종**으로")
+    L.append("> 정의했으나(① q50 방향 적중률 ② 폭-실현 상관 ③ 커버리지) 합격선은 ②③만")
+    L.append("> 채택했다 — ①은 **사전등록돼 있었는데 한 번도 렌더링되지 않았다**. 그 탓에")
+    L.append("> [3] PASS가 \"방향을 맞춘다\"로 오독될 여지가 있었다. 실제 의미는")
+    L.append("> \"**불확실성 폭**을 잘 맞춘다\"뿐이다.")
+    L.append("> 이 표의 목적은 승격 근거가 아니라 그 오독을 차단하는 것이다 — 적중률이")
+    L.append("> 50% 근처면 **q50을 방향·사이징에 쓰지 말라**는 뜻이고, [2] Meta-Gate가")
+    L.append("> 확신도-성과 역상관으로 탈락한 것과 같은 실패를 예방한다.")
+    L.append("> `|q50| 상위 30%` 적중률이 전체와 비슷하면 q50의 **크기**에도 정보가 없다는 뜻.")
+    L.append("")
+
+    # [3-B] 분위회귀 기반 TP1 거리 A/B (404차 후속10)
+    L.append("## [3-B] 분위회귀 기반 TP1 거리 A/B (404차 후속10 신설)")
+    L.append("")
+    if _g3b.get("error"):
+        L.append("> ⚠ 스크립트 실행 실패: %s" % _g3b["error"])
+    else:
+        _sk = _g3b.get("skip") or {}
+        L.append("- 진입 후보 %s건 → 시뮬 %s건 / 거래일 %s일"
+                 % (_g3b.get("n_candidates", "—"), _g3b.get("n_trades", "—"),
+                    _g3b.get("n_days", "—")))
+        L.append("- 제외: 분위결측 %s건(2026-07-20 이전 미적재) / ATR결측 %s / 이익방향분위 부호반대 %s / TP과협 %s / 시뮬불가 %s"
+                 % (_sk.get("quantile", 0), _sk.get("atr", 0), _sk.get("unfavorable", 0),
+                    _sk.get("tp_too_tight", 0), _sk.get("sim", 0)))
+        pv = _g3b.get("per_variant") or {}
+        if pv:
+            L.append("")
+            L.append("| 변형 | n | TP1 | STOP | 승률 | 누적pt | 현행 대비 | drop-max | 건별 우세 |")
+            L.append("|---|---|---|---|---|---|---|---|---|")
+            for k, v in pv.items():
+                L.append("| %s | %d | %d | %d | %.1f%% | %+.2f | %s | %s | %s |" % (
+                    k, v["n"], v["n_tp1"], v["n_stop"], v["win_rate"] * 100, v["total_pt"],
+                    ("%+.2f" % v["delta_vs_current"]) if v.get("delta_vs_current") is not None else "—",
+                    ("%+.2f" % v["delta_drop_max"]) if v.get("delta_drop_max") is not None else "—",
+                    ("%s/%d" % (v["beats_current_n"], v["n"])) if v.get("beats_current_n") is not None else "—"))
+        L.append("")
+        L.append("- **판정: %s** — %s" % (_g3b.get("verdict"), _g3b.get("reason")))
+    L.append("")
+    L.append("> **이 채널의 판정은 [3] 본채널 verdict에 반영하지 않는다**(§9-4 판정기준 사후")
+    L.append("> 변경 금지). [3]의 합격선은 커버리지·불확실성상관 두 개 그대로다.")
+    L.append("> 묻는 것: 현행 TP1은 `ATR × 배수`로 **신호 내용과 무관**한데, 분위회귀가 매 분봉")
+    L.append("> 계산해 두고도 쓰지 않는 \"이익 방향 꼬리까지의 거리\"를 쓰면 나은가.")
+    L.append("> LONG은 q90, SHORT는 |q10| — 방향별 favorable quantile을 쓴다(SHORT에 q90을")
+    L.append("> 쓰면 손실 방향 꼬리를 TP로 삼는 꼴).")
+    L.append("> **스톱은 전 변형 고정**(현행 ATR×1.5×hurst) — [23-B] `sym_1.0_1.0`이 TP·스톱을")
+    L.append("> 동시에 바꿔 기여 분해가 불가능했던 교란을 제거했다.")
+    L.append("> ⚠ 절대값은 실현손익이 아니다(qty=1 보호전환을 'TP1 전량청산'으로 단순화).")
+    L.append("> **변형 간 상대비교 전용.**")
+    L.append("> ⚠ FAIL이 떠도 즉시 적용 금지 — `drop-max`(최대기여 1건 제거 후 델타)와")
+    L.append("> `건별 우세`를 함께 볼 것. [25]는 drop-max에서 부호가 역전돼 무너졌다(372차).")
+    L.append("> ⚠ **MW0601 교차확인 필수** — [23-B]가 같은 코드·같은 기간에도 PC간 부호")
+    L.append("> 역전을 냈다(tp1_x2: +32.78 vs −19.04). n≈40으로는 기하를 확정할 수 없다(313차).")
+    L.append("> ⚠ 변형 간 결과가 **단조롭지 않으면**(예: 0.7배가 1.0배보다 나쁨) 폭 자체보다")
+    L.append("> \"몇 건이 TP1↔STOP으로 뒤집혔나\"가 결과를 지배한다는 뜻이다 — 표의 TP1/STOP")
+    L.append("> 건수를 함께 읽을 것.")
     L.append("")
 
     # [4] 신호소멸청산 상세

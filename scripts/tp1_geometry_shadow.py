@@ -55,6 +55,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# [404차 후속10] 단독 실행 시 콘솔/파이프 인코딩이 cp949로 잡혀 main()의 em-dash·⚠에서
+# UnicodeEncodeError로 죽던 문제 — tp1_protect_offset_shadow.py에 이미 있던 패턴을 맞춘다.
+# 리포트 경로(compute()/summarize())는 UTF-8 파일에 쓰므로 원래 영향이 없었고, 이 수정도
+# 계산·판정에는 무관하다(콘솔 출력 한정).
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 from config.settings import (  # noqa: E402
     TRADES_DB, PREDICTIONS_DB, RAW_DATA_DB,
     ATR_STOP_MULT, ATR_TP1_MULT, ATR_HORIZON_TP1_MULT,
