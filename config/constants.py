@@ -23,8 +23,16 @@ FID_OI              = 195   # 미결제약정 (선물시세 기준 — FID 291�
 FID_EXPECTED_PRICE  = 291   # 예상체결가 (선물호가잔량에서 수신 — OI 아님)
 FID_KOSPI200_IDX    = 197   # KOSPI200 지수 현재가 (선물시세)
 FID_BASIS           = 183   # 시장베이시스 (선물시세, 키움 자체 계산)
-FID_UPPER_LIMIT     = 305   # 선물 당일 상한가 (파생실시간상하한)
-FID_LOWER_LIMIT     = 306   # 선물 당일 하한가 (파생실시간상하한)
+# ⚠ 아래 두 상수는 **키움 전용이며 현재 휴면 경로다** — 라이브에 배선하지 말 것.
+# 이 시스템의 실효 백엔드는 Cybos(`config/settings.py:BROKER_BACKEND` 기본값 "cybos")이고,
+# Cybos는 FID가 아니라 `GetHeaderValue(index)`로 필드를 읽는다. 즉 이 두 상수를 소비하는
+# 코드는 `collection/kiwoom/*`에서만 의미가 있고, 그 경로는 지금 돌지 않는다.
+# Cybos에서 당일 상한가/하한가를 쓰려면 `Dscbo1.FutureMst`(= CybosAPI.request_futures_snapshot)
+# 의 헤더 인덱스를 써야 하며, 그 인덱스는 `config/settings.py`의
+# CYBOS_FUTUREMST_UPPER_LIMIT_IDX / _LOWER_LIMIT_IDX 에 있다(미확정 시 None).
+# 인덱스 탐색은 `scripts/probe_cybos_limit_price.py`. (404차 후속6)
+FID_UPPER_LIMIT     = 305   # [키움 전용/휴면] 선물 당일 상한가 (파생실시간상하한)
+FID_LOWER_LIMIT     = 306   # [키움 전용/휴면] 선물 당일 하한가 (파생실시간상하한)
 
 # 실시간 타입 코드 — OnReceiveRealData sRealType 파라미터는 한국어 명칭
 RT_FUTURES      = "선물시세"      # 선물 체결 틱 (FC0 해당)

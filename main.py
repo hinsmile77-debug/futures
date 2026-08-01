@@ -129,7 +129,9 @@ from strategy.entry.time_strategy_router import (
     get_zone_min_confidence, get_horizon_min_confs, update_dynamic_mc,
     is_entry_zone,
 )
-from utils.market_state import is_untradeable_now   # [404차 후속5] 거래불능 구간
+from utils.market_state import (   # [404차 후속5·6] 거래불능 구간 / 가격제한선
+    is_untradeable_now, is_at_daily_limit,
+)
 from strategy.entry.position_sizer import PositionSizer
 from strategy.entry.meta_gate import MetaGate
 from strategy.entry.trend_persistence import TrendPersistenceGate
@@ -8033,6 +8035,12 @@ class TradingSystem:
                         # Hurst 체크보다 앞에 두는 이유: 체결 자체가 불가능한 상태가
                         # 워밍업 여부보다 더 근본적인 차단 사유다.
                         _untr = self._check_untradeable_now()
+                        # [404차 후속6] 아직 유동적인 상태의 상한가 진입은 위 감지기가
+                        # 못 잡는다(연속 N분 필요) — 방향별 가격제한선 판정으로 보완.
+                        # **실제 체결 방향(final_dir_str)** 으로 판정해야 한다. 역전 모드
+                        # (_reverse_entry_enabled)에서는 raw와 final이 반대라, raw로 보면
+                        # 상한가에서 SHORT 체결을 막고 LONG 체결을 통과시키는 정반대가 된다.
+                        _dlim = self._check_daily_limit_block(close, final_dir_str)
                         if _untr.get("blocked"):
                             log_manager.signal(
                                 f"[차단] 거래불능 구간 — {_untr.get('reason', '')}"
@@ -8043,6 +8051,17 @@ class TradingSystem:
                             )
                             _entry_block_reason = (
                                 f"[차단] 거래불능 구간 — {_untr.get('reason', '')}"
+                            )
+                        elif _dlim.get("blocked"):
+                            log_manager.signal(
+                                f"[차단] 가격제한선 — {_dlim.get('reason', '')}"
+                            )
+                            log_manager.trade(
+                                f"[가격제한선 차단] {final_dir_str} {_qty_auto}계약 "
+                                f"{_final_grade}급 ({_dlim.get('reason', '')})"
+                            )
+                            _entry_block_reason = (
+                                f"[차단] 가격제한선 — {_dlim.get('reason', '')}"
                             )
                         # [237차] Hurst 미계산 진입 차단 — 워밍업 미완료(데이터 부족·오류) 시 손실 방지
                         elif not features.get("hurst_ready", False):
@@ -9323,6 +9342,31 @@ class TradingSystem:
             return is_untradeable_now(bars)
         except Exception as _ut_e:
             logger.debug("[Untradeable] 판정 실패 (무해, 진입 허용): %s", _ut_e)
+            return {"blocked": False, "reason": "판정 실패"}
+
+    def _check_daily_limit_block(self, price, direction) -> dict:
+        """[404차 후속6] 진입 방향이 당일 상한가/하한가에 막혀 있는가.
+
+        `_check_untradeable_now()`는 체결이 붕괴한 뒤에야(연속 N분) 발동하므로 **아직
+        유동적인 상태의 상한가 진입**은 못 막는다(2026-07-31 14:17 LONG이 그 사례).
+        이 함수가 그 구멍을 방향별로 막는다.
+
+        상한가 정보는 `CybosRealtimeData.daily_limits`에서 온다. 인덱스
+        (`CYBOS_FUTUREMST_*_LIMIT_IDX`)가 실측되기 전에는 0.0이라 **항상 통과**하므로,
+        배선만 해두고 인덱스를 채우면 그때부터 동작한다(코드 변경 불필요).
+        """
+        if not getattr(runtime_settings, "LIMIT_PIN_ENTRY_BLOCK_ENABLED", False):
+            return {"blocked": False, "reason": "비활성"}
+        try:
+            rt = getattr(self, "realtime_data", None)
+            limits = getattr(rt, "daily_limits", None) if rt else None
+            if not limits:
+                return {"blocked": False, "reason": "상한가 정보 없음"}
+            spec = get_contract_spec(self._futures_code or "")
+            return is_at_daily_limit(
+                price, limits, direction, tick=float(spec.get("tick_size", 0.0) or 0.0))
+        except Exception as _dl_e:
+            logger.debug("[DailyLimit] 판정 실패 (무해, 진입 허용): %s", _dl_e)
             return {"blocked": False, "reason": "판정 실패"}
 
     def _get_active_horizons(self, hhmm):

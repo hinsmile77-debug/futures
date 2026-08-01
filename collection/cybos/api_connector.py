@@ -234,6 +234,20 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _read_opt_idx(obj, idx: Optional[int]) -> float:
+    """인덱스가 설정된 경우에만 GetHeaderValue를 읽는다 (미설정/실패 → 0.0).
+
+    [404차 후속6] 상한가/하한가처럼 **인덱스가 아직 실측되지 않은** 필드용. None이면
+    아예 읽지 않으므로 추측 인덱스로 엉뚱한 값이 흘러드는 경로가 생기지 않는다.
+    """
+    if idx is None:
+        return 0.0
+    try:
+        return _safe_float(obj.GetHeaderValue(int(idx)))
+    except Exception:
+        return 0.0
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         text = str(value).replace(",", "").strip()
@@ -1149,7 +1163,17 @@ class CybosAPI:
         return subscription
 
     def request_futures_snapshot(self, code: str) -> Dict[str, Any]:
+        """FutureMst 스냅샷. `upper_limit`/`lower_limit`은 인덱스 실측 전엔 0.0이다.
+
+        상한가/하한가 인덱스(`CYBOS_FUTUREMST_*_LIMIT_IDX`)는 기본 None이며, 그 상태에서는
+        두 값이 0.0으로 나가고 소비처가 "상한가 정보 없음"으로 처리한다. 실측 절차는
+        `scripts/probe_cybos_limit_price.py` 참조. (404차 후속6)
+        """
         _code = _normalize_code(code)
+        # 지연 import — 이 모듈은 config에 의존하지 않는 self-contained 구조를 유지한다.
+        from config import settings as _s
+        _UPPER_IDX = getattr(_s, "CYBOS_FUTUREMST_UPPER_LIMIT_IDX", None)
+        _LOWER_IDX = getattr(_s, "CYBOS_FUTUREMST_LOWER_LIMIT_IDX", None)
 
         def _read_snapshot(obj):
             return {
@@ -1167,6 +1191,11 @@ class CybosAPI:
                 "trade_time": _safe_int(obj.GetHeaderValue(82)),
                 "process_time": _safe_int(obj.GetHeaderValue(83)),
                 "market_state": _safe_int(obj.GetHeaderValue(115)),
+                # [404차 후속6] 당일 상한가/하한가. 인덱스가 실측되기 전(None)에는
+                # 읽지 않는다 — 추측 인덱스로 엉뚱한 값을 읽으면 진입 게이트가 잘못
+                # 차단한다(2026-05-10 B51 사고와 같은 계열).
+                "upper_limit": _read_opt_idx(obj, _UPPER_IDX),
+                "lower_limit": _read_opt_idx(obj, _LOWER_IDX),
             }
 
         try:

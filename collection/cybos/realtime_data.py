@@ -62,6 +62,23 @@ class CybosRealtimeData:
         }
         self._tick_event_count = 0
         self._hoga_event_count = 0
+        # [404차 후속6] 당일 상한가/하한가 (FutureMst 스냅샷에서 1회 확보, 0.0=미확보)
+        self._upper_limit: float = 0.0
+        self._lower_limit: float = 0.0
+
+    @property
+    def daily_limits(self) -> Dict[str, float]:
+        """[404차 후속6] 당일 상한가/하한가. 미확보 시 0.0.
+
+        `_prime_from_snapshot()`이 FutureMst 스냅샷에서 채운다. 인덱스
+        (`CYBOS_FUTUREMST_*_LIMIT_IDX`)가 실측 전이면 0.0이 유지되고, 소비처는
+        "상한가 정보 없음"으로 처리해 기존 동작을 그대로 유지한다.
+
+        하루 중 바뀌지 않는 값이라 기동 시 1회 조회로 충분하다(가격제한폭 단계
+        확대가 일어나면 달라지지만, 그 경우도 재기동 전까지는 보수적으로 좁은
+        값을 유지하므로 과잉 차단이 아니라 과소 차단 방향이라 안전하다).
+        """
+        return {"upper": self._upper_limit, "lower": self._lower_limit}
 
     @property
     def candles(self) -> Deque[Dict]:
@@ -159,6 +176,20 @@ class CybosRealtimeData:
         oi_init = _safe_int(snapshot.get("open_interest", 0))
         if oi_init > 0:
             self._last_oi = oi_init
+        # [404차 후속6] 당일 상한가/하한가. 값이 서로 모순되면(상한<=하한, 또는 현재가가
+        # 밖에 있음) 잘못된 인덱스를 읽은 것이므로 채택하지 않는다 — 2026-05-10 B51처럼
+        # 인덱스 오매핑이 조용히 흘러드는 것을 막는 방어선이다.
+        _up = _safe_float(snapshot.get("upper_limit", 0.0))
+        _dn = _safe_float(snapshot.get("lower_limit", 0.0))
+        _px = _safe_float(snapshot.get("price", 0.0))
+        if _up > 0 and _dn > 0 and _up > _dn and (not _px or _dn <= _px <= _up):
+            self._upper_limit, self._lower_limit = _up, _dn
+            logger.info("[DailyLimit] 상한가=%.2f 하한가=%.2f (현재가=%.2f)", _up, _dn, _px)
+        elif _up or _dn:
+            logger.warning(
+                "[DailyLimit] 값 모순으로 미채택 — upper=%.2f lower=%.2f price=%.2f. "
+                "CYBOS_FUTUREMST_*_LIMIT_IDX 인덱스를 재확인할 것"
+                "(scripts/probe_cybos_limit_price.py)", _up, _dn, _px)
 
     def _handle_tick(self, obj) -> None:
         price = _safe_float(obj.GetHeaderValue(1))

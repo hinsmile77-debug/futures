@@ -8,6 +8,36 @@
 
 ---
 
+## 2026-08-01 (MW0602 404차 후속6 — 당일 가격제한선 배선)
+
+> 상세: `DECISION_LOG.md` 2026-08-01(MW0602 404차 후속6) 항목.
+
+- [DONE 2026-08-01] **FID 305/306은 배선 불가 판정** — 키움 상수인데 라이브는 Cybos.
+  `constants.py`에 [키움 전용/휴면] 표기 + Cybos 대체 경로 안내 부착.
+- [DONE 2026-08-01] **Cybos 경로 전체 구현** — 프로브 스크립트 + 스냅샷 수집 +
+  모순 검증 + 방향별 게이트 + main.py 배선. **인덱스 상수만 비어 있음.**
+
+### ⛳ 남은 단 하나 — 다음 거래일에 1회 실행
+
+- [ ] **Cybos Plus 로그인(관리자 권한) 후 프로브 실행**
+
+      python scripts/probe_cybos_limit_price.py
+
+      출력의 "가장 유력" 두 값을 눈으로 확인한 뒤 `config/settings.py`의
+      `CYBOS_FUTUREMST_UPPER_LIMIT_IDX` / `CYBOS_FUTUREMST_LOWER_LIMIT_IDX`에 기입.
+      **코드 변경은 필요 없다** — 상수만 채우면 그때부터 동작한다.
+      (이번 세션에는 `CpCybos.IsConnect=0`이라 실행 못 함)
+
+- [ ] **기입 후 첫 거래일 검증** — 기동 로그에 `[DailyLimit] 상한가=... 하한가=...`
+      INFO가 뜨는지. `[DailyLimit] 값 모순으로 미채택` WARNING이 뜨면 인덱스가 틀린
+      것이므로 프로브 재실행.
+
+- [ ] **FutureMst가 상한/하한을 아예 제공하지 않을 가능성** — 프로브에서 대칭 후보가
+      안 나오면 `Dscbo1.FutureCurOnly`나 별도 TR을 조사해야 한다. 그 경우 이 항목을
+      재설계 대상으로 되돌릴 것.
+
+---
+
 ## 2026-08-01 (MW0602 404차 후속5 — P0-B: 거래불능(가격상한) 구간)
 
 > 상세: `DECISION_LOG.md` 2026-08-01(MW0602 404차 후속5) 항목.

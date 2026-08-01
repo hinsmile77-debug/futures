@@ -1690,6 +1690,28 @@ TOXICITY_SEVERE_SPREAD_BLOCK_TICKS = 20.0
 # 발동 실적(캠페인 재생): 6,886 세션분봉 중 23분봉(0.33%) — 07-13 2분, 07-31 21분.
 LIMIT_PIN_ENTRY_BLOCK_ENABLED = True
 
+# ── [404차 후속6] Cybos 당일 상한가/하한가 헤더 인덱스 ──────────────────────
+# `Dscbo1.FutureMst`(CybosAPI.request_futures_snapshot) 의 GetHeaderValue 인덱스.
+#
+# **왜 키움 FID(305/306)를 안 쓰는가**: 그 둘은 키움 상수이고 이 시스템의 실효 백엔드는
+# Cybos다(BROKER_BACKEND 기본값). Cybos는 FID 개념 자체가 없어 `GetHeaderValue(index)`를
+# 쓴다 — 305/306을 배선하면 휴면 키움 경로에 죽은 코드를 넣는 꼴이 된다
+# (`config/constants.py` FID_UPPER_LIMIT 위 주석 참조).
+#
+# **왜 None이 기본값인가**: 인덱스가 아직 실측되지 않았다. 기존 FutureMst 인덱스들
+# (71=현재가, 80=미결제약정, 115=market_state …)도 2026-05-10 라이브 스냅샷 실측으로
+# 교정된 값이다 — 그 전에는 잘못된 인덱스로 엉뚱한 값을 읽고 있었다
+# (`dev_memory/DECISION_LOG.md` B51). 추측값을 넣으면 진입 게이트가 엉뚱한 가격으로
+# 차단하므로, **실측 전에는 None을 유지**한다. None이면 상한가 인지 기능만 꺼지고
+# 나머지(거래불능 구간 감지·진입보류)는 그대로 동작한다.
+#
+# **채우는 법**: Cybos Plus 로그인(관리자 권한) 후
+#     python scripts/probe_cybos_limit_price.py
+# 를 실행하면 헤더 덤프 + 상한/하한 후보 + 대칭성 점검 결과가 나온다. 눈으로 확인한 뒤
+# 아래 두 값을 채우면 배선이 완료된다(코드 변경 불필요).
+CYBOS_FUTUREMST_UPPER_LIMIT_IDX = None
+CYBOS_FUTUREMST_LOWER_LIMIT_IDX = None
+
 # CB③ 발동 최솟 유효 샘플 수
 # 파이프라인 지연 → conf<0.38 필터 → 샘플 부족 → 0%로 허위 발동 방지
 # 기존 25에서 상향: 초기 혼란기(scaler 노후화 직후) 오답 25개만으로 당일 정지 차단
