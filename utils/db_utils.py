@@ -1,6 +1,7 @@
 # utils/db_utils.py — SQLite 공통 유틸리티
 import sqlite3
 import os
+import sys
 import threading
 from contextlib import contextmanager
 from typing import List, Tuple, Any, Optional, Dict
@@ -439,11 +440,70 @@ def init_trades_db():
         -- 이미 있는 테이블을 갱신하지 않으므로 이 정의만으로는 부족하다).
         mfe_30m       REAL,
         mae_30m       REAL,
+        -- ── [MW0601 420차] 419차 반영 계측 보강 ──────────────────────────
+        -- 세 가지를 사후 분리할 수 있게 한다. 기존 DB는 리포트 스크립트의
+        -- _ensure_joint_gate_columns()가 ALTER로 보강한다(mfe_30m과 동일 사정).
+        --
+        -- (1) meta축 — 419차 발견 ④의 "meta_size 73/116이 정확히 0.500"이
+        --     학습값인지 falsy 폴백인지 구분한다. learning/meta_confidence.py의
+        --     _make_result()는 conf<0.5에서 size_mult=0.0을 내는데
+        --     strategy/entry/meta_gate.py의 `learned["size_multiplier"] or 0.5`가
+        --     그 0.0을 falsy로 잡아 0.5로 **승격**시킨다(약한 신호를 키우는 방향).
+        --     게다가 meta_conf는 그 뒤 <0.20이면 0.45로 floor되는데
+        --     size_multiplier는 floor 전 raw로 이미 확정돼 있어 두 축이 어긋난다.
+        --     → raw/보정 두 값을 모두 남겨야 어느 쪽이 원인인지 사후에 갈린다.
+        meta_conf          REAL,    -- MetaGate 보정 후 meta_conf (blended 산출에 실제 사용)
+        meta_conf_raw      REAL,    -- predict_confidence 원값 (size_multiplier 산출 근거)
+        meta_size_raw      REAL,    -- 클램프·폴백 전 learned["size_multiplier"] (0.0 포함)
+        meta_size_fallback INTEGER,  -- 1 = `or 0.5` 폴백이 발동 (raw가 falsy)
+        -- (2) tox축 체제 — 419차 P0이 TOXICITY_CANCEL_CHURN_CEILING을 0.08→0.42로
+        --     재보정해 tox 밴드 분포가 이동했다(block 23.3→8.6% / reduce 76.4→73.7%
+        --     / pass 0.27→17.7%). JointGateBlock 발동 전제가 tox_action=="reduce"라
+        --     이 채널의 **모집단 자체**가 2026-08-03부터 바뀐다. 날짜 상수로만 가르면
+        --     ceiling이 또 바뀔 때 침묵하므로 발동 시점 값을 행에 새겨 자기기술적으로
+        --     만든다(리포트가 config 날짜 경계와 이 값의 정합성을 교차확인한다).
+        tox_score          REAL,    -- 차단 당시 toxicity_score
+        tox_score_ma       REAL,    -- 차단 당시 toxicity_score_ma
+        tox_ceiling        REAL,    -- 차단 당시 TOXICITY_CANCEL_CHURN_CEILING (체제 태그)
+        -- (3) 419차 P1의 사각지대 = **차단 축**. [31] toxicity_reduce_mult_shadow는
+        --     실제로 체결된 reduce 밴드 진입만 본다 — JointGateBlock으로 차단된
+        --     신호는 그 채널에 아예 들어가지 않는다. 그런데 연속 배수가 실적용되면
+        --     joint_mult이 바뀌어 **차단 여부 자체가 뒤집힐 수 있다**
+        --     (예: meta 0.714 × tox_shadow 0.90 = 0.643 ≥ 0.50 → 차단 해제).
+        --     여기서 그 반사실을 기록해야 P1 실적용 판단에 차단 축 근거가 생긴다.
+        tox_size_shadow    REAL,    -- 419차 P1 연속 배수 (섀도, 실사이징 미관여)
+        joint_mult_shadow  REAL,    -- meta_size × tox_size_shadow
+        would_block_shadow INTEGER,  -- 1 = 연속 배수였어도 차단됐을 것 (<0.50)
         created_at    TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_jgs_ts ON joint_gate_shadow(ts)")
+    # [MW0601 420차] 위 CREATE는 **이미 존재하는 테이블을 갱신하지 않는다**. 두 PC가
+    # 각자 로컬 trades.db를 갖고 있어 기존 DB에는 420차 컬럼이 없고, main.py의
+    # INSERT는 컬럼명을 명시하므로 그대로 두면 매 차단마다 조용히 실패한다
+    # (예외를 삼키고 warning만 남기는 경로라 표본이 통째로 유실된다).
+    # → 기동 시 멱등 ALTER. 리포트 스크립트에도 같은 보강이 있으나 그쪽은 주간
+    #   실행이라 라이브 기록을 지켜주지 못한다. 여기가 1차 방어선이다.
+    _jgs_migrate = [
+        ("meta_conf", "REAL"), ("meta_conf_raw", "REAL"),
+        ("meta_size_raw", "REAL"), ("meta_size_fallback", "INTEGER"),
+        ("tox_score", "REAL"), ("tox_score_ma", "REAL"), ("tox_ceiling", "REAL"),
+        ("tox_size_shadow", "REAL"), ("joint_mult_shadow", "REAL"),
+        ("would_block_shadow", "INTEGER"),
+    ]
+    try:
+        _jgs_have = {r[1] for r in fetchall(
+            TRADES_DB, "PRAGMA table_info(joint_gate_shadow)")}
+        for _c, _t in _jgs_migrate:
+            if _c not in _jgs_have:
+                execute(TRADES_DB,
+                        "ALTER TABLE joint_gate_shadow ADD COLUMN %s %s" % (_c, _t))
+    except Exception as _jgs_mig_e:
+        # 이 모듈에는 logger가 없다(설계상 순수 유틸). 조용히 넘기면 라이브 기록이
+        # 통째로 유실되므로 stderr로는 반드시 남긴다 — EOD 로그에서 보인다.
+        print("[DB][WARN] joint_gate_shadow 컬럼 마이그레이션 실패: %s" % _jgs_mig_e,
+              file=sys.stderr)
     # [354차] OPEN_VOLATILE 시가이격 필터(§14, ATR×5) counterfactual 섀도우 —
     # hurst_gate_shadow·joint_gate_shadow와 완전히 동일한 패턴. 이 필터는 09:05~10:30
     # 구간에서 세션 시가(고정 기준점) 대비 gap이 ATR×5를 넘는 TREND_FOLLOW 신호를

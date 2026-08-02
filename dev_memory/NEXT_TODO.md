@@ -8,6 +8,42 @@
 
 ---
 
+### 420차 후속 — JointGateBlock 계측 보강 라이브 검증 (2026-08-03 월 / 08-07 금)
+
+**420차 검증도 전부 오프라인이다** — 419차와 같은 미검증 지점이 있다.
+
+- [ ] **신규 10컬럼 INSERT가 라이브에서 실제로 기록되는가** — 첫 JointGateBlock
+      차단 후 `SELECT ts, meta_size, meta_size_fallback, meta_conf, meta_conf_raw,
+      tox_ceiling, tox_size_shadow, would_block_shadow FROM joint_gate_shadow
+      ORDER BY id DESC LIMIT 5`.
+      **`tox_ceiling`이 0.42로 찍혀야 정상**(0.08이면 419차 P0가 라이브에 안 실린 것).
+      `meta_conf`/`meta_conf_raw`가 둘 다 0.0이면 `_meta_gate` dict에 420차 키가
+      안 실린 것 — meta_gate.py 리턴 배선을 재확인할 것.
+- [ ] **기동 마이그레이션이 실제로 돌았는가** — 첫 기동 로그(stderr)에
+      `[DB][WARN] joint_gate_shadow 컬럼 마이그레이션 실패`가 보이면 안 된다.
+      보이면 그 뒤 모든 차단 기록이 유실된다(INSERT가 컬럼명을 명시하므로).
+      **MW0602에서도 동일 확인 필요** — 두 PC가 각자 로컬 DB를 갖고 있다.
+- [ ] **`meta_size_fallback`의 실제 분포** — 구 체제 추정치는 63%였다(meta_size가
+      정확히 0.500인 비율로 역산). 라이브 실측이 그와 크게 다르면 역산 가정
+      (`conf<0.5 → size 0.0 → or 0.5`)이 틀린 것이므로 재조사할 것.
+- [ ] **[7] 신 체제 표본이 20건에 닿는 시점** — 닿으면 판정이 자동으로 구 체제에서
+      신 체제로 갈아탄다(`judged_regime`). 갈아탄 첫 주 리포트에서 누적 hyp·승률이
+      구 체제와 크게 다르면 그것이 **419차 P0의 [7] 축 효과**다. 이때 CLAUDE.md
+      실전전환기준 ⑧(진입을 늘리는 방향)과 함께 읽을 것.
+- [ ] **`tox_regime_date` 정합성** — `TOXICITY_CANCEL_CHURN_CEILING`을 또 바꾸면
+      [7] `tox_regime_date`와 [30] `effective_date`를 **둘 다** 갱신할 것.
+      어긋나면 리포트가 "⚠ 설정 불일치"를 찍는다(자동 감지는 되지만 자동 수정은 안 됨).
+
+**하지 않기로 한 것 (재시도 금지 — 419차 P3와 동일 사유)**
+
+- meta `or 0.5` falsy 폴백 **수정**: 계측만 배선했고 코드는 안 고쳤다. 419차 P3가
+  보류한 안건이고, 고치면 라이브 사이징이 바뀐다(§9 사전등록 원칙 — 주간회의 결정).
+- JointGateBlock 임계 0.50 **재선정**: 방향 증거가 없다(t=-0.39). 지금 바꾸면
+  단일 거래일 하나에 반응하는 꼴이다.
+- 기존 116행 소급 백필: 차단 시점에만 알 수 있는 값이라 복원 불가. NULL이 정직하다.
+
+---
+
 ### 419차 후속 — ToxicityGate 재보정·섀도 라이브 검증 (2026-08-03 월 / 08-07 금)
 
 **419차 검증은 전부 오프라인이다** — 아래는 라이브 경로 확인 항목이다.

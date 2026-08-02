@@ -67,6 +67,8 @@ from config.settings import (
     TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     TOXICITY_REDUCE_MULT_SHADOW_HI, TOXICITY_REDUCE_MULT_SHADOW_LO,
+    TOXICITY_CANCEL_CHURN_CEILING,        # [420차] joint_gate_shadow 체제 태그용
+
     LIMIT_ENTRY_FIRST_ENABLED, LIMIT_ENTRY_TIMEOUT_SEC,
     HZ_DEPLOY_POLICY,
     BAR_ONLY_RELAX_ENABLED, BAR_ONLY_RELAX_MAX_AGE,
@@ -8146,12 +8148,28 @@ class TradingSystem:
                                 * _jgs_mult.get("tp1", 1.0)
                             )
                             _jgs_dir_mult = 1 if direction == 1 else -1
+                            # [MW0601 420차] 419차 반영 계측 3축 — 전부 읽기 전용.
+                            # ① meta축: falsy 폴백(`or 0.5`)과 floor 전후 conf를 분리
+                            # ② tox축 체제: 419차 P0 ceiling 재보정 전/후 모집단 구분
+                            # ③ 차단 축 반사실: 419차 P1 연속 배수였다면 차단이 유지됐을지
+                            #    ([31] 채널은 체결된 진입만 봐서 이 축이 사각지대다)
+                            _jgs_ms_raw = _meta_gate.get("size_multiplier_raw")
+                            _jgs_tox_shadow = float(
+                                _tox_gate.get("size_multiplier_shadow", _tox_size)
+                                or _tox_size
+                            )
+                            _jgs_joint_shadow = float(_meta_size) * _jgs_tox_shadow
                             execute(
                                 TRADES_DB,
                                 """INSERT INTO joint_gate_shadow
                                    (ts, direction, grade, meta_size, tox_size, joint_mult,
-                                    conf, entry_price, stop_price, tp1_price)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                    conf, entry_price, stop_price, tp1_price,
+                                    meta_conf, meta_conf_raw, meta_size_raw,
+                                    meta_size_fallback, tox_score, tox_score_ma,
+                                    tox_ceiling, tox_size_shadow, joint_mult_shadow,
+                                    would_block_shadow)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                                 (
                                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
                                     raw_dir_str,
@@ -8163,6 +8181,16 @@ class TradingSystem:
                                     float(close),
                                     float(close - _jgs_dir_mult * atr * _jgs_stop_mult),
                                     float(close + _jgs_dir_mult * atr * _jgs_tp1_mult),
+                                    float(_meta_gate.get("raw_meta_confidence", 0.0) or 0.0),
+                                    float(_meta_gate.get("meta_confidence_pre_floor", 0.0) or 0.0),
+                                    (float(_jgs_ms_raw) if _jgs_ms_raw is not None else None),
+                                    1 if _meta_gate.get("size_multiplier_fallback") else 0,
+                                    float(_tox_gate.get("score", 0.0) or 0.0),
+                                    float(_tox_gate.get("score_ma", 0.0) or 0.0),
+                                    float(TOXICITY_CANCEL_CHURN_CEILING),
+                                    _jgs_tox_shadow,
+                                    round(_jgs_joint_shadow, 4),
+                                    1 if _jgs_joint_shadow < 0.50 else 0,
                                 ),
                             )
                         except Exception as _jgs_e:
