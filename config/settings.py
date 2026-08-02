@@ -1948,6 +1948,45 @@ FEATURE_SET_DECISIONS = {
         "source": "dev_memory/DECISION_LOG.md 2026-07-27(395차) §2, "
                   "config/settings.py CORE_FEATURES_BY_GROUP 주석(2026-06-25)",
     },
+    "queue_directional_depletion": {
+        "date": "2026-08-02",
+        "decision": "1m 편입 종결 — 개선 대상 아님 (후보 재고에서 제외)",
+        "note": "07-30 실행계획 항목 F의 '명시적 제외' 권고를 사용자가 확정한 건이다. "
+                "근거 셋: ① **1m은 331차 후속2로 영구 퇴역**한 호라이즌이라 "
+                "`ENSEMBLE_WEIGHTS['1m']=0.0` — 방향투표에 한 표도 넣지 않으므로 그 "
+                "피처셋을 고쳐도 거래 결과가 바뀌지 않는다(퇴역 근거는 conf-층화 검정 "
+                "방향적중률 47.75%, z=-2.82). ② **타 호라이즌 승격 여지가 없다** — "
+                "`features/feature_decay.py`의 감쇠곡선이 (1.0, 0.8, 0.5, 0.1, 0.0, 0.0)로 "
+                "1m에서 최대, 10m 이후 0으로 사전 정의돼 있다(호가 큐 방향별 고갈 강도라 "
+                "성격상 초단기 전용). ③ 395차가 07-27 재학습본에서 배포를 확인했을 때조차 "
+                "SHAP 평균 중요도 0.0069로 10개 중 9위였다. "
+                "덧붙여 현재는 `active_features`(97)에 없어 batch_retrainer의 "
+                "`get_available_feature_set()` 교집합에서 탈락하므로, json 명세만으로는 "
+                "**구조적으로 편입 자체가 불가능**한 상태다.",
+        "suppress": True,
+        "re_eval": "1m이 앙상블 가중치를 되찾는 경우에만 재론(현재 계획 없음).",
+        "source": "docs/미륵이고도화3/호라이즌_방향예측_개선_실행계획_2026-07-30.md 항목 F, "
+                  "config/settings.py ENSEMBLE_WEIGHTS(331차 후속2), "
+                  "features/feature_decay.py, dev_memory/DECISION_LOG.md 395차",
+    },
+    "micro_regime_code": {
+        "date": "2026-08-02",
+        "decision": "1m 편입만 하지 않음 — 타 호라이즌 후보 자격은 유지",
+        "note": "위 `queue_directional_depletion`과 같은 1m 갭이지만 **결정을 달리한다.** "
+                "1m 편입을 하지 않는 이유는 동일하다(1m 영구 퇴역). 그러나 이 피처는 "
+                "직전 1분 미시 레짐 코드(0=횡보 1=혼합 2=추세 3=탈진 4=급변, "
+                "features/feature_builder.py:624)로 **1분 lag를 허용하는 레짐 변수**여서 "
+                "초단기 전용 신호가 아니고, 실제로 10m·30m include 명세에도 같은 이름이 "
+                "올라 있다(셋 다 미배포). 타 호라이즌 유효성은 검증된 적이 없으므로 "
+                "`suppress=False`로 두어 **월간 L1' 스크리닝이 계속 평가**하게 한다. "
+                "1m 하나 때문에 전 호라이즌 후보 자격까지 닫는 것은 과잉이다.",
+        "suppress": False,
+        "re_eval": "월간 L1' 스크리닝에서 3m 이상 호라이즌 IC를 계속 관찰. "
+                   "1m 편입만 재론 금지.",
+        "source": "docs/미륵이고도화3/호라이즌_방향예측_개선_실행계획_2026-07-30.md 항목 F, "
+                  "featureset by horizon/horizon_feature_sets.json(1m·10m·30m include), "
+                  "features/feature_builder.py:624",
+    },
     "threshold_feasibility": {
         "date": "2026-07-26",
         "decision": "기각 — F4 재검증에서 부호 반전 (재현 실패)",
