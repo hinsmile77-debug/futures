@@ -8,7 +8,7 @@
 - 후보 축적 관찰창: 2026-05-06 ~ 2026-07-31 (60거래일)
 - 배포 스펙 출처: `model/horizons/feature_names_{hz}.pkl` **직접 로드** — `horizon_feature_sets.json`(계획 문서)·`shap_feature_registry.json`(PC별 런타임 산출물)이 아니다
 - 판정 기준: `scripts/feature_health_report.py` 단일 출처 (DEAD=분산0 / CRITICAL=zero·최빈 95%+ / WARN=80%+ / 미계측=표본<200)
-- git: `59b03af`
+- git: `f173a90`
 
 ## 1. 호라이즌별 요약
 
@@ -185,7 +185,7 @@ CORE(long): `above_vwap`=OK / `opt_chain_pcr`=OK
   근거: CLAUDE.md 절대원칙 §3, docs/미륵이고도화2/무스킬_피처셋_딥다이브_보고서_2026-07-13.md F4
 - **`opt_gex_bn`** — 설계 rho=0.198 → 최신구간 실측 IC=0.013으로 재현 실패. 다만 **개념 전체가 죽은 게 아니다** — 같은 F4 재실측에서 sign/ratio 계열(opt_gex_sign IC=0.035 p=0.006, opt_atm_pcr IC=0.051 p<1e-4)은 부분 생존했고, '재현될 때까지 sign/ratio 계열로 대체' 원칙에 따라 그 둘만 POOL로 승격했다. 표준절차 Phase 4-4(표현형 다양성)의 실례이므로 재고에 남긴다.  
   근거: config/constants.py DYNAMIC_FEATURES_POOL 주석(331차), docs/미륵이고도화2/무스킬_피처셋_딥다이브_보고서_2026-07-13.md F4
-- **`queue_directional_depletion`** — 07-30 실행계획 항목 F의 '명시적 제외' 권고를 사용자가 확정한 건이다. 근거 셋: ① **1m은 331차 후속2로 영구 퇴역**한 호라이즌이라 `ENSEMBLE_WEIGHTS['1m']=0.0` — 방향투표에 한 표도 넣지 않으므로 그 피처셋을 고쳐도 거래 결과가 바뀌지 않는다(퇴역 근거는 conf-층화 검정 방향적중률 47.75%, z=-2.82). ② **타 호라이즌 승격 여지가 없다** — `features/feature_decay.py`의 감쇠곡선이 (1.0, 0.8, 0.5, 0.1, 0.0, 0.0)로 1m에서 최대, 10m 이후 0으로 사전 정의돼 있다(호가 큐 방향별 고갈 강도라 성격상 초단기 전용). ③ 395차가 07-27 재학습본에서 배포를 확인했을 때조차 SHAP 평균 중요도 0.0069로 10개 중 9위였다. 덧붙여 현재는 `active_features`(97)에 없어 batch_retrainer의 `get_available_feature_set()` 교집합에서 탈락하므로, json 명세만으로는 **구조적으로 편입 자체가 불가능**한 상태다.  
+- **`queue_directional_depletion`** — 07-30 실행계획 항목 F의 '명시적 제외' 권고를 사용자가 확정한 건이다. 근거 셋: ① **1m은 331차 후속2로 영구 퇴역**한 호라이즌이라 `ENSEMBLE_WEIGHTS['1m']=0.0` — 방향투표에 한 표도 넣지 않으므로 그 피처셋을 고쳐도 거래 결과가 바뀌지 않는다(퇴역 근거는 conf-층화 검정 방향적중률 47.75%, z=-2.82). ② **타 호라이즌 승격 여지가 없다** — `features/feature_decay.py`의 감쇠곡선이 (1.0, 0.8, 0.5, 0.1, 0.0, 0.0)로 1m에서 최대, 10m 이후 0으로 사전 정의돼 있다(호가 큐 방향별 고갈 강도라 성격상 초단기 전용). ③ **실제 배포된 적은 2026-06-29~30 이틀뿐**이고 그마저 `active_features`가 일시적으로 121개였던 기간의 부수효과였다(413차 로그 분해). 덧붙여 현재는 `active_features`(97)에 없어 batch_retrainer의 `get_available_feature_set()` 교집합에서 탈락하므로, json 명세만으로는 **구조적으로 편입 자체가 불가능**한 상태다. ⚠ 412차가 근거로 적었던 '395차의 07-27 배포 확인 + SHAP 0.0069'은 413차 로그·DB 분해에서 **사실이 아님이 확정**됐다(아래 source의 413차 항목).  
   근거: docs/미륵이고도화3/호라이즌_방향예측_개선_실행계획_2026-07-30.md 항목 F, config/settings.py ENSEMBLE_WEIGHTS(331차 후속2), features/feature_decay.py, dev_memory/DECISION_LOG.md 395차
 - **`threshold_feasibility`** — 설계 시점 rho=+0.086이 최신 구간 재실측에서 IC=-0.024로 **부호가 뒤집혔다**. 386차가 1m 레지스트리 갭 2종을 DYNAMIC_FEATURES_POOL에 등록할 때 이 피처는 'F4 재현실패 케이스라 등록하지 않음(opt_gex_bn류와 동일 취급, 331차 선례 그대로)'으로 **명시적으로 제외**했다. 15m include_pending_validation에 남아 있는 것은 강등 시점의 잔존 표기다.  
   근거: dev_memory/DECISION_LOG.md 2026-07-26(386차) §2
