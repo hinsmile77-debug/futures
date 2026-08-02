@@ -1850,6 +1850,210 @@ VALIDATION_CAMPAIGN_DECISIONS = {
     },
 }
 
+# ── [MW0601 411차] 피처 확정 결정 레지스트리 (주기점검 Phase B) ────────────────
+#
+# 왜 필요한가: `scripts/generate_featureset_health_report.py` §4 후보 현황판은 매주
+# POOL/pending을 다시 훑어 상태를 **재계산**한다. 그래서 이미 판단이 끝난 피처
+# (`basis_pt`처럼 표본 확대 후 신호가 소멸한 것, `cancel_ratio`처럼 데이터 취득이
+# 구조적으로 불가한 것)도 매주 "축적중/검증가능"으로 다시 뜬다. 기록이 없으면 다음
+# 세션이 같은 검정을 반복하고, 우연히 유의가 나오면 **반증된 피처가 재승격**된다.
+# VALIDATION_CAMPAIGN_DECISIONS와 정확히 같은 문제이고 같은 해법이다.
+#
+# 규약: 피처명 → {"date", "decision", "note", "suppress", "re_eval", "source"}
+#   suppress=True  — §4 "살아있는 재고"에서 제외한다(재론 종결). 📌 마커로 표시.
+#   suppress=False — 마커만 붙이고 재고에는 그대로 남긴다(보류·조건부·정보성 기록).
+#   re_eval        — None이면 재검정 금지. 날짜나 조건 문자열이면 그때 재론한다.
+#   source         — 근거 위치. **이 필드 없이 항목을 추가하지 말 것.**
+#
+# 판정 로직에는 일절 관여하지 않는다 — L0 건강도·L1 IC는 사전등록 기준으로만
+# 계산되고, 이 레지스트리는 "그래서 사람이 무엇을 결정했나"만 남긴다. 결정이 바뀌면
+# 여기를 갱신하고 dev_memory/DECISION_LOG.md에도 함께 기록할 것.
+#
+# ⚠ 등록 기준 — 넣지 말아야 할 것이 넣어야 할 것보다 중요하다:
+#   · **기록된 결정만** 올린다. "이건 봐도 안 될 것 같다"는 판단은 결정이 아니다.
+#     근거 없는 등록은 실제로 기각된 적 없는 후보를 영구히 숨기는 것과 같다.
+#   · **"단독 신호로 돈이 안 된다" ≠ "모델 입력으로 무용하다".** 394차가 비용차감
+#     후 생존 신호 0/189를 확인했지만(`foreign_futures_net` IC t=-3.51인데 일중
+#     -1.087pt/일), 그것은 그 피처를 단독 게이트로 쓸 때의 결론이지 GBM 입력에서
+#     빼라는 결론이 아니다. 그래서 수급 계열은 여기 등록하지 않는다.
+#   · **CORE 피처(CLAUDE.md §3)는 어떤 경우에도 suppress=True로 올리지 않는다.**
+#     CORE 교체는 사용자 승인 사안이며 이 레지스트리의 권한 밖이다.
+_EXHAUSTION_NOTE = (
+    "394차 계측결함 교정 완료 후에도 `EXHAUSTION_RESTORE_MODE='shadow'`로 유지 중 — "
+    "라이브 소비를 열지 않고 값만 기록한다(표준절차 Phase 6 '조건부채택(섀도 유지)'의 "
+    "대표 사례). live 전환 조건이 이미 사전등록돼 있다: ⓐ 발화 시점 사후수익률이 "
+    "기대방향 기준 일자단위로 유의하게 양(+) ⓑ 교정값 포함 EOD 재학습 1회 이상 완료 "
+    "ⓒ 탈진 레짐 발생률 확인(RegimeChampGate가 그 구간 진입을 막으므로 챔피언 승격 "
+    "여부를 함께 결정). 현재 미충족 사유는 알파 미검증 — 교정 후 발화 시점 사후 10분 "
+    "수익률 평균 −1.72pt(n=89, t=−1.35)로 음도 양도 아니다. "
+    "별칭 `cvd_exhaustion`·`cvd_exhaustion_signal`도 같은 결정에 묶인다."
+)
+
+FEATURE_SET_DECISIONS = {
+    # ── 재론 종결 (suppress=True) ─────────────────────────────────────────────
+    "basis_pt": {
+        "date": "2026-07-26",
+        "decision": "승격 보류 — 표본 확대 후 신호 소멸(재현 실패)",
+        "note": "07-13 보고서가 1m/3m/15m IC +0.048~+0.099(전부 명목 유의, 호라이즌 단조 "
+                "증가)로 유망 후보라 판단했으나, 그 표본은 07-14 **하루치**(커버리지 17.3%)"
+                "였다. 07-14~07-24로 2,953행(약 8거래일)까지 확대해 재검증하자 전 호라이즌 "
+                "비유의(p 0.11~0.94)로 소멸했다. 386차 결론: '추가 축적으로도 신호가 나타날 "
+                "근거 약함(방향 전환 없이 계속 0에 수렴 중)'. "
+                "⚠ 원문 표현은 **'승격 보류'**이지 '기각'이 아니다 — 표준절차 Phase 6의 "
+                "기각(반증) 요건은 충족하나 그렇게 종결 선언된 적은 없으므로 그대로 옮긴다.",
+        "suppress": True,
+        "re_eval": "표본이 386차 시점(2,953행)의 4배 이상으로 늘고 다른 근거가 새로 "
+                   "생겼을 때만 1회 재검정. 그 전에는 재론 금지.",
+        "source": "dev_memory/DECISION_LOG.md 2026-07-26(386차) §3, "
+                  "featureset by horizon/horizon_feature_sets.json _meta",
+    },
+    "basis_change_pt": {
+        "date": "2026-07-26",
+        "decision": "승격 보류 — basis_pt와 동일 검정에서 함께 재현 실패",
+        "note": "IC -0.0119~+0.0001 (p 0.51~1.00)으로 전 호라이즌 비유의. basis_pt보다 "
+                "오히려 더 확실하게 0에 붙어 있다. 재론 조건은 basis_pt와 동일.",
+        "suppress": True,
+        "re_eval": "basis_pt와 동시에만 재론.",
+        "source": "dev_memory/DECISION_LOG.md 2026-07-26(386차) §3",
+    },
+    "cancel_ratio": {
+        "date": "2026-07-14",
+        "decision": "구현불가 확정 — 데이터 원천 없음 (완전 사장)",
+        "note": "Cybos Plus 취소/정정 TR(CpTd6832/6833 등)은 전부 '내 계좌' 전용이라 "
+                "**시장 전체 취소 이벤트라는 데이터 자체가 없다**(Level-3 주문흐름 미제공). "
+                "대안으로 검토한 Dscbo1.FutOptRest는 2026-07-14 실계정 BlockRequest 실측에서 "
+                "'고객님의 계좌등급으로는 FutOptRest 시세데이터를 받는 데 제한이 있습니다' "
+                "(파라미터 무관 항상 발생)로 조회 자체가 불가. 표준절차 Phase 1의 "
+                "'이론상 가능 ≠ 실측 가능' 대표 사례 — 계좌등급이 바뀌지 않는 한 재론 불가.",
+        "suppress": True,
+        "re_eval": None,
+        "source": "config/constants.py DYNAMIC_FEATURES_POOL 주석, "
+                  "docs/미륵이고도화2/cancel_ratio_Cybos_데이터가용성_재조사_2026-07-14.md",
+    },
+    "cvd_direction": {
+        "date": "2026-06-25",
+        "decision": "교체 완료 — cvd_delta_norm이 대체 (후보 목록의 잔존 항목)",
+        "note": "Cybos buy_vol의 시스템 편향(buy>sell 98.6%)으로 10일 이상 +0.5에 고착해 "
+                "**상수 피처로 전락**했고, 2026-06-25 project-wide로 CORE에서 "
+                "cvd_delta_norm(price-action 기반, 편향 없음)으로 교체됐다. 1m·3m "
+                "feature_names pkl에 cvd_delta_norm만 있고 cvd_direction은 없음을 386차가 "
+                "직접 로드로 확인했다. 10m `include_pending_validation`에 남아 있는 항목은 "
+                "395차가 '교체 이후에도 후보 목록에 남아있던 **폐기 대상 잔존 항목**'으로 "
+                "판정하고 '항목 자체 제거 검토 권고'를 메모해 둔 것이다 — json 편집은 "
+                "사용자 승인 사안이라 그때 삭제하지 않았다. 여기 등록은 그 판정의 기록이며, "
+                "**json에서 실제로 지우는 것은 여전히 사용자 승인이 필요하다.**",
+        "suppress": True,
+        "re_eval": "Cybos buy_vol 편향 자체가 해소되면(원천 데이터 변경) 재론 가능.",
+        "source": "dev_memory/DECISION_LOG.md 2026-07-27(395차) §2, "
+                  "config/settings.py CORE_FEATURES_BY_GROUP 주석(2026-06-25)",
+    },
+    "threshold_feasibility": {
+        "date": "2026-07-26",
+        "decision": "기각 — F4 재검증에서 부호 반전 (재현 실패)",
+        "note": "설계 시점 rho=+0.086이 최신 구간 재실측에서 IC=-0.024로 **부호가 뒤집혔다**. "
+                "386차가 1m 레지스트리 갭 2종을 DYNAMIC_FEATURES_POOL에 등록할 때 이 피처는 "
+                "'F4 재현실패 케이스라 등록하지 않음(opt_gex_bn류와 동일 취급, 331차 선례 "
+                "그대로)'으로 **명시적으로 제외**했다. 15m include_pending_validation에 "
+                "남아 있는 것은 강등 시점의 잔존 표기다.",
+        "suppress": True,
+        "re_eval": None,
+        "source": "dev_memory/DECISION_LOG.md 2026-07-26(386차) §2",
+    },
+
+    # ── 마커만 (suppress=False) — 재고에 그대로 둔다 ──────────────────────────
+    # 아래는 "끝난 판단"이 아니라 "진행 중인 상태"다. 재고에서 빼면 오히려 추적이 끊긴다.
+    "opt_gex_bn": {
+        "date": "2026-07-14",
+        "decision": "강등(include → pending) — magnitude 계열 재현 실패, sign 계열로 대체",
+        "note": "설계 rho=0.198 → 최신구간 실측 IC=0.013으로 재현 실패. 다만 **개념 전체가 "
+                "죽은 게 아니다** — 같은 F4 재실측에서 sign/ratio 계열(opt_gex_sign "
+                "IC=0.035 p=0.006, opt_atm_pcr IC=0.051 p<1e-4)은 부분 생존했고, "
+                "'재현될 때까지 sign/ratio 계열로 대체' 원칙에 따라 그 둘만 POOL로 승격했다. "
+                "표준절차 Phase 4-4(표현형 다양성)의 실례이므로 재고에 남긴다.",
+        "suppress": False,
+        "re_eval": "월간 L1' 스크리닝에서 magnitude 계열 IC가 회복되는지 계속 관찰.",
+        "source": "config/constants.py DYNAMIC_FEATURES_POOL 주석(331차), "
+                  "docs/미륵이고도화2/무스킬_피처셋_딥다이브_보고서_2026-07-13.md F4",
+    },
+    "opt_atm_call_oi": {
+        "date": "2026-07-14",
+        "decision": "강등(include → pending) — magnitude 계열 재현 실패",
+        "note": "opt_gex_bn과 동일 F4 판정. 비율 계열 opt_atm_pcr이 대체 후보로 승격됐다.",
+        "suppress": False,
+        "re_eval": "opt_gex_bn과 동시 관찰.",
+        "source": "docs/미륵이고도화2/무스킬_피처셋_딥다이브_보고서_2026-07-13.md F4",
+    },
+    "opt_atm_put_oi": {
+        "date": "2026-07-14",
+        "decision": "강등(include → pending) — magnitude 계열 재현 실패",
+        "note": "opt_gex_bn과 동일 F4 판정. 비율 계열 opt_atm_pcr이 대체 후보로 승격됐다.",
+        "suppress": False,
+        "re_eval": "opt_gex_bn과 동시 관찰.",
+        "source": "docs/미륵이고도화2/무스킬_피처셋_딥다이브_보고서_2026-07-13.md F4",
+    },
+    "opt_chain_pcr": {
+        "date": "2026-07-14",
+        "decision": "⚠ CORE — 15m 승격만 보류. 30m CORE 지위는 그대로 유지",
+        "note": "**이 항목을 '기각'으로 읽지 말 것.** opt_chain_pcr은 CLAUDE.md 절대원칙 §3의 "
+                "장기(30m) 그룹 CORE 피처이고 체크리스트 게이트로 소비된다. 보류 대상은 "
+                "'15m 모델 입력으로 승격하는 것'뿐이며, 그 근거는 설계 rho=0.184 → 최신구간 "
+                "IC=0.002 재현 실패다. CORE 교체는 사용자 승인 사안이라 이 레지스트리의 "
+                "권한 밖이다.",
+        "suppress": False,
+        "re_eval": "15m 승격은 월간 L1'에서 IC가 회복될 때 재론.",
+        "source": "CLAUDE.md 절대원칙 §3, "
+                  "docs/미륵이고도화2/무스킬_피처셋_딥다이브_보고서_2026-07-13.md F4",
+    },
+    "vwap_position": {
+        "date": "2026-07-27",
+        "decision": "⚠ CORE 유지 — 단, 단독 신호로는 비용차감 후 손실 확정",
+        "note": "**제거 결정이 아니다.** 단·중기 CORE(CLAUDE.md §3)이자 미통과 시 강제 X등급인 "
+                "게이트이며 현행 배포 피처셋에도 들어 있다. 기록하는 이유는 반대 방향의 "
+                "오독을 막기 위해서다 — IC가 압도적(t=-14.7)이라 나중에 누군가 '이걸 단독 "
+                "방향신호로 쓰자'고 재발굴할 여지가 크지만, 394차 거래성 검정에서 왕복비용 "
+                "차감 후 **양방향 모두 손실**로 확정됐다. 게이트로 쓸 때도 ±2.0 클리핑에 "
+                "51.6%가 몰려 해상도가 낮다는 별도 한계가 있다.",
+        "suppress": False,
+        "re_eval": "해당 없음 — CORE 지위 변경은 사용자 승인 사안이라 이 레지스트리에서 "
+                   "재론하지 않는다(정보성 기록).",
+        "source": "docs/Spec for feature/피처_발굴_표준절차.md Phase 4-3(394차 거래성 하네스)",
+    },
+    "bear_exhaustion": {
+        "date": "2026-07-27",
+        "decision": "조건부채택(섀도 유지) — 라이브 소비 미개방",
+        "note": _EXHAUSTION_NOTE,
+        "suppress": False,
+        "re_eval": "섀도 20거래일 이상 관측 후 ⓐⓑⓒ 전부 충족 시 live 전환 재론.",
+        "source": "config/settings.py EXHAUSTION_RESTORE_MODE 주석, "
+                  "docs/미륵이고도화2/Phase1_소진복구_2026-07-27.md",
+    },
+    "bull_exhaustion": {
+        "date": "2026-07-27",
+        "decision": "조건부채택(섀도 유지) — 라이브 소비 미개방",
+        "note": _EXHAUSTION_NOTE,
+        "suppress": False,
+        "re_eval": "섀도 20거래일 이상 관측 후 ⓐⓑⓒ 전부 충족 시 live 전환 재론.",
+        "source": "config/settings.py EXHAUSTION_RESTORE_MODE 주석, "
+                  "docs/미륵이고도화2/Phase1_소진복구_2026-07-27.md",
+    },
+    "bear_exhaustion_signal": {
+        "date": "2026-07-27",
+        "decision": "조건부채택(섀도 유지) — 라이브 소비 미개방",
+        "note": _EXHAUSTION_NOTE,
+        "suppress": False,
+        "re_eval": "bear_exhaustion과 동시 판단.",
+        "source": "config/settings.py EXHAUSTION_RESTORE_MODE 주석",
+    },
+    "bull_exhaustion_signal": {
+        "date": "2026-07-27",
+        "decision": "조건부채택(섀도 유지) — 라이브 소비 미개방",
+        "note": _EXHAUSTION_NOTE,
+        "suppress": False,
+        "re_eval": "bull_exhaustion과 동시 판단.",
+        "source": "config/settings.py EXHAUSTION_RESTORE_MODE 주석",
+    },
+}
+
 # [297차, P1-7] 캠페인 표본 기아 조기경보 + 완화 사다리 — §3-8 사전 등록 (변경 금지).
 # 트리거: 주간(7일) 진입 체결 건수 < ENTRY_STARVATION_WEEKLY_MIN. 이 속도가 유지되면
 # 4주 캠페인 기간 내 VALIDATION_CAMPAIGN의 여러 min_samples(tb=800/hz, meta_gate=90,
