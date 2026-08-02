@@ -2914,6 +2914,269 @@ def resolve_and_eval_toxicity_block() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [30]/[31] toxicity 재보정 계열 공통 (MW0601 419차)
+# ──────────────────────────────────────────────────────────────
+
+_TOX_RECALIB_GRACE_DAYS = 5  # 배선 직후 "표본 0"을 계측사망으로 오탐하지 않을 유예(달력일)
+
+
+def _tox_recalib_grace_active() -> bool:
+    """배선일로부터 유예기간 안이면 True.
+
+    [357차]가 도입한 no_data(🔴 NO-DATA "계측 점검 필요")는 **소스 적재 자체가
+    0인 계측 사망 의심**을 뜻한다. 그런데 신설 채널은 배선 당일에는 정의상 표본이
+    0이라, 그대로 두면 첫 주 리포트가 매번 빨간 오탐을 띄운다. 유예기간 안에서는
+    verdict를 INSUFFICIENT로만 두고 no_data 플래그를 세우지 않는다 —
+    유예가 지나도 0건이면 그때는 **진짜** 배선 문제이므로 no_data가 맞다.
+    """
+    eff = str(VALIDATION_CAMPAIGN.get(
+        "toxicity_recalib_watch", {}).get("effective_date", ""))
+    if not eff:
+        return False
+    try:
+        eff_d = datetime.datetime.strptime(eff, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    return (datetime.date.today() - eff_d).days < _TOX_RECALIB_GRACE_DAYS
+
+
+# ──────────────────────────────────────────────────────────────
+# [30] toxicity_score 재보정(P0) 후 밴드 분포 관찰 (MW0601 419차)
+# ──────────────────────────────────────────────────────────────
+
+def eval_toxicity_recalib_watch() -> dict:
+    """cancel_stress ceiling 재보정 후 toxicity 밴드 분포가 정상 구간으로
+    돌아왔는지 raw_features 실측으로 확인한다.
+
+    계기: 380차가 cancel_churn_ratio ceiling을 0.08로 잠정 설정하고 코드 주석에
+    "라이브 섀도 관찰 후 재보정 필요"라고 예고했으나 실행되지 않았다. 라이브
+    실측(2026-07-24~07-31, n=2,229)에서 cancel_churn_ratio p50=0.2649로 ceiling의
+    3.3배 — **초과율 100%** 라 toxicity_cancel_stress가 전 분봉 1.0으로 포화했고,
+    가중 0.20짜리 성분이 score에 상수 +0.20을 더하는 죽은 항이 돼 있었다
+    (중앙값 score 0.3475의 58%). 그 오프셋 때문에 밴드 분포가 380차 설계목표에서
+    완전히 이탈 — block 23.3% / reduce 76.4% / **pass 0.27%**.
+
+    419차가 ceiling을 실측 p99인 0.42로 재보정했고, 이 채널이 그 결과를 매주 잰다.
+    밴드 판정식은 ToxicityGate.evaluate()·ToxicityCalculator.update()와 동일하게
+    재현한다(score/score_ma/spread_ticks OR 조건).
+
+    백필 생성 행은 제외한다(418차) — 호가가 전부 0이라 spread/cancel 성분이 죽어
+    밴드 분포를 인위적으로 pass 쪽으로 끌어당긴다.
+    """
+    cr = VALIDATION_CAMPAIGN.get("toxicity_recalib_watch", {})
+    eff = str(cr.get("effective_date", ""))
+    out = {"verdict": "INSUFFICIENT", "effective_date": eff,
+           "cancel_churn_ceiling": None}
+    try:
+        from config.settings import TOXICITY_CANCEL_CHURN_CEILING as _ceil
+        out["cancel_churn_ceiling"] = float(_ceil)
+    except Exception:
+        pass
+
+    try:
+        with _conn(RAW_DATA_DB) as conn:
+            rows = conn.execute(
+                "SELECT ts, features FROM raw_features WHERE ts >= ? ORDER BY ts",
+                (eff,),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        # reason을 함께 세팅해야 요약표가 빈 수치를 0%로 렌더링하지 않는다.
+        out["reason"] = "raw_features 조회 실패: %s" % e
+        out["no_data"] = True
+        return out
+
+    n_block = n_reduce = n_pass = 0
+    n_cancel_sat = 0
+    scores, ratios = [], []
+    for r in rows:
+        if not _row_is_live(r["features"]):
+            continue
+        try:
+            d = json.loads(r["features"])
+        except (ValueError, TypeError):
+            continue
+        s = d.get("toxicity_score")
+        if s is None:
+            continue
+        s = float(s)
+        ma = float(d.get("toxicity_score_ma") or 0.0)
+        spt = float(d.get("spread_ticks") or 0.0)
+        cs = d.get("toxicity_cancel_stress")
+        if cs is not None:
+            if float(cs) >= 0.999:
+                n_cancel_sat += 1
+        cr_ratio = d.get("cancel_churn_ratio")
+        if cr_ratio is not None:
+            ratios.append(float(cr_ratio))
+        scores.append(s)
+        # ToxicityGate.evaluate()와 동일 판정식
+        if s >= 0.45 or ma >= 0.40:
+            n_block += 1
+        elif s >= 0.28 or ma >= 0.25 or spt >= 8.0:
+            n_reduce += 1
+        else:
+            n_pass += 1
+
+    n = n_block + n_reduce + n_pass
+    out["n_bars"] = n
+    if n == 0:
+        _grace = _tox_recalib_grace_active()
+        out["no_data"] = not _grace
+        out["reason"] = "재보정일(%s) 이후 라이브 분봉 0건%s" % (
+            eff or "—",
+            " — 배선 직후 유예 중(정상)" if _grace else " — 유예 경과, 배선 점검 필요")
+        return out
+
+    out.update({
+        "block_share": round(n_block / n, 4),
+        "reduce_share": round(n_reduce / n, 4),
+        "pass_share": round(n_pass / n, 4),
+        "cancel_sat_share": round(n_cancel_sat / n, 4),
+        "score_p50": round(float(np.percentile(scores, 50)), 4),
+        "score_p90": round(float(np.percentile(scores, 90)), 4),
+    })
+    if ratios:
+        out["churn_p50"] = round(float(np.percentile(ratios, 50)), 4)
+        out["churn_p99"] = round(float(np.percentile(ratios, 99)), 4)
+
+    min_bars = int(cr.get("min_bars", 1500))
+    if n < min_bars:
+        out["reason"] = "재보정 후 분봉 부족 (%d < %d) — 판정 보류" % (n, min_bars)
+        return out
+
+    lo = float(cr.get("pass_share_lo", 0.15))
+    hi = float(cr.get("pass_share_hi", 0.92))
+    bmax = float(cr.get("block_share_max", 0.12))
+    smax = float(cr.get("cancel_sat_max", 0.30))
+    fails = []
+    if not (lo <= out["pass_share"] <= hi):
+        fails.append("pass %.1f%% ∉ [%.0f%%, %.0f%%]" % (
+            out["pass_share"] * 100, lo * 100, hi * 100))
+    if out["block_share"] > bmax:
+        fails.append("block %.1f%% > %.0f%%" % (out["block_share"] * 100, bmax * 100))
+    if out["cancel_sat_share"] > smax:
+        fails.append("cancel포화 %.1f%% > %.0f%%" % (
+            out["cancel_sat_share"] * 100, smax * 100))
+
+    out["verdict"] = "FAIL" if fails else "PASS"
+    if fails:
+        out["reason"] = " / ".join(fails)
+        out["recommendation"] = (
+            "ToxicityGate 임계값(block 0.45 / reduce 0.28) 재선정을 주간회의 안건으로 "
+            "올릴 것 — **자동 변경 금지**(임계값은 전 채널 판정에 영향, §3 원칙대로 "
+            "사유를 DECISION_LOG.md에 기록해야 함)"
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# [31] ToxicityGate reduce 밴드 연속 배수 섀도 (MW0601 419차)
+# ──────────────────────────────────────────────────────────────
+
+def eval_toxicity_reduce_mult_shadow() -> dict:
+    """상수 0.7 대신 연속 배수를 썼다면 수량이 달라졌을지를 실체결 진입에서 잰다.
+
+    exec_1m_shadow와 동일 계열 — 실제 체결된 진입에 태그만 붙이므로 counterfactual
+    가격 시뮬레이션이 불필요하다(toxicity_reduce_shadow 테이블, ts로 trades 조인).
+
+    이 채널의 1차 질문은 손익이 아니라 **실효성**이다. reduce 밴드에서
+    toxicity_score는 단조 등급성을 갖는데(라이브 n=1,614에서 향후 스프레드
+    Spearman rho=+0.319, t=13.48) 상수 0.7이 그걸 전량 폐기한다. 다만 main.py의
+    사이징 체인이 매 단계 max(1, round())로 양자화하고 실체결 수량이 1~2계약에
+    묶여 있어, 연속화해도 수량이 실제로 바뀌지 않을 가능성이 크다 — 그렇다면
+    코드 복잡도만 늘리는 변경이므로 하지 않는 것이 옳다.
+
+    PASS = 현행 상수 유지(수량 상이 비율이 임계 미만 — 실적용 실익 없음)
+    FAIL = 실적용 검토(앵커 재도출 + 양자화 체인 단일화를 함께 안건화)
+    """
+    cr = VALIDATION_CAMPAIGN.get("toxicity_reduce_mult_shadow", {})
+    out = {"verdict": "INSUFFICIENT"}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                "SELECT * FROM toxicity_reduce_shadow ORDER BY ts"
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        # 테이블 미생성(배선 후 첫 기동 전)도 여기로 온다 — reason을 세팅해야
+        # 요약표가 빈 수치를 "수량상이 0.0%"로 잘못 렌더링하지 않는다.
+        out["reason"] = "toxicity_reduce_shadow 조회 실패: %s" % e
+        out["no_data"] = not _tox_recalib_grace_active()
+        return out
+
+    n = len(rows)
+    out["n_samples"] = n
+    if n == 0:
+        _grace = _tox_recalib_grace_active()
+        out["no_data"] = not _grace
+        out["reason"] = "reduce 밴드 체결 진입 0건 — %s" % (
+            "계측 배선 후 첫 거래 대기(유예 중, 정상)" if _grace
+            else "유예 경과, 배선 점검 필요")
+        return out
+
+    n_div = sum(1 for r in rows
+                if float(r["qty_after_shadow"] or 0) != float(r["qty_after_applied"] or 0))
+    shadows = [float(r["tox_size_shadow"] or 0.0) for r in rows]
+    out.update({
+        "divergent_qty_n": n_div,
+        "divergent_qty_share": round(n_div / n, 4),
+        "shadow_mult_min": round(min(shadows), 4),
+        "shadow_mult_p50": round(float(np.percentile(shadows, 50)), 4),
+        "shadow_mult_max": round(max(shadows), 4),
+        # 노출 중립성 점검 — 설계상 평균이 0.70 근처여야 한다(설계 근거는 settings 주석).
+        "shadow_mult_mean": round(sum(shadows) / n, 4),
+        "applied_mult_const": 0.7,
+    })
+
+    # 실현 손익 병기 — trades와 entry_ts 조인(판정에는 쓰지 않는다, 참고용).
+    # 이 테이블은 상한 없이 누적되므로 IN 절을 청크로 쪼갠다 — SQLite 기본
+    # SQLITE_MAX_VARIABLE_NUMBER(999)를 넘으면 "too many SQL variables"로 죽는다.
+    try:
+        ts_list = [str(r["ts"]) for r in rows]
+        pnl_map = {}
+        with _conn(TRADES_DB) as conn:
+            for i in range(0, len(ts_list), 500):
+                chunk = ts_list[i:i + 500]
+                qmarks = ",".join("?" * len(chunk))
+                for t in conn.execute(
+                    "SELECT entry_ts, SUM(COALESCE(net_pnl_krw,0)) AS pnl "
+                    "FROM trades WHERE entry_ts IN (%s) AND %s GROUP BY entry_ts"
+                    % (qmarks, _NOT_GHOST_SQL),
+                    chunk,
+                ).fetchall():
+                    pnl_map[str(t["entry_ts"])] = float(t["pnl"] or 0.0)
+        matched = [pnl_map[str(r["ts"])] for r in rows if str(r["ts"]) in pnl_map]
+        if matched:
+            out["matched_trades"] = len(matched)
+            out["total_pnl_krw"] = round(sum(matched), 0)
+    except Exception as e:
+        out["pnl_join_error"] = str(e)
+
+    min_n = int(cr.get("min_samples", 20))
+    if n < min_n:
+        out["reason"] = "표본 부족 (%d < %d) — 판정 보류" % (n, min_n)
+        return out
+
+    thr = float(cr.get("divergence_min_share", 0.20))
+    diverges = out["divergent_qty_share"] >= thr
+    out["verdict"] = "FAIL" if diverges else "PASS"
+    if diverges:
+        out["recommendation"] = (
+            "연속 배수 실적용 검토 — 단 즉시 전환 금지. (a) 앵커를 재보정 후 분포로 "
+            "재도출하고([30] 채널) (b) 사이징 체인의 8단 max(1,round()) 양자화 단일화를 "
+            "함께 안건화할 것 (§9 사전등록 원칙)"
+        )
+    else:
+        out["reason"] = (
+            "수량 상이 %.1f%% < %.0f%% — 양자화에 흡수돼 실적용 실익 없음(현행 상수 유지)"
+            % (out["divergent_qty_share"] * 100, thr * 100)
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [18] RegimeExhaustionGate counterfactual — resolve + 판정 (379차)
 # ──────────────────────────────────────────────────────────────
 
@@ -4243,6 +4506,8 @@ def build_report(days: int) -> tuple:
     ucw = eval_unreachable_cf_watch()
     siw = eval_sizing_inversion_watch()      # [28] MW0601 405차 P1-2
     mrs = eval_mean_revert_size_watch()      # [29] MW0601 405차 P1-3
+    trw = eval_toxicity_recalib_watch()      # [30] MW0601 419차 P0
+    trm = eval_toxicity_reduce_mult_shadow()  # [31] MW0601 419차 P1
     off = eval_offline_geometry_channels()
 
     metrics = {
@@ -4264,6 +4529,7 @@ def build_report(days: int) -> tuple:
         "tp1_protect_giveback_watch": tpg,
         "limit_pin_watch": lpw, "unreachable_cf_watch": ucw,
         "sizing_inversion_watch": siw, "mean_revert_size_watch": mrs,
+        "toxicity_recalib_watch": trw, "toxicity_reduce_mult_shadow": trm,
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
         "quantile_tp_shadow": off.get("quantile_tp_shadow"),
@@ -4462,6 +4728,21 @@ def build_report(days: int) -> tuple:
             "%s: n=%d 승률=%.1f%% 평균=%s원" % (
                 k, v["n"], v["win_rate"] * 100, format(v["avg_pnl_krw"], ",.0f"))
             for k, v in sorted(_mb.items())) or "표본 없음")))
+    L.append("| [30] toxicity 재보정 밴드분포 | %s | %s |" % (
+        _fmt_channel_verdict(trw),
+        trw.get("reason") or (
+            "pass=%.1f%% reduce=%.1f%% block=%.1f%% · cancel포화=%.1f%% (n=%s분봉)" % (
+                trw.get("pass_share", 0) * 100, trw.get("reduce_share", 0) * 100,
+                trw.get("block_share", 0) * 100, trw.get("cancel_sat_share", 0) * 100,
+                trw.get("n_bars", "—")))))
+    L.append("| [31] tox reduce 연속배수 섀도 | %s | %s |" % (
+        _fmt_channel_verdict(trm),
+        trm.get("reason") or (
+            "수량상이 %s/%s (%.1f%%) · 섀도배수 %s~%s (평균 %s vs 실적용 0.70)" % (
+                trm.get("divergent_qty_n", "—"), trm.get("n_samples", "—"),
+                trm.get("divergent_qty_share", 0) * 100,
+                trm.get("shadow_mult_min", "—"), trm.get("shadow_mult_max", "—"),
+                trm.get("shadow_mult_mean", "—")))))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -5531,6 +5812,92 @@ def build_report(days: int) -> tuple:
     L.append("> 0.000pt다. 표본이 더 쌓일 때까지 **현행 유지가 합리적**이다.")
     L.append("> ⚠ [12] tp1_trail_shadow가 기각한 \"TP1 **이후** 트레일 폭\"과 다른 질문이다")
     L.append("> — 이건 TP1 **시점**의 초기 보호 offset이다.")
+    L.append("")
+
+    # [30] toxicity 재보정 밴드분포 상세 (MW0601 419차)
+    L.append("## [30] toxicity_score 재보정 후 밴드 분포 (MW0601 419차, P0)")
+    L.append("")
+    if trw.get("error"):
+        L.append("> ⚠ %s" % trw["error"])
+    else:
+        L.append("- 재보정 배포일: **%s** / cancel_churn ceiling: **%s** (구값 0.08)"
+                 % (trw.get("effective_date", "—"), trw.get("cancel_churn_ceiling", "—")))
+        L.append("- 집계 분봉: %s (백필 생성 행 제외 — 418차)" % trw.get("n_bars", "—"))
+        L.append("")
+        L.append("| 구간 | block | reduce | pass | cancel_stress 포화 | score p50 |")
+        L.append("|---|---|---|---|---|---|")
+        L.append("| 재보정 **전** 실측 (07-24~07-31, n=2,229) | 23.3% | 76.4% | **0.27%** | **100.0%** | 0.3475 |")
+        L.append("| 380차 설계목표 | 0.7% | 11.8% | 87.5% | — | — |")
+        L.append("| **이번 주 실측** | %s | %s | %s | %s | %s |" % (
+            ("%.1f%%" % (trw["block_share"] * 100)) if "block_share" in trw else "—",
+            ("%.1f%%" % (trw["reduce_share"] * 100)) if "reduce_share" in trw else "—",
+            ("%.1f%%" % (trw["pass_share"] * 100)) if "pass_share" in trw else "—",
+            ("%.1f%%" % (trw["cancel_sat_share"] * 100)) if "cancel_sat_share" in trw else "—",
+            trw.get("score_p50", "—")))
+        L.append("")
+        if "churn_p50" in trw:
+            L.append("- cancel_churn_ratio 실측: p50=%s / p99=%s (ceiling %s)"
+                     % (trw["churn_p50"], trw["churn_p99"],
+                        trw.get("cancel_churn_ceiling", "—")))
+        L.append("- **판정: %s**%s" % (
+            trw.get("verdict", "—"),
+            (" — %s" % trw["reason"]) if trw.get("reason") else ""))
+        if trw.get("recommendation"):
+            L.append("- 권고: %s" % trw["recommendation"])
+    L.append("")
+    L.append("> **왜 이 채널이 생겼나**: 380차가 `cancel_churn_ratio` ceiling을 0.08로")
+    L.append("> 잠정 설정하며 코드 주석에 \"라이브 섀도 관찰 후 재보정 필요\"라고 **스스로**")
+    L.append("> **예고**했으나 실행되지 않았다. 라이브 실측 p50=0.2649로 ceiling의 3.3배 —")
+    L.append("> **초과율 100%** 라 가중 0.20짜리 성분이 전 분봉에서 1.0으로 포화해 score에")
+    L.append("> 상수 +0.20을 더하는 죽은 항이 됐다(중앙값 score 0.3475의 58%).")
+    L.append("> 그 오프셋 때문에 게이트가 사실상 상시 발동(pass 0.27%) 상태였다.")
+    L.append("> ⚠ **FAIL이어도 임계값을 자동으로 바꾸지 말 것** — block 0.45 / reduce 0.28은")
+    L.append("> 전 채널 판정에 영향을 주므로 §3 원칙대로 주간회의 결정 + DECISION_LOG 기록이")
+    L.append("> 선행돼야 한다. 또한 이 재보정은 **진입을 늘리는 방향**이라(시뮬레이션 기준")
+    L.append("> block 23.3%→8.6%) CLAUDE.md 실전전환기준 ⑧과 함께 읽어야 한다.")
+    L.append("")
+
+    # [31] tox reduce 연속배수 섀도 상세 (MW0601 419차)
+    L.append("## [31] ToxicityGate reduce 연속 배수 섀도 (MW0601 419차, P1)")
+    L.append("")
+    if trm.get("error"):
+        L.append("> ⚠ %s" % trm["error"])
+    else:
+        L.append("- reduce 밴드 체결 진입: **%s건**%s" % (
+            trm.get("n_samples", "—"),
+            (" (trades 조인 %s건, 실현손익 합 %s원)" % (
+                trm["matched_trades"], format(trm.get("total_pnl_krw", 0), ",.0f")))
+            if trm.get("matched_trades") else ""))
+        if "shadow_mult_mean" in trm:
+            L.append("- 섀도 배수 분포: min=%s / p50=%s / max=%s, **평균=%s** (실적용 상수 0.70)"
+                     % (trm["shadow_mult_min"], trm["shadow_mult_p50"],
+                        trm["shadow_mult_max"], trm["shadow_mult_mean"]))
+            L.append("  - 평균이 0.70에서 크게 벗어나면 **노출 중립 설계가 깨진 것**이다 —")
+            L.append("    앵커(`TOXICITY_REDUCE_MULT_SHADOW_HI/LO`) 재도출 필요.")
+        if "divergent_qty_share" in trm:
+            L.append("- tox 스테이지에서 수량이 달라진 진입: **%s/%s (%.1f%%)** (기준 %.0f%%)"
+                     % (trm["divergent_qty_n"], trm["n_samples"],
+                        trm["divergent_qty_share"] * 100,
+                        float(VALIDATION_CAMPAIGN.get(
+                            "toxicity_reduce_mult_shadow", {}).get(
+                            "divergence_min_share", 0.20)) * 100))
+        L.append("- **판정: %s**%s" % (
+            trm.get("verdict", "—"),
+            (" — %s" % trm["reason"]) if trm.get("reason") else ""))
+        if trm.get("recommendation"):
+            L.append("- 권고: %s" % trm["recommendation"])
+    L.append("")
+    L.append("> **PASS가 \"좋다\"는 뜻이 아니다** — 이 채널의 PASS는 \"연속화해도 수량이")
+    L.append("> 안 바뀌니 현행 상수를 유지하라\"는 뜻이다. 상수 0.7이 정보를 폐기하는 것은")
+    L.append("> 실측으로 확정돼 있다(reduce 밴드 n=1,614에서 향후 15m 평균스프레드가 5분위")
+    L.append("> 2.8→3.8틱 단조 증가, Spearman rho=+0.319 t=13.48). 다만 사이징 체인이 8단")
+    L.append("> `max(1, round())`로 양자화하고 실체결이 1~2계약에 묶여 있어 그 정보를 살릴")
+    L.append("> 여지 자체가 없을 수 있고, 그렇다면 복잡도만 늘리는 변경이므로 하지 않는 것이 맞다.")
+    L.append("> ⚠ `qty_after_*`는 **tox 스테이지 국소값**이다 — 하류(L2·Hurst·Degraded·상한)를")
+    L.append("> 재시뮬레이션하지 않는다. 두 값이 같으면 최종 수량도 같지만(입력 동일), 다르다고")
+    L.append("> 최종 수량이 반드시 달라지는 것은 아니다.")
+    L.append("> ⚠ 현행 앵커는 **재보정 전** 분포로 도출됐다 — [30]이 새 분포를 확정하면")
+    L.append("> 재도출할 것. 그전 판정은 잠정이다.")
     L.append("")
     L.append("---")
     L.append("")

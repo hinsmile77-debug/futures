@@ -66,6 +66,7 @@ from config.settings import (
     LOSS_TIER1_ENABLED, LOSS_TIER1_TICK_ENABLED,
     TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
+    TOXICITY_REDUCE_MULT_SHADOW_HI, TOXICITY_REDUCE_MULT_SHADOW_LO,
     LIMIT_ENTRY_FIRST_ENABLED, LIMIT_ENTRY_TIMEOUT_SEC,
     HZ_DEPLOY_POLICY,
     BAR_ONLY_RELAX_ENABLED, BAR_ONLY_RELAX_MAX_AGE,
@@ -344,6 +345,9 @@ class TradingSystem:
         self.toxicity_gate     = ToxicityGate(
             severe_spread_block_ticks=TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
             severe_spread_block_enabled=TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED,
+            # [MW0601 419차 / P1] 섀도 전용 연속 배수 앵커 — 실사이징 무관여
+            reduce_mult_shadow_hi=TOXICITY_REDUCE_MULT_SHADOW_HI,
+            reduce_mult_shadow_lo=TOXICITY_REDUCE_MULT_SHADOW_LO,
         )
         self.trend_gate        = TrendPersistenceGate()
         self.batch_retrainer          = BatchRetrainer()
@@ -8195,6 +8199,12 @@ class TradingSystem:
                                 self._log_exec_1m_shadow(
                                     final_dir_str, _final_grade, features, horizon_proba,
                                 )
+                                # [MW0601 419차 / P1] reduce 밴드 연속 배수 섀도우
+                                self._log_toxicity_reduce_shadow(
+                                    final_dir_str, _final_grade, features, _tox_gate,
+                                    locals().get("_tox_qty_before", 0),
+                                    _qty_auto,
+                                )
                                 _entry_executed_this_cycle = True
                 else:
                     # 모드 필터 차단
@@ -8300,6 +8310,12 @@ class TradingSystem:
                     )
                     self._log_exec_1m_shadow(
                         final_dir_str, _final_grade, features, horizon_proba,
+                    )
+                    # [MW0601 419차 / P1] reduce 밴드 연속 배수 섀도우 (C등급 실험 진입 경로)
+                    self._log_toxicity_reduce_shadow(
+                        final_dir_str, _final_grade, features, _tox_gate,
+                        locals().get("_tox_qty_before", 0),
+                        _qty_c_exp,
                     )
                     _entry_executed_this_cycle = True
 
@@ -9000,6 +9016,55 @@ class TradingSystem:
             )
         except Exception as _e1s_e:
             logger.warning("[Exec1mShadow] 기록 실패 (무해): %s", _e1s_e)
+
+    def _log_toxicity_reduce_shadow(
+        self, direction: str, grade: str, features: Optional[dict],
+        tox_gate: Optional[dict], qty_before_tox: float, qty_entered: float,
+    ) -> None:
+        """[MW0601 419차 / P1] ToxicityGate reduce 밴드 연속 배수 섀도우 계측.
+
+        exec_1m_shadow와 동일 계열 — 실제 체결된 진입에 "상수 0.7 대신 연속 배수를
+        썼다면 이 스테이지에서 수량이 달라졌을까"를 태그로 붙인다. 라이브 의사결정에는
+        전혀 관여하지 않는다(size_multiplier_shadow를 소비하는 사이징 코드 없음).
+
+        qty_after_* 는 tox 스테이지 국소 결과다 — 하류(L2·Hurst·Degraded·상한)를
+        재시뮬레이션하지 않는다. 자세한 해석 한계는 db_utils.py 테이블 주석 참조.
+        """
+        try:
+            _tg = tox_gate or {}
+            _act = str(_tg.get("action", "pass"))
+            # reduce가 아닌 분봉은 실배수와 섀도배수가 정의상 동일 — 기록해도 정보가 없다.
+            if _act != "reduce":
+                return
+            _feat = features or {}
+            _applied = float(_tg.get("size_multiplier", 1.0) or 1.0)
+            _shadow = float(_tg.get("size_multiplier_shadow", _applied) or _applied)
+            _qb = float(qty_before_tox or 0.0)
+            execute(
+                TRADES_DB,
+                """INSERT INTO toxicity_reduce_shadow
+                   (ts, direction, grade, toxicity_score, toxicity_score_ma, spread_ticks,
+                    tox_action, tox_size_applied, tox_size_shadow,
+                    qty_before_tox, qty_after_applied, qty_after_shadow, qty_entered)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                    direction,
+                    grade,
+                    float(_tg.get("score", 0.0) or 0.0),
+                    float(_tg.get("score_ma", 0.0) or 0.0),
+                    float(_feat.get("spread_ticks", 0.0) or 0.0),
+                    _act,
+                    _applied,
+                    _shadow,
+                    _qb,
+                    float(max(1, int(round(_qb * _applied)))) if _qb > 0 else 0.0,
+                    float(max(1, int(round(_qb * _shadow)))) if _qb > 0 else 0.0,
+                    float(qty_entered or 0.0),
+                ),
+            )
+        except Exception as _trs_e:
+            logger.warning("[ToxReduceShadow] 기록 실패 (무해): %s", _trs_e)
 
     def _post_exit(self, result: dict, filled_at=None):
         """청산 후 처리.
