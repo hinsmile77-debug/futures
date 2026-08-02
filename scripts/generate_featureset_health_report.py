@@ -575,16 +575,23 @@ def build_report(days, pool_days):
         ndays = len(presence.get(name) or ())
         dec = decisions.get(name) if isinstance(decisions, dict) else None
         lvl = (health.get(name) or {}).get("level", MISSING_LEVEL)
-        if dec:
-            status = "📌 %s" % (dec.get("decision") or "결정됨")
-        elif ndays <= 0:
+        if ndays <= 0:
             status = "⚠ 미배선(축적 0)"
         elif ndays >= POOL_READY_DAYS:
             status = "검증가능 (%d일)" % ndays
-            stock += 1
         else:
             status = "축적중 %d/%d일" % (ndays, POOL_READY_DAYS)
-            stock += 1
+
+        # 📌는 두 가지로 갈린다. suppress=True는 재론이 끝난 것이라 파이프라인 상태를
+        # 덮어쓰고 재고에서 뺀다. suppress=False는 "진행 중인 상태"에 대한 기록이므로
+        # 마커만 덧붙이고 재고에는 그대로 남긴다 — 빼면 오히려 추적이 끊긴다.
+        if dec and dec.get("suppress"):
+            status = "📌 %s" % (dec.get("decision") or "결정됨")
+        else:
+            if ndays > 0:
+                stock += 1
+            if dec:
+                status = "%s · 📌 %s" % (status, dec.get("decision") or "기록됨")
         cand_rows.append((name, ", ".join(sources[name]), ndays, lvl, status))
 
     if cand_rows:
@@ -595,8 +602,8 @@ def build_report(days, pool_days):
     else:
         L.append("(후보 없음 — POOL/pending이 전부 배포 피처셋에 포함돼 있다)")
     L.append("")
-    L.append("- **살아있는 재고**: %d건 (축적중+검증가능 — `미배선`·`📌결정됨` 제외)"
-             % stock)
+    L.append("- **살아있는 재고**: %d건 (축적중+검증가능 — `⚠ 미배선`과 §5에서 "
+             "`재고=제외`로 확정된 것은 뺀다)" % stock)
     if stock < CANDIDATE_STOCK_MIN:
         L.append("- 🔍 **발굴 세션 권고** — 재고 %d < %d. `docs/Spec for feature/"
                  "피처_발굴_표준절차.md` Phase 0으로 신규 후보를 확보할 것 "
@@ -622,17 +629,48 @@ def build_report(days, pool_days):
     L.append("## 5. 확정 결정 레지스트리 (📌)")
     L.append("")
     if decisions:
-        L.append("| 피처 | 결정 | 일자 | 사유 | 재검토 |")
+        L.append("출처: `config/settings.py:FEATURE_SET_DECISIONS` (%d건)" % len(decisions))
+        L.append("")
+        L.append("| 피처 | 결정 | 일자 | 재고 | 재검토 |")
         L.append("|---|---|---|---|---|")
         for nm in sorted(decisions):
             d = decisions[nm] or {}
             L.append("| `%s` | %s | %s | %s | %s |"
                      % (nm, d.get("decision", "?"), d.get("date", "—"),
-                        d.get("reason", "—"), d.get("re_eval") or "재검정 금지"))
+                        "제외" if d.get("suppress") else "유지",
+                        d.get("re_eval") or "재검정 금지"))
         L.append("")
-        L.append("> 여기 등록된 피처는 §4 후보 재고에서 제외된다. **판정(매주 재계산)과 "
-                 "결정(사람이 확정)은 별개다** — 리포트가 같은 수치를 다시 찍는 것은 "
-                 "미조치가 아니다(`CLAUDE.md` 검증 캠페인 운영 모드 참조).")
+        # 같은 사유를 공유하는 항목(예: exhaustion 4종)은 묶어서 한 번만 쓴다 —
+        # 동일 문단이 네 번 반복되면 읽는 사람이 그 절을 건너뛰게 된다.
+        by_note = {}
+        for nm in sorted(decisions):
+            d = decisions[nm] or {}
+            by_note.setdefault(
+                (d.get("note", "(사유 미기재)"), d.get("source") or ""), []
+            ).append(nm)
+        for (note, src), names in sorted(by_note.items(), key=lambda kv: kv[1][0]):
+            L.append("- **%s** — %s  "
+                     % (", ".join("`%s`" % n for n in names), note))
+            L.append("  근거: %s" % (src or "⚠ 근거 미기재"))
+        L.append("")
+        L.append("> `재고=제외`(suppress)만 §4 살아있는 재고에서 빠진다. `유지`는 마커만 "
+                 "붙고 재고에 그대로 남는다 — 보류·조건부채택처럼 **진행 중인 상태**를 "
+                 "재고에서 빼면 추적이 끊기기 때문이다.  ")
+        L.append("> **판정(매주 재계산)과 결정(사람이 확정)은 별개다** — 리포트가 같은 "
+                 "수치를 다시 찍는 것은 미조치가 아니다(`CLAUDE.md` 검증 캠페인 운영 모드).")
+
+        # 이름 오타 검출 — 레지스트리 키가 아무 데도 매칭되지 않으면 그 항목은 조용히
+        # 아무 일도 하지 않는다. suppress=True 오타는 "기각했다고 믿었는데 후보로
+        # 계속 살아있는" 최악의 실패라 반드시 눈에 띄어야 한다.
+        known_names = set(health) | deployed_all | set(sources)
+        orphans = sorted(n for n in decisions if n not in known_names)
+        if orphans:
+            L.append("")
+            L.append("⚠ **레지스트리 이름 불일치 %d건** — `%s`. 배포 피처·후보 명부·"
+                     "`raw_features` 어디에도 없는 이름이라 이 항목들은 아무 효과가 "
+                     "없다. 오타이거나 이미 사라진 피처다."
+                     % (len(orphans), "`, `".join(orphans)))
+        metrics["decision_orphans"] = orphans
     else:
         L.append("(등록된 확정 결정 없음 — `config/settings.py:FEATURE_SET_DECISIONS`)")
     metrics["decisions"] = decisions
