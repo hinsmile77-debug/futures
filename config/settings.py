@@ -1279,6 +1279,52 @@ VALIDATION_CAMPAIGN = {
         "min_samples": 20,  # 차단 건 최소 수 (미달 → 판정 보류, open_gap_shadow와 동일 기준)
         "cf_window_min": 30,  # counterfactual 관찰 창 (분) — open_gap_shadow와 동일
     },
+    # [MW0601 419차 신설] §18 toxicity_score 재보정(P0) 후 밴드 분포 관찰 채널.
+    # 380차가 cancel_churn_ratio ceiling을 0.08로 잠정 설정하고 "라이브 섀도 관찰 후
+    # 재보정 필요"라고 예고했으나 실행되지 않았고, 라이브 실측에서 그 값이 전 분봉을
+    # 1.0으로 포화시켜(cancel_churn_ratio p50=0.2649 = ceiling의 3.3배, 초과율 100%)
+    # score에 상수 +0.20을 더하는 죽은 항이 돼 있었다. 419차가 ceiling을 실측 p99인
+    # 0.42로 재보정(TOXICITY_CANCEL_CHURN_CEILING)했고, 이 채널은 그 결과 밴드 분포가
+    # 380차 설계목표에 수렴하는지를 raw_features 실측으로 매주 확인한다.
+    #
+    # **합격선 사전등록 — 배포 전에 확정했다(§9 사전등록 원칙).**
+    # PASS: pass 밴드 비율이 [pass_share_lo, pass_share_hi] 안 그리고 block 비율 ≤ block_share_max
+    # FAIL: 위를 벗어남 → 임계값(block 0.45 / reduce 0.28) 재선정을 주간회의 안건으로
+    #   올린다. **자동 변경 금지** — 임계값은 전 채널 판정에 영향을 주므로 바꾸려면
+    #   §3 원칙대로 사유를 DECISION_LOG에 기록해야 한다.
+    # 밴드 폭이 넓은 이유: 380차 설계목표(pass 87.5%)는 cancel_stress를 계산에서 뺀
+    # 07-14~23 백테스트 값이라 그 자체가 정확한 조준점이 아니다. 여기서는 "게이트가
+    # 상시 발동 상태를 벗어났는가"(pass가 두 자릿수 %로 회복)를 1차 기준으로 잡는다.
+    "toxicity_recalib_watch": {
+        "min_bars": 1500,       # 재보정 배포일 이후 최소 분봉 수 (약 4거래일) — 미달 시 판정 보류
+        "pass_share_lo": 0.15,  # pass 밴드 하한 (이보다 낮으면 게이트가 여전히 상시 발동)
+        "pass_share_hi": 0.92,  # pass 밴드 상한 (이보다 높으면 게이트가 사실상 무력화)
+        "block_share_max": 0.12,  # block 밴드 상한 (재보정 전 실측 23.3%)
+        "cancel_sat_max": 0.30,  # cancel_stress 포화(=1.0) 비율 상한 — P0의 직접 목표
+        "effective_date": "2026-08-03",  # 재보정 배포일 (이 날짜 이후 분봉만 집계)
+    },
+    # [MW0601 419차 신설] §19 ToxicityGate reduce 밴드 연속 배수 섀도 채널.
+    # reduce 밴드가 밴드 전체를 상수 size_multiplier=0.7 하나로 매핑하는데
+    # (joint_gate_shadow 116건 전수에서 tox_size가 예외 없이 정확히 0.7), 밴드 내부에서
+    # toxicity_score는 실제로 단조 등급성을 갖는다 — 라이브 07-24~07-31 reduce 밴드
+    # (n=1,614) 5분위에서 향후 15m 평균스프레드 2.8→3.8틱, 15m 실현레인지 9.52→13.70pt,
+    # Spearman rho=+0.319(t=13.48) / +0.260(t=10.81). 상수 0.7이 유의한 정보를 폐기 중이다.
+    #
+    # exec_1m_shadow와 동일 계열 — 실제 체결된 진입에 태그만 붙이므로 counterfactual
+    # 가격 시뮬레이션 불필요(toxicity_reduce_shadow 테이블, ts로 trades 조인).
+    #
+    # **합격선 사전등록.** 이 채널의 1차 질문은 손익이 아니라 **실효성**이다:
+    # PASS(=현행 상수 유지): 수량 상이 비율 < divergence_min_share — 연속화해도
+    #   max(1, round()) 양자화에 흡수돼 수량이 사실상 안 바뀜 → 실적용 실익 없음.
+    # FAIL(=실적용 검토): 상이 비율 ≥ divergence_min_share 이고 표본 ≥ min_samples
+    #   → 즉시 전환이 아니라 (a) 앵커를 재보정 후 분포로 재도출하고 (b) 양자화 체인
+    #   단일화(P2)를 함께 검토하는 안건으로 주간회의에 올린다. **자동 전환 금지.**
+    # ⚠ 현행 앵커(HI=0.90/LO=0.45)는 재보정 **전** 분포로 도출됐다 — [30]이 새 분포를
+    #   확정하면 반드시 재도출할 것. 그전 판정은 잠정으로 읽어야 한다.
+    "toxicity_reduce_mult_shadow": {
+        "min_samples": 20,           # reduce 밴드 체결 진입 최소 건수 (미달 → 판정 보류)
+        "divergence_min_share": 0.20,  # 이 비율 이상에서 수량이 달라져야 실적용 검토 가치
+    },
     # [361차 신설] §10 TP2 홀드 A/B counterfactual — 0720 정기점검 "TP3 도달 0건" 딥다이브.
     # 원인은 트레일링 폭이 아니라 qty=2 스테이지 배분(TP2에서 잔량 100% 종료, TP3 몫이
     # 항상 0)이었음이 확인됨(dev_memory/DECISION_LOG.md 361차 항목). TP2 전량종료 시점을
@@ -2240,6 +2286,66 @@ FP_CRITICAL_GRADE_BLOCK_ENABLED = False
 # 먼저 관찰 후 활성화할 것. 활성화 전 반드시 재검토.
 TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED = False
 TOXICITY_SEVERE_SPREAD_BLOCK_TICKS = 20.0
+
+# ── [MW0601 419차 / P0] cancel_stress 정규화 ceiling 재보정 ────────────────────
+# 380차가 cancel_churn_ratio(신규 피처)의 ceiling을 0.08로 잠정 설정하면서
+# features/technical/toxicity.py 주석에 "과거 데이터로 재현검증 불가한 잠정치 —
+# 라이브 섀도 관찰 몇 주 후 재보정 필요"라고 스스로 예고했으나 그 재보정이
+# 실행되지 않았다. 라이브 실측(2026-07-24~07-31, n=2,229분봉):
+#
+#   cancel_churn_ratio  p50=0.2649  p90=0.3412  p95=0.3675  p99=0.4241  max=0.5121
+#   → ceiling 0.08 초과 비율 **100.0%** = toxicity_cancel_stress가 전 분봉 1.0 포화
+#
+# 결과적으로 cancel_stress(가중 0.20)가 **모든 분봉에 상수 +0.20을 더하는 죽은 항**이
+# 됐고, 임계값(block 0.45 / reduce 0.28)이 그만큼 이동한 좌표계 위에 놓였다.
+# 실측 밴드 분포가 380차 설계목표에서 완전히 이탈:
+#
+#   | 밴드   | 380차 설계목표 | 라이브 실측 |
+#   |--------|---------------|------------|
+#   | block  | 0.7%          | 23.3%      |
+#   | reduce | 11.8%         | 76.4%      |
+#   | pass   | 87.5%         | **0.27%**  |
+#
+# 0.42 = 실측 p99. 380차가 다른 4개 성분(atr/spread/flow/queue)에 적용한
+# "p90~p99 실측 기준" 관례를 그대로 따른다.
+#
+# ⚠ 이 값은 **진입을 늘리는 방향**이다. 실제 ToxicityCalculator에 라이브 원입력을
+# 다시 흘려보낸 재생 검증(07-24~07-31, n=2,229 — 구값 재생이 저장된 실측
+# 23.3/76.4/0.27과 일치해 경로 신뢰성 확인됨):
+#   block 23.5%→8.6% / reduce 76.4%→73.7% / pass 0.2%→17.7%
+#   cancel_stress 포화율 100.0%→1.2%
+# CLAUDE.md 실전전환기준 ⑧("현행 흑자는 사이즈가 우발적으로 1~2계약에 묶인 결과")에
+# 비춰 임계값(0.45/0.28) 재선정 여부는 VALIDATION_CAMPAIGN["toxicity_recalib_watch"]
+# 채널이 라이브 표본을 모은 뒤 주간회의에서 수동 결정한다 — 여기서 함께 바꾸지 말 것.
+TOXICITY_CANCEL_CHURN_CEILING = 0.42
+
+# ── [MW0601 419차 / P1 섀도] ToxicityGate reduce 밴드 연속 배수 (섀도 전용) ────
+# 현행 reduce 밴드는 밴드 전체를 상수 size_multiplier=0.7 하나로 매핑한다
+# (joint_gate_shadow 116건 전수에서 tox_size가 예외 없이 정확히 0.7).
+# 그러나 밴드 **내부**에서 toxicity_score는 실제로 단조 등급성을 갖는다
+# (라이브 07-24~07-31 reduce 밴드 n=1,614):
+#
+#   5분위 | score범위      | 15m 실현레인지 | 향후 15m 평균스프레드
+#   Q1    | 0.200~0.294   |  9.52pt       | 2.8틱
+#   Q5    | 0.382~0.449   | 13.70pt       | 3.8틱
+#   Spearman(score, 향후스프레드) rho=+0.319 t=13.48  ← 직접적인 집행비용 축
+#   Spearman(score, 15m레인지)    rho=+0.260 t=10.81
+#
+# 즉 상수 0.7은 통계적으로 유의한 정보를 전량 폐기하고 있다.
+# 아래 앵커는 reduce_threshold에서 HI, block_threshold에서 LO로 선형 보간한다.
+#
+# **노출 중립으로 설계했다** — 실측 밴드 분포(n=1,703) 위에서 평균 배수가
+# 0.6932로 현행 0.70 대비 -1.0%다(분산만 추가: p10 0.57 / p50 0.70 / p90 0.81).
+# 이게 설계의 핵심이다: 총 노출이 함께 움직이면 나중에 손익이 바뀌었을 때
+# 그것이 *등급화* 덕인지 *노출 증가* 탓인지 분리할 수 없다.
+#
+# ⚠ 지금은 **섀도 전용**이다 — ToxicityGate.evaluate()가 size_multiplier_shadow로
+# 병기만 하고 실제 size_multiplier는 상수 0.7 그대로다. 실적용 전환은
+# VALIDATION_CAMPAIGN["toxicity_reduce_mult_shadow"] 표본 축적 후 주간회의 결정.
+# ⚠ 이 앵커는 **재보정 전(cancel_stress 포화) 분포로 도출**됐다. 위 P0가 라이브에
+# 반영되면 밴드 분포가 이동하므로 **반드시 재도출할 것** — [30] 채널이 그 근거다.
+TOXICITY_REDUCE_MULT_SHADOW_HI = 0.90   # reduce_threshold 지점 배수 (독성 낮음)
+TOXICITY_REDUCE_MULT_SHADOW_LO = 0.45   # block_threshold 지점 배수 (독성 높음)
 
 # ── [404차 후속5 / P0-B(b)] 거래불능 구간 신규진입 보류 ──────────────────────
 # `high == low` 이면서 거래량이 붕괴한 분봉이 N분 연속되면 신규 진입을 막는다.

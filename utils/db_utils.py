@@ -501,6 +501,47 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_tbs_ts ON toxicity_block_shadow(ts)")
+    # [MW0601 419차 / P1] ToxicityGate reduce 밴드 **연속 배수** 섀도우 —
+    # exec_1m_shadow와 동일 계열(실제로 체결된 진입에 진단 태그를 붙이는 방식)이라
+    # counterfactual 가격 시뮬레이션이 불필요하다. ts로 trades.entry_ts와 조인해
+    # 실현 pnl을 그대로 가져다 쓴다.
+    #
+    # 계기: reduce 밴드가 밴드 전체를 상수 size_multiplier=0.7 하나로 매핑하는데
+    # (joint_gate_shadow 116건 전수에서 tox_size가 예외 없이 정확히 0.7), 밴드
+    # **내부**에서 toxicity_score는 실제로 단조 등급성을 갖는다 — 라이브
+    # 2026-07-24~07-31 reduce 밴드(n=1,614) 5분위에서 향후 15m 평균스프레드
+    # 2.8→3.8틱, 15m 실현레인지 9.52→13.70pt, Spearman rho=+0.319/+0.260
+    # (t=13.48/10.81). 상수 0.7이 유의한 정보를 폐기하고 있다는 뜻이다.
+    #
+    # ⚠ qty_after_* 두 컬럼은 **tox 스테이지 국소 결과**다 — main.py의 사이징 체인은
+    # tox 뒤로도 L2·Hurst·Degraded·MAX_CONTRACTS 상한이 각각 max(1, round())로
+    # 이어지는데 그 하류를 재시뮬레이션하지 않는다. 따라서 "실제 진입 수량이 이만큼
+    # 달라졌을 것"이 아니라 "이 스테이지에서 달라질 여지가 있었는가"의 1차 지표다.
+    # 두 값이 같으면 하류가 무엇이든 최종 수량도 같다(입력이 동일하므로) — 즉
+    # **차이 0건이면 연속화의 실효가 0임이 확정**되고, 차이가 있을 때만 후속 판단거리가
+    # 생긴다. 실제 최종 체결 수량은 qty_entered에 따로 기록한다.
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS toxicity_reduce_shadow (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                TEXT NOT NULL,         -- 진입 분봉 (trades.entry_ts 조인키)
+        direction         TEXT NOT NULL,         -- LONG/SHORT (실제 체결 방향)
+        grade             TEXT,                  -- 진입 등급 (A/B/C)
+        toxicity_score    REAL,                  -- 진입 당시 toxicity_score
+        toxicity_score_ma REAL,                  -- 진입 당시 toxicity_score_ma
+        spread_ticks      REAL,                  -- 진입 당시 스프레드 (밴드 진입 경로 판별용)
+        tox_action        TEXT,                  -- pass / reduce / block
+        tox_size_applied  REAL,                  -- 실제 적용된 배수 (reduce면 상수 0.7)
+        tox_size_shadow   REAL,                  -- 연속 배수(섀도) — 적용되지 않음
+        qty_before_tox    REAL,                  -- tox 스테이지 진입 시점 수량
+        qty_after_applied REAL,                  -- max(1, round(qty_before × applied))
+        qty_after_shadow  REAL,                  -- max(1, round(qty_before × shadow))
+        qty_entered       REAL,                  -- 하류 스테이지까지 거친 최종 체결 수량
+        created_at        TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_trs_ts ON toxicity_reduce_shadow(ts)")
     # [331차 후속2, 2026-07-14] 1m 앙상블 방향투표 퇴역(역스킬 확정) 이후 "1m 활용방안 A"
     # (집행/타이밍 필터) 후보 검증용 섀도우 계측 — hurst_gate_shadow와 달리 차단된
     # 가상 진입이 아니라 **실제로 체결된** 진입에 진단 태그를 붙이는 것이라 counterfactual

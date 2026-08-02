@@ -28,10 +28,21 @@ class ToxicityCalculator:
     0.257로 횡보장(0.177)·추세장(0.176)과 뚜렷이 분리됨(구 공식은 급변장 0.254 vs 횡보장
     0.245로 사실상 무구분) — 26주 Walk-Forward 주기(CLAUDE.md "주기적 재검증 항목")에
     편입해 재확인할 것.
+
+    [MW0601 419차 / P0] 위 380차 재보정 중 **cancel_stress ceiling만 실측 없이 잠정
+    설정(0.08)** 됐고 그 값이 라이브 전 분봉을 1.0으로 포화시켰다 → 0.42(실측 p99)로
+    재보정. 380차 본문이 스스로 예고한 후속 작업이며, 나머지 4개 성분의 정규화 상수와
+    가중치, 그리고 아래 regime 임계값(0.45/0.28)은 **일절 건드리지 않았다** — 임계값
+    재선정은 재보정 후 이동한 밴드 분포를 라이브로 관찰한 뒤 결정할 사안이라
+    VALIDATION_CAMPAIGN["toxicity_recalib_watch"] 채널로 사전등록했다(§9 사전등록 원칙).
     """
 
-    def __init__(self, window: int = 20):
+    def __init__(self, window: int = 20, cancel_churn_ceiling: float = 0.42):
         self.window = window
+        # [MW0601 419차 / P0] config.settings.TOXICITY_CANCEL_CHURN_CEILING —
+        # 380차가 예고한 "라이브 섀도 관찰 후 재보정"의 실행. 기본값이 곧 재보정치이며
+        # 구값 0.08은 라이브 전 분봉을 1.0으로 포화시켰다(아래 update() 주석 참조).
+        self.cancel_churn_ceiling = max(float(cancel_churn_ceiling), 1e-6)
         self._score_history = deque(maxlen=window)
 
     def update(
@@ -61,9 +72,17 @@ class ToxicityCalculator:
         # cancel_churn_ratio: bid/ask 절대값 기반 무방향 취소폭주 지표(QueueDynamicsCalculator
         # 신규 필드) — 기존 cancel_add_ratio(부호 있는 평균, EnsembleGater 등 방향성 신호로
         # 계속 사용)는 반대부호 상쇄로 양방향 취소폭주를 못 잡는 사각지대가 있어 대체.
-        # ceiling=0.08은 신규 피처라 과거 데이터로 재현검증 불가한 잠정치 — 라이브 섀도
-        # 관찰 몇 주 후 재보정 필요(317차 Hurst·371차 PSI와 동일 절차).
-        cancel_stress = min(abs(float(cancel_churn_ratio)) / 0.08, 1.0)
+        # [MW0601 419차 / P0] ceiling 0.08 → 0.42 재보정 (self.cancel_churn_ceiling,
+        # config.settings.TOXICITY_CANCEL_CHURN_CEILING). 380차가 바로 위 줄에
+        # "잠정치 — 라이브 섀도 관찰 몇 주 후 재보정 필요"라고 예고했던 그 재보정이다.
+        # 라이브 실측(2026-07-24~07-31, n=2,229): cancel_churn_ratio p50=0.2649 /
+        # p99=0.4241 / max=0.5121 — **ceiling 0.08 초과 비율 100.0%** 였다. 즉 이
+        # 성분은 전 분봉에서 1.0으로 포화해 score에 상수 +0.20을 더하는 죽은 항이었고
+        # (중앙값 score 0.3475의 58%), 그 오프셋 때문에 밴드 분포가 380차 설계목표
+        # (block 0.7% / reduce 11.8% / pass 87.5%)에서 실측 23.3% / 76.4% / 0.27%로
+        # 이탈해 게이트가 사실상 상시 발동 상태였다. 0.42는 실측 p99 — 위 4개 성분에
+        # 쓴 "p90~p99 실측 기준" 관례와 동일(317차 Hurst·371차 PSI와 동일 절차).
+        cancel_stress = min(abs(float(cancel_churn_ratio)) / self.cancel_churn_ceiling, 1.0)
 
         score = (
             atr_stress * 0.25

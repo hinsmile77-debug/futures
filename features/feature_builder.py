@@ -32,7 +32,7 @@ from config.settings import (
     HURST_WARMUP_COLDSTART_MIN, HURST_WARMUP_LAG_FLOOR, HURST_WARMUP_LAG_RATIO,
     TREND_EFFICIENCY_WINDOW, KYLE_LAMBDA_WINDOW, RV_IV_WINDOW,
     CHASE_FILTER_LOOKBACK_MIN, REGIME_EXHAUSTION_LOOKBACK_MIN,
-    EXHAUSTION_RESTORE_MODE,
+    EXHAUSTION_RESTORE_MODE, TOXICITY_CANCEL_CHURN_CEILING,
 )
 
 logger = logging.getLogger("SIGNAL")
@@ -61,7 +61,10 @@ class FeatureBuilder:
         self.microprice = MicropriceCalculator(window=5, max_levels=5)
         self.mlofi = MLOFICalculator(levels=5, window=5)
         self.queue = QueueDynamicsCalculator(window=20, minute_window=5)
-        self.toxicity = ToxicityCalculator(window=20)
+        # [MW0601 419차 / P0] cancel_stress ceiling을 config에서 주입 — 380차가 예고한
+        # 재보정. 구 하드코딩 0.08은 라이브 전 분봉을 1.0으로 포화시켰다(settings 주석 참조).
+        self.toxicity = ToxicityCalculator(
+            window=20, cancel_churn_ceiling=TOXICITY_CANCEL_CHURN_CEILING)
         self.vpin_calc = VPINCalculator(bucket_size=1000)
         self.kyle_lambda_calc = KyleLambdaCalculator(window=KYLE_LAMBDA_WINDOW)
         self.rv_calc = RealizedVolCalculator(window=RV_IV_WINDOW)
