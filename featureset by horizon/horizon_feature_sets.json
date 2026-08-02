@@ -12,7 +12,8 @@
       "macro_vix_chg: Phase A 수집은 완료, transformer 출력 추가 필요 (현재는 macro_vix로 대체)",
       "[2026-07-13/14 딥다이브] 무스킬_피처셋_딥다이브_보고서_2026-07-13.md §4 반영 — 1m/3m/15m include 개편(무정보 피처 정리 + 포지셔닝 블록 편입). opt_gex_bn/opt_chain_pcr/opt_atm_call_oi/opt_atm_put_oi/threshold_feasibility는 최신구간 ρ 재현 실패(F4)로 include→include_pending_validation 강등, opt_gex_sign/opt_atm_pcr(sign/ratio 계열, 부분 생존)로 대체 후보 승격. 전부 P0-1(레지스트리 97→선별 복구, 사용자 결정 대기) 완료 전까지 미탑재 상태 유지. 다음 재학습부터 반영, purged WFA 게이트 통과 확인 필요.",
       "[2026-07-23 373차 딥다이브] 5m은 07-13/14 딥다이브 범위 밖(H2 후속-B로만 언급, 미착수)이었으나 0723 실거래 8건 전부가 entry_horizon=5m이라 처음 실측. 기존 include 중 cvd_monotone_ratio·va_bandwidth·macro_vix·opt_pcr_slope_norm(06-15 설계 당시 SHAP↑/유의로 등록됐던 것들) 4개가 06-01~07-23 최신 구간에서 전부 무정보(p 0.079~0.54)로 재현 실패해 exclude로 이동. ema_cross(부호일치율 53.7%)·bb_position·poc_distance·ret_15m·poc_above·vwap_position·cvd_slope는 동일 검증에서 전부 유의·반분안정 확인돼 그대로 유지. purged WFA CV 결과는 DECISION_LOG 373차 후속 항목 참조.",
-      "[2026-07-26 고도화2 진행점검] 07-24 EOD 재학습으로 1m/3m/5m/15m 개편(331차·373차)이 실제로 라이브 배포됨을 pkl 직접 로드로 확인(feature_names_{1,3,5,15}m.pkl). P0-2(cvd_direction->cvd_delta_norm)·P2-2(program_arb_net/prev_day_same_hour_ret 배선수리) 전부 라이브 확인 완료. 단 1m include의 queue_directional_depletion·micro_regime_code는 여전히 이 PC 레지스트리(97개)에 없어 라이브 8피처에서 누락 확인(위 pkl 필드 정정, DYNAMIC_FEATURES_POOL 등록 완료). 3m/5m 개편은 사후 분해분석(scripts/feature_ablation_purged_cv.py) 완료 — 5m은 va_bandwidth 단독이 하락 원인이고 제거가 옳았음을 확인, macro_vix/cvd_monotone_ratio/opt_pcr_slope_norm은 중립. 3m은 ema_cross·vwap_position이 순기여, poc_distance/bb_position/microprice_depth_bias는 중립~약한 역기여, cvd_delta_norm 단독 교체는 음(-2.72%p)이나 5개 추가 총합이 상쇄해 순계는 양(+1.14%p). basis_pt/basis_change_pt는 표본 확대(2,953행, ~8거래일) 후 재검증 결과 전 호라이즌 무정보(p 0.42~0.94)로 재현 실패 — 07-13 보고서의 초기 유의 신호는 소표본 우연으로 판정, 승격 보류. vkospi는 3m~15m에서 호라이즌 증가에 따라 IC가 단조 증가하며 유의(p<0.05~0.0001)해 유망 후보로 재확인. 상세: dev_memory/DECISION_LOG.md 2026-07-26 항목, scripts/ic_probe_pending_features.py."
+      "[2026-07-26 고도화2 진행점검] 07-24 EOD 재학습으로 1m/3m/5m/15m 개편(331차·373차)이 실제로 라이브 배포됨을 pkl 직접 로드로 확인(feature_names_{1,3,5,15}m.pkl). P0-2(cvd_direction->cvd_delta_norm)·P2-2(program_arb_net/prev_day_same_hour_ret 배선수리) 전부 라이브 확인 완료. 단 1m include의 queue_directional_depletion·micro_regime_code는 여전히 이 PC 레지스트리(97개)에 없어 라이브 8피처에서 누락 확인(위 pkl 필드 정정, DYNAMIC_FEATURES_POOL 등록 완료). 3m/5m 개편은 사후 분해분석(scripts/feature_ablation_purged_cv.py) 완료 — 5m은 va_bandwidth 단독이 하락 원인이고 제거가 옳았음을 확인, macro_vix/cvd_monotone_ratio/opt_pcr_slope_norm은 중립. 3m은 ema_cross·vwap_position이 순기여, poc_distance/bb_position/microprice_depth_bias는 중립~약한 역기여, cvd_delta_norm 단독 교체는 음(-2.72%p)이나 5개 추가 총합이 상쇄해 순계는 양(+1.14%p). basis_pt/basis_change_pt는 표본 확대(2,953행, ~8거래일) 후 재검증 결과 전 호라이즌 무정보(p 0.42~0.94)로 재현 실패 — 07-13 보고서의 초기 유의 신호는 소표본 우연으로 판정, 승격 보류. vkospi는 3m~15m에서 호라이즌 증가에 따라 IC가 단조 증가하며 유의(p<0.05~0.0001)해 유망 후보로 재확인. 상세: dev_memory/DECISION_LOG.md 2026-07-26 항목, scripts/ic_probe_pending_features.py.",
+      "[2026-08-02 411차] horizon_feature_sets.json 의 `pkl` 표기 11건을 feature_names_*.pkl 직접 로드 대조로 정정(전부 in_pkl→need_add). 1m queue_directional_depletion·micro_regime_code, 5m opt_chain_pcr, 10m opt_gex_sign·micro_regime_code, 30m opt_gex_bn·opt_chain_pcr·opt_atm_call_oi·opt_atm_pcr·threshold_feasibility·micro_regime_code. 공통 원인은 active_features(97) 미포함 → batch_retrainer get_available_feature_set() 교집합 탈락이며, **이 json은 계획 문서지 배포 스펙이 아니라는 337차·394차 교훈의 재확인**이다(배포 확인은 pkl 직접 로드만 인정). `pkl` 필드는 horizon_feature_registry가 읽지 않는 문서 메타데이터라 이 정정으로 학습·추론 동작은 변하지 않는다. 1m 2종은 같은 날 사용자 결정으로 config/settings.py:FEATURE_SET_DECISIONS에 등록됐다(queue_directional_depletion suppress=True 종결 / micro_regime_code suppress=False 유지)."
     ]
   },
   "1m": {
@@ -27,8 +28,8 @@
       {
         "name": "queue_directional_depletion",
         "rho": 0.033,
-        "pkl": "in_pkl",
-        "note": "매수/매도 큐 방향별 고갈 속도 ★ [2026-07-27 395차 재정정] feature_names_1m.pkl(07-27 15:45 재학습) 직접 로드로 실제 배포 확인 — need_add->in_pkl. shap_tracker.db에도 오늘 하루(270분봉) 매분 정상 스코어링, 평균 중요도 0.0069(10개 중 9위, 0은 아님)"
+        "pkl": "need_add",
+        "note": "매수/매도 큐 방향별 고갈 속도 ★ [2026-07-27 395차 재정정] feature_names_1m.pkl(07-27 15:45 재학습) 직접 로드로 실제 배포 확인 — need_add->in_pkl. shap_tracker.db에도 오늘 하루(270분봉) 매분 정상 스코어링, 평균 중요도 0.0069(10개 중 9위, 0은 아님)  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.** 395차가 07-27 재학습본에서 배포를 확인했으나 07-31 본에는 없다(배포 상태 재역전). **2026-08-02 사용자 결정으로 종결** — config/settings.py:FEATURE_SET_DECISIONS에 suppress=True 등록(1m 영구 퇴역 + 감쇠곡선상 타 호라이즌 승격 여지 없음). 이 항목은 더 이상 후보가 아니다."
       },
       {
         "name": "cvd_delta_norm",
@@ -57,8 +58,8 @@
       {
         "name": "micro_regime_code",
         "rho": 0.039,
-        "pkl": "in_pkl",
-        "note": "직전분 마이크로 레짐 코드 (0~4) ★ [2026-07-27 395차 재정정] feature_names_1m.pkl(07-27 15:45 재학습) 직접 로드로 실제 배포 확인 — need_add->in_pkl. shap_tracker.db에도 오늘 하루(270분봉) 매분 정상 스코어링, 평균 중요도 0.0050(10개 중 10위, 0은 아님)"
+        "pkl": "need_add",
+        "note": "직전분 마이크로 레짐 코드 (0~4) ★ [2026-07-27 395차 재정정] feature_names_1m.pkl(07-27 15:45 재학습) 직접 로드로 실제 배포 확인 — need_add->in_pkl. shap_tracker.db에도 오늘 하루(270분봉) 매분 정상 스코어링, 평균 중요도 0.0050(10개 중 10위, 0은 아님)  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.** 395차가 07-27 재학습본에서 배포를 확인했으나 07-31 본에는 없다(배포 상태 재역전). **2026-08-02 사용자 결정** — FEATURE_SET_DECISIONS에 suppress=False 등록: 1m 편입은 하지 않되(1m 영구 퇴역), 1분 lag 레짐 변수라 초단기 전용이 아니고 10m·30m include에도 같은 이름이 있으므로 월간 L1' 스크리닝이 타 호라이즌에서 계속 평가한다."
       },
       {
         "name": "vwap_position",
@@ -424,8 +425,8 @@
       {
         "name": "opt_chain_pcr",
         "rho": 0.106,
-        "pkl": "in_pkl",
-        "note": "풋/콜 비율 ★★ 5m 최강 — 5m 전환점"
+        "pkl": "need_add",
+        "note": "풋/콜 비율 ★★ 5m 최강 — 5m 전환점  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.** (⚠ 30m 그룹 CORE — 체크리스트 게이트로는 계속 소비된다. 미배포는 '모델 입력이 아니다'라는 뜻이지 CORE 지위와 무관하다.)"
       },
       {
         "name": "bb_position",
@@ -641,8 +642,8 @@
       {
         "name": "opt_gex_sign",
         "rho": 0.143,
-        "pkl": "in_pkl",
-        "note": "GEX 방향 부호 ★★★ 10m 전문"
+        "pkl": "need_add",
+        "note": "GEX 방향 부호 ★★★ 10m 전문  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.**"
       },
       {
         "name": "vwap_momentum",
@@ -713,8 +714,8 @@
       {
         "name": "micro_regime_code",
         "rho": null,
-        "pkl": "in_pkl",
-        "note": "레짐 코드 — 레짐 조건부 신호"
+        "pkl": "need_add",
+        "note": "레짐 코드 — 레짐 조건부 신호  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.** (1m 결정과 동일 피처 — 이 호라이즌에서는 후보 자격 유지.)"
       },
       {
         "name": "hurst",
@@ -1115,32 +1116,32 @@
       {
         "name": "opt_gex_bn",
         "rho": 0.29,
-        "pkl": "in_pkl",
-        "note": "딜러 감마 헤지 ★★★★ 전체 최강"
+        "pkl": "need_add",
+        "note": "딜러 감마 헤지 ★★★★ 전체 최강  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.**"
       },
       {
         "name": "opt_chain_pcr",
         "rho": 0.245,
-        "pkl": "in_pkl",
-        "note": "전체 체인 PCR ★★★★"
+        "pkl": "need_add",
+        "note": "전체 체인 PCR ★★★★  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.** (⚠ 30m 그룹 CORE — 체크리스트 게이트로는 계속 소비된다. 미배포는 '모델 입력이 아니다'라는 뜻이지 CORE 지위와 무관하다.)"
       },
       {
         "name": "opt_atm_call_oi",
         "rho": 0.126,
-        "pkl": "in_pkl",
-        "note": "ATM 콜 OI ★★★"
+        "pkl": "need_add",
+        "note": "ATM 콜 OI ★★★  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.**"
       },
       {
         "name": "opt_atm_pcr",
         "rho": 0.126,
-        "pkl": "in_pkl",
-        "note": "ATM PCR (30m 유의) ★★★"
+        "pkl": "need_add",
+        "note": "ATM PCR (30m 유의) ★★★  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.**"
       },
       {
         "name": "threshold_feasibility",
         "rho": 0.098,
-        "pkl": "in_pkl",
-        "note": "변동성 실현 가능성 ★★"
+        "pkl": "need_add",
+        "note": "변동성 실현 가능성 ★★  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.**"
       },
       {
         "name": "in_value_area",
@@ -1205,8 +1206,8 @@
       {
         "name": "micro_regime_code",
         "rho": null,
-        "pkl": "in_pkl",
-        "note": "레짐 코드"
+        "pkl": "need_add",
+        "note": "레짐 코드  [2026-08-02 411차 정정] json `in_pkl` 표기가 실제 배포와 어긋나 `need_add`로 정정 — feature_names_{hz}.pkl 직접 로드 대조(mtime 2026-07-31 14:05). 원인은 공통이다: 이 피처가 shap_feature_registry.json:active_features(97개)에 없어 batch_retrainer의 get_available_feature_set() 교집합에서 탈락한다 — **레지스트리에 없는 한 이 json 명세만으로는 pkl에 들어갈 수 없다.** (1m 결정과 동일 피처 — 이 호라이즌에서는 후보 자격 유지.)"
       },
       {
         "name": "macro_vix",
