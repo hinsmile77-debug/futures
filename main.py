@@ -776,6 +776,10 @@ class TradingSystem:
         self._shap_last_update_minute = None
         # [402차 후속7 P0-1b] 라운드로빈 커서 — 매분 _SHAP_RR_HORIZONS 중 1개만 계산
         self._shap_rr_idx: int = 0
+        # [414차 후속] SHAP 정합성 가드 로그 스로틀 — {(horizon, reason): 'YYYY-MM-DD'}.
+        # 이 함수는 매분 도는데 불일치는 재학습 전까지 계속 유지되므로, 스로틀이 없으면
+        # 같은 경고가 하루 수백 줄 쌓여 진짜 이상이 묻힌다(경보 피로).
+        self._shap_guard_logged: dict = {}
         self._cached_shap_importance = {}
         self._restored_corr_str: str = ""
         self._live_shap_ready: bool = False
@@ -1469,11 +1473,55 @@ class TradingSystem:
             else:
                 self._refresh_shap_horizon(ts, _h)
 
+    def _shap_guard_warn(self, horizon: str, reason: str, msg: str, *args) -> None:
+        """[414차 후속] SHAP 정합성 경고 — 조건별 하루 1회만 남긴다."""
+        key = (horizon, reason)
+        today = datetime.date.today().isoformat()
+        if self._shap_guard_logged.get(key) == today:
+            return
+        self._shap_guard_logged[key] = today
+        logger.warning(msg, *args)
+
+    def _shap_names_ok(self, model, names, horizon: str) -> bool:
+        """[414차 후속] 이름 배열과 모델 입력 차원의 정합성 검사.
+
+        **왜 필요한가**: 414차 딥다이브에서 2026-06-17~07-10(22거래일) 동안 SHAP 기록의
+        이름-값 대응이 통째로 틀렸음이 확정됐다 — 길이 12/14짜리 중요도 벡터가 길이
+        97/121짜리 이름 배열의 **앞 K칸**에 얹혀, 실제로는 모델이 쓰지도 않는 피처
+        (레지스트리 선두 블록인 cvd_*/ofi_*)가 상위 중요도로 20거래일 연속 기록됐다.
+        `_calc_importance`의 길이 검사가 `self._n_features`(이름 배열 길이)만 봐서
+        모델 차원과의 어긋남을 구조적으로 잡지 못한 것이 원인이다.
+
+        지금 3m/5m이 정상인 이유는 가드가 아니라 **우연**이다 — json 명세(13개)에서
+        레지스트리에 없는 1개가 빠져 12개가 되는데, 그게 배포 pkl의 12개와 마침
+        순서까지 같다. 명세나 레지스트리가 바뀌면 개수만 같고 순서가 다른 조합이
+        언제든 나올 수 있고, 그때 값은 조용히 잘못된 이름에 붙는다.
+
+        SHAP은 STEP6 임계경로에서 도는 표시·심사용 계측이므로 **예외를 올리지 않고
+        건너뛴다.** 다만 조용히 건너뛰면 337차의 "동적피처 탭이 몇 시간째 갱신 안 됨"
+        혼란이 재발하므로 경고를 남긴다(하루 1회 스로틀).
+        """
+        n_in = getattr(model, "n_features_in_", None)
+        if n_in is None or not names:
+            return bool(names)
+        if len(names) != int(n_in):
+            self._shap_guard_warn(
+                horizon, "dim",
+                "[ShapGuard] %s SHAP 스킵: 이름 %d개 != 모델 입력 %d개 — 이름-값 대응이 "
+                "어긋날 수 있어 기록하지 않는다(414차). 배포 pkl "
+                "feature_names_%s.pkl과 레지스트리/피처셋 명세를 대조할 것.",
+                horizon, len(names), int(n_in), horizon,
+            )
+            return False
+        return True
+
     def _refresh_shap_1m(self, ts: str) -> None:
         """1m: 기존 ShapTracker(주간 심사·후보교체 상태 유지) 경로."""
         horizon_model = self.model.models.get("1m")
         h_names_1m = list(getattr(self._shap_tracker, "feature_names", []) or [])
         if horizon_model is None or not h_names_1m:
+            return
+        if not self._shap_names_ok(horizon_model, h_names_1m, "1m"):
             return
         X_1m, y_1m = self._prep_shap_xy("1m", h_names_1m)
         if X_1m is None:
@@ -1506,8 +1554,20 @@ class TradingSystem:
         _model_h = self.model.models.get(_h)
         if _model_h is None:
             return
-        _h_names = get_available_feature_set(_h, self.model.feature_names) or []
+        # [414차 후속] 라벨 출처를 **배포 pkl 우선**으로 바꾼다.
+        # 종전엔 get_available_feature_set()(= horizon_feature_sets.json 명세 ∩ 레지스트리)
+        # 만 썼는데, 그 json은 "다음 재학습 계획"이지 배포 스펙이 아니다(337차·395차·413차가
+        # 반복 확인한 함정). 337차가 1m(_ensure_shap_tracker)에만 적용한 수정을 3m/5m에
+        # 확장하는 것 — 실배포 모델의 피처셋으로 라벨을 붙여야 이름-값 대응이 구조적으로
+        # 보장된다. 현재 두 경로가 우연히 같은 12개를 내지만 그건 보장이 아니다(414차).
+        _h_names = (
+            list(self.model.horizon_feature_names.get(_h) or [])
+            or get_available_feature_set(_h, self.model.feature_names)
+            or []
+        )
         if not _h_names:
+            return
+        if not self._shap_names_ok(_model_h, _h_names, _h):
             return
         X_h, y_h = self._prep_shap_xy(_h, _h_names)
         if X_h is None:
@@ -1515,6 +1575,14 @@ class TradingSystem:
         _idx = np.random.choice(len(X_h), min(120, len(X_h)), replace=False)
         _score_map = compute_horizon_importance(_model_h, X_h[_idx], y_h[_idx], _h_names)
         if _score_map:
+            # 최종 방어 — 계산 경로가 무엇이든 저장 직전에 한 번 더 본다.
+            if len(_score_map) != len(_h_names):
+                self._shap_guard_warn(
+                    _h, "scoremap",
+                    "[ShapGuard] %s SHAP 저장 스킵: score_map %d개 != 이름 %d개",
+                    _h, len(_score_map), len(_h_names),
+                )
+                return
             save_shap_scores(ts, _h, _score_map)
 
     def _update_shap_dashboard(self) -> None:

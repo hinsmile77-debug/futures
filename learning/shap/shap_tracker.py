@@ -118,6 +118,9 @@ class ShapTracker:
         # 반복 로그 억제: 같은 주 갱신은 DEBUG, 심사 로그는 30분 1회
         self._last_logged_update_week: Optional[tuple] = None
         self._last_review_log_ts: Optional[datetime.datetime] = None
+        # [414차 후속] 차원 불일치 경고 스로틀(하루 1회) — 불일치는 재학습 전까지
+        # 지속되므로 매분 찍으면 로그가 하루 수백 줄 늘어난다.
+        self._last_dim_warn_date: Optional[str] = None
 
         self._load_history()
 
@@ -188,6 +191,27 @@ class ShapTracker:
            전용 최종 fallback. 1~3은 이 모델 타입에서 구조적으로 전부 실패한다
            (estimators_/feature_importances_ 속성 자체가 없음, shap 0.41 다중클래스 미지원).
         """
+        # ── 0) [414차 후속] 모델 입력 차원 교차검증 (경로 1~4 공통 선행 가드) ──
+        # 아래 1~3의 길이 검사는 전부 `self._n_features`(= len(self.feature_names))만
+        # 본다. 이름 배열이 모델 차원과 어긋나 있으면 그 검사는 통과하면서 값만 엉뚱한
+        # 이름에 붙는다 — 414차 딥다이브에서 2026-06-17~07-10(22거래일) 동안 실제로
+        # 그렇게 기록됐다(길이 12/14 중요도가 길이 97/121 이름 배열의 앞 K칸에 얹혀,
+        # 모델이 쓰지도 않는 레지스트리 선두 블록 cvd_*/ofi_*이 상위 중요도로 20거래일
+        # 연속 기록). 경로 4에는 337차가 같은 취지의 가드를 넣었으나 1~3은 무방비였다.
+        # 여기서 한 번에 막는다 — 잘못된 기록을 남기느니 남기지 않는 편이 낫다.
+        _n_in = getattr(model, "n_features_in_", None)
+        if _n_in is not None and int(_n_in) != self._n_features:
+            _today = datetime.date.today().isoformat()
+            if self._last_dim_warn_date != _today:
+                self._last_dim_warn_date = _today
+                logger.warning(
+                    "[SHAP] 중요도 계산 스킵: feature_names %d개 != 모델 입력 %d개 — "
+                    "이름-값 대응이 어긋나므로 기록하지 않는다(414차). "
+                    "ShapTracker 생성 시 실배포 모델의 피처셋을 쓰는지 확인할 것.",
+                    self._n_features, int(_n_in),
+                )
+            return None
+
         # ── 1) SHAP TreeExplainer ───────────────────────────────────
         # [332차] HistGradientBoostingClassifier(배치 재학습 주 경로 모델)에서
         # shap 0.41 TreeExplainer.shap_values()가 "binary classification" 류의
@@ -655,12 +679,28 @@ def compute_horizon_importance(
     n_features = len(feature_names)
     if n_features == 0 or len(X) == 0:
         return None
+    # [414차 후속] 이름 배열이 모델 입력 차원과 어긋나면 계산 자체를 하지 않는다.
+    # 아래 zip()은 길이가 다르면 **조용히 짧은 쪽에서 잘려** 값이 엉뚱한 이름에 붙는데,
+    # 그게 정확히 06-17~07-10 22거래일 오염의 실패 유형이다(414차).
+    _n_in = getattr(model, "n_features_in_", None)
+    if _n_in is not None and int(_n_in) != n_features:
+        logger.warning(
+            "[SHAP] compute_horizon_importance 스킵: feature_names %d개 != "
+            "모델 입력 %d개 (414차 이름-값 정렬 가드)", n_features, int(_n_in),
+        )
+        return None
     imp = _permutation_importance_fallback(model, X, y, n_features)
     if imp is None and hasattr(model, "feature_importances_"):
         fi = model.feature_importances_
         if len(fi) == n_features:
             imp = np.asarray(fi, dtype=float)
     if imp is None:
+        return None
+    if len(imp) != n_features:
+        logger.warning(
+            "[SHAP] compute_horizon_importance 스킵: 중요도 %d개 != 이름 %d개",
+            len(imp), n_features,
+        )
         return None
     return {name: float(val) for name, val in zip(feature_names, imp)}
 
