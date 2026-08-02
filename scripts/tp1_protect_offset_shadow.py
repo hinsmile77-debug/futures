@@ -87,14 +87,26 @@ def _cost_pts(px: float) -> float:
 
 
 def _load_hooks(since: str):
-    """TP1 보호전환 시점 목록 — atr_profit 행만(ATR 역산 가능해야 함)."""
+    """TP1 보호전환 시점 **전량** — 모드 분류·ATR 확보는 compute()가 한다.
+
+    [MW0601 406차 / C] 예전에는 여기서 `AND protect_mode = 'atr_profit'`으로 걸렀다.
+    거르는 것 자체는 옳다(`current` 변형이 "실제 일어난 일"이어야 판정식이 성립한다)
+    — 다만 **몇 건이 왜 빠졌는지가 어디에도 남지 않아** MW0601의 n=0이 "표본이 아직
+    안 쌓였다"로 오독됐다. 전량을 읽어 와서 compute()가 사유별로 세고 리포트가
+    "해당 없음(모드 breakeven) N건"까지 표기한다. **판정 모집단은 그대로다.**
+
+    atr / protect_offset_pts는 406차 B에서 신설된 컬럼이라, 아직 마이그레이션이
+    적용되지 않은 DB(예: 코드만 먼저 pull한 PC)에서도 죽지 않도록 PRAGMA로 확인한다.
+    """
     with _conn(TRADES_DB) as c:
+        cols = {r[1] for r in c.execute(
+            "PRAGMA table_info(synthetic_partial_exits)").fetchall()}
+        extra = ", atr, protect_offset_pts" if "atr" in cols else ""
         return [dict(r) for r in c.execute(
             """SELECT ts, entry_ts, direction, entry_price, synthetic_price,
-                      synthetic_pnl_pts, protect_mode, stop_after
+                      synthetic_pnl_pts, protect_mode, stop_after%s
                  FROM synthetic_partial_exits
-                WHERE ts >= ? AND protect_mode = 'atr_profit'
-                ORDER BY ts""", (since,))]
+                WHERE ts >= ? ORDER BY ts""" % extra, (since,))]
 
 
 def _load_candles(since: str):
@@ -149,20 +161,48 @@ def compute(since: str = "2026-06-01") -> dict:
     res = {v: [] for v in variants}
     days, skipped = set(), 0
 
+    # [MW0601 406차 / C] 제외 사유별 카운터 — 예전에는 전부 skipped 하나로 뭉뚱그려져
+    # "왜 표본이 없는지"를 리포트가 말해줄 수 없었다.
+    n_other_mode: dict = {}     # atr_profit이 아니라 판정 모집단에서 빠진 건수(모드별)
+    n_backout_legacy = 0        # atr 컬럼 이전 행 — 역산 폴백을 쓴 건수
+    n_excluded_override = 0     # prev_stop 오버라이드가 확인돼 제외한 건수
+
     for h in hooks:
+        # 판정 모집단은 atr_profit 행만이다 — `current` 변형(ATR×0.25)이 "실제로
+        # 일어난 일"과 일치해야 delta_vs_current가 의미를 갖는다. 다른 모드 행은
+        # 세어만 두고 리포트가 사유로 표기한다(판정 기준 무변경).
+        mode = str(h.get("protect_mode") or "").strip().lower()
+        if mode != "atr_profit":
+            n_other_mode[mode or "(미기록)"] = n_other_mode.get(mode or "(미기록)", 0) + 1
+            continue
         ts = h["ts"]
         i0 = idx.get(ts)
         if i0 is None:
             skipped += 1
             continue
         ep = float(h["entry_price"])
-        off_cur = abs(float(h["synthetic_price"]) - float(h["stop_after"]))
-        # 저장된 stop_after는 진입가 기준이므로 ATR 역산은 |stop_after-entry|/0.25
         off_from_entry = abs(float(h["stop_after"]) - ep)
-        atr = off_from_entry / _LOCK_MULT_CURRENT if off_from_entry > 0 else 0.0
-        if atr <= 0:
-            skipped += 1
-            continue
+        _stored_atr = h.get("atr")
+        _stored_off = h.get("protect_offset_pts")
+        if _stored_atr is not None and float(_stored_atr) > 0:
+            # [406차 B] 보호전환 시점의 ATR 원본. 역산이 필요 없다.
+            atr = float(_stored_atr)
+        else:
+            # 레거시 행(atr 컬럼 이전) — |stop_after-entry|/0.25 역산 폴백.
+            # ⚠ position_tracker:749-751의 prev_stop 오버라이드가 걸린 행에서는 이
+            # 값이 ATR이 아니라 트레일링 스톱이다. protect_offset_pts가 있으면
+            # 대조해서 걸러내고, 없으면(진짜 레거시) 걸러낼 방법이 없어 그대로 쓴다
+            # — 그 건수를 n_backout_legacy로 노출해 해석 시 감안하게 한다.
+            if (_stored_off is not None
+                    and abs(float(_stored_off) - off_from_entry) > 1e-6):
+                n_excluded_override += 1
+                skipped += 1
+                continue
+            atr = off_from_entry / _LOCK_MULT_CURRENT if off_from_entry > 0 else 0.0
+            if atr <= 0:
+                skipped += 1
+                continue
+            n_backout_legacy += 1
         is_long = str(h["direction"]).upper() == "LONG"
         sgn = 1 if is_long else -1
         # 직전 N봉 평균 레인지
@@ -178,8 +218,13 @@ def compute(since: str = "2026-06-01") -> dict:
             outcome, pts = _simulate(bars, i0, is_long, ep, stop, tp2)
             res[v].append((outcome, pts - cost))
 
-    return {"variants": variants, "rows": res, "n_hooks": len(hooks) - skipped,
-            "n_skipped": skipped, "n_days": len(days), "since": since}
+    return {"variants": variants, "rows": res,
+            "n_hooks": len(hooks) - skipped - sum(n_other_mode.values()),
+            "n_skipped": skipped, "n_days": len(days), "since": since,
+            # [MW0601 406차 / C]
+            "n_other_mode": n_other_mode,
+            "n_backout_legacy": n_backout_legacy,
+            "n_excluded_override": n_excluded_override}
 
 
 def summarize(out: dict) -> dict:
@@ -212,6 +257,21 @@ def summarize(out: dict) -> dict:
     if n_cur < min_n or out["n_days"] < min_d:
         verdict, reason = "INSUFFICIENT", ("표본 부족 (n=%d<%d 또는 거래일=%d<%d)"
                                            % (n_cur, min_n, out["n_days"], min_d))
+        # [MW0601 406차 / E] "곧 표본이 찬다"와 "이 PC에서는 영원히 안 찬다"를 구분한다.
+        # 판정 모집단은 atr_profit 행뿐인데, 라이브 모드가 breakeven이면 아무리
+        # 기다려도 이 채널은 채워지지 않는다 — 그 사실을 사유에 명시한다.
+        _other = out.get("n_other_mode") or {}
+        if _other and n_cur == 0:
+            _desc = (list(_other)[0] if len(_other) == 1
+                     else "/".join("%s %d건" % kv for kv in sorted(_other.items())))
+            reason = ("해당 없음 — 보호전환 %d건이 전부 `%s` 모드다. 판정 모집단은 "
+                      "atr_profit 행이므로 라이브 모드를 atr_profit으로 두기 전에는 "
+                      "표본이 쌓이지 않는다(대기해도 무의미)"
+                      % (sum(_other.values()), _desc))
+        elif _other:
+            reason += " · 모드 불일치 제외 %d건(%s)" % (
+                sum(_other.values()),
+                "/".join("%s %d" % kv for kv in sorted(_other.items())))
     else:
         beat = [k for k, v in per.items()
                 if k != "current" and (v["delta_vs_current"] or 0) > 0]
@@ -219,7 +279,12 @@ def summarize(out: dict) -> dict:
         reason = ("현행 초과 대안: %s" % ", ".join(beat)) if beat else "모든 대안이 현행 이하"
     return {"verdict": verdict, "reason": reason, "per_variant": per,
             "n_hooks": out["n_hooks"], "n_days": out["n_days"],
-            "n_skipped": out["n_skipped"], "min_samples": min_n, "min_days": min_d}
+            "n_skipped": out["n_skipped"], "min_samples": min_n, "min_days": min_d,
+            # [MW0601 406차 / C·E] 제외 사유 노출 — 해석에 필요하다.
+            # n_backout_legacy가 크면 그만큼 ATR이 검증 불가한 역산값이라는 뜻이다.
+            "n_other_mode": out.get("n_other_mode") or {},
+            "n_backout_legacy": out.get("n_backout_legacy", 0),
+            "n_excluded_override": out.get("n_excluded_override", 0)}
 
 
 def main():

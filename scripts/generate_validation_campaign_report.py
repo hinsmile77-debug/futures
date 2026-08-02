@@ -18,14 +18,21 @@ docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3의 사전 등록 합�
 실행 (py310_64 — EOD 체인 scripts/eod_retrain.py가 금요일마다 자동 호출):
     python scripts/generate_validation_campaign_report.py [--days 28]
 
-출력: 콘솔 + data/validation_campaign_report.md + data/validation_campaign_metrics.json
-(둘 다 gitignore 대상 PC별 산출물 — 재생성 가능)
+출력: 콘솔 + docs/정기점검/금요일점검/<PC명>/validation_campaign_report_YYYYMMDD.md
+                                        + validation_campaign_metrics_YYYYMMDD.json
+
+[MW0601 407차] 예전에는 data/에 고정 파일명으로 썼다. 두 가지가 문제였다 —
+(1) data/는 gitignore라 **다른 PC에서 볼 수 없어** PC간 대조가 수동 복사에 의존했고,
+(2) 고정 파일명이 매주 덮어써서 **지난주 리포트가 남지 않았다**(2026-07-31분이 실제로
+덮였다). PC 폴더 + 날짜본으로 둘 다 해소했다. PC명은 _pc_id()가 호스트명에서 뽑는다.
+--out-dir로 출력 폴더를 덮어쓸 수 있으나 재현·검증용이며 주간 산출물은 기본 경로를 쓸 것.
 """
 import argparse
 import datetime
 import json
 import os
 import pickle
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -43,11 +50,12 @@ except Exception:
     pass
 
 from config.settings import (
+    BASE_DIR,
     PREDICTIONS_DB, TRADES_DB, RAW_DATA_DB, DATA_DIR, MODEL_DIR,
     HORIZONS, VALIDATION_CAMPAIGN, FUTURES_COMMISSION_RATE, TICK_SIZE,
     ENTRY_STARVATION_WEEKLY_MIN, ENTRY_STARVATION_MITIGATION_LADDER,
     HURST_RANGE_THRESHOLD, REGIME_EXHAUSTION_EXT_ATR_THRESHOLD,
-    VALIDATION_CAMPAIGN_DECISIONS,
+    VALIDATION_CAMPAIGN_DECISIONS, VALIDATION_REPORT_KEEP_WEEKS,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
@@ -110,6 +118,35 @@ def _pc_id() -> str:
             return m.group(1).upper() if m else (host[:32] or "UNKNOWN")
         except Exception:
             return "UNKNOWN"
+
+
+def _prune(pc_name: str, keep: int) -> list:
+    """[MW0601 408차] FIFO 보관정리 — 실패해도 리포트 생성을 막지 않는다."""
+    try:
+        from scripts.campaign_report_paths import prune as _p
+        return _p(pc_name, keep)
+    except Exception as e:
+        print("[경고] 보관정리 실패(무해, 다음 주 재시도): %s" % e, file=sys.stderr)
+        return []
+
+
+def _pc_dir_name() -> str:
+    """[MW0601 408차] 산출물 폴더로 쓸 PC 이름 — 새 PC에서도 안전하게.
+
+    `_pc_id()`는 호스트명에서 `MW####`를 못 찾으면 호스트명 원문을, 그것도 실패하면
+    "UNKNOWN"을 돌려준다. 그대로 폴더 이름으로 쓰면 새 PC에서 `금요일점검/UNKNOWN/`
+    같은 폴더가 **조용히** 생겨 다음 주에야 발견된다 — 경고를 찍어 즉시 알린다.
+    경로에 못 쓰는 문자는 방어적으로 치환한다(윈도우 호스트명엔 원래 없지만,
+    환경변수 오버라이드 등으로 들어올 여지를 남기지 않는다).
+    """
+    raw = _pc_id()
+    safe = re.sub(r'[\\/:*?"<>|\s]+', "_", raw).strip("._") or "UNKNOWN"
+    if not re.match(r"^MW\d{4}$", safe):
+        print("[경고] PC 식별자가 MW#### 형식이 아니다: %r → 산출물 폴더 '%s' 사용. "
+              "새 PC라면 호스트명을 확인하거나 폴더를 수동으로 정리할 것 "
+              "(대조 스크립트는 --pc1/--pc2로 폴더명을 지정할 수 있다)."
+              % (raw, safe), file=sys.stderr)
+    return safe
 
 
 def _pearson_r(a, b):
@@ -1937,27 +1974,58 @@ def eval_tp1_protect_giveback_watch() -> dict:
         out["reason"] = "표본 없음"
         return out
 
-    g = np.array([r["give"] for r in rows])
-    o = np.array([r["offset"] for r in rows])
-    p = np.array([r["paper"] for r in rows])
-    out["n_gaveback"] = int((g > 0).sum())
-    out["n_ranfurther"] = int((g < 0).sum())
-    out["mean_give_pt"] = round(float(g.mean()), 4)
-    out["median_give_pt"] = round(float(np.median(g)), 4)
-    out["mean_paper_pt"] = round(float(p.mean()), 4)
-    out["median_paper_pt"] = round(float(np.median(p)), 4)
-    out["mean_offset_pt"] = round(float(o.mean()), 4)
-    if np.median(p) > 0:
-        out["median_giveback_rate"] = round(float(np.median(g) / np.median(p)), 4)
-    if len(rows) > 2 and o.std() > 0 and g.std() > 0:
-        # [MW0601 405차] np.corrcoef → _pearson_r (py310_64 네이티브 크래시 회피, 값 동일)
-        _r = _pearson_r(o, g)
-        if _r is not None:
-            out["offset_vs_give_corr"] = round(_r, 4)
+    # [MW0601 406차 / D] 모드별 분리 집계.
+    # 보호스톱을 거는 자리가 모드마다 다르다(breakeven=진입가 / breakeven_plus=+0.20pt /
+    # atr_profit=ATR×0.25). 그래서 "반납"이라는 말의 기준선 자체가 모드마다 다르고,
+    # 섞어서 평균·중앙값·상관을 내면 두 자를 섞어 재는 것과 같다. 실측으로도 부호가
+    # 반대로 나온다 — 0802 대조에서 중앙값 반납이 MW0601(breakeven) −0.1pt vs
+    # MW0602(atr_profit) +1.0pt였다. 이 채널의 수치는 MW0602 검토보고 §1-4에서
+    # "더 들고 있어라"의 근거로 인용됐으므로 라벨 없이 두면 안 된다.
+    #
+    # 지금은 각 PC 안에서 우연히 단일 모드지만 한 PC가 모드를 바꾸면 그 PC의 DB
+    # 안에서 섞인다(MW0601은 406차 A로 breakeven→atr_profit 전환했다 — 08-03부터
+    # 실제로 섞이기 시작한다).
+    #
+    # 최상위 키는 하위호환을 위해 **풀링 값 그대로** 둔다(기존 소비처·metrics 스키마
+    # 무변경). 모드별 값은 by_mode_stats에 병기하고, 혼재 시 modes_mixed로 알린다.
+    # [24]는 verdict가 항상 OBSERVE이므로 판정에는 아무 영향이 없다.
+    def _give_stats(subset: list) -> dict:
+        g = np.array([r["give"] for r in subset])
+        o = np.array([r["offset"] for r in subset])
+        p = np.array([r["paper"] for r in subset])
+        st = {
+            "n": len(subset),
+            "n_days": len({r["ts"][:10] for r in subset}),
+            "n_gaveback": int((g > 0).sum()),
+            "n_ranfurther": int((g < 0).sum()),
+            "mean_give_pt": round(float(g.mean()), 4),
+            "median_give_pt": round(float(np.median(g)), 4),
+            "mean_paper_pt": round(float(p.mean()), 4),
+            "median_paper_pt": round(float(np.median(p)), 4),
+            "mean_offset_pt": round(float(o.mean()), 4),
+        }
+        if np.median(p) > 0:
+            st["median_giveback_rate"] = round(float(np.median(g) / np.median(p)), 4)
+        if len(subset) > 2 and o.std() > 0 and g.std() > 0:
+            # [MW0601 405차] np.corrcoef → _pearson_r (py310_64 네이티브 크래시 회피)
+            _r = _pearson_r(o, g)
+            if _r is not None:
+                st["offset_vs_give_corr"] = round(_r, 4)
+        return st
+
+    out.update(_give_stats(rows))
+    out["n"] = len(rows)          # _give_stats의 n과 동일하지만 명시적으로 되돌린다
+    out["n_days"] = len({r["ts"][:10] for r in rows})
+
     modes = {}
+    by_mode_rows = {}
     for r in rows:
-        modes[r["mode"]] = modes.get(r["mode"], 0) + 1
+        _m = r["mode"] or "(미기록)"
+        modes[_m] = modes.get(_m, 0) + 1
+        by_mode_rows.setdefault(_m, []).append(r)
     out["by_mode"] = modes
+    out["by_mode_stats"] = {m: _give_stats(rs) for m, rs in sorted(by_mode_rows.items())}
+    out["modes_mixed"] = len(by_mode_rows) > 1
     return out
 
 
@@ -4105,10 +4173,20 @@ def build_report(days: int) -> tuple:
     L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
         _g23.get("n_trades", "—"), _g23.get("n_days", "—"), _dm("tp1_geometry_shadow")))
-    L.append("| [24] TP1 보호전환 반납 관찰 | %s | 중앙값 반납=%s pt (반납 %s / 달림 %s, n=%s) |" % (
+    # [MW0601 406차 / D] 모드 라벨 필수 — 모드마다 보호스톱 기준선이 달라 수치를
+    # 라벨 없이 인용하면 안 된다(0802 대조 §2-B: 부호가 반대로 나온다).
+    _tpg_modes = tpg.get("by_mode") or {}
+    if tpg.get("modes_mixed"):
+        _tpg_tag = " ⚠ **모드 혼재**: " + "/".join(
+            "%s %d" % kv for kv in sorted(_tpg_modes.items())) + " — 모드별 값은 상세 참조"
+    elif _tpg_modes:
+        _tpg_tag = " (mode=`%s`)" % list(_tpg_modes)[0]
+    else:
+        _tpg_tag = ""
+    L.append("| [24] TP1 보호전환 반납 관찰 | %s | 중앙값 반납=%s pt (반납 %s / 달림 %s, n=%s)%s |" % (
         _fmt_verdict(tpg.get("verdict", "OBSERVE")),
         tpg.get("median_give_pt", "—"), tpg.get("n_gaveback", "—"),
-        tpg.get("n_ranfurther", "—"), tpg.get("n", 0)))
+        tpg.get("n_ranfurther", "—"), tpg.get("n", 0), _tpg_tag))
     L.append("| [25] TP1 보호전환 offset A/B | %s | %s (전환 %s건/%s일)%s |" % (
         _fmt_verdict(_g25.get("verdict", "")), _g25.get("reason", _g25.get("error", "—")),
         _g25.get("n_hooks", "—"), _g25.get("n_days", "—"), _dm("tp1_protect_offset_shadow")))
@@ -5015,8 +5093,32 @@ def build_report(days: int) -> tuple:
         if tpg.get("offset_vs_give_corr") is not None:
             L.append("- 보호폭 vs 반납 상관계수 **%.3f** (음수 = 좁은 보호폭일수록 더 반납)"
                       % tpg["offset_vs_give_corr"])
+        # [MW0601 406차 / D] 모드별 분리표 — 위 풀링 수치는 하위호환용이며,
+        # 모드가 섞이면 해석 근거로 쓸 수 없다.
+        _bms = tpg.get("by_mode_stats") or {}
+        if _bms:
+            L.append("")
+            L.append("**모드별 분리** (보호스톱 기준선이 모드마다 달라 섞어 읽으면 안 된다):")
+            L.append("")
+            L.append("| 모드 | n | 거래일 | 반납/달림 | 반납 중앙값 | 반납 평균 | 평균 보호폭 | 보호폭↔반납 상관 |")
+            L.append("|---|---|---|---|---|---|---|---|")
+            for _m, _s in _bms.items():
+                L.append("| `%s` | %s | %s | %s / %s | **%s** pt | %s pt | %s pt | %s |" % (
+                    _m, _s.get("n", 0), _s.get("n_days", 0),
+                    _s.get("n_gaveback", "—"), _s.get("n_ranfurther", "—"),
+                    _s.get("median_give_pt", "—"), _s.get("mean_give_pt", "—"),
+                    _s.get("mean_offset_pt", "—"),
+                    ("%.3f" % _s["offset_vs_give_corr"])
+                    if _s.get("offset_vs_give_corr") is not None else "—"))
+            if tpg.get("modes_mixed"):
+                L.append("")
+                L.append("> ⚠ **모드가 혼재한다 — 위 풀링 수치를 인용하지 말 것.** 모드별 행만 쓸 것.")
     L.append("")
     L.append("> **판정하지 않는다**(verdict 항상 OBSERVE). 처방(offset을 얼마로 할지)은 [25]가 맡는다.")
+    L.append("> [MW0601 406차] **모드 라벨 없이 이 수치를 인용하지 말 것** — 보호스톱을 거는")
+    L.append("> 자리가 모드마다 다르므로(breakeven=진입가 / atr_profit=ATR×0.25) \"반납\"의")
+    L.append("> 기준선 자체가 다르다. 0802 PC간 대조에서 중앙값 반납이 breakeven −0.1pt vs")
+    L.append("> atr_profit +1.0pt로 **부호가 반대**였다 — 섞으면 결론이 상쇄된다.")
     L.append("> **평균이 아니라 중앙값을 볼 것** — 0729 폭락일 2건이 평균을 5배 끌어올려")
     L.append("> 평균 반납은 무해해 보이는데 중앙값은 그 몇 배다. 두 수치가 정반대 인상을")
     L.append("> 주는 전형적 사례이므로 평균만 인용하지 말 것(372차 원칙).")
@@ -5169,13 +5271,44 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=28,
                         help="분석 창(일). 기본 28 — 캠페인 4주 전체")
+    parser.add_argument("--out-dir", default=None,
+                        help="출력 폴더 오버라이드. 기본 docs/정기점검/금요일점검/<PC명>/ "
+                             "— 재현·검증용 임시 출력에만 쓸 것(주간 산출물은 기본 경로 유지). "
+                             "지정 시 FIFO 보관정리는 하지 않는다")
+    parser.add_argument("--keep", type=int, default=VALIDATION_REPORT_KEEP_WEEKS,
+                        help="FIFO 보관 주차 수(기본 config/settings.py:"
+                             "VALIDATION_REPORT_KEEP_WEEKS). 0 이하면 삭제 안 함")
+    parser.add_argument("--no-prune", action="store_true",
+                        help="이번 실행에서만 보관정리를 건너뛴다")
     args = parser.parse_args()
 
     report_md, metrics = build_report(args.days)
 
-    os.makedirs(DATA_DIR, exist_ok=True)
-    md_path = os.path.join(DATA_DIR, "validation_campaign_report.md")
-    json_path = os.path.join(DATA_DIR, "validation_campaign_metrics.json")
+    # [MW0601 407차] 출력을 data/ 고정파일명 → docs/정기점검/금요일점검/<PC>/ 날짜본으로 이전.
+    #
+    # 왜 PC 폴더인가: data/는 gitignore 대상 PC 로컬 디렉터리라 **다른 PC에서 볼 방법이
+    # 없었다.** 0802 MW0601×MW0602 항목별 대조에서 MW0602 리포트를 사용자가 수동
+    # 복사해줄 때까지 31채널 대조가 막혀 있었다 — 리포트는 두 PC가 서로를 보는 유일한
+    # 통로이므로 커밋되는 위치에 둔다("런타임 산출물 커밋 금지"의 의도적 예외).
+    #
+    # 왜 날짜본인가: 고정 파일명이 매주 덮어써서 **지난주 리포트가 남지 않았다.**
+    # 2026-07-31 리포트가 08-01 재생성에 덮였고, 405차 세션 스크래치패드에 우연히
+    # 백업이 남아 있지 않았으면 영영 잃었을 것이다. 날짜본은 그 유실을 원천 차단하고
+    # 주차간 비교(지난주 vs 이번주)도 가능하게 한다.
+    #
+    # PC 식별은 405차 P0-5의 _pc_id()를 그대로 쓴다(호스트명에서 MW####).
+    # 폴더 이름에 PC가 들어가므로 파일명에는 날짜만 넣는다.
+    # [MW0601 408차] 폴더는 없으면 만든다 — 새 PC 첫 실행에서 그대로 동작한다.
+    # PC 이름 자체가 규칙(MW####)에 안 맞으면 _pc_dir_name()이 경고를 찍는다.
+    pc_name = _pc_dir_name()
+    if args.out_dir:
+        out_dir = os.path.abspath(args.out_dir)
+    else:
+        out_dir = os.path.join(BASE_DIR, "docs", "정기점검", "금요일점검", pc_name)
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = datetime.date.today().strftime("%Y%m%d")
+    md_path = os.path.join(out_dir, "validation_campaign_report_%s.md" % stamp)
+    json_path = os.path.join(out_dir, "validation_campaign_metrics_%s.json" % stamp)
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(report_md)
     with open(json_path, "w", encoding="utf-8") as f:
@@ -5183,6 +5316,23 @@ def main():
 
     print(report_md)
     print("\n저장: %s / %s" % (md_path, json_path))
+
+    # [MW0601 408차] FIFO 보관 — 최근 N주만 남기고 오래된 자동생성물 삭제.
+    # **쓰기가 끝난 뒤에만** 돈다(중간에 죽어도 이번 주 파일은 이미 디스크에 있다).
+    # --out-dir는 임의 폴더라 절대 정리하지 않는다 — 남의 디렉터리를 지우면 안 된다.
+    if args.out_dir:
+        if args.keep > 0:
+            print("보관정리: --out-dir 사용 중이라 건너뜀 (임의 폴더는 정리하지 않는다)")
+    elif args.no_prune:
+        print("보관정리: --no-prune")
+    else:
+        removed = _prune(pc_name, args.keep)
+        if removed:
+            print("보관정리: %d주 초과분 %d개 삭제 — %s"
+                  % (args.keep, len(removed),
+                     ", ".join(os.path.basename(p) for p in removed)))
+        elif args.keep > 0:
+            print("보관정리: 삭제 대상 없음 (보관 %d주)" % args.keep)
 
 
 if __name__ == "__main__":

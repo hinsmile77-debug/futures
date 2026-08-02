@@ -11349,8 +11349,9 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
                 TRADES_DB,
                 """INSERT INTO synthetic_partial_exits
                    (ts, entry_ts, direction, entry_price, synthetic_price,
-                    synthetic_fraction, synthetic_pnl_pts, protect_mode, stop_after)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    synthetic_fraction, synthetic_pnl_pts, protect_mode, stop_after,
+                    atr, protect_offset_pts)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
                     (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -11362,6 +11363,13 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
                     float(_syn_pnl or 0.0),
                     protect_mode,
                     float(protect["new_stop_price"]),
+                    # [MW0601 406차 / B] ATR 역산을 폐기하기 위해 원본을 그대로 남긴다.
+                    # atr은 이 함수 상단 _ts_get_reference_atr(self) 결과이고,
+                    # protect_offset_pts는 "모드가 의도한 offset"이다. 후자가
+                    # |stop_after - entry_price|와 다르면 position_tracker의
+                    # prev_stop 오버라이드가 걸린 행 — [25]가 그것으로 식별한다.
+                    float(atr or 0.0),
+                    float(protect.get("protect_offset_pts") or 0.0),
                 ),
             )
         except Exception as _spe:

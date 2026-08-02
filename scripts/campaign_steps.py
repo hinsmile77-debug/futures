@@ -102,5 +102,12 @@ def run_campaign_steps(logger, base_dir: str) -> None:
 
     logger.info("[검증 캠페인] 요약: %s",
                  " | ".join("%s=%s" % (n, s) for n, s in summary))
-    logger.info("판정 리포트: %s", os.path.join(base_dir, "data", "validation_campaign_report.md"))
+    # [MW0601 407차] 출력이 data/ 고정파일명 → docs/정기점검/금요일점검/<PC>/ 날짜본으로
+    # 바뀌었다. 로그가 옛 경로를 가리키면 EOD 로그만 보고 파일을 찾다 헤매게 된다.
+    try:
+        from scripts.campaign_report_paths import latest as _cr_latest
+        from utils.db_utils import pc_id as _cr_pc
+        logger.info("판정 리포트: %s", _cr_latest(_cr_pc(), "report"))
+    except Exception as _cr_e:
+        logger.info("판정 리포트: docs/정기점검/금요일점검/<PC명>/ (경로 조회 실패: %s)", _cr_e)
     logger.info("=" * 55)

@@ -554,6 +554,27 @@ def init_trades_db():
             "CREATE INDEX IF NOT EXISTS idx_spe_ts ON synthetic_partial_exits(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_spe_entry_ts ON synthetic_partial_exits(entry_ts)")
+    # [MW0601 406차 / B] atr·protect_offset_pts 영속화 — [25] tp1_protect_offset_shadow가
+    # ATR을 `|stop_after - entry| / 0.25`로 **역산**하고 있었는데, 그 역산은 두 경우에 깨진다:
+    #   (1) breakeven 모드는 offset=0이라 ATR이 0으로 나와 행 전체가 버려진다
+    #       (MW0601 29건 중 25건이 여기 해당 — [25] n=0의 진짜 원인).
+    #   (2) position_tracker:749-751의 `if mult*(prev_stop - protected_stop) > 0:
+    #       protected_stop = prev_stop` 때문에, 기존 트레일링 스톱이 더 유리하면
+    #       stop_after가 "모드가 의도한 offset"이 아니라 트레일링 스톱이 된다.
+    #       이 값을 /0.25 하면 ATR과 무관한 숫자가 조용히 나온다. 실측 4/29(13.8%).
+    #       **이 함정은 모드와 무관하므로 atr_profit 행에도 걸린다** — MW0602의 [25]도
+    #       해당 행에서 오염된 ATR 위에 6개 변형을 쌓고 있을 수 있다(미확인).
+    # 두 값 모두 arm_tp1_single_contract_with_mode 호출부에 이미 존재한다 — 새로 계산할
+    # 것이 없고 버리고 있었을 뿐이다. protect_offset_pts와 |stop_after-entry|가 다르면
+    # 그 행이 (2)에 해당한다는 뜻이라 식별자 역할도 겸한다.
+    # 소급 불가 — 기존 행은 NULL이며 [25]가 폴백 경로로 처리한다.
+    with get_conn(TRADES_DB) as _spe_conn:
+        _spe_cols = {r[1] for r in _spe_conn.execute(
+            "PRAGMA table_info(synthetic_partial_exits)").fetchall()}
+        for _c in ("atr", "protect_offset_pts"):
+            if _c not in _spe_cols:
+                _spe_conn.execute(
+                    "ALTER TABLE synthetic_partial_exits ADD COLUMN %s REAL" % _c)
     # [361차] TP2 홀드 A/B 섀도우 — 0720 정기점검 "TP3 도달 0건" 딥다이브 결과, 트레일링
     # 폭이 아니라 qty=2 스테이지 배분(get_stage_plan()이 (1,1,0) 하드코딩, TP2에서 잔량
     # 100% 종료)이 원인으로 확인됨. TP2가 실제로 전량 종료되는 순간 "이 계약을 홀드해서
