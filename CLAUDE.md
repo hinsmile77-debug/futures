@@ -137,8 +137,19 @@ CLAUDE.md처럼 git으로 커밋되는 문서에 적어야** 양쪽 PC 세션이
 | **중기** | 10m·15m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
 | **장기** | 30m | opt_chain_pcr | `collection/option/option_chain.py` | 미통과 → 등급 하락 |
 
-> `macro_vix`는 2026-06-25 CORE 강등. 일봉 VIX → 분봉 상수, SHAP 기여 ≈ 0, 임계 VIX 27.5 평상시 항상 통과 확인. 보조 피처로 GBM 피처셋에 유지.
-> `macro_risk_off`는 2026-06-25 CORE 해제. 모든 호라이즌 feature_names_hz 미포함 확인 (GBM gain=0, SHAP=0). 체크리스트·SGD 경로에도 없음. MacroFeatureTransformer 계산은 유지.
+> `macro_vix`는 2026-06-25 CORE 강등. 일봉 VIX → 분봉 상수, ~~SHAP 기여 ≈ 0~~, 임계 VIX 27.5 평상시 항상 통과 확인. 보조 피처로 GBM 피처셋에 유지.
+> `macro_risk_off`는 2026-06-25 CORE 해제. 모든 호라이즌 feature_names_hz 미포함 확인 (GBM gain=0, ~~SHAP=0~~). 체크리스트·SGD 경로에도 없음. MacroFeatureTransformer 계산은 유지.
+>
+> **[2026-08-02 416차 근거 정정] 위 두 줄의 SHAP 수치는 무효다 — 재인용 금지.**
+> 2026-06-25는 SHAP 이름↔값 정렬 오염 구간(2026-06-17~07-10, 18거래일) 한복판이다.
+> 그날 비영 중요도는 이름 배열 앞 12칸(cvd_*/ofi_*/vwap 블록)에만 실렸고 **나머지 85개
+> 피처는 조회하면 무조건 0.0**이었다. 즉 "SHAP=0"은 그 피처에 대해 아무 정보도 담고 있지
+> 않다(진짜 중요도가 얼마였든 0으로 읽혔다).
+> **단 두 결정은 유지된다 — 근거가 SHAP 하나가 아니었다.** `macro_vix`는 "일봉 → 분봉
+> 상수"와 "임계 27.5 무발동"이, `macro_risk_off`는 "모든 호라이즌 feature_names_hz
+> 미포함"(모델이 애초에 쓸 수 없음)이 SHAP과 논리적으로 독립이고 2026-08-02 실측
+> 재확인에서도 그대로다(macro_risk_off 전 호라이즌 미포함 / macro_vix 10m·30m 보조 유지).
+> 근거: `dev_memory/DECISION_LOG.md` 2026-08-02(414차·416차).
 
 ```
 설정: config/settings.py  HORIZON_CORE_GROUP, CORE_FEATURES_BY_GROUP
