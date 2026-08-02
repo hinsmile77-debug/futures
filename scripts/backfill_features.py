@@ -87,25 +87,59 @@ logger = logging.getLogger("backfill")
 
 RAW_DATA_DB = os.path.join(BASE_DIR, "data", "db", "raw_data.db")
 
-# 현재 raw_features에서 사용 중인 키 목록 (318차: hurst_ready 추가, 실제 116개 —
-# 기존 "99개" 주석은 2026-06-01 이후 드리프트된 값이라 실측치로 정정)
+# 현재 raw_features에서 사용 중인 키 목록 (417차: 라이브 미기록 9종 제거 → 107개.
+# 318차 "116개"는 그 시점 실측치이며, hurst_ready 추가분은 그대로 유지)
 # 계산 가능한 것 외에는 모두 0.0
+#
+# ── 동기화 규칙: **라이브가 한 번도 쓰지 않는 키는 넣지 않는다** ──────────────
+# 이 목록이 낡으면 양방향으로 사고가 나고, 둘 다 실제로 발생했다.
+#   ① 목록에만 있고 라이브에 없는 키 → 백필이 퇴역 피처를 0.0으로 되살린다.
+#      `learning/batch_retrainer.py:_load_from_db`가 전 구간 키의 **합집합**으로
+#      feat_names를 만들므로(318차), 백필 행이 학습창에 하나라도 들어오면 그 키가
+#      상수 0.0 컬럼으로 학습 피처공간에 편입된다. 주간 건강 리포트
+#      (`generate_featureset_health_report.py` §2-b)에도 유령 DEAD로 뜬다 —
+#      2026-08-02 MW0601×MW0602 대조에서 MW0601에만 있던 §2-b 추가 4건
+#      (bear_reversal_signal·macro_vix_abs·microprice·feature_recoverable_errors)이
+#      전부 이 경로였음이 확인됐다(MW0602 라이브 구간에는 그 키가 아예 없음).
+#   ② 라이브에 있는데 목록에 없는 키 → 백필 날짜에 그 키가 통째로 빠진다
+#      (318차 hurst_ready 사고).
+#
+# ⚠ **②를 "라이브 키를 전부 0.0으로 추가"로 고치지 말 것.** 학습 쪽은 이득이 0이고
+#   (위 합집합 + `rec.get(f, 0.0)`이라 키 부재 == 0.0), 건강 리포트 §4는 "키가 있으면
+#   그날 관측됨"으로 후보 축적 일수를 세기 때문에 실제로 수집된 적 없는 날이 축적일로
+#   잡혀 "20/20일 검증가능"이 거짓 판정이 된다. 라이브에만 있는 키(2026-08-02 기준
+#   37종: opt_gex_sign·opt_chain_pcr·vkospi·kyle_lambda·vpin 등)를 편입하려면
+#   **백필이 OHLCV로 진짜 계산할 수 있는 것만** 라이브와 동일한 산식으로 추가한다
+#   (317차 train/serve skew 원칙 — 산식이 다르면 소급 데이터가 새 불일치 원인이 된다).
+#
+# 재점검 방법(피처 퇴역 직후·26주 WFA 주기): 최근 라이브 구간의 features JSON 키
+#   합집합을 뽑아 이 목록과 대조해 **출현율 0%인 키만** 제거한다. 옵션체인·수급처럼
+#   장중 갱신 주기 때문에 84~96%대인 키는 정상이므로 남긴다.
+#
+# [417차 제거 9종] 2026-06-18~07-31 라이브 10,746행 실측 출현율 전부 0.0%:
+#   bear_reversal_signal                     — 191차 삭제(희소 이진 신호)
+#   microprice / macro_vix_abs /
+#   feature_recoverable_errors               — Phase 2-A~2-C 절대값·상수 피처 제거
+#   macro_quality_age_sec / _available /
+#   _fallback_used / _stale                  — macro_quality_source_code만 라이브 잔존
+#   vwap                                     — 라이브 미기록. 백필만 실값을 써서
+#       "백필 날짜에만 비영"인 컬럼이 되므로 오히려 train/serve skew를 만든다
+#       (0.0 상수보다 나쁘다). feat["vwap"] 대입도 함께 제거했다.
 FEATURE_KEYS_ALL = [
     "above_vwap", "atr", "atr_ratio", "avg_volume",
-    "bear_exhaustion", "bear_exhaustion_signal", "bear_reversal_signal",
+    "bear_exhaustion", "bear_exhaustion_signal",
     "bull_exhaustion", "bull_exhaustion_signal", "bull_reversal_signal",
     "cancel_add_ratio", "cvd", "cvd_direction", "cvd_divergence",
     "cvd_exhaustion", "cvd_exhaustion_signal", "cvd_monotone_ratio", "cvd_slope",
-    "feature_degraded", "feature_quality_score", "feature_recoverable_errors",
+    "feature_degraded", "feature_quality_score",
     "foreign_call_net", "foreign_futures_net", "foreign_put_net",
     "foreign_retail_divergence",
     "hurst", "hurst_ready", "imbalance_slope", "institution_futures_net",
     "macro_event_flag", "macro_krw_chg", "macro_nasdaq_chg",
-    "macro_quality_age_sec", "macro_quality_available",
-    "macro_quality_fallback_used", "macro_quality_source_code",
-    "macro_quality_stale", "macro_risk_off", "macro_risk_on",
-    "macro_sp500_chg", "macro_us10y_chg", "macro_vix", "macro_vix_abs",
-    "microprice", "microprice_bias", "microprice_depth_bias", "microprice_slope",
+    "macro_quality_source_code",
+    "macro_risk_off", "macro_risk_on",
+    "macro_sp500_chg", "macro_us10y_chg", "macro_vix",
+    "microprice_bias", "microprice_depth_bias", "microprice_slope",
     "mlofi_norm", "mlofi_pressure", "mlofi_slope",
     "ofi_imbalance", "ofi_norm", "ofi_pressure", "ofi_reversal_speed",
     "opt_available", "opt_pcr_bearish", "opt_pcr_bullish", "opt_pcr_extreme",
@@ -128,7 +162,7 @@ FEATURE_KEYS_ALL = [
     "toxicity_atr_stress", "toxicity_cancel_stress", "toxicity_flow_stress",
     "toxicity_queue_stress", "toxicity_regime_code", "toxicity_score",
     "toxicity_score_ma",
-    "vwap", "vwap_position",
+    "vwap_position",
     # 방향성 고도화 피처 (P2 — 2026-06-01 추가)
     "time_sin", "time_cos", "is_open_volatile", "is_close_volatile",
     "ret_1m", "ret_5m", "ret_15m",
@@ -294,7 +328,9 @@ def process_day(date_str: str, candles: list) -> list:
         feat: dict = {k: 0.0 for k in FEATURE_KEYS_ALL}
         feat["atr"]           = float(atr_res["atr"])
         feat["atr_ratio"]     = float(atr_res["atr_ratio"])
-        feat["vwap"]          = float(vwap_res["vwap"])
+        # feat["vwap"]는 417차에 제거 — 라이브가 vwap 절대값을 기록하지 않아
+        # 백필 날짜에만 비영인 컬럼이 됐다(위 FEATURE_KEYS_ALL 주석 참조).
+        # vwap_res는 vwap_position/above_vwap/vwap_momentum 계산에 계속 쓴다.
         feat["vwap_position"] = float(vwap_res["position"])
         feat["above_vwap"]    = 1.0 if vwap_res["above_vwap"] else 0.0
         feat["cvd_direction"] = cvd_dir
