@@ -28,6 +28,15 @@ import sqlite3
 import sys
 from collections import Counter, defaultdict
 
+# [MW0601 410차] Windows 기본 콘솔(cp949)에서 리포트 본문의 '—'(U+2014) 출력이
+# UnicodeEncodeError로 죽어 이 도구를 수동 실행할 수 없던 결함 수정. 리다이렉트
+# 없이도 돌아가야 한다 — 다른 리포트 스크립트들과 동일한 가드.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW_DB = os.path.join(_ROOT, "data", "db", "raw_data.db")
 

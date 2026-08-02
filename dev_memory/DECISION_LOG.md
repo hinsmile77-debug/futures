@@ -2,6 +2,81 @@
 
 ---
 
+## 2026-08-02 (MW0601 410차 — 피처셋 주기점검 Phase A: 주간 건강 리포트 자동화)
+
+**발단**: 사용자 요구 — "raw_features 축적분을 주기 분석해 호라이즌별 피처셋의 건강도·
+방향예측력·강건성을 자동 점검하고, 개선 피처셋 제안과 신규 알파 발굴까지 잇는다."
+**계획**: `docs/Spec for feature/피처셋_주기점검_자동리포트_구현계획_2026-08-02.md`
+**관련**: 07-30 실행계획(L0~L4 배터리), 표준절차 Phase 2, 407·408차(리포트 경로·FIFO 규약)
+
+### 진단 — 없는 것은 도구가 아니라 스케줄 연결이었다
+
+검정 도구는 이미 6종(`feature_health_report`·`core_feature_discovery`·
+`ic_probe_pending_features`·`validate_feature_set_purged_cv`·`feature_ablation_purged_cv`·
+`compute_canary_1m_ic`)이 있는데 **전부 수동 실행 전용**이라 어떤 주기에도 걸려 있지
+않았다. 그래서 Phase A는 새 검정법을 만들지 않고 기존 판정 기준을 그대로 쓰되 주간
+EOD 체인에 얹는 데 집중했다. 주기는 3단(주간=건강, 월간=제안, 26주=전면)으로 나누고
+**새 캘린더를 만들지 않았다**(317차 원칙 — 관리 포인트가 늘면 방치된다).
+
+### 구현 3건
+
+1. **`scripts/generate_featureset_health_report.py` 신설** (읽기 전용).
+   호라이즌별 배포 피처셋 기준 L0 건강도(§1·§2), 전체 raw 신규이상(§2-b), L4 conf-층화
+   요약(§3), 후보 파이프라인 현황판(§4), 확정 결정 레지스트리(§5).
+   - **배포 스펙은 `feature_names_{hz}.pkl` 직접 로드**로만 판단한다. 337차·394차·07-30
+     실행계획 0장이 전부 `horizon_feature_sets.json`(계획 문서)이나 registry(PC별 런타임
+     산출물, 커밋 안 됨)를 보고 배포 상태를 오판한 사례다.
+   - 판정 임계값은 `feature_health_report.py`를 **모듈 import**해 단일 출처 유지 —
+     복사하면 한쪽만 바뀌어 두 리포트가 다른 판정을 내는 사고가 난다. `MIN_DAYS`도
+     `core_feature_discovery`에서 가져온다(실패 시 경고 후 기본값).
+   - 단일 스캔으로 건강도 창(20일)과 후보 축적 창(60일)을 함께 모은다. 전수 스캔은
+     86,668행 8.7초이고 데이터가 쌓일수록 선형 증가하므로 창으로 상한을 묶었다.
+2. **`campaign_report_paths.py`에 `stem` 인자 추가** — 계열별 PC폴더·날짜본·FIFO 재사용.
+   기본값이 `validation_campaign`이라 기존 호출부 3곳 무변경. **FIFO는 stem별로 따로
+   센다**(공유하면 새 계열이 주간 검증 리포트를 조기 삭제한다).
+3. **`campaign_steps.py` 주간 스텝 1줄 배선** — 판정 리포트 뒤, 재학습 앞. 읽기전용이라
+   순서 민감도는 없지만 재학습 앞에 둬야 "이번 주 내내 라이브였던 pkl"의 상태가 기록된다.
+
+### 계획 대비 추가한 것 2가지 (둘 다 실측이 요구한 변경)
+
+- **§2-b 전체 raw 신규이상**: 계획대로 배포 피처만 봤더니 실이상 0건인데, 수동 도구는
+  같은 창에서 8건(`bear_reversal_signal`·`microprice`·`macro_vix_abs`·exhaustion_shadow
+  2종 등)을 잡았다. 그 8건 전부가 배포 피처셋 밖이라 호라이즌 표에 한 줄도 안 뜬 것 —
+  **자동 리포트가 수동 도구보다 덜 보는 상태**였다. 소진 6종 2개월 방치가 이 사각지대다.
+- **§1 `실이상` 열**: `is_*`/`quality_*` 상태플래그가 CRITICAL/WARN 열을 채워
+  (`is_close_volatile` 97.8% 등) 경보 피로를 만들었다. `실이상`은 KNOWN·상태플래그를
+  제외한 DEAD/CRITICAL/raw부재만 센다(수동 도구의 "신규 이상"과 동일 정의).
+
+### 부수 버그 수정
+
+`scripts/feature_health_report.py`가 Windows 기본 콘솔(cp949)에서 `—`(U+2014) 출력 시
+`UnicodeEncodeError`로 죽어 **리다이렉트 없이는 수동 실행 자체가 불가능**했다. 다른 리포트
+스크립트와 동일한 stdout/stderr utf-8 재설정 가드 추가. 이 도구가 신규 리포트의 판정
+단일 출처라 교차대조를 위해 필요했다.
+
+### 검증
+
+- py_compile: py37_32(3.7.13 32bit)·py310_64(3.10.20 64bit) 양쪽 rc=0.
+- 실행: 양쪽 환경에서 동일 결과. EOD 체인과 같은 방식(subprocess, cwd=ROOT)으로도 rc=0.
+- FIFO 계열 격리 샌드박스 테스트 PASS — 계열간 미간섭, 수동 스냅샷(`_pre405`)·검토보고
+  md 보존, `latest()` 계열별 분리, 없는 계열 `FileNotFoundError`.
+- 교차대조: §2-b 8건이 수동 `feature_health_report.py --days 20` 결과와 정확히 일치.
+
+### 첫 산출 (2026-08-02, 창 07-03~07-31 / 20거래일 7,539행)
+
+배포 피처 실이상 **0건**(6개 호라이즌 전부) · 전체 raw 신규이상 **8건** · 후보 재고
+**36건**(발굴 권고 없음) · `⚠ 미배선` 1건(`cancel_ratio` — 구현불가 확정이라 정상).
+후보 36건에 기각 확정된 `basis_pt`·`cvd_direction`이 섞여 있다 — **Phase B
+(`FEATURE_SET_DECISIONS`) 미구현 탓**이며 리포트가 생성 경고로 그 사실을 명시한다.
+
+### 원칙 준수
+
+읽기 전용 — raw_data.db SELECT와 md/json 쓰기 외에 모델·설정·registry·featureset json
+어디에도 쓰지 않는다. 리포트는 **관측과 권고만** 내며, 피처셋 변경 경로는 L3 purged CV →
+주간회의 수동 승인 → EOD 재학습 → pkl 직접 로드 확인뿐이다(`CLAUDE.md` §6).
+
+---
+
 ## 2026-08-02 (MW0601 409차 — 0802 대조 권고 미구현 3건 R2·R3·R5 구현)
 
 **발단**: `docs/정기점검/금요일점검/0802_MW0601xMW0602_리포트_항목별대조.md` R표

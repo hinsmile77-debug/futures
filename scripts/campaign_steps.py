@@ -54,13 +54,19 @@ def run_campaign_steps(logger, base_dir: str) -> None:
          이번 주 데이터가 지난주 모델 기준 OOS로 평가된다(§3-1 OOS 보장: 리포트가
          모델 파일 mtime 이후 ts만 평가하므로, 재학습을 먼저 돌리면 mtime이 오늘로
          갱신돼 평가 표본이 0이 된다)
-      3) 섀도우 TB 재학습 (다음 주 평가용 모델 갱신)
-      4) 분위 회귀 재학습
-      5) 격주(짝수 ISO 주차): MAE/MFE 배리어 적정성 분석
+      3) 피처셋 건강 리포트 (읽기 전용, 410차 Phase A)
+      4) 섀도우 TB 재학습 (다음 주 평가용 모델 갱신)
+      5) 분위 회귀 재학습
+      6) 격주(짝수 ISO 주차): MAE/MFE 배리어 적정성 분석
     """
     steps = [
         ("게이트 ablation 리포트", ["generate_gate_ablation_report.py", "--days", "7"]),
         ("검증 캠페인 판정 리포트", ["generate_validation_campaign_report.py"]),
+        # [MW0601 410차 / 피처셋 주기점검 Phase A] 호라이즌별 피처셋 L0 건강도 +
+        # 후보 파이프라인 현황판. 읽기 전용이라 순서에 민감하지 않지만, 재학습
+        # **앞**에 두어 이번 주 리포트가 "이번 주 내내 라이브였던 pkl"의 상태를
+        # 기록하게 한다(재학습 뒤면 오늘 갱신된 pkl을 지난 한 주의 근거로 오독하게 된다).
+        ("피처셋 건강 리포트", ["generate_featureset_health_report.py"]),
         ("섀도우 TB 재학습", ["run_shadow_triple_barrier_retrain.py"]),
         ("분위 회귀 재학습", ["train_quantile_regressor.py"]),
         # [357차] 메타라벨 분류기(entry_quality_prob 스코어러)가 어떤 스케줄에도
@@ -107,7 +113,14 @@ def run_campaign_steps(logger, base_dir: str) -> None:
     try:
         from scripts.campaign_report_paths import latest as _cr_latest
         from utils.db_utils import pc_id as _cr_pc
-        logger.info("판정 리포트: %s", _cr_latest(_cr_pc(), "report"))
+        _pc = _cr_pc()
+        logger.info("판정 리포트: %s", _cr_latest(_pc, "report"))
+        # [410차] 계열마다 stem이 다르다 — 하나가 없어도 나머지 경로는 찍어야 한다.
+        try:
+            logger.info("피처셋 건강 리포트: %s",
+                        _cr_latest(_pc, "report", stem="featureset_health"))
+        except Exception as _fs_e:
+            logger.info("피처셋 건강 리포트: 없음 (%s)", _fs_e)
     except Exception as _cr_e:
         logger.info("판정 리포트: docs/정기점검/금요일점검/<PC명>/ (경로 조회 실패: %s)", _cr_e)
     logger.info("=" * 55)
