@@ -120,6 +120,63 @@ def _pc_id() -> str:
             return "UNKNOWN"
 
 
+# [MW0601 409차 / R3] A/B 채널 3종과 그 기준선 지표.
+# 이 채널들의 FAIL 판정은 전부 `delta_vs_current`(대안 − 현행)로 내리므로,
+# **기준선(current) 자체의 부호가 PC간 반대면 "현행 초과 대안" 목록이 구조적으로 갈린다.**
+_AB_BASELINE_CHANNELS = (
+    ("[3-B]", "quantile_tp_shadow", "분위회귀 TP1 거리 A/B"),
+    ("[23-B]", "tp1_geometry_shadow", "TP1/손절 초기 기하 A/B"),
+    ("[25]", "tp1_protect_offset_shadow", "TP1 보호전환 offset A/B"),
+)
+
+
+def _peer_ab_baselines(me: str) -> dict:
+    """[MW0601 409차 / R3] 다른 PC 리포트의 A/B 기준선(current.total_pt)을 읽는다.
+
+    왜 필요한가: 0802 31채널 대조에서 `tp1_geometry_shadow.per_variant.current.total_pt`가
+    MW0601 −17.18 vs MW0602 +3.64로 **부호가 반대**임이 드러났다(quantile_tp_shadow도
+    −16.94 vs +6.03). 같은 대안이 한 PC에서는 "현행 초과", 다른 PC에서는 "현행 미달"로
+    갈릴 수밖에 없고, 실제로 tp1_x2(+32.78 vs −19.04)·q_x0.7·q_blend가 그렇게 갈렸다.
+    교차검토 §2-4는 그걸 tp1_x2 1건의 문제로 봤지만 전수로는 A/B 채널 3개 전체의 문제다.
+
+    407차가 리포트를 PC별 폴더의 날짜본으로 옮긴 덕에 상대 PC 파일을 읽을 수 있게 됐다.
+    **판정에는 일절 반영하지 않는다** — 표시 전용이다. 상대 파일이 없거나 오래됐어도
+    리포트 생성을 막지 않는다(없는 것이 정상인 상황이 많다: 새 PC, pull 전, 단일 PC 운용).
+
+    반환: {pc: {"date": "YYYYMMDD", "vals": {channel_key: total_pt or None}}}
+    """
+    out = {}
+    try:
+        from scripts.campaign_report_paths import WEEKLY_DIR, latest
+        if not os.path.isdir(WEEKLY_DIR):
+            return out
+        for name in sorted(os.listdir(WEEKLY_DIR)):
+            if name == me or not os.path.isdir(os.path.join(WEEKLY_DIR, name)):
+                continue
+            try:
+                p = latest(name, "metrics")
+            except Exception:
+                continue        # 그 폴더엔 리포트가 없다(검토보고만 있는 폴더 등)
+            try:
+                with open(p, encoding="utf-8") as f:
+                    m = json.load(f)
+            except Exception:
+                continue
+            vals = {}
+            for _, key, _ in _AB_BASELINE_CHANNELS:
+                try:
+                    vals[key] = ((m.get(key) or {}).get("per_variant") or {}) \
+                        .get("current", {}).get("total_pt")
+                except Exception:
+                    vals[key] = None
+            if any(v is not None for v in vals.values()):
+                _m = re.search(r"(\d{8})", os.path.basename(p))
+                out[name] = {"date": _m.group(1) if _m else "?", "vals": vals}
+    except Exception:
+        pass                    # R3는 부가 정보다 — 실패가 리포트를 막으면 안 된다
+    return out
+
+
 def _prune(pc_name: str, keep: int) -> list:
     """[MW0601 408차] FIFO 보관정리 — 실패해도 리포트 생성을 막지 않는다."""
     try:
@@ -3849,7 +3906,8 @@ def eval_grade_ev_inversion() -> dict:
             rows = conn.execute(
                 """SELECT entry_ts,
                           COALESCE(NULLIF(grade,''),'?') AS grade,
-                          COALESCE(net_pnl_krw, pnl_krw) AS pnl
+                          COALESCE(net_pnl_krw, pnl_krw) AS pnl,
+                          COALESCE(quantity, 0) AS qty
                    FROM trades
                    WHERE exit_ts >= ? AND grade IN ('A','B','C')""",
                 (_campaign_start(),),
@@ -3875,16 +3933,23 @@ def eval_grade_ev_inversion() -> dict:
     # 상시 전환이 같은 논리로 처리된 전례). 표본 축소로 min_samples 미달이 나면 그것이
     # 정상이며 되돌리지 말 것 — 원래 판정할 표본이 없었던 것이다.
     # 근거: docs/정기점검/매일점검/MW0601-20260731-점검리포트.md §9-2.
+    # [MW0601 409차 / R5] 계약수도 함께 병합한다. **`quantity`는 청산 행별 계약수이지
+    # 포지션 크기가 아니다** — 부분청산 포지션은 여러 행에 나뉘어 있으므로 포지션
+    # 크기는 `sum`이다(실측: `2026-07-10 11:37:04` → TP1 부분청산 2 + 하드스톱 3 = 5계약).
+    # max로 세면 5계약 포지션이 3계약으로 잡힌다.
     from collections import defaultdict
-    _merged = defaultdict(lambda: {"grade": None, "pnl": 0.0})
+    _merged = defaultdict(lambda: {"grade": None, "pnl": 0.0, "qty": 0})
     for row in rows:
         k = (row["entry_ts"], row["grade"])
         _merged[k]["grade"] = row["grade"]
         _merged[k]["pnl"] += float(row["pnl"] or 0.0)
+        _merged[k]["qty"] += int(row["qty"] or 0)
 
     pnl_by_grade = defaultdict(list)
+    qty_by_grade = defaultdict(list)
     for v in _merged.values():
         pnl_by_grade[v["grade"]].append(v["pnl"])
+        qty_by_grade[v["grade"]].append((v["qty"], v["pnl"]))
     out["n_entries_merged"] = len(_merged)
     out["n_exit_events"] = len(rows)
 
@@ -3900,6 +3965,54 @@ def eval_grade_ev_inversion() -> dict:
             "stdev_pnl_krw": round(float(arr.std(ddof=1)) if len(pnls) > 1 else 0.0, 0),
         }
     out["by_grade"] = by_grade
+
+    # [MW0601 409차 / R5] 등급 × 계약수 교차 분해 — **표시 전용, 판정 미반영**.
+    #
+    # 0802 PC 대조에서 A등급 총손실이 MW0601 −3,986,335원 vs MW0602 −488,009원으로
+    # 8.2배 갈렸다. 원인을 캠페인 구간 실측으로 분해한 결과, 이 채널이 "등급별" EV
+    # 역전으로 부르는 현상이 **계약수 축으로 더 잘 설명된다**:
+    #   A: qty≤2 48건 +1,311,796원(평균 +27,329)  /  qty≥3 4건 −5,298,131원(4전 1승)
+    #   C: qty≤2 11건   −352,072원(평균 −32,007)  /  qty≥3 3건   +603,890원(3전 2승)
+    # 즉 **qty≤2로 한정하면 A(+27,329) > C(−32,007)로 역전이 사라진다.**
+    # A가 적자인 이유는 A등급이 큰 계약수를 더 많이 받았기 때문이지 등급 자체가
+    # 역예측이기 때문이 아닐 수 있다 — 그렇다면 GradeEVGuard(등급 강등)는 잘못된
+    # 처방이고, 0801 결정 "부결 — GradeEVGuard 활성화하지 않음"이 옳다.
+    #
+    # ⚠ 그러나 qty≥3 표본이 A 4건 / C 3건으로 **극히 얇다**(313차: 이걸로 확정 결론
+    # 금지). C의 qty≥3이 흑자인 것은 CLAUDE.md 전환기준 ⑧이 인용하는 §9-3
+    # "3계약 이상 16전 1승"과 방향이 다른데, 그쪽은 전체 기간이고 이쪽은 캠페인
+    # 구간(_campaign_start 이후)이라 모집단이 다르다. **판정식은 건드리지 않는다**
+    # (A 평균 순EV < 0 → FAIL 그대로) — 이 분해는 그 FAIL을 어떻게 읽을지에 대한
+    # 맥락일 뿐이다. 계약수 축 판정은 [28] sizing_inversion_watch가 맡는다.
+    def _qty_stats(pairs: list) -> dict:
+        if not pairs:
+            return {}
+        arr = np.array([p for _, p in pairs], dtype=float)
+        return {
+            "n": len(pairs),
+            "n_win": int((arr > 0).sum()),
+            "total_pnl_krw": round(float(arr.sum()), 0),
+            "avg_pnl_krw": round(float(arr.mean()), 0),
+        }
+
+    by_grade_qty, qty_split = {}, {}
+    for g, pairs in qty_by_grade.items():
+        _buckets = defaultdict(list)
+        for q, p in pairs:
+            _buckets[q].append((q, p))
+        by_grade_qty[g] = {str(q): _qty_stats(v) for q, v in sorted(_buckets.items())}
+        qty_split[g] = {
+            "le2": _qty_stats([(q, p) for q, p in pairs if q <= 2]),
+            "ge3": _qty_stats([(q, p) for q, p in pairs if q >= 3]),
+        }
+    out["by_grade_qty"] = by_grade_qty
+    out["qty_split"] = qty_split
+    # qty≤2 한정으로 A/C 역전이 유지되는지 — 리포트가 한 줄로 답하게 한다.
+    _a2 = (qty_split.get("A") or {}).get("le2") or {}
+    _c2 = (qty_split.get("C") or {}).get("le2") or {}
+    if _a2.get("n") and _c2.get("n"):
+        out["inversion_persists_qty_le2"] = bool(
+            _a2["avg_pnl_krw"] < _c2["avg_pnl_krw"])
 
     min_n = int(cr["min_samples_per_grade"])
     a = by_grade.get("A")
@@ -4066,9 +4179,10 @@ def build_report(days: int) -> tuple:
     L.append("| [3-B] 분위회귀 TP1 거리 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g3b.get("verdict", "")), _g3b.get("reason", _g3b.get("error", "—")),
         _g3b.get("n_trades", "—"), _g3b.get("n_days", "—"), _dm("quantile_tp_shadow")))
-    L.append("| [4] 신호소멸청산 | %s | 누적 saved=%spt (n=%s, 보류 %s) |" % (
+    # [MW0601 409차 / R2] 마커 배선 — 이 행은 404차 후속11 당시 _dm()이 빠져 있었다.
+    L.append("| [4] 신호소멸청산 | %s | 누적 saved=%spt (n=%s, 보류 %s)%s |" % (
         _fmt_verdict(sd["verdict"]), sd.get("total_saved_pts", "—"),
-        sd.get("n_resolved", 0), sd.get("n_pending", 0)))
+        sd.get("n_resolved", 0), sd.get("n_pending", 0), _dm("signal_decay")))
     L.append("| [5] 레짐 ATR 배수 | %s | %s |" % (
         _fmt_verdict(hr["verdict"]),
         " / ".join("%s: n=%d EV=%s원" % (b, v["n"], format(v["avg_ev_krw"], ",.0f"))
@@ -4153,12 +4267,14 @@ def build_report(days: int) -> tuple:
         float(VALIDATION_CAMPAIGN.get("weight_collapse_watch", {}).get("target_tolerance", 0.07)) * 100,
         wcw.get("n_days_pre", 0), wcw.get("n_days_post", 0)))
     _dv = dev.get("by_direction", {})
-    L.append("| [21] 방향별 순EV (SYSTEM_AUTO) | %s | %s |" % (
+    # [MW0601 409차 / R2] 마커 배선 — 위 [4]와 같은 이유.
+    L.append("| [21] 방향별 순EV (SYSTEM_AUTO) | %s | %s%s |" % (
         _fmt_verdict(dev["verdict"]),
         " / ".join("%s: n=%d 평균=%s원 최대손실=%s원" % (
             d, _dv[d]["n"], format(_dv[d]["avg_pnl_krw"], ",.0f"),
             format(_dv[d]["min_pnl_krw"], ",.0f"))
-            for d in ("LONG", "SHORT") if d in _dv) or "표본 없음"))
+            for d in ("LONG", "SHORT") if d in _dv) or "표본 없음",
+        _dm("direction_ev_watch")))
     L.append("| [22] MFE 캡처율 관찰 | %s | 풀링캡처 보유내=%s 종가까지=%s / 평균잔여 %s pt (진입 %s건) |" % (
         _fmt_verdict(mcw["verdict"]),
         ("%.1f%%" % (mcw["capture_in_hold_pooled"] * 100)) if mcw.get("capture_in_hold_pooled") is not None else "—",
@@ -4672,6 +4788,44 @@ def build_report(days: int) -> tuple:
         L.append("> 수 없다. 0722 딥다이브: A등급 4주 누적손실의 84%가 [15]에서 관찰하는")
         L.append("> \"TP1 도달 전 급행 풀스톱\" 9건에 집중돼 있었음 — 표준편차가 크고")
         L.append("> 최대손실이 평균의 여러 배면 이 fat-tail 구조를 의심할 것.")
+    # [MW0601 409차 / R5] 등급 × 계약수 교차 분해 — 표시 전용, 판정 미반영
+    _qs = gei.get("qty_split") or {}
+    if _qs:
+        L.append("")
+        L.append("**등급 × 계약수 분해** — 이 채널이 \"등급별\" 역전으로 부르는 현상이")
+        L.append("계약수 축으로 더 잘 설명되는지 본다:")
+        L.append("")
+        L.append("| 등급 | qty≤2 n / 누적(원) / 평균(원) | qty≥3 n(승) / 누적(원) / 평균(원) |")
+        L.append("|---|---|---|")
+        for g in ("A", "B", "C"):
+            v = _qs.get(g)
+            if not v:
+                continue
+
+            def _f(s):
+                if not s:
+                    return "—"
+                return "%d / %s / %s" % (s["n"], format(s["total_pnl_krw"], ",.0f"),
+                                         format(s["avg_pnl_krw"], ",.0f"))
+            _ge3 = v.get("ge3")
+            _ge3s = ("%d(승%d) / %s / %s" % (
+                _ge3["n"], _ge3["n_win"], format(_ge3["total_pnl_krw"], ",.0f"),
+                format(_ge3["avg_pnl_krw"], ",.0f"))) if _ge3 else "—"
+            L.append("| %s | %s | %s |" % (g, _f(v.get("le2")), _ge3s))
+        L.append("")
+        _persist = gei.get("inversion_persists_qty_le2")
+        if _persist is False:
+            L.append("> ⚠ **qty≤2로 한정하면 A/C 역전이 사라진다.** A가 적자인 것은 등급 자체가")
+            L.append("> 역예측이어서가 아니라 **A등급이 큰 계약수를 더 많이 받았기 때문**일 수")
+            L.append("> 있다. 그렇다면 GradeEVGuard(등급 강등)는 잘못된 처방이다 — 등급을")
+            L.append("> 낮춰도 계약수 배분이 그대로면 문제가 남는다.")
+        elif _persist is True:
+            L.append("> qty≤2로 한정해도 A/C 역전이 유지된다 — 계약수만으로는 설명되지 않는다.")
+        L.append("> ⚠ **qty≥3 표본이 얇다**(313차: 이걸로 확정 결론 금지). 또 이 표는 캠페인")
+        L.append("> 구간 한정이라, 전체 기간을 본 `CLAUDE.md` 전환기준 ⑧의 §9-3")
+        L.append("> \"3계약 이상 16전 1승\"과 모집단이 다르다 — 두 수치를 같은 것으로 읽지 말 것.")
+        L.append("> **판정식은 무변경**(A 평균 순EV < 0 → FAIL). 계약수 축 판정은")
+        L.append("> [28] `sizing_inversion_watch`가 맡는다 — 함께 볼 것.")
     if gei.get("recommendation"):
         L.append("- **권고**: %s" % gei["recommendation"])
     if gei.get("reason"):
@@ -5233,6 +5387,52 @@ def build_report(days: int) -> tuple:
     L.append("> 0.000pt다. 표본이 더 쌓일 때까지 **현행 유지가 합리적**이다.")
     L.append("> ⚠ [12] tp1_trail_shadow가 기각한 \"TP1 **이후** 트레일 폭\"과 다른 질문이다")
     L.append("> — 이건 TP1 **시점**의 초기 보호 offset이다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # [MW0601 409차 / R3] A/B 채널 기준선 PC 대조 — **표시 전용, 판정 미반영**
+    _me_pc = _pc_dir_name()
+    _peers = _peer_ab_baselines(_me_pc)
+    L.append("## A/B 채널 기준선 PC 대조 (표시 전용 — 판정 미반영)")
+    L.append("")
+    L.append("`[3-B]`·`[23-B]`·`[25]`의 FAIL 판정은 전부 `delta_vs_current`(대안 − 현행)로")
+    L.append("내린다. 따라서 **기준선 `current` 자체의 부호가 PC간 반대면 같은 대안이 한 PC에서만**")
+    L.append("**\"현행 초과\"로 등재된다** — 그 목록을 단일 PC 근거로 채택하면 안 된다.")
+    L.append("")
+    if not _peers:
+        L.append("- 대조 가능한 다른 PC 리포트가 없다 (`docs/정기점검/금요일점검/<PC>/`에")
+        L.append("  상대 PC 산출물이 있어야 한다 — 아직 pull하지 않았거나 단일 PC 운용 중).")
+    else:
+        _cols = [_me_pc] + sorted(_peers)
+        L.append("| 채널 | %s |" % " | ".join(
+            (c if c == _me_pc else "%s (%s)" % (c, _peers[c]["date"])) for c in _cols))
+        L.append("|---%s|" % ("|---" * len(_cols)))
+        _inverted = []
+        for _tag, _key, _title in _AB_BASELINE_CHANNELS:
+            _mine = ((off.get(_key) or {}).get("per_variant") or {}) \
+                .get("current", {}).get("total_pt")
+            _vals = [_mine] + [_peers[c]["vals"].get(_key) for c in sorted(_peers)]
+            _known = [v for v in _vals if isinstance(v, (int, float))]
+            _flip = len(_known) > 1 and min(_known) < 0 < max(_known)
+            if _flip:
+                _inverted.append(_tag)
+            L.append("| %s %s%s | %s |" % (
+                _tag, _title, " ⚠**부호 역전**" if _flip else "",
+                " | ".join(("**%s**" % v) if isinstance(v, (int, float)) else "—"
+                           for v in _vals)))
+        L.append("")
+        L.append("*단위 pt — 각 채널 `per_variant.current.total_pt`(현행 전략의 재생 손익).*")
+        L.append("")
+        if _inverted:
+            L.append("> ⚠ **기준선 부호가 갈린 채널: %s** — 이 채널들의 \"현행 초과 대안\""
+                     % ", ".join(_inverted))
+            L.append("> 목록은 PC마다 다르게 나올 수밖에 없다. **양쪽에서 공통으로 살아남은**")
+            L.append("> **대안만** 후보로 볼 것(0802 대조 §3: `stop_1.0`·`sym_1.0_1.0` 2개).")
+        else:
+            L.append("> 기준선 부호가 모든 PC에서 일치한다 — A/B 결과를 그대로 읽어도 된다.")
+        L.append("> 상대 PC 날짜가 이번 주가 아니면 그 PC가 아직 리포트를 생성/커밋하지")
+        L.append("> 않은 것이다. **날짜가 다른 두 리포트를 같은 주로 취급하지 말 것.**")
     L.append("")
     L.append("---")
     L.append("")
