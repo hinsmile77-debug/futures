@@ -897,10 +897,57 @@ def _migrate_trades_db():
                 # 순EV 역전과도 연결되는 후보 원인)를 사후분석에서 구분할 수 있게
                 # 한다. 진입 판정에는 영향 없는 순수 관측 컬럼. NULL=구버전 레코드.
                 "raw_grade": "TEXT",
+                # [MW0601 417차 / ②] 진입 시점 계약수.
+                #
+                # **왜 필요한가.** `quantity`는 **청산 행별 계약수**다 — 부분청산
+                # 포지션은 같은 entry_ts로 여러 행에 나뉘고 각 행에 그 레그 수량이
+                # 들어간다. 그래서 `quantity`만으로는 "이 포지션이 몇 계약으로
+                # 들어갔나"를 알 수 없고, 분석하는 쪽이 매번 entry_ts로 묶어
+                # 합산해야 한다. 그 합산을 빠뜨리면 편향이 **한 방향으로만** 생긴다:
+                # 이익 포지션은 TP1/TP2/TP3로 쪼개져 작은 수량 여러 행이 되고,
+                # 손실 포지션은 하드스톱 전량청산이라 큰 수량 한 행이 된다
+                # → "계약수가 클수록 진다"가 인과 없이 만들어진다.
+                #
+                # 실제로 같은 사고가 네 번 반복됐다:
+                #   311차 후속(07-12) 인지만 등록 → 402차 후속5(07-29) 진입 27건이
+                #   87행으로 승률 65.5% 과대 → 405차(08-01) 병합 헬퍼 도입하며
+                #   수량은 max 채택 → 409차(08-02) max 반증·[13]만 sum 수정.
+                # 분석 측 관례로는 재발을 못 막으므로 기록 측에 값을 남긴다.
+                #
+                # 값의 출처는 `PositionTracker.initial_quantity`(진입 시 확정,
+                # 추가진입 시 갱신, 360차 shrink_initial 시 축소). NULL=구버전 레코드
+                # 이며 소비 측은 entry_ts 레그 합으로 폴백해야 한다.
+                "entry_qty": "INTEGER",
             }
             for name, dtype in additions.items():
                 if name not in cols:
                     conn.execute(f"ALTER TABLE trades ADD COLUMN {name} {dtype}")
+
+            # [MW0601 417차 / ②] entry_qty 백필 — 구버전 레코드는 같은
+            # (entry_ts, direction) 레그들의 quantity **단순 합**이 곧 진입 계약수다.
+            # 부분청산이 진입 수량을 남김없이 분할하므로 합이 정확히 원 수량이 된다.
+            # 이미 값이 있는 행은 건드리지 않는다(재실행 안전).
+            #
+            # **중복 제거를 하지 않는 이유 — 실측으로 반증됐다.** 처음에는
+            # `stuck_exit_flat`/`stuck_exit_remainder`가 같은 청산을 두 번 기록한
+            # 것으로 의심해 (exit_ts, quantity, net_pnl_krw) 중복을 접으려 했으나,
+            # TRADE 로그의 `[Position] 진입 N계약`과 대조하니 단순 합이 맞았다:
+            #   2026-06-26 11:01:58 로그 6계약 = 2+2+1+1 (중복제거하면 5 — 틀림)
+            #   2026-07-01 13:00:01 로그 6계약 = 5+1
+            #   2026-07-03 13:20:01 로그 8계약 = 1×8 (중복제거하면 7 — 틀림)
+            # flat/remainder는 진짜 별개 레그이고, 1계약씩 같은 가격에 나가면
+            # quantity·net_pnl_krw가 우연히 같아질 뿐이다. 07-03의 8분할처럼
+            # **정상 레그가 동일값을 갖는 경우가 실재**하므로 값 기반 중복 제거는
+            # 안전하지 않다.
+            if "entry_qty" not in cols:
+                conn.execute(
+                    """UPDATE trades SET entry_qty = (
+                           SELECT SUM(t2.quantity) FROM trades t2
+                           WHERE t2.entry_ts = trades.entry_ts
+                             AND t2.direction = trades.direction
+                       )
+                       WHERE entry_qty IS NULL AND entry_ts IS NOT NULL"""
+                )
 
             rows = conn.execute(
                 """SELECT id, entry_price, exit_price, direction,

@@ -1053,6 +1053,12 @@ class PositionTracker:
             "grade": self.grade,
             "entry_horizon": self.entry_horizon,
             "reverse_entry_enabled": self.reverse_entry_enabled,
+            # [MW0601 417차 / ②] 진입 계약수 — 위 "quantity"는 **이번 청산 레그의
+            # 수량**이라 부분청산이면 진입 규모와 다르다. 사이징 축 분석이 그 둘을
+            # 혼동해 "계약수가 클수록 진다"를 인과 없이 만들어낸 사고가 네 번
+            # 반복돼(311차→402차→405차→409차) 기록 측에 값을 남긴다.
+            # `initial_quantity`가 0이면(구경로·복원 직후) quantity로 폴백한다.
+            "entry_qty": int(self.initial_quantity or self.quantity or 0),
         }
 
     def _reset_position(self) -> None:
