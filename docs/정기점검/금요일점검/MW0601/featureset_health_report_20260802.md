@@ -6,9 +6,10 @@
 
 - 건강도 관찰창: **2026-07-03 ~ 2026-07-31** (20거래일, 7,539행)
 - 후보 축적 관찰창: 2026-05-06 ~ 2026-07-31 (60거래일)
+- 🚨 **관찰창에 백필 생성 행 15,696행(44일)이 포함돼 있다** (`--include-backfill`). 이 행들은 호가·수급·옵션·매크로가 전부 0.0이라 §2-b의 zero%와 §4의 축적일수가 모두 왜곡된다. 판정을 그대로 믿지 말 것.
 - 배포 스펙 출처: `model/horizons/feature_names_{hz}.pkl` **직접 로드** — `horizon_feature_sets.json`(계획 문서)·`shap_feature_registry.json`(PC별 런타임 산출물)이 아니다
 - 판정 기준: `scripts/feature_health_report.py` 단일 출처 (DEAD=분산0 / CRITICAL=zero·최빈 95%+ / WARN=80%+ / 미계측=표본<200)
-- git: `f173a90`
+- git: `fa642cd`
 
 ## 1. 호라이즌별 요약
 
@@ -110,7 +111,7 @@ CORE(long): `above_vwap`=OK / `opt_chain_pcr`=OK
 | `is_monthly_witching` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 19일 | CRITICAL | 축적중 19/20일 |
 | `is_weekly_witching` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 19일 | OK | 축적중 19/20일 |
 | `kyle_lambda` | POOL | 13일 | OK | 축적중 13/20일 |
-| `micro_regime_code` | POOL | 28일 | OK | 검증가능 (28일) · 📌 1m 편입만 하지 않음 — 타 호라이즌 후보 자격은 유지 |
+| `micro_regime_code` | POOL | 32일 | OK | 검증가능 (32일) · 📌 1m 편입만 하지 않음 — 타 호라이즌 후보 자격은 유지 |
 | `microprice_slope` | POOL | 60일 | OK | 검증가능 (60일) |
 | `mlofi_norm` | POOL | 60일 | OK | 검증가능 (60일) |
 | `multi_timeframe_15m` | POOL | 13일 | OK | 축적중 13/20일 |
@@ -125,13 +126,13 @@ CORE(long): `above_vwap`=OK / `opt_chain_pcr`=OK
 | `program_arb_net` | pending:5m, pending:10m, pending:15m, pending:30m | 60일 | OK | 검증가능 (60일) |
 | `program_non_arb_net` | pending:5m, pending:10m, pending:15m, pending:30m | 60일 | OK | 검증가능 (60일) |
 | `queue_depletion_speed` | POOL | 60일 | OK | 검증가능 (60일) |
-| `queue_directional_depletion` | POOL | 28일 | OK | 📌 1m 편입 종결 — 개선 대상 아님 (후보 재고에서 제외) |
+| `queue_directional_depletion` | POOL | 29일 | OK | 📌 1m 편입 종결 — 개선 대상 아님 (후보 재고에서 제외) |
 | `queue_momentum` | POOL | 60일 | OK | 검증가능 (60일) |
 | `queue_refill_rate` | POOL | 60일 | OK | 검증가능 (60일) |
 | `queue_signal` | POOL | 60일 | OK | 검증가능 (60일) |
 | `round_number_distance` | POOL | 13일 | OK | 축적중 13/20일 |
 | `rv_iv_spread` | POOL | 12일 | OK | 축적중 12/20일 |
-| `threshold_feasibility` | pending:15m | 28일 | OK | 📌 기각 — F4 재검증에서 부호 반전 (재현 실패) |
+| `threshold_feasibility` | pending:15m | 32일 | OK | 📌 기각 — F4 재검증에서 부호 반전 (재현 실패) |
 | `trend_efficiency` | POOL | 13일 | OK | 축적중 13/20일 |
 | `vkospi` | pending:10m, pending:15m, pending:30m | 13일 | OK | 축적중 13/20일 |
 | `vpin` | POOL | 13일 | OK | 축적중 13/20일 |

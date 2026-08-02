@@ -111,20 +111,50 @@ L4_JSON = os.path.join(ROOT, "data", "horizon_conf_stratified_latest.json")
 # 수집
 # ──────────────────────────────────────────────────────────────
 
-def _trading_dates(cur, n):
-    """raw_features에 실제 행이 있는 최근 n개 날짜(오름차순)."""
-    cur.execute(
-        "SELECT DISTINCT substr(ts,1,10) d FROM raw_features ORDER BY d DESC LIMIT ?",
-        (int(n),))
+# [418차] 백필 생성 행 마커 (scripts/backfill_features.py:BACKFILL_QUALITY_MARKER와 동일).
+BACKFILL_QUALITY_MARKER = 0.3
+_LIVE_ONLY_SQL = ("json_extract(features,'$.feature_quality_score') IS NOT "
+                  "%r" % BACKFILL_QUALITY_MARKER)
+
+
+def _trading_dates(cur, n, include_backfill=False):
+    """raw_features에 실제 행이 있는 최근 n개 날짜(오름차순).
+
+    [418차] 기본은 **라이브 행이 1개라도 있는 날**만 센다. 백필 전용일을 거래일로
+    치면 관찰창이 "N거래일"이라는 이름과 달리 실제 관측이 없는 날을 포함하게 된다 —
+    MW0601의 2026-08-02 리포트가 20거래일 창에 백필 7일을 포함해 §2-b에 유령 DEAD
+    4건을 띄우고 §4 축적일수를 부풀린 것이 그 결과다.
+    """
+    if include_backfill:
+        cur.execute(
+            "SELECT DISTINCT substr(ts,1,10) d FROM raw_features ORDER BY d DESC LIMIT ?",
+            (int(n),))
+    else:
+        cur.execute(
+            "SELECT substr(ts,1,10) d FROM raw_features WHERE " + _LIVE_ONLY_SQL +
+            " GROUP BY d ORDER BY d DESC LIMIT ?",
+            (int(n),))
     return sorted(r[0] for r in cur.fetchall())
 
 
-def collect(days, pool_days):
+def collect(days, pool_days, include_backfill=False):
     """단일 스캔으로 (건강도 표본, 후보 축적 일자)를 함께 모은다.
 
     전수 스캔(86k행)은 8초 이상 걸리고 데이터가 쌓일수록 선형으로 늘어난다. 두 창 중
     넓은 쪽까지만 읽어 비용을 상한선 안에 묶는다 — 축적 진척은 `POOL_READY_DAYS`
     도달 여부만 보면 되므로 60거래일 창이면 충분하다.
+
+    [418차] 백필 생성 행은 기본적으로 제외한다(`include_backfill=True`로 복원 가능).
+    그 행들은 OHLCV 파생만 실값이고 호가·수급·옵션·매크로가 전부 0.0이라, 섞이면
+    두 방향으로 리포트를 왜곡한다:
+      - §2-b: 백필 전용 키(`bear_reversal_signal`·`macro_vix_abs`·`microprice`·
+        `feature_recoverable_errors`)가 "DEAD 100%"로 뜬다 — 죽은 피처가 아니라
+        애초에 라이브가 기록하지 않는 퇴역 키다.
+      - §4: presence 집계가 "값이 None이 아니면 그날 관측됨"으로 세는데 백필 행은
+        `FEATURE_KEYS_ALL` 전 키를 0.0으로 채운다 — 한 번도 실제 수집되지 않은 날이
+        축적일로 계상돼 **축적일수가 부풀려진다**(`foreign_futures_net` 60→17일,
+        `cvd_direction` 60→32일). 실제보다 검증 준비가 된 것처럼 보인다.
+    근거: dev_memory/DECISION_LOG.md 2026-08-02 MW0601 418차.
 
     반환: (vals, day_presence, meta)
       vals[key]         = 건강도 창(days)의 float 값 리스트
@@ -132,7 +162,7 @@ def collect(days, pool_days):
     """
     con = sqlite3.connect(RAW_DB, timeout=15)
     cur = con.cursor()
-    wide = _trading_dates(cur, max(days, pool_days))
+    wide = _trading_dates(cur, max(days, pool_days), include_backfill)
     if not wide:
         con.close()
         return {}, {}, {"rows": 0, "dates": []}
@@ -145,14 +175,21 @@ def collect(days, pool_days):
     n_rows = 0
     n_health_rows = 0
     n_bad = 0
+    n_backfill = 0
+    backfill_days = set()
     for ts, fj in cur.fetchall():
         try:
             f = json.loads(fj)
         except Exception:
             n_bad += 1
             continue
-        n_rows += 1
         d = ts[:10]
+        if f.get("feature_quality_score") == BACKFILL_QUALITY_MARKER:
+            n_backfill += 1
+            backfill_days.add(d)
+            if not include_backfill:
+                continue
+        n_rows += 1
         in_health = d in health_dates
         if in_health:
             n_health_rows += 1
@@ -173,6 +210,9 @@ def collect(days, pool_days):
         "health_from": min(health_dates) if health_dates else None,
         "health_to": max(health_dates) if health_dates else None,
         "health_days": len(health_dates),
+        "backfill_rows": n_backfill,
+        "backfill_days": len(backfill_days),
+        "include_backfill": bool(include_backfill),
     }
     return dict(vals), dict(presence), meta
 
@@ -298,7 +338,7 @@ def _note_for(name):
     return ""
 
 
-def build_report(days, pool_days):
+def build_report(days, pool_days, include_backfill=False):
     warnings = []
     metrics = {}
 
@@ -315,7 +355,7 @@ def build_report(days, pool_days):
             "아직 없다'는 뜻이므로, 기각 피처가 §4에 후보로 다시 뜰 수 있다.")
 
     hz_list = list(HORIZONS.keys())
-    vals, presence, meta = collect(days, pool_days)
+    vals, presence, meta = collect(days, pool_days, include_backfill)
     if not vals:
         warnings.append("raw_features에서 표본을 얻지 못했다 — DB 경로/데이터 확인 필요.")
     health = health_table(vals)
@@ -344,6 +384,21 @@ def build_report(days, pool_days):
     if meta.get("wide_from"):
         L.append("- 후보 축적 관찰창: %s ~ %s (%d거래일)"
                  % (meta["wide_from"], meta["wide_to"], meta.get("wide_days", 0)))
+        # [418차] 관찰창 안에 백필 생성 행이 있으면 명시한다. 침묵하면 §2-b·§4를
+        # 라이브 관측으로 오독하게 된다 — 2026-08-02 MW0601 리포트가 그 상태였다.
+        _bf_rows, _bf_days = meta.get("backfill_rows", 0), meta.get("backfill_days", 0)
+        if _bf_rows:
+            if meta.get("include_backfill"):
+                L.append("- 🚨 **관찰창에 백필 생성 행 %s행(%d일)이 포함돼 있다** "
+                         "(`--include-backfill`). 이 행들은 호가·수급·옵션·매크로가 "
+                         "전부 0.0이라 §2-b의 zero%%와 §4의 축적일수가 모두 왜곡된다. "
+                         "판정을 그대로 믿지 말 것."
+                         % ("{:,}".format(_bf_rows), _bf_days))
+            else:
+                L.append("- ℹ 관찰창 범위에서 백필 생성 행 %s행(%d일)을 **제외**했다 "
+                         "(418차 기본 동작). 미시구조가 0.0인 소급 행이라 포함하면 "
+                         "§2-b·§4가 왜곡된다. 포함하려면 `--include-backfill`."
+                         % ("{:,}".format(_bf_rows), _bf_days))
     else:
         L.append("- ⚠ 후보 축적 관찰창: **데이터 없음** — `raw_features`에서 거래일을 "
                  "하나도 찾지 못했다. 아래 표는 전부 신뢰할 수 없다.")
@@ -709,6 +764,9 @@ def main():
                          "VALIDATION_REPORT_KEEP_WEEKS. 0 이하면 삭제 안 함")
     ap.add_argument("--no-prune", action="store_true",
                     help="이번 실행에서만 보관정리를 건너뛴다")
+    ap.add_argument("--include-backfill", action="store_true",
+                    help="[418차] 백필 생성 행(미시구조 0.0)을 관찰창에 포함한다. "
+                         "기본은 제외 — 포함하면 §2-b zero%%·§4 축적일수가 왜곡된다.")
     ap.add_argument("--stdout", action="store_true",
                     help="리포트 본문을 콘솔에도 출력")
     args = ap.parse_args()
@@ -725,7 +783,8 @@ def main():
         except Exception:
             keep = 4
 
-    report_md, metrics = build_report(args.days, args.pool_days)
+    report_md, metrics = build_report(args.days, args.pool_days,
+                                      args.include_backfill)
 
     pc_name = _pc_dir_name()
     if args.out_dir:

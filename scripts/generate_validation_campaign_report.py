@@ -72,6 +72,23 @@ _TS_FMT = "%Y-%m-%d %H:%M:%S"
 # 호라이즌당 replay 상한 — 모델 mtime이 오래됐을 때 메모리/시간 폭주 방지
 _MAX_REPLAY_ROWS = 12000
 
+# [418차] 백필 생성 행 마커 (scripts/backfill_features.py:BACKFILL_QUALITY_MARKER와 동일).
+# 이 행들은 호가·수급·옵션·매크로가 전부 0.0이라 모델 입력으로 쓰면 train/serve skew를
+# 만든다. 근거: dev_memory/DECISION_LOG.md 2026-08-02 MW0601 418차.
+_BACKFILL_QUALITY_MARKER = 0.3
+
+
+def _row_is_live(features_json):
+    """features JSON이 라이브 수집 행이면 True (백필 생성 행이면 False).
+
+    파싱 실패 행은 True로 둔다 — 뒤 파싱 루프에서 어차피 걸러진다.
+    """
+    try:
+        return json.loads(features_json).get(
+            "feature_quality_score") != _BACKFILL_QUALITY_MARKER
+    except (ValueError, TypeError):
+        return True
+
 # 유령 진입(pending 미등록 상태로 들어온 외부체결) 제외 — baseline_ensemble_report.py와
 # 동일 컨벤션. 미제외 시 [0]/[5]/[6]/[7]의 표본·EV·승률 집계가 오염된다(NEXT_TODO.md
 # 2026-07-12 P0 항목 참조).
@@ -520,6 +537,18 @@ def eval_tb_channel(days: int) -> dict:
         except Exception as e:
             res["reason"] = "피처 조회 실패: %s" % e
             continue
+
+        # [418차] raw_features 경로에서 백필 생성 행 제외 (미시구조 전부 0.0).
+        # `batch_retrainer._shadow_tb_row_is_live`와 같은 기준 — 학습에서 뺀 성격의
+        # 행을 평가에는 넣는 비대칭을 만들지 않는다. 현재 eval_start가 모델 mtime
+        # 이후라 실제로 걸릴 행이 거의 없지만, 손상 구간이 학습창에 다시 들어오는
+        # 상황(모델 재학습으로 mtime이 당겨지는 경우)에 대비한 방어다.
+        # 근거: dev_memory/DECISION_LOG.md 2026-08-02 MW0601 418차.
+        _n_pre = len(rows)
+        rows = [r for r in rows if _row_is_live(r["features"])]
+        if len(rows) < _n_pre:
+            print("[TB채널] %s 백필행 %d/%d 제외 (미시구조 0.0, 418차)"
+                  % (hz, _n_pre - len(rows), _n_pre))
 
         rows = rows[-_MAX_REPLAY_ROWS:]
         if not rows:

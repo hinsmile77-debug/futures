@@ -44,12 +44,25 @@ raw_features에 INSERT한다.
     심사·수동 승인(`main.py:_on_apply_shap_candidate_requested`)을 거쳐야 하며 이 스크립트
     수정만으로 자동 편입되지 않는다.
 
+[418차] `--update-features` 안전장치 3종 — 2026-07-13 사고 재발 방지
+  MW0601에서 `--from` 없는 `--update-features` 전체 실행이 라이브 29거래일
+  10,448행의 features JSON을 통째로 교체해, 실제 수집됐던 호가·수급·옵션·매크로
+  값을 0.0으로 소실시켰다(9,002행 복구 불가). 원래 의도는 hurst 재계산 하나뿐이었다.
+  근거: `dev_memory/DECISION_LOG.md` 2026-08-02 MW0601 418차.
+
+  ① 라이브 행 포함일 스캔 — 대상에 라이브 수집 행이 섞이면 날짜별 건수를 출력하고
+     **중단**한다. 강행하려면 `--force-overwrite-live` 명시.
+  ② 병합 갱신 — UPDATE가 features JSON을 통째 교체하지 않고 `_BACKFILL_COMPUTED_KEYS`
+     (백필이 실제로 계산하는 키)만 덮어쓴다. 라이브 수집분은 보존된다.
+  ③ 자동 백업 — UPDATE 실행 전 DB 스냅샷을 뜬다(`--no-backup`으로 생략 가능).
+
 사용법:
-  python scripts/backfill_features.py             # 전체 소급
+  python scripts/backfill_features.py             # 전체 소급 (INSERT — 안전)
   python scripts/backfill_features.py --dry-run   # 건수만 확인
   python scripts/backfill_features.py --from 2026-01-01  # 특정 날짜 이후만
   python scripts/backfill_features.py --update-features --from 2026-04-28
-      # 317차 hurst 재보정 반영 — 기존 raw_features 행을 새 공식으로 재계산해 UPDATE
+      # 317차 hurst 재보정 반영 — 기존 raw_features 행을 새 공식으로 재계산해 병합 UPDATE
+      # ※ 라이브 행이 섞인 날이 있으면 중단된다. 목록을 확인한 뒤 판단할 것.
 
 Python 3.7 32-bit 호환
 """
@@ -173,6 +186,35 @@ FEATURE_KEYS_ALL = [
     "volume_acceleration", "vwap_momentum", "prev_day_same_hour_ret",
 ]
 
+# [418차] 백필이 **실제로 계산하는** 키 — `process_day()`가 명시적으로 대입하는 것만.
+#
+# FEATURE_KEYS_ALL과 구분해야 하는 이유가 이 스크립트가 낸 사고의 핵심이다.
+# `process_day()`는 `{k: 0.0 for k in FEATURE_KEYS_ALL}`로 전 키를 0.0으로 깔고 시작하며,
+# 그중 OHLCV로 계산 가능한 아래 키만 실값으로 채운다. 즉 FEATURE_KEYS_ALL의 나머지는
+# "계산 결과 0.0"이 아니라 **"계산할 수단이 없어 0.0"** 이다. 병합 갱신에서 이 구분 없이
+# feat 전체를 merge하면 라이브가 실제로 수집한 호가·수급·옵션·매크로 값이 그 0.0에
+# 덮여 사라진다 — 2026-07-13 MW0601 사고와 똑같은 결과가 된다.
+#
+# `feature_quality_score`는 의도적으로 제외한다. 0.3은 "백필 생성 행" 마커이고,
+# 라이브 행에 병합 갱신을 걸 때 이걸 덮으면 그 행이 백필 행으로 오인돼 손상 판별
+# 자체가 불가능해진다(418차 조사가 이 마커에 전적으로 의존했다).
+_BACKFILL_COMPUTED_KEYS = frozenset([
+    "atr", "atr_ratio",
+    "vwap_position", "above_vwap",
+    "cvd_direction", "cvd_slope", "cvd_delta_norm",
+    "avg_volume",
+    "hurst", "hurst_ready",
+    "time_sin", "time_cos", "is_open_volatile", "is_close_volatile",
+    "ret_1m", "ret_5m", "ret_15m",
+    "ema_cross", "bb_position",
+    "poc_distance", "in_value_area", "va_bandwidth", "poc_above",
+    "volume_acceleration", "vwap_momentum", "prev_day_same_hour_ret",
+])
+
+# 백필 생성 행 마커. 라이브(feature_builder.py:604)는 페널티 차감식이라 정확히 0.3이
+# 나오려면 페널티 0.7이 필요한데 실측 0건 — 마커로 신뢰할 수 있다(418차 검증).
+BACKFILL_QUALITY_MARKER = 0.3
+
 
 def load_missing_dates(conn) -> list:
     """raw_candles에는 있지만 raw_features에 없는 날짜 목록 반환 (오름차순)"""
@@ -192,7 +234,10 @@ def load_missing_dates(conn) -> list:
 
 def process_day(date_str: str, candles: list) -> list:
     """
-    하루치 캔들 리스트 → raw_features 삽입용 (ts, features_json) 리스트 반환
+    하루치 캔들 리스트 → raw_features 삽입용 (ts, features_dict) 리스트 반환
+
+    [418차] 반환 타입이 features_json(str) → features_dict로 바뀌었다. 병합 갱신에서
+    호출부가 키 단위로 골라 써야 하기 때문이다. 직렬화는 각 write 지점에서 한다.
 
     candles: [{'ts', 'open', 'high', 'low', 'close', 'volume'}, ...]  시간순
     """
@@ -338,7 +383,7 @@ def process_day(date_str: str, candles: list) -> list:
         feat["avg_volume"]    = round(avg_vol, 2)
         feat["hurst"]         = hurst
         feat["hurst_ready"]   = hurst_ready
-        feat["feature_quality_score"] = 0.3  # 소급 데이터 마커
+        feat["feature_quality_score"] = BACKFILL_QUALITY_MARKER  # 소급 데이터 마커
 
         feat["time_sin"]          = time_sin
         feat["time_cos"]          = time_cos
@@ -358,7 +403,7 @@ def process_day(date_str: str, candles: list) -> list:
         feat["vwap_momentum"]            = round(vwap_momentum, 6)
         feat["prev_day_same_hour_ret"]   = prev_day_same_hour_ret
 
-        rows.append((ts, json.dumps(feat)))
+        rows.append((ts, feat))
 
     return rows
 
@@ -373,10 +418,79 @@ def load_all_dates(conn) -> list:
     )
 
 
-def run(dry_run: bool = False, from_date: str = None, update_features: bool = False):
+def scan_live_days(conn, target_dates) -> dict:
     """
-    update_features=True : 기존 raw_features 행의 features JSON을 새 피처로 갱신 (UPDATE).
+    [418차] 대상 날짜 중 **라이브 수집 행이 섞인 날**을 찾아 반환한다.
+
+    반환: {date_str: (live_cnt, backfill_cnt)}  — 라이브 행이 1개라도 있는 날만.
+
+    라이브/백필 구분은 `feature_quality_score == BACKFILL_QUALITY_MARKER`.
+    이 마커에 의존하는 근거는 `_BACKFILL_COMPUTED_KEYS` 주석 참조.
+    """
+    if not target_dates:
+        return {}
+    want = set(target_dates)
+    out = {}
+    c = conn.cursor()
+    for ts, fj in c.execute("SELECT ts, features FROM raw_features"):
+        day = ts[:10]
+        if day not in want:
+            continue
+        try:
+            q = json.loads(fj).get("feature_quality_score")
+        except Exception:
+            # 파싱 불가 행은 보수적으로 라이브 취급 — 덮어쓰기 판단은 안전측으로.
+            q = None
+        slot = out.setdefault(day, [0, 0])
+        if q == BACKFILL_QUALITY_MARKER:
+            slot[1] += 1
+        else:
+            slot[0] += 1
+    return dict((d, tuple(v)) for d, v in out.items() if v[0] > 0)
+
+
+def backup_db(db_path: str) -> str:
+    """[418차] UPDATE 전 원본 DB 스냅샷. 생성 경로 반환."""
+    import shutil
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst = "%s.bak_%s" % (db_path, stamp)
+    logger.info("[백업] %s → %s (약 %.0f MB)",
+                os.path.basename(db_path), os.path.basename(dst),
+                os.path.getsize(db_path) / 1024.0 / 1024.0)
+    shutil.copy2(db_path, dst)
+    return dst
+
+
+def merge_features(existing_json: str, new_feat: dict) -> str:
+    """
+    [418차] 기존 features JSON에 백필 계산 키만 덮어써 반환 (병합 갱신).
+
+    `_BACKFILL_COMPUTED_KEYS`에 없는 키는 **손대지 않는다** — 라이브가 수집한
+    호가·수급·옵션·매크로 값이 백필의 0.0 채움에 덮이는 것을 막는 지점이다.
+    기존 JSON이 깨져 있으면 백필 값 전체로 대체한다(그 행은 어차피 못 읽는다).
+    """
+    try:
+        merged = json.loads(existing_json)
+        if not isinstance(merged, dict):
+            raise ValueError("dict 아님")
+    except Exception:
+        return json.dumps(dict(new_feat))
+    for k in _BACKFILL_COMPUTED_KEYS:
+        if k in new_feat:
+            merged[k] = new_feat[k]
+    return json.dumps(merged)
+
+
+def run(dry_run: bool = False, from_date: str = None, update_features: bool = False,
+        force_overwrite_live: bool = False, no_backup: bool = False):
+    """
+    update_features=True : 기존 raw_features 행의 features JSON을 갱신 (UPDATE).
+                           [418차] **병합 갱신**이다 — 백필이 계산하는 키만 덮어쓰고
+                           나머지(라이브 수집분)는 보존한다.
     update_features=False: raw_features에 없는 날짜만 INSERT (기본 소급).
+
+    force_overwrite_live : 라이브 행이 섞인 날에도 UPDATE를 강행 (기본 False → 중단).
+    no_backup            : UPDATE 전 DB 자동 백업 생략 (기본 False → 백업).
     """
     if not os.path.exists(RAW_DATA_DB):
         logger.error("raw_data.db 없음: %s", RAW_DATA_DB)
@@ -401,6 +515,33 @@ def run(dry_run: bool = False, from_date: str = None, update_features: bool = Fa
                 target_dates[0] if target_dates else "-",
                 target_dates[-1] if target_dates else "-")
 
+    # ── [418차] 안전장치 ① 라이브 행 포함일 스캔 ──────────────────
+    # 2026-07-13 MW0601에서 `--from` 없는 `--update-features`가 라이브 29거래일
+    # 10,448행을 0.0으로 덮어썼다(9,002행 복구 불가). 같은 명령을 다시 밟지 못하게
+    # 대상에 라이브 행이 섞이면 기본적으로 멈춘다.
+    live_days = {}
+    if update_features and target_dates:
+        live_days = scan_live_days(conn, target_dates)
+        if live_days:
+            logger.warning("=" * 68)
+            logger.warning("⚠ 대상 %d일 중 %d일에 **라이브 수집 행**이 있다.",
+                           len(target_dates), len(live_days))
+            for d in sorted(live_days):
+                lv, bf = live_days[d]
+                logger.warning("    %s  live=%d  backfill=%d", d, lv, bf)
+            logger.warning("-" * 68)
+            logger.warning("병합 갱신이라 라이브 수집값(호가·수급·옵션·매크로)은 보존되고")
+            logger.warning("백필이 계산하는 %d개 키만 덮어쓴다.", len(_BACKFILL_COMPUTED_KEYS))
+            logger.warning("그래도 라이브 행을 건드리므로 명시적 동의를 요구한다:")
+            logger.warning("    --force-overwrite-live  를 붙여 다시 실행")
+            logger.warning("또는 라이브 이전 구간으로 한정:  --from YYYY-MM-DD")
+            logger.warning("=" * 68)
+            if not force_overwrite_live:
+                logger.error("중단 — 라이브 행 포함 (--force-overwrite-live 없음)")
+                conn.close()
+                sys.exit(2)
+            logger.warning("--force-overwrite-live 지정됨 — 진행한다.")
+
     if dry_run:
         logger.info("[DRY-RUN] 실제 %s 없이 종료", mode_label)
         conn.close()
@@ -410,6 +551,16 @@ def run(dry_run: bool = False, from_date: str = None, update_features: bool = Fa
         logger.info("처리할 날짜 없음 — 완료")
         conn.close()
         return
+
+    # ── [418차] 안전장치 ③ UPDATE 전 자동 백업 ────────────────────
+    # 418차 복구가 우연히 남아 있던 2026-06-08 백업본에 전적으로 의존했다
+    # (그것도 4일치 1,446행뿐). 다음엔 우연에 기대지 않는다.
+    if update_features and not no_backup:
+        conn.close()                      # 복사 중 쓰기 없도록 닫고 진행
+        backup_db(RAW_DATA_DB)
+        conn = sqlite3.connect(RAW_DATA_DB, timeout=30)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
 
     total_processed = 0
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -429,15 +580,30 @@ def run(dry_run: bool = False, from_date: str = None, update_features: bool = Fa
         rows = process_day(date_str, candles)
 
         if update_features:
-            # 기존 행의 features JSON을 새 피처로 통째 교체
+            # [418차] 통째 교체(SET features=?) → **병합 갱신**.
+            # 기존 행을 읽어 백필 계산 키만 덮어쓴다. 이 한 줄이 바뀌지 않았다면
+            # --force-overwrite-live를 붙이는 순간 2026-07-13 사고가 그대로 재현된다.
+            existing = dict(
+                (r[0], r[1]) for r in c.execute(
+                    "SELECT ts, features FROM raw_features WHERE substr(ts,1,10)=?",
+                    (date_str,),
+                ).fetchall()
+            )
+            payload = []
+            for ts, feat in rows:
+                prev = existing.get(ts)
+                if prev is None:
+                    continue          # UPDATE 대상 아님 (기존 행 없음)
+                payload.append((merge_features(prev, feat), now_str, ts))
             c.executemany(
                 "UPDATE raw_features SET features=?, created_at=? WHERE ts=?",
-                [(feat_json, now_str, ts) for ts, feat_json in rows],
+                payload,
             )
+            rows = payload            # 진행 로그·누계를 실제 반영 행수 기준으로
         else:
             c.executemany(
                 "INSERT OR IGNORE INTO raw_features (ts, features, created_at) VALUES (?,?,?)",
-                [(ts, feat_json, now_str) for ts, feat_json in rows],
+                [(ts, json.dumps(feat), now_str) for ts, feat in rows],
             )
         conn.commit()
 
@@ -468,8 +634,16 @@ if __name__ == "__main__":
                         metavar="YYYY-MM-DD",
                         help="이 날짜 이후만 처리 (기본: 전체)")
     parser.add_argument("--update-features", action="store_true",
-                        help="기존 raw_features 행의 피처 JSON을 신규 피처로 갱신 (UPDATE)")
+                        help="기존 raw_features 행의 피처를 갱신 (병합 UPDATE — "
+                             "백필 계산 키만 덮어쓰고 라이브 수집분은 보존)")
+    parser.add_argument("--force-overwrite-live", action="store_true",
+                        help="[418차] 라이브 수집 행이 섞인 날에도 UPDATE 강행. "
+                             "미지정 시 해당 날짜 목록을 출력하고 중단한다.")
+    parser.add_argument("--no-backup", action="store_true",
+                        help="[418차] UPDATE 전 DB 자동 백업 생략 (권장하지 않음)")
     args = parser.parse_args()
 
     run(dry_run=args.dry_run, from_date=args.from_date,
-        update_features=args.update_features)
+        update_features=args.update_features,
+        force_overwrite_live=args.force_overwrite_live,
+        no_backup=args.no_backup)

@@ -2,7 +2,7 @@
   "_meta": {
     "pc": "MW0601",
     "date": "2026-08-02",
-    "git": "f173a90",
+    "git": "fa642cd",
     "days": 20,
     "pool_days": 60,
     "min_samples": 200,
@@ -16,7 +16,10 @@
       "wide_days": 60,
       "health_from": "2026-07-03",
       "health_to": "2026-07-31",
-      "health_days": 20
+      "health_days": 20,
+      "backfill_rows": 15696,
+      "backfill_days": 44,
+      "include_backfill": true
     }
   },
   "horizons": {
@@ -317,9 +320,9 @@
     {
       "name": "micro_regime_code",
       "sources": "POOL",
-      "days": 28,
+      "days": 32,
       "health": "OK",
-      "status": "검증가능 (28일) · 📌 1m 편입만 하지 않음 — 타 호라이즌 후보 자격은 유지"
+      "status": "검증가능 (32일) · 📌 1m 편입만 하지 않음 — 타 호라이즌 후보 자격은 유지"
     },
     {
       "name": "microprice_slope",
@@ -422,7 +425,7 @@
     {
       "name": "queue_directional_depletion",
       "sources": "POOL",
-      "days": 28,
+      "days": 29,
       "health": "OK",
       "status": "📌 1m 편입 종결 — 개선 대상 아님 (후보 재고에서 제외)"
     },
@@ -464,7 +467,7 @@
     {
       "name": "threshold_feasibility",
       "sources": "pending:15m",
-      "days": 28,
+      "days": 32,
       "health": "OK",
       "status": "📌 기각 — F4 재검증에서 부호 반전 (재현 실패)"
     },

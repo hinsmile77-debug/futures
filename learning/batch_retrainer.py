@@ -323,6 +323,26 @@ def _make_sample_weight(y: np.ndarray, horizon_key: str) -> np.ndarray:
 # 실거래 의사결정에 전혀 사용되지 않는 순수 병행(shadow) 트랙.
 SHADOW_TB_DIRNAME = "shadow_triple_barrier"
 
+# [418차] 백필 생성 행 마커 — scripts/backfill_features.py:BACKFILL_QUALITY_MARKER와
+# 같은 값. 그쪽을 import하지 않는 이유는 learning 패키지가 scripts에 의존하지 않게
+# 하기 위함이다(런타임 경로가 scripts를 sys.path에 올린다는 보장이 없다).
+# 라이브(feature_builder.py:604)는 페널티 차감식이라 정확히 0.3이 나오려면 페널티
+# 0.7이 필요한데 실측 0건 — 마커로 신뢰할 수 있다.
+BACKFILL_QUALITY_MARKER = 0.3
+
+
+def _shadow_tb_row_is_live(features_json, json_mod):
+    """features JSON이 라이브 수집 행이면 True (백필 생성 행이면 False).
+
+    파싱 실패 행은 True로 둔다 — 어차피 뒤 파싱 루프에서 걸러지므로 여기서
+    제외 사유를 흐리지 않는다.
+    """
+    try:
+        return json_mod.loads(features_json).get(
+            "feature_quality_score") != BACKFILL_QUALITY_MARKER
+    except (ValueError, TypeError):
+        return True
+
 
 def _shadow_model_factory():
     """섀도우 학습 전용 모델 팩토리 — 프로덕션 정규 재학습과 동일 파라미터(비-intraday)."""
@@ -1626,6 +1646,32 @@ class BatchRetrainer:
                             (cutoff,),
                         ).fetchall()
                         _fallback_used = True
+
+                        # [418차] 백필 생성 행(feature_quality_score == 0.3) 제외.
+                        #
+                        # 이 행들은 OHLCV 파생만 실값이고 호가·수급·옵션·매크로가 전부
+                        # 0.0이다. 모델은 그 피처들이 채워진다는 전제로 학습·추론하므로
+                        # 섞어 넣으면 train/serve skew를 만든다 — "값 없음"이 아니라
+                        # "0이라는 잘못된 정보"를 학습시키는 쪽이라 능동적으로 해롭다.
+                        #
+                        # 두 종류가 모두 걸린다. 둘 다 제외가 맞다:
+                        #   ① 정상 소급 INSERT(2026-06-01 이전) — 문서화된 동작이지만
+                        #      미시구조 피처가 없다는 점은 같다.
+                        #   ② 2026-07-13 `--update-features` 사고로 덮인 라이브 행
+                        #      (2026-06-02~07-13, 복구 불가분 9,002행).
+                        # 근거: dev_memory/DECISION_LOG.md 2026-08-02 MW0601 418차.
+                        _n_raw = len(rows)
+                        rows = [
+                            r for r in rows
+                            if _shadow_tb_row_is_live(r["features"], _json3)
+                        ]
+                        _n_drop = _n_raw - len(rows)
+                        if _n_drop:
+                            logger.info(
+                                "[ShadowTB] %s raw_features 폴백 — 백필행 %d/%d 제외 "
+                                "(미시구조 0.0, 418차) → 학습 가용 %d행",
+                                hz, _n_drop, _n_raw, len(rows),
+                            )
                     candle_rows = conn.execute(
                         "SELECT ts, high, low, close FROM raw_candles WHERE ts>=? ORDER BY ts",
                         (cutoff,),
