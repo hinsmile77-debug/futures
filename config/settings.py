@@ -1236,9 +1236,45 @@ VALIDATION_CAMPAIGN = {
     #   meta_size 단일 임계와 동치라는 구조적 의문(07-14 실측 분석,
     #   docs/Ref/jointfateBlock.txt)이 있어, 표본이 쌓이면 meta_size 구간별
     #   승률도 함께 확인할 것(joint_gate_shadow.meta_size 컬럼).
+    #
+    # ── [MW0601 420차] 419차 반영 개정 ────────────────────────────────────────
+    # 위 "구조적 의문"은 419차 발견 ④에서 **확정**됐다(tox_size 116건 전수 0.7,
+    # meta_size<0.7143이 116/116). 그래서 이 채널의 남은 질문은 세 개로 바뀐다.
+    #
+    # (1) **체제 단절** — 419차 P0이 TOXICITY_CANCEL_CHURN_CEILING을 0.08→0.42로
+    #     재보정해 tox 밴드가 이동한다(block 23.3→8.6% / reduce 76.4→73.7% /
+    #     pass 0.27→17.7%). JointGateBlock 발동 전제가 tox_action=="reduce"이므로
+    #     이 채널의 **모집단 자체**가 tox_regime_date부터 바뀐다. 구·신 체제를 한
+    #     풀로 합산하면 두 분포의 평균을 판정하는 꼴이라, 판정은 **항상 한 체제
+    #     안에서만** 낸다(judged_regime). 신 체제가 min_samples에 닿기 전에는 구
+    #     체제로 판정하되 리포트가 "구 체제 기준"임을 명시한다.
+    # (2) **증거강도** — 현행 PASS는 `누적 hyp ≤ 0` 이분법이라 -13pt와 -0.01pt가
+    #     같은 판정을 받는다. 실측(2026-07-15~31, n=116)은 누적 -13.16pt이지만
+    #     건당 -0.1135pt / sd 3.11 / **t=-0.39(p≈0.70)** 로 0과 구분되지 않고,
+    #     07-28 하루(37건)를 빼면 **+6.49pt로 부호가 뒤집힌다**. verdict는 하위호환
+    #     때문에 PASS/FAIL을 유지하되 evidence로 SUPPORTS_GATE / NO_EVIDENCE를
+    #     분리 표기한다 — "FAIL이 아님"과 "차단이 옳다"는 다른 말이다.
+    # (3) **차단 축 반사실** — 419차 P1(reduce 밴드 연속 배수)은 [31] 채널이
+    #     **체결된** 진입만 본다. 차단된 신호는 그 채널에 없다. 연속 배수가
+    #     실적용되면 joint_mult이 바뀌어 차단 여부가 뒤집힐 수 있으므로
+    #     (meta 0.714 × tox_shadow 0.90 = 0.643 ≥ 0.50), 여기서 would_block_shadow로
+    #     "P1 실적용 시 차단 유지율"을 센다. 판정 없음 — [31] FAIL 시 함께 읽을 근거.
+    #
+    # **합격선 사전등록**(§9): 아래 상수는 신 체제 표본을 보기 **전에** 확정했다.
+    # 라이브가 기대와 다르게 나와도 사후에 완화하지 말 것.
     "joint_gate_shadow": {
         "min_samples": 20,  # 차단 건 최소 수 (미달 → 판정 보류, hurst_gate_shadow와 동일 기준)
         "cf_window_min": 30,  # counterfactual 관찰 창 (분) — signal_decay와 동일
+        # 419차 P0(ceiling 0.08→0.42) 배포일. 이 날짜 이후 행 = 신 체제.
+        # [30] toxicity_recalib_watch의 effective_date와 반드시 동일해야 한다.
+        "tox_regime_date": "2026-08-03",
+        # 에피소드 병합: 같은 방향 신호가 이 간격 이내로 연속되면 1건으로 센다.
+        # 실측에서 116신호 = 59에피소드(최대 6연속)라 신호 단위 n은 과대계상이다.
+        "episode_gap_min": 5,
+        # 증거강도 판정: |t| 가 이 값 미만이면 NO_EVIDENCE (양측 5% 근사).
+        "evidence_t_abs": 2.0,
+        # 단일일 민감도: 한 거래일을 빼서 누적 부호가 뒤집히면 fragile 플래그.
+        "jackknife_enabled": True,
     },
     # [342차 신설] KellyAdvisedSkip × C등급 게이트 승격 검토 — 켈리(PositionSizer)가
     # "자본 대비 1계약도 부적절"이라 판단했는데(kelly_advised_skip=True) MINI_MIN_CONTRACTS

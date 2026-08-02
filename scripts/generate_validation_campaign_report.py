@@ -288,6 +288,80 @@ def _shadow_qty_profile(table: str) -> dict:
     return out
 
 
+def _render_joint_mfe(jg: dict) -> list:
+    """[404차 후속9 / P1-D] [7] JointGateBlock의 MFE 병기 절 (표시 전용).
+
+    [MW0601 420차] 원래 이 코드는 `[29] mean-revert 상세` 뒤에 인라인으로 있었다.
+    `jg`(=[7]) 데이터인데 렌더 위치가 두 섹션 뒤라, 출력물에서 [29] 아래 붙은 H3처럼
+    보이고 [7]을 읽는 사람은 자기 채널의 자기편향 계측을 찾지 못했다. 함수로 떼어
+    [7] 본문 바로 아래에서 호출한다 — **순수 이동이며 계산·문구 로직은 그대로다**
+    (단 아래 MFE/MAE 대소 문단만 420차에서 조건부로 고쳤다, 사유는 해당 위치 주석).
+    """
+    L = []
+    if not jg.get("n_with_mfe"):
+        return L
+    L.append("")
+    L.append("### MFE 병기 — counterfactual이 얼마나 과소평가하는가 (P1-D)")
+    L.append("")
+    L.append("- 30분 창 MFE 평균 **%s pt**(중앙값 %s) · MAE 평균 **%s pt** (n=%s%s)"
+             % (jg.get("avg_mfe_30m", "—"), jg.get("median_mfe_30m", "—"),
+                jg.get("avg_mae_30m", "—"), jg.get("n_with_mfe", 0),
+                (", 소급 %d건" % jg["mfe_backfilled"]) if jg.get("mfe_backfilled") else ""))
+    L.append("- **MFE>MAE %s건 vs MAE≥MFE %s건** (ΣMFE %s / ΣMAE %s pt)"
+             % (jg.get("n_mfe_gt_mae", "—"), jg.get("n_mae_ge_mfe", "—"),
+                jg.get("total_mfe_30m", "—"), jg.get("total_mae_30m", "—")))
+    if jg.get("cf_capture_of_mfe") is not None:
+        L.append("- counterfactual 포착률 Σhyp/ΣMFE = %.1f%% "
+                 "(음수 = TP1 가정의 순손익이 마이너스라는 뜻이지 '비율'로 읽지 말 것)"
+                 % (jg["cf_capture_of_mfe"] * 100))
+    L.append("- 추세형 과소평가 건수(MFE≥5pt 이면서 hyp<MFE의 30%%): **%s건**"
+             % jg.get("n_trend_underestimated", 0))
+    if jg.get("trend_underestimated_top5"):
+        L.append("")
+        L.append("| 시각 | 방향 | MFE(30분) | MAE(30분) | TP1 기준 hyp | cf |")
+        L.append("|---|---|---|---|---|---|")
+        for r in jg["trend_underestimated_top5"]:
+            L.append("| %s | %s | **+%s** | −%s | %s | %s |" % (
+                str(r["ts"])[5:16], r["dir"], r["mfe"], r["mae"], r["hyp"], r["cf"]))
+    L.append("")
+    L.append("> **계측이지 처방이 아니다.** `hyp_pnl_pts`는 차단 신호를 현행 TP1")
+    L.append("> (ATR×0.3~0.5)로 청산했다고 가정하는데, 그 TP1이 너무 좁다는 것이 0731")
+    L.append("> 리포트 §2-C의 결론이다 — 즉 counterfactual이 자기 편향적이라 추세일의")
+    L.append("> 차단 비용을 구조적으로 과소평가한다. 포착률이 낮을수록 위 \"차단이")
+    L.append("> 이득\" 판정이 TP1 가정에 크게 기대고 있다는 뜻이다.")
+    L.append(">")
+    L.append("> ⚠ 이 수치로 **TP를 넓히자는 결론을 내면 안 된다** — §2-E가 차단 19건에")
+    L.append("> 대칭 TP(1:1)를 직접 적용해 −9.87pt(현행 +4.92pt)로 **이미 기각**했다.")
+    L.append("> 이기는 거래가 더 버는 만큼 지는 거래도 커진다. MFE는 \"차단 판정이")
+    L.append("> 어떤 가정 위에 서 있는지\"를 드러낼 뿐이다.")
+    L.append(">")
+    # [MW0601 420차] 아래 문단은 원래 "MAE 평균이 MFE 평균보다 **크다**. …그건 차단이
+    # 옳았던 쪽 증거다"를 **무조건** 출력했다. MW0602 실측(MFE 6.63 < MAE 8.96)에서는
+    # 참이지만 MW0601 실측(MFE 11.73 > MAE 6.68, MFE>MAE 74건 vs 42건)에서는 **거짓**이라,
+    # 바로 위에 인쇄된 자기 숫자와 정면으로 모순되는 결론이 실려 있었다. 실측으로 분기한다.
+    _mfe_gt = (float(jg.get("avg_mfe_30m", 0.0) or 0.0)
+               > float(jg.get("avg_mae_30m", 0.0) or 0.0))
+    L.append("> ⚠ **MFE만 보면 정반대로 읽힌다 — MAE를 반드시 함께 볼 것.**")
+    if not _mfe_gt:
+        L.append("> 이 표본에서 MAE 평균이 MFE 평균보다 **크다**. 차단된 신호들은 유리하게")
+        L.append("> 간 폭보다 불리하게 간 폭이 더 컸다는 뜻이고, 그건 차단이 옳았던 쪽")
+        L.append("> 증거다. \"추세일 차단 비용 과소평가\"는 개별 추세 건에서는 사실이지만")
+        L.append("> 표본 전체로는 반대 방향 증거가 더 크다.")
+    else:
+        L.append("> 다만 **이 표본은 MFE 평균이 MAE 평균보다 크다**(%s vs %s, MFE>MAE"
+                 % (jg.get("avg_mfe_30m", "—"), jg.get("avg_mae_30m", "—")))
+        L.append("> %s건 vs %s건). 즉 **\"차단이 옳았다\"는 MAE 근거가 이 표본에는 없다.**"
+                 % (jg.get("n_mfe_gt_mae", "—"), jg.get("n_mae_ge_mfe", "—")))
+        L.append("> 그렇다고 반대 결론(차단이 비쌌다)이 서지도 않는다 — MFE는 아래")
+        L.append("> \"순서를 모른다\" 한계 때문에 실현 가능한 값이 아니다. 판정은")
+        L.append("> hyp_pnl_pts와 증거강도(t)로 하고 여기는 참고로만 볼 것.")
+    L.append(">")
+    L.append("> ⚠ **MFE/MAE는 순서를 모른다.** 위 07-27 09:49 SHORT처럼 MFE +23.96인데")
+    L.append("> cf=STOP인 건은, 스톱이 먼저 맞은 뒤에 유리하게 갔다는 뜻일 수 있다.")
+    L.append("> \"이만큼 벌 수 있었다\"의 상한이지 실현 가능한 값이 아니다.")
+    return L
+
+
 def _render_qty_profile(table: str) -> list:
     """[MW0601 405차 / P0-3] 섀도 채널 상세절에 붙일 계약수 프로파일 줄 (표시 전용)."""
     p = _shadow_qty_profile(table)
@@ -1207,18 +1281,19 @@ def resolve_and_eval_joint_gate() -> dict:
     # [404차 후속9 / P1-D] 컬럼 신설 이전에 확정된 과거 행 소급 계산 (멱등)
     out["mfe_backfilled"] = _backfill_shadow_mfe("joint_gate_shadow", window_min)
 
+    # [MW0601 420차] 419차 계측 컬럼 보강 — main.py 기동 마이그레이션의 백스톱.
+    # (리포트를 라이브가 안 돈 PC/백업 DB에 대고 돌리는 경우가 있다)
+    _ensure_joint_gate_columns()
+
     try:
         with _conn(TRADES_DB) as conn:
-            agg = conn.execute(
-                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
-                          AVG(entry_price) AS avg_price,
-                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win,
-                          SUM(CASE WHEN cf_outcome='STOP' THEN 1 ELSE 0 END) AS n_stop,
-                          SUM(CASE WHEN cf_outcome='TP1' THEN 1 ELSE 0 END) AS n_tp1,
-                          SUM(CASE WHEN cf_outcome='NEITHER' THEN 1 ELSE 0 END) AS n_neither
-                   FROM joint_gate_shadow WHERE resolved=1 AND ts >= ?""",
+            # [420차] 집계를 SQL 한 방에서 파이썬으로 옮긴다 — 체제 분리·에피소드
+            # 병합·jackknife는 전부 행 단위 재그룹이라 GROUP BY로 표현할 수 없다.
+            all_rows = conn.execute(
+                """SELECT * FROM joint_gate_shadow
+                   WHERE resolved=1 AND ts >= ? ORDER BY ts""",
                 (_campaign_start(),),
-            ).fetchone()
+            ).fetchall()
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM joint_gate_shadow WHERE resolved=0"
             ).fetchone()["n"]
@@ -1228,27 +1303,77 @@ def resolve_and_eval_joint_gate() -> dict:
                    FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ?""",
                 (_campaign_start(),),
             ).fetchone()
-            # meta_size 구간별(<0.55 / >=0.55) 분리 집계 — tox_size 상수 구조 의문 검증용
-            meta_split = conn.execute(
-                """SELECT CASE WHEN meta_size >= 0.55 THEN 'high' ELSE 'low' END AS bucket,
-                          COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
-                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win
-                   FROM joint_gate_shadow
-                   WHERE resolved=1 AND ts >= ?
-                   GROUP BY bucket""",
-                (_campaign_start(),),
-            ).fetchall()
-            # [404차 후속9 / P1-D] MFE/MAE 병기 — counterfactual 자기편향 계측
-            mfe_rows = conn.execute(
-                """SELECT ts, direction, hyp_pnl_pts, mfe_30m, mae_30m, cf_outcome
-                   FROM joint_gate_shadow
-                   WHERE resolved=1 AND mfe_30m IS NOT NULL AND ts >= ?
-                   ORDER BY mfe_30m DESC""",
-                (_campaign_start(),),
-            ).fetchall()
     except Exception as e:
         out["error"] = str(e)
         return out
+
+    # ── [420차] tox 체제 분리 ─────────────────────────────────────────────
+    # 419차 P0(TOXICITY_CANCEL_CHURN_CEILING 0.08→0.42)이 tox 밴드 분포를 이동시켜
+    # JointGateBlock의 **모집단 자체**가 바뀐다(발동 전제가 tox_action=="reduce").
+    # 구·신 체제를 한 풀로 합산하면 서로 다른 두 분포의 평균을 판정하게 되므로,
+    # 판정은 **항상 한 체제 안에서만** 낸다.
+    _regime_date = str(cr.get("tox_regime_date", "") or "")
+    # [30] toxicity_recalib_watch와 같은 배포일을 가리켜야 한다. 어긋나면 한쪽만
+    # 갱신된 것이고, 그 상태로는 두 채널이 서로 다른 "재보정 시점"을 전제하게 된다.
+    _recal_date = str((VALIDATION_CAMPAIGN.get("toxicity_recalib_watch") or {})
+                      .get("effective_date", "") or "")
+    if _regime_date and _recal_date and _regime_date != _recal_date:
+        out["regime_date_mismatch"] = (
+            "joint_gate_shadow.tox_regime_date=%s ≠ toxicity_recalib_watch."
+            "effective_date=%s — 한쪽만 갱신됐다" % (_regime_date, _recal_date))
+    _pre = [r for r in all_rows
+            if not _regime_date or str(r["ts"])[:10] < _regime_date]
+    _post = [r for r in all_rows
+             if _regime_date and str(r["ts"])[:10] >= _regime_date]
+
+    def _pack(rows):
+        _h = [float(r["hyp_pnl_pts"] or 0.0) for r in rows]
+        return {
+            "n": len(rows),
+            "total_hyp_pnl_pts": round(sum(_h), 4),
+            "win_rate": round(sum(1 for x in _h if x > 0) / len(rows), 4) if rows else 0.0,
+        }
+
+    out["regime_split"] = {
+        "boundary": _regime_date or None,
+        "pre": _pack(_pre),
+        "post": _pack(_post),
+    }
+    # 행에 새겨진 tox_ceiling과 config 날짜 경계가 어긋나면 경계가 낡은 것이다
+    # (ceiling이 또 바뀌었는데 tox_regime_date를 안 고친 경우). 판정을 막지는 않되
+    # 리포트에 띄운다 — 침묵하면 다음 세션이 섞인 표본을 그대로 믿는다.
+    _ceil_pre = {round(float(r["tox_ceiling"]), 4) for r in _pre
+                 if r["tox_ceiling"] is not None}
+    _ceil_post = {round(float(r["tox_ceiling"]), 4) for r in _post
+                  if r["tox_ceiling"] is not None}
+    out["tox_ceiling_observed"] = {
+        "pre": sorted(_ceil_pre), "post": sorted(_ceil_post)}
+    if len(_ceil_pre | _ceil_post) > 1 and (_ceil_pre & _ceil_post):
+        out["regime_boundary_warning"] = (
+            "tox_ceiling이 경계 양쪽에 걸쳐 있다 — tox_regime_date(%s)가 실제 "
+            "재보정 시점과 다를 수 있음" % (_regime_date or "미설정"))
+
+    # 판정 대상 체제 선택: 신 체제가 min_samples에 닿으면 그것으로 갈아탄다.
+    # 닿기 전에는 구 체제로 판정하되 "구 체제 기준"임을 반드시 표기한다
+    # (신 체제 표본이 0인데 판정을 못 낸다고 하면 채널이 몇 주간 침묵한다).
+    _min_n = int(cr["min_samples"])
+    if len(_post) >= _min_n:
+        rows, judged = _post, "post"
+    elif _post and len(_pre) < _min_n:
+        rows, judged = _post, "post"   # 양쪽 다 미달이면 최신 체제를 보여준다
+    else:
+        rows, judged = _pre, "pre"
+    out["judged_regime"] = judged
+    out["judged_regime_note"] = (
+        "419차 P0 재보정 **이후**(%s~) 표본으로 판정" % _regime_date
+        if judged == "post" else
+        "419차 P0 재보정 **이전**(~%s) 구 체제 표본으로 판정 — 신 체제 표본 %d건 "
+        "(min_samples %d 미달)" % (_regime_date, len(_post), _min_n))
+
+    # ── MFE/MAE는 판정 대상 체제 안에서만 본다(구·신 혼합 방지) ──────────
+    mfe_rows = sorted(
+        [r for r in rows if r["mfe_30m"] is not None],
+        key=lambda r: float(r["mfe_30m"] or 0.0), reverse=True)
 
     # ── MFE 대비 counterfactual 포착률 ────────────────────────────────────
     # 핵심 지표는 `cf_capture_of_mfe` = Σhyp / ΣMFE 다. TP1 가정이 "갈 수 있었던 폭"의
@@ -1285,33 +1410,82 @@ def resolve_and_eval_joint_gate() -> dict:
              "cf": r["cf_outcome"]}
             for r in _big[:5]]
 
-    n = int(agg["n"] or 0)
-    total_hyp = float(agg["total_hyp"] or 0.0)
-    avg_price = float(agg["avg_price"] or 0.0) or 300.0
-    win_rate = (int(agg["n_win"] or 0) / n) if n else 0.0
+    n = len(rows)
+    _hyp = [float(r["hyp_pnl_pts"] or 0.0) for r in rows]
+    total_hyp = sum(_hyp)
+    _prices = [float(r["entry_price"] or 0.0) for r in rows]
+    avg_price = (sum(_prices) / len(_prices)) if _prices else 0.0
+    avg_price = avg_price or 300.0
+    win_rate = (sum(1 for x in _hyp if x > 0) / n) if n else 0.0
     baseline_wr = (
         float(baseline["wr"]) if baseline and baseline["wr"] is not None else None
     )
+
+    def _bucket_pack(subset):
+        _s = [float(r["hyp_pnl_pts"] or 0.0) for r in subset]
+        return {
+            "n": len(subset),
+            "total_hyp_pnl_pts": round(sum(_s), 4),
+            "win_rate": round(sum(1 for x in _s if x > 0) / len(subset), 4) if subset else 0.0,
+        }
+
     out.update({
         "n_resolved": n,
         "n_pending": int(pending),
         "total_hyp_pnl_pts": round(total_hyp, 4),
         "win_rate": round(win_rate, 4),
         "baseline_win_rate": round(baseline_wr, 4) if baseline_wr is not None else None,
-        "cf_stop": int(agg["n_stop"] or 0),
-        "cf_tp1": int(agg["n_tp1"] or 0),
-        "cf_neither": int(agg["n_neither"] or 0),
+        "cf_stop": sum(1 for r in rows if r["cf_outcome"] == "STOP"),
+        "cf_tp1": sum(1 for r in rows if r["cf_outcome"] == "TP1"),
+        "cf_neither": sum(1 for r in rows if r["cf_outcome"] == "NEITHER"),
         "meta_size_split": {
-            row["bucket"]: {
-                "n": int(row["n"] or 0),
-                "total_hyp_pnl_pts": round(float(row["total_hyp"] or 0.0), 4),
-                "win_rate": round((int(row["n_win"] or 0) / row["n"]), 4) if row["n"] else 0.0,
-            }
-            for row in meta_split
+            "high": _bucket_pack([r for r in rows
+                                  if float(r["meta_size"] or 0.0) >= 0.55]),
+            "low": _bucket_pack([r for r in rows
+                                 if float(r["meta_size"] or 0.0) < 0.55]),
         },
     })
-    if n < int(cr["min_samples"]):
-        out["reason"] = "차단 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+
+    # ── [420차 ①] meta falsy 폴백 분리 ───────────────────────────────────
+    # 419차 발견 ④: meta_size가 정확히 0.500인 행이 73/116(62.9%)인데, 그건
+    # `learned["size_multiplier"] or 0.5`가 **0.0을 falsy로 잡아 0.5로 승격**시킨
+    # 결과다(모델은 "사이즈 주지 마라"고 했다). 위 high/low(0.55) 분할은 low 버킷의
+    # 78%가 이 폴백이라 해석이 서지 않는다 — 그래서 별도 축으로 가른다.
+    # meta_size_fallback 컬럼은 420차부터 채워지므로 그 이전 행은 NULL이다.
+    # NULL을 0으로 뭉개면 폴백 건이 학습값처럼 보이므로 **미계측으로 따로 센다**.
+    _fb_known = [r for r in rows if r["meta_size_fallback"] is not None]
+    if _fb_known:
+        out["meta_fallback_split"] = {
+            "fallback": _bucket_pack([r for r in _fb_known
+                                      if int(r["meta_size_fallback"] or 0) == 1]),
+            "learned": _bucket_pack([r for r in _fb_known
+                                     if int(r["meta_size_fallback"] or 0) == 0]),
+            "unmeasured_n": n - len(_fb_known),
+        }
+    else:
+        out["meta_fallback_split"] = {"unmeasured_n": n}
+
+    # ── [420차 ③] 419차 P1 실적용 시 차단 유지율 (차단 축 반사실) ────────
+    # [31] toxicity_reduce_mult_shadow는 **체결된** 진입만 본다 — 차단된 신호는
+    # 그 채널에 없다. 여기가 그 사각지대다. 판정하지 않고 세기만 한다.
+    _wb = [r for r in rows if r["would_block_shadow"] is not None]
+    if _wb:
+        _kept = [r for r in _wb if int(r["would_block_shadow"] or 0) == 1]
+        _freed = [r for r in _wb if int(r["would_block_shadow"] or 0) == 0]
+        out["p1_shadow_block"] = {
+            "n": len(_wb),
+            "kept_n": len(_kept),
+            "freed_n": len(_freed),
+            "kept_share": round(len(_kept) / len(_wb), 4),
+            # 해제됐을 신호들의 실제 counterfactual 손익 — P1 실적용의 차단 축 비용/이득
+            "freed": _bucket_pack(_freed),
+            "shadow_mult_mean": round(
+                float(np.mean([float(r["tox_size_shadow"] or 0.0) for r in _wb])), 4),
+        }
+
+    if n < _min_n:
+        out["reason"] = ("차단 표본 부족 (%s 체제 %d < %d) — 판정 보류"
+                         % (judged, n, _min_n))
         return out
 
     cost_pt = _roundtrip_cost_pt(avg_price)
@@ -1326,6 +1500,62 @@ def resolve_and_eval_joint_gate() -> dict:
         out["recommendation"] = (
             "JointGateBlock 임계값 0.50 → 완화 검토 (즉시 언블록 금지, §3-7)"
         )
+
+    # ── [420차 ②] 증거강도 — verdict와 별개 축 ───────────────────────────
+    # 현행 verdict는 `누적 hyp ≤ 0` 이분법이라 -13pt와 -0.01pt가 같은 PASS다.
+    # "FAIL이 아니다"와 "차단이 옳다"는 다른 말이므로 분리해 표기한다.
+    # 통계 단위는 **에피소드 첫 신호** — JointGateBlock은 조건이 유지되는 동안 매
+    # 분봉 재차단하므로 원본 행은 독립 관측치가 아니다(116신호 = 59에피소드).
+    # 차단이 없었다면 그 에피소드에서 진입은 한 번 일어났을 것이므로 첫 신호가
+    # 자연스러운 사건 단위다.
+    _eps = _episode_reduce(rows, int(cr.get("episode_gap_min", 5)))
+    _ep_first = [float(e[0]["hyp_pnl_pts"] or 0.0) for e in _eps]
+    _ep_total = sum(_ep_first)
+    out["episode"] = {
+        "n": len(_eps),
+        "signals_per_episode": round(n / len(_eps), 2) if _eps else 0.0,
+        "total_hyp_pnl_pts": round(_ep_total, 4),
+        "win_rate": round(sum(1 for x in _ep_first if x > 0) / len(_ep_first), 4)
+                    if _ep_first else 0.0,
+        "max_run": max((len(e) for e in _eps), default=0),
+    }
+    _t_abs = float(cr.get("evidence_t_abs", 2.0))
+    if len(_ep_first) >= 2:
+        _sd = float(np.std(_ep_first, ddof=1))
+        _tstat = ((_ep_total / len(_ep_first)) / (_sd / len(_ep_first) ** 0.5)
+                  if _sd > 0 else 0.0)
+        out["episode"]["mean"] = round(_ep_total / len(_ep_first), 4)
+        out["episode"]["sd"] = round(_sd, 4)
+        out["episode"]["t_stat"] = round(_tstat, 3)
+        # SUPPORTS_GATE = 유의하게 음수(차단이 실제로 손실을 회피).
+        # REJECTS_GATE  = 유의하게 양수(차단이 비쌌다) — verdict FAIL과 같은 방향이나
+        #                 FAIL은 비용×2 + 승률 조건이라 둘이 항상 일치하지는 않는다.
+        # NO_EVIDENCE   = 0과 구분 불가. PASS의 대부분이 여기 해당할 수 있다.
+        if abs(_tstat) < _t_abs:
+            out["evidence"] = "NO_EVIDENCE"
+        else:
+            out["evidence"] = "SUPPORTS_GATE" if _tstat < 0 else "REJECTS_GATE"
+
+    # ── [420차 ②-b] 단일일 민감도(jackknife) ─────────────────────────────
+    # 실측(구 체제)에서 07-28 하루가 37건(32%)·-19.66pt를 차지해 그 하루를 빼면
+    # 누적이 +6.49pt로 **부호가 뒤집힌다**. 판정 전체가 한 거래일에 걸려 있다는
+    # 사실은 요약표만 보면 절대 드러나지 않으므로 자동 병기한다.
+    if cr.get("jackknife_enabled", True) and _eps:
+        _by_day = {}
+        for e in _eps:
+            _d = str(e[0]["ts"])[:10]
+            _by_day[_d] = _by_day.get(_d, 0.0) + float(e[0]["hyp_pnl_pts"] or 0.0)
+        _flips = [(d, round(c, 4), round(_ep_total - c, 4))
+                  for d, c in _by_day.items()
+                  if (_ep_total - c) * _ep_total < 0]
+        _worst = max(_by_day.items(), key=lambda kv: abs(kv[1])) if _by_day else None
+        out["jackknife"] = {
+            "n_days": len(_by_day),
+            "sign_flip_days": sorted(_flips, key=lambda x: abs(x[1]), reverse=True),
+            "fragile": bool(_flips),
+            "largest_day": ({"date": _worst[0], "contrib": round(_worst[1], 4)}
+                            if _worst else None),
+        }
     return out
 
 
@@ -2435,6 +2665,70 @@ def _ensure_shadow_mfe_columns(table: str) -> bool:
         return True
     except Exception:
         return False
+
+
+_JGS_EXTRA_COLS = (
+    ("meta_conf", "REAL"), ("meta_conf_raw", "REAL"), ("meta_size_raw", "REAL"),
+    ("meta_size_fallback", "INTEGER"), ("tox_score", "REAL"),
+    ("tox_score_ma", "REAL"), ("tox_ceiling", "REAL"),
+    ("tox_size_shadow", "REAL"), ("joint_mult_shadow", "REAL"),
+    ("would_block_shadow", "INTEGER"),
+)
+
+
+def _ensure_joint_gate_columns() -> bool:
+    """[MW0601 420차] joint_gate_shadow의 419차 반영 계측 컬럼을 보장한다(멱등).
+
+    _ensure_shadow_mfe_columns와 완전히 같은 사정 — 스키마 원본은
+    `utils/db_utils.py`지만 CREATE TABLE IF NOT EXISTS는 **이미 있는 테이블을
+    갱신하지 않는다**. 두 PC가 각자 로컬 DB를 갖고 있으므로 ALTER를 여기서 돌린다.
+
+    기존 행은 NULL로 남는다 — 소급 계산하지 않는다. meta 폴백 여부·tox 원점수는
+    차단 시점에만 알 수 있는 값이라 사후 복원이 불가능하고, 억지로 채우면 구
+    체제 표본을 신 체제처럼 보이게 만든다. NULL은 "그때는 안 쟀다"는 정직한 표기다.
+    """
+    try:
+        with _conn(TRADES_DB) as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(joint_gate_shadow)")}
+            for c, typ in _JGS_EXTRA_COLS:
+                if c not in cols:
+                    conn.execute(
+                        "ALTER TABLE joint_gate_shadow ADD COLUMN %s %s" % (c, typ))
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def _episode_reduce(rows, gap_min: int):
+    """같은 방향 신호가 `gap_min`분 이내로 연속되면 1 에피소드로 병합한다.
+
+    JointGateBlock은 조건이 유지되는 동안 **매 분봉 재차단**하므로 원본 행 수는
+    독립 관측치 수가 아니다(실측 2026-07-15~31: 116신호 = 59에피소드, 최대 6연속).
+    신호 단위로 t검정을 하면 같은 사건을 여러 번 센 만큼 유의성이 부풀려진다.
+
+    반환: [[row, ...], ...] — 각 에피소드의 행 리스트(시간순).
+    """
+    eps, cur = [], []
+    for r in sorted(rows, key=lambda x: str(x["ts"])):
+        if cur:
+            try:
+                t = datetime.datetime.strptime(str(r["ts"]), _TS_FMT)
+                pt = datetime.datetime.strptime(str(cur[-1]["ts"]), _TS_FMT)
+                same = (str(r["direction"]) == str(cur[-1]["direction"])
+                        and (t - pt).total_seconds() <= gap_min * 60)
+            except Exception:
+                same = False
+            if same:
+                cur.append(r)
+                continue
+            eps.append(cur)
+            cur = []
+        cur.append(r)
+    if cur:
+        eps.append(cur)
+    return eps
 
 
 def _mfe_mae(base_ts: str, entry_p: float, is_long: bool, window_min: int,
@@ -4587,10 +4881,23 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(hg["verdict"]), hg.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (hg["win_rate"] * 100)) if "win_rate" in hg else "—",
         hg.get("n_resolved", 0), hg.get("n_pending", 0), _dm("hurst_gate_shadow")))
-    L.append("| [7] JointGateBlock counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
+    # [MW0601 420차] verdict 옆에 증거강도·체제·취약성을 같이 띄운다 — 요약표만 보고
+    # "PASS = 차단이 옳다"로 읽히는 것이 이 채널의 실제 오독 경로였다.
+    _jg_tags = []
+    if jg.get("evidence") == "NO_EVIDENCE":
+        _jg_tags.append("⚠증거없음(t=%s)" % jg.get("episode", {}).get("t_stat", "—"))
+    elif jg.get("evidence"):
+        _jg_tags.append("%s(t=%s)" % (jg["evidence"],
+                                      jg.get("episode", {}).get("t_stat", "—")))
+    if jg.get("judged_regime") == "pre":
+        _jg_tags.append("구tox체제")
+    if jg.get("jackknife", {}).get("fragile"):
+        _jg_tags.append("단일일취약")
+    L.append("| [7] JointGateBlock counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s)%s |" % (
         _fmt_verdict(jg["verdict"]), jg.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (jg["win_rate"] * 100)) if "win_rate" in jg else "—",
-        jg.get("n_resolved", 0), jg.get("n_pending", 0)))
+        jg.get("n_resolved", 0), jg.get("n_pending", 0),
+        (" · " + " · ".join(_jg_tags)) if _jg_tags else ""))
     L.append("| [8] KellyAdvisedSkip×C등급 | %s | 누적 순PnL=%s원 승률=%s (n=%s) |" % (
         _fmt_verdict(ks["verdict"]),
         format(ks["total_pnl_krw"], ",.0f") if "total_pnl_krw" in ks else "—",
@@ -4992,6 +5299,129 @@ def build_report(days: int) -> tuple:
             L.append("  - %s(meta%s0.55): n=%d hyp=%spt 승률=%.1f%%" % (
                 bucket, "≥" if bucket == "high" else "<",
                 v["n"], v["total_hyp_pnl_pts"], v["win_rate"] * 100))
+
+    # ── [MW0601 420차] 419차 반영 4블록 ──────────────────────────────────
+    _rs = jg.get("regime_split") or {}
+    if _rs.get("boundary"):
+        L.append("")
+        L.append("### tox 체제 분리 (419차 P0 반영)")
+        L.append("")
+        L.append("- 경계: **%s** (`TOXICITY_CANCEL_CHURN_CEILING` 0.08→0.42 배포일)"
+                 % _rs["boundary"])
+        for _k, _lbl in (("pre", "구 체제(~경계 전)"), ("post", "신 체제(경계 이후)")):
+            _v = _rs.get(_k) or {}
+            L.append("- %s: n=%s 누적 hyp=%spt 승률=%.1f%%" % (
+                _lbl, _v.get("n", 0), _v.get("total_hyp_pnl_pts", "—"),
+                float(_v.get("win_rate", 0.0)) * 100))
+        L.append("- **판정 대상**: %s" % jg.get("judged_regime_note", "—"))
+        if jg.get("tox_ceiling_observed"):
+            L.append("- 행에 기록된 tox_ceiling: 구=%s / 신=%s" % (
+                jg["tox_ceiling_observed"].get("pre") or "미계측",
+                jg["tox_ceiling_observed"].get("post") or "미계측"))
+        if jg.get("regime_boundary_warning"):
+            L.append("- ⚠ %s" % jg["regime_boundary_warning"])
+        if jg.get("regime_date_mismatch"):
+            L.append("- ⚠ **설정 불일치**: %s" % jg["regime_date_mismatch"])
+        L.append("")
+        L.append("> **구·신 체제를 합산하지 않는다.** JointGateBlock의 발동 전제가")
+        L.append("> `tox_action==\"reduce\"`인데 419차 P0이 그 밴드 분포를 이동시켰다")
+        L.append("> (block 23.3→8.6% / reduce 76.4→73.7% / pass 0.27→17.7%). 두 구간은")
+        L.append("> 모집단이 달라 합치면 서로 다른 분포의 평균을 판정하게 된다.")
+
+    _ep = jg.get("episode") or {}
+    if _ep.get("n"):
+        L.append("")
+        L.append("### 에피소드 단위 재집계 + 증거강도")
+        L.append("")
+        L.append("- 신호 %s건 = **에피소드 %s건** (평균 %s신호/에피소드, 최대 연속 %s분)" % (
+            jg.get("n_resolved", 0), _ep["n"], _ep.get("signals_per_episode", "—"),
+            _ep.get("max_run", "—")))
+        L.append("- 에피소드 첫신호 기준: 누적 hyp=**%spt** 승률=%.1f%%" % (
+            _ep.get("total_hyp_pnl_pts", "—"), float(_ep.get("win_rate", 0.0)) * 100))
+        if "t_stat" in _ep:
+            L.append("- 건당 평균=%s sd=%s → **t=%s** (임계 |t|≥%.1f)" % (
+                _ep.get("mean", "—"), _ep.get("sd", "—"), _ep["t_stat"],
+                float(VALIDATION_CAMPAIGN["joint_gate_shadow"].get("evidence_t_abs", 2.0))))
+        if jg.get("evidence"):
+            L.append("- **증거강도: %s**" % jg["evidence"])
+        L.append("")
+        L.append("> **verdict와 증거강도는 다른 축이다.** verdict PASS는 `누적 hyp ≤ 0`")
+        L.append("> 이분법이라 -13pt와 -0.01pt가 같은 판정을 받는다 — \"FAIL이 아니다\"와")
+        L.append("> \"차단이 옳다\"는 다른 말이다. 통계 단위를 에피소드로 잡는 이유는")
+        L.append("> JointGateBlock이 조건 지속 중 **매 분봉 재차단**하기 때문이다")
+        L.append("> (같은 사건을 여러 번 세면 유의성이 부풀려진다).")
+
+    _jk = jg.get("jackknife") or {}
+    if _jk.get("n_days"):
+        L.append("")
+        L.append("### 단일일 민감도 (jackknife)")
+        L.append("")
+        L.append("- 거래일 %s일 · 최대 기여일: %s" % (
+            _jk["n_days"],
+            ("%s (%spt)" % (_jk["largest_day"]["date"], _jk["largest_day"]["contrib"]))
+            if _jk.get("largest_day") else "—"))
+        if _jk.get("sign_flip_days"):
+            L.append("- ⚠ **이 날 하루를 빼면 누적 부호가 뒤집힌다**:")
+            for _d, _c, _rest in _jk["sign_flip_days"]:
+                L.append("  - %s 제거 → 누적 %spt → **%spt**" % (_d, _ep.get(
+                    "total_hyp_pnl_pts", "—"), _rest))
+            L.append("- → 판정이 단일 거래일에 걸려 있다. 조치 근거로 쓰지 말 것.")
+        else:
+            L.append("- 어느 거래일을 빼도 누적 부호 유지 — 단일일 의존 없음")
+
+    _p1 = jg.get("p1_shadow_block") or {}
+    if _p1.get("n"):
+        L.append("")
+        L.append("### 419차 P1(연속 배수) 실적용 시 차단 축 반사실")
+        L.append("")
+        L.append("- 계측 n=%s · 평균 tox 섀도배수=%s (현행 상수 0.70)" % (
+            _p1["n"], _p1.get("shadow_mult_mean", "—")))
+        L.append("- 차단 **유지** %s건 (%.1f%%) / **해제** %s건" % (
+            _p1["kept_n"], _p1["kept_share"] * 100, _p1["freed_n"]))
+        if _p1.get("freed", {}).get("n"):
+            L.append("- 해제됐을 신호의 counterfactual: 누적 hyp=%spt 승률=%.1f%%" % (
+                _p1["freed"]["total_hyp_pnl_pts"], _p1["freed"]["win_rate"] * 100))
+        L.append("")
+        L.append("> **판정하지 않는다 — 세기만 한다.** `[31] toxicity_reduce_mult_shadow`는")
+        L.append("> 실제로 **체결된** reduce 밴드 진입만 보므로 JointGateBlock으로 차단된")
+        L.append("> 신호는 그 채널에 들어가지 않는다. 여기가 그 사각지대다. 연속 배수가")
+        L.append("> 실적용되면 `joint_mult`이 바뀌어 차단 여부 자체가 뒤집힐 수 있으므로")
+        L.append("> ([31] FAIL 시 함께 읽을 것), 차단 축 비용을 미리 계측해 둔다.")
+        L.append(">")
+        L.append("> ⚠ **한 방향만 본다.** 이 표는 \"지금 차단된 신호\"만 담는다")
+        L.append("> (joint_gate_shadow는 차단 시점에만 기록된다). 연속 배수는 반대")
+        L.append("> 방향으로도 판정을 뒤집는다 — 예: meta=0.75 × tox_shadow=0.36이면")
+        L.append("> 현행 0.525로 통과하지만 섀도로는 0.357이라 **차단**이다. 그런 건은")
+        L.append("> 실제로 체결됐으므로 여기 없고 `trades`에 있다. 따라서 위 \"해제")
+        L.append("> %s건\"을 P1의 순 노출 증가로 읽으면 안 된다 — 반대편이 빠져 있다."
+                 % _p1["freed_n"])
+
+    _fb = jg.get("meta_fallback_split") or {}
+    if _fb.get("fallback") or _fb.get("learned"):
+        L.append("")
+        L.append("### meta falsy 폴백 분리 (419차 발견 ④)")
+        L.append("")
+        for _k, _lbl in (("fallback", "폴백(`or 0.5` 발동 — 모델은 size 0을 지시)"),
+                         ("learned", "실학습값")):
+            _v = _fb.get(_k) or {}
+            if _v.get("n"):
+                L.append("- %s: n=%s hyp=%spt 승률=%.1f%%" % (
+                    _lbl, _v["n"], _v["total_hyp_pnl_pts"], _v["win_rate"] * 100))
+        if _fb.get("unmeasured_n"):
+            L.append("- 미계측(420차 이전 행): %s건 — 소급 복원 불가" % _fb["unmeasured_n"])
+        L.append("")
+        L.append("> 위 `meta_size 구간별(0.55)` 분할은 이 축과 섞여 있어 단독으로는")
+        L.append("> 해석되지 않는다 — 구 체제 실측에서 low 버킷 94건 중 73건(78%)이")
+        L.append("> 폴백이었다. **폴백은 모델이 \"사이즈를 주지 말라\"(size_mult=0.0)고")
+        L.append("> 한 상태를 `or 0.5`가 밴드 중간값으로 승격시킨 것**이라 의미가 반대다.")
+    elif _fb.get("unmeasured_n"):
+        L.append("")
+        L.append("- meta 폴백 분리: 미계측 %s건 (420차 계측 배선 이전 행)" % _fb["unmeasured_n"])
+
+    # [MW0601 420차] [7] 자기편향 계측 — 원래 [29] 뒤에서 렌더링돼 [7]에서 보이지
+    # 않던 것을 제자리로 옮겼다(_render_joint_mfe 도크스트링 참조).
+    L.extend(_render_joint_mfe(jg))
+    L.append("")
     L.extend(_render_qty_profile("joint_gate_shadow"))
     if jg.get("recommendation"):
         L.append("- **권고**: %s" % jg["recommendation"])
@@ -5056,52 +5486,10 @@ def build_report(days: int) -> tuple:
     if mrs.get("reason"):
         L.append("- %s" % mrs["reason"])
 
-    # [404차 후속9 / P1-D] MFE 병기 — counterfactual 자기편향 계측
-    if jg.get("n_with_mfe"):
-        L.append("")
-        L.append("### MFE 병기 — counterfactual이 얼마나 과소평가하는가 (P1-D)")
-        L.append("")
-        L.append("- 30분 창 MFE 평균 **%s pt**(중앙값 %s) · MAE 평균 **%s pt** (n=%s%s)"
-                 % (jg.get("avg_mfe_30m", "—"), jg.get("median_mfe_30m", "—"),
-                    jg.get("avg_mae_30m", "—"), jg.get("n_with_mfe", 0),
-                    (", 소급 %d건" % jg["mfe_backfilled"]) if jg.get("mfe_backfilled") else ""))
-        L.append("- **MFE>MAE %s건 vs MAE≥MFE %s건** (ΣMFE %s / ΣMAE %s pt)"
-                 % (jg.get("n_mfe_gt_mae", "—"), jg.get("n_mae_ge_mfe", "—"),
-                    jg.get("total_mfe_30m", "—"), jg.get("total_mae_30m", "—")))
-        if jg.get("cf_capture_of_mfe") is not None:
-            L.append("- counterfactual 포착률 Σhyp/ΣMFE = %.1f%% "
-                     "(음수 = TP1 가정의 순손익이 마이너스라는 뜻이지 '비율'로 읽지 말 것)"
-                     % (jg["cf_capture_of_mfe"] * 100))
-        L.append("- 추세형 과소평가 건수(MFE≥5pt 이면서 hyp<MFE의 30%%): **%s건**"
-                 % jg.get("n_trend_underestimated", 0))
-        if jg.get("trend_underestimated_top5"):
-            L.append("")
-            L.append("| 시각 | 방향 | MFE(30분) | MAE(30분) | TP1 기준 hyp | cf |")
-            L.append("|---|---|---|---|---|---|")
-            for r in jg["trend_underestimated_top5"]:
-                L.append("| %s | %s | **+%s** | −%s | %s | %s |" % (
-                    str(r["ts"])[5:16], r["dir"], r["mfe"], r["mae"], r["hyp"], r["cf"]))
-        L.append("")
-        L.append("> **계측이지 처방이 아니다.** `hyp_pnl_pts`는 차단 신호를 현행 TP1")
-        L.append("> (ATR×0.3~0.5)로 청산했다고 가정하는데, 그 TP1이 너무 좁다는 것이 0731")
-        L.append("> 리포트 §2-C의 결론이다 — 즉 counterfactual이 자기 편향적이라 추세일의")
-        L.append("> 차단 비용을 구조적으로 과소평가한다. 포착률이 낮을수록 위 \"차단이")
-        L.append("> 이득\" 판정이 TP1 가정에 크게 기대고 있다는 뜻이다.")
-        L.append(">")
-        L.append("> ⚠ 이 수치로 **TP를 넓히자는 결론을 내면 안 된다** — §2-E가 차단 19건에")
-        L.append("> 대칭 TP(1:1)를 직접 적용해 −9.87pt(현행 +4.92pt)로 **이미 기각**했다.")
-        L.append("> 이기는 거래가 더 버는 만큼 지는 거래도 커진다. MFE는 \"차단 판정이")
-        L.append("> 어떤 가정 위에 서 있는지\"를 드러낼 뿐이다.")
-        L.append(">")
-        L.append("> ⚠ **MFE만 보면 정반대로 읽힌다 — MAE를 반드시 함께 볼 것.** 이 표본에서")
-        L.append("> MAE 평균이 MFE 평균보다 **크다**. 차단된 신호들은 유리하게 간 폭보다")
-        L.append("> 불리하게 간 폭이 더 컸다는 뜻이고, 그건 차단이 옳았던 쪽 증거다.")
-        L.append("> \"추세일 차단 비용 과소평가\"는 개별 추세 건에서는 사실이지만 표본")
-        L.append("> 전체로는 반대 방향 증거가 더 크다.")
-        L.append(">")
-        L.append("> ⚠ **MFE/MAE는 순서를 모른다.** 위 07-27 09:49 SHORT처럼 MFE +23.96인데")
-        L.append("> cf=STOP인 건은, 스톱이 먼저 맞은 뒤에 유리하게 갔다는 뜻일 수 있다.")
-        L.append("> \"이만큼 벌 수 있었다\"의 상한이지 실현 가능한 값이 아니다.")
+    # [MW0601 420차] [7]의 MFE 병기 절은 여기서 _render_joint_mfe()로 분리해 [7] 본문
+    # 바로 아래로 옮겼다. 원래 이 자리(= [29] mean-revert 상세 뒤)에서 렌더링돼
+    # `jg` 데이터인데도 [29] 아래 붙은 H3처럼 보였다 — [7]을 읽는 사람이 자기 채널의
+    # 자기편향 계측을 두 섹션 건너에서 찾아야 했다. 순수 이동(로직 무변경).
     L.append("")
 
     # [8] KellyAdvisedSkip × C등급 상세

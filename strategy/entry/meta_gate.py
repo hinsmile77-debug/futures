@@ -138,6 +138,14 @@ class MetaGate:
         )
         learned = self.learner.predict_confidence(meta_features)
         meta_conf = float(learned["confidence_score"])
+        # [MW0601 420차] 아래 두 값은 **계측 전용** — 판정에 쓰지 않는다.
+        # size_multiplier는 predict_confidence 리턴 시점에 _make_result()가 raw conf로
+        # 이미 확정한 값이라, 바로 아래 과소보완 floor(0.45)가 meta_conf만 올리고
+        # size_multiplier는 건드리지 않는다. 즉 액션 경로와 사이즈 경로가 서로 다른
+        # conf를 쓴다. joint_gate_shadow가 그 어긋남을 사후에 분리할 수 있도록
+        # floor **이전** 값을 여기서 붙잡아 둔다(419차 발견 ④ 후속).
+        _meta_conf_raw = meta_conf
+        _size_mult_raw = learned.get("size_multiplier")
 
         # meta_conf 과소 보완: meta_conf<0.20 시 rule-based 하한 + 절대 하한 0.45 적용
         # LR은 SGD 붕괴 없음 — 초기 cold-start(레짐별 30봉 미만) 또는 클래스 단조성 구간에서만 발생
@@ -232,6 +240,16 @@ class MetaGate:
             "source":              learned["model_source"],
             "meta_features":       meta_features,
             "raw_meta_confidence": round(meta_conf, 4),
+            # [MW0601 420차] 계측 전용 3종 — 소비처는 joint_gate_shadow 기록뿐이고
+            # 사이징·판정 어느 경로도 읽지 않는다(추가해도 라이브 동작 불변).
+            # `raw_meta_confidence`는 floor **이후** 값이라(위 과소보완 블록이
+            # meta_conf를 덮어씀) floor 이전 값과 이름이 겹치지 않게 _pre_floor로 둔다.
+            "meta_confidence_pre_floor": round(_meta_conf_raw, 4),
+            "size_multiplier_raw":       (round(float(_size_mult_raw), 4)
+                                          if _size_mult_raw is not None else None),
+            # reduce 밴드에서 `learned["size_multiplier"] or 0.5`가 발동했는지.
+            # take/skip 밴드는 그 표현식을 타지 않으므로 정의상 False.
+            "size_multiplier_fallback":  bool(action == "reduce" and not _size_mult_raw),
             "regime":              regime,
             "micro_regime":        micro_regime,
             "checklist_grade":     checklist_grade,
