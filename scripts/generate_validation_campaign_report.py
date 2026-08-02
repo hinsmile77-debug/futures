@@ -1834,36 +1834,107 @@ def eval_guard_shadow_channel(days: int) -> dict:
 # [28]/[29] 사이징 역예측 · mean-revert 사이즈 (MW0601 405차) — 사전등록
 # ──────────────────────────────────────────────────────────────
 
+# `entry_source` 컬럼이 신설된 커밋(311차 후속4 `cf2d1b4`, 2026-07-12). 이보다 앞선
+# 행은 값이 NULL이며 "출처 미상"이 아니라 **라벨 도입 이전**이라는 뜻이다 — 아래
+# `_SYSTEM_AUTO_SQL` 주석 참조.
+_ENTRY_SOURCE_COLUMN_ADDED = "2026-07-12"
+
+# [MW0601 417차 / ③-1] "시스템 자동진입" 술어 — 하위호환 포함.
+#
+# **왜 `entry_source='SYSTEM_AUTO'` 단독으로는 안 되나.** 그 필터는 문자 그대로는
+# 진입 출처를 거르지만, 컬럼이 2026-07-12에야 신설돼 그 이전 행이 전부 NULL이라
+# **실제로는 "07-14 이후만"이라는 날짜 필터로 작동**했다. 그 결과 3계약+ 진입이
+# 존재하던 유일한 구간(06-10~07-10, 129행)이 통째로 빠져 [28]의 qty≥3 버킷이
+# 표본 0건이 됐다 — 채널이 감시하라고 만들어진 바로 그 현상을 못 보는 상태.
+#
+# **NULL을 시스템으로 봐도 안전한 근거(실측).** NULL 129행의 grade 분포는
+# A=109 / B=8 / C=7 / 공백=5이고 **MANUAL이 0건**이다. 반대로 grade='MANUAL' 행은
+# 전부 `entry_source='GHOST_PENDING_MISS'`로 라벨돼 있다. 즉 NULL 구간에 수동·유령
+# 진입이 섞여 들어올 경로가 없다. 그래도 `grade <> 'MANUAL'`을 함께 걸어 이중으로
+# 막는다(향후 백필로 NULL이 다시 생겨도 안전하도록).
+#
+# 판정식·합격선 무변경 — 모집단 정정은 계측 버그 수정이지 기준 완화가 아니다
+# (409차 `ef3ee59`가 [13] 집계단위 정정에 적용한 것과 동일 논리, §9-4 리셋 대상 아님).
+_SYSTEM_AUTO_SQL = (
+    "(COALESCE(entry_source,'') = 'SYSTEM_AUTO' "
+    " OR (entry_source IS NULL AND COALESCE(grade,'') <> 'MANUAL'))"
+)
+
+
+def _trades_has_column(name):
+    """trades 테이블에 해당 컬럼이 있는지. 마이그레이션 이전 DB에서도 죽지 않게."""
+    try:
+        with _conn(TRADES_DB) as conn:
+            return name in {r["name"] for r in
+                            conn.execute("PRAGMA table_info(trades)").fetchall()}
+    except Exception:
+        return False
+
+
 def _merged_positions(extra_cols=""):
-    """진입 1건(entry_ts) 단위로 병합한 SYSTEM_AUTO 포지션 목록.
+    """진입 1건(entry_ts) 단위로 병합한 시스템 자동진입 포지션 목록.
 
     [21]·[13]과 동일 관례 — trades는 부분청산을 같은 entry_ts로 여러 행에 나눠
     기록하므로 그대로 세면 승률이 부풀려진다(402차가 실제로 걸린 함정).
-    수량은 그 포지션에서 관측된 **최대** 계약수를 쓴다(부분청산으로 줄어들기 전
-    원래 진입 규모가 사이징 판단의 대상이므로).
+
+    **수량은 `sum`이다** — [MW0601 417차 / ①] 정정.
+      `trades.quantity`는 **청산 행별 계약수**이지 포지션 크기가 아니다. 405차가 이
+      헬퍼를 만들 때는 `max`를 썼고 근거를 "부분청산으로 줄어들기 전 원래 진입
+      규모"라 적었으나, 409차 `ef3ee59`가 실측으로 반증했다 —
+      `2026-07-10 11:37:04`은 TP1 부분청산 2 + 하드스톱 3 = **5계약**인데 max로 세면
+      3계약으로 잡힌다. 같은 커밋이 [13]을 sum으로 고쳤고 여기만 max로 남아 있어
+      **한 파일 안에서 규칙이 엇갈리던 것**을 정합화한다.
+
+      `max`의 편향 방향이 특히 나쁘다: 이익 포지션은 TP1/TP2/TP3로 쪼개져 나가
+      최대 레그가 진입 규모보다 작게 잡히고, 손실 포지션은 하드스톱 전량청산이라
+      max = 진입 규모다. 즉 **큰 계약수 구간에 손실만 남기는 방향으로 편향**돼
+      [28]이 탐지하려는 역전을 스스로 만들어낸다(실측: 캠페인 구간 qty≥3 격차가
+      max 1,313,295원 → sum 700,485원으로 87% 부풀려져 있었다).
+
+    `entry_qty`(417차 ②)가 있으면 그것을 우선 쓴다 — 진입 시점에 기록된 값이라
+    병합 추정이 필요 없다. 컬럼이 없거나 구버전 행이면 sum으로 폴백한다.
     """
+    use_entry_qty = _trades_has_column("entry_qty")
     cols = "entry_ts, quantity, COALESCE(net_pnl_krw, pnl_krw) AS pnl"
+    if use_entry_qty:
+        cols += ", entry_qty"
     if extra_cols:
         cols += ", " + extra_cols
     try:
         with _conn(TRADES_DB) as conn:
             rows = conn.execute(
                 "SELECT %s FROM trades WHERE exit_ts IS NOT NULL AND exit_ts >= ? "
-                "AND COALESCE(entry_source,'') = ?" % cols,
-                (_campaign_start(), "SYSTEM_AUTO"),
+                "AND %s" % (cols, _SYSTEM_AUTO_SQL),
+                (_campaign_start(),),
             ).fetchall()
     except Exception:
         return []
     merged = {}
     for r in rows:
         k = r["entry_ts"]
-        m = merged.setdefault(k, {"entry_ts": k, "pnl": 0.0, "qty": 0})
+        m = merged.setdefault(k, {"entry_ts": k, "pnl": 0.0, "qty": 0,
+                                  "qty_recorded": None, "legs": 0})
         m["pnl"] += float(r["pnl"] or 0.0)
-        m["qty"] = max(m["qty"], int(r["quantity"] or 1))
+        m["qty"] += int(r["quantity"] or 1)
+        m["legs"] += 1
+        if use_entry_qty and m["qty_recorded"] is None:
+            try:
+                _eq = int(r["entry_qty"] or 0)
+            except (TypeError, ValueError):
+                _eq = 0
+            if _eq > 0:
+                m["qty_recorded"] = _eq
         for c in [c.strip() for c in extra_cols.split(",") if c.strip()]:
             if c not in m:
                 m[c] = r[c]
-    return list(merged.values())
+    out = []
+    for m in merged.values():
+        # 기록값이 있으면 그것이 진실이다. 없으면 레그 합(417차 ①).
+        m["qty_sum"] = m["qty"]
+        if m.get("qty_recorded"):
+            m["qty"] = m["qty_recorded"]
+        out.append(m)
+    return out
 
 
 def _bucket_stats(pnls):
@@ -1896,6 +1967,15 @@ def eval_sizing_inversion_watch() -> dict:
         return out
     out["n_positions"] = len(pos)
     out["n_days"] = len({p["entry_ts"][:10] for p in pos})
+    # [417차 ①/②] 수량이 어디서 왔는지 남긴다 — 이 채널은 계약수가 판정의 축이라
+    # 집계 출처가 바뀌면 과거 리포트와 숫자가 달라진다. 그 이유를 설명 없이 두면
+    # 405차→409차→417차처럼 같은 혼란이 반복된다.
+    out["qty_source"] = {
+        "entry_qty_recorded": sum(1 for p in pos if p.get("qty_recorded")),
+        "leg_sum_fallback": sum(1 for p in pos if not p.get("qty_recorded")),
+        "note": "entry_qty(진입시 기록)가 있으면 우선, 없으면 청산레그 합(sum). "
+                "405차의 max 집계는 409차 실측 반증으로 폐기(417차 ①).",
+    }
 
     buckets = {"qty1": [], "qty2": [], "qty3plus": []}
     for p in pos:
@@ -1913,12 +1993,62 @@ def eval_sizing_inversion_watch() -> dict:
     out["all_krw"] = round(sum(p["pnl"] for p in pos), 0)
 
     b1, b3 = out["by_bucket"].get("qty1"), out["by_bucket"].get("qty3plus")
+
+    # [MW0601 417차 / ③-2] 표본 정체 진단 — **게이트 체인에 눌린 상태**.
+    #
+    # **왜 필요한가.** 이 채널은 CLAUDE.md 실전전환기준 ⑧이 "MAX_CONTRACTS 인하 판단의
+    # 근거"로 명시 지정한 곳인데, qty≥3 버킷이 안 채워지는 이유가 두 가지로 전혀 다른데
+    # 둘 다 똑같이 `INSUFFICIENT`로만 보인다:
+    #   (a) 진입이 적어 아직 모이는 중 — 기다리면 판정된다
+    #   (b) 3계약+ 진입 자체가 계통적으로 발생하지 않음 — 기다려도 안 채워진다
+    # 실제 상태는 (b)다.
+    #
+    # **원인은 사이징 자본이 아니라 사이저 뒤의 곱셈 게이트 체인이다** (417차 로그 실측,
+    # 2026-07-14~07-31): `[Sizer]` 호출 379건 중 **86건(22.7%)이 3계약 이상을 출력**했고
+    # 최대 6계약까지 나왔다. 그중 실제 진입까지 간 69건이 전부 meta·tox·hurst·L2 배수
+    # (`main.py`의 `_qty_display = max(1, int(round(qty × mult)))` 연쇄)에 눌려 1~2계약으로
+    # 체결됐다 — **qty≥3 체결 0건**. 대표적으로 `meta≈0.50 × tox=0.70 ≈ 0.35`가 최빈
+    # 조합이라 사이저 3계약이 1계약이 된다.
+    #
+    # 따라서 이 채널은 **죽은 게 아니라 눌려 잠든 상태**이며, 깨어나는 조건이 실재한다:
+    # ⑧ 해제로 base_risk가 오르거나(사이저 출력 상승) MetaGate/ToxicityGate 배수가
+    # 완화되면 즉시 표본이 생긴다. 그때가 바로 이 채널이 필요한 시점이므로 **삭제하면
+    # 안 된다** — 417차 조사 결론(확정 결정 레지스트리 9건 중 채널 삭제 선례 0건,
+    # 전부 "부결/판정보류"로 기록하고 채널은 계속 운영).
+    #
+    # 판정(verdict)은 INSUFFICIENT 그대로 둔다 — **합격선을 낮추지 않는다**(313차:
+    # 사후 데이터로 기준을 움직이는 것 금지). 바꾸는 것은 "왜 판정 못 하는가"의 가시성뿐.
+    #
+    # ⚠ 위 사이저 출력 통계는 TRADE 로그에서만 얻을 수 있어(DB에 원시 사이저 출력
+    # 컬럼이 없다) 여기서 매주 재계산하지 않는다. 수치가 낡았는지 의심되면
+    # `logs/*_TRADE.log`의 `[Sizer] ... → N계약`과 `[SizerMatch]`를 재집계할 것.
+    recent_days = sorted({p["entry_ts"][:10] for p in pos})[-int(cr.get("min_days", 5)):]
+    n3_recent = sum(1 for p in pos if p["qty"] >= 3 and p["entry_ts"][:10] in recent_days)
+    n3_total = len(buckets["qty3plus"])
+    out["n_qty3plus_recent"] = n3_recent
+    out["structural_block"] = bool(n3_total == 0 or n3_recent == 0)
+    if out["structural_block"]:
+        out["structural_reason"] = (
+            "최근 %d거래일 qty≥3 **체결** %d건 (누적 %d건). 원인은 사이징 자본이 아니라 "
+            "**사이저 뒤의 곱셈 게이트 체인**이다 — 417차 로그 실측(2026-07-14~07-31)에서 "
+            "`[Sizer]`는 379건 중 86건(22.7%%)이 3계약 이상을 출력했고 최대 6계약까지 "
+            "나왔으나, 진입까지 간 69건이 전부 meta·tox 등 배수에 눌려 1~2계약으로 "
+            "체결됐다(qty≥3 체결 0건, 최빈 조합 meta≈0.50 × tox=0.70 ≈ 0.35). "
+            "따라서 이 버킷은 **기다린다고 채워지지 않지만**, ⑧ 해제로 base_risk가 오르거나 "
+            "게이트 배수가 완화되면 즉시 표본이 생긴다 — 죽은 채널이 아니라 **눌려 잠든** "
+            "채널이다. CLAUDE.md ⑧이 이 채널의 누적 판정을 MAX_CONTRACTS 인하 근거로 "
+            "지정하고 있으므로, 지금 판정이 필요하다면 과거 3계약+ 구간"
+            "(2026-06-10~07-10) 포지션 단위 재분석을 별도 근거로 쓸 것."
+            % (len(recent_days), n3_recent, n3_total)
+        )
+
     if out["n_days"] < min_d:
         out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
         return out
     if not b1 or not b3 or b1["n"] < min_n or b3["n"] < min_n:
-        out["reason"] = "구간 표본 부족 (qty1=%d, qty3+=%d, 각각 %d 필요) — 판정 보류" % (
-            (b1 or {}).get("n", 0), (b3 or {}).get("n", 0), min_n)
+        out["reason"] = "구간 표본 부족 (qty1=%d, qty3+=%d, 각각 %d 필요) — 판정 보류%s" % (
+            (b1 or {}).get("n", 0), (b3 or {}).get("n", 0), min_n,
+            " ⚠ **구조적 판정불가**" if out.get("structural_block") else "")
         return out
 
     out["gap_krw"] = round(b1["avg_pnl_krw"] - b3["avg_pnl_krw"], 0)
@@ -4318,7 +4448,8 @@ def build_report(days: int) -> tuple:
             ", ".join("%s=%d" % kv for kv in (ucw.get("by_table") or {}).items()) or "—",
             ucw.get("excluded_hyp_pnl_pts", "—")))))
     _sb = siw.get("by_bucket") or {}
-    L.append("| [28] 사이징 역예측 감시 | %s | %s |" % (
+    L.append("| [28] 사이징 역예측 감시%s | %s | %s |" % (
+        " ⚠구조적판정불가" if siw.get("structural_block") else "",
         _fmt_verdict(siw["verdict"]),
         siw.get("reason") or (" / ".join(
             "%s: n=%d 승률=%.1f%% 평균=%s원" % (
@@ -4594,12 +4725,24 @@ def build_report(days: int) -> tuple:
              "16전 1승 -2,642만원(이항검정 p=5.07e-07)이 확인됐으나 이를 보는 채널이 "
              "하나도 없었다. **자동 조치 없음** — MAX_CONTRACTS 인하는 주간회의 수동 결정(§9).")
     L.append("")
-    L.append("- 포지션 %s건 / %s일 (부분청산 병합, entry_source=SYSTEM_AUTO)" % (
-        siw.get("n_positions", "—"), siw.get("n_days", "—")))
+    L.append("- 포지션 %s건 / %s일 (부분청산 병합, 시스템 자동진입 — "
+             "`entry_source=SYSTEM_AUTO` ∪ 컬럼 신설 이전 NULL행)" % (
+                 siw.get("n_positions", "—"), siw.get("n_days", "—")))
+    _qs = siw.get("qty_source") or {}
+    if _qs:
+        L.append("  - 계약수 출처: `entry_qty` 기록값 %s건 / 청산레그 합 폴백 %s건 "
+                 "— 405차 `max` 집계는 409차 실측 반증으로 폐기(417차 ①)" % (
+                     _qs.get("entry_qty_recorded", 0), _qs.get("leg_sum_fallback", 0)))
     for k, v in sorted((siw.get("by_bucket") or {}).items()):
         L.append("  - **%s**: n=%d 승률 %.1f%% 평균 %s원 누적 %s원 (최대손실 %s원)" % (
             k, v["n"], v["win_rate"] * 100, format(v["avg_pnl_krw"], ",.0f"),
             format(v["total_pnl_krw"], ",.0f"), format(v["min_pnl_krw"], ",.0f")))
+    if siw.get("structural_block"):
+        L.append("")
+        L.append("- ⚠ **구조적 판정불가** — %s" % siw.get("structural_reason", ""))
+        L.append("  - 이것은 \"표본이 모이는 중\"이 **아니다**. 표시를 분리한 이유는 "
+                 "`toxicity_block_shadow`가 자기모순 조건으로 3개월간 0건인 채 "
+                 "방치됐던 402차 후속3과 같은 유형이기 때문이다.")
     if siw.get("excl_above_cap_krw"):
         L.append("- 계약수 상한별 부분합(그 초과 거래를 **아예 안 했다면**): %s / 전체 %s원" % (
             " / ".join("상한%s=%s원" % (c, format(v, ",.0f"))
@@ -4620,8 +4763,9 @@ def build_report(days: int) -> tuple:
              "n=35·최다일 40%로 경계선이라 누적 확인이 필요하다. "
              "**\"진입 차단\"이 아니라 사이즈/등급 축 처방 가설**이다(317차 FalseBlock 교훈).")
     L.append("")
-    L.append("- 포지션 %s건 / %s일 (부분청산 병합, entry_source=SYSTEM_AUTO)" % (
-        mrs.get("n_positions", "—"), mrs.get("n_days", "—")))
+    L.append("- 포지션 %s건 / %s일 (부분청산 병합, 시스템 자동진입 — "
+             "`entry_source=SYSTEM_AUTO` ∪ 컬럼 신설 이전 NULL행)" % (
+                 mrs.get("n_positions", "—"), mrs.get("n_days", "—")))
     for k, v in sorted((mrs.get("by_bucket") or {}).items()):
         L.append("  - **%s**: n=%d 승률 %.1f%% 평균 %s원 누적 %s원" % (
             k, v["n"], v["win_rate"] * 100, format(v["avg_pnl_krw"], ",.0f"),

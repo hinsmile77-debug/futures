@@ -2556,9 +2556,9 @@ class TradingSystem:
                 formula_version, exit_reason, grade, regime,
                 meta_action, hurst_bucket, hour_bucket,
                 was_restart_after, had_partial_fill, entry_horizon, entry_source,
-                kelly_advised_skip, raw_grade)
+                kelly_advised_skip, raw_grade, entry_qty)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -2592,6 +2592,12 @@ class TradingSystem:
                 getattr(self, "_entry_source", "SYSTEM_AUTO"),
                 getattr(self, "_entry_kelly_advised_skip", 0),
                 getattr(self, "_entry_raw_grade", ""),
+                # [MW0601 417차 / ②] 진입 계약수. 바로 위 quantity는 이번 청산
+                # 레그의 수량이라 부분청산이면 진입 규모와 다르다 — 사이징 축
+                # 분석이 둘을 혼동하지 않도록 진입 시점 값을 별도 컬럼에 남긴다.
+                # PositionTracker._build_exit_result()가 initial_quantity로 채우며,
+                # 없으면 레그 수량으로 폴백(구경로 안전).
+                int(result.get("entry_qty") or result.get("quantity") or 0),
             ),
         )
         try:
