@@ -8,6 +8,71 @@
 
 ---
 
+### 407·408차 후속 확인 (2026-08-07 금 EOD)
+
+- [ ] **FIFO 보관정리가 EOD에서 돌았는가** — 로그에 "보관정리:" 줄 확인.
+      현재 MW0601 자동생성 날짜는 20260731 1개뿐이라 **실제 삭제는 5주째에야
+      첫 발생**한다(2026-09-04 안팽). 그전까진 "삭제 대상 없음"이 정상이다.
+- [ ] `_20260801_pre405` 스냅샷이 5주째에도 살아있는가 — 접미사 보호가 실제로
+      동작하는지 샌드박스 말고 실전에서 확인할 지점.
+
+
+- [ ] **EOD 체인이 새 경로에 생성하는가** — `docs/정기점검/금요일점검/MW0601/
+      validation_campaign_report_20260807.md`. 수동 실행만 검증했고 EOD 체인
+      경로(retrain_eod → campaign_steps → subprocess)는 미검증이다.
+- [ ] **MW0602도 pull 후 같은 경로에 생성되는가** — 그래야 cmp가 자동으로
+      짝짓는다. pull 전에는 MW0602가 여전히 data/에 쓴다.
+- [ ] `data/validation_campaign_report.md`·`_metrics.json`은 **이제 갱신되지 않는
+      잔존 파일**이다(2026-08-02 11:08이 마지막). 혼동 방지를 위해 지우는 것을
+      권장 — 재생성 가능하고 gitignore 대상이라 손실 없다.
+
+---
+
+## 2026-08-02 (MW0601 406차 — TP1 보호모드 통일 + 재생감시 전환, 라이브 검증 대기)
+
+> 상세: `dev_memory/DECISION_LOG.md` 2026-08-02(MW0601 406차),
+> `docs/정기점검/금요일점검/0802_TP1보호모드_통일_및_재생감시_구현계획.md`
+> **오프라인 검증만 마쳤다 — 라이브 경로는 08-03(월)이 첫 실행이다.**
+> 33채널 verdict 완전 무변경(§9-4 시계 리셋 없음).
+
+### 구현 완료 (5건)
+
+- [DONE 2026-08-02] **A 실거래 모드 통일** — MW0601 `session_state.json`
+      `tp1_single_contract_mode` `breakeven` → `atr_profit`.
+      백업 `data/session_state.json.bak_20260802_before_atrprofit`.
+- [DONE 2026-08-02] **B `atr`·`protect_offset_pts` 영속화** — `synthetic_partial_exits`
+      컬럼 2개 + `main.py` INSERT 배선. ATR 역산 폐기의 근거.
+- [DONE 2026-08-02] **C `[25]` ATR 소스 정정** — 저장 `atr` 우선, 역산 폴백 시
+      prev_stop 오버라이드 행 제외. 모드 필터는 **유지**(판정식 보존).
+- [DONE 2026-08-02] **D `[24]` mode별 분리 집계** (R1) — `by_mode_stats`·`modes_mixed`,
+      요약행 `(mode=...)` 라벨 + 상세 모드별 표.
+- [DONE 2026-08-02] **E `[25]` "해당 없음" 표기** (R4) — "표본 부족"이 아니라
+      "이 모드로는 영원히 안 찬다"를 명시.
+
+### 라이브 확인 필수 (2026-08-03 월)
+
+- [ ] **`atr_profit` 보호전환이 실제로 걸리는가** — 로그 `[SingleContractTP1] ... mode=atr_profit`.
+      MW0601은 07-20 이후 `breakeven`만 찍혔으므로 이 경로 자체가 첫 실행이다.
+- [ ] **`atr`·`protect_offset_pts`가 NULL이 아닌 값으로 INSERT되는가** —
+      `SELECT atr, protect_offset_pts FROM synthetic_partial_exits ORDER BY id DESC LIMIT 3`.
+- [ ] **오버라이드 행이 실제로 잡히는가** — `protect_offset_pts != |stop_after-entry|`인
+      행이 나오면 `[25]`의 `n_excluded_override`가 올라가야 한다.
+- [ ] `[24]` 요약행이 `⚠ 모드 혼재`로 바뀌는가 (breakeven 29건 + atr_profit 신규).
+
+### 열린 질문 / 후속
+
+- [ ] **MW0602에 B·C 배포 필요** — 그래야 그쪽 `[25]`의 오염된 ATR 역산이 해소된다.
+      MW0602의 `atr_profit` 행 중 prev_stop 오버라이드가 몇 건인지 **아직 모른다**
+      (MW0601은 4/29=13.8%였다). 배포 후 `n_excluded_override`로 확인할 것.
+- [ ] **MW0601 `[25]` min_samples=20 도달 시점** — 실측 도달속도 29건/11거래일
+      ≈ 2.6건/일 기준 **약 8거래일**(2026-08-13 안팎). 그때 첫 판정이 나온다.
+- [ ] **과거 29건 breakeven 표본은 소급 복구 불가** — 받아들이고 라벨만 붙였다.
+      `[24]`에는 남아 있으므로 모드별 표에서 계속 보인다.
+- [ ] 0802 대조문서 R2·R3·R5는 미구현 — `[4]`/`[21]` 판정보류 등록,
+      A/B 기준선 부호 병기, `[13]` 크기차 분해.
+
+---
+
 ## 2026-08-01 (MW0601 405차 — 0801 최종개선안 P0·P1 구현 11건, 라이브 검증 대기)
 
 > 상세: `dev_memory/DECISION_LOG.md` 2026-08-01(MW0601 405차), `docs/정기점검/금요일점검/0801_MW0601_최종개선안.md`

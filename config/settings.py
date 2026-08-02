@@ -1012,6 +1012,15 @@ LOSS_TIER1_TICK_ENABLED = True
 #   캡처율이 크게 오르지 않을 수 있다. MW0602 23건 재생 실측에서 'breakeven'은 현행
 #   'atr_profit' 대비 건별 우세 0/23으로 열위였다(대부분 본전 복귀로 0.00 종료) —
 #   상세는 검증캠페인 [25] 및 dev_memory/DECISION_LOG.md 404차 후속3 항목.
+#
+#   ✅ [MW0601 406차, 2026-08-02] **실거래는 'atr_profit'으로 통일했다.**
+#   위 0/23 열위가 근거이며, MW0601 session_state를 'breakeven' → 'atr_profit'으로
+#   바꿨다(MW0602는 원래 atr_profit — 이제 두 PC가 코드 기본값과 일치한다).
+#   **대조군은 잃지 않는다** — 'breakeven'은 [25] tp1_protect_offset_shadow의
+#   variants에 사전등록돼 있어 **같은 거래 위 카운터팩추얼 재생으로 계속 감시**된다.
+#   라이브 A/B(두 PC가 서로 다른 모드)는 모델·거래모집단이 달라 교란이므로 폐기했다.
+#   ⚠ 이 값은 여전히 PC 로컬 파일이다 — 새 PC 배포·세션 초기화 후에는 다시 확인할 것.
+#   (근거: docs/정기점검/금요일점검/0802_TP1보호모드_통일_및_재생감시_구현계획.md)
 TP1_TICK_ENABLED = True
 
 # [260704 감사 P2] 레짐 조건부 ATR 배수 — 추세장(Hurst>=0.55)에서는 손절/목표를
@@ -1147,6 +1156,23 @@ SIGNAL_DECAY_EXIT_ENABLED = True
 # 검증 후 활성화할 것. 참조: docs/CyBos ref/CYBOS_FUTURES_ORDER_TR_MAP.md
 LIMIT_ENTRY_FIRST_ENABLED = False
 LIMIT_ENTRY_TIMEOUT_SEC = 12  # 지정가 미체결 대기시간 (감사 권고 10~15초)
+
+# ── [MW0601 408차] 주간 리포트 보관 개수 (FIFO) ────────────────────────────────
+# 407차가 리포트를 docs/정기점검/금요일점검/<PC명>/*_YYYYMMDD.* 날짜본으로 바꾸면서
+# 덮어쓰기 유실은 막았지만, 이번엔 무한히 쌓인다(주 2파일 × 두 PC × 커밋되는 위치).
+# 최근 N주만 남기고 오래된 것부터 지운다.
+#
+# 왜 4인가: 검증 캠페인의 판정 창이 28일(4주)이라 그보다 오래된 리포트는 이번 주
+# 판정과 겹치는 구간이 없다. 주차간 비교(지난주 vs 이번주)에도 4주면 충분하다.
+#
+# 삭제 대상은 **`validation_campaign_report_YYYYMMDD.md` / `_metrics_YYYYMMDD.json`
+# 정확히 그 형태만**이다. 접미사가 붙은 것(`..._20260801_pre405.md` 등 수동 보존
+# 스냅샷)과 주간회의 검토보고 md는 건드리지 않는다 — 사람이 이름을 붙여 남긴 것은
+# 자동 삭제 대상이 아니라는 원칙.
+#
+# 0 또는 음수 = 삭제 비활성(킬스위치). 자기 PC 폴더만 정리하며 다른 PC 폴더는
+# 절대 건드리지 않는다(그쪽 보관 정책은 그쪽 PC가 자기 EOD에서 집행한다).
+VALIDATION_REPORT_KEEP_WEEKS = 4
 
 # ── [260705 검증 캠페인] 섀도우 채널 승격 합격선 — 사전 등록 (변경 금지) ──────
 # 근거: docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3.
