@@ -78,6 +78,51 @@
 
 ---
 
+## 2026-08-02 (MW0602 417차 — backfill FEATURE_KEYS_ALL 갱신, **MW0601 확인 1건 대기**)
+
+> 상세: 커밋 `6a795ab`. 라이브 미기록 9종 제거(116→107). 이 변경은 **앞으로의 백필**
+> 에만 적용되며 이미 DB에 들어간 행은 그대로다 — 그래서 아래 확인이 필요하다.
+
+### ★ MW0601에서만 확인 가능 → **MW0601 세션이 실행할 것**
+
+- [ ] **MW0601의 07-03~07-31 관찰창에 있는 백필 행이 INSERT인가 UPDATE인가** —
+      2026-08-02 리포트 대조에서 MW0601 §2-b에만 뜬 4건(`bear_reversal_signal`·
+      `macro_vix_abs`·`microprice`·`feature_recoverable_errors`)은 전부 퇴역 피처이고,
+      현재 이 키를 쓰는 경로는 `scripts/backfill_features.py`뿐이다. 즉 **MW0601의
+      건강도 관찰창 안에 백필이 쓴 행이 있다**는 뜻인데, 그게 둘 중 어느 쪽인지에
+      따라 심각도가 완전히 다르다. MW0602는 같은 검사에서 혼재 0일(결측일 INSERT만,
+      2026-04-28~06-01 22일)로 깨끗했다.
+
+      ```python
+      # MW0601, py37_32, 15:40 EOD 이후 실행 (읽기 전용)
+      import sqlite3, json
+      from collections import defaultdict
+      con = sqlite3.connect("data/db/raw_data.db")
+      d = defaultdict(lambda: [0, 0])
+      for ts, fj in con.execute("SELECT ts,features FROM raw_features WHERE ts>='2026-07-01'"):
+          f = json.loads(fj)
+          d[ts[:10]][0 if f.get("feature_quality_score") == 0.3 else 1] += 1
+      for k in sorted(d):
+          print(k, "backfill=%d live=%d" % tuple(d[k]))
+      ```
+      판정 (`feature_quality_score == 0.3`이 백필 생성 행 마커 —
+      `backfill_features.py:process_day`가 "소급 데이터 마커"로 박는다):
+      - 어떤 날짜든 **`backfill>0` `live=0`** → 결측일 INSERT. **무해**하다(문서화된
+        정상 동작). 다만 그날은 호가·수급·옵션·매크로가 전부 0.0이라 재학습 입력
+        으로는 빈 날이다.
+      - 한 날짜에 **둘 다 >0** → `--update-features`가 라이브 행을 덮어썼다는 뜻.
+        **재학습 데이터 손상**이다 — `UPDATE raw_features SET features=?`가 JSON을
+        통째로 교체하므로 실제 수집됐던 미시구조 값이 0.0으로 소실된다(MW0602
+        백필 날짜 실측: `ofi_pressure`/`opt_pcr_norm`/`foreign_futures_net` 0/6563
+        전부 0.0). 이 경우 복구 방안(해당 날짜 재수집 불가 → 학습창에서 제외할지)을
+        별도 결정할 것.
+
+- [ ] (위가 UPDATE로 판명될 때만) **MW0601 GBM 재학습 창에서 해당 날짜 제외 여부 결정** —
+      제외하면 표본이 줄고, 두면 0.0 상수 구간이 섞인다. 어느 쪽도 공짜가 아니므로
+      실측 행수를 보고 판단할 것.
+
+---
+
 ## 2026-08-02 (MW0601 411차 — 피처셋 주기점검 Phase B, 사용자 결정 1건 대기)
 
 > 상세: `dev_memory/DECISION_LOG.md` 2026-08-02(MW0601 411차)
@@ -3291,6 +3336,18 @@ PC 차이로 정정)
      — 실제 반영 전 대상 날짜 수만 먼저 확인.
   4. `python scripts/backfill_features.py --update-features` 실행 — 개발 PC 기준
      219일·약 90초였음(MW0601 보유 데이터 기간에 따라 다를 수 있음).
+
+     > ⚠ **[417차 경고] 이 4번을 `--from` 없이 그대로 실행하면 라이브 데이터가
+     > 손상된다.** `--update-features`는 `UPDATE raw_features SET features=?`로 기존
+     > 행의 features JSON을 **통째로 교체**하는데, 백필이 계산할 수 있는 건 OHLCV
+     > 파생뿐이라 실제 수집됐던 호가·수급·옵션·매크로 값이 전부 0.0으로 덮인다
+     > (MW0602 백필 날짜 실측: `ofi_pressure`/`opt_pcr_norm`/`foreign_futures_net`
+     > 0/6563 전부 0.0). 이 항목이 원래 노린 건 hurst 재계산뿐인데 부수효과가
+     > 훨씬 크다.
+     > **라이브 기록이 있는 날짜에는 돌리지 말 것** — 굳이 hurst를 소급 반영해야
+     > 한다면 라이브 이전 구간으로 `--from`을 한정하거나, features JSON을 병합
+     > 갱신(기존 키 보존 + hurst만 덮어쓰기)하도록 스크립트를 먼저 고칠 것.
+     > 이미 실행한 뒤라면 위 417차 항목의 판별 스니펫으로 피해 범위를 먼저 확인한다.
   5. 검증: 로그 마지막 줄 "UPDATE 완료: 총 N행" 확인. 필요시 아래로 콜드스타트
      비율·분포 재확인(이 세션에서 쓴 방식과 동일):
      ```python
