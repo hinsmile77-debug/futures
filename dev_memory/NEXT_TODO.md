@@ -28,6 +28,53 @@
 
 ---
 
+## 2026-08-02 (MW0601 410차 — 피처셋 주기점검 Phase A, EOD 체인 검증 대기)
+
+> 상세: `dev_memory/DECISION_LOG.md` 2026-08-02(MW0601 410차)
+> 계획: `docs/Spec for feature/피처셋_주기점검_자동리포트_구현계획_2026-08-02.md`
+> 읽기 전용 신설 — 판정식·합격선·캠페인 채널 **무변경**(§9-4 시계 리셋 없음).
+
+### 구현 완료 (3건 + 부수 1건)
+
+- [DONE 2026-08-02] `scripts/generate_featureset_health_report.py` 신설.
+- [DONE 2026-08-02] `campaign_report_paths.py` `stem` 일반화 (FIFO 계열 격리 테스트 PASS).
+- [DONE 2026-08-02] `campaign_steps.py` 주간 스텝 배선 + EOD 로그 경로 출력.
+- [DONE 2026-08-02] `feature_health_report.py` cp949 콘솔 크래시 수정(부수).
+
+### 다음 금요일 EOD 확인 (2026-08-07) — **402차 후속3 교훈: 행이 실제로 쌓였는지 본다**
+
+- [ ] **EOD 체인이 실제로 이 스텝을 돌렸는가** — 로그에 `피처셋 건강 리포트 → 완료`와
+      `피처셋 건강 리포트: <경로>` 두 줄. 수동·subprocess 실행만 검증했고 진짜 EOD
+      경로(`retrain_eod` → `campaign_steps`)는 미검증이다.
+- [ ] `docs/정기점검/금요일점검/MW0601/featureset_health_report_20260807.md` 생성 확인.
+- [ ] **FIFO가 두 계열을 따로 세는가** — 같은 날 `validation_campaign_*_20260807`도
+      생기므로, 둘 다 남아 있어야 정상. 한쪽이 사라지면 stem 격리가 깨진 것이다.
+- [ ] 주간 실행 시간 확인 — 첫 실행은 20+60거래일 창 스캔이었다. 데이터가 쌓이면
+      느려지므로 스텝 타임아웃(1800초) 대비 여유를 눈으로 확인해 둘 것.
+
+### 이어지는 작업 (계획 Phase B~D)
+
+- [ ] **Phase B — `config/settings.py:FEATURE_SET_DECISIONS` 신설.** 지금 §4 후보 36건에
+      이미 기각된 `basis_pt`(표본확대 후 소멸)·`cvd_direction`(CVD 포화) 등이 섞여 있고,
+      리포트가 생성 경고로 "레지스트리가 없어 기각 피처가 후보로 다시 뜬다"고 찍고 있다.
+      **Phase A의 미완 부분이므로 우선순위 최상.**
+- [ ] **Phase C — 월간 제안 리포트**(첫 금요일 분기). D-day(08-14 예정) 이후 착수 권고.
+- [ ] **Phase D — 발굴 런북 + 후보명세 폴더.** 재고 트리거가 실제 작동하는 것 확인 후.
+- [ ] `horizon_conf_stratified_test.py`(07-30 실행계획 1단계) 신설 시 **L4 입력 계약**을
+      맞출 것 — `data/horizon_conf_stratified_latest.json`, 스키마는 계획서 Phase A 참조.
+      그전까지 §3은 "⚠ 미배선"으로 뜨며 **빈칸이 이상 없음을 뜻하지 않는다**.
+
+### 열린 질문
+
+- [ ] 후보 재고 트리거 기준(3건)이 적절한가 — 현재 36건이라 사실상 절대 안 걸린다.
+      Phase B 레지스트리로 기각분을 걸러낸 뒤 실제 재고가 몇 건인지 보고 재검토할 것.
+      (지금 기준을 바꾸면 관측 후 조정이라 §9 사전등록 원칙 위반이다.)
+- [ ] §2-b `계측만` DEAD 5종(`bear_reversal_signal`·`microprice`·`macro_vix_abs`·
+      exhaustion_shadow 2종)을 고칠 것인가 사장할 것인가 — 지금은 모델에 무해하나
+      나중에 후보 승격 시 반드시 걸린다. 표준절차 Phase 2 대상으로 별도 판단 필요.
+
+---
+
 ## 2026-08-02 (MW0601 409차 — 0802 대조 권고 R2·R3·R5 구현, 라이브 검증 대기)
 
 > 상세: `dev_memory/DECISION_LOG.md` 2026-08-02(MW0601 409차)

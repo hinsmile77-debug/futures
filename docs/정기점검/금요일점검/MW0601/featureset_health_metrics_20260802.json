@@ -1,0 +1,498 @@
+{
+  "_meta": {
+    "pc": "MW0601",
+    "date": "2026-08-02",
+    "git": "ef3ee59",
+    "days": 20,
+    "pool_days": 60,
+    "min_samples": 200,
+    "pool_ready_days": 20,
+    "window": {
+      "rows": 22218,
+      "health_rows": 7539,
+      "bad_rows": 0,
+      "wide_from": "2026-05-06",
+      "wide_to": "2026-07-31",
+      "wide_days": 60,
+      "health_from": "2026-07-03",
+      "health_to": "2026-07-31",
+      "health_days": 20
+    }
+  },
+  "horizons": {
+    "1m": {
+      "weight": 0.0,
+      "n_features": 8,
+      "pkl_mtime": "2026-07-31 14:05",
+      "counts": {
+        "OK": 7,
+        "WARN": 1,
+        "CRITICAL": 0,
+        "DEAD": 0,
+        "미계측": 0,
+        "raw부재": 0
+      },
+      "real_bad": [],
+      "core": [
+        "cvd_delta_norm",
+        "vwap_position",
+        "ofi_pressure"
+      ],
+      "core_bad": [],
+      "features": {
+        "cvd_delta_norm": "OK",
+        "toxicity_score": "OK",
+        "cancel_add_ratio": "OK",
+        "spread_ticks": "OK",
+        "vwap_position": "OK",
+        "is_open_volatile": "WARN",
+        "bb_position": "OK",
+        "poc_distance": "OK"
+      }
+    },
+    "3m": {
+      "weight": 0.13,
+      "n_features": 12,
+      "pkl_mtime": "2026-07-31 14:05",
+      "counts": {
+        "OK": 12,
+        "WARN": 0,
+        "CRITICAL": 0,
+        "DEAD": 0,
+        "미계측": 0,
+        "raw부재": 0
+      },
+      "real_bad": [],
+      "core": [
+        "cvd_delta_norm",
+        "vwap_position",
+        "ofi_pressure"
+      ],
+      "core_bad": [],
+      "features": {
+        "cvd_delta_norm": "OK",
+        "cvd_divergence": "OK",
+        "microprice_bias": "OK",
+        "poc_above": "OK",
+        "ret_15m": "OK",
+        "ofi_norm": "OK",
+        "macro_us10y_chg": "OK",
+        "poc_distance": "OK",
+        "bb_position": "OK",
+        "ema_cross": "OK",
+        "vwap_position": "OK",
+        "microprice_depth_bias": "OK"
+      }
+    },
+    "5m": {
+      "weight": 0.3,
+      "n_features": 12,
+      "pkl_mtime": "2026-07-31 14:05",
+      "counts": {
+        "OK": 10,
+        "WARN": 1,
+        "CRITICAL": 1,
+        "DEAD": 0,
+        "미계측": 0,
+        "raw부재": 0
+      },
+      "real_bad": [],
+      "core": [
+        "cvd_delta_norm",
+        "vwap_position",
+        "ofi_pressure"
+      ],
+      "core_bad": [],
+      "features": {
+        "bb_position": "OK",
+        "ema_cross": "OK",
+        "ret_5m": "OK",
+        "ret_15m": "OK",
+        "poc_distance": "OK",
+        "poc_above": "OK",
+        "vwap_position": "OK",
+        "above_vwap": "OK",
+        "is_open_volatile": "WARN",
+        "is_close_volatile": "CRITICAL",
+        "in_value_area": "OK",
+        "cvd_slope": "OK"
+      }
+    },
+    "10m": {
+      "weight": 0.29,
+      "n_features": 11,
+      "pkl_mtime": "2026-07-31 14:05",
+      "counts": {
+        "OK": 10,
+        "WARN": 1,
+        "CRITICAL": 0,
+        "DEAD": 0,
+        "미계측": 0,
+        "raw부재": 0
+      },
+      "real_bad": [],
+      "core": [
+        "vwap_position"
+      ],
+      "core_bad": [],
+      "features": {
+        "vwap_momentum": "OK",
+        "poc_above": "OK",
+        "poc_distance": "OK",
+        "mlofi_slope": "OK",
+        "vwap_position": "OK",
+        "opt_pcr_extreme": "WARN",
+        "macro_sp500_chg": "OK",
+        "macro_us10y_chg": "OK",
+        "macro_krw_chg": "OK",
+        "macro_vix": "OK",
+        "hurst": "OK"
+      }
+    },
+    "15m": {
+      "weight": 0.28,
+      "n_features": 13,
+      "pkl_mtime": "2026-07-31 14:05",
+      "counts": {
+        "OK": 12,
+        "WARN": 0,
+        "CRITICAL": 1,
+        "DEAD": 0,
+        "미계측": 0,
+        "raw부재": 0
+      },
+      "real_bad": [],
+      "core": [
+        "vwap_position"
+      ],
+      "core_bad": [],
+      "features": {
+        "va_bandwidth": "OK",
+        "opt_pcr_slope_norm": "OK",
+        "retail_futures_net": "OK",
+        "foreign_retail_divergence": "OK",
+        "in_value_area": "OK",
+        "is_close_volatile": "CRITICAL",
+        "poc_distance": "OK",
+        "ret_15m": "OK",
+        "bb_position": "OK",
+        "ema_cross": "OK",
+        "poc_above": "OK",
+        "ret_5m": "OK",
+        "cvd_divergence": "OK"
+      }
+    },
+    "30m": {
+      "weight": 0.0,
+      "n_features": 11,
+      "pkl_mtime": "2026-07-31 14:05",
+      "counts": {
+        "OK": 11,
+        "WARN": 0,
+        "CRITICAL": 0,
+        "DEAD": 0,
+        "미계측": 0,
+        "raw부재": 0
+      },
+      "real_bad": [],
+      "core": [
+        "above_vwap",
+        "opt_chain_pcr"
+      ],
+      "core_bad": [],
+      "features": {
+        "in_value_area": "OK",
+        "opt_pcr_slope_norm": "OK",
+        "opt_pcr_bearish": "OK",
+        "toxicity_score_ma": "OK",
+        "atr_ratio": "OK",
+        "above_vwap": "OK",
+        "queue_signal_ma": "OK",
+        "toxicity_atr_stress": "OK",
+        "time_cos": "OK",
+        "macro_vix": "OK",
+        "macro_krw_chg": "OK"
+      }
+    }
+  },
+  "unknown_bad": [],
+  "system_bad": [
+    "bear_exhaustion_shadow",
+    "bear_reversal_signal",
+    "bull_exhaustion_shadow",
+    "bull_reversal_signal",
+    "feature_recoverable_errors",
+    "macro_vix_abs",
+    "microprice",
+    "opt_gex_sign"
+  ],
+  "l4": {
+    "status": "미배선"
+  },
+  "candidates": [
+    {
+      "name": "basis_change_pt",
+      "sources": "pending:1m, pending:3m, pending:5m, pending:10m",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "basis_pt",
+      "sources": "pending:1m, pending:3m, pending:5m, pending:10m",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "cancel_ratio",
+      "sources": "POOL",
+      "days": 0,
+      "health": "raw부재",
+      "status": "⚠ 미배선(축적 0)"
+    },
+    {
+      "name": "cvd_direction",
+      "sources": "pending:10m",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "foreign_futures_net",
+      "sources": "pending:10m",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "hurst_ready",
+      "sources": "POOL",
+      "days": 25,
+      "health": "WARN",
+      "status": "검증가능 (25일)"
+    },
+    {
+      "name": "imbalance_slope",
+      "sources": "POOL",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "is_month_end_rebalance",
+      "sources": "pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m",
+      "days": 19,
+      "health": "OK",
+      "status": "축적중 19/20일"
+    },
+    {
+      "name": "is_monthly_expiry_week",
+      "sources": "pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m",
+      "days": 19,
+      "health": "CRITICAL",
+      "status": "축적중 19/20일"
+    },
+    {
+      "name": "is_monthly_witching",
+      "sources": "pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m",
+      "days": 19,
+      "health": "CRITICAL",
+      "status": "축적중 19/20일"
+    },
+    {
+      "name": "is_weekly_witching",
+      "sources": "pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m",
+      "days": 19,
+      "health": "OK",
+      "status": "축적중 19/20일"
+    },
+    {
+      "name": "kyle_lambda",
+      "sources": "POOL",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "micro_regime_code",
+      "sources": "POOL",
+      "days": 28,
+      "health": "OK",
+      "status": "검증가능 (28일)"
+    },
+    {
+      "name": "microprice_slope",
+      "sources": "POOL",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "mlofi_norm",
+      "sources": "POOL",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "multi_timeframe_15m",
+      "sources": "POOL",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "multi_timeframe_5m",
+      "sources": "POOL",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "ofi_reversal_speed",
+      "sources": "pending:1m",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "opt_atm_call_oi",
+      "sources": "pending:15m",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "opt_atm_pcr",
+      "sources": "POOL, pending:15m",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "opt_atm_put_oi",
+      "sources": "pending:15m",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "opt_chain_pcr",
+      "sources": "pending:15m",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "opt_gex_bn",
+      "sources": "pending:15m",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "opt_gex_sign",
+      "sources": "POOL, pending:15m",
+      "days": 13,
+      "health": "CRITICAL",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "program_arb_net",
+      "sources": "pending:5m, pending:10m, pending:15m, pending:30m",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "program_non_arb_net",
+      "sources": "pending:5m, pending:10m, pending:15m, pending:30m",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "queue_depletion_speed",
+      "sources": "POOL",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "queue_directional_depletion",
+      "sources": "POOL",
+      "days": 28,
+      "health": "OK",
+      "status": "검증가능 (28일)"
+    },
+    {
+      "name": "queue_momentum",
+      "sources": "POOL",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "queue_refill_rate",
+      "sources": "POOL",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "queue_signal",
+      "sources": "POOL",
+      "days": 60,
+      "health": "OK",
+      "status": "검증가능 (60일)"
+    },
+    {
+      "name": "round_number_distance",
+      "sources": "POOL",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "rv_iv_spread",
+      "sources": "POOL",
+      "days": 12,
+      "health": "OK",
+      "status": "축적중 12/20일"
+    },
+    {
+      "name": "threshold_feasibility",
+      "sources": "pending:15m",
+      "days": 28,
+      "health": "OK",
+      "status": "검증가능 (28일)"
+    },
+    {
+      "name": "trend_efficiency",
+      "sources": "POOL",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "vkospi",
+      "sources": "pending:10m, pending:15m, pending:30m",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    },
+    {
+      "name": "vpin",
+      "sources": "POOL",
+      "days": 13,
+      "health": "OK",
+      "status": "축적중 13/20일"
+    }
+  ],
+  "candidate_stock": 36,
+  "decisions": {},
+  "warnings": [
+    "`config/settings.py:FEATURE_SET_DECISIONS` 미정의 — 구현계획 Phase B 미구현 상태다. §5가 비어 있는 것은 '결정이 없다'가 아니라 '레지스트리가 아직 없다'는 뜻이므로, 기각 피처가 §4에 후보로 다시 뜰 수 있다."
+  ]
+}
