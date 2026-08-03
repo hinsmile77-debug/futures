@@ -329,6 +329,21 @@ def _migrate_ensemble_decisions_db():
                 # 실제 저장 — 근본원인 재확인 시 쿼리 한 번으로 확인 가능하게 한다.
                 "confidence_raw": "REAL",       # 캘리브레이션 이전 원본 confidence
                 "confidence_smoothed": "REAL",  # P4 display용 EMA(span=20)
+                # [MW0601 422차 후속 / 채널 [34]] MetaGate가 클램프·폴백을 적용하기
+                # **전**의 원 사이즈 배수(learning/meta_confidence.py:_make_result()).
+                # meta_size_mult(적용 후)만으로는 "모델이 0을 냈는데 클램프가 올린 것"과
+                # "모델이 그 값을 낸 것"을 구분할 수 없다 — 두 경로 모두 정보를 지운다:
+                #   reduce: `learned["size_multiplier"] or 0.5`      → 0.0이 falsy → 0.5
+                #   take:   `max(0.9, min(1.25, size_multiplier))`   → 0.0 → **0.9**
+                # take 쪽 왜곡(0.0→0.9)이 reduce(0.0→0.5)보다 큰데 419·420차는 reduce의
+                # `or 0.5`만 계측했다. 진입한 신호의 raw는 지금까지 어디에도 남지 않아
+                # (joint_gate_shadow는 **차단된** 신호 전용) take 밴드는 판정 자체가
+                # 불가능했다. 캠페인 실측: take&0.900 버킷 26진입 -903,986원인데 그중
+                # raw==0 비율을 알 수 없다.
+                # NULL 허용 — MetaGate FLAT early-return 경로는 이 키를 반환하지 않는다
+                # (action='skip'이라 [34] 모집단 밖이므로 NULL이 정직하다).
+                # 소급 백필 없음: 결정 시점에만 알 수 있는 값이라 복원 불가(420차와 동일).
+                "meta_size_raw": "REAL",
                 # [conf(ema) 딥다이브, 개선안1] 실질 가중합 0 붕괴(WeightCollapse) 발동 여부.
                 # 콜드스타트 좁은 활성창에서 유일 활성 호라이즌이 그 분에 배포되지 않아
                 # 안전망(flat_score=1.0)이 발동한 케이스 표시 — 발생 빈도 계량용.

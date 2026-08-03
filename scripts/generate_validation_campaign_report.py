@@ -57,7 +57,7 @@ from config.settings import (
     HURST_RANGE_THRESHOLD, REGIME_EXHAUSTION_EXT_ATR_THRESHOLD,
     VALIDATION_CAMPAIGN_DECISIONS, VALIDATION_REPORT_KEEP_WEEKS,
 )
-from config.constants import DIRECTION_UP, DIRECTION_DOWN
+from config.constants import DIRECTION_UP, DIRECTION_DOWN, MINI_FUTURES_PT_VALUE
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
 from utils.db_utils import (  # [384차] TB 채널 판정 유지(carry-forward)
     save_tb_verdict, fetch_latest_tb_verdicts,
@@ -3487,6 +3487,149 @@ def eval_toxicity_reduce_mult_shadow() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [34] meta "size 0" 무시 관찰 (MW0601 422차 후속)
+# ──────────────────────────────────────────────────────────────
+
+def eval_meta_size_zero_shadow() -> dict:
+    """메타 모델이 size 0("베팅하지 마라")을 냈는데 진입까지 간 신호의 손익.
+
+    `_make_result()`는 `conf < 0.5`에서 size_multiplier를 0.0으로 낸다. conf는
+    4급 품질레이블의 기대값이고 a=0.5에서 정확히 0.5가 되므로(고신뢰비중 h와 무관),
+    size 0은 "이 맥락에서 호라이즌 예측기 풀이 동전던지기보다 못하다"는 뜻이다.
+
+    그런데 액션 밴드가 그 0을 덮는다 — reduce는 `or 0.5`, take는 `max(0.9, ...)`.
+    take 쪽 왜곡(0.0→0.9)이 reduce(0.0→0.5)보다 크므로 **밴드별로 분리 집계**한다.
+    합산하면 take의 큰 왜곡이 reduce에 희석된다.
+
+    PASS = 현행 유지(클램프·폴백이 해롭지 않음)
+    FAIL = "안 B"(raw==0 → action skip 강등)를 주간회의 안건화 — 자동 전환 금지
+    """
+    cr = VALIDATION_CAMPAIGN.get("meta_size_zero_shadow", {})
+    out = {"verdict": "INSUFFICIENT", "bands": {}}
+    eff = str(cr.get("effective_date", "") or "")
+
+    try:
+        with _conn(PREDICTIONS_DB) as conn:
+            rows = conn.execute(
+                """SELECT ts, meta_action, meta_size_mult, meta_size_raw,
+                          toxicity_action, entry_qty
+                     FROM ensemble_decisions
+                    WHERE entry_executed = 1
+                      AND meta_action IS NOT NULL AND meta_action != 'skip'
+                      AND ts >= ?
+                    ORDER BY ts""",
+                (eff,),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        # 컬럼 미생성(422차 후속 배선 전 기동) / 테이블 없음도 여기로 온다.
+        out["reason"] = "ensemble_decisions.meta_size_raw 조회 실패: %s" % e
+        out["no_data"] = True
+        return out
+
+    # 계측 이전 행은 raw가 NULL — 판정 모집단에서 제외하되 건수는 정직하게 표기한다.
+    unmeasured = [r for r in rows if r["meta_size_raw"] is None]
+    measured = [r for r in rows if r["meta_size_raw"] is not None]
+    out["unmeasured"] = len(unmeasured)
+    out["measured"] = len(measured)
+
+    zero = [r for r in measured if abs(float(r["meta_size_raw"])) < 1e-9]
+    out["n"] = len(zero)
+    if not measured:
+        out["reason"] = (
+            "계측 표본 0건 — meta_size_raw 배선(%s) 이후 진입이 아직 없다" % eff
+        )
+        out["no_data"] = True
+        return out
+
+    out["zero_share"] = round(len(zero) / float(len(measured)), 4)
+
+    # trades 조인 — 포지션 단위(진입은 중복 발화가 없어 에피소드 병합 불필요)
+    pnl_map = {}
+    try:
+        with _conn(TRADES_DB) as tconn:
+            for t in tconn.execute(
+                """SELECT substr(entry_ts,1,16) k, SUM(net_pnl_krw) pnl
+                     FROM trades WHERE entry_ts >= ? GROUP BY k""",
+                (eff,),
+            ).fetchall():
+                pnl_map[str(t["k"])] = float(t["pnl"] or 0.0)
+    except Exception as e:
+        out["pnl_join_error"] = str(e)
+
+    def _band(rs):
+        m = [(r, pnl_map[str(r["ts"])[:16]]) for r in rs if str(r["ts"])[:16] in pnl_map]
+        if not m:
+            return {"n": len(rs), "matched": 0}
+        v = [p for _, p in m]
+        days = sorted({str(r["ts"])[:10] for r, _ in m})
+        by_day = {}
+        for r, p in m:
+            by_day[str(r["ts"])[:10]] = by_day.get(str(r["ts"])[:10], 0.0) + p
+        return {
+            "n": len(rs), "matched": len(m),
+            "total_pnl_krw": round(sum(v), 0),
+            "avg_pnl_krw": round(sum(v) / len(v), 0),
+            "win_rate": round(sum(1 for x in v if x > 0) / float(len(v)), 4),
+            "days": len(days),
+            "neg_days": sum(1 for x in by_day.values() if x < 0),
+        }
+
+    for band in ("reduce", "take"):
+        out["bands"][band] = _band([r for r in zero if str(r["meta_action"]) == band])
+    out["bands"]["_합계"] = _band(zero)
+
+    agg = out["bands"]["_합계"]
+    n_matched = int(agg.get("matched", 0) or 0)
+    n_days = int(agg.get("days", 0) or 0)
+    min_n = int(cr.get("min_samples", 20))
+    min_d = int(cr.get("min_days", 5))
+    if n_matched < min_n or n_days < min_d:
+        out["reason"] = (
+            "표본 부족 (매칭 %d/%d건, 거래일 %d/%d) — 판정 보류%s"
+            % (n_matched, min_n, n_days, min_d,
+               ("  ※ 미계측 %d건 제외" % out["unmeasured"]) if out["unmeasured"] else "")
+        )
+        return out
+
+    # FAIL 2조건: 누적 손익이 왕복비용×2를 넘는 손실 AND 승률이 기준선 미만
+    avg_price = 0.0
+    try:
+        with _conn(TRADES_DB) as tconn:
+            r = tconn.execute(
+                "SELECT AVG(entry_price) p FROM trades WHERE entry_ts >= ?", (eff,)
+            ).fetchone()
+            avg_price = float((r["p"] if r else 0.0) or 0.0)
+    except Exception:
+        pass
+    cost_pt = _roundtrip_cost_pt(avg_price) if avg_price > 0 else 0.0
+    # 미니선물(A05) 기준 — 이 시스템의 거래 대상. 왕복비용×2를 손실 문턱으로 쓴다
+    # (다른 채널이 pt로 쓰는 `왕복비용×2` 규약을 원 단위로 옮긴 것).
+    cost_krw = cost_pt * 2.0 * MINI_FUTURES_PT_VALUE * n_matched
+    out["fail_threshold_krw"] = round(-cost_krw, 0)
+
+    total = float(agg.get("total_pnl_krw", 0.0) or 0.0)
+    wr = float(agg.get("win_rate", 0.0) or 0.0)
+    base_wr = float(cr.get("baseline_win_rate", 0.50))
+    if total < -cost_krw and wr < base_wr:
+        out["verdict"] = "FAIL"
+        out["recommendation"] = (
+            "\"안 B\"(meta_size_raw==0 → action을 skip으로 강등)를 주간회의 안건화 — "
+            "**자동 전환 금지**. 액션 축 변경이라 라이브 진입 동작이 바뀐다. "
+            "상정 시 교란 (a)recent_accuracy 자기상관 (b)퇴역 30m·FLAT 혼입 "
+            "(c)class_weight='balanced' 를 함께 볼 것 (settings [34] 주석)"
+        )
+    else:
+        out["verdict"] = "PASS"
+        out["reason"] = (
+            "누적 %s원 / 승률 %.1f%% — FAIL 2조건(손익 < %s원 AND 승률 < %.0f%%) 미충족, 현행 유지"
+            % (format(int(total), ","), wr * 100,
+               format(int(-cost_krw), ","), base_wr * 100)
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [18] RegimeExhaustionGate counterfactual — resolve + 판정 (379차)
 # ──────────────────────────────────────────────────────────────
 
@@ -4807,6 +4950,7 @@ def build_report(days: int) -> tuple:
     efs = eval_exit_fill_slippage_watch(days)
     reg = resolve_and_eval_regime_exhaustion()
     wcw = eval_weight_collapse_watch(days)
+    msz = eval_meta_size_zero_shadow()        # [34] MW0601 422차 후속
     dev = eval_direction_ev_watch()
     mcw = eval_mfe_capture_watch()
     gsc = eval_guard_shadow_channel(days)
@@ -5066,6 +5210,18 @@ def build_report(days: int) -> tuple:
                 trm.get("divergent_qty_share", 0) * 100,
                 trm.get("shadow_mult_min", "—"), trm.get("shadow_mult_max", "—"),
                 trm.get("shadow_mult_mean", "—")))))
+    _mz = msz.get("bands") or {}
+    _mzt = _mz.get("_합계") or {}
+    L.append("| [34] meta size0 무시 | %s | %s |" % (
+        _fmt_channel_verdict(msz),
+        msz.get("reason") or (
+            "raw0 진입 %s건(매칭 %s) · 누적 %s원 승률 %.1f%% · %s"
+            % (msz.get("n", "—"), _mzt.get("matched", "—"),
+               format(int(_mzt.get("total_pnl_krw", 0) or 0), ","),
+               float(_mzt.get("win_rate", 0) or 0) * 100,
+               " / ".join(
+                   "%s n=%s" % (b, (_mz.get(b) or {}).get("matched", 0))
+                   for b in ("reduce", "take"))))))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -6246,7 +6402,10 @@ def build_report(days: int) -> tuple:
     if _fs.get("error"):
         L.append("> ⚠ %s" % _fs["error"])
     else:
-        L.append("- 마지막 Phase A 실행: **%s** (결과: BH FDR 10% 통과 0개)"
+        # [MW0601 422차 후속] `10%`가 이스케이프되지 않아 `%s`와 함께 변환지정자 2개로
+        # 해석돼 TypeError로 **리포트 생성 전체가 죽었다**(421차 후속10 도입 이래).
+        # 문자열 그대로의 퍼센트는 `%%`여야 한다.
+        L.append("- 마지막 Phase A 실행: **%s** (결과: BH FDR 10%% 통과 0개)"
                  % _fs.get("last_run", "—"))
         L.append("- 현재 표본: 포지션 %d / FAST **%d** / 거래일 %d (그중 **유효 %d일**)"
                  % (_fs["n_positions"], _fs["n_fast"], _fs["n_days"], _fs["n_useful_days"]))
@@ -6368,6 +6527,56 @@ def build_report(days: int) -> tuple:
     L.append("> 최종 수량이 반드시 달라지는 것은 아니다.")
     L.append("> ⚠ 현행 앵커는 **재보정 전** 분포로 도출됐다 — [30]이 새 분포를 확정하면")
     L.append("> 재도출할 것. 그전 판정은 잠정이다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # [34] meta "size 0" 무시 상세 (MW0601 422차 후속)
+    L.append("## [34] meta \"size 0\" 무시 (MW0601 422차 후속)")
+    L.append("")
+    L.append("**모델이 \"베팅하지 마라\"고 한 신호로 실제 진입한 건**의 손익이다.")
+    L.append("`_make_result()`는 `conf < 0.5`에서 size를 **0.0**으로 내는데, 액션 밴드가 덮는다 —")
+    L.append("`reduce`는 `or 0.5`(→0.5), `take`는 `max(0.9, …)`(→**0.9**, 거의 풀사이즈).")
+    L.append("")
+    L.append("> **임계 0.5는 임의 상수가 아니다.** `conf`는 4급 품질레이블(Q0~Q3, 가중치 0/⅓/⅔/1)의")
+    L.append("> 기대값이고 `conf = ⅓(1−a)(1−h) + ⅔a(1−h) + a·h` 이다. **a=0.5를 넣으면 고신뢰비중**")
+    L.append("> **h와 무관하게 정확히 0.5** — 즉 `conf<0.5 ⟺ 적중률<50% 추정`이다.")
+    L.append("")
+    if msz.get("error"):
+        L.append("- ⚠ 조회 실패: `%s`" % msz.get("error"))
+        L.append("  (`ensemble_decisions.meta_size_raw` 미생성 — 422차 후속 배선 후 첫 기동 전이면 정상)")
+    else:
+        L.append("- 계측 시작: `%s` 이후 결정만 (그 이전은 raw 복원 불가 → NULL)"
+                 % (VALIDATION_CAMPAIGN.get("meta_size_zero_shadow", {}).get("effective_date", "—")))
+        L.append("- 미계측 %s건 / 계측 %s건 · 그중 raw==0 **%s건** (%.1f%%)"
+                 % (msz.get("unmeasured", 0), msz.get("measured", 0), msz.get("n", 0),
+                    float(msz.get("zero_share", 0) or 0) * 100))
+        L.append("")
+        L.append("| 밴드 | 왜곡 | raw0 진입 | 매칭 | 누적손익 | 평균 | 승률 | 거래일 | 음수일 |")
+        L.append("|---|---|---|---|---|---|---|---|---|")
+        for _b, _dist in (("reduce", "0.0→0.5"), ("take", "0.0→**0.9**"), ("_합계", "—")):
+            _v = (msz.get("bands") or {}).get(_b) or {}
+            L.append("| %s | %s | %s | %s | %s원 | %s원 | %.1f%% | %s | %s |" % (
+                _b, _dist, _v.get("n", 0), _v.get("matched", 0),
+                format(int(_v.get("total_pnl_krw", 0) or 0), ","),
+                format(int(_v.get("avg_pnl_krw", 0) or 0), ","),
+                float(_v.get("win_rate", 0) or 0) * 100,
+                _v.get("days", 0), _v.get("neg_days", 0)))
+        L.append("")
+    L.append("> **밴드를 합산해 읽지 말 것.** `take`의 왜곡(0.0→0.9)이 `reduce`(0.0→0.5)보다")
+    L.append("> 크다 — 한 숫자로 합치면 큰 왜곡이 작은 쪽에 희석된다. 합계 행은 판정용이지")
+    L.append("> 해석용이 아니다.")
+    L.append("> ")
+    L.append("> **판정 시 교란 3종을 반드시 함께 읽을 것** (settings `[34]` 주석):")
+    L.append("> (a) `recent_accuracy`가 meta 입력이라 conf는 **자기상관**을 갖는다 — \"size 0")
+    L.append("> 구간이 나빴다\"가 사전 판별력인지 나쁜 구간의 뭉침인지 구분되지 않는다.")
+    L.append("> (b) meta 학습 스트림에 **퇴역한 30m(20.8%)과 FLAT 예측(20~45%)이 혼입**된다")
+    L.append("> — conf 기준선이 그날 검증된 호라이즌 구성에 따라 흔들린다.")
+    L.append("> (c) LR이 `class_weight='balanced'`라 conf가 실제보다 **높게** 나올 수 있다")
+    L.append("> — `conf<0.5`는 오히려 보수적 추정일 수 있다.")
+    L.append("> ")
+    L.append("> FAIL이어도 **자동 전환 금지** — \"안 B\"(raw==0 → action skip 강등)는 액션 축")
+    L.append("> 변경이라 라이브 진입 동작이 바뀐다. §9 사전등록 원칙대로 주간회의 안건이다.")
     L.append("")
     L.append("---")
     L.append("")
