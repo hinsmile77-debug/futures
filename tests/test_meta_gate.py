@@ -1,4 +1,11 @@
 import os
+import sys
+
+# [423차] 422차 conftest와 동등한 2줄 중 sys.path 쪽이 빠져 있었다 — pytest 없이
+# `python tests/test_meta_gate.py`로 직접 실행하면 `config` import가 깨진다.
+# MW0602에는 pytest가 없어 이 줄이 없으면 아예 돌릴 수 없다.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 os.environ["MIREUK_TEST_MODE"] = "1"  # [422차] 프로덕션 로그·Slack 오염 차단 (utils/runtime_mode.py)
 
 import unittest

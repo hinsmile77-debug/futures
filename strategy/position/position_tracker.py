@@ -95,6 +95,11 @@ class PositionTracker:
         self.entry_extra_stop_mult: float = 1.0  # [349차] 급변장 사전 가드 스톱확대 배수
 
         self.stop_price:   float = 0.0
+        # [MW0602 423차] 스톱이 마지막으로 조여진 시각 — "유령 하드스톱" 차단용.
+        # is_stop_hit_intrabar()가 이 시각과 봉 시작시각을 비교해, 스톱을 조인
+        # 그 분봉의 고저가로는 봉중 판정을 하지 않는다(그 고저가는 조이기 이전에
+        # 형성된 값이라 새 스톱을 소급 적용하면 오판정이 된다).
+        self.stop_updated_at: Optional[datetime.datetime] = None
         self.tp1_price:    float = 0.0
         self.tp2_price:    float = 0.0
         self.tp3_price:    float = 0.0
@@ -180,6 +185,7 @@ class PositionTracker:
         self.entry_hurst_bucket = None
         self.entry_extra_stop_mult = 1.0
         self.stop_price = 0.0
+        self.stop_updated_at = None
         self.tp1_price = 0.0
         self.tp2_price = 0.0
         self.tp3_price = 0.0
@@ -283,6 +289,9 @@ class PositionTracker:
         _extra_stop_mult = self.entry_extra_stop_mult
         _stop_mult = _stop_mult * _extra_stop_mult
         self.stop_price = price - mult * atr * _stop_mult
+        # [423차] 진입(또는 레벨 재계산) 시각도 기록한다 — 진입 분봉의 고저가는
+        # 진입 이전 구간을 포함하므로, 그 봉의 봉중 판정 역시 유령이다.
+        self.stop_updated_at = now_kst()
         self.tp1_price  = price + mult * atr * _tp1_mult
         self.tp2_price  = price + mult * atr * _tp2_mult
         # [360차] 손절 계단화 1차 — entry~stop 사이 선형보간 50% 지점(진입 시 1회 계산,
@@ -734,6 +743,9 @@ class PositionTracker:
 
         if mult * (protected_stop - self.stop_price) > 0:
             self.stop_price = protected_stop
+            # [423차] 이 경로가 유령 하드스톱의 주 발생원 — 틱 핸들러가 분봉 도중
+            # 호출하므로 조이기 시각을 남겨 봉중 판정에서 그 봉을 배제한다.
+            self.stop_updated_at = now_kst()
 
         self.partial_1_done = True
         self._sync_partial_progress()
@@ -784,6 +796,9 @@ class PositionTracker:
 
         if mult * (protected_stop - self.stop_price) > 0:
             self.stop_price = protected_stop
+            # [423차] 이 경로가 유령 하드스톱의 주 발생원 — 틱 핸들러가 분봉 도중
+            # 호출하므로 조이기 시각을 남겨 봉중 판정에서 그 봉을 배제한다.
+            self.stop_updated_at = now_kst()
 
         self.partial_1_done = True
 
@@ -828,10 +843,17 @@ class PositionTracker:
         if self.status == POSITION_FLAT:
             return
 
+        _prev = self.stop_price
         self.trailing_anchor_price, self.stop_price = compute_trailing_stop_tier(
             self.entry_price, self.status, atr, current_price,
             self.trailing_anchor_price, self.stop_price,
         )
+        # [423차] 값이 실제로 바뀐 때만 시각을 갱신한다. 매분 호출되므로 무조건
+        # 찍으면 stop_updated_at이 항상 "이번 봉"이 되어 봉중 판정이 영구 무력화된다.
+        # 이 경로는 호출측 `_prev_stop_price`가 이미 되돌리고 있어 중복 방어지만,
+        # 틱 경로와 기준을 하나로 맞춰 두는 편이 이후 회귀에 안전하다.
+        if abs(self.stop_price - _prev) > 1e-9:
+            self.stop_updated_at = now_kst()
 
     def is_stop_hit(self, price: float) -> bool:
         if self.status == POSITION_FLAT:
@@ -840,15 +862,44 @@ class PositionTracker:
             return price <= self.stop_price
         return price >= self.stop_price
 
-    def is_stop_hit_intrabar(self, bar_low: float, bar_high: float, stop_price: float = None) -> bool:
+    def is_stop_hit_intrabar(
+        self,
+        bar_low: float,
+        bar_high: float,
+        stop_price: float = None,
+        bar_start: "Optional[datetime.datetime]" = None,
+    ) -> bool:
         """분봉 고저가로 스톱 히트 판단 — 종가 기준보다 빠른 감지 (Proposal D)
 
         stop_price를 명시하지 않으면 현재 self.stop_price를 사용한다. 봉 내에서
         트레일링 스톱이 이미 갱신된 뒤 호출하는 경우, 그 봉의 고저가는 갱신 전
         스톱 기준으로 형성된 것이므로 호출측에서 갱신 전 stop_price를 넘겨야
         "유령 하드스톱"(갱신된 스톱을 과거 고저가에 소급 적용)을 피할 수 있다.
+
+        [MW0602 423차] 위 `stop_price` 인자만으로는 **틱 경로가 조인 스톱**을 막지
+        못한다. 호출측(`_ts_check_exit_triggers`)의 `_prev_stop_price`는 그 함수
+        안에서 `update_trailing_stop()`이 조인 것만 되돌리는데, TP1 보호전환은
+        COM 틱 핸들러가 **함수 밖에서 비동기로** stop_price를 바꾸므로 그 시점엔
+        이미 조여진 값이 `_prev_stop_price`로 들어온다.
+
+        2026-08-03 실측: 비틱 `하드스톱` 청산 8건이 **전부** 이 경로였다. 예)
+        13:49:54 진입 SHORT@988.88 → 13:50:09 틱 TP1이 스톱을 991.00→988.53으로
+        조임 → 13:50:55 파이프라인이 분봉 13:50의 고가 988.94(≥988.53)로 히트
+        판정. 그 고가는 13:50:00~13:50:09 사이, **조이기 이전**에 찍힌 값이다.
+
+        그래서 `bar_start`(평가 대상 분봉의 시작시각)를 받아, 스톱이 그 봉 안에서
+        조여졌으면(`stop_updated_at >= bar_start`) 봉중 판정을 포기한다. 종가 기준
+        `is_stop_hit()`은 그대로 살아 있으므로 **진짜 스톱 히트를 놓치지 않는다** —
+        다음 봉부터는 새 스톱으로 정상 판정된다.
+        `bar_start`를 넘기지 않으면 종전과 완전히 동일하게 동작한다(하위호환).
         """
         if self.status == POSITION_FLAT:
+            return False
+        if (
+            bar_start is not None
+            and self.stop_updated_at is not None
+            and self.stop_updated_at >= bar_start
+        ):
             return False
         _stop = self.stop_price if stop_price is None else stop_price
         if self.status == POSITION_LONG:
@@ -1111,6 +1162,7 @@ class PositionTracker:
         self.entry_horizon = None
         self.entry_extra_stop_mult = 1.0
         self.stop_price = 0.0
+        self.stop_updated_at = None
         self.tp1_price = 0.0
         self.tp2_price = 0.0
         self.tp3_price = 0.0
@@ -1230,6 +1282,10 @@ class PositionTracker:
                 "entry_hurst_bucket": self.entry_hurst_bucket,
                 "entry_extra_stop_mult": self.entry_extra_stop_mult,
                 "stop_price":   self.stop_price,
+                # [423차] 유령 하드스톱 가드용 조이기 시각. 장중 재기동 시 이 값이
+                # 없으면 복원 직후 첫 봉에서 봉중 판정이 되살아나므로 함께 남긴다.
+                "stop_updated_at": (self.stop_updated_at.isoformat()
+                                    if self.stop_updated_at else None),
                 "tp1_price":    self.tp1_price,
                 "tp2_price":    self.tp2_price,
                 "tp3_price":    self.tp3_price,
@@ -1295,6 +1351,15 @@ class PositionTracker:
             self.entry_hurst_bucket = state.get("entry_hurst_bucket")
             self.entry_extra_stop_mult = float(state.get("entry_extra_stop_mult", 1.0) or 1.0)
             self.stop_price   = float(state.get("stop_price", 0))
+            # [423차] 구버전 상태파일에는 이 키가 없다 — None이면 가드가 비활성
+            # 되어 종전과 동일하게 동작한다(하위호환, 재기동 1회 한정 노출).
+            _sua_raw = state.get("stop_updated_at")
+            try:
+                self.stop_updated_at = (
+                    datetime.datetime.fromisoformat(_sua_raw) if _sua_raw else None
+                )
+            except (TypeError, ValueError):
+                self.stop_updated_at = None
             self.tp1_price    = float(state.get("tp1_price", 0))
             self.tp2_price    = float(state.get("tp2_price", 0))
             self.tp3_price    = float(state.get("tp3_price", 0))

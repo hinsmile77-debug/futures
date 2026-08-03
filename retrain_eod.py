@@ -355,22 +355,67 @@ def main():
         # CORE 3피처(cvd_divergence/vwap_position/ofi_norm) 분포를 PSI 기준선으로 저장.
         # 299차가 만든 "_try_bootstrap_baseline() 당일 50분 스냅샷" 임시방편을
         # 실제 WFA 학습분포로 대체 — main.py는 다음 재기동 시 이 파일을 읽어 사용.
+        # [MW0602 423차] 백필 행 제외 — PSI가 7거래일 연속 100% CRITICAL이던 근본원인.
+        #   `scripts/backfill_features.py:341`이 소급 생성 행에 박는 마커
+        #   `feature_quality_score == 0.3`을 기준으로 걸러낸다. 백필 행은 호가·수급이
+        #   없어 미시구조 피처를 0.0으로 채우는데(실측: 백필 24,824행의 ofi_norm이
+        #   100.0% 정확히 0.0, 라이브 15,176행은 1.6%), 그 행이 학습 모집단의 62%를
+        #   차지해 기준선에 거대한 0.0 점질량을 만든다. 그 결과 라이브 값이 정상
+        #   범위여도 그 한 개 빈에서만 PSI 기여가 2.73(임계 0.30의 9배)이 나온다.
+        #   371차가 균등폭→분위수 비닝으로 재설계했는데도 CRITICAL이 안 풀린 이유가
+        #   이것이다 — 비닝 방식이 아니라 **모집단**이 문제였다.
+        #   ⚠ 계측 전용 수정이다. `FP_CRITICAL_GRADE_BLOCK_ENABLED = False`이므로
+        #     라이브 진입 판단은 무변경이며, CLAUDE.md 실전전환기준 ⑦의 해제 조건
+        #     ("정상 구간에서 PSI가 오르내리는 것을 실측 확인")을 처음으로 시험 가능하게 한다.
+        _BACKFILL_QUALITY_MARKER = 0.3
         try:
-            from strategy.regime_fingerprint import get_fingerprint, _CORE_FEATURES
+            from strategy.regime_fingerprint import (
+                get_fingerprint, _CORE_FEATURES, _N_BINS,
+            )
+            # save_training_fingerprint()가 피처별로 요구하는 최소 표본(_N_BINS * 2)과
+            # 같은 기준. 이 아래로 떨어지면 그 피처가 통째로 스킵돼 기준선이 빈다.
+            _N_BINS_MIN_ROWS = _N_BINS * 2
             _core_idx = {
                 f: feature_names.index(f)
                 for f in _CORE_FEATURES
                 if f in feature_names
             }
             if len(_core_idx) == len(_CORE_FEATURES):
+                _q_idx = (
+                    feature_names.index("feature_quality_score")
+                    if "feature_quality_score" in feature_names else None
+                )
+                _all_rows = list(range(X.shape[0]))
+                if _q_idx is None:
+                    _rows, _excluded = _all_rows, 0
+                    log.warning(
+                        "[RegimeFingerprint] feature_quality_score 미포함 — 백필 행 제외 불가, "
+                        "전체 %d행으로 기준선 생성(PSI가 과대평가될 수 있음)", len(_all_rows),
+                    )
+                else:
+                    _rows = [
+                        i for i in _all_rows
+                        if abs(float(X[i, _q_idx]) - _BACKFILL_QUALITY_MARKER) > 1e-9
+                    ]
+                    _excluded = len(_all_rows) - len(_rows)
+                    # 안전판: 백필이 과반이라 필터 후 표본이 히스토그램 최소요건에
+                    # 못 미치면 기준선을 아예 못 만든다 — 그 경우 전체로 되돌린다.
+                    if len(_rows) < _N_BINS_MIN_ROWS:
+                        log.warning(
+                            "[RegimeFingerprint] 백필 제외 후 %d행뿐(최소 %d) — "
+                            "전체 %d행으로 폴백",
+                            len(_rows), _N_BINS_MIN_ROWS, len(_all_rows),
+                        )
+                        _rows, _excluded = _all_rows, 0
                 _wfa_features = [
                     {f: float(X[i, idx]) for f, idx in _core_idx.items()}
-                    for i in range(X.shape[0])
+                    for i in _rows
                 ]
                 get_fingerprint().save_training_fingerprint(_wfa_features)
                 log.info(
-                    "[RegimeFingerprint] 학습분포 갱신 완료 — %d행 기준 (CORE 3피처 전부 확보)",
-                    len(_wfa_features),
+                    "[RegimeFingerprint] 학습분포 갱신 완료 — %d행 기준 "
+                    "(전체 %d행 중 백필 %d행 제외, CORE 3피처 전부 확보)",
+                    len(_wfa_features), X.shape[0], _excluded,
                 )
             else:
                 log.warning(
