@@ -292,6 +292,50 @@ def analyze_feature(by_day, n_perm, rng):
     }
 
 
+def readiness(since="2026-06-01", fast_max_sec=None):
+    """[421차 후속10] **재실행 시점 게이지** — 순열 없이 즉시 계산한다.
+
+    Phase A가 BH 통과 0개로 끝난 뒤 "언제 다시 돌릴 것인가"를 사람이 기억하지 않아도
+    되게 하는 함수다. 캠페인 리포트가 매주 이걸 호출해 게이지를 찍고, 임계에 닿으면
+    배너를 띄운다(별도 캘린더를 만들지 않는다 — CLAUDE.md 주기적 재검증 규약).
+
+    **유효 거래일**이 핵심 지표다. 일자 내 순열검정은 FAST와 OK가 **둘 다 있는 날**만
+    정보를 내므로, 전체 거래일이 아니라 그 교집합이 실질 표본이다(초판 12일 중 7일).
+    실측 병목도 FAST 건수(7.0건/주)가 아니라 유효 거래일(2.4일/주)이었다.
+    """
+    if fast_max_sec is None:
+        fast_max_sec = FAST_MAX_SEC
+    cfg = VALIDATION_CAMPAIGN.get("faststop_rerun_watch") or {}
+    pos = load_positions(since, fast_max_sec)
+    if not pos:
+        return {"error": "포지션 없음"}
+
+    by_day = {}
+    for p in pos:
+        d = by_day.setdefault(p["day"], [0, 0])
+        d[0] += 1
+        if p["label"] == 0:
+            d[1] += 1
+    useful = [d for d, (n, f) in by_day.items() if 0 < f < n]
+    n_fast = sum(1 for p in pos if p["label"] == 0)
+
+    out = {
+        "n_positions": len(pos), "n_fast": n_fast,
+        "n_days": len(by_day), "n_useful_days": len(useful),
+        "last_run": cfg.get("last_run_date", "—"),
+        "fast_max_sec": fast_max_sec,
+    }
+    for tag in ("interim", "full"):
+        t = cfg.get(tag) or {}
+        need_f, need_d = int(t.get("min_fast", 0)), int(t.get("min_useful_days", 0))
+        out[tag] = {
+            "min_fast": need_f, "min_useful_days": need_d,
+            "fast_ok": n_fast >= need_f, "days_ok": len(useful) >= need_d,
+            "reached": (n_fast >= need_f) and (len(useful) >= need_d),
+        }
+    return out
+
+
 def bh_fdr(results, q):
     """Benjamini-Hochberg — 통과한 항목에 rank/threshold를 표시한다."""
     ordered = sorted(results, key=lambda r: r["p"])
