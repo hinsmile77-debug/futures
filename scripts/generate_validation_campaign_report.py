@@ -3461,6 +3461,22 @@ def eval_toxicity_reduce_mult_shadow() -> dict:
         "applied_mult_const": 0.7,
     })
 
+    # [MW0601 421차] 앵커 신선도 — 앵커를 도출한 ceiling과 현행 ceiling이 다르면
+    # 밴드 분포가 또 이동했다는 뜻이라 shadow_mult_mean 해석이 무의미해진다.
+    # 420차 tox_regime_date 불일치 감지와 동일 취지 — **자동 수정은 하지 않는다**.
+    from config.settings import TOXICITY_CANCEL_CHURN_CEILING as _cur_ceil
+    _cfg = VALIDATION_CAMPAIGN.get("toxicity_reduce_mult_shadow", {}) or {}
+    _anchor_ceil = _cfg.get("anchor_ceiling")
+    if _anchor_ceil is not None and abs(
+            float(_anchor_ceil) - float(_cur_ceil)) > 1e-9:
+        out["anchor_stale"] = (
+            "⚠ 앵커 낡음 — anchor_ceiling=%s 로 도출했으나 현행 "
+            "TOXICITY_CANCEL_CHURN_CEILING=%s. scripts/"
+            "toxicity_reduce_mult_anchor_rederive.py 재실행 후 HI/LO와 "
+            "anchor_ceiling/anchor_date를 함께 갱신할 것."
+            % (_anchor_ceil, _cur_ceil))
+    out["anchor_date"] = _cfg.get("anchor_date", "—")
+
     # 실현 손익 병기 — trades와 entry_ts 조인(판정에는 쓰지 않는다, 참고용).
     # 이 테이블은 상한 없이 누적되므로 IN 절을 청크로 쪼갠다 — SQLite 기본
     # SQLITE_MAX_VARIABLE_NUMBER(999)를 넘으면 "too many SQL variables"로 죽는다.
@@ -6293,12 +6309,20 @@ def build_report(days: int) -> tuple:
             (" (trades 조인 %s건, 실현손익 합 %s원)" % (
                 trm["matched_trades"], format(trm.get("total_pnl_krw", 0), ",.0f")))
             if trm.get("matched_trades") else ""))
+        if trm.get("anchor_stale"):
+            L.append("- %s" % trm["anchor_stale"])
         if "shadow_mult_mean" in trm:
             L.append("- 섀도 배수 분포: min=%s / p50=%s / max=%s, **평균=%s** (실적용 상수 0.70)"
                      % (trm["shadow_mult_min"], trm["shadow_mult_p50"],
                         trm["shadow_mult_max"], trm["shadow_mult_mean"]))
             L.append("  - 평균이 0.70에서 크게 벗어나면 **노출 중립 설계가 깨진 것**이다 —")
             L.append("    앵커(`TOXICITY_REDUCE_MULT_SHADOW_HI/LO`) 재도출 필요.")
+            L.append("  - 현행 앵커 도출일: **%s** (421차 재도출, HI=0.81/LO=0.36)."
+                     " 이 날짜 이전 표본은 구 앵커(0.90/0.45)로 계산된 값이라 섞어"
+                     " 읽지 말 것." % trm.get("anchor_date", "—"))
+            L.append("  - ⚠ 이 평균은 **게이트 이벤트** 모집단이다. 앵커 도출에 쓴")
+            L.append("    **봉** 모집단과 값이 다르다(08-03 실측 0.8205 vs 0.7894) —")
+            L.append("    절대값 판정이 아니라 추세 감시용으로 읽을 것.")
         if "divergent_qty_share" in trm:
             L.append("- tox 스테이지에서 수량이 달라진 진입: **%s/%s (%.1f%%)** (기준 %.0f%%)"
                      % (trm["divergent_qty_n"], trm["n_samples"],
