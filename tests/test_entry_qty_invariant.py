@@ -25,6 +25,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+os.environ["MIREUK_TEST_MODE"] = "1"  # [422차] 프로덕션 로그·Slack 오염 차단 (utils/runtime_mode.py)
+
 from config.constants import POSITION_LONG, POSITION_SHORT
 from strategy.position.position_tracker import PositionTracker
 

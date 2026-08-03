@@ -1,3 +1,6 @@
+import os
+os.environ["MIREUK_TEST_MODE"] = "1"  # [422차] 프로덕션 로그·Slack 오염 차단 (utils/runtime_mode.py)
+
 import unittest
 
 from config.constants import DIRECTION_FLAT
