@@ -6270,6 +6270,49 @@ def build_report(days: int) -> tuple:
     L.append("> 근거: [23] tp1_geometry_shadow에서 이미 PC간 부호 역전 전례가 있다.")
     L.append("")
 
+    # [33] 급행풀스톱 발굴 재실행 게이지 (MW0601 421차 후속10)
+    # 판정 채널이 아니다 — Phase A를 언제 다시 돌릴지 사람이 기억하지 않아도 되게 하는
+    # 알림이다. 별도 캘린더 신설 금지 규약(CLAUDE.md 주기적 재검증 절)에 따라 여기 얹는다.
+    L.append("## [33] 급행풀스톱 판별자 발굴 — 재실행 게이지 (421차 후속10, 알림 전용)")
+    L.append("")
+    try:
+        from scripts.faststop_discovery import readiness as _fs_ready
+        _fs = _fs_ready()
+    except Exception as _e:
+        _fs = {"error": "게이지 계산 실패: %s" % _e}
+    if _fs.get("error"):
+        L.append("> ⚠ %s" % _fs["error"])
+    else:
+        L.append("- 마지막 Phase A 실행: **%s** (결과: BH FDR 10% 통과 0개)"
+                 % _fs.get("last_run", "—"))
+        L.append("- 현재 표본: 포지션 %d / FAST **%d** / 거래일 %d (그중 **유효 %d일**)"
+                 % (_fs["n_positions"], _fs["n_fast"], _fs["n_days"], _fs["n_useful_days"]))
+        L.append("")
+        L.append("| 트리거 | FAST | 유효 거래일 | 도달 |")
+        L.append("|---|---|---|---|")
+        for _tag, _lbl in (("interim", "중간(재실행 검토)"), ("full", "본(재실행 권고)")):
+            _t = _fs.get(_tag) or {}
+            L.append("| %s | %d / %d %s | %d / %d %s | %s |" % (
+                _lbl, _fs["n_fast"], _t.get("min_fast", 0), "✅" if _t.get("fast_ok") else "…",
+                _fs["n_useful_days"], _t.get("min_useful_days", 0),
+                "✅" if _t.get("days_ok") else "…",
+                "🔔 **도달**" if _t.get("reached") else "—"))
+        L.append("")
+        if (_fs.get("full") or {}).get("reached"):
+            L.append("> 🔔 **본 트리거 도달 — `python scripts/faststop_discovery.py --perm 20000`")
+            L.append("> 재실행 후 `faststop_rerun_watch.last_run_date`를 갱신할 것.**")
+        elif (_fs.get("interim") or {}).get("reached"):
+            L.append("> 🔔 **중간 트리거 도달 — 재실행 검토 시점이다.** 본 트리거까지")
+            L.append("> 기다릴지 지금 한 번 돌려볼지 주간회의에서 판단할 것.")
+        else:
+            L.append("> 아직 두 트리거 모두 미도달 — 표본 축적 중. **조치 불필요.**")
+    L.append("")
+    L.append("> **유효 거래일**이 병목이다 — 일자 내 순열검정은 FAST와 OK가 **둘 다 있는")
+    L.append("> 날**만 정보를 내므로 전체 거래일이 아니라 그 교집합이 실질 표본이다")
+    L.append("> (초판 12일 중 7일). 실측 속도도 FAST 7.0건/주 vs 유효거래일 2.4일/주였다.")
+    L.append("> 판정 채널이 아니므로 verdict를 내지 않는다.")
+    L.append("")
+
     # [30] toxicity 재보정 밴드분포 상세 (MW0601 419차)
     L.append("## [30] toxicity_score 재보정 후 밴드 분포 (MW0601 419차, P0)")
     L.append("")
