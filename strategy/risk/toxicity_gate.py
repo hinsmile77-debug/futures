@@ -28,8 +28,11 @@ class ToxicityGate:
         # [MW0601 419차 / P1 섀도] reduce 밴드 연속 배수 앵커 — config.settings의
         # TOXICITY_REDUCE_MULT_SHADOW_HI/_LO. **섀도 전용**: size_multiplier_shadow
         # 키로 병기만 하고 실제 size_multiplier(상수 0.7)에는 관여하지 않는다.
-        reduce_mult_shadow_hi: float = 0.90,
-        reduce_mult_shadow_lo: float = 0.45,
+        # [MW0601 421차] 419차 P0 반영 후 재도출 — 0.90/0.45 → 0.81/0.36.
+        # 라이브는 main.py가 config.settings 값을 주입하므로 이 기본값은 폴백이지만,
+        # 단위테스트·오프라인 재생이 구값으로 굴러 결론이 갈리지 않도록 동기화한다.
+        reduce_mult_shadow_hi: float = 0.81,
+        reduce_mult_shadow_lo: float = 0.36,
     ):
         self.block_threshold = block_threshold
         self.reduce_threshold = reduce_threshold
@@ -56,9 +59,14 @@ class ToxicityGate:
         reduce 진입 조건이 둘의 OR이므로, ma로만 진입한 분봉을 score 기준으로
         보간하면 밴드 하단에 잘못 붙는다.
 
-        앵커는 노출 중립으로 골랐다(실측 밴드 분포 n=1,703에서 평균 0.6932 =
-        현행 0.70 대비 -1.0%). 총 노출을 고정해야 나중에 손익이 바뀌었을 때
-        그것이 등급화 덕인지 노출 증가 탓인지 분리할 수 있다.
+        앵커는 노출 중립으로 골랐다 — reduce 밴드 평균 배수가 실적용 상수 0.70과
+        같아야 한다. 총 노출을 고정해야 나중에 손익이 바뀌었을 때 그것이 등급화
+        덕인지 노출 증가 탓인지 분리할 수 있다.
+
+        [MW0601 421차] 419차 P0(cancel ceiling 0.08→0.42)가 밴드 분포를 옮겨
+        구 앵커(0.90/0.45)의 평균이 0.7894(+12.8%)로 이탈 → 0.81/0.36으로 재도출.
+        span(등급화 강도) 0.45는 고정하고 수준만 옮겼다. 도출 근거와 재실행 방법은
+        config/settings.py의 TOXICITY_REDUCE_MULT_SHADOW_HI 주석 참조.
         """
         span = self.block_threshold - self.reduce_threshold
         if span <= 0:
