@@ -9,6 +9,7 @@ import datetime
 import logging
 
 from config.settings import SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_PC_NAME
+from utils.runtime_mode import is_test_mode
 from utils.slack_queue import get_slack_queue
 
 logger = logging.getLogger("SYSTEM")
@@ -35,6 +36,12 @@ def is_slack_enabled() -> bool:
 def _send(message: str, channel: str = None) -> None:
     """Slack 큐에 메시지 추가 (비동기, 워커 스레드가 순차 처리)."""
     if not _SLACK_ENABLED:
+        return
+    # [MW0601 422차] 테스트 실행이 실제 Slack 큐에 적재하지 않도록 차단.
+    # 08-03 장전 CB 허위 알림 30건의 세 번째 오염 경로였다
+    # (나머지 둘은 utils/logger.py:setup_logging()에서 차단).
+    # 명시적 opt-in(MIREUK_TEST_MODE)만 인정 — utils/runtime_mode.py 참조.
+    if is_test_mode():
         return
     try:
         q = get_slack_queue(token=SLACK_BOT_TOKEN, default_channel=SLACK_CHANNEL_ID)

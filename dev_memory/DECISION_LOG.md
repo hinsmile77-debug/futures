@@ -2,6 +2,112 @@
 
 ---
 
+## 2026-08-03 (MW0601 422차 — 장전 CB 허위 알림 30건: 단위 테스트가 프로덕션 로그·알림을 오염)
+
+**지시**: 0803 정기점검 P0(장전 CB 허위 알림 제거) 딥다이브 → 구현계획 → 구현.
+
+### 1. [발견] 무엇이 이상했나
+
+`20260803_SYSTEM.log` 최상단 07:36:58~08:05:03에 CRITICAL 6종이 **5회, 총 30건**:
+
+```
+[CB] 당일 시스템 정지 | 연속 손절 3회 — 당일 정지
+[CB] API 지연 6.0초 — 즉시 청산        (조치: 전 포지션 즉시 청산 / 5분 진입 정지 2건)
+[CB] 파이프라인 6000ms 지연            (조치: 5분 진입 정지 2건)
+[CB] 신호 반전 5회/분                  (조치: 15분 진입 정지)
+```
+
+그런데 **장중 370분은 전부 `state=NORMAL`이고 실제 CB 발동은 0건**이었다
+(`20260803_DEBUG.log`의 `[DBG-CB]` 370줄 전수 확인).
+
+### 2. [근본원인] `tests/test_circuit_breaker.py`
+
+결정적 단서는 **"연속 손절 3회"** 문구였다. 운영값은
+`CB_CONSEC_STOP_LIMIT = 9999`(모의투자 한정 예외, CLAUDE.md 절대원칙 §2)라
+**진짜 트리거는 그 문구를 만들 수 없다**. 모듈 상수를 3으로 patch하는 곳은
+테스트뿐이다. 대조 결과 5개 테스트가 정확히 6건의 CRITICAL + 1건의 WARNING을
+만들고, 5회 실행 = **30건 CRITICAL**로 로그 실측과 완전히 일치했다
+(WARN.log의 `파이프라인 1500ms` 10건 · `6000ms` 10건도 5회 × 2줄로 일치).
+
+이 테스트는 실제 `CircuitBreaker`를 구동하는데, CB의 알림·로그 경로가
+프로덕션 싱글톤이라 **3개 경로로 실제 부작용**이 나갔다:
+
+| # | 경로 | 오염 대상 |
+|---|---|---|
+| 1 | `logger.critical/warning` (`logging.getLogger("SYSTEM")`) | `YYYYMMDD_SYSTEM.log` / `WARN.log` |
+| 2 | `log_manager.system(msg,"CRITICAL")` → `_write_to_file` → `get_logger()` | 동일 파일 |
+| 3 | `notify_circuit_breaker()` → `utils.notify._send()` | Slack 큐 |
+
+### 3. [평가] 손익 영향 없음 — 위험은 관측 신뢰도다
+
+거래·사이징·게이트 어디에도 영향이 없다(별도 프로세스, 장 시작 전). 위험은
+**진짜 CB 발동이 이 노이즈에 묻히는 것**이고, 실전 전환 기준 ②(CB 1회 이상
+정상 작동 확인)가 정확히 이 관측에 의존한다.
+
+### 4. [설계] 차단점 1곳 + 명시적 opt-in
+
+`utils/logger.py:setup_logging()`이 **이 프로젝트의 모든 로그 파일 핸들러가
+생기는 유일한 지점**이다. 여기 하나만 막으면 경로 1·2가 동시에 끊긴다.
+경로 3은 `notify._send()` 한 곳.
+
+**자동 감지(`"pytest" in sys.modules`, `sys.argv` 패턴 등)는 쓰지 않기로 했다 —
+재론 시 근거 필요.** 오탐 한 번이면 **프로덕션에서 CB 경보가 통째로 침묵**하는데,
+그것은 지금 고치는 문제(노이즈)보다 훨씬 나쁜 실패 모드다. 판별은
+`MIREUK_TEST_MODE` 환경변수 **명시적 opt-in만** 인정하고, 변수가 없으면 언제나
+프로덕션으로 판정한다(fail-safe 방향 = 프로덕션).
+
+### 5. [구현]
+
+- **신설** `utils/runtime_mode.py` — `is_test_mode()` / `enable_test_mode()`.
+  프로젝트 내부 import 없음(로그 초기화보다 앞서야 해 순환 차단).
+- `utils/logger.py` — `setup_logging()`에 테스트 분기(`_setup_null_logging()`:
+  NullHandler + `propagate=False`). 추가로 **import 시점 즉시 초기화** —
+  `circuit_breaker.py`처럼 모듈 최상단에서 `logging.getLogger()`를 직접 잡는 코드는
+  `get_logger()`를 거치지 않아 첫 로그가 지연 초기화 **전에** 발생하고, 그러면
+  `logging.lastResort`가 stderr로 뱉어 런처 리다이렉션에 걸린다.
+  겸사겸사 레이어 목록을 `_ALL_LAYERS` 상수로 뽑아 두 분기가 같은 목록을 보게 했다.
+- `utils/notify.py` — `_send()` 테스트 모드 차단.
+- **신설** `tests/conftest.py` — pytest 실행 시 자동(테스트 모듈보다 먼저 로드).
+- 테스트 5개 파일 상단 2줄 — `python tests/test_x.py` 직접 실행 대비(두 겹 방어).
+  `test_circuit_breaker.py`는 `sys.path` 삽입도 추가해 직접 실행이 되게 했다
+  (원래 `ModuleNotFoundError: config`로 직접 실행 자체가 불가였다).
+- **신설 회귀 테스트** `tests/test_log_isolation.py` (5건) — 421차
+  `test_entry_qty_invariant.py`와 같은 취지. 가드가 제거되면 즉시 깨진다.
+
+### 6. [검증]
+
+```
+pytest tests/  →  20 passed        (기존 15 + 신규 5)
+직접 실행       →  5 passed
+로그 증가분     →  SYSTEM 0줄 / WARN 0줄 (실행 전후 6266·1141 불변)
+프로덕션 배선   →  MIREUK_TEST_MODE 부재 시 SYSTEM=[File,File,Stream] 그대로
+```
+
+**A/B 역검증(임시 LOG_DIR 격리)** — 가드 유무만 바꿔 같은 CB 발동을 재현:
+
+| 모드 | CB 상태 | 생성 파일 | 로그 줄 |
+|---|---|---|---|
+| `noguard` (수정 전 재현) | HALTED | **11개** | **8줄** |
+| `guard` (수정 후) | HALTED | 0개 | 0줄 |
+
+양쪽 다 `HALTED` — **가드가 검증 대상 로직을 무력화하지 않는다**는 것이 핵심이다.
+
+⚠ 첫 역검증 시도는 무효였다(기록으로 남김): 실행 중 `MIREUK_TEST_MODE`를 0으로
+바꿔도 `setup_logging()`이 이미 `_initialized=True`라 반영되지 않아 "가드 없어도
+통과"로 잘못 나왔다. 로그 초기화는 프로세스당 1회이므로 **A/B는 반드시 별도
+프로세스로** 할 것.
+
+### 7. [남은 것]
+
+- 테스트가 **왜 5회나** 07:36~08:05에 돌았는지는 미확인(IDE 자동 실행 추정).
+  원인이 아니라 증상 경로를 막은 것이므로 재발해도 이제 무해하다.
+- 새 테스트 추가 시 상단 2줄을 함께 넣을 것 — pytest 경로는 conftest가 덮지만
+  직접 실행은 덮지 못한다.
+
+**관련**: 0803 정기점검 P0, CLAUDE.md 실전 전환 기준 ②, 421차(회귀 테스트 패턴).
+
+---
+
 ## 2026-08-03 (MW0601 421차 후속9 / Phase A — 급행풀스톱 판별자 발굴: **전멸**)
 
 **지시**: 후속7 계획서의 Phase A(`scripts/faststop_discovery.py`) 구현·착수.

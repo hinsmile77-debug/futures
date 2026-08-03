@@ -1,8 +1,29 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+os.environ["MIREUK_TEST_MODE"] = "1"  # [422차] 프로덕션 로그·Slack 오염 차단 — 아래 주석 참조
+
 import unittest
 from unittest.mock import patch
 
 from config.constants import CB_STATE_HALTED, CB_STATE_PAUSED
 from safety.circuit_breaker import CircuitBreaker
+
+# [MW0601 422차] 맨 위 2줄은 **프로젝트 import보다 먼저** 와야 한다.
+#
+# 이 테스트는 실제 CircuitBreaker를 구동하므로 CB의 알림·로그 경로가 그대로
+# 실행된다. 2026-08-03 장전에 이 파일이 5회 실행되며 프로덕션 로그에 CRITICAL
+# CB 알림 30건(`연속 손절 3회`, `API 지연 6.0초` 등)을 남겼다 — 장중 실제 CB
+# 발동은 0건이었는데도. 진짜 CB 발동이 그 노이즈에 묻히는 것이 위험이다.
+#
+# `MIREUK_TEST_MODE`는 utils/logger.py:setup_logging()(로그 파일 핸들러 생성의
+# 유일한 지점)과 utils/notify.py:_send()(Slack 큐)를 무력화한다. CB 상태 전이
+# 로직 자체는 그대로 실행되므로 아래 단언은 영향받지 않는다.
+# pytest로 돌리면 tests/conftest.py가 같은 일을 하지만, `python tests/
+# test_circuit_breaker.py` 직접 실행은 conftest를 로드하지 않아 여기서 막는다.
+# 상세: utils/runtime_mode.py
 
 
 class CircuitBreakerTests(unittest.TestCase):

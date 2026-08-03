@@ -16,6 +16,7 @@ import os
 from datetime import date
 
 from config.settings import BASE_DIR, LOG_DIR, LOG_LEVEL, LOG_FORMAT, LOG_DATE_FORMAT
+from utils.runtime_mode import is_test_mode
 
 
 # ── 로거 이름 상수 ─────────────────────────────────────────────
@@ -55,6 +56,35 @@ def _log_file(layer: str) -> str:
     return os.path.join(LOG_DIR, f"{today}_{layer}.log")
 
 
+#: setup_logging()이 파일 핸들러를 붙이는 전체 레이어 목록.
+#: 테스트 모드 분기와 프로덕션 분기가 **같은 목록**을 봐야 한 쪽만 갱신되는
+#: 표류가 생기지 않으므로 모듈 상수로 뽑아 둔다.
+_ALL_LAYERS = [
+    LAYER_SYSTEM, LAYER_SIGNAL, LAYER_TRADE, LAYER_LEARNING, LAYER_DEBUG,
+    LAYER_DATA, LAYER_PROBE, LAYER_HOGA, LAYER_MICRO, LAYER_HEALTH,
+]
+
+
+def _setup_null_logging():
+    """[MW0601 422차] 테스트 모드 — 파일·콘솔 핸들러를 일절 만들지 않는다.
+
+    `setup_logging()`은 이 프로젝트에서 **모든 로그 파일 핸들러가 생기는
+    유일한 지점**이다. 따라서 여기 한 곳만 막으면 08-03 장전 CB 허위 알림의
+    오염 경로 두 개(직접 `logger.critical` / `log_manager._write_to_file`)가
+    동시에 끊긴다. 상세 경위는 `utils/runtime_mode.py` 참조.
+
+    NullHandler + propagate=False로 두는 이유: 핸들러가 하나도 없으면 logging이
+    lastResort로 WARNING 이상을 stderr에 뱉어 테스트 출력이 지저분해지고,
+    propagate를 열어두면 상위(root)에 누가 핸들러를 붙였을 때 다시 새어나간다.
+    로거 객체 자체는 정상 반환되므로 CB 상태 전이 로직은 그대로 검증된다.
+    """
+    for layer in _ALL_LAYERS + [LAYER_WARN]:
+        logger = logging.getLogger(layer)
+        logger.handlers[:] = []          # 이미 붙은 핸들러가 있으면 제거
+        logger.addHandler(logging.NullHandler())
+        logger.propagate = False
+
+
 def setup_logging():
     """로그 시스템 초기화 (1회만 호출)"""
     global _initialized
@@ -62,13 +92,17 @@ def setup_logging():
         return
     _initialized = True
 
+    # [MW0601 422차] 테스트 실행은 프로덕션 로그 파일을 오염시키지 않는다.
+    # 명시적 opt-in(MIREUK_TEST_MODE)만 인정 — 자동 감지를 쓰지 않는 이유는
+    # utils/runtime_mode.py 참조(오탐 시 프로덕션 CB 경보 침묵).
+    if is_test_mode():
+        _setup_null_logging()
+        return
+
     os.makedirs(LOG_DIR, exist_ok=True)
     formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
 
-    layers = [LAYER_SYSTEM, LAYER_SIGNAL, LAYER_TRADE, LAYER_LEARNING, LAYER_DEBUG,
-              LAYER_DATA, LAYER_PROBE, LAYER_HOGA, LAYER_MICRO, LAYER_HEALTH]
-
-    for layer in layers:
+    for layer in _ALL_LAYERS:
         logger = logging.getLogger(layer)
         # DEBUG·PROBE 레이어는 항상 DEBUG 레벨 — 다른 레이어는 settings.LOG_LEVEL 사용
         logger.setLevel(logging.DEBUG if layer in (LAYER_DEBUG, LAYER_PROBE, LAYER_HOGA, LAYER_MICRO) else LOG_LEVEL)
@@ -115,6 +149,20 @@ def get_logger(layer: str = LAYER_DEBUG) -> logging.Logger:
     if not _initialized:
         setup_logging()
     return logging.getLogger(layer)
+
+
+# [MW0601 422차] 테스트 모드는 **import 시점에 즉시** null 초기화한다.
+#
+# setup_logging()은 원래 첫 get_logger() 호출에서 지연 실행된다. 그런데
+# safety/circuit_breaker.py처럼 모듈 최상단에서 `logging.getLogger("SYSTEM")`을
+# 직접 잡아 쓰는 코드는 get_logger()를 거치지 않으므로, 그 첫 logger.warning()이
+# 초기화 **전에** 발생한다. 그러면 핸들러가 하나도 없어 logging.lastResort가
+# WARNING 이상을 stderr로 뱉고, 그 stderr가 런처 리다이렉션에 걸리면 결국
+# 파일에 남는다 — 08-03에 고치려던 것과 같은 종류의 누출이다.
+#
+# 프로덕션에는 영향이 없다(is_test_mode()가 False면 아무 일도 하지 않는다).
+if is_test_mode():
+    setup_logging()
 
 
 # ── 편의 함수 ──────────────────────────────────────────────────

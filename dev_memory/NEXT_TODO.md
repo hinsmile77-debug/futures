@@ -8,6 +8,44 @@
 
 ---
 
+### 422차 — 장전 CB 허위 알림 차단 라이브 검증 (2026-08-04 화)
+
+**구현은 오프라인 검증만 마쳤다** — 419·420·421차와 같은 미검증 지점이 있다.
+
+- [ ] **08-04 장전 로그에 CB CRITICAL이 없는가** — 이번 수정의 진짜 확인 지점.
+      `grep -c "Circuit Breaker 발동" logs/20260804_SYSTEM.log` → **0이어야 정상**.
+      0이 아니면 (a) 테스트가 `MIREUK_TEST_MODE` 없이 도는 경로가 또 있거나
+      (b) **진짜 CB 발동**이다 — 후자면 `[DBG-CB] state=`를 함께 볼 것.
+      ※ 08-03에는 30건이었다(07:36·07:40·08:00·08:03·08:05 각 6건).
+- [ ] **프로덕션 로그가 정상적으로 쌓이는가** — 가드의 실패 모드는 "안 막힘"이
+      아니라 **"과하게 막힘"**이다. 08-04 기동 후 `20260804_SYSTEM.log`·`WARN.log`·
+      `TRADE.log`가 평소 크기로 늘어나는지 확인. 비정상적으로 작으면
+      `MIREUK_TEST_MODE`가 어딘가에서 켜진 채 프로덕션이 뜬 것이므로 즉시 확인할 것
+      (`python -c "import os;print(os.environ.get('MIREUK_TEST_MODE'))"` → None이어야 정상).
+- [ ] **Slack 큐 정상 동작** — 현재 Slack 알림은 사용자 결정으로 보류 상태라
+      (`feedback_slack_notify_deprioritized`) 실사용 확인은 불가. `_send()`의
+      테스트 가드가 프로덕션에서 `is_test_mode()=False`를 받는 것만 확인됐다.
+
+**하지 않기로 한 것 (재론 시 근거 필요)**
+
+- **자동 테스트 감지**(`"pytest" in sys.modules` / `sys.argv` 패턴매칭 등): 오탐 시
+  프로덕션 CB 경보가 통째로 침묵한다 — 지금 고친 노이즈보다 훨씬 나쁜 실패 모드다.
+  `MIREUK_TEST_MODE` 명시적 opt-in만 인정한다. 상세: `utils/runtime_mode.py`.
+- **테스트가 5회 실행된 원인 추적**: 증상 경로를 막았으므로 재발해도 무해하다.
+  원인(IDE 자동 실행 추정)을 쫓는 것은 비용 대비 효용이 없다.
+- **`log_manager`에 별도 가드 추가**: `_write_to_file`은 `get_logger()`를 거치므로
+  `setup_logging()` 한 곳에서 이미 끊긴다. 두 곳에 두면 한쪽만 갱신되는 표류가 생긴다.
+
+**새 테스트를 추가할 때** — 파일 상단에 아래 2줄을 프로젝트 import보다 **먼저** 둘 것.
+pytest는 `tests/conftest.py`가 덮지만 `python tests/test_x.py` 직접 실행은 못 덮는다.
+
+```python
+import os
+os.environ["MIREUK_TEST_MODE"] = "1"  # 프로덕션 로그·Slack 오염 차단
+```
+
+---
+
 ### 420차 후속 — JointGateBlock 계측 보강 라이브 검증 (2026-08-03 월 / 08-07 금)
 
 **420차 검증도 전부 오프라인이다** — 419차와 같은 미검증 지점이 있다.
