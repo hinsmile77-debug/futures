@@ -85,13 +85,43 @@
 
 ---
 
+### 421차 후속 — entry_qty 필드 분리 라이브 검증 (2026-08-04 화 / 08-07 금)
+
+**오늘 수정은 오프라인 검증만 마쳤다** — 419·420차와 같은 미검증 지점이 있다.
+
+- [ ] **08-03 잔여 오염 재검** — 오늘 13:20 v9-dev 반영 시점에 실행 중이던
+      프로세스는 **구코드로 계속 돌았다**(모듈을 08:40에 로드). 따라서 13:20 이후
+      손절1차가 또 발생했다면 그 행은 여전히 잘못 기록된다.
+      `SELECT entry_ts, direction, COUNT(*) legs, SUM(quantity) qty_sum,
+       GROUP_CONCAT(entry_qty) eqs FROM trades WHERE entry_qty IS NOT NULL
+       GROUP BY entry_ts, direction` — `eqs`가 서로 다르거나 `qty_sum`과 다르면 정정.
+- [ ] **08-04 첫 손절1차 포지션에서 레그별 entry_qty가 동일한가** — 이번 수정의
+      진짜 라이브 검증 지점이다. qty>=2 진입이 손절1차를 거쳐야 관측되므로
+      **며칠 걸릴 수 있다**(오늘도 7포지션 중 1건뿐이었다).
+- [ ] **`data/position_state.json`에 `entry_quantity` 키가 생기는가** — 08-04 기동 후
+      포지션 보유 중 확인. 없으면 `_save_state` 배선을 재확인할 것.
+- [ ] **장중 재기동 시 폴백이 도는가** — 구버전 상태파일(키 없음)에서 복원되면
+      `initial_quantity`로 폴백한다. 그 포지션이 **이미 손절1차를 거쳤다면 폴백값도
+      축소된 값**이라 복원 직후 청산 레그의 entry_qty는 여전히 과소일 수 있다
+      (재기동 1회 한정 잔여 오차 — 오프라인 테스트로는 재현 불가).
+
+**하지 않기로 한 것**
+
+- `initial_quantity`의 shrink_initial 축소 되돌리기: 360차 의도(TP 진행률 매칭)이며
+  `scripts/verify_loss_tier1.py`가 고정하고 있다. 두 필드를 분리했을 뿐 그쪽은 무변경.
+- 과거 행 소급 재계산: 이미 `SUM(quantity)` 백필로 정확하다. 오염은 라이브 경로가
+  들어온 08-02 이후 1건뿐이었고 정정 완료.
+
+---
+
 ### 417차 후속 — 계약수 축 계측 (2026-08-03 월 / 2026-08-07 금)
 
-- [ ] **라이브에서 `entry_qty`가 채워지는가** — 08-03(월) 첫 실거래 후
-      `SELECT entry_ts, quantity, entry_qty, exit_reason FROM trades ORDER BY id DESC LIMIT 5`.
-      부분청산 포지션에서 **레그별 `quantity`는 다르고 `entry_qty`는 전부 같아야** 정상이다.
-      마이그레이션·백필은 검증했으나 **기록 경로(`_build_exit_result` → INSERT)는
-      오프라인 미검증**이다.
+- [x] **라이브에서 `entry_qty`가 채워지는가** [**불합격 → 421차에서 수정 완료** 2026-08-03]
+      08-03 10:19 SHORT 3계약(첫 부분청산 포지션)에서 레그별 `entry_qty`가 3·3이 아니라
+      **2·1**로 찍혔다. 원인은 417차가 출처로 잡은 `initial_quantity`를 360차
+      `shrink_initial`이 손절1차 청산분만큼 깎기 때문 — 두 필드의 수명이 다른데
+      하나로 썼다. `entry_quantity` 필드를 분리 신설해 해소.
+      상세: `dev_memory/DECISION_LOG.md` 2026-08-03(MW0601 421차).
 - [ ] **08-07 EOD 리포트에 `⚠구조적판정불가`가 뜨는가** — [28] 요약행. 수동 실행만
       검증했고 EOD 체인 경로는 미검증(407·408차 항목과 같은 지점).
 - [ ] **[29] `neutral_trend` 부호 반전 확인** — 417차 수정으로 평균이 +56,323 →
