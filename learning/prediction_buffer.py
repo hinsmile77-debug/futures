@@ -52,8 +52,9 @@ class PredictionBuffer:
                 toxicity_action, toxicity_score, toxicity_score_ma, toxicity_size_mult, toxicity_reason,
                 checklist_reason, meta_entry_quality_prob,
                 quantile_expected_pt, quantile_uncertainty_pt,
-                quantile_q10_pt, quantile_q90_pt, meta_gate_horizon
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
+                meta_size_raw
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -91,6 +92,10 @@ class PredictionBuffer:
                 ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("q10"),
                 ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("q90"),
                 str((decision.get("meta_gate") or {}).get("scoring_horizon", "") or ""),
+                # [MW0601 422차 후속 / [34]] 클램프·폴백 **이전** 원 사이즈 배수.
+                # `or`가 아니라 `.get()` 그대로 — 0.0은 유효값이므로 falsy 승격 금지
+                # (그 승격이 바로 이 채널이 재는 결함이다). 키 부재는 NULL.
+                (decision.get("meta_gate") or {}).get("size_multiplier_raw"),
             ),
         )
 
@@ -209,6 +214,10 @@ class PredictionBuffer:
             (decision.get("confidence_raw")),
             (decision.get("confidence_smoothed")),
             int(bool(decision.get("weight_collapsed", False))),
+            # [MW0601 422차 후속 / [34]] 클램프·폴백 **이전** 원 사이즈 배수.
+            # `or`가 아니라 `.get()` 그대로 — 0.0은 유효값이므로 falsy 승격 금지
+            # (그 승격이 바로 이 채널이 재는 결함이다). 키 부재는 NULL.
+            (decision.get("meta_gate") or {}).get("size_multiplier_raw"),
         )
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
@@ -236,8 +245,9 @@ class PredictionBuffer:
                        quantile_expected_pt, quantile_uncertainty_pt,
                        quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
                        coherence_blocked,
-                       confidence_raw, confidence_smoothed, weight_collapsed
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       confidence_raw, confidence_smoothed, weight_collapsed,
+                       meta_size_raw
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 
