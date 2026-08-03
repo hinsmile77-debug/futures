@@ -2632,6 +2632,7 @@ class TradingSystem:
         stage=None,
         raw_direction: str = None,
         reverse_entry_enabled: bool = False,
+        hint_source: str = "",
     ) -> None:
         self._pending_order = {
             "kind": kind,
@@ -2641,6 +2642,9 @@ class TradingSystem:
             "qty": qty,
             "price_hint": price_hint,
             "reason": reason,
+            # [423차] price_hint가 어느 경로에서 나왔는지 — §17 채널이 집행
+            # 슬리피지와 "유령 하드스톱"을 분리해 집계하기 위한 태그.
+            "hint_source": hint_source,
             "atr": atr,
             "grade": grade,
             "stage": stage,
@@ -3483,6 +3487,9 @@ class TradingSystem:
                 qty=_tk_qty,
                 price_hint=round(_tk_exit, 2),
                 reason="하드스톱(틱)",
+                # [423차] 틱 경로는 실시간 호가가 실제로 스톱을 넘은 시점에 즉시
+                # 전송되므로 hint가 가장 정확하다 — §17 왕복비용의 기준 표본.
+                hint_source="stop_tick",
             )
             ret = self._send_broker_exit_order(_tk_qty)
             log_manager.system(
@@ -11692,8 +11699,9 @@ def _ts_record_exit_fill_slippage(self, pending: dict, fill_price: float) -> Non
         execute(
             TRADES_DB,
             """INSERT INTO exit_fill_slippage
-               (ts, entry_ts, direction, reason, price_hint, fill_price, slippage_pts)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (ts, entry_ts, direction, reason, price_hint, fill_price,
+                slippage_pts, hint_source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 entry_ts,
@@ -11702,6 +11710,9 @@ def _ts_record_exit_fill_slippage(self, pending: dict, fill_price: float) -> Non
                 round(price_hint, 2),
                 round(float(fill_price), 2),
                 round(slippage_pts, 4),
+                # [423차] .get() 그대로 — `or None`을 쓰면 빈 문자열이 NULL로
+                # 승격돼 "태그 없는 구경로"와 "태그가 빈 신경로"가 구분되지 않는다.
+                (pending.get("hint_source") or None),
             ),
         )
     except Exception as _efs_e:
@@ -11850,9 +11861,21 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
 
     bar_low  = bar.get("low",  price) if bar else price
     bar_high = bar.get("high", price) if bar else price
+    # [MW0602 423차] 평가 대상 분봉의 시작시각 — 유령 하드스톱 가드에 넘긴다.
+    # 위 `_prev_stop_price`는 이 함수 안의 update_trailing_stop()만 되돌리므로
+    # 틱 TP1 보호전환(COM 콜백에서 비동기로 stop_price를 조임)은 못 막는다.
+    # ts는 라이브/복구 경로 모두 datetime이지만 문자열로 오는 경우도 방어한다.
+    _bar_start = bar.get("ts") if bar else None
+    if isinstance(_bar_start, str):
+        try:
+            _bar_start = datetime.datetime.strptime(_bar_start, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            _bar_start = None
+    elif not isinstance(_bar_start, datetime.datetime):
+        _bar_start = None
     _close_stop_hit = self.position.is_stop_hit(price)
     _intrabar_stop_hit = self.position.is_stop_hit_intrabar(
-        bar_low, bar_high, stop_price=_prev_stop_price
+        bar_low, bar_high, stop_price=_prev_stop_price, bar_start=_bar_start
     )
     _stop_hit_ts = _close_stop_hit or _intrabar_stop_hit
     if _stop_hit_ts:
@@ -11878,6 +11901,10 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             qty=_hs_qty,
             price_hint=round(exit_price, 2),  # [B50] float 오차 방지
             reason="하드스톱",
+            # [423차] 종가 히트는 현재가가 실제로 스톱을 넘은 것이라 hint가 유효하다.
+            # 봉중 히트는 그 봉의 고저가에서 유도한 값이라 체결 시점 시장가와
+            # 구조적으로 벌어질 수 있다 — §17에서 섞이지 않게 구분한다.
+            hint_source=("stop_close" if _close_stop_hit else "stop_intrabar"),
         )
         ret = self._send_broker_exit_order(_hs_qty)
         log_manager.system(
@@ -13346,7 +13373,10 @@ def _ts_grade_ev_guard_check(self):
         from utils.db_utils import fetch_ev_by_grade
         _lookback = getattr(runtime_settings, "GRADE_EV_GUARD_LOOKBACK_DAYS", 30)
         try:
-            _rows = fetch_ev_by_grade(days_back=_lookback)
+            # [MW0602 423차] 시스템 자동진입만 — 수동·구경로(entry_source NULL) 진입이
+            # 섞이면 등급의 신호 품질이 아니라 다른 것을 재게 된다. 상세는
+            # utils/db_utils.py::fetch_ev_by_grade() docstring 참조.
+            _rows = fetch_ev_by_grade(days_back=_lookback, system_only=True)
             _a_row = next((r for r in _rows if r["grade"] == "A"), None)
             _cache = {
                 "ts": _now,

@@ -839,6 +839,7 @@ def init_trades_db():
         price_hint    REAL NOT NULL,      -- 주문 전송 시점 의도가(손절가/목표가)
         fill_price    REAL NOT NULL,      -- 실제 체결가
         slippage_pts  REAL NOT NULL,      -- 방향보정 후 (+)=불리, (-)=유리 (pt)
+        hint_source   TEXT,               -- [423차] 'normal' | 'phantom' (아래 참조)
         created_at    TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
@@ -846,6 +847,22 @@ def init_trades_db():
             "CREATE INDEX IF NOT EXISTS idx_efs_ts ON exit_fill_slippage(ts)")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_efs_entry_ts ON exit_fill_slippage(entry_ts)")
+    # [MW0602 423차] hint_source 멱등 ALTER — 420차 joint_gate_shadow와 같은 이유.
+    # 왜 필요한가: 이 채널(§17)은 왕복비용 가정(slippage_ticks_per_side=1.0 ≈ 0.02pt)을
+    # 실측으로 검증하려고 만들었는데, "유령 하드스톱" 건의 price_hint는 **실제로 닿은
+    # 적 없는 스톱가**라 fill과의 차이가 집행 슬리피지가 아니다.
+    # 2026-08-03 실측: 비틱 `하드스톱` 8건 평균 -1.371pt vs 틱 13건 평균 +0.085pt.
+    # 전자를 그대로 쓰면 왕복비용을 60배 이상 과대추정한다 — 섞어 놓으면 채널이
+    # 재려던 값을 못 잰다. 그래서 분리 태깅만 하고 기존 행/판정은 건드리지 않는다.
+    try:
+        _efs_have = {r[1] for r in fetchall(
+            TRADES_DB, "PRAGMA table_info(exit_fill_slippage)")}
+        if "hint_source" not in _efs_have:
+            execute(TRADES_DB,
+                    "ALTER TABLE exit_fill_slippage ADD COLUMN hint_source TEXT")
+    except Exception as _efs_mig_e:
+        print("[DB][WARN] exit_fill_slippage 컬럼 마이그레이션 실패: %s" % _efs_mig_e,
+              file=sys.stderr)
     # [379차 신설] RegimeExhaustionGate(§18) counterfactual 섀도우 — hurst_gate_shadow·
     # open_gap_shadow와 동일 패턴. "hurst<0.45(평균회귀) + 60분 느린 연장폭 임계 초과 +
     # 10_chase/11_countertrend 소프트 실패" 동시성립 시점의 가상 진입가·스톱·TP1을
@@ -1491,12 +1508,34 @@ def fetch_regime_stats() -> List[sqlite3.Row]:
     )
 
 
-def fetch_ev_by_grade(days_back: int = 30) -> List[sqlite3.Row]:
+def fetch_ev_by_grade(days_back: int = 30, system_only: bool = False) -> List[sqlite3.Row]:
     """등급별 순EV(수수료 차감 후 실집행 기준) — grade, cnt, win_rate, avg_net_pnl_krw, total_net_pnl_krw.
     [260704 감사 P0] "방향 적중률" 대신 "거래당 순기대값"을 보는 관점 — fetch_grade_stats()(pnl_pts 방향)와 병행 참고.
+
+    Args:
+        system_only: True면 `entry_source='SYSTEM_AUTO'` 행만 집계한다.
+
+    [MW0602 423차] `system_only`를 신설한 이유 — **등급의 신호 품질을 판정하려면
+    시스템이 스스로 낸 진입만 봐야 한다.** 기본값은 False라 기존 호출부
+    (`daily_exporter`의 손익 리포트)는 무변경이다. 손익 리포트는 "실제로 얼마
+    벌었나"를 보여야 하므로 수동·구경로 진입을 빼면 오히려 틀린다.
+
+    2026-08-03 실측 — 왜 이 구분이 결론을 뒤집는가:
+        A급 30일 전체     n=64  합계 -485,306원  평균  -7,583원  ← 가드가 보던 값
+          └ entry_source NULL  n= 6  합계 -1,069,701원 (07-09~10, qty=2 시절)
+          └ SYSTEM_AUTO        n=58  합계  +584,395원  평균 +10,076원
+    `entry_source` 컬럼이 채워지기 전 구간의 6건이 부호를 통째로 뒤집고 있었다.
+    같은 기간 pt 단위로는 A(+0.358)와 C(+0.239)가 통계적으로 구분되지 않는다
+    (Mann-Whitney p=0.80) — 원 단위 차이는 계약수 효과였다(417차 교훈과 동형).
+
+    ⚠ 이 필터는 `VALIDATION_CAMPAIGN_DECISIONS["grade_ev_inversion"]`의
+      "부결 — GradeEVGuard 활성화하지 않음"(2026-08-01) 결정을 **뒤집지 않는다**.
+      그 결정의 근거(급행 풀스톱 11건 오조준)와 **서로소인 두 번째 근거**를 더할
+      뿐이다. 가드는 여전히 섀도(GRADE_EV_GUARD_ENABLED=False)로 남는다.
     """
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(days=days_back)).isoformat()
+    _src_clause = " AND entry_source = 'SYSTEM_AUTO'" if system_only else ""
     return fetchall(
         TRADES_DB,
         """SELECT COALESCE(NULLIF(grade, ''), '?') AS grade,
@@ -1505,7 +1544,7 @@ def fetch_ev_by_grade(days_back: int = 30) -> List[sqlite3.Row]:
                   ROUND(AVG(COALESCE(net_pnl_krw, pnl_krw)), 0) AS avg_net_pnl_krw,
                   ROUND(SUM(COALESCE(net_pnl_krw, pnl_krw)), 0) AS total_net_pnl_krw
            FROM trades
-           WHERE exit_ts IS NOT NULL AND exit_ts >= ?
+           WHERE exit_ts IS NOT NULL AND exit_ts >= ?""" + _src_clause + """
            GROUP BY grade
            ORDER BY grade""",
         (cutoff + " 00:00:00",),
