@@ -105,6 +105,20 @@ class PositionTracker:
         self.partial_3_done: bool = False
         self.initial_quantity: int = 0
 
+        # [MW0601 421차] 진입 계약수 — `initial_quantity`와 분리한 별도 필드.
+        # 둘은 진입 시점에 같은 값으로 출발하지만 **수명이 다르다**:
+        #   initial_quantity : 360차 shrink_initial(손절1차 조기축소)이 청산분만큼
+        #                      깎는다. TP 진행률 매칭(_sync_partial_progress)이
+        #                      "잔여 포지션은 처음부터 이 수량이었던 새 포지션"으로
+        #                      보여야 하므로 **의도된 동작**이다.
+        #   entry_quantity   : 진입 시점 값을 그대로 보존한다. 어떤 청산 경로에서도
+        #                      줄지 않는다(추가진입 시에만 증가).
+        # 417차가 `entry_qty` 기록을 initial_quantity에서 가져가면서 이 수명 차이와
+        # 충돌했다 — 08-03 10:19 SHORT 3계약이 손절1차를 거치며 레그별 entry_qty가
+        # 3이 아니라 2·1로 기록됐다(감소하는 값의 스냅샷). db_utils 구버전 백필은
+        # `SUM(quantity) GROUP BY entry_ts`라 3을 넣으므로 라이브와 백필이 갈렸다.
+        self.entry_quantity: int = 0
+
         # [360차] 손절 계단화 1차 — entry~stop 거리의 50% 지점(진입 시 1회 계산, 고정)
         self.loss_tier1_price: float = 0.0
         self.loss_tier1_done: bool = False
@@ -174,6 +188,7 @@ class PositionTracker:
         self.partial_2_done = False
         self.partial_3_done = False
         self.initial_quantity = 0
+        self.entry_quantity = 0
         self.loss_tier1_price = 0.0
         self.loss_tier1_done = False
         self.loss_tier1_qty1_shadow_logged = False
@@ -246,6 +261,7 @@ class PositionTracker:
         self.entry_hurst_bucket = hurst_bucket
         self.entry_extra_stop_mult = float(extra_stop_mult or 1.0)
         self.initial_quantity = quantity
+        self.entry_quantity = quantity
         self.trailing_anchor_price = price
         self.entry_quantile_expected_pt = (
             float(quantile_expected_pt) if quantile_expected_pt is not None else None
@@ -410,6 +426,7 @@ class PositionTracker:
             self.entry_price = price
             self.quantity = quantity
             self.initial_quantity = quantity
+            self.entry_quantity = quantity
             self.trailing_anchor_price = price
             self.entry_time = filled_at or now_kst()
             self.grade = grade
@@ -427,6 +444,9 @@ class PositionTracker:
             ) / total_qty
             self.quantity = total_qty
             self.initial_quantity = max(int(self.initial_quantity or 0), total_qty)
+            # [421차] 추가진입은 진입 규모가 실제로 커진 것이므로 함께 올린다
+            # (줄지 않을 뿐, 증가는 정상 — 위 필드 주석 참조).
+            self.entry_quantity = max(int(self.entry_quantity or 0), total_qty)
             self.grade = grade or self.grade
             self.regime = regime or self.regime
             self.signal_direction = raw_direction or self.signal_direction or direction
@@ -534,6 +554,11 @@ class PositionTracker:
             self.quantity -= quantity
             if shrink_initial:
                 self.initial_quantity = max(0, self.initial_quantity - quantity)
+                # [421차] `entry_quantity`는 **의도적으로 건드리지 않는다** — 여기서
+                # 같이 줄이면 417차 `entry_qty` 기록 버그가 그대로 재발한다.
+                # initial_quantity 축소는 TP 진행률 매칭용이지 "진입 규모 정정"이
+                # 아니다. 이 불변식을 깨려면 tests/test_entry_qty_invariant.py를
+                # 먼저 볼 것.
             self._sync_partial_progress()
             self.last_update_reason = f"apply_exit_fill_partial:{reason}"
             self.last_update_ts = filled_at or now_kst()
@@ -563,6 +588,10 @@ class PositionTracker:
 
         prev_status = self.status
         prev_initial = max(int(self.initial_quantity or 0), int(self.quantity or 0))
+        # [421차] entry_quantity는 shrink_initial의 영향을 받지 않으므로 prev_initial
+        # 보다 크거나 같다 — 셋 중 최대를 취해 구버전 상태파일(entry_quantity 없음)
+        # 에서 복원된 경우에도 종전과 동일한 값이 나오게 한다.
+        prev_entry_qty = max(int(self.entry_quantity or 0), prev_initial)
         prev_entry_time = self.entry_time
         prev_stop = float(self.stop_price or 0.0)
         prev_anchor = float(self.trailing_anchor_price or 0.0)
@@ -579,8 +608,11 @@ class PositionTracker:
         self.reverse_entry_enabled = False
         if same_side_sync and prev_initial > 0:
             self.initial_quantity = max(prev_initial, quantity)
+            self.entry_quantity = max(prev_entry_qty, quantity)
         else:
+            # 반대방향/신규 동기화는 별개 포지션이므로 진입 규모도 새로 잡는다.
             self.initial_quantity = quantity
+            self.entry_quantity = quantity
         # 같은 방향 동기화 시 이미 실행된 TP 플래그 보존 (잔고 Chejan이 와도 재발동 방지)
         if not same_side_sync:
             self.partial_1_done = False
@@ -1057,8 +1089,14 @@ class PositionTracker:
             # 수량**이라 부분청산이면 진입 규모와 다르다. 사이징 축 분석이 그 둘을
             # 혼동해 "계약수가 클수록 진다"를 인과 없이 만들어낸 사고가 네 번
             # 반복돼(311차→402차→405차→409차) 기록 측에 값을 남긴다.
-            # `initial_quantity`가 0이면(구경로·복원 직후) quantity로 폴백한다.
-            "entry_qty": int(self.initial_quantity or self.quantity or 0),
+            # [MW0601 421차] 출처를 `initial_quantity` → `entry_quantity`로 교체.
+            # 전자는 360차 shrink_initial이 깎으므로 손절1차를 거친 포지션에서
+            # 진입 규모가 아니라 "그 시점 잔여치"가 찍혔다(08-03 10:19 실측: 3계약
+            # 진입인데 레그별 2·1로 기록). 폴백 순서는 구버전 상태파일에서 복원된
+            # 직후(entry_quantity=0)를 위한 것으로, 종전 동작을 그대로 보존한다.
+            "entry_qty": int(
+                self.entry_quantity or self.initial_quantity or self.quantity or 0
+            ),
         }
 
     def _reset_position(self) -> None:
@@ -1081,6 +1119,7 @@ class PositionTracker:
         self.partial_2_done = False
         self.partial_3_done = False
         self.initial_quantity = 0
+        self.entry_quantity = 0
         self.loss_tier1_price = 0.0
         self.loss_tier1_done = False
         self.loss_tier1_qty1_shadow_logged = False
@@ -1196,6 +1235,7 @@ class PositionTracker:
                 "tp3_price":    self.tp3_price,
                 "trailing_anchor_price": self.trailing_anchor_price,
                 "initial_quantity": self.initial_quantity,
+                "entry_quantity": self.entry_quantity,
                 "partial_1_done": self.partial_1_done,
                 "partial_2_done": self.partial_2_done,
                 "partial_3_done": self.partial_3_done,
@@ -1260,6 +1300,13 @@ class PositionTracker:
             self.tp3_price    = float(state.get("tp3_price", 0))
             self.trailing_anchor_price = float(state.get("trailing_anchor_price", self.entry_price))
             self.initial_quantity = int(state.get("initial_quantity", self.quantity))
+            # [421차] 구버전 상태파일에는 이 키가 없다 — 그때는 initial_quantity로
+            # 폴백해 종전과 동일하게 동작한다(장중 재기동 호환). 단 그 포지션이
+            # 이미 손절1차를 거쳤다면 폴백값은 축소된 값이므로, 복원 직후 청산되는
+            # 레그의 entry_qty는 여전히 과소일 수 있다 — 재기동 1회 한정 잔여 오차.
+            self.entry_quantity = int(
+                state.get("entry_quantity", self.initial_quantity) or 0
+            )
             self.partial_1_done = bool(state.get("partial_1_done", False))
             self.partial_2_done = bool(state.get("partial_2_done", False))
             self.partial_3_done = bool(state.get("partial_3_done", False))
