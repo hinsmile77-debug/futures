@@ -213,6 +213,60 @@ def _dir_sign(v) -> int:
     return 1 if f > 0 else (-1 if f < 0 else 0)
 
 
+# ── [MW0601 431차, 2026-08-05] 품질군 게이트 배수 합성 ──────────────────────────
+#
+# **무엇을 바꿨나**: 진입 사이징 게이트를 두 군으로 나누고, 품질군만 min()으로 합성한다.
+#
+#   품질군 (min 합성, 이 함수) : ExecutionGovernor · MetaGate · ToxicityGate · HurstGate
+#   안전군 (곱셈 유지, 기존)   : HealthPolicy Degraded · pre_retrain · VolatilityBurst
+#                                · IntradayRegime L2
+#
+# **왜 나눴나**: 품질군 4종은 전부 "이 신호/시장미시구조가 못 미덥다"는 **같은 축의
+# 중복 계상**이다(체결난이도·메타신뢰도·독성·횡보성은 서로 강하게 겹친다). 그런데
+# 431차 이전에는 각각 독립 배수를 순차 곱셈해서, 설계된 정책이 아니라 **창발적 곱**이
+# 최종 수량을 정했다. 실측(2026-07-16~08-04 진입 91건):
+#
+#   MetaGate reduce 발동 82%(평균 ×0.71) · HurstGate 60%(×0.50) · Toxicity 36%(×0.70)
+#   최빈 조합 Hurst 0.50 × Meta 0.50 = **0.25** → 사이저 3계약이 0.75 → 반올림 → 1계약
+#   결과: 사이저 raw >= 3이 31건인데 **최종 1계약이 20건**, 전체 진입의 85%가 1계약
+#
+# 반면 안전군 4종은 서로 **독립 위험**이다(시스템 헬스 저하 / 모델 미학습 / 급변장 /
+# 일중 레짐 붕괴). 동시 발생 시 곱해서 더 강하게 줄이는 것이 옳으므로 곱셈을 유지한다.
+# min()을 전 게이트에 적용하면 급변장에서 오히려 덜 보수적이 되는데, 그건 이 변경의
+# 의도가 아니다. (실측 확인: 최근 20거래일 안전군 발동 0건 — 이 변경의 시뮬레이션
+# 결과는 좁힌 설계에서도 그대로다.)
+#
+# **왜 단일 반올림인가**: 기존에는 게이트마다 `max(1, int(round(...)))`가 따로 걸려
+# 반올림 손실이 누적됐다. 배수를 먼저 합성하고 마지막에 한 번만 반올림한다.
+#
+# ⚠ 이 함수는 **차단(block)에 관여하지 않는다.** block은 종전대로 grade=X + qty=0으로
+#   즉시 처리되며, 호출부가 base_qty=0을 넘기면 여기서도 0이 그대로 나온다.
+# 근거: dev_memory/DECISION_LOG.md 431차, config/settings.py
+#       VALIDATION_CAMPAIGN_DECISIONS["sizing_prescription_axis"].
+def _compose_quality_qty(base_qty, quality_mults) -> int:
+    """안전군까지 반영된 수량에 품질군 배수를 min() 합성해 최종 수량을 낸다.
+
+    Args:
+        base_qty: 안전군(곱셈) 적용까지 끝난 수량. 0이면 차단 상태.
+        quality_mults: {게이트명: 배수} — 1.0 미만인 것만 담긴다(호출부 책임).
+
+    Returns:
+        max(1, round(base_qty × min(배수))) — base_qty가 0 이하면 0.
+    """
+    try:
+        _base = int(base_qty or 0)
+    except (TypeError, ValueError):
+        return 0
+    if _base <= 0:
+        return 0
+    if not quality_mults:
+        return _base
+    _m = min(float(v) for v in quality_mults.values())
+    if _m >= 1.0:
+        return _base
+    return max(1, int(round(_base * _m)))
+
+
 class _ShutdownSignal(QObject):
     """DailyClose 스레드 → 메인 Qt 스레드 종료 예약 (스레드-안전).
 
@@ -7032,12 +7086,26 @@ class TradingSystem:
         _meta_gate = decision.get("meta_gate") or {}
         _meta_action = _meta_gate.get("action", "")
         _meta_size = float(_meta_gate.get("size_multiplier", 1.0) or 1.0)
+        # [MW0601 431차] 사이징 경로 전용 배수 — JointGateBlock(_joint_mult)은 위
+        # `_meta_size`를 계속 쓴다. 둘은 reduce 밴드에서 모델이 사이즈 의견을 못 낸
+        # 경우에만 갈린다(그때 이 값이 1.0 = 중립). 상세 근거는 meta_gate.py 분기 주석.
+        # 키가 없는 구버전 결과 dict가 오면 종전 동작(`_meta_size`)으로 폴백한다.
+        _meta_size_sizing = float(
+            _meta_gate.get("size_multiplier_sizing", _meta_size) or _meta_size
+        )
         _tox_gate = decision.get("toxicity_gate") or {}
         _tox_action = _tox_gate.get("action", "pass")
         _tox_size = float(_tox_gate.get("size_multiplier", 1.0) or 1.0)
         _exec_gate = decision.get("execution_governor") or {}
         _exec_action = _exec_gate.get("action", "pass")
         _exec_size = float(_exec_gate.get("size_multiplier", 1.0) or 1.0)
+        # [MW0601 431차] 품질군/안전군 분리 — 자세한 근거는 _compose_quality_qty() 참조.
+        #   _qty_safety_base : 안전군(곱셈)까지 반영한 러닝 수량. 차단 시 0.
+        #   _quality_mults   : 품질군 배수 누적({게이트명: 배수}, 1.0 미만만).
+        # 두 값이 바뀔 때마다 _qty_display를 재합성한다 — 그래야 하류 스냅샷
+        # (_tox_qty_before·_qty_before_hurst)이 "그 시점의 현재 수량"이라는 의미를 유지한다.
+        _qty_safety_base = _qty_display
+        _quality_mults = {}
         if direction != 0 and self.position.status == "FLAT":
             if self._health_degraded_mode:
                 # DynMC zone_mc(actual_min_conf)를 기준으로 동적 계산.
@@ -7046,6 +7114,7 @@ class TradingSystem:
                 _dg_mc = max(actual_min_conf, 0.30)   # 절대 하한 0.30 (극단 상황 방어)
                 if confidence < _dg_mc:
                     _final_grade = "X"
+                    _qty_safety_base = 0
                     _qty_display = 0
                     _grade_x_source = _grade_x_source or (
                         "HealthPolicy Degraded conf=%.1f%% < %.1f%%" % (confidence * 100, _dg_mc * 100)
@@ -7053,14 +7122,18 @@ class TradingSystem:
                     log_manager.signal(
                         f"[HealthPolicy] Degraded Mode 차단: conf={confidence:.1%} < {_dg_mc:.1%} (zone_mc 기준)"
                     )
-                elif _qty_display > 0:
-                    _qty_display = max(1, int(round(_qty_display * float(HEALTH_DEGRADED_SIZE_MULT))))
+                elif _qty_safety_base > 0:
+                    # [431차] 안전군 — 곱셈 유지(품질군 min 합성 대상 아님).
+                    _qty_safety_base = max(1, int(round(_qty_safety_base * float(HEALTH_DEGRADED_SIZE_MULT))))
+                    _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
                     log_manager.signal(
                         f"[HealthPolicy] Degraded Mode 축소: size_mult={float(HEALTH_DEGRADED_SIZE_MULT):.2f}"
                     )
             # 방법3: GBM 첫 재학습 전 / 09:20~09:29 조건부 구간 사이즈 축소
-            if _pre_retrain_size_factor < 1.0 and _qty_display > 0:
-                _qty_display = max(1, int(round(_qty_display * _pre_retrain_size_factor)))
+            if _pre_retrain_size_factor < 1.0 and _qty_safety_base > 0:
+                # [431차] 안전군 — 곱셈 유지.
+                _qty_safety_base = max(1, int(round(_qty_safety_base * _pre_retrain_size_factor)))
+                _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
                 log_manager.signal(
                     f"[EntryGate] 사이즈 축소 ×{_pre_retrain_size_factor:.1f} "
                     f"({'GBM 재학습 전' if not self._pre_retrain_done else '조건부 진입 구간'})"
@@ -7068,12 +7141,15 @@ class TradingSystem:
 
             if _exec_action == "block":
                 _final_grade = "X"
+                _qty_safety_base = 0
                 _qty_display = 0
                 _grade_x_source = _grade_x_source or "ExecutionGovernor action=block (score=%.2f)" % float(
                     _exec_gate.get("tradability_score", 0.0) or 0.0
                 )
-            elif _qty_display > 0 and _exec_action == "reduce":
-                _qty_display = max(1, int(round(_qty_display * _exec_size)))
+            elif _qty_display > 0 and _exec_action == "reduce" and _exec_size < 1.0:
+                # [431차] 품질군 — 즉시 곱하지 않고 배수만 등록 후 재합성.
+                _quality_mults["exec"] = _exec_size
+                _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
             if _exec_action != "pass":
                 log_manager.signal(
                     f"[ExecutionGovernor] action={_exec_action} score={_exec_gate.get('tradability_score', 0.0):.2f} "
@@ -7081,16 +7157,33 @@ class TradingSystem:
                 )
             if _meta_action == "skip":
                 _final_grade = "X"
+                _qty_safety_base = 0
                 _qty_display = 0
                 _grade_x_source = _grade_x_source or "MetaGate action=skip (meta_conf=%.1f%%)" % (
                     float(_meta_gate.get("meta_confidence", 0.0) or 0.0) * 100
                 )
-            elif _qty_display > 0:
-                _qty_display = max(1, int(round(_qty_display * _meta_size)))
+            elif _qty_display > 0 and _meta_size_sizing < 1.0:
+                # [431차] 품질군 — 배수만 등록 후 재합성. 사이징 전용 배수를 쓴다.
+                _quality_mults["meta"] = _meta_size_sizing
+                _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
+            elif _qty_safety_base > 0 and _meta_size_sizing > 1.0:
+                # [431차] take 밴드 증량(0.9~1.25)은 **축소가 아니므로 min 합성 대상이
+                # 아니다** — 종전대로 곱셈으로 처리하되 base 쪽에 적용한다. 종전 코드는
+                # 이 증량도 `_qty_display`에 직접 곱했는데, 그러면 뒤따르는 축소 배수와
+                # 순서 의존이 생긴다(같은 배수 조합인데 순서만 달라도 결과가 갈림).
+                # 추가로 MAX_CONTRACTS 클램프를 건다 — 종전에는 사이저 클램프 이후에
+                # 증량이 곱해져 **상한을 넘길 수 있었다**(사이저 10 × 1.25 → 13).
+                _qty_safety_base = max(1, min(MAX_CONTRACTS,
+                                              int(round(_qty_safety_base * _meta_size_sizing))))
+                _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
             if _meta_action:
                 log_manager.signal(
                     f"[MetaGate] action={_meta_action} meta_conf={_meta_gate.get('meta_confidence', 0.0):.1%} "
                     f"size_mult={_meta_size:.2f} reason={_meta_gate.get('reason', '')}"
+                    # [431차] 두 값이 갈리면(무정보 폴백) 사이징 배수를 병기 —
+                    # 로그만 보고 "왜 0.50인데 안 깎였나"를 헤매지 않도록.
+                    + ("" if abs(_meta_size_sizing - _meta_size) < 1e-9
+                       else f" size_mult_sizing={_meta_size_sizing:.2f}(무정보폴백→중립)")
                 )
             # [신설] toxicity_block_shadow 카운터팩추얼용 스냅샷 — grade/qty가
             # 아래에서 X/0으로 바뀌기 직전(즉 exec/meta 등 앞선 게이트는 통과한
@@ -7100,13 +7193,16 @@ class TradingSystem:
             _tox_qty_before = _qty_display
             if _tox_action == "block":
                 _final_grade = "X"
+                _qty_safety_base = 0
                 _qty_display = 0
                 _grade_x_source = _grade_x_source or "ToxicityGate action=block (score=%.2f ma=%.2f)" % (
                     float(_tox_gate.get("score", 0.0) or 0.0),
                     float(_tox_gate.get("score_ma", 0.0) or 0.0),
                 )
-            elif _qty_display > 0 and _tox_action == "reduce":
-                _qty_display = max(1, int(round(_qty_display * _tox_size)))
+            elif _qty_display > 0 and _tox_action == "reduce" and _tox_size < 1.0:
+                # [431차] 품질군 — 배수만 등록 후 재합성.
+                _quality_mults["tox"] = _tox_size
+                _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
             if _tox_action != "pass":
                 log_manager.signal(
                     f"[ToxicityGate] action={_tox_action} score={_tox_gate.get('score', 0.0):.2f} "
@@ -7129,6 +7225,7 @@ class TradingSystem:
                         and _vb_atr_ratio >= runtime_settings.VOLATILITY_BURST_ATR_RATIO_MIN):
                     if runtime_settings.VOLATILITY_BURST_ACTION == "skip":
                         _final_grade = "X"
+                        _qty_safety_base = 0
                         _qty_display = 0
                         _grade_x_source = _grade_x_source or (
                             "VolatilityBurstGuard skip (tick=%d atr_ratio=%.2f)"
@@ -7142,9 +7239,11 @@ class TradingSystem:
                         )
                     else:
                         _vb_stop_widen_mult = float(runtime_settings.VOLATILITY_BURST_STOP_WIDEN_MULT)
-                        _qty_display = max(
-                            1, int(round(_qty_display * runtime_settings.VOLATILITY_BURST_SIZE_MULT))
+                        # [431차] 안전군 — 곱셈 유지(급변장은 품질 축과 독립 위험).
+                        _qty_safety_base = max(
+                            1, int(round(_qty_safety_base * runtime_settings.VOLATILITY_BURST_SIZE_MULT))
                         )
+                        _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
                         log_manager.signal(
                             f"[VolatilityBurst] 사이즈 축소 ×{runtime_settings.VOLATILITY_BURST_SIZE_MULT:.2f} "
                             f"+ 스톱 확대 ×{_vb_stop_widen_mult:.2f} — tick={_vb_tick} "
@@ -7155,8 +7254,10 @@ class TradingSystem:
             # UI L2 OFF이면 우회
             if _l2_gate_on:
                 _l2_size = self.intraday_regime.size_mult()
-                if _l2_size < 1.0 and _qty_display > 0:
-                    _qty_display = max(1, int(round(_qty_display * _l2_size)))
+                if _l2_size < 1.0 and _qty_safety_base > 0:
+                    # [431차] 안전군 — 곱셈 유지(일중 레짐 붕괴는 품질 축과 독립 위험).
+                    _qty_safety_base = max(1, int(round(_qty_safety_base * _l2_size)))
+                    _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
                     log_manager.signal(
                         f"[IntradayRegime] {self.current_intraday_regime} 사이즈 축소 "
                         f"×{_l2_size:.1f} → {_qty_display}계약"
@@ -7274,19 +7375,30 @@ class TradingSystem:
         # 동일한 "_ok" 명명으로만 남아 "게이트가 뚫렸다"는 오독을 유발해온 문제(id=200
         # 딥다이브에서 확인) — 소프트차단이 실제로 적용됐는지, 그리고 사이징이 이미
         # 최소단위(1계약)라 ×0.5가 수치상 무의미(no-op)했는지를 별도 필드로 남긴다.
+        # [MW0601 431차] no-op의 의미가 하나 늘었다 — 품질군 min() 합성 이후로는
+        # "이미 1계약"뿐 아니라 "hurst 0.50이 품질군 최소 배수가 아니어서 합성값이
+        # 그대로"인 경우도 no-op이다. 둘 다 "이 게이트가 최종 수량을 바꾸지 않았다"는
+        # 같은 사실을 가리키므로 필드 의미는 유지된다.
         _hurst_soft_block_applied = False
         _hurst_soft_block_noop = None
         if (HURST_SOFT_BLOCK_ENABLED and not _hurst_ok
                 and direction != 0 and self.position.status == "FLAT" and _qty_display > 0):
             _hurst_size = HURST_SOFT_BLOCK_SIZE_MULT
             _qty_before_hurst = _qty_display
-            _qty_display = max(1, int(round(_qty_display * _hurst_size)))
+            # [431차] 품질군 — 배수 등록 후 재합성. no-op 판정 의미는 그대로 보존된다:
+            # hurst의 0.50이 품질군 최소값이 아니면 합성 결과가 변하지 않아 no-op=True가
+            # 되고, 이는 "이미 더 강한 품질 축 배수에 눌려 있다"는 뜻으로 정확하다
+            # (종전에는 "이미 최소단위 1계약"이라는 뜻이었다 — 로그 문구 함께 수정).
+            _quality_mults["hurst"] = _hurst_size
+            _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
             _hurst_soft_block_applied = True
             _hurst_soft_block_noop = (_qty_display == _qty_before_hurst)
             log_manager.signal(
                 f"[HurstGate] 하드차단 대신 사이즈축소: hurst={features.get('hurst', 0.5):.3f} "
                 f"< {HURST_RANGE_THRESHOLD} size_mult={_hurst_size:.2f} (§3-6 FAIL 완화, 333차 후속)"
-                + (" [no-op: 이미 최소단위]" if _hurst_soft_block_noop else "")
+                + (" [no-op: 이미 최소단위 또는 더 강한 품질배수 존재]"
+                   if _hurst_soft_block_noop else "")
+                + (" quality_min=%.2f" % min(_quality_mults.values()) if _quality_mults else "")
             )
 
         # 273차: 정적 3.5pt 상한이 최근 장기간 시장 ATR 중앙값(3.5~6pt대)에 만성적으로
@@ -8371,6 +8483,12 @@ class TradingSystem:
                                     locals().get("_tox_qty_before", 0),
                                     _qty_auto,
                                 )
+                                # [MW0601 431차 / Phase 2-1] 신뢰도 배수 재매핑 섀도우
+                                self._log_conf_mult_shadow(
+                                    final_dir_str, _final_grade, confidence, atr,
+                                    locals().get("size_result"),
+                                    _qty_auto,
+                                )
                                 _entry_executed_this_cycle = True
                 else:
                     # 모드 필터 차단
@@ -9242,6 +9360,50 @@ class TradingSystem:
             )
         except Exception as _trs_e:
             logger.warning("[ToxReduceShadow] 기록 실패 (무해): %s", _trs_e)
+
+    def _log_conf_mult_shadow(
+        self, direction: str, grade: str, confidence: float, atr: float,
+        size_result: Optional[dict], qty_entered: float,
+    ) -> None:
+        """[MW0601 431차 / Phase 2-1] 신뢰도 배수 재매핑 섀도우 계측.
+
+        toxicity_reduce_shadow와 동일 계열 — 실제 체결된 진입에 "CONFIDENCE_MULT_TABLE
+        임계를 실측 분위수로 옮겼다면 사이저 수량이 달라졌을까"를 태그로 붙인다.
+        라이브 의사결정에는 전혀 관여하지 않는다(conf_mult_shadow를 소비하는 사이징
+        코드 없음 — PositionSizer가 값만 계산해 결과 dict에 담아 보낸다).
+
+        qty_live/qty_shadow는 **사이저 단계 국소값**이다 — 하류 게이트 체인(품질군
+        min 합성·안전군 곱셈·상한)을 재시뮬레이션하지 않는다. 해석 한계는
+        utils/db_utils.py 테이블 주석 참조.
+        """
+        try:
+            _sr = size_result or {}
+            _shadow = _sr.get("qty_shadow")
+            if _shadow is None:
+                return   # 구버전/조기반환 경로 — 기록할 정보 없음
+            execute(
+                TRADES_DB,
+                """INSERT INTO conf_mult_shadow
+                   (ts, direction, grade, confidence, conf_mult_live, conf_mult_shad,
+                    regime_mult, grade_mult, atr, qty_live, qty_shadow, qty_entered)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                    direction,
+                    grade,
+                    float(confidence or 0.0),
+                    float(_sr.get("conf_mult", 0.0) or 0.0),
+                    float(_sr.get("conf_mult_shadow", 0.0) or 0.0),
+                    float(_sr.get("regime_mult", 0.0) or 0.0),
+                    float(_sr.get("grade_mult", 0.0) or 0.0),
+                    float(atr or 0.0),
+                    float(_sr.get("quantity", 0) or 0),
+                    float(_shadow),
+                    float(qty_entered or 0.0),
+                ),
+            )
+        except Exception as _cms_e:
+            logger.warning("[ConfMultShadow] 기록 실패 (무해): %s", _cms_e)
 
     def _post_exit(self, result: dict, filled_at=None):
         """청산 후 처리.

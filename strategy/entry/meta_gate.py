@@ -122,6 +122,7 @@ class MetaGate:
                 "quantile_estimate": quantile_estimate,
                 "scoring_horizon": horizon,   # [260705 검증 캠페인] meta_labels 조인 키
                 "size_multiplier": 0.0,
+                "size_multiplier_sizing": 0.0,   # [431차] 조기반환 경로도 키 일관성 유지
                 "reason": "flat_signal",
                 "source": "rule",
             }
@@ -205,17 +206,40 @@ class MetaGate:
                     _original_reduce_thr, reduce_thr, time_zone,
                 )
 
+        # [MW0601 431차, 2026-08-05] `size_mult_sizing` 분리 — 사이징 경로 전용.
+        #
+        # **문제**: reduce 밴드의 `learned["size_multiplier"] or 0.5` 폴백은
+        # `_make_result()`가 conf<0.5에서 size_mult=0.0(falsy)을 내보내기 때문에 발동한다.
+        # 즉 "모델이 사이즈 의견을 못 냈다"를 **하드코딩 상수 0.5 축소**로 번역한다.
+        # 라이브 실측(2026-07-16~08-04): reduce 밴드 1,498건 중 **714건(47.6%)이 정확히
+        # 0.50** — MetaGate 축소의 절반이 모델 정보가 아니라 이 상수다.
+        #
+        # **왜 size_multiplier를 그대로 두는가**: 이 값은 사이징 말고 **JointGateBlock의
+        # 라이브 차단 기준**(main.py `_meta_size × _tox_size < 0.50`)에도 쓰인다.
+        # 최빈 조합이 정확히 `0.50 × 0.70 = 0.35`라, 폴백을 1.0으로 바꾸면
+        # `1.0 × 0.70 = 0.70`이 되어 **JointGateBlock 상당수가 조용히 무력화된다**.
+        # 그 게이트는 캠페인 [7]에서 PASS(누적 hyp -13.16pt, n=116 — 차단이 손실을 회피)
+        # 판정을 받은 검증된 차단이므로 건드리지 않는다.
+        #
+        # → 따라서 **키를 나눈다**. `size_multiplier`(차단 기준, 종전 그대로) /
+        #   `size_multiplier_sizing`(사이징 전용, 무정보 폴백이면 중립 1.0).
+        #   소비처: main.py `_meta_size_sizing`만 후자를 읽는다.
+        # 근거: dev_memory/DECISION_LOG.md 431차.
         if blended_conf >= take_thr:
             action    = "take"
             size_mult = max(0.9, min(1.25, learned["size_multiplier"]))
+            size_mult_sizing = size_mult
             reason    = "meta_take"
         elif blended_conf >= reduce_thr:
             action    = "reduce"
             size_mult = max(0.35, min(0.75, learned["size_multiplier"] or 0.5))
+            # 폴백이 발동했으면(모델이 사이즈 의견 없음) 사이징은 중립 — 상수로 깎지 않는다.
+            size_mult_sizing = 1.0 if not _size_mult_raw else size_mult
             reason    = "meta_reduce"
         else:
             action    = "skip"
             size_mult = 0.0
+            size_mult_sizing = 0.0   # skip은 차단이라 사이징 경로도 0 (동치)
             reason    = "meta_skip"
             _tag = "LIVE" if context == "live" else "VERIFY"
             _log_fn = logger.info if context == "live" else logger.debug
@@ -236,6 +260,10 @@ class MetaGate:
             "quantile_estimate":   quantile_estimate,
             "scoring_horizon":     horizon,   # [260705 검증 캠페인] meta_labels 조인 키
             "size_multiplier":     round(size_mult, 4),
+            # [MW0601 431차] 사이징 전용 배수 — **JointGateBlock은 위 size_multiplier를
+            # 계속 쓴다**(차단 기준 무변경). 두 값은 reduce 밴드에서 모델이 사이즈 의견을
+            # 못 냈을 때만 갈린다(그때 이 값이 1.0 = 중립). 위 분기 주석 참조.
+            "size_multiplier_sizing": round(size_mult_sizing, 4),
             "reason":              reason,
             "source":              learned["model_source"],
             "meta_features":       meta_features,
