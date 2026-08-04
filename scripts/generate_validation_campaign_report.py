@@ -56,6 +56,7 @@ from config.settings import (
     ENTRY_STARVATION_WEEKLY_MIN, ENTRY_STARVATION_MITIGATION_LADDER,
     HURST_RANGE_THRESHOLD, REGIME_EXHAUSTION_EXT_ATR_THRESHOLD,
     VALIDATION_CAMPAIGN_DECISIONS, VALIDATION_REPORT_KEEP_WEEKS,
+    ATR_STOP_MULT, ATR_TP1_MULT,   # [426차] [38] 차단신호 가상 스톱/TP1 재구성
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, MINI_FUTURES_PT_VALUE
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
@@ -2723,6 +2724,279 @@ def eval_hurst_meanrevert_drag() -> dict:
             "보류가 사전등록된 판독 규칙이다" % (
                 out.get("mean_diff", 0.0), out.get("sign_p", 1.0),
                 _fmt_krw(out["cum_krw"]["mean_revert"])))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
+# [38] ProfitGuard-L1 피크 트레일링 (MW0602 426차) — 희귀사건 채널
+# ══════════════════════════════════════════════════════════════
+
+def _pg_live_config() -> dict:
+    """라이브 ProfitGuard 파라미터의 **실제 출처**를 읽는다.
+
+    ⚠ 이 채널의 기준선은 코드에 없다 — `data/profit_guard_prefs.json`이며
+    대시보드에서 **장중 변경이 가능**하다. 코드 기본값(`ProfitGuardConfig`)만
+    보고 판정하면 전혀 다른 임계를 재게 된다(419·420차 `tox_regime_date`
+    교훈의 더 나쁜 버전 — 그쪽은 최소한 코드 안에 있었다).
+    """
+    cr = VALIDATION_CAMPAIGN.get("profit_guard_l1_watch", {})
+    rel = str(cr.get("live_prefs_path", "data/profit_guard_prefs.json"))
+    out = {"prefs_path": rel, "source": "code_default"}
+    try:
+        from strategy.profit_guard import ProfitGuardConfig
+        _d = ProfitGuardConfig()
+        out["code_activation_krw"] = float(_d.trail_activation_krw)
+        out["code_ratio"] = float(_d.trail_ratio)
+        out["activation_krw"] = out["code_activation_krw"]
+        out["ratio"] = out["code_ratio"]
+    except Exception as e:
+        out["error"] = "코드 기본값 로드 실패: %s" % e
+        return out
+    path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), rel.replace("/", os.sep))
+    out["prefs_exists"] = os.path.exists(path)
+    if out["prefs_exists"]:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = (json.load(fh) or {}).get("config") or {}
+            if "trail_activation_krw" in cfg:
+                out["activation_krw"] = float(cfg["trail_activation_krw"])
+            if "trail_ratio" in cfg:
+                out["ratio"] = float(cfg["trail_ratio"])
+            out["source"] = "prefs_json"
+            out["prefs_mtime"] = datetime.datetime.fromtimestamp(
+                os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception as e:
+            out["error"] = "prefs 파싱 실패: %s" % e
+    out["diverged"] = (
+        abs(out["activation_krw"] - out["code_activation_krw"]) > 1e-9
+        or abs(out["ratio"] - out["code_ratio"]) > 1e-9
+    )
+    return out
+
+
+def _pg_replay(activation, ratio, days, legs_by_day, pos_by_day):
+    """(발동금액, 비율) 격자 하나를 전 거래일에 소급 재현한다.
+
+    실현손익 경로를 청산 레그 순서로 누적해 피크·보호선을 따라간다 — 라이브
+    `_TrailingGuard.update()`와 같은 식이다(`peak >= activation` 이후
+    `current < peak*(1-ratio)`).
+
+    **발동했다고 다 같은 발동이 아니다.** 07-20은 14:56에 발동했는데 그날
+    마지막 진입이 14:33이고 14:50부터 신규금지 구간이라 아무것도 막지 못했다.
+    그래서 `binding`(발동 후 실제 진입 기회가 있었는가)을 따로 센다 — 이것이
+    이 채널의 표본 단위다.
+    """
+    fires = []
+    for d in days:
+        run = peak = 0.0
+        halt = None
+        for lg in legs_by_day.get(d, []):
+            run += lg["k"]
+            if run > peak:
+                peak = run
+            if halt is None and peak >= activation and run < peak * (1.0 - ratio):
+                halt = lg["exit_ts"]
+                break
+        if halt is None:
+            continue
+        after = [p for p in pos_by_day.get(d, []) if p["entry_ts"] > halt]
+        fires.append({
+            "day": d, "halt_ts": halt, "peak_krw": round(peak, 0),
+            "n_after": len(after),
+            "after_pnl_krw": round(sum(p["k"] for p in after), 0),
+            "binding": bool(after),
+        })
+    return fires
+
+
+def eval_profit_guard_l1_watch() -> dict:
+    """[38] ProfitGuard-L1 피크 트레일링 감시 (MW0602 426차) — 사전등록.
+
+    0804 점검이 L1을 "오늘 최대 공로자"로 적었으나 검증에서 **과장으로 확인**됐다.
+    상세 근거·판정 축은 config.settings의 채널 주석 참조.
+
+    verdict는 표본이 찰 때까지 OBSERVE다 — 실측 발동빈도(16거래일에 구속 1회)로는
+    min_activations=5가 약 4개월 스케일이라, 그 사이에 판정을 흉내내면 단일일
+    관측이 정책이 된다(0804에서 실제로 그럴 뻔했다).
+    """
+    cr = VALIDATION_CAMPAIGN.get("profit_guard_l1_watch", {})
+    out = {"verdict": "OBSERVE", "live_config": _pg_live_config()}
+    win = int(cr.get("cf_window_min", 30))
+
+    # ── 실현손익 경로 (소급 재현용) ──────────────────────────────
+    try:
+        with _conn(TRADES_DB) as conn:
+            legs = conn.execute(
+                "SELECT entry_ts, exit_ts, COALESCE(net_pnl_krw, pnl_krw) AS k "
+                "  FROM trades WHERE entry_ts >= ? AND exit_ts IS NOT NULL AND %s "
+                " ORDER BY exit_ts" % _SYSTEM_AUTO_SQL, (_campaign_start(),)).fetchall()
+            poss = conn.execute(
+                "SELECT entry_ts, SUM(COALESCE(net_pnl_krw, pnl_krw)) AS k "
+                "  FROM trades WHERE entry_ts >= ? AND exit_ts IS NOT NULL AND %s "
+                " GROUP BY entry_ts" % _SYSTEM_AUTO_SQL, (_campaign_start(),)).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        out["no_data"] = True
+        return out
+
+    legs_by_day, pos_by_day = {}, {}
+    for r in legs:
+        legs_by_day.setdefault(r["exit_ts"][:10], []).append(
+            {"exit_ts": r["exit_ts"], "k": float(r["k"] or 0.0)})
+    for r in poss:
+        pos_by_day.setdefault(r["entry_ts"][:10], []).append(
+            {"entry_ts": r["entry_ts"], "k": float(r["k"] or 0.0)})
+    days = sorted(pos_by_day)
+    out["n_days_total"] = len(days)
+
+    # ── (c) 임계 스윕 — 전 거래일 소급 재현 ─────────────────────
+    sweep = []
+    for act in cr.get("sweep_activation_krw", [1_000_000]):
+        for ratio in cr.get("sweep_ratio", [0.20]):
+            f = _pg_replay(float(act), float(ratio), days, legs_by_day, pos_by_day)
+            bind = [x for x in f if x["binding"]]
+            sweep.append({
+                "activation_krw": float(act), "ratio": float(ratio),
+                "n_fire": len(f), "n_binding": len(bind),
+                "n_blocked_pos": sum(x["n_after"] for x in bind),
+                # (+)면 차단해서 **지킨** 금액(막은 손실), (-)면 놓친 이익
+                "saved_krw": round(-sum(x["after_pnl_krw"] for x in bind), 0),
+            })
+    out["sweep"] = sweep
+
+    # ── (b)(d) 차단분 반사실 + 재개 지연 — 라이브에서 실제로 차단된 신호 ──
+    try:
+        with _conn(PREDICTIONS_DB) as conn:
+            blocked = conn.execute(
+                "SELECT ts, direction, grade, features FROM ensemble_decisions "
+                " WHERE ts >= ? AND entry_block_reason LIKE '%ProfitGuard%' "
+                " ORDER BY ts", (_campaign_start(),)).fetchall()
+    except Exception as e:
+        out["cf_error"] = str(e)
+        blocked = []
+    out["n_blocked_signals"] = len(blocked)
+    out["blocked_days"] = sorted({r["ts"][:10] for r in blocked})
+    _blk_by_day = {}
+    for r in blocked:
+        _blk_by_day.setdefault(r["ts"][:10], []).append(r["ts"])
+
+    # 현행 운영값 행을 따로 뽑아 둔다 — 판정과 표기의 기준선이다.
+    _lc = out["live_config"]
+    cur = _pg_replay(float(_lc.get("activation_krw", 1_000_000)),
+                     float(_lc.get("ratio", 0.20)), days, legs_by_day, pos_by_day)
+    # ⚠ **순환논리 교정.** `_pg_replay`의 binding은 "발동 후 실제 진입이 있었는가"인데,
+    #   가드가 **라이브로 실제 발동한 날**은 그 진입이 애초에 없다 — 가드가 막았기
+    #   때문이다. 그 날을 "구속 아님"으로 세면 유일한 진짜 구속 사건이 사라진다
+    #   (08-04이 정확히 그랬다). 라이브 차단 기록이 있으면 구속으로 인정한다.
+    for f in cur:
+        _lb = [t for t in _blk_by_day.get(f["day"], []) if t >= f["halt_ts"]]
+        if _lb:
+            f["binding"] = True
+            f["n_live_blocked"] = len(_lb)
+        else:
+            f["n_live_blocked"] = 0
+    out["fires"] = cur
+    out["n_fire"] = len(cur)
+    binding = [x for x in cur if x["binding"]]
+    out["n_binding"] = len(binding)
+    out["n_binding_days"] = len({x["day"] for x in binding})
+
+    if blocked:
+        _lo = min(r["ts"] for r in blocked)
+        _hi = max(r["ts"] for r in blocked)
+        try:
+            with _conn(RAW_DATA_DB) as rc:
+                bars = {r["ts"]: dict(r) for r in rc.execute(
+                    "SELECT ts, high, low, close FROM raw_candles "
+                    " WHERE ts >= ? AND ts <= datetime(?, '+%d minutes') ORDER BY ts"
+                    % win, (_lo, _hi))}
+        except Exception as e:
+            out["cf_error"] = str(e)
+            bars = {}
+        seq = sorted(bars)
+        # 그날 최초 차단 시각 = 발동 시각 근사 (재개 지연 축의 기준점)
+        first_block = {}
+        for r in blocked:
+            first_block.setdefault(r["ts"][:10], r["ts"])
+
+        rows, res = [], {"TP1": 0, "STOP": 0, "NEITHER": 0}
+        for r in blocked:
+            b = bars.get(r["ts"])
+            if not b or not r["direction"]:
+                continue
+            try:
+                atr = float((json.loads(r["features"]) or {}).get("atr") or 0.0)
+            except (ValueError, TypeError):
+                atr = 0.0
+            if atr <= 0:
+                continue
+            m = 1 if int(r["direction"]) == 1 else -1
+            e = float(b["close"])
+            stop = e - m * atr * ATR_STOP_MULT
+            tp1 = e + m * atr * ATR_TP1_MULT
+            end = (datetime.datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S")
+                   + datetime.timedelta(minutes=win)).strftime("%Y-%m-%d %H:%M:%S")
+            out_kind, px = "NEITHER", None
+            for ts in seq:
+                if ts <= r["ts"]:
+                    continue
+                if ts > end:
+                    break
+                bb = bars[ts]
+                if (bb["low"] <= stop) if m > 0 else (bb["high"] >= stop):
+                    out_kind, px = "STOP", stop
+                    break
+                if (bb["high"] >= tp1) if m > 0 else (bb["low"] <= tp1):
+                    out_kind, px = "TP1", tp1
+                    break
+            if px is None:
+                px = float(bars[seq[-1]]["close"]) if seq else e
+            res[out_kind] += 1
+            _delay = (datetime.datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S")
+                      - datetime.datetime.strptime(first_block[r["ts"][:10]],
+                                                   "%Y-%m-%d %H:%M:%S")).total_seconds() / 60.0
+            rows.append({"day": r["ts"][:10], "pt": (px - e) * m, "delay_min": _delay})
+
+        out["cf_n"] = len(rows)
+        out["cf_outcome"] = res
+        if rows:
+            out["cf_total_pt"] = round(sum(x["pt"] for x in rows), 4)
+            out["cf_avg_pt"] = round(out["cf_total_pt"] / len(rows), 4)
+            # (d) 재개 지연 구간별 — 두 조각을 **함께** 낸다. 한쪽만 보면 오독한다.
+            #   kept_pt   : 재개 전까지 계속 차단한 구간의 신호 손익
+            #               → (-)면 그 구간 차단이 이득(손실을 막았다)
+            #   resumed_pt: 재개 후 신호 손익 → (+)면 재개가 이득(이익을 되찾았다)
+            #   net_pt    : 재개 정책의 순효과 = resumed_pt (차단 유지분은 어느
+            #               지연을 고르든 그대로 회피되므로 비교에서 상쇄된다)
+            resume = {}
+            for dly in cr.get("resume_delay_min", [0, 15, 30, 60]):
+                _d = float(dly)
+                after = [x for x in rows if x["delay_min"] >= _d]
+                before = [x for x in rows if x["delay_min"] < _d]
+                resume[str(dly)] = {
+                    "n": len(after),
+                    "pt": round(sum(x["pt"] for x in after), 4),
+                    "n_kept": len(before),
+                    "kept_pt": round(sum(x["pt"] for x in before), 4),
+                }
+            out["resume_delay"] = resume
+            # 일자단위(313차) — 차단일이 여러 날 쌓이면 부호검정이 가능해진다
+            _dm = {}
+            for x in rows:
+                _dm.setdefault(x["day"], []).append(x["pt"])
+            out.update(_paired_day_summary(
+                [float(np.mean(v)) for _, v in sorted(_dm.items())],
+                float(cr.get("alpha", 0.05))))
+
+    # ── 판정 — 표본이 찰 때까지 OBSERVE ─────────────────────────
+    _min_a = int(cr.get("min_activations", 5))
+    _min_d = int(cr.get("min_days", 5))
+    if out["n_binding"] < _min_a or out["n_binding_days"] < _min_d:
+        out["reason"] = (
+            "구속 발동 %d건 / %d거래일 (필요 %d건 / %d일) — 관찰 단계. "
+            "실측 발동빈도로는 약 4개월 스케일이다"
+            % (out["n_binding"], out["n_binding_days"], _min_a, _min_d))
     return out
 
 
@@ -5494,6 +5768,7 @@ def build_report(days: int) -> tuple:
     pse = eval_phantom_stop_edge()           # [35] MW0602 424차 후속
     gxp = eval_grade_x_promotion()           # [36] MW0602 424차 후속
     hmd = eval_hurst_meanrevert_drag()       # [37] MW0602 424차 후속
+    pgl = eval_profit_guard_l1_watch()       # [38] MW0602 426차
     off = eval_offline_geometry_channels()
 
     metrics = {
@@ -5517,7 +5792,7 @@ def build_report(days: int) -> tuple:
         "sizing_inversion_watch": siw, "mean_revert_size_watch": mrs,
         "toxicity_recalib_watch": trw, "toxicity_reduce_mult_shadow": trm,
         "phantom_stop_edge": pse, "grade_x_promotion": gxp,
-        "hurst_meanrevert_drag": hmd,
+        "hurst_meanrevert_drag": hmd, "profit_guard_l1_watch": pgl,
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
         "quantile_tp_shadow": off.get("quantile_tp_shadow"),
@@ -5785,6 +6060,16 @@ def build_report(days: int) -> tuple:
                 format(int((hmd.get("cum_krw") or {}).get("mean_revert", 0) or 0), ","),
                 hmd.get("paired_days", "—"), hmd.get("mean_diff", 0.0),
                 hmd.get("sign_p", "—")))))
+    _pgc = pgl.get("live_config") or {}
+    L.append("| [38] ProfitGuard-L1 피크 트레일링 | %s | %s |" % (
+        _fmt_channel_verdict(pgl),
+        pgl.get("reason") or (
+            "구속발동 %s건/%s일 · 차단신호 %s건 반사실 %+.2fpt · 운영 %s원/%.0f%%%s" % (
+                pgl.get("n_binding", "—"), pgl.get("n_binding_days", "—"),
+                pgl.get("n_blocked_signals", 0), pgl.get("cf_total_pt", 0.0),
+                format(int(_pgc.get("activation_krw", 0) or 0), ","),
+                float(_pgc.get("ratio", 0) or 0) * 100,
+                " ⚠설정출처=prefs" if _pgc.get("diverged") else ""))))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -7315,6 +7600,111 @@ def build_report(days: int) -> tuple:
     L.append("> ")
     L.append("> 처방 축은 [29]와 동일하다 — qty=1에서 사이즈 축소는 no-op이므로")
     L.append("> **등급 강등/임계값 이동** 축으로 설계할 것(`sizing_prescription_axis` 참조).")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    L.append("## [38] ProfitGuard-L1 피크 트레일링 (MW0602 426차)")
+    L.append("")
+    L.append("**희귀사건 채널이다.** 0804 점검이 L1을 \"오늘 최대 공로자\"로 적었으나")
+    L.append("검증에서 **과장으로 확인**됐다 — 캠페인 전체에서 구속력 있는 발동은 1회뿐이고,")
+    L.append("그 하루의 차단 40건 반사실은 TP1 24 / STOP 16, 누적 **-1.87pt(-93,492원)** 로")
+    L.append("박빙이었다. 판정을 서두르지 않도록 min_activations를 걸어 둔다.")
+    L.append("")
+    if _pgc.get("diverged"):
+        L.append("> 🔴 **운영 파라미터가 코드에 없다.** 라이브 값은 `%s`에서 오며")
+        L[-1] = L[-1] % _pgc.get("prefs_path", "—")
+        L.append("> 대시보드에서 **장중 변경이 가능**하다 — 판정 기준선이 코드 리뷰로")
+        L.append("> 보이지 않고 세션 중에 바뀔 수도 있다는 뜻이다.")
+        L.append("> ")
+        L.append("> | | 발동금액 | 비율 |")
+        L.append("> |---|---|---|")
+        L.append("> | **운영(prefs)** | **%s원** | **%.0f%%** |" % (
+            format(int(_pgc.get("activation_krw", 0)), ","),
+            float(_pgc.get("ratio", 0)) * 100))
+        L.append("> | 코드 기본값 | %s원 | %.0f%% |" % (
+            format(int(_pgc.get("code_activation_krw", 0)), ","),
+            float(_pgc.get("code_ratio", 0)) * 100))
+        L.append("> ")
+        L.append("> prefs 최종수정: %s · **아래 수치는 전부 운영값 기준**이다."
+                 % _pgc.get("prefs_mtime", "—"))
+        L.append("")
+    L.append("- 발동 %s회 (그중 **구속 %s회 / %s거래일**) · 전체 %s거래일" % (
+        pgl.get("n_fire", "—"), pgl.get("n_binding", "—"),
+        pgl.get("n_binding_days", "—"), pgl.get("n_days_total", "—")))
+    if pgl.get("fires"):
+        L.append("")
+        L.append("| 거래일 | 피크 | 발동 | 발동후 진입 | 그 손익 | 구속? |")
+        L.append("|---|---|---|---|---|---|")
+        for f in pgl["fires"]:
+            L.append("| %s | %s원 | %s | %s건 | %s원 | %s |" % (
+                f["day"], format(int(f["peak_krw"]), ","), f["halt_ts"][11:16],
+                f["n_after"], format(int(f["after_pnl_krw"]), ","),
+                "**예**" if f["binding"] else "아니오"))
+        L.append("")
+        L.append("> **발동했다고 다 같은 발동이 아니다.** 발동 시각 뒤에 진입 기회가")
+        L.append("> 없었으면(장 마감·14:50 신규금지) 무해무익이다 — 실제로 07-20이 그랬다")
+        L.append("> (14:56 발동, 마지막 진입 14:33). 그래서 표본 단위는 **구속 발동**이다.")
+        L.append("")
+    if pgl.get("cf_n"):
+        _o = pgl.get("cf_outcome") or {}
+        L.append("- 차단 신호 반사실(%s분 창): **%s건** · TP1 %s / STOP %s / 무결정 %s" % (
+            (VALIDATION_CAMPAIGN.get("profit_guard_l1_watch") or {}).get("cf_window_min", 30),
+            pgl.get("cf_n"), _o.get("TP1", 0), _o.get("STOP", 0), _o.get("NEITHER", 0)))
+        L.append("- 누적 **%+.2fpt** (건당 %+.3fpt) — **(+)면 차단이 손해, (-)면 이득**" % (
+            pgl.get("cf_total_pt", 0.0), pgl.get("cf_avg_pt", 0.0)))
+        if pgl.get("paired_days"):
+            L.append("- 일자단위(313차): %s/%s일, p=%s" % (
+                pgl.get("days_positive"), pgl.get("paired_days"), pgl.get("sign_p")))
+        L.append("")
+    if pgl.get("resume_delay"):
+        L.append("**(d) 재개 조건 — 현재는 재개가 없다.** `_TrailingGuard.is_halted`가")
+        L.append("`reset_daily()`까지 유지돼 발동일은 장 마감까지 신규진입이 막힌다.")
+        L.append("아래는 \"발동 N분 뒤 재개했다면 그 뒤 차단분이 얼마였나\"이다.")
+        L.append("")
+        L.append("| 재개 지연 | 차단 유지분 | 그 손익 | 재개 후 진입분 | 그 손익 |")
+        L.append("|---|---|---|---|---|")
+        for _k in sorted(pgl["resume_delay"], key=lambda x: int(x)):
+            _v = pgl["resume_delay"][_k]
+            L.append("| **%s분**%s | %s건 | %+.2fpt | %s건 | %+.2fpt |" % (
+                _k, " (현행)" if _k == "0" else "",
+                _v.get("n_kept", 0), _v.get("kept_pt", 0.0), _v["n"], _v["pt"]))
+        L.append("")
+        L.append("> **두 열을 함께 읽어야 한다.** \"차단 유지분 손익\"이 (-)면 그 구간을")
+        L.append("> 막은 것이 이득이고, \"재개 후 진입분 손익\"이 (+)면 재개가 이득이다.")
+        L.append("> 즉 **(-, +) 조합이 나오는 지연이 최적**이다 — 나쁜 구간은 막고 좋은")
+        L.append("> 구간은 되찾는다.")
+        L.append("> ")
+        L.append("> ⚠ **신호 수 ≠ 진입 수다.** 연속 분봉의 같은 방향 신호가 그대로 세어져")
+        L.append("> 있고, 실제로는 포지션 보유·쿨다운·14:50 신규금지가 걸린다. 그래서 위")
+        L.append("> pt 합계는 **상한**이지 기대손익이 아니다([6]·[7]과 같은 한계).")
+        L.append("> 반사실 자체도 상방은 TP1에서 자르고 하방은 스톱까지 세는 비대칭이 있다.")
+        L.append("")
+    if pgl.get("sweep"):
+        L.append("**(c) 임계 스윕 — 전 거래일 소급 재현.** 이 축은 반사실이 아니다:")
+        L.append("발동하지 않았던 날은 그 뒤 진입이 실제로 체결돼 **실현손익이 남아 있다.**")
+        L.append("")
+        L.append("| 발동금액 | 비율 | 발동 | 구속 | 차단될 포지션 | 지킨 금액 |")
+        L.append("|---|---|---|---|---|---|")
+        for s in pgl["sweep"]:
+            _cur = (abs(s["activation_krw"] - float(_pgc.get("activation_krw", -1))) < 1e-9
+                    and abs(s["ratio"] - float(_pgc.get("ratio", -1))) < 1e-9)
+            L.append("| %s%s | %.0f%% | %s | %s | %s | %s원 |" % (
+                format(int(s["activation_krw"]), ","), " **(운영)**" if _cur else "",
+                s["ratio"] * 100, s["n_fire"], s["n_binding"],
+                s["n_blocked_pos"], format(int(s["saved_krw"]), ",")))
+        L.append("")
+        L.append("> \"지킨 금액\"이 (+)면 차단이 손실을 막은 것, (-)면 이익을 놓친 것이다.")
+        L.append("> **전 격자에서 0이면 L1은 사실상 무발동**이라는 뜻이다 — 임계를 조이는")
+        L.append("> 논의보다 \"이 레이어가 지금 무엇을 하고 있는가\"가 먼저다.")
+        L.append("")
+    if pgl.get("reason"):
+        L.append("- %s" % pgl["reason"])
+        L.append("")
+    L.append("> **판정을 서두르지 말 것.** 실측 발동빈도(16거래일에 구속 1회)로는")
+    L.append("> `min_activations=5`가 약 **4개월** 스케일이다([8] KellySkip과 같은 계열).")
+    L.append("> 그 사이에 판정을 흉내내면 단일일 관측이 정책이 된다 — 0804에 실제로")
+    L.append("> 그럴 뻔했고, 이 채널은 그 재발을 막으려고 만들었다.")
     L.append("")
     L.append("---")
     L.append("")
