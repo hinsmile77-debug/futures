@@ -2728,6 +2728,183 @@ def eval_hurst_meanrevert_drag() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
+# [39] confidence 판별력 감시 (MW0602 427차) — min_conf의 선행조건
+# ══════════════════════════════════════════════════════════════
+
+def _split_half_gap(pairs):
+    """(conf, correct) 목록 → 상위절반 − 하위절반 적중률 격차.
+
+    중앙값 기준 이분이 아니라 **정렬 후 절반**이다 — conf가 이산적으로 뭉쳐 있으면
+    (실측: 0.35~0.40 구간에 44%가 몰린다) 중앙값 분할이 한쪽으로 쏠린다.
+    """
+    n = len(pairs)
+    if n < 4:
+        return None
+    srt = sorted(pairs, key=lambda x: x[0])
+    h = n // 2
+    lo = sum(x[1] for x in srt[:h]) / float(h)
+    hi = sum(x[1] for x in srt[h:]) / float(n - h)
+    return {"n": n, "lo_acc": round(lo, 4), "hi_acc": round(hi, 4),
+            "gap_pp": round((hi - lo) * 100.0, 3)}
+
+
+def eval_conf_discrimination_watch() -> dict:
+    """[39] confidence 판별력 감시 (MW0602 427차) — 사전등록.
+
+    **min_conf 자체가 아니라 그 선행조건을 잰다.** 0804 조사에서 confidence가
+    승/패를 전혀 가르지 못함이 확인됐고(앙상블 격차 -0.0015, 모델축 +0.4%p),
+    그 상태에서 min_conf를 조이면 **무작위로 덜어낼 뿐**임이 스윕으로 확증됐다
+    (잘려나간 진입 승률 62~63% = 전체 승률 63.0%).
+
+    그래서 이 채널의 질문은 "min_conf를 얼마로 할까"가 아니라
+    **"conf가 정보를 갖기 시작했는가"** 다. 그 순간이 오면 그때 min_conf를 논한다.
+
+    상세 근거·임계 유도는 config.settings의 채널 주석 참조.
+    """
+    cr = VALIDATION_CAMPAIGN.get("conf_discrimination_watch", {})
+    alpha = float(cr.get("alpha", 0.05))
+    out = {"verdict": "INSUFFICIENT", "axes": {}}
+
+    # ── (B) 모델축 — predictions.confidence vs correct ──────────
+    _excl = set(cr.get("exclude_horizons", []) or [])
+    try:
+        with _conn(PREDICTIONS_DB) as conn:
+            prows = conn.execute(
+                "SELECT substr(ts,1,10) AS d, horizon, confidence AS c, correct AS k "
+                "  FROM predictions "
+                " WHERE ts >= ? AND correct IS NOT NULL AND confidence IS NOT NULL",
+                (_campaign_start(),)).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        out["no_data"] = True
+        return out
+
+    kept = [(r["d"], float(r["c"]), int(r["k"])) for r in prows
+            if r["horizon"] not in _excl]
+    out["excluded_horizons"] = sorted(_excl)
+    out["n_pred_excluded"] = len(prows) - len(kept)
+
+    mb = {"n": len(kept), "n_days": len({d for d, _, _ in kept})}
+    agg = _split_half_gap([(c, k) for _, c, k in kept])
+    if agg:
+        mb.update(agg)
+        # 일자 층화 — **같은 날 안에서** 상/하위 절반을 가른다. 날짜 수준 교란
+        # (그날은 변동성이 컸다)이 판별력으로 위장하는 것을 막는다(421차 Phase A 방식).
+        day_gaps = []
+        _byday = {}
+        for d, c, k in kept:
+            _byday.setdefault(d, []).append((c, k))
+        for d, v in sorted(_byday.items()):
+            g = _split_half_gap(v)
+            if g:
+                day_gaps.append(g["gap_pp"])
+        mb["stratified"] = _paired_day_summary(day_gaps, alpha)
+    out["axes"]["model"] = mb
+
+    # ── (A) 앙상블축 — 진입한 포지션의 승/패 conf 격차 ───────────
+    try:
+        with _conn(TRADES_DB) as conn:
+            trows = conn.execute(
+                "SELECT entry_ts, SUM(COALESCE(net_pnl_krw, pnl_krw)) AS k "
+                "  FROM trades WHERE entry_ts >= ? AND exit_ts IS NOT NULL AND %s "
+                " GROUP BY entry_ts" % _SYSTEM_AUTO_SQL, (_campaign_start(),)).fetchall()
+        with _conn(PREDICTIONS_DB) as conn:
+            erows = conn.execute(
+                "SELECT ts, confidence FROM ensemble_decisions "
+                " WHERE ts >= ? AND entry_executed = 1 AND confidence IS NOT NULL",
+                (_campaign_start(),)).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    _ed = {r["ts"][:16]: float(r["confidence"]) for r in erows}
+    rec, unmatched = [], []
+    for r in trows:
+        key = r["entry_ts"][:16]
+        if key in _ed:
+            rec.append((r["entry_ts"][:10], _ed[key], float(r["k"] or 0.0)))
+        else:
+            unmatched.append(r["entry_ts"])
+    # 데이터 무결성 — 이 축의 표본을 직접 깎는다. 0804 실측 19/100건 미매칭.
+    out["n_positions_total"] = len(trows)
+    out["n_matched"] = len(rec)
+    out["n_unmatched"] = len(unmatched)
+    out["unmatched_days"] = sorted({x[:10] for x in unmatched})
+    out["match_rate"] = round(len(rec) / float(len(trows)), 4) if trows else 0.0
+
+    eb = {"n": len(rec), "n_days": len({d for d, _, _ in rec})}
+    win = [c for _, c, k in rec if k > 0]
+    los = [c for _, c, k in rec if k <= 0]
+    eb["n_win"], eb["n_loss"] = len(win), len(los)
+    if win and los:
+        eb["win_conf"] = round(float(np.mean(win)), 4)
+        eb["loss_conf"] = round(float(np.mean(los)), 4)
+        eb["gap"] = round(eb["win_conf"] - eb["loss_conf"], 4)
+        eb["conf_sd"] = round(float(np.std([c for _, c, _ in rec], ddof=1)), 4)
+        if eb["conf_sd"] > 0:
+            eb["cohen_d"] = round(eb["gap"] / eb["conf_sd"], 3)
+        # 일자단위 — 승·패가 **둘 다 있는 날**만이 실질 표본이다
+        _dg = []
+        _bd = {}
+        for d, c, k in rec:
+            _bd.setdefault(d, []).append((c, k))
+        for d, v in sorted(_bd.items()):
+            w = [c for c, k in v if k > 0]
+            l = [c for c, k in v if k <= 0]
+            if w and l:
+                _dg.append(float(np.mean(w) - np.mean(l)))
+        eb["stratified"] = _paired_day_summary(_dg, alpha)
+    out["axes"]["ensemble"] = eb
+
+    # ── 판정 — 효과크기 AND 일자단위, 두 축 중 하나라도 통과하면 지지 ──
+    _minp = int(cr.get("min_predictions", 2000))
+    _minpos = int(cr.get("min_positions", 40))
+    _mind = int(cr.get("min_days", 6))
+    _gap_pp = float(cr.get("model_gap_min_pp", 3.0))
+    _gap_ens = float(cr.get("ens_gap_min", 0.025))
+
+    model_ready = mb.get("n", 0) >= _minp
+    ens_ready = (eb.get("n", 0) >= _minpos
+                 and (eb.get("stratified") or {}).get("paired_days", 0) >= _mind)
+    if not model_ready and not ens_ready:
+        out["reason"] = ("표본 부족 — 모델축 %d건(필요 %d) / 앙상블축 %d건·짝지은 %d일"
+                         "(필요 %d건·%d일)" % (
+                             mb.get("n", 0), _minp, eb.get("n", 0),
+                             (eb.get("stratified") or {}).get("paired_days", 0),
+                             _minpos, _mind))
+        return out
+
+    model_hit = bool(
+        model_ready
+        and mb.get("gap_pp", 0.0) >= _gap_pp
+        and (mb.get("stratified") or {}).get("significant"))
+    ens_hit = bool(
+        ens_ready
+        and eb.get("gap", 0.0) >= _gap_ens
+        and (eb.get("stratified") or {}).get("significant"))
+    out["model_hit"], out["ens_hit"] = model_hit, ens_hit
+
+    if model_hit or ens_hit:
+        out["verdict"] = "SUPPORTS_HYP"
+        out["recommendation"] = (
+            "confidence 판별력 출현 — %s축이 효과크기·일자단위 검정을 동시 통과했다. "
+            "**min_conf 재검토를 주간회의 안건으로 올릴 시점이다**(0804 §P2가 보류한 "
+            "바로 그 안건). 임계는 이 시점의 conf 분포로 새로 잡을 것 — 설계값 "
+            "0.54~0.67은 구 분포 기준이라 그대로 쓰면 진입이 사라진다"
+            % ("모델" if model_hit else "앙상블"))
+    else:
+        out["verdict"] = "REJECTS_HYP"
+        out["recommendation"] = (
+            "판별력 없음 — 모델축 격차 %+.2f%%p(임계 %.1f) / 앙상블축 %+.4f(임계 %.3f). "
+            "**min_conf 조정은 무의미하다**: 정보 없는 신호를 조이면 무작위로 덜어낼 "
+            "뿐이다(0804 스윕 실측 — 잘려나간 진입 승률 62~63%% = 전체 63.0%%). "
+            "선행조건은 §P1(방향모델 랜덤) 해소이며, 새 정보원이 들어오면 이 채널이 "
+            "먼저 반응한다" % (mb.get("gap_pp", 0.0), _gap_pp,
+                              eb.get("gap", 0.0), _gap_ens))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
 # [38] ProfitGuard-L1 피크 트레일링 (MW0602 426차) — 희귀사건 채널
 # ══════════════════════════════════════════════════════════════
 
@@ -5769,6 +5946,7 @@ def build_report(days: int) -> tuple:
     gxp = eval_grade_x_promotion()           # [36] MW0602 424차 후속
     hmd = eval_hurst_meanrevert_drag()       # [37] MW0602 424차 후속
     pgl = eval_profit_guard_l1_watch()       # [38] MW0602 426차
+    cdw = eval_conf_discrimination_watch()   # [39] MW0602 427차
     off = eval_offline_geometry_channels()
 
     metrics = {
@@ -5793,6 +5971,7 @@ def build_report(days: int) -> tuple:
         "toxicity_recalib_watch": trw, "toxicity_reduce_mult_shadow": trm,
         "phantom_stop_edge": pse, "grade_x_promotion": gxp,
         "hurst_meanrevert_drag": hmd, "profit_guard_l1_watch": pgl,
+        "conf_discrimination_watch": cdw,
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
         "quantile_tp_shadow": off.get("quantile_tp_shadow"),
@@ -6070,6 +6249,18 @@ def build_report(days: int) -> tuple:
                 format(int(_pgc.get("activation_krw", 0) or 0), ","),
                 float(_pgc.get("ratio", 0) or 0) * 100,
                 " ⚠설정출처=prefs" if _pgc.get("diverged") else ""))))
+    _cdm = (cdw.get("axes") or {}).get("model") or {}
+    _cde = (cdw.get("axes") or {}).get("ensemble") or {}
+    L.append("| [39] confidence 판별력 | %s | %s |" % (
+        _fmt_channel_verdict(cdw),
+        cdw.get("reason") or (
+            "모델축 %+.2f%%p(n=%s, 일자 p=%s) · 앙상블축 %+.4f(d=%s, 승%s/패%s) "
+            "· 매칭 %s/%s" % (
+                _cdm.get("gap_pp", 0.0), _cdm.get("n", "—"),
+                (_cdm.get("stratified") or {}).get("sign_p", "—"),
+                _cde.get("gap", 0.0), _cde.get("cohen_d", "—"),
+                _cde.get("n_win", "—"), _cde.get("n_loss", "—"),
+                cdw.get("n_matched", "—"), cdw.get("n_positions_total", "—")))))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -7705,6 +7896,96 @@ def build_report(days: int) -> tuple:
     L.append("> `min_activations=5`가 약 **4개월** 스케일이다([8] KellySkip과 같은 계열).")
     L.append("> 그 사이에 판정을 흉내내면 단일일 관측이 정책이 된다 — 0804에 실제로")
     L.append("> 그럴 뻔했고, 이 채널은 그 재발을 막으려고 만들었다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    L.append("## [39] confidence 판별력 (MW0602 427차)")
+    L.append("")
+    L.append("**min_conf 자체가 아니라 그 선행조건을 잰다.** 0804 §P2는 \"동적 min_conf가")
+    L.append("랜덤 기준선(0.33)까지 내려앉아 무력화됐다\"를 문제로 제기했는데, 조사 결과")
+    L.append("**문제 제기의 방향이 틀렸다** — 게이트는 정보 없는 신호를 걸러낼 수 없다.")
+    L.append("")
+    L.append("| 0804 조사 실측 | 결과 |")
+    L.append("|---|---|")
+    L.append("| min_conf 0.40 상향 | 손익 **−407,558원** |")
+    L.append("| min_conf 0.45 상향 | 손익 **−749,942원** |")
+    L.append("| 잘려나간 진입 승률 | **62~63%** = 전체 승률 **63.0%** |")
+    L.append("| 설계값 0.54 복원 시 | 진입 81건 → **1건** (진입 conf 최댓값 0.579) |")
+    L.append("")
+    L.append("> 잘려나가는 진입의 승률이 전체와 같다는 것이 직접 증거다 — 게이트가 품질")
+    L.append("> 필터가 아니라 **무작위 샘플러**로 작동한다. 그래서 질문을 바꿨다:")
+    L.append("> \"min_conf를 얼마로 할까\"가 아니라 **\"conf가 정보를 갖기 시작했는가\"**.")
+    L.append("")
+    _cr39 = VALIDATION_CAMPAIGN.get("conf_discrimination_watch") or {}
+    L.append("**(B) 모델축** — `predictions.confidence` vs `correct` (두꺼운 축)")
+    L.append("")
+    if _cdm.get("n"):
+        L.append("- n=**%s**건 / %s거래일 · 퇴역 호라이즌 %s 제외 %s건" % (
+            format(_cdm["n"], ","), _cdm.get("n_days", "—"),
+            cdw.get("excluded_horizons") or "—",
+            format(cdw.get("n_pred_excluded", 0), ",")))
+        L.append("- 하위절반 %.1f%% vs 상위절반 %.1f%% → **격차 %+.2f%%p** (임계 %.1f%%p)" % (
+            float(_cdm.get("lo_acc", 0)) * 100, float(_cdm.get("hi_acc", 0)) * 100,
+            _cdm.get("gap_pp", 0.0), float(_cr39.get("model_gap_min_pp", 3.0))))
+        _s = _cdm.get("stratified") or {}
+        if _s.get("paired_days"):
+            L.append("- 일자 층화(같은 날 안에서 상/하위 분할): %s/%s일 양수, "
+                     "**부호검정 p=%s**" % (
+                         _s.get("days_positive"), _s.get("paired_days"), _s.get("sign_p")))
+    else:
+        L.append("- 표본 없음")
+    L.append("")
+    L.append("> ⚠ **30m을 제외한다.** 296차가 앙상블·게이트에서 퇴역시킨 호라이즌인데")
+    L.append("> `predictions`에는 계속 쌓인다. 실측으로 `conf≥0.60` 구간의 **88%가 30m**")
+    L.append("> 이라, 포함하면 퇴역 모델이 판정을 끌고 간다.")
+    L.append("")
+    L.append("**(A) 앙상블축** — min_conf가 **실제로 게이트하는 값** (얇은 축)")
+    L.append("")
+    if _cde.get("n_win") and _cde.get("n_loss"):
+        L.append("- 승 %s건 평균 conf **%.4f** / 패 %s건 **%.4f** → **격차 %+.4f** "
+                 "(임계 %.3f · Cohen d=%s)" % (
+                     _cde["n_win"], _cde.get("win_conf", 0), _cde["n_loss"],
+                     _cde.get("loss_conf", 0), _cde.get("gap", 0),
+                     float(_cr39.get("ens_gap_min", 0.025)), _cde.get("cohen_d", "—")))
+        L.append("- 진입 conf 표준편차 %s — 임계 %.3f은 약 %.2f sd에 해당한다" % (
+            _cde.get("conf_sd", "—"), float(_cr39.get("ens_gap_min", 0.025)),
+            float(_cr39.get("ens_gap_min", 0.025)) / float(_cde.get("conf_sd") or 1)))
+        _s2 = _cde.get("stratified") or {}
+        if _s2.get("paired_days"):
+            L.append("- 일자단위(승·패가 둘 다 있는 날): %s/%s일, **p=%s**" % (
+                _s2.get("days_positive"), _s2.get("paired_days"), _s2.get("sign_p")))
+    else:
+        L.append("- 승 또는 패 표본이 없어 격차를 낼 수 없다")
+    if cdw.get("n_unmatched"):
+        L.append("- 🟡 **데이터 무결성**: 포지션 %s건 중 %s건이 `ensemble_decisions` "
+                 "`entry_executed=1` 기록과 매칭되지 않는다(매칭률 %.1f%%). 이 축의 "
+                 "표본을 직접 깎는다 — 미매칭일: %s" % (
+                     cdw.get("n_positions_total"), cdw.get("n_unmatched"),
+                     float(cdw.get("match_rate", 0)) * 100,
+                     ", ".join(cdw.get("unmatched_days") or []) or "—"))
+    L.append("")
+    if cdw.get("recommendation"):
+        L.append("- **권고**: %s" % cdw["recommendation"])
+        L.append("")
+    # 임계는 settings에서 읽는다 — 본문에 상수를 복붙하면 값과 설명이 갈라진다.
+    _mg = float(_cr39.get("model_gap_min_pp", 3.1))
+    _eg = float(_cr39.get("ens_gap_min", 0.025))
+    L.append("> **임계는 검출력에서 유도했다**(관측 전 고정). 모델축은 n≈14,770 절반분할의")
+    L.append("> 격차 SE가 0.78%%p라 검출하한(1.96SE)이 1.52%%p이고, 임계 %.1f%%p는 그 "
+             "**2배(3.04%%p) 이상**이다 —" % _mg)
+    L.append("> 매주 들여다보는 채널이라 경계선 값이 우연히 넘는 것을 막을 여유가 필요하다.")
+    L.append("> 앙상블축 %.3f은 진입 conf sd 0.0556 기준 **Cohen d≈%.2f**로, 이보다 작으면"
+             % (_eg, _eg / 0.0556))
+    L.append("> 승/패 conf 분포가 거의 완전히 겹쳐 어떤 임계도 둘을 가르지 못한다.")
+    L.append("> ")
+    L.append("> **두 축 모두 효과크기 AND 일자단위 검정을 함께 요구한다.** 0804에")
+    L.append("> pooled z=−4.95가 일자단위로는 p=0.42였던 전례를 그대로 겪었다")
+    L.append("> (표본의 56%가 하루, 88%가 퇴역 30m).")
+    L.append("> ")
+    L.append("> **SUPPORTS_HYP로 바뀌는 날이 min_conf를 다시 논할 시점이다.** 그때도")
+    L.append("> 설계값 0.54~0.67을 그대로 쓰면 안 된다 — 구 conf 분포 기준이라 진입이")
+    L.append("> 사라진다. 그 시점의 분포로 새로 잡을 것.")
     L.append("")
     L.append("---")
     L.append("")
