@@ -3501,7 +3501,11 @@ class EntryPanel(QWidget):
             "  [431차] 품질군(Exec·Meta·Toxicity·Hurst)은 곱셈이 아니라 min() 합성 —\n"
             "  가장 강한 축소 하나가 지배하고, 반올림은 마지막에 한 번만 한다.\n"
             "  안전군(Degraded·pre_retrain·VolBurst·L2)은 종전대로 곱셈.\n"
-            "  상한: MAX_CONTRACTS (%d계약) / 하한: 1계약" % MAX_CONTRACTS
+            # ⚠ 이 툴팁 본문에는 "잔고 × 1%", "58%→0.6" 등 리터럴 %가 들어 있다.
+            #    인접 문자열은 컴파일 시 하나로 합쳐지므로 여기에 % 포매팅을 쓰면
+            #    그 리터럴 %까지 변환지정자로 해석돼 ValueError가 난다(431차 기동실패).
+            #    → 문자열 결합으로만 값을 끼워 넣을 것.
+            "  상한: MAX_CONTRACTS (" + str(MAX_CONTRACTS) + "계약) / 하한: 1계약"
         )
         _TIP_ENTRY = (
             "【진입수량 계산 흐름】\n"
