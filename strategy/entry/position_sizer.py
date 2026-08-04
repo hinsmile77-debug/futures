@@ -30,9 +30,43 @@ CONFIDENCE_MULT_TABLE = [
     (0.00, 0.6),
 ]
 
+# ── [MW0601 431차 / Phase 2-1, 2026-08-05] 재매핑 섀도우 표 — **미적용** ──────────
+#
+# **문제**: 위 운영 표의 임계(0.58~0.70)가 라이브 신뢰도 분포와 정의역이 어긋난다.
+# 방향 있는 사이클 n=2,540(2026-07-16~08-04) 실측: p50=0.346 / p75=0.375 / p90=0.402 /
+# p95=0.425 / **max=0.628**, `conf >= 0.58`이 0.20%·`>= 0.65`가 0.00%.
+# 결과적으로 상위 4단(0.8/1.0/1.2/1.5)이 **도달 불가**이고, `[Sizer]` 로그의 신뢰도배수는
+# 652건 중 **649건(99.5%)이 최하단 0.6 고정**이다. 즉 사이저의 신뢰도 축은 상수다.
+#
+# **왜 임계만 옮기고 배수는 그대로인가**: 배수 값(0.6/0.8/1.0/1.2/1.5)은 설계 명세 8-4가
+# 정한 정책이고, 어긋난 것은 그 정책을 적용할 **입력 스케일**이다. Platt 보정 이후
+# 신뢰도가 0.3대에 눌린 것이 원인이므로, 고칠 곳은 배수가 아니라 임계다.
+# 임계는 위 실측 분위수를 그대로 쓴다 — **중앙값이 여전히 0.6**이라 중심 경향은 안 바뀌고
+# 상위 절반만 반응한다(기대 평균 배수 0.6 → 약 0.785). 사이즈를 일괄 키우는 표가 아니다.
+#
+# ⚠ **이 표는 어떤 사이징 경로도 읽지 않는다.** `compute()`가 `conf_mult_shadow` 키로
+# 값만 반환하고 main.py가 DB에 기록할 뿐이다. 라이브 적용은 표본 축적 후 주간회의
+# 수동 결정(313차 — 사후 데이터 기반 정책 변경 금지 원칙).
+# 근거: dev_memory/DECISION_LOG.md 431차, utils/db_utils.py `conf_mult_shadow` 주석.
+CONFIDENCE_MULT_TABLE_SHADOW = [
+    (0.425, 1.5),   # p95+
+    (0.402, 1.2),   # p90~p95
+    (0.375, 1.0),   # p75~p90
+    (0.346, 0.8),   # p50~p75
+    (0.000, 0.6),   # p50 미만 — 현행 표와 동일한 최하단
+]
+
 
 def _confidence_mult(confidence: float) -> float:
     for threshold, mult in CONFIDENCE_MULT_TABLE:
+        if confidence >= threshold:
+            return mult
+    return 0.6
+
+
+def _confidence_mult_shadow(confidence: float) -> float:
+    """[431차] 재매핑 표 배수 — 계측 전용, 사이징에 쓰지 말 것."""
+    for threshold, mult in CONFIDENCE_MULT_TABLE_SHADOW:
         if confidence >= threshold:
             return mult
     return 0.6
@@ -170,20 +204,31 @@ class PositionSizer:
         # 스킵 로직 도입 여부를 판단할 데이터로 축적한다(Phase 0 RM분석: 이 플래그가
         # True였던 과거 실거래 표본에서 손실이 압도적으로 몰려있었음을 확인 — 근거는
         # dev_memory/NEXT_TODO.md 311차 항목).
+        # [MW0601 431차 / Phase 2-1] 재매핑 표 섀도우 — 계측 전용.
+        # conf_mult 하나만 갈아끼운 반사실 수량이며, 아래 quantity 계산에는 절대
+        # 관여하지 않는다(별도 지역변수 → 결과 dict의 conf_mult_shadow/qty_shadow).
+        conf_mult_shadow = _confidence_mult_shadow(confidence)
+
         kelly_advised_skip = False
+        qty_shadow = None
         if stop_risk <= 0:
             quantity = min_qty
+            qty_shadow = min_qty
         else:
             raw_qty = (base_risk * conf_mult * regime_mult * grade_mult
                        * adaptive_kelly_mult * safety_mults) / stop_risk
             kelly_advised_skip = raw_qty < 1.0
             quantity = max(min_qty, min(int(raw_qty), MAX_CONTRACTS))
+            # 동일 식에서 conf_mult만 교체 — 다른 항은 전부 실제 사이클 값 그대로다.
+            _raw_qty_shadow = raw_qty / conf_mult * conf_mult_shadow if conf_mult else 0.0
+            qty_shadow = max(min_qty, min(int(_raw_qty_shadow), MAX_CONTRACTS))
 
         # [360차] 역추세 진입 캡 — raw_qty/kelly_advised_skip 계산 완료 후 최종 단계에서만
         # 클램프. size_mult(grade_mult)를 깎는 방식 대신 여기서 처리하는 이유는 위 docstring
         # max_qty_override 설명 참조 — kelly_advised_skip 의미 오염 방지.
         if max_qty_override is not None:
             quantity = min(quantity, int(max_qty_override))
+            qty_shadow = min(qty_shadow, int(max_qty_override))
 
         logger.info(
             "[Sizer] %s선물 실효잔고=%s(실제잔고=%s) 기본리스크=%s 신뢰도배수=%s 레짐배수=%s "
@@ -193,7 +238,11 @@ class PositionSizer:
             conf_mult, regime_mult,
             safety_mults, safety_note,
             quantity, min_qty,
-            " [KellyAdvisedSkip]" if kelly_advised_skip else "",
+            (" [KellyAdvisedSkip]" if kelly_advised_skip else "")
+            # [431차] 재매핑 섀도가 실제와 갈린 사이클만 표시 — 승격 판단용 육안 신호.
+            # 같은 값이면 침묵한다(로그 노이즈 방지).
+            + ("" if qty_shadow == quantity
+               else " [ConfShadow: %.1f→%d계약]" % (conf_mult_shadow, qty_shadow)),
         )
 
         return {
@@ -207,6 +256,11 @@ class PositionSizer:
             "safety_note":         safety_note,
             "kelly_advised_skip":  kelly_advised_skip,
             "sizing_balance":      round(sizing_balance, 0),
+            # [MW0601 431차 / Phase 2-1] 계측 전용 — 소비처는 main.py의
+            # conf_mult_shadow DB 기록뿐이다. 사이징·판정 어느 경로도 읽지 않는다.
+            "conf_mult_shadow":    conf_mult_shadow,
+            "qty_shadow":          qty_shadow,
+            "grade_mult":          grade_mult,
         }
 
     def calc_size(

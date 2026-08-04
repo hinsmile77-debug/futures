@@ -617,6 +617,46 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_trs_ts ON toxicity_reduce_shadow(ts)")
+    # ── [MW0601 431차 / Phase 2-1, 2026-08-05] 신뢰도 배수 재매핑 섀도우 ───────────
+    #
+    # 계기: `PositionSizer.CONFIDENCE_MULT_TABLE`의 임계(0.58/0.60/0.65/0.70)가 라이브
+    # 신뢰도 분포와 **정의역이 어긋나** 상위 4단이 도달 불가다. 실측(2026-07-16~08-04):
+    #   · 방향 있는 사이클 n=2,540 — p50=0.346 / p90=0.402 / p95=0.425 / **max=0.628**
+    #   · conf >= 0.58 비율 **0.20%**, >= 0.65 **0.00%**
+    #   · 그래서 `[Sizer]` 로그의 신뢰도배수가 652건 중 **649건(99.5%)이 최하단 0.6 고정**
+    # 즉 사이저의 "신뢰도" 축은 상수나 다름없고, 계약수 변동은 사실상 ATR·등급만 만든다.
+    # 417차가 잡은 `trades.quantity` 단위 불일치와 같은 계열(정의역 불일치)의 계측 결함.
+    #
+    # **왜 바로 안 고치고 섀도인가**: 임계를 실측 분위수로 옮기는 것은 배수 값 자체는
+    # 그대로 두더라도 사후 데이터로 사이징을 바꾸는 행위다(313차). 라이브 적용 전에
+    # "실제로 얼마나 갈리는가"를 먼저 누적한다. `shadow_*`는 **어떤 사이징 경로도 읽지
+    # 않는다** — 기록 전용이며, 승격은 표본 축적 후 주간회의 수동 결정이다.
+    #
+    # 판독법: `qty_live == qty_shadow`인 행만 쌓이면 재매핑의 실효가 0이다(승격 무의미).
+    # 차이가 나는 행이 충분히 모이면 그때 손익과 대조한다. `qty_*`는 **사이저 단계
+    # 국소값**이며 하류 게이트 체인(품질군 min 합성·안전군 곱셈·상한)을 재시뮬레이션하지
+    # 않는다 — toxicity_reduce_shadow와 동일한 해석 한계.
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS conf_mult_shadow (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts             TEXT NOT NULL,   -- 진입 분봉 (trades.entry_ts 조인키)
+        direction      TEXT NOT NULL,   -- LONG/SHORT (실제 체결 방향)
+        grade          TEXT,            -- 진입 등급 (A/B/C)
+        confidence     REAL,            -- 사이저에 들어간 앙상블 신뢰도 (재매핑 입력)
+        conf_mult_live REAL,            -- 현행 표 배수 (실측상 거의 항상 0.6)
+        conf_mult_shad REAL,            -- 재매핑 표 배수 (섀도, 미적용)
+        regime_mult    REAL,            -- 동일 사이클 레짐 배수 (교란 분리용)
+        grade_mult     REAL,            -- 동일 사이클 등급 배수 (교란 분리용)
+        atr            REAL,            -- 동일 사이클 ATR (분모 — 계약수 변동의 실제 주역)
+        qty_live       REAL,            -- 사이저가 실제로 낸 수량
+        qty_shadow     REAL,            -- 재매핑이었다면 사이저가 냈을 수량
+        qty_entered    REAL,            -- 게이트 체인까지 거친 최종 체결 수량
+        created_at     TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_cms_ts ON conf_mult_shadow(ts)")
     # [331차 후속2, 2026-07-14] 1m 앙상블 방향투표 퇴역(역스킬 확정) 이후 "1m 활용방안 A"
     # (집행/타이밍 필터) 후보 검증용 섀도우 계측 — hurst_gate_shadow와 달리 차단된
     # 가상 진입이 아니라 **실제로 체결된** 진입에 진단 태그를 붙이는 것이라 counterfactual

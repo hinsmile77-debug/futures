@@ -3497,8 +3497,11 @@ class EntryPanel(QWidget):
             "  ② ExecutionGovernor: confidence·품질·지연 기반 reduce / block (toxicity 제외)\n"
             "  ③ MetaGate      : 메타 신뢰도 기반 사이즈 배수 조정\n"
             "  ④ ToxicityGate  : 독성 스코어 기반 reduce / block\n"
-            "  각 게이트: block → 0 / reduce → ×배수 / pass → 유지\n"
-            "  상한: MAX_CONTRACTS (10계약) / 하한: 1계약"
+            "  각 게이트: block → 0 / reduce → 배수 등록 / pass → 유지\n"
+            "  [431차] 품질군(Exec·Meta·Toxicity·Hurst)은 곱셈이 아니라 min() 합성 —\n"
+            "  가장 강한 축소 하나가 지배하고, 반올림은 마지막에 한 번만 한다.\n"
+            "  안전군(Degraded·pre_retrain·VolBurst·L2)은 종전대로 곱셈.\n"
+            "  상한: MAX_CONTRACTS (%d계약) / 하한: 1계약" % MAX_CONTRACTS
         )
         _TIP_ENTRY = (
             "【진입수량 계산 흐름】\n"
