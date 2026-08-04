@@ -2728,6 +2728,204 @@ def eval_hurst_meanrevert_drag() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
+# [42] 타점의 가치 · [43] 변동성 추정량 (MW0602 429차)
+# ══════════════════════════════════════════════════════════════
+
+def eval_entry_timing_value_watch() -> dict:
+    """[42] 타점(진입 시각)의 가치 (MW0602 429차) — 사전등록.
+
+    [40]이 방향 축만 격리했다면 여기는 **타점 축**이다. `B − C`가 체크리스트/
+    게이트가 고른 분(minute)의 기여분이다. 상세는 settings 채널 주석 참조.
+    """
+    cr = VALIDATION_CAMPAIGN.get("entry_timing_value_watch", {})
+    out = {"verdict": "INSUFFICIENT"}
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from random_entry_control import run_three_arm
+    except Exception as e:
+        out["error"] = "random_entry_control 로드 실패: %s" % e
+        out["no_data"] = True
+        return out
+    try:
+        res = run_three_arm(_campaign_start(), int(cr.get("trials", 400)),
+                            int(cr.get("seed", 429)),
+                            tuple(cr.get("entry_window", ("09:05", "14:49"))))
+    except Exception as e:
+        out["error"] = "시뮬 실패: %s" % e
+        out["no_data"] = True
+        return out
+    out.update(res)
+    if res.get("error"):
+        out["no_data"] = True
+        return out
+
+    if (res.get("n_usable", 0) < int(cr.get("min_entries", 40))
+            or res.get("n_days", 0) < int(cr.get("min_days", 6))):
+        out["reason"] = ("표본 부족 — 진입 %s건 / %s거래일 (필요 %s / %s)"
+                         % (res.get("n_usable"), res.get("n_days"),
+                            cr.get("min_entries"), cr.get("min_days")))
+        return out
+
+    _sig = float(res.get("sign_p", 1.0)) < float(cr.get("alpha", 0.05))
+    if _sig and float(res.get("timing_gain_pt", 0.0)) > 0:
+        out["verdict"] = "SUPPORTS_HYP"
+        out["recommendation"] = (
+            "**타점 선택에 가치가 있다** (기여 %+.2fpt, B>C %.1f%%, p=%.4f) — "
+            "체크리스트/게이트가 고른 분이 무작위보다 낫다. 진입 축 개선의 "
+            "근거가 생겼고, 그 위에 변동성·미시구조 피처를 얹는 것이 정당해진다"
+            % (res.get("timing_gain_pt"), float(res.get("b_over_c_share", 0)) * 100,
+               res.get("sign_p")))
+    elif _sig:
+        out["verdict"] = "REJECTS_HYP"
+        out["recommendation"] = (
+            "**타점 선택이 오히려 열위다** (기여 %+.2fpt, p=%.4f) — 체크리스트가 "
+            "고르는 분이 무작위보다 나쁘다는 뜻이므로 원인 조사가 필요하다"
+            % (res.get("timing_gain_pt"), res.get("sign_p")))
+    else:
+        out["verdict"] = "REJECTS_HYP"
+        out["recommendation"] = (
+            "타점 선택이 무작위와 구분되지 않는다 (기여 %+.2fpt, B>C %.1f%%, p=%.4f). "
+            "**체크리스트가 가치를 더한다는 전제 위에 새 피처를 얹지 말 것** — "
+            "가치가 검증되지 않은 필터에 검증되지 않은 피처를 더하는 일이 된다. "
+            "[40]과 함께 읽으면 진입 축(방향·타점)이 **둘 다** 무작위와 구분되지 "
+            "않는다는 뜻이다"
+            % (res.get("timing_gain_pt"), float(res.get("b_over_c_share", 0)) * 100,
+               res.get("sign_p")))
+    return out
+
+
+def eval_vol_estimator_watch() -> dict:
+    """[43] 변동성 추정량 교체 가치 (MW0602 429차) — 사전등록.
+
+    **사이저는 이미 ATR로 변동성 스케일링을 한다.** 그러니 질문은 "변동성을
+    넣자"가 아니라 "분위 불확실성(선행 예측)이 ATR(후행 실현) 위에 **추가 정보**를
+    갖는가"다. 판정은 **ATR 통제 후 부분상관**으로 한다.
+    """
+    cr = VALIDATION_CAMPAIGN.get("vol_estimator_watch", {})
+    out = {"verdict": "INSUFFICIENT"}
+    win = int(cr.get("horizon_min", 30))
+    try:
+        with _conn(PREDICTIONS_DB) as conn:
+            rows = conn.execute(
+                "SELECT ts, quantile_uncertainty_pt AS u, features "
+                "  FROM ensemble_decisions "
+                " WHERE ts >= ? AND entry_executed = 1 "
+                "   AND quantile_uncertainty_pt IS NOT NULL", (_campaign_start(),)
+            ).fetchall()
+        with _conn(RAW_DATA_DB) as conn:
+            bars = {}
+            for r in conn.execute(
+                    "SELECT ts, high, low FROM raw_candles WHERE ts >= ?",
+                    (_campaign_start(),)):
+                bars.setdefault(str(r["ts"])[:10], []).append(
+                    (str(r["ts"]), float(r["high"]), float(r["low"])))
+        for d in bars:
+            bars[d].sort()
+    except Exception as e:
+        out["error"] = str(e)
+        out["no_data"] = True
+        return out
+
+    A, U, R, D = [], [], [], []
+    for r in rows:
+        try:
+            atr = float((json.loads(r["features"]) or {}).get("atr") or 0.0)
+        except (ValueError, TypeError):
+            atr = 0.0
+        if atr <= 0:
+            continue
+        ts = str(r["ts"])
+        end = (datetime.datetime.strptime(ts, _TS_FMT)
+               + datetime.timedelta(minutes=win)).strftime(_TS_FMT)
+        fut = [b for b in bars.get(ts[:10], ()) if ts < b[0] <= end]
+        if len(fut) < 5:
+            continue
+        A.append(atr * ATR_STOP_MULT)
+        U.append(float(r["u"]))
+        R.append(max(b[1] for b in fut) - min(b[2] for b in fut))
+        D.append(ts[:10])
+
+    out["n"] = len(A)
+    out["n_days"] = len(set(D))
+    if out["n"] < int(cr.get("min_samples", 40)) or out["n_days"] < int(cr.get("min_days", 6)):
+        out["reason"] = ("표본 부족 — %d건 / %d거래일 (필요 %s / %s). "
+                         "`quantile_uncertainty_pt`가 있는 진입만 대상이다"
+                         % (out["n"], out["n_days"],
+                            cr.get("min_samples"), cr.get("min_days")))
+        return out
+
+    _A, _U, _R = np.array(A), np.array(U), np.array(R)
+    out["corr_atr_realized"] = round(float(np.corrcoef(_A, _R)[0, 1]), 4)
+    out["corr_qunc_realized"] = round(float(np.corrcoef(_U, _R)[0, 1]), 4)
+    out["collinearity"] = round(float(np.corrcoef(_A, _U)[0, 1]), 4)
+    # ATR을 통제한 뒤 잔차끼리의 상관 = 증분정보
+    _bR = np.polyfit(_A, _R, 1)
+    _bU = np.polyfit(_A, _U, 1)
+    resR = _R - np.polyval(_bR, _A)
+    resU = _U - np.polyval(_bU, _A)
+    rp = float(np.corrcoef(resU, resR)[0, 1])
+    out["partial_corr"] = round(rp, 4)
+    n = out["n"]
+    out["partial_t"] = round(
+        rp * np.sqrt((n - 3) / max(1e-12, 1 - rp ** 2)), 3) if n > 3 else None
+
+    # qty 경계 통과 — 상관이 높아도 클램프 때문에 계약수가 갈릴 수 있다.
+    if cr.get("report_qty_boundary"):
+        try:
+            # ⚠ MINI_FUTURES_PT_VALUE는 config.constants에 있다(settings 아님).
+            #   초판이 settings에서 import해 ImportError로 조용히 건너뛰었다.
+            from config.settings import (SIZING_TARGET_CAPITAL_ENABLED,
+                                         SIZING_TARGET_CAPITAL_KRW,
+                                         ACCOUNT_BASE_RISK)
+            from config.constants import MINI_FUTURES_PT_VALUE
+            _bal = (SIZING_TARGET_CAPITAL_KRW if SIZING_TARGET_CAPITAL_ENABLED
+                    else 0.0)
+            _base = _bal * ACCOUNT_BASE_RISK
+            # 전역 정규화 계수 — 수준 차이가 효과로 오인되지 않게 중앙값을 맞춘다.
+            k = float(np.median(_A) / np.median(_U)) if np.median(_U) > 0 else 1.0
+            out["norm_k"] = round(k, 4)
+            cross = 0
+            for i in range(n):
+                q_atr = int(_base / max(1e-9, _A[i] * MINI_FUTURES_PT_VALUE))
+                q_unc = int(_base / max(1e-9, _U[i] * k * MINI_FUTURES_PT_VALUE))
+                if q_atr != q_unc:
+                    cross += 1
+            out["qty_boundary_cross"] = cross
+            out["qty_boundary_share"] = round(cross / float(n), 4)
+        except Exception as e:
+            out["qty_boundary_error"] = str(e)
+
+    _min_t = float(cr.get("min_partial_t", 2.0))
+    if abs(out.get("partial_t") or 0.0) >= _min_t:
+        out["verdict"] = "SUPPORTS_HYP"
+        out["recommendation"] = (
+            "분위 불확실성이 ATR 위에 **추가 정보를 갖는다** (부분상관 %+.4f, "
+            "t=%+.2f) — 사이징 섀도 착수를 주간회의 안건으로. 다만 교체가 아니라 "
+            "**잔차를 더하는 형태**로 설계할 것(두 추정량 상관 %.3f)"
+            % (out["partial_corr"], out["partial_t"], out["collinearity"]))
+    else:
+        out["verdict"] = "REJECTS_HYP"
+        _qb = out.get("qty_boundary_share")
+        _qb_txt = ""
+        if _qb is not None:
+            # ⚠ "아무것도 안 바뀐다"가 아니다 — 이산화 때문에 많이 바뀌는데
+            #    그 변화에 정보가 없다. 그건 무해가 아니라 **유해**다.
+            _qb_txt = (" 그리고 교체하면 **아무것도 안 바뀌는 것이 아니라** "
+                       "`int()` 절단 때문에 계약수가 **%.0f%%(%s/%s건)에서 갈린다** — "
+                       "근거 없는 사이즈 변동을 그만큼 주입한다는 뜻이라 무해가 아니라 "
+                       "유해다(CLAUDE.md ⑧·425차의 qty 1↔2 경계 참조)."
+                       % (float(_qb) * 100, out.get("qty_boundary_cross"), out.get("n")))
+        out["recommendation"] = (
+            "ATR 위에 추가 정보가 없다 (부분상관 %+.4f, t=%+.2f < %.1f, 공선성 %.3f). "
+            "**사이징 추정량 교체는 무의미하다** — 사이저는 이미 ATR로 변동성 "
+            "스케일링을 하고 있고(`stop_risk = atr × %.1f × pt_value`), ATR 자체가 "
+            "실현 레인지와 r=%+.3f로 이미 좋은 예측자다.%s"
+            % (out["partial_corr"], out["partial_t"] or 0.0, _min_t,
+               out["collinearity"], ATR_STOP_MULT, out["corr_atr_realized"], _qb_txt))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
 # [41] 청산 측 학습기 게이지 (MW0602 428차) — 판정 채널 아님
 # ══════════════════════════════════════════════════════════════
 
@@ -6186,6 +6384,8 @@ def build_report(days: int) -> tuple:
     cdw = eval_conf_discrimination_watch()   # [39] MW0602 427차
     dvw = eval_direction_value_watch()       # [40] MW0602 428차
     emw = eval_exit_model_watch()            # [41] MW0602 428차
+    etv = eval_entry_timing_value_watch()    # [42] MW0602 429차
+    vew = eval_vol_estimator_watch()         # [43] MW0602 429차
     off = eval_offline_geometry_channels()
 
     metrics = {
@@ -6212,6 +6412,7 @@ def build_report(days: int) -> tuple:
         "hurst_meanrevert_drag": hmd, "profit_guard_l1_watch": pgl,
         "conf_discrimination_watch": cdw, "direction_value_watch": dvw,
         "exit_model_watch": emw,
+        "entry_timing_value_watch": etv, "vol_estimator_watch": vew,
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
         "quantile_tp_shadow": off.get("quantile_tp_shadow"),
@@ -6516,6 +6717,24 @@ def build_report(days: int) -> tuple:
             "OOF AUC=%s (기준선 %s) · 포지션 %s / EPV %s" % (
                 emw.get("oof_auc", "—"), emw.get("baseline_acc", "—"),
                 _emr.get("n_positions", "—"), _emr.get("epv", "—")))))
+    L.append("| [42] 타점의 가치 | %s | %s |" % (
+        _fmt_channel_verdict(etv),
+        etv.get("reason") or (
+            "타점 기여(B-C) %+.2fpt · B>C %.1f%% · 짝지은 p=%s "
+            "(A %+.2f / B %+.2f / C %+.2f)" % (
+                etv.get("timing_gain_pt", 0.0),
+                float(etv.get("b_over_c_share", 0)) * 100, etv.get("sign_p", "—"),
+                etv.get("arm_a_pt", 0.0), etv.get("arm_b_median_pt", 0.0),
+                etv.get("arm_c_median_pt", 0.0)))))
+    L.append("| [43] 변동성 추정량 교체 | %s | %s |" % (
+        _fmt_channel_verdict(vew),
+        vew.get("reason") or (
+            "ATR 통제 후 부분상관 %+.4f (t=%s) · 공선성 %.3f · "
+            "실현레인지 상관 ATR %+.3f / q90-q10 %+.3f · qty경계통과 %s건" % (
+                vew.get("partial_corr", 0.0), vew.get("partial_t", "—"),
+                vew.get("collinearity", 0.0), vew.get("corr_atr_realized", 0.0),
+                vew.get("corr_qunc_realized", 0.0),
+                vew.get("qty_boundary_cross", "—")))))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -8372,6 +8591,113 @@ def build_report(days: int) -> tuple:
     L.append("> ⚠ **라이브 청산에 배선하지 않는다.** `exit_model_shadow`에 기록만 한다.")
     L.append("> 배선은 판정 후 주간회의 결정이며(§9), 계획서 2장이 경고한 \"기준선을")
     L.append("> 흔드는 변경\"이므로 **D-day(08-14) 스냅샷 이후**에 논의할 것.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    L.append("## [42] 타점(진입 시각)의 가치 (MW0602 429차)")
+    L.append("")
+    L.append("**[40]의 빠진 축이다.** [40]은 진입 시각을 고정한 채 방향만 뒤집어")
+    L.append("방향 축만 격리했다. 여기는 **타점 축**을 격리한다 — 3팔 비교에서")
+    L.append("**`B − C`가 체크리스트/게이트가 고른 분(minute)의 기여분**이다.")
+    L.append("")
+    if etv.get("error"):
+        L.append("- ⚠ 실행 실패: `%s`" % etv.get("error"))
+    elif etv.get("arm_b_median_pt") is not None:
+        L.append("| 팔 | 손익 | 5~95% |")
+        L.append("|---|---|---|")
+        L.append("| A) 실제시각 + **실제방향** | %+.2fpt | — |" % etv.get("arm_a_pt", 0.0))
+        L.append("| B) 실제시각 + 무작위방향 | %+.2fpt | %+.2f ~ %+.2f |" % (
+            etv.get("arm_b_median_pt", 0.0), etv.get("arm_b_p05_pt", 0.0),
+            etv.get("arm_b_p95_pt", 0.0)))
+        L.append("| C) **무작위시각** + 무작위방향 | %+.2fpt | %+.2f ~ %+.2f |" % (
+            etv.get("arm_c_median_pt", 0.0), etv.get("arm_c_p05_pt", 0.0),
+            etv.get("arm_c_p95_pt", 0.0)))
+        L.append("")
+        L.append("- **타점 기여 (B−C) = %+.2fpt** · B가 C를 이긴 시행 %s/%s (**%.1f%%**)"
+                 % (etv.get("timing_gain_pt", 0.0), etv.get("trials_b_over_c"),
+                    etv.get("trials"), float(etv.get("b_over_c_share", 0)) * 100))
+        L.append("- **짝지은 부호검정 p = %s** (타점에 정보가 없으면 50%%)"
+                 % etv.get("sign_p"))
+        L.append("- 후보 분봉 %s개 (%s~%s, 거래일별 건수는 실제와 일치)" % (
+            etv.get("n_candidate_bars"),
+            (etv.get("entry_window") or ["—", "—"])[0],
+            (etv.get("entry_window") or ["—", "—"])[1]))
+    else:
+        L.append("- %s" % (etv.get("reason") or "표본 없음"))
+    L.append("")
+    if etv.get("recommendation"):
+        L.append("- **권고**: %s" % etv["recommendation"])
+        L.append("")
+    L.append("> **짝지은 검정을 쓴다.** 같은 시행에서 B·C를 뽑아 부호를 센다 — 두 팔이")
+    L.append("> 같은 시장 데이터를 공유해 양의 상관을 가지므로, 독립 표본으로 다루면")
+    L.append("> p가 낙관적으로 나온다.")
+    L.append("> ")
+    L.append("> C의 후보 분봉은 **09:05~14:49**로 제한한다 — 라이브도 14:50부터 신규진입")
+    L.append("> 금지(345차)라 그 밖은 애초에 진입할 수 없다. 거래일별 건수도 실제와 맞춰")
+    L.append("> 일중 진입 빈도를 보존한다.")
+    L.append("> ")
+    L.append("> ⚠ [40]과 **같은 시뮬 한계**를 그대로 물려받는다 — 절대 수준 인용 금지,")
+    L.append("> 유효한 것은 팔 사이의 비교뿐이다.")
+    L.append("> ")
+    L.append("> **[40]과 함께 읽을 것.** 둘 다 REJECTS면 진입 축(방향·타점)이 **둘 다**")
+    L.append("> 무작위와 구분되지 않는다는 뜻이고, 그 위에 새 진입 피처를 얹는 것은")
+    L.append("> *가치가 검증되지 않은 필터에 검증되지 않은 피처를 더하는* 일이 된다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    L.append("## [43] 변동성 추정량 교체 가치 (MW0602 429차)")
+    L.append("")
+    L.append("**사이저는 이미 ATR로 변동성 스케일링을 하고 있다**")
+    L.append("(`stop_risk = atr × %.1f × pt_value`). 그러니 질문은 \"변동성을 넣자\"가"
+             % ATR_STOP_MULT)
+    L.append("아니라 **\"분위 불확실성(선행 예측)이 ATR(후행 실현) 위에 추가 정보를")
+    L.append("갖는가\"** 다. 판정은 **ATR을 통제한 뒤의 부분상관**으로 한다.")
+    L.append("")
+    if vew.get("error"):
+        L.append("- ⚠ 조회 실패: `%s`" % vew.get("error"))
+    elif vew.get("partial_corr") is not None:
+        L.append("| 지표 | 값 |")
+        L.append("|---|---|")
+        L.append("| 표본 | %s건 / %s거래일 |" % (vew.get("n"), vew.get("n_days")))
+        L.append("| corr(ATR×%.1f, %s분 실현레인지) | **%+.4f** |" % (
+            ATR_STOP_MULT, vew.get("horizon_min", 30) if vew.get("horizon_min")
+            else (VALIDATION_CAMPAIGN.get("vol_estimator_watch") or {}).get("horizon_min", 30),
+            vew.get("corr_atr_realized", 0.0)))
+        L.append("| corr(q90−q10, 실현레인지) | %+.4f |" % vew.get("corr_qunc_realized", 0.0))
+        L.append("| 두 추정량 공선성 | **%.4f** |" % vew.get("collinearity", 0.0))
+        L.append("| **부분상관** (ATR 통제 후) | **%+.4f (t=%s)** |" % (
+            vew.get("partial_corr", 0.0), vew.get("partial_t", "—")))
+        if vew.get("qty_boundary_cross") is not None:
+            L.append("| qty 경계 통과 | %s건 / %s (%.1f%%) |" % (
+                vew.get("qty_boundary_cross"), vew.get("n"),
+                float(vew.get("qty_boundary_share", 0)) * 100))
+        L.append("")
+        _cw = float((VALIDATION_CAMPAIGN.get("vol_estimator_watch") or {})
+                    .get("collinearity_warn", 0.90))
+        if abs(float(vew.get("collinearity", 0))) >= _cw:
+            L.append("> 🟡 **공선성 %.3f ≥ %.2f — 두 추정량이 사실상 같은 변수다.**"
+                     % (vew.get("collinearity"), _cw))
+            L.append("> 그래도 판정은 부분상관으로 한다(잔차에 정보가 있을 수 있으므로).")
+            L.append("")
+    else:
+        L.append("- %s" % (vew.get("reason") or "표본 없음"))
+    L.append("")
+    if vew.get("recommendation"):
+        L.append("- **권고**: %s" % vew["recommendation"])
+        L.append("")
+    L.append("> **왜 사이징 섀도를 돌리지 않는가.** 측정할 것이 없는 섀도는 잡음만")
+    L.append("> 만든다 — [41]이 EPV 미달에서 학습을 거부하는 것과 같은 취지다.")
+    L.append("> 이 채널이 SUPPORTS로 바뀌면 그때 섀도를 연다.")
+    L.append("> ")
+    L.append("> **SUPPORTS일 때도 \"교체\"가 아니라 \"잔차를 더하는\" 형태로 설계할 것** —")
+    L.append("> 공선성이 높은 두 변수를 맞바꾸면 얻는 것 없이 기준선만 흔든다.")
+    L.append("> ")
+    L.append("> qty 경계 통과 건수를 함께 재는 이유: 상관이 높아도 `int()`·`min_qty`·")
+    L.append("> `MAX_CONTRACTS` 클램프 때문에 경계에서 계약수가 갈릴 수 있다. 그 수가")
+    L.append("> 0이면 **교체가 실무적으로도 무효**라는 뜻이다(CLAUDE.md ⑧·425차가")
+    L.append("> qty 1↔2 경계의 중요성을 문서화했다).")
     L.append("")
     L.append("---")
     L.append("")

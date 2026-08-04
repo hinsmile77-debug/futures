@@ -211,6 +211,97 @@ def run(since, trials, seed):
     return out
 
 
+def run_three_arm(since, trials, seed, entry_window=("09:05", "14:49")):
+    """[MW0602 429차 / A-2 확장] 3팔 비교 — **타점(진입 시각)의 가치를 격리**한다.
+
+        A) 실제 시각 + 실제 방향     — 현행 시스템
+        B) 실제 시각 + 무작위 방향   — 방향만 제거 (= run()의 무작위 팔)
+        C) 무작위 시각 + 무작위 방향 — 방향과 **타점을 함께** 제거
+
+    `B − C`가 곧 **체크리스트/게이트가 고른 타점의 기여분**이다. `run()`은
+    A vs B만 봐서 방향 축만 격리했고, 타점 축은 재지 않았다.
+
+    **짝지은 검정을 쓴다.** 같은 시행 인덱스에서 B와 C를 뽑아 `B_i − C_i`의 부호를
+    센다 — 두 팔이 같은 시장 데이터를 공유해 양의 상관을 갖기 때문에, 독립 표본
+    비교로 다루면 p가 낙관적으로 나온다.
+
+    C의 후보 분봉은 `entry_window` 안에서 ATR이 있는 분으로 제한한다 —
+    라이브도 14:50부터 신규 진입 금지(345차)라 그 밖은 애초에 진입할 수 없다.
+    각 거래일에 **실제와 같은 건수**를 뽑아 일자별 진입 빈도를 보존한다.
+    """
+    entries, atr, bars = load_inputs(since)
+    usable = []
+    for e in entries:
+        a = _atr_for(str(e["entry_ts"]), atr)
+        if a:
+            usable.append((str(e["entry_ts"]), float(e["px"]),
+                           1 if str(e["direction"]) == "LONG" else -1, a))
+    out = {"since": since, "trials": trials, "seed": seed,
+           "n_usable": len(usable),
+           "n_days": len({u[0][:10] for u in usable}),
+           "entry_window": list(entry_window)}
+    if not usable:
+        out["error"] = "시뮬 가능한 진입이 없다 (ATR 미확보)"
+        return out
+
+    per_day = collections.Counter(u[0][:10] for u in usable)
+    cand = collections.defaultdict(list)
+    for d, blist in bars.items():
+        if d not in per_day:
+            continue
+        for ts, hi, lo, cl in blist:
+            if entry_window[0] <= ts[11:16] <= entry_window[1]:
+                a = atr.get(ts[:16])
+                if a:
+                    cand[d].append((ts, cl, a))
+    out["n_candidate_bars"] = sum(len(v) for v in cand.values())
+
+    out["arm_a_pt"] = round(sum(simulate(e, p, s, a, bars)
+                                for e, p, s, a in usable), 4)
+    rnd = random.Random(seed)
+    B, C, diff = [], [], []
+    for _ in range(trials):
+        b = sum(simulate(e, p, rnd.choice((1, -1)), a, bars)
+                for e, p, _s, a in usable)
+        c = 0.0
+        for d, k in per_day.items():
+            pool = cand.get(d) or []
+            if not pool:
+                continue
+            for ts, cl, a in rnd.sample(pool, min(k, len(pool))):
+                c += simulate(ts, cl, rnd.choice((1, -1)), a, bars)
+        B.append(b)
+        C.append(c)
+        diff.append(b - c)
+    Bs, Cs = sorted(B), sorted(C)
+    n = len(Bs)
+    out["arm_b_median_pt"] = round(Bs[n // 2], 4)
+    out["arm_b_p05_pt"] = round(Bs[int(n * 0.05)], 4)
+    out["arm_b_p95_pt"] = round(Bs[int(n * 0.95)], 4)
+    out["arm_c_median_pt"] = round(Cs[n // 2], 4)
+    out["arm_c_p05_pt"] = round(Cs[int(n * 0.05)], 4)
+    out["arm_c_p95_pt"] = round(Cs[int(n * 0.95)], 4)
+    out["timing_gain_pt"] = round(out["arm_b_median_pt"] - out["arm_c_median_pt"], 4)
+    pos = sum(1 for x in diff if x > 0)
+    out["trials_b_over_c"] = pos
+    out["b_over_c_share"] = round(pos / float(n), 4)
+    # 짝지은 부호검정(양측). p0=0.5 — 타점에 정보가 없으면 B와 C가 반반이다.
+    out["sign_p"] = round(_binom_two_sided(min(pos, n - pos), n), 6)
+    return out
+
+
+def _binom_two_sided(k, n):
+    """양측 이항검정 p (p0=0.5). trials가 커도 로그공간으로 안전하게 계산한다."""
+    if n <= 0:
+        return 1.0
+    import math
+    lg = math.lgamma
+    tail = 0.0
+    for i in range(0, min(k, n - k) + 1):
+        tail += math.exp(lg(n + 1) - lg(i + 1) - lg(n - i + 1) - n * math.log(2.0))
+    return min(1.0, 2.0 * tail)
+
+
 def _utf8_stdout():
     """cp949 콘솔에서 em-dash 등이 UnicodeEncodeError를 내는 것을 막는다."""
     try:
