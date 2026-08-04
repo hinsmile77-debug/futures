@@ -2378,6 +2378,391 @@ def eval_mean_revert_size_watch() -> dict:
     return out
 
 
+# ══════════════════════════════════════════════════════════════
+# [35]~[37] MW0602 424차 후속 — 0804 일일점검 4-2 신설 3채널
+#
+# 셋 다 **표본·유의성 미달 상태로 등록**됐다. 등록 자체가 조치가 아니라,
+# "지금 움직이면 313차 위반"이라는 판단을 코드에 남기는 장치다.
+# 근거·판독 규칙·판정 어휘는 config.settings:VALIDATION_CAMPAIGN 각 채널 주석 참조.
+# ══════════════════════════════════════════════════════════════
+
+def _fmt_krw(v) -> str:
+    """부호 포함 천단위 구분 원화 문자열.
+
+    ⚠ `%+,.0f`는 **%-포매팅에서 지원되지 않는다**(콤마 플래그는 `format()`/f-string
+    전용). 실제로 이 파일에서 ValueError로 리포트 생성이 죽었다 — 같은 실수가
+    반복되지 않게 헬퍼로 고정한다.
+    """
+    try:
+        return format(int(round(float(v))), "+,d")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _sign_test_p(k: int, n: int) -> float:
+    """양측 이항 부호검정 p (귀무 p0=0.5).
+
+    313차 일자단위 검정의 공통 도구다. 포지션 단위 z검정을 쓰지 않는 이유:
+    같은 날 진입들은 같은 레짐·같은 모델 스냅샷을 공유해 **독립 관측치가 아니다**.
+    372차가 PSI 재보정에서 신호단위(n=29,089) 유의성이 일자단위(n=58)로 가면
+    사라지는 것을 실측했다 — 여기서도 같은 규율을 적용한다.
+    """
+    if n <= 0:
+        return 1.0
+    from math import factorial as _f
+    _c = lambda a, b: _f(a) // (_f(b) * _f(a - b))
+    tail = sum(_c(n, i) for i in range(0, min(k, n - k) + 1)) / float(2 ** n)
+    return min(1.0, 2.0 * tail)
+
+
+def _paired_day_summary(day_diffs, alpha):
+    """일자별 차이값 리스트 → 짝지은 검정 요약(평균차·t·부호검정 p)."""
+    n = len(day_diffs)
+    out = {"paired_days": n}
+    if n == 0:
+        return out
+    arr = np.array(day_diffs, dtype=float)
+    out["mean_diff"] = round(float(arr.mean()), 4)
+    out["days_positive"] = int((arr > 0).sum())
+    out["sign_p"] = round(_sign_test_p(out["days_positive"], n), 4)
+    if n >= 2 and float(arr.std(ddof=1)) > 0:
+        out["t_stat"] = round(float(arr.mean() / (arr.std(ddof=1) / np.sqrt(n))), 3)
+    out["significant"] = bool(out["sign_p"] < alpha)
+    return out
+
+
+def eval_phantom_stop_edge() -> dict:
+    """[35] 유령 하드스톱은 결함인가 알파인가 (MW0602 424차 후속) — 사전등록.
+
+    424차가 `phantom_stop_shadow`에 심은 계측을 소비한다. 대상은 **유령 청산**뿐이다
+    (`would_suppress=1` & `live_suppressed=0` & `exited=1`) — 즉 "전 경로를 덮은
+    가드였다면 억제했을 텐데 실제로는 청산으로 나간" 건.
+
+    반사실(관측 전 고정): 억제했다면 포지션은 유지되고 **판정에 실제로 쓰인 스톱**
+    (`stop_eval`)으로 계속 간다 → 이후 분봉에서 닿으면 그 가격, 15:10까지 안 닿으면
+    그날 마지막 종가. `delta_pt = 실현 − 반사실`, (+)면 유령이 유리.
+
+    ⚠ 판정 전에 가드를 켜면 이 표본이 더 안 쌓인다. 라이브는 계측만 하도록 배선돼
+    있다(main.py `mark_stop_tightened_shadow`).
+    """
+    cr = VALIDATION_CAMPAIGN.get("phantom_stop_edge", {})
+    min_n = int(cr.get("min_samples", 20))
+    min_d = int(cr.get("min_days", 5))
+    alpha = float(cr.get("alpha", 0.05))
+    eff = str(cr.get("effective_date", "2026-08-05")) + " 00:00:00"
+    out = {"verdict": "INSUFFICIENT", "effective_date": cr.get("effective_date")}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            ph = conn.execute(
+                """SELECT ts, entry_ts, direction, entry_price, stop_eval,
+                          bar_high, bar_low, cur_price, quantity, tighten_path
+                     FROM phantom_stop_shadow
+                    WHERE ts >= ? AND would_suppress = 1
+                      AND live_suppressed = 0 AND exited = 1
+                    ORDER BY ts""", (eff,)).fetchall()
+            rows = []
+            for h in ph:
+                # 실현: 그 판정 이후 최초로 닫힌 레그 (판정 → EXIT_FULL 주문)
+                leg = conn.execute(
+                    """SELECT pnl_pts, exit_price, exit_reason FROM trades
+                        WHERE entry_ts = ? AND exit_ts IS NOT NULL AND exit_ts >= ?
+                        ORDER BY exit_ts LIMIT 1""",
+                    (h["entry_ts"], h["ts"])).fetchone()
+                if leg is None:
+                    continue
+                rows.append({
+                    "ts": h["ts"], "entry_ts": h["entry_ts"],
+                    "direction": h["direction"],
+                    "entry_price": float(h["entry_price"] or 0.0),
+                    "stop_eval": float(h["stop_eval"] or 0.0),
+                    "cur_price": float(h["cur_price"] or 0.0),
+                    "tighten_path": h["tighten_path"],
+                    "realized_pt": float(leg["pnl_pts"] or 0.0),
+                })
+    except Exception as e:
+        out["error"] = str(e)
+        out["no_data"] = True
+        return out
+
+    if not rows:
+        out["reason"] = ("표본 없음 — `phantom_stop_shadow` 적재 대기 "
+                         "(계측 시작 %s, 그 이전은 소스가 없어 소급 판정 불가)"
+                         % cr.get("effective_date"))
+        # `no_data`는 🔴 "계측 점검 필요"로 렌더된다(357차). **계측 시작 전에는
+        # 붙이지 않는다** — 정상인데 빨간불이 켜지면 그 신호를 무시하게 되고,
+        # 정작 계측이 죽었을 때 357차가 막으려던 2주 방치가 그대로 재발한다.
+        if datetime.date.today().isoformat() > str(cr.get("effective_date", "")):
+            out["no_data"] = True
+            out["reason"] += " ⚠ 계측 시작일이 지났는데 0건 — 배선 확인 필요"
+        return out
+
+    # 반사실: stop_eval 재히트까지 보유
+    try:
+        with _conn(RAW_DATA_DB) as rc:
+            for r in rows:
+                day = r["ts"][:10]
+                bars = rc.execute(
+                    "SELECT ts, high, low, close FROM raw_candles "
+                    "WHERE ts > ? AND ts <= ? ORDER BY ts",
+                    (r["ts"], day + " 15:10:00")).fetchall()
+                if not bars:
+                    r["cf_pt"] = None
+                    continue
+                se, is_short = r["stop_eval"], (r["direction"] == "SHORT")
+                cf_exit = None
+                for b in bars:
+                    if (is_short and float(b["high"]) >= se) or \
+                       ((not is_short) and float(b["low"]) <= se):
+                        cf_exit = se
+                        r["cf_hit_ts"] = b["ts"]
+                        break
+                if cf_exit is None:
+                    cf_exit = float(bars[-1]["close"])
+                    r["cf_hit_ts"] = None
+                r["cf_pt"] = ((r["entry_price"] - cf_exit) if is_short
+                              else (cf_exit - r["entry_price"]))
+    except Exception as e:
+        out["error"] = "반사실 계산 실패: %s" % e
+        return out
+
+    usable = [r for r in rows if r.get("cf_pt") is not None]
+    for r in usable:
+        r["delta_pt"] = r["realized_pt"] - r["cf_pt"]
+    out["n"] = len(usable)
+    out["n_unresolved"] = len(rows) - len(usable)
+    days = sorted({r["ts"][:10] for r in usable})
+    out["n_days"] = len(days)
+    if usable:
+        out["realized_pt_sum"] = round(sum(r["realized_pt"] for r in usable), 3)
+        out["cf_pt_sum"] = round(sum(r["cf_pt"] for r in usable), 3)
+        out["delta_pt_sum"] = round(sum(r["delta_pt"] for r in usable), 3)
+        out["delta_pt_avg"] = round(out["delta_pt_sum"] / len(usable), 4)
+        out["favorable_n"] = sum(1 for r in usable if r["delta_pt"] > 0)
+        _bp = {}
+        for r in usable:
+            _bp.setdefault(r["tighten_path"] or "—", []).append(r["delta_pt"])
+        out["by_path"] = {k: {"n": len(v), "delta_pt_sum": round(sum(v), 3)}
+                          for k, v in sorted(_bp.items())}
+        # 일자단위(313차) — 하루 평균 delta의 부호를 센다
+        day_means = [float(np.mean([r["delta_pt"] for r in usable
+                                    if r["ts"][:10] == d])) for d in days]
+        out.update(_paired_day_summary(day_means, alpha))
+
+    if out["n"] < min_n or out["n_days"] < min_d:
+        out["reason"] = ("표본 축적 중 — %d건 / %d거래일 (필요 %d건 / %d일). "
+                         "누적 delta %+.2fpt" % (
+                             out["n"], out["n_days"], min_n, min_d,
+                             out.get("delta_pt_sum", 0.0)))
+        return out
+
+    if not out.get("significant"):
+        out["verdict"] = "PASS"
+        out["recommendation"] = (
+            "유령 청산과 반사실이 통계적으로 구분되지 않는다 (일자 부호검정 p=%.4f) — "
+            "손익 중립이면 **정확성이 우선**이므로 가드를 qty>=2까지 활성화하는 것이 "
+            "안전하다 (main.py tp1_breakeven의 mark_stop_tightened_shadow → "
+            "_mark_stop_tightened)" % out.get("sign_p", 1.0))
+    elif out["delta_pt_avg"] > 0:
+        out["verdict"] = "SUPPORTS_HYP"
+        out["recommendation"] = (
+            "유령 청산이 반사실보다 유리 (평균 %+.3fpt, %d/%d일 우세, p=%.4f) — "
+            "**버그로 고치지 말 것.** \"스파이크가 스톱을 스쳤으나 현재가가 유리하면 "
+            "시장가 익절\"을 명시적 청산 정책으로 승격시키는 안건(§9 주간회의)" % (
+                out["delta_pt_avg"], out.get("days_positive", 0),
+                out.get("paired_days", 0), out.get("sign_p", 1.0)))
+    else:
+        out["verdict"] = "REJECTS_HYP"
+        out["recommendation"] = (
+            "유령 청산이 반사실보다 열위 (평균 %+.3fpt, p=%.4f) — 가드를 qty>=2까지 "
+            "활성화할 것 (main.py tp1_breakeven에서 mark_stop_tightened_shadow를 "
+            "_mark_stop_tightened로 교체)" % (
+                out["delta_pt_avg"], out.get("sign_p", 1.0)))
+    return out
+
+
+def eval_grade_x_promotion() -> dict:
+    """[36] 체크리스트 승격 경로별 우열 (MW0602 424차 후속) — 사전등록.
+
+    0803 정기점검 P2의 "앙상블 X를 A로 올리는 경로에 하한 조건 추가" 제안을
+    검정한다. 0804 실측은 정반대였다(X→A 6건 5승1패 +587,344원 vs C→A 14건
+    -377,207원) — 다만 X 경로는 2거래일에만 존재해 확정 불가.
+    """
+    cr = VALIDATION_CAMPAIGN.get("grade_x_promotion", {})
+    min_n = int(cr.get("min_samples_per_bucket", 20))
+    min_d = int(cr.get("min_days", 5))
+    alpha = float(cr.get("alpha", 0.05))
+    out = {"verdict": "INSUFFICIENT",
+           "entry_source_filter": cr.get("entry_source", "SYSTEM_AUTO")}
+
+    if not _trades_has_column("raw_grade"):
+        out["no_data"] = True
+        out["reason"] = "`trades.raw_grade` 컬럼 없음 — 마이그레이션 전 DB"
+        return out
+
+    pos = _merged_positions(extra_cols="raw_grade, grade")
+    pos = [p for p in pos if p.get("raw_grade")]   # 구버전 행(NULL)은 경로 미상
+    if not pos:
+        out["no_data"] = True
+        out["reason"] = "raw_grade 기록 표본 없음 (구버전 행은 경로 판별 불가)"
+        return out
+    out["n_positions"] = len(pos)
+    out["n_days"] = len({p["entry_ts"][:10] for p in pos})
+
+    def _sel(raw, grade):
+        return [p for p in pos
+                if p.get("raw_grade") == raw and p.get("grade") == grade]
+
+    xa, ca, cc = _sel("X", "A"), _sel("C", "A"), _sel("C", "C")
+    out["by_path"] = {}
+    for _lab, _v in (("X→A", xa), ("C→A", ca), ("C→C", cc)):
+        if _v:
+            _s = _bucket_stats([p["pnl"] for p in _v])
+            _s["days"] = len({p["entry_ts"][:10] for p in _v})
+            out["by_path"][_lab] = _s
+
+    if out["n_days"] < min_d:
+        out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
+        return out
+    if len(xa) < min_n or len(ca) < min_n:
+        out["reason"] = ("경로 표본 부족 (X→A=%d, C→A=%d, 각각 %d 필요) — 판정 보류. "
+                         "0803 P2 \"X 승격 조이기\" 제안은 그때까지 보류다" % (
+                             len(xa), len(ca), min_n))
+        return out
+
+    a, b = out["by_path"]["X→A"], out["by_path"]["C→A"]
+    out["avg_gap_krw"] = round(a["avg_pnl_krw"] - b["avg_pnl_krw"], 0)
+    out["win_rate_gap"] = round(a["win_rate"] - b["win_rate"], 4)
+    # 일자단위 — 두 경로가 다 있는 날만
+    days = sorted({p["entry_ts"][:10] for p in xa} &
+                  {p["entry_ts"][:10] for p in ca})
+    diffs = [float(np.mean([p["pnl"] for p in xa if p["entry_ts"][:10] == d])
+                   - np.mean([p["pnl"] for p in ca if p["entry_ts"][:10] == d]))
+             for d in days]
+    out.update(_paired_day_summary(diffs, alpha))
+
+    if out.get("paired_days", 0) < min_d:
+        out["reason"] = ("짝지은 거래일 부족 (%d일 < %d일) — 두 경로가 같은 날 함께 "
+                         "나와야 일자단위 비교가 성립한다" % (
+                             out.get("paired_days", 0), min_d))
+        return out
+    if not out.get("significant"):
+        out["verdict"] = "PASS"
+        out["recommendation"] = (
+            "두 승격 경로가 구분되지 않는다 (p=%.4f) — 현행 유지. 0803 P2의 "
+            "\"X 승격 조이기\"는 **근거 없음으로 종결**" % out.get("sign_p", 1.0))
+    elif out["mean_diff"] > 0:
+        out["verdict"] = "SUPPORTS_HYP"
+        out["recommendation"] = (
+            "X→A가 C→A보다 우월 (일평균 격차 %s원, p=%.4f) — 0803 P2 **기각**. "
+            "조일 대상이 있다면 X가 아니라 **C→A 경로**다" % (
+                _fmt_krw(out["mean_diff"]), out.get("sign_p", 1.0)))
+    else:
+        out["verdict"] = "REJECTS_HYP"
+        out["recommendation"] = (
+            "X→A가 C→A보다 열위 (일평균 격차 %s원, p=%.4f) — 0803 P2 지지. "
+            "앙상블 X 승격에 하한 조건 설계를 주간회의 안건으로" % (
+                _fmt_krw(out["mean_diff"]), out.get("sign_p", 1.0)))
+    return out
+
+
+def eval_hurst_meanrevert_drag() -> dict:
+    """[37] mean-revert 적자의 **일자단위** 재검정 (MW0602 424차 후속) — 사전등록.
+
+    ⚠ **[29] mean_revert_size_watch와 모집단이 같다. 중복이 아니라 브레이크다.**
+    [29]는 포지션 단위 승률 격차로 판정하는데, 0804 실측에서 두 축이 갈렸다 —
+    포지션 누적 -1,455,546원인데 짝지은 7거래일 검정은 p=0.4531로 미유의.
+    누적 수치만으로 조치하는 것을 막는 것이 이 채널의 존재 이유다(313차).
+
+    판독 규칙은 관측 전에 고정돼 있다 — config.settings 채널 주석 참조.
+    """
+    cr = VALIDATION_CAMPAIGN.get("hurst_meanrevert_drag", {})
+    min_n = int(cr.get("min_samples", 20))
+    min_pd = int(cr.get("min_paired_days", 5))
+    alpha = float(cr.get("alpha", 0.05))
+    out = {"verdict": "INSUFFICIENT",
+           "entry_source_filter": cr.get("entry_source", "SYSTEM_AUTO"),
+           "shares_population_with": "[29] mean_revert_size_watch"}
+
+    # ⚠ `_merged_positions(extra_cols=...)`를 쓰지 않는다 — 그 헬퍼는 extra_cols를
+    #   **첫 레그 값**으로만 담는다(`if c not in m: m[c] = r[c]`). `pnl_pts`는
+    #   부분청산으로 여러 행에 쪼개지므로 그렇게 담으면 TP1 레그 하나만 세어진다.
+    #   `pnl`(원)은 헬퍼가 정확히 합산하지만, 이 채널은 **pt 단위**로 봐야 한다 —
+    #   417차 교훈대로 원 단위 격차는 계약수 효과와 뒤엉킨다(A/C 등급 차이가
+    #   Mann-Whitney p=0.80으로 사라졌던 것과 같은 함정).
+    try:
+        with _conn(TRADES_DB) as conn:
+            rows = conn.execute(
+                "SELECT entry_ts, hurst_bucket, "
+                "       SUM(pnl_pts) AS pts, SUM(COALESCE(net_pnl_krw, pnl_krw)) AS pnl "
+                "  FROM trades "
+                " WHERE exit_ts IS NOT NULL AND exit_ts >= ? AND %s "
+                " GROUP BY entry_ts" % _SYSTEM_AUTO_SQL,
+                (_campaign_start(),)).fetchall()
+        pos = [{"entry_ts": r["entry_ts"], "hurst_bucket": r["hurst_bucket"],
+                "pnl_pts": float(r["pts"] or 0.0), "pnl": float(r["pnl"] or 0.0)}
+               for r in rows]
+    except Exception as e:
+        out["error"] = str(e)
+        out["no_data"] = True
+        return out
+    if not pos:
+        out["no_data"] = True
+        out["reason"] = "표본 없음"
+        return out
+    out["n_positions"] = len(pos)
+    out["n_days"] = len({p["entry_ts"][:10] for p in pos})
+
+    mr = [p for p in pos if p.get("hurst_bucket") == "mean-revert"]
+    oth = [p for p in pos if p.get("hurst_bucket") in ("neutral", "trend")]
+    out["n_mean_revert"] = len(mr)
+    out["n_other"] = len(oth)
+    out["cum_krw"] = {
+        "mean_revert": round(sum(p["pnl"] for p in mr), 0),
+        "other": round(sum(p["pnl"] for p in oth), 0),
+    }
+
+    # 일자단위 — 양쪽 버킷이 **모두 있는** 날만이 실질 표본이다.
+    # [33] faststop_rerun_watch가 "유효 거래일"을 병목으로 지목한 것과 같은 사정:
+    # 한쪽만 있는 날은 그날의 레짐·변동성을 통제하지 못해 비교가 성립하지 않는다.
+    days = sorted({p["entry_ts"][:10] for p in mr} &
+                  {p["entry_ts"][:10] for p in oth})
+    diffs = [float(np.mean([p["pnl_pts"] for p in mr if p["entry_ts"][:10] == d])
+                   - np.mean([p["pnl_pts"] for p in oth if p["entry_ts"][:10] == d]))
+             for d in days]
+    out.update(_paired_day_summary(diffs, alpha))
+    out["unpaired_days"] = out["n_days"] - out.get("paired_days", 0)
+
+    if len(mr) < min_n:
+        out["reason"] = "mean-revert 표본 부족 (%d < %d)" % (len(mr), min_n)
+        return out
+    if out.get("paired_days", 0) < min_pd:
+        out["reason"] = ("짝지은 거래일 부족 (%d일 < %d일, 단일버킷일 %d일 제외) — "
+                         "누적 %s원은 **판정 근거가 아니다**" % (
+                             out.get("paired_days", 0), min_pd,
+                             out.get("unpaired_days", 0),
+                             _fmt_krw(out["cum_krw"]["mean_revert"])))
+        return out
+
+    if out.get("significant") and out.get("mean_diff", 0) < 0:
+        out["verdict"] = "SUPPORTS_HYP"
+        out["recommendation"] = (
+            "mean-revert 열위가 일자단위로도 유의 (평균차 %+.2fpt, %d/%d일, p=%.4f) — "
+            "[29]와 두 축 합치. 처방은 사이즈 축소가 아니라 **등급 강등/임계값 이동** "
+            "축으로 설계할 것(qty=1에서 사이즈 축소는 no-op)" % (
+                out["mean_diff"], out.get("days_positive", 0),
+                out.get("paired_days", 0), out.get("sign_p", 1.0)))
+    else:
+        out["verdict"] = "PASS"
+        out["recommendation"] = (
+            "일자단위로는 유의하지 않다 (평균차 %+.2fpt, p=%.4f) — 누적 %s원이 "
+            "커 보여도 **조치 금지**. [29]가 FAIL을 내더라도 이 채널이 PASS인 동안은 "
+            "보류가 사전등록된 판독 규칙이다" % (
+                out.get("mean_diff", 0.0), out.get("sign_p", 1.0),
+                _fmt_krw(out["cum_krw"]["mean_revert"])))
+    return out
+
+
 # ──────────────────────────────────────────────────────────────
 # [24] TP1 보호전환 반납 관찰 (404차 후속3) — verdict 항상 OBSERVE
 # ──────────────────────────────────────────────────────────────
@@ -3274,6 +3659,44 @@ def _tox_recalib_grace_active() -> bool:
 # ──────────────────────────────────────────────────────────────
 # [30] toxicity_score 재보정(P0) 후 밴드 분포 관찰 (MW0601 419차)
 # ──────────────────────────────────────────────────────────────
+
+# [MW0602 424차 후속] **미정의 헬퍼 복구 — 리포트 생성 전체가 죽어 있었다.**
+# 419차(`2050437`)가 [30] 채널을 추가하면서 아래 `_row_is_live()`를 호출만 하고
+# 정의하지 않았다. `eval_toxicity_recalib_watch()`의 try/except는 DB 조회만 감싸고
+# 행 순회는 밖이라, 첫 행에서 NameError가 나면 `build_report()`가 통째로 죽는다.
+# 08-03부터 이 상태였으나 `campaign_due()`가 금요일에만 돌아 발현되지 않았다 —
+# 422차 후속이 잡은 `[33]` `10%` 미이스케이프와 **같은 주에 생긴 같은 계열의
+# 잠복 크래시**이고, 그쪽만 고쳐서는 08-07 리포트가 여전히 안 나온다.
+#
+# 원 의도는 채널 독스트링에 있다 — "백필 생성 행은 제외한다(418차) — 호가가 전부
+# 0이라 spread/cancel 성분이 죽어 밴드 분포를 인위적으로 pass 쪽으로 끌어당긴다."
+# 판별자는 `scripts/backfill_features.py:341`이 박는 마커 `feature_quality_score == 0.3`.
+#
+# ⚠ 허용오차 주의: 여기 입력은 **JSON dict(float64)** 라 0.3이 정확히 일치하지만,
+#   같은 마커를 float32 행렬에서 비교하면 틀린다(424차 P0-A — `retrain_eod.py`가
+#   `1e-9` 때문에 백필을 한 행도 못 걸렀다). 관례를 하나로 맞춰 1e-6을 쓴다.
+_BACKFILL_QUALITY_MARKER = 0.3
+_BACKFILL_MARKER_TOL = 1e-6
+
+
+def _row_is_live(features_json) -> bool:
+    """raw_features 한 행이 **라이브 수집분**인가(= 백필 소급 생성이 아닌가)."""
+    try:
+        d = (json.loads(features_json) if isinstance(features_json, str)
+             else features_json)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(d, dict):
+        return False
+    q = d.get("feature_quality_score")
+    if q is None:
+        # 마커 키 자체가 없으면 백필 도입 이전 스키마다 — 라이브로 본다.
+        return True
+    try:
+        return abs(float(q) - _BACKFILL_QUALITY_MARKER) > _BACKFILL_MARKER_TOL
+    except (TypeError, ValueError):
+        return True
+
 
 def eval_toxicity_recalib_watch() -> dict:
     """cancel_stress ceiling 재보정 후 toxicity 밴드 분포가 정상 구간으로
@@ -4932,6 +5355,16 @@ def _fmt_verdict(v: str) -> str:
         # 지지/기각으로 표기(resolve_and_eval_regime_exhaustion() 참조)
         "SUPPORTS_GATE": "🔶 SUPPORTS_GATE",
         "REJECTS_GATE": "🔷 REJECTS_GATE",
+        # [MW0602 424차 후속] [35]~[37] 전용 — PASS/FAIL로 표기할 수 없는 채널들.
+        # 이 셋은 "조치가 필요한가"가 아니라 **어느 방향으로 필요한가**가 결론이다.
+        #   [35] 유령 청산이 결함인가 알파인가 — 방향에 따라 처방이 정반대다
+        #        (SUPPORTS=정책 승격 / REJECTS=가드 활성화).
+        #   [36] 0803 P2의 "X 승격 조이기" 제안을 지지하는가 기각하는가.
+        #   [37] [29]의 포지션단위 FAIL을 일자단위가 뒷받침하는가.
+        # PASS/FAIL 어휘를 쓰면 "FAIL이니 조여라"로 자동 오독된다 — 실제로 [6]
+        # Hurst 완화 권고가 그렇게 3주간 오독됐다(404차 후속11).
+        "SUPPORTS_HYP": "🔶 SUPPORTS_HYP",
+        "REJECTS_HYP": "🔷 REJECTS_HYP",
     }.get(v, "⏳ INSUFFICIENT")
 
 
@@ -4999,6 +5432,9 @@ def build_report(days: int) -> tuple:
     mrs = eval_mean_revert_size_watch()      # [29] MW0601 405차 P1-3
     trw = eval_toxicity_recalib_watch()      # [30] MW0601 419차 P0
     trm = eval_toxicity_reduce_mult_shadow()  # [31] MW0601 419차 P1
+    pse = eval_phantom_stop_edge()           # [35] MW0602 424차 후속
+    gxp = eval_grade_x_promotion()           # [36] MW0602 424차 후속
+    hmd = eval_hurst_meanrevert_drag()       # [37] MW0602 424차 후속
     off = eval_offline_geometry_channels()
 
     metrics = {
@@ -5021,6 +5457,8 @@ def build_report(days: int) -> tuple:
         "limit_pin_watch": lpw, "unreachable_cf_watch": ucw,
         "sizing_inversion_watch": siw, "mean_revert_size_watch": mrs,
         "toxicity_recalib_watch": trw, "toxicity_reduce_mult_shadow": trm,
+        "phantom_stop_edge": pse, "grade_x_promotion": gxp,
+        "hurst_meanrevert_drag": hmd,
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
         "quantile_tp_shadow": off.get("quantile_tp_shadow"),
@@ -5259,6 +5697,33 @@ def build_report(days: int) -> tuple:
                " / ".join(
                    "%s n=%s" % (b, (_mz.get(b) or {}).get("matched", 0))
                    for b in ("reduce", "take"))))))
+    # [MW0602 424차 후속] [35]~[37] — 셋 다 등록 시점에 표본·유의성 미달이다.
+    L.append("| [35] 유령 하드스톱 결함/알파 | %s | %s |" % (
+        _fmt_channel_verdict(pse),
+        pse.get("reason") or (
+            "유령 %s건 / %s거래일 · 실현 %+.2fpt vs 반사실 %+.2fpt · "
+            "delta %+.2fpt (유리 %s건) · 일자 부호검정 p=%s" % (
+                pse.get("n", "—"), pse.get("n_days", "—"),
+                pse.get("realized_pt_sum", 0.0), pse.get("cf_pt_sum", 0.0),
+                pse.get("delta_pt_sum", 0.0), pse.get("favorable_n", "—"),
+                pse.get("sign_p", "—")))))
+    _gx = gxp.get("by_path") or {}
+    L.append("| [36] 체크리스트 승격 경로 | %s | %s |" % (
+        _fmt_channel_verdict(gxp),
+        gxp.get("reason") or (" / ".join(
+            "%s: n=%d(%d일) 승률=%.1f%% 평균=%s원" % (
+                k, v["n"], v.get("days", 0), v["win_rate"] * 100,
+                format(v["avg_pnl_krw"], ",.0f"))
+            for k, v in sorted(_gx.items())) or "표본 없음")))
+    L.append("| [37] mean-revert 일자단위 재검정 | %s | %s |" % (
+        _fmt_channel_verdict(hmd),
+        hmd.get("reason") or (
+            "MR %s건 누적 %s원 · 짝지은 %s일 평균차 %+.2fpt · p=%s "
+            "(⚠ [29]와 모집단 동일 — 판독규칙 상세 참조)" % (
+                hmd.get("n_mean_revert", "—"),
+                format(int((hmd.get("cum_krw") or {}).get("mean_revert", 0) or 0), ","),
+                hmd.get("paired_days", "—"), hmd.get("mean_diff", 0.0),
+                hmd.get("sign_p", "—")))))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -6614,6 +7079,140 @@ def build_report(days: int) -> tuple:
     L.append("> ")
     L.append("> FAIL이어도 **자동 전환 금지** — \"안 B\"(raw==0 → action skip 강등)는 액션 축")
     L.append("> 변경이라 라이브 진입 동작이 바뀐다. §9 사전등록 원칙대로 주간회의 안건이다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [35]~[37] MW0602 424차 후속 신설 3채널 상세 ─────────────────────────
+    L.append("## [35] 유령 하드스톱 — 결함인가 알파인가 (MW0602 424차 후속)")
+    L.append("")
+    L.append("423차 가드가 `qty>=2`의 TP1 손익분기 경로를 우회해 유령 청산이 계속 난다.")
+    L.append("**일부러 고치지 않고 재고 있다** — 손익 부호가 예상과 반대이기 때문이다.")
+    L.append("")
+    L.append("| 근거일 | 건수 | 실현 | 반사실(정상 가드) |")
+    L.append("|---|---|---|---|")
+    L.append("| 2026-08-03 (423차 실측) | 8 | +1.42pt | 5건 유리 / 3건 불리 |")
+    L.append("| 2026-08-04 (qty≥2) | 3 | **+8.76pt (+433,609원)** | **0pt** |")
+    L.append("")
+    L.append("> 08-04의 +433,609원은 그날 순익 +752,561원의 **57.6%**다. 정상 동작이었다면")
+    L.append("> 약 +316,000원이었다. 유령 판정은 *\"봉 고가가 스톱을 스쳤으나 현재가는 유리하게")
+    L.append("> 되돌아왔다\"*에서만 성립해 **시장가가 스톱보다 좋은 국면만 고른다** — 스파이크-")
+    L.append("> 되돌림 익절을 우연히 구현하고 있을 수 있다.")
+    L.append("")
+    L.append("반사실 정의(관측 전 고정): 억제했다면 포지션은 유지되고 **판정에 실제로 쓰인**")
+    L.append("**스톱(`stop_eval`)** 으로 계속 간다 → 이후 분봉에서 닿으면 그 가격, 15:10까지")
+    L.append("안 닿으면 그날 마지막 종가. `delta_pt = 실현 − 반사실`, (+)면 유령이 유리.")
+    L.append("")
+    if pse.get("error"):
+        L.append("- ⚠ 조회 실패: `%s`" % pse.get("error"))
+    elif not pse.get("n"):
+        L.append("- 표본 없음 — `phantom_stop_shadow` 적재 대기 (계측 시작 **%s**)."
+                 % pse.get("effective_date"))
+        L.append("  그 이전 판정은 소스가 없어 **소급 재구성이 불가능**하다.")
+    else:
+        L.append("- 유령 청산 **%s건 / %s거래일** (반사실 산출 실패 %s건 제외)"
+                 % (pse.get("n"), pse.get("n_days"), pse.get("n_unresolved", 0)))
+        L.append("- 실현 %+.2fpt vs 반사실 %+.2fpt → **delta %+.2fpt** (평균 %+.3fpt/건, 유리 %s건)"
+                 % (pse.get("realized_pt_sum", 0.0), pse.get("cf_pt_sum", 0.0),
+                    pse.get("delta_pt_sum", 0.0), pse.get("delta_pt_avg", 0.0),
+                    pse.get("favorable_n", 0)))
+        if pse.get("paired_days"):
+            L.append("- 일자단위(313차): %s/%s일 유리, 평균 %+.3fpt, **부호검정 p=%s**"
+                     % (pse.get("days_positive"), pse.get("paired_days"),
+                        pse.get("mean_diff", 0.0), pse.get("sign_p")))
+        if pse.get("by_path"):
+            L.append("")
+            L.append("| 조이기 경로 | 건수 | delta 합 |")
+            L.append("|---|---|---|")
+            for _k, _v in sorted((pse.get("by_path") or {}).items()):
+                L.append("| `%s` | %s | %+.2fpt |" % (_k, _v["n"], _v["delta_pt_sum"]))
+    L.append("")
+    if pse.get("recommendation"):
+        L.append("- **권고**: %s" % pse["recommendation"])
+        L.append("")
+    L.append("> **판정 전에 가드를 켜지 말 것** — 켜는 순간 이 표본이 더 안 쌓인다.")
+    L.append("> 라이브는 계측만 하도록 배선돼 있다(`main.py` tp1_breakeven →")
+    L.append("> `mark_stop_tightened_shadow`). 전환은 그 한 줄을 `_mark_stop_tightened`로")
+    L.append("> 바꾸는 것이고, **SUPPORTS_HYP면 전환이 아니라 정책 승격**이 처방이다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    L.append("## [36] 체크리스트 승격 경로별 우열 (MW0602 424차 후속)")
+    L.append("")
+    L.append("0803 정기점검 P2의 *\"앙상블 X를 A로 올리는 경로에 하한 조건 추가\"* 제안을")
+    L.append("검정한다. **0804 실측은 정반대였다** — 그래서 그 제안은 이 채널 판정까지 보류다.")
+    L.append("")
+    if gxp.get("by_path"):
+        L.append("| 경로 | 포지션 | 거래일 | 승률 | 평균 | 누적 |")
+        L.append("|---|---|---|---|---|---|")
+        for _k in ("X→A", "C→A", "C→C"):
+            _v = (gxp.get("by_path") or {}).get(_k)
+            if not _v:
+                continue
+            L.append("| **%s** | %d | %d | %.1f%% | %s원 | %s원 |" % (
+                _k, _v["n"], _v.get("days", 0), _v["win_rate"] * 100,
+                format(int(_v["avg_pnl_krw"]), ","),
+                format(int(_v["total_pnl_krw"]), ",")))
+        L.append("")
+    else:
+        L.append("- %s" % (gxp.get("reason") or "표본 없음"))
+        L.append("")
+    if gxp.get("paired_days"):
+        L.append("- 일자단위(313차): 짝지은 %s일, 평균 격차 %s원, **부호검정 p=%s**"
+                 % (gxp.get("paired_days"), _fmt_krw(gxp.get("mean_diff", 0.0)), gxp.get("sign_p")))
+        L.append("")
+    if gxp.get("recommendation"):
+        L.append("- **권고**: %s" % gxp["recommendation"])
+        L.append("")
+    L.append("> `raw_grade`가 NULL인 구버전 행은 경로 판별이 불가능해 **전량 제외**한다 —")
+    L.append("> 승격/미승격을 섞으면 이 채널이 재려는 값을 못 잰다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    L.append("## [37] mean-revert 적자 — 일자단위 재검정 (MW0602 424차 후속)")
+    L.append("")
+    L.append("⚠ **[29] mean_revert_size_watch와 모집단이 같다. 중복이 아니라 브레이크다.**")
+    L.append("[29]는 포지션 단위 승률 격차로 판정하는데, 0804 실측에서 두 축이 갈렸다:")
+    L.append("")
+    L.append("| 축 | 결과 |")
+    L.append("|---|---|")
+    L.append("| 포지션 누적 | mean-revert 54건 **-1,455,546원** (neutral +2,303,166 / trend +778,965) |")
+    L.append("| 일자단위 짝지은 검정 | 7거래일, 평균차 -1.63pt, t=-1.13, 부호 2/7, **p=0.4531 (미유의)** |")
+    L.append("")
+    L.append("누적 -145만원은 극적으로 보이지만 일자단위로는 재현되지 않는다 — 313차가")
+    L.append("막으려던 바로 그 패턴이다(372차 PSI 재보정의 이상치 착시와 동형).")
+    L.append("")
+    if hmd.get("n_mean_revert"):
+        L.append("- mean-revert **%s건** 누적 %s원 / 그 외 %s건 누적 %s원" % (
+            hmd.get("n_mean_revert"),
+            format(int((hmd.get("cum_krw") or {}).get("mean_revert", 0) or 0), ","),
+            hmd.get("n_other"),
+            format(int((hmd.get("cum_krw") or {}).get("other", 0) or 0), ",")))
+        L.append("- 짝지은 거래일 **%s일** (단일버킷일 %s일 제외 — 그날은 레짐 통제가 안 된다)"
+                 % (hmd.get("paired_days", 0), hmd.get("unpaired_days", 0)))
+        if hmd.get("paired_days"):
+            L.append("- 평균차 %+.2fpt · MR 우세 %s/%s일 · **부호검정 p=%s**%s" % (
+                hmd.get("mean_diff", 0.0), hmd.get("days_positive", 0),
+                hmd.get("paired_days"), hmd.get("sign_p"),
+                (" · t=%s" % hmd["t_stat"]) if hmd.get("t_stat") is not None else ""))
+    else:
+        L.append("- %s" % (hmd.get("reason") or "표본 없음"))
+    L.append("")
+    if hmd.get("recommendation"):
+        L.append("- **권고**: %s" % hmd["recommendation"])
+        L.append("")
+    L.append("> **판독 규칙 (관측 전 고정 — settings 채널 주석과 동일)**")
+    L.append("> ")
+    L.append("> | [29] | [37] | 조치 |")
+    L.append("> |---|---|---|")
+    L.append("> | FAIL | PASS | **보류.** 누적 수치만으로 움직이지 말 것 |")
+    L.append("> | FAIL | SUPPORTS_HYP | 두 축 합치 — 주간회의 안건 승격 가능 |")
+    L.append("> | PASS | SUPPORTS_HYP | 승률은 같은데 손익 크기가 갈림 — 재조사 |")
+    L.append("> ")
+    L.append("> 처방 축은 [29]와 동일하다 — qty=1에서 사이즈 축소는 no-op이므로")
+    L.append("> **등급 강등/임계값 이동** 축으로 설계할 것(`sizing_prescription_axis` 참조).")
     L.append("")
     L.append("---")
     L.append("")
