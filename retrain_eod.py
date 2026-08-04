@@ -368,6 +368,19 @@ def main():
         #     라이브 진입 판단은 무변경이며, CLAUDE.md 실전전환기준 ⑦의 해제 조건
         #     ("정상 구간에서 PSI가 오르내리는 것을 실측 확인")을 처음으로 시험 가능하게 한다.
         _BACKFILL_QUALITY_MARKER = 0.3
+        # [MW0602 424차] 허용오차는 **float32 유효자리에 맞춰야 한다** — 이 한 줄 때문에
+        # 423차의 백필 제외가 08-04 EOD에서 "백필 0행 제외"로 아무것도 걸러내지 못했다.
+        #   `X`는 learning/batch_retrainer.py:_load_from_db()가 `dtype=np.float32`로 만든다.
+        #   float32(0.3) = 0.30000001192092896 → |값 - 0.3| = 1.192e-08.
+        #   구 허용오차 1e-9는 그보다 한 자릿수 촘촘해서 **모든 백필 행이 필터를 통과**했다.
+        # 왜 423차 오프라인 검증에서는 맞았나: scripts/scan_backfill_exposure.py는 같은
+        #   1e-9를 쓰지만 raw_features JSON dict(float64)를 읽어 0.3이 정확히 일치한다.
+        #   오프라인 float64 / 프로덕션 float32 — 419·420·421차가 반복 지적한
+        #   "오프라인만 검증" 패턴이 같은 형태로 재발한 것이다.
+        # 1e-6은 float32 유효자리(≈3e-8)보다 넉넉하면서, 실제로 쓰이는 다른 품질점수
+        #   (0.76·0.78·0.82·0.84·0.86·0.88·0.9·0.94·1.0 — 08-04 실측 전수)와는
+        #   최소 0.46 떨어져 있어 오분류 여지가 없다.
+        _BACKFILL_MARKER_TOL = 1e-6
         try:
             from strategy.regime_fingerprint import (
                 get_fingerprint, _CORE_FEATURES, _N_BINS,
@@ -395,9 +408,24 @@ def main():
                 else:
                     _rows = [
                         i for i in _all_rows
-                        if abs(float(X[i, _q_idx]) - _BACKFILL_QUALITY_MARKER) > 1e-9
+                        if abs(float(X[i, _q_idx]) - _BACKFILL_QUALITY_MARKER)
+                        > _BACKFILL_MARKER_TOL
                     ]
                     _excluded = len(_all_rows) - len(_rows)
+                    # [MW0602 424차] 회귀 가드 — 0행 제외는 구조적으로 불가능하다.
+                    # 26주 창의 백필 비중은 08-04 실측 64.7%(44,125행 중 28,564행)이고,
+                    # 백필이 정말로 0이 되려면 26주 전체가 라이브 수집이어야 한다.
+                    # 그런 날이 실제로 오면 이 WARNING은 "정상인데 시끄러운" 1줄로
+                    # 끝나지만, 필터가 또 죽으면(허용오차·dtype·컬럼명 변경 등)
+                    # 이 줄이 없으면 이번처럼 **조용히 무효**가 된다.
+                    if _excluded == 0:
+                        log.warning(
+                            "[RegimeFingerprint] 백필 0행 제외 — 필터가 무효일 수 있다. "
+                            "%d행 전수가 마커(%.1f±%.0e)와 불일치. "
+                            "X.dtype과 허용오차를 확인할 것(424차: float32 회귀).",
+                            len(_all_rows), _BACKFILL_QUALITY_MARKER,
+                            _BACKFILL_MARKER_TOL,
+                        )
                     # 안전판: 백필이 과반이라 필터 후 표본이 히스토그램 최소요건에
                     # 못 미치면 기준선을 아예 못 만든다 — 그 경우 전체로 되돌린다.
                     if len(_rows) < _N_BINS_MIN_ROWS:

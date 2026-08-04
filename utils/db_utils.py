@@ -863,6 +863,52 @@ def init_trades_db():
     except Exception as _efs_mig_e:
         print("[DB][WARN] exit_fill_slippage 컬럼 마이그레이션 실패: %s" % _efs_mig_e,
               file=sys.stderr)
+    # ── [MW0602 424차 신설] 유령 하드스톱 섀도 — 계측 전용, 청산 동작 무관여 ──────
+    # 무엇을 재는가: 봉중(intrabar) 하드스톱 판정이 날 때마다 한 행을 남기고,
+    # "조이기 경로를 **전부** 덮은 가드였다면 이 판정을 억제했을까"를 함께 기록한다.
+    #
+    # 왜 억제하지 않고 재기만 하는가 — 손익 부호가 예상과 반대이기 때문이다.
+    #   08-03  비틱 하드스톱  8건  +1.42pt (423차 실측, 5건 유리/3건 불리)
+    #   08-04  qty>=2 유령    3건  +8.76pt (+433,609원 = 당일 순익 +752,561원의 57.6%)
+    #   반사실(정상 가드 시 손익분기 스톱 유지)은 3건 모두 **0pt** — 되돌림 뒤
+    #   12:00·12:24·12:34에 BE스톱이 재히트된다.
+    # 유령 판정은 "봉 고가가 스톱을 스쳤으나 현재가는 유리하게 되돌아왔다"에서만
+    # 터져 시장가가 스톱보다 좋은 국면만 고른다. 결함(정확성)인 동시에 미발견
+    # 청산 알파일 수 있다 — 2거래일 11건으로 확정하는 것은 313차 위반이다.
+    #
+    # 판정 후: 유리 확정이면 "스파이크가 스톱을 스쳤으나 현재가가 유리하면 시장가
+    # 익절"을 **명시적 청산 정책**으로 승격시킬 것. 불리 확정이면 그때 가드를
+    # qty>=2까지 켠다(main.py `mark_stop_tightened_shadow` → `_mark_stop_tightened`).
+    # 캠페인 채널 등록(`phantom_stop_edge`)은 4-2 후속 — min_samples=20/min_days=5.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS phantom_stop_shadow (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts               TEXT NOT NULL,   -- 판정 시각
+        entry_ts         TEXT,            -- trades.entry_ts 조인 키
+        direction        TEXT NOT NULL,   -- LONG/SHORT
+        quantity         INTEGER,         -- 판정 시점 잔여 계약수 (qty>=2 경로 식별용)
+        entry_price      REAL,
+        stop_eval        REAL,            -- 봉중 판정에 실제로 쓰인 스톱(_prev_stop_price)
+        stop_current     REAL,            -- 판정 시점 최신 스톱
+        bar_start        TEXT,            -- 평가 대상 분봉 시작시각
+        bar_high         REAL,
+        bar_low          REAL,
+        cur_price        REAL,            -- 판정 시점 현재가 (스톱보다 유리하면 유령 징후)
+        close_hit        INTEGER,         -- 1=종가 기준으로도 히트 (유령 아님)
+        live_suppressed  INTEGER,         -- 1=423차 라이브 가드가 실제로 억제함
+        would_suppress   INTEGER,         -- 1=전 경로 계측 가드였다면 억제했을 것
+        tighten_path     TEXT,            -- entry/trailing/arm_tp1_qty1*/tp1_breakeven_qty2
+        stop_updated_at  TEXT,            -- 라이브 가드가 본 조이기 시각
+        shadow_tightened_at TEXT,         -- 섀도가 본 조이기 시각 (전 경로)
+        exited           INTEGER,         -- 1=이 판정이 청산으로 이어짐(주문 전송 시도)
+        created_at       TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_pss_ts ON phantom_stop_shadow(ts)")
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_pss_entry_ts ON phantom_stop_shadow(entry_ts)")
+
     # [379차 신설] RegimeExhaustionGate(§18) counterfactual 섀도우 — hurst_gate_shadow·
     # open_gap_shadow와 동일 패턴. "hurst<0.45(평균회귀) + 60분 느린 연장폭 임계 초과 +
     # 10_chase/11_countertrend 소프트 실패" 동시성립 시점의 가상 진입가·스톱·TP1을

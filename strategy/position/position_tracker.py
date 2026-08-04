@@ -100,6 +100,21 @@ class PositionTracker:
         # 그 분봉의 고저가로는 봉중 판정을 하지 않는다(그 고저가는 조이기 이전에
         # 형성된 값이라 새 스톱을 소급 적용하면 오판정이 된다).
         self.stop_updated_at: Optional[datetime.datetime] = None
+        # [MW0602 424차] 섀도 전용 조이기 기록 — **가드가 읽지 않는다**.
+        # 왜 `stop_updated_at`과 따로 두는가:
+        #   423차 가드는 qty==1 경로(arm_tp1_*)만 계측했고, qty>=2의 TP1 손익분기
+        #   이동(main.py `tp1_breakeven`)은 stop_price를 직접 대입해 계측이 없다.
+        #   그래서 08-04에 qty=2 포지션 3건이 유령 하드스톱으로 청산됐다.
+        #   그런데 그 3건의 실현손익이 **+8.76pt(+433,609원, 당일 순익의 57.6%)** 로
+        #   유리했다(08-03 8건 +1.42pt와 부호 동일 — 2거래일 11건 연속 유리).
+        #   유령 청산은 "봉 고가가 스톱을 스쳤으나 현재가는 유리하게 되돌아왔다"는
+        #   조건에서만 터져 시장가가 스톱보다 좋은 국면을 고른다 — 결함이 아니라
+        #   미발견 청산 알파일 가능성이 있다.
+        #   따라서 지금 가드를 qty>=2까지 켜면 **손익이 줄어들 수 있다**. 표본 11건
+        #   2거래일로 확정하는 것은 313차 원칙 위반이므로, 라이브 청산은 그대로 두고
+        #   "정상 가드였다면 억제됐을 건"만 기록해 캠페인 채널로 판정한다.
+        self.stop_shadow_tightened_at: Optional[datetime.datetime] = None
+        self.stop_shadow_tighten_path: Optional[str] = None
         self.tp1_price:    float = 0.0
         self.tp2_price:    float = 0.0
         self.tp3_price:    float = 0.0
@@ -186,6 +201,8 @@ class PositionTracker:
         self.entry_extra_stop_mult = 1.0
         self.stop_price = 0.0
         self.stop_updated_at = None
+        self.stop_shadow_tightened_at = None   # [424차]
+        self.stop_shadow_tighten_path = None   # [424차]
         self.tp1_price = 0.0
         self.tp2_price = 0.0
         self.tp3_price = 0.0
@@ -291,7 +308,7 @@ class PositionTracker:
         self.stop_price = price - mult * atr * _stop_mult
         # [423차] 진입(또는 레벨 재계산) 시각도 기록한다 — 진입 분봉의 고저가는
         # 진입 이전 구간을 포함하므로, 그 봉의 봉중 판정 역시 유령이다.
-        self.stop_updated_at = now_kst()
+        self._mark_stop_tightened("entry")
         self.tp1_price  = price + mult * atr * _tp1_mult
         self.tp2_price  = price + mult * atr * _tp2_mult
         # [360차] 손절 계단화 1차 — entry~stop 사이 선형보간 50% 지점(진입 시 1회 계산,
@@ -745,7 +762,7 @@ class PositionTracker:
             self.stop_price = protected_stop
             # [423차] 이 경로가 유령 하드스톱의 주 발생원 — 틱 핸들러가 분봉 도중
             # 호출하므로 조이기 시각을 남겨 봉중 판정에서 그 봉을 배제한다.
-            self.stop_updated_at = now_kst()
+            self._mark_stop_tightened("arm_tp1_qty1")
 
         self.partial_1_done = True
         self._sync_partial_progress()
@@ -798,7 +815,7 @@ class PositionTracker:
             self.stop_price = protected_stop
             # [423차] 이 경로가 유령 하드스톱의 주 발생원 — 틱 핸들러가 분봉 도중
             # 호출하므로 조이기 시각을 남겨 봉중 판정에서 그 봉을 배제한다.
-            self.stop_updated_at = now_kst()
+            self._mark_stop_tightened("arm_tp1_qty1_mode")
 
         self.partial_1_done = True
 
@@ -853,7 +870,43 @@ class PositionTracker:
         # 이 경로는 호출측 `_prev_stop_price`가 이미 되돌리고 있어 중복 방어지만,
         # 틱 경로와 기준을 하나로 맞춰 두는 편이 이후 회귀에 안전하다.
         if abs(self.stop_price - _prev) > 1e-9:
-            self.stop_updated_at = now_kst()
+            self._mark_stop_tightened("trailing")
+
+    def _mark_stop_tightened(self, path: str, live_guard: bool = True) -> None:
+        """[MW0602 424차] 스톱 조이기 시각 기록 — 라이브 가드 / 섀도 이원화.
+
+        `live_guard=True`  → 423차 가드용 `stop_updated_at`과 섀도를 **둘 다** 갱신.
+        `live_guard=False` → 섀도만 갱신한다. 봉중 판정은 종전 그대로 살아 있으므로
+                             **라이브 청산 동작이 바뀌지 않는다**(main.py의 qty>=2
+                             TP1 손익분기 경로가 이쪽을 쓴다).
+
+        두 필드를 한 곳에서만 쓰도록 묶은 이유: 423차는 조이기 지점 4곳 중 3곳만
+        계측했고 main.py의 네 번째 지점이 빠져 가드가 통째로 우회됐다. 대입을
+        분산시키면 같은 누락이 또 생긴다.
+        """
+        _now = now_kst()
+        if live_guard:
+            self.stop_updated_at = _now
+        self.stop_shadow_tightened_at = _now
+        self.stop_shadow_tighten_path = path
+
+    def mark_stop_tightened_shadow(self, path: str) -> None:
+        """[424차] 섀도 전용 기록 (라이브 가드 무변경). main.py에서 호출."""
+        self._mark_stop_tightened(path, live_guard=False)
+
+    def would_guard_suppress_intrabar(
+        self, bar_start: "Optional[datetime.datetime]" = None
+    ) -> bool:
+        """[424차] "가드가 모든 조이기 경로를 덮었다면 봉중 판정을 억제했을까".
+
+        `is_stop_hit_intrabar()`의 억제 조건과 같은 식이되 **섀도 시각**을 본다.
+        판정만 하고 아무것도 바꾸지 않는다 — 계측 전용.
+        """
+        return bool(
+            bar_start is not None
+            and self.stop_shadow_tightened_at is not None
+            and self.stop_shadow_tightened_at >= bar_start
+        )
 
     def is_stop_hit(self, price: float) -> bool:
         if self.status == POSITION_FLAT:
@@ -1163,6 +1216,8 @@ class PositionTracker:
         self.entry_extra_stop_mult = 1.0
         self.stop_price = 0.0
         self.stop_updated_at = None
+        self.stop_shadow_tightened_at = None   # [424차]
+        self.stop_shadow_tighten_path = None   # [424차]
         self.tp1_price = 0.0
         self.tp2_price = 0.0
         self.tp3_price = 0.0
@@ -1286,6 +1341,12 @@ class PositionTracker:
                 # 없으면 복원 직후 첫 봉에서 봉중 판정이 되살아나므로 함께 남긴다.
                 "stop_updated_at": (self.stop_updated_at.isoformat()
                                     if self.stop_updated_at else None),
+                # [424차] 섀도 계측도 함께 남긴다 — 장중 재기동 후 첫 봉에서
+                # would_suppress 판정이 근거 없이 False가 되는 것을 막는다.
+                "stop_shadow_tightened_at": (
+                    self.stop_shadow_tightened_at.isoformat()
+                    if self.stop_shadow_tightened_at else None),
+                "stop_shadow_tighten_path": self.stop_shadow_tighten_path,
                 "tp1_price":    self.tp1_price,
                 "tp2_price":    self.tp2_price,
                 "tp3_price":    self.tp3_price,
@@ -1360,6 +1421,17 @@ class PositionTracker:
                 )
             except (TypeError, ValueError):
                 self.stop_updated_at = None
+            # [424차] 구버전 상태파일엔 없다 — None이면 would_suppress가 False로
+            # 나오고, 그건 "억제 안 됨"이 아니라 "판정 근거 없음"이다. 섀도 판정
+            # 전용이라 라이브 동작에는 영향이 없다(재기동 1회 한정 노출).
+            _sst_raw = state.get("stop_shadow_tightened_at")
+            try:
+                self.stop_shadow_tightened_at = (
+                    datetime.datetime.fromisoformat(_sst_raw) if _sst_raw else None
+                )
+            except (TypeError, ValueError):
+                self.stop_shadow_tightened_at = None
+            self.stop_shadow_tighten_path = state.get("stop_shadow_tighten_path")
             self.tp1_price    = float(state.get("tp1_price", 0))
             self.tp2_price    = float(state.get("tp2_price", 0))
             self.tp3_price    = float(state.get("tp3_price", 0))
