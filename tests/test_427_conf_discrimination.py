@@ -6,12 +6,16 @@
 0804 점검 §P2는 "동적 min_conf가 랜덤 기준선(0.33)까지 내려앉아 사실상 무력화됐다"를
 **고쳐야 할 문제**로 적었다. 조사 결과 방향이 틀렸다:
 
-  · 모델축 n=15,770 — conf 하위절반 32.9% vs 상위절반 33.3% (격차 +0.4%p, z=+0.56)
-  · 앙상블축 — 승 51건 평균 conf 0.3963 vs 패 30건 0.3978 (**격차 -0.0015**)
+  · 모델축 n=14,770(30m 제외) — 하위절반 33.4% vs 상위절반 33.6% (격차 +0.15%p)
+  · 앙상블축 — 승 63건 vs 패 37건, **격차 -0.0008** (Cohen d=-0.015)
   · min_conf 상향 스윕은 전 구간 손익 악화 (0.40→-407,558원 / 0.45→-749,942원)
   · 잘려나간 진입의 승률 62~63%가 전체 승률 63.0%와 **같다**
     → 게이트가 품질 필터가 아니라 **무작위 샘플러**로 작동한다는 직접 증거
-  · 설계값 0.54 복원 시 진입 81건 → **1건** (실제 진입 conf 최댓값 0.579)
+  · 설계값 0.54 복원 시 진입이 거의 전멸 (실제 진입 conf 최댓값 0.579)
+
+⚠ 초판은 앙상블축을 **81/100건**으로 보고했다(승 51/패 30, 격차 -0.0015).
+  분 단위 정확 조인이 체결 분 경계를 넘은 19건을 잃은 것이며 427차 후속에서
+  고쳤다 — 아래 `test_entry_decision_join` 참조. **판정은 바뀌지 않았다.**
 
 **게이트는 정보 없는 신호를 걸러낼 수 없다.** 그래서 이 채널은 min_conf가 아니라
 그 **선행조건**을 잰다 — "conf가 정보를 갖기 시작하는 순간". 그때가 min_conf를
@@ -175,8 +179,11 @@ def test_eval_current_state():
           "30m" in (out.get("excluded_horizons") or []))
     check("모델축 427차 실측 재현 - 격차 +0.15%p",
           abs(float(mb.get("gap_pp", 9)) - 0.149) < 0.02)
-    check("앙상블축 427차 실측 재현 - 격차 -0.0015",
-          abs(float(eb.get("gap", 9)) + 0.0015) < 0.001)
+    check("앙상블축 실측 재현 - 격차 -0.0008 (조인 수정 후 n=100)",
+          abs(float(eb.get("gap", 9)) + 0.0008) < 0.0005)
+    check("조인 수정으로 앙상블축이 전수(100건)를 쓴다", eb.get("n") == 100)
+    check("승 63 / 패 37 (전체 승률 63.0%와 일치)",
+          eb.get("n_win") == 63 and eb.get("n_loss") == 37)
     check("앙상블축 Cohen d가 보고된다", "cohen_d" in eb)
     check("두 축 다 일자 층화 결과를 갖는다",
           (mb.get("stratified") or {}).get("sign_p") is not None
@@ -185,18 +192,41 @@ def test_eval_current_state():
           out.get("model_hit") is False and out.get("ens_hit") is False)
 
 
+def test_entry_decision_join():
+    """[427차 후속] 진입↔결정 조인 — 분 단위 정확 조인은 19%를 잃는다.
+
+    체결 확인이 `T+1:00~:09`에 도착하면 `trades.entry_ts`가 결정 분보다 1분 뒤가
+    된다. 초판은 `entry_ts[:16] == ts[:16]`이라 그 19건을 통째로 잃고 매칭률
+    81%로 보고했다 — 데이터가 없는 게 아니라 **키가 어긋난 것**이었다.
+    """
+    m = _mod()
+    pairs, unmatched = m._entry_decision_pairs("2026-07-05 00:00:00")
+    check("매칭 쌍이 반환된다", len(pairs) > 0)
+    offs = {}
+    for _e, _d, o in pairs:
+        offs[o] = offs.get(o, 0) + 1
+    check("427차 실측 - 오프셋 0분 81건", offs.get(0) == 81)
+    check("427차 실측 - 오프셋 -1분 19건 (분 경계를 넘은 체결)", offs.get(-1) == 19)
+    check("오프셋은 0 / -1 두 종류뿐", set(offs.keys()) <= set((0, -1)))
+    check("미매칭 0건 - 전수 매칭된다", len(unmatched) == 0)
+    check("결정행에 direction이 실려 있다 (방향 일치 검사의 전제)",
+          all(d["direction"] is not None for _e, d, _o in pairs))
+
+
 def test_integrity_surfaced():
-    """앙상블축 표본을 직접 깎는 미매칭을 숨기지 않는가."""
+    """무결성 지표를 숨기지 않는가 — 매칭률·오프셋 분포."""
     m = _mod()
     out = m.eval_conf_discrimination_watch()
     for k in ("n_positions_total", "n_matched", "n_unmatched",
-              "match_rate", "unmatched_days"):
+              "match_rate", "unmatched_days", "join_offset_min"):
         if k not in out:
             check("무결성 지표 %s가 보고된다" % k, False)
             return
-    check("무결성 지표 5종이 전부 보고된다", True)
-    check("427차 실측 - 미매칭 19/100건", out.get("n_unmatched") == 19)
-    check("미매칭 발생일이 기록된다", len(out.get("unmatched_days") or []) > 0)
+    check("무결성 지표 6종이 전부 보고된다", True)
+    check("조인 수정 후 매칭률 100%", abs(float(out.get("match_rate", 0)) - 1.0) < 1e-9)
+    check("미매칭 0건", out.get("n_unmatched") == 0)
+    check("오프셋 분포가 남는다 (-1분 비중이 곧 체결지연 신호)",
+          "-1" in (out.get("join_offset_min") or {}))
 
 
 def test_recommendation_names_the_blocker():
@@ -229,6 +259,7 @@ if __name__ == "__main__":
         test_split_half_gap,
         test_gate_can_actually_fire,
         test_eval_current_state,
+        test_entry_decision_join,
         test_integrity_surfaced,
         test_recommendation_names_the_blocker,
         test_renders_in_report,
