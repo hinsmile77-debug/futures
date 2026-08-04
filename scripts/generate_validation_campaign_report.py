@@ -2765,6 +2765,167 @@ def eval_hurst_meanrevert_drag() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
+# [41] 청산 측 학습기 게이지 (MW0602 428차) — 판정 채널 아님
+# ══════════════════════════════════════════════════════════════
+
+def eval_exit_model_watch() -> dict:
+    """[41] 청산 측 학습기 게이지 (MW0602 428차) — 사전등록.
+
+    [33] faststop_rerun_watch와 같은 **게이지**다. "언제 학습을 시작할 수 있는가"를
+    매주 찍고, 요건에 닿으면 배너를 띄운다. verdict는 그때까지 OBSERVE.
+
+    ⚠ 라이브 청산 무관여 — `exit_model_shadow`에 기록만 한다.
+    """
+    cr = VALIDATION_CAMPAIGN.get("exit_model_watch", {})
+    out = {"verdict": "OBSERVE"}
+    try:
+        from learning.exit_outcome_labeler import (
+            build_labels, summary as _lbl_summary, FEATURE_NAMES,
+        )
+        from learning.exit_classifier import (
+            train_or_defer, MIN_EVENTS_PER_VARIABLE, MIN_DAYS as _EC_MIN_DAYS,
+        )
+        from config.settings import ATR_STOP_MULT, ATR_TP1_MULT
+    except Exception as e:
+        out["error"] = "청산 학습 모듈 로드 실패: %s" % e
+        out["no_data"] = True
+        return out
+
+    # 설정 표류 감지 — settings와 코드 상수가 갈리면 게이지가 거짓말을 한다.
+    _drift = []
+    if abs(float(cr.get("min_events_per_variable", MIN_EVENTS_PER_VARIABLE))
+           - float(MIN_EVENTS_PER_VARIABLE)) > 1e-9:
+        _drift.append("min_events_per_variable")
+    if int(cr.get("min_days", _EC_MIN_DAYS)) != int(_EC_MIN_DAYS):
+        _drift.append("min_days")
+    if _drift:
+        out["config_drift"] = _drift
+
+    try:
+        rows = build_labels(TRADES_DB, PREDICTIONS_DB, RAW_DATA_DB,
+                            _campaign_start(), ATR_STOP_MULT, ATR_TP1_MULT)
+        smry = _lbl_summary(rows)
+        res = train_or_defer(rows, smry, FEATURE_NAMES, TRADES_DB,
+                             persist=False, label=str(cr.get("label", "y_hold_better")))
+    except Exception as e:
+        out["error"] = "라벨/학습 실패: %s" % e
+        return out
+
+    out["labels"] = smry
+    out["readiness"] = res.get("readiness") or {}
+    out["trained"] = bool(res.get("trained"))
+    rd = out["readiness"]
+
+    if not out["trained"]:
+        _short = int(rd.get("positions_short") or 0)
+        # 실측 진입속도로 남은 기간을 추정한다 — [33]과 같은 방식.
+        _days = int(smry.get("n_days") or 0)
+        _pos = int(smry.get("n_positions") or 0)
+        _rate = (_pos / float(_days)) if _days else 0.0
+        out["positions_per_day"] = round(_rate, 2)
+        if _rate > 0 and _short > 0:
+            out["eta_trading_days"] = int(round(_short / _rate))
+        out["reason"] = rd.get("reason")
+        return out
+
+    out["oof_auc"] = res.get("oof_auc")
+    out["oof_acc"] = res.get("oof_acc")
+    out["baseline_acc"] = res.get("baseline_acc")
+    _min_auc = float(cr.get("min_oof_auc", 0.55))
+    if (res.get("oof_auc") or 0.0) >= _min_auc:
+        out["verdict"] = "SUPPORTS_HYP"
+        out["recommendation"] = (
+            "청산 학습기가 정보를 갖는다 (OOF AUC %.4f >= %.2f, 기준선 정확도 %.4f) — "
+            "**라이브 배선을 주간회의 안건으로.** 단 회전율은 안 늘지만 조기 청산은 "
+            "이익도 자른다([11] 채널과 함께 읽을 것). D-day 스냅샷 이후에 배선할 것"
+            % (res["oof_auc"], _min_auc, res.get("baseline_acc", 0)))
+    else:
+        out["verdict"] = "REJECTS_HYP"
+        out["recommendation"] = (
+            "학습은 열렸으나 정보가 없다 (OOF AUC %s < %.2f) — 청산 축도 현행 규칙 "
+            "이상을 못 낸다는 뜻이다. 피처 재설계 또는 라벨 재정의 없이 재시도 금지"
+            % (res.get("oof_auc"), _min_auc))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
+# [40] 방향 선택의 가치 (MW0602 428차) — 연구 우선순위의 축
+# ══════════════════════════════════════════════════════════════
+
+def eval_direction_value_watch() -> dict:
+    """[40] 방향 선택의 가치 (MW0602 428차) — 사전등록.
+
+    같은 진입 시각·같은 청산 기하에서 실제 방향과 동전던지기를 비교한다.
+    구현은 `scripts/random_entry_control.py`(오프라인·읽기 전용)에 있고 여기서는
+    그것을 호출해 판정만 붙인다 — 시뮬 로직을 두 곳에 복붙하지 않기 위함이다
+    ([11] resolver가 `_ts_execute_loss_tier1_exit`를 재사용한 것과 같은 취지).
+
+    ⚠ 이 채널은 **"시스템 전체의 엣지"를 재지 않는다.** 방향 축 하나만 잰다.
+       시뮬이 단순화돼 실제 손익을 재현하지 못하므로 절대 수준은 인용 금지.
+    """
+    cr = VALIDATION_CAMPAIGN.get("direction_value_watch", {})
+    out = {"verdict": "INSUFFICIENT"}
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from random_entry_control import run as _rec_run
+    except Exception as e:
+        out["error"] = "random_entry_control 로드 실패: %s" % e
+        out["no_data"] = True
+        return out
+
+    try:
+        res = _rec_run(_campaign_start(), int(cr.get("trials", 400)),
+                       int(cr.get("seed", 428)))
+    except Exception as e:
+        out["error"] = "시뮬 실패: %s" % e
+        out["no_data"] = True
+        return out
+    out.update(res)
+    if res.get("error"):
+        out["no_data"] = True
+        return out
+
+    _min_n = int(cr.get("min_entries", 40))
+    _min_d = int(cr.get("min_days", 6))
+    _alpha = float(cr.get("alpha", 0.05))
+    _min_share = float(cr.get("min_day_win_share", 0.70))
+
+    if res.get("n_usable", 0) < _min_n or res.get("n_days", 0) < _min_d:
+        out["reason"] = ("표본 부족 — 진입 %s건 / %s거래일 (필요 %d건 / %d일)"
+                         % (res.get("n_usable"), res.get("n_days"), _min_n, _min_d))
+        return out
+
+    _days = int(res.get("days_evaluated") or 0)
+    _share = (int(res.get("days_beating_random") or 0) / float(_days)) if _days else 0.0
+    out["day_win_share"] = round(_share, 4)
+    # 판정 2겹 — 전체 순열 p AND 일자단위 비율. 전체 합계 하나로 판정하면 큰 하루가
+    # 통째로 만들 수 있다(0804에 같은 함정에 세 번 걸렸다).
+    _perm_ok = float(res.get("p_one_sided", 1.0)) < _alpha
+    _day_ok = _share >= _min_share
+    out["perm_ok"], out["day_ok"] = _perm_ok, _day_ok
+
+    if _perm_ok and _day_ok:
+        out["verdict"] = "SUPPORTS_HYP"
+        out["recommendation"] = (
+            "**방향 선택이 무작위보다 우월하다** (단측 p=%.4f, 일자 %d/%d일=%.0f%%) — "
+            "정보원 도입/피처 개선이 실제로 성과를 냈다는 첫 신호다. "
+            "`docs/미륵이고도화3` 이월 D·E·G에 자원을 넣을 근거가 이제 생겼고, "
+            "`FEATURE_SET_DECISIONS`의 `opt_trade_flow_realtime` 재검토 트리거 (2)도 "
+            "충족된다" % (res.get("p_one_sided"), res.get("days_beating_random"),
+                          _days, _share * 100))
+    else:
+        out["verdict"] = "REJECTS_HYP"
+        out["recommendation"] = (
+            "방향 선택이 동전던지기와 구분되지 않는다 (단측 p=%.4f, 일자 %d/%d일=%.0f%%). "
+            "**방향 피처 재배치(이월 D·E·G)보다 청산 축([41])과 새 정보원 도입이 "
+            "우선이다** — `FEATURE_SET_DECISIONS`의 `opt_trade_flow_realtime` "
+            "재검토 트리거 (3)이 이 상태의 지속을 조건으로 걸려 있다"
+            % (res.get("p_one_sided"), res.get("days_beating_random"),
+               _days, _share * 100))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
 # [39] confidence 판별력 감시 (MW0602 427차) — min_conf의 선행조건
 # ══════════════════════════════════════════════════════════════
 
@@ -6060,6 +6221,8 @@ def build_report(days: int) -> tuple:
     hmd = eval_hurst_meanrevert_drag()       # [37] MW0602 424차 후속
     pgl = eval_profit_guard_l1_watch()       # [38] MW0602 426차
     cdw = eval_conf_discrimination_watch()   # [39] MW0602 427차
+    dvw = eval_direction_value_watch()       # [40] MW0602 428차
+    emw = eval_exit_model_watch()            # [41] MW0602 428차
     off = eval_offline_geometry_channels()
 
     metrics = {
@@ -6084,7 +6247,8 @@ def build_report(days: int) -> tuple:
         "toxicity_recalib_watch": trw, "toxicity_reduce_mult_shadow": trm,
         "phantom_stop_edge": pse, "grade_x_promotion": gxp,
         "hurst_meanrevert_drag": hmd, "profit_guard_l1_watch": pgl,
-        "conf_discrimination_watch": cdw,
+        "conf_discrimination_watch": cdw, "direction_value_watch": dvw,
+        "exit_model_watch": emw,
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
         "quantile_tp_shadow": off.get("quantile_tp_shadow"),
@@ -6374,6 +6538,21 @@ def build_report(days: int) -> tuple:
                 _cde.get("gap", 0.0), _cde.get("cohen_d", "—"),
                 _cde.get("n_win", "—"), _cde.get("n_loss", "—"),
                 cdw.get("n_matched", "—"), cdw.get("n_positions_total", "—")))))
+    L.append("| [40] 방향 선택의 가치 | %s | %s |" % (
+        _fmt_channel_verdict(dvw),
+        dvw.get("reason") or (
+            "실제 %+.2fpt vs 무작위중앙 %+.2fpt (n=%s/%s일) · 단측 p=%s · 일자 %s/%s일" % (
+                dvw.get("actual_pt", 0.0), dvw.get("random_median_pt", 0.0),
+                dvw.get("n_usable", "—"), dvw.get("n_days", "—"),
+                dvw.get("p_one_sided", "—"),
+                dvw.get("days_beating_random", "—"), dvw.get("days_evaluated", "—")))))
+    _emr = emw.get("readiness") or {}
+    L.append("| [41] 청산 측 학습기 게이지 | %s | %s |" % (
+        _fmt_channel_verdict(emw),
+        emw.get("reason") or (
+            "OOF AUC=%s (기준선 %s) · 포지션 %s / EPV %s" % (
+                emw.get("oof_auc", "—"), emw.get("baseline_acc", "—"),
+                _emr.get("n_positions", "—"), _emr.get("epv", "—")))))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -8111,6 +8290,125 @@ def build_report(days: int) -> tuple:
     L.append("> **SUPPORTS_HYP로 바뀌는 날이 min_conf를 다시 논할 시점이다.** 그때도")
     L.append("> 설계값 0.54~0.67을 그대로 쓰면 안 된다 — 구 conf 분포 기준이라 진입이")
     L.append("> 사라진다. 그 시점의 분포로 새로 잡을 것.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    L.append("## [40] 방향 선택의 가치 (MW0602 428차)")
+    L.append("")
+    L.append("**같은 진입 시각·같은 청산 기하**에서 시스템의 실제 방향과 **동전던지기**를")
+    L.append("비교한다. 두 팔이 같은 시뮬을 통과하므로 차이는 오직 **방향 선택의 기여분**이다.")
+    L.append("구현: `scripts/random_entry_control.py` (오프라인·읽기 전용).")
+    L.append("")
+    if dvw.get("error"):
+        L.append("- ⚠ 실행 실패: `%s`" % dvw.get("error"))
+    elif dvw.get("n_usable"):
+        L.append("- 표본: 진입 **%s건** 중 %s건 시뮬 가능 / **%s거래일**" % (
+            dvw.get("n_entries"), dvw.get("n_usable"), dvw.get("n_days")))
+        L.append("")
+        L.append("| | 손익 | 승률 |")
+        L.append("|---|---|---|")
+        L.append("| **실제 방향** | **%+.2fpt** | %.1f%% |" % (
+            dvw.get("actual_pt", 0.0), float(dvw.get("actual_win_rate", 0)) * 100))
+        L.append("| 무작위 %s회 (중앙) | %+.2fpt | %.1f%% |" % (
+            dvw.get("trials"), dvw.get("random_median_pt", 0.0),
+            float(dvw.get("random_mean_win_rate", 0)) * 100))
+        L.append("| 무작위 5~95%% 구간 | %+.2f ~ %+.2fpt | — |" % (
+            dvw.get("random_p05_pt", 0.0), dvw.get("random_p95_pt", 0.0)))
+        L.append("")
+        L.append("- 실제가 무작위를 상회한 비율 **%.1f%%** → **단측 p = %s**" % (
+            float(dvw.get("beats_random_share", 0)) * 100, dvw.get("p_one_sided")))
+        L.append("- 일자단위(313차): **%s/%s일**에서 그날 무작위 중앙값 상회 (임계 %.0f%%)" % (
+            dvw.get("days_beating_random"), dvw.get("days_evaluated"),
+            float((VALIDATION_CAMPAIGN.get("direction_value_watch") or {})
+                  .get("min_day_win_share", 0.70)) * 100))
+    else:
+        L.append("- %s" % (dvw.get("reason") or "표본 없음"))
+    L.append("")
+    if dvw.get("recommendation"):
+        L.append("- **권고**: %s" % dvw["recommendation"])
+        L.append("")
+    L.append("> ⚠ **절대 수준 인용 금지.** 시뮬은 단순화돼 있다 — TP1(33% 부분익절) +")
+    L.append("> 본전이동 + TP2 + 하드스톱 + 종가청산이 전부이고, **트레일링 계단·틱 청산·")
+    L.append("> 손절계단화·ProfitGuard·수수료/슬리피지가 없다.** 실제 손익을 재현하지")
+    L.append("> 못하며 **유효한 것은 두 팔의 비교뿐**이다(같은 시뮬이라 그 비교는 공정).")
+    L.append("> 비용을 빼지 않은 것도 의도적이다 — 양쪽에 동일해 비교에서 상쇄된다.")
+    L.append("> ")
+    L.append("> **따라서 이 채널은 \"시스템 전체의 엣지\"를 재지 않는다. 방향 축 하나만**")
+    L.append("> **잰다.** 실제 손익이 양수인데 여기서 음수가 나오는 것은 모순이 아니다 —")
+    L.append("> 라이브 기하가 이 시뮬보다 정교하기 때문이다.")
+    L.append("> ")
+    L.append("> **이 채널이 연구 우선순위를 좌우한다.** `docs/미륵이고도화3` 로드맵의")
+    L.append("> 이월 D·E·G는 전부 **방향 피처 재배치**이고, [40]이 REJECTS로 굳어 있는")
+    L.append("> 동안 그것들은 소수점 싸움이다. 계획서 §5-1이 지적한 *\"3단계에서 성공의")
+    L.append("> 정의가 비어 있다\"* 는 공백을 이 채널이 메운다 — **[40]의 전환이 곧**")
+    L.append("> **성공의 정의다.**")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    L.append("## [41] 청산 측 학습기 게이지 (MW0602 428차)")
+    L.append("")
+    L.append("**판정 채널이 아니라 게이지다** ([33]과 같은 부류). \"언제 학습을 시작할 수")
+    L.append("있는가\"를 매주 찍는다. 학습기가 **전부 진입 측**이라는 것이 계기다 —")
+    L.append("GBM/RF·SGD·`meta_confidence`·`meta_labeling`이 모두 **방향 적중**을 학습하고,")
+    L.append("**청산은 전부 규칙**(ATR 고정배수·트레일링·손절계단화)이다. 그런데 425차는")
+    L.append("스톱이 16건 중 14건 옳았음을, [40]은 방향이 동전던지기와 구분되지 않음을")
+    L.append("보였다 — **돈은 청산에서 온다.**")
+    L.append("")
+    _lb = emw.get("labels") or {}
+    _rd = emw.get("readiness") or {}
+    if emw.get("error"):
+        L.append("- ⚠ 실행 실패: `%s`" % emw.get("error"))
+    else:
+        L.append("- 라벨 표본: **%s행** / %s포지션 / %s거래일 (포지션당 %s행)" % (
+            _lb.get("n_rows", "—"), _lb.get("n_positions", "—"),
+            _lb.get("n_days", "—"), _lb.get("rows_per_position", "—")))
+        L.append("- 양성률: `y_hold_better` %.1f%% · `y_tp1_first` %.1f%%" % (
+            float(_lb.get("y_hold_better_rate", 0)) * 100,
+            float(_lb.get("y_tp1_first_rate", 0)) * 100))
+        L.append("")
+        L.append("| 게이지 | 현재 | 요건 |")
+        L.append("|---|---|---|")
+        L.append("| EPV (events per variable) | **%s** | ≥ %s |" % (
+            _rd.get("epv", "—"), _rd.get("min_events_per_variable", "—")))
+        L.append("| 포지션 | **%s** | ≥ %s (**%s건 부족**) |" % (
+            _rd.get("n_positions", "—"), _rd.get("positions_required", "—"),
+            _rd.get("positions_short", "—")))
+        L.append("| 거래일 | %s | ≥ %s |" % (
+            _rd.get("n_days", "—"), _rd.get("min_days", "—")))
+        L.append("| 피처 수 | %s | — |" % _rd.get("n_features", "—"))
+        L.append("")
+        if emw.get("eta_trading_days"):
+            L.append("- 실측 진입속도 **%s건/거래일** 기준 잔여 약 **%s거래일**" % (
+                emw.get("positions_per_day"), emw.get("eta_trading_days")))
+        if emw.get("trained"):
+            L.append("- 🔶 **학습이 열렸다** — OOF AUC **%s** (정확도 %s / 기준선 %s)" % (
+                emw.get("oof_auc"), emw.get("oof_acc"), emw.get("baseline_acc")))
+    if emw.get("config_drift"):
+        L.append("- 🔴 **설정 표류**: `%s`가 settings와 `exit_classifier.py` 사이에서 "
+                 "다르다. 게이지가 거짓말을 한다 — 둘을 맞출 것"
+                 % ", ".join(emw["config_drift"]))
+    L.append("")
+    if emw.get("recommendation"):
+        L.append("- **권고**: %s" % emw["recommendation"])
+        L.append("")
+    L.append("> **왜 스스로 학습을 거부하는가.** 395행처럼 보이지만 행은 같은 포지션 안에서")
+    L.append("> 강하게 상관돼 있어(포지션당 4.03행) **유효표본은 포지션 수**다. 피처 14개·")
+    L.append("> 양성률 32%에서 EPV는 2.25로 통상 기준 10의 **1/5**이다. 이 상태로 학습하면")
+    L.append("> 학습이 아니라 암기다 — 그래서 `exit_classifier`가 **학습 자체를 거부**하고")
+    L.append("> 얼마나 더 필요한지만 돌려준다.")
+    L.append("> ")
+    L.append("> 학습이 열리면 **`GroupKFold(groups=entry_ts)`** 를 쓴다. 같은 포지션의 행이")
+    L.append("> 학습/검증에 갈라져 들어가면 누출이라 행 단위 KFold는 쓰지 않는다.")
+    L.append("> ")
+    L.append("> **이 축의 구조적 이점**: 회전율을 **늘리지 않는다**(진입 수 그대로, 청산")
+    L.append("> 시점만 변경) → 189회 검정을 전멸시킨 왕복비용 0.133pt를 추가 지불하지")
+    L.append("> 않는다. 그리고 **방향 예측이 필요 없다**(이미 진입한 포지션의 조건부 문제).")
+    L.append("> ")
+    L.append("> ⚠ **라이브 청산에 배선하지 않는다.** `exit_model_shadow`에 기록만 한다.")
+    L.append("> 배선은 판정 후 주간회의 결정이며(§9), 계획서 2장이 경고한 \"기준선을")
+    L.append("> 흔드는 변경\"이므로 **D-day(08-14) 스냅샷 이후**에 논의할 것.")
     L.append("")
     L.append("---")
     L.append("")
