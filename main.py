@@ -8861,6 +8861,17 @@ class TradingSystem:
             if _mult * (_entry - _prev_stop) > 0:
                 self.position.stop_price = _entry
                 self.position.last_update_reason = "tp1_breakeven"
+                # [MW0602 424차] **423차 가드가 통째로 우회되던 네 번째 조이기 지점.**
+                # 423차는 stop_updated_at을 position_tracker의 3곳(진입/트레일링/
+                # arm_tp1 qty==1)에만 심었는데, qty>=2의 TP1 손익분기 이동은 여기서
+                # stop_price를 직접 대입하므로 조이기 사실 자체가 기록되지 않았다.
+                # 그 결과 08-04에 qty=2 포지션 3건(11:55·12:03·12:08)이 조이기와
+                # **같은 분봉** 안에서 유령 하드스톱으로 청산됐다.
+                # ⚠ `mark_stop_tightened_shadow`는 섀도만 찍는다 — 여기서
+                #   stop_updated_at을 찍으면 봉중 판정이 즉시 억제되어 라이브
+                #   손익이 바뀐다(08-04 기준 -433,609원). 판정 전까지는 계측만 한다.
+                #   상세 근거: utils/db_utils.py `phantom_stop_shadow` 주석.
+                self.position.mark_stop_tightened_shadow("tp1_breakeven_qty2")
                 self.position._save_state()
                 log_manager.system(
                     f"[TP1-Breakeven] {self.position.status} 잔여 {self.position.quantity}계약 "
@@ -11943,6 +11954,56 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
         bar_low, bar_high, stop_price=_prev_stop_price, bar_start=_bar_start
     )
     _stop_hit_ts = _close_stop_hit or _intrabar_stop_hit
+
+    # ── [MW0602 424차] 유령 하드스톱 섀도 계측 — 판정에 관여하지 않는다 ──────────
+    # `bar_start`를 넘기지 않으면 가드가 꺼진 종전 동작이므로(하위호환 규약,
+    # is_stop_hit_intrabar 독스트링), 이 호출로 "가드가 없었다면 봉중 히트였는가"를
+    # 그대로 얻는다. 라이브 가드 억제분과 섀도 억제분을 둘 다 남겨 양쪽 팔을
+    # 비교할 수 있게 한다 — 판정 근거는 utils/db_utils.py phantom_stop_shadow 주석.
+    try:
+        _pss_raw_hit = self.position.is_stop_hit_intrabar(
+            bar_low, bar_high, stop_price=_prev_stop_price
+        )
+        if _pss_raw_hit:
+            _pss_live_suppressed = not _intrabar_stop_hit
+            _pss_would_suppress = self.position.would_guard_suppress_intrabar(_bar_start)
+            execute(
+                TRADES_DB,
+                """INSERT INTO phantom_stop_shadow
+                   (ts, entry_ts, direction, quantity, entry_price,
+                    stop_eval, stop_current, bar_start, bar_high, bar_low,
+                    cur_price, close_hit, live_suppressed, would_suppress,
+                    tighten_path, stop_updated_at, shadow_tightened_at, exited)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                     if self.position.entry_time else None),
+                    self.position.status,
+                    int(self.position.quantity),
+                    float(self.position.entry_price),
+                    float(_prev_stop_price),
+                    float(self.position.stop_price),
+                    (_bar_start.strftime("%Y-%m-%d %H:%M:%S") if _bar_start else None),
+                    float(bar_high),
+                    float(bar_low),
+                    float(price),
+                    1 if _close_stop_hit else 0,
+                    1 if _pss_live_suppressed else 0,
+                    1 if _pss_would_suppress else 0,
+                    self.position.stop_shadow_tighten_path,
+                    (self.position.stop_updated_at.strftime("%Y-%m-%d %H:%M:%S")
+                     if self.position.stop_updated_at else None),
+                    (self.position.stop_shadow_tightened_at.strftime("%Y-%m-%d %H:%M:%S")
+                     if self.position.stop_shadow_tightened_at else None),
+                    1 if _stop_hit_ts else 0,
+                ),
+            )
+    except Exception as _pss_e:
+        # 계측 실패가 청산을 막아서는 안 된다 — 섀도 채널은 전부 이 규약을 따른다.
+        log_manager.system(
+            "[PhantomStopShadow] 기록 실패(무시): %s" % _pss_e, "WARNING"
+        )
     if _stop_hit_ts:
         # 종가 히트는 방금 갱신된(최신) 스톱 기준, 봉중 히트는 그 봉 동안
         # 실제로 유효했던(갱신 전) 스톱 기준으로 청산가를 계산한다.
