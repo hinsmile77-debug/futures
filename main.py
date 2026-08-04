@@ -64,6 +64,8 @@ from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
     SIGNAL_DECAY_EXIT_ENABLED,
     LOSS_TIER1_ENABLED, LOSS_TIER1_TICK_ENABLED,
+    LOSS_TIER1_QTY1_ENABLED,              # [425차] qty=1 전량 조기청산 (기본 False)
+    LOSS_TIER1_QTY1_TICK_ENABLED,         # [425차] 위의 틱 확장분 별도 킬스위치
     TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     TOXICITY_REDUCE_MULT_SHADOW_HI, TOXICITY_REDUCE_MULT_SHADOW_LO,
@@ -590,6 +592,12 @@ class TradingSystem:
         # 분당 1회(:33초)라 최악 60초 지연되던 비대칭을 해소. 위 두 형제와 동일 패턴.
         self._tick_tp1_triggered: bool  = False
         self._tick_tp1_price:     float = 0.0
+        # [MW0602 425차] qty=1 손절1차 — **위 세 형제와 달리 elif 체인 밖의 독립 경로**다.
+        # 섀도(계측)일 때는 액션이 없어 상호배타가 필요 없고, 오히려 elif에 넣으면
+        # "같은 틱이 tier1과 풀스톱을 함께 뚫은" 사건을 또 놓친다 — 그게 지금 이
+        # 채널이 급행풀스톱의 40%를 못 잡고 있는 바로 그 원인이다(0804 4-3 실측).
+        self._tick_lt1_q1_pending: bool  = False
+        self._tick_lt1_q1_price:   float = 0.0
         # [320차] VPIN 배선 — bar 누적 buy_vol/sell_vol의 틱 델타로 개별 체결 복원용
         self._vpin_bar_ts: Optional[datetime.datetime] = None
         self._vpin_prev_buy_vol:  float = 0.0
@@ -3430,6 +3438,34 @@ class TradingSystem:
                     self.position.status, close, self.position.tp1_price,
                 )
                 QTimer.singleShot(0, self._process_tick_tp1)
+
+            # ── [MW0602 425차] qty=1 손절1차 — **독립 if다. elif 체인에 넣지 말 것.** ──
+            # 위 체인은 "풀스톱이 잡히면 tier1은 평가하지 않는다"는 상호배타인데,
+            # qty=1 경로는 섀도(액션 없음)이거나 있어도 풀스톱과 같은 전량청산이라
+            # 그 배타가 필요 없다. 오히려 체인에 넣으면 **같은 틱이 tier1과 풀스톱을
+            # 함께 뚫은 사건이 통째로 관측 밖으로 사라진다** — 0804 4-3 실측에서
+            # 이 채널이 급행풀스톱 qty=1 10건 중 4건(-7.82pt)을 못 잡고 있던 원인이
+            # 정확히 그것이다(분당 파이프라인에서만 평가돼 1분 스트로보 샘플링).
+            #
+            # is_loss_tier1_qty1_shadow_hit()는 quantity==1과 1회기록 플래그를 자체
+            # 검사하므로 여기서 중복 확인하지 않는다. 다만 그 플래그는 **기록 시점**에
+            # 서야 서므로, singleShot 처리 전 여러 틱이 들어오면 예약이 쌓인다 —
+            # `_tick_lt1_q1_pending`이 그 중복 예약만 막는다.
+            #
+            # §4 준수: 콜백 안에서는 flag만 세우고 QTimer.singleShot(0, ...)으로 예약.
+            if (LOSS_TIER1_ENABLED
+                    and not self._tick_lt1_q1_pending
+                    and self.position.status != "FLAT"
+                    and self.position.is_loss_tier1_qty1_shadow_hit(close)):
+                self._tick_lt1_q1_pending = True
+                self._tick_lt1_q1_price   = close
+                logger.warning(
+                    "[TickLossTier1Qty1] qty=1 손절1차 히트 감지 (틱) %s tick=%.2f tier1=%.2f"
+                    " → 처리 예약 (실적용=%s)",
+                    self.position.status, close, self.position.loss_tier1_price,
+                    LOSS_TIER1_QTY1_ENABLED and LOSS_TIER1_QTY1_TICK_ENABLED,
+                )
+                QTimer.singleShot(0, self._process_tick_loss_tier1_qty1)
             # [230차] 100ms 쓰로틀 — minute_chart_tick(chart.update) 은 heavy (348 candles paintEvent)
             _now_tick = time.perf_counter()
             _last_tick_ui = getattr(self, "_last_tick_chart_update", 0.0)
@@ -3534,6 +3570,40 @@ class TradingSystem:
                 and self.circuit_breaker.state != CB_STATE_HALTED
                 and price > 0):
             self._execute_loss_tier1_exit(price)
+
+    def _process_tick_loss_tier1_qty1(self) -> None:
+        """[MW0602 425차] qty=1 손절1차 tick-level 처리 — 메인 스레드에서만 호출.
+
+        `_process_tick_loss_tier1`과 같은 뼈대(flag 최상단 즉시 클리어로 멱등 보장,
+        상태 재확인 후 실행)이나 **두 가지가 다르다**:
+
+        1. **기록이 먼저, 액션은 조건부다.** `LOSS_TIER1_QTY1_ENABLED`가 False인
+           동안(기본값) 이 경로는 순수 계측이다 — 라이브 청산 동작 무변경.
+        2. **기록은 pending/CB 상태와 무관하게 한다.** 액션이 없으므로 막을 이유가
+           없고, 오히려 그 게이트를 걸면 "풀스톱 주문이 이미 나간 뒤"라는 가장
+           중요한 국면이 계측에서 빠진다.
+
+        실적용(Phase 2) 시 전량청산인 이유: qty==1은 쪼갤 수 없다. 따라서 이 정책은
+        "부분 축소"가 아니라 **qty=1 한정 손절폭 절반**이며, 그 비용(회복했을
+        포지션의 조기 손절)은 [10] 채널의 hyp_pnl_pts에 이미 차감돼 있다.
+        """
+        if not getattr(self, "_tick_lt1_q1_pending", False):
+            return
+        self._tick_lt1_q1_pending = False   # 중복 처리 방지 — 결과 무관 즉시 해제
+        price = self._tick_lt1_q1_price
+        if self.position.status == "FLAT" or price <= 0:
+            return
+        # 예약~실행 사이에 청산·기록이 끝났을 수 있다 — 조건을 다시 확인한다.
+        if not self.position.is_loss_tier1_qty1_shadow_hit(price):
+            return
+
+        _act = bool(LOSS_TIER1_QTY1_ENABLED and LOSS_TIER1_QTY1_TICK_ENABLED)
+        self._record_loss_tier1_qty1_shadow(price, live_active=_act)
+        if not _act:
+            return
+        if self._has_pending_order() or self.circuit_breaker.state == CB_STATE_HALTED:
+            return
+        self._execute_loss_tier1_qty1_exit(price)
 
     def _process_tick_tp1(self) -> None:
         """[403차 종합 P1-5] TP1 도달 tick-level 처리 — 메인 스레드에서만 호출.
@@ -11830,7 +11900,50 @@ def _ts_execute_loss_tier1_exit(self, price: float) -> None:
         log_manager.system(f"[Exit] 손절1차 주문 실패 ret={ret}", "ERROR")
 
 
-def _ts_record_loss_tier1_qty1_shadow(self, price: float) -> None:
+def _ts_execute_loss_tier1_qty1_exit(self, price: float) -> None:
+    """[MW0602 425차 / Phase 2] qty=1 손절1차 — **전량** 조기청산 주문 전송.
+
+    `LOSS_TIER1_QTY1_ENABLED`가 True일 때만 호출된다(기본 False).
+
+    `_ts_execute_loss_tier1_exit`(qty>=2 부분축소)와 별도 함수인 이유:
+      · 저쪽은 `get_loss_tier1_exit_qty()`가 `min(cut, quantity-1)`이라 **qty=1에서
+        0을 돌려주고 조용히 return한다** — 재사용하면 아무 일도 일어나지 않는다.
+      · 잔여가 0이 되므로 부분청산(EXIT_LOSS_TIER1)이 아니라 **전량청산(EXIT_FULL)**
+        이다. 하드스톱 경로와 같은 kind를 써야 `_ts_handle_exit_fill`이
+        close_position으로 정상 마감한다.
+
+    `hint_source="stop_tier1_qty1"`로 태깅해 §17 슬리피지 채널에서 하드스톱과
+    섞이지 않게 한다(423차가 stop_close/stop_intrabar/stop_tick을 분리한 것과 동일
+    취지 — 다른 트리거를 한 통에 넣으면 그 채널이 재려던 값을 못 잰다).
+    """
+    if self._has_pending_order():
+        return
+    if self.position.status == "FLAT" or self.position.quantity != 1:
+        return
+    direction = self.position.status
+    self._set_pending_order(
+        kind="EXIT_FULL",
+        direction=direction,
+        qty=1,
+        price_hint=round(price, 2),
+        reason="손절1차 전량청산(qty1)",
+        hint_source="stop_tier1_qty1",
+    )
+    ret = self._send_broker_exit_order(1)
+    log_manager.system(
+        f"[ExitSendOrderResult] ret={ret} kind=손절1차qty1 direction={direction} qty=1",
+        "WARNING",
+    )
+    if ret == 0:
+        log_manager.trade(
+            f"[주문요청] 손절1차 전량청산(qty1) {direction} 1계약 @ {price} 체결대기"
+        )
+    else:
+        self._clear_pending_order()
+        log_manager.system(f"[Exit] 손절1차 qty1 주문 실패 ret={ret}", "ERROR")
+
+
+def _ts_record_loss_tier1_qty1_shadow(self, price: float, live_active: bool = False) -> None:
     """[363차] qty=1 손실1차 섀도 — hurst_gate_shadow/joint_gate_shadow/open_gap_shadow/
     tp2_hold_shadow와 동일한 패턴(발동 시점 상태만 기록 → 주간 리포트가 사후 판정).
 
@@ -11848,10 +11961,14 @@ def _ts_record_loss_tier1_qty1_shadow(self, price: float) -> None:
             """INSERT INTO loss_tier1_qty1_shadow
                (ts, entry_ts, direction, entry_price, loss_tier1_price, stop_price,
                 grade, entry_horizon, cf_outcome, cf_exit_price,
-                quantile_expected_pt, quantile_uncertainty_pt)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                quantile_expected_pt, quantile_uncertainty_pt,
+                live_active, from_tier1_remainder)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                # [425차] 초 단위까지 남긴다. 종전 "%H:%M:00" 절단은 틱 배선 이후
+                # 문제가 된다 — 같은 분 안에서 tier1 터치와 풀스톱이 갈리는 것이
+                # 이 채널의 핵심 관측인데 분으로 뭉개면 순서를 복원할 수 없다.
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
                  if self.position.entry_time else None),
                 self.position.status,
@@ -11864,6 +11981,11 @@ def _ts_record_loss_tier1_qty1_shadow(self, price: float) -> None:
                 float(self.position.loss_tier1_price),
                 self.position.entry_quantile_expected_pt,
                 self.position.entry_quantile_uncertainty_pt,
+                1 if live_active else 0,
+                # [425차] qty=2가 tier1으로 1계약을 자른 **잔여 1계약**인지.
+                # 그 경우 모집단이 다르다(이미 한 번 보호받았다 — [14]의 영역).
+                # `loss_tier1_done`은 tier1 체결 후에만 True다.
+                1 if getattr(self.position, "loss_tier1_done", False) else 0,
             ),
         )
     except Exception as _lt1q1_e:
@@ -12062,10 +12184,16 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
     # 0721 딥다이브: 오늘 손실 2건 다 qty=1(대상 제외) 또는 틱 급락(항목2로 해소)이라
     # Loss Tier1이 한 번도 못 떴음 — qty=1 조기청산이 실제로 유리한지는 §9 사전등록
     # 원칙에 따라 VALIDATION_CAMPAIGN["loss_tier1_qty1_shadow"] 누적판정으로 확인한다.
+    # [MW0602 425차] 틱 경로(_process_tick_loss_tier1_qty1)와 **같은 판단을** 한다.
+    # 이 분당 경로는 이제 폴백이다 — 틱이 먼저 잡으면 1회기록 플래그에 걸려 여기선
+    # 아무 일도 일어나지 않는다(멱등). 틱 확장분을 끄면 종전 동작으로 되돌아간다.
     if (LOSS_TIER1_ENABLED
             and self.position.status != "FLAT"
             and self.position.is_loss_tier1_qty1_shadow_hit(price)):
-        self._record_loss_tier1_qty1_shadow(price)
+        _lt1q1_act = bool(LOSS_TIER1_QTY1_ENABLED)
+        self._record_loss_tier1_qty1_shadow(price, live_active=_lt1q1_act)
+        if _lt1q1_act and not self._has_pending_order():
+            self._execute_loss_tier1_qty1_exit(price)
 
     # [367차] Tier1 발동 후 잔여계약 2단계 조기청산 섀도 — 0722 딥다이브에서 확인한
     # "Tier1이 qty=2 중 1계약만 자르고 남은 1계약은 원래 stop까지 무방비" 사각지대를
@@ -14832,6 +14960,7 @@ TradingSystem._manual_position_restore = _ts_manual_position_restore
 TradingSystem._execute_entry = _ts_execute_entry
 TradingSystem._execute_partial_exit = _ts_execute_partial_exit
 TradingSystem._execute_loss_tier1_exit = _ts_execute_loss_tier1_exit
+TradingSystem._execute_loss_tier1_qty1_exit = _ts_execute_loss_tier1_qty1_exit  # [425차]
 TradingSystem._record_loss_tier1_qty1_shadow = _ts_record_loss_tier1_qty1_shadow
 TradingSystem._record_loss_tier2_shadow = _ts_record_loss_tier2_shadow
 TradingSystem._record_tp1_trail_shadow = _ts_record_tp1_trail_shadow

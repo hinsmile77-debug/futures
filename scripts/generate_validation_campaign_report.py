@@ -4464,18 +4464,77 @@ def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
                 conn.commit()
             out["resolved_now"] = len(updates)
 
+    # ── [MW0602 425차] 판정 모집단 정제 — 두 가지를 제외한다 ────────────────────
+    # (1) `live_active=1` — LOSS_TIER1_QTY1_ENABLED 전환 이후의 기록. 그때는 실제로
+    #     tier1에서 잘랐으므로 "잘랐다면"이라는 반사실이 실제와 같아져 hyp≈0으로
+    #     수렴한다. 섞으면 판정이 0 쪽으로 희석된다.
+    # (2) `from_tier1_remainder=1` — qty=2가 tier1으로 1계약을 자른 **잔여 1계약**.
+    #     이 채널의 모집단은 "계단화가 원천 배제된 진짜 qty=1"인데 잔여계약은 이미
+    #     한 번 보호받은 다른 모집단이다(그쪽은 [14]가 맡는다).
+    #     ⚠ 구버전 행은 이 컬럼이 없거나 0이므로 **trades의 '손절1차 조기축소' 레그
+    #       유무로 소급 보정**한다 — 실측 혼입이 있었다(08-04 12:21, entry_qty=2가
+    #       12:22:18 tier1 체결로 qty 2→1이 된 뒤 이 표에 들어왔다).
+    try:
+        with _conn(TRADES_DB) as conn:
+            _cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(loss_tier1_qty1_shadow)").fetchall()}
+            _has_live = "live_active" in _cols
+            _has_rem = "from_tier1_remainder" in _cols
+            if _has_rem:
+                # 소급 보정 — 조인 관례는 위 resolve와 동일(±10초 근사).
+                _fix = conn.execute(
+                    """SELECT s.id FROM loss_tier1_qty1_shadow s
+                        WHERE COALESCE(s.from_tier1_remainder,0) = 0
+                          AND EXISTS (SELECT 1 FROM trades t
+                                       WHERE t.exit_reason = '손절1차 조기축소'
+                                         AND t.direction = s.direction
+                                         AND ABS((julianday(t.entry_ts)
+                                                  - julianday(s.entry_ts)) * 86400) <= 10)"""
+                ).fetchall()
+                if _fix:
+                    conn.executemany(
+                        "UPDATE loss_tier1_qty1_shadow SET from_tier1_remainder=1 WHERE id=?",
+                        [(r["id"],) for r in _fix])
+                    conn.commit()
+                    out["remainder_backfilled"] = len(_fix)
+    except Exception as e:
+        out["error"] = "모집단 정제 실패: %s" % e
+        return out
+
+    _excl = ["resolved=1", "ts >= ?"]
+    if _has_live:
+        _excl.append("COALESCE(live_active,0) = 0")
+    if _has_rem:
+        _excl.append("COALESCE(from_tier1_remainder,0) = 0")
+    _where = " AND ".join(_excl)
+
     try:
         with _conn(TRADES_DB) as conn:
             agg = conn.execute(
                 """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
                           AVG(entry_price) AS avg_price,
                           SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win
-                   FROM loss_tier1_qty1_shadow WHERE resolved=1 AND ts >= ?""",
+                   FROM loss_tier1_qty1_shadow WHERE """ + _where,
                 (_campaign_start(),),
             ).fetchone()
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM loss_tier1_qty1_shadow WHERE resolved=0"
             ).fetchone()["n"]
+            _day_rows = conn.execute(
+                "SELECT substr(ts,1,10) AS d, hyp_pnl_pts AS h "
+                "  FROM loss_tier1_qty1_shadow WHERE " + _where,
+                (_campaign_start(),),
+            ).fetchall()
+            if _has_live:
+                out["n_live_excluded"] = conn.execute(
+                    "SELECT COUNT(*) AS n FROM loss_tier1_qty1_shadow "
+                    " WHERE resolved=1 AND COALESCE(live_active,0)=1"
+                ).fetchone()["n"]
+            if _has_rem:
+                out["n_remainder_excluded"] = conn.execute(
+                    "SELECT COUNT(*) AS n FROM loss_tier1_qty1_shadow "
+                    " WHERE resolved=1 AND COALESCE(from_tier1_remainder,0)=1"
+                ).fetchone()["n"]
     except Exception as e:
         out["error"] = str(e)
         return out
@@ -4484,6 +4543,14 @@ def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
     total_hyp = float(agg["total_hyp"] or 0.0)
     avg_price = float(agg["avg_price"] or 0.0) or 300.0
     win_rate = (int(agg["n_win"] or 0) / n) if n else 0.0
+    # [425차] 일자단위 검정(313차) — 12/14 표본이 3거래일에 몰려 있어 건수만으로는
+    # 하루가 표본의 40%를 공급해도 판정이 난다. 일자별 평균 hyp의 부호를 센다.
+    _by_day = {}
+    for _r in _day_rows:
+        _by_day.setdefault(_r["d"], []).append(float(_r["h"] or 0.0))
+    _day_means = [float(np.mean(v)) for _, v in sorted(_by_day.items())]
+    out.update(_paired_day_summary(_day_means, float(cr.get("alpha", 0.05))))
+    out["days"] = len(_day_means)
     out.update({
         "n_resolved": n,
         "n_pending": int(pending),
@@ -4518,18 +4585,47 @@ def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
         out["edge_uncertainty_corr"] = None if np.isnan(_ec) else round(_ec, 4)
         out["edge_ratio_mean"] = round(float(np.mean(edge_ratios)), 4)
 
+    _min_d = int(cr.get("min_days", 0))
     if n < int(cr["min_samples"]):
-        out["reason"] = "tier1 터치 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        out["reason"] = ("tier1 터치 표본 부족 (%d < %d, %d거래일) — 판정 보류"
+                         % (n, cr["min_samples"], out["days"]))
+        return out
+    if out["days"] < _min_d:
+        # [425차] 건수는 찼는데 거래일이 모자란 경우. n=5에서는 양측 부호검정 최소
+        # p가 0.0625라 α=0.05를 **원리적으로** 통과할 수 없다 — 건수만 보고 판정하면
+        # 하루가 표본의 절반을 공급해도 통과한다.
+        out["reason"] = ("거래일 부족 (%d일 < %d일, 표본 %d건) — 판정 보류. "
+                         "누적 %+.2fpt는 아직 근거가 아니다"
+                         % (out["days"], _min_d, n, total_hyp))
         return out
 
     cost_pt = _roundtrip_cost_pt(avg_price)
     out["cost_pt"] = round(cost_pt, 4)
-    adopt = total_hyp > cost_pt * 2.0
+    # [425차] 채택 조건을 **두 겹**으로 한다 — 종전은 누적 pt가 왕복비용의 2배를
+    # 넘는지만 봤는데, 그 지표는 큰 하루가 통째로 만들 수 있다(372차 이상치 착시).
+    #   ① 누적 hyp > 왕복비용 × 2   (경제적 유의미)
+    #   ② 일자단위 부호검정 p < α    (재현성, 313차)
+    _econ = total_hyp > cost_pt * 2.0
+    _repro = bool(out.get("significant"))
+    adopt = _econ and _repro
+    out["econ_ok"] = _econ
+    out["repro_ok"] = _repro
     out["verdict"] = "FAIL" if adopt else "PASS"
     if adopt:
         out["recommendation"] = (
-            "qty=1 손실1차 조기청산 정책 채택 검토 — 주간회의 수동 결정 (§9 사전등록 원칙)"
-        )
+            "qty=1 손실1차 **전량** 조기청산 채택 검토 — 누적 %+.2fpt(비용 %.3fpt×2 초과) "
+            "이고 일자단위로도 재현된다(%d/%d일, p=%.4f). 적용은 "
+            "`config/settings.py:LOSS_TIER1_QTY1_ENABLED = True` + "
+            "`LOSS_TIER1_QTY1_EFFECTIVE_DATE` 기입 — 주간회의 수동 결정(§9). "
+            "전환 후 이 채널은 live_active 행을 판정에서 제외하므로 판정이 얼어붙는다"
+            % (total_hyp, cost_pt, out.get("days_positive", 0),
+               out.get("paired_days", 0), out.get("sign_p", 1.0)))
+    elif _econ and not _repro:
+        out["recommendation"] = (
+            "누적 %+.2fpt는 비용 기준을 넘지만 **일자단위로 재현되지 않는다** "
+            "(%d/%d일, p=%.4f) — 채택 보류. 누적 수치만으로 움직이지 말 것(313차)"
+            % (total_hyp, out.get("days_positive", 0),
+               out.get("paired_days", 0), out.get("sign_p", 1.0)))
     return out
 
 
@@ -5548,10 +5644,12 @@ def build_report(days: int) -> tuple:
         ("%.1f%%" % (t2["win_rate"] * 100)) if "win_rate" in t2 else "—",
         t2.get("n_resolved", 0), t2.get("n_pending", 0),
         t2.get("cf_tp3", "—"), t2.get("cf_trail_stop", "—"), t2.get("cf_force_exit", "—")))
-    L.append("| [11] qty=1 손실1차 조기청산 counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
+    L.append("| [11] qty=1 손실1차 조기청산 counterfactual | %s | 누적 hyp=%spt 승률=%s "
+             "(n=%s/%s일, 보류 %s) 일자 p=%s |" % (
         _fmt_verdict(lt1["verdict"]), lt1.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (lt1["win_rate"] * 100)) if "win_rate" in lt1 else "—",
-        lt1.get("n_resolved", 0), lt1.get("n_pending", 0)))
+        lt1.get("n_resolved", 0), lt1.get("days", "—"), lt1.get("n_pending", 0),
+        lt1.get("sign_p", "—")))
     L.append("| [12] qty=1 TP1 이후 트레일 폭 counterfactual | %s | 누적 hyp=%spt 승률=%s "
               "(n=%s, 보류 %s) 트레일스톱=%s건 강제청산=%s건 |" % (
         _fmt_verdict(t1t["verdict"]), t1t.get("total_hyp_pnl_pts", "—"),
@@ -6214,7 +6312,17 @@ def build_report(days: int) -> tuple:
     L.append("")
 
     # [11] qty=1 손실1차 조기청산 counterfactual 상세
-    L.append("## [11] qty=1 손실1차(Loss Tier1) 조기청산 counterfactual (363차)")
+    L.append("## [11] qty=1 손실1차(Loss Tier1) 조기청산 counterfactual (363차 / 425차 개정)")
+    L.append("")
+    L.append("**0804 4-3 딥다이브에서 집행 축의 유일한 생존 처방으로 확정된 채널이다.**")
+    L.append("급행 풀스톱 16건 중 **13건(-2,319,612원, 81%)이 qty=1**이고, qty=1은")
+    L.append("`is_loss_tier1_hit()`가 \"물리적 분할 불가\"로 원천 제외해 전액이 풀스톱까지")
+    L.append("노출된다. 같은 딥다이브에서 다른 후보는 전부 떨어졌다 —")
+    L.append("손절 유예·스톱 확대는 **반증**(급행 16건 중 14건이 청산 후 더 나빠짐),")
+    L.append("체결 슬리피지는 **대상 아님**(FAST 평균 -0.0157pt), 지정가 진입은 **미지지**")
+    L.append("(최선 변형도 일자단위 p=0.45·델타의 59%가 단일일), 진입 판별자는 421차")
+    L.append("Phase A가 245피처 **BH FDR 통과 0개**. \"스톱이 옳았다\"면 남는 레버는")
+    L.append("**더 일찍 끊는 것**이고 그게 이 채널이다.")
     L.append("")
     L.append("- 이번 실행 resolve: %d건 / 누적 판정 %s건 (미판정 %s건)" % (
         lt1.get("resolved_now", 0), lt1.get("n_resolved", 0), lt1.get("n_pending", 0)))
@@ -6222,6 +6330,22 @@ def build_report(days: int) -> tuple:
         lt1.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (lt1["win_rate"] * 100)) if "win_rate" in lt1 else "—",
     ))
+    # [425차] 판정 2겹 — 경제성(누적 pt)과 재현성(일자단위)을 분리 표기한다.
+    L.append("- 판정 조건 **2겹**: ① 누적 hyp > 왕복비용×2 → **%s** / "
+             "② 일자단위 부호검정 p<%.2f → **%s** (%s/%s일, p=%s)" % (
+        ("충족" if lt1.get("econ_ok") else "미충족" if "econ_ok" in lt1 else "—"),
+        float((VALIDATION_CAMPAIGN.get("loss_tier1_qty1_shadow") or {}).get("alpha", 0.05)),
+        ("충족" if lt1.get("repro_ok") else "미충족" if "repro_ok" in lt1 else "—"),
+        lt1.get("days_positive", "—"), lt1.get("paired_days", "—"),
+        lt1.get("sign_p", "—")))
+    if lt1.get("n_live_excluded") or lt1.get("n_remainder_excluded"):
+        L.append("- 판정 제외: 실적용 이후 %s건 · tier1 잔여계약 %s건 "
+                 "(전자는 반사실이 실제와 같아지고, 후자는 이미 한 번 보호받은 다른 "
+                 "모집단이라 [14]가 맡는다)" % (
+                     lt1.get("n_live_excluded", 0), lt1.get("n_remainder_excluded", 0)))
+    if lt1.get("remainder_backfilled"):
+        L.append("- ⚠ 구버전 행 %s건을 `from_tier1_remainder`로 소급 보정했다 "
+                 "(trades의 '손절1차 조기축소' 레그 유무 기준)" % lt1["remainder_backfilled"])
     if lt1.get("recommendation"):
         L.append("- **권고**: %s" % lt1["recommendation"])
     if lt1.get("reason"):
@@ -6235,6 +6359,21 @@ def build_report(days: int) -> tuple:
     elif lt1.get("n_edge_samples", 0) > 0:
         L.append("- [제안3 편입] edge_ratio 표본 %s건 — 상관 계산 최소치(10건) 미달, 축적 대기" %
                   lt1.get("n_edge_samples", 0))
+    L.append("")
+    L.append("> **거래일이 병목이지 건수가 아니다.** 일자단위 양측 부호검정에서 얻을 수")
+    L.append("> 있는 최소 p는 n=5일 때 0.0625로, α=0.05를 **원리적으로** 통과할 수 없다")
+    L.append("> (n=6부터 0.03125로 기각 가능). 그래서 `min_days=6`을 걸었다 —")
+    L.append("> 425차 등록 시점에 이미 5거래일 전부 양수였고 그 바닥에 닿아 있었다.")
+    L.append("> ")
+    L.append("> **FAIL이어도 자동 전환 금지.** 적용은 `LOSS_TIER1_QTY1_ENABLED = True` +")
+    L.append("> `LOSS_TIER1_QTY1_EFFECTIVE_DATE` 기입이고 주간회의 수동 결정이다(§9).")
+    L.append("> qty=1은 쪼갤 수 없으므로 이 정책은 부분 축소가 아니라 **qty=1 한정")
+    L.append("> 손절폭 절반**이다 — 회복했을 포지션을 조기 손절하는 비용이 따르며,")
+    L.append("> 그 비용은 위 hyp_pnl_pts에 이미 차감돼 있다(음수 표본이 그것이다).")
+    L.append("> ")
+    L.append("> ⚠ **전환하면 이 채널의 판정은 얼어붙는다** — 실제로 자르게 되므로")
+    L.append("> 반사실이 실제와 같아진다. 그래서 전환 후 기록은 `live_active=1`로")
+    L.append("> 태깅해 판정에서 빼고, 회귀 감시는 [15]·[13]이 맡는다.")
     L.append("")
 
     # [12] qty=1 TP1 이후 트레일 폭 counterfactual 상세

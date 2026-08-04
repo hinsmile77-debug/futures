@@ -741,6 +741,17 @@ def init_trades_db():
         hyp_pnl_pts        REAL,                    -- (+)=조기청산이 유리, (-)=현행(무조치) 유지가 나았음
         quantile_expected_pt    REAL,                -- [363차 후속] 진입 시점 분위 기대엣지(pt)
         quantile_uncertainty_pt REAL,                -- [363차 후속] 진입 시점 분위 불확실성(pt)
+        -- ── [MW0602 425차] 두 컬럼 다 판정 품질을 지키기 위한 것이다 ──────────────
+        -- live_active: LOSS_TIER1_QTY1_ENABLED가 켜진 뒤의 기록. 그때는 실제로 tier1
+        --   에서 잘랐으므로 "잘랐다면"이라는 반사실이 **실제와 같아져** hyp≈0으로
+        --   수렴한다. 섞으면 판정이 0 쪽으로 희석되므로 리포트가 이 행을 제외한다.
+        -- from_tier1_remainder: qty=2가 tier1으로 1계약을 자른 **잔여 1계약**에서
+        --   찍힌 기록. 이 채널의 모집단은 "계단화가 원천 배제된 진짜 qty=1"인데,
+        --   잔여계약은 이미 한 번 보호받은 다른 모집단이다(그쪽은 [14]가 맡는다).
+        --   실측으로 실제 혼입이 있었다 — 08-04 12:21(entry_qty=2)이 12:22:18 tier1
+        --   체결로 qty 2→1이 된 뒤 12:22:5x 파이프라인에서 이 표에 들어왔다.
+        live_active        INTEGER DEFAULT 0,
+        from_tier1_remainder INTEGER DEFAULT 0,
         created_at         TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
@@ -753,6 +764,11 @@ def init_trades_db():
         for _col, _dtype in (
             ("quantile_expected_pt", "REAL"),
             ("quantile_uncertainty_pt", "REAL"),
+            # [MW0602 425차] 기존 DB는 DEFAULT 0으로 따라잡는다 — 과거 행은 전부
+            # 전환 이전(live_active=0)이 맞고, 잔여계약 혼입 판별은 리포트가
+            # trades의 '손절1차 조기축소' 레그 유무로 소급 보정한다.
+            ("live_active", "INTEGER DEFAULT 0"),
+            ("from_tier1_remainder", "INTEGER DEFAULT 0"),
         ):
             if _col not in _lt1q1_cols:
                 _lt1q1_conn.execute(
