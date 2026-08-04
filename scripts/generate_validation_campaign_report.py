@@ -2731,6 +2731,77 @@ def eval_hurst_meanrevert_drag() -> dict:
 # [39] confidence 판별력 감시 (MW0602 427차) — min_conf의 선행조건
 # ══════════════════════════════════════════════════════════════
 
+def _entry_decision_pairs(since, executed_only=True):
+    """진입 체결(`trades.entry_ts`) ↔ 진입 결정(`ensemble_decisions`) 매핑.
+
+    ⚠ **분 단위 정확 조인은 표본의 19%를 잃는다.** 캠페인 100포지션 전수 실측
+    (MW0602 427차 후속):
+
+        오프셋  0분 : 81건 — 체결 초 `:40~:59`
+        오프셋 -1분 : 19건 — 체결 초 `:00~:09`
+        방향 일치   : 100/100
+
+    파이프라인이 `T:52` 근방에 주문을 내고 **체결 확인이 `T+1:00~:09`에 도착**하면
+    `trades.entry_ts`(체결 시각)가 결정 분보다 1분 뒤가 된다. `ts[:16]`로 맞추면
+    그 19건이 통째로 사라진다 — 데이터가 없는 게 아니라 **키가 어긋난 것**이다.
+    (실제로 [39] 초판이 앙상블축 표본을 81/100으로 잃었고, [34]는 같은 결함을
+     잠재 상태로 갖고 있었다 — effective_date 이후 아직 경계를 넘은 체결이 없어
+     발현만 안 했다.)
+
+    T → T-1 순으로 찾되 **방향 일치를 요구**한다. 방향까지 맞는 결정이 없으면
+    매칭하지 않는다 — 인접 분에 반대 방향 결정이 있을 때 엉뚱하게 붙는 것을 막는다.
+
+    Returns:
+        (pairs, unmatched)
+        pairs    = [(entry_ts, decision_row, offset_min), ...]
+        unmatched = [entry_ts, ...]
+    """
+    _dirmap = {"LONG": 1, "SHORT": -1}
+    try:
+        with _conn(TRADES_DB) as conn:
+            trows = conn.execute(
+                "SELECT entry_ts, MIN(direction) AS direction "
+                "  FROM trades WHERE entry_ts >= ? AND exit_ts IS NOT NULL AND %s "
+                " GROUP BY entry_ts ORDER BY entry_ts" % _SYSTEM_AUTO_SQL,
+                (since,)).fetchall()
+        with _conn(PREDICTIONS_DB) as conn:
+            erows = conn.execute(
+                "SELECT * FROM ensemble_decisions WHERE ts >= ?%s"
+                % (" AND entry_executed = 1" if executed_only else ""),
+                (since,)).fetchall()
+    except Exception:
+        return [], []
+
+    by_ts = {str(r["ts"]): r for r in erows}
+    pairs, unmatched = [], []
+    for t in trows:
+        ets = str(t["entry_ts"])
+        want = _dirmap.get(str(t["direction"]), 0)
+        try:
+            base = datetime.datetime.strptime(ets, _TS_FMT).replace(second=0)
+        except ValueError:
+            unmatched.append(ets)
+            continue
+        hit = None
+        for off in (0, -1):
+            k = (base + datetime.timedelta(minutes=off)).strftime(_TS_FMT)
+            d = by_ts.get(k)
+            if d is None:
+                continue
+            try:
+                if int(d["direction"] or 0) != want:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            hit = (ets, d, off)
+            break
+        if hit:
+            pairs.append(hit)
+        else:
+            unmatched.append(ets)
+    return pairs, unmatched
+
+
 def _split_half_gap(pairs):
     """(conf, correct) 목록 → 상위절반 − 하위절반 적중률 격차.
 
@@ -2802,35 +2873,35 @@ def eval_conf_discrimination_watch() -> dict:
     out["axes"]["model"] = mb
 
     # ── (A) 앙상블축 — 진입한 포지션의 승/패 conf 격차 ───────────
+    # [MW0602 427차 후속] 분 단위 정확 조인을 **공유 헬퍼로 교체**했다.
+    # 초판은 `entry_ts[:16] == ts[:16]`이라 체결이 분 경계를 넘은 19건(체결 초
+    # `:00~:09`)을 통째로 잃었다 — 데이터가 없는 게 아니라 키가 어긋난 것이었다.
     try:
         with _conn(TRADES_DB) as conn:
-            trows = conn.execute(
+            _pnl = {str(r["entry_ts"]): float(r["k"] or 0.0) for r in conn.execute(
                 "SELECT entry_ts, SUM(COALESCE(net_pnl_krw, pnl_krw)) AS k "
                 "  FROM trades WHERE entry_ts >= ? AND exit_ts IS NOT NULL AND %s "
-                " GROUP BY entry_ts" % _SYSTEM_AUTO_SQL, (_campaign_start(),)).fetchall()
-        with _conn(PREDICTIONS_DB) as conn:
-            erows = conn.execute(
-                "SELECT ts, confidence FROM ensemble_decisions "
-                " WHERE ts >= ? AND entry_executed = 1 AND confidence IS NOT NULL",
-                (_campaign_start(),)).fetchall()
+                " GROUP BY entry_ts" % _SYSTEM_AUTO_SQL, (_campaign_start(),))}
     except Exception as e:
         out["error"] = str(e)
         return out
 
-    _ed = {r["ts"][:16]: float(r["confidence"]) for r in erows}
-    rec, unmatched = [], []
-    for r in trows:
-        key = r["entry_ts"][:16]
-        if key in _ed:
-            rec.append((r["entry_ts"][:10], _ed[key], float(r["k"] or 0.0)))
-        else:
-            unmatched.append(r["entry_ts"])
-    # 데이터 무결성 — 이 축의 표본을 직접 깎는다. 0804 실측 19/100건 미매칭.
-    out["n_positions_total"] = len(trows)
+    pairs, unmatched = _entry_decision_pairs(_campaign_start())
+    rec, _off = [], {}
+    for ets, d, off in pairs:
+        _off[off] = _off.get(off, 0) + 1
+        if d["confidence"] is None or ets not in _pnl:
+            continue
+        rec.append((ets[:10], float(d["confidence"]), _pnl[ets]))
+    # 데이터 무결성 — 이 축의 표본을 직접 깎는다. 오프셋 분포도 함께 남긴다:
+    # -1분 비중이 갑자기 늘면 체결 확인 지연이 커진 것이다(집행 품질 신호).
+    _total = len(pairs) + len(unmatched)
+    out["n_positions_total"] = _total
     out["n_matched"] = len(rec)
     out["n_unmatched"] = len(unmatched)
     out["unmatched_days"] = sorted({x[:10] for x in unmatched})
-    out["match_rate"] = round(len(rec) / float(len(trows)), 4) if trows else 0.0
+    out["match_rate"] = round(len(rec) / float(_total), 4) if _total else 0.0
+    out["join_offset_min"] = {str(k): v for k, v in sorted(_off.items())}
 
     eb = {"n": len(rec), "n_days": len({d for d, _, _ in rec})}
     win = [c for _, c, k in rec if k > 0]
@@ -4419,20 +4490,25 @@ def eval_meta_size_zero_shadow() -> dict:
     out["zero_share"] = round(len(zero) / float(len(measured)), 4)
 
     # trades 조인 — 포지션 단위(진입은 중복 발화가 없어 에피소드 병합 불필요)
+    # [MW0602 427차 후속] 종전 `substr(entry_ts,1,16)` 분 단위 정확 조인은
+    # **체결이 분 경계를 넘으면 그 건을 통째로 잃는다**(캠페인 전수 실측 19/100건,
+    # 체결 초 `:00~:09`). 이 채널은 effective_date가 늦어 아직 발현만 안 했을 뿐
+    # 같은 결함이었다 — [39]가 실제로 그것에 걸려 발견됐다.
+    # 공유 헬퍼가 결정 ts → 체결 entry_ts를 T/T-1 + 방향 일치로 풀어 준다.
     pnl_map = {}
     try:
         with _conn(TRADES_DB) as tconn:
-            for t in tconn.execute(
-                """SELECT substr(entry_ts,1,16) k, SUM(net_pnl_krw) pnl
-                     FROM trades WHERE entry_ts >= ? GROUP BY k""",
-                (eff,),
-            ).fetchall():
-                pnl_map[str(t["k"])] = float(t["pnl"] or 0.0)
+            _by_entry = {str(t["entry_ts"]): float(t["pnl"] or 0.0) for t in tconn.execute(
+                """SELECT entry_ts, SUM(net_pnl_krw) pnl
+                     FROM trades WHERE entry_ts >= ? GROUP BY entry_ts""", (eff,))}
+        for _ets, _d, _off in _entry_decision_pairs(eff)[0]:
+            if _ets in _by_entry:
+                pnl_map[str(_d["ts"])] = _by_entry[_ets]
     except Exception as e:
         out["pnl_join_error"] = str(e)
 
     def _band(rs):
-        m = [(r, pnl_map[str(r["ts"])[:16]]) for r in rs if str(r["ts"])[:16] in pnl_map]
+        m = [(r, pnl_map[str(r["ts"])]) for r in rs if str(r["ts"]) in pnl_map]
         if not m:
             return {"n": len(rs), "matched": 0}
         v = [p for _, p in m]
@@ -7957,13 +8033,25 @@ def build_report(days: int) -> tuple:
                 _s2.get("days_positive"), _s2.get("paired_days"), _s2.get("sign_p")))
     else:
         L.append("- 승 또는 패 표본이 없어 격차를 낼 수 없다")
+    _jo = cdw.get("join_offset_min") or {}
+    L.append("- 진입↔결정 매칭 **%s/%s (%.1f%%)** · 오프셋 분포 %s" % (
+        cdw.get("n_matched"), cdw.get("n_positions_total"),
+        float(cdw.get("match_rate", 0)) * 100,
+        " / ".join("%s분 %s건" % (k, v) for k, v in sorted(_jo.items())) or "—"))
     if cdw.get("n_unmatched"):
-        L.append("- 🟡 **데이터 무결성**: 포지션 %s건 중 %s건이 `ensemble_decisions` "
-                 "`entry_executed=1` 기록과 매칭되지 않는다(매칭률 %.1f%%). 이 축의 "
-                 "표본을 직접 깎는다 — 미매칭일: %s" % (
-                     cdw.get("n_positions_total"), cdw.get("n_unmatched"),
-                     float(cdw.get("match_rate", 0)) * 100,
+        L.append("- 🟡 **미매칭 %s건** — T/T-1 두 분과 방향 일치를 다 봐도 결정행을 "
+                 "찾지 못했다. 발생일: %s" % (
+                     cdw.get("n_unmatched"),
                      ", ".join(cdw.get("unmatched_days") or []) or "—"))
+    L.append("")
+    L.append("> **`-1분` 오프셋은 결함이 아니라 정상이다.** 파이프라인이 `T:52` 근방에")
+    L.append("> 주문을 내고 체결 확인이 `T+1:00~:09`에 도착하면 `trades.entry_ts`(체결")
+    L.append("> 시각)가 결정 분보다 1분 뒤가 된다. 427차 초판은 분 단위 정확 조인이라")
+    L.append("> **이 19건을 통째로 잃고 매칭률 81%로 보고했다** — 데이터가 없는 게")
+    L.append("> 아니라 키가 어긋난 것이었다(방향은 100/100 일치).")
+    L.append("> ")
+    L.append("> **`-1분` 비중이 갑자기 늘면 체결 확인 지연이 커진 것이다** — 집행 품질")
+    L.append("> 신호로 함께 볼 것.")
     L.append("")
     if cdw.get("recommendation"):
         L.append("- **권고**: %s" % cdw["recommendation"])
