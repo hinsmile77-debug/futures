@@ -57,6 +57,8 @@ from config.settings import (
     HURST_RANGE_THRESHOLD, REGIME_EXHAUSTION_EXT_ATR_THRESHOLD,
     VALIDATION_CAMPAIGN_DECISIONS, VALIDATION_REPORT_KEEP_WEEKS,
     ATR_STOP_MULT, ATR_TP1_MULT,   # [426차] [38] 차단신호 가상 스톱/TP1 재구성
+    CONF_SCALE_BREAKS,             # [430차] conf 스케일 불연속 레지스트리
+    MC_PERCENTILE, MC_ABS_FLOOR, MC_ABS_CEIL,  # [430차] [44] DynMC 재현
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, MINI_FUTURES_PT_VALUE
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
@@ -382,6 +384,46 @@ def _render_qty_profile(table: str) -> list:
 
 def _campaign_start() -> str:
     return VALIDATION_CAMPAIGN.get("start_date", "2026-07-05") + " 00:00:00"
+
+
+# ── [MW0602 430차 / P0-1] conf 스케일 불연속 ────────────────────────────────
+def _conf_scale_breaks_in(window_start: str, window_end: str = None) -> list:
+    """분석 창이 걸치는 conf 스케일 불연속 목록.
+
+    `config.settings.CONF_SCALE_BREAKS`를 읽어, 창 안에 들어오는 경계만 돌려준다.
+    창의 시작보다 앞선 경계는 무해하다 — 창 전체가 같은 체제이기 때문이다.
+    걸치는 경우에만 경고를 띄워야 "경고가 늘 떠 있어서 안 읽는" 상태를 피한다.
+
+    Args:
+        window_start: "YYYY-MM-DD" 또는 "YYYY-MM-DD HH:MM:SS"
+        window_end:   같은 형식. None이면 상한 없음(오늘까지).
+    """
+    s = (window_start or "")[:10]
+    e = (window_end or "9999-12-31")[:10]
+    hits = []
+    for b in (CONF_SCALE_BREAKS or ()):
+        d = str(b.get("date", ""))[:10]
+        if d and s < d <= e:
+            hits.append(b)
+    return hits
+
+
+def _conf_scale_break_lines(window_start: str, window_end: str = None,
+                            prefix: str = "> ") -> list:
+    """불연속 경고 마크다운 줄. 걸치는 경계가 없으면 빈 리스트."""
+    out = []
+    for b in _conf_scale_breaks_in(window_start, window_end):
+        out.append("%s⚠ **conf 스케일 불연속 — %s (%s)**" % (
+            prefix, b.get("date"), b.get("label")))
+        out.append("%s이 창은 경계를 걸친다. `ensemble_decisions.confidence`의 "
+                   "**산출 경로가 달라졌으므로 경계를 넘는 수준 비교는 무효**다." % prefix)
+        out.append("%s원인: %s" % (prefix, b.get("cause")))
+        out.append("%s실측: %s" % (prefix, b.get("evidence")))
+        if b.get("caveat"):
+            out.append("%s%s" % (prefix, b["caveat"]))
+        out.append("%s일자단위·층화 지표는 이 수준 이동에 면역이다 — **그쪽을 보라.**"
+                   % prefix)
+    return out
 
 
 def _load_candle_maps(cutoff_ts: str, exclude_untradeable: bool = False):
@@ -2922,6 +2964,269 @@ def eval_vol_estimator_watch() -> dict:
             "실현 레인지와 r=%+.3f로 이미 좋은 예측자다.%s"
             % (out["partial_corr"], out["partial_t"] or 0.0, _min_t,
                out["collinearity"], ATR_STOP_MULT, out["corr_atr_realized"], _qb_txt))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
+# [44] DynMC 붕괴행 잠식 · [45] 축퇴 가드 플래핑 (MW0602 430차)
+# ══════════════════════════════════════════════════════════════
+
+def _load_conf_rows(start_date: str) -> list:
+    """[430차 공통] ensemble_decisions에서 conf 축 원자료를 읽는다.
+
+    두 채널([44]·[45])이 같은 표를 쓰므로 한 번만 읽는다. `confidence_raw`는
+    2026-07-29부터 기록되므로 그 이전 구간은 보정 적용여부를 판정할 수 없다 —
+    두 채널 모두 `start_date`가 07-31이라 문제되지 않지만, 호출부가 앞당기면
+    `raw`가 None인 행이 섞이므로 소비처에서 걸러야 한다.
+
+    Returns: [(date, ts, conf, raw, collapsed)] — raw는 None일 수 있다.
+    """
+    try:
+        with _conn(PREDICTIONS_DB) as conn:
+            rows = conn.execute(
+                "SELECT substr(ts,1,10) AS d, ts, confidence AS c, "
+                "       confidence_raw AS r, COALESCE(weight_collapsed,0) AS wc "
+                "  FROM ensemble_decisions "
+                " WHERE ts >= ? AND confidence IS NOT NULL "
+                " ORDER BY ts", (start_date + " 00:00:00",)).fetchall()
+    except Exception:
+        return []
+    return [(r["d"], r["ts"], float(r["c"]),
+             (float(r["r"]) if r["r"] is not None else None), int(r["wc"]))
+            for r in rows]
+
+
+def _base_mc_from(confs: list) -> float:
+    """DynMC의 base_mc 산출을 그대로 재현.
+
+    `strategy/entry/time_strategy_router.update_dynamic_mc()`와 **같은 식**이어야
+    한다 — 다르면 이 채널이 재는 것이 라이브와 무관해진다. 그래서 인덱스 계산까지
+    복제한다(`min(int(n*MC_PERCENTILE), n-1)`). STEP_LIMIT 클램프는 재현하지
+    않는다: 그것은 수렴 속도만 늦추는 과도항이고, 이 채널이 묻는 것은 **수렴점**이다.
+    """
+    if not confs:
+        return float("nan")
+    s = sorted(confs)
+    p = s[min(int(len(s) * MC_PERCENTILE), len(s) - 1)]
+    return max(MC_ABS_FLOOR, min(MC_ABS_CEIL, p))
+
+
+def eval_dynmc_collapse_feed_watch() -> dict:
+    """[44] 붕괴행이 DynMC 진입 예산을 잠식하는가 (MW0602 430차) — 사전등록.
+
+    `weight_collapsed=1`은 **실질 가중합 0 = 판단 불가**다. 그런데 07-31 보정
+    미적용 전환 이후 이 행들의 conf가 0.85(클리핑 상한)로 나가 분포 최상단을
+    점유하고, DynMC가 그 분포의 p65를 min_conf로 쓰기 때문에 **정상 신호 행의
+    통과율이 설계 의도(1-p65≈35%)보다 낮아진다.**
+
+    판정은 "현행 피드 vs 붕괴행 제외 피드" 두 base_mc를 각각 계산하고, **같은
+    비붕괴 행 집합**에 적용해 통과율 차이를 본다 — 분모를 고정해야 base_mc
+    이동분만 분리된다.
+
+    상세 근거·임계 유도는 config.settings의 채널 주석 참조.
+    """
+    cr = VALIDATION_CAMPAIGN.get("dynmc_collapse_feed_watch", {}) or {}
+    start = str(cr.get("start_date", "2026-07-31"))
+    out = {"verdict": "INSUFFICIENT", "start_date": start}
+
+    rows = [x for x in _load_conf_rows(start)]
+    if not rows:
+        out["no_data"] = True
+        out["reason"] = "표본 없음 (%s 이후 ensemble_decisions 행 없음)" % start
+        return out
+
+    days = sorted({d for d, _, _, _, _ in rows})
+    out["n_rows"] = len(rows)
+    out["n_days"] = len(days)
+    n_col = sum(1 for _, _, _, _, wc in rows if wc)
+    out["n_collapsed"] = n_col
+    out["collapsed_share"] = round(n_col / float(len(rows)), 4)
+
+    all_conf = [c for _, _, c, _, _ in rows]
+    non_conf = [c for _, _, c, _, wc in rows if not wc]
+    out["n_non_collapsed"] = len(non_conf)
+    if not non_conf:
+        out["reason"] = "비붕괴 행이 없어 통과율을 낼 수 없다"
+        return out
+
+    mc_cur = _base_mc_from(all_conf)          # 현행 — 붕괴행 포함
+    mc_alt = _base_mc_from(non_conf)          # 대안 — 붕괴행 제외
+    out["base_mc_current"] = round(mc_cur, 4)
+    out["base_mc_excl_collapsed"] = round(mc_alt, 4)
+    out["base_mc_shift"] = round(mc_cur - mc_alt, 4)
+
+    # 분모 고정 — 둘 다 **비붕괴 행**에만 적용한다.
+    pass_cur = sum(1 for c in non_conf if c >= mc_cur) / float(len(non_conf))
+    pass_alt = sum(1 for c in non_conf if c >= mc_alt) / float(len(non_conf))
+    design = 1.0 - float(MC_PERCENTILE)
+    out["pass_rate_current"] = round(pass_cur, 4)
+    out["pass_rate_excl_collapsed"] = round(pass_alt, 4)
+    out["pass_rate_design"] = round(design, 4)
+    out["gap_pp"] = round((design - pass_cur) * 100.0, 2)
+
+    # ── ConstOut 필터 여유폭 — main.py:_recalibrate_mc의 15% 임계에 얼마나 붙었나 ──
+    # 넘으면 그 값이 통째로 제외돼 base_mc가 불연속으로 튄다. 그 순간을 놓치면
+    # "왜 갑자기 min_conf가 내려갔지"를 사후에 설명할 수 없다.
+    _freq = {}
+    for c in all_conf:
+        k = round(c, 2)
+        _freq[k] = _freq.get(k, 0) + 1
+    if _freq:
+        _top_v, _top_n = max(_freq.items(), key=lambda kv: kv[1])
+        out["top_conf_value"] = _top_v
+        out["top_conf_share"] = round(_top_n / float(len(all_conf)), 4)
+        _thr = float(cr.get("constout_threshold", 0.15))
+        out["constout_threshold"] = _thr
+        out["constout_margin_pp"] = round((_thr - out["top_conf_share"]) * 100.0, 2)
+        out["constout_would_fire"] = bool(out["top_conf_share"] > _thr)
+
+    # ── 일자단위(313차) — 붕괴율이 높은 하루가 통째로 만드는 것을 막는다 ──
+    _byday = {}
+    for d, _, c, _, wc in rows:
+        _byday.setdefault(d, []).append((c, wc))
+    day_gaps, day_rows = [], []
+    for d in days:
+        v = _byday[d]
+        _a = [c for c, _ in v]
+        _n = [c for c, wc in v if not wc]
+        if not _n:
+            continue
+        _mc_c, _mc_a = _base_mc_from(_a), _base_mc_from(_n)
+        _pc = sum(1 for c in _n if c >= _mc_c) / float(len(_n))
+        _pa = sum(1 for c in _n if c >= _mc_a) / float(len(_n))
+        day_gaps.append((_pa - _pc) * 100.0)
+        day_rows.append({
+            "date": d, "n": len(v),
+            "collapsed_share": round(sum(1 for _, wc in v if wc) / float(len(v)), 4),
+            "base_mc_current": round(_mc_c, 4), "base_mc_excl": round(_mc_a, 4),
+            "pass_current": round(_pc, 4), "pass_excl": round(_pa, 4),
+        })
+    out["by_day"] = day_rows
+    out["stratified"] = _paired_day_summary(day_gaps, float(cr.get("alpha", 0.05)))
+
+    # ── 판정 ─────────────────────────────────────────────────
+    _min_d, _min_r = int(cr.get("min_days", 10)), int(cr.get("min_rows", 2000))
+    if out["n_days"] < _min_d or out["n_rows"] < _min_r:
+        out["reason"] = (
+            "표본 부족 — %d거래일(필요 %d) / %d행(필요 %d). "
+            "⚠ base_mc는 10일 롤링이라 07-31 전환분이 다 채워지기 전 수치로 "
+            "판정하면 과도구간을 정상으로 오인한다."
+            % (out["n_days"], _min_d, out["n_rows"], _min_r))
+        return out
+
+    _gap_min = float(cr.get("pass_rate_gap_min_pp", 5.0))
+    _share_min = float(cr.get("min_day_share", 0.70))
+    _st = out["stratified"] or {}
+    _day_share = ((_st.get("days_positive", 0) / float(_st["paired_days"]))
+                  if _st.get("paired_days") else 0.0)
+    out["day_share"] = round(_day_share, 4)
+    _eff_ok = out["gap_pp"] >= _gap_min
+    _day_ok = _day_share >= _share_min
+    if _eff_ok and _day_ok:
+        out["verdict"] = "SUPPORTS_HYP"
+        out["reason"] = (
+            "설계 통과율 %.1f%% 대비 현행 %.1f%% — **이탈 %.2f%%p**(임계 %.1f), "
+            "일자단위 %d/%d일(%.0f%%). 붕괴행 %.1f%%가 분포 상단을 점유해 base_mc를 "
+            "%.4f→%.4f로 밀어올린다."
+            % (design * 100, pass_cur * 100, out["gap_pp"], _gap_min,
+               _st.get("days_positive", 0), _st.get("paired_days", 0),
+               _day_share * 100, out["collapsed_share"] * 100, mc_alt, mc_cur))
+        out["recommendation"] = (
+            "DynMC 피드에서 `weight_collapsed=1` 행 제외를 **주간회의 안건으로** 올릴 것. "
+            "⚠ 자동 배선 금지 — 제외하면 진입이 %.1f%%→%.1f%%로 늘고, 427차 [39]가 "
+            "확정한 대로 min_conf는 무작위 샘플러이므로 **기대값의 부호가 보장되지 "
+            "않는다.** CLAUDE.md ⑧(사이징·MAX_CONTRACTS) 미해제 상태에서는 진입 증가가 "
+            "곧 노출 증가다."
+            % (pass_cur * 100, pass_alt * 100))
+    else:
+        out["verdict"] = "REJECTS_HYP"
+        out["reason"] = (
+            "이탈 %.2f%%p(임계 %.1f, %s) · 일자단위 %.0f%%(임계 %.0f%%, %s) — "
+            "현행 피드 유지."
+            % (out["gap_pp"], _gap_min, "통과" if _eff_ok else "미달",
+               _day_share * 100, _share_min * 100, "통과" if _day_ok else "미달"))
+    return out
+
+
+def eval_cal_guard_flap_watch() -> dict:
+    """[45] 축퇴 가드 플래핑 게이지 (MW0602 430차) — 사전등록.
+
+    **게이지다. 판정하지 않는다**(verdict=OBSERVE 고정) — [33]·[41]과 같은 부류.
+
+    보정 적용/미적용은 DB에 직접 기록되지 않으므로 **행 단위로 복원**한다:
+    `confidence == min(confidence_raw, 0.85)` 이면 미적용(raw 통과)이다.
+    `calibrate()`가 미적합 시 raw를 그대로 돌려주고([calibration.py]), 적용
+    경로는 Platt 출력이라 raw와 우연히 일치할 확률이 사실상 0이기 때문이다.
+
+    ⚠ 허용오차 6e-4는 **DB 저장이 round(x,4)이기 때문**이다(424차가 float32
+    허용오차로 같은 함정을 밟았다). 더 좁히면 반올림만으로 오분류가 생긴다.
+    """
+    cr = VALIDATION_CAMPAIGN.get("cal_guard_flap_watch", {}) or {}
+    start = str(cr.get("start_date", "2026-07-31"))
+    out = {"verdict": "OBSERVE", "start_date": start}
+
+    rows = [x for x in _load_conf_rows(start) if x[3] is not None]
+    if not rows:
+        out["no_data"] = True
+        out["reason"] = ("표본 없음 — `confidence_raw`는 2026-07-29부터 기록된다")
+        return out
+
+    _TOL = 6e-4          # round(x,4) 저장 오차의 여유분
+    _CLIP = 0.85         # ensemble_decision.py의 보정 출력 클리핑 상한
+
+    by_day, jumps, flips_by_day = {}, [], {}
+    for d, ts, c, r, wc in rows:
+        passthru = abs(c - min(r, _CLIP)) < _TOL
+        by_day.setdefault(d, []).append((ts, passthru, c))
+
+    n_pass = 0
+    day_rows = []
+    for d in sorted(by_day):
+        seq = by_day[d]
+        _p = sum(1 for _, p, _ in seq if p)
+        n_pass += _p
+        flips = 0
+        for i in range(1, len(seq)):
+            if seq[i][1] != seq[i - 1][1]:
+                flips += 1
+                jumps.append(abs(seq[i][2] - seq[i - 1][2]))
+        flips_by_day[d] = flips
+        day_rows.append({
+            "date": d, "n": len(seq),
+            "passthru_share": round(_p / float(len(seq)), 4),
+            "flips": flips,
+        })
+    out["by_day"] = day_rows
+    out["n_rows"] = len(rows)
+    out["n_days"] = len(by_day)
+    out["passthru_share"] = round(n_pass / float(len(rows)), 4)
+    out["flips_total"] = int(sum(flips_by_day.values()))
+    out["flips_per_day"] = round(out["flips_total"] / float(len(by_day)), 2)
+    if jumps:
+        out["conf_jump_median"] = round(float(np.median(jumps)), 4)
+        out["conf_jump_max"] = round(float(np.max(jumps)), 4)
+
+    _min_d = int(cr.get("min_days", 6))
+    if out["n_days"] < _min_d:
+        out["reason"] = "표본 %d거래일 (게이지 표시 하한 %d일)" % (out["n_days"], _min_d)
+        return out
+
+    _fw = float(cr.get("flip_per_day_warn", 4.0))
+    _jw = float(cr.get("conf_jump_warn", 0.10))
+    out["flap_warn"] = bool(out["flips_per_day"] >= _fw)
+    out["jump_warn"] = bool((out.get("conf_jump_median") or 0.0) >= _jw)
+    out["reason"] = (
+        "보정 미적용 %.1f%% · 전환 %.2f회/일(경보 %.1f) · 전환 시 conf 점프 중앙값 "
+        "%s(경보 %.2f)"
+        % (out["passthru_share"] * 100, out["flips_per_day"], _fw,
+           out.get("conf_jump_median", "—"), _jw))
+    if out["flap_warn"] or out["jump_warn"]:
+        out["recommendation"] = (
+            "히스테리시스(또는 EOD 1회 고정) 도입을 주간회의 안건으로. "
+            "⚠ **AUC 임계·보정 함수형은 건드리지 말 것** — 근본 문제는 임계가 아니라 "
+            "정보 부재이고(raw conf 순위 AUC 0.489 < 0.5, 427차 [39]와 일치), "
+            "임계를 손대면 conf 스케일에 세 번째 불연속이 생긴다."
+        )
     return out
 
 
@@ -6386,6 +6691,8 @@ def build_report(days: int) -> tuple:
     emw = eval_exit_model_watch()            # [41] MW0602 428차
     etv = eval_entry_timing_value_watch()    # [42] MW0602 429차
     vew = eval_vol_estimator_watch()         # [43] MW0602 429차
+    dcf = eval_dynmc_collapse_feed_watch()   # [44] MW0602 430차
+    cgf = eval_cal_guard_flap_watch()        # [45] MW0602 430차
     off = eval_offline_geometry_channels()
 
     metrics = {
@@ -6413,6 +6720,14 @@ def build_report(days: int) -> tuple:
         "conf_discrimination_watch": cdw, "direction_value_watch": dvw,
         "exit_model_watch": emw,
         "entry_timing_value_watch": etv, "vol_estimator_watch": vew,
+        "dynmc_collapse_feed_watch": dcf, "cal_guard_flap_watch": cgf,
+        # [430차] conf 스케일 불연속 — 분석 창이 걸치는 경계를 metrics에도 남긴다.
+        # PC간 대조 스크립트(cmp_metrics.py)가 "코드 세대 차이"와 같은 이유로
+        # "체제 차이"도 구분할 수 있어야 한다.
+        "conf_scale_breaks_in_window": [
+            {k: b.get(k) for k in ("date", "label")}
+            for b in _conf_scale_breaks_in(VALIDATION_CAMPAIGN.get("start_date", ""))
+        ],
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
         "quantile_tp_shadow": off.get("quantile_tp_shadow"),
@@ -6433,6 +6748,12 @@ def build_report(days: int) -> tuple:
     L.append("- 📌 표시가 붙은 채널은 **주간회의에서 확정된 결정이 있다** — 하단 "
              "\"확정 결정 레지스트리\" 참조. 판정(verdict)과 결정은 별개다.")
     L.append("")
+    # [MW0602 430차 / P0-1] conf 스케일 불연속 경고 — 창이 경계를 걸칠 때만 뜬다.
+    # 캠페인 창(start_date~)을 기준으로 판단한다: 대부분의 채널이 그 창을 쓴다.
+    _csb = _conf_scale_break_lines(VALIDATION_CAMPAIGN.get("start_date", ""))
+    if _csb:
+        L.extend(_csb)
+        L.append("")
     L.append("| 채널 | 판정 | 핵심 수치 |")
     L.append("|---|---|---|")
     L.append("| [0] 표본 기아 경보 | %s | 주간진입=%s건(하한 %s) 4주투영=%s건 |" % (
@@ -6735,6 +7056,19 @@ def build_report(days: int) -> tuple:
                 vew.get("collinearity", 0.0), vew.get("corr_atr_realized", 0.0),
                 vew.get("corr_qunc_realized", 0.0),
                 vew.get("qty_boundary_cross", "—")))))
+    L.append("| [44] DynMC 붕괴행 잠식 | %s | %s |" % (
+        _fmt_channel_verdict(dcf),
+        dcf.get("reason") or (
+            "설계 %.1f%% vs 현행 %.1f%% (이탈 %.2f%%p) · base_mc %.4f→%.4f · "
+            "붕괴 %.1f%%" % (
+                float(dcf.get("pass_rate_design", 0)) * 100,
+                float(dcf.get("pass_rate_current", 0)) * 100,
+                dcf.get("gap_pp", 0.0),
+                dcf.get("base_mc_excl_collapsed", 0.0),
+                dcf.get("base_mc_current", 0.0),
+                float(dcf.get("collapsed_share", 0)) * 100))))
+    L.append("| [45] 축퇴 가드 플래핑 (게이지) | %s | %s |" % (
+        _fmt_verdict("OBSERVE"), cgf.get("reason", "—")))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -8431,6 +8765,26 @@ def build_report(days: int) -> tuple:
                 _s2.get("days_positive"), _s2.get("paired_days"), _s2.get("sign_p")))
     else:
         L.append("- 승 또는 패 표본이 없어 격차를 낼 수 없다")
+    # [MW0602 430차 / P0-1] 이 축은 ensemble_decisions.confidence를 쓰므로
+    # conf 스케일 불연속의 직접 영향권이다. 다만 **무엇이 오염되고 무엇이 면역인지**를
+    # 명시해야 한다 — 안 그러면 다음 세션이 채널 전체를 불신하거나(과잉) 아무것도
+    # 조정하지 않거나(과소) 둘 중 하나로 흐른다.
+    if _conf_scale_breaks_in(VALIDATION_CAMPAIGN.get("start_date", "")):
+        L.append("")
+        L.extend(_conf_scale_break_lines(VALIDATION_CAMPAIGN.get("start_date", "")))
+        L.append("> **이 채널에 미치는 영향**: 위 `격차`·`표준편차`는 경계 양쪽의 서로")
+        L.append("> 다른 스케일을 한 통에 넣은 값이라 **수준·분산이 오염**된다. 반면")
+        L.append("> 바로 아래 **일자단위(같은 날 안에서 승/패 비교)는 면역**이다 —")
+        L.append("> 하루 안에서는 스케일이 하나이기 때문이다. **판정은 일자단위를 볼 것.**")
+        L.append("> ")
+        L.append("> **모델축(`predictions.confidence`)은 이 경계에서 계단 변화가 없다**")
+        L.append("> — 430차 실측 1m/3m/5m 07-27~08-04 전 구간 0.36~0.41로 연속.")
+        L.append("> 호라이즌 보정기도 **같은 축퇴 가드를 쓰지만**(같은 클래스다) 영향이")
+        L.append("> 작은 이유는 입력 분포가 다르기 때문이다: 앙상블축에는 가중치 붕괴가")
+        L.append("> 만드는 인위적 `raw≈1.0` 행이 21%나 있어 적용/미적용 차이가 0.33↔0.85로")
+        L.append("> 벌어지지만, 호라이즌 raw는 기저율 근처(~0.33~0.40)라 보정을 걸든 말든")
+        L.append("> 출력이 비슷하다. **\"가드를 안 쓴다\"가 아니라 \"입력이 극단이 아니다\"** —")
+        L.append("> 붕괴 구조가 바뀌면 모델축도 영향권에 들어올 수 있으므로 재확인할 것.")
     _jo = cdw.get("join_offset_min") or {}
     L.append("- 진입↔결정 매칭 **%s/%s (%.1f%%)** · 오프셋 분포 %s" % (
         cdw.get("n_matched"), cdw.get("n_positions_total"),
@@ -8698,6 +9052,123 @@ def build_report(days: int) -> tuple:
     L.append("> `MAX_CONTRACTS` 클램프 때문에 경계에서 계약수가 갈릴 수 있다. 그 수가")
     L.append("> 0이면 **교체가 실무적으로도 무효**라는 뜻이다(CLAUDE.md ⑧·425차가")
     L.append("> qty 1↔2 경계의 중요성을 문서화했다).")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [MW0602 430차] [44] DynMC 붕괴행 잠식 ──────────────────────────
+    L.append("## [44] DynMC 붕괴행 잠식 (MW0602 430차)")
+    L.append("")
+    L.append("`weight_collapsed=1`은 **실질 가중합 0 = 판단 불가**다. 07-31 보정 미적용")
+    L.append("전환 이후 이 행들의 conf가 클리핑 상한 0.85로 나가 **분포 최상단을 점유**하고,")
+    L.append("DynMC가 그 분포의 p%.0f를 `min_conf`로 쓰기 때문에 정상 신호 행의 통과율이"
+             % (MC_PERCENTILE * 100))
+    L.append("설계 의도(1−p%.0f≈%.0f%%)보다 낮아진다." % (
+        MC_PERCENTILE * 100, (1 - MC_PERCENTILE) * 100))
+    L.append("")
+    if dcf.get("no_data") or dcf.get("n_rows") is None:
+        L.append("- %s" % (dcf.get("reason") or "표본 없음"))
+    else:
+        L.append("| 지표 | 값 |")
+        L.append("|---|---|")
+        L.append("| 표본 | %s행 / %s거래일 (%s 이후) |" % (
+            format(dcf.get("n_rows", 0), ","), dcf.get("n_days", "—"),
+            dcf.get("start_date", "—")))
+        L.append("| 붕괴행 비중 | **%.1f%%** (%s행) |" % (
+            float(dcf.get("collapsed_share", 0)) * 100,
+            format(dcf.get("n_collapsed", 0), ",")))
+        L.append("| base_mc — 현행(붕괴 포함) | **%.4f** |" % dcf.get("base_mc_current", 0))
+        L.append("| base_mc — 붕괴 제외 | %.4f (차 %+.4f) |" % (
+            dcf.get("base_mc_excl_collapsed", 0), dcf.get("base_mc_shift", 0)))
+        L.append("| 비붕괴 통과율 — 현행 | **%.1f%%** |" % (
+            float(dcf.get("pass_rate_current", 0)) * 100))
+        L.append("| 비붕괴 통과율 — 붕괴 제외 | %.1f%% |" % (
+            float(dcf.get("pass_rate_excl_collapsed", 0)) * 100))
+        L.append("| 설계 의도 통과율 | %.1f%% → **이탈 %+.2f%%p** |" % (
+            float(dcf.get("pass_rate_design", 0)) * 100, dcf.get("gap_pp", 0.0)))
+        if dcf.get("top_conf_share") is not None:
+            L.append("| ConstOut 필터 여유 | 최빈값 %.2f가 %.1f%% "
+                     "(임계 %.0f%% · 여유 **%+.2f%%p**)%s |" % (
+                         dcf.get("top_conf_value", 0),
+                         float(dcf.get("top_conf_share", 0)) * 100,
+                         float(dcf.get("constout_threshold", 0.15)) * 100,
+                         dcf.get("constout_margin_pp", 0.0),
+                         " 🔴 **발동**" if dcf.get("constout_would_fire") else ""))
+        _s44 = dcf.get("stratified") or {}
+        if _s44.get("paired_days"):
+            L.append("| 일자단위 | %s/%s일 양수, 부호검정 p=%s |" % (
+                _s44.get("days_positive"), _s44.get("paired_days"), _s44.get("sign_p")))
+        L.append("")
+        if dcf.get("recommendation"):
+            L.append("- **권고**: %s" % dcf["recommendation"])
+            L.append("")
+    L.append("> **⚠ 판정 = 조치가 아니다.** 붕괴행을 피드에서 빼면 진입이 늘어나는데,")
+    L.append("> 427차 [39]가 확정한 대로 `min_conf`는 품질 필터가 아니라 **무작위**")
+    L.append("> **샘플러**다 — 늘어난 진입은 무작위 표본 확대이고 기대값의 부호가")
+    L.append("> 보장되지 않는다. CLAUDE.md ⑧(사이징·`MAX_CONTRACTS`) 미해제 상태에서는")
+    L.append("> **진입 증가 = 노출 증가**이므로, 배선 변경은 주간회의 결정 사항이다.")
+    L.append("> ")
+    L.append("> **⚠ 판정 창.** `base_mc`는 10일 롤링이라 07-31 전환분이 다 채워지기")
+    L.append("> 전(2026-08-11경) 수치로 판정하면 **과도구간을 정상으로 오인한다.**")
+    L.append("> `min_days`가 그 방어선이다.")
+    L.append("> ")
+    L.append("> **ConstOut 여유폭을 왜 같이 재는가.** `main.py:_recalibrate_mc`에")
+    L.append("> \"동일 반올림값 15% 초과 시 제외\" 필터가 있다. 430차 실측에서 0.85가")
+    L.append("> **12.6%**로 2.4%p 차이로 빠져나갔다 — 붕괴율이 오르는 날(07-29는 45%)엔")
+    L.append("> 필터가 걸리고 안 걸리고가 뒤바뀌어 `base_mc`가 불연속으로 튄다.")
+    L.append("> 임계는 손대지 않는다(낮추면 정상 conf 최빈값까지 걸린다) — **여유폭만**")
+    L.append("> **노출**해 그 순간을 사후에 설명할 수 있게 한다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [MW0602 430차] [45] 축퇴 가드 플래핑 (게이지) ──────────────────
+    L.append("## [45] 축퇴 가드 플래핑 (MW0602 430차 · 게이지)")
+    L.append("")
+    L.append("**판정 채널이 아니다**([33]·[41]과 같은 게이지). 앙상블 보정기의")
+    L.append("적용/미적용이 하루 중 몇 번 뒤집히는지, 그 전환이 conf에 만드는 점프폭이")
+    L.append("얼마인지만 잰다. 행 단위 복원 규칙: `confidence == min(confidence_raw, 0.85)`")
+    L.append("이면 **미적용**(raw 통과)이다.")
+    L.append("")
+    if cgf.get("no_data"):
+        L.append("- %s" % (cgf.get("reason") or "표본 없음"))
+    else:
+        L.append("| 지표 | 값 |")
+        L.append("|---|---|")
+        L.append("| 표본 | %s행 / %s거래일 |" % (
+            format(cgf.get("n_rows", 0), ","), cgf.get("n_days", "—")))
+        L.append("| 보정 미적용 비율 | **%.1f%%** |" % (
+            float(cgf.get("passthru_share", 0)) * 100))
+        L.append("| 전환 횟수 | 총 %s회 · **%.2f회/일**%s |" % (
+            cgf.get("flips_total", "—"), cgf.get("flips_per_day", 0.0),
+            " 🟡" if cgf.get("flap_warn") else ""))
+        if cgf.get("conf_jump_median") is not None:
+            L.append("| 전환 시 conf 점프 | 중앙값 **%.4f** / 최대 %.4f%s |" % (
+                cgf.get("conf_jump_median", 0), cgf.get("conf_jump_max", 0),
+                " 🟡" if cgf.get("jump_warn") else ""))
+        _bd45 = cgf.get("by_day") or []
+        if _bd45:
+            L.append("")
+            L.append("| 일자 | 행 | 미적용% | 전환 |")
+            L.append("|---|---|---|---|")
+            for r in _bd45[-10:]:
+                L.append("| %s | %s | %.1f%% | %s |" % (
+                    r["date"], r["n"], r["passthru_share"] * 100, r["flips"]))
+        L.append("")
+        if cgf.get("recommendation"):
+            L.append("- **권고**: %s" % cgf["recommendation"])
+            L.append("")
+    L.append("> **왜 게이지인가.** 축퇴 판정은 `auc < 0.53` **단독**으로 내려진다 —")
+    L.append("> AND의 span 조건은 사문이다(로그 845건 전수 최대 0.01321, 임계 0.02")
+    L.append("> 도달 0건. `learning/calibration.py` 430차 정정 주석 참조). n=200에서")
+    L.append("> AUC의 SE≈0.041이라 이 통계량이 0.53을 수시로 넘나든다.")
+    L.append("> ")
+    L.append("> **⚠ 이 채널은 임계 튜닝을 정당화하지 않는다.** 근본 문제는 임계가 아니라")
+    L.append("> **정보 부재**다 — raw conf의 1m 적중 순위 AUC=**0.489**(<0.5, 역방향)로")
+    L.append("> 어떤 단조 보정도 붙일 신호가 없다(427차 [39] REJECTS_HYP와 일치).")
+    L.append("> 개선 여지는 \"정보 없음을 **안정적으로 표시**하는 것\"(히스테리시스 또는")
+    L.append("> EOD 1회 고정)뿐이고, **AUC 임계·보정 함수형은 건드리지 않는다** —")
+    L.append("> 건드리면 conf 스케일에 **세 번째 불연속**이 생긴다.")
     L.append("")
     L.append("---")
     L.append("")
