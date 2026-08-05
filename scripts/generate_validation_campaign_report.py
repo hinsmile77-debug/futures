@@ -6918,9 +6918,17 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(tpg.get("verdict", "OBSERVE")),
         tpg.get("median_give_pt", "—"), tpg.get("n_gaveback", "—"),
         tpg.get("n_ranfurther", "—"), tpg.get("n", 0), _tpg_tag))
-    L.append("| [25] TP1 보호전환 offset A/B | %s | %s (전환 %s건/%s일)%s |" % (
+    # [MW0602 432차] 클램프 발동 건수를 요약행에 노출한다. 요약표만 보고 회의에
+    # 올리는 경로가 실제로 있어서, "그 변형은 체결 불가능한 가격을 요구했다"는
+    # 사실이 상세 섹션에만 있으면 놓친다.
+    _cl25 = _g25.get("n_clamped") or {}
+    _cl25_hot = sorted(((v, k) for k, v in _cl25.items() if v), reverse=True)
+    _cl25_tag = (" ⚠클램프 " + ", ".join("%s %d건" % (k, v) for v, k in _cl25_hot)
+                 if _cl25_hot else "")
+    L.append("| [25] TP1 보호전환 offset A/B | %s | %s (전환 %s건/%s일)%s%s |" % (
         _fmt_verdict(_g25.get("verdict", "")), _g25.get("reason", _g25.get("error", "—")),
-        _g25.get("n_hooks", "—"), _g25.get("n_days", "—"), _dm("tp1_protect_offset_shadow")))
+        _g25.get("n_hooks", "—"), _g25.get("n_days", "—"), _cl25_tag,
+        _dm("tp1_protect_offset_shadow")))
     L.append("| [26] 거래불능(가격상한 고착) 구간 | %s | %s |" % (
         _fmt_verdict(lpw.get("verdict", "OBSERVE")),
         (lpw.get("reason") or "고착 %s분봉 / %s일  · MFE오염 %s"
@@ -8254,17 +8262,32 @@ def build_report(days: int) -> tuple:
     L.append("> ⚠ **사전등록 정직성 고지**: `breakeven` 변형은 이 채널 신설 **전에** 404차")
     L.append("> 후속3 조사에서 이미 1회 측정됐다(현행이 22/23 우세) — 재확인용이지 사전등록된")
     L.append("> 검증이 아니다. 사전등록 가치는 `atr_lock_0.50/0.75`·`bar_range`에 있다.")
-    L.append("> ⚠ **FAIL이 떠도 즉시 적용 금지** — 372차 이상치 분해상 현행 초과 대안들은")
-    L.append("> **최대 기여 1건만 빼면 부호가 역전**된다(atr_lock_0.75 +0.92→−1.33pt,")
-    L.append("> bar_range +0.81→−0.29pt). 건별 우세도 8/23·7/23으로 소수이고 중앙값 차이는")
-    L.append("> 0.000pt다. 표본이 더 쌓일 때까지 **현행 유지가 합리적**이다.")
+    # [MW0602 432차] 이 자리에 있던 0801 경고문("최대 기여 1건만 빼면 부호 역전,
+    # 건별 우세 8/23·7/23")은 **더 이상 참이 아니다** — 08-05 기준 표본 49건/11일에서
+    # drop-max +16.50 유지, LOO일 최악 +10.00, 건별 우세 28/49로 전부 소멸했다.
+    # 그 경고문을 그대로 두면 리포트가 매주 거짓을 찍는다. 새 제동으로 교체한다.
+    L.append("> ⚠ **FAIL이 떠도 즉시 적용 금지** — 단, **이유가 2026-08-05에 바뀌었다.**")
+    L.append("> 0801의 제동(drop-max 부호역전·건별 우세 소수)은 표본이 23건/8일 →")
+    L.append("> 49건/11일로 늘며 **전부 소멸했다**(drop-max +16.50 유지, 우세 28/49).")
+    L.append("> 지금의 제동은 두 가지다 — ① **일자단위 t검정 p=0.255로 미유의**(313차),")
+    L.append("> ② 판독규칙 (3): MW0601 표본이 아직 08-03 시작분뿐이라 단독 확정 불가.")
+    L.append("> ⚠ **[432차] 2026-08-05 이전의 이 채널 수치는 전부 무효다** — offset이")
+    L.append("> 보호전환 시점의 실제 유리이동을 넘어도 체결로 계상되던 결함이 있었다")
+    # ⚠ 이 줄에는 `%` 연산자를 적용하지 않는다 → 리터럴 퍼센트는 `%` 하나로 쓴다.
+    #   (422차 후속의 `%%` 규칙은 `%` 포매팅을 **쓰는** 줄에만 해당한다. 431차 후속2가
+    #    그 반대 방향으로 터진 사고다 — 포매팅 유무를 매번 확인할 것.)
+    L.append("> (atr_lock_0.75는 **57%가 체결 불가**). 클램프 후 Δ현행 +18.75 → **+8.04pt**.")
+    L.append("> 이 채널에서 **일자단위로 유의한 것은 `breakeven`(p=0.021) 하나뿐이고**")
+    L.append("> **방향은 음(−9.23pt)** 이다 — 즉 '본전 보호는 현행보다 나쁘다'만 확립됐다.")
     L.append("> ⚠ [12] tp1_trail_shadow가 기각한 \"TP1 **이후** 트레일 폭\"과 다른 질문이다")
     L.append("> — 이건 TP1 **시점**의 초기 보호 offset이다.")
     # [MW0601 421차 후속2] PC 출처 + 두 PC 불일치 판독 규칙 — 사전등록분을 그대로 노출한다.
     # 0803 점검에서 위 "8/23·7/23"의 PC 출처가 없어 "MW0601 breakeven 표본이라 406차로
     # 무효화됐다"는 오독이 실제로 발생했다. 그 재발을 막는 것이 목적이다.
     _c25 = VALIDATION_CAMPAIGN.get("tp1_protect_offset_shadow", {}) or {}
-    L.append("> ⚠ **위 8/23·7/23은 MW0602 표본**이다(404차 후속3). MW0601은 당시")
+    # [432차] 예전에는 "위 8/23·7/23은 MW0602 표본"이라 적었는데, 그 숫자를 담던
+    # 경고문을 교체하면서 **가리킬 대상이 사라졌다**. 자체 완결형으로 바꾼다.
+    L.append("> ⚠ **위 표는 MW0602 표본**이다(404차 후속3). MW0601은 당시")
     L.append("> `breakeven`이라 유효표본 0이었고, 406차 통일로 **MW0601 표본은 %s부터**"
              % _c25.get("mw0601_sample_start", "—"))
     L.append("> 시작한다. 406차는 0801 결정을 무효화하지 않는다 — MW0601 독립 확인이")

@@ -51,13 +51,15 @@ from config.settings import (
     ATR_ADAPTIVE_MAX_CEILING, ATR_EXPIRY_CEILING_MULT,
     ATR_EXPIRY_CEILING_DAYS_BEFORE, ATR_EXPIRY_CEILING_DAYS_AFTER,
     CB_ACC30M_MIN_SAMPLES, SGD_BLEND_DISABLED_HORIZONS, HORIZON_ENABLED,
+    TP1_PROTECT_PLUS_ALPHA_PTS, TP1_PROTECT_ATR_LOCK_MULT,   # [432차] 3중 정의 단일화
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
 from utils.db_utils import fetch_today_trades, fetchall, fetch_regime_today, fetch_direction_today
 
-TP1_PROTECT_PLUS_ALPHA_PTS = 0.20
-TP1_PROTECT_ATR_LOCK_MULT = 0.25
+# [432차] TP1_PROTECT_* 는 config/settings.py가 정본 — 위 import 블록에서 가져온다.
+# 예전에는 여기 리터럴 사본이 있어, 라이브(main.py)만 바뀌면 이 툴팁이 조용히
+# 거짓을 말했다. 경위는 settings.py의 해당 상수 주석 참조.
 
 logger = logging.getLogger("SYSTEM")
 
