@@ -6929,6 +6929,13 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(_g25.get("verdict", "")), _g25.get("reason", _g25.get("error", "—")),
         _g25.get("n_hooks", "—"), _g25.get("n_days", "—"), _cl25_tag,
         _dm("tp1_protect_offset_shadow")))
+    # [MW0601 432차] [25-B] TP2 거리 축 — [25]와 같은 훅 모집단·같은 시뮬을 쓰지만
+    # **판정은 완전히 독립**이다(본채널 합격선 무변경, §9-4). 요약표에서도 별 행으로 낸다.
+    _g25b = _g25.get("tp2") or {}
+    if _g25b:
+        L.append("| [25-B] TP2 거리 A/B | %s | %s (전환 %s건/%s일) |" % (
+            _fmt_verdict(_g25b.get("verdict", "")), _g25b.get("reason", "—"),
+            _g25b.get("n_hooks", "—"), _g25b.get("n_days", "—")))
     L.append("| [26] 거래불능(가격상한 고착) 구간 | %s | %s |" % (
         _fmt_verdict(lpw.get("verdict", "OBSERVE")),
         (lpw.get("reason") or "고착 %s분봉 / %s일  · MFE오염 %s"
@@ -8281,6 +8288,8 @@ def build_report(days: int) -> tuple:
     L.append("> **방향은 음(−9.23pt)** 이다 — 즉 '본전 보호는 현행보다 나쁘다'만 확립됐다.")
     L.append("> ⚠ [12] tp1_trail_shadow가 기각한 \"TP1 **이후** 트레일 폭\"과 다른 질문이다")
     L.append("> — 이건 TP1 **시점**의 초기 보호 offset이다.")
+    L.append("> ⚠ **TP2 거리 축은 아래 [25-B]에 따로 있다** — 위 표의 변형들은 전부 TP2를")
+    L.append("> 현행(ATR×1.5)으로 고정한 상태에서 보호 offset만 바꾼 것이다.")
     # [MW0601 421차 후속2] PC 출처 + 두 PC 불일치 판독 규칙 — 사전등록분을 그대로 노출한다.
     # 0803 점검에서 위 "8/23·7/23"의 PC 출처가 없어 "MW0601 breakeven 표본이라 406차로
     # 무효화됐다"는 오독이 실제로 발생했다. 그 재발을 막는 것이 목적이다.
@@ -8298,6 +8307,48 @@ def build_report(days: int) -> tuple:
     L.append("> 병기(유리한 쪽만 인용 금지). (3) 한쪽만 표본 충족 → 단독 판정을 확정으로")
     L.append("> 쓰지 않고 \"단일 PC 표본\" 명시. (4) 어느 경우도 자동 적용 없음(§9).")
     L.append("> 근거: [23] tp1_geometry_shadow에서 이미 PC간 부호 역전 전례가 있다.")
+    L.append("")
+
+    # [25-B] TP2 거리 A/B (MW0601 432차 신설)
+    L.append("## [25-B] TP2 거리 A/B (MW0601 432차 신설)")
+    L.append("")
+    if not _g25b:
+        L.append("> ⚠ 미산출 — `tp2_variants` 미설정이거나 [25] 스크립트 실행 실패.")
+    else:
+        if not _g25b.get("baseline_consistent", True):
+            L.append("> 🔴 %s" % (_g25b.get("baseline_note") or "배선 검산 실패"))
+            L.append("")
+        L.append("- 보호전환 %s건 / 거래일 %s일 · 보호 offset은 현행(ATR×0.25) **고정**, "
+                 "TP2만 변형" % (_g25b.get("n_hooks", "—"), _g25b.get("n_days", "—")))
+        pv2 = _g25b.get("per_variant") or {}
+        if pv2:
+            L.append("")
+            L.append("| 변형 | n | STOP | TP2완주 | 승률 | 누적pt | 중앙값 | 최대손실 | 표준편차 | 현행 대비 | 건별 우세 | drop-max |")
+            L.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+            for k, v in pv2.items():
+                L.append("| %s | %d | %d | %d | %.1f%% | %+.2f | %+.3f | %+.2f | %.2f | %s | %s | %s |" % (
+                    k, v["n"], v["n_stop"], v["n_tp2"], v["win_rate"] * 100,
+                    v["total_pt"], v["median_pt"], v["max_loss_pt"], v["std_pt"],
+                    ("%+.2f" % v["delta_vs_current"]) if v.get("delta_vs_current") is not None else "—",
+                    ("%s/%d" % (v["beats_current_n"], v["n"])) if v.get("beats_current_n") is not None else "—",
+                    ("%+.2f" % v["delta_drop_max"]) if v.get("delta_drop_max") is not None else "—"))
+        L.append("")
+        L.append("- **판정: %s** — %s" % (_g25b.get("verdict"), _g25b.get("reason")))
+    L.append("")
+    L.append("> **왜 [23]이 아니라 여기인가**: [23]의 시뮬레이터는 TP1 도달 시 전량청산으로")
+    L.append("> 종료해 TP2가 등장하지 않는다. 반면 이 채널은 이미 `보호스톱 vs TP2`를 재생한다.")
+    L.append("> 더 중요한 건 **조건부 추정이 정확히 valid**하다는 점 — TP2를 바꿔도 stop·TP1은")
+    L.append("> 불변이라 \"TP1 도달 사건 집합\"이 전 변형에서 동일하다. TP1 도달 건만 보는 것은")
+    L.append("> 선택편향이 아니라 교란이 제거된 설계다.")
+    L.append(">")
+    L.append("> ⚠ **TP2 단축은 완주율↑ / 완주 1건당 이익↓의 교환이다.** 누적pt만 보고 판단하지")
+    L.append("> 말 것 — `TP2완주` 건수와 `중앙값`·`표준편차`가 함께 움직이는지 확인해야 한다.")
+    L.append("> ⚠ `tp2_2.00`은 **대조군**(넓히는 방향)이다. 결과가 거리에 대해 단조라면 진짜")
+    L.append("> 거리 효과이고, 특정 값에서만 튀면 표본 우연이다 — 단조성을 먼저 볼 것.")
+    L.append("> ⚠ **FAIL이 떠도 즉시 적용 금지**(§9). 사전등록 판정보조 ①drop-max ②건별우세")
+    L.append("> ③MW0601×MW0602 교차를 전부 통과해야 주간회의 승격 후보다. [25] 본채널이")
+    L.append("> 바로 ①에서 무너진 전례가 있다(atr_lock_0.75 +0.92→−1.33pt).")
+    L.append("> ⚠ 이 판정은 [25] 본채널(offset 축) 판정과 **무관**하다 — 본채널 합격선 무변경(§9-4).")
     L.append("")
 
     # [33] 급행풀스톱 발굴 재실행 게이지 (MW0601 421차 후속10)
