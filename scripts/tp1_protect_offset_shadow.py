@@ -34,6 +34,21 @@ qty=1 포지션은 TP1에서 물리적 분할청산이 불가능해 "보호스�
 - [12] tp1_trail_shadow가 이미 기각한 "TP1 이후 더 느슨한 트레일링"과는 **다른
   질문**이다 — 그건 TP1 이후 트레일 폭, 이건 TP1 시점의 초기 보호 offset이다.
 
+[25-B] TP2 거리 축 (MW0601 432차 추가)
+--------------------------------------
+같은 훅 모집단·같은 `_simulate()`를 쓰되 **보호 offset을 현행(ATR×0.25)으로 고정하고
+TP2만** 바꾸는 평행 축이다. 계기는 0805 일일점검 — 진입 19건 전부에서 TP2 거리 ÷ 손절
+거리 = 1.00이었고(ATR_STOP_MULT = ATR_TP2_MULT = 1.5), qty=1은 TP1에서 돈이 들어오지
+않으므로 실질 페이오프가 "손절폭만큼 완주해야 손절 1건을 상쇄"하는 구조가 된다.
+
+왜 [23] tp1_geometry_shadow가 아니라 여기인가: [23]의 시뮬레이터는 TP1 도달 시
+전량청산으로 종료해 TP2가 아예 등장하지 않는다. 더 중요한 것은 **조건부 추정이 정확히
+valid**하다는 점 — TP2를 바꿔도 stop·TP1은 불변이므로 "TP1 도달 사건 집합"이 전 변형에서
+동일하고, 따라서 TP1 도달 건만 보는 것은 선택편향이 아니라 교란이 제거된 설계다.
+
+판정은 `tp2_*` 키로 **본채널과 완전히 분리**돼 계산된다(본채널 합격선 무변경, §9-4).
+사전등록 기준·판정보조 3종·한계는 config/settings.py의 [25-B] 주석에 관측 전 고정.
+
 한계 (반드시 함께 읽을 것)
 --------------------------
 - 1분봉 고저가 기준이라 봉 내 도달 순서를 알 수 없다. 보호스톱·TP2가 같은 봉에서
@@ -117,6 +132,24 @@ def _load_candles(since: str):
     return [(r["ts"], float(r["high"]), float(r["low"])) for r in rows]
 
 
+def _tp2_mult_for(name: str) -> float:
+    """[MW0601 432차 / 25-B] TP2 거리 변형 → ATR 배수.
+
+    `current`는 라이브 상수 ATR_TP2_MULT(1.5)를 그대로 쓴다 — 하드코딩하지 않는 이유는
+    라이브 값이 바뀌면 이 채널의 기준선도 함께 따라가야 delta_vs_current가 의미를
+    유지하기 때문이다(offset 축의 `_offset_for("current")`가 _LOCK_MULT_CURRENT를
+    쓰는 것과 같은 관례).
+    """
+    if name == "current":
+        return float(ATR_TP2_MULT)
+    if name.startswith("tp2_"):
+        try:
+            return float(name[4:])
+        except ValueError:
+            pass
+    raise ValueError("unknown tp2 variant: %s" % name)
+
+
 def _offset_for(name: str, atr: float, bar_rng: float) -> float:
     if name == "current":
         return atr * _LOCK_MULT_CURRENT
@@ -160,6 +193,13 @@ def compute(since: str = "2026-06-01") -> dict:
     variants = list(_CR.get("variants", ["current"]))
     res = {v: [] for v in variants}
     days, skipped = set(), 0
+
+    # [MW0601 432차 / 25-B] TP2 거리 축 — offset 축과 **완전히 평행한 별도 집계**다.
+    # 같은 훅 모집단·같은 _simulate()를 쓰되 offset은 현행(ATR×0.25)으로 고정하고
+    # TP2만 바꾼다. res와 섞지 않는 이유는 본채널 verdict가 오염되면 안 되기 때문
+    # (§9-4 — 본채널 합격선 무변경). 판정도 summarize()에서 별도 키로 낸다.
+    tp2_variants = list(_CR.get("tp2_variants", []))
+    res_tp2 = {v: [] for v in tp2_variants}
 
     # [MW0601 406차 / C] 제외 사유별 카운터 — 예전에는 전부 skipped 하나로 뭉뚱그려져
     # "왜 표본이 없는지"를 리포트가 말해줄 수 없었다.
@@ -218,13 +258,24 @@ def compute(since: str = "2026-06-01") -> dict:
             outcome, pts = _simulate(bars, i0, is_long, ep, stop, tp2)
             res[v].append((outcome, pts - cost))
 
+        # [MW0601 432차 / 25-B] TP2 축 — 보호 offset은 현행 고정, TP2만 변형.
+        # `current`는 위 offset 축의 `current`와 수치가 동일해야 정상이다
+        # (같은 stop·같은 tp2·같은 시뮬). 어긋나면 배선 오류다 — summarize()가 검산한다.
+        stop_cur = ep + sgn * _offset_for("current", atr, bar_rng)
+        for v in tp2_variants:
+            tp2_v = ep + sgn * atr * _tp2_mult_for(v)
+            outcome, pts = _simulate(bars, i0, is_long, ep, stop_cur, tp2_v)
+            res_tp2[v].append((outcome, pts - cost))
+
     return {"variants": variants, "rows": res,
             "n_hooks": len(hooks) - skipped - sum(n_other_mode.values()),
             "n_skipped": skipped, "n_days": len(days), "since": since,
             # [MW0601 406차 / C]
             "n_other_mode": n_other_mode,
             "n_backout_legacy": n_backout_legacy,
-            "n_excluded_override": n_excluded_override}
+            "n_excluded_override": n_excluded_override,
+            # [MW0601 432차 / 25-B]
+            "tp2_variants": tp2_variants, "rows_tp2": res_tp2}
 
 
 def summarize(out: dict) -> dict:
@@ -284,7 +335,89 @@ def summarize(out: dict) -> dict:
             # n_backout_legacy가 크면 그만큼 ATR이 검증 불가한 역산값이라는 뜻이다.
             "n_other_mode": out.get("n_other_mode") or {},
             "n_backout_legacy": out.get("n_backout_legacy", 0),
-            "n_excluded_override": out.get("n_excluded_override", 0)}
+            "n_excluded_override": out.get("n_excluded_override", 0),
+            # [MW0601 432차 / 25-B] TP2 축 — 본채널 verdict와 분리된 별도 판정.
+            "tp2": _summarize_tp2(out, base)}
+
+
+def _summarize_tp2(out: dict, offset_base: list) -> dict:
+    """[MW0601 432차 / 25-B] TP2 거리 축 요약 — 본채널과 독립 판정.
+
+    사전등록 기준은 VALIDATION_CAMPAIGN['tp1_protect_offset_shadow']의 tp2_* 키에
+    관측 전 고정돼 있다. 여기서 기준을 바꾸지 말 것(§9).
+
+    `offset_base`는 offset 축의 current 행 — 배선 검산에만 쓴다(판정 무관).
+    """
+    res = out.get("rows_tp2") or {}
+    variants = out.get("tp2_variants") or []
+    if not variants:
+        return {"verdict": "DISABLED", "reason": "tp2_variants 미설정", "per_variant": {}}
+
+    base = res.get("current", [])
+    base_pts = [p for _, p in base]
+    base_total = sum(base_pts) if base_pts else None
+
+    per = {}
+    for name in variants:
+        rows = res.get(name, [])
+        if not rows:
+            continue
+        pts = [p for _, p in rows]
+        d = {
+            "n": len(pts),
+            "total_pt": round(sum(pts), 4),
+            "avg_pt": round(sum(pts) / len(pts), 4),
+            "median_pt": round(sorted(pts)[len(pts) // 2], 4),
+            "win_rate": round(sum(1 for p in pts if p > 0) / len(pts), 4),
+            "max_loss_pt": round(min(pts), 4),
+            "std_pt": round((sum((p - sum(pts) / len(pts)) ** 2 for p in pts)
+                             / max(len(pts) - 1, 1)) ** 0.5, 4),
+            "n_stop": sum(1 for o, _ in rows if o == "STOP"),
+            "n_tp2": sum(1 for o, _ in rows if o == "TP2"),
+            "n_forced": sum(1 for o, _ in rows if o == "FORCED"),
+        }
+        if base_total is not None and len(pts) == len(base_pts):
+            deltas = [p - q for p, q in zip(pts, base_pts)]
+            d["delta_vs_current"] = round(sum(deltas), 4)
+            d["beats_current_n"] = sum(1 for x in deltas if x > 0)
+            # 사전등록 판정보조 ① 이상치 분해(drop-max) — 최대 기여 1건을 뺀 delta.
+            # [25] 본채널이 이 검사에서 무너진 전례가 있어 처음부터 계산해 노출한다.
+            d["delta_drop_max"] = (round(sum(deltas) - max(deltas), 4)
+                                   if deltas else None)
+        else:
+            d["delta_vs_current"] = None
+            d["beats_current_n"] = None
+            d["delta_drop_max"] = None
+        per[name] = d
+
+    min_n = int(_CR.get("tp2_min_samples", 20))
+    min_d = int(_CR.get("tp2_min_days", 3))
+    n_cur = len(base)
+    if n_cur < min_n or out["n_days"] < min_d:
+        verdict = "INSUFFICIENT"
+        reason = ("표본 부족 (n=%d<%d 또는 거래일=%d<%d)"
+                  % (n_cur, min_n, out["n_days"], min_d))
+    else:
+        beat = [k for k, v in per.items()
+                if k != "current" and (v.get("delta_vs_current") or 0) > 0]
+        verdict = "FAIL" if beat else "PASS"
+        reason = ("현행 초과 대안: %s" % ", ".join(beat)) if beat else "모든 대안이 현행 이하"
+
+    # 배선 검산 — TP2축 current와 offset축 current는 stop·tp2·시뮬이 전부 같으므로
+    # 수치가 일치해야 한다. 어긋나면 축 하나가 잘못 배선된 것이므로 판정을 신뢰할 수
+    # 없다. verdict는 건드리지 않고 사실만 노출한다(조용한 오염 방지).
+    _ob = sum(p for _, p in offset_base) if offset_base else None
+    consistent = (base_total is not None and _ob is not None
+                  and abs(base_total - _ob) < 1e-9)
+    return {
+        "verdict": verdict, "reason": reason, "per_variant": per,
+        "min_samples": min_n, "min_days": min_d,
+        "n_hooks": out["n_hooks"], "n_days": out["n_days"],
+        "baseline_consistent": consistent,
+        "baseline_note": (None if consistent else
+                          "⚠ 배선 검산 실패 — TP2축 current(%s) ≠ offset축 current(%s). "
+                          "판정을 신뢰하지 말 것." % (base_total, _ob)),
+    }
 
 
 def main():
@@ -327,6 +460,43 @@ def main():
     print("⚠ breakeven 변형은 404차 후속3 조사에서 이미 1회 측정됨 — 사전등록 검증이")
     print("  아니라 재확인용이다. 사전등록 가치는 atr_lock_0.50/0.75·bar_range에 있다.")
     print("⚠ 절대값은 실현손익이 아니다(TP3·트레일링·신호소멸 미모델링). 상대비교 전용.")
+
+    # ── [MW0601 432차 / 25-B] TP2 거리 축 ─────────────────────────────────────
+    t = s.get("tp2") or {}
+    if t.get("per_variant"):
+        print()
+        print("=" * 92)
+        print("[25-B] TP2 거리 A/B — 보호 offset은 현행(ATR×0.25) 고정, TP2만 변형")
+        print("=" * 92)
+        if not t.get("baseline_consistent"):
+            print(t.get("baseline_note") or "⚠ 배선 검산 실패")
+            print()
+        print("%-12s %5s %7s %7s %7s %9s %9s %9s %9s"
+              % ("변형", "n", "STOP", "TP2", "강제", "승률", "누적pt", "중앙값", "최대손실"))
+        for v in out.get("tp2_variants", []):
+            d = t["per_variant"].get(v)
+            if not d:
+                print("%-12s (표본 없음)" % v)
+                continue
+            print("%-12s %5d %7d %7d %7d %8.1f%% %+9.2f %+9.3f %+9.2f"
+                  % (v, d["n"], d["n_stop"], d["n_tp2"], d["n_forced"],
+                     d["win_rate"] * 100, d["total_pt"], d["median_pt"],
+                     d["max_loss_pt"]))
+        print()
+        print("현행 대비 (pt / 1계약 환산 원 / 건별우세 / drop-max 후 delta):")
+        for v in out.get("tp2_variants", []):
+            d = t["per_variant"].get(v)
+            if not d or v == "current" or d.get("delta_vs_current") is None:
+                continue
+            print("  %-12s %+8.2f pt  %+12s 원   우세 %s/%d건   drop-max %+8.2f pt"
+                  % (v, d["delta_vs_current"],
+                     format(int(d["delta_vs_current"] * MINI_FUTURES_PT_VALUE), ","),
+                     d["beats_current_n"], d["n"], d["delta_drop_max"]))
+        print()
+        print("판정: %s — %s" % (t.get("verdict"), t.get("reason")))
+        print("⚠ TP2 단축은 완주율↑ / 완주 1건당 이익↓의 교환이다. 누적pt만 보지 말고")
+        print("  승률·최대손실·drop-max를 반드시 함께 읽을 것(사전등록 판정보조 ①②③).")
+        print("⚠ 이 판정은 위 offset 축 판정과 **무관**하다 — 본채널 합격선 무변경(§9-4).")
 
 
 if __name__ == "__main__":
