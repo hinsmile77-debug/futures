@@ -58,6 +58,18 @@ valid**하다는 점 — TP2를 바꿔도 stop·TP1은 불변이므로 "TP1 도�
   절대값을 실현손익으로 인용하면 안 된다.
 - ATR은 저장된 offset에서 역산한다(offset = ATR × 0.25). 현행이 atr_profit이 아닌
   행(breakeven 등)은 ATR 역산이 불가능해 제외된다.
+- **[MW0602 432차] 체결가능성 클램프** — offset이 보호전환 시점의 실제 유리이동을
+  넘으면 그 시점 가격으로 자른다. 이 클램프가 없던 시기(404차 후속3 ~ 431차)의
+  `atr_lock_0.50/0.75`·`bar_range` 수치는 **시장이 제시한 적 없는 가격에 체결된
+  것으로 계상**돼 부풀려져 있었다. 그 수치를 인용하지 말 것:
+
+      atr_lock_0.75  Δ현행 +18.75pt → 클램프 후 **+8.04pt** (허수 기여 57%)
+      bar_range      Δ현행  +8.50pt → 클램프 후   +4.96pt (42%)
+      atr_lock_0.50  Δ현행  +3.81pt → 클램프 후   +2.23pt (42%)
+      current/breakeven/breakeven_plus — 클램프 0건, 영향 없음
+
+  변형별 클램프 발동 건수는 `n_clamped`로 노출되며 CLI·리포트가 함께 찍는다.
+  클램프 비율이 높다 = 그 변형이 기하학적으로 무리한 요구를 했다는 뜻이다.
 
 실행:
     py310_64\python.exe scripts/tp1_protect_offset_shadow.py [--since 2026-06-01]
@@ -81,13 +93,19 @@ except Exception:
 from config.settings import (  # noqa: E402
     TRADES_DB, RAW_DATA_DB, VALIDATION_CAMPAIGN, ATR_TP2_MULT,
     FUTURES_COMMISSION_RATE, TICK_SIZE,
+    # [432차] 라이브와 같은 상수를 쓴다 — 예전에는 여기 리터럴 사본이 있어
+    # 라이브가 바뀌면 `current` 기준선이 조용히 어긋날 수 있었다.
+    TP1_PROTECT_ATR_LOCK_MULT, TP1_PROTECT_PLUS_ALPHA_PTS,
 )
 from config.constants import MINI_FUTURES_PT_VALUE  # noqa: E402
 
 _CR = VALIDATION_CAMPAIGN.get("tp1_protect_offset_shadow", {})
-_LOCK_MULT_CURRENT = 0.25          # main.py:TP1_PROTECT_ATR_LOCK_MULT
+_LOCK_MULT_CURRENT = TP1_PROTECT_ATR_LOCK_MULT   # 라이브 정본(config/settings.py)
 _BAR_RANGE_LOOKBACK = 3            # bar_range 변형: 직전 N봉
 _MAX_MIN = 360                     # 재생 상한(분) — 15:10 컷이 먼저 걸리는 게 정상
+# [MW0602 432차] 체결가능성 클램프. 기본 True — 끄면 결함 상태(체결 불가 가격을
+# 체결로 계상)가 재현된다. 과거 수치 재현 목적으로만 False로 둘 것.
+_CLAMP_ON = bool(_CR.get("feasibility_clamp", True))
 
 
 def _conn(p):
@@ -156,7 +174,7 @@ def _offset_for(name: str, atr: float, bar_rng: float) -> float:
     if name == "breakeven":
         return 0.0
     if name == "breakeven_plus":
-        return 0.20
+        return TP1_PROTECT_PLUS_ALPHA_PTS
     if name == "atr_lock_0.50":
         return atr * 0.50
     if name == "atr_lock_0.75":
@@ -206,6 +224,9 @@ def compute(since: str = "2026-06-01") -> dict:
     n_other_mode: dict = {}     # atr_profit이 아니라 판정 모집단에서 빠진 건수(모드별)
     n_backout_legacy = 0        # atr 컬럼 이전 행 — 역산 폴백을 쓴 건수
     n_excluded_override = 0     # prev_stop 오버라이드가 확인돼 제외한 건수
+    # [MW0602 432차] 변형별 체결가능성 클램프 발동 건수·초과폭 — 아래 클램프 참조.
+    n_clamped: dict = {v: 0 for v in variants}
+    clamp_excess: dict = {v: [] for v in variants}
 
     for h in hooks:
         # 판정 모집단은 atr_profit 행만이다 — `current` 변형(ATR×0.25)이 "실제로
@@ -252,8 +273,28 @@ def compute(since: str = "2026-06-01") -> dict:
         tp2 = ep + sgn * atr * ATR_TP2_MULT
         cost = _cost_pts(ep)
         days.add(ts[:10])
+        # [MW0602 432차] 보호전환 **시점에 실제로 도달했던** 유리이동. 클램프 상한.
+        excursion = abs(float(h["synthetic_price"]) - ep)
         for v in variants:
-            off = _offset_for(v, atr, bar_rng)
+            off_raw = _offset_for(v, atr, bar_rng)
+            # ── 체결가능성 클램프 ────────────────────────────────────────────
+            # offset은 진입가에서 **이익 방향으로** 띄우는 거리다. 이것이 그 시점의
+            # 실제 유리이동보다 크면 보호스톱이 당시 가격보다 더 이익 쪽에 놓인다.
+            # _simulate()는 다음 봉에서 hit_stop을 무조건 True로 읽으므로,
+            # **시장이 한 번도 제시하지 않은 가격에 체결된 것으로 계상**된다.
+            #
+            # 실측(432차, 판정모집단 49건): 시점 유리이동 중앙 0.552×ATR
+            #   atr_lock_0.75 → 28건(57%)이 체결 불가, 초과폭 중앙 0.52pt
+            #   bar_range     → 14건(29%),  atr_lock_0.50 → 5건(10%)
+            #   current/breakeven/breakeven_plus → 0건 (영향 없음)
+            # 클램프 전후 Δ현행: atr_lock_0.75 +18.75 → **+8.04pt** (57%가 허수였다)
+            #
+            # 상한을 excursion으로 두면 "그 순간 가격에 스톱" = 사실상 즉시 익절이며,
+            # 이는 실제로 체결 가능한 최선이다.
+            off = min(off_raw, excursion) if _CLAMP_ON else off_raw
+            if off_raw > excursion + 1e-9:
+                n_clamped[v] += 1
+                clamp_excess[v].append(off_raw - excursion)
             stop = ep + sgn * off
             outcome, pts = _simulate(bars, i0, is_long, ep, stop, tp2)
             res[v].append((outcome, pts - cost))
@@ -275,7 +316,10 @@ def compute(since: str = "2026-06-01") -> dict:
             "n_backout_legacy": n_backout_legacy,
             "n_excluded_override": n_excluded_override,
             # [MW0601 432차 / 25-B]
-            "tp2_variants": tp2_variants, "rows_tp2": res_tp2}
+            "tp2_variants": tp2_variants, "rows_tp2": res_tp2,
+            # [MW0602 432차]
+            "n_clamped": n_clamped,
+            "clamp_excess": clamp_excess}
 
 
 def summarize(out: dict) -> dict:
@@ -301,6 +345,14 @@ def summarize(out: dict) -> dict:
                                  if base_total is not None else None),
             "beats_current_n": (sum(1 for (_, p), (_, q) in zip(rows, base) if p > q)
                                 if base and len(rows) == len(base) else None),
+            # [MW0602 432차] 체결가능성 클램프가 걸린 건수 — 클수록 그 변형은
+            # "그 시점에 존재하지 않던 가격"을 요구한 것이므로 원안 자체가 기하학적
+            # 으로 무리다. 해석 시 반드시 병기할 것.
+            "n_clamped": (out.get("n_clamped") or {}).get(v, 0),
+            "clamp_excess_med": (
+                round(sorted((out.get("clamp_excess") or {}).get(v) or [0])[
+                    len((out.get("clamp_excess") or {}).get(v) or [0]) // 2], 4)
+                if ((out.get("clamp_excess") or {}).get(v)) else 0.0),
         }
     min_n = int(_CR.get("min_samples", 20))
     min_d = int(_CR.get("min_days", 3))
@@ -337,7 +389,9 @@ def summarize(out: dict) -> dict:
             "n_backout_legacy": out.get("n_backout_legacy", 0),
             "n_excluded_override": out.get("n_excluded_override", 0),
             # [MW0601 432차 / 25-B] TP2 축 — 본채널 verdict와 분리된 별도 판정.
-            "tp2": _summarize_tp2(out, base)}
+            "tp2": _summarize_tp2(out, base),
+            # [MW0602 432차] 클램프 총계 — 리포트 생성기가 경고문에 쓴다.
+            "n_clamped": out.get("n_clamped") or {}}
 
 
 def _summarize_tp2(out: dict, offset_base: list) -> dict:
@@ -445,21 +499,31 @@ def main():
               % (v, d["n"], d["n_stop"], d["n_tp2"], d["n_forced"],
                  d["win_rate"] * 100, d["total_pt"], d["median_pt"]))
     print()
-    print("현행 대비 차이 (pt / 1계약 환산 원 / 건별 우세):")
+    print("현행 대비 차이 (pt / 1계약 환산 원 / 건별 우세 / 체결가능성 클램프):")
     for v in out["variants"]:
         d = s["per_variant"].get(v)
         if not d or v == "current":
             continue
-        print("  %-16s %+8.2f pt   %+12s 원   우세 %s/%d건"
+        _cl = d.get("n_clamped", 0)
+        _cltxt = ("클램프 %d/%d건(%.0f%%, 초과 중앙 %.2fpt)"
+                  % (_cl, d["n"], 100.0 * _cl / d["n"], d.get("clamp_excess_med", 0.0))
+                  ) if _cl else "클램프 없음"
+        print("  %-16s %+8.2f pt   %+12s 원   우세 %s/%d건   %s"
               % (v, d["delta_vs_current"],
                  format(int((d["delta_vs_current"] or 0) * MINI_FUTURES_PT_VALUE), ","),
-                 d["beats_current_n"], d["n"]))
+                 d["beats_current_n"], d["n"], _cltxt))
     print()
     print("판정: %s — %s" % (s["verdict"], s["reason"]))
     print("§9: 이 스크립트는 판정을 자동 적용하지 않는다. 적용은 주간회의 수동 결정.")
     print("⚠ breakeven 변형은 404차 후속3 조사에서 이미 1회 측정됨 — 사전등록 검증이")
     print("  아니라 재확인용이다. 사전등록 가치는 atr_lock_0.50/0.75·bar_range에 있다.")
     print("⚠ 절대값은 실현손익이 아니다(TP3·트레일링·신호소멸 미모델링). 상대비교 전용.")
+    _tot_cl = sum((s.get("n_clamped") or {}).values())
+    if _tot_cl:
+        print("⚠ [432차] 체결가능성 클램프가 적용됐다 — offset이 보호전환 시점의 실제")
+        print("  유리이동을 넘는 건은 그 시점 가격으로 잘랐다. 클램프 비율이 높은 변형은")
+        print("  '그 순간 존재하지 않던 가격'을 요구한 것이므로 원안 자체가 기하학적 무리다.")
+        print("  (클램프 도입 전 atr_lock_0.75는 +18.75pt였고 그 중 57%가 허수였다.)")
 
     # ── [MW0601 432차 / 25-B] TP2 거리 축 ─────────────────────────────────────
     t = s.get("tp2") or {}
