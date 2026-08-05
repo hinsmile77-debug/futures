@@ -218,8 +218,8 @@ def _dir_sign(v) -> int:
 # **무엇을 바꿨나**: 진입 사이징 게이트를 두 군으로 나누고, 품질군만 min()으로 합성한다.
 #
 #   품질군 (min 합성, 이 함수) : ExecutionGovernor · MetaGate · ToxicityGate · HurstGate
-#   안전군 (곱셈 유지, 기존)   : HealthPolicy Degraded · pre_retrain · VolatilityBurst
-#                                · IntradayRegime L2
+#                                · pre_retrain  ← [433차 이동]
+#   안전군 (곱셈 유지, 기존)   : HealthPolicy Degraded · VolatilityBurst · IntradayRegime L2
 #
 # **왜 나눴나**: 품질군 4종은 전부 "이 신호/시장미시구조가 못 미덥다"는 **같은 축의
 # 중복 계상**이다(체결난이도·메타신뢰도·독성·횡보성은 서로 강하게 겹친다). 그런데
@@ -230,11 +230,21 @@ def _dir_sign(v) -> int:
 #   최빈 조합 Hurst 0.50 × Meta 0.50 = **0.25** → 사이저 3계약이 0.75 → 반올림 → 1계약
 #   결과: 사이저 raw >= 3이 31건인데 **최종 1계약이 20건**, 전체 진입의 85%가 1계약
 #
-# 반면 안전군 4종은 서로 **독립 위험**이다(시스템 헬스 저하 / 모델 미학습 / 급변장 /
-# 일중 레짐 붕괴). 동시 발생 시 곱해서 더 강하게 줄이는 것이 옳으므로 곱셈을 유지한다.
-# min()을 전 게이트에 적용하면 급변장에서 오히려 덜 보수적이 되는데, 그건 이 변경의
-# 의도가 아니다. (실측 확인: 최근 20거래일 안전군 발동 0건 — 이 변경의 시뮬레이션
-# 결과는 좁힌 설계에서도 그대로다.)
+# 반면 안전군은 서로 **독립 위험**이다(시스템 헬스 저하 / 급변장 / 일중 레짐 붕괴).
+# 동시 발생 시 곱해서 더 강하게 줄이는 것이 옳으므로 곱셈을 유지한다. min()을 전
+# 게이트에 적용하면 급변장에서 오히려 덜 보수적이 되는데, 그건 이 변경의 의도가 아니다.
+#
+# ⚠ **[MW0601 433차, 2026-08-05] 431차 근거 정정 — 원 주석의 다음 문장은 사실이 아니다.**
+#     (구) "실측 확인: 최근 20거래일 안전군 발동 0건 — 이 변경의 시뮬레이션 결과는
+#           좁힌 설계에서도 그대로다."
+#   실측(2026-07-01~08-05 SIGNAL 로그): `pre_retrain ×0.6`이 **160사이클 / 15거래일**
+#   발동했고 그중 **24건이 실제 진입**이다. "안전군은 관측 구간에서 무영향"이라는 안전
+#   논거가 이 배수에는 성립하지 않았고, 그래서 431차 시뮬(2계약+ 37%)과 08-05 실측(16%)이
+#   갈렸다 — 사이저 3계약이 `3×0.6 → 2 → ×min(quality) 0.50 → 1`로 **이중 축소·이중
+#   반올림**됐기 때문이다(431차가 없애려던 바로 그 현상이 군 경계를 넘어 남아 있었다).
+#   → 433차에서 pre_retrain을 품질군으로 옮겼다. 나머지 안전군 3종(Degraded·VolBurst·L2)은
+#     최근 20거래일 발동 0건이 **맞다** — 그 부분은 정정 대상이 아니다.
+#   되돌림: `config/settings.py:PRE_RETRAIN_SIZE_QUALITY_GROUP = False` (코드 수정 불필요).
 #
 # **왜 단일 반올림인가**: 기존에는 게이트마다 `max(1, int(round(...)))`가 따로 걸려
 # 반올림 손실이 누적됐다. 배수를 먼저 합성하고 마지막에 한 번만 반올림한다.
@@ -7129,14 +7139,28 @@ class TradingSystem:
                     log_manager.signal(
                         f"[HealthPolicy] Degraded Mode 축소: size_mult={float(HEALTH_DEGRADED_SIZE_MULT):.2f}"
                     )
-            # 방법3: GBM 첫 재학습 전 / 09:20~09:29 조건부 구간 사이즈 축소
+            # 방법3: GBM 첫 재학습 전 사이즈 축소
             if _pre_retrain_size_factor < 1.0 and _qty_safety_base > 0:
-                # [431차] 안전군 — 곱셈 유지.
-                _qty_safety_base = max(1, int(round(_qty_safety_base * _pre_retrain_size_factor)))
+                # [MW0601 433차] 품질군으로 이동 — 431차는 이걸 안전군(곱셈)에 뒀으나
+                # 실체가 "오늘 첫 재학습이 아직 안 끝났다"는 **모델 최신성 = 신호 품질 축**
+                # 이라 Meta·Hurst와 중복 계상된다. 근거·되돌림 방법은
+                # config/settings.py:PRE_RETRAIN_SIZE_QUALITY_GROUP 주석 참조.
+                # getattr 기본값 True — 여긴 매분 파이프라인 핫패스라 AttributeError가
+                # 나면 68차처럼 minute_pipeline이 통째로 중단된다. 신규 플래그는 항상
+                # 기본값과 함께 읽는다(이 파일의 _build_health_policy 관례와 동일).
+                _pre_in_quality = bool(getattr(
+                    runtime_settings, "PRE_RETRAIN_SIZE_QUALITY_GROUP", True))
+                if _pre_in_quality:
+                    _quality_mults["pre_retrain"] = float(_pre_retrain_size_factor)
+                else:
+                    # [431차 원안] 안전군 — 곱셈 유지.
+                    _qty_safety_base = max(1, int(round(_qty_safety_base * _pre_retrain_size_factor)))
                 _qty_display = _compose_quality_qty(_qty_safety_base, _quality_mults)
                 log_manager.signal(
-                    f"[EntryGate] 사이즈 축소 ×{_pre_retrain_size_factor:.1f} "
-                    f"({'GBM 재학습 전' if not self._pre_retrain_done else '조건부 진입 구간'})"
+                    f"[EntryGate] 사이즈 축소 ×{_pre_retrain_size_factor:.1f} (GBM 재학습 전)"
+                    # 어느 군으로 계상됐는지 로그만 봐도 알 수 있어야 한다 — 433차 배포
+                    # 직후 "왜 수량이 늘었나"를 추적할 유일한 단서다.
+                    + (" [품질군 min 합성]" if _pre_in_quality else " [안전군 곱셈]")
                 )
 
             if _exec_action == "block":

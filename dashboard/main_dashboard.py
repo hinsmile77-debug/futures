@@ -3500,7 +3500,9 @@ class EntryPanel(QWidget):
             "  각 게이트: block → 0 / reduce → 배수 등록 / pass → 유지\n"
             "  [431차] 품질군(Exec·Meta·Toxicity·Hurst)은 곱셈이 아니라 min() 합성 —\n"
             "  가장 강한 축소 하나가 지배하고, 반올림은 마지막에 한 번만 한다.\n"
-            "  안전군(Degraded·pre_retrain·VolBurst·L2)은 종전대로 곱셈.\n"
+            "  [433차] pre_retrain(GBM 첫 재학습 전)도 품질군으로 이동 — 모델 최신성은\n"
+            "  신호 품질 축이라 Meta·Hurst와 중복 계상됐다(431차 '발동 0건'은 오기).\n"
+            "  안전군(Degraded·VolBurst·L2)만 종전대로 곱셈.\n"
             # ⚠ 이 툴팁 본문에는 "잔고 × 1%", "58%→0.6" 등 리터럴 %가 들어 있다.
             #    인접 문자열은 컴파일 시 하나로 합쳐지므로 여기에 % 포매팅을 쓰면
             #    그 리터럴 %까지 변환지정자로 해석돼 ValueError가 난다(431차 기동실패).
