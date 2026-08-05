@@ -4477,7 +4477,11 @@ def eval_offline_geometry_channels() -> dict:
                      # ⚠ 이 채널의 verdict는 [3-6] hurst_gate_shadow와 무관하다 —
                      #   그건 "차단된 신호가 벌었을까"(모집단: 차단분), 이건 "임계가
                      #   좋은/나쁜 신호를 가르는가"(모집단: 실제 진입분)로 질문이 다르다.
-                     ("hurst_threshold_shadow", "scripts.hurst_threshold_shadow")):
+                     ("hurst_threshold_shadow", "scripts.hurst_threshold_shadow"),
+                     # [MW0601 436차, 47] 진입 맥락별 손익. 사후 슬라이스 3종을 OOS +
+                     # 다중비교 보정으로 판정한다. ⚠ FAIL이어도 진입 차단은 처방이
+                     # 아니다(427·428차 방향 축 무작위 + 차단 게이트 과다).
+                     ("entry_context_shadow", "scripts.entry_context_shadow")):
         try:
             import importlib
             m = importlib.import_module(mod)
@@ -7127,6 +7131,14 @@ def build_report(days: int) -> tuple:
             _g46.get("reason", _g46.get("error", "—")),
             _g46.get("n_oos", "—"), _g46.get("n_days_oos", "—"),
             _g46.get("n_matched", "—"), _g46.get("n_days", "—")))
+    # [MW0601 436차] [47] 진입 맥락별 손익 — 사후 슬라이스 3종의 OOS 판정.
+    _g47 = off.get("entry_context_shadow") or {}
+    if _g47:
+        L.append("| [47] 진입 맥락별 손익 | %s | %s (OOS %s건/%s일, Bonferroni α=%s) |" % (
+            _fmt_verdict(_g47.get("verdict", "")),
+            _g47.get("reason", _g47.get("error", "—")),
+            _g47.get("n_oos", "—"), _g47.get("n_days_oos", "—"),
+            _g47.get("alpha_bonferroni", "—")))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -9355,6 +9367,92 @@ def build_report(days: int) -> tuple:
     L.append("> **⚠ [3-6] `hurst_gate_shadow`와 다른 질문이다** — 그건 \"차단된 신호가")
     L.append("> 벌었을까\"(모집단: 차단분), 이건 \"임계가 좋은/나쁜 신호를 가르는가\"")
     L.append("> (모집단: 실제 진입분)다. 두 verdict는 서로 무관하다(§9-4).")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [MW0601 436차] [47] 진입 맥락별 손익 ─────────────────────────────
+    L.append("## [47] 진입 맥락별 손익 (MW0601 436차 신설)")
+    L.append("")
+    if not _g47:
+        L.append("> ⚠ 미산출 — 스크립트 실행 실패 또는 사전등록 누락.")
+    elif _g47.get("error"):
+        L.append("> ⚠ 스크립트 실행 실패: %s" % _g47["error"])
+    else:
+        L.append("0805 점검이 **사후 슬라이스**로 발견한 \"나빠 보이는 진입 맥락\" 3종이")
+        L.append("진짜 효과인지 포킹 패스 인공물인지를 OOS + 다중비교 보정으로 판정한다.")
+        L.append("주 지표는 **계약당 pt**(사이징 무관), 검정은 **순열검정**이다.")
+        L.append("")
+        L.append("- 포지션 %s건 / %s거래일 · OOS %s건 / %s거래일 · 순열 %s회"
+                 % (_g47.get("n_positions", "—"), _g47.get("n_days", "—"),
+                    _g47.get("n_oos", "—"), _g47.get("n_days_oos", "—"),
+                    _g47.get("perm_iters", "—")))
+        L.append("- **Bonferroni**: α=%s / %s슬라이스 = **%s**"
+                 % (_g47.get("alpha", "—"), _g47.get("family_size", "—"),
+                    _g47.get("alpha_bonferroni", "—")))
+
+        def _t47(pv, title):
+            L.append("")
+            L.append("**%s**" % title)
+            if not pv:
+                L.append("")
+                L.append("- (표본 없음)")
+                return
+            L.append("")
+            L.append("| 슬라이스 | n | 거래일 | 승률Δ | 평균ptΔ | drop-worst | 페이오프Δ | p(순열) | 음수일% |")
+            L.append("|---|---|---|---|---|---|---|---|---|")
+            for n in _g47.get("slices", []):
+                v = pv.get(n) or {}
+                if v.get("insufficient") or not v.get("slice"):
+                    L.append("| %s | — | — | — | — | — | — | — | — |" % n)
+                    continue
+                s = v["slice"]
+                L.append("| %s | %d | %d | %+.1f%% | **%+.3f** | %s | %s | %.4f | %.0f%% |" % (
+                    n, s["n"], v.get("days", 0),
+                    (v.get("delta_win_rate") or 0) * 100, v.get("delta_mean_pt", 0),
+                    ("%+.3f" % v["delta_mean_drop_worst"]) if v.get("delta_mean_drop_worst") is not None else "—",
+                    ("%+.2f" % v["delta_payoff"]) if v.get("delta_payoff") is not None else "—",
+                    v.get("p_perm", 1.0), (v.get("neg_day_share") or 0) * 100))
+
+        _t47(_g47.get("per_slice"), "전체표본 — ⚠ 사후 슬라이스, 판정 근거 아님")
+        _t47(_g47.get("per_slice_oos"),
+             "OOS (%s 이후) — 판정 대상" % (_g47.get("oos_start") or "미설정"))
+
+        _sens = _g47.get("sensitivity") or {}
+        if _sens:
+            _ws = sorted(_sens)
+            L.append("")
+            L.append("**판정보조 ③ 창 민감도 (평균ptΔ)** — 이 채널의 등록 사유다")
+            L.append("")
+            L.append("| 슬라이스 | %s |" % " | ".join(_ws))
+            L.append("|---|%s" % ("---|" * len(_ws)))
+            for n in _g47.get("slices", []):
+                cells = []
+                for w in _ws:
+                    v = _sens[w].get(n)
+                    cells.append(("%+.3f" % v) if v is not None else "—")
+                L.append("| %s | %s |" % (n, " | ".join(cells)))
+        L.append("")
+        L.append("- **판정: %s** — %s" % (_g47.get("verdict"), _g47.get("reason")))
+    L.append("")
+    L.append("> **⚠ 사전등록 정직성 고지**: 슬라이스 3종은 0805에 **이미 관측한 뒤** 골랐다.")
+    L.append("> 진입 맥락을 여러 축(재진입 간격 4구간 · 동일/반대 방향 · 직전 승/패 ·")
+    L.append("> 시간대 6구간)으로 갈라본 뒤 **나빠 보이는 것만 고른 것**이므로, 전체표본은")
+    L.append("> 정의상 in-sample이고 개별 p를 그대로 읽으면 안 된다(garden of forking paths).")
+    L.append("> ")
+    L.append("> **⚠ Bonferroni는 하한이다.** 등록 슬라이스 3개 기준으로 보정하지만 실제")
+    L.append("> 탐색 가지는 15갈래 이상이었다 — 통과해도 \"약한 증거\"로 읽을 것.")
+    L.append("> ")
+    L.append("> **⚠ 원 보고 수치는 포지션합 pt였다.** 계약수가 섞인 값이라(417차 교훈,")
+    L.append("> 06-10~07-10 대형 계약수 구간 포함) 계약당으로 정규화하면 크기가 달라진다.")
+    L.append("> 특히 S2는 −0.000(보완 +0.743)으로 **효과가 사실상 사라진다**. 또한 원 보고의")
+    L.append("> \"S2는 승률이 평균 이상\"이라는 해석은 07-01~ 창에서만 성립한다(06-10~ 기준")
+    L.append("> 51.5% vs 보완 57.3%로 **오히려 낮다**).")
+    L.append("> ")
+    L.append("> **⚠ FAIL이 나와도 \"진입 차단\"은 처방 후보가 아니다.** (a) 427·428차가")
+    L.append("> 방향 축이 무작위와 구분되지 않음을 확정했으므로 진입 필터의 기대값이")
+    L.append("> 보장되지 않고, (b) 감사 §2-2 ③ \"차단형 게이트는 이미 충분히 많다\".")
+    L.append("> 처방은 **사이징 또는 집행(청산) 축**에서 찾을 것 — 417차·425차와 같은 방향.")
     L.append("")
     L.append("---")
     L.append("")
