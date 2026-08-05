@@ -854,6 +854,9 @@ class TradingSystem:
         self._shap_last_update_minute = None
         # [402차 후속7 P0-1b] 라운드로빈 커서 — 매분 _SHAP_RR_HORIZONS 중 1개만 계산
         self._shap_rr_idx: int = 0
+        # [MW0601 435차] SHAP 슬로우 스로틀 잔여 스킵 분(minute) 수.
+        # >0이면 그 분의 SHAP 계산을 건너뛴다(라운드로빈 인덱스는 전진하지 않음).
+        self._shap_skip_until_cnt: int = 0
         # [414차 후속] SHAP 정합성 가드 로그 스로틀 — {(horizon, reason): 'YYYY-MM-DD'}.
         # 이 함수는 매분 도는데 불일치는 재학습 전까지 계속 유지되므로, 스로틀이 없으면
         # 같은 경고가 하루 수백 줄 쌓여 진짜 이상이 묻힌다(경보 피로).
@@ -1538,18 +1541,46 @@ class TradingSystem:
             return
         self._shap_last_update_minute = minute_key
 
+        # [MW0601 435차] 슬로우 스로틀 — 직전 SHAP이 오래 걸렸으면 쿨다운 동안 건너뛴다.
+        # SHAP은 이 분의 매매 판단에 쓰이지 않는데(위 docstring) 2026-08-05 12:34에
+        # 4,481ms 단발 스파이크로 파이프라인을 5,117ms까지 밀어 **CB⑤ 진입정지를
+        # 실제로 발동**시켰다. 근거·되돌림은 config/settings.py:SHAP_SLOW_* 주석 참조.
+        # ⚠ 라운드로빈 인덱스는 여기서 전진시키지 않는다 — 건너뛴 호라이즌은 유실되지
+        #   않고 다음 분으로 밀린다.
+        if bool(getattr(runtime_settings, "SHAP_SLOW_SKIP_ENABLED", True)):
+            if self._shap_skip_until_cnt > 0:
+                self._shap_skip_until_cnt -= 1
+                return
+
         _round_robin = bool(getattr(runtime_settings, "SHAP_REFRESH_ROUND_ROBIN", True))
         if _round_robin:
             _targets = (_SHAP_RR_HORIZONS[self._shap_rr_idx % len(_SHAP_RR_HORIZONS)],)
-            self._shap_rr_idx = (self._shap_rr_idx + 1) % len(_SHAP_RR_HORIZONS)
         else:
             _targets = _SHAP_RR_HORIZONS
 
+        _t0 = time.perf_counter()
         for _h in _targets:
             if _h == "1m":
                 self._refresh_shap_1m(ts)
             else:
                 self._refresh_shap_horizon(ts, _h)
+        _elapsed_ms = (time.perf_counter() - _t0) * 1000.0
+
+        # 계산에 성공했을 때만 인덱스를 전진시킨다(건너뛴 분에는 전진 없음 — 위 참조).
+        if _round_robin:
+            self._shap_rr_idx = (self._shap_rr_idx + 1) % len(_SHAP_RR_HORIZONS)
+
+        if bool(getattr(runtime_settings, "SHAP_SLOW_SKIP_ENABLED", True)):
+            _slow_ms = float(getattr(runtime_settings, "SHAP_SLOW_MS", 900.0))
+            if _elapsed_ms >= _slow_ms:
+                self._shap_skip_until_cnt = int(
+                    getattr(runtime_settings, "SHAP_SLOW_COOLDOWN_MIN", 5))
+                log_manager.system(
+                    f"[SHAP] 슬로우 감지 {_elapsed_ms:.0f}ms (임계 {_slow_ms:.0f}ms) "
+                    f"— 다음 {self._shap_skip_until_cnt}분 건너뜀 "
+                    f"(호라이즌 {_targets[0] if _targets else '?'}는 유실 없이 밀림)",
+                    "WARNING",
+                )
 
     def _shap_guard_warn(self, horizon: str, reason: str, msg: str, *args) -> None:
         """[414차 후속] SHAP 정합성 경고 — 조건별 하루 1회만 남긴다."""
@@ -10141,11 +10172,39 @@ class TradingSystem:
                 "INFO",
             )
         else:
-            log_manager.system(
-                "[DailyClose] EOD 재학습 마커 없음 — retrain_eod.py 미실행 또는 실패 "
-                "(내일 PreRetrain에서 보완 재학습 예약됨)",
-                "WARNING",
-            )
+            # [MW0601 435차] 이 경보는 **매 거래일 반드시 뜨는 구조적 오탐**이었다.
+            # daily_close()는 15:40에 돌고 retrain_eod.py는 py310_64 장외 스케줄러가
+            # 15:45에 띄워 ~15:48에 마커를 쓴다 — 즉 이 시점에 오늘 마커가 없는 것이
+            # **정상**이며, 검사 자체가 원리상 항상 실패한다.
+            # 실측: 07-30·07-31·08-03·08-04·08-05 전부 이 WARNING이 찍혔고 그 다음날
+            # 아침 PreRetrain은 매번 "EOD 마커 파일 직접 확인 → 스킵"으로 정상 동작했다.
+            # 즉 기능은 멀쩡한데 경보만 늑대를 외치고 있었다(경보 불감증 유발).
+            #
+            # 그렇다고 검사를 지우지는 않는다 — 마커가 **있는** 경우의 session_state
+            # 기록은 여전히 유효하고(재기동 등으로 EOD가 먼저 끝난 경우), "진짜 실패"를
+            # 볼 창구도 남겨야 한다. 대신 **시각을 인지해** 등급을 나눈다:
+            #   지금이 스케줄러 예정시각 이전 → INFO (정상, 아직 안 돌았을 뿐)
+            #   그 이후인데도 마커가 없음     → WARNING (진짜 미실행/실패 의심)
+            # 판정의 실질은 다음날 아침 PreRetrain이 마커 파일을 직접 확인하는 쪽이
+            # 정본이다(이 경로는 관측용).
+            _eod_sched_hm = str(getattr(runtime_settings, "EOD_RETRAIN_SCHEDULE_HM", "1545"))
+            _now_hm = datetime.datetime.now().strftime("%H%M")
+            if _now_hm < _eod_sched_hm:
+                log_manager.system(
+                    "[DailyClose] EOD 재학습 마커 없음 — 정상 "
+                    f"(스케줄러 {_eod_sched_hm[:2]}:{_eod_sched_hm[2:]} 예정, "
+                    "현재 %s:%s). 마커는 재학습 완료 시 기록된다"
+                    % (_now_hm[:2], _now_hm[2:]),
+                    "INFO",
+                )
+            else:
+                log_manager.system(
+                    "[DailyClose] EOD 재학습 마커 없음 — 예정시각"
+                    f"({_eod_sched_hm[:2]}:{_eod_sched_hm[2:]}) 경과했는데 마커가 없다. "
+                    "retrain_eod.py 미실행 또는 실패 의심 "
+                    "(내일 PreRetrain에서 보완 재학습 예약됨)",
+                    "WARNING",
+                )
 
         # DB pruning — 매주 월요일 EOD 1회 실행 (RAW_DATA_PRUNE_WEEKS=52주 이전 삭제)
         # 슬라이딩 창(26주) 정상 운영 시 학습 행 수는 ~40,000 안정적
@@ -10348,6 +10407,9 @@ class TradingSystem:
         for _h in self._shap_labeled_window:
             self._shap_labeled_window[_h].clear()
         self._shap_last_update_minute = None
+        # [MW0601 435차] 슬로우 스로틀 쿨다운도 일일 리셋 — 전날 장 막판에 걸린 스킵이
+        # 다음 날 개장 직후까지 이어지면 안 된다(데이터·모델이 이미 갱신된 상태다).
+        self._shap_skip_until_cnt = 0
         self._restored_corr_str = ""
         self._live_shap_ready = False
         self._cached_shap_importance = {}

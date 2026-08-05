@@ -378,6 +378,15 @@ USE_ROLLING_SIGMA_THRESHOLD: bool = True
 # False → rolling sigma로 레이블 생성 (기존 방식, 레이블 드리프트 잔존)
 USE_FIXED_LABEL_THRESHOLD: bool = True
 
+# [MW0601 435차] 장외 EOD 재학습 스케줄러(MireukiEODRetrain) 예정 시각 "HHMM".
+# daily_close()가 15:40에 EOD 마커 유무를 검사하는데 스케줄러는 15:45에 시작해
+# ~15:48에 마커를 쓴다 — 즉 그 시점에 마커가 없는 것이 **정상**이다. 종전에는
+# 이를 무조건 WARNING으로 찍어 **매 거래일 오탐**이 났다(07-30~08-05 전부 실측).
+# 이 값 이전이면 INFO(정상), 이후인데도 없으면 WARNING(진짜 실패 의심)으로 가른다.
+# ⚠ 스케줄러(작업 스케줄러 트리거) 시각을 바꾸면 이 값도 함께 바꿀 것 — 안 맞추면
+#   경보가 다시 늑대를 외치거나(너무 이름) 진짜 실패를 놓친다(너무 늦음).
+EOD_RETRAIN_SCHEDULE_HM: str = "1545"
+
 # GBM 첫 재학습 완료 전 진입 사이즈 배율
 # 방법3 레이블 기반 재학습 전까지 구 레이블 GBM으로 운영 → 보수 사이즈
 PRE_RETRAIN_SIZE_MULT: float = 0.6
@@ -3788,6 +3797,31 @@ SHAP_MIN_DATA_POINTS = 100  # 최소 누적 데이터
 #       _maybe_reload_health_policy()가 settings 모듈 전체를 importlib.reload 하므로
 #       재기동 없이 다음 분봉부터 반영된다.
 SHAP_REFRESH_ROUND_ROBIN = True
+
+# [MW0601 435차] SHAP 슬로우 스로틀 — SHAP이 CB⑤를 발동시키는 것을 막는다.
+#
+# 실측(2026-08-05, 370 사이클): `_refresh_shap_state()`가 **S6 시간의 92.6%**
+# (하루 99.2초/107.1초)를 쓴다. 평균 268ms / p90 545ms까지는 감내할 만하나 꼬리가
+# 문제다 — 12:34:07에 **4,481ms** 단발 스파이크가 나면서 파이프라인 총 5,117ms →
+# **CB⑤ "5분 진입 정지"가 실제로 발동**했다(당일 유일한 CB 발동).
+#
+# **SHAP은 그 분의 매매 판단에 쓰이지 않는다** — `_refresh_shap_state()` docstring이
+# 명시하듯 대시보드 표시·주간 심사·DB 관측용이다. 판단에 안 쓰이는 계산이 진입을
+# 멈추게 하는 것은 명백한 설계 결함이다.
+#
+# 402차 후속7 P0-1b가 이미 라운드로빈(매분 1개 호라이즌)으로 **평균**을 1/3로 줄였다.
+# 이 설정은 남은 **꼬리**를 자른다: 직전 SHAP이 임계를 넘었으면 쿨다운 동안 건너뛴다.
+# 라운드로빈 인덱스는 건너뛴 분에 전진하지 않으므로 **호라이즌이 유실되지 않고 밀릴
+# 뿐**이다(주 단위 dedup이라 심사 표본에도 영향 없음).
+#
+# ⚠ 이것은 **증상 억제**다. 근본 원인(왜 단발로 13배가 튀는가 — permutation_importance
+#   내부 GC/데이터 증가 추정, 미확정)은 별건이며 NEXT_TODO 435차에 등록했다.
+# ⚠ CB⑤ **입력에서 SHAP 시간을 빼는 것**(= 판단 경로만 계측)이 더 근본적인 해법이나,
+#   CB⑤는 CLAUDE.md 절대원칙 §2의 안전장치라 그 입력 정의를 바꾸는 것은 사용자 결정
+#   사항이다. 여기서는 건드리지 않는다.
+SHAP_SLOW_SKIP_ENABLED: bool = True
+SHAP_SLOW_MS: float = 900.0        # 직전 SHAP이 이 시간을 넘으면 슬로우로 본다(p90 545ms 위)
+SHAP_SLOW_COOLDOWN_MIN: int = 5    # 슬로우 감지 후 건너뛸 분(minute) 수
 
 # ── Slack 알림 ─────────────────────────────────────────────────
 # 우선순위: secrets.py > 환경변수 SLACK_BOT_TOKEN (Git 미포함)
