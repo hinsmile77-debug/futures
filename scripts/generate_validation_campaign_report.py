@@ -4471,7 +4471,13 @@ def eval_offline_geometry_channels() -> dict:
                      # [404차 후속10, 3-B] 분위회귀 기반 TP1 거리 A/B. 위 둘과 동일 설계
                      # (오프라인 재생·compute()/summarize() 규약)이라 같은 배관을 쓴다.
                      # ⚠ 이 채널의 verdict는 [3] 본채널 verdict와 무관하다(§9-4).
-                     ("quantile_tp_shadow", "scripts.quantile_tp_shadow")):
+                     ("quantile_tp_shadow", "scripts.quantile_tp_shadow"),
+                     # [MW0601 434차, 46] HurstGate 임계 위치 A/B. 동일 규약
+                     # (compute()/summarize(), 오프라인 재생, 라이브 무변경).
+                     # ⚠ 이 채널의 verdict는 [3-6] hurst_gate_shadow와 무관하다 —
+                     #   그건 "차단된 신호가 벌었을까"(모집단: 차단분), 이건 "임계가
+                     #   좋은/나쁜 신호를 가르는가"(모집단: 실제 진입분)로 질문이 다르다.
+                     ("hurst_threshold_shadow", "scripts.hurst_threshold_shadow")):
         try:
             import importlib
             m = importlib.import_module(mod)
@@ -7113,6 +7119,14 @@ def build_report(days: int) -> tuple:
                 float(dcf.get("collapsed_share", 0)) * 100))))
     L.append("| [45] 축퇴 가드 플래핑 (게이지) | %s | %s |" % (
         _fmt_verdict("OBSERVE"), cgf.get("reason", "—")))
+    # [MW0601 434차] [46] HurstGate 임계 위치 A/B — OOS 기준 판정(전체표본은 in-sample).
+    _g46 = off.get("hurst_threshold_shadow") or {}
+    if _g46:
+        L.append("| [46] Hurst 임계 위치 A/B | %s | %s (OOS %s건/%s일, 전체 %s건/%s일) |" % (
+            _fmt_verdict(_g46.get("verdict", "")),
+            _g46.get("reason", _g46.get("error", "—")),
+            _g46.get("n_oos", "—"), _g46.get("n_days_oos", "—"),
+            _g46.get("n_matched", "—"), _g46.get("n_days", "—")))
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -9257,6 +9271,90 @@ def build_report(days: int) -> tuple:
     L.append("> 개선 여지는 \"정보 없음을 **안정적으로 표시**하는 것\"(히스테리시스 또는")
     L.append("> EOD 1회 고정)뿐이고, **AUC 임계·보정 함수형은 건드리지 않는다** —")
     L.append("> 건드리면 conf 스케일에 **세 번째 불연속**이 생긴다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [MW0601 434차] [46] HurstGate 임계 위치 A/B ──────────────────────
+    L.append("## [46] HurstGate 임계 위치 A/B (MW0601 434차 신설)")
+    L.append("")
+    if not _g46:
+        L.append("> ⚠ 미산출 — 스크립트 실행 실패 또는 사전등록 누락.")
+    elif _g46.get("error"):
+        L.append("> ⚠ 스크립트 실행 실패: %s" % _g46["error"])
+    else:
+        _live_th = float(_g46.get("live_threshold", 0.45))
+        # ⚠ 431차 후속2 교훈 — 여러 줄에 걸친 문자열에 % 포매팅을 걸지 말 것.
+        #   한 줄씩 독립적으로 포매팅한다(리터럴 %가 섞여도 안전).
+        L.append("현행 임계 `HURST_RANGE_THRESHOLD = %.2f`가 이 추정량의 **판별 경계로**" % _live_th)
+        L.append("**적절한 위치인가**를 묻는다. 지표는 **계약당 pt의 분리도**")
+        L.append("(= 통과구간 평균 − 차단구간 평균)로, 계약당 정규화라 **사이징과 무관**하다.")
+        L.append("")
+        L.append("- 진입 %s건 중 hurst 매칭 %s건 / %s거래일 · 분위 룩백 %s거래일(당일 제외)"
+                 % (_g46.get("n_positions", "—"), _g46.get("n_matched", "—"),
+                    _g46.get("n_days", "—"), _g46.get("quantile_lookback_days", "—")))
+
+        def _tbl(pv, title):
+            L.append("")
+            L.append("**%s**" % title)
+            if not pv:
+                L.append("")
+                L.append("- (표본 없음)")
+                return
+            L.append("")
+            L.append("| 후보 | 차단n | 발동률 | 차단평균pt | 통과평균pt | 분리도 | drop-worst | 차단승률 | 통과승률 |")
+            L.append("|---|---|---|---|---|---|---|---|---|")
+            _cur = _g46.get("cur_key")
+            for k in sorted(pv, key=lambda x: (x.startswith("q"), x)):
+                v = pv[k]
+                L.append("| %s%s | %d | %.1f%% | %+.3f | %+.3f | **%+.3f** | %s | %.1f%% | %.1f%% |" % (
+                    k, " ← 현행" if k == _cur else "", v["n_gated"], v["gate_rate"] * 100,
+                    v["mean_gated_pt"], v["mean_passed_pt"], v["separation_pt"],
+                    ("%+.3f" % v["separation_drop_worst"]) if v.get("separation_drop_worst") is not None else "—",
+                    v["wr_gated"] * 100, v["wr_passed"] * 100))
+
+        # ⚠ _tbl()이 title을 `**...**`로 감싸므로 title 안에 다시 `**`를 쓰면
+        #   볼드가 중첩돼 마크다운이 깨진다.
+        _tbl(_g46.get("per_variant"), "전체표본 — ⚠ in-sample, 판정 근거 아님")
+        _tbl(_g46.get("per_variant_oos"),
+             "OOS (%s 이후) — 판정 대상" % (_g46.get("oos_start") or "미설정"))
+        L.append("")
+        L.append("- **판정: %s** — %s" % (_g46.get("verdict"), _g46.get("reason")))
+        # 판정보조 ② 일자단위(313차)
+        _bd = _g46.get("by_day") or {}
+        if _bd:
+            _ks = sorted(_bd)[-10:]
+            L.append("")
+            L.append("**판정보조 ② 일자단위 (313차)** — 저hurst(<%.2f) 진입 비중 vs 그날 계약당 합pt"
+                     % float(_g46.get("live_threshold", 0.45)))
+            L.append("")
+            L.append("| 일자 | 진입n | 저hurst 비중 | 합pt |")
+            L.append("|---|---|---|---|")
+            for k in _ks:
+                v = _bd[k]
+                L.append("| %s | %d | %.0f%% | %+.2f |" % (
+                    k, v["n"], v["low_share"] * 100, v["pt"]))
+    L.append("")
+    L.append("> **⚠ 사전등록 정직성 고지**: 후보 목록은 2026-08-05 점검에서 **이미 1회**")
+    L.append("> **스윕한 뒤에** 골랐다. 따라서 전체표본은 **가설을 세운 그 기간의 in-sample**")
+    L.append("> 이며 그 자체로는 판정 근거가 아니다 — 사전등록 가치는 OOS에 있다([23]과 동일).")
+    L.append("> ")
+    L.append("> **⚠ 이미 반증된 방향 — 재시도 금지**: 추정량 **편향보정**(상수이동·선형")
+    L.append("> de-shrinkage)은 317차가 60거래일 실측에서 **FalsePass 14.4%→30~33% 악화**로")
+    L.append("> 폐기했다(`HURST_DESHRINK_TABLE`은 REFERENCE ONLY). 이 채널은 추정량을 고치지")
+    L.append("> 않고 **임계 위치만** 묻는다. 317차가 손댄 N/max_lag와도 질문이 다르다 —")
+    L.append("> 26주 WFA 재검증 항목을 앞당길 이유가 아니다.")
+    L.append("> ")
+    L.append("> **⚠ 372차 함정**: PSI 임계 재보정 시도가 이상치 2건이 만든 값으로 확인돼")
+    L.append("> **기존값 유지**로 끝났다. 여기도 표본이 얇다 — `drop-worst`(차단구간 최악")
+    L.append("> 1건 제거)와 위 일자단위를 **반드시 함께** 읽을 것. 분리도만 보면 같은 함정이다.")
+    L.append("> ")
+    L.append("> **⚠ 임계를 낮추면 노출이 는다.** 발동률이 줄어 사이징 축소가 덜 걸린다.")
+    L.append("> CLAUDE.md ⑧ 미해제 상태에서는 그 자체가 리스크이므로 승격 시 총노출 병기 필수.")
+    L.append("> ")
+    L.append("> **⚠ [3-6] `hurst_gate_shadow`와 다른 질문이다** — 그건 \"차단된 신호가")
+    L.append("> 벌었을까\"(모집단: 차단분), 이건 \"임계가 좋은/나쁜 신호를 가르는가\"")
+    L.append("> (모집단: 실제 진입분)다. 두 verdict는 서로 무관하다(§9-4).")
     L.append("")
     L.append("---")
     L.append("")
