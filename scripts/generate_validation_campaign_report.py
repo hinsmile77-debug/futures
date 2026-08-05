@@ -4488,6 +4488,37 @@ def eval_offline_geometry_channels() -> dict:
             out[key] = m.summarize(m.compute(_campaign_start()[:10]))
         except Exception as e:
             out[key] = {"verdict": "INSUFFICIENT", "error": "%s: %s" % (type(e).__name__, e)}
+
+    # ── [MW0602 435차, 47] 시뮬레이터 재현충실도 게이트 ─────────────────────────
+    # 위 채널들은 전부 같은 재생기 가정(1분봉 / TP2 종료 / TP3·트레일링 미모델링)을
+    # 공유한다. 그 가정이 실제를 재현하지 못하면 delta의 **부호까지 뒤집힌다**
+    # (432차 후속2 실측: 러너 보정만으로 [25-B] tp2_2.00이 +14.76 → −12.13).
+    # 게이트가 SUSPEND면 verdict를 덮어 리포트가 FAIL을 찍지 않게 한다.
+    #
+    # ⚠ **데이터·사전등록은 그대로 보존한다** — 원 verdict는 `verdict_raw`로 남기고
+    #   per_variant 등 수치도 전부 유지한다. 삭제가 아니라 정지다(§9).
+    # ⚠ 게이트가 INSUFFICIENT(표본 미달)면 **열어 둔다** — 근거 없이 막지 않는다(313차).
+    try:
+        import importlib
+        _g = importlib.import_module("scripts.sim_fidelity_gate")
+        gate = _g.summarize(_g.compute(_campaign_start()[:10]))
+    except Exception as e:
+        gate = {"verdict": "INSUFFICIENT", "gate": "OPEN",
+                "reason": "게이트 실행 실패(미적용): %s: %s" % (type(e).__name__, e)}
+    out["_sim_fidelity_gate"] = gate
+
+    if gate.get("gate") == "SUSPEND":
+        for key in (gate.get("targets") or []):
+            ch = out.get(key)
+            if not isinstance(ch, dict):
+                continue
+            ch["verdict_raw"] = ch.get("verdict")
+            ch["verdict"] = "SUSPENDED"
+            ch["suspended_by"] = "sim_fidelity_gate"
+            ch["suspend_reason"] = gate.get("reason", "")
+            ch["reason"] = ("판정 정지 — 재생기가 실제를 재현하지 못한다(§47). "
+                            "원 판정 `%s`: %s" % (ch.get("verdict_raw"),
+                                                 ch.get("reason", "")))
     return out
 
 
@@ -6662,6 +6693,11 @@ def _fmt_verdict(v: str) -> str:
         # Hurst 완화 권고가 그렇게 3주간 오독됐다(404차 후속11).
         "SUPPORTS_HYP": "🔶 SUPPORTS_HYP",
         "REJECTS_HYP": "🔷 REJECTS_HYP",
+        # [MW0602 435차, 47] 재현충실도 게이트가 정지시킨 채널. FAIL/PASS 어느 쪽으로도
+        # 읽으면 안 된다 — "판정 재료가 유효하지 않다"는 뜻이다. 데이터·사전등록은 보존.
+        "SUSPENDED": "⏸ SUSPENDED(계측 무효)",
+        # [MW0602 435차, 47] 게이트 자신의 판정
+        "SUSPEND": "⏸ SUSPEND(하위 정지)",
     }.get(v, "⏳ INSUFFICIENT")
 
 
@@ -6741,6 +6777,20 @@ def build_report(days: int) -> tuple:
     dcf = eval_dynmc_collapse_feed_watch()   # [44] MW0602 430차
     cgf = eval_cal_guard_flap_watch()        # [45] MW0602 430차
     off = eval_offline_geometry_channels()
+    # [MW0602 435차] [48]/[49] — 둘 다 **시뮬레이터를 쓰지 않는다**(trades /
+    # exit_fill_slippage 실측). 그래서 §47 게이트가 SUSPEND여도 계속 판정한다.
+    # 스크립트 실패가 리포트를 죽이면 안 되므로 각각 격리한다(기존 관례와 동일).
+    def _safe_channel(mod, label):
+        try:
+            import importlib
+            m = importlib.import_module(mod)
+            return m.summarize(m.compute(_campaign_start()[:10]))
+        except Exception as e:
+            return {"verdict": "INSUFFICIENT",
+                    "error": "%s: %s" % (type(e).__name__, e),
+                    "reason": "%s 실행 실패" % label}
+    bsp = _safe_channel("scripts.bar_stop_path_watch", "[48]")
+    pgw = _safe_channel("scripts.payoff_geometry_watch", "[49]")
 
     metrics = {
         "generated_at": now_str,
@@ -6778,6 +6828,11 @@ def build_report(days: int) -> tuple:
         "tp1_geometry_shadow": off.get("tp1_geometry_shadow"),
         "tp1_protect_offset_shadow": off.get("tp1_protect_offset_shadow"),
         "quantile_tp_shadow": off.get("quantile_tp_shadow"),
+        # [MW0602 435차] 신규 3채널. [47]은 게이트, [48]/[49]는 **시뮬 무관**이라
+        # 게이트가 SUSPEND여도 계속 판정한다.
+        "sim_fidelity_gate": off.get("_sim_fidelity_gate"),
+        "bar_stop_path_watch": bsp,
+        "payoff_geometry_watch": pgw,
     }
 
     L = []
@@ -6948,6 +7003,18 @@ def build_report(days: int) -> tuple:
         gsc.get("missed_upgrade_n", "—"), gsc.get("n_fair", "—"), gsc.get("n_days", 0)))
     _g23 = off.get("tp1_geometry_shadow") or {}
     _g25 = off.get("tp1_protect_offset_shadow") or {}
+    # ── [MW0602 435차] 신규 3채널 요약행. [47]을 **기하 채널들보다 먼저** 찍는다 —
+    # 아래 [23-B]/[25]가 SUSPENDED로 보일 때 그 이유를 바로 위에서 읽게 하기 위함이다.
+    _gate = off.get("_sim_fidelity_gate") or {}
+    L.append("| **[47] 시뮬 재현충실도 게이트** | %s | %s |" % (
+        _fmt_verdict(_gate.get("verdict", "")), _gate.get("reason", "—")))
+    L.append("| [48] 봉중 하드스톱 경로 건전성 | %s | %s |" % (
+        _fmt_channel_verdict(bsp), bsp.get("reason", bsp.get("error", "—"))))
+    _pk, _pr = (pgw.get("krw") or {}), (pgw.get("risk") or {})
+    L.append("| [49] 페이오프 기하 상시 감시 | %s | %s%s |" % (
+        _fmt_verdict(pgw.get("verdict", "")), pgw.get("reason", pgw.get("error", "—")),
+        (" · 포지션 %s건/%s일 (레그 %s건)" % (pgw.get("n"), pgw.get("n_days"),
+                                            pgw.get("n_legs"))) if pgw.get("n") else ""))
     L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
         _g23.get("n_trades", "—"), _g23.get("n_days", "—"), _dm("tp1_geometry_shadow")))
@@ -8412,6 +8479,93 @@ def build_report(days: int) -> tuple:
     L.append("> ③MW0601×MW0602 교차를 전부 통과해야 주간회의 승격 후보다. [25] 본채널이")
     L.append("> 바로 ①에서 무너진 전례가 있다(atr_lock_0.75 +0.92→−1.33pt).")
     L.append("> ⚠ 이 판정은 [25] 본채널(offset 축) 판정과 **무관**하다 — 본채널 합격선 무변경(§9-4).")
+    L.append("")
+
+    # ── [MW0602 435차] [47]/[48]/[49] 상세 ────────────────────────────────────
+    L.append("## [47] 시뮬레이터 재현충실도 게이트 (435차 신설 · 메타 채널)")
+    L.append("")
+    _gate = off.get("_sim_fidelity_gate") or {}
+    L.append("- 판정: **%s** — %s" % (_fmt_verdict(_gate.get("verdict", "")),
+                                     _gate.get("reason", "—")))
+    if _gate.get("repro_bias_R") is not None:
+        L.append("- 재현 편향(중앙) **%+.3fR** / 평균 %+.3fR · 총합 시뮬 %+.2f pt vs 실제 %+.2f pt · 부호일치=%s"
+                 % (_gate["repro_bias_R"], _gate.get("repro_bias_R_mean", 0),
+                    _gate.get("sim_total_pt", 0), _gate.get("actual_total_pt", 0),
+                    _gate.get("sign_match")))
+    L.append("")
+    L.append("> 기하 A/B 채널들은 전부 같은 재생기 가정을 공유한다 — ① 1분봉 고저가만 본다")
+    L.append("> ② TP2에서 종료한다 ③ TP3·4단계 트레일링·신호소멸청산을 모델링하지 않는다.")
+    L.append("> 그 가정이 실제를 재현하지 못하면 `delta_vs_current`의 **부호까지 뒤집힌다**")
+    L.append("> — 432차 후속2 실측: 러너 프리미엄 보정만으로 [25-B] `tp2_2.00`이")
+    L.append("> **+14.76 → −12.13pt**(−61만원)로 역전됐고, 4채널 결론 격차 합계는")
+    L.append("> **61.51pt = 307만원**이다.")
+    if _gate.get("gate") == "SUSPEND":
+        L.append("> ")
+        L.append("> ⏸ **아래 채널의 판정을 정지했다** — %s"
+                 % ", ".join("`%s`" % t for t in (_gate.get("targets") or [])))
+        L.append("> **삭제가 아니라 정지다**: 원 판정은 `verdict_raw`로, 수치는 그대로 보존된다.")
+        L.append("> 소스 데이터도 `main.py`가 계속 기록하므로 소급 재실행이 가능하다.")
+        L.append("> **해제 조건**: 재생기에 TP3·트레일링을 편입해 재현이 회복되면 **자동 PASS**")
+        L.append("> — 사람이 \"재검토하기로 했는데 안 함\"으로 방치할 여지가 없다.")
+    L.append("> ⚠ **사전등록 정직성**: 최초 SUSPEND는 432차 후속2에서 **이미 본 결과**의")
+    L.append("> 코드화다([25]의 `breakeven`과 같은 취급). 사전등록 가치는 **회복 판정**에 있다.")
+    L.append("> ⚠ 정본 재생기로 [23-B]를 쓴다(포지션 단위 조인이 되는 유일한 채널). 다른")
+    L.append("> 채널은 같은 세 가정을 공유하므로 **간접 추론**이다.")
+    L.append("")
+
+    L.append("## [48] 봉중 하드스톱 경로 건전성 (435차 신설 · 시뮬 무관)")
+    L.append("")
+    if bsp.get("per_path"):
+        L.append("| 경로 | n | 합계pt | 평균 | 유리비율 | 부호검정 p | 거래일 |")
+        L.append("|---|---|---|---|---|---|---|")
+        for k in ("봉중 하드스톱", "종가 하드스톱", "틱 하드스톱", "목표(TP1/TP2/기타)"):
+            d = bsp["per_path"].get(k)
+            if not d:
+                continue
+            L.append("| %s | %d | %+.2f | %+.3f | %d/%d (%.0f%%) | %.5f | %d |"
+                     % (k, d["n"], d["total"], d["mean"], d["fav"], d["n"],
+                        100 * d["fav_rate"], d["sign_p"], d["days"]))
+        L.append("")
+    L.append("- 판정: **%s** — %s" % (_fmt_channel_verdict(bsp),
+                                     bsp.get("reason", bsp.get("error", "—"))))
+    L.append("- (음수 = 유리) 미태깅 재분류 %s건 — `hint_source`는 423차부터 기록된다"
+             % bsp.get("n_reclassified", 0))
+    L.append("")
+    L.append("> **틱 경로는 대칭이고(정직) 봉중 경로만 편향된다.** 메커니즘은 두 겹이다 —")
+    L.append("> ① `price_hint`가 `min(_prev_stop_price, bar_high)`라 **허구의 스톱가**이고")
+    L.append("> (주문은 시장가라 손익은 무관, 슬리피지 지표만 오염) ② 유령 하드스톱은")
+    L.append("> \"봉의 극값이 스톱 조임보다 먼저 발생\"할 때만 생기고 스톱 조임은 TP1이")
+    L.append("> 전제라 **이익 중인 포지션에서만 발동**한다 — 편향이 결정론적이다.")
+    L.append("> ⚠ **손익 영향은 작다** — 반사실 재생 기준 유령 순기여는 9건 통산 ≈+3.0pt고,")
+    L.append("> 08-05 억제 5건은 **억제가 오히려 +0.38pt 유리**했다. 424차 억제는 옳다.")
+    L.append("> ⚠ 사전등록 정직성: 첫 관측(13/13, p=0.00024)은 신설 전에 이미 봤다 —")
+    L.append("> 재확인용이며, 가치는 **억제 후 회복 판정**에 있다(억제 후 표본 1건).")
+    L.append("")
+
+    L.append("## [49] 페이오프 기하 상시 감시 (435차 신설 · 시뮬 무관)")
+    L.append("")
+    if pgw.get("krw"):
+        L.append("| 기준 | n | 승률 | 평균승 | 평균패 | 손익비 | 손익분기승률 | edge_gap |")
+        L.append("|---|---|---|---|---|---|---|---|")
+        for nm, d in (("원화(pt)", pgw.get("krw")), ("위험조정(R)", pgw.get("risk"))):
+            if not d:
+                continue
+            L.append("| %s | %d | %.1f%% | %+.3f | %+.3f | %.3f | %.1f%% | **%+.2f%%p** |"
+                     % (nm, d["n"], 100 * d["win_rate"], d["avg_win"], d["avg_loss"],
+                        d["payoff"], 100 * d["breakeven_wr"], 100 * d["edge_gap"]))
+        L.append("")
+    L.append("- 판정: **%s** — %s" % (_fmt_verdict(pgw.get("verdict", "")),
+                                     pgw.get("reason", pgw.get("error", "—"))))
+    L.append("- 포지션 %s건 / 레그 %s건 (다중레그 포지션 %s건) — ⚠ **417차: 포지션 단위로 병합**"
+             % (pgw.get("n"), pgw.get("n_legs"), pgw.get("n_multileg")))
+    L.append("")
+    L.append("> **현행 기하가 애초에 이길 수 있는 구조인가**를 묻는 유일한 채널이다")
+    L.append("> ([24]는 반납만, [25]는 offset만, [23-B]는 대안 기하만 본다).")
+    L.append("> 설정 직독: 하드스톱 `ATR×1.50` / 보호스톱(qty=1) `ATR×0.25`(호라이즌 무관 상수)")
+    L.append("> → 보호전환에 걸린 승리만 놓고 보면 **손익분기 승률 85.7%**. 러너가 그 격차를 메운다.")
+    L.append("> TP1은 374/387차에 호라이즌별로 분화됐는데(0.3/0.5/0.7) lock은 339차 상수라")
+    L.append("> **유지율이 호라이즌에 반비례**한다(1m 83% / 3m 50% / 5m 36%).")
+    L.append("> ⚠ 두 기준이 갈리면 **결과가 소수 고변동일에 집중**됐다는 신호다 — 그래서 둘 다 찍는다.")
     L.append("")
 
     # [33] 급행풀스톱 발굴 재실행 게이지 (MW0601 421차 후속10)
