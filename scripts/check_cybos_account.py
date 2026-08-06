@@ -43,6 +43,7 @@ import os
 import struct
 import sys
 import threading
+import time
 
 EXIT_OK = 0
 EXIT_NOT_CONNECTED = 1
@@ -160,14 +161,66 @@ def arm_watchdog(timeout_sec, exit_code=EXIT_TIMEOUT):
 
 
 # ── 본체 ──────────────────────────────────────────────────────────────────
+def wait_for_connect(timeout_sec, interval_sec=5):
+    """IsConnect==1 이 될 때까지 폴링한다. TradeInit 은 호출하지 않는다.
+
+    [2026-08-06] 이 함수는 원래 start_mireuk.bat 안에 CMD 라벨+GOTO 루프로
+    구현했다가 옮겨온 것이다. 그 배치 루프는 **새 콘솔 창에서 실행하면 STEP 4
+    직후 배치가 통째로 죽는** 문제를 냈다(재현율 100%).
+
+    원인: 이 배치는 UTF-8 인코딩에 한글이 많고 CHCP 65001 로 도는데, CMD 의
+    GOTO 는 파일 위치를 **바이트 오프셋**으로 되짚는다. 콘솔 코드페이지가
+    기대와 다르면(새 콘솔에서 실제로 그랬다 - 로그 한글이 깨졌다) 점프 위치가
+    어긋나 파서가 엉뚱한 지점에서 재개하고 배치가 종료된다.
+    PowerShell 의 `cmd /c` 로 돌릴 때는 코드페이지가 달라 우연히 통과했다.
+
+    => CMD 에서 루프/라벨/GOTO 를 없애고 파이썬 한 번 호출로 대체한다.
+       배치는 종료코드만 본다. 이 클래스의 버그가 구조적으로 사라진다.
+    """
+    try:
+        import win32com.client
+    except Exception as exc:
+        sys.stdout.write("[WAIT] pywin32 임포트 실패: %s\n" % exc)
+        return EXIT_COM_ERROR
+
+    deadline = time.time() + max(0, timeout_sec)
+    last_report = -1
+    while True:
+        try:
+            cp = win32com.client.Dispatch("CpUtil.CpCybos")
+            if int(cp.IsConnect) == 1:
+                return EXIT_OK
+        except Exception:
+            pass                      # 미연결 구간의 COM 예외는 정상 상황
+        remain = deadline - time.time()
+        if remain <= 0:
+            return EXIT_NOT_CONNECTED
+        elapsed = int(timeout_sec - remain)
+        if elapsed - last_report >= 30 or last_report < 0:
+            sys.stdout.write(
+                "[WAIT] Cybos 연결 대기 중... %d/%d초 "
+                "(LAUNCH_API.bat 로그인 진행 중일 수 있음)\n" % (elapsed, timeout_sec)
+            )
+            sys.stdout.flush()
+            last_report = elapsed
+        time.sleep(min(interval_sec, max(0.1, remain)))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Cybos 세션 계좌 대조")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SEC,
                         help="워치독 타임아웃(초). 기본 %d" % DEFAULT_TIMEOUT_SEC)
     parser.add_argument("--expected", default=None,
                         help="설정 계좌 직접 지정(미지정 시 config/secrets.py 에서 로드)")
+    parser.add_argument("--wait-connect", type=int, default=0, metavar="SEC",
+                        help="IsConnect==1 까지 SEC 초 대기만 하고 종료"
+                             "(계좌 대조·TradeInit 없음). 0=비활성")
     args = parser.parse_args(argv)
     make_output_safe()
+
+    if args.wait_connect > 0:
+        # 대기 전용 모드 - 워치독을 걸지 않는다(대기 자체가 시간 상한을 가진다).
+        return wait_for_connect(args.wait_connect)
 
     if struct.calcsize("P") != 4:
         print("[ERROR] 32비트 Python 이 필요합니다. 현재=%d비트"
