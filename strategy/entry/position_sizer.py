@@ -16,8 +16,8 @@ from config.constants import FUTURES_PT_VALUE, MINI_FUTURES_PT_VALUE
 from config.settings import (
     ACCOUNT_BASE_RISK, ATR_STOP_MULT, REGIME_SIZE_MULT, MAX_CONTRACTS,
     MINI_MIN_CONTRACTS,
-    SIZING_TARGET_CAPITAL_ENABLED, SIZING_TARGET_CAPITAL_KRW,
 )
+from config.capital import sizing_capital
 
 logger = logging.getLogger("TRADE")
 
@@ -176,7 +176,9 @@ class PositionSizer:
 
         # [311차 후속] base_risk는 사이징 전용 목표자본을 쓰고(모의투자 한정),
         # balance(실제 브로커 잔고)는 마진체크·대시보드 표시 등 다른 용도에 그대로 사용.
-        sizing_balance  = SIZING_TARGET_CAPITAL_KRW if SIZING_TARGET_CAPITAL_ENABLED else balance
+        # [2026-08-06] 기준자본 판정을 config/capital.py 단일 출처로 이관 —
+        # 같은 판정이 main.py 3곳에 `max(잔고, 50_000_000)` 으로 하드코딩돼 있었다.
+        sizing_balance  = sizing_capital(balance)
         base_risk       = sizing_balance * ACCOUNT_BASE_RISK
         conf_mult       = _confidence_mult(confidence)
         regime_mult     = REGIME_SIZE_MULT.get(regime, 0.8)

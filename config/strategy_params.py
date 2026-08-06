@@ -28,6 +28,14 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
+# [2026-08-06] 자본·리스크 파라미터는 config/settings.py 를 단일 출처로 삼는다.
+# (settings 는 이 모듈을 import 하지 않으므로 순환 없음 — 확인 완료)
+from config.settings import (
+    ACCOUNT_BASE_RISK as _ACCOUNT_BASE_RISK,
+    MAX_CONTRACTS as _MAX_CONTRACTS,
+    DAILY_LOSS_LIMIT_PCT as _DAILY_LOSS_LIMIT_PCT,
+)
+
 # ---------------------------------------------------------------------------
 # 탐색 공간 정의
 # ---------------------------------------------------------------------------
@@ -202,23 +210,33 @@ PARAM_SPACE: Dict[str, Dict[str, Any]] = {
     },
 
     # ── GROUP F: 포지션 사이징 ────────────────────────────────────────
+    # [2026-08-06] 아래 3개는 config/settings.py 의 라이브 값에서 파생한다.
+    # 하드코딩돼 있던 탓에 실제 운영값과 조용히 어긋나 있었다:
+    #   max_contracts     레지스트리 10 vs 라이브 3   (431차에 settings만 인하)
+    #   account_base_risk 레지스트리 0.010 vs 라이브 0.03 — **심지어 high(0.020)를
+    #                     넘어 허용범위 밖**이라 옵티마이저가 라이브 값을 탐색조차
+    #                     못 하는 상태였다(339차에 settings만 상향).
+    # 이 레지스트리는 backtest/param_optimizer.py 와 strategy/ops/hotswap_gate.py 가
+    # 참조하므로, 어긋나면 **백테스트·핫스왑이 실제와 다른 값으로 판단**한다.
     "account_base_risk": {
-        "current": 0.010,
-        "low": 0.005, "high": 0.020, "step": 0.005,
+        "current": _ACCOUNT_BASE_RISK,
+        "low": 0.005, "high": 0.040, "step": 0.005,
         "dtype": "float", "group": "F", "review": "monthly",
-        "note": "거래당 계좌 기본 리스크 비율. 켈리 최적값은 0.8~1.2% 구간",
+        "note": "거래당 계좌 기본 리스크 비율. settings.ACCOUNT_BASE_RISK 파생",
     },
     "max_contracts": {
-        "current": 10,
-        "low": 3, "high": 15, "step": 1,
+        "current": _MAX_CONTRACTS,
+        "low": 1, "high": 15, "step": 1,
         "dtype": "int", "group": "F", "review": "monthly",
-        "note": "1회 최대 계약 수 절대 상한. 유동성 고려: 계좌 대비 현실적 상한 설정",
+        "note": "1회 최대 계약 수 절대 상한. settings.MAX_CONTRACTS 파생. "
+                "손익 실측으로 정하는 값이며 자본에서 자동 파생하지 않는다(CLAUDE.md ⑧)",
     },
     "daily_loss_limit_pct": {
-        "current": 0.020,
+        "current": _DAILY_LOSS_LIMIT_PCT,
         "low": 0.010, "high": 0.030, "step": 0.005,
         "dtype": "float", "group": "F", "review": "monthly",
-        "note": "일일 최대 손실 허용 비율. 2% 초과 시 당일 진입 금지",
+        "note": "일일 최대 손실 허용 비율. settings.DAILY_LOSS_LIMIT_PCT 파생 — "
+                "실판정은 strategy/entry/checklist.py 9_risk",
     },
 
     # ── GROUP G: Circuit Breaker ──────────────────────────────────────

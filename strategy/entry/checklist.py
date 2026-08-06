@@ -18,6 +18,7 @@ from config.settings import (
     CHASE_FILTER_ENABLED, CHASE_FILTER_ATR_THRESHOLD, CHASE_FILTER_ATR_THRESHOLD_MEANREV,
     HURST_RANGE_THRESHOLD, HURST_TREND_THRESHOLD,
     COUNTERTREND_CAP_ENABLED, COUNTERTREND_ATR_THRESHOLD, COUNTERTREND_MAX_QTY,
+    DAILY_LOSS_LIMIT_PCT,
 )
 
 logger = logging.getLogger("SIGNAL")
@@ -227,8 +228,11 @@ class EntryChecklist:
         # 8. 시간 필터 (금지 구간 외)
         checks["8_time"] = "8_time" in disabled or time_zone not in ("EXIT_ONLY", "OTHER")
 
-        # 9. 리스크 한도 (일일 손실 < 2%)
-        checks["9_risk"] = "9_risk" in disabled or daily_loss_pct < 0.02
+        # 9. 리스크 한도 (일일 손실 < DAILY_LOSS_LIMIT_PCT)
+        # [2026-08-06] 임계가 0.02 리터럴로 박혀 있어 config/settings.py 의
+        # DAILY_LOSS_LIMIT_PCT 는 **소비처 0건인 죽은 설정**이었다(값을 바꿔도
+        # 아무 일도 안 일어남). 두 값이 우연히 같아 증상이 없었을 뿐이라 일원화한다.
+        checks["9_risk"] = "9_risk" in disabled or daily_loss_pct < DAILY_LOSS_LIMIT_PCT
 
         # 10. 연장 추격 필터(anti-chasing, 343차) — 직전 CHASE_FILTER_LOOKBACK_MIN분간
         # 이미 임계 ATR 이상 같은 방향으로 연장된 뒤 순방향(추격) 진입인지 확인.

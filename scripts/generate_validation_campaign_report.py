@@ -2953,13 +2953,13 @@ def eval_vol_estimator_watch() -> dict:
         try:
             # ⚠ MINI_FUTURES_PT_VALUE는 config.constants에 있다(settings 아님).
             #   초판이 settings에서 import해 ImportError로 조용히 건너뛰었다.
-            from config.settings import (SIZING_TARGET_CAPITAL_ENABLED,
-                                         SIZING_TARGET_CAPITAL_KRW,
-                                         ACCOUNT_BASE_RISK)
+            # [2026-08-06] 기준자본 판정을 config/capital.py 단일 출처로 이관.
+            # 오프라인 재생이라 실제 잔고가 없으므로 balance=0 을 넘긴다 —
+            # ENABLED=True 면 목표자본, False 면 0(= base_risk 0, 아래 분모 가드로
+            # 경계 계산이 자동 생략)이 되어 구 동작과 동일하다.
+            from config.capital import base_risk_krw
             from config.constants import MINI_FUTURES_PT_VALUE
-            _bal = (SIZING_TARGET_CAPITAL_KRW if SIZING_TARGET_CAPITAL_ENABLED
-                    else 0.0)
-            _base = _bal * ACCOUNT_BASE_RISK
+            _base = base_risk_krw(0.0)
             # 전역 정규화 계수 — 수준 차이가 효과로 오인되지 않게 중앙값을 맞춘다.
             k = float(np.median(_A) / np.median(_U)) if np.median(_U) > 0 else 1.0
             out["norm_k"] = round(k, 4)

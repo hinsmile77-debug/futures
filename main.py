@@ -103,6 +103,14 @@ from config.settings import (
 )
 import config.settings as runtime_settings
 from config.constants import MINI_FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED, DIRECTION_FLAT
+# [2026-08-06] 자본 기준 단일 출처. daily_loss_pct 분모가 세 곳에
+# `max(잔고, 50_000_000)` 으로 하드코딩돼 있던 것을 이 모듈로 이관했다.
+from config.capital import (
+    daily_loss_ratio as _capital_daily_loss_ratio,
+    capital_profile as _capital_profile,
+    check_consistency as _capital_check_consistency,
+    format_profile as _capital_format_profile,
+)
 from config import secrets as _secrets
 
 # ── 핵심 모듈 ──────────────────────────────────────────────────
@@ -6450,8 +6458,9 @@ class TradingSystem:
                         prev_bar_direction = (1 if bar.get("close", 0) > bar.get("open", 0)
                                               else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
                         time_zone          = _tz,
-                        daily_loss_pct     = max(-self.position.daily_stats()["pnl_krw"], 0)
-                                             / max(_ts_current_sizer_balance(self), 50_000_000),
+                        daily_loss_pct     = _capital_daily_loss_ratio(
+                                                 -self.position.daily_stats()["pnl_krw"],
+                                                 _ts_current_sizer_balance(self)),
                         min_confidence     = _cl_min_conf_pre,
                         bear_exhaustion    = float(features.get("bear_exhaustion", 0.0) or 0.0),
                         bull_exhaustion    = float(features.get("bull_exhaustion", 0.0) or 0.0),
@@ -6817,7 +6826,9 @@ class TradingSystem:
                         prev_bar_direction = (1 if bar.get("close", 0) > bar.get("open", 0)
                                               else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0)),
                         time_zone         = time_zone,
-                        daily_loss_pct    = max(-self.position.daily_stats()["pnl_krw"], 0) / max(_ts_current_sizer_balance(self), 50_000_000),
+                        daily_loss_pct    = _capital_daily_loss_ratio(
+                                                -self.position.daily_stats()["pnl_krw"],
+                                                _ts_current_sizer_balance(self)),
                         min_confidence    = _checklist_min_conf,
                         bear_exhaustion   = float(features.get("bear_exhaustion", 0.0) or 0.0),
                         bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
@@ -8255,8 +8266,8 @@ class TradingSystem:
 
         _prev_bar_dir = (1 if bar.get("close", 0) > bar.get("open", 0)
                          else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0))
-        _dl_pct = (max(-self.position.daily_stats()["pnl_krw"], 0)
-                   / max(_ts_current_sizer_balance(self), 50_000_000))
+        _dl_pct = _capital_daily_loss_ratio(
+            -self.position.daily_stats()["pnl_krw"], _ts_current_sizer_balance(self))
         _atr_state = (
             "↑고변동" if atr > _atr_max_adaptive
             else ("↓저변동" if atr < ATR_MIN_ENTRY else "OK")
@@ -11391,6 +11402,73 @@ class TradingSystem:
             },
         }
 
+    def _log_capital_profile(self) -> None:
+        """[2026-08-06] 기동 시 자본 프로파일 1회 로그 + 정합성 경고.
+
+        2026-08-06 모의계좌 재발급으로 자본이 4.9억 -> 5천만으로 바뀌었는데
+        시스템 어디에도 그 사실이 드러나지 않았다(사람이 로그를 대조해서야 알았다).
+        그 상황을 기동 시 한 줄로 드러내는 것이 목적이다.
+
+        **자동 조치는 하지 않는다** — 어긋난 사실을 알리기만 한다. 자동 보정은
+        같은 날 제거한 계좌 대체 폴백과 같은 부류의 위험을 만든다.
+        """
+        try:
+            balance = _ts_current_sizer_balance(self)
+            pt_value = float(getattr(self, "_pt_value", 0.0) or 0.0)
+
+            # 기동 시점에는 파이프라인 가격이 아직 없다(항상 0). 그대로 두면
+            # 최대노출이 0 이 되어 **레버리지 경고가 구조적으로 발동 불가**하다
+            # (초판이 실제로 그랬다 — 2026-08-06 기동 검증에서 발견).
+            # DB 최근 종가로 폴백한다. 실패해도 무해하며 노출 항목만 0 이 된다.
+            price = float(getattr(self, "_last_pipeline_price", 0.0) or 0.0)
+            if price <= 0:
+                try:
+                    import sqlite3 as _sq
+                    from config.settings import RAW_DATA_DB as _RDB
+                    with _sq.connect(_RDB, timeout=3) as _c:
+                        _row = _c.execute(
+                            "SELECT close FROM raw_candles ORDER BY ts DESC LIMIT 1"
+                        ).fetchone()
+                    if _row and _row[0]:
+                        price = float(_row[0])
+                except Exception as _px_e:
+                    logger.debug("[Capital] 최근 종가 폴백 실패: %s", _px_e)
+
+            # 서버 판정(1=모의 / 0=실서버). 판정 불가 시 None -> 해당 경고 생략.
+            is_simul = None
+            try:
+                _gubun = str(self.broker.get_login_info("GetServerGubun") or "")
+                if _gubun in ("0", "1"):
+                    is_simul = (_gubun == "1")
+            except Exception:
+                pass
+
+            eff_qty = None
+            try:
+                eff_qty = self.dashboard.get_max_qty()
+            except Exception:
+                pass
+
+            profile = _capital_profile(balance, price, pt_value)
+            msg = _capital_format_profile(profile)
+            logger.info(msg)
+            log_manager.system(msg)
+
+            for level, text in _capital_check_consistency(
+                actual_balance=balance, index_price=price, pt_value=pt_value,
+                is_simulation=is_simul, effective_max_qty=eff_qty,
+            ):
+                full = "[Capital] " + text
+                if level == "CRITICAL":
+                    logger.critical(full)
+                elif level == "WARNING":
+                    logger.warning(full)
+                else:
+                    logger.info(full)
+                log_manager.system(full, level)
+        except Exception as _cap_e:
+            logger.warning("[Capital] 자본 프로파일 로그 실패(무해): %s", _cap_e)
+
     def _log_broker_capability_summary(self) -> None:
         summary = self._collect_broker_capability_summary()
 
@@ -11515,6 +11593,7 @@ class TradingSystem:
         # 대시보드 표시 + 긴급정지 버튼 연결
         self.dashboard.show()
         self._log_broker_capability_summary()
+        self._log_capital_profile()
         if hasattr(self.dashboard, "btn_kill"):
             self.dashboard.btn_kill.clicked.connect(
                 lambda: self.activate_kill_switch("대시보드 긴급정지")
