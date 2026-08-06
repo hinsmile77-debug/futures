@@ -2996,6 +2996,74 @@ def _load_conf_rows(start_date: str) -> list:
             for r in rows]
 
 
+def _entry_collapse_lift(start_date: str) -> dict:
+    """[44] 보조지표 (MW0602 436차) — 붕괴행이 **실제 진입까지 갔는가**.
+
+    왜 별도 로더인가: `_load_conf_rows`는 [45]와 공유하는 5-튜플이라 원소를 추가하면
+    양쪽의 언팩(`for d, _, c, _, wc in rows`)이 전부 깨진다. 이 지표는 [44]에서만
+    쓰므로 독립 쿼리로 분리한다(회귀 위험 0).
+
+    무엇을 재는가:
+        lift = P(붕괴 | 진입) / P(붕괴 | 전체)
+        lift ≈ 1  → 붕괴행이 진입에 비례해 들어간다
+        lift ≪ 1  → 붕괴행은 하류 게이트에서 이미 걸러진다
+        lift ≫ 1  → 붕괴행이 진입을 만들고 있다 (430차가 우려한 방향)
+
+    왜 필요한가 — 430차 §5는 "붕괴행이 분포 최상단을 점유해 **진입 예산을 잠식**"한다고
+    했다. 그 서술은 base_mc 축에서는 맞지만, "그래서 붕괴행이 실제로 진입하는가"는
+    한 번도 측정된 적이 없었다. 0806(436차) 실측은 **반대**였다:
+        08-03~08-06 진입 72건 중 붕괴행 **1건(1.4%)**, 전체 붕괴율 21.2% → **lift 0.07**
+    즉 붕괴행은 하류에서 강하게 배제되고 있다. 이 관측이 맞다면 붕괴행을 피드에서
+    빼는 조치(22.6%→35.2%)는 "판단 불가 행에게 진입을 준다"가 아니라 "정상 행의
+    통과율을 복원한다"로 읽어야 한다 — 판정 시 해석이 달라지는 지점이다.
+
+    ⚠ 이것은 **판정이 아니라 관측 기록**이다. 430차 §7이 08-11 이전 수치로 판정하지
+      말라고 못박았고 [44]의 min_days=10이 그 방어선이다. 이 값도 같은 창을 따른다.
+
+    함께 싣는 진입률(entry_rate)의 이유: 430차 §5는 진입 급증이 base_mc 수렴과 함께
+    **자기소멸**한다고 투영했다(~08-11). 0806 실측은 base_mc가 투영대로 올랐는데
+    (0.3971→0.4151, 투영 0.418) 진입률은 되돌지 않고 **신고점(6.2%)**이었다. 게이트
+    수렴과 진입률을 **같은 표에서** 봐야 그 괴리가 판정 때 눈에 띈다.
+    """
+    out = {}
+    try:
+        with _conn(PREDICTIONS_DB) as conn:
+            rows = conn.execute(
+                "SELECT substr(ts,1,10) AS d, "
+                "       COALESCE(weight_collapsed,0) AS wc, "
+                "       COALESCE(entry_executed,0)   AS ex "
+                "  FROM ensemble_decisions "
+                " WHERE ts >= ? AND confidence IS NOT NULL",
+                (start_date + " 00:00:00",)).fetchall()
+    except Exception as e:
+        return {"error": str(e)}
+    if not rows:
+        return {}
+    n = len(rows)
+    n_col = sum(1 for r in rows if int(r["wc"]))
+    n_ex = sum(1 for r in rows if int(r["ex"]))
+    n_ex_col = sum(1 for r in rows if int(r["ex"]) and int(r["wc"]))
+    out["n_rows"] = n
+    out["n_entries"] = n_ex
+    out["entry_rate"] = round(n_ex / float(n), 4)
+    out["collapsed_share"] = round(n_col / float(n), 4)
+    out["entry_collapsed_n"] = n_ex_col
+    if n_ex and n_col:
+        out["entry_collapsed_share"] = round(n_ex_col / float(n_ex), 4)
+        out["lift"] = round((n_ex_col / float(n_ex)) / (n_col / float(n)), 3)
+    # 일자단위 진입률 — 430차 §5의 "자기소멸" 투영이 실제로 일어나는지 추적
+    byday = {}
+    for r in rows:
+        d = r["d"]
+        a = byday.setdefault(d, [0, 0])
+        a[0] += 1
+        a[1] += int(r["ex"])
+    out["by_day"] = [{"date": d, "n": v[0], "entries": v[1],
+                      "entry_rate": round(v[1] / float(v[0]), 4)}
+                     for d, v in sorted(byday.items())]
+    return out
+
+
 def _base_mc_from(confs: list) -> float:
     """DynMC의 base_mc 산출을 그대로 재현.
 
@@ -3103,6 +3171,9 @@ def eval_dynmc_collapse_feed_watch() -> dict:
         })
     out["by_day"] = day_rows
     out["stratified"] = _paired_day_summary(day_gaps, float(cr.get("alpha", 0.05)))
+    # [436차] 보조지표 — 붕괴행이 실제 진입까지 갔는가 + 진입률 추이(자기소멸 검증).
+    # 판정에는 관여하지 않는다(verdict 산식 무변경) — 해석용 병기다.
+    out["entry_lift"] = _entry_collapse_lift(start)
 
     # ── 판정 ─────────────────────────────────────────────────
     _min_d, _min_r = int(cr.get("min_days", 10)), int(cr.get("min_rows", 2000))
@@ -9340,6 +9411,19 @@ def build_report(days: int) -> tuple:
         if _s44.get("paired_days"):
             L.append("| 일자단위 | %s/%s일 양수, 부호검정 p=%s |" % (
                 _s44.get("days_positive"), _s44.get("paired_days"), _s44.get("sign_p")))
+        # [436차] 붕괴행이 실제 진입까지 갔는가 — 판정 무관여, 해석용 병기
+        _el = dcf.get("entry_lift") or {}
+        if _el.get("lift") is not None:
+            L.append("| 붕괴행 진입 리프트 | **%.2fx** (진입 %d건 중 붕괴 %d건 = %.1f%% "
+                     "vs 전체 붕괴율 %.1f%%) |" % (
+                         _el["lift"], _el.get("n_entries", 0),
+                         _el.get("entry_collapsed_n", 0),
+                         float(_el.get("entry_collapsed_share", 0)) * 100,
+                         float(_el.get("collapsed_share", 0)) * 100))
+        if _el.get("by_day"):
+            _bd = _el["by_day"]
+            L.append("| 진입률 추이 | %s |" % " → ".join(
+                "%s %.1f%%" % (r["date"][5:], r["entry_rate"] * 100) for r in _bd[-6:]))
         L.append("")
         if dcf.get("recommendation"):
             L.append("- **권고**: %s" % dcf["recommendation"])
@@ -9353,6 +9437,19 @@ def build_report(days: int) -> tuple:
     L.append("> **⚠ 판정 창.** `base_mc`는 10일 롤링이라 07-31 전환분이 다 채워지기")
     L.append("> 전(2026-08-11경) 수치로 판정하면 **과도구간을 정상으로 오인한다.**")
     L.append("> `min_days`가 그 방어선이다.")
+    L.append("> ")
+    L.append("> **[436차] 판정 시 반드시 함께 읽을 것 — 두 관측이 430차 §5와 어긋난다.**")
+    L.append("> ① **붕괴행 진입 리프트가 1보다 한참 작다**(위 표의 실측값 — 436차")
+    L.append("> 최초 관측 시 채널창 0.06x / 08-03~08-06만 보면 0.07x). 430차 §5는")
+    L.append("> 붕괴행이 \"진입 예산을 잠식\"한다고 했으나, base_mc를 밀어올리는 것과")
+    L.append("> 붕괴행이 **실제로 진입하는 것**은 다른 이야기다. 리프트가 계속 1을 크게")
+    L.append("> 밑돌면 붕괴행 제외는 \"판단 불가 행에 진입을 준다\"가 아니라 **\"정상 행의")
+    L.append("> 통과율을 복원한다\"**로 읽어야 하며, 그러면 위 ⚠(노출 증가)의 무게가 달라진다.")
+    L.append("> ② **자기소멸이 아직 관측되지 않았다.** 430차 §5는 base_mc 수렴과 함께")
+    L.append("> 진입 급증이 되돌아간다고 투영했는데(~08-11), 0806까지 base_mc는 투영대로")
+    L.append("> 올랐고(0.3971→0.4151, 투영 0.418) **진입률은 되돌기는커녕 신고점**이었다")
+    L.append("> (5.7%→3.0%→4.6%→**6.2%**). 위 \"진입률 추이\" 행이 그 후속이다 —")
+    L.append("> 판정 시점에도 되돌지 않았으면 **투영 자체를 안건화할 것**.")
     L.append("> ")
     L.append("> **ConstOut 여유폭을 왜 같이 재는가.** `main.py:_recalibrate_mc`에")
     L.append("> \"동일 반올림값 15% 초과 시 제외\" 필터가 있다. 430차 실측에서 0.85가")

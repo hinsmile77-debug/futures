@@ -724,6 +724,27 @@ def init_trades_db():
     # 것이 없고 버리고 있었을 뿐이다. protect_offset_pts와 |stop_after-entry|가 다르면
     # 그 행이 (2)에 해당한다는 뜻이라 식별자 역할도 겸한다.
     # 소급 불가 — 기존 행은 NULL이며 [25]가 폴백 경로로 처리한다.
+    # [MW0602 436차] arm_ts — 초 해상도 보호전환 시각.
+    # 결함: main.py의 INSERT가 `strftime("%Y-%m-%d %H:%M:00")`으로 **초를 리터럴 "00"**
+    # 으로 박아 넣어 `ts`가 분 단위로 절삭돼 있었다. `entry_ts`는 초 해상도라
+    # (arm - entry) 지연이 최대 ±60초 양자화되고, **67행 중 10행이 물리적으로 불가능한
+    # 음수**(-3 ~ -52초)를 갖는다(진입과 같은 분에 arm → 분 시작으로 절삭).
+    #
+    # 피해는 "부정확"이 아니라 **정보 부재**다. 진입은 매분 파이프라인 끝(초 53~58)에
+    # 일어나므로, 같은 분 안의 arm은 기록지연이 `60 - 진입초` = 3~7초로 **항상** 나온다.
+    # 즉 그 값은 arm 속도가 아니라 다음 분 경계까지의 잔여시간이며, 분 이하 해상도가
+    # 애초에 존재하지 않는다(0806 점검 §6에서 원자료로 실증).
+    #
+    # ⚠ **`ts`를 초 해상도로 고치면 안 된다** — scripts/tp1_protect_offset_shadow.py:240이
+    #   `idx.get(ts)`로 `ts`를 **raw_candles 분봉 인덱스의 키로 직접** 쓴다. 분 절삭이
+    #   그 조인의 전제라 그대로 고치면 [25]·[25-B]의 표본이 조용히 0이 된다.
+    #   → `ts`는 분 키로 보존하고 초 해상도는 **새 컬럼**으로 분리한다.
+    #
+    # 왜 필요한가: 0806 점검 §5-1이 "틱 TP1이 보호전환을 앞당겨 러너를 죽였나"를 물었는데,
+    # PRE/POST 시간 비교는 `827bd04`가 틱 TP1과 conf passthrough를 **동시 배포**해
+    # 영구히 판정 불가다. 남은 유일한 경로는 같은 코드 세대 안에서 **arm 지연 ↔ TP2
+    # 완주 상관**을 보는 것인데(캠페인 [50]), 그 측정 수단이 바로 이 컬럼이다.
+    # 소급 불가 — 기존 67행은 NULL이며 [50]이 `data_start`로 걸러낸다.
     with get_conn(TRADES_DB) as _spe_conn:
         _spe_cols = {r[1] for r in _spe_conn.execute(
             "PRAGMA table_info(synthetic_partial_exits)").fetchall()}
@@ -731,6 +752,9 @@ def init_trades_db():
             if _c not in _spe_cols:
                 _spe_conn.execute(
                     "ALTER TABLE synthetic_partial_exits ADD COLUMN %s REAL" % _c)
+        if "arm_ts" not in _spe_cols:
+            _spe_conn.execute(
+                "ALTER TABLE synthetic_partial_exits ADD COLUMN arm_ts TEXT")
     # [361차] TP2 홀드 A/B 섀도우 — 0720 정기점검 "TP3 도달 0건" 딥다이브 결과, 트레일링
     # 폭이 아니라 qty=2 스테이지 배분(get_stage_plan()이 (1,1,0) 하드코딩, TP2에서 잔량
     # 100% 종료)이 원인으로 확인됨. TP2가 실제로 전량 종료되는 순간 "이 계약을 홀드해서
