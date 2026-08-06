@@ -46,12 +46,17 @@ def main():
     print("[CHECK 2/3] ServerType=%s" % server_type)
 
     # ── CHECK 3/3: TradeInit ──
-    # ServerType: 정수 2 = 모의투자, 1 = 실거래 (문자열 "모의" 포함 여부도 fallback 허용)
+    # [2026-08-06] ServerType: 1 = 모의투자, 2 = 실거래.
+    # 이전 주석/코드는 정반대(2=모의)였고, 그 탓에 런처 로그가 모의서버를
+    # "(실거래)"로 기록해 왔다(2026-08-06 08:57 cybos5_launch.log 실측).
+    # 실서버 접속 상태에서 ServerType=2를 직접 확인해 확정.
+    # 표준 출처: config/constants.py:is_cybos_simulation
     trade_init_param = 0  # 기본값: 실거래
     try:
-        is_mock = (int(server_type) == 2)
+        is_mock = (int(server_type) == 1)
     except (TypeError, ValueError):
-        is_mock = server_type is not None and u"모의" in str(server_type)
+        # 판정 불능 시 실거래로 간주 — 모의로 오판하면 실자금이 위험하다.
+        is_mock = False
     if is_mock:
         print("[CHECK 3/3] ServerType=%s (모의투자) -- TradeInit(1) 사용" % server_type)
         trade_init_param = 1

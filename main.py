@@ -629,6 +629,9 @@ class TradingSystem:
         self._broker_sync_verified: bool = False
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
+        # [2026-08-06] 설정 계좌(secrets.ACCOUNT_NO)가 브로커 세션 계좌목록에 없을 때 True.
+        # 계좌를 대체하지 않는 대신 신규 진입만 차단한다(sticky — BrokerSync가 풀지 못함).
+        self._account_mismatch_block: bool = False
         self._warmup_retrain_pending: bool = False   # 세션 재시작 후 GBM 즉시 재학습 예약 플래그
         self._eod_retrain_ok: bool = False           # 전날 EOD 재학습 성공 여부 — 08:55 PreRetrain 스킵 판단용
         self._gbm_retrain_running: bool = False      # GBM 재학습 중복 실행 방지 플래그
@@ -2274,22 +2277,59 @@ class TradingSystem:
             )
 
     def _get_active_account_no(self) -> str:
+        """활성 주문 계좌 — 설정 계좌(secrets.ACCOUNT_NO)에 고정한다.
+
+        [2026-08-06] 세션 목록에 없으면 accounts[0]으로 갈아타던 폴백을 제거했다
+        (잘못된 계좌로 하루 거래한 사고). 불일치 시 계좌는 그대로 두고
+        `_account_mismatch_block`으로 신규 진입만 차단한다.
+        대시보드 선택값은 설정 계좌와 다를 때만 로그로 남기고 무시한다 —
+        계좌 변경은 "저장" 버튼(_save_account_from_dashboard) 경로로만 허용.
+        """
         account_no = str(_secrets.ACCOUNT_NO or "").strip()
         try:
             selected = str(self.dashboard.get_selected_account() or "").strip()
         except Exception as _acc_e:
             logger.debug("[Account] get_selected_account 실패: %s", _acc_e)
             selected = ""
-        if selected:
+        if not account_no and selected:
+            # 설정이 비어 있는 경우에만 UI 선택값을 신뢰한다.
             account_no = selected
+
         try:
             accounts = [str(x).strip() for x in (self.broker.get_account_list() or []) if str(x).strip()]
         except Exception as _acl_e:
             logger.debug("[Account] get_account_list 실패: %s", _acl_e)
             accounts = []
-        if accounts and account_no not in accounts:
-            account_no = accounts[0]
-            self._apply_account_no(account_no)
+
+        # [2026-08-06] 차단 래치는 **판정 가능할 때만** 갱신한다.
+        #
+        # 이전 코드는 `mismatch = bool(accounts) and ...` 를 무조건 대입해서,
+        # `accounts` 가 비면(=판정 불능) mismatch=False 가 되어 **이미 걸려 있던
+        # 차단이 풀렸다**. 그런데 `accounts` 가 비는 경로는 예외가 아니라 정상
+        # 리턴이다 — CybosAPI.get_account_list() 는 TradeInit 미완료·COM 재연결
+        # 중·AccountNumber 실패를 전부 조용히 `[]` 로 반환한다.
+        # 게다가 이 함수는 매분 사이징 경로(_ts_margin_capped_qty, main.py:7573)
+        # 에서 호출되므로 래치는 매분 해제될 기회를 가졌다.
+        # 2026-08-06 09:58:52 "연결 끊김" 같은 구간이 정확히 그 조건이다.
+        #
+        # 해제 조건을 비대칭으로 둔다: 걸 때는 "불일치를 확인했을 때",
+        # 풀 때는 "일치를 확인했을 때"만. "확인하지 못했을 때"는 유지한다.
+        if accounts:
+            mismatch = bool(account_no) and account_no not in accounts
+            if mismatch and not getattr(self, "_account_mismatch_block", False):
+                msg = (
+                    f"[Account] 설정 계좌 {account_no} 가 브로커 세션 계좌목록 {accounts} 에 "
+                    f"없습니다 — 계좌 고정 유지, 신규 진입 차단. Cybos 로그인 ID를 확인하십시오."
+                )
+                logger.critical(msg)
+                log_manager.system(msg, "CRITICAL")
+            self._account_mismatch_block = mismatch
+        else:
+            # 판정 불능 — 직전 상태를 유지한다(해제하지 않는다).
+            logger.debug(
+                "[Account] 계좌목록 조회 불가 — mismatch 래치 유지(block=%s)",
+                getattr(self, "_account_mismatch_block", False),
+            )
         return account_no
 
     def _write_account_no_to_secrets(self, account_no: str) -> None:
@@ -2320,14 +2360,22 @@ class TradingSystem:
             logger.warning(msg)
             log_manager.system(msg, "WARNING")
             return
-        if not account_no.isdigit() or len(account_no) != 10:
-            msg = f"[Account] 계좌번호는 10자리 숫자여야 합니다: {account_no}"
+        # [2026-08-06] len==10 고정 검증은 Cybos 계좌(333042073 = 9자리)를 항상 거부해
+        # 저장 버튼이 무용지물이었다. 상품구분코드("-50")를 뺀 계좌번호 자릿수는
+        # 증권사·상품별로 달라 8~12자리 숫자로 완화한다.
+        if not account_no.isdigit() or not (8 <= len(account_no) <= 12):
+            msg = (
+                f"[Account] 계좌번호는 8~12자리 숫자여야 합니다(상품구분코드 '-50' 제외): "
+                f"{account_no}"
+            )
             logger.warning(msg)
             log_manager.system(msg, "WARNING")
             return
 
         self._write_account_no_to_secrets(account_no)
         self._apply_account_no(account_no)
+        # 저장으로 계좌를 바꿨으면 불일치 차단 상태를 새 계좌 기준으로 재평가한다.
+        self._get_active_account_no()
         msg = f"[Account] 주문 계좌번호 저장 완료: {account_no}"
         logger.info(msg)
         log_manager.system(msg)
@@ -10740,7 +10788,7 @@ class TradingSystem:
         """정상 종료 플래그 파일 생성 — 런처 RESTART_LOOP 재시작 방지.
 
         [229차] UI X 버튼·자동 종료 등 의도된 종료 시 생성.
-        런처(start_mireuk_Cybos.bat)가 이 파일을 감지하면 AUTO-RESTART 건너뜀.
+        런처(start_mireuk.bat)가 이 파일을 감지하면 AUTO-RESTART 건너뜀.
         → X 버튼 후 스케줄러 클릭으로 인한 이중 인스턴스 방지.
         """
         try:
@@ -13696,6 +13744,10 @@ def _ts_on_chejan_event(self, payload: dict) -> None:
 
 def _ts_set_broker_sync_status(self, verified: bool, reason: str, block_new_entries: bool) -> None:
     self._broker_sync_verified = verified
+    # [2026-08-06] 계좌 불일치는 sticky — BrokerSync가 정상이어도 진입 차단을 풀지 않는다.
+    if getattr(self, "_account_mismatch_block", False) and not block_new_entries:
+        block_new_entries = True
+        reason = "account mismatch (configured account not in broker session)"
     self._broker_sync_block_new_entries = block_new_entries
     self._broker_sync_last_error = str(reason or "").strip()
     logger.info(
@@ -14541,6 +14593,51 @@ def _ts_execute_entry(
         pending=_ts_get_pending_snapshot(self),
         position=_ts_get_position_snapshot(self),
     )
+    # [2026-08-06] 서버 구분 하드게이트 — 대시보드 라디오(모의/실서버) 선택이
+    # 실제 접속 서버와 다르면 신규 진입을 보내지 않는다.
+    #
+    # 이 게이트는 `dashboard.is_server_match()`로 2026-05월부터 존재했으나
+    # **호출하는 곳이 한 곳도 없어 죽은 코드**였다 — 함수 docstring과 화면 경고
+    # 라벨("⚠ 실접속=... · 진입차단")이 둘 다 차단을 약속하는데 실제로는 빨간
+    # 글씨만 뜨고 주문은 그대로 나갔다. 2026-08-06 실측에서 ServerType=2(실서버)
+    # 세션에 ui_prefs의 라디오가 "simul"로 복원되는 조합이 실재함을 확인해 배선한다.
+    #
+    # 연결 전(actual="unknown")은 True를 돌려주므로 기동 구간을 막지 않는다.
+    # 대시보드 조회 자체가 실패하면 판정 불능이므로 **막지 않고 경고만** 남긴다 —
+    # UI 예외로 매매 전체가 정지되는 것이 더 큰 손해이고, 아래 계좌 불일치·
+    # broker sync 게이트가 그대로 살아 있다.
+    try:
+        _server_matched = bool(self.dashboard.is_server_match())
+    except Exception as _srv_e:
+        _server_matched = True
+        logger.warning("[EntryBlock] is_server_match 조회 실패 — 서버 게이트 통과: %s", _srv_e)
+    if not _server_matched:
+        _srv_gubun = ""
+        try:
+            _srv_gubun = str(self.broker.get_login_info("GetServerGubun") or "")
+        except Exception:
+            pass
+        _actual_lbl = "모의투자" if _srv_gubun == "1" else "실서버"
+        msg = (
+            f"[EntryBlock] 서버 구분 불일치로 진입 차단 — 실제 접속={_actual_lbl}"
+            f"(ServerType gubun={_srv_gubun or '?'}) 인데 대시보드 선택이 다릅니다. "
+            f"raw={raw_direction} final={direction} qty={quantity}. "
+            f"라디오 선택을 실제 서버에 맞추거나 올바른 서버로 재접속하십시오."
+        )
+        log_manager.system(msg, "CRITICAL")
+        logger.critical(msg)
+        return
+    # [2026-08-06] 계좌 불일치 하드게이트 — 설정 계좌가 브로커 세션에 없으면
+    # 어떤 경로(자동/수동)로도 신규 진입을 보내지 않는다. 잘못된 계좌 체결 방지.
+    if getattr(self, "_account_mismatch_block", False):
+        msg = (
+            f"[EntryBlock] 계좌 불일치로 진입 차단 — 설정 계좌 {_secrets.ACCOUNT_NO} 가 "
+            f"브로커 세션에 없습니다. raw={raw_direction} final={direction} qty={quantity}. "
+            f"Cybos 로그인 ID 확인 필요."
+        )
+        log_manager.system(msg, "CRITICAL")
+        logger.critical(msg)
+        return
     if self._broker_sync_block_new_entries:
         log_manager.system(
             f"[EntryBlock] broker sync 미검증으로 진입 차단 raw={raw_direction} final={direction} "

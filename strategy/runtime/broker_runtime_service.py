@@ -43,7 +43,12 @@ class BrokerRuntimeService:
 
         logger.info("[Account] ACCNO raw=%s", acc_raw)
         logger.info("[Account] parsed accounts=%s", accounts)
-        system.dashboard.set_account_options(accounts, selected_account)
+        # 설정 계좌가 세션 목록에 없어도 콤보에 반드시 포함시킨다 —
+        # 빠져 있으면 get_selected_account()가 세션 계좌를 돌려줘 고정이 무너진다.
+        account_options = list(accounts)
+        if selected_account and selected_account not in account_options:
+            account_options.insert(0, selected_account)
+        system.dashboard.set_account_options(account_options, selected_account)
         print("[DBG CK-2] login() 성공", flush=True)
 
         broker_name = getattr(system.broker, "name", "")
@@ -312,17 +317,29 @@ class BrokerRuntimeService:
 
     @staticmethod
     def _select_account(system: Any, accounts: List[str]) -> str:
+        """설정 계좌(secrets.ACCOUNT_NO)를 고정 반환한다 — 절대 다른 계좌로 갈아타지 않는다.
+
+        [2026-08-06] 이전 구현은 설정 계좌가 브로커 세션 목록에 없으면 조용히
+        accounts[0]으로 대체했다. 그 결과 Cybos 세션이 다른 계좌(555011215)를
+        반환한 날 시스템이 하루 종일 잘못된 계좌에 붙어 돌았다(예수금 0,
+        "97007 모의투자 데이터가 없습니다").
+        세션에 설정 계좌가 없다는 것은 **Cybos 로그인 ID가 다르다**는 뜻이라
+        코드로 고칠 수 없다. 따라서 계좌는 고정하고 신규 진입만 차단한다
+        (`system._account_mismatch_block`).
+        """
         from config import secrets as _secrets
 
         selected_account = str(_secrets.ACCOUNT_NO or "").strip()
-        if accounts and selected_account not in accounts:
-            fallback_account = str(accounts[0]).strip()
-            logger.warning(
-                "[Account] configured account %s not in broker session accounts=%s; using %s",
-                selected_account,
-                accounts,
-                fallback_account,
+        mismatch = bool(accounts) and selected_account and selected_account not in accounts
+        system._account_mismatch_block = bool(mismatch)
+        if mismatch:
+            msg = (
+                "[Account] 설정 계좌 {cfg} 가 브로커 세션 계좌목록 {acc} 에 없습니다 — "
+                "계좌를 대체하지 않고 고정합니다. 신규 진입 차단. "
+                "Cybos 로그인 ID가 올바른지 확인하십시오.".format(
+                    cfg=selected_account, acc=accounts,
+                )
             )
-            selected_account = fallback_account
-            system._apply_account_no(selected_account)
+            logger.critical(msg)
+            log_manager.system(msg, "CRITICAL")
         return selected_account

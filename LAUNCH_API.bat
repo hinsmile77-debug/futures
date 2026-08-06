@@ -247,6 +247,24 @@ IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
         SET "ERROR_FLAG=1"
         GOTO :end_error
     )
+    REM [2026-08-06] 계좌 대조 실패 -- preflight CHECK 4/4 신설.
+    REM 연결도 되고 TradeInit 도 됐지만 설정 계좌가 세션에 없는 상태다.
+    REM 그대로 기동하면 잘못된 세션 위에서 하루를 보낸다(2026-08-06 사고).
+    IF "!PREFLIGHT_ERR!"=="4" (
+        ECHO [ERROR] 설정 계좌가 브로커 세션에 없습니다 -- 위 preflight 출력의 계좌목록을 확인하세요.
+        ECHO [HINT]  모의계좌 재발급 시 config\secrets.py 의 ACCOUNT_NO / ACCOUNT_GOODS_CODE / ACCOUNT_PWD 를 직접 갱신하십시오.
+        ECHO [HINT]  로그인 ID 가 다른 경우라면 secrets 를 고치지 말고 올바른 ID 로 재로그인하십시오.
+        ECHO [ERROR] Preflight account mismatch. >> "!LOG!"
+        SET "ERROR_FLAG=1"
+        GOTO :end_error
+    )
+    IF "!PREFLIGHT_ERR!"=="5" (
+        ECHO [ERROR] Preflight 워치독 타임아웃 -- TradeInit 응답 없음(판정 불능).
+        ECHO [HINT]  Cybos 창에 대화상자가 떠 있는지 확인 후 재시도하십시오.
+        ECHO [ERROR] Preflight watchdog timeout. >> "!LOG!"
+        SET "ERROR_FLAG=1"
+        GOTO :end_error
+    )
     IF "!PREFLIGHT_ERR!" NEQ "0" (
         ECHO [ERROR] Preflight 알 수 없는 종료 코드 ^(!PREFLIGHT_ERR!^)
         ECHO [ERROR] Preflight unknown exit code=!PREFLIGHT_ERR! >> "!LOG!"

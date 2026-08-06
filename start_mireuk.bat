@@ -80,16 +80,25 @@ CALL :L "============================================================"
 ECHO.
 
 REM ============================================================
-REM  STEP 0: Pre-launch Cleanup
-REM  - 다른 창 최소화 (Cybos/CREON GUI 자동화 간섭 방지)
-REM  - SW_MINIMIZE only (프로세스 종료 없음)
-REM  - 마우스 커서 (0,0) 리셋
+REM  [2026-08-06] STEP 0 (다른 창 최소화 + 마우스 리셋) 제거됨.
+REM
+REM  이 단계의 존재 이유는 "Cybos/CREON GUI 자동화 간섭 방지" 였다. 그런데
+REM  아래 STEP 4 에서 자동 로그인(=유일한 GUI 자동화)을 걷어냈으므로 이 런처는
+REM  더 이상 GUI 를 조작하지 않는다 -- 보호할 대상이 없다.
+REM
+REM  게다가 이 단계는 중복을 넘어 유해할 수 있었다. close_other_windows.ps1 의
+REM  보호 목록은 프로세스가 아니라 **창 제목** 매칭이라
+REM      $protected = "Mireuk","CREON","Cybos","CpStart","CMD","PowerShell","cmd.exe"
+REM  로그인 창 'CYBOS Starter' 는 "Cybos" 에 걸려 보호되지만
+REM  **'모의투자 선택' 팝업은 어느 항목에도 걸리지 않아 최소화 대상**이다.
+REM  2026-08-06 실측에서 이 런처의 STEP 0 는 08:40:0x 에 돌았고 그 시각
+REM  LAUNCH_API.bat 의 로그인은 아직 진행 중(08:41:44 실패 확정)이었다.
+REM  => 최소화로 포커스가 바뀌면 autologin 의 blind Enter 가 엉뚱한 창으로 간다.
+REM  (팝업 정상 처리 이력 0/43 과의 인과는 미확정 -- 별도 조사 항목)
+REM
+REM  LAUNCH_API.bat 의 STEP 0 는 그대로 유지한다. 그쪽은 실제로 GUI 자동화를
+REM  수행하므로 창 정리가 필요하다.
 REM ============================================================
-CALL :L "[STEP 0] Pre-launch cleanup: 다른 창 최소화, 마우스 리셋..."
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\close_other_windows.ps1" -KeepTitle "Mireuk"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(0, 0)"
-CALL :L "[INFO] Pre-launch cleanup 완료."
-ECHO.
 
 REM ============================================================
 REM  1. Workspace Detection
@@ -340,38 +349,72 @@ IF DEFINED SLACK_PC_NAME (
 IF NOT EXIST "logs" MKDIR "logs" 2>NUL
 
 REM ============================================================
-REM  4. Auto-Login
+REM  4. API 세션 준비 대기 -- 이 런처는 로그인을 수행하지 않는다
+REM
+REM  [2026-08-06] 기존 STEP 4 는 IsConnect!=1 이면 cybos_autologin.py 를
+REM  직접 실행했다. 그러나 LAUNCH_API.bat(작업 스케줄러 "Cybos Plus", 08:35)이
+REM  이미 같은 일을 하고 있어서, 그쪽 로그인이 5분 안에 끝나지 않으면
+REM  **두 autologin 프로세스가 같은 로그인 창에 동시에 blind Enter 를 난사**했다.
+REM
+REM  2026-08-06 실측:
+REM    08:35:10  autologin (LAUNCH_API.bat)      -> 타임아웃, 시도 3/3 실패
+REM    08:40:24  autologin (바로 이 STEP 4)      -> A 가 만든 연결을 자기 성공으로 판정
+REM    08:43:50  미륵이 기동 -> ACCNO raw=555011215 (설정 계좌 아님)
+REM    => 잘못된 계좌로 91분간 운영, 당일 진입 0건
+REM
+REM  로그인 책임을 LAUNCH_API.bat 한 곳으로 모으고, 여기서는 "준비될 때까지
+REM  기다리기만" 한다. 세션이 없으면 만들지 않고 **크게 실패**한다 --
+REM  조용히 잘못된 세션에 붙어 하루를 버리는 것보다 낫다.
+REM
+REM  ※ 장중 AUTO-RESTART 루프의 재로그인은 성격이 달라 그대로 유지한다.
+REM    LAUNCH_API 는 "session ready" 후 종료하므로, 장중 연결 끊김의 유일한
+REM    복구 경로다 (2026-08-06 09:58:52 연결끊김 -> 09:59:12/10:00:40 재로그인 실측).
+REM
+REM  [대기 구현 주의] sleep 에 TIMEOUT 을 쓰지 않는다. TIMEOUT 은 stdin 이
+REM  리다이렉트된 환경(작업 스케줄러)에서 "Input redirection is not supported"
+REM  로 즉시 반환될 수 있고, 그러면 이 루프가 폭주해 300초가 몇 초로 줄어든다.
+REM  ping -n 은 리다이렉트 영향을 받지 않는다. 반복횟수 상한도 함께 둬서
+REM  대기가 실패하더라도 루프가 반드시 종료되게 한다.
 REM ============================================================
+SET "_API_WAIT_TIMEOUT=300"
+SET "_API_WAIT_INTERVAL=5"
+SET /A "_API_WAIT_PING=_API_WAIT_INTERVAL+1"
+SET /A "_API_WAIT_ITER_MAX=_API_WAIT_TIMEOUT/_API_WAIT_INTERVAL+2"
+SET /A "_API_WAIT_ELAPSED=0"
+SET /A "_API_WAIT_ITER=0"
+
 ECHO.
-CALL :L "[INFO] !BROKER! 연결 상태 확인 중..."
+CALL :L "[STEP 4] !BROKER! API 세션 준비 대기 (최대 !_API_WAIT_TIMEOUT!초) -- 이 런처는 로그인하지 않습니다."
+
+:_api_wait_loop
 "!PY32!" -c "import sys, win32com.client as w; c=w.Dispatch('CpUtil.CpCybos'); sys.exit(0 if c.IsConnect==1 else 1)" >NUL 2>&1
-IF %ERRORLEVEL% NEQ 0 (
-    CALL :L "[INFO] !BROKER! 미연결 -- 자동 로그인 시작..."
-    IF EXIST "!WORKDIR!\scripts\cybos_autologin.py" (
-        "!PY32!" "!WORKDIR!\scripts\cybos_autologin.py" --broker !BROKER!
-        IF !ERRORLEVEL! NEQ 0 (
-            ECHO.
-            CALL :L "[ERROR] !BROKER! 자동 로그인 실패."
-            IF /I "!BROKER!"=="creon" (
-                CALL :L "[HINT]  자격증명 등록: cmdkey /add:creonplus /user:아이디 /pass:비밀번호"
-                CALL :L "[HINT]  실행 파일 확인: C:\CREON\STARTER\coStarter.exe"
-            ) ELSE (
-                CALL :L "[HINT]  자격증명 등록: cmdkey /add:cybosplus /user:아이디 /pass:비밀번호"
-                CALL :L "[HINT]  실행 파일 확인: C:\DAISHIN\STARTER\ncStarter.exe"
-            )
-            CALL :L "[HINT]  로그 위치: !WORKDIR!\logs\"
-            TIMEOUT /T 30
-            EXIT /B 1
-        )
-        CALL :L "[OK] !BROKER! 자동 로그인 완료."
-    ) ELSE (
-        CALL :L "[WARN] cybos_autologin.py 없음: !WORKDIR!\scripts\"
-        ECHO [WARN] !BROKER! 수동 로그인 후 아무 키나 누르세요.
-        PAUSE
-    )
+IF !ERRORLEVEL! EQU 0 GOTO :_api_wait_ok
+IF !_API_WAIT_ELAPSED! GEQ !_API_WAIT_TIMEOUT! GOTO :_api_wait_timeout
+IF !_API_WAIT_ITER! GEQ !_API_WAIT_ITER_MAX! GOTO :_api_wait_timeout
+SET /A "_API_WAIT_MOD=_API_WAIT_ELAPSED %% 30"
+IF !_API_WAIT_MOD! EQU 0 CALL :L "[STEP 4] 대기 중... !_API_WAIT_ELAPSED!/!_API_WAIT_TIMEOUT!초 (LAUNCH_API.bat 로그인 진행 중일 수 있음)"
+ping -n !_API_WAIT_PING! 127.0.0.1 >NUL 2>&1
+SET /A "_API_WAIT_ELAPSED+=_API_WAIT_INTERVAL"
+SET /A "_API_WAIT_ITER+=1"
+GOTO :_api_wait_loop
+
+:_api_wait_timeout
+ECHO.
+CALL :L "[ERROR] !BROKER! API 세션이 !_API_WAIT_TIMEOUT!초 안에 준비되지 않았습니다."
+CALL :L "[ERROR] 이 런처는 로그인을 수행하지 않습니다 -- 로그인은 LAUNCH_API.bat 담당입니다."
+CALL :L "[HINT]  LAUNCH_API.bat 를 먼저 실행한 뒤 이 런처를 다시 실행하십시오."
+CALL :L "[HINT]  LAUNCH_API 로그 : !WORKDIR!\logs\cybos_plus_launch.log"
+CALL :L "[HINT]  로그인 진단 로그: !WORKDIR!\logs\cybos_autologin_diag.log"
+IF /I "!BROKER!"=="creon" (
+    CALL :L "[HINT]  자격증명 등록: cmdkey /add:creonplus /user:아이디 /pass:비밀번호"
 ) ELSE (
-    CALL :L "[INFO] !BROKER! 이미 연결됨 -- 로그인 생략."
+    CALL :L "[HINT]  자격증명 등록: cmdkey /add:cybosplus /user:아이디 /pass:비밀번호"
 )
+TIMEOUT /T 30
+EXIT /B 1
+
+:_api_wait_ok
+CALL :L "[OK] !BROKER! API 세션 준비 확인 (대기 !_API_WAIT_ELAPSED!초)."
 
 REM ============================================================
 REM  5. Preflight Check
@@ -388,6 +431,24 @@ IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
     )
     IF "!PREFLIGHT_ERR!"=="2" (
         CALL :L "[ERROR] Preflight: TradeInit 실패 -- 계좌 세션 확인."
+        TIMEOUT /T 30
+        EXIT /B 1
+    )
+    REM [2026-08-06] 계좌 대조 실패 -- preflight CHECK 4/4 신설.
+    REM 연결도 되고 TradeInit 도 됐지만 설정 계좌가 세션에 없는 상태다.
+    REM main.py 를 띄우지 않고 여기서 멈춘다 -- 잘못된 세션으로 하루를 보내는 것보다
+    REM 크게 실패하는 편이 낫다(2026-08-06 사고: 91분간 엉뚱한 계좌, 당일 진입 0건).
+    IF "!PREFLIGHT_ERR!"=="4" (
+        CALL :L "[ERROR] Preflight: 설정 계좌가 브로커 세션에 없습니다 -- main.py 를 실행하지 않습니다."
+        CALL :L "[HINT]  위 preflight 출력의 '계좌목록' 을 확인하십시오."
+        CALL :L "[HINT]  모의계좌 재발급 시 config\secrets.py 의 ACCOUNT_NO / ACCOUNT_GOODS_CODE / ACCOUNT_PWD 를 직접 갱신."
+        CALL :L "[HINT]  로그인 ID 가 다른 경우라면 secrets 를 고치지 말고 올바른 ID 로 재로그인."
+        TIMEOUT /T 30
+        EXIT /B 1
+    )
+    IF "!PREFLIGHT_ERR!"=="5" (
+        CALL :L "[ERROR] Preflight 워치독 타임아웃 -- TradeInit 응답 없음(판정 불능)."
+        CALL :L "[HINT]  Cybos 창에 대화상자가 떠 있는지 확인 후 재시도하십시오."
         TIMEOUT /T 30
         EXIT /B 1
     )
