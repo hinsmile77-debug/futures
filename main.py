@@ -11914,16 +11914,25 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
         # 절대 반영하지 않는다. 아직 물리적으로 열려 있는 1계약의 리스크 노출은
         # 위 stop 이동(atr_profit 등)이 유일한 실제 관리 수단이며, 이 INSERT는 그
         # 판단이 "TP1까지는 왔었다"는 사후 분석용 사실 기록일 뿐이다.
+        #
+        # [436차] ts(분 절삭)와 arm_ts(초)는 **같은 시각**이어야 하므로 now()를 한 번만
+        # 부른다. 분 경계를 사이에 두고 두 번 부르면 두 컬럼이 1분 어긋난다.
+        _arm_now = datetime.datetime.now()
         try:
             execute(
                 TRADES_DB,
                 """INSERT INTO synthetic_partial_exits
                    (ts, entry_ts, direction, entry_price, synthetic_price,
                     synthetic_fraction, synthetic_pnl_pts, protect_mode, stop_after,
-                    atr, protect_offset_pts)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    atr, protect_offset_pts, arm_ts)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                    # [436차] `ts`의 초를 "00"으로 박는 것은 **의도된 동작이다** —
+                    # scripts/tp1_protect_offset_shadow.py:240이 이 값을 raw_candles
+                    # 분봉 인덱스의 키로 직접 쓴다(`idx.get(ts)`). 초를 넣으면 그
+                    # 조인이 전부 실패해 [25]·[25-B] 표본이 조용히 0이 된다.
+                    # 초 해상도가 필요하면 아래 arm_ts를 쓸 것. (근거: 0806 점검 §6)
+                    _arm_now.strftime("%Y-%m-%d %H:%M:00"),
                     (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
                      if self.position.entry_time else None),
                     self.position.status,
@@ -11940,6 +11949,11 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
                     # prev_stop 오버라이드가 걸린 행 — [25]가 그것으로 식별한다.
                     float(atr or 0.0),
                     float(protect.get("protect_offset_pts") or 0.0),
+                    # [MW0602 436차] 초 해상도 보호전환 시각. `ts`(분 절삭)와 **같은
+                    # 시점**이며 절삭만 하지 않은 값이다 — 둘은 반드시 동일한
+                    # _arm_now에서 파생돼야 한다(따로 now()를 부르면 분 경계에서
+                    # 어긋난다). 캠페인 [50]이 (arm_ts - entry_ts)로 지연을 잰다.
+                    _arm_now.strftime("%Y-%m-%d %H:%M:%S"),
                 ),
             )
         except Exception as _spe:
@@ -15239,6 +15253,53 @@ class _BrokerOrderAdapter:
         return ret if ret == 0 else None
 
 
+def _rotate_crash_log(path, rotate_mb=None, keep=None):
+    """[MW0602 436차] crash_fault.log 크기 기반 로테이션 — 기동 시 1회.
+
+    230차는 append 전용("이전 세션 누적 보관")이라 로테이션이 없었고, faulthandler의
+    `dump_traceback_later(30, repeat=True)`가 **행과 무관하게 무조건 30초마다** 쓰기
+    때문에 하루 약 1.7MB씩 자란다(2026-06-29~08-06 실측 44.7MB / 666,510행 / 97세션).
+
+    회전 순서는 오래된 세대부터 밀어낸다: `.4` 삭제 → `.3`→`.4` → … → base→`.1`.
+    반대 순서로 하면 `.1`이 `.2`를 덮어써 세대가 사라진다.
+
+    ⚠ **호출은 파일을 열기 전에** 해야 한다 — faulthandler는 fd에 직접 쓰므로,
+      열어 둔 뒤 회전시키면 os.replace가 성공해도 덤프는 계속 옛 inode로 간다
+      (Windows에서는 열린 파일 rename 자체가 실패할 수도 있다).
+
+    실패해도 예외를 올리지 않는다 — 로그 위생이 크래시 진단 기동보다 우선일 수 없다.
+    `CRASH_LOG_ROTATE_MB` 또는 `CRASH_LOG_KEEP_GENERATIONS`가 0 이하면 비활성
+    (킬스위치 = 230차 원래 동작인 무한 append).
+
+    Returns: 회전했으면 회전 직전 크기(bytes), 아니면 0. (테스트용 — 운영 경로는 무시)
+    """
+    try:
+        if rotate_mb is None:
+            rotate_mb = int(getattr(runtime_settings, "CRASH_LOG_ROTATE_MB", 0) or 0)
+        if keep is None:
+            keep = int(getattr(runtime_settings, "CRASH_LOG_KEEP_GENERATIONS", 0) or 0)
+        if rotate_mb <= 0 or keep <= 0 or not os.path.exists(path):
+            return 0
+        size = os.path.getsize(path)
+        if size < rotate_mb * 1024 * 1024:
+            return 0
+        oldest = "%s.%d" % (path, keep)
+        if os.path.exists(oldest):
+            os.remove(oldest)
+        for g in range(keep - 1, 0, -1):
+            src = "%s.%d" % (path, g)
+            if os.path.exists(src):
+                os.replace(src, "%s.%d" % (path, g + 1))
+        os.replace(path, "%s.1" % path)
+        logger.info(
+            "[FaultHandler] 로테이션 — %.1fMB >= %dMB 임계 → %s.1 (보관 %d세대)",
+            size / 1024.0 / 1024.0, rotate_mb, os.path.basename(path), keep)
+        return size
+    except Exception as e:
+        logger.warning("[FaultHandler] 로테이션 실패 (무해, append 계속): %s", e)
+        return 0
+
+
 def main():
     import traceback as _tb
 
@@ -15252,11 +15313,24 @@ def main():
     #        — 크래시 즉시 전 스레드 트레이스 덤프
     #        — Windows: AddVectoredExceptionHandler 등록 → 0xC0000409 포함 치명 예외 포착
     #   ② faulthandler.dump_traceback_later(timeout=30, repeat=True)
-    #        — 30초 동안 GIL 해제 안 되면(COM BlockRequest 행 등) 주기적 트레이스 덤프
+    #        — **30초마다 무조건** 전 스레드 트레이스 덤프 (아래 🔴 참조)
     #        — 15:09 크래시 재현 시: _scheduler_tick 안에서 무엇이 30초 블로킹했는지 즉시 확인
     #   ③ atexit: 정상 종료 시 "CLEAN EXIT" 마커 → 크래시 여부 구별
     #
-    # 파일: logs/crash_fault.log (append — 이전 세션 로그 누적 보관)
+    # 🔴 [MW0602 436차 주석 정정 — 값 불변] 이 자리에는 원래 ②가 *"30초 동안 GIL 해제
+    #    안 되면(COM BlockRequest 행 등) 주기적 트레이스 덤프"*라고 적혀 있었다. 즉
+    #    **행 감지기**처럼 읽혔다. 그렇지 않다 — `dump_traceback_later(repeat=True)`는
+    #    행 여부를 전혀 보지 않고 타이머가 만료될 때마다 무조건 덤프한다.
+    #    실측(0806 점검 §8): 세션 6.9시간에 덤프 **840회** vs 무조건 주기 기댓값
+    #    **828회** 일치. 누적 22,609회 ≈ 97세션 × ~830회.
+    #    → "Timeout (0:00:30)!" 블록이 파일에 2만 개 있는 것은 **행이 2만 번 났다는
+    #      뜻이 아니다**(419차 "죽은 상수" 계열의 주석-실동작 괴리였다).
+    #    → 동작은 그대로 둔다. 30초 해상도가 크래시 직전 구간의 진단 가치이므로,
+    #      늘리면 230차가 넣은 목적 자체가 훼손된다. 대신 크기만 관리한다(아래 로테이션).
+    #
+    # 파일: logs/crash_fault.log
+    #   - append (세션 누적) + **크기 기반 로테이션** (436차, CRASH_LOG_ROTATE_MB)
+    #   - 로테이션 없으면 하루 ~1.7MB씩 무한 증가 — 실측 44.7MB/97세션에서 도입.
     # 인코딩: faulthandler는 fd에 직접 ASCII 바이트 씀 → BOM·인코딩 지정 불필요
     _fault_file = None
     try:
@@ -15267,6 +15341,9 @@ def main():
 
         _fault_path = os.path.join("logs", "crash_fault.log")
         os.makedirs("logs", exist_ok=True)
+
+        # [MW0602 436차] 파일을 **열기 전에** 회전시켜야 fd가 옛 파일을 잡지 않는다.
+        _rotate_crash_log(_fault_path)
 
         # append + no encoding → faulthandler가 fd에 직접 ASCII 쓰므로 충돌 없음
         _fault_file = open(_fault_path, "a")
