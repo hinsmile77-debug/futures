@@ -113,8 +113,8 @@ MOCK_POPUP_MIN_WAIT = 8          # 구버전 호환용 상수 -- _wait_for_conne
 PASSWORD_OVERRIDE = None         # Windows 자격증명 관리자(cybosplus)에서 읽음
 
 # ── 브로커 지정: --broker creon|cybos 인수 우선, 없으면 exe 존재 여부로 자동 감지 ──
-# CYBOS_PLUS.bat → --broker cybos
-# CREON_PLUS.bat → --broker creon
+# LAUNCH_API.bat / start_mireuk.bat → machine.cfg 의 BROKER 값을 그대로 전달
+#   BROKER=cybos → --broker cybos  /  BROKER=creon → --broker creon
 _CREON_EXE_PATH = r"C:\CREON\STARTER\coStarter.exe"
 _CYBOS_EXE_PATH = r"C:\DAISHIN\STARTER\ncStarter.exe"
 

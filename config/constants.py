@@ -34,6 +34,33 @@ FID_BASIS           = 183   # 시장베이시스 (선물시세, 키움 자체 �
 FID_UPPER_LIMIT     = 305   # [키움 전용/휴면] 선물 당일 상한가 (파생실시간상하한)
 FID_LOWER_LIMIT     = 306   # [키움 전용/휴면] 선물 당일 하한가 (파생실시간상하한)
 
+# ── Cybos ServerType (CpUtil.CpCybos.ServerType) ──────────────
+# [2026-08-06 실측 확정] 실서버 접속 상태에서 직접 조회해 값을 확정했다:
+#     IsConnect=1 / ServerType=2  → 실서버
+# 따라서 1=모의투자, 2=실서버 다. 0은 미연결이다.
+#
+# ⚠ 이 매핑이 코드베이스 3곳에 매직넘버로 흩어져 있었고 그중 2곳이 **반대로**
+# 적혀 있었다(`scripts/cybos_plus_preflight.py`, `scripts/cybos5_preflight.py`).
+# 그 결과 런처 로그가 모의서버를 "실거래"로, 실서버를 "모의투자"로 기록해 왔다 —
+# 후자는 운영자가 로그만 보고 실서버를 모의로 착각하는 방향의 오류다.
+# 새로 ServerType을 해석하는 코드는 반드시 이 상수를 쓸 것. 리터럴 금지.
+CYBOS_SERVER_TYPE_DISCONNECTED = 0
+CYBOS_SERVER_TYPE_SIMULATION   = 1   # 모의투자
+CYBOS_SERVER_TYPE_REAL         = 2   # 실서버 (실자금)
+
+
+def is_cybos_simulation(server_type) -> bool:
+    """Cybos ServerType 값이 모의투자 서버인지 판정한다.
+
+    문자열/None 등 비정상 입력은 **모의로 간주하지 않는다** — 판정 불능일 때
+    실서버 쪽으로 기울여야 안전하기 때문이다(모의로 오판하면 실자금이 위험).
+    """
+    try:
+        return int(server_type) == CYBOS_SERVER_TYPE_SIMULATION
+    except (TypeError, ValueError):
+        return False
+
+
 # 실시간 타입 코드 — OnReceiveRealData sRealType 파라미터는 한국어 명칭
 RT_FUTURES      = "선물시세"      # 선물 체결 틱 (FC0 해당)
 RT_FUTURES_HOGA = "선물호가잔량"   # 선물 호가 (FH0 해당)

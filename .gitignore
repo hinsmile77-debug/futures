@@ -107,9 +107,10 @@ register_eod_scheduler.ps1
 
 # 머신 전용 런처 (dev 브랜치 공유 제외 -- 통합 런처: LAUNCH_API.bat, start_mireuk.bat)
 # MW0601 전용
-CYBOS_PLUS.bat
+# [2026-08-06] CYBOS_PLUS.bat / start_mireuk_Cybos.bat 삭제됨 — LAUNCH_API.bat +
+# start_mireuk.bat(machine.cfg BROKER 분기)이 실제 스케줄 등록 런처이고, 구버전 2개는
+# 같은 로그파일(cybos_plus_launch.log)에 써서 사후 분석을 오염시켰다.
 CYBOS5.bat
-start_mireuk_Cybos.bat
 # MW0602 전용
 CREON_PLUS.bat
 start_mireuk_CREON.bat

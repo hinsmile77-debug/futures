@@ -55,8 +55,13 @@ try:
     from config.secrets import ACCOUNT_NO, ACCOUNT_PWD, APP_KEY, APP_SECRET
     from config.secrets import KAKAO_TOKEN, BOK_API_KEY, FRED_API_KEY
     from config.secrets import SLACK_BOT_TOKEN as _SECRET_SLACK_TOKEN
+    try:
+        from config.secrets import ACCOUNT_GOODS_CODE
+    except ImportError:      # 구버전 secrets.py — 선물 상품코드 기본값
+        ACCOUNT_GOODS_CODE = "50"
 except ImportError:
     ACCOUNT_NO = ""
+    ACCOUNT_GOODS_CODE = "50"
     ACCOUNT_PWD = ""
     APP_KEY = ""
     APP_SECRET = ""

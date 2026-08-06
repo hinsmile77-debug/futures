@@ -25,9 +25,13 @@
 ### MW0601 전용 (git 추적 제외)
 | 파일 | 설명 |
 |---|---|
-| `CYBOS_PLUS.bat` | Cybos Plus API 연결 런처 (구버전) |
-| `CYBOS5.bat` | Cybos Plus 별도 런처 (구버전) |
-| `start_mireuk_Cybos.bat` | 미륵이 Cybos 실행 런처 (구버전) |
+| `CYBOS5.bat` | Cybos5 HTS 세션 런처 (스케줄 등록: `Cybos5_HTS` 08:56) |
+
+> [2026-08-06] `CYBOS_PLUS.bat` / `start_mireuk_Cybos.bat` **삭제됨.**
+> 실제 스케줄에 등록된 것은 `LAUNCH_API.bat`(`Cybos Plus` 08:35)과
+> `start_mireuk.bat`(`미륵이` 08:40)이며, 둘 다 `machine.cfg`의 `BROKER`로
+> cybos/creon을 분기한다. 삭제한 구버전 2개는 같은 로그파일에 기록해
+> 사후 분석 시 어느 런처의 출력인지 구분할 수 없게 만들었다.
 
 ### MW0602 전용 (git 추적 제외)
 | 파일 | 설명 |
@@ -137,8 +141,7 @@ dev 브랜치 (공유)
 MW0601 로컬만 존재 (gitignore)
 ├── machine.cfg               ← BROKER=cybos
 ├── register_eod_scheduler.ps1 ← 이 PC 사용자 경로로 하드코딩
-├── CYBOS_PLUS.bat            ← 구버전 (사용 중이면 유지, 아니면 삭제 가능)
-└── start_mireuk_Cybos.bat
+└── CYBOS5.bat                ← Cybos5 HTS 세션 (08:56 스케줄)
 
 MW0602 로컬만 존재 (gitignore)
 ├── machine.cfg               ← BROKER=creon

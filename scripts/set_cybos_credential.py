@@ -26,10 +26,12 @@ _BROKER_INFO = {
         "bat_start": "start_mireuk_CREON.bat",
         "label":    "CREON Plus",
     },
+    # [2026-08-06] 구버전 전용 런처(CYBOS_PLUS.bat / start_mireuk_Cybos.bat) 삭제 →
+    # machine.cfg BROKER 로 분기하는 통합 런처 이름으로 교체.
     "cybos": {
         "target":   "cybosplus",
-        "bat_login": "CYBOS_PLUS.bat",
-        "bat_start": "start_mireuk_Cybos.bat",
+        "bat_login": "LAUNCH_API.bat",
+        "bat_start": "start_mireuk.bat",
         "label":    "CYBOS Plus",
     },
 }

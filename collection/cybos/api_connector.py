@@ -7,6 +7,7 @@ import time
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 from logging_system.log_manager import log_manager
+from config.constants import is_cybos_simulation
 
 try:
     import pythoncom
@@ -34,7 +35,13 @@ CYBOS_RUNTIME_HINT = (
     "a running U-CYBOS/CYBOS Plus login session, and enabled futures trading."
 )
 
-CYBOS_GOODS_CODE_FUTURES = "50"
+# 상품관리구분코드 — 계좌 "333-042073-50"의 뒤 2자리.
+# secrets.ACCOUNT_GOODS_CODE 를 단일 출처로 삼고, 없으면 선물 기본값 "50".
+try:
+    from config.secrets import ACCOUNT_GOODS_CODE as _ACCOUNT_GOODS_CODE
+except ImportError:  # pragma: no cover - secrets.py 미배포 환경
+    _ACCOUNT_GOODS_CODE = ""
+CYBOS_GOODS_CODE_FUTURES = str(_ACCOUNT_GOODS_CODE or "50").strip()
 CYBOS_CONCLUSION_PROGID = "Dscbo1.CpFConclusion"
 CYBOS_FUTURES_BALANCE_PROGID = "CpTrade.CpTd0723"
 CYBOS_FUTURES_DAILY_PNL_PROGID = "CpTrade.CpTd6197"
@@ -438,12 +445,13 @@ class CybosAPI:
         if tag == "ACCOUNT_CNT":
             return str(len(self.get_account_list()))
         if tag == "GETSERVERGUBUN":
-            # Cybos ServerType: 1=simulation, 2=real (same "1"=mock contract as Kiwoom)
+            # 반환값은 키움 호환 계약: "1"=모의투자, "0"=실서버.
+            # ServerType 원값 해석은 config.constants 단일 출처를 쓴다
+            # (1=모의 / 2=실 — 2026-08-06 실서버 실측 확정).
             if self._cp_cybos is None:
                 return ""
             try:
-                server_type = int(self._cp_cybos.ServerType)
-                return "1" if server_type == 1 else "0"
+                return "1" if is_cybos_simulation(self._cp_cybos.ServerType) else "0"
             except Exception:
                 return "0" if self.is_connected else ""
         return ""
