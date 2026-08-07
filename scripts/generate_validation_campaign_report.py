@@ -6351,22 +6351,31 @@ def eval_exit_fill_slippage_watch(days: int) -> dict:
     계산이 가정하는 slippage_ticks_per_side(=1.0, 0.02pt)이 실측과 맞는지 검증할
     데이터가 그때까지 전혀 없었다.
 
-    fast_reversal_watch·chase_foreign_combo_watch와 동일 원칙 — 이 실측치로
-    slippage_ticks_per_side를 "즉시 자동 재보정"하지 않는다(캠페인 전 채널의
-    공통 가정이므로 바꾸려면 §3 사전등록 원칙에 따라 검증 시계 리셋이 필요).
-    verdict는 항상 OBSERVE로 고정, min_samples_for_note 이상 쌓이면 재보정
-    검토가 필요하다는 note만 노출한다.
+    [439차 P2] 관찰 → **판정**으로 승격하면서 오염을 걷어냈다.
+
+    🔴 이 채널은 자기 경보를 스스로 억제하고 있었다 — note 조건이 `풀링 평균 >
+    가정`인데 풀링 평균이 **봉중(stop_intrabar) 경로에 오염**돼 음수로 끌려가
+    조건이 성립할 수 없었다(풀링 -0.1816 / 봉중 -1.8854 / 유효 +0.0492).
+    봉중은 `price_hint`가 봉 고저가에서 유도한 **허구의 스톱가**라 주문(시장가)과
+    무관하다 — 슬리피지 추정에서 제외한다(P3 [48-T]에서 확정).
+
+    경로 분류는 `scripts/bar_stop_path_watch.py:_path_of()` **단일 소스**를 쓴다.
+    판정 기준·정직성 고지는 config/settings.py `exit_fill_slippage_watch` 참조.
+    ⚠ FAIL이어도 `slippage_ticks_per_side`를 **자동으로 바꾸지 않는다**(§3).
     """
     days_cfg = VALIDATION_CAMPAIGN.get("exit_fill_slippage_watch", {})
     min_note = int(days_cfg.get("min_samples_for_note", 20))
-    out = {"verdict": "OBSERVE", "assumed_ticks_per_side": float(
+    min_n = int(days_cfg.get("min_samples", 60))
+    min_d = int(days_cfg.get("min_days", 8))
+    alpha = float(days_cfg.get("alpha", 0.05))
+    out = {"verdict": "INSUFFICIENT", "assumed_ticks_per_side": float(
         VALIDATION_CAMPAIGN.get("slippage_ticks_per_side", 1.0))}
     cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(_TS_FMT)
 
     try:
         with _conn(TRADES_DB) as conn:
             rows = conn.execute(
-                """SELECT reason, slippage_pts FROM exit_fill_slippage
+                """SELECT ts, reason, hint_source, slippage_pts FROM exit_fill_slippage
                    WHERE ts >= ?""",
                 (cutoff,),
             ).fetchall()
@@ -6380,10 +6389,13 @@ def eval_exit_fill_slippage_watch(days: int) -> dict:
         return out
 
     vals = [float(r["slippage_pts"]) for r in rows]
+    # ⚠ `avg_slippage_pts`는 **풀링값 그대로 둔다**(의미 변경 금지 — metrics json
+    #   소비처와 과거 주차 대조가 이 키를 읽는다). 판정은 아래 유효-hint로 한다.
     out["avg_slippage_pts"] = round(sum(vals) / len(vals), 4)
     out["max_slippage_pts"] = round(max(vals), 4)
     out["assumed_slippage_pts_per_side"] = round(
         out["assumed_ticks_per_side"] * TICK_SIZE, 4)
+    assumed = out["assumed_slippage_pts_per_side"]
 
     by_reason = {}
     for r in rows:
@@ -6396,13 +6408,88 @@ def eval_exit_fill_slippage_watch(days: int) -> dict:
         for k, v in by_reason.items()
     }
 
-    if out["n"] >= min_note and out["avg_slippage_pts"] > out["assumed_slippage_pts_per_side"]:
+    # ── 유효-hint 부분표본 분리 ([48]과 단일 소스) ──────────────────────────
+    try:
+        from scripts.bar_stop_path_watch import _path_of as _bsp_path_of, BAR as _BAR
+    except Exception as e:
+        out["error"] = "경로 분류 임포트 실패: %s" % e
+        return out
+
+    valid, bar_vals = [], []
+    for r in rows:
+        v = float(r["slippage_pts"])
+        if _bsp_path_of(r["hint_source"], r["reason"])[0] == _BAR:
+            bar_vals.append(v)
+        else:
+            valid.append((str(r["ts"])[:10], v))
+    out["n_bar_excluded"] = len(bar_vals)
+    out["avg_bar_pts"] = round(sum(bar_vals) / len(bar_vals), 4) if bar_vals else None
+    out["n_valid"] = len(valid)
+    if not valid:
+        out["reason"] = "유효-hint 표본 0건 (전부 봉중 경로 — hint가 허구라 제외)"
+        return out
+
+    vv = [x for _, x in valid]
+    out["avg_valid_pts"] = round(sum(vv) / len(vv), 4)
+    out["valid_over_assumed_mult"] = (round(out["avg_valid_pts"] / assumed, 2)
+                                      if assumed else None)
+    day_map = {}
+    for d, x in valid:
+        day_map.setdefault(d, []).append(x)
+    days_sorted = sorted(day_map)
+    out["n_valid_days"] = len(days_sorted)
+    # 일자단위 = 판정 단위(313차). "가정 초과"를 부호로 삼아 부호검정한다.
+    day_means = [float(np.mean(day_map[d])) for d in days_sorted]
+    out["day_means"] = {d: round(m, 4) for d, m in zip(days_sorted, day_means)}
+    out["avg_valid_day_pts"] = round(float(np.mean(day_means)), 4)
+    out["median_valid_day_pts"] = round(float(np.median(day_means)), 4)
+    out.update(_paired_day_summary([m - assumed for m in day_means], alpha))
+    out["days_over_assumed"] = int(sum(1 for m in day_means if m > assumed))
+    out["days_majority_over"] = bool(out["days_over_assumed"] * 2 > out["n_valid_days"])
+    # 세 지표가 만장일치가 아니면 소표본 일자·이상치가 끌고 있다는 뜻이다(313차).
+    _sig = (out["avg_valid_pts"] > assumed,          # 이벤트 평균
+            out["avg_valid_day_pts"] > assumed,      # 일자 평균(이상치 민감)
+            out["days_majority_over"])               # 일자 과반(이상치 강건)
+    out["event_day_split"] = not (all(_sig) or not any(_sig))
+
+    if out["n"] >= min_note and out["avg_valid_pts"] > assumed:
         out["note"] = (
-            f"실측 평균슬리피지({out['avg_slippage_pts']:.3f}pt)가 캠페인 가정"
-            f"({out['assumed_slippage_pts_per_side']:.3f}pt)을 초과 — "
-            f"slippage_ticks_per_side 재보정 여부를 주간회의에서 검토할 가치 있음"
-            f"(§3 사전등록 원칙 — 즉시 자동 변경 금지)"
+            "유효-hint 실측 평균(%.4fpt)이 캠페인 가정(%.4fpt)의 %.1f배 — "
+            "slippage_ticks_per_side 재보정 여부를 주간회의에서 검토할 가치 있음"
+            "(§3 사전등록 원칙 — 즉시 자동 변경 금지). ⚠ 풀링 평균(%.4fpt)은 봉중 "
+            "경로 %d건에 오염돼 이 경보를 억제하고 있었다(439차 P2)."
+            % (out["avg_valid_pts"], assumed, out["avg_valid_pts"] / assumed,
+               out["avg_slippage_pts"], out["n_bar_excluded"])
         )
+
+    if out["n_valid"] < min_n or out["n_valid_days"] < min_d:
+        out["reason"] = ("유효-hint 표본 부족 (%d건<%d 또는 거래일 %d<%d) — 판정 보류"
+                         % (out["n_valid"], min_n, out["n_valid_days"], min_d))
+        return out
+
+    # 🔴 방향은 **일자 과반**으로 잡는다 — 일자 평균이 아니다.
+    #   부호검정은 양측이라 "9일이 가정 **미만**이고 1일만 폭등"해도 유의가 뜨고,
+    #   그 1일이 평균을 끌어올려 `avg_valid_day_pts > assumed`까지 참이 된다.
+    #   그러면 일자단위로 내려온 이유(이상치 강건성) 자체가 무너진다.
+    #   과반을 쓰면 부호검정이 세는 것(초과일 수)과 방향 판정이 같은 통계량이 된다.
+    if out.get("significant") and out["days_majority_over"]:
+        out["verdict"] = "FAIL"
+        out["reason"] = (
+            "초과일이 과반이고(일자 평균 %+.4fpt vs 가정 %.4fpt) 부호검정 p=%.4f < %.2f "
+            "(초과일 %d/%d) — 왕복비용 가정이 실측을 못 따라간다. "
+            "`slippage_ticks_per_side` 재보정을 **주간회의 안건으로** 올릴 것"
+            "(⚠ 자동 변경 금지 — 바꾸면 §3에 따라 검증 시계 리셋)"
+            % (out["avg_valid_day_pts"], assumed, out.get("sign_p", 1.0), alpha,
+               out["days_over_assumed"], out["n_valid_days"]))
+    else:
+        out["verdict"] = "PASS"
+        out["reason"] = (
+            "일자단위 평균 %+.4fpt vs 가정 %.4fpt, 초과일 %d/%d, 부호검정 p=%.4f — "
+            "**가정과 구분되지 않는다**(가정이 옳다고 증명된 것이 아니다). "
+            "이벤트단위는 %+.4fpt(가정의 %.1f배)지만 313차상 판정 단위는 일자다"
+            % (out["avg_valid_day_pts"], assumed, out["days_over_assumed"],
+               out["n_valid_days"], out.get("sign_p", 1.0),
+               out["avg_valid_pts"], (out["avg_valid_pts"] / assumed) if assumed else 0))
     return out
 
 
@@ -7146,11 +7233,14 @@ def build_report(days: int) -> tuple:
         cfc.get("n_combo", 0),
         format(cfc["total_pnl_krw"], ",.0f") if cfc.get("n_combo") else "—",
         cfc.get("n_matched", 0)))
-    L.append("| [17] 청산 체결 슬리피지 관찰 | %s | n=%s 평균=%spt (가정 %spt) |" % (
-        _fmt_verdict(efs["verdict"]),
-        efs.get("n", 0),
-        efs.get("avg_slippage_pts", "—"),
-        efs.get("assumed_slippage_pts_per_side", "—")))
+    # [439차 P2] 헤드라인을 **유효-hint 기준**으로 바꾼다 — 풀링 평균은 봉중 경로
+    # (hint가 허구)에 오염돼 음수로 끌려가 이 채널의 경보를 억제하고 있었다.
+    L.append("| [17] 청산 체결 슬리피지 | %s | 유효-hint n=%s 일자평균=%spt / 이벤트 %spt "
+             "(가정 %spt) · 봉중 %s건 제외 · 일자 p=%s |" % (
+        _fmt_channel_verdict(efs),
+        efs.get("n_valid", "—"), efs.get("avg_valid_day_pts", "—"),
+        efs.get("avg_valid_pts", "—"), efs.get("assumed_slippage_pts_per_side", "—"),
+        efs.get("n_bar_excluded", 0), efs.get("sign_p", "—")))
     L.append("| [18] RegimeExhaustionGate(탈진반전) | %s | 발동=%s건 누적hyp=%spt "
               "(STOP=%s/TP1=%s/NEITHER=%s) |" % (
         _fmt_verdict(reg["verdict"]),
@@ -8099,13 +8189,63 @@ def build_report(days: int) -> tuple:
     L.append("")
 
     # [17] 청산 체결 슬리피지 관찰 상세
-    L.append("## [17] 청산 체결 슬리피지 관찰 (369차, 0723 정기점검, 관찰 전용 — 정책 게이트 아님)")
+    L.append("## [17] 청산 체결 슬리피지 (369차 · 439차 P2로 관찰→판정 승격)")
     L.append("")
     L.append("- 관찰 대상: 모든 청산 주문의 의도가(price_hint) vs 실체결가(fill_price)")
     L.append("  (exit_fill_slippage 테이블, main.py::_ts_record_exit_fill_slippage())")
-    L.append("- 표본 n=%s, 평균 슬리피지 %s pt, 최대 %s pt (캠페인 가정 %s pt/편도)" % (
-        efs.get("n", 0), efs.get("avg_slippage_pts", "—"),
-        efs.get("max_slippage_pts", "—"), efs.get("assumed_slippage_pts_per_side", "—")))
+    L.append("- 판정: **%s** — %s" % (_fmt_channel_verdict(efs),
+                                     efs.get("reason", efs.get("error", "—"))))
+    L.append("")
+    L.append("### [17-V] 유효-hint 부분표본 — 판정 근거 (439차 P2)")
+    L.append("")
+    L.append("> 🔴 **이 채널은 자기 경보를 스스로 억제하고 있었다.** note 조건이")
+    L.append("> `풀링 평균 > 가정`인데, 풀링 평균이 **봉중 경로에 오염**돼 음수로 끌려가")
+    L.append("> 조건이 성립할 수 없었다. 봉중은 `price_hint`가 봉 고저가에서 유도한")
+    L.append("> **허구의 스톱가**라 주문(시장가)과 무관하다 — 제외가 옳다([48-T]에서 확정).")
+    L.append("> 경로 분류는 `bar_stop_path_watch._path_of()` **단일 소스**를 재사용한다.")
+    L.append("")
+    L.append("| 구분 | n | 평균(pt) | 가정 대비 | 경보 조건 성립 |")
+    L.append("|---|---|---|---|---|")
+    _asm = efs.get("assumed_slippage_pts_per_side") or 0.0
+    for _nm, _n, _av in (
+            ("풀링(구 헤드라인)", efs.get("n"), efs.get("avg_slippage_pts")),
+            ("봉중 — hint 허구, **제외**", efs.get("n_bar_excluded"), efs.get("avg_bar_pts")),
+            ("**유효-hint(틱/종가/목표)**", efs.get("n_valid"), efs.get("avg_valid_pts"))):
+        if _n is None or _av is None:
+            continue
+        L.append("| %s | %s | %+.4f | %s | %s |" % (
+            _nm, _n, _av,
+            ("%.1f배" % (_av / _asm)) if _asm else "—",
+            "✅ 예" if _av > _asm else "❌ 아니오"))
+    L.append("")
+    L.append("- 일자단위(313차 — **판정 단위**): 평균 %s pt · 중앙값 %s pt · "
+             "초과일 **%s/%s**(과반 %s) · 부호검정 **p=%s**" % (
+                 efs.get("avg_valid_day_pts", "—"), efs.get("median_valid_day_pts", "—"),
+                 efs.get("days_over_assumed", "—"), efs.get("n_valid_days", "—"),
+                 "예" if efs.get("days_majority_over") else "아니오",
+                 efs.get("sign_p", "—")))
+    L.append("  - 🔴 방향 판정은 **일자 과반**이 기준이다 — 일자 *평균*이 아니다.")
+    L.append("    부호검정은 양측이라 \"9일이 가정 미만이고 1일만 폭등\"해도 유의가 뜨고,")
+    L.append("    그 1일이 평균을 끌어올려 평균 기준이면 FAIL이 나버린다 — 일자단위로")
+    L.append("    내려온 이유(이상치 강건성)가 무너진다. 과반을 쓰면 부호검정이 세는")
+    L.append("    통계량과 방향 판정이 **같은 것**이 된다(439차 P2, 회귀 테스트 (4)).")
+    if efs.get("day_means"):
+        L.append("- 일자별 유효-hint 평균: %s" % " / ".join(
+            "%s %+.3f" % (d[5:], v) for d, v in sorted(efs["day_means"].items())))
+    if efs.get("event_day_split"):
+        L.append("- 🔴 **이벤트단위와 일자단위의 부호가 갈린다** — 소표본 일자가 동일")
+        L.append("  가중을 받아 끌고 있다는 뜻이다. 313차상 **일자단위가 판정 단위**이며,")
+        L.append("  이벤트 수치만 보고 상수를 바꾸면 372차가 이상치로 PSI 임계를 바꿀 뻔한")
+        L.append("  것과 같은 함정이다.")
+    L.append("")
+    L.append("> ⚠ **사전등록 정직성 고지** — 첫 관측치는 이 승격 **전에 이미 봤다**")
+    L.append("> ([48]의 고지와 같은 취급). 다만 비교 임계 **0.02pt는 사후에 고른 값이")
+    L.append("> 아니다** — 369차에 고정된 모델 가정(`slippage_ticks_per_side=1.0`)을")
+    L.append("> 그대로 쓴다. 움직인 것은 임계가 아니라 **오염 제거와 검정 단위**다.")
+    L.append("> ⚠ **PASS는 \"가정이 옳다고 증명됐다\"가 아니라 \"구분되지 않는다\"**이다.")
+    L.append("> ⚠ FAIL이어도 `slippage_ticks_per_side`를 **자동으로 바꾸지 않는다** —")
+    L.append("> 캠페인 전 채널의 왕복비용에 쓰이므로 §3에 따라 검증 시계 리셋이 필요하다.")
+    L.append("")
     if efs.get("by_reason"):
         L.append("")
         L.append("| 청산사유 | n | 평균 슬리피지(pt) |")
