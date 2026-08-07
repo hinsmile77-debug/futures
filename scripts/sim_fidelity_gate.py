@@ -85,6 +85,7 @@ except Exception:
     pass
 
 from config.settings import TRADES_DB, VALIDATION_CAMPAIGN  # noqa: E402
+from config.constants import MINI_FUTURES_PT_VALUE  # noqa: E402
 
 _CR = VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {})
 
@@ -105,8 +106,33 @@ def _actual_by_entry(since: str) -> dict:
     return {r[0]: float(r[1] or 0.0) for r in rows}
 
 
-def compute(since: str = "2026-07-05") -> dict:
-    """정본 재생기([23-B] current)와 실제 실현손익을 포지션 단위로 대조."""
+def _actual_krw_by_entry(since: str) -> dict:
+    """[MW0601 440차 신설] entry_ts → 실제 실현손익(pt, **계약가중**).
+
+    ⚠ 위 `_actual_by_entry()`의 `SUM(pnl_pts)`는 **레그별 계약당 pt의 단순합**이라
+    계약가중이 아니다. 예: 3계약 포지션이 (1계약 +0.69) + (2계약 +1.35)로 나가면
+    SUM(pnl_pts)=2.04 지만 실제 실현은 0.69×1 + 1.35×2 = **3.39pt·계약**이다.
+
+    이 함수는 진단 표기용으로만 쓴다 — **판정식 입력은 바꾸지 않았다.** 사전등록된
+    합격선의 입력을 사후에 교체하면 그 자체로 §9 위반이라, 단위 불일치는 리포트가
+    양쪽 수치를 나란히 찍어 **주간회의가 결정**하게 한다(440차 판단).
+    """
+    src = _CR.get("entry_source", "SYSTEM_AUTO")
+    with sqlite3.connect(TRADES_DB) as c:
+        rows = c.execute(
+            "SELECT entry_ts, SUM(COALESCE(net_pnl_krw, pnl_krw)) FROM trades "
+            "WHERE entry_ts >= ? AND exit_ts IS NOT NULL AND entry_source = ? "
+            "GROUP BY entry_ts", (since, src)).fetchall()
+    return {r[0]: float(r[1] or 0.0) / float(MINI_FUTURES_PT_VALUE) for r in rows}
+
+
+def compute(since: str = "2026-07-05", engine: str = None) -> dict:
+    """정본 재생기([23-B] current)와 실제 실현손익을 포지션 단위로 대조.
+
+    engine: None이면 사전등록된 현행 엔진(settings sim_fidelity_gate["engine"]).
+            "v1"/"v2"를 명시하면 그 엔진으로 계산한다 — 리포트가 개선폭을 감사할 수
+            있도록 양쪽을 각각 부른다(440차).
+    """
     try:
         from scripts.tp1_geometry_shadow import (
             compute as _geo_compute, _load_atr_map, _geometry,
@@ -114,14 +140,18 @@ def compute(since: str = "2026-07-05") -> dict:
     except Exception as e:  # 정본 채널이 죽으면 게이트는 판정하지 않는다(막지도 않는다)
         return {"error": "%s: %s" % (type(e).__name__, e), "pairs": []}
 
-    out = _geo_compute(since)
+    out = _geo_compute(since, engine=engine)
     rows = (out.get("rows") or {}).get("current") or []
     ts_list = (out.get("rows_ts") or {}).get("current") or []
+    qty_list = (out.get("rows_qty") or {}).get("current") or []
     if len(rows) != len(ts_list):
         return {"error": "rows/rows_ts 길이 불일치 (%d/%d)" % (len(rows), len(ts_list)),
                 "pairs": []}
+    if len(qty_list) != len(rows):
+        qty_list = [1] * len(rows)
 
     actual = _actual_by_entry(since)
+    actual_krw = _actual_krw_by_entry(since)
     atr_map = _load_atr_map(since)
 
     # 진입별 hurst/horizon — R(하드스톱 거리) 산출에 필요하다.
@@ -133,7 +163,7 @@ def compute(since: str = "2026-07-05") -> dict:
             (since, src)).fetchall()}
 
     pairs, days = [], set()
-    for (outcome, sim_pt), ets in zip(rows, ts_list):
+    for (outcome, sim_pt), ets, q in zip(rows, ts_list, qty_list):
         act = actual.get(ets)
         if act is None:
             continue
@@ -144,11 +174,17 @@ def compute(since: str = "2026-07-05") -> dict:
         R = _geometry(hz, hb, float(atr), None, None)[0]   # 현행 기하의 스톱 거리
         if not R or R <= 0:
             continue
+        q = int(q or 1) or 1
         pairs.append({"ts": ets, "sim": float(sim_pt), "actual": act,
-                      "R": float(R), "bias_R": (float(sim_pt) - act) / float(R)})
+                      "R": float(R), "bias_R": (float(sim_pt) - act) / float(R),
+                      # 440차 진단 전용 — 판정식은 위 두 필드만 쓴다.
+                      "qty": q,
+                      "sim_w": float(sim_pt) * q,
+                      "actual_w": actual_krw.get(ets, 0.0)})
         days.add(ets[:10])
 
     return {"since": since, "pairs": pairs, "n_days": len(days),
+            "engine": out.get("engine"),
             "n_geo_trades": out.get("n_trades"), "error": None}
 
 
@@ -191,11 +227,49 @@ def summarize(out: dict) -> dict:
         reason = ("재현 실패 — %s (n=%d/%d일) → 하위 채널 판정 정지"
                   % (" · ".join(why), n, nd))
 
+    # ── [MW0601 440차] 진단 지표 — **판정에 관여하지 않는다** ────────────────────
+    # (a) MAE: 모델이 개별 포지션을 얼마나 맞히는가. 총합은 오차가 상쇄되면
+    #     좋아 보일 수 있어(v1이 정확히 그랬다) 모델 품질의 지표로 부적합하다.
+    # (b) 계약가중 총합: `_actual_by_entry()`가 레그 pt 단순합이라 계약가중이
+    #     아니다(그 함수 주석 참조). 단위를 맞춘 값을 나란히 찍는다.
+    # (c) 부호판정 안정성: Σactual이 분산 대비 0에 가까우면 sign_match는
+    #     아주 작은 편향으로도 뒤집힌다. "부호 불일치"가 재현 실패를 뜻하는지
+    #     아니면 기준의 불안정을 뜻하는지 구분할 근거를 남긴다.
+    mae = statistics.mean(abs(p["bias_R"]) for p in pairs)
+    sim_w = sum(p.get("sim_w", p["sim"]) for p in pairs)
+    act_w = sum(p.get("actual_w", p["actual"]) for p in pairs)
+    try:
+        disp = statistics.pstdev([p["actual"] for p in pairs]) * (n ** 0.5)
+    except statistics.StatisticsError:
+        disp = 0.0
+    sign_margin = (abs(act_tot) / disp) if disp else None
+
     return {"verdict": verdict, "gate": ("OPEN" if ok else "SUSPEND"),
             "reason": reason, "n": n, "n_days": nd,
+            "engine": out.get("engine"),
             "repro_bias_R": round(bias, 4), "repro_bias_R_mean": round(bias_mean, 4),
             "sim_total_pt": round(sim_tot, 4), "actual_total_pt": round(act_tot, 4),
-            "sign_match": sign_ok, "targets": list(_CR.get("targets", []))}
+            "sign_match": sign_ok, "targets": list(_CR.get("targets", [])),
+            # 진단 전용 (440차)
+            "mae_R": round(mae, 4),
+            "sim_total_pt_wq": round(sim_w, 4), "actual_total_pt_wq": round(act_w, 4),
+            "sign_margin_sd": (round(sign_margin, 3) if sign_margin is not None else None)}
+
+
+def compare_engines(since: str) -> dict:
+    """[MW0601 440차] v1/v2 재현 지표를 나란히 계산 — 리포트 감사용.
+
+    "재생기를 고쳤다"는 주장은 개선폭이 보여야 검증된다. 판정은 사전등록된
+    현행 엔진(settings `engine`) 결과만 쓴다 — 이 함수는 표기용이다.
+    """
+    outs = {}
+    for eng in ("v1", "v2"):
+        try:
+            s = summarize(compute(since, engine=eng))
+        except Exception as e:                      # 한쪽이 죽어도 나머지는 찍는다
+            s = {"verdict": "ERROR", "reason": "%s: %s" % (type(e).__name__, e)}
+        outs[eng] = s
+    return outs
 
 
 def main():

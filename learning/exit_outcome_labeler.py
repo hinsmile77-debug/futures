@@ -72,10 +72,14 @@ def _conn(path):
 
 
 def _load_positions(trades_db, since):
+    # [MW0601 440차] entry_horizon·hurst_bucket 추가 — 라이브와 같은 TP1/스톱
+    # 기하를 쓰기 위해 필요하다(build_labels 주석 참조).
     with _conn(trades_db) as c:
         return [dict(r) for r in c.execute(
             "SELECT entry_ts, MAX(exit_ts) AS exit_ts, MIN(direction) AS direction, "
             "       MIN(entry_price) AS entry_price, "
+            "       MIN(entry_horizon) AS entry_horizon, "
+            "       MIN(hurst_bucket) AS hurst_bucket, "
             "       SUM(COALESCE(net_pnl_krw, pnl_krw)) AS pnl_krw "
             "  FROM trades WHERE entry_ts >= ? AND exit_ts IS NOT NULL AND %s "
             " GROUP BY entry_ts ORDER BY entry_ts" % _SYSTEM_AUTO_SQL, (since,))]
@@ -120,7 +124,30 @@ def build_labels(trades_db, pred_db, raw_db, since,
     """포지션 × 분 라벨 행 목록을 만든다.
 
     Returns: list of dict — FEATURE_NAMES + y_hold_better / y_tp1_first + 메타
+
+    ⚠ [MW0601 440차 수정] **호라이즌별 TP1 기하를 쓴다.**
+    ------------------------------------------------------
+    종전에는 호출측이 넘긴 `atr_tp1_mult`(= `ATR_TP1_MULT` = **1.0**, "entry_horizon
+    미지정 시 fallback")를 전 포지션에 그대로 썼다. 라이브 TP1은 374/387차부터
+    호라이즌별(`1m .3 / 3m .5 / 5m .7`)이고 hurst 레짐 배수까지 곱하므로, 라벨러의
+    TP1 거리는 **1.4~3.3배 과대**였다(캠페인 표본 호라이즌 분포: 3m 57 / 5m 49 /
+    1m 11건 — 전건이 영향권). 스톱도 hurst 배수가 빠져 있었다.
+
+    그 결과 오염된 것:
+        · `dist_tp1_atr` 피처   — TP1까지 거리를 실제보다 멀게 본다
+        · `tp1_done` 피처       — 이미 도달했는데 미도달로 읽는다
+        · `y_tp1_first` 라벨    — 도달률이 구조적으로 과소
+    표본을 더 모아도 **잘못 라벨된 표본이 늘 뿐**이라, [41] 게이지가 요구하는
+    267포지션을 기다리기 전에 고쳐야 한다.
+
+    기하는 `scripts/exit_replay.geometry()` 단일 소스에서 가져온다 — 재생기와
+    라벨러가 서로 다른 기하를 쓰면 같은 표류가 반복된다(432차 "3중 정의" 교훈).
+    호라이즌을 모르는 행은 종전대로 호출측 인자를 쓴다(하위호환).
     """
+    try:
+        from scripts.exit_replay import geometry as _geom
+    except Exception:                                   # 순환/경로 문제 시 종전 동작
+        _geom = None
     positions = _load_positions(trades_db, since)
     feats, bars = _load_market(pred_db, raw_db, since)
     rows = []
@@ -134,8 +161,14 @@ def build_labels(trades_db, pred_db, raw_db, since,
         atr = float((f0 or {}).get("atr") or 0.0)
         if px <= 0 or atr <= 0:
             continue
-        stop = px - sign * atr * atr_stop_mult
-        tp1 = px + sign * atr * atr_tp1_mult
+        _hz = p.get("entry_horizon") or None
+        if _geom is not None and _hz:
+            _sp, _tp1p, _, _ = _geom(_hz, p.get("hurst_bucket"), atr)
+            stop = px - sign * _sp
+            tp1 = px + sign * _tp1p
+        else:
+            stop = px - sign * atr * atr_stop_mult
+            tp1 = px + sign * atr * atr_tp1_mult
 
         path = [b for b in bars.get(day, ())
                 if ets[:16] < b[0][:16] <= xts[:16] and b[0][11:16] <= _SESSION_LAST]

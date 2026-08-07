@@ -4692,6 +4692,17 @@ def eval_offline_geometry_channels() -> dict:
                 "reason": "게이트 실행 실패(미적용): %s: %s" % (type(e).__name__, e)}
     out["_sim_fidelity_gate"] = gate
 
+    # [MW0601 440차] v1/v2 엔진 대조 — **표기 전용**이며 위 gate 판정에 관여하지 않는다.
+    # "재생기를 고쳤다"는 주장은 개선폭이 리포트에 남아야 검증 가능하다.
+    # 계산이 두 배 드므로 사전등록 스위치로 끌 수 있다(report_both_engines).
+    if (VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {}) or {}).get("report_both_engines"):
+        try:
+            out["_sim_fidelity_engines"] = _g.compare_engines(_campaign_start()[:10])
+        except Exception as e:
+            out["_sim_fidelity_engines"] = {
+                "v1": {"verdict": "ERROR", "reason": "%s: %s" % (type(e).__name__, e)},
+                "v2": {"verdict": "ERROR", "reason": "%s: %s" % (type(e).__name__, e)}}
+
     if gate.get("gate") == "SUSPEND":
         for key in (gate.get("targets") or []):
             ch = out.get(key)
@@ -8722,6 +8733,24 @@ def build_report(days: int) -> tuple:
     L.append("> ⚠ **사전등록 정직성 고지**: `breakeven` 변형은 이 채널 신설 **전에** 404차")
     L.append("> 후속3 조사에서 이미 1회 측정됐다(현행이 22/23 우세) — 재확인용이지 사전등록된")
     L.append("> 검증이 아니다. 사전등록 가치는 `atr_lock_0.50/0.75`·`bar_range`에 있다.")
+    # ── [MW0601 440차] §25-C 호라이즌 비례 lock 축 신설 고지 ──────────────────
+    _lp = [v for v in (_g25.get("per_variant") or {}) if str(v).startswith("lock_prop_")]
+    if _lp:
+        L.append("> ")
+        L.append("> 🆕 **[MW0601 440차] §25-C 호라이즌 비례 lock 3변형 사전등록** — `%s`."
+                 % "`, `".join(sorted(_lp)))
+        L.append("> offset = **TP1거리 × k** (현행은 ATR×0.25 **고정**). 계기: TP1은 374/387차에")
+        L.append("> 호라이즌별로 분화됐는데(`1m .3 / 3m .5 / 5m .7`) lock만 339차 상수라,")
+        L.append("> \"TP1 이익 중 얼마를 확보하는가\"가 호라이즌에 **반비례**한다 —")
+        L.append("> **1m 83% / 3m 50% / 5m 36%** ([49]가 실측으로 같은 것을 지적).")
+        L.append("> 설계 의도라는 근거가 없고 두 축을 각각 고친 **부작용**으로 보인다.")
+        L.append("> ")
+        L.append("> ⚠ **관측 전 확정된 그리드다** — 0.35(느슨)·0.50·0.75(타이트) 양방향으로")
+        L.append("> 넣어 **단조성**을 본다. 단조가 아니면 특정 값의 표본 우연이다.")
+        L.append("> ⚠ 이 변형은 `entry_horizon`이 필요해 `trades` 조인에 실패한 행이 빠진다 —")
+        L.append("> 그래서 `현행 대비`는 **짝지은 부분집합**으로 계산한다(기존 변형은 전건")
+        L.append("> 일치라 종전 값과 동일). 각 행의 누락 건수는 위 표의 n으로 확인할 것.")
+        L.append("> ⚠ **라이브는 무변경이다** — `TP1_PROTECT_ATR_LOCK_MULT`(0.25) 그대로다.")
     # [MW0602 432차] 이 자리에 있던 0801 경고문("최대 기여 1건만 빼면 부호 역전,
     # 건별 우세 8/23·7/23")은 **더 이상 참이 아니다** — 08-05 기준 표본 49건/11일에서
     # drop-max +16.50 유지, LOO일 최악 +10.00, 건별 우세 28/49로 전부 소멸했다.
@@ -8815,7 +8844,62 @@ def build_report(days: int) -> tuple:
                  % (_gate["repro_bias_R"], _gate.get("repro_bias_R_mean", 0),
                     _gate.get("sim_total_pt", 0), _gate.get("actual_total_pt", 0),
                     _gate.get("sign_match")))
+    if _gate.get("engine"):
+        L.append("- 재생기 엔진: **%s** (`config/settings.py sim_fidelity_gate[\"engine\"]`)"
+                 % _gate["engine"])
     L.append("")
+
+    # ── [MW0601 440차] v1/v2 엔진 대조 — "고쳤다"는 주장의 감사 근거 ────────────
+    _eng = off.get("_sim_fidelity_engines") or {}
+    if _eng:
+        L.append("### 재생기 엔진 대조 (439차 — [47] 해제작업)")
+        L.append("")
+        L.append("| 엔진 | 판정 | MAE(개별정확도) | 편향(중앙) | 총합 시뮬 | 총합 실제 | 부호 |")
+        L.append("|---|---|---|---|---|---|---|")
+        for k, lbl in (("v1", "v1 (435차까지)"), ("v2", "v2 (사다리 편입)")):
+            s = _eng.get(k) or {}
+            if s.get("repro_bias_R") is None:
+                L.append("| %s | %s | — | — | — | — | — |" % (lbl, s.get("verdict", "—")))
+                continue
+            L.append("| %s | %s | **%.4fR** | %+.4fR | %+.2f | %+.2f | %s |"
+                     % (lbl, s.get("verdict", "—"), s.get("mae_R", 0),
+                        s["repro_bias_R"], s.get("sim_total_pt", 0),
+                        s.get("actual_total_pt", 0), s.get("sign_match")))
+        L.append("")
+        _v1, _v2 = _eng.get("v1") or {}, _eng.get("v2") or {}
+        if _v1.get("mae_R") and _v2.get("mae_R"):
+            L.append("- **개별 포지션 정확도(MAE)는 %.4fR → %.4fR (%+.0f%%)로 개선됐다.**"
+                     % (_v1["mae_R"], _v2["mae_R"],
+                        100.0 * (_v2["mae_R"] - _v1["mae_R"]) / _v1["mae_R"]))
+        if _v2.get("sign_margin_sd") is not None:
+            L.append("- ⚠ **부호 판정 안정성: |Σ실제| = %.2f SD.** 실제 총합이 분산 대비 "
+                     "0 근처면 `sign_match`는 아주 작은 편향으로도 뒤집힌다 — "
+                     "\"부호 불일치\"가 재현 실패인지 **기준의 불안정**인지 구분해서 읽을 것."
+                     % _v2["sign_margin_sd"])
+        if _v2.get("sim_total_pt_wq") is not None:
+            L.append("- ⚠ **단위 불일치(기존 결함)**: 판정식의 `실제`는 레그별 pt 단순합이라 "
+                     "계약가중이 아니다. 계약가중으로 맞추면 시뮬 %+.2f vs 실제 %+.2f pt다. "
+                     "**판정식 입력은 바꾸지 않았다**(사전등록 §9) — 교체 여부는 주간회의 결정."
+                     % (_v2["sim_total_pt_wq"], _v2["actual_total_pt_wq"]))
+        L.append("")
+        L.append("> **440차가 한 일**: `scripts/exit_replay.py`가 라이브 청산 사다리를")
+        L.append("> 미러링한다 — 4단계 트레일링(`compute_trailing_stop_tier` **라이브 함수를**")
+        L.append("> **import**) + 손절1차 + TP1/TP2/TP3 분할 + qty=1 보호전환 + 15:10 강제청산.")
+        L.append("> 추가로 **코드 세대(체제)를 인식**한다 — 2026-08-03 이전은 TP 트리거가")
+        L.append("> 종가뿐이고 보호전환이 `breakeven`이었다(TRADE 로그 전수 집계로 확정).")
+        L.append("> 과거를 지금의 규칙으로 재생하면 그 자체가 오차원이 된다.")
+        L.append("> ")
+        L.append("> **결과: 개별 정확도는 크게 올랐지만 사전등록 합격선(부호 일치)은 아직")
+        L.append("> 충족하지 못했다 — 게이트는 SUSPEND를 유지한다.** 남은 오차원은 ①(틱 경로)")
+        L.append("> 이며, 0807 호가로그 224,812틱 대조에서도 봉 단위 재생만으로는 현행을")
+        L.append("> 재현할 수 없음이 확인됐다. ②③ 편입은 [47]이 사전등록한 조치이고 그것은")
+        L.append("> 이행했다 — **합격선을 사후에 완화하지 않는다**(§9).")
+        L.append("> ")
+        L.append("> ⚠ **v1이 만들던 인공물의 크기**: [23-B]에서 v1은 `tp1_x2`를 최선")
+        L.append("> (**+37.96pt**)으로 봤는데 v2에서는 최악(**−30.68pt**)이다. TP1에서 종료하며")
+        L.append("> `tp1_pts`를 확정이익으로 계상하면 **TP1을 넓히는 것만으로 장부가 좋아지는**")
+        L.append("> 순수 인공물이 생긴다. 이 축의 과거 결론을 인용하지 말 것.")
+        L.append("")
     L.append("> 기하 A/B 채널들은 전부 같은 재생기 가정을 공유한다 — ① 1분봉 고저가만 본다")
     L.append("> ② TP2에서 종료한다 ③ TP3·4단계 트레일링·신호소멸청산을 모델링하지 않는다.")
     L.append("> 그 가정이 실제를 재현하지 못하면 `delta_vs_current`의 **부호까지 뒤집힌다**")
@@ -8899,7 +8983,7 @@ def build_report(days: int) -> tuple:
     L.append("> ② 435차 — 1분봉 반사실 재생 9건 통산 **≈+3.0pt**, 08-05 억제 5건은")
     L.append("> **억제가 오히려 +0.38pt 유리**")
     L.append("> 둘 다 이 채널의 사전등록 판정이 **아니다**. 라이브 재판정 경로는")
-    L.append("> **[35-M] 미러 서브표본**(439차)뿐이다 — 그쪽을 볼 것.")
+    L.append("> **[35-M] 미러 서브표본**(440차)뿐이다 — 그쪽을 볼 것.")
     L.append("")
 
     L.append("## [49] 페이오프 기하 상시 감시 (435차 신설 · 시뮬 무관)")
@@ -9151,7 +9235,7 @@ def build_report(days: int) -> tuple:
         L.append("- ⚠ **구조적 판정불가** — %s" % pse.get("structural_reason", ""))
         L.append("  - 이것은 \"표본이 모이는 중\"이 **아니다**. 🔴 NO-DATA(배선 점검)와도 "
                  "다르다 — 적재는 정상이고 주판정 **필터를 통과하는 모집단이 사라졌다**. "
-                 "[28] `sizing_inversion_watch`와 같은 유형이다(439차).")
+                 "[28] `sizing_inversion_watch`와 같은 유형이다(440차).")
         L.append("  - ⚠ **[439차 P3 자체 정정]** 위 문구의 초판은 \"유령 청산은 qty≥2 "
                  "경로에서**만** 났다\"·\"qty≥2 진입 **자체가 사라졌다**\"였는데 둘 다 "
                  "과했다. 실측: **08-03에 봉중 유령 8건이 전부 qty=1에서 났다**"
@@ -9633,6 +9717,23 @@ def build_report(days: int) -> tuple:
         if emw.get("eta_trading_days"):
             L.append("- 실측 진입속도 **%s건/거래일** 기준 잔여 약 **%s거래일**" % (
                 emw.get("positions_per_day"), emw.get("eta_trading_days")))
+        L.append("")
+        L.append("> 🔧 **[MW0601 440차] 라벨 기하 결함 수정 — 이전 주 수치와 비교 금지.**")
+        L.append("> 라벨러가 TP1을 `ATR × ATR_TP1_MULT`(=**1.0**, \"entry_horizon 미지정 시")
+        L.append("> fallback\")로 잡고 있었다. 라이브 TP1은 374/387차부터 호라이즌별")
+        L.append("> (`1m .3 / 3m .5 / 5m .7`)이고 hurst 레짐 배수까지 곱하므로 라벨러의 TP1")
+        L.append("> 거리는 **1.4~3.3배 과대**였다(표본 호라이즌: 3m 57 / 5m 49 / 1m 11건 —")
+        L.append("> **전건 영향권**). 스톱에도 hurst 배수가 빠져 있었다.")
+        L.append("> ")
+        L.append("> 오염 범위: `dist_tp1_atr`·`tp1_done` 피처와 `y_tp1_first` 라벨.")
+        L.append("> 수정 후 `y_tp1_first` 양성률 **42.4% → 53.8%**로 올랐고,")
+        L.append("> `y_hold_better`(주 라벨)는 TP1 기하와 무관해 **36.6% 불변**이다 —")
+        L.append("> 이 불변이 수정이 의도한 범위에만 닿았다는 검산이다.")
+        L.append("> ")
+        L.append("> **왜 표본을 더 기다리기 전에 고쳤나**: 267포지션을 더 모아도 잘못")
+        L.append("> 라벨된 표본이 늘 뿐이다. 기하는 이제 `scripts/exit_replay.geometry()`")
+        L.append("> 단일 소스에서 온다 — 재생기와 라벨러가 다른 기하를 쓰면 같은 표류가")
+        L.append("> 반복된다(432차 \"3중 정의\" 교훈).")
         if emw.get("trained"):
             L.append("- 🔶 **학습이 열렸다** — OOF AUC **%s** (정확도 %s / 기준선 %s)" % (
                 emw.get("oof_auc"), emw.get("oof_acc"), emw.get("baseline_acc")))

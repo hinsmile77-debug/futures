@@ -96,6 +96,9 @@ from config.settings import (  # noqa: E402
     # [432차] 라이브와 같은 상수를 쓴다 — 예전에는 여기 리터럴 사본이 있어
     # 라이브가 바뀌면 `current` 기준선이 조용히 어긋날 수 있었다.
     TP1_PROTECT_ATR_LOCK_MULT, TP1_PROTECT_PLUS_ALPHA_PTS,
+    # [440차] 호라이즌 비례 lock(§25-C) — TP1 거리를 라이브와 같은 산식으로 구한다.
+    ATR_TP1_MULT, ATR_HORIZON_TP1_MULT,
+    HURST_REGIME_ATR_MULT, HURST_REGIME_ATR_MULT_ENABLED,
 )
 from config.constants import MINI_FUTURES_PT_VALUE  # noqa: E402
 
@@ -142,6 +145,19 @@ def _load_hooks(since: str):
                 WHERE ts >= ? ORDER BY ts""" % extra, (since,))]
 
 
+def _load_hz(since: str):
+    """[MW0601 440차 / 25-C] entry_ts → (entry_horizon, hurst_bucket).
+
+    `synthetic_partial_exits`에는 호라이즌 컬럼이 없다. 비례 lock 변형이 TP1 거리를
+    알아야 하므로 `trades`에서 조인해 온다. 조인 실패는 그 변형에서만 제외된다.
+    """
+    with _conn(TRADES_DB) as c:
+        return {r["entry_ts"]: (r["entry_horizon"], r["hurst_bucket"])
+                for r in c.execute(
+                    "SELECT entry_ts, entry_horizon, hurst_bucket FROM trades "
+                    "WHERE entry_ts >= ? GROUP BY entry_ts", (since,))}
+
+
 def _load_candles(since: str):
     with _conn(RAW_DATA_DB) as c:
         rows = c.execute(
@@ -168,7 +184,25 @@ def _tp2_mult_for(name: str) -> float:
     raise ValueError("unknown tp2 variant: %s" % name)
 
 
-def _offset_for(name: str, atr: float, bar_rng: float) -> float:
+def _tp1_dist(atr: float, horizon, hurst_bucket) -> float:
+    """[MW0601 440차] 그 진입의 **TP1 거리(pt)** — 라이브 `_recalculate_levels()` 산식.
+
+    호라이즌 비례 lock(`lock_prop_*`)의 기준선이다. hurst 레짐 배수까지 곱해야
+    라이브 TP1과 같은 값이 된다.
+    """
+    base = ATR_HORIZON_TP1_MULT.get(horizon, ATR_TP1_MULT)
+    m = (HURST_REGIME_ATR_MULT.get(hurst_bucket or "", {})
+         if HURST_REGIME_ATR_MULT_ENABLED else {})
+    return float(atr) * float(base) * float(m.get("tp1", 1.0))
+
+
+def _offset_for(name: str, atr: float, bar_rng: float, tp1_dist: float = None) -> float:
+    """변형 이름 → 보호전환 offset(pt).
+
+    `lock_prop_*`는 TP1 거리에 비례한다 — 그 변형만 `tp1_dist`를 요구하며,
+    구할 수 없으면 ValueError를 던져 호출측이 그 행을 **비례 변형에서만** 제외한다
+    (기존 변형의 모집단은 무변경 — settings §25-C 주석 참조).
+    """
     if name == "current":
         return atr * _LOCK_MULT_CURRENT
     if name == "breakeven":
@@ -181,6 +215,10 @@ def _offset_for(name: str, atr: float, bar_rng: float) -> float:
         return atr * 0.75
     if name == "bar_range":
         return max(atr * _LOCK_MULT_CURRENT, bar_rng * 0.5)
+    if name.startswith("lock_prop_"):
+        if not tp1_dist or tp1_dist <= 0:
+            raise ValueError("lock_prop needs tp1_dist: %s" % name)
+        return float(tp1_dist) * float(name[len("lock_prop_"):])
     raise ValueError("unknown variant: %s" % name)
 
 
@@ -210,6 +248,10 @@ def compute(since: str = "2026-06-01") -> dict:
     idx = {t: i for i, (t, _, _) in enumerate(bars)}
     variants = list(_CR.get("variants", ["current"]))
     res = {v: [] for v in variants}
+    # [MW0601 440차 / 25-C] 훅 ts 평행 리스트 — 비례 변형이 호라이즌 미상 행을
+    # 건너뛰면 변형마다 모집단이 달라진다. delta는 **짝지은 부분집합**으로 내야
+    # 공정하다(summarize 참조). 기존 변형끼리는 전건 일치하므로 영향 없음.
+    res_ts = {v: [] for v in variants}
     days, skipped = set(), 0
 
     # [MW0601 432차 / 25-B] TP2 거리 축 — offset 축과 **완전히 평행한 별도 집계**다.
@@ -227,6 +269,9 @@ def compute(since: str = "2026-06-01") -> dict:
     # [MW0602 432차] 변형별 체결가능성 클램프 발동 건수·초과폭 — 아래 클램프 참조.
     n_clamped: dict = {v: 0 for v in variants}
     clamp_excess: dict = {v: [] for v in variants}
+    # [MW0601 440차 / 25-C] 비례 변형에서만 호라이즌 미상으로 빠진 건수.
+    n_no_horizon: dict = {}
+    hz_map = _load_hz(since)
 
     for h in hooks:
         # 판정 모집단은 atr_profit 행만이다 — `current` 변형(ATR×0.25)이 "실제로
@@ -275,8 +320,18 @@ def compute(since: str = "2026-06-01") -> dict:
         days.add(ts[:10])
         # [MW0602 432차] 보호전환 **시점에 실제로 도달했던** 유리이동. 클램프 상한.
         excursion = abs(float(h["synthetic_price"]) - ep)
+        # [MW0601 440차 / 25-C] 호라이즌 비례 lock용 TP1 거리. hooks 테이블에
+        # entry_horizon이 없어 trades를 entry_ts로 조인해 얻는다(_load_hz 참조).
+        _hz, _hb = hz_map.get(h.get("entry_ts") or "", (None, None))
+        tp1_dist = _tp1_dist(atr, _hz, _hb) if _hz else None
         for v in variants:
-            off_raw = _offset_for(v, atr, bar_rng)
+            try:
+                off_raw = _offset_for(v, atr, bar_rng, tp1_dist)
+            except ValueError:
+                # 비례 변형인데 호라이즌을 못 구한 행 — **그 변형에서만** 제외한다.
+                # 기존 변형의 모집단은 무변경(사전등록 §25-C).
+                n_no_horizon[v] = n_no_horizon.get(v, 0) + 1
+                continue
             # ── 체결가능성 클램프 ────────────────────────────────────────────
             # offset은 진입가에서 **이익 방향으로** 띄우는 거리다. 이것이 그 시점의
             # 실제 유리이동보다 크면 보호스톱이 당시 가격보다 더 이익 쪽에 놓인다.
@@ -298,6 +353,7 @@ def compute(since: str = "2026-06-01") -> dict:
             stop = ep + sgn * off
             outcome, pts = _simulate(bars, i0, is_long, ep, stop, tp2)
             res[v].append((outcome, pts - cost))
+            res_ts[v].append(ts)
 
         # [MW0601 432차 / 25-B] TP2 축 — 보호 offset은 현행 고정, TP2만 변형.
         # `current`는 위 offset 축의 `current`와 수치가 동일해야 정상이다
@@ -308,30 +364,45 @@ def compute(since: str = "2026-06-01") -> dict:
             outcome, pts = _simulate(bars, i0, is_long, ep, stop_cur, tp2_v)
             res_tp2[v].append((outcome, pts - cost))
 
-    return {"variants": variants, "rows": res,
+    return {"variants": variants, "rows": res, "rows_ts": res_ts,
             "n_hooks": len(hooks) - skipped - sum(n_other_mode.values()),
             "n_skipped": skipped, "n_days": len(days), "since": since,
             # [MW0601 406차 / C]
             "n_other_mode": n_other_mode,
             "n_backout_legacy": n_backout_legacy,
             "n_excluded_override": n_excluded_override,
+            # [MW0601 432차 / 25-B]
+            "tp2_variants": tp2_variants, "rows_tp2": res_tp2,
             # [MW0602 432차]
             "n_clamped": n_clamped,
             "clamp_excess": clamp_excess,
-            # [MW0601 432차 / 25-B]
-            "tp2_variants": tp2_variants, "rows_tp2": res_tp2}
+            # [MW0601 440차 / 25-C]
+            "n_no_horizon": n_no_horizon}
 
 
 def summarize(out: dict) -> dict:
     res = out["rows"]
     base = res.get("current", [])
     base_total = sum(p for _, p in base) if base else None
+    # [MW0601 440차 / 25-C] 짝지은 delta용 — 훅 ts → current의 pt.
+    _rts = out.get("rows_ts") or {}
+    _base_by_ts = dict(zip(_rts.get("current") or [], [p for _, p in base]))
     per = {}
     for v in out["variants"]:
         rows = res.get(v, [])
         if not rows:
             continue
         pts = [p for _, p in rows]
+        # 변형이 일부 행을 건너뛰었으면(비례 lock의 호라이즌 미상) 전체합끼리
+        # 빼는 것은 **모집단이 다른 두 수의 차**라 무의미하다. 공통 행만으로
+        # 짝지어 계산한다. 전건 일치면 결과가 종전과 동일하다(회귀 없음).
+        _delta_paired = None
+        _vts = _rts.get(v) or []
+        if _base_by_ts and len(_vts) == len(pts):
+            _common = [(p, _base_by_ts[t]) for p, t in zip(pts, _vts)
+                       if t in _base_by_ts]
+            if _common:
+                _delta_paired = round(sum(a - b for a, b in _common), 4)
         per[v] = {
             "n": len(pts),
             "total_pt": round(sum(pts), 4),
@@ -341,8 +412,13 @@ def summarize(out: dict) -> dict:
             "n_stop": sum(1 for o, _ in rows if o == "STOP"),
             "n_tp2": sum(1 for o, _ in rows if o == "TP2"),
             "n_forced": sum(1 for o, _ in rows if o == "FORCED"),
-            "delta_vs_current": (round(sum(pts) - base_total, 4)
-                                 if base_total is not None else None),
+            # 짝지은 값이 있으면 그것을 쓴다 — 전건 일치면 총합차와 같다(회귀 없음).
+            "delta_vs_current": (
+                _delta_paired if _delta_paired is not None
+                else (round(sum(pts) - base_total, 4)
+                      if base_total is not None else None)),
+            "delta_paired": _delta_paired,
+            "n_missing_vs_current": (len(base) - len(pts)) if base else None,
             "beats_current_n": (sum(1 for (_, p), (_, q) in zip(rows, base) if p > q)
                                 if base and len(rows) == len(base) else None),
             # [MW0602 432차] 체결가능성 클램프가 걸린 건수 — 클수록 그 변형은
