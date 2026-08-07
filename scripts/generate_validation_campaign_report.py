@@ -551,12 +551,40 @@ def eval_sample_starvation() -> dict:
 # [1] Triple-Barrier 채널 — OOS replay IC vs 3클래스 IC
 # ──────────────────────────────────────────────────────────────
 
+def _tb_apply_carried(res: dict, cv, n: int, min_n: int) -> None:
+    """[439차] tb_verdict_log의 최근 판정을 이월 적용 — 표본 부족/0 공통 경로.
+
+    384차의 carry-forward를 `eval_tb_channel()` 두 자리에서 함께 쓰도록 뽑아냈다.
+    `cv`가 없으면(=첫 판정 전) 아무것도 이월하지 않고 이유만 남긴다.
+    호출자가 이미 `res["reason"]`을 채웠으면 그 문구를 앞에 보존한다 —
+    "왜 표본이 없는가"(모델 mtime 대기 등)가 이월 사실보다 진단에 중요하기 때문.
+    """
+    if cv is None:
+        if not res.get("reason"):
+            res["reason"] = "OOS 표본 부족 (%d < %d) — 첫 판정 대기" % (n, min_n)
+        return
+    res["status"] = cv["verdict"]
+    res["carried"] = True
+    res["judged_at"] = cv["judged_at"]
+    res["ic_tb"] = cv["ic_tb"]
+    res["ic_3class"] = cv["ic_3class"]
+    _base = "누적중 (%d/%d)" % (n, min_n) if n else (res.get("reason") or "표본 0건")
+    res["reason"] = ("%s — 최근 판정 유지: %s (%s 판정, n=%d)"
+                     % (_base, cv["verdict"], cv["judged_at"][:10], cv["n_samples"]))
+
+
 def eval_tb_channel(days: int) -> dict:
     """[384차] 383차가 규명한 구조결함(평가창이 매주 재학습으로 리셋돼 5m~30m이
     min_samples_hz 영구 미달) 해법: 호라이즌별로 실제 OOS n이 min_samples_hz에
     도달한 주에만 신선하게 판정하고 tb_verdict_log에 기록한다. 그 아래 주는 그
     "최근 판정"을 그대로 이어받아(carry-forward) 채널 집계에 반영 — n_pass/verdict
-    계산 로직 자체는 res["status"]만 보므로 변경 불요."""
+    계산 로직 자체는 res["status"]만 보므로 변경 불요.
+
+    [439차] 이월 적용을 `_tb_apply_carried()`로 단일화했다. 이전에는 `n <
+    min_samples_hz` 분기 안에만 있어서 **OOS 행이 정확히 0일 때** 그보다 앞선
+    `if not rows: continue`가 먼저 걸려 이월이 통째로 건너뛰어졌다(경계값만 뚫린
+    가드). 상세 실증은 그 `continue` 자리의 주석 참조.
+    """
     cr = VALIDATION_CAMPAIGN["tb"]
     out = {"horizons": {}, "verdict": "INSUFFICIENT", "n_pass": 0}
 
@@ -634,7 +662,20 @@ def eval_tb_channel(days: int) -> dict:
 
         rows = rows[-_MAX_REPLAY_ROWS:]
         if not rows:
+            # [439차] **여기서도 carry-forward를 태운다.** 384차가 심은 이월은
+            # `n < min_samples_hz` 분기에만 있었는데, OOS 행이 **정확히 0**이면
+            # 그보다 앞선 이 `continue`가 먼저 걸려 이월이 통째로 건너뛰어졌다 —
+            # "표본이 적다"는 살리고 "표본이 없다"는 죽이는, 경계값만 뚫린 가드였다.
+            # 실증(0807): EOD 체인은 리포트(15:47:41) → 섀도우 TB 재학습(15:48:57)
+            # 순서라 리포트 시점엔 지난주 모델 mtime이 보여 1m n=1844 / 3m n=1194로
+            # 정상 판정(FAIL)이 났다. 그런데 체인이 끝난 뒤 리포트를 **재생성하면**
+            # 모델 mtime이 15:48:57로 밀려 OOS가 0이 되고, [1]이 FAIL → INSUFFICIENT로
+            # 조용히 강등됐다. tb_verdict_log(id 48·49)에는 그날의 FAIL이 멀쩡히
+            # 남아 있는데도 리포트만 판정을 잃는다.
+            res["n_samples"] = 0
             res["reason"] = "OOS 표본 0건 (모델 mtime 이후 데이터 대기)"
+            _tb_apply_carried(res, carried_verdicts.get(hz), 0,
+                              int(cr["min_samples_hz"]))
             continue
 
         # [404차 후속5 / P0-B(a)] 여기는 **레이블 생성**(N분 뒤 실현 가격)이라
@@ -661,19 +702,8 @@ def eval_tb_channel(days: int) -> dict:
         n = len(X_list)
         res["n_samples"] = n
         if n < int(cr["min_samples_hz"]):
-            cv = carried_verdicts.get(hz)
-            if cv is not None:
-                res["status"] = cv["verdict"]
-                res["carried"] = True
-                res["judged_at"] = cv["judged_at"]
-                res["ic_tb"] = cv["ic_tb"]
-                res["ic_3class"] = cv["ic_3class"]
-                res["reason"] = (
-                    "누적중 (%d/%d) — 최근 판정 유지: %s (%s 판정, n=%d)"
-                    % (n, cr["min_samples_hz"], cv["verdict"], cv["judged_at"][:10], cv["n_samples"])
-                )
-            else:
-                res["reason"] = "OOS 표본 부족 (%d < %d) — 첫 판정 대기" % (n, cr["min_samples_hz"])
+            _tb_apply_carried(res, carried_verdicts.get(hz), n,
+                              int(cr["min_samples_hz"]))
             continue
 
         try:
@@ -2437,6 +2467,97 @@ def _paired_day_summary(day_diffs, alpha):
     return out
 
 
+def _phantom_mirror_subsample(conn, eff: str, alpha: float) -> dict:
+    """[439차] [35] 미러 서브표본 — **억제된 쪽**에서 같은 Δ를 반대 방향으로 잰다.
+
+    왜 필요한가: [35] 주판정은 `live_suppressed=0`(가드가 못 막아 유령 청산이 실제로
+    난 건)만 센다. 그런데 431차 이후 그 모집단이 사라져 주판정 표본이 영구 0이 됐다
+    (`eval_phantom_stop_edge` 안 `structural_reason` 참조). 같은 질문 —
+
+        Δ = (유령 청산했을 때의 손익) − (버텼을 때의 손익),  (+)면 유령이 유리
+
+    — 은 `live_suppressed=1`(가드가 억제해서 버틴 건)에서도 **부호만 뒤집어** 잴 수 있다.
+    주판정: 실제=유령청산, 반사실=버팀.  미러: 실제=버팀, 반사실=유령청산.
+    ⚠ 반환하는 `delta_pt`는 **주판정과 부호 규약이 같다**((+)=유령 유리). 미러의
+    원자료에서 보면 "억제이득"의 부호가 반대라는 뜻이므로 읽을 때 주의할 것.
+
+    반사실(관측 전 고정): 유령 청산이 났다면 **시장가**로 나가므로 판정 시점의
+    `cur_price`에 체결된 것으로 본다.
+
+    ⚠ 이 서브표본은 주판정과 **합치지 않는다**. 세 가지가 다르다 —
+      ① 반사실 비대칭: 주판정의 반사실은 "`stop_eval`로 계속"이라는 단일 규칙이지만,
+         미러의 실제값은 억제 이후 **모든 청산 로직**(TP2·트레일·15:10 강제청산)의
+         합이라 그것들과 교락돼 있다. "억제의 순수 효과"가 아니다.
+      ② 시점 교락: 두 부분표본은 처치 시점이 갈린다(유령 발생기 vs 억제기). 436차가
+         `827bd04` 교락 때문에 [50]을 PRE/POST 비교로 등록하지 **않은** 것과 같은 함정.
+      ③ `cur_price` 근사 편향: 실측 유령 청산의 체결 슬리피지는 평균 -2.708pt(유리)
+         였으므로 `cur_price` 근사는 유령을 **과소평가**한다 — 보수적 방향이다.
+    그래서 verdict를 내지 않는다. 관찰 병기이며, 판정 승격은 §9 주간회의 안건이다.
+    """
+    out = {"n": 0}
+    rs = conn.execute(
+        """SELECT ts, entry_ts, direction, entry_price, stop_eval, cur_price,
+                  quantity, tighten_path
+             FROM phantom_stop_shadow
+            WHERE ts >= ? AND would_suppress = 1 AND live_suppressed = 1
+            ORDER BY ts""", (eff,)).fetchall()
+    out["n_rows_total"] = int(conn.execute(
+        "SELECT COUNT(*) FROM phantom_stop_shadow WHERE ts >= ?", (eff,)).fetchone()[0])
+    recs, n_multi = [], 0
+    for h in rs:
+        ep = float(h["entry_price"] or 0.0)
+        cp = float(h["cur_price"] or 0.0)
+        if ep <= 0 or cp <= 0:
+            continue
+        is_short = (h["direction"] == "SHORT")
+        ghost_pt = (ep - cp) if is_short else (cp - ep)
+        # 버틴 결과: 그 판정 이후 닫힌 **모든** 레그의 합. 주판정의 LIMIT 1과 달리
+        # 합을 쓰는 이유는 억제 후 포지션이 TP1 부분청산 → TP2로 쪼개질 수 있기
+        # 때문이다. 다중레그면 1계약 기준 해석이 깨지므로 건수를 따로 노출한다.
+        legs = conn.execute(
+            """SELECT pnl_pts FROM trades
+                WHERE entry_ts = ? AND exit_ts IS NOT NULL AND exit_ts >= ?
+                ORDER BY exit_ts""", (h["entry_ts"], h["ts"])).fetchall()
+        if not legs:
+            continue
+        if len(legs) > 1:
+            n_multi += 1
+        held_pt = sum(float(l["pnl_pts"] or 0.0) for l in legs)
+        recs.append({
+            "ts": h["ts"], "direction": h["direction"],
+            "tighten_path": h["tighten_path"] or "—",
+            "ghost_pt": ghost_pt, "held_pt": held_pt,
+            "delta_pt": ghost_pt - held_pt,   # (+)=유령 유리 — 주판정과 동일 규약
+        })
+    if not recs:
+        return out
+    days = sorted({r["ts"][:10] for r in recs})
+    deltas = [r["delta_pt"] for r in recs]
+    out.update({
+        "n": len(recs), "n_days": len(days), "n_multi_leg": n_multi,
+        "ghost_pt_sum": round(sum(r["ghost_pt"] for r in recs), 3),
+        "held_pt_sum": round(sum(r["held_pt"] for r in recs), 3),
+        "delta_pt_sum": round(sum(deltas), 3),
+        "delta_pt_avg": round(sum(deltas) / len(deltas), 4),
+        "delta_pt_median": round(float(np.median(deltas)), 4),
+        "favorable_n": sum(1 for d in deltas if d > 0),
+        "ghost_positive_n": sum(1 for r in recs if r["ghost_pt"] > 0),
+    })
+    _bp = {}
+    for r in recs:
+        _bp.setdefault(r["tighten_path"], []).append(r["delta_pt"])
+    out["by_path"] = {k: {"n": len(v), "delta_pt_sum": round(sum(v), 3)}
+                      for k, v in sorted(_bp.items())}
+    day_means = [float(np.mean([r["delta_pt"] for r in recs if r["ts"][:10] == d]))
+                 for d in days]
+    out.update(_paired_day_summary(day_means, alpha))
+    # 평균과 중앙값이 갈리면 소수 관측이 끌고 있다는 뜻이다(313차) — 판독자가
+    # 평균만 보고 결론 내지 않도록 플래그로 노출한다.
+    out["mean_median_split"] = bool(
+        out["delta_pt_avg"] * out["delta_pt_median"] < 0)
+    return out
+
+
 def eval_phantom_stop_edge() -> dict:
     """[35] 유령 하드스톱은 결함인가 알파인가 (MW0602 424차 후속) — 사전등록.
 
@@ -2450,6 +2571,12 @@ def eval_phantom_stop_edge() -> dict:
 
     ⚠ 판정 전에 가드를 켜면 이 표본이 더 안 쌓인다. 라이브는 계측만 하도록 배선돼
     있다(main.py `mark_stop_tightened_shadow`).
+
+    [439차] 그런데 그 모집단이 **가드를 켜지 않았는데도** 사라졌다 — 431차의
+    MAX_CONTRACTS 10→3으로 qty>=2 진입 자체가 없어졌기 때문이다. 주판정 표본이
+    영구 0이 되므로 (a) 0건의 원인을 "적재 0(=🔴 배선 점검)"과 "모집단 소멸
+    (=⚠구조적판정불가)"로 구분하고, (b) `_phantom_mirror_subsample()`이 억제된 쪽에서
+    같은 Δ를 재도록 병기한다. **주판정의 합격선·반사실 정의·verdict 어휘는 무변경**이다.
     """
     cr = VALIDATION_CAMPAIGN.get("phantom_stop_edge", {})
     min_n = int(cr.get("min_samples", 20))
@@ -2486,12 +2613,39 @@ def eval_phantom_stop_edge() -> dict:
                     "tighten_path": h["tighten_path"],
                     "realized_pt": float(leg["pnl_pts"] or 0.0),
                 })
+            out["mirror"] = _phantom_mirror_subsample(conn, eff, alpha)
     except Exception as e:
         out["error"] = str(e)
         out["no_data"] = True
         return out
 
     if not rows:
+        # [439차] 주판정 표본 0건의 원인이 두 가지로 갈린다 — 구분하지 않으면 오진한다.
+        #   ① 적재 자체가 0  → 계측 사망 의심. 🔴 빨간불이 맞다(357차).
+        #   ② 적재는 되는데 `live_suppressed=0`이 0  → **모집단 소멸**. 배선은 멀쩡하다.
+        # ②가 실제로 일어났다: 431차가 MAX_CONTRACTS를 10→3으로 내리고 게이트 체인을
+        # 재구성하면서 qty>=2 진입이 사라졌고, 유령 청산은 사실상 그 경로에서만 났다
+        # (423차 가드가 qty=1 경로에는 정상 배선돼 있다). 그래서 남은 행은 전부
+        # live_suppressed=1이고 주판정 필터를 통과하는 행이 영구히 0이다.
+        # → [28] sizing_inversion_watch와 같은 **구조적 판정불가**로 표기한다.
+        _mir = out.get("mirror") or {}
+        if _mir.get("n"):
+            out["structural_block"] = True
+            out["structural_reason"] = (
+                "유령 청산(`live_suppressed=0`) 0건 — 그러나 적재는 정상이다"
+                "(계측 시작 이후 %d행, 그중 억제 %d행 / %d거래일). 원인은 배선이 아니라 "
+                "**모집단 소멸**이다: 유령 청산은 423차 가드를 우회하던 qty>=2의 TP1 "
+                "손익분기 경로에서만 났는데(main.py `tp1_breakeven`), 431차의 "
+                "MAX_CONTRACTS 10→3 + 게이트 체인 재구성으로 qty>=2 진입 자체가 "
+                "사라졌다. 남은 행은 전부 `arm_tp1_qty1_mode`(가드가 정상 배선된 경로)라 "
+                "주판정 필터를 통과하는 행이 **기다린다고 생기지 않는다**. "
+                "→ 아래 **미러 서브표본**(억제된 쪽)이 같은 Δ를 반대 방향에서 재는 "
+                "유일한 경로다." % (_mir.get("n_rows_total", 0), _mir.get("n", 0),
+                                    _mir.get("n_days", 0)))
+            out["reason"] = ("유령 청산 표본 0건 — ⚠ **구조적 판정불가** "
+                             "(적재 정상, 미러 %d건/%d일 병기)"
+                             % (_mir.get("n", 0), _mir.get("n_days", 0)))
+            return out
         out["reason"] = ("표본 없음 — `phantom_stop_shadow` 적재 대기 "
                          "(계측 시작 %s, 그 이전은 소스가 없어 소급 판정 불가)"
                          % cr.get("effective_date"))
@@ -7134,7 +7288,8 @@ def build_report(days: int) -> tuple:
                    "%s n=%s" % (b, (_mz.get(b) or {}).get("matched", 0))
                    for b in ("reduce", "take"))))))
     # [MW0602 424차 후속] [35]~[37] — 셋 다 등록 시점에 표본·유의성 미달이다.
-    L.append("| [35] 유령 하드스톱 결함/알파 | %s | %s |" % (
+    L.append("| [35] 유령 하드스톱 결함/알파%s | %s | %s |" % (
+        " ⚠구조적판정불가" if pse.get("structural_block") else "",
         _fmt_channel_verdict(pse),
         pse.get("reason") or (
             "유령 %s건 / %s거래일 · 실현 %+.2fpt vs 반사실 %+.2fpt · "
@@ -8785,8 +8940,13 @@ def build_report(days: int) -> tuple:
     # ── [35]~[37] MW0602 424차 후속 신설 3채널 상세 ─────────────────────────
     L.append("## [35] 유령 하드스톱 — 결함인가 알파인가 (MW0602 424차 후속)")
     L.append("")
-    L.append("423차 가드가 `qty>=2`의 TP1 손익분기 경로를 우회해 유령 청산이 계속 난다.")
+    L.append("423차 가드가 `qty>=2`의 TP1 손익분기 경로를 우회해 유령 청산이 났다.")
     L.append("**일부러 고치지 않고 재고 있다** — 손익 부호가 예상과 반대이기 때문이다.")
+    L.append("")
+    L.append("> **[439차 정정] \"계속 난다\"는 더 이상 사실이 아니다.** 431차의 MAX_CONTRACTS")
+    L.append("> 10→3 + 게이트 체인 재구성으로 `qty>=2` 진입이 사라져 유령 청산 모집단이")
+    L.append("> 소멸했다(2026-08-05 이후 `live_suppressed=0` **0건**). 아래 근거표는")
+    L.append("> **그 시절의 기록**이며 현행 상태가 아니다 — 현행은 [35-M] 미러를 볼 것.")
     L.append("")
     L.append("| 근거일 | 건수 | 실현 | 반사실(정상 가드) |")
     L.append("|---|---|---|---|")
@@ -8804,6 +8964,11 @@ def build_report(days: int) -> tuple:
     L.append("")
     if pse.get("error"):
         L.append("- ⚠ 조회 실패: `%s`" % pse.get("error"))
+    elif not pse.get("n") and pse.get("structural_block"):
+        L.append("- ⚠ **구조적 판정불가** — %s" % pse.get("structural_reason", ""))
+        L.append("  - 이것은 \"표본이 모이는 중\"이 **아니다**. 🔴 NO-DATA(배선 점검)와도 "
+                 "다르다 — 적재는 정상이고 주판정 **필터를 통과하는 모집단이 사라졌다**. "
+                 "[28] `sizing_inversion_watch`와 같은 유형이다(439차).")
     elif not pse.get("n"):
         L.append("- 표본 없음 — `phantom_stop_shadow` 적재 대기 (계측 시작 **%s**)."
                  % pse.get("effective_date"))
@@ -8826,6 +8991,53 @@ def build_report(days: int) -> tuple:
             for _k, _v in sorted((pse.get("by_path") or {}).items()):
                 L.append("| `%s` | %s | %+.2fpt |" % (_k, _v["n"], _v["delta_pt_sum"]))
     L.append("")
+    _mir = pse.get("mirror") or {}
+    if _mir.get("n"):
+        L.append("### [35-M] 미러 서브표본 — 억제된 쪽 (439차 신설, 관찰 병기)")
+        L.append("")
+        L.append("주판정이 보는 `live_suppressed=0`(유령 청산 발생)이 431차 이후 사라졌으므로,")
+        L.append("**같은 Δ를 `live_suppressed=1`(가드가 억제해 버틴 건)에서 반대 방향으로** 잰다.")
+        L.append("반사실(관측 전 고정): 유령 청산은 시장가이므로 판정 시점 `cur_price` 체결로 본다.")
+        L.append("**부호 규약은 주판정과 같다 — (+)면 유령이 유리.**")
+        L.append("")
+        L.append("- 억제 **%d건 / %d거래일** (계측 시작 이후 적재 %d행, 다중레그 %d건)"
+                 % (_mir["n"], _mir.get("n_days", 0),
+                    _mir.get("n_rows_total", 0), _mir.get("n_multi_leg", 0)))
+        L.append("- 유령청산했다면 %+.2fpt vs 버틴 실제 %+.2fpt → **delta %+.2fpt** "
+                 "(평균 %+.3f / 중앙값 %+.3f, 유령 유리 %d/%d건)"
+                 % (_mir.get("ghost_pt_sum", 0.0), _mir.get("held_pt_sum", 0.0),
+                    _mir.get("delta_pt_sum", 0.0), _mir.get("delta_pt_avg", 0.0),
+                    _mir.get("delta_pt_median", 0.0),
+                    _mir.get("favorable_n", 0), _mir["n"]))
+        L.append("- 유령청산 손익이 양수인 건: **%d/%d** — 스파이크-되돌림 익절 가설의 직접 지표"
+                 % (_mir.get("ghost_positive_n", 0), _mir["n"]))
+        if _mir.get("paired_days"):
+            L.append("- 일자단위(313차): %s/%s일 유령 우세, 평균 %+.3fpt, **부호검정 p=%s**"
+                     % (_mir.get("days_positive"), _mir.get("paired_days"),
+                        _mir.get("mean_diff", 0.0), _mir.get("sign_p")))
+        if _mir.get("mean_median_split"):
+            L.append("- 🔴 **평균과 중앙값의 부호가 다르다** (%+.3f vs %+.3f) — 소수 관측이 "
+                     "평균을 끌고 있다는 뜻이다. **평균만 보고 결론 내지 말 것**(313차)."
+                     % (_mir.get("delta_pt_avg", 0.0), _mir.get("delta_pt_median", 0.0)))
+        if _mir.get("by_path"):
+            L.append("")
+            L.append("| 조이기 경로 | 건수 | delta 합 |")
+            L.append("|---|---|---|")
+            for _k, _v in sorted((_mir.get("by_path") or {}).items()):
+                L.append("| `%s` | %s | %+.2fpt |" % (_k, _v["n"], _v["delta_pt_sum"]))
+        L.append("")
+        L.append("> ⚠ **주판정과 합치지 않는다 — verdict도 내지 않는다.** 세 가지가 다르다:")
+        L.append("> ① **반사실 비대칭** — 주판정의 반사실은 \"`stop_eval`로 계속\"이라는 단일")
+        L.append("> 규칙이지만, 미러의 실제값은 억제 이후 **모든 청산 로직**(TP2·트레일·15:10")
+        L.append("> 강제청산)의 합이라 그것들과 교락돼 있다. \"억제의 순수 효과\"가 아니다.")
+        L.append("> ② **시점 교락** — 두 부분표본은 처치 시점이 갈린다(유령 발생기 vs 억제기).")
+        L.append("> 436차가 `827bd04` 교락 때문에 [50]을 PRE/POST 비교로 등록하지 **않은** 것과")
+        L.append("> 같은 함정이다.")
+        L.append("> ③ **`cur_price` 근사 편향** — 실측 유령 청산의 체결 슬리피지는 평균")
+        L.append("> −2.708pt(유리)였으므로 이 근사는 유령을 **과소평가**한다(보수적 방향).")
+        L.append("")
+        L.append("> 판정으로의 승격은 §9 주간회의 안건이다 — 합격선을 여기서 만들지 않는다(313차).")
+        L.append("")
     if pse.get("recommendation"):
         L.append("- **권고**: %s" % pse["recommendation"])
         L.append("")
