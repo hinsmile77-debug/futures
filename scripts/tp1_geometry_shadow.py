@@ -76,6 +76,10 @@ _TS_FMT = "%Y-%m-%d %H:%M:%S"
 _CR = VALIDATION_CAMPAIGN.get("tp1_geometry_shadow", {})
 _MAX_HOLD_MIN = 45          # 최대 보유 분 (미도달 시 그 시점 종가로 마감)
 _COST_PTS = 0.10            # 왕복 비용 가정 (수수료+슬리피지, pt) — 보수적 근사
+# [MW0601 440차] 재생기 엔진 기본값 — "v1"(435차까지) / "v2"(청산 사다리 미러링).
+# 근거·되돌리는 법은 config/settings.py sim_fidelity_gate["engine"] 주석 참조.
+_ENGINE = str((VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {}) or {})
+              .get("engine", "v1")).lower()
 
 
 def _load_candles(since: str):
@@ -160,7 +164,7 @@ def _simulate(entry_ts, is_long, entry_px, stop_pts, tp1_pts, hi, lo, cl):
     return "TIMEOUT", (last - entry_px) if is_long else (entry_px - last)
 
 
-def compute(since: str = "2026-06-01", horizon=None) -> dict:
+def compute(since: str = "2026-06-01", horizon=None, engine=None) -> dict:
     """[404차 후속3, 23-B] 계산부 — main()의 출력과 분리해 재사용 가능하게 추출.
 
     generate_validation_campaign_report.py가 이 함수를 import해 `[23]` 채널로
@@ -170,6 +174,7 @@ def compute(since: str = "2026-06-01", horizon=None) -> dict:
     Returns: {variants, n_trades, n_skipped, n_days, cost_pts, rows: {name: [(outcome, pts)]}}
     """
     hi, lo, cl = _load_candles(since)
+    bars = {ts: (hi[ts], lo[ts], cl[ts]) for ts in hi}   # v2 엔진 입력 형태
     atr_map = _load_atr_map(since)
     trades = _load_trades(since, horizon)
 
@@ -179,7 +184,17 @@ def compute(since: str = "2026-06-01", horizon=None) -> dict:
     # res의 튜플 형태를 바꾸면 이 파일의 언팩 지점 8곳과 main() 출력이 전부 영향을
     # 받으므로, 기존 구조는 그대로 두고 평행 리스트만 추가한다(회귀 위험 0).
     res_ts = {name: [] for name in variants}
+    # [MW0601 440차] 진입 계약수 평행 리스트 — [47] 게이트가 계약가중 총합을 내려면
+    # 필요하다. rows 튜플 형태는 건드리지 않는다(언팩 지점 8곳 회귀 위험 0).
+    res_qty = {name: [] for name in variants}
     days, skipped = set(), 0
+
+    # [MW0601 440차] 엔진 선택 — 상세·근거는 config/settings.py
+    # VALIDATION_CAMPAIGN["sim_fidelity_gate"]["engine"] 주석 참조.
+    _eng = str(engine or _ENGINE).lower()
+    _replay = _regime_for = None
+    if _eng == "v2":
+        from scripts.exit_replay import replay as _replay, regime_for as _regime_for
 
     for t in trades:
         ets = t["entry_ts"]
@@ -189,15 +204,30 @@ def compute(since: str = "2026-06-01", horizon=None) -> dict:
             continue
         is_long = str(t["direction"]).upper() == "LONG"
         px = float(t["entry_price"])
+        qty = int(t.get("qty") or 1) or 1
         days.add(ets[:10])
         for name, cfg in variants.items():
-            sp, tp = _geometry(t["entry_horizon"], t["hurst_bucket"], atr,
-                               cfg.get("stop_mult"), cfg.get("tp1_mult"))
-            outcome, pts = _simulate(ets, is_long, px, sp, tp, hi, lo, cl)
-            if outcome is None:
-                continue
+            if _eng == "v2":
+                rg = _regime_for(ets)
+                r = _replay(
+                    bars, ets, t["direction"], px, qty, atr,
+                    t["entry_horizon"], t["hurst_bucket"],
+                    stop_mult=cfg.get("stop_mult"), tp1_mult=cfg.get("tp1_mult"),
+                    tp_trigger=rg["tp_trigger"], protect_mode=rg["protect_mode"])
+                if r is None:
+                    continue
+                # 이 채널의 단위 규약은 **1계약 기준**이다(리포트 배지
+                # `[1계약·TP1상한·미실현 시뮬]`). 계약수는 res_qty로 따로 낸다.
+                outcome, pts = r["outcome"], r["pts_per_contract"]
+            else:
+                sp, tp = _geometry(t["entry_horizon"], t["hurst_bucket"], atr,
+                                   cfg.get("stop_mult"), cfg.get("tp1_mult"))
+                outcome, pts = _simulate(ets, is_long, px, sp, tp, hi, lo, cl)
+                if outcome is None:
+                    continue
             res[name].append((outcome, pts - _COST_PTS))
             res_ts[name].append(ets)
+            res_qty[name].append(qty)
 
     return {
         "variants": list(variants),
@@ -207,6 +237,8 @@ def compute(since: str = "2026-06-01", horizon=None) -> dict:
         "cost_pts": _COST_PTS,
         "rows": res,
         "rows_ts": res_ts,
+        "rows_qty": res_qty,
+        "engine": _eng,
         "since": since,
     }
 
