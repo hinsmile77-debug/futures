@@ -138,12 +138,32 @@ def _path_of(hint_source, reason) -> tuple:
     return TARGET, True
 
 
+def _comb(n: int, k: int) -> int:
+    """[439차 P3] `math.comb`는 Python 3.8+다 — py37_32에서 AttributeError로 죽는다.
+
+    이 모듈은 py310_64 전용으로 쓰여 왔지만(모듈 docstring의 실행 예시),
+    `_binom_two_sided`의 주석은 "scipy 없이도 돌게 직접 계산한다"라고 이식성을
+    의도하고 있었다. 회귀 테스트를 2환경에서 돌리려면 이 한 겹이 필요하다.
+    동작은 3.8+에서 `math.comb`와 완전히 동일하다(정수 정확 연산).
+    """
+    _c = getattr(math, "comb", None)
+    if _c is not None:
+        return _c(n, k)
+    if k < 0 or k > n:
+        return 0
+    k = min(k, n - k)
+    num = 1
+    for i in range(k):
+        num = num * (n - i) // (i + 1)
+    return num
+
+
 def _binom_two_sided(k: int, n: int) -> float:
     """부호검정 p (정확 이항, 양측). scipy 없이도 돌게 직접 계산한다."""
     if n <= 0:
         return 1.0
     def pmf(i):
-        return math.comb(n, i) * 0.5 ** n
+        return _comb(n, i) * 0.5 ** n
     obs = pmf(k)
     return min(1.0, sum(pmf(i) for i in range(n + 1) if pmf(i) <= obs + 1e-15))
 
@@ -158,15 +178,80 @@ def compute(since: str = "2026-07-05") -> dict:
             return {"error": str(e), "groups": {}}
 
     groups, reclass, days = {}, 0, {}
+    by_day = {}          # {날짜: {경로: [slip, ...]}} — 발생 추이(439차 P3)
+    all_days = set()
     for ts, reason, hs, sp in rows:
         path, was_re = _path_of(hs, reason)
+        d = ts[:10]
         groups.setdefault(path, []).append(float(sp or 0.0))
-        days.setdefault(path, set()).add(ts[:10])
+        days.setdefault(path, set()).add(d)
+        by_day.setdefault(d, {}).setdefault(path, []).append(float(sp or 0.0))
+        all_days.add(d)
         if was_re:
             reclass += 1
     return {"since": since, "groups": groups, "n_reclassified": reclass,
             "days": {k: len(v) for k, v in days.items()},
+            "by_day": by_day, "all_days": sorted(all_days),
             "n_total": len(rows), "error": None}
+
+
+def _bar_guard_split(out: dict) -> dict:
+    """[439차 P3] 봉중 표본을 **423차 가드 배포 경계**로 pre/post 분리 — 관찰 전용.
+
+    왜: 이 채널은 스스로 "가치는 424차 억제 배포 후의 **회복 판정**에 있다"고 적어
+    두고도 `start_date` 이후를 통째로 풀링해 판정한다. 실측하면 pre-guard가 과반이라
+    n이 min_samples에 도달해도 그 판정은 "억제 후 회복"이 아니라 **혼합**이다.
+
+    ⚠ **verdict를 바꾸지 않는다.** 사전등록 판정식은 그대로 두고(§9, 313차), 여기서는
+    분해와 경고만 만든다 — 사후 데이터로 합격선을 움직이는 것이 313차 위반이기 때문.
+    """
+    gld = str(_CR.get("guard_live_date", "2026-08-04"))
+    warn_at = float(_CR.get("pre_guard_contamination_warn", 0.50))
+    by_day = out.get("by_day") or {}
+    res = {"guard_live_date": gld, "bar_by_day": {}, "path_by_day": {}}
+
+    pre_n = post_n = 0
+    pre_days, post_days = set(), set()
+    pre_tot = post_tot = 0.0
+    for d in out.get("all_days", []):
+        paths = by_day.get(d) or {}
+        res["path_by_day"][d] = {k: len(v) for k, v in paths.items()}
+        bar = paths.get(BAR) or []
+        res["bar_by_day"][d] = len(bar)
+        if not bar:
+            continue
+        if d < gld:
+            pre_n += len(bar); pre_days.add(d); pre_tot += sum(bar)
+        else:
+            post_n += len(bar); post_days.add(d); post_tot += sum(bar)
+
+    res["pre_guard"] = {"n": pre_n, "days": len(pre_days), "total": round(pre_tot, 4)}
+    res["post_guard"] = {"n": post_n, "days": len(post_days), "total": round(post_tot, 4)}
+    total = pre_n + post_n
+    res["pre_guard_share"] = round(pre_n / total, 4) if total else 0.0
+    res["prereg_contaminated"] = bool(total and res["pre_guard_share"] > warn_at)
+    if res["prereg_contaminated"]:
+        res["contamination_reason"] = (
+            "봉중 표본 %d건 중 **%d건(%.1f%%)이 가드 배포 이전**(%s 이전)이다. "
+            "이 채널이 재려는 것은 '억제 후 회복'인데 판정은 pre/post를 풀링해 "
+            "계산되므로, n이 min_samples에 도달해도 그 판정은 회복 판정이 아니라 "
+            "**혼합 판정**이다. 억제 후 표본은 %d건 / %d거래일뿐이다."
+            % (total, pre_n, 100 * res["pre_guard_share"], gld,
+               post_n, len(post_days)))
+    # 최근 거래일 발생 추이 — "지금도 쌓이고 있는가"를 판정과 무관하게 보여 준다.
+    # ⚠ 합계 하나로 내면 **가드 이전 날이 섞여 오독된다**(최근 5일 합 13건인데
+    #    그중 8건이 08-03 = 가드 이전이다). 그래서 일자별 시퀀스로 낸다.
+    recent = out.get("all_days", [])[-5:]
+    res["recent_days"] = recent
+    res["bar_recent_seq"] = [res["bar_by_day"].get(d, 0) for d in recent]
+    # 마지막으로 봉중이 발생한 날 이후 무발생 거래일 수 — 가장 정직한 "고갈" 지표
+    _since_last = 0
+    for d in reversed(out.get("all_days", [])):
+        if res["bar_by_day"].get(d, 0):
+            break
+        _since_last += 1
+    res["bar_dry_days"] = _since_last
+    return res
 
 
 def summarize(out: dict) -> dict:
@@ -187,6 +272,7 @@ def summarize(out: dict) -> dict:
                    "days": out.get("days", {}).get(k, 0)}
     base = {"per_path": stat, "n_reclassified": out.get("n_reclassified", 0),
             "n_total": out.get("n_total", 0)}
+    base.update(_bar_guard_split(out))
 
     b = stat.get(BAR)
     min_n = int(_CR.get("min_samples", 25))
@@ -248,11 +334,44 @@ def main():
     print()
     print("(음수 = 유리) 판정: %s" % s["verdict"])
     print("사유: %s" % s["reason"])
+
+    # ── [439차 P3] 발생 추이 + 가드 경계 pre/post 분해 ──────────────────────
+    print()
+    print("[발생 추이] 경로별 건수 (가드 배포 경계 %s)" % s.get("guard_live_date"))
+    print("%-12s %6s %6s %6s   %s" % ("날짜", "봉중", "틱", "목표", ""))
+    print("-" * 52)
+    for d in sorted(s.get("path_by_day", {})):
+        p = s["path_by_day"][d]
+        mark = "  <- 가드 배포" if d == s.get("guard_live_date") else ""
+        print("%-12s %6d %6d %6d %s"
+              % (d, p.get(BAR, 0), p.get(TICK, 0), p.get(TARGET, 0), mark))
+    pre, post = s.get("pre_guard", {}), s.get("post_guard", {})
+    print()
+    print("가드 이전 : n=%-3s %s거래일  합계 %+.2fpt"
+          % (pre.get("n", 0), pre.get("days", 0), pre.get("total", 0.0)))
+    print("가드 이후 : n=%-3s %s거래일  합계 %+.2fpt"
+          % (post.get("n", 0), post.get("days", 0), post.get("total", 0.0)))
+    print("최근 %d거래일 봉중 발생: %s   (마지막 발생 이후 무발생 %d거래일)"
+          % (len(s.get("recent_days", [])),
+             " / ".join(str(x) for x in s.get("bar_recent_seq", [])),
+             s.get("bar_dry_days", 0)))
+    if s.get("prereg_contaminated"):
+        print()
+        print("[!] 사전등록 오염 — %s" % s.get("contamination_reason", ""))
+        print("    판정 시 pre/post를 반드시 분리해 읽을 것. 위 verdict는 풀링값이다.")
+
     print()
     print("⚠ 사전등록 정직성: 첫 관측치(봉중 13/13, p=0.00024)는 신설 전에 이미 봤다.")
     print("  재확인용이지 사전등록된 검증이 아니다 — 가치는 424차 억제 후 회복 판정에 있다.")
-    print("⚠ 손익 영향은 작다 — 유령 순기여는 반사실 재생 기준 9건 통산 ≈+3.0pt뿐이고,")
-    print("  08-05 억제 5건은 억제가 오히려 +0.38pt 유리했다. 이 채널은 경로 건전성을 본다.")
+    print()
+    print("⚠ **합계pt는 손익이 아니다** — `price_hint`가 봉 고저가에서 유도한 허구의")
+    print("  스톱가라 주문(시장가)과 무관하고, 슬리피지 지표만 오염시킨다.")
+    print("  봉중 -24.51pt를 원화로 환산해 '유리했다'고 읽으면 안 된다.")
+    print("  실제 손익 기여 추정은 두 개가 있고 **서로 3배 이상 어긋난 채 미해결**이다:")
+    print("    424차: 08-04 qty>=2 3건 실현 +8.76pt(+433,609원) vs 반사실 0pt")
+    print("    435차: 1분봉 반사실 재생 9건 통산 ≈+3.0pt, 08-05 억제 5건은 억제가 +0.38pt 유리")
+    print("  → 어느 쪽도 이 채널의 사전등록 판정이 아니다. 라이브 재판정 경로는")
+    print("    [35-M] 미러 서브표본(439차)뿐이다.")
 
 
 if __name__ == "__main__":
