@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-07 17:55:39",
+  "generated_at": "2026-08-07 18:09:40",
   "days": 28,
   "criteria": {
     "tb": {
@@ -113,7 +113,10 @@
       "lookback_days": 28
     },
     "exit_fill_slippage_watch": {
-      "min_samples_for_note": 20
+      "min_samples_for_note": 20,
+      "min_samples": 60,
+      "min_days": 8,
+      "alpha": 0.05
     },
     "regime_exhaustion_watch": {
       "min_samples": 20,
@@ -881,7 +884,7 @@
     "total_pnl_krw": 2119485.0
   },
   "exit_fill_slippage_watch": {
-    "verdict": "OBSERVE",
+    "verdict": "PASS",
     "assumed_ticks_per_side": 1.0,
     "n": 109,
     "avg_slippage_pts": -0.1816,
@@ -908,7 +911,38 @@
         "n": 1,
         "avg_pts": 0.0
       }
-    }
+    },
+    "n_bar_excluded": 13,
+    "avg_bar_pts": -1.8854,
+    "n_valid": 96,
+    "avg_valid_pts": 0.0492,
+    "valid_over_assumed_mult": 2.46,
+    "n_valid_days": 10,
+    "day_means": {
+      "2026-07-27": 0.19,
+      "2026-07-28": 0.1,
+      "2026-07-29": -0.23,
+      "2026-07-30": -0.22,
+      "2026-07-31": 0.06,
+      "2026-08-03": 0.0846,
+      "2026-08-04": -0.0167,
+      "2026-08-05": 0.0194,
+      "2026-08-06": 0.0717,
+      "2026-08-07": 0.0739
+    },
+    "avg_valid_day_pts": 0.0133,
+    "median_valid_day_pts": 0.0659,
+    "paired_days": 10,
+    "mean_diff": -0.0067,
+    "days_positive": 6,
+    "sign_p": 0.7539,
+    "t_stat": -0.155,
+    "significant": false,
+    "days_over_assumed": 6,
+    "days_majority_over": true,
+    "event_day_split": true,
+    "note": "유효-hint 실측 평균(0.0492pt)이 캠페인 가정(0.0200pt)의 2.5배 — slippage_ticks_per_side 재보정 여부를 주간회의에서 검토할 가치 있음(§3 사전등록 원칙 — 즉시 자동 변경 금지). ⚠ 풀링 평균(-0.1816pt)은 봉중 경로 13건에 오염돼 이 경보를 억제하고 있었다(439차 P2).",
+    "reason": "일자단위 평균 +0.0133pt vs 가정 0.0200pt, 초과일 6/10, 부호검정 p=0.7539 — **가정과 구분되지 않는다**(가정이 옳다고 증명된 것이 아니다). 이벤트단위는 +0.0492pt(가정의 2.5배)지만 313차상 판정 단위는 일자다"
   },
   "regime_exhaustion_watch": {
     "verdict": "SUPPORTS_GATE",
