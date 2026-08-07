@@ -2634,11 +2634,12 @@ def eval_phantom_stop_edge() -> dict:
             out["structural_reason"] = (
                 "유령 청산(`live_suppressed=0`) 0건 — 그러나 적재는 정상이다"
                 "(계측 시작 이후 %d행, 그중 억제 %d행 / %d거래일). 원인은 배선이 아니라 "
-                "**모집단 소멸**이다: 유령 청산은 423차 가드를 우회하던 qty>=2의 TP1 "
-                "손익분기 경로에서만 났는데(main.py `tp1_breakeven`), 431차의 "
-                "MAX_CONTRACTS 10→3 + 게이트 체인 재구성으로 qty>=2 진입 자체가 "
-                "사라졌다. 남은 행은 전부 `arm_tp1_qty1_mode`(가드가 정상 배선된 경로)라 "
-                "주판정 필터를 통과하는 행이 **기다린다고 생기지 않는다**. "
+                "**모집단 소멸**이다: **423차 가드 배포 후** 억제되지 않고 남은 경로는 "
+                "424차가 일부러 열어 둔 qty>=2의 TP1 손익분기 우회뿐인데"
+                "(main.py `tp1_breakeven` — 섀도만 기록), 431차의 MAX_CONTRACTS 10→3 + "
+                "게이트 체인 재구성으로 qty>=2 진입이 급감했다(08-06 0건 / 08-07 1건). "
+                "남은 행은 전부 `arm_tp1_qty1_mode`(가드가 정상 배선된 경로)라 주판정 "
+                "필터를 통과하는 행이 **기다린다고 생기지 않는다**. "
                 "→ 아래 **미러 서브표본**(억제된 쪽)이 같은 Δ를 반대 방향에서 재는 "
                 "유일한 경로다." % (_mir.get("n_rows_total", 0), _mir.get("n", 0),
                                     _mir.get("n_days", 0)))
@@ -7192,8 +7193,13 @@ def build_report(days: int) -> tuple:
     _gate = off.get("_sim_fidelity_gate") or {}
     L.append("| **[47] 시뮬 재현충실도 게이트** | %s | %s |" % (
         _fmt_verdict(_gate.get("verdict", "")), _gate.get("reason", "—")))
-    L.append("| [48] 봉중 하드스톱 경로 건전성 | %s | %s |" % (
-        _fmt_channel_verdict(bsp), bsp.get("reason", bsp.get("error", "—"))))
+    L.append("| [48] 봉중 하드스톱 경로 건전성%s | %s | %s%s |" % (
+        " ⚠사전등록오염" if bsp.get("prereg_contaminated") else "",
+        _fmt_channel_verdict(bsp), bsp.get("reason", bsp.get("error", "—")),
+        (" · 가드이전 %d / 이후 %d건 · 무발생 %d거래일" % (
+            (bsp.get("pre_guard") or {}).get("n", 0),
+            (bsp.get("post_guard") or {}).get("n", 0),
+            bsp.get("bar_dry_days", 0))) if bsp.get("prereg_contaminated") else ""))
     _pk, _pr = (pgw.get("krw") or {}), (pgw.get("risk") or {})
     L.append("| [49] 페이오프 기하 상시 감시 | %s | %s%s |" % (
         _fmt_verdict(pgw.get("verdict", "")), pgw.get("reason", pgw.get("error", "—")),
@@ -8713,10 +8719,47 @@ def build_report(days: int) -> tuple:
     L.append("> (주문은 시장가라 손익은 무관, 슬리피지 지표만 오염) ② 유령 하드스톱은")
     L.append("> \"봉의 극값이 스톱 조임보다 먼저 발생\"할 때만 생기고 스톱 조임은 TP1이")
     L.append("> 전제라 **이익 중인 포지션에서만 발동**한다 — 편향이 결정론적이다.")
-    L.append("> ⚠ **손익 영향은 작다** — 반사실 재생 기준 유령 순기여는 9건 통산 ≈+3.0pt고,")
-    L.append("> 08-05 억제 5건은 **억제가 오히려 +0.38pt 유리**했다. 424차 억제는 옳다.")
     L.append("> ⚠ 사전등록 정직성: 첫 관측(13/13, p=0.00024)은 신설 전에 이미 봤다 —")
-    L.append("> 재확인용이며, 가치는 **억제 후 회복 판정**에 있다(억제 후 표본 1건).")
+    L.append("> 재확인용이며, 가치는 **억제 후 회복 판정**에 있다.")
+    L.append("")
+
+    # ── [439차 P3] 발생 추이 + 가드 경계 분해 + 손익 오독 차단 ────────────────
+    if bsp.get("path_by_day"):
+        L.append("### [48-T] 발생 추이와 가드 경계 (439차 P3, 관찰 전용)")
+        L.append("")
+        L.append("| 날짜 | 봉중 | 틱 | 목표 | |")
+        L.append("|---|---|---|---|---|")
+        for _d in sorted(bsp["path_by_day"]):
+            _p = bsp["path_by_day"][_d]
+            _mk = "**← 423차 가드 배포**" if _d == bsp.get("guard_live_date") else ""
+            L.append("| %s | %d | %d | %d | %s |" % (
+                _d, _p.get("봉중 하드스톱", 0), _p.get("틱 하드스톱", 0),
+                _p.get("목표(TP1/TP2/기타)", 0), _mk))
+        L.append("")
+        _pre, _post = (bsp.get("pre_guard") or {}), (bsp.get("post_guard") or {})
+        L.append("- 가드 이전 **%d건 / %d거래일** (%+.2fpt) · 가드 이후 **%d건 / %d거래일** (%+.2fpt)"
+                 % (_pre.get("n", 0), _pre.get("days", 0), _pre.get("total", 0.0),
+                    _post.get("n", 0), _post.get("days", 0), _post.get("total", 0.0)))
+        L.append("- 최근 %d거래일 봉중 발생: **%s** — 마지막 발생 이후 **무발생 %d거래일**"
+                 % (len(bsp.get("recent_days", [])),
+                    " / ".join(str(x) for x in bsp.get("bar_recent_seq", [])),
+                    bsp.get("bar_dry_days", 0)))
+        L.append("")
+    if bsp.get("prereg_contaminated"):
+        L.append("- 🔴 **사전등록 오염** — %s" % bsp.get("contamination_reason", ""))
+        L.append("  - **위 verdict는 풀링값이다.** 판정 시 pre/post를 분리해 읽을 것.")
+        L.append("  - 판정식·`fav_rate_band`·`min_samples`는 **무변경**이다(§9, 313차 —")
+        L.append("    사후 데이터로 합격선을 움직이지 않는다). 바뀐 것은 가시성뿐이다.")
+        L.append("")
+    L.append("> 🔴 **`합계pt`는 손익이 아니다 — 원화로 환산하지 말 것.** `price_hint`가")
+    L.append("> 봉 고저가에서 유도한 **허구의 스톱가**라 주문(시장가)과 무관하고, 슬리피지")
+    L.append("> 지표만 오염시킨다. 봉중 −24.51pt를 \"122만원 유리했다\"로 읽으면 틀린다.")
+    L.append("> 실제 손익 기여 추정은 두 개가 있고 **서로 3배 이상 어긋난 채 미해결**이다:")
+    L.append("> ① 424차 — 08-04 qty≥2 3건 실현 +8.76pt(+433,609원) vs 반사실 0pt")
+    L.append("> ② 435차 — 1분봉 반사실 재생 9건 통산 **≈+3.0pt**, 08-05 억제 5건은")
+    L.append("> **억제가 오히려 +0.38pt 유리**")
+    L.append("> 둘 다 이 채널의 사전등록 판정이 **아니다**. 라이브 재판정 경로는")
+    L.append("> **[35-M] 미러 서브표본**(439차)뿐이다 — 그쪽을 볼 것.")
     L.append("")
 
     L.append("## [49] 페이오프 기하 상시 감시 (435차 신설 · 시뮬 무관)")
@@ -8969,6 +9012,13 @@ def build_report(days: int) -> tuple:
         L.append("  - 이것은 \"표본이 모이는 중\"이 **아니다**. 🔴 NO-DATA(배선 점검)와도 "
                  "다르다 — 적재는 정상이고 주판정 **필터를 통과하는 모집단이 사라졌다**. "
                  "[28] `sizing_inversion_watch`와 같은 유형이다(439차).")
+        L.append("  - ⚠ **[439차 P3 자체 정정]** 위 문구의 초판은 \"유령 청산은 qty≥2 "
+                 "경로에서**만** 났다\"·\"qty≥2 진입 **자체가 사라졌다**\"였는데 둘 다 "
+                 "과했다. 실측: **08-03에 봉중 유령 8건이 전부 qty=1에서 났다**"
+                 "(423차 가드가 그날 장 마감 후 커밋 `c64efd6` — 그 세션은 가드 없이 "
+                 "돌았고 진입 21건이 전부 qty=1이었다). qty≥2 한정은 **가드 배포 이후**에만 "
+                 "성립한다. 또 qty≥2는 사라진 게 아니라 급감이다(08-07 1건). "
+                 "경로별 일자 추이는 **[48-T]** 참조.")
     elif not pse.get("n"):
         L.append("- 표본 없음 — `phantom_stop_shadow` 적재 대기 (계측 시작 **%s**)."
                  % pse.get("effective_date"))
