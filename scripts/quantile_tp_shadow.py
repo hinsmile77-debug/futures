@@ -262,6 +262,10 @@ def compute(since: str = "2026-07-05", horizon=None, engine=None) -> dict:
 
     res = {name: [] for name in variants}
     res_ts, res_qty = {n: [] for n in variants}, {n: [] for n in variants}
+    # [MW0601 446차] 행별 재생 체제 — 체제별 부분집합 판정에 쓴다(summarize 참조).
+    # 전 변형이 paired이므로 current 기준 하나만 있으면 되지만, 변형별 길이가
+    # 달라질 여지를 없애려 평행 리스트로 둔다(res_ts와 같은 관례).
+    res_regime = {n: [] for n in variants}
     days = set()
     skip = {"atr": 0, "quantile": 0, "unfavorable": 0, "tp_too_tight": 0,
             "sim": 0, "tp_inverted": 0}
@@ -346,6 +350,7 @@ def compute(since: str = "2026-07-05", horizon=None, engine=None) -> dict:
             res[name].append((outcome, net))
             res_ts[name].append(ets)
             res_qty[name].append(qty)
+            res_regime[name].append(str(rg.get("tp_trigger") or "?") if rg else "v1")
 
     return {
         "variants": variants,
@@ -357,6 +362,7 @@ def compute(since: str = "2026-07-05", horizon=None, engine=None) -> dict:
         "rows": res,
         "rows_ts": res_ts,
         "rows_qty": res_qty,
+        "rows_regime": res_regime,
         "engine": _eng,
         "n_regime": n_regime,
         "since": since,
@@ -443,7 +449,54 @@ def summarize(out: dict) -> dict:
         "engine": out.get("engine"),
         # 체제 분포 — PC간 비교 전 필수 확인(경계가 MW0601 캘리브레이션이다).
         "n_regime": out.get("n_regime") or {},
+        # [MW0601 446차] 체제별 부분집합 판정 — 아래 _by_regime() 참조.
+        "by_regime": _by_regime(out),
     }
+
+
+def _by_regime(out: dict) -> dict:
+    """[MW0601 446차] 재생 체제별로 A/B를 따로 판정한다 — **표시 전용, 본판정 무관.**
+
+    왜 필요한가 — 445차가 [25]에서 **체제 지정이 A/B 결론을 바꾼다**는 것을 실측했다
+    (`atr_lock_0.50` Δ현행 +6.73(envelope) vs +0.24(close), MW0602에서는 −3.76).
+    `replay_regime`의 경계는 **MW0601 TRADE 로그로 캘리브레이션**된 값이라 다른 PC
+    에서는 어긋날 수 있고(settings가 이미 경고), 그러면 **풀링 판정이 조용히 오염된다.**
+
+    이 함수는 그 위험을 상시 가시화한다. 체제별 판정이 풀링과 갈리면 리포트가
+    경고를 띄우므로, "어느 체제로 재생됐는지 모른 채 두 PC 수치를 비교"하는 사고를
+    막을 수 있다.
+
+    446차 실측(MW0601 110건): 풀링 PASS · close 부분집합(46건) PASS ·
+    envelope 부분집합(64건) PASS — **[3-B]는 체제에 견고하다**([25]와 대조적).
+    강제 시나리오까지 포함해 5개 전부 PASS였다(q_raw Δ현행 −0.92 ~ −19.53).
+
+    ⚠ **본판정에 반영하지 않는다** — 사전등록 합격선은 풀링 기준 그대로다(§9-4).
+    ⚠ 부분집합은 표본이 쪼개지므로 313차상 단독 근거로 쓰지 말 것.
+    """
+    rows = out.get("rows") or {}
+    regs = (out.get("rows_regime") or {}).get("current") or []
+    base = rows.get("current") or []
+    if not base or len(regs) != len(base):
+        return {}
+    res = {}
+    for era in sorted(set(regs)):
+        sel = [i for i, e in enumerate(regs) if e == era]
+        if not sel:
+            continue
+        b = sum(base[i][1] for i in sel)
+        per, beat = {}, []
+        for name, rws in rows.items():
+            if len(rws) != len(regs):
+                continue          # 길이가 다른 변형(비례축 등)은 이 표에서 제외
+            tot = sum(rws[i][1] for i in sel)
+            d = tot - b
+            per[name] = {"total_pt": round(tot, 4), "delta_vs_current": round(d, 4)}
+            if name != "current" and d > 0:
+                beat.append(name)
+        res[era] = {"n": len(sel), "per_variant": per,
+                    "verdict": "FAIL" if beat else "PASS",
+                    "beats": beat}
+    return res
 
 
 def main():

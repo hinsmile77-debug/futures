@@ -7763,6 +7763,39 @@ def build_report(days: int) -> tuple:
                 L.append("  - 🔴 **`close` 체제 표본이 섞여 있다** — `replay_regime` 경계"
                          "(2026-08-03)는 **MW0601 캘리브레이션**이며 settings가 타 PC "
                          "재확인을 경고한다. 445차 실측상 체제 지정이 A/B 결론을 바꾼다.")
+        # [MW0601 446차] 체제별 부분집합 판정 — 표시 전용(본판정 무관, §9-4).
+        _br = _g3b.get("by_regime") or {}
+        if len(_br) > 1:
+            _pool = _g3b.get("verdict")
+            _split = {k: v.get("verdict") for k, v in _br.items()}
+            _agree = all(v == _pool for v in _split.values())
+            L.append("")
+            L.append("**체제별 부분집합 판정** (446차 신설 · 표시 전용 — 본판정은 풀링 기준)")
+            L.append("")
+            _alts = [k for k in _g3b.get("per_variant", {}) if k != "current"]
+            L.append("| 체제 | n | 판정 | %s |" % " | ".join(_alts))
+            L.append("|---|---|---|%s" % ("---|" * len(_alts)))
+            for era, d in sorted(_br.items()):
+                _cells = []
+                for k in _g3b.get("per_variant", {}):
+                    if k == "current":
+                        continue
+                    _v = (d.get("per_variant") or {}).get(k)
+                    _cells.append("%+.2f" % _v["delta_vs_current"] if _v else "—")
+                L.append("| `%s` | %d | %s | %s |"
+                         % (era, d["n"], _fmt_verdict(d.get("verdict", "")),
+                            " | ".join(_cells)))
+            L.append("")
+            if _agree:
+                L.append("> ✅ **체제별 판정이 풀링과 일치한다** — 이 채널의 결론은 "
+                         "`replay_regime` 경계 설정에 **견고**하다. (445차가 [25]에서 "
+                         "발견한 체제 민감도가 여기서는 관측되지 않는다.)")
+            else:
+                L.append("> 🔴 **체제별 판정이 풀링과 갈린다**(풀링 `%s` vs %s) — "
+                         "**풀링 수치를 단독 근거로 쓰지 말 것.** `replay_regime` 경계가 "
+                         "이 PC에 맞는지 먼저 확인해야 한다(경계는 MW0601 캘리브레이션)."
+                         % (_pool, " / ".join("`%s`=%s" % kv for kv in sorted(_split.items()))))
+            L.append("> ⚠ 부분집합은 표본이 쪼개진다 — 313차상 **단독 근거로 쓰지 말 것.**")
         pv = _g3b.get("per_variant") or {}
         if pv:
             L.append("")
