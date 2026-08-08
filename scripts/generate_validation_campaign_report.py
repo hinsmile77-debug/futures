@@ -7331,10 +7331,11 @@ def build_report(days: int) -> tuple:
     L.append("| [4] 신호소멸청산 | %s | 누적 saved=%spt (n=%s, 보류 %s)%s |" % (
         _fmt_verdict(sd["verdict"]), sd.get("total_saved_pts", "—"),
         sd.get("n_resolved", 0), sd.get("n_pending", 0), _dm("signal_decay")))
-    L.append("| [5] 레짐 ATR 배수 | %s | %s |" % (
+    L.append("| [5] 레짐 ATR 배수 | %s | %s%s |" % (
         _fmt_verdict(hr["verdict"]),
         " / ".join("%s: n=%d EV=%s원" % (b, v["n"], format(v["avg_ev_krw"], ",.0f"))
-                   for b, v in sorted(hr.get("buckets", {}).items())) or "거래 없음"))
+                   for b, v in sorted(hr.get("buckets", {}).items())) or "거래 없음",
+        _dm("hurst_regime")))
     L.append("| [6] Hurst 게이트 counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s)%s |" % (
         _fmt_verdict(hg["verdict"]), hg.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (hg["win_rate"] * 100)) if "win_rate" in hg else "—",
@@ -7356,11 +7357,11 @@ def build_report(days: int) -> tuple:
         ("%.1f%%" % (jg["win_rate"] * 100)) if "win_rate" in jg else "—",
         jg.get("n_resolved", 0), jg.get("n_pending", 0),
         (" · " + " · ".join(_jg_tags)) if _jg_tags else ""))
-    L.append("| [8] KellyAdvisedSkip×C등급 | %s | 누적 순PnL=%s원 승률=%s (n=%s) |" % (
+    L.append("| [8] KellyAdvisedSkip×C등급 | %s | 누적 순PnL=%s원 승률=%s (n=%s)%s |" % (
         _fmt_verdict(ks["verdict"]),
         format(ks["total_pnl_krw"], ",.0f") if "total_pnl_krw" in ks else "—",
         ("%.1f%%" % (ks["win_rate"] * 100)) if "win_rate" in ks else "—",
-        ks.get("n", 0)))
+        ks.get("n", 0), _dm("kelly_skip")))
     L.append("| [9] OPEN_VOLATILE 시가이격 counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
         _fmt_verdict(og["verdict"]), og.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (og["win_rate"] * 100)) if "win_rate" in og else "—",
@@ -7402,11 +7403,11 @@ def build_report(days: int) -> tuple:
         frw.get("n_fast_hardstop", 0), frw.get("n_no_tp1", 0),
         _frw_a.get("n", 0),
         format(_frw_a["total_pnl_krw"], ",.0f") if _frw_a else "—"))
-    L.append("| [16] chase+foreign 조합 관찰 | %s | 동시실패=%s건 누적=%s원 (매칭=%s건) |" % (
+    L.append("| [16] chase+foreign 조합 관찰 | %s | 동시실패=%s건 누적=%s원 (매칭=%s건)%s |" % (
         _fmt_verdict(cfc["verdict"]),
         cfc.get("n_combo", 0),
         format(cfc["total_pnl_krw"], ",.0f") if cfc.get("n_combo") else "—",
-        cfc.get("n_matched", 0)))
+        cfc.get("n_matched", 0), _dm("chase_foreign_combo_watch")))
     # [439차 P2] 헤드라인을 **유효-hint 기준**으로 바꾼다 — 풀링 평균은 봉중 경로
     # (hint가 허구)에 오염돼 음수로 끌려가 이 채널의 경보를 억제하고 있었다.
     L.append("| [17] 청산 체결 슬리피지 | %s | 유효-hint n=%s 일자평균=%spt / 이벤트 %spt "
@@ -7416,11 +7417,12 @@ def build_report(days: int) -> tuple:
         efs.get("avg_valid_pts", "—"), efs.get("assumed_slippage_pts_per_side", "—"),
         efs.get("n_bar_excluded", 0), efs.get("sign_p", "—")))
     L.append("| [18] RegimeExhaustionGate(탈진반전) | %s | 발동=%s건 누적hyp=%spt "
-              "(STOP=%s/TP1=%s/NEITHER=%s) |" % (
+              "(STOP=%s/TP1=%s/NEITHER=%s)%s |" % (
         _fmt_verdict(reg["verdict"]),
         reg.get("n_resolved", 0),
         reg.get("total_hyp_pnl_pts", "—"),
-        reg.get("cf_stop", 0), reg.get("cf_tp1", 0), reg.get("cf_neither", 0)))
+        reg.get("cf_stop", 0), reg.get("cf_tp1", 0), reg.get("cf_neither", 0),
+        _dm("regime_exhaustion_shadow")))
     L.append("| [19] ToxicityGate block counterfactual | %s | 누적 hyp=%spt 승률=%s (n=%s, 보류 %s) |" % (
         _fmt_verdict(txb["verdict"]), txb.get("total_hyp_pnl_pts", "—"),
         ("%.1f%%" % (txb["win_rate"] * 100)) if "win_rate" in txb else "—",
@@ -7636,7 +7638,7 @@ def build_report(days: int) -> tuple:
             "OOF AUC=%s (기준선 %s) · 포지션 %s / EPV %s" % (
                 emw.get("oof_auc", "—"), emw.get("baseline_acc", "—"),
                 _emr.get("n_positions", "—"), _emr.get("epv", "—")))))
-    L.append("| [42] 타점의 가치 | %s | %s |" % (
+    L.append("| [42] 타점의 가치 | %s | %s%s |" % (
         _fmt_channel_verdict(etv),
         etv.get("reason") or (
             "타점 기여(B-C) %+.2fpt · B>C %.1f%% · 짝지은 p=%s "
@@ -7644,7 +7646,8 @@ def build_report(days: int) -> tuple:
                 etv.get("timing_gain_pt", 0.0),
                 float(etv.get("b_over_c_share", 0)) * 100, etv.get("sign_p", "—"),
                 etv.get("arm_a_pt", 0.0), etv.get("arm_b_median_pt", 0.0),
-                etv.get("arm_c_median_pt", 0.0)))))
+                etv.get("arm_c_median_pt", 0.0))),
+        _dm("entry_timing_value_watch")))
     L.append("| [43] 변동성 추정량 교체 | %s | %s |" % (
         _fmt_channel_verdict(vew),
         vew.get("reason") or (
@@ -7665,8 +7668,9 @@ def build_report(days: int) -> tuple:
                 dcf.get("base_mc_excl_collapsed", 0.0),
                 dcf.get("base_mc_current", 0.0),
                 float(dcf.get("collapsed_share", 0)) * 100))))
-    L.append("| [45] 축퇴 가드 플래핑 (게이지) | %s | %s |" % (
-        _fmt_verdict("OBSERVE"), cgf.get("reason", "—")))
+    L.append("| [45] 축퇴 가드 플래핑 (게이지) | %s | %s%s |" % (
+        _fmt_verdict("OBSERVE"), cgf.get("reason", "—"),
+        _dm("cal_guard_flap_watch")))
     # [MW0601 434차] [46] HurstGate 임계 위치 A/B — OOS 기준 판정(전체표본은 in-sample).
     _g46 = off.get("hurst_threshold_shadow") or {}
     if _g46:
