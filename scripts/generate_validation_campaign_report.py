@@ -4645,6 +4645,69 @@ def _cf_target_unreachable(direction, tp1_price, limits: dict) -> bool:
 # [23] TP1/손절 초기 기하 A/B (403차 P1-6) — 오프라인 스크립트 위임
 # ──────────────────────────────────────────────────────────────
 
+def check_replay_regime_fit() -> dict:
+    """[MW0601 447차] 사전등록 `replay_regime`이 **이 PC 실측과 맞는가** 자동 점검.
+
+    왜 필요한가 — `tick_era_start`(2026-08-03)와 `pre.protect_mode`(breakeven)는
+    **MW0601 TRADE 로그로 캘리브레이션**된 값인데 config는 **단일 값**이라 두 PC가
+    공유한다. settings 주석이 "MW0602에서 판정할 때 재확인 필요"라고 이미 경고했지만
+    **재확인을 사람이 기억해야 하는 구조**였고, 실제로 두 달 가까이 아무도 안 했다.
+
+    MW0602가 0808 교차검토에서 수동으로 재도출해 **경계가 다르다**는 것을 확인했다
+    (`tick_era_start` 07-31 vs 08-03, `pre.protect_mode` atr_profit vs breakeven).
+    그 PC는 07-20부터 전 구간 `atr_profit`이라 **pre 구간 자체가 없다.**
+    이 함수는 그 수동 작업을 **매주 자동으로** 수행해 불일치를 리포트에 띄운다 —
+    새 PC가 붙어도 자동으로 걸린다.
+
+    무엇을 보나 — `protect_mode` 축만 DB로 판정 가능하다(틱 TP 축은 TRADE 로그
+    파싱이 필요해 범위 밖). `synthetic_partial_exits`를 경계 전후로 갈라 각 구간의
+    **최빈 모드**를 config와 대조한다.
+
+    ⚠ **경계를 자동으로 고치지 않는다.** `replay_regime`은 사전등록 블록이고,
+      settings가 "재현이 잘 되는 쪽으로 옮기지 말 것 — 옮기는 순간 [47]은 검증이
+      아니라 곡선맞춤이 된다(§9)"고 못 박았다. 이 함수는 **경보만** 낸다.
+    ⚠ 소수 예외는 무시한다 — MW0601·MW0602 **양쪽 모두** 2026-08-03 13:25/13:38에
+      `breakeven` 2건이 있는데, 같은 시각·같은 방향이라 PC 결함이 아니라 **운영자가
+      양 PC 대시보드에서 모드를 장중 변경**한 흔적이다(421차 후속6 "장중변경 로그부재"
+      가 등록한 사건). 최빈값 기준이라 이런 소수 예외에 흔들리지 않는다.
+    """
+    rg = (VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {}) or {}).get("replay_regime") \
+        or VALIDATION_CAMPAIGN.get("replay_regime") or {}
+    start = str(rg.get("tick_era_start") or "")
+    out = {"tick_era_start": start,
+           "cfg_pre": (rg.get("pre") or {}).get("protect_mode"),
+           "cfg_post": (rg.get("post") or {}).get("protect_mode")}
+    if not start:
+        out["error"] = "replay_regime 미등록"
+        return out
+    try:
+        with _conn(TRADES_DB) as c:
+            rows = c.execute(
+                "SELECT substr(ts,1,10) AS d, protect_mode AS m, COUNT(*) AS n "
+                "FROM synthetic_partial_exits GROUP BY d, m").fetchall()
+    except Exception as e:
+        out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out
+
+    pre, post = {}, {}
+    for r in rows:
+        tgt = pre if str(r["d"]) < start else post
+        k = str(r["m"] or "(미기록)")
+        tgt[k] = tgt.get(k, 0) + int(r["n"] or 0)
+    out["obs_pre"], out["obs_post"] = pre, post
+
+    def _dom(d):
+        return max(d.items(), key=lambda kv: kv[1])[0] if d else None
+
+    out["dom_pre"], out["dom_post"] = _dom(pre), _dom(post)
+    # pre 표본이 아예 없으면 "이 PC엔 pre 구간이 없다" — 불일치가 아니라 정보 부족.
+    out["pre_empty"] = not pre
+    out["mismatch_pre"] = bool(pre and out["dom_pre"] != out["cfg_pre"])
+    out["mismatch_post"] = bool(post and out["dom_post"] != out["cfg_post"])
+    out["ok"] = not (out["mismatch_pre"] or out["mismatch_post"])
+    return out
+
+
 def eval_offline_geometry_channels() -> dict:
     """[404차 후속3, 23-B/25] 오프라인 A/B 스크립트 2종을 리포트에 편입한다.
 
@@ -8980,6 +9043,33 @@ def build_report(days: int) -> tuple:
     if _gate.get("engine"):
         L.append("- 재생기 엔진: **%s** (`config/settings.py sim_fidelity_gate[\"engine\"]`)"
                  % _gate["engine"])
+    # ── [MW0601 447차] replay_regime 적합성 자동 점검 ──────────────────────────
+    try:
+        _rf = check_replay_regime_fit()
+    except Exception as _e:
+        _rf = {"error": "%s: %s" % (type(_e).__name__, _e)}
+    if _rf.get("error"):
+        L.append("- 체제 경계 점검: ⚠ 미산출 (%s)" % _rf["error"])
+    else:
+        _fmt_d = (lambda d: ", ".join("%s %d" % kv for kv in sorted(d.items())) or "없음")
+        L.append("- **체제 경계 적합성** (`tick_era_start=%s`): %s"
+                 % (_rf["tick_era_start"], "✅ 이 PC 실측과 일치" if _rf.get("ok")
+                    else "🔴 **이 PC 실측과 불일치**"))
+        L.append("  - pre 실측 `%s` vs config `%s` / post 실측 `%s` vs config `%s`"
+                 % (_fmt_d(_rf.get("obs_pre") or {}), _rf.get("cfg_pre"),
+                    _fmt_d(_rf.get("obs_post") or {}), _rf.get("cfg_post")))
+        if not _rf.get("ok"):
+            L.append("  - 🔴 **이 PC의 재생 체제가 틀렸을 수 있다** — `replay_regime`은 "
+                     "**MW0601 TRADE 로그로 캘리브레이션**된 단일 값이라 두 PC가 공유한다. "
+                     "MW0602 0808 교차검토가 실측으로 `tick_era_start` **07-31**(vs 08-03)·"
+                     "`pre.protect_mode` **atr_profit**(vs breakeven)을 재도출했다. "
+                     "**A/B 채널 수치를 PC간 비교하기 전에 이 불일치부터 해소할 것.**")
+            L.append("  - ⚠ **경계를 임의로 옮기지 말 것** — settings가 \"재현이 잘 되는 "
+                     "쪽으로 옮기는 순간 [47]은 검증이 아니라 곡선맞춤이 된다(§9)\"고 "
+                     "못 박았다. PC별 분기 도입은 **주간회의 소관**이다.")
+        elif _rf.get("pre_empty"):
+            L.append("  - ℹ pre 구간 표본이 없다 — 이 PC는 경계 이전 보호전환 기록이 "
+                     "없어 `pre` 설정이 사실상 미사용이다.")
     L.append("")
 
     # ── [MW0601 440차] v1/v2 엔진 대조 — "고쳤다"는 주장의 감사 근거 ────────────
