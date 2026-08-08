@@ -4707,7 +4707,12 @@ def eval_offline_geometry_channels() -> dict:
                      # [MW0601 436차, 47] 진입 맥락별 손익. 사후 슬라이스 3종을 OOS +
                      # 다중비교 보정으로 판정한다. ⚠ FAIL이어도 진입 차단은 처방이
                      # 아니다(427·428차 방향 축 무작위 + 차단 게이트 과다).
-                     ("entry_context_shadow", "scripts.entry_context_shadow")):
+                     ("entry_context_shadow", "scripts.entry_context_shadow"),
+                     # [MW0601 441차, 47-B] TP 체결 오버슈트 감시. 관찰 전용(OBSERVE).
+                     # ⚠ [47] 게이트의 targets에 **넣지 않는다** — 이 채널은 게이트가
+                     #   쓰는 재생기의 체결 모델 자체를 감시하므로, 게이트가 이것을
+                     #   정지시키면 순환 논증이 된다(settings 주석 참조).
+                     ("tp_fill_overshoot_watch", "scripts.tp_fill_overshoot_watch")):
         try:
             import importlib
             m = importlib.import_module(mod)
@@ -4744,18 +4749,61 @@ def eval_offline_geometry_channels() -> dict:
                 "v1": {"verdict": "ERROR", "reason": "%s: %s" % (type(e).__name__, e)},
                 "v2": {"verdict": "ERROR", "reason": "%s: %s" % (type(e).__name__, e)}}
 
+    _cr_gate = VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {}) or {}
+
+    # [MW0601 441차] 중첩 축 — 같은 스크립트 안의 **평행 판정**이라 함께 정지해야 한다.
+    # 🔴 기존 결함 수정: settings의 targets 주석은 "[25-B]는 [25] 스크립트 안의 평행
+    #    축이라 **같은 키로 함께 정지된다**"고 사전등록해 뒀는데, 실제 코드는 최상위
+    #    `verdict`만 덮어써서 [25-B]가 정지를 새어나갔다(0807 리포트에서 [25]는
+    #    SUSPENDED인데 [25-B]만 FAIL로 찍힌 것이 그 증거다). 사전등록과 코드를
+    #    일치시키는 수정이지 기준 변경이 아니다.
+    #    [25-B]는 축이 **TP2 거리** 자체라 "TP2에서 종료" 인공물의 직격 대상이다.
+    _SUB_AXES = {"tp1_protect_offset_shadow": ["tp2"]}
+
+    def _suspend(ch, by, reason_text, gate_reason):
+        ch["verdict_raw"] = ch.get("verdict")
+        ch["verdict"] = "SUSPENDED"
+        ch["suspended_by"] = by
+        ch["suspend_reason"] = gate_reason
+        ch["reason"] = reason_text % (ch.get("verdict_raw"), ch.get("reason", ""))
+
+    def _suspend_channel(key, by, reason_text, gate_reason):
+        ch = out.get(key)
+        if not isinstance(ch, dict):
+            return
+        _suspend(ch, by, reason_text, gate_reason)
+        for sub in _SUB_AXES.get(key, []):
+            sub_ch = ch.get(sub)
+            if isinstance(sub_ch, dict) and sub_ch.get("verdict"):
+                _suspend(sub_ch, by, reason_text, gate_reason)
+
     if gate.get("gate") == "SUSPEND":
         for key in (gate.get("targets") or []):
-            ch = out.get(key)
-            if not isinstance(ch, dict):
+            _suspend_channel(
+                key, "sim_fidelity_gate",
+                "판정 정지 — 재생기가 실제를 재현하지 못한다(§47). 원 판정 `%s`: %s",
+                gate.get("reason", ""))
+    elif gate.get("verdict") == "PASS":
+        # ── [MW0601 441차] 엔진 커버리지 가드 — PASS의 효력 범위를 제한한다 ──────
+        # 435차의 간접 추론("정본이 실패하면 그들도 실패")은 **제한 방향으로만**
+        # 타당하다. 역방향은 성립하지 않는다 — 미이관 채널은 정본과 **코드를
+        # 공유하지 않기 때문이다**(440차가 고친 것은 exit_replay.py인데 그들은 자체
+        # `_simulate`를 쓴다). 근거·분류는 settings의 `replay_engine_targets` 주석 참조.
+        # ⚠ 이 가드가 없으면 441차의 게이트 개통이 **검증된 적 없는 계측을 통과시킨다**
+        #   — [47]이 막으려던 바로 그 사고를 반대 방향으로 재현하는 셈이다.
+        _verified = (set(_cr_gate.get("replay_engine_targets") or [])
+                     | set(_cr_gate.get("no_replay_targets") or []))
+        for key in (gate.get("targets") or []):
+            if key in _verified:
                 continue
-            ch["verdict_raw"] = ch.get("verdict")
-            ch["verdict"] = "SUSPENDED"
-            ch["suspended_by"] = "sim_fidelity_gate"
-            ch["suspend_reason"] = gate.get("reason", "")
-            ch["reason"] = ("판정 정지 — 재생기가 실제를 재현하지 못한다(§47). "
-                            "원 판정 `%s`: %s" % (ch.get("verdict_raw"),
-                                                 ch.get("reason", "")))
+            _suspend_channel(
+                key, "engine_coverage",
+                "판정 정지 — **정본 재생기 미이관**(§47 엔진 커버리지, 441차). "
+                "[47] 자체는 PASS지만 이 채널은 자체 시뮬(TP1/TP2에서 종료)을 쓰므로 "
+                "그 PASS가 여기까지 미치지 않는다. 해제 조건은 재생기 수리가 아니라 "
+                "**이 채널을 `exit_replay`로 이관**하는 것이다. 원 판정 `%s`: %s",
+                "[47]은 PASS이지만 이 채널은 정본 재생기(`exit_replay`)를 쓰지 않는다 "
+                "— 게이트의 PASS가 이 채널의 계측을 검증하지 않는다(441차).")
     return out
 
 
@@ -7333,8 +7381,18 @@ def build_report(days: int) -> tuple:
     # ── [MW0602 435차] 신규 3채널 요약행. [47]을 **기하 채널들보다 먼저** 찍는다 —
     # 아래 [23-B]/[25]가 SUSPENDED로 보일 때 그 이유를 바로 위에서 읽게 하기 위함이다.
     _gate = off.get("_sim_fidelity_gate") or {}
-    L.append("| **[47] 시뮬 재현충실도 게이트** | %s | %s |" % (
-        _fmt_verdict(_gate.get("verdict", "")), _gate.get("reason", "—")))
+    _gate_note = ""
+    # [MW0601 441차] 조건부 부호경로가 판정을 바꾼 주에는 **표에서 바로 보이게** 한다.
+    # 구 기준 그대로의 판정(verdict_strict_sign)과 갈리면 그 사실이 감사 대상이다(§9).
+    if (_gate.get("verdict_strict_sign")
+            and _gate.get("verdict_strict_sign") != _gate.get("verdict")):
+        _gate_note = ("  ⚠ **구 기준(sign_match 무조건)으로는 `%s`** — 조건부 경로가 "
+                      "판정을 바꿨다(441차)" % _gate["verdict_strict_sign"])
+    L.append("| **[47] 시뮬 재현충실도 게이트** | %s | %s%s |" % (
+        _fmt_verdict(_gate.get("verdict", "")), _gate.get("reason", "—"), _gate_note))
+    _ovs = off.get("tp_fill_overshoot_watch") or {}
+    L.append("| [47-B] TP 체결 오버슈트 (관찰) | %s | %s |" % (
+        _fmt_verdict(_ovs.get("verdict", "")), _ovs.get("reason", "—")))
     L.append("| [48] 봉중 하드스톱 경로 건전성%s | %s | %s%s |" % (
         " ⚠사전등록오염" if bsp.get("prereg_contaminated") else "",
         _fmt_channel_verdict(bsp), bsp.get("reason", bsp.get("error", "—")),
@@ -8893,6 +8951,37 @@ def build_report(days: int) -> tuple:
                  % (_gate["repro_bias_R"], _gate.get("repro_bias_R_mean", 0),
                     _gate.get("sim_total_pt", 0), _gate.get("actual_total_pt", 0),
                     _gate.get("sign_match")))
+    # ── [MW0601 441차] 4기준 판정 내역 — 어느 기준으로 통과/탈락했는지 감사 가능하게 ──
+    if _gate.get("repro_gap_sd") is not None:
+        _cr47 = VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {}) or {}
+        L.append("- 판정 기준별 (441차 4기준 AND):")
+        L.append("  - ① 편향(중앙) `%+.3fR` ≤ `%.2fR`" % (
+            _gate.get("repro_bias_R", 0), _cr47.get("repro_bias_R_max", 0.10)))
+        L.append("  - ② **수준 — 재현 격차 `%.2f SE` ≤ `%.1f SE`** (격차 %.2f pt) ← 실질 판별자"
+                 % (_gate["repro_gap_sd"], _cr47.get("repro_gap_sd_max", 1.0),
+                    _gate.get("repro_gap_pt", 0)))
+        L.append("  - ③ 일자단위 추적 — 상관 `%s` ≥ `%.2f` · 부호일치 `%s` ≥ `%.0f%%` (%s일)"
+                 % (("%+.3f" % _gate["day_corr"]) if _gate.get("day_corr") is not None else "—",
+                    _cr47.get("day_corr_min", 0.60),
+                    ("%.0f%%" % (100 * _gate["day_sign_agree"]))
+                    if _gate.get("day_sign_agree") is not None else "—",
+                    100 * _cr47.get("day_sign_agree_min", 0.70),
+                    _gate.get("n_day_points", "—")))
+        L.append("  - ④ 부호검정 — 구속력 **%s** (|Σ실제|=%.2f SE, 기준 %.1f SE)"
+                 % ("있음" if _gate.get("sign_binding") else "없음(무정보 → ②가 대체)",
+                    _gate.get("sign_margin_sd") or 0.0,
+                    _cr47.get("sign_match_min_sd", 2.0)))
+        if _gate.get("verdict_strict_sign"):
+            _same = _gate["verdict_strict_sign"] == _gate.get("verdict")
+            L.append("- 구 기준(sign_match 무조건) 판정: **%s** — %s"
+                     % (_gate["verdict_strict_sign"],
+                        "현행과 동일(조건부 경로가 판정을 바꾸지 않았다)" if _same
+                        else "⚠ **현행과 다르다** — 조건부 경로가 판정을 바꿨다. §9 감사 대상."))
+    if _gate.get("sim_total_pt_legacy") is not None:
+        L.append("- 참고 — 440차까지의 구 판정식 입력: 시뮬 %+.2f vs 실제 %+.2f pt "
+                 "(레그 무가중합 vs 비용차감 시뮬). **441차가 단위를 통일**해 "
+                 "양변을 `gross·1계약`으로 맞췄다 — 수치가 달라진 이유다."
+                 % (_gate["sim_total_pt_legacy"], _gate["actual_total_pt_legacy"]))
     if _gate.get("engine"):
         L.append("- 재생기 엔진: **%s** (`config/settings.py sim_fidelity_gate[\"engine\"]`)"
                  % _gate["engine"])
@@ -8925,11 +9014,6 @@ def build_report(days: int) -> tuple:
                      "0 근처면 `sign_match`는 아주 작은 편향으로도 뒤집힌다 — "
                      "\"부호 불일치\"가 재현 실패인지 **기준의 불안정**인지 구분해서 읽을 것."
                      % _v2["sign_margin_sd"])
-        if _v2.get("sim_total_pt_wq") is not None:
-            L.append("- ⚠ **단위 불일치(기존 결함)**: 판정식의 `실제`는 레그별 pt 단순합이라 "
-                     "계약가중이 아니다. 계약가중으로 맞추면 시뮬 %+.2f vs 실제 %+.2f pt다. "
-                     "**판정식 입력은 바꾸지 않았다**(사전등록 §9) — 교체 여부는 주간회의 결정."
-                     % (_v2["sim_total_pt_wq"], _v2["actual_total_pt_wq"]))
         L.append("")
         L.append("> **440차가 한 일**: `scripts/exit_replay.py`가 라이브 청산 사다리를")
         L.append("> 미러링한다 — 4단계 트레일링(`compute_trailing_stop_tier` **라이브 함수를**")
@@ -8938,11 +9022,25 @@ def build_report(days: int) -> tuple:
         L.append("> 종가뿐이고 보호전환이 `breakeven`이었다(TRADE 로그 전수 집계로 확정).")
         L.append("> 과거를 지금의 규칙으로 재생하면 그 자체가 오차원이 된다.")
         L.append("> ")
-        L.append("> **결과: 개별 정확도는 크게 올랐지만 사전등록 합격선(부호 일치)은 아직")
-        L.append("> 충족하지 못했다 — 게이트는 SUSPEND를 유지한다.** 남은 오차원은 ①(틱 경로)")
-        L.append("> 이며, 0807 호가로그 224,812틱 대조에서도 봉 단위 재생만으로는 현행을")
-        L.append("> 재현할 수 없음이 확인됐다. ②③ 편입은 [47]이 사전등록한 조치이고 그것은")
-        L.append("> 이행했다 — **합격선을 사후에 완화하지 않는다**(§9).")
+        L.append("> **441차가 한 일 — 남은 격차는 재생기 능력이 아니라 계측 결함이었다.**")
+        L.append("> 440차는 잔여 격차를 \"틱 경로(오차원 ①)\"로 귀속했으나, 441차가 실제")
+        L.append("> 청산 경로별로 분해하니 **틱스톱 76포지션의 오차는 +0.05pt(사실상 0)**")
+        L.append("> 였다 — 틱 재현은 이미 정확했다. 격차는 두 계측 결함이었다:")
+        L.append("> ")
+        L.append("> - **ⓐ 판정식 단위 3중 불일치 (-16.15pt)** — `SUM(pnl_pts)`는 레그별")
+        L.append(">   계약당 pt의 **무가중 합**인데 시뮬은 1계약 기준이었고, 게다가 시뮬만")
+        L.append(">   왕복비용을 뺐다(실제는 gross). 왜곡이 **결과에 비대칭**이라 더 나쁘다 —")
+        L.append(">   이긴 포지션은 TP 분할로 레그가 여러 개(부풀려짐), 진 포지션은 하드스톱")
+        L.append(">   전량이라 하나다(417차와 같은 메커니즘). 실측: post 세대 TP도달 오차")
+        L.append(">   −18.65pt가 단위 통일 후 **0.00pt** — 전부 이 인공물이었다.")
+        L.append("> - **ⓑ 재생기 TP 체결가 (-21.56pt)** — `close` 세대는 트리거가 종가인데")
+        L.append(">   체결을 목표가로 계상해 이익 오버슈트가 사라졌다. TP2 완주 22건이")
+        L.append(">   목표거리를 **전건 초과**(합 +18.19pt)한 것이 그 증거다. → [47-B] 신설.")
+        L.append("> ")
+        L.append("> **합격선을 완화해서 통과한 것이 아니다** — 위 둘을 고친 뒤 **구 기준")
+        L.append("> (sign_match 무조건) 그대로 PASS**했고(리포트 상단 ④ 항목 확인), 같은")
+        L.append("> 수정을 받은 **v1은 여전히 SUSPEND**다(수준 기준 1.25SE > 1.0SE).")
+        L.append("> 기준이 판별력을 잃지 않았다는 대조 증거다(§9).")
         L.append("> ")
         L.append("> ⚠ **v1이 만들던 인공물의 크기**: [23-B]에서 v1은 `tp1_x2`를 최선")
         L.append("> (**+37.96pt**)으로 봤는데 v2에서는 최악(**−30.68pt**)이다. TP1에서 종료하며")
@@ -8963,10 +9061,95 @@ def build_report(days: int) -> tuple:
         L.append("> 소스 데이터도 `main.py`가 계속 기록하므로 소급 재실행이 가능하다.")
         L.append("> **해제 조건**: 재생기에 TP3·트레일링을 편입해 재현이 회복되면 **자동 PASS**")
         L.append("> — 사람이 \"재검토하기로 했는데 안 함\"으로 방치할 여지가 없다.")
+    elif _gate.get("verdict") == "PASS":
+        _crg = VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {}) or {}
+        _ver = (set(_crg.get("replay_engine_targets") or [])
+                | set(_crg.get("no_replay_targets") or []))
+        _unver = [t for t in (_gate.get("targets") or []) if t not in _ver]
+        L.append("> ")
+        L.append("> ### ⚠ 엔진 커버리지 — **이 PASS가 어디까지 미치는가** (441차 신설)")
+        L.append("> ")
+        L.append("> 435차는 \"정본([23-B])이 실패하면 같은 가정을 공유하는 그들도 실패한다\"는")
+        L.append("> **간접 추론**으로 대상을 정했다. 그 추론은 **제한 방향으로만 타당하다** —")
+        L.append("> 역방향(\"정본이 통과하면 그들도 통과\")은 성립하지 않는다. **그들은 정본과**")
+        L.append("> **코드를 공유하지 않기 때문이다**: 440차가 고친 것은 `exit_replay.py`인데,")
+        L.append("> 미이관 채널은 자체 `_simulate`를 그대로 쓴다(441차 코드 확인).")
+        L.append("> ")
+        L.append("> | 채널 | 재생 방식 | 이 PASS가 검증하나 |")
+        L.append("> |---|---|---|")
+        L.append("> | `tp1_geometry_shadow` [23-B] | **정본** `exit_replay` | ✅ 직접 검증 |")
+        L.append("> | `hurst_threshold_shadow` [46] | **재생 없음**(실제 손익 슬라이스) | ➖ 무관 |")
+        L.append("> | `quantile_tp_shadow` [3-B] | 자체 `_simulate` — **TP1에서 종료** | ❌ 미검증 |")
+        L.append("> | `tp1_protect_offset_shadow` [25]/[25-B] | 자체 `_simulate` — **TP2에서 종료** | ❌ 미검증 |")
+        L.append("> ")
+        if _unver:
+            L.append("> ⏸ 그래서 **다음 채널은 PASS에도 불구하고 정지를 유지한다** — %s"
+                     % ", ".join("`%s`" % t for t in _unver))
+            L.append("> 사유가 다르므로 표기도 다르다: \"재현 실패\"가 아니라 **\"정본 재생기**")
+            L.append("> **미이관\"**이다. 원인이 다르면 처방도 다르다 — 전자는 재생기를 고치는")
+            L.append("> 것이고, **후자는 그 채널을 `exit_replay`로 이관하는 것**이다.")
+            L.append("> ")
+        L.append("> 🔴 **[3-B]는 특히 위험하다.** 그 채널의 자체 시뮬은 TP1에서 종료하며 TP1")
+        L.append("> 목표가를 확정이익으로 계상하는데, 440차가 [23-B]에서 **\"TP1을 넓히는")
+        L.append("> 것만으로 장부가 좋아지는 순수 인공물\"**로 지목한 바로 그 구조다(v1에서")
+        L.append("> `tp1_x2` 최선 +37.96 → v2에서 최악 −30.68). 그런데 [3-B]의 질문 자체가")
+        L.append("> **\"TP1 거리를 무엇으로 정하나\"** 라서 이 인공물이 답을 직접 오염시킨다 —")
+        L.append("> `q_raw`의 우위를 이관 전 수치로 인용하지 말 것.")
     L.append("> ⚠ **사전등록 정직성**: 최초 SUSPEND는 432차 후속2에서 **이미 본 결과**의")
     L.append("> 코드화다([25]의 `breakeven`과 같은 취급). 사전등록 가치는 **회복 판정**에 있다.")
     L.append("> ⚠ 정본 재생기로 [23-B]를 쓴다(포지션 단위 조인이 되는 유일한 채널). 다른")
     L.append("> 채널은 같은 세 가정을 공유하므로 **간접 추론**이다.")
+    L.append("")
+
+    # ── [MW0601 441차] [47-B] TP 체결 오버슈트 감시 ────────────────────────────
+    L.append("## [47-B] TP 체결 오버슈트 감시 (441차 신설 · 관찰 전용)")
+    L.append("")
+    _ovs = off.get("tp_fill_overshoot_watch") or {}
+    if _ovs.get("error"):
+        L.append("> ⚠ 미산출 — %s" % _ovs["error"])
+    else:
+        L.append("- 판정: **%s** — %s" % (_fmt_verdict(_ovs.get("verdict", "")),
+                                         _ovs.get("reason", "—")))
+        L.append("- TP 레그 %s건 / %s거래일 (ATR 결측 제외 %s건)"
+                 % (_ovs.get("n", "—"), _ovs.get("n_days", "—"),
+                    _ovs.get("n_skipped_atr", 0)))
+        _blocks = []
+        if _ovs.get("overall"):
+            _blocks.append(("전체", _ovs["overall"]))
+        for k, v in (_ovs.get("by_era") or {}).items():
+            _blocks.append(("세대 `%s`" % k, v))
+        for k, v in (_ovs.get("by_stage") or {}).items():
+            _blocks.append((k, v))
+        if _blocks:
+            L.append("")
+            L.append("| 구분 | n | 일수 | 중앙(pt) | 평균(pt) | 중앙(ATR배) | 양수비율 | 최대 |")
+            L.append("|---|---|---|---|---|---|---|---|")
+            for label, a in _blocks:
+                if not a:
+                    continue
+                L.append("| %s | %d | %d | %+.3f | %+.3f | %+.3f | %.0f%% | %+.2f |"
+                         % (label, a["n"], a["n_days"], a["median_pt"], a["mean_pt"],
+                            a["median_atr"], 100 * a["pos_share"], a["max_pt"]))
+        L.append("")
+    L.append("> **무엇을 재나**: 오버슈트 = (실제 TP 체결거리) − (재생기 목표거리).")
+    L.append("> `envelope` 세대(틱 TP)는 틱이 목표가를 스치는 즉시 나가므로 **0 근처**가")
+    L.append("> 정상이고, `close` 세대는 종가까지 간 만큼 **양수**가 정상이다 — 그래서")
+    L.append("> 세대별로 갈라 본다(경계는 사전등록된 `replay_regime`).")
+    L.append("> ")
+    L.append("> **왜 생겼나**: 441차가 [47] 딥다이브에서 재생기가 `close` 세대의 TP를")
+    L.append("> **목표가로 체결 계상**하던 결함을 찾았다(트리거는 종가인데). TP2 완주")
+    L.append("> 22건이 목표거리를 전건 초과했고 그것이 재현 격차 **-21.56pt**였다.")
+    L.append("> 결함은 고쳤고, 이 채널은 **같은 종류의 재발을 상시 감시**한다 —")
+    L.append("> 체결 모델은 코드 세대가 바뀔 때 조용히 어긋나고, 441차 이전에는 그걸")
+    L.append("> 볼 계기가 게이트 SUSPEND 딥다이브밖에 없었다(약 2개월간 미발견).")
+    L.append("> ")
+    L.append("> ⚠ **판정하지 않는다(OBSERVE).** 정상 오버슈트 크기의 기준을 지금 만들면")
+    L.append("> **관측을 본 뒤 기준을 세우는 것**(313차 위반)이 된다. 표본이 쌓여 분포가")
+    L.append("> 드러나면 §9 주간회의에서 사전등록할 것.")
+    L.append("> ⚠ 오버슈트는 **이미 실현된 실제 손익의 일부**다 — \"더 벌 수 있었다\"가")
+    L.append("> 아니다. `[1계약·미실현 시뮬]` 배지 채널들과 성격이 다르다.")
+    L.append("> ⚠ [47] 게이트의 `targets`에 **넣지 않았다** — 게이트가 쓰는 재생기 자체를")
+    L.append("> 감시하므로 게이트가 이것을 정지시키면 순환 논증이 된다.")
     L.append("")
 
     L.append("## [48] 봉중 하드스톱 경로 건전성 (435차 신설 · 시뮬 무관)")

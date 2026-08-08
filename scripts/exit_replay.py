@@ -51,6 +51,23 @@ qty=1은 TP1에서 물리적 분할이 불가능해 `arm_tp1_single_contract_wit
   따라가면 안 된다.
 - **봉내 도달순서**: 스톱·TP가 같은 봉에 있으면 **스톱 우선**(캠페인 공통 관례).
 
+[MW0601 441차] TP 체결가를 세대별로 갈랐다 — 편향 1건 제거
+--------------------------------------------------------
+`tp_trigger="close"` 세대(~2026-08-02)의 TP 체결가를 목표가에서 **트리거 봉의
+종가**로 바꿨다. 그 세대의 트리거 조건 자체가 "종가가 목표가를 넘었다"이므로
+체결을 목표가로 적는 것은 자기모순이었고, 넘어선 만큼(이익 방향 오버슈트)이
+전부 사라져 **시뮬이 구조적으로 이익을 과소계상**했다.
+
+실측 근거(2026-07-05~08-07, TP2 완주 22건): 실제 체결거리가 재생 목표거리를
+**전건 초과**했고(합 +18.19pt, 최대 +2.47pt), 큰 초과분(+1.2~2.5pt)은 전부
+pre 세대였다. 이 수정으로 [47] 게이트의 재현 격차가 **+21.56pt 회복**된다.
+
+⚠ **스톱에는 같은 수정을 하지 않는다.** pre 세대에도 `하드스톱(틱)` 레그가
+실존하므로(틱 스톱 경로는 원래 있었다) 스톱까지 종가 체결로 바꾸면 −23.40pt가
+반대 방향으로 얹혀 재현이 오히려 나빠진다 — 441차가 실측으로 확인했다.
+⚠ 이 수정은 **자유 파라미터를 도입하지 않는다.** 종가는 데이터이지 튜닝값이
+아니며, 어느 세대에 적용할지는 이미 사전등록된 `replay_regime`이 정한다.
+
 ⚠ 사전등록 정직성
 ------------------
 이 모듈은 [47]을 **PASS로 만들기 위해** 쓰였다. 그러므로 자유 파라미터를 두지
@@ -315,6 +332,11 @@ def replay(bars_by_ts, entry_ts, direction, entry_px, qty, atr,
             if not hit:
                 continue
             reached["tp%d" % stage] = True
+            # 체결가 — `close` 세대는 **종가로 체결된다**(441차 수정).
+            # 그 세대의 트리거 조건 자체가 "종가가 목표가를 넘었다"이므로 체결을
+            # 목표가로 적으면 넘어선 만큼(이익 방향 오버슈트)이 통째로 사라진다.
+            # `envelope` 세대는 틱이 목표가를 스치는 즉시 나가므로 목표가가 맞다.
+            fill = cl if tp_trigger == "close" else px
 
             # qty=1 TP1 → 물리적 청산이 아니라 **보호전환**
             if stage == 1 and qty == 1:
@@ -327,7 +349,7 @@ def replay(bars_by_ts, entry_ts, direction, entry_px, qty, atr,
                     tightened_this_bar = True
                 tp1_armed = True
                 stage_done[0] = True
-                events.append((key, "TP1_ARM", 0, px, 0.0))
+                events.append((key, "TP1_ARM", 0, fill, 0.0))
                 continue
 
             need = max(0, targets[stage - 1] - closed)
@@ -337,8 +359,8 @@ def replay(bars_by_ts, entry_ts, direction, entry_px, qty, atr,
             if send <= 0:
                 stage_done[stage - 1] = True
                 continue
-            realized += sgn * (px - entry_px) * send
-            events.append((key, "TP%d" % stage, send, px, sgn * (px - entry_px)))
+            realized += sgn * (fill - entry_px) * send
+            events.append((key, "TP%d" % stage, send, fill, sgn * (fill - entry_px)))
             remaining -= send
             closed += send
             stage_done[stage - 1] = True

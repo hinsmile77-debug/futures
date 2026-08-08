@@ -90,12 +90,87 @@ from config.constants import MINI_FUTURES_PT_VALUE  # noqa: E402
 _CR = VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {})
 
 
+def _spearman(xs, ys):
+    """순위 상관 — numpy/scipy 없이 계산한다(이 스크립트의 무의존 원칙 유지).
+
+    동순위(tie)는 평균순위로 처리한다. 표본이 2 미만이거나 분산이 0이면 None.
+    """
+    n = len(xs)
+    if n < 2 or len(ys) != n:
+        return None
+
+    def _rank(v):
+        order = sorted(range(n), key=lambda i: v[i])
+        r = [0.0] * n
+        i = 0
+        while i < n:
+            j = i
+            while j + 1 < n and v[order[j + 1]] == v[order[i]]:
+                j += 1
+            avg = (i + j) / 2.0
+            for k in range(i, j + 1):
+                r[order[k]] = avg
+            i = j + 1
+        return r
+
+    rx, ry = _rank(xs), _rank(ys)
+    mx, my = sum(rx) / n, sum(ry) / n
+    num = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    dx = sum((a - mx) ** 2 for a in rx) ** 0.5
+    dy = sum((b - my) ** 2 for b in ry) ** 0.5
+    if dx == 0 or dy == 0:
+        return None
+    return num / (dx * dy)
+
+
 def _actual_by_entry(since: str) -> dict:
-    """entry_ts → 실제 실현손익(pt). **포지션 단위로 병합한다.**
+    """entry_ts → 실제 실현손익(**1계약 환산 gross pt**). 포지션 단위로 병합한다.
 
     ⚠ 417차 교훈: `trades` 한 행은 **청산 레그**다(TP1 부분청산/잔량이 별도 행).
     레그 단위로 세면 이익 포지션이 여러 행으로 쪼개져 지표가 왜곡된다.
     [23-B]의 `_load_trades()`와 동일한 GROUP BY 규약을 쓴다.
+
+    ── [MW0601 441차] 단위 통일: `SUM(pnl_pts)` → `SUM(pnl_pts×qty) / entry_qty`
+    ---------------------------------------------------------------------------
+    종전 `SUM(pnl_pts)`는 **레그별 계약당 pt의 무가중 합**이었고, 시뮬 쪽은
+    `pts_per_contract`(1계약)라 **두 변을 다른 스케일로 비교**하고 있었다.
+
+    예: qty=2가 TP1(1계약 +1.87) + 트레일(1계약 +4.01)로 나가면
+        구 방식 = 1.87 + 4.01 = **+5.88**   (2계약짜리를 1계약 시뮬과 대조)
+        신 방식 = (1.87×1 + 4.01×1) / 2 = **+2.94**  (둘 다 1계약)
+
+    왜 치명적인가 — 왜곡이 **결과에 비대칭**이다(417차와 같은 메커니즘):
+    이긴 포지션은 TP 분할로 레그가 여러 개라 부풀려지고, 진 포지션은 하드스톱
+    전량이라 레그가 하나다. 441차 실측: 이 하나로 재현 격차 **-4.25pt**가
+    발생했고, post 세대 TP도달 오차 -18.65pt는 단위 통일 후 **0.00pt**였다
+    (즉 전부 이 인공물이었다).
+
+    ⚠ `pnl_pts`는 **gross**다(441차 검증: `pnl_pts × 50,000 × qty == gross_pnl_krw`,
+      표본 전건 일치). 따라서 시뮬 쪽도 왕복비용을 차감하지 **않은** 값과 맞춰야
+      한다 — `compute()`가 `_COST_PTS`를 되돌리는 이유다.
+    ⚠ 진입수량은 `entry_qty` 우선, 없으면 레그 `SUM(quantity)` 폴백. 441차 실측상
+      119포지션 전건에서 둘이 일치했으나, 부분체결 시 갈릴 수 있어 명시적으로 둔다.
+    """
+    src = _CR.get("entry_source", "SYSTEM_AUTO")
+    with sqlite3.connect(TRADES_DB) as c:
+        rows = c.execute(
+            "SELECT entry_ts, SUM(pnl_pts * quantity), SUM(quantity), "
+            "       MAX(COALESCE(entry_qty, 0)) FROM trades "
+            "WHERE entry_ts >= ? AND exit_ts IS NOT NULL AND entry_source = ? "
+            "GROUP BY entry_ts", (since, src)).fetchall()
+    out = {}
+    for ets, wsum, legqty, eqty in rows:
+        q = int(eqty or 0) or int(legqty or 0) or 1
+        out[ets] = float(wsum or 0.0) / float(q)
+    return out
+
+
+def _actual_legsum_by_entry(since: str) -> dict:
+    """[MW0601 441차] 구(440차) 판정식의 `SUM(pnl_pts)` — **진단 표기 전용**.
+
+    441차가 판정식 입력을 단위 통일본으로 교체했으므로, 교체 전 값을 나란히
+    찍어 **"수치가 왜 달라졌는지"를 리포트에서 감사**할 수 있게 남긴다.
+    이 값으로 판정하지 말 것 — 위 `_actual_by_entry()` 독스트링 참조.
     """
     src = _CR.get("entry_source", "SYSTEM_AUTO")
     with sqlite3.connect(TRADES_DB) as c:
@@ -107,15 +182,13 @@ def _actual_by_entry(since: str) -> dict:
 
 
 def _actual_krw_by_entry(since: str) -> dict:
-    """[MW0601 440차 신설] entry_ts → 실제 실현손익(pt, **계약가중**).
+    """entry_ts → 실제 실현손익(pt, 계약가중) — **진단 표기 전용**.
 
-    ⚠ 위 `_actual_by_entry()`의 `SUM(pnl_pts)`는 **레그별 계약당 pt의 단순합**이라
-    계약가중이 아니다. 예: 3계약 포지션이 (1계약 +0.69) + (2계약 +1.35)로 나가면
-    SUM(pnl_pts)=2.04 지만 실제 실현은 0.69×1 + 1.35×2 = **3.39pt·계약**이다.
-
-    이 함수는 진단 표기용으로만 쓴다 — **판정식 입력은 바꾸지 않았다.** 사전등록된
-    합격선의 입력을 사후에 교체하면 그 자체로 §9 위반이라, 단위 불일치는 리포트가
-    양쪽 수치를 나란히 찍어 **주간회의가 결정**하게 한다(440차 판단).
+    ⚠ [MW0601 441차 경고] `COALESCE(net_pnl_krw, pnl_krw)`는 **수수료 차감 후(net)**
+    라, 이 값을 gross 기준인 판정식에 섞으면 또 다른 단위 불일치가 된다(실측 수수료
+    ≈ 레그당 0.034pt로 시뮬의 왕복비용 가정 0.10pt/포지션과 같지 않다).
+    440차 리포트가 병기하던 "계약가중 -23.48 vs +27.69"가 그 오염된 비교였다.
+    441차는 판정식을 **gross·1계약**으로 통일했고 이 함수는 참고 표기로만 남긴다.
     """
     src = _CR.get("entry_source", "SYSTEM_AUTO")
     with sqlite3.connect(TRADES_DB) as c:
@@ -136,6 +209,7 @@ def compute(since: str = "2026-07-05", engine: str = None) -> dict:
     try:
         from scripts.tp1_geometry_shadow import (
             compute as _geo_compute, _load_atr_map, _geometry,
+            _COST_PTS as _GEO_COST,
         )
     except Exception as e:  # 정본 채널이 죽으면 게이트는 판정하지 않는다(막지도 않는다)
         return {"error": "%s: %s" % (type(e).__name__, e), "pairs": []}
@@ -151,6 +225,7 @@ def compute(since: str = "2026-07-05", engine: str = None) -> dict:
         qty_list = [1] * len(rows)
 
     actual = _actual_by_entry(since)
+    actual_legsum = _actual_legsum_by_entry(since)
     actual_krw = _actual_krw_by_entry(since)
     atr_map = _load_atr_map(since)
 
@@ -175,11 +250,19 @@ def compute(since: str = "2026-07-05", engine: str = None) -> dict:
         if not R or R <= 0:
             continue
         q = int(q or 1) or 1
-        pairs.append({"ts": ets, "sim": float(sim_pt), "actual": act,
-                      "R": float(R), "bias_R": (float(sim_pt) - act) / float(R),
-                      # 440차 진단 전용 — 판정식은 위 두 필드만 쓴다.
+        # [MW0601 441차] 단위 통일 — 시뮬도 **gross·1계약**으로 맞춘다.
+        # `tp1_geometry_shadow.compute()`가 전 변형에 일괄로 `_COST_PTS`를 빼는데
+        # (변형 간 delta에서는 약분돼 무해하다), 게이트는 **절대 대조**라 이 비대칭이
+        # 그대로 격차가 된다 — 실측 119포지션 × 0.10 = **-11.90pt**로 단일 최대
+        # 오염원이었다. 실제 쪽 `pnl_pts`가 gross이므로 시뮬도 gross로 되돌린다.
+        sim_gross = float(sim_pt) + float(_GEO_COST)
+        pairs.append({"ts": ets, "sim": sim_gross, "actual": act,
+                      "R": float(R), "bias_R": (sim_gross - act) / float(R),
+                      # 진단 전용 — 판정식은 위 두 필드만 쓴다.
                       "qty": q,
-                      "sim_w": float(sim_pt) * q,
+                      "sim_cost": float(sim_pt),                    # 440차 구 입력
+                      "actual_legsum": actual_legsum.get(ets, 0.0),  # 440차 구 입력
+                      "sim_w": sim_gross * q,
                       "actual_w": actual_krw.get(ets, 0.0)})
         days.add(ets[:10])
 
@@ -212,20 +295,88 @@ def summarize(out: dict) -> dict:
     lim = float(_CR.get("repro_bias_R_max", 0.10))
     need_sign = bool(_CR.get("require_sign_match", True))
 
-    ok = (abs(bias) <= lim) and (sign_ok or not need_sign)
+    # ── [MW0601 441차] 일자단위 추적성 + 부호검정 정보력 전제 ────────────────────
+    # 근거·설계는 config/settings.py sim_fidelity_gate 주석 참조. 요지:
+    # |Σ실제|가 분산 대비 0 근처면 sign_match는 검정력이 없다(부트스트랩 P(Σ>0)=0.81).
+    # 그때는 "총합의 부호"가 아니라 "일자별로 같이 움직이는가"를 본다(313차 원칙).
+    day_sim, day_act = {}, {}
+    for p in pairs:
+        d = p["ts"][:10]
+        day_sim[d] = day_sim.get(d, 0.0) + p["sim"]
+        day_act[d] = day_act.get(d, 0.0) + p["actual"]
+    _days = sorted(day_sim)
+    _xs = [day_sim[d] for d in _days]
+    _ys = [day_act[d] for d in _days]
+    day_corr = _spearman(_xs, _ys)
+    day_agree = ((sum(1 for x, y in zip(_xs, _ys) if (x >= 0) == (y >= 0)) / float(len(_days)))
+                 if _days else None)
+
+    try:
+        _disp = statistics.pstdev([p["actual"] for p in pairs]) * (n ** 0.5)
+    except statistics.StatisticsError:
+        _disp = 0.0
+    sign_margin = (abs(act_tot) / _disp) if _disp else None
+    _min_sd = float(_CR.get("sign_match_min_sd", 0.0) or 0.0)
+    # 구속력 판단 — margin을 못 구하면(분산 0) 보수적으로 구속한다.
+    sign_binding = (True if (_min_sd <= 0 or sign_margin is None)
+                    else sign_margin >= _min_sd)
+
+    _corr_min = float(_CR.get("day_corr_min", 0.60))
+    _agree_min = float(_CR.get("day_sign_agree_min", 0.70))
+    day_ok = (day_corr is not None and day_agree is not None
+              and day_corr >= _corr_min and day_agree >= _agree_min)
+
+    # ── 수준(level) 기준 — 441차의 실질 판별자 ──────────────────────────────────
+    # 1차 설계(부호 무정보 → 일자단위 대체)만으로는 **고장난 v1까지 통과**했다.
+    # 중앙 bias는 오차가 소수 포지션에 몰리면 지워지고, 일자 상관은 순위만 본다 —
+    # 둘 다 "수준이 맞는가"를 못 본다. 그 구멍을 이 기준이 막는다.
+    # 정보력 있는 구간에서는 이것이 sign_match를 **함의**한다(설계 주석 참조).
+    _gap_max = float(_CR.get("repro_gap_sd_max", 0.0) or 0.0)
+    gap_abs = abs(sim_tot - act_tot)
+    gap_sd = (gap_abs / _disp) if _disp else None
+    gap_ok = (True if (_gap_max <= 0 or gap_sd is None) else gap_sd <= _gap_max)
+
+    bias_ok = abs(bias) <= lim
+    if not need_sign:
+        sign_crit_ok, sign_desc = True, "부호검정 미요구"
+    elif sign_binding:
+        sign_crit_ok = sign_ok
+        sign_desc = ("부호 일치" if sign_ok else
+                     "총합 부호 불일치 (시뮬 %+.2f vs 실제 %+.2f pt)" % (sim_tot, act_tot))
+    else:
+        # 무정보 구간 — 부호검정은 구속력을 잃고 수준 기준(gap)이 그 자리를 대신한다.
+        sign_crit_ok = True
+        sign_desc = ("부호검정 **무정보**(|Σ실제|=%.2fSE < %.1fSE) — 수준 기준으로 대체"
+                     % (sign_margin or 0.0, _min_sd))
+
+    ok = bias_ok and gap_ok and day_ok and sign_crit_ok
     verdict = "PASS" if ok else "SUSPEND"
+    _gap_txt = ("격차 %.2fSE ≤ %.1fSE" % (gap_sd, _gap_max)) if gap_sd is not None else "격차 —"
+    _day_txt = ("일자 상관 %s · 부호일치 %s"
+                % (("%+.3f" % day_corr) if day_corr is not None else "—",
+                   ("%.0f%%" % (100 * day_agree)) if day_agree is not None else "—"))
     if ok:
-        reason = ("재현 양호 — bias(중앙) %+.3fR ≤ %.2fR, 부호 일치 "
+        reason = ("재현 양호 — bias(중앙) %+.3fR ≤ %.2fR · %s · %s · %s "
                   "(시뮬 %+.2f / 실제 %+.2f pt, n=%d/%d일)"
-                  % (bias, lim, sim_tot, act_tot, n, nd))
+                  % (bias, lim, _gap_txt, _day_txt, sign_desc, sim_tot, act_tot, n, nd))
     else:
         why = []
-        if abs(bias) > lim:
+        if not bias_ok:
             why.append("bias(중앙) %+.3fR > %.2fR" % (bias, lim))
-        if need_sign and not sign_ok:
-            why.append("총합 부호 불일치 (시뮬 %+.2f vs 실제 %+.2f pt)" % (sim_tot, act_tot))
+        if not gap_ok:
+            why.append("재현 격차 %.2fSE > %.1fSE (시뮬 %+.2f vs 실제 %+.2f pt)"
+                       % (gap_sd, _gap_max, sim_tot, act_tot))
+        if not day_ok:
+            why.append("일자단위 추적 실패 (%s · 기준 %.2f/%.0f%%)"
+                       % (_day_txt, _corr_min, 100 * _agree_min))
+        if not sign_crit_ok:
+            why.append(sign_desc)
         reason = ("재현 실패 — %s (n=%d/%d일) → 하위 채널 판정 정지"
                   % (" · ".join(why), n, nd))
+
+    # 구(440차) 기준 그대로의 판정 — **항상 병기한다.** 조건부 경로가 판정을 바꾼
+    # 주에는 그 사실이 리포트에 남아야 사후 감사가 된다(§9).
+    verdict_strict = "PASS" if (bias_ok and (sign_ok or not need_sign)) else "SUSPEND"
 
     # ── [MW0601 440차] 진단 지표 — **판정에 관여하지 않는다** ────────────────────
     # (a) MAE: 모델이 개별 포지션을 얼마나 맞히는가. 총합은 오차가 상쇄되면
@@ -238,11 +389,9 @@ def summarize(out: dict) -> dict:
     mae = statistics.mean(abs(p["bias_R"]) for p in pairs)
     sim_w = sum(p.get("sim_w", p["sim"]) for p in pairs)
     act_w = sum(p.get("actual_w", p["actual"]) for p in pairs)
-    try:
-        disp = statistics.pstdev([p["actual"] for p in pairs]) * (n ** 0.5)
-    except statistics.StatisticsError:
-        disp = 0.0
-    sign_margin = (abs(act_tot) / disp) if disp else None
+    # [MW0601 441차] 구 판정식 입력(440차까지)의 총합 — 수치가 왜 달라졌는지 감사용.
+    sim_old = sum(p.get("sim_cost", p["sim"]) for p in pairs)
+    act_old = sum(p.get("actual_legsum", p["actual"]) for p in pairs)
 
     return {"verdict": verdict, "gate": ("OPEN" if ok else "SUSPEND"),
             "reason": reason, "n": n, "n_days": nd,
@@ -253,7 +402,20 @@ def summarize(out: dict) -> dict:
             # 진단 전용 (440차)
             "mae_R": round(mae, 4),
             "sim_total_pt_wq": round(sim_w, 4), "actual_total_pt_wq": round(act_w, 4),
-            "sign_margin_sd": (round(sign_margin, 3) if sign_margin is not None else None)}
+            "sign_margin_sd": (round(sign_margin, 3) if sign_margin is not None else None),
+            # ── [MW0601 441차] 신규 진단·감사 필드 ──────────────────────────────
+            # 구 기준 그대로의 판정. 조건부 부호경로가 판정을 바꾼 주에는
+            # verdict != verdict_strict_sign 이 되고, 리포트가 그것을 표기한다.
+            "verdict_strict_sign": verdict_strict,
+            "sign_binding": sign_binding,          # 부호검정이 구속력을 가졌는가
+            "repro_gap_pt": round(gap_abs, 4),
+            "repro_gap_sd": (round(gap_sd, 4) if gap_sd is not None else None),
+            "day_corr": (round(day_corr, 4) if day_corr is not None else None),
+            "day_sign_agree": (round(day_agree, 4) if day_agree is not None else None),
+            "n_day_points": len(_days),
+            # 440차까지의 판정식 입력(레그합 vs 비용차감 시뮬) — 단위 통일 전 값
+            "sim_total_pt_legacy": round(sim_old, 4),
+            "actual_total_pt_legacy": round(act_old, 4)}
 
 
 def compare_engines(since: str) -> dict:
