@@ -107,12 +107,21 @@ _MAX_HOLD_MIN = 360         # 재생 상한(분). 정상적으로는 15:10 컷�
 # 기하 — 라이브 `PositionTracker._recalculate_levels()`와 같은 산식
 # ──────────────────────────────────────────────────────────────────────────
 def geometry(horizon, hurst_bucket, atr, *,
-             stop_mult=None, tp1_mult=None, tp2_mult=None, tp3_mult=None):
+             stop_mult=None, tp1_mult=None, tp2_mult=None, tp3_mult=None,
+             tp1_pts_abs=None):
     """(stop_pts, tp1_pts, tp2_pts, tp3_pts) — 전부 진입가로부터의 **절대 거리**.
 
     override가 주어지면 그 ATR 배수로 대체한다(A/B 변형용). hurst 레짐 배수는
     라이브와 동일하게 stop/tp1/tp2에만 곱한다 — TP3에는 곱하지 않는다
     (`_recalculate_levels()`가 tp3만 `ATR_TP3_MULT` 단독으로 쓴다).
+
+    [MW0601 442차] `tp1_pts_abs` — TP1을 **ATR 배수가 아니라 절대 pt**로 지정한다.
+    [3-B] `quantile_tp_shadow`가 분위회귀 추정치(q90/|q10|)를 TP1 거리로 쓰는데,
+    그것은 배수가 아니라 이미 pt 단위 거리라서 배수로 역산하면 ATR·hurst로 나눴다
+    곱하는 왕복이 생긴다. `lock_offset_pts`가 이미 같은 취지의 절대-pt 오버라이드다.
+    ⚠ 지정 시 **hurst 배수를 곱하지 않는다** — 분위 추정치에는 이미 그 시점의
+      변동성이 반영돼 있어 레짐 배수를 덧씌우면 이중 계상이 된다(구 [3-B]
+      `_tp1_for()`도 `current`에만 hurst를 곱하고 분위 변형에는 곱하지 않았다).
     """
     m = (HURST_REGIME_ATR_MULT.get(hurst_bucket or "", {})
          if HURST_REGIME_ATR_MULT_ENABLED else {})
@@ -121,9 +130,11 @@ def geometry(horizon, hurst_bucket, atr, *,
     _tp1 = _tp1_base if tp1_mult is None else tp1_mult
     _tp2 = ATR_TP2_MULT if tp2_mult is None else tp2_mult
     _tp3 = ATR_TP3_MULT if tp3_mult is None else tp3_mult
+    tp1_pts = (atr * _tp1 * m.get("tp1", 1.0)
+               if tp1_pts_abs is None else float(tp1_pts_abs))
     return (
         atr * _stop * m.get("stop", 1.0),
-        atr * _tp1 * m.get("tp1", 1.0),
+        tp1_pts,
         atr * _tp2 * m.get("tp2", 1.0),
         atr * _tp3,
     )
@@ -183,6 +194,7 @@ def stage_plan(total_qty):
 def replay(bars_by_ts, entry_ts, direction, entry_px, qty, atr,
            horizon=None, hurst_bucket=None, *,
            stop_mult=None, tp1_mult=None, tp2_mult=None, tp3_mult=None,
+           tp1_pts_abs=None,
            lock_offset_pts=None, max_hold_min=_MAX_HOLD_MIN,
            tp_trigger="envelope", protect_mode="atr_profit"):
     """청산 사다리를 분봉으로 재생한다.
@@ -231,7 +243,8 @@ def replay(bars_by_ts, entry_ts, direction, entry_px, qty, atr,
     stop_pts, tp1_pts, tp2_pts, tp3_pts = geometry(
         horizon, hurst_bucket, float(atr),
         stop_mult=stop_mult, tp1_mult=tp1_mult,
-        tp2_mult=tp2_mult, tp3_mult=tp3_mult)
+        tp2_mult=tp2_mult, tp3_mult=tp3_mult,
+        tp1_pts_abs=tp1_pts_abs)
 
     stop_px = entry_px - sgn * stop_pts
     tp_px = (entry_px + sgn * tp1_pts,
