@@ -26,6 +26,17 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# ── [MW0601 448차] BLAS DLL 경로 보장 — **numpy import보다 먼저** ──────────────
+# 이 파일은 작업 스케줄러 `MireukiEODRetrain`의 직접 실행 대상이고, 스케줄러는
+# **conda 활성화 없이** py310_64\python.exe를 부른다. 그러면 그 env의 Library\bin이
+# PATH에 없어 MKL delay-load가 실패하고 **프로세스가 stderr 한 줄 없이 즉사**한다
+# (0xC06D007F). 08-01·08-07 주간 리포트 2회 결번의 원인이 이것이다.
+# ⚠ 자식 프로세스(campaign_steps가 띄우는 리포트 생성기 등)도 os.environ 상속으로
+#   함께 보호된다 — 실제로 죽은 것이 그 자식이었다.
+# 상세·실측은 utils/dll_bootstrap.py 참조.
+from utils.dll_bootstrap import ensure_conda_dll_path  # noqa: E402
+ensure_conda_dll_path()
+
 _TODAY = datetime.datetime.now().strftime("%Y%m%d")
 _LOG_PATH    = os.path.join(_ROOT, "logs", f"retrain_eod_{_TODAY}.log")
 _MARKER_PATH = os.path.join(_ROOT, "data", f"eod_retrain_done_{_TODAY}.txt")

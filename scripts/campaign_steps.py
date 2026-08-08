@@ -110,11 +110,38 @@ def run_campaign_steps(logger, base_dir: str) -> None:
                  " | ".join("%s=%s" % (n, s) for n, s in summary))
     # [MW0601 407차] 출력이 data/ 고정파일명 → docs/정기점검/금요일점검/<PC>/ 날짜본으로
     # 바뀌었다. 로그가 옛 경로를 가리키면 EOD 로그만 보고 파일을 찾다 헤매게 된다.
+    # ── [MW0601 448차] 🔴 조용한 실패 차단 ──────────────────────────────────────
+    # 종전에는 리포트 스텝이 죽어도 아래에서 **가장 최근 파일**을 "판정 리포트"로
+    # 안내했다. 08-07 EOD 로그가 실제로 **6일 묵은 20260801_pre405**를 그렇게 찍었고,
+    # 그 조합(조용한 크래시 + 낡은 파일 안내) 때문에 2주간 결번을 아무도 못 알아챘다.
+    # 이제 그 스텝의 성패를 확인해 **실패면 경로를 안내하지 않고 ERROR로 알린다.**
+    _report_step_ok = None
+    for _n, _s in summary:
+        if "판정 리포트" in _n:
+            _report_step_ok = (_s == "OK")
+            break
+    if _report_step_ok is False:
+        logger.error(
+            "[검증 캠페인] 🔴 판정 리포트 생성 실패 — **이번 주 산출물이 없다.** "
+            "아래에 경로를 안내하지 않는다(낡은 파일을 이번 주 것으로 오독하는 사고 방지). "
+            "rc가 -1066598273/3228369023(0xC06D007F)이면 BLAS DLL 문제이며 "
+            "utils/dll_bootstrap.py 자가진단을 먼저 돌릴 것: "
+            "python -m utils.dll_bootstrap")
     try:
         from scripts.campaign_report_paths import latest as _cr_latest
         from utils.db_utils import pc_id as _cr_pc
         _pc = _cr_pc()
-        logger.info("판정 리포트: %s", _cr_latest(_pc, "report"))
+        if _report_step_ok is False:
+            raise RuntimeError("리포트 스텝 실패 — 경로 안내 생략")
+        _rp = _cr_latest(_pc, "report")
+        # 파일명의 날짜본이 오늘이 아니면 **이번 주 것이 아니다**. 스텝이 OK로 보고돼도
+        # (예: 생성기가 rc=0인데 파일을 못 쓴 경우) 여기서 한 번 더 걸린다.
+        _today = datetime.date.today().strftime("%Y%m%d")
+        if _today not in os.path.basename(_rp):
+            logger.error("[검증 캠페인] 🔴 판정 리포트가 오늘(%s) 것이 아니다: %s "
+                         "— 이번 주 산출물로 인용하지 말 것.", _today, _rp)
+        else:
+            logger.info("판정 리포트: %s", _rp)
         # [410차] 계열마다 stem이 다르다 — 하나가 없어도 나머지 경로는 찍어야 한다.
         try:
             logger.info("피처셋 건강 리포트: %s",

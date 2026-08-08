@@ -37,11 +37,22 @@ import sqlite3
 import sys
 from pathlib import Path
 
-import numpy as np
-
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# ── [MW0601 448차] BLAS DLL 경로 보장 — **반드시 `import numpy` 앞** ───────────
+# 이 스크립트가 0xC06D007F로 즉사한 당사자다(08-01·08-07 주간 리포트 2회 결번).
+# EOD 체인에서는 campaign_steps가 자식으로 띄우고, 사람이 단독 실행하기도 한다 —
+# 후자를 위해 여기서도 직접 보장한다(부모가 이미 했으면 no-op).
+# ⚠ **numpy import 순서를 바꿨다** — 원래 이 import가 sys.path 설정보다 위에 있어
+#   부트스트랩을 끼울 자리가 없었다. numpy는 import 자체는 성공하고 첫 BLAS 호출에서
+#   죽으므로, 늦게 부르면 "임포트는 됐는데 나중에 죽는" 형태가 된다.
+# 상세·실측은 utils/dll_bootstrap.py 참조.
+from utils.dll_bootstrap import ensure_conda_dll_path  # noqa: E402
+ensure_conda_dll_path()
+
+import numpy as np  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
