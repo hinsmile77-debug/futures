@@ -705,16 +705,22 @@ def main():
     print("보호전환 %d건 (제외 %d건) / 거래일 %d일"
           % (out["n_hooks"], out["n_skipped"], out["n_days"]))
     print()
-    print("%-16s %5s %7s %7s %7s %9s %9s %9s"
-          % ("변형", "n", "STOP", "TP2", "강제", "승률", "누적pt", "중앙값"))
+    # [MW0601 444차] v2 이관 후 STOP/강제 고정 컬럼은 항상 0을 찍는다 — 보호전환 뒤
+    # 털린 건이 TP1_ARM_STOP으로 라벨링되기 때문이다(결함 아님). 리포트는 443차에
+    # 결말 분포로 바꿨는데 CLI만 남아 있었다. 같은 표기로 통일한다.
+    print("%-16s %5s %9s %9s %9s  %s"
+          % ("변형", "n", "승률", "누적pt", "중앙값", "결말 분포"))
     for v in out["variants"]:
         d = s["per_variant"].get(v)
         if not d:
             print("%-16s (표본 없음)" % v)
             continue
-        print("%-16s %5d %7d %7d %7d %8.1f%% %+9.2f %+9.3f"
-              % (v, d["n"], d["n_stop"], d["n_tp2"], d["n_forced"],
-                 d["win_rate"] * 100, d["total_pt"], d["median_pt"]))
+        _oc = d.get("outcomes") or {}
+        _oc_txt = (" ".join("%s=%d" % (o, c) for o, c in _oc.items())
+                   if _oc else "STOP=%d TP2=%d" % (d["n_stop"], d["n_tp2"]))
+        print("%-16s %5d %8.1f%% %+9.2f %+9.3f  %s"
+              % (v, d["n"], d["win_rate"] * 100, d["total_pt"], d["median_pt"],
+                 _oc_txt))
     print()
     print("현행 대비 차이 (pt / 1계약 환산 원 / 건별 우세 / 체결가능성 클램프):")
     for v in out["variants"]:

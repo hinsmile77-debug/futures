@@ -453,27 +453,38 @@ def main():
     print("  제외: atr결측 %d / 분위결측 %d(07-20 이전) / 이익방향분위 부호반대 %d / TP과협 %d / 시뮬불가 %d"
           % (sk["atr"], sk["quantile"], sk["unfavorable"], sk["tp_too_tight"], sk["sim"]))
     print("-" * 96)
-    print("%-10s %4s %4s %5s %5s %7s %9s %9s %9s %8s"
-          % ("변형", "n", "TP1", "STOP", "만료", "승률", "누적pt", "현행대비", "drop-max", "건별우세"))
+    # [MW0601 444차] v2 이관 후 결말 라벨 집합이 달라 TP1/만료 고정 컬럼은 항상 0을
+    # 찍는다(TP1은 청산이 아니라 보호전환이라 결말이 될 수 없다). 리포트는 442차에
+    # 결말 분포로 바꿨는데 CLI만 남아 있었다 — MW0602가 0808 교차검토에서 이 출력을
+    # 인용하며 컬럼을 수동으로 걸러냈다. 같은 표기로 통일한다.
+    print("%-10s %4s %7s %9s %9s %9s %8s  %s"
+          % ("변형", "n", "승률", "누적pt", "현행대비", "drop-max", "건별우세", "결말 분포"))
     for name in out["variants"]:
         d = s["per_variant"].get(name)
         if not d:
             continue
         dv = d.get("delta_vs_current")
         dm = d.get("delta_drop_max")
-        print("%-10s %4d %4d %5d %5d %6.1f%% %+9.2f %9s %9s %8s"
-              % (name, d["n"], d["n_tp1"], d["n_stop"], d["n_timeout"],
+        _oc = d.get("outcomes") or {}
+        _oc_txt = (" ".join("%s=%d" % (o, c) for o, c in _oc.items())
+                   if _oc else "TP1=%d STOP=%d" % (d["n_tp1"], d["n_stop"]))
+        print("%-10s %4d %6.1f%% %+9.2f %9s %9s %8s  %s"
+              % (name, d["n"],
                  d["win_rate"] * 100, d["total_pt"],
                  "-" if dv is None else "%+.2f" % dv,
                  "-" if dm is None else "%+.2f" % dm,
                  "-" if d.get("beats_current_n") is None
-                 else "%d/%d" % (d["beats_current_n"], d["n"])))
+                 else "%d/%d" % (d["beats_current_n"], d["n"]),
+                 _oc_txt))
     print("-" * 96)
     print("판정: %s - %s" % (s["verdict"], s["reason"]))
+    print("재생기 엔진: %s" % out.get("engine", "?"))
     print()
     print("⚠ 이 채널의 판정은 [3] 분위회귀 본채널의 verdict에 반영하지 않는다(§9-4).")
-    print("⚠ 절대값은 실현손익이 아니다(qty=1 보호전환을 'TP1 전량청산'으로 단순화).")
-    print("  변형 간 상대비교 전용. FAIL이 떠도 drop-max·건별우세·MW0601 교차확인 필수.")
+    print("⚠ 결말 분포에 TP1이 없는 것은 정상 — v2에서 TP1은 청산이 아니라 보호전환이라")
+    print("  결말이 될 수 없다(TP1_ARM_STOP이 '보호전환 후 되돌림'이다).")
+    print("⚠ 절대값은 실현손익이 아니다(1계약 기준·왕복비용 가정). 변형 간 상대비교 전용.")
+    print("  FAIL이 떠도 drop-max·건별우세·타 PC 교차확인 필수.")
 
 
 if __name__ == "__main__":
