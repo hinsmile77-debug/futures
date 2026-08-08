@@ -339,6 +339,15 @@ def compute(since: str = "2026-06-01", engine=None) -> dict:
     # [MW0601 443차 / v2] 정본 재생기 경로에서만 생기는 제외 사유 2종.
     n_qty_gt1 = 0     # 잔여 1계약 arm 케이스 — 원 진입수량이 1이 아니라 모집단이 다르다
     n_no_arm = 0      # 재생기가 TP1 arm에 도달하지 못한 훅(반사실을 만들 수 없다)
+    # [MW0601 445차] 재생 체제 분포 — **PC간 결과 해석의 필수 정보다.**
+    # `replay_regime`의 경계(2026-08-03)는 **MW0601 TRADE 로그로 캘리브레이션**됐고
+    # settings가 "MW0602에서 판정할 때 재확인 필요"라고 이미 경고하고 있다.
+    # 445차 민감도 실측(MW0601 33훅, tp_trigger만 교체): breakeven Δ현행
+    # −0.08(envelope) vs **−2.53(close)**, atr_lock_0.50 +6.73 vs **+0.24**,
+    # bar_range +7.90 vs **+1.00** — 즉 **체제 지정이 결론을 바꿀 수 있다.**
+    # 분포를 출력에 실어 두면 "이 PC 표본이 어느 체제로 재생됐는지"를 모른 채
+    # 두 PC 수치를 비교하는 사고를 막을 수 있다.
+    n_regime: dict = {}
 
     for h in hooks:
         # 판정 모집단은 atr_profit 행만이다 — `current` 변형(ATR×0.25)이 "실제로
@@ -405,6 +414,8 @@ def compute(since: str = "2026-06-01", engine=None) -> dict:
                 n_qty_gt1 += 1
                 continue
             rg = _regime_for(_ets)
+            _rk = str(rg.get("tp_trigger") or "?")
+            n_regime[_rk] = n_regime.get(_rk, 0) + 1
             staged, armed_ok = [], True
             for v in variants:
                 try:
@@ -506,7 +517,8 @@ def compute(since: str = "2026-06-01", engine=None) -> dict:
             # [MW0601 443차 / v2 이관]
             "engine": _eng,
             "n_qty_gt1": n_qty_gt1,
-            "n_no_arm": n_no_arm}
+            "n_no_arm": n_no_arm,
+            "n_regime": n_regime}
 
 
 def summarize(out: dict) -> dict:
@@ -602,7 +614,15 @@ def summarize(out: dict) -> dict:
             # [MW0601 432차 / 25-B] TP2 축 — 본채널 verdict와 분리된 별도 판정.
             "tp2": _summarize_tp2(out, base),
             # [MW0602 432차] 클램프 총계 — 리포트 생성기가 경고문에 쓴다.
-            "n_clamped": out.get("n_clamped") or {}}
+            "n_clamped": out.get("n_clamped") or {},
+            # [MW0601 443·445차] v2 이관 관련 — 리포트가 그대로 노출한다.
+            # ⚠ 443차에 compute()에는 넣었으나 여기 통과를 빠뜨려 리포트에 안 찍혔다
+            #   (445차에 MW0602 교차검토를 검토하다 발견). summarize()가 새 dict를
+            #   만들어 반환하므로 **compute()에 키를 더하는 것만으로는 부족하다.**
+            "engine": out.get("engine"),
+            "n_qty_gt1": out.get("n_qty_gt1", 0),
+            "n_no_arm": out.get("n_no_arm", 0),
+            "n_regime": out.get("n_regime") or {}}
 
 
 def _summarize_tp2(out: dict, offset_base: list) -> dict:

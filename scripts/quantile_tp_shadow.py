@@ -265,6 +265,9 @@ def compute(since: str = "2026-07-05", horizon=None, engine=None) -> dict:
     days = set()
     skip = {"atr": 0, "quantile": 0, "unfavorable": 0, "tp_too_tight": 0,
             "sim": 0, "tp_inverted": 0}
+    # [MW0601 445차] 재생 체제 분포 — `replay_regime` 경계는 MW0601 캘리브레이션이라
+    # 다른 PC에서는 어긋날 수 있다(settings가 이미 경고). PC간 비교 전 필수 확인.
+    n_regime = {}
 
     # [MW0601 442차] 엔진 선택 — [23-B]와 같은 스위치를 공유한다.
     _eng = str(engine or _ENGINE).lower()
@@ -295,6 +298,9 @@ def compute(since: str = "2026-07-05", horizon=None, engine=None) -> dict:
         stop_pts = atr * ATR_STOP_MULT * _hurst_mult(t["hurst_bucket"], "stop")
         qty = int(t.get("qty") or 1) or 1
         rg = _regime_for(ets) if _eng == "v2" else None
+        if rg:
+            _rk = str(rg.get("tp_trigger") or "?")
+            n_regime[_rk] = n_regime.get(_rk, 0) + 1
         # v2에는 v1에 없던 TP2/TP3가 있다 — 분위 TP1이 현행 TP2를 넘으면 기하가
         # 역전된다(TP1이 TP2보다 멀어짐). 442차 실측 110건 전 변형 0건이지만,
         # 분위는 신호마다 달라 앞으로 생길 수 있으므로 방어하고 **건수를 보고**한다.
@@ -352,6 +358,7 @@ def compute(since: str = "2026-07-05", horizon=None, engine=None) -> dict:
         "rows_ts": res_ts,
         "rows_qty": res_qty,
         "engine": _eng,
+        "n_regime": n_regime,
         "since": since,
     }
 
@@ -429,6 +436,13 @@ def summarize(out: dict) -> dict:
         "n_trades": out["n_trades"], "n_candidates": out["n_candidates"],
         "n_days": out["n_days"], "skip": out["skip"],
         "min_samples": min_n, "min_days": min_d,
+        # [MW0601 445차] 442차가 compute()에만 넣고 여기 통과를 빠뜨려 리포트의
+        # "재생기 엔진" 줄이 **한 번도 렌더된 적이 없었다**([25]와 같은 결함).
+        # summarize()가 새 dict를 만들어 반환하므로 compute()에 키를 더하는 것만으로는
+        # 부족하다 — 이관 채널에 키를 추가할 때 반드시 양쪽을 함께 볼 것.
+        "engine": out.get("engine"),
+        # 체제 분포 — PC간 비교 전 필수 확인(경계가 MW0601 캘리브레이션이다).
+        "n_regime": out.get("n_regime") or {},
     }
 
 

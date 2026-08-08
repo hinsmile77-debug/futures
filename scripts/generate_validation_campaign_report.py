@@ -7755,6 +7755,14 @@ def build_report(days: int) -> tuple:
         if _g3b.get("engine"):
             L.append("- 재생기 엔진: **%s** (442차 이관 — `sim_fidelity_gate[\"engine\"]` 공유)"
                      % _g3b["engine"])
+        _rg3b = _g3b.get("n_regime") or {}
+        if _rg3b:
+            L.append("- 재생 체제 분포: %s"
+                     % " / ".join("`%s` %d건" % (k, v) for k, v in sorted(_rg3b.items())))
+            if "close" in _rg3b:
+                L.append("  - 🔴 **`close` 체제 표본이 섞여 있다** — `replay_regime` 경계"
+                         "(2026-08-03)는 **MW0601 캘리브레이션**이며 settings가 타 PC "
+                         "재확인을 경고한다. 445차 실측상 체제 지정이 A/B 결론을 바꾼다.")
         pv = _g3b.get("per_variant") or {}
         if pv:
             L.append("")
@@ -8863,6 +8871,19 @@ def build_report(days: int) -> tuple:
             L.append("- v2 전용 제외: 원 진입수량≠1 **%s건**(잔여 1계약 arm — 모집단이 다르다) "
                      "/ 재생기 arm 미도달 **%s건**"
                      % (_g25.get("n_qty_gt1", 0), _g25.get("n_no_arm", 0)))
+        # [MW0601 445차] 체제 분포 — PC간 비교 전에 **반드시** 확인할 것.
+        _rg25 = _g25.get("n_regime") or {}
+        if _rg25:
+            L.append("- 재생 체제 분포: %s"
+                     % " / ".join("`%s` %d건" % (k, v) for k, v in sorted(_rg25.items())))
+            if len(_rg25) > 1 or "close" in _rg25:
+                L.append("  - 🔴 **`close` 체제 표본이 섞여 있다 — 두 PC 비교 시 주의.** "
+                         "`replay_regime` 경계(2026-08-03)는 **MW0601 TRADE 로그로 "
+                         "캘리브레이션**된 값이며 settings가 \"MW0602에서 판정할 때 "
+                         "재확인 필요\"라고 경고하고 있다. 445차 민감도 실측(MW0601 33훅, "
+                         "`tp_trigger`만 교체): `breakeven` Δ현행 −0.08(envelope) vs "
+                         "**−2.53(close)**, `atr_lock_0.50` +6.73 vs **+0.24**, "
+                         "`bar_range` +7.90 vs **+1.00** — **체제 지정이 결론을 바꾼다.**")
         pv = _g25.get("per_variant") or {}
         if pv:
             L.append("")
