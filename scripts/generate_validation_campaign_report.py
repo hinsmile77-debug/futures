@@ -8807,17 +8807,28 @@ def build_report(days: int) -> tuple:
         L.append("- 보호전환 %s건 (제외 %s건) / 거래일 %s일"
                   % (_g25.get("n_hooks", "—"), _g25.get("n_skipped", "—"),
                      _g25.get("n_days", "—")))
+        if _g25.get("engine"):
+            L.append("- 재생기 엔진: **%s** (443차 이관 — `sim_fidelity_gate[\"engine\"]` 공유)"
+                     % _g25["engine"])
+        if _g25.get("n_qty_gt1") or _g25.get("n_no_arm"):
+            L.append("- v2 전용 제외: 원 진입수량≠1 **%s건**(잔여 1계약 arm — 모집단이 다르다) "
+                     "/ 재생기 arm 미도달 **%s건**"
+                     % (_g25.get("n_qty_gt1", 0), _g25.get("n_no_arm", 0)))
         pv = _g25.get("per_variant") or {}
         if pv:
             L.append("")
-            L.append("| 변형 | n | STOP | TP2 | 승률 | 누적pt | 중앙값 | 현행 대비 | 건별 우세 |")
-            L.append("|---|---|---|---|---|---|---|---|---|")
+            L.append("| 변형 | n | 승률 | 누적pt | 중앙값 | 현행 대비 | 건별 우세 | 결말 분포 |")
+            L.append("|---|---|---|---|---|---|---|---|")
             for k, v in pv.items():
-                L.append("| %s | %d | %d | %d | %.1f%% | %+.2f | %+.3f | %s | %s |" % (
-                    k, v["n"], v["n_stop"], v["n_tp2"], v["win_rate"] * 100,
+                _oc = v.get("outcomes") or {}
+                _oc_txt = (" · ".join("%s %d" % (o, c) for o, c in _oc.items())
+                           if _oc else "STOP %d / TP2 %d" % (v["n_stop"], v["n_tp2"]))
+                L.append("| %s | %d | %.1f%% | %+.2f | %+.3f | %s | %s | %s |" % (
+                    k, v["n"], v["win_rate"] * 100,
                     v["total_pt"], v["median_pt"],
                     ("%+.2f" % v["delta_vs_current"]) if v["delta_vs_current"] is not None else "—",
-                    ("%s/%d" % (v["beats_current_n"], v["n"])) if v.get("beats_current_n") is not None else "—"))
+                    ("%s/%d" % (v["beats_current_n"], v["n"])) if v.get("beats_current_n") is not None else "—",
+                    _oc_txt))
         L.append("")
         L.append("- **판정: %s** — %s" % (_g25.get("verdict"), _g25.get("reason")))
     L.append("")
@@ -8896,11 +8907,11 @@ def build_report(days: int) -> tuple:
         pv2 = _g25b.get("per_variant") or {}
         if pv2:
             L.append("")
-            L.append("| 변형 | n | STOP | TP2완주 | 승률 | 누적pt | 중앙값 | 최대손실 | 표준편차 | 현행 대비 | 건별 우세 | drop-max |")
-            L.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+            L.append("| 변형 | n | TP2완주 | 승률 | 누적pt | 중앙값 | 최대손실 | 표준편차 | 현행 대비 | 건별 우세 | drop-max |")
+            L.append("|---|---|---|---|---|---|---|---|---|---|---|")
             for k, v in pv2.items():
-                L.append("| %s | %d | %d | %d | %.1f%% | %+.2f | %+.3f | %+.2f | %.2f | %s | %s | %s |" % (
-                    k, v["n"], v["n_stop"], v["n_tp2"], v["win_rate"] * 100,
+                L.append("| %s | %d | %d | %.1f%% | %+.2f | %+.3f | %+.2f | %.2f | %s | %s | %s |" % (
+                    k, v["n"], v["n_tp2"], v["win_rate"] * 100,
                     v["total_pt"], v["median_pt"], v["max_loss_pt"], v["std_pt"],
                     ("%+.2f" % v["delta_vs_current"]) if v.get("delta_vs_current") is not None else "—",
                     ("%s/%d" % (v["beats_current_n"], v["n"])) if v.get("beats_current_n") is not None else "—",
