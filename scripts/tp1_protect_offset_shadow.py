@@ -49,13 +49,38 @@ valid**하다는 점 — TP2를 바꿔도 stop·TP1은 불변이므로 "TP1 도�
 판정은 `tp2_*` 키로 **본채널과 완전히 분리**돼 계산된다(본채널 합격선 무변경, §9-4).
 사전등록 기준·판정보조 3종·한계는 config/settings.py의 [25-B] 주석에 관측 전 고정.
 
+[MW0601 443차] 정본 재생기 이관
+--------------------------------
+441차 [47] 엔진 커버리지 가드가 이 채널을 SUSPENDED로 잡아 두었다 — 자체
+`_simulate()`가 **TP2에서 종료**하고 트레일링을 모델링하지 않아, 게이트의 PASS가
+이 채널의 계측을 검증하지 못했기 때문이다. 443차가 `exit_replay`로 이관했다.
+
+**무엇이 달라지나** — v1은 *보호전환 시점부터* 스톱/TP2만 봤다. v2는 *진입부터*
+라이브 청산 사다리를 그대로 돌리고 offset을 `lock_offset_pts`로 주입한다. 따라서
+v1이 못 보던 **4단계 트레일링이 보호스톱을 더 끌어올리는 효과**가 반영된다.
+조건부 타당성은 그대로다 — offset은 TP1 도달 여부에 영향을 주지 않으므로 arm
+사건 집합이 전 변형에서 동일하다(§25-B 주석의 논리와 같다).
+
+**결과: 판정 방향은 유지되고 크기가 바뀌었다**([3-B]가 뒤집힌 것과 대조적).
+`atr_lock_0.75` Δ현행 +6.86 → **+12.62pt**로 오히려 강해졌고, `breakeven`은
+−10.22 → **−0.08pt**로 사실상 현행과 동률이 됐다(트레일링이 초기 lock의 차이를
+흡수한다 — v1에는 없던 효과). **[25-B]는 최선 변형이 바뀌었다**: `tp2_2.00`
+(v1 최선) → **`tp2_1.25`**(v2 최선, +44.06 vs 현행 +37.95).
+⚠ **이관 전 수치를 인용하지 말 것.** v1은 `engine="v1"`로 재현 가능하다.
+
+**v2 전용 제외 2종**(v1에는 없던 개념):
+  - 원 진입수량 ≠ 1 — 실측 36건 중 **2건**. tier1 축소/TP1 부분청산으로 잔여
+    1계약이 arm된 케이스인데, 정본 재생기는 `stage==1 and qty==1`로 **원 진입
+    수량**을 보므로 같은 상황을 만들지 못한다(부분청산으로 모델링된다).
+  - 재생기 arm 미도달 — 실측 **1건**. 라이브는 틱으로 TP1을 쳤는데 봉 기준
+    재생에서는 못 친 경우. 그 훅은 전 변형이 동일해져 delta를 희석하므로 제외한다.
+
 한계 (반드시 함께 읽을 것)
 --------------------------
 - 1분봉 고저가 기준이라 봉 내 도달 순서를 알 수 없다. 보호스톱·TP2가 같은 봉에서
   모두 닿으면 보수적으로 **스톱을 먼저** 적용한다(캠페인 다른 채널과 동일 관례).
-- TP3·4단계 트레일링·신호소멸청산은 모델링하지 않고 TP2/스톱/15:10만 본다. 이
-  요소들은 모든 변형에 동일하게 빠지므로 **변형 간 상대비교는 유효**하지만,
-  절대값을 실현손익으로 인용하면 안 된다.
+- (v1 한정) TP3·4단계 트레일링을 모델링하지 않고 TP2/스톱/15:10만 본다.
+  **v2에서는 해소됐다** — 443차 이관 참조.
 - ATR은 저장된 offset에서 역산한다(offset = ATR × 0.25). 현행이 atr_profit이 아닌
   행(breakeven 등)은 ATR 역산이 불가능해 제외된다.
 - **[MW0602 432차] 체결가능성 클램프** — offset이 보호전환 시점의 실제 유리이동을
@@ -109,6 +134,10 @@ _MAX_MIN = 360                     # 재생 상한(분) — 15:10 컷이 먼저 
 # [MW0602 432차] 체결가능성 클램프. 기본 True — 끄면 결함 상태(체결 불가 가격을
 # 체결로 계상)가 재현된다. 과거 수치 재현 목적으로만 False로 둘 것.
 _CLAMP_ON = bool(_CR.get("feasibility_clamp", True))
+# [MW0601 443차] 재생기 엔진 — [23-B]/[3-B]와 **같은 스위치를 공유**한다.
+# 근거·되돌리는 법은 config/settings.py sim_fidelity_gate["engine"] 주석 참조.
+_ENGINE = str((VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {}) or {})
+              .get("engine", "v1")).lower()
 
 
 def _conn(p):
@@ -242,11 +271,46 @@ def _simulate(bars, i0, is_long, entry_px, stop_px, tp2_px):
     return "FORCED", sgn * (px - entry_px)
 
 
-def compute(since: str = "2026-06-01") -> dict:
+def _load_qty(since: str):
+    """[MW0601 443차] entry_ts → 진입 계약수. v2 재생은 진입부터 돌리므로 필요하다.
+
+    ⚠ 훅 전량이 qty=1인 것은 **아니다** — 443차 실측 36건 중 2건이 qty≥2였다
+    (tier1 축소/TP1 부분청산으로 **잔여 1계약**이 된 뒤 arm된 케이스). 정본
+    재생기는 `stage == 1 and qty == 1`로 **원 진입수량**을 보므로 그 2건에서는
+    보호전환이 아니라 부분청산을 모델링한다 — 같은 상황이 아니다.
+    → v2 경로는 qty=1만 판정하고 나머지는 사유를 붙여 제외한다(`n_qty_gt1`).
+    """
+    with _conn(TRADES_DB) as c:
+        return {r["entry_ts"]: (int(r["eq"] or 0) or int(r["lq"] or 0) or 1)
+                for r in c.execute(
+                    "SELECT entry_ts, MAX(COALESCE(entry_qty,0)) eq, SUM(quantity) lq "
+                    "FROM trades WHERE entry_ts >= ? GROUP BY entry_ts", (since,))}
+
+
+def _load_bars_map(since: str):
+    """{ts: (high, low, close)} — v2 재생기 입력 형태."""
+    with _conn(RAW_DATA_DB) as c:
+        return {r["ts"]: (float(r["high"]), float(r["low"]), float(r["close"]))
+                for r in c.execute(
+                    "SELECT ts, high, low, close FROM raw_candles WHERE ts >= ?",
+                    (since,))}
+
+
+def compute(since: str = "2026-06-01", engine=None) -> dict:
+    """[MW0601 443차] engine="v1"/"v2" — 기본은 사전등록된 현행 엔진
+    (`sim_fidelity_gate["engine"]`). [23-B]/[3-B]와 같은 스위치를 공유하며
+    v1 코드는 보존한다(되돌리면 이관 전 수치가 재현된다)."""
     hooks = _load_hooks(since)
     bars = _load_candles(since)
     idx = {t: i for i, (t, _, _) in enumerate(bars)}
     variants = list(_CR.get("variants", ["current"]))
+    _eng = str(engine or _ENGINE).lower()
+    _replay = _regime_for = None
+    bars_map, qty_map = None, {}
+    if _eng == "v2":
+        from scripts.exit_replay import replay as _replay, regime_for as _regime_for
+        bars_map = _load_bars_map(since)
+        qty_map = _load_qty(since)
     res = {v: [] for v in variants}
     # [MW0601 440차 / 25-C] 훅 ts 평행 리스트 — 비례 변형이 호라이즌 미상 행을
     # 건너뛰면 변형마다 모집단이 달라진다. delta는 **짝지은 부분집합**으로 내야
@@ -272,6 +336,9 @@ def compute(since: str = "2026-06-01") -> dict:
     # [MW0601 440차 / 25-C] 비례 변형에서만 호라이즌 미상으로 빠진 건수.
     n_no_horizon: dict = {}
     hz_map = _load_hz(since)
+    # [MW0601 443차 / v2] 정본 재생기 경로에서만 생기는 제외 사유 2종.
+    n_qty_gt1 = 0     # 잔여 1계약 arm 케이스 — 원 진입수량이 1이 아니라 모집단이 다르다
+    n_no_arm = 0      # 재생기가 TP1 arm에 도달하지 못한 훅(반사실을 만들 수 없다)
 
     for h in hooks:
         # 판정 모집단은 atr_profit 행만이다 — `current` 변형(ATR×0.25)이 "실제로
@@ -324,6 +391,64 @@ def compute(since: str = "2026-06-01") -> dict:
         # entry_horizon이 없어 trades를 entry_ts로 조인해 얻는다(_load_hz 참조).
         _hz, _hb = hz_map.get(h.get("entry_ts") or "", (None, None))
         tp1_dist = _tp1_dist(atr, _hz, _hb) if _hz else None
+
+        # ── [MW0601 443차] 정본 재생기 경로 ─────────────────────────────────────
+        # v1은 **보호전환 시점(i0)부터** 스톱/TP2만 보고 끝냈다. v2는 **진입부터**
+        # 라이브 청산 사다리를 그대로 돌리고, 보호전환 offset은 `lock_offset_pts`로
+        # 주입한다(이미 있던 절대-pt 오버라이드). 그래야 v1이 못 보던 것 —
+        # 4단계 트레일링이 보호스톱을 **더 끌어올리는 것** — 이 반영된다.
+        # 조건부 타당성은 그대로다: offset은 TP1 도달 여부에 영향을 주지 않으므로
+        # arm 사건 집합이 전 변형에서 동일하다(사전등록 §25-B 주석의 논리).
+        if _eng == "v2":
+            _ets = h.get("entry_ts") or ""
+            if int(qty_map.get(_ets, 1)) != 1:
+                n_qty_gt1 += 1
+                continue
+            rg = _regime_for(_ets)
+            staged, armed_ok = [], True
+            for v in variants:
+                try:
+                    off_raw = _offset_for(v, atr, bar_rng, tp1_dist)
+                except ValueError:
+                    n_no_horizon[v] = n_no_horizon.get(v, 0) + 1
+                    continue
+                r = _replay(
+                    bars_map, _ets, h["direction"], ep, 1, atr, _hz, _hb,
+                    lock_offset_pts=off_raw,
+                    # 클램프는 재생기가 arm 봉의 유리 극값을 알고 있으므로 거기서
+                    # 건다(432차가 v1에서 밖에서 걸던 것을 정본 안으로 옮긴 것).
+                    lock_clamp_to_bar=_CLAMP_ON,
+                    tp_trigger=rg["tp_trigger"], protect_mode=rg["protect_mode"])
+                if r is None:
+                    armed_ok = False
+                    break
+                if not r.get("tp1_armed"):
+                    # 재생기가 arm에 도달하지 못했다 — 이 훅은 offset 반사실을
+                    # 만들 수 없다(전 변형이 동일해져 delta가 0으로 희석된다).
+                    armed_ok = False
+                    break
+                if r.get("n_lock_clamped"):
+                    n_clamped[v] += 1
+                    clamp_excess[v].append(float(r.get("lock_clamp_excess_pts") or 0.0))
+                staged.append((v, r["outcome"], r["pts_per_contract"] - cost))
+            if not armed_ok:
+                n_no_arm += 1
+                continue
+            for v, outcome, net in staged:
+                res[v].append((outcome, net))
+                res_ts[v].append(ts)
+            # [25-B] TP2 축 — offset은 현행 고정, TP2만 변형.
+            for v in tp2_variants:
+                r = _replay(
+                    bars_map, _ets, h["direction"], ep, 1, atr, _hz, _hb,
+                    tp2_mult=_tp2_mult_for(v),
+                    lock_offset_pts=_offset_for("current", atr, bar_rng),
+                    lock_clamp_to_bar=_CLAMP_ON,
+                    tp_trigger=rg["tp_trigger"], protect_mode=rg["protect_mode"])
+                if r is not None:
+                    res_tp2[v].append((r["outcome"], r["pts_per_contract"] - cost))
+            continue
+
         for v in variants:
             try:
                 off_raw = _offset_for(v, atr, bar_rng, tp1_dist)
@@ -377,7 +502,11 @@ def compute(since: str = "2026-06-01") -> dict:
             "n_clamped": n_clamped,
             "clamp_excess": clamp_excess,
             # [MW0601 440차 / 25-C]
-            "n_no_horizon": n_no_horizon}
+            "n_no_horizon": n_no_horizon,
+            # [MW0601 443차 / v2 이관]
+            "engine": _eng,
+            "n_qty_gt1": n_qty_gt1,
+            "n_no_arm": n_no_arm}
 
 
 def summarize(out: dict) -> dict:
@@ -412,6 +541,12 @@ def summarize(out: dict) -> dict:
             "n_stop": sum(1 for o, _ in rows if o == "STOP"),
             "n_tp2": sum(1 for o, _ in rows if o == "TP2"),
             "n_forced": sum(1 for o, _ in rows if o == "FORCED"),
+            # [MW0601 443차] 결말 분포 전체 — v2는 라벨 집합이 다르다.
+            # 보호전환 뒤 되돌려 털린 건은 "STOP"이 아니라 **TP1_ARM_STOP**이라
+            # 위 n_stop이 v2에서 항상 0이다(결함이 아니다). 이 분포를 함께 내지
+            # 않으면 "스톱 0건"이 "한 번도 안 털렸다"로 오독된다.
+            "outcomes": {o: sum(1 for oo, _ in rows if oo == o)
+                         for o in sorted({oo for oo, _ in rows})},
             # 짝지은 값이 있으면 그것을 쓴다 — 전건 일치면 총합차와 같다(회귀 없음).
             "delta_vs_current": (
                 _delta_paired if _delta_paired is not None
@@ -505,6 +640,12 @@ def _summarize_tp2(out: dict, offset_base: list) -> dict:
             "n_stop": sum(1 for o, _ in rows if o == "STOP"),
             "n_tp2": sum(1 for o, _ in rows if o == "TP2"),
             "n_forced": sum(1 for o, _ in rows if o == "FORCED"),
+            # [MW0601 443차] 결말 분포 전체 — v2는 라벨 집합이 다르다.
+            # 보호전환 뒤 되돌려 털린 건은 "STOP"이 아니라 **TP1_ARM_STOP**이라
+            # 위 n_stop이 v2에서 항상 0이다(결함이 아니다). 이 분포를 함께 내지
+            # 않으면 "스톱 0건"이 "한 번도 안 털렸다"로 오독된다.
+            "outcomes": {o: sum(1 for oo, _ in rows if oo == o)
+                         for o in sorted({oo for oo, _ in rows})},
         }
         if base_total is not None and len(pts) == len(base_pts):
             deltas = [p - q for p, q in zip(pts, base_pts)]

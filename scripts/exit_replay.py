@@ -195,7 +195,8 @@ def replay(bars_by_ts, entry_ts, direction, entry_px, qty, atr,
            horizon=None, hurst_bucket=None, *,
            stop_mult=None, tp1_mult=None, tp2_mult=None, tp3_mult=None,
            tp1_pts_abs=None,
-           lock_offset_pts=None, max_hold_min=_MAX_HOLD_MIN,
+           lock_offset_pts=None, lock_clamp_to_bar=False,
+           max_hold_min=_MAX_HOLD_MIN,
            tp_trigger="envelope", protect_mode="atr_profit"):
     """청산 사다리를 분봉으로 재생한다.
 
@@ -265,6 +266,8 @@ def replay(bars_by_ts, entry_ts, direction, entry_px, qty, atr,
     tp1_armed = False                  # qty=1 보호전환 여부
     events = []
     reached = {"tp1": False, "tp2": False, "tp3": False, "trail": False}
+    n_lock_clamped = 0          # [443차] 보호전환 offset이 체결 가능 범위를 넘은 횟수
+    lock_clamp_excess = 0.0     # 그 초과폭 합(pt) — 변형이 얼마나 무리했는지의 척도
 
     base = datetime.datetime.strptime(entry_ts, _TS_FMT).replace(second=0)
     outcome = None
@@ -355,6 +358,20 @@ def replay(bars_by_ts, entry_ts, direction, entry_px, qty, atr,
             if stage == 1 and qty == 1:
                 off = (_protect_offset(protect_mode, float(atr))
                        if lock_offset_pts is None else float(lock_offset_pts))
+                # [MW0601 443차] 체결가능성 클램프 — **A/B 카운터팩추얼 전용(opt-in)**.
+                # offset이 이 봉에서 실제 도달한 유리 극값을 넘으면 보호스톱이 시장이
+                # 한 번도 제시하지 않은 가격에 놓인다. 다음 봉에서 그 스톱이 무조건
+                # 히트로 읽혀 **체결 불가 가격에 익절한 것으로 계상**된다.
+                # 라이브 현행 offset(ATR×0.25)은 TP1 거리(ATR×0.3~0.7)보다 작아 이런
+                # 일이 없다 — 그래서 기본 False이고 [23-B]/[3-B]는 영향받지 않는다.
+                # 큰 가상 offset을 시험하는 [25]에서만 켠다(432차가 v1에서 발견한
+                # 결함과 같은 것 — 그때 atr_lock_0.75의 Δ현행 57%가 허수였다).
+                if lock_clamp_to_bar:
+                    reach = sgn * ((hi if is_long else lo) - entry_px)
+                    if off > reach + 1e-9:
+                        n_lock_clamped += 1
+                        lock_clamp_excess += off - reach
+                        off = max(reach, 0.0)
                 protected = entry_px + sgn * max(off, 0.0)
                 # 라이브: 기존 스톱보다 불리해지면 채택하지 않는다
                 if sgn * (protected - stop_px) > 0:
@@ -403,4 +420,8 @@ def replay(bars_by_ts, entry_ts, direction, entry_px, qty, atr,
         "events": events,
         "hold_min": hold_min,
         "reached": reached,
+        # [MW0601 443차] 보호전환 클램프 계측 — `lock_clamp_to_bar=True`일 때만 증가.
+        "n_lock_clamped": n_lock_clamped,
+        "lock_clamp_excess_pts": round(lock_clamp_excess, 4),
+        "tp1_armed": tp1_armed,
     }
