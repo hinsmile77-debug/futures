@@ -7459,9 +7459,13 @@ def build_report(days: int) -> tuple:
     # **판정은 완전히 독립**이다(본채널 합격선 무변경, §9-4). 요약표에서도 별 행으로 낸다.
     _g25b = _g25.get("tp2") or {}
     if _g25b:
-        L.append("| [25-B] TP2 거리 A/B | %s | %s (전환 %s건/%s일) |" % (
+        # [2026-08-08 주간회의] [25-B]는 판정이 [25]와 완전히 분리돼 있어(§9-4) 결정도
+        # 별도 키(`..._tp2`)로 기록한다 — 그 키를 여기 배선하지 않으면 확정 결정이 요약표에
+        # 안 뜬다(실제로 D4 등록 직후 이 행만 마커가 비어 있었다).
+        L.append("| [25-B] TP2 거리 A/B | %s | %s (전환 %s건/%s일)%s |" % (
             _fmt_verdict(_g25b.get("verdict", "")), _g25b.get("reason", "—"),
-            _g25b.get("n_hooks", "—"), _g25b.get("n_days", "—")))
+            _g25b.get("n_hooks", "—"), _g25b.get("n_days", "—"),
+            _dm("tp1_protect_offset_shadow_tp2")))
     L.append("| [26] 거래불능(가격상한 고착) 구간 | %s | %s |" % (
         _fmt_verdict(lpw.get("verdict", "OBSERVE")),
         (lpw.get("reason") or "고착 %s분봉 / %s일  · MFE오염 %s"
