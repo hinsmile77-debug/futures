@@ -7700,20 +7700,27 @@ def build_report(days: int) -> tuple:
         L.append("- 진입 후보 %s건 → 시뮬 %s건 / 거래일 %s일"
                  % (_g3b.get("n_candidates", "—"), _g3b.get("n_trades", "—"),
                     _g3b.get("n_days", "—")))
-        L.append("- 제외: 분위결측 %s건(2026-07-20 이전 미적재) / ATR결측 %s / 이익방향분위 부호반대 %s / TP과협 %s / 시뮬불가 %s"
+        L.append("- 제외: 분위결측 %s건(2026-07-20 이전 미적재) / ATR결측 %s / 이익방향분위 부호반대 %s / TP과협 %s / 기하역전(TP1≥TP2) %s / 시뮬불가 %s"
                  % (_sk.get("quantile", 0), _sk.get("atr", 0), _sk.get("unfavorable", 0),
-                    _sk.get("tp_too_tight", 0), _sk.get("sim", 0)))
+                    _sk.get("tp_too_tight", 0), _sk.get("tp_inverted", 0), _sk.get("sim", 0)))
+        if _g3b.get("engine"):
+            L.append("- 재생기 엔진: **%s** (442차 이관 — `sim_fidelity_gate[\"engine\"]` 공유)"
+                     % _g3b["engine"])
         pv = _g3b.get("per_variant") or {}
         if pv:
             L.append("")
-            L.append("| 변형 | n | TP1 | STOP | 승률 | 누적pt | 현행 대비 | drop-max | 건별 우세 |")
-            L.append("|---|---|---|---|---|---|---|---|---|")
+            L.append("| 변형 | n | 승률 | 누적pt | 현행 대비 | drop-max | 건별 우세 | 결말 분포 |")
+            L.append("|---|---|---|---|---|---|---|---|")
             for k, v in pv.items():
-                L.append("| %s | %d | %d | %d | %.1f%% | %+.2f | %s | %s | %s |" % (
-                    k, v["n"], v["n_tp1"], v["n_stop"], v["win_rate"] * 100, v["total_pt"],
+                _oc = v.get("outcomes") or {}
+                _oc_txt = (" · ".join("%s %d" % (o, c) for o, c in _oc.items())
+                           if _oc else "TP1 %d / STOP %d" % (v["n_tp1"], v["n_stop"]))
+                L.append("| %s | %d | %.1f%% | %+.2f | %s | %s | %s | %s |" % (
+                    k, v["n"], v["win_rate"] * 100, v["total_pt"],
                     ("%+.2f" % v["delta_vs_current"]) if v.get("delta_vs_current") is not None else "—",
                     ("%+.2f" % v["delta_drop_max"]) if v.get("delta_drop_max") is not None else "—",
-                    ("%s/%d" % (v["beats_current_n"], v["n"])) if v.get("beats_current_n") is not None else "—"))
+                    ("%s/%d" % (v["beats_current_n"], v["n"])) if v.get("beats_current_n") is not None else "—",
+                    _oc_txt))
         L.append("")
         L.append("- **판정: %s** — %s" % (_g3b.get("verdict"), _g3b.get("reason")))
     L.append("")
@@ -7724,16 +7731,42 @@ def build_report(days: int) -> tuple:
     L.append("> LONG은 q90, SHORT는 |q10| — 방향별 favorable quantile을 쓴다(SHORT에 q90을")
     L.append("> 쓰면 손실 방향 꼬리를 TP로 삼는 꼴).")
     L.append("> **스톱은 전 변형 고정**(현행 ATR×1.5×hurst) — [23-B] `sym_1.0_1.0`이 TP·스톱을")
-    L.append("> 동시에 바꿔 기여 분해가 불가능했던 교란을 제거했다.")
-    L.append("> ⚠ 절대값은 실현손익이 아니다(qty=1 보호전환을 'TP1 전량청산'으로 단순화).")
-    L.append("> **변형 간 상대비교 전용.**")
+    L.append("> 동시에 바꿔 기여 분해가 불가능했던 교란을 제거했다. TP2/TP3도 현행 고정이다")
+    L.append("> (**TP1 축만** 바꾼다는 사전등록 취지 — 442차 실측 110건에서 기하역전 0건).")
+    L.append("> ")
+    L.append("> ### 🔴 442차 정본 재생기 이관 — **이관 전 수치는 인공물이었다**")
+    L.append("> ")
+    L.append("> 441차까지 이 채널은 자체 시뮬을 썼고 규칙이 하나였다 — **\"TP1선에 닿으면")
+    L.append("> 그 거리만큼 전부 벌고 즉시 종료\"**. 실제로는 TP1 도달이 청산이 아니다")
+    L.append("> (1계약이면 **보호스톱 전환**이고 포지션은 살아 있다; 2계약 이상이면 33%만")
+    L.append("> 나간다). 즉 구 시뮬은 \"TP1 찍고 반납한 거래\"와 \"TP2까지 완주한 거래\"를")
+    L.append("> **둘 다 만점 처리**했고, 그 오차는 **TP1 거리에 정비례**한다 —")
+    L.append("> **TP1을 넓히는 변형일수록 공짜로 점수가 오르는** 구조였다.")
+    L.append("> ")
+    L.append("> 442차 실측(110건)에서 그 지문이 완벽하게 단조로 드러났다:")
+    L.append("> ")
+    L.append("> | 변형 | TP1 폭(현행 대비) | 구 시뮬 개선폭 | **정본 이관 후** |")
+    L.append("> |---|---|---|---|")
+    L.append("> | q_x0.7 | +11.8% | +0.56pt | **−14.73pt** |")
+    L.append("> | q_blend | +29.8% | +6.42pt | **−10.99pt** |")
+    L.append("> | q_raw | +59.7% | **+20.22pt** | **−9.59pt** |")
+    L.append("> ")
+    L.append("> 순위가 \"분위회귀가 맞았는가\"가 아니라 **\"얼마나 넓혔는가\"** 로 전부")
+    L.append("> 설명됐다. 이관 후 **판정이 FAIL → PASS로 뒤집혔다**(모든 대안이 현행 이하).")
+    L.append("> 440차가 [23-B]에서 실증한 것과 같은 인공물이다(`tp1_x2` v1 최고 +37.96 →")
+    L.append("> v2 최악 −30.68).")
+    L.append("> ")
+    L.append("> ⚠ **이관 전 수치(특히 `q_raw` +20.22pt)를 인용하지 말 것.** 0801 결산이")
+    L.append("> \"감사 §5 승격 후보 4개 중 유일한 생존자\"로 올린 근거가 그 숫자였다.")
+    L.append("> ⚠ v1 롤백 회귀는 4/4 비트 단위 재현됨(`engine=\"v1\"`).")
+    L.append("> ")
+    L.append("> ⚠ 결말 분포에 `TP1`이 안 보이는 것은 정상이다 — v2에서 TP1은 **청산이 아니라**")
+    L.append("> **보호전환**이라 결말이 될 수 없다(`TP1_ARM_STOP`이 \"보호전환 후 되돌림\"이다).")
+    L.append("> ⚠ 절대값은 실현손익이 아니다(1계약 기준·왕복비용 가정). **변형 간 상대비교 전용.**")
     L.append("> ⚠ FAIL이 떠도 즉시 적용 금지 — `drop-max`(최대기여 1건 제거 후 델타)와")
     L.append("> `건별 우세`를 함께 볼 것. [25]는 drop-max에서 부호가 역전돼 무너졌다(372차).")
     L.append("> ⚠ **MW0601 교차확인 필수** — [23-B]가 같은 코드·같은 기간에도 PC간 부호")
     L.append("> 역전을 냈다(tp1_x2: +32.78 vs −19.04). n≈40으로는 기하를 확정할 수 없다(313차).")
-    L.append("> ⚠ 변형 간 결과가 **단조롭지 않으면**(예: 0.7배가 1.0배보다 나쁨) 폭 자체보다")
-    L.append("> \"몇 건이 TP1↔STOP으로 뒤집혔나\"가 결과를 지배한다는 뜻이다 — 표의 TP1/STOP")
-    L.append("> 건수를 함께 읽을 것.")
     L.append("")
 
     # [4] 신호소멸청산 상세

@@ -29,6 +29,34 @@ favorable quantile을 고른다 (LONG → q90, SHORT → |q10|). q90을 SHORT에
 기여 분해가 불가능했다(stop_1.0 단독 +0.53 vs sym +1.38 — 이득의 출처 특정 불가).
 이 채널은 **TP1 축만** 바꾸고 스톱은 현행(ATR×1.5×hurst)으로 고정한다.
 
+[MW0601 442차] 정본 재생기 이관 — **이관 전 수치는 인공물이었다**
+------------------------------------------------------------------
+이 채널은 441차까지 자체 `_simulate`를 썼다. 그 시뮬의 규칙은 하나였다 —
+**"TP1선에 닿으면 그 거리만큼 전부 벌고 즉시 종료"**. 그런데 실제 시스템에서
+TP1 도달은 청산이 아니다(1계약이면 **보호스톱 전환**이고 포지션은 살아 있다;
+2계약 이상이면 33%만 나간다). 즉 구 시뮬은 "TP1 찍고 반납한 거래"와 "TP1 이후
+TP2까지 완주한 거래"를 **둘 다 만점 처리**했다.
+
+그 오차의 크기는 **TP1 거리에 정비례**하므로, **TP1을 넓히는 변형일수록 공짜로
+점수가 오르는** 구조적 편향이 생긴다. 440차가 [23-B]에서 같은 편향을 실증했다 —
+`tp1_x2`(TP1 2배)가 v1에서 **최고(+37.96pt)**였는데 v2에서 **최악(−30.68pt)**으로
+뒤집혔다("TP1을 넓히는 것만으로 장부가 좋아지는 순수 인공물").
+
+**이 채널이 하필 그 편향의 직격 대상이었다** — 질문 자체가 "TP1 거리를 무엇으로
+정하나"이기 때문이다. 442차 실측(110건)에서 변형별 TP1 폭과 구 시뮬 개선폭이
+**완벽히 단조**였다:
+
+    변형        TP1 폭(현행 대비)   구 시뮬 개선폭
+    q_x0.7           +11.8%           +0.56pt
+    q_blend          +29.8%           +6.42pt
+    q_raw            +59.7%          +20.22pt
+
+순위가 "분위회귀가 맞았는가"가 아니라 **"얼마나 넓혔는가"** 로 전부 설명된다.
+→ 그래서 441차 [47] 엔진 커버리지 가드가 이 채널을 SUSPENDED로 잡아 두었고,
+442차가 `exit_replay`(라이브 청산 사다리 미러링)로 이관해 해제했다.
+⚠ **이관 전 수치(특히 `q_raw` +20.22pt)를 인용하지 말 것.** 0801 결산이 "감사 §5
+승격 후보 4개 중 유일한 생존자"로 올린 근거가 그 숫자였다.
+
 왜 라이브 코드를 안 건드리는가
 ------------------------------
 필요한 입력이 전부 이미 저장돼 있다 — trades(진입가·방향·호라이즌·hurst·entry_ts),
@@ -52,9 +80,6 @@ ensemble_decisions(features의 atr, quantile_q10_pt/quantile_q90_pt), raw_candle
   구조적으로 제외되며 초기 표본은 n≈40 수준에서 시작한다.
 - 1분봉 고저가 기준이라 봉 내 도달 순서를 알 수 없다. 스톱·TP가 같은 봉에서 모두
   닿으면 보수적으로 STOP을 먼저 적용한다(캠페인 다른 채널과 동일 관례).
-- qty=1 포지션의 현행 TP1은 물리적 부분청산이 아니라 보호스톱 전환이다. 여기서는
-  비교 가능성을 위해 모든 변형에서 "TP1 도달 = 그 가격에 전량 청산"으로 단순화한다.
-  따라서 current의 시뮬 손익은 실제 실현손익과 다르며 **변형 간 상대비교 전용**이다.
 - 어느 한 변형이라도 시뮬 불가(캔들 결측 등)한 진입은 **전 변형에서 함께 제외**한다.
   변형별로 표본이 달라지면 delta_vs_current가 의미를 잃기 때문이다([23-B]는 변형별
   개별 skip이라 이론상 unpaired가 될 수 있었다 — 이 채널은 그 구멍을 막았다).
@@ -91,9 +116,13 @@ from config.settings import (  # noqa: E402
 
 _TS_FMT = "%Y-%m-%d %H:%M:%S"
 _CR = VALIDATION_CAMPAIGN.get("quantile_tp_shadow", {})
-_MAX_HOLD_MIN = 45          # 최대 보유 분 — [23-B]와 동일
+_MAX_HOLD_MIN = 45          # 최대 보유 분 — v1 전용([23-B] v1과 동일)
 _COST_PTS = 0.10            # 왕복 비용 가정 (pt) — [23-B]와 동일
 _MIN_TP_PTS = 0.05          # 이보다 좁은 TP는 무의미(진입 즉시 체결) — 해당 진입 제외
+# [MW0601 442차] 재생기 엔진 — [23-B]와 **같은 스위치를 공유**한다.
+# 근거·되돌리는 법은 config/settings.py sim_fidelity_gate["engine"] 주석 참조.
+_ENGINE = str((VALIDATION_CAMPAIGN.get("sim_fidelity_gate", {}) or {})
+              .get("engine", "v1")).lower()
 
 
 def _load_candles(since: str):
@@ -135,10 +164,17 @@ def _load_signal_map(since: str):
 
 
 def _load_trades(since: str, horizon=None):
-    """부분청산 레그를 entry_ts 기준으로 병합해 '진입 1건'으로 만든다([23-B]와 동일)."""
+    """부분청산 레그를 entry_ts 기준으로 병합해 '진입 1건'으로 만든다([23-B]와 동일).
+
+    [MW0601 442차] `qty`를 함께 낸다 — v2 재생기는 분할청산을 모델링하므로 진입
+    계약수가 필요하다(v1은 계약수 개념 자체가 없었다). `entry_qty` 우선, 없으면
+    레그 `SUM(quantity)` 폴백 — 441차가 게이트에서 확립한 규약과 같다(119포지션
+    전건에서 둘이 일치함을 실측했으나, 부분체결 시 갈릴 수 있어 명시한다).
+    """
     src = _CR.get("entry_source", "SYSTEM_AUTO")
     sql = (
-        "SELECT entry_ts, direction, entry_price, entry_horizon, hurst_bucket "
+        "SELECT entry_ts, direction, entry_price, entry_horizon, hurst_bucket, "
+        "       SUM(quantity) AS leg_qty, MAX(COALESCE(entry_qty, 0)) AS entry_qty "
         "FROM trades WHERE entry_ts >= ? AND exit_ts IS NOT NULL AND entry_source = ? "
     )
     args = [since, src]
@@ -148,7 +184,10 @@ def _load_trades(since: str, horizon=None):
     sql += "GROUP BY entry_ts, direction, entry_price ORDER BY entry_ts"
     with sqlite3.connect(TRADES_DB) as c:
         c.row_factory = sqlite3.Row
-        return [dict(r) for r in c.execute(sql, args)]
+        rows = [dict(r) for r in c.execute(sql, args)]
+    for r in rows:
+        r["qty"] = int(r.get("entry_qty") or 0) or int(r.get("leg_qty") or 0) or 1
+    return rows
 
 
 def _hurst_mult(hurst_bucket, key):
@@ -206,20 +245,34 @@ def _simulate(entry_ts, is_long, entry_px, stop_pts, tp1_pts, hi, lo, cl):
     return "TIMEOUT", (last - entry_px) if is_long else (entry_px - last)
 
 
-def compute(since: str = "2026-07-05", horizon=None) -> dict:
+def compute(since: str = "2026-07-05", horizon=None, engine=None) -> dict:
     """계산부 — generate_validation_campaign_report.py가 [3-B] 채널로 import한다.
 
     Returns: {variants, n_trades, n_days, skip:{...}, cost_pts, rows: {name: [(outcome, pts)]}}
     rows는 **전 변형 동일 길이·동일 순서**(paired)임이 보장된다.
+
+    [MW0601 442차] engine="v1"/"v2" — 기본값은 사전등록된 현행 엔진
+    (`sim_fidelity_gate["engine"]`). [23-B]와 동일 규약이며 v1 코드는 보존한다.
     """
     hi, lo, cl = _load_candles(since)
+    bars = {ts: (hi[ts], lo[ts], cl[ts]) for ts in hi}   # v2 엔진 입력 형태
     sig = _load_signal_map(since)
     trades = _load_trades(since, horizon)
     variants = list(_CR.get("variants", ["current"]))
 
     res = {name: [] for name in variants}
+    res_ts, res_qty = {n: [] for n in variants}, {n: [] for n in variants}
     days = set()
-    skip = {"atr": 0, "quantile": 0, "unfavorable": 0, "tp_too_tight": 0, "sim": 0}
+    skip = {"atr": 0, "quantile": 0, "unfavorable": 0, "tp_too_tight": 0,
+            "sim": 0, "tp_inverted": 0}
+
+    # [MW0601 442차] 엔진 선택 — [23-B]와 같은 스위치를 공유한다.
+    _eng = str(engine or _ENGINE).lower()
+    _replay = _regime_for = _geometry = None
+    if _eng == "v2":
+        from scripts.exit_replay import (
+            replay as _replay, regime_for as _regime_for, geometry as _geometry,
+        )
 
     for t in trades:
         ets = t["entry_ts"]
@@ -240,6 +293,13 @@ def compute(since: str = "2026-07-05", horizon=None) -> dict:
 
         px = float(t["entry_price"])
         stop_pts = atr * ATR_STOP_MULT * _hurst_mult(t["hurst_bucket"], "stop")
+        qty = int(t.get("qty") or 1) or 1
+        rg = _regime_for(ets) if _eng == "v2" else None
+        # v2에는 v1에 없던 TP2/TP3가 있다 — 분위 TP1이 현행 TP2를 넘으면 기하가
+        # 역전된다(TP1이 TP2보다 멀어짐). 442차 실측 110건 전 변형 0건이지만,
+        # 분위는 신호마다 달라 앞으로 생길 수 있으므로 방어하고 **건수를 보고**한다.
+        tp2_pts = (_geometry(t["entry_horizon"], t["hurst_bucket"], float(atr))[2]
+                   if _eng == "v2" else None)
 
         # 전 변형을 먼저 계산해 하나라도 불가하면 이 진입을 통째로 버린다(paired 보장).
         staged, bad = [], False
@@ -249,11 +309,28 @@ def compute(since: str = "2026-07-05", horizon=None) -> dict:
                 skip["tp_too_tight"] += 1
                 bad = True
                 break
-            outcome, pts = _simulate(ets, is_long, px, stop_pts, tp, hi, lo, cl)
-            if outcome is None:
-                skip["sim"] += 1
+            if tp2_pts is not None and tp >= tp2_pts:
+                skip["tp_inverted"] += 1
                 bad = True
                 break
+            if _eng == "v2":
+                r = _replay(
+                    bars, ets, t["direction"], px, qty, float(atr),
+                    t["entry_horizon"], t["hurst_bucket"],
+                    tp1_pts_abs=tp,                       # 분위 거리는 절대 pt다
+                    tp_trigger=rg["tp_trigger"], protect_mode=rg["protect_mode"])
+                if r is None:
+                    skip["sim"] += 1
+                    bad = True
+                    break
+                # 단위 규약은 **1계약 기준**([23-B]와 동일, 리포트 배지와 일치).
+                outcome, pts = r["outcome"], r["pts_per_contract"]
+            else:
+                outcome, pts = _simulate(ets, is_long, px, stop_pts, tp, hi, lo, cl)
+                if outcome is None:
+                    skip["sim"] += 1
+                    bad = True
+                    break
             staged.append((name, outcome, pts - _COST_PTS))
         if bad:
             continue
@@ -261,6 +338,8 @@ def compute(since: str = "2026-07-05", horizon=None) -> dict:
         days.add(ets[:10])
         for name, outcome, net in staged:
             res[name].append((outcome, net))
+            res_ts[name].append(ets)
+            res_qty[name].append(qty)
 
     return {
         "variants": variants,
@@ -270,6 +349,9 @@ def compute(since: str = "2026-07-05", horizon=None) -> dict:
         "skip": skip,
         "cost_pts": _COST_PTS,
         "rows": res,
+        "rows_ts": res_ts,
+        "rows_qty": res_qty,
+        "engine": _eng,
         "since": since,
     }
 
@@ -304,6 +386,14 @@ def summarize(out: dict) -> dict:
             "n_tp1": sum(1 for o, _ in rows if o == "TP1"),
             "n_stop": sum(1 for o, _ in rows if o == "STOP"),
             "n_timeout": sum(1 for o, _ in rows if o == "TIMEOUT"),
+            # [MW0601 442차] 결말 분포 전체 — v2는 라벨 집합이 다르다.
+            # v1: TP1 / STOP / TIMEOUT 셋뿐. v2: STOP / TP1_ARM_STOP / TP2 / TP3 /
+            # FORCED / TIMEOUT (TP1은 **청산이 아니라 보호전환**이라 결말이 될 수
+            # 없다 — 그래서 위 `n_tp1`이 v2에서 항상 0이다. 결함이 아니다).
+            # 이 분포를 함께 내지 않으면 리포트의 "TP1 0건"이 "한 번도 못 갔다"로
+            # 오독된다 — 실제로는 "TP1에서 끝나지 않고 그 뒤가 있었다"는 뜻이다.
+            "outcomes": {o: sum(1 for oo, _ in rows if oo == o)
+                         for o in sorted({oo for oo, _ in rows})},
         }
         if base_total is not None and len(pts) == len(base_pts):
             diffs = [p - q for p, q in zip(pts, base_pts)]
