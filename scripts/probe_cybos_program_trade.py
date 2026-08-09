@@ -50,13 +50,20 @@ QUERY_TARGETS: List[Tuple[str, List[Tuple[int, Any]]]] = [
     ("CpSysDib.CpSvr2221", []),             # 뒷 3자리 221 일치, 미문서
     ("CpSysDib.CpSvr8113", []),             # 프로그램 8111~8119 사이 미문서
     ("CpSysDib.CpSvr8113", [(0, ord("1"))]),
-    ("Dscbo1.PgAtime8112", [(0, ord("1"))]),  # 화면 8221 '시간대별' 탭 원천(문서: 차익/비차익만)
+    # PgAtime8112 — 공식 명세 확보(451차 후속3). 입력=장구분('1'=거래소), 연속 O.
+    # 행=시간대: 0 시간 / 1·2 차익 매도·매수 / 3·4 비차익 매도·매수 / 5·6 전체 매도·매수 /
+    # 7 순매수. **확인 목적은 "시간대"의 실제 granularity**(1분/5분/10분/시간)다.
+    ("Dscbo1.PgAtime8112", [(0, ord("1"))]),
     ("CpSysDib.CpSvr7210d", []),            # 투자자별 종합(잠정) — 미문서
     ("CpSysDib.CpSvr7210T", []),            # 〃 시간대별 — 미문서
     ("CpSysDib.CpSvr7236", []),             # 72xx 투자자 계열 미문서
     ("CpSysDib.CpSvr7238", []),
     ("CpSysDib.CpSvr7240", []),
-    ("Dscbo1.CpSvr7225", [(0, 0)]),         # 시장매매흐름분석(문서화됨). 입력0=최종시간(0=현재)
+    # CpSvr7225 — 공식 명세 확보(451차 후속3). 입력0=(short)최종시간, **0=현재시간**.
+    # 행=시간대: 0 시간 / 1·2 장내 외국인·기관 / 3·4 코스닥 외국인·기관 /
+    # 5·6 프로그램 차익·비차익 / 7·8 선물 외국인·기관 / 9·10 옵션 외국인·기관.
+    # 🟢 옵션 외국인·기관이 여기 있다 — `_option_flow_supported`의 mapping pending 후보 답.
+    ("Dscbo1.CpSvr7225", [(0, 0)]),
 ]
 
 REALTIME_TARGETS: List[str] = [
