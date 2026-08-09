@@ -1,0 +1,457 @@
+"""
+labeling.py — 적응형 트리플 배리어 라벨링 (Adaptive Triple Barrier, ATB)
+
+설계 목표
+---------
+4가지 라벨링 기법의 장점만 취하고 단점을 상쇄한다.
+
+  (1) 회귀      → 수익 '규모' 정보는 라벨(y)이 아니라 표본 가중치(w)로 흡수
+  (2) 방향 분류 → 최종 출력은 안정적인 {-1, 0, +1} 분류
+  (3) 변동성조정→ 위험 정규화는 '배리어 폭'에 흡수 (σ 배수로 배리어 설정)
+  (4) 트리플배리어→ 경로 의존성을 그대로 유지 (뼈대)
+
+핵심 아이디어
+-------------
+    y  = 방향 (분류)          ← 노이즈에 강함
+    w  = |수익| × 고유성      ← 손익비를 학습에 반영 + 중복 표본 제거
+
+참고: Lopez de Prado, "Advances in Financial Machine Learning" (2018)
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+__all__ = [
+    "ewma_volatility",
+    "atr_volatility",
+    "cusum_filter",
+    "add_vertical_barrier",
+    "apply_triple_barrier",
+    "build_events",
+    "num_concurrent_events",
+    "average_uniqueness",
+    "return_attribution_weights",
+    "time_decay_weights",
+    "make_sample_weights",
+    "make_meta_labels",
+    "bet_size_from_probability",
+]
+
+
+# ---------------------------------------------------------------------------
+# STEP 1. 변동성 추정 — 모든 것의 기준 '자'
+# ---------------------------------------------------------------------------
+
+
+def ewma_volatility(
+    close: pd.Series,
+    span: int = 100,
+    floor_quantile: float = 0.20,
+    floor_window: int = 500,
+) -> pd.Series:
+    """EWMA 수익률 변동성. 분모 폭발 방지를 위해 하한을 클리핑한다.
+
+    변동성이 0에 수렴하는 점심시간 횡보 구간에서 라벨/배리어가 발산하는 것을 막는다.
+    """
+    ret = close.pct_change()
+    sigma = ret.ewm(span=span).std()
+    if floor_quantile is not None:
+        floor = sigma.rolling(floor_window, min_periods=span).quantile(floor_quantile)
+        sigma = sigma.clip(lower=floor)
+    return sigma
+
+
+def atr_volatility(
+    high: pd.Series, low: pd.Series, close: pd.Series, window: int = 20
+) -> pd.Series:
+    """ATR을 가격 대비 비율(=수익률 단위)로 환산한 변동성.
+
+    갭이 잦은 시장(옵션/야간)에서는 EWMA보다 ATR이 안정적이다.
+    """
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return (tr.ewm(span=window).mean() / close).rename("atr_pct")
+
+
+# ---------------------------------------------------------------------------
+# STEP 2. CUSUM 이벤트 필터 — '언제' 라벨을 붙일지 고른다
+# ---------------------------------------------------------------------------
+
+
+def cusum_filter(close: pd.Series, threshold) -> pd.DatetimeIndex:
+    """누적 편차가 임계치를 넘는 시점만 이벤트로 반환한다.
+
+    아무 일도 없는 구간의 라벨은 순수 노이즈다. 그런 구간을 통째로 버려
+    신호대잡음비를 끌어올린다. 보통 표본 수가 80~95% 줄어든다.
+
+    threshold : scalar 또는 Series (Series를 주면 변동성 적응형 필터가 된다)
+    """
+    log_p = np.log(close.to_numpy(dtype=float))
+    diff = np.diff(log_p, prepend=log_p[0])
+
+    if np.isscalar(threshold):
+        thr = np.full(len(close), float(threshold))
+    else:
+        thr = pd.Series(threshold).reindex(close.index).ffill().to_numpy(dtype=float)
+
+    s_pos = s_neg = 0.0
+    events = []
+    for i in range(1, len(close)):
+        h = thr[i]
+        if not np.isfinite(h) or h <= 0:
+            continue
+        d = diff[i]
+        if not np.isfinite(d):
+            continue
+        s_pos = max(0.0, s_pos + d)
+        s_neg = min(0.0, s_neg + d)
+        if s_pos > h:
+            s_pos = 0.0
+            events.append(i)
+        elif s_neg < -h:
+            s_neg = 0.0
+            events.append(i)
+    return close.index[events]
+
+
+# ---------------------------------------------------------------------------
+# STEP 3. 수직 배리어 (시간 만기)
+# ---------------------------------------------------------------------------
+
+
+def add_vertical_barrier(
+    t_events: pd.Index,
+    close: pd.Series,
+    num_bars: int = 15,
+    expiry: pd.Series | None = None,
+) -> pd.Series:
+    """이벤트 시점 + num_bars 후를 수직 배리어로 지정한다.
+
+    expiry : 옵션 등 만기가 있는 상품이면 각 시점의 만기 시각을 주어
+             수직 배리어가 만기를 넘지 않도록 클립한다.
+    """
+    idx = close.index
+    locs = idx.searchsorted(pd.DatetimeIndex(t_events))
+    ends = locs + num_bars
+    ok = ends < len(idx)
+    t1 = pd.Series(idx[ends[ok]], index=idx[locs[ok]], name="t1")
+
+    if expiry is not None:
+        exp = expiry.reindex(t1.index).ffill()
+        t1 = t1.combine(exp, min)
+    return t1
+
+
+# ---------------------------------------------------------------------------
+# STEP 4~5. 수평 배리어 설정 + 경로 스캔
+# ---------------------------------------------------------------------------
+
+
+def apply_triple_barrier(
+    close: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    events: pd.DataFrame,
+    pt_sl: tuple[float, float] = (2.0, 1.0),
+    conservative: bool = True,
+) -> pd.DataFrame:
+    """트리플 배리어 스캔.
+
+    events : index = 진입 시점 t0
+             columns = ['t1'   수직 배리어 시각
+                        'trgt' 목표 변동성 σ (수익률 단위)
+                        'side' (선택) 1=롱, -1=숏. 메타라벨링용]
+
+    pt_sl : (익절 배수, 손절 배수). 예 (2.0, 1.0) → 손익비 2:1
+            익절선 = ±pt * σ,  손절선 = ∓sl * σ
+
+    conservative : True면 한 봉 안에서 고가/저가가 익절선과 손절선을
+        **동시에** 터치했을 때 손절을 먼저 맞은 것으로 간주한다.
+        OHLC로는 봉 내부 순서를 알 수 없으므로, 이 처리를 하지 않으면
+        백테스트 수익률이 구조적으로 부풀려진다. (가장 흔한 치명적 버그)
+
+    반환 : t_touch, label(+1/-1/0), ret(사이드 조정 실현수익률), barrier
+    """
+    idx = close.index
+    c = close.to_numpy(dtype=float)
+    h = high.to_numpy(dtype=float)
+    lo = low.to_numpy(dtype=float)
+
+    i0_all = idx.searchsorted(events.index)
+    i1_all = idx.searchsorted(events["t1"].to_numpy())
+    trgt_all = events["trgt"].to_numpy(dtype=float)
+    side_all = (
+        events["side"].to_numpy(dtype=float)
+        if "side" in events.columns
+        else np.ones(len(events))
+    )
+
+    n = len(events)
+    out_touch = np.empty(n, dtype=np.int64)
+    out_label = np.zeros(n, dtype=np.int8)
+    out_ret = np.zeros(n, dtype=float)
+    out_barrier = np.empty(n, dtype=object)
+
+    pt_m, sl_m = float(pt_sl[0]), float(pt_sl[1])
+
+    for k in range(n):
+        i0, i1 = int(i0_all[k]), int(i1_all[k])
+        p0, sigma, side = c[i0], trgt_all[k], side_all[k]
+
+        if not np.isfinite(sigma) or sigma <= 0 or i1 <= i0:
+            out_touch[k], out_barrier[k] = i1, "invalid"
+            continue
+
+        pt, sl = pt_m * sigma, sl_m * sigma
+        seg = slice(i0 + 1, i1 + 1)
+        hi_s, lo_s = h[seg], lo[seg]
+
+        if side > 0:  # 롱
+            hit_pt = hi_s >= p0 * (1 + pt)
+            hit_sl = lo_s <= p0 * (1 - sl)
+        else:  # 숏
+            hit_pt = lo_s <= p0 * (1 - pt)
+            hit_sl = hi_s >= p0 * (1 + sl)
+
+        j_pt = int(np.argmax(hit_pt)) if hit_pt.any() else np.iinfo(np.int32).max
+        j_sl = int(np.argmax(hit_sl)) if hit_sl.any() else np.iinfo(np.int32).max
+
+        if j_pt == j_sl == np.iinfo(np.int32).max:  # 수직 배리어 도달
+            out_touch[k] = i1
+            out_ret[k] = (c[i1] / p0 - 1.0) * side
+            out_label[k] = 0
+            out_barrier[k] = "vertical"
+        else:
+            # 동시 터치(j_pt == j_sl)는 보수적으로 손절 처리
+            sl_first = (j_sl < j_pt) or (conservative and j_sl == j_pt)
+            j = min(j_pt, j_sl)
+            out_touch[k] = i0 + 1 + j
+            if sl_first:
+                out_ret[k] = -sl
+                out_label[k] = -1
+                out_barrier[k] = "stop_loss"
+            else:
+                out_ret[k] = pt
+                out_label[k] = 1
+                out_barrier[k] = "take_profit"
+
+    return pd.DataFrame(
+        {
+            "t1": idx[out_touch],  # 실제 청산 시각(터치 시점) — 가중치/퍼징의 기준
+            "t1_vertical": events["t1"].to_numpy(),
+            "label": out_label,
+            "ret": out_ret,
+            "barrier": out_barrier,
+            "trgt": trgt_all,
+            "side": side_all,
+        },
+        index=events.index,
+    )
+
+
+def build_events(
+    close,
+    high,
+    low,
+    *,
+    sigma=None,
+    vol_span=100,
+    cusum_k=1.0,
+    num_bars=15,
+    pt_sl=(2.0, 1.0),
+    min_edge=0.0,
+    side=None,
+    expiry=None,
+    conservative=True,
+) -> pd.DataFrame:
+    """STEP 1~5를 한 번에 실행하는 편의 함수.
+
+    min_edge : 왕복 비용(수수료+슬리피지+호가스프레드) 하한.
+        pt * σ 가 min_edge 미만인 이벤트는 애초에 먹을 게 없으므로 폐기한다.
+        옵션처럼 스프레드가 예상 수익보다 큰 구간을 걸러내는 필수 장치.
+    """
+    if sigma is None:
+        sigma = ewma_volatility(close, span=vol_span)
+
+    t_events = cusum_filter(close, cusum_k * sigma)
+    if len(t_events) == 0:
+        raise ValueError("CUSUM 이벤트가 0개입니다. cusum_k를 낮추세요.")
+
+    t1 = add_vertical_barrier(t_events, close, num_bars=num_bars, expiry=expiry)
+
+    ev = pd.DataFrame({"t1": t1, "trgt": sigma.reindex(t1.index)})
+    if side is not None:
+        ev["side"] = pd.Series(side).reindex(t1.index)
+    ev = ev.dropna(subset=["t1", "trgt"])
+
+    if min_edge > 0:
+        ev = ev[pt_sl[0] * ev["trgt"] >= min_edge]
+    if len(ev) == 0:
+        raise ValueError("min_edge 필터 후 남은 이벤트가 0개입니다.")
+
+    return apply_triple_barrier(
+        close, high, low, ev, pt_sl=pt_sl, conservative=conservative
+    )
+
+
+# ---------------------------------------------------------------------------
+# STEP 6. 표본 가중치 — 중복 라벨 문제 해결 + 손익비 반영
+# ---------------------------------------------------------------------------
+
+
+def _locs(bar_index: pd.Index, labels: pd.DataFrame):
+    starts = bar_index.searchsorted(labels.index)
+    ends = bar_index.searchsorted(labels["t1"].to_numpy())
+    ends = np.minimum(ends, len(bar_index) - 1)
+    return starts.astype(int), ends.astype(int)
+
+
+def num_concurrent_events(bar_index: pd.Index, labels: pd.DataFrame) -> pd.Series:
+    """각 시점에서 동시에 '살아 있는' 라벨의 개수.
+
+    이 값이 10이면, 그 시점의 시장 움직임 하나가 라벨 10개에 중복 반영된다는 뜻.
+    """
+    starts, ends = _locs(bar_index, labels)
+    delta = np.zeros(len(bar_index) + 1)
+    np.add.at(delta, starts, 1)
+    np.add.at(delta, ends + 1, -1)
+    return pd.Series(np.cumsum(delta[:-1]), index=bar_index, name="concurrency")
+
+
+def average_uniqueness(bar_index: pd.Index, labels: pd.DataFrame) -> pd.Series:
+    """라벨별 평균 고유성 ∈ (0, 1]. 1이면 완전 독립, 0.05면 사실상 20배 중복."""
+    conc = num_concurrent_events(bar_index, labels).to_numpy()
+    inv = np.where(conc > 0, 1.0 / np.maximum(conc, 1e-12), 0.0)
+    cum = np.concatenate([[0.0], np.cumsum(inv)])
+    starts, ends = _locs(bar_index, labels)
+    span = (ends - starts + 1).astype(float)
+    return pd.Series(
+        (cum[ends + 1] - cum[starts]) / span, index=labels.index, name="uniqueness"
+    )
+
+
+def return_attribution_weights(
+    bar_index: pd.Index, close: pd.Series, labels: pd.DataFrame
+) -> pd.Series:
+    """수익 귀속 가중치 w_i = | Σ_{t∈[t0,t1]} r_t / c_t |
+
+    한 줄로 두 문제를 동시에 푼다.
+      · 분자 r_t  → 큰 수익/손실 구간의 표본이 더 큰 가중치를 받는다 (손익비 반영)
+      · 분모 c_t  → 겹쳐 있는 라벨끼리 수익을 나눠 가진다 (중복 제거)
+    """
+    r = np.log(close.to_numpy(dtype=float))
+    r = np.diff(r, prepend=r[0])
+    r = np.nan_to_num(r)
+    conc = num_concurrent_events(bar_index, labels).to_numpy()
+    contrib = np.where(conc > 0, r / np.maximum(conc, 1e-12), 0.0)
+    cum = np.concatenate([[0.0], np.cumsum(contrib)])
+    starts, ends = _locs(bar_index, labels)
+    w = np.abs(cum[ends + 1] - cum[starts])
+    total = w.sum()
+    w = w * (len(w) / total) if total > 0 else np.ones(len(w))
+    return pd.Series(w, index=labels.index, name="w_return")
+
+
+def time_decay_weights(uniqueness: pd.Series, last_weight: float = 0.5) -> pd.Series:
+    """오래된 표본의 비중을 선형으로 낮춘다.
+
+    last_weight = 1.0  → 감쇠 없음
+                = 0.5  → 가장 오래된 표본이 최신의 절반
+                = 0.0  → 가장 오래된 표본은 0
+                < 0    → 가장 오래된 |x| 비율은 완전히 제거
+    """
+    cum = uniqueness.sort_index().cumsum()
+    if last_weight >= 0:
+        slope = (1.0 - last_weight) / cum.iloc[-1]
+    else:
+        slope = 1.0 / ((last_weight + 1) * cum.iloc[-1])
+    const = 1.0 - slope * cum.iloc[-1]
+    d = const + slope * cum
+    return d.clip(lower=0).reindex(uniqueness.index).rename("w_decay")
+
+
+def make_sample_weights(
+    bar_index, close, labels, *, use_return=True, last_weight=1.0
+) -> pd.DataFrame:
+    """최종 표본 가중치 = 수익귀속 × 시간감쇠 (평균 1로 정규화)."""
+    uniq = average_uniqueness(bar_index, labels)
+    w = (
+        return_attribution_weights(bar_index, close, labels)
+        if use_return
+        else uniq.copy()
+    )
+    decay = time_decay_weights(uniq, last_weight) if last_weight != 1.0 else 1.0
+    final = w * decay
+    final = final / final.mean()
+    return pd.DataFrame({"uniqueness": uniq, "w_return": w, "weight": final})
+
+
+# ---------------------------------------------------------------------------
+# STEP 7. 메타 라벨링 — 손익비/베팅사이즈 문제의 정답
+# ---------------------------------------------------------------------------
+
+
+def make_meta_labels(
+    close,
+    high,
+    low,
+    primary_side: pd.Series,
+    *,
+    sigma=None,
+    num_bars=15,
+    pt_sl=(1.0, 1.0),
+    min_edge=0.0,
+    expiry=None,
+) -> pd.DataFrame:
+    """1차 모델(또는 룰)이 정한 방향을 받아 '먹을지 말지'의 이진 라벨을 만든다.
+
+    primary_side : 1차 신호. index=진입 시점, value ∈ {+1, -1}. 0/NaN은 무시.
+
+    반환의 'meta_label' 은 1(그 신호를 취한다) / 0(거른다).
+    2차 모델은 방향을 다시 맞추지 않고 오직 이것만 학습한다.
+    → 재현율은 1차 모델이, 정밀도는 2차 모델이 담당하는 분업 구조.
+    """
+    side = pd.Series(primary_side).replace(0, np.nan).dropna()
+    if sigma is None:
+        sigma = ewma_volatility(close)
+
+    t1 = add_vertical_barrier(side.index, close, num_bars=num_bars, expiry=expiry)
+    ev = pd.DataFrame(
+        {"t1": t1, "trgt": sigma.reindex(t1.index), "side": side.reindex(t1.index)}
+    ).dropna()
+    if min_edge > 0:
+        ev = ev[pt_sl[0] * ev["trgt"] >= min_edge]
+
+    res = apply_triple_barrier(close, high, low, ev, pt_sl=pt_sl)
+    res["meta_label"] = (res["ret"] > 0).astype(int)
+    return res
+
+
+def bet_size_from_probability(
+    prob: pd.Series, n_classes: int = 2, step: float | None = None
+) -> pd.Series:
+    """2차 모델의 확률을 베팅 사이즈로 변환한다.
+
+    z = (p - 1/n) / sqrt(p(1-p)),  size = 2·Φ(z) - 1  ∈ (-1, 1)
+
+    확률 0.5 근처면 사이즈 0, 확신이 커질수록 1에 접근한다.
+    "10틱 자리와 1틱 자리를 똑같이 취급"하는 문제는 여기서 해소된다.
+    step 을 주면 (예 0.05) 사이즈를 이산화해 불필요한 리밸런싱 매매를 줄인다.
+    """
+    from scipy.stats import norm
+
+    p = prob.clip(1e-6, 1 - 1e-6)
+    z = (p - 1.0 / n_classes) / np.sqrt(p * (1 - p))
+    size = pd.Series(2 * norm.cdf(z) - 1, index=prob.index, name="bet_size")
+    if step:
+        size = (size / step).round() * step
+    return size

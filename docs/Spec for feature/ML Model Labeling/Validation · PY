@@ -1,0 +1,493 @@
+
+클라우드
+문제 1 — "답안지가 옆 학생 것과 겹쳐 있다"
+무슨 일이 벌어지는가
+1분봉에 15분짜리 트리플 배리어를 걸었다고 해봅시다.
+
+09:00 샘플 → 09:00~09:15 구간을 보고 정답 결정
+09:01 샘플 → 09:01~09:16 구간을 보고 정답 결정
+09:02 샘플 → 09:02~09:17 구간을 보고 정답 결정
+...
+09:00 샘플과 09:01 샘플은 미래 구간의 14/15가 똑같습니다. 만약 09:05에 급등이 한 번 터졌다면, 09:00부터 09:05까지의 여섯 개 샘플이 전부 +1 을 받습니다.
+
+실제로 일어난 사건은 급등 한 번인데, 데이터셋에는 성공 사례 여섯 개로 기록됩니다.
+
+쉬운 비유
+여론조사를 했다고 합시다. "표본 1,000명, 오차범위 ±3%"라고 발표했는데, 알고 보니 같은 가족 5명이 200번씩 응답한 거였습니다. 숫자상 1,000명이지만 실제로 들은 의견은 5개입니다. 오차범위 ±3%는 새빨간 거짓말이고, 진짜 오차는 ±40%쯤 됩니다.
+
+왜 치명적인가 — 두 가지 피해
+첫째, 모델이 특정 사건에 과적합됩니다.
+그날 급등 한 번이 데이터에 여섯 번 등장하니, 모델은 "이 패턴 자주 나오네"라고 착각하고 그 사건 하나에 가중치를 몰아줍니다. 우연히 한 번 일어난 일을 법칙으로 배워버립니다.
+
+둘째, 검증 점수가 부풀려집니다. 이게 더 무섭습니다.
+데이터를 무작위로 나눠 09:00~09:03은 학습셋, 09:04는 검증셋에 넣었다고 합시다. 둘은 같은 급등을 공유합니다. 시험 문제를 미리 보여주고 시험 친 겁니다. 정확도 70%가 나와도 그건 실력이 아니라 컨닝입니다.
+
+체감으로 말하면, 데이터 10만 개인 줄 알았는데 독립적인 사건은 3천 개인 상황입니다. 통계적 신뢰도가 30배 뻥튀기되어 있는 겁니다.
+
+문제 2 — "채점 기준이 실제 성적과 무관하다"
+무슨 일이 벌어지는가
+모델 정확도 95%가 나왔다고 좋아합니다. 그런데 뜯어보면 데이터의 95%가 0(횡보)이었고, 모델은 전부 "횡보"라고 찍었을 뿐입니다. 정작 매매해야 할 5% 구간에서는 100% 틀렸습니다. 정확도 95%, 계좌는 깡통.
+
+더 현실적인 예 — 정확도가 높을수록 망하는 경우
+승률	이길 때	질 때	100회 후
+모델 A	70%	+0.1%	-0.5%	-8%
+모델 B	35%	+2.0%	-0.3%	+50.5%
+정확도만 보면 A가 압승입니다. 실제 돈은 B가 법니다. A는 작은 이익 자리만 골라 맞추고, 큰 손실 자리를 다 밟았기 때문입니다.
+
+야구로 치면 타율 3할 타자인데 안타가 전부 주자 없을 때 나오고, 만루 찬스에서는 매번 삼진인 선수입니다. 기록지는 예쁘고 팀은 집니다.
+
+그리고 더 근본적인 문제 — 애초에 비교가 불가능하다
+방금 문서에서 4가지 라벨링을 비교한다고 했죠. 이런 결과가 나왔다고 합시다.
+
+트리플 배리어 모델 → 정확도 62%
+방향성 분류 모델   → 정확도 55%
+회귀 모델          → R² 0.03
+"트리플 배리어가 낫네"라고 결론 내리면 틀립니다. 세 모델은 애초에 서로 다른 시험을 친 겁니다.
+
+트리플 배리어의 "정답"은 "15분 안에 +0.3% 먼저 닿느냐"
+방향성 분류의 "정답"은 "15분 뒤 종가가 위냐 아래냐"
+회귀의 "정답"은 수익률 실수값
+국어 90점과 수학 70점 중 누가 더 잘한 건가요? 시험이 다르면 점수는 비교 대상이 아닙니다. 게다가 임계치를 넓게 잡으면 정확도는 그냥 올라갑니다. 채점 기준을 자기가 정하고 자기가 채점한 점수인 셈이죠.
+
+유일하게 정당한 공통 잣대
+네 모델을 똑같은 백테스트 엔진에 태우고, 똑같은 수수료·슬리피지를 물리고, 나온 아웃오브샘플 샤프와 MDD를 비교하는 것뿐입니다.
+
+시험 점수가 아니라 입사 후 실적으로 평가하는 겁니다. 어떤 시험을 쳤든 상관없이, 결국 회사에 돈을 얼마나 벌어다 줬느냐 하나로 줄을 세우는 거죠.
+
+정리
+착각	진실	처방
+라벨 중복	샘플 10만 개	독립 사건 3천 개	고유성 가중치 + Purged CV
+평가 지표	정확도 95%	실전 수익 -8%	백테스트 샤프/MDD로만 비교
+두 문제의 공통점은 "숫자는 좋은데 돈은 안 벌린다" 는 형태로 나타난다는 겁니다. 그래서 더 위험합니다. 라벨링을 잘못하면 백테스트가 망가져서 바로 알아채는데, 이 두 문제는 백테스트를 더 예쁘게 만들어 놓고 실전에서만 무너뜨립니다.
+
+
+
+
+메시지 접힘
+
+작업 업데이트됨, 명령 5개 실행함, 4개의 파일 생성됨
+작업 업데이트됨, 명령 5개 실행함, 4개의 파일 생성됨
+지적하신 대로 이전 답변은 두 공정을 뒤섞어 놨습니다. 완전히 분리해서 다시 정리했고, 말로만 하지 않고 실제로 돌아가는 코드로 만들어 합성 데이터에 태워 검증했습니다.
+
+Part 1 — 추천 라벨링: 적응형 트리플 배리어(ATB)
+4가지 기법 중 하나를 고르는 게 아니라, 각각이 잘하는 부분을 서로 다른 위치에 배치하는 구조입니다.
+
+핵심 한 수는 이겁니다.
+
+y = 방향 {-1, 0, +1}     ← 분류라서 아웃라이어에 안 흔들림
+w = |수익| × 고유성       ← 손익비를 '배점'으로 반영 + 중복 표본 제거
+회귀의 "수익 규모"를 정답이 아니라 배점으로 옮긴 겁니다. 시험 문제는 O/X로 내되 배점을 다르게 주는 방식이죠. 이 한 수로 "방향성 분류는 손익비를 무시한다"는 단점이 사라집니다.
+
+구현은 7단계 — 변동성 추정(하한 클리핑) → CUSUM 이벤트 필터 → 수직 배리어(만기 클립) → σ 배수 동적 배리어 + 비용 하한 → 경로 스캔 → 가중치 → 메타 라벨링.
+
+실측으로 확인한 것 하나: 한 봉 안에서 익절선과 손절선을 동시에 터치했을 때 익절을 먼저 잡으면 평균수익이 +0.26bp, 손절 우선으로 바꾸면 −0.02bp가 나옵니다. 0.28bp가 통째로 착시였습니다. 고빈도에서는 이 차이가 수익과 손실을 가릅니다.
+
+Part 2 — 검증: 3중 방어선
+누출은 서로 독립적인 세 개의 문으로 들어오므로, 한 가지 방어로는 못 막습니다.
+
+경로	부풀리는 대상	방어
+① 시간적 누출	AUC	Purging + Embargo
+② 표본 중복	통계적 유의성	고유성 가중치 + 순차 부트스트랩
+③ 선택 편향	샤프	CPCV + DSR + PBO
+③이 제일 많이 방치되는 구멍입니다. ①②를 완벽히 막아도, 파라미터 100개 돌려 최고를 골랐다면 그 샤프는 실력이 아니라 최댓값 통계량입니다. DSR은 "실력이 0이어도 N번 시도하면 우연히 나오는 샤프"를 계산해서 그걸 못 넘으면 기각시키고, PBO는 전략 하나가 아니라 고르는 방식 자체를 심문합니다.
+
+누출 실증 결과 — 전 구간 라벨링(평균 고유성 0.37) 데이터에서:
+
+셔플 K-Fold(누출)  AUC 0.6361   ← "발견했다!"
+Purged + Embargo   AUC 0.5037   ← 동전 던지기
+                        +0.13 이 통째로 착시
+같은 데이터, 같은 모델, 검증 방식만 바꿨습니다. 0.636을 보고 실전 투입했다면 그대로 계좌가 녹습니다.
+
+그리고 CUSUM 필터의 숨은 효과 하나 — 이벤트를 솎아내면 라벨 중복 자체가 줄어서(고유성 0.37 → 0.99) 누출 문제의 크기 자체가 작아집니다. 라벨링 단계의 선택이 검증 난이도를 결정하는 셈입니다.
+
+전달한 파일 네 개는 그대로 python example_pipeline.py로 돌아갑니다. leakage_selftest()는 CI에 넣어두시길 권합니다 — 파이프라인을 건드릴 때마다 퍼징이 깨졌는지 한 줄로 확인됩니다. 조용히 새는 누출이 가장 비쌉니다.
+
+KOSPI200 옵션 적용 시 필수 수정사항(라벨은 선물에, 세타 조정 배리어, 스프레드 하한, 만기 주간 분리)은 가이드 1.3절에 표로 정리해 뒀습니다.
+
+
+Guide
+문서 · MD 
+
+Labeling
+PY 
+
+Validation
+PY 
+
+Example pipeline
+PY 
+
+
+
+
+Claude는 AI이므로 실수할 수 있습니다. 응답을 다시 한번 확인해 주세요. 의견 보내기
+Validation · PY
+"""
+validation.py — 3중 방어선 검증 프레임워크
+ 
+과적합/점수 부풀림은 서로 다른 3개의 경로로 들어온다. 각각 다른 방어가 필요하다.
+ 
+  누출 경로 1. 시간적 누출  : 검증셋 라벨의 미래가 학습셋에 들어감
+              → 방어: Purging + Embargo         (Layer 1)
+ 
+  누출 경로 2. 표본 중복    : 겹친 라벨을 독립 표본으로 착각
+              → 방어: 고유성 가중치 + 순차 부트스트랩 (labeling.py + 본 모듈)
+ 
+  누출 경로 3. 선택 편향    : 여러 번 돌려 제일 좋은 걸 고름
+              → 방어: CPCV 경로 분포 + DSR + PBO   (Layer 2, 3)
+ 
+3번이 가장 많이 방치되는 구멍이다. 백테스트를 100번 돌려 최고를 고르면
+그 샤프는 실력이 아니라 최댓값 통계량이다.
+ 
+참고: Lopez de Prado, "Advances in Financial Machine Learning" (2018)
+      Bailey & Lopez de Prado, "The Deflated Sharpe Ratio" (2014)
+      Bailey et al., "The Probability of Backtest Overfitting" (2015)
+"""
+ 
+from __future__ import annotations
+ 
+import itertools
+ 
+import numpy as np
+import pandas as pd
+from scipy.stats import norm
+ 
+__all__ = [
+    "purged_train_indices",
+    "PurgedKFold",
+    "purged_kfold_splits",
+    "cpcv_splits",
+    "cpcv_backtest_paths",
+    "walk_forward_splits",
+    "sequential_bootstrap",
+    "sharpe_ratio",
+    "max_drawdown",
+    "expected_max_sharpe",
+    "deflated_sharpe_ratio",
+    "probability_of_backtest_overfitting",
+    "leakage_selftest",
+]
+ 
+ 
+# ===========================================================================
+# Layer 1. 시간적 누출 차단 — Purging + Embargo
+# ===========================================================================
+ 
+def _contiguous_blocks(sorted_idx: np.ndarray) -> list[tuple[int, int]]:
+    """정렬된 위치 배열을 [start, end) 연속 블록 목록으로 자른다."""
+    if len(sorted_idx) == 0:
+        return []
+    breaks = np.where(np.diff(sorted_idx) != 1)[0]
+    starts = np.concatenate([[0], breaks + 1])
+    ends = np.concatenate([breaks + 1, [len(sorted_idx)]])
+    return [(int(sorted_idx[s]), int(sorted_idx[e - 1]) + 1)
+            for s, e in zip(starts, ends)]
+ 
+ 
+def purged_train_indices(t1: pd.Series, test_idx: np.ndarray,
+                         embargo: int = 0) -> np.ndarray:
+    """테스트 구간과 시간적으로 겹치는 학습 표본을 제거한다.
+ 
+    t1 : index = 각 표본의 진입 시각 t0 (시간 오름차순 정렬 필수)
+         value = 각 표본의 청산 시각 t1 (트리플 배리어의 '실제 터치 시각')
+ 
+    Purging : 학습 표본의 [t0, t1] 이 테스트 블록의 [T0, T1] 과 조금이라도
+              겹치면 제거한다. 겹치면 그 학습 표본은 테스트의 정답을 이미 본 것이다.
+ 
+    Embargo : 테스트 블록 직후 일정 기간을 학습에서 통째로 배제한다.
+              자기상관 때문에 t1 이 지난 직후 데이터도 정보를 흘린다.
+    """
+    n = len(t1)
+    t0_vals = t1.index.to_numpy()
+    t1_vals = t1.to_numpy()
+ 
+    mask = np.ones(n, dtype=bool)
+    mask[test_idx] = False
+ 
+    for st, en in _contiguous_blocks(np.sort(np.asarray(test_idx))):
+        blk_t0, blk_t1 = t0_vals[st], t1_vals[st:en].max()
+        # Purge: 구간이 겹치는 모든 학습 표본 제거
+        overlap = (t1_vals >= blk_t0) & (t0_vals <= blk_t1)
+        mask &= ~overlap
+        # Embargo: 테스트 블록 이후 embargo 개 표본 배제
+        if embargo > 0:
+            emb_start = int(np.searchsorted(t0_vals, blk_t1, side="right"))
+            mask[emb_start:min(n, emb_start + embargo)] = False
+ 
+    return np.where(mask)[0]
+ 
+ 
+def purged_kfold_splits(t1: pd.Series, n_splits: int = 6,
+                        embargo_pct: float = 0.01):
+    """Purged K-Fold. 테스트 폴드는 '시간 연속' 블록이다 (셔플 금지)."""
+    n = len(t1)
+    embargo = int(n * embargo_pct)
+    for block in np.array_split(np.arange(n), n_splits):
+        yield purged_train_indices(t1, block, embargo), block
+ 
+ 
+class PurgedKFold:
+    """sklearn 호환 splitter. cross_val_score / GridSearchCV 에 그대로 꽂힌다."""
+ 
+    def __init__(self, t1: pd.Series, n_splits: int = 6, embargo_pct: float = 0.01):
+        self.t1 = t1
+        self.n_splits = n_splits
+        self.embargo_pct = embargo_pct
+ 
+    def get_n_splits(self, X=None, y=None, groups=None) -> int:
+        return self.n_splits
+ 
+    def split(self, X=None, y=None, groups=None):
+        yield from purged_kfold_splits(self.t1, self.n_splits, self.embargo_pct)
+ 
+ 
+# ===========================================================================
+# Layer 2. 선택 편향 차단 (1) — CPCV: 백테스트 '경로'의 분포를 얻는다
+# ===========================================================================
+ 
+def cpcv_splits(t1: pd.Series, n_groups: int = 6, n_test_groups: int = 2,
+                embargo_pct: float = 0.01):
+    """Combinatorial Purged CV.
+ 
+    N개 그룹 중 k개를 테스트로 뽑는 모든 조합 C(N,k)를 검증한다.
+    단일 백테스트가 '한 번의 운'이라면, CPCV는 여러 개의 대체 역사를 만들어
+    성과의 **분포**를 준다. 샤프 하나가 아니라 샤프의 신뢰구간을 얻는 것이 목적.
+ 
+    N=6, k=2 → 15개 폴드 / 5개의 독립 백테스트 경로
+    """
+    n = len(t1)
+    embargo = int(n * embargo_pct)
+    groups = np.array_split(np.arange(n), n_groups)
+    for combo in itertools.combinations(range(n_groups), n_test_groups):
+        test_idx = np.sort(np.concatenate([groups[g] for g in combo]))
+        yield purged_train_indices(t1, test_idx, embargo), test_idx, combo
+ 
+ 
+def n_cpcv_paths(n_groups: int, n_test_groups: int) -> int:
+    """CPCV가 만들어내는 독립 백테스트 경로의 개수."""
+    from math import comb
+    return comb(n_groups, n_test_groups) * n_test_groups // n_groups
+ 
+ 
+def cpcv_backtest_paths(preds_by_combo: dict, n_groups: int,
+                        n_test_groups: int) -> list[pd.Series]:
+    """폴드별 예측을 경로(path)로 재조립한다.
+ 
+    preds_by_combo : {combo(tuple): pd.Series(예측 또는 수익률, index=시각)}
+    반환 : 경로 개수만큼의 pd.Series. 각각이 하나의 완전한 백테스트다.
+    """
+    slots = {g: [] for g in range(n_groups)}
+    for combo, s in preds_by_combo.items():
+        parts = np.array_split(np.arange(len(s)), n_test_groups)
+        for g, part in zip(combo, parts):
+            slots[g].append(s.iloc[part])
+ 
+    n_paths = min(len(v) for v in slots.values())
+    return [pd.concat([slots[g][p] for g in range(n_groups)]).sort_index()
+            for p in range(n_paths)]
+ 
+ 
+# ===========================================================================
+# Layer 1b. 순차 부트스트랩 — 중복 표본을 덜 뽑는 배깅
+# ===========================================================================
+ 
+def sequential_bootstrap(ind_matrix: np.ndarray, size: int | None = None,
+                         rng: np.random.Generator | None = None) -> np.ndarray:
+    """이미 뽑힌 표본과 겹치지 않는 표본을 우선적으로 뽑는 부트스트랩.
+ 
+    ind_matrix : (n_bars, n_samples) 0/1 지시행렬. 표본 j가 바 t를 점유하면 1.
+    표준 부트스트랩은 겹친 표본을 그대로 중복 추출해 독립성 착각을 키운다.
+    """
+    rng = rng or np.random.default_rng(0)
+    n = ind_matrix.shape[1]
+    size = size or n
+    picked, occupancy = [], np.zeros(ind_matrix.shape[0])
+    for _ in range(size):
+        avg_u = np.empty(n)
+        for j in range(n):
+            col = ind_matrix[:, j]
+            active = col > 0
+            c = occupancy[active] + 1.0
+            avg_u[j] = (1.0 / c).mean()
+        prob = avg_u / avg_u.sum()
+        j = rng.choice(n, p=prob)
+        picked.append(j)
+        occupancy += ind_matrix[:, j]
+    return np.array(picked)
+ 
+ 
+def build_indicator_matrix(bar_index: pd.Index, labels: pd.DataFrame) -> np.ndarray:
+    """sequential_bootstrap 용 지시행렬 생성."""
+    starts = bar_index.searchsorted(labels.index)
+    ends = np.minimum(bar_index.searchsorted(labels["t1"].to_numpy()),
+                      len(bar_index) - 1)
+    m = np.zeros((len(bar_index), len(labels)))
+    for j, (s, e) in enumerate(zip(starts, ends)):
+        m[s:e + 1, j] = 1.0
+    return m
+ 
+ 
+# ===========================================================================
+# Layer 3. 선택 편향 차단 (2) — 성과 통계
+# ===========================================================================
+ 
+def sharpe_ratio(returns: pd.Series, periods_per_year: int = 252) -> float:
+    r = pd.Series(returns).dropna()
+    if len(r) < 2 or r.std(ddof=1) == 0:
+        return 0.0
+    return float(r.mean() / r.std(ddof=1) * np.sqrt(periods_per_year))
+ 
+ 
+def max_drawdown(returns: pd.Series) -> float:
+    eq = (1 + pd.Series(returns).fillna(0)).cumprod()
+    return float((eq / eq.cummax() - 1).min())
+ 
+ 
+def walk_forward_splits(n: int, n_folds: int = 5, min_train: float = 0.3,
+                        anchored: bool = True):
+    """Walk-Forward (확장/롤링 윈도우). 시간 순서를 그대로 지키는 현실 시뮬레이션.
+ 
+    CPCV가 '통계적 검증'이라면 Walk-Forward는 '운영 리허설'이다. 둘 다 필요하다.
+    """
+    start = int(n * min_train)
+    bounds = np.linspace(start, n, n_folds + 1).astype(int)
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        train = np.arange(0, a) if anchored else np.arange(max(0, a - start), a)
+        yield train, np.arange(a, b)
+ 
+ 
+def expected_max_sharpe(n_trials: int, var_sharpe: float) -> float:
+    """N번 시도했을 때 '실력이 0이어도' 우연히 나오는 최대 샤프의 기댓값.
+ 
+    파라미터 100개 조합을 돌려 최고를 골랐다면, 그 샤프는 최소 이만큼은
+    거저 나온다. 이 값을 넘지 못하면 발견이 아니라 잡음이다.
+    """
+    if n_trials < 2:
+        return 0.0
+    gamma = 0.5772156649015329  # Euler-Mascheroni
+    a = (1 - gamma) * norm.ppf(1 - 1.0 / n_trials)
+    b = gamma * norm.ppf(1 - 1.0 / (n_trials * np.e))
+    return float(np.sqrt(var_sharpe) * (a + b))
+ 
+ 
+def deflated_sharpe_ratio(returns: pd.Series, n_trials: int,
+                          var_sharpe: float | None = None,
+                          periods_per_year: int = 252,
+                          sharpe_trials: np.ndarray | None = None) -> dict:
+    """Deflated Sharpe Ratio — 점수 부풀림에 대한 최종 방어선.
+ 
+    관측 샤프가 '시도 횟수를 감안해도' 0보다 크다고 말할 수 있는 확률.
+    수익률의 왜도(음의 왜도 = 나쁨)와 첨도(팻테일 = 나쁨)까지 벌점으로 반영한다.
+ 
+    DSR >= 0.95 를 통과 기준으로 삼는다. 미만이면 전략을 폐기한다.
+ 
+    n_trials      : 실제로 시도한 파라미터/모델 조합 수 (정직하게 셀 것!)
+    sharpe_trials : 시도들의 샤프 배열. 주면 var_sharpe를 여기서 추정한다.
+    """
+    r = pd.Series(returns).dropna()
+    T = len(r)
+    if T < 3:
+        return {"sharpe": 0.0, "sr_threshold": np.nan, "dsr": 0.0, "n_obs": T}
+ 
+    sr_ann = sharpe_ratio(r, periods_per_year)
+    sr = sr_ann / np.sqrt(periods_per_year)          # 주기당 샤프
+    skew = float(r.skew())
+    kurt = float(r.kurtosis()) + 3.0                 # 비초과 첨도
+ 
+    if var_sharpe is None:
+        var_sharpe = (float(np.var(np.asarray(sharpe_trials) /
+                                   np.sqrt(periods_per_year), ddof=1))
+                      if sharpe_trials is not None and len(sharpe_trials) > 1
+                      else (1 + 0.5 * sr ** 2) / T)
+ 
+    sr0 = expected_max_sharpe(n_trials, var_sharpe)
+    denom = np.sqrt(max(1e-12, 1 - skew * sr + (kurt - 1) / 4.0 * sr ** 2))
+    z = (sr - sr0) * np.sqrt(T - 1) / denom
+    return {
+        "sharpe": sr_ann,
+        "sr_threshold": float(sr0 * np.sqrt(periods_per_year)),
+        "dsr": float(norm.cdf(z)),
+        "n_obs": T,
+        "skew": skew,
+        "kurtosis": kurt,
+        "pass": bool(norm.cdf(z) >= 0.95),
+    }
+ 
+ 
+def probability_of_backtest_overfitting(returns_matrix: pd.DataFrame,
+                                        n_splits: int = 12) -> dict:
+    """PBO (CSCV 방식) — "인샘플 1등이 아웃샘플에서 평범 이하일 확률".
+ 
+    returns_matrix : (T x N). 열 = 시도한 전략/파라미터 조합, 행 = 시점 수익률.
+ 
+    데이터를 S개 블록으로 나눠, 절반을 IS·나머지를 OS로 하는 모든 조합에서
+      1) IS 최고 전략을 고르고
+      2) 그 전략이 OS에서 몇 등인지 본다.
+    중앙값 이하로 떨어지는 비율이 PBO.
+ 
+    PBO < 0.2  : 견고
+    PBO > 0.5  : 전략 선택 과정 자체가 과적합. 결과 전체를 폐기한다.
+    """
+    R = returns_matrix.dropna(how="any")
+    T, N = R.shape
+    if N < 2 or n_splits < 2:
+        raise ValueError("전략 2개 이상, 블록 2개 이상이 필요합니다.")
+    if n_splits % 2 == 1:
+        n_splits += 1
+ 
+    blocks = np.array_split(np.arange(T), n_splits)
+    half = n_splits // 2
+    logits, oos_ranks = [], []
+ 
+    for combo in itertools.combinations(range(n_splits), half):
+        is_idx = np.concatenate([blocks[b] for b in combo])
+        os_idx = np.concatenate([blocks[b] for b in range(n_splits)
+                                 if b not in combo])
+        is_sr = R.iloc[is_idx].mean() / R.iloc[is_idx].std(ddof=1).replace(0, np.nan)
+        os_sr = R.iloc[os_idx].mean() / R.iloc[os_idx].std(ddof=1).replace(0, np.nan)
+        if is_sr.isna().all() or os_sr.isna().all():
+            continue
+        best = is_sr.idxmax()
+        rank = os_sr.rank(pct=False).loc[best]           # 1 = 최악
+        w = rank / (N + 1)
+        w = min(max(w, 1e-6), 1 - 1e-6)
+        logits.append(np.log(w / (1 - w)))
+        oos_ranks.append(w)
+ 
+    logits = np.array(logits)
+    return {
+        "pbo": float((logits <= 0).mean()),
+        "median_oos_percentile": float(np.median(oos_ranks)),
+        "n_combinations": len(logits),
+        "pass": bool((logits <= 0).mean() < 0.2),
+    }
+ 
+ 
+# ===========================================================================
+# 자가 진단 — 누출 방지가 실제로 작동하는지 확인
+# ===========================================================================
+ 
+def leakage_selftest(t1: pd.Series, n_splits: int = 6,
+                     embargo_pct: float = 0.01) -> pd.DataFrame:
+    """각 폴드에서 학습/테스트 구간이 실제로 겹치지 않는지 직접 확인한다.
+ 
+    overlap_count 가 0이 아니면 퍼징이 깨진 것이다. 파이프라인을 바꿀 때마다
+    이 테스트를 돌려라. 조용히 새는 누출이 가장 비싸다.
+    """
+    t0_vals = t1.index.to_numpy()
+    t1_vals = t1.to_numpy()
+    rows = []
+    for k, (tr, te) in enumerate(purged_kfold_splits(t1, n_splits, embargo_pct)):
+        T0, T1 = t0_vals[te].min(), t1_vals[te].max()
+        overlap = ((t1_vals[tr] >= T0) & (t0_vals[tr] <= T1)).sum()
+        rows.append({
+            "fold": k,
+            "n_train": len(tr),
+            "n_test": len(te),
+            "train_kept_pct": round(100 * len(tr) / (len(t1) - len(te)), 1),
+            "overlap_count": int(overlap),
+            "ok": overlap == 0,
+        })
+    return pd.DataFrame(rows)
+ 
+
