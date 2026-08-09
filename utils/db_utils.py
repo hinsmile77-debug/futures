@@ -1347,11 +1347,22 @@ def init_raw_data_db():
             oi         INTEGER,
             buy_vol    INTEGER DEFAULT 0,
             sell_vol   INTEGER DEFAULT 0,
+            -- ── [MW0601 452차 / QDQ Phase 0] 앵커 계측 4열 (소비 0, 적재 전용) ──
+            -- 🔴 DEFAULT를 두지 않는다. 미계측은 반드시 NULL이어야 한다 —
+            --    "0이었다"와 "못 받았다"가 같아 보이면 감시가 무의미해진다
+            --    (451차 program_* 유령 피처가 정확히 그 방식으로 2개월간 숨었다).
+            anchor_buy    INTEGER,   -- 서버 23_누적체결매수 봉내 증분 (정답지)
+            anchor_sell   INTEGER,   -- 서버 22_누적체결매도 봉내 증분 (정답지)
+            buy_vol_flag  INTEGER,   -- 24_체결구분 올바른 파싱 기준 매수량 (섀도)
+            sell_vol_flag INTEGER,   -- 〃 매도량 (섀도)
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
         )
     """)
     # Phase 2 마이그레이션: 기존 DB에 buy_vol/sell_vol 컬럼 추가 (없으면 추가, 있으면 무시)
-    for _col, _type in [("buy_vol", "INTEGER DEFAULT 0"), ("sell_vol", "INTEGER DEFAULT 0")]:
+    # [452차] 앵커 4열도 같은 방식으로 추가 — 기존 88,558행은 NULL이 된다(정상).
+    for _col, _type in [("buy_vol", "INTEGER DEFAULT 0"), ("sell_vol", "INTEGER DEFAULT 0"),
+                        ("anchor_buy", "INTEGER"), ("anchor_sell", "INTEGER"),
+                        ("buy_vol_flag", "INTEGER"), ("sell_vol_flag", "INTEGER")]:
         try:
             execute(RAW_DATA_DB, "ALTER TABLE raw_candles ADD COLUMN {} {}".format(_col, _type))
         except Exception:
@@ -1492,8 +1503,9 @@ def save_candle(candle: dict) -> None:
     execute(
         RAW_DATA_DB,
         """INSERT OR REPLACE INTO raw_candles
-           (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
+            anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ts,
             candle.get("open",     0.0),
@@ -1506,6 +1518,12 @@ def save_candle(candle: dict) -> None:
             candle.get("oi"),
             candle.get("buy_vol",  0),
             candle.get("sell_vol", 0),
+            # [452차] 기본값 없이 읽는다 — 키가 없으면 None → NULL.
+            # `.get(key, 0)`을 쓰면 미계측이 "매수 0건"으로 위장된다.
+            candle.get("anchor_buy"),
+            candle.get("anchor_sell"),
+            candle.get("buy_vol_flag"),
+            candle.get("sell_vol_flag"),
         ),
     )
 
@@ -1551,8 +1569,9 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
         with get_conn(RAW_DATA_DB) as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO raw_candles
-                   (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
+                    anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     candle_ts,
                     candle.get("open",     0.0),
@@ -1565,6 +1584,11 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
                     candle.get("oi"),
                     candle.get("buy_vol",  0),
                     candle.get("sell_vol", 0),
+                    # [452차] 기본값 없이 읽는다 (save_candle과 동일 규약)
+                    candle.get("anchor_buy"),
+                    candle.get("anchor_sell"),
+                    candle.get("buy_vol_flag"),
+                    candle.get("sell_vol_flag"),
                 ),
             )
             conn.execute(

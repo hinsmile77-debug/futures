@@ -2,6 +2,99 @@
 
 ---
 
+## 2026-08-09 (MW0601 452차 — 체결구분 파싱 결함 규명 + QDQ Phase 0 앵커 계측 배선)
+
+**지시**: 외부 작성 `피처_무결성_점검_보고서.md`의 "미륵이 상태와 현실을 반영해 구현 손익을
+조사하고, 이익이 있으면 구현계획 수립" → 이어서 "Phase 0 구현계획 수립하고 구현 진행".
+**성격**: 라이브 버그 규명(코드 미수정, Phase 3 대기) + 계측 계층 신설(소비 0).
+
+### 1. 🔴 `24_체결구분`을 2개월째 통째로 버리고 있었다
+
+`collection/cybos/realtime_data.py:223`
+
+```python
+buy_sell_flag = _safe_str(obj.GetHeaderValue(24))   # 실제 반환값: 49 / 50
+if buy_sell_flag == "2":              # 절대 참이 되지 않는다
+elif buy_sell_flag not in ("1","2"):  # 항상 여기로 온다 → 틱룰 폴백
+    is_buy_tick = price >= self._last_price ...     # 보합(>=)을 전부 매수로
+```
+
+COM은 문자 `'1'`/`'2'`가 아니라 **그 코드값 49/50을 숫자로** 준다.
+
+**근거 3중** (전부 이 저장소 실물):
+- 로그 `[CybosRT-TICK] flag=` 75,264건 → `49` 37,156 / `50` 38,108 / **그 외 0건**
+- 공식 캡처본 `docs/CyBos ref/Excel_Example/FutureCurOnly(SbPb).xls` → `24_체결구분 = 50.0`
+- 의미 독립검증(로그 44,919건 호가 대조): `49` → 체결가=최우선매도호가 30.1% vs
+  최우선매수호가 1.1% / `50` → 매수호가 29.9% vs 매도호가 1.2%. **27:1 비대칭**
+
+**결과**: `raw_candles` 매수비중이 **44거래일 전부 50% 초과**(평균 63.08%, 60.55~68.03%).
+함의 보합틱 비중 26.2% = `(1+tie)/2 = 0.631`로 폴백 산식과 정확히 일치.
+
+### 2. CVD 상수화의 원인은 **둘**이다 — ①만 고치면 안 된다
+
+`raw_features` 최근 13거래일 5,642분: `cvd == 1.0` **98.6%**, `≥0.99` 99.3%,
+`≤-0.99` **0.0%**, 평균 0.993.
+
+- **원인 ①** 위 분류 편향 → 일중 누적 CVD 단조 증가
+- **원인 ②** `features/technical/cvd.py:104` — `cvd_abs_max`가 **자기 자신을 포함한**
+  창의 최대값이라, 계열이 단조이기만 하면 결과는 수학적으로 항상 ±1
+
+### 3. 기존 3중 우회책은 전부 이 원인 위에 지어져 있었다
+
+| 시점 | 우회책 | 위치 |
+|---|---|---|
+| 2026-06-25 | 체크리스트 `4_cvd` → `cvd_delta_norm` 교체 | `strategy/entry/checklist.py:174` |
+| 2026-06-25 | `cvd_direction` AutoMask 면제 제외 | `model/multi_horizon_model.py:183` |
+| 394차 | `bear_exhaustion` 발화불가 → detrend 섀도 | `features/technical/cvd_exhaustion.py:38` |
+
+`cvd_exhaustion.py`는 편향을 "delta 평균 +57.3, t=93.1"까지 정량화하고도 **"Cybos buy_vol의
+구조적 편향"** 으로 결론냈다. 원천이 아니라 **우리 파서**가 원인이었다.
+→ **`NEXT_TODO.md:3632`(371차 `cvd_divergence` 점질량 원인 조사)가 이걸로 닫힌다.**
+   단 `ofi_norm` 쪽은 호가 경로라 별건으로 남는다.
+
+### 4. 부수 발견 — 복구 경로가 **정상 데이터를 파괴**한다 (Phase 1 대기)
+
+`main.py:11317`이 파이프라인 정지 복구 시 DB 마지막 봉을 읽어 재처리하는데,
+`buy_vol: 0`/`sell_vol: 0`을 하드코딩하고 `bid1`/`ask1`/`oi`는 키 자체가 없다.
+`INSERT OR REPLACE`를 타면서 **원래 행의 진짜 값을 덮어쓴다.**
+실측 55봉(라이브 틱 개시 이후) — 06-25 16봉 · 07-31 13봉 · 08-04 15봉으로
+**파이프라인이 멎을 만큼 험했던 날에 집중**. `feedback_no_schema_fallback_in_collection`
+(451차)의 세 번째 재발. **원본 소실로 복구 불가.**
+
+### 5. 결정 — QDQ 엔진은 이식하지 않는다. 축만 가져온다
+
+71체크 실사용성: 즉시가능 32 / 데이터신설 22 / **기존중복 9** / **해당없음 8**.
+- 무의미: `CREON.SUBSCRIBE_SLOTS`(구독 3개 vs 한도 400), `FEED.*` 6종(COM에 시퀀스번호 없음)
+- 중복: `FEAT.PSI_DRIFT`↔`regime_fingerprint`, `DEGENERATE`/`NULL_RATIO`↔`feature_health_report`,
+  `TRAIN_SERVE_SKEW`↔`scaler_monitor` — **판정 기준 이원화가 최대 위험**
+- py37_32 실행 실측: `tests_checks.py` **183건 중 1건 실패**(pandas 1.3.5 ↔
+  `date_range(inclusive=)`는 1.4+). "전량 통과"는 이 환경에서 재현되지 않는다
+- **fail-closed 게이팅 도입 보류** — CB②·CB③-P4·FP-CRITICAL 셋 다 "계측이 덜 익은 상태에서
+  차단부터 켰다가 상시 발동으로 껐다"는 같은 실패를 겪었다. 네 번째를 만들지 않는다
+
+산출물: `docs/Spec for feature/Validation for feature/QDQ_도입_손익분석_및_구현계획_2026-08-09.md`
+(6 Phase) · `QDQ_Phase0_구현계획_2026-08-09.md`(상세)
+
+### 6. Phase 0 배포 — 계측만, 소비 0
+
+`buy_vol`/`sell_vol`/`is_buy_tick`을 **의도적으로 그대로 둔다.** 두 열이 라이브 모델의
+학습 입력이라, 지금 뒤집으면 CORE 피처에 train/serve skew가 생긴다(Phase 3 안건).
+**버그를 그대로 둔 채 옆에 정답을 적는다.**
+
+- `decode_trade_side()` 신설 — 49/50/'1'/'2'/1/2 수용, **판정불가는 None**(매수 폴백 금지)
+- `_read_trade_anchor()` 신설 — `22`(매도)/`23`(매수) 봉내 증분. 역행은 `max(0,…)`으로
+  뭉개지 않고 **폐기 + 기준선 재설정 + 경고**(재접속·월물교체 신호를 죽이지 않기 위함)
+- `raw_candles` 4열: `anchor_buy`/`anchor_sell`/`buy_vol_flag`/`sell_vol_flag`.
+  🔴 **DEFAULT 없음** — 미계측은 반드시 NULL. 기존 88,558행 전부 NULL 확인
+- COM 호출 추가 **0**(이미 수신 중인 이벤트의 안 읽던 필드). 콜백 내 `dynamicCall`/`emit` 없음
+- 진단 로그 `[CVD-ANCHOR]` 1줄/봉 + `[RESET]`/`[UNAVAIL]`
+
+검증: `tests/test_452_cvd_anchor_shadow.py` **9/9 통과**(스텁 COM으로 `_handle_tick` 직접
+구동 — 실 COM 없이 전 경로). 전체 스위트 **147 passed**. DB 마이그레이션 적용 완료.
+**라이브 미검증** → `NEXT_TODO.md` 452차 항목의 1일차 판정 쿼리로 확인할 것.
+
+---
+
 ## 2026-08-09 (MW0601 451차 — program_* 수급 3종 폐기 + 유령 피처 재발 방지 장치)
 
 **지시**: "수집은 되는데 피처가 죽어 있는 원인을 딥다이브하고 정상적 데이터수집을 위한
