@@ -2,6 +2,69 @@
 
 ---
 
+## 2026-08-09 (MW0601 453차 — 복구 봉 이중 처리 해소 D1~D4 + 절대원칙 §1 구멍 봉합)
+
+**지시**: 452차 Phase 1 파생 안건(복구 봉 이중 처리) 딥다이브 → 설계제안 승인 →
+"D2→D1→D3→D4 순서로 구현". 문서 2건:
+`docs/미륵이고도화3/복구봉_이중처리_딥다이브_및_설계제안_2026-08-09.md`(딥다이브),
+`복구봉_이중처리_구현계획_2026-08-09.md`(구현계획).
+
+### 딥다이브 핵심 실측 (전부 저장소 실물)
+
+1. **최악 오염은 CVD가 아니라 N분봉 격자 밀림** — `BarAggregator.push()`에 ts 가드가
+   없어(len(buf)>=h 완성 판정) 중복 1분봉 1개가 그날 남은 모든 N분봉 경계를 1분씩
+   영구로 민다. 08-04 복구 7완주 → 30m 경계 최대 7분 어긋남. 아무 신호 없었음.
+2. **"항상 이중"이 아니다** — raw_candles는 파이프라인 자신(STEP 4)만 쓰므로,
+   원 실행이 중도 사망하면 복구가 STEP 5~9의 첫 실행이 된다(시나리오 B). 08-04
+   실증: 복구 봉 predictions가 중복 없이 2행(1m+30m — 스톨 중 유일 배포 호라이즌).
+3. predictions (ts,horizon) 중복 423그룹·미채점 고아 800행·ensemble 91 ts — 단
+   **복구 단독 원인 아님**(06-23 복구 2회에 중복 144건 → 장중 재시작도 만든다).
+4. 복구 완주가 `_last_real_pipeline_dt`+`notify_pipeline_ran()` 시계 2개를 되감아
+   ExchangeCB 감지 ~90s 지연 (228차가 스킵 분기만 고치고 완주 분기를 남겼음).
+5. 🔴 **완전 피드 스톨이 15:10 관통 시 청산 주체 없음** — STEP 8(분봉 필요),
+   틱 하드스톱(틱 필요), 워치독·복구(15:10 이후 가드 정지), daily_close(청산 로직
+   없음), EmergencyExit(CB/KS 발동 시만 — 그것들도 파이프라인 구동). 오버나이트
+   금지(절대원칙 §1)의 마지막 구멍. 미실현이었으나 구조적.
+6. STEP 1·2는 `actual IS NULL` 필터로 자연 멱등 — 재실행 무해 확인.
+7. 묵은 데이터 진입(STEP 7): 구조적 위험이나 trades 전수 대조 결과 실현 사례 없음.
+
+### 구현 (커밋 대상)
+
+- **D2** `_ts_scheduler_force_exit_net()` 신설 + `_scheduler_tick`(30s QTimer, 피드
+  독립) 배선 — 15:11부터(정규 STEP 8에 60s 유예) 미청산 포지션/유령 브로커 잔량을
+  `_ts_broker_direct_force_exit` 재사용으로 시장가 청산. pending 시 스킵(Chejan은
+  시세와 별개 연결이라 스톨 중에도 온다), 상한 `is_market_open()`(만기일 15:20 자동).
+  **§1 구멍 봉합 — D1의 전제.**
+- **D1** `_try_pipeline_recovery()`가 더 이상 `run_minute_pipeline`을 호출하지 않는다.
+  신설 `_ts_run_maintenance_pass()`: 포지션·pending·브로커 잔량 있을 때만 STEP 8을
+  캐시 컨텍스트(`_maint_ctx` — 파이프라인 완주 시 저장, STEP 8 실사용은 atr 1키+
+  신호소멸 3키뿐)와 최신 가격(`_last_pipeline_price` 우선)으로 1회 평가. STEP 1~7·9·
+  DB 쓰기·시계 리셋 없음. 시나리오 B 감지 로그 1줄(발생 빈도 무료 계측).
+  기존 에스컬레이션 골격(스킵 분기·600s ExchangeCB·복구 포기) 전부 유지.
+- **D3** `init_predictions_db()`에 "UNIQUE 인덱스 시도 → 실패 시 정리 → 재시도" 패턴.
+  정리는 채점행 우선·최소 id 생존, victims는 `predictions_dup_archive`/
+  `ensemble_dup_archive`로 이동(860MB 파일 복사 대신 행 아카이브). 쓰기 4곳 전부
+  `INSERT OR IGNORE`(⚠ OR REPLACE 금지 — 채점 라벨을 미채점 새 행으로 갈아치움).
+  **실 DB 적용 완료**: pred 634행·ens 129행 아카이브, 중복 0, **라벨 손실 0 검증**
+  (아카이브 채점행 75건 전부 생존자도 채점행인 그룹).
+- **D4** ① `BarAggregator.push()` 동일 ts 무시 가드(+reset_daily 초기화)
+  ② `run_minute_pipeline` 입구 동일 ts 차단 — D1 이후 남은 중복 경로(stale
+  oscillation 중복 BAR-CLOSE — 경고만 찍고 콜백은 나감)를 파이프라인 전체에서 차단.
+
+### 주의 (롤백·운영)
+
+- ⚠ **revert 시 UNIQUE 인덱스 동반 DROP 필수** — plain INSERT로 돌아가면
+  IntegrityError로 죽는다: `DROP INDEX ux_pred_ts_hz; DROP INDEX ux_ens_ts;`
+- `bar_recovered=1` 신규 발생 **중단됨** — 452차 Phase 1 라이브 확인 ②의 의미가
+  "새로 생기면 회귀"로 반전 (NEXT_TODO 갱신).
+- 시나리오 B의 1분 예측 저장 누락은 의도된 손실(15:10 이후·CB 구간과 동일 패턴).
+
+검증: `tests/test_453_recovery_redesign.py` 34체크 전부 통과(스텁 self로 `_ts_*`
+직접 구동 — T5가 시계 불변을 dashboard 부재 스텁으로 강제). 전체 스위트 **163
+passed**. **라이브 미검증** — 다음 스톨 발생일 확인 항목은 NEXT_TODO 453차.
+
+---
+
 ## 2026-08-09 (MW0601 452차 — 체결구분 파싱 결함 규명 + QDQ Phase 0 앵커 계측 배선)
 
 **지시**: 외부 작성 `피처_무결성_점검_보고서.md`의 "미륵이 상태와 현실을 반영해 구현 손익을

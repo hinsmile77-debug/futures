@@ -1,5 +1,6 @@
 # utils/db_utils.py — SQLite 공통 유틸리티
 import sqlite3
+import logging
 import os
 import sys
 import threading
@@ -235,8 +236,99 @@ def init_predictions_db():
             "CREATE INDEX IF NOT EXISTS idx_meta_ts ON meta_labels(ts)")
     execute(PREDICTIONS_DB,
             "CREATE INDEX IF NOT EXISTS idx_meta_horizon ON meta_labels(horizon)")
+
+    # ── [MW0601 453차 D3] 멱등 쓰기 — UNIQUE 인덱스 + 기존 중복 정리 ──────────
+    # 왜: predictions는 plain INSERT + UNIQUE 제약 없음이라 복구 재실행·장중 재시작이
+    # (ts,horizon) 중복을 만들었다(실측 423그룹, 영구 미채점 고아 800행 — 채점기가
+    # fetchone으로 한 행만 채점하고 나머지는 actual NULL로 방치된다). 쓰기 계층이
+    # `INSERT OR IGNORE`로 바뀌었으므로(prediction_buffer.py) 제약이 반드시 필요하다
+    # — OR IGNORE는 **제약이 있어야만** 동작한다.
+    # 패턴: 인덱스 생성 시도 → 실패(중복 잔존) 시 정리 후 재시도. IF NOT EXISTS라
+    # 이미 있으면 no-op — 매 기동마다 무거운 검사를 하지 않는다.
+    # ⚠ revert 시 이 인덱스를 DROP하지 않으면 plain INSERT가 IntegrityError로 죽는다.
+    for _ux_sql, _dedupe_fn in [
+        ("CREATE UNIQUE INDEX IF NOT EXISTS ux_pred_ts_hz ON predictions(ts, horizon)",
+         _dedupe_predictions_for_unique_index),
+        ("CREATE UNIQUE INDEX IF NOT EXISTS ux_ens_ts ON ensemble_decisions(ts)",
+         _dedupe_ensemble_for_unique_index),
+    ]:
+        try:
+            execute(PREDICTIONS_DB, _ux_sql)
+        except Exception:
+            try:
+                _dedupe_fn()
+                execute(PREDICTIONS_DB, _ux_sql)
+            except Exception as _ux_e:
+                # init_all_dbs를 죽이면 안 된다 — 인덱스 없으면 OR IGNORE가 무제약
+                # plain INSERT처럼 동작할 뿐(종전과 동일), 시스템은 계속 돈다.
+                logging.getLogger("SYSTEM").error(
+                    "[D3] UNIQUE 인덱스 생성 실패 — 중복 차단 미가동(종전 동작 유지): %s",
+                    _ux_e)
+
     # WAL 파일이 하루종일 비대해지는 것을 방지 (기본 1000 → 100페이지)
     execute(PREDICTIONS_DB, "PRAGMA wal_autocheckpoint=100")
+
+
+def _dedupe_predictions_for_unique_index():
+    """[MW0601 453차 D3] (ts,horizon) 중복 정리 — UNIQUE 인덱스 생성 전 1회.
+
+    남길 행: 그룹당 1행 — **채점된 행(actual NOT NULL) 우선**, 동급이면 최소 id.
+    (STEP 1 채점기가 fetchone=최소 id를 채점하므로 대개 일치한다. 라벨 보존이 목적.)
+    삭제 대상은 지우기 전에 `predictions_dup_archive`로 옮긴다 — 860MB DB 파일
+    복사 대신 행 단위 아카이브(`_purge_extreme_conf.py`의 predictions_archive 선례).
+    """
+    with _lock:
+        with get_conn(PREDICTIONS_DB) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS predictions_dup_archive AS "
+                "SELECT * FROM predictions WHERE 0")
+            # victim 판정: 같은 (ts,horizon)에 나보다 우선하는 행이 존재하면 나는 victim.
+            # 우선순위 — ① 채점행 > 미채점행 ② 같은 급이면 작은 id.
+            conn.execute("""
+                CREATE TEMP TABLE _dup_victims AS
+                SELECT p.id AS id FROM predictions p
+                WHERE EXISTS (
+                  SELECT 1 FROM predictions q
+                  WHERE q.ts = p.ts AND q.horizon = p.horizon AND q.id != p.id
+                    AND (
+                      (q.actual IS NOT NULL AND p.actual IS NULL)
+                      OR ((q.actual IS NULL) = (p.actual IS NULL) AND q.id < p.id)
+                    )
+                )""")
+            n = conn.execute("SELECT COUNT(*) FROM _dup_victims").fetchone()[0]
+            conn.execute("INSERT INTO predictions_dup_archive "
+                         "SELECT * FROM predictions "
+                         "WHERE id IN (SELECT id FROM _dup_victims)")
+            conn.execute("DELETE FROM predictions "
+                         "WHERE id IN (SELECT id FROM _dup_victims)")
+            conn.execute("DROP TABLE _dup_victims")
+            logging.getLogger("SYSTEM").warning(
+                "[D3] predictions 중복 정리: %d행 → predictions_dup_archive 이동", n)
+
+
+def _dedupe_ensemble_for_unique_index():
+    """[MW0601 453차 D3] ensemble_decisions ts 중복 정리 — 최소 id만 남긴다."""
+    with _lock:
+        with get_conn(PREDICTIONS_DB) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ensemble_dup_archive AS "
+                "SELECT * FROM ensemble_decisions WHERE 0")
+            conn.execute("""
+                CREATE TEMP TABLE _dup_victims AS
+                SELECT e.id AS id FROM ensemble_decisions e
+                WHERE EXISTS (
+                  SELECT 1 FROM ensemble_decisions f
+                  WHERE f.ts = e.ts AND f.id < e.id
+                )""")
+            n = conn.execute("SELECT COUNT(*) FROM _dup_victims").fetchone()[0]
+            conn.execute("INSERT INTO ensemble_dup_archive "
+                         "SELECT * FROM ensemble_decisions "
+                         "WHERE id IN (SELECT id FROM _dup_victims)")
+            conn.execute("DELETE FROM ensemble_decisions "
+                         "WHERE id IN (SELECT id FROM _dup_victims)")
+            conn.execute("DROP TABLE _dup_victims")
+            logging.getLogger("SYSTEM").warning(
+                "[D3] ensemble_decisions 중복 정리: %d행 → ensemble_dup_archive 이동", n)
 
 
 def _migrate_predictions_db():

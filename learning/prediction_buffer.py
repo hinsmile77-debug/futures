@@ -41,8 +41,9 @@ class PredictionBuffer:
         gate = decision.get("gating") or {}
         execute(
             PREDICTIONS_DB,
+            # [453차 D3] OR IGNORE — ts UNIQUE 인덱스와 짝 (첫 기록 승리)
             """
-            INSERT INTO ensemble_decisions (
+            INSERT OR IGNORE INTO ensemble_decisions (
                 ts, regime, micro_regime, direction, confidence,
                 up_score, down_score, flat_score,
                 grade, auto_entry, regime_ok, min_conf,
@@ -222,15 +223,19 @@ class PredictionBuffer:
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
             if pred_rows:
+                # [MW0601 453차 D3] OR IGNORE — (ts,horizon) UNIQUE 인덱스와 짝.
+                # 같은 분을 두 번 쓰는 경로(복구·장중 재시작)에서 첫 기록이 승리한다.
+                # ⚠ OR REPLACE 금지: 재삽입이 이미 채점된 행(actual 세팅됨)을
+                #   미채점 새 행으로 갈아치워 라벨을 잃는다.
                 conn.executemany(
-                    """INSERT INTO predictions
+                    """INSERT OR IGNORE INTO predictions
                        (ts, horizon, direction, confidence, up_prob, down_prob, flat_prob,
                         features, sigma_at_t)
                        VALUES (?,?,?,?,?,?,?,?,?)""",
                     pred_rows,
                 )
             conn.execute(
-                """INSERT INTO ensemble_decisions (
+                """INSERT OR IGNORE INTO ensemble_decisions (
                        ts, regime, micro_regime, direction, confidence,
                        up_score, down_score, flat_score,
                        grade, auto_entry, regime_ok, min_conf,
@@ -272,7 +277,8 @@ class PredictionBuffer:
             sigma_at_t = 0.0
         execute(
             PREDICTIONS_DB,
-            """INSERT INTO predictions
+            # [453차 D3] OR IGNORE — save_step9_batch와 동일 규약 (첫 기록 승리)
+            """INSERT OR IGNORE INTO predictions
                (ts, horizon, direction, confidence, up_prob, down_prob, flat_prob, features, sigma_at_t)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ts, horizon, direction, conf, up, dn, fl, feat_json, sigma_at_t),
