@@ -365,7 +365,7 @@ def _is_deployable(hz, bar_aggregator):
 #    4열(anchor_*/*_flag)을 추가했고 Phase 4가 더 추가할 예정이라, 목록 방식이면
 #    **네 번째 재발이 예약**돼 있다. `row.keys()`를 순회하면 자동으로 따라온다.
 #
-# 근거: `docs/Spec for feature/Validation for feature/QDQ_Phase1_구현계획_2026-08-09.md`
+# 근거: `docs/Spec for feature/Feature integrity/QDQ_Phase1_구현계획_2026-08-09.md`
 _RECOVERY_BAR_SKIP_COLS = frozenset({"created_at"})   # DB가 자동 생성 — 실어보내지 않는다
 
 

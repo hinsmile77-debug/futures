@@ -330,7 +330,7 @@ COM은 문자 `'1'`/`'2'`가 아니라 **그 코드값 49/50을 숫자로** 준�
 - **fail-closed 게이팅 도입 보류** — CB②·CB③-P4·FP-CRITICAL 셋 다 "계측이 덜 익은 상태에서
   차단부터 켰다가 상시 발동으로 껐다"는 같은 실패를 겪었다. 네 번째를 만들지 않는다
 
-산출물: `docs/Spec for feature/Validation for feature/QDQ_도입_손익분석_및_구현계획_2026-08-09.md`
+산출물: `docs/Spec for feature/Feature integrity/QDQ_도입_손익분석_및_구현계획_2026-08-09.md`
 (6 Phase) · `QDQ_Phase0_구현계획_2026-08-09.md`(상세)
 
 ### 6. Phase 0 배포 — 계측만, 소비 0

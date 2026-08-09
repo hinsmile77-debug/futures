@@ -43,7 +43,7 @@ def decode_trade_side(raw):
     그 폴백(`is_buy_tick = price >= 직전가`, 보합틱을 매수로 흡수)이 매수비중
     63% 편향(44거래일 전부 50% 초과)의 원인이며, 그 편향이 CORE 피처 `cvd`를
     98.6% `+1.0` 고착으로 상수화시켰다.
-    근거: `docs/Spec for feature/Validation for feature/QDQ_도입_손익분석_및_구현계획_2026-08-09.md` §2 발견 A
+    근거: `docs/Spec for feature/Feature integrity/QDQ_도입_손익분석_및_구현계획_2026-08-09.md` §2 발견 A
     """
     if raw is None:
         return None
