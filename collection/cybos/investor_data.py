@@ -73,6 +73,9 @@ class CybosInvestorData:
         self._program_nonarb = 0
         # 차익+비차익 합계(KRW). 투자자별 분해가 아니다 — 이름으로 그것을 못 박는다.
         self._program_total = 0
+        # [451차 Phase 1-1] CpSvr8111 원천 56필드. **해석하지 않고 그대로 보관만** 한다 —
+        # 저장은 main._fetch_investor_data가 한다(수집 클래스는 DB를 모른다).
+        self._program_fields: Dict[str, int] = {}
         self._open_interest = 0
 
         # 원천이 실제로 채운 키 감시 — 유령 필드 조기 경보(451차)
@@ -102,6 +105,12 @@ class CybosInvestorData:
             self._program_supported = False
             self._program_source = "runtime_disabled"
             self._program_reason = "program probe loop disabled in live timer"
+            # [451차 Phase 1-1] 프로그램 조회를 건너뛰었으면 원천 필드도 비운다.
+            # 안 비우면 직전 성공분이 남아, 나중에 누가 "현재 시각 + 옛 값"으로 저장할 수
+            # 있다 — 이번 세션 내내 다룬 "안 온 것을 온 것처럼" 패턴 그 자체다.
+            # (현재 유일한 저장 경로 main._fetch_investor_data는 항상 include_program=True로
+            #  먼저 갱신하므로 실제 사고는 없지만, 그 전제가 깨지는 순간 조용히 오염된다.)
+            self._program_fields = {}
         self._last_fetch = datetime.datetime.now()
         self._fetch_count += 1
         logger.info(
@@ -196,6 +205,15 @@ class CybosInvestorData:
         self._program_supported = bool(result.get("supported", False))
         self._program_source = str(result.get("source", "unknown"))
         self._program_reason = str(result.get("reason", ""))
+
+        # [451차 Phase 1-1] 원천 56필드 보관. **조회 성공일 때만** 갱신한다 —
+        # 실패 시 직전값을 남겨두면 그 시각에 실제로 수신한 것처럼 저장돼
+        # 451차가 폐기한 "안 온 것을 온 것처럼" 패턴이 그대로 재현된다.
+        if self._program_supported:
+            self._program_fields = dict(result.get("fields") or {})
+        else:
+            self._program_fields = {}
+
         program_state = self._program_status_label(self._program_source, self._program_reason)
         logger.info(
             "[CybosInvestor] program supported=%s state=%s source=%s "
@@ -209,6 +227,15 @@ class CybosInvestorData:
             self._program_reason,
         )
         return self._program_supported
+
+    def get_program_raw_fields(self) -> Dict[str, int]:
+        """[451차 Phase 1-1] 직전 **성공** 조회의 CpSvr8111 56필드 (보존 저장용).
+
+        조회 실패·미지원이면 **빈 dict**를 반환한다 — 호출부는 빈 dict를 저장하지 말 것
+        (`utils/db_utils.save_program_trade_raw`가 한 번 더 막는다).
+        필드 의미: `docs/CyBos ref/CYBOS_프로그램매매_투자자별_TR_명세.md` §1-1.
+        """
+        return dict(self._program_fields)
 
     def get_features(self) -> Dict[str, float]:
         foreign_fut = self._futures.get("foreign", 0)
@@ -378,6 +405,7 @@ class CybosInvestorData:
         self._program_arb = 0
         self._program_nonarb = 0
         self._program_total = 0
+        self._program_fields = {}
         self._open_interest = 0
         # 관측 횟수만 리셋 — '본 적 있음' 이력은 유지한다(provenance.py:reset 참조).
         self._futures_prov.reset()

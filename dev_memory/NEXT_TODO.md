@@ -14,18 +14,52 @@
 > 이 세션 결함 4건이 **하나의 구조 문제**(원천 응답을 보존하지 않고 소수 필드만 피처화)임을
 > 정리하고 Phase 0~4로 구성. **아래 개별 TODO들의 상위 문서** — 착수 전 먼저 읽을 것.
 
-- [ ] **사용자 승인 대기 — Phase 1-1 `raw_program_trade` 신설**
-      8111 56필드 전량 보존. `_probe_investor_tr`가 **이미 `range(64)`로 전량 읽고 있어
-      추가 COM 호출 0**, 라이브 피처 경로 무변경(위험 0), +55MB/년.
-      ⏰ **오늘 시작해야 검증 시계가 오늘부터 돈다** — 신규 피처는 과거 DB에 없어
-      분 단위 백필이 불가하다. 계획서에서 유일하게 "빨리"가 중요한 항목.
+- [x] ~~**Phase 1-1 `raw_program_trade` 신설**~~ **[DONE 2026-08-09] 배포 완료.**
+      8111 56필드 전량 보존. 추가 COM 호출 **0**(이미 `range(64)`로 읽고 있었다),
+      라이브 피처 경로 무변경. 실측 용량 **61.4MB/년**(계획서 추정 55MB보다 약간 큼).
+      통합 테스트 27/27 통과, 실 DB에 테이블 생성 완료(기존 7개 테이블 무결).
+      **라이브 미검증** → 위 0-1 ④번으로 확인할 것.
+
+- [ ] **Phase 1-2 — 7221 전량 보존 비용 측정 후 결정** (P2, 0-1 ③ 결과 의존)
+      7221은 `GetDataValue(열,행)` 격자라 전량(type 0~51)을 매분 읽으면 COM 호출이
+      **행 5개 기준 75 → 260회**로 는다. 8111과 달리 **공짜가 아니다.**
+      → 0-1 ③에서 세션 첫 호출(`field_limit=64`) 구간의 실제 소요시간을 먼저 볼 것.
+      → 예산(500ms) 안이면 `raw_investor_flow` 신설, 아니면 **저장 주기 하향**
+        (예: 5분마다 전량 / 매분은 15열).
+      💡 성사되면 gross PCR 검증의 "하루 1건" 한계가 자동으로 풀린다(0-3 후속 항목).
 - [x] ~~**Phase 0**~~ **[DONE 2026-08-09] 0-2·0-3·0-4 완료.** 결과는 DECISION_LOG
       "451차 Phase 0 실행" 참조. **0-1만 남았다(아래).**
 
-- [ ] 🔴 **0-1 라이브 검증 3건** (P1, 다음 거래일 — 2026-08-09는 토요일이라 미실행)
-      ① `raw_features`에서 `program_foreign/individual/institution_net_krw` 3종 소멸
-      ② DATA 로그에 `[Provenance]` WARNING 부재 (뜨면 선물 투자자 TR 쪽 새 발견)
-      ③ `[CybosProbe][RAW]`에 `field_limit=64` + 7221 **열 15 이상** 데이터
+- [ ] 🔴 **0-1 라이브 검증 4건** (P1, 다음 거래일 — 2026-08-09는 토요일이라 미실행)
+
+      **① `program_*` 3종 소멸** (451차 폐기분)
+      ```
+      python -c "import sqlite3,json;c=sqlite3.connect(r'data/db/raw_data.db');r=c.execute(\"SELECT features FROM raw_features ORDER BY ts DESC LIMIT 1\").fetchone();f=json.loads(r[0]);print([k for k in f if k.startswith('program_')])"
+      ```
+      → `['program_arb_net','program_non_arb_net']` 2개만 나와야 한다.
+
+      **② `[Provenance]` WARNING 부재**
+      ```
+      findstr /C:"[Provenance]" logs\<날짜>_DATA.log
+      ```
+      → 아무것도 없어야 정상. 뜨면 **선물 투자자 TR(7221)이 기대 키를 안 준다는 새 발견**이다.
+
+      **③ `field_limit=64` + 7221 열 15 이상** (후속4 배포분)
+      ```
+      findstr /C:"[CybosProbe][RAW]" logs\<날짜>_PROBE.log
+      ```
+      → `field_limit=64`가 찍히고 `CpSvrNew7221` 행에 키 `15` 이상이 보이는지.
+        보이면 §명세대로 type 0~51이 실재하는 것 → TR 명세 문서 §3 대조표를 실측으로 갱신.
+        안 보이면 2014년 문서와 현행 서버 응답이 다른 것 — **그것도 기록할 것.**
+
+      **④ 🆕 `raw_program_trade` 적재 시작** (Phase 1-1 배포분)
+      ```
+      python -c "import sqlite3;c=sqlite3.connect(r'data/db/raw_data.db');print(c.execute('SELECT COUNT(*),MIN(ts),MAX(ts) FROM raw_program_trade').fetchone())"
+      findstr /C:"[ProgramRaw]" logs\<날짜>_SYSTEM.log
+      ```
+      → 장중 약 **370행/일**이 쌓이고 `[ProgramRaw] ... 필드 56개` INFO가 **세션 1회** 찍혀야 한다.
+      → `[ProgramRaw] 원천 보존 실패`가 뜨면 저장 경로 문제다(수집·파이프라인에는 영향 없음).
+      ⚠ 09:00~09:02는 CB⑤ 방어로 스킵되므로 그 구간 행이 없는 것은 **정상**이다.
 
 - [ ] **[0-3 후속] gross PCR 병행 기록** (P2, Phase 1 이후)
       40일 오프라인 검증은 **가설을 강하게 지지**한다 — 캡 고착 net 22.5% → gross **0.0%**,
