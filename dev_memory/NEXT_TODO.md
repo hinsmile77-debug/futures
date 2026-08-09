@@ -53,11 +53,30 @@
       ② `SELECT COUNT(*) FROM raw_candles WHERE bar_recovered=1` — 복구 빈도 가시화
       ③ 회귀 감시 — `ts>='<배포일>' AND volume>0 AND buy_vol=0 AND sell_vol=0` → **0이어야 함**
 
-- [ ] **[452차 Phase 1 파생, 별건] 복구 봉 이중 처리** — 복구는 *이미 처리된* 봉을 다시
-      파이프라인에 태운다. CVD·VWAP·ATR 등 **누적 계산기가 그 봉을 두 번 먹는다.**
-      Phase 1이 만든 문제는 아니다(`volume`은 종전에도 그대로 실려 두 번 들어갔고,
-      buy/sell만 0이었던 것이 오히려 비일관이었다). 복구 시 누적 계산기 갱신을 건너뛸지,
-      아니면 candle 재저장만 생략할지 별도 설계 필요.
+- [x] ~~**[452차 Phase 1 파생] 복구 봉 이중 처리**~~ **[DONE 2026-08-09, 453차] D1~D4
+      전부 배포 완료.** 상세: `DECISION_LOG.md` 453차 /
+      `docs/미륵이고도화3/복구봉_이중처리_구현계획_2026-08-09.md`.
+      테스트 34체크 + 전체 스위트 163 passed. D3 실 DB 마이그레이션 적용
+      (pred 634행·ens 129행 아카이브, 라벨 손실 0 검증). **라이브 미검증** → 아래.
+
+- [ ] **[453차] 라이브 확인 — 다음 피드 스톨 발생일** (워치독 90s 경보가 뜬 날):
+      ① `[유지보수 패스]` 로그 존재 + 그 분의 predictions/raw_candles에 **신규 행 없음**
+      ② ExchangeCB 확정까지 240~300s 설계값 수렴 (완주發 ~90s 지연 소멸 확인)
+      ③ `[BarAggregator] 동일 ts 중복 push` / `[Pipeline] 중복 분봉 주입 차단` 로그가
+        뜨면 **D1 외의 중복 경로가 실존**하는 것 — 출처 추적할 것
+      ④ `bar_recovered=1` 신규 발생 시 **회귀**(452차 Phase 1 확인 ② 의미 반전)
+      ⑤ `[유지보수 패스] scenario B` 로그 빈도 — 원 실행 중도 사망의 실빈도 계측
+
+- [ ] **[453차] D2 안전망 라이브 확인 — 15:10 스톨은 드무니 장기 관찰**: 평상일에는
+      `[SchedForceExit]` 로그가 **없어야 정상**(정규 STEP 8이 먼저 처리). 뜨는 날 =
+      스톨이 15:10을 관통한 날 — 발동 후 브로커 청산 체결까지 정상 확인.
+      ⚠ revert 시 `DROP INDEX ux_pred_ts_hz; DROP INDEX ux_ens_ts;` 동반 필수
+      (plain INSERT 복귀 시 IntegrityError).
+
+- [ ] **[453차 파생, 별건] meta_labels 중복 165건 정리** — D3의 predictions 정리로
+      신규 발생은 멎는다(중복 예측행이 없으면 채점도 1회). 기존 165건은 영향 낮음
+      (메타라벨 분류기 학습 표본의 경미한 중복 가중) — 월간 정리(monthly_cleanup.py)에
+      편입 검토.
 
 - [ ] **[452차 Phase 1 파생, 별건] 백필과 라이브가 다른 `override_horizon_features`를 쓴다**
       — 호라이즌 피처의 train/serve 불일치.

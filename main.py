@@ -4700,6 +4700,19 @@ class TradingSystem:
         ts_raw = bar.get("ts", datetime.datetime.now())
         ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
 
+        # ── [MW0601 453차 D4] 동일 분봉 중복 주입 가드 ────────────────────────
+        # 같은 ts가 두 번 들어오면 누산기(CVD·VWAP·OFI·ATR)와 N분봉 격자가 이중
+        # 급식된다. 453차 D1로 복구 재실행이 사라졌으므로 남은 중복 경로는 전부
+        # 버그다(대표: stale oscillation 중복 BAR-CLOSE — 경고만 찍고 콜백은
+        # 그대로 나간다, collection/cybos/realtime_data.py). 여기서 차단한다.
+        if ts == getattr(self, "_last_pipeline_bar_ts", None):
+            log_manager.system(
+                f"[Pipeline] 중복 분봉 주입 차단 ts={ts} — 이미 처리된 봉 (453차 D4)",
+                "WARNING",
+            )
+            return
+        self._last_pipeline_bar_ts = ts
+
         # ── [S0-A] 64비트 GBM subprocess 완료 체크 ────────────────────────
         # [226차] poll()은 non-blocking — subprocess가 완료되면 returncode 반환.
         # [381차 후속] 로직을 _poll_gbm_retrain_subprocess()로 추출 — daily_close()도
@@ -9068,6 +9081,11 @@ class TradingSystem:
         # [228차] 실제 분봉 완료 시각 기록 — 복구 스킵 경로와 구별해 ExchangeCB 정확히 감지
         self._last_real_pipeline_dt = datetime.datetime.now()
 
+        # [MW0601 453차 D1] 유지보수 패스 컨텍스트 — 이번 완주분의 features/decision/ts.
+        # 피드 스톨 시 _ts_run_maintenance_pass()가 STEP 8 평가에 재사용한다.
+        # STEP 8의 실사용은 atr(1키)·신호소멸 섀도(3키)뿐이라 1~4분 묵어도 충분하다.
+        self._maint_ctx = (features, decision, ts)
+
         # 상태 바 '마지막 갱신' 타이머 리셋
         self.dashboard.notify_pipeline_ran()
 
@@ -11152,7 +11170,16 @@ class TradingSystem:
             pass
 
     def _try_pipeline_recovery(self) -> None:
-        """raw_candles 최신 분봉으로 파이프라인 강제 재실행."""
+        """[MW0601 453차 D1] 피드 스톨 유지보수 — **파이프라인을 재실행하지 않는다.**
+
+        종전(~452차)에는 raw_candles 마지막 봉으로 `run_minute_pipeline()`을 통째로
+        재실행했다. 그 재실행이 N분봉 격자 밀림·predictions 중복·묵은 진입 위험·
+        ExchangeCB 시계 되감기를 만들었다(완주 42회 실측 — 상세는
+        `_ts_run_maintenance_pass` docstring과 설계제안서). 이제 이 함수는
+        ① 포지션 안전 점검(_ts_run_maintenance_pass — 청산 감시만)
+        ② ExchangeCB 에스컬레이션 관련 기존 분기(600s 강제 진입·복구 포기)
+        만 수행한다. 함수명은 워치독 배선 호환을 위해 유지한다.
+        """
         # 거래소 CB 대기 모드 중에는 분봉 자체가 없으므로 복구 시도 무의미
         if self._exchange_cb_mode:
             log_manager.system(
@@ -11186,7 +11213,16 @@ class TradingSystem:
 
         ts_str = row["ts"]  # "YYYY-MM-DD HH:MM:SS"
 
-        # 동일 분봉 반복 재처리 방지 — 이미 복구한 ts면 스킵
+        # [453차 D1] 포지션 안전 유지보수 — 같은 ts 반복 호출과 무관하게 **매번** 수행
+        # (멱등이라 무해하고, 스톨 중 청산 감시가 살아 있음이 로그로 증명된다).
+        # 아래 스킵/포기 분기보다 앞에 둔다 — 그 분기들은 에스컬레이션 관리일 뿐,
+        # 포지션 안전 점검을 막을 이유가 없다.
+        try:
+            _ts_run_maintenance_pass(self, row)
+        except Exception:
+            logger.exception("[유지보수 패스] 예외 — 워치독 에스컬레이션은 계속된다")
+
+        # 동일 분봉 반복 로그 방지 — 이미 점검한 ts면 스킵 (유지보수는 위에서 이미 수행)
         if ts_str == self._last_recovery_ts:
             # [228차] notify_pipeline_ran() 제거 — 워치독 타이머를 리셋하지 않음.
             # 이전 코드: notify_pipeline_ran() → elapsed_s가 항상 90s로 고착 → ExchangeCB 미발동.
@@ -11195,7 +11231,7 @@ class TradingSystem:
                 datetime.datetime.now() - self._last_real_pipeline_dt
             ).total_seconds() if self._last_real_pipeline_dt else 9999
             log_manager.system(
-                f"[복구 스킵] {ts_str} 이미 재처리 완료 "
+                f"[복구 스킵] {ts_str} 이미 점검 완료 "
                 f"(실 분봉 {int(_real_elapsed)}초 전) — 새 분봉 대기 중",
             )
             # 안전망: 실 분봉 없이 10분 초과 → ExchangeCB 모드 강제 진입
@@ -11239,19 +11275,16 @@ class TradingSystem:
                 )
             return
 
-        # [MW0601 452차 / QDQ Phase 1] 손으로 조립하지 않는다 — 행의 모든 열을
-        # 그대로 승계해야 재저장이 멱등이 된다. 종전 방식은 buy_vol/sell_vol을 0으로
-        # 박고 bid1/ask1/oi는 키를 빠뜨려, INSERT OR REPLACE가 **원본을 파괴**했다
-        # (실측 55봉). 상세는 `_bar_from_raw_candle_row()` 주석 참조.
-        bar = _bar_from_raw_candle_row(row)
-        bar["ts"] = ts                    # 위에서 이미 파싱한 datetime을 신뢰
-        self._last_recovery_ts = ts_str   # 이 ts를 처리 완료로 기록
-        log_manager.system(f"[복구 시도] {ts_str} 분봉 강제 재처리...")
-        try:
-            self.run_minute_pipeline(bar)
-            log_manager.system("[복구 완료] 파이프라인 재실행 성공 — 정상 감시 재개")
-        except Exception as e:
-            log_manager.system(f"[복구 실패] 파이프라인 예외: {e}", "WARNING")
+        # [MW0601 453차 D1] 종전에는 여기서 run_minute_pipeline(bar)를 재실행했다.
+        # 그 재실행이 격자 밀림·중복 행·묵은 진입·시계 되감기의 근원이었다 —
+        # 유지보수 패스(위에서 이미 수행)로 대체하고, 여기서는 기록만 남긴다.
+        # `age_s`는 위 age 체크에서 계산된 값(600s 이내 확정)이다.
+        self._last_recovery_ts = ts_str   # 이 ts를 점검 완료로 기록 (스킵 분기용)
+        log_manager.system(
+            f"[유지보수 패스] {ts_str} (age={age_s}s) — 파이프라인 재실행 없음 "
+            "(453차 D1: 이중 처리·격자 밀림 차단). 포지션 안전 점검만 수행. "
+            "분봉 재개 시 자동 정상화, 미재개 시 워치독이 240/300s에 ExchangeCB 판정"
+        )
 
     # [SERVICE-BOUNDARY 4/4] SessionRecoveryService
     # 책임: 재시작 세션 번호 증가, 당일 거래/패널/통계 복원
@@ -11613,6 +11646,14 @@ class TradingSystem:
         self._heartbeat_count += 1
         if self._heartbeat_count % 10 == 0:
             self._log_waiting_status(now)
+
+        # [MW0601 453차 D2] 시간 청산 피드 독립 안전망 — 분봉·틱이 전부 죽어도
+        # 이 타이머는 돌므로, 15:11 이후 미청산 포지션을 브로커 직접 청산한다
+        # (절대원칙 §1 오버나이트 금지의 마지막 방어선. 상세는 함수 docstring).
+        try:
+            _ts_scheduler_force_exit_net(self, now)
+        except Exception:
+            logger.exception("[SchedForceExit] 안전망 예외 — 30초 후 재시도")
 
         # [A] 08:45 얼리버드 warmup — scaler age > EARLY_WARMUP_MIN_AGE_HOURS 시 선행 갱신
         # 커버: 전날 P8 실패 / 휴장일 / 중간 멈춤 / 주말 등 원인 무관 모든 노후화 케이스
@@ -13688,6 +13729,133 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
         )
         _ts_broker_direct_force_exit(self, _force_price, "EXIT잔여 반대포지션 긴급청산")
     return True
+
+
+def _ts_run_maintenance_pass(self, row) -> None:
+    """[MW0601 453차 D1] 피드 스톨 중 포지션 안전 유지 — 파이프라인 재실행을 대체한다.
+
+    복구가 `run_minute_pipeline(마지막 봉)`을 통째로 다시 돌리던 종전 구조는
+    (완주 42회 실측):
+      ① BarAggregator에 ts 가드가 없어 N분봉 격자를 회당 1분씩 **영구로** 밀었고
+         (08-04 완주 7회 → 30m 봉 경계 최대 7분 어긋남)
+      ② predictions/ensemble에 중복 행을 만들었고 (UNIQUE 없음 + plain INSERT)
+      ③ 90s+ 묵은 데이터로 STEP 7 실주문이 구조적으로 가능했고
+      ④ 완주가 워치독·ExchangeCB 시계 2개를 되감아 감지를 ~90s 늦췄다.
+    재실행의 유일한 존재 가치는 STEP 8(청산 감시) 유지였다 — **그것만 남긴다.**
+    (근거: docs/미륵이고도화3/복구봉_이중처리_딥다이브_및_설계제안_2026-08-09.md)
+
+    하는 일:
+      포지션·pending·브로커 잔량 캐시 중 하나라도 있으면 STEP 8을 1회 평가한다.
+      컨텍스트는 `_maint_ctx`(마지막 완주분 features/decision — 기동 직후 스톨이면
+      빈 dict, atr 기본 0.5로 동작), 가격은 `_last_pipeline_price` 우선(봉만 죽고
+      틱이 살아 있으면 DB 종가보다 신선) → row 종가 폴백.
+      STEP 8은 최상단 pending 가드 + 동일 입력 멱등이라 반복 호출이 안전하다.
+    안 하는 일:
+      STEP 1~7·9 전부, DB 쓰기 전부, `notify_pipeline_ran()`,
+      `_last_real_pipeline_dt` 갱신 — 시계를 건드리지 않아야 ExchangeCB
+      에스컬레이션(240/300s)이 설계대로 진행된다 (228차 취지의 완성).
+    """
+    ctx = getattr(self, "_maint_ctx", None)
+    feats = (ctx[0] if ctx else None) or {}
+    decision = (ctx[1] if ctx else None) or {}
+    last_done_ts = (ctx[2] if ctx else "") or ""
+
+    ts_str = str(row["ts"])
+    # 시나리오 B 계측 — 마지막 완주분보다 새 봉이 DB에 있다 = 원 실행이 STEP 4
+    # 이후 중도 사망(봉 저장은 됐는데 완주 기록이 없음). 발생 빈도 파악용 1줄
+    # (설계제안서 §7 — 이 로그가 쌓이면 시나리오 B의 실빈도를 무료로 얻는다).
+    if (last_done_ts and ts_str > last_done_ts
+            and ts_str != getattr(self, "_maint_scenario_b_ts", "")):
+        self._maint_scenario_b_ts = ts_str
+        log_manager.system(
+            f"[유지보수 패스] 원 실행 미완주 분 감지(scenario B): bar={ts_str} > "
+            f"last_done={last_done_ts} — 그 분의 예측·호라이즌 저장은 생략된다(의도됨)",
+            "WARNING",
+        )
+
+    _pos_open = self.position.status != "FLAT"
+    _pending = self._has_pending_order()
+    _broker_cached = int(getattr(self, "_integrity_broker_qty", 0) or 0)
+    if not (_pos_open or _pending or _broker_cached > 0):
+        log_manager.system(
+            "[유지보수 패스] 포지션·pending·브로커 잔량 없음 — 청산 점검 불필요", "INFO"
+        )
+        return
+
+    bar = _bar_from_raw_candle_row(row)
+    price = (float(getattr(self, "_last_pipeline_price", 0.0) or 0.0)
+             or float(bar.get("close", 0.0) or 0.0))
+    if price <= 0:
+        log_manager.system("[유지보수 패스] 가격 힌트 없음 — 청산 점검 스킵", "WARNING")
+        return
+    log_manager.system(
+        f"[유지보수 패스] 청산 감시 평가 — price={price:.2f} "
+        f"status={self.position.status} pending={_pending} "
+        f"broker_cached={_broker_cached}ct (재실행·저장·시계리셋 없음)",
+        "INFO",
+    )
+    self._check_exit_triggers(price, feats, decision, bar)
+
+
+def _ts_scheduler_force_exit_net(self, now: datetime.datetime = None) -> bool:
+    """[MW0601 453차 D2] 시간 청산 피드 독립 안전망 — `_scheduler_tick`(30s)에서 호출.
+
+    왜 필요한가: 15:10 강제청산·15:18 FINAL_CLOSE는 전부 STEP 8(분봉 구동) 안에만
+    있었다. 완전 피드 스톨이 15:10을 관통하면 — 분봉 없음(STEP 8 죽음), 틱 없음
+    (틱 하드스톱 죽음), 워치독·복구는 15:10 이후 `is_force_exit_time` 가드로 정지,
+    daily_close(15:40)는 청산 로직 없음 — **포지션을 닫을 주체가 아무도 없어**
+    절대원칙 §1(오버나이트 금지)이 뚫린다. 이 안전망은 피드와 무관하게 도는
+    30s QTimer에서 실행되므로 그 구멍을 막는다.
+    (근거: docs/미륵이고도화3/복구봉_이중처리_딥다이브_및_설계제안_2026-08-09.md §4)
+
+    설계:
+      발화  15:11:00부터 — 정규 STEP 8이 15:10 분봉 마감에서 먼저 처리할 60s 유예.
+            피드가 정상인 날은 이 함수가 영원히 no-op다.
+      상한  is_market_open() — 일반일 15:35 / 만기일 15:20 자동 반영. 마감 후엔
+            주문 자체가 불가하므로 시도하지 않는다.
+      조건  내부 포지션 보유 or 브로커 잔량 캐시>0 — 후자는 15:18 FINAL_CLOSE의
+            유령 잔량 케이스와 동일 기준.
+      차단  pending 주문 존재 시 스킵 — Chejan(체결통보)은 시세 구독과 별개
+            연결이라 스톨 중에도 도착한다. 30s 후 자연 재확인.
+      수단  `_ts_broker_direct_force_exit` 재사용 — 브로커 잔고를 직접 조회해
+            시장가 청산. 내부 상태를 불신하는 함수라 스톨 상황에 정확히 맞고,
+            신규 주문 코드가 0줄이다.
+      재시도 30s 틱 리듬 그대로 (성공하면 pending 등록 → 다음 틱은 pending 스킵,
+            체결되면 FLAT → 조건 불충족으로 자연 소멸).
+
+    Returns: 청산 주문을 전송했으면 True.
+    """
+    now = now or datetime.datetime.now()
+    if not is_trading_day(now) or not is_market_open(now):
+        return False
+    if now.time() < datetime.time(15, 11):
+        return False
+
+    _pos_open = self.position.status != "FLAT"
+    _broker_cached = int(getattr(self, "_integrity_broker_qty", 0) or 0)
+    if not _pos_open and _broker_cached <= 0:
+        return False
+    if self._has_pending_order():
+        log_manager.system(
+            "[SchedForceExit] 15:10 경과 + 미청산이나 pending 주문 대기 중 — 30초 후 재확인",
+            "WARNING",
+        )
+        return False
+
+    self._sched_force_exit_attempts = getattr(self, "_sched_force_exit_attempts", 0) + 1
+    _n = self._sched_force_exit_attempts
+    price = (float(getattr(self, "_last_pipeline_price", 0.0) or 0.0)
+             or float(getattr(self.position, "entry_price", 0.0) or 0.0))
+    if _n == 1 or _n % 5 == 0:
+        log_manager.system(
+            f"[SchedForceExit] 15:10 경과에도 미청산 — 피드 독립 안전망 발동 "
+            f"(시도 {_n}회, status={self.position.status} engine={self.position.quantity}ct "
+            f"broker_cached={_broker_cached}ct price_hint={price:.2f})",
+            "ERROR",
+        )
+    if _n == 1:
+        notify("🚨 미륵이 시간청산 안전망 발동 — 파이프라인 미경유, 브로커 직접 청산 시도")
+    return _ts_broker_direct_force_exit(self, price, "15:10 스케줄러 안전망")
 
 
 def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산") -> bool:
