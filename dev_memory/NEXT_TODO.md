@@ -8,6 +8,29 @@
 
 ---
 
+### 455차 — 다중 호라이즌 피처 평가 P1~P6 후속 확인 (MW0601, 2026-08-10 배포)
+
+> 상위: `docs/Spec for feature/Muti Hz feature eval/0809_다중호라이즌_피처평가_구현계획_MW0601.md`
+> 배경: `DECISION_LOG.md` 2026-08-10(455차)
+
+- [ ] **다음 금요일 EOD 체인(첫 캠페인 실행일)** — ① `[검증 캠페인]` 요약에
+      "호라이즌 conf-층화 검정=OK" 확인 ② `data/horizon_conf_stratified_latest.json`
+      날짜 갱신 확인 ③ `featureset_health_report_*.md`의 L4 칸이 "⚠ 미배선"에서
+      실데이터로 바뀌었는지 확인 (07-30 실행계획 1단계 완료 조건 6 — toxicity_block_shadow
+      3개월 0건 방치 사고 재발 방지).
+- [ ] **L2 판정 비용값 주간회의 결정** — 07-30·08-02 계획 문서는 0.133pt(일반선물 틱
+      구 가정)를 사전등록 문구로 쓰고 있고, 캠페인 정본 산식은 0.0716pt(미니 틱).
+      `horizon_signal_tradability.py`는 그때까지 둘 다 출력(정본 기본 + legacy 병기).
+      결정 시 두 계획 문서·`FEATURE_SET_DECISIONS` 규약에 반영.
+- [ ] **Phase C(월간 제안 리포트) 구현 시 편입** — N1 비용문턱 표(advisory 열),
+      N2 감쇠 카탈로그 섹션(월간 트리거 공유), N3 하한선(ADD 자격 규칙), N4 방향뒤집힘
+      플래그. Phase C는 기존 일정(D-day 후, 첫 리포트 09-04) 유지.
+- [ ] (관찰) L4 고conf 표본 희소 — 20일에 11~25건(311차 5m 106건/4주 대비 급감).
+      수 주간 INSUFFICIENT가 정상이며 사전등록값(100)은 유지. conf 압축 체제([39]·[45])가
+      풀리면 자연 해소되는지 관찰.
+- [x] ~~N5 bounce 1회성 검증~~ **[DONE 2026-08-10]** 40일 실측 — bounce 성분 최대
+      ±0.005(미미), mid 커버리지 99.6%. 추가 조치 불요, DECISION_LOG 455차 기록.
+
 ### 454차 — ATB 도입 Phase A~C 후속 확인 (MW0601, 2026-08-09 배포)
 
 > 상위: `docs/Spec for feature/ML Model Labeling/0809_ATB_구현계획_MW0601.md`

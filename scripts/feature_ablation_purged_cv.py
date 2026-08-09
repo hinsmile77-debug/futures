@@ -81,11 +81,24 @@ def purge_train_tail(train_idx, test_idx, h_min):
     return keep
 
 
+def _spearman_sign(x, margin):
+    """[455차 N4] Spearman corr(피처, 모델 margin)의 부호 — numpy 전용(scipy 회피)."""
+    from scripts.core_feature_discovery import rankdata, corr
+    ok = np.isfinite(x) & np.isfinite(margin)
+    if ok.sum() < 50 or np.unique(x[ok]).size < 3:
+        return 0
+    r = corr(rankdata(x[ok]), rankdata(margin[ok]))
+    if not np.isfinite(r) or abs(r) < 0.01:  # 사실상 무상관 — 부호 판정 보류
+        return 0
+    return 1 if r > 0 else -1
+
+
 def eval_feature_set(names, X_full, master_cols, y, h_min):
     names = [n for n in names if n in master_cols]
     col_idx = [master_cols.index(n) for n in names]
     tscv = TimeSeriesSplit(n_splits=3)
     dir_accs = []
+    fold_signs = {n: [] for n in names}  # [455차 N4] 폴드별 방향 부호
     for train_idx, test_idx in tscv.split(X_full):
         train_idx_p = purge_train_tail(train_idx, test_idx, h_min)
         if len(train_idx_p) < 200 or len(np.unique(y[train_idx_p])) < 2:
@@ -99,9 +112,23 @@ def eval_feature_set(names, X_full, master_cols, y, h_min):
         pred = model.predict(X_val)
         nonflat = y_val != DIRECTION_FLAT
         dir_accs.append(float((pred[nonflat] == y_val[nonflat]).mean()) if nonflat.sum() > 0 else None)
+        # [MW0601 455차 / N4] 부호 일관성 — corr(피처, P(UP)-P(DOWN)) 부호를 폴드별 기록.
+        # 검토보고 원안은 SHAP이나, shap×HistGBM 힙 손상 선례(332차)로 margin 상관 대체.
+        # 판정 효력 없음 — "중요하지만 방향을 모르는 피처"의 승격 제안 차단 표시용.
+        try:
+            classes = list(model.classes_)
+            if 1 in classes and -1 in classes:
+                proba = model.predict_proba(X_val)
+                margin = proba[:, classes.index(1)] - proba[:, classes.index(-1)]
+                for k, n in enumerate(names):
+                    fold_signs[n].append(_spearman_sign(X_val[:, k], margin))
+        except Exception:
+            pass  # 부가 계측 실패가 본 분석을 막으면 안 됨
     valid = [d for d in dir_accs if d is not None]
     mean_acc = float(np.mean(valid)) if valid else None
-    return mean_acc, dir_accs
+    flips = [n for n, s in fold_signs.items()
+             if len([x for x in s if x != 0]) >= 2 and 1 in s and -1 in s]
+    return mean_acc, dir_accs, flips
 
 
 def run(hz, h_min, feat, close_map, master_cols, variants):
@@ -119,9 +146,10 @@ def run(hz, h_min, feat, close_map, master_cols, variants):
     print(f"호라이즌 {hz} — 유효표본 {len(ts_all)}")
     baseline_acc = None
     for tag, names in variants:
-        mean_acc, per_fold = eval_feature_set(names, X_full, master_cols, y, h_min)
+        mean_acc, per_fold, flips = eval_feature_set(names, X_full, master_cols, y, h_min)
         delta = "" if baseline_acc is None else f"  (Δ={mean_acc - baseline_acc:+.4f}, {(mean_acc - baseline_acc)*100:+.2f}%p)"
-        print(f"  [{tag}] n_feat={len(names)} dir_acc={mean_acc:.4f} fold={['%.3f'%d if d else 'NA' for d in per_fold]}{delta}")
+        flip_s = f"  ⚠방향뒤집힘[N4]: {','.join(flips)}" if flips else ""
+        print(f"  [{tag}] n_feat={len(names)} dir_acc={mean_acc:.4f} fold={['%.3f'%d if d else 'NA' for d in per_fold]}{delta}{flip_s}")
         if tag.startswith("BASE"):
             baseline_acc = mean_acc
     print()
