@@ -1487,6 +1487,14 @@ class CybosAPI:
         ("본 객체에서는 지원하지 않는 함수입니다") — 8111S는 실시간 구독 전용으로 추정,
         조회는 8111(비실시간)만 사용한다. CpSvr8119/CpSvrNew8119는 종목별(입력 없인 전종목
         순회) TR로 이 용도(시장 전체 요약)에 맞지 않아 후보에서 제외했다.
+
+        ⚠ **이 TR은 투자자별(개인·기관·외인) 분해를 제공하지 않는다** — 위 레이아웃 전체가
+        차익/비차익 × 위탁/자기 축이다. 그래서 반환 `nets`는 **항상 빈 dict**다.
+        [MW0601 451차 정정] 이전 구현은 `nets = {"foreign": arb + nonarb}`로 전체
+        프로그램 순매수를 "외국인"으로 오라벨했고, 그 폴백이 소비 계층에서
+        `program_individual/institution_net_krw`를 상수 0으로 만들어 2개월간 방치됐다.
+        투자자별 프로그램 수급이 필요하면 **다른 TR을 먼저 실측 확인**할 것
+        (`dev_memory/NEXT_TODO.md` 451차 — 장중 프로브 항목).
         """
         ARB_NET_AMOUNT_IDX = 19       # 차익순매수체결금액 (총, KRW)
         NONARB_NET_AMOUNT_IDX = 37    # 비차익순매수체결금액 (총, KRW)
@@ -1534,8 +1542,13 @@ class CybosAPI:
             "supported": True,
             "source": "Dscbo1.CpSvr8111",
             "reason": "verified field mapping (cybosplus docs, 2026-07-05)",
-            "nets": {"foreign": arb_net + nonarb_net},
-            "raw": {"arb_net": arb_net, "nonarb_net": nonarb_net},
+            # 투자자별 분해 없음 — 원천이 주지 않는 키를 만들어내지 않는다(451차).
+            "nets": {},
+            "raw": {
+                "arb_net": arb_net,
+                "nonarb_net": nonarb_net,
+                "total_net": arb_net + nonarb_net,
+            },
         }
 
     def _ensure_message_pump(self) -> None:

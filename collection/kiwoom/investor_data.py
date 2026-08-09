@@ -229,6 +229,13 @@ class InvestorData:
 
         실제 행 구조(투자자별 vs 시간별)는 TR-DISCOVER 로그로 확인.
         필드 후보: 투자자별순매수금액 → 순매수금액 → 순매수 순으로 시도.
+
+        ⚠ [MW0601 451차] 이 모듈은 **현재 브로커가 아니다**(2026-05-11 Cybos 전환).
+        되살릴 일이 생기면 아래 `.get(key, 0)` 스키마 폴백부터 걷어낼 것 — Cybos 쪽
+        같은 패턴이 `program_individual/institution_net_krw`를 상수 0으로 emit하면서
+        `supported=1`을 함께 보고해 2개월간 방치된 사고의 직접 원인이었다. 위
+        "행이 투자자별 순서라고 **가정**"이라는 미검증 전제도 그대로 남아 있다.
+        원칙과 감시 도구: `collection/provenance.py`.
         """
         _FIELD_CANDIDATES = ["투자자별순매수금액", "순매수금액", "순매수"]
 
