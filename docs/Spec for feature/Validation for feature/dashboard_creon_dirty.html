@@ -1,0 +1,280 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KOSPI200 파생 자동매매 콘솔 · 데이터 무결성</title><style>
+:root{color-scheme:light;--surface-0:#f6f5f2;--surface-1:#fcfcfb;--surface-2:#efeeea;
+--border:#e3e2dd;--text-primary:#0b0b0b;--text-secondary:#52514e;--text-muted:#83817a;
+--good:#0ca30c;--warning:#fab219;--serious:#ec835a;--critical:#d03b3b;--neutral:#a9a79e;}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--surface-0:#111110;
+--surface-1:#1a1a19;--surface-2:#232321;--border:#33332f;--text-primary:#fff;
+--text-secondary:#c3c2b7;--text-muted:#8f8e85;--neutral:#6f6e67;}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface-0);color:var(--text-primary);
+font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans KR",sans-serif}
+.app{max-width:1180px;margin:0 auto;padding:20px 18px 48px}
+.topbar{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+flex-wrap:wrap;margin-bottom:14px}
+.topbar h1{font-size:16px;margin:0;font-weight:650}
+.topbar .meta{font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+
+/* ---------- 탭 ---------- */
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:20px;
+overflow-x:auto}
+.tab{appearance:none;background:none;border:0;border-bottom:2px solid transparent;
+padding:10px 16px;font:inherit;font-weight:600;color:var(--text-muted);cursor:pointer;
+white-space:nowrap;display:flex;align-items:center;gap:7px}
+.tab:hover{color:var(--text-secondary)}
+.tab[aria-selected="true"]{color:var(--text-primary);border-bottom-color:var(--text-primary)}
+.tab .dot{font-size:11px;line-height:1}
+.panel{display:none}
+.panel.active{display:block}
+
+/* ---------- 히어로 판정 ---------- */
+.hero{border:1px solid var(--border);border-radius:14px;background:var(--surface-1);
+padding:22px 24px;margin-bottom:16px;display:flex;gap:20px;align-items:flex-start;
+flex-wrap:wrap;position:relative;overflow:hidden}
+.hero::before{content:"";position:absolute;left:0;top:0;bottom:0;width:6px;
+background:var(--hero-color)}
+.hero .mark{font-size:34px;line-height:1;color:var(--hero-color);margin-top:2px}
+.hero .body{flex:1 1 320px;min-width:0}
+.hero .verdict{font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.15;
+color:var(--hero-color)}
+.hero .why{margin-top:6px;font-size:14px;color:var(--text-secondary)}
+.hero .why b{color:var(--text-primary)}
+.hero .stamp{font-size:12px;color:var(--text-muted);margin-top:8px;
+font-variant-numeric:tabular-nums}
+.hero .actions{flex:0 0 auto;font-size:12px;color:var(--text-secondary);
+background:var(--surface-2);border-radius:10px;padding:12px 14px;max-width:340px}
+.hero .actions b{display:block;color:var(--text-primary);margin-bottom:4px;font-size:12px}
+
+/* ---------- 파이프라인 칩 ---------- */
+.stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;
+margin-bottom:18px}
+.stage{border:1px solid var(--border);border-radius:12px;background:var(--surface-1);
+padding:12px 14px;position:relative}
+.stage .top{display:flex;align-items:center;gap:7px;font-weight:650;font-size:14px}
+.stage .top .ic{color:var(--st);font-size:13px}
+.stage .sub{font-size:11px;color:var(--text-muted);margin-top:3px}
+.stage .cnt{font-size:11px;color:var(--text-secondary);margin-top:7px;
+font-variant-numeric:tabular-nums}
+.stage .bar{height:3px;border-radius:2px;background:var(--st);margin-top:9px;opacity:.85}
+.arrow{display:none}
+
+/* ---------- 세션 타임라인 ---------- */
+.card{border:1px solid var(--border);border-radius:12px;background:var(--surface-1);
+padding:14px 16px;margin-bottom:16px}
+.card h2{font-size:13px;margin:0 0 2px;font-weight:650}
+.card .hint{font-size:11px;color:var(--text-muted);margin-bottom:12px}
+.tl{display:flex;align-items:flex-end;gap:1px;height:46px;padding:0 1px}
+.tl .cell{flex:1 1 0;min-width:1px;border-radius:1.5px;background:var(--c);
+transition:opacity .1s}
+.tl .cell:hover{opacity:.6;outline:1px solid var(--text-primary)}
+.tl .cell.miss{background:transparent;border:1.5px dashed var(--critical);
+height:100%!important;min-width:4px;flex-grow:2}
+.tl .cell.hit{min-width:4px;flex-grow:2}
+.tl-axis{display:flex;justify-content:space-between;font-size:10px;
+color:var(--text-muted);margin-top:6px;font-variant-numeric:tabular-nums}
+.tl-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;
+color:var(--text-secondary);margin-top:10px}
+.tl-legend span{display:inline-flex;align-items:center;gap:5px}
+.tl-legend i{width:9px;border-radius:1.5px;display:inline-block}
+
+/* ---------- KPI 타일 ---------- */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px;
+margin-bottom:16px}
+.kpi{border:1px solid var(--border);border-radius:12px;background:var(--surface-1);
+padding:12px 14px}
+.kpi .k{font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:5px}
+.kpi .k .ic{color:var(--st)}
+.kpi .v{font-size:23px;font-weight:660;letter-spacing:-.02em;margin-top:3px;
+font-variant-numeric:tabular-nums}
+.kpi .t{font-size:11px;color:var(--text-muted);margin-top:2px;font-variant-numeric:tabular-nums}
+
+/* ---------- 상세 ---------- */
+details.more{border:1px solid var(--border);border-radius:12px;background:var(--surface-1);
+padding:0 16px}
+details.more>summary{cursor:pointer;padding:13px 0;font-size:13px;font-weight:650;
+list-style:none;display:flex;align-items:center;gap:8px}
+details.more>summary::-webkit-details-marker{display:none}
+details.more>summary::before{content:"▸";color:var(--text-muted);font-size:11px}
+details.more[open]>summary::before{content:"▾"}
+table{width:100%;border-collapse:collapse;margin-bottom:14px}
+th,td{text-align:left;padding:8px 10px;border-top:1px solid var(--border);
+vertical-align:top;font-size:13px}
+th{font-size:11px;color:var(--text-muted);font-weight:600;border-top:0}
+td.mono,th.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+white-space:nowrap}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:650;
+white-space:nowrap;color:var(--st)}
+.fix{margin-top:5px;font-size:11.5px;color:var(--text-secondary);
+border-left:3px solid var(--serious);padding-left:8px}
+pre{margin:5px 0 0;padding:7px 9px;background:var(--surface-2);border-radius:6px;
+font-size:10.5px;overflow-x:auto;color:var(--text-secondary)}
+.ph{border:1px dashed var(--border);border-radius:12px;padding:40px;text-align:center;
+color:var(--text-muted);font-size:13px}
+</style></head><body>
+<div class="app">
+  <div class="topbar"><h1>KOSPI200 파생 자동매매 콘솔</h1>
+    <div class="meta">대신 CYBOS Plus / CREON Plus · 렌더 2026-08-09 06:03:59 UTC</div></div>
+  <div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="false" data-panel="p0">포지션</button><button class="tab" role="tab" aria-selected="false" data-panel="p1">손익</button><button class="tab" role="tab" aria-selected="false" data-panel="p2">체결로그</button><button class="tab" role="tab" aria-selected="true" data-panel="p3"><span class="dot" style="color:var(--critical)">■</span>데이터 무결성</button></div>
+  <section class="panel" id="p0" role="tabpanel"><div class="ph">포지션 패널 — 기존 대시보드 내용이 들어갑니다</div></section><section class="panel" id="p1" role="tabpanel"><div class="ph">손익 패널 — 기존 대시보드 내용이 들어갑니다</div></section><section class="panel" id="p2" role="tabpanel"><div class="ph">체결로그 패널 — 기존 대시보드 내용이 들어갑니다</div></section><section class="panel active" id="p3" role="tabpanel">
+<div class="hero" style="--hero-color:var(--critical)">
+  <div class="mark">■</div>
+  <div class="body">
+    <div class="verdict">매매 차단</div>
+    <div class="why"><b>CREON.SUBSCRIBE_SLOTS</b> — 구독 392/400 슬롯 (98%) · 구독 요청했으나 수신 없는 종목 4개 → 슬롯 부족 또는 등록 실패<br><b>CREON.CVD_ANCHOR</b> — 봉단위 CVD 최대 괴리 45.30%, 이탈 3/404봉 · 장 마감 누적 오프셋 +84계약(0.090%) → 체결구분 분류 로직 또는 이벤트 유실 점검<br><b>MATH.NORM_BOUND</b> — 최대 범위이탈 0.00%, 최대 클리핑 포화 23.08%, 문제 피처 1/2개<br><span style='color:var(--text-muted)'>외 1건</span></div>
+    <div class="stamp">최종 점검 2026-08-09 06:03:59 UTC
+      · run creon-dirty · 주기 장중+EOD 통합</div>
+  </div>
+  <div class="actions"><b>다음 조치</b>① 400슬롯 내로 구독 종목 재설계(ATM±N 만기 1개 우선) ② 구독 성공 여부를 반드시 확인 후 등록부에 기록</div>
+</div>
+<div class="stages"><div class="stage" style="--st:var(--critical)">
+  <div class="top"><span class="ic">■</span>수신
+    <span style="font-weight:400;color:var(--text-muted);font-size:12px">
+    실패</span></div>
+  <div class="sub">CREON·FEED</div>
+  <div class="cnt">이상 7 / 점검 9 · CREON.SUBSCRIBE_SLOTS</div>
+  <div class="bar"></div>
+</div><div class="stage" style="--st:var(--good)">
+  <div class="top"><span class="ic">●</span>조립
+    <span style="font-weight:400;color:var(--text-muted);font-size:12px">
+    정상</span></div>
+  <div class="sub">분봉·호가</div>
+  <div class="cnt">이상 0 / 점검 6 · 6개 점검 통과</div>
+  <div class="bar"></div>
+</div><div class="stage" style="--st:var(--warning)">
+  <div class="top"><span class="ic">▲</span>대사
+    <span style="font-weight:400;color:var(--text-muted);font-size:12px">
+    경고</span></div>
+  <div class="sub">공식 TR 대조</div>
+  <div class="cnt">이상 1 / 점검 3 · RECON.OHLC_DIFF</div>
+  <div class="bar"></div>
+</div><div class="stage" style="--st:var(--critical)">
+  <div class="top"><span class="ic">■</span>피처
+    <span style="font-weight:400;color:var(--text-muted);font-size:12px">
+    실패</span></div>
+  <div class="sub">수학·누수</div>
+  <div class="cnt">이상 2 / 점검 9 · MATH.NORM_BOUND</div>
+  <div class="bar"></div>
+</div></div>
+<div class="card">
+  <h2>세션 타임라인 · 1칸 = 1분봉 <span style="font-weight:400;
+    color:var(--text-muted)">(KST 기준)</span></h2>
+  <div class="hint">점선 빈칸 = 미수신 · 반높이 = 경고 · 꽉찬 막대 = 정상
+    (색이 안 보여도 높이로 구분됩니다)</div>
+  <div class="tl"><div class="cell" style="--c:var(--good);height:100%" title="09:00 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:01 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:02 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:03 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:04 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:05 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:06 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:07 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:08 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:09 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:10 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:11 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:12 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:13 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:14 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:15 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:16 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:17 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:18 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:19 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:20 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:21 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:22 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:23 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:24 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:25 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:26 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:27 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:28 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:29 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:30 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:31 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:32 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:33 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:34 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:35 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:36 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:37 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:38 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:39 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:40 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:41 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:42 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:43 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:44 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:45 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:46 · 정상"></div><div class="cell hit" style="--c:var(--warning);height:52%" title="09:47 · 경고"></div><div class="cell hit" style="--c:var(--warning);height:52%" title="09:48 · 경고"></div><div class="cell hit" style="--c:var(--warning);height:52%" title="09:49 · 경고"></div><div class="cell" style="--c:var(--good);height:100%" title="09:50 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:51 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:52 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:53 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:54 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:55 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:56 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:57 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:58 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="09:59 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:00 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:01 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:02 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:03 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:04 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:05 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:06 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:07 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:08 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:09 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:10 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:11 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:12 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:13 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:14 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:15 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:16 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:17 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:18 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:19 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:20 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:21 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:22 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:23 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:24 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:25 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:26 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:27 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:28 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:29 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:30 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:31 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:32 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:33 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:34 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:35 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:36 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:37 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:38 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:39 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:40 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:41 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:42 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:43 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:44 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:45 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:46 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:47 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:48 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:49 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:50 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:51 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:52 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:53 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:54 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:55 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:56 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:57 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:58 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="10:59 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:00 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:01 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:02 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:03 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:04 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:05 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:06 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:07 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:08 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:09 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:10 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:11 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:12 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:13 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:14 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:15 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:16 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:17 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:18 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:19 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:20 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:21 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:22 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:23 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:24 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:25 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:26 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:27 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:28 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:29 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:30 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:31 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:32 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:33 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:34 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:35 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:36 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:37 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:38 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:39 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:40 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:41 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:42 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:43 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:44 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:45 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:46 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:47 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:48 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:49 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:50 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:51 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:52 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:53 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:54 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:55 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:56 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:57 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:58 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="11:59 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:00 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:01 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:02 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:03 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:04 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:05 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:06 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:07 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:08 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:09 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:10 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:11 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:12 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:13 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:14 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:15 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:16 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:17 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:18 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:19 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:20 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:21 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:22 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:23 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:24 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:25 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:26 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:27 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:28 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:29 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:30 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:31 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:32 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:33 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:34 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:35 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:36 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:37 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:38 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:39 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:40 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:41 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:42 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:43 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:44 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:45 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:46 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:47 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:48 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:49 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:50 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:51 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:52 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:53 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:54 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:55 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:56 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:57 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:58 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="12:59 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:00 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:01 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:02 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:03 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:04 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:05 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:06 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:07 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:08 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:09 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:10 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:11 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:12 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:13 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:14 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:15 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:16 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:17 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:18 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:19 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:20 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:21 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:22 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:23 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:24 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:25 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:26 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:27 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:28 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:29 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:30 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:31 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:32 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:33 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:34 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:35 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:36 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:37 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:38 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:39 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:40 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:41 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:42 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:43 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:44 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:45 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:46 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:47 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:48 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:49 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:50 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:51 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:52 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:53 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:54 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:55 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:56 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:57 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:58 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="13:59 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:00 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:01 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:02 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:03 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:04 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:05 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:06 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:07 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:08 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:09 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:10 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:11 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:12 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:13 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:14 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:15 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:16 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:17 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:18 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:19 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:20 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:21 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:22 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:23 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:24 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:25 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:26 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:27 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:28 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:29 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:30 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:31 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:32 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:33 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:34 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:35 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:36 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:37 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:38 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:39 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:40 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:41 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:42 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:43 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:44 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:45 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:46 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:47 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:48 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:49 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:50 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:51 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:52 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:53 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:54 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:55 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:56 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:57 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:58 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="14:59 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:00 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:01 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:02 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:03 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:04 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:05 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:06 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:07 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:08 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:09 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:10 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:11 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:12 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:13 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:14 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:15 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:16 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:17 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:18 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:19 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:20 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:21 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:22 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:23 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:24 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:25 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:26 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:27 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:28 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:29 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:30 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:31 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:32 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:33 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:34 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:35 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:36 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:37 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:38 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:39 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:40 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:41 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:42 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:43 · 정상"></div><div class="cell" style="--c:var(--good);height:100%" title="15:44 · 정상"></div></div>
+  <div class="tl-axis"><span>09:00</span><span>12:22</span><span>15:44</span></div>
+  <div class="tl-legend">
+    <span><i style="background:var(--good);height:14px"></i>정상 402분</span>
+    <span><i style="background:var(--warning);height:8px"></i>경고 3분</span>
+    <span><i style="border:1px dashed var(--critical);height:14px;width:9px"></i>미수신 0분</span>
+    <span style="color:var(--text-muted)">총 405분</span>
+  </div>
+</div>
+<div class="kpis"><div class="kpi" style="--st:var(--good)">
+  <div class="k"><span class="ic">●</span>봉 유실률</div>
+  <div class="v">0.00%</div>
+  <div class="t">기준 &lt; 0.20%</div>
+</div><div class="kpi" style="--st:var(--good)">
+  <div class="k"><span class="ic">●</span>거래량 대사 오차</div>
+  <div class="v">0.000%</div>
+  <div class="t">기준 &lt; 0.20%</div>
+</div><div class="kpi" style="--st:var(--critical)">
+  <div class="k"><span class="ic">■</span>CVD 앵커 괴리</div>
+  <div class="v">45.30%</div>
+  <div class="t">기준 &lt; 2.0%</div>
+</div><div class="kpi" style="--st:var(--critical)">
+  <div class="k"><span class="ic">■</span>구독 슬롯</div>
+  <div class="v">392/400</div>
+  <div class="t">경고 &gt; 340</div>
+</div><div class="kpi" style="--st:var(--warning)">
+  <div class="k"><span class="ic">▲</span>메모리 (32bit)</div>
+  <div class="v">1490MB</div>
+  <div class="t">한계 2048MB · 경고 1331MB</div>
+</div><div class="kpi" style="--st:var(--warning)">
+  <div class="k"><span class="ic">▲</span>이벤트 큐</div>
+  <div class="v">1830</div>
+  <div class="t">경고 &gt; 500 · 실패 &gt; 5000</div>
+</div></div>
+<details class="more">
+  <summary>점검 상세 · 정상 17 · 경고 6 · 실패 4 · 오류 0 · 대기 0</summary>
+  <table><thead><tr><th>상태</th><th class="mono">체크 ID</th>
+    <th class="mono">지표</th><th>내용</th></tr></thead>
+  <tbody><tr><td><span class="badge" style="--st:var(--critical)">■ 실패</span> 🔒</td><td class="mono">CREON.CVD_ANCHOR</td><td class="mono">0.453</td><td>봉단위 CVD 최대 괴리 45.30%, 이탈 3/404봉 · 장 마감 누적 오프셋 +84계약(0.090%) → 체결구분 분류 로직 또는 이벤트 유실 점검<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 봉단위 |Δ자체−Δ앵커|/Δ거래량 warn&gt;0.50%, fail&gt;2.00%</div><details><summary style='cursor:pointer;color:var(--text-muted);font-size:11px'>샘플</summary><pre>[
+ {
+  &quot;ts&quot;: &quot;2026-08-07 00:49:00+00:00&quot;,
+  &quot;symbol&quot;: &quot;101W09&quot;,
+  &quot;자체증분&quot;: &quot;65.0&quot;,
+  &quot;앵커증분&quot;: &quot;-17.0&quot;,
+  &quot;괴리율&quot;: &quot;0.453&quot;
+ },
+ {
+  &quot;ts&quot;: &quot;2026-08-07 00:47:00+00:00&quot;,
+  &quot;symbol&quot;: &quot;101W09&quot;,
+  &quot;자체증분&quot;: &quot;116.0&quot;,
+  &quot;앵커증분&quot;: &quot;96.0&quot;,
+  &quot;괴리율&quot;: &quot;0.1724&quot;
+ },
+ {
+  &quot;ts&quot;: &quot;2026-08-07 00:48:00+00:00&quot;,
+  &quot;symbol&quot;: &quot;101W09&quot;,
+  &quot;자체증분&quot;: &quot;74.0&quot;,
+  &quot;앵커증분&quot;: &quot;92.0&quot;,
+  &quot;괴리율&quot;: &quot;0.0616&quot;
+ }
+]</pre></details><div class="fix">① 체결구분(24) 분류 로직 점검 ② 누적체결매수/매도(23/22)로 CVD 재계산 후 덮어쓰기 ③ 괴리 구간 신호 차단</div></td></tr><tr><td><span class="badge" style="--st:var(--critical)">■ 실패</span> 🔒</td><td class="mono">CREON.SUBSCRIBE_SLOTS</td><td class="mono">0.98</td><td>구독 392/400 슬롯 (98%) · 구독 요청했으나 수신 없는 종목 4개 → 슬롯 부족 또는 등록 실패<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 소진율 warn&gt;85%, fail&gt;97% / 미수신 종목 0개</div><details><summary style='cursor:pointer;color:var(--text-muted);font-size:11px'>샘플</summary><pre>[
+ {
+  &quot;미수신종목&quot;: [
+   &quot;OPT36&quot;,
+   &quot;OPT37&quot;,
+   &quot;OPT38&quot;,
+   &quot;OPT39&quot;
+  ]
+ }
+]</pre></details><div class="fix">① 400슬롯 내로 구독 종목 재설계(ATM±N 만기 1개 우선) ② 구독 성공 여부를 반드시 확인 후 등록부에 기록</div></td></tr><tr><td><span class="badge" style="--st:var(--critical)">■ 실패</span> 🔒</td><td class="mono">MATH.NORM_BOUND</td><td class="mono">0.2308</td><td>최대 범위이탈 0.00%, 최대 클리핑 포화 23.08%, 문제 피처 1/2개<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 [-1.0,1.0] 이탈률 warn&gt;0.5%, fail&gt;2.0% / 포화율 warn&gt;2%, fail&gt;10% / [-3.0,3.0] 이탈 0건</div><details><summary style='cursor:pointer;color:var(--text-muted);font-size:11px'>샘플</summary><pre>[
+ {
+  &quot;feature&quot;: &quot;ret_z&quot;,
+  &quot;이탈률&quot;: 0.0,
+  &quot;포화율&quot;: 0.23077,
+  &quot;하드이탈&quot;: 0,
+  &quot;min&quot;: -1.0,
+  &quot;max&quot;: 1.0
+ }
+]</pre></details><div class="fix">① 클리핑에 가려진 포화인지 확인 ② 극단장 구간이면 로버스트 스케일러(median/IQR) 검토 ③ 포화 구간 신호 축소</div></td></tr><tr><td><span class="badge" style="--st:var(--critical)">■ 실패</span> 🔒</td><td class="mono">MATH.SCALER_PARAMS</td><td class="mono">1</td><td>스케일러 파라미터 불일치 1개 → 서빙 중 재적합(refit) 여부 확인<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 학습 시점 파라미터와 완전 일치</div><details><summary style='cursor:pointer;color:var(--text-muted);font-size:11px'>샘플</summary><pre>[
+ {
+  &quot;param&quot;: &quot;ret_1_std&quot;,
+  &quot;학습&quot;: 0.00052,
+  &quot;서빙&quot;: 0.00041
+ }
+]</pre></details><div class="fix">⛔ 서빙 중 재적합 의심. 학습 시점 스케일러를 파일에서 로드하도록 고정하고 백테스트 재검증</div></td></tr><tr><td><span class="badge" style="--st:var(--warning)">▲ 경고</span> 🔒</td><td class="mono">CREON.CONNECT</td><td class="mono">1</td><td>IsConnect=1, ServerType=1(cybosplus 서버), 세션 내 OnDisConnect 1회<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 IsConnect=1, ServerType=1, OnDisConnect 0회</div></td></tr><tr><td><span class="badge" style="--st:var(--warning)">▲ 경고</span> 🔒</td><td class="mono">CREON.HEARTBEAT</td><td class="mono">3</td><td>하트비트 결번 3회, 마지막 기록 20초 전<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 결번 warn&gt;1, fail&gt;3 / 최신성 180s</div></td></tr><tr><td><span class="badge" style="--st:var(--warning)">▲ 경고</span> 🔒</td><td class="mono">CREON.MEMORY</td><td class="mono">0.7275</td><td>RSS 1490MB / 한계 2048MB (73%), 증가율 +168MB/h → 누수 의심, 임계까지 약 0.9h (장 마감 전 재기동 검토)<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 사용률 warn&gt;65%, fail&gt;80% / 증가율 80MB/h 초과 시 경고</div></td></tr><tr><td><span class="badge" style="--st:var(--warning)">▲ 경고</span> 🔒</td><td class="mono">CREON.QUEUE_DEPTH</td><td class="mono">1830</td><td>큐 대기 1830건<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 warn&gt;500건, fail&gt;5000건</div></td></tr><tr><td><span class="badge" style="--st:var(--warning)">▲ 경고</span></td><td class="mono">CREON.REQUEST_QUOTA</td><td class="mono">0.8</td><td>시세 48/60건 (15초 창, 80%) · 주문 3/20건 (15%) · 재계산까지 8200ms<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 소진율 warn&gt;70%, fail&gt;90%</div></td></tr><tr><td><span class="badge" style="--st:var(--warning)">▲ 경고</span> 🔒</td><td class="mono">RECON.OHLC_DIFF</td><td class="mono">0.002469</td><td>항목별 불일치율 {&#x27;open&#x27;: 0.0, &#x27;high&#x27;: 0.002469, &#x27;low&#x27;: 0.002469, &#x27;close&#x27;: 0.0} · 종가는 일치하나 고/저가 불일치 → 봉 내부 틱 유실 패턴<div style='font-size:11px;color:var(--text-muted);margin-top:2px'>기준 항목별 불일치율 warn&gt;0.10%, fail&gt;0.50%</div><details><summary style='cursor:pointer;color:var(--text-muted);font-size:11px'>샘플</summary><pre>[
+ {
+  &quot;open&quot;: 0.0,
+  &quot;high&quot;: 0.002469,
+  &quot;low&quot;: 0.002469,
+  &quot;close&quot;: 0.0
+ },
+ {
+  &quot;ts&quot;: &quot;2026-08-07 00:48:00+00:00&quot;,
+  &quot;symbol&quot;: &quot;101W09&quot;,
+  &quot;high_mine&quot;: &quot;350.5&quot;,
+  &quot;high_off&quot;: &quot;350.55&quot;
+ },
+ {
+  &quot;ts&quot;: &quot;2026-08-07 00:49:00+00:00&quot;,
+  &quot;symbol&quot;: &quot;101W09&quot;,
+  &quot;low_mine&quot;: &quot;350.45000000000005&quot;,
+  &quot;low_off&quot;: &quot;350.40000000000003&quot;
+ }
+]</pre></details></td></tr></tbody></table>
+</details>
+</section>
+</div>
+<script>
+document.querySelectorAll('.tab').forEach(function(t){
+  t.addEventListener('click', function(){
+    document.querySelectorAll('.tab').forEach(function(x){x.setAttribute('aria-selected','false')});
+    document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active')});
+    t.setAttribute('aria-selected','true');
+    document.getElementById(t.dataset.panel).classList.add('active');
+  });
+});
+</script></body></html>

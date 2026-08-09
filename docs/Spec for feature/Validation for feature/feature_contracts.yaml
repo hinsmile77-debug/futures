@@ -1,0 +1,225 @@
+# =====================================================================
+# 피처 계약서 (Feature Contract)
+# ---------------------------------------------------------------------
+# 피처마다 점검 코드를 짜지 않는다. 성질을 선언하면 점검이 자동 생성된다.
+#
+# 7개 축:
+#   ① 치역      lo/hi (이론경계) · soft_lo/soft_hi (절대경계, 추정오차 허용)
+#   ② 불변식    invariants — 항상 참이어야 하는 식
+#   ③ 정의구간  denominator — 0에 가까우면 계산이 성립하지 않는 식
+#   ④ 인과성    lookback / allow_forward
+#   ⑤ 앵커      anchor — 외부 정답지 식 (있으면 가장 강력한 검증)
+#   ⑥ 위생      null_warn/null_fail · warmup · min_unique
+#   ⑦ 안정성    psi_warn/psi_fail · stationary
+#
+# 축을 많이 채울수록 그 피처는 강하게 보호된다.
+# CONTRACT.COVERAGE 가 '축이 빈약한 계약'과 '계약 없는 피처'를 잡아낸다.
+# =====================================================================
+
+features:
+
+  # ── 가격·수익률 계열 ────────────────────────────────────────────
+  ret_1:
+    desc: 1분 로그수익률
+    unit: log
+    soft_lo: -0.15          # 선물 1분에 15% = 사실상 불가능 (오분봉/스케일 오류)
+    soft_hi: 0.15
+    lo: -0.05
+    hi: 0.05
+    soft_warn_ratio: 0.002
+    denominator: "close.shift(1)"
+    lookback: 2
+    warmup: 1
+    null_warn: 0.005
+    null_fail: 0.02
+
+  vol_20:
+    desc: 20봉 실현변동성 (수익률 표준편차)
+    lo: 0.0                 # 표준편차는 음수가 될 수 없다 — 이론이 아니라 정의
+    soft_lo: 0.0
+    soft_hi: 0.5
+    invariants:
+      - "vol_20 >= 0"
+    lookback: 20
+    warmup: 20
+    null_warn: 0.06
+    null_fail: 0.12
+    min_unique: 10
+
+  rsi_14:
+    desc: 14봉 RSI
+    lo: 0.0
+    hi: 100.0
+    soft_lo: 0.0            # RSI는 정의상 절대 [0,100] — 추정오차 여지가 없다
+    soft_hi: 100.0
+    denominator: "loss_ma_14"   # 하락 평균이 0이면 분모 0 (강한 상승 구간)
+    lookback: 14
+    warmup: 14
+    null_warn: 0.05
+    null_fail: 0.10
+
+  vwap_dev:
+    desc: 20봉 VWAP 대비 종가 괴리율
+    lo: -0.05
+    hi: 0.05
+    soft_lo: -0.3
+    soft_hi: 0.3
+    denominator: "vwap_20"
+    lookback: 20
+    warmup: 20
+    null_warn: 0.06
+    null_fail: 0.12
+
+  # ── 체결 흐름 계열 (예시 ①: 불변식·앵커가 강한 피처) ───────────
+  cvd_1m:
+    desc: 1분봉 순매수 거래량 (Cumulative Volume Delta 증분)
+    unit: 계약
+    invariants:
+      - "abs(cvd_1m) <= volume"                       # 부등식 (약한 조건)
+      - "buy_volume + sell_volume == volume"          # 항등식 (강한 조건)
+      - "cvd_1m == buy_volume - sell_volume"
+      - "buy_volume >= 0"
+      - "sell_volume >= 0"
+    lookback: 1
+    null_warn: 0.0
+    null_fail: 0.0
+    stationary: true
+
+  cvd_cum:
+    desc: 세션 누적 CVD
+    unit: 계약
+    invariants:
+      - "abs(cvd_cum) <= cum_volume"
+    # 크레온 FutureCurOnly 가 누적체결매수(23)/매도(22)를 주므로 정답지가 존재한다.
+    # 증분 비교(anchor_diff)로 봐야 장 후반에 희석되지 않는다.
+    anchor: "cum_buy - cum_sell"
+    anchor_scale: "cum_volume"
+    anchor_diff: true
+    anchor_warn: 0.005
+    anchor_fail: 0.02
+    lookback: 1
+    null_warn: 0.0
+    null_fail: 0.0
+
+  obi:
+    desc: 최우선호가 불균형 (bid_qty - ask_qty)/(bid_qty + ask_qty)
+    lo: -1.0
+    hi: 1.0
+    soft_lo: -1.0           # 정의상 절대 경계
+    soft_hi: 1.0
+    invariants:
+      - "abs(obi) <= 1.0"
+    denominator: "bid1_qty + ask1_qty"
+    lookback: 1
+    null_warn: 0.01
+    null_fail: 0.05
+
+  spread_bp:
+    desc: 상대 스프레드 (bp)
+    lo: 0.0
+    hi: 100.0
+    soft_lo: 0.0            # 음수 스프레드 = crossed book = 데이터 오류
+    soft_hi: 3000.0
+    invariants:
+      - "spread_bp >= 0"
+    denominator: "(ask1 + bid1) / 2"
+    lookback: 1
+    null_warn: 0.005
+    null_fail: 0.02
+
+  # ── 프랙탈·통계 계열 (예시 ②: 치역·정의구간이 강한 피처) ────────
+  hurst_64:
+    desc: 64봉 Hurst 지수 (R/S 추정)
+    # 이론값 H는 (0,1). 그러나 R/S '추정량'은 짧은 윈도우 + 강한 추세에서
+    # 1을 넘기도 한다. 이론경계는 lo/hi(경고), 절대경계는 soft(실패)로 분리한다.
+    lo: 0.0
+    hi: 1.0
+    soft_lo: -0.1
+    soft_hi: 1.1
+    soft_warn_ratio: 0.01
+    denominator: "rolling_std_64"     # 평탄 구간이면 0 → 분모 0
+    lookback: 64
+    warmup: 64
+    null_warn: 0.02
+    null_fail: 0.08
+    min_unique: 20
+
+  # ── 파생 고유 계열 ─────────────────────────────────────────────
+  basis_ann:
+    desc: 연율화 베이시스 (선물/현물 - 1) / 잔존연수
+    lo: -0.20
+    hi: 0.20
+    soft_lo: -1.0
+    soft_hi: 1.0
+    denominator: "tau_years"
+    lookback: 1
+    null_warn: 0.01
+    null_fail: 0.05
+
+  iv_atm:
+    desc: ATM 내재변동성
+    lo: 0.03
+    hi: 1.5
+    soft_lo: 0.0            # IV는 음수가 될 수 없다
+    soft_hi: 5.0
+    invariants:
+      - "iv_atm > 0"
+    lookback: 1
+    null_warn: 0.02
+    null_fail: 0.08
+
+  oi_chg:
+    desc: 미결제약정 1일 변화율
+    lo: -0.5
+    hi: 0.5
+    soft_lo: -1.0           # OI가 전량 청산돼도 -100%가 하한
+    soft_hi: 5.0
+    denominator: "open_interest.shift(1)"
+    lookback: 2
+    warmup: 1
+    null_warn: 0.02
+    null_fail: 0.08
+
+  # ── 모델 입력(정규화) 계열 ─────────────────────────────────────
+  ret_z:
+    desc: 수익률 Z-score (3σ 스케일 후 클리핑)
+    lo: -1.0
+    hi: 1.0
+    soft_lo: -1.0           # 클리핑 후이므로 절대 경계 = 이론 경계
+    soft_hi: 1.0
+    invariants:
+      - "abs(ret_z) <= 1.0"
+    denominator: "ret_1_expanding_std"
+    warmup: 2               # ret_1(1행) + expanding std(2행) — CONTRACT.HYGIENE가 잡아준 값
+    lookback: 2
+    null_warn: 0.01
+    null_fail: 0.05
+    min_unique: 50          # 고유값이 적다 = 경계에 눌려 있다(클리핑 포화)
+
+  cvd_z:
+    desc: CVD 정규화 (봉 거래량 대비 비율)
+    lo: -1.0
+    hi: 1.0
+    soft_lo: -1.0
+    soft_hi: 1.0
+    invariants:
+      - "abs(cvd_z) <= 1.0"
+    denominator: "volume"
+    lookback: 1
+    null_warn: 0.01
+    null_fail: 0.05
+    min_unique: 50
+
+  # ── 타깃 ───────────────────────────────────────────────────────
+  fwd_ret:
+    desc: 5봉 선행 수익률 (학습 타깃)
+    allow_forward: true     # 타깃만 미래 참조가 허용된다
+    soft_lo: -0.3
+    soft_hi: 0.3
+    lo: -0.1
+    hi: 0.1
+    lookback: 0
+    null_warn: 0.02         # 마지막 5봉은 정의상 NaN
+    null_fail: 0.05
+    gating: false           # 타깃 결측은 서빙을 막지 않는다
+    stationary: true
