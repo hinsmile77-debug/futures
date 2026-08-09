@@ -305,6 +305,32 @@ class ChallengerDB(object):
             rows = conn.execute(sql, (challenger_id,)).fetchall()
         return [float(r["pnl_pt"]) for r in rows]
 
+    def get_daily_pnl_matrix(self):
+        # type: () -> Dict[str, Any]
+        """[MW0601 454차 / ATB-C3] 일자×챌린저 PnL 행렬 — PBO(CSCV) 입력용.
+
+        challenger_daily_metrics.total_pnl_pt를 (date 오름차순) × (challenger_id)
+        행렬로 피벗한다. 어떤 챌린저가 그 날 기록이 없으면 0.0(무거래 = 손익 0).
+
+        Returns: {"dates": [...], "challenger_ids": [...],
+                  "matrix": List[List[float]]  # (n_dates × n_challengers)}
+        """
+        sql = """
+        SELECT date, challenger_id, total_pnl_pt FROM challenger_daily_metrics
+        ORDER BY date
+        """
+        with self._conn() as conn:
+            rows = conn.execute(sql).fetchall()
+        dates = sorted(set(r["date"] for r in rows))
+        ids = sorted(set(r["challenger_id"] for r in rows))
+        pos_d = {d: i for i, d in enumerate(dates)}
+        pos_c = {c: j for j, c in enumerate(ids)}
+        matrix = [[0.0] * len(ids) for _ in dates]
+        for r in rows:
+            matrix[pos_d[r["date"]]][pos_c[r["challenger_id"]]] = \
+                float(r["total_pnl_pt"] or 0.0)
+        return {"dates": dates, "challenger_ids": ids, "matrix": matrix}
+
     def get_recent_closed_trades(self, challenger_id, limit=60):
         # type: (str, int) -> List[sqlite3.Row]
         """[260704 감사 P2] 최근 N건 종료된 가상거래(레짐 무관, entry_ts 내림차순 → 재정렬해 오름차순 반환).

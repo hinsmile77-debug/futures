@@ -138,6 +138,21 @@ def _path_conditioned_label(
 
     return DIRECTION_FLAT
 
+def _leak_overlap_count(train_idx, val_idx, h_min):
+    """[MW0601 454차 / ATB-A2] CV 경계 누출 자가진단 — 퍼징 후 0이어야 정상.
+
+    train 표본 i의 라벨은 미래 창 [i+1, i+h_min]을 보고 결정되므로, i + h_min이
+    val 시작 위치 이상이면 그 표본은 val 구간의 정답을 이미 본 것이다. 위치(행)
+    기반 경량판 — 스펙(docs/Spec for feature/ML Model Labeling) leakage_selftest의
+    시각 기반 검사와 달리 행수≈분수 가정을 쓴다(결측 분봉 시 과잉 방향으로만 어긋남).
+    진단 전용: 호출부는 경고 로그만 남기고 재학습을 절대 막지 않는다.
+    """
+    if h_min <= 0 or len(train_idx) == 0 or len(val_idx) == 0:
+        return 0
+    v0 = int(val_idx[0])
+    return int(np.sum(np.asarray(train_idx) + h_min >= v0))
+
+
 # ── sklearn GBM (HistGBM 불가 시 fallback) ───────────────────────
 # 정상 환경(_HIST_GBM_OK=True)에서는 사용 안 됨.
 GBM_PARAMS = {
@@ -663,8 +678,22 @@ class BatchRetrainer:
         """
         cv_accs = []
         val_idx_all = []
+        h_min = HORIZONS.get(horizon_key, 0)
         tscv = TimeSeriesSplit(n_splits=3)
         for train_idx, val_idx in tscv.split(X):
+            # [MW0601 454차 / ATB-A1a] 경계 퍼징 — train 꼬리 h_min행의 라벨은
+            # val 구간의 미래를 보고 만들어졌다(라벨 창 [i+1, i+h_min]).
+            # TimeSeriesSplit이라 셔플 누출은 없지만 이 경계 누출은 남는다.
+            # 뒤의 MAX_CV_FOLD_BARS 절단과 X_full[train_idx][-len(X_tr):] 미러는
+            # train_idx를 여기서 줄여도 그대로 정합 — 인덱스 기반이므로 무변경.
+            if 0 < h_min < len(train_idx):
+                train_idx = train_idx[:-h_min]
+            _leak = _leak_overlap_count(train_idx, val_idx, h_min)
+            if _leak:
+                logger.warning(
+                    "[LeakGuard] %s fold 퍼징 실패 — train 라벨 %d건이 val 미래와 겹침"
+                    " (판정 무영향, 즉시 조사 필요)", horizon_key, _leak,
+                )
             X_tr, X_val = X[train_idx], X[val_idx]
             y_tr, y_val = y[train_idx], y[val_idx]
 
@@ -975,14 +1004,20 @@ class BatchRetrainer:
         n = len(X)
         if H < min_hold:
             return None, None, 0, "홀드아웃 설정 과소 (%d < %d)" % (H, min_hold)
-        if n - H < min_train:
+        # [MW0601 454차 / ATB-A1c] 홀드아웃 경계 퍼징 — 도전자 학습을 홀드아웃
+        # 직전 h_min행 앞에서 끊는다. 그 h_min행의 라벨은 홀드아웃 구간의 미래를
+        # 보고 만들어졌으므로, 포함하면 도전자가 채점 구간의 정답 일부를 학습한다.
+        # 홀드아웃 자체([-H:])와 현행 모델 채점은 무변경 — 계측 정의만 정직해진다.
+        _purge = max(0, int(HORIZONS.get(horizon_key, 0)))
+        cut = H + _purge
+        if n - cut < min_train:
             return None, None, 0, ("홀드아웃 후 학습표본 부족 (%d-%d=%d < %d)"
-                                   % (n, H, n - H, min_train))
+                                   % (n, cut, n - cut, min_train))
         try:
             import pickle as _pk
             src = X_full if X_full is not None else X
-            tr_src, ho_src = src[:-H], src[-H:]
-            y_tr, y_ho = y[:-H], y[-H:]
+            tr_src, ho_src = src[:-cut], src[-H:]
+            y_tr, y_ho = y[:-cut], y[-H:]
 
             # 도전자 — 홀드아웃을 뺀 구간으로만 스케일러·모델을 새로 학습
             sc = StandardScaler()
@@ -1691,6 +1726,16 @@ class BatchRetrainer:
             tscv = TimeSeriesSplit(n_splits=3)
             cv_accs = []
             for train_idx, val_idx in tscv.split(X_hz):
+                # [MW0601 454차 / ATB-A1b] 경계 퍼징 — _run_cv_folds와 동일 사유.
+                # 라벨 정의·최종 모델 학습은 무변경(CV 계측만 정직해진다) —
+                # [1] TB 채널의 OOS 평가(모델 mtime 기준)와 무관.
+                if 0 < h_min < len(train_idx):
+                    train_idx = train_idx[:-h_min]
+                _leak = _leak_overlap_count(train_idx, val_idx, h_min)
+                if _leak:
+                    logger.warning(
+                        "[LeakGuard] ShadowTB %s fold 퍼징 실패 — %d건 겹침", hz, _leak,
+                    )
                 X_tr, X_val = X_hz[train_idx], X_hz[val_idx]
                 y_tr, y_val = y_hz[train_idx], y_hz[val_idx]
                 if len(np.unique(y_tr)) < 2:

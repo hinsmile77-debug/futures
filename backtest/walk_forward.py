@@ -26,6 +26,29 @@ TEST_WEEKS  = 1
 MIN_WEEKS   = 26
 
 
+def _dsr_advisory(oos_weekly_pnl, window_sharpes, n_trials):
+    """[MW0601 454차 / ATB-C2] Deflated Sharpe advisory — **판정(passed) 무영향**.
+
+    OOS 주간 PnL 시계열(PPY=52)로 "n_trials번 시도했음을 감안해도 샤프가 0보다
+    크다고 말할 수 있는 확률"을 계산한다. Phase 5 조건 ③(Sharpe≥1.5)에 DSR≥0.95를
+    정식 편입할지는 실측 누적 후 사용자 결정 사항 — 그때까지 결과에 병기만 한다.
+    n_trials는 호출자가 정직하게 센다(파라미터 탐색·재시도 포함, 기본 1).
+    """
+    try:
+        from learning.validation_stats import deflated_sharpe_ratio
+        st = [s for s in window_sharpes
+              if s is not None and np.isfinite(s)]
+        out = deflated_sharpe_ratio(
+            oos_weekly_pnl, n_trials=max(1, int(n_trials)),
+            periods_per_year=52,
+            sharpe_trials=st if len(st) > 1 else None,
+        )
+        out["n_trials"] = max(1, int(n_trials))
+        return out
+    except Exception as e:  # advisory — 어떤 경우에도 WFA 자체를 막지 않는다
+        return {"error": str(e)}
+
+
 class WalkForwardValidator:
     """
     Walk-Forward 검증기.
@@ -47,9 +70,13 @@ class WalkForwardValidator:
         self.test_weeks   = test_weeks
         self.metrics_calc = PerformanceMetrics()
 
-    def run(self, weekly_trades: List[List[dict]]) -> dict:
+    def run(self, weekly_trades: List[List[dict]], n_trials: int = 1) -> dict:
         """
         Walk-Forward 검증 실행.
+
+        Args:
+            n_trials: 이 결과에 도달하기까지 시도한 전략/파라미터 조합 수
+                      (DSR advisory용 — 정직하게 셀 것, 기본 1)
 
         Returns:
             passed:         최종 통과 여부
@@ -57,6 +84,7 @@ class WalkForwardValidator:
             windows:        창별 상세 성과
             avg_metrics:    평균 성과 지표
             criteria_check: Phase 2 기준 충족 여부
+            dsr_advisory:   DSR 병기 (판정 무영향 — _dsr_advisory 참조)
         """
         n_weeks = len(weekly_trades)
         if n_weeks < MIN_WEEKS:
@@ -73,6 +101,7 @@ class WalkForwardValidator:
         windows = []
         start   = 0
         idx     = 0
+        oos_weekly_pnl = []  # [454차] DSR advisory용 — 무거래 주도 0원으로 포함
 
         while start + self.train_weeks + self.test_weeks <= n_weeks:
             train_end = start + self.train_weeks
@@ -82,6 +111,8 @@ class WalkForwardValidator:
             test_trades = []
             for week in weekly_trades[train_end:test_end]:
                 test_trades.extend(week)
+                oos_weekly_pnl.append(
+                    sum(float(t.get("pnl_krw", 0.0)) for t in week))
 
             if test_trades:
                 metrics = self.metrics_calc.compute(test_trades)
@@ -115,6 +146,10 @@ class WalkForwardValidator:
             "windows":        windows,
             "avg_metrics":    avg_metrics,
             "criteria_check": criteria,
+            # [454차] 판정 무영향 병기 — Phase 5 조건 ③ 편입 여부는 사용자 결정
+            "dsr_advisory":   _dsr_advisory(
+                oos_weekly_pnl,
+                [w["metrics"].get("sharpe") for w in windows], n_trials),
         }
 
     def summary_report(self, result: dict) -> str:
@@ -201,9 +236,12 @@ class AnchoredWalkForwardValidator:
         self.min_train_weeks = min_train_weeks
         self.metrics_calc    = PerformanceMetrics()
 
-    def run(self, weekly_trades: List[List[dict]]) -> dict:
+    def run(self, weekly_trades: List[List[dict]], n_trials: int = 1) -> dict:
         """
         AWFA 실행 — 고정 시작점 확장 윈도우.
+
+        Args:
+            n_trials: 시도한 전략/파라미터 조합 수 (DSR advisory용, 기본 1)
 
         Returns:
             passed:         최종 통과 여부
@@ -211,6 +249,7 @@ class AnchoredWalkForwardValidator:
             windows:        창별 상세 성과
             avg_metrics:    평균 성과 지표
             criteria_check: Phase 2 기준 충족 여부
+            dsr_advisory:   DSR 병기 (판정 무영향)
             mode:           "anchored"
         """
         n_weeks = len(weekly_trades)
@@ -233,6 +272,7 @@ class AnchoredWalkForwardValidator:
         train_start = 0
         train_end   = self.min_train_weeks
         idx         = 0
+        oos_weekly_pnl = []  # [454차] DSR advisory용 — 무거래 주도 0원으로 포함
 
         while train_end + self.test_weeks <= n_weeks:
             test_end = train_end + self.test_weeks
@@ -240,6 +280,8 @@ class AnchoredWalkForwardValidator:
             test_trades = []
             for week in weekly_trades[train_end:test_end]:
                 test_trades.extend(week)
+                oos_weekly_pnl.append(
+                    sum(float(t.get("pnl_krw", 0.0)) for t in week))
 
             if test_trades:
                 metrics = self.metrics_calc.compute(test_trades)
@@ -274,6 +316,9 @@ class AnchoredWalkForwardValidator:
             "windows":        windows,
             "avg_metrics":    avg_metrics,
             "criteria_check": criteria,
+            "dsr_advisory":   _dsr_advisory(
+                oos_weekly_pnl,
+                [w["metrics"].get("sharpe") for w in windows], n_trials),
             "mode":           "anchored",
         }
 
