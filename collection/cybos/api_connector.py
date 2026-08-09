@@ -1552,6 +1552,16 @@ class CybosAPI:
         arb_net = _safe_int(h.get(ARB_NET_AMOUNT_IDX, "0"))
         nonarb_net = _safe_int(h.get(NONARB_NET_AMOUNT_IDX, "0"))
 
+        # [MW0601 451차 Phase 1-1] 56필드 전량을 그대로 통과시킨다 — 보존용.
+        # `_probe_investor_tr`가 이미 `range(64)`로 전부 읽어놨으므로 **추가 COM 호출은 0**이다.
+        # 12개월간 이 값들은 매 호출 메모리에 올라왔다가 idx19·idx37만 남고 버려졌다.
+        # 빈 문자열 칸(대개 idx56~63)은 제외 — "응답에 없던 칸"과 "값이 0인 칸"을 구분한다.
+        fields: Dict[str, int] = {}
+        for _i, _v in h.items():
+            if str(_v).strip() == "":
+                continue
+            fields[str(_i)] = _safe_int(_v)
+
         _system_info(
             f"[CybosInvestorRaw] program via CpSvr8111(market={market}) "
             f"arb={arb_net:+d} nonarb={nonarb_net:+d}"
@@ -1567,6 +1577,8 @@ class CybosAPI:
                 "nonarb_net": nonarb_net,
                 "total_net": arb_net + nonarb_net,
             },
+            # 원천 보존용 56필드 (Phase 1-1). 소비 계층은 이걸 해석하지 않고 그대로 저장만 한다.
+            "fields": fields,
         }
 
     def _ensure_message_pump(self) -> None:

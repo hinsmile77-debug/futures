@@ -1409,6 +1409,40 @@ def init_raw_data_db():
             PRIMARY KEY (ts, horizon)
         )
     """)
+    # [MW0601 451차 Phase 1-1] 프로그램매매 원천 보존 — `Dscbo1.CpSvr8111` 56필드 전량.
+    #
+    # 왜 별도 테이블인가:
+    #   `raw_features`는 **피처** 테이블이다. 원천 TR 응답을 거기 섞으면 스케일러·모델·
+    #   피처 건강도 리포트가 전부 영향을 받는다. 원천은 원천끼리 둔다.
+    #
+    # 왜 지금 만드는가 (451차가 실증한 대가):
+    #   8111은 56필드를 주는데 우리는 `idx19`·`idx37` 2개만 뽑아 쓰고 나머지 54개를
+    #   버려 왔다. 그런데 `_probe_investor_tr`는 **이미 매 호출 `GetHeaderValue(0..63)`을
+    #   전부 읽고 있다** — 못 받은 게 아니라 저장하지 않았을 뿐이다. 그 결과 지금
+    #   gross·위탁/자기 파생을 만들려 해도 **과거 데이터가 없어** 검증을 처음부터
+    #   시작해야 한다. 원시를 보존하면 파생은 언제든 오프라인에서 만들 수 있고 과거
+    #   구간에 소급도 되지만, 반대는 불가능하다.
+    #
+    # 왜 JSON인가:
+    #   `raw_features.features`와 같은 관례다. 56개를 컬럼으로 펼치면 TR 필드가 바뀔 때
+    #   또 스키마 마이그레이션이 필요하고, 그때 담지 못한 필드는 또 영영 사라진다.
+    #
+    # 용량: 약 370행/일 × 250일 × ~600B ≈ 55MB/년.
+    # 필드 의미: `docs/CyBos ref/CYBOS_프로그램매매_투자자별_TR_명세.md` §1-1.
+    #   ⚠ `idx17`(차익순매수 위탁금액)은 서버측 결함으로 `idx19`를 중복 반환한다(7일 실측).
+    #     쓰려면 `idx19 − idx18` 또는 `idx11 − idx5`로 우회할 것.
+    #   ⚠ `idx1`(시간)은 실측상 항상 0이다 — 시계열 용도로 쓰지 말 것. 시각은 `ts` 컬럼이다.
+    #   ⚠ 값은 **일중 누계**다(09:02 → 15:34 사이 부호까지 바뀐다). 흐름이 필요하면 차분할 것.
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS raw_program_trade (
+            ts         TEXT NOT NULL,
+            market     TEXT NOT NULL,
+            fields     TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (ts, market)
+        )
+    """)
+
     # v9 처방 P1 (mireuki_v9_최종설계안_2026-07-03.md §2-2): 트리플 배리어 라벨 저장.
     # 기존 학습 라벨(_path_conditioned_label)과 병렬 비교/검증용 — scripts/build_triple_barrier_labels.py
     execute(RAW_DATA_DB, """
@@ -1483,6 +1517,29 @@ def save_features(ts: str, features: dict) -> None:
         "INSERT OR REPLACE INTO raw_features (ts, features) VALUES (?, ?)",
         (ts, json.dumps(features, ensure_ascii=False)),
     )
+
+
+def save_program_trade_raw(ts: str, market: str, fields: Dict[str, int]) -> bool:
+    """[451차 Phase 1-1] `CpSvr8111` 원천 필드를 `raw_program_trade`에 보존.
+
+    ts     — 'YYYY-MM-DD HH:MM:SS' (분 단위로 내림한 값. 호출부 책임)
+    market — '1'=거래소, '2'=코스닥
+    fields — {"0": 20260807, "1": 0, ..., "55": 109980}  (문자열 키, 정수 값)
+
+    반환: 저장했으면 True, 입력이 비어 건너뛰었으면 False.
+
+    🔴 **빈 dict는 저장하지 않는다.** 451차의 유령 피처는 "원천이 안 준 것을 0으로 채워
+    저장한" 사고였다. 여기서 빈 응답을 빈 JSON으로 남기면 나중에 읽는 사람이 "그 시각엔
+    프로그램매매가 0이었다"로 오독한다 — **행이 없는 것과 0인 것은 다르다.**
+    """
+    if not fields:
+        return False
+    execute(
+        RAW_DATA_DB,
+        "INSERT OR REPLACE INTO raw_program_trade (ts, market, fields) VALUES (?, ?, ?)",
+        (ts, str(market), json.dumps(fields, ensure_ascii=False, sort_keys=True)),
+    )
+    return True
 
 
 def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:

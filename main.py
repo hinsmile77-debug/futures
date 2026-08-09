@@ -59,6 +59,7 @@ from utils.db_utils import (
     upsert_daily_broker_pnl,
     save_shap_scores,
     save_regime_at, purge_old_regime_history,
+    save_program_trade_raw,
 )
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
@@ -465,6 +466,9 @@ class TradingSystem:
         self.entry_horizon_recalibrator = EntryHorizonRecalibrator()
         self.atr_multiple_recalibrator = ATRMultipleRecalibrator()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
+        # [451차 Phase 1-1] raw_program_trade 보존 로그 1회성 플래그 (60초 주기 로그 폭주 방지)
+        self._program_raw_logged = False
+        self._program_raw_err_logged = False
         self.pcr_store          = PCRStore()
         self.option_chain_snap  = OptionChainSnapshot(
             chain_cache_path="data/option_chain.json",
@@ -3360,6 +3364,7 @@ class TradingSystem:
             # (무스킬_피처셋_딥다이브_보고서_2026-07-13.md F5). 실패 시에도 api_connector.py의
             # _system_info_throttled(600s)가 로그 폭주를 막으므로 108차 우려는 이미 해소됨.
             self.investor_data.fetch_all(include_program=True)
+            self._save_program_trade_raw(now)
             # FutureCurOnly 틱에서 실시간으로 수집된 미결제약정 동기화
             rt = getattr(self, "realtime_data", None)
             if rt is not None:
@@ -3385,6 +3390,42 @@ class TradingSystem:
                 )
             else:
                 logger.debug("[LiveDBG] _fetch_investor_data 완료 %.0fms", _elapsed_ms)
+
+    def _save_program_trade_raw(self, now: datetime.datetime) -> None:
+        """[MW0601 451차 Phase 1-1] CpSvr8111 원천 56필드를 `raw_program_trade`에 보존.
+
+        **추가 COM 호출은 0이다.** `_probe_investor_tr`가 이미 매 호출
+        `GetHeaderValue(0..63)`을 전부 읽고 있고, 지금까지 그중 `idx19`·`idx37` 2개만
+        쓰고 나머지 54개를 버려 왔다. 여기서는 방금 받아온 값을 저장만 한다.
+
+        왜 필요한가: 원시를 보존하면 gross·위탁/자기·차분 같은 파생을 **언제든 오프라인에서,
+        과거 구간까지 소급해** 만들 수 있다. 반대는 불가능하다 — 451차가 그 대가를 실증했다
+        (56필드 중 2개만 남겨둔 탓에 지금 파생 검증을 표본 0에서 시작해야 한다).
+
+        ⚠ 이 함수는 **어떤 예외도 밖으로 내보내지 않는다.** 보존은 부가 기능이고, 이것 때문에
+        수급 수집이나 파이프라인이 흔들려서는 안 된다. 실패는 로그로만 남긴다.
+        """
+        try:
+            inv = getattr(self, "investor_data", None)
+            if inv is None or not hasattr(inv, "get_program_raw_fields"):
+                return
+            fields = inv.get_program_raw_fields()
+            if not fields:
+                # 조회 실패·미지원. **빈 행을 남기지 않는다** — "행이 없음"과 "값이 0"은 다르다.
+                return
+            ts = now.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+            saved = save_program_trade_raw(ts, "1", fields)
+            if saved and not self._program_raw_logged:
+                self._program_raw_logged = True
+                logger.info(
+                    "[ProgramRaw] raw_program_trade 보존 시작 — ts=%s 필드 %d개 (세션 1회 로그)",
+                    ts, len(fields),
+                )
+        except Exception as e:
+            # 세션당 1회만 경고 — 60초마다 같은 실패를 찍어 로그를 덮지 않는다.
+            if not self._program_raw_err_logged:
+                self._program_raw_err_logged = True
+                logger.warning("[ProgramRaw] 원천 보존 실패(이후 무시): %s", e, exc_info=True)
 
     def _poll_kospi200_index(self) -> None:
         """[260704 감사 P2] KOSPI200 현물지수 + VKOSPI 1분 폴링 — QTimer 콜백.
