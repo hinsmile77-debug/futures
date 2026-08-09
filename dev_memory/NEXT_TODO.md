@@ -8,6 +8,57 @@
 
 ---
 
+### 🔴 452차 — QDQ Phase 0 라이브 1일차 판정 (MW0601, 2026-08-09 배포, **라이브 미검증**)
+
+> 상위: `docs/Spec for feature/Validation for feature/QDQ_도입_손익분석_및_구현계획_2026-08-09.md`
+> 상세: 같은 폴더 `QDQ_Phase0_구현계획_2026-08-09.md` §5-2
+> 배경: `DECISION_LOG.md` 2026-08-09(452차)
+
+- [ ] 🔴 **[최우선] 다음 거래일 장 마감 후 아래 쿼리 1회** — 이 결과가 Phase 3 착수 여부를
+      가른다. **Phase 0은 이 판정을 위해 존재한다.**
+
+  ```sql
+  SELECT COUNT(*) AS bars,
+         SUM(anchor_buy IS NULL)                     AS anchor_null,
+         SUM(buy_vol_flag IS NULL)                   AS flag_null,
+         SUM(anchor_buy + anchor_sell <> volume)     AS anchor_resid_bars,
+         SUM(buy_vol_flag + sell_vol_flag <> volume) AS flag_resid_bars,
+         SUM(buy_vol)*1.0/SUM(buy_vol+sell_vol)      AS legacy_buy_share,
+         SUM(anchor_buy)*1.0/SUM(anchor_buy+anchor_sell) AS anchor_buy_share
+  FROM raw_candles WHERE ts >= '<배포 후 첫 거래일>';
+  ```
+
+  | 지표 | 기대 | 어긋나면 |
+  |---|---|---|
+  | `anchor_null` | ≈ 0 | 22/23 미제공 → **가설 반증**, Phase 3·4 재설계 |
+  | `anchor_resid_bars` | ≈ 0 | 항등식 불성립 → 필드 의미 재확인 |
+  | `legacy_buy_share` | ≈ 0.63 | 기존 실측(44거래일 평균 63.08%) 재현 |
+  | **`anchor_buy_share`** | **≈ 0.50** | **0.63에 가까우면 편향이 시장 실체이고 진단이 틀린 것 → Phase 3 취소** |
+
+- [ ] **로그 확인** — `grep "\[CVD-ANCHOR\]"` 로 봉당 대조 1줄. `[UNAVAIL]`이 뜨면 필드
+      미제공(가설 반증), `[RESET]`이 잦으면 재접속·월물교체 빈발. `side=?`가 보이면
+      원천 체결구분 형식이 49/50에서 바뀐 것.
+
+- [ ] **MW0602(Creon, dev 브랜치) 동일 결함 확인** — 같은 `realtime_data.py` 계열이면
+      같은 버그다. 그쪽 `raw_candles` 매수비중을 먼저 재보고 두 PC 대조할 것.
+
+- [ ] **[Phase 1, 미착수] `main.py:11317` 복구 경로 데이터 파괴 차단** — 하드코딩
+      `buy_vol: 0`/`sell_vol: 0` 제거 + `bid1`/`ask1`/`oi` 원본 복원 +
+      `db_utils.py` `.get("buy_vol", 0)` → `.get("buy_vol")`. 실측 피해 55봉.
+      **Phase 0의 신규 4열도 같은 경로로 NULL 덮임** — Phase 0 데이터 신뢰도에 직결하므로
+      1일차 판정과 함께 처리 우선순위를 볼 것.
+
+- [ ] **[Phase 3, 조건부] CVD 전환** — 위 판정이 기대대로 나오고 섀도 **20거래일** 누적
+      후에만. 정규화 포화(`cvd.py:104`, 원인 ②)를 **동시에** 고쳐야 하며,
+      틱 원본이 없어 2026-06-08~전환일 구간은 **영구 편향**(백필 불가) — 학습 창 분리 필요.
+      우회책 3건(2026-06-25 CORE 교체 / 394차 detrend / AutoMask 면제 제외) 재검토 동반.
+
+- [x] ~~[371차] `cvd_divergence` 점질량 원인 조사~~ **[DONE 2026-08-09]** 원인은
+      `feature_builder.py:172-193`(후보)이 아니라 **상류 체결구분 파싱 결함**이었다
+      (452차 발견 A). `ofi_norm` 쪽은 호가 경로라 **별건으로 남는다**.
+
+---
+
 ### 🔵 451차 종합 — 구현계획 제안서 (MW0601, 2026-08-09, **승인 대기**)
 
 > `docs/미륵이고도화3/수급수집_원천보존_구현계획_2026-08-09.md`
