@@ -2,6 +2,80 @@
 
 ---
 
+## 2026-08-09 (MW0601 454차 — ATB 라벨링·검증 프레임워크 도입 Phase A~C)
+
+**지시**: `docs/Spec for feature/ML Model Labeling/` 스펙(ATB + 3중 방어선) 검토보고
+승인 → "도입 권고 우선순위순(A→5m 판정 확인→B→C)으로 구현계획 수립 + 구현 진행".
+문서 2건(동 폴더): `0809_ATB_도입검토보고_MW0601.md`, `0809_ATB_구현계획_MW0601.md`.
+
+### 검토 핵심 발견
+
+- 스펙 절반은 기존 보유(섀도 TB·메타라벨링·동시터치 보수처리·IC 비교·사전등록 문화).
+  신규 4요소만 도입: **CV 퍼징 / CUSUM+고유성 가중치 / 세션클립·min_edge / DSR·PBO**.
+- **전봉 라벨링의 표본 중복**: 평균 고유성 ≈ 1/h → 30m은 0.033(독립 사건 기준
+  MIN_TRAIN_BARS 500 = 약 17개). 296차 30m 퇴역(acc 0.3052)의 후보 원인 —
+  CB③-P4 재론(실전 전환 기준 ⑥) 시 이 관점 포함할 것.
+- TimeSeriesSplit이라 셔플 누출은 없지만 **train 꼬리 h_min행 경계 누출**은 실재
+  (테스트 실측: 폴드당 정확히 h_min행).
+
+### Phase A — CV 퍼징 3곳 + LeakGuard (라벨 무변경, [1] 채널 시계 리셋 아님)
+
+- `learning/batch_retrainer.py`: ① `_run_cv_folds` train 꼬리 h_min행 절단
+  ② `retrain_shadow_triple_barrier` CV 동일 ③ `_measure_fair_holdout` 도전자 학습을
+  `src[:-(H+h_min)]`로(홀드아웃 경계 갭). ④ `_leak_overlap_count()` 신설 —
+  폴드마다 검사, 0 아니면 `[LeakGuard]` WARNING(판정 무영향, 재학습 절대 안 막음).
+- **관찰 필요(다음 EOD)**: cv_acc 소폭 이동 예상 — 가드 6/6 HOLD 쏠림이 나오면
+  acc.txt 기준값이 구(누출 포함) 체계라는 뜻 → 1회 force 갱신 검토(사용자 승인 후).
+  GuardFair 홀드아웃 정의도 이번에 h_min만큼 이동(계측 연속성 주의).
+
+### Phase B — ATB v2 병행 트랙 (코드 준비 + 사전등록, 판정 개시는 게이트)
+
+- `model/atb_labeling.py` 신설: CUSUM(k×ATR%) / ATR 하한(롤링 분위) /
+  **수직 배리어 15:10 세션 클립**(절대원칙 §1 정합 — 기존 TB는 14:40 이후 30m
+  라벨이 실행 불가능 거래를 정답으로 가르쳤음) / min_edge(캠페인 왕복비용 산식) /
+  고유성·수익귀속 가중치 / 시간구간 기반 퍼지드 스플릿 + 누출 자가진단.
+- `scripts/atb_v2_build_and_eval.py`: py310_64 수동 실행 전용, EOD 체인 미연결.
+  모델 `{HORIZON_DIR}/shadow_atb_v2/`(protocol=4), 리포트 `data/atb_v2/`(커밋 금지).
+- `config/settings.py:VALIDATION_CAMPAIGN["atb_v2"]` **사전등록**(데이터 보기 전
+  고정): IC 축은 [1]과 동일(0.03/0.05/800) + uniqueness_min 0.30 +
+  nonevent_ic_min 0.025(CUSUM 학습·매분 추론 분포 불일치 가드). 대상 3m/5m,
+  min_horizons_pass 1. **판정 개시 = [1] tb 5m 첫 판정 이후**(현재 706/800) —
+  리포트 생성기에 이 키는 의도적으로 inert. [1]의 라벨·mtime 일절 무접촉.
+- **스모크 실측**(2026-08-09, 26주, 판정 아님): 이벤트율 6.3%(2804/44454),
+  평균 고유성 **1.000**(전봉 이론치 3m 0.333/5m 0.200 대비 — 스펙 예측 재현),
+  세션클립 제외 61건. 학습가능 3m 654/5m 393(이벤트 중 피처 보유분).
+  IC는 전분 +0.006/+0.008 수준으로 아직 무의미(소표본·판정 아님).
+- ⚠ scipy.spearmanr가 이 환경에서 MKL 지연로드 크래시(0xc06d007f) — 캠페인
+  리포트와 동일한 numpy 전용 `_spearman`으로 대체(방법론 일치 겸).
+
+### Phase C — DSR·PBO (전부 advisory, 판정문 무변경)
+
+- `learning/validation_stats.py` 신설(py37_32 호환): sharpe/mdd/expected_max_sharpe/
+  `deflated_sharpe_ratio`(왜도·첨도 벌점, 통과 0.95)/`probability_of_backtest_
+  overfitting`(CSCV). n_trials는 정직하게 셀 것 — 실패 시도 제외 시 무의미.
+- `backtest/walk_forward.py`: Rolling·Anchored `run()` 결과에 `dsr_advisory` 병기
+  (OOS 주간 PnL, PPY=52, 무거래 주 0원 포함). **passed 무변경** — Phase 5 조건 ③
+  정식 편입은 실측 후 사용자 결정.
+- `challenger/`: `ChallengerDB.get_daily_pnl_matrix()`(일자×챌린저 PnL 피벗) +
+  `PromotionManager.evaluate_selection_bias()`(DSR: n_trials=등록 챌린저 수 —
+  유전 진화 전체 시도의 **하한**임을 명시 / PBO: 최소 24일×2챌린저). 자동 승격
+  금지 원칙 그대로 — 수동 승격 검토 자료.
+
+### 검증
+
+- `tests/test_454_purged_cv_atb.py` 38체크 전부 통과(py310_64): 누출 검출·퍼지 후
+  0·세션클립·동시터치 보수·min_edge·고유성 0.5/1.0·이벤트 퍼징·DSR 단조성·PBO
+  노이즈/지배전략 분리·WFA advisory 무영향.
+- py37_32: 변경·신설 8파일 전부 compile OK + validation_stats/atb_labeling/
+  walk_forward import·동작 확인.
+
+### 미결 (NEXT_TODO 454차)
+
+- 다음 EOD에서 [LeakGuard] 0건 + 가드 HOLD 쏠림 여부 확인.
+- [1] 5m 첫 판정 도달 주에 ATB v2 판정 개시(리포트 배선) 재론.
+
+---
+
 ## 2026-08-09 (MW0601 453차 — 복구 봉 이중 처리 해소 D1~D4 + 절대원칙 §1 구멍 봉합)
 
 **지시**: 452차 Phase 1 파생 안건(복구 봉 이중 처리) 딥다이브 → 설계제안 승인 →

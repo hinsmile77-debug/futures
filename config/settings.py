@@ -1403,6 +1403,26 @@ VALIDATION_CAMPAIGN = {
         "min_horizons_pass": 2,  # 6개 중 2개 이상 합격 시 채널 PASS
         "max_retries": 2,  # 불합격 시 배리어 재조정 후 재시험 최대 횟수 (§3-1)
     },
+    # [MW0601 454차 / ATB-B3] ATB v2 채널 — 적응형 트리플 배리어 병행 트랙 사전등록.
+    # 기존 [1] tb 채널과 별개다: 라벨에 CUSUM 이벤트 필터·세션 클립(15:10)·min_edge
+    # 비용 필터·고유성/수익귀속 가중치를 추가한 변형(model/atb_labeling.py,
+    # scripts/atb_v2_build_and_eval.py, 모델은 shadow_atb_v2/ 별도 디렉터리).
+    # ⚠ **판정 개시 게이트**: [1] tb 채널의 5m 첫 판정이 나오기 전에는 주간 자동
+    # 판정을 배선하지 않는다(리포트 생성기에 이 키는 아직 inert — 의도된 상태).
+    # [1]의 라벨·재학습·mtime에는 일절 영향 없음(5m OOS 누적 보호가 목적).
+    # 합격선은 데이터를 보기 전인 2026-08-09에 고정(§9 사전등록) — IC 축은 [1]과
+    # 동일하게 맞춰 비교 가능성을 유지하고, ATB 고유 가드 2개를 추가한다.
+    # 근거: docs/Spec for feature/ML Model Labeling/0809_ATB_구현계획_MW0601.md
+    "atb_v2": {
+        "ic_delta_min": 0.03,  # IC_ATB > IC_3class + 0.03 ([1]과 동일)
+        "ic_abs_min": 0.05,  # 그리고 IC_ATB > 0.05 ([1]과 동일)
+        "min_samples_hz": 800,  # 호라이즌별 최소 OOS 표본 ([1]과 동일)
+        "target_horizons": ["3m", "5m"],  # 357차 해석: 실질 승격 검토 대상 한정
+        "min_horizons_pass": 1,  # 대상 2개 중 1개 이상
+        "uniqueness_min": 0.30,  # 평균 고유성 하한 (스펙 합격선 — 미달 시 라벨 설계 회귀)
+        "nonevent_ic_min": 0.025,  # 비이벤트 분 IC 하한 (CUSUM 학습·매분 추론 분포 불일치 가드)
+        "judgement_start": "[1] tb 5m 첫 판정 이후",  # 그 전 주간 자동 판정 없음
+    },
     # §3-2 Meta-Gate 채널: entry_quality_prob 상위/하위 30% 분위의 실현 순EV 분리도.
     "meta_gate": {
         "top_ev_min_pt": 0.0,  # 상위 30% 순EV(왕복비용 차감, pt) > 0

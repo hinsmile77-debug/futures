@@ -8,6 +8,24 @@
 
 ---
 
+### 454차 — ATB 도입 Phase A~C 후속 확인 (MW0601, 2026-08-09 배포)
+
+> 상위: `docs/Spec for feature/ML Model Labeling/0809_ATB_구현계획_MW0601.md`
+> 배경: `DECISION_LOG.md` 2026-08-09(454차)
+
+- [ ] **다음 EOD(첫 거래일 15:45) 로그 확인** — ① `[LeakGuard]` 경고가 0건인지
+      (있으면 퍼지 로직 파손 — 즉시 조사), ② EOD 모델가드가 6/6 HOLD로 쏠리는지.
+      쏠리면 acc.txt 기준값이 구(누출 포함) CV 체계라는 뜻 — 1회 force 갱신을
+      사용자 승인 받아 검토. cv_acc가 소폭(예상 ≪1%p) 움직이는 것 자체는 정상
+      (퍼징으로 계측이 정직해진 것 — 회귀 아님).
+- [ ] **[1] TB 채널 5m 첫 판정(현재 706/800, 1~2주 내 예상) 도달 시** —
+      ATB v2 판정 개시 재론: `VALIDATION_CAMPAIGN["atb_v2"]` 사전등록 합격선으로
+      `generate_validation_campaign_report.py`에 채널 배선(별도 커밋). 그 전까지
+      atb_v2 키는 의도적으로 inert — 지우지 말 것.
+- [ ] (선택) `scripts/atb_v2_build_and_eval.py`를 몇 주 뒤 재실행해 학습가능 표본
+      증가 추이 확인 (2026-08-09 스모크: 3m 654 / 5m 393 — 판정 아님).
+      실행: `py310_64`, EOD 체인 미연결(수동 전용).
+
 ### 🔴 452차 — QDQ Phase 0 라이브 1일차 판정 (MW0601, 2026-08-09 배포, **라이브 미검증**)
 
 > 상위: `docs/Spec for feature/Validation for feature/QDQ_도입_손익분석_및_구현계획_2026-08-09.md`

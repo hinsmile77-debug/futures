@@ -164,6 +164,75 @@ class PromotionManager(object):
             mdd_delta      = round(mdd_ratio - 1.0, 4),
         )
 
+    def evaluate_selection_bias(self, challenger_id):
+        # type: (str) -> Dict[str, Any]
+        """[MW0601 454차 / ATB-C3] 선택편향 진단 — **advisory 전용, 승격 게이트 아님**.
+
+        유전자 진화로 챌린저를 여럿 만들고 그중 좋은 것을 고르는 구조는 정의상
+        "n번 시도 후 최댓값 선택"이다 — 그 샤프는 실력이 아니라 최댓값 통계량일 수
+        있다(스펙 §2.2 STEP 7~8). 기존 Bonferroni 보정(동시 활성 수 기준)과 상호보완:
+        Bonferroni는 '지금 살아 있는' 후보만 세지만, 여기의 n_trials는 등록된 챌린저
+        전체(퇴출 포함)를 센다 — 그래도 유전 진화의 전체 시도 수보다는 적을 수
+        있으므로 **하한**임을 명시한다(실패해 등록조차 안 된 변이는 못 센다).
+
+        ① DSR: 해당 챌린저 거래 PnL 시계열 + 전 챌린저 샤프 분포로 계산.
+        ② PBO: 일자×챌린저 PnL 행렬(CSCV) — "IS 1등을 고르는 방식 자체"를 심문.
+
+        자동 승격 금지 원칙(CLAUDE.md §6)은 그대로다 — 이 수치는 [▶ 수동 승격]
+        검토 시 사용자에게 보여줄 진단 자료다.
+        """
+        out = {"challenger_id": challenger_id, "advisory": True}
+        try:
+            from learning.validation_stats import (
+                deflated_sharpe_ratio, probability_of_backtest_overfitting,
+            )
+        except Exception as e:
+            out["error"] = "validation_stats 임포트 실패: %s" % e
+            return out
+
+        all_ids = list(self.registry.ids() or [])
+        n_trials = max(1, len(all_ids))
+        out["n_trials"] = n_trials
+        out["n_trials_note"] = "등록 챌린저 수 — 유전 진화 전체 시도 수의 하한"
+
+        # ① DSR — 거래 단위 PnL(pt). 거래 빈도 기반 연율화가 불가능하므로
+        #    periods_per_year는 관례값 252를 쓴다(샤프 스케일만 영향, pass 기준
+        #    자체가 상대 비교용 advisory라 결론을 바꾸지 않는다).
+        try:
+            pnls = self.db.get_closed_trade_pnls(challenger_id)
+            sharpe_trials = []
+            for cid in all_ids:
+                try:
+                    sharpe_trials.append(
+                        float(self.db.get_metrics_summary(cid).get("sharpe", 0.0)))
+                except Exception:
+                    continue
+            if len(pnls) >= 10:
+                out["dsr"] = deflated_sharpe_ratio(
+                    pnls, n_trials=n_trials,
+                    sharpe_trials=sharpe_trials if len(sharpe_trials) > 1 else None,
+                )
+            else:
+                out["dsr"] = {"error": "거래 부족 (%d < 10)" % len(pnls)}
+        except Exception as e:
+            out["dsr"] = {"error": str(e)}
+
+        # ② PBO — 일자×챌린저 PnL 행렬 (챌린저 2개·충분한 일수 필요)
+        try:
+            m = self.db.get_daily_pnl_matrix()
+            mat = np.asarray(m.get("matrix", []), dtype=float)
+            if mat.ndim == 2 and mat.shape[1] >= 2 and mat.shape[0] >= 24:
+                out["pbo"] = probability_of_backtest_overfitting(mat, n_splits=12)
+                out["pbo"]["n_challengers"] = mat.shape[1]
+                out["pbo"]["n_days"] = mat.shape[0]
+            else:
+                out["pbo"] = {"error": "행렬 부족 (일수=%d, 챌린저=%d — 최소 24일×2)"
+                              % (mat.shape[0] if mat.ndim == 2 else 0,
+                                 mat.shape[1] if mat.ndim == 2 else 0)}
+        except Exception as e:
+            out["pbo"] = {"error": str(e)}
+        return out
+
     def evaluate_for_promotion_bootstrap(self, challenger_id, seed=None):
         # type: (str, Optional[int]) -> PromotionResult
         """
