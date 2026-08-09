@@ -352,6 +352,57 @@ def _is_deployable(hz, bar_aggregator):
     return bar_aggregator.is_bar_fresh(hz, max_age=max_age)
 
 
+# ── [MW0601 452차 / QDQ Phase 1] 복구 재처리 봉 복원 ──────────────────────────
+# `raw_candles`에서 읽은 행을 **손실 없이** 파이프라인 bar dict로 되돌린다.
+#
+# 왜 필요한가: `_try_pipeline_recovery()`가 마지막 봉을 재처리할 때 bar를 손으로
+# 조립하면서 `buy_vol: 0`/`sell_vol: 0`을 하드코딩하고 `bid1`/`ask1`/`oi`는 키
+# 자체를 빠뜨렸다. 그 bar가 `save_candle_and_features()`의 `INSERT OR REPLACE`에
+# 도달하며 **방금 읽어온 그 행을 열등한 값으로 덮어썼다.**
+# 실측 피해 55봉(2026-06-08 이후) — 06-25 16봉 · 07-31 13봉 · 08-04 15봉으로
+# **파이프라인이 멎을 만큼 험했던 날에 집중**. 원본 소실로 복구 불가.
+#
+# 🔴 **열 목록을 손으로 적지 않는다.** 그게 이 함수의 존재 이유다.
+#    하드코딩 목록은 스키마가 커질 때마다 조용히 뒤처진다 — 452차 Phase 0이 방금
+#    4열(anchor_*/*_flag)을 추가했고 Phase 4가 더 추가할 예정이라, 목록 방식이면
+#    **네 번째 재발이 예약**돼 있다. `row.keys()`를 순회하면 자동으로 따라온다.
+#
+# 근거: `docs/Spec for feature/Validation for feature/QDQ_Phase1_구현계획_2026-08-09.md`
+_RECOVERY_BAR_SKIP_COLS = frozenset({"created_at"})   # DB가 자동 생성 — 실어보내지 않는다
+
+
+def _bar_from_raw_candle_row(row):
+    # type: (object) -> dict
+    """`raw_candles` 행 → 파이프라인 bar dict (모든 열 자동 승계).
+
+    NULL 열은 **키 자체를 만들지 않는다.** `None`을 실으면
+    `features/bar_aggregator.py:70`의 `sum(b.get("buy_vol", 0) …)`가 TypeError로
+    죽는다. 키가 없으면 그 `.get(…, 0)`은 0을 주고,
+    `features/feature_builder.py:184`의 `.get("buy_vol")`은 None을 받아
+    **가격기반 프록시 경로로 정상 분기**한다 — 양쪽 다 안전하다.
+    """
+    bar = {}
+    for key in row.keys():
+        if key in _RECOVERY_BAR_SKIP_COLS:
+            continue
+        value = row[key]
+        if value is None:
+            continue                      # 🔴 0으로 채우지 않는다 (모르는 건 모르는 것)
+        bar[key] = value
+    # 파이프라인 규약: ts는 datetime. 파싱 실패는 호출부가 이미 걸러낸다.
+    ts_raw = bar.get("ts")
+    if isinstance(ts_raw, str):
+        try:
+            bar["ts"] = datetime.datetime.strptime(ts_raw, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+    # 이 봉이 재처리본임을 DB에 남긴다 — 신호가 아니라 **봉의 내력**이라 피처가
+    # 아닌 열로 간다(피처로 두면 99.7%가 0인 상수라 feature_health_report가
+    # 즉시 DEAD로 잡는다 — 유령 피처를 스스로 만드는 꼴).
+    bar["bar_recovered"] = True
+    return bar
+
+
 class TradingSystem:
     """미륵이 메인 트레이딩 시스템"""
 
@@ -11315,16 +11366,12 @@ class TradingSystem:
                 )
             return
 
-        bar = {
-            "ts":       ts,
-            "open":     float(row["open"]),
-            "high":     float(row["high"]),
-            "low":      float(row["low"]),
-            "close":    float(row["close"]),
-            "volume":   int(row["volume"] or 0),
-            "buy_vol":  0,
-            "sell_vol": 0,
-        }
+        # [MW0601 452차 / QDQ Phase 1] 손으로 조립하지 않는다 — 행의 모든 열을
+        # 그대로 승계해야 재저장이 멱등이 된다. 종전 방식은 buy_vol/sell_vol을 0으로
+        # 박고 bid1/ask1/oi는 키를 빠뜨려, INSERT OR REPLACE가 **원본을 파괴**했다
+        # (실측 55봉). 상세는 `_bar_from_raw_candle_row()` 주석 참조.
+        bar = _bar_from_raw_candle_row(row)
+        bar["ts"] = ts                    # 위에서 이미 파싱한 datetime을 신뢰
         self._last_recovery_ts = ts_str   # 이 ts를 처리 완료로 기록
         log_manager.system(f"[복구 시도] {ts_str} 분봉 강제 재처리...")
         try:

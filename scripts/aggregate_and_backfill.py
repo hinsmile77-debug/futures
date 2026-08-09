@@ -50,6 +50,32 @@ logger = logging.getLogger("BACKFILL")
 HORIZONS_TO_BACKFILL = [3, 5, 10, 15, 30]
 
 
+def derive_bar_flow(volume, high, low, close, buy_vol=None, sell_vol=None):
+    # type: (float, float, float, float, object, object) -> tuple
+    """1분봉의 매수/매도 귀속량을 낸다. 실측 우선, 없으면 바 기하학 프록시.
+
+    반환: `(buy, sell, used_proxy)` — `buy + sell == volume` 을 항상 만족한다.
+
+    [MW0601 452차 / QDQ Phase 1] 종전에는 `"buy_vol": 0, "sell_vol": 0` 하드코딩이었다.
+    `feedback_no_schema_fallback_in_collection`(451차)의 재발 #2이며, 원천이 실제로
+    값을 갖고 있는데도(2026-06-08 이후 raw_candles에 실측 존재) 조회조차 하지 않았다.
+
+    프록시 공식은 `features/feature_builder.py:190-192` ·
+    `scripts/exhaustion_restore_replay.py:157-159`와 **동일**하다 — 재구성 도구마다
+    다른 근사를 쓰면 산출물이 서로 대조 불가능해진다.
+
+    ⚠ N분봉 집계 후 한 번 계산하지 않고 **1분봉마다** 계산해 합산한다.
+      라이브(`bar_aggregator`가 분당 귀속을 합산)와 같은 의미가 되게 하기 위함이다.
+    """
+    if buy_vol is not None and sell_vol is not None:
+        return float(buy_vol), float(sell_vol), False
+    vol = float(volume or 0.0)
+    rng = max(float(high or 0.0) - float(low or 0.0), 1e-9)
+    buy = vol * max(float(close or 0.0) - float(low or 0.0), 0.0) / rng
+    sell = vol - buy          # 합이 volume과 정확히 일치하도록 잔차로 낸다
+    return buy, sell, True
+
+
 def override_horizon_features(base_feats, bar_n, h_min):
     # type: (dict, dict, int) -> dict
     """
@@ -132,7 +158,10 @@ def main():
         with sqlite3.connect(RAW_DATA_DB, timeout=30) as conn:
             conn.row_factory = sqlite3.Row
             candle_rows = conn.execute(
-                "SELECT ts, open, high, low, close, volume, bid1, ask1 "
+                # [452차 Phase 1] buy_vol/sell_vol 추가 조회 — 종전에는 조회조차 하지
+                # 않고 0을 하드코딩했다(재발 #2).
+                "SELECT ts, open, high, low, close, volume, bid1, ask1, "
+                "buy_vol, sell_vol "
                 "FROM raw_candles WHERE ts>=? ORDER BY ts",
                 (cutoff,),
             ).fetchall()
@@ -174,7 +203,22 @@ def main():
         count = 0
         skipped = 0
 
+        proxy_bars = 0
         for row in candle_rows:
+            # [452차 Phase 1] 실측 우선, NULL이면 바 기하학 프록시.
+            # ⚠ 이 스크립트의 로컬 `override_horizon_features()`(위)는 현재
+            #   buy_vol/sell_vol을 **소비하지 않는다** — 그래서 종전 0 하드코딩이
+            #   산출물을 직접 틀리게 만든 적은 없다. 그래도 고치는 이유:
+            #   ① 거짓값을 만들어 두면 나중에 소비처가 생겼을 때 조용히 틀린다
+            #     (라이브 경로 `feature_builder.override_horizon_features()`는 이 값으로
+            #      N분봉 cvd_direction을 재계산한다 — 두 함수를 정렬할 때 바로 밟는다)
+            #   ② 451차 규칙(원천이 주는 값을 0으로 위장 금지)의 재발 #2를 남겨두지 않는다
+            _buy, _sell, _used_proxy = derive_bar_flow(
+                volume=row["volume"], high=row["high"], low=row["low"],
+                close=row["close"],
+                buy_vol=row["buy_vol"], sell_vol=row["sell_vol"],
+            )
+            proxy_bars += 1 if _used_proxy else 0
             bar = {
                 "ts":       row["ts"],
                 "open":     float(row["open"]   or 0.0),
@@ -184,8 +228,8 @@ def main():
                 "volume":   int(row["volume"]   or 0),
                 "bid1":     float(row["bid1"]   or 0.0) if row["bid1"] else 0.0,
                 "ask1":     float(row["ask1"]   or 0.0) if row["ask1"] else 0.0,
-                "buy_vol":  0,
-                "sell_vol": 0,
+                "buy_vol":  _buy,
+                "sell_vol": _sell,
             }
             completed = aggregator.push(bar)
             agg_bar = completed.get(h_min)
@@ -223,6 +267,11 @@ def main():
         total_skipped[h_min] = skipped
         logger.info("[%dm] 완료: %d봉 저장 / %d봉 건너뜀 %s",
                     h_min, count, skipped, "(dry-run)" if args.dry_run else "")
+        # [452차 Phase 1] 실측 없이 기하 프록시로 채운 1분봉 비율 — 이 값이 높으면
+        # 그 구간의 흐름 파생 피처는 "추정"이지 "관측"이 아니다.
+        logger.info("[%dm] 매수/매도 귀속: 실측 %d봉 / 기하 프록시 %d봉 (%.1f%%)",
+                    h_min, len(candle_rows) - proxy_bars, proxy_bars,
+                    100.0 * proxy_bars / max(len(candle_rows), 1))
 
     logger.info("=" * 60)
     logger.info("Backfill v2 완료:")

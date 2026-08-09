@@ -1355,6 +1355,11 @@ def init_raw_data_db():
             anchor_sell   INTEGER,   -- 서버 22_누적체결매도 봉내 증분 (정답지)
             buy_vol_flag  INTEGER,   -- 24_체결구분 올바른 파싱 기준 매수량 (섀도)
             sell_vol_flag INTEGER,   -- 〃 매도량 (섀도)
+            -- [MW0601 452차 / QDQ Phase 1] 봉의 내력. NULL=452차 이전 / 0=정상 실시간
+            -- 경로 / 1=파이프라인 복구 재처리본(bid_qty·hoga 등 미복원 열화 상태).
+            -- 측정값이 아니라 **기록자가 항상 아는 플래그**라 0을 쓰는 것이 위 NULL
+            -- 원칙과 충돌하지 않는다.
+            bar_recovered INTEGER,
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
         )
     """)
@@ -1362,7 +1367,8 @@ def init_raw_data_db():
     # [452차] 앵커 4열도 같은 방식으로 추가 — 기존 88,558행은 NULL이 된다(정상).
     for _col, _type in [("buy_vol", "INTEGER DEFAULT 0"), ("sell_vol", "INTEGER DEFAULT 0"),
                         ("anchor_buy", "INTEGER"), ("anchor_sell", "INTEGER"),
-                        ("buy_vol_flag", "INTEGER"), ("sell_vol_flag", "INTEGER")]:
+                        ("buy_vol_flag", "INTEGER"), ("sell_vol_flag", "INTEGER"),
+                        ("bar_recovered", "INTEGER")]:
         try:
             execute(RAW_DATA_DB, "ALTER TABLE raw_candles ADD COLUMN {} {}".format(_col, _type))
         except Exception:
@@ -1504,8 +1510,8 @@ def save_candle(candle: dict) -> None:
         RAW_DATA_DB,
         """INSERT OR REPLACE INTO raw_candles
            (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
-            anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, bar_recovered)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ts,
             candle.get("open",     0.0),
@@ -1516,14 +1522,19 @@ def save_candle(candle: dict) -> None:
             candle.get("bid1"),
             candle.get("ask1"),
             candle.get("oi"),
-            candle.get("buy_vol",  0),
-            candle.get("sell_vol", 0),
-            # [452차] 기본값 없이 읽는다 — 키가 없으면 None → NULL.
+            # [452차 Phase 1] 기본값 0 제거 — 키가 없으면 NULL이 맞다.
+            # 종전 `.get("buy_vol", 0)`은 복구 경로가 키를 빠뜨렸을 때
+            # "매수 0계약이었다"는 **거짓말**을 DB에 남겼다(실측 55봉).
+            candle.get("buy_vol"),
+            candle.get("sell_vol"),
+            # [452차 Phase 0] 기본값 없이 읽는다 — 키가 없으면 None → NULL.
             # `.get(key, 0)`을 쓰면 미계측이 "매수 0건"으로 위장된다.
             candle.get("anchor_buy"),
             candle.get("anchor_sell"),
             candle.get("buy_vol_flag"),
             candle.get("sell_vol_flag"),
+            # [452차 Phase 1] 내력 플래그 — 기록자가 항상 아는 값이라 0/1로 확정한다.
+            1 if candle.get("bar_recovered") else 0,
         ),
     )
 
@@ -1570,8 +1581,8 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
             conn.execute(
                 """INSERT OR REPLACE INTO raw_candles
                    (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
-                    anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, bar_recovered)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     candle_ts,
                     candle.get("open",     0.0),
@@ -1582,13 +1593,14 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
                     candle.get("bid1"),
                     candle.get("ask1"),
                     candle.get("oi"),
-                    candle.get("buy_vol",  0),
-                    candle.get("sell_vol", 0),
                     # [452차] 기본값 없이 읽는다 (save_candle과 동일 규약)
+                    candle.get("buy_vol"),
+                    candle.get("sell_vol"),
                     candle.get("anchor_buy"),
                     candle.get("anchor_sell"),
                     candle.get("buy_vol_flag"),
                     candle.get("sell_vol_flag"),
+                    1 if candle.get("bar_recovered") else 0,
                 ),
             )
             conn.execute(
