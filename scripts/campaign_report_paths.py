@@ -39,6 +39,8 @@ DEFAULT_STEM = "validation_campaign"
 _GENERATOR_HINT = {
     DEFAULT_STEM: "scripts/generate_validation_campaign_report.py",
     "featureset_health": "scripts/generate_featureset_health_report.py",
+    # [MW0601 453차 / QDQ Phase 2] CVD 앵커 대조 — 서버 정답지(22/23)와 자체 분류 대조
+    "cvd_anchor": "scripts/generate_cvd_anchor_report.py",
 }
 
 
