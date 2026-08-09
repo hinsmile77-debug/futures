@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """[MW0601 453차 / QDQ Phase 2] CVD 앵커 대조 리포트 — 읽기 전용.
 
-근거: `docs/Spec for feature/Validation for feature/QDQ_Phase2_구현계획_2026-08-09.md`
+근거: `docs/Spec for feature/Feature integrity/QDQ_Phase2_구현계획_2026-08-09.md`
 상위: 같은 폴더 `QDQ_도입_손익분석_및_구현계획_2026-08-09.md` §2(발견 A)·§5 Phase 2
 
 **이 리포트가 답하는 단 하나의 질문**
@@ -375,7 +375,7 @@ def build_report(days):
     L.append("")
     L.append("> 생성: `scripts/generate_cvd_anchor_report.py` (읽기 전용) · "
              "git `%s` · 관찰창 최근 %d거래일" % (metrics["git"] or "?", days))
-    L.append("> 근거: `docs/Spec for feature/Validation for feature/"
+    L.append("> 근거: `docs/Spec for feature/Feature integrity/"
              "QDQ_Phase2_구현계획_2026-08-09.md`")
     L.append("")
 

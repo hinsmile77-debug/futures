@@ -51,7 +51,7 @@
 
 ### 🔴 452차 — QDQ Phase 0 라이브 1일차 판정 (MW0601, 2026-08-09 배포, **라이브 미검증**)
 
-> 상위: `docs/Spec for feature/Validation for feature/QDQ_도입_손익분석_및_구현계획_2026-08-09.md`
+> 상위: `docs/Spec for feature/Feature integrity/QDQ_도입_손익분석_및_구현계획_2026-08-09.md`
 > 상세: 같은 폴더 `QDQ_Phase0_구현계획_2026-08-09.md` §5-2
 > 배경: `DECISION_LOG.md` 2026-08-09(452차)
 
