@@ -67,6 +67,12 @@ def run_campaign_steps(logger, base_dir: str) -> None:
         # **앞**에 두어 이번 주 리포트가 "이번 주 내내 라이브였던 pkl"의 상태를
         # 기록하게 한다(재학습 뒤면 오늘 갱신된 pkl을 지난 한 주의 근거로 오독하게 된다).
         ("피처셋 건강 리포트", ["generate_featureset_health_report.py"]),
+        # [MW0601 453차 / QDQ Phase 2] CVD 앵커 대조 — 서버 정답지(FutureCurOnly
+        # 22/23)와 자체 분류를 3축으로 대조하고 Phase 3(CVD 전환) 착수 여부를 판정한다.
+        # 읽기 전용이라 순서에 민감하지 않지만 재학습 **앞**에 둔다(410차 규약과 동일 —
+        # 이번 주 내내 라이브였던 상태를 기록해야 한다). 게이팅 없음: 판정 결과와
+        # 무관하게 종료코드 0이라 후속 스텝을 막지 않는다.
+        ("CVD 앵커 대조 리포트", ["generate_cvd_anchor_report.py", "--days", "5"]),
         ("섀도우 TB 재학습", ["run_shadow_triple_barrier_retrain.py"]),
         ("분위 회귀 재학습", ["train_quantile_regressor.py"]),
         # [357차] 메타라벨 분류기(entry_quality_prob 스코어러)가 어떤 스케줄에도
