@@ -528,7 +528,21 @@ class FeatureBuilder:
             for k, v in supply_demand.items():
                 _fv = float(v) if v is not None else 0.0
                 if k in _INV_LOG_COLS:
-                    # 계약수 단위 원시값 → 로그 압축: ±1000계약≈0.69, ±20000계약≈3.0
+                    # 원시값 → 로그 압축: |x|=1000에서 0.69, |x|=20000에서 3.0.
+                    #
+                    # ⚠ [MW0601 451차 후속3 정정] 이 집합은 **단위가 섞여 있다.**
+                    #   · 선물/옵션 투자자 5종(foreign_futures_net·retail_·institution_·
+                    #     foreign_call_net·foreign_put_net·foreign_retail_divergence)
+                    #     → CpSvrNew7221, **계약수 또는 금액**(입력코드 ord('1')=옵션금액/선물계약)
+                    #   · program_arb_net·program_non_arb_net
+                    #     → CpSvr8111 idx19/idx37, **금액(백만원)**. 계약수가 아니다
+                    #       (공식 CHM 명세 "차익순매수체결금액" 확인, 후속3).
+                    #       게다가 이 둘은 **일중 누계**다 — 이름의 `_net`이 그 사실을
+                    #       전혀 드러내지 않는다. 흐름이 필요하면 Δ를 별도 피처로 추가할 것
+                    #       (`docs/미륵이고도화3/수급수집_원천보존_구현계획_2026-08-09.md` §5).
+                    #
+                    # 산식은 **의도적으로 그대로 둔다** — 결과 스케일이 합리적이고
+                    # (−650,762 → −6.48), 바꾸면 train/serve skew가 생긴다(317차 원칙).
                     features[k] = float(np.sign(_fv) * np.log1p(abs(_fv) / 1000.0))
                 else:
                     features[k] = _fv

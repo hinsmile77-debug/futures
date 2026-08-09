@@ -68,6 +68,12 @@ KNOWN = {
     "cvd_exhaustion_signal":       "bear_exhaustion_signal 별칭(deprecated)",
     "cvd":                         "CVD 포화(+1.0 고착) — buy_vol 편향 파생, 미해결 등록",
     "cvd_direction":               "CVD 포화 파생 — 미해결 등록",
+    # [451차 Phase 0-4] PHANTOM 검출기가 잡은 신규 1건 — **수집 결함 아님**으로 종결.
+    # opt_gex_bn(연속값)과 부호 불일치 0건, sign=0 행은 전부 opt_chain_available=0(미수집).
+    # KOSPI200 감마 노출이 구조적으로 음수라 -1이 97.2%인 것이며 계측은 정상이다.
+    # 다만 피처로서는 사실상 상수(+1이 07-15·07-23 단 2일, 그 뒤 11거래일 무변화)이고
+    # opt_gex_bn의 순수 부호 함수라 정보가 중복이다. 학습 영향은 현재 0(active_features 미포함).
+    "opt_gex_sign":                "시장구조(감마 음수 고착) — 계측 정상, 정보 중복. 451차 종결",
 }
 
 # 상태·품질 플래그는 "거의 항상 같은 값"이 오히려 정상이다(예: quality_*_available=1,
