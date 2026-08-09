@@ -2,6 +2,95 @@
 
 ---
 
+## 2026-08-10 (MW0601 455차 — 다중 호라이즌 피처 평가 P1~P6: 07-30 실행계획 1단계 + 신규 5요소)
+
+**지시**: `docs/Spec for feature/Muti Hz feature eval/multi_horizon_feature_eval_review.md`
+(외부 7단계 개정안) 도입 검토보고 승인 → "구현계획 수립 + 구현 진행". 문서 3건(동 폴더):
+`0809_..._도입검토보고_MW0601.md`(+§5-B 방향축 할인 추가), `0809_..._구현계획_MW0601.md`.
+
+### 검토 핵심 (검토보고 요약)
+
+- 리뷰 7단계의 약 2/3는 기존 보유(454차 퍼징·DSR·PBO, 일자단위 ICIR, 롤링 IC 설계,
+  섀도 TB)이거나 실측 반례 보유(곱셈 사이징 — 431차 min() 교체). **진짜 신규 5요소만 도입**:
+  N1 비용문턱 IC\*(h) / N2 전 격자 감쇠 카탈로그(부호반전형 탐지) / N3 노이즈 벤치마크 /
+  N4 SHAP 부호 일관성(margin 상관 대체) / N5 bounce 1회성 검증.
+- 요구된 "챔피언-챌린저 승격·탈락 표준화"는 새 프레임워크가 아니라 **기존 계획 미구현분**
+  (07-30 실행계획 1단계 + 피처셋 주기점검 Phase C)과 일치 → 1단계를 이번에 구현(P1),
+  Phase C는 기존 일정(D-day 후) 유지, N1~N4는 그때 리포트에 편입.
+- [40]·[42] REJECTS(진입 축 무가치) 동안 이 프레임워크의 근거는 "방향 성능 개선"이 아니라
+  ① 오판 방지 인프라 ② 새 정보원 심사 관문(트리거(3)) ③ N2 부호반전형 → 청산 축 입력.
+
+### P1 — 07-30 실행계획 1단계 (완료 조건 1~5 이행, 6은 NEXT_TODO)
+
+- `scripts/horizon_conf_stratified_test.py` 신설(L4) — 311차 후속5 방법론 코드화.
+  `data/horizon_conf_stratified_latest.json`(08-02 계획 L4 입력 계약) 산출 →
+  피처셋 건강 리포트 "⚠ 미배선" 자동 해소(그쪽 코드 무수정).
+- `scripts/horizon_signal_tradability.py` 신설(L2) — 394차 거래성 하네스 코드화
+  (러닝 중앙값 게이트·비중복·비용차감·일자 t·전후반, orientation ± 병기).
+- `VALIDATION_CAMPAIGN["horizon_direction_watch"]` 사전등록(07-30 §2-4 값 그대로),
+  `campaign_steps.py` 주간 스텝 1줄(판정 리포트 앞), CLAUDE.md 26주 항목 등록.
+- **왕복비용 괴리 규명**: 394차 문서의 0.133pt는 **일반선물 틱 0.05 기준 슬리피지**를 쓴
+  구 가정(TICK_SIZE는 235차에 미니 0.02로 교정됨). 정본 산식(평균가 1054pt)은 0.0716pt.
+  L2·N1은 정본 기본 + 0.133 병기 열 — 판정 기준 채택은 주간회의 결정 사항으로 보류.
+
+### P2~P6 — 신규 5요소 (전부 읽기전용 advisory)
+
+- N1 `scripts/ic_cost_hurdle_table.py`: σ₁=1.4882pt(118일 중앙값) 실측 →
+  **IC\*(1m, top5%)=0.023 … IC\*(30m)=0.005**. [1] 채널 합격선 0.03/0.05가 전 호라이즌에서
+  비용 문턱 위에 있음이 처음 정량 확인. 실측 σ_h < σ₁√h(일중 평균회귀) — 실측 열 병기.
+- N2 `scripts/ic_decay_catalog.py` + `VALIDATION_CAMPAIGN["ic_decay_catalog"]` 사전등록:
+  전 격자 {1,3,5,10,15,30}, Bonferroni 가족 = 실피처×6(기존 3점 채널과 불혼합), 유형 5종.
+  **첫 스모크(60일)에서 "증가형"(peak=격자 끝) 유형을 추가** — 수급·vwap 계열이 전부 h=30
+  끝점 피크(일 단위 공변동 패턴)인데 초안 4유형은 이를 "봉우리"로 오분류. 판정 소비 전
+  같은 세션 내 확정(사후 변경 아님). 부호반전형 0건(60일 기준).
+- N3 `scripts/noise_benchmark.py` + `ic_probe_pending_features.py` 배선: 셔플 3+위상 2,
+  시드=관찰창 끝 날짜. **첫 실행에서 위상무작위 노이즈가 15m IC 0.0345·명목 p=0.0001로
+  "유의"** — 자기상관 보존 노이즈가 풀링 검정을 뚫는 372차 병리의 라이브 실증이자 경보
+  기능의 실증. basis_pt·program_non_arb_net 등 4종이 하한선 미달 표시.
+- N4 `feature_ablation_purged_cv.py` 병기: 폴드별 corr(피처, P(UP)−P(DOWN)) 부호 뒤집힘
+  표시. SHAP 대신 margin 상관(332차 shap×HistGBM 힙 손상 회피 — 의도적 대체).
+- N5 `scripts/bounce_artifact_check.py` 1회 실행(40일, mid 커버리지 99.6%):
+  **bounce 성분(IC_close−IC_open) 최대 ±0.005로 미미** — 리뷰의 "단기 마이크로 IC는
+  항등식" 우려는 미륵이 데이터에서 크지 않음(단 현 구간 단기 CORE IC 자체가 약함 —
+  311차 무정보 결론과 정합). CORE 해석 할인율로 기록, 추가 조치 불요.
+
+### 선재 버그·결함 수정 (구현 중 발견)
+
+1. **`ic_probe_pending_features.py` 반분 안정성이 IC가 아니라 p값을 출력** —
+   `_, rho1 = stats.spearmanr(...)`가 (rho, p) 반환 순서를 뒤집어 받음. 이 도구로 반분
+   안정성을 인용한 과거 기록은 rho가 아니라 p를 본 것 — 다행히 SOP상 이 도구는 "1차
+   선별용, 채택 근거 금지"라 파급 제한적. `rho1, _`로 수정.
+2. **conda 미활성 직접 실행 시 MKL 지연로드 즉사(0xC06D007F, bash exit 127)** —
+   np.polyfit(LAPACK)·scipy 첫 호출에서 프로세스 침묵 사망(448차와 동일 뿌리).
+   신설 4종 + ic_probe에 `utils.dll_bootstrap.ensure_conda_dll_path()` 적용.
+   실측: numpy import 후 호출해도 유효(지연로드는 첫 호출 시점 해석).
+3. **신설 스크립트의 import 시점 stdout 재래핑이 중첩 래퍼로 출력 유실** —
+   여러 모듈을 한 프로세스에서 import하는 테스트에서 발현. `_utf8_console()`로 빼서
+   `__main__` 실행 시에만 호출하도록 전환.
+
+### 관찰 (판정 아님)
+
+- L4 첫 실측(20일): **전 호라이즌 INSUFFICIENT** — 고conf(≥0.55) 표본이 11~25건뿐
+  (311차 시절 5m 106건/4주와 대조). conf 분포가 낮게 눌린 현 체제([39]·[45] 관련)에서는
+  min_samples_high_conf=100 도달이 느릴 것 — 사전등록값 유지, 관찰만.
+- L2 스모크(40일, CORE 4종): vwap_position +1방향이 전 호라이즌 양수(t≤1.9 미유의),
+  cvd_divergence·ofi_norm 전반부 거래 0(0 점질량 — 371차 잔여 이슈와 정합).
+
+### 검증
+
+- `tests/test_455_multi_hz_feature_eval.py` **34체크 전부 통과**(py310_64): z-test 손계산·
+  판정 어휘·L4 JSON 계약 / L2 미래참조 부재·비중복·비용 산식=캠페인 정본 / N1 IC\*∝1/√h·
+  E[z|top5%] / N3 시드 재현·분포 보존 / N2 유형 5종·τ 복원 / N5 합성 bounce 검출.
+- py37_32·py310_64 `py_compile` 전 파일 OK. 실데이터 스모크 6종(위) 전부 정상 종료.
+
+### 미결 (NEXT_TODO 455차)
+
+- 다음 금요일 EOD 체인에서 L4 스텝 실행 + JSON 갱신 + 건강 리포트 L4 칸 확인(완료 조건 6).
+- L2 판정 비용값(정본 0.072 vs 구 0.133) 주간회의 결정.
+- Phase C 구현 시 N1 표·N2 카탈로그·N3 하한선·N4 플래그를 월간 리포트에 편입.
+
+---
+
 ## 2026-08-09 (MW0601 454차 — ATB 라벨링·검증 프레임워크 도입 Phase A~C)
 
 **지시**: `docs/Spec for feature/ML Model Labeling/` 스펙(ATB + 3중 방어선) 검토보고

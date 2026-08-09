@@ -1948,6 +1948,33 @@ VALIDATION_CAMPAIGN = {
         "regression_streak_days": 3,
         "min_days": 3,
     },
+    # [MW0601 455차 신설] 호라이즌 방향예측 conf-층화 감시 — 311차 후속5 방법론의 상시화
+    # (07-30 실행계획 §2-4 사전등록 값 그대로 — 관측 전 고정, 사후 조정 금지).
+    # verdict는 관찰 계열(weight_collapse_watch와 동일 부류) — 자동으로 어떤 호라이즌도
+    # 퇴역시키지 않는다(§9 사전등록 원칙, 퇴역은 주간회의 수동 결정).
+    # 소비처: scripts/horizon_conf_stratified_test.py (주간 EOD 체인 + 수동) →
+    #   data/horizon_conf_stratified_latest.json → generate_featureset_health_report.py
+    #   L4 칸(08-02 계획 "L4 입력 계약").
+    # 기준값 근거(전부 관측 전 고정):
+    #   conf_bucket_edge 0.55     — 311차 후속5와 동일(과거 판정과의 시계열 비교 가능성)
+    #   min_samples_high_conf 100 — 311차 실측 5m 106건/4주. 미만은 INSUFFICIENT
+    #   min_days 10               — 313차 원칙(단일일·소표본 결론 금지)
+    #   alpha 0.05 + Bonferroni   — 311차 6개 동시검정 α=0.0083 선례(÷ 동시검정 호라이즌 수)
+    #   dir_acc_floor 0.45        — 퇴역 검토 착수선. 1m 퇴역 근거가 47.75%(z=-2.82)였고
+    #                               3m/5m/10m/15m 기저는 45~51% 구간 → 정상 변동에는 걸리지
+    #                               않고 실제 붕괴만 잡는다.
+    #   regression_streak_weeks 3 — 3주 연속 floor 미달 → 딥다이브 착수 권고(퇴역 아님).
+    #                               추적은 주간 산출 JSON의 날짜본 대조로 수행(자동 상태 없음).
+    "horizon_direction_watch": {
+        "horizons": ["3m", "5m", "10m", "15m"],   # 1m·30m 퇴역 — 감시 대상 아님
+        "conf_bucket_edge": 0.55,
+        "min_samples_high_conf": 100,
+        "min_days": 10,
+        "alpha": 0.05,
+        "bonferroni": True,
+        "dir_acc_floor": 0.45,
+        "regression_streak_weeks": 3,
+    },
     # [402차 후속5 신설] §21 방향별 순EV 감시 — [13] grade_ev_inversion의 미러
     # (축만 등급→방향). 실제 체결(trades)의 실현 net_pnl_krw를 방향별로 집계하므로
     # counterfactual 시뮬레이션 불필요.
@@ -2972,6 +2999,26 @@ VALIDATION_CAMPAIGN = {
     },
     # 왕복 비용(pt) 계산 공통 가정: 수수료 2×price×rate + 슬리피지 2×틱
     "slippage_ticks_per_side": 1.0,
+    # ── [MW0601 455차 신설] IC 감쇠 카탈로그(N2) 사전등록 — advisory 전용 ──────────
+    # scripts/ic_decay_catalog.py가 소비. 기존 3점 스크리닝(core_feature_discovery,
+    # h=5/15/30)과 **별개 채널**이다 — 격자가 달라 Bonferroni 가족 수가 다르므로 판정을
+    # 섞지 않는다(§9-4: 기존 채널 기준 무변경). 값 전부 관측 전 고정:
+    #   grid 1/3/5/10/15/30 — h=60 제외(15:10 강제청산 + 30m 퇴역 이력, 검토보고 §4)
+    #   bonferroni family = 실피처 수 × len(grid). 노이즈 벤치마크는 가족 밖(하한선 전용)
+    #   sig_t_pair 2.0 — 부호반전형 판정에 쓰는 완화 임계(두 h가 |t|>=2 + 반대 부호).
+    #     Bonferroni보다 느슨한 이유: 반전형은 채택이 아니라 "청산/역추세 후보 회부"라
+    #     1종오류 비용이 낮고, 엄격 임계로는 곡선 양끝이 동시에 살아남기 어렵다.
+    #   min_days 20 — L1과 동일(313차). tau_min_points 3 — 지수 피팅 최소 점수.
+    # 산출물은 data/ic_decay/(런타임 — 커밋 금지), 월간 수동 → Phase C 편입 예정.
+    "ic_decay_catalog": {
+        "grid": [1, 3, 5, 10, 15, 30],
+        "alpha": 0.05,
+        "sig_t_pair": 2.0,
+        "min_days": 20,
+        "tau_min_points": 3,
+        "noise_shuffle": 3,
+        "noise_phase": 2,
+    },
     # ── [MW0602 435차 신설] §47 시뮬레이터 재현충실도 게이트 (메타 채널) ─────────
     # 계기: 432차 후속2. 기하 A/B 채널 4종([3-B]/[23-B]/[25]/[25-B])이 전부 FAIL을
     # 찍고 있었는데, 그 채널들이 공유하는 재생기가 **실제를 재현하지 못한다**는 것이

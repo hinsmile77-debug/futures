@@ -450,6 +450,21 @@ EOD 로그에 그 경고가 보이면 호스트명을 확인할 것.
 > 일자단위 상관과 손익 구간별 이상치 분해를 먼저 확인한 뒤 결론 낼 것.
 > (근거: 371~372차, `dev_memory/DECISION_LOG.md`·`NEXT_TODO.md` 372차 항목)
 
+> **[2026-08-09 455차 등록] 호라이즌 방향예측 피처셋 재검증** —
+> `scripts/core_feature_discovery.py` · `validate_feature_set_purged_cv.py` ·
+> `feature_ablation_purged_cv.py` · `horizon_signal_tradability.py`(L2, 455차 신설) ·
+> `ic_decay_catalog.py`(455차 신설, 전 격자 감쇠 카탈로그).
+> **왜 26주 주기 재검증이 필요한가**: 피처의 IC는 시장 미시구조 체제에 따라 드리프트한다 —
+> `basis_pt`가 소표본 유의(IC +0.048~+0.099) → 표본 확대 후 전 호라이즌 비유의로 소멸한
+> 사례, `va_bandwidth` 제거가 옳았음이 사후에야 확인된 사례, `opt_gex_bn` 설계 시점
+> IC 0.198 → 최신 0.013 감쇠 사례가 모두 그 증거다.
+> **다음 26주 WFA 시**: L1(`core_feature_discovery` 전 피처 스크리닝, 노이즈 벤치마크
+> 포함) → L2(`horizon_signal_tradability` 비용차감 거래성) → L3(purged CV)를 순서대로
+> 재실행해 현행 피처셋이 여전히 최적 근방인지 확인. 벗어나면 L3'(ablation)로 원인 피처를
+> 분해한 뒤 단일 호라이즌씩 순차 교체. 감쇠 추세는 `ic_decay_catalog`의 월간 날짜본
+> 대조로 확인한다.
+> (근거: 07-30 실행계획 §2-4, `dev_memory/DECISION_LOG.md` 455차 항목)
+
 향후 "시장 프로파일 실측치로 캘리브레이션한 파라미터" 성격의 항목이 새로 생기면
 같은 형식으로 이 목록에 추가할 것 — 예: 359차 레짐 불안정도 섀도 게이트
 (`INSTABILITY_TRANSITION_THRESHOLD` 등)도 섀도 검증을 거쳐 실적용으로 전환되면

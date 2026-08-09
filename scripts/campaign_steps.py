@@ -61,6 +61,10 @@ def run_campaign_steps(logger, base_dir: str) -> None:
     """
     steps = [
         ("게이트 ablation 리포트", ["generate_gate_ablation_report.py", "--days", "7"]),
+        # [MW0601 455차 / 07-30 실행계획 1단계] L4 conf-층화 z-test — 311차 후속5 방법론
+        # 상시화. 읽기 전용 + data/horizon_conf_stratified_latest.json 갱신(피처셋 건강
+        # 리포트의 L4 입력 계약). 판정 리포트 **앞**(07-30 계획 §2-4 위치 규약).
+        ("호라이즌 conf-층화 검정", ["horizon_conf_stratified_test.py", "--days", "20"]),
         ("검증 캠페인 판정 리포트", ["generate_validation_campaign_report.py"]),
         # [MW0601 410차 / 피처셋 주기점검 Phase A] 호라이즌별 피처셋 L0 건강도 +
         # 후보 파이프라인 현황판. 읽기 전용이라 순서에 민감하지 않지만, 재학습
