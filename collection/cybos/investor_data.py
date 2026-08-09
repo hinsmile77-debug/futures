@@ -4,6 +4,7 @@ import datetime
 import logging
 from typing import Any, Dict, Optional
 
+from collection.provenance import ProvenanceTracker
 from utils.logger import LAYER_DATA
 
 logger = logging.getLogger(LAYER_DATA)
@@ -27,6 +28,10 @@ ZONE_LABELS = {
     "institution": "기관",
 }
 
+# 이 클래스가 실제로 피처로 내보내는 투자자 키 — 원천이 이것만 채우면 충분하다.
+# (INVESTOR_KEYS 전체는 키움 시절 스키마 잔재로, 나머지 7종은 emit 대상이 아니다.)
+_EMITTED_INVESTOR_KEYS = ("foreign", "individual", "institution")
+
 
 def _to_int(value: Any, default: int = 0) -> int:
     try:
@@ -47,6 +52,13 @@ class CybosInvestorData:
     - Until broker-native mappings land, this class should expose explicit
       partial/unavailable states instead of silently presenting fake zeros as
       if they were validated market data.
+
+    [MW0601 451차] 위 Notes의 취지를 실제로 어기고 있던 경로를 제거했다.
+    `Dscbo1.CpSvr8111`은 투자자별 분해를 제공하지 않는데도 `nets.get(key, 기존값)`
+    폴백이 `program_individual/institution_net_krw`를 상수 0으로 매분 emit하면서
+    `quality_investor_program_supported=1`을 함께 보고했다 — 정확히 "fake zeros as
+    validated market data"였다. 이제 프로그램매매는 원천이 실제 주는 차익/비차익만
+    보유하고, 원천이 채운 키는 ProvenanceTracker로 감시한다.
     """
 
     def __init__(self, cybos_api=None):
@@ -59,8 +71,13 @@ class CybosInvestorData:
         self._put: Dict[str, int] = {k: 0 for k in INVESTOR_KEYS}
         self._program_arb = 0
         self._program_nonarb = 0
-        self._program_investor: Dict[str, int] = {k: 0 for k in INVESTOR_KEYS}
+        # 차익+비차익 합계(KRW). 투자자별 분해가 아니다 — 이름으로 그것을 못 박는다.
+        self._program_total = 0
         self._open_interest = 0
+
+        # 원천이 실제로 채운 키 감시 — 유령 필드 조기 경보(451차)
+        self._futures_prov = ProvenanceTracker("CybosFuturesInvestor", warn_after=10)
+        self._program_prov = ProvenanceTracker("CybosProgramInvestor", warn_after=10)
 
         self._futures_supported = False
         self._program_supported = False
@@ -108,8 +125,14 @@ class CybosInvestorData:
 
         result = self._api.request_investor_futures()
         nets = result.get("nets") or {}
+        # 폴백은 "이번 조회에 값이 안 왔을 때 직전값 유지"라는 연속성 목적으로만 남긴다.
+        # "한 번도 온 적 없는 키"는 그 폴백에 가려 보이지 않으므로 따로 감시한다(451차).
+        self._futures_prov.observe(nets.keys())
         for key in INVESTOR_KEYS:
             self._futures[key] = _to_int(nets.get(key, self._futures.get(key, 0)))
+        self._futures_prov.maybe_warn(
+            logger, _EMITTED_INVESTOR_KEYS, bool(result.get("supported", False))
+        )
 
         # call_nets / put_nets — CpSyrNew7212 제공 시 option_flow도 갱신
         call_nets = result.get("call_nets") or {}
@@ -156,14 +179,19 @@ class CybosInvestorData:
             return False
 
         result = self._api.request_program_investor()
-        nets = result.get("nets") or {}
-        for key in INVESTOR_KEYS:
-            self._program_investor[key] = _to_int(nets.get(key, self._program_investor.get(key, 0)))
+        # CpSvr8111은 투자자별 분해를 제공하지 않는다 — `nets`는 빈 dict가 정상이며
+        # 여기서 그 모양을 채우지 않는다(451차). 여기서 필요한 감시는 경보가 아니라
+        # 그 반대다: 다른 TR로 교체해 투자자별 키가 실제로 오기 시작하면 INFO로 알려
+        # 폐기했던 피처를 되살릴 시점을 놓치지 않게 한다.
+        self._program_prov.notice_new(logger, (result.get("nets") or {}).keys())
 
         # 차익/비차익 순매수 (raw 에서 직접 추출)
         raw = result.get("raw") or {}
         self._program_arb    = _to_int(raw.get("arb_net",    self._program_arb))
         self._program_nonarb = _to_int(raw.get("nonarb_net", self._program_nonarb))
+        self._program_total  = _to_int(
+            raw.get("total_net", self._program_arb + self._program_nonarb)
+        )
 
         self._program_supported = bool(result.get("supported", False))
         self._program_source = str(result.get("source", "unknown"))
@@ -171,16 +199,13 @@ class CybosInvestorData:
         program_state = self._program_status_label(self._program_source, self._program_reason)
         logger.info(
             "[CybosInvestor] program supported=%s state=%s source=%s "
-            "foreign=%+d individual=%+d institution=%+d "
-            "arb=%+d nonarb=%+d reason=%s",
+            "arb=%+d nonarb=%+d total=%+d reason=%s",
             self._program_supported,
             program_state,
             self._program_source,
-            self._program_investor.get("foreign", 0),
-            self._program_investor.get("individual", 0),
-            self._program_investor.get("institution", 0),
             self._program_arb,
             self._program_nonarb,
+            self._program_total,
             self._program_reason,
         )
         return self._program_supported
@@ -203,9 +228,13 @@ class CybosInvestorData:
             "program_arb_net": float(self._program_arb),
             "program_non_arb_net": float(self._program_nonarb),
             "foreign_retail_divergence": float(foreign_fut - retail_fut),
-            "program_foreign_net_krw": float(self._program_investor.get("foreign", 0)),
-            "program_institution_net_krw": float(self._program_investor.get("institution", 0)),
-            "program_individual_net_krw": float(self._program_investor.get("individual", 0)),
+            # [MW0601 451차 폐기] program_foreign/individual/institution_net_krw 3종 제거.
+            #   - individual/institution: 원천(CpSvr8111)에 없는 필드 → 상수 0이었다.
+            #   - foreign: 값은 있었으나 외국인이 아니라 **전체 프로그램 순매수**를
+            #     오라벨한 것이었고, 위 program_arb_net + program_non_arb_net의
+            #     정확한 합이라 정보가 100% 중복이다.
+            # 3종 모두 horizon_feature_sets.json:excluded_from_all_horizons 등재 상태여서
+            # 학습·추론 영향은 이미 0이었다(과거 DB 행 보호를 위해 그 등재는 유지한다).
             # Day 8 quality flags (수치형: FeatureBuilder가 float 캐스팅 가능해야 함)
             "quality_investor_supported": 1.0 if runtime_supported else 0.0,
             "quality_investor_futures_supported": 1.0 if self._futures_supported else 0.0,
@@ -316,12 +345,10 @@ class CybosInvestorData:
             "foreign_futures_net": foreign_fut,
             "retail_futures_net": retail_fut,
             "institution_futures_net": inst_fut,
-            # 프로그램 매매
+            # 프로그램 매매 — 원천이 주는 차익/비차익만. 투자자별 분해는 없다(451차).
             "program_arb_net": self._program_arb,
             "program_nonarb_net": self._program_nonarb,
-            "program_foreign_net_krw": int(features["program_foreign_net_krw"]),
-            "program_individual_net_krw": int(features["program_individual_net_krw"]),
-            "program_institution_net_krw": int(features["program_institution_net_krw"]),
+            "program_total_net_krw": self._program_total,
             # 미결제약정 (FutureMst 또는 선물 투자자 TR 응답)
             "open_interest": self._open_interest,
         }
@@ -329,16 +356,16 @@ class CybosInvestorData:
             "[DivergencePanel] source=cybos status=%s div=%+d "
             "futures(fi=%+d rt=%+d inst=%+d) "
             "call(fi=%+d rt=%+d) put(fi=%+d rt=%+d) "
-            "bias(fi=%.2f rt=%.2f) program(fi=%+d rt=%+d inst=%+d)",
+            "bias(fi=%.2f rt=%.2f) program(arb=%+d nonarb=%+d total=%+d)",
             panel_status,
             divergence,
             foreign_fut, retail_fut, inst_fut,
             fi_call, rt_call,
             fi_put, rt_put,
             fi_bias, rt_bias,
-            panel["program_foreign_net_krw"],
-            panel["program_individual_net_krw"],
-            panel["program_institution_net_krw"],
+            self._program_arb,
+            self._program_nonarb,
+            self._program_total,
         )
         return panel
 
@@ -350,8 +377,11 @@ class CybosInvestorData:
         self._put = {k: 0 for k in INVESTOR_KEYS}
         self._program_arb = 0
         self._program_nonarb = 0
-        self._program_investor = {k: 0 for k in INVESTOR_KEYS}
+        self._program_total = 0
         self._open_interest = 0
+        # 관측 횟수만 리셋 — '본 적 있음' 이력은 유지한다(provenance.py:reset 참조).
+        self._futures_prov.reset()
+        self._program_prov.reset()
         self._futures_supported = False
         self._program_supported = False
         self._option_flow_supported = False
@@ -371,7 +401,8 @@ class CybosInvestorData:
             "fetch_count": self._fetch_count,
             "last_fetch": self._last_fetch.strftime("%H:%M:%S") if self._last_fetch else "",
             "foreign_net": self._futures.get("foreign", 0),
-            "prog_fi_krw": self._program_investor.get("foreign", 0),
+            # 451차: prog_fi_krw(=외국인 오라벨) → prog_total_krw(차익+비차익 합계)
+            "prog_total_krw": self._program_total,
             "futures_supported": self._futures_supported,
             "program_supported": self._program_supported,
             "option_supported": self._option_flow_supported,

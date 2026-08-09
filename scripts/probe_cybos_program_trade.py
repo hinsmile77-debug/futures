@@ -18,6 +18,28 @@ QUERY_TARGETS: List[Tuple[str, List[Tuple[int, Any]]]] = [
     ("Dscbo1.CpSvr8111KS", []),
     ("Dscbo1.CpSvr8119", []),
     ("Dscbo1.CpSvrNew8119", []),
+    # ── [MW0601 451차] 프로그램매매 "투자자별" 분해 원천 탐색 ──────────────
+    #
+    # 배경: 운영 중인 `Dscbo1.CpSvr8111`은 차익/비차익 × 위탁/자기 축만 제공하고
+    # 투자자별(개인·기관·외인) 필드가 **없다**. 그걸 모른 채 소비 계층이 스키마를
+    # 폴백으로 채워 `program_individual/institution_net_krw`가 상수 0으로 2개월
+    # 방치됐다(451차). 그 피처들은 폐기했고, 여기서는 "원천이 애초에 존재하는가"를
+    # 실측으로 닫으려 한다.
+    #
+    # 후보는 숫자 인접 추측이 아니라 **공식 API 목록**
+    # (`docs/CyBos ref/CYBOS_투자정보_API_목록.md`)에 실재하는 ProgID만 골랐다.
+    # `scripts/check_cybos_investor_candidates.py`의 CpTd6198~6200은 CpTrade(주문)
+    # 네임스페이스의 번호 인접 추측이라 시장 전체 통계 용도에 맞지 않는다.
+    #
+    # ⚠ 판정 기준은 "응답이 온다"가 아니라 **장중에 값이 갱신되는가**다. 한국거래소가
+    # 프로그램매매의 투자자별 분해를 장중 배포하지 않고 일별 마감 통계로만 낸다면,
+    # 응답이 와도 1분봉 피처로는 쓸 수 없다. 같은 시각 Creon HTS 화면과 대조할 것.
+    ("CpSysDib.CpSvr7210d", []),            # 투자자별 종합(잠정) 매매동향
+    ("CpSysDib.CpSvr7210T", []),            # 투자자별 종합(잠정) 시간대별 매매동향
+    ("Dscbo1.CpSvr7225", []),               # 투자자 시장매매
+    ("Dscbo1.CpSvr7225", [(0, ord("1"))]),  # 〃 (7221·8111 관례인 아스키 시장코드)
+    ("Dscbo1.CpSvr8116", []),               # 프로그램매매 일별매매종합
+    ("Dscbo1.CpSvr8116", [(0, ord("1"))]),  # 〃
 ]
 
 REALTIME_TARGETS: List[str] = [
@@ -306,9 +328,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Probe CYBOS program-trading query/realtime objects.")
     parser.add_argument("--code", default="A005930", help="Stock code for 8119S realtime probe")
     parser.add_argument("--realtime-seconds", type=float, default=5.0, help="How long to wait for realtime events")
-    parser.add_argument("--header-limit", type=int, default=40, help="Max query headers to sample")
-    parser.add_argument("--row-limit", type=int, default=10, help="Max query rows to sample")
-    parser.add_argument("--field-limit", type=int, default=10, help="Max query fields per row")
+    # [451차] 기본 폭 확대 — 8111은 idx55까지 쓰고(구 기본 40은 잘렸다), 투자자별 격자는
+    # 행이 투자자 10종·열이 매도/매수/순매수 3축으로 벌어질 수 있어 10×10으로는 못 본다.
+    parser.add_argument("--header-limit", type=int, default=64, help="Max query headers to sample")
+    parser.add_argument("--row-limit", type=int, default=20, help="Max query rows to sample")
+    parser.add_argument("--field-limit", type=int, default=20, help="Max query fields per row")
     parser.add_argument("--ensure-login", action="store_true", help="Try autologin if CYBOS is disconnected")
     args = parser.parse_args()
 

@@ -78,7 +78,11 @@
 
 `foreign_retail_divergence`
 
-`program_foreign_net_krw`, `program_institution_net_krw`, `program_individual_net_krw`
+> ~~`program_foreign_net_krw`, `program_institution_net_krw`, `program_individual_net_krw`~~
+> **[MW0601 451차, 2026-08-09] 3종 폐기.** 원천 TR(`Dscbo1.CpSvr8111`)에 투자자별 분해가
+> 없어 institution·individual은 상수 0이었고, foreign은 값은 있었으나 외국인이 아니라
+> **전체 프로그램 순매수**(= `program_arb_net` + `program_non_arb_net`)의 오라벨이었다.
+> 이 축의 프로그램 수급은 위 차익/비차익 2종으로 표현된다.
 
 - 역할: 외국인 선물 주도, 개인 역추세, 프로그램 수급 동행 여부 반영
 - 특징: 단기 가격 신호보다 느리지만 방향 conviction 보강에 유용

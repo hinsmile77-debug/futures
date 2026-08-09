@@ -8,6 +8,48 @@
 
 ---
 
+### 451차 — program_* 3종 폐기 후속 + 유령 피처 감시 (MW0601, 2026-08-09)
+
+> 폐기·정정·감시장치는 배포 완료. 아래는 **장중에만 닫을 수 있는 것**과 검출기가 새로 찾은 건.
+> 근거: `dev_memory/DECISION_LOG.md` 2026-08-09(451차).
+
+- [ ] 🔴 **장중 프로브 — 투자자별 프로그램매매 원천이 존재하는가** (P1, 장중 1회)
+      ```
+      conda run -n py37_32 python scripts/probe_cybos_program_trade.py --ensure-login
+      ```
+      451차가 후보를 이미 심어놨다: `CpSysDib.CpSvr7210d` / `CpSvr7210T` /
+      `Dscbo1.CpSvr7225` / `Dscbo1.CpSvr8116` (전부 **공식 API 목록** 실재 ProgID).
+      ⚠ **판정 기준은 "응답이 온다"가 아니라 "장중에 값이 갱신된다"** 이다. 거래소가
+      프로그램매매 투자자별 분해를 **일별 마감 통계로만** 낸다면 응답이 와도 1분봉
+      피처로 못 쓴다 — 같은 시각 Creon HTS 화면과 대조할 것.
+      💡 **가장 싼 선행 확인**: HTS에 "프로그램매매 투자자별"이 장중 갱신되는 화면이
+      있는지 눈으로 볼 것. **HTS에 없으면 API에도 없다** → 그 자리에서 종결.
+      ⚠ `scripts/check_cybos_investor_candidates.py`의 `CpTd6198~6200`은 CpTrade(주문)
+      네임스페이스 번호 인접 추측이다 — **후보로 쓰지 말 것.**
+      → 존재 확인 시에만 수집 재설계. 부재로 확정되면 폐기를 최종 확정하고
+        대체로 **위탁/자기(증권사 프랍) 분해**(8111 차익 idx17/18·비차익 idx35/36,
+        이미 매분 수신 중이라 추가 TR 비용 0)를 ic_probe → pending_validation 절차로 검토.
+
+- [ ] **`opt_gex_sign` 유령 판정 조사** (P2, 오프라인)
+      451차 신설 PHANTOM 검출기가 찾은 **유일한 신규 진짜 후보**.
+      `opt_chain_available=99%` 켜져 있는데 3개 값(-1/0/+1) 중 하나가 **97.2%** 고착
+      (20일·60일 두 창 모두 동일). 감마 레짐이 원래 지속적이라 정상일 수도 있고,
+      `option_chain_worker.py:107`의 gex_sign 산출이 한쪽으로 붙박인 결함일 수도 있다.
+      ⚠ 이 피처는 15m 옵션구조 CORE 정식 편입 대상이다(`config/constants.py:241`) —
+      편입 전에 닫을 것.
+
+- [ ] **라이브 1일 확인** (P1, 다음 거래일)
+      ① `raw_features`에서 `program_foreign/individual/institution_net_krw` 3종이 **사라졌는지**
+      ② DATA 로그에 `[Provenance]` WARNING이 **뜨지 않는지**
+         (뜬다면 선물 투자자 TR이 3종 중 일부를 안 주고 있다는 뜻 — 새 발견이다)
+      ③ `[CybosInvestor] program ... arb=... nonarb=... total=...` 로그가 정상 갱신되는지
+
+- [ ] (읽는 법) **`program_arb_net`/`program_non_arb_net`은 "계약수"가 아니라 금액이다**
+      `features/feature_builder.py:531`의 `_INV_LOG_COLS` 주석이 "±1000계약≈0.69"라고
+      말하지만 원천(8111 idx19/37)은 **체결금액**이다. 로그압축 결과 스케일 자체는
+      합리적이라 451차가 **의도적으로 건드리지 않았다**(산식 변경 = train/serve skew,
+      317차 원칙). 주석-실제 불일치로만 등록 — 이걸 보고 산식을 "고치지" 말 것.
+
 ### 450차 — opt_pcr_* 가드 재설계 후속 (MW0601, 2026-08-09)
 
 > 가드 수정은 배포 완료(62일 재생 가용률 81.5%→99.83%).

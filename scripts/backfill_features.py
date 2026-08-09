@@ -145,9 +145,10 @@ FEATURE_KEYS_ALL = [
     "opt_available", "opt_pcr_bearish", "opt_pcr_bullish", "opt_pcr_extreme",
     "opt_pcr_extreme_bearish", "opt_pcr_extreme_bullish",
     "opt_pcr_extreme_signed", "opt_pcr_norm", "opt_pcr_slope_norm",
-    "program_arb_net", "program_foreign_net_krw",
-    "program_individual_net_krw", "program_institution_net_krw",
-    "program_non_arb_net",
+    # [MW0601 451차] program_foreign/individual/institution_net_krw 3종 제거 —
+    # 라이브가 더 이상 emit하지 않는다(원천 CpSvr8111에 투자자별 분해 없음).
+    # 여기 남겨두면 백필 행에만 0.0으로 되살아나 "일부 날짜만 존재하는 유령 키"가 된다.
+    "program_arb_net", "program_non_arb_net",
     "quality_investor_age_sec", "quality_investor_fetch_count",
     "quality_investor_futures_supported", "quality_investor_option_supported",
     "quality_investor_program_supported", "quality_investor_reason_code",
