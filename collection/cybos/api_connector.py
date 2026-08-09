@@ -1310,11 +1310,24 @@ class CybosAPI:
                     headers[i] = _safe_str(obj.GetHeaderValue(i))
                 except Exception:
                     break
+            # [MW0601 451차 후속4] 열 폭이 15로 하드코딩돼 있어 **RAW 덤프 자체가 잘리고
+            # 있었다.** 공식 문서(cybosplus.github.io/cpsysdib_rtf_1_/cpsvrnew7221.htm)상
+            # `CpSvrNew7221`은 GetDataValue **type 0~51**(투자자 12분류 × 매도/매수/순매수)
+            # × **index 0~22**(주식·코스닥·선물·콜·풋·국채선물·통화선물·상품선물·CME…)인데,
+            # 우리는 40거래일 내내 앞 15열만 기록해 왔다. 없는 데이터라고 착각하기 딱 좋은
+            # 형태다(451차 본편의 유령 피처와 같은 계열의 착시).
+            #
+            # 다만 이 루프는 **60초 폴링 라이브 경로**를 탄다(`_fetch_investor_data`는
+            # 메인 스레드를 점유하며 500ms 초과 시 경고가 찍힌다). 그래서 넓게 읽는 것은
+            # **세션당 progid별 첫 호출(=RAW 덤프를 남기는 그 호출)** 로 한정한다.
+            # 상시 파싱 폭은 그대로 15 — 실제 사용하는 열(2·5·8)을 모두 포함한다.
+            is_dump_call = progid not in CybosAPI._probe_dump_done
+            field_limit = 64 if is_dump_call else 15
             rows: List[Dict[int, str]] = []
             for ri in range(30):
                 row: Dict[int, str] = {}
                 any_val = False
-                for fi in range(15):
+                for fi in range(field_limit):
                     try:
                         v = _safe_str(obj.GetDataValue(fi, ri))
                         row[fi] = v
@@ -1331,13 +1344,18 @@ class CybosAPI:
                 "[CybosProbe] %s ok status=%s nonempty_headers=%d rows=%d",
                 progid, status, nonempty_h, len(rows),
             )
-            # 세션당 1회 raw 덤프 — TR 구조 파악용
-            if progid not in CybosAPI._probe_dump_done:
+            # 세션당 1회 raw 덤프 — TR 구조 파악용.
+            # 이 덤프가 오프라인 분석의 유일한 원본이다(451차 후속3에서 40거래일치가
+            # gross PCR·8111 레이아웃 검증을 라이브 프로브 없이 가능하게 했다).
+            # rows[:5]로 자르지 않는 이유: 7221은 index 0~22가 상품 종류라 5행이면
+            # 선물·콜·풋 뒤의 국채·통화·상품·CME 선물이 통째로 잘린다.
+            if is_dump_call:
                 CybosAPI._probe_dump_done.add(progid)
                 h_nonempty = {k: v for k, v in headers.items() if v}
+                rows_nonempty = [{k: v for k, v in r.items() if v} for r in rows[:25]]
                 probe_log.info(
-                    "[CybosProbe][RAW] %s headers=%s rows_sample=%s",
-                    progid, h_nonempty, rows[:5],
+                    "[CybosProbe][RAW] %s field_limit=%d headers=%s rows_sample=%s",
+                    progid, field_limit, h_nonempty, rows_nonempty,
                 )
             return {
                 "progid": progid,
