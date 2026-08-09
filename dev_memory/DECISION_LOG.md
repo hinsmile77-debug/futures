@@ -93,6 +93,48 @@ COM은 문자 `'1'`/`'2'`가 아니라 **그 코드값 49/50을 숫자로** 준�
 구동 — 실 COM 없이 전 경로). 전체 스위트 **147 passed**. DB 마이그레이션 적용 완료.
 **라이브 미검증** → `NEXT_TODO.md` 452차 항목의 1일차 판정 쿼리로 확인할 것.
 
+### 7. Phase 1 — 복구 경로 데이터 파괴 차단 (발견 C)
+
+`main.py:_try_pipeline_recovery()`가 DB 마지막 봉을 재처리할 때 bar를 손으로 조립하며
+`buy_vol: 0`/`sell_vol: 0`을 박고 `bid1`/`ask1`/`oi`는 키를 빠뜨렸다. 그 bar가
+`INSERT OR REPLACE`에 도달해 **방금 읽어온 행을 파괴**했다(실측 55봉, 06-25·07-31·08-04에
+집중 — 파이프라인이 멎을 만큼 험했던 날). 원본 소실로 과거분 복구 불가.
+
+**핵심 결정 — 열 목록을 손으로 적지 않는다.**
+`_bar_from_raw_candle_row()`가 `row.keys()`를 순회한다. 같은 안티패턴이 세 번 재발했고
+(451차 `program_*` / `aggregate_and_backfill` / 이번 복구 경로) 세 번 다 원인이
+"열 목록 하드코딩"이었다. 구버전 재현 테스트에서 **9열이 파괴**됐는데 그중 4열이 바로
+몇 시간 전 Phase 0이 추가한 앵커 열이었다 — **네 번째 재발이 이미 예약돼 있었다.**
+
+- NULL 열은 **키를 만들지 않는다**. `None`을 실으면 `bar_aggregator.py:70`의
+  `sum(b.get("buy_vol", 0) …)`가 TypeError로 죽고, 키가 없으면 그 `.get(…,0)`은 0을,
+  `feature_builder.py:184`의 `.get("buy_vol")`은 None을 받아 프록시 경로로 정상 분기한다.
+- `raw_candles.bar_recovered` 신설 — NULL=452차 이전 / 0=정상 / 1=복구 재처리.
+  **상위 계획서의 "피처로 싣는다"에서 의도적으로 벗어났다**: 신규 피처 키는 99.7%가 0인
+  상수라 `feature_health_report.py`가 즉시 DEAD로 잡는다 — 유령 피처를 스스로 만드는 꼴.
+  "재처리됐다"는 신호가 아니라 **봉의 내력**이므로 DB 열이 맞는 자리다.
+- `save_candle*`의 `.get("buy_vol", 0)` → `.get("buy_vol")`. NULL 판독처 전수 확인
+  (`exhaustion_restore_replay.py:153`이 유일하며 이미 `is not None` 분기 보유).
+
+**초안 정정 — 백필 스크립트 영향 평가가 틀렸었다.**
+Phase 1 계획 초안은 `aggregate_and_backfill.py:187`의 `buy_vol: 0`이 `cvd_direction`
+재계산을 막아 `raw_features_horizon` 23,276행을 오염시켰다고 적었다. **틀렸다.** 이
+스크립트는 **자체 `override_horizon_features()`**(`:53`)를 갖고 있고 그 함수는
+`atr`/`bar_volume`/`ret_Nm` 셋만 덮어쓴다 — buy_vol을 아예 소비하지 않는다.
+대신 **더 중요한 것이 드러났다**: 라이브는 `feature_builder.py:838`(N분봉 buy/sell로
+`cvd_direction` 재계산), 백필은 로컬 함수(1분봉 값 유지) — 호라이즌 모델의 학습행과
+추론행이 같은 이름의 피처를 다르게 채운다. **train/serve 불일치, 별건으로 NEXT_TODO 등록.**
+이번엔 거짓값만 제거했다(`derive_bar_flow()`: 실측 우선, NULL이면 기하 프록시,
+프록시 사용 봉 수 로그).
+
+**범위 밖(NEXT_TODO 등록)**: 복구 봉 **이중 처리** — 이미 처리된 봉이 다시 파이프라인에
+들어가 누적 계산기가 두 번 먹는다. Phase 1이 만든 문제는 아니다(`volume`은 종전에도
+그대로 실렸고 buy/sell만 0이었던 것이 비일관이었다).
+
+검증: `tests/test_452_phase1_recovery_preserve.py` **8/8**(P1은 '미래의 열'을 심어
+하드코딩 부재를 증명, P5는 왕복 멱등성 회귀). 전체 스위트 **155 passed**.
+DB 마이그레이션 적용. **라이브 미검증.**
+
 ---
 
 ## 2026-08-09 (MW0601 451차 — program_* 수급 3종 폐기 + 유령 피처 재발 방지 장치)
