@@ -28,9 +28,14 @@ PCR_BULLISH_THRESHOLD         = 0.8   # 이 이하: 콜 우세 (강세)
 PCR_EXTREME_THRESHOLD         = 1.5   # 이 이상: 풋 과잉 (역발상 반등 신호) — bearish extreme
 PCR_EXTREME_BULLISH_THRESHOLD = 0.67  # 이 이하: 콜 과잉 (역발상 매도 신호) — bullish extreme (= 1/1.5)
 
-# 장 시작 직후 콜 데이터 미로드 방어: |call| 최소 유효 수량
-# 이 미만이면 PCR 계산 신뢰 불가 → 스킵
-PCR_MIN_CALL_ABS = 1000
+# 저활동 방어: max(|call|,|put|)가 이 미만이면 양쪽 모두 미미한 장초반 노이즈 → 스킵
+# [2026-08-09 재설계] 구 가드 PCR_MIN_CALL_ABS=1000(63차)은 계약수 스케일 가정이었으나
+# CpSvrNew7221 옵션 순매수는 입력 ord('1')=금액 단위이고, '순매수'는 방향 균형일에
+# 하루 종일 수백 수준에 머물 수 있어(2026-08-04 |call| max=798, 08-07 p95=904)
+# 절대 임계 1000이 그런 날 opt_pcr_* 8종을 전면 사망시켰다(08-04 0%, 08-07 0.8% 가용).
+# 62일(2026-05-11~08-07) DATA 로그 재생 실측: 신 가드 가용률 99.8% (구 81.5%),
+# 63차 원버그 케이스(call=0·put≠0, 33행)는 아래 call_abs==0 스킵이 전부 방어.
+PCR_MIN_ACTIVITY_ABS = 100
 
 # PCR 극단값 상한 — 콜≈0 상태에서 생성되는 수억 단위 PCR 방어
 PCR_MAX = 4.0
@@ -71,14 +76,21 @@ class PCRStore:
         call_abs = abs(call_net)
         put_abs  = abs(put_net)
 
-        # 장 시작 직후 콜 데이터 미로드 방어:
-        # call_abs < PCR_MIN_CALL_ABS 이면 PCR = put/≈0 → 수억 단위 극단값 생성.
-        # 이 틱은 신뢰 불가 데이터이므로 버퍼에 넣지 않고 스킵한다.
-        if call_abs < PCR_MIN_CALL_ABS:
+        # ① 장 시작 직후 콜 데이터 미로드 방어(63차 원버그: call=0·put≠0 → PCR 폭주).
+        #    진짜 순매수 0과 미로드를 구분할 수 없으므로 스킵한다(실측 0.14%).
+        if call_abs == 0:
             self._available = False
             logger.debug(
-                "[PCRStore] call_abs=%+.0f < min=%d → 미로드 스킵 (put_abs=%+.0f)",
-                call_abs, PCR_MIN_CALL_ABS, put_abs,
+                "[PCRStore] call_abs=0 → 미로드 스킵 (put_abs=%+.0f)", put_abs,
+            )
+            return
+
+        # ② 저활동 방어: 콜·풋 모두 미미하면 비율 자체가 노이즈 → 스킵.
+        if max(call_abs, put_abs) < PCR_MIN_ACTIVITY_ABS:
+            self._available = False
+            logger.debug(
+                "[PCRStore] max(|call|,|put|)=%.0f < %d → 저활동 스킵",
+                max(call_abs, put_abs), PCR_MIN_ACTIVITY_ABS,
             )
             return
 
