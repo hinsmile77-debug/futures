@@ -1,0 +1,339 @@
+
+클라우드
+문제 1 — "답안지가 옆 학생 것과 겹쳐 있다"
+무슨 일이 벌어지는가
+1분봉에 15분짜리 트리플 배리어를 걸었다고 해봅시다.
+
+09:00 샘플 → 09:00~09:15 구간을 보고 정답 결정
+09:01 샘플 → 09:01~09:16 구간을 보고 정답 결정
+09:02 샘플 → 09:02~09:17 구간을 보고 정답 결정
+...
+09:00 샘플과 09:01 샘플은 미래 구간의 14/15가 똑같습니다. 만약 09:05에 급등이 한 번 터졌다면, 09:00부터 09:05까지의 여섯 개 샘플이 전부 +1 을 받습니다.
+
+실제로 일어난 사건은 급등 한 번인데, 데이터셋에는 성공 사례 여섯 개로 기록됩니다.
+
+쉬운 비유
+여론조사를 했다고 합시다. "표본 1,000명, 오차범위 ±3%"라고 발표했는데, 알고 보니 같은 가족 5명이 200번씩 응답한 거였습니다. 숫자상 1,000명이지만 실제로 들은 의견은 5개입니다. 오차범위 ±3%는 새빨간 거짓말이고, 진짜 오차는 ±40%쯤 됩니다.
+
+왜 치명적인가 — 두 가지 피해
+첫째, 모델이 특정 사건에 과적합됩니다.
+그날 급등 한 번이 데이터에 여섯 번 등장하니, 모델은 "이 패턴 자주 나오네"라고 착각하고 그 사건 하나에 가중치를 몰아줍니다. 우연히 한 번 일어난 일을 법칙으로 배워버립니다.
+
+둘째, 검증 점수가 부풀려집니다. 이게 더 무섭습니다.
+데이터를 무작위로 나눠 09:00~09:03은 학습셋, 09:04는 검증셋에 넣었다고 합시다. 둘은 같은 급등을 공유합니다. 시험 문제를 미리 보여주고 시험 친 겁니다. 정확도 70%가 나와도 그건 실력이 아니라 컨닝입니다.
+
+체감으로 말하면, 데이터 10만 개인 줄 알았는데 독립적인 사건은 3천 개인 상황입니다. 통계적 신뢰도가 30배 뻥튀기되어 있는 겁니다.
+
+문제 2 — "채점 기준이 실제 성적과 무관하다"
+무슨 일이 벌어지는가
+모델 정확도 95%가 나왔다고 좋아합니다. 그런데 뜯어보면 데이터의 95%가 0(횡보)이었고, 모델은 전부 "횡보"라고 찍었을 뿐입니다. 정작 매매해야 할 5% 구간에서는 100% 틀렸습니다. 정확도 95%, 계좌는 깡통.
+
+더 현실적인 예 — 정확도가 높을수록 망하는 경우
+승률	이길 때	질 때	100회 후
+모델 A	70%	+0.1%	-0.5%	-8%
+모델 B	35%	+2.0%	-0.3%	+50.5%
+정확도만 보면 A가 압승입니다. 실제 돈은 B가 법니다. A는 작은 이익 자리만 골라 맞추고, 큰 손실 자리를 다 밟았기 때문입니다.
+
+야구로 치면 타율 3할 타자인데 안타가 전부 주자 없을 때 나오고, 만루 찬스에서는 매번 삼진인 선수입니다. 기록지는 예쁘고 팀은 집니다.
+
+그리고 더 근본적인 문제 — 애초에 비교가 불가능하다
+방금 문서에서 4가지 라벨링을 비교한다고 했죠. 이런 결과가 나왔다고 합시다.
+
+트리플 배리어 모델 → 정확도 62%
+방향성 분류 모델   → 정확도 55%
+회귀 모델          → R² 0.03
+"트리플 배리어가 낫네"라고 결론 내리면 틀립니다. 세 모델은 애초에 서로 다른 시험을 친 겁니다.
+
+트리플 배리어의 "정답"은 "15분 안에 +0.3% 먼저 닿느냐"
+방향성 분류의 "정답"은 "15분 뒤 종가가 위냐 아래냐"
+회귀의 "정답"은 수익률 실수값
+국어 90점과 수학 70점 중 누가 더 잘한 건가요? 시험이 다르면 점수는 비교 대상이 아닙니다. 게다가 임계치를 넓게 잡으면 정확도는 그냥 올라갑니다. 채점 기준을 자기가 정하고 자기가 채점한 점수인 셈이죠.
+
+유일하게 정당한 공통 잣대
+네 모델을 똑같은 백테스트 엔진에 태우고, 똑같은 수수료·슬리피지를 물리고, 나온 아웃오브샘플 샤프와 MDD를 비교하는 것뿐입니다.
+
+시험 점수가 아니라 입사 후 실적으로 평가하는 겁니다. 어떤 시험을 쳤든 상관없이, 결국 회사에 돈을 얼마나 벌어다 줬느냐 하나로 줄을 세우는 거죠.
+
+정리
+착각	진실	처방
+라벨 중복	샘플 10만 개	독립 사건 3천 개	고유성 가중치 + Purged CV
+평가 지표	정확도 95%	실전 수익 -8%	백테스트 샤프/MDD로만 비교
+두 문제의 공통점은 "숫자는 좋은데 돈은 안 벌린다" 는 형태로 나타난다는 겁니다. 그래서 더 위험합니다. 라벨링을 잘못하면 백테스트가 망가져서 바로 알아채는데, 이 두 문제는 백테스트를 더 예쁘게 만들어 놓고 실전에서만 무너뜨립니다.
+
+
+
+
+메시지 접힘
+
+작업 업데이트됨, 명령 5개 실행함, 4개의 파일 생성됨
+작업 업데이트됨, 명령 5개 실행함, 4개의 파일 생성됨
+지적하신 대로 이전 답변은 두 공정을 뒤섞어 놨습니다. 완전히 분리해서 다시 정리했고, 말로만 하지 않고 실제로 돌아가는 코드로 만들어 합성 데이터에 태워 검증했습니다.
+
+Part 1 — 추천 라벨링: 적응형 트리플 배리어(ATB)
+4가지 기법 중 하나를 고르는 게 아니라, 각각이 잘하는 부분을 서로 다른 위치에 배치하는 구조입니다.
+
+핵심 한 수는 이겁니다.
+
+y = 방향 {-1, 0, +1}     ← 분류라서 아웃라이어에 안 흔들림
+w = |수익| × 고유성       ← 손익비를 '배점'으로 반영 + 중복 표본 제거
+회귀의 "수익 규모"를 정답이 아니라 배점으로 옮긴 겁니다. 시험 문제는 O/X로 내되 배점을 다르게 주는 방식이죠. 이 한 수로 "방향성 분류는 손익비를 무시한다"는 단점이 사라집니다.
+
+구현은 7단계 — 변동성 추정(하한 클리핑) → CUSUM 이벤트 필터 → 수직 배리어(만기 클립) → σ 배수 동적 배리어 + 비용 하한 → 경로 스캔 → 가중치 → 메타 라벨링.
+
+실측으로 확인한 것 하나: 한 봉 안에서 익절선과 손절선을 동시에 터치했을 때 익절을 먼저 잡으면 평균수익이 +0.26bp, 손절 우선으로 바꾸면 −0.02bp가 나옵니다. 0.28bp가 통째로 착시였습니다. 고빈도에서는 이 차이가 수익과 손실을 가릅니다.
+
+Part 2 — 검증: 3중 방어선
+누출은 서로 독립적인 세 개의 문으로 들어오므로, 한 가지 방어로는 못 막습니다.
+
+경로	부풀리는 대상	방어
+① 시간적 누출	AUC	Purging + Embargo
+② 표본 중복	통계적 유의성	고유성 가중치 + 순차 부트스트랩
+③ 선택 편향	샤프	CPCV + DSR + PBO
+③이 제일 많이 방치되는 구멍입니다. ①②를 완벽히 막아도, 파라미터 100개 돌려 최고를 골랐다면 그 샤프는 실력이 아니라 최댓값 통계량입니다. DSR은 "실력이 0이어도 N번 시도하면 우연히 나오는 샤프"를 계산해서 그걸 못 넘으면 기각시키고, PBO는 전략 하나가 아니라 고르는 방식 자체를 심문합니다.
+
+누출 실증 결과 — 전 구간 라벨링(평균 고유성 0.37) 데이터에서:
+
+셔플 K-Fold(누출)  AUC 0.6361   ← "발견했다!"
+Purged + Embargo   AUC 0.5037   ← 동전 던지기
+                        +0.13 이 통째로 착시
+같은 데이터, 같은 모델, 검증 방식만 바꿨습니다. 0.636을 보고 실전 투입했다면 그대로 계좌가 녹습니다.
+
+그리고 CUSUM 필터의 숨은 효과 하나 — 이벤트를 솎아내면 라벨 중복 자체가 줄어서(고유성 0.37 → 0.99) 누출 문제의 크기 자체가 작아집니다. 라벨링 단계의 선택이 검증 난이도를 결정하는 셈입니다.
+
+전달한 파일 네 개는 그대로 python example_pipeline.py로 돌아갑니다. leakage_selftest()는 CI에 넣어두시길 권합니다 — 파이프라인을 건드릴 때마다 퍼징이 깨졌는지 한 줄로 확인됩니다. 조용히 새는 누출이 가장 비쌉니다.
+
+KOSPI200 옵션 적용 시 필수 수정사항(라벨은 선물에, 세타 조정 배리어, 스프레드 하한, 만기 주간 분리)은 가이드 1.3절에 표로 정리해 뒀습니다.
+
+
+Guide
+문서 · MD 
+
+Labeling
+PY 
+
+Validation
+PY 
+
+Example pipeline
+PY 
+
+
+
+
+Claude는 AI이므로 실수할 수 있습니다. 응답을 다시 한번 확인해 주세요. 의견 보내기
+Example pipeline · PY
+"""
+example_pipeline.py — 라벨링 → 검증 전 과정 실행 예제 (합성 데이터)
+ 
+실행: python example_pipeline.py
+"""
+ 
+import numpy as np
+import pandas as pd
+ 
+from labeling import (
+    ewma_volatility, cusum_filter, build_events, make_sample_weights,
+    make_meta_labels, bet_size_from_probability,
+)
+from validation import (
+    PurgedKFold, purged_kfold_splits, cpcv_splits, n_cpcv_paths,
+    walk_forward_splits, leakage_selftest, sharpe_ratio, max_drawdown,
+    deflated_sharpe_ratio, probability_of_backtest_overfitting,
+)
+ 
+RNG = np.random.default_rng(7)
+ 
+ 
+# ---------------------------------------------------------------- 합성 데이터
+def make_ohlc(n=60_000):
+    """레짐이 바뀌는(변동성 군집) 1분봉 합성 데이터.
+ 
+    주의: 학습 가능한 약한 모멘텀을 인위적으로 심어 둔 '실험용' 데이터다.
+    아래 출력의 Sharpe 절대값은 의미가 없다. 보아야 할 것은
+    '누출 있는 검증 vs Purged 검증'의 격차와 각 방어선의 동작 여부다.
+    """
+    vol = 0.0004 * (1 + 0.8 * np.sin(np.arange(n) / 3000))
+    ret = RNG.normal(0, 1, n) * vol
+    ret += 0.08 * np.roll(ret, 1)                    # 약한 모멘텀 (학습 대상)
+    close = pd.Series(100 * np.exp(np.cumsum(ret)),
+                      index=pd.date_range("2024-01-02 09:00", periods=n, freq="min"))
+    noise = np.abs(RNG.normal(0, 1, n)) * vol * close.to_numpy()
+    high = close + noise
+    low = close - np.abs(RNG.normal(0, 1, n)) * vol * close.to_numpy()
+    return close, high, low
+ 
+ 
+close, high, low = make_ohlc()
+print(f"[data] {len(close):,} bars  {close.index[0]} ~ {close.index[-1]}")
+ 
+# ------------------------------------------------- STEP 1~2. 변동성 & 이벤트
+CUSUM_K, NUM_BARS = 3.0, 120
+sigma = ewma_volatility(close, span=100)
+events_idx = cusum_filter(close, CUSUM_K * sigma)
+print(f"[step2] CUSUM 이벤트 {len(events_idx):,}개 "
+      f"(전체의 {100*len(events_idx)/len(close):.1f}%) — 노이즈 구간 제거")
+ 
+# ------------------------------------------------- STEP 3~5. 트리플 배리어
+labels = build_events(close, high, low, sigma=sigma,
+                      cusum_k=CUSUM_K, num_bars=NUM_BARS, pt_sl=(2.0, 1.0),
+                      min_edge=0.0003)          # 왕복비용 3bp 하한
+print(f"[step5] 라벨 {len(labels):,}개")
+print(labels["barrier"].value_counts().to_string())
+print(labels["label"].value_counts(normalize=True).round(3).to_string())
+ 
+# 보수적 처리 효과 확인
+optimistic = build_events(close, high, low, sigma=sigma, cusum_k=CUSUM_K,
+                          num_bars=NUM_BARS, pt_sl=(2.0, 1.0), min_edge=0.0003,
+                          conservative=False)
+print(f"[bug check] 동시터치 낙관처리 시 평균수익 {optimistic['ret'].mean()*1e4:+.2f}bp "
+      f"→ 보수처리 {labels['ret'].mean()*1e4:+.2f}bp  "
+      f"(차이 {(optimistic['ret'].mean()-labels['ret'].mean())*1e4:+.2f}bp = 공짜 수익 착시)")
+ 
+# ------------------------------------------------- STEP 6. 표본 가중치
+w = make_sample_weights(close.index, close, labels, last_weight=0.5)
+print(f"[step6] 평균 고유성 {w['uniqueness'].mean():.3f} "
+      f"→ 실효 표본수 ≈ {int(w['uniqueness'].sum()):,} / 명목 {len(labels):,} "
+      f"({100*w['uniqueness'].mean():.1f}%)")
+ 
+# ------------------------------------------------- 특징(feature) 생성
+def make_features(close, idx):
+    f = pd.DataFrame(index=close.index)
+    lp = np.log(close)
+    for k in (5, 15, 60):
+        f[f"ret{k}"] = lp.diff(k)
+        f[f"vol{k}"] = lp.diff().rolling(k).std()
+    f["z60"] = (close - close.rolling(60).mean()) / close.rolling(60).std()
+    return f.reindex(idx)
+ 
+PPY = len(labels) / ((close.index[-1] - close.index[0]).days / 365.25)  # 연간 거래 수
+ 
+X = make_features(close, labels.index)
+ok = X.notna().all(axis=1)
+X, labels, w = X[ok], labels[ok], w[ok]
+y = (labels["label"] > 0).astype(int)
+t1 = labels["t1"]
+ 
+# ------------------------------------------------- Layer 1. 누출 자가진단
+print("\n[layer1] Purged K-Fold + Embargo 누출 자가진단")
+print(leakage_selftest(t1, n_splits=6, embargo_pct=0.01).to_string(index=False))
+ 
+# ------------------------------------------------- 학습 + Purged CV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import roc_auc_score
+ 
+def fit_predict(tr, te):
+    m = RandomForestClassifier(n_estimators=150, max_depth=None,
+                               min_samples_leaf=5, max_features=0.5,
+                               class_weight="balanced_subsample",
+                               n_jobs=-1, random_state=0)
+    m.fit(X.iloc[tr], y.iloc[tr], sample_weight=w["weight"].iloc[tr])
+    return pd.Series(m.predict_proba(X.iloc[te])[:, 1], index=X.index[te])
+ 
+aucs, pnl = [], []
+for tr, te in purged_kfold_splits(t1, n_splits=6, embargo_pct=0.01):
+    p = fit_predict(tr, te)
+    aucs.append(roc_auc_score(y.iloc[te], p))
+    pnl.append(np.sign(p - 0.5) * labels["ret"].iloc[te])
+pnl = pd.concat(pnl).sort_index()
+print(f"\n[purged cv] AUC {np.mean(aucs):.4f} ± {np.std(aucs):.4f}")
+print(f"[purged cv] OOS Sharpe {sharpe_ratio(pnl, PPY):.2f}  "
+      f"MDD {max_drawdown(pnl):.2%}  거래 {len(pnl):,}회")
+ 
+# 누출 있는 잘못된 검증과 비교
+from sklearn.model_selection import KFold
+bad = [roc_auc_score(y.iloc[te], fit_predict(tr, te))
+       for tr, te in KFold(6, shuffle=True, random_state=0).split(X)]
+print(f"[비교] 셔플 K-Fold(누출) AUC {np.mean(bad):.4f} "
+      f"vs Purged {np.mean(aucs):.4f} → 부풀림 {np.mean(bad)-np.mean(aucs):+.4f}")
+ 
+# ------------------------------------------------- Layer 2. CPCV
+n_g, n_k = 6, 2
+combos = list(cpcv_splits(t1, n_groups=n_g, n_test_groups=n_k, embargo_pct=0.01))
+print(f"\n[layer2] CPCV: {len(combos)}개 폴드 → {n_cpcv_paths(n_g, n_k)}개 백테스트 경로")
+sr_folds = []
+for tr, te, combo in combos:
+    p = fit_predict(tr, te)
+    sr_folds.append(sharpe_ratio(np.sign(p - 0.5) * labels["ret"].iloc[te], PPY))
+sr_folds = np.array(sr_folds)
+print(f"[layer2] Sharpe 분포: 중앙값 {np.median(sr_folds):.2f}  "
+      f"5%분위 {np.percentile(sr_folds,5):.2f}  "
+      f"음수 비율 {100*(sr_folds<0).mean():.0f}%")
+ 
+# ------------------------------------------------- Layer 3. DSR / PBO
+N_TRIALS = 40      # 실제로 시도한 파라미터 조합 수 (정직하게!)
+dsr = deflated_sharpe_ratio(pnl, n_trials=N_TRIALS, periods_per_year=PPY,
+                            sharpe_trials=sr_folds)
+print(f"\n[layer3] Sharpe {dsr['sharpe']:.2f} / 우연 기대 최대치 "
+      f"{dsr['sr_threshold']:.2f} → DSR {dsr['dsr']:.3f} "
+      f"({'PASS' if dsr['pass'] else 'FAIL'})")
+ 
+# 여러 파라미터를 돌려 PBO 계산
+strat = {}
+for k, (pt, sl) in enumerate([(1.5,1.0),(2.0,1.0),(2.5,1.0),(2.0,1.5),(3.0,1.0)]):
+    lab = build_events(close, high, low, sigma=sigma, cusum_k=CUSUM_K,
+                       num_bars=NUM_BARS, pt_sl=(pt, sl), min_edge=0.0003)
+    s = lab["ret"].reindex(pnl.index).fillna(0) * np.sign(pnl)
+    strat[f"pt{pt}_sl{sl}"] = s
+pbo = probability_of_backtest_overfitting(pd.DataFrame(strat), n_splits=10)
+print(f"[layer3] PBO {pbo['pbo']:.3f}  "
+      f"(OOS 중앙 백분위 {pbo['median_oos_percentile']:.2f}, "
+      f"{'PASS' if pbo['pass'] else 'FAIL'})")
+ 
+# ------------------------------------------------- Walk-Forward
+wf = [sharpe_ratio(np.sign(fit_predict(tr, te) - 0.5) * labels["ret"].iloc[te], PPY)
+      for tr, te in walk_forward_splits(len(X), n_folds=5, min_train=0.4)]
+print(f"\n[walk-forward] 폴드별 Sharpe {np.round(wf,2).tolist()}  "
+      f"평균 {np.mean(wf):.2f}")
+ 
+# ------------------------------------------------- STEP 7. 메타 라벨링
+primary = pd.Series(np.sign(np.log(close).diff(15)), index=close.index)
+primary = primary.reindex(labels.index).replace(0, np.nan).dropna()
+meta = make_meta_labels(close, high, low, primary, sigma=sigma,
+                        num_bars=NUM_BARS, pt_sl=(1.0, 1.0), min_edge=0.0003)
+print(f"\n[step7] 메타 라벨 {len(meta):,}개, "
+      f"1차 신호 적중률 {meta['meta_label'].mean():.3f} "
+      f"→ 2차 모델이 이 중 좋은 것만 골라 정밀도를 올린다")
+print(f"[step7] 확률 0.62 → 베팅사이즈 "
+      f"{bet_size_from_probability(pd.Series([0.62])).iloc[0]:.3f}, "
+      f"0.51 → {bet_size_from_probability(pd.Series([0.51])).iloc[0]:.3f}")
+ 
+print("\n완료.")
+ 
+# ===========================================================================
+# 부록. "라벨 중복이 클수록 누출 부풀림이 커진다" 실증
+#   위 본편은 CUSUM 필터 덕에 고유성이 0.99라 누출 여지가 거의 없었다.
+#   아래는 필터 없이 '모든 봉'에 라벨을 붙인, 즉 중복이 극심한 경우다.
+# ===========================================================================
+print("\n" + "="*70)
+print("[부록] CUSUM 없이 전 구간 라벨링 (중복 극심) → 누출 부풀림 측정")
+ 
+from labeling import add_vertical_barrier, apply_triple_barrier, average_uniqueness
+ 
+sub = close.index[300:20_300]
+ev = pd.DataFrame({"t1": add_vertical_barrier(sub, close, num_bars=NUM_BARS),
+                   "trgt": sigma.reindex(sub)}).dropna()
+lab2 = apply_triple_barrier(close, high, low, ev, pt_sl=(2.0, 1.0))
+u2 = average_uniqueness(close.index, lab2)
+print(f"  라벨 {len(lab2):,}개, 평균 고유성 {u2.mean():.4f} "
+      f"→ 실효 표본수 ≈ {int(u2.sum()):,} (명목의 {100*u2.mean():.1f}%)")
+ 
+X2 = make_features(close, lab2.index); m2 = X2.notna().all(axis=1)
+X2, lab2, u2 = X2[m2], lab2[m2], u2[m2]
+y2 = (lab2["label"] > 0).astype(int)
+ 
+def fp2(tr, te):
+    m = RandomForestClassifier(n_estimators=100, max_depth=None,
+                               min_samples_leaf=2, n_jobs=-1, random_state=0)
+    m.fit(X2.iloc[tr], y2.iloc[tr])
+    return m.predict_proba(X2.iloc[te])[:, 1]
+ 
+a_bad = [roc_auc_score(y2.iloc[te], fp2(tr, te))
+         for tr, te in KFold(5, shuffle=True, random_state=0).split(X2)]
+a_good = [roc_auc_score(y2.iloc[te], fp2(tr, te))
+          for tr, te in purged_kfold_splits(lab2["t1"], n_splits=5, embargo_pct=0.01)]
+print(f"  셔플 K-Fold(누출) AUC {np.mean(a_bad):.4f}")
+print(f"  Purged+Embargo  AUC {np.mean(a_good):.4f}")
+print(f"  >> 점수 부풀림 {np.mean(a_bad)-np.mean(a_good):+.4f}  "
+      f"(고유성이 낮을수록 이 격차가 커진다)")
+ 
+
