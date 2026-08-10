@@ -2,6 +2,99 @@
 
 ---
 
+## 2026-08-10 (MW0602 456차 — 0810 일일점검 후속: ZeroDiag 오진 수정 + min_conf 완화하한 + JointGate 폴백 섀도)
+
+**지시**: 0810 일일점검(기동~EOD+P8) → 승패 딥다이브(313차) → 개선안 P1·P2·P3 구현.
+
+### 점검에서 확정된 근본 진단 (구현의 배경)
+
+`predictions.db` 20거래일 21,518건을 **각 호라이즌의 실제 최빈 클래스(전부 DOWN)**
+기준선과 대조: 6개 호라이즌 중 **기준선을 이기는 것이 0개**, Bonferroni(α=.0083) 후에도
+15m(-4.4%p, p=0.0064)·30m(-4.6%p, p<0.0001)은 **유의하게 열위**. [40]·[42] "진입 축
+무가치" REJECTS를 대규모 표본으로 재확인한 것이다. ⚠ 그 기준선은 사후적이라 실전
+대안이 아니다 — "모델이 무조건부 편향조차 학습하지 못했다"는 진단으로만 읽을 것.
+
+부수 검정 2건 **기각**(313차 기록): ① "고신뢰=고적중" → conf≥45% 33.6% vs <45% 33.5%,
+z=+0.09 p=0.93, 일자단위 20일 t=0.61. ② "고변동성 진입이 손실" → 포지션단위 n=152에서
+Q4가 오히려 흑자, 일자 대응표본 t=0.42.
+
+### [버그] ZeroDiag가 실제 차단자를 놓쳐 점검 세션을 오진시켰다 — P1-c
+
+**File**: `main.py:_diagnose_zero_entry`
+**증상**: 2026-08-10 오전 A급 SHORT 5건(09:19·09:24·09:25·09:29·09:32)이 차단됐는데
+ZeroDiag는 `이상값피처(opt_pcr_bearish,opt_pcr_extreme,opt_pcr_slope_norm)`만 찍었다.
+**진짜 차단자는 `[RegimeOverride] 진입 금지 — RISK_ON×급변장`** 이었다.
+**원인**: 진단 목록이 `coherence_blocked`/`cascade_blocked`/`direction==0`/`conf<mc`/
+`FL고착`/`이상값피처` 6종뿐이고, 차단자들이 정본으로 기록하는
+`decision["checklist_reason"]`(RegimeOverride·FP-CRITICAL·ChampGate·σ미수집·조건부구간·
+ATR저변동)을 **읽지 않았다**. 게다가 원인과 참고를 한 줄에 "/"로 이어 붙여, 원인을 못
+찾은 줄에서 참고 항목이 원인으로 읽혔다.
+**실피해**: 이 세션이 "어제 450차 배포(opt_pcr 부활)의 스케일러 부작용이 오전 진입을
+막았다"고 오진해 불필요한 강제 재적합을 제안할 뻔했다. 로그 형식이 사람을 오도한 사례.
+**수정**: ① `checklist_reason`을 최우선 원인으로 읽는다(단 FLAT/conf↓/Coherence↓는
+후속 개별 진단이 더 구체적이라 중복 제거). ② 이상값피처를 `| 참고:`로 강등 — AutoMask
+격리는 예측을 바꿀 뿐 진입을 막지 않는다. ③ 원인을 하나도 못 찾으면 `⚠원인미상` 명시.
+**검증**: 오늘 로그 전량 재생 — 오독 위험 분봉 6개가 전부 `RegimeOverride`로 정정됨.
+
+### [결함] min_conf 강화가 완화 게이트에 조용히 지워진다 — P2
+
+**File**: `main.py` TrendGate 블록 / `config/settings.py:MC_RELAX_FLOOR_ENABLED`
+**원인**: min_conf 조정 게이트가 순차 덮어쓰기라 **마지막 게이트가 이긴다**.
+TrendGate의 `min(actual, override)`가 바로 앞 FQAdj의 강화까지 지운다. 431차가 품질군
+배수를 min() 합성으로 통일했을 때 min_conf 계열은 대상이 아니었다.
+**수정**: FQAdj가 `tighten`을 내면 그 값이 완화 하한(floor). 완화 게이트는 그 아래로
+못 내려간다. 강화 게이트(L2·InstabilityGate)는 제약하지 않는다.
+
+> ⚠ **손익 근거로 인용 금지 — 초안이 틀렸다.** 처음엔 "14:49 진입(-162,926원)의 직접
+> 패인"이라고 적었으나 그 분봉의 conf=0.495는 강화선 0.46도 넘어 floor가 있었어도
+> 진입했다. **12거래일(07-28~08-10) 전량 재생: 클램프 6분봉 / 차단됐을 진입 0건.**
+> 지금까지 이 경로가 체결을 바꾼 적은 없다. True로 두는 근거는 손익이 아니라
+> **불변식**("안전 강화가 조용히 지워지지 않는다")이고, 측정 영향이 0이라 켜는 비용도 0이다.
+
+### [결정 유지] JointGateBlock 폴백 중립화 — 배선하되 끈다 (기본 OFF) — P3
+
+**File**: `config/settings.py:JOINT_GATE_META_FALLBACK_NEUTRAL = False`,
+`main.py` JointGateBlock 블록, `utils/db_utils.py` `meta_neutral_pass` 컬럼
+**배경**: MetaGate reduce 밴드의 무정보 폴백(하드코딩 0.50)이 2026-08-10 발동 158회 중
+**41회(25.9%)**. 폴백이면 tox가 reduce이기만 하면 joint ≤ 0.50이라 **사실상 자동 차단**
+(그날 A급 SHORT 2건이 정확히 `0.50×0.70=0.350`).
+**그런데 켜지 않는다 — 431차가 이미 검토하고 거부한 변경이다**
+(`strategy/entry/meta_gate.py` 209~227행). 캠페인 [7]이 PASS(차단이 손실 회피) 판정을
+냈고 리포트도 "즉시 언블록 금지(§3-7)"를 권고문에 박아뒀다. 456차 재확인도 같은 방향:
+차단 158건 반사실 누적 **-72.85pt**, 오늘 2건도 자체 카운터팩추얼 **-1.02pt**(차단이 옳았다).
+**결정**: 라이브 경로 무변경. `joint_gate_shadow.meta_neutral_pass`에 "중립화였다면
+풀렸을 신호"를 **플래그와 무관하게 항상** 적재하고, 표본이 [7] `min_samples`에 닿으면
+주간회의가 판정한다. 켤 때 `VALIDATION_CAMPAIGN_DECISIONS`와 이 로그를 함께 갱신할 것.
+**부수 수정**: 차단 로그가 판정에 실제 쓰인 배수를 찍도록 정리 — 플래그 ON에서
+`meta=0.50 … joint=0.70` 자기모순이 나오지 않게 하고, 중립화 행은 `(폴백중립, raw=…)` 병기.
+
+### [기각] P1 원안(opt_pcr 스케일러 강제 재적합) — 불필요 확정
+
+신설한 `scripts/check_scaler_feature_drift.py`(읽기 전용)로 실측: 오늘 EOD P8(15:47,
+최근 500봉 재적합) 이후 **opt_pcr 계열 전부 |z| < 0.30**, AutoMask 임계 초과 0건.
+500봉 ≈ 1.3거래일이라 P8이 매일 흡수한다 — 오늘 겪은 것은 450차 배포 직후 1일 한정.
+**강제 재적합 배선하지 않음.**
+
+> 이 스크립트 자체도 첫 버전이 틀렸다: raw_features 원본값을 스케일러 파라미터와
+> 직접 비교해 `avg_volume`이 z=+736으로 찍혔다. 스케일러는 `apply_robust_preprocess()`
+> **이후**(log1p/clip) 값으로 적합된다. 전처리를 미러링해 수정했고, config에서 직접
+> 읽어 정의가 갈라지지 않게 했다. 6개 호라이즌 스케일러가 파라미터 동일이라 표를 1개로 합쳤다.
+
+**부수 발견(미조치, NEXT_TODO 등록)**: 5거래일 창으로 보면 수급 계열이 상시 드리프트
+(`program_non_arb_net` z=+3.07·격리유발 35%, `foreign_call_net` 36%). 대부분 비실사용이나
+`foreign_retail_divergence`(15m 실사용)는 22%. P8 창(500봉)이 짧은 데서 오는 구조적 특성.
+
+**구현**: `main.py`(3곳), `config/settings.py`(2 플래그), `utils/db_utils.py`(컬럼+마이그레이션),
+`scripts/generate_validation_campaign_report.py`(`_JGS_EXTRA_COLS` 1줄),
+`scripts/check_scaler_feature_drift.py`(신설), `tests/test_456_zerodiag_and_mc_floor.py`(신설).
+**검증**: 회귀 15/15 통과 · py37_32·py310_64 양쪽 py_compile · 12거래일 로그 재생 ·
+`joint_gate_shadow` INSERT 21/21 arity + 실 DB 롤백 드라이런(160행 무변경) ·
+멱등 ALTER 실행 확인. **라이브 미검증** — 다음 거래일 확인 항목은 NEXT_TODO 참조.
+**관련**: 431차(min() 합성·사이징 중립화), 450차(PCR 가드), 327·420차([7] 섀도),
+344차(FQAdj), 313차 원칙, 359차(섀도 선배선 관행).
+
+---
+
 ## 2026-08-10 (MW0601 455차 — 다중 호라이즌 피처 평가 P1~P6: 07-30 실행계획 1단계 + 신규 5요소)
 
 **지시**: `docs/Spec for feature/Muti Hz feature eval/multi_horizon_feature_eval_review.md`

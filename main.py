@@ -858,6 +858,11 @@ class TradingSystem:
         # STEP 6에서 저장 → STEP 1에서 T-1m 앙상블 conf 조회 → ensemble_calibrator 누적
         self._ensemble_conf_cache: dict = {}  # {ts_str: (conf_float, 1m_included_bool)}
 
+        # [MW0602 456차] min_conf 완화 하한 — FQAdj가 강화를 낸 분봉에만 float,
+        # 그 외에는 None. 매 분봉 STEP 6에서 무조건 재설정되므로 잔존값이 다음
+        # 분봉으로 새지 않는다(여기 초기화는 첫 분봉 전 조회 방어용).
+        self._mc_relax_floor: Optional[float] = None
+
         # ── P3-b: Reverse Entry Clamp ─────────────────────────────────────────
         self._last_exit_direction: str = ""      # 마지막 청산 방향 "LONG" or "SHORT"
 
@@ -6213,6 +6218,11 @@ class TradingSystem:
             log_manager.signal(
                 f"[FQAdj] {_fq_reason} → min_conf {_zone_mc:.2f}→{_zone_mc_new:.2f} ({_fq_action_ko})"
             )
+        # [MW0602 456차] 완화 하한 — FQAdj가 강화(tighten)를 냈으면 그 값을 하한으로
+        # 기록해 뒤따르는 완화 게이트(TrendGate)가 이 아래로 못 내리게 한다.
+        # 강화가 아니면 None → 종전 동작과 완전히 동일하다.
+        # 근거·실사고: config/settings.py MC_RELAX_FLOOR_ENABLED 주석.
+        self._mc_relax_floor = _zone_mc_new if _fq_action == "tighten" else None
         _zone_mc = _zone_mc_new
 
         # [353차] 확신도 고착 임시 부스트(P2-b 옵션 c) 입력값 — 타깃 호라이즌
@@ -6417,6 +6427,19 @@ class TradingSystem:
         if _tp_active:
             _prev_mc = actual_min_conf
             actual_min_conf = min(actual_min_conf, _tp["min_conf_override"])
+            # [MW0602 456차] 완화 하한 클램프 — FQAdj 강화선 아래로는 내리지 않는다.
+            # 섀도 로그는 플래그와 무관하게 남긴다(OFF로 되돌려도 발동 빈도 추적 가능).
+            _mc_floor = getattr(self, "_mc_relax_floor", None)
+            _mc_clamped = False
+            if _mc_floor is not None and actual_min_conf < _mc_floor:
+                if runtime_settings.MC_RELAX_FLOOR_ENABLED:
+                    actual_min_conf = _mc_floor
+                    _mc_clamped = True
+                else:
+                    log_manager.signal(
+                        f"[MCFloor] (섀도) TrendGate 완화 {actual_min_conf:.2f}가 "
+                        f"FQAdj 강화선 {_mc_floor:.2f} 아래 — 활성 시 {_mc_floor:.2f} 유지(미적용)"
+                    )
             if actual_min_conf < _prev_mc:
                 _tp_label  = "UP" if direction == 1 else "DN"
                 _tp_streak = _tp["up_streak"] if direction == 1 else _tp["dn_streak"]
@@ -6424,6 +6447,11 @@ class TradingSystem:
                 log_manager.signal(
                     f"[TrendGate] {_tp_label} 추세 지속 {_tp_streak}분{_ps_tag}"
                     f" — min_conf {_prev_mc:.2f}→{actual_min_conf:.2f}"
+                )
+            if _mc_clamped:
+                log_manager.signal(
+                    f"[MCFloor] FQAdj 강화선 {_mc_floor:.2f} 유지 — TrendGate 완화"
+                    f"({_tp['min_conf_override']:.2f}) 무시"
                 )
         # 대시보드 등급 카드 깜빡임: UP 상방 원웨이=녹색 / DN 하방 원웨이=오렌지
         _tp_dash_mode = (
@@ -8427,27 +8455,70 @@ class TradingSystem:
                     # MetaGate + ToxicityGate 동시 reduce → 합산 mult < 0.50 시 진입 차단
                     # 두 게이트가 각각 독립적으로 "위험하다"고 판단한 상황이므로 진입 의미 없음
                     # 5일 실거래 분석: 이 조건은 6/24 14:04(-1.27M), 6/18 14:14 손실 케이스에 해당
-                    _joint_mult = _meta_size * _tox_size
+                    #
+                    # [MW0602 456차] 무정보 폴백 중립화 — **기본 OFF(섀도)**.
+                    # reduce 밴드에서 모델이 사이즈 의견을 못 내면 meta_gate.py가
+                    # 하드코딩 0.50을 넣는다(`size_multiplier_fallback=True`). 그러면
+                    # tox가 reduce(≤1.0)이기만 하면 joint ≤ 0.50이라 **사실상 자동 차단**이다.
+                    # 2026-08-10 실측: MetaGate 발동 158회 중 41회(25.9%)가 폴백,
+                    # 그날 A급 SHORT 2건(09:39·09:40)이 정확히 `0.50×0.70=0.350`으로 막혔다.
+                    #
+                    # **그런데 켜면 안 된다.** 431차가 이 변경을 이미 검토하고 거부했다
+                    # (`strategy/entry/meta_gate.py` 209~227행): 폴백을 1.0으로 바꾸면
+                    # `1.0×0.70=0.70`이 되어 JointGateBlock 상당수가 조용히 무력화되는데,
+                    # 이 게이트는 캠페인 [7]에서 PASS(차단이 손실 회피) 판정을 받았고
+                    # 리포트도 "즉시 언블록 금지(§3-7)"를 명시한다. 456차 재확인:
+                    # 차단 158건 반사실 합계 **-72.85pt**, 2026-08-10 2건도 -1.02pt 회피.
+                    #
+                    # → 라이브 경로는 종전 그대로 두고, "중립화했다면 통과했을 신호"를
+                    #   섀도로만 적재한다(아래 `_jgs_meta_neutral_pass`). 캠페인 [7]이
+                    #   충분한 표본으로 판정을 내리면 그때 이 플래그를 켠다.
+                    _meta_size_fb = bool(_meta_gate.get("size_multiplier_fallback"))
+                    _meta_size_eff = (
+                        1.0
+                        if (runtime_settings.JOINT_GATE_META_FALLBACK_NEUTRAL and _meta_size_fb)
+                        else _meta_size
+                    )
+                    _joint_mult = _meta_size_eff * _tox_size
                     _joint_blocked = (
                         _meta_action == "reduce"
                         and _tox_action == "reduce"
                         and _joint_mult < 0.50
                     )
+                    # 섀도: 플래그와 무관하게 "폴백을 중립화했다면" 기준으로 재판정.
+                    # 라이브는 차단인데 이 값이 True면 = 중립화가 풀어줬을 신호.
+                    _jgs_meta_neutral_pass = bool(
+                        _meta_size_fb
+                        and _meta_action == "reduce"
+                        and _tox_action == "reduce"
+                        and (1.0 * _tox_size) >= 0.50
+                        and (_meta_size * _tox_size) < 0.50
+                    )
                     if _joint_blocked:
+                        # [MW0602 456차] 로그는 판정에 실제로 쓰인 `_meta_size_eff`를 찍는다.
+                        # 플래그 OFF면 `_meta_size`와 같아 종전 출력과 동일하고, ON이면
+                        # `meta=0.50 … joint=0.70` 같은 자기모순이 나오지 않는다.
+                        # 중립화가 적용된 행은 원값을 괄호로 병기해 사후 추적이 가능하게 둔다.
+                        _mn_tag = (
+                            f"(폴백중립, raw={_meta_size:.2f})"
+                            if _meta_size_eff != _meta_size else ""
+                        )
                         log_manager.signal(
-                            f"[JointGateBlock] MetaGate({_meta_size:.2f})×ToxGate({_tox_size:.2f})"
+                            f"[JointGateBlock] MetaGate({_meta_size_eff:.2f}){_mn_tag}"
+                            f"×ToxGate({_tox_size:.2f})"
                             f"={_joint_mult:.3f} < 0.50 → 진입 차단"
                         )
                         log_manager.trade(
                             f"[JointGateBlock 차단] {raw_dir_str} {_qty_auto}계약 {_final_grade}급 "
-                            f"(meta={_meta_size:.2f} tox={_tox_size:.2f} joint={_joint_mult:.3f})"
+                            f"(meta={_meta_size_eff:.2f}{_mn_tag} tox={_tox_size:.2f} "
+                            f"joint={_joint_mult:.3f})"
                         )
                         # [EOD리포트 진단용] 체크리스트 통과 후 2차 게이트(JointGateBlock)
                         # 차단임을 entry_block_reason에 기록 — 미기록 시 EOD 리포트에서
                         # "체결실패"로만 뭉뚱그려져 원인이 JointGateBlock인지 구분 불가.
                         _entry_block_reason = (
-                            f"[차단] JointGateBlock — meta={_meta_size:.2f} tox={_tox_size:.2f} "
-                            f"joint={_joint_mult:.3f} < 0.50"
+                            f"[차단] JointGateBlock — meta={_meta_size_eff:.2f} "
+                            f"tox={_tox_size:.2f} joint={_joint_mult:.3f} < 0.50"
                         )
                         # [327차] JointGateBlock counterfactual 섀도우 — hurst_gate_shadow와
                         # 동일 패턴(§3-6). tox_size가 상수(0.7)라 joint_mult이 사실상
@@ -8485,9 +8556,9 @@ class TradingSystem:
                                     meta_conf, meta_conf_raw, meta_size_raw,
                                     meta_size_fallback, tox_score, tox_score_ma,
                                     tox_ceiling, tox_size_shadow, joint_mult_shadow,
-                                    would_block_shadow)
+                                    would_block_shadow, meta_neutral_pass)
                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                                 (
                                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
                                     raw_dir_str,
@@ -8509,8 +8580,18 @@ class TradingSystem:
                                     _jgs_tox_shadow,
                                     round(_jgs_joint_shadow, 4),
                                     1 if _jgs_joint_shadow < 0.50 else 0,
+                                    1 if _jgs_meta_neutral_pass else 0,
                                 ),
                             )
+                            # [MW0602 456차] 플래그 OFF 동안에도 "중립화였다면 풀렸을"
+                            # 신호를 로그로 남긴다 — DB를 안 열어도 발동 빈도가 보인다.
+                            if (_jgs_meta_neutral_pass
+                                    and not runtime_settings.JOINT_GATE_META_FALLBACK_NEUTRAL):
+                                log_manager.signal(
+                                    f"[JointGateBlock] (섀도) meta는 무정보 폴백"
+                                    f"(raw={_jgs_ms_raw}) — 중립화 시 "
+                                    f"1.00×{_tox_size:.2f}={_tox_size:.2f} ≥ 0.50로 통과했을 신호"
+                                )
                         except Exception as _jgs_e:
                             logger.warning("[JointGateShadow] counterfactual 기록 실패 (무해): %s", _jgs_e)
                     else:
@@ -10013,9 +10094,28 @@ class TradingSystem:
         """진입0 원인을 자동 진단하여 [ZeroDiag] 로그 출력.
 
         STEP 7 전 grade==X 또는 direction==0 시 호출.
+
+        [456차] **원인(cause)과 참고(note)를 분리한다.** 종전에는 둘을 한 줄에 "/"로
+        이어 붙여, 진짜 차단자가 목록에 없을 때 참고 항목이 원인으로 읽혔다.
+        2026-08-10 실사고: 오전 A급 SHORT 5건을 막은 것은 `[RegimeOverride] RISK_ON×급변장`
+        이었는데 ZeroDiag는 `이상값피처(opt_pcr_*)`만 찍었고(RegimeOverride를 진단
+        목록에 넣지 않았다), 점검 세션이 그걸 원인으로 읽어 엉뚱한 조치를 제안할
+        뻔했다. 두 가지를 고친다.
+          ① `decision["checklist_reason"]`(차단자가 직접 기록하는 정본 필드)을 최우선 원인으로 읽는다.
+          ② 이상값피처는 `참고:`로 내린다 — AutoMask 격리는 예측을 바꿀 뿐 진입을 막지 않는다.
+        원인을 하나도 못 찾으면 `⚠원인미상`을 명시해 참고 항목이 원인으로 오독되는 걸 막는다.
         """
         try:
             reasons = []
+            notes = []
+            # ① 정본 차단사유 — RegimeOverride/FP-CRITICAL/ChampGate/σ미수집/조건부구간/
+            #    ATR저변동은 이 호출 시점 **이전**에 기록된다(main.py 6570~6760).
+            #    Warmup대기·coldstart·VWAP강제X·pass N/9는 이후라 여기서는 안 보인다 —
+            #    그것들은 애초에 이 함수가 호출되지 않는 경로다.
+            #    아래 세 값은 이어지는 개별 진단이 더 구체적으로 표현하므로 중복 제거한다.
+            _primary = str(ensemble_result.get("checklist_reason") or "").strip()
+            if _primary and _primary not in ("FLAT", "conf↓", "Coherence↓"):
+                reasons.append(_primary)
             if ensemble_result.get("coherence_blocked"):
                 reasons.append("CoherenceGate")
             if ensemble_result.get("cascade_blocked"):
@@ -10064,9 +10164,16 @@ class TradingSystem:
                     else f"{fn}(candidate)"
                     for fn in _outlier_feats[:3]
                 ]
-                reasons.append("이상값피처({})".format(",".join(_tagged_feats)))
-            if reasons:
-                log_manager.signal("[ZeroDiag] 진입X 원인: {}".format(" / ".join(reasons)))
+                # [456차] 원인 아님 — AutoMask 격리는 예측을 바꿀 뿐 진입을 막지 않는다.
+                notes.append("이상값피처({})".format(",".join(_tagged_feats)))
+            if reasons or notes:
+                if not reasons:
+                    # 참고 항목만 있는 상태를 "원인"으로 읽지 못하게 명시한다.
+                    reasons.append("⚠원인미상")
+                _msg = "[ZeroDiag] 진입X 원인: {}".format(" / ".join(reasons))
+                if notes:
+                    _msg += " | 참고: {}".format(" / ".join(notes))
+                log_manager.signal(_msg)
         except Exception as _de:
             logger.debug("[ZeroDiag] 진단 실패: %s", _de)
 

@@ -1,0 +1,76 @@
+{
+  "generated_at": "2026-08-10T15:18:50",
+  "pc": "MW0602",
+  "git": "8708035",
+  "days_requested": 1,
+  "coverage": {
+    "bars": 384,
+    "dates": [
+      "2026-08-10"
+    ],
+    "anchor_bars": 384,
+    "shadow_bars": 384,
+    "recovered_bars": 0
+  },
+  "identities": {
+    "i1_n": 384,
+    "i1_bad": 1,
+    "i1_max": 2,
+    "i2_n": 384,
+    "i2_unclassified": 0,
+    "i2_negative_bars": 0,
+    "i3_n": 384,
+    "i3_bad": 0,
+    "i3_bad_legacy_era": 0,
+    "i3_bad_dates": []
+  },
+  "axis_legacy_vs_anchor": {
+    "n": 384,
+    "volume": 112803,
+    "mag_net": 0.11706248947279771,
+    "mag_abs": 0.11709794952261908,
+    "sign_bias": 0.0026109660574412533,
+    "concentration": 0.9973958333333334,
+    "max_abs_bar": 172.0,
+    "worst_ts": "2026-08-10 09:00:00"
+  },
+  "axis_shadow_vs_anchor": {
+    "n": 384,
+    "volume": 112803,
+    "mag_net": 0.0,
+    "mag_abs": 0.0,
+    "sign_bias": null,
+    "concentration": 0.0,
+    "max_abs_bar": 0.0,
+    "worst_ts": "2026-08-10 08:45:00"
+  },
+  "shares": {
+    "legacy": 0.6237777364077196,
+    "shadow": 0.506715246934922,
+    "anchor": 0.5067242311681635
+  },
+  "daily": [
+    {
+      "date": "2026-08-10",
+      "bars": 384,
+      "anchor_bars": 384,
+      "legacy": 0.6237777364077196,
+      "shadow": 0.506715246934922,
+      "anchor": 0.5067242311681635
+    }
+  ],
+  "verdict": "✅ 발견 A 확정",
+  "reason": "앵커 매수비중 50.67%(균형)인데 라이브 legacy는 62.38%(편향) — 발견 A가 라이브에서 재현됐다.",
+  "next_action": "Phase 3 착수 가능. 단 섀도 20거래일 누적 후, 정규화 포화(features/technical/cvd.py:104)를 **동시에** 고칠 것. 틱 원본이 없어 2026-06-08~전환일 구간은 영구 편향(백필 불가)이므로 학습 창 분리가 필요하다.",
+  "thresholds": {
+    "MIN_BARS": 300,
+    "BALANCED": [
+      0.45,
+      0.55
+    ],
+    "BIASED_MIN": 0.58,
+    "IDENTITY_MAX_VIOLATION": 0.01,
+    "SHADOW_MATCH_MAX": 0.02,
+    "calibrated": false
+  }
+}

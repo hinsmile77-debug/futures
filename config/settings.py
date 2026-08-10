@@ -514,6 +514,36 @@ FQADJ_ACC_STRENGTHEN_MIN: float = (
     0.40  # 미만이면 fq 무관 강화 (랜덤 0.50 대비 뚜렷한 하회)
 )
 
+# [MW0602 456차, 2026-08-10] min_conf 완화 하한 — FQAdj 강화를 후속 완화 게이트가
+# 덮어쓰지 못하게 한다.
+#
+# **문제**: min_conf 조정 게이트들이 순차 덮어쓰기라 **마지막 게이트가 이긴다**.
+# TrendGate는 `actual_min_conf = min(actual_min_conf, override)`로 무조건 완화하므로,
+# 바로 앞에서 FQAdj가 "실측 정확도가 낮으니 문턱을 올려라"라고 강화한 것까지 지운다.
+# 431차가 품질군 배수(Exec·Meta·Tox·Hurst)를 min() 합성으로 통일했을 때 이 min_conf
+# 계열은 대상이 아니었다.
+#
+# **발견 경위 (2026-08-10, MW0602)**: 14:49 진입 직전 두 줄이 연속으로 찍혔다.
+#     [FQAdj]     실측acc=20.0% 낮음 → min_conf 0.41→0.46 (강화)
+#     [TrendGate] DN 추세 지속 21분  → min_conf 0.46→0.44
+#
+# **규칙**: FQAdj가 `tighten`을 냈으면 그 값이 완화 하한(floor)이 된다. 이후 완화
+# 게이트는 그 아래로 내려가지 못한다. **강화 게이트는 제약하지 않는다** — L2
+# IntradayRegime·InstabilityGate의 상향은 그대로 통과한다(문턱은 max가 이긴다).
+#
+# ⚠ **손익 근거로 인용하지 말 것 — 이 수정은 실측상 무해하지만 무익하기도 하다.**
+# 발견 당시 초안은 "이것이 14:49 진입(-162,926원)의 패인"이라고 적었으나 **틀렸다**.
+# 그 분봉의 conf=0.495는 강화선 0.46도 넘으므로 floor가 있었어도 진입했다.
+# 12거래일(2026-07-28~08-10) 로그 전량 재생 실측:
+#     클램프 발동 **6분봉** / 그로 인해 차단됐을 진입 **0건**
+# 즉 지금까지 이 경로가 실제 체결을 바꾼 적은 한 번도 없다.
+#
+# **그래도 True로 두는 이유**: 손익 기대가 아니라 **불변식**이다 — "안전을 위한 강화가
+# 완화 게이트에 조용히 지워지지 않는다". 측정된 영향이 0이라 켜는 비용도 0이고,
+# 마진이 실제로 물리는 날 대비가 된다. False로 두면 종전 동작 + 섀도 로그(`[MCFloor] (섀도)`)만
+# 남는다. 발동 빈도는 `[MCFloor]` grep으로 추적할 것 — 유의미하게 늘면 재검토 대상이다.
+MC_RELAX_FLOOR_ENABLED: bool = True
+
 # [346차] EOD 모델 교체 가드 — CV acc(GBM)/OOB(RF)가 구모델 대비 허용 하락폭을
 # 넘으면 교체를 보류하고 구모델을 유지한다(호라이즌별 독립 판정). 신규 학습 결과는
 # 버리지 않고 model/horizons/rejected/에 참고용으로 저장 + notify() 알림.
@@ -4385,6 +4415,31 @@ TOXICITY_SEVERE_SPREAD_BLOCK_TICKS = 20.0
 # 비춰 임계값(0.45/0.28) 재선정 여부는 VALIDATION_CAMPAIGN["toxicity_recalib_watch"]
 # 채널이 라이브 표본을 모은 뒤 주간회의에서 수동 결정한다 — 여기서 함께 바꾸지 말 것.
 TOXICITY_CANCEL_CHURN_CEILING = 0.42
+
+# ── [MW0602 456차 / 섀도] JointGateBlock 무정보 폴백 중립화 ────────────────────
+# **기본 False = 라이브 동작 무변경.** 켜면 JointGateBlock의 차단 판정에서
+# MetaGate의 무정보 폴백(`size_multiplier_fallback=True`, 하드코딩 0.50)을 중립
+# 1.00으로 간주한다 → `1.00 × tox` 가 되어 폴백 케이스 차단이 대부분 풀린다.
+#
+# **왜 배선만 하고 끄는가**
+# 431차가 정확히 이 변경을 검토하고 **의도적으로 거부했다**
+# (`strategy/entry/meta_gate.py` 209~227행). 사이징 경로는 중립화했지만
+# (`size_multiplier_sizing`) 차단 경로는 그대로 뒀는데, 근거는 캠페인 [7]
+# JointGateBlock counterfactual이 PASS(차단이 손실 회피) 판정을 받았고
+# `generate_validation_campaign_report.py`도 "즉시 언블록 금지(§3-7)"를 권고문에
+# 박아뒀기 때문이다.
+#
+# 456차 재확인(2026-08-10, MW0602):
+#   · 차단 158건 반사실 누적 **-72.85pt** (A급 -50.65 / C급 -22.2)
+#   · 그날 폴백 차단 2건(09:39·09:40)도 자체 카운터팩추얼 **-1.02pt** — 차단이 옳았다
+#   · 다만 폴백은 MetaGate 발동의 **25.9%**(41/158)로 결코 예외가 아니다
+#
+# → 라이브는 종전대로 두고, `joint_gate_shadow.meta_neutral_pass`에 "중립화였다면
+#   풀렸을 신호"를 **플래그와 무관하게 항상** 적재한다. 그 표본이 캠페인 [7]
+#   min_samples에 닿아 주간회의가 판정하면 그때 이 값을 True로 바꾼다.
+#   변경 시 `VALIDATION_CAMPAIGN_DECISIONS` 레지스트리와 DECISION_LOG를 함께 갱신할 것
+#   (CLAUDE.md "판정과 결정은 별개다" 규약).
+JOINT_GATE_META_FALLBACK_NEUTRAL: bool = False
 
 # ── [MW0601 419차 / P1 섀도] ToxicityGate reduce 밴드 연속 배수 (섀도 전용) ────
 # 현행 reduce 밴드는 밴드 전체를 상수 size_multiplier=0.7 하나로 매핑한다

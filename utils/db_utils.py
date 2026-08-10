@@ -581,6 +581,14 @@ def init_trades_db():
         tox_size_shadow    REAL,    -- 419차 P1 연속 배수 (섀도, 실사이징 미관여)
         joint_mult_shadow  REAL,    -- meta_size × tox_size_shadow
         would_block_shadow INTEGER,  -- 1 = 연속 배수였어도 차단됐을 것 (<0.50)
+        -- (4) [MW0602 456차] **무정보 폴백 축**. 위 (1)의 meta_size_fallback은 폴백
+        --     발동 여부만 남길 뿐, "폴백을 중립(1.0)으로 봤다면 이 차단이 풀렸는가"는
+        --     기록하지 않았다. 431차가 사이징 경로만 중립화하고 차단 경로는 캠페인 [7]
+        --     PASS 판정 때문에 의도적으로 남겨뒀는데, 그 결정을 재검토하려면 바로 이
+        --     반사실 표본이 있어야 한다(2026-08-10 실측: 폴백이 MetaGate 발동의 25.9%).
+        --     `JOINT_GATE_META_FALLBACK_NEUTRAL` 플래그와 **무관하게** 항상 적재한다 —
+        --     OFF인 동안 표본을 모으는 것이 이 컬럼의 존재 이유다.
+        meta_neutral_pass  INTEGER,  -- 1 = 폴백 중립화였다면 차단이 풀렸을 신호
         created_at    TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
@@ -598,6 +606,7 @@ def init_trades_db():
         ("tox_score", "REAL"), ("tox_score_ma", "REAL"), ("tox_ceiling", "REAL"),
         ("tox_size_shadow", "REAL"), ("joint_mult_shadow", "REAL"),
         ("would_block_shadow", "INTEGER"),
+        ("meta_neutral_pass", "INTEGER"),   # [MW0602 456차]
     ]
     try:
         _jgs_have = {r[1] for r in fetchall(

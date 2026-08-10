@@ -4481,6 +4481,9 @@ _JGS_EXTRA_COLS = (
     ("tox_score_ma", "REAL"), ("tox_ceiling", "REAL"),
     ("tox_size_shadow", "REAL"), ("joint_mult_shadow", "REAL"),
     ("would_block_shadow", "INTEGER"),
+    # [MW0602 456차] 폴백 중립화 반사실. 주간 리포트가 아직 소비하지 않는다 —
+    # 표본이 쌓이면 [7] 채널에 절을 추가할 것(NEXT_TODO 456차 항목).
+    ("meta_neutral_pass", "INTEGER"),
 )
 
 
