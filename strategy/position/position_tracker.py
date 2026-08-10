@@ -88,6 +88,11 @@ class PositionTracker:
         self.quantity:     int   = 0
         self.entry_time:   Optional[datetime.datetime] = None
         self.grade:        str   = ""
+        # [456차 Wave 4 / F10-B] 진입 시점 체크리스트 통과 항목 수.
+        # 승격 경로([36])는 raw_grade→grade로 이미 재지만, "C→A 승격에 정렬강도
+        # 하한이 필요한가"는 pass_count 없이는 답할 수 없다. 진입 판정에 관여하지
+        # 않는 순수 관측값이다. None=구버전 레코드.
+        self.checklist_pass_count: Optional[int] = None
         self.regime:       str   = ""
         self.signal_direction: str = ""
         self.reverse_entry_enabled: bool = False
@@ -261,6 +266,7 @@ class PositionTracker:
         extra_stop_mult: float = 1.0,
         quantile_expected_pt: Optional[float] = None,
         quantile_uncertainty_pt: Optional[float] = None,
+        checklist_pass_count: Optional[int] = None,
     ):
         """
         포지션 진입
@@ -295,6 +301,7 @@ class PositionTracker:
         self.quantity    = quantity
         self.entry_time  = now_kst()
         self.grade       = grade
+        self.checklist_pass_count = checklist_pass_count   # [456차 Wave 4 / F10-B]
         self.regime      = regime
         self.signal_direction = raw_direction or direction
         self.reverse_entry_enabled = bool(reverse_entry_enabled)
@@ -405,6 +412,7 @@ class PositionTracker:
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,
+            "checklist_pass_count": self.checklist_pass_count,
             "entry_horizon": self.entry_horizon,
             "reverse_entry_enabled": self.reverse_entry_enabled,
         }
@@ -767,6 +775,7 @@ class PositionTracker:
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,
+            "checklist_pass_count": self.checklist_pass_count,
             "entry_horizon": self.entry_horizon,
             "forward_commission": round(forward_commission, 0),
             "reverse_entry_enabled": self.reverse_entry_enabled,
@@ -1220,6 +1229,7 @@ class PositionTracker:
                 (filled_at or now_kst()).strftime("%Y-%m-%d %H:%M:%S")
             ),
             "grade": self.grade,
+            "checklist_pass_count": self.checklist_pass_count,
             "entry_horizon": self.entry_horizon,
             "reverse_entry_enabled": self.reverse_entry_enabled,
             # [MW0601 417차 / ②] 진입 계약수 — 위 "quantity"는 **이번 청산 레그의
@@ -1242,6 +1252,7 @@ class PositionTracker:
         self.quantity = 0
         self.entry_time = None
         self.grade = ""
+        self.checklist_pass_count = None
         self.regime = ""
         self.signal_direction = ""
         self.reverse_entry_enabled = False
@@ -1392,6 +1403,7 @@ class PositionTracker:
                 "entry_time":   (self.entry_time.isoformat()
                                  if self.entry_time else None),
                 "grade":        self.grade,
+                "checklist_pass_count": self.checklist_pass_count,
                 "regime":       self.regime,
                 "signal_direction": self.signal_direction,
                 "reverse_entry_enabled": self.reverse_entry_enabled,
@@ -1471,6 +1483,7 @@ class PositionTracker:
             self.entry_time  = (datetime.datetime.fromisoformat(state["entry_time"])
                                 if state.get("entry_time") else None)
             self.grade        = state.get("grade", "")
+            self.checklist_pass_count = state.get("checklist_pass_count")
             self.regime       = state.get("regime", "")
             self.signal_direction = state.get("signal_direction", self.status)
             self.reverse_entry_enabled = bool(state.get("reverse_entry_enabled", False))

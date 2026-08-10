@@ -113,18 +113,55 @@ _NOT_GHOST_SQL = "COALESCE(entry_source,'') != 'GHOST_PENDING_MISS'"
 # 공통 유틸
 # ──────────────────────────────────────────────────────────────
 
+def _rankdata_avg(a):
+    """평균순위(동률 처리) — scipy 없이. `core_feature_discovery.rankdata`와 동일 정의."""
+    order = np.argsort(a, kind="mergesort")
+    ranks = np.empty(a.size, dtype=np.float64)
+    ranks[order] = np.arange(1, a.size + 1, dtype=np.float64)
+    sa = a[order]
+    i = 0
+    while i < sa.size:
+        j = i
+        while j + 1 < sa.size and sa[j + 1] == sa[i]:
+            j += 1
+        if j > i:
+            ranks[order[i:j + 1]] = (i + 1 + j + 1) / 2.0
+        i = j + 1
+    return ranks
+
+
 def _spearman(x, y) -> float:
-    """numpy 전용 스피어만 상관 (scipy 의존 회피)."""
+    """numpy 전용 스피어만 상관 (scipy 의존 회피).
+
+    [MW0601 456차 / Wave 4 구현 중 발견·수정] **동률 처리 버그**.
+    종전 구현은 `np.argsort(np.argsort(x))`로 **서수 순위(0..n-1)**를 만들었다.
+    그 방식은 동률을 **원 배열 위치 순서로 임의 분리**한다 —
+
+        _spearman([1,2,1,2,1,2], [0.3]*6)  →  구: **+0.714**  /  정정: nan
+
+    y가 전부 같은 값인데도 0.7이 나온다. `sy < 1e-12` 가드가 무력한 이유도 같다:
+    동률을 갈라 순위가 0..n-1이 되면 표준편차가 0이 아니게 된다.
+
+    **영향** — 동률이 많은 축에서 없는 상관이 만들어진다. 특히 이산 소범위 변수
+    (청산수량 {1,2,3}, pass_count, 이진 플래그)에서 심하다. 456차 [17-Q] 설계 중
+    합성데이터 검증으로 드러났다(관계 없는 데이터에 rho=+0.17, CI가 0을 배제).
+
+    평균순위(midrank)로 교체한다 — Spearman의 표준 정의다.
+
+    ⚠ **계측 불연속**: 이 헬퍼를 쓰는 기존 채널의 rho 값이 바뀐다(정정 방향).
+    동률이 없는 연속형 축은 사실상 무변화이고, 이산 축일수록 크게 바뀐다.
+    경계는 2026-08-10 — DECISION_LOG 456차 Wave 4 참조.
+    """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     if len(x) < 3 or len(x) != len(y):
         return float("nan")
-    rx = np.argsort(np.argsort(x)).astype(np.float64)
-    ry = np.argsort(np.argsort(y)).astype(np.float64)
+    rx = _rankdata_avg(x)
+    ry = _rankdata_avg(y)
     sx = rx.std()
     sy = ry.std()
     if sx < 1e-12 or sy < 1e-12:
-        return float("nan")
+        return float("nan")     # 한쪽이 전부 동률 = 상관 정의 불가
     return float(((rx - rx.mean()) * (ry - ry.mean())).mean() / (sx * sy))
 
 
@@ -7213,6 +7250,18 @@ def build_report(days: int) -> tuple:
     trm = eval_toxicity_reduce_mult_shadow()  # [31] MW0601 419차 P1
     pse = eval_phantom_stop_edge()           # [35] MW0602 424차 후속
     gxp = eval_grade_x_promotion()           # [36] MW0602 424차 후속
+    # [MW0601 456차 Wave 4] 사전등록 하위 축 3종 — 기존 채널의 빠진 축만 보탠다
+    from scripts.wave4_subaxis import (
+        eval_exit_fill_slippage_qty as _w4_slipqty,
+        eval_grade_promotion_passcount as _w4_passcnt,
+        eval_tp1_protect_forgone_mfe as _w4_fmfe,
+    )
+    efq = _w4_slipqty(_conn, TRADES_DB, _campaign_start(), _spearman,
+                      VALIDATION_CAMPAIGN)
+    gpp = _w4_passcnt(_merged_positions, _trades_has_column, _spearman,
+                      VALIDATION_CAMPAIGN)
+    tfm = _w4_fmfe(_conn, TRADES_DB, _campaign_start(), _load_candle_maps,
+                   VALIDATION_CAMPAIGN)
     hmd = eval_hurst_meanrevert_drag()       # [37] MW0602 424차 후속
     pgl = eval_profit_guard_l1_watch()       # [38] MW0602 426차
     cdw = eval_conf_discrimination_watch()   # [39] MW0602 427차
@@ -7592,6 +7641,16 @@ def build_report(days: int) -> tuple:
                 k, v["n"], v.get("days", 0), v["win_rate"] * 100,
                 format(v["avg_pnl_krw"], ",.0f"))
             for k, v in sorted(_gx.items())) or "표본 없음")))
+    L.append("| [36-P] C→A 승격 pass_count 축 | %s | %s |" % (
+        _fmt_channel_verdict(gpp),
+        gpp.get("note") or gpp.get("reason") or "—"))
+    L.append("| [17-Q] 손절 슬리피지 × 청산수량 | %s | %s |" % (
+        _fmt_channel_verdict(efq),
+        ((efq.get("note") or efq.get("reason") or "—")
+         + (" 🔴사전관측" if efq.get("pre_observed") else ""))))
+    L.append("| [TP1-M] 보호전환 포기 MFE | %s | %s |" % (
+        _fmt_channel_verdict(tfm),
+        tfm.get("note") or tfm.get("reason") or "—"))
     L.append("| [37] mean-revert 일자단위 재검정 | %s | %s |" % (
         _fmt_channel_verdict(hmd),
         hmd.get("reason") or (

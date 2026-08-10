@@ -2786,9 +2786,9 @@ class TradingSystem:
                 formula_version, exit_reason, grade, regime,
                 meta_action, hurst_bucket, hour_bucket,
                 was_restart_after, had_partial_fill, entry_horizon, entry_source,
-                kelly_advised_skip, raw_grade, entry_qty)
+                kelly_advised_skip, raw_grade, entry_qty, checklist_pass_count)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -2828,6 +2828,10 @@ class TradingSystem:
                 # PositionTracker._build_exit_result()가 initial_quantity로 채우며,
                 # 없으면 레그 수량으로 폴백(구경로 안전).
                 int(result.get("entry_qty") or result.get("quantity") or 0),
+                # [456차 Wave 4 / F10-B] 진입 시점 체크리스트 통과 항목 수.
+                # None을 그대로 넘긴다 — 0으로 채우면 "미기록"과 "0개 통과"가
+                # 구분되지 않는다(G3-A② 미측정 ≠ 0).
+                result.get("checklist_pass_count"),
             ),
         )
         try:
@@ -8498,6 +8502,15 @@ class TradingSystem:
                     # [401차, 372차 제안 반영] 체크리스트 등급(_final_grade)과 별개로
                     # 원시 확신도 등급(grade, EnsembleDecision.compute() 산출)을 보존
                     self._entry_raw_grade    = str(grade or "")
+                    # [456차 Wave 4 / F10-B] 체크리스트 통과 항목 수.
+                    # `_cr`이 없는 경로(FLAT·보유중)는 여기 도달하지 않지만,
+                    # 방어적으로 None을 남긴다 — 0으로 채우면 "미기록"과
+                    # "0개 통과"가 구분되지 않는다(G3-A② 미측정 ≠ 0).
+                    self._entry_pass_count = (
+                        int(_cr.get("pass_count"))
+                        if isinstance(_cr, dict) and _cr.get("pass_count") is not None
+                        else None
+                    )
                     self._entry_hurst_bucket = (
                         "trend"       if _hurst_now >= 0.55
                         else "neutral" if _hurst_now >= 0.45
@@ -12369,12 +12382,19 @@ def _ts_record_exit_fill_slippage(self, pending: dict, fill_price: float) -> Non
             self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
             if getattr(self.position, "entry_time", None) else None
         )
+        # [456차 Wave 4 / G2-B] 청산 레그 수량. 417차 가설("계약수가 클수록 손절
+        # 체결이 나빠진다")을 재려면 필수다. 종전엔 trades 조인으로만 얻을 수 있었고
+        # (조인 성공률 100%지만) 조인은 exit_ts ±3초 매칭이라 깨지기 쉽다.
+        try:
+            _slip_qty = int(pending.get("qty") or 0) or None
+        except Exception:
+            _slip_qty = None
         execute(
             TRADES_DB,
             """INSERT INTO exit_fill_slippage
                (ts, entry_ts, direction, reason, price_hint, fill_price,
-                slippage_pts, hint_source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                slippage_pts, hint_source, quantity)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 entry_ts,
@@ -12386,6 +12406,7 @@ def _ts_record_exit_fill_slippage(self, pending: dict, fill_price: float) -> Non
                 # [423차] .get() 그대로 — `or None`을 쓰면 빈 문자열이 NULL로
                 # 승격돼 "태그 없는 구경로"와 "태그가 빈 신경로"가 구분되지 않는다.
                 (pending.get("hint_source") or None),
+                _slip_qty,
             ),
         )
     except Exception as _efs_e:
@@ -15247,6 +15268,7 @@ def _ts_execute_entry(
             extra_stop_mult=extra_stop_mult,
             quantile_expected_pt=quantile_expected_pt,
             quantile_uncertainty_pt=quantile_uncertainty_pt,
+            checklist_pass_count=getattr(self, "_entry_pass_count", None),  # [456차 F10-B]
         )
         self.position._optimistic = True
         if self._pending_order is not None:

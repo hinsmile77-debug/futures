@@ -1187,6 +1187,12 @@ def init_trades_db():
         # [456차 / F6] fair_contaminated_bars: 홀드아웃 중 현행 모델이 이미 학습한 봉 수.
         #   0  = 깨끗 (판정 유효)  /  >0 = 오염 봉수  /  -1 = 미상(=오염 취급)
         # incumbent_source/cutoff_ts: 배포 pkl이 eod인지 intraday인지, 학습 마지막 봉 ts.
+        # [456차 Wave 4 / G2-B] 청산 레그 수량 — 417차 "계약수 x 슬리피지" 가설용.
+        # 종전엔 trades 조인으로만 얻었고 그 조인은 exit_ts ±3초 매칭이라 깨지기 쉽다.
+        _efs_cols = {r[1] for r in _gsl_conn.execute(
+            "PRAGMA table_info(exit_fill_slippage)").fetchall()}
+        if _efs_cols and "quantity" not in _efs_cols:
+            _gsl_conn.execute("ALTER TABLE exit_fill_slippage ADD COLUMN quantity INTEGER")
         for _c, _t in (("fair_new", "REAL"), ("fair_old", "REAL"),
                        ("fair_hold_bars", "INTEGER"), ("fair_note", "TEXT"),
                        ("fair_contaminated_bars", "INTEGER"),
@@ -1255,6 +1261,11 @@ def _migrate_trades_db():
                 # 순EV 역전과도 연결되는 후보 원인)를 사후분석에서 구분할 수 있게
                 # 한다. 진입 판정에는 영향 없는 순수 관측 컬럼. NULL=구버전 레코드.
                 "raw_grade": "TEXT",
+                # [456차 Wave 4 / F10-B] 진입 시점 체크리스트 통과 항목 수.
+                # 승격 경로([36])는 raw_grade->grade로 이미 재지만 "C->A 승격에
+                # 정렬강도 하한이 필요한가"는 pass_count 없이는 답할 수 없다.
+                # 진입 판정 무관 순수 관측. NULL=구버전 레코드.
+                "checklist_pass_count": "INTEGER",
                 # [MW0601 417차 / ②] 진입 시점 계약수.
                 #
                 # **왜 필요한가.** `quantity`는 **청산 행별 계약수**다 — 부분청산
