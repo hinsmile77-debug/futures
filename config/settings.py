@@ -547,6 +547,33 @@ EOD_MODEL_GUARD_DROP_TOLERANCE = {
 }
 EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT = 0.03  # 미등록 호라이즌 기본값
 
+# ── [MW0601 456차 / F7] EOD 모델가드 판정 소스 ────────────────────────────────
+#
+# 가드는 "신규 CV acc"를 "현행 모델 성적"과 비교해 교체 여부를 정한다. 그 **현행
+# 성적을 어디서 읽느냐**가 이 설정이다.
+#
+#   "acc_txt"    — 현행(기본). `gbm_{h}_acc.txt`를 읽는다.
+#   "guard_fair" — 공정 홀드아웃(`_measure_fair_holdout`) 결과로 판정.
+#
+# **왜 기본값이 아직 acc_txt인가**
+# `acc_txt`는 유령 기준선이다. intraday 재학습이 pkl을 덮어써도 acc.txt는 보존되므로
+# (`_save_model` 의도된 동작) 그 수치의 주인은 이미 없다 — 실측: 3m acc.txt=0.4651이
+# 2026-07-22자인데 pkl은 매일 장중 재학습본이고, 그 결과 3m은 08-05·06·07·10
+# **4거래일 연속 교체 보류**됐다. 보류가 지킨 것은 0.4651 모델이 아니라 **CV를 거치지
+# 않은 장중 모델**이다.
+#
+# 그래서 `guard_fair`로 옮기는 것이 옳지만, 지금 바로 켜면 안 된다:
+# GuardFair 자체가 2026-08-10까지 **6거래일 연속 100% 오염**돼 있었다(현행 pkl이
+# 홀드아웃 1,850봉을 통째로 학습 — intraday 학습창 4,800봉 ⊃ 1,850봉).
+# 456차 F6이 그 오염을 검출·차단하도록 고쳤으므로, **깨끗한 판정이 5거래일 누적된 뒤**
+# 주간회의에서 전환한다(313차 원칙 — 하루치로 정책을 바꾸지 않는다).
+#
+# 전환 조건 (전부 충족 시):
+#   ① `guard_shadow_log.fair_contaminated_bars == 0` 인 EOD 행이 5거래일 연속
+#   ② 그 구간에서 fair_verdict 이 6/6 HOLD로 쏠리지 않을 것(쏠리면 홀드아웃 설계 재검토)
+#   ③ 주간회의 승인 + DECISION_LOG 기록
+EOD_GUARD_VERDICT_SOURCE = "acc_txt"   # "acc_txt" | "guard_fair"
+
 # [MW0601 405차 / P1-1] EOD 모델가드 공정 홀드아웃 — **섀도 전용, 판정 무영향**
 #
 # 문제: 현행 가드는 new(3-fold CV 홀드아웃, OOS)와 old(acc.txt, 그 폴드를 학습에

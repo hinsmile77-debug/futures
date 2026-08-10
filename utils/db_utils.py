@@ -1184,8 +1184,15 @@ def init_trades_db():
                 "ALTER TABLE guard_shadow_log ADD COLUMN source TEXT NOT NULL DEFAULT 'eod'")
         if "pc" not in _gsl_cols:
             _gsl_conn.execute("ALTER TABLE guard_shadow_log ADD COLUMN pc TEXT")
+        # [456차 / F6] fair_contaminated_bars: 홀드아웃 중 현행 모델이 이미 학습한 봉 수.
+        #   0  = 깨끗 (판정 유효)  /  >0 = 오염 봉수  /  -1 = 미상(=오염 취급)
+        # incumbent_source/cutoff_ts: 배포 pkl이 eod인지 intraday인지, 학습 마지막 봉 ts.
         for _c, _t in (("fair_new", "REAL"), ("fair_old", "REAL"),
-                       ("fair_hold_bars", "INTEGER"), ("fair_note", "TEXT")):
+                       ("fair_hold_bars", "INTEGER"), ("fair_note", "TEXT"),
+                       ("fair_contaminated_bars", "INTEGER"),
+                       ("incumbent_source", "TEXT"),
+                       ("incumbent_cutoff_ts", "TEXT"),
+                       ("verdict_source", "TEXT")):
             if _c not in _gsl_cols:
                 _gsl_conn.execute(
                     "ALTER TABLE guard_shadow_log ADD COLUMN %s %s" % (_c, _t))
@@ -2495,6 +2502,10 @@ def save_guard_shadow(
     source: str = "eod",
     fair_new: Optional[float] = None, fair_old: Optional[float] = None,
     fair_hold_bars: Optional[int] = None, fair_note: Optional[str] = None,
+    fair_contaminated_bars: Optional[int] = None,
+    incumbent_source: Optional[str] = None,
+    incumbent_cutoff_ts: Optional[str] = None,
+    verdict_source: Optional[str] = None,
 ) -> None:
     """[404차, P0-4 후속] EOD/intraday 모델가드 GuardShadow 1행 저장.
 
@@ -2517,11 +2528,15 @@ def save_guard_shadow(
         """INSERT INTO guard_shadow_log
            (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
             distortion, actual_verdict, fair_verdict, n_samples, pc,
-            fair_new, fair_old, fair_hold_bars, fair_note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            fair_new, fair_old, fair_hold_bars, fair_note,
+            fair_contaminated_bars, incumbent_source, incumbent_cutoff_ts,
+            verdict_source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
          distortion, actual_verdict, fair_verdict, n_samples, pc_id(),
-         fair_new, fair_old, fair_hold_bars, fair_note),
+         fair_new, fair_old, fair_hold_bars, fair_note,
+         fair_contaminated_bars, incumbent_source, incumbent_cutoff_ts,
+         verdict_source),
     )
 
 

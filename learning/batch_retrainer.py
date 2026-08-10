@@ -20,6 +20,7 @@
 Python 3.7 32-bit 호환 (scikit-learn GradientBoostingClassifier)
 """
 import os
+import json
 import logging
 import datetime
 import pickle
@@ -52,7 +53,7 @@ from config.settings import (
     GBM_WEIGHT_DEFAULT, GBM_MIN_SAMPLES_LEAF,
     RETRAIN_WEEKS_BACK, MAX_TRAIN_BARS, RAW_DATA_PRUNE_WEEKS,
     EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
-    EOD_GUARD_FAIR_HOLDOUT,
+    EOD_GUARD_FAIR_HOLDOUT, EOD_GUARD_VERDICT_SOURCE,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from learning.eod_model_guard import evaluate_model_replace
@@ -457,6 +458,14 @@ class BatchRetrainer:
         self._last_retrain:  Optional[datetime.datetime] = None
         self._retrain_count: int = 0
 
+        # [456차 / F6] 이번 학습에 쓰인 행별 타임스탬프. `_load_from_db`가 채우고
+        # `retrain_now`의 절단과 동기화된다. 두 곳에서 쓴다:
+        #   ① `_save_model` — 사이드카에 `train_cutoff_ts`(마지막 학습 봉) 기록
+        #   ② `_measure_fair_holdout` — 홀드아웃 시작 시각 산출
+        # X를 외부에서 주입받은 경로에서는 정렬을 보장할 수 없어 None으로 둔다
+        # ("모른다"를 0이나 빈 값으로 위장하지 않는다 — 미측정 ≠ 0, G3-A②).
+        self._train_row_ts: Optional[List[str]] = None
+
     def restore_stats(self, last_retrain_str: str, total_count: int) -> None:
         """재시동 후 이전 세션 이력 복원."""
         if last_retrain_str:
@@ -529,6 +538,9 @@ class BatchRetrainer:
         # 데이터 로드 (Phase 0/1 경로)
         if X is None or y_dict is None:
             X, y_dict, feature_names = self._load_from_db(weeks_back, intraday=intraday)
+        else:
+            # [456차 / F6] 외부 주입 X는 행↔ts 정렬을 보장할 수 없다 → "미상"으로 둔다.
+            self._train_row_ts = None
 
         # [404차 후속2] intraday는 학습창 자체가 MAX_TRAIN_BARS_INTRADAY로 설계돼
         # 있으므로 MIN_TRAIN_BARS(15,000 — 26주 전량 로드 기준)를 그대로 요구하면
@@ -553,6 +565,8 @@ class BatchRetrainer:
             )
             X = X[-MAX_TRAIN_BARS_INTRADAY:]
             y_dict = {h: y[-MAX_TRAIN_BARS_INTRADAY:] for h, y in y_dict.items()}
+            if self._train_row_ts is not None:      # [456차 / F6] 절단과 동기화
+                self._train_row_ts = self._train_row_ts[-MAX_TRAIN_BARS_INTRADAY:]
 
         if feature_names is None:
             feature_names = ["feature_{}".format(i) for i in range(X.shape[1])]
@@ -876,23 +890,67 @@ class BatchRetrainer:
             )
             if _fair_new is not None and _fair_old is not None:
                 logger.info(
-                    "[GuardFair] %s 공정홀드아웃(최신 %d봉, 양쪽 미학습 목표) "
+                    "[GuardFair] %s 공정홀드아웃(최신 %d봉, 오염 0봉 확인) "
                     "new=%.4f vs old=%.4f | 격차=%+.4f | acc.txt=%.4f new(cv)=%.4f | %s "
-                    "— 판정 무영향(섀도)",
+                    "— 판정소스=%s",
                     horizon_key, _fair_n, _fair_new, _fair_old,
                     _fair_new - _fair_old, old_acc, cv_acc, _fair_note,
+                    EOD_GUARD_VERDICT_SOURCE,
                 )
             else:
-                logger.info(
-                    "[GuardFair] %s 측정 불가 (%s)", horizon_key, _fair_note,
+                # [456차 F6] 오염이면 여기로 온다 — 종전엔 "격차를 하한으로 읽으라"고만
+                # 적어두고 판정을 냈지만, 그 6거래일치가 전부 100% 오염이었다.
+                logger.warning(
+                    "[GuardFair] %s 판정 불가 — %s", horizon_key, _fair_note,
                 )
+
+        # ── [456차 / F7] 현행 모델 정체 확인 + 유령 기준선 경고 ────────────────
+        # acc.txt는 "현행 모델의 성적"이라는 전제로 쓰이지만, intraday가 pkl을 덮어쓰면
+        # 그 전제가 깨진다. 사이드카로 실제 배포본이 무엇인지 확인하고, 어긋나면 알린다.
+        #
+        # ⚠ 반드시 `_save_model()` **이전에** 읽어야 한다 — 교체가 일어나면 사이드카가
+        #   신규 모델 것으로 덮어써져 "현행"이 사라진다. 오염 봉수도 여기서 한 번만
+        #   계산해 재사용한다(교체 후 재계산하면 신규 모델의 컷오프를 재게 된다).
+        _inc_meta   = self._load_model_meta(horizon_key)
+        _inc_source = (_inc_meta or {}).get("source")
+        _inc_cutoff = (_inc_meta or {}).get("train_cutoff_ts")
+        _contam_bars = self._holdout_contamination(
+            horizon_key, int((EOD_GUARD_FAIR_HOLDOUT or {}).get("holdout_bars", 1850))
+        )[0]
+        _ghost = (not intraday) and (_inc_source == "intraday")
+        if _ghost:
+            logger.warning(
+                "[GuardGhost] %s 비교 기준이 유령이다 — 배포된 pkl은 CV 미검증 "
+                "intraday 모델(학습 %s까지)인데 acc.txt=%.4f는 다른 모델의 성적이다. "
+                "이 판정은 존재하지 않는 모델과의 비교다.",
+                horizon_key, _inc_cutoff or "?", old_acc,
+            )
 
         # [346차] intraday/force는 가드 자체를 건너뜀(기존 동작 그대로) — intraday는
         # CV 없음(cv_acc=None), force는 명시적 강제 요구(웜업 복구 등). 그 외(EOD 정규
         # 재학습, force=False)만 호라이즌별 허용 하락폭으로 판정한다.
+        _verdict_src = "n/a"
         if intraday or force:
             _guard_ok, _guard_reason = True, "intraday" if intraday else "force"
+        elif (EOD_GUARD_VERDICT_SOURCE == "guard_fair"
+              and _fair_new is not None and _fair_old is not None):
+            # [456차 / F7] 공정 홀드아웃 기반 판정. `_measure_fair_holdout`이 오염을
+            # 검출하면 _fair_old=None으로 돌아오므로 여기 진입 자체가 막힌다 —
+            # 즉 이 분기는 **오염 0봉이 확인된 경우에만** 탄다.
+            _verdict_src = "guard_fair"
+            _guard_ok, _guard_reason = evaluate_model_replace(
+                horizon_key, _fair_new, _fair_old,
+                EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
+            )
+            _guard_reason = "공정홀드아웃 기준 — " + _guard_reason
         else:
+            _verdict_src = "acc_txt"
+            if EOD_GUARD_VERDICT_SOURCE == "guard_fair":
+                logger.warning(
+                    "[GuardVerdict] %s guard_fair 요청됐으나 공정홀드아웃 미가용(%s) "
+                    "→ acc.txt로 폴백",
+                    horizon_key, _fair_note,
+                )
             _guard_ok, _guard_reason = evaluate_model_replace(
                 horizon_key, cv_acc, old_acc,
                 EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
@@ -949,6 +1007,13 @@ class BatchRetrainer:
                     # [405차 P1-1] 공정 홀드아웃 섀도 — 판정 무영향, 누적 관찰용
                     fair_new=_fair_new, fair_old=_fair_old,
                     fair_hold_bars=(_fair_n or None), fair_note=_fair_note,
+                    # [456차 F6/F7] 오염 정량 + 현행 모델 정체 + 실제 판정 소스.
+                    # 전환 조건("깨끗한 5거래일")을 SQL로 셀 수 있게 하는 열이다.
+                    # _contam_bars는 _save_model 이전에 계산된 값 — 재계산 금지.
+                    fair_contaminated_bars=_contam_bars,
+                    incumbent_source=_inc_source,
+                    incumbent_cutoff_ts=_inc_cutoff,
+                    verdict_source=_verdict_src,
                 )
             except Exception as _gs_e:
                 logger.debug("[GuardShadow] DB 저장 실패 (무해): %s", _gs_e)
@@ -975,6 +1040,11 @@ class BatchRetrainer:
                     actual_verdict="REPLACE",
                     n_samples=len(X),
                     source="intraday",
+                    # [456차 F6] intraday 행에도 현행 정체를 남긴다 — "누가 언제
+                    # 홀드아웃을 오염시켰는가"의 추적 근거가 여기서 나온다.
+                    incumbent_source=_inc_source,
+                    incumbent_cutoff_ts=_inc_cutoff,
+                    verdict_source=_verdict_src,
                 )
             except Exception as _igs_e:
                 logger.debug("[GuardShadow] intraday DB 저장 실패 (무해): %s", _igs_e)
@@ -1003,11 +1073,14 @@ class BatchRetrainer:
         여기서는 최신 `holdout_bars`행을 **학습에서 완전히 제외**한 도전자를 따로
         학습해, 도전자·현행 둘 다 그 구간으로 채점한다. 도전자에게는 완전 OOS다.
 
-        ⚠ **여전히 완전히 공정하지는 않다.** 현행 pkl은 intraday 재학습이 매일
-        덮어쓰므로(403차 교차검증 #6, mtime 실측) 홀드아웃 구간을 이미 학습했을 수
-        있다. 즉 측정된 격차는 실제의 **하한**이며, 판단 재료로 pkl mtime을 함께
-        돌려준다. 이 한계를 없애려면 현행 모델의 학습 컷오프를 메타데이터로 남기는
-        별건 작업이 필요하다.
+        [456차 / F6] **오염 검출 추가.** 종전에는 현행 pkl이 intraday 재학습으로
+        홀드아웃을 이미 학습했는지 알 수 없어 격차를 "하한"으로만 읽어야 했다
+        (실측: intraday n=4,800봉 ⊃ 홀드아웃 1,850봉 → **100% 오염**, 6거래일 연속).
+        이제 사이드카(`_load_model_meta`)의 `train_cutoff_ts`를 읽어 홀드아웃 구간과
+        겹치는 봉 수를 세고, 겹치면 **판정을 내지 않는다**(`old_acc=None` 반환).
+
+        모르는 경우(구버전 pkl·외부 주입 X로 ts 미상)도 **오염으로 간주**한다 —
+        "모름"을 "깨끗함"으로 읽으면 가드가 조용히 무력화된다.
 
         데이터는 시간순 정렬이 보장된다(TimeSeriesSplit·`X[-N:]`=최신 관례가 이미
         그 전제 위에 있다). 타임스탬프가 이 경로까지 전달되지 않으므로 홀드아웃은
@@ -1076,9 +1149,44 @@ class BatchRetrainer:
             old_acc = float((old_model.predict(ho_old) == y_ho).mean())
             mt = datetime.datetime.fromtimestamp(
                 os.path.getmtime(mp)).strftime("%Y-%m-%d %H:%M")
-            return new_acc, old_acc, H, "ok (구모델 pkl mtime=%s)" % mt
+
+            # ── [456차 / F6] 오염 검출 ──────────────────────────────────────
+            # 현행 모델이 홀드아웃 구간을 이미 학습했으면 이 비교는 성립하지 않는다.
+            # 겹친 봉 수를 세어 판정 자체를 보류한다(격차를 "하한"이라 적어두는 것만으로는
+            # 6거래일간 아무도 판정을 못 내렸다 — 432차 항목).
+            _contam, _cnote = self._holdout_contamination(horizon_key, H)
+            if _contam != 0:
+                return new_acc, None, H, (
+                    "오염 %s — 판정 보류 (구모델 pkl mtime=%s)" % (_cnote, mt)
+                )
+            return new_acc, old_acc, H, "ok · 오염 0봉 (구모델 pkl mtime=%s)" % mt
         except Exception as e:
             return None, None, 0, "측정 실패: %s" % e
+
+    def _holdout_contamination(self, horizon_key: str, holdout_bars: int):
+        """홀드아웃 구간 중 현행 모델이 이미 학습한 봉 수.
+
+        Returns: (겹친_봉수, 설명). 판단 불가 시 (-1, 사유) — **오염으로 취급**한다.
+
+        `-1`(미상)을 0(깨끗함)과 구분하는 것이 핵심이다. 구버전 pkl에는 사이드카가
+        없고, 외부 주입 X 경로는 행↔ts 정렬을 보장하지 못한다. 그 경우를 "깨끗함"으로
+        처리하면 F6 이전과 똑같이 오염된 비교가 판정에 쓰인다.
+        """
+        meta = self._load_model_meta(horizon_key)
+        cutoff = (meta or {}).get("train_cutoff_ts")
+        if not cutoff:
+            return -1, "현행 모델 학습 컷오프 미상(사이드카 없음 — 구버전 pkl)"
+        ts_list = self._train_row_ts
+        if not ts_list or len(ts_list) < holdout_bars:
+            return -1, "학습행 타임스탬프 미상(외부 주입 X 경로)"
+        ho_ts = ts_list[-holdout_bars:]
+        overlap = sum(1 for t in ho_ts if t <= cutoff)
+        if overlap:
+            return overlap, ("홀드아웃 %d봉 중 %d봉(%.0f%%)이 현행 학습구간 "
+                             "(현행 cutoff=%s ≥ 홀드아웃 시작=%s)"
+                             % (holdout_bars, overlap, 100.0 * overlap / holdout_bars,
+                                cutoff, ho_ts[0]))
+        return 0, "깨끗함"
 
     def _save_model(self, horizon_key: str, model, scaler, acc: float, feature_names: List[str]):
         path       = os.path.join(self.model_dir, f"gbm_{horizon_key}.pkl")
@@ -1099,9 +1207,16 @@ class BatchRetrainer:
         # intraday 재학습(CV 없음)은 acc=nan — 파일을 덮어쓰면 다음 재학습의
         # old_acc 로그가 무의미해지므로(연쇄 nan), 유효한 값일 때만 갱신하고
         # 그 외에는 EOD 전체 재학습(CV 있음)의 마지막 실측값을 그대로 보존한다.
+        #
+        # ⚠ [456차 / F6·F7] 이 "보존"이 유령 기준선을 만든다. intraday가 pkl을
+        # 덮어써도 acc.txt는 남으므로, acc.txt는 **이미 존재하지 않는 모델의 성적**이
+        # 된다(실측: 3m acc.txt=0.4651이 07-22자인데 pkl은 매일 장중 재학습본).
+        # acc.txt 자체는 하위호환을 위해 그대로 두고, **지금 저장하는 모델이 무엇인지**를
+        # 사이드카에 따로 남긴다 — 아래 _save_model_meta.
         if not np.isnan(acc):
             with open(acc_path, "w") as f:
                 f.write(str(acc))
+        self._save_model_meta(horizon_key, acc, feature_names)
         # Phase C 원자성 보장: 모델 저장 직후 feature_names_{h}.pkl도 함께 저장.
         # 외부 호출자(_train_horizon 이후)의 _save_feature_names와 중복이지만 무해.
         # subprocess 타임아웃 강제 종료 시 모델은 저장되지만 외부 _save_feature_names는
@@ -1131,6 +1246,60 @@ class BatchRetrainer:
             with open(_tmp_fn, "wb") as f:
                 pickle.dump(list(feature_names), f, protocol=4)
             os.replace(_tmp_fn, h_fn_path)
+
+    # ── [456차 / F6] 모델 학습 메타 사이드카 ──────────────────────────────────
+    #
+    # 왜 필요한가: 배포된 pkl이 **무엇으로 언제까지 학습됐는지**를 아무도 기록하지
+    # 않았다. 그래서 두 가지가 동시에 망가져 있었다.
+    #   ① EOD 모델가드가 acc.txt(유령 기준선)와 비교 — 그 수치의 주인은 이미 없다
+    #   ② GuardFair 홀드아웃이 현행 모델의 학습구간과 겹쳐도 알 수 없었다
+    #      (실측: intraday n=4,800봉 학습 ⊃ 홀드아웃 1,850봉 → 100% 오염)
+    #
+    # 사이드카는 **판정을 바꾸지 않는다** — 판정 소스 전환은 EOD_GUARD_VERDICT_SOURCE
+    # 플래그로 별도 게이트한다(깨끗한 5거래일 관측 후 주간회의 전환).
+
+    def _meta_path(self, horizon_key: str) -> str:
+        return os.path.join(self.model_dir, "gbm_%s_meta.json" % horizon_key)
+
+    def _save_model_meta(self, horizon_key: str, acc: float, feature_names) -> None:
+        """배포 모델의 학습 메타를 사이드카 JSON으로 남긴다 (실패해도 무해)."""
+        try:
+            _ts_list = self._train_row_ts
+            _cutoff = _ts_list[-1] if _ts_list else None
+            meta = {
+                "trained_at":      datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                # intraday는 CV를 돌리지 않아 acc=nan으로 들어온다 → cv_acc=None.
+                # "성적을 모른다"를 0이나 낡은 값으로 위장하지 않는다.
+                "cv_acc":          None if (acc is None or np.isnan(acc)) else float(acc),
+                "source":          "eod" if (acc is not None and not np.isnan(acc)) else "intraday",
+                "train_rows":      len(_ts_list) if _ts_list else None,
+                # 학습에 쓰인 **마지막 봉의 ts**. 홀드아웃은 이 시각 이후여야 공정하다.
+                "train_cutoff_ts": _cutoff,
+                "train_start_ts":  _ts_list[0] if _ts_list else None,
+                "n_features":      len(feature_names) if feature_names else None,
+            }
+            _tmp = self._meta_path(horizon_key) + ".tmp"
+            with open(_tmp, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            os.replace(_tmp, self._meta_path(horizon_key))
+        except Exception as e:
+            logger.debug("[Retrain] %s 메타 사이드카 저장 실패 (무해): %s", horizon_key, e)
+
+    def _load_model_meta(self, horizon_key: str) -> dict:
+        """배포 모델의 학습 메타를 읽는다. 없거나 깨졌으면 빈 dict.
+
+        빈 dict는 "구버전 pkl이라 이력을 모른다"는 뜻이며, 호출부는 이를
+        **오염 가능성 있음**으로 보수적으로 다뤄야 한다(모름을 안전으로 읽지 말 것).
+        """
+        try:
+            p = self._meta_path(horizon_key)
+            if not os.path.exists(p):
+                return {}
+            with open(p, "r", encoding="utf-8") as f:
+                m = json.load(f)
+            return m if isinstance(m, dict) else {}
+        except Exception:
+            return {}
 
     def _save_rejected_model(
         self, horizon_key: str, model, scaler, new_acc: float, old_acc: float,
@@ -2045,9 +2214,13 @@ class BatchRetrainer:
                     y.append(label)
                 y_dict[hz] = np.array(y, dtype=int)
 
+            # [456차 / F6] 행↔타임스탬프 정렬 보존. X는 records 순서 그대로 만들어지므로
+            # (위 np.array 생성부) 인덱스가 1:1로 대응한다.
+            self._train_row_ts = [rec[0] for rec in records]
+
             logger.info(
                 f"[Retrain] DB 로드 완료: {len(X)}행 × {len(feat_names)}피처 "
-                f"(cutoff={cutoff[:10]})"
+                f"(cutoff={cutoff[:10]} ~ {self._train_row_ts[-1] if self._train_row_ts else '?'})"
             )
             return X, y_dict, feat_names
 
