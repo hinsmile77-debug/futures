@@ -52,6 +52,9 @@ class SystemHealthScore:
         self._restart_count: int   = 0
         self._z_warn_count:  int   = 0    # model.last_z_warn_count (z>임계 피처 수)
         self._core_pass_rate: float = 1.0  # 0.0 ~ 1.0
+        # [456차 / F2] 이번 분에 체크리스트가 돌았는가. False면 CORE 항목은
+        # 감점에서 제외한다 — "미측정"과 "전부 실패"는 다르다.
+        self._core_pass_measured: bool = False
         self._s2_latency_sec: float = 0.0
         self._shs: float = 100.0
         self._last_alerted_shs: float = 101.0  # 아직 블록 임계 미달 적 없음
@@ -80,8 +83,26 @@ class SystemHealthScore:
         self._z_warn_count = max(0, int(z_warn_count))
         self._recompute()
 
-    def update_core_pass(self, pass_rate: float) -> None:
-        self._core_pass_rate = max(0.0, min(1.0, float(pass_rate)))
+    def update_core_pass(self, pass_rate) -> None:
+        """CORE 통과율 갱신. `None`이면 **미측정**으로 처리한다(감점 없음).
+
+        [456차 / F2] 종전에는 호출부(main.py)가 체크리스트 결과가 없을 때 0.0을
+        넘겼고, 그게 "CORE 3개 전부 실패"와 구분되지 않아 SHS에서 그대로 -25점이
+        됐다. 체크리스트는 `direction != 0 and status == FLAT`일 때만 도는데,
+        2026-08-10 실측으로 그 조건이 아닌 분이 대부분이었다(FLAT 수렴 189회 +
+        포지션 보유 구간). 즉 **정상 운영이 상시 -25점으로 계상**됐다.
+
+        그 결과 SHS는 재시작 1회(-8)와 z경고 3개(-7.5)만 겹쳐도
+        100-8-7.5-25 = 59.5로 임계 60 바로 아래에 붙박였다(그날 실측 44~60점).
+
+        미측정 구간은 직전 유효값을 유지하지 않고 **감점 자체를 건너뛴다** —
+        직전값을 끌고 가면 오래된 관측이 현재 점수인 것처럼 보인다.
+        """
+        if pass_rate is None:
+            self._core_pass_measured = False
+        else:
+            self._core_pass_measured = True
+            self._core_pass_rate = max(0.0, min(1.0, float(pass_rate)))
         self._recompute()
 
     def update_s2_latency(self, latency_sec: float) -> None:
@@ -302,6 +323,22 @@ class SystemHealthScore:
         return self._shs
 
     def is_entry_blocked(self) -> bool:
+        """⚠ **표시 전용 플래그다 — 실제로 진입을 막지 않는다.**
+
+        [456차 / F2] 전수 검색 결과 이 값의 유일한 소비처는
+        `dashboard/main_dashboard.py:update_shs_badge()`의 배지 색상이다.
+        실제 진입 차단은 EKS(`kill_switch_active`, main.py:7249/7289)만 수행한다.
+
+        그런데 알림 문구는 "기준 60점 미만 → 진입 차단"이라고 단언했고,
+        2026-08-10에 그 경보가 8회 뜨는 동안 **10건이 정상 진입**됐다.
+        문구를 실제 동작에 맞추는 쪽으로 정리했다(utils/notify.py).
+
+        **게이트로 승격하지 않은 이유**: SHS 감점 계수(8 / 2.5 / 25 / 5)와 임계 60은
+        캘리브레이션 근거가 문서에 없다. 근거 없는 계수로 진입을 막기 시작하면
+        F2가 고친 상시 -25점 같은 계측 결함이 그대로 거래 차단으로 이어진다.
+        승격 여부는 주간회의 안건으로 남긴다
+        (`docs/정기점검/매일점검/0810_Fix_고도화_통합구현계획_MW0601.md` §9-1).
+        """
         return self._shs < ENTRY_BLOCK_THRESHOLD
 
     @property
@@ -326,6 +363,7 @@ class SystemHealthScore:
             "restart_count":     self._restart_count,
             "z_warn_count":      self._z_warn_count,
             "core_pass_rate":    round(self._core_pass_rate, 2),
+            "core_pass_measured": self._core_pass_measured,   # [456차 / F2]
             "s2_latency_sec":    round(self._s2_latency_sec, 3),
             "gap_open_conf_max":      round(self._gap_open_conf_max, 3),
             "gap_open_bars":          self._gap_open_bar_count,
@@ -356,6 +394,8 @@ class SystemHealthScore:
         score = 100.0
         score -= min(40.0, self._restart_count * 8.0)
         score -= min(25.0, self._z_warn_count * 2.5)
-        score -= (1.0 - self._core_pass_rate) * 25.0
+        # [456차 / F2] 미측정 구간은 CORE 감점 없음 (update_core_pass 참조)
+        if self._core_pass_measured:
+            score -= (1.0 - self._core_pass_rate) * 25.0
         score -= min(10.0, max(0.0, self._s2_latency_sec - 1.0) * 5.0)
         self._shs = max(0.0, min(100.0, score))

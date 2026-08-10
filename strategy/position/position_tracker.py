@@ -7,6 +7,7 @@ import datetime
 import json
 import logging
 import os
+from collections import OrderedDict
 from typing import Optional, Dict, Tuple
 
 from utils.time_utils import now_kst
@@ -177,6 +178,23 @@ class PositionTracker:
         self._daily_forward_trades: int = 0
         self._daily_forward_wins: int = 0
         self._daily_forward_commission: float = 0.0
+
+        # [456차 / F1] 현재 포지션의 **누적 실현 손익(계약가중 pt)**.
+        # 승패를 최종 청산 레그의 부호로 판정하던 버그를 고치기 위한 것이다.
+        #
+        # 2026-08-10 09:58 실측: 3계약 진입 → 손절1차로 2계약 -3.04pt 청산 →
+        # 잔여 1계약이 +0.70pt로 종료. 포지션 순손익은 **-273,410원**인데
+        # 최종 레그가 양수라 "승"으로 기록됐다(그날 daily_close 8승2패 vs 실제 7승3패).
+        #
+        # 레그 손익은 계약수로 가중해야 한다 — -3.04×2 + 0.70×1 = -5.38pt (패).
+        # 가중하지 않으면 -3.04 + 0.70 = -2.34 로 부호는 같아도 크기가 틀리고,
+        # 레그 수량이 엇갈리면 부호까지 뒤집힐 수 있다.
+        #
+        # ⚠ 기준은 **수수료 차감 전 gross pt**다 — 기존 판정(`pnl_pts > 0`)과 같은
+        # 기준을 유지해 과거 시계열과의 불연속을 최소화한다. 단위(레그→포지션)만
+        # 고치는 변경이며 gross↔net 전환은 별건이다.
+        self._pos_realized_pnl_pts: float = 0.0
+        self._pos_realized_fwd_pnl_pts: float = 0.0
         self.last_update_reason: str = "init"
         self.last_update_ts: Optional[datetime.datetime] = None
 
@@ -352,13 +370,18 @@ class PositionTracker:
 
         self._daily_pnl_pts += pnl_pts * self.quantity
         self._daily_commission += commission
-        self._daily_trades  += 1
-        if pnl_pts > 0:
-            self._daily_wins += 1
         self._daily_forward_pnl_pts += forward_pnl_pts * self.quantity
         self._daily_forward_commission += forward_commission
+
+        # [456차 / F1] 승패는 **포지션 누적**으로 판정한다 — 앞선 부분청산 레그가
+        # 있으면 이 레그의 부호만으로는 포지션의 성패를 알 수 없다.
+        _pos_total = self._pos_realized_pnl_pts + pnl_pts * self.quantity
+        _pos_total_fwd = self._pos_realized_fwd_pnl_pts + forward_pnl_pts * self.quantity
+        self._daily_trades  += 1
+        if _pos_total > 0:
+            self._daily_wins += 1
         self._daily_forward_trades += 1
-        if forward_pnl_pts > 0:
+        if _pos_total_fwd > 0:
             self._daily_forward_wins += 1
 
         entry_ts_str = (
@@ -547,13 +570,19 @@ class PositionTracker:
         self._daily_forward_pnl_pts += forward_pnl_pts * quantity
         self._daily_forward_commission += forward_commission
 
+        # [456차 / F1] 이 레그를 포지션 누적에 먼저 반영한 뒤, 최종 레그일 때만
+        # 그 **누적값**으로 승패를 판정한다. 부분 레그는 누적만 하고 카운트하지 않는다
+        # (기존 "_daily_trades는 최종 청산에서만" 설계는 그대로 유지).
+        self._pos_realized_pnl_pts += pnl_pts * quantity
+        self._pos_realized_fwd_pnl_pts += forward_pnl_pts * quantity
+
         is_final = quantity == self.quantity
         if is_final:
             self._daily_trades += 1
-            if pnl_pts > 0:
+            if self._pos_realized_pnl_pts > 0:
                 self._daily_wins += 1
             self._daily_forward_trades += 1
-            if forward_pnl_pts > 0:
+            if self._pos_realized_fwd_pnl_pts > 0:
                 self._daily_forward_wins += 1
 
         result = self._build_exit_result(
@@ -690,6 +719,8 @@ class PositionTracker:
         """부분 청산 — qty 계약만 청산하고 잔여 포지션 유지.
 
         _daily_trades는 증가시키지 않음 (최종 close_position에서만 카운트).
+        단 [456차 / F1] 실현 손익은 `_pos_realized_pnl_pts`에 누적한다 — 그래야
+        최종 청산 시 포지션 전체의 성패를 판정할 수 있다.
         """
         assert self.status != POSITION_FLAT, "포지션 없음"
         assert 0 < qty < self.quantity, (
@@ -709,6 +740,8 @@ class PositionTracker:
         self._daily_commission += commission
         self._daily_forward_pnl_pts += forward_pnl_pts * qty
         self._daily_forward_commission += forward_commission
+        self._pos_realized_pnl_pts += pnl_pts * qty              # [456차 / F1]
+        self._pos_realized_fwd_pnl_pts += forward_pnl_pts * qty  # [456차 / F1]
         self.quantity        -= qty
         self._sync_partial_progress()
         self.last_update_reason = f"partial_close:{reason}"
@@ -1239,6 +1272,10 @@ class PositionTracker:
         self.synthetic_tp1_fraction = None
         self.synthetic_tp1_ts = None
         self._optimistic = False
+        # [456차 / F1] 다음 포지션이 이전 포지션의 실현손익을 물려받지 않도록 초기화.
+        # 승패 판정 이후에 호출되므로(close_position·apply_exit_fill 모두) 안전하다.
+        self._pos_realized_pnl_pts = 0.0
+        self._pos_realized_fwd_pnl_pts = 0.0
         self.last_update_ts = self.last_update_ts or now_kst()
         self._save_state()
 
@@ -1272,25 +1309,42 @@ class PositionTracker:
     def restore_daily_stats(self, rows) -> None:
         """재시작 시 trades.db 당일 행으로 일일 통계 복원.
 
-        trades.db 컬럼: pnl_pts(계약당), quantity, pnl_krw(합계)
-        close_position()과 동일한 집계 방식 사용.
+        trades.db 컬럼: pnl_pts(계약당), quantity(청산 레그별), pnl_krw(합계)
+
+        [456차 / F1] **행(레그) 단위가 아니라 포지션 단위로 집계한다.**
+        trades.db는 청산 레그마다 한 행이라, 행마다 `_daily_trades += 1` 하면
+        다레그 포지션이 여러 건으로 세어진다 — 2026-08-10 실측으로 10 포지션이
+        13건으로 복원됐을 상황이다. 승패도 레그 부호가 아니라 포지션 누적으로
+        판정해야 close_position()/apply_exit_fill()과 결과가 일치한다.
+
+        포지션 식별은 `entry_ts`로 한다(같은 진입 시각 = 같은 포지션). 그 열이
+        없는 구버전 행은 행마다 별개 포지션으로 취급해 종전 동작을 유지한다.
+        손익·수수료 합계는 레그 합이 맞으므로 집계 방식을 바꾸지 않는다.
         """
+        _pos_pnl = OrderedDict()      # entry_ts -> [pnl_pts 누적, fwd 누적]
+        _rowno = 0
         for row in rows:
+            _rowno += 1
             pnl_pts = float(row["pnl_pts"] or 0.0)
             qty     = int(row["quantity"] or 1)
             self._daily_pnl_pts += pnl_pts * qty
-            self._daily_trades  += 1
-            if pnl_pts > 0:
-                self._daily_wins += 1
             forward_pnl_pts = float(
                 row["forward_pnl_pts"]
                 if "forward_pnl_pts" in row.keys() and row["forward_pnl_pts"] is not None
                 else pnl_pts
             )
             self._daily_forward_pnl_pts += forward_pnl_pts * qty
-            self._daily_forward_trades += 1
-            if forward_pnl_pts > 0:
-                self._daily_forward_wins += 1
+
+            _key = None
+            if "entry_ts" in row.keys():
+                _key = row["entry_ts"]
+            if not _key:
+                _key = "__row%d__" % _rowno      # 구버전 폴백 — 행=포지션
+            if _key not in _pos_pnl:
+                _pos_pnl[_key] = [0.0, 0.0]
+            _pos_pnl[_key][0] += pnl_pts * qty
+            _pos_pnl[_key][1] += forward_pnl_pts * qty
+
             # trades.db에 commission_krw 컬럼이 있으면 복원, 없으면 재계산
             commission = float(
                 row["commission_krw"]
@@ -1307,6 +1361,14 @@ class PositionTracker:
                 else commission
             )
             self._daily_forward_commission += forward_commission
+
+        for _tot, _tot_fwd in _pos_pnl.values():
+            self._daily_trades += 1
+            if _tot > 0:
+                self._daily_wins += 1
+            self._daily_forward_trades += 1
+            if _tot_fwd > 0:
+                self._daily_forward_wins += 1
 
     def reset_daily(self):
         self._daily_pnl_pts = 0.0
@@ -1367,6 +1429,10 @@ class PositionTracker:
                 "synthetic_tp1_ts": (
                     self.synthetic_tp1_ts.isoformat() if self.synthetic_tp1_ts else None
                 ),
+                # [456차 / F1] 포지션 누적 실현손익 — 부분청산 후 장중 재기동하면
+                # 이 값이 0으로 돌아가 최종 레그만으로 승패를 판정하게 된다(구 버그 재발).
+                "pos_realized_pnl_pts": self._pos_realized_pnl_pts,
+                "pos_realized_fwd_pnl_pts": self._pos_realized_fwd_pnl_pts,
                 "last_update_reason": self.last_update_reason,
                 "last_update_ts": (
                     self.last_update_ts.isoformat() if self.last_update_ts else None
@@ -1458,6 +1524,15 @@ class PositionTracker:
             self.synthetic_tp1_ts = (
                 datetime.datetime.fromisoformat(state["synthetic_tp1_ts"])
                 if state.get("synthetic_tp1_ts") else None
+            )
+            # [456차 / F1] 구버전 상태파일에는 이 키가 없다 → 0.0 폴백.
+            # 그 경우 복원된 포지션은 재기동 전 부분청산 이력을 잃으므로 종전과
+            # 동일하게 최종 레그 기준으로 판정된다(재기동 1회 한정 잔여 오차).
+            self._pos_realized_pnl_pts = float(
+                state.get("pos_realized_pnl_pts", 0.0) or 0.0
+            )
+            self._pos_realized_fwd_pnl_pts = float(
+                state.get("pos_realized_fwd_pnl_pts", 0.0) or 0.0
             )
             if self.tp3_price == 0.0 and self.stop_price and self.tp1_price and self.tp2_price:
                 atr = abs(self.entry_price - self.stop_price) / ATR_STOP_MULT if ATR_STOP_MULT else 0.0

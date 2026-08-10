@@ -2243,24 +2243,57 @@ def save_daily_stats(date_str: str, stats: dict) -> None:
     ))
 
 
+def _trend_sql(bucket_expr: str, alias: str, extra_where: str, limit) -> str:
+    """[456차 / F1] 추이 집계 SQL — **포지션 단위**로 승패를 센다.
+
+    `trades` 테이블은 **청산 레그마다 한 행**이다. 종전 쿼리는 `COUNT(*)`로 행을 세고
+    레그별 `pnl_pts > 0`으로 승패를 판정해, 다레그 포지션이 여러 건으로 계상되고
+    부분청산으로 손실을 턴 포지션이 "승"이 됐다.
+
+    2026-08-10 실측: 13레그 = 10포지션, 레그 기준 승률과 포지션 기준(7승3패)이 불일치.
+    같은 결함을 `PositionTracker`(daily_stats·restore_daily_stats) 쪽에서 고쳤으므로
+    여기도 맞추지 않으면 "오늘 마감"과 "추이 차트의 오늘"이 서로 다른 값을 낸다.
+
+    승패 기준은 **계약가중 pt 합**이다 — 레그 수량이 다르면 비가중 합은 부호까지
+    뒤집힐 수 있다(예: -1.0pt×3 + 2.0pt×1 = -1.0 인데 비가중은 +1.0).
+
+    ⚠ 네 개 추이 함수가 같은 SQL을 복사해 쓰다 한쪽만 고쳐지는 것을 막으려고
+    한 곳에서 만든다(333차 후속4가 `campaign_steps`에서 겪은 동기화 드리프트).
+    """
+    return """
+        WITH pos AS (
+            SELECT {bucket} AS {alias},
+                   SUM(COALESCE(forward_pnl_pts, pnl_pts) * COALESCE(quantity, 1)) AS pos_pts,
+                   SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw,
+                                net_pnl_krw, pnl_krw)) AS pos_krw
+            FROM trades
+            WHERE exit_ts IS NOT NULL
+                  AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
+                  {extra}
+            GROUP BY entry_ts
+        )
+        SELECT {alias},
+               COUNT(*) AS trades,
+               SUM(CASE WHEN pos_pts > 0 THEN 1 ELSE 0 END) AS wins,
+               COUNT(*) - SUM(CASE WHEN pos_pts > 0 THEN 1 ELSE 0 END) AS losses,
+               ROUND(AVG(CASE WHEN pos_pts > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+               ROUND(SUM(pos_krw), 0) AS pnl_krw
+        FROM pos
+        GROUP BY {alias}
+        ORDER BY {alias} DESC
+        {limit}
+    """.format(bucket=bucket_expr, alias=alias, extra=extra_where,
+               limit=("LIMIT %d" % limit) if limit else "")
+
+
 def fetch_trend_daily(days_back: int = 30) -> List[dict]:
     """일별 집계 (최대 30일). trades.db 체결 + daily_stats 정확도 병합."""
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(days=days_back)).isoformat()
-    rows = fetchall(TRADES_DB, """
-        SELECT date(entry_ts)  AS date,
-               COUNT(*)        AS trades,
-               SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS wins,
-               COUNT(*) - SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS losses,
-               ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-               ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
-        FROM trades
-        WHERE exit_ts IS NOT NULL AND entry_ts >= ?
-              AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
-        GROUP BY date(entry_ts)
-        ORDER BY date(entry_ts) DESC
-        LIMIT 30
-    """, (cutoff,))
+    rows = fetchall(
+        TRADES_DB,
+        _trend_sql("date(entry_ts)", "date", "AND entry_ts >= ?", 30),
+        (cutoff,))
     acc_map = {
         r["date"]: (r["sgd_accuracy"], r["verified_count"])
         for r in fetchall(TRADES_DB,
@@ -2278,60 +2311,30 @@ def fetch_trend_daily(days_back: int = 30) -> List[dict]:
 
 
 def fetch_trend_weekly(weeks_back: int = 12) -> List[dict]:
-    """주별 집계 (최대 12주)."""
+    """주별 집계 (최대 12주). 승패 단위는 `_trend_sql` 참조."""
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(weeks=weeks_back)).isoformat()
-    return [dict(r) for r in fetchall(TRADES_DB, """
-        SELECT strftime('%Y-W%W', entry_ts) AS week,
-               COUNT(*)        AS trades,
-               SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS wins,
-               COUNT(*) - SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS losses,
-               ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-               ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
-        FROM trades
-        WHERE exit_ts IS NOT NULL AND entry_ts >= ?
-              AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
-        GROUP BY strftime('%Y-W%W', entry_ts)
-        ORDER BY week DESC
-        LIMIT 12
-    """, (cutoff,))]
+    return [dict(r) for r in fetchall(
+        TRADES_DB,
+        _trend_sql("strftime('%Y-W%W', entry_ts)", "week", "AND entry_ts >= ?", 12),
+        (cutoff,))]
 
 
 def fetch_trend_monthly(months_back: int = 12) -> List[dict]:
-    """월별 집계 (최대 12개월)."""
+    """월별 집계 (최대 12개월). 승패 단위는 `_trend_sql` 참조."""
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(days=months_back * 31)).isoformat()
-    return [dict(r) for r in fetchall(TRADES_DB, """
-        SELECT strftime('%Y-%m', entry_ts) AS month,
-               COUNT(*)        AS trades,
-               SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS wins,
-               COUNT(*) - SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS losses,
-               ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-               ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
-        FROM trades
-        WHERE exit_ts IS NOT NULL AND entry_ts >= ?
-              AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
-        GROUP BY strftime('%Y-%m', entry_ts)
-        ORDER BY month DESC
-        LIMIT 12
-    """, (cutoff,))]
+    return [dict(r) for r in fetchall(
+        TRADES_DB,
+        _trend_sql("strftime('%Y-%m', entry_ts)", "month", "AND entry_ts >= ?", 12),
+        (cutoff,))]
 
 
 def fetch_trend_yearly() -> List[dict]:
-    """연간 집계 (전체)."""
-    return [dict(r) for r in fetchall(TRADES_DB, """
-        SELECT strftime('%Y', entry_ts) AS year,
-               COUNT(*)        AS trades,
-               SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS wins,
-               COUNT(*) - SUM(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1 ELSE 0 END) AS losses,
-               ROUND(AVG(CASE WHEN COALESCE(forward_pnl_pts, pnl_pts) > 0 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
-               ROUND(SUM(COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw)), 0) AS pnl_krw
-        FROM trades
-        WHERE exit_ts IS NOT NULL
-              AND COALESCE(entry_source, '') != 'GHOST_PENDING_MISS'
-        GROUP BY strftime('%Y', entry_ts)
-        ORDER BY year DESC
-    """)]
+    """연간 집계 (전체). 승패 단위는 `_trend_sql` 참조."""
+    return [dict(r) for r in fetchall(
+        TRADES_DB,
+        _trend_sql("strftime('%Y', entry_ts)", "year", "", None))]
 
 
 def init_daily_broker_pnl_db():

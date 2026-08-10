@@ -8971,11 +8971,18 @@ class TradingSystem:
                 break
         self.system_health.update_s2_latency(_s2_dur_sec)
 
-        _core_pass_cnt = sum(
-            1 for k in ("3_vwap", "4_cvd", "5_ofi")
-            if (_cr is not None and bool(_cr["checks"].get(k)))
-        ) if _cr is not None else 0
-        self.system_health.update_core_pass(_core_pass_cnt / 3.0)
+        # [456차 / F2] `_cr`(체크리스트 결과)은 direction!=0 이고 FLAT일 때만 만들어진다
+        # (6875행). 그 조건이 아닌 분 — FLAT 수렴·포지션 보유 중 — 에 0.0을 넘기면
+        # "CORE 3개 전부 실패"로 계상돼 SHS가 상시 -25점을 먹었다. None을 넘겨
+        # **미측정**으로 구분한다.
+        if _cr is None:
+            self.system_health.update_core_pass(None)
+        else:
+            _core_pass_cnt = sum(
+                1 for k in ("3_vwap", "4_cvd", "5_ofi")
+                if bool(_cr["checks"].get(k))
+            )
+            self.system_health.update_core_pass(_core_pass_cnt / 3.0)
 
         _shs_state = self.system_health.to_dict()
         self.dashboard.update_shs_badge(

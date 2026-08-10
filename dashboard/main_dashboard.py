@@ -10945,7 +10945,13 @@ class DashboardAdapter:
     def update_shs_badge(
         self, shs: float, entry_blocked: bool, kill_switch: bool, eks_reason: str = ""
     ) -> None:
-        """SHS 배지 색상·텍스트 갱신 (매분 파이프라인에서 호출)."""
+        """SHS 배지 색상·텍스트 갱신 (매분 파이프라인에서 호출).
+
+        ⚠ [456차 / F2] `entry_blocked`는 이름과 달리 **진입을 막지 않는다** —
+        이 배지 색상이 유일한 소비처다(전수 검색 확인). 실제 진입 차단은
+        `kill_switch`(EKS)뿐이다. 이름을 믿고 "SHS가 거래를 멈췄다"고 읽지 말 것.
+        근거: `safety/system_health.py:is_entry_blocked()` docstring.
+        """
         lbl = getattr(self._win, "lbl_shs", None)
         if lbl is None:
             return

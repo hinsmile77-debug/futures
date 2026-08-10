@@ -171,16 +171,34 @@ def notify_pipeline_delayed(elapsed_str: str) -> None:
 # ── SHS / EKS 알림 ────────────────────────────────────────────
 
 def notify_shs_alert(shs: float, components: dict) -> None:
-    """SHS < 60 최초 진입 또는 5점 이상 추가 하락 시 경고."""
+    """SHS < 60 최초 진입 또는 5점 이상 추가 하락 시 경고.
+
+    [456차 / F2] 종전 문구는 "기준 60점 미만 → 진입 차단"이라고 단언했지만
+    `entry_blocked`는 대시보드 배지에만 쓰이고 **어떤 진입도 막지 않는다**
+    (실제 차단은 EKS뿐 — safety/system_health.py:is_entry_blocked 참조).
+    2026-08-10에 이 경보가 8회 뜨는 동안 10건이 정상 진입됐다. 또 SHS가 정확히
+    60일 때도 "60 미만"이라 찍는 부등호 오류가 있었다.
+
+    CORE 통과율도 미측정(체크리스트 미실행 분)과 0%를 구분해 표시한다.
+    """
+    # 지역 import — utils.notify는 저수준 유틸이라 safety 패키지를 모듈 레벨에서
+    # 끌어오면 순환 import 위험이 생긴다(현재는 없지만 만들지 않는다).
+    try:
+        from safety.system_health import ENTRY_BLOCK_THRESHOLD
+    except Exception:
+        ENTRY_BLOCK_THRESHOLD = 60.0
     restart  = components.get("restart_count", 0)
     z_warn   = components.get("z_warn_count", 0)
-    core_pct = components.get("core_pass_rate", 1.0) * 100
     s2_ms    = components.get("s2_latency_sec", 0.0) * 1000
+    if components.get("core_pass_measured", True):
+        core_txt = "%.0f%%" % (components.get("core_pass_rate", 1.0) * 100)
+    else:
+        core_txt = "미측정(체크리스트 미실행)"
     notify(
         f"🩺 시스템 건강 점수 저하\n"
-        f"SHS = {shs:.0f}점  (기준 60점 미만 → 진입 차단)\n"
+        f"SHS = {shs:.0f}점  (임계 {ENTRY_BLOCK_THRESHOLD:.0f} — 경고 전용, 진입 차단 아님)\n"
         f"  재시작: {restart}회  |  z경고 피처: {z_warn}개\n"
-        f"  CORE 통과율: {core_pct:.0f}%  |  S2 지연: {s2_ms:.0f}ms",
+        f"  CORE 통과율: {core_txt}  |  S2 지연: {s2_ms:.0f}ms",
         "WARNING",
     )
 
