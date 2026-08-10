@@ -1220,6 +1220,13 @@ def init_trades_db():
         fair_old        REAL,
         fair_hold_bars  INTEGER,
         fair_note       TEXT,
+        -- [MW0602 457차] 위 fair_* 비교가 **성립하는 행인가**. 405차 docstring이
+        -- 스스로 밝힌 한계 — "현행 pkl은 intraday 재학습이 매일 덮어쓰므로 홀드아웃
+        -- 구간을 이미 학습했을 수 있다" — 를 사이드카 메타(gbm_{h}_meta.json)의
+        -- train_end_ts로 직접 판정한다. 0이면 격차가 성능차가 아니라 in-sample
+        -- 프리미엄이라 **판정에 쓰면 안 된다**. 457차 이전 42행은 전부 NULL이며
+        -- 그 구간 실측이 36행 중 35행 도전자 열위(평균 -0.1161)였다.
+        fair_valid      INTEGER,
         created_at      TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
@@ -1265,7 +1272,8 @@ def init_trades_db():
                        ("verdict_source", "TEXT"),
                        ("clean_new", "REAL"), ("clean_old", "REAL"),
                        ("clean_n", "INTEGER"), ("clean_note", "TEXT"),
-                       ("live_acc", "REAL"), ("live_n", "INTEGER")):
+                       ("live_acc", "REAL"), ("live_n", "INTEGER"),
+                       ("fair_valid", "INTEGER")):   # [MW0602 457차]
             if _c not in _gsl_cols:
                 _gsl_conn.execute(
                     "ALTER TABLE guard_shadow_log ADD COLUMN %s %s" % (_c, _t))
@@ -2737,6 +2745,7 @@ def save_guard_shadow(
     clean_new: Optional[float] = None, clean_old: Optional[float] = None,
     clean_n: Optional[int] = None, clean_note: Optional[str] = None,
     live_acc: Optional[float] = None, live_n: Optional[int] = None,
+    fair_valid: Optional[int] = None,
 ) -> None:
     """[404차, P0-4 후속] EOD/intraday 모델가드 GuardShadow 1행 저장.
 
@@ -2748,7 +2757,13 @@ def save_guard_shadow(
     [404차 후속] source="intraday"는 계측 전용이다 — intraday는 가드 자체가
     없어 actual_verdict은 항상 "REPLACE"로 기록되며(실제로 항상 무조건 교체됨을
     그대로 반영), fair_verdict은 "만약 EOD처럼 가드를 걸었다면 통과했을지"를
-    보여주는 참고값일 뿐 어떤 결정에도 관여하지 않는다."""
+    보여주는 참고값일 뿐 어떤 결정에도 관여하지 않는다.
+
+    [MW0602 457차] `fair_valid` — fair_new/fair_old 비교가 **성립하는 행인지**.
+    0이면 현행 모델이 홀드아웃 구간을 이미 학습한 상태라 격차가 성능차가 아니라
+    in-sample 프리미엄이다. 457차 이전 42행은 전부 NULL이며, 그 구간 실측은
+    36행 중 35행 도전자 열위(평균 -0.1161)였다 — **그 표본으로 GuardFair를
+    판정하면 안 된다.** 값은 무효여도 기록한다(무효율 자체가 지표다)."""
     distortion = (acc_txt - old_acc_live) if old_acc_live is not None else None
     fair_verdict = (
         ("REPLACE" if new_cv > old_acc_live else "HOLD")
@@ -2762,15 +2777,15 @@ def save_guard_shadow(
             fair_new, fair_old, fair_hold_bars, fair_note,
             fair_contaminated_bars, incumbent_source, incumbent_cutoff_ts,
             verdict_source, clean_new, clean_old, clean_n, clean_note,
-            live_acc, live_n)
+            live_acc, live_n, fair_valid)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                   ?, ?, ?, ?, ?, ?)""",
+                   ?, ?, ?, ?, ?, ?, ?)""",
         (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
          distortion, actual_verdict, fair_verdict, n_samples, pc_id(),
          fair_new, fair_old, fair_hold_bars, fair_note,
          fair_contaminated_bars, incumbent_source, incumbent_cutoff_ts,
          verdict_source, clean_new, clean_old, clean_n, clean_note,
-         live_acc, live_n),
+         live_acc, live_n, fair_valid),
     )
 
 

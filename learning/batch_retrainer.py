@@ -505,6 +505,7 @@ class BatchRetrainer:
         use_horizon_features: bool = False,
         intraday:             bool = False,
         full_cv:              bool = False,
+        horizons:             Optional[List[str]] = None,
     ) -> Dict:
         """
         GBM 모델 전체 재학습
@@ -589,6 +590,12 @@ class BatchRetrainer:
             y_dict = {h: y[-MAX_TRAIN_BARS_INTRADAY:] for h, y in y_dict.items()}
             if self._train_row_ts is not None:      # [456차 / F6] 절단과 동기화
                 self._train_row_ts = self._train_row_ts[-MAX_TRAIN_BARS_INTRADAY:]
+            # [MW0602 457차] ts 목록도 같이 잘라 X와의 행 정렬을 유지한다.
+            _tsl = getattr(self, "_last_train_ts", None)
+            if _tsl:
+                self._last_train_ts = _tsl[-MAX_TRAIN_BARS_INTRADAY:]
+                self._last_train_end_ts = self._last_train_ts[-1]
+                self._last_train_start_ts = self._last_train_ts[0]
 
         if feature_names is None:
             feature_names = ["feature_{}".format(i) for i in range(X.shape[1])]
@@ -604,9 +611,22 @@ class BatchRetrainer:
         except ImportError:
             _registry_ok = False
 
+        # [MW0602 457차] 교체 스코프 — None이면 전체(종전 동작). ConstOut 유발
+        # 재학습만 트리거 호라이즌으로 좁힌다. 근거·부작용은
+        # config/settings.py CONST_OUT_RETRAIN_SCOPED 주석.
+        _scope = set(horizons) if horizons else None
+        if _scope:
+            _skipped = [h for h in HORIZONS if h not in _scope]
+            logger.info(
+                "[Retrain] 교체 스코프 제한: %s 만 재학습 (스킵 %s — 구모델 유지)",
+                sorted(_scope), _skipped,
+            )
+
         results = {}
         for horizon_key in HORIZONS:
             if horizon_key not in y_dict:
+                continue
+            if _scope and horizon_key not in _scope:
                 continue
             y = y_dict[horizon_key]
             if len(y) != len(X):
@@ -906,6 +926,7 @@ class BatchRetrainer:
         _fair_new = _fair_old = None
         _fair_n, _fair_note = 0, "미실행"
         _fair_extra = {}
+        _fair_valid = None
         if not intraday and cv_acc is not None:
             _fair_new, _fair_old, _fair_n, _fair_note, _fair_extra = (
                 self._measure_fair_holdout(
@@ -914,14 +935,23 @@ class BatchRetrainer:
                 )
             )
             if _fair_new is not None and _fair_old is not None:
+                # [MW0602 457차] 유효성은 _measure_fair_holdout 안에서 판정돼
+                # note 앞머리에 "ok"/"무효"로 실린다. 여기서 그 결과를 컬럼으로 뽑는다.
+                _fair_valid = 1 if str(_fair_note).startswith("ok") else 0
                 logger.info(
                     "[GuardFair] %s 공정홀드아웃(최신 %d봉, 오염 0봉 확인) "
                     "new=%.4f vs old=%.4f | 격차=%+.4f | acc.txt=%.4f new(cv)=%.4f | %s "
-                    "— 판정소스=%s",
+                    "— 판정 무영향(섀도), 판정소스=%s",
                     horizon_key, _fair_n, _fair_new, _fair_old,
                     _fair_new - _fair_old, old_acc, cv_acc, _fair_note,
                     EOD_GUARD_VERDICT_SOURCE,
                 )
+                if not _fair_valid:
+                    # 무효 행을 성능차로 읽는 것이 457차가 막으려는 바로 그 오독이다.
+                    logger.warning(
+                        "[GuardFair] %s ⚠ 이 격차는 성능차가 아니다 — 현행이 홀드아웃을 "
+                        "이미 학습했다. 판정·인용 금지 (%s)", horizon_key, _fair_note,
+                    )
             else:
                 # [456차 F6] 오염이면 여기로 온다 — 종전엔 "격차를 하한으로 읽으라"고만
                 # 적어두고 판정을 냈지만, 그 6거래일치가 전부 100% 오염이었다.
@@ -1030,6 +1060,10 @@ class BatchRetrainer:
 
         if _guard_ok:
             _disp_acc = cv_acc if cv_acc is not None else float("nan")
+            # [MW0602 457차] 사이드카 메타에 새길 경로 태그. "eod"만 CV 가드를 통과한
+            # 모델이고, intraday/force는 검증 없이 교체된 것이다 — GuardFair가 현행을
+            # 신뢰할 수 있는지 판정할 때 이 구분이 결정적이다.
+            self._save_source = _guard_reason if _guard_reason in ("intraday", "force") else "eod"
             self._save_model(horizon_key, final_model, final_scaler, _disp_acc, feature_names)
             replaced = True
             if intraday:
@@ -1115,6 +1149,7 @@ class BatchRetrainer:
                     clean_note=_fair_extra.get("clean_note"),
                     # [458차 P1-B] 장중 무가드 구간의 실제 복무 성적.
                     live_acc=_live_acc, live_n=(_live_n or None),
+                    fair_valid=_fair_valid,   # [MW0602 457차]
                 )
             except Exception as _gs_e:
                 logger.debug("[GuardShadow] DB 저장 실패 (무해): %s", _gs_e)
@@ -1160,6 +1195,48 @@ class BatchRetrainer:
         }
 
     # ── 모델 저장/로드 ────────────────────────────────────────────
+    def _read_model_meta(self, horizon_key: str):
+        """[MW0602 457차] `gbm_{h}_meta.json` 사이드카를 읽는다. 없으면 None.
+
+        457차 이전에 저장된 모델에는 이 파일이 없다 — 그 경우 "모른다"이지
+        "괜찮다"가 아니므로, 호출부는 None을 **무효**로 처리해야 한다.
+        """
+        try:
+            import json as _json
+            p = os.path.join(self.model_dir, "gbm_%s_meta.json" % horizon_key)
+            if not os.path.exists(p):
+                return None
+            with open(p, "r", encoding="utf-8") as f:
+                return _json.load(f)
+        except Exception:
+            return None
+
+    def _fair_validity(self, horizon_key: str, holdout_bars: int):
+        """공정 홀드아웃 비교가 유효한가 — (bool, 사유).
+
+        유효 조건: **현행 모델이 홀드아웃 구간을 학습하지 않았을 것.**
+        현행의 `train_end_ts`가 홀드아웃 시작 시각보다 앞서야 한다.
+
+        무효여도 측정 자체는 계속한다(값은 그대로 기록) — 무효 표본을 지우면
+        "얼마나 자주 무효인가"를 알 수 없게 된다. 판정에서만 걸러낸다.
+        """
+        meta = self._read_model_meta(horizon_key)
+        if not meta:
+            return False, "현행 메타 없음(457차 이전 모델) — 오염 여부 불명"
+        _end = meta.get("train_end_ts")
+        _src = meta.get("source", "unknown")
+        if not _end:
+            return False, "현행 train_end_ts 없음 — 오염 여부 불명"
+        tsl = getattr(self, "_last_train_ts", None)
+        if not tsl or len(tsl) <= holdout_bars:
+            return False, "홀드아웃 경계 ts 불명(학습 ts 목록 없음/부족)"
+        _ho_start = tsl[-holdout_bars]
+        if str(_end) >= str(_ho_start):
+            return False, ("현행이 홀드아웃 학습함 — train_end=%s >= holdout_start=%s (source=%s)"
+                           % (str(_end)[:16], str(_ho_start)[:16], _src))
+        return True, ("유효 — 현행 train_end=%s < holdout_start=%s (source=%s)"
+                      % (str(_end)[:16], str(_ho_start)[:16], _src))
+
     def _measure_fair_holdout(
         self, horizon_key, X, y, X_full, h_idx, feature_names,
         make_model, make_sample_weight,
@@ -1279,17 +1356,25 @@ class BatchRetrainer:
             # 겹친 봉 수를 세어 판정 자체를 보류한다(격차를 "하한"이라 적어두는 것만으로는
             # 6거래일간 아무도 판정을 못 내렸다 — 432차 항목).
             _contam, _cnote = self._holdout_contamination(horizon_key, H)
-            if _contam != 0:
+            # [MW0602 457차] 사이드카 메타(train_end_ts) 기반 교차검증 — 도전자는
+            # 홀드아웃을 확실히 못 봤지만 현행은 봤을 수 있고, 그러면 이 격차는
+            # 성능차가 아니라 **in-sample 프리미엄**이다. 두 신호 중 하나라도
+            # 오염을 가리키면 보수적으로 판정을 보류한다(OR — 더 엄격한 쪽을 따름).
+            _valid, _vnote = self._fair_validity(horizon_key, H)
+            if _contam != 0 or not _valid:
                 # [458차 P1-A] 전면 보류하되, 오염되지 않은 꼬리로 매치드 대조를
                 # 계측해 함께 돌려준다(판정 무영향 — old_acc는 None 유지).
                 _extra = self._clean_tail_matched(
                     horizon_key, H, y_ho, _pred_new_ho, _pred_old_ho,
                 )
                 return new_acc, None, H, (
-                    "오염 %s — 판정 보류 (구모델 pkl mtime=%s)" % (_cnote, mt)
+                    "오염 %s | 사이드카=%s — 판정 보류 (구모델 pkl mtime=%s)"
+                    % (_cnote, _vnote, mt)
                 ), _extra
-            # 오염 0봉이면 홀드아웃 전체가 곧 깨끗한 구간이다.
-            return new_acc, old_acc, H, "ok · 오염 0봉 (구모델 pkl mtime=%s)" % mt, {
+            # 오염 0봉이고 사이드카 판정도 유효면 홀드아웃 전체가 곧 깨끗한 구간이다.
+            return new_acc, old_acc, H, (
+                "ok · 오염 0봉, 사이드카=%s (구모델 pkl mtime=%s)" % (_vnote, mt)
+            ), {
                 "clean_new": new_acc, "clean_old": old_acc, "clean_n": H,
                 "clean_note": "오염 0봉 — 홀드아웃 전체가 깨끗함",
             }
@@ -1392,6 +1477,11 @@ class BatchRetrainer:
         if not np.isnan(acc):
             with open(acc_path, "w") as f:
                 f.write(str(acc))
+        # [MW0602 457차 병합] 사이드카는 두 세션이 각자 독립적으로 같은 파일
+        # (`gbm_{h}_meta.json`)에 쓰려 했다 — `_save_model_meta()`(456차/F6·F7)로
+        # 단일화하고, 그 함수 안에서 457차가 필요로 하는 `train_end_ts`/`acc_kind`
+        # 등 필드를 함께 채운다(아래 정의부 참조). 이중 write로 서로 덮어쓰는
+        # 경합을 없앤다.
         self._save_model_meta(horizon_key, acc, feature_names)
         # Phase C 원자성 보장: 모델 저장 직후 feature_names_{h}.pkl도 함께 저장.
         # 외부 호출자(_train_horizon 이후)의 _save_feature_names와 중복이지만 무해.
@@ -1438,19 +1528,34 @@ class BatchRetrainer:
         return os.path.join(self.model_dir, "gbm_%s_meta.json" % horizon_key)
 
     def _save_model_meta(self, horizon_key: str, acc: float, feature_names) -> None:
-        """배포 모델의 학습 메타를 사이드카 JSON으로 남긴다 (실패해도 무해)."""
+        """배포 모델의 학습 메타를 사이드카 JSON으로 남긴다 (실패해도 무해).
+
+        [MW0602 457차 병합] `train_end_ts`/`acc_kind`/`written_at`/`horizon`은
+        457차의 `_fair_validity()`·`_read_model_meta()`가 읽는 필드다 — 이
+        함수가 유일한 writer이므로 두 세션의 필드를 전부 채운다(§ 위 호출부
+        주석 참조). `train_cutoff_ts`와 `train_end_ts`는 같은 값의 별칭이다
+        (전자는 456차/`_load_model_meta` 계열, 후자는 457차/`_read_model_meta`
+        계열이 읽는다 — 리더를 둘 다 건드리지 않기 위해 값만 이중으로 싣는다).
+        """
         try:
             _ts_list = self._train_row_ts
             _cutoff = _ts_list[-1] if _ts_list else None
             meta = {
+                "horizon":         horizon_key,
                 "trained_at":      datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "written_at":      datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 # intraday는 CV를 돌리지 않아 acc=nan으로 들어온다 → cv_acc=None.
                 # "성적을 모른다"를 0이나 낡은 값으로 위장하지 않는다.
                 "cv_acc":          None if (acc is None or np.isnan(acc)) else float(acc),
+                "acc":             None if (acc is None or np.isnan(acc)) else float(acc),
+                "acc_kind":        ("cv" if (acc is not None and not np.isnan(acc))
+                                     else "none(intraday)"),
                 "source":          "eod" if (acc is not None and not np.isnan(acc)) else "intraday",
                 "train_rows":      len(_ts_list) if _ts_list else None,
                 # 학습에 쓰인 **마지막 봉의 ts**. 홀드아웃은 이 시각 이후여야 공정하다.
+                # train_cutoff_ts(456차 계열) / train_end_ts(457차 계열) — 동일 값 별칭.
                 "train_cutoff_ts": _cutoff,
+                "train_end_ts":    _cutoff,
                 "train_start_ts":  _ts_list[0] if _ts_list else None,
                 "n_features":      len(feature_names) if feature_names else None,
             }
@@ -2394,9 +2499,24 @@ class BatchRetrainer:
             # (위 np.array 생성부) 인덱스가 1:1로 대응한다.
             self._train_row_ts = [rec[0] for rec in records]
 
+            # [MW0602 457차] 학습창 끝 시각을 인스턴스에 남긴다 — `_save_model`이
+            # 사이드카 메타에 새겨 "이 pkl이 어디까지 봤는가"를 사후에 알 수 있게 한다.
+            # 반환 시그니처를 바꾸지 않는 이유: `_load_from_db` 호출부가 여럿이고
+            # 전부 3-튜플 언팩이라 확장하면 조용히 깨진다.
+            # `_last_train_ts`는 X와 **행 위치가 1:1로 맞는다** — 위 필터(미래가격
+            # 제거·MAX_TRAIN_BARS·CUSUM·장중 제한)가 전부 `records` 단계에서 끝난 뒤
+            # 바로 그 `records`로 X를 만들기 때문이다. 소비처는 반드시 `len()` 대조로
+            # 정렬을 확인할 것(X를 직접 넘겨받는 retrain_now 호출 경로에서는 어긋난다).
+            try:
+                self._last_train_ts = [str(r[0]) for r in records]
+                self._last_train_end_ts = self._last_train_ts[-1]
+                self._last_train_start_ts = self._last_train_ts[0]
+            except Exception:
+                self._last_train_ts = None
+                self._last_train_end_ts = self._last_train_start_ts = None
             logger.info(
                 f"[Retrain] DB 로드 완료: {len(X)}행 × {len(feat_names)}피처 "
-                f"(cutoff={cutoff[:10]} ~ {self._train_row_ts[-1] if self._train_row_ts else '?'})"
+                f"(cutoff={cutoff[:10]} ~ {(self._last_train_end_ts or '?')[:16]})"
             )
             return X, y_dict, feat_names
 

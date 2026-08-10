@@ -517,6 +517,27 @@ MC_LOOKBACK_DAYS: int = 5  # conf 분포 측정 기간 (거래일)
 FQADJ_ACC_MIN_SAMPLES: int = (
     15  # 이 미만 표본이면 게이트 건너뜀(None, "모른다"≠"나쁘다")
 )
+# [MW0602 457차] ConstOut 유발 장중 재학습의 스코프 — 트리거 호라이즌만 교체한다.
+#
+# **문제**: `_on_const_out_refit_done(hz)`가 `const_out=['3m']`처럼 **한 호라이즌의
+# 병리**로 발동하는데, 실제 재학습은 6/6 전부를 갈아치운다. 그것도 장중 경로라
+# **CV·가드가 전혀 없다**(`[Retrain] 3m 교체 (intraday — CV 없음)`).
+#
+# **실측 (2026-08-03~08-10, 6거래일)**: 장중 재학습 **20회 전부** ConstOut 유발이다
+# (3m 14회 / 5m 6회). STEP3 주기·워밍업·EKS·ExchangeCB 경로는 **0회**. 즉 1m·10m·
+# 15m·30m은 자기 문제가 아닌데도 20번 무검증 교체됐다(= 약 100건의 불필요한 교체).
+# 2026-08-10 하루만 봐도 5회 전부 `const_out=['3m']`이었다.
+#
+# **왜 스코프 제한이 맞는가**: ConstOut 재학습의 명시적 목적이 "scaler 재적합 후
+# **그 호라이즌의** 트리 구조 갱신"이다(`main.py:_on_const_out_refit_done` 주석).
+# 나머지 호라이즌은 EOD 전체 재학습(CV + 346차 가드)이 정규 갱신 경로다.
+#
+# ⚠ **부작용을 알고 켠다**: 위 실측대로 다른 intraday 경로가 사실상 안 도므로,
+# 이 값이 True이면 비트리거 호라이즌은 **당일 중 GBM 갱신이 없다**(EOD까지 대기).
+# 스케일러 갱신은 무관하다 — ScalerRefresh·ConstOut refit 경로는 손대지 않았고
+# 장중에 실제로 중요한 건 그쪽이다. False로 두면 종전대로 6/6 전량 교체다.
+CONST_OUT_RETRAIN_SCOPED: bool = True
+
 FQADJ_ACC_FREEZE_MIN: float = 0.45  # 미만이면 완화 동결 (단기 CUT_THR 하한과 정합)
 FQADJ_ACC_STRENGTHEN_MIN: float = (
     0.40  # 미만이면 fq 무관 강화 (랜덤 0.50 대비 뚜렷한 하회)
