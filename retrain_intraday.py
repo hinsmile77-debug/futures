@@ -70,8 +70,16 @@ def main():
     result_json_path = sys.argv[1]
     force    = sys.argv[2].strip() == "1"
     intraday = sys.argv[3].strip() == "1"
+    # [MW0602 457차] argv[4] = 교체 대상 호라이즌 CSV(선택). 없거나 빈 문자열이면
+    # 전체 = 457차 이전 동작. 구버전 main.py가 4개 인수만 넘겨도 안전하다.
+    horizons = None
+    if len(sys.argv) >= 5:
+        _hz_raw = sys.argv[4].strip()
+        if _hz_raw:
+            horizons = [h.strip() for h in _hz_raw.split(",") if h.strip()]
 
-    log.info("파라미터: force=%s intraday=%s result_path=%s", force, intraday, result_json_path)
+    log.info("파라미터: force=%s intraday=%s horizons=%s result_path=%s",
+             force, intraday, horizons or "ALL", result_json_path)
 
     t0 = time.perf_counter()
     result = {"ok": False, "error": "unknown", "elapsed_sec": 0.0}
@@ -81,7 +89,9 @@ def main():
 
         gc.collect()
         retrainer = BatchRetrainer()
-        result = retrainer.retrain_now(force=force, intraday=intraday)
+        result = retrainer.retrain_now(
+            force=force, intraday=intraday, horizons=horizons,
+        )
         result["elapsed_sec"] = round(time.perf_counter() - t0, 1)
 
         if result.get("ok"):

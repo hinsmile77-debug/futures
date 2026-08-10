@@ -2037,6 +2037,26 @@ def eval_mfe_capture_watch() -> dict:
 # [23] EOD 모델가드 판정 괴리 감시 (404차 신설)
 # ──────────────────────────────────────────────────────────────
 
+def _ensure_guard_shadow_columns() -> None:
+    """[MW0602 457차] guard_shadow_log의 457차 컬럼을 보장한다(멱등).
+
+    `_ensure_joint_gate_columns`와 완전히 같은 사정 — 스키마 원본은
+    `utils/db_utils.py`지만 두 PC가 각자 로컬 trades.db를 갖고 있고, 리포트가
+    앱 재기동보다 먼저 돌 수 있다. 컬럼이 없으면 아래 SELECT가 예외를 내고
+    `out["error"]`로 삼켜져 **채널이 조용히 죽는다**(420차 joint_gate_shadow와
+    동일한 사고 형태). 여기가 2차 방어선이다.
+    """
+    try:
+        with _conn(TRADES_DB) as conn:
+            have = {r[1] for r in conn.execute(
+                "PRAGMA table_info(guard_shadow_log)").fetchall()}
+            if "fair_valid" not in have:
+                conn.execute(
+                    "ALTER TABLE guard_shadow_log ADD COLUMN fair_valid INTEGER")
+    except Exception as e:
+        print("[WARN] guard_shadow_log 컬럼 보장 실패: %s" % e, file=sys.stderr)
+
+
 def eval_guard_shadow_channel(days: int) -> dict:
     """가드가 실제 판정에 쓰는 acc.txt 기준 결과(actual_verdict)와, old_acc_live
     (동일폴드 재측정) vs new(cv)의 공정비교 결과(fair_verdict)가 얼마나 자주
@@ -2063,12 +2083,13 @@ def eval_guard_shadow_channel(days: int) -> dict:
         (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(_TS_FMT),
         _campaign_start(),
     )
+    _ensure_guard_shadow_columns()
     try:
         with _conn(TRADES_DB) as conn:
             all_rows = conn.execute(
                 """SELECT ts, horizon, acc_txt, old_acc_live, new_cv, live_note,
                           distortion, actual_verdict, fair_verdict, pc,
-                          fair_new, fair_old, fair_hold_bars
+                          fair_new, fair_old, fair_hold_bars, fair_valid
                      FROM guard_shadow_log
                     WHERE ts >= ? AND source = 'eod'
                     ORDER BY ts""",
@@ -2100,16 +2121,39 @@ def eval_guard_shadow_channel(days: int) -> dict:
     # fair_new/fair_old는 최신 구간을 학습에서 완전히 뺀 도전자와 현행을 같은
     # 구간으로 채점한 값이다(현행 pkl은 intraday가 덮어써 여전히 유리할 수 있어
     # 격차는 하한이다 — batch_retrainer._measure_fair_holdout 주석 참조).
-    _fair = [r for r in rows
-             if r["fair_new"] is not None and r["fair_old"] is not None]
+    #
+    # 🔴 [MW0602 457차] **fair_valid=1 행만 요약한다.** 405차가 한계로 적어둔
+    # "현행 pkl은 intraday가 덮어써 여전히 유리할 수 있다"가 관측이 아니라 **상시
+    # 상태**였음이 457차에 확인됐다. 2026-07-31~08-10 실측 36행 중 **35행(97%)**
+    # 도전자 열위, 평균 격차 -0.1161, 그리고 fair_note의 구모델 mtime이 전부 당일
+    # 장중 재학습(예: 08-10 14:16)이라 홀드아웃 1850봉을 통째로 학습한 모델과 비교
+    # 중이었다. 그 표본으로 "도전자가 나쁘다"를 읽으면 모든 모델이 영구 동결된다.
+    # 이제 사이드카 메타(gbm_{h}_meta.json)의 train_end_ts로 오염을 직접 판정한다.
+    # fair_valid IS NULL = 457차 이전 행 → 오염 여부 불명 → 요약에서 제외.
+    _fair_all = [r for r in rows
+                 if r["fair_new"] is not None and r["fair_old"] is not None]
+    _fair = [r for r in _fair_all if r["fair_valid"] == 1]
+    _fair_invalid = len(_fair_all) - len(_fair)
+    if _fair_all:
+        out["fair_holdout_invalid_n"] = _fair_invalid
+        out["fair_holdout_invalid_rate"] = round(_fair_invalid / len(_fair_all), 4)
     if _fair:
         _gaps = [float(r["fair_new"]) - float(r["fair_old"]) for r in _fair]
         out["fair_holdout"] = {
             "n": len(_fair),
+            "n_excluded_invalid": _fair_invalid,
             "n_new_better": sum(1 for g in _gaps if g > 0),
             "mean_gap": round(float(np.mean(_gaps)), 4),
             "hold_bars": int(_fair[-1]["fair_hold_bars"] or 0),
-            "note": "판정 미반영 — 3거래일 관측 후 old_acc 인자 교체 여부를 주간회의 결정(§9)",
+            "note": "판정 미반영 — 유효표본 누적 후 old_acc 인자 교체 여부를 주간회의 결정(§9)",
+        }
+    elif _fair_all:
+        out["fair_holdout"] = {
+            "n": 0,
+            "n_excluded_invalid": _fair_invalid,
+            "note": ("⚠ 유효 표본 0 — 측정된 %d행 전부 현행이 홀드아웃을 학습한 상태다"
+                     "(457차). 이 채널의 fair_* 수치를 성능차로 인용하지 말 것."
+                     % _fair_invalid),
         }
 
     fair_rows = [r for r in rows if r["fair_verdict"] is not None]

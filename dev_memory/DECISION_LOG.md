@@ -2,6 +2,88 @@
 
 ---
 
+## 2026-08-10 (MW0602 457차 — 0810 점검 후속 P4·P5·P6: 모델 메타 사이드카 + GuardFair 유효성 + ConstOut 재학습 스코프)
+
+**지시**: 456차에 이어 개선안 P4·P5·P6 구현.
+**배경**: `DECISION_LOG.md` 2026-08-10(456차) 부수 발견 3건.
+
+### 원안 대비 방향 전환 — P4를 그대로 하면 모델이 영구 동결된다
+
+P4 원안은 "GuardFair를 섀도 → 판정 보조로 승격"이었다. `guard_shadow_log` 실측이
+그 전제를 깼다: **36행 중 35행(97%)에서 도전자 열위, 평균 격차 -0.1161.**
+원인은 405차 docstring이 이미 자백해 둔 한계였다 — *"현행 pkl은 intraday 재학습이
+매일 덮어쓰므로 홀드아웃 구간을 이미 학습했을 수 있다"*. `fair_note` 실측이 이를
+확정한다: 08-10 6개 호라이즌 전부 `구모델 pkl mtime=2026-08-10 14:16`(당일 장중
+재학습본)이라 홀드아웃 1850봉을 통째로 학습한 모델과 비교하고 있었다.
+**도전자만 홀드아웃되고 현행은 안 된 비대칭 비교**이므로, 이 격차는 성능차가 아니라
+in-sample 프리미엄이다. 승격했다면 6/6 전량이 영구 보류됐을 것이다.
+
+→ 같은 docstring이 해법도 지목한다: *"현행 모델의 학습 컷오프를 메타데이터로 남기는
+별건 작업"*. **그것이 P6의 결함과 같은 뿌리**라 P6 → P4 순서로 묶어 구현했다.
+
+### P6 — 모델 메타 사이드카 `gbm_{h}_meta.json` 신설
+
+**File**: `learning/batch_retrainer.py` `_save_model` / `_load_from_db`
+**결함**: `acc.txt`가 **이미 존재하지 않는 모델을 기술한다.** 두 경로가 겹친다.
+  · intraday 재학습은 `acc=nan` → pkl만 갈리고 acc.txt는 보존(의도된 동작)
+  · EOD 가드가 HOLD면 `_save_model` 자체가 미호출 → acc.txt 동결
+겹치면 영구 고착된다. 실측: `gbm_3m_acc.txt` mtime **2026-08-01**(9거래일 정체,
+0.4756 고정)인데 `gbm_3m.pkl`은 **08-10 14:16**(그날 5번째 무검증 장중 재학습본).
+즉 EOD 가드가 "구모델 유지"라고 판정한 그 구모델은 실재하지 않는다.
+**조치**: 저장 시 `{written_at, source, train_start_ts, train_end_ts, n_features,
+acc, acc_kind}` 사이드카 기록. **판정 로직·acc.txt 의미론 전부 무변경** —
+404차 `guard_shadow` 채널이 이미 판정 기준 교체를 사전등록했고(missed_upgrade_rate
+≥ 0.30 → 주간회의) 실측은 **3/42=0.0714로 PASS**다. 이 메타는 그 판정을 대체하지
+않고 GuardFair에 입력을 준다.
+**라이브 실행 검증**: `source=intraday / train_end_ts=2026-08-10 14:38 / acc=null /
+acc_kind=none(intraday)` — acc.txt(08-01, 0.4756)와의 괴리가 이제 기계 판독 가능하다.
+
+### P4 — GuardFair 비교 유효성 판정 `fair_valid`
+
+**File**: `learning/batch_retrainer.py` `_read_model_meta`·`_fair_validity`,
+`utils/db_utils.py`(컬럼+마이그레이션), `scripts/generate_validation_campaign_report.py`
+**규칙**: 현행의 `train_end_ts` < 홀드아웃 시작 ts 여야 유효. 메타 없음·ts 불명도
+**무효**로 본다("모른다"는 "괜찮다"가 아니다). 무효여도 값은 그대로 기록한다 —
+무효율 자체가 지표이기 때문이다. 무효 시 WARNING으로 "이 격차는 성능차가 아니다"를 명시.
+**리포트 반영**: `fair_holdout` 요약을 `fair_valid=1` 행으로만 계산하고,
+`fair_holdout_invalid_n/rate`를 병기. 유효 0이면 인용 금지 문구를 낸다.
+**실행 검증**: 현 DB에서 **무효율 1.0 (36/36)**, 유효 표본 0 → 요약에서 전량 배제.
+`missed_upgrade_rate=0.0714 / PASS`(별개 지표)는 영향 없음.
+**부수**: 리포트에 `_ensure_guard_shadow_columns()` 멱등 ALTER 추가 — 없으면 MW0601이
+앱 재기동 전 리포트를 돌릴 때 SELECT가 예외를 내고 `out["error"]`로 삼켜져 **채널이
+조용히 죽는다**(420차 joint_gate_shadow와 동일 사고 형태).
+
+### P5 — ConstOut 유발 재학습을 트리거 호라이즌으로 제한
+
+**File**: `config/settings.py:CONST_OUT_RETRAIN_SCOPED=True`, `main.py`(3곳),
+`retrain_intraday.py`(argv[4]), `learning/batch_retrainer.py:retrain_now(horizons=)`
+**결함**: `const_out=['3m']` 한 호라이즌의 병리가 **6/6 전부를 CV·가드 없이** 교체한다.
+**실측(2026-08-03~08-10, 6거래일)**: 장중 재학습 **20회 전부 ConstOut 유발**
+(3m 14 / 5m 6). STEP3 주기·워밍업·EKS·ExchangeCB 경로는 **0회**. 즉 1m·10m·15m·30m은
+자기 문제가 아닌데 20번 무검증 교체됐다(≈100건).
+**근거**: 이 재학습의 명시적 목적이 "scaler 재적합 후 **그 호라이즌의** 트리 구조
+갱신"이다(`_on_const_out_refit_done` 주석). 나머지는 EOD(CV+346차 가드)가 정규 경로다.
+⚠ **부작용을 알고 켠다**: 다른 intraday 경로가 사실상 안 도므로 비트리거 호라이즌은
+당일 중 GBM 갱신이 없다(EOD까지 대기). 스케일러 갱신 경로는 무변경 — 장중에 실제로
+중요한 건 그쪽이다. False로 두면 종전대로 6/6.
+**라이브 실행 검증**: `horizons=['3m']`로 1회 실행 →
+`교체 스코프 제한: ['3m'] 만 재학습 (스킵 ['1m','5m','10m','15m','30m'] — 구모델 유지)`,
+`성공=1/1 호라이즌`, 소요 **17.7s → 8.3s**. pkl mtime 대조로 3m만 갱신 확인 후
+**백업에서 EOD 직후 상태로 복원**(테스트 산출물을 라이브에 남기지 않음).
+
+**구현**: `learning/batch_retrainer.py`(메타 저장·ts 목록·유효성 판정·스코프),
+`config/settings.py`(플래그 1), `utils/db_utils.py`(`fair_valid` 컬럼+마이그레이션+
+`save_guard_shadow` 인자), `main.py`(스코프 전달·로그), `retrain_intraday.py`(argv[4]),
+`scripts/generate_validation_campaign_report.py`(유효행 필터+컬럼 보장),
+`tests/test_457_guard_meta_and_scope.py`(신설).
+**검증**: 회귀 20/20 · py37_32·py310_64 양쪽 py_compile · 실 재학습 1회(스코프 동작
++ 메타 생성 확인 후 복원) · 채널 평가 실행(무효율 1.0 반영 확인) · 멱등 ALTER 실행
+(174행 무변경). **라이브 미검증** — 확인 항목은 NEXT_TODO 457차.
+**관련**: 405차(GuardFair 신설·한계 명시), 404차(guard_shadow 채널·영속화),
+403차 P0-4(acc.txt 왜곡), 346차(EOD 가드), 456차(선행 세션), 313차 원칙.
+
+---
+
 ## 2026-08-10 (MW0602 456차 — 0810 일일점검 후속: ZeroDiag 오진 수정 + min_conf 완화하한 + JointGate 폴백 섀도)
 
 **지시**: 0810 일일점검(기동~EOD+P8) → 승패 딥다이브(313차) → 개선안 P1·P2·P3 구현.

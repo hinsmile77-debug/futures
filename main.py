@@ -1197,14 +1197,19 @@ class TradingSystem:
                 return candidate, ""
         return None, "실데이터에 존재하는 대체 후보 없음"
 
-    def _start_manual_retrain(self, force: bool, reason: str) -> bool:
-        """ConstOut 재적합·드리프트 트리거 시 호출 — 64비트 subprocess 경량 재학습."""
+    def _start_manual_retrain(self, force: bool, reason: str, horizons=None) -> bool:
+        """ConstOut 재적합·드리프트 트리거 시 호출 — 64비트 subprocess 경량 재학습.
+
+        horizons: [MW0602 457차] 교체 대상 호라이즌 목록. None이면 종전대로 6/6 전부.
+        """
         return self._start_gbm_retrain_subprocess(
             force=force, reason=reason, is_warmup=False, intraday=True,
+            horizons=horizons,
         )
 
     def _start_gbm_retrain_subprocess(
         self, force: bool, reason: str, is_warmup: bool, intraday: bool = True,
+        horizons=None,
     ) -> bool:
         """[226차] GBM 재학습을 py310_64 서브프로세스로 실행 — 32비트 OOM 완전 차단.
 
@@ -1240,8 +1245,12 @@ class TradingSystem:
             _stderr_fh = None  # 파일 오픈 실패 시 DEVNULL 폴백
 
         try:
+            # [MW0602 457차] argv[4] = 교체 대상 호라이즌 CSV. 빈 문자열이면 전부
+            # (= 457차 이전 동작). retrain_intraday.py는 argv[4]가 없어도 동작하므로
+            # 구버전 스크립트와 섞여도 안전하다.
+            _hz_s = ",".join(str(h) for h in (horizons or []))
             _proc = subprocess.Popen(
-                [PYTHON_64_EXEC, _script, _rpath, _force_s, _intraday_s],
+                [PYTHON_64_EXEC, _script, _rpath, _force_s, _intraday_s, _hz_s],
                 stdout=subprocess.DEVNULL,
                 stderr=_stderr_fh if _stderr_fh is not None else subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
@@ -1270,6 +1279,9 @@ class TradingSystem:
         log_manager.learning(
             f"[GBM-64] 64비트 서브프로세스 재학습 시작 "
             f"| force={force} intraday={intraday} pid={_proc.pid} | {reason}"
+            # [MW0602 457차] 스코프를 로그에 남긴다 — 어떤 호라이즌이 교체됐는지
+            # 사후에 모르면 "왜 이 pkl이 갈렸나"를 추적할 수 없다.
+            + (f" | scope={_hz_s}" if _hz_s else " | scope=ALL")
         )
         return True
 
@@ -2283,7 +2295,13 @@ class TradingSystem:
             f"[ConstOut] {hz} → GBM 재학습 예약 (scaler 재적합 후 트리 구조 갱신 필요)",
             "INFO",
         )
-        self._start_manual_retrain(force=True, reason=f"const_out={hz}")
+        # [MW0602 457차] 트리거 호라이즌만 교체 — 이 재학습의 목적은 위 (2)가
+        # 밝힌 대로 "그 호라이즌의 트리 구조 갱신"이다. 근거·부작용은
+        # config/settings.py CONST_OUT_RETRAIN_SCOPED 주석.
+        _scope = list(hz or []) if runtime_settings.CONST_OUT_RETRAIN_SCOPED else None
+        self._start_manual_retrain(
+            force=True, reason=f"const_out={hz}", horizons=_scope,
+        )
 
     def _is_degraded_entry_blocked(
         self,
