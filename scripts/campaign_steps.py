@@ -77,6 +77,15 @@ def run_campaign_steps(logger, base_dir: str) -> None:
         # 이번 주 내내 라이브였던 상태를 기록해야 한다). 게이팅 없음: 판정 결과와
         # 무관하게 종료코드 0이라 후속 스텝을 막지 않는다.
         ("CVD 앵커 대조 리포트", ["generate_cvd_anchor_report.py", "--days", "5"]),
+        # [MW0602 458차 / 3-B] §49 조기청산 반사실 — TP1 도달 전 익절성 틱스톱의
+        # "유지했다면". 읽기 전용 stdout 판정(사전등록 early_trail_exit_watch).
+        # 판정 리포트 **앞**(읽기 전용 채널 공통 규약). TRADE 로그를 파싱하므로
+        # 각 PC가 자기 로그 표본으로 돌린다 — PC간 대조는 stdout 로그로.
+        ("조기청산 반사실 [49]", ["early_trail_exit_counterfactual.py"]),
+        # [MW0602 458차 / 3-A] §40-B 방향 처분 실험 — 실제 vs 자기 반대.
+        # 어떤 결과도 역방향 매매로 이어지지 않는다(처분 판단 재료, 사전등록
+        # direction_disposal_watch). [40]과 같은 시뮬레이터라 비용 무시 — 비교만 유효.
+        ("방향 처분 실험 [40-B]", ["random_entry_control.py", "--inverse"]),
         ("섀도우 TB 재학습", ["run_shadow_triple_barrier_retrain.py"]),
         ("분위 회귀 재학습", ["train_quantile_regressor.py"]),
         # [357차] 메타라벨 분류기(entry_quality_prob 스코어러)가 어떤 스케줄에도

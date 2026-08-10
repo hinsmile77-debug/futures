@@ -211,6 +211,81 @@ def run(since, trials, seed):
     return out
 
 
+def run_inverse(since):
+    """[MW0602 458차 / 3-A] §40-B 역방향 팔 — 방향 처분 실험.
+
+    [40]("무작위와 구분되는가")의 짝으로 **"자기 반대와 구분되는가"** 를 잰다.
+    무정보 신호라면 반대도 같은 기대값이고, 역정보 신호라면 반대가 체계적으로
+    낫다 — 처분(재학습 격하 vs 리서치 철수 vs 존치)이 갈리는 지점이다.
+
+    판정(사전등록: VALIDATION_CAMPAIGN["direction_disposal_watch"]):
+    짝지은 t **와** 일자단위 부호검정이 **둘 다** α를 넘어야 "역정보" 분기.
+    ⚠ 어떤 결과도 역방향 매매로 이어지지 않는다 — 처분 판단 재료다.
+    """
+    import math
+    cr = VALIDATION_CAMPAIGN.get("direction_disposal_watch") or {}
+    entries, atr, bars = load_inputs(since)
+    usable = []
+    for e in entries:
+        a = _atr_for(str(e["entry_ts"]), atr)
+        if a:
+            usable.append((str(e["entry_ts"]), float(e["px"]),
+                           1 if str(e["direction"]) == "LONG" else -1, a))
+    out = {
+        "channel": "direction_disposal_watch", "since": since,
+        "n_entries": len(usable), "n_days": len({u[0][:10] for u in usable}),
+        "preregistered": {k: cr.get(k) for k in ("min_entries", "min_days", "alpha")},
+    }
+    if not usable:
+        out["verdict"] = "INSUFFICIENT"
+        out["reason"] = "시뮬 가능한 진입 없음"
+        return out
+
+    diffs, by_day = [], collections.defaultdict(float)
+    act_sum = inv_sum = 0.0
+    for ets, px, sg, a in usable:
+        pa = simulate(ets, px, sg, a, bars)
+        pi = simulate(ets, px, -sg, a, bars)
+        act_sum += pa
+        inv_sum += pi
+        diffs.append(pi - pa)
+        by_day[ets[:10]] += (pi - pa)
+    n = len(diffs)
+    mean = sum(diffs) / n
+    var = sum((d - mean) ** 2 for d in diffs) / (n - 1) if n > 1 else 0.0
+    t_stat = mean / ((var / n) ** 0.5) if var > 0 else 0.0
+    pos_days = sum(1 for v in by_day.values() if v > 0)
+    sign_p = _binom_two_sided(pos_days, len(by_day))
+    out.update({
+        "actual_pt": round(act_sum, 2), "inverse_pt": round(inv_sum, 2),
+        "paired_mean_pt": round(mean, 4), "paired_t": round(t_stat, 3),
+        "days_inverse_better": "%d/%d" % (pos_days, len(by_day)),
+        "sign_test_p": round(sign_p, 4),
+    })
+    alpha = float(cr.get("alpha", 0.05))
+    # 근사 양측 p (정규 근사 — n>100에서 충분. scipy 의존 회피)
+    z = abs(t_stat)
+    p_t = 2.0 * (1.0 - 0.5 * (1.0 + math.erf(z / math.sqrt(2.0))))
+    out["paired_p_approx"] = round(p_t, 4)
+    if (out["n_entries"] < int(cr.get("min_entries", 300))
+            or out["n_days"] < int(cr.get("min_days", 35))):
+        out["verdict"] = "INSUFFICIENT"
+        out["reason"] = "표본 부족 (%d건/%d일 < %s건/%s일)" % (
+            out["n_entries"], out["n_days"],
+            cr.get("min_entries", 300), cr.get("min_days", 35))
+    elif p_t < alpha and sign_p < alpha and mean > 0:
+        out["verdict"] = "INVERSE_SIGNAL"
+        out["reason"] = ("역정보 검출 — 방향 결정의 앙상블 분리·재학습 격하를 "
+                         "주간회의 안건으로 (역방향 매매 금지)")
+    elif p_t < alpha and sign_p < alpha and mean < 0:
+        out["verdict"] = "ACTUAL_SIGNAL"
+        out["reason"] = "실제 방향 우위 — 존치, 채널 종료 검토"
+    else:
+        out["verdict"] = "NO_INFORMATION"
+        out["reason"] = "구분 안 됨 — 방향 리서치 자원 철수를 주간회의 안건으로"
+    return out
+
+
 def run_three_arm(since, trials, seed, entry_window=("09:05", "14:49")):
     """[MW0602 429차 / A-2 확장] 3팔 비교 — **타점(진입 시각)의 가치를 격리**한다.
 
@@ -318,12 +393,36 @@ def main():
     ap.add_argument("--trials", type=int, default=400, help="무작위 시행 횟수")
     ap.add_argument("--seed", type=int, default=428, help="난수 시드(재현성)")
     ap.add_argument("--json", action="store_true", help="JSON만 출력")
+    ap.add_argument("--inverse", action="store_true",
+                    help="[458차/40-B] 역방향 팔 — 방향 처분 실험만 실행")
     args = ap.parse_args()
     _utf8_stdout()
 
     since = (args.since or VALIDATION_CAMPAIGN.get("start_date", "2026-07-05"))
     if len(since) == 10:
         since += " 00:00:00"
+
+    if args.inverse:
+        r = run_inverse(since)
+        if args.json:
+            print(json.dumps(r, ensure_ascii=False, indent=1))
+            return
+        print("=" * 66)
+        print("[40-B] 방향 처분 실험 — 실제 방향 vs 자기 반대 (같은 시각·기하)")
+        print("=" * 66)
+        print("표본: %s건 / %s거래일 (%s 이후)"
+              % (r.get("n_entries"), r.get("n_days"), since[:10]))
+        if "actual_pt" in r:
+            print("\n  실제 방향 : %+10.2fpt" % r["actual_pt"])
+            print("  반대 방향 : %+10.2fpt" % r["inverse_pt"])
+            print("  짝차이    : %+.4fpt/건  t=%.3f (근사 p=%.4f)"
+                  % (r["paired_mean_pt"], r["paired_t"], r["paired_p_approx"]))
+            print("  일자단위  : 반대 우위 %s일  부호검정 p=%.4f"
+                  % (r["days_inverse_better"], r["sign_test_p"]))
+        print("\n  판정: %s — %s" % (r["verdict"], r["reason"]))
+        print("\n※ 절대 수준 인용 금지 — 단순사다리 시뮬. 어떤 결과도 역방향 매매로")
+        print("  이어지지 않는다(처분 판단 재료). settings direction_disposal_watch.")
+        return
 
     res = run(since, args.trials, args.seed)
     if args.json:
