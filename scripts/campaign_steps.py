@@ -13,6 +13,13 @@ import os
 import sys
 import subprocess
 
+# [MW0601 456차 / F8] 장중 실행 차단 종료코드. utils.analysis_db가 단일 진실원이지만
+# 이 모듈은 EOD 크리티컬 경로라 import 실패로 체인 전체를 죽이지 않는다 — 리터럴 폴백.
+try:
+    from utils.analysis_db import EXIT_INTRADAY_BLOCKED as _EXIT_INTRADAY_BLOCKED
+except Exception:
+    _EXIT_INTRADAY_BLOCKED = 2
+
 
 def week_last_trading_day(friday: datetime.date) -> datetime.date:
     """그 주(월~금) 중 실제 마지막 거래일을 반환.
@@ -106,6 +113,17 @@ def run_campaign_steps(logger, base_dir: str) -> None:
             )
             ok = proc.returncode == 0
             tail = (proc.stdout or b"")[-2000:].decode("utf-8", errors="replace")
+            # [MW0601 456차 / F8] rc=2 = utils.analysis_db.EXIT_INTRADAY_BLOCKED —
+            # 장중 실행 차단(정책상 스킵)이지 스텝 고장이 아니다. FAIL로 집계하면
+            # 448차가 막으려던 "조용한 실패"의 반대편, 즉 **시끄러운 거짓 실패**가 된다.
+            # 정규 EOD(15:45)는 장 마감 후라 여기 걸리지 않는다 — 수동 --campaign 실행
+            # 경로에서만 나타난다.
+            if proc.returncode == _EXIT_INTRADAY_BLOCKED:
+                logger.warning(
+                    "[검증 캠페인] %s → 장중 차단으로 스킵 (rc=%d) — 장 마감 후 재실행할 것\n%s",
+                    name, proc.returncode, tail)
+                summary.append((name, "SKIP(장중차단)"))
+                continue
             logger.info("[검증 캠페인] %s → %s (rc=%d)\n%s",
                          name, "완료" if ok else "실패", proc.returncode, tail)
             summary.append((name, "OK" if ok else "FAIL(rc=%d)" % proc.returncode))

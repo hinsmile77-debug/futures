@@ -227,6 +227,10 @@ def main():
     ap.add_argument("--no-noise", action="store_true")
     args = ap.parse_args()
 
+    # 라이브 DB를 대량 읽는다 — 장중이면 CB⑤를 유발할 수 있어 차단한다(456차 F8).
+    from utils.analysis_db import guard_intraday
+    guard_intraday("ic_decay_catalog")
+
     feats, closes, dates = load(args.days)
     print("raw_features %d행, %d거래일 (%s ~ %s)" % (len(feats), len(dates), dates[0], dates[-1]))
     names, X, ts_list = build_matrix(feats)

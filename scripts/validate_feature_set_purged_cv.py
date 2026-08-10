@@ -160,6 +160,12 @@ def run_horizon(hz, h_min, feat, close_map, master_cols):
 
 
 def main():
+    # [456차 F8] 이 스크립트는 raw_features 전체를 WHERE 없이 읽는다(load_data) —
+    # 4개 하네스 중 IO가 가장 크다. 장중이면 CB⑤를 유발할 수 있어 차단한다.
+    from utils.analysis_db import guard_intraday, utf8_console
+    utf8_console()
+    guard_intraday("validate_feature_set_purged_cv")
+
     feat, close_map = load_data()
     master_cols = list(joblib.load(os.path.join(HORIZON_DIR, "feature_names.pkl")))
     master_cols = [c for c in master_cols if c in feat.columns]

@@ -32,7 +32,13 @@ from collections import defaultdict
 import numpy as np
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 RAW_DB = os.path.join(_ROOT, "data", "db", "raw_data.db")
+
+from utils.analysis_db import (  # noqa: E402
+    connect_ro, guard_intraday, utf8_console,
+)
 
 # CLAUDE.md 절대원칙 §3 현행 CORE (비교 기준선)
 INCUMBENT = {
@@ -47,19 +53,38 @@ INCUMBENT_EXTRA = {"cvd_delta_norm": "단기 CORE 실소비값"}
 HORIZONS = [5, 15, 30]      # 단기/중기/장기 대표
 MIN_DAY_ROWS = 60           # 하루 최소 유효 분봉
 MIN_DAYS = 20
-MIN_COVERAGE = 0.80         # 피처 결측 허용 하한
+MIN_COVERAGE = 0.80         # 피처 결측 허용 하한 (**첫 관측 이후** 구간 기준)
 MIN_DISTINCT = 20           # 상수·이진 플래그 제외
 
+# [456차 / F3] 첫 관측 이후 최소 관찰 거래일.
+# 커버리지를 first_seen 이후로 재정의하면 "어제 생긴 피처"가 커버리지 100%로 통과해
+# 2~3일 표본의 우연한 IC가 후보 상단에 올라온다. 그 반대편 실패를 막는 하한이다.
+MIN_DAYS_SINCE_FIRST_SEEN = 15
 
-def load(days):
-    con = sqlite3.connect(RAW_DB)
+#: build_matrix()가 마지막 호출에서 탈락시킨 피처 내역.
+#: 반환 시그니처를 바꾸면 이 함수를 import 하는 horizon_signal_tradability.py·
+#: ic_decay_catalog.py가 조용히 깨지므로, 3-tuple 반환은 유지하고 부가 정보는 여기 남긴다.
+LAST_SCREENING_REPORT = {"kept": [], "dropped": [], "total_rows": 0, "total_days": 0}
+
+
+def load(days, con=None):
+    """최근 `days` 거래일의 (피처행, 종가맵, 날짜목록) 로드.
+
+    [456차 / F3] `WHERE substr(ts,1,10) >= ?` → `WHERE ts >= ?`.
+    `raw_features`/`raw_candles`의 자동 인덱스는 `ts` 위에 있는데, `substr()`로 감싸면
+    인덱스를 못 타 **468MB 테이블 전체 스캔**이 된다. ts가
+    'YYYY-MM-DD HH:MM:SS' 고정폭이라 사전순 비교가 날짜 비교와 동치이므로 결과는 같다.
+    """
+    own = con is None
+    if own:
+        con = connect_ro(RAW_DB)
     cur = con.cursor()
     cur.execute("SELECT DISTINCT substr(ts,1,10) d FROM raw_candles ORDER BY d DESC LIMIT ?", (days,))
     dates = sorted(r[0] for r in cur.fetchall())
     lo = dates[0]
-    cur.execute("SELECT ts, close FROM raw_candles WHERE substr(ts,1,10) >= ? ORDER BY ts", (lo,))
+    cur.execute("SELECT ts, close FROM raw_candles WHERE ts >= ? ORDER BY ts", (lo,))
     closes = {ts: float(c) for ts, c in cur.fetchall() if c is not None}
-    cur.execute("SELECT ts, features FROM raw_features WHERE substr(ts,1,10) >= ? ORDER BY ts", (lo,))
+    cur.execute("SELECT ts, features FROM raw_features WHERE ts >= ? ORDER BY ts", (lo,))
     feats = []
     for ts, fj in cur.fetchall():
         if ts not in closes:
@@ -68,21 +93,61 @@ def load(days):
             feats.append((ts, json.loads(fj)))
         except Exception:
             continue
-    con.close()
+    if own:
+        con.close()
     return feats, closes, dates
 
 
-def build_matrix(feats):
-    """공통 수치 피처만 추려 (이름목록, 값행렬, ts목록) 반환."""
+def build_matrix(feats, verbose=True):
+    """공통 수치 피처만 추려 (이름목록, 값행렬, ts목록) 반환.
+
+    [456차 / F3] 커버리지를 **피처별 첫 관측 이후** 구간 기준으로 계산한다.
+
+    구 방식은 관찰창 전체 행수(`n`)로 나눴다. 관찰창 중간에 도입된 피처는 도입 전
+    구간이 통째로 결측으로 잡혀, 도입 후 매일 100% 수집돼도 탈락했다.
+
+    2026-08-10 실측: `--days 40` 62개 vs `--days 19` 82개 — **20개가 도입일 때문에만
+    보이지 않았다**. 그중에 CLAUDE.md 절대원칙 §3이 30m CORE로 규정한 `opt_chain_pcr`,
+    그리고 `vkospi`(2026-07-14 도입, 이후 19거래일 연속 95~100% 커버)가 있었다.
+    즉 **신규 피처는 도입 후 약 한 달간 L1에서 구조적으로 보이지 않았다.**
+
+    탈락 내역은 `LAST_SCREENING_REPORT`에 남기고 `verbose=True`면 출력한다 —
+    구 버전은 통과 개수만 찍어 무엇이 왜 빠졌는지 알 길이 없었다(조용한 실패).
+    """
+    n = len(feats)
+    dates = [ts[:10] for ts, _ in feats]
+    total_days = len(set(dates))
+
+    # 1) 피처별 첫 수치 관측 위치와 관측 수
     cnt = defaultdict(int)
-    for _, f in feats:
+    first_idx = {}
+    for i, (_, f) in enumerate(feats):
         for k, v in f.items():
             if isinstance(v, bool):
                 continue
             if isinstance(v, (int, float)) and not (isinstance(v, float) and math.isnan(v)):
                 cnt[k] += 1
-    n = len(feats)
-    names = sorted(k for k, c in cnt.items() if c >= n * MIN_COVERAGE)
+                if k not in first_idx:
+                    first_idx[k] = i
+
+    # 2) 첫 관측 이후 기준 커버리지 + 관찰기간 하한
+    eligible = {k: max(1, n - first_idx[k]) for k in cnt}
+    days_since = {k: len(set(dates[first_idx[k]:])) for k in cnt}
+    dropped = []
+    names = []
+    for k in sorted(cnt):
+        cov = cnt[k] / float(eligible[k])
+        if cov < MIN_COVERAGE:
+            dropped.append((k, "커버리지 %.1f%% < %.0f%% (첫관측 이후 %d행 중 %d행)"
+                            % (cov * 100, MIN_COVERAGE * 100, eligible[k], cnt[k])))
+            continue
+        if days_since[k] < MIN_DAYS_SINCE_FIRST_SEEN:
+            dropped.append((k, "관찰 %d거래일 < %d (첫관측 %s — 표본 부족)"
+                            % (days_since[k], MIN_DAYS_SINCE_FIRST_SEEN,
+                               dates[first_idx[k]])))
+            continue
+        names.append(k)
+
     X = np.full((n, len(names)), np.nan, dtype=np.float64)
     idx = {k: j for j, k in enumerate(names)}
     ts_list = []
@@ -96,17 +161,50 @@ def build_matrix(feats):
                 continue
             if isinstance(v, (int, float)):
                 X[i, j] = float(v)
-    # 상수·저해상도(이진 플래그 등) 제외
+
+    # 3) 상수·저해상도(이진 플래그 등) 제외 — 커버리지도 first_seen 기준으로 재확인
     keep = []
     for j, k in enumerate(names):
         col = X[:, j]
         col = col[~np.isnan(col)]
-        if col.size < n * MIN_COVERAGE:
+        if col.size < eligible[k] * MIN_COVERAGE:
+            dropped.append((k, "행렬화 후 커버리지 미달 (%d < %d)"
+                            % (col.size, int(eligible[k] * MIN_COVERAGE))))
             continue
-        if np.unique(col).size < MIN_DISTINCT:
+        nuniq = np.unique(col).size
+        if nuniq < MIN_DISTINCT:
+            dropped.append((k, "고유값 %d < %d (상수·플래그)" % (nuniq, MIN_DISTINCT)))
             continue
         keep.append(j)
-    return [names[j] for j in keep], X[:, keep], ts_list
+
+    kept_names = [names[j] for j in keep]
+    LAST_SCREENING_REPORT.update({
+        "kept": kept_names,
+        "dropped": sorted(dropped),
+        "total_rows": n,
+        "total_days": total_days,
+    })
+    if verbose:
+        print_screening_report()
+    return kept_names, X[:, keep], ts_list
+
+
+def print_screening_report():
+    """스크리닝 통과/탈락 내역 출력 (G3-A3 탈락 가시화).
+
+    필터링하는 코드는 *제외된 것의 개수와 사유*를 반드시 남긴다 — 구 버전이 통과
+    개수만 찍은 탓에 20개 누락이 몇 주간 드러나지 않았다.
+    """
+    rep = LAST_SCREENING_REPORT
+    print("스크리닝 대상 피처 %d개 / 후보 %d개 (커버리지 %.0f%%+ · 고유값 %d+ · 첫관측후 %d거래일+)"
+          % (len(rep["kept"]) + len(rep["dropped"]), len(rep["kept"]),
+             MIN_COVERAGE * 100, MIN_DISTINCT, MIN_DAYS_SINCE_FIRST_SEEN))
+    if not rep["dropped"]:
+        print("  제외 0개")
+        return
+    print("  제외 %d개 — 이번 창에서 평가되지 않은 피처:" % len(rep["dropped"]))
+    for nm, why in rep["dropped"]:
+        print("    %-32s %s" % (nm, why))
 
 
 def rankdata(a):
@@ -219,21 +317,23 @@ def analyze(names, X, ts_list, closes, horizon):
 
 
 def main():
+    utf8_console()          # cp949 콘솔에서 비ASCII 출력이 죽는 것 방지 (455차 패턴)
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=120)
     ap.add_argument("--top", type=int, default=20)
     args = ap.parse_args()
 
+    # 라이브 DB를 대량 읽는다 — 장중이면 CB⑤를 유발할 수 있어 차단한다(456차 F8).
+    guard_intraday("core_feature_discovery")
+
     feats, closes, dates = load(args.days)
     print("raw_features %d행, %d거래일 (%s ~ %s)" % (len(feats), len(dates), dates[0], dates[-1]))
     names, X, ts_list = build_matrix(feats)
-    print("스크리닝 대상 피처 %d개 (커버리지 %.0f%%+ · 고유값 %d+ 만)"
-          % (len(names), MIN_COVERAGE * 100, MIN_DISTINCT))
 
     n_tests = len(names) * len(HORIZONS)
-    # 양측 t 임계 ≈ Bonferroni α=0.05
+    # 양측 t 임계 ~= Bonferroni α=0.05
     bonf_t = 3.0 + 0.55 * math.log(max(n_tests, 2))
-    print("다중비교: 검정 %d회 → Bonferroni 근사 |t| 임계 ≈ %.2f" % (n_tests, bonf_t))
+    print("다중비교: 검정 %d회 -> Bonferroni 근사 |t| 임계 ~= %.2f" % (n_tests, bonf_t))
 
     results = {}
     for h in HORIZONS:

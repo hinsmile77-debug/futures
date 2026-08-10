@@ -177,6 +177,10 @@ def main():
     ap.add_argument("--json", default="", help="결과 JSON 출력 경로(선택)")
     args = ap.parse_args()
 
+    # 라이브 DB를 대량 읽는다 — 장중이면 CB⑤를 유발할 수 있어 차단한다(456차 F8).
+    from utils.analysis_db import guard_intraday
+    guard_intraday("horizon_signal_tradability")
+
     horizons = [int(x) for x in args.horizons.split(",") if x.strip()]
     feats, closes, dates = load(args.days)
     print("raw_features %d행, %d거래일 (%s ~ %s)" % (len(feats), len(dates), dates[0], dates[-1]))

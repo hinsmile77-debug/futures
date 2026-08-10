@@ -29,6 +29,34 @@ KOSPI 200 선물 1분봉 기반 방향 예측 + 자동매매 시스템 (별칭: 
 > EOD 로그에 `Python 3.10.20 64-bit`가 찍혀도 정상 — 이상 환경이 아님.
 > `EOD_RETRAIN.bat`도 **`py310_64`** 전용 (191차 결정). `scripts\eod_retrain.py`도 동일. 두 파일 모두 py37_32 언급은 구버전 잔재이며, py37_32로 실행하면 OOM 재발 — 다시 거론하지 말 것.
 
+### 🔴 장중 라이브 DB 분석 금지 [2026-08-10 456차]
+
+**프리장 08:45 ~ 본장 마감(15:35, 만기일 15:20) 사이에는 라이브 DB에 분석 쿼리를 돌리지 말 것.**
+
+2026-08-10 13:47:08, 점검 세션이 `raw_data.db`(468MB)·`predictions.db`(835MB)를
+전수 스캔하는 동안 파이프라인이 **7,619ms**로 늘어 CB⑤가 발동하고 신규 진입이 5분간
+정지됐다. 포지션이 FLAT이라 실손해는 없었다.
+
+지연 프로파일이 원인을 특정한다 — 정례 스파이크는 `S0`(모델 리로드) 단독인데,
+이 건은 `S0=3ms`인데 **`S1=3,098ms`·`S4=1,951ms`** 로 DB 접근 단계만 동시에 느려졌다.
+
+> ⚠ **잠금 경합이 아니다.** 두 DB 모두 `journal_mode=wal`이라 읽기가 쓰기를 막지 않는다.
+> 원인은 **IO 대역폭·OS 페이지캐시 압박**이므로 `mode=ro`나 `busy_timeout`으로는 못 막는다.
+> 막는 방법은 **실행 시점을 옮기는 것뿐이다.**
+
+```python
+from utils.analysis_db import guard_intraday, connect_ro
+guard_intraday("스크립트명")      # 장중이면 rc=2로 종료
+con = connect_ro(DB_PATH)         # 읽기전용(쓰기 사고 방지용 — 지연 대책 아님)
+```
+
+- 분석 하네스 4종(`core_feature_discovery` · `horizon_signal_tradability` ·
+  `ic_decay_catalog` · `validate_feature_set_purged_cv`)에 배선 완료
+- 정규 EOD(15:45)는 장 마감 후라 걸리지 않는다. 수동 `--campaign` 실행만 해당되며,
+  그 경우 `campaign_steps`가 `FAIL`이 아니라 `SKIP(장중차단)`으로 집계한다
+- 꼭 장중에 돌려야 하면 `set MIREUK_ALLOW_INTRADAY_ANALYSIS=1` (의도를 남기는 장치)
+- **이 CB⑤ 발동은 자가유발이므로 실전전환기준 ②의 근거로 쓰지 말 것**
+
 ---
 
 ## 절대 원칙 (변경 불가)
