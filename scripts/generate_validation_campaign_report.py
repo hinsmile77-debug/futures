@@ -91,14 +91,51 @@ _MAX_REPLAY_ROWS = 12000
 # 공통 유틸
 # ──────────────────────────────────────────────────────────────
 
+def _rankdata(a):
+    """평균순위(동률 처리) — `scripts/core_feature_discovery.rankdata`와 동일 정의.
+
+    scipy 의존 없이, 합/비교만 쓴다(`_pearson_r` docstring의 BLAS 회피 제약과 동일 취지).
+    """
+    a = np.asarray(a, dtype=np.float64)
+    order = np.argsort(a, kind="mergesort")
+    ranks = np.empty(a.size, dtype=np.float64)
+    ranks[order] = np.arange(1, a.size + 1, dtype=np.float64)
+    sa = a[order]
+    i = 0
+    while i < sa.size:
+        j = i
+        while j + 1 < sa.size and sa[j + 1] == sa[i]:
+            j += 1
+        if j > i:
+            ranks[order[i:j + 1]] = (i + 1 + j + 1) / 2.0
+        i = j + 1
+    return ranks
+
+
 def _spearman(x, y) -> float:
-    """numpy 전용 스피어만 상관 (scipy 의존 회피)."""
+    """numpy 전용 스피어만 상관 (scipy 의존 회피). 동률은 **평균순위**로 처리한다.
+
+    [MW0602 460차] 종전 구현은 `np.argsort(np.argsort(x))`로 **서수순위**를 만들어
+    동률을 배열 위치 순서로 임의 분리했다. 두 축의 행 순서가 같으므로(같은 쿼리 결과)
+    동률군 내부 순위가 양쪽 다 "시간 순서"를 대리하게 되고, 그 공유된 위치 성분이
+    상관으로 읽히는 계통편향(부호는 항상 +)이 있었다. y가 전부 같은 값이면 y 순위가
+    정확히 0..n-1이 되어 분산이 0이 아니게 되므로 아래 `sy` 가드도 무력했다
+    (`_spearman([1,2,1,2,1,2], [0.3]*6)` → 구 +0.7143 / 정정 nan).
+
+    ⚠ **계측 불연속 경계 2026-08-10.** 이 헬퍼를 쓰는 채널의 rho가 정정 방향으로 바뀐다.
+    동률 없는 연속형 축은 사실상 무변화이고, **양쪽 축에 동시에 동률군이 있고 그 동률군이
+    시간에 뭉쳐 있을수록** 크게 바뀐다(수량·pass_count·플래그 축). 독립 데이터 몬테카를로
+    (참값 rho=0): 연속×연속 편향 -0.003 → 정정 후 동일 / 수량×승패플래그 n=60 +0.023 →
+    +0.001 / 수량군이 시간에 뭉친 경우 n=60 **+0.110 → -0.001**.
+    이 PC의 2026-08-10 시점 호출부 4곳은 실측 |Δ| ≤ 0.0045로 판정 무변화였다
+    ([1] ic_3class 전 호라이즌 ≤0.0004, [3] unc_corr -0.0001, [12] edge_corr -0.0045).
+    """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     if len(x) < 3 or len(x) != len(y):
         return float("nan")
-    rx = np.argsort(np.argsort(x)).astype(np.float64)
-    ry = np.argsort(np.argsort(y)).astype(np.float64)
+    rx = _rankdata(x)
+    ry = _rankdata(y)
     sx = rx.std()
     sy = ry.std()
     if sx < 1e-12 or sy < 1e-12:

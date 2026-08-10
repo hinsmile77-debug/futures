@@ -56,19 +56,43 @@ ATB_DIRNAME = "shadow_atb_v2"
 _TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 
+def _rankdata(a):
+    """평균순위(동률 처리) — `scripts/core_feature_discovery.rankdata`와 동일 정의."""
+    a = np.asarray(a, dtype=np.float64)
+    order = np.argsort(a, kind="mergesort")
+    ranks = np.empty(a.size, dtype=np.float64)
+    ranks[order] = np.arange(1, a.size + 1, dtype=np.float64)
+    sa = a[order]
+    i = 0
+    while i < sa.size:
+        j = i
+        while j + 1 < sa.size and sa[j + 1] == sa[i]:
+            j += 1
+        if j > i:
+            ranks[order[i:j + 1]] = (i + 1 + j + 1) / 2.0
+        i = j + 1
+    return ranks
+
+
 def _spearman(x, y):
     """numpy 전용 스피어만 — generate_validation_campaign_report._spearman과 동일.
 
     scipy.spearmanr는 이 환경에서 MKL 지연로드 크래시(0xc06d007f)를 일으킨다 —
     캠페인 리포트가 numpy 전용으로 짠 것과 같은 이유. IC 방법론도 [1]과 정확히
     일치해야 하므로 같은 구현을 쓴다.
+
+    [MW0602 460차] 동률을 서수순위(`argsort∘argsort`)로 가르던 버그를 **평균순위**로
+    정정 — 사유·영향 범위는 리포트 쪽 `_spearman` docstring 참조. 이 사본이 "리포트와
+    동일"을 표방하므로 **두 곳을 항상 함께 고칠 것**(이번 건이 정확히 사본 한 벌만
+    고쳐질 뻔한 사고 유형이었다). ATB 채널도 [1]과 같은 게이트
+    (`ic_delta_min=0.03` / `ic_abs_min=0.05`)를 쓰므로 방법론이 갈리면 안 된다.
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     if len(x) < 3 or len(x) != len(y):
         return float("nan")
-    rx = np.argsort(np.argsort(x)).astype(np.float64)
-    ry = np.argsort(np.argsort(y)).astype(np.float64)
+    rx = _rankdata(x)
+    ry = _rankdata(y)
     sx = rx.std()
     sy = ry.std()
     if sx < 1e-12 or sy < 1e-12:
