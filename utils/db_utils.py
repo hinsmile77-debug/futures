@@ -453,6 +453,18 @@ def _migrate_ensemble_decisions_db():
                 # 없으면 같은 날 행들이 두 스케일로 섞여 있는데 구분이 불가능하다.
                 # 1=보정 적용 / 0=raw 통과 / NULL=구버전 행(사후 추정 필요).
                 "cal_applied": "INTEGER",
+                # [MW0602 462차 P1-b] 진입을 **실제로 판정한** min_conf.
+                # 기존 `min_conf` 컬럼은 zone_mc(+FQAdj)까지만 반영한 값이고,
+                # 그 뒤 TrendGate override·MCFloor·L2·InstabilityGate·STABLE_TREND
+                # cap 이 순서대로 적용된 `_checklist_min_conf`가 체크리스트의
+                # 실판정값이다. 두 값이 갈리는 것이 관측으로 확인됐다 —
+                # 2026-08-03 12:14 기록 min_conf=0.62 / TrendGate 완화 후 0.44,
+                # conf=0.579로 **진입 성사**. 그날 `[ZeroDiag]`는 같은 행을
+                # "conf미달(0.579<mc0.620)"로 찍어 진단과 실동작이 반대였다.
+                # 이 컬럼이 없으면 사후분석의 "conf 여유(conf-mc)"가 통째로
+                # 틀린 축이 된다(0811 점검 §4-2 가설②가 그 함정에 걸렸다).
+                # NULL=구버전 행 — 0으로 단정하지 않는다.
+                "min_conf_effective": "REAL",
             }
             for name, dtype in additions.items():
                 if name not in cols:

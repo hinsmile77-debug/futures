@@ -2353,6 +2353,59 @@ class TradingSystem:
             enabled = bool(p.get("degraded_block_auto_entry", HEALTH_DEGRADED_BLOCK_AUTO_ENTRY))
         return bool(enabled and confidence < min_conf), min_conf
 
+    def _check_mc_unreachable(self, ts_dt, confidence, mc_effective,
+                              collapsed: bool, zone_allows_entry: bool) -> None:
+        """[MW0602 462차 P3] mc 도달불가 장중 조기경보 — 경보만, 자동 조정 없음.
+
+        기존 `MC_CONF_GAP_ALERT`는 daily_close(15:40)에서만 돌아 "오늘 진입이
+        없었다"를 장 끝난 뒤 알렸다(2026-08-11 실측: 15:40에 "진입후보 9분"). 이
+        메서드는 같은 사실을 09:30에 낸다. 절대 분(分) 하한 대신 **당일 conf 분포의
+        p95 < 실효 min_conf** 라는 스케일 프리 기준을 쓴다 — 장중 부분표본에서도
+        성립하기 때문이다.
+
+        판정 단위는 `min_conf_effective`(TrendGate·L2·cap 적용 후)다. 기록용
+        `min_conf`를 쓰면 완화가 반영되지 않아 과다 경보가 난다(462차 P1-b 참조).
+        """
+        if not getattr(runtime_settings, "MC_UNREACHABLE_ALERT_ENABLED", True):
+            return
+        try:
+            _today = ts_dt.strftime("%Y-%m-%d")
+            if getattr(self, "_mcu_date", None) != _today:
+                self._mcu_date = _today
+                self._mcu_confs = []
+                self._mcu_alerted = False
+            # 진입금지 존은 mc가 설계된 블랙아웃 장치 — 표본에도 넣지 않는다
+            # (404차 후속4 ConfFloorGuard 오탐 억제와 동일 규율).
+            if not zone_allows_entry:
+                return
+            # 붕괴행 제외 — 461차가 밝힌 인위값(flat_score=1.0)이 p95를 끌어올린다.
+            if not collapsed and confidence is not None:
+                self._mcu_confs.append(float(confidence))
+            if self._mcu_alerted:
+                return
+            _after = str(getattr(runtime_settings, "MC_UNREACHABLE_ALERT_AFTER", "09:30"))
+            _hh, _mm = (int(x) for x in _after.split(":"))
+            if (ts_dt.hour, ts_dt.minute) < (_hh, _mm):
+                return
+            _min_n = int(getattr(runtime_settings, "MC_UNREACHABLE_MIN_SAMPLES", 20))
+            if len(self._mcu_confs) < _min_n:
+                return
+            _pct = float(getattr(runtime_settings, "MC_UNREACHABLE_PERCENTILE", 0.95))
+            _s = sorted(self._mcu_confs)
+            _p_hi = _s[min(len(_s) - 1, int(round(_pct * (len(_s) - 1))))]
+            if _p_hi >= float(mc_effective):
+                return
+            self._mcu_alerted = True   # 당일 1회 — 매분 반복 경보 방지
+            log_manager.system(
+                f"[경보] mc 도달불가(조기 {_after}): 금일 conf p{int(_pct * 100)}="
+                f"{_p_hi:.4f} < 실효 min_conf={float(mc_effective):.4f} "
+                f"(표본 {len(_s)}분, 당일 최대 conf={_s[-1]:.4f}). 이 상태가 유지되면 "
+                f"오늘 진입후보는 사실상 0이다. mc는 자동 조정하지 않음(사용자 판단 필요).",
+                "WARNING",
+            )
+        except Exception as _mcu_e:
+            logger.debug("[mc-unreachable] 계산 실패 (무시): %s", _mcu_e)
+
     # ── 키움 API 연결 ─────────────────────────────────────────
     def _apply_account_no(self, account_no: str) -> None:
         account_no = str(account_no).strip()
@@ -4788,7 +4841,11 @@ class TradingSystem:
         # ── [S0] 재학습 완료 모델 교체 — predict_proba 전 안전 지점 ─────────
         # _on_gbm_retrain_done 이 플래그를 세우면 여기서 소비.
         # 파이프라인 실행 중 모델 객체 교체 race condition 방지 (193차).
+        # [MW0602 462차 P2] 이 사이클의 모델 교체 소요시간 — CB⑤/Health 지연 판정에서 차감.
+        # 매 사이클 0으로 리셋해야 직전 값이 새는 것을 막는다.
+        self._model_swap_ms = 0.0
         if getattr(self, "_pending_model_reload", False):
+            _swap_t0 = time.perf_counter()
             self._pending_model_reload = False
             _bad = self.model._load_all()
             if _bad:
@@ -4802,7 +4859,10 @@ class TradingSystem:
             except Exception:
                 pass
             self._rebuild_sgd_feat_indices()   # [P2] feature_names 교체 반영
-            logger.info("[Model] 재학습 완료 모델 교체 적용 (S0)")
+            self._model_swap_ms = (time.perf_counter() - _swap_t0) * 1000.0
+            logger.info(
+                "[Model] 재학습 완료 모델 교체 적용 (S0) — %.0fms", self._model_swap_ms
+            )
 
         # [S2-A] 지연 SGD 학습 변수 — S2에서 채워지고 "end" 이후에 소비
         # 초기값 [] 로 설정해 early return 시에도 NameError 방지
@@ -6866,6 +6926,12 @@ class TradingSystem:
         # direction==0 이거나 포지션 보유 중이면 UnboundLocalError로 파이프라인 전체가
         # 매분 크래시하던 버그 (399차 a603dc6 회귀, 2026-07-29 라이브 중 발견)
 
+        # [MW0602 462차 P1-b] 체크리스트 실판정 min_conf 계측용 초기화.
+        # 아래 else 분기 안에서만 대입되므로(StartupWarmup·direction==0·포지션보유
+        # 경로는 통과하지 않는다) 위 400차 사고와 같은 이유로 분기 밖에서 잡는다.
+        # 기본값 actual_min_conf — "완화가 일어나지 않았다"가 그 경로의 정직한 기록이다.
+        _checklist_min_conf = actual_min_conf
+
         if direction != 0 and self.position.status == "FLAT":
             # 재가동 cold-start 워밍업 — elapsed=infmin 이후 3분간 진입 차단
             if self.model.is_in_startup_warmup(_ts_dt_obj):
@@ -7826,6 +7892,35 @@ class TradingSystem:
             and _ecb_observation_ok                         # 거래소 CB 해제 후 관망 기간
         )
 
+        # [MW0602 462차 P1-a] 시간대 진입금지 존 — 섀도 계측(기본) / 선택적 집행.
+        # `allow_new_entry`는 `is_entry_zone()`을 통해 **ConfFloorGuard 오탐 억제**
+        # (404차 후속4)에만 쓰였고, 진입 차단에는 한 번도 배선된 적이 없다 —
+        # `_final_entry_ok` 어디에도 이 조건이 없다(config.settings:
+        # ZONE_ENTRY_BAN_ENFORCE 주석의 실측 7건 참조).
+        # 기본값 OFF에서는 `_final_entry_ok`를 일절 건드리지 않는다 — 라이브 무변경.
+        _zone_entry_allowed = True
+        _zone_ban_violation = False
+        try:
+            if getattr(runtime_settings, "ZONE_ENTRY_BAN_SHADOW_ENABLED", True):
+                _zone_entry_allowed = is_entry_zone(time_zone)
+                # 위반 = "존이 금지인데 나머지 게이트는 전부 통과했다"
+                _zone_ban_violation = bool(_final_entry_ok and not _zone_entry_allowed)
+                if _zone_ban_violation:
+                    log_manager.signal(
+                        f"[ZoneBanShadow] zone={time_zone} allow_new_entry=False 인데 "
+                        f"진입 게이트 전부 통과 — conf={confidence:.4f} "
+                        f"mc(기록)={decision.get('min_conf', 0.0):.4f} "
+                        f"mc(실효)={_checklist_min_conf:.4f} grade={_final_grade} "
+                        f"qty={_qty_display} | 집행={'ON' if getattr(runtime_settings, 'ZONE_ENTRY_BAN_ENFORCE', False) else 'OFF(섀도)'}",
+                        "WARNING",
+                    )
+        except Exception as _zbs_e:
+            logger.debug("[ZoneBanShadow] 계측 실패 (무시): %s", _zbs_e)
+
+        # 🔴 집행은 플래그가 켜진 경우에만 — 기본 OFF라 아래 줄은 no-op이다.
+        if getattr(runtime_settings, "ZONE_ENTRY_BAN_ENFORCE", False) and not _zone_entry_allowed:
+            _final_entry_ok = False
+
         # [297차, P1-4] Hurst 게이트 counterfactual 섀도우 — "Hurst만 아니었으면
         # 진입했을" 분봉의 가상 결과를 기록한다(검증 캠페인 §3-6). Hurst를 제외한
         # 나머지 게이트가 전부 통과했고 등급도 X가 아닌 경우만 대상 — 다른 이유로
@@ -8171,7 +8266,16 @@ class TradingSystem:
         _entry_block_reason = ""
         if direction != 0 and self.position.status == "FLAT":
             _cb_state = self.circuit_breaker.state
-            if not _ecb_observation_ok:
+            # [MW0602 462차 P1-a] 존 진입금지 집행 — 기본 OFF라 평소엔 이 분기를 타지 않는다.
+            # 켠 경우엔 최우선으로 표기해야 사후분석에서 "왜 안 들어갔나"가 명확해진다
+            # (402차: 사유가 다른 분기에 가로채여 뭉개진 전례).
+            if (getattr(runtime_settings, "ZONE_ENTRY_BAN_ENFORCE", False)
+                    and not _zone_entry_allowed):
+                _entry_block_reason = (
+                    f"[차단] 시간대 {time_zone} 신규 진입 금지 구간 "
+                    f"(allow_new_entry=False, 462차 집행)"
+                )
+            elif not _ecb_observation_ok:
                 _obs_remain = int((self._ecb_observation_until - datetime.datetime.now()).total_seconds() / 60) + 1
                 _entry_block_reason = (
                     f"[차단] 거래소 CB 해제 후 관망 중 — 약 {_obs_remain}분 후 진입 재개 "
@@ -8945,7 +9049,30 @@ class TradingSystem:
         )
         # 파이프라인 처리시간 (CB⑤ 대체 지표) — 헬스 패널·SYSTEM 로그 공용
         _st.append(("end", time.perf_counter()))
-        _pipe_ms = (_st[-1][1] - _pipe_t0) * 1000
+        _pipe_ms_raw = (_st[-1][1] - _pipe_t0) * 1000
+        # [MW0602 462차 P2] 자기유발 지연 차감 — 재학습 완료 후 pkl 로드(S0)를 뺀다.
+        #
+        # 왜: CB⑤는 "API 지연 5초 초과 → 즉시 청산"(절대원칙 §2-⑤)의 경고 계층인데,
+        # 실제로 감지하던 것이 시장·API 지연이 아니라 **자기 자신의 모델 교체**였다.
+        # 2026-08-11 실측 — CB⑤ 경고 5건이 전부 재학습 직후 사이클과 1:1 대응했고
+        # (S0 1,527~2,817ms, 평상시 1~2ms), 그 5건이 HealthPolicy Degraded 선제차단을
+        # 그대로 유발했다. Degraded는 `conf < 0.62` 진입을 막으므로 실피해가 났다:
+        # 13:58(conf 0.387 ≥ mc 0.378)·14:58(0.388 ≥ 0.380)은 min_conf를 통과한
+        # 유효 진입후보였는데 이 자기유발 차단으로 소멸했다(그날 후보 9분 중 2분).
+        #
+        # `set_gbm_retrain_active`(기존 CB⑤ 완화)로는 못 막는다 — 그 플래그는 재학습
+        # **중**에만 True이고, 교체는 재학습이 끝나고 플래그가 내려간 **다음** 사이클
+        # S0에서 일어난다. 실제로 그 5건 PipePerf 로그에 `[GBM재학습중]` 태그가 없다.
+        #
+        # 차감 대상은 판정용 값뿐이다 — 원값(_pipe_ms_raw)은 로그에 그대로 남긴다.
+        _swap_ms = float(getattr(self, "_model_swap_ms", 0.0) or 0.0)
+        if _swap_ms > 0.0 and getattr(
+            runtime_settings, "PIPE_LATENCY_EXCLUDE_MODEL_SWAP", True
+        ):
+            _pipe_ms = max(0.0, _pipe_ms_raw - _swap_ms)
+        else:
+            _swap_ms = 0.0
+            _pipe_ms = _pipe_ms_raw
         self._last_pipe_ms = _pipe_ms   # 다음 사이클 Degraded 선제차단 lookahead용
         # P5: 전 단계 분해 문자열 — CB임박/WARN 양쪽에서 재사용
         # [라벨 수정] 마커는 각 STEP "시작" 지점에 찍힌다(예: S2 마커 = STEP2 시작).
@@ -8961,10 +9088,16 @@ class TradingSystem:
         _retrain_tag_pipe = (
             " [GBM재학습중]" if self.circuit_breaker._gbm_retrain_active else ""
         )
+        # [462차 P2] 차감이 실제로 일어난 사이클만 표기 — 원값·차감액을 함께 남겨
+        # "숨긴 것"이 아니라 "판정에서만 뺀 것"임이 로그로 확인되게 한다.
+        _swap_tag_pipe = (
+            f" [모델교체 {_swap_ms:.0f}ms 차감 / raw={_pipe_ms_raw:.0f}ms]"
+            if _swap_ms > 0.0 else ""
+        )
         if _pipe_ms >= HEALTH_LATENCY_CRIT_MS:
             # CB⑤ 발동 임계값 이상 — 전 단계 무조건 출력 (진단용)
             _pipeperf_msg = (
-                f"[PipePerf][CB임박]{_retrain_tag_pipe} "
+                f"[PipePerf][CB임박]{_retrain_tag_pipe}{_swap_tag_pipe} "
                 f"total={_pipe_ms:.0f}ms | {_all_steps_str or '─'}"
             )
             logger.warning(_pipeperf_msg)
@@ -8972,14 +9105,14 @@ class TradingSystem:
         elif _pipe_ms > HEALTH_LATENCY_WARN_MS:
             # P5: 경고 수준도 전 단계 분해 출력 (100ms+ 필터 제거 — 병목 단계 특정에 필요)
             _pipeperf_warn_msg = (
-                f"[PipePerf]{_retrain_tag_pipe} "
+                f"[PipePerf]{_retrain_tag_pipe}{_swap_tag_pipe} "
                 f"total={_pipe_ms:.0f}ms | {_all_steps_str or '─'}"
             )
             logger.warning(_pipeperf_warn_msg)
             log_manager.system(_pipeperf_warn_msg, "WARNING")
         # [진단] PipePerf 항상 INFO 출력 — 임계값 무관하게 매 봉 기록 (병목 분석용)
         log_manager.system(
-            f"[PipePerf][DBG]{_retrain_tag_pipe} "
+            f"[PipePerf][DBG]{_retrain_tag_pipe}{_swap_tag_pipe} "
             f"total={_pipe_ms:.0f}ms | {_all_steps_str or '─'}",
             "INFO",
         )
@@ -9027,6 +9160,17 @@ class TradingSystem:
         # ── STEP 9: 예측 DB 저장 (배치 — 1연결 트랜잭션) ──────────
         # STEP7 마스터 게이트 결과 — 대시보드 "진입단계 추적" 카드 복원용
         decision["entry_gate"]         = _gate_checks
+        # [MW0602 462차 P1-b] 진입을 실제로 판정한 min_conf. `min_conf`(zone_mc+FQAdj)와
+        # 갈리는 행이 바로 진입 성사 행이라 이 값 없이는 사후 "conf 여유" 분석이 성립하지 않는다.
+        decision["min_conf_effective"] = float(_checklist_min_conf)
+        # [MW0602 462차 P3] mc 도달불가 조기경보 — 경보만, 진입 판정에 관여하지 않음.
+        self._check_mc_unreachable(
+            _ts_dt_obj,
+            decision.get("confidence"),
+            _checklist_min_conf,
+            bool(decision.get("weight_collapsed", False)),
+            _zone_entry_allowed,
+        )
         decision["entry_final_ok"]     = bool(_final_entry_ok)
         decision["entry_qty"]          = int(_qty_display)
         decision["entry_mode"]         = entry_mode

@@ -54,8 +54,8 @@ class PredictionBuffer:
                 checklist_reason, meta_entry_quality_prob,
                 quantile_expected_pt, quantile_uncertainty_pt,
                 quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
-                meta_size_raw, cal_applied
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                meta_size_raw, cal_applied, min_conf_effective
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -100,6 +100,10 @@ class PredictionBuffer:
                 # [MW0602 461차 P-C] save_step9_batch와 동일 규약 — 키 부재는 NULL.
                 (None if decision.get("cal_applied") is None
                  else int(bool(decision.get("cal_applied")))),
+                # [MW0602 462차 P1-b] 체크리스트 실판정 min_conf. 키 부재는 NULL —
+                # 0.0으로 승격하면 "완화가 없었다"와 "구버전 행"이 섞인다.
+                (None if decision.get("min_conf_effective") is None
+                 else float(decision.get("min_conf_effective"))),
             ),
         )
 
@@ -226,6 +230,10 @@ class PredictionBuffer:
             # NULL — "0(raw 통과)"으로 단정하지 않는다. 그 구분이 이 계측의 목적이다.
             (None if decision.get("cal_applied") is None
              else int(bool(decision.get("cal_applied")))),
+            # [MW0602 462차 P1-b] 체크리스트 실판정 min_conf(TrendGate·L2·cap 적용 후).
+            # `min_conf` 컬럼과 갈릴 수 있고, 갈리는 그 행이 진입 성사 행이다.
+            (None if decision.get("min_conf_effective") is None
+             else float(decision.get("min_conf_effective"))),
         )
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
@@ -258,8 +266,8 @@ class PredictionBuffer:
                        quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
                        coherence_blocked,
                        confidence_raw, confidence_smoothed, weight_collapsed,
-                       meta_size_raw, cal_applied
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       meta_size_raw, cal_applied, min_conf_effective
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 

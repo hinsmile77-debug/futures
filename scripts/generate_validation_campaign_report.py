@@ -70,6 +70,7 @@ from config.settings import (
     ATR_STOP_MULT, ATR_TP1_MULT,   # [426차] [38] 차단신호 가상 스톱/TP1 재구성
     CONF_SCALE_BREAKS,             # [430차] conf 스케일 불연속 레지스트리
     MC_PERCENTILE, MC_ABS_FLOOR, MC_ABS_CEIL,  # [430차] [44] DynMC 재현
+    ZONE_ENTRY_BAN_ENFORCE,        # [462차] [53] 집행 플래그 현황 표기용
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, MINI_FUTURES_PT_VALUE
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
@@ -2874,6 +2875,40 @@ def eval_grade_x_promotion() -> dict:
             _s["days"] = len({p["entry_ts"][:10] for p in _v})
             out["by_path"][_lab] = _s
 
+    # ── [MW0602 462차] C→C 대조군 분해 — "승격 효과"와 "원시등급 효과"의 분리 ──
+    # 이 채널의 판정축(X→A vs C→A)은 **원시등급도 승격여부도 함께** 다르다.
+    # 즉 격차가 나와도 "승격 경로가 나쁜 것"인지 "원시 C가 나쁜 것"인지 구분되지
+    # 않는다. C→C(원시 C · 승격 없음)가 그 교락을 푸는 대조군이다.
+    #
+    #   promotion_effect = C→A − C→C   (원시등급 고정 → 순수 승격 효과)
+    #   raw_grade_effect = C→C − X→A   (…의 잔차 — 원시등급 축)
+    #
+    # 0811 점검 실측(n=96, 07-30~08-11): C→A 계약당 EV -0.433pt vs C→C -0.438pt로
+    # 사실상 동일했고 X→A만 +1.119pt였다. 승격이 성과를 바꾸지 않았다는 뜻이라,
+    # 이 값이 계속 0 근방이면 처방 축을 "승격 조이기"가 아니라 **원시등급 C 취급**
+    # 으로 옮겨야 한다. ⚠ 그 실측의 일자단위 검정은 3/6·순열 p=0.285로 **비유의**다.
+    #
+    # ⚠ **판정 게이트보다 앞에 둔다** — 이 분해는 verdict가 INSUFFICIENT인 동안에도
+    #   읽을 값이다. 게이트 뒤에 두면 X→A가 min_samples(20)에 도달할 때까지
+    #   영영 계산되지 않는다(462차 초안이 실제로 그 실수를 했고 리포트에
+    #   promotion_effect=None으로 찍혀 발견됐다). 판정에는 일절 관여하지 않는다.
+    _cc, _ca, _xa = (out["by_path"].get("C→C"), out["by_path"].get("C→A"),
+                     out["by_path"].get("X→A"))
+    if _cc and _ca:
+        out["promotion_effect_krw"] = round(_ca["avg_pnl_krw"] - _cc["avg_pnl_krw"], 0)
+        out["n_cc"] = _cc.get("n")
+        if _xa:
+            out["raw_grade_effect_krw"] = round(_cc["avg_pnl_krw"] - _xa["avg_pnl_krw"], 0)
+            _p, _r = (abs(out["promotion_effect_krw"]),
+                      abs(out["raw_grade_effect_krw"]))
+            if _p + _r > 0:
+                out["dominant_axis"] = "원시등급" if _r > _p else "승격경로"
+                out["axis_share"] = round(max(_p, _r) / (_p + _r), 3)
+    else:
+        out["promotion_effect_krw"] = None   # C→C 표본 없음 — 교락 미해소
+        out["raw_grade_effect_krw"] = None
+        out["dominant_axis"] = None
+
     if out["n_days"] < min_d:
         out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
         return out
@@ -2916,6 +2951,337 @@ def eval_grade_x_promotion() -> dict:
             "X→A가 C→A보다 열위 (일평균 격차 %s원, p=%.4f) — 0803 P2 지지. "
             "앙상블 X 승격에 하한 조건 설계를 주간회의 안건으로" % (
                 _fmt_krw(out["mean_diff"]), out.get("sign_p", 1.0)))
+    return out
+
+
+def _atr14_at(conn, ts: str, lookback: int = 60):
+    """진입 시각 직전 14봉 ATR(14). 봉이 모자라면 None.
+
+    같은 날 봉만 쓴다 — 전일 종가 대비 TR은 오버나이트 갭을 섞는데,
+    절대원칙 §1(15:10 강제청산)상 이 시스템에 오버나이트 포지션은 없다.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT high, low, close FROM raw_candles "
+            "WHERE ts <= ? AND substr(ts,1,10) = ? ORDER BY ts DESC LIMIT ?",
+            (ts, ts[:10], lookback)).fetchall()
+    except Exception:
+        return None
+    if len(rows) < 15:
+        return None
+    rows = list(reversed(rows))[-15:]      # 오래된 → 최신, TR 14개 확보
+    trs, prev = [], float(rows[0]["close"])
+    for b in rows[1:]:
+        h, l = float(b["high"]), float(b["low"])
+        trs.append(max(h - l, abs(h - prev), abs(l - prev)))
+        prev = float(b["close"])
+    return sum(trs) / len(trs) if trs else None
+
+
+def eval_profit_geometry_lowvol_watch() -> dict:
+    """[51] 저변동성 국면 이익기하 붕괴 (MW0602 462차) — 사전등록.
+
+    진입시점 ATR(14)로 저·고변동 층을 갈라, 층별 **계약당 실현손익 / ATR** 을
+    비교한다. 0811 점검 §4-1의 관찰(승률은 불변인데 계약당 실현이익만 -52%,
+    MFE/ATR은 -9%뿐)을 검정 가능한 형태로 등록한 것이다.
+
+    ⚠ 그 관찰은 **일자단위 순열검정 p=0.156으로 비유의**였다(거래일 12+7일).
+    그래서 지금 처방하지 않는다 — min_days=10을 둔 이유가 그것이다.
+    상세 근거는 config.settings:VALIDATION_CAMPAIGN["profit_geometry_lowvol_watch"].
+    """
+    cr = VALIDATION_CAMPAIGN.get("profit_geometry_lowvol_watch", {})
+    min_n = int(cr.get("min_samples_per_bucket", 25))
+    min_d = int(cr.get("min_days", 10))
+    split = float(cr.get("atr_split_pt", 2.6))
+    gap_min = float(cr.get("profit_atr_ratio_gap_min", 0.25))
+    alpha = float(cr.get("alpha", 0.05))
+    out = {"verdict": "INSUFFICIENT",
+           "entry_source_filter": cr.get("entry_source", "SYSTEM_AUTO"),
+           "atr_split_pt": split}
+
+    pos = _merged_positions(extra_cols="pnl_pts")
+    if not pos:
+        out["reason"] = "표본 없음"
+        return out
+
+    # 계약당 pt로 정규화 — 원화·계약수 교란 제거(417차 레그/포지션 규율과 같은 취지)
+    rows = []
+    try:
+        with _conn(RAW_DATA_DB) as conn:
+            for p in pos:
+                qty = float(p.get("entry_qty") or p.get("quantity") or 1) or 1.0
+                pts = p.get("pnl_pts")
+                if pts is None:
+                    continue
+                atr = _atr14_at(conn, p["entry_ts"])
+                if not atr or atr <= 0:
+                    continue
+                rows.append({"day": p["entry_ts"][:10], "atr": atr,
+                             "ratio": (float(pts) / qty) / atr,
+                             "pnl": p["pnl"]})
+    except Exception as e:
+        out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out
+
+    if not rows:
+        out["reason"] = "ATR 산출 가능한 표본 없음 (raw_candles 부족)"
+        return out
+    out["n_positions"] = len(rows)
+    out["n_days"] = len({r["day"] for r in rows})
+
+    lo = [r for r in rows if r["atr"] < split]
+    hi = [r for r in rows if r["atr"] >= split]
+    out["by_stratum"] = {}
+    for lab, v in (("low_vol", lo), ("high_vol", hi)):
+        if v:
+            out["by_stratum"][lab] = {
+                "n": len(v),
+                "avg_profit_atr_ratio": round(float(np.mean([x["ratio"] for x in v])), 4),
+                "avg_pnl_krw": round(float(np.mean([x["pnl"] for x in v])), 0),
+                "win_rate": round(float(np.mean([1.0 if x["pnl"] > 0 else 0.0 for x in v])), 4),
+                "days": len({x["day"] for x in v}),
+            }
+
+    if out["n_days"] < min_d:
+        out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
+        return out
+    if len(lo) < min_n or len(hi) < min_n:
+        out["reason"] = ("층 표본 부족 (저변동=%d, 고변동=%d, 각각 %d 필요) — 판정 보류"
+                         % (len(lo), len(hi), min_n))
+        return out
+
+    a, b = out["by_stratum"]["low_vol"], out["by_stratum"]["high_vol"]
+    out["ratio_gap"] = round(b["avg_profit_atr_ratio"] - a["avg_profit_atr_ratio"], 4)
+    # 일자단위 — 두 층이 같은 날 함께 나온 날만(313차: 일자가 독립관측치)
+    days = sorted({r["day"] for r in lo} & {r["day"] for r in hi})
+    diffs = [float(np.mean([r["ratio"] for r in hi if r["day"] == d])
+                   - np.mean([r["ratio"] for r in lo if r["day"] == d]))
+             for d in days]
+    out.update(_paired_day_summary(diffs, alpha))
+
+    if out.get("paired_days", 0) < min_d:
+        out["reason"] = ("짝지은 거래일 부족 (%d일 < %d일) — 두 층이 같은 날 함께 "
+                         "나와야 일자단위 비교가 성립한다"
+                         % (out.get("paired_days", 0), min_d))
+        return out
+    if out.get("significant") and out["ratio_gap"] >= gap_min:
+        out["verdict"] = "FAIL"
+        out["recommendation"] = (
+            "저변동 층에서 이익기하가 열위 (실현/ATR %.3f vs %.3f, 격차 %.3f, p=%.4f) — "
+            "처방 축은 둘이다: ① 저변동 국면 TP 기하 재설계([12]/[25]와 함께 볼 것) "
+            "② 저변동 국면 진입 자체를 줄이기. **어느 쪽인지는 이 채널만으로 정해지지 "
+            "않는다** — 주간회의 안건으로 올릴 것" % (
+                a["avg_profit_atr_ratio"], b["avg_profit_atr_ratio"],
+                out["ratio_gap"], out.get("sign_p", 1.0)))
+    else:
+        out["verdict"] = "PASS"
+        out["recommendation"] = (
+            "ATR 정규화 후 두 층이 구분되지 않는다 (격차 %.3f, p=%.4f) — 0811 §4-1의 "
+            "\"저변동에서 이익기하 붕괴\" 가설은 **근거 없음**. 8월 적자는 다른 축에서 "
+            "찾을 것" % (out.get("ratio_gap", 0.0), out.get("sign_p", 1.0)))
+    return out
+
+
+def eval_effective_weight_watch() -> dict:
+    """[52] 준(準)붕괴 — 유효 가중합이 0은 아니나 극단적으로 낮은 진입 (462차) — 사전등록.
+
+    `weight_collapsed`(가중합 == 0)는 기존 weight_collapse_watch가 잡지만,
+    0 < w < 0.30 구간은 어느 그물에도 걸리지 않는다. 0811 유일 진입이 정확히
+    그 구간(w=0.243, 방향은 3m 단독)이었고 패했다.
+    459차 F2·461차 P-A와 같은 계열 — "약한 근거"와 "강한 근거"가 같은 conf
+    스케일에 섞이는 문제다. 상세는 config.settings의 채널 주석 참조.
+    """
+    cr = VALIDATION_CAMPAIGN.get("effective_weight_watch", {})
+    min_n = int(cr.get("min_samples_per_bucket", 25))
+    min_d = int(cr.get("min_days", 10))
+    w_low = float(cr.get("weight_sum_low", 0.30))
+    alpha = float(cr.get("alpha", 0.05))
+    out = {"verdict": "INSUFFICIENT",
+           "entry_source_filter": cr.get("entry_source", "SYSTEM_AUTO"),
+           "weight_sum_low": w_low}
+
+    # 진입 성사 분의 앙상블 detail에서 유효 가중합을 복원
+    try:
+        with _conn(PREDICTIONS_DB) as conn:
+            drows = conn.execute(
+                "SELECT ts, detail, weight_collapsed FROM ensemble_decisions "
+                "WHERE ts >= ? AND entry_executed = 1", (_campaign_start(),)).fetchall()
+    except Exception as e:
+        out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out
+    wmap = {}
+    for r in drows:
+        try:
+            det = json.loads(r["detail"] or "{}")
+            wmap[str(r["ts"])[:16]] = (
+                sum(float(h.get("weight", 0) or 0) for h in det.values()),
+                int(r["weight_collapsed"] or 0),
+            )
+        except Exception:
+            continue
+    if not wmap:
+        out["no_data"] = True
+        out["reason"] = "entry_executed=1 행에 detail 없음"
+        return out
+
+    pos = _merged_positions(extra_cols="pnl_pts")
+    rows = []
+    for p in pos:
+        k = p["entry_ts"][:16]
+        hit = wmap.get(k)
+        if hit is None:                      # 결정 ts와 체결 ts가 1~2분 어긋나는 경우
+            for back in (1, 2):
+                try:
+                    alt = (datetime.datetime.strptime(k, "%Y-%m-%d %H:%M")
+                           - datetime.timedelta(minutes=back)).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    break
+                hit = wmap.get(alt)
+                if hit is not None:
+                    break
+        if hit is None:
+            continue
+        wsum, collapsed = hit
+        if collapsed:                        # 완전붕괴는 weight_collapse_watch 관할
+            continue
+        qty = float(p.get("entry_qty") or p.get("quantity") or 1) or 1.0
+        pts = p.get("pnl_pts")
+        rows.append({"day": p["entry_ts"][:10], "wsum": wsum, "pnl": p["pnl"],
+                     "ppt": (float(pts) / qty) if pts is not None else None})
+    if not rows:
+        out["no_data"] = True
+        out["reason"] = "가중합 복원 가능한 포지션 없음"
+        return out
+    out["n_positions"] = len(rows)
+    out["n_days"] = len({r["day"] for r in rows})
+
+    low = [r for r in rows if r["wsum"] < w_low]
+    norm = [r for r in rows if r["wsum"] >= w_low]
+    out["by_bucket"] = {}
+    for lab, v in (("low_weight", low), ("normal_weight", norm)):
+        if v:
+            s = _bucket_stats([r["pnl"] for r in v])
+            s["days"] = len({r["day"] for r in v})
+            s["avg_wsum"] = round(float(np.mean([r["wsum"] for r in v])), 4)
+            out["by_bucket"][lab] = s
+
+    if out["n_days"] < min_d:
+        out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
+        return out
+    if len(low) < min_n or len(norm) < min_n:
+        out["reason"] = ("버킷 표본 부족 (저가중=%d, 정상=%d, 각각 %d 필요) — 판정 보류"
+                         % (len(low), len(norm), min_n))
+        return out
+
+    a, b = out["by_bucket"]["low_weight"], out["by_bucket"]["normal_weight"]
+    out["avg_gap_krw"] = round(b["avg_pnl_krw"] - a["avg_pnl_krw"], 0)
+    days = sorted({r["day"] for r in low} & {r["day"] for r in norm})
+    diffs = [float(np.mean([r["pnl"] for r in norm if r["day"] == d])
+                   - np.mean([r["pnl"] for r in low if r["day"] == d]))
+             for d in days]
+    out.update(_paired_day_summary(diffs, alpha))
+    if out.get("paired_days", 0) < min_d:
+        out["reason"] = ("짝지은 거래일 부족 (%d일 < %d일)"
+                         % (out.get("paired_days", 0), min_d))
+        return out
+    if out.get("significant") and out.get("mean_diff", 0) > 0:
+        out["verdict"] = "FAIL"
+        out["recommendation"] = (
+            "유효 가중합 <%.2f 진입이 열위 (일평균 격차 %s원, p=%.4f) — WeightCollapse "
+            "안전망의 문턱을 0에서 이 값 근방으로 올리는 안을 검토. ⚠ 차단이 아니라 "
+            "**등급 강등/사이즈 축소** 축으로 설계할 것(317차 하드차단 교훈)" % (
+                w_low, _fmt_krw(out.get("mean_diff", 0)), out.get("sign_p", 1.0)))
+    else:
+        out["verdict"] = "PASS"
+        out["recommendation"] = (
+            "준붕괴 구간이 정상 구간과 구분되지 않는다 (p=%.4f) — 현행 문턱(가중합 0) 유지"
+            % out.get("sign_p", 1.0))
+    return out
+
+
+def eval_zone_ban_breach_watch() -> dict:
+    """[53] 시간대 진입금지 존 위반 코호트 (MW0602 462차 P1-a) — 사전등록.
+
+    `ZONE_ENTRY_BAN_ENFORCE`를 켤지 말지를 정하는 **의사결정 도구**다.
+    `allow_new_entry=False`가 진입 차단에 배선된 적이 없어(462차 P1-a) 금지 존에
+    진입이 성사돼 왔다 — 그 코호트가 나머지보다 열위여야 집행이 정당화된다.
+
+    ⚠ 등록 시점 실측은 **반대 방향**이다(7포지션 +596,858원 vs 나머지 146건
+    -302,986원). n=7이라 확정 불가이며, 표본이 차서도 우위가 유지되면 처방은
+    "집행"이 아니라 OTHER 존 정의(11:50~13:00 공백) 재검토다.
+    """
+    cr = VALIDATION_CAMPAIGN.get("zone_ban_breach_watch", {})
+    min_n = int(cr.get("min_samples", 20))
+    min_d = int(cr.get("min_days", 10))
+    alpha = float(cr.get("alpha", 0.05))
+    out = {"verdict": "INSUFFICIENT",
+           "entry_source_filter": cr.get("entry_source", "SYSTEM_AUTO"),
+           "enforce_flag": bool(ZONE_ENTRY_BAN_ENFORCE)}
+
+    try:
+        from strategy.entry.time_strategy_router import TimeStrategyRouter, is_entry_zone
+    except Exception as e:
+        out["error"] = "router import 실패: %s" % e
+        return out
+
+    router = TimeStrategyRouter()
+    pos = _merged_positions()
+    if not pos:
+        out["reason"] = "표본 없음"
+        return out
+    rows = []
+    for p in pos:
+        try:
+            dt = datetime.datetime.strptime(p["entry_ts"][:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        zone = router.get_zone(dt)
+        rows.append({"day": p["entry_ts"][:10], "zone": zone,
+                     "banned": (not is_entry_zone(zone)), "pnl": p["pnl"]})
+    if not rows:
+        out["reason"] = "존 판별 가능한 표본 없음"
+        return out
+    out["n_positions"] = len(rows)
+    out["n_days"] = len({r["day"] for r in rows})
+
+    breach = [r for r in rows if r["banned"]]
+    allowed = [r for r in rows if not r["banned"]]
+    out["by_bucket"] = {}
+    for lab, v in (("banned_zone", breach), ("allowed_zone", allowed)):
+        if v:
+            s = _bucket_stats([r["pnl"] for r in v])
+            s["days"] = len({r["day"] for r in v})
+            out["by_bucket"][lab] = s
+    out["breach_zones"] = sorted({r["zone"] for r in breach})
+
+    if len(breach) < min_n:
+        out["reason"] = ("위반 코호트 표본 부족 (%d건 < %d건) — 판정 보류. "
+                         "표본이 찰 때까지 ZONE_ENTRY_BAN_ENFORCE는 False 유지"
+                         % (len(breach), min_n))
+        return out
+    if out["n_days"] < min_d:
+        out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
+        return out
+
+    a, b = out["by_bucket"]["banned_zone"], out["by_bucket"]["allowed_zone"]
+    out["avg_gap_krw"] = round(b["avg_pnl_krw"] - a["avg_pnl_krw"], 0)
+    days = sorted({r["day"] for r in breach} & {r["day"] for r in allowed})
+    diffs = [float(np.mean([r["pnl"] for r in allowed if r["day"] == d])
+                   - np.mean([r["pnl"] for r in breach if r["day"] == d]))
+             for d in days]
+    out.update(_paired_day_summary(diffs, alpha))
+    if out.get("significant") and out.get("mean_diff", 0) > 0:
+        out["verdict"] = "FAIL"
+        out["recommendation"] = (
+            "금지 존 위반 진입이 열위 (일평균 격차 %s원, p=%.4f) — "
+            "`ZONE_ENTRY_BAN_ENFORCE = True` 승격을 주간회의 안건으로" % (
+                _fmt_krw(out.get("mean_diff", 0)), out.get("sign_p", 1.0)))
+    else:
+        out["verdict"] = "PASS"
+        out["recommendation"] = (
+            "위반 코호트가 열위가 아니다 (p=%.4f) — 집행하지 말 것. 처방 방향은 "
+            "**OTHER 존 정의 재검토**다: TIME_ZONES에 11:50~13:00이 정의되지 않아 "
+            "매일 70분이 기본 금지로 떨어지는 것이 의도인지 확인할 것" % out.get("sign_p", 1.0))
     return out
 
 
@@ -7265,6 +7631,18 @@ def build_report(days: int) -> tuple:
     vew = eval_vol_estimator_watch()         # [43] MW0602 429차
     dcf = eval_dynmc_collapse_feed_watch()   # [44] MW0602 430차
     cgf = eval_cal_guard_flap_watch()        # [45] MW0602 430차
+    # [51]~[53] MW0602 462차 — 0811 점검 P4 신설. 셋 다 표본 미달 등록 상태다.
+    # 개별 격리: 신설 채널의 예외가 리포트 전체를 죽이면 안 된다(기존 관례).
+    def _safe_eval(fn, label):
+        try:
+            return fn()
+        except Exception as e:
+            return {"verdict": "INSUFFICIENT",
+                    "error": "%s: %s" % (type(e).__name__, e),
+                    "reason": "%s 평가 실패" % label}
+    pgv = _safe_eval(eval_profit_geometry_lowvol_watch, "[51]")
+    efw = _safe_eval(eval_effective_weight_watch, "[52]")
+    zbb = _safe_eval(eval_zone_ban_breach_watch, "[53]")
     off = eval_offline_geometry_channels()
     # [MW0602 435차] [48]/[49] — 둘 다 **시뮬레이터를 쓰지 않는다**(trades /
     # exit_fill_slippage 실측). 그래서 §47 게이트가 SUSPEND여도 계속 판정한다.
@@ -7307,6 +7685,10 @@ def build_report(days: int) -> tuple:
         "exit_model_watch": emw,
         "entry_timing_value_watch": etv, "vol_estimator_watch": vew,
         "dynmc_collapse_feed_watch": dcf, "cal_guard_flap_watch": cgf,
+        # [MW0602 462차] 0811 점검 P4 신설 3채널
+        "profit_geometry_lowvol_watch": pgv,
+        "effective_weight_watch": efw,
+        "zone_ban_breach_watch": zbb,
         # [430차] conf 스케일 불연속 — 분석 창이 걸치는 경계를 metrics에도 남긴다.
         # PC간 대조 스크립트(cmp_metrics.py)가 "코드 세대 차이"와 같은 이유로
         # "체제 차이"도 구분할 수 있어야 한다.
@@ -7722,6 +8104,17 @@ def build_report(days: int) -> tuple:
             _g46.get("reason", _g46.get("error", "—")),
             _g46.get("n_oos", "—"), _g46.get("n_days_oos", "—"),
             _g46.get("n_matched", "—"), _g46.get("n_days", "—")))
+
+    # [MW0602 462차] [51]~[53] — 0811 점검 P4 신설. 전부 사전등록·표본 미달 상태.
+    def _row_462(num, title, d, key):
+        _why = d.get("reason") or d.get("recommendation") or d.get("error") or "—"
+        L.append("| [%d] %s | %s | %s%s |" % (
+            num, title, _fmt_verdict(d.get("verdict", "")), _why, _dm(key)))
+    _row_462(51, "저변동성 이익기하 붕괴", pgv, "profit_geometry_lowvol_watch")
+    _row_462(52, "준붕괴(유효가중합 저) 진입", efw, "effective_weight_watch")
+    _row_462(53, "진입금지 존 위반 코호트%s" % (
+        " **[집행 ON]**" if zbb.get("enforce_flag") else ""),
+        zbb, "zone_ban_breach_watch")
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,

@@ -315,7 +315,10 @@ def test_insert_arity_matches_columns():
     for node in ast.walk(tree):
         if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "ens_row":
             lens.append(len(node.value.elts))
-    check("ens_row 튜플 길이 = 47", lens and lens[0] == 47)
+    # [MW0602 462차] 47 → 48: `min_conf_effective` 추가. 이 상수는 컬럼이 늘 때마다
+    # 함께 갱신해야 한다 — 여기서 막고 싶은 것은 "튜플과 컬럼목록이 어긋나는 것"이고,
+    # 그 검사는 바로 위 INSERT#n 컬럼수==플레이스홀더가 이미 하고 있다.
+    check("ens_row 튜플 길이 = 48", lens and lens[0] == 48)
 
 
 def test_cal_applied_column_registered():
