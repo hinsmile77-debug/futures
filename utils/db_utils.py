@@ -776,6 +776,38 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_e1s_ts ON exec_1m_shadow(ts)")
+    # ── [MW0601 457차 / G7] 진입 호라이즌 라우터 × 모델 건강도 — 섀도 전용 ──────
+    #
+    # 계기: `select_entry_horizon()`은 **ATR 밴드 단독 함수**다(모델 품질과 무관).
+    #   2026-08-11 실측으로 3m을 **82%** 선택했는데, 하필 그 3m이 하루 6회
+    #   ConstOut(상수 출력)으로 앙상블에서 퇴출·복귀를 반복했고 EOD 교체는 7거래일
+    #   막혀 있었다. **가장 많은 물량이 가장 관리가 안 되는 모델로 흘러간다.**
+    #
+    # ⚠ **정책을 바꾸지 않는다 — 이 테이블은 기록만 한다.**
+    #   같은 날 대조에서 ConstOut 활성 구간과 진입 시도 시각의 **교집합이 0건**이었다
+    #   (진입 10:02/10:04/10:08/10:49/13:24 vs ConstOut 구간 6개 — 13:24는 13:23:01
+    #   해소 59초 뒤). 즉 "ConstOut 호라이즌을 라우터에서 빼자"는 조치가 **그날은
+    #   아무것도 바꾸지 않았을 것**이다. 효과가 미확인인 상태로 진입 분포를 바꾸는 것은
+    #   313차 원칙 위반이라, 얼마나 자주 실제로 물리는지부터 센다.
+    #
+    # 사전등록: config/settings.py:VALIDATION_CAMPAIGN["router_health_shadow"]
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS router_health_shadow (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts             TEXT NOT NULL,        -- 분봉 시각
+        chosen_hz      TEXT,                 -- 라우터가 고른 호라이즌 (None=저변동 차단)
+        tf             REAL,                 -- threshold_feasibility (라우터 입력)
+        const_out_hz   TEXT,                 -- 그 시각 ConstOut 활성 호라이즌 (JSON 배열)
+        chosen_degraded INTEGER DEFAULT 0,   -- 1 = 고른 호라이즌이 ConstOut 활성 ← 핵심
+        chosen_cv_null INTEGER DEFAULT 0,    -- 1 = 그 호라이즌 배포본이 CV 미검증(F6 사이드카)
+        direction      INTEGER,              -- 앙상블 방향 (-1/0/+1)
+        grade          TEXT,                 -- 앙상블 등급
+        entry_executed INTEGER DEFAULT 0,    -- 1 = 실제 진입까지 갔다
+        created_at     TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_rhs_ts ON router_health_shadow(ts)")
     # [339차 후속, 2026-07-16] 1계약 TP1 회계적 분할청산(synthetic partial) 기록 —
     # Cybos 최소 체결단위가 1계약이라 물리적으로 못 쪼개는 포지션이 TP1에 도달했을 때
     # "PARTIAL_EXIT_RATIOS[0](33%)를 그 가격에서 확정했다"고 회계상으로만 남긴다.

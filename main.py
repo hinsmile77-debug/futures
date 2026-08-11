@@ -938,6 +938,21 @@ class TradingSystem:
         # run_minute_pipeline STEP 6이 매분 갱신한다(_pre는 선행, 무접미는 확정값).
         self._entry_horizon_pre: str = "1m"
         self._entry_horizon: str = "1m"
+        # [MW0601 457차 / G5] 모델 건강도 일일 카운터.
+        # 2026-08-11에 3m이 하루 6회 상수출력으로 앙상블에서 빠졌다 되돌아왔는데
+        # 그 사실이 어떤 일별 집계에도 남지 않았다 — 경고 로그만 흘러가고 추세가
+        # 쌓이지 않으니 "어제보다 나빠졌는가"를 물을 수 없었다. EOD에 scaler_daily로
+        # 영속화한다(신규 DB 금지 — 317차 관리 포인트 원칙).
+        self._mh_pipeline_minutes: int = 0
+        self._mh_const_out_minutes: int = 0          # 분·호라이즌 합
+        self._mh_const_out_events: int = 0           # 비활성→활성 전이 수
+        self._mh_const_out_by_hz: dict = {}          # {hz: {"events":n,"minutes":m}}
+        self._mh_const_out_active: set = set()       # 전이 판정용 직전 상태
+        self._mh_weight_collapse_minutes: int = 0
+        self._mh_intraday_retrain_count: int = 0
+        # [MW0601 457차 / G9] 직전 사이클 파이프라인 지배 구간 (stage, ms).
+        # Degraded 판정 로그의 원인 태그 전용 — 판정 자체에는 관여하지 않는다.
+        self._last_pipe_dominant = None
         # [414차 후속] SHAP 정합성 가드 로그 스로틀 — {(horizon, reason): 'YYYY-MM-DD'}.
         # 이 함수는 매분 도는데 불일치는 재학습 전까지 계속 유지되므로, 스로틀이 없으면
         # 같은 경고가 하루 수백 줄 쌓여 진짜 이상이 묻힌다(경보 피로).
@@ -2133,6 +2148,83 @@ class TradingSystem:
             logger.debug("[Canary] z_warn 피처 로드 실패: %s", _e)
             return []
 
+    def _record_router_health_shadow(self, *, ts, chosen_hz, tf, const_hz,
+                                     direction, grade) -> None:
+        """[MW0601 457차 / G7] 라우터가 병든 호라이즌을 골랐는지 기록. **섀도 전용.**
+
+        `select_entry_horizon()`은 ATR 밴드 단독 함수라 모델 품질을 모른다. 그 결과
+        2026-08-11에 3m을 82% 선택했는데 그 3m은 하루 6회 ConstOut으로 앙상블에서
+        빠졌고 EOD 교체는 7거래일 막혀 있었다.
+
+        ⚠ 여기서 라우터 선택을 **바꾸지 않는다.** 같은 날 대조에서 ConstOut 구간과
+          진입 시도의 교집합이 0건이라, 조치의 효과가 아직 미확인이다. 얼마나 자주
+          실제로 물리는지부터 센다(313차 — 효과 미확인 상태로 진입 분포 변경 금지).
+
+        `chosen_cv_null`은 F6 사이드카(`gbm_{hz}_meta.json`)의 `cv_acc`가 null인지 —
+        즉 배포본이 CV 미검증 장중 모델인지다. **457차 C1 이후에만 신뢰할 수 있다.**
+        """
+        # 지역 import — 상단 import 블록을 건드리지 않는다(이 함수 전용 의존).
+        from config.settings import VALIDATION_CAMPAIGN as _VC
+        _cfg = _VC.get("router_health_shadow") or {}
+        if not _cfg.get("enabled", False):
+            return
+        if direction == 0 and not chosen_hz:
+            return   # FLAT + 라우터 미선택은 관측 가치가 없다 — 행 수만 늘린다
+
+        _const = list(const_hz or ())
+        _degraded = 1 if (chosen_hz and chosen_hz in _const) else 0
+        _cv_null = 0
+        if chosen_hz:
+            try:
+                _meta = self.batch_retrainer._load_model_meta(chosen_hz) or {}
+                # 사이드카가 없으면(구버전 pkl) "모름"이다 — 0(정상)으로 위장하지
+                # 않고 판정 단계에서 제외되도록 NULL을 쓴다(계측 4원칙 ②).
+                _cv_null = 1 if ("cv_acc" in _meta and _meta.get("cv_acc") is None) else 0
+            except Exception:
+                _cv_null = 0
+
+        from utils.db_utils import execute as _dbx
+        from config.settings import TRADES_DB as _TDB
+        _dbx(
+            _TDB,
+            "INSERT INTO router_health_shadow "
+            "(ts, chosen_hz, tf, const_out_hz, chosen_degraded, chosen_cv_null, "
+            " direction, grade, entry_executed) VALUES (?,?,?,?,?,?,?,?,0)",
+            (ts, chosen_hz or "", float(tf or 0.0),
+             json.dumps(_const, ensure_ascii=False), _degraded, _cv_null,
+             int(direction or 0), str(grade or "")),
+        )
+        if _degraded:
+            log_manager.signal(
+                "[RouterHealth] 라우터가 ConstOut 활성 호라이즌 선택 — chosen=%s "
+                "const_out=%s (섀도 기록만, 정책 무변경)" % (chosen_hz, _const)
+            )
+
+    def _model_health_snapshot(self) -> dict:
+        """[MW0601 457차 / G5] 당일 모델 건강도 카운터 스냅샷.
+
+        ⚠ `_reset_model_health_counters()` **이전에** 호출할 것. 457차 C5가 잡은
+          "리셋 뒤에 저장해 8거래일 연속 죽은 값" 사고와 같은 함정이 여기에도 있다.
+        """
+        return {
+            "pipeline_minutes":        int(self._mh_pipeline_minutes),
+            "const_out_events":        int(self._mh_const_out_events),
+            "const_out_minutes":       int(self._mh_const_out_minutes),
+            "const_out_by_horizon":    dict(self._mh_const_out_by_hz),
+            "weight_collapse_minutes": int(self._mh_weight_collapse_minutes),
+            "intraday_retrain_count":  int(self._mh_intraday_retrain_count),
+        }
+
+    def _reset_model_health_counters(self) -> None:
+        """[MW0601 457차 / G5] 일일 리셋 — 반드시 스냅샷 저장 **이후에**."""
+        self._mh_pipeline_minutes = 0
+        self._mh_const_out_minutes = 0
+        self._mh_const_out_events = 0
+        self._mh_const_out_by_hz = {}
+        self._mh_const_out_active = set()
+        self._mh_weight_collapse_minutes = 0
+        self._mh_intraday_retrain_count = 0
+
     def _model_reload_worker(self) -> None:
         """[MW0601 457차 / B1] 모델 pkl 언피클 워커 — 파이프라인 밖에서 3~4초를 쓴다.
 
@@ -2489,11 +2581,18 @@ class TradingSystem:
                 _enter_thresh = float(p.get("degraded_enter_streak", HEALTH_DEGRADED_ENTER_STREAK))
                 if self._health_warn_streak + _w >= _enter_thresh:
                     is_degraded = True
+                    # [MW0601 457차 / G9] 원인 태그 — **표시 전용, 판정에 미관여.**
+                    # 직전 사이클의 지배 구간을 붙여 "내부 정비 기인(S0 모델 리로드)"과
+                    # "외부/DB 기인(S1·S4)"을 로그에서 바로 가를 수 있게 한다.
+                    # 분기 정책은 보류 — B1 배포 후 실제로 무엇이 남는지 보고 결정한다.
+                    _dom = getattr(self, "_last_pipe_dominant", None)
+                    _cause = ("cause=%s(%.0fms)" % _dom) if _dom else "cause=미상"
                     logger.warning(
                         "[HealthPolicy] Degraded 선제차단: streak=%.2f+%.2f ≥ %.0f "
-                        "(latency=%.0fms quality=%.2f cache=%.0fs exc10m=%.0f)",
+                        "(latency=%.0fms quality=%.2f cache=%.0fs exc10m=%.0f) | %s",
                         self._health_warn_streak, _w, _enter_thresh,
                         latency_ms, quality_score, cache_age_sec, exception_density_10m,
+                        _cause,
                     )
 
         if not is_degraded:
@@ -4464,6 +4563,9 @@ class TradingSystem:
                 )
             except Exception as _pe:
                 logger.warning("[GBM] 재학습 이력 저장 실패 (무해): %s", _pe)
+            # [MW0601 457차 / G5] 당일 장중 재학습 완료 수 — ConstOut 연쇄의 하류 지표.
+            # 위 세션 영속 카운터는 **전체 누적**이라 일별 추세를 못 낸다. 별도로 센다.
+            self._mh_intraday_retrain_count += 1
 
             log_manager.learning(
                 f"[GBM] {prefix}배치 재학습 완료 | "
@@ -6626,6 +6728,24 @@ class TradingSystem:
         # GBM 재학습(수분 소요)과 달리 스케일러만 재적합은 수초 이내 완료.
         # 쿨다운 30분: 재적합 중 또 다른 트리거로 중복 실행 방지.
         _const_hz = decision.get("const_output_horizons", [])
+
+        # ── [MW0601 457차 / G5] 모델 건강도 계측 ────────────────────────────
+        # ⚠ 재적합 트리거(아래 쿨다운 분기)보다 **먼저**, 그리고 조건 없이 센다.
+        #   쿨다운에 막혀 재적합이 안 도는 분에도 호라이즌은 여전히 앙상블에서
+        #   빠져 있다 — 그 시간을 놓치면 "제외 지속시간"이 과소 집계된다.
+        self._mh_pipeline_minutes += 1
+        _co_now = set(_const_hz or ())
+        for _hz in _co_now:
+            _slot = self._mh_const_out_by_hz.setdefault(_hz, {"events": 0, "minutes": 0})
+            _slot["minutes"] += 1
+            self._mh_const_out_minutes += 1
+            if _hz not in self._mh_const_out_active:   # 비활성 → 활성 전이만 사건
+                _slot["events"] += 1
+                self._mh_const_out_events += 1
+        self._mh_const_out_active = _co_now
+        if decision.get("weight_collapsed"):
+            self._mh_weight_collapse_minutes += 1
+
         # GBM 재학습 중이면 skip — raw_data.db 동시 접근 + CPU 경합 방지
         if _const_hz and not self._scaler_refresh_running and not self._gbm_retrain_running:
             _now_dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
@@ -7054,6 +7174,19 @@ class TradingSystem:
                 f"[ATR-Horizon] 진입 호라이즌={_entry_horizon} tf={_tf:.2f} "
                 f"→ TP1×{ATR_HORIZON_TP1_MULT.get(_entry_horizon, 1.0)}"
             )
+
+        # ── [MW0601 457차 / G7] 라우터 × 모델 건강도 섀도 기록 ─────────────────
+        # ⚠ **기록만 한다 — 라우터 선택을 바꾸지 않는다.** 08-11 대조에서 ConstOut
+        #   활성 구간과 진입 시도의 교집합이 0건이라 효과가 미확인이다. 빈도부터 센다.
+        #   사전등록: VALIDATION_CAMPAIGN["router_health_shadow"]
+        try:
+            self._record_router_health_shadow(
+                ts=ts, chosen_hz=_entry_horizon, tf=_tf,
+                const_hz=decision.get("const_output_horizons") or [],
+                direction=direction, grade=grade,
+            )
+        except Exception as _rhs_e:      # 계측 실패가 매매를 막으면 안 된다
+            logger.debug("[RouterHealth] 섀도 기록 실패 (무해): %s", _rhs_e)
 
         # [MW0601 457차 / C4] 확정값을 인스턴스에도 보존.
         # `self._entry_horizon`은 대시보드 SHAP 탭이 CORE 그룹(단기/중기/장기)을
@@ -9183,6 +9316,25 @@ class TradingSystem:
             f"{(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
             for i in range(1, len(_st))
         )
+        # ── [MW0601 457차 / G9] 지배 구간 보존 — Degraded 판정 로그에 원인 태그 ──
+        # 2026-08-11 Degraded 선제차단 5회는 **전부 자기 유발**(장중 재학습 직후 S0)
+        # 이었는데, 정책은 원인을 구분하지 않고 진입을 막았다. 절대원칙 §장중DB 항목이
+        # 이미 "지연 프로파일이 원인을 특정한다"는 방법론을 확립했으니, 그것을 사후
+        # 분석이 아니라 **런타임 판정 로그**에 붙인다.
+        #
+        # ⚠ **정책은 바꾸지 않는다.** 457차 B1이 S0를 3.6ms로 낮췄으므로 이 문제
+        #   자체가 소멸했을 수 있다. 원인 태그를 며칠 관측해 실제로 무엇이 Degraded를
+        #   유발하는지 확인한 뒤에 분기 여부를 결정한다(주간회의).
+        try:
+            _spans = [
+                (_st[i - 1][0] if _st[i - 1][0] != "start" else "S0",
+                 (_st[i][1] - _st[i - 1][1]) * 1000.0)
+                for i in range(1, len(_st))
+            ]
+            self._last_pipe_dominant = max(_spans, key=lambda t: t[1]) if _spans else None
+        except Exception:
+            self._last_pipe_dominant = None
+
         _retrain_tag_pipe = (
             " [GBM재학습중]" if self.circuit_breaker._gbm_retrain_active else ""
         )
@@ -10936,10 +11088,13 @@ class TradingSystem:
                 today_str, _sm_stats,
                 grade_x_minutes=self._grade_x_count,
                 cb3_triggered=_cb3_fired,
+                # [MW0601 457차 / G5] 모델 건강도 — 아래 리셋보다 **먼저** 읽는다
+                health=self._model_health_snapshot(),
             )
         except Exception as _sm_e:
             logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)
         self._grade_x_count = 0   # 내일을 위해 리셋
+        self._reset_model_health_counters()   # [457차 G5] — insert_daily 이후에만
         _ccf_today = self._checklist_conf_fail_count   # [P3] 리포트 전달용 — 리셋 전에 캡처
         log_manager.system(
             f"[P3] 금일 Checklist 신뢰도 차단: {_ccf_today}회"

@@ -7181,6 +7181,14 @@ def _fmt_verdict(v: str) -> str:
         "SUSPENDED": "⏸ SUSPENDED(계측 무효)",
         # [MW0602 435차, 47] 게이트 자신의 판정
         "SUSPEND": "⏸ SUSPEND(하위 정지)",
+        # [MW0601 457차 / G4·A3] 방향 편향·비용 엣지 전용.
+        #   ALERT_BIAS는 **"뒤집어라"가 아니다.** 판정문에 역방향 적중률이 함께
+        #   실려 있고 A1 실측은 반전 시 적중률이 **떨어짐**을 보였다(3m 0.347→0.337).
+        #   조치 축은 방향 반전이 아니라 **절편 보정**이다. 위 [35]~[37] 주석이
+        #   경고한 "FAIL이니 조여라" 자동 오독과 같은 함정을 피하려고 별도 어휘를 쓴다.
+        "ALERT_BIAS": "🟠 ALERT_BIAS(절편 편향)",
+        #   소급 구간을 포함한 실행 — 사전등록 판정으로 승격하지 않는다.
+        "BACKFILL_ADVISORY": "🔎 BACKFILL_ADVISORY(소급·참고용)",
     }.get(v, "⏳ INSUFFICIENT")
 
 
@@ -7286,6 +7294,9 @@ def build_report(days: int) -> tuple:
                     "reason": "%s 실행 실패" % label}
     bsp = _safe_channel("scripts.bar_stop_path_watch", "[48]")
     pgw = _safe_channel("scripts.payoff_geometry_watch", "[49]")
+    # [MW0601 457차 / G4] 방향 편향 상시 감시. predictions.db만 읽고 시뮬레이터를
+    # 쓰지 않으므로 §47 게이트가 SUSPEND여도 계속 판정한다([48]/[49]와 같은 이유).
+    dbw = _safe_channel("scripts.direction_bias_watch", "[50]")
 
     metrics = {
         "generated_at": now_str,
@@ -7328,6 +7339,7 @@ def build_report(days: int) -> tuple:
         "sim_fidelity_gate": off.get("_sim_fidelity_gate"),
         "bar_stop_path_watch": bsp,
         "payoff_geometry_watch": pgw,
+        "direction_bias_watch": dbw,   # [MW0601 457차 / G4]
     }
 
     L = []
@@ -7530,6 +7542,10 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(pgw.get("verdict", "")), pgw.get("reason", pgw.get("error", "—")),
         (" · 포지션 %s건/%s일 (레그 %s건)" % (pgw.get("n"), pgw.get("n_days"),
                                             pgw.get("n_legs"))) if pgw.get("n") else ""))
+    # [MW0601 457차 / G4] 방향 편향 상시 감시. ALERT_BIAS는 "반전하라"가 아니다 —
+    # 판정문에 역방향 적중률이 함께 실려 있으니 반드시 같이 읽을 것(A1 실측: 반전 시 하락).
+    L.append("| [50] 방향 편향 상시 감시 | %s | %s |" % (
+        _fmt_verdict(dbw.get("verdict", "")), dbw.get("reason", dbw.get("error", "—"))))
     L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
         _g23.get("n_trades", "—"), _g23.get("n_days", "—"), _dm("tp1_geometry_shadow")))
