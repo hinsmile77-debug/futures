@@ -445,6 +445,14 @@ def _migrate_ensemble_decisions_db():
                 # 콜드스타트 좁은 활성창에서 유일 활성 호라이즌이 그 분에 배포되지 않아
                 # 안전망(flat_score=1.0)이 발동한 케이스 표시 — 발생 빈도 계량용.
                 "weight_collapsed": "INTEGER",
+                # [MW0602 461차 P-C] 이 행의 confidence가 **보정 적용값인지 raw
+                # 통과값인지**. 지금까지 어디에도 저장되지 않아, 430차는
+                # `conf == min(raw, 0.85)` 휴리스틱으로 사후 추정해야 했다(그 추정이
+                # CONF_SCALE_BREAKS 07-31 경계의 근거였다). 축퇴/도달불가 가드가
+                # 하루 20회 이상 뒤집히는 상황([45] 실측 13.17회/일)에서 이 플래그가
+                # 없으면 같은 날 행들이 두 스케일로 섞여 있는데 구분이 불가능하다.
+                # 1=보정 적용 / 0=raw 통과 / NULL=구버전 행(사후 추정 필요).
+                "cal_applied": "INTEGER",
             }
             for name, dtype in additions.items():
                 if name not in cols:

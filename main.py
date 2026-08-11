@@ -5072,9 +5072,15 @@ class TradingSystem:
             if v["horizon"] == "1m":
                 _cached = self._ensemble_conf_cache.get(v["ts"])
                 if _cached is not None:
-                    _ens_conf_at_t, _1m_was_active = _cached
+                    # [461차 P-A] 3-튜플로 확장(3번째 = WeightCollapse). 장중 배포·롤백
+                    # 중 2-튜플이 남아 있을 수 있어 길이로 폴백한다(폴백 시 종전 동작).
+                    _ens_conf_at_t, _1m_was_active = _cached[0], _cached[1]
+                    _was_collapsed = bool(_cached[2]) if len(_cached) > 2 else False
                     if _1m_was_active:
-                        self.ensemble.record_ensemble_outcome(_ens_conf_at_t, bool(v["correct"]))
+                        self.ensemble.record_ensemble_outcome(
+                            _ens_conf_at_t, bool(v["correct"]),
+                            weight_collapsed=_was_collapsed,
+                        )
             # F1 적응형 가중치: 전 호라이즌 검증 결과 누적 (이번 세션 예측만)
             if _pred_ts >= self._session_start_ts:
                 self.ensemble.record_horizon_verification(
@@ -6423,8 +6429,13 @@ class TradingSystem:
         # 1m 포함 여부 함께 저장 — 1m OFF 중에는 1m 결과로 앙상블 보정기 학습 불가
         # [238차] raw conf 저장 — calibrated conf를 저장하면 calibrator가 자신의 출력을
         #         입력으로 재학습하는 피드백 루프 발생 → A≈0, 상수 0.21 출력 고착
+        # [461차 P-A] WeightCollapse 여부 동반 저장 — 그 분의 raw는 모델 출력이 아니라
+        # 안전망이 넣은 인위값(flat_score=1.0)이므로 보정기 학습표본에서 구분해야 한다.
+        # 실측(0811 저장본 200건 중 42건 21%)이 전부 이 경로에서 왔다.
         self._ensemble_conf_cache[ts] = (
-            float(decision.get("confidence_raw", confidence)), "1m" in _hp_ens
+            float(decision.get("confidence_raw", confidence)),
+            "1m" in _hp_ens,
+            bool(decision.get("weight_collapsed", False)),
         )
         if len(self._ensemble_conf_cache) > 35:
             self._ensemble_conf_cache.pop(min(self._ensemble_conf_cache), None)

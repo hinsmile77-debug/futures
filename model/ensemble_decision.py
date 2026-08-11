@@ -350,6 +350,10 @@ class EnsembleDecision:
                 )
                 return
             _cal = self.ensemble_calibrator
+            # [461차 P-B] 실효 진입 하한 주입 — 진입 허용 시간대의 min_conf만 넘긴다.
+            # (블랙아웃 구간 min_conf는 진입 임계가 아니므로 위 early-return이 막는다.)
+            # 미fit 상태에서도 갱신해야 다음 fit이 최신 하한으로 판정할 수 있다.
+            _cal.update_effective_floor(min_conf)
             if not _cal.is_fitted:
                 return          # 미fit이면 raw가 그대로 나가므로 도달 가능
             _out_max = _cal.output_max
@@ -1017,6 +1021,10 @@ class EnsembleDecision:
         #   → 방향 전환 시 calibration 불연속(conf 급등락) 제거
         # P3 블렌딩(calibration.py)으로 is_fitted 전환 점프 완화
         _confidence_raw = confidence
+        # [461차 P-C] 이 분의 conf가 보정 적용값인지 raw 통과값인지 기록한다.
+        # 아래 분기 중 실제로 보정 함수를 통과한 경로만 True — 사후 추정
+        # (`conf == min(raw, 0.85)`)이 아니라 사실을 남긴다.
+        _cal_applied = False
         if _weight_collapsed and WEIGHT_COLLAPSE_HONEST_MODE:
             # [conf(ema) 딥다이브, 개선안4 — 기본 비활성] 실질 신호 0인 붕괴 케이스는
             # 인위적 raw=1.0을 캘리브레이터에 넣지 않고 "판단불가"를 정직하게 confidence=0.0
@@ -1025,9 +1033,16 @@ class EnsembleDecision:
         elif self.ensemble_calibrator.is_fitted:
             _cal = self.ensemble_calibrator.calibrate(confidence)
             confidence = min(max(float(_cal), 0.0), 0.85)
+            _cal_applied = True
         elif self.calibrator is not None:
             _cal = self.calibrator.calibrate("3m", confidence)
             confidence = min(max(float(_cal), 0.0), 0.85)
+            # 호라이즌 보정기는 미fit이면 raw를 그대로 돌려준다 — 그 경우는
+            # "적용"이 아니다(is_fitted 접근자로 사실 확인, 461차 P-C).
+            try:
+                _cal_applied = bool(self.calibrator.is_fitted("3m"))
+            except Exception:
+                _cal_applied = False
         else:
             confidence = min(max(float(confidence), 0.0), 0.85)
         # [conf(ema) 딥다이브, 개선안3] 보정은 direction에 해당하는 스코어 하나만
@@ -1142,6 +1157,8 @@ class EnsembleDecision:
             "30m_filter_blocked":    _30m_filter_blocked,
             "conf_stuck_boost_applied": _stuck_boost_applied,
             "weight_collapsed":      _weight_collapsed,
+            # [461차 P-C] conf 스케일 판독용 — 1=보정 적용 / 0=raw 통과
+            "cal_applied":           _cal_applied,
         }
 
         logger.info(
@@ -1166,9 +1183,19 @@ class EnsembleDecision:
             return remainder * (a / total), remainder * (b / total)
         return remainder / 2.0, remainder / 2.0
 
-    def record_ensemble_outcome(self, raw_conf: float, correct: bool) -> None:
-        """앙상블 보정기에 결과 누적 — STEP 1 검증 시 main.py에서 호출."""
-        self.ensemble_calibrator.record(raw_conf, correct)
+    def record_ensemble_outcome(
+        self, raw_conf: float, correct: bool, weight_collapsed: bool = False,
+    ) -> None:
+        """앙상블 보정기에 결과 누적 — STEP 1 검증 시 main.py에서 호출.
+
+        [461차 P-A] weight_collapsed=True는 그 분의 raw_conf가 모델 출력이 아니라
+        WeightCollapse 안전망이 넣은 인위값(flat_score=1.0)이라는 뜻이다. 기본
+        False이며, 라이브 학습 표본 구성은 `CAL_COLLAPSE_EXCLUDE_LIVE`가 False인 한
+        종전과 동일하다(오염행 포함) — 지금은 clean 섀도 윈도만 따로 쌓는다.
+        """
+        self.ensemble_calibrator.record(
+            raw_conf, correct, is_artifact=bool(weight_collapsed),
+        )
         # Grade A 가드용 고신뢰도 버퍼 업데이트 (calibrated conf 기준)
         if raw_conf >= self._HC_GUARD_CONF_THR:
             self._hc_buf.append(1 if correct else 0)

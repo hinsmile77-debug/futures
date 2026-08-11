@@ -117,7 +117,17 @@ class PredictionCalibrator:
         self._probs  = deque(maxlen=self.WINDOW)
         self._labels = deque(maxlen=self.WINDOW)
 
+        # [461차 P-A] 오염행(WeightCollapse 인위값 raw=1.0)을 제외한 병행 윈도.
+        # 라이브 보정기는 _probs/_labels를 쓴다 — 이쪽은 섀도 진단 전용이다.
+        self._clean_probs  = deque(maxlen=self.WINDOW)
+        self._clean_labels = deque(maxlen=self.WINDOW)
+        self._artifact_n: int = 0   # 이번 윈도에 들어온 오염행 누적(진단 표시용)
+
         self._model: Optional[object] = None
+        # [461차 P-A] clean 윈도 전용 섀도 모델 + 마지막 섀도 진단값
+        self._shadow_model: Optional[object] = None
+        self._last_shadow_diag: Optional[dict] = None
+        self._shadow_log_n: int = 0   # 섀도 대조 로그 스로틀 카운터
 
         self._transition_steps: int = 0  # P3: is_fitted 전환 후 블렌딩 카운터
 
@@ -130,6 +140,12 @@ class PredictionCalibrator:
         # [MW0602 403차 후속] 축퇴는 아니지만 출력상한이 자동진입 하한 아래라
         # 보정을 미적용 중인 상태. _degenerate와 독립적으로 관리한다.
         self._unreachable: bool = False
+        # [461차 P-B] 실효 진입 하한(zone_mc). ensemble_decision이 매분 갱신하지만
+        # 판정은 fit 시점 값으로 **고정**한다 — 매분 재평가하면 플래핑이 늘어난다.
+        self._effective_floor: Optional[float] = None
+        # [461차 P-B] "실효 하한 기준이었다면 어떤 판정이었나"(섀도). 플래그가 꺼져
+        # 있어도 항상 계산해 로그에 병기한다 — 켜기 전에 영향을 먼저 본다.
+        self._last_unreach_shadow: Optional[dict] = None
 
         if _SKLEARN_OK:
             if method == "isotonic":
@@ -141,16 +157,51 @@ class PredictionCalibrator:
                 # C=0.02: 계수 w를 더 0에 가깝게 → tail의 sigmoid가 base rate(33%)에 더 밀착.
                 self._model = LogisticRegression(C=0.02, solver="lbfgs")
 
-    def record(self, raw_prob: float, actual_correct: bool):
+    def _make_model(self):
+        """[461차 P-A] 섀도 모델용 — 라이브와 **동일 설정**의 새 추정기를 만든다.
+
+        섀도가 라이브와 다른 하이퍼파라미터를 쓰면 "오염 제거 효과"와 "설정 차이
+        효과"가 섞여 판독 불가가 된다. 반드시 __init__과 같은 값을 유지할 것.
+        """
+        if not _SKLEARN_OK:
+            return None
+        if self.method == "isotonic":
+            return IsotonicRegression(out_of_bounds="clip")
+        return LogisticRegression(C=0.02, solver="lbfgs")
+
+    def record(self, raw_prob: float, actual_correct: bool, is_artifact: bool = False):
         """
         예측 결과 누적
 
         Args:
             raw_prob:        모델 원본 확률 (0~1)
             actual_correct:  실제로 맞았으면 True
+            is_artifact:     [461차 P-A] 인위값 행(WeightCollapse "판단 불가"에
+                             안전망이 넣은 raw=1.0)인가. 기본 False라 기존 호출부는
+                             종전과 완전히 동일하게 동작한다.
         """
-        self._probs.append(float(raw_prob))
-        self._labels.append(1 if actual_correct else 0)
+        _artifact = bool(is_artifact)
+        if _artifact:
+            self._artifact_n += 1
+
+        # 라이브 윈도 — 기본 동작은 종전 그대로(오염행도 넣는다).
+        # CAL_COLLAPSE_EXCLUDE_LIVE=True 일 때만 라이브에서도 제외한다(🔴 승인 필요).
+        _exclude_live = False
+        if _artifact:
+            try:
+                from config.settings import CAL_COLLAPSE_EXCLUDE_LIVE
+                _exclude_live = bool(CAL_COLLAPSE_EXCLUDE_LIVE)
+            except Exception:
+                _exclude_live = False
+        if not _exclude_live:
+            self._probs.append(float(raw_prob))
+            self._labels.append(1 if actual_correct else 0)
+
+        # clean 윈도 — 오염행은 항상 제외. 섀도 진단 전용이다.
+        if not _artifact:
+            self._clean_probs.append(float(raw_prob))
+            self._clean_labels.append(1 if actual_correct else 0)
+
         self._n += 1
 
         # 주기적 재보정 (85차: 50→20, 6/11: 20→10, 6/29: 10→5 — 200건 윈도우에서 tail 반영 속도 향상)
@@ -218,6 +269,142 @@ class PredictionCalibrator:
         return (auc < self.DEGENERATE_AUC_MIN
                 and span < self.DEGENERATE_SPAN_MIN), detail
 
+    def _fit_shadow(self):
+        """[461차 P-A] clean 윈도(오염행 제외)로 재적합해 진단값만 계산한다.
+
+        **라이브 보정기(_model)를 건드리지 않는다** — 반환값은 로그·리포트용이며
+        calibrate() 경로는 이 함수의 결과를 절대 참조하지 않는다.
+
+        Returns: dict 또는 None(측정 불가). 키: n, artifact_n, span, auc, out_max, base
+        """
+        try:
+            from config.settings import CAL_COLLAPSE_SHADOW_ENABLED
+            if not CAL_COLLAPSE_SHADOW_ENABLED:
+                return None
+        except Exception:
+            return None
+        if not _SKLEARN_OK:
+            return None
+        probs  = np.array(list(self._clean_probs))
+        labels = np.array(list(self._clean_labels))
+        if len(probs) < self.MIN_SAMPLES or len(np.unique(labels)) < 2:
+            return None
+        try:
+            if self._shadow_model is None:
+                self._shadow_model = self._make_model()
+            if self._shadow_model is None:
+                return None
+            if self.method == "isotonic":
+                self._shadow_model.fit(probs, labels)
+                outs = [float(v) for v in
+                        self._shadow_model.predict(np.array(list(self._SPAN_PROBE_POINTS)))]
+            else:
+                self._shadow_model.fit(probs.reshape(-1, 1), labels)
+                _X = np.array(list(self._SPAN_PROBE_POINTS)).reshape(-1, 1)
+                outs = [float(v) for v in self._shadow_model.predict_proba(_X)[:, 1]]
+            from sklearn.metrics import roc_auc_score
+            return {
+                "n":          len(probs),
+                "artifact_n": self._artifact_n,
+                "span":       max(outs) - min(outs),
+                "auc":        float(roc_auc_score(labels, probs)),
+                "out_max":    max(outs),
+                "base":       float(labels.mean()),
+            }
+        except Exception as e:
+            logger.debug("[Calibration] 섀도 적합 실패 (무해): %s", e)
+            return None
+
+    def _log_shadow_compare(self, live_detail: str) -> None:
+        """[461차 P-A] 라이브 vs clean(오염 제외) 진단 대조 로그.
+
+        매 fit(5건마다)마다 찍으면 하루 ~74줄이라 잡음이 된다 → 축퇴 판정이
+        **갈리는 순간**과 20회 주기에만 INFO로 남기고 나머지는 DEBUG.
+        """
+        _sd = self._last_shadow_diag
+        if not _sd:
+            return
+        self._shadow_log_n += 1
+        _live_degen = (
+            self._last_auc is not None and self._last_span is not None
+            and self._last_auc < self.DEGENERATE_AUC_MIN
+            and self._last_span < self.DEGENERATE_SPAN_MIN
+        )
+        _shadow_degen = (_sd["auc"] < self.DEGENERATE_AUC_MIN
+                         and _sd["span"] < self.DEGENERATE_SPAN_MIN)
+        _msg = (
+            "[Calibration][CleanShadow] live(%s) vs clean(n=%d span=%.5f auc=%.3f "
+            "out_max=%.4f base=%.4f) 오염행=%d건 축퇴판정 live=%s clean=%s"
+        )
+        _args = (live_detail, _sd["n"], _sd["span"], _sd["auc"], _sd["out_max"],
+                 _sd["base"], _sd["artifact_n"], _live_degen, _shadow_degen)
+        if (_live_degen != _shadow_degen) or (self._shadow_log_n % 20 == 1):
+            logger.info(_msg, *_args)
+        else:
+            logger.debug(_msg, *_args)
+
+    def update_effective_floor(self, min_conf: Optional[float]) -> None:
+        """[461차 P-B] 실효 진입 하한(zone_mc) 주입.
+
+        ensemble_decision이 매분 호출하지만, **판정에 쓰이는 값은 fit 시점에
+        읽힌 것 하나**다(매분 재평가 시 플래핑 증가 — [45] 참조).
+        """
+        try:
+            if min_conf is None:
+                return
+            _v = float(min_conf)
+            if _v > 0.0:
+                self._effective_floor = _v
+        except (TypeError, ValueError):
+            pass
+
+    def _unreachable_need(self):
+        """[461차 P-B] 판정 기준선 계산 → (live_need, shadow_need).
+
+        live_need   : 현재 플래그 설정이 실제로 쓰는 기준
+        shadow_need : 실효 하한 모드였다면 썼을 기준(플래그와 무관하게 항상 계산)
+        """
+        from config.settings import ENS_CONF_FLOOR_FOR_AUTO
+        _static = float(ENS_CONF_FLOOR_FOR_AUTO)
+        _eff = self._effective_floor
+        _shadow_need = max(_static, float(_eff)) if _eff is not None else _static
+        try:
+            from config.settings import CAL_UNREACHABLE_USE_EFFECTIVE_FLOOR
+            _use_eff = bool(CAL_UNREACHABLE_USE_EFFECTIVE_FLOOR)
+        except Exception:
+            _use_eff = False
+        return (_shadow_need if _use_eff else _static), _shadow_need
+
+    def _apply_hysteresis(self, out_max: float, need: float) -> bool:
+        """[461차 P-B] 히스테리시스를 적용한 도달불가 판정 — **편측(one-sided)**이다.
+
+        ⚠ 밴드를 양쪽에 두면 안 된다. 초안이 그렇게 짰다가 테스트에서 잡혔다:
+          `out_max < need - h`로 발동을 늦추면, out_max가 밴드 안(need-h ~ need)에
+          있는 동안 **보정이 적용된 채로 자동진입이 산술적으로 불가능한 상태**가
+          유지된다. 2026-08-11 오전이 정확히 그 값이었다(out_max 0.383 / need 0.389
+          / h 0.01 → 0.383 은 밴드 안) — 즉 양측 밴드는 이 채널이 잡으려던 바로 그
+          사례를 놓친다.
+
+        403차 지배 논증에 따르면 `out_max < need`인 순간 적용은 미적용에 **엄밀히
+        지배**된다(적용 시 진입 0 확정, 미적용 시 raw 통과). 따라서 발동을 늦출
+        이유가 없다. 늦춰야 하는 것은 **해소**뿐이다 — 경계에서 왕복하며 conf
+        스케일이 분마다 갈리는 것([45] 플래핑)을 막는 게 목적이기 때문이다.
+
+          적용 중                : out_max <  need        → 즉시 발동 (지배 논증)
+          미적용(unreachable) 중 : out_max >= need + h    → 밴드 밖이라야 해소
+        h=0이면 종전과 동일한 단일 문턱 판정으로 환원된다.
+        """
+        try:
+            from config.settings import CAL_UNREACHABLE_HYSTERESIS
+            h = float(CAL_UNREACHABLE_HYSTERESIS)
+        except Exception:
+            h = 0.0
+        if h <= 0.0:
+            return out_max < need
+        if self._unreachable:
+            return not (out_max >= need + h)   # 해소는 밴드 밖에서만
+        return out_max < need                  # 발동은 지연 없이
+
     def _evaluate_unreachable(self):
         """[MW0602 403차 후속] 보정 적용 시 자동진입 하한 도달이 불가능한지 판정.
 
@@ -234,9 +421,7 @@ class PredictionCalibrator:
         Returns: (is_unreachable: bool, detail: str)
         """
         try:
-            from config.settings import (
-                CAL_UNREACHABLE_FALLBACK_ENABLED, ENS_CONF_FLOOR_FOR_AUTO,
-            )
+            from config.settings import CAL_UNREACHABLE_FALLBACK_ENABLED
         except Exception:
             return False, "설정 로드 실패 → 미적용"
         if not CAL_UNREACHABLE_FALLBACK_ENABLED:
@@ -244,8 +429,48 @@ class PredictionCalibrator:
         out_max = self._last_out_max
         if out_max is None:
             return False, "out_max 미측정 → 보수적 통과"
-        need = float(ENS_CONF_FLOOR_FOR_AUTO)
-        return out_max < need, "out_max=%.4f < conf_floor=%.4f" % (out_max, need)
+
+        # [461차 P-B] 기준선 2종 — live는 플래그가 정하고, shadow는 항상 계산한다.
+        try:
+            _live_need, _shadow_need = self._unreachable_need()
+            from config.settings import CAL_UNREACHABLE_USE_EFFECTIVE_FLOOR
+            _use_eff = bool(CAL_UNREACHABLE_USE_EFFECTIVE_FLOOR)
+        except Exception:
+            from config.settings import ENS_CONF_FLOOR_FOR_AUTO
+            _live_need = _shadow_need = float(ENS_CONF_FLOOR_FOR_AUTO)
+            _use_eff = False
+
+        # 섀도 판정 기록 — 실효 하한 모드였다면 어떻게 판정됐을지(플래그 무관).
+        # 히스테리시스는 실효 모드 전용이므로 섀도도 같은 규칙으로 잰다.
+        self._last_unreach_shadow = {
+            "need":            _shadow_need,
+            "effective_floor": self._effective_floor,
+            "out_max":         float(out_max),
+            "verdict":         self._apply_hysteresis(float(out_max), _shadow_need),
+        }
+
+        if _use_eff:
+            # 실효 하한 모드 — 히스테리시스로 경계 왕복을 억제한다.
+            _verdict = self._apply_hysteresis(float(out_max), _live_need)
+            return _verdict, "out_max=%.4f < need=%.4f (실효하한 %s, 히스테리시스 적용)" % (
+                out_max, _live_need,
+                ("%.4f" % self._effective_floor) if self._effective_floor is not None else "N/A",
+            )
+
+        # 기본 경로 — 403차 원본과 **완전히 동일**(정적 하한, 히스테리시스 없음).
+        _live_verdict = out_max < _live_need
+        # [461차 P-B] 섀도가 라이브와 갈리면 남긴다 — "실효 하한이었다면 보정을
+        # 껐을 텐데 지금은 켜둔 채 봉쇄 중"인 구간이 정확히 이 로그로 드러난다.
+        # (2026-08-11 오전이 그 사례: out_max 0.383 >= 0.33 통과, 실효 mc 0.389 미달)
+        _sh = self._last_unreach_shadow
+        if _sh is not None and _sh["verdict"] != _live_verdict:
+            logger.info(
+                "[Calibration][FloorShadow] 판정 불일치 — 정적하한 기준=%s / "
+                "실효하한(%.4f) 기준=%s  out_max=%.4f. 실효 기준이 True면 현재 "
+                "보정 적용 상태에서 자동진입이 산술적으로 불가능하다는 뜻이다.",
+                _live_verdict, _sh["need"], _sh["verdict"], out_max,
+            )
+        return _live_verdict, "out_max=%.4f < conf_floor=%.4f" % (out_max, _live_need)
 
     def fit(self):
         """보정 모델 학습"""
@@ -271,6 +496,11 @@ class PredictionCalibrator:
             # _model은 지우지 않는다 — 진단(coef 확인)과 다음 fit 재사용에 필요.
             _prev_degen = self._degenerate
             _is_degen, _detail = self._evaluate_degeneracy()
+
+            # [461차 P-A] clean 윈도 섀도 재적합 — 진단 전용, 라이브 무영향.
+            self._last_shadow_diag = self._fit_shadow()
+            self._log_shadow_compare(_detail)
+
             if _is_degen:
                 _was_fitted = self._fitted
                 self._degenerate = True
@@ -405,6 +635,12 @@ class PredictionCalibrator:
                 "labels":  list(self._labels),
                 "n":       self._n,
                 "method":  self.method,
+                # [461차 P-A] clean 윈도도 영속화 — 없으면 재기동마다 섀도가 0에서
+                # 다시 쌓여 MIN_SAMPLES(80)까지 진단이 비고, 하루 단위 대조가 끊긴다.
+                # 구버전 저장본에는 이 키가 없다 → load()에서 빈 리스트 폴백.
+                "clean_probs":  list(self._clean_probs),
+                "clean_labels": list(self._clean_labels),
+                "artifact_n":   self._artifact_n,
             }, path, protocol=4)
             return True
         except Exception as e:
@@ -425,11 +661,22 @@ class PredictionCalibrator:
                 self._probs.append(p)
             for lb in state.get("labels", []):
                 self._labels.append(lb)
+            # [461차 P-A] clean 윈도 복원. 구버전 저장본이면 키가 없어 빈 상태로
+            # 시작한다 — 섀도 진단만 MIN_SAMPLES까지 비고 라이브는 영향 없다.
+            for p in state.get("clean_probs", []):
+                self._clean_probs.append(p)
+            for lb in state.get("clean_labels", []):
+                self._clean_labels.append(lb)
+            self._artifact_n = int(state.get("artifact_n", 0) or 0)
             # [403차 종합 P0-2] 저장본에도 동일 축퇴 가드 적용.
             # 이게 없으면 P0-1(복원 배선 수정)이 오히려 해롭다 — 어제 축퇴한 보정기를
             # 오늘 아침 그대로 되살려 09:00부터 진입을 봉쇄하게 된다(오늘까지는 복원이
             # 죽어 있어서 오전에만 우연히 살아 있었던 것).
             _is_degen, _detail = self._evaluate_degeneracy()
+            # [461차 P-A] 복원 시점에도 섀도 진단을 한 번 계산해둔다 — 기동 로그에서
+            # "어제 저장본이 오염 때문에 축퇴로 읽혔는지"를 바로 볼 수 있게 한다.
+            self._last_shadow_diag = self._fit_shadow()
+            self._log_shadow_compare(_detail)
             if _is_degen:
                 self._degenerate = True
                 self._fitted = False
@@ -508,6 +755,23 @@ class PredictionCalibrator:
         """
         return self._unreachable
 
+    # ── [461차] 섀도 진단 노출 (리포트·테스트용, 라이브 판정 미참여) ──────────
+    @property
+    def shadow_diag(self) -> Optional[dict]:
+        """[P-A] 오염행 제외 clean 윈도의 마지막 재적합 진단.
+        None = 표본 부족(<MIN_SAMPLES) 또는 섀도 비활성."""
+        return self._last_shadow_diag
+
+    @property
+    def artifact_count(self) -> int:
+        """[P-A] 지금까지 record()로 들어온 인위값(WeightCollapse) 행 누적."""
+        return self._artifact_n
+
+    @property
+    def floor_shadow(self) -> Optional[dict]:
+        """[P-B] 실효 하한 기준이었다면 내려졌을 도달불가 판정."""
+        return self._last_unreach_shadow
+
 
 class MultiHorizonCalibrator:
     """호라이즌별 독립 보정기 묶음"""
@@ -523,6 +787,16 @@ class MultiHorizonCalibrator:
         if horizon in self.calibrators:
             return self.calibrators[horizon].calibrate(raw_prob)
         return raw_prob
+
+    def is_fitted(self, horizon: str) -> bool:
+        """[461차 P-C] 해당 호라이즌 보정기가 실제로 적용 상태인가.
+
+        `calibrate()`는 미fit이면 raw를 그대로 돌려주므로 반환값만으로는
+        "보정됐다"를 판별할 수 없다(보정 결과가 우연히 raw와 같을 수도 있다).
+        `cal_applied` 계측이 추정이 아닌 사실을 기록하려면 이 접근자가 필요하다.
+        """
+        _c = self.calibrators.get(horizon)
+        return bool(_c.is_fitted) if _c is not None else False
 
     def fit_all(self):
         for cal in self.calibrators.values():

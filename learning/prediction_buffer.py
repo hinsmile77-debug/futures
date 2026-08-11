@@ -54,8 +54,8 @@ class PredictionBuffer:
                 checklist_reason, meta_entry_quality_prob,
                 quantile_expected_pt, quantile_uncertainty_pt,
                 quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
-                meta_size_raw
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                meta_size_raw, cal_applied
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -97,6 +97,9 @@ class PredictionBuffer:
                 # `or`가 아니라 `.get()` 그대로 — 0.0은 유효값이므로 falsy 승격 금지
                 # (그 승격이 바로 이 채널이 재는 결함이다). 키 부재는 NULL.
                 (decision.get("meta_gate") or {}).get("size_multiplier_raw"),
+                # [MW0602 461차 P-C] save_step9_batch와 동일 규약 — 키 부재는 NULL.
+                (None if decision.get("cal_applied") is None
+                 else int(bool(decision.get("cal_applied")))),
             ),
         )
 
@@ -219,6 +222,10 @@ class PredictionBuffer:
             # `or`가 아니라 `.get()` 그대로 — 0.0은 유효값이므로 falsy 승격 금지
             # (그 승격이 바로 이 채널이 재는 결함이다). 키 부재는 NULL.
             (decision.get("meta_gate") or {}).get("size_multiplier_raw"),
+            # [MW0602 461차 P-C] conf 스케일 판독용. 키 부재(구버전 decision)는
+            # NULL — "0(raw 통과)"으로 단정하지 않는다. 그 구분이 이 계측의 목적이다.
+            (None if decision.get("cal_applied") is None
+             else int(bool(decision.get("cal_applied")))),
         )
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
@@ -251,8 +258,8 @@ class PredictionBuffer:
                        quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
                        coherence_blocked,
                        confidence_raw, confidence_smoothed, weight_collapsed,
-                       meta_size_raw
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       meta_size_raw, cal_applied
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 
