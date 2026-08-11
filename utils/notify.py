@@ -173,11 +173,13 @@ def notify_pipeline_delayed(elapsed_str: str) -> None:
 def notify_shs_alert(shs: float, components: dict) -> None:
     """SHS < 60 최초 진입 또는 5점 이상 추가 하락 시 경고.
 
-    [456차 / F2] 종전 문구는 "기준 60점 미만 → 진입 차단"이라고 단언했지만
-    `entry_blocked`는 대시보드 배지에만 쓰이고 **어떤 진입도 막지 않는다**
+    [456차 / F2, MW0602 459차 F2] 종전 문구는 "기준 60점 미만 → 진입 차단"이라고
+    단언했지만 `entry_blocked`는 대시보드 배지에만 쓰이고 **어떤 진입도 막지 않는다**
     (실제 차단은 EKS뿐 — safety/system_health.py:is_entry_blocked 참조).
-    2026-08-10에 이 경보가 8회 뜨는 동안 10건이 정상 진입됐다. 또 SHS가 정확히
-    60일 때도 "60 미만"이라 찍는 부등호 오류가 있었다.
+    2026-08-10에 이 경보가 8회 뜨는 동안 10건이 정상 진입됐다(0808 실측도 동일).
+    아울러 SHS가 정확히 60일 때도 "60 미만"이라 찍는 부등호 오류, `.0f` 반올림
+    탓에 59.5~59.9에서 "SHS = 60점 (60점 미만)"이 되는 자기모순 문구도 있었다
+    → 소수 1자리로 표기.
 
     CORE 통과율도 미측정(체크리스트 미실행 분)과 0%를 구분해 표시한다.
     """
@@ -196,7 +198,7 @@ def notify_shs_alert(shs: float, components: dict) -> None:
         core_txt = "미측정(체크리스트 미실행)"
     notify(
         f"🩺 시스템 건강 점수 저하\n"
-        f"SHS = {shs:.0f}점  (임계 {ENTRY_BLOCK_THRESHOLD:.0f} — 경고 전용, 진입 차단 아님)\n"
+        f"SHS = {shs:.1f}점  (임계 {ENTRY_BLOCK_THRESHOLD:.0f} — 경고 전용, 진입 차단 아님)\n"
         f"  재시작: {restart}회  |  z경고 피처: {z_warn}개\n"
         f"  CORE 통과율: {core_txt}  |  S2 지연: {s2_ms:.0f}ms",
         "WARNING",

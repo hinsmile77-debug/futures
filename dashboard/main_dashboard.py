@@ -10959,17 +10959,28 @@ class DashboardAdapter:
             # [C3] 원인 있으면 "관망일" 아래 2줄로 표시
             text = f"⛔ 관망일\n{eks_reason}" if eks_reason else "⛔ 관망일"
             bg, fg = C["red"], "#fff"
+            tip = "Early Kill Switch 발동 — 자동 진입 차단 중"
             lbl.setWordWrap(True)
             lbl.setMinimumWidth(S.p(90))
         elif entry_blocked:
-            text, bg, fg = f"⚠ SHS {shs:.0f}", C["orange"], "#fff"
+            # [459차 F2] 경고 상태만 소수 1자리 — `.0f`는 SHS 59.5~59.9를 "60"으로
+            # 반올림해 "60점인데 60점 미만 경고"라는 자기모순 표시를 만들었다.
+            text, bg, fg = f"⚠ SHS {shs:.1f}", C["orange"], "#fff"
+            tip = (
+                "시스템 건강 점수 60점 미만 — 경고 표시 전용입니다.\n"
+                "이 배지는 신규 진입을 차단하지 않습니다 "
+                "(실제 차단은 Early Kill Switch·서킷브레이커)."
+            )
             lbl.setWordWrap(False)
         elif shs >= 80:
             text, bg, fg = f"♥ SHS {shs:.0f}", C["green"], "#fff"
+            tip = "시스템 건강 점수 양호"
             lbl.setWordWrap(False)
         else:
             text, bg, fg = f"SHS {shs:.0f}", C["blue"], "#fff"
+            tip = "시스템 건강 점수 정상 범위"
             lbl.setWordWrap(False)
+        lbl.setToolTip(tip)   # [459차 F2] 상태 전환 시 이전 툴팁이 남지 않도록 매번 지정
         lbl.setText(text)
         lbl.setAlignment(Qt.AlignCenter)
         lbl.setStyleSheet(
