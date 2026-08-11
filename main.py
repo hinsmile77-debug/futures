@@ -7158,10 +7158,11 @@ class TradingSystem:
         if time_zone == "GAP_OPEN":
             # [P4] CORE 3개 중 2개 이상 통과 = core_ok (AND → 다수결)
             # GAP_OPEN은 거래량 부족·갭으로 1개 실패가 잦아 AND 조건이 EKS 과발동을 유발
+            _gap_core_checks = _cr.get("checks") if _cr is not None else None
             _core_votes = (
-                int(bool(_cr is not None and _cr["checks"].get("3_vwap")))
-                + int(bool(_cr is not None and _cr["checks"].get("4_cvd")))
-                + int(bool(_cr is not None and _cr["checks"].get("5_ofi")))
+                int(bool(_gap_core_checks and _gap_core_checks.get("3_vwap")))
+                + int(bool(_gap_core_checks and _gap_core_checks.get("4_cvd")))
+                + int(bool(_gap_core_checks and _gap_core_checks.get("5_ofi")))
             )
             _core_all_ok = _core_votes >= 2
             # [P2] 파이프라인 지연 분봉은 conf 신뢰 불가 — EKS conf_max에서 제외
@@ -7174,6 +7175,9 @@ class TradingSystem:
                 core_all_passed=_core_all_ok,
                 pipeline_delayed=_gap_pipe_delayed,
                 horizon_policy_blocked=_gap_horizon_blocked,
+                # [459차 F2] 체크리스트 미실행 봉은 "CORE 전부 탈락"이 아니라 미측정.
+                # 발동 조건은 불변이고 로그 분모만 정직해진다(system_health 참조).
+                core_measured=bool(_gap_core_checks),
             )
         elif not self.system_health._eks_evaluated:
             _eks_fired = self.system_health.evaluate_early_kill_switch(
@@ -8978,11 +8982,19 @@ class TradingSystem:
                 break
         self.system_health.update_s2_latency(_s2_dur_sec)
 
-        _core_pass_cnt = sum(
-            1 for k in ("3_vwap", "4_cvd", "5_ofi")
-            if (_cr is not None and bool(_cr["checks"].get(k)))
-        ) if _cr is not None else 0
-        self.system_health.update_core_pass(_core_pass_cnt / 3.0)
+        # [459차 F2] 체크리스트는 신호가 있고 FLAT인 분에만 돈다 — 그 외 분
+        # (관망·포지션 보유·StartupWarmup)은 `_cr is None` 또는 `checks == {}`이며
+        # "CORE 전부 탈락"이 아니라 **미측정**이다. 종전에는 그 분에 통과율 0.0을
+        # 넣어 SHS가 매분 -25점 전액 감점됐다 → None을 넘겨 감점 0으로 만든다.
+        _core_checks = _cr.get("checks") if _cr is not None else None
+        if _core_checks:
+            _core_pass_cnt = sum(
+                1 for k in ("3_vwap", "4_cvd", "5_ofi")
+                if bool(_core_checks.get(k))
+            )
+            self.system_health.update_core_pass(_core_pass_cnt / 3.0)
+        else:
+            self.system_health.update_core_pass(None)   # 미측정
 
         _shs_state = self.system_health.to_dict()
         self.dashboard.update_shs_badge(

@@ -14,6 +14,11 @@ from config.settings import FUTURES_COMMISSION_RATE
 
 _lock = threading.Lock()
 TRADE_PNL_FORMULA_VERSION = 4  # v4: pt_value 종목코드 연동 (미니선물 50k, 일반선물 250k)
+# [459차 F1] daily_stats.wins 집계 단위. v1=레그(청산 행) 단위 — 부분청산 포지션의
+# 승패를 **마지막 레그**의 pnl_pts로 판정해 순손실 포지션이 승으로 기록됐다.
+# v2=포지션 단위(레그 누적 총합). 과거 행은 소급 수정하지 않으므로 컬럼이 NULL인
+# 날짜가 v1 구간이다(2026-08-10 전환 — dev_memory/DECISION_LOG.md 459차).
+WIN_COUNT_FORMULA_VERSION = 2
 MIN_VALID_FUTURES_PRICE = 100.0
 MAX_VALID_FUTURES_PRICE = 10000.0
 MAX_REASONABLE_TRADE_PNL_PTS = 200.0
@@ -2241,14 +2246,25 @@ def init_daily_stats_db():
             created_at     TEXT    DEFAULT (datetime('now', 'localtime'))
         )
     """)
+    # [459차 F1] 승패 집계 단위 전환 표식. 과거 행은 **소급 수정하지 않는다**
+    # (fetch_trend_daily 등 추이 지표에 불연속이 생긴다) — NULL로 남는 날은
+    # v1(레그 단위), 값이 있는 날은 v2(포지션 단위)라는 뜻이다.
+    cols = {
+        row["name"]
+        for row in fetchall(TRADES_DB, "PRAGMA table_info(daily_stats)")
+    }
+    if "win_formula_version" not in cols:
+        execute(TRADES_DB,
+                "ALTER TABLE daily_stats ADD COLUMN win_formula_version INTEGER")
 
 
 def save_daily_stats(date_str: str, stats: dict) -> None:
     """일일 마감 통계 저장 — daily_close() 에서 호출."""
     execute(TRADES_DB, """
         INSERT OR REPLACE INTO daily_stats
-            (date, trades, wins, pnl_pts, pnl_krw, sgd_accuracy, verified_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (date, trades, wins, pnl_pts, pnl_krw, sgd_accuracy, verified_count,
+             win_formula_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         date_str,
         int(stats.get("trades",        0)),
@@ -2257,6 +2273,7 @@ def save_daily_stats(date_str: str, stats: dict) -> None:
         float(stats.get("pnl_krw",     0.0)),
         float(stats.get("sgd_accuracy",0.5)),
         int(stats.get("verified_count",0)),
+        WIN_COUNT_FORMULA_VERSION,
     ))
 
 

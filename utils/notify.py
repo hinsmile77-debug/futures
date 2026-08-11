@@ -171,16 +171,26 @@ def notify_pipeline_delayed(elapsed_str: str) -> None:
 # ── SHS / EKS 알림 ────────────────────────────────────────────
 
 def notify_shs_alert(shs: float, components: dict) -> None:
-    """SHS < 60 최초 진입 또는 5점 이상 추가 하락 시 경고."""
+    """SHS < 60 최초 진입 또는 5점 이상 추가 하락 시 경고.
+
+    [459차 F2] 문구를 실제 동작에 맞춘다. 종전 "→ 진입 차단"은 사실이 아니었다
+    — SHS entry_blocked는 대시보드 배지 색상에만 쓰이고 어떤 진입도 막지 않는다
+    (0808 실측: 8회 전부 "진입 차단"이라 알렸으나 10건 진입). 아울러 SHS를
+    `.0f`로 반올림하던 탓에 59.5~59.9에서 "SHS = 60점 (60점 미만)"이라는
+    자기모순 문구가 나갔다 → 소수 1자리로 표기.
+    """
     restart  = components.get("restart_count", 0)
     z_warn   = components.get("z_warn_count", 0)
-    core_pct = components.get("core_pass_rate", 1.0) * 100
     s2_ms    = components.get("s2_latency_sec", 0.0) * 1000
+    if components.get("core_pass_measured", True):
+        core_str = f"{components.get('core_pass_rate', 1.0) * 100:.0f}%"
+    else:
+        core_str = "미측정(관망·보유 구간)"
     notify(
         f"🩺 시스템 건강 점수 저하\n"
-        f"SHS = {shs:.0f}점  (기준 60점 미만 → 진입 차단)\n"
+        f"SHS = {shs:.1f}점  (기준 60점 미만 — 경고만, 진입은 차단되지 않음)\n"
         f"  재시작: {restart}회  |  z경고 피처: {z_warn}개\n"
-        f"  CORE 통과율: {core_pct:.0f}%  |  S2 지연: {s2_ms:.0f}ms",
+        f"  CORE 통과율: {core_str}  |  S2 지연: {s2_ms:.0f}ms",
         "WARNING",
     )
 
