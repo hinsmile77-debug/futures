@@ -925,6 +925,19 @@ class TradingSystem:
         # [MW0601 435차] SHAP 슬로우 스로틀 잔여 스킵 분(minute) 수.
         # >0이면 그 분의 SHAP 계산을 건너뛴다(라운드로빈 인덱스는 전진하지 않음).
         self._shap_skip_until_cnt: int = 0
+        # [MW0601 457차 / B2] SHAP 워커 상호배제 + UI 갱신 요청 플래그.
+        # _shap_worker_running: 워커 1개만 돈다(느린 분이 겹쳐 쌓이는 것 방지)
+        # _shap_ui_dirty:       워커가 세우고 메인 스레드가 소비 — 워커에서 Qt 금지
+        self._shap_worker_running: bool = False
+        self._shap_ui_dirty: bool = False
+        # [MW0601 457차 / B1] 모델 pkl 선로드 워커 상호배제.
+        # 워커가 도는 동안 다음 분 S0가 또 띄우면 12개 pkl을 이중 언피클한다.
+        self._model_reload_worker_running: bool = False
+        # [MW0601 457차 / C3·C4] 진입 호라이즌 — 종전엔 읽는 곳만 있고 할당부가 없어
+        # getattr 폴백 '1m'이 영구 고정이었다. 여기서 명시 초기화하고
+        # run_minute_pipeline STEP 6이 매분 갱신한다(_pre는 선행, 무접미는 확정값).
+        self._entry_horizon_pre: str = "1m"
+        self._entry_horizon: str = "1m"
         # [414차 후속] SHAP 정합성 가드 로그 스로틀 — {(horizon, reason): 'YYYY-MM-DD'}.
         # 이 함수는 매분 도는데 불일치는 재학습 전까지 계속 유지되므로, 스로틀이 없으면
         # 같은 경고가 하루 수백 줄 쌓여 진짜 이상이 묻힌다(경보 피로).
@@ -1626,18 +1639,53 @@ class TradingSystem:
         else:
             _targets = _SHAP_RR_HORIZONS
 
-        _t0 = time.perf_counter()
-        for _h in _targets:
-            if _h == "1m":
-                self._refresh_shap_1m(ts)
-            else:
-                self._refresh_shap_horizon(ts, _h)
-        _elapsed_ms = (time.perf_counter() - _t0) * 1000.0
+        # ── [MW0601 457차 / B2] 워커 스레드 이관 ────────────────────────────
+        # 근거·설계·롤백은 config/settings.py:SHAP_ASYNC_ENABLED 주석 참조.
+        if bool(getattr(runtime_settings, "SHAP_ASYNC_ENABLED", True)):
+            if self._shap_worker_running:
+                # 직전 분 워커가 아직 안 끝났다 — 이번 분은 건너뛴다.
+                # ⚠ 라운드로빈 인덱스는 전진시키지 않는다(스로틀과 동일 규칙 —
+                #   건너뛴 호라이즌은 유실되지 않고 다음 분으로 밀린다).
+                logger.debug("[SHAP] 직전 워커 진행 중 — 이번 분 스킵")
+                return
+            if getattr(self, "_pending_model_reload", False):
+                # 곧 모델이 교체된다 — 구 모델로 계산해봐야 즉시 낡는다.
+                logger.debug("[SHAP] 모델 교체 대기 중 — 이번 분 스킵")
+                return
+            self._shap_worker_running = True
+            threading.Thread(
+                target=self._shap_worker, args=(ts, _targets, _round_robin), daemon=True,
+            ).start()
+            return
 
-        # 계산에 성공했을 때만 인덱스를 전진시킨다(건너뛴 분에는 전진 없음 — 위 참조).
+        # ── 동기 경로 (SHAP_ASYNC_ENABLED=False 롤백용) ─────────────────────
+        self._run_shap_targets(ts, _targets, _round_robin)
+
+    def _run_shap_targets(self, ts: str, _targets, _round_robin: bool) -> bool:
+        """[MW0601 457차 / B2] SHAP 계산 본체 — 동기·워커 공용.
+
+        Qt 위젯은 절대 건드리지 않는다. 대시보드 갱신이 필요하면 True를 돌려주고
+        호출부가 메인 스레드에서 `_update_shap_dashboard()`를 부르게 한다.
+
+        Returns: 대시보드 갱신 필요 여부
+        """
+        self._shap_ui_dirty = False
+        _t0 = time.perf_counter()
+        try:
+            for _h in _targets:
+                if _h == "1m":
+                    self._refresh_shap_1m(ts)
+                else:
+                    self._refresh_shap_horizon(ts, _h)
+        finally:
+            _elapsed_ms = (time.perf_counter() - _t0) * 1000.0
+
+        # 계산에 성공했을 때만 인덱스를 전진시킨다(건너뛴 분에는 전진 없음).
         if _round_robin:
             self._shap_rr_idx = (self._shap_rr_idx + 1) % len(_SHAP_RR_HORIZONS)
 
+        # [435차] 슬로우 스로틀은 워커 모드에서도 유지한다. 워커라도 CPU는 공유하고,
+        # 4초짜리 permutation importance가 GIL을 잡으면 파이프라인이 여전히 밀린다.
         if bool(getattr(runtime_settings, "SHAP_SLOW_SKIP_ENABLED", True)):
             _slow_ms = float(getattr(runtime_settings, "SHAP_SLOW_MS", 900.0))
             if _elapsed_ms >= _slow_ms:
@@ -1649,6 +1697,23 @@ class TradingSystem:
                     f"(호라이즌 {_targets[0] if _targets else '?'}는 유실 없이 밀림)",
                     "WARNING",
                 )
+        return bool(self._shap_ui_dirty)
+
+    def _shap_worker(self, ts: str, _targets, _round_robin: bool) -> None:
+        """[MW0601 457차 / B2] SHAP 워커 — 파이프라인 밖에서 계산한다.
+
+        ⚠ 이 함수 안에서 Qt 위젯·시그널을 절대 건드리지 말 것. 대시보드 갱신은
+          _deferred_callbacks 큐를 통해 메인 스레드(S0-B drain)로 넘긴다 —
+          ConstOut 재적합 워커가 쓰는 것과 같은 기존 경로다.
+        """
+        try:
+            _need_ui = self._run_shap_targets(ts, _targets, _round_robin)
+            if _need_ui:
+                self._deferred_callbacks.put(("shap_ui",))
+        except Exception as _e:
+            logger.warning("[SHAP] 워커 실패 (무해 — 이번 분 SHAP 생략): %s", _e)
+        finally:
+            self._shap_worker_running = False
 
     def _shap_guard_warn(self, horizon: str, reason: str, msg: str, *args) -> None:
         """[414차 후속] SHAP 정합성 경고 — 조건별 하루 1회만 남긴다."""
@@ -1714,7 +1779,11 @@ class TradingSystem:
                 self._cached_shap_importance = score_map
                 self._live_shap_ready = True
                 save_shap_scores(ts, "1m", score_map)
-                self._update_shap_dashboard()
+                # [MW0601 457차 / B2] 여기서 직접 부르지 않는다 — 이 경로는 워커
+                # 스레드에서도 실행되고 _update_shap_dashboard()는 Qt 위젯을 만진다
+                # (절대원칙 §4와 같은 취지: 워커에서 UI 금지). 플래그만 세우고
+                # 메인 스레드가 _deferred_callbacks("shap_ui")로 소비한다.
+                self._shap_ui_dirty = True
         else:
             logger.debug(
                 "[ShapRefresh] 1m update() False — n=%d, tracker_feat=%d",
@@ -2063,6 +2132,73 @@ class TradingSystem:
         except Exception as _e:
             logger.debug("[Canary] z_warn 피처 로드 실패: %s", _e)
             return []
+
+    def _model_reload_worker(self) -> None:
+        """[MW0601 457차 / B1] 모델 pkl 언피클 워커 — 파이프라인 밖에서 3~4초를 쓴다.
+
+        ⚠ 여기서 self.model / self.rf_model의 **상태를 바꾸지 않는다**. stage_* 는
+          순수 디스크 읽기이고, 라이브 반영은 메인 스레드의 _commit_model_reload가 한다.
+          (Qt 위젯·시그널도 당연히 금지 — 절대원칙 §4와 같은 취지)
+        """
+        _t0 = time.perf_counter()
+        try:
+            _staged_gbm = self.model.stage_reload()
+            try:
+                _staged_rf = self.rf_model.stage_load()
+            except Exception as _rfe:
+                logger.warning("[Model] RF 선로드 실패 (GBM만 교체): %s", _rfe)
+                _staged_rf = None
+            logger.info(
+                "[Model] 워커 선로드 완료 %.0fms — 메인 스레드 스왑 대기",
+                (time.perf_counter() - _t0) * 1000.0,
+            )
+            self._deferred_callbacks.put(("model_staged", _staged_gbm, _staged_rf))
+        except Exception as _e:
+            # 플래그를 내리지 않는다 — 다음 분에 재시도된다(교체 유실 방지).
+            logger.error("[Model] 워커 선로드 실패 — 다음 분 재시도: %s", _e)
+        finally:
+            self._model_reload_worker_running = False
+
+    def _commit_model_reload(self, staged_gbm, staged_rf) -> None:
+        """[MW0601 457차 / B1] 스테이징된 모델을 라이브에 원자 반영. 메인 스레드 전용."""
+        _t0 = time.perf_counter()
+        _bad = self.model.apply_staged(staged_gbm or {})
+        if _bad:
+            logger.error(
+                "[Model] 재학습 후 %d개 호라이즌 차원 불일치: %s → 재학습 재트리거",
+                len(_bad), _bad,
+            )
+            self._start_manual_retrain(force=True, reason="resync_mismatch")
+        try:
+            if staged_rf:
+                self.rf_model.apply_staged(staged_rf)
+        except Exception:
+            pass
+        self._rebuild_sgd_feat_indices()   # [P2] feature_names 교체 반영
+        logger.info(
+            "[Model] 재학습 완료 모델 교체 적용 (S0) — 스왑 %.0fms",
+            (time.perf_counter() - _t0) * 1000.0,
+        )
+
+    def _notify_canary_bad(self, age_h: float, z_warn: int, note: str = "") -> None:
+        """[MW0601 457차 / C7] Canary 이상 알림 — 메인 경로·refit 워커 공용.
+
+        종전에는 판정 직후 무조건 발송해, 같은 초에 끝나는 장전 재적합이 해소할
+        문제까지 경보했다(2026-08-11 08:55:23 실측: 알림 z=14개 → 1초 뒤 z=3개 해소).
+        이제 재적합이 기동되면 발송 판단을 워커로 위임하고, 워커는 개선 실패 시에만
+        부른다. 판정 로그 자체는 종전대로 즉시 남는다.
+        """
+        try:
+            from utils.notify import notify as _ncanary
+            _ncanary(
+                f"🌡 Canary 이상 감지\n"
+                f"scaler 노후: {age_h:.0f}시간  z경고 피처: {z_warn}개\n"
+                + (f"{note}\n" if note else "")
+                + f"PreRetrain으로 갱신 예정 — 09:00 전 완료 목표",
+                "WARNING",
+            )
+        except Exception as _e:
+            logger.debug("[Canary] 알림 실패 (무해): %s", _e)
 
     def _emit_runtime_health(self, features: dict, latency_ms: float) -> None:
         """Day10: 운영 헬스 스냅샷 생성/전파 (대시보드 + HEALTH 로그)."""
@@ -3378,6 +3514,18 @@ class TradingSystem:
                 f"[WarmupRetrain] 최근 재학습({_last_rt.strftime('%H:%M')}, {_mins_since_last_rt:.0f}분 전) → 장중 재학습 스킵",
                 "INFO",
             )
+        else:
+            # [MW0601 457차 / C8] 장전·장외 기동은 위 3개 분기 중 어느 것도 타지 않아
+            # 예약 플래그만 남고 로그가 끊겼다(2026-08-11 08:41:22 "예약" 이후 소진·취소
+            # 어느 기록도 없음). **기능 결함은 아니다** — 08:55 PreRetrain(4681행)이
+            # _warmup_retrain_pending을 정상 소비한다. 다만 태그가 [PreRetrain]으로
+            # 바뀌어 운영자가 두 로그를 연결하지 못한다. 이월 사실을 명시한다.
+            log_manager.system(
+                "[WarmupRetrain] 장전/장외 기동(%s) — 장중 분기 해당 없음 → "
+                "예약 유지, 08:55 PreRetrain에서 소진 예정"
+                % _rst_now.strftime("%H:%M"),
+                "INFO",
+            )
 
         if self.position.status != "FLAT":
             self.dashboard.set_ui_position_mode()
@@ -4419,6 +4567,9 @@ class TradingSystem:
         # ── Warm Scaler Canary ──────────────────────────────────────
         # scaler pkl mtime 기준 노후 점검 → 24h+ 경과 시 경고 + SHS z_warn 업데이트
         _canary_stale = False   # [P2] warmup 대기 조건 참조를 위해 try 블록 밖에서 초기화
+        # [MW0601 457차 / C7] 알림 문구를 메인 경로와 refit 워커가 공유한다.
+        # 워커는 다른 스레드지만 utils.notify는 큐 기반이라 호출 안전하다
+        # (절대원칙 §4는 COM 콜백 한정 — 여기는 순수 파이썬 워커).
         try:
             _canary_age_h = self.model.canary_stale_age_hours()
             _canary_z_warn = 0
@@ -4436,14 +4587,17 @@ class TradingSystem:
                 + ("  ⚠ z경고 폭증" if _canary_z_bad else ""),
                 "WARNING" if (_canary_stale or _canary_z_bad) else "INFO",
             )
-            if _canary_stale or _canary_z_bad:
-                from utils.notify import notify as _ncanary
-                _ncanary(
-                    f"🌡 Canary 이상 감지\n"
-                    f"scaler 노후: {_canary_age_h:.0f}시간  z경고 피처: {_canary_z_warn}개\n"
-                    f"PreRetrain으로 갱신 예정 — 09:00 전 완료 목표",
-                    "WARNING",
-                )
+            # [MW0601 457차 / C7] 알림을 재적합 **뒤로** 미룬다.
+            # 2026-08-11 08:55:23 실측: "🌡 Canary 이상 감지(z경고 14개)" 알림이 나간
+            # 바로 그 초에 "[Canary] 장전 재적합 완료 z경고 →3개 ✓ 임계 이하"가 찍혔다.
+            # 즉 스스로 1초 뒤 해소할 일을 먼저 경보한 것이다. 허위 경보는 진짜 경보의
+            # 신뢰를 깎으므로, 재적합이 실제로 기동되는 경우에는 알림을 워커에 위임하고
+            # 워커가 "개선 실패"일 때만 보낸다.
+            #
+            # ⚠ 로그(4433행)는 그대로 즉시 남긴다 — 억제하는 것은 **알림**뿐이고
+            #   관측 기록은 유지한다(계측 3원칙: 탈락 가시화).
+            _canary_refit_started = False
+
             # [P1] z경고 폭증 시 08:58 전 즉시 재적합 — EarlyWarmup 이후 갭오픈 분포 갱신
             # EarlyWarmup은 전날 데이터 기준이라 오늘 갭오픈 이후 분포와 괴리가 생김.
             # 08:58 전에 한 번 더 재적합해 GAP_OPEN 분봉의 conf 신뢰성을 높임.
@@ -4485,18 +4639,40 @@ class TradingSystem:
                                         + (" ✓ 임계 이하" if _improved else " ⚠ z경고 지속 — bar14 재적합 대기"),
                                         "INFO" if _improved else "WARNING",
                                     )
+                                    # [MW0601 457차 / C7] 알림은 여기서만 — 재적합으로
+                                    # 해소되면 보내지 않는다(허위 경보 제거).
+                                    if not _improved:
+                                        self._notify_canary_bad(
+                                            _canary_age_h, _z_after,
+                                            note="장전 재적합 후에도 임계 초과 (%d개 ≥ %d개)"
+                                                 % (_z_after, _thresh),
+                                        )
                                 else:
                                     log_manager.system("[Canary] 장전 재적합 스킵 — 데이터 없음", "WARNING")
+                                    self._notify_canary_bad(
+                                        _canary_age_h, _canary_z_warn,
+                                        note="장전 재적합 스킵 — 데이터 없음",
+                                    )
                             except Exception as _e:
                                 logger.warning("[Canary] 장전 재적합 실패: %s", _e)
+                                self._notify_canary_bad(
+                                    _canary_age_h, _canary_z_warn,
+                                    note="장전 재적합 실패: %s" % _e,
+                                )
                             finally:
                                 self._scaler_refresh_running = False
                         threading.Thread(target=_canary_refit_worker, daemon=True).start()
+                        _canary_refit_started = True
                     else:
                         log_manager.system(
                             f"[Canary] z경고 폭증({_canary_z_warn}개) — refit 스킵: 다른 refit 진행 중",
                             "INFO",
                         )
+            # [MW0601 457차 / C7] 재적합이 기동되지 않은 경우에만 즉시 알림.
+            # (stale 단독 / 08:58 경과 / 다른 refit 진행 중) — 이 경우들은 자동 해소를
+            # 기대할 수 없으므로 종전대로 곧바로 알린다.
+            if (_canary_stale or _canary_z_bad) and not _canary_refit_started:
+                self._notify_canary_bad(_canary_age_h, _canary_z_warn)
             # [P3] EKS 원인 진단용 — 마지막 Canary z경고 수 인스턴스 변수로 보존
             self._last_canary_z_warn = _canary_z_warn
             self.system_health.update_z_warn(_canary_z_warn)
@@ -4648,13 +4824,16 @@ class TradingSystem:
                 else:
                     _gap_tag = "전날"
                 log_manager.system(
-                    f"[PreRetrain] 08:55 사전 재학습 스킵 — {_gap_tag} EOD 재학습 성공 (동일 데이터 중복 불필요)",
+                    f"[PreRetrain] 08:55 사전 재학습 스킵 — {_gap_tag} EOD 재학습 성공 "
+                    f"(동일 데이터 중복 불필요) | WarmupRetrain 예약 소진",   # [457차 C8]
                     "INFO",
                 )
             else:
                 self.dashboard.set_model_status("GBM 사전 재학습중(64bit)...")
                 log_manager.system(
-                    "[PreRetrain] 08:55 GBM 사전 재학습 시작 — EOD 미완료 또는 재시작 복구 (64bit subprocess)", "INFO"
+                    "[PreRetrain] 08:55 GBM 사전 재학습 시작 — EOD 미완료 또는 재시작 복구 "
+                    "(64bit subprocess) | WarmupRetrain 예약 소진",   # [457차 C8]
+                    "INFO",
                 )
                 # [226차] PreRetrain도 64비트 subprocess — 32비트 OOM 없이 full 재학습
                 self._start_gbm_retrain_subprocess(
@@ -4784,6 +4963,16 @@ class TradingSystem:
                 _dcb_tag = _dcb[0]
                 if _dcb_tag == "const_out_done":
                     self._on_const_out_refit_done(_dcb[1])
+                elif _dcb_tag == "shap_ui":
+                    # [MW0601 457차 / B2] SHAP 워커가 요청한 대시보드 갱신을
+                    # **메인 스레드에서** 소비. 워커는 Qt를 만지지 않는다.
+                    self._update_shap_dashboard()
+                elif _dcb_tag == "model_staged":
+                    # [MW0601 457차 / B1] 워커가 언피클해둔 모델을 메인 스레드에서
+                    # 원자 스왑. 이 지점은 predict_proba(S5) 이전이라 193차의
+                    # "파이프라인 실행 중 교체 금지" 제약을 그대로 만족한다.
+                    self._pending_model_reload = False
+                    self._commit_model_reload(_dcb[1], _dcb[2])
                 # gbm_done 태그: [226차] subprocess 이관 — 큐에서 수신 시 무시(잔여 배출)
             except Exception as _dcb_e:
                 logger.warning("[DeferredCB] 콜백 처리 오류 (tag=%s): %s", _dcb[0] if _dcb else "?", _dcb_e)
@@ -4808,21 +4997,28 @@ class TradingSystem:
         # ── [S0] 재학습 완료 모델 교체 — predict_proba 전 안전 지점 ─────────
         # _on_gbm_retrain_done 이 플래그를 세우면 여기서 소비.
         # 파이프라인 실행 중 모델 객체 교체 race condition 방지 (193차).
+        #
+        # [MW0601 457차 / B1] 종전에는 여기서 joblib.load × 12(GBM 6 + RF 1 + 피처명 6)를
+        # 동기 실행해 **메인 스레드를 3.0~4.4초 블로킹**했다(2026-08-11 실측: 장중 재학습
+        # 5회 직후 S0 = 2,979/3,197/3,401/3,585/4,381ms, 5/5 시각 일치). CB⑤ 즉시청산
+        # 임계 5,000ms의 93%까지 붙었고 Degraded 선제차단 5회로 진입이 봉쇄됐다.
+        #
+        # 이제 비싼 언피클은 워커가 미리 해두고(stage_reload), 여기서는 참조 스왑만 한다.
+        # 워커 완료는 _deferred_callbacks("model_staged")로 위 S0-B drain이 받는다 —
+        # ConstOut 재적합·SHAP 워커가 쓰는 것과 동일한 기존 경로다.
+        # 롤백: config/settings.py:MODEL_RELOAD_ASYNC_ENABLED = False
         if getattr(self, "_pending_model_reload", False):
-            self._pending_model_reload = False
-            _bad = self.model._load_all()
-            if _bad:
-                logger.error(
-                    "[Model] 재학습 후 %d개 호라이즌 차원 불일치: %s → 재학습 재트리거",
-                    len(_bad), _bad,
-                )
-                self._start_manual_retrain(force=True, reason="resync_mismatch")
-            try:
-                self.rf_model.load_all()
-            except Exception:
-                pass
-            self._rebuild_sgd_feat_indices()   # [P2] feature_names 교체 반영
-            logger.info("[Model] 재학습 완료 모델 교체 적용 (S0)")
+            if (bool(getattr(runtime_settings, "MODEL_RELOAD_ASYNC_ENABLED", True))
+                    and not self._model_reload_worker_running):
+                # 워커에 위임 — 플래그는 워커가 성공적으로 커밋한 뒤에 내린다.
+                # (여기서 미리 내리면 워커 실패 시 교체가 영영 유실된다)
+                self._model_reload_worker_running = True
+                threading.Thread(target=self._model_reload_worker, daemon=True).start()
+                logger.info("[Model] 재학습 완료 모델 — 워커 선로드 시작 (S0 비블로킹)")
+            elif not bool(getattr(runtime_settings, "MODEL_RELOAD_ASYNC_ENABLED", True)):
+                # 동기 경로 (롤백용) — 457차 이전 동작 그대로
+                self._pending_model_reload = False
+                self._commit_model_reload(self.model.stage_reload(), self.rf_model.stage_load())
 
         # [S2-A] 지연 SGD 학습 변수 — S2에서 채워지고 "end" 이후에 소비
         # 초기값 [] 로 설정해 early return 시에도 NameError 방지
@@ -6198,6 +6394,34 @@ class TradingSystem:
         # 273차: S6(STEP6) PipePerf 병목 딥다이브용 세부 타이머 — 항상 INFO 기록
         _s6_prof = [("t0", time.perf_counter())]
         _entry_horizon = None   # ATR 레짐별 진입 호라이즌 (STEP 6 말미에 확정)
+
+        # ── [MW0601 457차 / C3·C4] 진입 호라이즌 선행 확정 ──────────────────
+        # `self._entry_horizon_pre` / `self._entry_horizon` 은 읽는 곳만 있고
+        # **할당부가 코드베이스에 단 한 곳도 없었다**(grep 실측). 그래서 아래 두
+        # 소비자가 영구히 폴백 "1m"을 받아왔다:
+        #   · MetaGate.evaluate(horizon=)  → entry_quality_prob·분위회귀를 **항상 1m
+        #     스코어러**로 산출. 2026-08-11 실측 `ensemble_decisions.meta_gate_horizon`
+        #     = **370/370건 전부 '1m'** 인데 실제 진입은 3m·3m·5m였다.
+        #   · EntryChecklist(entry_horizon=) 선행 평가 → 절대원칙 §3의 CORE 그룹
+        #     결정 인자. 1m·3m·5m가 같은 단기 그룹이라 우연히 무해했을 뿐,
+        #     10m/15m/30m 진입에서는 잘못된 CORE 세트로 심사한다.
+        # 게다가 `meta_gate_horizon`은 meta_labels(ts×horizon) **조인 키**라
+        # (strategy/entry/meta_gate.py:123) 검증 캠페인 [2] 채널이 줄곧 오조인됐다.
+        #
+        # `threshold_feasibility`는 STEP 4(피처 생성)에서 이미 확정되므로 여기서
+        # 계산할 수 있다. 6819행의 지역변수 `_entry_horizon`(STEP 6 말미 확정)과
+        # **같은 함수·같은 입력**이라 값이 어긋나지 않는다.
+        #
+        # ⚠ 시계열 불연속: 이 커밋 이후 `meta_gate_horizon`의 의미가 바뀐다.
+        #   캠페인 [2] 채널의 2026-08-11 이전 데이터와 혼용 금지 (DECISION_LOG 457차).
+        try:
+            self._entry_horizon_pre = select_entry_horizon(
+                float(features.get("threshold_feasibility", 1.0) or 1.0), 1.0
+            ) or "1m"
+        except Exception as _ehp_e:
+            logger.debug("[EntryHorizonPre] 선행 산출 실패, 1m 폴백: %s", _ehp_e)
+            self._entry_horizon_pre = "1m"
+
         horizon_proba = self._apply_horizon_calibration(horizon_proba, features=features)
         _h_conf_values = [float(v.get("confidence", 0.0) or 0.0) for v in horizon_proba.values()]
         _gov_conf = (sum(_h_conf_values) / len(_h_conf_values)) if _h_conf_values else 0.0
@@ -6830,6 +7054,16 @@ class TradingSystem:
                 f"[ATR-Horizon] 진입 호라이즌={_entry_horizon} tf={_tf:.2f} "
                 f"→ TP1×{ATR_HORIZON_TP1_MULT.get(_entry_horizon, 1.0)}"
             )
+
+        # [MW0601 457차 / C4] 확정값을 인스턴스에도 보존.
+        # `self._entry_horizon`은 대시보드 SHAP 탭이 CORE 그룹(단기/중기/장기)을
+        # 고르는 데 쓰는데(1977행), 여기 지역변수 `_entry_horizon`만 갱신되고
+        # 인스턴스 속성은 **한 번도 할당된 적이 없어** 항상 폴백 '1m' → 단기 그룹으로
+        # 고정 표시됐다. 표시 전용이라 매매 영향은 없다.
+        # ⚠ None(저변동성 차단)일 때는 덮어쓰지 않는다 — 직전 유효값을 유지해
+        #   패널이 매 분 깜빡이지 않게 한다.
+        if _entry_horizon:
+            self._entry_horizon = _entry_horizon
 
         # ── Phase 1: 진입0 자동 원인 진단 ───────────────────────
         if direction == 0 or grade == "X":
@@ -10601,6 +10835,11 @@ class TradingSystem:
         # [MW0601 435차] 슬로우 스로틀 쿨다운도 일일 리셋 — 전날 장 막판에 걸린 스킵이
         # 다음 날 개장 직후까지 이어지면 안 된다(데이터·모델이 이미 갱신된 상태다).
         self._shap_skip_until_cnt = 0
+        # [MW0601 457차 / B2] 워커 플래그도 일일 리셋 — 워커가 예외 없이 행(hang)에
+        # 빠져 finally를 못 돌면 플래그가 고착돼 다음 날 SHAP이 영원히 스킵된다.
+        self._shap_worker_running = False
+        self._shap_ui_dirty = False
+        self._model_reload_worker_running = False   # [457차 B1] 동일 취지 일일 리셋
         self._restored_corr_str = ""
         self._live_shap_ready = False
         self._cached_shap_importance = {}
@@ -10609,6 +10848,13 @@ class TradingSystem:
         self._health_lat_baseline = None
         self._health_lat_recent.clear()
         self._health_lat_trend_alerted_at = None
+        # [MW0601 457차 / C5] 리셋 **전에** 스냅샷. save_daily_stats(하단)가 이 값을
+        # 읽는데, 종전에는 리셋 뒤에 읽어 `verified_count`가 8거래일 연속 0으로
+        # 기록됐다(실측: 2026-08-03~08-11 전량 0). `sgd_accuracy`도 같은 이유로
+        # online_learner 버퍼가 비어 recent_accuracy()의 폴백 0.5가 박혔다.
+        # 정확도 쪽은 10433행 `_today_accuracy`가 이미 리셋 전 값을 잡아둔 상태라
+        # 그것을 그대로 재사용한다(같은 함수 안의 _ccf_today와 동일한 관례).
+        _verified_today_snapshot = self._verified_today
         self._verified_today = 0
         for _h in self._horizon_runtime_state:
             self._horizon_runtime_state[_h] = {
@@ -10674,8 +10920,11 @@ class TradingSystem:
             "wins":           forward_stats["wins"],
             "pnl_pts":        forward_stats["pnl_pts"],
             "pnl_krw":        forward_stats["pnl_krw"],
-            "sgd_accuracy":   self.online_learner.recent_accuracy(),
-            "verified_count": self._verified_today,
+            # [MW0601 457차 / C5] 리셋 전 스냅샷 사용 — 상단 주석 참조.
+            # ⚠ 여기서 self.online_learner.recent_accuracy() / self._verified_today를
+            #   다시 읽으면 안 된다. 이 시점에는 둘 다 이미 리셋됐다.
+            "sgd_accuracy":   _today_accuracy,
+            "verified_count": _verified_today_snapshot,
         })
 
         # 섹션 8: scaler_daily EOD 집계 저장

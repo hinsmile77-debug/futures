@@ -123,9 +123,16 @@ def get_available_feature_set(
 
     missing = [f for f in desired if f not in available_set]
     if missing:
+        # [MW0601 457차 / C6] 종전 `missing[:5]`는 절단 표식이 없어 "7개 미가용"이라
+        # 적어놓고 5개만 보여줬다(2026-08-11 30m 실측). 운영자가 "7개 = 나열된 5개"로
+        # 오독하고, 하필 30m은 opt_chain_pcr(절대원칙 §3 장기 CORE)의 지위를 F9로
+        # 심사 중인 호라이즌이라 은닉된 2개가 판단을 직접 왜곡한다.
+        # → 계측 3원칙 G3-A③ "탈락 가시화": 전량 출력하고, 길면 잔여 개수를 명시한다.
+        _shown = missing if len(missing) <= 12 else missing[:12]
+        _tail  = "" if len(missing) <= 12 else " 외 %d개" % (len(missing) - 12)
         logger.info(
-            "[FeatureReg] %s: %d개 피처 미가용 (need_add) → 제외: %s",
-            horizon, len(missing), missing[:5],
+            "[FeatureReg] %s: %d개 피처 미가용 (need_add) → 제외: %s%s",
+            horizon, len(missing), _shown, _tail,
         )
 
     return selected

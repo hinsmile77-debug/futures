@@ -152,25 +152,42 @@ class RFHorizonModel:
         os.replace(_tmp, path)
         logger.info("[RF] 저장 완료: %s (%d호라이즌)", path, len(self._models))
 
-    def load_all(self) -> bool:
+    def stage_load(self):
+        """[MW0601 457차 / B1] 디스크 → 스테이징. self를 건드리지 않는다.
+
+        GBM과 같은 이유로 분리한다 — 워커 스레드에서 언피클해두고 메인 스레드는
+        `apply_staged()`로 참조만 바꾼다. 상세 근거는
+        `model/multi_horizon_model.py:stage_reload` docstring 참조.
+
+        Returns: payload dict, 또는 파일 없음/실패 시 None
+        """
         path = os.path.join(self._dir, self.MODEL_FILE)
         if not os.path.exists(path):
-            return False
+            return None
         try:
             with open(path, "rb") as f:
-                payload = pickle.load(f)
-            self._models       = payload.get("models", {})
-            self._oob          = payload.get("oob", {})
-            self.feature_names = payload.get("feature_names", [])
-            self._ready = len(self._models) == len(HORIZONS)
-            logger.info(
-                "[RF] 로드 완료: %d호라이즌 ready=%s",
-                len(self._models), self._ready,
-            )
-            return True
+                return pickle.load(f)
         except Exception as exc:
             logger.warning("[RF] 로드 실패: %s", exc)
+            return None
+
+    def apply_staged(self, payload) -> bool:
+        """[MW0601 457차 / B1] 스테이징 → 라이브 반영. 메인 스레드 전용."""
+        if not payload:
             return False
+        self._models       = payload.get("models", {})
+        self._oob          = payload.get("oob", {})
+        self.feature_names = payload.get("feature_names", [])
+        self._ready = len(self._models) == len(HORIZONS)
+        logger.info(
+            "[RF] 로드 완료: %d호라이즌 ready=%s",
+            len(self._models), self._ready,
+        )
+        return True
+
+    def load_all(self) -> bool:
+        """동기 로드 — 기동·롤백 경로용. 동작은 457차 이전과 동일하다."""
+        return self.apply_staged(self.stage_load())
 
     def is_ready(self) -> bool:
         return self._ready and len(self._models) > 0

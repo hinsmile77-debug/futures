@@ -820,21 +820,42 @@ class MultiHorizonModel:
                 joblib.dump(h_names, h_path, protocol=_PROTO)
         logger.info("[Model] 전체 모델 저장 완료")
 
-    def _load_all(self):
+    def stage_reload(self) -> dict:
+        """[MW0601 457차 / B1] 디스크 → 스테이징. **self를 전혀 건드리지 않는다.**
+
+        `_load_all()`이 하던 일 중 **비싼 부분(joblib.load × 12, 3.0~4.4초 실측)** 만
+        떼어내 별도 스레드에서 돌 수 있게 한 것이다. 반환한 dict를 메인 스레드가
+        `apply_staged()`로 원자 반영한다.
+
+        왜 분리가 필요한가 — 종전에는 이 전량이 Qt 메인 스레드(파이프라인 S0)에서
+        동기 실행돼 2026-08-11 장중 재학습 5회 직후 S0가 각각 2,979 / 3,197 / 3,401 /
+        3,585 / **4,381ms** 를 먹었다. CB⑤ 즉시청산 임계(5,000ms)의 93%까지 붙었고,
+        그 결과 HealthPolicy Degraded 선제차단이 5회 발동해 신규 진입이 봉쇄됐다.
+
+        ⚠ 이 함수는 워커 스레드에서 호출된다 — 로깅·파일IO만 허용. self 상태 변경 금지.
+        """
+        staged = {
+            "feature_names": None,
+            "models": {},
+            "scalers": {},
+            "is_fitted": {},
+            "scaler_fitted_at": {},
+            "horizon_feature_names": {},
+        }
         # 공유 pkl (전체 피처셋 기준 — 전처리·모니터링에 사용)
         fn_path = os.path.join(HORIZON_DIR, "feature_names.pkl")
         if os.path.exists(fn_path):
-            self.feature_names = joblib.load(fn_path)
+            staged["feature_names"] = joblib.load(fn_path)
 
         for h in HORIZONS:
             mp = self._model_path(h)
             sp = self._scaler_path(h)
             if os.path.exists(mp) and os.path.exists(sp):
-                self.models[h] = joblib.load(mp)
+                staged["models"][h] = joblib.load(mp)
                 with open(sp, "rb") as _sf:
-                    self.scalers[h] = _pickle.load(_sf)
-                self._is_fitted[h] = True
-                self._scaler_fitted_at[h] = datetime.datetime.fromtimestamp(
+                    staged["scalers"][h] = _pickle.load(_sf)
+                staged["is_fitted"][h] = True
+                staged["scaler_fitted_at"][h] = datetime.datetime.fromtimestamp(
                     os.path.getmtime(sp)
                 )
                 logger.info(f"[Model] {h} 로드 성공")
@@ -846,7 +867,11 @@ class MultiHorizonModel:
                 # 모델·pkl 불일치 방어 — subprocess 타임아웃 강제 종료 시
                 # gbm_{h}.pkl(저장 완료) + feature_names_{h}.pkl(미갱신) 불일치 발생 가능.
                 # 불일치 감지 시 pkl을 무효화해 전체 피처셋 fallback으로 복구.
-                _clf = self.models.get(h)
+                # 이번에 스테이징된 모델 우선, 없으면 현행 라이브 모델과 비교한다
+                # (종전 `self.models.get(h)` 의미 보존 — pkl이 없어 교체되지 않는
+                #  호라이즌도 새 feature_names_{h}.pkl과 차원 대조는 계속해야 한다).
+                # ⚠ self를 **읽기만** 한다 — 워커 스레드에서 호출되므로 변경 금지.
+                _clf = staged["models"].get(h) or self.models.get(h)
                 _model_n = getattr(_clf, "n_features_in_", None) if _clf else None
                 if _model_n is not None and len(_h_fnames) != _model_n:
                     logger.error(
@@ -868,14 +893,37 @@ class MultiHorizonModel:
                             pass
                     # horizon_feature_names에 등록하지 않음 → 슬라이싱 비활성화 (97개 fallback)
                 else:
-                    self.horizon_feature_names[h] = _h_fnames
+                    staged["horizon_feature_names"][h] = _h_fnames
                     logger.debug("[Model] %s 전용 피처셋 로드: %d개", h, len(_h_fnames))
+        return staged
+
+    def apply_staged(self, staged: dict) -> list:
+        """[MW0601 457차 / B1] 스테이징 → 라이브 반영. **메인 스레드 전용.**
+
+        여기서 하는 일은 참조 대입 + 인덱스 재계산 + 정합성 검사뿐이라 수 ms다.
+        predict_proba가 보는 상태(models/scalers/feature_names/_hz_feat_indices)를
+        한 군데에서 연속으로 갈아끼워, 파이프라인이 반쯤 교체된 상태를 보지 않게 한다.
+
+        ⚠ `.update()`가 아니라 종전 `_load_all()`과 동일한 **누적 갱신** 의미를 지킨다 —
+          파일이 없어 스테이징되지 않은 호라이즌은 기존 것을 유지한다(종전 동작 보존).
+        """
+        if staged.get("feature_names") is not None:
+            self.feature_names = staged["feature_names"]
+        self.models.update(staged.get("models") or {})
+        self.scalers.update(staged.get("scalers") or {})
+        self._is_fitted.update(staged.get("is_fitted") or {})
+        self._scaler_fitted_at.update(staged.get("scaler_fitted_at") or {})
+        self.horizon_feature_names.update(staged.get("horizon_feature_names") or {})
 
         # 슬라이싱 인덱스 사전계산
         self._rebuild_hz_feat_indices()
 
         self._check_registry_feature_consistency()
         return self.validate_and_resync()
+
+    def _load_all(self):
+        """동기 전체 로드 — 기동·롤백 경로용. 동작은 457차 이전과 동일하다."""
+        return self.apply_staged(self.stage_reload())
 
     def _rebuild_hz_feat_indices(self) -> None:
         """horizon_feature_names → _hz_feat_indices 사전계산.

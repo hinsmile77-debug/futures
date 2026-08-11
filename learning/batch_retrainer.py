@@ -54,6 +54,7 @@ from config.settings import (
     RETRAIN_WEEKS_BACK, MAX_TRAIN_BARS, RAW_DATA_PRUNE_WEEKS,
     EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
     EOD_GUARD_FAIR_HOLDOUT, EOD_GUARD_VERDICT_SOURCE,
+    EOD_GUARD_GHOST_POLICY,   # [MW0601 457차 / C2]
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, DIRECTION_FLAT
 from learning.eod_model_guard import evaluate_model_replace
@@ -540,7 +541,28 @@ class BatchRetrainer:
             X, y_dict, feature_names = self._load_from_db(weeks_back, intraday=intraday)
         else:
             # [456차 / F6] 외부 주입 X는 행↔ts 정렬을 보장할 수 없다 → "미상"으로 둔다.
-            self._train_row_ts = None
+            #
+            # [MW0601 457차 / C1] **단, 행 수가 일치하면 정렬은 보장된다.**
+            # 프로덕션 EOD 경로(retrain_eod.py:298→320)는 이 인스턴스의 _load_from_db()로
+            # X를 만든 **직후** 그대로 주입한다. 즉 방금 이 객체가 채운 _train_row_ts가
+            # X와 1:1로 대응하는데, 위 무조건 None이 그것을 지워버렸다.
+            #
+            # 실측 피해(2026-08-11 EOD): _holdout_contamination()이 6/6 호라이즌 전부
+            # (-1, "학습행 타임스탬프 미상(외부 주입 X 경로)")을 돌려줘 GuardFair가
+            # **판정 자체를 못 냈다**. 456차 F6이 만든 오염 검출 능력이 프로덕션 경로에서
+            # 구조적으로 도달 불가였던 것(= 배포는 됐으나 목적 미달성).
+            #
+            # 행 수가 다르면(진짜 외부 데이터·수동 슬라이싱) 종전대로 폐기한다 —
+            # "모름"을 "깨끗함"으로 읽지 않는다는 F6 원칙은 그대로다.
+            if not (self._train_row_ts is not None
+                    and X is not None
+                    and len(self._train_row_ts) == len(X)):
+                self._train_row_ts = None
+            else:
+                logger.info(
+                    "[Retrain] 주입 X와 직전 DB 로드 행 수 일치(%d) — 학습행 타임스탬프 "
+                    "유지 (F6 오염 검출 가용)", len(X),
+                )
 
         # [404차 후속2] intraday는 학습창 자체가 MAX_TRAIN_BARS_INTRADAY로 설계돼
         # 있으므로 MIN_TRAIN_BARS(15,000 — 26주 전량 로드 기준)를 그대로 요구하면
@@ -943,6 +965,32 @@ class BatchRetrainer:
                 EOD_MODEL_GUARD_DROP_TOLERANCE, EOD_MODEL_GUARD_DROP_TOLERANCE_DEFAULT,
             )
             _guard_reason = "공정홀드아웃 기준 — " + _guard_reason
+        elif _ghost and EOD_GUARD_GHOST_POLICY == "replace":
+            # ── [MW0601 457차 / C2] F7 ⑤안 (2026-08-11 사용자 결정) ──────────────
+            # 456차가 유령 경고를 **찍기만** 하고 판정에는 그대로 acc.txt를 쓴 결과,
+            # 시스템이 "이 판정은 존재하지 않는 모델과의 비교다"라고 스스로 로그를 남긴 뒤
+            # 그 판정을 집행했다. 3m EOD 교체가 **7거래일 연속(08-03~08-11) 보류**됐고,
+            # 그 사이 배포본은 계속 CV 미검증 장중 모델이었다 — 가드가 지키려던 것과
+            # 정반대로, 검증되지 않은 모델이 검증된 모델의 진입을 막고 있었다.
+            #
+            # 이 분기는 **guard_fair가 불가능할 때만** 탄다(위 elif가 우선). 즉
+            # "배포본을 직접 채점할 방법이 없고, 비교 기준마저 다른 모델의 성적"인
+            # 경우에 한해 CV 검증된 신규 모델로 교체한다.
+            #
+            # ⚠ 이것은 가드 완화가 아니라 **가드 적용 불가의 명시**다. 구모델은
+            #   `_save_rejected_model`이 아니라 정상 교체이므로 되돌리려면
+            #   `model/horizons/`의 백업이 아니라 재학습이 필요하다.
+            # 롤백/대안: config/settings.py:EOD_GUARD_GHOST_POLICY = "hold" (⑥안)
+            _verdict_src = "ghost_bypass"
+            _guard_ok = True
+            _guard_reason = (
+                "가드 미적용 — 현행 배포본이 CV 미검증 intraday 모델(학습 %s까지)이라 "
+                "acc.txt=%.4f는 존재하지 않는 모델의 성적이다. CV 검증된 신규 모델"
+                "(cv=%s)로 교체한다 [457차 F7 ⑤안]"
+                % (_inc_cutoff or "?", old_acc,
+                   ("%.4f" % cv_acc) if cv_acc is not None else "N/A")
+            )
+            logger.warning("[GuardGhost] %s %s", horizon_key, _guard_reason)
         else:
             _verdict_src = "acc_txt"
             if EOD_GUARD_VERDICT_SOURCE == "guard_fair":
