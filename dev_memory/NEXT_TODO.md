@@ -13,12 +13,18 @@
 > 배경: `DECISION_LOG.md` 2026-08-12(464차). BiasReset의 의도된 균등값을 ConstOut이
 > GBM 붕괴로 오인 → 무검증 장중 재학습 루프 → 유령 acc.txt가 EOD 도전자를 영구 차단.
 
-- [결정대기 🔴] **3m·5m 유령 잠금 1회성 해제 — 사용자 승인 필요**
-  - 현행 3m(13:01)·5m(14:56) pkl은 무검증 장중본, acc.txt는 각각 8/1·8/6 동결
-  - 제안: `gbm_3m_acc.txt`·`gbm_5m_acc.txt` 삭제 → 다음 EOD 콜드스타트 분기로
-    검증된 도전자 설치 → acc.txt 재정합
-  - ⚠ 승인 없이는 내일도 HOLD 반복(영구 잠금). P5-a만으로는 못 푼다
-  - 승인 시 DECISION_LOG + VALIDATION_CAMPAIGN_DECISIONS 기록
+- [DONE 2026-08-12] **3m·5m 유령 잠금 1회성 해제** (사용자 승인, 19:19 실행)
+  - `gbm_3m_acc.txt`(0.4755886)·`gbm_5m_acc.txt`(0.4741089) 삭제 + `.bak_20260812_464`
+  - gitignore 대상이라 **MW0602 로컬 전용** — MW0601 무영향
+  - 기록: `VALIDATION_CAMPAIGN_DECISIONS["guard_shadow"]`, DECISION_LOG 464차 P5-c
+
+- [NEXT 다음 EOD 🔴] **콜드스타트 교체 실착 확인 (최우선)**
+  - 3m·5m 로그가 `콜드스타트(구모델 없음) — 비교 없이 교체`로 REPLACE 되는지
+  - `gbm_3m_acc.txt`·`gbm_5m_acc.txt`가 CV 실측값으로 **재생성**되는지
+    (재생성 안 되면 다음 EOD도 콜드스타트가 반복된다 = 정합 복구 실패)
+  - 메타 사이드카 `source`가 `intraday` → `eod`, `acc_kind`가 `none` → `cv`로 바뀌는지
+  - ⚠ **10m은 건드리지 않았다** — HOLD가 뜨면 그건 정당한 보류다(acc.txt·pkl 정합)
+  - 실패 시 복구: `.bak_20260812_464`를 원래 이름으로 되돌리면 종전 상태
 
 - [NEXT 다음 거래일] **P5-a 실동작 확인**
   - BiasReset 발동(+5~8분) 후 ConstOut이 더는 안 뜨는지
