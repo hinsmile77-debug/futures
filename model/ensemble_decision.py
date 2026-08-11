@@ -617,6 +617,24 @@ class EnsembleDecision:
         _const_stuck: set = set()
         # 비활성 호라이즌은 fallback 상수값으로 ConstOut을 허위 트리거하므로 버퍼 업데이트 제외
         _active_set_co = set(active_horizons) if active_horizons is not None else set(HORIZONS.keys())
+        # [MW0602 464차 P5-a] BiasReset(uniform fallback) 호라이즌도 동일 사유로 제외.
+        # BiasReset은 main.py STEP5가 편향 고착 호라이즌에 **의도적으로** 균등분포
+        # (1/3,1/3,1/3)를 20분간 강제하는 안전장치인데, 그 균등값이 이 버퍼에 쌓이면
+        # 정확히 5분 뒤 ConstOut이 "GBM 붕괴"로 오인해 스케일러 재적합 + 장중 GBM
+        # 재학습(n=4800, CV 없음, force 교체)을 쏜다. 0811 실측 — 3m ConstOut 3회
+        # 전부 BiasReset +5~8분 후였고(09:51→09:57 / 12:01→12:09 / 12:49→12:59),
+        # 08-04~08-11 6거래일 대조에서도 3m·5m ConstOut의 대부분이 같은 패턴이다.
+        # 이 오탐 하나가 "무검증 장중 모델이 검증된 EOD 모델을 영구 대체"하는 악순환의
+        # 방아쇠였다(P5-b·DECISION_LOG 464차 참조). 위 "비활성 호라이즌 제외"와 완전히
+        # 같은 취지 — 의도된 상수값은 모델 고장이 아니다.
+        # 버퍼는 비운다: 남겨두면 20분 뒤 해제 시 override 이전 잔존값과 새 값이 섞여
+        # 관찰 창이 오염된다. 해소 경로(아래 elif)의 clear와 같은 이유다.
+        # 킬스위치: CONST_OUT_EXCLUDE_BIAS_RESET=False 로 종전 동작(오탐 포함) 복원.
+        from config import settings as _rs_co
+        _bias_set_co = (
+            set(bias_override_horizons or [])
+            if getattr(_rs_co, "CONST_OUT_EXCLUDE_BIAS_RESET", True) else set()
+        )
         for _h in list(cur_weights.keys()):
             # [P1, 303차 후속] 30m 퇴역(296차) — 가중치는 이미 0으로 앙상블 투표에서
             # 제외되지만, 이 루프는 active_horizons(시간대 정책)만 걸러 30m을 그대로
@@ -631,6 +649,10 @@ class EnsembleDecision:
             if not _res_h:
                 continue
             if _h not in _active_set_co:
+                continue
+            # [464차 P5-a] BiasReset 중 — 의도된 균등값이므로 감지 대상 아님
+            if _h in _bias_set_co:
+                self._hz_conf_hist[_h].clear()
                 continue
             _c = round(float(_res_h.get("confidence", 0.0)), 3)
             _d = int(_res_h.get("direction", 0))

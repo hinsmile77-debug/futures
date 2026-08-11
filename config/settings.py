@@ -5098,6 +5098,21 @@ ZONE_ENTRY_BAN_SHADOW_ENABLED = True  # 집행과 무관하게 위반 계측은 
 # 원값은 로그에 `raw=…ms`로 계속 남는다 — 판정에서만 뺀다.
 PIPE_LATENCY_EXCLUDE_MODEL_SWAP = True
 
+# ── [MW0602 464차 P5-a] ConstOut 감지에서 BiasReset 호라이즌 제외 ──────────────
+# 두 안전장치가 서로를 오인해 자기유발 재학습 루프를 만들고 있었다.
+#   BiasReset(STEP5): 편향 고착 호라이즌에 **의도적으로** 균등분포(1/3)를 20분 강제
+#   ConstOut(앙상블):  같은 값 5분 지속 → "GBM 붕괴"로 판정 → 스케일러 재적합
+#                      + 장중 GBM 재학습(n=4,800, CV 없음, force 교체)
+# 0811 실측 — 3m ConstOut 3회 전부 BiasReset +5~8분 후 (09:51→09:57 / 12:01→12:09 /
+# 12:49→12:59). 08-04~08-11 6거래일 대조에서도 3m·5m ConstOut 대부분이 같은 패턴.
+# 이 오탐이 하루 1~3회 무검증 장중 교체를 쏘고, EOD 가드는 동결된 acc.txt(3m은
+# 7/29값 0.4756이 8/1 이후 고정)와 비교해 검증된 도전자를 매일 보류시켰다 —
+# 결과적으로 **무검증 장중 모델이 9거래일째 영구 집권**(guard_shadow_log 실측:
+# 장중 REPLACE 26회 무사통과 vs EOD 도전자 HOLD 8회). 설계 의도의 정반대다.
+# False 시 종전 동작(오탐 포함) 복원. ConstOut 자체는 유지된다 — BiasReset이
+# 아닌 진짜 상수출력(08-10 dir=-1 range=0.002 등)은 계속 잡는다.
+CONST_OUT_EXCLUDE_BIAS_RESET = True
+
 # 설정 핫리로드 (재시작 없이 운영 튜닝 반영)
 HEALTH_POLICY_HOT_RELOAD_ENABLED = True
 HEALTH_POLICY_HOT_RELOAD_INTERVAL_SEC = 5

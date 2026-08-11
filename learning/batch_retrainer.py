@@ -929,6 +929,31 @@ class BatchRetrainer:
                 "[Retrain] %s 교체 보류(EOD 모델가드) — %s — 참고용 저장, 구모델 유지",
                 horizon_key, _guard_reason,
             )
+            # [MW0602 464차 P5-b 계측] 이 HOLD가 **유령 기준과의 비교**였는지 명시.
+            # 현행 pkl의 457차 메타가 source=intraday(acc_kind=none)면, old_acc로 쓴
+            # acc.txt는 이미 파괴된 과거 EOD 모델의 점수다 — "구모델 유지"의 그
+            # 구모델은 검증된 적이 없다. 0811 실측: 3m acc.txt=0.4756(7/29 EOD값,
+            # 8/1 동결)로 검증된 도전자를 7 EOD 연속 보류시키는 동안 현행 pkl은
+            # 무검증 장중본(마지막 13:01)이었다.
+            # **판정은 바꾸지 않는다** — 457차가 명시적으로 유보했고 사전등록 채널
+            # [22] guard_shadow가 그 결정을 관할한다. 단 [22]의 missed_upgrade_rate는
+            # 공정비교 유효행만 세는데 이 모드는 fair_valid=0(현행이 홀드아웃 학습)이라
+            # **구조적으로 측정 불능**이다 — 그래서 최소한 로그로는 매일 드러나야 한다.
+            # 해소는 1회성 수동 결정(acc.txt 리셋 → 콜드스타트 교체) 몫이다.
+            try:
+                _inc_meta = self._read_model_meta(horizon_key)
+                if _inc_meta and _inc_meta.get("source") in ("intraday", "force"):
+                    logger.warning(
+                        "[Retrain] %s ⚠ 유령 기준 HOLD — 현행 pkl은 %s 무검증본"
+                        "(written_at=%s, acc_kind=%s)인데 비교 기준 acc.txt=%.4f는 "
+                        "과거 EOD 모델의 점수다. 이 보류로 살아남는 것은 검증된 적 "
+                        "없는 모델이다 — 해소하려면 acc.txt 리셋(콜드스타트) 수동 결정 필요",
+                        horizon_key, _inc_meta.get("source"),
+                        _inc_meta.get("written_at"), _inc_meta.get("acc_kind"),
+                        old_acc,
+                    )
+            except Exception as _gm_e:
+                logger.debug("[Retrain] 유령 기준 계측 실패 (무해): %s", _gm_e)
             self._save_rejected_model(
                 horizon_key, final_model, final_scaler, _disp_acc, old_acc, feature_names,
             )
