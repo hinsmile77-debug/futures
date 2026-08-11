@@ -6220,6 +6220,26 @@ class TradingSystem:
         # 273차: S6(STEP6) PipePerf 병목 딥다이브용 세부 타이머 — 항상 INFO 기록
         _s6_prof = [("t0", time.perf_counter())]
         _entry_horizon = None   # ATR 레짐별 진입 호라이즌 (STEP 6 말미에 확정)
+
+        # [MW0602 463차 C3] MetaGate·체크리스트 **선행** 평가용 진입 호라이즌.
+        # `self._entry_horizon_pre`는 179차에 도입돼 두 곳(MetaGate 스코어링 호라이즌,
+        # 체크리스트 선행평가 CORE 그룹)에서 읽히는데 **할당부가 한 번도 없었다** —
+        # 전수 grep 결과 read 2건 / write 0건. 즉 항상 폴백 "1m"이 쓰였다.
+        # 실측 확증: `ensemble_decisions.meta_gate_horizon` 7거래일 2,587행이
+        # **전부 '1m'** 인데, 같은 기간 체결 진입 153건의 실제 호라이즌은
+        # 3m 80 / 5m 56 / 1m 17 — **88.9%가 불일치 스코어러로 채점**됐다.
+        #
+        # 여기서 확정할 수 있는 이유: `threshold_feasibility`는 STEP 4(피처 생성)에서
+        # 이미 확정되므로 STEP 6 진입 시점에 계산 가능하다. 말미(_entry_horizon)와
+        # 같은 함수·같은 입력을 쓰므로 두 값은 항상 일치한다.
+        #
+        # ⚠ 진입 차단은 여기서 하지 않는다 — `select_entry_horizon()`이 None(저변동성)을
+        # 주면 "1m"으로 폴백하고, 실제 차단은 종전대로 STEP 6 말미가 담당한다.
+        # 여기서 중복 차단하면 차단 시점이 앞당겨져 라이브 동작이 바뀐다.
+        self._entry_horizon_pre = select_entry_horizon(
+            float(features.get("threshold_feasibility", 1.0)), 1.0
+        ) or "1m"
+
         horizon_proba = self._apply_horizon_calibration(horizon_proba, features=features)
         _h_conf_values = [float(v.get("confidence", 0.0) or 0.0) for v in horizon_proba.values()]
         _gov_conf = (sum(_h_conf_values) / len(_h_conf_values)) if _h_conf_values else 0.0
@@ -6880,6 +6900,13 @@ class TradingSystem:
                 f"[ATR-Horizon] 진입 호라이즌={_entry_horizon} tf={_tf:.2f} "
                 f"→ TP1×{ATR_HORIZON_TP1_MULT.get(_entry_horizon, 1.0)}"
             )
+
+        # [MW0602 463차 C4] 대시보드 SHAP 패널용 인스턴스 속성 갱신.
+        # 위 `_entry_horizon`은 **지역변수**라 `update_shap(entry_horizon=
+        # getattr(self, "_entry_horizon", "1m"))`(main.py:1955)은 할당부가 없어
+        # 항상 폴백 "1m"을 읽었다 — SHAP 탭 CORE 그룹 표시가 단기로 고정.
+        # 표시 전용이며 진입 판단에는 관여하지 않는다.
+        self._entry_horizon = _entry_horizon or "1m"
 
         # ── Phase 1: 진입0 자동 원인 진단 ───────────────────────
         if direction == 0 or grade == "X":
@@ -10422,6 +10449,16 @@ class TradingSystem:
 
         stats = self.position.daily_stats()
         forward_stats = self.position.daily_forward_stats()
+        # [MW0602 463차 C5] SGD 지표는 **리셋 전에** 캡처한다.
+        # daily_close()는 아래에서 `online_learner.reset_daily()`(버퍼 비움)와
+        # `self._verified_today = 0`을 먼저 실행하고, 그 뒤 save_daily_stats()에서
+        # 두 값을 읽었다 — 즉 항상 리셋된 값이 저장됐다.
+        # 실측: `daily_stats` 30행 **전부** sgd_accuracy=0.5(빈 버퍼 폴백) /
+        # verified_count=0. 하루도 살아 있던 적이 없다.
+        # forward_stats가 여기서 미리 캡처되는 것과 같은 이유·같은 자리다 —
+        # 그쪽은 되어 있었고 이 둘만 빠져 있었다.
+        _sgd_acc_eod = self.online_learner.recent_accuracy()
+        _verified_eod = int(self._verified_today)
         logger.info(f"[Daily] 마감 통계: {stats}")
         log_manager.system(
             f"일일 마감 | 승={stats['wins']} 패={stats['losses']} "
@@ -10822,8 +10859,10 @@ class TradingSystem:
             "wins":           forward_stats["wins"],
             "pnl_pts":        forward_stats["pnl_pts"],
             "pnl_krw":        forward_stats["pnl_krw"],
-            "sgd_accuracy":   self.online_learner.recent_accuracy(),
-            "verified_count": self._verified_today,
+            # [MW0602 463차 C5] 리셋 전 캡처값 사용 — 여기서 라이브를 읽으면
+            # 위쪽 reset_daily()·_verified_today=0 이후라 항상 0.5/0이 저장된다.
+            "sgd_accuracy":   _sgd_acc_eod,
+            "verified_count": _verified_eod,
         })
 
         # 섹션 8: scaler_daily EOD 집계 저장

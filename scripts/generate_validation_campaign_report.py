@@ -71,6 +71,7 @@ from config.settings import (
     CONF_SCALE_BREAKS,             # [430차] conf 스케일 불연속 레지스트리
     MC_PERCENTILE, MC_ABS_FLOOR, MC_ABS_CEIL,  # [430차] [44] DynMC 재현
     ZONE_ENTRY_BAN_ENFORCE,        # [462차] [53] 집행 플래그 현황 표기용
+    META_SCORING_HORIZON_BREAKS,   # [463차] [2] 스코어링 호라이즌 불연속 고지
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, MINI_FUTURES_PT_VALUE
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
@@ -884,13 +885,41 @@ def eval_meta_gate_channel(days: int) -> dict:
             key = (r["ts"], "1m")  # 구버전 행 fallback
             if key not in move_map:
                 continue
-        samples.append((float(r["prob"]), move_map[key] * int(r["direction"])))
+        samples.append((float(r["prob"]), move_map[key] * int(r["direction"]),
+                        str(r["ts"])[:10]))
     # 평균 가격 → 왕복 비용 산정
     avg_price = float(np.mean([float(m["target_close"]) for m in mrows])) if mrows else 1300.0
     cost_pt = _roundtrip_cost_pt(avg_price)
 
     out["n_samples"] = len(samples)
     out["cost_pt"] = round(cost_pt, 4)
+
+    # [MW0602 463차 C3] 스코어링 호라이즌 불연속 고지 — **표시만, 판정 무관여**.
+    # 이 채널의 입력 `meta_entry_quality_prob`은 2026-08-12 이전에는 전부 1m
+    # 스코어러 산출값이었다(`_entry_horizon_pre` 미할당, read 2 / write 0).
+    # 같은 기간 체결 진입의 88.9%가 3m·5m이었으므로 경계 이전 표본은
+    # "3m·5m 진입을 1m 모델로 잰 값"이다. 405차 P0-3 pt배지와 같은 규율 —
+    # 판정식·합격선·verdict에는 일절 관여하지 않고 혼용 사실만 드러낸다.
+    try:
+        _brk = (META_SCORING_HORIZON_BREAKS or ({},))[0].get("date")
+    except Exception:
+        _brk = None
+    if _brk:
+        _pre = sum(1 for s in samples if s[2] < _brk)
+        _post = len(samples) - _pre
+        out["scoring_break_date"] = _brk
+        out["n_pre_break"] = _pre
+        out["n_post_break"] = _post
+        if _pre and _post:
+            out["scoring_break_caveat"] = (
+                "⚠ 표본이 스코어링 호라이즌 경계(%s)를 걸친다 — 이전 %d건은 1m 고정 "
+                "스코어러, 이후 %d건은 실제 진입 호라이즌 산출값이다. 두 모집단을 합친 "
+                "분위 판정은 해석 불가. 재측정은 경계 이후 표본만으로 할 것 "
+                "(VALIDATION_CAMPAIGN_DECISIONS['meta_gate'] 재개 조건)." % (_brk, _pre, _post))
+        elif _pre and not _post:
+            out["scoring_break_caveat"] = (
+                "⚠ 표본 전부가 경계(%s) **이전** — 1m 고정 스코어러 산출값이다. "
+                "2026-08-01 '탈락 확정'과 같은 근거이며 재측정 표본이 아직 없다." % _brk)
     if len(samples) < 3 * int(cr["min_per_tercile"]):
         out["reason"] = "표본 부족 (%d < %d)" % (len(samples), 3 * cr["min_per_tercile"])
         if out.get("no_data"):
@@ -904,6 +933,9 @@ def eval_meta_gate_channel(days: int) -> dict:
     bottom = [s[1] - cost_pt for s in samples[:k]]
     top = [s[1] - cost_pt for s in samples[-k:]]
     mid = [s[1] - cost_pt for s in samples[k:n - k]]
+    # ⚠ 위 분위 분할은 경계(scoring_break_date)를 구분하지 않는다 — 의도적이다.
+    # 판정식을 바꾸면 합격선 변경이 되어 §9-4 검증시계 리셋에 걸린다.
+    # 혼용 사실은 scoring_break_caveat으로만 드러낸다(463차).
 
     top_ev = float(np.mean(top))
     bot_ev = float(np.mean(bottom))
@@ -7735,9 +7767,16 @@ def build_report(days: int) -> tuple:
     L.append("| [1] Triple-Barrier | %s | 합격 호라이즌 %d개 (기준 %d개) |" % (
         _fmt_verdict(tb["verdict"]), tb.get("n_pass", 0),
         VALIDATION_CAMPAIGN["tb"]["min_horizons_pass"]))
-    L.append("| [2] Meta-Gate | %s | 상위EV=%s 분리도=%s (필요 %s)%s |" % (
+    # [463차] 스코어링 호라이즌 경계 배지 — 표시 전용, 판정 무관여.
+    _mg_brk = ""
+    if mg.get("scoring_break_caveat"):
+        _mg_brk = " 🔴 `[스코어러 경계 %s: 이전 %s건 / 이후 %s건]`" % (
+            mg.get("scoring_break_date", "—"),
+            mg.get("n_pre_break", "—"), mg.get("n_post_break", "—"))
+    L.append("| [2] Meta-Gate | %s | 상위EV=%s 분리도=%s (필요 %s)%s%s |" % (
         _fmt_channel_verdict(mg), mg.get("top_ev_pt", "—"),
-        mg.get("separation_pt", "—"), mg.get("required_sep_pt", "—"), _dm("meta_gate")))
+        mg.get("separation_pt", "—"), mg.get("required_sep_pt", "—"),
+        _mg_brk, _dm("meta_gate")))
     L.append("| [3] 분위 회귀 | %s | 커버리지=%s (밴드 %s) 상관=%s |" % (
         _fmt_channel_verdict(qt), qt.get("coverage", "—"),
         qt.get("coverage_band", "—"), qt.get("unc_corr", "—")))

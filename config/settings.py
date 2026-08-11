@@ -1159,6 +1159,45 @@ CONF_SCALE_BREAKS = (
     },
 )
 
+# ── [MW0602 463차 C3] MetaGate 스코어링 호라이즌 불연속 레지스트리 ──────────
+# CONF_SCALE_BREAKS와 같은 목적·같은 형식이다 — "이 날짜를 걸치는 시계열 비교는
+# 무효"임을 코드에 남겨 사람 기억에 맡기지 않는다(430차 선례).
+#
+# 무엇이 바뀌었나: `self._entry_horizon_pre`가 179차 도입 이래 **한 번도 할당되지
+# 않아** MetaGate가 항상 폴백 "1m"으로 채점했다. 463차가 할당부를 배선하면서
+# 아래 4개 컬럼의 의미가 배포일부터 바뀐다.
+#
+# ⚠ **진입 판단은 바뀌지 않는다** — `horizon` 인자가 닿는 두 값
+# (`entry_quality_prob`·`quantile_estimate`)은 meta_gate.py 주석이 명시하듯
+# "로깅 전용, action/size_multiplier 결정에는 관여하지 않는다"이고, main.py의 두
+# 소비처도 "사후 분석 전용, 리스크 판단 무관여"로 스냅샷 기록만 한다.
+# 체크리스트 쪽도 불변이다 — `select_entry_horizon()`은 1m/3m/5m만 반환하고
+# 셋 다 HORIZON_CORE_GROUP에서 "short"라 CORE 세트가 동일하다.
+# 즉 바뀌는 것은 **기록값의 의미**뿐이며, 그래서 판정이 아니라 이 레지스트리 대상이다.
+META_SCORING_HORIZON_BREAKS = (
+    {
+        "date": "2026-08-12",
+        "label": "MetaGate 스코어링 호라이즌 '1m 고정' → 실제 진입 호라이즌",
+        "cause": "463차 C3 — `_entry_horizon_pre` 할당부 배선(179차 이래 미할당)",
+        "affected_columns": (
+            "ensemble_decisions.meta_gate_horizon",
+            "ensemble_decisions.meta_entry_quality_prob",
+            "ensemble_decisions.quantile_expected_pt / _uncertainty_pt / _q10_pt / _q90_pt",
+            "trades.quantile_expected_pt / quantile_uncertainty_pt",
+        ),
+        "evidence": (
+            "이전: meta_gate_horizon 7거래일(08-03~08-11) 2,587행 전부 '1m'. "
+            "같은 기간 체결 진입 153건의 실제 entry_horizon은 3m 80 / 5m 56 / 1m 17 "
+            "→ 88.9% 불일치. 이후: ATR-Horizon 분포(봉 기준 1m 43% / 3m 51% / 5m 6%)를 따른다."
+        ),
+        "caveat": (
+            "이 경계를 걸치는 entry_quality_prob·quantile_* 비교는 **무효**다. "
+            "특히 검증 캠페인 [2] meta_gate 채널은 경계 이전 데이터로 판정됐다 — "
+            "VALIDATION_CAMPAIGN_DECISIONS['meta_gate'] 참조."
+        ),
+    },
+)
+
 # [P5] C등급 자동 진입 — UI 토글로 실시간 ON/OFF 가능 (기본값 ON)
 # EntryPanel._grade_c_auto_enabled 와 연동; False 시 C등급 수동 확인으로 강등
 ENTRY_GRADE_C_AUTO_EXP: bool = True  # 기본 ON (UI 토글로 override)
@@ -3788,10 +3827,24 @@ VALIDATION_CAMPAIGN_DECISIONS = {
     },
     "meta_gate": {
         "date": "2026-08-01",
-        "decision": "탈락 확정 — 승격 포기",
+        "decision": "탈락 확정 — 승격 포기 (⚠ 2026-08-12 재측정 대상으로 표시)",
         "note": "상위분위 순EV −0.0499pt < 하위분위 +0.031pt로 분리도 −0.0809(필요 +0.1457). "
                 "부호가 반대이고 분위당 n=402로 표본 핑계가 불가하다. 감사 §5 활성화 순서 "
-                "2순위(Meta-gate 사이징)를 공식 삭제하고 entry_quality_prob 재설계로 이관한다.",
+                "2순위(Meta-gate 사이징)를 공식 삭제하고 entry_quality_prob 재설계로 이관한다. "
+                "▪ 🔴 **[MW0602 463차, 2026-08-12 — 결정 유지, 근거 교락 고지]** 위 판정의 "
+                "입력인 `entry_quality_prob`은 **전부 1m 스코어러 산출값**이었다. "
+                "`self._entry_horizon_pre`가 179차 도입 이래 할당된 적이 없어 MetaGate가 "
+                "항상 폴백 '1m'으로 채점했기 때문이다(read 2건 / write 0건, 463차 전수 grep). "
+                "실측: `meta_gate_horizon` 7거래일 2,587행 전부 '1m'인데 같은 기간 체결 진입 "
+                "153건의 실제 호라이즌은 3m 80 / 5m 56 / 1m 17 — **88.9% 불일치**. "
+                "즉 '3m·5m 진입의 품질을 1m 모델로 잰 값'으로 채널을 탈락시킨 것이다. "
+                "▪ **그래도 결정은 유지한다** — 뒤집을 근거가 아직 없다. 분리도가 −0.0809로 "
+                "**부호까지 반대**라 스코어러 교체가 이 폭을 메운다는 보장이 없고, 지금 "
+                "재개하면 관측 후 기준 수립(313차)이 된다. 바뀐 것은 '표본 핑계가 불가하다'는 "
+                "문장의 지위다 — n=402는 여전하지만 그 402건이 **잘못된 스코어러**의 산출물이다. "
+                "▪ **재개 조건**: 463차 배선(2026-08-12) **이후** 데이터로만 분위당 n≥300을 "
+                "채운 뒤 재측정. 경계를 걸친 혼용은 금지 — `META_SCORING_HORIZON_BREAKS` 참조. "
+                "재측정에서도 분리도가 합격선 미달이면 그때 **최종** 탈락으로 확정한다.",
     },
     "hurst_gate_shadow": {
         "date": "2026-08-01",
