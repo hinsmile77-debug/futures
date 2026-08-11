@@ -4682,6 +4682,10 @@ MC_FLOOR=0.25지만 즉시 반영이 아님. 재학습마다 step_limit=0.03씩 
 3. 30m봉 16분 경과 시 카드 테두리 주황 dashed 확인
 4. BAR_CACHE_DECAY: 30m봉 미완성 구간 confidence 점진 감소 확인
 5. `validate_horizon_scaler_consistency()` 불일치 경보 없음 확인
+   > 🔴 **[463차 후속, 2026-08-12 정정] 이 확인 항목은 무의미했다.** 경보가 없던 것은
+   > 스케일러가 일관돼서가 아니라 **경보가 발생할 수 없어서**다 — 이 메서드는 호출자
+   > 0건이고 `_scaler_meta` write도 0건이라 루프 본문이 절대 실행되지 않는다.
+   > 상세·재개 조건은 `model/multi_horizon_model.py`의 해당 메서드 docstring 참조.
 
 ---
 
@@ -4694,7 +4698,7 @@ MC_FLOOR=0.25지만 즉시 반영이 아님. 재학습마다 step_limit=0.03씩 
 | `BarAggregator` 신규 — 1m봉→N분봉 집계 | **완료** ✅ | `features/bar_aggregator.py` |
 | `feats_to_vec` / `build_for_horizon` 추가 | **완료** ✅ | `features/feature_builder.py` |
 | DB 스키마 확장 — `raw_features_horizon`, `raw_candles_aggregated`, buy_vol/sell_vol | **완료** ✅ | `utils/db_utils.py` |
-| `validate_horizon_scaler_consistency` / `predict_proba_multi` 추가 | **완료** ✅ | `model/multi_horizon_model.py` |
+| `validate_horizon_scaler_consistency` / `predict_proba_multi` 추가 | ~~**완료** ✅~~ → 🔴 **정정(463차 후속)** | `model/multi_horizon_model.py` |
 | `MIN_TRAIN_BARS_PER_HORIZON` + `_retrain_phase2` + `--phase2` 플래그 | **완료** ✅ | `learning/batch_retrainer.py`, `scripts/eod_retrain.py` |
 | `main.py` STEP 4/5 Phase 2 로직 + `_hz_feat_cache` + `BAR_CACHE_DECAY` | **완료** ✅ | `main.py` |
 | `scripts/aggregate_and_backfill.py` 신규 — 기존 72k봉 소급 적용 스크립트 | **완료** ✅ | `scripts/aggregate_and_backfill.py` |

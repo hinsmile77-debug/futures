@@ -2,6 +2,57 @@
 
 ---
 
+## 2026-08-12 (MW0602 463차 후속 — 미할당 속성 전수 감사: 1건 발견, 6건 오탐)
+
+**지시**: C3·C4와 같은 유형(placeholder가 write 없이 방치)이 더 있는지 지금 전수 조사.
+
+### 도구 — `scripts/audit_unassigned_attrs.py` 신설 (읽기 전용)
+
+AST로 클래스별 `getattr(self, "_x", 기본값)` read와 `self._x = …` write를 대조한다.
+**py310_64 전용** — 아래 자체 결함 참조.
+
+### 결과 — 후보 7건 → **진짜 1건**
+
+초안 스캔이 7건을 올렸으나 **6건이 오탐**이었고, 그 오탐 패턴 3가지를 도구에 반영했다:
+
+| 패턴 | 사례 | 오탐 수 |
+|---|---|---|
+| ① mixin — 모듈레벨 `def _ts_xxx(self, …)` | `_last_exit_ts`, `_last_balance_realized_*` | 3 |
+| ② 교차객체 할당 | `system._futures_code = code` (`broker_runtime_service.py:76`) | 1 |
+| ③ 계산된 setattr 이름 | `setattr(self, _attr + "_label", v)` (L2 패널 라벨) | 2 |
+
+보완 후 재실행: 억제 16건 / **발견 1건**.
+
+### [발견] `MultiHorizonModel._scaler_meta` — 이중으로 죽어 있다
+
+- **호출자 0건** — `validate_horizon_scaler_consistency`는 저장소 전체에서 `def` 한 줄뿐.
+- **write 0건** — `_scaler_meta`를 채우는 곳이 없어 호출해도 `{}` → `bar_h=None` → 루프
+  본문 미실행. `bar_horizon` 키 자체가 그 메서드 안에서만 등장한다.
+- ⚠ **`CURRENT_STATE.md` 120차가 "완료 ✅"로 기록**하고 "다음 장에서 확인할 것"에
+  `불일치 경보 없음 확인`을 두 번 올려뒀다. **그 확인은 항상 통과했는데 스케일러가
+  일관돼서가 아니라 경보가 발생할 수 없어서다.**
+  → `allow_new_entry`(462차)·FP-CRITICAL PSI=0.0 2개월(303차)·`_entry_horizon_pre`(463차 C3)와
+  같은 계열이다.
+
+**조치: 배선하지 않고 표시만 한다.** 120차 Phase 2 설계(`BarAggregator`·`_retrain_phase2`)는
+코드에 살아 있지만 **프로덕션 EOD가 그 경로를 쓰지 않는다** — EOD 로그 32회 전부
+`phase2=False`이고 대신 1분봉 피처 슬라이싱을 건다. 즉 "N분봉 스케일러"라는 전제가 현행에
+없다. 지우면 재개 시 의도가 사라지고, 배선하면 쓰지도 않는 경로에 `_is_fitted[h]=False`
+가드가 살아난다(317차 HurstGate 교훈). 메서드 docstring에 죽은 상태·근거·재개 조건을
+명시하고 `CURRENT_STATE.md` 두 곳을 정정했다.
+
+### 도구 자체의 결함 1건 — 발견 즉시 수정
+
+py37_32로 돌리면 **조용히 "없음"**이 나온다. 3.7의 `ast.parse()`는 문자열 리터럴을
+`ast.Str`로 만드는데 스크립트는 `ast.Constant`(3.8+)로 검사해 getattr 이름 인자를 하나도
+못 잡는다. 실측: py37_32 억제 0 / 발견 0 vs py310_64 억제 16 / 발견 1.
+**이 도구가 잡으려는 결함을 도구 자신이 저지르는 꼴**이라 조용한 폴백 대신
+`sys.exit(2)`로 즉시 중단하게 했다(py37_32 실행 시 exit=2 확인).
+
+**관련**: 463차 C3·C4, 462차(allow_new_entry), 303차(FP-CRITICAL 죽은 코드), 317차.
+
+---
+
 ## 2026-08-12 (MW0602 463차 — 미할당 속성 2건 배선 + daily_stats 리셋 순서, C3/C4/C5)
 
 **지시**: 외부 리뷰 C1·C3·C4·C5를 MW0602에서 검토 → 개선 필요 여부 판정 → 배치 1~3 구현.

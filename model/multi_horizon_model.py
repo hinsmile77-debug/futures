@@ -964,6 +964,35 @@ class MultiHorizonModel:
         """
         Phase 2: 호라이즌별 스케일러가 해당 N분봉 데이터로 적합됐는지 메타 검증.
         _scaler_meta[h]["bar_horizon"] != h 이면 재적합 예약.
+
+        🔴 **[MW0602 463차 후속, 2026-08-12] 이 메서드는 현재 동작하지 않는다 — 이중으로 죽어 있다.**
+
+          ① **호출자 0건.** 저장소 전체 grep에서 이 이름은 여기 `def` 한 줄에만 있다.
+             동적 디스패치(getattr 호출)도 없다.
+          ② **`_scaler_meta` write 0건.** 어느 경로에서도 채워지지 않아, 설령 호출해도
+             `{}` → `bar_h = None` → falsy로 루프 본문이 절대 실행되지 않는다.
+             `bar_horizon` 이라는 키 자체가 저장소에서 이 메서드 안에서만 등장한다.
+
+        **왜 남겨두는가 — 지우지 않고 표시만 한다.**
+        120차(2026-06-07) Phase 2 "호라이즌별 완성봉 입력 구조"의 일부이고, 그 설계
+        (`BarAggregator` / `raw_candles_aggregated` / `_retrain_phase2`)는 코드에 살아 있다.
+        다만 **프로덕션 EOD는 그 경로를 쓰지 않는다** — 실측 EOD 로그 32회 전부
+        `phase2=False`이고, 대신 1분봉 피처 행렬에 호라이즌별 **피처 슬라이싱**을 건다
+        (`[Retrain] 1m 호라이즌 피처 슬라이싱: 105 → 10개`). 즉 "N분봉 스케일러"라는
+        전제 자체가 현행 프로덕션에 없다. 지우면 Phase 2 재개 시 의도가 사라지고,
+        배선하면 쓰지도 않는 경로에 `_is_fitted[h] = False`를 세우는 가드가 살아난다
+        (317차 HurstGate 교훈 — 근거 없이 하드 가드를 켜지 않는다).
+
+        ⚠ **`dev_memory/CURRENT_STATE.md` 120차 항목이 이것을 "완료 ✅"로 기록하고,
+        "다음 장에서 확인할 것"에 `validate_horizon_scaler_consistency() 불일치 경보
+        없음 확인`을 두 번 올려두었다. 그 확인은 항상 통과했는데, 스케일러가
+        일관돼서가 아니라 경보가 발생할 수 없어서다.** 같은 계열의 전례:
+        `allow_new_entry`(선언만, 462차)·FP-CRITICAL PSI=0.0 2개월(303차)·
+        `_entry_horizon_pre`(read만, 463차 C3).
+
+        **재개 조건**: Phase 2 경로를 프로덕션으로 승격할 때 ① 스케일러 적합부에서
+        `_scaler_meta[h]["bar_horizon"]`을 기록하고 ② 호출부를 배선하되
+        ③ 먼저 섀도(로그만, `_is_fitted` 미변경)로 불일치 실존 여부를 확인할 것.
         """
         scaler_meta = getattr(self, "_scaler_meta", {})
         for h, scaler in list(self.scalers.items()):

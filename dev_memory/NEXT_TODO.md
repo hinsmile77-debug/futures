@@ -32,9 +32,14 @@
   - ⚠ 경계 이전 표본과 **혼용 금지** (`META_SCORING_HORIZON_BREAKS`)
   - ⚠ 재측정 전까지 "탈락 확정"은 유효하다 — 교락이 드러났다고 자동 재개가 아니다
 
-- [NEXT 조사] **다른 미할당 `self.` 속성이 더 있는가**
-  - C3·C4가 같은 유형(179차·290차에 도입된 placeholder가 write 없이 방치)이라 동종 결함
-    가능성이 있다. `getattr(self, "_...", 기본값)` 패턴 중 write 0건인 것을 전수 조사할 것
+- [DONE 2026-08-12] **다른 미할당 `self.` 속성 전수 조사** — `scripts/audit_unassigned_attrs.py`
+  신설. 후보 7건 → 진짜 1건(`MultiHorizonModel._scaler_meta`), 오탐 6건.
+  진짜 1건은 호출자도 0건이라 배선하지 않고 표시만 함 (DECISION_LOG 463차 후속)
+  - [NEXT 주기적] 큰 리팩터 후 `python scripts/audit_unassigned_attrs.py` 재실행
+    (⚠ **py310_64 전용** — py37_32는 exit=2로 중단된다. 조용한 0건 오보 방지)
+  - [NEXT 조건부] Phase 2(`--phase2`) 경로를 프로덕션 승격 시
+    `_scaler_meta["bar_horizon"]` 기록 + 호출부 배선 + **섀도 먼저**
+    (`_is_fitted` 미변경으로 불일치 실존 확인 후 활성화)
 
 ---
 
