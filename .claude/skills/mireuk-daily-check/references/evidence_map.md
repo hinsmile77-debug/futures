@@ -32,6 +32,25 @@
 > **HOGA를 열지 않는 이유**: 원시 호가 스트림이라 하루 51MB다. 여기서 이상을 찾는 건
 > 도서관 전체를 읽어 오탈자를 찾는 격이다. 크기가 평소와 크게 다르면 그때 들어간다.
 
+## 1-A. 브랜치 규약 — **두 PC가 서로 다른 브랜치로 돈다** ⚠
+
+2026-08-12 실측. 이걸 모르면 체리픽이 엉뚱한 브랜치로 간다(실제로 갔다).
+
+| PC | 운영 브랜치 | 최근 |
+|---|---|---|
+| **MW0601** | **`v9-dev`** | `[MW0601] 458차 후속` |
+| **MW0602** | **`dev`** | `[MW0602] 466차` |
+
+그 밖에 `DEV-samefeature`(174차 스냅샷), `maitreya_dist`(MW0601 배포용)가 있다.
+
+**MW0601의 로컬 `dev` 는 `origin/dev` 보다 289커밋 뒤처져 있다.** `config/settings.py` 가
+**5,476줄 짧다** — `CB3_P4_GRADE_BLOCK_ENABLED`·`TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED`·
+`HURST_SOFT_BLOCK_ENABLED` 같은 상수가 아예 없다.
+**그 상태로 미륵이를 기동하면 289커밋 전 코드로 돈다.**
+
+→ MW0601에서 작업할 때는 **반드시 `git branch --show-current` 로 `v9-dev` 를 확인**하고 시작하라.
+→ 점검 중 브랜치가 다르면 그 자체를 P0로 보고하라. 수집기 §2가 브랜치를 첫 줄에 찍는다.
+
 ## 1-B. 완료 마커 · 리포트
 
 `.txt` 이면서 8KB 이하면 수집기가 **전문을 싣는다.** 마커는 "그 단계가 끝났다"는 도장이다.
@@ -51,33 +70,91 @@
 리포 루트에 `config/dailycheck_targets.json` 을 두면 위 정책이 적용된다.
 스킬 폴더의 `config_dailycheck_targets.json` 이 그 원본이다.
 
-### 로그 형식
-
-수집기는 **JSON 라인**과 **평문 logging 포맷** 둘 다 읽는다.
+### 로그 형식 (2026-08-12 MW0601 실측)
 
 ```
-2026-08-12 09:00:03,123 INFO  strategy.entry - STEP 6 앙상블 등급=C prob=0.58
-{"ts": "...", "level": "INFO", "tag": "...", "msg": "..."}
+2026-08-12 08:40:48 [INFO] SYSTEM: [FaultHandler] 활성화 | file=logs\crash_fault.log PID=17492
+└─ 날짜 시각        └ 레벨  └ 채널   └ 컴포넌트   └ 본문
 ```
 
-평문의 경우 로거명(`strategy.entry`) 또는 대괄호 토큰(`[Sizer]`)을 태그로 잡는다.
-인코딩은 `utf-8-sig` → `cp949` 순으로 시도한다 (Windows 로그가 cp949일 수 있다).
+**첫 대괄호는 레벨이지 태그가 아니다.** 컴포넌트는 `채널:` 뒤의 대괄호다.
+수집기는 `MIREUK_LINE_RE` 로 이 넷을 정확히 가른다 — 이걸 틀리면 태그 히스토그램이
+전부 `INFO`가 되어 쓸모없어진다.
+
+채널은 파일명과 대체로 같지만 **`WARN.log` 에는 `SYSTEM:`·`HEALTH:` 가 섞여 들어온다**
+(경고만 모아 놓은 파일이지 별도 채널이 아니다).
+
+인코딩은 `utf-8-sig` → `cp949` 순으로 시도한다.
+
+### 레벨 분포의 함정 — ERROR 를 찾지 마라
+
+2026-08-12 하루 전체에서 **ERROR·CRITICAL 이 0건**이다(08-10에 HEALTH CRITICAL 1건이 마지막).
+레벨만 보면 아무 일도 없었던 것처럼 보인다. 실제 신호는 이렇게 흩어져 있다.
+
+| 무엇 | 어디에 | 레벨 |
+|---|---|---|
+| 진입·청산·손익 | `[Position] 진입` / `체결청산` | **INFO** |
+| 게이트 차단 | `[차단]` | INFO |
+| 사이징 | `[Sizer]` | INFO |
+| 그날의 판정 | `전략 상태 경보` 배너 | WARNING |
+| 성능 저하 | `메인 스레드 블로킹` | WARNING |
+| 모델 열화 | `축퇴` `WeightCollapse` `ConstOut` | WARNING |
+
+→ 그래서 수집기 **§5 거래일 요약**이 있다. 레벨 집계(§4)만으로 판단하지 마라.
+
+### 거래일 요약이 파싱하는 토큰
+
+`day_summary_patterns` (config로 덮어쓸 수 있다). 로그 문구가 바뀌면 여기만 고친다.
+
+| 키 | 실제 라인 예시 |
+|---|---|
+| `entry_check` | `[진입체크] LONG→LONG 2계약 A급(원시C) \| sign✅ conf✅ vwap✅ cvd✅ ofi✅ … \| conf=40.5%` |
+| `entry` | `[Position] 진입 LONG 2계약 @ 1026.8 \| 손절=1024.66 1차=1027.80(×0.59) 2차=1028.94 horizon=5m hurst=mean-revert` |
+| `fill_entry` | `[체결진입] LONG 1계약 @ 1026.6 \| 평균=1026.6 보유=2계약` |
+| `exit` | `[Position] 체결청산 LONG @ 1026.4 \| PnL=+1.72pt (+84,463원) \| TP2(전량)` |
+| `block` | `[차단] 등급X — 미통과 항목: 2_confidence` |
+| `sizer` | `[Sizer] 미니선물 실효잔고=50,000,000(…) 기본리스크=1,500,000 신뢰도배수=0.6 레짐배수=0.8 안전배수=1.00(정상) → 3계약 (최소=1)` |
+| `cb` | `[CB] 연속 손절 2회` |
+| `block_ms` | `[LiveDBG] _tick_header 간격 6172ms — 메인 스레드 블로킹 발생` |
+
+배너는 `banner_start="전략 상태 경보"` 부터 8줄을 통째로 담는다.
+
+```
+[전략 상태 경보] v1.0
+  판정  : UNDERPERFORM
+  드리프트: CLEAR (Lv.0)
+  액션  : 🔄 교체 후보 탐색
+  사유  : 기대값 하회 — param_optimizer + WFA 즉시 예약.
+  오늘 PnL: +170443원
+```
+
+### 컴포넌트 상위 (2026-08-12 실측)
+
+`CybosInvestorRaw`(1574) · `ScalerFloor`(1452) · `CybosRT-TICK`(1209) · `MetaGate`(590) ·
+`CybosRT-ROLLOVER`(409) · `CVD-ANCHOR`(409) · `BAR-CLOSE`(409) · `PipePerf`(384) ·
+`Ensemble`(377) · `Checklist`(231) · `ATR-Horizon`(202) · `MicroRegime`(172) ·
+`차단`(115) · `InstabilityGate`(78) · `WeightCollapse`(78) · `ToxicityGate`(50)
+
+> `ScalerFloor` 는 SIGNAL WARNING 1946건 중 1386건을 차지한다. **압도적 다수라고 해서
+> 중요한 것은 아니다** — 배경 소음으로 보고, 나머지 560건에서 신호를 찾아라.
 
 ### 항상 인용되는 패턴
 
-수집기 §5가 자동으로 뽑는다. 목록은 `collect_evidence.py:DEFAULT_CONFIG["always_quote_patterns"]`.
+`always_quote_patterns` — 추상적 키워드가 아니라 **실제로 찍히는 문자열**이다.
 
 | 계열 | 패턴 |
 |---|---|
-| 안전장치 | `CIRCUIT` `CB①~⑤` `HALT` `정지` |
-| 청산 | `강제청산` `FORCED` `FLAT` `안전망` `손절` `STOP_LOSS` |
-| 크래시 | `0xC0000409` `STACK_BUFFER` `CRASH` `Traceback` |
-| 메모리 | `OOM` `MemoryError` |
-| 학습 | `재학습` `RETRAIN` `SHAP` |
-| 레짐 | `PSI` `CRITICAL` |
-| 거래 | `진입` `ENTRY` `체결` `미체결` |
+| 안전장치 | `[CB]` `연속 손절` `HALT` `CIRCUIT` |
+| 청산 | `강제청산` `[ExitCooldown]` `안전망` `FORCED` |
+| 크래시 | `0xC0000409` `STACK_BUFFER` `Traceback` `MemoryError` |
+| 성능 | `메인 스레드 블로킹` `[Brier] 과신` `[SHAP] 슬로우` |
+| 상태 | `degraded=ON` `level=CRITICAL` |
+| 모델 열화 | `축퇴` `WeightCollapse` `ConstOut` `ConfFloorGuard` |
+| 판정 | `전략 상태 경보` `판정  :` |
+| 생명주기 | `[Shutdown]` `자동 종료` `기동 복원` |
 
-패턴을 늘리려면 `config/dailycheck_targets.json` 에 `always_quote_patterns` 를 통째로 넣는다.
+> 맨 `OOM` 은 **뺐다** — `장중 경량 모드(DB): 39799 → 4800행 사전 제한 (OOM 방지)` 같은
+> **예방 문구**가 잡혀 매일 가짜 적신호를 냈다. `MemoryError`·`OutOfMemory`·`메모리 부족`만 본다.
 
 ---
 

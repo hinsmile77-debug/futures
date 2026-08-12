@@ -106,17 +106,32 @@ DEFAULT_CONFIG = {
     # 비우면 "분 커버리지가 충분한 모든 로그"가 대상. 채널별로 나뉜 구조에서는
     # 매분 도는 본체 채널만 지정하는 편이 낫다. 예: ["_SYSTEM"]
     "main_loop_log_patterns": [],
-    # 이 토큰이 보이면 무조건 인용한다 (대소문자 무시, 부분일치)
+    # 이 토큰이 보이면 무조건 인용한다 (대소문자 무시, 부분일치, 한 줄당 첫 매치만)
+    # 2026-08-12 MW0601 실측 로그에서 뽑았다 — 추상적 키워드가 아니라 실제로 찍히는 문자열이다.
     "always_quote_patterns": [
-        "CIRCUIT", "CB①", "CB②", "CB③", "CB④", "CB⑤", "HALT", "정지",
-        "강제청산", "FORCED", "FLAT", "안전망",
-        "KILL", "STOP_LOSS", "손절",
-        "0xC0000409", "STACK_BUFFER", "CRASH", "TRACEBACK", "Traceback",
-        "OOM", "MemoryError",
-        "PSI", "CRITICAL",
-        "재학습", "RETRAIN", "SHAP",
-        "진입", "ENTRY", "체결", "미체결",
+        "[CB]", "연속 손절", "HALT", "CIRCUIT",
+        "강제청산", "[ExitCooldown]", "안전망", "FORCED",
+        "0xC0000409", "STACK_BUFFER", "Traceback", "MemoryError", "OutOfMemory", "메모리 부족",
+        "메인 스레드 블로킹", "[Brier] 과신", "[SHAP] 슬로우",
+        "degraded=ON", "level=CRITICAL",
+        "축퇴", "WeightCollapse", "ConstOut", "ConfFloorGuard",
+        "전략 상태 경보", "판정  :",
+        "[Shutdown]", "자동 종료", "기동 복원",
+        "PSI",
     ],
+    # 거래일 요약 — 이름있는 그룹으로 뽑는다. 로그 문구가 바뀌면 여기만 고치면 된다.
+    "day_summary_patterns": {
+        "entry_check": r"\[진입체크\]\s*(?P<dir>\S+)\s+(?P<qty>\d+)계약\s+(?P<grade>[A-Z]급(?:\(원시[A-Z]\))?)\s*\|\s*(?P<checks>[^|]+?)\s*\|\s*conf=(?P<conf>[\d.]+)%",
+        "entry": r"\[Position\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약 @ (?P<px>[\d.]+).*?horizon=(?P<hz>\w+)\s+hurst=(?P<hurst>\S+)",
+        "fill_entry": r"\[체결진입\]\s*(?P<dir>\w+)\s+(?P<qty>\d+)계약.*?보유=(?P<held>\d+)계약",
+        "exit": r"\[Position\] 체결청산 (?P<dir>\w+) @ (?P<px>[\d.]+)\s*\|\s*PnL=(?P<pt>[+-][\d.]+)pt\s*\((?P<won>[+-][\d,]+)원\)\s*\|\s*(?P<reason>.+?)\s*$",
+        "block": r"\[차단\]\s*(?P<reason>.+?)\s*$",
+        "sizer": r"\[Sizer\].*?신뢰도배수=(?P<conf_mult>[\d.]+)\s+레짐배수=(?P<regime_mult>[\d.]+)\s+안전배수=(?P<safe_mult>[\d.]+).*?→\s*(?P<qty>\d+)계약",
+        "cb": r"\[CB\]\s*(?P<msg>.+?)\s*$",
+        "block_ms": r"메인 스레드 블로킹.*?간격 (?P<ms>\d+)ms|간격 (?P<ms2>\d+)ms — 메인 스레드 블로킹",
+    },
+    "banner_start": "전략 상태 경보",
+    "banner_lines": 8,
     # config/settings.py 에서 값을 확인할 상수 — CLAUDE.md 절대원칙·한시예외 대응
     "invariants": [
         {"name": "CB_CONSEC_STOP_LIMIT", "expect": "9999",
@@ -168,12 +183,21 @@ DEFAULT_CONFIG = {
         "CLAUDE.md", "CORE.md", "ROADMAP.md",
         "_archive/plans/PROJECT_DESIGN.md",
     ],
-    "devmemory_files": ["dev_memory/DECISION_LOG.md", "dev_memory/NEXT_TODO.md"],
+    "devmemory_files": [
+        "dev_memory/DECISION_LOG.md",
+        "dev_memory/NEXT_TODO.md",
+        "dev_memory/CURRENT_STATE.md",
+        "dev_memory/SESSION_LOG.md",
+    ],
+    # 날짜 토큰이 없어 인벤토리에 안 잡히는 상태 파일 — 존재와 mtime 만 본다
+    "state_files": [
+        {"path": "data/_exit_normally", "why": "정상 종료 플래그. **기동 시 소비되므로 재기동했다면 없는 것이 정상**이다. 로그의 `[Shutdown] 정상 종료 플래그 기록` 과 교차확인하라"},
+    ],
     "report_dirs": ["docs/정기점검/매일점검", "docs/정기점검/금요일점검"],
     # --out-auto 가 쓰는 출력 폴더. 파일명에 PC명이 들어가 두 PC가 서로를 덮지 않는다.
     "evidence_dir": "docs/정기점검/매일점검",
-    "max_error_samples_per_tag": 3,
-    "max_warn_tags": 20,
+    "max_error_samples_per_tag": 2,
+    "max_warn_tags": 12,
     "msg_truncate": 240,
     "max_files_per_group": 6,
     "max_log_bytes": 40 * 1024 * 1024,
@@ -183,9 +207,17 @@ LEVEL_RE = re.compile(r"\b(CRITICAL|FATAL|ERROR|WARNING|WARN|INFO|DEBUG)\b")
 LEVEL_ORDER = ["CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG"]
 # 2026-08-12 09:00:01,123  /  2026-08-12T09:00:01  /  [09:00:01]  /  09:00:01
 TIME_RE = re.compile(r"(?:(\d{4})[-/](\d{2})[-/](\d{2})[T ])?(\d{2}):(\d{2}):(\d{2})")
-# 로거명 추정: "module.sub - " 또는 "[TAG]"
+# 미륵이 표준 라인:
+#   2026-08-12 08:40:48 [INFO] SYSTEM: [FaultHandler] 활성화 | file=... PID=17492
+#   └ 날짜/시각      └ 레벨   └ 채널  └ 컴포넌트
+# 첫 대괄호는 **레벨**이므로 태그로 잡으면 안 된다. 컴포넌트는 채널 뒤 대괄호다.
+MIREUK_LINE_RE = re.compile(
+    r"^\S+\s+\S+\s+\[(?P<level>[A-Z]+)\]\s+(?P<channel>[A-Z_]+):\s*(?:\[(?P<comp>[^\]]{1,50})\]\s*)?(?P<msg>.*)$"
+)
+# 그 밖의 포맷용 폴백
 TAG_BRACKET_RE = re.compile(r"\[([A-Za-z가-힣_][\w가-힣.\-]{1,40})\]")
 TAG_LOGGER_RE = re.compile(r"\s([A-Za-z_][\w.]{2,50})\s+[-|:]\s")
+LEVEL_NAMES = frozenset(LEVEL_ORDER)
 DATE_TOKEN_KEYS = ("ymd", "y_m_d", "ymd2", "md")
 
 
@@ -389,11 +421,22 @@ class LogDigest(object):
         self.records = []
         self.level_counts = {}
         self.tag_counts = {}
+        self.channel_counts = {}
         self.by_level_tag = {}
         self.quoted = {}
         self.first_lines = []
         self.last_lines = []
         self.truncated = False
+        # 거래일 요약용 — config 의 정규식에 걸린 것만 모은다
+        self.hits = {}
+        self.banner = []
+        self._banner_left = 0
+        self._day_re = {}
+        for key, pat in (cfg.get("day_summary_patterns") or {}).items():
+            try:
+                self._day_re[key] = re.compile(pat)
+            except re.error as e:
+                eprint("[collect_evidence] day_summary_patterns['%s'] 정규식 오류: %s" % (key, e))
 
     def scan(self):
         if self.size > self.cfg["max_log_bytes"]:
@@ -411,11 +454,18 @@ class LogDigest(object):
                 if not line.strip():
                     continue
                 self.total_lines += 1
-                if len(self.first_lines) < 8:
+                if len(self.first_lines) < 5:
                     self.first_lines.append(truncate(line, 300))
                 tail.append(line)
-                if len(tail) > 8:
+                if len(tail) > 5:
                     tail.pop(0)
+                # 결산 배너는 여러 줄에 걸쳐 있어 한 줄씩 보면 뜻이 없다 — 창을 열어 통째로 담는다
+                if self._banner_left > 0:
+                    self.banner.append(truncate(line, 200))
+                    self._banner_left -= 1
+                elif self.cfg.get("banner_start") and self.cfg["banner_start"] in line:
+                    self.banner.append(truncate(line, 200))
+                    self._banner_left = int(self.cfg.get("banner_lines", 8))
                 self._ingest(line)
         self.last_lines = [truncate(x, 300) for x in tail]
         return self
@@ -438,21 +488,31 @@ class LogDigest(object):
             msg = str(rec.get("msg") or rec.get("message") or "")
             tsrc = str(rec.get("ts") or rec.get("timestamp") or rec.get("asctime") or "")
         else:
-            m = LEVEL_RE.search(line)
-            level = m.group(1) if m else "PLAIN"
-            mb = TAG_BRACKET_RE.search(line)
-            if mb:
-                tag = mb.group(1)
+            mm = MIREUK_LINE_RE.match(line)
+            if mm:
+                # 미륵이 표준 포맷 — 채널과 컴포넌트를 정확히 가른다
+                level = mm.group("level")
+                comp = mm.group("comp")
+                tag = comp if comp else mm.group("channel")
+                msg = mm.group("msg")
+                self.channel_counts[mm.group("channel")] = \
+                    self.channel_counts.get(mm.group("channel"), 0) + 1
             else:
-                ml = TAG_LOGGER_RE.search(line)
-                tag = ml.group(1) if ml else "-"
+                m = LEVEL_RE.search(line)
+                level = m.group(1) if m else "PLAIN"
+                tag = None
+                for bm in TAG_BRACKET_RE.finditer(line):
+                    if bm.group(1) not in LEVEL_NAMES:   # [INFO] 같은 레벨 대괄호는 건너뛴다
+                        tag = bm.group(1)
+                        break
+                if tag is None:
+                    ml = TAG_LOGGER_RE.search(line)
+                    tag = ml.group(1) if ml else "-"
+                msg = line[m.end():] if m else line
+                msg = re.sub(r"^[\s\-|:]+", "", msg)
+                if tag and tag != "-" and msg.startswith(tag):
+                    msg = re.sub(r"^%s[\s\-|:]+" % re.escape(tag), "", msg)
             tsrc = line
-            # 표에 실을 msg 에서는 앞머리(타임스탬프·레벨·로거명)를 걷어낸다.
-            # 원문이 필요하면 raw 를 쓴다.
-            msg = line[m.end():] if m else line
-            msg = re.sub(r"^[\s\-|:]+", "", msg)
-            if tag and tag != "-" and msg.startswith(tag):
-                msg = re.sub(r"^%s[\s\-|:]+" % re.escape(tag), "", msg)
 
         minutes = None
         hhmm = "??:??:??"
@@ -479,6 +539,14 @@ class LogDigest(object):
                 if len(bucket) < 8:
                     bucket.append(entry)
                 break
+
+        for key, rx in self._day_re.items():
+            mh = rx.search(line)
+            if mh:
+                d = dict(mh.groupdict())
+                d["hhmm"] = hhmm
+                d["_raw"] = truncate(line, 400)
+                self.hits.setdefault(key, []).append(d)
 
     # --- 파생 --------------------------------------------------------
     def gaps(self):
@@ -604,6 +672,231 @@ def check_invariants(root, cfg):
     return path, rows
 
 
+def day_summary(digests, cfg, out):
+    """거래일 요약 — 로그 요약이 아니라 '오늘 무엇을 했는가'.
+
+    로그 레벨 집계만으로는 이 시스템을 읽을 수 없다. 미륵이는 ERROR 를 거의 안 남기고
+    (2026-08-12 하루 종일 0건) 정작 중요한 것은 INFO 로 찍히는 진입·청산·차단이다.
+    """
+    A = out.append
+    merged = {}
+    banner = []
+    for dg in digests:
+        for k, v in dg.hits.items():
+            merged.setdefault(k, []).extend(v)
+        if dg.banner and not banner:
+            banner = dg.banner
+    for k in merged:
+        merged[k].sort(key=lambda d: d.get("hhmm") or "")
+
+    A("## 5. 거래일 요약 — 오늘 무엇을 했는가")
+    A("")
+    if not merged and not banner:
+        A("_거래일 패턴이 하나도 안 잡혔다. 로그 문구가 바뀌었을 수 있다 — "
+          "`config/dailycheck_targets.json` 의 `day_summary_patterns` 를 확인하라._")
+        A("")
+        return
+
+    # --- 전략 상태 경보 배너 (그날의 판정) ---
+    if banner:
+        A("### 전략 상태 경보 — 그날의 판정")
+        A("")
+        A("```")
+        out.extend(banner)
+        A("```")
+        A("")
+
+    ec = merged.get("entry_check", [])
+    en = merged.get("entry", [])
+    fi = merged.get("fill_entry", [])
+    ex = merged.get("exit", [])
+    bl = merged.get("block", [])
+    sz = merged.get("sizer", [])
+
+    A("| 항목 | 건수 |")
+    A("|---|---|")
+    A("| 진입체크 통과(`[진입체크]`) | %d |" % len(ec))
+    A("| 진입 등록(`[Position] 진입`) | %d |" % len(en))
+    A("| 체결(`[체결진입]`) | %d |" % len(fi))
+    A("| 청산(`체결청산`) | %d |" % len(ex))
+    A("| 차단(`[차단]`) | %d |" % len(bl))
+    A("| 사이저 호출(`[Sizer]`) | %d |" % len(sz))
+    A("")
+
+    # --- 손익 ---
+    if ex:
+        tot_pt = 0.0
+        tot_won = 0
+        reasons = {}
+        wins = 0
+        for e in ex:
+            try:
+                tot_pt += float(e["pt"])
+                tot_won += int(e["won"].replace(",", ""))
+                if float(e["pt"]) > 0:
+                    wins += 1
+            except (TypeError, ValueError):
+                pass
+            r = (e.get("reason") or "?").strip()
+            reasons[r] = reasons.get(r, 0) + 1
+        A("### 청산 %d건 · 승 %d (%.0f%%) · 합계 %+.2fpt (%s원)"
+          % (len(ex), wins, 100.0 * wins / len(ex), tot_pt, format(tot_won, "+,d")))
+        A("")
+        A("| 시각 | 방향 | PnL(pt) | PnL(원) | 사유 |")
+        A("|---|---|---|---|---|")
+        for e in ex:
+            A("| %s | %s | %s | %s | %s |" % (
+                e["hhmm"], e.get("dir"), e.get("pt"), e.get("won"), e.get("reason")))
+        A("")
+        A("**청산 사유 분포** — " + ", ".join(
+            "`%s`×%d" % (k, v) for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])))
+        A("")
+        stops = sum(v for k, v in reasons.items() if "스톱" in k or "손절" in k)
+        if stops:
+            A("> 하드스톱·손절 계열 %d/%d건. **손절 준수율**(실현손실 ÷ 의도손절폭 ATR×1.5)은 "
+              "417차 재분해에서 유일하게 유의했던 축이다 — 진입 로그의 `손절=` 값과 대조하라."
+              % (stops, len(ex)))
+            A("")
+
+    # --- 진입 상세 ---
+    if en:
+        A("### 진입 %d건" % len(en))
+        A("")
+        A("| 시각 | 방향 | 계약 | 진입가 | 호라이즌 | Hurst |")
+        A("|---|---|---|---|---|---|")
+        for e in en:
+            A("| %s | %s | %s | %s | %s | %s |" % (
+                e["hhmm"], e.get("dir"), e.get("qty"), e.get("px"), e.get("hz"), e.get("hurst")))
+        A("")
+        qd = {}
+        for e in en:
+            qd[e.get("qty")] = qd.get(e.get("qty"), 0) + 1
+        A("계약수 분포 — " + ", ".join("%s계약×%d" % (k, v) for k, v in sorted(qd.items())))
+        A("")
+    if ec:
+        gd = {}
+        fail = {}
+        for e in ec:
+            gd[e.get("grade")] = gd.get(e.get("grade"), 0) + 1
+            for name, mark in re.findall(r"(\w+)\s*([✅❌])", e.get("checks") or ""):
+                if mark == "❌":
+                    fail[name] = fail.get(name, 0) + 1
+        A("등급 분포 — " + ", ".join("`%s`×%d" % (k, v) for k, v in sorted(gd.items())))
+        A("")
+        if fail:
+            A("**진입한 건들의 체크리스트 미통과 항목** — " + ", ".join(
+                "`%s`×%d" % (k, v) for k, v in sorted(fail.items(), key=lambda kv: -kv[1])))
+            A("")
+            if any(k.startswith("vwap") for k in fail):
+                A("> ⚠ **`vwap` 미통과 상태로 진입한 건이 %d건 있다.** 절대원칙 3에서 VWAP 위치는 "
+                  "단기·중기 그룹 모두 미통과 시 **강제 X** 다 — 등급 상향 경로가 이를 우회했는지 확인하라."
+                  % sum(v for k, v in fail.items() if k.startswith("vwap")))
+                A("")
+
+    # --- 사이저 vs 실제 ---
+    if sz:
+        sq = {}
+        for s in sz:
+            sq[s.get("qty")] = sq.get(s.get("qty"), 0) + 1
+        A("### 사이저 출력 vs 실제 진입 — 게이트 배수에 눌리고 있는가")
+        A("")
+        A("사이저 출력 계약수 — " + ", ".join("**%s계약**×%d" % (k, v) for k, v in sorted(sq.items())))
+        if en:
+            eq = {}
+            for e in en:
+                eq[e.get("qty")] = eq.get(e.get("qty"), 0) + 1
+            A("")
+            A("실제 진입 계약수 — " + ", ".join("**%s계약**×%d" % (k, v) for k, v in sorted(eq.items())))
+            try:
+                smax = max(int(k) for k in sq)
+                emax = max(int(k) for k in eq)
+                if smax > emax:
+                    A("")
+                    A("> ⚠ 사이저는 최대 **%d계약**을 냈는데 실제 진입 최대는 **%d계약**이다. "
+                      "게이트 배수(meta·tox 등)에 눌린 것인지 확인하라 — "
+                      "실전 전환 기준 ⑧의 `sizing_inversion_watch` 채널이 이것을 본다." % (smax, emax))
+            except (TypeError, ValueError):
+                pass
+        A("")
+        mults = {}
+        for s in sz:
+            key = "conf=%s regime=%s safe=%s" % (
+                s.get("conf_mult"), s.get("regime_mult"), s.get("safe_mult"))
+            mults[key] = mults.get(key, 0) + 1
+        A("배수 조합 상위 — " + ", ".join(
+            "`%s`×%d" % (k, v) for k, v in sorted(mults.items(), key=lambda kv: -kv[1])[:5]))
+        A("")
+
+    # --- 차단 사유 ---
+    if bl:
+        bd = {}
+        for b in bl:
+            r = truncate(b.get("reason") or "?", 90)
+            bd[r] = bd.get(r, 0) + 1
+        A("### 차단 사유 %d건 · %d종" % (len(bl), len(bd)))
+        A("")
+        A("| 건수 | 사유 |")
+        A("|---|---|")
+        for k, v in sorted(bd.items(), key=lambda kv: -kv[1])[:20]:
+            A("| %d | %s |" % (v, k))
+        A("")
+        items = {}
+        for b in bl:
+            m = re.search(r"미통과 항목:\s*(.+)$", b.get("reason") or "")
+            if m:
+                for it in m.group(1).split(","):
+                    it = it.strip()
+                    if it:
+                        items[it] = items.get(it, 0) + 1
+        if items:
+            A("**체크리스트 미통과 항목 누적** — " + ", ".join(
+                "`%s`×%d" % (k, v) for k, v in sorted(items.items(), key=lambda kv: -kv[1])))
+            A("")
+            A("> 진입 0건이거나 적을 때 여기가 출발점이다. 특정 항목 하나가 압도적이면 "
+              "그 게이트의 임계를 의심하라 — 316차 HurstGate 63% 차단이 그렇게 발견됐다.")
+            A("")
+
+    # --- CB ---
+    cb = merged.get("cb", [])
+    if cb:
+        cd = {}
+        for c in cb:
+            k = truncate(c.get("msg") or "?", 60)
+            cd[k] = cd.get(k, 0) + 1
+        A("### Circuit Breaker 이벤트 %d건" % len(cb))
+        A("")
+        for k, v in sorted(cd.items(), key=lambda kv: -kv[1]):
+            A("- `%s` ×%d" % (k, v))
+        A("")
+        A("> CB② 는 `CB_CONSEC_STOP_LIMIT=9999` 라 **연속 손절 카운터는 올라가되 정지는 안 한다.** "
+          "카운터 로그가 보이는 것은 정상이다.")
+        A("")
+
+    # --- 메인 스레드 블로킹 ---
+    bms = merged.get("block_ms", [])
+    if bms:
+        vals = []
+        for b in bms:
+            v = b.get("ms") or b.get("ms2")
+            if v:
+                try:
+                    vals.append(int(v))
+                except ValueError:
+                    pass
+        if vals:
+            vals.sort(reverse=True)
+            over = [v for v in vals if v >= 5000]
+            A("### 메인 스레드 블로킹 %d건 · 최대 %dms · 5초 초과 %d건"
+              % (len(vals), vals[0], len(over)))
+            A("")
+            A("상위 — " + ", ".join("%dms" % v for v in vals[:8]))
+            A("")
+            if over:
+                A("> ⚠ `CB_PIPE_PAUSE_MS = 5_000`(CB⑤ 실질 구현) 이상이 **%d건**이다. "
+                  "CB⑤가 실제로 발동했는지, 아니면 계측만 되고 지나갔는지 확인하라." % len(over))
+                A("")
+
+
 def scan_gate_flags(root, cfg):
     """`*_BLOCK_ENABLED` 류 불리언 플래그를 전수 조사한다.
 
@@ -630,7 +923,7 @@ def scan_gate_flags(root, cfg):
 def devmemory_section(root, cfg, day, out):
     A = out.append
     A("")
-    A("## 7. dev_memory")
+    A("## 8. dev_memory")
     A("")
     for rel in cfg["devmemory_files"]:
         p = os.path.join(root, rel)
@@ -641,14 +934,21 @@ def devmemory_section(root, cfg, day, out):
         mt = ts_kst(st.st_mtime)
         fresh = "**오늘 갱신됨**" if mt.date() == day else "마지막 갱신 %s" % mt.strftime("%Y-%m-%d %H:%M")
         A("### %s — %s · %s" % (rel, fmt_bytes(st.st_size), fresh))
+        # 전부 훑으면 이 절만 25KB가 된다. 꼬리 열람은 두 파일로 한정한다.
+        detailed = ("DECISION_LOG" in rel) or ("NEXT_TODO" in rel)
         text = read_text(p)
         heads = [l.strip() for l in text.splitlines() if re.match(r"^#{1,3} ", l)]
         if heads:
             A("")
-            A("최근 헤딩 12개:")
+            A("최근 헤딩 %d개:" % min(8, len(heads)))
             A("```")
-            out.extend(heads[-12:])
+            out.extend(heads[-8:])
             A("```")
+        if not detailed:
+            A("")
+            A("_(참고용 — 필요하면 직접 열 것)_")
+            A("")
+            continue
         if "NEXT_TODO" in rel:
             openitems = [l.strip() for l in text.splitlines() if re.match(r"^\s*[-*]\s*\[ \]", l)]
             A("")
@@ -789,21 +1089,27 @@ def build(root, day, phase, cfg, discover_only=False):
 
     gates = scan_gate_flags(root, cfg)
     if gates:
+        only_rx = re.compile(cfg.get("gate_flag_alert_pattern", "BLOCK"))
         off = [g for g in gates if g["value"] == "False"]
-        undoc = [g for g in off if not g["documented"]]
+        undoc = [g for g in off if not g["documented"] and only_rx.search(g["name"])]
         A("### 차단 게이트 전수 인벤토리 — %d개 중 **%d개 꺼짐**" % (len(gates), len(off)))
         A("")
         A("| 플래그 | 값 | 기록됨 |")
         A("|---|---|---|")
         for g in gates:
             if g["value"] == "False":
-                doc = "기록됨" if g["documented"] else "**미기록 ⚠**"
+                if g["documented"]:
+                    doc = "기록됨"
+                elif only_rx.search(g["name"]):
+                    doc = "**미기록 ⚠**"
+                else:
+                    doc = "기능토글"
             else:
                 doc = "—"
             A("| `%s` | %s | %s |" % (g["name"], g["value"], doc))
         A("")
         if undoc:
-            A("> ⚠ **꺼져 있는데 근거가 기록되지 않은 게이트 %d개**: %s" % (
+            A("> ⚠ **꺼져 있는데 근거가 기록되지 않은 차단 게이트 %d개**: %s" % (
                 len(undoc), ", ".join("`%s`" % g["name"] for g in undoc)))
             A("> 의도한 것이면 `dev_memory/DECISION_LOG.md` 에 사유·복원조건을 적고 "
               "`config/dailycheck_targets.json` 의 `documented_disabled_flags` 에 추가하라. "
@@ -877,7 +1183,7 @@ def build(root, day, phase, cfg, discover_only=False):
         A("")
         A("- 형식 %s · 시각 인식 %d행 · %s" % (kind, dg.timed, lv))
         A("")
-        A("<details><summary>첫 8행 / 끝 8행</summary>")
+        A("<details><summary>첫 5행 / 끝 5행</summary>")
         A("")
         A("```")
         L.extend(dg.first_lines)
@@ -899,7 +1205,7 @@ def build(root, day, phase, cfg, discover_only=False):
                     level, tag, len(items), items[0]["hhmm"], items[-1]["hhmm"],
                     truncate(items[0]["msg"], cfg["msg_truncate"])))
             A("")
-            for (level, tag), items in sev[:6]:
+            for (level, tag), items in sev[:4]:
                 n = cfg["max_error_samples_per_tag"]
                 A("<details><summary>%s/%s 원문 %d건</summary>" % (level, tag, min(n, len(items))))
                 A("")
@@ -922,13 +1228,20 @@ def build(root, day, phase, cfg, discover_only=False):
                     tag, len(items), items[0]["hhmm"], items[-1]["hhmm"],
                     truncate(items[0]["msg"], cfg["msg_truncate"])))
             A("")
+        if dg.channel_counts:
+            ch = sorted(dg.channel_counts.items(), key=lambda kv: -kv[1])
+            A("**채널** — " + ", ".join("`%s`×%d" % (t, c) for t, c in ch[:8]))
+            A("")
         top = sorted(dg.tag_counts.items(), key=lambda kv: -kv[1])[:15]
         if top:
-            A("**태그 상위 15** — " + ", ".join("`%s`×%d" % (t, c) for t, c in top))
+            A("**컴포넌트 상위 15** — " + ", ".join("`%s`×%d" % (t, c) for t, c in top))
             A("")
 
-    # ---- 5. 항상 인용하는 패턴 ----
-    A("## 5. 항상 인용하는 패턴 (안전장치·크래시·재학습·진입)")
+    # ---- 5. 거래일 요약 ----
+    day_summary(digests, cfg, L)
+
+    # ---- 6. 항상 인용하는 패턴 ----
+    A("## 6. 항상 인용하는 패턴 (안전장치·크래시·성능·학습)")
     A("")
     any_q = False
     for dg in digests:
@@ -947,8 +1260,8 @@ def build(root, day, phase, cfg, discover_only=False):
         A("(해당 패턴 없음 — 안전장치가 조용했거나, 계측이 없거나. 어느 쪽인지 원본으로 구분할 것)")
         A("")
 
-    # ---- 6. 타임라인 앵커 · 매분 루프 커버리지 ----
-    A("## 6. 타임라인 앵커 · 매분 루프 커버리지")
+    # ---- 7. 타임라인 앵커 · 매분 루프 커버리지 ----
+    A("## 7. 타임라인 앵커 · 매분 루프 커버리지")
     A("")
     for dg in digests[:4]:
         if not dg.records:
@@ -1021,12 +1334,12 @@ def build(root, day, phase, cfg, discover_only=False):
                 A("| %s | %s | %d |" % (m2hhmm(a), m2hhmm(b), g))
         A("")
 
-    # ---- 7. dev_memory ----
+    # ---- 8. dev_memory ----
     devmemory_section(root, cfg, day, L)
 
-    # ---- 8. 산출물 JSON ----
+    # ---- 9. 산출물 JSON ----
     jsons = [e for e in files if is_jsonish(e)]
-    A("## 8. 당일 JSON/JSONL 산출물")
+    A("## 9. 당일 JSON/JSONL 산출물")
     A("")
     if not jsons:
         A("(없음)")
@@ -1039,15 +1352,15 @@ def build(root, day, phase, cfg, discover_only=False):
         A("```")
         A("")
 
-    # ---- 9. 정기점검 리포트 폴더 ----
-    A("## 9. 정기점검 리포트 현황")
+    # ---- 10. 정기점검 리포트 폴더 ----
+    A("## 10. 정기점검 리포트 현황")
     A("")
     for rel in cfg["report_dirs"]:
         base = os.path.join(root, rel)
         if not os.path.isdir(base):
             A("- `%s` 없음" % rel)
             continue
-        rows = []
+        rep_rows = []
         for dirpath, dirnames, filenames in os.walk(base):
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
@@ -1055,18 +1368,18 @@ def build(root, day, phase, cfg, discover_only=False):
                     st = os.stat(full)
                 except OSError:
                     continue
-                rows.append((st.st_mtime, os.path.relpath(full, root).replace(os.sep, "/"), st.st_size))
-        rows.sort(reverse=True)
-        A("### `%s` — %d개 (최근 8개)" % (rel, len(rows)))
+                rep_rows.append((st.st_mtime, os.path.relpath(full, root).replace(os.sep, "/"), st.st_size))
+        rep_rows.sort(reverse=True)
+        A("### `%s` — %d개 (최근 8개)" % (rel, len(rep_rows)))
         A("")
         A("| 파일 | 크기 | 최종 |")
         A("|---|---|---|")
-        for mt, r, sz in rows[:8]:
-            A("| `%s` | %s | %s |" % (r, fmt_bytes(sz), ts_kst(mt).strftime("%m-%d %H:%M")))
+        for mt, r, szb in rep_rows[:8]:
+            A("| `%s` | %s | %s |" % (r, fmt_bytes(szb), ts_kst(mt).strftime("%m-%d %H:%M")))
         A("")
 
-    # ---- 10. 자동 적신호 ----
-    A("## 10. 자동 적신호 (출발점이지 결론이 아니다)")
+    # ---- 11. 자동 적신호 ----
+    A("## 11. 자동 적신호 (출발점이지 결론이 아니다)")
     A("")
     flags = []
     if not files:
@@ -1076,8 +1389,11 @@ def build(root, day, phase, cfg, discover_only=False):
             if "불일치" in r["verdict"] or "미발견" in r["verdict"]:
                 flags.append("설정 불변식 `%s` = `%s` (기대 `%s`) — %s" % (
                     r["name"], r["actual"], r["expect"], truncate(r["why"], 90)))
+    # 전수 표에는 `*_ENABLED` 전부를 싣되, 적신호로는 **차단 게이트**(이름에 BLOCK)만 올린다.
+    # 기능 토글이 꺼진 것과 차단 장치가 꺼진 것은 무게가 다르다.
+    only = re.compile(cfg.get("gate_flag_alert_pattern", "BLOCK"))
     for g in scan_gate_flags(root, cfg):
-        if g["value"] == "False" and not g["documented"]:
+        if g["value"] == "False" and not g["documented"] and only.search(g["name"]):
             flags.append("차단 게이트 `%s` = False 인데 **근거 미기록** — "
                          "의도한 예외인지 확인하고 DECISION_LOG에 남길 것" % g["name"])
     for dg in digests:
@@ -1119,14 +1435,91 @@ def build(root, day, phase, cfg, discover_only=False):
     for em in cfg.get("expected_markers", []):
         if em["phase"] in phases and em["contains"].lower() not in all_names:
             flags.append("완료 마커 **`%s`** 없음 — %s" % (em["contains"], em["why"]))
+    # --- 미륵이 특화 적신호 ---
+    # 이 시스템은 ERROR 를 거의 안 남긴다(2026-08-12 하루 0건). 레벨만 보면 아무 일도
+    # 없었던 것처럼 보이므로, 실제로 의미 있는 신호를 따로 잡는다.
+    merged = {}
+    banner_all = []
+    for dg in digests:
+        for k, v in dg.hits.items():
+            merged.setdefault(k, []).extend(v)
+        if dg.banner:
+            banner_all.extend(dg.banner)
+
+    for line in banner_all:
+        m = re.search(r"판정\s*:\s*(\S+)", line)
+        if m and m.group(1) not in ("OK", "NORMAL", "GOOD", "PASS"):
+            flags.append("전략 상태 경보 **판정 = %s** — 배너 전문을 §5에서 확인하라" % m.group(1))
+            break
+
+    ex = merged.get("exit", [])
+    en = merged.get("entry", [])
+    bl = merged.get("block", [])
+    sz = merged.get("sizer", [])
+    if phase in ("post", "all"):
+        if not en and not ex:
+            top_bl = ""
+            if bl:
+                bd = {}
+                for b in bl:
+                    r = truncate(b.get("reason") or "?", 60)
+                    bd[r] = bd.get(r, 0) + 1
+                top_bl = " 최다 차단 사유: `%s`" % sorted(bd.items(), key=lambda kv: -kv[1])[0][0]
+            flags.append("**진입 0건** — 차단 %d건.%s (진입0 딥다이브 절차를 따르라)" % (len(bl), top_bl))
+        if ex:
+            stops = sum(1 for e in ex
+                        if "스톱" in (e.get("reason") or "") or "손절" in (e.get("reason") or ""))
+            if stops * 2 >= len(ex):
+                flags.append("청산 %d건 중 하드스톱·손절 계열 **%d건(%.0f%%)** — 손절 준수율 확인 필요"
+                             % (len(ex), stops, 100.0 * stops / len(ex)))
+    try:
+        if sz and en:
+            smax = max(int(s["qty"]) for s in sz if s.get("qty"))
+            emax = max(int(e["qty"]) for e in en if e.get("qty"))
+            if smax > emax:
+                flags.append("사이저 최대 %d계약 → 실제 진입 최대 %d계약 — 게이트 배수에 눌림 "
+                             "(sizing_inversion_watch 대상)" % (smax, emax))
+    except (ValueError, KeyError, TypeError):
+        pass
+
+    bms = merged.get("block_ms", [])
+    over = []
+    for b in bms:
+        v = b.get("ms") or b.get("ms2")
+        try:
+            if v and int(v) >= 5000:
+                over.append(int(v))
+        except ValueError:
+            pass
+    if over:
+        flags.append("메인 스레드 블로킹 5초 초과 **%d건** (최대 %dms) — "
+                     "`CB_PIPE_PAUSE_MS=5_000` 기준 초과. CB⑤ 발동 여부 확인" % (len(over), max(over)))
+
+    for dg in digests:
+        for pat in ("[Brier] 과신", "degraded=ON", "level=CRITICAL", "축퇴",
+                    "WeightCollapse", "ConstOut"):
+            if pat in dg.quoted:
+                flags.append("`%s`: **%s** %d건(표본)" % (dg.rel, pat, len(dg.quoted[pat])))
+
     if bad_tag:
         flags.append("PC명 태그 누락 커밋 %d건 — 멀티PC 컨벤션 위반" % len(bad_tag))
     if dirty:
         flags.append("미커밋 변경 %d건" % len(dirty))
-    for rel in cfg["devmemory_files"]:
+    for rel in ("dev_memory/DECISION_LOG.md", "dev_memory/NEXT_TODO.md"):
         p = os.path.join(root, rel)
         if os.path.exists(p) and ts_kst(os.stat(p).st_mtime).date() != day and phase in ("post", "all"):
             flags.append("`%s` 가 오늘 갱신되지 않았다 — 세션 기록 의무 확인" % rel)
+
+    for sf in cfg.get("state_files", []):
+        p = os.path.join(root, sf["path"])
+        if not os.path.exists(p):
+            if phase in ("post", "all"):
+                flags.append("상태 파일 `%s` 없음 — %s" % (sf["path"], sf["why"]))
+        else:
+            mt = ts_kst(os.stat(p).st_mtime)
+            if mt.date() != day and phase in ("post", "all"):
+                flags.append("상태 파일 `%s` 가 오늘 것이 아니다 (%s) — %s"
+                             % (sf["path"], mt.strftime("%m-%d %H:%M"), sf["why"]))
 
     if flags:
         seen = set()

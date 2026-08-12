@@ -8,6 +8,16 @@
 
 ---
 
+## 0. 브랜치 — MW0601과 MW0602는 다른 브랜치로 돈다 ⚠
+
+| PC | 운영 브랜치 |
+|---|---|
+| MW0601 | **`v9-dev`** |
+| MW0602 | **`dev`** |
+
+같은 리포를 공유하지만 작업 라인이 갈려 있다. **커밋·체리픽 전에 반드시 확인하라.**
+`config/settings.py` 가 브랜치 간 5,476줄 차이 난다 — 아래 §2 한시예외 값도 `v9-dev` 기준이다.
+
 ## 1. 절대원칙 6종 (변경 불가)
 
 제안이 이 중 하나에 저촉되면 **그 제안 자체를 내지 않는다.**
@@ -127,6 +137,22 @@ CLAUDE.md 절대원칙 §2의 서술과 `config/settings.py` 실제 값이 어�
 |---|---|---|
 | CB③ "30분 정확도 **< 35%** → 당일 정지" | `CB_ACCURACY_MIN_30M = 0.28` (주석: 0.35→0.28) | 임계가 완화됐는데 절대원칙 문구는 그대로 |
 | CB⑤ "API 지연 5초 초과 → 즉시 청산" | `CB_API_LATENCY_LIMIT = 5.0` 은 **"레거시 — Kiwoom용, Cybos에서는 사용 안 함"**. 실질 구현은 `CB_PIPE_PAUSE_MS = 5_000` (5분 진입 정지) | 트리거 대상도(API→파이프) 동작도(즉시 청산→진입 정지) 다르다 |
+
+### v9-dev 차단 게이트 전수 (2026-08-12 실측, 27개 중 7개 False)
+
+| 플래그 | 값 | 성격 |
+|---|---|---|
+| `CB3_P4_GRADE_BLOCK_ENABLED` | False | 차단 게이트 — 기록됨 |
+| `FP_CRITICAL_GRADE_BLOCK_ENABLED` | False | 차단 게이트 — 기록됨 |
+| `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED` | False | **차단 게이트 — 미기록 ⚠** |
+| `HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY` | False | 차단 게이트 — 설계 선택(수동진입은 막지 않음) |
+| `LIMIT_PIN_ENTRY_BLOCK_ENABLED` | True | 차단 게이트 — 켜짐 |
+| `HURST_SOFT_BLOCK_ENABLED` | True | 소프트 차단(사이즈 0.5배) |
+| `HEALTH_DEGRADED_BLOCK_AUTO_ENTRY` | True | 차단 게이트 — 켜짐 |
+| `LOSS_TIER1_QTY1_ENABLED` · `LIMIT_ENTRY_FIRST_ENABLED` · `TICKUI_TRACE_ENABLED` | False | 기능 토글 (차단 아님) |
+
+수집기는 전수 표에 전부 싣되 **이름에 `BLOCK` 이 든 것만** 적신호로 올린다
+(`gate_flag_alert_pattern`). 기능 토글이 꺼진 것과 차단 장치가 꺼진 것은 무게가 다르다.
 
 ### 네 번째 비활성 차단 게이트
 
