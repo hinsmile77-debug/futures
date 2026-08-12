@@ -2225,6 +2225,59 @@ class TradingSystem:
         self._mh_weight_collapse_minutes = 0
         self._mh_intraday_retrain_count = 0
 
+    @staticmethod
+    def _model_reload_quiet_delay(now_sec: float, cfg: dict) -> float:
+        """[MW0601 458차 / P0] 조용한 창까지 기다릴 초 — 순수 함수(테스트 가능).
+
+        now_sec: 분 안의 현재 초(0.0~59.999). cfg: MODEL_RELOAD_QUIET_WINDOW.
+
+        규칙:
+          · 목표(:target) 이전이면 목표까지 기다린다.
+          · 목표를 지났지만 아직 이르면(≤ latest_start) **즉시 간다** — 파이프라인은
+            이미 끝났고 다음 파이프라인까지 여유가 있다.
+          · latest_start를 지났으면 다음 파이프라인(:59)이 임박했으므로 **다음 분**
+            목표까지 미룬다.
+        어떤 경우에도 max_wait를 넘지 않는다(스왑이 영영 밀리지 않게).
+        """
+        if not cfg.get("enabled", False):
+            return 0.0
+        target = float(cfg.get("target_sec", 15))
+        latest = float(cfg.get("latest_start_sec", 45))
+        max_wait = float(cfg.get("max_wait_sec", 45))
+        if now_sec <= target:
+            delay = target - now_sec
+        elif now_sec <= latest:
+            delay = 0.0
+        else:
+            delay = (60.0 - now_sec) + target
+        return max(0.0, min(delay, max_wait))
+
+    def _await_model_reload_quiet_window(self) -> float:
+        """[MW0601 458차 / P0] 조용한 창까지 대기. 반환값 = 실제로 기다린 초.
+
+        데몬 스레드에서만 호출된다(프로세스 종료를 막지 않는다). 대기 자체가
+        교체를 지연시키지 않는 이유는 settings의 MODEL_RELOAD_QUIET_WINDOW 주석 참조 —
+        스왑은 원래부터 다음 분 S0 drain이 가져간다.
+        """
+        try:
+            cfg = getattr(runtime_settings, "MODEL_RELOAD_QUIET_WINDOW", None) or {}
+            now = datetime.datetime.now()
+            delay = self._model_reload_quiet_delay(
+                now.second + now.microsecond / 1e6, cfg,
+            )
+            if delay <= 0:
+                return 0.0
+            logger.debug(
+                "[Model] 선로드 대기 %.1fs — 조용한 창(:%02d초)까지",
+                delay, int(cfg.get("target_sec", 15)),
+            )
+            time.sleep(delay)
+            return delay
+        except Exception as _qe:
+            # 계측이 본 작업을 막지 않는다 — 대기 실패는 즉시 로드로 폴백.
+            logger.debug("[Model] 조용한 창 대기 실패, 즉시 로드 (무해): %s", _qe)
+            return 0.0
+
     def _model_reload_worker(self) -> None:
         """[MW0601 457차 / B1] 모델 pkl 언피클 워커 — 파이프라인 밖에서 3~4초를 쓴다.
 
@@ -2232,7 +2285,13 @@ class TradingSystem:
           순수 디스크 읽기이고, 라이브 반영은 메인 스레드의 _commit_model_reload가 한다.
           (Qt 위젯·시그널도 당연히 금지 — 절대원칙 §4와 같은 취지)
         """
+        # [MW0601 458차 / P0] 무거운 언피클을 분 안의 조용한 구간으로 미룬다.
+        # 457차는 워커로 옮기기만 했을 뿐 **파이프라인과 같은 분에** 돌아 GIL 경합으로
+        # S0~S6를 전부 3~8배 늦췄다(config/settings.py:MODEL_RELOAD_QUIET_WINDOW 참조).
+        # 스왑 시점은 어차피 다음 분 S0 drain이므로 이 대기는 교체를 지연시키지 않는다.
+        _waited = self._await_model_reload_quiet_window()
         _t0 = time.perf_counter()
+        _start_sec = datetime.datetime.now().second
         try:
             _staged_gbm = self.model.stage_reload()
             try:
@@ -2240,9 +2299,12 @@ class TradingSystem:
             except Exception as _rfe:
                 logger.warning("[Model] RF 선로드 실패 (GBM만 교체): %s", _rfe)
                 _staged_rf = None
+            # 대기 시간을 함께 남긴다 — 계측 4원칙 ④(폴백·대기를 숨기지 않는다).
+            # 종전 문구는 `(S0 비블로킹)`이라 적어놓고 실제로는 막고 있었다.
             logger.info(
-                "[Model] 워커 선로드 완료 %.0fms — 메인 스레드 스왑 대기",
-                (time.perf_counter() - _t0) * 1000.0,
+                "[Model] 워커 선로드 완료 %.0fms (대기 %.1fs, 시작 :%02d초) "
+                "— 메인 스레드 스왑 대기",
+                (time.perf_counter() - _t0) * 1000.0, _waited, _start_sec,
             )
             self._deferred_callbacks.put(("model_staged", _staged_gbm, _staged_rf))
         except Exception as _e:
@@ -12895,6 +12957,27 @@ def _ts_execute_loss_tier1_qty1_exit(self, price: float) -> None:
         log_manager.system(f"[Exit] 손절1차 qty1 주문 실패 ret={ret}", "ERROR")
 
 
+def _position_elapsed_sec(position) -> "Optional[float]":
+    """[MW0601 458차 / P3] 진입 후 경과 초 — 섀도 채널의 시간축.
+
+    왜 필요한가: 2026-08-12 조기축소 3건이 전부 진입 후 **11~47초**에 발동했고,
+    그중 2건은 잘라낸 직후 반등해 잔여 레그가 TP2까지 갔다(#3은 30초 뒤 반등).
+    "진입 직후의 일시적 역행을 손절 신호로 오독하는가"를 물으려면 이 축이 필요한데
+    테이블에 없었다. **관측 전용이며 어떤 정책도 바꾸지 않는다** — 표본(현재 3건)이
+    쌓이기 전에 트리거를 손대는 것은 313차 위반이다.
+
+    ⚠ 진입시각을 모르면 **None**을 돌려준다. 0.0으로 채우면 "즉시 발동"과
+      "미상"이 같은 값이 돼 분포 하단이 오염된다(계측 4원칙 ②).
+    """
+    try:
+        et = getattr(position, "entry_time", None)
+        if et is None:
+            return None
+        return max(0.0, (datetime.datetime.now() - et).total_seconds())
+    except Exception:
+        return None
+
+
 def _ts_record_loss_tier1_qty1_shadow(self, price: float, live_active: bool = False) -> None:
     """[363차] qty=1 손실1차 섀도 — hurst_gate_shadow/joint_gate_shadow/open_gap_shadow/
     tp2_hold_shadow와 동일한 패턴(발동 시점 상태만 기록 → 주간 리포트가 사후 판정).
@@ -12907,6 +12990,10 @@ def _ts_record_loss_tier1_qty1_shadow(self, price: float, live_active: bool = Fa
     별도 캔들 시뮬레이션이 불필요(포지션이 실제로 계속 진행되므로 실현치를 그대로 대조).
     """
     self.position.loss_tier1_qty1_shadow_logged = True
+    # [MW0601 458차 / P3] 진입 후 경과 초 — 관측 전용, 정책 무변경.
+    # entry_time이 없으면 **None**으로 남긴다(0으로 채우지 않는다 — 계측 4원칙 ②:
+    # "즉시 발동"과 "진입시각 미상"은 다른 사실이다).
+    _elapsed_sec = _position_elapsed_sec(self.position)
     try:
         execute(
             TRADES_DB,
@@ -12914,8 +13001,8 @@ def _ts_record_loss_tier1_qty1_shadow(self, price: float, live_active: bool = Fa
                (ts, entry_ts, direction, entry_price, loss_tier1_price, stop_price,
                 grade, entry_horizon, cf_outcome, cf_exit_price,
                 quantile_expected_pt, quantile_uncertainty_pt,
-                live_active, from_tier1_remainder)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                live_active, from_tier1_remainder, elapsed_sec)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 # [425차] 초 단위까지 남긴다. 종전 "%H:%M:00" 절단은 틱 배선 이후
                 # 문제가 된다 — 같은 분 안에서 tier1 터치와 풀스톱이 갈리는 것이
@@ -12938,6 +13025,7 @@ def _ts_record_loss_tier1_qty1_shadow(self, price: float, live_active: bool = Fa
                 # 그 경우 모집단이 다르다(이미 한 번 보호받았다 — [14]의 영역).
                 # `loss_tier1_done`은 tier1 체결 후에만 True다.
                 1 if getattr(self.position, "loss_tier1_done", False) else 0,
+                _elapsed_sec,
             ),
         )
     except Exception as _lt1q1_e:
@@ -12952,15 +13040,21 @@ def _ts_record_loss_tier2_shadow(self, price: float) -> None:
     기존 stop_price 그대로 유지, 기존 동작 무변경).
     """
     self.position.loss_tier2_shadow_logged = True
+    # [MW0601 458차 / P3] tier1과 동일한 경과초 축. None 허용(0으로 채우지 않는다).
+    _elapsed_sec = _position_elapsed_sec(self.position)
     try:
         execute(
             TRADES_DB,
             """INSERT INTO loss_tier2_remainder_shadow
                (ts, entry_ts, direction, entry_price, loss_tier2_price, stop_price,
-                remaining_qty, grade, entry_horizon, cf_outcome, cf_exit_price)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                remaining_qty, grade, entry_horizon, cf_outcome, cf_exit_price,
+                elapsed_sec)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                # [458차 P3] 초 단위 보존 — 425차가 tier1에만 적용했던 수정을 여기에도
+                # 옮긴다. tier1↔tier2 발동 순서가 이 채널 짝의 핵심 관측인데 분으로
+                # 뭉개면 같은 분 안의 순서를 복원할 수 없다(425차와 동일 사유).
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
                  if self.position.entry_time else None),
                 self.position.status,
@@ -12972,6 +13066,7 @@ def _ts_record_loss_tier2_shadow(self, price: float) -> None:
                 self.position.entry_horizon,
                 "EARLY_CUT",
                 float(self.position.loss_tier2_price),
+                _elapsed_sec,
             ),
         )
     except Exception as _lt2_e:

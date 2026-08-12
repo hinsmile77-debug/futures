@@ -957,6 +957,13 @@ def init_trades_db():
             # trades의 '손절1차 조기축소' 레그 유무로 소급 보정한다.
             ("live_active", "INTEGER DEFAULT 0"),
             ("from_tier1_remainder", "INTEGER DEFAULT 0"),
+            # [MW0601 458차 / P3] 진입 후 경과 초. 2026-08-12 조기축소 3건이 전부
+            # 진입 후 **11~47초**에 발동했고 그중 2건은 잔여 레그가 곧 반등해 TP2까지
+            # 갔다(#3은 30초 뒤 반등) — "진입 직후의 일시적 역행을 손절 신호로
+            # 오독하는가"라는 질문이 생겼는데, 그것을 검정할 축이 테이블에 없었다.
+            # ⚠ 기존 행은 NULL이다(DEFAULT 0 금지) — 0초 발동과 미측정은 다르다
+            #   (계측 4원칙 ②). 리포트는 NULL 행을 이 축의 집계에서 제외해야 한다.
+            ("elapsed_sec", "REAL"),
         ):
             if _col not in _lt1q1_cols:
                 _lt1q1_conn.execute(
@@ -989,6 +996,14 @@ def init_trades_db():
         created_at         TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
+    # [MW0601 458차 / P3] tier2에도 같은 축을 단다 — tier1과 짝을 이뤄야
+    # "1차는 너무 일렀나 / 2차는 늦었나"를 같은 단위로 비교할 수 있다. 기존 행 NULL.
+    with get_conn(TRADES_DB) as _lt2_conn:
+        _lt2_cols = {r[1] for r in _lt2_conn.execute(
+            "PRAGMA table_info(loss_tier2_remainder_shadow)").fetchall()}
+        if "elapsed_sec" not in _lt2_cols:
+            _lt2_conn.execute(
+                "ALTER TABLE loss_tier2_remainder_shadow ADD COLUMN elapsed_sec REAL")
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_lt2_ts ON loss_tier2_remainder_shadow(ts)")
     execute(TRADES_DB,
