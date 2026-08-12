@@ -114,3 +114,12 @@ CYBOS5.bat
 # MW0602 ì „ìš©
 CREON_PLUS.bat
 start_mireuk_CREON.bat
+
+# ÀÏÀÏ Á¡°Ë ½ºÅ³Àº µÎ PC°¡ °øÀ¯ÇØ¾ß ÇÏ¹Ç·Î .claude Á¦¿ÜÀÇ ¿¹¿Ü·Î µĞ´Ù
+!.claude/
+.claude/*
+!.claude/skills/
+!.claude/commands/
+
+# Áõ°Å ´ÙÀÌÁ¦½ºÆ®´Â Àç»ı¼º °¡´É (Á¡°Ë¸®Æ÷Æ®´Â Ä¿¹Ô ´ë»ó)
+docs/Á¤±âÁ¡°Ë/¸ÅÀÏÁ¡°Ë/evidence_*.md
