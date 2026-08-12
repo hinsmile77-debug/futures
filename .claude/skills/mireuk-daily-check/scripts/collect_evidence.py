@@ -1,0 +1,1219 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""미륵이(futures) 일일 점검 — 증거 수집기.
+
+표준 라이브러리만 쓴다. **Python 3.7 호환** (py37_32 런타임에서도 돈다).
+
+메시아용 수집기와 달리 로그 파일명을 미리 알지 못해도 동작한다.
+날짜 토큰(20260812 / 2026-08-12 / 260812)을 파일명에 가진 것을 스스로 찾아
+분류·요약한다. 사냥개가 냄새로 찾는 방식이고, 목줄(config)을 채우면
+정해진 곳만 뒤진다.
+
+사용:
+    python scripts/collect_evidence.py --discover          # 무엇이 있는지 먼저 본다
+    python scripts/collect_evidence.py --phase pre
+    python scripts/collect_evidence.py --phase post --date 2026-08-11 --out docs/정기점검/매일점검/evidence.md
+
+설정 고정(선택): config/dailycheck_targets.json
+    {"scan_dirs": ["logs", "data/logs"], "process_map": {"main": "trader_", "eod": "eod_"}}
+"""
+
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+from datetime import date as _date
+from datetime import datetime, timedelta
+
+# ------------------------------------------------------------------ 시간대
+# py3.7 에는 zoneinfo 가 없다. KST 는 고정 오프셋이라 직접 만든다.
+try:
+    from datetime import timezone
+
+    KST = timezone(timedelta(hours=9))
+except Exception:  # pragma: no cover
+    KST = None
+
+
+def now_kst():
+    if KST is None:
+        return datetime.now()
+    return datetime.now(KST)
+
+
+def ts_kst(epoch):
+    if KST is None:
+        return datetime.fromtimestamp(epoch)
+    return datetime.fromtimestamp(epoch, KST)
+
+
+# ------------------------------------------------------------------ 기본 설정
+DEFAULT_CONFIG = {
+    # 로그가 있을 만한 곳. 없으면 무시한다.
+    "scan_dirs": ["logs", "log", "data", "data/logs", "output/logs", "."],
+    "scan_depth": 2,
+    # 파일명에 이 문자열이 있으면 아예 무시한다 (호가처럼 수십 MB짜리, 모델 백업 등)
+    "exclude_patterns": [".bak_", "__pycache__", ".pkl", ".joblib", ".parquet", ".csv"],
+    # 로그 다이제스트 순서. 크기가 아니라 중요도로 고른다 —
+    # TRADE 는 15KB지만 강제청산이 거기 있고, HOGA 는 51MB지만 원시 호가일 뿐이다.
+    "priority_logs": [
+        "_TRADE", "_WARN", "_SYSTEM", "_SIGNAL", "_LEARNING", "_HEALTH",
+        "retrain_eod", "retrain_intraday", "_MICRO", "_DATA", "_PROBE",
+        "launcher_", "_DEBUG", "_BACKFILL",
+    ],
+    # 인벤토리에는 남기되 본문은 훑지 않는다.
+    # 호가 원본처럼 수십 MB짜리는 "존재와 크기"가 증거이지 내용은 읽을 것이 아니다.
+    "never_digest_patterns": ["_HOGA"],
+    "max_logs_digested": 8,
+    # 이보다 작은 .txt 는 로그가 아니라 마커·리포트로 보고 전문을 싣는다
+    "marker_max_bytes": 8192,
+    # 그 국면까지 왔으면 있어야 하는 완료 마커
+    "expected_markers": [
+        {"contains": "daily_close_done", "phase": "post",
+         "why": "15:40 일일 마감 완료 마커"},
+        {"contains": "eod_retrain_done", "phase": "post",
+         "why": "EOD 재학습 완료 마커 — 없으면 모델 미교체 → 다음날 CB③ HALT 위험"},
+        {"contains": "strategy_report", "phase": "post",
+         "why": "일일 전략 리포트"},
+    ],
+    # 하루의 뼈대 — CLAUDE.md "매분 실행 파이프라인 9단계" 기준
+    "anchors": [
+        {"at": "08:40", "label": "런처 기동 (Mireuk_batch)", "phase": "pre"},
+        {"at": "08:55", "label": "매크로 수집 → 레짐 판정 + 실시간 구독 사전 시작", "phase": "pre"},
+        {"at": "09:00", "label": "정규장 개장 · 매분 루프 시작", "phase": "pre"},
+        {"at": "10:00", "label": "장중 초반", "phase": "intra"},
+        {"at": "12:00", "label": "장중 중간점", "phase": "intra"},
+        {"at": "14:00", "label": "장중 후반 · 장중 재학습", "phase": "intra"},
+        {"at": "15:10", "label": "**오버나이트 금지 — 강제 청산** (절대원칙 1)", "phase": "post"},
+        {"at": "15:18", "label": "안전망 청산 (STEP 8 5단계 마지막)", "phase": "post"},
+        {"at": "15:40", "label": "자가학습 일일 마감 + SHAP 피처 심사", "phase": "post"},
+        {"at": "15:47", "label": "EOD 재학습(py310_64) 완료", "phase": "post"},
+    ],
+    "anchor_window_minutes": 6,
+    "gap_scan_window": ["08:55", "15:12"],
+    "gap_threshold_minutes": 10,
+    # 매분 루프이므로 정상이면 1분 간격 기록이 있어야 한다
+    "minute_loop_window": ["09:00", "15:10"],
+    # 이 정도 분(minute)을 덮는 로그만 "매분 루프 로그"로 보고 커버리지를 잰다.
+    # EOD 재학습 로그처럼 몇 줄뿐인 파일에 커버리지 0%를 들이대면 경보만 시끄러워진다.
+    "main_loop_min_minutes": 60,
+    # 비우면 "분 커버리지가 충분한 모든 로그"가 대상. 채널별로 나뉜 구조에서는
+    # 매분 도는 본체 채널만 지정하는 편이 낫다. 예: ["_SYSTEM"]
+    "main_loop_log_patterns": [],
+    # 이 토큰이 보이면 무조건 인용한다 (대소문자 무시, 부분일치)
+    "always_quote_patterns": [
+        "CIRCUIT", "CB①", "CB②", "CB③", "CB④", "CB⑤", "HALT", "정지",
+        "강제청산", "FORCED", "FLAT", "안전망",
+        "KILL", "STOP_LOSS", "손절",
+        "0xC0000409", "STACK_BUFFER", "CRASH", "TRACEBACK", "Traceback",
+        "OOM", "MemoryError",
+        "PSI", "CRITICAL",
+        "재학습", "RETRAIN", "SHAP",
+        "진입", "ENTRY", "체결", "미체결",
+    ],
+    # config/settings.py 에서 값을 확인할 상수 — CLAUDE.md 절대원칙·한시예외 대응
+    "invariants": [
+        {"name": "CB_CONSEC_STOP_LIMIT", "expect": "9999",
+         "why": "모의투자 한정 예외(CB② 사실상 비활성). 실투 전환 전 2~3 복원 필수. 재검토 기한 2026-08-29"},
+        {"name": "CB3_P4_GRADE_BLOCK_ENABLED", "expect": "False",
+         "why": "30m 퇴역으로 CB③-P4 상시 RESTRICTED 고착 → 차단만 비활성 (296·297차)"},
+        {"name": "FP_CRITICAL_GRADE_BLOCK_ENABLED", "expect": "False",
+         "why": "PSI 계측 결함으로 차단만 비활성. 371차 분위수 재설계 후 라이브 관찰 중"},
+        {"name": "MAX_CONTRACTS", "expect": "3",
+         "why": "431차 10→3 인하. 실전 자본 확정 시 재산출 대상"},
+        {"name": "SIZING_TARGET_CAPITAL_ENABLED", "expect": "True",
+         "why": "모의투자 한정. False 전환은 단독 지시로 읽지 말 것 (손실 구간 복원 위험)"},
+        {"name": "SIZING_TARGET_CAPITAL_KRW", "expect": None,
+         "why": "현행 5천만원. 실전 전환 기준 ⑧의 남은 해제 조건"},
+        {"name": "HURST_WINDOW_N", "expect": "90", "why": "317차 재보정. 26주 WFA마다 재검증"},
+        {"name": "HURST_MAX_LAG", "expect": "9", "why": "317차 재보정. 26주 WFA마다 재검증"},
+        {"name": "VALIDATION_REPORT_KEEP_WEEKS", "expect": "4", "why": "주간 리포트 FIFO 보관"},
+        # --- 2026-08-12 실측으로 추가된 감시 대상 ---
+        {"name": "CB_ACCURACY_MIN_30M", "expect": "0.28",
+         "why": "CB③ 임계. ⚠ CLAUDE.md 절대원칙 §2는 35%로 적혀 있다 — 코드가 0.35→0.28 완화됨. 문서 갱신 필요"},
+        {"name": "CB_ACC_RESTRICTED_MIN", "expect": "0.30",
+         "why": "WATCH→RESTRICTED 경계. 30m 구조적 성능(0.3052)과 거의 같아 CB③-P4 비활성의 직접 원인"},
+        {"name": "CB_ACCURACY_MIN_30M_STRICT", "expect": "0.42",
+         "why": "과신 연속 시 강화 임계 (0.50→0.42 완화)"},
+        {"name": "TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED", "expect": "False",
+         "why": "⚠ CLAUDE.md 한시예외 목록에 없는 네 번째 비활성 차단 게이트. 근거·복원조건 미기록 상태"},
+        {"name": "LIMIT_PIN_ENTRY_BLOCK_ENABLED", "expect": "True",
+         "why": "호가 상하한 핀 진입 차단 — 켜져 있어야 정상"},
+        {"name": "HURST_SOFT_BLOCK_ENABLED", "expect": "True",
+         "why": "Hurst 소프트 차단(사이즈 0.5배). 316~318차 재보정 계열"},
+        {"name": "HEALTH_DEGRADED_BLOCK_AUTO_ENTRY", "expect": "True",
+         "why": "Degraded 상태 자동진입 차단 — 켜져 있어야 정상"},
+        {"name": "CB_PIPE_PAUSE_MS", "expect": "5_000",
+         "why": "CB⑤ 실질 구현. `CB_API_LATENCY_LIMIT` 은 Kiwoom 레거시로 Cybos에서 미사용"},
+        {"name": "ENTRY_HORIZON_B1", "expect": "3.2", "why": "1m/3m 경계 [374차 1.5→3.5, 387차 3.5→3.2] — 드리프트 항목"},
+        {"name": "ENTRY_HORIZON_B2", "expect": "4.4", "why": "3m/5m 경계 [374차 2.5→4.0, 387차 4.0→4.4] — 드리프트 항목"},
+        {"name": "CB_DAILY_HALT_FULL_BLOCK", "expect": "3", "why": "HALT 3회 → 완전 관망"},
+    ],
+    # 차단 게이트 자동 인벤토리 — 이름에 이 패턴이 있고 값이 True/False 인 상수
+    "gate_flag_pattern": "BLOCK|ENABLED|DISABLE",
+    # CLAUDE.md·DECISION_LOG 에 근거가 기록된 "일부러 꺼둔" 게이트.
+    # 여기 없는 False 게이트는 §10에서 적신호로 올린다 — 조용히 잠든 게이트를 막기 위함.
+    "documented_disabled_flags": [
+        "CB3_P4_GRADE_BLOCK_ENABLED",
+        "FP_CRITICAL_GRADE_BLOCK_ENABLED",
+    ],
+    # 텍스트로 훑을 기준 문서
+    "design_docs": [
+        "CLAUDE.md", "CORE.md", "ROADMAP.md",
+        "_archive/plans/PROJECT_DESIGN.md",
+    ],
+    "devmemory_files": ["dev_memory/DECISION_LOG.md", "dev_memory/NEXT_TODO.md"],
+    "report_dirs": ["docs/정기점검/매일점검", "docs/정기점검/금요일점검"],
+    # --out-auto 가 쓰는 출력 폴더. 파일명에 PC명이 들어가 두 PC가 서로를 덮지 않는다.
+    "evidence_dir": "docs/정기점검/매일점검",
+    "max_error_samples_per_tag": 3,
+    "max_warn_tags": 20,
+    "msg_truncate": 240,
+    "max_files_per_group": 6,
+    "max_log_bytes": 40 * 1024 * 1024,
+}
+
+LEVEL_RE = re.compile(r"\b(CRITICAL|FATAL|ERROR|WARNING|WARN|INFO|DEBUG)\b")
+LEVEL_ORDER = ["CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG"]
+# 2026-08-12 09:00:01,123  /  2026-08-12T09:00:01  /  [09:00:01]  /  09:00:01
+TIME_RE = re.compile(r"(?:(\d{4})[-/](\d{2})[-/](\d{2})[T ])?(\d{2}):(\d{2}):(\d{2})")
+# 로거명 추정: "module.sub - " 또는 "[TAG]"
+TAG_BRACKET_RE = re.compile(r"\[([A-Za-z가-힣_][\w가-힣.\-]{1,40})\]")
+TAG_LOGGER_RE = re.compile(r"\s([A-Za-z_][\w.]{2,50})\s+[-|:]\s")
+DATE_TOKEN_KEYS = ("ymd", "y_m_d", "ymd2", "md")
+
+
+def eprint(*a):
+    sys.stderr.write(" ".join(str(x) for x in a) + "\n")
+
+
+# ------------------------------------------------------------------ 유틸
+def find_repo_root(start):
+    cur = os.path.abspath(start)
+    while True:
+        if os.path.exists(os.path.join(cur, "CLAUDE.md")) and os.path.isdir(os.path.join(cur, "dev_memory")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    cur = os.path.abspath(start)
+    while True:
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return os.path.abspath(start)
+        cur = parent
+
+
+def parse_date(s):
+    if not s:
+        return now_kst().date()
+    s = s.strip()
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%y%m%d", "%m/%d", "%m-%d"):
+        try:
+            d = datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+        if fmt in ("%m/%d", "%m-%d"):
+            d = d.replace(year=now_kst().year)
+        return d.date()
+    raise SystemExit("날짜 형식을 못 읽었다: %r (예: 2026-08-12 / 20260812 / 8/11)" % s)
+
+
+def date_tokens(day):
+    return {
+        "ymd": day.strftime("%Y%m%d"),
+        "y_m_d": day.strftime("%Y-%m-%d"),
+        "ymd2": day.strftime("%y%m%d"),
+        "md": day.strftime("%m%d"),
+    }
+
+
+def hhmm_to_min(s):
+    h, m = s.split(":")
+    return int(h) * 60 + int(m)
+
+
+def m2hhmm(m):
+    return "%02d:%02d" % (m // 60, m % 60)
+
+
+def fmt_bytes(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return ("%.0f%s" % (n, unit)) if unit == "B" else ("%.1f%s" % (n, unit))
+        n = n / 1024.0
+    return "%sB" % n
+
+
+def truncate(s, n):
+    s = str(s).replace("\n", " ⏎ ").replace("\r", "").strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def read_text(path, limit=None):
+    for enc in ("utf-8-sig", "cp949", "latin-1"):
+        try:
+            with io.open(path, "r", encoding=enc, errors="strict") as f:
+                return f.read() if limit is None else f.read(limit)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        except Exception as e:
+            return "(읽기 실패) %s" % e
+    try:
+        with io.open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read() if limit is None else f.read(limit)
+    except Exception as e:
+        return "(읽기 실패) %s" % e
+
+
+def open_text(path):
+    """인코딩을 순서대로 시도해 라인 이터레이터를 준다."""
+    for enc in ("utf-8-sig", "cp949"):
+        try:
+            f = io.open(path, "r", encoding=enc, errors="strict")
+            f.readline()
+            f.seek(0)
+            return f
+        except (UnicodeDecodeError, LookupError):
+            try:
+                f.close()
+            except Exception:
+                pass
+            continue
+        except Exception:
+            break
+    return io.open(path, "r", encoding="utf-8", errors="replace")
+
+
+def run_git(root, args, timeout=25):
+    try:
+        p = subprocess.Popen(["git"] + list(args), cwd=root,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = p.communicate(timeout=timeout)
+        dec = lambda b: b.decode("utf-8", "replace").strip()
+        return dec(out) if p.returncode == 0 else "(git 실패 rc=%s) %s" % (p.returncode, dec(err)[:300])
+    except Exception as e:
+        return "(git 실행 불가) %s" % e
+
+
+def pc_id():
+    """CLAUDE.md 규약: 호스트명에서 MW#### 를 뽑는다 (utils/db_utils.py:pc_id() 와 동일 취지)."""
+    host = platform.node() or ""
+    m = re.search(r"(MW\d{4})", host, re.IGNORECASE)
+    return (m.group(1).upper() if m else "UNKNOWN"), host
+
+
+# ------------------------------------------------------------------ 파일 탐색
+def discover_files(root, cfg, day):
+    """날짜 토큰을 파일명에 가진 파일을 찾아 그룹으로 묶는다."""
+    toks = date_tokens(day)
+    found = []
+    seen = set()
+    for rel in cfg["scan_dirs"]:
+        base = os.path.normpath(os.path.join(root, rel))
+        if not os.path.isdir(base):
+            continue
+        base_depth = base.rstrip(os.sep).count(os.sep)
+        for dirpath, dirnames, filenames in os.walk(base):
+            if dirpath.count(os.sep) - base_depth >= cfg["scan_depth"]:
+                dirnames[:] = []
+            dirnames[:] = [d for d in dirnames
+                           if d not in (".git", ".venv", "__pycache__", "node_modules", ".idea")]
+            for fn in filenames:
+                full = os.path.normpath(os.path.join(dirpath, fn))
+                if full in seen:
+                    continue
+                if any(x.lower() in fn.lower() for x in cfg.get("exclude_patterns", [])):
+                    continue
+                hit = None
+                for key in DATE_TOKEN_KEYS:
+                    if toks[key] in fn:
+                        hit = key
+                        break
+                if hit is None:
+                    continue
+                seen.add(full)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                # 파일명에서 날짜 토큰을 지운 나머지를 그룹키로 쓴다
+                stem = fn
+                for key in DATE_TOKEN_KEYS:
+                    stem = stem.replace(toks[key], "{DATE}")
+                found.append({
+                    "path": full,
+                    "rel": os.path.relpath(full, root).replace(os.sep, "/"),
+                    "name": fn,
+                    "group": stem,
+                    "token": hit,
+                    "size": st.st_size,
+                    "mtime": st.st_mtime,
+                    "ext": os.path.splitext(fn)[1].lower(),
+                })
+    found.sort(key=lambda x: (x["group"], x["rel"]))
+    return found
+
+
+def is_logish(entry):
+    return entry["ext"] in (".log", ".txt", ".out", ".err", "") or "log" in entry["name"].lower()
+
+
+def is_jsonish(entry):
+    return entry["ext"] in (".json", ".jsonl")
+
+
+# ------------------------------------------------------------------ 로그 파싱
+class LogDigest(object):
+    """JSON 로그와 평문 로그를 모두 받는다 — 미륵이는 평문 logging 포맷일 가능성이 높다."""
+
+    def __init__(self, entry, cfg, day):
+        self.entry = entry
+        self.rel = entry["rel"]
+        self.cfg = cfg
+        self.day = day
+        self.size = entry["size"]
+        self.mtime = ts_kst(entry["mtime"])
+        self.total_lines = 0
+        self.json_lines = 0
+        self.timed = 0
+        self.records = []
+        self.level_counts = {}
+        self.tag_counts = {}
+        self.by_level_tag = {}
+        self.quoted = {}
+        self.first_lines = []
+        self.last_lines = []
+        self.truncated = False
+
+    def scan(self):
+        if self.size > self.cfg["max_log_bytes"]:
+            self.truncated = True
+            return self
+        tail = []
+        try:
+            f = open_text(self.entry["path"])
+        except Exception as e:
+            self.first_lines = ["(열기 실패) %s" % e]
+            return self
+        with f:
+            for line in f:
+                line = line.rstrip("\r\n")
+                if not line.strip():
+                    continue
+                self.total_lines += 1
+                if len(self.first_lines) < 8:
+                    self.first_lines.append(truncate(line, 300))
+                tail.append(line)
+                if len(tail) > 8:
+                    tail.pop(0)
+                self._ingest(line)
+        self.last_lines = [truncate(x, 300) for x in tail]
+        return self
+
+    def _ingest(self, line):
+        stripped = line.lstrip()
+        level = None
+        tag = None
+        msg = line
+        rec = None
+        if stripped.startswith("{"):
+            try:
+                rec = json.loads(stripped)
+            except Exception:
+                rec = None
+        if isinstance(rec, dict):
+            self.json_lines += 1
+            level = str(rec.get("level") or rec.get("levelname") or "?").upper()
+            tag = str(rec.get("tag") or rec.get("name") or rec.get("logger") or "?")
+            msg = str(rec.get("msg") or rec.get("message") or "")
+            tsrc = str(rec.get("ts") or rec.get("timestamp") or rec.get("asctime") or "")
+        else:
+            m = LEVEL_RE.search(line)
+            level = m.group(1) if m else "PLAIN"
+            mb = TAG_BRACKET_RE.search(line)
+            if mb:
+                tag = mb.group(1)
+            else:
+                ml = TAG_LOGGER_RE.search(line)
+                tag = ml.group(1) if ml else "-"
+            tsrc = line
+            # 표에 실을 msg 에서는 앞머리(타임스탬프·레벨·로거명)를 걷어낸다.
+            # 원문이 필요하면 raw 를 쓴다.
+            msg = line[m.end():] if m else line
+            msg = re.sub(r"^[\s\-|:]+", "", msg)
+            if tag and tag != "-" and msg.startswith(tag):
+                msg = re.sub(r"^%s[\s\-|:]+" % re.escape(tag), "", msg)
+
+        minutes = None
+        hhmm = "??:??:??"
+        mt = TIME_RE.search(tsrc)
+        if mt:
+            hhmm = "%s:%s:%s" % (mt.group(4), mt.group(5), mt.group(6))
+            minutes = int(mt.group(4)) * 60 + int(mt.group(5))
+            self.timed += 1
+
+        level = level if level in LEVEL_ORDER or level == "PLAIN" else "PLAIN"
+        self.level_counts[level] = self.level_counts.get(level, 0) + 1
+        self.tag_counts[tag] = self.tag_counts.get(tag, 0) + 1
+        entry = {"hhmm": hhmm, "minutes": minutes, "level": level, "tag": tag,
+                 "msg": truncate(msg if msg else line, 600), "raw": truncate(line, 600)}
+        if minutes is not None:
+            self.records.append(entry)
+        if level in ("ERROR", "CRITICAL", "FATAL", "WARNING", "WARN"):
+            self.by_level_tag.setdefault((level, tag), []).append(entry)
+
+        up = line.upper()
+        for pat in self.cfg["always_quote_patterns"]:
+            if pat.upper() in up:
+                bucket = self.quoted.setdefault(pat, [])
+                if len(bucket) < 8:
+                    bucket.append(entry)
+                break
+
+    # --- 파생 --------------------------------------------------------
+    def gaps(self):
+        lo = hhmm_to_min(self.cfg["gap_scan_window"][0])
+        hi = hhmm_to_min(self.cfg["gap_scan_window"][1])
+        thr = self.cfg["gap_threshold_minutes"]
+        pts = sorted(set(e["minutes"] for e in self.records
+                         if e["minutes"] is not None and lo <= e["minutes"] <= hi))
+        out = []
+        for a, b in zip(pts, pts[1:]):
+            if b - a >= thr:
+                out.append((a, b, b - a))
+        return out
+
+    def minute_coverage(self):
+        """매분 루프가 정말 매분 돌았는지 — 분 단위 커버리지."""
+        lo = hhmm_to_min(self.cfg["minute_loop_window"][0])
+        hi = hhmm_to_min(self.cfg["minute_loop_window"][1])
+        have = set(e["minutes"] for e in self.records
+                   if e["minutes"] is not None and lo <= e["minutes"] <= hi)
+        total = hi - lo + 1
+        missing = sorted(set(range(lo, hi + 1)) - have)
+        return len(have), total, missing
+
+    def is_main_loop(self):
+        """매분 루프를 도는 본체 로그인가 — 커버리지 판정 대상 여부.
+
+        패턴이 지정돼 있으면 그 파일만 대상이다. 채널별로 로그가 갈린 구조에서는
+        예측 채널이 매분 기록하지 않는 것이 정상일 수 있어, 아무 로그나 붙잡고
+        "커버리지 54%"라고 하면 경보만 시끄러워진다.
+        """
+        pats = self.cfg.get("main_loop_log_patterns") or []
+        if pats and not any(p.lower() in self.entry["name"].lower() for p in pats):
+            return False
+        have, _total, _missing = self.minute_coverage()
+        return have >= self.cfg["main_loop_min_minutes"]
+
+    def anchor_slices(self, anchors, phases):
+        w = self.cfg["anchor_window_minutes"]
+        out = []
+        for a in anchors:
+            if a["phase"] not in phases:
+                continue
+            at = hhmm_to_min(a["at"])
+            hits = [e for e in self.records
+                    if e["minutes"] is not None and at - w <= e["minutes"] <= at + w]
+            out.append((a, hits))
+        return out
+
+
+# ------------------------------------------------------------------ JSON 요약
+def summarize_json(path, max_chars=1800):
+    raw = read_text(path)
+    if raw.startswith("(읽기 실패)"):
+        return raw
+    stripped = raw.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            obj = json.loads(stripped)
+        except Exception:
+            # jsonl 일 수 있다
+            lines = [l for l in stripped.splitlines() if l.strip()]
+            head = lines[:3]
+            tail = lines[-3:] if len(lines) > 3 else []
+            return truncate("JSONL %d행\n첫: %s\n끝: %s" % (len(lines), " | ".join(head), " | ".join(tail)), max_chars)
+        dumped = json.dumps(obj, ensure_ascii=False, indent=1)
+        if len(dumped) <= max_chars:
+            return dumped
+
+        def fold(o, depth=0):
+            if depth >= 2:
+                if isinstance(o, dict):
+                    return "<dict %d키: %s…>" % (len(o), ", ".join(list(o)[:8]))
+                if isinstance(o, list):
+                    return "<list %d건>" % len(o)
+                return o
+            if isinstance(o, dict):
+                return dict((k, fold(v, depth + 1)) for k, v in o.items())
+            if isinstance(o, list):
+                head = [fold(v, depth + 1) for v in o[:3]]
+                return head + (["…외 %d건" % (len(o) - 3)] if len(o) > 3 else [])
+            return o
+        return truncate(json.dumps(fold(obj), ensure_ascii=False, indent=1), max_chars)
+    lines = [l for l in stripped.splitlines() if l.strip()]
+    return truncate("JSONL %d행\n첫: %s\n끝: %s" % (
+        len(lines), " | ".join(lines[:2]), " | ".join(lines[-2:])), max_chars)
+
+
+# ------------------------------------------------------------------ 불변식 검사
+def check_invariants(root, cfg):
+    """config/settings.py 를 import 하지 않고 정규식으로만 읽는다.
+
+    import 하면 py37_32 전용 모듈이 딸려 들어와 터진다. 여기서는 '값이 무엇인가'만
+    알면 되므로 텍스트로 읽는 편이 안전하고 빠르다.
+    """
+    path = os.path.join(root, "config", "settings.py")
+    if not os.path.exists(path):
+        return None, []
+    text = read_text(path)
+    rows = []
+    for inv in cfg["invariants"]:
+        name = inv["name"]
+        m = re.search(r"(?m)^\s*%s\s*=\s*([^\n#]+)" % re.escape(name), text)
+        actual = m.group(1).strip().rstrip(",") if m else None
+        exp = inv["expect"]
+        if actual is None:
+            verdict = "**미발견 ⚠**"
+        elif exp is None:
+            verdict = "값 확인"
+        elif actual == exp or actual.rstrip("_0123456789") == exp:
+            verdict = "일치"
+        else:
+            verdict = "**불일치 ⚠**"
+        rows.append({"name": name, "actual": actual, "expect": exp,
+                     "verdict": verdict, "why": inv["why"]})
+    # VALIDATION_CAMPAIGN mode 는 dict 안에 있어 따로 본다
+    m = re.search(r"VALIDATION_CAMPAIGN\s*=\s*\{.*?[\"']mode[\"']\s*:\s*[\"'](\w+)[\"']",
+                  text, re.S)
+    if m:
+        rows.append({"name": 'VALIDATION_CAMPAIGN["mode"]', "actual": m.group(1),
+                     "expect": "standing", "why": "2026-08-01 상시 운영 전환",
+                     "verdict": "일치" if m.group(1) == "standing" else "**불일치 ⚠**"})
+    return path, rows
+
+
+def scan_gate_flags(root, cfg):
+    """`*_BLOCK_ENABLED` 류 불리언 플래그를 전수 조사한다.
+
+    한시예외를 하나하나 손으로 적어두면 새로 생긴 것을 놓친다. 이름 규칙으로 훑으면
+    "꺼져 있는데 아무도 기록해두지 않은 게이트"가 저절로 드러난다.
+    """
+    path = os.path.join(root, "config", "settings.py")
+    if not os.path.exists(path):
+        return []
+    text = read_text(path)
+    pat = re.compile(cfg.get("gate_flag_pattern", "BLOCK|ENABLED|DISABLE"))
+    out = []
+    for m in re.finditer(r"(?m)^([A-Z][A-Z0-9_]*)\s*=\s*(True|False)\b", text):
+        name, val = m.group(1), m.group(2)
+        if not pat.search(name):
+            continue
+        out.append({"name": name, "value": val,
+                    "documented": name in cfg.get("documented_disabled_flags", [])})
+    out.sort(key=lambda r: (r["value"] == "True", r["name"]))
+    return out
+
+
+# ------------------------------------------------------------------ dev_memory
+def devmemory_section(root, cfg, day, out):
+    A = out.append
+    A("")
+    A("## 7. dev_memory")
+    A("")
+    for rel in cfg["devmemory_files"]:
+        p = os.path.join(root, rel)
+        if not os.path.exists(p):
+            A("- **%s**: 없음 ⚠" % rel)
+            continue
+        st = os.stat(p)
+        mt = ts_kst(st.st_mtime)
+        fresh = "**오늘 갱신됨**" if mt.date() == day else "마지막 갱신 %s" % mt.strftime("%Y-%m-%d %H:%M")
+        A("### %s — %s · %s" % (rel, fmt_bytes(st.st_size), fresh))
+        text = read_text(p)
+        heads = [l.strip() for l in text.splitlines() if re.match(r"^#{1,3} ", l)]
+        if heads:
+            A("")
+            A("최근 헤딩 12개:")
+            A("```")
+            out.extend(heads[-12:])
+            A("```")
+        if "NEXT_TODO" in rel:
+            openitems = [l.strip() for l in text.splitlines() if re.match(r"^\s*[-*]\s*\[ \]", l)]
+            A("")
+            A("미완료 체크박스 **%d건** (끝에서 30건)" % len(openitems))
+            if openitems:
+                A("```")
+                out.extend(truncate(x, 200) for x in openitems[-30:])
+                A("```")
+        A("")
+        A("<details><summary>%s 꼬리 2.5KB</summary>" % rel)
+        A("")
+        A("```")
+        A(text[-2500:])
+        A("```")
+        A("")
+        A("</details>")
+        A("")
+
+
+# ------------------------------------------------------------------ 본문
+def build(root, day, phase, cfg, discover_only=False):
+    toks = date_tokens(day)
+    D = toks["y_m_d"]
+    phases = {"pre": ["pre"], "intra": ["pre", "intra"],
+              "post": ["pre", "intra", "post"], "all": ["pre", "intra", "post"]}[phase]
+    pcid, host = pc_id()
+    L = []
+    A = L.append
+
+    A("# 미륵이 증거 다이제스트 — %s / %s" % (D, phase.upper()))
+    A("")
+    A("- 생성 %s KST · PC **%s** (`%s`)" % (now_kst().strftime("%Y-%m-%d %H:%M:%S"), pcid, host))
+    A("- 리포 `%s`" % root)
+    A("- 점검 범위: %s (장전=pre / 장중=intra / 장후=post)" % ", ".join(phases))
+    A("- 날짜 토큰: %s" % " · ".join("`%s`" % toks[k] for k in DATE_TOKEN_KEYS))
+    if pcid == "UNKNOWN":
+        A("- ⚠ 호스트명에서 `MW####` 를 못 뽑았다 — 커밋/DECISION_LOG 태그를 수동 확인할 것")
+    A("")
+
+    # ---- 1. 파일 인벤토리 ----
+    files = discover_files(root, cfg, day)
+    A("## 1. 당일 파일 인벤토리 (날짜 토큰 자동탐색)")
+    A("")
+    if not files:
+        A("**해당 날짜 토큰을 가진 파일을 하나도 못 찾았다 ⚠**")
+        A("")
+        A("가능성: (a) 그날 프로그램이 안 돌았다 (b) 로그가 다른 폴더에 있다 "
+          "(c) 파일명에 날짜를 안 쓴다 (d) `scan_dirs` 설정이 좁다.")
+        A("")
+        A("현재 스캔 대상: %s (깊이 %d)" % (", ".join("`%s`" % d for d in cfg["scan_dirs"]), cfg["scan_depth"]))
+        A("")
+        A("`config/dailycheck_targets.json` 에 `scan_dirs` 를 지정하면 그곳만 뒤진다.")
+        A("")
+    else:
+        groups = {}
+        for e in files:
+            groups.setdefault(e["group"], []).append(e)
+        A("총 **%d개** 파일 · %d개 그룹" % (len(files), len(groups)))
+        A("")
+        A("| 그룹(파일명 패턴) | 개수 | 경로 | 크기 | 최종기록 |")
+        A("|---|---|---|---|---|")
+        for g in sorted(groups):
+            items = groups[g]
+            for e in items[: cfg["max_files_per_group"]]:
+                A("| `%s` | %d | `%s` | %s | %s |" % (
+                    g, len(items), e["rel"], fmt_bytes(e["size"]),
+                    ts_kst(e["mtime"]).strftime("%m-%d %H:%M")))
+            if len(items) > cfg["max_files_per_group"]:
+                A("| `%s` | | … 외 %d개 | | |" % (g, len(items) - cfg["max_files_per_group"]))
+        A("")
+
+    if discover_only:
+        A("---")
+        A("")
+        A("*`--discover` 모드다. 위 인벤토리를 보고 `config/dailycheck_targets.json` 의 "
+          "`scan_dirs` 를 좁힌 뒤 `--phase` 로 다시 돌려라.*")
+        return "\n".join(L)
+
+    # ---- 2. 코드·커밋 상태 ----
+    A("## 2. 코드·커밋 상태")
+    A("")
+    head = run_git(root, ["rev-parse", "--short", "HEAD"])
+    branch = run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    status = run_git(root, ["status", "--porcelain"])
+    dirty = [l for l in status.splitlines() if l.strip()]
+    A("- HEAD `%s` · 브랜치 `%s` · 미커밋 %d건" % (head, branch, len(dirty)))
+    if dirty:
+        A("```")
+        L.extend(dirty[:40])
+        if len(dirty) > 40:
+            A("… 외 %d건" % (len(dirty) - 40))
+        A("```")
+    nxt = (day + timedelta(days=1)).strftime("%Y-%m-%d")
+    todays = run_git(root, ["log", "--oneline", "--no-decorate",
+                            "--since=%s 00:00" % D, "--until=%s 00:00" % nxt])
+    A("")
+    A("**당일(%s) 커밋**" % D)
+    A("```")
+    A(todays if todays.strip() else "(당일 커밋 없음)")
+    A("```")
+    recent = run_git(root, ["log", "--oneline", "--no-decorate", "-12"])
+    A("")
+    A("**최근 커밋 12건**")
+    A("```")
+    A(recent)
+    A("```")
+    # PC 태그 규약 점검
+    bad_tag = [l for l in recent.splitlines()
+               if l.strip() and not re.search(r"\[MW\d{4}\]", l)]
+    A("")
+    if bad_tag:
+        A("⚠ **PC명 태그 누락 커밋 %d건** (CLAUDE.md 멀티PC 컨벤션 위반):" % len(bad_tag))
+        A("```")
+        L.extend(bad_tag[:8])
+        A("```")
+    else:
+        A("PC명 태그 규약: 최근 12건 모두 `[MW####]` 접두 확인")
+    A("")
+
+    # ---- 3. 절대원칙 불변식 ----
+    A("## 3. 설정 불변식 — 절대원칙·한시예외 (config/settings.py)")
+    A("")
+    spath, rows = check_invariants(root, cfg)
+    if spath is None:
+        A("`config/settings.py` 를 못 찾았다 ⚠ — 경로가 바뀌었는지 확인할 것")
+    else:
+        A("| 상수 | 현재값 | 기대값 | 판정 | 왜 보는가 |")
+        A("|---|---|---|---|---|")
+        for r in rows:
+            A("| `%s` | `%s` | %s | %s | %s |" % (
+                r["name"], r["actual"] if r["actual"] is not None else "—",
+                ("`%s`" % r["expect"]) if r["expect"] else "—",
+                r["verdict"], truncate(r["why"], 90)))
+        A("")
+        A("> 이 표는 **의도한 예외가 여전히 의도대로인지** 보는 것이다. "
+          "`불일치`는 누군가 바꿨다는 뜻이고, 바꿨다면 `dev_memory/DECISION_LOG.md` 에 근거가 있어야 한다.")
+    A("")
+
+    gates = scan_gate_flags(root, cfg)
+    if gates:
+        off = [g for g in gates if g["value"] == "False"]
+        undoc = [g for g in off if not g["documented"]]
+        A("### 차단 게이트 전수 인벤토리 — %d개 중 **%d개 꺼짐**" % (len(gates), len(off)))
+        A("")
+        A("| 플래그 | 값 | 기록됨 |")
+        A("|---|---|---|")
+        for g in gates:
+            if g["value"] == "False":
+                doc = "기록됨" if g["documented"] else "**미기록 ⚠**"
+            else:
+                doc = "—"
+            A("| `%s` | %s | %s |" % (g["name"], g["value"], doc))
+        A("")
+        if undoc:
+            A("> ⚠ **꺼져 있는데 근거가 기록되지 않은 게이트 %d개**: %s" % (
+                len(undoc), ", ".join("`%s`" % g["name"] for g in undoc)))
+            A("> 의도한 것이면 `dev_memory/DECISION_LOG.md` 에 사유·복원조건을 적고 "
+              "`config/dailycheck_targets.json` 의 `documented_disabled_flags` 에 추가하라. "
+              "의도한 것이 아니면 그 자체가 P0다.")
+            A("")
+
+    # ---- 4. 로그 다이제스트 ----
+    A("## 4. 마커·리포트 · 로그 다이제스트")
+    A("")
+    markers = [e for e in files if e["ext"] == ".txt" and 0 < e["size"] <= cfg["marker_max_bytes"]]
+    marker_paths = set(e["path"] for e in markers)
+    nodig = cfg.get("never_digest_patterns", [])
+    logs = [e for e in files
+            if is_logish(e) and e["size"] > 0 and e["path"] not in marker_paths
+            and not any(x.lower() in e["name"].lower() for x in nodig)]
+    skipped = [e for e in files
+               if is_logish(e) and any(x.lower() in e["name"].lower() for x in nodig)]
+    if skipped:
+        A("_본문 미열람(설정): %s — 존재와 크기만 증거로 본다_" % ", ".join(
+            "`%s` %s" % (e["name"], fmt_bytes(e["size"])) for e in skipped[:6]))
+        A("")
+
+    if markers:
+        A("### 당일 마커·리포트 파일 (전문)")
+        A("")
+        A("완료 마커(`*_done_*.txt`)는 **있으면 그 단계가 끝났다는 뜻**이고, 없으면 안 끝났거나"
+          " 안 돌았다는 뜻이다. 어느 쪽인지는 로그로 구분한다.")
+        A("")
+        for e in sorted(markers, key=lambda x: x["rel"]):
+            A("**`%s`** — %s · %s" % (e["rel"], fmt_bytes(e["size"]),
+                                      ts_kst(e["mtime"]).strftime("%m-%d %H:%M:%S")))
+            A("```")
+            A(read_text(e["path"], 6000).rstrip())
+            A("```")
+            A("")
+
+    prio = cfg.get("priority_logs", [])
+
+    def rank(e):
+        low = e["name"].lower()
+        for i, pat in enumerate(prio):
+            if pat.lower() in low:
+                return i
+        return len(prio)
+
+    logs.sort(key=lambda e: (rank(e), -e["size"]))
+    picked = logs[: cfg["max_logs_digested"]]
+    if len(logs) > len(picked):
+        A("_다이제스트 대상 %d/%d개 (중요도순). 제외: %s_" % (
+            len(picked), len(logs),
+            ", ".join("`%s`" % e["name"] for e in logs[len(picked):][:8])))
+        A("")
+    digests = []
+    if not logs:
+        A("당일 로그 파일을 못 찾았다 ⚠")
+        A("")
+    for e in picked:
+        dg = LogDigest(e, cfg, day).scan()
+        digests.append(dg)
+        A("### `%s` — %s · %d행 · 최종 %s" % (
+            dg.rel, fmt_bytes(dg.size), dg.total_lines, dg.mtime.strftime("%H:%M:%S")))
+        if dg.truncated:
+            A("")
+            A("⚠ 파일이 너무 커서(%s) 건너뛰었다. `--max-log-mb` 로 올릴 수 있다." % fmt_bytes(dg.size))
+            A("")
+            continue
+        kind = "JSON %d행" % dg.json_lines if dg.json_lines else "평문"
+        lv = ", ".join("%s=%d" % (k, v) for k, v in sorted(
+            dg.level_counts.items(),
+            key=lambda kv: LEVEL_ORDER.index(kv[0]) if kv[0] in LEVEL_ORDER else 99))
+        A("")
+        A("- 형식 %s · 시각 인식 %d행 · %s" % (kind, dg.timed, lv))
+        A("")
+        A("<details><summary>첫 8행 / 끝 8행</summary>")
+        A("")
+        A("```")
+        L.extend(dg.first_lines)
+        A("  …")
+        L.extend(dg.last_lines)
+        A("```")
+        A("")
+        A("</details>")
+        A("")
+        sev = [(k, v) for k, v in dg.by_level_tag.items() if k[0] in ("CRITICAL", "FATAL", "ERROR")]
+        if sev:
+            sev.sort(key=lambda kv: -len(kv[1]))
+            A("**ERROR 이상**")
+            A("")
+            A("| level | tag | 건수 | 최초 | 최종 | 대표 |")
+            A("|---|---|---|---|---|---|")
+            for (level, tag), items in sev:
+                A("| %s | `%s` | %d | %s | %s | %s |" % (
+                    level, tag, len(items), items[0]["hhmm"], items[-1]["hhmm"],
+                    truncate(items[0]["msg"], cfg["msg_truncate"])))
+            A("")
+            for (level, tag), items in sev[:6]:
+                n = cfg["max_error_samples_per_tag"]
+                A("<details><summary>%s/%s 원문 %d건</summary>" % (level, tag, min(n, len(items))))
+                A("")
+                A("```")
+                for it in items[:n]:
+                    A(it["raw"])
+                A("```")
+                A("")
+                A("</details>")
+                A("")
+        warn = [(k, v) for k, v in dg.by_level_tag.items() if k[0] in ("WARNING", "WARN")]
+        if warn:
+            warn.sort(key=lambda kv: -len(kv[1]))
+            A("**WARNING — 태그 %d종 (상위 %d)**" % (len(warn), min(len(warn), cfg["max_warn_tags"])))
+            A("")
+            A("| tag | 건수 | 최초 | 최종 | 대표 |")
+            A("|---|---|---|---|---|")
+            for (level, tag), items in warn[: cfg["max_warn_tags"]]:
+                A("| `%s` | %d | %s | %s | %s |" % (
+                    tag, len(items), items[0]["hhmm"], items[-1]["hhmm"],
+                    truncate(items[0]["msg"], cfg["msg_truncate"])))
+            A("")
+        top = sorted(dg.tag_counts.items(), key=lambda kv: -kv[1])[:15]
+        if top:
+            A("**태그 상위 15** — " + ", ".join("`%s`×%d" % (t, c) for t, c in top))
+            A("")
+
+    # ---- 5. 항상 인용하는 패턴 ----
+    A("## 5. 항상 인용하는 패턴 (안전장치·크래시·재학습·진입)")
+    A("")
+    any_q = False
+    for dg in digests:
+        if not dg.quoted:
+            continue
+        any_q = True
+        A("### `%s`" % dg.rel)
+        A("```")
+        for pat, items in sorted(dg.quoted.items()):
+            A("--- %s ×%d(표본)" % (pat, len(items)))
+            for it in items[:4]:
+                A("%s %s" % (it["hhmm"], truncate(it["raw"], 220)))
+        A("```")
+        A("")
+    if not any_q:
+        A("(해당 패턴 없음 — 안전장치가 조용했거나, 계측이 없거나. 어느 쪽인지 원본으로 구분할 것)")
+        A("")
+
+    # ---- 6. 타임라인 앵커 · 매분 루프 커버리지 ----
+    A("## 6. 타임라인 앵커 · 매분 루프 커버리지")
+    A("")
+    for dg in digests[:4]:
+        if not dg.records:
+            continue
+        main = dg.is_main_loop()
+        A("### `%s`%s" % (dg.rel, "" if main else " _(보조 로그 — 매분 루프 대상 아님)_"))
+        A("")
+        A("| 시각 | 앵커 | 창 내 | 대표 |")
+        A("|---|---|---|---|")
+        # 그 로그가 살아 있던 시간대 밖의 앵커는 "없어서 이상"이 아니라 "해당 없음"이다.
+        mins = [e["minutes"] for e in dg.records if e["minutes"] is not None]
+        alive = (min(mins), max(mins)) if mins else (0, 0)
+        for a, hits in dg.anchor_slices(cfg["anchors"], phases):
+            if not main and not hits:
+                continue          # 보조 로그에 없는 앵커는 이상이 아니다
+            rep = "—"
+            if hits:
+                sev_hit = [h for h in hits if h["level"] in ("ERROR", "CRITICAL", "FATAL", "WARNING", "WARN")]
+                pick = sev_hit[0] if sev_hit else hits[0]
+                rep = "%s [%s] %s" % (pick["hhmm"], pick["level"], truncate(pick["msg"], 110))
+            at = hhmm_to_min(a["at"])
+            in_range = alive[0] - cfg["anchor_window_minutes"] <= at <= alive[1] + cfg["anchor_window_minutes"]
+            if hits:
+                label = a["label"]
+            elif not in_range:
+                label = "_%s (이 로그 생존구간 밖)_" % a["label"]
+            else:
+                label = a["label"] + " ⚠"
+            A("| %s | %s | %d | %s |" % (a["at"], label, len(hits), rep))
+        A("")
+        A("- 이 로그 생존구간: %s ~ %s" % (m2hhmm(alive[0]), m2hhmm(alive[1])))
+        A("")
+        if not main:
+            A("_이 로그는 매분 루프 로그가 아니므로 커버리지·공백 판정을 하지 않는다._")
+            A("")
+            continue
+        have, total, missing = dg.minute_coverage()
+        pct = (100.0 * have / total) if total else 0.0
+        A("**매분 루프 커버리지 %s~%s: %d/%d분 (%.1f%%)**" % (
+            cfg["minute_loop_window"][0], cfg["minute_loop_window"][1], have, total, pct))
+        if missing:
+            runs = []
+            s = prev = missing[0]
+            for m in missing[1:]:
+                if m == prev + 1:
+                    prev = m
+                    continue
+                runs.append((s, prev))
+                s = prev = m
+            runs.append((s, prev))
+            runs = [r for r in runs if r[1] - r[0] >= 2]
+            if runs:
+                A("")
+                A("연속 3분 이상 기록 없는 구간 %d개:" % len(runs))
+                A("")
+                A("| 시작 | 끝 | 분 |")
+                A("|---|---|---|")
+                for a, b in runs[:15]:
+                    A("| %s | %s | %d |" % (m2hhmm(a), m2hhmm(b), b - a + 1))
+        A("")
+        gaps = dg.gaps()
+        A("**%s~%s 구간 %d분 이상 공백: %d건**" % (
+            cfg["gap_scan_window"][0], cfg["gap_scan_window"][1],
+            cfg["gap_threshold_minutes"], len(gaps)))
+        if gaps:
+            A("")
+            A("| 시작 | 재개 | 공백(분) |")
+            A("|---|---|---|")
+            for a, b, g in gaps[:15]:
+                A("| %s | %s | %d |" % (m2hhmm(a), m2hhmm(b), g))
+        A("")
+
+    # ---- 7. dev_memory ----
+    devmemory_section(root, cfg, day, L)
+
+    # ---- 8. 산출물 JSON ----
+    jsons = [e for e in files if is_jsonish(e)]
+    A("## 8. 당일 JSON/JSONL 산출물")
+    A("")
+    if not jsons:
+        A("(없음)")
+        A("")
+    for e in sorted(jsons, key=lambda x: x["rel"])[:12]:
+        A("### `%s` — %s · %s" % (e["rel"], fmt_bytes(e["size"]),
+                                  ts_kst(e["mtime"]).strftime("%m-%d %H:%M:%S")))
+        A("```json")
+        A(summarize_json(e["path"]))
+        A("```")
+        A("")
+
+    # ---- 9. 정기점검 리포트 폴더 ----
+    A("## 9. 정기점검 리포트 현황")
+    A("")
+    for rel in cfg["report_dirs"]:
+        base = os.path.join(root, rel)
+        if not os.path.isdir(base):
+            A("- `%s` 없음" % rel)
+            continue
+        rows = []
+        for dirpath, dirnames, filenames in os.walk(base):
+            for fn in filenames:
+                full = os.path.join(dirpath, fn)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                rows.append((st.st_mtime, os.path.relpath(full, root).replace(os.sep, "/"), st.st_size))
+        rows.sort(reverse=True)
+        A("### `%s` — %d개 (최근 8개)" % (rel, len(rows)))
+        A("")
+        A("| 파일 | 크기 | 최종 |")
+        A("|---|---|---|")
+        for mt, r, sz in rows[:8]:
+            A("| `%s` | %s | %s |" % (r, fmt_bytes(sz), ts_kst(mt).strftime("%m-%d %H:%M")))
+        A("")
+
+    # ---- 10. 자동 적신호 ----
+    A("## 10. 자동 적신호 (출발점이지 결론이 아니다)")
+    A("")
+    flags = []
+    if not files:
+        flags.append("당일 날짜 토큰 파일 0개 — 프로그램이 안 돌았거나 탐색 경로가 틀렸다")
+    if spath and rows:
+        for r in rows:
+            if "불일치" in r["verdict"] or "미발견" in r["verdict"]:
+                flags.append("설정 불변식 `%s` = `%s` (기대 `%s`) — %s" % (
+                    r["name"], r["actual"], r["expect"], truncate(r["why"], 90)))
+    for g in scan_gate_flags(root, cfg):
+        if g["value"] == "False" and not g["documented"]:
+            flags.append("차단 게이트 `%s` = False 인데 **근거 미기록** — "
+                         "의도한 예외인지 확인하고 DECISION_LOG에 남길 것" % g["name"])
+    for dg in digests:
+        n_err = sum(v for k, v in dg.level_counts.items() if k in ("ERROR", "CRITICAL", "FATAL"))
+        if n_err:
+            flags.append("`%s`: ERROR 이상 %d건" % (dg.rel, n_err))
+        if dg.records and dg.is_main_loop():
+            have, total, missing = dg.minute_coverage()
+            if total and have < total * 0.98:
+                flags.append("`%s`: 매분 루프 커버리지 %d/%d분 (%.1f%%) — 루프가 빠진 구간이 있다" % (
+                    dg.rel, have, total, 100.0 * have / total))
+            # 연속 3분 이상 비면 매분 루프에서는 그 자체가 사건이다
+            runs, s, prev = [], None, None
+            for mnt in missing:
+                if prev is not None and mnt == prev + 1:
+                    prev = mnt
+                    continue
+                if s is not None and prev - s >= 2:
+                    runs.append((s, prev))
+                s = prev = mnt
+            if s is not None and prev - s >= 2:
+                runs.append((s, prev))
+            for a, b in runs[:6]:
+                flags.append("`%s`: %s~%s **연속 %d분 매분 루프 기록 없음**" % (
+                    dg.rel, m2hhmm(a), m2hhmm(b), b - a + 1))
+            for a, b, g in dg.gaps():
+                if g >= cfg["gap_threshold_minutes"] * 2:
+                    flags.append("`%s`: %s~%s %d분 로그 공백" % (dg.rel, m2hhmm(a), m2hhmm(b), g))
+        for pat in ("0xC0000409", "STACK_BUFFER", "Traceback", "OOM", "MemoryError"):
+            if pat in dg.quoted:
+                flags.append("`%s`: **%s** 출현 %d건 — 크래시/메모리 계열" % (dg.rel, pat, len(dg.quoted[pat])))
+    if phase in ("post", "all"):
+        hit_flat = any(("강제청산" in dg.quoted or "FORCED" in dg.quoted or "FLAT" in dg.quoted)
+                       for dg in digests)
+        if not hit_flat:
+            flags.append("장후인데 **강제청산(15:10) 흔적을 못 찾았다** — 절대원칙 1 확인 필요 "
+                         "(포지션이 없었을 수도 있다. 원본으로 구분할 것)")
+    all_names = " ".join(e["name"] for e in files).lower()
+    for em in cfg.get("expected_markers", []):
+        if em["phase"] in phases and em["contains"].lower() not in all_names:
+            flags.append("완료 마커 **`%s`** 없음 — %s" % (em["contains"], em["why"]))
+    if bad_tag:
+        flags.append("PC명 태그 누락 커밋 %d건 — 멀티PC 컨벤션 위반" % len(bad_tag))
+    if dirty:
+        flags.append("미커밋 변경 %d건" % len(dirty))
+    for rel in cfg["devmemory_files"]:
+        p = os.path.join(root, rel)
+        if os.path.exists(p) and ts_kst(os.stat(p).st_mtime).date() != day and phase in ("post", "all"):
+            flags.append("`%s` 가 오늘 갱신되지 않았다 — 세션 기록 의무 확인" % rel)
+
+    if flags:
+        seen = set()
+        i = 0
+        for f in flags:
+            if f in seen:
+                continue
+            seen.add(f)
+            i += 1
+            A("%d. %s" % (i, f))
+    else:
+        A("자동 탐지 적신호 없음. 그래도 §4~§6을 직접 읽고 판단할 것.")
+    A("")
+    A("---")
+    A("")
+    A("*요약이지 원본이 아니다. 특정 패턴 전량이 필요하면 원본을 직접 열 것 — "
+      "예: `findstr /C:\"강제청산\" logs\\*%s*.log` (Windows) / `grep 강제청산 logs/*%s*.log`*"
+      % (toks["ymd"], toks["ymd"]))
+    return "\n".join(L)
+
+
+# ------------------------------------------------------------------ 설정 로드
+def load_config(root):
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+    for rel in ("config/dailycheck_targets.json", "configs/dailycheck_targets.json"):
+        p = os.path.join(root, rel)
+        if os.path.exists(p):
+            try:
+                user = json.loads(read_text(p))
+                cfg.update(user)
+                eprint("[collect_evidence] 설정 덮어씀: %s" % p)
+            except Exception as e:
+                eprint("[collect_evidence] 설정 무시(파싱 실패): %s" % e)
+            break
+    return cfg
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="미륵이 일일 점검 증거 수집기")
+    ap.add_argument("--phase", choices=["pre", "intra", "post", "all"], default="post")
+    ap.add_argument("--date", default=None, help="YYYY-MM-DD / YYYYMMDD (기본 오늘 KST)")
+    ap.add_argument("--root", default=None, help="리포 루트 (기본 자동탐지)")
+    ap.add_argument("--out", default=None, help="파일로 저장 (기본 stdout)")
+    ap.add_argument("--out-auto", action="store_true",
+                    help="evidence_<PC명>-<YYYYMMDD>_<국면>.md 로 자동 저장 "
+                         "(두 PC가 서로 덮어쓰지 않는다. 셸 날짜 확장에 의존하지 않아 "
+                         "PowerShell/bash 어디서든 같다)")
+    ap.add_argument("--discover", action="store_true",
+                    help="파일 인벤토리만 출력 — 처음 한 번 돌려 경로를 확인한다")
+    ap.add_argument("--max-log-mb", type=int, default=None, help="이보다 큰 로그는 건너뛴다")
+    args = ap.parse_args(argv)
+
+    start = args.root if args.root else os.path.dirname(os.path.abspath(__file__))
+    root = find_repo_root(start)
+    day = parse_date(args.date)
+    cfg = load_config(root)
+    if args.max_log_mb:
+        cfg["max_log_bytes"] = args.max_log_mb * 1024 * 1024
+
+    text = build(root, day, args.phase, cfg, discover_only=args.discover)
+
+    out = args.out
+    if args.out_auto and not out:
+        pcid, _host = pc_id()
+        out = os.path.join(cfg["evidence_dir"],
+                           "evidence_%s-%s_%s.md" % (pcid, day.strftime("%Y%m%d"), args.phase))
+
+    if out:
+        outp = out if os.path.isabs(out) else os.path.join(root, out)
+        d = os.path.dirname(outp)
+        if d and not os.path.isdir(d):
+            os.makedirs(d)
+        with io.open(outp, "w", encoding="utf-8") as f:
+            f.write(text)
+        eprint("[collect_evidence] 저장: %s (%s)" % (outp, fmt_bytes(len(text.encode("utf-8")))))
+        print(outp)
+    else:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+        try:
+            print(text)
+        except UnicodeEncodeError:
+            sys.stdout.write(text.encode("utf-8", "replace").decode("ascii", "replace"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

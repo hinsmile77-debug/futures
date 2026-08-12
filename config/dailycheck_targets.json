@@ -1,0 +1,42 @@
+{
+  "_설명": "미륵이(MW0601/MW0602) 실측 레이아웃 기준. 2026-08-12 --discover 결과로 확정.",
+  "_설치위치": "리포 루트의 config/dailycheck_targets.json",
+
+  "scan_dirs": ["logs", "data"],
+  "scan_depth": 2,
+
+  "_exclude_설명": "인벤토리에도 안 나온다. 모델 백업본과 데이터 파일 — 로그가 아니다.",
+  "exclude_patterns": [".bak_", "__pycache__", ".pkl", ".joblib", ".parquet", ".csv", ".db", ".sqlite"],
+
+  "_never_digest_설명": "인벤토리에는 남기되 본문은 안 훑는다. 51MB 호가 원본은 존재와 크기가 증거다.",
+  "never_digest_patterns": ["_HOGA"],
+
+  "_priority_설명": "크기가 아니라 중요도 순. TRADE는 15KB지만 강제청산이 거기 있다.",
+  "priority_logs": [
+    "_TRADE",
+    "_WARN",
+    "_SYSTEM",
+    "_SIGNAL",
+    "_LEARNING",
+    "_HEALTH",
+    "retrain_eod",
+    "retrain_intraday",
+    "_MICRO",
+    "_DATA",
+    "_PROBE",
+    "launcher_",
+    "_DEBUG",
+    "_BACKFILL"
+  ],
+  "max_logs_digested": 8,
+
+  "_main_loop_설명": "매분 루프 커버리지를 잴 채널. SIGNAL/TRADE는 매분 기록이 정상이 아니므로 제외.",
+  "main_loop_log_patterns": ["_SYSTEM"],
+
+  "_documented_설명": "꺼져 있는 것이 정상이고 근거가 기록된 게이트. 여기 없는 False 게이트는 적신호로 뜬다. TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED 는 일부러 뺐다 — 2026-08-12 실측에서 발견됐으나 CLAUDE.md에도 DECISION_LOG에도 근거가 없다. 확인 후 사유를 기록하고 여기 추가하라.",
+  "documented_disabled_flags": [
+    "CB3_P4_GRADE_BLOCK_ENABLED",
+    "FP_CRITICAL_GRADE_BLOCK_ENABLED",
+    "HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY"
+  ]
+}
