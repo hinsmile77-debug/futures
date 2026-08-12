@@ -1236,6 +1236,13 @@ class PositionTracker:
             "entry_qty": int(
                 self.entry_quantity or self.initial_quantity or self.quantity or 0
             ),
+            # [MW0602 465차 P4] 이 청산 시점에 TP1이 이미 도달돼 있었는가.
+            # `exit_reason`이 "하드스톱"이어도 여기가 1이면 그것은 손절이 아니라
+            # 보호 스톱(이익 트레일)이다 — 두 사건이 같은 라벨을 공유하기 때문에
+            # 기록 측에 구분값을 남긴다(utils/db_utils.py `tp1_reached` 주석 참조).
+            # `partial_1_done`은 qty≥2 TP1 부분청산과 qty=1 보호전환
+            # (`arm_tp1_single_contract_with_mode`) 양쪽에서 True가 된다.
+            "tp1_reached": 1 if self.partial_1_done else 0,
         }
 
     def _reset_position(self) -> None:

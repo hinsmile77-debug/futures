@@ -60,19 +60,27 @@ class DailyExporter:
                 wr = live.get("win_rate")
                 pf = live.get("profit_factor")
                 if sh is not None:
+                    # [MW0602 465차 P6-b] MDD 분모를 라벨에 박는다. 이 값의 분모는
+                    # **누적손익의 러닝 피크**이지 자본이 아니라서 100%를 넘을 수
+                    # 있다(0812 실측 129.2% — 승률 83.3%·PF 2.50인 날에). 아무
+                    # 표기 없이 "MDD=129.2%"만 있으면 자본 낙폭으로 오독된다.
+                    # 계산은 건드리지 않는다 — WFA 합격선(MDD ≤ 15%)이 같은 정의를
+                    # 쓰므로 값을 바꾸면 실전 전환 기준 ③이 조용히 이동한다.
                     lines.append(
-                        "  Live    : Sh=%.2f  MDD=%.1f%%  WR=%.1f%%  PF=%.2f" % (
+                        "  Live    : Sh=%.2f  MDD=%.1f%%(누적손익peak대비)  WR=%.1f%%  PF=%.2f" % (
                             sh, abs(md or 0) * 100, (wr or 0) * 100, pf or 0
                         )
                     )
                 # 롤링 20일
                 rolling = reg.get_rolling_metrics(ver)
                 cum = rolling.get("cum_pnl", 0)
+                _r_mdd_krw = rolling.get("mdd_krw")
                 lines.append(
-                    "  롤링20일: 누적 %+.0f원  Sh=%.2f  MDD=%.1f%%" % (
+                    "  롤링20일: 누적 %+.0f원  Sh=%.2f  MDD=%.1f%%(누적손익peak대비%s)" % (
                         cum,
                         rolling.get("sharpe", 0) or 0,
                         abs(rolling.get("mdd_pct", 0) or 0) * 100,
+                        (", {:,.0f}원".format(_r_mdd_krw)) if _r_mdd_krw is not None else "",
                     )
                 )
             else:

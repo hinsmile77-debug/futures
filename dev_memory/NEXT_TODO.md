@@ -8,6 +8,66 @@
 
 ---
 
+### 465차 — 재학습 스코프 한정 + TP1 계측 (MW0602, 2026-08-12 배포, **라이브 미검증**)
+
+**다음 거래일 최우선 확인 (P1 효과 판정)**
+
+- [ ] **DriftRetrain 발동 시 `scope=5m`으로 찍히는가** — LEARNING 로그
+      `[GBM-64] ... | STEP3 DriftRetrain | scope=5m`. `scope=ALL`이면 P1 미작동
+      (조건 4개 중 하나가 예상과 다르게 True인 것 — `_warmup_forced` 의심)
+- [ ] **BiasReset 냉각이 20분 유지되는가** — `[GBM] 재학습 완료 → BiasReset 상태
+      초기화 (교체분 5m만 — 465차 P5)` 로그 + 다른 호라이즌의 `자동 해제 (20분 경과)`가
+      실제로 20분 뒤에 찍히는지. 4분 만에 끝나면 P5 미작동
+- [ ] **10m EOD 판정이 REPLACE로 바뀌는가** — P3 콜드스타트 효과.
+      `[Retrain] 10m 교체 (acc 0.0000→…)`. 여전히 HOLD면 acc.txt가 어딘가에서
+      재생성된 것 → `_save_model` 경로 재조사
+- [ ] **`⚠ 유령 기준 HOLD` 경고가 0건인가** — 6개 호라이즌 전부. 1건이라도 남으면
+      그 호라이즌의 pkl/acc.txt 정합이 또 깨진 것
+
+**P4 계측 검증**
+
+- [ ] 첫 청산 후 `trades.tp1_reached`가 NULL이 아닌 값으로 들어가는가
+      (`select exit_reason, tp1_reached, pnl_pts from trades where date(entry_ts)=DATE('now')`)
+- [ ] `하드스톱` + `tp1_reached=1` 조합이 실제로 이익 레그인지 교차 확인
+- [ ] 표본 20건쯤 쌓이면 `exit_reason × tp1_reached` 교차표로 청산 분석 재작성.
+      기존 분석은 -907만원과 +412만원을 한 버킷에 담고 있었다
+
+**주간회의 안건 (사전등록 절차 필요 — 임의 변경 금지)**
+
+- [ ] **[29] `mean_revert_size_watch` 판정식에 손익 축 추가**
+      승률 격차 12.7pp < 15pp라 영원히 PASS인데 손익은 MR -2,346,877 vs 그 외
+      +2,858,884(PF 0.58 vs ≈1.9). 313차 두 관문 통과(일자 이항 p=0.0352,
+      이상치 제거 후 생존, 2개 기간 부호 동일).
+      제안: `avg_pnl_gap_krw` 또는 PF 조건 추가. 처방 축은 431차 min() 합성 이후
+      사이징·등급 둘 다 가능
+- [ ] **EOD 가드 개정** — meta `source=intraday`면 콜드스타트 취급.
+      464차가 "1회성 조치로 갈음하지 않는다"고 남긴 안건. 465차 P1으로 유입은
+      줄었지만 가드 로직 자체는 그대로다. [22] 채널 스펙 개정과 함께 다뤄야 함
+
+**다음 세션 안건 (오늘 범위 밖으로 뺀 것)**
+
+- [ ] **P6-a `ensemble_decisions`에 최종 등급 컬럼** — 현재 `grade`는 승격 **전**
+      값이라 `trades.grade`(승격 후)와 어긋난다. 0812 실측: 11:29·14:24가
+      DB `grade=C` / `trades.grade=A`. 두 테이블 조인 등급 분석이 전부 틀어진다.
+      진입 실행 경로를 건드려야 해서 465차 범위에서 제외
+- [ ] **P6-c 파이프라인 지연 상승 원인** — 0812 세션 기준선 184ms → 종반 536ms로
+      하루 안에 3배. CB⑤(5,000ms) 대비 여유는 크지만 원인 미규명
+- [ ] **3m 편중 재검토** — `meta_gate_horizon`이 3m 79% / 5m 16%인데 손익은 정반대
+      (3m -606,888 / 5m +1,303,714). 확립②지만 일자단위 비유의(p=0.42)라
+      확립①보다 약한 근거 — 표본 축적 후 재검정
+
+**기존 스위트 부채 (465차 무관, 변경 전에도 실패)**
+
+- [ ] `tests/test_460_spearman_ties.py` — `ast.end_lineno`는 Python 3.8+ 전용,
+      py37_32에서 AttributeError. 런타임이 3.7인 한 이 테스트는 py310_64로 돌려야 함
+- [ ] `tests/test_424_campaign_channels.py` — 0804 실측 고정값([37] 짝지은 거래일
+      7일 / 부호검정 p=0.4531)이 데이터 축적으로 드리프트
+- [ ] `tests/test_439_phantom_mirror.py` — `structural_reason` 문구 불일치
+- [ ] 다수 테스트가 콘솔 cp949에서 em-dash 출력 시 UnicodeEncodeError.
+      `PYTHONIOENCODING=utf-8` 없이 돌리면 전부 통과해놓고 마지막 줄에서 죽는다
+
+---
+
 ### 464차 — P5: ConstOut 오탐 차단 (MW0602, 2026-08-12 배포, **라이브 미검증**)
 
 > 배경: `DECISION_LOG.md` 2026-08-12(464차). BiasReset의 의도된 균등값을 ConstOut이

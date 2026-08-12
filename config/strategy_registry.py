@@ -614,6 +614,12 @@ class StrategyRegistry:
         return {
             "sharpe":         round(sharpe, 3),
             "mdd_pct":        round(mdd_pct, 4),
+            # [MW0602 465차 P6-b] mdd_pct의 분모는 **누적손익의 러닝 피크**이지
+            # 자본이 아니다 — 피크가 작으면 100%를 쉽게 넘는다(0812 리포트 129.2%).
+            # 원화 절대값을 함께 돌려줘 소비 측이 오해 없이 쓸 수 있게 한다.
+            # 기존 mdd_pct는 그대로 둔다 — WFA 합격선(MDD ≤ 15%)이 이 정의를
+            # 쓰고 있어 계산을 바꾸면 실전 전환 기준 ③이 조용히 이동한다.
+            "mdd_krw":        round(mdd_krw, 0),
             "win_rate":       round(win_rate, 4),
             "profit_factor":  round(pf, 3),
             "total_trades":   total_trades,

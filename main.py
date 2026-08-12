@@ -731,6 +731,8 @@ class TradingSystem:
         self._retrain_subproc = None                     # subprocess.Popen handle
         self._retrain_subproc_is_warmup: bool = False
         self._retrain_subproc_result_path: str = ""
+        # [MW0602 465차 P5] 진행 중 재학습의 교체 스코프. 빈 리스트 = 전 호라이즌.
+        self._retrain_subproc_scope: list = []
         # [267차] 서브프로세스 stderr 파일 핸들 — py310 경고·오류 캡처 (DEVNULL 대체)
         self._retrain_subproc_stderr_fh = None           # open() handle, 완료 후 닫힘
         # [228차] 시작 시 이전 세션의 잔류 결과 JSON 정리 — 이중 인스턴스 경합 잔류 파일 방지
@@ -1274,6 +1276,9 @@ class TradingSystem:
         self._retrain_subproc             = _proc
         self._retrain_subproc_is_warmup   = is_warmup
         self._retrain_subproc_result_path = _rpath
+        # [MW0602 465차 P5] 이번 교체의 스코프를 보관 — 완료 콜백에서 BiasReset
+        # 냉각을 교체된 호라이즌에만 해제하기 위해서다. 빈 리스트 = ALL(종전 동작).
+        self._retrain_subproc_scope       = list(horizons or [])
         self._retrain_subproc_stderr_fh   = _stderr_fh
         self.circuit_breaker.set_gbm_retrain_active(True)
         log_manager.learning(
@@ -2823,9 +2828,9 @@ class TradingSystem:
                 formula_version, exit_reason, grade, regime,
                 meta_action, hurst_bucket, hour_bucket,
                 was_restart_after, had_partial_fill, entry_horizon, entry_source,
-                kelly_advised_skip, raw_grade, entry_qty)
+                kelly_advised_skip, raw_grade, entry_qty, tp1_reached)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -2865,6 +2870,14 @@ class TradingSystem:
                 # PositionTracker._build_exit_result()가 initial_quantity로 채우며,
                 # 없으면 레그 수량으로 폴백(구경로 안전).
                 int(result.get("entry_qty") or result.get("quantity") or 0),
+                # [MW0602 465차 P4] TP1 도달 여부 — "하드스톱" 라벨이 진짜 손절인지
+                # 보호 트레일(이익)인지 구분하는 유일한 기록. 값이 없으면 NULL로
+                # 남겨 구버전 레코드와 같은 취급을 받게 한다(0으로 채우면 "TP1
+                # 미도달"이라는 없는 사실을 만들어낸다).
+                (
+                    int(result["tp1_reached"])
+                    if result.get("tp1_reached") is not None else None
+                ),
             ),
         )
         try:
@@ -4364,10 +4377,28 @@ class TradingSystem:
             # 새 GBM 기준으로 BiasReset 상태만 초기화
             # 구 GBM 편향 판정(bias_override_horizons, bias_fl_streak, bias_buf)이
             # 새 모델에 그대로 남으면 uniform fallback 고착 + SGD 대항력 약화 지속
-            self._bias_override_horizons.clear()
-            self._bias_fl_streak = {h: 0 for h in HORIZONS}
-            self._bias_override_timer = {h: 0 for h in HORIZONS}
-            for _bh in HORIZONS:
+            #
+            # [MW0602 465차 P5] **교체된 호라이즌에만** 적용한다. 위 논거("구 모델의
+            # 편향 판정을 새 모델에 물려주지 않는다")는 모델이 실제로 갈린 호라이즌에만
+            # 성립한다 — 교체되지 않은 호라이즌은 모델이 그대로이므로 그 편향 판정도
+            # 여전히 유효하고, 지우면 20분 냉각만 잃는다.
+            # 0812 실측: 13:58 BiasReset(10m·3m) → 14:02 재학습 완료 clear → 4분 만에
+            # 냉각 종료(설계의 20%). 464차는 이 상호작용이 ConstOut 오탐 차단으로
+            # 자연 해소될 것으로 봤으나 정규·Drift 재학습도 같은 경로를 탄다.
+            # 스코프가 비어 있으면(ALL 교체) 종전과 완전히 동일하게 전부 초기화한다.
+            _bias_scope = [
+                h for h in (getattr(self, "_retrain_subproc_scope", None) or [])
+                if h in HORIZONS
+            ]
+            if not (
+                _bias_scope
+                and bool(getattr(runtime_settings, "BIAS_RESET_CLEAR_SCOPED", True))
+            ):
+                _bias_scope = list(HORIZONS)
+            self._bias_override_horizons.difference_update(_bias_scope)
+            for _bh in _bias_scope:
+                self._bias_fl_streak[_bh] = 0
+                self._bias_override_timer[_bh] = 0
                 self._bias_buf[_bh].clear()
             # [P0] online_learner.reset_daily() 호출 제거 (288차)
             # 장중 GBM 재학습(수십 회/일)마다 SGD acc_buf·가중치·표본카운트가 매번
@@ -4375,7 +4406,10 @@ class TradingSystem:
             # 영구 콜드스타트 루프 유발 — DriftAdjuster도 매번 "표본부족→스킵" 고착.
             # SGD 일간 리셋은 하루 1회 EOD 마감(daily_close 루틴, self.online_learner.reset_daily() 호출부)에서만 수행.
             log_manager.learning(
-                "[GBM] 재학습 완료 → BiasReset 상태 초기화 (SGD 누적 학습은 유지)"
+                "[GBM] 재학습 완료 → BiasReset 상태 초기화 "
+                + ("(전 호라이즌)" if len(_bias_scope) == len(HORIZONS)
+                   else "(교체분 %s만 — 465차 P5)" % ",".join(_bias_scope))
+                + " (SGD 누적 학습은 유지)"
             )
 
             # ── ConstOut 원인 CB③ HALT 해제 시도 ──────────────────────────
@@ -5522,11 +5556,15 @@ class TradingSystem:
             self.batch_retrainer.should_retrain_weekly()
             and not getattr(self, "_eod_retrain_ok", False)
         )
+        # [MW0602 465차 P1] should_retrain_monthly()를 한 번만 평가해 보관한다.
+        # 아래 스코프 판정에서 다시 호출하면 두 호출 사이에 분 경계를 넘을 때
+        # (07:59:59.9 → 08:00:00) 서로 다른 답이 나올 수 있다.
+        _monthly_needed = self.batch_retrainer.should_retrain_monthly()
         _need_retrain = (
             _warmup_forced
             or _drift_trigger
             or _weekly_needed
-            or self.batch_retrainer.should_retrain_monthly()
+            or _monthly_needed
         )
         if _need_retrain and not getattr(self, "_gbm_retrain_running", False):
             _reason_s = "WarmupRetrain" if _warmup_forced else ("DriftRetrain" if _drift_trigger else "periodic")
@@ -5536,9 +5574,28 @@ class TradingSystem:
                 self._drift_retrain_last_attempt = datetime.datetime.now()
             # [226차] 64비트 subprocess 경량 재학습 — 32비트 OOM 없이 실행
             self.dashboard.set_model_status("GBM 재학습중(64bit)...")
+            # [MW0602 465차 P1] DriftRetrain 단독 트리거면 교체 스코프를 판정 기준
+            # 호라이즌으로 한정한다. 5m 정확도 하나 때문에 나머지 5개의 검증된 EOD
+            # 모델까지 무검증 intraday본으로 갈아치우면, 그중 하나가 EOD 가드에
+            # 잠겨 "유령 모델 영구 집권"이 재생산된다(0812 10m 실측 — settings.py
+            # DRIFT_RETRAIN_SCOPE_LIMIT 주석 참조).
+            # WarmupRetrain·weekly·monthly가 함께 성립하면 보수적으로 ALL을 택한다
+            # — 그것들은 "전 호라이즌이 낡았다"가 트리거 사유이기 때문이다.
+            _rt_scope = None
+            if (
+                bool(getattr(runtime_settings, "DRIFT_RETRAIN_SCOPE_LIMIT", True))
+                and _drift_trigger
+                and not _warmup_forced
+                and not _weekly_needed
+                and not _monthly_needed
+            ):
+                _rt_scope = [
+                    str(getattr(runtime_settings, "DRIFT_RETRAIN_TRIGGER_HORIZON", "5m"))
+                ]
             self._start_gbm_retrain_subprocess(
                 force=False, reason=f"STEP3 {_reason_s}",
                 is_warmup=bool(_warmup_forced), intraday=True,
+                horizons=_rt_scope,
             )
 
         # ── STEP 4: 피처 생성 ──────────────────────────────────
