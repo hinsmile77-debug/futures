@@ -905,10 +905,13 @@ class BatchRetrainer:
         # 구간으로 채점한다. 3거래일 관측 후 old_acc 인자 교체 여부를 수동 결정(§9).
         _fair_new = _fair_old = None
         _fair_n, _fair_note = 0, "미실행"
+        _fair_extra = {}
         if not intraday and cv_acc is not None:
-            _fair_new, _fair_old, _fair_n, _fair_note = self._measure_fair_holdout(
-                horizon_key, X, y, X_full, h_idx, feature_names,
-                _make_model, _make_sample_weight,
+            _fair_new, _fair_old, _fair_n, _fair_note, _fair_extra = (
+                self._measure_fair_holdout(
+                    horizon_key, X, y, X_full, h_idx, feature_names,
+                    _make_model, _make_sample_weight,
+                )
             )
             if _fair_new is not None and _fair_old is not None:
                 logger.info(
@@ -925,6 +928,21 @@ class BatchRetrainer:
                 logger.warning(
                     "[GuardFair] %s 판정 불가 — %s", horizon_key, _fair_note,
                 )
+                # [458차 P1-A] 보류여도 깨끗한 꼬리 매치드 대조는 남긴다.
+                # 판정 무영향 — 누적 롤링용 관측이다.
+                if _fair_extra.get("clean_new") is not None:
+                    logger.info(
+                        "[GuardClean] %s 깨끗한꼬리 new=%.4f vs old=%.4f | 격차=%+.4f "
+                        "| n=%d — %s (판정 무영향, 누적 관측)",
+                        horizon_key, _fair_extra["clean_new"], _fair_extra["clean_old"],
+                        _fair_extra["clean_new"] - _fair_extra["clean_old"],
+                        _fair_extra["clean_n"], _fair_extra["clean_note"],
+                    )
+                else:
+                    logger.info(
+                        "[GuardClean] %s 꼬리 대조 불가 — %s",
+                        horizon_key, _fair_extra.get("clean_note", "미실행"),
+                    )
 
         # ── [456차 / F7] 현행 모델 정체 확인 + 유령 기준선 경고 ────────────────
         # acc.txt는 "현행 모델의 성적"이라는 전제로 쓰이지만, intraday가 pkl을 덮어쓰면
@@ -983,12 +1001,18 @@ class BatchRetrainer:
             # 롤백/대안: config/settings.py:EOD_GUARD_GHOST_POLICY = "hold" (⑥안)
             _verdict_src = "ghost_bypass"
             _guard_ok = True
+            # [458차 P1-C] fair_new(최신 홀드아웃 완전 OOS) 병기 — 계측 4원칙 ④.
+            # cv_acc는 26주 전 구간을 폴드에 섞어 현재 레짐 성능을 체계적으로
+            # 과대평가한다(2026-08-12 실측 3m cv=0.4215 vs 최신OOS=0.3000, −12pp).
+            # "CV 검증된"만 읽고 교체를 실제보다 안전하게 인지하는 것을 막는다.
+            # fair_new는 오염과 무관하게 항상 유효하다(도전자는 홀드아웃 미학습).
             _guard_reason = (
                 "가드 미적용 — 현행 배포본이 CV 미검증 intraday 모델(학습 %s까지)이라 "
                 "acc.txt=%.4f는 존재하지 않는 모델의 성적이다. CV 검증된 신규 모델"
-                "(cv=%s)로 교체한다 [457차 F7 ⑤안]"
+                "(cv=%s / 최신OOS=%s)로 교체한다 [457차 F7 ⑤안]"
                 % (_inc_cutoff or "?", old_acc,
-                   ("%.4f" % cv_acc) if cv_acc is not None else "N/A")
+                   ("%.4f" % cv_acc) if cv_acc is not None else "N/A",
+                   ("%.4f" % _fair_new) if _fair_new is not None else "미측정")
             )
             logger.warning("[GuardGhost] %s %s", horizon_key, _guard_reason)
         else:
@@ -1043,6 +1067,28 @@ class BatchRetrainer:
         if not intraday and cv_acc is not None:
             try:
                 from utils.db_utils import save_guard_shadow
+                # [458차 P1-B] 그날 배포본의 라이브 실적 — 관찰 전용, 판정 무관.
+                _live_acc = _live_n = None
+                try:
+                    from utils.db_utils import fetch_live_frequential_acc
+                    _live_acc, _live_n = fetch_live_frequential_acc(
+                        horizon_key,
+                        datetime.datetime.now().strftime("%Y-%m-%d"),
+                    )
+                    if _live_acc is not None:
+                        logger.info(
+                            "[ModelLive] %s 당일 라이브 적중률=%.4f (n=%d) "
+                            "| EOD신규 cv=%.4f 최신OOS=%s — 관찰 전용",
+                            horizon_key, _live_acc, _live_n, cv_acc,
+                            ("%.4f" % _fair_new) if _fair_new is not None else "미측정",
+                        )
+                    else:
+                        logger.info(
+                            "[ModelLive] %s 당일 채점 표본 없음 — 미측정(0 아님)",
+                            horizon_key,
+                        )
+                except Exception as _lv_e:
+                    logger.debug("[ModelLive] 산출 실패 (무해): %s", _lv_e)
                 save_guard_shadow(
                     ts=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     horizon=horizon_key,
@@ -1062,6 +1108,13 @@ class BatchRetrainer:
                     incumbent_source=_inc_source,
                     incumbent_cutoff_ts=_inc_cutoff,
                     verdict_source=_verdict_src,
+                    # [458차 P1-A] 오염일에도 살아남는 유일한 공정 표본 — 롤링 누적용.
+                    clean_new=_fair_extra.get("clean_new"),
+                    clean_old=_fair_extra.get("clean_old"),
+                    clean_n=(_fair_extra.get("clean_n") or None),
+                    clean_note=_fair_extra.get("clean_note"),
+                    # [458차 P1-B] 장중 무가드 구간의 실제 복무 성적.
+                    live_acc=_live_acc, live_n=(_live_n or None),
                 )
             except Exception as _gs_e:
                 logger.debug("[GuardShadow] DB 저장 실패 (무해): %s", _gs_e)
@@ -1134,17 +1187,37 @@ class BatchRetrainer:
         그 전제 위에 있다). 타임스탬프가 이 경로까지 전달되지 않으므로 홀드아웃은
         **행 위치 기준**으로 자른다.
 
-        Returns: (new_acc, old_acc, n_holdout, note) — 측정 불가 시 (None, None, 0, 사유)
+        [MW0601 458차 / P1-A] **깨끗한 꼬리 매치드 대조.** 456차 전환조건
+        ①("오염 0봉 EOD 5거래일 연속")은 원리적으로 달성 불가다 — 오염은
+        "홀드아웃 봉 ts ≤ 현행 cutoff"인데 장중 재학습이 매일 pkl을 덮어써
+        cutoff를 당일 12:00 근방으로 밀어올리므로, 5거래일 폭 홀드아웃의 91%는
+        **항상** 오염이다(2026-08-12 실측 1850봉 중 1691봉). 기다림의 대상이
+        존재하지 않는 조건이었다.
+        → 전면 보류 대신, 홀드아웃 중 **현행 cutoff보다 뒤(ts > cutoff)** 인
+          꼬리 구간만 떼어 도전자·현행을 **같은 봉으로** 채점한다. 도전자의
+          홀드아웃은 꼬리를 포함하므로 도전자에게도 완전 OOS이며, 둘이 정확히
+          같은 표본을 보므로 매치드 페어가 된다.
+        ⚠ 하루치 꼬리(159~210봉)는 단독 판정에 부족하다(95% CI ±3.5pp).
+          여기서는 **판정하지 않고** `clean_*`로 반환만 하며, 누적·판정은
+          guard_shadow_log 롤링(주간회의 P1-A 전환조건)이 담당한다.
+          `old_acc`는 여전히 None으로 두어 **판정 경로는 무변경**이다.
+
+        Returns:
+            (new_acc, old_acc, n_holdout, note, extra)
+            extra = {"clean_new","clean_old","clean_n","clean_note"} — 미측정 시 None 값.
+            측정 불가 시 (None, None, 0, 사유, {})
         """
+        _empty_extra = {"clean_new": None, "clean_old": None,
+                        "clean_n": 0, "clean_note": "미실행"}
         cfg = EOD_GUARD_FAIR_HOLDOUT or {}
         if not cfg.get("enabled", False):
-            return None, None, 0, "비활성"
+            return None, None, 0, "비활성", _empty_extra
         H = int(cfg.get("holdout_bars", 1850))
         min_hold = int(cfg.get("min_holdout_bars", 300))
         min_train = int(cfg.get("min_train_bars_after_holdout", 10000))
         n = len(X)
         if H < min_hold:
-            return None, None, 0, "홀드아웃 설정 과소 (%d < %d)" % (H, min_hold)
+            return None, None, 0, "홀드아웃 설정 과소 (%d < %d)" % (H, min_hold), _empty_extra
         # [MW0601 454차 / ATB-A1c] 홀드아웃 경계 퍼징 — 도전자 학습을 홀드아웃
         # 직전 h_min행 앞에서 끊는다. 그 h_min행의 라벨은 홀드아웃 구간의 미래를
         # 보고 만들어졌으므로, 포함하면 도전자가 채점 구간의 정답 일부를 학습한다.
@@ -1153,7 +1226,7 @@ class BatchRetrainer:
         cut = H + _purge
         if n - cut < min_train:
             return None, None, 0, ("홀드아웃 후 학습표본 부족 (%d-%d=%d < %d)"
-                                   % (n, cut, n - cut, min_train))
+                                   % (n, cut, n - cut, min_train)), _empty_extra
         try:
             import pickle as _pk
             src = X_full if X_full is not None else X
@@ -1176,7 +1249,7 @@ class BatchRetrainer:
             sp = os.path.join(self.scaler_dir, "scaler_%s.pkl" % horizon_key)
             fp = os.path.join(self.model_dir, "feature_names_%s.pkl" % horizon_key)
             if not (os.path.exists(mp) and os.path.exists(sp)):
-                return new_acc, None, H, "구모델/스케일러 pkl 없음"
+                return new_acc, None, H, "구모델/스케일러 pkl 없음", _empty_extra
             with open(mp, "rb") as f:
                 old_model = _pk.load(f)
             with open(sp, "rb") as f:
@@ -1186,15 +1259,18 @@ class BatchRetrainer:
                     saved = list(_pk.load(f))
                 if list(feature_names) != saved:
                     return new_acc, None, H, ("피처셋 변경 %d→%d개"
-                                              % (len(saved), len(feature_names)))
+                                              % (len(saved), len(feature_names))), _empty_extra
             ho_old = old_scaler.transform(ho_src)
             if h_idx is not None:
                 ho_old = ho_old[:, h_idx]
             nf = getattr(old_model, "n_features_in_", None)
             if nf is not None and ho_old.shape[1] != nf:
                 return new_acc, None, H, ("피처 수 불일치 %d vs %d"
-                                          % (ho_old.shape[1], nf))
+                                          % (ho_old.shape[1], nf)), _empty_extra
             old_acc = float((old_model.predict(ho_old) == y_ho).mean())
+            # 도전자 예측도 보관 — 아래 깨끗한 꼬리에서 같은 봉만 잘라 쓴다.
+            _pred_new_ho = ch.predict(ho_scaled)
+            _pred_old_ho = old_model.predict(ho_old)
             mt = datetime.datetime.fromtimestamp(
                 os.path.getmtime(mp)).strftime("%Y-%m-%d %H:%M")
 
@@ -1204,12 +1280,64 @@ class BatchRetrainer:
             # 6거래일간 아무도 판정을 못 내렸다 — 432차 항목).
             _contam, _cnote = self._holdout_contamination(horizon_key, H)
             if _contam != 0:
+                # [458차 P1-A] 전면 보류하되, 오염되지 않은 꼬리로 매치드 대조를
+                # 계측해 함께 돌려준다(판정 무영향 — old_acc는 None 유지).
+                _extra = self._clean_tail_matched(
+                    horizon_key, H, y_ho, _pred_new_ho, _pred_old_ho,
+                )
                 return new_acc, None, H, (
                     "오염 %s — 판정 보류 (구모델 pkl mtime=%s)" % (_cnote, mt)
-                )
-            return new_acc, old_acc, H, "ok · 오염 0봉 (구모델 pkl mtime=%s)" % mt
+                ), _extra
+            # 오염 0봉이면 홀드아웃 전체가 곧 깨끗한 구간이다.
+            return new_acc, old_acc, H, "ok · 오염 0봉 (구모델 pkl mtime=%s)" % mt, {
+                "clean_new": new_acc, "clean_old": old_acc, "clean_n": H,
+                "clean_note": "오염 0봉 — 홀드아웃 전체가 깨끗함",
+            }
         except Exception as e:
-            return None, None, 0, "측정 실패: %s" % e
+            return None, None, 0, "측정 실패: %s" % e, _empty_extra
+
+    def _clean_tail_matched(self, horizon_key, holdout_bars,
+                            y_ho, pred_new_ho, pred_old_ho):
+        """[MW0601 458차 / P1-A] 홀드아웃 중 **오염되지 않은 꼬리**만의 매치드 대조.
+
+        현행 모델의 `train_cutoff_ts`보다 뒤(ts > cutoff)인 봉은 현행이 학습하지
+        않았다. 도전자는 홀드아웃 전체를 학습에서 뺐으므로 그 봉도 OOS다.
+        따라서 그 구간에서는 **둘 다 OOS인 동일 표본** 비교가 성립한다.
+
+        판정하지 않는다 — 하루치는 표본이 얇다(2026-08-12 실측 159봉, 95% CI
+        ±3.5pp). guard_shadow_log에 누적해 롤링으로 보는 것이 P1-A 설계다.
+
+        Returns: {"clean_new","clean_old","clean_n","clean_note"}
+        """
+        out = {"clean_new": None, "clean_old": None, "clean_n": 0,
+               "clean_note": "미실행"}
+        try:
+            meta = self._load_model_meta(horizon_key)
+            cutoff = (meta or {}).get("train_cutoff_ts")
+            if not cutoff:
+                out["clean_note"] = "현행 cutoff 미상 — 꼬리 산출 불가"
+                return out
+            ts_list = self._train_row_ts
+            if not ts_list or len(ts_list) < holdout_bars:
+                out["clean_note"] = "학습행 타임스탬프 미상 — 꼬리 산출 불가"
+                return out
+            ho_ts = ts_list[-holdout_bars:]
+            # 시간순 정렬 전제(_holdout_contamination과 동일) — cutoff 초과 봉만.
+            mask = [i for i, t in enumerate(ho_ts) if t > cutoff]
+            if not mask:
+                out["clean_note"] = ("깨끗한 꼬리 0봉 (현행 cutoff=%s 가 홀드아웃 "
+                                     "전체를 덮음)" % cutoff)
+                return out
+            n_clean = len(mask)
+            y_c = y_ho[mask]
+            out["clean_new"] = float((pred_new_ho[mask] == y_c).mean())
+            out["clean_old"] = float((pred_old_ho[mask] == y_c).mean())
+            out["clean_n"] = n_clean
+            out["clean_note"] = ("매치드 %d봉 (cutoff=%s 이후, 둘 다 OOS)"
+                                 % (n_clean, cutoff))
+        except Exception as e:
+            out["clean_note"] = "산출 실패: %s" % e
+        return out
 
     def _holdout_contamination(self, horizon_key: str, holdout_bars: int):
         """홀드아웃 구간 중 현행 모델이 이미 학습한 봉 수.

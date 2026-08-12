@@ -1225,12 +1225,23 @@ def init_trades_db():
             "PRAGMA table_info(exit_fill_slippage)").fetchall()}
         if _efs_cols and "quantity" not in _efs_cols:
             _gsl_conn.execute("ALTER TABLE exit_fill_slippage ADD COLUMN quantity INTEGER")
+        # [MW0601 458차 / P1-A] clean_*: 홀드아웃 중 **현행 cutoff 이후** 구간(=현행도
+        #   도전자도 학습하지 않은 봉)만의 매치드 대조. 456차 전환조건 ①("오염 0봉
+        #   5거래일 연속")이 원리적 달성 불가임이 458차에 확인돼(장중 재학습이 매일
+        #   cutoff를 밀어올려 홀드아웃 91%가 항상 오염), 오염일에도 살아남는 유일한
+        #   공정 표본이다. 하루치는 얇으므로(실측 159봉) **롤링 누적으로만** 판정한다.
+        # [MW0601 458차 / P1-B] live_*: 그날 배포본이 실제 라이브에서 낸 성적
+        #   (predictions.db 당일 채점). EOD 가드가 지키는 구간은 다음날 08:55~09:37의
+        #   42분뿐이고 나머지는 무가드 장중 모델이므로, 몸통을 보는 관측치다.
         for _c, _t in (("fair_new", "REAL"), ("fair_old", "REAL"),
                        ("fair_hold_bars", "INTEGER"), ("fair_note", "TEXT"),
                        ("fair_contaminated_bars", "INTEGER"),
                        ("incumbent_source", "TEXT"),
                        ("incumbent_cutoff_ts", "TEXT"),
-                       ("verdict_source", "TEXT")):
+                       ("verdict_source", "TEXT"),
+                       ("clean_new", "REAL"), ("clean_old", "REAL"),
+                       ("clean_n", "INTEGER"), ("clean_note", "TEXT"),
+                       ("live_acc", "REAL"), ("live_n", "INTEGER")):
             if _c not in _gsl_cols:
                 _gsl_conn.execute(
                     "ALTER TABLE guard_shadow_log ADD COLUMN %s %s" % (_c, _t))
@@ -2549,6 +2560,9 @@ def save_guard_shadow(
     incumbent_source: Optional[str] = None,
     incumbent_cutoff_ts: Optional[str] = None,
     verdict_source: Optional[str] = None,
+    clean_new: Optional[float] = None, clean_old: Optional[float] = None,
+    clean_n: Optional[int] = None, clean_note: Optional[str] = None,
+    live_acc: Optional[float] = None, live_n: Optional[int] = None,
 ) -> None:
     """[404차, P0-4 후속] EOD/intraday 모델가드 GuardShadow 1행 저장.
 
@@ -2573,14 +2587,44 @@ def save_guard_shadow(
             distortion, actual_verdict, fair_verdict, n_samples, pc,
             fair_new, fair_old, fair_hold_bars, fair_note,
             fair_contaminated_bars, incumbent_source, incumbent_cutoff_ts,
-            verdict_source)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            verdict_source, clean_new, clean_old, clean_n, clean_note,
+            live_acc, live_n)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   ?, ?, ?, ?, ?, ?)""",
         (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
          distortion, actual_verdict, fair_verdict, n_samples, pc_id(),
          fair_new, fair_old, fair_hold_bars, fair_note,
          fair_contaminated_bars, incumbent_source, incumbent_cutoff_ts,
-         verdict_source),
+         verdict_source, clean_new, clean_old, clean_n, clean_note,
+         live_acc, live_n),
     )
+
+
+def fetch_live_frequential_acc(horizon: str, date_str: str):
+    """[MW0601 458차 / P1-B] 그날 배포본이 **라이브에서 실제로** 낸 적중률.
+
+    EOD 가드가 지키는 구간은 다음날 08:55~09:37의 42분뿐이다 — 09:37 첫 장중
+    재학습이 EOD 모델을 덮어쓰고 이후 마감까지는 무가드 장중 모델이 복무한다
+    (404차가 재현 분산 8.83%p를 근거로 장중 게이트를 걸지 않기로 한 의도적 결정).
+    그러므로 품질 리스크의 몸통은 장중 모델에 있는데, 지금까지 그것을 EOD 시점에
+    돌아보는 계측이 없었다.
+
+    predictions 테이블은 매분 STEP1에서 이미 채점되므로(correct 컬럼) 추가 계산이
+    없다 — 읽기 1회다. 관찰 전용이며 어떤 판정에도 쓰지 않는다.
+
+    Returns: (acc, n) — 표본 없으면 (None, 0).
+    ⚠ "표본 없음"과 "적중률 0.0"을 같은 값으로 돌려주지 않는다(계측 4원칙 ②).
+    """
+    rows = fetchall(
+        PREDICTIONS_DB,
+        """SELECT AVG(correct) AS acc, COUNT(correct) AS n
+           FROM predictions
+           WHERE horizon = ? AND date(ts) = ? AND correct IS NOT NULL""",
+        (horizon, date_str),
+    )
+    if not rows or not rows[0]["n"]:
+        return None, 0
+    return float(rows[0]["acc"]), int(rows[0]["n"])
 
 
 def fetch_latest_tb_verdicts() -> Dict[str, sqlite3.Row]:

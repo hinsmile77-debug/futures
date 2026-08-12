@@ -141,7 +141,28 @@ con = connect_ro(DB_PATH)         # 읽기전용(쓰기 사고 방지용 — 지
 | **단기** | 1m·3m·5m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
 | **단기** | 1m·3m·5m | OFI 불균형 | `features/technical/ofi.py` | 미통과 → 등급 하락 |
 | **중기** | 10m·15m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
-| **장기** | 30m | opt_chain_pcr | `collection/option/option_chain.py` | 미통과 → 등급 하락 |
+| **장기** | 30m | opt_chain_pcr ⚠ | `collection/option/option_chain.py` | 미통과 → 등급 하락 |
+
+> ⚠ **[2026-08-12 458차] 30m 행은 현재 "지정만 존재"하는 상태다 — 실효 없음.**
+> 강등·폐지 결정이 아니라 **사실 표기**이며, 처분은 F9 심사에서 정한다.
+> 세 가지가 독립적으로 확인됐다:
+> ① **모델에 들어간 적이 없다.** `opt_chain_pcr`은 수집 자체는 정상이나
+>    (`raw_features_horizon` 30m 최신행 = 0.5953, 2026-07-15부터 존재율 92%),
+>    학습 X가 `model/horizons/feature_names.pkl`의 **97개 동결 슈퍼셋**으로
+>    구성돼(`learning/batch_retrainer.py` `use_feat_names`) 컬럼 자체를 못 얻는다
+>    → `get_available_feature_set()` 교집합에서 탈락 → 매 EOD가 그 97개를 재저장해
+>    **자기유지**된다. 같은 이유로 잠긴 피처가 **11종**이다.
+>    ※ 260704 감사 P3의 "전 구간 키 합집합" 수정은 바로 아래 줄이 결과를 덮어써
+>      배포일 이래 X 구성에 반영된 적이 없다. 다만 이 동결은 추론 공간 일치를 위한
+>      **의도적 설계**이므로 여기만 고치면 shape mismatch로 깨진다(332차·337차 전례) —
+>      푸는 절차는 P2-B(피처 온보딩)로 별도 등록.
+> ② **장기 그룹 체크리스트가 발동한 적이 없다.** `trades.entry_horizon`은 1m/3m/5m
+>    뿐이고 10m·15m·30m은 **사상 0건**이다.
+> ③ **IC가 무정보다.** rho = −0.0066 (t = −0.09, n=209, 2026-07-15 이후 30m 선도수익).
+>    표본이 작아 사형선고 근거는 아니나, **온보딩을 서두를 근거는 없다**.
+> 배경: 30m은 296차에 앙상블·CoherenceGate·CascadeCoherence에서 전면 퇴역했고
+> CB③-P4도 그 때문에 비활성이다(절대원칙 §2). 근거: `DECISION_LOG.md` 2026-08-12(458차),
+> `docs/정기점검/매일점검/MW0601-20260812-이상점3건-딥다이브.md` §C.
 
 > `macro_vix`는 2026-06-25 CORE 강등. 일봉 VIX → 분봉 상수, ~~SHAP 기여 ≈ 0~~, 임계 VIX 27.5 평상시 항상 통과 확인. 보조 피처로 GBM 피처셋에 유지.
 > `macro_risk_off`는 2026-06-25 CORE 해제. 모든 호라이즌 feature_names_hz 미포함 확인 (GBM gain=0, ~~SHAP=0~~). 체크리스트·SGD 경로에도 없음. MacroFeatureTransformer 계산은 유지.
