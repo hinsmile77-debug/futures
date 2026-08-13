@@ -267,6 +267,44 @@ class DailyExporter:
                         lines.append(
                             "      └ 상세: " + "  ".join("%s=%d" % (k, v) for k, v in _efbd)
                         )
+
+                # ── [461차, G-6] JointGateBlock 무정보폴백 비율 ──────────────
+                # 460차 F-1의 판정 조건("3거래일 연속 80% 초과면 게이트 원인")을
+                # 사람 손 없이 채운다. 판정문은 min_samples 도달 전까지 내지 않는다.
+                try:
+                    from utils.db_utils import fetch_daily_joint_gate_fallback
+                    _jg = fetch_daily_joint_gate_fallback()
+                    if _jg["n"] > 0:
+                        _seg = "      └ JointGateBlock %d건" % _jg["n"]
+                        if _jg["pct"] is not None:
+                            _seg += " (무정보폴백 %d건 = %.1f%%)" % (_jg["fallback"], _jg["pct"])
+                        if _jg["unmeasured"]:
+                            _seg += " ⚠미계측 %d건(420차 이전)" % _jg["unmeasured"]
+                        if not _jg["verdict_ready"]:
+                            # [313차] 소표본 확정 금지 — 세기만 하고 판정하지 않는다
+                            _seg += " [표본 %d건 부족 — 판정보류]" % _jg["remain_to_min"]
+                        lines.append(_seg)
+                except Exception as _jge:
+                    lines.append("      └ JointGateBlock 폴백집계: [실패: %s]" % _jge)
+
+                # ── [461차, G-4] 퍼널 자기검증 ──────────────────────────────
+                # F-5가 고친 누락은 6주 넘게 무경보로 지나갔다. 본질은 버그가
+                # 아니라 검산 부재다. 정상이어도 반드시 한 줄 남긴다 —
+                # "검산이 돌았다"는 사실 자체가 관측값이기 때문이다.
+                try:
+                    from utils.db_utils import verify_daily_entry_funnel
+                    _bad = verify_daily_entry_funnel(_fn)
+                    if _bad:
+                        _msg = "⚠ 퍼널 정합성 실패: " + " / ".join(_bad)
+                        lines.append("    " + _msg)
+                        try:
+                            logger.warning("[EntryFunnel] %s", _msg)
+                        except Exception:
+                            pass
+                    else:
+                        lines.append("    └ 정합성: OK (칸합계·진입·JointGateBlock 3종 일치)")
+                except Exception as _vfe:
+                    lines.append("    └ 정합성: [검산 실패: %s]" % _vfe)
         except Exception as e:
             lines.append("  진입 퍼널 : [계산 실패: %s]" % e)
 

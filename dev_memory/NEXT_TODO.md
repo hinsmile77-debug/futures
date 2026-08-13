@@ -12221,14 +12221,28 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
 
 ### 고도화
 
-- [ ] **G-4 퍼널 자기검증 (선행: F-5)** — `strategy/ops/daily_exporter.py` 퍼널 섹션 말미에
+- [x] **G-4 퍼널 자기검증 (선행: F-5)** — ✅ **2026-08-13 구현·검증 완료(커밋 ④)**.
+  `utils/db_utils.py:verify_daily_entry_funnel()` 신설 + exporter 배선. **67거래일 전부 통과, 오탐 0건.**
+  🔧 **초안이 항등식이 아니어서 두 번 고쳤다**: ① ③의 모집단이 반쪽 — JointGateBlock 차단 행은
+  `entry_final_ok`에 따라 `exec_fail_breakdown`/`gate_breakdown`으로 갈리므로 **합산**해야 한다
+  (07-20 실측 9+2=11). ② `joint_gate_shadow` 개시일(2026-07-15) 이전 46일은 미계측이므로 ③ 스킵.
+  ③의 대조 대상은 `TRADE.log` grep이 아니라 **`joint_gate_shadow`(다른 DB의 독립 기록)** 로 잡았다 —
+  텍스트 grep보다 견고하고 독립성은 동일. 정상이어도 `└ 정합성: OK` 한 줄을 항상 남긴다.
+  ~~아래 원안~~ — `strategy/ops/daily_exporter.py` 퍼널 섹션 말미에
   항등식 검산 3종: ① 각 칸 합 == `total`, ② `entered == SUM(entry_executed)`,
   ③ 퍼널 JointGateBlock 건수 == `TRADE.log` grep 건수. 어긋나면
   `⚠ 퍼널 정합성 실패: {항목} 기대={a} 실측={b}`를 리포트와 WARN 로그에.
   **근거**: 1-1의 본질은 버그 하나가 아니라 **검산이 없다는 것** — 13.2% 누락이 6주 넘게
   무경보로 지나갔다. EOD 시각이라 장중 DB 금지 규약 무관.
 
-- [ ] **G-5 "미측정" 1급 표현 — 스냅샷 스키마에 `*_measured`** —
+- [x] **G-5 "미측정" 1급 표현 — 스냅샷 스키마에 `*_measured`** — ✅ **2026-08-13 완료**.
+  `metrics_measured` 컬럼은 **커밋 ②(F-7)에서 이미 배선**됐고, 커밋 ④에서 남은 절반인
+  **자동 검출**을 `tests/test_457_fallback_visibility.py`에 추가(테스트 3건).
+  AST로 "컬럼 명시 INSERT + 폴백 리터럴 + 플래그 컬럼 없음"을 잡는다. 전 리포 INSERT 21건 중 **4건 검출**,
+  전부 검토 후 근거와 함께 `_DB_FALLBACK_PINNED`로 **핀 고정**(고칠 결함 아님 — 새로 생기는 것을 막는 검사다).
+  🔴 **함정**: 런타임이 py37_32라 `ast.Constant`만 보면 **전 리포 0건**이 나온다(3.7은 `ast.Str`).
+  `n_inserts >= 10` 하한 assert로 검출기 사망을 감지한다.
+  ~~아래 원안~~ —
   `strategy_live_snapshots`에 `metrics_measured INTEGER` `ALTER TABLE` 추가
   (`ensemble_decisions` 6컬럼 전례와 동일 패턴). `tests/test_457_fallback_visibility.py`의
   검사 범위를 **"DB 컬럼에 폴백값을 쓸 때 같은 행에 플래그가 있는가"** 로 확장 —
@@ -12236,7 +12250,15 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
   **근거**: 오늘 하루에만 미측정이 정상값으로 위장한 사례 2건.
   ⚠ 기존 96행은 `NULL`(미상)로 남아 소급 판정 불가 — 주석 명기. F-7과 동시 작업 권장.
 
-- [ ] **G-6 JointGateBlock 폴백 비율 일일 자동 집계 (선행: 460차 F-1)** —
+- [x] **G-6 JointGateBlock 폴백 비율 일일 자동 집계** — ✅ **2026-08-13 구현·검증 완료(커밋 ④)**.
+  `fetch_daily_joint_gate_fallback()` 신설. 출력
+  `└ JointGateBlock 7건 (무정보폴백 6건 = 85.7%) [표본 13건 부족 — 판정보류]`.
+  🔧 **[선행조건 정정] 460차 F-1을 기다릴 필요가 없었다** — **420차가 `joint_gate_shadow.meta_size_fallback`
+  컬럼으로 이미 승격**해뒀다(리포트 "함정 ①"에 해당). 값(`meta_size==0.50`) 추정이 아니라 컬럼을 읽는다 —
+  학습값이 우연히 0.50인 행과 구분되기 때문. 실측 85.7%로 수동 집계와 정확히 일치.
+  일자별: 08-03 76.9%(n=26) · 08-06 77.8%(9) · 08-07 73.7%(19) · 08-11 100%(1) · 08-13 85.7%(7).
+  **판정 표본 20 도달은 08-03뿐** — `verdict_ready=False`면 판정문 미출력(313차).
+  ~~아래 원안~~ —
   15:40 리포트 퍼널 섹션에 `└ JointGateBlock N건 (무정보폴백 M건 = P%) [min_samples=20까지 K건]`.
   **근거**: 오늘 7건 중 6건(85.7%) `meta=0.50`. 같은 창 건수가 08-11 0 · 08-12 0 · 08-13 7로 급변.
   "3거래일 연속 폴백비율 80% 초과" 판정 조건이 사람 손 없이 채워진다.

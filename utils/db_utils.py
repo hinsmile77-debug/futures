@@ -2240,6 +2240,131 @@ def fetch_daily_entry_funnel(date_str: Optional[str] = None) -> Dict:
     return out
 
 
+#: [461차, G-4] `joint_gate_shadow` 채널 개시일(첫 행 2026-07-15 10:24). 이전 날짜는
+#: 표가 비어 있는 것이 정상이므로 검산 ③을 건너뛴다 — 미계측 ≠ 불일치.
+_JOINT_SHADOW_SINCE = "2026-07-15"
+
+
+def verify_daily_entry_funnel(funnel: Dict, date_str: Optional[str] = None) -> List[str]:
+    """[461차, G-4] 진입 퍼널 자기검증 — 항등식이 깨지면 사유 문자열을 돌려준다.
+
+    F-5가 고친 결함(퍼널 `entered`가 실제 진입의 13.2%를 누락)은 **6주 넘게 아무
+    경보 없이** 지나갔다. 문제의 본질은 버그 하나가 아니라 **검산이 없다는 것**이다.
+    같은 사실을 서로 다른 경로로 두 번 세서 어긋나면 그날 즉시 잡는다.
+
+    검사 3종 — 모두 항등식이라 정상이면 오탐이 날 수 없다:
+
+      ① 칸 합계 == total
+         (flat + conf_fail + coherence_blocked + gate_blocked + candidate)
+      ② entered == SUM(entry_executed)            ← 같은 테이블, 다른 집계 경로
+      ③ 퍼널 JointGateBlock 건수 == joint_gate_shadow 당일 행수
+         ← **다른 DB**(trades.db)에 다른 코드가 쓴 독립 기록. 2026-08-13에 퍼널이
+           6, 실제가 7이었던 바로 그 불일치를 잡는 축이다.
+
+    ③의 모집단 주의 — **두 breakdown을 합쳐야 한다.**
+    JointGateBlock으로 차단된 행은 `entry_final_ok` 값에 따라 퍼널에서 갈린다:
+    1이면 `exec_fail_breakdown`, 0이면 `gate_breakdown`. 한쪽만 세면 상시 어긋난다
+    (실측: 2026-07-20 exec_fail 9 + gate_blocked 2 = shadow 11).
+
+    ③은 `_JOINT_SHADOW_SINCE` 이전 날짜에는 건너뛴다 — 그 채널이 2026-07-15에
+    개시돼 이전 날짜는 항상 0이다. **미계측을 불일치로 보고하지 않는다**(계측 4원칙 ②).
+
+    반환: 실패 사유 리스트(빈 리스트 = 전부 통과). 예외는 삼키고 사유로 바꾼다 —
+    검산이 EOD 리포트 생성을 깨뜨리면 안 된다.
+    """
+    import datetime as _dt
+    d = date_str or funnel.get("date") or _dt.date.today().isoformat()
+    fails = []
+
+    # ① 칸 합계
+    parts = (int(funnel.get("flat", 0)) + int(funnel.get("conf_fail", 0))
+             + int(funnel.get("coherence_blocked", 0))
+             + int(funnel.get("gate_blocked", 0)) + int(funnel.get("candidate", 0)))
+    total = int(funnel.get("total", 0))
+    if parts != total:
+        fails.append("칸합계 기대=%d 실측=%d" % (total, parts))
+
+    # ② entered vs SUM(entry_executed)
+    try:
+        rows = fetchall(
+            PREDICTIONS_DB,
+            "SELECT COUNT(*) AS n FROM ensemble_decisions "
+            "WHERE substr(ts, 1, 10) = ? AND entry_executed = 1",
+            (d,),
+        )
+        db_exec = int(rows[0]["n"]) if rows else 0
+        if int(funnel.get("entered", 0)) != db_exec:
+            fails.append("진입 기대=%d 실측(entry_executed)=%d" % (db_exec, funnel.get("entered", 0)))
+    except Exception as e:
+        fails.append("진입 대조 실패(%s)" % e)
+
+    # ③ JointGateBlock vs joint_gate_shadow (다른 DB의 독립 기록)
+    if d >= _JOINT_SHADOW_SINCE:
+        try:
+            rows = fetchall(
+                TRADES_DB,
+                "SELECT COUNT(*) AS n FROM joint_gate_shadow WHERE substr(ts, 1, 10) = ?",
+                (d,),
+            )
+            shadow_n = int(rows[0]["n"]) if rows else 0
+            funnel_n = (int((funnel.get("exec_fail_breakdown") or {}).get("JointGateBlock", 0))
+                        + int((funnel.get("gate_breakdown") or {}).get("JointGateBlock", 0)))
+            if funnel_n != shadow_n:
+                fails.append("JointGateBlock 퍼널=%d joint_gate_shadow=%d" % (funnel_n, shadow_n))
+        except Exception as e:
+            fails.append("JointGateBlock 대조 실패(%s)" % e)
+
+    return fails
+
+
+def fetch_daily_joint_gate_fallback(date_str: Optional[str] = None,
+                                    min_samples: int = 20) -> Dict:
+    """[461차, G-6] JointGateBlock 중 MetaGate 무정보 폴백 비율 일일 집계.
+
+    460차 F-1이 "매일 사람이 눈으로 세고 있다"고 지적한 값을 자동화한다.
+    판정 조건은 *"폴백 비율이 3거래일 연속 80% 초과면 게이트 쪽 원인"* 인데,
+    그 입력을 손으로 만들고 있었다.
+
+    ⚠ **폴백 여부를 meta 값으로 추정하지 않는다.** `meta_size == 0.50`으로 세면
+    "학습값이 우연히 0.50인 행"과 구분이 안 된다. 420차가 신설한
+    `joint_gate_shadow.meta_size_fallback`(1 = `learned["size_multiplier"] or 0.5`
+    폴백 발동)을 그대로 읽는다 — 2026-08-13 실측 7건 중 6건(85.7%)으로 수동 집계와 일치.
+
+    420차 이전 행은 그 컬럼이 NULL이다 → **미계측으로 따로 센다**(계측 4원칙 ②).
+    NULL을 0(=학습값)으로 뭉개면 폴백 건이 학습값처럼 보인다.
+
+    반환: {"n", "fallback", "learned", "unmeasured", "pct", "remain_to_min",
+           "min_samples", "verdict_ready"}
+    `verdict_ready=False`면 **판정문을 출력하지 말 것**(313차 원칙 — 소표본 확정 금지).
+    """
+    import datetime as _dt
+    d = date_str or _dt.date.today().isoformat()
+    out = {"n": 0, "fallback": 0, "learned": 0, "unmeasured": 0, "pct": None,
+           "min_samples": min_samples, "remain_to_min": min_samples,
+           "verdict_ready": False}
+    rows = fetchall(
+        TRADES_DB,
+        "SELECT meta_size_fallback FROM joint_gate_shadow WHERE substr(ts, 1, 10) = ?",
+        (d,),
+    )
+    out["n"] = len(rows)
+    for r in rows:
+        v = r["meta_size_fallback"]
+        if v is None:
+            out["unmeasured"] += 1
+        elif int(v) == 1:
+            out["fallback"] += 1
+        else:
+            out["learned"] += 1
+
+    known = out["fallback"] + out["learned"]
+    if known > 0:
+        out["pct"] = round(100.0 * out["fallback"] / known, 1)
+    out["remain_to_min"] = max(min_samples - known, 0)
+    out["verdict_ready"] = known >= min_samples
+    return out
+
+
 def fetch_realized_volatility_context(date_str: Optional[str] = None, lookback_days: int = 5) -> Dict:
     """[369차, 0723 정기점검] mc-conf 괴리 경보(진입후보 하한 미달)가 뜰 때,
     원인이 "모델 이상"인지 "그날 시장 자체가 조용했음"인지 즉시 구분하기 위한
