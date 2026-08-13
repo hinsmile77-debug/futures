@@ -406,7 +406,22 @@ EOD 로그에 그 경고가 보이면 호스트명을 확인할 것.
 ```
 ① 모의투자 4주 통산 수익률 양수
 ② Circuit Breaker 1회 이상 정상 작동 확인
-③ Walk-Forward 26주 통과 (Sharpe ≥ 1.5, MDD ≤ 15%, 승률 ≥ 53%)
+③ Walk-Forward 26주 통과 (Sharpe ≥ 1.5, **MDD ≤ 15% — 자본 대비**, 승률 ≥ 53%)
+
+   > **[2026-08-13 461차] MDD는 반드시 "자본 대비"다 — 분모를 확인하고 인용할 것.**
+   > 같은 이름 `mdd_pct`가 두 곳에서 다른 분모를 썼다:
+   > `backtest/performance_metrics.py`는 **자본 대비**(이 기준선이 재는 값),
+   > `config/strategy_registry.py`의 Live는 **누적 PnL 곡선의 peak 대비**였다.
+   > peak 대비는 100%를 얼마든지 넘는다(2026-08-13 실측 20일 **215.4%**, 60일 **75,916%**).
+   > 그 값을 자본 대비 15% 기준에서 빼서 `UNDERPERFORM` + 전략 교체 권고가 나왔다.
+   > 같은 구간을 자본 대비로 재면 **3.33%**다.
+   > → 461차부터 판정(`_compute_verdict`)·리포트 배너·대시보드는 **`mdd_pct_of_capital`**
+   >   만 쓴다. `mdd_pct`는 `mdd_pct_of_peak`의 하위호환 별칭이므로 **판정에 쓰지 말 것**.
+   >   분모 자본은 `SIZING_TARGET_CAPITAL_KRW`(현재 5천만원) — ⑧에서 실전 자본으로
+   >   재설정되면 이 MDD도 함께 바뀐다.
+   > ⚠ **2026-08-13 이전 verdict 시계열과 직접 비교 금지**(불연속).
+   >   전환 마커: `strategy_events` id=76 `METRIC_REDEFINITION`.
+   >   근거: `dev_memory/DECISION_LOG.md` 2026-08-13 461차 후속, 계측 4원칙 ①.
 ④ 일일 수익률 변동성 안정적
 ⑤ CB② 복원 확인 — `CB_CONSEC_STOP_LIMIT` 9999 → 2~3 (모의투자 한정 예외 해제, 절대원칙 §2 참조)
    ※ 2026-08-01 결산에서 **복원 4주 연기 결정 → 재검토 2026-08-29** (절대원칙 §2 CB② 항목 참조)

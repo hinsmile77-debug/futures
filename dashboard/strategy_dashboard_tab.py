@@ -257,20 +257,37 @@ class _HeaderCard(QFrame):
         self._mv_sharpe.setStyleSheet(
             _metric_color_style(sharpe_val, 1.5, 1.2, 18)
         )
-        self._mv_mdd.setText(_fmt("mdd_pct", "%.1f%%", ""))
-        mdd_raw = src.get("mdd_pct")
-        if mdd_raw is not None:
-            self._mv_mdd.setText("%.1f%%" % (abs(mdd_raw) * 100))
+        # [461차, F-7] MDD는 **자본 대비**를 우선 표시한다. src가 live면
+        # mdd_pct_of_capital이 있고, WFA stage면 없으므로 mdd_pct(이미 자본 대비)로
+        # 떨어진다 — 어느 쪽이든 카드에 뜨는 값의 분모가 같아진다.
+        # (종전 live 경로의 mdd_pct는 누적 PnL peak 대비라 WFA와 단위가 달랐다)
+        mdd_raw = src.get("mdd_pct_of_capital")
+        if mdd_raw is None:
+            mdd_raw = src.get("mdd_pct")
+        self._mv_mdd.setText(
+            "%.1f%%" % (abs(mdd_raw) * 100) if mdd_raw is not None else "—"
+        )
         self._mv_mdd.setStyleSheet(
             _mdd_color_style(abs(mdd_raw) * 100 if mdd_raw else None, 18)
         )
+        # [461차, F-7] 거래 0건이면 WR/PF는 미측정 — 0.0%/1.00으로 찍지 않는다
+        measured = src.get("metrics_measured")
         wr = src.get("win_rate")
-        self._mv_wr.setText("%.1f%%" % (wr * 100) if wr is not None else "—")
-        self._mv_wr.setStyleSheet(_metric_color_style(wr, 0.56, 0.53, 18))
+        if measured is False:
+            self._mv_wr.setText("미측정")
+            self._mv_wr.setStyleSheet(_metric_color_style(None, 0.56, 0.53, 18))
+        else:
+            self._mv_wr.setText("%.1f%%" % (wr * 100) if wr is not None else "—")
+            self._mv_wr.setStyleSheet(_metric_color_style(wr, 0.56, 0.53, 18))
 
         pf = src.get("profit_factor")
-        self._mv_pf.setText("%.2f" % pf if pf is not None else "—")
-        self._mv_pf.setStyleSheet(_metric_color_style(pf, 1.3, 1.1, 18))
+        if measured is False:
+            self._mv_pf.setText("미측정")
+        else:
+            self._mv_pf.setText("%.2f" % pf if pf is not None else "—")
+        self._mv_pf.setStyleSheet(
+            _metric_color_style(None if measured is False else pf, 1.3, 1.1, 18)
+        )
 
         # 판정 배지
         verdict = ver_info.get("verdict", "INSUFFICIENT")
@@ -808,11 +825,16 @@ class _StrategyLog(QTextEdit):
                 )
             if live.get("sharpe") is not None:
                 verdict = ver_info.get("verdict", "")
+                # [461차, F-7] 바로 윗줄 WFA MDD와 **같은 분모**(자본 대비)로 찍는다.
+                # 종전엔 peak 대비를 그 옆에 나란히 놓아 눈으로도 비교가 안 됐다.
+                _lm = live.get("mdd_pct_of_capital")
+                _lwr = live.get("win_rate")
                 lines.append(
-                    "  Live: Sharpe=%.2f  MDD=%.1f%%  WR=%.1f%%  판정=%s" % (
+                    "  Live: Sharpe=%.2f  MDD(자본대비)=%s  WR=%s  판정=%s" % (
                         live.get("sharpe", 0),
-                        abs(live.get("mdd_pct") or 0) * 100,
-                        (live.get("win_rate") or 0) * 100,
+                        "%.1f%%" % (abs(_lm) * 100) if _lm is not None else "미측정",
+                        ("미측정" if live.get("metrics_measured") is False
+                         else ("%.1f%%" % (_lwr * 100) if _lwr is not None else "—")),
                         verdict,
                     )
                 )
@@ -965,7 +987,11 @@ class _LivePnlSparkline(QLabel):
         if sh is not None:
             parts.append("Sh:%.2f" % sh)
         if md is not None:
-            parts.append("MDD:%.1f%%" % (md * 100))
+            # [461차, F-7] rolling["mdd_pct"]는 peak 대비 별칭 — 단위를 라벨에 박는다
+            parts.append("MDD(peak):%.1f%%" % (md * 100))
+        mdc = rolling.get("mdd_pct_of_capital")
+        if mdc is not None:
+            parts.append("MDD(자본):%.1f%%" % (abs(mdc) * 100))
         if wr is not None:
             parts.append("WR:%.0f%%" % (wr * 100))
         if pf is not None:

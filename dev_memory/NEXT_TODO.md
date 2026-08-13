@@ -12176,7 +12176,18 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
   다이제스트에는 없다. 예약작업이 오발할 때마다 반복된다.
   **검증**: 같은 날 `--phase post` 연속 2회 실행 시 두 파일 모두 잔존.
 
-- [ ] **F-7 Live/WFA MDD 단위 정합 + WR·PF 폴백 가시화 (P1)** —
+- [x] **F-7 Live/WFA MDD 단위 정합 + WR·PF 폴백 가시화 (P1)** — ✅ **2026-08-13 구현·검증
+  완료(커밋 ②)**. 자본 기준 = `SIZING_TARGET_CAPITAL_KRW`(5천만원, 사용자 확정).
+  **전환일 2026-08-13 — 이전 verdict 시계열과 불연속. 마커 `strategy_events` id=76
+  `METRIC_REDEFINITION`.** 20일 MDD peak대비 215.4% → 자본대비 3.33%.
+  ⚠ **판정은 뒤집히지 않았다** — MDD 축은 FAIL→PASS(`+2.012`→`-0.109`)지만
+  Sharpe 축이 독립적으로 FAIL(`-0.848`)이라 `UNDERPERFORM` 유지. 리포트가 예상한
+  "NORMAL/OUTPERFORM 뒤집힘"은 미발생. 오늘의 UNDERPERFORM은 진짜 Sharpe 미달이었다.
+  부수 발견: WR/PF를 NULL로 바꾸자 **롤링 20일 값이 당일 칸을 덮는** 2차 결함이
+  드러나 `_merge_rolling()`+`_DAILY_ONLY_KEYS`로 차단. 섀도 불필요(교체 권고는 자동
+  조치 없음 — `main.py:11278` 확인). 테스트 9건 신규, 317 passed.
+  상세: `DECISION_LOG.md` 2026-08-13 461차 후속.
+  ~~아래 원안~~ —
   `config/strategy_registry.py:601`·`_judge_verdict()`(778~790행)·`strategy/ops/daily_exporter.py`.
   ① `mdd_pct` → `mdd_pct_of_peak` 개명 + `mdd_pct_of_capital` 병기(`mdd_krw / capital`),
   ② `_judge_verdict()`의 Live 항만 `mdd_pct_of_capital`로 교체(**임계·수식 무변경**),

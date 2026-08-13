@@ -55,6 +55,56 @@ _NORMAL_SHARPE_DELTA     = -0.20
 _OUTPERFORM_MDD_DELTA    = -0.01   # MDD 개선 (음수가 개선)
 _NORMAL_MDD_DELTA        = 0.03    # MDD 최대 악화 허용
 
+# [461차, F-7] 스냅샷 중 "당일" 값 — 롤링(20일)으로 덮으면 안 되는 키.
+# 아래 _merge_rolling 참조. 기간이 다른 값이 같은 칸에 들어가는 것을 막는다.
+_DAILY_ONLY_KEYS = ("win_rate", "profit_factor", "total_trades",
+                    "daily_pnl", "metrics_measured")
+
+
+def _target_capital_krw() -> float:
+    """[461차, F-7] MDD 분모로 쓸 자본 기준 — `SIZING_TARGET_CAPITAL_KRW`.
+
+    PositionSizer가 base_risk 산출에 쓰는 것과 **같은 기준**을 쓴다(일관성).
+    실전 전환 기준 ⑧에서 실전 자본으로 재설정될 때 이 분모도 함께 바뀐다.
+    settings를 지연 import 하는 이유: config 패키지 내 상호 import 순서 의존을 피한다.
+    구할 수 없으면 0.0을 반환하고, 호출부는 그 경우 None(미측정)으로 남긴다.
+    """
+    try:
+        from config.settings import SIZING_TARGET_CAPITAL_KRW
+        return float(SIZING_TARGET_CAPITAL_KRW)
+    except Exception as e:
+        logger.warning("[Registry] SIZING_TARGET_CAPITAL_KRW 조회 실패: %s", e)
+        return 0.0
+
+
+def _merge_rolling(
+    live_snap: Optional[Dict[str, Any]],
+    rolling:   Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """[461차, F-7] 롤링(20일) 지표로 스냅샷의 **누락 필드만** 보완한다.
+
+    단일 스냅샷에는 sharpe/mdd가 없으므로 롤링으로 채워 넣는 것이 원래 의도인데,
+    `win_rate`·`profit_factor`는 스냅샷 쪽이 **당일** 값이라 성격이 다르다.
+    F-7이 "거래 0건이면 WR/PF를 NULL 저장"으로 바꾸면서, 그냥 두면 그 NULL 칸이
+    20일 롤링 값으로 조용히 채워져 **미측정이 측정값으로 위장**된다
+    (계측 4원칙 ① 단위 명시 · ④ 폴백 가시화). 그래서 당일 전용 키는 제외한다.
+
+    스냅샷 자체가 없으면(당일 기록 전) 롤링을 그대로 쓰되 `metrics_measured=False`로
+    표시한다 — 그 WR/PF는 당일 값이 아니기 때문이다.
+    """
+    if not rolling:
+        return live_snap
+    if live_snap is None:
+        out = dict(rolling)
+        out["metrics_measured"] = False
+        return out
+    for k, v in rolling.items():
+        if k in _DAILY_ONLY_KEYS:
+            continue
+        if live_snap.get(k) is None:
+            live_snap[k] = v
+    return live_snap
+
 
 # ─────────────────────────────────────────────────────────────────────────
 class StrategyRegistry:
@@ -122,6 +172,9 @@ class StrategyRegistry:
                 daily_pnl   REAL,
                 regime      TEXT,
                 raw_json    TEXT,
+                -- [461차, F-7] 당일 win_rate/profit_factor가 실제 거래로 측정된
+                -- 값인지 여부. 거래 0건이면 0 + WR/PF는 NULL (계측 4원칙 ④).
+                metrics_measured INTEGER,
                 FOREIGN KEY(version) REFERENCES strategy_versions(version)
             );
 
@@ -147,7 +200,24 @@ class StrategyRegistry:
                 note        TEXT
             );
             """)
+            # [461차, F-7] 기존 DB 마이그레이션 — CREATE TABLE IF NOT EXISTS는
+            # 이미 있는 테이블에 새 컬럼을 붙여주지 않는다.
+            self._ensure_column(cur, "strategy_live_snapshots",
+                                "metrics_measured", "INTEGER")
             con.commit()
+
+    @staticmethod
+    def _ensure_column(cur: sqlite3.Cursor, table: str,
+                       column: str, decl: str) -> None:
+        """테이블에 컬럼이 없으면 ALTER TABLE로 추가 (있으면 무동작)."""
+        try:
+            cur.execute("PRAGMA table_info(%s)" % table)
+            names = [r[1] for r in cur.fetchall()]
+            if column not in names:
+                cur.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, decl))
+                logger.info("[StrategyRegistry] 컬럼 추가: %s.%s", table, column)
+        except Exception as e:
+            logger.warning("[StrategyRegistry] 컬럼 확인 실패 %s.%s: %s", table, column, e)
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(self._db)
@@ -330,6 +400,25 @@ class StrategyRegistry:
             regime:  당일 주요 레짐 (선택)
         """
         today = datetime.now().strftime("%Y-%m-%d")
+
+        # [461차, F-7] 거래 0건이면 WR/PF는 **측정된 값이 아니다** — NULL로 남긴다.
+        # 종전에는 호출부(main.py:daily_close)가 wins/max(trades,1) = 0.0 과
+        # _daily_profit_factor()의 손실0 폴백 1.0 을 그대로 넘겨, 리포트에
+        # `WR=0.0% PF=1.00`이 찍혔다. "승률 0%"와 "표본 없음"은 다른 사실인데
+        # 같은 숫자로 표현된 것이다(계측 4원칙 ② 미측정≠0 · ④ 폴백 가시화).
+        _trades  = metrics.get("total_trades")
+        measured = bool(_trades)          # None·0 → False
+        _wr = metrics.get("win_rate")      if measured else None
+        _pf = metrics.get("profit_factor") if measured else None
+
+        _stored = dict(metrics)
+        _stored["metrics_measured"] = measured
+        if not measured:
+            # raw_json에도 폴백이 아니라 미측정임을 남긴다 (사후 재구성 대비)
+            _stored["win_rate"] = None
+            _stored["profit_factor"] = None
+            _stored["_measured_note"] = "total_trades=0 — WR/PF 미측정 (461차 F-7)"
+
         with self._conn() as con:
             cur = con.cursor()
             # UPSERT: 당일 같은 버전 중복 방지
@@ -340,19 +429,21 @@ class StrategyRegistry:
             cur.execute(
                 """INSERT INTO strategy_live_snapshots
                    (version, snapshot_date, sharpe, mdd_pct, win_rate,
-                    profit_factor, calmar, total_trades, daily_pnl, regime, raw_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    profit_factor, calmar, total_trades, daily_pnl, regime, raw_json,
+                    metrics_measured)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     version, today,
                     metrics.get("sharpe"),
                     metrics.get("mdd_pct"),
-                    metrics.get("win_rate"),
-                    metrics.get("profit_factor"),
+                    _wr,
+                    _pf,
                     metrics.get("calmar"),
-                    metrics.get("total_trades"),
+                    _trades,
                     metrics.get("daily_pnl"),
                     regime,
-                    json.dumps(metrics, ensure_ascii=False),
+                    json.dumps(_stored, ensure_ascii=False),
+                    1 if measured else 0,
                 ),
             )
             con.commit()
@@ -420,14 +511,8 @@ class StrategyRegistry:
         # 롤링 지표 자동 계산 — daily_pnl 누적에서 실 Sharpe/MDD 채우기
         # (단일 스냅샷에는 sharpe가 없으므로 롤링 계산으로 대체)
         rolling = self.get_rolling_metrics(ver, days=20)
-        if rolling:
-            if live_snap is None:
-                live_snap = rolling
-            elif live_snap.get("sharpe") is None:
-                # 롤링 지표로 누락 필드 보완 (existing 값 우선)
-                for k, v in rolling.items():
-                    if live_snap.get(k) is None:
-                        live_snap[k] = v
+        # [461차, F-7] 당일 전용 키(WR/PF 등)는 롤링으로 덮지 않는다 — _merge_rolling 참조
+        live_snap = _merge_rolling(live_snap, rolling)
 
         verdict = self._compute_verdict(stages, live_snap)
 
@@ -462,13 +547,7 @@ class StrategyRegistry:
             live_days = self._get_live_days(cur, ver)
 
         rolling = self.get_rolling_metrics(ver, days=20)
-        if rolling:
-            if live_snap is None:
-                live_snap = rolling
-            elif live_snap.get("sharpe") is None:
-                for k, v in rolling.items():
-                    if live_snap.get(k) is None:
-                        live_snap[k] = v
+        live_snap = _merge_rolling(live_snap, rolling)   # [461차, F-7]
 
         verdict = self._compute_verdict(stages, live_snap)
         return {
@@ -598,7 +677,18 @@ class StrategyRegistry:
             dd = peak - cum
             if dd > mdd_krw:
                 mdd_krw = dd
-        mdd_pct = mdd_krw / abs(peak) if abs(peak) > 0 else 0.0
+
+        # [461차, F-7] 분모가 다른 두 MDD를 **이름으로 구분**한다(계측 4원칙 ①).
+        #   of_peak    : 누적 PnL 곡선의 peak 대비 — 100%를 넘을 수 있다.
+        #                (peak가 작은 초기 구간에서 수백 %가 정상적으로 나온다)
+        #   of_capital : 자본 대비 — WFA/백테스트의 mdd_pct와 **같은 분모**.
+        # 판정(_compute_verdict)과 WFA 대조는 반드시 of_capital을 쓴다. 2026-08-13
+        # 이전에는 of_peak(215.4%)를 자본 대비 WFA MDD(15% 기준)에서 빼서
+        # UNDERPERFORM을 만들고 전략 교체를 권고했다.
+        mdd_pct_of_peak = mdd_krw / abs(peak) if abs(peak) > 0 else 0.0
+        _cap = _target_capital_krw()
+        # 자본을 못 구하면 0이 아니라 None — 미측정 ≠ 0 (계측 4원칙 ②)
+        mdd_pct_of_capital = (mdd_krw / _cap) if _cap > 0 else None
 
         # 승률 · Profit Factor
         wins       = sum(1 for p in pnls if p > 0)
@@ -613,7 +703,13 @@ class StrategyRegistry:
 
         return {
             "sharpe":         round(sharpe, 3),
-            "mdd_pct":        round(mdd_pct, 4),
+            # mdd_pct 는 mdd_pct_of_peak 의 **별칭**이다(하위호환 — 기존 대시보드
+            # 히스토리/버전비교 표가 이 키를 읽는다). 판정에 쓰지 말 것.
+            "mdd_pct":        round(mdd_pct_of_peak, 4),
+            "mdd_pct_of_peak":    round(mdd_pct_of_peak, 4),
+            "mdd_pct_of_capital": (round(mdd_pct_of_capital, 4)
+                                   if mdd_pct_of_capital is not None else None),
+            "mdd_krw":        round(mdd_krw, 0),
             "win_rate":       round(win_rate, 4),
             "profit_factor":  round(pf, 3),
             "total_trades":   total_trades,
@@ -726,7 +822,7 @@ class StrategyRegistry:
     ) -> Optional[Dict[str, Any]]:
         cur.execute(
             """SELECT sharpe, mdd_pct, win_rate, profit_factor, calmar,
-                      total_trades, daily_pnl, snapshot_date
+                      total_trades, daily_pnl, snapshot_date, metrics_measured
                FROM strategy_live_snapshots WHERE version=?
                ORDER BY snapshot_date DESC LIMIT 1""",
             (version,),
@@ -734,11 +830,19 @@ class StrategyRegistry:
         row = cur.fetchone()
         if not row:
             return None
+        # [461차, F-7] metrics_measured 가 NULL인 행은 F-7 이전(2026-08-13 이전)에
+        # 기록된 것이다 — 그때는 거래 0건도 WR=0.0/PF=1.0으로 저장됐으므로
+        # "측정 여부를 알 수 없다". total_trades로 역추정하되, 그 컬럼도 없으면 None.
+        _mm = row[8]
+        if _mm is None:
+            _mm = bool(row[5]) if row[5] is not None else None
+        else:
+            _mm = bool(_mm)
         return {
             "sharpe": row[0], "mdd_pct": row[1], "win_rate": row[2],
             "profit_factor": row[3], "calmar": row[4],
             "total_trades": row[5], "daily_pnl": row[6],
-            "snapshot_date": row[7],
+            "snapshot_date": row[7], "metrics_measured": _mm,
         }
 
     def _get_live_days(self, cur: sqlite3.Cursor, version: str) -> int:
@@ -771,14 +875,27 @@ class StrategyRegistry:
 
         live_sharpe = live_snap.get("sharpe")
         wfa_sharpe  = wfa.get("sharpe")
-        live_mdd    = live_snap.get("mdd_pct")
+
+        # [461차, F-7] 🔴 분모를 맞춘다. wfa["mdd_pct"]는 backtest/performance_metrics.py
+        # 가 산출한 **자본 대비**이고, live의 mdd_pct는 누적 PnL peak 대비였다.
+        # 이름이 같아 그대로 빼왔고, 2026-08-13에 Live 215.4% − WFA 12% 로
+        # UNDERPERFORM + 전략 교체 권고가 나왔다. 반드시 of_capital과 대조한다.
+        live_mdd    = live_snap.get("mdd_pct_of_capital")
         wfa_mdd     = wfa.get("mdd_pct")
 
         if live_sharpe is None or wfa_sharpe is None:
             return VERDICT_INSUFFICIENT
+        if live_mdd is None:
+            # 자본 기준을 못 구했다 = 비교 불가. peak 대비로 대신 판정하지 않는다
+            # (그것이 바로 F-7이 없앤 결함이다) — 미측정은 미측정으로 둔다.
+            logger.warning(
+                "[Registry] Live MDD(자본대비) 미산출 — 판정 보류(INSUFFICIENT). "
+                "SIZING_TARGET_CAPITAL_KRW 확인 필요"
+            )
+            return VERDICT_INSUFFICIENT
 
         sharpe_delta = live_sharpe - wfa_sharpe
-        mdd_delta    = (abs(live_mdd or 0) - abs(wfa_mdd or 0))
+        mdd_delta    = (abs(live_mdd) - abs(wfa_mdd or 0))
 
         if (sharpe_delta >= _OUTPERFORM_SHARPE_DELTA
                 and mdd_delta <= _OUTPERFORM_MDD_DELTA):

@@ -22523,3 +22523,121 @@ SKILL.md에 "접미사 붙은 파일이 보이면 그날 같은 국면이 두 �
 
 F-7(MDD 단위 정합)은 **판정 결과가 바뀌므로** 별도 커밋이며 결정 필요 사항 2건이 남아 있다.
 F-4·F-3(문서)도 미착수. 리포트 §2 적용순서 2·3번 그대로 유효하다.
+
+---
+
+## 2026-08-13 (MW0601 461차 후속 — 커밋 ②: F-7 Live MDD 분모 정합 + 거래0건 폴백 가시화)
+
+**지시**: "커밋 ②(F-7 MDD 단위 정합) SIZING_TARGET_CAPITAL_KRW 기준으로 구현진행해 —
+DECISION_LOG에 전환일 명기, strategy_events에 마커, 대시보드 mdd_pct grep 확인".
+**317 passed**(직전 308 + 신규 9). **매매 정책 변경 0건 — 계측·판정 입력만.**
+
+### 🔴 [전환일] 2026-08-13 — Live MDD 분모를 peak 대비 → 자본 대비로 바꿨다
+
+**이 날짜 이전 verdict 시계열과 직접 비교하지 말 것.** 마커: `strategy_events`
+**id=76** `METRIC_REDEFINITION`(2026-08-13 23:03:14, version=v1.0).
+
+**File**: `config/strategy_registry.py` · `strategy/ops/daily_exporter.py` ·
+`dashboard/strategy_dashboard_tab.py` · `CLAUDE.md`(실전 전환 기준 ③) ·
+`tests/test_461_mdd_unit_and_fallback.py`(신규 9건)
+
+같은 이름 `mdd_pct`가 두 곳에서 **다른 분모**를 썼다:
+
+| 출처 | 분모 | 값(2026-08-13, 20일) |
+|---|---|---|
+| `backtest/performance_metrics.py:151` (WFA 기준) | **자본** | 14.2% |
+| `config/strategy_registry.py:601` (Live) | **누적 PnL 곡선 peak** | **215.4%** |
+
+이름이 같으니 `_compute_verdict()`가 아무 의심 없이 뺐다 →
+`mdd_delta = +2.012`(NORMAL 상한 +0.03의 **67배**) → `UNDERPERFORM` →
+*"🔄 교체 후보 탐색 — param_optimizer + WFA 즉시 예약"*.
+계측 4원칙 ① 단위 명시가 정확히 겨냥하는 사고 유형이다.
+
+**조치** — `get_rolling_metrics()`가 두 값을 **다른 이름으로** 낸다:
+`mdd_pct_of_peak` · `mdd_pct_of_capital`(분모 `SIZING_TARGET_CAPITAL_KRW`=5천만원,
+PositionSizer와 같은 기준) · `mdd_krw`. `mdd_pct`는 **of_peak의 하위호환 별칭**으로
+남겼다(대시보드 히스토리·버전비교 표가 읽는다) — **판정에 쓰지 말 것**.
+`_compute_verdict()`는 of_capital만 보고, 자본을 못 구하면 peak로 대체 판정하지 않고
+`INSUFFICIENT`로 보류한다(그게 바로 없앤 결함이므로).
+
+**전 구간 실측 — peak 분모는 구조적으로 못 쓴다**:
+
+| 구간 | 누적 PnL | mdd_krw | **peak 대비** | **자본 대비** |
+|---|---|---|---|---|
+| 5일 | +613,463 | 247,827 | 35.9% | 0.50% |
+| 20일 | +371,426 | 1,662,685 | **215.4%** | **3.33%** |
+| 40일 | −9,865,733 | 16,779,287 | 296.9% | 33.56% |
+| 60일 | −36,498,614 | 41,754,028 | **75,916.4%** | 83.51% |
+
+peak가 작은 구간에서 분모가 0에 수렴해 값이 발산한다. 60일 75,916%가 그 증거다.
+
+> ⚠ **[리포트 예측 정정] 판정은 뒤집히지 않았다.**
+> 리포트 §2 F-7 회귀 위험은 *"`UNDERPERFORM`이 `NORMAL`/`OUTPERFORM`으로 뒤집힐 수
+> 있다"* 고 적었고, 결정 필요 사항 ②는 그 불연속을 감수할지 물었다. 실측 결과
+> **판정은 `UNDERPERFORM` 그대로다** — 두 축이 독립이기 때문이다:
+> - MDD 축: `+2.012 FAIL` → **`-0.109 PASS`** (고쳐졌다)
+> - Sharpe 축: Live 0.57 vs WFA 1.42 → **`-0.848 FAIL`** (NORMAL 하한 −0.20)
+>
+> 즉 **오늘의 UNDERPERFORM은 계측 결함이 아니라 진짜 Sharpe 미달이었다.**
+> F-7은 판정을 좋게 만드는 변경이 아니라 **틀린 근거 하나를 제거한 변경**이다.
+> 이 사실을 `test_verdict_still_fails_on_sharpe_alone`으로 고정했다.
+
+### [수정] 거래 0건인데 `WR=0.0% PF=1.00` — 미측정이 측정값으로 위장했다
+
+`main.py:11240`이 `wins / max(trades, 1)` = **0.0**, `_daily_profit_factor()`가
+손실 0·이익 0에서 **1.0**을 반환해 그대로 저장됐다. "승률 0%"와 "표본 없음"은 다른
+사실인데 같은 숫자가 됐다 — 계측 4원칙 ② 미측정≠0 · ④ 폴백 가시화.
+
+**조치**: `record_live_snapshot()`가 `total_trades`가 0/None이면 WR·PF를 **NULL**로
+저장하고 `metrics_measured` 컬럼(신설, `ALTER TABLE` 마이그레이션 `_ensure_column()`)에
+0을 남긴다. `raw_json`에도 `_measured_note`를 적는다. 리포트·대시보드는
+`WR=미측정(거래0건) PF=미측정`을 출력한다.
+
+과거 행은 `metrics_measured`가 NULL이라 "측정 여부를 알 수 없다" — `total_trades`로
+역추정하되 그 컬럼도 없으면 `None`으로 두고 배너에 `(측정여부 불명 — F-7 이전 기록)`을
+붙인다. **모르는 것을 안다고 쓰지 않는다.**
+
+### 🔴 [함정] 이 수정이 새로 만든 결함을 같이 막았다 — 롤링이 당일 값을 덮는다
+
+`get_current_version()`은 스냅샷(당일)의 빈 칸을 롤링(20일)으로 채운다. WR/PF가
+**NULL이 되는 순간** 그 폴백이 발동해 **당일 WR 칸에 20일 WR이 들어간다** — 미측정을
+없애려던 수정이 더 교묘한 위장을 만들 뻔했다.
+
+→ `_merge_rolling()`을 신설하고 `_DAILY_ONLY_KEYS`(`win_rate`·`profit_factor`·
+`total_trades`·`daily_pnl`·`metrics_measured`)를 병합에서 제외했다. 스냅샷이 아예
+없으면 롤링을 쓰되 `metrics_measured=False`로 표시한다(그 WR/PF는 당일 값이 아니므로).
+기존 `elif live_snap.get("sharpe") is None` 게이트도 제거 — 조건이 우연히 참이라
+동작하던 코드였다. `test_rolling_never_overwrites_daily_only_keys`로 고정.
+
+### [확인] 대시보드 `mdd_pct` grep — 14곳, 3곳만 정합 대상
+
+지시대로 전수 grep했다. 나머지는 **일부러 두었다**:
+
+| 위치 | 처리 | 사유 |
+|---|---|---|
+| `:260` 지표 카드 MDD | **of_capital 우선** | live면 of_capital, WFA면 mdd_pct(이미 자본대비) → 어느 쪽이든 분모 동일 |
+| `:814` Live vs WFA 나란히 | **of_capital + 라벨** | 바로 윗줄 WFA MDD와 눈으로 비교되는 자리였다 |
+| `:962` 롤링 미니차트 | **라벨만** `MDD(peak)` + 자본 병기 | 값은 그대로, 단위만 명시(계측 4원칙 ①) |
+| `:371` `_StageMatrix` | 무변경 | `strategy_stage_results`(BT/WFA/SIM/LIVE) — 전부 자본 대비 |
+| `:1031·1087·1138·1193` 버전비교/델타 | 무변경 | 별칭 유지로 기존 동작 그대로. 별도 안건 |
+
+WR/PF도 `metrics_measured is False`면 카드에 `미측정`을 찍는다(리포트와 표기 일치).
+
+### [확인] 교체 권고는 자동 조치를 촉발하지 않는다 — 섀도 불필요
+
+리포트 §F-7이 조건으로 건 *"권고가 실제로 param_optimizer를 자동 예약하는지"* 를
+코드로 확인했다. `main.py:11278`은 `REPLACE_CANDIDATE`에 대해 **WARNING 로그 +
+`strategy_events` 기록만** 한다 — optimizer 호출·예약 코드는 없다. 문구의 "즉시 예약"은
+사람이 하는 일이다(절대원칙 §6 알파 자동통합 금지와 일관). → **섀도 1주 불필요**,
+즉시 적용 조건 충족.
+
+### [정정] 리포트가 지목한 함수명 2개가 실제 코드에 없다 — 재인용 금지
+
+리포트 §2 F-7은 `_compute_live_snapshot()`·`_judge_verdict()`를 변경 대상으로 적었으나
+**둘 다 존재하지 않는다.** 실제 함수는 `get_rolling_metrics()`(라인 559)와
+`_compute_verdict()`(라인 752)다. 다음 세션이 리포트만 보고 grep하면 못 찾는다.
+
+### [참고] 남은 것 — 커밋 ③
+
+F-4(`TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED` 근거 확정, 4일째 이월) + F-3(CLAUDE.md
+CB③ 임계 문구 35% → 0.28 정정). 미착수.

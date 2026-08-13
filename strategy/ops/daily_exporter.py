@@ -55,24 +55,43 @@ class DailyExporter:
                 lines.append("  버전    : %s  (%d일차)" % (ver, days))
                 lines.append("  판정    : %s" % verdict)
                 live = curr.get("live_snapshot") or {}
+                # [461차, F-7] 라벨에 **기간과 분모**를 박는다(계측 4원칙 ①).
+                # Sh/MDD는 롤링 20일 값이고 WR/PF는 당일 값인데, 종전 배너는 넷을
+                # 한 줄에 `Live :` 로 묶어 같은 기간처럼 보였다. MDD도 자본 대비를
+                # 쓴다 — peak 대비(215.4% 같은 값)는 WFA 기준과 비교 불가.
                 sh = live.get("sharpe")
-                md = live.get("mdd_pct")
-                wr = live.get("win_rate")
-                pf = live.get("profit_factor")
+                md = live.get("mdd_pct_of_capital")
                 if sh is not None:
                     lines.append(
-                        "  Live    : Sh=%.2f  MDD=%.1f%%  WR=%.1f%%  PF=%.2f" % (
-                            sh, abs(md or 0) * 100, (wr or 0) * 100, pf or 0
+                        "  Live(20일): Sh=%.2f  MDD(자본대비)=%s" % (
+                            sh,
+                            "%.1f%%" % (abs(md) * 100) if md is not None else "미측정",
+                        )
+                    )
+                # 당일 WR/PF — 거래 0건이면 0.0/1.00 폴백 대신 미측정으로 표기
+                measured = live.get("metrics_measured")
+                if measured is False:
+                    lines.append("  당일      : WR=미측정(거래0건)  PF=미측정")
+                else:
+                    wr = live.get("win_rate")
+                    pf = live.get("profit_factor")
+                    lines.append(
+                        "  당일      : WR=%s  PF=%s%s" % (
+                            "%.1f%%" % (wr * 100) if wr is not None else "미측정",
+                            "%.2f" % pf if pf is not None else "미측정",
+                            "" if measured else "  (측정여부 불명 — F-7 이전 기록)",
                         )
                     )
                 # 롤링 20일
                 rolling = reg.get_rolling_metrics(ver)
                 cum = rolling.get("cum_pnl", 0)
+                _rc = rolling.get("mdd_pct_of_capital")
                 lines.append(
-                    "  롤링20일: 누적 %+.0f원  Sh=%.2f  MDD=%.1f%%" % (
+                    "  롤링20일: 누적 %+.0f원  Sh=%.2f  MDD(자본대비)=%s  MDD(peak대비)=%.1f%%" % (
                         cum,
                         rolling.get("sharpe", 0) or 0,
-                        abs(rolling.get("mdd_pct", 0) or 0) * 100,
+                        "%.1f%%" % (abs(_rc) * 100) if _rc is not None else "미측정",
+                        abs(rolling.get("mdd_pct_of_peak", 0) or 0) * 100,
                     )
                 )
             else:
