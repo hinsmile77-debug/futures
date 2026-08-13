@@ -2,6 +2,80 @@
 
 ---
 
+## 2026-08-14 (MW0602 468차 후속 커밋② — SHAP CORE 지표 소생 + F-2는 465차 결정과 충돌해 보류)
+
+**지시**: 0813 리포트 커밋 ②(F-2 + F-3) 구현. **F-3만 배포하고 F-2는 보류했다.**
+
+### F-2 보류 — "0812 P4 미구현"이 아니라 "다르게 구현됐다"
+
+0813 리포트는 F-2를 *"0812 P4 재상정, 미구현 상태"*로 올렸다. **틀렸다.**
+465차(0812)는 `보호트레일` 라벨 신설을 **검토한 뒤 명시적으로 기각**하고
+`trades.tp1_reached` 관측 컬럼을 대신 넣었다. 기각 사유가 코드 주석
+(`utils/db_utils.py:1314-1337`)과 `DECISION_LOG` 465차 P4에 둘 다 남아 있다 —
+`exit_reason LIKE '%하드스톱%'`가 사전등록 채널 [15]·[26]·[48], `bar_stop_path_watch.py:134`,
+`test_439`의 필터라 문자열을 갈아치우면 **그 채널들의 판정이 조용히 뒤집힌다**(캠페인
+거버넌스 위반).
+
+이것은 CLAUDE.md "검증 캠페인 운영 모드 — 판정(verdict)과 결정(decision)은 별개다"가
+경고한 **"이미 이행된 권고를 신규 안건으로 오인"** 유형이다(0801 Hurst 완화 선례와 동형).
+점검 리포트가 매일 재생성되며 같은 항목을 다시 올리기 때문에 반복해서 발생한다.
+
+**F-2-a 소비처 조사 결과(완료)**: `generate_validation_campaign_report.py`(LIKE),
+`bar_stop_path_watch.py:132-134`(**정확일치** `== "하드스톱"`), `early_trail_exit_counterfactual.py:144`
+(`== "하드스톱(틱)" and pnl>0`), `analyze_mae_mfe.py:57 _STOP_KEYWORDS`,
+`.claude/.../collect_evidence.py`(§5·§11 "하드스톱·손절 계열" — **오독 생산 지점**),
+`dashboard/main_dashboard.py`, `tests/test_439_p2_slippage_judgment.py`.
+정확일치 소비처가 둘 있어 라벨 교체는 LIKE 필터 갱신만으로 끝나지 않는다.
+
+**실측**: `tp1_reached`는 08-13부터 정상 적재된다 — 0813 `하드스톱` 2건이 **둘 다 `=1`**
+(= TP1 보호 트레일, 리포트 진단과 일치). 즉 465차 메커니즘은 살아 있고, 남은 진짜 결함은
+**표시 계층**이다(수집기가 라벨만 읽어 "하드스톱·손절 계열 2/3건(67%)"을 자동 생산).
+
+→ 선택지 A(라벨 무변경 + 수집기·대시보드가 `tp1_reached`로 분리) / B(원안대로 라벨 신설 +
+소비처 동시 갱신, 465차 결정 번복이므로 주간회의) / C(보류). **사용자 판단 대기.**
+
+### F-3 — 죽어 있던 `CORE안전` 지표를 운영 정의에 연결
+
+**File**: `learning/shap/shap_tracker.py`, `main.py:1080-1097`, `config/constants.py:114`
+**원인**: 판정식이 `len(core_ranks) == 3` 고정이고 `core_ranks`가 레거시
+`constants.CORE_FEATURES`(`cvd_divergence`/`vwap_position`/`ofi_norm` — 2026-06-25 이름
+교체 **전**) 기준이었다. 1m 배포 슬라이스(10개)에 그 옛 이름은 `vwap_position` 하나뿐이라
+분자가 3에 닿을 수 없다 → **6거래일 100% ⚠️ 고착**.
+**수정**: `operational_core_names(horizon)` 신설 — `settings.CORE_FEATURES_BY_GROUP` +
+`HORIZON_CORE_GROUP`(절대원칙 §3의 유일한 운영 정의)에서 그룹 CORE 피처명을 조회한다.
+키를 열거하지 않고 값 타입으로 걸러 `vwap_forced_x`(bool)·면제(None)를 자동 제외 —
+long 그룹의 `opt` 키처럼 그룹마다 키가 달라도 안전하다.
+`ShapTracker(feature_names, horizon="1m")`로 호라이즌을 명시(기본값 `"1m"`이라 기존
+호출부·테스트 무영향). 판정은 **슬라이스 교집합** 기준이고 분모 0이면 `n/a`.
+
+**설계 판단 2건 (원안에서 벗어난 곳)**
+
+1. **중요도 0을 판정에 넣지 않았다.** 처음엔 "존재만 확인하고 ✅를 주면 죽은 CORE를
+   안전으로 읽는다"고 보고 넣었으나, 실측을 보니 이 모델의 permutation importance는
+   한 창에서 다수 피처가 정확히 0인 것이 정상이다(0813 15:09: 10개 중 **8개가 0.0**).
+   판정에 넣으면 **고치려던 상시 ⚠️를 다른 이유로 재생산**한다. 대신 로그 상세에
+   `중요도0 …`로 남긴다 — G-2(고착 지표 자동탐지)가 나중에 이 값을 쓴다.
+2. **`is_core` 보호 집합은 운영 CORE ∪ 레거시 합집합.** 보호를 **줄이는** 방향의
+   회귀를 원천 차단한다(3m 슬라이스에는 레거시 `cvd_divergence`·`ofi_norm`이 실제로
+   남아 있다). 판정용 기대집합과는 분리된 별개 개념으로 뒀다.
+
+**검증(실측 재현, 라이브 상태 미오염 — 트래커 새로 만들고 DB 최신 벡터 주입만)**:
+- 종전식 `len(core_ranks)==3` → **⚠️** (재현 성공, `core_ranks={vwap_position:7}`)
+- 신규식 → **✅** (`cvd_delta_norm` r4 + `vwap_position` r7 = 2/2, 모델미탑재 `ofi_pressure` 명시)
+- **교체후보 목록 변화 0건** (전후 모두 `poc_distance`·`bb_position`·`is_open_volatile`) —
+  0813 리포트가 지목한 회귀 위험 없음 확인
+- `py37_32` py_compile 통과. 332차 힙 손상 구역인 **importance 계산 경로는 무변경**(이름 조회부만).
+
+`config/constants.py:CORE_FEATURES`는 **값 무변경**, "레거시 표시용이며 운영 정의는
+settings 쪽"이라는 주석만 달았다(원안 그대로 — `is_core` 소비처 조사는 별건).
+
+### 관련
+
+465차 P4(`tp1_reached`), 416차(SHAP 이름-값 정렬 오염), 414차(차원 가드), 332차(HistGBM 힙 손상),
+CLAUDE.md 절대원칙 §3·"판정과 결정은 별개".
+
+---
+
 ## 2026-08-14 (MW0602 468차 후속 커밋① — 일일 점검 오탐 2건 정정: 수집기 화이트리스트 + DailyClose 마커 경고 레벨)
 
 **지시**: 0813 점검 리포트 §2 "적용 순서와 커밋 계획"의 **커밋 ①(F-4 + F-5)** 구현.

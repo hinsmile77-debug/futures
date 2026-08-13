@@ -112,6 +112,15 @@ def get_contract_spec(code: str) -> dict:
     }
 
 # ── 고정 CORE 피처명 ──────────────────────────────────────────
+# ⚠ [MW0602 468차 F-3] **운영 정의가 아니다 — 레거시 표시/보호용 상수다.**
+# 절대원칙 §3의 운영 CORE는 `config/settings.py`의 `CORE_FEATURES_BY_GROUP` +
+# `HORIZON_CORE_GROUP`(호라이즌 그룹별)이며, 진입 체크리스트와 AutoMask 면제가
+# 그쪽을 쓴다. 이 목록은 2026-06-25 이름 교체(`cvd_direction→cvd_delta_norm`,
+# `ofi_norm→ofi_pressure`) 이전에서 멈춰 있다.
+# 값을 그대로 두는 이유: `is_core` 플래그가 SHAP 교체후보 필터에도 쓰여서
+# 이름을 바꾸면 후보 목록이 함께 바뀐다(소비처 조사 선행 — 별건).
+# 새 코드는 `learning/shap/shap_tracker.py:operational_core_names()`처럼
+# **운영 정의를 직접 조회**할 것.
 CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_norm"]
 
 # ── 전체 피처 목록 ────────────────────────────────────────────

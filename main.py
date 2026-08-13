@@ -1082,15 +1082,19 @@ class TradingSystem:
             or get_available_feature_set("1m", all_feature_names)
             or all_feature_names
         )
+        # [MW0602 468차 F-3] horizon="1m"을 명시 — 위에서 1m 슬라이스를 고른 것과
+        # 같은 사실을 트래커에도 알린다. 트래커는 이 값으로 절대원칙 §3의 그룹
+        # CORE(short: cvd_delta_norm·vwap_position·ofi_pressure)를 조회해 CORE안전
+        # 지표를 낸다. 여기가 다른 호라이즌으로 바뀌면 이 인자도 같이 바꿀 것.
         if self._shap_tracker is None:
-            self._shap_tracker = ShapTracker(feature_names)
+            self._shap_tracker = ShapTracker(feature_names, horizon="1m")
             return
         if list(getattr(self._shap_tracker, "feature_names", [])) != feature_names:
             self._record_shap_feature_changes(
                 list(getattr(self._shap_tracker, "feature_names", [])),
                 feature_names,
             )
-            self._shap_tracker = ShapTracker(feature_names)
+            self._shap_tracker = ShapTracker(feature_names, horizon="1m")
 
     def _record_shap_feature_changes(self, old_names, new_names) -> None:
         if self._shap_tracker is None:

@@ -27,20 +27,37 @@
       반올림 수량이 바뀌는 건수**. **10건 이상이면 F-1 단독 적용 금지 → 주간회의 상정**
       (`MAX_CONTRACTS=3`(431차)과 노출 상호작용). 10건 미만이면 즉시 적용 권고.
       (오늘 진입 3건은 min 합성 결과가 같아 영향 0 — 표본 3건, 313차 원칙상 확정 결론 금지)
-- [ ] **F-2 (P1) `exit_reason` 보호트레일 분리** — 0812 P4 재상정, 미구현 상태.
-      하드스톱 청산 시 TP1 보호전환이 armed면 `보호트레일`/`보호트레일(틱)`로 기록.
-      **과거 행 무변경**(소급은 `pnl_pts>0` 규칙 — `scripts/early_trail_exit_counterfactual.py:144`
-      선례). 8월 실측: `하드스톱` 17건 **100% 이익** +1,692,393원.
-- [ ] **F-2-a (선행) `exit_reason` 소비처 조사** — 최소 `campaign_steps.py`,
-      [24]·[25] 청산 기하 채널, 일일 리포트 청산사유 분포. 신규 라벨을 모르면 채널이 조용히 죽는다
-      (420차 `joint_gate_shadow`, 457차 `_ensure_guard_shadow_columns` 선례)
-- [ ] **F-3 (P1) SHAP CORE 지표를 운영 정의에 연결** —
-      `learning/shap/shap_tracker.py:428`의 `len(core_ranks)==3` → `settings.CORE_FEATURES_BY_GROUP`
-      +`HORIZON_CORE_GROUP` 기반 기대집합을 `feature_names`와 **교집합**한 크기로 교체.
-      분모 0이면 `CORE안전=n/a`("모른다"를 "괜찮다"로 만들지 않는다).
-      ⚠ 332차 shap×HistGBM 힙 손상 구역 — **importance 계산 경로 무변경, 이름 조회부만**.
-      ⚠ `config/constants.py:CORE_FEATURES` **값 자체는 이번에 바꾸지 않는다**(`is_core`가
-      교체후보 필터에도 쓰임 — 별건 분리)
+- [ ] **F-2 (P1) `exit_reason` 보호트레일 분리** — 🔴 **보류: 465차 P4 결정과 충돌.
+      사용자 판단 대기 (2026-08-14 F-2-a 조사 결과).**
+      0813 리포트는 "0812 P4 미구현"으로 적었으나 **P4는 구현됐다 — 다른 방식으로.**
+      465차가 `보호트레일` 라벨 신설을 **검토 후 기각**하고 `trades.tp1_reached`
+      관측 컬럼을 대신 넣었다(`utils/db_utils.py:1314-1337`, `DECISION_LOG` 465차 P4).
+      기각 사유: `exit_reason LIKE '%하드스톱%'`가 사전등록 채널 [15]·[26]·[48]과
+      `bar_stop_path_watch.py:134`·`test_439`의 필터라 문자열 교체 시 **판정이 조용히
+      뒤집힌다**(캠페인 거버넌스 위반).
+      → 선택지: **(A) DB 라벨 무변경 + 표시계층(수집기·대시보드)에서 `tp1_reached`로
+      분리** / (B) 원안대로 라벨 신설 + 소비처 5곳 동시 갱신(465차 결정 번복 →
+      주간회의) / (C) 주간회의까지 보류.
+- [x] **F-2-a (선행) `exit_reason` 소비처 조사** — **[DONE 2026-08-14]**
+      소비처: `generate_validation_campaign_report.py`([15] `LIKE '%하드스톱%'` 외),
+      `bar_stop_path_watch.py:132-134`(`== "하드스톱"` 정확일치로 봉중/틱 재분류),
+      `early_trail_exit_counterfactual.py:144`(`== "하드스톱(틱)" and pnl>0`),
+      `analyze_mae_mfe.py:57 _STOP_KEYWORDS`, `.claude/.../collect_evidence.py`
+      (§5·§11 "하드스톱·손절 계열" 집계 — **오독 생산 지점**),
+      `dashboard/main_dashboard.py`(청산사유 표시), `tests/test_439_p2_slippage_judgment.py`.
+      실측: `tp1_reached`는 08-13부터 정상 적재(0813 하드스톱 2건 전부 `=1` = 보호트레일).
+      08-12 이전 행은 NULL(소급 백필 안 함 — 465차 결정)
+- [x] **F-3 (P1) SHAP CORE 지표를 운영 정의에 연결** — **[DONE 2026-08-14 · 커밋 ②]**
+      `learning/shap/shap_tracker.py`에 `operational_core_names(horizon)` 신설
+      (`settings.CORE_FEATURES_BY_GROUP`+`HORIZON_CORE_GROUP` 조회),
+      `ShapTracker(feature_names, horizon="1m")`로 호라이즌 명시.
+      판정식 `len(core_ranks)==3` → 슬라이스 교집합 크기 비교, 분모 0이면 `n/a`.
+      로그에 분자/분모·모델미탑재·중요도0을 함께 출력(기호만 찍지 않는다).
+      ⚠ **중요도 0은 판정에 넣지 않았다** — 이 모델의 permutation importance는
+      한 창에서 다수 피처가 0인 것이 정상이라(0813 15:09 실측 10개 중 8개) 판정에
+      넣으면 상시 ⚠️를 다른 이유로 재생산한다.
+      검증(실측 재현): 종전식 ⚠️ / 신규식 **✅**(`cvd_delta_norm` r4 + `vwap_position` r7,
+      미탑재 `ofi_pressure` 1건 명시), **교체후보 목록 변화 0건**(회귀 없음)
 - [x] **F-4 (P2) 수집기 화이트리스트** — **[DONE 2026-08-14 · 커밋 ①]**
       `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED`를 `documented_disabled_flags`에 등록
       (근거 `config/settings.py:4770-4781`, 311차). **사본 2벌 + 수집기 기본값 3곳**:

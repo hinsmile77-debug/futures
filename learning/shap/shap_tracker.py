@@ -37,6 +37,7 @@ from config.constants import CORE_FEATURES, DYNAMIC_FEATURES_POOL
 from config.settings import (
     SHAP_COOLDOWN_DAYS, SHAP_MAX_REPLACE_DAILY,
     SHAP_RANK_IMPROVE_MIN, SHAP_MIN_DATA_POINTS, SHAP_DB,
+    CORE_FEATURES_BY_GROUP, HORIZON_CORE_GROUP,
 )
 
 # SHAP 전용 로거: LEARNING 레이어 파일 핸들러 없이 독립 실행되는 문제를 방지하기 위해
@@ -83,12 +84,34 @@ def _permutation_importance_fallback(
         return None
 
 
+def operational_core_names(horizon: str) -> List[str]:
+    """[MW0602 468차 F-3] 운영 CORE 정의(절대원칙 §3) 조회 — 호라이즌 그룹별.
+
+    `config/constants.py:CORE_FEATURES`는 2026-06-25 이름 교체
+    (`cvd_direction→cvd_delta_norm`, `ofi_norm→ofi_pressure`) 이전에 멈춰 있는
+    **레거시 표시용 상수**다. 운영 정의는 `settings.CORE_FEATURES_BY_GROUP` +
+    `HORIZON_CORE_GROUP` 하나뿐이며(체크리스트·AutoMask 면제가 그것을 쓴다),
+    SHAP 심사도 같은 정의를 봐야 지표가 의미를 갖는다.
+
+    반환은 그룹 CORE의 **피처명만**이다 — `vwap_forced_x` 같은 정책 플래그와
+    체크 면제(None)는 뺀다. 알 수 없는 호라이즌은 빈 목록(=판정 불가)을 낸다.
+    """
+    group = HORIZON_CORE_GROUP.get(str(horizon or ""))
+    if not group:
+        return []
+    spec = CORE_FEATURES_BY_GROUP.get(group) or {}
+    # 키를 열거하지 않고 값의 타입으로 거른다 — 그룹마다 키가 다르고(long은 `opt`)
+    # 나중에 키가 늘어도 여기를 고칠 필요가 없다. 정책 플래그(`vwap_forced_x`)는
+    # bool이라 자동으로 빠지고, 체크 면제(None)도 빠진다.
+    return [name for _k, name in spec.items() if isinstance(name, str) and name]
+
+
 class ShapTracker:
     """
     SHAP 피처 중요도 추적 및 주간 심사
 
     사용:
-        tracker = ShapTracker(feature_names)
+        tracker = ShapTracker(feature_names, horizon="1m")
         tracker.update(model, X_recent)    # 매 분봉 or 주간
         report  = tracker.weekly_review()  # 주간 심사
     """
@@ -96,9 +119,22 @@ class ShapTracker:
     # 중요도 히스토리 보관 주 수
     HISTORY_WEEKS = 12
 
-    def __init__(self, feature_names: List[str]):
+    def __init__(self, feature_names: List[str], horizon: str = "1m"):
         self.feature_names = feature_names
         self._n_features   = len(feature_names)
+        # [MW0602 468차 F-3] 이 트래커가 어느 호라이즌 모델을 보고 있는가.
+        # 기본 "1m"은 현행 유일 호출부(main.py `_ensure_shap_tracker`)와 같아
+        # 인자를 안 넘기는 기존 코드/테스트의 동작이 바뀌지 않는다.
+        self.horizon = str(horizon or "1m")
+        # 운영 CORE(절대원칙 §3) — 그룹 정의 그대로. 슬라이스 교집합은 심사 때 낸다.
+        self._core_group_names: List[str] = operational_core_names(self.horizon)
+        # 교체 후보에서 보호할 이름: 운영 CORE ∪ 레거시 상수.
+        # 합집합인 이유 — 보호를 **줄이는** 방향의 회귀를 원천 차단한다. 레거시
+        # 이름이 슬라이스에 남아 있는 호라이즌(3m의 cvd_divergence·ofi_norm)에서
+        # 운영 이름만 쓰면 종전에 보호되던 피처가 갑자기 교체 후보로 떨어진다.
+        self._core_protected: frozenset = frozenset(
+            list(self._core_group_names) + list(CORE_FEATURES)
+        )
 
         # 주간 중요도 히스토리 (deque of {week, importances})
         self._history: deque = deque(maxlen=self.HISTORY_WEEKS)
@@ -342,16 +378,44 @@ class ShapTracker:
                 "rank":       i + 1,
                 "feature":    self.feature_names[rank_idx[i]],
                 "importance": round(float(self._current_importance[rank_idx[i]]), 6),
-                "is_core":    self.feature_names[rank_idx[i]] in CORE_FEATURES,
+                "is_core":    self.feature_names[rank_idx[i]] in self._core_protected,
             }
             for i in range(len(rank_idx))
         ]
 
-        # CORE 피처 순위 확인
+        # ── [MW0602 468차 F-3] CORE 안전 판정 — 운영 정의(절대원칙 §3) 기준 ──────
+        # 종전 판정은 `len(core_ranks) == 3` 고정이었고 `core_ranks`는 레거시
+        # `constants.CORE_FEATURES`(2026-06-25 이름 교체 전) 기준이었다. 1m 배포
+        # 슬라이스에는 그 옛 이름이 `vwap_position` 하나뿐이라 분자가 3에 닿을 수
+        # 없어 **6거래일 100% ⚠️로 고착**했다(0813 점검 발견 3).
+        #
+        # 판정 대상은 "이 모델이 실제로 쓰는 피처" 안에 있는 CORE뿐이다 —
+        # 슬라이스에 없는 CORE는 여기서 세지 않는다. 다만 **없다는 사실 자체를
+        # 로그에 남긴다**(`absent`). 모델 미탑재는 그 자체로 절대원칙 위반이
+        # 아니지만(`horizon_feature_sets.json`이 IC 근거로 명시적 제외), 조용히
+        # 사라지면 아무도 모른다.
+        core_expected = [n for n in self._core_group_names if n in self.feature_names]
+        core_absent   = [n for n in self._core_group_names if n not in self.feature_names]
         core_ranks = {}
         for entry in rank_table:
-            if entry["is_core"]:
+            if entry["feature"] in core_expected:
                 core_ranks[entry["feature"]] = entry["rank"]
+        # 중요도 0인 CORE는 **판정에 넣지 않고 정보로만 남긴다.** 이 모델의
+        # permutation importance는 한 창(window)에서 다수 피처가 정확히 0으로
+        # 나오는 것이 정상이라(0813 15:09 실측: 10개 중 8개가 0.0), 판정에 넣으면
+        # "상시 ⚠️"를 다른 이유로 재생산한다 — 고치려던 병을 다시 만드는 꼴이다.
+        core_zero = [
+            e["feature"] for e in rank_table
+            if e["feature"] in core_expected and float(e["importance"]) <= 0.0
+        ]
+        if not core_expected:
+            # 분모 0 — 그룹 정의가 없거나(알 수 없는 호라이즌) 슬라이스에 CORE가
+            # 하나도 없다. "모른다"를 "괜찮다"로 만들지 않는다.
+            core_safe = "n/a"
+        elif len(core_ranks) != len(core_expected):
+            core_safe = "⚠️"
+        else:
+            core_safe = "✅"
 
         # 하락 트렌드 감지 (최근 4주 추세)
         declining = self._find_declining_features()
@@ -410,6 +474,14 @@ class ShapTracker:
         report = {
             "rank_table":      rank_table[:15],  # 상위 15개만
             "core_ranks":      core_ranks,
+            # [468차 F-3] 판정 근거를 그대로 실어 보낸다 — 소비 측이 기호만 보고
+            # 판단하지 않도록. `core_safe`는 독스트링이 예전부터 약속만 하고
+            # 실제로는 넣지 않던 키다(이번에 채운다).
+            "core_safe":       core_safe,
+            "core_expected":   core_expected,
+            "core_absent":     core_absent,
+            "core_zero":       core_zero,
+            "core_horizon":    self.horizon,
             "declining":       declining,
             "candidates":      candidates,
             "replace_allowed": replace_allowed,
@@ -421,11 +493,19 @@ class ShapTracker:
         _review_interval = datetime.timedelta(minutes=30)
         if (self._last_review_log_ts is None
                 or (now - self._last_review_log_ts) >= _review_interval):
+            # [468차 F-3] 기호만 찍지 않는다 — 분자/분모와 미탑재 목록을 함께
+            # 남겨야 다음에 값이 고착해도 원인을 바로 읽을 수 있다.
+            _core_detail = "슬라이스 %d/%d · 그룹 %d개" % (
+                len(core_ranks), len(core_expected), len(self._core_group_names))
+            if core_absent:
+                _core_detail += " · 모델미탑재 %s" % ",".join(core_absent)
+            if core_zero:
+                _core_detail += " · 중요도0 %s" % ",".join(core_zero)
             logger.info(
                 "[SHAP] 주간 심사 완료 | "
-                "하락피처=%d개 | 교체후보=%d개 | CORE안전=%s%s",
+                "하락피처=%d개 | 교체후보=%d개 | CORE안전=%s (%s | hz=%s)%s",
                 len(declining), len(candidates),
-                "✅" if len(core_ranks) == 3 else "⚠️",
+                core_safe, _core_detail, self.horizon,
                 " | 방향별분석=ON" if direction_top else "",
             )
             self._last_review_log_ts = now
@@ -461,7 +541,10 @@ class ShapTracker:
 
         declining = []
         for i, fname in enumerate(self.feature_names):
-            if fname in CORE_FEATURES:
+            # [468차 F-3] 보호 집합(운영 CORE ∪ 레거시)과 rank_table의 `is_core`를
+            # 같은 기준으로 맞춘다 — 여기만 레거시로 남으면 "교체 후보에선 빠지는데
+            # 하락 목록에는 오르는" 어긋난 상태가 된다.
+            if fname in self._core_protected:
                 continue
             ranks = []
             for h in recent4:
