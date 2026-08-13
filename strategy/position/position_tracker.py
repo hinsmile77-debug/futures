@@ -1223,6 +1223,14 @@ class PositionTracker:
             self.entry_time.strftime("%Y-%m-%d %H:%M:%S")
             if self.entry_time else ""
         )
+        # [468차 G-3] 지연 import — db_utils는 config만 의존하므로 순환은 없으나,
+        # 이 모듈은 COM/DB 없이도 단위 테스트에서 import되므로 최상단 의존을 늘리지 않는다.
+        try:
+            from utils.db_utils import classify_exit as _cx
+            _trigger, _outcome = _cx(
+                reason, 1 if self.partial_1_done else 0, pnl_pts)
+        except Exception:
+            _trigger, _outcome = "", ""
         return {
             "direction": self.status,
             "executed_direction": self.status,
@@ -1260,6 +1268,12 @@ class PositionTracker:
             # `partial_1_done`은 qty≥2 TP1 부분청산과 qty=1 보호전환
             # (`arm_tp1_single_contract_with_mode`) 양쪽에서 True가 된다.
             "tp1_reached": 1 if self.partial_1_done else 0,
+            # [MW0602 468차 G-3] 청산 2축(트리거/결과). `exit_reason`은 그대로 두고
+            # 분석용 축을 함께 싣는다 — 이 dict를 소비하는 대시보드·복구 경로도
+            # 같은 값을 보게 하려는 것. DB 기록은 main.py가 한 번 더 보장한다
+            # (result dict를 손으로 조립하는 경로가 있어서). 생성자는 한 곳뿐이다.
+            "exit_trigger": _trigger,
+            "exit_outcome": _outcome,
         }
 
     def _reset_position(self) -> None:

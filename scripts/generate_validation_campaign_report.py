@@ -4966,6 +4966,33 @@ _JGS_EXTRA_COLS = (
 )
 
 
+def _ensure_trades_exit_axis_columns() -> bool:
+    """[MW0602 468차 G-3] trades의 청산 2축 컬럼을 보장한다(멱등).
+
+    `_ensure_guard_shadow_columns`·`_ensure_joint_gate_columns`와 완전히 같은 사정 —
+    스키마 원본은 `utils/db_utils.py`지만 두 PC가 각자 로컬 trades.db를 갖고 있고,
+    **리포트가 앱 재기동보다 먼저 돌 수 있다.** 컬럼이 없으면 이 축을 쓰는 SELECT가
+    예외를 내고 `out["error"]`로 삼켜져 채널이 조용히 죽는다(420차 joint_gate_shadow와
+    같은 사고 형태). 여기가 2차 방어선이다.
+
+    기존 행은 NULL로 남는다 — **소급 계산하지 않는다.** `exit_trigger`의
+    하드스톱/보호트레일 구분은 `tp1_reached`(2026-08-13부터 적재)에 의존하는데,
+    그 이전 행은 그 값 자체가 없다. `pnl_pts>0`으로 추정하면 트리거 축이 결과 축과
+    상관돼 2축으로 나눈 의미가 사라진다.
+    """
+    try:
+        with _conn(TRADES_DB) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
+            for c in ("exit_trigger", "exit_outcome"):
+                if c not in cols:
+                    conn.execute("ALTER TABLE trades ADD COLUMN %s TEXT" % c)
+            conn.commit()
+        return True
+    except Exception as e:
+        print("[WARN] trades 청산 2축 컬럼 보장 실패: %s" % e, file=sys.stderr)
+        return False
+
+
 def _ensure_joint_gate_columns() -> bool:
     """[MW0601 420차] joint_gate_shadow의 419차 반영 계측 컬럼을 보장한다(멱등).
 
@@ -7619,6 +7646,9 @@ def _fmt_channel_verdict(out: dict) -> str:
 
 def build_report(days: int) -> tuple:
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # [MW0602 468차 G-3] 청산 2축 컬럼 보강 — main.py 기동 마이그레이션의 백스톱.
+    # 리포트가 앱 재기동보다 먼저 도는 PC/백업 DB에서 채널이 조용히 죽는 것을 막는다.
+    _ensure_trades_exit_axis_columns()
     ss = eval_sample_starvation()
     tb = eval_tb_channel(days)
     mg = eval_meta_gate_channel(days)

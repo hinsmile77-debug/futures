@@ -140,6 +140,67 @@ def is_plausible_futures_trade(
     return True
 
 
+def classify_exit(exit_reason, tp1_reached=None, pnl_pts=None) -> Tuple[str, str]:
+    """[MW0602 468차 G-3] 청산 한 건을 (트리거, 결과) 2축으로 가른다.
+
+    **이 함수가 `exit_trigger`/`exit_outcome`의 유일한 생성자다.** 기록 시점(main.py
+    `_record_trade_result`)과 분석 스크립트가 같은 함수를 쓰게 해서 "분석마다 매핑이
+    조금씩 다른" 상태를 만들지 않는다.
+
+    Args:
+        exit_reason: `trades.exit_reason` 원문. 변형 접미사(`_유실복구`)가 붙어 있어도 된다.
+        tp1_reached: 청산 시점 TP1 도달 여부(465차 컬럼). None이면 **모른다**.
+        pnl_pts:     레그 손익(pt). None이면 결과를 판정하지 않는다.
+
+    Returns:
+        (trigger, outcome)
+          trigger: 하드스톱 / 보호트레일 / 손절1차 / TP1 / TP2 / TP3 /
+                   시간마감 / 안전망 / 수동 / 복구 / 기타
+          outcome: 이익 / 손실 / 본전 / "" (판정 불가)
+
+    ⚠ **`하드스톱` vs `보호트레일`은 `tp1_reached`로만 가른다.** `pnl_pts>0`으로
+      추정하면 트리거 축이 결과 축과 상관돼 두 축을 나눈 의미가 사라진다(손절선을
+      지켰는지 묻는 질문에 "이겼으니 손절이 아니다"로 답하는 꼴). `tp1_reached`가
+      None이면 **모른다는 뜻이므로 `하드스톱`으로 두지 않고 `하드스톱?`으로 표시**한다.
+    """
+    r = str(exit_reason or "").strip()
+    base = r[:-len("_유실복구")] if r.endswith("_유실복구") else r
+
+    if "안전망" in base:
+        trigger = "안전망"
+    elif "강제청산" in base or "시간마감" in base:
+        trigger = "시간마감"
+    elif "손절1차" in base:
+        trigger = "손절1차"
+    elif "하드스톱" in base or "스톱" in base:
+        if tp1_reached is None:
+            trigger = "하드스톱?"      # 구버전 행 — 손절인지 보호트레일인지 모른다
+        elif int(tp1_reached):
+            trigger = "보호트레일"
+        else:
+            trigger = "하드스톱"
+    elif base.startswith("TP") or "익절" in base:
+        trigger = base[:3] if base[:3] in ("TP1", "TP2", "TP3") else "TP"
+    elif "수동" in base:
+        trigger = "수동"
+    elif base.startswith("stuck_exit"):
+        trigger = "복구"
+    else:
+        trigger = "기타"
+
+    if pnl_pts is None:
+        outcome = ""
+    else:
+        try:
+            v = float(pnl_pts)
+        except (TypeError, ValueError):
+            return trigger, ""
+        # 동률(0.0)은 `본전`이다 — 승패 집계의 `>0` 규약(패로 셈)과는 **다른 축**이라
+        # 일부러 분리한다. 승률을 바꾸지 않는다.
+        outcome = "이익" if v > 0 else ("손실" if v < 0 else "본전")
+    return trigger, outcome
+
+
 def filter_plausible_trade_rows(rows: List[sqlite3.Row]) -> List[sqlite3.Row]:
     return [
         row for row in rows
@@ -1335,6 +1396,29 @@ def _migrate_trades_db():
                 #   추정치를 실측 컬럼에 섞으면 이 컬럼 자체를 못 믿게 된다.
                 #   구간 분석 시 NULL은 별도 코호트로 다룰 것.
                 "tp1_reached": "INTEGER",
+                # ── [MW0602 468차 G-3] 청산 라벨 2축 스키마 ────────────────────
+                # `exit_reason`(단일 문자열)은 **트리거와 결과를 한 칸에 섞는다.**
+                # 그래서 세 가지가 동시에 불가능했다:
+                #   ① `하드스톱` 하나에 진짜 손절과 TP1 이후 보호트레일(이익)이 섞임
+                #      → 465차 `tp1_reached`, 468차 F-2 로그 태그로 우회해 왔다.
+                #   ② 한 포지션이 손절 계열과 이익 계열을 **둘 다** 밟는 경우를 못 담음
+                #      (0813 실측: 손절1차 조기축소 → TP1 보호전환 → TP2 전량).
+                #   ③ 손절 준수율(417차 재분해에서 **유일하게 유의**했던 축,
+                #      rho=+0.318 p=0.015)을 라벨만으로 계산 불가.
+                # → 트리거(무엇이 청산을 일으켰나)와 결과(돈을 벌었나)를 분리한다.
+                #
+                # `exit_reason`은 **유지한다**(하위호환). 사전등록 채널 [15]·[26]·[48],
+                # `scripts/bar_stop_path_watch.py`, `tests/test_439_*`가 그 문자열을
+                # 필터로 쓰므로 바꾸면 판정이 조용히 뒤집힌다(465차 P4 결정).
+                #
+                # 값 도메인 — `classify_exit()`이 유일한 생성자다:
+                #   exit_trigger: 하드스톱 / 보호트레일 / 손절1차 / TP1 / TP2 / TP3 /
+                #                 시간마감 / 안전망 / 수동 / 복구 / 기타
+                #   exit_outcome: 이익 / 손실 / 본전
+                # ⚠ 소급 백필 없음(`tp1_reached`와 같은 이유). 구버전 행은 NULL이며,
+                #   과거 분석은 `exit_reason` + `pnl_pts`로 그때의 규칙대로 다룰 것.
+                "exit_trigger": "TEXT",
+                "exit_outcome": "TEXT",
             }
             for name, dtype in additions.items():
                 if name not in cols:

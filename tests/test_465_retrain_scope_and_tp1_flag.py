@@ -239,7 +239,11 @@ def test_p4_insert_arity():
 
     check("컬럼수(%d) == 플레이스홀더수(%d)" % (len(names), n_q), len(names) == n_q)
     check("값 튜플 길이(%s) == 컬럼수(%d)" % (tup_len, len(names)), tup_len == len(names))
-    check("tp1_reached가 컬럼 목록 마지막", names and names[-1] == "tp1_reached")
+    # [468차 G-3 정정] 원 단정은 `names[-1] == "tp1_reached"`(맨 끝)였다. 그건 **컬럼이
+    # 하나라도 추가되면 깨지는** 형태이고, 실제로 468차가 exit_trigger/exit_outcome을
+    # 뒤에 붙이자 깨졌다. 지키려는 불변식은 "위치"가 아니라 **"컬럼 목록에 있고 값 튜플과
+    # 자릿수가 맞는다"**이며 그것은 바로 위 두 단정이 이미 보장한다.
+    check("tp1_reached가 컬럼 목록에 있다", "tp1_reached" in names)
     check("값 누락 시 0이 아니라 NULL",
           'if result.get("tp1_reached") is not None else None' in src)
 

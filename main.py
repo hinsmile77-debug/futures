@@ -56,6 +56,7 @@ from utils.db_utils import (
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
     fetch_trend_monthly, fetch_trend_yearly,
     is_plausible_futures_trade,
+    classify_exit,
     upsert_daily_broker_pnl,
     save_shap_scores,
     save_regime_at, purge_old_regime_history,
@@ -2821,6 +2822,18 @@ class TradingSystem:
             )
             return
         executed_metrics, forward_metrics = self._trade_metrics_pair(result)
+        # [MW0602 468차 G-3] 트리거/결과 2축 — `exit_reason` 문자열은 그대로 두고
+        # 분석용 축을 따로 남긴다. 계산 실패가 거래 기록을 막아서는 안 되므로
+        # 실패 시 빈 값(=구버전 행과 동일 취급)으로 떨어뜨린다.
+        try:
+            _exit_trigger, _exit_outcome = classify_exit(
+                result.get("exit_reason"),
+                result.get("tp1_reached"),
+                result.get("pnl_pts"),
+            )
+        except Exception as _cx_e:
+            logger.warning("[G-3] 청산 2축 분류 실패 (무해, NULL 기록): %s", _cx_e)
+            _exit_trigger, _exit_outcome = None, None
         execute(
             TRADES_DB,
             """INSERT INTO trades
@@ -2832,9 +2845,10 @@ class TradingSystem:
                 formula_version, exit_reason, grade, regime,
                 meta_action, hurst_bucket, hour_bucket,
                 was_restart_after, had_partial_fill, entry_horizon, entry_source,
-                kelly_advised_skip, raw_grade, entry_qty, tp1_reached)
+                kelly_advised_skip, raw_grade, entry_qty, tp1_reached,
+                exit_trigger, exit_outcome)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -2882,6 +2896,12 @@ class TradingSystem:
                     int(result["tp1_reached"])
                     if result.get("tp1_reached") is not None else None
                 ),
+                # [MW0602 468차 G-3] 청산 라벨 2축. **여기서 계산한다** —
+                # `_build_exit_result()`가 채워 오지만, stuck_exit 복구처럼 result dict를
+                # 손으로 조립하는 경로도 있어서 기록 직전에 한 번 더 보장한다.
+                # `classify_exit()`이 유일한 생성자이므로 두 경로의 값이 갈리지 않는다.
+                _exit_trigger,
+                _exit_outcome,
             ),
         )
         try:
