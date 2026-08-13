@@ -599,9 +599,26 @@ class PositionTracker:
         result["forward_commission"] = round(forward_commission, 0)
 
         if is_final:
+            # ── [MW0602 468차 F-2 / A안] 표시 계층에서만 보호트레일을 분리한다 ──────
+            # `exit_reason` **문자열은 바꾸지 않는다.** 465차 P4가 같은 안(`보호트레일`
+            # 라벨 신설)을 검토 후 기각했다 — `exit_reason LIKE '%하드스톱%'`가 사전등록
+            # 채널 [15]·[26]·[48]과 `scripts/bar_stop_path_watch.py:134`(정확일치),
+            # `tests/test_439_p2_slippage_judgment.py`의 필터라 갈아치우면 그 채널들의
+            # 판정이 조용히 뒤집힌다(캠페인 거버넌스 위반).
+            #
+            # 그런데 같은 `하드스톱` 라벨에 **정반대 두 사건**이 들어 있다 — 진짜 손절과
+            # TP1 도달 후 보호 스톱(이익 청산). 로그만 읽는 요약 도구는 그것을 구분할
+            # 방법이 없어 오독을 자동 생산했다(0813 실측: `하드스톱` 2건이 **둘 다**
+            # 보호 트레일인데 일일 점검이 "하드스톱·손절 계열 2/3건(67%)"으로 집계).
+            # → DB에는 465차의 `tp1_reached` 컬럼을 그대로 쓰고, **로그 줄에만** 같은
+            #   값을 태그로 덧붙인다. 손절 계열에만 붙여 TP 청산 줄은 건드리지 않는다.
+            _stop_family = any(_k in str(reason) for _k in ("스톱", "손절"))
+            _tp1_tag = ""
+            if _stop_family:
+                _tp1_tag = " [TP1보호]" if result.get("tp1_reached") else " [TP1미도달]"
             logger.info(
                 f"[Position] 체결청산 {self.status} @ {exit_price} "
-                f"| PnL={pnl_pts:+.2f}pt ({pnl_krw:+,.0f}원) | {reason}"
+                f"| PnL={pnl_pts:+.2f}pt ({pnl_krw:+,.0f}원) | {reason}{_tp1_tag}"
             )
             self.last_update_reason = f"apply_exit_fill_final:{reason}"
             self.last_update_ts = filled_at or now_kst()

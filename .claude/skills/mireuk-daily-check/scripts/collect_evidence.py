@@ -704,6 +704,36 @@ def check_invariants(root, cfg):
     return path, rows
 
 
+def exit_stop_kind(reason):
+    """[MW0602 468차 F-2/A안] 청산 사유 한 줄을 손절/보호/불명으로 가른다.
+
+    `하드스톱` 라벨 하나에 **정반대 두 사건**이 들어 있다 — 진짜 손절과 TP1 도달 후
+    보호 스톱(이익 청산). 465차 P4가 라벨 교체 대신 `trades.tp1_reached` 컬럼을 택했고
+    (LIKE '%하드스톱%'가 사전등록 채널의 필터라 문자열을 못 바꾼다), 468차가 같은 값을
+    청산 로그 줄에 `[TP1보호]`/`[TP1미도달]` 태그로 덧붙였다.
+
+    반환: "stop"(진짜 손절) / "protect"(보호트레일) / "unknown"(태그 없는 구버전 로그)
+          / None(손절 계열이 아님 — TP·시간마감 등)
+
+    ⚠ 태그가 없으면 **불명으로 둔다.** 손절로 세면 없는 사실을 만들고, 보호로 세면
+    진짜 손절을 숨긴다 — 둘 다 이 수집기가 실제로 저지른 오독의 형태다.
+    """
+    r = str(reason or "")
+    if not ("스톱" in r or "손절" in r):
+        return None
+    if "TP1보호" in r:
+        return "protect"
+    if "TP1미도달" in r:
+        return "stop"
+    return "unknown"
+
+
+def exit_stop_counts(exits):
+    """청산 목록 → (진짜손절, 보호트레일, 태그없음) 건수."""
+    kinds = [exit_stop_kind(e.get("reason")) for e in exits]
+    return kinds.count("stop"), kinds.count("protect"), kinds.count("unknown")
+
+
 def day_summary(digests, cfg, out):
     """거래일 요약 — 로그 요약이 아니라 '오늘 무엇을 했는가'.
 
@@ -783,11 +813,21 @@ def day_summary(digests, cfg, out):
         A("**청산 사유 분포** — " + ", ".join(
             "`%s`×%d" % (k, v) for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])))
         A("")
-        stops = sum(v for k, v in reasons.items() if "스톱" in k or "손절" in k)
-        if stops:
-            A("> 하드스톱·손절 계열 %d/%d건. **손절 준수율**(실현손실 ÷ 의도손절폭 ATR×1.5)은 "
-              "417차 재분해에서 유일하게 유의했던 축이다 — 진입 로그의 `손절=` 값과 대조하라."
-              % (stops, len(ex)))
+        n_stop, n_prot, n_unk = exit_stop_counts(ex)
+        if n_stop or n_prot or n_unk:
+            A("> **손절 계열 분해** — 진짜 손절 %d건 · TP1 보호트레일 %d건 · 태그없음 %d건 "
+              "(청산 %d건 중)" % (n_stop, n_prot, n_unk, len(ex)))
+            if n_prot:
+                A("> `하드스톱` 라벨이지만 **TP1 도달 후 보호 스톱 = 이익 청산**인 건이 "
+                  "%d건이다. 손절로 세지 말 것 — 라벨 하나에 정반대 두 사건이 들어 있다"
+                  "(465차 `tp1_reached`, 468차 로그 태그)." % n_prot)
+            if n_unk:
+                A("> 태그 없는 %d건은 **468차 이전 로그**다. 손절로도 보호로도 세지 않는다 — "
+                  "`trades.tp1_reached`(08-13 이후 적재)로 직접 확인하라." % n_unk)
+            if n_stop:
+                A("> 진짜 손절 %d건의 **손절 준수율**(실현손실 ÷ 의도손절폭 ATR×1.5)은 "
+                  "417차 재분해에서 유일하게 유의했던 축이다 — 진입 로그의 `손절=` 값과 대조하라."
+                  % n_stop)
             A("")
 
     # --- 진입 상세 ---
@@ -1499,11 +1539,19 @@ def build(root, day, phase, cfg, discover_only=False):
                 top_bl = " 최다 차단 사유: `%s`" % sorted(bd.items(), key=lambda kv: -kv[1])[0][0]
             flags.append("**진입 0건** — 차단 %d건.%s (진입0 딥다이브 절차를 따르라)" % (len(bl), top_bl))
         if ex:
-            stops = sum(1 for e in ex
-                        if "스톱" in (e.get("reason") or "") or "손절" in (e.get("reason") or ""))
-            if stops * 2 >= len(ex):
-                flags.append("청산 %d건 중 하드스톱·손절 계열 **%d건(%.0f%%)** — 손절 준수율 확인 필요"
-                             % (len(ex), stops, 100.0 * stops / len(ex)))
+            # [468차 F-2/A안] 보호트레일(TP1 도달 후 이익 청산)을 손절로 세지 않는다.
+            # 태그 없는 구버전 로그는 '모른다'이므로 손절 쪽에 함께 넣되 적신호 문구에
+            # 그 사실을 적는다 — 조용히 빼면 진짜 손절 급증을 놓친다.
+            n_stop, n_prot, n_unk = exit_stop_counts(ex)
+            _susp = n_stop + n_unk
+            if _susp and _susp * 2 >= len(ex):
+                _det = "진짜 손절 %d" % n_stop
+                if n_unk:
+                    _det += " · 태그없음(468차 이전 로그) %d" % n_unk
+                if n_prot:
+                    _det += " · 보호트레일 %d건은 제외" % n_prot
+                flags.append("청산 %d건 중 손절 계열 **%d건(%.0f%%)** [%s] — 손절 준수율 확인 필요"
+                             % (len(ex), _susp, 100.0 * _susp / len(ex), _det))
     try:
         if sz and en:
             smax = max(int(s["qty"]) for s in sz if s.get("qty"))
