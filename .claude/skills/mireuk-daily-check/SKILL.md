@@ -112,17 +112,38 @@ python scripts/collect_evidence.py --discover      # ← 이 검증은 PC마다 
 > 호스트명에서 `MW####`를 못 뽑으면 다이제스트 첫 줄이 `UNKNOWN`이 되고 경고가 뜬다.
 > 그 상태로 커밋하면 어느 PC의 관찰인지 영영 모르게 된다 — 반드시 확인하라.
 
+### PC명이 `UNKNOWN`으로 나오면 — `--pc` 로 알려줘라 [2026-08-13 추가]
+
+수집기는 `platform.node()`(호스트명)에서 `MW####`를 뽑는다. 그런데 **호스트명이 그 PC의
+것이 아닌 환경**이 실제로 있다 — 클로드 코웍 **예약작업은 리눅스 샌드박스에서 돌고
+호스트명이 `claude`** 로 나온다. 그대로 두면 `evidence_UNKNOWN-…` 이 생긴다.
+
+```bash
+python scripts/collect_evidence.py --phase post --pc MW0602 --out-auto
+MIREUK_PC_ID=MW0602 python scripts/collect_evidence.py --phase post --out-auto   # 환경변수도 같다
+```
+
+우선순위는 **`--pc` 인자 > `MIREUK_PC_ID` 환경변수 > 호스트명 자동탐지**다.
+아무것도 주지 않으면 종전과 완전히 같게 동작한다 — **PC에서 직접 돌릴 때는 붙일 필요가 없다.**
+override 가 걸리면 다이제스트 첫 줄에 `MW0602 (override · host=claude)` 로 원래 호스트명까지
+같이 찍히므로, 나중에 봐도 어떻게 판정됐는지 추적된다.
+
+`DeskTop-MW0602` 처럼 통째로 줘도 `MW0602` 를 뽑아낸다.
+
 **예약작업은 PC별로 따로 등록해야 한다.** 코드는 git으로 공유되지만 예약작업은 그렇지 않다.
 각 PC의 데스크톱 앱에서 시작한 세션에서 등록하라.
+**그리고 예약작업 프롬프트에는 반드시 `--pc <PC명>` 을 박아라** — 위 샌드박스 문제 때문이다.
 
 ## 2. 증거를 먼저 모은다
 
 ```bash
 python scripts/collect_evidence.py --phase post --out-auto
+python scripts/collect_evidence.py --phase post --pc MW0602 --out-auto   # 예약작업 등 호스트명이 안 잡히는 환경
 ```
 
 `--out-auto`는 `docs/정기점검/매일점검/evidence_<PC명>-<날짜>_<국면>.md`로 저장한다.
 셸 날짜 확장(`$(date ...)`)에 기대지 않아 PowerShell·bash 어디서든 같게 동작한다.
+PC명이 `UNKNOWN`으로 찍히면 §1-B의 `--pc` 절을 보라.
 
 **처음 쓰는 PC라면 `--discover`를 먼저 돌려라.** 로그 폴더 구조를 확인하고
 필요하면 `config/dailycheck_targets.json`에 `scan_dirs`를 고정한다.

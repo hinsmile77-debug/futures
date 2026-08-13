@@ -13,6 +13,7 @@
     python scripts/collect_evidence.py --discover          # 무엇이 있는지 먼저 본다
     python scripts/collect_evidence.py --phase pre
     python scripts/collect_evidence.py --phase post --date 2026-08-11 --out docs/정기점검/매일점검/evidence.md
+    python scripts/collect_evidence.py --phase post --pc MW0602 --out-auto   # 호스트명이 그 PC의 것이 아닐 때
 
 설정 고정(선택): config/dailycheck_targets.json
     {"scan_dirs": ["logs", "data/logs"], "process_map": {"main": "trader_", "eod": "eod_"}}
@@ -337,9 +338,36 @@ def run_git(root, args, timeout=25):
         return "(git 실행 불가) %s" % e
 
 
+# --pc 인자 / MIREUK_PC_ID 환경변수로 들어온 PC명 override. main() 이 채운다.
+_PC_OVERRIDE = None
+
+
+def _norm_pc(value):
+    """'MW0602' . 'mw0602' . 'DeskTop-MW0602' 어느 형태로 줘도 MW#### 를 뽑는다."""
+    if not value:
+        return None
+    m = re.search(r"(MW\d{4})", value, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    v = value.strip().upper()
+    return v or None
+
+
 def pc_id():
-    """CLAUDE.md 규약: 호스트명에서 MW#### 를 뽑는다 (utils/db_utils.py:pc_id() 와 동일 취지)."""
+    """CLAUDE.md 규약: 호스트명에서 MW#### 를 뽑는다 (utils/db_utils.py:pc_id() 와 동일 취지).
+
+    우선순위: `--pc` 인자 > `MIREUK_PC_ID` 환경변수 > 호스트명 자동탐지.
+    아무것도 주지 않으면 종전과 **완전히 같게** 동작한다 (MW0601 기존 사용 무영향).
+
+    override 가 필요한 이유: 예약작업.컨테이너처럼 **호스트명이 그 PC의 것이 아닌
+    환경**에서 돌면 자동탐지가 UNKNOWN 이 되고, 그대로 커밋하면 어느 PC의 관찰인지
+    영영 모르게 된다 (2026-08-13 MW0602 코웍 예약작업에서 실측 - 샌드박스
+    호스트명이 `claude` 로 나온다).
+    """
     host = platform.node() or ""
+    forced = _PC_OVERRIDE or _norm_pc(os.environ.get("MIREUK_PC_ID"))
+    if forced:
+        return forced, "%s (override . host=%s)" % (forced, host or "?")
     m = re.search(r"(MW\d{4})", host, re.IGNORECASE)
     return (m.group(1).upper() if m else "UNKNOWN"), host
 
@@ -1570,7 +1598,14 @@ def main(argv=None):
     ap.add_argument("--discover", action="store_true",
                     help="파일 인벤토리만 출력 — 처음 한 번 돌려 경로를 확인한다")
     ap.add_argument("--max-log-mb", type=int, default=None, help="이보다 큰 로그는 건너뛴다")
+    ap.add_argument("--pc", default=None,
+                    help="PC명을 직접 지정한다 (예: MW0602). 환경변수 MIREUK_PC_ID 로도 같다. "
+                         "생략하면 호스트명에서 자동탐지 - 예약작업.컨테이너처럼 호스트명이 "
+                         "그 PC의 것이 아닐 때만 쓴다")
     args = ap.parse_args(argv)
+
+    global _PC_OVERRIDE
+    _PC_OVERRIDE = _norm_pc(args.pc)
 
     start = args.root if args.root else os.path.dirname(os.path.abspath(__file__))
     root = find_repo_root(start)
