@@ -183,6 +183,64 @@ DEFAULT_CONFIG = {
         "HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY",   # 설계 선택 — 수동진입은 막지 않는다
         "TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED",  # config/settings.py:4770-4781 (311차)
     ],
+    # ── [MW0602 468차 G-2] 고착 지표 자동 탐지 ────────────────────────────────
+    # 미륵이가 **반복적으로 밟아온 실패 형태**: 안전장치·계측이 한쪽 값에 붙박여
+    # 사실상 죽어 있는데 아무도 모른다. FP-CRITICAL 상시 CRITICAL(303차),
+    # CB③-P4 상시 RESTRICTED(292차), PSI 메가빈(371차), `CORE안전=⚠️` 6거래일
+    # 100%(468차) — 매번 사람이 뒤늦게 발견했다.
+    #
+    # 여기서는 **두 가지**를 잡는다:
+    #   ① 한 값이 관측의 100%  → 고착(발동하지 않는 안전장치 / 죽은 판정)
+    #   ② 표본 0             → 아예 기록이 끊겼거나 로그 문구가 바뀌어 패턴이 안 맞음.
+    #      **이것도 죽은 지표다.** 조용히 넘어가면 "경고가 없다 = 정상"으로 읽힌다.
+    "stuck_indicators": {
+        "lookback_days": 10,      # 최근 몇 거래일치 로그를 볼 것인가
+        "min_days": 3,            # 이보다 적은 날에서만 관측되면 판정 보류
+        "min_samples": 20,        # 이보다 표본이 적으면 판정 보류
+        "max_file_mb": 8,         # 이보다 큰 파일은 건너뛴다(HOGA 등)
+        #
+        # ⚠ **조건부 로그를 넣지 말 것.** 임계를 넘을 때만 찍는 줄(예:
+        #   `[RegimeFingerprint] PSI=… CRITICAL`은 PSI>0.20에서만 출력)을 표본으로 삼으면
+        #   100% 고착이 **구조적으로 보장**된다 — 지표가 죽은 게 아니라 표본이 편향된 것이다.
+        #   실제로 이 절을 만들면서 그 패턴을 넣었다가 "PSI 100% CRITICAL 고착"이라는
+        #   가짜 적신호를 만들어 봤다(2026-08-05 이후엔 CLEAR라 아예 안 찍힌다).
+        #   **매 주기 무조건 찍히는 상태 샘플만** 넣는다.
+        #
+        # name: {re: 값 캡처 정규식(그룹 v), files: 파일명 부분일치, why: 왜 보는가,
+        #        benign: 이 값 하나로 100%인 것이 정상인 경우(경고 대신 정보로 표시),
+        #        min_samples/min_days: 전역 기준 덮어쓰기(선택)}
+        "patterns": {
+            "CORE안전": {
+                "re": r"CORE안전=(?P<v>\S+)",
+                "files": ["_LEARNING"],
+                "why": "SHAP CORE 감시. 468차 F-3 이전 6거래일 100% ⚠️ 고착 실적",
+            },
+            "degraded": {
+                "re": r"\[Health\][^|]*degraded=(?P<v>\w+)",
+                "files": ["_HEALTH"],
+                "benign": ["OFF"],
+                "why": "시스템 헬스 강등. OFF 고착은 정상(사고 없음)",
+            },
+            "CB_state": {
+                "re": r"\[DBG-CB\] state=(?P<v>\w+)",
+                "files": ["_DEBUG"],
+                "benign": ["NORMAL"],
+                "why": "CB 전체 상태(매분 샘플). NORMAL 고착은 정상 — 단 Phase 5 조건 ②"
+                       "(CB 실발동 확인)가 여전히 미충족이라는 뜻이기도 하다",
+            },
+            "GuardFair_유효": {
+                "re": r"\[GuardFair\][^\n]*\|\s*(?P<v>무효|ok)\s*\(",
+                "files": ["retrain_eod"],
+                "why": "457차 fair_valid. 무효 100%면 GuardFair 비교가 죽어 있다",
+            },
+            "전략판정": {
+                "re": r"판정\s*:\s*(?P<v>\S+)",
+                "files": ["_WARN", "_SYSTEM"],
+                "min_samples": 5,   # 배너는 하루 1~2회라 전역 20건 기준이면 영영 판정 불가
+                "why": "전략 상태 경보 판정. 한 값 고착이면 판정식이 무의미해진 것",
+            },
+        },
+    },
     # 텍스트로 훑을 기준 문서
     "design_docs": [
         "CLAUDE.md", "CORE.md", "ROADMAP.md",
@@ -702,6 +760,109 @@ def check_invariants(root, cfg):
                      "expect": "standing", "why": "2026-08-01 상시 운영 전환",
                      "verdict": "일치" if m.group(1) == "standing" else "**불일치 ⚠**"})
     return path, rows
+
+
+# ------------------------------------------------------------------ 고착 지표
+def scan_stuck_indicators(root, cfg, day):
+    """[MW0602 468차 G-2] 최근 N거래일 상태 지표의 값 분포를 센다.
+
+    반환: [{name, why, days, n, dist:[(값, 건수)], verdict, note}]
+      verdict — "고착"(한 값 100%) / "변동" / "표본부족" / "무기록"
+
+    **왜 표본 0을 따로 세는가.** 로그 문구가 바뀌면 정규식이 조용히 아무것도 안 잡는데,
+    그 상태는 "경고 없음 = 정상"으로 읽힌다. 고착과 무기록은 증상이 다를 뿐 둘 다
+    "지표가 죽었다"이므로 같은 표에서 함께 보고한다.
+    """
+    conf = cfg.get("stuck_indicators") or {}
+    pats = conf.get("patterns") or {}
+    if not pats:
+        return []
+    look = int(conf.get("lookback_days", 10))
+    max_bytes = int(conf.get("max_file_mb", 8)) * 1024 * 1024
+
+    # 최근 N거래일 = 스캔 대상 폴더에서 발견되는 YYYYMMDD 토큰 중 오늘 이하 상위 N개.
+    # 별도 캘린더가 필요 없다 — 파일이 있는 날이 곧 돌아간 날이다.
+    ymd_re = re.compile(r"(20\d{6})")
+    today_tok = date_tokens(day)["ymd"]
+    by_day = {}
+    for rel in cfg["scan_dirs"]:
+        base = os.path.normpath(os.path.join(root, rel))
+        if not os.path.isdir(base):
+            continue
+        base_depth = base.rstrip(os.sep).count(os.sep)
+        for dirpath, dirnames, filenames in os.walk(base):
+            if dirpath.count(os.sep) - base_depth >= cfg["scan_depth"]:
+                dirnames[:] = []
+            dirnames[:] = [d for d in dirnames
+                           if d not in (".git", ".venv", "__pycache__", "node_modules", ".idea")]
+            for fn in filenames:
+                if any(x.lower() in fn.lower() for x in cfg.get("exclude_patterns", [])):
+                    continue
+                if any(x.lower() in fn.lower() for x in cfg.get("never_digest_patterns", [])):
+                    continue
+                m = ymd_re.search(fn)
+                if not m or m.group(1) > today_tok:
+                    continue
+                by_day.setdefault(m.group(1), []).append(
+                    os.path.normpath(os.path.join(dirpath, fn)))
+    days = sorted(by_day)[-look:]
+    if not days:
+        return []
+
+    rows = []
+    for name, spec in pats.items():
+        try:
+            rx = re.compile(spec["re"])
+        except re.error as e:
+            rows.append({"name": name, "why": spec.get("why", ""), "days": 0, "n": 0,
+                         "dist": [], "verdict": "무기록",
+                         "note": "정규식 오류: %s" % e})
+            continue
+        want = [f.lower() for f in (spec.get("files") or [])]
+        counts, hit_days = {}, set()
+        for d in days:
+            for full in by_day[d]:
+                fn = os.path.basename(full).lower()
+                if want and not any(w in fn for w in want):
+                    continue
+                try:
+                    if os.stat(full).st_size > max_bytes:
+                        continue
+                    with io.open(full, encoding="utf-8", errors="replace") as f:
+                        for ln in f:
+                            m = rx.search(ln)
+                            if m:
+                                v = (m.group("v") or "").strip()
+                                counts[v] = counts.get(v, 0) + 1
+                                hit_days.add(d)
+                except (IOError, OSError):
+                    continue
+        n = sum(counts.values())
+        dist = sorted(counts.items(), key=lambda kv: -kv[1])
+        _min_n = int(spec.get("min_samples", conf.get("min_samples", 20)))
+        _min_d = int(spec.get("min_days", conf.get("min_days", 3)))
+        _benign = [str(b) for b in (spec.get("benign") or [])]
+        if n == 0:
+            verdict, note = "무기록", "%d거래일 전체에서 0건 — 로그 문구 변경 또는 계측 중단" % len(days)
+        elif len(hit_days) < _min_d or n < _min_n:
+            verdict, note = "표본부족", "관측 %d일 · %d건 (기준 %d일 · %d건)" % (
+                len(hit_days), n, _min_d, _min_n)
+        elif len(dist) == 1:
+            # 한 값 100%가 **정상인** 지표가 있다(사고 없는 날의 degraded=OFF 등).
+            # 그것까지 적신호로 올리면 §12 전체가 늑대소년이 된다 — 표에는 남기되
+            # 경고로는 올리지 않는다.
+            if dist[0][0] in _benign:
+                verdict = "정상고착"
+                note = "`%s` 100%% (%d건 / %d일) — 기대값" % (dist[0][0], n, len(hit_days))
+            else:
+                verdict = "고착"
+                note = "`%s` 100%% (%d건 / %d일)" % (dist[0][0], n, len(hit_days))
+        else:
+            verdict, note = "변동", "%d개 값" % len(dist)
+        rows.append({"name": name, "why": spec.get("why", ""), "days": len(hit_days),
+                     "n": n, "dist": dist, "verdict": verdict, "note": note,
+                     "scanned_days": len(days)})
+    return rows
 
 
 def exit_stop_kind(reason):
@@ -1451,6 +1612,9 @@ def build(root, day, phase, cfg, discover_only=False):
         A("")
 
     # ---- 11. 자동 적신호 ----
+    # [468차 G-2] §12 표를 먼저 계산한다 — 아래 적신호 목록이 그 결과를 인용한다.
+    stuck_rows = scan_stuck_indicators(root, cfg, day)
+
     A("## 11. 자동 적신호 (출발점이지 결론이 아니다)")
     A("")
     flags = []
@@ -1601,6 +1765,16 @@ def build(root, day, phase, cfg, discover_only=False):
                 flags.append("상태 파일 `%s` 가 오늘 것이 아니다 (%s) — %s"
                              % (sf["path"], mt.strftime("%m-%d %H:%M"), sf["why"]))
 
+    # [468차 G-2] 고착·무기록은 그날의 이벤트가 아니라 **누적 상태**라서 다른 적신호와
+    # 성격이 다르다. 그래도 여기 올린다 — §12를 안 읽으면 영영 안 보이기 때문이다.
+    for r in stuck_rows:
+        if r["verdict"] == "고착":
+            flags.append("고착 지표 **`%s`** — %s. 안전장치가 '켜져 있다'와 '작동한다'는 "
+                         "다르다 (§12)" % (r["name"], r["note"]))
+        elif r["verdict"] == "무기록":
+            flags.append("지표 **`%s`** 최근 %d거래일 **기록 0건** — 계측 중단 또는 로그 문구 "
+                         "변경 의심 (§12)" % (r["name"], r.get("scanned_days", 0)))
+
     if flags:
         seen = set()
         i = 0
@@ -1613,6 +1787,33 @@ def build(root, day, phase, cfg, discover_only=False):
     else:
         A("자동 탐지 적신호 없음. 그래도 §4~§6을 직접 읽고 판단할 것.")
     A("")
+
+    # ---- 12. 고착 지표 ----
+    A("## 12. 고착 지표 (최근 %d거래일 상태값 분포)" % (cfg.get("stuck_indicators", {}) or {})
+      .get("lookback_days", 10))
+    A("")
+    if not stuck_rows:
+        A("`stuck_indicators` 설정이 비어 있다 — 탐지를 수행하지 않았다.")
+        A("")
+    else:
+        A("> **왜 보는가.** 292차(CB③-P4 상시 RESTRICTED)·303차(FP-CRITICAL 상시 CRITICAL)·")
+        A("> 371차(PSI 메가빈)·468차(`CORE안전` 6거래일 100% ⚠️)는 전부 **같은 실패**였다 — ")
+        A("> 지표가 한쪽 값에 붙박여 죽어 있는데 매번 사람이 뒤늦게 발견했다.")
+        A("> `무기록`은 그 반대 형태다: 문구가 바뀌어 계측이 조용히 끊긴 상태.")
+        A("")
+        A("| 지표 | 판정 | 관측일 | 표본 | 값 분포 | 왜 보는가 |")
+        A("|---|---|---|---|---|---|")
+        for r in stuck_rows:
+            mark = {"고착": "🔴 고착", "무기록": "🔴 무기록", "정상고착": "⚪ 정상고착",
+                    "표본부족": "⚪ 표본부족", "변동": "✅ 변동"}[r["verdict"]]
+            dist = ", ".join("`%s`×%d" % (v, c) for v, c in r["dist"][:6]) or "—"
+            A("| `%s` | %s | %d | %d | %s | %s |" % (
+                r["name"], mark, r["days"], r["n"], dist, r["why"]))
+        A("")
+        A("*판정 기준: 한 값이 100%면 `고착`, 표본 0이면 `무기록`, "
+          "관측일·표본이 기준 미달이면 `표본부족`(판정 보류). "
+          "**출발점이지 결론이 아니다** — 고착이 정상인 지표도 있다(예: 사고 없는 날의 CB 상태).*")
+        A("")
     A("---")
     A("")
     A("*요약이지 원본이 아니다. 특정 패턴 전량이 필요하면 원본을 직접 열 것 — "
