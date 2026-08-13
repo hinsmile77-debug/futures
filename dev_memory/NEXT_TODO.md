@@ -12091,14 +12091,32 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
   `learning/calibration.py`에 `is_bypassed` 프로퍼티 노출.
   ⚠ **`main.py` 앙상블 호출부 2곳(주경로·masked fallback) 모두에 kwarg 전달**(404차 함정).
   ⚠ **대조군 검증 필수** — 정상 fitted 보정기 저장본에서 WARNING이 여전히 나야 한다.
-- [ ] **F-3 CLAUDE.md 절대원칙 §2 ③ CB③ 임계 문구 정정 (P2)** — "30분 정확도 < 35%" →
-  실제 `CB_ACCURACY_MIN_30M = 0.28`. `git log -S "CB_ACCURACY_MIN_30M"`으로 완화 커밋·차수
-  특정 후 근거와 함께 기재. **코드는 바꾸지 않는다.**
-- [ ] **F-4 `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED = False` 근거 확정 (P2, 2일째 이월)** —
-  `git log -S "TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED" -- config/settings.py`로 비활성 커밋 특정
-  → DECISION_LOG에 사유·복원조건 → CLAUDE.md 한시예외 **네 번째 항목** 추가 →
-  `config/dailycheck_targets.json:documented_disabled_flags`에 추가 →
-  실전 전환 기준 **⑨**로 승격 여부 결정(권고: 승격).
+- [x] **F-3 CLAUDE.md 절대원칙 §2 ③ CB③ 임계 문구 정정 (P2)** — ✅ **2026-08-13 완료(커밋 ③)**.
+  **98차(`f96d341`, 2026-06-02)** 특정. ⚠ `git log -S`로는 안 나온다(같은 줄 값 변경은
+  출현 횟수가 안 바뀜) — `-G "^CB_ACCURACY_MIN_30M "` 사용할 것.
+  핵심은 임계값이 아니라 **집계 대상**: FLAT 예측 제외 → 방향성만 채점 → 무정보 기준선이
+  3클래스 33% → 2클래스 50% → 임계 0.35→0.28. **2026-06-02 이전 acc30m과 직접 비교 금지**를
+  CLAUDE.md에 함께 명기. 코드 무변경.
+- [x] **F-4 `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED = False` 근거 확정 (P2, 3일째 이월)** —
+  ✅ **2026-08-13 완료(커밋 ③)**. CLAUDE.md 한시예외 **4번째** + 실전 전환 기준 **⑨** 등재,
+  `dailycheck_targets.json` 2본 `documented_disabled_flags` 편입.
+  🔧 **전제 2건 정정**: ① **비활성 커밋은 없다** — 311차 후속4(`cf2d1b4`, 2026-07-12)가
+  처음부터 `False`로 신설(섀도). ② 근거는 `config/settings.py:4800~4814` **주석에 이미
+  상세히 있었다** — 없던 건 CLAUDE.md·DECISION_LOG 등재였다.
+  🔴 **복원 조건이 충족 불가능함을 발견** → 아래 F-8 신규 등록.
+
+- [ ] **F-8 `spread_extreme_shadow` 섀도 계측 배선 (P2, 461차 신규 — F-4 복원의 선행조건)** —
+  `strategy/risk/toxicity_gate.py:88`이 `spread_extreme_shadow`를 매분 계산하고 주석은
+  *"섀도우 로그/대시보드 관찰용"* 이라 적어놨으나 **소비처가 0곳**이다. `ensemble_decisions`의
+  toxicity 컬럼은 `_action`·`_score`·`_score_ma`·`_size_mult`·`_reason` 5개뿐이고,
+  전 DB에 `spread` 컬럼이 **0개**, 당일 로그 `severe_spread` grep **0건**.
+  2026-07-12 도입 이래 **한 달 넘게 죽은 섀도** — FP-CRITICAL의 "PSI=0.0 2개월 고정"과
+  같은 결함 패턴.
+  **할 일**: `ensemble_decisions`에 `spread_ticks`·`spread_extreme_shadow` 컬럼 추가
+  (`_ensure_column` 패턴 — 461차 F-7이 `strategy_live_snapshots`에 쓴 것과 동일) →
+  `main.py`의 tox 컬럼 기록부에 병기 → EOD 리포트에 `spread_ticks ≥ 20` 발생 분수 요약.
+  ⚠ **DB 스키마 변경 동반** — 문서 커밋과 분리할 것.
+  **이게 없으면 실전 전환 기준 ⑨는 영원히 판정 불가다.**
 
 ### NEXT (고도화)
 
@@ -12226,17 +12244,18 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
 
 ### 문서·운영
 
-- [ ] **`TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED` 를 실전 전환 기준 ⑨로 승격 (F-4 확장, 3일째 이월)** —
-  차단 게이트 27개 중 유일하게 비활성 근거가 CLAUDE.md·DECISION_LOG 어디에도 없다.
-  CB②·CB③-P4·FP-CRITICAL과 달리 **복원 조건이 없어 실전 전환 체크리스트에서 구조적으로 누락**된다.
-  도입·비활성 커밋 특정 → 사유·복원조건 기록 → CLAUDE.md 한시예외 **4번째 항목** → 실전 전환 기준 ⑨.
+- [x] **`TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED` 를 실전 전환 기준 ⑨로 승격 (F-4 확장)** —
+  ✅ **2026-08-13 완료(커밋 ③)**. 승격 완료. 단 ⑨는 **F-8(섀도 배선) 없이는 판정 불가**임을
+  기준 본문에 명시했다.
 
-- [ ] **실전 전환 기준 ③ "MDD ≤ 15%" 문구에 분모 명시** — `자본 대비 MDD`로 확정. F-7과 동시 반영.
-  같은 이름의 두 MDD가 실제로 혼동을 일으켰다.
+- [x] **실전 전환 기준 ③ "MDD ≤ 15%" 문구에 분모 명시** — ✅ **2026-08-13 완료(커밋 ②, F-7 동시)**.
+  `자본 대비` 확정 + `mdd_pct`(peak 별칭)를 판정에 쓰지 말라는 경고,
+  2026-08-13 이전 시계열 불연속 경고까지 함께 기재.
 
-- [ ] **`docs/정기점검/매일점검/evidence_UNKNOWN-20260813_post.md` 수동 삭제** —
-  수집기가 샌드박스 호스트명에서 `MW####`를 못 뽑아 생성. 삭제 권한 부족으로 남아 있다.
-  **커밋 전 반드시 제거** — 커밋되면 어느 PC의 관찰인지 영영 모르게 된다(SKILL.md §1-B 경고).
+- [x] **`docs/정기점검/매일점검/evidence_UNKNOWN-20260813_post.md` 수동 삭제** —
+  ✅ **2026-08-13 확인 — 해당 파일이 존재하지 않는다.** 폴더에 남은 건
+  `evidence_MW0601-20260813_post.md`(+ 08-12분)뿐이고, 커밋된 적도 없다.
+  461차 세션 실측(`ls | grep -i unknown` → 0건). 조치 불필요.
 
 ### 다음 거래일(2026-08-14) 관측 예정
 
