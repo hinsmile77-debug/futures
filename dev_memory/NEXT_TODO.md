@@ -8,6 +8,115 @@
 
 ---
 
+### 468차 — 0813 장후 점검 후속 (MW0602, 2026-08-13 진단 / 2026-08-14 커밋① 배포, **라이브 미검증**)
+
+리포트: `docs/정기점검/매일점검/MW0602-20260813-점검리포트.md`
+근거: `dev_memory/DECISION_LOG.md` 2026-08-13(468차)
+
+**F — Fix (우선순위순)**
+
+- [ ] **F-1 (P1) `_pre_retrain_done`을 전일 EOD 적재로도 해제** —
+      `main.py` PreRetrain 스킵 분기(`_eod_retrain_ok=True`)에서 `_pre_retrain_done=True`
+      + 로그 `[EntryGate] 전일 EOD 모델 적재 확인 — 사이즈 제한 해제 (×0.6 → ×1.0, 재학습 불요)`.
+      킬스위치 `config/settings.py:PRE_RETRAIN_DONE_BY_EOD_ENABLED=True` 신설(`getattr` 기본값
+      동반 — 핫패스 AttributeError는 68차처럼 minute_pipeline을 통째로 죽인다).
+      마커 파일 `data/eod_retrain_done_<날짜>.txt` 존재를 **AND 조건**으로 검사.
+      ⚠ **적용 전 필수**: 아래 F-1-v 소급 집계 먼저.
+- [ ] **F-1-v (선행 검증) `SizerMatch` 소급 집계** — 최근 20거래일에서
+      `kelly/meta/tox/exec` 최솟값이 0.60(pre_retrain 배수)인 진입 중 **0.60을 뺐을 때
+      반올림 수량이 바뀌는 건수**. **10건 이상이면 F-1 단독 적용 금지 → 주간회의 상정**
+      (`MAX_CONTRACTS=3`(431차)과 노출 상호작용). 10건 미만이면 즉시 적용 권고.
+      (오늘 진입 3건은 min 합성 결과가 같아 영향 0 — 표본 3건, 313차 원칙상 확정 결론 금지)
+- [ ] **F-2 (P1) `exit_reason` 보호트레일 분리** — 0812 P4 재상정, 미구현 상태.
+      하드스톱 청산 시 TP1 보호전환이 armed면 `보호트레일`/`보호트레일(틱)`로 기록.
+      **과거 행 무변경**(소급은 `pnl_pts>0` 규칙 — `scripts/early_trail_exit_counterfactual.py:144`
+      선례). 8월 실측: `하드스톱` 17건 **100% 이익** +1,692,393원.
+- [ ] **F-2-a (선행) `exit_reason` 소비처 조사** — 최소 `campaign_steps.py`,
+      [24]·[25] 청산 기하 채널, 일일 리포트 청산사유 분포. 신규 라벨을 모르면 채널이 조용히 죽는다
+      (420차 `joint_gate_shadow`, 457차 `_ensure_guard_shadow_columns` 선례)
+- [ ] **F-3 (P1) SHAP CORE 지표를 운영 정의에 연결** —
+      `learning/shap/shap_tracker.py:428`의 `len(core_ranks)==3` → `settings.CORE_FEATURES_BY_GROUP`
+      +`HORIZON_CORE_GROUP` 기반 기대집합을 `feature_names`와 **교집합**한 크기로 교체.
+      분모 0이면 `CORE안전=n/a`("모른다"를 "괜찮다"로 만들지 않는다).
+      ⚠ 332차 shap×HistGBM 힙 손상 구역 — **importance 계산 경로 무변경, 이름 조회부만**.
+      ⚠ `config/constants.py:CORE_FEATURES` **값 자체는 이번에 바꾸지 않는다**(`is_core`가
+      교체후보 필터에도 쓰임 — 별건 분리)
+- [x] **F-4 (P2) 수집기 화이트리스트** — **[DONE 2026-08-14 · 커밋 ①]**
+      `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED`를 `documented_disabled_flags`에 등록
+      (근거 `config/settings.py:4770-4781`, 311차). **사본 2벌 + 수집기 기본값 3곳**:
+      `config/dailycheck_targets.json` · `.claude/.../config_dailycheck_targets.json` ·
+      `collect_evidence.py:DEFAULT_CONFIG`(JSON이 이 목록을 통째로 대체하므로 JSON 없는
+      PC 폴백까지 동기화). `references/invariants.md` "근거 없음" 서술도 정정.
+      검증: 0813 post 재수집 → §11 적신호에서 소멸, §3 표 `기록됨` 확인
+- [x] **F-5 (P2) 문서-코드 괴리 2건** — **[DONE 2026-08-14 · 커밋 ①]**
+      ① `CLAUDE.md` 절대원칙 §2 CB③ "30분 정확도 < 35%"에 코드 실값
+      `CB_ACCURACY_MIN_30M=0.28`/`_STRICT=0.42`/`WATCH 0.35`/`RESTRICTED 0.30` 병기
+      (**코드 무변경**)
+      ② `main.py:10639` `[DailyClose] EOD 재학습 마커 없음` WARNING →
+      `EOD 재학습 미완료 (정상 — 15:45 스케줄 대기 중, 내일 08:55 PreRetrain이 마커 재확인)` INFO.
+      ⚠ **무조건 INFO가 아니다** — EOD 예산 종료(16:05) 이후면 기존 WARNING 유지
+      (STEP3 대기 최대 20분으로 daily_close가 늦어졌을 때 진짜 실패 신호를 잃지 않기 위함)
+- [ ] **F-5-c (P2, 468차 범위 밖 별건) CB⑤ 문서-코드 괴리** — `CLAUDE.md` 절대원칙 §2
+      ⑤ "API 지연 5초 초과 → 즉시 청산"의 `CB_API_LATENCY_LIMIT`은 Kiwoom 레거시(Cybos 미사용)이고
+      실질 구현은 `CB_PIPE_PAUSE_MS=5_000`(파이프라인 지연 → **5분 진입 정지**)이다.
+      트리거 대상도 동작도 달라 문구 병기만으로 정리되지 않는다 — **절대원칙 조항 자체를
+      다시 쓸지**를 주간회의에서 결정할 것. 현재는 CLAUDE.md §2 각주에 미해소로 명시만 해둠
+
+**G — 고도화**
+
+- [ ] **G-1 (이번 주) 사이즈 배수 해제를 이벤트→상태로 재작성** —
+      `_pre_retrain_done` 폐기, `_model_label_scheme_current()` 신설:
+      457차 `gbm_{h}_meta.json` 사이드카 6개를 읽어 전부 방법3 레이블 학습본이면 True.
+      파일 부재 시 **보수적으로 False**(현행 유지). F-1은 최소 구현, G-1이 정본.
+      판정 기준: 전일 EOD 성공일에 `사이즈 축소 ×0.6` 로그 **0건**
+- [ ] **G-2 (이번 주) 수집기 §12 "고착 지표" 신설** — 이진/범주형 상태 로그
+      (`CORE안전`, `degraded`, `fair_valid`, CB 단계, PSI 밴드, 캠페인 채널 판정)를
+      최근 N거래일(기본 10) 집계해 **한 값이 100%면 경고**. 292·303·371차가 전부
+      "안전장치가 상시 발동 상태로 죽어 있었다"는 같은 실패였고 매번 사람이 뒤늦게 발견했다.
+      수집기 단독 변경(표준 라이브러리, 라이브 무영향).
+      → **CLAUDE.md 26주 WFA 재검증 항목에 "고착 지표 점검" 추가 검토**(G-2 의존)
+- [ ] **G-3 (F-2 이후) 청산 라벨 2축 스키마** — `trades`에 `exit_trigger`
+      (하드스톱/보호트레일/TP1/TP2/TP3/손절1차/시간마감/안전망) + `exit_outcome`
+      (이익/손실/본전) 분리. `exit_reason`은 하위호환 유지.
+      효과: 손절 준수율(417차 유일 유의 축, rho=+0.318 p=0.015)이 라벨만으로 자동 계산.
+      ⚠ 멱등 ALTER를 **리포트 쪽에도** 넣는다(420차·457차 선례)
+- [ ] **G-4 (이번 주) 파이프라인 지연 STEP 단위 분해** — 당일 `[PipePerf]` S1~S9(매분 370건)를
+      파싱해 시간대별 단조 증가 STEP 지목. 2일 연속 재현(184→536ms / 191→568ms)으로 우연 배제.
+      기존 TODO "`pred_select` 5~12초 병목(S1) — predictions DB 풀스캔 의심"과 교차 확인.
+      **`predictions.db` 892MB**가 유력 후보 → 인덱스 추가 vs 아카이빙 결정
+
+**O — 다음 거래일(2026-08-14) 관측**
+
+- [ ] O-1 `[EntryGate] 사이즈 축소 ×0.6` 건수 — F-1 적용 시 **0건**
+- [ ] O-2 `[SHAP] … CORE안전=` — F-3 적용 시 ⚠️ 이외 값이 **1회라도** 나오면 소생 확인
+      (6거래일 100% ⚠️였으므로 1회만 달라져도 판정)
+- [ ] O-3 `trades.exit_reason` — F-2 적용 후 `보호트레일` 생성 + `하드스톱` 승/패 혼재 소멸
+- [ ] O-4 `[Health] latency=` 최대값 — **3일 연속** 기준선 2.5배 이상이면 G-4 즉시 착수
+- [ ] O-5 `ConstOut` 0회 유지 (P5-a 지속 검증 **3일차**). 1회라도 발생 시 465차 스코프 재점검
+- [ ] O-6 `[DailyClose] EOD 재학습 마커 없음` — F-5 적용 시 WARNING에서 소멸
+- [ ] O-7 장중 GBM 재학습 횟수 — 0회면 O-1과 묶어 판정. DriftRetrain 발동 시
+      **465차 스코프 한정(`scope=5m`)의 라이브 첫 검증 기회**
+- [ ] O-8 WeightCollapse 비율 — 20.3%(0813)·20.5%(0812) 대비 **±5%p 이탈 시** 원인 조사
+
+**기한 관리**
+
+- [ ] **CB② 복원 재검토 2026-08-29 (D-16)** — `CB_CONSEC_STOP_LIMIT` 9999 → 2~3.
+      오늘 `[CB] 연속 손절 1회` 1건으로 카운터 정상 누적 확인
+- [ ] **`FP_CRITICAL_GRADE_BLOCK_ENABLED` 판정 상정** — 371차 "며칠 라이브 관찰 후 판단"에서
+      **21일 경과**. 오늘 PSI 0.063(CLEAR), cvd=0.230 vwap=0.063 ofi=0.003 — 분위수 재설계 후
+      CLEAR 밴드 정상 변동. **"며칠"이 무기한이 되지 않도록 다음 주간회의에 판정 상정**
+- [ ] `meta_size_raw==0.0` 비율 — 0812 48.1% vs 0813 `size_mult=0.50` 52건.
+      **분모가 달라 직접 비교 불가** → 동일 분모로 재계산할 것
+
+**완료 처리**
+
+- [DONE 2026-08-13] **0812 P3 — 10m 유령 잠금 해제**: EOD `[Retrain] 10m 교체
+  (acc 0.0000→0.4575)` 정상 확인. `gbm_10m_acc.txt.bak_20260812_465` 백업 존재
+- [DONE 2026-08-13] **467차 수집기 `--pc` override 라이브 검증**: 장후 예약 실행에서
+  다이제스트 1행 `MW0602 (override · host=claude)` 확인, 산출물 `UNKNOWN` 아님
+
+---
+
 ### 467차 — 일일 점검 예약 자동화 + 수집기 `--pc` (MW0602, 2026-08-13 배포, **라이브 미검증**)
 
 **다음 거래일(2026-08-14) 최우선 확인 — 예약 첫 발화**

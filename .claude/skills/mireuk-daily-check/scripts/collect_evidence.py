@@ -152,13 +152,13 @@ DEFAULT_CONFIG = {
         {"name": "VALIDATION_REPORT_KEEP_WEEKS", "expect": "4", "why": "주간 리포트 FIFO 보관"},
         # --- 2026-08-12 실측으로 추가된 감시 대상 ---
         {"name": "CB_ACCURACY_MIN_30M", "expect": "0.28",
-         "why": "CB③ 임계. ⚠ CLAUDE.md 절대원칙 §2는 35%로 적혀 있다 — 코드가 0.35→0.28 완화됨. 문서 갱신 필요"},
+         "why": "CB③ 임계(0.35→0.28 완화). CLAUDE.md 절대원칙 §2 본문 '35%' 옆에 실값 병기 완료(468차) — 문서-코드 괴리 해소됨"},
         {"name": "CB_ACC_RESTRICTED_MIN", "expect": "0.30",
          "why": "WATCH→RESTRICTED 경계. 30m 구조적 성능(0.3052)과 거의 같아 CB③-P4 비활성의 직접 원인"},
         {"name": "CB_ACCURACY_MIN_30M_STRICT", "expect": "0.42",
          "why": "과신 연속 시 강화 임계 (0.50→0.42 완화)"},
         {"name": "TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED", "expect": "False",
-         "why": "⚠ CLAUDE.md 한시예외 목록에 없는 네 번째 비활성 차단 게이트. 근거·복원조건 미기록 상태"},
+         "why": "극단 스프레드(20틱) block — 311차 섀도우 검증 대기. 근거·활성화 조건은 config/settings.py:4770-4781"},
         {"name": "LIMIT_PIN_ENTRY_BLOCK_ENABLED", "expect": "True",
          "why": "호가 상하한 핀 진입 차단 — 켜져 있어야 정상"},
         {"name": "HURST_SOFT_BLOCK_ENABLED", "expect": "True",
@@ -173,11 +173,15 @@ DEFAULT_CONFIG = {
     ],
     # 차단 게이트 자동 인벤토리 — 이름에 이 패턴이 있고 값이 True/False 인 상수
     "gate_flag_pattern": "BLOCK|ENABLED|DISABLE",
-    # CLAUDE.md·DECISION_LOG 에 근거가 기록된 "일부러 꺼둔" 게이트.
+    # CLAUDE.md·DECISION_LOG·settings.py 주석에 근거가 기록된 "일부러 꺼둔" 게이트.
     # 여기 없는 False 게이트는 §10에서 적신호로 올린다 — 조용히 잠든 게이트를 막기 위함.
+    # ⚠ config/dailycheck_targets.json 의 같은 키가 이 목록을 **통째로 대체**한다
+    #   (load_config 는 cfg.update(user)). 한쪽만 고치면 JSON 없는 PC에서만 오탐이 난다.
     "documented_disabled_flags": [
-        "CB3_P4_GRADE_BLOCK_ENABLED",
-        "FP_CRITICAL_GRADE_BLOCK_ENABLED",
+        "CB3_P4_GRADE_BLOCK_ENABLED",           # CLAUDE.md 절대원칙 §2 한시예외 (297차)
+        "FP_CRITICAL_GRADE_BLOCK_ENABLED",      # CLAUDE.md 절대원칙 §2 한시예외 (303·371차)
+        "HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY",   # 설계 선택 — 수동진입은 막지 않는다
+        "TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED",  # config/settings.py:4770-4781 (311차)
     ],
     # 텍스트로 훑을 기준 문서
     "design_docs": [

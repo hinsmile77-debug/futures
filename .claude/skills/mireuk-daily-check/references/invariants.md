@@ -30,9 +30,11 @@
 ### ② Circuit Breaker 5종
 - ① 1분 내 신호 5번 반전 → 15분 정지
 - ② 5분 내 손절 3연속 → 당일 정지
-- ③ 30분 정확도 < 35% → 당일 정지
+- ③ 30분 정확도 < 35% → 당일 정지 (**코드 실값 `CB_ACCURACY_MIN_30M = 0.28`** — 468차에
+  CLAUDE.md에 병기됨. 아래 §3-B 참조)
 - ④ 변동성 ATR 3배 초과 → 5분 정지
-- ⑤ API 지연 5초 초과 → 즉시 청산
+- ⑤ API 지연 5초 초과 → 즉시 청산 (**실질 구현은 `CB_PIPE_PAUSE_MS = 5_000`** — 아래 §3-B,
+  아직 미해소 드리프트)
 
 **점검**: 발동이 있었으면 사유·지속·복구까지 추적. 발동이 없었으면 "정말 조건 미달이었나"를 확인.
 
@@ -133,10 +135,10 @@ CLAUDE.md 절대원칙 §2의 서술과 `config/settings.py` 실제 값이 어�
 **코드가 옳고 문서가 낡았다** — 그렇더라도 "절대원칙"이 실제와 다른 상태는 위험하다.
 보고서에 올려 문서 갱신을 제안하라.
 
-| CLAUDE.md 서술 | 실제 코드 | 해석 |
-|---|---|---|
-| CB③ "30분 정확도 **< 35%** → 당일 정지" | `CB_ACCURACY_MIN_30M = 0.28` (주석: 0.35→0.28) | 임계가 완화됐는데 절대원칙 문구는 그대로 |
-| CB⑤ "API 지연 5초 초과 → 즉시 청산" | `CB_API_LATENCY_LIMIT = 5.0` 은 **"레거시 — Kiwoom용, Cybos에서는 사용 안 함"**. 실질 구현은 `CB_PIPE_PAUSE_MS = 5_000` (5분 진입 정지) | 트리거 대상도(API→파이프) 동작도(즉시 청산→진입 정지) 다르다 |
+| CLAUDE.md 서술 | 실제 코드 | 해석 | 상태 |
+|---|---|---|---|
+| CB③ "30분 정확도 **< 35%** → 당일 정지" | `CB_ACCURACY_MIN_30M = 0.28` (주석: 0.35→0.28) | 임계가 완화됐는데 절대원칙 문구는 그대로였다 | **해소 (468차)** — CLAUDE.md §2에 실값·근거 병기. 코드는 무변경 |
+| CB⑤ "API 지연 5초 초과 → 즉시 청산" | `CB_API_LATENCY_LIMIT = 5.0` 은 **"레거시 — Kiwoom용, Cybos에서는 사용 안 함"**. 실질 구현은 `CB_PIPE_PAUSE_MS = 5_000` (5분 진입 정지) | 트리거 대상도(API→파이프) 동작도(즉시 청산→진입 정지) 다르다 | **미해소** — 468차 F-5 범위 밖(별건). 발견하면 계속 보고할 것 |
 
 ### v9-dev 차단 게이트 전수 (2026-08-12 실측, 27개 중 7개 False)
 
@@ -144,7 +146,7 @@ CLAUDE.md 절대원칙 §2의 서술과 `config/settings.py` 실제 값이 어�
 |---|---|---|
 | `CB3_P4_GRADE_BLOCK_ENABLED` | False | 차단 게이트 — 기록됨 |
 | `FP_CRITICAL_GRADE_BLOCK_ENABLED` | False | 차단 게이트 — 기록됨 |
-| `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED` | False | **차단 게이트 — 미기록 ⚠** |
+| `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED` | False | 차단 게이트 — 기록됨 (311차, `settings.py:4770-4781`) |
 | `HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY` | False | 차단 게이트 — 설계 선택(수동진입은 막지 않음) |
 | `LIMIT_PIN_ENTRY_BLOCK_ENABLED` | True | 차단 게이트 — 켜짐 |
 | `HURST_SOFT_BLOCK_ENABLED` | True | 소프트 차단(사이즈 0.5배) |
@@ -154,7 +156,7 @@ CLAUDE.md 절대원칙 §2의 서술과 `config/settings.py` 실제 값이 어�
 수집기는 전수 표에 전부 싣되 **이름에 `BLOCK` 이 든 것만** 적신호로 올린다
 (`gate_flag_alert_pattern`). 기능 토글이 꺼진 것과 차단 장치가 꺼진 것은 무게가 다르다.
 
-### 네 번째 비활성 차단 게이트
+### 네 번째 비활성 차단 게이트 — 오탐이었다 (468차 종결)
 
 CLAUDE.md 한시예외는 3건(CB②·CB③-P4·FP-CRITICAL)인데 코드에는 하나 더 있다.
 
@@ -163,9 +165,16 @@ TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED = False
 TOXICITY_SEVERE_SPREAD_BLOCK_TICKS = 20.0
 ```
 
-**근거·복원 조건이 CLAUDE.md에도 DECISION_LOG에도 없다.** 의도한 것이면 기록하고,
-아니면 그 자체가 P0다. 확인 후 `config/dailycheck_targets.json` 의
-`documented_disabled_flags` 에 추가하면 적신호에서 빠진다.
+2026-08-12 초판은 "근거가 CLAUDE.md에도 DECISION_LOG에도 없다"고 적었으나 **틀렸다.**
+근거는 `config/settings.py:4770-4781` 에 311차 결정으로 상세히 있다 — 합성 toxicity_score가
+실측 최댓값 0.393으로 block 임계(0.78)에 도달한 적이 없어 안전장치가 사실상 부재였고,
+슬리피지 역산으로 `spread_ticks>=20`(p90)을 후보 임계로 제안하되 **"실거래 표본(n=8~19)만으로는
+노이즈가 커 이 컷을 검증 못함 — 섀도우 로그로 먼저 관찰 후 활성화"** 가 활성화 조건이다.
+
+→ 468차에 `documented_disabled_flags` 에 등록해 적신호에서 뺐다(사본 2벌 + 수집기 기본값).
+**교훈: "CLAUDE.md·DECISION_LOG에 없다"는 "근거가 없다"와 다르다** — 게이트 근거는
+`settings.py` 정의부 주석에 있는 경우가 많다. 적신호로 올리기 전에 **정의부 앞 20줄을 먼저
+읽어라.**
 
 > 수집기 §3 하단 **차단 게이트 전수 인벤토리**가 `*_BLOCK*`/`*_ENABLED*` 불리언을 매번
 > 훑는다. 손으로 적어둔 목록은 새로 생긴 것을 놓치지만, 이름 규칙으로 훑으면

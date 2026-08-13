@@ -10637,11 +10637,27 @@ class TradingSystem:
                 "INFO",
             )
         else:
-            log_manager.system(
-                "[DailyClose] EOD 재학습 마커 없음 — retrain_eod.py 미실행 또는 실패 "
-                "(내일 PreRetrain에서 보완 재학습 예약됨)",
-                "WARNING",
-            )
+            # [468차 F-5] daily_close(15:40)는 EOD 스케줄러(MireukiEODRetrain, 15:45 시작 /
+            # 16:05 종료 예산)보다 **먼저** 돈다 — 이 시점에 마커가 없는 것이 정상이고,
+            # 08-10~08-13 4거래일 연속으로 WARNING이 오탐으로 찍혔다. 진짜 실패는 다음날
+            # 08:55 PreRetrain이 마커 파일을 직접 확인해 잡는다(보완 재학습 경로 그대로).
+            # 다만 STEP 3 재학습 대기(최대 20분)로 daily_close가 늦어져 EOD 예산 종료까지
+            # 넘겼다면 그때는 정말로 미실행이거나 실패한 것이므로 WARNING을 유지한다 —
+            # 무조건 INFO로 내리면 진짜 실패 신호까지 같이 잃는다.
+            _now_dc = datetime.datetime.now()
+            _eod_budget_end = _now_dc.replace(hour=16, minute=5, second=0, microsecond=0)
+            if _now_dc < _eod_budget_end:
+                log_manager.system(
+                    "[DailyClose] EOD 재학습 미완료 (정상 — 15:45 스케줄 대기 중, "
+                    "내일 08:55 PreRetrain이 마커 재확인)",
+                    "INFO",
+                )
+            else:
+                log_manager.system(
+                    "[DailyClose] EOD 재학습 마커 없음 — retrain_eod.py 미실행 또는 실패 "
+                    "(EOD 예산 16:05 경과 · 내일 PreRetrain에서 보완 재학습 예약됨)",
+                    "WARNING",
+                )
 
         # DB pruning — 매주 월요일 EOD 1회 실행 (RAW_DATA_PRUNE_WEEKS=52주 이전 삭제)
         # 슬라이딩 창(26주) 정상 운영 시 학습 행 수는 ~40,000 안정적
