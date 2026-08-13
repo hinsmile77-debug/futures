@@ -4722,6 +4722,50 @@ class TradingSystem:
                     f"[PreRetrain] 08:55 사전 재학습 스킵 — {_gap_tag} EOD 재학습 성공 (동일 데이터 중복 불필요)",
                     "INFO",
                 )
+                # ── [MW0602 468차 F-1] 전일 EOD 적재로도 사이즈 제한 해제 ──────────
+                # `_pre_retrain_done`은 "오늘 쓰는 GBM이 방법3 레이블 학습본인가"라는
+                # **상태**를 물어야 하는데 "장중 재학습 콜백이 돌았는가"라는 **이벤트**로만
+                # 구현돼 있었다. 그 결과 전일 EOD가 성공한 날(= 최신 모델이 이미 적재됨,
+                # 장중 재학습 불요)에 ×0.6이 하루 종일 안 풀린다 — 모델이 가장 건강한 날에
+                # 제한이 유지되는 역설(0813 실측: 사이저 18회 전부 ×0.6, 해제 0회).
+                # 킬스위치는 getattr 기본값과 함께 읽는다 — 이 경로는 장전 1회지만 68차처럼
+                # AttributeError 하나가 상위 흐름을 통째로 죽이는 사고를 반복하지 않는다.
+                # 근거·노출 실측(F-1-v 0건)은 config/settings.py 플래그 주석 참조.
+                if (bool(getattr(runtime_settings, "PRE_RETRAIN_DONE_BY_EOD_ENABLED", True))
+                        and not self._pre_retrain_done):
+                    # AND 조건: 마커 파일 실재. `_eod_retrain_ok`는 session_state 날짜
+                    # 복원으로도 True가 되므로 그것만 믿으면 "EOD 실패인데 제한 해제"가
+                    # 가능하다. 마커는 retrain_eod.py가 **성공 시에만** 쓴다.
+                    _eod_marker_seen = False
+                    try:
+                        _f1_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+                        _f1_days = (
+                            [_gap_date] if _gap_date
+                            else [datetime.date.today() - datetime.timedelta(days=_i)
+                                  for _i in range(1, 6)]
+                        )
+                        for _f1_d in _f1_days:
+                            if _f1_d and os.path.exists(os.path.join(
+                                    _f1_dir, "eod_retrain_done_%s.txt" % _f1_d.strftime("%Y%m%d"))):
+                                _eod_marker_seen = True
+                                break
+                    except Exception as _f1_e:
+                        # 확인 실패는 "모른다"이므로 보수 유지(해제하지 않는다).
+                        logger.warning("[EntryGate] EOD 마커 확인 실패 (무해, ×0.6 유지): %s", _f1_e)
+                    if _eod_marker_seen:
+                        self._pre_retrain_done = True
+                        log_manager.system(
+                            "[EntryGate] 전일 EOD 모델 적재 확인 — 사이즈 제한 해제 "
+                            f"(×{runtime_settings.PRE_RETRAIN_SIZE_MULT:.1f} → ×1.0, 재학습 불요)",
+                            "INFO",
+                        )
+                    else:
+                        log_manager.system(
+                            "[EntryGate] EOD 마커 파일 없음 — 사이즈 제한 유지 "
+                            f"(×{runtime_settings.PRE_RETRAIN_SIZE_MULT:.1f}). "
+                            "session_state 복원만으로는 해제하지 않는다",
+                            "INFO",
+                        )
             else:
                 self.dashboard.set_model_status("GBM 사전 재학습중(64bit)...")
                 log_manager.system(

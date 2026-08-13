@@ -15,18 +15,20 @@
 
 **F — Fix (우선순위순)**
 
-- [ ] **F-1 (P1) `_pre_retrain_done`을 전일 EOD 적재로도 해제** —
-      `main.py` PreRetrain 스킵 분기(`_eod_retrain_ok=True`)에서 `_pre_retrain_done=True`
-      + 로그 `[EntryGate] 전일 EOD 모델 적재 확인 — 사이즈 제한 해제 (×0.6 → ×1.0, 재학습 불요)`.
-      킬스위치 `config/settings.py:PRE_RETRAIN_DONE_BY_EOD_ENABLED=True` 신설(`getattr` 기본값
-      동반 — 핫패스 AttributeError는 68차처럼 minute_pipeline을 통째로 죽인다).
-      마커 파일 `data/eod_retrain_done_<날짜>.txt` 존재를 **AND 조건**으로 검사.
-      ⚠ **적용 전 필수**: 아래 F-1-v 소급 집계 먼저.
-- [ ] **F-1-v (선행 검증) `SizerMatch` 소급 집계** — 최근 20거래일에서
-      `kelly/meta/tox/exec` 최솟값이 0.60(pre_retrain 배수)인 진입 중 **0.60을 뺐을 때
-      반올림 수량이 바뀌는 건수**. **10건 이상이면 F-1 단독 적용 금지 → 주간회의 상정**
-      (`MAX_CONTRACTS=3`(431차)과 노출 상호작용). 10건 미만이면 즉시 적용 권고.
-      (오늘 진입 3건은 min 합성 결과가 같아 영향 0 — 표본 3건, 313차 원칙상 확정 결론 금지)
+- [x] **F-1 (P1) `_pre_retrain_done`을 전일 EOD 적재로도 해제** — **[DONE 2026-08-14 · 커밋 ③]**
+      `main.py` PreRetrain 스킵 분기에서 `_pre_retrain_done=True` +
+      `[EntryGate] 전일 EOD 모델 적재 확인 — 사이즈 제한 해제 (×0.6 → ×1.0, 재학습 불요)`.
+      킬스위치 `config/settings.py:PRE_RETRAIN_DONE_BY_EOD_ENABLED=True`(getattr 기본값 동반).
+      마커 파일 `data/eod_retrain_done_<날짜>.txt` **AND 조건** — 없으면 해제하지 않고
+      `EOD 마커 파일 없음 — 사이즈 제한 유지`를 찍는다("모른다"를 "괜찮다"로 만들지 않는다).
+      ⚠ **알려진 사각지대**: 08:55를 지나 재시작하면 `_warmup_retrain_pending=False`라 이
+      분기 자체를 안 타므로 그날은 ×0.6이 유지된다. **G-1(상태 기반 정본)이 그것까지 덮는다.**
+- [x] **F-1-v (선행 검증) 소급 집계** — **[DONE 2026-08-14]** 결과 **0건 → 즉시 적용 조건 충족**.
+      `scripts/pre_retrain_size_counterfactual.py` 신설(재현 가능).
+      2026-07-21~08-13 20거래일: 진입 132건 / ×0.6 적용 21건 / 재구성 성공 13건
+      (= 재구성값이 실제 체결수량과 일치) 중 **수량 변화 0건, 노출 증가 0계약**.
+      재구성불가 8건은 전부 431차(08-05) 이전 곱셈 세대 — 추정하지 않고 제외했다.
+      ⚠ 표본 13건 — 313차 원칙상 확정 결론 금지. `MAX_CONTRACTS=3` 상호작용은 O-1로 관측.
 - [ ] **F-2 (P1) `exit_reason` 보호트레일 분리** — 🔴 **보류: 465차 P4 결정과 충돌.
       사용자 판단 대기 (2026-08-14 F-2-a 조사 결과).**
       0813 리포트는 "0812 P4 미구현"으로 적었으나 **P4는 구현됐다 — 다른 방식으로.**
