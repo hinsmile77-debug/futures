@@ -169,6 +169,17 @@ DEFAULT_CONFIG = {
         {"name": "ENTRY_HORIZON_B1", "expect": "3.2", "why": "1m/3m 경계 [374차 1.5→3.5, 387차 3.5→3.2] — 드리프트 항목"},
         {"name": "ENTRY_HORIZON_B2", "expect": "4.4", "why": "3m/5m 경계 [374차 2.5→4.0, 387차 4.0→4.4] — 드리프트 항목"},
         {"name": "CB_DAILY_HALT_FULL_BLOCK", "expect": "3", "why": "HALT 3회 → 완전 관망"},
+        # --- 462·468차 배포분 (2026-08-14 추가). 전부 라이브 검증 대기 상태다 ---
+        {"name": "MODEL_LABEL_STATE_UNLOCK_ENABLED", "expect": "True",
+         "why": "468차 G-1. 사이즈 제한 해제를 이벤트→상태 판정으로. **라이브 미검증** — `사이즈 축소 ×0.6` 0건 확인 전까지 CLAUDE.md ⑧ 해제 금지"},
+        {"name": "PRE_RETRAIN_DONE_BY_EOD_ENABLED", "expect": "True",
+         "why": "468차 F-1. EOD 완료로 `_pre_retrain_done` 해제 — G-1의 동반 스위치"},
+        {"name": "ZONE_ENTRY_BAN_ENFORCE", "expect": "False",
+         "why": "462차 P1-a. 🔴 True면 라이브 진입이 즉시 준다. 위반 7건이 오히려 흑자(+596,858원)라 [53] 채널 판정 전까지 False 유지"},
+        {"name": "ZONE_ENTRY_BAN_SHADOW_ENABLED", "expect": "True",
+         "why": "462차 P1-a 섀도. 집행과 무관하게 위반 계측은 항상 켜져 있어야 한다"},
+        {"name": "PIPE_LATENCY_EXCLUDE_MODEL_SWAP", "expect": "True",
+         "why": "462차 P2. 모델 교체 구간을 CB⑤ 판정용 지연에서만 차감(원값은 `raw=…ms`로 존치)"},
     ],
     # 차단 게이트 자동 인벤토리 — 이름에 이 패턴이 있고 값이 True/False 인 상수
     "gate_flag_pattern": "BLOCK|ENABLED|DISABLE",
@@ -649,7 +660,10 @@ def check_invariants(root, cfg):
     rows = []
     for inv in cfg["invariants"]:
         name = inv["name"]
-        m = re.search(r"(?m)^\s*%s\s*=\s*([^\n#]+)" % re.escape(name), text)
+        # `NAME = 3` 뿐 아니라 `NAME: bool = True` 형태(어노테이션 대입)도 잡는다.
+        # 468차 F-1/G-1 스위치가 어노테이션으로 선언돼 있어, 이걸 안 보면 실재하는
+        # 상수가 `미발견 ⚠` 으로 뜬다 — 오탐이 아니라 **감시 누락**이다.
+        m = re.search(r"(?m)^\s*%s\s*(?::[^=\n]+)?=\s*([^\n#]+)" % re.escape(name), text)
         actual = m.group(1).strip().rstrip(",") if m else None
         exp = inv["expect"]
         if actual is None:

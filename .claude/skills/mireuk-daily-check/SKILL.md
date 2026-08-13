@@ -1,6 +1,6 @@
 ---
 name: mireuk-daily-check
-description: 미륵이(futures, KOSPI 200 선물 자동매매)의 장전·장중·장후 일일 운영 점검. 당일 로그를 훑어 CLAUDE.md 절대원칙·CORE.md·ROADMAP·dev_memory·커밋 이력 대비 이상점을 찾아내고, fix 구현계획과 고도화 방안까지 보고서로 낸다. 트리거 - "미륵이 점검", "장전 점검", "장중 점검", "장후 점검", "일일 점검", "dailycheck", "오늘 미륵이 로그 조사", "이상점 정리보고", "고도화 방안 수립", "mireuk daily check", "premarket/intraday/postmarket check".
+description: 미륵이(futures, KOSPI 200 선물 자동매매)의 장전·장중·장후 일일 운영 점검. 당일 로그를 훑어 CLAUDE.md 절대원칙·CORE.md·ROADMAP·dev_memory·커밋 이력 대비 이상점을 찾아내고, fix 구현계획과 고도화 방안까지 보고서로 낸다. 장후에는 진입 승패 사후검증(EOD+P8)까지 이어간다. 트리거 - "미륵이 점검", "장전 점검", "장중 점검", "장후 점검", "일일 점검", "dailycheck", "오늘 미륵이 로그 조사", "이상점 정리보고", "고도화 방안 수립", "mireuk daily check", "premarket/intraday/postmarket check", "승패 딥다이브", "사후검증", "EOD+P8", "수익률 향상방안", "진입결과 점검", "postmortem".
 ---
 
 # 미륵이 일일 운영 점검
@@ -9,11 +9,13 @@ description: 미륵이(futures, KOSPI 200 선물 자동매매)의 장전·장중
 
 한 문장으로: **"오늘 미륵이가 절대원칙을 지키며 설계대로 살았는가"를 로그로 심문하고, 안 그런 부분에 대해 고칠 계획과 더 나아갈 계획을 내놓는다.**
 
-산출은 항상 세 부분이다. 순서도 고정이다.
+산출은 순서가 고정돼 있다. 1~3은 전 국면 공통, 4~5는 **장후(`post`) 한정**이다.
 
 1. **이상점 정리보고** — 국면(장전/장중/장후)별 작업흐름 이상점
 2. **Fix 작업 구현계획** — 우선순위(P0/P1/P2)와 함께
 3. **고도화 방안** — 당일 작동 점검결과를 근거로
+4. **진입 승패 사후검증** — 장후 한정. 케이스 단위 딥다이브와 요인 귀인 (`references/postmortem.md`)
+5. **수익률 향상방안** — 4번 요인 집계에서만 도출. 일반론 금지
 
 ---
 
@@ -78,7 +80,14 @@ MW0601·MW0602가 같은 repo를 공유하지만 **운영 브랜치가 다르다
 |---|---|---|---|
 | 장전 | `pre` | ~09:00 | 오늘 거래할 자격이 되는가 |
 | 장중 | `intra` | 09:00~15:10 | 매분 9단계가 설계대로 돌고 있는가 |
-| 장후 | `post` | 15:10~ | 오늘 하루가 절대원칙을 지켰는가 |
+| 장후 | `post` | 15:10~ | 오늘 하루가 절대원칙을 지켰는가 **+ 오늘 할일이 실제로 처리됐는가 + 각 진입이 왜 이기고 왜 졌는가** |
+
+> **장후는 "EOD+P8"까지가 범위다.** EOD = 15:40 `daily_close()`(일일 마감·SHAP 심사),
+> P8 = 그 뒤 `retrain_eod.py:p8_scaler_refit()`(15:45~, `py310_64`)의 **스케일러 재적합**이다.
+> 원래 `daily_close()` 안에 있었으나 197차에 `retrain_eod.py`로 옮겼다 — 재학습 pkl이
+> 매일 P8 효과를 덮어쓰고 있었기 때문이다. 완료 도장은 `data/eod_retrain_done_{d}.txt` 와
+> `data/session_state.json` 의 `p8_last_success_date`·`eod_retrain_ok_date` 다.
+> **P8이 빠지면 다음날 시초 z-score가 흔들린다** — 장후 점검에서 이 둘을 확인하라.
 
 **리포 루트**: `CLAUDE.md`와 `dev_memory/`를 함께 가진 디렉터리.
 
@@ -145,7 +154,12 @@ python scripts/collect_evidence.py --discover
 - 출력이 크면 `--out docs/정기점검/매일점검/evidence_<PC>-<날짜>_<국면>.md`로 파일에 받는다
 - 파이썬은 `py37_32`든 `py310_64`든 상관없다 (수집기는 표준 라이브러리만 쓴다)
 
-> §10 자동 적신호는 **출발점이지 결론이 아니다.** 기계가 못 잡는 것 — 설계와 다른 순서,
+> ⚠ **수집기는 DB를 읽지 않는다 — 로그·설정·git 전용이다**(`sqlite3` import 0건, 2026-08-14 확인).
+> 그래서 진입 확률·레이블·실현손익은 다이제스트에 없다. **제4부 승패 사후검증은
+> `data/db/predictions.db` · `data/db/trades.db` 를 직접 조회**해야 한다 —
+> 경로·스키마·조인 규칙은 `references/evidence_map.md` §8에 실측 고정돼 있다.
+
+> §11 자동 적신호는 **출발점이지 결론이 아니다.** 기계가 못 잡는 것 — 설계와 다른 순서,
 > 있어야 할 로그가 아예 없는 것, INFO로 조용히 지나간 폴백 — 이 진짜 수확이다.
 
 ## 3. 원본을 좁게 되짚는다
@@ -170,8 +184,22 @@ grep -n "CircuitBreaker\|CB②\|HALT" logs/*20260812*.log
 > `_archive/plans/PROJECT_DESIGN.md`는 2026-04 브레인스토밍이다. 30m 호라이즌 등
 > **퇴역한 내용을 포함**하므로 사료적 참고용으로만 쓰고 근거로 인용하지 마라.
 
-국면별 구체 점검항목은 **`references/phases.md`**, 절대원칙·한시예외·재인용금지 목록은
-**`references/invariants.md`** 에 있다. 둘 다 읽고 빠짐없이 통과시킨다.
+> 기준 4·5(dev_memory·커밋 이력)의 **실제 대조 절차**는 `references/postmortem.md` §1 에 있다.
+> "오늘 할일"은 `NEXT_TODO.md` 미완료 체크박스를 당일 커밋과 4분류 대조하는 것으로 정의한다.
+
+### 참조 파일 위치
+
+| 용도 | 경로 (repo 루트 기준) |
+|---|---|
+| 국면별 점검 체크리스트 (장전 A / 장중 B / 장후 C) | `.claude/skills/mireuk-daily-check/references/phases.md` |
+| 절대원칙 6종 · 한시예외 · 재인용 금지 · 313차 원칙 | `.claude/skills/mireuk-daily-check/references/invariants.md` |
+| 증거 지도 — 로그 레이아웃 · **DB 스키마(§8)** | `.claude/skills/mireuk-daily-check/references/evidence_map.md` |
+| **진입 승패 사후검증 절차 (장후 전용)** | `.claude/skills/mireuk-daily-check/references/postmortem.md` |
+| 보고서 양식 | `.claude/skills/mireuk-daily-check/references/report_template.md` |
+| **예측 확률·게이트 판정 원천** | `data/db/predictions.db` (`predictions` / `ensemble_decisions` / `meta_labels`) |
+| **진입·청산·실현손익 원천** | `data/db/trades.db` (`trades` + 섀도 채널 테이블 다수) |
+
+phases.md와 invariants.md는 **둘 다 읽고 빠짐없이 통과시킨다.** postmortem.md는 장후에만 편다.
 
 ## 5. 보고서를 쓴다
 
@@ -184,6 +212,7 @@ grep -n "CircuitBreaker\|CB②\|HALT" logs/*20260812*.log
   "`strategy/entry/checklist.py`의 `_core_pass()`에서 entry_horizon 그룹 판정을 …".
 - **장중에는 코드 변경을 제안만 하고 실행하지 않는다.** 라이브 프로세스가 돌고 있다.
 - 고도화 방안은 **당일 관측에서 출발**해야 한다. 일반론 금지.
+- **장후면 제4부(승패 사후검증)·제5부(수익률 향상방안)를 이어 붙인다** — `references/postmortem.md` 절차대로.
 
 **산출 위치 — 기존 관행을 따른다:**
 
@@ -214,6 +243,10 @@ PC명은 수집기 첫 줄에 찍힌 값(`MW0601`/`MW0602`)을 쓴다. 국면을
 - [ ] 표본이 부족한 채널에 확정 결론을 내리지 않았는가
 - [ ] PC명 태그·세션 차수 규약을 지켰는가 (함정 ③)
 - [ ] dev_memory 갱신을 마쳤는가
+- [ ] (장후) 오늘 할일 4분류 표를 채웠는가 — ⚠완료주장-커밋없음 항목을 P1으로 올렸는가
+- [ ] (장후) 로그·수집기§5·DB(ensemble_decisions·trades) 3원 대사 건수가 일치하는가
+- [ ] (장후) 모든 승패 요인 태그에 로그 인용과 시각이 붙었는가
+- [ ] (장후) 수익률 향상방안 각 항목의 6칸(근거/변경대상/기대효과/회귀위험/검증/표본상태)이 다 찼는가
 
 ---
 
