@@ -244,6 +244,12 @@ def test_p4_insert_arity():
           'if result.get("tp1_reached") is not None else None' in src)
 
 
+# [MW0602 468차] P4 배선이 라이브에 처음 반영된 거래일. 이 날짜 **이전** 청산 행은
+# tp1_reached가 NULL이어야 한다(소급 백필 금지 — 추정치를 실측 컬럼에 섞지 않는다는
+# 465차 결정). 이 날짜 이후 행은 반대로 채워져 있어야 배선이 살아 있는 것이다.
+P4_LIVE_SINCE = "2026-08-13"
+
+
 def test_p4_live_db_column():
     """마이그레이션이 실제 DB에 반영됐는지 (있을 때만 검사)."""
     import sqlite3
@@ -256,10 +262,30 @@ def test_p4_live_db_column():
         cols = [r[1] for r in conn.execute("PRAGMA table_info(trades)")]
         check("라이브 trades.tp1_reached 존재", "tp1_reached" in cols)
         if "tp1_reached" in cols:
-            n_notnull = conn.execute(
-                "select count(*) from trades where tp1_reached is not null"
+            # [MW0602 468차 정정] 원 단정은 `count(*) where tp1_reached is not null == 0`
+            # 이었다. 그건 **배선이 동작하는 순간 반드시 깨진다** — 465차 배포 다음
+            # 거래일(2026-08-13)에 라이브가 6행을 채우자 그대로 실패했다.
+            # 지키려던 불변식은 "백필을 하지 않는다"이지 "아무도 안 채운다"가 아니다.
+            # → **배포 이전 청산 행만** NULL이어야 한다로 정확히 다시 쓴다.
+            n_old_filled = conn.execute(
+                "select count(*) from trades "
+                "where tp1_reached is not null and exit_ts < ?", (P4_LIVE_SINCE,)
             ).fetchone()[0]
-            check("구버전 행은 NULL 유지 (백필 없음)", n_notnull == 0)
+            check("구버전 행은 NULL 유지 (백필 없음)", n_old_filled == 0)
+            # 배선이 살아 있는지도 함께 본다 — 위 단정만 남기면 "컬럼만 있고 아무도
+            # 안 쓰는 상태"가 영구히 통과한다(292·303차가 반복한 실패 형태).
+            n_new_filled = conn.execute(
+                "select count(*) from trades "
+                "where tp1_reached is not null and exit_ts >= ?", (P4_LIVE_SINCE,)
+            ).fetchone()[0]
+            n_new_rows = conn.execute(
+                "select count(*) from trades where exit_ts >= ?", (P4_LIVE_SINCE,)
+            ).fetchone()[0]
+            if n_new_rows:
+                check("배포 이후 행은 실제로 채워진다 (%d/%d)" % (n_new_filled, n_new_rows),
+                      n_new_filled > 0)
+            else:
+                print("[SKIP] 배포 이후 청산 행 없음 — 배선 확인 보류")
     finally:
         conn.close()
 
