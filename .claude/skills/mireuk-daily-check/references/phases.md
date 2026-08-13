@@ -138,16 +138,25 @@
 - [ ] **SHAP 이름↔값 정렬이 올바른가** — 2026-06-17~07-10에 18거래일간 오염된 이력이 있다
 - [ ] 심사 결과로 피처셋을 바꿀 때는 `references/invariants.md` §3-1을 먼저 읽어라
 
-### C-3. EOD 재학습
+### C-3. EOD 재학습 + P8
 - [ ] `EOD_RETRAIN.bat` / `scripts/eod_retrain.py` 가 **`py310_64`** 로 돌았는가
 - [ ] 로그에 `Python 3.10.20 64-bit` 가 찍혀도 **정상**이다 — 이상 환경이 아니다
 - [ ] `pickle protocol=4` 저장 확인 (py37_32 로드 호환)
 - [ ] OOM 없이 완주했는가 — 실패 시 모델 미교체 → 다음날 CB③ HALT 위험
 - [ ] 226차 이력: py37_32에서 numpy float32 배열 OOM 반복 → 환경 분리한 이유
+- [ ] **P8 스케일러 재적합**(`retrain_eod.py:p8_scaler_refit()`)이 끝났는가 —
+      `data/eod_retrain_done_{d}.txt` + `data/session_state.json` 의
+      `p8_last_success_date`·`eod_retrain_ok_date` 둘 다 오늘 날짜인가
+- [ ] P8이 빠졌으면 **다음날 시초 z-score 불안정**을 예고하라. 수동 복구는
+      `scripts/catch_up_eod.py`(STEP 2). 197차에 `daily_close()` 밖으로 옮긴 이유도 함께 기억할 것
 
 ### C-4. STEP 9 예측 DB
-- [ ] 당일 예측이 DB에 저장됐는가
+- [ ] 당일 예측이 DB에 저장됐는가 (`data/db/predictions.db`)
 - [ ] 레이블링 완료 건수 — SGD 온라인학습·SHAP 심사 표본의 원천이다
+- [ ] `ensemble_decisions` 당일 행수와 `entry_executed=1` 건수 — **차단 사유의 1차 자료**
+- [ ] ⚠ `predictions` 에 `30m` 행이 계속 쌓이는 것은 **정상**이다(퇴역은 앙상블 편입에서
+      뺀 것). 다만 그 행을 근거로 삼지 마라
+- [ ] 스키마·조회 명령은 `evidence_map.md` §8
 
 ### C-5. 검증 캠페인 (금요일이면 특히)
 - [ ] 주간 리포트가 `docs/정기점검/금요일점검/<PC명>/` 에 **날짜본**으로 생성됐는가
@@ -157,7 +166,20 @@
 - [ ] 호스트명에서 `MW####`를 못 뽑아 `UNKNOWN/` 폴더가 생기지 않았는가 (stderr 경고 확인)
 - [ ] **리포트의 FAIL/권고 중 이미 코드에 반영된 것이 있는가** — 함정 ①
 
-### C-6. 기록 의무
+### C-6. 진입 승패 사후검증 (제4·5부) — 절차는 `references/postmortem.md`
+
+이 절은 **관문만** 둔다. 실제 절차는 중복해 적지 않는다.
+
+- [ ] EOD·P8 완료(C-3)를 확인한 뒤 시작했는가
+- [ ] 3원 대사가 **포지션 단위**로 일치하는가 — 로그 `[Position] 진입` /
+      `ensemble_decisions.entry_executed=1` / `COUNT(DISTINCT trades.entry_ts)`
+      (`trades` 행수는 청산 레그라 더 많다. 그건 불일치가 아니다)
+- [ ] 승패를 `exit_reason` 만으로 세지 않았는가 — `하드스톱`에 **TP1 보호 이익 청산이 섞여 있다**
+      (`tp1_reached` / `[TP1보호]` 태그로 가른다. `evidence_map.md` §8-4)
+- [ ] 요인 태그 A~F에 로그 인용과 시각이 붙었는가. **E(손절 준수율)를 빠뜨리지 않았는가**
+- [ ] 313차 다섯 갈래를 다 적용했는가 (`postmortem.md` §4-2)
+
+### C-7. 기록 의무
 - [ ] `dev_memory/DECISION_LOG.md` · `NEXT_TODO.md` 갱신
 - [ ] 세션 헤더에 PC명 병기 (`## 2026-08-12 (MW0601 46X차 — …)`)
 - [ ] 세션 차수를 원격(git) 기준으로 맞췄는가
@@ -172,6 +194,8 @@
 - **판정과 결정은 별개다.** 리포트 FAIL이 반복되는 것은 미조치의 증거가 아니다.
 - **재인용 금지 수치**를 근거로 쓰지 마라 (`invariants.md` §3).
 - **30m 호라이즌은 퇴역했다.** 30m 기반 지표를 근거로 삼지 마라.
-- **표본 부족 채널에 확정 결론 금지** (313차).
+- **표본 부족 채널에 확정 결론 금지** (313차). 요약 한 줄이 아니라 다섯 갈래다 —
+  일자단위 판정 / overlap 보정 / 이상치 분해 / 사전등록(기준 불변) / 부호 일관성.
+  `invariants.md` §4, 적용은 `postmortem.md` §4-2.
 - **다른 PC의 관찰과 섞이지 않게** 하라. PC명 태그가 유일한 구분자다.
 - 전일 다이제스트가 있으면 **델타**를 본다. 절대값보다 변화가 정보량이 크다.

@@ -39,7 +39,7 @@
 | PC | 운영 브랜치 | 최근 |
 |---|---|---|
 | **MW0601** | **`v9-dev`** | `[MW0601] 458차 후속` |
-| **MW0602** | **`dev`** | `[MW0602] 466차` |
+| **MW0602** | **`dev`** | `[MW0602] 468차` (2026-08-14 `9d6f85f`) |
 
 그 밖에 `DEV-samefeature`(174차 스냅샷), `maitreya_dist`(MW0601 배포용)가 있다.
 
@@ -266,3 +266,117 @@ git log --oneline --since="2026-08-12 00:00" --until="2026-08-13 00:00"
 git log --oneline -12 | grep -v "\[MW"      # PC명 태그 누락 커밋
 git status --porcelain
 ```
+
+---
+
+## 8. DB 원천 — 실측 스키마 (2026-08-14 MW0602 확인)
+
+> **수집기는 DB를 읽지 않는다.** 로그·설정·git 전용이다(`sqlite3` import 0건).
+> 승패 사후검증(`postmortem.md`)은 여기 적힌 대로 **직접 조회**한다.
+> 스키마가 바뀌면 이 절을 갱신하는 것이 진실원천 갱신이다.
+
+### 8-1. 파일 위치와 규모
+
+| 파일 | 크기 | 무엇의 원천인가 |
+|---|---|---|
+| `data/db/predictions.db` | 892MB | **예측 확률 · 게이트 판정.** 아래 3테이블 |
+| `data/db/trades.db` | 618KB | **진입·청산·실현손익** + 섀도 채널 22테이블 |
+| `data/db/challenger.db` · `shap_tracker.db` · `raw_data.db` · `scaler_monitor.db` | 19MB~492MB | 사후검증 범위 밖. 필요할 때만 |
+
+`data/db/ensemble_decisions.db` 는 **0바이트 껍데기**다 — 실제 `ensemble_decisions` 테이블은
+`predictions.db` 안에 있다. 이름에 속지 마라.
+
+### 8-2. `predictions.db` — 3테이블
+
+| 테이블 | 행수(2026-08-14) | 컬럼 | 무엇을 답하는가 |
+|---|---|---|---|
+| `predictions` | 97,117 | 13 | 호라이즌별 방향 예측과 채점 |
+| `ensemble_decisions` | 23,063 | **50** | 분당 진입 판정 전 과정 — **차단 사유의 유일한 1차 자료** |
+| `meta_labels` | 95,297 | 17 | 레이블링(실현 이동 vs 임계) |
+
+```
+predictions          : id, ts, horizon, direction, confidence, actual, correct, features,
+                       created_at, up_prob, down_prob, flat_prob, sigma_at_t
+ensemble_decisions   : ts, regime, micro_regime, direction, confidence, grade, auto_entry,
+                       min_conf, min_conf_effective(462차), gate_reason, gate_blocked,
+                       meta_action, meta_size_mult, meta_size_raw, toxicity_*, entry_gate_json,
+                       entry_final_ok, entry_qty, entry_mode, entry_executed, entry_block_reason,
+                       checklist_reason, quantile_*, meta_gate_horizon, coherence_blocked,
+                       confidence_raw, confidence_smoothed, weight_collapsed, cal_applied …
+meta_labels          : ts, horizon, predicted, actual, confidence, up/down/flat_prob,
+                       target_close, future_close, realized_move, threshold_move, meta_*
+```
+
+> ⚠ **`predictions` 에는 `30m` 행이 계속 쌓인다** (2026-08-13: 368행, `1m`과 동수).
+> 296차 퇴역은 **앙상블·CoherenceGate 편입에서 뺀 것**이지 예측 발행을 끈 것이 아니다.
+> 사후검증에서 `30m` 행을 근거로 쓰지 마라(`invariants.md` §1-③).
+
+### 8-3. `trades.db` — `trades` 는 **청산 레그** 단위다 ⚠
+
+36컬럼. 사후검증에 실제로 쓰는 것:
+
+```
+entry_ts, exit_ts, direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,
+net_pnl_krw, exit_reason, grade, raw_grade, entry_horizon, entry_qty, entry_source,
+hurst_bucket, hour_bucket, meta_action, kelly_advised_skip, tp1_reached(465차), had_partial_fill
+```
+
+**1포지션 = 여러 행이다.** 이익 포지션은 TP1/TP2/TP3로 쪼개지고 손실 포지션은 한 행으로 끝난다.
+417차 재인용 금지 수치가 정확히 이 단위 혼동에서 나왔다(`invariants.md` §3-2).
+
+- **포지션 단위 집계**: `GROUP BY entry_ts` 또는 `COUNT(DISTINCT entry_ts)`
+- `quantity` 는 **레그별 계약수**, 진입 수량은 `entry_qty`
+- `entry_source`: `SYSTEM_AUTO` 183건 / `NULL` 32건(계측 이전) — NULL을 시스템 진입으로 세지 마라
+
+### 8-4. `exit_reason` 실제 문자열 — 전수 (215행 기준)
+
+| 문자열 | 건수 | 성격 |
+|---|---|---|
+| `하드스톱(틱)` | 124 | 손절 **또는** TP1 보호 트레일 — 아래 ⚠ |
+| `하드스톱` | 39 | 위와 같음 |
+| `TP2(전량)` | 24 | 익절 |
+| `TP1 부분청산 33%` | 19 | 부분 익절 |
+| `손절1차 조기축소` | 7 | 363차 tick-level Loss Tier1 |
+| `stuck_exit_remainder` · `stuck_exit_flat` | 1 · 1 | 잔여 정리 |
+
+> ⚠ **`하드스톱` 두 글자에 정반대 두 사건이 들어 있다.** 진짜 손절과, TP1 도달 후
+> 보호 스톱에 걸린 **이익 청산**이다. 2026-08-13 실측: `하드스톱` 2건이 **둘 다
+> `tp1_reached=1` 이고 손익 +1.41pt·+0.80pt** — 즉 승리다.
+> **`exit_reason` 만으로 승패를 세면 틀린다.** `tp1_reached`(465차) 또는 로그 태그
+> `[TP1보호]`/`[TP1미도달]`(468차)로 갈라라. `exit_reason` 문자열 자체는 사전등록 채널
+> 필터라 **바꾸지 않는다**.
+>
+> ⚠ **`15:10 강제청산`으로 기록된 행은 0건이다.** 절대원칙 ①이 안 지켜진 게 아니라,
+> 그 시각까지 남은 포지션이 없었다는 뜻이다. **"청산 로그 없음"과 "청산할 것이 없었음"은
+> 다르다**(phases.md C-1) — 강제청산 검증은 로그로 하고 DB로 하지 마라.
+
+### 8-5. 3원 대사 — 건수가 서로 다른 것이 정상이다
+
+2026-08-13 실측이 표준 예시다.
+
+| 원천 | 질의 | 값 |
+|---|---|---|
+| `ensemble_decisions` | `entry_executed=1` | **3** ← 포지션 |
+| `trades` | `COUNT(DISTINCT entry_ts)` | **3** ← 포지션 |
+| `trades` | `COUNT(*)` | **6** ← 청산 레그 |
+| 로그 | `[Position] 진입` | **3** |
+
+**포지션 3 = 3 = 3 이면 일치**다. 레그 6은 불일치가 아니다.
+앞의 세 값 중 하나라도 어긋나면 그때가 P1 이상점이다(관측 훼손).
+
+### 8-6. 조회 명령
+
+```bash
+# 테이블 목록
+python -c "import sqlite3;[print(r[0]) for r in sqlite3.connect('data/db/predictions.db').execute(\"select name from sqlite_master where type='table'\")]"
+
+# 당일 진입 판정 (차단 사유 포함)
+python -c "import sqlite3;[print(r) for r in sqlite3.connect('data/db/predictions.db').execute(\"select ts,grade,confidence,entry_executed,entry_qty,entry_block_reason from ensemble_decisions where ts like '2026-08-13%' and (entry_executed=1 or grade in ('A','B'))\")]"
+
+# 당일 포지션 단위 승패
+python -c "import sqlite3;[print(r) for r in sqlite3.connect('data/db/trades.db').execute(\"select entry_ts,count(*),sum(pnl_pts),sum(net_pnl_krw),group_concat(exit_reason,' / ') from trades where exit_ts like '2026-08-13%' group by entry_ts\")]"
+```
+
+Windows에서 한글 `exit_reason` 이 깨지면 `PYTHONIOENCODING=utf-8` 을 앞에 붙인다.
+**DB는 읽기 전용으로만 만진다** — 라이브 프로세스가 같은 파일을 쓴다.
+검증 스크립트가 실거래 상태파일을 공유해 진입가를 오염시킨 사고가 실제로 있었다(299차).

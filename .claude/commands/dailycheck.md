@@ -19,7 +19,11 @@ argument-hint: "[pre|intra|post] [YYYY-MM-DD]"
    `references/phases.md` 체크리스트와 `references/invariants.md` 를 빠짐없이 통과시킨다.
 4. `references/report_template.md` 형식으로 **① 이상점 정리보고 ② Fix 작업 구현계획 ③ 고도화 방안**
    보고서를 `docs/정기점검/매일점검/<PC명>-<YYYYMMDD>-점검리포트.md` 에 쓴다. 날짜본을 덮어쓰지 않는다.
-5. `dev_memory/DECISION_LOG.md` append + `NEXT_TODO.md` 갱신. 세션 헤더와 커밋에 PC명 병기.
+5. **장후(`post`)면 여기서 끝내지 않는다** — `references/postmortem.md` 절차로
+   **④ 진입 승패 사후검증 ⑤ 수익률 향상방안**까지 이어 붙인다(EOD+P8 완료 확인 → 오늘 할일
+   4분류 → 3원 대사 → 케이스 카드 → 313차 다섯 갈래). 수집기는 DB를 읽지 않으므로
+   `predictions.db`·`trades.db` 는 직접 조회한다(`references/evidence_map.md` §8, 읽기 전용).
+6. `dev_memory/DECISION_LOG.md` append + `NEXT_TODO.md` 갱신. 세션 헤더와 커밋에 PC명 병기.
 
 세 가지 함정을 잊지 마라:
 - **판정 ≠ 결정** — 리포트 FAIL이 반복되는 것은 미조치의 증거가 아니다. 코드를 먼저 확인하라.
