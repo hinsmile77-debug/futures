@@ -783,7 +783,11 @@ class TradingSystem:
         # 이전 파이프라인 완료 시점에만 갱신하여 tick 오염 차단.
         self._sigma_prev_price: float = 0.0
         # GBM 첫 재학습 완료 전 보수 진입 제어
-        self._pre_retrain_done: bool = False         # True이면 방법3 레이블 GBM 사용 중
+        self._pre_retrain_done: bool = False         # True이면 현행 레이블 규칙 GBM 사용 중
+        # [MW0602 468차 G-1] 레이블 체계 상태 확인을 하루 1회로 제한하는 가드.
+        # 사이드카 6개 파일 I/O를 매분 하지 않기 위한 것 — 장중 재학습으로 해제되는
+        # 경로는 콜백에서 직접 True로 만들므로 이 가드가 그것을 막지 않는다.
+        self._label_state_checked_date: str = ""
         self._last_balance_result: dict = {}
         self._last_sizer_balance: float = 100_000_000.0
         self._effect_report_tick: int = 0
@@ -1060,6 +1064,78 @@ class TradingSystem:
             return bool(getattr(self.circuit_breaker, "_gbm_retrain_active", False))
         except Exception:
             return False
+
+    def _model_label_scheme_current(self):
+        """[MW0602 468차 G-1] 지금 적재된 GBM들이 **현행 레이블 규칙 학습본인가**.
+
+        종전 `_pre_retrain_done`은 *"장중 재학습 콜백이 돌았는가"*라는 **이벤트**였다.
+        물어야 할 것은 *"오늘 쓰는 모델이 현행 레이블로 학습됐는가"*라는 **상태**다.
+        그 차이 때문에 **모델이 가장 건강한 날(전일 EOD 성공 → 장중 재학습 불요)에
+        보수 사이즈 제한이 안 풀리는** 역설이 생겼다(0813 실측: 사이저 18회 전부 ×0.6).
+
+        457차 사이드카 `gbm_{h}_meta.json`에 468차가 `label_scheme`·`label_param`을
+        추가했으므로 상태를 직접 물을 수 있다. 6개 호라이즌 **전부**가 현행 설정과
+        일치할 때만 True다.
+
+        Returns:
+            (ok: bool, detail: str) — detail은 로그용 사유 문자열.
+
+        ⚠ **모르면 False다.** 파일 없음·필드 없음(구버전 사이드카)·파싱 실패는 전부
+          "모른다"이며 보수 유지(=현행 동작)로 간다. "모른다"를 "괜찮다"로 바꾸지 않는다.
+
+        판정 로직 자체는 `learning/model_meta.py:read_label_state()`에 있다 — 라이브
+        사이즈 배수를 푸는 근거라 회귀 테스트가 필수인데, 여기 두면 PyQt/COM 의존 때문에
+        테스트에서 import할 수 없다. 이 메서드는 **설정을 읽어 넘기는 어댑터**다.
+        """
+        try:
+            from learning.model_meta import read_label_state as _rls
+            _dir = getattr(self.batch_retrainer, "model_dir", None)
+            _want_scheme = "fixed" if getattr(
+                runtime_settings, "USE_FIXED_LABEL_THRESHOLD", True) else (
+                "rolling_sigma" if getattr(
+                    runtime_settings, "USE_ROLLING_SIGMA_THRESHOLD", True) else "atr")
+
+            def _want_param_of(hz):
+                if _want_scheme == "fixed":
+                    return float(runtime_settings.HORIZON_THRESHOLDS.get(hz, 0.0003))
+                if _want_scheme == "rolling_sigma":
+                    return float(runtime_settings.SIGMA_K_PER_HORIZON.get(
+                        hz, runtime_settings.SIGMA_K))
+                return None
+
+            return _rls(_dir, list(runtime_settings.HORIZONS), _want_scheme, _want_param_of)
+        except Exception as _ls_e:
+            return False, "조회 실패: %s" % _ls_e
+
+    def _refresh_pre_retrain_state(self, trigger: str) -> bool:
+        """[MW0602 468차 G-1] 레이블 체계 상태로 보수 사이즈 제한을 해제한다.
+
+        해제 방향(노출 증가)이므로 **켜는 쪽으로만** 동작한다 — 이미 True면 건드리지
+        않는다(장중 재학습으로 풀린 것을 되돌리지 않는다).
+        킬스위치 `MODEL_LABEL_STATE_UNLOCK_ENABLED=False`면 종전 동작 그대로다.
+        """
+        if getattr(self, "_pre_retrain_done", False):
+            return True
+        if not bool(getattr(runtime_settings, "MODEL_LABEL_STATE_UNLOCK_ENABLED", True)):
+            return False
+        _ok, _why = self._model_label_scheme_current()
+        if _ok:
+            self._pre_retrain_done = True
+            log_manager.system(
+                "[EntryGate] 모델 레이블 체계 확인(%s) — 사이즈 제한 해제 "
+                "(×%.1f → ×1.0) | %s" % (
+                    trigger, runtime_settings.PRE_RETRAIN_SIZE_MULT, _why),
+                "INFO",
+            )
+        else:
+            # 조용히 넘어가면 "왜 안 풀렸는지"를 로그로 추적할 수 없다.
+            log_manager.system(
+                "[EntryGate] 모델 레이블 체계 미확인(%s) — 사이즈 제한 유지 "
+                "(×%.1f) | %s" % (
+                    trigger, runtime_settings.PRE_RETRAIN_SIZE_MULT, _why),
+                "INFO",
+            )
+        return _ok
 
     def _ensure_shap_tracker(self) -> None:
         all_feature_names = list(self.model.feature_names or [])
@@ -4742,6 +4818,14 @@ class TradingSystem:
                     f"[PreRetrain] 08:55 사전 재학습 스킵 — {_gap_tag} EOD 재학습 성공 (동일 데이터 중복 불필요)",
                     "INFO",
                 )
+                # ── [MW0602 468차 G-1] 먼저 **상태**를 묻는다 ─────────────────────
+                # 사이드카가 "현행 레이블 규칙 학습본"이라고 말하면 그것이 정본 근거다.
+                # 아래 F-1(마커 파일)은 사이드카에 label_scheme이 아직 없는 구버전
+                # 상황을 위한 **독립 증거**로 남긴다 — 둘은 다른 것을 본다
+                # (G-1=적재된 모델의 성질 / F-1=전일 EOD가 성공했다는 사건).
+                self._label_state_checked_date = datetime.date.today().isoformat()
+                self._refresh_pre_retrain_state("장전")
+
                 # ── [MW0602 468차 F-1] 전일 EOD 적재로도 사이즈 제한 해제 ──────────
                 # `_pre_retrain_done`은 "오늘 쓰는 GBM이 방법3 레이블 학습본인가"라는
                 # **상태**를 물어야 하는데 "장중 재학습 콜백이 돌았는가"라는 **이벤트**로만
@@ -6908,8 +6992,22 @@ class TradingSystem:
             elif grade == "A":
                 actual_min_conf = max(actual_min_conf, 0.60)
 
-        # GBM 첫 재학습(방법3 레이블) 완료 전 사이즈 축소 플래그
+        # GBM 첫 재학습(현행 레이블) 완료 전 사이즈 축소 플래그
         # → STEP 7 진입 실행 시 size_mult 에 _pre_retrain_size_factor 곱함
+        #
+        # [MW0602 468차 G-1] 08:55를 지나 재시작하면 장전 분기(_warmup_retrain_pending)를
+        # 아예 안 타서 그날 내내 ×0.6이 유지되던 사각지대가 있었다. 여기서 **하루 1회만**
+        # 상태를 다시 묻는다 — 사이드카 6개 읽기라 매분 하면 핫패스 비용이 되고,
+        # 하루 1회면 재시작 세션도 첫 사이클에서 곧바로 판정된다.
+        if not self._pre_retrain_done:
+            _today_iso = datetime.date.today().isoformat()
+            if self._label_state_checked_date != _today_iso:
+                self._label_state_checked_date = _today_iso
+                try:
+                    self._refresh_pre_retrain_state("장중 첫 확인")
+                except Exception as _g1_e:
+                    # 계측이 매분 파이프라인을 죽이지 않는다(68차 규약).
+                    logger.warning("[EntryGate] 레이블 체계 확인 실패 (무해, ×0.6 유지): %s", _g1_e)
         _pre_retrain_size_factor = (
             1.0 if self._pre_retrain_done
             else runtime_settings.PRE_RETRAIN_SIZE_MULT

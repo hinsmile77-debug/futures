@@ -436,6 +436,12 @@ class BatchRetrainer:
 
         self._last_retrain:  Optional[datetime.datetime] = None
         self._retrain_count: int = 0
+        # [MW0602 468차 G-1] 직전 학습이 **실제로 쓴** 레이블 규칙. `_save_model`이
+        # 사이드카에 새기고, 런타임(main.py `_model_label_scheme_current`)이 그것으로
+        # "지금 적재된 모델이 현행 레이블 학습본인가"를 판정한다.
+        # 초기값 None = "모른다" — 그 상태로 기록되면 런타임은 보수(제한 유지)로 간다.
+        self._last_label_scheme: Optional[str] = None
+        self._last_label_params: dict = {}
 
     def restore_stats(self, last_retrain_str: str, total_count: int) -> None:
         """재시동 후 이전 세션 이력 복원."""
@@ -493,6 +499,14 @@ class BatchRetrainer:
         """
         if not _SKLEARN_OK:
             return {"ok": False, "error": "scikit-learn 미설치"}
+
+        # [MW0602 468차 G-1] 호출자가 X/y를 직접 넘기면 아래 두 레이블 생성 경로가 전부
+        # 건너뛰어진다 — 그때 직전 학습의 값이 남아 있으면 **이번 pkl의 레이블 규칙인 양
+        # 사이드카에 새겨진다.** 매 호출 초기화해서 그 경우 `None`(=모른다)이 기록되게
+        # 한다. 런타임은 모르면 보수(사이즈 제한 유지)로 가므로 안전한 쪽으로 틀린다.
+        if X is not None and y_dict is not None:
+            self._last_label_scheme = None
+            self._last_label_params = {}
 
         logger.info(
             "[Retrain] 배치 재학습 시작 (weeks_back=%d, phase2=%s, intraday=%s)",
@@ -1225,6 +1239,13 @@ class BatchRetrainer:
                 # acc.txt에 실제로 쓰인 값과 그 출처. nan이면 미갱신(직전 값 보존).
                 "acc":            (None if np.isnan(acc) else float(acc)),
                 "acc_kind":       ("cv" if not np.isnan(acc) else "none(intraday)"),
+                # [MW0602 468차 G-1] 이 pkl을 만든 **레이블 규칙**.
+                # 런타임이 "지금 적재된 모델이 현행 레이블 규칙 학습본인가"를 직접
+                # 묻는 근거다(main.py `_model_label_scheme_current`). 값이 없으면
+                # (구버전 사이드카) 런타임은 **모른다 → 보수적으로 제한 유지**로 간다.
+                "label_scheme":   getattr(self, "_last_label_scheme", None),
+                "label_param":    (getattr(self, "_last_label_params", {}) or {}).get(
+                    horizon_key),
             }
             _mp = os.path.join(self.model_dir, f"gbm_{horizon_key}_meta.json")
             _tmp_meta = _mp + ".tmp"
@@ -1654,6 +1675,15 @@ class BatchRetrainer:
 
             # y 레이블 (Phase 2는 고정 임계값 사용)
             _fixed_thresh = HORIZON_THRESHOLDS.get(hz, 0.0003)
+            # [MW0602 468차 G-1] 이 경로가 **실제로 쓴** 레이블 규칙을 남긴다.
+            # Phase 2는 설정과 무관하게 항상 고정 임계값이다 — `USE_FIXED_LABEL_THRESHOLD`를
+            # 읽지 않고 이 사실을 그대로 적는다. 여기를 빼먹으면 EOD 주경로(Phase 2)로
+            # 저장된 사이드카가 `label_scheme=None`이 되고, 런타임은 "모른다"로 읽어
+            # 사이즈 제한을 영영 안 푼다(보수 폴백이라 안전하되 G-1이 무력화된다).
+            self._last_label_scheme = "fixed"
+            if not isinstance(getattr(self, "_last_label_params", None), dict):
+                self._last_label_params = {}
+            self._last_label_params[hz] = float(_fixed_thresh)
             _plr = PATH_LABEL_RATIO_BY_HZ.get(hz, PATH_LABEL_RATIO)
             y_hz = []
             for ts, _ in records:
@@ -2149,6 +2179,28 @@ class BatchRetrainer:
                     )
                     y.append(label)
                 y_dict[hz] = np.array(y, dtype=int)
+
+            # [MW0602 468차 G-1] **이 학습에 실제로 쓴 레이블 규칙**을 인스턴스에 남긴다.
+            # `_save_model`이 사이드카에 새겨, 런타임이 "지금 적재된 pkl이 현행 레이블
+            # 규칙으로 학습된 것인가"라는 **상태**를 직접 물을 수 있게 한다
+            # (종전 `_pre_retrain_done`은 "재학습 콜백이 돌았나"라는 **이벤트**였다).
+            # ⚠ 설정값이 아니라 **이 루프에서 실제로 쓴 값**을 남긴다 — 설정을 바꾼 뒤
+            #   재학습 전이라면 둘이 다르고, 그 차이를 감지하는 것이 이 필드의 목적이다.
+            try:
+                self._last_label_scheme = "fixed" if _use_fixed else (
+                    "rolling_sigma" if _USE_ROLLING else "atr")
+                self._last_label_params = {}
+                for hz in HORIZONS:
+                    if _use_fixed:
+                        self._last_label_params[hz] = float(
+                            HORIZON_THRESHOLDS.get(hz, 0.0003))
+                    elif _USE_ROLLING:
+                        self._last_label_params[hz] = float(_SK_PER_H.get(hz, _SK))
+                    else:
+                        self._last_label_params[hz] = None
+            except Exception:
+                self._last_label_scheme = None
+                self._last_label_params = {}
 
             # [MW0602 457차] 학습창 끝 시각을 인스턴스에 남긴다 — `_save_model`이
             # 사이드카 메타에 새겨 "이 pkl이 어디까지 봤는가"를 사후에 알 수 있게 한다.

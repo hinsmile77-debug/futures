@@ -447,6 +447,30 @@ PRE_RETRAIN_SIZE_QUALITY_GROUP: bool = True
 #   손익·노출이 나빠지면 이 플래그를 False로 되돌리면 종전 동작이다(코드 수정 불필요).
 PRE_RETRAIN_DONE_BY_EOD_ENABLED: bool = True
 
+# [MW0602 468차 G-1, 2026-08-14] 사이즈 제한 해제를 "이벤트"가 아니라 "상태"로 판정할지.
+#   True  → `gbm_{h}_meta.json` 사이드카 6개를 읽어 **전 호라이즌이 현행 레이블 규칙
+#           학습본**이면 `_pre_retrain_done=True` (main.py `_model_label_scheme_current`)
+#   False → 종전대로 이벤트(재학습 콜백)와 F-1(EOD 마커)만으로 해제
+#
+# **F-1과 무엇이 다른가.** F-1은 "전일 EOD가 성공했다"는 **사건**을 본다. G-1은 "지금
+# 적재된 pkl이 현행 레이블로 학습됐는가"라는 **성질**을 본다. 후자가 원래 물었어야 할
+# 질문이다 — `_pre_retrain_done`의 정의 자체가 "방법3 레이블 GBM 사용 중"이었다.
+# 둘은 서로를 대체하지 않고 **독립 증거**로 함께 둔다(F-1은 사이드카에 label_scheme이
+# 아직 없는 구버전 상황을 덮는다).
+#
+# **판정 재료**(468차가 사이드카에 추가): `label_scheme`("fixed"/"rolling_sigma"/"atr")과
+# `label_param`(그 호라이즌의 고정 임계 또는 σ_k). 학습 시점에 **실제로 쓴 값**을 적으므로,
+# 387차처럼 `HORIZON_THRESHOLDS`를 재보정하면 스키마가 같아도 임계가 달라 즉시 불일치로
+# 잡힌다 — 그때는 재학습 전까지 보수 사이즈가 유지되는 것이 옳다.
+#
+# ⚠ **모르면 제한 유지다.** 사이드카 없음·`label_scheme` 없음(구버전)·파싱 실패는 전부
+#   "모른다"로 보고 해제하지 않는다. "모른다"를 "괜찮다"로 바꾸지 않는다.
+# ⚠ 배포 직후 첫 EOD 전까지는 사이드카에 `label_scheme`이 없어 G-1이 해제하지 못한다 —
+#   그 구간은 F-1(마커)이 덮는다. 다음 EOD가 6개 사이드카를 새로 쓰면 G-1이 작동한다.
+# ⚠ 노출 영향은 F-1과 같은 성질이다(같은 배수를 같은 방향으로 푼다). F-1-v 소급 집계
+#   결과 수량 변화 0건 — `scripts/pre_retrain_size_counterfactual.py`로 재확인 가능.
+MODEL_LABEL_STATE_UNLOCK_ENABLED: bool = True
+
 HORIZON_THRESHOLDS_RESEARCH: dict = {
     "1m": {"down": -0.00041, "up": 0.00041},
     "3m": {"down": -0.00060, "up": 0.00060},
