@@ -1557,6 +1557,24 @@ def load_config(root):
     return cfg
 
 
+def _nonclobber_path(root, base_rel, ext):
+    """[461차, F-6] `base_rel + ext`가 이미 있으면 시각 접미사로 비켜간다.
+
+    반환은 `base_rel`과 같은 형식(리포 루트 기준 상대경로)이라 호출부의 절대경로
+    변환 로직을 그대로 탄다. 덮어쓰기를 하지 않는 것이 목적이므로, 시각 접미사까지
+    충돌하면(같은 분 재실행) `-2`, `-3` … 을 더 붙여 반드시 새 파일을 만든다.
+    """
+    if not os.path.exists(os.path.join(root, base_rel + ext)):
+        return base_rel + ext
+    stamp = now_kst().strftime("%H%M")
+    cand = "%s_%s%s" % (base_rel, stamp, ext)
+    n = 2
+    while os.path.exists(os.path.join(root, cand)) and n < 100:
+        cand = "%s_%s-%d%s" % (base_rel, stamp, n, ext)
+        n += 1
+    return cand
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="미륵이 일일 점검 증거 수집기")
     ap.add_argument("--phase", choices=["pre", "intra", "post", "all"], default="post")
@@ -1566,7 +1584,8 @@ def main(argv=None):
     ap.add_argument("--out-auto", action="store_true",
                     help="evidence_<PC명>-<YYYYMMDD>_<국면>.md 로 자동 저장 "
                          "(두 PC가 서로 덮어쓰지 않는다. 셸 날짜 확장에 의존하지 않아 "
-                         "PowerShell/bash 어디서든 같다)")
+                         "PowerShell/bash 어디서든 같다. [461차] 같은 이름이 이미 있으면 "
+                         "_<HHMM>을 붙여 회피 — 기존 파일을 덮지 않는다)")
     ap.add_argument("--discover", action="store_true",
                     help="파일 인벤토리만 출력 — 처음 한 번 돌려 경로를 확인한다")
     ap.add_argument("--max-log-mb", type=int, default=None, help="이보다 큰 로그는 건너뛴다")
@@ -1584,8 +1603,13 @@ def main(argv=None):
     out = args.out
     if args.out_auto and not out:
         pcid, _host = pc_id()
-        out = os.path.join(cfg["evidence_dir"],
-                           "evidence_%s-%s_%s.md" % (pcid, day.strftime("%Y%m%d"), args.phase))
+        base = os.path.join(cfg["evidence_dir"],
+                            "evidence_%s-%s_%s" % (pcid, day.strftime("%Y%m%d"), args.phase))
+        # [461차, F-6] 같은 국면이 하루 두 번 돌 수 있다 — 2026-08-13에 예약작업이
+        # 13:13에 오발해 phase=post 로 돌았고, 16:22 진짜 장후 수집이 그 파일을 덮었다.
+        # 리포트에는 덮어쓰기 방어가 있는데 다이제스트에는 없었다. 존재하면 시각
+        # 접미사로 회피한다(같은 분 재실행까지 대비해 -2, -3 … 을 더 붙인다).
+        out = _nonclobber_path(root, base, ".md")
 
     if out:
         outp = out if os.path.isabs(out) else os.path.join(root, out)

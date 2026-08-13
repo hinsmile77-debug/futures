@@ -224,6 +224,14 @@ class DailyExporter:
                         _fn["gate_blocked"], _fn["candidate"], _fn["entered"],
                     )
                 )
+                if _fn.get("grade_override"):
+                    # [461차, F-5] 앙상블 grade='X'인데 체크리스트 상향으로 최종관문까지
+                    # 간 행(285차-P5가 허용한 합법 경로). 구 집계는 이 행을
+                    # CoherenceGate/conf미달로 잘못 계상하고 진입에서 누락했다.
+                    lines.append(
+                        "    └ 등급상향경로(앙상블X→체크리스트통과): %d건 [285차-P5]"
+                        % _fn["grade_override"]
+                    )
                 if _fn["gate_breakdown"]:
                     _bd = sorted(_fn["gate_breakdown"].items(), key=lambda kv: -kv[1])
                     lines.append(

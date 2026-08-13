@@ -12072,3 +12072,172 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
 - [NEXT 모니터링] **다음 EOD 재학습 후 슬라이싱 로그 확인**
   - `[Retrain-P2] *m 피처 슬라이싱: 97 → N개 (horizon_feature_sets.json)` 출력 여부
   - 출력 없으면: JSON에 해당 호라이즌 미등록 또는 전체 피처셋과 동일한 경우
+
+## 2026-08-13 (MW0601 460차 — 일일 점검)
+
+### NEXT (Fix)
+
+- [ ] **F-0 예약작업 `mireuk-postmarket-check` 트리거를 15:50 KST로 변경** — 현재 13:13에
+  실행돼 장후 항목(15:10 강제청산·15:18 안전망·15:40 마감·15:45 EOD 재학습)을 전부 검증
+  못 한다. 코드 아님(Cowork 예약작업 설정). **사용자 확인 필요.**
+- [ ] **F-1 JointGateBlock 무정보 폴백 플래그 분리 계측 (P1)** — MetaGate가
+  `meta_is_fallback: bool` 반환(431차가 사이징 경로에서 문자열로만 갖고 있는 정보를 필드로
+  승격) → `main.py` JointGateBlock 로그에 `meta_fallback=Y/N` → `joint_gate_shadow` 테이블에
+  `meta_fallback` 컬럼 + 층화 판정(`config/settings.py`). **차단 임계는 바꾸지 않는다**
+  (표본 7건, 313차 원칙 / 431차가 의도적으로 남긴 결정).
+- [ ] **F-2 ConfFloorGuard 축퇴-우회 축 오탐 억제 (P1)** —
+  `model/ensemble_decision.py:_check_conf_floor_consistency()`에 `calibrator_bypassed` kwarg
+  추가(True면 404차의 `zone_allows_entry=False`와 동일하게 판정 스킵 + 상태 무갱신),
+  `learning/calibration.py`에 `is_bypassed` 프로퍼티 노출.
+  ⚠ **`main.py` 앙상블 호출부 2곳(주경로·masked fallback) 모두에 kwarg 전달**(404차 함정).
+  ⚠ **대조군 검증 필수** — 정상 fitted 보정기 저장본에서 WARNING이 여전히 나야 한다.
+- [ ] **F-3 CLAUDE.md 절대원칙 §2 ③ CB③ 임계 문구 정정 (P2)** — "30분 정확도 < 35%" →
+  실제 `CB_ACCURACY_MIN_30M = 0.28`. `git log -S "CB_ACCURACY_MIN_30M"`으로 완화 커밋·차수
+  특정 후 근거와 함께 기재. **코드는 바꾸지 않는다.**
+- [ ] **F-4 `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED = False` 근거 확정 (P2, 2일째 이월)** —
+  `git log -S "TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED" -- config/settings.py`로 비활성 커밋 특정
+  → DECISION_LOG에 사유·복원조건 → CLAUDE.md 한시예외 **네 번째 항목** 추가 →
+  `config/dailycheck_targets.json:documented_disabled_flags`에 추가 →
+  실전 전환 기준 **⑨**로 승격 여부 결정(권고: 승격).
+
+### NEXT (고도화)
+
+- [ ] **G-1 `ReachabilityGuard` — "산술적 도달 불가" 조합을 게이트 체인 전체로 일반화** —
+  오늘 같은 형태가 두 축에서 동시 발생(ConfFloorGuard `out_max 0.3435 < min_conf 0.3980` /
+  JointGate `0.50×0.70=0.35 < 0.50`)했는데 전자만 전용 가드가 있어 후자 7건이 조용히 지나갔다.
+  경보 전용(새 차단 아님)이므로 섀도 승격 불필요. 대상: JointGate, Degraded min_conf,
+  CoherenceGate(min=0.60). 오전 소표본 오탐 회피를 위해 **09:30 이후부터 평가**.
+  **선행: F-1**(폴백/계산 구분 없이는 상한 정의가 무의미).
+- [ ] **G-2 `HEALTH_DEGRADED_MIN_CONF = 0.62`의 현행 conf 스케일 정합성 재확인** —
+  비붕괴 앙상블 conf 최대치: 08-07 58.8 / 08-10 70.4 / 08-11 65.7 / 08-12 56.3 / 08-13 53.6.
+  **5일 중 3일은 62%에 한 번도 도달하지 못했다** → 그런 날의 Degraded는 "고신뢰 신호만 허용"이
+  아니라 사실상 전면 차단이다(오늘 09:39:58 `conf=40.8% < 62.0%` 차단 실측).
+  1차는 계측만(Degraded 진입 시 `reachable=Y/N` 로그). 임계 재정의(min_conf 배수 또는 당일
+  분위수)는 **주간회의 안건 — 자동 변경 금지**(§9 사전등록).
+  ⚠ 2026-07-31 `CONF_SCALE_BREAKS` 이후 표본만 사용할 것.
+- [ ] **G-3 수집기 적신호에서 `_tick_header` 블로킹과 `PipePerf total`을 분리** —
+  오늘 UI 블로킹 9건이 5초를 넘었으나 파이프라인 최대는 2,664ms였는데, 수집기 적신호 9번이
+  둘을 같은 축으로 읽어 "CB⑤ 기준 초과"로 오탐했다.
+  `.claude/skills/mireuk-daily-check/scripts/collect_evidence.py` 규칙 수정, UI 축 임계 8초 권고.
+
+### 다음 거래일 관측 (판정 근거)
+
+- [ ] **O-1 오늘 15:35 이후 장후 재점검** — `강제청산`·`daily_close_done`·`eod_retrain_done`
+  3종 존재 확인. EOD 재학습 `성공=N/6`. **판정 예정 2026-08-13 15:50**
+- [ ] **O-2 `[JointGateBlock 차단]` 건수와 `meta=` 분포** — 폴백(0.50) 비중이 오늘처럼 6/7이면
+  F-1 우선순위 상향. `joint_gate_shadow` min_samples=20까지 13건 부족
+- [ ] **O-3 진입 건수 회복 여부** — 0건 2거래일 연속이면 진입0 딥다이브 절차 착수
+- [ ] **O-4 `[ConfFloorGuard]` 경보 건수 vs out_max 초과 분봉 수** — 오늘 괴리(1 vs 140)가
+  재현되면 F-2 확정 근거
+- [ ] **O-5 `[Bias⚠] 5m` 종가 최종값 · SGD 50분 정확도** — 오늘 13:13 적중 23%(DN편향 63%) /
+  SGD 25.3% → 13:16 적중 30% / SGD 32.0%로 회복 중. 종가 < 30% 지속이면 STEP 2/5 딥다이브
+- [ ] **O-6 `WeightCollapse / Ensemble` 종가 비율** — 13:16 기준 106/268 = 39.6%로 CLAUDE.md
+  평시 21~22%의 약 2배. 단 반일치 + ConstOut 구간 포함이라 **종가 재집계 전 확정 결론 보류**
+- [ ] **O-7 `_tick_header` 5초 초과 건수** — 오늘 9건(최대 11,625ms). 증가면 G-3 상향
+
+### 충족 근거 확보(완료 표기는 사용자 확인 후)
+
+- [ ] **404차 후속4 검증항목 "11:50~13:00 ConfFloorGuard WARNING 없음"** — 2026-08-13 실측
+  0건으로 충족. 기존 체크박스에 DONE 표기 여부는 사용자 판단
+
+---
+
+## 2026-08-13 (MW0601 461차 — 장후 점검) 신규 항목
+
+> 리포트: `docs/정기점검/매일점검/MW0601-20260813-점검리포트-post.md`
+> 460차 O-1~O-7은 그 리포트 §6에서 전부 답을 냈다(완료 표기는 사용자 확인 후).
+
+### Fix
+
+- [x] **F-5 진입 퍼널 최종상태 우선 분기 (P1)** — ✅ **2026-08-13 구현·검증 완료(커밋 ①)**.
+  검사를 `direction==0`보다도 앞에 둬 67거래일 전부 `entered == SUM(entry_executed)` 성립,
+  전기간 190=190. 08-03/04/05 = 24/3/19. 08-13 `JointGateBlock=7`이 `TRADE.log` grep과 일치.
+  **리포트 설계 대비 보정 2건**: ① 체결행은 전부 `grade='X'`였다(`direction=0` 체결 0건),
+  ② `final_ok=1&미체결&grade='X'` **17건**도 함께 누락돼 있었다 → 총 은닉 **42건**.
+  상세: `DECISION_LOG.md` 2026-08-13 461차 구현 항목.
+  ~~`utils/db_utils.py:fetch_daily_entry_funnel()`~~
+  2187~2204행. `grade=="X"` 분기 **앞에** `executed or final_ok` 검사를 넣어
+  285차-P5 등급상향 경로가 `continue`로 잘리지 않게 한다. 반환 dict에 `grade_override` 추가,
+  `strategy/ops/daily_exporter.py`에 `└ 등급상향경로(앙상블X→체크리스트통과): N건 [285차-P5]` 한 줄.
+  **근거**: 전기간 `entry_executed` 190건 중 **25건(13.2%)** 누락. 08-03 퍼널20/실제24 ·
+  08-04 2/3 · 08-05 15/19. 오늘도 10:49분 1건(퍼널 `JointGateBlock=6` vs 실제 7).
+  **정책 변경 0건**(순수 읽기 집계). py37_32 문법 준수. 과거 리포트와 숫자가 달라지므로
+  주간회의 퍼널 시계열 비교 시 세대 차이 명시.
+  **검증**: 08-03/04/05/13에서 `entered == SUM(entry_executed)` (20→24 / 2→3 / 15→19 / 0→0),
+  전기간 합계 190 일치, 다음 거래일 퍼널 `JointGateBlock=` 이 `TRADE.log` grep과 정확히 일치.
+
+- [x] **F-6 증거 다이제스트 덮어쓰기 방지 (P2)** — ✅ **2026-08-13 구현·검증 완료(커밋 ①)**.
+  `_nonclobber_path()` 신설 — `_<HHMM>`, 같은 분 재실행이면 `-2`/`-3`. 연속 2회 실행에
+  원본 잔존 확인. SKILL.md §1-B·§2 갱신. 표준 라이브러리만 사용 유지.
+  ~~아래 원안~~ —
+  `.claude/skills/mireuk-daily-check/scripts/collect_evidence.py` `--out-auto` 경로 생성부.
+  동일 파일 존재 시 `evidence_<PC>-<날짜>_<국면>_<HHMM>.md`로 회피. SKILL.md §1-B 표도 갱신.
+  **근거**: 오늘 16:22 재수집이 13:13본(57.4KB)을 덮었다. 리포트에는 방어가 있는데
+  다이제스트에는 없다. 예약작업이 오발할 때마다 반복된다.
+  **검증**: 같은 날 `--phase post` 연속 2회 실행 시 두 파일 모두 잔존.
+
+- [ ] **F-7 Live/WFA MDD 단위 정합 + WR·PF 폴백 가시화 (P1)** —
+  `config/strategy_registry.py:601`·`_judge_verdict()`(778~790행)·`strategy/ops/daily_exporter.py`.
+  ① `mdd_pct` → `mdd_pct_of_peak` 개명 + `mdd_pct_of_capital` 병기(`mdd_krw / capital`),
+  ② `_judge_verdict()`의 Live 항만 `mdd_pct_of_capital`로 교체(**임계·수식 무변경**),
+  ③ `total_trades==0`이면 `win_rate`·`profit_factor`를 **NULL 저장** + `metrics_measured` 플래그,
+  ④ 배너 라벨에 기간 명시(`Live(20일)` / `당일`), 미측정은 `미측정(거래0건)` 출력.
+  **근거**: Live MDD는 누적PnL peak 대비(215.4%)인데 WFA MDD는 자본 대비 15% 기준 —
+  `mdd_delta`가 분모 다른 두 값의 차다. 자본 환산 시 약 1.6%. MDD 추이 0.0→109.3→150.8→215.4%.
+  같은 줄 `WR=0.0% PF=1.00`은 거래 0건 폴백(id=96 `total_trades=0`).
+  ⚠ **회귀**: UNDERPERFORM이 뒤집힐 수 있다 — 전환일 명기 + `strategy_events` 마커.
+  `dashboard/strategy_dashboard_tab.py`의 `mdd_pct` 사용처 grep 필수.
+  `권고: 교체 후보 탐색`이 param_optimizer를 **자동 예약**하는지 먼저 확인 — 자동이면 섀도 1주.
+  **결정 필요**: 자본 기준 = `SIZING_TARGET_CAPITAL_KRW`(권고) vs 실잔고.
+
+### 고도화
+
+- [ ] **G-4 퍼널 자기검증 (선행: F-5)** — `strategy/ops/daily_exporter.py` 퍼널 섹션 말미에
+  항등식 검산 3종: ① 각 칸 합 == `total`, ② `entered == SUM(entry_executed)`,
+  ③ 퍼널 JointGateBlock 건수 == `TRADE.log` grep 건수. 어긋나면
+  `⚠ 퍼널 정합성 실패: {항목} 기대={a} 실측={b}`를 리포트와 WARN 로그에.
+  **근거**: 1-1의 본질은 버그 하나가 아니라 **검산이 없다는 것** — 13.2% 누락이 6주 넘게
+  무경보로 지나갔다. EOD 시각이라 장중 DB 금지 규약 무관.
+
+- [ ] **G-5 "미측정" 1급 표현 — 스냅샷 스키마에 `*_measured`** —
+  `strategy_live_snapshots`에 `metrics_measured INTEGER` `ALTER TABLE` 추가
+  (`ensemble_decisions` 6컬럼 전례와 동일 패턴). `tests/test_457_fallback_visibility.py`의
+  검사 범위를 **"DB 컬럼에 폴백값을 쓸 때 같은 행에 플래그가 있는가"** 로 확장 —
+  계측 4원칙 ④ 3번째 규약이 문장으로만 있고 자동 검출이 없다.
+  **근거**: 오늘 하루에만 미측정이 정상값으로 위장한 사례 2건.
+  ⚠ 기존 96행은 `NULL`(미상)로 남아 소급 판정 불가 — 주석 명기. F-7과 동시 작업 권장.
+
+- [ ] **G-6 JointGateBlock 폴백 비율 일일 자동 집계 (선행: 460차 F-1)** —
+  15:40 리포트 퍼널 섹션에 `└ JointGateBlock N건 (무정보폴백 M건 = P%) [min_samples=20까지 K건]`.
+  **근거**: 오늘 7건 중 6건(85.7%) `meta=0.50`. 같은 창 건수가 08-11 0 · 08-12 0 · 08-13 7로 급변.
+  "3거래일 연속 폴백비율 80% 초과" 판정 조건이 사람 손 없이 채워진다.
+  ⚠ **min_samples=20 도달 전까지 판정문은 출력하지 않는다**(313차).
+
+### 문서·운영
+
+- [ ] **`TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED` 를 실전 전환 기준 ⑨로 승격 (F-4 확장, 3일째 이월)** —
+  차단 게이트 27개 중 유일하게 비활성 근거가 CLAUDE.md·DECISION_LOG 어디에도 없다.
+  CB②·CB③-P4·FP-CRITICAL과 달리 **복원 조건이 없어 실전 전환 체크리스트에서 구조적으로 누락**된다.
+  도입·비활성 커밋 특정 → 사유·복원조건 기록 → CLAUDE.md 한시예외 **4번째 항목** → 실전 전환 기준 ⑨.
+
+- [ ] **실전 전환 기준 ③ "MDD ≤ 15%" 문구에 분모 명시** — `자본 대비 MDD`로 확정. F-7과 동시 반영.
+  같은 이름의 두 MDD가 실제로 혼동을 일으켰다.
+
+- [ ] **`docs/정기점검/매일점검/evidence_UNKNOWN-20260813_post.md` 수동 삭제** —
+  수집기가 샌드박스 호스트명에서 `MW####`를 못 뽑아 생성. 삭제 권한 부족으로 남아 있다.
+  **커밋 전 반드시 제거** — 커밋되면 어느 PC의 관찰인지 영영 모르게 된다(SKILL.md §1-B 경고).
+
+### 다음 거래일(2026-08-14) 관측 예정
+
+- [ ] **N-1 `[JointGateBlock 차단]` 중 `meta=0.50` 비율** — 3거래일 연속 80% 초과면 게이트 원인 확정.
+  **오늘 85.7%(6/7), 1일차.** 판정 예정 08-18
+- [ ] **N-2 진입 건수** — 0건이면 **2거래일 연속** → 진입0 딥다이브 절차 착수(460차 O-3 승계)
+- [ ] **N-3 퍼널 `JointGateBlock=N` vs `TRADE.log` grep** — F-5 적용 후 정확히 일치해야 함
+- [ ] **N-4 `_tick_header ≥5000ms` 건수** — 오늘 10건(460차 9건). 15건 초과면 G-3 상향
+- [ ] **N-5 `[FeatureReg] 5m … 제외: ['opt_chain_pcr']` 만성도** — `최초관측` → `만성` 승격 여부.
+  458차 §C(97개 동결 슈퍼셋)와 같은 계열로 보이나 이번엔 5m. 5거래일 누적 필요. 판정 예정 08-20
+- [ ] **N-6 `eod_retrain_done_*.txt` 의 `horizons_replaced`** — `6/6` 유지. 미달이면 익일 CB③ HALT 위험
+- [ ] **N-7 `[ConfFloorGuard]` 경보 vs `conf > out_max` 분봉 수** — 오늘 1 vs 210(붕괴행 제외).
+  F-2 적용 후 괴리 해소 확인
+- [ ] **N-8 예약작업 `mireuk-postmarket-check` 트리거 시각** — **15:50 KST** 변경 여부(460차 F-0).
+  오늘도 16:2x 실행이었다

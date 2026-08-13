@@ -2158,9 +2158,24 @@ def fetch_daily_entry_funnel(date_str: Optional[str] = None) -> Dict:
     coherence_blocked 컬럼은 297차부터 저장되므로, 그 이전 날짜 데이터는 0으로
     나온다(과소 계상 — 로그 재생 없이는 소급 복원 불가, 알려진 한계).
 
+    [461차, F-5] **최종 상태(entry_final_ok/entry_executed)를 grade보다 먼저 본다.**
+    위 docstring이 스스로 밝히듯 grade는 "앙상블 단계 등급"인데, 285차-P5가
+    "A/B등급 자동진입은 CoherenceGate와 무관하게 허용"을 결정한 뒤로는 앙상블
+    grade='X'인 채 체크리스트 상향으로 최종관문까지 가는 행이 합법적으로 존재한다.
+    등급으로 먼저 분기하고 continue 하면 그 행이 coherence_blocked/conf미달로
+    잘못 계상되고 entered/candidate에서 사라진다 — 전기간(2026-06-17~08-13) 실측
+    entry_executed=1의 25건(13.2%), entry_final_ok=1&미체결의 17건이 그렇게 은닉돼
+    2026-08-03 진입 20 vs 실제 24, 08-13 JointGateBlock 6 vs 실제 7이 됐다.
+    은닉량은 grade_override로 노출한다(계측 4원칙 ③ 탈락 가시화).
+
     반환: {"date", "total", "flat", "conf_fail", "coherence_blocked",
            "ensemble_pass", "gate_blocked", "gate_breakdown": {label: n},
-           "exec_fail", "exec_fail_breakdown": {label: n}, "candidate", "entered"}
+           "exec_fail", "exec_fail_breakdown": {label: n}, "candidate", "entered",
+           "grade_override"}
+
+    grade_override: [461차] 앙상블 grade='X'(또는 direction=0)인데 체크리스트 상향으로
+    최종관문까지 간 건수. 0이 정상이 아니라 285차-P5 경로가 살아있다는 뜻이다.
+    이 값이 0보다 크면 그만큼 구 집계는 entered/candidate를 적게 말했다.
 
     exec_fail_breakdown: [305차] entry_final_ok=True인데 entry_executed=False인 건
     (체크리스트 통과 후 2차 실행단계 차단 — JointGateBlock/Hurst미계산/증거금부족/
@@ -2183,13 +2198,34 @@ def fetch_daily_entry_funnel(date_str: Optional[str] = None) -> Dict:
         "flat": 0, "conf_fail": 0, "coherence_blocked": 0,
         "ensemble_pass": 0, "gate_blocked": 0, "gate_breakdown": {},
         "exec_fail": 0, "exec_fail_breakdown": {}, "candidate": 0, "entered": 0,
+        "grade_override": 0,
     }
     for r in rows:
         direction = int(r["direction"] or 0)
+        grade = str(r["grade"] or "")
+        final_ok = bool(r["entry_final_ok"])
+        executed = bool(r["entry_executed"])
+
+        # [461차, F-5] 최종 상태 우선 — grade/direction 분기보다 앞에 둔다.
+        # 이 순서라야 entered == SUM(entry_executed)가 무조건 성립한다.
+        # grade가 C/B인 정상 경로는 아래 분기에 걸릴 일이 없으므로 동작이 같다
+        # (구 코드의 executed/final_ok 처리를 그대로 흡수한 것).
+        if executed or final_ok:
+            if grade == "X" or direction == 0:
+                out["grade_override"] += 1
+            out["ensemble_pass"] += 1
+            out["candidate"] += 1
+            if executed:
+                out["entered"] += 1
+            else:
+                out["exec_fail"] += 1
+                label = _categorize_block_reason(r["entry_block_reason"], r["checklist_reason"])
+                out["exec_fail_breakdown"][label] = out["exec_fail_breakdown"].get(label, 0) + 1
+            continue
+
         if direction == 0:
             out["flat"] += 1
             continue
-        grade = str(r["grade"] or "")
         if grade == "X":
             if bool(r["coherence_blocked"]):
                 out["coherence_blocked"] += 1
@@ -2198,20 +2234,9 @@ def fetch_daily_entry_funnel(date_str: Optional[str] = None) -> Dict:
             continue
 
         out["ensemble_pass"] += 1
-        final_ok = bool(r["entry_final_ok"])
-        executed = bool(r["entry_executed"])
-        if executed:
-            out["candidate"] += 1
-            out["entered"] += 1
-        elif final_ok:
-            out["candidate"] += 1
-            out["exec_fail"] += 1
-            label = _categorize_block_reason(r["entry_block_reason"], r["checklist_reason"])
-            out["exec_fail_breakdown"][label] = out["exec_fail_breakdown"].get(label, 0) + 1
-        else:
-            out["gate_blocked"] += 1
-            label = _categorize_block_reason(r["entry_block_reason"], r["checklist_reason"])
-            out["gate_breakdown"][label] = out["gate_breakdown"].get(label, 0) + 1
+        out["gate_blocked"] += 1
+        label = _categorize_block_reason(r["entry_block_reason"], r["checklist_reason"])
+        out["gate_breakdown"][label] = out["gate_breakdown"].get(label, 0) + 1
     return out
 
 
