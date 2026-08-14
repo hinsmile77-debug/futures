@@ -315,6 +315,8 @@ class EnsembleDecision:
         # [403차 종합 P0-2b] 진입 하한 ↔ 보정기 출력범위 정합성 경보 상태.
         # 마지막으로 경보한 (도달가능여부) 를 기억해 상태가 바뀔 때만 로그를 남긴다.
         self._conf_floor_reachable: Optional[bool] = None
+        # [MW0602 470차 L2] 상태 샘플을 남긴 마지막 분(wall-clock). 분당 1회로 제한한다.
+        self._conf_floor_sample_minute: Optional[str] = None
 
     def _check_conf_floor_consistency(
         self, min_conf: float, zone_allows_entry: bool = True
@@ -379,6 +381,61 @@ class EnsembleDecision:
                 )
         except Exception as _cfg_e:
             logger.debug("[ConfFloorGuard] 점검 실패 (무해): %s", _cfg_e)
+
+    def _sample_conf_floor_state(
+        self, min_conf: float, zone_allows_entry: bool = True
+    ) -> None:
+        """[MW0602 470차 L2] ConfFloorGuard 상태를 **매분 무조건** 1줄 남긴다.
+
+        왜: 위 `_check_conf_floor_consistency`는 **엣지 트리거**(상태가 바뀔 때만 로그)다.
+        그래서 **마지막 상태가 열린 채로 끝난다.** 2026-08-14 실측이 정확히 그랬다 —
+          09:22:54 도달 불가 → 09:27:54 복구
+          10:18:55 도달 불가 → 10:30:54 복구
+          10:36:55 도달 불가 → **복구 로그 없음 (종일)**
+        그런데 11:25:55에 실제 진입이 성사됐다. **해제됐는데 해제가 안 찍힌 것**이다.
+        로그만 보면 10:36부터 종일 자동진입이 봉쇄된 것처럼 읽히고, 장후 사후검증에서
+        "봉쇄 구간 몇 분"을 세면 틀린 값이 나온다.
+
+        이것은 468차 G-2가 §12 고착 지표에서 경고한 구조와 정확히 같은 함정이다 —
+        *"조건부 로그는 넣지 말 것"*. 무조건 찍히는 상태 샘플이 있어야 감시가 성립한다.
+
+        엣지 경고(`WARNING`)는 그대로 둔다 — 이것은 **추가**이지 대체가 아니다.
+        분당 1회로 제한해 미러/폴백 경로의 중복 호출을 흡수한다(로그량 ≈370행/일).
+        """
+        try:
+            import datetime as _dt
+            _now_min = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+            if self._conf_floor_sample_minute == _now_min:
+                return                      # 같은 분에 이미 남겼다(미러 경로 중복 흡수)
+            self._conf_floor_sample_minute = _now_min
+
+            _need = max(float(ENS_CONF_FLOOR_FOR_AUTO), float(min_conf or 0.0))
+            if not zone_allows_entry:
+                # 진입금지 존 — min_conf가 설계된 블랙아웃이라 판정 대상이 아니다.
+                # "봉쇄"로 세면 404차 후속4가 잡은 오탐이 재발한다.
+                state, _out_max = "ZONE_BLACKOUT", None
+            else:
+                _cal = getattr(self, "calibrator", None)
+                if _cal is None:
+                    state, _out_max = "NO_CAL", None
+                elif not _cal.is_fitted:
+                    state, _out_max = "RAW", None      # 미fit — raw 통과라 도달 가능
+                else:
+                    _out_max = _cal.output_max
+                    if _out_max is None:
+                        state = "UNKNOWN"
+                    else:
+                        state = "OK" if _out_max >= _need else "BLOCKED"
+            logger.info(
+                "[ConfFloorGuard] state=%s 출력상한=%s 필요=%.4f "
+                "(conf_floor=%.3f, min_conf=%.3f, zone_entry=%s)",
+                state,
+                ("%.4f" % _out_max) if _out_max is not None else "N/A",
+                _need, float(ENS_CONF_FLOOR_FOR_AUTO), float(min_conf or 0.0),
+                zone_allows_entry,
+            )
+        except Exception as _cfs_e:
+            logger.debug("[ConfFloorGuard] 상태 샘플 실패 (무해): %s", _cfs_e)
 
     def compute(
         self,
@@ -1094,6 +1151,10 @@ class EnsembleDecision:
         # [403차 종합 P0-2b] 하한 ↔ 보정기 출력범위 정합성 점검 (상태 변화 시에만 로그)
         # [404차 후속4 / P1-E] 진입 허용 시간대에서만 판정 — 블랙아웃 구간 오탐 억제
         self._check_conf_floor_consistency(min_conf, zone_allows_entry)
+        # [MW0602 470차 L2] 위 엣지 트리거는 마지막 상태를 열린 채로 남긴다
+        # (0814: 10:36 봉쇄 경고 후 복구 로그 없이 11:25 진입 성사).
+        # 무조건 상태 샘플을 분당 1회 덧붙여 §12 고착 감시가 성립하게 한다.
+        self._sample_conf_floor_state(min_conf, zone_allows_entry)
 
         # ── 진입 등급 (체크리스트 통과 수는 entry_manager에서 계산) ──
         # 코히어런스 게이트 차단 시 최우선 X

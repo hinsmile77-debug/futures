@@ -10543,6 +10543,27 @@ class TradingSystem:
         try:
             reasons = []
             notes = []
+            # [MW0602 470차 L1] ⓪ **시간대 존을 1급 사유로 맨 앞에 둔다.**
+            #
+            # 존은 `min_confidence`(OTHER 0.65 / EXIT_ONLY 1.0 / PRE_MARKET 1.01)를 올리는
+            # **간접 경로**로만 작동한다. 그래서 차단 시점에는 이미 "신뢰도 미달"과 구분이
+            # 안 되고, 로그가 원인이 아니라 **결과**를 적는다.
+            # 2026-08-14 실측: 11:50:27 `[TimeRouter] OTHER — 진입 금지` 전환 이후 55분 동안
+            # min_conf 가 0.41 → 0.65 로 뛰었는데 `[ZeroDiag]`는 일관되게 `conf미달`만 적었다.
+            # 그 결과 차단 사유 분포에서 `2_confidence`가 33건(전체 57건의 58%)으로 1위가 됐고,
+            # phases.md B-4 의 지시("한 사유가 압도적이면 그 게이트의 임계를 의심하라")를
+            # 따르면 **엉뚱한 게이트(신뢰도 임계)를 손보게 된다** — 진짜 원인은 시간대 정의다.
+            # (316차가 HurstGate 63%를 찾아낸 바로 그 통계가 여기서는 거짓 신호를 준다.)
+            #
+            # ⚠ **집행은 무변경이다.** `ZONE_ENTRY_BAN_ENFORCE=False` 를 건드리지 않는다
+            #    (462차 P1-a: 위반 7건이 흑자 +596,858원, n=7로 313차 확정 불가).
+            #    기존 `conf미달(...)` 도 지우지 않고 **병기**한다 — 뒤에 오는 파서·집계 호환.
+            try:
+                _zd_tz = get_time_zone()
+                if not is_entry_zone(_zd_tz):
+                    reasons.append("존금지({})".format(_zd_tz))
+            except Exception:
+                pass
             # ① 정본 차단사유 — RegimeOverride/FP-CRITICAL/ChampGate/σ미수집/조건부구간/
             #    ATR저변동은 이 호출 시점 **이전**에 기록된다(main.py 6570~6760).
             #    Warmup대기·coldstart·VWAP강제X·pass N/9는 이후라 여기서는 안 보인다 —
@@ -11473,7 +11494,48 @@ class TradingSystem:
         logger.info("[System] 자동 종료 실행")
         log_manager.system("미륵이 자동 종료")
         self._write_exit_normally_flag("auto_shutdown")
+        self._dump_surviving_threads()
         _qt_app.quit()
+
+    def _dump_surviving_threads(self) -> None:
+        """[MW0602 470차 L4] 종료 직전 살아 있는 스레드를 찍는다 — **진단 전용**.
+
+        런처 GUARD 가 5거래일 연속(2026-08-10~08-14) 08:40 기동 시 전일 `main.py` 가
+        아직 살아 있는 것을 발견하고 강제 종료했다. 그런데 전일 로그는 정상 종료를
+        주장한다 — `15:40:28 [System] 자동 종료 실행` + `[Shutdown] 정상 종료 플래그 기록`.
+        즉 **Qt 이벤트 루프는 끝났는데 프로세스는 남는다.** 로그도 15:40:28에서 끊긴다.
+
+        가설(미검증): 비데몬 스레드(Cybos 구독 워커 / OptionChain Worker / watchdog 등)가
+        남아 인터프리터가 종료되지 않는다. `_exit_normally` 플래그는 "종료를 의도했다"는
+        기록이지 **실제 종료의 증거가 아니다.**
+
+        ⚠ **1단계는 관측뿐이다.** `stop()`·`join(timeout)` 배선이나 `os._exit(0)` 같은
+        종료 로직 변경은 **이 덤프로 원인 스레드를 특정한 뒤에** 한다 — 원인 없이
+        종료 경로를 건드리면 로그 flush·DB commit 미완료 위험이 생긴다.
+        A3(`scripts/eod_ghost_check.ps1`)가 같은 날 저녁에 "그래서 실제로 살아남았나"를
+        찍으므로, 두 기록을 대조하면 원인 스레드가 바로 드러난다.
+
+        절대원칙 ④ 무관 — COM 콜백 내부가 아니라 메인 스레드 종료 경로다.
+        """
+        try:
+            import threading as _th
+            alive = [t for t in _th.enumerate() if t.is_alive()]
+            nondaemon = [t for t in alive if not t.daemon and t is not _th.main_thread()]
+            desc = ", ".join(
+                "%s(%s)" % (t.name, "daemon" if t.daemon else "**non-daemon**")
+                for t in alive
+            )
+            logger.info("[Shutdown] 잔존 스레드 %d개: %s", len(alive), desc)
+            if nondaemon:
+                # 비데몬 스레드가 인터프리터 종료를 막는다 — 유령의 유력 용의자다.
+                log_manager.system(
+                    "[Shutdown] ⚠ 비데몬 스레드 %d개 잔존: %s "
+                    "— 프로세스가 안 죽으면 이것들이 원인이다"
+                    % (len(nondaemon), ", ".join(t.name for t in nondaemon)),
+                    "WARNING",
+                )
+        except Exception as _tde:
+            logger.warning("[Shutdown] 잔존 스레드 덤프 실패 (무해): %s", _tde)
 
     def _write_exit_normally_flag(self, reason: str = "user_close") -> None:
         """정상 종료 플래그 파일 생성 — 런처 RESTART_LOOP 재시작 방지.
@@ -12682,6 +12744,24 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
     is_full_close = target_qty >= total_qty or stage >= 3
     send_qty = total_qty if is_full_close else target_qty
     reason = f"TP{stage}(전량)" if is_full_close else f"TP{stage} 부분청산 {ratio:.0%}"
+
+    # [MW0602 470차 L3] 설정 비율과 **실효 비율**을 함께 남긴다.
+    # 2026-08-14 실측: 2계약 포지션에서 1계약을 청산했는데 로그는 `TP1 부분청산 33%` 였다.
+    # 반올림 후 실제로 나간 비율은 50% 다. MAX_CONTRACTS=3 체제에서 2계약이 주력이면
+    # 표시와 실제가 **상시** 어긋나고, 장후 사후검증의 부분청산 비율 통계가 틀어진다.
+    #
+    # ⚠ `reason` 문자열은 **건드리지 않는다.** 그것은 trades.exit_reason 으로 저장되고
+    #    캠페인 채널이 LIKE 로 필터한다(465차 P4: "LIKE '%하드스톱%'가 사전등록 채널의
+    #    필터라 문자열을 못 바꾼다"). 468차 G-3 원칙대로 **표시 계층에서만** 분리한다.
+    #    tests/test_468_exit_axes.py 가 이 문자열을 그대로 검증하고 있다.
+    if not is_full_close and total_qty > 0:
+        try:
+            log_manager.trade(
+                f"[TP비율] TP{stage} 설정={ratio:.0%} 실효={send_qty / total_qty:.0%} "
+                f"({send_qty}/{total_qty}계약)"
+            )
+        except Exception as _tpr_e:      # 표시 전용 — 집행을 막지 않는다
+            logger.debug("[TP비율] 로그 실패 (무해): %s", _tpr_e)
 
     # [361차] TP2 홀드 A/B 섀도우 — qty=2 포지션이 TP2에서 잔량 1계약을 100% 종료하는
     # 순간, "이 계약을 홀드해서 TP3/트레일링까지 갔다면 어땠을까"를 counterfactual로
