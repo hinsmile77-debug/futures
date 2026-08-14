@@ -24,6 +24,13 @@ if errorlevel 1 (
 REM 프로젝트 디렉토리로 이동
 cd /d "%~dp0"
 
+REM ---- [MW0602 470char A3] shutdown completeness check (see scripts/eod_ghost_check.ps1)
+REM Launcher GUARD found a live main.py at 08:40 on 5 consecutive trading days
+REM (2026-08-10..08-14) although the previous day logged a normal shutdown.
+REM Record it tonight instead of discovering it next morning.
+REM Logic lives in the .ps1 to avoid CMD quoting pitfalls. It always exits 0.
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\eod_ghost_check.ps1"
+
 REM 재학습 실행
 python scripts\eod_retrain.py --phase2 --weeks 10
 
