@@ -9676,11 +9676,14 @@ class TradingSystem:
         pnl = result["pnl_pts"]
         qty = result["quantity"]
 
+        # [MW0602 470차 C1] CB② 는 **포지션 단위**로 센다 — 부분청산 레그는 카운터를
+        # 올리지도, 리셋하지도 않는다. Kelly 는 종전대로 레그를 기록한다(별개 축이며
+        # 사이징에 직접 영향을 주므로 이 점검의 범위가 아니다 — 470차 C2 결론 참조).
         if pnl > 0:
-            self.circuit_breaker.record_win()
+            self.circuit_breaker.record_win(is_partial_leg=True)
             self.kelly.record(win=True, pnl_pts=pnl)
         else:
-            self.circuit_breaker.record_stop_loss()
+            self.circuit_breaker.record_stop_loss(is_partial_leg=True)
             self.kelly.record(win=False, pnl_pts=pnl)
 
         log_manager.trade(
@@ -9757,11 +9760,15 @@ class TradingSystem:
         pnl = result["pnl_pts"]
         qty = result["quantity"]
 
+        # [MW0602 470차 C1] **여기가 2026-08-14 이중계상의 진원지다.**
+        #   13:07:27 손절1차 조기축소 → [CB] 연속 손절 1회
+        #   13:07:31 하드스톱(틱)     → [CB] 연속 손절 2회   ← 같은 포지션
+        # 실제 손실 포지션은 그 시점 1건이었다. 부분청산 레그는 카운터를 올리지 않는다.
         if pnl > 0:
-            self.circuit_breaker.record_win()
+            self.circuit_breaker.record_win(is_partial_leg=True)
             self.kelly.record(win=True, pnl_pts=pnl)
         else:
-            self.circuit_breaker.record_stop_loss()
+            self.circuit_breaker.record_stop_loss(is_partial_leg=True)
             self.kelly.record(win=False, pnl_pts=pnl)
 
         log_manager.trade(
@@ -13654,11 +13661,12 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
     pnl = result["pnl_pts"]
     qty = result["quantity"]
 
+    # [MW0602 470차 C1] 이름 그대로 **부분** 청산이다 — CB② 카운터를 건드리지 않는다.
     if pnl > 0:
-        self.circuit_breaker.record_win()
+        self.circuit_breaker.record_win(is_partial_leg=True)
         self.kelly.record(win=True, pnl_pts=pnl)
     else:
-        self.circuit_breaker.record_stop_loss()
+        self.circuit_breaker.record_stop_loss(is_partial_leg=True)
         self.kelly.record(win=False, pnl_pts=pnl)
 
     log_manager.trade(

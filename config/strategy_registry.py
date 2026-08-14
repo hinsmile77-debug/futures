@@ -755,6 +755,54 @@ class StrategyRegistry:
         row = cur.fetchone()
         return row[0] if row else 0
 
+    # [MW0602 470차 R1] 실운영 개시일 — 이보다 이른 stage 결과는 QA seed 로 본다.
+    # `strategy_stage_results` id=8 의 `evaluated_at=2026-05-07 18:37:00` 이 그 값이다
+    # (`scripts/qa_strategy_seeder.py` 계열, 같은 배치에 `v2.0-shadow … (QA 테스트)`).
+    # 298차가 같은 DB 의 phantom 버전(v1.2)을 정리한 전례가 있다.
+    _SEED_BASELINE_BEFORE = "2026-05-08"
+
+    @staticmethod
+    def _is_seed_baseline(stage: Dict[str, Any]) -> bool:
+        """이 stage 결과가 QA seed 인가 — 판정 근거로 쓸 수 없다."""
+        ev = str(stage.get("evaluated_at") or "")
+        if not ev:
+            return True                      # 언제 측정했는지도 모르면 근거로 못 쓴다
+        return ev[:10] < StrategyRegistry._SEED_BASELINE_BEFORE
+
+    @staticmethod
+    def _live_mdd_vs_capital(live_snap: Dict[str, Any]) -> Optional[float]:
+        """Live MDD 를 **자본 대비 비율**로 환산한다 (WFA 기준과 같은 단위).
+
+        `live_snap["mdd_pct"]` 는 분모가 20일 창 누적손익 peak 라 자본 대비가 아니다
+        (465차 P6-b 가 규명, 계산식은 의도적으로 무변경). 같은 465차가 함께 넣어 둔
+        원화 절대값 `mdd_krw` 를 사이징 목표자본으로 나눠 단위를 맞춘다.
+
+        자본을 못 읽으면 **None** — 호출부가 INSUFFICIENT 로 떨어뜨린다.
+        모르는 것을 UNDERPERFORM 으로 단정하지 않는다.
+        """
+        mdd_krw = live_snap.get("mdd_krw")
+        if mdd_krw is None:
+            return None
+        capital = None
+        try:
+            from config import runtime_settings as _rs
+            capital = getattr(_rs, "SIZING_TARGET_CAPITAL_KRW", None)
+        except Exception:
+            capital = None
+        if not capital:
+            try:
+                from config.settings import SIZING_TARGET_CAPITAL_KRW as _cap
+                capital = _cap
+            except Exception:
+                capital = None
+        try:
+            capital = float(capital or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if capital <= 0:
+            return None
+        return abs(float(mdd_krw)) / capital
+
     def _compute_verdict(
         self,
         stages:    Dict[str, Dict[str, Any]],
@@ -763,6 +811,31 @@ class StrategyRegistry:
         """
         WFA 기준 대비 Live 성과 비교 판정.
         Live 데이터 5일 미만이면 INSUFFICIENT.
+
+        ════════════════════════════════════════════════════════════════════
+        [MW0602 470차 R1] MDD 다리의 **단위 불일치**를 여기서 고친다.
+        ════════════════════════════════════════════════════════════════════
+        증상: `전략판정` 배너가 2026-07-31부터 **10거래일 연속** UNDERPERFORM +
+        REPLACE_CANDIDATE 를 발행했다. **손익 부호와 무관했다** —
+        +752,561원인 날도 UNDERPERFORM, -473,373원인 날은 OUTPERFORM.
+
+        원인: 뒤집은 것은 Sharpe 가 아니라 **MDD 다리 단독**이었고, 그 두 값은
+        **서로 다른 단위**다.
+          · `live_snap["mdd_pct"]` = mdd_krw / **20일 창 누적손익 peak** (`:601`)
+          · `wfa["mdd_pct"]`       = **자본 대비** MDD (0.142)
+        창이 밀려 초반 수익이 빠지면 peak 가 붕괴해(07-30 9,467,235원 →
+        08-12 1,119,219원) 같은 낙폭이 몇 배로 부풀려진다.
+        08-12 실측 `mdd_pct=1.292`(129%)는 **자본 대비로는 물리적으로 불가능한 값**이며
+        그 자체가 단위 불일치의 증거다.
+
+        ⛔ **`_compute_live_metrics` 의 `mdd_pct` 계산식(`:601`)은 건드리지 않는다.**
+           465차 P6-b 가 이미 그 결함을 규명하고 *"기존 mdd_pct 는 그대로 둔다 —
+           WFA 합격선(MDD ≤ 15%)이 이 정의를 쓰고 있어 계산을 바꾸면 실전 전환 기준 ③이
+           조용히 이동한다"* 고 명시했다. 그래서 **소비 지점만** 고친다:
+           같은 465차가 함께 추가해 둔 `mdd_krw`(원화 절대값)를 자본으로 나눠 쓴다.
+
+        ⚠ 313차 — 임계값(`_NORMAL_SHARPE_DELTA` 등)은 **손대지 않았다.**
+          이번 변경은 단위 버그 수정이지 기준 완화가 아니다.
         """
         if not live_snap:
             return VERDICT_INSUFFICIENT
@@ -775,16 +848,33 @@ class StrategyRegistry:
         if not wfa:
             return VERDICT_INSUFFICIENT
 
+        # [470차 R1] 기준선이 QA seed 면 판정하지 않는다.
+        #
+        # 현행 `WFA sharpe=1.42 / mdd=0.142` 는 `strategy_stage_results` id=8,
+        # `evaluated_at=2026-05-07 18:37:00` 으로 `scripts/qa_strategy_seeder.py` 계열
+        # **seed 값**이다(같은 배치에 `v2.0-shadow … (QA 테스트)` 이벤트 동반).
+        # CLAUDE.md Phase 표에서 Phase 2 Walk-Forward 는 여전히 `⏳ 26주 데이터 필요` —
+        # **진짜 26주 WFA 는 수행된 적이 없다.**
+        # 26주 WFA 미수행 상태에서 "기대값 대비"를 판정하는 것 자체가 근거 없다.
+        # **모르는 것을 UNDERPERFORM 으로 단정하지 않는다.**
+        if self._is_seed_baseline(wfa):
+            return VERDICT_INSUFFICIENT
+
         live_sharpe = live_snap.get("sharpe")
         wfa_sharpe  = wfa.get("sharpe")
-        live_mdd    = live_snap.get("mdd_pct")
         wfa_mdd     = wfa.get("mdd_pct")
 
         if live_sharpe is None or wfa_sharpe is None:
             return VERDICT_INSUFFICIENT
 
+        # [470차 R1] MDD 를 **자본 대비**로 환산해 WFA 기준과 단위를 맞춘다.
+        live_mdd = self._live_mdd_vs_capital(live_snap)
+        if live_mdd is None:
+            # 자본을 모르면 비교가 불가능하다 — UNDERPERFORM 으로 단정하지 않는다.
+            return VERDICT_INSUFFICIENT
+
         sharpe_delta = live_sharpe - wfa_sharpe
-        mdd_delta    = (abs(live_mdd or 0) - abs(wfa_mdd or 0))
+        mdd_delta    = (abs(live_mdd) - abs(wfa_mdd or 0))
 
         if (sharpe_delta >= _OUTPERFORM_SHARPE_DELTA
                 and mdd_delta <= _OUTPERFORM_MDD_DELTA):

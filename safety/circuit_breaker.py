@@ -55,8 +55,11 @@ class CircuitBreaker:
         self._signal_history: deque = deque()   # (timestamp, direction)
         self._flip_window_sec = 60
 
-        # 트리거 ② 연속 손절 카운터
+        # 트리거 ② 연속 손절 카운터 — **포지션 단위**(470차 C1)
         self._consec_stops: int = 0
+        # [470차 C1] 카운터를 올리지 않은 손실 레그 수 — 관측 전용.
+        # 조용히 빼면 "손절1차가 몇 번 돌았나"를 사후에 셀 수 없다.
+        self._partial_loss_legs: int = 0
 
         # 트리거 ③ 30분 정확도 버퍼
         self._accuracy_buf: deque = deque(maxlen=30)  # 매분 정확도
@@ -203,13 +206,56 @@ class CircuitBreaker:
             )
 
     # ── 트리거 ② 연속 손절 ────────────────────────────────────
-    def record_stop_loss(self):
+    def record_stop_loss(self, is_partial_leg: bool = False):
+        """연속 손절 카운터 +1. **포지션 단위로 센다.**
+
+        [MW0602 470차 C1] 종전에는 청산 **레그**마다 +1 했다. 한 포지션이
+        `손절1차 조기축소` → `하드스톱` 으로 쪼개지면 손실 이벤트가 2회로 잡힌다.
+        360차가 예견했고 2026-08-14에 라이브에서 처음 실측됐다:
+
+            13:07:27 체결부분청산 손절1차 조기축소 → [CB] 연속 손절 1회
+            13:07:31 체결청산     하드스톱(틱)     → [CB] 연속 손절 2회  ← 같은 포지션
+            14:41:43                              → [CB] 연속 손절 3회
+            (실제 손실 포지션은 2건)
+
+        지금은 `CB_CONSEC_STOP_LIMIT=9999` 라 무해하지만, **위험은 복원 시점이다.**
+        임계를 2로 되돌리면 그날 13:07:31에 HALT 가 걸리고 `_trigger_halt()` 가
+        emergency_exit 까지 부른다 — 실제 손실 포지션이 그 시점 1건뿐인데도.
+        전 기간 실측(470차 C2, `scripts/verify_cb2_kelly_leg_counting.py`):
+        최대 연속 손절이 **레그 6 vs 포지션 5**, 손실 레그를 2회 이상 만든 포지션 **8건**.
+
+        Args:
+            is_partial_leg: True 면 **카운터를 올리지 않는다**(부분청산 레그).
+                최종 청산(`_post_exit`)에서만 올린다. 관측은 계속 남긴다 —
+                조용히 빼면 "손절1차가 몇 번 돌았나"를 사후에 셀 수 없다.
+
+        ⚠ 기본값은 종전 동작(+1)이다. 인자 없는 호출
+          (`tests/test_circuit_breaker.py`, `tests/test_log_isolation.py`)은 그대로 동작한다.
+        """
+        if is_partial_leg:
+            self._partial_loss_legs += 1
+            logger.info(
+                "[CB] 손실 레그(부분청산) %d회 — 연속 손절 카운터 미증가 "
+                "(포지션 단위 집계, 470차 C1). 현재 연속=%d",
+                self._partial_loss_legs, self._consec_stops,
+            )
+            return
         self._consec_stops += 1
         logger.warning(f"[CB] 연속 손절 {self._consec_stops}회")
         if self._consec_stops >= CB_CONSEC_STOP_LIMIT:
             self._trigger_halt(f"연속 손절 {self._consec_stops}회 — 당일 정지", cause="cb2")
 
-    def record_win(self):
+    def record_win(self, is_partial_leg: bool = False):
+        """수익 시 연속 손절 카운터 초기화.
+
+        [MW0602 470차 C1] 부분청산 레그의 이익으로는 **리셋하지 않는다.**
+        TP1 부분익절 뒤 잔여가 손절되는 포지션은 전체로 보면 손실일 수 있는데,
+        레그 단위로 리셋하면 그 손실이 연속 카운터에서 지워진다 —
+        `record_stop_loss` 를 포지션 단위로 고치면서 이쪽만 레그 단위로 두면
+        **같은 비대칭이 반대 방향으로 남는다.**
+        """
+        if is_partial_leg:
+            return
         self._consec_stops = 0   # 수익 시 카운터 초기화
 
     # ── 트리거 ③ 정확도 저하 (30분 호라이즌 전용) ───────────────
@@ -591,6 +637,7 @@ class CircuitBreaker:
         self._pause_until = None
         self._signal_history.clear()
         self._consec_stops = 0
+        self._partial_loss_legs = 0     # [470차 C1]
         self._accuracy_buf.clear()
         self._atr_buf.clear()
         self._cb3_warn_count = 0
