@@ -402,6 +402,19 @@ def _migrate_ensemble_decisions_db():
                 "entry_mode": "TEXT",
                 "entry_executed": "INTEGER",
                 "entry_block_reason": "TEXT",
+                # [MW0601 471차 F-4] 동시 성립 차단 축 전량(세미콜론 구분 안정 키).
+                # `entry_block_reason`은 STEP7 elif 체인의 **1등 사유 하나**뿐이라
+                # 같은 분봉에 두 축이 동시에 성립하면 하나가 통째로 사라진다 —
+                # 2026-08-14 09:39·11:24에 로그는 `Degraded 선제차단`, DB는 `등급X`로
+                # 갈렸다. 기존 컬럼을 목록으로 바꾸지 않은 이유는 그 컬럼을 읽는
+                # 부분문자열 분류기 3곳(_categorize_block_reason·
+                # generate_gate_blocking_report·캠페인 LIKE)의 집계가 조용히
+                # 재정의돼 과거 시계열과 불연속이 생기기 때문(461차 mdd_pct 유형).
+                "entry_block_axes": "TEXT",
+                # 같은 건의 짝 — Degraded 선제차단 lookahead가 그 분에 발화했는가.
+                # "진입이 막혔는가"와 다른 사실이다(막지 않아도 발화한다).
+                # 471차 이전 행은 NULL = **미측정**이며 0(미발화)이 아니다(계측 4원칙 ②).
+                "health_preblock": "INTEGER",
                 # 차단사유 축약 키 — stage 2/8 표시용
                 "checklist_reason": "TEXT",
                 # [260704 감사 P1] meta_labels 기반 진입품질 분류기 섀도우 스코어 —

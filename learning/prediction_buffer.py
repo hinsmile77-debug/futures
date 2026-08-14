@@ -202,6 +202,13 @@ class PredictionBuffer:
             str(decision.get("entry_mode", "")),
             int(bool(decision.get("entry_executed", False))),
             str(decision.get("entry_block_reason", "")),
+            # [MW0601 471차 F-4] 동시 성립 차단 축 전량 + 선제차단 발화 여부.
+            # 키 자체가 없으면(구버전 호출부) NULL — **미측정과 "축 없음"을 구분한다**
+            # (계측 4원칙 ②: `.get(key, "")`로 채우면 상수값이 정상 수집으로 위장된다).
+            (str(decision["entry_block_axes"])
+             if "entry_block_axes" in decision else None),
+            (int(bool(decision["health_preblock"]))
+             if "health_preblock" in decision else None),
             str(decision.get("checklist_reason", "")),
             (decision.get("meta_gate") or {}).get("entry_quality_prob"),
             ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("expected_pt"),
@@ -246,13 +253,14 @@ class PredictionBuffer:
                        toxicity_size_mult, toxicity_reason,
                        entry_gate_json, entry_final_ok, entry_qty, entry_mode,
                        entry_executed, entry_block_reason,
+                       entry_block_axes, health_preblock,
                        checklist_reason, meta_entry_quality_prob,
                        quantile_expected_pt, quantile_uncertainty_pt,
                        quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
                        coherence_blocked,
                        confidence_raw, confidence_smoothed, weight_collapsed,
                        meta_size_raw
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 

@@ -822,6 +822,11 @@ class TradingSystem:
         self._force_exit_pass_date: object = None
         self._sched_force_exit_heartbeat_date: object = None
 
+        # ── [MW0601 471차 F-4] Degraded 선제차단 lookahead 발화 여부(이번 분) ────
+        # `_is_degraded_entry_blocked()`가 매 호출 첫머리에서 False로 리셋하고
+        # 발화 시 True로 올린다. `ensemble_decisions.health_preblock`에 저장.
+        self._health_preblock_fired: bool = False
+
         # ── P3-a: OnlineLearner stuck 학습 오염 가드 ───────────────────────────
         self._stuck_this_minute: bool = False    # 이번 분봉에 stuck 해소 발생 여부
 
@@ -2660,6 +2665,13 @@ class TradingSystem:
         """
         p = self._health_policy
         is_degraded = self._health_degraded_mode
+        # [MW0601 471차 F-4] 이번 분에 선제차단 lookahead가 실제로 발화했는지.
+        # 아래 WARNING("Degraded 선제차단")은 **Degraded 진입 판정**일 뿐이고,
+        # 진입이 실제로 막혔는지(`enabled and confidence < min_conf`)와는 별개다.
+        # 2026-08-14 09:39·11:24가 그 사례 — 로그는 "선제차단"인데 DB에 남은 최종
+        # 사유는 `등급X`였다(두 계측이 같은 분봉에 다른 이름을 붙였다).
+        # 그래서 발화 사실 자체를 `ensemble_decisions.health_preblock`에 남긴다.
+        self._health_preblock_fired = False
 
         # Lookahead: 현재 사이클 지표로 Degraded 진입 여부를 선제 판단
         if not is_degraded and latency_ms > 0:
@@ -2676,6 +2688,7 @@ class TradingSystem:
                 _enter_thresh = float(p.get("degraded_enter_streak", HEALTH_DEGRADED_ENTER_STREAK))
                 if self._health_warn_streak + _w >= _enter_thresh:
                     is_degraded = True
+                    self._health_preblock_fired = True   # [471차 F-4] 발화 사실 기록
                     # [MW0601 457차 / G9] 원인 태그 — **표시 전용, 판정에 미관여.**
                     # 직전 사이클의 지배 구간을 붙여 "내부 정비 기인(S0 모델 리로드)"과
                     # "외부/DB 기인(S1·S4)"을 로그에서 바로 가를 수 있게 한다.
@@ -8874,6 +8887,54 @@ class TradingSystem:
             # 순수 관측 필드.
             _entry_block_reason = "[정보] 포지션 보유중 — 신규진입 평가 생략"
 
+        # ── [MW0601 471차 F-4] 동시 성립 차단 축 전량 ────────────────────────
+        # 위 elif 체인은 **우선순위 1등만** 남긴다. 그래서 같은 분봉에 두 축이
+        # 동시에 성립하면 하나가 통째로 사라지고, 다른 계측(로그)이 그 사라진
+        # 축의 이름을 부르면 "두 계측이 같은 분봉에 다른 이름을 붙인다"가 된다
+        # (2026-08-14 09:39·11:24: 로그 `Degraded 선제차단` vs DB `등급X`).
+        #
+        # ⚠ **`entry_block_reason`은 건드리지 않는다.** 그 컬럼은 부분문자열
+        #   분류기 3곳(`utils/db_utils.py:_categorize_block_reason`,
+        #   `scripts/generate_gate_blocking_report.py`, 캠페인 리포트 LIKE)이
+        #   읽는다. 거기에 사유를 이어붙이면 일일 퍼널 분포가 조용히 재정의돼
+        #   과거 시계열과 불연속이 생긴다(461차 mdd_pct 사고와 같은 유형).
+        #   → 전량은 **새 컬럼 `entry_block_axes`**(세미콜론 구분 키 목록)에 담고,
+        #     기존 컬럼은 1등 사유 그대로 둔다. 기존 리포트는 무영향.
+        # 키는 조회용 안정 식별자다 — 문구가 바뀌어도 키는 유지할 것.
+        _block_axes = []
+        if direction != 0 and self.position.status == "FLAT":
+            for _bk, _bc in (
+                ("ecb_observation",  not _ecb_observation_ok),
+                ("cb_halt",          self.circuit_breaker.state != "NORMAL"),
+                ("hc_block",         bool(_hc_block)),
+                ("broker_sync",      bool(self._broker_sync_block_new_entries)),
+                ("armistice",        bool(_in_armistice)),
+                ("integrity",        not _integrity_ok),
+                ("entry_cooldown",   bool(_in_cooldown)),
+                ("exit_cooldown",    bool(_in_exit_cooldown)),
+                ("reverse_clamp",    bool(_in_reverse_clamp)),
+                ("intraday_regime",  bool(_intraday_block)),
+                ("hurst",            not _hurst_ok),
+                ("atr",              not _atr_ok),
+                ("open_gap",         not _open_gap_ok),
+                ("entry_cutoff",     not is_new_entry_allowed()),
+                ("degraded_conf",    bool(_auto_blocked)),
+                ("mode_filter",      not mode_filter_passed and _final_grade != "X"),
+                ("bar_volume_zero",  bool(_bar_volume_zero)),
+                ("kill_switch",      bool(self.system_health.kill_switch_active)),
+                ("checklist_missing", _cr is None),
+                ("grade_x",          _final_grade == "X"),
+                ("qty_zero",         _qty_display <= 0),
+                ("auto_entry_off",   not self._auto_entry_enabled),
+                ("conf_floor",       bool(_cr) and not _cr.get("auto_entry", True)),
+                # 진입을 막았는지와 무관하게 "선제차단 lookahead가 발화했다"는
+                # 사실 자체를 남긴다 — 이것이 로그와 DB가 갈리던 지점이다.
+                ("health_preblock",  bool(self._health_preblock_fired)),
+            ):
+                if _bc:
+                    _block_axes.append(_bk)
+        _entry_block_axes = ";".join(_block_axes)
+
         _entry_executed_this_cycle = False
 
         _prev_bar_dir = (1 if bar.get("close", 0) > bar.get("open", 0)
@@ -9638,6 +9699,10 @@ class TradingSystem:
         decision["entry_mode"]         = entry_mode
         decision["entry_executed"]     = bool(_entry_executed_this_cycle)
         decision["entry_block_reason"] = _entry_block_reason
+        # [MW0601 471차 F-4] 1등 사유 옆에 **동시 성립 축 전량**과 선제차단 발화
+        # 여부를 함께 남긴다. entry_block_reason(1등)은 무변경 — 위 산출부 주석 참조.
+        decision["entry_block_axes"]   = _entry_block_axes
+        decision["health_preblock"]    = bool(self._health_preblock_fired)
 
         _feat_clean = {k: round(float(v), 4) for k, v in features.items()
                        if v is not None and v == v}
