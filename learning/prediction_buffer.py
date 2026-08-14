@@ -211,6 +211,10 @@ class PredictionBuffer:
              if "health_preblock" in decision else None),
             (int(bool(decision["entry_mode_fallback"]))
              if "entry_mode_fallback" in decision else None),
+            # [MW0601 471차 후속6 / G-1] 사이징 계보 구조체(JSON 문자열).
+            # 값이 None이면 그대로 NULL — 사이저가 돌지 않은 분과 "0계약"을 구분한다.
+            (json.dumps(decision["sizing_trace"], ensure_ascii=False)
+             if decision.get("sizing_trace") else None),
             str(decision.get("checklist_reason", "")),
             (decision.get("meta_gate") or {}).get("entry_quality_prob"),
             ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("expected_pt"),
@@ -256,13 +260,14 @@ class PredictionBuffer:
                        entry_gate_json, entry_final_ok, entry_qty, entry_mode,
                        entry_executed, entry_block_reason,
                        entry_block_axes, health_preblock, entry_mode_fallback,
+                       sizing_trace,
                        checklist_reason, meta_entry_quality_prob,
                        quantile_expected_pt, quantile_uncertainty_pt,
                        quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
                        coherence_blocked,
                        confidence_raw, confidence_smoothed, weight_collapsed,
                        meta_size_raw
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 

@@ -411,6 +411,13 @@ def _migrate_ensemble_decisions_db():
                 # generate_gate_blocking_report·캠페인 LIKE)의 집계가 조용히
                 # 재정의돼 과거 시계열과 불연속이 생기기 때문(461차 mdd_pct 유형).
                 "entry_block_axes": "TEXT",
+                # [MW0601 471차 후속6 / G-1] 사이징 계보 구조체(JSON).
+                # 수량 계보(사이저원본→안전군→표시→최종) + 품질군 배수 전량 +
+                # argmin(binding_gate) + 상한 2종. `[SizerMatch]` 로그 문자열을
+                # 파싱하던 판정을 구조화 질의로 대체한다 — 게이트가 하나 늘 때마다
+                # 파서를 고쳐야 하는 구조를 끝낸다(2026-08-14 P1-2 오귀속의 근본원인).
+                # ⚠ 사이저가 돌지 않은 분(무신호·포지션 보유중)은 NULL = 미측정.
+                "sizing_trace": "TEXT",
                 # [MW0601 471차 후속4 / F-9] `entry_mode`가 폴백값인가(0/1).
                 # `manual`은 A·B·C 전 등급을 허용하는 **가장 넓은 모드**인데 정상
                 # 설정값도 `manual`이라(실측 manual 11,590행 / hybrid 35행) 이 플래그
