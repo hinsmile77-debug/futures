@@ -110,7 +110,13 @@ DEFAULT_CONFIG = {
     # 2026-08-12 MW0601 실측 로그에서 뽑았다 — 추상적 키워드가 아니라 실제로 찍히는 문자열이다.
     "always_quote_patterns": [
         "[CB]", "연속 손절", "HALT", "CIRCUIT",
-        "강제청산", "[ExitCooldown]", "안전망", "FORCED",
+        "강제청산",
+        # [MW0601 471차 F-1·F-2] 15:10 청산 1차 경로(분봉 구동)와 2차 안전망(30s 틱)의
+        # 태그. **"안전망"보다 앞에 둬야 한다** — 한 줄당 첫 매치만 채택(break)하므로
+        # 뒤에 두면 D2 발동 로그가 "안전망" 버킷으로 들어가 §11 적신호 6번 판정이
+        # 이 태그를 못 본다.
+        "[ForceExitPass]", "[SchedForceExit]",
+        "[ExitCooldown]", "안전망", "FORCED",
         "0xC0000409", "STACK_BUFFER", "Traceback", "MemoryError", "OutOfMemory", "메모리 부족",
         "메인 스레드 블로킹", "[Brier] 과신", "[SHAP] 슬로우",
         "degraded=ON", "level=CRITICAL",
@@ -1440,11 +1446,22 @@ def build(root, day, phase, cfg, discover_only=False):
             if pat in dg.quoted:
                 flags.append("`%s`: **%s** 출현 %d건 — 크래시/메모리 계열" % (dg.rel, pat, len(dg.quoted[pat])))
     if phase in ("post", "all"):
-        hit_flat = any(("강제청산" in dg.quoted or "FORCED" in dg.quoted or "FLAT" in dg.quoted)
+        # [MW0601 471차 F-2] 판정 기준 교체: "강제청산 문자열이 있는가"가 아니라
+        # **하트비트 또는 실집행 로그 중 하나가 있는가**로 본다.
+        # 종전 기준은 "대상 없음(포지션 FLAT)"과 "코드 사망"을 구분하지 못해
+        # 0812·0813·0814 3일 연속으로 적신호를 띄웠고 매번 사람이 원본으로 수동
+        # 판별했다. 이제 15:10 이후 안전망 경로는 FLAT이어도 당일 1회
+        # `[SchedForceExit] … 청산 대상 없음(정상) bar_pass=N회`를 남긴다.
+        # ⚠ "FLAT"을 근거로 치던 종전 needle은 뺐다 — 포지션 상태 로그 어디에나
+        #   등장하는 문자열이라 사실상 상시 통과였다(적신호가 죽어 있었다).
+        hit_exec = any(("강제청산" in dg.quoted or "FORCED" in dg.quoted)
                        for dg in digests)
-        if not hit_flat:
-            flags.append("장후인데 **강제청산(15:10) 흔적을 못 찾았다** — 절대원칙 1 확인 필요 "
-                         "(포지션이 없었을 수도 있다. 원본으로 구분할 것)")
+        hit_beat = any(("[SchedForceExit]" in dg.quoted or "[ForceExitPass]" in dg.quoted)
+                       for dg in digests)
+        if not (hit_exec or hit_beat):
+            flags.append("장후인데 **15:10 청산 경로가 아무 흔적도 남기지 않았다** — "
+                         "실집행(`강제청산`)도 하트비트(`[SchedForceExit]`)도 없다. "
+                         "절대원칙 1 확인 필요 (471차 F-2 배포 이후라면 하트비트 부재 자체가 이상)")
     all_names = " ".join(e["name"] for e in files).lower()
     for em in cfg.get("expected_markers", []):
         if em["phase"] in phases and em["contains"].lower() not in all_names:

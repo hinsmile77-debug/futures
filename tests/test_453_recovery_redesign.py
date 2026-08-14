@@ -70,6 +70,11 @@ class _StubSelf(object):
         if maint_ctx is not None:
             self._maint_ctx = maint_ctx
         self._last_real_pipeline_dt = "SENTINEL"      # 바뀌면 T5 실패
+        # [MW0601 471차 F-2] 안전망 하트비트 상태 — TradingSystem.__init__이
+        # 명시 초기화하는 값이라 스텁도 같이 갖는다(계측 4원칙 ④ — 프로덕션
+        # 코드가 getattr 폴백으로 읽지 않으므로 여기서 채워야 한다).
+        self._force_exit_pass_evals = 0
+        self._sched_force_exit_heartbeat_date = None
         self.exit_calls = []                           # _check_exit_triggers 기록
 
     def _has_pending_order(self):

@@ -812,6 +812,16 @@ class TradingSystem:
         # ── 15:18 FINAL_CLOSE 안전망 ───────────────────────────────────────────
         self._final_close_done: bool = False     # 1회만 실행 (중복 방지)
 
+        # ── [MW0601 471차 F-1·F-2] 15:10 강제청산 1차 경로 도달성 계측 ─────────
+        # 계측 4원칙 ④ — 런타임 상태를 getattr 폴백으로 읽지 않는다(그러면 미설정이
+        # 기본값으로 위장한다). 셋 다 여기서 명시 초기화하고 아래 세 곳에서만 갱신한다:
+        #   _force_exit_pass_evals : _ts_run_force_exit_pass() 호출 횟수(당일)
+        #   _force_exit_pass_date  : 그 카운터의 소속 날짜(자정/재기동 리셋용)
+        #   _sched_force_exit_heartbeat_date : 안전망 하트비트를 남긴 날짜(1일 1회)
+        self._force_exit_pass_evals: int = 0
+        self._force_exit_pass_date: object = None
+        self._sched_force_exit_heartbeat_date: object = None
+
         # ── P3-a: OnlineLearner stuck 학습 오염 가드 ───────────────────────────
         self._stuck_this_minute: bool = False    # 이번 분봉에 stuck 해소 발생 여부
 
@@ -4400,6 +4410,20 @@ class TradingSystem:
             return
         # 15:10 강제 청산 이후 예측 파이프라인 중단 (TimeRouter·앙상블 불필요 실행 방지)
         if is_force_exit_time(now):
+            # [MW0601 471차 F-1] 이 가드가 STEP 8(청산 감시)까지 함께 끊고 있었다.
+            # 15:09 봉의 마감 콜백이 **정확히 15:10:00에** 도착하므로(2026-08-14 실측)
+            # 15:10 강제청산의 1차 집행자인 STEP 8은 실행될 창 자체가 없었고,
+            # 453차 D2 스케줄러 안전망(15:11 발화, ERROR + 🚨 알림)만 살아 있었다.
+            # 예측 파이프라인 중단이라는 원 의도는 유지한 채 청산 전용 패스만 되살린다.
+            # 실패해도 D2 안전망이 60초 뒤 잡으므로 여기서 예외를 밖으로 던지지 않는다.
+            try:
+                _ts_run_force_exit_pass(self, candle)
+            except Exception as _fep_e:
+                log_manager.system(
+                    f"[ForceExitPass] 청산 전용 패스 실패: {_fep_e} — "
+                    f"15:11 스케줄러 안전망(D2)이 후속 처리",
+                    "ERROR",
+                )
             return
 
         self._last_recovery_ts = ""   # 실분봉 수신 시에만 복구 ts 초기화
@@ -14584,6 +14608,80 @@ def _ts_run_maintenance_pass(self, row) -> None:
     self._check_exit_triggers(price, feats, decision, bar)
 
 
+def _ts_run_force_exit_pass(self, candle) -> None:
+    """[MW0601 471차 F-1] 15:10 이후 분봉 마감에서 STEP 8만 1회 평가한다.
+
+    왜 필요한가: `_on_candle_closed`의 `is_force_exit_time` 가드는 "예측 파이프라인
+    중단"이 목적인데 STEP 8(청산 감시)까지 함께 끊었다. 그리고 15:09 봉의 마감
+    콜백은 **정확히 15:10:00에 온다**(2026-08-14 실측 `[BAR-CLOSE] ts=15:09`) —
+    즉 `should_force_exit()`가 True인 상태로 STEP 8이 도는 창이 존재하지 않았다.
+    워치독(`_on_pipeline_watchdog`)·복구/유지보수 패스(`_try_pipeline_recovery`)도
+    같은 가드로 막혀 있어, 절대원칙 §1의 1차 집행자는 구조적으로 도달 불가였고
+    453차 D2 안전망(15:11, ERROR + 🚨 알림)이 사실상 1차가 돼 있었다.
+    그 결과 ① 정상 마감이 매번 사고처럼 보고되고 ② 이중화가 사라진다.
+    (근거: docs/정기점검/매일점검/MW0601-20260814-점검리포트-post.md P1-1)
+
+    하는 일:
+      포지션·pending·브로커 잔량 캐시 중 하나라도 있으면 STEP 8을 1회 평가한다.
+      입력은 정규 STEP 8과 동일하게 **방금 마감한 봉**(close·high·low·ts)이고,
+      features/decision은 `_maint_ctx`(마지막 완주분)를 재사용한다 — STEP 8의
+      실사용은 atr(1키)와 신호소멸 섀도(3키)뿐이다.
+    안 하는 일:
+      STEP 1~7·9 전부, 예측·DB 저장 전부, `notify_pipeline_ran()`,
+      `_last_real_pipeline_dt`·`_maint_ctx` 갱신 — 시계를 건드리면 228차
+      ExchangeCB 에스컬레이션이 깨진다(453차 D1과 같은 규약).
+    반복 호출 안전성:
+      15:10~장마감까지 매 분봉마다 호출되지만, STEP 8은 최상단 pending 가드 +
+      동일 입력 멱등이라 이중 주문이 되지 않는다(시간청산은 주문 전송 **전에**
+      `_set_pending_order`를 등록한다 — main.py `_ts_check_exit_triggers`).
+    """
+    # 호출 횟수는 FLAT이어도 센다 — 이 카운터가 "1차 경로가 살아 있다"는
+    # 유일한 라이브 증거이고, F-2 하트비트가 그대로 찍어 준다(계측 4원칙 ④).
+    _today = datetime.date.today()
+    if self._force_exit_pass_date != _today:
+        self._force_exit_pass_date = _today
+        self._force_exit_pass_evals = 0
+    self._force_exit_pass_evals += 1
+
+    _pos_open = self.position.status != "FLAT"
+    _pending = self._has_pending_order()
+    _broker_cached = int(getattr(self, "_integrity_broker_qty", 0) or 0)
+    if not (_pos_open or _pending or _broker_cached > 0):
+        return                       # FLAT — 하트비트는 F-2(스케줄러)가 1일 1회 남긴다
+    if _pending:
+        log_manager.system(
+            "[ForceExitPass] 15:10 경과 + pending 주문 대기 중 — 다음 봉/30초 틱에서 재확인",
+            "WARNING",
+        )
+        return
+
+    ctx = getattr(self, "_maint_ctx", None)
+    feats = (ctx[0] if ctx else None) or {}
+    decision = (ctx[1] if ctx else None) or {}
+
+    bar = candle or {}
+    # 정규 STEP 8과 같은 입력을 쓴다 — 그 경로는 봉 종가를 price로 넘긴다.
+    # 봉이 비었을 때만 틱 캐시로 폴백한다(피드 이상 상황).
+    price = (float(bar.get("close", 0.0) or 0.0)
+             or float(getattr(self, "_last_pipeline_price", 0.0) or 0.0))
+    if price <= 0:
+        log_manager.system(
+            "[ForceExitPass] 가격 힌트 없음 — 청산 점검 스킵 "
+            "(15:11 스케줄러 안전망이 후속 처리)",
+            "WARNING",
+        )
+        return
+
+    log_manager.system(
+        f"[ForceExitPass] 15:10 경과 분봉 — STEP 8 청산 감시 평가 "
+        f"price={price:.2f} status={self.position.status} "
+        f"engine={self.position.quantity}ct broker_cached={_broker_cached}ct "
+        f"(예측·저장·시계리셋 없음)",
+        "WARNING",
+    )
+    self._check_exit_triggers(price, feats, decision, bar)
+
+
 def _ts_scheduler_force_exit_net(self, now: datetime.datetime = None) -> bool:
     """[MW0601 453차 D2] 시간 청산 피드 독립 안전망 — `_scheduler_tick`(30s)에서 호출.
 
@@ -14594,6 +14692,12 @@ def _ts_scheduler_force_exit_net(self, now: datetime.datetime = None) -> bool:
     절대원칙 §1(오버나이트 금지)이 뚫린다. 이 안전망은 피드와 무관하게 도는
     30s QTimer에서 실행되므로 그 구멍을 막는다.
     (근거: docs/미륵이고도화3/복구봉_이중처리_딥다이브_및_설계제안_2026-08-09.md §4)
+
+    [MW0601 471차 F-1 정정] 이 docstring이 상정한 "정규 STEP 8이 15:10 분봉
+    마감에서 먼저 처리한다"는 전제는 **배포 시점부터 성립하지 않았다** — 15:09 봉의
+    마감 콜백이 정확히 15:10:00에 도착해 `_on_candle_closed`의 `is_force_exit_time`
+    가드에 먼저 걸렸기 때문이다. 즉 이 안전망이 상시 1차 집행자였다. 471차가
+    `_ts_run_force_exit_pass`로 1차 경로를 복구했으므로 이제 전제가 실제로 성립한다.
 
     설계:
       발화  15:11:00부터 — 정규 STEP 8이 15:10 분봉 마감에서 먼저 처리할 60s 유예.
@@ -14621,6 +14725,21 @@ def _ts_scheduler_force_exit_net(self, now: datetime.datetime = None) -> bool:
     _pos_open = self.position.status != "FLAT"
     _broker_cached = int(getattr(self, "_integrity_broker_qty", 0) or 0)
     if not _pos_open and _broker_cached <= 0:
+        # [MW0601 471차 F-2] 하트비트 — 포지션이 없으면 이 경로가 **한 줄도 남기지
+        # 않아** "청산 대상 없음"과 "코드 사망"이 로그상 완전히 같았다. 점검
+        # 수집기 §11 적신호 6번이 매일 이걸 띄우고 매번 사람이 원본으로 수동
+        # 판별해야 했다(0812·0813·0814 연속). 계측 4원칙 ④의 폴백 가시화.
+        # `bar_pass`는 F-1의 청산 전용 패스가 15:10 이후 실제로 몇 번 호출됐는지 —
+        # 1차 경로 도달성의 라이브 증거다(0이면 F-1 회귀).
+        # 30초마다 찍으면 로그가 죽으므로 **당일 최초 1회만** 남긴다.
+        if self._sched_force_exit_heartbeat_date != now.date():
+            self._sched_force_exit_heartbeat_date = now.date()
+            log_manager.system(
+                f"[SchedForceExit] {now.strftime('%H:%M')} 점검 — status=FLAT "
+                f"engine={self.position.quantity}ct broker_cached={_broker_cached}ct "
+                f"bar_pass={self._force_exit_pass_evals}회 → 청산 대상 없음(정상)",
+                "INFO",
+            )
         return False
     if self._has_pending_order():
         log_manager.system(
