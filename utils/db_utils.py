@@ -411,6 +411,12 @@ def _migrate_ensemble_decisions_db():
                 # generate_gate_blocking_report·캠페인 LIKE)의 집계가 조용히
                 # 재정의돼 과거 시계열과 불연속이 생기기 때문(461차 mdd_pct 유형).
                 "entry_block_axes": "TEXT",
+                # [MW0601 471차 후속4 / F-9] `entry_mode`가 폴백값인가(0/1).
+                # `manual`은 A·B·C 전 등급을 허용하는 **가장 넓은 모드**인데 정상
+                # 설정값도 `manual`이라(실측 manual 11,590행 / hybrid 35행) 이 플래그
+                # 없이는 "대시보드 예외로 넓어진 행"을 사후에 가려낼 수 없다.
+                # 471차 이전 행은 NULL = 미측정(계측 4원칙 ②·④).
+                "entry_mode_fallback": "INTEGER",
                 # 같은 건의 짝 — Degraded 선제차단 lookahead가 그 분에 발화했는가.
                 # "진입이 막혔는가"와 다른 사실이다(막지 않아도 발화한다).
                 # 471차 이전 행은 NULL = **미측정**이며 0(미발화)이 아니다(계측 4원칙 ②).

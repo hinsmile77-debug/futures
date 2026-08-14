@@ -827,6 +827,11 @@ class TradingSystem:
         # 발화 시 True로 올린다. `ensemble_decisions.health_preblock`에 저장.
         self._health_preblock_fired: bool = False
 
+        # ── [MW0601 471차 후속4 / F-9] 진입 모드 폴백 상태(직전 관측) ──────────
+        # `_read_entry_mode()`가 상태 변화 시에만 로그를 남기기 위해 쓰는 값.
+        # None = 아직 한 번도 조회하지 않음(""=정상 조회와 구분 — 계측 4원칙 ②).
+        self._entry_mode_fallback_last: object = None
+
         # ── P3-a: OnlineLearner stuck 학습 오염 가드 ───────────────────────────
         self._stuck_this_minute: bool = False    # 이번 분봉에 stuck 해소 발생 여부
 
@@ -2711,6 +2716,57 @@ class TradingSystem:
         else:
             enabled = bool(p.get("degraded_block_auto_entry", HEALTH_DEGRADED_BLOCK_AUTO_ENTRY))
         return bool(enabled and confidence < min_conf), min_conf
+
+    def _read_entry_mode(self) -> tuple:
+        """[MW0601 471차 후속4 / F-9] 진입 모드 조회 — **폴백을 가시화한다.**
+
+        Returns: (entry_mode, fallback_reason)  — 정상 조회면 reason은 빈 문자열.
+
+        왜 함수로 뺐나: 종전에는 파이프라인 안에 인라인으로 있었고, 대시보드 조회가
+        실패하면 `except Exception: entry_mode = "manual"` 한 줄로 **조용히** 떨어졌다.
+        하필 `manual`은 A·B·C **전 등급을 허용하는 가장 넓은 모드**다 —
+        `allowed_grades = {"auto": ["A"], "hybrid": ["A","B"], "manual": ["A","B","C"]}`.
+        즉 대시보드 예외 한 번이 허용 등급을 `["A"]`에서 `["A","B","C"]`로 조용히
+        넓힐 수 있는데, 로그도 플래그도 없었다. 게다가 **정상 설정값도 `manual`**이라
+        (`ensemble_decisions` 실측 2026-07-01~: manual 11,590행 / hybrid 35행)
+        사후 분석에서 폴백분과 정상분을 구분할 방법이 아예 없었다.
+        계측 4원칙 ④(폴백 가시화)의 정면 위반이고, 457차가 잡아낸 4건과 같은 결함이다.
+        (근거: docs/정기점검/매일점검/MW0601-20260814-점검리포트-post.md P2 1-5)
+
+        로그는 **상태가 바뀔 때만** 남긴다 — 매분 찍으면 하루 370줄이라 로그가 죽고,
+        그러면 아무도 안 보게 되어 결국 같은 결함으로 돌아간다.
+        플래그는 `ensemble_decisions.entry_mode_fallback`에 **매 행** 저장한다
+        (계측 4원칙 ④: "DB 컬럼에 폴백값을 쓸 때는 폴백 여부 플래그를 같은 행에 써라").
+        """
+        mode = "manual"
+        reason = ""
+        _dash = getattr(self, "dashboard", None)
+        if _dash is None:
+            # 대시보드 미생성(헤드리스·기동 초기) — 예외와 원인이 다르므로 구분한다.
+            reason = "대시보드 없음"
+        else:
+            try:
+                mode = _dash.get_entry_mode()
+            except Exception as _emf_e:
+                mode = "manual"
+                reason = "조회 예외 %s: %s" % (type(_emf_e).__name__, _emf_e)
+
+        _prev = self._entry_mode_fallback_last
+        if reason != _prev:
+            self._entry_mode_fallback_last = reason
+            if reason:
+                log_manager.signal(
+                    "[EntryMode] ⚠ manual 폴백 — %s. 허용 등급이 %s로 넓어진 상태다"
+                    " (정상 설정값도 manual이라 로그 없이는 구분 불가 — F-9)"
+                    % (reason, ["A", "B", "C"]),
+                    level="WARNING",
+                )
+            elif _prev:
+                log_manager.signal(
+                    "[EntryMode] 정상 조회 복구 — mode=%s (직전 폴백 사유: %s)"
+                    % (mode, _prev)
+                )
+        return mode, reason
 
     # ── 키움 API 연결 ─────────────────────────────────────────
     def _apply_account_no(self, account_no: str) -> None:
@@ -8308,12 +8364,10 @@ class TradingSystem:
                     level="WARNING",
                 )
 
-        entry_mode = "manual"
-        if getattr(self, "dashboard", None) is not None:
-            try:
-                entry_mode = self.dashboard.get_entry_mode()
-            except Exception:
-                entry_mode = "manual"
+        # [MW0601 471차 후속4 / F-9] 폴백 가시화 — 상세 근거는 _read_entry_mode() 참조.
+        # 종전 인라인 `except Exception: entry_mode = "manual"`은 가장 관대한 모드로
+        # 조용히 떨어지면서 아무 흔적도 남기지 않았다.
+        entry_mode, _entry_mode_fallback_reason = self._read_entry_mode()
         allowed_grades = {
             "auto":   ["A"],
             "hybrid": ["A", "B"],
@@ -9703,6 +9757,9 @@ class TradingSystem:
         # 여부를 함께 남긴다. entry_block_reason(1등)은 무변경 — 위 산출부 주석 참조.
         decision["entry_block_axes"]   = _entry_block_axes
         decision["health_preblock"]    = bool(self._health_preblock_fired)
+        # [MW0601 471차 후속4 / F-9] entry_mode가 폴백값인지 같은 행에 남긴다 —
+        # 정상 설정값도 "manual"이라 이 플래그 없이는 사후 구분이 불가능하다.
+        decision["entry_mode_fallback"] = bool(_entry_mode_fallback_reason)
 
         _feat_clean = {k: round(float(v), 4) for k, v in features.items()
                        if v is not None and v == v}
