@@ -9641,6 +9641,47 @@ class TradingSystem:
         # 정상 설정값도 "manual"이라 이 플래그 없이는 사후 구분이 불가능하다.
         decision["entry_mode_fallback"] = bool(_entry_mode_fallback_reason)
 
+        # ── [MW0601 471차 후속6 / G-1] 사이징 추적 구조체 ─────────────────────
+        # F-3이 `[SizerMatch]` 문자열을 고쳤지만, 문자열은 게이트가 하나 늘 때마다
+        # 같은 오귀속이 재발한다(2026-08-14 P1-2: hurst가 목록에 아예 없었다).
+        # 그래서 **판정 근거를 문자열 파싱이 아니라 구조화 질의로** 옮긴다 —
+        # 실전 전환 기준 ⑧([28] sizing_inversion_watch)이 읽는 근거의 무결성 문제다.
+        # 부수 효과가 하나 더 있다: 지금까지 "사이저가 몇 계약을 내놓았는가"는 DB에
+        # 없어서(TRADE 로그에만 있음) [28]의 structural_reason이 **417차에 하드코딩된
+        # 수치**(2026-07-14~07-31)를 매주 그대로 인용하고 있었다. 이 컬럼이 그것을
+        # 매주 실측으로 대체한다.
+        # ⚠ 사이저가 돌지 않은 분(무신호·포지션 보유중)은 **NULL** — 0이 아니다
+        #   (계측 4원칙 ②: 미측정과 "0계약"은 다른 사실이다).
+        _sz_raw = locals().get("_qty_sizer_raw")
+        if _sz_raw is None:
+            decision["sizing_trace"] = None
+        else:
+            _sz_q = {k: round(float(v), 4) for k, v in _quality_mults.items()}
+            _sz_kelly = locals().get("kelly_result") or {}
+            decision["sizing_trace"] = {
+                # 수량 계보 — 사이저 원본 → 안전군 → 표시 → 자동진입 최종
+                "qty_sizer_raw":   int(_sz_raw),
+                "qty_safety_base": int(_qty_safety_base),
+                "qty_display":     int(_qty_display),
+                "qty_auto":        int(_qty_auto),
+                # 품질군 min() 합성(431차)의 입력 전량과 그 argmin
+                "quality_mults":   _sz_q,
+                "binding_gate":    (min(_sz_q, key=lambda k: _sz_q[k]) if _sz_q else None),
+                "quality_min":     (round(min(_sz_q.values()), 4) if _sz_q else None),
+                # 게이트 원값 — 사이징 투입값(meta_size_sizing)과 갈릴 수 있다
+                "meta_size_raw":     round(float(_meta_size), 4),
+                "meta_size_sizing":  round(float(_meta_size_sizing), 4),
+                "tox_size":          round(float(_tox_size), 4),
+                "exec_size":         round(float(_exec_size), 4),
+                "kelly_mult":        (round(float(_sz_kelly.get("multiplier", 1.0)), 4)
+                                      if _sz_kelly else None),
+                "kelly_advised_skip": int(bool(locals().get("_kelly_advised_skip", False))),
+                # 상한 2종 — 어느 쪽이 물렸는지 사후에 가릴 수 있어야 한다
+                "max_contracts":   int(MAX_CONTRACTS),
+                "max_entry_qty":   int(self._max_entry_qty),
+                "entry_executed":  int(bool(_entry_executed_this_cycle)),
+            }
+
         _feat_clean = {k: round(float(v), 4) for k, v in features.items()
                        if v is not None and v == v}
         try:

@@ -2376,6 +2376,86 @@ def _bucket_stats(pnls):
     }
 
 
+def _sizer_pressure_from_trace(since: str = None) -> dict:
+    """[MW0601 471차 후속6 / G-1] 사이저 압력 실측 — `sizing_trace`(JSON) 집계.
+
+    무엇을 재나: **사이저가 내놓은 수량**과 **게이트 통과 후 최종 수량**의 분포 차이.
+    [28]이 판정하려는 "계약수 역예측"은 표본이 qty≥3에 안 쌓여 구조적으로 막혀 있는데,
+    그 원인이 (a) 진입이 적어서인지 (b) 사이저 뒤 게이트 체인에 눌려서인지를
+    가르는 것이 이 지표다. 417차가 TRADE 로그로 한 번 손으로 셌고(379건 중 86건이
+    3계약 이상), 그 값이 DB에 없어 매주 그대로 재인용돼 왔다.
+
+    ⚠ **판정에 관여하지 않는다.** 관측치만 돌려준다 — 합격선 변경 금지(§9).
+    ⚠ `sizing_trace`는 471차 후속6(2026-08-14) 이후 행에만 있다. 그 이전은 NULL이며
+      **미측정**이지 "압력 0"이 아니다(계측 4원칙 ②). `since_effective`로 표기한다.
+    """
+    out = {"available": False}
+    since = since or _campaign_start()
+    try:
+        with _conn(PREDICTIONS_DB) as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(ensemble_decisions)").fetchall()}
+            if "sizing_trace" not in cols:
+                out["reason"] = ("`sizing_trace` 컬럼 없음 — 471차 후속6 미배포 PC "
+                                 "(구 하드코딩 수치를 그대로 읽지 말 것)")
+                return out
+            rows = conn.execute(
+                "SELECT ts, sizing_trace FROM ensemble_decisions "
+                " WHERE ts >= ? AND sizing_trace IS NOT NULL ORDER BY ts",
+                (since,),
+            ).fetchall()
+    except Exception as e:
+        out["reason"] = "조회 실패 — %s: %s" % (type(e).__name__, e)
+        return out
+
+    if not rows:
+        out["reason"] = ("`sizing_trace` 표본 0 — 배포 직후이거나 사이저가 돈 분이 없다 "
+                         "(NULL은 미측정이지 0이 아니다)")
+        return out
+
+    n_ge3 = n_entered = 0
+    entered_qty = []
+    raw_hist, final_hist, binding = {}, {}, {}
+    for r in rows:
+        try:
+            t = json.loads(r["sizing_trace"])
+        except Exception:
+            continue
+        _raw = int(t.get("qty_sizer_raw") or 0)
+        _fin = int(t.get("qty_auto") or 0)
+        raw_hist[_raw] = raw_hist.get(_raw, 0) + 1
+        final_hist[_fin] = final_hist.get(_fin, 0) + 1
+        if _raw >= 3:
+            n_ge3 += 1
+        _bg = t.get("binding_gate")
+        binding[_bg or "(없음)"] = binding.get(_bg or "(없음)", 0) + 1
+        if int(t.get("entry_executed") or 0):
+            n_entered += 1
+            entered_qty.append(_fin)
+
+    n = len(rows)
+    out.update({
+        "available": True,
+        "since_effective": rows[0]["ts"][:10],
+        "n_sizer_runs": n,
+        "n_days": len({r["ts"][:10] for r in rows}),
+        "n_sizer_ge3": n_ge3,
+        "pct_sizer_ge3": round(100.0 * n_ge3 / n, 1),
+        "qty_sizer_raw_hist": dict(sorted(raw_hist.items())),
+        "qty_final_hist": dict(sorted(final_hist.items())),
+        "binding_gate_hist": dict(sorted(binding.items(), key=lambda kv: -kv[1])),
+        "n_entered": n_entered,
+        "entered_qty_ge3": int(sum(1 for q in entered_qty if q >= 3)),
+    })
+    out["reason"] = (
+        "사이저 %d회/%d일 중 3계약+ 출력 %d회(%.1f%%) → 실제 3계약+ 체결 %d건. "
+        "최빈 binding=%s (실측 기준일 %s~)"
+        % (n, out["n_days"], n_ge3, out["pct_sizer_ge3"], out["entered_qty_ge3"],
+           (list(out["binding_gate_hist"]) or ["—"])[0], out["since_effective"])
+    )
+    return out
+
+
 def eval_sizing_inversion_watch() -> dict:
     """[28] 사이징 역예측 감시 (MW0601 405차 / P1-2) — 사전등록.
 
@@ -2481,6 +2561,13 @@ def eval_sizing_inversion_watch() -> dict:
             "⚠ MarginCap이 유일 원인이라는 단정은 아직 못 한다(인과 관측 5건·1거래일)."
             % (len(recent_days), n3_recent, n3_total)
         )
+
+    # [MW0601 471차 후속6 / G-1] 사이저 압력 실측 — 위 structural_reason이 인용하는
+    # "379건 중 86건이 3계약 이상" 수치는 **417차에 TRADE 로그로 한 번 센 값**이고
+    # 그 뒤로 매주 그대로 재인용돼 왔다(DB에 사이저 원본 출력이 없었기 때문).
+    # 471차 후속6이 `ensemble_decisions.sizing_trace`를 만들었으므로 이제 매주
+    # 실측으로 갱신한다. **판정에는 관여하지 않는다** — 합격선은 사전등록 그대로다(§9).
+    out["sizer_pressure"] = _sizer_pressure_from_trace()
 
     if out["n_days"] < min_d:
         out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
@@ -8633,6 +8720,23 @@ def build_report(days: int) -> tuple:
         L.append("  - 이것은 \"표본이 모이는 중\"이 **아니다**. 표시를 분리한 이유는 "
                  "`toxicity_block_shadow`가 자기모순 조건으로 3개월간 0건인 채 "
                  "방치됐던 402차 후속3과 같은 유형이기 때문이다.")
+    # [MW0601 471차 후속6 / G-1] 사이저 압력 **실측**. 바로 위 structural_reason이
+    # 인용하는 "379건 중 86건(22.7%)"은 417차에 TRADE 로그로 한 번 센 값이고 그 뒤로
+    # 매주 그대로 재인용돼 왔다 — 이 줄이 그것을 매주 갱신되는 실측으로 대체한다.
+    # 판정에는 관여하지 않는다(§9 합격선 불변).
+    _sp = siw.get("sizer_pressure") or {}
+    L.append("")
+    if _sp.get("available"):
+        L.append("- **사이저 압력(실측, 471차 후속6 `sizing_trace`)**: %s"
+                 % _sp.get("reason", "—"))
+        L.append("  - 사이저 원본 수량 분포: %s / 최종 수량 분포: %s" % (
+            _sp.get("qty_sizer_raw_hist"), _sp.get("qty_final_hist")))
+        L.append("  - binding 게이트 빈도: %s" % _sp.get("binding_gate_hist"))
+        L.append("  - ⚠ `sizing_trace`는 2026-08-14(471차 후속6) 이후 행에만 있다. "
+                 "그 이전 구간은 **미측정**이지 압력 0이 아니다 — 위 417차 수치와 "
+                 "직접 비교하지 말 것(집계 원천이 다르다).")
+    else:
+        L.append("- 사이저 압력(실측): 미가용 — %s" % _sp.get("reason", "이유 미상"))
     if siw.get("excl_above_cap_krw"):
         L.append("- 계약수 상한별 부분합(그 초과 거래를 **아예 안 했다면**): %s / 전체 %s원" % (
             " / ".join("상한%s=%s원" % (c, format(v, ",.0f"))
