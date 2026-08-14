@@ -8881,6 +8881,31 @@ class TradingSystem:
                         and (1.0 * _tox_size) >= 0.50
                         and (_meta_size * _tox_size) < 0.50
                     )
+                    # [MW0602 470차 D1'] **임계 경계 통과**를 계측한다 — 차단·통과 양쪽 다.
+                    #
+                    # 2026-08-14 CASE-03(당일 최대 손실 -163,268원)은 joint 가
+                    # `0.50 × 1.00 = 0.50` 으로 **정확히 임계에서** 통과했다. 차단 기준이
+                    # `< 0.50` 이라 0.50 은 통과다 — 소수점 하나만 낮았어도 안 들어갔다.
+                    # 게다가 1분 전 13:04:55 에 같은 방향이 이 게이트에 막혔고(tox=0.70),
+                    # 13:05 에 tox 가 1.00 으로 풀리자마자 들어가 졌다.
+                    #
+                    # 이런 "경계 통과" 건이 얼마나 되고 승률이 어떤지 **집계 자체가 없다.**
+                    # ⚠ **임계를 바꾸자는 게 아니다** — 바꿀지 판단할 표본을 만드는 것이다.
+                    #    [7] JointGateBlock 은 캠페인에서 ✅PASS(차단이 옳았다) 판정을 받았고
+                    #    리포트가 "즉시 언블록 금지"를 명시한다. 최소 30건까지 어떤 결론도 내지 않는다.
+                    if _meta_action == "reduce" and _tox_action == "reduce":
+                        try:
+                            _jg_margin = _joint_mult - 0.50
+                            if abs(_jg_margin) <= 0.02:
+                                log_manager.signal(
+                                    f"[JointGateEdge] joint={_joint_mult:.4f} "
+                                    f"margin={_jg_margin:+.4f} (임계 0.50) "
+                                    f"→ {'차단' if _joint_blocked else '통과'} "
+                                    f"| meta={_meta_size_eff:.2f} tox={_tox_size:.2f} "
+                                    f"grade={_final_grade} dir={raw_dir_str}"
+                                )
+                        except Exception as _jge:
+                            logger.debug("[JointGateEdge] 계측 실패 (무해): %s", _jge)
                     if _joint_blocked:
                         # [MW0602 456차] 로그는 판정에 실제로 쓰인 `_meta_size_eff`를 찍는다.
                         # 플래그 OFF면 `_meta_size`와 같아 종전 출력과 동일하고, ON이면

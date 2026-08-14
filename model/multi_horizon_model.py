@@ -1157,6 +1157,9 @@ class MultiHorizonModel:
         # refit 시에는 gap_offset 미적용 — 과거 데이터 기반 재학습이라 당일 갭 보정 불필요
         X_proc = apply_robust_preprocess(X, names)
 
+        # [MW0602 470차 B4] 이번 refit 에서 identity 강제된 CORE 피처 수집 — {피처: [호라이즌]}
+        _degen_core = {}
+
         refreshed = []
         for horizon in HORIZONS:
             # 스케일러는 GBM 학습 완료(_is_fitted) 여부와 독립적으로 재적합 가능.
@@ -1204,6 +1207,10 @@ class MultiHorizonModel:
                                 " → identity(0,1) 강제 (FLAT 100%% 방지)",
                                 horizon, _feat, _raw_std,
                             )
+                            # [MW0602 470차 B4] 호라이즌별 개별 경고만으로는
+                            # "오늘 어느 CORE가 몇 개 호라이즌에서 눌렸나"를 알 수 없다.
+                            # 아래에서 한 줄로 접어 요약한다.
+                            _degen_core.setdefault(_feat, []).append(horizon)
 
                 # [A_WARMUP 보호] 프리장 30봉은 macro 피처 all-zero →
                 # warmup refit으로 mean≈0, scale≈0 → 장 시작 후 실값 z-score 폭발.
@@ -1248,6 +1255,39 @@ class MultiHorizonModel:
             len(X), refreshed, elapsed,
         )
         self._last_scaler_refit_at = datetime.datetime.now()
+
+        # [MW0602 470차 B4] CORE 준비도 한 줄 — **매 refit 무조건 남긴다.**
+        #
+        # 왜: 2026-08-14 장전 워밍업 3회 전부에서 `above_vwap`(단기 1m·3m·5m + 중기 10m·15m
+        # 양 그룹의 CORE, 체크리스트 규칙이 **미통과 → 강제 X**)가 6호라이즌 모두 identity 로
+        # 눌렸다. 같은 배치의 `cvd_divergence`·`opt_chain_pcr` 는 첫 회만 걸리고 2회차에
+        # 해소됐다 — 즉 **CORE 별로 회복 속도가 다르다**는 사실이 그날 처음 관측됐는데,
+        # 그것을 요약하는 지표가 없어 사람이 18줄짜리 개별 경고를 세어야 했다.
+        # 장전 30봉이 전부 VWAP 한쪽에 있으면 이진 피처의 std=0 은 **수학적으로 정상**이고
+        # identity 강제 자체는 올바른 방어다. 문제는 **그 상태로 09:00 첫 예측에 들어간다**는 것.
+        #
+        # ⚠ **차단은 붙이지 않는다 — 섀도 계측 전용이다.** 317차 HurstGate 가 근거 없이
+        #    하드차단해 진짜 추세 분봉의 72.3% 를 오판 차단한 전례가 있다. 20거래일 축적 후
+        #    "장전 CORE 축퇴일의 09:00~09:30 예측 정확도"를 일자단위로 비교해 판정할 것.
+        # ⚠ 축퇴가 없어도 `축퇴 0/N` 을 남긴다 — 조건부 로그는 §12 고착 감시에 못 넣는다
+        #    (468차 G-2 규약: 100% 고착이 구조적으로 보장되는 로그는 감시 대상이 안 된다).
+        try:
+            _n_ref = len(refreshed) if hasattr(refreshed, "__len__") else 0
+            if _degen_core:
+                _detail = " ".join(
+                    "%s×%dhz" % (f, len(hz)) for f, hz in sorted(_degen_core.items())
+                )
+                logger.warning(
+                    "[CORE준비도] trigger=%s 축퇴 %d/%d — %s | 정상 진입 전 해소 여부를 확인하라",
+                    _trig_label, len(_degen_core), _n_ref, _detail,
+                )
+            else:
+                logger.info(
+                    "[CORE준비도] trigger=%s 축퇴 0/%d — CORE 스케일 정상",
+                    _trig_label, _n_ref,
+                )
+        except Exception as _cre:
+            logger.debug("[CORE준비도] 요약 실패 (무해): %s", _cre)
 
         # [⑥] D_FORCE + opt_pcr 피처 → 30분 감쇠 타이머 설정
         if trigger_type == "D_FORCE" and "opt_pcr" in trigger_reason:

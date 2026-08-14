@@ -137,6 +137,9 @@ DEFAULT_CONFIG = {
         "sizer_match": r"\[SizerMatch\] sizer=(?P<sizer_qty>\d+)계약 → actual=(?P<actual_qty>\d+)계약\s*\(gap=(?P<gap>\d+)\)\s*\|\s*(?P<mults>.+?)\s*$",
         # [MW0602 470차 S3/B3] 증거금 상한 — MAX_CONTRACTS 보다 먼저 구속하는 실효 상한.
         "margin_cap": r"\[MarginCap\]\s*(?P<dir>\w+)\s*산출=(?P<calc>\d+)계약 → 증거금상한=(?P<cap>\d+)계약으로 축소",
+        # [MW0602 470차 B2] 시간대 존 전환 — 진입 가능 시간 예산을 재구성한다.
+        # 추가 계측이 필요 없다. 이 로그를 구간으로 접으면 존별 체류 분수가 그대로 나온다.
+        "time_zone": r"\[TimeRouter\] 시간대 전환 → (?P<zone>[A-Z_]+)\s*[:：]\s*(?P<desc>.+?)\s*$",
         "cb": r"\[CB\]\s*(?P<msg>.+?)\s*$",
         "block_ms": r"메인 스레드 블로킹.*?간격 (?P<ms>\d+)ms|간격 (?P<ms2>\d+)ms — 메인 스레드 블로킹",
     },
@@ -258,6 +261,27 @@ DEFAULT_CONFIG = {
                 "files": ["_WARN", "_SYSTEM"],
                 "min_samples": 5,   # 배너는 하루 1~2회라 전역 20건 기준이면 영영 판정 불가
                 "why": "전략 상태 경보 판정. 한 값 고착이면 판정식이 무의미해진 것",
+            },
+            # ── [MW0602 470차] 470차 L2·B4 가 신설한 무조건 상태 샘플 2종 ──
+            # 둘 다 "엣지 트리거라 마지막 상태가 열린 채 끝나던" 지표를 상태 샘플로 바꾼 것이다.
+            # 배포 이전 날짜를 조회하면 `무기록`으로 뜨는 것이 정상 — 그때는 로그가 없었다.
+            "ConfFloor": {
+                "re": r"\[ConfFloorGuard\] state=(?P<v>\w+)",
+                "files": ["_SIGNAL"],
+                "benign": ["OK"],
+                "why": "자동진입 하한 도달 가능 여부(매분 샘플, 470차 L2). OK 고착은 정상. "
+                       "BLOCKED 고착이면 어떤 신호도 자동진입 하한을 못 넘는 상태가 "
+                       "종일 지속된 것이다 — 2026-08-11 오전 88신호 전부 grade=X 가 그 사례",
+            },
+            "CORE준비도": {
+                "re": r"\[CORE준비도\][^\n]*축퇴 (?P<v>\d+)/\d+",
+                "files": ["_LEARNING", "_SYSTEM", "_SIGNAL"],
+                "benign": ["0"],
+                "why": "장전/장중 스케일러 refit 시 CORE 축퇴 개수(470차 B4). 0 고착이 정상. "
+                       "0이 아닌 값에 고착하면 절대원칙 ③의 CORE가 상시 무력화된 것 — "
+                       "2026-08-14 장전 above_vwap 6호라이즌 identity 강제가 그 사례. "
+                       "⚠ 섀도 계측이다. 차단으로 승격하려면 20거래일 축적 후 "
+                       "'축퇴일의 09:00~09:30 정확도'를 일자단위로 비교할 것(317차 교훈)",
             },
         },
     },
@@ -1300,6 +1324,74 @@ def day_summary(digests, cfg, out):
         A("> 이 절은 신설 로그가 아니라 **이미 있던 `[SizerMatch]`(main.py:8833)를 §5 시야에 넣은 것**이다. "
           "470차 장후 1차가 `TRADE.log` 만 보고 \"축소 사유 로그가 없다\"고 오보한 원인이 여기였다.")
         A("")
+
+    # --- 진입 가능 시간 예산 (B2) ---
+    # [MW0602 470차 B2] "진입 0건"을 볼 때 **분모를 알 수 있게** 한다.
+    # 2026-08-14: 11:50:27~13:00 의 70분이 TimeRouter OTHER(진입 금지)였는데, 그 사실을
+    # 알려주는 것은 전환 로그 단 1줄뿐이었다. 대시보드·수집기·리포트 어디에도
+    # "오늘 진입 가능 시간이 몇 분이었는가"가 없었다.
+    # STABLE_TREND 80분에 진입 1건 vs OTHER 55분에 0건은 전혀 다른 정보다.
+    tzs = merged.get("time_zone", [])
+    if tzs:
+        # 진입금지 존 — settings.py `_ZONE_PARAMS[*]["allow_new_entry"]` 및
+        # main.py `is_entry_zone()` 과 같은 집합. 바뀌면 여기도 갱신할 것.
+        _NO_ENTRY = {"OTHER", "EXIT_ONLY", "PRE_MARKET"}
+        segs = []
+        for i, t in enumerate(tzs):
+            start = hhmm_to_min((t.get("hhmm") or "00:00:00")[:5])
+            if i + 1 < len(tzs):
+                end = hhmm_to_min((tzs[i + 1].get("hhmm") or "00:00:00")[:5])
+            else:
+                # 마지막 구간은 로그가 끝난 시각까지. 장중 점검이면 "진행 중"이다.
+                end = max(start, hhmm_to_min(cfg["minute_loop_window"][1]))
+            segs.append((t.get("zone") or "?", start, max(end, start)))
+
+        # 매분 루프 창(09:00~15:10, 장중이면 잘린 창)과 교집합만 센다 —
+        # 08:40 기동 직후의 OTHER 는 "진입 기회를 잃은 시간"이 아니다.
+        _lo = hhmm_to_min(cfg["minute_loop_window"][0])
+        _hi = hhmm_to_min(cfg["minute_loop_window"][1])
+        budget = {}
+        for zone, s, e in segs:
+            s2, e2 = max(s, _lo), min(e, _hi)
+            if e2 > s2:
+                budget[zone] = budget.get(zone, 0) + (e2 - s2)
+        total_min = sum(budget.values())
+
+        # 존별 진입 건수 — 진입 시각이 어느 구간에 들어가는지로 귀속
+        ent_by_zone = {}
+        for e in en:
+            m = hhmm_to_min((e.get("hhmm") or "00:00:00")[:5])
+            for zone, s, ee in segs:
+                if s <= m < ee:
+                    ent_by_zone[zone] = ent_by_zone.get(zone, 0) + 1
+                    break
+
+        A("### 진입 가능 시간 예산 — 오늘 진입 기회가 몇 분이었나")
+        A("")
+        A("| 존 | 진입 | 체류(분) | 비중 | 진입 건수 |")
+        A("|---|---|---|---|---|")
+        for zone, mins in sorted(budget.items(), key=lambda kv: -kv[1]):
+            allow = "🚫 금지" if zone in _NO_ENTRY else "✅ 허용"
+            A("| `%s` | %s | %d | %.0f%% | %d |" % (
+                zone, allow, mins, (100.0 * mins / total_min) if total_min else 0.0,
+                ent_by_zone.get(zone, 0)))
+        ban_min = sum(m for z, m in budget.items() if z in _NO_ENTRY)
+        A("")
+        A("**진입 가능 %d분 / 금지 %d분** (매분 루프 창 %s~%s 기준 총 %d분)" % (
+            total_min - ban_min, ban_min,
+            cfg["minute_loop_window"][0], cfg["minute_loop_window"][1], total_min))
+        A("")
+        if ban_min:
+            A("> **진입 0건을 볼 때 이 분모를 먼저 보라.** 금지 구간의 0건은 이상이 아니다. "
+              "매일 11:50~13:00 **70분**이 구조적으로 `OTHER`(TIME_ZONES 정의 공백)이며 "
+              "462차 P1-a로 등록·채널 [53] 판정 대기 중이다(`settings.py:5184`).")
+            A("")
+        if any(z in _NO_ENTRY and n_ent for z, n_ent in ent_by_zone.items()):
+            _viol = {z: n for z, n in ent_by_zone.items() if z in _NO_ENTRY and n}
+            A("> ⚠ **진입금지 존에서 진입 %d건** — `ZONE_ENTRY_BAN_ENFORCE=False`(의도된 상태)라 "
+              "집행되지 않는다. 채널 [53] `zone_ban_breach_watch` 의 표본이다. "
+              "**집행을 켜자는 신호로 읽지 말 것** — 위반 코호트가 흑자였다(462차)." % sum(_viol.values()))
+            A("")
 
     # --- 차단 사유 ---
     if bl:
