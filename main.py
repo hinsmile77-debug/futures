@@ -8855,13 +8855,51 @@ class TradingSystem:
                     self._entry_had_partial  = 0   # 진입 시 초기화, 체결 후 갱신
                     self._entry_kelly_advised_skip = 1 if _kelly_advised_skip else 0
                     # [SizerMatch] Sizer 제안 vs 실제 진입 수량 불일치 감지
+                    #
+                    # [MW0601 471차 F-3] 종전 출력은 `kelly/meta/tox/exec` **4종 고정
+                    # 리스트**라 두 가지를 동시에 틀렸다(2026-08-14 11:48 진입 실측):
+                    #   ① 사이징에 실제 쓰인 `_meta_size_sizing`이 아니라 게이트 원값
+                    #      `_meta_size`(0.50)를 찍었다 — 같은 초 `[MetaGate]` 로그가
+                    #      `size_mult_sizing=1.00(무정보폴백→중립)`이라고 스스로 적고 있는데도.
+                    #   ② 품질군의 다섯 번째 축인 **hurst가 목록에 아예 없었다** —
+                    #      그날 `min()`을 지배해 `round(3×0.50)=2`를 만든 장본인이다.
+                    # 그래서 "축소 원인이 MetaGate"라는 **오귀속**이 로그에 남았다.
+                    # → 이제 `_quality_mults`(431차 min() 합성의 입력)를 **전량 순회**
+                    #   출력하고, 최소값을 만든 키를 `binding=`으로 명시한다. 게이트가
+                    #   늘어도 자동으로 따라온다(고정 리스트를 다시 만들지 말 것).
+                    # ⚠ 값은 **사이징 경로에 실제 투입된 것**이다. meta가 게이트 원값과
+                    #   갈리면 `(raw…)`를 병기한다(431차 `[MetaGate]` 관례).
+                    # ※ 캠페인 [28] sizing_inversion_watch는 이 문자열이 아니라 DB
+                    #   포지션(entry_qty)을 읽으므로 파서 동반 수정은 불필요하다.
+                    #   구조화 저장(G-1)이 이 로그의 후속이다.
                     _qty_sizer_raw_val = locals().get("_qty_sizer_raw", _qty_auto)
                     if _qty_sizer_raw_val != _qty_auto:
+                        _sm_q = dict(_quality_mults)
+                        if _sm_q:
+                            _sm_binding = min(_sm_q, key=lambda k: _sm_q[k])
+                            _sm_bind_txt = "%s(%.2f)" % (_sm_binding, _sm_q[_sm_binding])
+                        else:
+                            # 품질군 배수가 하나도 없는데 수량이 줄었다 = 안전군(곱셈)·
+                            # MAX_CONTRACTS 상한·증거금 캡 경로다. "없음"을 0.00으로
+                            # 위장하지 않는다(계측 4원칙 ②).
+                            _sm_bind_txt = "없음(안전군·상한·증거금 경로)"
+                        _sm_meta_txt = "%.2f" % _meta_size_sizing + (
+                            "" if abs(_meta_size_sizing - _meta_size) < 1e-9
+                            else "(raw%.2f·무정보폴백→중립)" % _meta_size
+                        )
+                        # 품질군 전량 — 작은 값부터(=원인 순서). 위에서 이미 이름을
+                        # 따로 찍은 meta는 중복 출력하지 않는다.
+                        _sm_q_txt = " ".join(
+                            "%s=%.2f" % (k, v)
+                            for k, v in sorted(_sm_q.items(), key=lambda kv: kv[1])
+                            if k != "meta"
+                        )
                         log_manager.signal(
                             f"[SizerMatch] sizer={_qty_sizer_raw_val}계약 → actual={_qty_auto}계약 "
-                            f"(gap={_qty_sizer_raw_val - _qty_auto}) | "
+                            f"(gap={_qty_sizer_raw_val - _qty_auto}) | binding={_sm_bind_txt} | "
                             f"kelly={kelly_result.get('multiplier', 1.0):.2f} "
-                            f"meta={_meta_size:.2f} tox={_tox_size:.2f} exec={_exec_size:.2f}"
+                            f"meta={_sm_meta_txt} tox={_tox_size:.2f} exec={_exec_size:.2f}"
+                            + (f" | 품질군: {_sm_q_txt}" if _sm_q_txt else "")
                         )
                     # MetaGate + ToxicityGate 동시 reduce → 합산 mult < 0.50 시 진입 차단
                     # 두 게이트가 각각 독립적으로 "위험하다"고 판단한 상황이므로 진입 의미 없음
