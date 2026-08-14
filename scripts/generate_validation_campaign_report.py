@@ -7334,6 +7334,13 @@ def _fmt_verdict(v: str) -> str:
         "ALERT_BIAS": "🟠 ALERT_BIAS(절편 편향)",
         #   소급 구간을 포함한 실행 — 사전등록 판정으로 승격하지 않는다.
         "BACKFILL_ADVISORY": "🔎 BACKFILL_ADVISORY(소급·참고용)",
+        # [MW0601 471차 후속7 / G-2, 51] ConstOut 빈발일의 동일 호라이즌 진입 열위.
+        #   **"그 호라이즌을 막아라"가 아니다** — 처방 축은 라우터 선택 억제·재학습
+        #   스케줄·피처셋 조사다. 위 ALERT_BIAS와 같은 이유로 별도 어휘를 쓴다
+        #   (FAIL 어휘를 쓰면 316~318차 HurstGate FalseBlock을 반복한다).
+        # ⚠ 이 표에 없는 verdict는 조용히 "INSUFFICIENT"로 표시된다 — 새 채널을
+        #   추가할 때 여기 등록을 빠뜨리면 판정이 사라진 것처럼 보인다.
+        "FLAG_DRAG": "🟠 FLAG_DRAG(호라이즌 열위)",
     }.get(v, "⏳ INSUFFICIENT")
 
 
@@ -7442,6 +7449,10 @@ def build_report(days: int) -> tuple:
     # [MW0601 457차 / G4] 방향 편향 상시 감시. predictions.db만 읽고 시뮬레이터를
     # 쓰지 않으므로 §47 게이트가 SUSPEND여도 계속 판정한다([48]/[49]와 같은 이유).
     dbw = _safe_channel("scripts.direction_bias_watch", "[50]")
+    # [MW0601 471차 후속7 / G-2] ConstOut 호라이즌 건강도. scaler_monitor.db(457차 G5가
+    # 이미 쌓고 있던 집계)와 trades만 읽고 시뮬레이터를 쓰지 않으므로 §47 게이트가
+    # SUSPEND여도 계속 판정한다([48]/[49]/[50]과 같은 이유).
+    cow = _safe_channel("scripts.const_out_horizon_watch", "[51]")
 
     metrics = {
         "generated_at": now_str,
@@ -7485,6 +7496,7 @@ def build_report(days: int) -> tuple:
         "bar_stop_path_watch": bsp,
         "payoff_geometry_watch": pgw,
         "direction_bias_watch": dbw,   # [MW0601 457차 / G4]
+        "const_out_horizon_watch": cow,  # [MW0601 471차 후속7 / G-2]
     }
 
     L = []
@@ -7691,6 +7703,10 @@ def build_report(days: int) -> tuple:
     # 판정문에 역방향 적중률이 함께 실려 있으니 반드시 같이 읽을 것(A1 실측: 반전 시 하락).
     L.append("| [50] 방향 편향 상시 감시 | %s | %s |" % (
         _fmt_verdict(dbw.get("verdict", "")), dbw.get("reason", dbw.get("error", "—"))))
+    # [MW0601 471차 후속7 / G-2] FLAG_DRAG는 "그 호라이즌을 막자"가 아니다 —
+    # 판정문이 처방 축(라우터 억제·재학습 스케줄·피처셋 조사)을 함께 싣는다.
+    L.append("| [51] ConstOut 호라이즌 건강도 | %s | %s |" % (
+        _fmt_verdict(cow.get("verdict", "")), cow.get("reason", cow.get("error", "—"))))
     L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
         _g23.get("n_trades", "—"), _g23.get("n_days", "—"), _dm("tp1_geometry_shadow")))
@@ -9696,6 +9712,41 @@ def build_report(days: int) -> tuple:
     L.append("> TP1은 374/387차에 호라이즌별로 분화됐는데(0.3/0.5/0.7) lock은 339차 상수라")
     L.append("> **유지율이 호라이즌에 반비례**한다(1m 83% / 3m 50% / 5m 36%).")
     L.append("> ⚠ 두 기준이 갈리면 **결과가 소수 고변동일에 집중**됐다는 신호다 — 그래서 둘 다 찍는다.")
+    L.append("")
+
+    # [51] ConstOut 호라이즌 건강도 (MW0601 471차 후속7 / G-2)
+    L.append("## [51] ConstOut 호라이즌 건강도 (471차 후속7 신설 · 시뮬 무관)")
+    L.append("")
+    L.append("- 판정: **%s** — %s" % (_fmt_verdict(cow.get("verdict", "")),
+                                     cow.get("reason", cow.get("error", "—"))))
+    _co_tot = cow.get("const_out_by_horizon_totals") or {}
+    if _co_tot:
+        L.append("")
+        L.append("| 호라이즌 | ConstOut 사건 | 제외 분 | 발생 거래일 |")
+        L.append("|---|---|---|---|")
+        for _hz, _v in _co_tot.items():
+            L.append("| %s | %d | %d | %d |" % (
+                _hz, _v.get("events", 0), _v.get("minutes", 0), _v.get("days", 0)))
+    _co_hz = cow.get("by_horizon") or {}
+    if _co_hz:
+        def _co_cell(d):
+            return ("%d / %s원" % (d["n"], format(d["avg_pnl_krw"], ",.0f"))
+                    if d else "—")
+        L.append("")
+        L.append("| 호라이즌 | heavy n / 평균 | clean n / 평균 |")
+        L.append("|---|---|---|")
+        for _hz, _v in sorted(_co_hz.items()):
+            L.append("| %s | %s | %s |" % (
+                _hz, _co_cell(_v.get("heavy")), _co_cell(_v.get("clean"))))
+    L.append("")
+    L.append("> **일별 영속화는 457차 G5가 이미 하고 있다**(`scaler_daily.const_out_by_horizon`).")
+    L.append("> 이 채널은 그 집계를 **진입 성적과 결합**하는 부분만 담당한다.")
+    L.append("> 🔴 `const_out_by_horizon`이 NULL인 날(457차 G5 배포 이전)의 진입은 **양 버킷")
+    L.append("> 어디에도 넣지 않는다** — 미측정을 clean으로 세면 버킷이 오염된다(계측 4원칙 ②).")
+    L.append("> 이번 주 제외 포지션 **%s건**. 그래서 당분간 INSUFFICIENT가 정상이다."
+             % cow.get("n_excluded_unmeasured", "—"))
+    L.append("> ⚠ FLAG_DRAG는 **차단 처방이 아니다** — 라우터 선택 억제·재학습 스케줄·")
+    L.append("> 피처셋 조사 축이다(316~318차 HurstGate FalseBlock 교훈).")
     L.append("")
 
     # [33] 급행풀스톱 발굴 재실행 게이지 (MW0601 421차 후속10)

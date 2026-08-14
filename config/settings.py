@@ -3916,6 +3916,54 @@ VALIDATION_CAMPAIGN = {
         "window_days": 60,         # 롤링 창 — 체제 변화를 놓치지 않을 만큼 짧게
         "data_start": "2026-05-15",  # predictions.actual 연속 커버리지 시작
     },
+    # ── [MW0601 471차 후속7 / G-2] ConstOut 호라이즌 건강도 — 사전등록 ───────────
+    #
+    # 계기: 2026-08-14에 3m이 하루 **4회** 상수출력(ConstOut)으로 앙상블에서 제외됐다
+    #   돌아왔고, 그 4회가 재학습 4회 → S0 스파이크(최대 2,570ms) → Degraded 선제차단
+    #   4회를 연쇄로 유발했다. **그리고 그날 유일한 진입의 호라이즌도 3m이었다.**
+    #   즉 특정 호라이즌의 불안정이 시스템 전체 자원을 소모하면서 동시에 그 호라이즌으로
+    #   진입하고 있다. "그런 날의 그 호라이즌 진입은 성적이 다른가"를 묻는 축이 없었다.
+    #
+    # 🔵 **영속화는 이미 돼 있다 — 457차 G5가 만들었다**(`scaler_daily.const_out_by_horizon`,
+    #   JSON {hz: {events, minutes}}). 0814 점검 리포트 G-2는 이것을 "영속화하자"고
+    #   적었으나 **함정 ①(이미 반영된 사안)** 이다. 이 채널은 남은 절반 —
+    #   그 집계를 **진입 성적과 결합**하는 부분 — 만 구현한다.
+    #
+    # 관측치: 진입을 두 버킷으로 나눈다.
+    #   heavy : 그날 그 `entry_horizon`의 ConstOut events ≥ heavy_events_min
+    #   clean : 같은 날 같은 호라이즌 events < heavy_events_min
+    # 🔴 `const_out_by_horizon`이 NULL인 날(457차 G5 배포 이전 = data_start 이전)은
+    #   **양쪽 어디에도 넣지 않는다.** 미측정을 "ConstOut 0"으로 읽으면 clean 버킷이
+    #   오염된다(계측 4원칙 ②). 이 채널이 막으려는 가장 큰 함정이다.
+    #
+    # 판정 (관측 전 고정 — 사후 조정 금지, §9):
+    #   FLAG_DRAG    : 양 버킷 표본 충족 AND heavy 평균이 clean보다 pnl_gap_krw 이상 낮음
+    #                  → **차단 처방이 아니다.** 주간회의 안건(라우터가 ConstOut 활성
+    #                    호라이즌을 고르는 것을 억제할지)일 뿐이다.
+    #   PASS         : 표본 충족 + 격차 미달
+    #   INSUFFICIENT : 표본·거래일 미달 (당분간 여기 머문다 — 아래 참조)
+    #
+    # 임계 근거:
+    #   · heavy_events_min 3 — 0814 점검 O-3의 관측 기준("3거래일 연속 3회 이상이면
+    #     3m 피처셋 딥다이브")과 같은 값을 쓴다. 임계를 둘로 나누면 두 문서가 갈린다.
+    #   · min_samples_per_bucket 20 / min_days 5 / pnl_gap_krw 200,000
+    #     — [28]·[29]와 동일. 새 숫자를 만들 이유가 없다.
+    #
+    # ⚠ **당분간 INSUFFICIENT가 정상이다.** data_start(2026-08-12) 이후 3거래일에
+    #   포지션이 7건뿐이다(08-12 6건 · 08-13 0건 · 08-14 1건). 그래도 지금 등록하는
+    #   이유는 사전등록 원칙이다 — 표본이 쌓인 뒤에 기준을 정하면 그 기준은 데이터를
+    #   보고 만든 것이 된다(313차 ④).
+    "const_out_horizon_watch": {
+        "enabled": True,
+        "entry_source": "SYSTEM_AUTO",
+        "heavy_events_min": 3,
+        "min_samples_per_bucket": 20,
+        "min_days": 5,
+        "pnl_gap_krw": 200_000,
+        # `scaler_daily.const_out_by_horizon`이 실제로 채워지기 시작한 날
+        # (457차 G5 배포). 그 이전 행은 NULL = 미측정이며 제외 대상이다.
+        "data_start": "2026-08-12",
+    },
     # ── [MW0601 457차 / A3] 회전 비용 엣지 — 사전등록 (수집 시작 전 확정) ────────
     #
     # 🔴 **먼저 정정한다 — 0811 점검리포트 §2 A3의 전제가 틀렸다.**
