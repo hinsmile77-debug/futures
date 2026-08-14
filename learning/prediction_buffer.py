@@ -219,6 +219,8 @@ class PredictionBuffer:
              if "entry_block_axes" in decision else None),
             (int(bool(decision["health_preblock"]))
              if "health_preblock" in decision else None),
+            (int(bool(decision["entry_mode_fallback"]))
+             if "entry_mode_fallback" in decision else None),
             str(decision.get("checklist_reason", "")),
             (decision.get("meta_gate") or {}).get("entry_quality_prob"),
             ((decision.get("meta_gate") or {}).get("quantile_estimate") or {}).get("expected_pt"),
@@ -279,7 +281,7 @@ class PredictionBuffer:
                        toxicity_size_mult, toxicity_reason,
                        entry_gate_json, entry_final_ok, entry_qty, entry_mode,
                        entry_executed, entry_block_reason,
-                       entry_block_axes, health_preblock,
+                       entry_block_axes, health_preblock, entry_mode_fallback,
                        checklist_reason, meta_entry_quality_prob,
                        quantile_expected_pt, quantile_uncertainty_pt,
                        quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
