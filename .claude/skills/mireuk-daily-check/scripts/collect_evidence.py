@@ -126,8 +126,17 @@ DEFAULT_CONFIG = {
         "entry": r"\[Position\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약 @ (?P<px>[\d.]+).*?horizon=(?P<hz>\w+)\s+hurst=(?P<hurst>\S+)",
         "fill_entry": r"\[체결진입\]\s*(?P<dir>\w+)\s+(?P<qty>\d+)계약.*?보유=(?P<held>\d+)계약",
         "exit": r"\[Position\] 체결청산 (?P<dir>\w+) @ (?P<px>[\d.]+)\s*\|\s*PnL=(?P<pt>[+-][\d.]+)pt\s*\((?P<won>[+-][\d,]+)원\)\s*\|\s*(?P<reason>.+?)\s*$",
+        # [MW0602 470차 S3] 부분청산 — 이것을 안 세면 §5 손익이 배너와 어긋난다.
+        # 2026-08-14 실측: §5 -82,547원 vs 배너 -93,450원, 차이 10,902원이 정확히 부분청산 3레그였다.
+        "partial_exit": r"\[Position\] 체결부분청산 (?P<qty>\d+)계약 @ (?P<px>[\d.]+)\s*\|\s*잔여=(?P<rem>\d+)계약\s*\|\s*PnL=(?P<pt>[+-][\d.]+)pt\s*\((?P<won>[+-][\d,]+)원\)\s*\|\s*(?P<reason>.+?)\s*$",
         "block": r"\[차단\]\s*(?P<reason>.+?)\s*$",
         "sizer": r"\[Sizer\].*?신뢰도배수=(?P<conf_mult>[\d.]+)\s+레짐배수=(?P<regime_mult>[\d.]+)\s+안전배수=(?P<safe_mult>[\d.]+).*?→\s*(?P<qty>\d+)계약",
+        # [MW0602 470차 S3] 사이즈 축소 사유 — **이미 존재하는 로그**다(main.py:8833).
+        # 470차 장후 1차가 TRADE.log 만 보고 "사유 로그가 없다"고 오보했다. 실제로는 SIGNAL.log 에
+        # 있었다. 수집기가 이 채널을 읽지 않은 것이 오보의 원인이므로 §5의 시야에 넣는다.
+        "sizer_match": r"\[SizerMatch\] sizer=(?P<sizer_qty>\d+)계약 → actual=(?P<actual_qty>\d+)계약\s*\(gap=(?P<gap>\d+)\)\s*\|\s*(?P<mults>.+?)\s*$",
+        # [MW0602 470차 S3/B3] 증거금 상한 — MAX_CONTRACTS 보다 먼저 구속하는 실효 상한.
+        "margin_cap": r"\[MarginCap\]\s*(?P<dir>\w+)\s*산출=(?P<calc>\d+)계약 → 증거금상한=(?P<cap>\d+)계약으로 축소",
         "cb": r"\[CB\]\s*(?P<msg>.+?)\s*$",
         "block_ms": r"메인 스레드 블로킹.*?간격 (?P<ms>\d+)ms|간격 (?P<ms2>\d+)ms — 메인 스레드 블로킹",
     },
@@ -909,6 +918,71 @@ def exit_stop_counts(exits):
     return kinds.count("stop"), kinds.count("protect"), kinds.count("unknown")
 
 
+def _won_to_int(s):
+    """`+24,863` → 24863. 파싱 실패는 None — 0으로 떨어뜨리면 손익이 조용히 사라진다."""
+    try:
+        return int(str(s).replace(",", "").replace("+", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def group_positions(entries, partials, finals):
+    """진입·부분청산·최종청산 이벤트를 **포지션 단위**로 묶는다.
+
+    [MW0602 470차 S3] 417차(2026-08-02)가 정정한 단위 혼동 — 청산 레그를 포지션으로 세는 것 —
+    이 2026-08-14 리포트에서 그대로 재발했다("최대 손실 14:40" ← 실제는 13:05, 포지션으로
+    묶으면 -163,268원). **원인은 사람이 아니라 이 도구다**: §5가 레그 단위로 렌더링했고
+    리포트가 그것을 옮겨 적었다. 그래서 집계 단위를 도구 쪽에서 고정한다.
+
+    미륵이는 동시에 한 포지션만 보유한다(FLAT↔보유 교대). 따라서 시각순으로 훑으며
+    진입이 포지션을 열고 최종청산이 닫는 방식으로 정확히 묶인다.
+
+    반환: (positions, orphans)
+      positions — [{"entry":…, "legs":[…], "pt":float|None, "won":int|None, "closed":bool}]
+      orphans   — 진입 없이 나타난 청산 레그(전일 이월·로그 절단·수집 시점 절단).
+                  ⚠ **버리지 않는다.** 버리면 손익이 조용히 사라지고 검산이 통과해버린다.
+    """
+    ev = []
+    for e in entries or []:
+        ev.append((e.get("hhmm") or "", 0, "entry", e))
+    for e in partials or []:
+        ev.append((e.get("hhmm") or "", 1, "partial", e))
+    for e in finals or []:
+        ev.append((e.get("hhmm") or "", 2, "final", e))
+    # 같은 초에 진입과 청산이 겹치면 진입(0) → 부분(1) → 최종(2) 순으로 정렬해야
+    # 포지션이 열리기 전에 닫히는 역전이 생기지 않는다.
+    ev.sort(key=lambda t: (t[0], t[1]))
+
+    positions = []
+    orphans = []
+    cur = None
+    for _hhmm, _ord, kind, rec in ev:
+        if kind == "entry":
+            cur = {"entry": rec, "legs": [], "closed": False}
+            positions.append(cur)
+        elif cur is not None and not cur["closed"]:
+            cur["legs"].append((kind, rec))
+            if kind == "final":
+                cur["closed"] = True
+                cur = None
+        else:
+            orphans.append((kind, rec))
+
+    for p in positions:
+        pts = [_pt_to_float(r.get("pt")) for _k, r in p["legs"]]
+        wons = [_won_to_int(r.get("won")) for _k, r in p["legs"]]
+        p["pt"] = sum(v for v in pts if v is not None) if any(v is not None for v in pts) else None
+        p["won"] = sum(v for v in wons if v is not None) if any(v is not None for v in wons) else None
+    return positions, orphans
+
+
+def _pt_to_float(s):
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
 def day_summary(digests, cfg, out):
     """거래일 요약 — 로그 요약이 아니라 '오늘 무엇을 했는가'.
 
@@ -926,13 +1000,15 @@ def day_summary(digests, cfg, out):
     for k in merged:
         merged[k].sort(key=lambda d: d.get("hhmm") or "")
 
+    ds_flags = []
+
     A("## 5. 거래일 요약 — 오늘 무엇을 했는가")
     A("")
     if not merged and not banner:
         A("_거래일 패턴이 하나도 안 잡혔다. 로그 문구가 바뀌었을 수 있다 — "
           "`config/dailycheck_targets.json` 의 `day_summary_patterns` 를 확인하라._")
         A("")
-        return
+        return ds_flags
 
     # --- 전략 상태 경보 배너 (그날의 판정) ---
     if banner:
@@ -947,47 +1023,152 @@ def day_summary(digests, cfg, out):
     en = merged.get("entry", [])
     fi = merged.get("fill_entry", [])
     ex = merged.get("exit", [])
+    pex = merged.get("partial_exit", [])
     bl = merged.get("block", [])
     sz = merged.get("sizer", [])
+    sm = merged.get("sizer_match", [])
+    mc = merged.get("margin_cap", [])
+
+    positions, orphans = group_positions(en, pex, ex)
 
     A("| 항목 | 건수 |")
     A("|---|---|")
     A("| 진입체크 통과(`[진입체크]`) | %d |" % len(ec))
     A("| 진입 등록(`[Position] 진입`) | %d |" % len(en))
     A("| 체결(`[체결진입]`) | %d |" % len(fi))
-    A("| 청산(`체결청산`) | %d |" % len(ex))
+    A("| **포지션**(진입~최종청산) | **%d** |" % len(positions))
+    A("| 청산 레그 — 최종(`체결청산`) | %d |" % len(ex))
+    A("| 청산 레그 — 부분(`체결부분청산`) | %d |" % len(pex))
     A("| 차단(`[차단]`) | %d |" % len(bl))
     A("| 사이저 호출(`[Sizer]`) | %d |" % len(sz))
+    A("| 사이즈 축소(`[SizerMatch]`) | %d |" % len(sm))
+    A("| 증거금 상한(`[MarginCap]`) | %d |" % len(mc))
+    A("")
+    A("> **집계 단위 — 승패·손익은 `포지션`으로 센다. `레그`가 아니다.**")
+    A("> 이익 포지션은 TP1/TP2/TP3로 쪼개져 여러 레그가 되고 손실 포지션은 전량청산 한 레그가 된다 — "
+      "레그로 세면 **없는 인과가 만들어진다**(417차가 정확히 그 사고였고, 470차 리포트에서 재발했다).")
     A("")
 
-    # --- 손익 ---
-    if ex:
-        tot_pt = 0.0
-        tot_won = 0
-        reasons = {}
-        wins = 0
-        for e in ex:
-            try:
-                tot_pt += float(e["pt"])
-                tot_won += int(e["won"].replace(",", ""))
-                if float(e["pt"]) > 0:
-                    wins += 1
-            except (TypeError, ValueError):
-                pass
-            r = (e.get("reason") or "?").strip()
-            reasons[r] = reasons.get(r, 0) + 1
-        A("### 청산 %d건 · 승 %d (%.0f%%) · 합계 %+.2fpt (%s원)"
-          % (len(ex), wins, 100.0 * wins / len(ex), tot_pt, format(tot_won, "+,d")))
+    # --- 손익 (포지션 단위) ---
+    if positions or orphans:
+        wins = sum(1 for p in positions if (p.get("pt") or 0) > 0 and p["closed"])
+        closed = [p for p in positions if p["closed"]]
+        tot_pt = sum(p["pt"] for p in positions if p.get("pt") is not None)
+        tot_won = sum(p["won"] for p in positions if p.get("won") is not None)
+        for _k, r in orphans:
+            _w = _won_to_int(r.get("won"))
+            _p = _pt_to_float(r.get("pt"))
+            if _w is not None:
+                tot_won += _w
+            if _p is not None:
+                tot_pt += _p
+        n_leg = len(ex) + len(pex)
+        A("### 포지션 %d건 (레그 %d) · 승 %d / 종료 %d (%s) · 합계 %+.2fpt (%s원)"
+          % (len(positions), n_leg, wins, len(closed),
+             ("%.0f%%" % (100.0 * wins / len(closed))) if closed else "—",
+             tot_pt, format(tot_won, "+,d")))
         A("")
-        A("| 시각 | 방향 | PnL(pt) | PnL(원) | 사유 |")
-        A("|---|---|---|---|---|")
-        for e in ex:
-            A("| %s | %s | %s | %s | %s |" % (
-                e["hhmm"], e.get("dir"), e.get("pt"), e.get("won"), e.get("reason")))
+        A("**포지션 단위** — 진입 시각으로 묶었다.")
         A("")
-        A("**청산 사유 분포** — " + ", ".join(
-            "`%s`×%d" % (k, v) for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])))
+        A("| 진입 | 방향 | 계약 | 레그 | 합계pt | 합계원 | 청산 사유 체인 |")
+        A("|---|---|---|---|---|---|---|")
+        for p in positions:
+            e = p["entry"]
+            chain = " → ".join(
+                "%s(%s)" % ((r.get("reason") or "?").strip(), r.get("pt")) for _k, r in p["legs"]
+            ) or "_미청산_"
+            A("| %s | %s | %s | %d | %s | %s | %s |" % (
+                e.get("hhmm"), e.get("dir"), e.get("qty"), len(p["legs"]),
+                ("%+.2f" % p["pt"]) if p.get("pt") is not None else "?",
+                format(p["won"], "+,d") if p.get("won") is not None else "?",
+                truncate(chain, 110)))
         A("")
+        if any(not p["closed"] for p in positions):
+            n_open = sum(1 for p in positions if not p["closed"])
+            A("> ⚠ **미청산 포지션 %d건** — 수집 시점에 아직 열려 있거나 청산 로그를 못 찾았다. "
+              "장후 국면이면 절대원칙 ①(15:10 강제청산) 확인 대상이다." % n_open)
+            A("")
+            ds_flags.append("**미청산 포지션 %d건** — 청산 로그 미발견. 절대원칙 ① 확인" % n_open)
+        if orphans:
+            A("> 🔴 **진입 없이 나타난 청산 레그 %d건** — 전일 이월이거나 로그가 잘렸다. "
+              "손익에는 포함했으나 포지션으로 묶지 못했다." % len(orphans))
+            for _k, r in orphans:
+                A(">   - %s %s %s (%s)" % (r.get("hhmm"), r.get("pt"), r.get("won"),
+                                           truncate((r.get("reason") or "?").strip(), 40)))
+            A("")
+            ds_flags.append("진입 없는 청산 레그 **%d건** — 이월 포지션 또는 로그 절단" % len(orphans))
+
+        # --- 자동 검산: 전략 상태 경보 배너의 '오늘 PnL' 과 대조 ---
+        # 2026-08-14: §5가 -82,547원(레그·부분청산 누락), 배너가 -93,450원이었는데
+        # 둘이 같은 절에 나란히 찍혀 읽는 사람이 매번 손으로 검산해야 했다.
+        banner_won = None
+        for bline in banner or []:
+            bm = re.search(r"오늘\s*PnL\s*[:：]\s*([+-]?[\d,]+)\s*원", bline)
+            if bm:
+                banner_won = _won_to_int(bm.group(1))
+                break
+        if banner_won is not None:
+            diff = tot_won - banner_won
+            if abs(diff) <= 2:      # 반올림 1원 차는 정상
+                A("> ✅ **검산 일치** — §5 합계 `%s원` ≒ 전략경보 배너 `%s원` (차 %d원)"
+                  % (format(tot_won, "+,d"), format(banner_won, "+,d"), diff))
+            else:
+                A("> 🔴 **검산 불일치** — §5 합계 `%s원` vs 전략경보 배너 `%s원` (**차 %s원**). "
+                  "어느 한쪽이 레그를 빠뜨렸다는 뜻이다. 리포트에 손익을 옮겨 적기 전에 원인을 찾아라."
+                  % (format(tot_won, "+,d"), format(banner_won, "+,d"), format(diff, "+,d")))
+                ds_flags.append(
+                    "§5 손익 `%s원` ≠ 전략경보 배너 `%s원` (차 %s원) — 집계 누락 의심"
+                    % (format(tot_won, "+,d"), format(banner_won, "+,d"), format(diff, "+,d")))
+            A("")
+        else:
+            A("> ⚠ 전략경보 배너에서 `오늘 PnL` 을 못 찾아 **검산하지 못했다.** "
+              "장중이면 정상(배너는 15:40 마감 시 발행). 장후면 배너 문구 변경을 의심하라.")
+            A("")
+
+        # --- 레그 상세 (접어둔다 — 단위 혼동 방지) ---
+        if ex or pex:
+            reasons = {}
+            for e in ex:
+                r = (e.get("reason") or "?").strip()
+                reasons[r] = reasons.get(r, 0) + 1
+            A("<details><summary>청산 레그 상세 %d건 (부분 %d + 최종 %d) — "
+              "⚠ 이 표로 승패를 세지 말 것</summary>" % (n_leg, len(pex), len(ex)))
+            A("")
+            A("| 시각 | 종류 | 방향/계약 | PnL(pt) | PnL(원) | 사유 |")
+            A("|---|---|---|---|---|---|")
+            for p in positions:
+                for k, r in p["legs"]:
+                    A("| %s | %s | %s | %s | %s | %s |" % (
+                        r.get("hhmm"), "부분" if k == "partial" else "**최종**",
+                        r.get("dir") or ("%s계약" % r.get("qty")),
+                        r.get("pt"), r.get("won"), (r.get("reason") or "?").strip()))
+            for k, r in orphans:
+                A("| %s | %s(고아) | %s | %s | %s | %s |" % (
+                    r.get("hhmm"), "부분" if k == "partial" else "최종",
+                    r.get("dir") or ("%s계약" % r.get("qty")),
+                    r.get("pt"), r.get("won"), (r.get("reason") or "?").strip()))
+            A("")
+            A("</details>")
+            A("")
+            if reasons:
+                A("**최종청산 사유 분포** — " + ", ".join(
+                    "`%s`×%d" % (k, v) for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])))
+                A("")
+            if pex:
+                pr = {}
+                pwon = 0
+                for e in pex:
+                    r = (e.get("reason") or "?").strip()
+                    pr[r] = pr.get(r, 0) + 1
+                    _w = _won_to_int(e.get("won"))
+                    if _w is not None:
+                        pwon += _w
+                A("**부분청산 %d건 · 합계 %s원** — " % (len(pex), format(pwon, "+,d")) + ", ".join(
+                    "`%s`×%d" % (k, v) for k, v in sorted(pr.items(), key=lambda kv: -kv[1])))
+                A("")
+                A("> 부분청산은 **포지션 손익의 일부**다. 최종청산만 더하면 배너와 어긋난다"
+                  "(2026-08-14 실측 차 10,902원).")
+                A("")
         n_stop, n_prot, n_unk = exit_stop_counts(ex)
         if n_stop or n_prot or n_unk:
             A("> **손절 계열 분해** — 진짜 손절 %d건 · TP1 보호트레일 %d건 · 태그없음 %d건 "
@@ -1074,6 +1255,52 @@ def day_summary(digests, cfg, out):
             "`%s`×%d" % (k, v) for k, v in sorted(mults.items(), key=lambda kv: -kv[1])[:5]))
         A("")
 
+    # --- 실효 상한 분해 (SizerMatch / MarginCap) ---
+    # [MW0602 470차 S3+B3] 사이저 출력이 그대로 체결되지 않는 경로는 두 개다 —
+    #   (1) 품질게이트 min() 합성(431차)   (2) 브로커 증거금 상한(get_order_available_qty)
+    # 이 둘은 성격이 정반대다: 증거금은 **자본이 늘면 사라지고**, 게이트 배수는 안 사라진다.
+    # ⑧ 해제 판단에서 절대 같이 세면 안 되므로 사유별로 갈라 보여준다.
+    if sm or mc:
+        A("### 실효 상한 분해 — 무엇이 그날의 binding constraint였나")
+        A("")
+        A("| 경로 | 건수 | 내용 |")
+        A("|---|---|---|")
+        if sm:
+            gaps = {}
+            for s in sm:
+                gaps["%s→%s" % (s.get("sizer_qty"), s.get("actual_qty"))] = \
+                    gaps.get("%s→%s" % (s.get("sizer_qty"), s.get("actual_qty")), 0) + 1
+            A("| 품질게이트 `[SizerMatch]` | %d | %s |" % (
+                len(sm), ", ".join("`%s계약`×%d" % (k, v)
+                                   for k, v in sorted(gaps.items(), key=lambda kv: -kv[1]))))
+        if mc:
+            caps = {}
+            for m_ in mc:
+                caps["%s→%s" % (m_.get("calc"), m_.get("cap"))] = \
+                    caps.get("%s→%s" % (m_.get("calc"), m_.get("cap")), 0) + 1
+            A("| 증거금 `[MarginCap]` | %d | %s |" % (
+                len(mc), ", ".join("`%s계약`×%d" % (k, v)
+                                   for k, v in sorted(caps.items(), key=lambda kv: -kv[1]))))
+        A("")
+        if sm:
+            mult_mix = {}
+            for s in sm:
+                mult_mix[(s.get("mults") or "?").strip()] = \
+                    mult_mix.get((s.get("mults") or "?").strip(), 0) + 1
+            A("게이트 배수 조합 — " + ", ".join(
+                "`%s`×%d" % (truncate(k, 60), v)
+                for k, v in sorted(mult_mix.items(), key=lambda kv: -kv[1])[:5]))
+            A("")
+        if mc:
+            A("> ⚠ **증거금 상한이 발동한 날이다.** `MAX_CONTRACTS` 보다 증거금이 먼저 구속하면 "
+              "실전 전환 기준 ⑧의 `[28] sizing_inversion_watch` 는 **구조적으로 표본을 못 쌓는다** "
+              "(431차 이후 74포지션 qty≥3 0건). 이것은 '표본이 천천히 쌓이는 중'이 아니라 "
+              "'⑧ 해제 전까지 켜지지 않는 상태'다.")
+            A("")
+        A("> 이 절은 신설 로그가 아니라 **이미 있던 `[SizerMatch]`(main.py:8833)를 §5 시야에 넣은 것**이다. "
+          "470차 장후 1차가 `TRADE.log` 만 보고 \"축소 사유 로그가 없다\"고 오보한 원인이 여기였다.")
+        A("")
+
     # --- 차단 사유 ---
     if bl:
         bd = {}
@@ -1142,6 +1369,8 @@ def day_summary(digests, cfg, out):
                 A("> ⚠ `CB_PIPE_PAUSE_MS = 5_000`(CB⑤ 실질 구현) 이상이 **%d건**이다. "
                   "CB⑤가 실제로 발동했는지, 아니면 계측만 되고 지나갔는지 확인하라." % len(over))
                 A("")
+
+    return ds_flags
 
 
 def scan_gate_flags(root, cfg):
@@ -1216,12 +1445,53 @@ def devmemory_section(root, cfg, day, out):
 
 
 # ------------------------------------------------------------------ 본문
+def clamp_windows_to_now(cfg, day, phase):
+    """[MW0602 470차 S2] 아직 오지 않은 시간을 분모·공백으로 세지 않는다.
+
+    2026-08-14 장중 점검(12:41)에서 수집기가
+      적신호 ① "매분 루프 커버리지 222/371분 (59.8%)"
+      적신호 ② "12:42~15:10 **연속 149분 기록 없음**"
+    을 최상단에 올렸다. 실측은 **09:00~12:41 222/222분, 누락 0분**이었다 — 두 적신호 다
+    미래 시각을 센 결과다. 이런 가짜 적신호가 매번 최상단에 뜨면 적신호 전체가 무시된다
+    (468차 G-2가 막으려던 실패 유형과 같은 늑대소년 효과).
+
+    ⚠ **과거일 재실행(`--date`)에는 적용하지 않는다.** 그날은 15:10까지 다 지났으므로
+    창을 자르면 진짜 공백을 숨긴다. "오늘"인지 반드시 확인한다.
+    ⚠ `pre`/`post` 국면도 자르지 않는다 — pre 는 창 자체가 개장 전이라 무의미하고,
+    post 는 15:10 이 이미 지난 뒤라 자를 것이 없다.
+
+    반환: 잘렸으면 "HH:MM", 아니면 None (렌더링에 쓴다)
+    """
+    if phase != "intra":
+        return None
+    now = now_kst()
+    if day.strftime("%Y-%m-%d") != now.strftime("%Y-%m-%d"):
+        return None                      # 과거일 재실행 — 자르지 않는다
+    now_min = now.hour * 60 + now.minute
+    cut = None
+    for key in ("minute_loop_window", "gap_scan_window"):
+        win = cfg.get(key)
+        if not win:
+            continue
+        lo, hi = hhmm_to_min(win[0]), hhmm_to_min(win[1])
+        if now_min < hi:
+            new_hi = max(lo, now_min)
+            cfg[key] = [win[0], m2hhmm(new_hi)]
+            if key == "minute_loop_window":
+                cut = m2hhmm(new_hi)
+    return cut
+
+
 def build(root, day, phase, cfg, discover_only=False):
     toks = date_tokens(day)
     D = toks["y_m_d"]
     phases = {"pre": ["pre"], "intra": ["pre", "intra"],
               "post": ["pre", "intra", "post"], "all": ["pre", "intra", "post"]}[phase]
     pcid, host = pc_id()
+    # [470차 S2] 국면 인지 — 진행 중인 장중이면 창을 수집 시각까지 자른다.
+    # cfg 를 얕은 복사해 호출자 설정을 오염시키지 않는다(digest 는 이 복사본을 받는다).
+    cfg = dict(cfg)
+    window_cut = clamp_windows_to_now(cfg, day, phase)
     L = []
     A = L.append
 
@@ -1230,6 +1500,9 @@ def build(root, day, phase, cfg, discover_only=False):
     A("- 생성 %s KST · PC **%s** (`%s`)" % (now_kst().strftime("%Y-%m-%d %H:%M:%S"), pcid, host))
     A("- 리포 `%s`" % root)
     A("- 점검 범위: %s (장전=pre / 장중=intra / 장후=post)" % ", ".join(phases))
+    if window_cut:
+        A("- ⏳ **진행 중인 장중** — 커버리지·공백 창을 `%s` 까지 잘랐다(미래 시각을 공백으로 세지 않는다). "
+          "15:10 까지의 판정은 장후 점검에서 한다." % window_cut)
     A("- 날짜 토큰: %s" % " · ".join("`%s`" % toks[k] for k in DATE_TOKEN_KEYS))
     if pcid == "UNKNOWN":
         A("- ⚠ 호스트명에서 `MW####` 를 못 뽑았다 — 커밋/DECISION_LOG 태그를 수동 확인할 것")
@@ -1279,9 +1552,19 @@ def build(root, day, phase, cfg, discover_only=False):
     A("")
     head = run_git(root, ["rev-parse", "--short", "HEAD"])
     branch = run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
-    status = run_git(root, ["status", "--porcelain"])
+    # [MW0602 470차 S1] `-c core.autocrlf=true` 를 **강제**한다 — 환경 중립화.
+    # 이 점검은 두 곳에서 돈다: 사용자의 Windows(Git for Windows 기본 autocrlf=true)와
+    # 예약작업의 리눅스 샌드박스(autocrlf 미설정). Windows 워킹트리는 CRLF, HEAD는 LF이므로
+    # autocrlf 없이 세면 **같은 바이트가 "전 파일 수정됨"으로 읽힌다** —
+    # 2026-08-13 517건 / 08-14 520·522·529·530건이 전부 그 오탐이었고(실제 7건),
+    # 진짜 미커밋 7건이 그 노이즈에 묻혀 점검의 눈이 멀었다.
+    # ⚠ `-c` 는 읽기 전용 오버라이드다. 워킹트리도 리포지터리 설정도 건드리지 않는다.
+    #   ⛔ `.gitattributes` + `git add --renormalize` 는 **하지 않는다** — 리포지터리는 정상이고
+    #      518파일을 건드리면 Windows 쪽 정상 동작을 깨뜨린다(470차 초안 권고를 철회한 이유).
+    status = run_git(root, ["-c", "core.autocrlf=true", "status", "--porcelain"])
     dirty = [l for l in status.splitlines() if l.strip()]
     A("- HEAD `%s` · 브랜치 `%s` · 미커밋 %d건" % (head, branch, len(dirty)))
+    A("- 측정: `git -c core.autocrlf=true status --porcelain` (개행 차이 제외 — 환경 중립)")
     if dirty:
         A("```")
         L.extend(dirty[:40])
@@ -1485,7 +1768,9 @@ def build(root, day, phase, cfg, discover_only=False):
             A("")
 
     # ---- 5. 거래일 요약 ----
-    day_summary(digests, cfg, L)
+    # [MW0602 470차 S3] §5가 스스로 발견한 것(손익 검산 불일치·미청산·고아 레그)을
+    # §11 적신호로 올린다. 예전에는 §5 안에만 찍혀 읽는 사람이 놓칠 수 있었다.
+    day_summary_flags = day_summary(digests, cfg, L)
 
     # ---- 6. 항상 인용하는 패턴 ----
     A("## 6. 항상 인용하는 패턴 (안전장치·크래시·성능·학습)")
@@ -1547,8 +1832,10 @@ def build(root, day, phase, cfg, discover_only=False):
             continue
         have, total, missing = dg.minute_coverage()
         pct = (100.0 * have / total) if total else 0.0
-        A("**매분 루프 커버리지 %s~%s: %d/%d분 (%.1f%%)**" % (
-            cfg["minute_loop_window"][0], cfg["minute_loop_window"][1], have, total, pct))
+        A("**매분 루프 커버리지 %s~%s%s: %d/%d분 (%.1f%%)**" % (
+            cfg["minute_loop_window"][0], cfg["minute_loop_window"][1],
+            " _(진행 중 — 창을 수집 시각까지 자름)_" if window_cut else "",
+            have, total, pct))
         if missing:
             runs = []
             s = prev = missing[0]
@@ -1632,6 +1919,9 @@ def build(root, day, phase, cfg, discover_only=False):
     A("## 11. 자동 적신호 (출발점이지 결론이 아니다)")
     A("")
     flags = []
+    # [MW0602 470차 S3] §5 자체 검산 결과를 최우선으로 올린다 — 손익이 배너와 다르면
+    # 그 아래 모든 손익 서술이 오염된다.
+    flags.extend(day_summary_flags or [])
     if not files:
         flags.append("당일 날짜 토큰 파일 0개 — 프로그램이 안 돌았거나 탐색 경로가 틀렸다")
     if spath and rows:
@@ -1836,6 +2126,55 @@ def build(root, day, phase, cfg, discover_only=False):
     return "\n".join(L)
 
 
+# 같은 날 같은 국면의 보존본 개수 (주간 리포트 VALIDATION_REPORT_KEEP_WEEKS 와 같은 사상)
+EVIDENCE_KEEP_PER_PHASE = 3
+
+
+def preserve_existing_digest(outp, keep=EVIDENCE_KEEP_PER_PHASE):
+    """[MW0602 470차 S4] 같은 국면 재수집이 직전본을 **경고 없이** 덮는 것을 막는다.
+
+    2026-08-14 실제 발생: 장후 2차 수집(16:22)이 1차본(15:53)을 덮었다(70.6KB → 71.1KB).
+    그날은 차이가 EOD 로그 후반부뿐이라 손실이 작았지만, 위험한 경우는 **재기동 전후로
+    두 번 수집할 때**다 — 첫 수집만 담고 있던 로그 구간이 영영 사라진다.
+
+    CLAUDE.md "주간 산출물 위치 규약"이 기록한 사고
+    (*"고정 파일명이 매주 덮어써서 2026-07-31분이 08-01 재생성에 덮였다"*)와 **같은 형태**다.
+    주간 리포트는 날짜본으로 고쳤는데 일일 다이제스트는 안 고쳐져 있었다.
+
+    동작: 기존본을 `<이름>_<mtime HHMM>.md` 로 rename 하고 stderr 에 경고.
+          같은 날 같은 국면의 보존본이 `keep` 를 넘으면 오래된 것부터 지운다.
+    """
+    if not os.path.exists(outp):
+        return
+    base, ext = os.path.splitext(outp)
+    try:
+        stamp = datetime.fromtimestamp(os.path.getmtime(outp)).strftime("%H%M")
+    except Exception:
+        stamp = "prev"
+    bak = "%s_%s%s" % (base, stamp, ext)
+    n = 1
+    while os.path.exists(bak):          # 같은 분에 두 번 돌린 경우
+        bak = "%s_%s-%d%s" % (base, stamp, n, ext)
+        n += 1
+    try:
+        os.rename(outp, bak)
+        eprint("[collect_evidence] 기존본 보존: %s (덮어쓰지 않았다)" % os.path.basename(bak))
+    except Exception as e:
+        eprint("[collect_evidence] ⚠ 기존본 보존 실패 — 덮어쓴다: %s" % e)
+        return
+    # FIFO — 자동 생성물만 대상. 접미사가 시각(4자리 숫자)인 것만 센다.
+    try:
+        d = os.path.dirname(outp) or "."
+        stem = os.path.basename(base)
+        rx = re.compile(r"^%s_(\d{4})(-\d+)?%s$" % (re.escape(stem), re.escape(ext)))
+        olds = sorted(f for f in os.listdir(d) if rx.match(f))
+        for f in olds[:-keep] if len(olds) > keep else []:
+            os.remove(os.path.join(d, f))
+            eprint("[collect_evidence] 보존본 FIFO 삭제: %s" % f)
+    except Exception as e:
+        eprint("[collect_evidence] 보존본 정리 실패(무해): %s" % e)
+
+
 # ------------------------------------------------------------------ 설정 로드
 def load_config(root):
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
@@ -1894,6 +2233,7 @@ def main(argv=None):
         d = os.path.dirname(outp)
         if d and not os.path.isdir(d):
             os.makedirs(d)
+        preserve_existing_digest(outp, keep=EVIDENCE_KEEP_PER_PHASE)
         with io.open(outp, "w", encoding="utf-8") as f:
             f.write(text)
         eprint("[collect_evidence] 저장: %s (%s)" % (outp, fmt_bytes(len(text.encode("utf-8")))))
