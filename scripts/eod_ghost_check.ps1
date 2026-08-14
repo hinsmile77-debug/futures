@@ -29,16 +29,27 @@ $logPath = Join-Path $logDir 'eod_ghost_check.log'
 try {
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 
+    # [470차 후속6] 매칭 폭을 **런처 GUARD와 정확히 맞춘다.**
+    #   start_mireuk.bat:457 →  'python' in (name or '').lower()  and  'main.py' in any(cmdline)
+    # 종전에는 여기서 `-eq 'python.exe'`(정확일치)를 썼다. GUARD 는 부분일치라
+    # `pythonw.exe` 같은 이름을 잡지만 이 스크립트는 놓친다 — 그러면 저녁에 "잔존 0" 을
+    # 기록해 두고 다음날 아침 GUARD 가 "실행 중" 을 외치는, **두 기록이 서로 반박하는**
+    # 상태가 된다. 그 상태에서는 어느 쪽이 옳은지 판정할 근거가 로그에 없다.
+    # ⚠ 이 조건을 바꿀 때는 `start_mireuk.bat` 의 GUARD 조건도 함께 볼 것.
     $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop |
-               Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*main.py*' })
+               Where-Object { $_.Name -match '(?i)python' -and $_.CommandLine -like '*main.py*' })
     $n = $procs.Count
     $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
 
     if ($n -eq 0) {
-        $line = "$stamp [EodGhostCheck] main.py 잔존 프로세스 0 — 정상 종료 확인"
+        $line = "$stamp [EodGhostCheck] main.py 잔존 프로세스 0 — 정상 종료 확인 (매칭: name~python & cmdline~main.py)"
         Write-Output $line
     } else {
-        $detail = ($procs | ForEach-Object { "PID=$($_.ProcessId) start=$($_.CreationDate)" }) -join ' | '
+        # cmdline 을 함께 남긴다 — 판정을 자동화하지 않고 **사람이 가릴 수 있게** 한다.
+        # (어떤 python 이 남았는지가 원인 추적의 핵심이다)
+        $detail = ($procs | ForEach-Object {
+            "PID=$($_.ProcessId) name=$($_.Name) start=$($_.CreationDate) cmd=$($_.CommandLine)"
+        }) -join ' | '
         $line = "$stamp [EodGhostCheck] WARN main.py 잔존 프로세스 $n 개 — $detail"
         Write-Output $line
         Write-Output "  → 전일 로그가 '정상 종료'를 주장해도 프로세스는 남았다."

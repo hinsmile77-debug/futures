@@ -115,3 +115,6 @@ start_mireuk_CREON.bat
 
 # 증거 다이제스트는 재생성 가능 (점검리포트는 커밋 대상)
 docs/정기점검/매일점검/evidence_*.md
+
+# 수집기 실행 부산물 (Cowork 예약 세션이 리포 루트에 남긴다)
+collect_stderr.txt
