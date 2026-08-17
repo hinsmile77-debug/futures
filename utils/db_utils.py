@@ -471,6 +471,28 @@ def _migrate_ensemble_decisions_db():
                 # 콜드스타트 좁은 활성창에서 유일 활성 호라이즌이 그 분에 배포되지 않아
                 # 안전망(flat_score=1.0)이 발동한 케이스 표시 — 발생 빈도 계량용.
                 "weight_collapsed": "INTEGER",
+                # ── [MW0601 473차 / F-8] 극단 스프레드 섀도 계측 ──────────────
+                # ToxicityGate가 매분 계산하던 `signals.spread_extreme_shadow`가
+                # **어디에서도 소비되지 않았다** — 2026-07-12 도입 이래 한 달 넘게
+                # 죽은 섀도였고, 그래서 실전 전환 기준 ⑨의 복원 판단 근거를 만들
+                # 수 없었다(FP-CRITICAL이 "저장 함수가 호출된 적 없어 2개월간
+                # PSI=0.0"이던 것과 같은 결함 패턴).
+                #
+                # 🔵 단, `spread_ticks` **원값은 이미 남아 있었다** — `features`
+                #   JSON(141키) 안에. 2026-08-17 전수 파싱: 24,113행 보유,
+                #   max 104.9988, >=20틱 911행(3.8%). 그래서 이 두 컬럼은
+                #   "없던 데이터를 새로 만드는 것"이 아니라 **질의 가능하게 꺼내는
+                #   것**이다. 141키 JSON 파싱은 매주 리포트가 감당할 비용이 아니다.
+                #
+                # ⚠ 473차 이전 행은 NULL = **미측정**이지 "스프레드 0"이 아니다.
+                #   대조 시 `features` JSON에서 복원할 수 있으나(sizing_trace와
+                #   다른 점), 소급 백필은 하지 않았다 — 원본이 살아 있으므로
+                #   백필로 사본을 만들 이유가 없고, 백필하면 "언제부터 컬럼이
+                #   실제로 채워졌는가"를 잃는다.
+                # ⚠ `spread_ticks = 0.0`은 호가 결측 폴백일 수 있다
+                #   (`features/feature_builder.py:516`). 판독기가 반드시 가른다.
+                "spread_ticks": "REAL",
+                "spread_extreme_shadow": "INTEGER",
             }
             for name, dtype in additions.items():
                 if name not in cols:
