@@ -45,6 +45,19 @@ def _bind():
     _Stub._fair_validity = BatchRetrainer._fair_validity
 
 
+# [MW0601 473차] `_bind()`는 아래 `__main__` 블록에서만 호출됐다 — 그래서 **pytest로
+# 수집하면 바인딩이 일어나지 않아** `test_fair_validity`가
+# `AttributeError: '_Stub' object has no attribute '_fair_validity'` 로 죽었다.
+# 이 파일의 docstring이 직접 실행(`<py310_64> tests/...py`)을 전제하고 있어 그 경로로는
+# 통과했고, 전체 스위트에서는 **빨간불이면서 아무것도 지키지 않는 상태**로 남아 있었다
+# (457차 P4 가드 유효성 판정이 무방비). 모듈 임포트 시점으로 끌어올려 두 경로를 맞춘다.
+# 실패해도 collection을 깨뜨리지 않는다 — 그 경우 테스트 쪽에서 skip 처리된다.
+try:
+    _bind()
+except Exception as _e:      # sklearn 미설치 등 — 이 PC에서는 검증 불가
+    print("[457] _bind 실패 — %s: %s" % (type(_e).__name__, _e))
+
+
 def _write_meta(d, hz, train_end_ts, source="eod"):
     with open(os.path.join(d, "gbm_%s_meta.json" % hz), "w", encoding="utf-8") as f:
         json.dump({"horizon": hz, "train_end_ts": train_end_ts, "source": source}, f)

@@ -176,6 +176,9 @@ class PredictionBuffer:
             pred_rows.append((ts, h_name, h_res.get("direction", 0), conf, up, dn, fl, feat_json, _sigma))
 
         gate = decision.get("gating") or {}
+        # [MW0601 473차 / F-8] ToxicityGate가 밴드와 무관하게 항상 채우는 서브딕트.
+        # 게이트가 아예 돌지 않은 분은 빈 dict → 아래에서 NULL로 떨어진다(미측정).
+        _tox_signals = (decision.get("toxicity_gate") or {}).get("signals") or {}
         ens_row: Tuple = (
             ts, regime, micro_regime,
             int(decision.get("direction", 0)),
@@ -234,6 +237,14 @@ class PredictionBuffer:
             # `min_conf` 컬럼과 갈릴 수 있고, 갈리는 그 행이 진입 성사 행이다.
             (None if decision.get("min_conf_effective") is None
              else float(decision.get("min_conf_effective"))),
+            # [MW0601 473차 / F-8] ToxicityGate `signals`의 스프레드 2값.
+            # 게이트는 매분 계산해 반환하는데 소비처가 0곳이라 그대로 버려졌다.
+            # ⚠ `.get(key, 0)` 금지 — 키가 없으면 NULL로 둔다. 0.0은 "스프레드 0"과
+            #   "호가 결측 폴백"을 겸하는 값이라(feature_builder.py:516) 미측정까지
+            #   0으로 뭉개면 세 상태가 한 값에 겹친다(계측 4원칙 ②).
+            _tox_signals.get("spread_ticks"),
+            (int(bool(_tox_signals["spread_extreme_shadow"]))
+             if "spread_extreme_shadow" in _tox_signals else None),
         )
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
@@ -266,8 +277,9 @@ class PredictionBuffer:
                        quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
                        coherence_blocked,
                        confidence_raw, confidence_smoothed, weight_collapsed,
-                       meta_size_raw, cal_applied, min_conf_effective
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       meta_size_raw, cal_applied, min_conf_effective,
+                       spread_ticks, spread_extreme_shadow
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 
