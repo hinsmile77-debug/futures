@@ -9273,11 +9273,11 @@ class MireukDashboard(QMainWindow):
         self._cycle_timer.timeout.connect(self._refresh_cycle_badge)
         self._cycle_timer.start()
 
-        # ── Phase 3 알림 배지 깜박임 (800ms) ─────────────────────
-        self._phase3_blink_timer = QTimer(self)
-        self._phase3_blink_timer.setInterval(800)
-        self._phase3_blink_timer.timeout.connect(self._blink_phase3)
-        self._phase3_blink_timer.start()
+        # ── Phase 5 게이트 배지 깜박임 (800ms — 기한 임박 시에만 실제로 깜빡임) ──
+        self._phase5_blink_timer = QTimer(self)
+        self._phase5_blink_timer.setInterval(800)
+        self._phase5_blink_timer.timeout.connect(self._blink_phase5_gate)
+        self._phase5_blink_timer.start()
 
         self._minute_chart_dialog = MinuteChartDialog(self)
         self._minute_chart_shortcut = QShortcut(QKeySequence(MinuteChartDialog.SHORTCUT_TEXT), self)
@@ -9643,33 +9643,30 @@ class MireukDashboard(QMainWindow):
         strat_row.addWidget(self.cmb_strategy)
         strat_row.addWidget(self.btn_save_strategy)
         strat_row.addStretch()
-        # Phase 3 알림 배지 (깜박임 — _blink_phase3 타이머로 갱신)
-        self.lbl_phase3 = QLabel("Phase 3 예정")
-        self.lbl_phase3.setStyleSheet(
-            f"color:{C['orange']};font-size:{S.f(9)}px;font-weight:bold;"
-            f"border:1px solid {C['orange']};border-radius:3px;padding:1px 5px;"
-        )
-        self.lbl_phase3.setToolTip(
-            "Phase 3 — 모의투자 2주 이상 안정 확인 후 착수 예정\n\n"
-            "구현 항목:\n"
-            "  ① Platt Scaling 호라이즌별 독립 적용\n"
-            "     ECE 측정 후 대상 호라이즌 결정\n"
-            "  ② online_learner.py — anti_signal 채널 추가\n"
-            "     역신호 학습 채널 (아이디어 C)\n"
-            "  ③ MFE 기반 레이블 재설계\n"
-            "     Phase 5 실전 전환 이후 착수\n\n"
-            "착수 조건:\n"
-            "  모의투자 4주 통산 수익률 양수\n"
-            "  Circuit Breaker 1회 이상 정상 작동 확인\n"
-            "  Walk-Forward 26주 통과 (Sharpe >= 1.5)"
-        )
-        self._phase3_blink_on = True
+        # ── Phase 5 실전 전환 게이트 배지 [472차] ──────────────────────────
+        # 이 자리에는 원래 "Phase 3 예정"이라는 **하드코딩 문자열**이 800ms마다
+        # 깜빡이고 있었다. 그런데 그 툴팁이 예고한 3개 항목 중 ①Platt Scaling은
+        # 458차에, ②anti_signal 역신호 채널은 457차에 각각 **기각**됐고(둘 다
+        # NEXT_TODO "하지 말 것"에 재시도 금지로 등재), ③MFE 레이블은
+        # Triple-Barrier 경로로 대체돼 캠페인 [1]에서 검증 중이다. 착수 조건도
+        # 구버전이었다(Sharpe만 있고 MDD·승률·전환기준 ⑤~⑨ 누락).
+        # 즉 운영자가 매일 보는 자리에서 **기각된 계획을 계속 예고**하고 있었다 —
+        # 계측 4원칙 ④("폴백이 정상값처럼 보인다")와 같은 결함이고 대상이 UI였을 뿐이다.
+        #
+        # → 문자열을 손으로 갈아끼우지 않는다. `strategy/ops/phase5_gate_status.py`가
+        #   CLAUDE.md 실전 전환 기준 ①~⑨를 config/settings.py 실측 + 결정 레지스트리로
+        #   매번 다시 판정하고, 이 배지는 그 결과만 그린다.
+        self.lbl_phase5_gate = QLabel("")
+        self._phase5_color = C['orange']
+        self._phase5_urgent = False
+        self._phase5_blink_on = True
+        self._refresh_phase5_badge()
 
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(S.p(8))
         title_row.addWidget(title)
-        title_row.addWidget(self.lbl_phase3)
+        title_row.addWidget(self.lbl_phase5_gate)
         title_row.addStretch()
 
         title_box.addLayout(title_row)
@@ -10400,20 +10397,53 @@ class MireukDashboard(QMainWindow):
         self._update_symbol_label(new_text)
         self._save_ui_prefs()
 
-    def _blink_phase3(self):
-        """Phase 3 알림 배지 800ms 깜박임."""
-        self._phase3_blink_on = not self._phase3_blink_on
-        if self._phase3_blink_on:
-            style = (
-                f"color:{C['orange']};font-size:{S.f(9)}px;font-weight:bold;"
-                f"border:1px solid {C['orange']};border-radius:3px;padding:1px 5px;"
-            )
-        else:
-            style = (
-                f"color:{C['bg3']};font-size:{S.f(9)}px;font-weight:bold;"
-                f"border:1px solid {C['bg3']};border-radius:3px;padding:1px 5px;"
-            )
-        self.lbl_phase3.setStyleSheet(style)
+    @staticmethod
+    def _phase5_style(color):
+        return (
+            f"color:{color};font-size:{S.f(9)}px;font-weight:bold;"
+            f"border:1px solid {color};border-radius:3px;padding:1px 5px;"
+        )
+
+    def _refresh_phase5_badge(self):
+        """Phase 5 전환 게이트 배지를 설정값에서 다시 판정해 갱신한다 [472차].
+
+        1분 타이머(`_refresh_cycle_badge`)에 물려 있다 — 기한 D-표기가 자정을 넘겨
+        굳지 않게 하기 위해서다. 게이트 자체는 설정 변경(=재기동) 때만 바뀐다.
+        """
+        try:
+            from strategy.ops.phase5_gate_status import badge as _p5_badge
+            text, level, tip, urgent = _p5_badge()
+        except Exception as e:
+            # 실패를 그럴듯한 값으로 덮지 않는다 — "?/9"로 드러낸다(계측 4원칙 ④).
+            logger.warning("[Phase5Gate] 배지 판정 실패 — %s: %s", type(e).__name__, e)
+            text, level, urgent = "Phase 5 게이트 ?/9", "urgent", False
+            tip = ("Phase 5 게이트 판정에 실패했다 — 화면 값이 아니라 로그를 볼 것.\n"
+                   "판정기: strategy/ops/phase5_gate_status.py\n"
+                   f"예외: {type(e).__name__}: {e}")
+
+        self._phase5_color = {"ok": C['green'], "urgent": C['red']}.get(level, C['orange'])
+        self._phase5_urgent = urgent
+        self.lbl_phase5_gate.setText(text)
+        self.lbl_phase5_gate.setToolTip(tip)
+        # 깜빡임이 꺼진 위상에서 갱신돼 배지가 사라진 채 굳는 것을 막는다.
+        self._phase5_blink_on = True
+        self.lbl_phase5_gate.setStyleSheet(self._phase5_style(self._phase5_color))
+
+    def _blink_phase5_gate(self):
+        """기한이 임박한 게이트가 있을 때만 깜빡인다 [472차].
+
+        **상시 깜빡임은 신호가 아니다.** 교체 전 배지는 기각된 계획을 두 달 넘게
+        깜빡였고, 그렇게 되면 경보 피로로 이 자리의 가치가 0이 된다. 여기서는
+        `PHASE5_GATE_DECISIONS`의 `due`가 D-7 이내로 들어오거나 지났을 때만 깜빡인다.
+        """
+        if not self._phase5_urgent:
+            if not self._phase5_blink_on:
+                self._phase5_blink_on = True
+                self.lbl_phase5_gate.setStyleSheet(self._phase5_style(self._phase5_color))
+            return
+        self._phase5_blink_on = not self._phase5_blink_on
+        col = self._phase5_color if self._phase5_blink_on else C['bg3']
+        self.lbl_phase5_gate.setStyleSheet(self._phase5_style(col))
 
     def _tick_header(self):
         """1초마다 헤더 가동 경과시간 + 파이프라인 생존 바 갱신."""
@@ -10504,6 +10534,8 @@ class MireukDashboard(QMainWindow):
             f"background:{col};color:#fff;border-radius:3px;"
             f"padding:1px {S.p(5)}px;font-size:{S.f(11)}px;font-weight:bold;"
         )
+        # Phase 5 게이트 배지도 같은 이유(날짜 롤오버)로 함께 갱신한다 [472차].
+        self._refresh_phase5_badge()
 
     def closeEvent(self, event):
         """메인 윈도우 종료 시 '완전 종료 / 재시작' 선택 다이얼로그 표시.
