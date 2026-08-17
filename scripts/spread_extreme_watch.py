@@ -216,6 +216,19 @@ def _sign_test_p(diffs):
     return p, pos, neg
 
 
+def _krw(v, sign=False):
+    """천단위 콤마 포맷.
+
+    🔴 `%`-포매팅의 콤마 플래그(`"%,.0f" % v`)는 **py3.7에서 ValueError**다
+      (`str.format`/f-string 전용). 런타임이 py37_32이므로 여기서 막는다.
+      이런 줄은 **표본이 문턱을 넘은 뒤에야 실행**되므로 그대로 두면 몇 달 뒤
+      판정이 처음 나오는 그날 터진다 — `math.comb`과 같은 지연 폭발 패턴이다.
+    """
+    if v is None:
+        return "N/A"
+    return ("{:+,.0f}" if sign else "{:,.0f}").format(v)
+
+
 def _mean(xs):
     return (sum(xs) / len(xs)) if xs else None
 
@@ -406,15 +419,16 @@ def compute():
 
     if worse and big and sig and holds:
         res["verdict"] = "BLOCK_JUSTIFIED"
-        reasons.append("일자단위 격차 %+,.0f원 (|격차| >= %,.0f) · p=%.4f < %.2f · "
+        reasons.append("일자단위 격차 %s원 (|격차| >= %s) · p=%.4f < %.2f · "
                        "최악 %d일 제거 후 부호 유지"
-                       % (mean_diff, gap_thr, p_val, alpha, k))
+                       % (_krw(mean_diff, sign=True), _krw(gap_thr), p_val, alpha, k))
     else:
         res["verdict"] = "BLOCK_UNJUSTIFIED"
         if not worse:
             reasons.append("격차 부호가 반대 (극단 스프레드 진입이 더 낫거나 같다)")
         if not big:
-            reasons.append("|격차| %,.0f원 < 사전등록 %,.0f원" % (abs(mean_diff or 0), gap_thr))
+            reasons.append("|격차| %s원 < 사전등록 %s원"
+                           % (_krw(abs(mean_diff or 0)), _krw(gap_thr)))
         if not sig:
             reasons.append("부호검정 p=%s >= %.2f" % (
                 "%.4f" % p_val if p_val is not None else "N/A", alpha))
@@ -430,7 +444,7 @@ def summarize(res):
     return ("[⑨ 극단스프레드] %s | 처리군 %d포지션/%d일 vs 대조군 %d포지션 | "
             "일자평균격차 %s원 | %s"
             % (res["verdict"], res["n_hi"], res["days_hi"], res["n_lo"],
-               ("%+,.0f" % res["day_mean_diff_krw"])
+               _krw(res["day_mean_diff_krw"], sign=True)
                if res.get("day_mean_diff_krw") is not None else "N/A",
                res.get("reason", "")))
 
@@ -439,7 +453,7 @@ def _fmt(v, unit=""):
     if v is None:
         return "N/A"
     if isinstance(v, float):
-        return "%+,.0f%s" % (v, unit)
+        return "%s%s" % (_krw(v, sign=True), unit)
     return "%s%s" % (v, unit)
 
 
