@@ -30,6 +30,28 @@ class DailyExporter:
         self._dir = report_dir or _REPORT_DIR
         os.makedirs(self._dir, exist_ok=True)
 
+    @staticmethod
+    def _fmt_mdd(snap: Dict, mdd_pct_of_peak: Optional[float]) -> str:
+        """MDD 를 **자본 대비 우선**으로 포맷한다 (461차 규약의 표시 경로 적용).
+
+        분모를 여기서 다시 정의하지 않는다 — `StrategyRegistry._live_mdd_vs_capital()`
+        하나만 쓴다. 같은 이름의 지표가 두 곳에서 다른 분모를 갖는 것이 461차 사고의
+        원인이었으므로, 정의를 복제하는 순간 같은 사고의 씨앗이 다시 생긴다.
+
+        자본을 못 읽으면 `N/A(자본미상)` — **모르는 것을 0으로 쓰지 않는다**
+        (계측 4원칙 ②). peak 대비는 괄호 안에 계속 남긴다.
+        """
+        _peak_pct = abs(mdd_pct_of_peak or 0) * 100
+        _cap = None
+        try:
+            from config.strategy_registry import StrategyRegistry as _SR
+            _cap = _SR._live_mdd_vs_capital(snap or {})
+        except Exception:
+            _cap = None
+        if _cap is None:
+            return "N/A(자본대비·자본미상) [peak대비 %.1f%%]" % _peak_pct
+        return "%.2f%%(자본대비) [peak대비 %.1f%%]" % (abs(_cap) * 100, _peak_pct)
+
     def build_report(self, extra_stats: Optional[Dict] = None) -> str:
         """
         현재 전략 상태를 종합하여 리포트 문자열을 반환.
@@ -66,9 +88,17 @@ class DailyExporter:
                     # 표기 없이 "MDD=129.2%"만 있으면 자본 낙폭으로 오독된다.
                     # 계산은 건드리지 않는다 — WFA 합격선(MDD ≤ 15%)이 같은 정의를
                     # 쓰므로 값을 바꾸면 실전 전환 기준 ③이 조용히 이동한다.
+                    #
+                    # [MW0602 475차 후속] **자본 대비를 앞에 둔다.** 461차가
+                    # "판정·리포트 배너·대시보드는 mdd_pct_of_capital 만 쓴다"고
+                    # 정했는데 이 배너만 남아 있었다(0818 실측: peak대비 143.3% vs
+                    # 자본대비 2.89% — 49.6배). 143.3% 가 전환기준 ③(MDD ≤ 15%)과
+                    # 나란히 읽히면 461차가 실제로 겪은 사고가 그대로 재발한다.
+                    # peak 대비도 **지우지 않고 병기**한다 — 계측 4원칙 ③(탈락 가시화).
+                    # 분모 정의는 새로 쓰지 않고 registry 의 단일 헬퍼를 부른다.
                     lines.append(
-                        "  Live    : Sh=%.2f  MDD=%.1f%%(누적손익peak대비)  WR=%.1f%%  PF=%.2f" % (
-                            sh, abs(md or 0) * 100, (wr or 0) * 100, pf or 0
+                        "  Live    : Sh=%.2f  MDD=%s  WR=%.1f%%  PF=%.2f" % (
+                            sh, self._fmt_mdd(live, md), (wr or 0) * 100, pf or 0
                         )
                     )
                 # 롤링 20일
@@ -76,11 +106,11 @@ class DailyExporter:
                 cum = rolling.get("cum_pnl", 0)
                 _r_mdd_krw = rolling.get("mdd_krw")
                 lines.append(
-                    "  롤링20일: 누적 %+.0f원  Sh=%.2f  MDD=%.1f%%(누적손익peak대비%s)" % (
+                    "  롤링20일: 누적 %+.0f원  Sh=%.2f  MDD=%s%s" % (
                         cum,
                         rolling.get("sharpe", 0) or 0,
-                        abs(rolling.get("mdd_pct", 0) or 0) * 100,
-                        (", {:,.0f}원".format(_r_mdd_krw)) if _r_mdd_krw is not None else "",
+                        self._fmt_mdd(rolling, rolling.get("mdd_pct")),
+                        (", 낙폭 {:,.0f}원".format(_r_mdd_krw)) if _r_mdd_krw is not None else "",
                     )
                 )
             else:
@@ -136,7 +166,10 @@ class DailyExporter:
             _dd_lvs = _dd.get_levels() if hasattr(_dd, "get_levels") else {}
             _dlv  = max(_dd_lvs.values()) if _dd_lvs else 0
             _plv  = _gf().get_level()
-            action, reason = compute_action(_verd, _dlv, _days, _plv)
+            action, reason = compute_action(
+                _verd, _dlv, _days, _plv,
+                insufficient_reason=(_curr or {}).get("verdict_reason"),
+            )
             lines.append("  권고    : %s" % ACTION_KOR.get(action, action))
             lines.append("  사유    : %s" % reason)
         except Exception as e:

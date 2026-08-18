@@ -303,8 +303,15 @@ def test_p6b_mdd_label():
     check("mdd_pct 계산식 무변경 (WFA 합격선 보호)",
           "mdd_pct = mdd_krw / abs(peak) if abs(peak) > 0 else 0.0" in reg)
     exp = _read("strategy/ops/daily_exporter.py")
-    check("Live 줄에 분모 표기", "MDD=%.1f%%(누적손익peak대비)" in exp)
-    check("롤링 줄에 분모 표기", "누적손익peak대비%s" in exp)
+    # [MW0602 475차 후속] 배너를 **자본 대비 우선 + peak 대비 병기**로 바꿨다.
+    # 461차가 "판정·리포트 배너·대시보드는 mdd_pct_of_capital 만 쓴다"고 정했는데
+    # 이 배너만 peak 대비 단독이었다(0818 실측 143.3% vs 자본대비 2.89%).
+    # 검사 취지는 그대로다 — **분모를 반드시 라벨에 박는다.**
+    check("자본 대비 표기(461차 규약)", "%.2f%%(자본대비)" in exp)
+    check("peak 대비 병기 유지(계측 4원칙 ③ 탈락 가시화)", "peak대비 %.1f%%" in exp)
+    check("분모 정의를 복제하지 않고 registry 단일 헬퍼 사용",
+          "_live_mdd_vs_capital" in exp)
+    check("자본 미상 시 0 으로 쓰지 않는다(계측 4원칙 ②)", "자본미상" in exp)
     check("원화 포맷은 str.format 사용 ('%,.0f'는 Python에서 ValueError)",
           "{:,.0f}원\".format(" in exp)
     check("printf 스타일 천단위 구분자 미사용",
