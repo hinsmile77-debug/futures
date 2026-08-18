@@ -318,6 +318,22 @@ class EnsembleDecision:
         # [MW0602 470차 L2] 상태 샘플을 남긴 마지막 분(wall-clock). 분당 1회로 제한한다.
         self._conf_floor_sample_minute: Optional[str] = None
 
+    def _resolve_conf_calibrator(self):
+        """[MW0602 475차 후속] ConfFloorGuard 두 경로가 **같은 보정기**를 보게 하는 단일 접근자.
+
+        왜 접근자로 묶는가: 470차 L2가 상태 샘플을 신설할 때 `self.calibrator`
+        (= main.py:464 가 주입하는 **MultiHorizonCalibrator**)를 참조했는데, 엣지 경고
+        경로는 `self.ensemble_calibrator`(**PredictionCalibrator**)를 본다. 두 클래스는
+        API 가 다르다 —
+          · `is_fitted`   : property(bool)  vs  **method**(horizon 인자 필요)
+          · `output_max`  : property        vs  **속성 자체가 없음**
+        그래서 상태 샘플은 진입 허용 존에서 매분 `AttributeError` 를 냈고, 그 예외가
+        `logger.debug` 로 삼켜져 **로그가 0건**이었다(2026-08-18 실측: 금지 존 80건만 기록,
+        허용 290분 0건). 계측을 고쳐도 참조가 갈라져 있으면 같은 사고가 재발하므로
+        접근자를 하나로 묶는다.
+        """
+        return getattr(self, "ensemble_calibrator", None)
+
     def _check_conf_floor_consistency(
         self, min_conf: float, zone_allows_entry: bool = True
     ) -> None:
@@ -351,7 +367,9 @@ class EnsembleDecision:
                     float(min_conf or 0.0),
                 )
                 return
-            _cal = self.ensemble_calibrator
+            _cal = self._resolve_conf_calibrator()
+            if _cal is None:
+                return
             # [461차 P-B] 실효 진입 하한 주입 — 진입 허용 시간대의 min_conf만 넘긴다.
             # (블랙아웃 구간 min_conf는 진입 임계가 아니므로 위 early-return이 막는다.)
             # 미fit 상태에서도 갱신해야 다음 fit이 최신 하한으로 판정할 수 있다.
@@ -415,7 +433,9 @@ class EnsembleDecision:
                 # "봉쇄"로 세면 404차 후속4가 잡은 오탐이 재발한다.
                 state, _out_max = "ZONE_BLACKOUT", None
             else:
-                _cal = getattr(self, "calibrator", None)
+                # [MW0602 475차 후속] `self.calibrator`(MultiHorizonCalibrator) 오참조 수정.
+                # 그 객체에는 `output_max` 가 없어 여기서 매분 AttributeError 가 났다.
+                _cal = self._resolve_conf_calibrator()
                 if _cal is None:
                     state, _out_max = "NO_CAL", None
                 elif not _cal.is_fitted:
@@ -435,7 +455,10 @@ class EnsembleDecision:
                 zone_allows_entry,
             )
         except Exception as _cfs_e:
-            logger.debug("[ConfFloorGuard] 상태 샘플 실패 (무해): %s", _cfs_e)
+            # [MW0602 475차 후속] debug → warning 승격 + 예외 타입 병기.
+            # 계측이 조용히 죽는 것을 막는 것이 이 승격의 목적이다(468차 G-2 계열).
+            logger.warning("[ConfFloorGuard] 상태 샘플 실패 — %s: %s",
+                           type(_cfs_e).__name__, _cfs_e)
 
     def compute(
         self,
