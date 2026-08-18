@@ -13086,8 +13086,8 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
                 """INSERT INTO synthetic_partial_exits
                    (ts, entry_ts, direction, entry_price, synthetic_price,
                     synthetic_fraction, synthetic_pnl_pts, protect_mode, stop_after,
-                    atr, protect_offset_pts, arm_ts)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    atr, protect_offset_pts, arm_ts, hook_path, entry_qty)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'qty1_static', 1)""",
                 (
                     # [436차] `ts`의 초를 "00"으로 박는 것은 **의도된 동작이다** —
                     # scripts/tp1_protect_offset_shadow.py:240이 이 값을 raw_candles
@@ -13172,6 +13172,56 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
             )
         except Exception as _t2h_e:
             logger.warning("[TP2HoldShadow] 기록 실패 (무해): %s", _t2h_e)
+
+    # ── [MW0601 477차 후속3 / 476차 F-3 재설계] qty≥2 TP1 훅 ───────────────────
+    # `synthetic_partial_exits`는 qty=1 전용이었고, 431차 이후 사이징이 2계약으로
+    # 수렴하면서 2026-08-13부터 신규 행이 0이다 — [25]/[25-B]/[50]의 모집단이
+    # 통째로 말랐다(버그가 아니라 모집단 소멸). qty≥2의 TP1도 같은 테이블에
+    # 기록해 채널을 되살린다.
+    # ⚠ **판정 모집단은 섞지 않는다** — hook_path='qty2plus_partial'로 태그하고
+    #   `scripts/tp1_protect_offset_shadow.py:_load_hooks()`가 qty1_static만 읽어
+    #   기존 판정선을 그대로 보존한다(§9 합격선 무변경). qty≥2는 실제 부분청산 +
+    #   4단계 트레일링이라 청산 기하 자체가 다르다(계측 4원칙 ①).
+    # ⚠ 실거래 무영향 — 주문 전송(_send_broker_exit_order)은 아래에서 그대로 실행된다.
+    if stage == 1 and total_qty >= 2:
+        try:
+            _sp_now = datetime.datetime.now()
+            _sp_atr = float(_ts_get_reference_atr(self) or 0.0)
+            _sp_mult = 1.0 if self.position.status == "LONG" else -1.0
+            _sp_entry = float(self.position.entry_price)
+            execute(
+                TRADES_DB,
+                """INSERT INTO synthetic_partial_exits
+                   (ts, entry_ts, direction, entry_price, synthetic_price,
+                    synthetic_fraction, synthetic_pnl_pts, protect_mode, stop_after,
+                    atr, protect_offset_pts, arm_ts, hook_path, entry_qty)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'qty2plus_partial', ?)""",
+                (
+                    # qty=1 경로와 같은 규약 — ts는 분 절삭(raw_candles 조인 키),
+                    # 초 해상도는 arm_ts. 둘은 같은 _sp_now에서 파생한다(436차).
+                    _sp_now.strftime("%Y-%m-%d %H:%M:00"),
+                    (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
+                     if self.position.entry_time else None),
+                    self.position.status,
+                    _sp_entry,
+                    float(price),
+                    # qty≥2는 회계상이 아니라 **실제로** 이 비율만큼 청산된다
+                    float(ratio),
+                    (float(price) - _sp_entry) * _sp_mult,
+                    # 모드는 "실제 부분청산"임을 값으로 남긴다 — atr_profit 등
+                    # qty=1 보호전환 모드와 같은 칸에 넣되 값으로 구분된다.
+                    "partial_exit",
+                    float(self.position.stop_price),
+                    _sp_atr,
+                    # qty≥2에는 "모드가 의도한 보호 offset" 개념이 없다 —
+                    # 0으로 채우면 qty=1의 0(breakeven)과 겹치므로 NULL(미측정).
+                    None,
+                    _sp_now.strftime("%Y-%m-%d %H:%M:%S"),
+                    int(total_qty),
+                ),
+            )
+        except Exception as _sp2_e:
+            logger.warning("[SyntheticPartial] qty≥2 기록 실패 (무해): %s", _sp2_e)
 
     # pending을 주문 전에 먼저 등록 — BlockRequest() 메시지 펌프 race condition 방지
     # (수동 청산과 동일한 순서: pending 선등록 → 주문 → 실패 시 롤백)

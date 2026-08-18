@@ -162,16 +162,26 @@ def _load_hooks(since: str):
 
     atr / protect_offset_pts는 406차 B에서 신설된 컬럼이라, 아직 마이그레이션이
     적용되지 않은 DB(예: 코드만 먼저 pull한 PC)에서도 죽지 않도록 PRAGMA로 확인한다.
+
+    ⚠ [MW0601 477차 후속3 / 476차 F-3 재설계] **hook_path='qty1_static' 행만 읽는다.**
+    477차부터 qty≥2의 TP1 스테이지도 같은 테이블에 기록된다(모집단 소멸 대응) —
+    그쪽은 실제 부분청산 + 4단계 트레일링이라 청산 기하가 다르므로 이 채널의
+    판정 모집단이 아니다. 섞으면 사전등록 합격선이 조용히 재정의된다(§9-4).
+    레거시 NULL 행은 전부 qty=1 시절이므로 포함한다(마이그레이션이 백필하지만
+    코드만 먼저 pull한 PC를 위해 SQL에서도 NULL을 허용한다).
     """
     with _conn(TRADES_DB) as c:
         cols = {r[1] for r in c.execute(
             "PRAGMA table_info(synthetic_partial_exits)").fetchall()}
         extra = ", atr, protect_offset_pts" if "atr" in cols else ""
+        _path_filter = (
+            " AND (hook_path IS NULL OR hook_path = 'qty1_static')"
+            if "hook_path" in cols else "")
         return [dict(r) for r in c.execute(
             """SELECT ts, entry_ts, direction, entry_price, synthetic_price,
                       synthetic_pnl_pts, protect_mode, stop_after%s
                  FROM synthetic_partial_exits
-                WHERE ts >= ? ORDER BY ts""" % extra, (since,))]
+                WHERE ts >= ?%s ORDER BY ts""" % (extra, _path_filter), (since,))]
 
 
 def _load_hz(since: str):

@@ -7052,8 +7052,48 @@ def resolve_and_eval_tp1_trail_shadow() -> dict:
         "cf_trail_stop": int(agg["n_stop"] or 0),
         "cf_force_exit": int(agg["n_force"] or 0),
     })
+    # [MW0601 477차 후속3 / 476차 F-3 재설계] **모집단 소멸을 "적립 중"과 구분한다.**
+    # 이 채널은 qty=1 전용이다(counterfactual = "qty=2와 같은 4단계 트레일링을
+    # 적용했다면"). 431차 MAX_CONTRACTS 10→3 이후 사이징이 2계약으로 수렴해
+    # 2026-08-13부터 신규 훅이 0이다 — 표본이 **더 이상 오지 않는데** 종전 문구는
+    # "표본 부족"이라 기다리면 채워지는 것처럼 읽혔다(계측 4원칙 ②·③,
+    # 473차 F-8이 TOX-SEVERE-SPREAD에서 확인한 것과 같은 구조).
+    try:
+        with _conn(TRADES_DB) as conn:
+            _q1_recent = conn.execute(
+                """SELECT MAX(ts) AS last_ts,
+                          SUM(CASE WHEN ts >= date('now','-30 day') THEN 1 ELSE 0 END) AS n30
+                     FROM tp1_trail_shadow"""
+            ).fetchone()
+            _last_hook_ts = _q1_recent["last_ts"]
+            _n30 = int(_q1_recent["n30"] or 0)
+            _qty1_recent = conn.execute(
+                """SELECT COUNT(*) AS n FROM trades
+                    WHERE entry_ts >= date('now','-30 day') AND entry_qty = 1"""
+            ).fetchone()["n"]
+    except Exception:
+        _last_hook_ts, _n30, _qty1_recent = None, -1, -1
+    out["last_hook_ts"] = _last_hook_ts
+    out["hooks_30d"] = _n30
+    out["qty1_entries_30d"] = _qty1_recent
+    _dried = (_n30 == 0 and _qty1_recent == 0)
+    if _dried:
+        out["population_dried"] = True
+
     if n < int(cr["min_samples"]):
-        out["reason"] = "TP1 보호전환 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
+        if _dried:
+            out["reason"] = (
+                "⚠ **모집단 소멸** — qty=1 진입이 최근 30일 0건이라 훅이 더 이상 "
+                "발생하지 않는다(마지막 %s). 표본 %d/%d는 **기다려도 차지 않는다**. "
+                "431차 사이징 수렴(2계약)의 구조적 결과이며 버그가 아니다. "
+                "판정하려면 ⓐ 과거 표본 한정으로 문턱을 재사전등록하거나 "
+                "ⓑ qty≥2 축([25] hook_path='qty2plus_partial')으로 질문을 옮겨야 "
+                "한다 — 주간회의 결정(§9)"
+                % (_last_hook_ts or "?", n, cr["min_samples"])
+            )
+        else:
+            out["reason"] = ("TP1 보호전환 표본 부족 (%d < %d) — 판정 보류"
+                             % (n, cr["min_samples"]))
         return out
 
     cost_pt = _roundtrip_cost_pt(avg_price)

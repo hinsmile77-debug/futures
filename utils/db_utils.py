@@ -954,6 +954,30 @@ def init_trades_db():
         if "arm_ts" not in _spe_cols:
             _spe_conn.execute(
                 "ALTER TABLE synthetic_partial_exits ADD COLUMN arm_ts TEXT")
+        # ── [MW0601 477차 후속3 / 476차 F-3 재설계] 훅 경로·진입수량 ──────────
+        # 이 테이블은 **qty=1 전용 훅**([25]/[25-B]/[50]의 유일한 모집단)이었는데,
+        # 431차 이후 사이징이 2계약으로 수렴하면서 2026-08-13부터 신규 행이 0이 됐다
+        # (모집단 소멸 — 버그가 아니다). qty≥2의 TP1 스테이지도 기록해 채널을
+        # 되살리되, **판정 모집단은 섞지 않는다**:
+        #   qty1_static      = 물리 분할 불가 → static ATR-lock 1회 보호전환(기존)
+        #   qty2plus_partial = 실제 부분청산(33%) + 4단계 트레일링(다른 메커니즘)
+        # 두 경로는 청산 기하가 달라 같은 판정선에 넣으면 계측 4원칙 ① 위반이다.
+        # `scripts/tp1_protect_offset_shadow.py:_load_hooks()`가 qty1_static만
+        # 읽어 기존 판정을 그대로 보존한다(§9 합격선 무변경).
+        # ⚠ 기존 행은 전부 qty=1 시절이므로 'qty1_static'으로 백필한다 — NULL로
+        #   두면 레거시와 신규 qty≥2를 구분할 수 없다.
+        if "hook_path" not in _spe_cols:
+            _spe_conn.execute(
+                "ALTER TABLE synthetic_partial_exits ADD COLUMN hook_path TEXT")
+            _spe_conn.execute(
+                "UPDATE synthetic_partial_exits SET hook_path = 'qty1_static' "
+                "WHERE hook_path IS NULL")
+        if "entry_qty" not in _spe_cols:
+            _spe_conn.execute(
+                "ALTER TABLE synthetic_partial_exits ADD COLUMN entry_qty INTEGER")
+            _spe_conn.execute(
+                "UPDATE synthetic_partial_exits SET entry_qty = 1 "
+                "WHERE entry_qty IS NULL")
     # [361차] TP2 홀드 A/B 섀도우 — 0720 정기점검 "TP3 도달 0건" 딥다이브 결과, 트레일링
     # 폭이 아니라 qty=2 스테이지 배분(get_stage_plan()이 (1,1,0) 하드코딩, TP2에서 잔량
     # 100% 종료)이 원인으로 확인됨. TP2가 실제로 전량 종료되는 순간 "이 계약을 홀드해서
