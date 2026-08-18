@@ -875,6 +875,67 @@ def check_invariants(root, cfg):
     return path, rows
 
 
+# ------------------------------------------------------------------ 확정 결정 레지스트리
+# [MW0602 475차 후속3] 왜 일일 다이제스트에 주간회의 결정이 필요한가.
+#
+# 2026-08-18 장후 리포트 §5 R-1 이 "TP1 보호트레일 protect_offset 감도 섀도 계측"을
+# **신규 제안**했다. 그런데 그 질문은 캠페인 [25] `tp1_protect_offset_shadow`(404차
+# 후속3, 443차 정본 재생기 이관)가 이미 더 강한 형태(소급 counterfactual, 95훅/16일)로
+# 측정했고, 판정(FAIL)을 지나 **주간회의 확정 결정(2026-08-08 "미적용 유지")**까지
+# 끝나 있었다. R-1 의 방향 직관(보호를 느슨하게)조차 실측이 반박한다(v2: breakeven
+# Δ−0.08pt ≈ 현행 동률, 우세 변형은 오히려 타이트한 atr_lock_0.75 +12.62pt).
+#
+# CLAUDE.md 캠페인 절이 경고한 바로 그 사고다 — *"일부러 적용하지 않기로 한 FAIL 을
+# 다음 세션이 보고 적용을 재시도할 위험"*. 레지스트리는 있었지만 주간 리포트(docs/)에만
+# 렌더되고 이 수집기의 scan_dirs(logs·data)에는 안 잡혀 **일일 세션의 시야에 없었다.**
+# 그래서 최신 주간 리포트에서 결정 헤딩만 뽑아 §13 으로 노출한다.
+def scan_campaign_decisions(root, pcid):
+    """최신 주간 캠페인 리포트의 "확정 결정 레지스트리" 헤딩을 추출한다.
+
+    반환: {"file": 상대경로, "mtime": "MM-DD HH:MM", "entries": [(key, decision, date)]}
+          리포트가 없으면 None — **미측정이지 "결정 없음"이 아니다**(계측 4원칙 ②).
+    """
+    base = os.path.join(root, "docs", "정기점검", "금요일점검", pcid or "")
+    if not os.path.isdir(base):
+        return None
+    cands = sorted(
+        f for f in os.listdir(base)
+        if re.match(r"^validation_campaign_report_\d{8}\.md$", f))
+    if not cands:
+        return None
+    latest = os.path.join(base, cands[-1])
+    entries = []
+    in_reg = False
+    # 형식(주간 리포트가 렌더): `### \`key\` — 결정문 *(YYYY-MM-DD)*`
+    # 결정문 안에도 — 가 있을 수 있으므로 첫 — 만 구분자로 쓴다.
+    h_re = re.compile(r"^###\s+`(?P<key>[^`]+)`\s*—\s*(?P<rest>.+?)\s*$")
+    d_re = re.compile(r"\*\((?P<d>\d{4}-\d{2}-\d{2})\)\*\s*$")
+    try:
+        with io.open(latest, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                if ln.startswith("## "):
+                    in_reg = ln.startswith("## 확정 결정 레지스트리")
+                    continue
+                if not in_reg:
+                    continue
+                m = h_re.match(ln.strip())
+                if not m:
+                    continue
+                rest = m.group("rest")
+                dm = d_re.search(rest)
+                date = dm.group("d") if dm else ""
+                if dm:
+                    rest = rest[:dm.start()].strip()
+                entries.append((m.group("key"), rest, date))
+    except (IOError, OSError):
+        return None
+    return {
+        "file": os.path.relpath(latest, root),
+        "mtime": ts_kst(os.stat(latest).st_mtime).strftime("%m-%d %H:%M"),
+        "entries": entries,
+    }
+
+
 # ------------------------------------------------------------------ DB (읽기 전용)
 # [MW0602 475차 후속] 이 수집기가 DB 를 읽는 **첫 경로**다.
 #
@@ -2516,6 +2577,37 @@ def build(root, day, phase, cfg, discover_only=False):
           "표본이 쌓여도 해소되지 않는다), "
           "관측일·표본이 기준 미달이면 `표본부족`(판정 보류). "
           "**출발점이지 결론이 아니다** — 고착이 정상인 지표도 있다(예: 사고 없는 날의 CB 상태).*")
+        A("")
+    # ---- 13. 확정 결정 레지스트리 ----
+    # [475차 후속3] §5 수익률 향상방안(R-*)·§3 고도화를 쓰기 전에 반드시 볼 것 —
+    # 같은 질문의 결정이 이미 있으면 신규 계측 제안이 아니라 그 채널의 판정·결정 인용이다.
+    A("## 13. 확정 결정 레지스트리 (주간회의 결정 — 재론 주의)")
+    A("")
+    dec = scan_campaign_decisions(root, pcid)
+    if dec is None:
+        A("> ⚠ **미측정** — `docs/정기점검/금요일점검/%s/validation_campaign_report_*.md` 를 "
+          "찾지 못했다. **\"결정이 없다\"는 뜻이 아니다** — 레지스트리 원본은 "
+          "`config/settings.py:VALIDATION_CAMPAIGN_DECISIONS` 다. 그쪽을 직접 확인할 것."
+          % (pcid or "?"))
+        A("")
+    else:
+        A("> **왜 여기 있는가.** 2026-08-18 §5 R-1 이 캠페인 [25]의 확정 결정(미적용 유지, "
+          "2026-08-08)을 모른 채 같은 질문의 섀도 계측을 신규 제안했다 — CLAUDE.md 가 경고한 "
+          "*\"일부러 적용하지 않기로 한 FAIL 을 다음 세션이 재시도\"* 사고다. "
+          "**§5 R-* · §3 고도화를 쓰기 전에 이 표와 대조하라.** 아래 키와 같은 질문이면 "
+          "신규 계측 제안 금지 — 해당 채널의 판정·결정을 인용한다. "
+          "결정을 바꾸는 것은 주간회의 소관이다(§9).")
+        A("")
+        A("- 원천: `%s` (mtime %s) — 판정(verdict)은 매주 재계산되지만 아래 **결정(decision)은 "
+          "수동 확정 이력**이다. 둘을 혼동하지 말 것." % (dec["file"], dec["mtime"]))
+        A("")
+        if not dec["entries"]:
+            A("_레지스트리 섹션은 있으나 항목이 0건 — 리포트 포맷 변경 의심. 원본을 열어 볼 것._")
+        else:
+            A("| 채널 키 | 결정 | 확정일 |")
+            A("|---|---|---|")
+            for key, decision, date in dec["entries"]:
+                A("| `%s` | %s | %s |" % (key, truncate(decision, 140), date or "—"))
         A("")
     A("---")
     A("")
