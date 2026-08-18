@@ -14,7 +14,7 @@ KEEP / WATCH / REPLACE_CANDIDATE / ROLLBACK_REVIEW 액션을 결정한다.
 """
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 # ─── 액션 상수 ────────────────────────────────────────────────────────────────
 ACTION_KEEP              = "KEEP"
@@ -59,6 +59,7 @@ def compute_action(
     drift_level:  int,
     days_active:  int = 0,
     psi_level:    int = 0,
+    insufficient_reason: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
     전략 상태에서 권장 액션과 이유 문자열을 반환한다.
@@ -121,7 +122,15 @@ def compute_action(
             "Shadow 전략 2주 가동 후 Hot-Swap 검토."
         )
 
-    # INSUFFICIENT (데이터 부족)
+    # INSUFFICIENT (판정 불가)
+    #
+    # [MW0602 475차 후속] 사유를 "데이터 부족"으로 뭉뚱그리지 않는다.
+    # 470차 R1 이 seed 기준선 차단을 넣은 뒤로 INSUFFICIENT 의 실제 다수 원인은
+    # 일수 부족이 아니라 **기준선 부재**다 — 2026-08-18 실측은 `live_days=60` 인데
+    # 배너가 "데이터 부족 (60일)" 이라 자체 모순이었다.
+    # 호출부가 사유를 못 넘기면 종전 문구를 그대로 쓴다(하위호환).
+    if insufficient_reason:
+        return ACTION_WATCH, ("판정 불가: %s. 관찰 지속." % insufficient_reason)
     return ACTION_WATCH, (
         "데이터 부족 (%d일) — %d일 이후 재판정. 관찰 지속." % (
             days_active, _GRACE_PERIOD_DAYS

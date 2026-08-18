@@ -11511,7 +11511,10 @@ class TradingSystem:
             _dd2_lvs  = _get_dd2().get_levels() if hasattr(_get_dd2(), "get_levels") else {}
             _dlv2     = max(_dd2_lvs.values()) if _dd2_lvs else 0
             _plv2     = _get_fp3().get_level()
-            _action, _reason = compute_action(_verd, _dlv2, _ldays, _plv2)
+            _action, _reason = compute_action(
+                _verd, _dlv2, _ldays, _plv2,
+                insufficient_reason=(_curr_v or {}).get("verdict_reason"),
+            )
 
             # 경보 수준 로그 + registry 이벤트 기록
             _ver_str = _curr_v.get("version", "—") if _curr_v else "—"

@@ -429,7 +429,8 @@ class StrategyRegistry:
                     if live_snap.get(k) is None:
                         live_snap[k] = v
 
-        verdict = self._compute_verdict(stages, live_snap)
+        _why: Dict[str, str] = {}
+        verdict = self._compute_verdict(stages, live_snap, _why)
 
         return {
                 "version":          ver,
@@ -440,6 +441,7 @@ class StrategyRegistry:
                 "changed_params":   params,
                 "live_snapshot":    live_snap,
                 "verdict":          verdict,
+                "verdict_reason":   _why.get("reason"),
                 "live_days":        live_days,
             }
 
@@ -470,7 +472,8 @@ class StrategyRegistry:
                     if live_snap.get(k) is None:
                         live_snap[k] = v
 
-        verdict = self._compute_verdict(stages, live_snap)
+        _why: Dict[str, str] = {}
+        verdict = self._compute_verdict(stages, live_snap, _why)
         return {
                 "version":          ver,
                 "activated_at":     activated_at,
@@ -481,6 +484,7 @@ class StrategyRegistry:
                 "changed_params":   params,
                 "live_snapshot":    live_snap,
                 "verdict":          verdict,
+                "verdict_reason":   _why.get("reason"),
                 "live_days":        live_days,
             }
 
@@ -807,6 +811,7 @@ class StrategyRegistry:
         self,
         stages:    Dict[str, Dict[str, Any]],
         live_snap: Optional[Dict[str, Any]],
+        _why:      Optional[Dict[str, str]] = None,
     ) -> str:
         """
         WFA 기준 대비 Live 성과 비교 판정.
@@ -837,16 +842,28 @@ class StrategyRegistry:
         ⚠ 313차 — 임계값(`_NORMAL_SHARPE_DELTA` 등)은 **손대지 않았다.**
           이번 변경은 단위 버그 수정이지 기준 완화가 아니다.
         """
-        if not live_snap:
+        # [MW0602 475차 후속] INSUFFICIENT 의 **사유**를 선택적으로 밖으로 흘린다.
+        # 왜: 이 함수가 문자열 하나만 돌려주는 탓에 소비 측(verdict_engine)이 사유를
+        # 항상 "데이터 부족 (N일)" 로 찍는다. 470차 R1 이 seed 기준선 차단을 넣은 뒤로는
+        # 그 문구가 사실과 어긋난다 — 2026-08-18 실측 `live_days=60` 인데 "데이터 부족".
+        # 계측 4원칙 ②(미측정 ≠ 0)와 같은 취지다: **모르는 이유를 뭉뚱그리지 않는다.**
+        # 기존 호출부·테스트는 `_why` 를 안 넘기므로 반환값 계약은 그대로다.
+        def _ins(reason: str) -> str:
+            if _why is not None:
+                _why["reason"] = reason
             return VERDICT_INSUFFICIENT
+
+        if not live_snap:
+            return _ins("live_snapshot 없음 — 라이브 성과 기록 자체가 없다")
 
         # 롤링 계산 일수가 5일 미만이면 판정 보류
         if live_snap.get("days", 999) < 5:
-            return VERDICT_INSUFFICIENT
+            return _ins("라이브 %d일 — 판정 최소 5일 미달"
+                        % int(live_snap.get("days", 0) or 0))
 
         wfa = stages.get("WFA", {})
         if not wfa:
-            return VERDICT_INSUFFICIENT
+            return _ins("WFA 단계 결과 없음 — 비교 기준선이 없다")
 
         # [470차 R1] 기준선이 QA seed 면 판정하지 않는다.
         #
@@ -858,20 +875,23 @@ class StrategyRegistry:
         # 26주 WFA 미수행 상태에서 "기대값 대비"를 판정하는 것 자체가 근거 없다.
         # **모르는 것을 UNDERPERFORM 으로 단정하지 않는다.**
         if self._is_seed_baseline(wfa):
-            return VERDICT_INSUFFICIENT
+            return _ins("WFA 기준선이 QA seed(evaluated_at=%s) — 진짜 26주 WFA "
+                        "미수행. 기준선을 갱신하기 전에는 판정 불가"
+                        % (wfa.get("evaluated_at") or "미상"))
 
         live_sharpe = live_snap.get("sharpe")
         wfa_sharpe  = wfa.get("sharpe")
         wfa_mdd     = wfa.get("mdd_pct")
 
         if live_sharpe is None or wfa_sharpe is None:
-            return VERDICT_INSUFFICIENT
+            return _ins("Sharpe 결손 (live=%s, wfa=%s)" % (live_sharpe, wfa_sharpe))
 
         # [470차 R1] MDD 를 **자본 대비**로 환산해 WFA 기준과 단위를 맞춘다.
         live_mdd = self._live_mdd_vs_capital(live_snap)
         if live_mdd is None:
             # 자본을 모르면 비교가 불가능하다 — UNDERPERFORM 으로 단정하지 않는다.
-            return VERDICT_INSUFFICIENT
+            return _ins("자본 대비 MDD 환산 불가 (mdd_krw 또는 "
+                        "SIZING_TARGET_CAPITAL_KRW 부재)")
 
         sharpe_delta = live_sharpe - wfa_sharpe
         mdd_delta    = (abs(live_mdd) - abs(wfa_mdd or 0))

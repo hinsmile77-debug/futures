@@ -307,6 +307,9 @@ class _HeaderCard(QFrame):
                 drift_level = drift_level,
                 days_active = live_days,
                 psi_level   = psi_level,
+                # [MW0602 475차 후속] 대시보드도 같은 사유를 본다 — 배너와 화면이
+                # 다른 설명을 하면 어느 쪽이 맞는지 확인하는 비용이 매번 든다.
+                insufficient_reason = (ver_info or {}).get("verdict_reason"),
             )
             _acol = ACTION_COLORS.get(_action, C["text2"])
             _akor = ACTION_KOR.get(_action, _action)
