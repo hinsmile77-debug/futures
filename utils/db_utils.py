@@ -445,6 +445,15 @@ def _migrate_ensemble_decisions_db():
                 "quantile_q10_pt": "REAL",
                 "quantile_q90_pt": "REAL",
                 "meta_gate_horizon": "TEXT",
+                # [MW0601 477차 후속 / 476차 F-5] RegimeFingerprint PSI 매분 영속.
+                # 종전엔 EOD 스냅샷 1점/일 + 임계(0.20) 초과 시에만 로그라 실전 전환
+                # 기준 ⑦("정상 구간에서 PSI가 오르내리는 것을 실측 확인")에 쓸
+                # 시계열이 없었다(0818 이상점 1-4). NULL = 그 분 update_live 예외
+                # (미측정) — 0.0(무드리프트)과 다르다(계측 4원칙 ②).
+                # 473차 spread_ticks와 같은 방식. 판정·차단에는 미관여
+                # (FP_CRITICAL_GRADE_BLOCK_ENABLED=False 유지).
+                "fp_psi": "REAL",
+                "fp_level": "INTEGER",
                 # [297차, P1-6] CoherenceGate/CascadeCoherence 실제 차단 플래그.
                 # grade=='X' AND regime_ok==1 로 역추정하면 conf미달과 동시 발생한
                 # 케이스(같은 분에 confidence<mc 이면서 coherence_blocked도 True인

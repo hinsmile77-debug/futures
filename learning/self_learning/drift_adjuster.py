@@ -64,6 +64,12 @@ class DriftAdjuster:
         self._acc_history: deque = deque(maxlen=HISTORY_DAYS)
         # 마지막 record_accuracy() 판정 (대시보드 표시용, 재기동해도 유지되도록 영속화)
         self._last_action: str = "HOLD"
+        # [MW0601 477차 후속 / 476차 F-1] 포화 연속일수 — alpha가 상한/하한에 붙어
+        # 조정량이 0인 날의 연속 카운트. 2026-08-10~08-18 6거래일 연속
+        # "alpha 0.01000→0.01000" 로그가 조정이 일어난 것처럼 읽혔다(계측 4원칙 ④
+        # 폴백 가시화 위반). SKIP_LOW_SAMPLE은 판정 자체가 없던 날이라 유지,
+        # 그 외 비포화 액션에서 0으로 리셋.
+        self._saturated_days: int = 0
         self._load()
 
     # ── 15:40 마감 시 호출 ─────────────────────────────────────
@@ -119,6 +125,9 @@ class DriftAdjuster:
             "alpha":   self._alpha,
             "action":  self._last_action,
             "history": list(self._acc_history),
+            # [477차 후속 / 476차 F-1] 포화 상태 노출 — F-2 안건(2026-08-29)의 근거
+            "saturated": self._last_action in ("SATURATED_MAX", "SATURATED_MIN"),
+            "saturated_days": self._saturated_days,
         }
 
     def reset(self) -> None:
@@ -126,6 +135,7 @@ class DriftAdjuster:
         self._alpha = ALPHA_DEFAULT
         self._acc_history.clear()
         self._last_action = "HOLD"
+        self._saturated_days = 0
         self._save()
         logger.info("[DriftAdjuster] 수동 초기화 — alpha=%.5f", self._alpha)
 
@@ -139,6 +149,18 @@ class DriftAdjuster:
             if all(a < DRIFT_THRESHOLD for a in recent_drift):
                 old = self._alpha
                 self._alpha = min(self._alpha * ALPHA_UP_FACTOR, ALPHA_MAX)
+                # [477차 후속 / 476차 F-1] 조정량 0이면 조정문이 아니라 포화문을
+                # 남긴다 — "0.01000→0.01000"은 조정처럼 읽힌다(계측 4원칙 ④).
+                if self._alpha == old:
+                    self._saturated_days += 1
+                    logger.warning(
+                        "[DriftAdjuster] %d일 연속 정확도 %.0f%% 미만 — "
+                        "alpha %.5f 유지, ALPHA_MAX 포화 (연속 %d일)",
+                        DRIFT_DAYS_REQUIRED, DRIFT_THRESHOLD * 100,
+                        self._alpha, self._saturated_days,
+                    )
+                    return "SATURATED_MAX"
+                self._saturated_days = 0
                 logger.warning(
                     "[DriftAdjuster] %d일 연속 정확도 %.0f%% 미만 → alpha %.5f→%.5f",
                     DRIFT_DAYS_REQUIRED, DRIFT_THRESHOLD * 100, old, self._alpha,
@@ -150,12 +172,23 @@ class DriftAdjuster:
             if all(a >= RECOVERY_THRESHOLD for a in recent_rec):
                 old = self._alpha
                 self._alpha = max(self._alpha * ALPHA_DOWN_FACTOR, ALPHA_MIN)
+                if self._alpha == old:
+                    self._saturated_days += 1
+                    logger.info(
+                        "[DriftAdjuster] %d일 연속 회복 %.0f%% 이상 — "
+                        "alpha %.5f 유지, ALPHA_MIN 포화 (연속 %d일)",
+                        RECOVERY_DAYS_REQUIRED, RECOVERY_THRESHOLD * 100,
+                        self._alpha, self._saturated_days,
+                    )
+                    return "SATURATED_MIN"
+                self._saturated_days = 0
                 logger.info(
                     "[DriftAdjuster] %d일 연속 회복 %.0f%% 이상 → alpha %.5f→%.5f",
                     RECOVERY_DAYS_REQUIRED, RECOVERY_THRESHOLD * 100, old, self._alpha,
                 )
                 return "RECOVERY_DOWN"
 
+        self._saturated_days = 0
         return "HOLD"
 
     # ── 영속성 ───────────────────────────────────────────────
@@ -166,6 +199,7 @@ class DriftAdjuster:
             "alpha":       self._alpha,
             "acc_history": list(self._acc_history),
             "last_action": self._last_action,
+            "saturated_days": self._saturated_days,   # [477차 후속 / 476차 F-1]
         }
         try:
             with open(self._path, "w", encoding="utf-8") as f:
@@ -184,6 +218,8 @@ class DriftAdjuster:
                 state.get("acc_history", []), maxlen=HISTORY_DAYS
             )
             self._last_action = str(state.get("last_action", "HOLD"))
+            # 구버전 state 파일에는 키가 없다 — 0에서 새로 세기 시작(과거 소급 없음)
+            self._saturated_days = int(state.get("saturated_days", 0))
             logger.info(
                 "[DriftAdjuster] 로드: alpha=%.5f, 이력 %d일, 마지막 액션=%s",
                 self._alpha, len(self._acc_history), self._last_action,

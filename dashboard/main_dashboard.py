@@ -4879,7 +4879,9 @@ class LearningPanel(QWidget):
             "5일 롤링 정확도 추이로 SGD 학습률(alpha)을 자동 조정합니다.\n"
             "DRIFT_UP: 정확도 하락 감지 → alpha 상향(빠른 적응) | "
             "RECOVERY_DOWN: 정확도 회복 → alpha 하향(과적합 방지)\n"
-            "SKIP_LOW_SAMPLE: 당일 표본 부족(<15건) — 극단값 반영 스킵, 기존 alpha 유지"
+            "SKIP_LOW_SAMPLE: 당일 표본 부족(<15건) — 극단값 반영 스킵, 기존 alpha 유지\n"
+            "SATURATED_MAX/MIN: 하락(회복) 지속인데 alpha가 이미 상한(하한) — "
+            "조정 불가 포화 상태(477차, F-2 안건 근거)"
         )
         root.addWidget(self._lbl_drift)
 
@@ -5119,6 +5121,9 @@ class LearningPanel(QWidget):
             "RECOVERY_DOWN":  ("정확도 회복→alpha↓", C['green']),
             "HOLD":           ("유지", C['text2']),
             "SKIP_LOW_SAMPLE": ("표본부족→스킵", C['yellow']),
+            # [477차 후속 / 476차 F-1] 조정량 0 포화 — "조정 중"으로 오독 방지
+            "SATURATED_MAX":  ("하락 지속·alpha 상한 포화", C['red']),
+            "SATURATED_MIN":  ("회복 지속·alpha 하한 포화", C['green']),
         }
         action_txt, action_col = _DRIFT_LABELS.get(drift_action, (drift_action, C['text2']))
         drift_spark = self._spark([float(v) for v in drift_hist[-24:]], 18)

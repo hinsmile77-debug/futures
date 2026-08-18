@@ -919,6 +919,11 @@ class TradingSystem:
         self._shadow_ev = None  # [Phase2] ShadowEvaluator — 신버전 가상 실행
         self._last_health_level: str = "INFO"
         self._fp_last_logged_level: Optional[int] = None
+        # [MW0601 477차 후속 / 476차 F-5] 그 분의 PSI 스냅샷 (psi, level) —
+        # STEP 4에서 계산해 STEP 9 ensemble_decisions(fp_psi/fp_level)에 싣는다
+        # (471차 sizing_trace 관례). update_live 예외 시 None으로 갱신해 이전 분
+        # 값이 유령으로 남지 않게 한다(계측 4원칙 ④). None → DB NULL = 미측정.
+        self._fp_last_psi: Optional[tuple] = None
         self._health_degraded_mode: bool = False
         self._health_warn_streak: int = 0
         self._health_info_streak: int = 0
@@ -6062,10 +6067,22 @@ class TradingSystem:
             _fp      = _get_fp()
             _fp_psi  = _fp.update_live(features)
             _fp_lv   = _fp.get_level()
+            # [477차 후속 / 476차 F-5] STEP 9 저장용 스냅샷 — 매분 갱신
+            self._fp_last_psi = (float(_fp_psi), _fp_lv)
             # 레벨이 유지되는 동안 매분 동일 WARN이 반복 적재되는 것을 방지 —
             # 레벨 전환 시점은 즉시 로그, 그 외에는 5분 간격 하트비트로 축소.
             _fp_lv_changed = _fp_lv != self._fp_last_logged_level
             self._fp_last_logged_level = _fp_lv
+            # [477차 후속 / 476차 F-5] 레벨 무관 5분 하트비트 — 정상 구간(CLEAR/
+            # WATCH)이 어디에도 시계열로 남지 않던 문제(0818 이상점 1-4). 실전 전환
+            # 기준 ⑦("정상 구간에서 PSI가 오르내리는 것을 실측 확인")의 선행 계측.
+            # ⚠ INFO 고정 — WARN이면 수집기 §11 적신호에 매일 ~74건 잡혀 진짜
+            #   경보를 파묻는다(333차 후속5와 동일 취지).
+            if _ts_should_emit_throttled(self, "fp_psi_heartbeat", min_interval_sec=300.0):
+                logger.info(
+                    "[RegimeFingerprint] PSI=%.3f level=%s (heartbeat)",
+                    _fp_psi, _fp_lv,
+                )
             # [303차] PSI 계측 결함(균등폭 10-bin 첨봉 분포)으로 CRITICAL/ALARM이
             # 상시 고착 — 차단은 이미 비활성(FP_CRITICAL_GRADE_BLOCK_ENABLED=False)이고
             # 실제로 라이브에 반영되지 않는 계측치이므로 대시보드 경보 탭에는 올리지
@@ -6095,7 +6112,15 @@ class TradingSystem:
                 "psi_level": _fp_lv,
             })
         except Exception as _fp_e:
-            logger.debug("[RegimeFingerprint] 스킵: %s", _fp_e)
+            # [477차 후속 / 476차 F-5] ⓐ 스냅샷을 None으로 — 이전 분 값이 이번 분
+            # 행에 실리는 유령 방지(계측 4원칙 ④). NULL = 미측정.
+            # ⓑ debug 삼킴 승격 — "하루 종일 조용함"과 "매분 예외로 죽음"을 로그로
+            # 구분할 수 없던 문제(0818 이상점 1-4). 5분 스로틀 WARNING.
+            self._fp_last_psi = None
+            if _ts_should_emit_throttled(self, "fp_psi_error", min_interval_sec=300.0):
+                logger.warning("[RegimeFingerprint] update_live 예외 (5분 스로틀): %s", _fp_e)
+            else:
+                logger.debug("[RegimeFingerprint] 스킵: %s", _fp_e)
 
         # GBM 미학습 시 피처명 부트스트랩 → SGD 학습 활성화
         if not self.model.feature_names and features:
@@ -9801,6 +9826,15 @@ class TradingSystem:
                 "max_entry_qty":   int(self._max_entry_qty),
                 "entry_executed":  int(bool(_entry_executed_this_cycle)),
             }
+
+        # ── [MW0601 477차 후속 / 476차 F-5] PSI 매분 영속 ──────────────────────
+        # STEP 4가 스태시한 그 분의 (psi, level)을 같은 분 행에 싣는다. 스태시가
+        # None(update_live 예외)이면 NULL = 미측정 — 0.0(진짜 무드리프트)과 구분
+        # (계측 4원칙 ②·④). 실전 전환 기준 ⑦의 실측 시계열이 여기서 쌓인다.
+        if self._fp_last_psi is not None:
+            decision["fp_psi"], decision["fp_level"] = self._fp_last_psi
+        else:
+            decision["fp_psi"] = decision["fp_level"] = None
 
         _feat_clean = {k: round(float(v), 4) for k, v in features.items()
                        if v is not None and v == v}
