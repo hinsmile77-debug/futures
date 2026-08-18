@@ -2571,24 +2571,133 @@ def fetch_trend_yearly() -> List[dict]:
 
 
 def init_daily_broker_pnl_db():
-    """브로커 일별 실현손익 테이블 생성 (CpTd6197 실제 정산값 보관)"""
+    """브로커 일별 실현손익 테이블 생성 (CpTd6197 실제 정산값 보관).
+
+    [MW0601 477차 후속2 / 476차 F-4] 단위 명시(계측 4원칙 ①):
+    · pnl_krw        = **gross**(수수료 차감 전) — 0818 원 단위 대사로 확정
+      (broker 685,000 − commission 23,332 = engine net 661,668).
+      이름을 바꾸지 않는 이유: 소비처(대시보드 손익 추이)와 과거 행의 시계열
+      연속성(461차 mdd_pct 관례 — 기존 컬럼은 유지하고 명시 컬럼을 추가한다).
+    · commission_krw / pnl_net_krw = EOD daily_close()가 trades 합산으로 기입.
+      실전 전환 기준 ①(4주 통산 수익률)은 **pnl_net_krw 기준**이다.
+    """
     execute(TRADES_DB, """
         CREATE TABLE IF NOT EXISTS daily_broker_pnl (
             date       TEXT PRIMARY KEY,
-            pnl_krw    REAL NOT NULL,
-            updated_at TEXT NOT NULL
+            pnl_krw    REAL NOT NULL,      -- 브로커 gross(수수료 차감 전)
+            updated_at TEXT NOT NULL,
+            commission_krw REAL,           -- EOD trades 합산 (NULL=미기입)
+            pnl_net_krw    REAL            -- EOD trades 합산 (NULL=미기입)
         )
     """)
+    with get_conn(TRADES_DB) as _bp_conn:
+        _bp_cols = {r[1] for r in _bp_conn.execute(
+            "PRAGMA table_info(daily_broker_pnl)").fetchall()}
+        for _c in ("commission_krw", "pnl_net_krw"):
+            if _c not in _bp_cols:
+                _bp_conn.execute(
+                    "ALTER TABLE daily_broker_pnl ADD COLUMN %s REAL" % _c)
+
+
+# [477차 후속2 / F-4] 거래일 판정 캐시 — 날짜당 1회만 DB를 본다
+_trading_date_cache: Dict[str, bool] = {}
+
+
+def is_krx_trading_date(date_str: str) -> bool:
+    """[MW0601 477차 후속2 / 476차 F-4] 그 날짜가 실제 거래일이었는가.
+
+    KRX 캘린더 대신 자체 데이터로 판정한다 — predictions(매분 STEP9) 또는
+    trades에 그 날짜 행이 있으면 거래일. `upsert_daily_broker_pnl`의 가드용:
+    브로커 balance push가 `_yesterday`를 **달력** 기준으로 잡아 주말·휴장일에
+    직전 거래일 값을 복제 저장해 왔다(8월 실측 4행 — 08-08/09에 723,000,
+    08-16/17에 32,000). 이 유령 행은 전환기준 ①을 이 테이블 SUM으로 판정하는
+    순간 이중가산이 된다(8월 실측 +151만원 과대).
+
+    한계: 시스템이 하루 종일 죽어 있던 진짜 거래일은 False가 나온다 — 그날은
+    저장할 라이브 값도 없었으므로 가드로서는 올바른 방향의 오류다.
+    """
+    if not date_str:
+        return False
+    hit = _trading_date_cache.get(date_str)
+    if hit is not None:
+        return hit
+    ok = False
+    try:
+        row = fetchone(
+            PREDICTIONS_DB,
+            "SELECT 1 FROM predictions WHERE date(ts) = ? LIMIT 1", (date_str,))
+        ok = row is not None
+        if not ok:
+            row = fetchone(
+                TRADES_DB,
+                "SELECT 1 FROM trades WHERE date(entry_ts) = ? LIMIT 1", (date_str,))
+            ok = row is not None
+    except Exception:
+        # 판정 불가 시 저장을 막지 않는다(가드는 보조 장치다)
+        ok = True
+    _trading_date_cache[date_str] = ok
+    return ok
 
 
 def upsert_daily_broker_pnl(date: str, pnl_krw: float) -> None:
-    """날짜별 브로커 실현손익 저장 (pnl_krw=0 이면 스킵)."""
+    """날짜별 브로커 실현손익(gross) 저장.
+
+    스킵 2종:
+    · pnl_krw == 0 — 브로커 TR이 빈 summary를 줄 때 기존 실측값을 0으로
+      덮어쓰는 사고 방지. 부작용으로 "진짜 0원 거래일"이 기록되지 않는데,
+      그 날은 EOD `update_daily_broker_pnl_net()`이 trades 합산으로 행을
+      만들어 보완한다(477차 후속2 — 계측 4원칙 ② 대응).
+    · 비거래일 — is_krx_trading_date() 참조(유령 행 방지, 477차 후속2).
+    """
     if not date or pnl_krw == 0.0:
         return
+    if not is_krx_trading_date(date):
+        logging.getLogger("SYSTEM").debug(
+            "[BrokerPnl] %s 비거래일 — 유령 행 방지 스킵 (pnl=%s)", date, pnl_krw)
+        return
     import datetime as _dt
-    execute(TRADES_DB,
-            "INSERT OR REPLACE INTO daily_broker_pnl (date, pnl_krw, updated_at) VALUES (?, ?, ?)",
-            (date, float(pnl_krw), _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    _now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # commission/net을 지우지 않도록 UPDATE 우선 — INSERT OR REPLACE는 EOD 기입분을
+    # 날린다. (ON CONFLICT upsert 구문은 py37_32 sqlite 구버전 호환 불확실로 회피)
+    with _lock:
+        with get_conn(TRADES_DB) as _c:
+            _cur = _c.execute(
+                "UPDATE daily_broker_pnl SET pnl_krw = ?, updated_at = ? WHERE date = ?",
+                (float(pnl_krw), _now, date))
+            if _cur.rowcount == 0:
+                _c.execute(
+                    "INSERT INTO daily_broker_pnl (date, pnl_krw, updated_at) VALUES (?, ?, ?)",
+                    (date, float(pnl_krw), _now))
+
+
+def update_daily_broker_pnl_net(date: str, gross_krw: float,
+                                commission_krw: float, net_krw: float) -> None:
+    """[MW0601 477차 후속2 / 476차 F-4] EOD 확정치 기입 — daily_close() 전용.
+
+    trades 합산(엔진)으로 commission/net을 기입한다. 브로커 gross 행이 없으면
+    (브로커 TR 미수신·gross=0 거래일) 엔진 gross로 행을 만든다 — "0원 거래일
+    기록 불가" 보완. 브로커 행이 있으면 gross는 브로커 값을 보존한다
+    (두 원천의 차이 자체가 관측 대상이다).
+    """
+    if not date:
+        return
+    import datetime as _dt
+    _now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _lock:
+        with get_conn(TRADES_DB) as _c:
+            _cur = _c.execute(
+                """UPDATE daily_broker_pnl
+                      SET commission_krw = ?, pnl_net_krw = ?, updated_at = ?
+                    WHERE date = ?""",
+                (float(commission_krw), float(net_krw), _now, date))
+            if _cur.rowcount == 0:
+                # 브로커 gross 행 부재 — 엔진 gross로 행 생성(0원 거래일 포함)
+                _c.execute(
+                    """INSERT INTO daily_broker_pnl
+                           (date, pnl_krw, updated_at, commission_krw, pnl_net_krw)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (date, float(gross_krw), _now,
+                     float(commission_krw), float(net_krw)))
 
 
 def fetch_broker_daily_pnl_map(days: int = 90) -> Dict[str, float]:

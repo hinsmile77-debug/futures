@@ -118,6 +118,32 @@ class DailyExporter:
         except Exception as e:
             lines.append("  [Registry 조회 실패: %s]" % e)
 
+        # ── [MW0601 477차 후속2 / 476차 F-4] 당일 gross/수수료/net 3행 ─────────
+        # broker(gross)와 engine(net)이 나란히 보이면 매일 수수료만큼의 설명 불가
+        # 격차로 읽힌다(0818: 685,000 vs 661,668). 단위를 같은 자리에 박는다.
+        # 실전 전환 기준 ①(4주 통산 수익률)은 net 기준이다.
+        try:
+            import datetime as _dt
+            from utils.db_utils import fetchone as _f4_fetchone, TRADES_DB as _F4_DB
+            _f4_row = _f4_fetchone(
+                _F4_DB,
+                """SELECT pnl_krw, commission_krw, pnl_net_krw
+                     FROM daily_broker_pnl WHERE date = ?""",
+                (_dt.date.today().isoformat(),))
+            if _f4_row is not None:
+                _f4_g = _f4_row["pnl_krw"]
+                _f4_c = _f4_row["commission_krw"]
+                _f4_n = _f4_row["pnl_net_krw"]
+                lines.append(
+                    "  당일손익 : broker(gross) %s  수수료 %s  net %s  ※ 전환기준①=net" % (
+                        ("{:+,.0f}원".format(_f4_g)) if _f4_g is not None else "미측정",
+                        ("{:,.0f}원".format(_f4_c)) if _f4_c is not None else "미기입(EOD 전)",
+                        ("{:+,.0f}원".format(_f4_n)) if _f4_n is not None else "미기입(EOD 전)",
+                    )
+                )
+        except Exception:
+            pass
+
         lines.append("-" * 56)
 
         # ── CUSUM 드리프트 ───────────────────────────────────────────────
