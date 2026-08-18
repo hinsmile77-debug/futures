@@ -1,0 +1,343 @@
+{
+ "since": "2026-06-01",
+ "n_latch_days": 4,
+ "n_analyzed": 4,
+ "total_binding_minutes": 17,
+ "total_binding_clusters": 3,
+ "total_cf_net_pts_per_ct": 1.0786,
+ "total_cf_net_pts_per_ct_by_cluster": 4.2711,
+ "days": [
+  {
+   "date": "2026-06-19",
+   "latch": {
+    "ts": "2026-06-19 13:40:59",
+    "peak_krw": 1163000.0,
+    "ratio_pct": 20,
+    "current_krw": 547000.0,
+    "floor_krw": 930400.0
+   },
+   "regime": {
+    "tp_trigger": "close",
+    "protect_mode": "breakeven"
+   },
+   "funnel": {
+    "log_block_minutes": 163,
+    "after_latch_minutes": 67,
+    "db_rows": 67,
+    "entry_qualified": 39,
+    "binding": 0
+   },
+   "grade_dist_qualified": {
+    "C": 39
+   },
+   "overlap_clusters": 0,
+   "clusters": [],
+   "cf_total_net_pts_per_ct": 0,
+   "cf_wins": 0,
+   "cf_losses": 0,
+   "binding_rows": []
+  },
+  {
+   "date": "2026-06-25",
+   "latch": {
+    "ts": "2026-06-25 14:23:00",
+    "peak_krw": 1108200.0,
+    "ratio_pct": 20,
+    "current_krw": 845700.0,
+    "floor_krw": 886560.0
+   },
+   "regime": {
+    "tp_trigger": "close",
+    "protect_mode": "breakeven"
+   },
+   "funnel": {
+    "log_block_minutes": 219,
+    "after_latch_minutes": 46,
+    "db_rows": 45,
+    "entry_qualified": 32,
+    "binding": 0
+   },
+   "grade_dist_qualified": {
+    "C": 32
+   },
+   "overlap_clusters": 0,
+   "clusters": [],
+   "cf_total_net_pts_per_ct": 0,
+   "cf_wins": 0,
+   "cf_losses": 0,
+   "binding_rows": []
+  },
+  {
+   "date": "2026-06-30",
+   "latch": {
+    "ts": "2026-06-30 09:51:54",
+    "peak_krw": 2082000.0,
+    "ratio_pct": 20,
+    "current_krw": 723000.0,
+    "floor_krw": 1665600.0
+   },
+   "regime": {
+    "tp_trigger": "close",
+    "protect_mode": "breakeven"
+   },
+   "funnel": {
+    "log_block_minutes": 329,
+    "after_latch_minutes": 317,
+    "db_rows": 317,
+    "entry_qualified": 4,
+    "binding": 0
+   },
+   "grade_dist_qualified": {
+    "C": 4
+   },
+   "overlap_clusters": 0,
+   "clusters": [],
+   "cf_total_net_pts_per_ct": 0,
+   "cf_wins": 0,
+   "cf_losses": 0,
+   "binding_rows": []
+  },
+  {
+   "date": "2026-08-18",
+   "latch": {
+    "ts": "2026-08-18 13:19:59",
+    "peak_krw": 927000.0,
+    "ratio_pct": 20,
+    "current_krw": 685000.0,
+    "floor_krw": 741600.0
+   },
+   "regime": {
+    "tp_trigger": "envelope",
+    "protect_mode": "atr_profit"
+   },
+   "funnel": {
+    "log_block_minutes": 105,
+    "after_latch_minutes": 94,
+    "db_rows": 94,
+    "entry_qualified": 33,
+    "binding": 17
+   },
+   "grade_dist_qualified": {
+    "C": 33
+   },
+   "overlap_clusters": 3,
+   "clusters": [
+    {
+     "start": "13:23",
+     "end": "13:51",
+     "n_minutes": 8,
+     "net_pts_sum": -11.4235,
+     "net_pts_first": 0.7058
+    },
+    {
+     "start": "13:59",
+     "end": "14:29",
+     "n_minutes": 5,
+     "net_pts_sum": 10.4812,
+     "net_pts_first": 1.9432
+    },
+    {
+     "start": "14:33",
+     "end": "14:45",
+     "n_minutes": 4,
+     "net_pts_sum": 2.0209,
+     "net_pts_first": 1.6221
+    }
+   ],
+   "cf_total_net_pts_per_ct": 1.0786,
+   "cf_wins": 10,
+   "cf_losses": 7,
+   "binding_rows": [
+    {
+     "ts": "2026-08-18 13:23:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.3771,
+     "min_conf": 0.361,
+     "atr": 1.5571,
+     "pts_per_contract": 0.7785,
+     "net_pts": 0.7058,
+     "outcome": "STOP"
+    },
+    {
+     "ts": "2026-08-18 13:25:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.3656,
+     "min_conf": 0.361,
+     "atr": 1.5714,
+     "pts_per_contract": -2.3571,
+     "net_pts": -2.4299,
+     "outcome": "STOP"
+    },
+    {
+     "ts": "2026-08-18 13:41:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.3947,
+     "min_conf": 0.361,
+     "atr": 1.9843,
+     "pts_per_contract": 0.248,
+     "net_pts": 0.1753,
+     "outcome": "STOP"
+    },
+    {
+     "ts": "2026-08-18 13:44:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.4023,
+     "min_conf": 0.361,
+     "atr": 1.7971,
+     "pts_per_contract": -1.3478,
+     "net_pts": -1.4205,
+     "outcome": "STOP"
+    },
+    {
+     "ts": "2026-08-18 13:45:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.3951,
+     "min_conf": 0.361,
+     "atr": 1.7786,
+     "pts_per_contract": -2.0009,
+     "net_pts": -2.0736,
+     "outcome": "STOP"
+    },
+    {
+     "ts": "2026-08-18 13:48:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.3911,
+     "min_conf": 0.361,
+     "atr": 1.6857,
+     "pts_per_contract": -1.8964,
+     "net_pts": -1.9691,
+     "outcome": "STOP"
+    },
+    {
+     "ts": "2026-08-18 13:49:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.4127,
+     "min_conf": 0.361,
+     "atr": 1.5843,
+     "pts_per_contract": -1.7823,
+     "net_pts": -1.8551,
+     "outcome": "STOP"
+    },
+    {
+     "ts": "2026-08-18 13:51:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.3848,
+     "min_conf": 0.361,
+     "atr": 1.6557,
+     "pts_per_contract": -2.4835,
+     "net_pts": -2.5564,
+     "outcome": "STOP"
+    },
+    {
+     "ts": "2026-08-18 13:59:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.3711,
+     "min_conf": 0.361,
+     "atr": 1.6129,
+     "pts_per_contract": 2.0161,
+     "net_pts": 1.9432,
+     "outcome": "TP2"
+    },
+    {
+     "ts": "2026-08-18 14:11:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.384,
+     "min_conf": 0.369,
+     "atr": 2.1071,
+     "pts_per_contract": 2.6339,
+     "net_pts": 2.5612,
+     "outcome": "TP2"
+    },
+    {
+     "ts": "2026-08-18 14:14:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.4209,
+     "min_conf": 0.369,
+     "atr": 1.8171,
+     "pts_per_contract": 2.2714,
+     "net_pts": 2.1987,
+     "outcome": "TP2"
+    },
+    {
+     "ts": "2026-08-18 14:15:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.4182,
+     "min_conf": 0.369,
+     "atr": 1.8243,
+     "pts_per_contract": 2.2804,
+     "net_pts": 2.2077,
+     "outcome": "TP2"
+    },
+    {
+     "ts": "2026-08-18 14:29:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.386,
+     "min_conf": 0.369,
+     "atr": 1.3143,
+     "pts_per_contract": 1.6429,
+     "net_pts": 1.5704,
+     "outcome": "TP2"
+    },
+    {
+     "ts": "2026-08-18 14:33:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.376,
+     "min_conf": 0.369,
+     "atr": 1.3557,
+     "pts_per_contract": 1.6946,
+     "net_pts": 1.6221,
+     "outcome": "TP2"
+    },
+    {
+     "ts": "2026-08-18 14:34:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.4865,
+     "min_conf": 0.369,
+     "atr": 1.4757,
+     "pts_per_contract": 0.5534,
+     "net_pts": 0.481,
+     "outcome": "TP2"
+    },
+    {
+     "ts": "2026-08-18 14:39:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.3778,
+     "min_conf": 0.369,
+     "atr": 1.6457,
+     "pts_per_contract": 2.0571,
+     "net_pts": 1.9847,
+     "outcome": "TP2"
+    },
+    {
+     "ts": "2026-08-18 14:45:00",
+     "direction": "SHORT",
+     "grade": "C",
+     "conf": 0.3953,
+     "min_conf": 0.369,
+     "atr": 1.7729,
+     "pts_per_contract": -1.9945,
+     "net_pts": -2.0669,
+     "outcome": "STOP"
+    }
+   ]
+  }
+ ],
+ "verdict": "NOT_JUDGED",
+ "verdict_note": "판정문 재등록 미승인 — 대상(A/B → 자동진입 자격)·min_days(거래일 → L1 발동일) 변경은 2026-08-29 주간회의 승인 사항이다(GR-2, §9 사전등록). 이 출력은 관측치이며 어떤 임계와도 비교하지 않는다."
+}
