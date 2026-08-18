@@ -27,6 +27,7 @@ import json
 import os
 import platform
 import re
+import sqlite3
 import subprocess
 import sys
 from datetime import date as _date
@@ -327,6 +328,26 @@ DEFAULT_CONFIG = {
                        "2026-08-14 장전 above_vwap 6호라이즌 identity 강제가 그 사례. "
                        "⚠ 섀도 계측이다. 차단으로 승격하려면 20거래일 축적 후 "
                        "'축퇴일의 09:00~09:30 정확도'를 일자단위로 비교할 것(317차 교훈)",
+            },
+        },
+    },
+    # ── [MW0602 475차 후속 / 장후 G-2] DB 원천 지표 ────────────────────────────
+    # 로그에 없는 상태를 §12 시야에 넣는다. 판정 규칙은 로그 지표와 같다(stuck_verdict).
+    # ⚠ `ensemble_decisions` 는 `predictions.db` 에 있다 — 같은 이름의
+    #   `data/db/ensemble_decisions.db` 는 0바이트 유령 파일이다.
+    "db_indicators": {
+        "lookback_days": 14,
+        "min_samples": 20,
+        "min_days": 3,
+        "sources": {
+            "binding_gate": {
+                "db": "data/db/predictions.db",
+                "sql": "select substr(ts,1,10) d, sizing_trace from ensemble_decisions "
+                       " where ts >= ? and ts <= ? || ' 23:59:59' and sizing_trace is not null",
+                "json_key": "binding_gate",
+                "why": "무엇이 실제로 사이즈를 구속했는가(471차 후속6 sizing_trace). "
+                       "한 게이트 100% 고착이면 316차 HurstGate(63% 차단)와 같은 상태다. "
+                       "⚠ 2026-08-14 이후 행에만 있다 — 그 이전은 미측정이지 압력 0이 아니다",
             },
         },
     },
@@ -854,7 +875,149 @@ def check_invariants(root, cfg):
     return path, rows
 
 
+# ------------------------------------------------------------------ DB (읽기 전용)
+# [MW0602 475차 후속] 이 수집기가 DB 를 읽는 **첫 경로**다.
+#
+# 왜 필요한가: 로그에는 없는 사실이 있다. 수수료가 그렇다 — 청산 줄
+# `PnL=+0.34pt (+15,301원)` 의 pt 는 gross 이고 원은 **net** 이라, 로그만 보면
+# "방향은 맞혔는데 비용에 졌다" 와 "방향을 틀렸다" 가 같은 숫자로 보인다.
+# 2026-08-18 실측: gross +8,000원인데 수수료 33,084원이라 net -25,084원.
+#
+# 규율
+#  · **읽기 전용**(`mode=ro`)이고 타임아웃을 둔다. 장중 점검이 본체와 겹쳐도 안전하다.
+#  · 실패는 **조용히 0을 만들지 않는다** — stderr 경고 + 호출부가 "(DB 없음 — 미측정)"
+#    으로 렌더한다. 계측 4원칙 ②: 미측정과 0은 다르다.
+#  · 표준 라이브러리만(`sqlite3` 는 stdlib) — 이 수집기의 이식성 규약을 지킨다.
+#
+# ⚠ **`ensemble_decisions` 는 `predictions.db` 에 있다.** 같은 이름의
+#   `data/db/ensemble_decisions.db` 가 있지만 **0바이트·테이블 0개짜리 유령**이다
+#   (2026-08-18 실측). 이름만 보고 열면 조용히 빈 결과가 나온다.
+def db_rows(root, rel, sql, params=(), timeout=3.0):
+    """읽기 전용 SQLite 질의. 실패하면 `None`(빈 리스트 아님 — 0과 구분한다)."""
+    p = os.path.normpath(os.path.join(root, rel))
+    if not os.path.exists(p):
+        eprint("[collect_evidence] DB 없음: %s" % rel)
+        return None
+    uri = "file:%s?mode=ro" % p.replace("\\", "/").replace("?", "%3f").replace("#", "%23")
+    try:
+        con = sqlite3.connect(uri, uri=True, timeout=timeout)
+        try:
+            return con.execute(sql, tuple(params)).fetchall()
+        finally:
+            con.close()
+    except Exception as e:
+        eprint("[collect_evidence] DB 질의 실패(%s): %s" % (rel, e))
+        return None
+
+
+def trade_costs(root, day):
+    """그날 청산된 거래의 gross / 수수료 / net. 실패하면 None.
+
+    포지션 귀속은 **진입 시각(HH:MM)** 으로 한다 — §5 포지션표가 진입 시각으로
+    묶기 때문이다(470차 S3 집계 단위 규약).
+    """
+    d = day.isoformat()
+    rows = db_rows(root, os.path.join("data", "db", "trades.db"),
+                   "select substr(entry_ts,12,5) hm, count(*), "
+                   "       sum(gross_pnl_krw), sum(commission_krw), sum(net_pnl_krw) "
+                   "  from trades where date(exit_ts)=? group by entry_ts",
+                   (d,))
+    if rows is None:
+        return None
+    by_min, tot = {}, [0, 0.0, 0.0, 0.0]
+    for hm, n, g, c, net in rows:
+        g, c, net = float(g or 0), float(c or 0), float(net or 0)
+        prev = by_min.get(hm)
+        by_min[hm] = (n + prev[0], g + prev[1], c + prev[2], net + prev[3]) if prev \
+            else (n, g, c, net)
+        tot[0] += n; tot[1] += g; tot[2] += c; tot[3] += net
+    return {"legs": tot[0], "gross": tot[1], "comm": tot[2], "net": tot[3],
+            "by_min": by_min}
+
+
 # ------------------------------------------------------------------ 고착 지표
+def stuck_verdict(dist, n, hit_days, scanned_days, min_n, min_d, benign,
+                  ratio=None, expected=0, ratio_min=0.5, exp_min=60):
+    """값 분포 → (판정, 사유). 로그 지표와 DB 지표가 **같은 규칙**을 쓴다.
+
+    판정 순서에 뜻이 있다:
+      무기록 → 분기편향 → 표본부족 → (정상)고착 → 변동
+    분기편향이 표본부족보다 앞이다 — 통계가 아니라 구조 문제라 표본이 쌓여도
+    저절로 해소되지 않는다(0818 ConfFloor 는 1일차에 이미 확정적이었다).
+    """
+    if n == 0:
+        return "무기록", "%d거래일 전체에서 0건 — 로그 문구 변경 또는 계측 중단" % scanned_days
+    if ratio is not None and expected >= exp_min and ratio < ratio_min:
+        return "분기편향", (
+            "관측률 %.2f (%d건 / 관측일 %d일의 로그 생존 %d분) — 매분 샘플러를 "
+            "표방하는데 일부 분기에서만 찍힌다" % (ratio, n, len(hit_days), expected))
+    if len(hit_days) < min_d or n < min_n:
+        return "표본부족", "관측 %d일 · %d건 (기준 %d일 · %d건)" % (
+            len(hit_days), n, min_d, min_n)
+    if len(dist) == 1:
+        # 한 값 100%가 **정상인** 지표가 있다(사고 없는 날의 degraded=OFF 등).
+        # 그것까지 적신호로 올리면 §12 전체가 늑대소년이 된다 — 표에는 남기되
+        # 경고로는 올리지 않는다.
+        if dist[0][0] in benign:
+            return "정상고착", "`%s` 100%% (%d건 / %d일) — 기대값" % (
+                dist[0][0], n, len(hit_days))
+        return "고착", "`%s` 100%% (%d건 / %d일)" % (dist[0][0], n, len(hit_days))
+    return "변동", "%d개 값" % len(dist)
+
+
+def scan_db_indicators(root, cfg, day):
+    """[MW0602 475차 후속 / 장후 G-2] DB 원천 고착 지표.
+
+    §12 는 로그 정규식만 봤다. 그런데 **로그에 없는 상태**가 있다 —
+    471차 후속6이 신설한 `ensemble_decisions.sizing_trace.binding_gate`
+    ("무엇이 실제로 사이즈를 구속했는가")가 그렇다. 431차가 곱셈 체인을 min() 합성으로
+    바꾼 뒤 이 축이 생겼지만 감시 목록에 없어, 한 게이트가 상시 binding 으로 굳어도
+    아무도 모른다(316차 HurstGate 63% 차단과 같은 형태).
+
+    ⚠ `sizing_trace` 는 **2026-08-14 이후 행에만** 있다. 그 이전은 NULL 이며
+      **미측정이지 "압력 0"이 아니다**(계측 4원칙 ②).
+    """
+    conf = cfg.get("db_indicators") or {}
+    srcs = conf.get("sources") or {}
+    if not srcs:
+        return []
+    look = int(conf.get("lookback_days", 14))
+    since = (day - timedelta(days=look)).isoformat()
+    rows = []
+    for name, spec in srcs.items():
+        raw = db_rows(root, spec["db"], spec["sql"], (since, day.isoformat()))
+        if raw is None:
+            rows.append({"name": name, "why": spec.get("why", ""), "days": 0, "n": 0,
+                         "dist": [], "verdict": "무기록", "ratio": None, "expected": None,
+                         "note": "DB 접근 실패 — **미측정**이지 0이 아니다", "scanned_days": 0,
+                         "source": "DB"})
+            continue
+        counts, hit_days = {}, set()
+        for r in raw:
+            d, payload = r[0], r[1]
+            v = payload
+            if spec.get("json_key"):
+                try:
+                    v = json.loads(payload).get(spec["json_key"])
+                except (ValueError, TypeError):
+                    continue
+            v = str(v)
+            counts[v] = counts.get(v, 0) + 1
+            hit_days.add(d)
+        dist = sorted(counts.items(), key=lambda kv: -kv[1])
+        n = sum(counts.values())
+        verdict, note = stuck_verdict(
+            dist, n, hit_days, look,
+            int(spec.get("min_samples", conf.get("min_samples", 20))),
+            int(spec.get("min_days", conf.get("min_days", 3))),
+            [str(b) for b in (spec.get("benign") or [])])
+        rows.append({"name": name, "why": spec.get("why", ""), "days": len(hit_days),
+                     "n": n, "dist": dist, "verdict": verdict, "note": note,
+                     "ratio": None, "expected": None, "scanned_days": look,
+                     "source": "DB"})
+    return rows
+
+
 def scan_stuck_indicators(root, cfg, day):
     """[MW0602 468차 G-2] 최근 N거래일 상태 지표의 값 분포를 센다.
 
@@ -968,31 +1131,11 @@ def scan_stuck_indicators(root, cfg, day):
         _min_d = int(spec.get("min_days", conf.get("min_days", 3)))
         _benign = [str(b) for b in (spec.get("benign") or [])]
         _ratio = (float(n) / expected) if (per_minute and expected) else None
-        _ratio_min = float(conf.get("branch_ratio_min", 0.5))
-        _exp_min = int(conf.get("branch_min_expected", 60))
-        if n == 0:
-            verdict, note = "무기록", "%d거래일 전체에서 0건 — 로그 문구 변경 또는 계측 중단" % len(days)
-        elif (_ratio is not None and expected >= _exp_min and _ratio < _ratio_min):
-            # 표본부족보다 **먼저** 판정한다. 이것은 통계가 아니라 구조 문제라
-            # 표본이 쌓여도 저절로 해소되지 않는다(0818 ConfFloor 1일차에 이미 확정적).
-            verdict = "분기편향"
-            note = ("관측률 %.2f (%d건 / 관측일 %d일의 로그 생존 %d분) — 매분 샘플러를 "
-                    "표방하는데 일부 분기에서만 찍힌다" % (_ratio, n, len(hit_days), expected))
-        elif len(hit_days) < _min_d or n < _min_n:
-            verdict, note = "표본부족", "관측 %d일 · %d건 (기준 %d일 · %d건)" % (
-                len(hit_days), n, _min_d, _min_n)
-        elif len(dist) == 1:
-            # 한 값 100%가 **정상인** 지표가 있다(사고 없는 날의 degraded=OFF 등).
-            # 그것까지 적신호로 올리면 §12 전체가 늑대소년이 된다 — 표에는 남기되
-            # 경고로는 올리지 않는다.
-            if dist[0][0] in _benign:
-                verdict = "정상고착"
-                note = "`%s` 100%% (%d건 / %d일) — 기대값" % (dist[0][0], n, len(hit_days))
-            else:
-                verdict = "고착"
-                note = "`%s` 100%% (%d건 / %d일)" % (dist[0][0], n, len(hit_days))
-        else:
-            verdict, note = "변동", "%d개 값" % len(dist)
+        verdict, note = stuck_verdict(
+            dist, n, hit_days, len(days), _min_n, _min_d, _benign,
+            ratio=_ratio, expected=expected,
+            ratio_min=float(conf.get("branch_ratio_min", 0.5)),
+            exp_min=int(conf.get("branch_min_expected", 60)))
         rows.append({"name": name, "why": spec.get("why", ""), "days": len(hit_days),
                      "n": n, "dist": dist, "verdict": verdict, "note": note,
                      "scanned_days": len(days),
@@ -1095,7 +1238,7 @@ def _pt_to_float(s):
         return None
 
 
-def day_summary(digests, cfg, out):
+def day_summary(digests, cfg, out, root=None, day=None):
     """거래일 요약 — 로그 요약이 아니라 '오늘 무엇을 했는가'.
 
     로그 레벨 집계만으로는 이 시스템을 읽을 수 없다. 미륵이는 ERROR 를 거의 안 남기고
@@ -1161,6 +1304,11 @@ def day_summary(digests, cfg, out):
       "레그로 세면 **없는 인과가 만들어진다**(417차가 정확히 그 사고였고, 470차 리포트에서 재발했다).")
     A("")
 
+    # [MW0602 475차 후속 / 장후 G-1] 비용 축 — 로그에는 수수료가 없다.
+    # 청산 줄의 원화는 **net** 이고 pt 는 gross 라, 순액만 보면
+    # "방향은 맞혔는데 비용에 졌다"와 "방향을 틀렸다"가 같은 숫자로 보인다.
+    costs = trade_costs(root, day) if (root and day) else None
+
     # --- 손익 (포지션 단위) ---
     if positions or orphans:
         wins = sum(1 for p in positions if (p.get("pt") or 0) > 0 and p["closed"])
@@ -1180,18 +1328,44 @@ def day_summary(digests, cfg, out):
              ("%.0f%%" % (100.0 * wins / len(closed))) if closed else "—",
              tot_pt, format(tot_won, "+,d")))
         A("")
+        # 비용 축 — 하루 합계. 승률이 높은데 적자인 날을 그 자리에서 가른다.
+        if costs is None:
+            A("> ⚠ **비용 축 미측정** — `data/db/trades.db` 를 읽지 못했다. "
+              "아래 `합계원`은 수수료 차감 **후**(net)이며 gross 는 알 수 없다. "
+              "**미측정이지 수수료 0이 아니다.**")
+            A("")
+        else:
+            _g, _c, _net = costs["gross"], costs["comm"], costs["net"]
+            _ratio = ("%.0f%%" % (100.0 * _c / abs(_g))) if _g else "n/a"
+            A("### 비용 축 — gross %s원 · 수수료 %s원 · net %s원 (수수료/|gross| = %s)"
+              % (format(int(_g), "+,d"), format(int(_c), ",d"),
+                 format(int(_net), "+,d"), _ratio))
+            A("")
+            if _g > 0 > _net:
+                A("> 🔴 **수수료가 손익의 부호를 뒤집었다** — 방향은 맞혔고 비용에 졌다. "
+                  "gross `%s원` → net `%s원`." % (format(int(_g), "+,d"), format(int(_net), "+,d")))
+                A("")
+            elif _g < 0 and _c > abs(_g):
+                A("> ⚠ **수수료가 원손실보다 크다** — 손실의 절반 이상이 비용이다.")
+                A("")
+            A("> 원천은 `trades` 의 `gross_pnl_krw`·`commission_krw`·`net_pnl_krw` 다. "
+              "로그의 원화는 **net**, pt 는 **gross** 라 둘을 그냥 나누면 안 된다.")
+            A("")
         A("**포지션 단위** — 진입 시각으로 묶었다.")
         A("")
-        A("| 진입 | 방향 | 계약 | 레그 | 합계pt | 합계원 | 청산 사유 체인 |")
-        A("|---|---|---|---|---|---|---|")
+        A("| 진입 | 방향 | 계약 | 레그 | 합계pt | gross원 | 수수료 | 합계원(net) | 청산 사유 체인 |")
+        A("|---|---|---|---|---|---|---|---|---|")
         for p in positions:
             e = p["entry"]
             chain = " → ".join(
                 "%s(%s)" % ((r.get("reason") or "?").strip(), r.get("pt")) for _k, r in p["legs"]
             ) or "_미청산_"
-            A("| %s | %s | %s | %d | %s | %s | %s |" % (
+            _cm = (costs or {}).get("by_min", {}).get((e.get("hhmm") or "")[:5])
+            A("| %s | %s | %s | %d | %s | %s | %s | %s | %s |" % (
                 e.get("hhmm"), e.get("dir"), e.get("qty"), len(p["legs"]),
                 ("%+.2f" % p["pt"]) if p.get("pt") is not None else "?",
+                format(int(_cm[1]), "+,d") if _cm else "—",
+                format(int(_cm[2]), ",d") if _cm else "—",
                 format(p["won"], "+,d") if p.get("won") is not None else "?",
                 truncate(chain, 110)))
         A("")
@@ -1967,7 +2141,7 @@ def build(root, day, phase, cfg, discover_only=False):
     # ---- 5. 거래일 요약 ----
     # [MW0602 470차 S3] §5가 스스로 발견한 것(손익 검산 불일치·미청산·고아 레그)을
     # §11 적신호로 올린다. 예전에는 §5 안에만 찍혀 읽는 사람이 놓칠 수 있었다.
-    day_summary_flags = day_summary(digests, cfg, L)
+    day_summary_flags = day_summary(digests, cfg, L, root, day)
 
     # ---- 6. 항상 인용하는 패턴 ----
     A("## 6. 항상 인용하는 패턴 (안전장치·크래시·성능·학습)")
@@ -2112,6 +2286,9 @@ def build(root, day, phase, cfg, discover_only=False):
     # ---- 11. 자동 적신호 ----
     # [468차 G-2] §12 표를 먼저 계산한다 — 아래 적신호 목록이 그 결과를 인용한다.
     stuck_rows = scan_stuck_indicators(root, cfg, day)
+    # [MW0602 475차 후속 / G-2] DB 원천 지표를 같은 표에 합류시킨다 —
+    # 판정 규칙(stuck_verdict)이 같으므로 렌더·적신호가 그대로 재사용된다.
+    stuck_rows += scan_db_indicators(root, cfg, day)
 
     A("## 11. 자동 적신호 (출발점이지 결론이 아니다)")
     A("")
@@ -2322,16 +2499,17 @@ def build(root, day, phase, cfg, discover_only=False):
         A("> 체류 **80분과 정확히 일치**했다(허용 290분 0건). `관측률` 열이 그것을 잰다 — ")
         A("> `sample_axis: \"minute\"` 지표만 대상이며, **그 지표가 사는 로그가 살아 있던 분**이 분모다.")
         A("")
-        A("| 지표 | 판정 | 관측일 | 표본 | 관측률 | 값 분포 | 왜 보는가 |")
-        A("|---|---|---|---|---|---|---|")
+        A("| 지표 | 원천 | 판정 | 관측일 | 표본 | 관측률 | 값 분포 | 왜 보는가 |")
+        A("|---|---|---|---|---|---|---|---|")
         for r in stuck_rows:
             mark = {"고착": "🔴 고착", "무기록": "🔴 무기록", "정상고착": "⚪ 정상고착",
                     "표본부족": "⚪ 표본부족", "변동": "✅ 변동",
                     "분기편향": "🟠 분기편향"}[r["verdict"]]
             dist = ", ".join("`%s`×%d" % (v, c) for v, c in r["dist"][:6]) or "—"
             _rt = ("%.2f" % r["ratio"]) if r.get("ratio") is not None else "—"
-            A("| `%s` | %s | %d | %d | %s | %s | %s |" % (
-                r["name"], mark, r["days"], r["n"], _rt, dist, r["why"]))
+            A("| `%s` | %s | %s | %d | %d | %s | %s | %s |" % (
+                r["name"], r.get("source") or "로그", mark, r["days"], r["n"],
+                _rt, dist, r["why"]))
         A("")
         A("*판정 기준: 한 값이 100%면 `고착`, 표본 0이면 `무기록`, "
           "관측률이 기준(0.5) 미만이면 `분기편향`(표본부족보다 **먼저** — 구조 문제라 "
