@@ -96,6 +96,13 @@ _SIM_TARGET_CAPITAL_KRW = 50_000_000
 #: 절대원칙 ②가 요구하는 연속손절 한도 상한(이하이면 "복원된 값").
 _CB2_RESTORED_MAX = 3
 
+#: ① "모의투자 4주 통산" 의 4주 = 거래일 20일.
+_TRADING_DAYS_4W = 20
+
+#: 손익 실측 캐시 TTL(초). 배지는 1분 타이머에 물려 있어 매분 DB 를 때릴 이유가 없다.
+_PNL_CACHE_TTL_SEC = 300
+_pnl_cache = {"at": None, "val": None}
+
 
 class GateState(object):
     """게이트 1개의 판정 결과."""
@@ -164,6 +171,109 @@ def _chk_flag_restored(settings, flag_name):
     return OPEN, "%s=False — 복원 안 됨" % flag_name
 
 
+def _recent_daily_pnl(days=_TRADING_DAYS_4W):
+    """최근 N거래일의 **일별 net 손익**(원). 실패하면 `None`.
+
+    [MW0602 475차 후속] ①④는 지금까지 `checker=None`("trades.db 실측이 필요해 코드가
+    판정할 수 없다")이었다. 그런데 ①의 판정식은 SQL 한 줄이다. 손으로 적은 수치를
+    노트에 남기는 방식은 이 repo 에서 이미 실패했다 — 417차의 "379건 중 86건"이
+    몇 주 동안 재인용됐고 CLAUDE.md 가 그것을 직접 경고하고 있다.
+
+    ⚠ **0을 지어내지 않는다.** DB 가 없거나 질의가 실패하면 None 이고, 호출부는
+    `UNMEASURED` 로 남긴다(계측 4원칙 ②: 미측정 != 0).
+    ⚠ 시스템 자동 진입만 센다(`entry_source='SYSTEM_AUTO'`) — 수동 개입을 섞으면
+    "모의투자 성과"가 아니게 된다.
+
+    ⚠ **레그/포지션 단위 주의(417차·470차 C4').** 여기는 레그를 날짜로 합칠 뿐이라
+    단위 문제가 없다 — 포지션은 15:10 강제청산 때문에 날짜를 넘지 못하므로 하루치
+    레그 합 == 하루치 포지션 합이다. 금지된 것은 **승률·계약수별 통계를 레그로 세는
+    것**이고, 이 함수는 그런 것을 만들지 않는다(일별 금액과 양수일 수만 낸다).
+    """
+    import time as _time
+    now = _time.time()
+    if (_pnl_cache["at"] is not None
+            and now - _pnl_cache["at"] < _PNL_CACHE_TTL_SEC):
+        return _pnl_cache["val"]
+
+    rows = None
+    try:
+        import sqlite3 as _sq
+        from config.settings import TRADES_DB as _db
+        import os as _os
+        if _os.path.exists(_db):
+            _uri = "file:%s?mode=ro" % str(_db).replace("\\", "/")
+            con = _sq.connect(_uri, uri=True, timeout=2.0)
+            try:
+                rows = con.execute(
+                    "select date(exit_ts) d, sum(net_pnl_krw) "
+                    "  from trades where entry_source='SYSTEM_AUTO' "
+                    "   and exit_ts is not null "
+                    " group by d order by d desc limit ?", (int(days),)).fetchall()
+            finally:
+                con.close()
+    except Exception as e:                       # DB 파손·락·스키마 변경 전부 여기로
+        logger.warning("[Phase5Gate] 손익 실측 실패 — %s: %s", type(e).__name__, e)
+        rows = None
+
+    val = None if rows is None else [float(r[1] or 0.0) for r in rows]
+    _pnl_cache["at"], _pnl_cache["val"] = now, val
+    return val
+
+
+def _chk_paper_profit(settings):
+    """① 모의투자 4주 통산 수익률 양수 — **반증 전용** 자동 판정.
+
+    이 모듈의 규율 그대로다: *"자동 판정은 한쪽 방향으로만 확정한다."*
+    합이 0 이하면 **미충족이 확실하다**. 반대로 양수라고 해서 ①이 끝난 것은 아니다 —
+    창이 롤링이라 내일 뒤집힐 수 있고, "4주"의 기산점을 정하는 것은 사람의 몫이다.
+    그래서 양수면 수치를 보여 주고 판단은 넘긴다(`PHASE5_GATE_DECISIONS` 수동 기록).
+    """
+    pnl = _recent_daily_pnl()
+    if pnl is None:
+        return UNMEASURED, "trades.db 를 읽지 못했다 — **미측정**이지 미충족이 아니다"
+    if not pnl:
+        return UNMEASURED, "청산된 자동매매 거래가 없다 — 표본 0"
+    total = sum(pnl)
+    n_pos = sum(1 for x in pnl if x > 0)
+    head = "최근 %d거래일 통산 %s원 (양수일 %d/%d)" % (
+        len(pnl), "{:+,.0f}".format(total), n_pos, len(pnl))
+    if len(pnl) < _TRADING_DAYS_4W:
+        return UNMEASURED, "%s — 4주(%d거래일) 미달" % (head, _TRADING_DAYS_4W)
+    if total <= 0:
+        return OPEN, head
+    return UNMEASURED, ("%s — 양수. 다만 롤링 창이라 확정은 수동 기록 필요"
+                        " (④ 변동성과 함께 볼 것)" % head)
+
+
+def _chk_daily_vol(settings):
+    """④ 일일 수익률 변동성 안정적 — **합격선이 정의된 적이 없다.**
+
+    ①③⑤~⑨와 달리 ④에는 숫자가 없다(③은 Sharpe 1.5 / MDD 15% / 승률 53%가 있다).
+    기준이 없으면 어떤 실측으로도 충족/미충족을 말할 수 없으므로 **영구 UNMEASURED**다.
+    여기서 임계를 지어내면 사전등록 원칙(§9)을 코드가 넘는 것이 된다.
+
+    대신 **재료를 보여 준다** — 기준을 정할 때 쓸 수 있게. 2026-08-18 실측은
+    표준편차가 평균의 10.6배, 양수일 35%였다. ①만 떼어 "충족"이라 읽으면 안 되는
+    이유가 이 수치에 있다.
+    """
+    pnl = _recent_daily_pnl()
+    if pnl is None:
+        return UNMEASURED, "trades.db 를 읽지 못했다 — **미측정**"
+    if len(pnl) < 2:
+        return UNMEASURED, "표본 %d일 — 변동성 계산 불가" % len(pnl)
+    n = len(pnl)
+    mean = sum(pnl) / n
+    var = sum((x - mean) ** 2 for x in pnl) / (n - 1)
+    sd = var ** 0.5
+    ratio = (sd / abs(mean)) if mean else None
+    return UNMEASURED, (
+        "최근 %d거래일 평균 %s원 · 표준편차 %s원%s · 양수일 %d/%d — "
+        "⚠ ④는 **합격선이 정의된 적이 없다**. 판정하려면 기준부터 사전등록할 것"
+        % (n, "{:+,.0f}".format(mean), "{:,.0f}".format(sd),
+           ("(평균의 %.1f배)" % ratio) if ratio else "",
+           sum(1 for x in pnl if x > 0), n))
+
+
 def _chk_cb2(settings):
     """⑤ CB② 복원 — `CB_CONSEC_STOP_LIMIT` 9999 → 2~3."""
     lim = _get(settings, "CB_CONSEC_STOP_LIMIT")
@@ -213,10 +323,13 @@ def _chk_tox_spread(settings):
 # (번호, 짧은이름, 제목, 자동판정함수 | None)
 # 자동판정함수가 None인 것은 trades.db·WFA 실측이 필요해 코드가 판정할 수 없는 게이트다.
 _GATE_SPECS = (
-    (1, "수익률", "모의투자 4주 통산 수익률 양수", None),
+    # [MW0602 475차 후속] ①④에 실측 배선. **충족을 자동으로 선언하지 않는다** —
+    # ①은 합이 0 이하일 때만 OPEN(반증), ④는 합격선이 없어 영구 UNMEASURED.
+    # 손으로 적은 수치가 몇 주씩 재인용되는 사고를 막는 것이 목적이다(417차 전례).
+    (1, "수익률", "모의투자 4주 통산 수익률 양수", _chk_paper_profit),
     (2, "CB작동", "Circuit Breaker 정상 작동 + 15:10 강제청산 실집행 1회", None),
     (3, "WFA26주", "Walk-Forward 26주 통과 (Sharpe>=1.5 / MDD<=15% 자본대비 / 승률>=53%)", None),
-    (4, "변동성", "일일 수익률 변동성 안정", None),
+    (4, "변동성", "일일 수익률 변동성 안정", _chk_daily_vol),
     (5, "CB2복원", "CB② 복원 (CB_CONSEC_STOP_LIMIT 9999 -> 2~3)", _chk_cb2),
     (6, "CB3-P4", "CB③-P4 재검토 (C등급 차단 복원 여부 결정)", _chk_cb3_p4),
     (7, "FP-CRIT", "FP-CRITICAL 재검토 (PSI 계측 재설계 후 복원)", _chk_fp_critical),
