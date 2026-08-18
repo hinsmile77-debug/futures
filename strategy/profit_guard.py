@@ -70,6 +70,20 @@ class ProfitGuardConfig:
         }
 
 
+# ── [MW0601 477차 후속7 / GR-3] 일일손익 원천 라벨 ────────────────────────
+# ProfitGuard가 보는 `daily_pnl_krw`는 호출부(main.py:8313~8328)에서 두 원천을 오간다:
+#   broker : Cybos 잔고 TR의 실현손익 캐시 = **gross(수수료 차감 전)**
+#   engine : position.daily_stats()["pnl_krw"] = **net(수수료 차감 후)**
+# 2026-08-18 실측 두 값 차이 23,332원(net의 3.5%). 피크·현재가 같은 원천이면 비율
+# 판정(trail_ratio)은 내부 일관적이라 오작동은 아니지만, **활성화 임계
+# `trail_activation_krw`는 절대 원화**라 폴백 여부로 발동 시점이 달라진다.
+# 그런데 그 원천이 차단 로그 어디에도 남지 않아 사후 복원이 불가능했다 —
+# main.py의 `[DebugPnL]` 줄은 **등급이 이미 X가 아닌 경우에만** 찍혀 커버리지가
+# 08-18 기준 37/160(23%)뿐이다. 여기서 남기면 **모든 차단 줄**이 단위를 갖는다
+# (계측 4원칙 ①·④). GR-1 스크립트가 이 토큰으로 단위를 구분한다.
+_PNL_SRC_LABEL = {"broker": "broker(gross)", "engine": "engine(net)"}
+
+
 # ── Layer 1: 피크 트레일링 가드 ──────────────────────────────────
 class _TrailingGuard:
     def __init__(self):
@@ -310,6 +324,8 @@ class ProfitGuard:
         self._pcb    = _ProfitCB()
 
         # 통계
+        # [477차 후속7 / GR-3] 마지막 판정에 쓴 일일손익 원천 — 미설정은 None
+        self._pnl_source: Optional[str] = None
         self._blocked_today: int   = 0
         self._block_log: list      = []   # [(시각, layer, reason)]
 
@@ -319,6 +335,7 @@ class ProfitGuard:
         daily_pnl_krw: float,
         size_mult: float,
         now: Optional[datetime.datetime] = None,
+        pnl_source: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Returns:
@@ -326,6 +343,9 @@ class ProfitGuard:
         """
         if now is None:
             now = now_kst()
+        # [477차 후속7 / GR-3] 이번 판정의 손익 원천. 호출부가 안 주면 None(미측정) —
+        # 0이나 임의 기본값으로 채우지 않는다(계측 4원칙 ②·④).
+        self._pnl_source = pnl_source
 
         # Layer 1
         if self._trail.update(daily_pnl_krw, self.cfg):
@@ -353,7 +373,9 @@ class ProfitGuard:
         self._block_log.append((ts, layer, reason))
         if len(self._block_log) > 200:
             self._block_log = self._block_log[-200:]
-        log_manager.signal(f"[ProfitGuard] 진입 차단 [{layer}] {reason}")
+        _src = _PNL_SRC_LABEL.get(self._pnl_source, self._pnl_source) or "미상"
+        log_manager.signal(
+            f"[ProfitGuard] 진입 차단 [{layer}] {reason} | src={_src}")
         return False, f"[{layer}] {reason}"
 
     # ── 이벤트 훅 ─────────────────────────────────────────────────

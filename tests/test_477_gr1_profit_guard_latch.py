@@ -80,7 +80,7 @@ def _write_blocks(logs, hhmms):
 
 def test_latch_parsing(env):
     _write_blocks(env["logs"], ["13:30"])
-    latches, blocks = pgw.scan_logs("2026-06-01")
+    latches, blocks, srcs = pgw.scan_logs("2026-06-01")  # GR-3에서 3튜플로 확장
     assert "2026-08-18" in latches
     lt = latches["2026-08-18"]
     assert lt["peak_krw"] == 927000.0

@@ -79,6 +79,9 @@ _RE_LATCH = re.compile(
     r"피크 ([+-][\d,]+)원 대비 (\d+)% 하락.*?현재 ([+-][\d,]+)원 < 보호선 ([+-][\d,]+)원")
 _RE_BLOCK = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\d{2}.*?\[ProfitGuard\] 진입 차단[:\s]*\[(L\d[^\]]*)\]")
+# [477차 후속7 / GR-3] 차단 줄 끝의 손익 원천 토큰 — `| src=broker(gross)` 형태.
+# 2026-08-18 이전 로그에는 없다(→ "미측정"으로 남기고 0/임의값으로 채우지 않는다).
+_RE_SRC = re.compile(r"\| src=(\S+)")
 
 
 def _conn(p):
@@ -106,9 +109,10 @@ def scan_logs(since: str):
     """로그에서 (래치 이벤트, 일자별 차단 분) 추출.
 
     Returns: ({date: {ts, peak, ratio_pct, current, floor}},
-              {date: {minute_str: set(layer)}})
+              {date: {minute_str: set(layer)}},
+              {date: {src_label: count}})   # GR-3 토큰 — 없는 날은 빈 dict(미측정)
     """
-    latches, blocks = {}, {}
+    latches, blocks, srcs = {}, {}, {}
     for path in sorted(glob.glob(os.path.join(LOG_DIR, "*_TRADE.log"))
                        + glob.glob(os.path.join(LOG_DIR, "*_SIGNAL.log"))):
         base = os.path.basename(path)
@@ -132,7 +136,11 @@ def scan_logs(since: str):
             b = _RE_BLOCK.match(line)
             if b:
                 blocks.setdefault(d, {}).setdefault(b.group(1), set()).add(b.group(2))
-    return latches, blocks
+                sm = _RE_SRC.search(line)
+                if sm:
+                    srcs.setdefault(d, {})[sm.group(1)] = (
+                        srcs.setdefault(d, {}).get(sm.group(1), 0) + 1)
+    return latches, blocks, srcs
 
 
 def _load_day_rows(day: str):
@@ -188,7 +196,8 @@ def _cluster_rows(rows):
     } for c in out]
 
 
-def analyze_day(day: str, latch: dict, block_minutes: dict) -> dict:
+def analyze_day(day: str, latch: dict, block_minutes: dict,
+                src_counts: dict = None) -> dict:
     """하루치 깔때기 + binding 반사실."""
     from scripts.exit_replay import replay, regime_for
 
@@ -253,6 +262,9 @@ def analyze_day(day: str, latch: dict, block_minutes: dict) -> dict:
             "binding": len(binding),
         },
         "grade_dist_qualified": grade_dist,
+        # [477차 후속7 / GR-3] 그날 차단 줄이 어느 손익 원천으로 판정됐는가.
+        # 빈 dict = 토큰 이전 로그(**미측정** — "engine이었다"가 아니다).
+        "pnl_source_counts": dict(src_counts or {}),
         "overlap_clusters": len(_cluster_rows(binding)),
         "clusters": _cluster_rows(binding),
         "cf_total_net_pts_per_ct": round(tot, 4),
@@ -263,7 +275,7 @@ def analyze_day(day: str, latch: dict, block_minutes: dict) -> dict:
 
 
 def compute(since: str = "2026-06-01") -> dict:
-    latches, blocks = scan_logs(since)
+    latches, blocks, srcs = scan_logs(since)
     days = []
     for d in sorted(latches):
         # 로그 콜은 SIGNAL, 래치는 TRADE — 둘 중 하나만 있는 날은 계측 불완전
@@ -271,7 +283,7 @@ def compute(since: str = "2026-06-01") -> dict:
             days.append({"date": d, "error": "차단 로그 없음(SIGNAL 로그 부재)"})
             continue
         try:
-            days.append(analyze_day(d, latches[d], blocks[d]))
+            days.append(analyze_day(d, latches[d], blocks[d], srcs.get(d)))
         except Exception as e:  # noqa: BLE001 — 하루 실패가 전체를 막지 않는다
             days.append({"date": d, "error": "%s: %s" % (type(e).__name__, e)})
     ok = [d for d in days if "error" not in d]
@@ -347,6 +359,10 @@ def render_md(res: dict) -> str:
         L.append("## {} — 래치 {} (피크 {:+,.0f}원 → 현재 {:+,.0f}원, 보호선 {:+,.0f}원)".format(
             d["date"], lt["ts"][11:19], lt["peak_krw"], lt["current_krw"], lt["floor_krw"]))
         L.append("")
+        _sc = d.get("pnl_source_counts") or {}
+        L.append("- 손익 원천(GR-3 토큰): %s" % (
+            ", ".join("%s×%d" % kv for kv in sorted(_sc.items())) if _sc
+            else "**미측정** — 토큰 도입(2026-08-18) 이전 로그"))
         L.append("- 재생 체제: `%s` / `%s` · 자격 분 등급 분포: %s" % (
             d["regime"]["tp_trigger"], d["regime"]["protect_mode"],
             ", ".join("%s=%d" % kv for kv in sorted(d["grade_dist_qualified"].items())) or "—"))

@@ -25736,3 +25736,50 @@ meta_gate.py·batch_retrainer.py:977~1059·campaign report:6353. 재인용 금�
 - 전체 487 passed. 산출물 1종 생성(`profit_guard_latch_20260818.md/json`).
 - ⚠ `ALLOWED_GRADES`는 `main.py:8396`의 **리터럴 사본**이다 — main이 바뀌면 함께 고칠 것
   (주석에 명시).
+
+
+## 2026-08-18 (MW0601 477차 후속7 — GR-3 ProfitGuard 손익 원천 토큰)
+
+> 상위: `docs/정기점검/매일점검/MW0601-20260818-고도화방안검토.md` §3-1.
+> 전체 스위트 487 → **496 passed**(신규 9건). 집행 무변경 — 로그 문자열 1개 추가.
+
+### 증상
+
+ProfitGuard가 보는 `daily_pnl_krw`는 호출부(`main.py:8313~8328`)에서 두 원천을 오간다 —
+Cybos 캐시가 있으면 **broker(gross, 수수료 차감 전)**, 없으면 엔진
+`daily_stats()["pnl_krw"]`(**net**) 폴백. 2026-08-18 실측 차이 **23,332원**(net의 3.5%).
+피크·현재가 같은 원천이면 비율 판정(`trail_ratio`)은 내부 일관적이라 오작동은 아니지만,
+**활성화 임계 `trail_activation_krw`는 절대 원화**라 폴백 여부로 발동 시점이 달라진다.
+그런데 그 원천이 차단 로그 어디에도 남지 않아 **사후 복원이 불가능**했다.
+
+### 원인 — 기존 계측이 있었지만 커버리지가 23%였다
+
+`main.py`에 `[ProfitGuard][DebugPnL] source=...` 줄이 이미 있으나
+**`if not _pg_allowed and _final_grade not in ("X",)`** 안에 있어 **등급이 이미 X면
+찍히지 않는다.** 실측 커버리지: 08-18 **37/160(23%)** · 06-19 25 · 06-25 38 · 06-30 87.
+차단의 대부분이 이미 X 등급 상태에서 일어나므로 정작 필요한 구간이 비어 있었다.
+
+### 결정
+
+- `strategy/profit_guard.py`
+  - `is_entry_allowed(..., pnl_source=None)` 인자 신설 → `self._pnl_source`에 보관.
+    `__init__`에서 **명시 초기화**(`None`) — `getattr` 폴백 금지(계측 4원칙 ④).
+  - `_block()`이 모든 차단 줄에 **`| src=<label>`** 을 붙인다. 레이어 무관 전량.
+  - `_PNL_SRC_LABEL = {"broker": "broker(gross)", "engine": "engine(net)"}` —
+    **단위를 이름에 박는다**(계측 4원칙 ①). 미지정은 **`미상`**(0·임의값 금지, ②).
+- `main.py` 호출부가 `pnl_source=_daily_pnl_source` 전달.
+- ⚠ **`_block_log` 튜플은 3원소 그대로 둔다** — `dashboard/panels/profit_guard_panel.py:764`가
+  `for ts, layer, reason in ...`로 언팩한다. 반환 `reason` 문자열에도 토큰을 넣지 않는다
+  (`_grade_x_source`로 흘러들어 차단사유 분류기를 오염시킨다).
+- `scripts/profit_guard_latch_watch.py`(GR-1)가 `_RE_SRC`로 토큰을 집계해 리포트에
+  일자별 원천 분포를 찍는다. **토큰 이전 로그는 빈 dict = 미측정**으로 남기고
+  "engine이었다"로 추정하지 않는다(②).
+
+### 검증
+
+- `tests/test_477_gr3_pnl_source_token.py` **9건** — broker/engine 라벨 · 미지정 시 `미상`
+  (engine·broker 문자열이 아예 없어야 함) · 미지 라벨 통과 · 호출마다 갱신 ·
+  **block_log arity 3 유지** · reason에 토큰 미유출 · GR-1 토큰 집계 · 레거시 로그 미측정.
+- 기존 `test_426_profit_guard_l1.py` 무영향. 전체 496 passed.
+- 라이브 확인(다음 L1 발동일): 차단 줄이 `... | src=broker(gross)` 형태인지.
+  ⚠ 평시에는 L1이 안 터지므로 **L2/L3/L4 차단 줄**에서 먼저 보이게 된다(레이어 무관).

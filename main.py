@@ -8331,7 +8331,12 @@ class TradingSystem:
         # Tier4(daily_pnl>=400만 완전중단) 감지는 size_mult=1.0으로도 작동하므로 대체.
         _size_mult_for_pg = 1.0 if _final_grade == "X" else (_cr["size_mult"] if _cr else 1.0)
         _pg_allowed, _pg_reason = self.profit_guard.is_entry_allowed(
-            _daily_pnl_now, _size_mult_for_pg
+            _daily_pnl_now, _size_mult_for_pg,
+            # [MW0601 477차 후속7 / GR-3] 이번 판정이 gross(broker)로 계산됐는지
+            # net(engine)으로 계산됐는지를 **모든 차단 줄**에 남긴다. 아래
+            # `[DebugPnL]` 줄은 등급이 이미 X면 찍히지 않아 커버리지가 23%뿐이다
+            # (08-18 실측 37/160). 계측 4원칙 ①(단위 명시)·④(폴백 가시화).
+            pnl_source=_daily_pnl_source,
         )
         if not _pg_allowed and _final_grade not in ("X",):
             _final_grade = "X"
