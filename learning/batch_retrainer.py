@@ -1105,9 +1105,9 @@ class BatchRetrainer:
                 _live_acc = _live_n = None
                 try:
                     from utils.db_utils import fetch_live_frequential_acc
+                    _mld_date = datetime.datetime.now().strftime("%Y-%m-%d")
                     _live_acc, _live_n = fetch_live_frequential_acc(
-                        horizon_key,
-                        datetime.datetime.now().strftime("%Y-%m-%d"),
+                        horizon_key, _mld_date,
                     )
                     if _live_acc is not None:
                         logger.info(
@@ -1116,6 +1116,34 @@ class BatchRetrainer:
                             horizon_key, _live_acc, _live_n, cv_acc,
                             ("%.4f" % _fair_new) if _fair_new is not None else "미측정",
                         )
+                        # ── [MW0601 477차 / DD-1] G-3: [ModelLive] DB 승격 ─────────
+                        # 로그 한 줄은 보존기간에 종속돼 5거래일 대조마다 grep이
+                        # 필요했다(0818 딥다이브 §1). n_eff·예측×실제 교차·σ평균·
+                        # clean_old를 함께 실어 "라벨 밴드 확대 vs 모델 열화 vs
+                        # 역위상"을 질의 한 번으로 분리한다. 관찰 전용 — 판정 무관.
+                        # 채점 표본 없는 날은 행을 만들지 않는다(미측정 ≠ 0).
+                        try:
+                            from utils.db_utils import (
+                                fetch_live_daily_detail, save_model_live_daily,
+                            )
+                            from config.settings import HORIZONS as _mld_hzs
+                            _mld = fetch_live_daily_detail(
+                                horizon_key, _mld_date,
+                                int(_mld_hzs.get(horizon_key, 1)),
+                            )
+                            save_model_live_daily(
+                                date_str=_mld_date, horizon=horizon_key,
+                                live_acc=_live_acc, live_n=_live_n,
+                                cv_acc=cv_acc, oos_acc=_fair_new,
+                                n_eff=_mld.get("n_eff"),
+                                hit_dir_json=json.dumps(
+                                    _mld.get("hit_dir") or {}, sort_keys=True),
+                                sigma_avg=_mld.get("sigma_avg"),
+                                clean_old_acc=_fair_extra.get("clean_old"),
+                            )
+                        except Exception as _mld_e:
+                            logger.debug(
+                                "[ModelLive] DB 승격 저장 실패 (무해): %s", _mld_e)
                     else:
                         logger.info(
                             "[ModelLive] %s 당일 채점 표본 없음 — 미측정(0 아님)",

@@ -434,6 +434,10 @@ def _migrate_ensemble_decisions_db():
                 # 실거래 의사결정 미반영, 예측-손익 상관 분석용 로깅 전용
                 "meta_entry_quality_prob": "REAL",
                 # [260704 감사 P2] 분위 회귀(q10/q50/q90) 섀도우 스코어 — 실거래 미반영
+                # ⚠ [477차] expected_pt(=q50)는 **가격 기준**이다(양수 = 상승 예측,
+                #   라벨 = close(t+h) − close(t), learning/quantile_regressor.py).
+                #   포지션 기준이 아니므로 SHORT에서는 음수가 유리한 예측 —
+                #   승패와 비교하려면 진입방향 부호를 곱해 정렬할 것(0818 오독 사례).
                 "quantile_expected_pt": "REAL",
                 "quantile_uncertainty_pt": "REAL",
                 # [260705 검증 캠페인] §3-3 커버리지 KPI용 원시 분위값 + 스코어링 호라이즌
@@ -989,7 +993,7 @@ def init_trades_db():
         cf_exit_price      REAL,                    -- = loss_tier1_price
         actual_pnl_pts     REAL,                    -- 실거래(trades.pnl_pts) 실현치
         hyp_pnl_pts        REAL,                    -- (+)=조기청산이 유리, (-)=현행(무조치) 유지가 나았음
-        quantile_expected_pt    REAL,                -- [363차 후속] 진입 시점 분위 기대엣지(pt)
+        quantile_expected_pt    REAL,                -- [363차 후속] 진입 시점 분위 q50(pt) ⚠ 가격 기준(양수=상승 예측) — 포지션 기준 아님, SHORT는 음수가 유리(477차)
         quantile_uncertainty_pt REAL,                -- [363차 후속] 진입 시점 분위 불확실성(pt)
         -- ── [MW0602 425차] 두 컬럼 다 판정 품질을 지키기 위한 것이다 ──────────────
         -- live_active: LOSS_TIER1_QTY1_ENABLED가 켜진 뒤의 기록. 그때는 실제로 tier1
@@ -2879,6 +2883,125 @@ def fetch_live_frequential_acc(horizon: str, date_str: str):
     if not rows or not rows[0]["n"]:
         return None, 0
     return float(rows[0]["acc"]), int(rows[0]["n"])
+
+
+def summarize_live_prediction_rows(rows: List[Dict], h_min: int) -> Dict:
+    """[MW0601 477차 / DD-1] 당일 채점행 요약 — [ModelLive] DB 승격(G-3)의 계산부.
+
+    0818 딥다이브가 수동 쿼리로 한 분리를 매 EOD 자동화한다:
+    · n_eff : 10m/15m 예측은 :x9/:x0 연속 2분 쌍으로 생성돼 명목 n의 절반이
+      유효표본이다(1분 간격 예측은 h분 창이 h−1분 겹쳐 사실상 같은 관측).
+      **겹치지 않는 h분 창의 그리디 최대 개수**로 센다 — 시각 정렬 후 직전
+      채택 시각 + h분 이후인 행만 채택. 1m은 매분이 독립 창이라 n_eff == n.
+      이 보정 없이는 20.8%(n=72)가 실제보다 2배 정밀해 보인다.
+    · hit_dir : 예측×실제 3×3 교차("p{-1|0|+1}_a{-1|0|+1}" → 건수). 역위상
+      (반등에 DOWN, 하락 재개에 UP)과 단순 부진을 구분하는 열쇠다.
+    · sigma_avg : 당일 sigma_at_t 평균. FLAT 밴드가 σ 연동이라 밴드 확대일의
+      적중률 하락을 모델 열화로 오독하지 않기 위한 통제 변수다(0818 실측:
+      σ +33% → -59pt 추세일인데 10m 실제 라벨 DOWN 42%뿐).
+
+    rows: [{"ts","direction","actual","correct","sigma_at_t"}] — dict 리스트
+    (sqlite3.Row 아님 — 호출부에서 변환). 관찰 전용, 어떤 판정에도 쓰지 않는다.
+    """
+    scored = [r for r in rows if r.get("correct") is not None]
+    n = len(scored)
+    acc = (sum(1 for r in scored if r["correct"]) / float(n)) if n else None
+    minutes = []
+    for r in scored:
+        ts = r.get("ts") or ""
+        try:
+            minutes.append(int(ts[11:13]) * 60 + int(ts[14:16]))
+        except (ValueError, TypeError, IndexError):
+            continue
+    n_eff = 0
+    _h = max(1, int(h_min))
+    _next_free = None
+    for m in sorted(minutes):
+        if _next_free is None or m >= _next_free:
+            n_eff += 1
+            _next_free = m + _h
+    hit_dir = {}
+    for r in scored:
+        try:
+            key = "p%+d_a%+d" % (int(r["direction"]), int(r["actual"]))
+        except (ValueError, TypeError, KeyError):
+            continue
+        hit_dir[key] = hit_dir.get(key, 0) + 1
+    sigmas = [float(r["sigma_at_t"]) for r in rows
+              if r.get("sigma_at_t") is not None]
+    return {
+        "acc": acc,
+        "n": n,
+        "n_eff": n_eff,
+        "hit_dir": hit_dir,
+        # ⚠ 미측정 ≠ 0 (계측 4원칙 ②) — 표본 없으면 None
+        "sigma_avg": (sum(sigmas) / float(len(sigmas))) if sigmas else None,
+    }
+
+
+def fetch_live_daily_detail(horizon: str, date_str: str, h_min: int) -> Dict:
+    """[MW0601 477차 / DD-1] 당일 채점행을 읽어 summarize_live_prediction_rows로 요약."""
+    try:
+        rows = fetchall(
+            PREDICTIONS_DB,
+            """SELECT ts, direction, actual, correct, sigma_at_t
+               FROM predictions WHERE horizon = ? AND date(ts) = ?""",
+            (horizon, date_str),
+        )
+        dict_rows = [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        # sigma_at_t 미존재 구버전 스키마 — σ 없이 폴백(값은 None으로 남는다)
+        rows = fetchall(
+            PREDICTIONS_DB,
+            """SELECT ts, direction, actual, correct
+               FROM predictions WHERE horizon = ? AND date(ts) = ?""",
+            (horizon, date_str),
+        )
+        dict_rows = [dict(r) for r in rows]
+    return summarize_live_prediction_rows(dict_rows, h_min)
+
+
+def save_model_live_daily(
+    date_str: str, horizon: str,
+    live_acc: Optional[float], live_n: Optional[int],
+    cv_acc: Optional[float] = None, oos_acc: Optional[float] = None,
+    n_eff: Optional[int] = None, hit_dir_json: Optional[str] = None,
+    sigma_avg: Optional[float] = None, clean_old_acc: Optional[float] = None,
+    db_path: Optional[str] = None,
+) -> None:
+    """[MW0601 477차 / DD-1] [ModelLive] 로그의 DB 승격(476차 G-3) — 1일 1호라이즌 1행.
+
+    종전엔 retrain_eod 로그 텍스트로만 남아 5거래일 대조마다 grep이 필요했고
+    로그 보존기간에 종속됐다(0818 딥다이브 §1-4). 관찰 전용 — 어떤 판정에도
+    관여하지 않는다. 채점 표본이 없는 날은 **행을 만들지 않는다**(미측정 ≠ 0,
+    계측 4원칙 ② — 행 부재가 곧 "미측정"이다).
+
+    clean_old_acc: 같은 날 guard_shadow_log에 기록되는 clean 매치드 현행 성적 —
+    라이브 적중률과의 상호 확인용(0818 실측 10m 라이브 20.8% ↔ clean_old 24.3%).
+    """
+    db = db_path or PREDICTIONS_DB
+    execute(db, """
+    CREATE TABLE IF NOT EXISTS model_live_daily (
+        date          TEXT NOT NULL,     -- YYYY-MM-DD
+        horizon       TEXT NOT NULL,     -- 1m/3m/5m/10m/15m/30m
+        live_acc      REAL,              -- 당일 라이브 적중률 (predictions.correct 평균)
+        n             INTEGER,           -- 채점행 수 (명목)
+        n_eff         INTEGER,           -- 겹치지 않는 h분 창 그리디 개수 (쌍 샘플링 보정 — 477차)
+        cv_acc        REAL,              -- EOD 신규 모델 CV
+        oos_acc       REAL,              -- EOD 신규 모델 최신 홀드아웃(fair_new)
+        hit_dir_json  TEXT,              -- 예측×실제 3×3 교차 JSON
+        sigma_avg     REAL,              -- 당일 sigma_at_t 평균 (라벨 밴드 통제)
+        clean_old_acc REAL,              -- clean 매치드 현행 성적 (guard_shadow 조인)
+        created_at    TEXT DEFAULT (datetime('now', 'localtime')),
+        PRIMARY KEY (date, horizon)
+    )""")
+    execute(db, """
+    INSERT OR REPLACE INTO model_live_daily
+        (date, horizon, live_acc, n, n_eff, cv_acc, oos_acc,
+         hit_dir_json, sigma_avg, clean_old_acc)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (date_str, horizon, live_acc, live_n, n_eff, cv_acc, oos_acc,
+         hit_dir_json, sigma_avg, clean_old_acc))
 
 
 def fetch_latest_tb_verdicts() -> Dict[str, sqlite3.Row]:

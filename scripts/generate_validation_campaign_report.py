@@ -2241,6 +2241,42 @@ def eval_guard_shadow_channel(days: int) -> dict:
                      % _fair_invalid),
         }
 
+    # [MW0601 477차 / DD-4] ghost_bypass 무비교 교체 vs clean 매치드 대조 — 관측 전용.
+    # ⑤안(457차 F7)의 전제는 "배포본을 비교할 방법이 없다"인데, 458차 P1-A의
+    # clean 매치드가 그 비교를 이미 제공하는 날이 있다 — 0818 실측: 5m ghost_bypass가
+    # clean_new=0.183 < clean_old=0.317(n=164)인데 무비교 교체 강행. 이 어긋남의
+    # 빈도를 여기서 센다. **판정 무관여** — ⑤안 유지/개정은 D6 안건(주간회의,
+    # min_days=10·min_bars=1350 도달 후)이며 이 수치는 그 서류다. ⚠ ghost 호라이즌의
+    # clean_n은 구조적으로 작다(0818 실측 8~164봉) — 건별 인용 시 clean_n 병기 필수.
+    # 표본부족 조기반환보다 앞에 둬 INSUFFICIENT 주간에도 적립 상황이 보이게 한다.
+    try:
+        with _conn(TRADES_DB) as conn:
+            _g_rows = conn.execute(
+                """SELECT horizon, clean_new, clean_old, clean_n
+                     FROM guard_shadow_log
+                    WHERE ts >= ? AND source = 'eod'
+                      AND verdict_source = 'ghost_bypass'
+                      AND (pc IS NULL OR pc = ?)""",
+                (cutoff, _me),
+            ).fetchall()
+        _g_meas = [r for r in _g_rows
+                   if r["clean_new"] is not None and r["clean_old"] is not None]
+        _g_opp = [r for r in _g_meas
+                  if float(r["clean_new"]) < float(r["clean_old"])]
+        out["ghost_bypass_clean"] = {
+            "n_ghost": len(_g_rows),
+            "n_clean_measured": len(_g_meas),
+            "n_clean_opposed": len(_g_opp),
+            "opposed_detail": [
+                "%s(n=%s, new=%.3f<old=%.3f)" % (
+                    r["horizon"], r["clean_n"] or 0,
+                    float(r["clean_new"]), float(r["clean_old"]))
+                for r in _g_opp],
+        }
+    except Exception:
+        # verdict_source/clean_* 미존재 구버전 스키마 — 관측 생략(미측정 ≠ 0)
+        pass
+
     fair_rows = [r for r in rows if r["fair_verdict"] is not None]
     if len(rows) < cr["min_samples"] or out["n_days"] < cr["min_days"]:
         out["reason"] = "표본 부족 (%d건/%d일 < %d건/%d일)" % (
@@ -6340,7 +6376,7 @@ def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
         with _conn(TRADES_DB) as conn:
             edge_rows = conn.execute(
                 """SELECT quantile_expected_pt AS exp_pt, quantile_uncertainty_pt AS unc_pt,
-                          actual_pnl_pts AS pnl
+                          actual_pnl_pts AS pnl, direction
                    FROM loss_tier1_qty1_shadow
                    WHERE resolved=1 AND ts >= ?
                      AND quantile_expected_pt IS NOT NULL
@@ -6357,6 +6393,30 @@ def resolve_and_eval_loss_tier1_qty1_shadow() -> dict:
         _ec = _spearman(edge_ratios, edge_pnls)
         out["edge_uncertainty_corr"] = None if np.isnan(_ec) else round(_ec, 4)
         out["edge_ratio_mean"] = round(float(np.mean(edge_ratios)), 4)
+
+    # [MW0601 477차 / DD-2] 방향정렬 edge — |exp|는 유·불리를 구분하지 못한다.
+    # expected_pt(=q50)는 **가격 기준**(양수=상승 예측)이라, SHORT 진입에서
+    # -0.672(순행 예측)와 +0.672(역행 예측)가 같은 "기대엣지"로 집계된다
+    # (0818 사후검증에서 실측된 오독 — 딥다이브 §2-3). 진입방향 부호를 곱해
+    # **+ = 포지션에 유리**로 정렬한 값을 병기한다. 기존 edge_ratio도 유지
+    # (시계열 단절 방지). 참고용 상관일 뿐 판정 게이트 아님(§9 — 위와 동일).
+    _dir_sign = {"LONG": 1.0, "SHORT": -1.0}
+    aligned_ratios, aligned_pnls, _n_opposed = [], [], 0
+    for r in edge_rows:
+        _s = _dir_sign.get(str(r["direction"] or "").upper())
+        if _s is None:
+            continue
+        _a = _s * float(r["exp_pt"]) / float(r["unc_pt"])
+        aligned_ratios.append(_a)
+        aligned_pnls.append(float(r["pnl"]))
+        if _a < 0:
+            _n_opposed += 1   # 모델이 포지션 반대 방향을 예측했는데 진입한 행
+    out["n_edge_aligned"] = len(aligned_ratios)
+    out["n_edge_opposed"] = _n_opposed
+    if len(aligned_ratios) >= 10:
+        _ac = _spearman(aligned_ratios, aligned_pnls)
+        out["aligned_edge_corr"] = None if np.isnan(_ac) else round(_ac, 4)
+        out["aligned_edge_mean"] = round(float(np.mean(aligned_ratios)), 4)
 
     _min_d = int(cr.get("min_days", 0))
     if n < int(cr["min_samples"]):
@@ -8551,6 +8611,17 @@ def build_report(days: int) -> tuple:
     elif lt1.get("n_edge_samples", 0) > 0:
         L.append("- [제안3 편입] edge_ratio 표본 %s건 — 상관 계산 최소치(10건) 미달, 축적 대기" %
                   lt1.get("n_edge_samples", 0))
+    if "aligned_edge_corr" in lt1:
+        L.append("- [477차 / DD-2] **방향정렬 edge**(=q50×진입방향부호/불확실성, +가 유리) vs "
+                  "실현 pt 스피어만 상관: **%s** (n=%s, 평균=%s, 역행예측 진입 %s건). "
+                  "q50은 가격 기준이라 위 |exp| 판은 순행/역행 예측을 구분하지 못한다 — "
+                  "이 줄이 그 교정본이다. 게이트 아님" % (
+            lt1.get("aligned_edge_corr", "—"), lt1.get("n_edge_aligned", "—"),
+            lt1.get("aligned_edge_mean", "—"), lt1.get("n_edge_opposed", "—")))
+    elif lt1.get("n_edge_aligned", 0) > 0:
+        L.append("- [477차 / DD-2] 방향정렬 edge 표본 %s건(역행예측 진입 %s건) — "
+                  "상관 계산 최소치(10건) 미달, 축적 대기" % (
+            lt1.get("n_edge_aligned", 0), lt1.get("n_edge_opposed", 0)))
     L.append("")
     L.append("> **거래일이 병목이지 건수가 아니다.** 일자단위 양측 부호검정에서 얻을 수")
     L.append("> 있는 최소 p는 n=5일 때 0.0625로, α=0.05를 **원리적으로** 통과할 수 없다")
@@ -9000,6 +9071,19 @@ def build_report(days: int) -> tuple:
             L.append("|---|---|---|")
             for hz, v in sorted(gsc["by_horizon"].items()):
                 L.append("| %s | %d | %d |" % (hz, v["n"], v["missed"]))
+    # [MW0601 477차 / DD-4] ghost_bypass 무비교 교체 vs clean 매치드 — 관측 전용 1행.
+    # 표본부족(reason) 주간에도 출력된다 — 적립 상황이 D6 안건 서류다.
+    _gbc = gsc.get("ghost_bypass_clean")
+    if _gbc and _gbc.get("n_ghost"):
+        L.append("- [477차 / DD-4] ghost_bypass(⑤안 무비교 교체) **%s건** 중 clean 매치드 "
+                  "측정 가능 %s건, 그중 **clean이 반대 방향(신규<현행)이었던 행 %s건**%s "
+                  "— 판정 무관(관측 전용). ⑤안 유지/개정은 D6 안건(주간회의)이며 이 줄이 "
+                  "그 서류다. ⚠ ghost 호라이즌 clean_n은 소표본(0818 실측 8~164봉) — "
+                  "건별 인용 시 clean_n을 함께 볼 것" % (
+            _gbc.get("n_ghost", 0), _gbc.get("n_clean_measured", 0),
+            _gbc.get("n_clean_opposed", 0),
+            (": %s" % " · ".join(_gbc.get("opposed_detail") or []))
+            if _gbc.get("opposed_detail") else ""))
     L.append("")
     L.append("> **판정 기준**(관측 전 고정, §9): missed_upgrade_rate ≥ %.0f%% → FAIL"
               "(판정기준을 old_acc_live로 교체할지 주간회의 검토), 미만 → PASS(acc.txt 유지)."
