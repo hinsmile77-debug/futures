@@ -11532,6 +11532,35 @@ class TradingSystem:
             "verified_count": _verified_today_snapshot,
         })
 
+        # ── [MW0601 477차 후속2 / 476차 F-4] daily_broker_pnl EOD 확정치 기입 ──
+        # pnl_krw(브로커 TR)는 gross다 — commission/net을 엔진(trades 합산)으로
+        # 같은 행에 기입해 단위를 명시한다(계측 4원칙 ①). 실전 전환 기준 ①은
+        # pnl_net_krw 기준. gross − commission = net 원 단위 대사를 로그로 남긴다
+        # (0818 실측: 685,000 − 23,332 = 661,668).
+        try:
+            from utils.db_utils import update_daily_broker_pnl_net, fetch_broker_daily_pnl_map
+            _f4_gross = float(stats.get("gross_krw", 0.0) or 0.0)
+            _f4_comm = float(stats.get("commission", 0.0) or 0.0)
+            _f4_net = float(stats.get("pnl_krw", 0.0) or 0.0)
+            update_daily_broker_pnl_net(today_str, _f4_gross, _f4_comm, _f4_net)
+            _f4_broker = fetch_broker_daily_pnl_map(3).get(today_str)
+            if _f4_broker is not None and abs(_f4_broker - _f4_gross) > 1.0:
+                log_manager.system(
+                    f"[BrokerPnl] gross 불일치 — broker {_f4_broker:+,.0f}원 vs "
+                    f"engine {_f4_gross:+,.0f}원 (차 {_f4_broker - _f4_gross:+,.0f}원). "
+                    f"체결 누락 또는 브로커 미정산 가능 — 확인 필요",
+                    "WARNING",
+                )
+            else:
+                log_manager.system(
+                    f"[BrokerPnl] EOD 확정 — gross {_f4_gross:+,.0f} − 수수료 "
+                    f"{_f4_comm:,.0f} = net {_f4_net:+,.0f}원"
+                    + (f" (broker 대사 일치)" if _f4_broker is not None else " (broker 행 없음 — 엔진 gross로 생성)"),
+                    "INFO",
+                )
+        except Exception as _f4_e:
+            logger.warning("[BrokerPnl] EOD 확정치 기입 실패 (무해): %s", _f4_e)
+
         # 섹션 8: scaler_daily EOD 집계 저장
         try:
             from model.scaler_monitor_db import aggregate_daily, insert_daily
@@ -15601,6 +15630,13 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
             _yesterday = (_today - _dt.timedelta(days=1)).isoformat()
             _today_str = _today.isoformat()
             _today_pnl = float(str(summary.get("실현손익") or "0").replace(",", "") or "0")
+            # ⚠ [477차 후속2 / F-4] 키 이름 ≠ 의미 — summary["추정자산"]에 실제로
+            # 담기는 값은 계좌 추정자산(4.9억대)이 아니라 **직전 거래일 실현손익
+            # (gross)** 이다(0818 실측: 32,000 = 08-14 gross / 723,000 = 08-07 gross).
+            # 브로커 TR summary 매핑 단계에서 키가 어긋난 것으로 보이나 저장 동작은
+            # 맞다 — 매핑 원점 수정은 별도 확인 후(재명명하면 이 줄도 함께).
+            # 또한 _yesterday는 **달력** 어제라 주말·휴장일 유령 행을 만들던 결함은
+            # upsert_daily_broker_pnl 내부의 is_krx_trading_date 가드가 막는다.
             _prev_pnl  = float(str(summary.get("추정자산") or "0").replace(",", "") or "0")
             # FLAT 상태에서만 저장: 포지션 보유 중 CpTd6197 today_pnl에 미실현손익이
             # 포함되면 broker_daily_pnl 테이블이 오염되어 손익 추이 탭 값이 부풀려짐.
