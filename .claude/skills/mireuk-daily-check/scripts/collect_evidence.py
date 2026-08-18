@@ -235,9 +235,32 @@ DEFAULT_CONFIG = {
         #   가짜 적신호를 만들어 봤다(2026-08-05 이후엔 CLEAR라 아예 안 찍힌다).
         #   **매 주기 무조건 찍히는 상태 샘플만** 넣는다.
         #
+        # [MW0602 475차 후속 / 장후 G-3 = 장전 G-1] **분기편향 자동 탐지.**
+        #
+        # 고착·무기록 말고 세 번째 죽음이 있다 — 지표가 **특정 분기에서만 돈다.**
+        # 2026-08-18 `ConfFloor` 가 그것이었다: 80샘플이 전부 `ZONE_BLACKOUT` 이고
+        # 그 80이 **진입 금지 존 체류 80분과 정확히 일치**했다(진입 허용 290분 0건).
+        # 즉 "매분 무조건 상태 샘플"이라 주장하는 계측이 실제로는 한쪽 분기에서만 찍혔다.
+        # 그것을 발견한 방법이 사람이 우연히 한 산술 일치였으므로 계측으로 바꾼다.
+        #
+        # ⚠ **옵트인이다**(`sample_axis: "minute"`). 화이트리스트 방식으로 만들면
+        #   설계상 매분이 아닌 지표가 즉시 오탐이 된다 — 0818 실측 비율:
+        #     CB_state 1.01(진짜 매분)  ConfFloor 0.22(편향)
+        #     degraded 0.07 · CORE준비도 0.12  ← 둘 다 설계상 매분 아님(오탐이 될 뻔했다)
+        # ⚠ `n == 0` 은 분기편향으로 세지 않는다 — 그건 기존 `무기록`이며, 배포 첫날
+        #   이전 날짜가 전부 여기 걸린다(0814 ConfFloor 0건은 미배포가 원인이다).
+        #
         # name: {re: 값 캡처 정규식(그룹 v), files: 파일명 부분일치, why: 왜 보는가,
         #        benign: 이 값 하나로 100%인 것이 정상인 경우(경고 대신 정보로 표시),
-        #        min_samples/min_days: 전역 기준 덮어쓰기(선택)}
+        #        min_samples/min_days: 전역 기준 덮어쓰기(선택),
+        #        sample_axis: "minute" 이면 "그 지표가 사는 로그가 살아 있던 분" 대비
+        #                     관측률을 재고 branch_ratio_min 미만이면 `분기편향`}
+        # 관측률이 이 값 미만이면 분기편향. 0.5 는 "절반의 분에서 안 찍혔다"는 뜻이라
+        # 주기 로그(2분·5분 간격)와 진짜 편향을 가르는 자리다. 0818 실측 0.22 는 통과 못 하고
+        # 진짜 매분 샘플러 CB_state 1.01 은 여유 있게 통과한다.
+        "branch_ratio_min": 0.5,
+        # 분모가 이보다 작은 날은 관측률을 재지 않는다(반나절만 돈 날에 판정하지 않는다).
+        "branch_min_expected": 60,
         "patterns": {
             "CORE안전": {
                 "re": r"CORE안전=(?P<v>\S+)",
@@ -254,6 +277,7 @@ DEFAULT_CONFIG = {
                 "re": r"\[DBG-CB\] state=(?P<v>\w+)",
                 "files": ["_DEBUG"],
                 "benign": ["NORMAL"],
+                "sample_axis": "minute",   # 0818 실측 관측률 1.01 — 진짜 매분 샘플러
                 "why": "CB 전체 상태(매분 샘플). NORMAL 고착은 정상 — 단 Phase 5 조건 ②"
                        "(CB 실발동 확인)가 여전히 미충족이라는 뜻이기도 하다",
             },
@@ -288,6 +312,8 @@ DEFAULT_CONFIG = {
                 "re": r"\[ConfFloorGuard\] state=(?P<v>\w+)",
                 "files": ["_SIGNAL"],
                 "benign": ["OK"],
+                # 470차 L2 가 "매분 무조건"을 표방하며 신설했다 — 그 주장을 매일 검증한다.
+                "sample_axis": "minute",
                 "why": "자동진입 하한 도달 가능 여부(매분 샘플, 470차 L2). OK 고착은 정상. "
                        "BLOCKED 고착이면 어떤 신호도 자동진입 하한을 못 넘는 상태가 "
                        "종일 지속된 것이다 — 2026-08-11 오전 88신호 전부 grade=X 가 그 사례",
@@ -875,6 +901,15 @@ def scan_stuck_indicators(root, cfg, day):
     if not days:
         return []
 
+    # [MW0602 475차 후속] `sample_axis: "minute"` 지표의 분모 — **그 지표가 사는 로그가
+    # 그날 살아 있던 분(分)**. 매분 루프 창(09:00~15:10)으로 자른다.
+    # 왜 파일별인가: 채널마다 기록 주기가 달라 한 분모를 공유하면 주기 차이가 편향으로
+    # 오독된다. "이 파일이 그 분에 살아 있었는데 이 지표는 안 찍혔다" 가 물어야 할 것이다.
+    _ts_min_re = re.compile(r"^\d{4}-\d{2}-\d{2} (\d{2}):(\d{2})")
+    _loop_lo = hhmm_to_min(cfg.get("minute_loop_window", ["09:00", "15:10"])[0])
+    _loop_hi = hhmm_to_min(cfg.get("minute_loop_window", ["09:00", "15:10"])[1])
+    file_minutes = {}          # full path -> 살아 있던 분 수 (같은 파일 재계산 방지)
+
     rows = []
     for name, spec in pats.items():
         try:
@@ -885,8 +920,12 @@ def scan_stuck_indicators(root, cfg, day):
                          "note": "정규식 오류: %s" % e})
             continue
         want = [f.lower() for f in (spec.get("files") or [])]
+        per_minute = str(spec.get("sample_axis") or "") == "minute"
         counts, hit_days = {}, set()
+        expected = 0            # 분모 합 (per_minute 일 때만 의미 있다)
         for d in days:
+            day_expected = 0
+            _n_before = sum(counts.values())
             for full in by_day[d]:
                 fn = os.path.basename(full).lower()
                 if want and not any(w in fn for w in want):
@@ -894,22 +933,51 @@ def scan_stuck_indicators(root, cfg, day):
                 try:
                     if os.stat(full).st_size > max_bytes:
                         continue
+                    # 분모는 같은 스트림에서 센다 — 파일을 두 번 읽지 않는다.
+                    track = per_minute and full not in file_minutes
+                    mins = set() if track else None
                     with io.open(full, encoding="utf-8", errors="replace") as f:
                         for ln in f:
+                            if track:
+                                tm = _ts_min_re.match(ln)
+                                if tm:
+                                    _t = int(tm.group(1)) * 60 + int(tm.group(2))
+                                    if _loop_lo <= _t <= _loop_hi:
+                                        mins.add(_t)
                             m = rx.search(ln)
                             if m:
                                 v = (m.group("v") or "").strip()
                                 counts[v] = counts.get(v, 0) + 1
                                 hit_days.add(d)
+                    if track:
+                        file_minutes[full] = len(mins)
                 except (IOError, OSError):
                     continue
+                if per_minute:
+                    # 여러 파일에 걸치면 **최댓값**을 쓴다. 합치면 같은 분을 두 번 세서
+                    # 분모가 부풀고 멀쩡한 지표가 편향으로 보인다.
+                    day_expected = max(day_expected, file_minutes.get(full, 0))
+            # 표본이 하나도 없는 날은 분모에서 뺀다 — 그 날은 "편향"이 아니라 **미배포**이거나
+            # 계측 중단이며, 그것은 `무기록`이 말할 몫이다. 빼지 않으면 배포 첫날 지표가
+            # 무조건 분기편향으로 뜬다(0818 ConfFloor: 80/2918=0.03 vs 80/365=0.22).
+            if sum(counts.values()) > _n_before:
+                expected += day_expected
         n = sum(counts.values())
         dist = sorted(counts.items(), key=lambda kv: -kv[1])
         _min_n = int(spec.get("min_samples", conf.get("min_samples", 20)))
         _min_d = int(spec.get("min_days", conf.get("min_days", 3)))
         _benign = [str(b) for b in (spec.get("benign") or [])]
+        _ratio = (float(n) / expected) if (per_minute and expected) else None
+        _ratio_min = float(conf.get("branch_ratio_min", 0.5))
+        _exp_min = int(conf.get("branch_min_expected", 60))
         if n == 0:
             verdict, note = "무기록", "%d거래일 전체에서 0건 — 로그 문구 변경 또는 계측 중단" % len(days)
+        elif (_ratio is not None and expected >= _exp_min and _ratio < _ratio_min):
+            # 표본부족보다 **먼저** 판정한다. 이것은 통계가 아니라 구조 문제라
+            # 표본이 쌓여도 저절로 해소되지 않는다(0818 ConfFloor 1일차에 이미 확정적).
+            verdict = "분기편향"
+            note = ("관측률 %.2f (%d건 / 관측일 %d일의 로그 생존 %d분) — 매분 샘플러를 "
+                    "표방하는데 일부 분기에서만 찍힌다" % (_ratio, n, len(hit_days), expected))
         elif len(hit_days) < _min_d or n < _min_n:
             verdict, note = "표본부족", "관측 %d일 · %d건 (기준 %d일 · %d건)" % (
                 len(hit_days), n, _min_d, _min_n)
@@ -927,7 +995,8 @@ def scan_stuck_indicators(root, cfg, day):
             verdict, note = "변동", "%d개 값" % len(dist)
         rows.append({"name": name, "why": spec.get("why", ""), "days": len(hit_days),
                      "n": n, "dist": dist, "verdict": verdict, "note": note,
-                     "scanned_days": len(days)})
+                     "scanned_days": len(days),
+                     "ratio": _ratio, "expected": expected if per_minute else None})
     return rows
 
 
@@ -2214,6 +2283,10 @@ def build(root, day, phase, cfg, discover_only=False):
         if r["verdict"] == "고착":
             flags.append("고착 지표 **`%s`** — %s. 안전장치가 '켜져 있다'와 '작동한다'는 "
                          "다르다 (§12)" % (r["name"], r["note"]))
+        elif r["verdict"] == "분기편향":
+            flags.append("지표 **`%s`** %s — 계측이 **한쪽 분기에서만** 돈다. "
+                         "값 분포가 정상으로 보여도 그 분포는 그 분기의 것이다 (§12)"
+                         % (r["name"], r["note"]))
         elif r["verdict"] == "무기록":
             flags.append("지표 **`%s`** 최근 %d거래일 **기록 0건** — 계측 중단 또는 로그 문구 "
                          "변경 의심 (§12)" % (r["name"], r.get("scanned_days", 0)))
@@ -2244,16 +2317,25 @@ def build(root, day, phase, cfg, discover_only=False):
         A("> 지표가 한쪽 값에 붙박여 죽어 있는데 매번 사람이 뒤늦게 발견했다.")
         A("> `무기록`은 그 반대 형태다: 문구가 바뀌어 계측이 조용히 끊긴 상태.")
         A("")
-        A("| 지표 | 판정 | 관측일 | 표본 | 값 분포 | 왜 보는가 |")
-        A("|---|---|---|---|---|---|")
+        A("> **세 번째 죽음 — 분기편향.** 고착·무기록 말고 *한쪽 분기에서만 도는* 계측이 있다.")
+        A("> 2026-08-18 `ConfFloor` 80샘플이 전부 `ZONE_BLACKOUT` 이었고 그 80이 진입 금지 존")
+        A("> 체류 **80분과 정확히 일치**했다(허용 290분 0건). `관측률` 열이 그것을 잰다 — ")
+        A("> `sample_axis: \"minute\"` 지표만 대상이며, **그 지표가 사는 로그가 살아 있던 분**이 분모다.")
+        A("")
+        A("| 지표 | 판정 | 관측일 | 표본 | 관측률 | 값 분포 | 왜 보는가 |")
+        A("|---|---|---|---|---|---|---|")
         for r in stuck_rows:
             mark = {"고착": "🔴 고착", "무기록": "🔴 무기록", "정상고착": "⚪ 정상고착",
-                    "표본부족": "⚪ 표본부족", "변동": "✅ 변동"}[r["verdict"]]
+                    "표본부족": "⚪ 표본부족", "변동": "✅ 변동",
+                    "분기편향": "🟠 분기편향"}[r["verdict"]]
             dist = ", ".join("`%s`×%d" % (v, c) for v, c in r["dist"][:6]) or "—"
-            A("| `%s` | %s | %d | %d | %s | %s |" % (
-                r["name"], mark, r["days"], r["n"], dist, r["why"]))
+            _rt = ("%.2f" % r["ratio"]) if r.get("ratio") is not None else "—"
+            A("| `%s` | %s | %d | %d | %s | %s | %s |" % (
+                r["name"], mark, r["days"], r["n"], _rt, dist, r["why"]))
         A("")
         A("*판정 기준: 한 값이 100%면 `고착`, 표본 0이면 `무기록`, "
+          "관측률이 기준(0.5) 미만이면 `분기편향`(표본부족보다 **먼저** — 구조 문제라 "
+          "표본이 쌓여도 해소되지 않는다), "
           "관측일·표본이 기준 미달이면 `표본부족`(판정 보류). "
           "**출발점이지 결론이 아니다** — 고착이 정상인 지표도 있다(예: 사고 없는 날의 CB 상태).*")
         A("")
