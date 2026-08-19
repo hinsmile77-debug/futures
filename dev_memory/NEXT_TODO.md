@@ -9586,9 +9586,11 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
   - 15:40 `[ThresholdRecal] 재보정 결과` 로그
   - threshold_monitor.db 누적 확인
 
-- [NEXT 2026-07-01] **monthly_cleanup.py 첫 실행**
-  - `python scripts/monthly_cleanup.py --apply`
-  - 5월 SYSTEM.log ~1.5GB 회수 예상
+- [DONE 2026-08-19 / MW0601 479차] ~~monthly_cleanup.py 첫 실행~~ — **구 정책(60일 컷)
+  그대로 실행하면 안 되는 항목이었다**(predictions.db 원자재 4~5만행 영구 소실 —
+  `docs/정기점검/보관정책_MW0601-20260818.md` §2). 476차 안전화(190일·DB프룬 기본
+  비활성) + 479차 차등·압축 후 첫 --apply 완료(4,878MB→210.5MB, 삭제 0건).
+  이후는 EOD 체인이 매월 첫 금요일 자동 실행(campaign_steps.py 배선) — 수동 실행 불필요.
 
 - [NEXT Phase E — 1주 후] **2순위 피처 Robust 재평가**
   - `ofi_norm`, `mlofi_norm`, `ofi_imbalance` 극단 z 빈도 재측정
@@ -9648,9 +9650,11 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
   - 15:40 `[ThresholdRecal] 재보정 결과` 로그
   - threshold_monitor.db 누적 확인
 
-- [NEXT 2026-07-01] **monthly_cleanup.py 첫 실행**
-  - `python scripts/monthly_cleanup.py --apply`
-  - 5월 SYSTEM.log ~1.5GB 회수 예상
+- [DONE 2026-08-19 / MW0601 479차] ~~monthly_cleanup.py 첫 실행~~ — **구 정책(60일 컷)
+  그대로 실행하면 안 되는 항목이었다**(predictions.db 원자재 4~5만행 영구 소실 —
+  `docs/정기점검/보관정책_MW0601-20260818.md` §2). 476차 안전화(190일·DB프룬 기본
+  비활성) + 479차 차등·압축 후 첫 --apply 완료(4,878MB→210.5MB, 삭제 0건).
+  이후는 EOD 체인이 매월 첫 금요일 자동 실행(campaign_steps.py 배선) — 수동 실행 불필요.
 
 - [NEXT 미구현 — 잔여] **방안B: prediction_buffer sigma_at_t 저장**
   - `predictions` 테이블 `sigma_at_t REAL` 컬럼 마이그레이션
@@ -14046,3 +14050,15 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
 - [ ] **FZ-11 (관찰, 08-20) 워치독 오탐 0건 확인** — `logs/crash_fault.log`의 `[TS]` 줄에서
       `beat_age`가 장중 내내 0~5초를 유지하는지. 30초 이상 튀는 구간이 있으면 임계
       재검토 전에 **그 블로킹의 정체를 먼저 밝힐 것**(그것이 진짜 수확이다)
+
+- [ ] **[MW0601 479차] HOGA 압축본 190일 컷 면제 해제 여부 — 주간회의 안건.**
+  원시 5호가의 유일 원장(raw_data.db에 호가 테이블 없음) + CORE 피처 점질량 조사
+  (CLAUDE.md §3)가 원시 재생을 요구할 수 있어 보수 기본값 = 무기한 보존(~3.3MB/일).
+  근거: `docs/정기점검/보관정책_로그차등_MW0601-20260819.md` §7.
+- [ ] **[MW0601 479차] 월간 로그 정리 배선 라이브 검증** — 2026-08-21(금) EOD 로그에서
+  `[검증 캠페인] 월간 로그 정리 → 완료` + `data/monthly_cleanup_last_run.txt=202608` 확인.
+- [ ] **[MW0601 479차] MW0602 배포 확인** — dev 체리픽 push 완료 후, MW0602에서
+  `git pull` → `python scripts/monthly_cleanup.py` dry-run(삭제 0건·번들 목록 타당성)
+  → 첫 금요일 EOD 자동 실행 확인. 절차: 보관정책_로그차등 문서 §5.
+- [ ] **`raw_data.db`(508MB)·`shap_tracker.db`(132MB) 보관정책 부재** — 별도 조사
+  (476차 §6-3에서 이월).

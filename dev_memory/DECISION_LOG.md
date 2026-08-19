@@ -26409,3 +26409,58 @@ net +92,785원 · 3원 대사 불일치 1건) · O-1~O-4 판정 · P1 4건(1-3 F
   것은 정상이다(`ready=False` 처리). 그것을 결함으로 보고 백필을 재시도하지 말 것.
 - **검증**: 위 전부 로그·DB 실측. 상세 표는
   `docs/정기점검/매일점검/MW0601-20260819-미종료-딥다이브.md` §9.
+
+## 2026-08-18 (MW0601 476차 후속 — 점검 산출물 보관정책 이식) [479차 세션에서 소급 기록]
+
+### [1] monthly_cleanup.py가 백업 없는 시계열 원자재를 지우도록 대기 중이었다 (P0급)
+
+**증상**: `scripts/monthly_cleanup.py`가 `PRED_KEEP_DAYS=60`으로 `predictions` ·
+`ensemble_decisions` · `meta_labels` 행을 삭제하도록 돼 있고, NEXT_TODO에
+`[NEXT 2026-07-01] --apply`가 미완료 항목으로 두 번 걸려 있었다. 실행됐다면
+2026-08-19 기준 `ensemble_decisions` 10,168행(41.5%) · `predictions` 55,324행(54.4%) ·
+`meta_labels` 55,182행(55.4%)이 사라졌다. predictions.db는 gitignore + 백업 7일 →
+삭제 = 영구 소실.
+
+**결정**: DB 행 삭제를 기본 비활성(`--allow-db-prune` 필요)으로, 켜더라도
+`_MIN_KEEP_DAYS_DB = 190`(26주 182일 + 여유) 하한 강제. `LOG_KEEP_DAYS` 30 → 190.
+
+**Why**: 실측 소급 인용 꼬리가 182일 = 26주 WFA 주기. 증거 다이제스트는 원본 로그가
+있어야 재생성되므로 로그 보관이 증거의 재생성 가능성을 결정한다. FP-CRITICAL·
+TOX-SEVERE-SPREAD와 반대 방향의 같은 결함(저쪽은 계측이 안 돌았고, 이쪽은 계측을
+지우는 코드가 돌기를 기다렸다).
+
+**How to apply**: monthly_cleanup.py — ALLOW_DB_PRUNE 플래그, 보관 하한, 파일명 날짜
+판정, 보호 패턴, 삭제 목록 전부 인쇄. collect_evidence.py — `--pc` 인자(우선순위
+인자 > MIREUK_PC_ID > 호스트명), UNKNOWN이면 프룬 중단. 전문:
+`docs/정기점검/보관정책_MW0601-20260818.md`.
+
+**검증**: dry-run 190일 컷 전 테이블 0행 · `tests/test_476_evidence_retention.py` 12 passed.
+
+## 2026-08-19 (MW0601 479차 — 로그 채널별 차등 보관: 측정·압축·발화 배선)
+
+### [1] 476차 §6-1 미결(차등 보관) 측정으로 종결 — 3계층 확정
+
+**측정**(2026-08-19): ① 점검 문서의 로그 파일 인용 558건 전수 — 과거분은 WARN
+1건(1일)뿐, HOGA·SYSTEM 포함 전부 당일 인용. ② 원본 .log를 소급 glob하는 소비자는
+TRADE(5개 스크립트)·SIGNAL(2)·PROBE(1)뿐, 합계 39MB. ③ 용량 96%(SYSTEM 3.8GB +
+HOGA 2.4GB)는 소급 소비자 0. ④ HOGA는 원시 5호가 잔량의 유일 원장(raw_data.db에
+호가 테이블 없음). ⑤ 압축률 실측 HOGA 8% · SYSTEM 2%.
+
+**결정**: Tier A(TRADE·SIGNAL·PROBE) 원본 190일 유지 / Tier B(SYSTEM·HOGA·MICRO 등
+9종) 30일 후 월 zip → 압축본 190일 컷, 단 HOGA 압축본은 삭제 면제(주간회의 결정 전
+보수 기본값) / Tier C(crash·날짜없음·json) 기존 보호. 발화 지점은 campaign_steps.py
+(EOD 체인 공용 모듈) 한 곳 — 매월 첫 캠페인 실행일 마지막 스텝, 마커
+data/monthly_cleanup_last_run.txt(gitignore).
+
+**Why**: "측정 없는 차등은 근거 없는 30일의 반복"(476차) — 측정으로 근거를 만든 뒤
+차등했다. 압축(이동)이지 삭제(소실)가 아니므로 HOGA 원장이 보존된다.
+
+**How to apply**: monthly_cleanup.py [0]장중가드/[1a]압축/[1b]원본컷(Tier B 구조적
+제외)/[1c]압축본컷(HOGA 면제) + campaign_steps.py monthly_cleanup_due()/마커 +
+tests/test_479_log_retention_tiers.py 10케이스. 전문:
+`docs/정기점검/보관정책_로그차등_MW0601-20260819.md`.
+
+**검증**: 22 passed(476+479) · dry-run 삭제 0건 · 첫 --apply 실측
+4,878MB→210.5MB(4.3%), logs/ 6.5GB→1.78GB, CRC 검증 경고 0건.
+2026-08-21(금) EOD 로그의 `월간 로그 정리 → 완료`가 배선 라이브 검증.
+MW0602 배포: 커밋 (1/3)(2/3)을 dev에 체리픽 — 절차는 위 문서 §5.

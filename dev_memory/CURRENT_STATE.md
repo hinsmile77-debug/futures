@@ -5941,7 +5941,7 @@ F1_IMPROVEMENT_MASTER_PLAN.md 기반 로드맵 P1~P6c 전체 구현.
 | **섹션 8: scaler_monitor.db 수집** — predict_proba INSERT + refresh UPDATE + daily_close EOD | **완료** — model/scaler_monitor_db.py + multi_horizon_model.py + main.py |
 | **섹션 9: ScalerMonitorPanel UI** — "🔬 스케일러" 탭 | **완료** — dashboard/panels/scaler_monitor_panel.py |
 | **SYSTEM.log 200MB/일 버그 수정** — 호가 이벤트 INFO→DEBUG | **완료** — api_connector.py + realtime_data.py |
-| **monthly_cleanup.py** — 30일 로그·90일 shap·60일 예측 자동 정리 | **완료** — scripts/monthly_cleanup.py |
+| **monthly_cleanup.py** — 30일 로그·90일 shap·60일 예측 자동 정리 | ~~완료~~ **[2026-08-19 정정] 구현 완료였을 뿐 정책 검증 완료가 아니었다** — 발화 지점이 없어 한 번도 실행되지 않았고, 그게 다행이었다(60일 컷이 predictions.db 원자재를 지울 뻔 — 보관정책_MW0601-20260818.md §2). 476차 안전화(190일) + 479차 차등·압축·EOD 배선으로 대체 |
 | 실세션 확인 (scaler_monitor.db 누적 + 패널 표시) | **미완료** — 다음 기동 시 |
 
 ### 수정 파일 (94차)
