@@ -822,6 +822,16 @@ class TradingSystem:
         self._force_exit_pass_date: object = None
         self._sched_force_exit_heartbeat_date: object = None
 
+        # ── [MW0601 478차 후속 / FZ-1] 메인 이벤트 루프 하트비트 ────────────────
+        # 2026-08-19 13:41:21 동결 사고 대응. 이 값은 **메인(Qt) 스레드에서만** 갱신되고
+        # `utils/freeze_watchdog.py`(순수 threading.Thread)가 밖에서 나이를 읽는다.
+        # None = 아직 이벤트 루프가 하트비트를 한 번도 찍지 않음(기동 중) — 워치독은
+        # 그 상태를 동결로 판정하지 않는다(계측 4원칙 ② 미측정 ≠ 0).
+        # 갱신 지점은 셋뿐이다: _on_main_heartbeat(5s QTimer) / _scheduler_tick 진입부 /
+        # 매분 파이프라인 완료부. getattr 폴백으로 읽지 말 것(계측 4원칙 ④).
+        self._main_beat: object = None
+        self._freeze_watchdog: object = None
+
         # ── [MW0601 471차 F-4] Degraded 선제차단 lookahead 발화 여부(이번 분) ────
         # `_is_degraded_entry_blocked()`가 매 호출 첫머리에서 False로 리셋하고
         # 발화 시 True로 올린다. `ensemble_decisions.health_preblock`에 저장.
@@ -9732,6 +9742,9 @@ class TradingSystem:
             f"total={_pipe_ms:.0f}ms | {_all_steps_str or '─'}",
             "INFO",
         )
+        # [MW0601 478차 후속 / FZ-1] 하트비트 3중화 — 매분 파이프라인 완주 지점.
+        # 5초 타이머·30초 스케줄러와 독립이므로, 셋 중 하나만 살아도 오탐이 없다.
+        self._main_beat = time.time()
         self._emit_runtime_health(features, _pipe_ms)
 
         # ── SHS: S2 latency + CORE pass rate 업데이트 + 대시보드/슬랙 ──
@@ -11959,6 +11972,99 @@ class TradingSystem:
         except Exception as _e:
             logger.warning("[Shutdown] 정상 종료 플래그 기록 실패 (무해): %s", _e)
 
+    # ── [MW0601 478차 후속 / FZ-1] 메인 이벤트 루프 동결 감시 ─────────────────
+
+    def _on_main_heartbeat(self) -> None:
+        """5초 QTimer — 이벤트 루프가 살아 있다는 유일한 증거를 찍는다.
+
+        의도적으로 **이 한 줄만** 한다. 무엇을 더 하면 그 작업이 느려질 때
+        하트비트가 함께 늦어져 워치독이 오탐한다.
+        """
+        self._main_beat = time.time()
+
+    def _freeze_watchdog_active(self) -> bool:
+        """워치독이 감시해야 하는 상태인가 — 워치독 스레드에서 호출된다.
+
+        거래일이 아니거나 오늘 자동종료가 이미 끝났으면 감시하지 않는다.
+        (자동종료 후에는 이벤트 루프가 정상적으로 끝나므로 동결이 아니다.)
+        """
+        try:
+            if self._auto_shutdown_done_today:
+                return False
+            return bool(is_trading_day(datetime.datetime.now()))
+        except Exception:
+            return True     # 판단 실패 시 감시를 끄지 않는다
+
+    def _freeze_watchdog_context(self) -> str:
+        """발화 직전 fault 로그에 남길 상태 한 줄 — 특히 **미청산 여부**.
+
+        15:10 이후 발화면 런처가 재기동하지 않는다(오버나이트 금지 정책). 그때
+        포지션이 남아 있었는지가 사후 조사에서 가장 먼저 필요한 사실이므로,
+        프로세스를 끊기 전에 반드시 기록한다.
+        """
+        try:
+            _pos = self.position.status
+            _qty = self.position.quantity
+            _broker = int(getattr(self, "_integrity_broker_qty", 0) or 0)
+            _unclosed = (_pos != "FLAT") or _broker > 0
+            return (
+                "  position=%s %sct broker_cached=%dct  **미청산=%s**\n"
+                "  pipeline_last=%s  force_exit_pass=%d회"
+                % (
+                    _pos, _qty, _broker,
+                    "예 — 절대원칙 §1 확인 필요" if _unclosed else "아니오",
+                    getattr(self, "_last_real_pipeline_dt", None),
+                    self._force_exit_pass_evals,
+                )
+            )
+        except Exception as exc:
+            return "  상태 수집 실패: %s" % (exc,)
+
+    def _start_freeze_watchdog(self) -> None:
+        """워치독 스레드 기동 — Qt 이벤트 루프 진입 **직전**에 1회 호출.
+
+        환경변수 `MIREUK_FREEZE_WATCHDOG=0` 또는
+        `config/settings.py:FREEZE_WATCHDOG_ENABLED=False` 로 끌 수 있다.
+        기동 실패는 치명이 아니다 — 감시가 없던 이전 동작으로 돌아갈 뿐이므로
+        경고만 남기고 진행한다(감시자 때문에 거래 시스템이 못 뜨면 본말전도다).
+        """
+        try:
+            from config.settings import (
+                FREEZE_WATCHDOG_ENABLED, FREEZE_WATCHDOG_CHECK_SEC,
+                FREEZE_WATCHDOG_STALL_SEC, FREEZE_WATCHDOG_STRIKES,
+                FREEZE_WATCHDOG_EXIT_CODE, FREEZE_WATCHDOG_WINDOW,
+                FREEZE_WATCHDOG_TS_HEARTBEAT,
+            )
+            if not FREEZE_WATCHDOG_ENABLED:
+                logger.info("[FreezeWatchdog] 설정 비활성 — 기동 생략")
+                return
+            if os.environ.get("MIREUK_FREEZE_WATCHDOG", "1").strip() == "0":
+                logger.info("[FreezeWatchdog] MIREUK_FREEZE_WATCHDOG=0 — 기동 생략")
+                return
+
+            from utils.freeze_watchdog import FreezeWatchdog
+            self._freeze_watchdog = FreezeWatchdog(
+                beat_fn=lambda: self._main_beat,
+                active_fn=self._freeze_watchdog_active,
+                context_fn=self._freeze_watchdog_context,
+                check_sec=FREEZE_WATCHDOG_CHECK_SEC,
+                stall_sec=FREEZE_WATCHDOG_STALL_SEC,
+                strikes=FREEZE_WATCHDOG_STRIKES,
+                exit_code=FREEZE_WATCHDOG_EXIT_CODE,
+                window=FREEZE_WATCHDOG_WINDOW,
+                fault_log_path=os.path.join("logs", "crash_fault.log"),
+                ts_heartbeat=FREEZE_WATCHDOG_TS_HEARTBEAT,
+            )
+            self._freeze_watchdog.start()
+            log_manager.system(
+                f"[FreezeWatchdog] 기동 — 하트비트 {FREEZE_WATCHDOG_STALL_SEC:.0f}s 정체 "
+                f"×{FREEZE_WATCHDOG_STRIKES}회 연속 시 os._exit({FREEZE_WATCHDOG_EXIT_CODE}) "
+                f"→ 런처 재기동 (2026-08-19 동결 사고 대응)",
+                "INFO",
+            )
+        except Exception as e:
+            logger.warning("[FreezeWatchdog] 기동 실패 (감시 없이 계속): %s", e, exc_info=True)
+
     # ── 파이프라인 생존 감시 ──────────────────────────────────────
 
     def _on_pipeline_watchdog(self, elapsed_s: int) -> None:
@@ -12599,10 +12705,33 @@ class TradingSystem:
         self._kospi200_index_timer.start()
 
         # 옵션 체인 주기 폴링 — 300초 (opt_chain_pcr / opt_gex_bn / opt_atm_* 수집)
+        #
+        # [MW0601 478차 후속 / FZ-3] **기동을 17초 늦춘다 — 위상 분리다.**
+        # 위 세 타이머(_scheduler 30s / _investor 60s / _kospi200_index 60s)는 여기서
+        # 연속으로 start()되므로 모두 **같은 초에 만료**한다. 실측 2026-08-19에는 그
+        # 초가 매분 :21이었고, 그 한 초에 수급 BlockRequest 2건(백그라운드 스레드
+        # 생성·소멸) + 지수 BlockRequest 2건 + (5분마다) 옵션 워커의 CoInitialize +
+        # Dispatch("Dscbo1.OptionMst")가 겹쳤다. 13:41:21 메인 스레드 동결은 옵션 워커
+        # 기동과 1초 이내로 일치했고(워커 소요 601,493ms 역산 = 13:41:20.99), 그 초에
+        # 시작된 신규 활동은 워커가 유일했다.
+        # → 크로스 아파트먼트 COM 활동이 같은 초에 몰리는 구조 자체를 해체한다.
+        # ⚠ 이것은 **원인 확정이 아니라 폭 좁히기**다. 근본 방어는 FZ-1 워치독이고,
+        #   이 오프셋은 레이스 창을 줄일 뿐이다(네이티브 스핀 프레임 미특정 — 풀 덤프
+        #   c:\tmp\mireuk_freeze_20260819_pid21612.dmp 보존).
+        # 부작용 없음: 옵션 체인은 5분 주기 스냅샷이고 `is_due()`가 경과 시간으로만
+        # 판단하므로, 절대 시각이 17초 이동해도 수집 빈도·신선도는 변하지 않는다.
         self._option_chain_timer = QTimer()
         self._option_chain_timer.setInterval(300_000)
         self._option_chain_timer.timeout.connect(self._poll_option_chain)
-        self._option_chain_timer.start()
+        QTimer.singleShot(17_000, self._option_chain_timer.start)
+
+        # [MW0601 478차 후속 / FZ-1] 메인 이벤트 루프 하트비트 — 5초.
+        # 이 타이머가 멈추는 것이 곧 "이벤트 루프 사망"이며, 그것을 이벤트 루프 **밖**의
+        # FreezeWatchdog 스레드가 감시한다. 콜백은 타임스탬프 대입 한 줄뿐이다.
+        self._main_heartbeat_timer = QTimer()
+        self._main_heartbeat_timer.setInterval(5_000)
+        self._main_heartbeat_timer.timeout.connect(self._on_main_heartbeat)
+        self._main_heartbeat_timer.start()
 
         self._balance_ui_timer = QTimer()
         self._balance_ui_timer.setInterval(2_000)
@@ -12662,6 +12791,12 @@ class TradingSystem:
         # 이벤트 루프 진입 2초 후 초기 대기 상태 즉시 출력
         QTimer.singleShot(2000, lambda: self._log_waiting_status(datetime.datetime.now()))
 
+        # [MW0601 478차 후속 / FZ-1] 이벤트 루프 진입 **직전**에 감시자를 세운다.
+        # 첫 하트비트는 5초 뒤에 찍히므로, 그 전까지는 beat=None → 워치독이 판정을
+        # 보류한다(계측 4원칙 ② 미측정 ≠ 0).
+        self._on_main_heartbeat()          # 초기 스탬프 — 기동 직후 공백 구간 제거
+        self._start_freeze_watchdog()
+
         logger.info("[System] Qt 이벤트 루프 진입")
         _qt_app.exec_()
         # exec_() 반환 후 COM 스레드·비데몬 스레드가 프로세스를 붙잡는 경우 방지
@@ -12673,6 +12808,10 @@ class TradingSystem:
     def _scheduler_tick(self) -> None:
         """30초마다 호출 — 장 전 준비 / 일일 마감 / 연결 감시."""
         _sched_t0 = time.perf_counter()
+        # [MW0601 478차 후속 / FZ-1] 하트비트 이중화 — 5초 전용 타이머가 어떤 이유로
+        # 멈춰도(연결 해제·예외) 이 30초 타이머가 살아 있으면 오탐하지 않는다.
+        # 임계 180초 > 30초이므로 이 경로만으로도 정상 판정이 성립한다.
+        self._main_beat = time.time()
         now = datetime.datetime.now()
         logger.debug(
             "[LiveDBG] _scheduler_tick 시작 #%d | %s (메인 스레드 점유 시작)",
@@ -15011,6 +15150,16 @@ def _ts_scheduler_force_exit_net(self, now: datetime.datetime = None) -> bool:
     절대원칙 §1(오버나이트 금지)이 뚫린다. 이 안전망은 피드와 무관하게 도는
     30s QTimer에서 실행되므로 그 구멍을 막는다.
     (근거: docs/미륵이고도화3/복구봉_이중처리_딥다이브_및_설계제안_2026-08-09.md §4)
+
+    🔴 [MW0601 478차 후속 / FZ-9 정정] 위 문단의 *"피드와 무관하게 도는 30s QTimer"*
+    는 **피드 스톨에 대해서만** 참이다. QTimer는 메인 이벤트 루프가 살아 있을 때만
+    돈다 — 2026-08-19 13:41:21에 메인(Qt) 스레드가 `exec_()` 아래 네이티브 코드에서
+    스핀에 빠지자 이 안전망도 STEP 8·CB⑤·대시보드 워치독과 **함께 죽었다**(15:10을
+    관통했는데 로그 0줄). 즉 이 함수는 "피드 독립"이지 "메인 스레드 독립"이 아니다.
+    그 계층의 생존 감시는 이벤트 루프 밖 `utils/freeze_watchdog.py`(FZ-1)가 맡으며,
+    동결 판정 시 프로세스를 끊어 런처가 재기동하게 한다.
+    (근거: dev_memory/DECISION_LOG.md 2026-08-19 478차 후속,
+     docs/정기점검/매일점검/MW0601-20260819-미종료-딥다이브.md §3)
 
     [MW0601 471차 F-1 정정] 이 docstring이 상정한 "정규 STEP 8이 15:10 분봉
     마감에서 먼저 처리한다"는 전제는 **배포 시점부터 성립하지 않았다** — 15:09 봉의

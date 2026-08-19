@@ -354,11 +354,112 @@ def run_git(root, args, timeout=25):
         return "(git 실행 불가) %s" % e
 
 
+# [MW0601 476차] PC 식별자 오버라이드 — 인자 > 환경변수 > 호스트명.
+# 프로세스 전역으로 한 번만 정한다(build()와 --out-auto가 반드시 같은 값을 써야
+# 한다 — 다르면 머리말의 PC와 파일명의 PC가 어긋난 다이제스트가 나온다).
+_PC_OVERRIDE = None
+
+
+def set_pc_override(pc):
+    """`--pc` / `MIREUK_PC_ID` 로 PC 식별자를 강제한다. None이면 자동탐지."""
+    global _PC_OVERRIDE
+    _PC_OVERRIDE = (pc or "").strip().upper() or None
+    return _PC_OVERRIDE
+
+
 def pc_id():
-    """CLAUDE.md 규약: 호스트명에서 MW#### 를 뽑는다 (utils/db_utils.py:pc_id() 와 동일 취지)."""
+    """CLAUDE.md 규약: 호스트명에서 MW#### 를 뽑는다 (utils/db_utils.py:pc_id() 와 동일 취지).
+
+    [476차] 우선순위는 **`--pc` 인자 > `MIREUK_PC_ID` 환경변수 > 호스트명 자동탐지**다.
+
+    왜 필요한가: 코웍/컨테이너 등 **리눅스 샌드박스에서 돌리면 호스트명이 `claude`**
+    라 `MW####`를 못 뽑고 `evidence_UNKNOWN-….md` 가 조용히 생긴다. 그 상태로
+    커밋하면 어느 PC의 관찰인지 영영 모른다(멀티PC — CLAUDE.md 함정③).
+    실제로 2026-08-18 장후 점검이 이 경로를 밟아 `platform.node()`를 임시 주입해
+    우회해야 했다. 스킬 문서(SKILL.md·RUN_ON_MW0602.md)는 `--pc MW0602`를 **필수**로
+    적고 있었는데 코드에는 그 인자가 없었다 — 문서와 코드의 불일치를 코드 쪽으로 맞춘다.
+
+    반환: (PC명, 호스트명). 오버라이드가 걸리면 호스트명은 `"<host> (override)"`.
+    """
     host = platform.node() or ""
+    if _PC_OVERRIDE:
+        return _PC_OVERRIDE, "%s (override)" % (host or "?")
+    env = (os.environ.get("MIREUK_PC_ID") or "").strip().upper()
+    if env:
+        return env, "%s (env MIREUK_PC_ID)" % (host or "?")
     m = re.search(r"(MW\d{4})", host, re.IGNORECASE)
     return (m.group(1).upper() if m else "UNKNOWN"), host
+
+
+# ------------------------------------------------------- 증거 다이제스트 보관정책
+#
+# [MW0601 476차 / 지침 §2·§3] **기본값은 「지우지 않음」이다.** 2026-08-18 실측:
+#
+#   · `docs/정기점검` 전체 = 100파일 **3.4MB** → 용량이 삭제 사유가 될 수 없다
+#   · 전부 **git 추적** 대상 → 지워도 용량이 안 줄고 grep 대상만 잃는다
+#   · 일일 점검 문서의 소급 인용 꼬리 = **182일**(= 26주 WFA 주기)
+#   · 증거 다이제스트 인용 26회 중 과거분 **1회** — 마흐디의 0건과 다르다
+#   · 증거는 원본 로그가 있어야 재생성된다. 로그는 현재 87일치 보유
+#     → **로그 보관(monthly_cleanup.py LOG_KEEP_DAYS)이 증거의 재생성 가능성을
+#       결정한다.** 둘을 따로 정할 수 없다.
+#
+# 그래서 `--prune-days`는 **기본 끔**이다. 수단은 두되 켜는 것은 사람이 정한다.
+# 켤 때도 아래가 강제된다:
+#   · `keep_days < 1` 이면 아무것도 지우지 않는다(0을 "전부"로 읽지 않는다)
+#   · **자기 PC 산출물만** 대상이다 — 정규식에 PC명을 박는다(멀티PC 교차삭제 방지)
+#   · **mtime이 아니라 파일명의 날짜**로 판정한다
+#   · 지운 파일명을 전부 인쇄한다 / 개별 실패는 경고만 낸다
+#   · 보고서(`<PC>-<날짜>-점검리포트*.md`)와 접미사 스냅샷은 정규식에 **안 걸린다**
+_EVIDENCE_PRUNE_MIN_KEEP = 1
+
+
+def _evidence_strict_re(pcid):
+    """자동 생성된 증거 다이제스트 **정확히 그 형태만**.
+
+    `evidence_<PC>-<YYYYMMDD>_<phase>.md` 와 461차 F-6 의 비덮어쓰기 변형
+    `..._<phase>_<HHMM>.md` / `..._<phase>_<HHMM>-<n>.md` 까지만 매칭한다.
+    보고서·검토보고·딥다이브 md 는 `evidence_` 로 시작하지 않아 구조적으로 제외된다.
+    다른 PC의 파일은 PC명이 정규식에 박혀 있어 **매칭 자체가 안 된다.**
+    """
+    return re.compile(
+        r"^evidence_%s-(\d{8})_(pre|intra|post|all)(_\d{4}(-\d+)?)?\.md$"
+        % re.escape(pcid))
+
+
+def prune_evidence(root, cfg, pcid, keep_days, today, dry_run=False):
+    """증거 다이제스트 FIFO 정리. 반환: (지운/지울 경로 리스트, 사유 문자열)."""
+    if keep_days is None or keep_days < _EVIDENCE_PRUNE_MIN_KEEP:
+        return [], "keep_days<%d — 킬스위치(아무것도 지우지 않는다)" % _EVIDENCE_PRUNE_MIN_KEEP
+    if pcid == "UNKNOWN":
+        # PC를 모르면 무엇이 내 것인지도 모른다. 남의 것을 지울 위험이 있으므로 멈춘다.
+        return [], "PC 식별자가 UNKNOWN — 자기 PC 산출물을 특정할 수 없어 중단(--pc 를 줄 것)"
+    d = os.path.join(root, cfg["evidence_dir"])
+    if not os.path.isdir(d):
+        return [], "증거 디렉터리 없음: %s" % d
+    strict = _evidence_strict_re(pcid)
+    cut = today - timedelta(days=keep_days)
+    doomed = []
+    for name in sorted(os.listdir(d)):
+        m = strict.match(name)
+        if not m:
+            continue
+        try:
+            fd = datetime.strptime(m.group(1), "%Y%m%d").date()
+        except ValueError:
+            continue                      # 날짜를 못 읽으면 지우지 않는다
+        if fd < cut:
+            doomed.append(os.path.join(d, name))
+    if dry_run:
+        return doomed, "dry-run (컷오프 %s 이전)" % cut.strftime("%Y-%m-%d")
+    deleted = []
+    for p in doomed:
+        try:
+            os.remove(p)
+            deleted.append(p)
+        except OSError as e:
+            eprint("[collect_evidence] 보관정리 실패(무해, 다음에 재시도): %s — %s"
+                   % (os.path.basename(p), e))
+    return deleted, "컷오프 %s 이전" % cut.strftime("%Y-%m-%d")
 
 
 # ------------------------------------------------------------------ 파일 탐색
@@ -1005,7 +1106,14 @@ def build(root, day, phase, cfg, discover_only=False):
     A("- 점검 범위: %s (장전=pre / 장중=intra / 장후=post)" % ", ".join(phases))
     A("- 날짜 토큰: %s" % " · ".join("`%s`" % toks[k] for k in DATE_TOKEN_KEYS))
     if pcid == "UNKNOWN":
-        A("- ⚠ 호스트명에서 `MW####` 를 못 뽑았다 — 커밋/DECISION_LOG 태그를 수동 확인할 것")
+        A("- 🔴 호스트명에서 `MW####` 를 못 뽑았다 — **이 파일은 어느 PC의 관찰인지 알 수 없다.**")
+        A("  `--pc MW0601` 처럼 인자로 강제하거나 `MIREUK_PC_ID` 환경변수를 줄 것 "
+          "(리눅스 샌드박스에서 돌리면 호스트명이 `claude`다). "
+          "커밋/DECISION_LOG 태그도 수동 확인할 것")
+    # [476차] 보관정책을 산출물 자신에 새긴다 — 파일만 보고도 "지워도 되는가"를 알 수 있게.
+    A("- 보관정책: **무기한 · git 추적**(2026-08-18 실측 — `docs/정기점검` 전체 3.4MB, "
+      "소급 인용 꼬리 182일=26주 WFA, 재생성은 원본 로그 생존에 종속). "
+      "정리 수단은 `--prune-days`이며 **기본 꺼져 있다**")
     A("")
 
     # ---- 1. 파일 인벤토리 ----
@@ -1513,6 +1621,38 @@ def build(root, day, phase, cfg, discover_only=False):
     except (ValueError, KeyError, TypeError):
         pass
 
+    # [MW0601 478차 후속 / FZ-6] 장중 로그 침묵 — 메인 이벤트 루프 동결 조기 감지.
+    #
+    # 2026-08-19 13:41:21에 메인(Qt) 스레드가 네이티브 스핀에 빠져 틱·분봉·QTimer가
+    # 전부 멈췄다. 그런데 **프로세스는 살아 있고 ERROR도 0건**이라 레벨 집계로는
+    # 아무 일도 없어 보인다(함정 ④). 유일하게 눈에 띄는 신호는 "로그가 그냥 끊긴다"
+    # 는 것이었고, 그날 장중 점검(12:35 수집)은 동결 이전이라 잡지 못했다.
+    # 동결 이후 아무 때나 수집기를 돌렸다면 즉시 드러났을 신호이므로 여기에 넣는다.
+    #
+    # 판정: 장중(pre/intra) 수집이고 오늘 로그일 때, 최신 로그 기록이 **5분 이상**
+    # 낡았으면 적신호. 매분 파이프라인이 도는 한 SYSTEM/SIGNAL 로그는 60초 안에
+    # 반드시 갱신되므로 5분은 충분한 여유다(정상 최장 블로킹 실측 9.5초의 30배).
+    # ⚠ 이것은 **동결 확정이 아니라 확인 지시**다 — 장 시작 전·점심 저활동·수집 시점
+    #   우연도 가능하다. 원본 로그 꼬리와 프로세스 CPU를 직접 볼 것.
+    try:
+        if phase in ("pre", "intra") and day == now_kst().date():
+            _live = [e for e in files
+                     if e["name"].lower().endswith(".log") and toks["ymd"] in e["name"]]
+            if _live:
+                _newest = max(ts_kst(e["mtime"]) for e in _live)
+                _age_min = (now_kst() - _newest).total_seconds() / 60.0
+                if _age_min >= 5.0:
+                    flags.append(
+                        "**장중 로그 침묵 %.0f분** (최신 기록 %s) — 매분 파이프라인이 돌면 "
+                        "60초 안에 갱신된다. 메인 이벤트 루프 동결 가능성: 프로세스 CPU가 "
+                        "1코어 100%%에 붙어 있고 `Responding=False`면 확정 "
+                        "(2026-08-19 13:41 동일 사고). `logs/crash_fault.log` 꼬리에서 "
+                        "메인 스레드 스택이 `exec_()` 단독인지 확인하라"
+                        % (_age_min, _newest.strftime("%H:%M:%S"))
+                    )
+    except (KeyError, TypeError, ValueError):
+        pass
+
     bms = merged.get("block_ms", [])
     over = []
     for b in bms:
@@ -1620,7 +1760,21 @@ def main(argv=None):
     ap.add_argument("--discover", action="store_true",
                     help="파일 인벤토리만 출력 — 처음 한 번 돌려 경로를 확인한다")
     ap.add_argument("--max-log-mb", type=int, default=None, help="이보다 큰 로그는 건너뛴다")
+    ap.add_argument("--pc", default=None,
+                    help="PC 식별자를 강제한다 (예: MW0601). 우선순위는 "
+                         "--pc > MIREUK_PC_ID 환경변수 > 호스트명 자동탐지. "
+                         "리눅스 샌드박스처럼 호스트명에 MW####가 없는 환경에서 "
+                         "evidence_UNKNOWN-… 이 생기는 것을 막는다")
+    ap.add_argument("--prune-days", type=int, default=None,
+                    help="[476차] 자기 PC의 증거 다이제스트를 N일치만 남긴다. "
+                         "**기본 끔** — 인자를 줘야만 지운다. 1 미만이면 아무것도 "
+                         "지우지 않는다. 보고서·다른 PC 파일은 대상이 아니다. "
+                         "삭제 전 --prune-dry-run 으로 목록을 먼저 볼 것")
+    ap.add_argument("--prune-dry-run", action="store_true",
+                    help="--prune-days 대상만 인쇄하고 지우지 않는다")
     args = ap.parse_args(argv)
+
+    set_pc_override(args.pc)
 
     start = args.root if args.root else os.path.dirname(os.path.abspath(__file__))
     root = find_repo_root(start)
@@ -1660,6 +1814,18 @@ def main(argv=None):
             print(text)
         except UnicodeEncodeError:
             sys.stdout.write(text.encode("utf-8", "replace").decode("ascii", "replace"))
+
+    # [MW0601 476차] 보관정리 — **기본 끔.** 인자를 줘야만 돈다.
+    # 다이제스트를 먼저 쓰고 나서 돈다: 정리가 실패해도 오늘 증거는 이미 남는다.
+    if args.prune_days is not None or args.prune_dry_run:
+        pcid, _h = pc_id()
+        removed, why = prune_evidence(
+            root, cfg, pcid, args.prune_days, now_kst().date(),
+            dry_run=args.prune_dry_run)
+        eprint("[collect_evidence] 보관정리(%s · PC=%s): %s — %d건"
+               % ("dry-run" if args.prune_dry_run else "apply", pcid, why, len(removed)))
+        for p in removed:                     # 지운 것은 반드시 인쇄한다
+            eprint("    - %s" % os.path.basename(p))
     return 0
 
 

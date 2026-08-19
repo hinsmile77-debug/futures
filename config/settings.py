@@ -1550,6 +1550,49 @@ VALIDATION_REPORT_KEEP_WEEKS = 4
 CRASH_LOG_ROTATE_MB = 8
 CRASH_LOG_KEEP_GENERATIONS = 4
 
+# ── [MW0601 478차 후속 / FZ-1] 메인 이벤트 루프 동결 워치독 ────────────────────
+# 2026-08-19 13:41:21, 메인(Qt) 스레드가 `_qt_app.exec_()` 아래 **네이티브 코드**에서
+# 1코어 100% 스핀에 빠져 메시지 펌프가 죽었다(faulthandler 30초 덤프 전 구간에서
+# 메인 스택이 main.py exec_() 단독 — 파이썬 콜백 프레임 0개). 그 순간부터 QTimer가
+# 하나도 돌지 않아 **아래가 전부 동시에 무력화**됐다:
+#   · 매분 파이프라인(STEP 1~9) · 15:10 강제청산(STEP 8, 절대원칙 §1)
+#   · 453차 D2 SchedForceExit 안전망 · CB⑤ · 대시보드 파이프라인 워치독
+#   · 15:40 daily_close → _schedule_shutdown → _auto_shutdown (그래서 종료도 안 됐다)
+# 실손해는 0이었으나 **동결 18분 전까지 포지션을 들고 있었다** — 그 창이 어긋났으면
+# 절대원칙 §1(오버나이트 금지)이 그대로 뚫린다.
+#
+# 🔴 이 시스템의 안전장치는 전부 "메인 이벤트 루프 생존"을 암묵 전제로 쌓여 있다.
+#    453차 D2가 *"분봉·틱이 전부 죽어도 이 타이머는 돈다"* 고 적은 것도 QTimer인 한
+#    거짓이었다. 따라서 감시자는 **이벤트 루프 밖**에 있어야 한다 —
+#    `utils/freeze_watchdog.py`는 순수 `threading.Thread`이며 Qt에 의존하지 않는다.
+#
+# 동작: 메인 스레드가 5초 QTimer로 하트비트를 찍고, 워치독이 CHECK_SEC마다 그 나이를
+#      본다. 장중(WINDOW)에 STALL_SEC 초과가 STRIKES회 연속이면 crash_fault.log에
+#      CRITICAL을 직접 append(로깅 시스템도 메인 의존일 수 있다)한 뒤 os._exit()로
+#      하드 종료 → 런처(start_mireuk.bat) RESTART_LOOP가 재기동하고
+#      session_recovery_service가 포지션·카운터를 복원한다.
+#      **재기동이 동결 지속보다 모든 시나리오에서 낫다 — 특히 포지션 보유 중.**
+#
+# 왜 180초 × 2회(=최소 실동결 ~3분 후 발화)인가: 실측된 최장 "정상" 메인 블로킹은
+# 2026-07-30 _tick_header 9.5초, 2026-06-26 09:01 수급 BlockRequest 7.2초,
+# 2026-08-10 CB⑤ 자가유발 7.6초다. 180초는 그 20배 이상이라 오탐 여지가 없고,
+# 2회 연속 요구가 단발 계측 오차를 한 번 더 거른다. 반대로 상한은 분봉 주기(60초)
+# 대비 3분이면 충분히 짧다 — 15:10 강제청산 창(15:10~15:35)을 통째로 놓치지 않는다.
+#
+# 왜 상한 시각이 15:45인가: 15:40 daily_close 직후 자동종료까지 커버하되, 그 이후의
+# 정상적인 종료 절차(EOD 체인 대기 등)를 동결로 오인하지 않기 위함.
+# ⚠ 15:10 이후 발화 시 런처는 재시작하지 않는다(오버나이트 금지 정책) — 그래서
+#   워치독은 종료 직전에 **그날 미청산 포지션 유무를 fault 로그에 남긴다.**
+#
+# 0/False = 비활성(킬스위치). 환경변수 MIREUK_FREEZE_WATCHDOG=0 으로도 끌 수 있다.
+FREEZE_WATCHDOG_ENABLED = True
+FREEZE_WATCHDOG_CHECK_SEC = 30.0        # 감시 주기
+FREEZE_WATCHDOG_STALL_SEC = 180.0       # 이 시간 넘게 하트비트가 갱신되지 않으면 1스트라이크
+FREEZE_WATCHDOG_STRIKES = 2             # 연속 스트라이크 이 횟수에서 발화
+FREEZE_WATCHDOG_EXIT_CODE = 43          # os._exit 코드 — 런처 로그에서 식별용
+FREEZE_WATCHDOG_WINDOW = ("09:00", "15:45")   # 감시 구간(거래일 KST). 밖에서는 검사만 쉰다
+FREEZE_WATCHDOG_TS_HEARTBEAT = True     # [FZ-5] crash_fault.log에 30초마다 [TS] 시각 1줄
+
 # ── [260705 검증 캠페인] 섀도우 채널 승격 합격선 — 사전 등록 (변경 금지) ──────
 # 근거: docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3.
 # 데이터를 보기 전에 합격선을 고정한다(pre-registration). 사후 변경은 반드시

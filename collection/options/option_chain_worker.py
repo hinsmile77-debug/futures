@@ -31,6 +31,30 @@ _HV_GAMMA = 110  # Gamma (백분율, ÷100)
 _OPTION_MULTIPLIER = 250_000
 _GEX_BN = 1e9
 
+# ── [MW0601 478차 후속 / FZ-4] 이상 소요 가드 ──────────────────────────────────
+# 2026-08-19 13:41:21~13:51:22, 이 워커의 BlockRequest 루프가 **601,493ms**(평소
+# 1,500ms의 400배) 걸렸다. 메인 스레드가 동결돼 Cybos 응답 라우팅이 죽자 24종목이
+# 각각 내부 타임아웃(~25초)까지 늘어진 것이다. 그때 반환된 피처는
+# `PCR=0.103 ATM_PCR=1.000 GEX=+169.19B` — 같은 날 정상 범위(PCR≈1.0, GEX ±40B)를
+# 완전히 벗어난 **병리값**이었다.
+#
+# 🔴 그 값이 저장되지 않은 것은 설계가 막아서가 아니라 **우연**이다. `result_ready`는
+#    Qt 큐드 시그널이라 죽은 메인 루프에 영영 배달되지 못했을 뿐이다. 메인이 살아
+#    있는 부분 지연(네트워크 저하·서버 피크)에서는 같은 병리값이 그대로
+#    `opt_chain_pcr`·`opt_gex_bn` 피처로 흘러 들어간다.
+#
+# 두 겹으로 막는다:
+#   ① 수집 중단 임계 — 누적 경과가 넘으면 남은 종목을 포기한다. 죽은/막힌 상대에게
+#      COM 요청을 계속 던지지 않는다(오늘은 10분간 던졌다).
+#   ② 결과 폐기 임계 — 전체 소요가 넘으면 피처를 **버리고** 빈 dict를 반환한다.
+#      `OptionChainSnapshot.on_worker_done`이 빈 dict를 "이전 피처 유지"로 처리하므로
+#      (계측 4원칙 ② — 미측정을 0으로 위장하지 않는다) 안전하게 스킵된다.
+#
+# 값 근거: 정상 완료 실측이 1,461~1,628ms(2026-08-19 30회)다. 60초는 그 40배,
+# 30초는 20배 — 서버 지연 몇 배는 통과시키고 오늘 같은 병리(601초)만 잡는다.
+_COLLECT_ABORT_SEC = 60.0     # ① 이 시간 넘으면 남은 종목 수집 중단
+_RESULT_DISCARD_SEC = 30.0    # ② 전체 소요가 이 시간 넘으면 결과 폐기
+
 
 # ── 타입 헬퍼 ──────────────────────────────────────────────────────
 
@@ -236,6 +260,17 @@ class OptionChainWorker(QThread):
         mst_obj = Dispatch("Dscbo1.OptionMst")
         snapshots = self._collect_snapshots(mst_obj, target)
 
+        # [FZ-4 ②] 이상 소요 — 결과 폐기. 값을 안 쓰는 것이 병리값을 쓰는 것보다 낫다.
+        _elapsed_guard = (time.perf_counter() - t0) * 1000
+        if _elapsed_guard > _RESULT_DISCARD_SEC * 1000:
+            _aborted = sum(1 for s in snapshots if s.get("error") == "collect_abort_slow")
+            system_logger.warning(
+                "[OptionChain][Worker] 이상 소요 %.0fms > %.0fms — **결과 폐기**(이전 피처 유지) "
+                "target=%d aborted=%d | 2026-08-19 동결 시 601,493ms/PCR=0.103/GEX=169B 병리값 재발 방지",
+                _elapsed_guard, _RESULT_DISCARD_SEC * 1000, len(target), _aborted,
+            )
+            return {}, chain_raw
+
         valid = [s for s in snapshots if not s.get("error")]
         if not valid:
             errors = [s.get("error", "?") for s in snapshots[:3]]
@@ -260,8 +295,16 @@ class OptionChainWorker(QThread):
         return feats, chain_raw
 
     def _collect_snapshots(self, mst_obj: Any, target: List[Dict]) -> List[Dict]:
-        """OptionMst BlockRequest 루프 — 워커 스레드 전용."""
+        """OptionMst BlockRequest 루프 — 워커 스레드 전용.
+
+        [FZ-4 ①] 누적 경과가 `_COLLECT_ABORT_SEC`를 넘으면 남은 종목을 요청하지 않고
+        `error="collect_abort_slow"`로 표시만 한다. 행을 빠뜨리지 않고 **탈락을
+        가시화**하기 위해서다(계측 4원칙 ③) — 리스트 길이가 줄면 호출부가 "대상이
+        원래 적었다"로 오독한다.
+        """
         out: List[Dict] = []
+        _loop_t0 = time.perf_counter()
+        _aborted = False
         for row in target:
             code = row["code"]
             snap: Dict[str, Any] = {
@@ -269,6 +312,17 @@ class OptionChainWorker(QThread):
                 "call_put": row.get("call_put", ""),
                 "strike":   row.get("strike", 0.0),
             }
+            if _aborted or (time.perf_counter() - _loop_t0) > _COLLECT_ABORT_SEC:
+                if not _aborted:
+                    _aborted = True
+                    system_logger.warning(
+                        "[OptionChain][Worker] 수집 %.0fs 초과 — 잔여 종목 요청 중단 "
+                        "(완료 %d / 전체 %d). 막힌 상대에게 COM 요청을 계속 던지지 않는다",
+                        _COLLECT_ABORT_SEC, len(out), len(target),
+                    )
+                snap["error"] = "collect_abort_slow"
+                out.append(snap)
+                continue
             try:
                 mst_obj.SetInputValue(0, code)
                 mst_obj.BlockRequest()
