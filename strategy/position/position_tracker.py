@@ -99,6 +99,9 @@ class PositionTracker:
         self.entry_horizon: Optional[str] = None
         self.entry_hurst_bucket: Optional[str] = None
         self.entry_extra_stop_mult: float = 1.0  # [349차] 급변장 사전 가드 스톱확대 배수
+        # [MW0601 480차 / F-5①] TP1 배수 폴백을 포지션당 1회만 경고하기 위한 표식.
+        # ⚠ getattr 기본값으로 읽지 않는다 — 계측 4원칙 ④(폴백 가시화).
+        self._tp1_fallback_warned_for: Optional[str] = None
 
         self.stop_price:   float = 0.0
         # [MW0602 423차] 스톱이 마지막으로 조여진 시각 — "유령 하드스톱" 차단용.
@@ -467,8 +470,20 @@ class PositionTracker:
         raw_direction: Optional[str] = None,
         reverse_entry_enabled: bool = False,
         entry_horizon: Optional[str] = None,
+        hurst_bucket: Optional[str] = None,
+        extra_stop_mult: Optional[float] = None,
+        checklist_pass_count: Optional[int] = None,
     ) -> Dict:
-        """Chejan 체결 기준으로 포지션을 오픈하거나 증액한다."""
+        """Chejan 체결 기준으로 포지션을 오픈하거나 증액한다.
+
+        [MW0601 480차 / F-5②] `hurst_bucket`·`extra_stop_mult`·`checklist_pass_count`는
+        **신규 오픈(FLAT 분기)에서만** 대입한다. Chejan 선행 레이스로 `open_position()`이
+        건너뛰어졌을 때 이 경로가 유일한 세팅 지점이 되기 때문이다 —
+        2026-08-19 09:49 포지션이 그래서 TP1 배수 2배(1.0, 설계 0.5)로 열렸다.
+
+        ⚠ 기본값은 전부 `None`이며 그 경우 **기존 값을 건드리지 않는다**. 증액·체결보정
+        경로가 진입 시점 파라미터를 뒤늦게 덮어쓰면 손절폭이 포지션 중간에 바뀐다.
+        """
         assert direction in (POSITION_LONG, POSITION_SHORT), f"Invalid direction: {direction}"
         assert quantity > 0, f"Invalid fill quantity: {quantity}"
 
@@ -518,6 +533,14 @@ class PositionTracker:
             self.signal_direction = raw_direction or direction
             self.reverse_entry_enabled = bool(reverse_entry_enabled)
             self.entry_horizon = entry_horizon
+            # [MW0601 480차 / F-5②] 레이스 경로의 유일한 세팅 지점 — None이면 미전달로
+            # 보고 건드리지 않는다(호출부가 값을 모르는 것과 "0/None으로 하라"는 다르다).
+            if hurst_bucket is not None:
+                self.entry_hurst_bucket = hurst_bucket
+            if extra_stop_mult is not None:
+                self.entry_extra_stop_mult = float(extra_stop_mult or 1.0)
+            if checklist_pass_count is not None:
+                self.checklist_pass_count = checklist_pass_count
         else:
             assert self.status == direction, (
                 f"Opposite fill mismatch: status={self.status} fill={direction}"
@@ -1213,6 +1236,21 @@ class PositionTracker:
             ATR_HORIZON_TP1_MULT.get(self.entry_horizon, ATR_TP1_MULT)
             if self.entry_horizon else ATR_TP1_MULT
         )
+        # [MW0601 480차 / F-5①] 폴백 가시화 — 계측 4원칙 ④.
+        # entry_horizon이 비면 TP1 배수가 조용히 1.0이 된다. 3m 설계값 0.5의 **2배**이며
+        # 2026-08-19 09:49 포지션이 그렇게 열렸는데 로그 어디에도 흔적이 없어,
+        # 장후에 실현가 역산(진입 1018.3667 → TP1 1020.5 = ×0.958)으로 밝혀야 했다.
+        # 포지션당 1회만 경고한다(재계산은 체결보정·브로커동기화마다 일어난다).
+        if self.status != POSITION_FLAT and not self.entry_horizon:
+            _key = str(self.entry_time or "") + "|" + str(self.entry_price)
+            if self._tp1_fallback_warned_for != _key:
+                self._tp1_fallback_warned_for = _key
+                logger.warning(
+                    "[PositionFallback] entry_horizon 미설정 → TP1 배수 폴백 %.2f 적용 "
+                    "(호라이즌별 설계값의 최대 2배). status=%s qty=%s entry=%.2f "
+                    "— 진입 경로가 파라미터를 넘기지 않았다(F-5 대상)",
+                    ATR_TP1_MULT, self.status, self.quantity, self.entry_price,
+                )
         _stop_mult, _tp2_mult = ATR_STOP_MULT, ATR_TP2_MULT
         _regime_mult = (
             HURST_REGIME_ATR_MULT.get(self.entry_hurst_bucket)

@@ -1593,6 +1593,43 @@ FREEZE_WATCHDOG_EXIT_CODE = 43          # os._exit 코드 — 런처 로그에�
 FREEZE_WATCHDOG_WINDOW = ("09:00", "15:45")   # 감시 구간(거래일 KST). 밖에서는 검사만 쉰다
 FREEZE_WATCHDOG_TS_HEARTBEAT = True     # [FZ-5] crash_fault.log에 30초마다 [TS] 시각 1줄
 
+# ── [MW0601 480차 / G-1] 생존 하트비트를 별도 파일로 내보낸다 ─────────────────
+# 왜 별도 파일인가: 2026-08-19 동결 당일 `data/session_state.json`의 mtime은 16:08
+# (EOD 재학습이 쓴 것)이었다. 라이브 프로세스는 13:41에 멈췄는데 그 파일만 보면
+# 정상으로 보인다 — **여러 프로세스가 쓰는 상태파일은 생존 판정에 쓸 수 없다.**
+# 이 파일은 라이브 프로세스의 워치독 스레드만 쓴다(단일 진실원천).
+# ⚠ 새 하트비트를 만드는 게 아니라 `_main_beat`(FZ-1)를 파일로 내보낼 뿐이다.
+# 소비자: `scripts/force_flat_guard.py`(F-2), 일일 점검 수집기.
+FREEZE_WATCHDOG_HEARTBEAT_FILE = True
+# `{pc}`·`{date}` 치환. PC명은 utils/db_utils.pc_id() (호스트명에서 MW#### 추출).
+FREEZE_WATCHDOG_HEARTBEAT_PATH = "data/heartbeat_{pc}_{date}.json"
+
+# ── [MW0601 480차 / F-2] 프로세스 밖 15:12 FLAT 가드 ─────────────────────────
+# 절대원칙 §1(15:10 강제청산)의 방어선 3개 — STEP 8 → _ts_scheduler_force_exit_net
+# → 15:18 안전망 — 는 **전부 같은 프로세스 안**에 있다. 2026-08-19 13:41 동결은
+# 그 셋을 동시에 무력화했다. FZ-1 워치독이 그 구멍의 15:10 **이전** 구간을 메우지만,
+# 15:10 이후 발화는 런처가 재기동하지 않으므로(오버나이트 금지 정책) 15:10~15:35가
+# 그대로 비어 있다 — 정확히 §1의 집행 시각이다.
+#
+# 그래서 라이브 프로세스와 **별개 프로세스**로 도는 최후 감시자를 둔다. 런처가
+# main.py 기동 직전에 사이드카로 띄우고(start_mireuk.bat), 이 프로세스는 지정 시각에
+# ① 하트비트 파일(FREEZE_WATCHDOG_HEARTBEAT_PATH) ② data/position_state.json
+# 둘만 읽어 판정한다.
+#
+# 🔴 **1단계는 주문을 내지 않는다.** 별도 프로세스가 브로커에 청산 주문을 넣으면
+#    이중 청산·수량 불일치 위험이 있다. 승격은 주간회의 안건이다
+#    (FORCE_FLAT_GUARD_ORDER_ENABLED — 자리만 있고 구현은 없다).
+#
+# 🔴 왜 `ENABLED = True`로 신설하는가(311차 섀도 관례와 다르다):
+#    이 단계는 **읽기 + 기록**뿐이라 매매 경로에 닿지 않는다. False로 두면
+#    TOX-SEVERE-SPREAD(도입 후 한 달간 죽은 섀도)·FP-CRITICAL(2개월간 PSI=0.0)과
+#    같은 "켜진 적 없는 게이트"가 된다. 차단 게이트가 아니므로 섀도 단계가 곧 이것이다.
+FORCE_FLAT_GUARD_ENABLED = True
+FORCE_FLAT_GUARD_AT = "15:12"           # 판정 시각(KST). 15:10 집행 + 여유 2분
+FORCE_FLAT_GUARD_HEARTBEAT_STALE_SEC = 180.0   # 하트비트가 이보다 낡으면 "프로세스 정지"
+FORCE_FLAT_GUARD_POPUP = True           # 미청산 감지 시 Windows 메시지박스(트레이딩 PC 앞 사람용)
+FORCE_FLAT_GUARD_ORDER_ENABLED = False  # ⚠ 2단계(브로커 직접 청산) — 미구현. 주간회의 승인 전 금지
+
 # ── [260705 검증 캠페인] 섀도우 채널 승격 합격선 — 사전 등록 (변경 금지) ──────
 # 근거: docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3.
 # 데이터를 보기 전에 합격선을 고정한다(pre-registration). 사후 변경은 반드시

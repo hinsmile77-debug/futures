@@ -465,6 +465,7 @@ CALL :L "[GUARD] 기존 main.py 없음 -- 단일 인스턴스 확인."
 
 :guard_done
 
+
 REM WORKDIR 최종 확인
 IF NOT DEFINED WORKDIR (
     SET "WORKDIR=%USERPROFILE%\PycharmProjects\futures"
@@ -473,6 +474,21 @@ IF NOT DEFINED WORKDIR (
 IF "!WORKDIR!"=="" (
     SET "WORKDIR=%USERPROFILE%\PycharmProjects\futures"
     CALL :L "[WARN] WORKDIR 공백 -- 기본값 복원: !WORKDIR!"
+)
+
+REM ============================================================
+REM  6-B. Force-FLAT Guard sidecar (480th session / F-2)
+REM  - Separate process. Reads heartbeat json + position_state.json at 15:12.
+REM  - Absolute rule 1 (15:10 force exit) has 3 defenses, all inside main.py.
+REM    The 2026-08-19 13:41 freeze killed all three at once, and RESTART_LOOP
+REM    did not fire because the process never exited. This sidecar survives it.
+REM  - Alert only: it never sends broker orders.
+REM ============================================================
+IF EXIST "!WORKDIR!\scripts\force_flat_guard.py" (
+    CALL :L "[GUARD-FLAT] 15:12 FLAT 가드 사이드카 기동 (별도 프로세스, 알림 전용)"
+    START "MireukForceFlatGuard" /MIN "!PY32!" "!WORKDIR!\scripts\force_flat_guard.py"
+) ELSE (
+    CALL :L "[GUARD-FLAT] force_flat_guard.py 없음 -- 15:10 이후 구간 무감시로 진행"
 )
 
 :RESTART_LOOP

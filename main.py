@@ -12034,6 +12034,7 @@ class TradingSystem:
                 FREEZE_WATCHDOG_STALL_SEC, FREEZE_WATCHDOG_STRIKES,
                 FREEZE_WATCHDOG_EXIT_CODE, FREEZE_WATCHDOG_WINDOW,
                 FREEZE_WATCHDOG_TS_HEARTBEAT,
+                FREEZE_WATCHDOG_HEARTBEAT_FILE, FREEZE_WATCHDOG_HEARTBEAT_PATH,
             )
             if not FREEZE_WATCHDOG_ENABLED:
                 logger.info("[FreezeWatchdog] 설정 비활성 — 기동 생략")
@@ -12041,6 +12042,21 @@ class TradingSystem:
             if os.environ.get("MIREUK_FREEZE_WATCHDOG", "1").strip() == "0":
                 logger.info("[FreezeWatchdog] MIREUK_FREEZE_WATCHDOG=0 — 기동 생략")
                 return
+
+            # [MW0601 480차 / G-1] 생존 하트비트 파일 경로 — 쓰는 주체는 이 프로세스뿐.
+            # session_state.json은 EOD 재학습도 쓰기 때문에 생존 판정에 쓸 수 없다
+            # (08-19 동결일 mtime 16:08 = 죽은 뒤 갱신된 값).
+            _hb_path = None
+            if FREEZE_WATCHDOG_HEARTBEAT_FILE:
+                try:
+                    from utils.db_utils import pc_id as _pc_id
+                    _hb_path = FREEZE_WATCHDOG_HEARTBEAT_PATH.format(
+                        pc=_pc_id(),
+                        date=datetime.date.today().strftime("%Y%m%d"),
+                    )
+                except Exception as _hb_e:
+                    logger.warning("[FreezeWatchdog] 하트비트 경로 생성 실패 (파일 미출력): %s", _hb_e)
+                    _hb_path = None
 
             from utils.freeze_watchdog import FreezeWatchdog
             self._freeze_watchdog = FreezeWatchdog(
@@ -12054,12 +12070,14 @@ class TradingSystem:
                 window=FREEZE_WATCHDOG_WINDOW,
                 fault_log_path=os.path.join("logs", "crash_fault.log"),
                 ts_heartbeat=FREEZE_WATCHDOG_TS_HEARTBEAT,
+                heartbeat_path=_hb_path,
             )
             self._freeze_watchdog.start()
             log_manager.system(
                 f"[FreezeWatchdog] 기동 — 하트비트 {FREEZE_WATCHDOG_STALL_SEC:.0f}s 정체 "
                 f"×{FREEZE_WATCHDOG_STRIKES}회 연속 시 os._exit({FREEZE_WATCHDOG_EXIT_CODE}) "
-                f"→ 런처 재기동 (2026-08-19 동결 사고 대응)",
+                f"→ 런처 재기동 (2026-08-19 동결 사고 대응) "
+                f"| 하트비트파일={_hb_path or '미출력'}",
                 "INFO",
             )
         except Exception as e:
@@ -14318,6 +14336,11 @@ def _ts_handle_entry_fill(
         raw_direction=pending.get("raw_direction") or pending["direction"],
         reverse_entry_enabled=bool(pending.get("reverse_entry_enabled", False)),
         entry_horizon=pending.get("entry_horizon"),
+        # [MW0601 480차 / F-5②] 나머지 3종도 같은 pending에서 승계 — 두 진입 경로가
+        # 서로 다른 파라미터 집합을 쓰면 사후 대사에서 어느 쪽이 정본인지 알 수 없다.
+        hurst_bucket=pending.get("hurst_bucket"),
+        extra_stop_mult=pending.get("extra_stop_mult"),
+        checklist_pass_count=pending.get("checklist_pass_count"),
     )
     if before.get("status") == "FLAT":
         self.dashboard.minute_chart_record_entry(
@@ -16394,7 +16417,16 @@ def _ts_execute_entry(
     # 낙관적 오픈 후 분할체결 VWAP 보정을 위한 플래그
     self._pending_order["optimistic_opened"] = True
     self._pending_order["partial_fill_count"] = 0
+    # [MW0601 480차 / F-5①·②] 위험 파라미터를 pending에 **전부** 싣는다.
+    # 종전에는 entry_horizon 하나만 실었고, Chejan 선행 레이스(BlockRequest가 COM
+    # 이벤트를 pump하는 동안 체결 콜백이 먼저 도착)로 open_position이 "이미 포지션
+    # 보유 중"으로 실패하면 나머지가 통째로 유실됐다 — 2026-08-19 09:49 포지션이
+    # entry_horizon 공란·TP1 배수 2배(0.5 대신 1.0)로 집행된 경로다.
+    # 유실은 조용했다: 로그에도 DB에도 "기본값이 쓰였다"는 흔적이 없었다(계측 4원칙 ④).
     self._pending_order["entry_horizon"] = entry_horizon
+    self._pending_order["hurst_bucket"] = hurst_bucket
+    self._pending_order["extra_stop_mult"] = extra_stop_mult
+    self._pending_order["checklist_pass_count"] = getattr(self, "_entry_pass_count", None)
     ret = self._send_broker_entry_order(direction, quantity)
     # [재발방지] ret만으로는 거부 사유를 알 수 없어 2026-07-03 10:28:59 LONG 3계약
     # 주문 거부(ret=-1) 원인을 사후 추적할 수 없었음 — 브로커가 보관한 상세
@@ -16508,9 +16540,24 @@ def _ts_execute_entry(
             direction, self.position.status, self.position.quantity, self.position._optimistic,
         )
     except Exception as _fixb_err:
+        # [MW0601 480차 / F-5①] 무엇이 유실될 뻔했는지 함께 남긴다.
+        # 이 경로로 빠지면 아래 apply_entry_fill(레이스로 이미 실행됐거나 곧 실행될)이
+        # 같은 값을 pending에서 받아 세팅한다 — 그래도 "폴백이 발생했다"는 사실 자체는
+        # 기록해야 한다. 08-19에는 이 줄이 err만 담고 있어, 위험 파라미터 5종이
+        # 기본값으로 갔다는 것을 장후 DB 대사로 역산해야 했다.
         logger.error(
-            "[FixB] open_position 실패 direction=%s status_before=%s err=%s",
+            "[FixB] open_position 실패 direction=%s status_before=%s err=%s "
+            "| 파라미터=entry_horizon=%s hurst=%s extra_stop_mult=%s pass_count=%s "
+            "(pending 경유로 apply_entry_fill이 승계)",
             direction, self.position.status, _fixb_err,
+            entry_horizon, hurst_bucket, extra_stop_mult,
+            getattr(self, "_entry_pass_count", None),
+        )
+        log_manager.system(
+            f"[FixB] open_position 실패 — 위험 파라미터는 pending 승계로 복구 시도 "
+            f"(horizon={entry_horizon} hurst={hurst_bucket} "
+            f"stop_mult={extra_stop_mult} pass={getattr(self, '_entry_pass_count', None)})",
+            "WARNING",
         )
     _ts_log_diag(
         self,
@@ -16663,6 +16710,11 @@ def _ts_handle_entry_fill_cybos_safe(
             f"| 평균={result['avg_entry_price']} 보유={result['position_qty']}계약"
         )
     else:
+        # [MW0601 480차 / F-5①·②] 위험 파라미터 5종을 pending에서 승계한다.
+        # 이 호출부가 곧 "Chejan 선행 레이스" 경로다 — 여기서 안 넘기면 신규 오픈이
+        # entry_horizon=None(→ TP1 배수 1.0, 설계값 0.5의 2배)·hurst 미적용·
+        # 급변장 스톱확대 미적용으로 열린다. 범용 경로(14310행)는 이미 넘기고 있었고
+        # 이 경로만 빠져 있었다.
         result = self.position.apply_entry_fill(
             direction=entry_direction,
             price=fill_price,
@@ -16673,6 +16725,10 @@ def _ts_handle_entry_fill_cybos_safe(
             filled_at=filled_at,
             raw_direction=pending.get("raw_direction") or pending["direction"],
             reverse_entry_enabled=bool(pending.get("reverse_entry_enabled", False)),
+            entry_horizon=pending.get("entry_horizon"),
+            hurst_bucket=pending.get("hurst_bucket"),
+            extra_stop_mult=pending.get("extra_stop_mult"),
+            checklist_pass_count=pending.get("checklist_pass_count"),
         )
         # 첫 체결 완료: partial_fill_count 초기화 (이후 분할체결 VWAP 기준점)
         if pending.get("optimistic_opened"):

@@ -36,10 +36,27 @@ faulthandler가 같은 파일에 fd로 쓰지만 둘 다 append 모드라 안전
 `sys.exit()`이 아니라 `os._exit()`인 이유: 전자는 예외를 던져 메인 스레드가
 처리해야 하는데 그 메인이 죽어 있다. atexit·flush도 기대할 수 없으므로 기록을
 먼저 남기고 즉시 프로세스를 끊는다.
+
+## [MW0601 480차 / G-1] 하트비트를 파일로도 내보낸다 — 진실원천은 하나다
+
+동결 당일 `data/session_state.json`의 mtime은 **16:08**이었다. 라이브 프로세스는
+13:41에 멈췄는데 EOD 재학습이 같은 파일을 쓰는 바람에 그 파일만 보면 정상으로
+보였다 — **여러 프로세스가 쓰는 상태파일은 생존 판정에 쓸 수 없다.**
+
+그래서 이 워치독이 `heartbeat_path`에 매 검사마다 작은 JSON을 쓴다. 쓰는 주체는
+라이브 프로세스 **하나뿐**이므로 밖에서 mtime·`beat_age_sec`만 봐도 생존을 판정할
+수 있다. `scripts/force_flat_guard.py`(F-2)가 이 파일을 읽는다.
+
+⚠ **하트비트를 새로 만들지 않는다.** `_main_beat`(FZ-1)와 **같은 값**을 파일로
+   내보낼 뿐이다 — 별도 하트비트를 두면 진실원천이 둘이 되어, 어느 쪽이 맞는지
+   판정하는 세 번째 장치가 필요해진다.
+⚠ 계측 4원칙 ②: 하트비트가 아직 없으면 `beat_age_sec`는 **0이 아니라 `null`**이다.
+   "미측정"과 "방금 갱신됨"은 정반대 사실이다.
 """
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import threading
 import time
@@ -115,6 +132,10 @@ class FreezeWatchdog(object):
                       실패해도 발화를 막지 않는다.
         on_fire:      () -> None. 기본값 None이면 os._exit(exit_code).
                       테스트에서 주입해 종료를 가로챈다.
+        heartbeat_path: [480차 G-1] 매 검사마다 생존 JSON을 덮어쓸 경로.
+                      None이면 출력하지 않는다(기존 동작). 쓰는 주체는 라이브
+                      프로세스 하나뿐이어야 한다 — 여러 프로세스가 쓰는 파일은
+                      생존 판정에 쓸 수 없다(모듈 docstring 참조).
     """
 
     def __init__(
@@ -130,6 +151,7 @@ class FreezeWatchdog(object):
         window=("09:00", "15:45"),
         fault_log_path=_FAULT_LOG_DEFAULT,
         ts_heartbeat=True,
+        heartbeat_path=None,
         name="FreezeWatchdog",
     ):
         self._beat_fn = beat_fn
@@ -143,6 +165,7 @@ class FreezeWatchdog(object):
         self._window = window
         self._fault_log_path = fault_log_path
         self._ts_heartbeat = bool(ts_heartbeat)
+        self._heartbeat_path = heartbeat_path      # [480차 G-1] None이면 미출력
         self._name = name
 
         self._strikes = 0
@@ -204,6 +227,8 @@ class FreezeWatchdog(object):
                 )
             )
 
+        self._write_heartbeat_file(now, beat, age, watching)
+
         self._strikes, should_fire = evaluate(
             age, self._stall_sec, self._strikes, self._strikes_needed, watching
         )
@@ -260,6 +285,50 @@ class FreezeWatchdog(object):
             self._on_fire()
             return
         os._exit(self._exit_code)
+
+    # ── [480차 G-1] 생존 하트비트 파일 ─────────────────────────────────
+
+    def _write_heartbeat_file(self, now, beat, age, watching):
+        """밖에서 읽을 수 있는 생존 신호를 원자적으로 덮어쓴다.
+
+        원자성(tmp → os.replace)이 필요한 이유: 읽는 쪽(`force_flat_guard.py`)이
+        15:12에 딱 한 번 읽고 그 결과로 절대원칙 §1 경보를 낼지 정한다. 반쯤 쓰인
+        JSON을 읽고 파싱에 실패하면 "프로세스 죽음"으로 오판할 수 있다.
+
+        실패는 삼킨다 — 하트비트를 못 써서 감시자가 죽으면 본말전도다. 대신 파일이
+        아예 갱신되지 않는 것 자체가 읽는 쪽에서 "낡음"으로 보이므로 안전측 오류다.
+        """
+        if not self._heartbeat_path:
+            return
+        try:
+            d = os.path.dirname(self._heartbeat_path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            payload = {
+                "pid": os.getpid(),
+                "written_at": now.isoformat(timespec="seconds"),
+                "beat_epoch": None if beat is None else float(beat),
+                # ⚠ 계측 4원칙 ② — 하트비트 미시작은 0이 아니라 null이다.
+                "beat_age_sec": None if age is None else round(float(age), 1),
+                "watching": bool(watching),
+                "strikes": int(self._strikes),
+                "stall_sec": self._stall_sec,
+                "strikes_needed": self._strikes_needed,
+                "check_sec": self._check_sec,
+                "window": list(self._window),
+                "fired": bool(self.fired),
+            }
+            tmp = self._heartbeat_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp, self._heartbeat_path)
+        except Exception:
+            pass
 
     # ── fault 로그 직접 append ──────────────────────────────────────────
 
