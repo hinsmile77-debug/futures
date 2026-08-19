@@ -79,17 +79,31 @@ def test_tier_sets_disjoint(mc):
     assert mc["_ARCHIVE_DELETE_EXEMPT"] <= comp
 
 
+# 예외 허용 목록 — 그 스크립트의 소비 창이 LOG_COMPRESS_DAYS(30일) 안의
+# **후행 창**임을 확인했을 때만 등록한다. 값은 근거(없으면 등록 금지).
+_RETRO_GLOB_EXEMPT = {
+    # dev(MW0602) 전용 진단 도구. 전 기간 glob 뒤 [-args.days:] 슬라이스 —
+    # 기본 3일·통상 ≤5일 후행 창이라 원본이 항상 남아 있다(30일 유예 안).
+    # ⚠ --days 를 25 이상으로 쓰려면 압축본 대응을 먼저 넣을 것.
+    "pipeperf_step_decomposition.py":
+        "[MW0602 468차 G-4] 최근 N거래일 후행 창(기본 3) — 압축 유예 안",
+}
+
+
 def test_no_script_retro_globs_compressed_channels(mc):
     """scripts/ 안에 Tier B 채널을 **와일드카드 glob**으로 소급 소비하는 코드가
     생기면 실패한다 — 그 채널은 30일 뒤 zip이 되므로 그 스크립트는 조용히
     표본을 잃는다. 당일 로그를 쓰는 생산자(aggregate_and_backfill.py 등,
-    와일드카드 없음)는 걸리지 않는다."""
+    와일드카드 없음)는 걸리지 않고, 30일 안 후행 창만 읽는 스크립트는
+    _RETRO_GLOB_EXEMPT에 근거와 함께 등록한다."""
     comp = mc["_COMPRESS_CHANNELS"]
     pat = re.compile(r"\*[^\"']*_(%s)\.log" % "|".join(sorted(comp)))
     offenders = []
     scripts_dir = os.path.join(ROOT, "scripts")
     for name in os.listdir(scripts_dir):
         if not name.endswith(".py") or name == "monthly_cleanup.py":
+            continue
+        if name in _RETRO_GLOB_EXEMPT:
             continue
         path = os.path.join(scripts_dir, name)
         with open(path, "r", encoding="utf-8", errors="replace") as f:
