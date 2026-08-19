@@ -44,6 +44,43 @@ def campaign_due(flag=None) -> bool:
     return week_last_trading_day(this_friday) == today
 
 
+# ── [MW0601 479차] 월간 로그 정리 발화 지점 ──────────────────────────────────
+# monthly_cleanup.py는 2026-05 신설 이래 **한 번도 실행된 적이 없었다** —
+# 발화 지점이 없어서다(보관정책_MW0601-20260818.md §2). 보관정책 §4-6 원칙대로
+# 국면 점검이 아니라 "하루의 끝이 확정된" EOD 체인 공용 모듈인 여기 **한 곳**에만
+# 건다. 캠페인 스텝은 주 1회(금요일 EOD)만 돌므로 실제 주기는 "매월 첫 캠페인
+# 실행일" — 즉 「월 1회」는 엄밀히 「월 1회 이상 아님」이며, 보관 N일은 「N일
+# 이상」이 된다(정책 문서에 명기). 마커는 data/(gitignore, PC별 로컬 상태).
+_MONTHLY_CLEANUP_STEP = "월간 로그 정리"
+
+
+def _monthly_cleanup_marker(base_dir: str) -> str:
+    return os.path.join(base_dir, "data", "monthly_cleanup_last_run.txt")
+
+
+def monthly_cleanup_due(base_dir: str, today=None) -> bool:
+    """이번 달에 아직 안 돌았으면 True. 마커가 없거나 못 읽으면 True(첫 실행)."""
+    today = today or datetime.date.today()
+    cur = today.strftime("%Y%m")
+    try:
+        with open(_monthly_cleanup_marker(base_dir), "r") as f:
+            last = f.read().strip()
+    except Exception:
+        return True
+    return last < cur
+
+
+def _monthly_cleanup_mark_done(base_dir: str, logger, today=None) -> None:
+    """성공 시에만 호출 — 실패/장중차단이면 마커를 안 쓰고 다음 금요일에 재시도."""
+    today = today or datetime.date.today()
+    try:
+        with open(_monthly_cleanup_marker(base_dir), "w") as f:
+            f.write(today.strftime("%Y%m"))
+    except Exception as e:
+        logger.warning("[검증 캠페인] 월간 정리 마커 기록 실패(다음 주 중복 실행 가능, "
+                       "정리는 멱등이라 무해): %s", e)
+
+
 def run_campaign_steps(logger, base_dir: str) -> None:
     """[260705 검증 캠페인] 주간 검증 스텝 체인 자동화 (§4-1).
 
@@ -95,6 +132,13 @@ def run_campaign_steps(logger, base_dir: str) -> None:
     ]
     if datetime.date.today().isocalendar()[1] % 2 == 0:
         steps.append(("MAE/MFE 분석", ["analyze_mae_mfe.py"]))
+    # [MW0601 479차] 월간 로그 정리(압축 + 보관 컷) — 매월 첫 캠페인 실행일 1회.
+    # **마지막 스텝**에 둔다: 정리 IO(첫 실행 시 수 GB 압축)가 리포트·재학습
+    # 체인을 지연시키지 않게. 로그를 소급 파싱하는 스텝([49] 등)은 TRADE만 읽고
+    # TRADE는 Tier A(원본 유지)라 간섭이 없다. rc=2(장중차단)·FAIL이면 마커를
+    # 안 쓰므로 다음 금요일에 자동 재시도된다.
+    if monthly_cleanup_due(base_dir):
+        steps.append((_MONTHLY_CLEANUP_STEP, ["monthly_cleanup.py", "--apply"]))
 
     script_dir = os.path.join(base_dir, "scripts")
     logger.info("=" * 55)
@@ -127,6 +171,11 @@ def run_campaign_steps(logger, base_dir: str) -> None:
 
     logger.info("[검증 캠페인] 요약: %s",
                  " | ".join("%s=%s" % (n, s) for n, s in summary))
+    # [MW0601 479차] 월간 정리가 성공했을 때만 이번 달 마커를 남긴다.
+    for _n, _s in summary:
+        if _n == _MONTHLY_CLEANUP_STEP and _s == "OK":
+            _monthly_cleanup_mark_done(base_dir, logger)
+            break
     # [MW0601 407차] 출력이 data/ 고정파일명 → docs/정기점검/금요일점검/<PC>/ 날짜본으로
     # 바뀌었다. 로그가 옛 경로를 가리키면 EOD 로그만 보고 파일을 찾다 헤매게 된다.
     # ── [MW0601 448차] 🔴 조용한 실패 차단 ──────────────────────────────────────
