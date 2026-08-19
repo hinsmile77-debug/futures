@@ -6,7 +6,7 @@
 
 **지시**: *"리포트 2항과 3항 제안내용에 대해 구현 손익 조사하고 이익이면 구현계획 수립하고
 구현진행해"*. 대상은 `MW0601-20260819-점검리포트-post.md` §2(Fix 계획)·§3(고도화).
-**매매 정책 변경 0건 · 진입 판정·차단 게이트 무변경.** 전체 **563 passed**(478차 552 + 신규 26).
+**매매 정책 변경 0건 · 진입 판정·차단 게이트 무변경.** 전체 **576 passed / 0 failed**(478차 552 + 신규 24). 480차 신규 테스트 파일 4종 자체는 38건.
 
 ### [전제] §2의 P0 항목은 이미 배포돼 있었다 — 중복 구현하지 않았다
 
@@ -88,7 +88,7 @@ FP-CRITICAL(2개월 PSI=0.0)과 같은 **"켜진 적 없는 게이트"** 가 된
 | F-3 | `scripts/ofi_norm_distribution_probe.py`(신설, `guard_intraday`) |
 | F-4 | `retrain_eod.py`(`daily_close_seen`/`wait_dc_timeout` 마커) |
 | G-2 | `.claude/skills/.../collect_evidence.py`(§7 기준선 표 + §11 조기종료 적신호) |
-| 검증 | `tests/test_480_*.py` 4종 26건 |
+| 검증 | `tests/test_480_*.py` 4종 **38건** (force_flat 16 · entry_param 11 · log_end 7 · waitdc 4) |
 | 로드맵 | `CLAUDE.md` 전환기준 ② 선행 확인사항 ⓑ + 26주 WFA 재검증 항목 |
 
 ---
