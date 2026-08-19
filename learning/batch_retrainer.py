@@ -442,6 +442,12 @@ class BatchRetrainer:
         # 초기값 None = "모른다" — 그 상태로 기록되면 런타임은 보수(제한 유지)로 간다.
         self._last_label_scheme: Optional[str] = None
         self._last_label_params: dict = {}
+        # [MW0602 476차 F-1] _load_from_db()가 자기 반환 X에 남기는 표식
+        # (id(X), X.shape, label_scheme, label_params). retrain_now()의 468차 가드가
+        # "출처 불명 X/y"와 "방금 이 인스턴스가 만든 X/y"(retrain_eod.py 프로덕션 경로)를
+        # 구분하는 근거다. 반환 시그니처는 못 바꾼다 — 호출부가 여럿이고 전부 3-튜플
+        # 언팩이라 확장하면 조용히 깨진다(_load_from_db 하단 주석).
+        self._label_state_from_load_db = None
 
     def restore_stats(self, last_retrain_str: str, total_count: int) -> None:
         """재시동 후 이전 세션 이력 복원."""
@@ -469,6 +475,28 @@ class BatchRetrainer:
         if now is None:
             now = datetime.datetime.now()
         return now.day == 1 and now.hour == 7
+
+    def _resolve_external_label_state(self, X) -> None:
+        """[MW0602 476차 F-1] 호출자가 X/y를 직접 넘겼을 때의 레이블 규칙 판정.
+
+        `_load_from_db()`가 반환 직전에 남긴 표식(id + shape)이 일치하면 그 규칙을
+        복원하고(사이드카에 정상 기록), 그 외에는 종전(468차)대로 None(=모른다)으로
+        지운다 — 런타임은 모르면 보수(사이즈 제한 유지)로 간다.
+
+        id() 재사용 오탐(X가 GC된 뒤 다른 객체가 같은 id를 받는 경우)은 shape 병행
+        대조로 줄인다. 그래도 틀리면 방향이 중요하다 — **오탐은 None(제한 유지) 쪽으로만
+        떨어진다**(표식이 남긴 규칙을 엉뚱한 X에 붙이려면 id와 shape가 동시에 우연히
+        일치해야 하고, 실사용 경로(retrain_eod.py)는 X를 지역변수로 살려둔 채 되먹이므로
+        GC 재사용 자체가 발생하지 않는다).
+        """
+        _src = getattr(self, "_label_state_from_load_db", None)
+        if (_src and _src[1] is not None
+                and _src[0] == id(X) and _src[1] == getattr(X, "shape", None)):
+            self._last_label_scheme = _src[2]
+            self._last_label_params = dict(_src[3] or {})
+        else:
+            self._last_label_scheme = None
+            self._last_label_params = {}
 
     # ── 재학습 메인 ───────────────────────────────────────────────
     def retrain_now(
@@ -500,13 +528,13 @@ class BatchRetrainer:
         if not _SKLEARN_OK:
             return {"ok": False, "error": "scikit-learn 미설치"}
 
-        # [MW0602 468차 G-1] 호출자가 X/y를 직접 넘기면 아래 두 레이블 생성 경로가 전부
-        # 건너뛰어진다 — 그때 직전 학습의 값이 남아 있으면 **이번 pkl의 레이블 규칙인 양
-        # 사이드카에 새겨진다.** 매 호출 초기화해서 그 경우 `None`(=모른다)이 기록되게
-        # 한다. 런타임은 모르면 보수(사이즈 제한 유지)로 가므로 안전한 쪽으로 틀린다.
+        # [MW0602 468차 G-1 → 476차 F-1] 호출자가 X/y를 직접 넘기면 아래 레이블 생성
+        # 경로가 전부 건너뛰어진다 — 468차 가드는 그때 무조건 None(=모른다)으로 지웠는데,
+        # 프로덕션 호출자(retrain_eod.py)는 **같은 인스턴스의 _load_from_db() 반환값**을
+        # 되먹이므로 유효한 규칙까지 지워 사이드카가 label_scheme=null로 3거래일 연속
+        # 기록됐다(0819 P1-1). "모르는 X/y만 지운다"로 좁힌다.
         if X is not None and y_dict is not None:
-            self._last_label_scheme = None
-            self._last_label_params = {}
+            self._resolve_external_label_state(X)
 
         logger.info(
             "[Retrain] 배치 재학습 시작 (weeks_back=%d, phase2=%s, intraday=%s)",
@@ -1985,6 +2013,10 @@ class BatchRetrainer:
         from config.settings import RAW_DATA_DB, HORIZON_THRESHOLDS
         from model.target_builder import build_single_target
 
+        # [MW0602 476차 F-1] 실패 경로에서 직전 호출의 표식이 남지 않도록 먼저 지운다 —
+        # 표식은 성공 반환 직전에만 새로 기록된다.
+        self._label_state_from_load_db = None
+
         raw_db = RAW_DATA_DB
         if not os.path.exists(raw_db):
             logger.warning("[Retrain] raw_data.db 없음 — 학습 데이터 축적 대기")
@@ -2217,6 +2249,13 @@ class BatchRetrainer:
             except Exception:
                 self._last_train_ts = None
                 self._last_train_end_ts = self._last_train_start_ts = None
+            # [MW0602 476차 F-1] retrain_now()의 468차 가드가 이 반환값을 "출처를 아는
+            # X"로 인식할 수 있게 표식을 남긴다 — 위에서 레이블 규칙을 확정한 직후다.
+            # (retrain_eod.py가 이 X를 그대로 retrain_now(X=…, y_dict=…)로 되먹인다.)
+            self._label_state_from_load_db = (
+                id(X), getattr(X, "shape", None),
+                self._last_label_scheme, dict(self._last_label_params or {}),
+            )
             logger.info(
                 f"[Retrain] DB 로드 완료: {len(X)}행 × {len(feat_names)}피처 "
                 f"(cutoff={cutoff[:10]} ~ {(self._last_train_end_ts or '?')[:16]})"

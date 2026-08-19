@@ -29,8 +29,9 @@ def read_label_state(model_dir, horizons, want_scheme, want_param_of=None, tol=1
     Returns:
         (ok: bool, detail: str)
 
-    ⚠ **모르면 False다.** 폴더/파일 없음, `label_scheme` 없음(468차 이전 사이드카),
-      JSON 파싱 실패는 전부 "모른다"이며 False로 떨어진다. 이 함수의 True는
+    ⚠ **모르면 False다.** 폴더/파일 없음, `label_scheme` 키 없음(468차 이전 사이드카),
+      키는 있으나 `null`(기록 경로 결함 — 476차 F-3에서 문구 분리), JSON 파싱 실패는
+      전부 "모른다"이며 False로 떨어진다. 이 함수의 True는
       "6개 전부 확인했고 전부 현행"이라는 뜻이어야 한다 — "문제를 못 찾았다"가 아니다.
     """
     hz_list = list(horizons or [])
@@ -51,9 +52,18 @@ def read_label_state(model_dir, horizons, want_scheme, want_param_of=None, tol=1
         except (ValueError, IOError, OSError) as e:
             stale.append("%s:판독실패(%s)" % (hz, type(e).__name__))
             continue
+        # [MW0602 476차 F-3] "키 부재"(진짜 468차 이전 구버전)와 "키는 있으나 null"
+        # (기록 경로 결함 — 0819 P1-1: 어제 새로 쓴 사이드카를 "구버전"이라 불러
+        # 원인 추적을 늦출 뻔했다)을 구분한다. 셋 다 False(모른다)인 것은 그대로다.
+        if "label_scheme" not in meta:
+            stale.append("%s:사이드카 구버전(키없음)" % hz)
+            continue
         scheme = meta.get("label_scheme")
+        if scheme is None:
+            stale.append("%s:label_scheme=null(기록경로 결함)" % hz)
+            continue
         if not scheme:
-            stale.append("%s:label_scheme없음(구버전)" % hz)
+            stale.append("%s:label_scheme 빈값" % hz)
             continue
         if scheme != want_scheme:
             stale.append("%s:%s!=%s" % (hz, scheme, want_scheme))
