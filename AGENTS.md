@@ -64,12 +64,20 @@ start_mireuk_cybos_test.bat  # 테스트용 런처 (동일 구성, 명시적 테
 | `dashboard/` | PyQt5 실시간 대시보드 |
 | `research_bot/` | 알파 발굴 봇 (자동 통합 비활성화) |
 
-## 테스트 프레임워크 없음
+## 테스트
 
-이 프로젝트에는 **단위 테스트 프레임워크가 전혀 없음** (pytest, unittest 모두 없음). 검증은 다음으로 대체:
-- 실시간 시뮬레이션 모드 (`python main.py --mode simulation`)
-- `backtest/walk_forward.py` 오프라인 검증
-- Cybos/Kiwoom 실거래 직접 운영
+- `tests/` — 회귀 테스트(424차~). COM/PyQt 의존 없는 모듈만 대상이며, pytest 스타일
+  (`test_473_*` 등)과 단독 실행 스타일(`python tests/test_468_*.py`)이 혼재한다.
+  (구버전 서술 "테스트 프레임워크 전혀 없음"은 2026-06 이후 사실이 아니다 — 476차 정정.)
+- **도달성 불변식 테스트 명명 규약 (476차 G-5)**: 게이트·등급·임계 등 "코드에 있으니
+  지켜진다"고 전제되는 분기를 새로 만들 때는 `tests/test_*_reachability.py` 형식의
+  도달성 테스트를 함께 둔다. 정의가 바뀌면 테스트가 깨져 관련 문서(CLAUDE.md 등)의
+  갱신을 강제하는 방식이다 — 선례: `test_471_force_exit_reachability.py`(15:10 경로) ·
+  `test_473_core_group_reachability.py`(CORE 그룹) · `test_476_grade_reachability.py`
+  (앙상블 등급 A/B). ⚠ 라이브 **분포**에 의존하는 단언은 CI에서 불안정하므로 점검
+  도구(일일 점검 수집기 §12b 임계-분포 대조)에 두고, 테스트는 **정의 대조**만 한다.
+- 오프라인 검증 보조: 실시간 시뮬레이션 모드(`python main.py --mode simulation`) ·
+  `backtest/walk_forward.py` · Cybos/Kiwoom 실거래 직접 운영
 
 ## DB 파일
 

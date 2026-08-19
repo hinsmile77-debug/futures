@@ -7082,11 +7082,22 @@ class TradingSystem:
                 )
         elif _now_hm < "0930":
             # 09:20~09:29: grade A만, min_conf 0.60 상향, size×0.5 (STEP 7에서 적용)
+            #
+            # [MW0602 476차 F-6 Phase A] 여기의 grade 는 **앙상블 등급**이다(체크리스트
+            # 등급이 아니다). 앙상블 A는 conf≥0.70 요구인데 방향성 conf 는 2026-06-01
+            # 이후 0.60에도 닿은 적이 없어(최근 30거래일 p100 0.5970), 이 분기는
+            # **실질 전면 진입 금지**로 동작해 왔다(0819 리포트 1-9 — 로그 문구에 사실
+            # 병기만 하고 분기 동작·임계·direction=0 처리는 그대로 둔다. 임계 재설계는
+            # 매매 정책 변경이라 주간회의(2026-08-22) 안건.
+            # 도달성 불변식: tests/test_476_grade_reachability.py).
             if grade in ("B", "C"):
                 direction = 0
                 grade     = "X"
                 decision["checklist_reason"] = "조건부구간"
-                log_manager.signal("[EntryGate] 조건부 구간 — A등급만 허용 (09:30까지)")
+                log_manager.signal(
+                    "[EntryGate] 조건부 구간 — 앙상블 A등급만 허용 (09:30까지) "
+                    "| ⚠ A는 conf≥0.70 요구, 2026-06 이후 라이브 도달 0건 — 실질 전면 금지(1-9)"
+                )
             elif grade == "A":
                 actual_min_conf = max(actual_min_conf, 0.60)
 
