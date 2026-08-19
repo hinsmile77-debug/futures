@@ -185,3 +185,25 @@ def test_2단계_주문_경로는_아직_없다():
         src = f.read()
     for banned in ("send_order", "SendOrder", "CpTd0311", "broker."):
         assert banned not in src, "가드가 주문 경로에 손대고 있다: %s" % banned
+
+
+def test_수동_실행은_마커를_남기지_않는다():
+    """`--once` 진단이 다음날 증거 인벤토리에 "경보"로 섞이면 진짜 15:12 발화와
+    구분되지 않는다 — 개발 중 실제로 운영 `data/`를 그렇게 오염시켰다."""
+    import tempfile
+    from scripts.force_flat_guard import emit
+    d = tempfile.mkdtemp()
+    v = {"level": "CRITICAL", "rc": RC_UNCLOSED, "headline": "테스트", "details": []}
+    emit(d, datetime.date(2026, 8, 19), v, popup=False, manual=True)
+    assert not os.path.exists(os.path.join(d, "data", "force_flat_alert_20260819.txt"))
+    # 로그에는 남는다 — 정보가 사라지는 것이 아니라 마커만 안 만드는 것이다
+    assert os.path.exists(os.path.join(d, "logs", "force_flat_guard_20260819.log"))
+
+
+def test_예약_실행은_마커를_남긴다():
+    import tempfile
+    from scripts.force_flat_guard import emit
+    d = tempfile.mkdtemp()
+    v = {"level": "CRITICAL", "rc": RC_UNCLOSED, "headline": "테스트", "details": []}
+    emit(d, datetime.date(2026, 8, 19), v, popup=False, manual=False)
+    assert os.path.exists(os.path.join(d, "data", "force_flat_alert_20260819.txt"))

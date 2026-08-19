@@ -213,16 +213,22 @@ def heartbeat_path(root, day, pc=None):
     return os.path.join(root, tpl.format(pc=pc or _pc_id(), date=day.strftime("%Y%m%d")))
 
 
-def emit(root, day, verdict, popup=True):
+def emit(root, day, verdict, popup=True, manual=False):
     """경보를 남긴다 — 로그 · (경보 시)마커 파일 · (옵션)메시지박스.
 
     Slack은 쓰지 않는다(사용자 결정: 개발단계 직접 모니터링, feedback 메모 참조).
     마커 파일을 두는 이유는 일일 점검 수집기가 §1 인벤토리에서 자동으로 집어
     다음 점검에 눈에 띄게 하기 위해서다 — 사람이 그 시각에 화면을 보고 있지
     않아도 사실이 남는다.
+
+    ⚠ `manual=True`(`--once` 수동 실행)면 **마커를 남기지 않는다.** 점검 중에 손으로
+    돌린 진단이 다음날 증거 인벤토리에 "경보"로 섞이면, 진짜 15:12 발화와 구분되지
+    않아 수집기가 거짓 적신호를 만든다(개발 중 실제로 그렇게 오염시켰다).
+    콘솔과 로그에는 그대로 남으므로 정보가 사라지지는 않는다.
     """
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    body = ["[ForceFlatGuard] %s %s" % (stamp, verdict["level"]),
+    body = ["[ForceFlatGuard] %s %s%s" % (stamp, verdict["level"],
+                                          " (수동 실행 — 마커 미기록)" if manual else ""),
             "  " + verdict["headline"]]
     body += ["  · " + d for d in verdict["details"]]
     text = "\n".join(body)
@@ -238,7 +244,7 @@ def emit(root, day, verdict, popup=True):
 
     print(text)
 
-    if verdict["level"] in ("CRITICAL", "WARNING", "UNKNOWN"):
+    if not manual and verdict["level"] in ("CRITICAL", "WARNING", "UNKNOWN"):
         try:
             data_dir = os.path.join(root, "data")
             os.makedirs(data_dir, exist_ok=True)
@@ -342,7 +348,7 @@ def main(argv=None):
     hb = _read_json(heartbeat_path(root, day))
     pos = _read_json(os.path.join(root, "data", "position_state.json"))
     verdict = judge(now, hb, pos, stale_sec=stale)
-    emit(root, day, verdict, popup=popup)
+    emit(root, day, verdict, popup=popup, manual=bool(args.once))
     return verdict["rc"]
 
 
