@@ -149,6 +149,10 @@ DEFAULT_CONFIG = {
         "time_zone": r"\[TimeRouter\] 시간대 전환 → (?P<zone>[A-Z_]+)\s*[:：]\s*(?P<desc>.+?)\s*$",
         "cb": r"\[CB\]\s*(?P<msg>.+?)\s*$",
         "block_ms": r"메인 스레드 블로킹.*?간격 (?P<ms>\d+)ms|간격 (?P<ms2>\d+)ms — 메인 스레드 블로킹",
+        # [MW0602 476차 F-7] 일일 마감 줄 — §5 손익 검산의 2차 원천.
+        # `오늘 PnL` 이 든 전략경보 배너는 뜨지 않는 날이 있는데(0819 실측: 배너 자체
+        # 미출력 → 검산 축이 매일 비었다), 이 줄은 15:40 daily_close 마다 무조건 찍힌다.
+        "daily_close": r"일일 마감\s*\|\s*승=(?P<w>\d+)\s*패=(?P<l>\d+)\s*PnL=(?P<won>[+-]?[\d,]+)원",
     },
     "banner_start": "전략 상태 경보",
     "banner_lines": 8,
@@ -255,7 +259,14 @@ DEFAULT_CONFIG = {
         #        benign: 이 값 하나로 100%인 것이 정상인 경우(경고 대신 정보로 표시),
         #        min_samples/min_days: 전역 기준 덮어쓰기(선택),
         #        sample_axis: "minute" 이면 "그 지표가 사는 로그가 살아 있던 분" 대비
-        #                     관측률을 재고 branch_ratio_min 미만이면 `분기편향`}
+        #                     관측률을 재고 branch_ratio_min 미만이면 `분기편향`.
+        #                     "ensemble_minute" 이면 분모를 `[Ensemble] dir=` 출현 분으로
+        #                     좁힌다(476차 F-8 — 앙상블이 계산된 분에만 사는 지표용.
+        #                     ConfFloor 를 "minute" 축으로 재면 포지션 보유 등으로 앙상블을
+        #                     건너뛴 분이 분모에 들어가 관측률이 구조적으로 과소평가된다:
+        #                     0819 실측 원시 0.88 vs 앙상블 축 1.00),
+        #        value_map: [[정규식, 라벨], …] — 캡처값을 라벨로 정규화(476차 G-6.
+        #                   예: bar_pass 1,2,3… 을 "≥1(생존)" 하나로 접어 고착 오탐 방지)}
         # 관측률이 이 값 미만이면 분기편향. 0.5 는 "절반의 분에서 안 찍혔다"는 뜻이라
         # 주기 로그(2분·5분 간격)와 진짜 편향을 가르는 자리다. 0818 실측 0.22 는 통과 못 하고
         # 진짜 매분 샘플러 CB_state 1.01 은 여유 있게 통과한다.
@@ -314,7 +325,10 @@ DEFAULT_CONFIG = {
                 "files": ["_SIGNAL"],
                 "benign": ["OK"],
                 # 470차 L2 가 "매분 무조건"을 표방하며 신설했다 — 그 주장을 매일 검증한다.
-                "sample_axis": "minute",
+                # [476차 F-8] 실제 호출 지점은 EnsembleDecision.compute() 내부라
+                # **앙상블이 계산된 분에만** 남는다(0819 실측: [Ensemble] 출현 306분과
+                # 교집합 306 · 차집합 0). 분모를 앙상블 축으로 좁혀 오탐을 없앤다.
+                "sample_axis": "ensemble_minute",
                 "why": "자동진입 하한 도달 가능 여부(매분 샘플, 470차 L2). OK 고착은 정상. "
                        "BLOCKED 고착이면 어떤 신호도 자동진입 하한을 못 넘는 상태가 "
                        "종일 지속된 것이다 — 2026-08-11 오전 88신호 전부 grade=X 가 그 사례",
@@ -500,8 +514,12 @@ def open_text(path):
 
 
 def run_git(root, args, timeout=25):
+    # [MW0602 476차 F-5] `--no-optional-locks` — status 계열이 .git/index.lock 을
+    # 만들지 않게 한다. 0819 장전에 스테일 index.lock 이 커밋을 막았고, 샌드박스
+    # 마운트는 unlink 불가라 세션이 스스로 지울 수도 없었다. 읽기 전용 수집기가
+    # 락을 남길 이유가 없다.
     try:
-        p = subprocess.Popen(["git"] + list(args), cwd=root,
+        p = subprocess.Popen(["git", "--no-optional-locks"] + list(args), cwd=root,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = p.communicate(timeout=timeout)
         dec = lambda b: b.decode("utf-8", "replace").strip()
@@ -953,22 +971,114 @@ def scan_campaign_decisions(root, pcid):
 # ⚠ **`ensemble_decisions` 는 `predictions.db` 에 있다.** 같은 이름의
 #   `data/db/ensemble_decisions.db` 가 있지만 **0바이트·테이블 0개짜리 유령**이다
 #   (2026-08-18 실측). 이름만 보고 열면 조용히 빈 결과가 나온다.
+# [MW0602 476차 F-2'] 3단 폴백의 접근 기록. 렌더가 `db_access_notes()` 로 읽는다.
+#   rel -> 사용된 모드 집합 {"ro", "snapshot", "immutable", "실패", "없음"}
+_DB_ACCESS = {}
+_DB_SNAPSHOT = {}      # abs db 경로 -> 스냅샷 경로 (실패는 None) — 세션당 1회만 복사
+_DB_TMPDIR = [None]
+
+
+def _db_snapshot(p):
+    """[MW0602 476차 F-2'] ①(`mode=ro`) 실패 시에만 — db + `-wal` + `-shm` 을 tempdir 로
+    복사해 일반 open 한다. WAL 포함이라 값이 정확하다.
+
+    ⚠ `predictions.db` 는 929MB — **세션당 1회만** 복사하고 결과(실패 포함)를 캐시한다.
+    디스크 여유가 사본 크기의 1.2배 미만이면 복사하지 않는다(③ immutable 로 넘어간다).
+    """
+    import atexit
+    import shutil
+    import tempfile
+    if p in _DB_SNAPSHOT:
+        return _DB_SNAPSHOT[p]
+    try:
+        need = os.path.getsize(p)
+        for suf in ("-wal", "-shm"):
+            if os.path.exists(p + suf):
+                need += os.path.getsize(p + suf)
+        free = shutil.disk_usage(tempfile.gettempdir()).free
+        if free < need * 1.2:
+            eprint("[collect_evidence] DB 스냅샷 생략(디스크 여유 부족): %s" % p)
+            _DB_SNAPSHOT[p] = None
+            return None
+        if _DB_TMPDIR[0] is None:
+            _DB_TMPDIR[0] = tempfile.mkdtemp(prefix="mireuk_dbsnap_")
+            atexit.register(shutil.rmtree, _DB_TMPDIR[0], True)
+        dst = os.path.join(_DB_TMPDIR[0], os.path.basename(p))
+        shutil.copy2(p, dst)
+        for suf in ("-wal", "-shm"):
+            if os.path.exists(p + suf):
+                shutil.copy2(p + suf, dst + suf)
+        _DB_SNAPSHOT[p] = dst
+    except Exception as e:
+        eprint("[collect_evidence] DB 스냅샷 실패(%s): %s" % (p, e))
+        _DB_SNAPSHOT[p] = None
+    return _DB_SNAPSHOT[p]
+
+
 def db_rows(root, rel, sql, params=(), timeout=3.0):
-    """읽기 전용 SQLite 질의. 실패하면 `None`(빈 리스트 아님 — 0과 구분한다)."""
+    """읽기 전용 SQLite 질의. 실패하면 `None`(빈 리스트 아님 — 0과 구분한다).
+
+    [MW0602 476차 F-2'] 3단 폴백:
+      ① `file:…?mode=ro`               — 윈도우 네이티브에서 최선 (WAL 포함)
+      ② 스냅샷 복사(db+`-wal`+`-shm`)   — 코웍 샌드박스가 `-shm` 매핑을 못 할 때. 값 정확
+      ③ `mode=ro&immutable=1`          — 최후. **WAL 미반영**(최신 수 분 누락 가능, 경고 동반)
+    실패 원인은 마운트 자체가 아니라 **라이브 프로세스가 WAL 을 쥐고 있는 동안의 경합**
+    이었다(0819 장후 실측: 장전·장중 ① 실패, 장후 ① 성공). 어느 단계를 썼는지는
+    `_DB_ACCESS` 에 남겨 다이제스트가 한 줄 주석으로 보여준다.
+    """
     p = os.path.normpath(os.path.join(root, rel))
     if not os.path.exists(p):
         eprint("[collect_evidence] DB 없음: %s" % rel)
+        _DB_ACCESS.setdefault(rel, set()).add("없음")
         return None
-    uri = "file:%s?mode=ro" % p.replace("\\", "/").replace("?", "%3f").replace("#", "%23")
-    try:
-        con = sqlite3.connect(uri, uri=True, timeout=timeout)
+    esc = p.replace("\\", "/").replace("?", "%3f").replace("#", "%23")
+
+    def _run(target, uri):
+        con = sqlite3.connect(target, uri=uri, timeout=timeout)
         try:
             return con.execute(sql, tuple(params)).fetchall()
         finally:
             con.close()
-    except Exception as e:
-        eprint("[collect_evidence] DB 질의 실패(%s): %s" % (rel, e))
+
+    try:                                        # ① mode=ro
+        out = _run("file:%s?mode=ro" % esc, True)
+        _DB_ACCESS.setdefault(rel, set()).add("ro")
+        return out
+    except Exception as e1:
+        err1 = e1
+    snap = _db_snapshot(p)                      # ② 스냅샷 (세션 1회 복사)
+    if snap:
+        try:
+            out = _run(snap, False)
+            _DB_ACCESS.setdefault(rel, set()).add("snapshot")
+            return out
+        except Exception as e2:
+            eprint("[collect_evidence] DB 스냅샷 질의 실패(%s): %s" % (rel, e2))
+    try:                                        # ③ immutable=1 (WAL 누락 감수)
+        out = _run("file:%s?mode=ro&immutable=1" % esc, True)
+        _DB_ACCESS.setdefault(rel, set()).add("immutable")
+        return out
+    except Exception as e3:
+        eprint("[collect_evidence] DB 질의 실패(%s): ①%s / ③%s" % (rel, err1, e3))
+        _DB_ACCESS.setdefault(rel, set()).add("실패")
         return None
+
+
+def db_access_notes():
+    """[MW0602 476차 F-2'] ①이 아닌 경로로 읽은 DB 가 있으면 다이제스트용 주석을 낸다."""
+    lines = []
+    for rel in sorted(_DB_ACCESS):
+        modes = _DB_ACCESS[rel]
+        if "snapshot" in modes:
+            lines.append("> ℹ️ `%s` — `mode=ro` 실패로 **스냅샷 사본**에서 읽었다"
+                         "(WAL 포함, 값 정확. 원인: 라이브 프로세스 WAL 경합 — F-2')." % rel)
+        elif "immutable" in modes:
+            lines.append("> ⚠ `%s` — **`immutable=1` 폴백**으로 읽었다. WAL 미반영이라 "
+                         "**최신 수 분이 누락**될 수 있다(0818 실측 8행 차이)." % rel)
+        elif "실패" in modes or "없음" in modes:
+            lines.append("> ⬛ `%s` — 3단 폴백 전부 실패. 이 DB 원천 지표는 "
+                         "**미측정**이다(0이 아니다 — 계측 4원칙 ②)." % rel)
+    return lines
 
 
 def trade_costs(root, day):
@@ -1048,10 +1158,12 @@ def scan_db_indicators(root, cfg, day):
     for name, spec in srcs.items():
         raw = db_rows(root, spec["db"], spec["sql"], (since, day.isoformat()))
         if raw is None:
+            # [MW0602 476차 F-2'] 접근 실패는 `무기록`(계측 중단 의심)과 다르다 —
+            # 수집기 환경 문제이며 **미측정**이다. 판정을 분리해 오독을 막는다.
             rows.append({"name": name, "why": spec.get("why", ""), "days": 0, "n": 0,
-                         "dist": [], "verdict": "무기록", "ratio": None, "expected": None,
-                         "note": "DB 접근 실패 — **미측정**이지 0이 아니다", "scanned_days": 0,
-                         "source": "DB"})
+                         "dist": [], "verdict": "DB미접속", "ratio": None, "expected": None,
+                         "note": "DB 접근 실패(3단 폴백 전부) — **미측정**이지 0이 아니다",
+                         "scanned_days": 0, "source": "DB"})
             continue
         counts, hit_days = {}, set()
         for r in raw:
@@ -1144,7 +1256,18 @@ def scan_stuck_indicators(root, cfg, day):
                          "note": "정규식 오류: %s" % e})
             continue
         want = [f.lower() for f in (spec.get("files") or [])]
-        per_minute = str(spec.get("sample_axis") or "") == "minute"
+        # [MW0602 476차 F-8] "ensemble_minute" 축 — 분모를 로그 생존 분이 아니라
+        # `[Ensemble] dir=` 출현 분으로 좁힌다. compute() 안에서만 사는 지표용.
+        axis = str(spec.get("sample_axis") or "")
+        per_minute = axis in ("minute", "ensemble_minute")
+        axis_rx = re.compile(r"\[Ensemble\] dir=") if axis == "ensemble_minute" else None
+        # [MW0602 476차 G-6] value_map — 캡처값 정규화 (예: bar_pass N → "≥1(생존)")
+        vmap = []
+        for _vm in (spec.get("value_map") or []):
+            try:
+                vmap.append((re.compile(_vm[0]), str(_vm[1])))
+            except (re.error, IndexError, TypeError):
+                continue
         counts, hit_days = {}, set()
         expected = 0            # 분모 합 (per_minute 일 때만 의미 있다)
         for d in days:
@@ -1158,11 +1281,13 @@ def scan_stuck_indicators(root, cfg, day):
                     if os.stat(full).st_size > max_bytes:
                         continue
                     # 분모는 같은 스트림에서 센다 — 파일을 두 번 읽지 않는다.
-                    track = per_minute and full not in file_minutes
+                    # 캐시 키에 축을 넣는다 — 같은 파일이라도 "minute"(생존 분)와
+                    # "ensemble_minute"([Ensemble] 출현 분)의 분모는 다르다(476차 F-8).
+                    track = per_minute and (full, axis) not in file_minutes
                     mins = set() if track else None
                     with io.open(full, encoding="utf-8", errors="replace") as f:
                         for ln in f:
-                            if track:
+                            if track and (axis_rx is None or axis_rx.search(ln)):
                                 tm = _ts_min_re.match(ln)
                                 if tm:
                                     _t = int(tm.group(1)) * 60 + int(tm.group(2))
@@ -1171,16 +1296,20 @@ def scan_stuck_indicators(root, cfg, day):
                             m = rx.search(ln)
                             if m:
                                 v = (m.group("v") or "").strip()
+                                for _vrx, _lbl in vmap:
+                                    if _vrx.fullmatch(v):
+                                        v = _lbl
+                                        break
                                 counts[v] = counts.get(v, 0) + 1
                                 hit_days.add(d)
                     if track:
-                        file_minutes[full] = len(mins)
+                        file_minutes[(full, axis)] = len(mins)
                 except (IOError, OSError):
                     continue
                 if per_minute:
                     # 여러 파일에 걸치면 **최댓값**을 쓴다. 합치면 같은 분을 두 번 세서
                     # 분모가 부풀고 멀쩡한 지표가 편향으로 보인다.
-                    day_expected = max(day_expected, file_minutes.get(full, 0))
+                    day_expected = max(day_expected, file_minutes.get((full, axis), 0))
             # 표본이 하나도 없는 날은 분모에서 뺀다 — 그 날은 "편향"이 아니라 **미배포**이거나
             # 계측 중단이며, 그것은 `무기록`이 말할 몫이다. 빼지 않으면 배포 첫날 지표가
             # 무조건 분기편향으로 뜬다(0818 ConfFloor: 80/2918=0.03 vs 80/365=0.22).
@@ -1448,28 +1577,35 @@ def day_summary(digests, cfg, out, root=None, day=None):
         # --- 자동 검산: 전략 상태 경보 배너의 '오늘 PnL' 과 대조 ---
         # 2026-08-14: §5가 -82,547원(레그·부분청산 누락), 배너가 -93,450원이었는데
         # 둘이 같은 절에 나란히 찍혀 읽는 사람이 매번 손으로 검산해야 했다.
-        banner_won = None
+        banner_won, banner_src = None, None
         for bline in banner or []:
             bm = re.search(r"오늘\s*PnL\s*[:：]\s*([+-]?[\d,]+)\s*원", bline)
             if bm:
-                banner_won = _won_to_int(bm.group(1))
+                banner_won, banner_src = _won_to_int(bm.group(1)), "전략경보 배너"
                 break
+        if banner_won is None:
+            # [MW0602 476차 F-7] 전략경보 배너가 없는 날(0819 실측)의 폴백 —
+            # `일일 마감 | 승=… 패=… PnL=…` 줄은 15:40 마다 무조건 발행된다.
+            _dc = merged.get("daily_close") or []
+            if _dc:
+                banner_won = _won_to_int(_dc[-1].get("won"))
+                banner_src = "`일일 마감` 배너"
         if banner_won is not None:
             diff = tot_won - banner_won
             if abs(diff) <= 2:      # 반올림 1원 차는 정상
-                A("> ✅ **검산 일치** — §5 합계 `%s원` ≒ 전략경보 배너 `%s원` (차 %d원)"
-                  % (format(tot_won, "+,d"), format(banner_won, "+,d"), diff))
+                A("> ✅ **검산 일치** — §5 합계 `%s원` ≒ %s `%s원` (차 %d원)"
+                  % (format(tot_won, "+,d"), banner_src, format(banner_won, "+,d"), diff))
             else:
-                A("> 🔴 **검산 불일치** — §5 합계 `%s원` vs 전략경보 배너 `%s원` (**차 %s원**). "
+                A("> 🔴 **검산 불일치** — §5 합계 `%s원` vs %s `%s원` (**차 %s원**). "
                   "어느 한쪽이 레그를 빠뜨렸다는 뜻이다. 리포트에 손익을 옮겨 적기 전에 원인을 찾아라."
-                  % (format(tot_won, "+,d"), format(banner_won, "+,d"), format(diff, "+,d")))
+                  % (format(tot_won, "+,d"), banner_src, format(banner_won, "+,d"), format(diff, "+,d")))
                 ds_flags.append(
-                    "§5 손익 `%s원` ≠ 전략경보 배너 `%s원` (차 %s원) — 집계 누락 의심"
-                    % (format(tot_won, "+,d"), format(banner_won, "+,d"), format(diff, "+,d")))
+                    "§5 손익 `%s원` ≠ %s `%s원` (차 %s원) — 집계 누락 의심"
+                    % (format(tot_won, "+,d"), banner_src, format(banner_won, "+,d"), format(diff, "+,d")))
             A("")
         else:
-            A("> ⚠ 전략경보 배너에서 `오늘 PnL` 을 못 찾아 **검산하지 못했다.** "
-              "장중이면 정상(배너는 15:40 마감 시 발행). 장후면 배너 문구 변경을 의심하라.")
+            A("> ⚠ 전략경보 배너(`오늘 PnL`)도 `일일 마감 | … PnL=` 줄도 못 찾아 **검산하지 못했다.** "
+              "장중이면 정상(둘 다 15:40 마감 시 발행). 장후면 배너 문구 변경을 의심하라.")
             A("")
 
         # --- 레그 상세 (접어둔다 — 단위 혼동 방지) ---
@@ -2528,6 +2664,10 @@ def build(root, day, phase, cfg, discover_only=False):
         elif r["verdict"] == "무기록":
             flags.append("지표 **`%s`** 최근 %d거래일 **기록 0건** — 계측 중단 또는 로그 문구 "
                          "변경 의심 (§12)" % (r["name"], r.get("scanned_days", 0)))
+        elif r["verdict"] == "DB미접속":
+            # [MW0602 476차 F-2'] 계측 중단 의심이 아니라 **수집기 환경 문제**다.
+            flags.append("지표 **`%s`** — DB 접근 실패로 **미측정** (계측 중단이 아니라 "
+                         "수집기 환경 문제. 라이브 프로세스 WAL 경합 가능성 — §12)" % r["name"])
 
     if flags:
         seen = set()
@@ -2559,13 +2699,21 @@ def build(root, day, phase, cfg, discover_only=False):
         A("> 2026-08-18 `ConfFloor` 80샘플이 전부 `ZONE_BLACKOUT` 이었고 그 80이 진입 금지 존")
         A("> 체류 **80분과 정확히 일치**했다(허용 290분 0건). `관측률` 열이 그것을 잰다 — ")
         A("> `sample_axis: \"minute\"` 지표만 대상이며, **그 지표가 사는 로그가 살아 있던 분**이 분모다.")
+        A("> `\"ensemble_minute\"` 축(476차 F-8)은 분모를 `[Ensemble] dir=` 출현 분으로 좁힌다 — ")
+        A("> `compute()` 안에서만 사는 지표(ConfFloor)를 로그 생존 분으로 재면 관측률이 구조적으로 낮게 나온다.")
         A("")
         A("| 지표 | 원천 | 판정 | 관측일 | 표본 | 관측률 | 값 분포 | 왜 보는가 |")
         A("|---|---|---|---|---|---|---|---|")
+        # [MW0602 476차 F-2'] ①(`mode=ro`)이 아닌 경로로 읽은 DB 가 있으면 명시한다.
+        for _ln in db_access_notes():
+            A(_ln)
+        if db_access_notes():
+            A("")
         for r in stuck_rows:
             mark = {"고착": "🔴 고착", "무기록": "🔴 무기록", "정상고착": "⚪ 정상고착",
                     "표본부족": "⚪ 표본부족", "변동": "✅ 변동",
-                    "분기편향": "🟠 분기편향"}[r["verdict"]]
+                    "분기편향": "🟠 분기편향",
+                    "DB미접속": "⬛ DB미접속(미측정)"}[r["verdict"]]
             dist = ", ".join("`%s`×%d" % (v, c) for v, c in r["dist"][:6]) or "—"
             _rt = ("%.2f" % r["ratio"]) if r.get("ratio") is not None else "—"
             A("| `%s` | %s | %s | %d | %d | %s | %s | %s |" % (

@@ -282,7 +282,7 @@ MetaGate에서 근소 불발). "게이트가 과했나"를 **그 자리에서 �
 | Hurst 추정 파라미터 | `HURST_WINDOW_N=90`, `HURST_MAX_LAG=9` | `scripts/hurst_oos_validation.py` · `hurst_stability_check.py`를 최신 60거래일로 재실행. FalseBlock 최저 구간 확인 |
 | PSI 경보 임계값 | `_PSI_WATCH=0.10` / `_PSI_ALARM=0.20` / `_PSI_CRIT=0.30` | 372차 방법론 재시도. **일자단위 상관과 손익 구간별 이상치 분해를 먼저** 확인한 뒤 결론 |
 | 호라이즌 방향예측 피처셋 | — | L1(`core_feature_discovery`) → L2(`horizon_signal_tradability`) → L3(purged CV) 순차 재실행 |
-| **분기편향 옵트인 목록** (475차 후속) | 수집기 §12 `sample_axis: "minute"` | ① 매분 샘플러를 표방하는 지표가 새로 생겼으면 축을 켠다 ② 켜 둔 지표가 여전히 매분 축인지 재확인(주기가 바뀌면 상시 오탐이 된다) ③ `branch_ratio_min=0.5` 가 여전히 주기 로그와 진짜 편향을 가르는 자리인지. ⚠ 화이트리스트로 되돌리지 말 것 — 0818 실측에서 `degraded` 0.07 · `CORE준비도` 0.12 가 즉시 오탐이 된다 |
+| **분기편향 옵트인 목록** (475차 후속) | 수집기 §12 `sample_axis: "minute"` \| `"ensemble_minute"` | ① 매분 샘플러를 표방하는 지표가 새로 생겼으면 축을 켠다 ② 켜 둔 지표가 여전히 그 축인지 재확인(주기가 바뀌면 상시 오탐이 된다) ③ `branch_ratio_min=0.5` 가 여전히 주기 로그와 진짜 편향을 가르는 자리인지 ④ **축 종류가 2개로 늘었다(476차 F-8)** — `"ensemble_minute"` 는 분모를 `[Ensemble] dir=` 출현 분으로 좁힌다(`ConfFloor` 가 첫 옵트인. `compute()` 안에서만 사는 지표를 `"minute"` 축으로 재면 구조적 과소평가 — 0819 실측 0.88 vs 1.00). 새 축을 또 만들면 이 칸에 사실을 병기할 것. ⚠ 화이트리스트로 되돌리지 말 것 — 0818 실측에서 `degraded` 0.07 · `CORE준비도` 0.12 가 즉시 오탐이 된다 |
 | **DB 원천 지표** (475차 후속 G-2) | 수집기 §12 `db_indicators.sources` | 스키마·경로가 바뀌면 조용히 `무기록`이 된다. ① SQL 이 여전히 도는지 ② `binding_gate` 값 집합이 그대로인지(게이트가 추가되면 분포가 갈린다). ⚠ `ensemble_decisions` 는 `predictions.db` 에 있다 — 같은 이름의 0바이트 유령 파일 주의 |
 | **고착 지표 감시목록** (468차 G-2) | 수집기 §12 `stuck_indicators.patterns` | ① `무기록` 항목의 패턴을 현행 로그 문구로 갱신 ② 그 사이 새로 생긴 이진/범주형 상태 로그를 추가 ③ `benign`(정상고착) 목록이 여전히 타당한지 재확인. ⚠ 조건부 로그(임계 초과 시에만 출력)는 넣지 마라 — 100% 고착이 구조적으로 보장된다 |
 

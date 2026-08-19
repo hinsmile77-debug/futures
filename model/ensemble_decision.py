@@ -403,7 +403,15 @@ class EnsembleDecision:
     def _sample_conf_floor_state(
         self, min_conf: float, zone_allows_entry: bool = True
     ) -> None:
-        """[MW0602 470차 L2] ConfFloorGuard 상태를 **매분 무조건** 1줄 남긴다.
+        """[MW0602 470차 L2] ConfFloorGuard 상태를 **앙상블이 계산된 매 분(=`compute()`
+        진입 시) 무조건** 1줄 남긴다.
+
+        [476차 F-8 정정] 종전 표현 "매분 무조건"은 호출 축과 달랐다 — 호출 지점이
+        `compute()` 내부라 포지션 보유 등으로 앙상블을 건너뛴 분에는 샘플이 없다
+        (0819 실측: `[Ensemble]` 출현 306분과 교집합 306 · 차집합 양방향 0).
+        그 분에는 판정 대상 자체가 없으므로 코드는 옳고 표현이 틀렸던 것이다.
+        수집기 §12 는 이 지표의 관측률 분모를 앙상블 축(`sample_axis:
+        "ensemble_minute"`)으로 잰다 — 로그 생존 분으로 재면 구조적 과소평가다.
 
         왜: 위 `_check_conf_floor_consistency`는 **엣지 트리거**(상태가 바뀔 때만 로그)다.
         그래서 **마지막 상태가 열린 채로 끝난다.** 2026-08-14 실측이 정확히 그랬다 —
