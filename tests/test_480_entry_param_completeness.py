@@ -161,16 +161,35 @@ def test_pending에_위험_파라미터가_실린다():
 
 # ── ③ 조용한 폴백 금지 ────────────────────────────────────────────────────
 
-def test_호라이즌_없이_열리면_경고가_남는다(caplog):
-    p = _flat_tracker()
-    with caplog.at_level("WARNING", logger="TRADE"):
+def test_호라이즌_없이_열리면_경고가_남는다():
+    """⚠ caplog를 쓰지 않는다 — `utils/logger.py`가 "TRADE" 로거의 propagate를 끄면
+    루트에 붙는 caplog가 아무것도 못 본다(전체 스위트 실행에서 실제로 그랬다.
+    단독 실행만 통과하는 테스트는 없느니만 못하다). 해당 로거에 직접 핸들러를 단다."""
+    import logging
+
+    captured = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record):
+            captured.append(record.getMessage())
+
+    lg = logging.getLogger("TRADE")
+    sink = _Sink(level=logging.WARNING)
+    prev_level = lg.level
+    lg.addHandler(sink)
+    lg.setLevel(logging.WARNING)
+    try:
+        p = _flat_tracker()
         p.apply_entry_fill(
             direction="LONG", price=PRICE, quantity=1, atr=ATR,
             grade="A", regime="NEUTRAL", filled_at=datetime.datetime.now(),
             raw_direction="LONG",
         )
-    assert any("PositionFallback" in r.message or "PositionFallback" in r.getMessage()
-               for r in caplog.records), "TP1 폴백이 조용히 적용됐다 (계측 4원칙 ④)"
+    finally:
+        lg.removeHandler(sink)
+        lg.setLevel(prev_level)
+
+    assert any("PositionFallback" in m for m in captured),         "TP1 폴백이 조용히 적용됐다 (계측 4원칙 ④)"
 
 
 def test_경고는_포지션당_1회다():
