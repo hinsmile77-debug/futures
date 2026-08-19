@@ -343,6 +343,25 @@ DEFAULT_CONFIG = {
                        "⚠ 섀도 계측이다. 차단으로 승격하려면 20거래일 축적 후 "
                        "'축퇴일의 09:00~09:30 정확도'를 일자단위로 비교할 것(317차 교훈)",
             },
+            # ── [MW0602 476차 G-6] 15:10 강제청산 1차 경로 하트비트 ──
+            # 471차 F-2 가 배선한 `[SchedForceExit] … bar_pass=N회` 는 15:11 에 매일
+            # **무조건** 1줄 찍힌다(FLAT 이어도) — §5 규약(조건부 로그 금지) 준수.
+            # 그런데 어디에도 집계되지 않아 "1차 경로가 살아 있었는가"를 알려면 매번
+            # 원본을 grep 해야 했다. 470차 C2'가 `신뢰도배수`를 benign 으로 등록한 것과
+            # 같은 취지 — *목적은 발견이 아니라 규명된 것도 계속 보이게 두는 것*이다.
+            "강제청산_경로": {
+                "re": r"\[SchedForceExit\][^\n]*bar_pass=(?P<v>\d+)회",
+                "files": ["_SYSTEM"],
+                # bar_pass 원값(1,2,3…)은 관심사가 아니다 — 15:10 창을 1차 경로(STEP 8)가
+                # **지나갔는가(≥1)** 만 본다. 원값 그대로 세면 "2 100%"가 🔴 고착으로
+                # 오탐된다. 0 = 471차 F-1 복구가 다시 죽은 것(P-9).
+                "value_map": [[r"0", "0(경로사망)"], [r"[1-9]\d*", "≥1(생존)"]],
+                "benign": ["≥1(생존)"],
+                "min_samples": 3,   # 하루 1줄이라 전역 20건 기준이면 영영 판정 불가
+                "why": "15:10 강제청산 1차 경로 생존(471차 F-2 하트비트, 매일 15:11 무조건 1줄). "
+                       "'≥1(생존)' 고착이 정상. '0(경로사망)' 출현 = 1차 경로 재사망. "
+                       "F-1R 리허설(실집행 확인) 전까지의 공백을 매일 관측으로 메운다(G-6)",
+            },
         },
     },
     # ── [MW0602 475차 후속 / 장후 G-2] DB 원천 지표 ────────────────────────────
@@ -362,6 +381,53 @@ DEFAULT_CONFIG = {
                 "why": "무엇이 실제로 사이즈를 구속했는가(471차 후속6 sizing_trace). "
                        "한 게이트 100% 고착이면 316차 HurstGate(63% 차단)와 같은 상태다. "
                        "⚠ 2026-08-14 이후 행에만 있다 — 그 이전은 미측정이지 압력 0이 아니다",
+            },
+        },
+    },
+    # ── [MW0602 476차 G-4] 임계-분포 대조 (threshold reachability) ─────────────
+    # §12 고착 검사가 못 잡는 네 번째 죽음: **로그는 정상 출력되는데 그 로그가 지키려던
+    # 분기가 죽어 있다.** 0819 리포트 1-9(`[EntryGate] 조건부 구간` 54회 정상 출력 —
+    # 죽은 것은 로그가 아니라 "A등급이면 통과"라는 분기 자체)가 그것이고,
+    # 471차 F-1(6개월)·474차(6개월)·1-9(약 3개월) 모두 사람이 우연히 발견했다.
+    # 여기서는 판정식의 **상수 임계**와 그 임계를 받는 **DB 컬럼의 실측 분포**를 짝지어
+    # `max(관측) < 임계` 가 N거래일 연속이면 §12b 에 표시한다.
+    #  · known: 이미 규명·등록된 미도달(안건 참조 문자열). §11 적신호로는 **known 이
+    #    없는 항목만** 올린다 — 규명된 사실을 매일 경보로 울리면 늑대소년이 된다.
+    #  · ⚠ 조건부로만 발생하는 임계(예: CRASH 레짐 전용)는 미도달이 정상이다 —
+    #    그런 쌍은 등록하지 말거나 known 으로 등록할 것(§12 benign 과 같은 취지).
+    #  · ⚠ 판정 기준 변경이 아니다 — 관측 전용이며 어떤 캠페인 합격선도 건드리지 않는다.
+    "threshold_reachability": {
+        "lookback_days": 14,
+        "consec_days_warn": 3,
+        "pairs": {
+            "앙상블A(conf≥0.70)": {
+                "db": "data/db/predictions.db",
+                "sql": "select substr(ts,1,10) d, max(confidence) from ensemble_decisions "
+                       " where direction != 0 and ts >= ? and ts <= ? || ' 23:59:59' group by 1",
+                "threshold": 0.70,
+                "known": "1-9 등록(0819) — 주간회의 2026-08-22 안건. 2026-06 이후 도달 0건",
+                "why": "앙상블 등급 A 임계(ensemble_decision.py). 미도달이면 09:20~09:29 "
+                       "'A등급만 허용' 게이트가 전면 금지로 동작하고 HCGuard·CRASH A숏 예외도 "
+                       "발동 불가(tests/test_476_grade_reachability.py 가 정의를 고정)",
+            },
+            "앙상블B(conf≥0.60)": {
+                "db": "data/db/predictions.db",
+                "sql": "select substr(ts,1,10) d, max(confidence) from ensemble_decisions "
+                       " where direction != 0 and ts >= ? and ts <= ? || ' 23:59:59' group by 1",
+                "threshold": 0.60,
+                "known": "1-9 등록(0819) — 주간회의 2026-08-22 안건",
+                "why": "앙상블 등급 B 임계. A와 같은 뿌리(2026-05→06 conf 분포 급변에 임계만 고정)",
+            },
+            "TOX스프레드(진입≥20틱)": {
+                "db": "data/db/predictions.db",
+                "sql": "select substr(ts,1,10) d, max(spread_ticks) from ensemble_decisions "
+                       " where entry_executed=1 and spread_ticks is not null "
+                       "   and ts >= ? and ts <= ? || ' 23:59:59' group by 1",
+                "threshold": 20.0,
+                "known": "473차 F-8 — 진입 표본 도달 ETA 약 7.1개월(INSUFFICIENT). 전환기준 ⑨ "
+                         "처분(선행조건 유지 vs 26주 WFA 이관)은 주간회의 안건",
+                "why": "TOXICITY_SEVERE_SPREAD_BLOCK_TICKS(전환기준 ⑨). '표본이 오지 않는다'가 "
+                       "매일 자동으로 보인다. ⚠ 판정 기준 무변경(사전등록 458차 D6 교훈)",
             },
         },
     },
@@ -1188,6 +1254,59 @@ def scan_db_indicators(root, cfg, day):
                      "n": n, "dist": dist, "verdict": verdict, "note": note,
                      "ratio": None, "expected": None, "scanned_days": look,
                      "source": "DB"})
+    return rows
+
+
+def scan_threshold_reachability(root, cfg, day):
+    """[MW0602 476차 G-4] 임계-분포 대조 — "로그는 정상인데 분기가 죽은" 형태 탐지.
+
+    반환: [{name, threshold, days, overall_max, consec, verdict, known, why}]
+      verdict — "도달" / "미도달(N일 연속)" / "표본없음" / "DB미접속"
+    consec 는 **말미 연속** 미도달 거래일 수다(중간에 도달한 날이 있으면 거기서 끊는다).
+    ⚠ 관측 전용 — 어떤 판정 기준·합격선도 건드리지 않는다.
+    """
+    conf = cfg.get("threshold_reachability") or {}
+    pairs = conf.get("pairs") or {}
+    if not pairs:
+        return []
+    look = int(conf.get("lookback_days", 14))
+    warn_d = int(conf.get("consec_days_warn", 3))
+    since = (day - timedelta(days=look)).isoformat()
+    rows = []
+    for name, spec in pairs.items():
+        base = {"name": name, "threshold": float(spec["threshold"]),
+                "known": spec.get("known"), "why": spec.get("why", ""),
+                "scanned_days": look}
+        raw = db_rows(root, spec["db"], spec["sql"], (since, day.isoformat()))
+        if raw is None:
+            base.update({"days": 0, "overall_max": None, "consec": None,
+                         "verdict": "DB미접속"})
+            rows.append(base)
+            continue
+        day_max = sorted((str(d), float(v)) for d, v in raw if v is not None)
+        if not day_max:
+            base.update({"days": 0, "overall_max": None, "consec": None,
+                         "verdict": "표본없음"})
+            rows.append(base)
+            continue
+        thr = float(spec["threshold"])
+        consec = 0
+        for _d, v in reversed(day_max):
+            if v < thr:
+                consec += 1
+            else:
+                break
+        overall = max(v for _d, v in day_max)
+        if consec >= warn_d:
+            verdict = "미도달(%d일 연속%s)" % (
+                consec, " — 전 관측일" if consec == len(day_max) else "")
+        elif consec == 0:
+            verdict = "도달(최근일)"
+        else:
+            verdict = "최근 %d일 미도달" % consec
+        base.update({"days": len(day_max), "overall_max": overall,
+                     "consec": consec, "verdict": verdict})
+        rows.append(base)
     return rows
 
 
@@ -2486,6 +2605,8 @@ def build(root, day, phase, cfg, discover_only=False):
     # [MW0602 475차 후속 / G-2] DB 원천 지표를 같은 표에 합류시킨다 —
     # 판정 규칙(stuck_verdict)이 같으므로 렌더·적신호가 그대로 재사용된다.
     stuck_rows += scan_db_indicators(root, cfg, day)
+    # [MW0602 476차 G-4] 임계-분포 대조 — §12b 에 렌더하고, known 없는 미도달만 적신호.
+    reach_rows = scan_threshold_reachability(root, cfg, day)
 
     A("## 11. 자동 적신호 (출발점이지 결론이 아니다)")
     A("")
@@ -2668,6 +2789,12 @@ def build(root, day, phase, cfg, discover_only=False):
             # [MW0602 476차 F-2'] 계측 중단 의심이 아니라 **수집기 환경 문제**다.
             flags.append("지표 **`%s`** — DB 접근 실패로 **미측정** (계측 중단이 아니라 "
                          "수집기 환경 문제. 라이브 프로세스 WAL 경합 가능성 — §12)" % r["name"])
+    # [MW0602 476차 G-4] 임계 미도달 — **규명 안 된 것만** 올린다(known 은 §12b 표시로 충분).
+    for r in reach_rows:
+        if r["verdict"].startswith("미도달") and not r.get("known"):
+            flags.append("임계 미도달 **`%s`** — %s, max(관측)=%s < 임계 %s (§12b). "
+                         "로그가 정상이어도 이 임계를 지키는 분기는 죽어 있을 수 있다"
+                         % (r["name"], r["verdict"], r["overall_max"], r["threshold"]))
 
     if flags:
         seen = set()
@@ -2726,6 +2853,36 @@ def build(root, day, phase, cfg, discover_only=False):
           "관측일·표본이 기준 미달이면 `표본부족`(판정 보류). "
           "**출발점이지 결론이 아니다** — 고착이 정상인 지표도 있다(예: 사고 없는 날의 CB 상태).*")
         A("")
+
+    # ---- 12b. 임계-분포 대조 (476차 G-4) ----
+    if reach_rows:
+        A("### 12b. 임계-분포 대조 (threshold reachability — 최근 %d거래일)"
+          % (cfg.get("threshold_reachability", {}) or {}).get("lookback_days", 14))
+        A("")
+        A("> **왜 보는가.** 로그가 정상 출력돼도 **그 로그가 지키려던 분기**는 죽어 있을 수")
+        A("> 있다 — 1-9(앙상블 A/B, 약 3개월) · 471차 F-1(15:10 경로, 6개월) · 474차(CORE")
+        A("> 그룹, 6개월)가 전부 사람이 우연히 발견했다. 판정식의 상수 임계 vs 그 임계를")
+        A("> 받는 DB 컬럼의 실측 분포를 매일 대조한다. `📌` = 이미 규명·등록된 안건")
+        A("> (적신호로 안 올린다 — 표시로 충분). ⚠ 관측 전용, 판정 기준 무변경.")
+        A("")
+        A("| 임계쌍 | 관측일 | max(관측) | 임계 | 판정 | 안건 | 왜 보는가 |")
+        A("|---|---|---|---|---|---|---|")
+        for r in reach_rows:
+            if r["verdict"] == "DB미접속":
+                mark = "⬛ DB미접속(미측정)"
+            elif r["verdict"] == "표본없음":
+                mark = "⚪ 표본없음"
+            elif r["verdict"].startswith("미도달"):
+                mark = ("📌 %s" % r["verdict"]) if r.get("known") else ("⚠️ %s" % r["verdict"])
+            else:
+                mark = "✅ %s" % r["verdict"]
+            A("| `%s` | %s | %s | %s | %s | %s | %s |" % (
+                r["name"], r["days"],
+                ("%.4g" % r["overall_max"]) if r.get("overall_max") is not None else "—",
+                "%.4g" % r["threshold"], mark,
+                truncate(r.get("known") or "—", 60), truncate(r["why"], 90)))
+        A("")
+
     # ---- 13. 확정 결정 레지스트리 ----
     # [475차 후속3] §5 수익률 향상방안(R-*)·§3 고도화를 쓰기 전에 반드시 볼 것 —
     # 같은 질문의 결정이 이미 있으면 신규 계측 제안이 아니라 그 채널의 판정·결정 인용이다.
