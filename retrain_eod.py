@@ -282,7 +282,13 @@ def main():
     # daily_close() 완료 대기 — STEP 3 장중 GBM 재학습과 pkl 경합 방지
     # _exit_normally 파일(daily_close 마지막에 기록)의 오늘 날짜를 확인.
     # 스케줄러가 16:10에 실행되더라도 daily_close가 늦으면 추가 대기.
-    _wait_for_daily_close(max_wait_min=20, poll_sec=30)
+    # [MW0601 480차 / F-4] 결과를 버리지 않는다 — 마커에 남긴다.
+    # 08-19에는 daily_close가 아예 실행되지 않아(라이브 프로세스 동결) 20분 타임아웃
+    # 후 강제 진행했고 그대로 6/6 성공했다. 그런데 그 사실이 **로그 1줄로만** 남아
+    # 다음날 마커만 보면 정상 완주와 구분되지 않았다 — 계측 4원칙 ④(폴백 가시화).
+    _dc_ok = _wait_for_daily_close(max_wait_min=20, poll_sec=30)
+    _dc_note = "daily_close_seen: %s\nwait_dc_timeout: %s\n" % (
+        "true" if _dc_ok else "false", "false" if _dc_ok else "true")
 
     t_start = time.perf_counter()
 
@@ -359,6 +365,10 @@ def main():
                 f"t_load_s: {t_load:.1f}\n"
                 f"t_retrain_s: {t_retrain:.1f}\n"
                 f"t_total_s: {t_total:.1f}\n"
+                # [480차 F-4] 폴백 여부를 산출물에 남긴다. true면 장중 재학습과 pkl
+                # 경합 가능성이 있는 상태에서 교체한 것이므로, 그날 모델을 의심할 근거가
+                # 된다 — 마커만 보고 정상 완주로 읽으면 안 된다.
+                f"{_dc_note}"
             )
         log.info("완료 마커 저장: %s", _MARKER_PATH)
 
@@ -515,6 +525,8 @@ def main():
         with open(_FAIL_PATH, "w", encoding="utf-8") as f:
             f.write(
                 f"failed: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                # [480차 F-4] 실패 조사에서 "daily_close가 없었다"는 1급 단서다
+                f"{_dc_note}"
                 f"error: {exc}\n\n{tb}"
             )
 

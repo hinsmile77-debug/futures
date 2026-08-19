@@ -238,6 +238,75 @@ LEVEL_NAMES = frozenset(LEVEL_ORDER)
 DATE_TOKEN_KEYS = ("ymd", "y_m_d", "ymd2", "md")
 
 
+# ---------------------------------------------------- [480차 G-2] 로그 종료시각 기준선
+_TS_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})")
+
+
+def log_end_minute(path):
+    """로그 파일의 **마지막 기록 시각**(분)을 꼬리에서 읽는다.
+
+    전문을 파싱하지 않는다 — 12거래일치를 매 점검마다 훑으면 그 자체가 IO 부하다
+    (2026-08-10 CB⑤ 자가유발 전례). 꼬리 8KB만 읽고 마지막 `HH:MM:SS`를 취한다.
+    실패 시 mtime으로 떨어지되 **그 사실을 함께 반환**한다(계측 4원칙 ④).
+
+    반환: (분, 출처) 또는 (None, 사유)
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 8192))
+            tail = f.read().decode("utf-8", "replace")
+    except Exception as exc:
+        return None, "읽기 실패(%s)" % exc
+    hits = _TS_RE.findall(tail)
+    if hits:
+        h, m, _s = hits[-1]
+        return int(h) * 60 + int(m), "로그 본문"
+    try:
+        mt = ts_kst(os.stat(path).st_mtime)
+        return mt.hour * 60 + mt.minute, "mtime 폴백(본문에 시각 없음)"
+    except Exception as exc:
+        return None, "mtime 실패(%s)" % exc
+
+
+def prior_log_end_baseline(root, day, suffix="_SYSTEM.log", n=5):
+    """직전 n거래일의 같은 채널 로그 종료시각 — 오늘을 재는 자.
+
+    왜 필요한가: 2026-08-19 동결일, 수집기 §11은 공백을 정확히 짚었지만 *"정상일에는
+    15:40까지 로그가 있다"* 는 **비교 기준선이 표에 없어서**, 사람이 직전 12일 로그를
+    직접 열어 확인해야 했다. 그 확인을 기계가 한다.
+
+    파일명 규약 `YYYYMMDD_SYSTEM.log`만 본다. 주말·휴장일은 파일 자체가 없으므로
+    자동으로 빠진다(거래일 캘린더를 따로 들이지 않는 이유).
+    """
+    logs_dir = os.path.join(root, "logs")
+    if not os.path.isdir(logs_dir):
+        return []
+    today_tok = day.strftime("%Y%m%d")
+    cands = []
+    for name in os.listdir(logs_dir):
+        if not name.endswith(suffix):
+            continue
+        tok = name[: len(today_tok)]
+        if not tok.isdigit() or tok >= today_tok:
+            continue
+        cands.append((tok, os.path.join(logs_dir, name)))
+    cands.sort(reverse=True)
+    out = []
+    for tok, path in cands[:n]:
+        mnt, src = log_end_minute(path)
+        if mnt is not None:
+            out.append({"date": tok, "minute": mnt, "source": src})
+    return out
+
+
+def median_minute(rows):
+    vals = sorted(r["minute"] for r in rows)
+    if not vals:
+        return None
+    return vals[len(vals) // 2]
+
+
 def eprint(*a):
     sys.stderr.write(" ".join(str(x) for x in a) + "\n")
 
@@ -1462,6 +1531,40 @@ def build(root, day, phase, cfg, discover_only=False):
                 A("| %s | %s | %d |" % (m2hhmm(a), m2hhmm(b), g))
         A("")
 
+    # ---- [480차 G-2] 로그 종료시각 vs 직전 5거래일 ----
+    # 2026-08-19 동결은 "로그가 15:40이 아니라 13:51에 끝났다"가 유일하게 눈에 띄는
+    # 신호였는데, 그 판단에 필요한 기준선이 리포트에 없어 사람이 직전 12일 로그를
+    # 직접 열어야 했다. 기준선을 표에 박아 그 수작업을 없앤다.
+    A("### 로그 종료시각 — 직전 5거래일 대조 (SYSTEM)")
+    A("")
+    _base = prior_log_end_baseline(root, day)
+    _today_end, _today_src = (None, "오늘 SYSTEM 로그 없음")
+    _tp = os.path.join(root, "logs", "%s_SYSTEM.log" % toks["ymd"])
+    if os.path.exists(_tp):
+        _today_end, _today_src = log_end_minute(_tp)
+    if not _base:
+        A("_직전 거래일 SYSTEM 로그가 없어 기준선을 만들 수 없다 (보관정책·신규 PC 확인)._")
+    else:
+        A("| 일자 | 종료시각 | 출처 |")
+        A("|---|---|---|")
+        for r in _base:
+            A("| %s | %s | %s |" % (r["date"], m2hhmm(r["minute"]), r["source"]))
+        _med = median_minute(_base)
+        A("| **중앙값** | **%s** | 기준선 |" % m2hhmm(_med))
+        A("| **오늘 %s** | **%s** | %s |" % (
+            toks["ymd"],
+            "—(미측정)" if _today_end is None else m2hhmm(_today_end),
+            _today_src))
+        A("")
+        if _today_end is None:
+            A("- ⚠ 오늘 종료시각 미측정 — **0으로 읽지 말 것**(계측 4원칙 ②).")
+        else:
+            _delta = _today_end - _med
+            A("- 델타 **%+d분** (음수 = 기준선보다 이르게 끝났다)" % _delta)
+            if phase in ("post", "all") and _delta <= -30:
+                A("- 🔴 30분 이상 조기 종료 — §11 적신호 참조")
+    A("")
+
     # ---- 8. dev_memory ----
     devmemory_section(root, cfg, day, L)
 
@@ -1651,6 +1754,30 @@ def build(root, day, phase, cfg, discover_only=False):
                         % (_age_min, _newest.strftime("%H:%M:%S"))
                     )
     except (KeyError, TypeError, ValueError):
+        pass
+
+    # [MW0601 480차 / G-2] 장후 조기종료 — FZ-6(장중 침묵)과 잡는 구간이 다르다.
+    # FZ-6은 "지금 이 순간 로그가 멎었다"를, 이쪽은 "오늘 하루가 평소보다 일찍
+    # 끝났다"를 본다. 08-19는 13:51에 끝났고(직전 12거래일은 전부 15:40대),
+    # 장후 점검이 아니었으면 다음 거래일까지 몰랐을 사고다.
+    try:
+        if phase in ("post", "all"):
+            _b = prior_log_end_baseline(root, day)
+            _tp2 = os.path.join(root, "logs", "%s_SYSTEM.log" % toks["ymd"])
+            _te = log_end_minute(_tp2)[0] if os.path.exists(_tp2) else None
+            _md = median_minute(_b)
+            if _b and _md is not None and _te is not None and _te - _md <= -30:
+                flags.append(
+                    "**SYSTEM 로그가 직전 %d거래일 중앙값(%s)보다 %d분 이르게 끝났다** "
+                    "(오늘 %s) — 15:40 daily_close까지 살아 있었는지 확인하라. "
+                    "프로세스 동결이면 15:10 강제청산·15:40 마감이 통째로 미실행이다 "
+                    "(2026-08-19 13:41 사고)"
+                    % (len(_b), m2hhmm(_md), _md - _te, m2hhmm(_te))
+                )
+            elif phase in ("post", "all") and _b and _te is None:
+                flags.append("오늘 SYSTEM 로그 종료시각을 못 읽었다 — 파일 부재/손상 확인 "
+                             "(미측정이지 정상이 아니다)")
+    except (OSError, ValueError, TypeError):
         pass
 
     bms = merged.get("block_ms", [])
