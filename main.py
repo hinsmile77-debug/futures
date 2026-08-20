@@ -11823,6 +11823,29 @@ class TradingSystem:
                     % (len(nondaemon), ", ".join(t.name for t in nondaemon)),
                     "WARNING",
                 )
+            # [MW0602 477차 후속 / G-3] crash_fault.log 에 종료 마커 + 현재 스택 1회.
+            # 3거래일 실측에서 비데몬은 MainThread 뿐이었다(35~36개 전부 데몬) —
+            # 데몬은 종료를 못 막으므로, 유령의 원인 후보는 "이벤트 루프 종료 후
+            # MainThread 가 반환하지 못하는 지점"으로 좁혀졌다. faulthandler 의
+            # 30초 주기 덤프(dump_traceback_later, repeat=True)는 루프 종료 후에도
+            # 계속 돌므로, **이 마커 이후에 찍힌 Timeout 덤프의 MainThread 프레임**이
+            # 바로 그 잔류 지점이다. 관측 강화일 뿐 종료 로직은 무변경(기존 결정 유지).
+            # 절대원칙 ④ 무관(COM 콜백 밖). 별도 fd append — faulthandler 의 fd 와
+            # 충돌하지 않는다(둘 다 append, Windows CRT 공유 모드).
+            try:
+                import faulthandler as _fh_sd
+                with open(os.path.join("logs", "crash_fault.log"), "a") as _mkf:
+                    _mkf.write(
+                        "\n[SHUTDOWN-MARKER] %s PID=%d threads=%d nondaemon=%d "
+                        "-- after this marker, Timeout dump MainThread frames = "
+                        "post-shutdown residue point (477 G-3)\n"
+                        % (datetime.datetime.now().isoformat(timespec="seconds"),
+                           os.getpid(), len(alive), len(nondaemon) + 1)
+                    )
+                    _fh_sd.dump_traceback(file=_mkf, all_threads=False)
+                    _mkf.flush()
+            except Exception as _mk_e:
+                logger.warning("[Shutdown] G-3 마커 기록 실패 (무해): %s", _mk_e)
         except Exception as _tde:
             logger.warning("[Shutdown] 잔존 스레드 덤프 실패 (무해): %s", _tde)
 
@@ -16231,6 +16254,17 @@ def _ts_margin_capped_qty(self, direction: str, price: float, qty: int) -> int:
         return qty
     key = "buy_new_qty" if direction == "LONG" else "sell_new_qty"
     margin_qty = int(margin_info.get(key, 0) or 0)
+    # [MW0602 477차 후속 / G-2] 무조건 상태 샘플 — 470차 C2'가 예고한 항목.
+    # 아래 [MarginCap] 축소·[MarginBlock] 로그는 **조건 성립 시에만** 찍히는 조건부
+    # 로그라 §12 감시 규약 위반이었고, 그 조건부성이 0820 이상점 1-1(entry_qty
+    # 오귀속을 사람이 뒤늦게 발견)을 낳았다. 조회가 성공한 매 사이클에 상태 한 줄을
+    # 남긴다 — "증거금이 언제부터 binding constraint였나"가 부재가 아니라 값으로
+    # 남는다(전환기준 ⑧의 직접 입력). 기존 로그 2종은 파서 호환을 위해 무변경.
+    # ⚠ 증거금 조회 자체는 늘리지 않는다 — 이미 걸러진 사이클의 결과만 기록.
+    _mc_state = "BLOCK" if margin_qty <= 0 else ("CAP" if margin_qty < qty else "OK")
+    log_manager.trade(
+        f"[MarginCap] state={_mc_state} {direction} 산출={qty} 상한={margin_qty}"
+    )
     if margin_qty <= 0:
         log_manager.system(
             f"[MarginBlock] {direction} 신규주문가능수량=0 — 증거금 부족 추정, 진입 차단 "
