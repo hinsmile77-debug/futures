@@ -266,7 +266,13 @@ DEFAULT_CONFIG = {
         #                     건너뛴 분이 분모에 들어가 관측률이 구조적으로 과소평가된다:
         #                     0819 실측 원시 0.88 vs 앙상블 축 1.00),
         #        value_map: [[정규식, 라벨], …] — 캡처값을 라벨로 정규화(476차 G-6.
-        #                   예: bar_pass 1,2,3… 을 "≥1(생존)" 하나로 접어 고착 오탐 방지)}
+        #                   예: bar_pass 1,2,3… 을 "≥1(생존)" 하나로 접어 고착 오탐 방지),
+        #        measured_since: "YYYY-MM-DD" — **계측 배포일 마커**(477차 후속 G-1).
+        #                   그 이전 일자는 분모·분자·무기록 판정에서 제외한다.
+        #                   배포 전 날짜는 **미측정**이지 "관측률 낮음"이 아니다(계측 4원칙 ②)
+        #                   — 0820 실측: ConfFloor 합산 0.72 는 08-18(배포 전)이 창에 섞인
+        #                   값이었고 당일값은 1.00 이었다. ⚠ 낡으면 반대 방향으로 속인다 —
+        #                   26주 WFA 목록(invariants.md §5)에서 갱신을 강제한다}
         # 관측률이 이 값 미만이면 분기편향. 0.5 는 "절반의 분에서 안 찍혔다"는 뜻이라
         # 주기 로그(2분·5분 간격)와 진짜 편향을 가르는 자리다. 0818 실측 0.22 는 통과 못 하고
         # 진짜 매분 샘플러 CB_state 1.01 은 여유 있게 통과한다.
@@ -329,6 +335,8 @@ DEFAULT_CONFIG = {
                 # **앙상블이 계산된 분에만** 남는다(0819 실측: [Ensemble] 출현 306분과
                 # 교집합 306 · 차집합 0). 분모를 앙상블 축으로 좁혀 오탐을 없앤다.
                 "sample_axis": "ensemble_minute",
+                # [477차 후속 G-1] 08-18 은 F-8(상시 상태 샘플) 배포 전 = 미측정.
+                "measured_since": "2026-08-19",
                 "why": "자동진입 하한 도달 가능 여부(매분 샘플, 470차 L2). OK 고착은 정상. "
                        "BLOCKED 고착이면 어떤 신호도 자동진입 하한을 못 넘는 상태가 "
                        "종일 지속된 것이다 — 2026-08-11 오전 88신호 전부 grade=X 가 그 사례",
@@ -337,6 +345,7 @@ DEFAULT_CONFIG = {
                 "re": r"\[CORE준비도\][^\n]*축퇴 (?P<v>\d+)/\d+",
                 "files": ["_LEARNING", "_SYSTEM", "_SIGNAL"],
                 "benign": ["0"],
+                "measured_since": "2026-08-14",   # 470차 B4 배포일 (477차 후속 G-1)
                 "why": "장전/장중 스케일러 refit 시 CORE 축퇴 개수(470차 B4). 0 고착이 정상. "
                        "0이 아닌 값에 고착하면 절대원칙 ③의 CORE가 상시 무력화된 것 — "
                        "2026-08-14 장전 above_vwap 6호라이즌 identity 강제가 그 사례. "
@@ -358,9 +367,29 @@ DEFAULT_CONFIG = {
                 "value_map": [[r"0", "0(경로사망)"], [r"[1-9]\d*", "≥1(생존)"]],
                 "benign": ["≥1(생존)"],
                 "min_samples": 3,   # 하루 1줄이라 전역 20건 기준이면 영영 판정 불가
+                "measured_since": "2026-08-14",   # 471차 F-2 배포일 (477차 후속 G-1)
                 "why": "15:10 강제청산 1차 경로 생존(471차 F-2 하트비트, 매일 15:11 무조건 1줄). "
                        "'≥1(생존)' 고착이 정상. '0(경로사망)' 출현 = 1차 경로 재사망. "
                        "F-1R 리허설(실집행 확인) 전까지의 공백을 매일 관측으로 메운다(G-6)",
+            },
+            # ── [MW0602 477차 후속 G-2] 증거금 상한 상태 — 470차 C2'가 예고한 그 항목 ──
+            # 종전 `[MarginCap] … 축소` 는 **축소가 일어날 때만** 찍히는 조건부 로그라
+            # §5 규약 위반이었고, 그 조건부성이 0820 이상점 1-1(entry_qty 오귀속)을 낳았다.
+            # main.py `_ts_margin_capped_qty()` 가 조회 성공 매 사이클에
+            # `[MarginCap] state=OK|CAP|BLOCK 산출=N 상한=M` 상태 샘플을 남긴다(무조건).
+            # ⚠ 사이클 자체는 진입 후보 분(auto_entry & grade≠X)에만 돈다 — 매분 샘플러가
+            #   아니므로 sample_axis 를 켜지 말 것(즉시 오탐이 된다).
+            # 전환기준 ⑧의 직접 입력 — "증거금이 언제부터 binding constraint 였나"가
+            # 부재가 아니라 값으로 남는다(470차 사슬의 첫 칸).
+            "MarginCap_state": {
+                "re": r"\[MarginCap\] state=(?P<v>\w+)",
+                "files": ["_TRADE"],
+                "benign": ["OK"],
+                "measured_since": "2026-08-21",   # 배포 다음 거래일부터 로그 존재
+                "why": "증거금 상한 상태(477차 후속 G-2, 조회 성공 사이클마다 무조건 1줄). "
+                       "OK 고착이 정상. CAP 고착이면 증거금이 사이저보다 항상 먼저 자르는 "
+                       "상태(470차 실측: 목표자본 5천만 > 실잔고 2.9천만에서 5/5 축소) — "
+                       "⑧ 재설계 논의의 직접 입력. BLOCK 출현 = 증거금 부족 진입 차단",
             },
         },
     },
@@ -378,6 +407,7 @@ DEFAULT_CONFIG = {
                 "sql": "select substr(ts,1,10) d, sizing_trace from ensemble_decisions "
                        " where ts >= ? and ts <= ? || ' 23:59:59' and sizing_trace is not null",
                 "json_key": "binding_gate",
+                "measured_since": "2026-08-14",   # 471차 후속6 sizing_trace 배포일 (G-1)
                 "why": "무엇이 실제로 사이즈를 구속했는가(471차 후속6 sizing_trace). "
                        "한 게이트 100% 고착이면 316차 HurstGate(63% 차단)와 같은 상태다. "
                        "⚠ 2026-08-14 이후 행에만 있다 — 그 이전은 미측정이지 압력 0이 아니다",
@@ -1184,9 +1214,11 @@ def stuck_verdict(dist, n, hit_days, scanned_days, min_n, min_d, benign,
     """
     if n == 0:
         return "무기록", "%d거래일 전체에서 0건 — 로그 문구 변경 또는 계측 중단" % scanned_days
+    # [MW0602 477차 후속 F-2] ratio 는 **당일값**(가장 최근 유효 일자)이다 — 합산값은
+    # 계측 배포 경계를 넘으면 미측정일을 섞으므로 판정에 쓰지 않는다(참고 표시만).
     if ratio is not None and expected >= exp_min and ratio < ratio_min:
         return "분기편향", (
-            "관측률 %.2f (%d건 / 관측일 %d일의 로그 생존 %d분) — 매분 샘플러를 "
+            "당일 관측률 %.2f (합산 %d건 / 관측일 %d일 / 분모 %d분) — 매분 샘플러를 "
             "표방하는데 일부 분기에서만 찍힌다" % (ratio, n, len(hit_days), expected))
     if len(hit_days) < min_d or n < min_n:
         return "표본부족", "관측 %d일 · %d건 (기준 %d일 · %d건)" % (
@@ -1222,7 +1254,11 @@ def scan_db_indicators(root, cfg, day):
     since = (day - timedelta(days=look)).isoformat()
     rows = []
     for name, spec in srcs.items():
-        raw = db_rows(root, spec["db"], spec["sql"], (since, day.isoformat()))
+        # [MW0602 477차 후속 G-1] measured_since — 계측 배포일 이전 행은 미측정.
+        # 창 하한을 배포일로 끌어올려 배포 전 구간이 표본에 섞이지 않게 한다.
+        _ms = str(spec.get("measured_since") or "")
+        _since = max(since, _ms) if _ms else since
+        raw = db_rows(root, spec["db"], spec["sql"], (_since, day.isoformat()))
         if raw is None:
             # [MW0602 476차 F-2'] 접근 실패는 `무기록`(계측 중단 의심)과 다르다 —
             # 수집기 환경 문제이며 **미측정**이다. 판정을 분리해 오독을 막는다.
@@ -1253,6 +1289,7 @@ def scan_db_indicators(root, cfg, day):
         rows.append({"name": name, "why": spec.get("why", ""), "days": len(hit_days),
                      "n": n, "dist": dist, "verdict": verdict, "note": note,
                      "ratio": None, "expected": None, "scanned_days": look,
+                     "measured_since": spec.get("measured_since"),
                      "source": "DB"})
     return rows
 
@@ -1387,9 +1424,27 @@ def scan_stuck_indicators(root, cfg, day):
                 vmap.append((re.compile(_vm[0]), str(_vm[1])))
             except (re.error, IndexError, TypeError):
                 continue
+        # [MW0602 477차 후속 G-1] measured_since — 계측 배포일 이전 일자는 통째로 제외.
+        # 배포 전 날짜는 **미측정**이지 "관측 0"이 아니다(계측 4원칙 ②). 합산에 섞으면
+        # 이미 고쳐진 계측이 며칠간 "안 고쳐진 것"처럼 보인다(0820 이상점 1-2:
+        # ConfFloor 합산 0.72 vs 당일 1.00 — 08-18 배포 전 하루가 분모에 섞였다).
+        _ms = str(spec.get("measured_since") or "").replace("-", "")
+        p_days = [d for d in days if not _ms or d >= _ms]
+        if _ms and not p_days:
+            # 계측 시작 전 — `무기록`(계측 중단 의심, §11 적신호)으로 올리면 배포
+            # 당일마다 늑대소년이 된다. 표본부족(판정 보류)으로 명시한다.
+            rows.append({"name": name, "why": spec.get("why", ""), "days": 0, "n": 0,
+                         "dist": [], "verdict": "표본부족",
+                         "note": "계측 시작 전 (measured_since %s — 창 내 해당 거래일 없음)"
+                                 % spec.get("measured_since"),
+                         "scanned_days": 0, "measured_since": spec.get("measured_since"),
+                         "ratio": None, "ratio_today": None, "ratio_min_day": None,
+                         "expected": None})
+            continue
         counts, hit_days = {}, set()
         expected = 0            # 분모 합 (per_minute 일 때만 의미 있다)
-        for d in days:
+        day_stats = []          # [MW0602 477차 후속 F-2] (일자, 분자, 분모) — 일자별 관측률용
+        for d in p_days:
             day_expected = 0
             _n_before = sum(counts.values())
             for full in by_day[d]:
@@ -1432,23 +1487,37 @@ def scan_stuck_indicators(root, cfg, day):
             # 표본이 하나도 없는 날은 분모에서 뺀다 — 그 날은 "편향"이 아니라 **미배포**이거나
             # 계측 중단이며, 그것은 `무기록`이 말할 몫이다. 빼지 않으면 배포 첫날 지표가
             # 무조건 분기편향으로 뜬다(0818 ConfFloor: 80/2918=0.03 vs 80/365=0.22).
-            if sum(counts.values()) > _n_before:
+            _day_n = sum(counts.values()) - _n_before
+            if _day_n > 0:
                 expected += day_expected
+                day_stats.append((d, _day_n, day_expected))
         n = sum(counts.values())
         dist = sorted(counts.items(), key=lambda kv: -kv[1])
         _min_n = int(spec.get("min_samples", conf.get("min_samples", 20)))
         _min_d = int(spec.get("min_days", conf.get("min_days", 3)))
         _benign = [str(b) for b in (spec.get("benign") or [])]
+        _exp_min = int(conf.get("branch_min_expected", 60))
         _ratio = (float(n) / expected) if (per_minute and expected) else None
+        # [MW0602 477차 후속 F-2] 일자별 관측률 — 합산은 계측 배포 경계·과거 결함일을
+        # 창이 빠져나갈 때까지 끌고 다닌다(0820 실측: 합산 0.72 vs 당일 1.00).
+        # 판정은 **당일값**(가장 최근 유효 일자)으로 한다. 분모가 exp_min 미만인 날은
+        # 재지 않는다(반나절만 돈 날에 판정하지 않는다 — 기존 규약 유지).
+        _day_ratios = [(d, float(dn) / de) for d, dn, de in day_stats
+                       if de >= _exp_min] if per_minute else []
+        _ratio_today = _day_ratios[-1][1] if _day_ratios else None
+        _ratio_min_day = min(r for _, r in _day_ratios) if _day_ratios else None
         verdict, note = stuck_verdict(
-            dist, n, hit_days, len(days), _min_n, _min_d, _benign,
-            ratio=_ratio, expected=expected,
+            dist, n, hit_days, len(p_days), _min_n, _min_d, _benign,
+            ratio=_ratio_today, expected=expected,
             ratio_min=float(conf.get("branch_ratio_min", 0.5)),
-            exp_min=int(conf.get("branch_min_expected", 60)))
+            exp_min=_exp_min)
         rows.append({"name": name, "why": spec.get("why", ""), "days": len(hit_days),
                      "n": n, "dist": dist, "verdict": verdict, "note": note,
-                     "scanned_days": len(days),
-                     "ratio": _ratio, "expected": expected if per_minute else None})
+                     "scanned_days": len(p_days),
+                     "measured_since": spec.get("measured_since"),
+                     "ratio": _ratio, "ratio_today": _ratio_today,
+                     "ratio_min_day": _ratio_min_day,
+                     "expected": expected if per_minute else None})
     return rows
 
 
@@ -2829,7 +2898,12 @@ def build(root, day, phase, cfg, discover_only=False):
         A("> `\"ensemble_minute\"` 축(476차 F-8)은 분모를 `[Ensemble] dir=` 출현 분으로 좁힌다 — ")
         A("> `compute()` 안에서만 사는 지표(ConfFloor)를 로그 생존 분으로 재면 관측률이 구조적으로 낮게 나온다.")
         A("")
-        A("| 지표 | 원천 | 판정 | 관측일 | 표본 | 관측률 | 값 분포 | 왜 보는가 |")
+        A("> **관측률은 `합산 / 당일 / 최소일` 3값이다(477차 후속 F-2). 판정은 당일값으로 한다** — ")
+        A("> 합산값은 계측 배포 경계를 넘으면 미측정일을 섞는다(0820 실측: ConfFloor 합산 0.72 vs")
+        A("> 당일 1.00 — 08-18 배포 전 하루가 분모에 남아 있었다). `(계측 MM-DD~)` 표시는")
+        A("> `measured_since` 마커(G-1) — 그 이전 일자는 분모·분자·무기록 판정에서 제외됐다.")
+        A("")
+        A("| 지표 | 원천 | 판정 | 관측일 | 표본 | 관측률(합산/당일/최소일) | 값 분포 | 왜 보는가 |")
         A("|---|---|---|---|---|---|---|---|")
         # [MW0602 476차 F-2'] ①(`mode=ro`)이 아닌 경로로 읽은 DB 가 있으면 명시한다.
         for _ln in db_access_notes():
@@ -2842,14 +2916,24 @@ def build(root, day, phase, cfg, discover_only=False):
                     "분기편향": "🟠 분기편향",
                     "DB미접속": "⬛ DB미접속(미측정)"}[r["verdict"]]
             dist = ", ".join("`%s`×%d" % (v, c) for v, c in r["dist"][:6]) or "—"
-            _rt = ("%.2f" % r["ratio"]) if r.get("ratio") is not None else "—"
-            A("| `%s` | %s | %s | %d | %d | %s | %s | %s |" % (
-                r["name"], r.get("source") or "로그", mark, r["days"], r["n"],
+            if r.get("ratio") is not None:
+                # [477차 후속 F-2] 합산 / **당일** / 최소일 — 판정은 당일값이 했다.
+                _f = lambda v: ("%.2f" % v) if v is not None else "—"
+                _rt = "%s / **%s** / %s" % (
+                    _f(r["ratio"]), _f(r.get("ratio_today")), _f(r.get("ratio_min_day")))
+            else:
+                _rt = "—"
+            _nm = "`%s`" % r["name"]
+            if r.get("measured_since"):
+                _nm += " (계측 %s~)" % r["measured_since"][5:]
+            A("| %s | %s | %s | %d | %d | %s | %s | %s |" % (
+                _nm, r.get("source") or "로그", mark, r["days"], r["n"],
                 _rt, dist, r["why"]))
         A("")
         A("*판정 기준: 한 값이 100%면 `고착`, 표본 0이면 `무기록`, "
-          "관측률이 기준(0.5) 미만이면 `분기편향`(표본부족보다 **먼저** — 구조 문제라 "
-          "표본이 쌓여도 해소되지 않는다), "
+          "**당일** 관측률이 기준(0.5) 미만이면 `분기편향`(표본부족보다 **먼저** — 구조 문제라 "
+          "표본이 쌓여도 해소되지 않는다. 합산·최소일 값은 참고 표시 — 배포 경계를 넘으면 "
+          "미측정일이 섞인다), "
           "관측일·표본이 기준 미달이면 `표본부족`(판정 보류). "
           "**출발점이지 결론이 아니다** — 고착이 정상인 지표도 있다(예: 사고 없는 날의 CB 상태).*")
         A("")
