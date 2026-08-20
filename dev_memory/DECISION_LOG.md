@@ -26475,3 +26475,47 @@ if data.get("date") != today:
 2. `[MW0602] 477차 후속: ensemble_decisions 진입수량 귀속 분리 (entry_qty_final) + 문서 정정`
 3. `[MW0602] 477차 후속: 수집기 §12 관측률 일자축 분리 — 배포 경계 혼입 제거`
 4. `git push origin dev` (F-3, 사용자 조치 — 푸시 후 ahead 8)
+
+## 2026-08-20 (MW0602 477차 후속2 — §2p·§3p 구현: F-1·F-2 + G-1~G-3 전량 배포)
+
+> 사용자 지시: 0820 장후 리포트 §2p(Fix)·§3p(고도화)의 구현 손익을 조사하고
+> 이익이 있으면 구현까지. **전 항목 구현이익 양(+) 판정 → 전량 배포.**
+> 공통 근거: 전부 계측·기록 정확성 축(매매 정책·게이트 임계·사이징 로직 무변경),
+> ⑧ 해제와 주간회의(08-22) 안건의 직접 입력, 회귀 위험 낮음.
+
+### 착수 전 확인 — 이월 2건은 이미 완료 상태였다
+- **F-4(477차 장전 F-1·F-2)**: 커밋 `b4fd2d3`으로 배포 완료 확인 → 재작업 안 함.
+  O-1·O-2(08-21 장전)가 판정한다.
+- **F-3(push)**: `git status -b` ahead 0 — 리포트 시점(ahead 5) 이후 푸시 완료 상태.
+  NEXT_TODO의 "ahead 5 유지" 서술은 낡은 것으로 정정.
+
+### 배포 커밋 3건
+1. **`e8b664a` F-1** — `ensemble_decisions.entry_qty_final`(증거금 캡 이후 실체결 수량) 신설.
+   `main.py`(STEP9 스냅샷) + `prediction_buffer.py`(INSERT 55컬럼) + `db_utils.py`(마이그레이션)
+   + `tests/test_477_entry_qty_attribution.py`(T1~T4 통과) + `evidence_map.md` §8-2 경고 병기.
+   ⚠ **리포트 §2 F-1의 위치 지목(`main.py:3008/:3050`)은 trades INSERT였다** — ensemble_decisions
+   INSERT는 `prediction_buffer.py:save_step9_batch`. 구현에서 정정했다(기록 목적: 다음 세션이
+   리포트 §2를 그대로 따라가지 않도록).
+   `entry_qty`(산출 수량)는 의미 무변경 — 461차 mdd_pct 시계열 불연속 재발 방지(계측 4원칙 ①).
+2. **`dfc4a3d` G-2+G-3** — ① `[MarginCap] state=OK|CAP|BLOCK {dir} 산출=N 상한=M` 무조건
+   상태 샘플(조회 성공 사이클마다, COM 호출 추가 0. 기존 축소/차단 로그 무변경 — 파서 호환).
+   ② `[SHUTDOWN-MARKER]` + MainThread 스택 1회를 crash_fault.log에 append — 30초 주기
+   Timeout 덤프는 루프 종료 후에도 돌므로 **마커 이후 MainThread 프레임 = 유령 잔류 지점**.
+   종료 로직 무변경(기존 "진단만 먼저" 결정 유지). ③ CLAUDE.md ⑧ [28] 선행조건 병기.
+3. **`e84101d` F-2+G-1** — §12 관측률 `합산/당일/최소일` 3값 + **분기편향 판정 당일값 전환**
+   + 지표별 `measured_since`(초기 5종: ConfFloor=08-19 · CORE준비도=08-14 · 강제청산_경로=08-14 ·
+   binding_gate=08-14 · MarginCap_state=08-21) + 계측 시작 전 지표는 `표본부족`(무기록 적신호
+   오탐 방지) + invariants §5 갱신 행 + NEXT_TODO P-4 문구 정정.
+   ⚠ **G-1 위치는 리포트 제안(`dailycheck_targets.json`)에서 변경** — json 같은 키는 기본
+   패턴을 **통째로 대체**하므로(load_config 규약) 수집기 `DEFAULT_CONFIG.patterns` 필드로 구현.
+
+### 검증
+- F-1: 회귀 테스트 4종 통과(py37_32) + 471차 sizing_trace 테스트 재통과(55컬럼 arity).
+- F-2/G-1: 0820 수집기 재실행 — ConfFloor `1.00/**1.00**/1.00 (계측 08-19~)` 렌더
+  (합산 0.72 오염 소거), §11 신규 오탐 없음, MarginCap_state `표본부족(계측 시작 전)` 정상.
+- **라이브 미검증 2건**: O-6(다음 `[MarginCap]` 발생일 `entry_qty_final == trades.entry_qty`
+  대사) · MarginCap_state 첫 로그(08-21). G-3 첫 판독은 다음 유령 발생일 crash_fault.log.
+
+### 미착수(범위 밖 — 의도적)
+- invariants.md §2-B 판별 규칙 병기(문서 정정 ①) — §2p·§3p 목록 밖이라 보류, NEXT_TODO 잔존.
+- 477차 장중 F-1i·F-2i·F-3i — 이월 유지.
