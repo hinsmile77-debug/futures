@@ -7640,9 +7640,15 @@ class TradingSystem:
                     _eks_stale_h = self.model.canary_stale_age_hours()
                     if _eks_stale_h > 24.0:
                         _ss_eks = self._read_session_state()
-                        _p8_ok_date = _ss_eks.get("p8_last_success_date", "")
                         _today = datetime.date.today()
                         _yesterday = _today - datetime.timedelta(days=1)
+                        # [477차 F-2] session_state 미기록 시 EOD 마커파일 폴백 —
+                        # F-1 이전 롤오버가 p8_last_success_date를 매일 지워
+                        # "!= 어제"가 항상 성립, 스케일러 노후가 휴장/중단갭으로
+                        # 상시 오분류됐다. 발동 조건·차단 무변경, 태그만 바뀐다.
+                        _p8_ok_date = _ts_resolve_p8_ok_date(
+                            _ss_eks.get("p8_last_success_date", ""), _yesterday
+                        )
                         if _p8_ok_date != _yesterday.isoformat():
                             _dow = _today.weekday()  # 0=Mon
                             _eks_causes.append(
@@ -12852,6 +12858,26 @@ class TradingSystem:
             self.position.status, now.strftime("%H:%M:%S"),
         )
         self.dashboard.append_sys_log(f"[{now.strftime('%H:%M')}] {reason}")
+
+
+def _ts_resolve_p8_ok_date(ss_p8_date, yesterday: datetime.date, data_dir: str = None) -> str:
+    """[477차 F-2] EKS 원인 태깅용 P8 성공일 해석 — session_state 우선, 마커파일 폴백.
+
+    session_state 값이 어제와 일치하면 그대로 신뢰한다. 아니면(빈 값 포함)
+    data/eod_retrain_done_{어제}.txt 존재 시 어제로 폴백 — retrain_eod.py가
+    성공 시에만 쓰는 마커라(08:55 PreRetrain 폴백과 같은 원천), session_state
+    기록만 실패한 날(retrain_eod.py의 "무해" 예외 경로)과 F-1 이전 롤오버가
+    키를 지운 상태를 모두 덮는다. 태그 문자열 판별 전용 — 차단·판정 무관여.
+    """
+    _ss_str = str(ss_p8_date or "")
+    _y_iso = yesterday.isoformat()
+    if _ss_str == _y_iso:
+        return _ss_str
+    _dir = data_dir or os.path.join(BASE_DIR, "data")
+    _mf = os.path.join(_dir, "eod_retrain_done_%s.txt" % yesterday.strftime("%Y%m%d"))
+    if os.path.exists(_mf):
+        return _y_iso
+    return _ss_str
 
 
 def _ts_parse_chejan_time(time_str: str) -> datetime.datetime:

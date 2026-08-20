@@ -102,15 +102,22 @@ class SessionRecoveryService:
         data = system._read_session_state()
         today = datetime.date.today().isoformat()
         if data.get("date") != today:
-            data = {
-                "date": today,
-                "count": 0,
-                "reverse_entry_enabled": bool(data.get("reverse_entry_enabled", False)),
-                "tp1_single_contract_mode": str(
-                    data.get("tp1_single_contract_mode", "atr_profit") or "atr_profit"
-                ).strip().lower(),
-                "auto_shutdown_done_date": "",
-            }
+            # [477차 F-1] 날짜 롤오버는 당일 종속 키만 리셋한다(블랙리스트).
+            # 구 화이트리스트 재구성은 이 함수 이후에 추가된 키(p8_last_success_date ·
+            # eod_retrain_ok_date · gbm_last_retrain · gbm_total_retrain_count)를
+            # 매 거래일 통째로 버려 PreRetrain 1차 경로·EKS 원인 태깅·누적 카운터를
+            # 죽여 왔다(0820 점검 1-1). 보존 키가 늘어나도 여기는 수정 불요.
+            data = dict(data)
+            data["date"] = today
+            data["count"] = 0
+            data["auto_shutdown_done_date"] = ""
+            # 전일 값이 남으면 안 되는 키는 명시적으로 제거한다.
+            # CB/PG 상태가 날짜를 넘으면 restore_daily_state()의 date==today
+            # 가드를 통과해 전일 상태가 복원된다(절대원칙 §2 판정 오염) —
+            # _write_session_state()의 재직렬화가 예외로 실패하는 경우 실경로.
+            # today_open(갭 오프셋)은 당일 전용.
+            for _stale_key in ("today_open", "profit_guard_state", "circuit_breaker_state"):
+                data.pop(_stale_key, None)
 
         data["count"] = data.get("count", 0) + 1
         data["reverse_entry_enabled"] = bool(system._reverse_entry_enabled)
