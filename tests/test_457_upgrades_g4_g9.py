@@ -66,7 +66,11 @@ def test_health_snapshot_read_before_reset():
     _reset_model_health_counters() 보다 앞서야 한다.
     """
     src = open(os.path.join(_ROOT, "main.py"), encoding="utf-8").read()
-    i_snap = src.find("health=self._model_health_snapshot()")
+    # [MW0601 482차] 인자 유무와 무관하게 잡는다. 종전에는 호출 전문
+    # `health=self._model_health_snapshot()` 을 문자열로 찾아, 482차가 `cb3_avail=`
+    # 인자를 추가하자 **불변식은 그대로인데 테스트만** 깨졌다. 여기서 지킬 것은
+    # 호출 형태가 아니라 **순서**다.
+    i_snap = src.find("health=self._model_health_snapshot(")
     i_reset = src.find("self._reset_model_health_counters()")
     assert i_snap != -1 and i_reset != -1, "G5 배선이 사라졌다"
     assert i_snap < i_reset, (
