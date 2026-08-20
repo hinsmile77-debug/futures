@@ -207,3 +207,44 @@ def test_예약_실행은_마커를_남긴다():
     v = {"level": "CRITICAL", "rc": RC_UNCLOSED, "headline": "테스트", "details": []}
     emit(d, datetime.date(2026, 8, 19), v, popup=False, manual=False)
     assert os.path.exists(os.path.join(d, "data", "force_flat_alert_20260819.txt"))
+
+
+# ── ⑤ 감시 개시 기록 (480차 후속4) ────────────────────────────────────────
+
+def test_감시_개시가_파일에_남는다():
+    """가드의 콘솔은 START /MIN 최소화 창이라 아무도 보지 않는다. 기동 줄이
+    파일에 없으면 "사이드카가 장중에 죽었다"와 "런처가 아예 안 띄웠다"를
+    구분할 수 없다 — 감시자가 스스로 조용한 부재에 빠지는 형태다."""
+    import tempfile
+    from scripts.force_flat_guard import log_armed
+    d = tempfile.mkdtemp()
+    assert log_armed(d, datetime.date(2026, 8, 20), "15:12", 180.0, pid=4242) is True
+    with open(os.path.join(d, "logs", "force_flat_guard_20260820.log"),
+              encoding="utf-8") as f:
+        line = f.read()
+    assert "ARMED" in line
+    assert "pid=4242" in line
+    assert "15:12" in line
+    assert "주문 없음" in line
+
+
+def test_대기_경로가_ARMED를_부른다():
+    """호출 배선이 빠지면 헬퍼만 있고 아무도 안 부르는 죽은 코드가 된다."""
+    import ast as _ast
+    with open(os.path.join(_ROOT, "scripts", "force_flat_guard.py"),
+              encoding="utf-8") as f:
+        tree = _ast.parse(f.read())
+    called = [n for n in _ast.walk(tree)
+              if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+              and n.func.id == "log_armed"]
+    assert called, "log_armed() 호출부가 없다 — 기동 기록이 죽은 코드다"
+
+
+def test_ARMED_기록은_마커가_아니다():
+    """기동 사실은 `logs/`에만 남는다. `data/`에 남기면 일일 점검이 매일
+    '경보'로 읽는다 — 마커는 이상이 있을 때만 만든다."""
+    import tempfile
+    from scripts.force_flat_guard import log_armed
+    d = tempfile.mkdtemp()
+    log_armed(d, datetime.date(2026, 8, 20), "15:12", 180.0)
+    assert not os.path.isdir(os.path.join(d, "data")) or         not os.listdir(os.path.join(d, "data"))

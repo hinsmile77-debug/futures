@@ -213,6 +213,47 @@ def heartbeat_path(root, day, pc=None):
     return os.path.join(root, tpl.format(pc=pc or _pc_id(), date=day.strftime("%Y%m%d")))
 
 
+def log_line(root, day, text):
+    """가드 전용 로그에 한 줄 남긴다 — 실패해도 가드를 멈추지 않는다.
+
+    `encoding="utf-8"`을 명시하는 이유는 FZ-1과 같다: py37_32의 기본 인코딩은
+    cp949라 em dash(—) 하나에 `UnicodeEncodeError`가 나고, 예외를 삼키면 기록이
+    통째로 사라진다(478차 후속 §8-2 실측).
+    """
+    try:
+        _dir = os.path.join(root, "logs")
+        os.makedirs(_dir, exist_ok=True)
+        with open(os.path.join(_dir, "force_flat_guard_%s.log" % day.strftime("%Y%m%d")),
+                  "a", encoding="utf-8", errors="replace") as f:
+            f.write(text + "\n")
+        return True
+    except Exception as exc:
+        print("[ForceFlatGuard] 로그 기록 실패: %s" % exc, file=sys.stderr)
+        return False
+
+
+def log_armed(root, day, at, stale, pid=None):
+    """감시 개시를 파일에 남긴다 — **가드 자신의 생존 증거**.
+
+    왜 필요한가: 이 프로세스의 콘솔은 런처가 `START /MIN`으로 띄운 최소화 창이라
+    아무도 보지 않는다. 그리고 종전에는 **판정 시각에만** 파일을 썼다. 그래서
+    사이드카가 장중에 조용히 죽으면 15:12에 아무 일도 일어나지 않고 **그 사실이
+    어디에도 남지 않는다** — 2026-08-19 동결과 같은 "조용한 부재" 패턴이며,
+    감시자가 스스로 그 패턴에 빠지는 것이 가장 나쁘다.
+
+    기동 줄이 있으면 사후 판정이 셋으로 갈린다:
+      · ARMED 있고 판정 있음     → 정상
+      · ARMED 있고 판정 **없음**  → 가드가 도중에 죽었다(조사 대상)
+      · ARMED 자체가 없음        → 런처가 사이드카를 못 띄웠다(배선 문제)
+    """
+    return log_line(root, day, (
+        "[ForceFlatGuard] %s ARMED pid=%s 판정예정=%s 정지임계=%.0fs "
+        "(알림 전용 — 주문 없음)"
+        % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+           os.getpid() if pid is None else pid, at, stale)
+    ))
+
+
 def emit(root, day, verdict, popup=True, manual=False):
     """경보를 남긴다 — 로그 · (경보 시)마커 파일 · (옵션)메시지박스.
 
@@ -233,14 +274,7 @@ def emit(root, day, verdict, popup=True, manual=False):
     body += ["  · " + d for d in verdict["details"]]
     text = "\n".join(body)
 
-    log_dir = os.path.join(root, "logs")
-    try:
-        os.makedirs(log_dir, exist_ok=True)
-        with open(os.path.join(log_dir, "force_flat_guard_%s.log" % day.strftime("%Y%m%d")),
-                  "a", encoding="utf-8", errors="replace") as f:
-            f.write(text + "\n")
-    except Exception as exc:
-        print("[ForceFlatGuard] 로그 기록 실패: %s" % exc, file=sys.stderr)
+    log_line(root, day, text)
 
     print(text)
 
@@ -339,6 +373,11 @@ def main(argv=None):
         if target < now:
             print("[ForceFlatGuard] 판정 시각 %s 이 이미 지났다 — 즉시 1회 판정" % at)
         else:
+            # [MW0601 480차 후속4] 감시 개시를 **파일에도** 남긴다.
+            # 이 콘솔은 START /MIN 최소화 창이라 아무도 보지 않는다 — 종전에는
+            # 판정 시각에만 파일을 써서, 가드가 장중에 죽으면 그 사실이 어디에도
+            # 남지 않았다(감시자가 스스로 "조용한 부재"에 빠지는 형태).
+            log_armed(root, now.date(), at, stale)
             print("[ForceFlatGuard] 대기 — %s 에 판정 (pid=%d)" % (at, os.getpid()))
             while datetime.datetime.now() < target:
                 time.sleep(min(30.0, max(1.0, (target - datetime.datetime.now()).total_seconds())))
