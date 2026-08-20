@@ -990,6 +990,15 @@ class TradingSystem:
         self._mh_const_out_active: set = set()       # 전이 판정용 직전 상태
         self._mh_weight_collapse_minutes: int = 0
         self._mh_intraday_retrain_count: int = 0
+        # [MW0601 482차 / G-1] CB③ 판정 가능 분 수. 절대원칙 §2의 CB③이 하루 중
+        # 실제로 "살아 있던" 시간을 처음으로 시계열화한다 — 전환기준 ⑥(CB③ 기준
+        # 호라이즌 교체)을 논의하려면 임계 이전에 **판정 입력이 존재했는가**를
+        # 먼저 알아야 한다. 분모는 위 `_mh_pipeline_minutes` 를 그대로 쓴다.
+        self._mh_cb3_ready_minutes: int = 0
+        # [MW0601 482차] EOD 시점 당일 CB HALT 횟수 — `circuit_breaker.reset_daily()`
+        # 직전에 잡아 `scaler_daily.cb3_triggered` 에 쓴다. 명시 초기화(계측 4원칙 ④):
+        # getattr 폴백으로 읽으면 종전처럼 조용히 0이 박힌다.
+        self._cb3_daily_halt_eod: int = 0
         # [MW0601 457차 / G9] 직전 사이클 파이프라인 지배 구간 (stage, ms).
         # Degraded 판정 로그의 원인 태그 전용 — 판정 자체에는 관여하지 않는다.
         self._last_pipe_dominant = None
@@ -2252,12 +2261,18 @@ class TradingSystem:
                 "const_out=%s (섀도 기록만, 정책 무변경)" % (chosen_hz, _const)
             )
 
-    def _model_health_snapshot(self) -> dict:
+    def _model_health_snapshot(self, cb3_avail: dict = None) -> dict:
         """[MW0601 457차 / G5] 당일 모델 건강도 카운터 스냅샷.
 
         ⚠ `_reset_model_health_counters()` **이전에** 호출할 것. 457차 C5가 잡은
           "리셋 뒤에 저장해 8거래일 연속 죽은 값" 사고와 같은 함정이 여기에도 있다.
+
+        cb3_avail: [MW0601 482차 / G-1] CB③ 가용성 스냅샷. `daily_close()` 는
+            `circuit_breaker.reset_daily()` **전에** 잡아둔 값을 반드시 넘긴다 —
+            EOD 저장 시점에는 CB 쪽 당일 누계가 이미 0이기 때문이다. None 이면
+            현재값을 읽는다(장중 호출용).
         """
+        _cb3av = cb3_avail if cb3_avail is not None else self.circuit_breaker.cb3_availability
         return {
             "pipeline_minutes":        int(self._mh_pipeline_minutes),
             "const_out_events":        int(self._mh_const_out_events),
@@ -2265,6 +2280,12 @@ class TradingSystem:
             "const_out_by_horizon":    dict(self._mh_const_out_by_hz),
             "weight_collapse_minutes": int(self._mh_weight_collapse_minutes),
             "intraday_retrain_count":  int(self._mh_intraday_retrain_count),
+            # [MW0601 482차 / G-1·G-2] CB③ 가용성. `cb3_ready_minutes` 는 매분
+            # 누적한 값이고, 리셋·표본손실은 CB 가 들고 있는 당일 누계를 그대로 읽는다
+            # (여기도 `_reset_model_health_counters()` **이전에** 호출돼야 한다).
+            "cb3_ready_minutes":       int(self._mh_cb3_ready_minutes),
+            "cb3_buffer_resets":       int(_cb3av["resets_today"]),
+            "cb3_samples_dropped":     int(_cb3av["samples_dropped"]),
         }
 
     def _reset_model_health_counters(self) -> None:
@@ -2276,6 +2297,7 @@ class TradingSystem:
         self._mh_const_out_active = set()
         self._mh_weight_collapse_minutes = 0
         self._mh_intraday_retrain_count = 0
+        self._mh_cb3_ready_minutes = 0   # [MW0601 482차 / G-1]
 
     @staticmethod
     def _model_reload_quiet_delay(now_sec: float, cfg: dict) -> float:
@@ -6963,6 +6985,10 @@ class TradingSystem:
         self._mh_const_out_active = _co_now
         if decision.get("weight_collapsed"):
             self._mh_weight_collapse_minutes += 1
+        # [MW0601 482차 / G-1] CB③ 가용성 — 분모(_mh_pipeline_minutes)와 같은 자리에서
+        # 세야 "몇 분 중 몇 분"이 성립한다.
+        if self.circuit_breaker.cb3_ready:
+            self._mh_cb3_ready_minutes += 1
 
         # GBM 재학습 중이면 skip — raw_data.db 동시 접근 + CPU 경합 방지
         if _const_hz and not self._scaler_refresh_running and not self._gbm_retrain_running:
@@ -7385,10 +7411,21 @@ class TradingSystem:
         )
         debug_log.debug("[DBG-F6] horizons: %s", _h_summary)
         _cb = self.circuit_breaker.status_dict()
+        # [MW0601 482차 / F-1] 표본 수·판정가능 여부 병기 — 계측 4원칙 ②·④.
+        # 종전 포맷은 `acc30m=0.0%` 하나로 "표본이 없어 판정 자체를 못 한다"와
+        # "판정했더니 적중 0%다"를 같은 문자로 찍었다. 2026-08-20에 acc30m<0.28 이
+        # 236분(64.0%)인데 HALT 0회인 것을 로그만으로 화해시킬 수 없었던 원인이다.
+        # `status_dict()` 는 `cb3_samples` 를 이미 내놓고 있었는데 여기서 버렸다.
         debug_log.debug(
-            "[DBG-CB] state=%s consec_stops=%d acc30m=%.1f%% latency=%.3fs%s",
+            "[DBG-CB] state=%s consec_stops=%d acc30m=%s n=%d/%d ready=%s"
+            " resets=%d dropped=%d latency=%.3fs%s",
             _cb["state"], _cb["consec_stops"],
-            _cb["accuracy_30m"] * 100, _cb["last_latency"],
+            ("%.1f%%" % (_cb["accuracy_30m"] * 100)) if _cb["accuracy_30m_measured"]
+            else "—(표본없음)",
+            _cb["cb3_samples"], _cb["cb3_min_samples"],
+            "Y" if _cb["cb3_ready"] else "N",
+            _cb["cb3_resets_today"], _cb["cb3_samples_dropped"],
+            _cb["last_latency"],
             f" pause_until={_cb['pause_until']}" if _cb["pause_until"] else "",
         )
 
@@ -11414,6 +11451,13 @@ class TradingSystem:
         self.basis_calc.reset_daily()
         self._last_vkospi = None
         self.position.reset_daily()
+        # [MW0601 482차 / G-1] ⚠ 리셋 **전에** CB③ 가용성 스냅샷을 잡는다.
+        # `reset_daily()` 가 당일 리셋·표본손실 누계를 0으로 되돌리는데,
+        # `_model_health_snapshot()` 은 여기서 한참 아래(scaler_daily 저장부)에서
+        # 호출된다 — 그대로 두면 457차 C5(`verified_count` 8거래일 연속 0)와
+        # 똑같이 죽은 값이 매일 기록된다. `_ccf_today` 와 같은 관례다.
+        _cb3_avail_eod = self.circuit_breaker.cb3_availability
+        self._cb3_daily_halt_eod = int(self.circuit_breaker.daily_halt_count)
         self.circuit_breaker.reset_daily()
         self.profit_guard.reset_daily()
         self.online_learner.reset_daily()
@@ -11583,13 +11627,19 @@ class TradingSystem:
         try:
             from model.scaler_monitor_db import aggregate_daily, insert_daily
             _sm_stats = aggregate_daily(today_str)
-            _cb3_fired = int(bool(getattr(self.circuit_breaker, "_daily_halt", False)))
+            # [MW0601 482차] ⚠ 종전 `getattr(self.circuit_breaker, "_daily_halt", False)` —
+            # CircuitBreaker 에 그런 속성은 **없다**(실재 이름은 `_daily_halt_count`).
+            # 폴백 False 가 조용히 반환돼 `scaler_daily.cb3_triggered` 가 51행 전량
+            # 0으로 죽어 있었다. CB③ HALT 가 코드상 비활성이라 값이 우연히 맞아
+            # 보였을 뿐, CB①②④⑤ 로 HALT 가 나도 0이 기록되는 상태였다.
+            # 계측 4원칙 ④ — 런타임 상태를 getattr 폴백으로 읽지 마라.
+            _cb3_fired = int(self._cb3_daily_halt_eod)
             insert_daily(
                 today_str, _sm_stats,
                 grade_x_minutes=self._grade_x_count,
                 cb3_triggered=_cb3_fired,
                 # [MW0601 457차 / G5] 모델 건강도 — 아래 리셋보다 **먼저** 읽는다
-                health=self._model_health_snapshot(),
+                health=self._model_health_snapshot(cb3_avail=_cb3_avail_eod),
             )
         except Exception as _sm_e:
             logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)

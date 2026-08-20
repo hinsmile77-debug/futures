@@ -72,6 +72,22 @@ _HEALTH_COLS = [
     ("intraday_retrain_count",  "INTEGER DEFAULT 0"),
     # 파생 — 0.0~1.0. NULL이면 "미측정"이지 "0"이 아니다(계측 4원칙 ②)
     ("ensemble_uptime",         "REAL"),
+    # ── [MW0601 482차 / G-1·G-2] CB③ 가용성 ──────────────────────────────
+    # 절대원칙 §2의 CB③이 하루 중 실제로 "판정 가능"했던 분 수. 분모는 위
+    # pipeline_minutes 다. 2026-08-20에 acc30m < 0.28 이 236분(64.0%)인데 HALT
+    # 0회였고, 그 분들이 "표본 부족이라 판정을 안 한 것"인지 "판정했는데 통과한
+    # 것"인지 사후 재구성이 불가능했다 — 전환기준 ⑥(CB③ 기준 호라이즌 교체)을
+    # 논의하려면 임계 이전에 **판정 입력이 존재했는가**를 먼저 알아야 한다.
+    #
+    # ⚠ DEFAULT 를 주지 않는다. `ALTER TABLE ADD COLUMN ... DEFAULT 0` 은 기존
+    #   행에도 0을 채워 넣어 "측정한 적 없는 51거래일"이 "ready 0분"으로 위장된다
+    #   (계측 4원칙 ②). NULL 로 남겨 미측정임을 보존한다.
+    ("cb3_ready_minutes",       "INTEGER"),
+    # 스케일러 재적합이 acc30m 버퍼를 되감은 횟수와 그때 버린 표본 수.
+    # 재적합이 잦을수록 CB③은 표본을 못 채우고, 표본을 못 채우면 판정이 안 된다 —
+    # 두 계측이 서로를 침식하는 관계를 처음 수치화한다(482차 G-2).
+    ("cb3_buffer_resets",       "INTEGER"),
+    ("cb3_samples_dropped",     "INTEGER"),
 ]
 
 
@@ -193,6 +209,11 @@ def aggregate_daily(date_str: str) -> dict:
     }
 
 
+def _int_or_none(v):
+    """[MW0601 482차 / G-1] 값이 없으면 0이 아니라 None — 계측 4원칙 ②."""
+    return None if v is None else int(v)
+
+
 def compute_ensemble_uptime(health: Optional[dict]) -> Optional[float]:
     """[MW0601 457차 / G5] 앙상블 유효 가동률 = 1 − (ConstOut 분 + 붕괴 분) / 총 분.
 
@@ -235,8 +256,9 @@ def insert_daily(
                     refresh_count, refresh_types, grade_x_minutes, cb3_triggered, note,
                     pipeline_minutes, const_out_events, const_out_minutes,
                     const_out_by_horizon, weight_collapse_minutes,
-                    intraday_retrain_count, ensemble_uptime)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    intraday_retrain_count, ensemble_uptime,
+                    cb3_ready_minutes, cb3_buffer_resets, cb3_samples_dropped)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     date_str,
                     stats.get("max_age_minutes", 0.0),
@@ -254,6 +276,11 @@ def insert_daily(
                     int(_h.get("weight_collapse_minutes") or 0),
                     int(_h.get("intraday_retrain_count") or 0),
                     _uptime,
+                    # [MW0601 482차 / G-1·G-2] health 가 없으면 **NULL**(미측정).
+                    # 0 으로 채우면 "CB③이 하루 종일 죽어 있었다"로 읽힌다.
+                    _int_or_none(_h.get("cb3_ready_minutes")),
+                    _int_or_none(_h.get("cb3_buffer_resets")),
+                    _int_or_none(_h.get("cb3_samples_dropped")),
                 ),
             )
             c.commit()
@@ -269,18 +296,32 @@ def insert_daily(
         # [MW0601 457차 / G5] 건강도는 별도 줄로 — 종전 줄의 포맷을 바꾸면 기존
         # 로그 파서·점검 스크립트가 깨진다.
         if health:
+            # [MW0601 482차 / G-1·G-2] CB③ 가용성을 같은 줄에 붙인다 — 종전 필드
+            # 순서와 포맷은 그대로 두고 **뒤에만** 덧붙인다(457차 G5의 이유와 동일:
+            # 앞을 바꾸면 기존 로그 파서·점검 스크립트가 깨진다).
+            _pm = int(_h.get("pipeline_minutes") or 0)
+            _rm = _h.get("cb3_ready_minutes")
+            if _rm is None:
+                _cb3_txt = " | CB③ ready 미측정"
+            else:
+                _cb3_txt = " | CB③ ready %d분/%d분%s (리셋 %s회, 표본손실 %s건)" % (
+                    int(_rm), _pm,
+                    (" (%.0f%%)" % (100.0 * int(_rm) / _pm)) if _pm else "",
+                    _h.get("cb3_buffer_resets"), _h.get("cb3_samples_dropped"),
+                )
             logger.info(
                 "[ModelHealth] date=%s 앙상블유효가동률=%s | 파이프라인 %d분 | "
-                "ConstOut %d회/%d분%s | WeightCollapse %d분 | 장중재학습 %d회",
+                "ConstOut %d회/%d분%s | WeightCollapse %d분 | 장중재학습 %d회%s",
                 date_str,
                 ("%.1f%%" % (_uptime * 100.0)) if _uptime is not None else "미측정",
-                int(_h.get("pipeline_minutes") or 0),
+                _pm,
                 int(_h.get("const_out_events") or 0),
                 int(_h.get("const_out_minutes") or 0),
                 (" " + json.dumps(_h.get("const_out_by_horizon") or {},
                                   ensure_ascii=False)) if _h.get("const_out_by_horizon") else "",
                 int(_h.get("weight_collapse_minutes") or 0),
                 int(_h.get("intraday_retrain_count") or 0),
+                _cb3_txt,
             )
     except Exception as _e:
         logger.debug("[ScalerMonitorDB] insert_daily 실패: %s", _e)

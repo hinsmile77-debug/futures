@@ -67,6 +67,16 @@ class CircuitBreaker:
         # 트리거 ⑤ 최근 API 지연
         self._last_latency: float = 0.0
 
+        # ── [MW0601 482차 / G-1·G-2] CB③ 가용성 계측 ────────────────
+        # acc30m 버퍼가 CB_ACC30M_MIN_SAMPLES 에 도달해야 CB③이 **판정 자체를**
+        # 할 수 있다. 그런데 종전에는 그 사실이 어디에도 안 남아, 2026-08-20에
+        # `acc30m < 0.28` 이 236분(64.0%)인데 HALT 0회인 것을 로그만으로 화해시킬
+        # 수 없었다("표본이 없어 판정을 안 한 것"인지 "판정했는데 통과한 것"인지).
+        # 스케일러 재적합이 버퍼를 리셋하면 표본이 되감기므로, 재적합 빈도가
+        # CB③ 가용시간을 얼마나 깎는지도 함께 센다(482차 G-2).
+        self._cb3_resets_today: int = 0          # 실제 리셋된 횟수(스킵 제외)
+        self._cb3_samples_dropped_today: int = 0  # 리셋으로 버린 표본 수
+
         # 트리거 ③ 연속 경고 카운터 — 2회 연속 미달 시 HALT
         self._cb3_warn_count: int = 0
         self._cb3_ok_streak:  int = 0  # 연속 정상 분 수 (리셋 조건 강화용)
@@ -173,6 +183,38 @@ class CircuitBreaker:
     def daily_halt_count(self) -> int:
         """[3순위] 당일 HALT 발생 횟수."""
         return self._daily_halt_count
+
+    @property
+    def cb3_samples(self) -> int:
+        """[MW0601 482차 / G-1] 현재 acc30m 버퍼에 쌓인 표본 수."""
+        return len(self._accuracy_buf)
+
+    @property
+    def cb3_ready(self) -> bool:
+        """[MW0601 482차 / G-1] CB③이 지금 **판정 가능한** 상태인가.
+
+        `record_accuracy()` 의 평가 분기는 `len(buf) >= CB_ACC30M_MIN_SAMPLES` 를
+        전제한다. 그 아래면 acc30m 값이 존재해도 CB③은 아무 판정도 하지 않는다.
+
+        ⚠ 리셋 쿨다운(`_cb3_reset_cooldown_samples`, 15)은 여기 반영하지 않는다 —
+          쿨다운 상한 15 < 최소표본 30 이라 표본 조건이 충족되면 쿨다운은 이미
+          풀려 있다. 두 상수의 대소가 바뀌면 이 전제가 깨지므로 함께 볼 것.
+        ⚠ Contrarian/EKS ACTIVE 구간은 누적은 하되 발동만 스킵하는데, 그 상태는
+          CB 가 들고 있지 않아(호출부 인자) 여기서 알 수 없다. 이 값은 **버퍼 축**
+          가용성이다.
+        """
+        return len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES
+
+    @property
+    def cb3_availability(self) -> dict:
+        """[MW0601 482차 / G-1·G-2] 가용성 스냅샷 — EOD 집계용."""
+        return {
+            "samples":         len(self._accuracy_buf),
+            "min_samples":     CB_ACC30M_MIN_SAMPLES,
+            "ready":           len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES,
+            "resets_today":    self._cb3_resets_today,
+            "samples_dropped": self._cb3_samples_dropped_today,
+        }
 
     def _check_pause_expiry(self):
         if self._state == CB_STATE_PAUSED and self._pause_until:
@@ -529,13 +571,19 @@ class CircuitBreaker:
             logger.info(msg)
             log_manager.system(msg, "INFO")
             return False
+        # [MW0601 482차 / G-2] 재적합이 CB③ 표본을 얼마나 되감는가 — 리셋 **전에** 센다.
+        _dropped = len(self._accuracy_buf)
+        self._cb3_resets_today += 1
+        self._cb3_samples_dropped_today += _dropped
         self._accuracy_buf.clear()
         self._acc30m_stage = "NORMAL"
         self._cb3_warn_count = 0
         # [225차 P2] 리셋 직후 샘플 부족 구간에서 즉시 재HALT 방어
         # 15샘플 이상 누적 전까지 CB③ warn_count 누적 억제
         self._cb3_reset_cooldown_samples = 15
-        msg = "[CB③] acc30m 버퍼 리셋 (스케일러 재적합 완료 — 이전 예측 무효화, 쿨다운=15샘플)"
+        msg = ("[CB③] acc30m 버퍼 리셋 (스케일러 재적합 완료 — 이전 예측 무효화, "
+               "쿨다운=15샘플) | 버린 표본 %d건 · 당일 누적 리셋 %d회/표본손실 %d건"
+               % (_dropped, self._cb3_resets_today, self._cb3_samples_dropped_today))
         logger.info(msg)
         log_manager.system(msg, "INFO")
         return True
@@ -604,6 +652,8 @@ class CircuitBreaker:
         self._horizon_fl_bias_warned.clear()   # [P5]
         self._halt_cause = ""
         self._cb3_reset_cooldown_samples = 0   # [225차 P2]
+        self._cb3_resets_today = 0             # [MW0601 482차 / G-2]
+        self._cb3_samples_dropped_today = 0
         logger.info("[CB] 일간 리셋 완료")
         log_manager.system("[CB] 일간 리셋 완료", "INFO")
 
@@ -615,9 +665,19 @@ class CircuitBreaker:
             "pause_until":             self._pause_until.strftime("%H:%M:%S") if self._pause_until else None,
             "consec_stops":            self._consec_stops,
             "last_latency":            self._last_latency,
+            # ⚠ [MW0601 482차 / F-1] 분모의 max(len,1) 때문에 **빈 버퍼가 조용히
+            #   0.0** 을 돌려준다. "표본 없음"과 "적중 0%"가 같은 값이 되는 계측
+            #   4원칙 ②·④ 위반이다. 하위호환 때문에 반환 타입은 float 로 두고,
+            #   대신 `accuracy_30m_measured` 를 **반드시 함께** 소비할 것
+            #   (원칙 ②가 명시한 `*_measured` 동반 형태).
             "accuracy_30m":            round(sum(self._accuracy_buf) / max(len(self._accuracy_buf), 1), 3),
+            "accuracy_30m_measured":   bool(self._accuracy_buf),
             "cb3_warn_count":          self._cb3_warn_count,
             "cb3_samples":             len(self._accuracy_buf),
+            "cb3_min_samples":         CB_ACC30M_MIN_SAMPLES,
+            "cb3_ready":               len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES,
+            "cb3_resets_today":        self._cb3_resets_today,
+            "cb3_samples_dropped":     self._cb3_samples_dropped_today,
             "high_conf_wrong_streak":  self._high_conf_wrong_streak,
             "mid_conf_wrong_streak":   self._mid_conf_wrong_streak,
             "brier_avg":               round(brier_avg, 4),

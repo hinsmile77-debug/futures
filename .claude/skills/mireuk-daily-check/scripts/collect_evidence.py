@@ -145,6 +145,14 @@ DEFAULT_CONFIG = {
         "sizer": r"\[Sizer\].*?신뢰도배수=(?P<conf_mult>[\d.]+)\s+레짐배수=(?P<regime_mult>[\d.]+)\s+안전배수=(?P<safe_mult>[\d.]+).*?→\s*(?P<qty>\d+)계약",
         "cb": r"\[CB\]\s*(?P<msg>.+?)\s*$",
         "block_ms": r"메인 스레드 블로킹.*?간격 (?P<ms>\d+)ms|간격 (?P<ms2>\d+)ms — 메인 스레드 블로킹",
+        # [MW0601 482차 / G-1] CB③ 가용성 — EOD `[ModelHealth]` 한 줄에서 뽑는다.
+        # `[DBG-CB]`(DEBUG 로그)를 매분 세지 않는 이유: DEBUG 는 priority 하위라
+        # `max_logs_digested` 에 밀려 다이제스트에 안 잡히는 날이 있다. EOD 한 줄이
+        # 같은 값을 이미 집계해 두므로 그쪽이 더 안정적이다.
+        "cb3_ready": r"\[ModelHealth\].*?CB③ ready (?P<ready_min>\d+)분/(?P<total_min>\d+)분(?:\s*\((?P<pct>\d+)%\))?\s*\(리셋 (?P<resets>\S+)회, 표본손실 (?P<dropped>\S+)건\)",
+        "cb3_ready_unmeasured": r"\[ModelHealth\].*?CB③ ready 미측정",
+        # EOD 건강도 줄의 존재 자체 — "필드가 없다"와 "줄이 없다"를 구분하기 위함.
+        "model_health": r"\[ModelHealth\] date=(?P<date>[\d-]+)",
     },
     "banner_start": "전략 상태 경보",
     "banner_lines": 8,
@@ -1142,6 +1150,43 @@ def day_summary(digests, cfg, out):
         if orphans:
             _bits.append("**귀속 실패 레그 %d행 ⚠**(진입 로그 없는 이월 포지션 가능)" % len(orphans))
         A("**정합성**: " + " · ".join(_bits))
+        A("")
+
+    # --- [MW0601 482차 / G-1] CB③ 가용성 ---
+    # 절대원칙 §2의 CB③이 하루 중 실제로 **판정 가능**했던 시간. 2026-08-20에
+    # `acc30m < 0.28` 이 236분(64.0%)인데 HALT 0회였고, 그 분들이 "표본이 없어
+    # 판정을 안 한 것"인지 "판정했는데 통과한 것"인지 로그로 구분할 수 없었다.
+    _cb3 = merged.get("cb3_ready", [])
+    if _cb3:
+        r = _cb3[-1]
+        try:
+            _rm, _tm = int(r["ready_min"]), int(r["total_min"])
+            _pct = ("%.0f%%" % (100.0 * _rm / _tm)) if _tm else "—"
+        except (TypeError, ValueError):
+            _rm = _tm = 0
+            _pct = "—"
+        A("### CB③ 판정 가능 시간 — **%d분 / %d분 (%s)**" % (_rm, _tm, _pct))
+        A("")
+        A("acc30m 버퍼 리셋 %s회 · 그때 버린 표본 %s건 (스케일러 재적합이 CB③ 표본을 되감는다)"
+          % (r.get("resets"), r.get("dropped")))
+        A("")
+        A("> `acc30m` 값이 낮은데 HALT 가 없다면 먼저 이 값을 보라 — ready 가 아닌 분에는"
+          " CB③이 **판정 자체를 하지 않는다**. 전환기준 ⑥(CB③ 기준 호라이즌 교체)을"
+          " 논의하려면 임계보다 이 가용시간이 먼저다.")
+        A("")
+    elif merged.get("cb3_ready_unmeasured"):
+        A("### CB③ 판정 가능 시간 — **미측정**")
+        A("")
+        A("> `[ModelHealth]` 가 `CB③ ready 미측정` 으로 찍혔다. 0분이 아니라"
+          " **재지 않았다**는 뜻이다(계측 4원칙 ②).")
+        A("")
+    elif merged.get("model_health"):
+        # [MW0601 482차 / G-1] 482차 배포 이전 거래일 — 필드 자체가 없다.
+        # 침묵하면 "0분"으로 오독되므로 없다는 사실을 명시한다(계측 4원칙 ②).
+        A("### CB③ 판정 가능 시간 — **필드 없음(482차 배포 이전 로그)**")
+        A("")
+        A("> 이 거래일의 `[ModelHealth]` 에는 `CB③ ready` 필드가 없다. "
+          "**0분이 아니라 계측이 존재하지 않던 날**이다 — 이전 거래일과 비교하지 말 것.")
         A("")
 
     # --- 진입 상세 ---
