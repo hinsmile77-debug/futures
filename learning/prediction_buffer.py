@@ -258,6 +258,12 @@ class PredictionBuffer:
             _tox_signals.get("spread_ticks"),
             (int(bool(_tox_signals["spread_extreme_shadow"]))
              if "spread_extreme_shadow" in _tox_signals else None),
+            # [MW0602 477차 후속 / F-1] 실제 진입 계약수(증거금 캡 이후).
+            # `entry_qty`는 산출 수량(캡 이전)이라 MarginCap 발생일에 1계약 크다.
+            # 키 부재(구버전 호출부)는 NULL — 0으로 채우면 "0계약 진입"이라는
+            # 없는 사실이 된다(계측 4원칙 ②).
+            (int(decision["entry_qty_final"])
+             if "entry_qty_final" in decision else None),
         )
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
@@ -293,8 +299,9 @@ class PredictionBuffer:
                        coherence_blocked,
                        confidence_raw, confidence_smoothed, weight_collapsed,
                        meta_size_raw, cal_applied, min_conf_effective,
-                       spread_ticks, spread_extreme_shadow
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       spread_ticks, spread_extreme_shadow,
+                       entry_qty_final
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 

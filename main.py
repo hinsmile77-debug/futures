@@ -9647,6 +9647,13 @@ class TradingSystem:
         )
         decision["entry_final_ok"]     = bool(_final_entry_ok)
         decision["entry_qty"]          = int(_qty_display)
+        # [MW0602 477차 후속 / F-1] 실제 진입 계약수(증거금 캡 이후 = _qty_auto).
+        # `entry_qty`는 품질 게이트까지만 반영한 **산출 수량**(_qty_display)이라
+        # [MarginCap] 발생일에 실체결보다 1계약 크게 기록된다(0820 실측: 140포지션
+        # 중 6건, 전부 MarginCap 발생일). 기존 컬럼 의미는 바꾸지 않는다 — 바꾸면
+        # 2026-08-20을 경계로 같은 컬럼이 다른 것을 세는 시계열 불연속이 생긴다
+        # (461차 mdd_pct 사고 유형, 계측 4원칙 ①). 새 축으로 분리 저장한다.
+        decision["entry_qty_final"]    = int(_qty_auto)
         decision["entry_mode"]         = entry_mode
         decision["entry_executed"]     = bool(_entry_executed_this_cycle)
         decision["entry_block_reason"] = _entry_block_reason

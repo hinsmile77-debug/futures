@@ -574,6 +574,18 @@ def _migrate_ensemble_decisions_db():
                 #   (`features/feature_builder.py:516`). 판독기가 반드시 가른다.
                 "spread_ticks": "REAL",
                 "spread_extreme_shadow": "INTEGER",
+                # ── [MW0602 477차 후속 / F-1] 실제 진입 계약수 ──────────────
+                # `entry_qty`는 품질 게이트까지만 반영한 **산출 수량**(_qty_display)
+                # 이고, 증거금 캡은 그 뒤 _qty_auto에만 걸린다(main.py:8105 주석).
+                # 그래서 [MarginCap] 발생일에는 `entry_qty`가 `trades.entry_qty`보다
+                # 1계약 크게 남는다(0820 전수 대사: 140포지션 중 6건, 전부 그런 날).
+                # 실전 전환 기준 ⑧ 해제 시 증거금이 binding이 되는 빈도가 올라
+                # [28] sizing_inversion_watch의 입력이 그만큼 부정확해지므로,
+                # 판정용 축을 분리한다. 기존 `entry_qty`는 의미 무변경(하위호환·
+                # 대시보드 "산출 수량" 카드) — 판정에는 이 컬럼을 쓸 것.
+                # ⚠ 2026-08-20 이전 행은 NULL = 미측정. `sizing_trace.qty_auto`
+                #   (08-14~) 또는 `trades.entry_qty`로 복원한다(계측 4원칙 ②).
+                "entry_qty_final": "INTEGER",
             }
             for name, dtype in additions.items():
                 if name not in cols:

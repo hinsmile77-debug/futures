@@ -300,12 +300,19 @@ predictions          : id, ts, horizon, direction, confidence, actual, correct, 
 ensemble_decisions   : ts, regime, micro_regime, direction, confidence, grade, auto_entry,
                        min_conf, min_conf_effective(462차), gate_reason, gate_blocked,
                        meta_action, meta_size_mult, meta_size_raw, toxicity_*, entry_gate_json,
-                       entry_final_ok, entry_qty, entry_mode, entry_executed, entry_block_reason,
+                       entry_final_ok, entry_qty, entry_qty_final(477차), entry_mode,
+                       entry_executed, entry_block_reason,
                        checklist_reason, quantile_*, meta_gate_horizon, coherence_blocked,
                        confidence_raw, confidence_smoothed, weight_collapsed, cal_applied …
 meta_labels          : ts, horizon, predicted, actual, confidence, up/down/flat_prob,
                        target_close, future_close, realized_move, threshold_move, meta_*
 ```
+
+> ⚠ **`ensemble_decisions.entry_qty` = 산출 수량(증거금 캡 이전, `_qty_display`)이다 —
+> "진입 수량"이라는 이름을 믿지 마라.** `[MarginCap]` 발생일에는 실체결보다 1계약 크다
+> (0820 전수 대사: 140포지션 중 6건, 전부 그런 날). **실제 진입 계약수**는
+> `entry_qty_final`(477차 후속~. 그 이전 행은 NULL=미측정) 또는
+> `sizing_trace.qty_auto`(08-14~) 또는 `trades.entry_qty`를 쓸 것.
 
 > ⚠ **`predictions` 에는 `30m` 행이 계속 쌓인다** (2026-08-13: 368행, `1m`과 동수).
 > 296차 퇴역은 **앙상블·CoherenceGate 편입에서 뺀 것**이지 예측 발행을 끈 것이 아니다.
