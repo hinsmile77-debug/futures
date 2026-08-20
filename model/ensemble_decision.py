@@ -315,6 +315,21 @@ class EnsembleDecision:
         # [403차 종합 P0-2b] 진입 하한 ↔ 보정기 출력범위 정합성 경보 상태.
         # 마지막으로 경보한 (도달가능여부) 를 기억해 상태가 바뀔 때만 로그를 남긴다.
         self._conf_floor_reachable: Optional[bool] = None
+        # ── [MW0601 482차 / G-3] 도달가능성의 **3상태** ─────────────────────────
+        # `_conf_floor_reachable` 은 전이 시에만 로그를 남기는 래치인데, 아래 세 개의
+        # early return 경로(진입금지 시간대 / 보정기 미fit / output_max 없음)에서는
+        # **상태를 갱신하지 않고** 빠져나간다. 그래서 한 번 False 로 떨어진 뒤
+        # 보정기가 미fit 이 되면(403차 축퇴 가드 배포 이후 상시) 복구 로그 없이
+        # False 로 **고착**한다.
+        #
+        # 2026-08-20 실측: 09:06:00 "도달 불가" 1건 뒤 복구 로그 0건인데, 10:55
+        # 이후 conf 0.397(> min_conf 0.370)로 정상 진입 4건이 났다. 즉 그날 하루가
+        # 도달불가였던 게 아니라 **판정을 멈춘 것**이다.
+        #
+        # 이 위에 "도달불가 분"을 세면 CLAUDE.md 계측 4원칙 ④의 `_verified_today`
+        # 가짜 평선과 똑같은 시계열이 만들어진다. 그래서 카운트 이전에 "재지 않음"을
+        # 먼저 1급 상태로 만든다 — 값은 "reachable" / "unreachable" / "unmeasured:<사유>".
+        self.conf_floor_state: str = "unmeasured:init"
 
     def _check_conf_floor_consistency(
         self, min_conf: float, zone_allows_entry: bool = True
@@ -348,15 +363,24 @@ class EnsembleDecision:
                     "[ConfFloorGuard] 진입 금지 시간대 — 정합성 판정 스킵 (min_conf=%.3f)",
                     float(min_conf or 0.0),
                 )
+                # [MW0601 482차 / G-3] 판정을 안 했다 != 도달불가. 래치는 그대로 두되
+                # 3상태에는 "재지 않음"을 명시한다.
+                self.conf_floor_state = "unmeasured:zone_blackout"
                 return
             _cal = self.ensemble_calibrator
             if not _cal.is_fitted:
-                return          # 미fit이면 raw가 그대로 나가므로 도달 가능
+                # 미fit이면 raw가 그대로 나가므로 도달 가능 — 하지만 그것은 **판정이
+                # 아니라 가정**이다. 403차 축퇴 가드 이후 이 경로가 상시라, 여기서
+                # 래치를 안 건드리는 바람에 직전 False 가 하루 종일 고착했다.
+                self.conf_floor_state = "unmeasured:calibrator_unfitted"
+                return
             _out_max = _cal.output_max
             if _out_max is None:
+                self.conf_floor_state = "unmeasured:no_output_max"
                 return
             _need = max(float(ENS_CONF_FLOOR_FOR_AUTO), float(min_conf or 0.0))
             _reachable = _out_max >= _need
+            self.conf_floor_state = "reachable" if _reachable else "unreachable"
             if _reachable == self._conf_floor_reachable:
                 return          # 상태 무변화 — 로그 억제
             self._conf_floor_reachable = _reachable
@@ -374,6 +398,8 @@ class EnsembleDecision:
                     _out_max, _need,
                 )
         except Exception as _cfg_e:
+            # [MW0601 482차 / G-3] 예외로 못 잰 분도 0이 아니라 "재지 않음"이다.
+            self.conf_floor_state = "unmeasured:error"
             logger.debug("[ConfFloorGuard] 점검 실패 (무해): %s", _cfg_e)
 
     def compute(

@@ -999,6 +999,15 @@ class TradingSystem:
         # 직전에 잡아 `scaler_daily.cb3_triggered` 에 쓴다. 명시 초기화(계측 4원칙 ④):
         # getattr 폴백으로 읽으면 종전처럼 조용히 0이 박힌다.
         self._cb3_daily_halt_eod: int = 0
+        # [MW0601 482차 / G-3] ConfFloorGuard 3상태 분 카운터.
+        # `mc-conf 괴리` 경보의 "진입후보 N분"은 "기회가 없었다"와 "구조적으로
+        # 진입이 불가능했다"를 같은 숫자에 섞고 있다. 도달불가 분을 분리 카운트해야
+        # 그 경보의 오탐/정탐을 구분할 수 있다 — 다만 셋째 칸(**재지 않음**)이
+        # 없으면 카운터 자체가 거짓말을 한다(계측 4원칙 ②). 보정기 미fit 구간이
+        # 상시라 그 값이 대부분일 수 있고, 그렇다면 앞의 두 수치는 아직 해석하면 안 된다.
+        self._mh_cfg_reachable_min: int = 0
+        self._mh_cfg_unreachable_min: int = 0
+        self._mh_cfg_unmeasured_min: int = 0
         # [MW0601 457차 / G9] 직전 사이클 파이프라인 지배 구간 (stage, ms).
         # Degraded 판정 로그의 원인 태그 전용 — 판정 자체에는 관여하지 않는다.
         self._last_pipe_dominant = None
@@ -2298,6 +2307,9 @@ class TradingSystem:
         self._mh_weight_collapse_minutes = 0
         self._mh_intraday_retrain_count = 0
         self._mh_cb3_ready_minutes = 0   # [MW0601 482차 / G-1]
+        self._mh_cfg_reachable_min = 0   # [MW0601 482차 / G-3]
+        self._mh_cfg_unreachable_min = 0
+        self._mh_cfg_unmeasured_min = 0
 
     @staticmethod
     def _model_reload_quiet_delay(now_sec: float, cfg: dict) -> float:
@@ -6989,6 +7001,14 @@ class TradingSystem:
         # 세야 "몇 분 중 몇 분"이 성립한다.
         if self.circuit_breaker.cb3_ready:
             self._mh_cb3_ready_minutes += 1
+        # [MW0601 482차 / G-3] ConfFloorGuard 3상태 — 같은 분모로 센다.
+        _cfg_state = self.ensemble.conf_floor_state
+        if _cfg_state == "reachable":
+            self._mh_cfg_reachable_min += 1
+        elif _cfg_state == "unreachable":
+            self._mh_cfg_unreachable_min += 1
+        else:
+            self._mh_cfg_unmeasured_min += 1
 
         # GBM 재학습 중이면 skip — raw_data.db 동시 접근 + CPU 경합 방지
         if _const_hz and not self._scaler_refresh_running and not self._gbm_retrain_running:
@@ -11690,23 +11710,32 @@ class TradingSystem:
                 _mc_gap_avg = _gap.get("avg", 0.0)
                 _min_today = runtime_settings.MC_CONF_GAP_ALERT_MIN_TODAY
                 _min_avg   = runtime_settings.MC_CONF_GAP_ALERT_MIN_AVG
+                # [MW0601 482차 / G-3] "기회가 없었다"와 "구조적으로 불가능했다"를
+                # 분리한다. 도달불가 구간에서는 **어떤 신호도** 자동진입 하한을 넘을
+                # 수 없으므로, 그 분들이 섞인 후보 수로 경보의 오탐/정탐을 판단할 수
+                # 없다. ⚠ 셋째 칸(재지 않음)을 반드시 함께 찍는다 — 계측 4원칙 ②.
+                _cfg_txt = (" | ConfFloorGuard 도달가능 %d분 · 도달불가 %d분 · 재지않음 %d분"
+                            % (self._mh_cfg_reachable_min,
+                               self._mh_cfg_unreachable_min,
+                               self._mh_cfg_unmeasured_min))
                 if _gap["days"] and _mc_gap_today < _min_today:
                     log_manager.system(
                         f"[경보] mc-conf 괴리: 금일 진입후보(conf≥mc) {_mc_gap_today}분"
                         f" < 하한 {_min_today}분 — 최근 {_gap['lookback_days']}거래일 평균"
-                        f" {_gap['avg']:.0f}분/일. mc는 자동 조정하지 않음(사용자 판단 필요).",
+                        f" {_gap['avg']:.0f}분/일. mc는 자동 조정하지 않음(사용자 판단 필요).{_cfg_txt}",
                         "WARNING",
                     )
                 elif _gap["days"] and _gap["avg"] < _min_avg:
                     log_manager.system(
                         f"[경보] mc-conf 괴리: 최근 {_gap['lookback_days']}거래일 평균"
-                        f" 진입후보 {_gap['avg']:.0f}분/일 < 하한 {_min_avg}분 — 금일 {_mc_gap_today}분.",
+                        f" 진입후보 {_gap['avg']:.0f}분/일 < 하한 {_min_avg}분 — 금일 {_mc_gap_today}분.{_cfg_txt}",
                         "WARNING",
                     )
                 else:
                     logger.info(
-                        "[mc-conf gap] 정상: 금일 %d분, %d일 평균 %.0f분",
+                        "[mc-conf gap] 정상: 금일 %d분, %d일 평균 %.0f분%s",
                         _mc_gap_today, _gap["lookback_days"], _gap.get("avg", 0.0),
+                        _cfg_txt,
                     )
         except Exception as _mcg_e:
             logger.warning("[mc-conf gap] 계산 실패 (스킵): %s", _mcg_e)
