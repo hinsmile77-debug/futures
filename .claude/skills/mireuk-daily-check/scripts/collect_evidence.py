@@ -131,6 +131,16 @@ DEFAULT_CONFIG = {
         "entry": r"\[Position\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약 @ (?P<px>[\d.]+).*?horizon=(?P<hz>\w+)\s+hurst=(?P<hurst>\S+)",
         "fill_entry": r"\[체결진입\]\s*(?P<dir>\w+)\s+(?P<qty>\d+)계약.*?보유=(?P<held>\d+)계약",
         "exit": r"\[Position\] 체결청산 (?P<dir>\w+) @ (?P<px>[\d.]+)\s*\|\s*PnL=(?P<pt>[+-][\d.]+)pt\s*\((?P<won>[+-][\d,]+)원\)\s*\|\s*(?P<reason>.+?)\s*$",
+        # [MW0601 482차 / F-4] 부분청산 레그 — 계측 4원칙 ①(포지션 단위가 기본).
+        # `체결청산`만 세면 TP1 부분청산·손절1차 조기축소로 빠져나간 레그가 통째로
+        # 사라진다. 2026-08-20 실측: 레그 7 중 3레그(-118,014원)가 은닉돼 당일 순손실이
+        # 34% 과소, 승률이 25%p 과소 보고됐다.
+        # ⚠ **체결 단위**(`[Position] 체결부분청산`)를 쓴다. 요약 라인
+        #   (`[TP1 부분청산]`·`[손절1차 조기축소]`)은 이 체결들의 합이라 둘 다 세면
+        #   이중계상이다(10:55:17 실측: -61,628 + -60,628 = -122,256 = 요약 라인).
+        "partial_exit": r"\[Position\] 체결부분청산 (?P<qty>\d+)계약 @ (?P<px>[\d.]+)\s*\|\s*잔여=(?P<rem>\d+)계약\s*\|\s*PnL=(?P<pt>[+-][\d.]+)pt\s*\((?P<won>[+-][\d,]+)원\)\s*\|\s*(?P<reason>.+?)\s*$",
+        # 포지션 종료 표식 — 조립된 포지션 수와 대조하는 정합성 축
+        "pos_done": r"\[청산 완료\] PnL=(?P<pt>[+-][\d.]+)pt\s*\((?P<won>[+-][\d,]+)원\)",
         "block": r"\[차단\]\s*(?P<reason>.+?)\s*$",
         "sizer": r"\[Sizer\].*?신뢰도배수=(?P<conf_mult>[\d.]+)\s+레짐배수=(?P<regime_mult>[\d.]+)\s+안전배수=(?P<safe_mult>[\d.]+).*?→\s*(?P<qty>\d+)계약",
         "cb": r"\[CB\]\s*(?P<msg>.+?)\s*$",
@@ -176,15 +186,20 @@ DEFAULT_CONFIG = {
         {"name": "ENTRY_HORIZON_B2", "expect": "4.4", "why": "3m/5m 경계 [374차 2.5→4.0, 387차 4.0→4.4] — 드리프트 항목"},
         {"name": "CB_DAILY_HALT_FULL_BLOCK", "expect": "3", "why": "HALT 3회 → 완전 관망"},
         # --- 462·468차 배포분 (2026-08-14 추가). 전부 라이브 검증 대기 상태다 ---
-        {"name": "MODEL_LABEL_STATE_UNLOCK_ENABLED", "expect": "True",
+        # ⚠ [MW0601 482차 / F-2] 아래 5건은 `origin/dev`(MW0602 운영 브랜치) **전용**이다.
+        #   v9-dev 에는 상수뿐 아니라 **기능 코드 자체가 없다**(2026-08-20 전수검색: 5개 이름
+        #   모두 리포 안에서 수집기 기대표에만 존재). 브랜치를 구분하지 않던 종전 기대표는
+        #   MW0601 리포트에서 8거래일 연속 `미발견 ⚠` 5행을 만들었고, §11 자동 적신호
+        #   15칸 중 5칸을 상시 점유해 진짜 적신호를 가렸다. `branches` 키로 범위를 좁힌다.
+        {"name": "MODEL_LABEL_STATE_UNLOCK_ENABLED", "expect": "True", "branches": ["dev"],
          "why": "468차 G-1. 사이즈 제한 해제를 이벤트→상태 판정으로. **라이브 미검증** — `사이즈 축소 ×0.6` 0건 확인 전까지 CLAUDE.md ⑧ 해제 금지"},
-        {"name": "PRE_RETRAIN_DONE_BY_EOD_ENABLED", "expect": "True",
+        {"name": "PRE_RETRAIN_DONE_BY_EOD_ENABLED", "expect": "True", "branches": ["dev"],
          "why": "468차 F-1. EOD 완료로 `_pre_retrain_done` 해제 — G-1의 동반 스위치"},
-        {"name": "ZONE_ENTRY_BAN_ENFORCE", "expect": "False",
+        {"name": "ZONE_ENTRY_BAN_ENFORCE", "expect": "False", "branches": ["dev"],
          "why": "462차 P1-a. 🔴 True면 라이브 진입이 즉시 준다. 위반 7건이 오히려 흑자(+596,858원)라 [53] 채널 판정 전까지 False 유지"},
-        {"name": "ZONE_ENTRY_BAN_SHADOW_ENABLED", "expect": "True",
+        {"name": "ZONE_ENTRY_BAN_SHADOW_ENABLED", "expect": "True", "branches": ["dev"],
          "why": "462차 P1-a 섀도. 집행과 무관하게 위반 계측은 항상 켜져 있어야 한다"},
-        {"name": "PIPE_LATENCY_EXCLUDE_MODEL_SWAP", "expect": "True",
+        {"name": "PIPE_LATENCY_EXCLUDE_MODEL_SWAP", "expect": "True", "branches": ["dev"],
          "why": "462차 P2. 모델 교체 구간을 CB⑤ 판정용 지연에서만 차감(원값은 `raw=…ms`로 존치)"},
     ],
     # 차단 게이트 자동 인벤토리 — 이름에 이 패턴이 있고 값이 True/False 인 상수
@@ -823,19 +838,42 @@ def summarize_json(path, max_chars=1800):
 
 
 # ------------------------------------------------------------------ 불변식 검사
+def current_branch(root):
+    """[MW0601 482차 / F-2] 현재 체크아웃된 브랜치명. 못 읽으면 None."""
+    out = run_git(root, ["branch", "--show-current"])
+    if not out:
+        return None
+    b = out.strip().splitlines()[0].strip() if out.strip() else ""
+    return b or None
+
+
 def check_invariants(root, cfg):
     """config/settings.py 를 import 하지 않고 정규식으로만 읽는다.
 
     import 하면 py37_32 전용 모듈이 딸려 들어와 터진다. 여기서는 '값이 무엇인가'만
     알면 되므로 텍스트로 읽는 편이 안전하고 빠르다.
+
+    [MW0601 482차 / F-2] 브랜치 스코프 — 항목에 `branches` 키가 있고 현재 브랜치가
+    거기 없으면 표에서 빼고 **개수와 이름을 따로 남긴다**(계측 4원칙 ③ 탈락 가시화).
+    키가 없는 항목은 종전과 동일하게 전 브랜치 대상이므로 MW0602(`dev`)의 표는
+    바뀌지 않는다. 브랜치를 못 읽으면(detached HEAD 등) **아무것도 빼지 않는다** —
+    감시 누락보다 오탐이 낫다.
+
+    반환: (path, rows, out_of_scope)
     """
     path = os.path.join(root, "config", "settings.py")
     if not os.path.exists(path):
-        return None, []
+        return None, [], []
     text = read_text(path)
+    branch = current_branch(root)
     rows = []
+    out_of_scope = []
     for inv in cfg["invariants"]:
         name = inv["name"]
+        _scope = inv.get("branches")
+        if _scope and branch and branch not in _scope:
+            out_of_scope.append({"name": name, "branches": _scope, "why": inv.get("why", "")})
+            continue
         # `NAME = 3` 뿐 아니라 `NAME: bool = True` 형태(어노테이션 대입)도 잡는다.
         # 468차 F-1/G-1 스위치가 어노테이션으로 선언돼 있어, 이걸 안 보면 실재하는
         # 상수가 `미발견 ⚠` 으로 뜬다 — 오탐이 아니라 **감시 누락**이다.
@@ -859,7 +897,120 @@ def check_invariants(root, cfg):
         rows.append({"name": 'VALIDATION_CAMPAIGN["mode"]', "actual": m.group(1),
                      "expect": "standing", "why": "2026-08-01 상시 운영 전환",
                      "verdict": "일치" if m.group(1) == "standing" else "**불일치 ⚠**"})
-    return path, rows
+    return path, rows, out_of_scope
+
+
+# ------------------------------------------------- [MW0601 482차 / F-4] 포지션 조립기
+_HHMMSS_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})")
+
+
+def _rec_seconds(rec):
+    """레코드의 초 단위 시각. `_raw` 앞머리의 로그 타임스탬프를 쓴다.
+
+    `hhmm` 은 분 해상도라 같은 분 안에서 벌어지는 진입→부분청산→청산의 순서를
+    복원할 수 없다(2026-08-20 10:55:00 진입 → 10:55:17 조기축소가 같은 분이다).
+    """
+    m = _HHMMSS_RE.search(rec.get("_raw") or "")
+    if not m:
+        h, mi = (rec.get("hhmm") or "00:00").split(":")[:2]
+        return int(h) * 3600 + int(mi) * 60
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+
+
+def _won(rec):
+    try:
+        return int((rec.get("won") or "0").replace(",", ""))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pt(rec):
+    try:
+        return float(rec.get("pt"))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def assemble_positions(merged):
+    """청산 **레그**를 **포지션**으로 조립한다 — CLAUDE.md 계측 4원칙 ①.
+
+    왜 필요한가: `trades.quantity` 와 마찬가지로 로그의 청산도 레그 단위다.
+    이익 포지션은 TP1/TP2/TP3 로 쪼개져 작은 레그 여러 개가 되고, 손실 포지션은
+    하드스톱 전량청산이라 큰 레그 하나가 된다. 레그로 승패를 세면 "부분청산으로
+    손실을 턴 포지션이 승" 이 되고(417차가 사이징 통계 4종을 무효화한 그 오류),
+    `체결청산` 만 세면 부분청산 레그의 손익이 통째로 사라진다.
+
+    2026-08-20 실측 — 레그 7 / 포지션 4:
+        수집기 §5 종전: 청산 4건 · 승 1 (25%) · -230,004원
+        DB 포지션 단위: 4포지션 2승 2패(50.0%) · -348,018원
+        차이 -118,014원 = 은닉된 3레그(손절1차 조기축소 2 + TP1 부분청산 1)
+
+    조립 규칙:
+      · `[Position] 진입` 이 포지션을 연다.
+      · `체결부분청산` / `체결청산` 레그를 열린 포지션에 붙인다.
+      · `체결청산`(전량) 이 포지션을 닫는다.
+      · 포지션 pt 는 **계약 가중합** Σ(pt_i × qty_i) 이다. 레그 수량이 다르면
+        비가중 합은 부호까지 뒤집힌다(utils/db_utils.py `_trend_sql` 과 동일 규약).
+      · 전량청산 레그에는 수량이 안 찍히므로 직전 레그의 `잔여=` 로 역산한다.
+
+    반환: (positions, orphans)
+      positions: [{"open_hhmm","dir","entry_qty","hz","legs":[...],
+                   "net_won","net_pt","closed","exit_reason"}]
+      orphans:   포지션에 귀속되지 않은 레그(진입 로그가 없는 이월 포지션 등)
+    """
+    ev = []
+    for rec in merged.get("entry", []):
+        ev.append((_rec_seconds(rec), 0, "entry", rec))
+    for rec in merged.get("partial_exit", []):
+        ev.append((_rec_seconds(rec), 1, "partial", rec))
+    for rec in merged.get("exit", []):
+        ev.append((_rec_seconds(rec), 2, "full", rec))
+    ev.sort(key=lambda t: (t[0], t[1]))
+
+    positions, orphans, cur = [], [], None
+    for _sec, _ord, kind, rec in ev:
+        if kind == "entry":
+            if cur is not None:              # 직전 포지션이 안 닫혔다 — 그대로 보존
+                positions.append(cur)
+            try:
+                _eq = int(rec.get("qty") or 0)
+            except (TypeError, ValueError):
+                _eq = 0
+            cur = {"open_hhmm": rec.get("hhmm"), "dir": rec.get("dir"),
+                   "entry_qty": _eq, "hz": rec.get("hz"), "grade": None,
+                   "legs": [], "net_won": 0, "net_pt": 0.0,
+                   "closed": False, "exit_reason": None, "_rem": _eq}
+            continue
+        if cur is None:
+            orphans.append(rec)
+            continue
+        if kind == "partial":
+            try:
+                _q = int(rec.get("qty") or 1)
+            except (TypeError, ValueError):
+                _q = 1
+            try:
+                cur["_rem"] = int(rec.get("rem"))
+            except (TypeError, ValueError):
+                cur["_rem"] = max(0, cur["_rem"] - _q)
+        else:
+            # 전량청산 — 수량 미기재. 직전 레그의 잔여로 역산(최소 1)
+            _q = max(1, int(cur["_rem"] or 1))
+            cur["_rem"] = 0
+        cur["legs"].append({"hhmm": rec.get("hhmm"), "qty": _q,
+                            "pt": _pt(rec), "won": _won(rec),
+                            "reason": (rec.get("reason") or "?").strip(),
+                            "kind": kind})
+        cur["net_won"] += _won(rec)
+        cur["net_pt"] += _pt(rec) * _q
+        if kind == "full":
+            cur["closed"] = True
+            cur["exit_reason"] = (rec.get("reason") or "?").strip()
+            positions.append(cur)
+            cur = None
+    if cur is not None:
+        positions.append(cur)
+    return positions, orphans
 
 
 def day_summary(digests, cfg, out):
@@ -913,40 +1064,85 @@ def day_summary(digests, cfg, out):
     A("| 사이저 호출(`[Sizer]`) | %d |" % len(sz))
     A("")
 
-    # --- 손익 ---
-    if ex:
-        tot_pt = 0.0
-        tot_won = 0
+    # --- 손익 — **포지션 단위가 기본**(계측 4원칙 ①) [MW0601 482차 / F-4] ---
+    pe = merged.get("partial_exit", [])
+    pd = merged.get("pos_done", [])
+    if ex or pe:
+        positions, orphans = assemble_positions(merged)
+        closed = [q for q in positions if q["closed"]]
+        wins = sum(1 for q in closed if q["net_won"] > 0)
+        tot_won = sum(q["net_won"] for q in closed)
+        tot_pt = sum(q["net_pt"] for q in closed)
+        n_legs = sum(len(q["legs"]) for q in closed)
+
+        A("### 포지션 %d건 · 승 %d (%s) · 합계 %+.2fpt (%s원)  ※ 레그 %d행"
+          % (len(closed), wins,
+             ("%.0f%%" % (100.0 * wins / len(closed))) if closed else "—",
+             tot_pt, format(tot_won, "+,d"), n_legs))
+        A("")
+        A("> ⚠ **단위 주의** — 이 표는 **포지션 단위**다. `체결청산` 행만 세면(종전 방식)"
+          " 부분청산으로 빠져나간 레그가 통째로 사라진다. 2026-08-20 실측: 레그 기준"
+          " 4건 승 1(25%) −230,004원 vs **포지션 기준 4건 승 2(50%) −348,018원** —"
+          " 손익 34% 과소, 승률 25%p 과소였다(계측 4원칙 ①).")
+        A("")
+        A("| 진입 | 방향 | 진입수량 | hz | 레그 | 포지션 pt | 포지션 net(원) | 최종 청산사유 |")
+        A("|---|---|---|---|---|---|---|---|")
+        for q in positions:
+            A("| %s | %s | %s | %s | %d | %+.2f | %s | %s |" % (
+                q["open_hhmm"], q.get("dir"), q.get("entry_qty"), q.get("hz") or "—",
+                len(q["legs"]), q["net_pt"], format(q["net_won"], "+,d"),
+                q["exit_reason"] if q["closed"] else "**미청산(보유 중)**"))
+        A("")
+
+        # 레그 상세 — 은닉되던 부분청산을 눈에 보이게 (계측 4원칙 ③ 탈락 가시화)
+        A("**청산 레그 %d행** (부분청산 %d · 전량청산 %d)" % (n_legs, len(pe), len(ex)))
+        A("")
+        A("> 단위 주 — 여기 레그는 **체결 단위**다. `trades` 테이블은 같은 부분청산을"
+          " 주문 단위 한 행으로 합쳐 적으므로 DB 행수가 더 적을 수 있다"
+          "(2026-08-20: 체결 8 vs DB 7). **포지션 합계는 양쪽이 일치해야 한다** —"
+          " 아래 정합성 줄이 그것을 본다.")
+        A("")
+        A("| 시각 | 종류 | 계약 | PnL(pt) | PnL(원) | 사유 |")
+        A("|---|---|---|---|---|---|")
+        for q in positions:
+            for lg in q["legs"]:
+                A("| %s | %s | %d | %+.2f | %s | %s |" % (
+                    lg["hhmm"], "부분" if lg["kind"] == "partial" else "전량",
+                    lg["qty"], lg["pt"], format(lg["won"], "+,d"), lg["reason"]))
+        A("")
+
         reasons = {}
-        wins = 0
-        for e in ex:
-            try:
-                tot_pt += float(e["pt"])
-                tot_won += int(e["won"].replace(",", ""))
-                if float(e["pt"]) > 0:
-                    wins += 1
-            except (TypeError, ValueError):
-                pass
-            r = (e.get("reason") or "?").strip()
-            reasons[r] = reasons.get(r, 0) + 1
-        A("### 청산 %d건 · 승 %d (%.0f%%) · 합계 %+.2fpt (%s원)"
-          % (len(ex), wins, 100.0 * wins / len(ex), tot_pt, format(tot_won, "+,d")))
-        A("")
-        A("| 시각 | 방향 | PnL(pt) | PnL(원) | 사유 |")
-        A("|---|---|---|---|---|")
-        for e in ex:
-            A("| %s | %s | %s | %s | %s |" % (
-                e["hhmm"], e.get("dir"), e.get("pt"), e.get("won"), e.get("reason")))
-        A("")
-        A("**청산 사유 분포** — " + ", ".join(
+        for q in positions:
+            for lg in q["legs"]:
+                reasons[lg["reason"]] = reasons.get(lg["reason"], 0) + 1
+        A("**청산 사유 분포(레그 단위)** — " + ", ".join(
             "`%s`×%d" % (k, v) for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])))
         A("")
-        stops = sum(v for k, v in reasons.items() if "스톱" in k or "손절" in k)
-        if stops:
-            A("> 하드스톱·손절 계열 %d/%d건. **손절 준수율**(실현손실 ÷ 의도손절폭 ATR×1.5)은 "
-              "417차 재분해에서 유일하게 유의했던 축이다 — 진입 로그의 `손절=` 값과 대조하라."
-              % (stops, len(ex)))
+
+        # 손절 준수율 적신호는 **포지션의 최종 청산사유** 기준 — 부분청산 레그가
+        # 분모를 부풀려 비율을 왜곡하지 않게 한다.
+        stop_pos = sum(1 for q in closed
+                       if "스톱" in (q["exit_reason"] or "") or "손절" in (q["exit_reason"] or ""))
+        if stop_pos:
+            A("> 최종 청산이 하드스톱·손절 계열인 포지션 %d/%d건. **손절 준수율**"
+              "(실현손실 ÷ 의도손절폭 ATR×1.5)은 417차 재분해에서 유일하게 유의했던 축이다 "
+              "— 진입 로그의 `손절=` 값과 대조하라." % (stop_pos, len(closed)))
             A("")
+
+        # --- 정합성 등식 (482차 F-4) ---
+        # 은닉 레그를 다시 놓치면 이 등식이 깨진다 — 회귀 자동 검출.
+        leg_sum = sum(_won(e) for e in ex) + sum(_won(e) for e in pe)
+        ok_sum = (leg_sum == tot_won)
+        ok_cnt = (len(pd) == len(closed)) if pd else None
+        _bits = ["레그합 %s = 포지션합 %s → %s" % (
+            format(leg_sum, "+,d"), format(tot_won, "+,d"), "OK" if ok_sum else "**불일치 ⚠**")]
+        if ok_cnt is not None:
+            _bits.append("`[청산 완료]` %d건 = 조립 포지션 %d건 → %s" % (
+                len(pd), len(closed), "OK" if ok_cnt else "**불일치 ⚠**"))
+        if orphans:
+            _bits.append("**귀속 실패 레그 %d행 ⚠**(진입 로그 없는 이월 포지션 가능)" % len(orphans))
+        A("**정합성**: " + " · ".join(_bits))
+        A("")
 
     # --- 진입 상세 ---
     if en:
@@ -1268,7 +1464,7 @@ def build(root, day, phase, cfg, discover_only=False):
     # ---- 3. 절대원칙 불변식 ----
     A("## 3. 설정 불변식 — 절대원칙·한시예외 (config/settings.py)")
     A("")
-    spath, rows = check_invariants(root, cfg)
+    spath, rows, inv_oos = check_invariants(root, cfg)
     if spath is None:
         A("`config/settings.py` 를 못 찾았다 ⚠ — 경로가 바뀌었는지 확인할 것")
     else:
@@ -1282,6 +1478,13 @@ def build(root, day, phase, cfg, discover_only=False):
         A("")
         A("> 이 표는 **의도한 예외가 여전히 의도대로인지** 보는 것이다. "
           "`불일치`는 누군가 바꿨다는 뜻이고, 바꿨다면 `dev_memory/DECISION_LOG.md` 에 근거가 있어야 한다.")
+        if inv_oos:
+            A("")
+            A("_이 브랜치(`%s`) 범위 밖 **%d건** — 표에서 제외했다(계측 4원칙 ③): %s._" % (
+                current_branch(root) or "?", len(inv_oos),
+                ", ".join("`%s`(→%s)" % (r["name"], "/".join(r["branches"])) for r in inv_oos)))
+            A("> 제외는 \"없어도 된다\"가 아니라 \"이 브랜치에는 기능 자체가 없다\"는 뜻이다. "
+              "이식 여부는 별개 안건이며 주간회의에서 정한다.")
     A("")
 
     gates = scan_gate_flags(root, cfg)
@@ -1708,12 +1911,24 @@ def build(root, day, phase, cfg, discover_only=False):
                     bd[r] = bd.get(r, 0) + 1
                 top_bl = " 최다 차단 사유: `%s`" % sorted(bd.items(), key=lambda kv: -kv[1])[0][0]
             flags.append("**진입 0건** — 차단 %d건.%s (진입0 딥다이브 절차를 따르라)" % (len(bl), top_bl))
-        if ex:
-            stops = sum(1 for e in ex
-                        if "스톱" in (e.get("reason") or "") or "손절" in (e.get("reason") or ""))
-            if stops * 2 >= len(ex):
-                flags.append("청산 %d건 중 하드스톱·손절 계열 **%d건(%.0f%%)** — 손절 준수율 확인 필요"
-                             % (len(ex), stops, 100.0 * stops / len(ex)))
+        # [MW0601 482차 / F-4] 포지션 단위로 센다. 종전은 `체결청산` 레그만 세어
+        # 2026-08-20에 "4건 100% 하드스톱"이라 찍었으나 실제는 하드스톱 4 ·
+        # 손절1차 조기축소 2 · TP1 부분청산 1(레그 7 / 포지션 4)이었다.
+        _pos_all, _ = assemble_positions(merged)
+        _pos = [q for q in _pos_all if q["closed"]]
+        if _pos:
+            stops = sum(1 for q in _pos
+                        if "스톱" in (q["exit_reason"] or "") or "손절" in (q["exit_reason"] or ""))
+            if stops * 2 >= len(_pos):
+                flags.append("포지션 %d건 중 최종청산이 하드스톱·손절 계열 **%d건(%.0f%%)** "
+                             "— 손절 준수율 확인 필요 (레그 %d행)"
+                             % (len(_pos), stops, 100.0 * stops / len(_pos),
+                                sum(len(q["legs"]) for q in _pos)))
+            _hidden = sum(1 for q in _pos if len(q["legs"]) > 1)
+            if _hidden:
+                flags.append("다레그 포지션 **%d건** — 레그 단위 집계는 손익·승률을 왜곡한다"
+                             "(계측 4원칙 ①). §5 표는 포지션 단위이니 그 값을 인용하라"
+                             % _hidden)
     try:
         if sz and en:
             smax = max(int(s["qty"]) for s in sz if s.get("qty"))
