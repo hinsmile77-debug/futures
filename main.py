@@ -11148,11 +11148,22 @@ class TradingSystem:
         # [Platt] 앙상블 보정기 저장 — 다음 기동 시 즉시 복원 가능
         try:
             from config.settings import ENSEMBLE_CALIBRATOR_PATH
-            if self.ensemble.ensemble_calibrator.save(ENSEMBLE_CALIBRATOR_PATH):
+            _cal = self.ensemble.ensemble_calibrator
+            if _cal.save(ENSEMBLE_CALIBRATOR_PATH):
                 log_manager.system(
-                    f"[Calibration] 앙상블 보정기 저장 완료 "
-                    f"n={self.ensemble.ensemble_calibrator.n_samples}",
+                    f"[Calibration] 앙상블 보정기 저장 완료 n={_cal.n_samples}",
                     "INFO",
+                )
+            else:
+                # [MW0602 485차 F-1] 부정 분기 무로그 금지 — save()가 False를
+                # 돌려주면 판정 기준선이 며칠씩 과거 저장본에 묶여도 아무 로그가
+                # 없었다(0821 리포트 1-1: 7거래일 무저장·무로그). 감싸는 except는
+                # False 반환에 발동하지 않으므로 여기서 직접 남긴다.
+                log_manager.system(
+                    f"[Calibration] 앙상블 보정기 저장 건너뜀 — "
+                    f"fitted={_cal.is_fitted} degenerate={_cal.is_degenerate} "
+                    f"unreachable={_cal.is_unreachable} n={_cal.n_samples}",
+                    "WARNING",
                 )
         except Exception as _cal_s_e:
             logger.warning("[Calibration] 보정기 저장 실패 (무해): %s", _cal_s_e)

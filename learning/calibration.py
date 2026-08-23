@@ -625,7 +625,15 @@ class PredictionCalibrator:
 
     def save(self, path: str) -> bool:
         """보정 모델 + 누적 데이터를 디스크에 저장 (joblib)."""
-        if not _SKLEARN_OK or not self._fitted:
+        if not _SKLEARN_OK:
+            return False
+        # [MW0602 485차 F-1] `not self._fitted` 게이트 제거 — 모델 계수와 누적 표본은
+        # 수명이 다른 데이터인데 한 게이트에 묶여 있어, 마감 시각에 축퇴/도달불가
+        # 상태면 그날 쌓인 표본까지 통째로 버려졌다(2026-08-12~21 7거래일 무저장,
+        # 0821 리포트 1-1). 이제 fit 상태와 무관하게 저장하고, 상태 3키를 payload에
+        # 실어 load()가 그대로 복원한다. 한 번도 fit된 적 없어 _model 자체가 없는
+        # 경우만 종전대로 저장하지 않는다.
+        if self._model is None:
             return False
         try:
             import joblib
@@ -641,6 +649,12 @@ class PredictionCalibrator:
                 "clean_probs":  list(self._clean_probs),
                 "clean_labels": list(self._clean_labels),
                 "artifact_n":   self._artifact_n,
+                # [MW0602 485차 F-1] 저장 시점 상태 — 구버전 저장본에는 이 3키가 없다
+                # → load()에서 fitted=True 폴백(구버전은 fitted일 때만 저장됐으므로
+                # 종전 동작 보존).
+                "fitted":      self._fitted,
+                "degenerate":  self._degenerate,
+                "unreachable": self._unreachable,
             }, path, protocol=4)
             return True
         except Exception as e:
@@ -655,7 +669,14 @@ class PredictionCalibrator:
             import joblib
             state = joblib.load(path)
             self._model  = state["model"]
-            self._fitted = True
+            # [MW0602 485차 F-1] 저장 시점 상태 복원 — 무조건 True로 세우면(구현)
+            # 축퇴 상태로 저장된 보정기가 다음 기동에 fitted로 되살아난다(1-7).
+            # 구버전 저장본(키 없음)은 True 폴백 — 구버전은 fitted일 때만 저장됐다.
+            # 아래 축퇴/도달불가 재평가는 fitted를 **내리기만** 하고 올리지 않으므로
+            # False로 복원되면 calibrate()가 raw 통과(현행 보수적 폴백)로 시작한다.
+            self._fitted      = bool(state.get("fitted", True))
+            self._degenerate  = bool(state.get("degenerate", False))
+            self._unreachable = bool(state.get("unreachable", False))
             self._n      = state.get("n", 0)
             for p in state.get("probs", []):
                 self._probs.append(p)
