@@ -479,52 +479,31 @@ def run_git(root, args, timeout=25):
 
 
 def git_index_lock(root):
-    """[MW0601 483차 후속2 / P0-1] `.git/index.lock` 스테일 판정.
+    """[MW0601 483차 후속2·후속3 / P0-1·P2-1] `.git/index.lock` 스테일 판정.
 
-    반환: dict(present, size, age_sec, stale, git_procs, note)
-      stale=True 는 **3중 조건**을 모두 만족할 때만 — ① 0바이트 ② 나이 > 10분
-      ③ 실행 중 `git` 프로세스 0개. 하나라도 빠지면 stale 로 부르지 않는다.
-      진짜로 도는 git 을 스테일로 오판하면 남의 인덱스를 깨뜨린다.
+    ⚠ **판정 로직을 여기 두지 않는다.** 정본은 `scripts/git_lock_guard.py` 하나이며
+    (형제 저장소에도 같은 파일이 복사돼 있다), 여기서는 그것을 불러 쓰기만 한다.
+    같은 판정을 두 곳에 적으면 한쪽만 고쳐져 조용히 갈라진다 — 이 사고가 바로
+    "한 저장소만 고치면 다른 저장소는 그대로"였던 유형이다(futures·fuoption 동시 발생).
 
-    왜 필요한가 (2026-08-21 실측): 락이 있어도 `git status` 는 **rc=0 · stderr 무출력**
-    이라 완전 무증상이다. 실패하는 것은 `git add`/`commit` 뿐이고, 그날은 커밋 시도가
-    없어 **53시간 동안 아무 계측에도 안 걸렸다.** 같은 사고가 fuoption 에도 동시 발생
-    (09:08:53, 0바이트)했고 그쪽은 2일간 커밋 봉쇄 상태였다.
-    0바이트인 이유: git 은 락을 **빈 파일로 먼저 만들고** 새 인덱스를 **맨 마지막에**
-    쓴다 → 0바이트 = 인덱스 쓰기 명령(`git add` 계열)이 중간에 죽었다는 지문이다
-    (`git status` 는 아무리 죽여도 락을 남기지 않는다 — 483차 강제종료 실험 4/4 vs 0/5).
+    정본을 못 찾으면 **미측정**으로 반환한다. 여기서 축약 구현을 다시 만들면
+    그게 두 번째 정본이 된다(계측 4원칙 ②ㆍ④).
     """
-    d = os.path.join(root, ".git", "index.lock")
-    info = {"present": False, "size": None, "age_sec": None,
-            "stale": False, "git_procs": None, "note": ""}
-    if not os.path.exists(d):
-        return info
-    info["present"] = True
+    guard = os.path.join(root, "scripts", "git_lock_guard.py")
+    if not os.path.exists(guard):
+        return {"present": None, "size": None, "age_sec": None, "stale": False,
+                "git_procs": None,
+                "note": "scripts/git_lock_guard.py 없음 — 인덱스락 **미측정**"}
     try:
-        st = os.stat(d)
-        info["size"] = st.st_size
-        info["age_sec"] = max(0.0, time.time() - st.st_mtime)
+        if os.path.dirname(guard) not in sys.path:
+            sys.path.insert(0, os.path.dirname(guard))
+        import git_lock_guard as _glg
+        info = _glg.inspect(root)
+        info["note"] = ""
+        return info
     except Exception as e:
-        info["note"] = "stat 실패: %s" % e
-        return info
-    # 실행 중 git 프로세스 — 못 세면 None(미측정)이며 0 으로 위장하지 않는다(계측 4원칙 ②)
-    try:
-        out = subprocess.Popen(["tasklist", "/FI", "IMAGENAME eq git.exe", "/NH"],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                               ).communicate(timeout=10)[0].decode("utf-8", "replace")
-        info["git_procs"] = out.lower().count("git.exe")
-    except Exception:
-        info["git_procs"] = None
-    info["stale"] = bool(info["size"] == 0
-                         and info["age_sec"] > 600
-                         and info["git_procs"] == 0)
-    return info
-
-
-# [MW0601 476차] PC 식별자 오버라이드 — 인자 > 환경변수 > 호스트명.
-# 프로세스 전역으로 한 번만 정한다(build()와 --out-auto가 반드시 같은 값을 써야
-# 한다 — 다르면 머리말의 PC와 파일명의 PC가 어긋난 다이제스트가 나온다).
-_PC_OVERRIDE = None
+        return {"present": None, "size": None, "age_sec": None, "stale": False,
+                "git_procs": None, "note": "git_lock_guard 호출 실패 — **미측정**: %s" % e}
 
 
 def set_pc_override(pc):
@@ -1606,8 +1585,12 @@ def build(root, day, phase, cfg, discover_only=False):
     status = run_git(root, ["status", "--porcelain"])
     dirty = [l for l in status.splitlines() if l.strip()]
     # [MW0601 483차 후속2 / P0-1] 인덱스락 상태를 같은 줄에 병기한다.
+    # 3상태다 — None(미측정) / False(없음) / True(있음). 미측정을 "없음"으로 적으면
+    # 계측 4원칙 ②(미측정 ≠ 0) 위반이고, 하필 이 지표는 **무증상 결함의 유일한 창구**다.
     lk = git_index_lock(root)
-    if not lk["present"]:
+    if lk["present"] is None:
+        lock_txt = " · 인덱스락 **미측정**(%s)" % (lk.get("note") or "사유 미기록")
+    elif not lk["present"]:
         lock_txt = " · 인덱스락 없음"
     else:
         _age_h = (lk["age_sec"] or 0) / 3600.0
@@ -2014,7 +1997,10 @@ def build(root, day, phase, cfg, discover_only=False):
     if not files:
         flags.append("당일 날짜 토큰 파일 0개 — 프로그램이 안 돌았거나 탐색 경로가 틀렸다")
     # [MW0601 483차 후속2 / P0-1] 스테일 인덱스락 — 무증상 결함이라 여기서만 드러난다
-    if lk["stale"]:
+    if lk["present"] is None:
+        flags.append("인덱스락 **미측정** — %s. `git status` 는 스테일 락에서도 rc=0 이라 "
+                     "이 칸이 비면 커밋 불가 상태를 볼 창구가 없다" % (lk.get("note") or "사유 미기록"))
+    elif lk["stale"]:
         flags.append("`.git/index.lock` **스테일 잔존** (0바이트 · %.1f시간 · git 프로세스 0개) — "
                      "이 저장소는 **커밋 불가** 상태다. `git status` 는 rc=0 으로 조용히 통과하므로 "
                      "다른 어떤 계측에도 안 걸린다. 3중 조건 확인 후 제거할 것" % ((lk["age_sec"] or 0) / 3600.0))
