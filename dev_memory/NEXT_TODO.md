@@ -15295,3 +15295,76 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
   `state_file_keys`·발화마진·`CORE축퇴_피처` grep 0건 · `test_477_state_contract.py` 부재.
 - [x] **F-8·F-9 체크박스 4개 DONE 소급 처리** — 487차 후속 `f8faa12` 구현 확인
   (report:7852-7893). **주간회의 안건에서 제외할 것**(0823 리포트 §6·§8 표는 487차 이전 서술).
+
+---
+
+## 2026-08-23 (MW0602 488차 후속 — 계획 A~E 전량 구현)
+
+> 사용자 지시 "계획 전부 진행해". 전문: `MW0602-20260823-점검리포트.md` **부록 E**.
+> **매매 경로 변경 0건** — 전부 관측/테스트 계층. 신설 27 + 인접 회귀 31 = **58 passed**.
+
+### ✅ 완료 (488차 후속)
+
+- [x] **계획 A — 장전 발화 마진 상시 기록 + 지각 배너** (485차 G-2 + 476차 G-3 병합).
+  `collect_evidence.py`: `_fire_margin()` 순수함수 · `read_margin_history()`(최근 5본) ·
+  `margin_streak_flag()` · `_is_tight()`. `--phase pre` 한정 §「⏱ 장전 발화 마진」 렌더.
+  `tests/test_488_pre_margin.py` **9종**.
+- [x] **계획 B — 휴장일 판정(486차 F-1) + 거래일 문맥 머리줄(486차 G-1 1단계)**.
+  `is_trading_day()`(krx_holidays 재사용, 임포트 실패 시 주말만 폴백+명시) ·
+  `prev_trading_day()` · `HOLIDAY_SUPPRESS`(6종 고정) · `split_holiday_flags()`.
+  §1 가능성 `(e)` 추가. 실측: 적신호 **7 → 2건**, 강등 6건 취소선 명시.
+  `tests/test_486_collector_holiday.py` **8종**.
+- [x] **계획 C — EOD 재학습 SelfCheck** (476차 G-1).
+  `learning/model_meta.py:wants_from_settings()` 신설(단일 진실원천) ·
+  `main.py:_model_label_scheme_current()` 어댑터 축약(**유일한 라이브 접점**, 동작 등가) ·
+  `retrain_eod.py` 마커 직전 `[SelfCheck] label_state ok=…` + 마커에 `selfcheck_label_state:`.
+  비치명(예외 전부 삼킴) · ERROR 미사용 · 3분기 전부 로그.
+  `tests/test_488_eod_selfcheck.py` **6종**. 🔴 **라이브 미검증 → P-5**.
+- [x] **계획 D — §12c `snapshot_identity` + §12 `CORE축퇴_피처`**.
+  `collect_files_by_day()` 공용 추출(§12와 일자 집합 공유) · `snapshot_verdict()`(말단 연속) ·
+  `scan_snapshot_identity()`. 소급 검출 성공: `앙상블보정기_스냅샷` 🟠 정체(임계 8).
+  `CORE축퇴_피처` 실측 `ofi_norm×6hz`×98.
+- [x] **계획 E — `tests/test_477_state_contract.py`** (477차 G-1) **4종**.
+  읽는 키 ⊆ 쓰는 키 · 477차 3키 생존 · 파일 경계 계약(retrain_eod→main) ·
+  **스캐너 눈멂 가드**. 라인번호 미사용(파일 전체 스캔).
+- [x] **[부수] `test_486_early_window_shadow.py` 채널 예약 단언 정정** —
+  487차 F-9(`f8faa12`)가 `[54]`를 ConstOut 에 배정하자 486차의 `'"[54]" not in src'`
+  단언이 **배포된 결정과 모순**돼 계속 실패 중이었다. "쓰지 않았는가" → "겹치지 않는가"로
+  질문을 교체(ConstOut 배정 단언 + 번호 유일성 검사). 10종 회복.
+
+### 🆕 등록 — 관측 (다음 거래일 08-24 소관)
+
+- [ ] 🆕 **P-5 (08-24 장후 15:45) — 계획 C 라이브 검증.**
+  `retrain_eod_20260824.log` 에 `[SelfCheck] label_state ok=…` **1줄 출현** +
+  `data/eod_retrain_done_20260824.txt` 에 `selfcheck_label_state:` 줄.
+  `ok=False` 면 사이드카 기록 경로 결함(0819 P1-1 계열) — **재학습 실패가 아니다.**
+- [ ] 🆕 **P-6 (08-24 장후) — 계획 D 라이브 검증(F-1 이행 확인 겸용).**
+  §12c `앙상블보정기_스냅샷` 이 🟠 정체 → **✅ 갱신**으로 바뀌는가.
+  ⚠ 계속 정체면 485차 F-1(저장 게이트 제거)이 듣지 않은 것이다. P-1·P-2와 같은 사건을
+  서로 다른 계층에서 보는 것이므로 **셋의 결론이 일치해야 한다.**
+- [ ] 🆕 **P-7 (08-24 장전) — 계획 A 라이브 첫 기록.**
+  다이제스트에 `발화 마진` 줄 출현. **O-10(08-25 3거래일 판정)의 입력**이 된다.
+  ⚠ 08-19·08-20 실측이 각각 **−424초·−454초(개장 7분 후)** 였다 — O-10 은 이미
+  2거래일 미충족이며 08-24 가 3일째다.
+
+### 🔵 주간회의 (2026-08-28) — 신규 안건
+
+- [ ] 🔴 **`opt_chain_pcr` 가 `active_features` 에 편입됐다 — CLAUDE.md 절대원칙 §3 갱신 필요.**
+  `tests/test_473_core_group_reachability.py::test_long_group_core_feature_is_not_in_the_model`
+  실패로 드러났다(**488차 변경과 무관 — `git stash` 대조로 확인**). 테스트 자체가
+  *"CLAUDE.md §3 과 D9 안건을 갱신할 것"* 이라고 지시하고 있다.
+  ⚠ **절대원칙 문서라 임의 수정 금지** — 사용자·주간회의 소관.
+  ⚠ 474차가 *"장기(30m) 그룹은 도달 불가"* 라고 못박은 서술의 전제가 흔들린다.
+
+### 🟢 백로그 (P3 — 선행조건 있음)
+
+- [ ] **`snapshot_identity` 축 2종 추가 — 로그 신설이 선행조건.**
+  0821 G-1 등록문의 `MetaConf_스냅샷`·`앙상블가중_스냅샷` 은 **캡처할 로그가 없다**(488차 실측):
+  `MetaConf` 는 복원 **실패** 시에만 로그(`main.py:4660-4662`, 성공 경로 무로그),
+  호라이즌 가중은 로그 자체 부재. 없는 로그를 등록하면 매일 `무기록` → 늑대소년.
+  → **무조건 상태 샘플 로그를 먼저 신설**할 것(§5 규약: 조건부 로그 금지).
+- [ ] **전체 스위트 기존 실패 12건 분류** — 488차와 무관(stash 대조 확인). 성격:
+  Windows 임시파일 잠금 6(`test_439_p2_*`, sqlite 핸들 미해제) · `opt_chain_pcr` 1(위 안건) ·
+  미조사 5(`test_472_phase5_gate_badge` 등).
+  ⚠ `test_461`~`test_465` 5파일은 import 시 `sys.stdout` 을 감싸 pytest 캡처와 충돌 —
+  단독 실행 스타일(AGENTS.md 인정). 전량 실행 시 `--ignore` 필요.
