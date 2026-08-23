@@ -151,6 +151,15 @@ def run_campaign_steps(logger, base_dir: str) -> None:
     logger.info("=" * 55)
     logger.info("[검증 캠페인] 주간 스텝 %d개 실행 (§4-1)", len(steps))
     summary = []
+    # [MW0601 483차 후속4 / P2-H] 자식 프로세스의 표준출력을 UTF-8 로 고정한다.
+    # 윈도우에서 stdout 이 **파이프**면 기본 인코딩이 cp949 라, 출력 문자열에
+    # em-dash 같은 문자가 하나만 있어도 `print` 가 UnicodeEncodeError 로 죽는다
+    # (2026-08-21 월간 로그 정리 rc=1 — 작업 시작 전 배너에서 즉사).
+    # 개별 스크립트를 하나씩 고치는 것은 두더지잡기다 — **여기가 근본 처방**이다.
+    # 오늘 나머지 11스텝이 통과한 것은 그 문자를 안 쓴 것뿐이고, 문구가 바뀌면 재발한다.
+    # 아래 `.decode("utf-8", errors="replace")` 와 짝을 이룬다.
+    _env = dict(os.environ)
+    _env["PYTHONIOENCODING"] = "utf-8"
     for name, cmd in steps:
         script_path = os.path.join(script_dir, cmd[0])
         if not os.path.exists(script_path):
@@ -161,6 +170,7 @@ def run_campaign_steps(logger, base_dir: str) -> None:
             proc = subprocess.run(
                 [sys.executable, script_path] + cmd[1:],
                 cwd=base_dir,
+                env=_env,      # [483차 후속4 / P2-H] UTF-8 강제
                 timeout=1800,  # 스텝당 최대 30분
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             )

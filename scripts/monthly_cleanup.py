@@ -345,7 +345,32 @@ def compress_into_archives(log_dir, groups, dry_run):
         print("  [합계] 원본 %.1fMB -> 압축본 %.1fMB" % (total_src_mb, total_zip_mb))
 
 
+def _force_utf8_stdio():
+    """[MW0601 483차 후속4 / P2-H] 표준출력을 UTF-8로 강제한다.
+
+    2026-08-21 EOD 첫 자동 실행에서 이 스크립트가 **작업을 한 줄도 하기 전에**
+    죽었다 — `main()` 배너의 em-dash(U+2014)를 cp949 파이프에 쓰다 `print` 자체가
+    `UnicodeEncodeError` 를 던졌다(`rc=1`). 캠페인 스텝은 금요일 EOD 에만 돌므로
+    그날이 첫 자동 실행이었고, 첫 시도에서 실패했다.
+
+    ⚠ **em-dash 한 글자만 고치는 처방은 금지다.** 이 파일에 cp949 로 인코딩 불가능한
+    문자가 `—` `≈` `═` `⚠` `🔴` **5종 359회** 있어, 한 줄만 고치면 다음 `print` 에서
+    같은 자리에 다시 선다. 고칠 곳은 문자열이 아니라 **스트림 인코딩**이다.
+
+    `errors="replace"` 를 함께 거는 이유: `reconfigure` 가 없는 환경(3.6 이하·특수
+    스트림)에서도 죽지 않게 하기 위함이다. 정리 작업이 **인쇄 때문에** 죽는 일은
+    다시 없어야 한다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main():
+    _force_utf8_stdio()
+
     import sqlite3
 
     from config.settings import LOG_DIR, DB_DIR, SHAP_DB, PREDICTIONS_DB
