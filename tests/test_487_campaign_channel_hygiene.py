@@ -1,20 +1,24 @@
 # -*- coding: utf-8 -*-
-"""[MW0602 487차 / F-8(B)·F-9] 캠페인 채널 위생 불변식.
+"""[MW0602 487차 / F-8(B)·F-9, v9-dev 갈래 적용] 캠페인 채널 위생 불변식.
 
 배경 (0821 이상점 1-17·1-18, 2026-08-23 멀티PC 정책 폐기)
 --------------------------------------------------------
-① 채널 [50]·[54]는 소비부만 `dev`에 들어오고 생산부(커밋 080c982)는 `v9-dev`에만
-   있어 태어날 때부터 죽어 있었는데, 리포트가 `INSUFFICIENT`로 표기해 "표본이
-   쌓이는 중"으로 매주 오독됐다. → F-8(B): 생산부 존재를 감지해 없으면
-   `NOT_AVAILABLE_ON_THIS_BRANCH`로 분리 표기(생산부가 생기면 자동 복귀).
-② 채널 번호 [51]이 두 채널(462차 저변동성 / 471차 후속7 ConstOut)에 중복 배정돼
-   같은 번호가 다른 것을 가리켰다. → F-9: 선착 우선 — 저변동성이 [51] 유지,
-   ConstOut은 [54]로 재배정(채널 키 문자열은 불변 — 이력 식별자다).
+① dev 쪽 문제: 채널 [50]·[51]은 소비부만 `dev`에 들어오고 생산부(커밋 080c982)는
+   `v9-dev`에만 있어 태어날 때부터 죽어 있었는데, 리포트가 `INSUFFICIENT`로
+   표기해 "표본이 쌓이는 중"으로 매주 오독됐다. → F-8(B): 생산부 존재를 감지해
+   없으면 `NOT_AVAILABLE_ON_THIS_BRANCH`로 분리 표기(생산부가 생기면 자동 복귀).
+   **v9-dev는 생산부가 둘 다 있으므로 이 감지는 상시 정상 경로를 탄다** — 그래도
+   방어 로직 자체는 해가 없어 그대로 가져왔다.
+② dev 쪽 문제: 채널 번호 [51]이 두 채널(462차 저변동성 / 471차 후속7 ConstOut)에
+   중복 배정돼 dev의 F-9가 ConstOut을 [54]로 재배정했다. **v9-dev에는 462차
+   저변동성 채널이 없어 애초에 충돌이 없다** — 번호 체계는 각자 관리한다는
+   정책 폐기 원칙(MW0601_이관_점검사항_20260823.md §2)에 따라 v9-dev는 ConstOut을
+   원래 번호 [51]로 유지한다. F-9 재배정 자체는 cherry-pick하지 않았다.
 
-이 파일이 고정하는 불변식 3종
------------------------------
+이 파일이 고정하는 불변식 3종 (v9-dev 갈래)
+-------------------------------------------
 1. 요약표 채널 번호 유일성 — 같은 번호가 두 행에 붙으면 깨진다
-2. F-9 재배정 상태 — [54] ConstOut 존재 · [51] ConstOut 부재 · 저변동성 [51] 유지
+2. ConstOut 채널 번호 — v9-dev는 [51] 유지(재배정 없음), [54]는 쓰지 않는다
 3. F-8(B) 배선 — NOT_AVAILABLE 어휘 등록 + 두 채널 모두 생산부 감지로 가드
 
 실행:
@@ -46,12 +50,15 @@ def test_1_summary_channel_numbers_unique():
     assert not dupes, "요약표 채널 번호 중복: %s — 새 채널 등록 시 번호를 확인하라" % dupes
 
 
-def test_2_f9_renumbering_holds():
-    """[54]=ConstOut · [51]=저변동성(462차 선착 유지)이 뒤집히면 깨진다."""
+def test_2_constout_stays_at_51():
+    """v9-dev는 462차 저변동성 채널이 없어 [51] 충돌이 없다 — ConstOut은 [51] 유지.
+
+    dev 쪽 F-9([51]→[54] 재배정)는 v9-dev에는 적용하지 않았다(근거 없는 번호
+    변경이 되므로). [54]가 다시 등장하면 그 재배정을 실수로 되가져온 것이다.
+    """
     src = _src()
-    assert "| [54] ConstOut" in src, "[54] ConstOut 요약행이 없다 — F-9 재배정이 풀렸다"
-    assert "| [51] ConstOut" not in src, "[51] ConstOut 행 재출현 — 0821 1-18 중복 재발"
-    assert "_row_462(51," in src, "저변동성 채널의 [51]이 사라졌다 — 선착 우선 원칙 위반"
+    assert "| [51] ConstOut" in src, "[51] ConstOut 요약행이 없다"
+    assert "[54] ConstOut" not in src, "[54] ConstOut 재출현 — dev 전용 F-9 재배정이 잘못 반영됐다"
 
 
 def test_3_f8b_branch_gating_wired():
@@ -64,6 +71,6 @@ def test_3_f8b_branch_gating_wired():
     """
     src = _src()
     assert '"NOT_AVAILABLE_ON_THIS_BRANCH":' in src, "_fmt_verdict 어휘 미등록"
-    assert src.count("_branch_unavailable(") >= 3, "정의 1 + [50]/[54] 호출 2가 있어야 한다"
+    assert src.count("_branch_unavailable(") >= 3, "정의 1 + [50]/[51] 호출 2가 있어야 한다"
     assert '_has_module("scripts.direction_bias_watch")' in src, "[50] 생산부 감지 배선 소실"
-    assert "_has_const_out_column()" in src, "[54] 생산부(컬럼) 감지 배선 소실"
+    assert "_has_const_out_column()" in src, "[51] 생산부(컬럼) 감지 배선 소실"
