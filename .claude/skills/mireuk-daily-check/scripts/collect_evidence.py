@@ -358,6 +358,31 @@ DEFAULT_CONFIG = {
                        "⚠ 섀도 계측이다. 차단으로 승격하려면 20거래일 축적 후 "
                        "'축퇴일의 09:00~09:30 정확도'를 일자단위로 비교할 것(317차 교훈)",
             },
+            # ── [MW0602 476차 G-2 / 488차 계획 D] CORE 축퇴 **피처명** 축 ──
+            # 위 `CORE준비도` 는 **개수만** 센다(`1`×35). 어느 피처가 축퇴했는지는
+            # 값에 안 실려서, 470차가 사전등록한 20거래일 판정 때 로그를 **다시 파싱**해야
+            # 한다. 개수 축을 대체하지 않고 **병렬로** 둔다 — 개수는 심각도, 피처명은 원인이라
+            # 묻는 것이 다르고, 개수 축의 시계열(measured_since 2026-08-14)을 끊지 않기 위해서다.
+            # 로그 원본: `model/multi_horizon_model.py:1281` (축퇴 시 WARNING) /
+            #            `:1286` (축퇴 0 이어도 INFO 1줄 — 조건부 로그가 아니다).
+            "CORE축퇴_피처": {
+                "re": r"\[CORE준비도\][^\n]*축퇴 \d+/\d+ — (?P<v>[^|\n]+)",
+                "files": ["_LEARNING", "_SYSTEM", "_SIGNAL"],
+                # 축퇴 0 줄의 꼬리는 "CORE 스케일 정상" 이다 — `없음` 으로 정규화해
+                # 피처명 값들과 같은 분포에 놓는다. 축퇴 줄은 `above_vwap×6hz` 형태.
+                "value_map": [[r"CORE 스케일 정상\s*", "없음"]],
+                "benign": ["없음"],
+                # 축 신설일(08-24)이 아니라 **로그 배포일**이다 — 같은 표의 개수 축
+                # `CORE준비도` 와 동일 기준(470차 B4). 이 축은 이미 있는 로그를 다르게
+                # 읽을 뿐이라 소급 관측이 유효하다. 축 신설일로 잡으면 창이 비어
+                # 08-14~08-21 실측(`cvd_divergence×6hz` 등)을 통째로 못 본다.
+                "measured_since": "2026-08-14",
+                "why": "축퇴한 CORE 피처의 **이름 집합**(476차 G-2). `없음` 고착이 정상. "
+                       "특정 피처명에 고착하면 그 피처가 상시 identity 강제 상태다 — "
+                       "2026-08-14 `above_vwap×6hz` 가 그 사례이며 그때는 이름을 알려고 "
+                       "로그를 재파싱해야 했다. ⚠ 개수 축 `CORE준비도` 와 병렬(대체 아님). "
+                       "⚠ 섀도 관측 축 추가일 뿐 **차단 승격이 아니다**",
+            },
             # ── [MW0602 476차 G-6] 15:10 강제청산 1차 경로 하트비트 ──
             # 471차 F-2 가 배선한 `[SchedForceExit] … bar_pass=N회` 는 15:11 에 매일
             # **무조건** 1줄 찍힌다(FLAT 이어도) — §5 규약(조건부 로그 금지) 준수.
@@ -417,6 +442,55 @@ DEFAULT_CONFIG = {
                 "why": "무엇이 실제로 사이즈를 구속했는가(471차 후속6 sizing_trace). "
                        "한 게이트 100% 고착이면 316차 HurstGate(63% 차단)와 같은 상태다. "
                        "⚠ 2026-08-14 이후 행에만 있다 — 그 이전은 미측정이지 압력 0이 아니다",
+            },
+        },
+    },
+    # ── [MW0602 485차 G-1 / 488차 계획 D] 스냅샷 정체 (snapshot identity) ──────
+    # §12 가 못 잡는 **네 번째 형태**다. 정리하면 죽음의 형태는 넷이다:
+    #   ① 고착(§12)        — 값이 한쪽에 붙박였다
+    #   ② 무기록(§12)      — 로그 문구가 바뀌어 정규식이 아무것도 못 잡는다
+    #   ③ 분기편향(475 G-1)— 계측이 한쪽 분기에서만 돈다
+    #   ④ **스냅샷 정체**  — 로그는 매일 정상 출력되고 값도 "정상"인데 **어제와 똑같다**
+    # ④의 실사례: `data/ensemble_calibrator.pkl` 이 2026-08-11~08-21 **7거래일** 갱신되지
+    # 않았다(0821 이상점 1-1). 매 기동 `[Calibration] … 복원 완료 n=…` 은 정상적으로 찍혔고
+    # n 값도 정상 범위였다 — **다만 매일 같은 수였다.** ①~③ 어디에도 안 걸린다.
+    #
+    # 여러 필드를 튜플로 묶어 **일자 간 동일성**을 보고, 연속 동일일수 ≥ N 이면 정체로 본다.
+    # ⚠ `N` 은 실측 갱신 주기의 2배로 **사전등록**한다(313차 ④ — 결과를 보고 조정 금지).
+    # ⚠ 값이 원래 잘 안 변하는 지표는 `benign: true` 로 등록해 표시만 하고 적신호에서 뺀다.
+    #
+    # 🔴 **등록은 로그 실측으로만 한다.** 0821 등록문은 초기 3종(`앙상블보정기` ·
+    #    `MetaConf` · `앙상블가중`)을 제안했으나, 488차 구현 시 실측한 결과
+    #    **나머지 둘은 캡처할 로그가 없다** — `MetaConf` 는 복원 **실패** 시에만 찍고
+    #    (`main.py:4660-4662` — 성공 경로 무로그), 호라이즌 가중은 로그 자체가 없다.
+    #    없는 로그를 등록하면 매일 `무기록` 이 떠 늑대소년이 된다(§12 규약과 같은 취지).
+    #    → **두 축은 로그 신설이 선행조건**이며 별건으로 남긴다(NEXT_TODO 488차 항목).
+    "snapshot_identity": {
+        "lookback_days": 14,
+        "patterns": {
+            "앙상블보정기_스냅샷": {
+                "re": r"\[Calibration\] 앙상블 보정기 복원 완료 "
+                      r"n=(?P<n>\d+) fitted=(?P<fitted>\S+)[^\n]*?out_max=(?P<out_max>\S+)",
+                "files": ["_SYSTEM"],
+                "fields": ["n", "fitted", "out_max"],
+                # 실측 갱신 주기 = 매 거래일(EOD 15:40 저장) → 정체 허용 상한을 넉넉히
+                # 잡아도 4거래일이면 이상. 0821 사고는 7거래일이었다. **N=8 사전등록**
+                # (0821 G-1 등록문 그대로 — 구현 시점에 결과를 보고 바꾸지 않았다).
+                "n_warn": 8,
+                # 여기서는 배포일이 아니라 **로그 형식이 존재하는 최초일**이다.
+                # 477차 G-1 의 measured_since 는 *로그 자체가 신설된* 축을 위한 것인데
+                # 이 로그는 최소 2026-07-31 부터 같은 형식으로 있었다(실측). 배포일로
+                # 잡으면 소급 창이 통째로 비어 **이미 일어난 정체를 못 본다** — 그러면
+                # 이 축을 만든 이유가 사라진다.
+                "measured_since": "2026-07-31",
+                "why": "앙상블 Platt 보정기 스냅샷(n·fitted·out_max). 매 거래일 EOD 에 "
+                       "갱신되는 것이 정상. 같은 튜플이 N거래일 연속이면 저장 경로가 "
+                       "끊긴 것이다 — 2026-08-12~21 `n=1183` 10일 연속이 그 사례이며"
+                       "(실측) 그때는 사람이 pkl mtime 을 직접 열어보고서야 알았다"
+                       "(0821 이상점 1-1). 원인은 **485차 F-1 로 08-23 수정 완료** — "
+                       "따라서 08-24 이후 갱신으로 바뀌는 것이 기대값이고, 그 전환 "
+                       "자체가 F-1 의 라이브 검증(P-1·P-2)이 된다. 계속 정체면 "
+                       "수정이 듣지 않은 것이다",
             },
         },
     },
@@ -556,6 +630,232 @@ def date_tokens(day):
         "ymd2": day.strftime("%y%m%d"),
         "md": day.strftime("%m%d"),
     }
+
+
+# ------------------------------------------------------------------ 거래일 판정
+# [MW0602 486차 F-1 + G-1 / 488차 계획 B] 수집기가 휴장일을 인지한다.
+#
+# **왜.** 0823(일요일)에 `--phase post` 를 돌리자 §11 에 적신호 7건이 올라왔고
+# **전부 "오늘이 휴장일"이라는 한 가지 사실의 파생**이었다(실제 결함 0건). 그중 하나는
+# *"15:10 청산 경로가 아무 흔적도 남기지 않았다 — 절대원칙 1 확인 필요"* 였다.
+# 반대편 사고도 있다 — 484차가 `logs/20260817_SYSTEM.log`(공휴일 기동)를 근거로
+# 08-17을 거래일로 세어 "8거래일"이라 썼다. **파일의 존재/부재를 곧바로 원인으로 읽은**
+# 같은 형태이고, 그 교훈은 문서(DECISION_LOG)에만 있고 도구에는 없었다.
+#
+# 🔴 **새 판정식을 만들지 않는다.** `config/krx_holidays.py:is_krx_holiday()` 를 쓰고
+#    식은 `scripts/campaign_steps.py:40-41` 과 동일하게 `weekday()>=5 or is_krx_holiday(d)`.
+#    판정식이 둘이 되면 어느 쪽이 옳은지 다투게 된다.
+def is_trading_day(root, d):
+    """거래일이면 (True, "거래일"), 아니면 (False, 사유).
+
+    반환 사유: "주말(토)" / "주말(일)" / "공휴일(KRX)" / "거래일"
+               / "거래일(추정 — 공휴일표 미적재)"
+
+    ⚠ 수집기는 **표준 라이브러리만** 쓰는 것이 원칙이라, repo 모듈 임포트가 실패하면
+      `weekday()>=5` 만으로 폴백하고 **그 사실을 사유에 남긴다.** 공휴일은 못 거르되
+      주말은 걸러진다 — 부분 성립이 무성립보다 낫다.
+    """
+    wd = d.weekday()
+    if wd >= 5:
+        return False, "주말(%s)" % ("토" if wd == 5 else "일")
+    added = False
+    try:
+        if root and root not in sys.path:
+            sys.path.insert(0, root)
+            added = True
+        from config.krx_holidays import is_krx_holiday
+        return (False, "공휴일(KRX)") if is_krx_holiday(d) else (True, "거래일")
+    except Exception:
+        return True, "거래일(추정 — 공휴일표 미적재)"
+    finally:
+        if added:
+            try:
+                sys.path.remove(root)
+            except ValueError:
+                pass
+
+
+def prev_trading_day(root, d, max_back=14):
+    """`d` 직전 거래일. 못 찾으면 None(연휴가 14일을 넘는 일은 없다)."""
+    cur = d
+    for _ in range(max_back):
+        cur = cur - timedelta(days=1)
+        ok, _why = is_trading_day(root, cur)
+        if ok:
+            return cur
+    return None
+
+
+# [486차 F-1] 휴장일에 **강등할 적신호**를 명시 열거한다.
+#
+# 🔴 **전부 끄지 않는다.** 미커밋 변경·PC명 태그 위반·설정 불변식 `불일치`는 휴장일에도
+#    유효한 사실이므로 그대로 올린다. 억제는 **당일 데이터 부재에서 파생되는 것만**이다.
+# 🔴 **과잉 억제가 이 기능의 최대 위험**이다 — 휴장 플래그가 잘못 서면 진짜 결함이 있는
+#    거래일에 적신호가 통째로 사라진다. 그래서 목록을 여기 고정하고
+#    `tests/test_486_collector_holiday.py` 가 **6개임을 불변식으로 단언**한다.
+#    목록이 늘면 테스트가 깨져 재검토를 강제한다.
+HOLIDAY_SUPPRESS = (
+    "당일 날짜 토큰 파일 0개",           # ① 프로그램이 안 돌았다 — 휴장이면 정상
+    "15:10 청산 경로가 아무 흔적도",      # ② 절대원칙 1 거짓 경보
+    "완료 마커 **`daily_close_done`**",  # ③ 15:40 마감
+    "완료 마커 **`eod_retrain_done`**",  # ④ ⚠ "다음날 CB③ HALT 위험" 인과는 휴장일엔 불성립
+    "완료 마커 **`strategy_report`**",   # ⑤ 일일 전략 리포트
+    "**진입 0건**",                      # ⑥ 거래가 없는 날의 진입 0은 결함이 아니다
+)
+
+
+def split_holiday_flags(flags):
+    """휴장일 적신호를 (남길 것, 강등할 것)으로 가른다. 순수 함수 — 테스트 대상."""
+    keep, sup = [], []
+    for f in flags:
+        (sup if any(k in f for k in HOLIDAY_SUPPRESS) else keep).append(f)
+    return keep, sup
+
+
+# ------------------------------------------------------------------ 장전 발화 마진
+# [MW0602 488차 계획 A] 485차 G-2 + 476차 G-3 병합.
+#
+# **왜 재는가.** 0821 O-10 이 "예약 발화가 09:00 전인가"를 3거래일 관측으로 판정하려
+# 했는데, 마진이 **예측 47초 vs 실측 12초** 로 4배 차이가 났다. 아무도 그 값을 매일
+# 보고 있지 않아서 단발 관측으로 판정할 뻔했다. 그리고 반대편에서는 0819 장전 점검이
+# **09:07**(개장 7분 후)에 돌아 장전/장중 표본이 한 파일에 섞였다 — 같은 축의 반대편이다.
+#
+# 🔴 **마진이 작다고 cron 을 08:58:30 이전으로 앞당기지 말 것.**
+#    `phases.md` A-2(08:55 매크로 → 레짐 확정) 증거를 잃는다. 0821 실측 레짐 확정은
+#    **08:58:19** 였다. 이 경고는 렌더에도 매번 동봉한다.
+MARGIN_ANCHOR = "09:00:00"          # 개장 — 마진의 기준점
+MARGIN_WARN_SEC = 30                # 이보다 작으면 경고 (사전등록 — 사후 조정 금지)
+MARGIN_WARN_STREAK = 2              # 연속 N거래일이면 §11 적신호로 승격
+MARGIN_TREND_DAYS = 5               # 추이 표에 싣는 과거 다이제스트 수
+
+
+def _fire_margin(day, now):
+    """발화 마진(초) = 09:00:00 − 생성시각. 순수 함수 — 시각 조작 없이 테스트한다.
+
+    Args:
+        day: 점검 대상일(`date`).
+        now: 수집기 실행 시각(`datetime`, KST).
+
+    Returns:
+        (margin_sec, kind)
+          kind == "live"      — 대상일 == 실행일. margin_sec 유효(음수면 개장 후 실행).
+          kind == "backfill"  — 대상일 ≠ 실행일(소급/재실행). margin_sec 는 None.
+
+    ⚠ **소급 실행에 마진을 계산하지 않는다.** 0823 이상점 1-2(예약작업 재실행으로
+      일요일에 08-21분 점검이 다시 돈 건)에서 보듯, 그때 나오는 "마진"은 발화 품질이
+      아니라 재실행 시각일 뿐이다. 그 값을 추이에 섞으면 판정이 오염된다.
+    """
+    if day is None or now is None:
+        return None, "backfill"
+    if day.strftime("%Y-%m-%d") != now.strftime("%Y-%m-%d"):
+        return None, "backfill"
+    h, m, s = [int(x) for x in MARGIN_ANCHOR.split(":")]
+    anchor = now.replace(hour=h, minute=m, second=s, microsecond=0)
+    return int(round((anchor - now).total_seconds())), "live"
+
+
+def fmt_margin(sec):
+    """마진 초를 사람이 읽는 문자열로. 음수는 개장 **후** 실행이라는 뜻이다."""
+    if sec is None:
+        return "—"
+    if sec >= 0:
+        return "+%d초 (개장 %d분 %d초 전)" % (sec, sec // 60, sec % 60)
+    a = -sec
+    return "−%d초 (**개장 %d분 %d초 후**)" % (a, a // 60, a % 60)
+
+
+_EVIDENCE_GEN_RE = re.compile(
+    r"^- 생성 (\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2}) KST")
+_EVIDENCE_NAME_RE = re.compile(r"^evidence_(.+)-(\d{8})_pre\.md$")
+
+
+def read_margin_history(out_dir, pcid, day, limit=MARGIN_TREND_DAYS):
+    """과거 장전 다이제스트에서 발화 마진 추이를 되읽는다.
+
+    같은 폴더의 `evidence_<PC>-YYYYMMDD_pre.md` 파일에서 생성 줄(고정 형식)을 파싱한다.
+    ⚠ evidence 는 `.gitignore` 대상이라 **이 이력은 로컬 전용**이다 — 다른 PC 나
+      새 클론에는 없다. 표에 그 사실을 명시한다(없는 이력을 "마진 양호"로 읽지 않게).
+
+    반환: [(ymd, margin_sec 또는 None)] — 날짜 내림차순, 대상일 제외.
+    """
+    out = []
+    try:
+        names = sorted(os.listdir(out_dir), reverse=True)
+    except OSError:
+        return out
+    today_tok = day.strftime("%Y%m%d")
+    for fn in names:
+        m = _EVIDENCE_NAME_RE.match(fn)
+        if not m or m.group(1) != pcid or m.group(2) >= today_tok:
+            continue
+        try:
+            with io.open(os.path.join(out_dir, fn), encoding="utf-8",
+                         errors="replace") as f:
+                for _ in range(40):          # 생성 줄은 머리 몇 줄 안에 있다
+                    ln = f.readline()
+                    if not ln:
+                        break
+                    g = _EVIDENCE_GEN_RE.match(ln)
+                    if not g:
+                        continue
+                    # 그 다이제스트의 대상일 == 파일명 날짜. 생성일이 다르면 소급본이다.
+                    if g.group(1).replace("-", "") != m.group(2):
+                        out.append((m.group(2), None))
+                        break
+                    sec = (hhmm_to_min(MARGIN_ANCHOR[:5]) * 60
+                           - (int(g.group(2)) * 3600 + int(g.group(3)) * 60
+                              + int(g.group(4))))
+                    out.append((m.group(2), sec))
+                    break
+        except OSError:
+            continue
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _is_tight(sec):
+    """**정시 발화인데 여유가 없는** 날인가 — 연속 판정이 세는 것은 이것뿐이다.
+
+    🔴 개장 **후** 실행(`sec < 0`)을 여기 넣지 않는다. 그것은 "마진이 빠듯하다"가
+    아니라 **"장전 점검이 아예 늦었다"** 는 다른 사건이고, 이미 별도 적신호
+    (`장전 점검이 개장 후 N분에 실행됨`)로 올라간다. 섞으면 두 가지가 뭉개진다 —
+    실측이 그걸 보여줬다: 08-18·08-14 다이제스트는 각각 개장 **452분·635분 후**에
+    생성된 수동 실행분인데, 부호만 보고 세면 "마진 빠듯함 4일 연속"이 된다.
+
+    ⚠ 이 구분은 **결과를 보고 만든 문턱이 아니다**(313차 ④). 새 상수를 도입하지
+      않았고, 기존 경계(0 = 개장)를 쓴다.
+    """
+    return sec is not None and 0 <= sec < MARGIN_WARN_SEC
+
+
+def margin_streak_flag(cur_sec, history):
+    """`0 ≤ 마진 < MARGIN_WARN_SEC` 가 연속 `MARGIN_WARN_STREAK` 거래일이면 적신호.
+
+    ⚠ 임계·연속일은 **0821 G-2 등록문 그대로의 사전등록 값**이다(313차 ④ — 결과를
+      보고 조정하지 않는다). 소급본(None)과 지각본(음수)은 판정에서 제외하되 연속을
+      끊지도 않는다 — "관측 못 함"·"다른 사건"을 "정상"으로도 "위반"으로도 세지 않는다.
+    """
+    if not _is_tight(cur_sec):
+        return None
+    streak, seen = 1, []
+    for _ymd, sec in history:
+        if sec is None or sec < 0:      # 소급본·지각본 — 중립(건너뛴다)
+            continue
+        if _is_tight(sec):
+            streak += 1
+            seen.append(_ymd)
+            if streak >= MARGIN_WARN_STREAK:
+                break
+        else:
+            break
+    if streak < MARGIN_WARN_STREAK:
+        return None
+    return ("장전 발화 마진 **%d초** — `<%d초` 가 %d거래일 연속(%s). "
+            "예약 발화가 개장에 너무 붙었다. 🔴 **cron 을 08:58:30 이전으로 앞당기지 말 것** — "
+            "A-2(08:55 매크로→레짐, 실측 확정 08:58:19) 증거를 잃는다"
+            % (cur_sec, MARGIN_WARN_SEC, streak,
+               ", ".join(seen) if seen else "이전 관측"))
 
 
 def hhmm_to_min(s):
@@ -1353,25 +1653,14 @@ def scan_threshold_reachability(root, cfg, day):
     return rows
 
 
-def scan_stuck_indicators(root, cfg, day):
-    """[MW0602 468차 G-2] 최근 N거래일 상태 지표의 값 분포를 센다.
+def collect_files_by_day(root, cfg, day):
+    """스캔 대상 폴더의 파일을 `YYYYMMDD` 토큰별로 묶는다. (대상일 이후는 제외)
 
-    반환: [{name, why, days, n, dist:[(값, 건수)], verdict, note}]
-      verdict — "고착"(한 값 100%) / "변동" / "표본부족" / "무기록"
-
-    **왜 표본 0을 따로 세는가.** 로그 문구가 바뀌면 정규식이 조용히 아무것도 안 잡는데,
-    그 상태는 "경고 없음 = 정상"으로 읽힌다. 고착과 무기록은 증상이 다를 뿐 둘 다
-    "지표가 죽었다"이므로 같은 표에서 함께 보고한다.
+    [MW0602 488차 계획 D] `scan_stuck_indicators` 안에 있던 것을 그대로 떼어냈다 —
+    스냅샷 정체 스캐너(§12c)가 **같은 일자 집합**을 봐야 하기 때문이다. 복제하면
+    한쪽만 `exclude_patterns` 가 바뀌는 식으로 조용히 갈라진다.
+    ⚠ 동작 무변경 — 로직을 옮기기만 했다.
     """
-    conf = cfg.get("stuck_indicators") or {}
-    pats = conf.get("patterns") or {}
-    if not pats:
-        return []
-    look = int(conf.get("lookback_days", 10))
-    max_bytes = int(conf.get("max_file_mb", 8)) * 1024 * 1024
-
-    # 최근 N거래일 = 스캔 대상 폴더에서 발견되는 YYYYMMDD 토큰 중 오늘 이하 상위 N개.
-    # 별도 캘린더가 필요 없다 — 파일이 있는 날이 곧 돌아간 날이다.
     ymd_re = re.compile(r"(20\d{6})")
     today_tok = date_tokens(day)["ymd"]
     by_day = {}
@@ -1395,6 +1684,133 @@ def scan_stuck_indicators(root, cfg, day):
                     continue
                 by_day.setdefault(m.group(1), []).append(
                     os.path.normpath(os.path.join(dirpath, fn)))
+    return by_day
+
+
+def snapshot_verdict(seq, n_warn):
+    """일자별 스냅샷 튜플 열에서 **말단 연속 동일일수**를 세어 판정한다.
+
+    Args:
+        seq: [(ymd, 튜플문자열)] — 날짜 오름차순. 그날 관측이 없으면 아예 없는 항목.
+        n_warn: 연속 동일일수가 이 값 이상이면 정체.
+
+    Returns:
+        (verdict, streak) — verdict ∈ {"정체", "갱신", "표본부족"}
+
+    ⚠ **말단(최근)부터 센다.** 과거에 정체가 있었어도 이후 갱신됐으면 지금은 정상이다 —
+      485차 F-1(저장 게이트 제거) 배포 후 회복을 정체로 계속 부르면 안 된다.
+    """
+    if len(seq) < 2:
+        return "표본부족", len(seq)
+    last = seq[-1][1]
+    streak = 1
+    for _ymd, val in reversed(seq[:-1]):
+        if val == last:
+            streak += 1
+        else:
+            break
+    return ("정체" if streak >= n_warn else "갱신"), streak
+
+
+def scan_snapshot_identity(root, cfg, day):
+    """[MW0602 485차 G-1 / 488차 계획 D] 값이 정상인데 **어제와 똑같은** 지표를 찾는다.
+
+    반환: [{name, why, verdict, streak, n_warn, days, series, measured_since, benign}]
+      verdict — "정체" / "갱신" / "표본부족" / "무기록"
+
+    §12(고착·무기록)·475차 G-1(분기편향)이 못 잡는 네 번째 형태다. 설정부 주석 참조.
+    """
+    conf = cfg.get("snapshot_identity") or {}
+    pats = conf.get("patterns") or {}
+    if not pats:
+        return []
+    look = int(conf.get("lookback_days", 14))
+    max_bytes = int((cfg.get("stuck_indicators") or {}).get("max_file_mb", 8)) * 1024 * 1024
+    by_day = collect_files_by_day(root, cfg, day)
+    days = sorted(by_day)[-look:]
+    if not days:
+        return []
+
+    rows = []
+    for name, spec in pats.items():
+        base = {"name": name, "why": spec.get("why", ""),
+                "n_warn": int(spec.get("n_warn", 8)),
+                "measured_since": spec.get("measured_since"),
+                "benign": bool(spec.get("benign")), "series": [], "streak": 0,
+                "days": 0}
+        try:
+            rx = re.compile(spec["re"])
+        except re.error as e:
+            base.update({"verdict": "무기록", "note": "정규식 오류: %s" % e})
+            rows.append(base)
+            continue
+        # [477차 후속 G-1과 같은 규약] 계측 배포일 이전은 **미측정**이지 "정체"가 아니다.
+        _ms = str(spec.get("measured_since") or "").replace("-", "")
+        p_days = [d for d in days if not _ms or d >= _ms]
+        want = [f.lower() for f in (spec.get("files") or [])]
+        fields = list(spec.get("fields") or [])
+        series = []
+        for d in p_days:
+            got = None
+            for full in by_day[d]:
+                fn = os.path.basename(full).lower()
+                if want and not any(w in fn for w in want):
+                    continue
+                try:
+                    if os.stat(full).st_size > max_bytes:
+                        continue
+                    with io.open(full, encoding="utf-8", errors="replace") as f:
+                        for ln in f:
+                            m = rx.search(ln)
+                            if m:
+                                # 그날 **마지막** 관측을 쓴다 — 재기동이 여러 번이면
+                                # 최신 상태가 그날의 스냅샷이다.
+                                got = " · ".join(
+                                    "%s=%s" % (k, (m.group(k) or "").strip())
+                                    for k in fields)
+                except (OSError, IOError):
+                    continue
+            if got is not None:
+                series.append((d, got))
+        base["series"] = series
+        base["days"] = len(series)
+        if not series:
+            if _ms and not p_days:
+                base.update({"verdict": "표본부족",
+                             "note": "계측 시작 전 (measured_since %s)"
+                                     % spec.get("measured_since")})
+            else:
+                base.update({"verdict": "무기록",
+                             "note": "최근 %d거래일 기록 0건 — 로그 문구 변경 의심"
+                                     % len(p_days)})
+            rows.append(base)
+            continue
+        v, streak = snapshot_verdict(series, base["n_warn"])
+        base.update({"verdict": v, "streak": streak})
+        rows.append(base)
+    return rows
+
+
+def scan_stuck_indicators(root, cfg, day):
+    """[MW0602 468차 G-2] 최근 N거래일 상태 지표의 값 분포를 센다.
+
+    반환: [{name, why, days, n, dist:[(값, 건수)], verdict, note}]
+      verdict — "고착"(한 값 100%) / "변동" / "표본부족" / "무기록"
+
+    **왜 표본 0을 따로 세는가.** 로그 문구가 바뀌면 정규식이 조용히 아무것도 안 잡는데,
+    그 상태는 "경고 없음 = 정상"으로 읽힌다. 고착과 무기록은 증상이 다를 뿐 둘 다
+    "지표가 죽었다"이므로 같은 표에서 함께 보고한다.
+    """
+    conf = cfg.get("stuck_indicators") or {}
+    pats = conf.get("patterns") or {}
+    if not pats:
+        return []
+    look = int(conf.get("lookback_days", 10))
+    max_bytes = int(conf.get("max_file_mb", 8)) * 1024 * 1024
+
+    # 최근 N거래일 = 스캔 대상 폴더에서 발견되는 YYYYMMDD 토큰 중 오늘 이하 상위 N개.
+    # 별도 캘린더가 필요 없다 — 파일이 있는 날이 곧 돌아간 날이다.
+    by_day = collect_files_by_day(root, cfg, day)
     days = sorted(by_day)[-look:]
     if not days:
         return []
@@ -2290,6 +2706,77 @@ def build(root, day, phase, cfg, discover_only=False):
         A("- ⚠ 호스트명에서 `MW####` 를 못 뽑았다 — 커밋/DECISION_LOG 태그를 수동 확인할 것")
     A("")
 
+    # [MW0602 486차 G-1 / 488차 계획 B] 거래일 문맥 — **3줄 고정 블록.**
+    # 484차(파일 있음 → 거래일로 오계수)와 0823 1-1(파일 없음 → 결함 7건)이 같은 축의
+    # 양쪽 끝이다. 둘 다 "거래일이 무엇인가"를 도구가 답하지 않아서 생겼다.
+    # ⚠ **1단계는 표시까지다.** §12(10거래일)·§12b(14거래일)의 계수 정의 통합은
+    #   26주 WFA 경계로 분리한다 — 지금 바꾸면 관측일 수가 달라져 시계열이 끊긴다
+    #   (461차 `mdd_pct` 유형).
+    is_td, td_why = is_trading_day(root, day)
+    prev_td = prev_trading_day(root, day)
+    prev_has_log = None
+    if prev_td is not None:
+        _ptok = prev_td.strftime("%Y%m%d")
+        prev_has_log = any(
+            _ptok in e["name"] for e in discover_files(root, cfg, prev_td))
+    A("### 🗓 거래일 문맥")
+    A("")
+    A("- **대상일**: `%s` (%s요일)" % (D, "월화수목금토일"[day.weekday()]))
+    A("- **거래일 여부**: %s" % (
+        "**거래일** ✅" if is_td else "🚫 **거래일이 아니다** — %s" % td_why))
+    if prev_td is None:
+        A("- **직전 거래일**: 못 찾음(14일 역탐색 실패) ⚠")
+    else:
+        A("- **직전 거래일**: `%s` — 그날 로그 %s" % (
+            prev_td.strftime("%Y-%m-%d"),
+            "**있음**" if prev_has_log else "**없음** ⚠ (그날도 안 돌았는지 확인할 것)"))
+    if not is_td:
+        A("")
+        A("> 🗓 **%s은 거래일이 아니다(%s). 아래의 0건들은 결함이 아니다.**" % (D, td_why))
+        A("> 프로그램 미기동·완료 마커 부재·진입 0건은 전부 이 한 가지 사실의 파생이다. "
+          "§11 에서 해당 적신호를 `휴장(정상)` 으로 강등하고 **건수를 명시**한다 — "
+          "은폐가 아니라 이동이다.")
+    if "추정" in td_why:
+        A("")
+        A("> ⚠ `config/krx_holidays.py` 임포트 실패 — **주말만 판정했다(공휴일 미판정).** "
+          "공휴일에 이 다이제스트를 보면 거래일로 표시되니 수동 확인할 것.")
+    A("")
+
+    # [MW0602 488차 계획 A] 장전 발화 마진 + 지각 배너 (485차 G-2 + 476차 G-3)
+    if phase == "pre":
+        _margin, _kind = _fire_margin(day, now_kst())
+        _hist = read_margin_history(
+            os.path.join(root, "docs", "정기점검", "매일점검"), pcid, day)
+        A("### ⏱ 장전 발화 마진")
+        A("")
+        if _kind == "backfill":
+            A("- **소급 실행 — 발화 마진 무의미.** 대상일(`%s`)과 실행일(`%s`)이 다르다. "
+              "여기서 나오는 값은 발화 품질이 아니라 재실행 시각일 뿐이라 재지 않는다"
+              " (0823 이상점 1-2 계열)." % (D, now_kst().strftime("%Y-%m-%d")))
+        else:
+            A("- **마진 = %s − 생성시각 = %s**" % (MARGIN_ANCHOR, fmt_margin(_margin)))
+            if _margin is not None and _margin < 0:
+                A("- ⚠ **개장 후 실행이다** — 장전/장중 표본이 한 파일에 섞인다(§5 진입 건수 참조).")
+        if _hist:
+            A("")
+            A("| 과거 장전 다이제스트 | 발화 마진 |")
+            A("|---|---|")
+            for _ymd, _sec in _hist:
+                A("| `%s` | %s |" % (_ymd, "소급본(미측정)" if _sec is None else fmt_margin(_sec)))
+            A("")
+            A("> ⚠ 이 이력은 `evidence_*.md` 에서 되읽은 것이라 **로컬 전용**이다"
+              "(`.gitignore` 대상). 다른 PC·새 클론에는 없다 — **행이 없는 것을 "
+              "「마진 양호」로 읽지 말 것**(계측 4원칙 ② 미측정 ≠ 0).")
+        else:
+            A("- 과거 장전 다이제스트 없음 — 추이는 다음 거래일부터 쌓인다(로컬 전용 이력).")
+        A("")
+        A("> 🔴 **마진이 작아도 cron 을 08:58:30 이전으로 앞당기지 말 것** — "
+          "`phases.md` A-2(08:55 매크로 → 레짐 확정) 증거를 잃는다. "
+          "0821 실측 레짐 확정 시각은 **08:58:19** 였다. "
+          "판정: `<%d초` 가 %d거래일 연속이면 §11 에 P2 로 자동 등록(사전등록 임계)."
+          % (MARGIN_WARN_SEC, MARGIN_WARN_STREAK))
+        A("")
+
     # ---- 1. 파일 인벤토리 ----
     files = discover_files(root, cfg, day)
     A("## 1. 당일 파일 인벤토리 (날짜 토큰 자동탐색)")
@@ -2298,7 +2785,9 @@ def build(root, day, phase, cfg, discover_only=False):
         A("**해당 날짜 토큰을 가진 파일을 하나도 못 찾았다 ⚠**")
         A("")
         A("가능성: (a) 그날 프로그램이 안 돌았다 (b) 로그가 다른 폴더에 있다 "
-          "(c) 파일명에 날짜를 안 쓴다 (d) `scan_dirs` 설정이 좁다.")
+          "(c) 파일명에 날짜를 안 쓴다 (d) `scan_dirs` 설정이 좁다"
+          "%s." % (" **(e) 오늘이 거래일이 아니다 — 위 「거래일 문맥」 참조. "
+                   "이 경우 (a)~(d)를 의심할 이유가 없다**" if not is_td else ""))
         A("")
         A("현재 스캔 대상: %s (깊이 %d)" % (", ".join("`%s`" % d for d in cfg["scan_dirs"]), cfg["scan_depth"]))
         A("")
@@ -2702,6 +3191,8 @@ def build(root, day, phase, cfg, discover_only=False):
     stuck_rows += scan_db_indicators(root, cfg, day)
     # [MW0602 476차 G-4] 임계-분포 대조 — §12b 에 렌더하고, known 없는 미도달만 적신호.
     reach_rows = scan_threshold_reachability(root, cfg, day)
+    # [MW0602 485차 G-1 / 488차 계획 D] 스냅샷 정체 — §12c 에 렌더.
+    snap_rows = scan_snapshot_identity(root, cfg, day)
 
     A("## 11. 자동 적신호 (출발점이지 결론이 아니다)")
     A("")
@@ -2891,6 +3382,38 @@ def build(root, day, phase, cfg, discover_only=False):
                          "로그가 정상이어도 이 임계를 지키는 분기는 죽어 있을 수 있다"
                          % (r["name"], r["verdict"], r["overall_max"], r["threshold"]))
 
+    # [MW0602 485차 G-1 / 488차 계획 D] 스냅샷 정체 — **benign 이 아닌 것만** 올린다.
+    # ⚠ `무기록`도 올린다(§12 규약과 동일) — 로그 문구가 바뀌면 조용히 죽기 때문이다.
+    for r in snap_rows:
+        if r["verdict"] == "정체" and not r.get("benign"):
+            flags.append("스냅샷 정체 **`%s`** — 최근 **%d거래일 연속 같은 값**"
+                         "(임계 %d, 사전등록). 로그는 매일 정상 출력되고 값도 정상 범위지만 "
+                         "갱신 경로가 끊겼을 수 있다 (§12c). 마지막 관측: `%s`"
+                         % (r["name"], r["streak"], r["n_warn"],
+                            r["series"][-1][1] if r.get("series") else "—"))
+        elif r["verdict"] == "무기록":
+            flags.append("스냅샷 지표 **`%s`** 최근 창 **기록 0건** — 계측 중단 또는 "
+                         "로그 문구 변경 의심 (§12c)" % r["name"])
+
+    # [MW0602 488차 계획 A] 발화 마진 연속 미달 — 사전등록 임계로 P2 자동 등록.
+    if phase == "pre":
+        _m, _k = _fire_margin(day, now_kst())
+        if _k == "live":
+            _mf = margin_streak_flag(
+                _m, read_margin_history(
+                    os.path.join(root, "docs", "정기점검", "매일점검"), pcid, day))
+            if _mf:
+                flags.append(_mf)
+            if _m is not None and _m < 0:
+                flags.append("장전 점검이 **개장 후 %d분**에 실행됨 — 장전/장중 표본 혼입 "
+                             "가능. §5 진입 건수로 이 시점까지의 거래를 확인할 것"
+                             % ((-_m + 59) // 60))
+
+    # [MW0602 486차 F-1] 휴장일 강등 — 은폐가 아니라 이동이다. 건수를 반드시 낸다.
+    suppressed = []
+    if not is_td:
+        flags, suppressed = split_holiday_flags(flags)
+
     if flags:
         seen = set()
         i = 0
@@ -2902,6 +3425,19 @@ def build(root, day, phase, cfg, discover_only=False):
             A("%d. %s" % (i, f))
     else:
         A("자동 탐지 적신호 없음. 그래도 §4~§6을 직접 읽고 판단할 것.")
+    if suppressed:
+        A("")
+        A("**🗓 휴장(정상)으로 강등된 적신호 %d건** — %s(%s)이라 당일 데이터가 없는 것이 "
+          "정상이다. 아래는 **삭제가 아니라 이동**이며, 거래일에는 그대로 적신호로 올라온다."
+          % (len(suppressed), D, td_why))
+        A("")
+        for j, f in enumerate(suppressed, 1):
+            A("- ~~%d. %s~~" % (j, f))
+        A("")
+        A("> ⚠ **강등 목록은 코드에 고정돼 있다**(`HOLIDAY_SUPPRESS`, 6종). "
+          "미커밋 변경·PC명 태그 위반·설정 불변식 `불일치`는 휴장일에도 **강등하지 않는다** — "
+          "위 본 목록에 그대로 남는다. 과잉 억제가 이 기능의 최대 위험이라 "
+          "`tests/test_486_collector_holiday.py` 가 목록 크기를 불변식으로 잠근다.")
     A("")
 
     # ---- 12. 고착 지표 ----
@@ -2992,6 +3528,43 @@ def build(root, day, phase, cfg, discover_only=False):
                 "%.4g" % r["threshold"], mark,
                 truncate(r.get("known") or "—", 60), truncate(r["why"], 90)))
         A("")
+
+    # ---- 12c. 스냅샷 정체 (485차 G-1 / 488차 계획 D) ----
+    if snap_rows:
+        A("### 12c. 스냅샷 정체 (snapshot identity — 최근 %d거래일)"
+          % (cfg.get("snapshot_identity", {}) or {}).get("lookback_days", 14))
+        A("")
+        A("> **왜 보는가 — 죽음의 네 번째 형태다.** §12 는 *한 값 고착*, §12 `무기록`은")
+        A("> *계측 중단*, 475차 G-1 은 *분기편향*을 잡는다. 여기서 잡는 것은 **로그가 매일**")
+        A("> **정상 출력되고 값도 정상인데 어제와 똑같은** 경우다. 실사례:")
+        A("> `ensemble_calibrator.pkl` 이 2026-08-11~21 **7거래일** 갱신되지 않았고")
+        A("> `[Calibration] … 복원 완료 n=…` 은 매일 정상이었다 — 사람이 pkl mtime 을")
+        A("> 직접 열어보고서야 알았다(0821 이상점 1-1). ⚠ 임계 `N`은 **사전등록**이며")
+        A("> 결과를 보고 조정하지 않는다(313차 ④).")
+        A("")
+        A("| 지표 | 관측일 | 판정 | 연속 동일 | 임계N | 마지막 관측값 | 왜 보는가 |")
+        A("|---|---|---|---|---|---|---|")
+        for r in snap_rows:
+            if r["verdict"] == "정체":
+                mark = "⚪ 정체(정상)" if r.get("benign") else "🟠 **정체**"
+            elif r["verdict"] == "무기록":
+                mark = "🔴 무기록"
+            elif r["verdict"] == "표본부족":
+                mark = "⚫ 표본부족"
+            else:
+                mark = "✅ 갱신"
+            A("| `%s` | %d | %s | %s | %d | `%s` | %s |" % (
+                r["name"], r.get("days", 0), mark,
+                ("%d일" % r["streak"]) if r.get("streak") else (r.get("note") or "—"),
+                r.get("n_warn", 0),
+                truncate(r["series"][-1][1], 60) if r.get("series") else "—",
+                truncate(r["why"], 90)))
+        A("")
+        _ms_snap = [r for r in snap_rows if r.get("measured_since")]
+        if _ms_snap:
+            A("> ⚠ **계측 시작일 이전은 미측정이지 「갱신」이 아니다**(계측 4원칙 ②): %s"
+              % " · ".join("`%s` %s~" % (r["name"], r["measured_since"]) for r in _ms_snap))
+            A("")
 
     # ---- 13. 확정 결정 레지스트리 ----
     # [475차 후속3] §5 수익률 향상방안(R-*)·§3 고도화를 쓰기 전에 반드시 볼 것 —

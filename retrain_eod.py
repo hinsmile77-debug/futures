@@ -349,6 +349,44 @@ def main():
             t_total,
         )
 
+        # ── [MW0602 488차 계획 C / 476차 G-1] EOD 재학습 자체 사후검증 ──────
+        # **왜 마커를 쓰기 직전인가.** 마커가 찍히면 내일 08:55 PreRetrain 이 그것을
+        # 근거로 "모델이 현행"이라 믿고 보수 사이즈 제한(×0.6)을 푼다. 그런데 0819 P1-1
+        # 에서 사이드카 `label_scheme` 이 `null` 로 기록되는 결함이 있었고, 그 사실은
+        # **다음날 장전에야** 드러났다 — 그 사이 하루치 노출이 잘못된 전제 위에 있었다.
+        # 방금 저장한 사이드카를 되읽어 같은 판정식으로 확인하면 **당일 15:45 에** 안다.
+        #
+        # 🔴 **재학습을 실패로 만들지 않는다.** 모델 교체는 이미 끝났고 마커도 찍힌다 —
+        #    여기서 하는 것은 **관측을 남기는 것뿐**이다. 예외는 전부 삼킨다.
+        # 🔴 ERROR 를 쓰지 않는다 — 이 프로젝트는 ERROR 를 거의 안 남기고, 그 관행을
+        #    이 한 줄이 깨면 ERROR 집계의 의미가 흐려진다(점검 함정 ④). WARNING 을 쓴다.
+        _sc_line = "unknown"
+        try:
+            from learning.model_meta import read_label_state as _rls
+            from learning.model_meta import wants_from_settings as _wfs
+            from config import settings as _cfg_s
+
+            _want_scheme, _want_param_of = _wfs(_cfg_s)
+            _sc_ok, _sc_detail = _rls(
+                getattr(retrainer, "model_dir", None),
+                list(_cfg_s.HORIZONS), _want_scheme, _want_param_of,
+            )
+            _sc_line = "ok=%s detail=%s" % (_sc_ok, _sc_detail)
+            if _sc_ok:
+                log.info("[SelfCheck] label_state %s", _sc_line)
+            else:
+                # 모델은 교체됐는데 사이드카가 현행이 아니다 = 기록 경로 결함이 유력하다.
+                # 내일 장전 PreRetrain 이 사이즈 제한을 못 푸는 형태로 나타난다.
+                log.warning(
+                    "[SelfCheck] label_state %s — 사이드카가 현행 레이블을 증명하지 "
+                    "못한다. 모델 교체는 정상 진행됐고 이 검사는 관측 전용이다. "
+                    "내일 08:55 PreRetrain 이 사이즈 제한을 못 풀 수 있다", _sc_line)
+        except Exception as _sc_e:
+            # 검사 자체가 실패해도 재학습은 성공이다. 다만 **조용히 넘어가지 않는다** —
+            # 무로그 부정 분기가 0821 이상점 1-1 의 핵심이었다.
+            _sc_line = "수행실패(%s: %s)" % (type(_sc_e).__name__, _sc_e)
+            log.warning("[SelfCheck] label_state %s", _sc_line)
+
         # 완료 마커 기록
         with open(_MARKER_PATH, "w", encoding="utf-8") as f:
             f.write(
@@ -359,6 +397,8 @@ def main():
                 f"t_load_s: {t_load:.1f}\n"
                 f"t_retrain_s: {t_retrain:.1f}\n"
                 f"t_total_s: {t_total:.1f}\n"
+                # [488차 계획 C] 로그를 안 열어도 마커만 보면 알게 한다 — 수집기·다음 세션용.
+                f"selfcheck_label_state: {_sc_line}\n"
             )
         log.info("완료 마커 저장: %s", _MARKER_PATH)
 

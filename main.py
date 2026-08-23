@@ -1108,21 +1108,14 @@ class TradingSystem:
         테스트에서 import할 수 없다. 이 메서드는 **설정을 읽어 넘기는 어댑터**다.
         """
         try:
+            # [MW0602 488차 계획 C] 기대치 구성은 `model_meta.wants_from_settings()` 로
+            # 이관했다 — `retrain_eod.py` 의 EOD SelfCheck 가 **같은 기대치**를 써야
+            # 하는데, 복제하면 레이블 체계 변경 시 한쪽만 고쳐져 조용히 갈라진다.
+            # ⚠ 동작 등가 리팩터링이다(로직 무변경).
             from learning.model_meta import read_label_state as _rls
+            from learning.model_meta import wants_from_settings as _wfs
             _dir = getattr(self.batch_retrainer, "model_dir", None)
-            _want_scheme = "fixed" if getattr(
-                runtime_settings, "USE_FIXED_LABEL_THRESHOLD", True) else (
-                "rolling_sigma" if getattr(
-                    runtime_settings, "USE_ROLLING_SIGMA_THRESHOLD", True) else "atr")
-
-            def _want_param_of(hz):
-                if _want_scheme == "fixed":
-                    return float(runtime_settings.HORIZON_THRESHOLDS.get(hz, 0.0003))
-                if _want_scheme == "rolling_sigma":
-                    return float(runtime_settings.SIGMA_K_PER_HORIZON.get(
-                        hz, runtime_settings.SIGMA_K))
-                return None
-
+            _want_scheme, _want_param_of = _wfs(runtime_settings)
             return _rls(_dir, list(runtime_settings.HORIZONS), _want_scheme, _want_param_of)
         except Exception as _ls_e:
             return False, "조회 실패: %s" % _ls_e

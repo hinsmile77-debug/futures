@@ -76,6 +76,14 @@ start_mireuk_cybos_test.bat  # 테스트용 런처 (동일 구성, 명시적 테
   `test_473_core_group_reachability.py`(CORE 그룹) · `test_476_grade_reachability.py`
   (앙상블 등급 A/B). ⚠ 라이브 **분포**에 의존하는 단언은 CI에서 불안정하므로 점검
   도구(일일 점검 수집기 §12b 임계-분포 대조)에 두고, 테스트는 **정의 대조**만 한다.
+- **계약 불변식 테스트 명명 규약 (477차 G-1 / 488차 계획 E)**: 파일·프로세스 경계를
+  넘어 주고받는 **키·필드 집합**이 한쪽에서만 바뀌어 조용히 끊기는 것을 막을 때는
+  `tests/test_*_contract.py` 형식으로 둔다(위 `_reachability` 의 자매 규약).
+  선례: `test_477_state_contract.py`(`data/session_state.json` — `retrain_eod.py` 가
+  쓰고 다음날 `main.py` PreRetrain 이 읽는다). ⚠ **라인 번호를 박지 말 것** —
+  파일 전체를 정적 스캔한다. ⚠ **스캐너가 눈멀었는지 먼저 보는 가드 테스트를 함께**
+  둘 것 — 관용구가 바뀌면 본 불변식이 "위반 0건"으로 공허하게 통과한다(빈 집합은
+  언제나 부분집합이다).
 - 오프라인 검증 보조: 실시간 시뮬레이션 모드(`python main.py --mode simulation`) ·
   `backtest/walk_forward.py` · Cybos/Kiwoom 실거래 직접 운영
 

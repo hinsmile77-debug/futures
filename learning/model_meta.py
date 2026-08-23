@@ -12,7 +12,40 @@ import io
 import json
 import os
 
-__all__ = ["read_label_state"]
+__all__ = ["read_label_state", "wants_from_settings"]
+
+
+def wants_from_settings(settings):
+    """[MW0602 488차 계획 C] 설정에서 **현행 레이블 기대치**를 뽑는다.
+
+    Args:
+        settings: `config.settings` 모듈(또는 같은 속성을 가진 객체).
+
+    Returns:
+        (want_scheme, want_param_of) — 그대로 `read_label_state()` 에 넘긴다.
+
+    **왜 여기로 옮겼나.** 이 구성 로직은 `main.py:_model_label_scheme_current()` 안에만
+    있었는데, EOD 재학습 자체 사후검증(`retrain_eod.py`)도 **똑같은 기대치**를 만들어야
+    한다. 복제하면 레이블 체계를 바꿀 때 한쪽만 고쳐져 조용히 갈라진다 — 그때
+    재학습 쪽 SelfCheck 는 "이상 없음"을 계속 찍으면서 실제로는 다른 기준을 본다.
+    단일 진실원천으로 둔다. `main.py` 는 이 함수를 부르는 **어댑터**로 남는다.
+
+    ⚠ 순수 함수다 — 파일 I/O·COM·PyQt 의존이 없어 테스트에서 그대로 부를 수 있다.
+    """
+    want_scheme = "fixed" if getattr(
+        settings, "USE_FIXED_LABEL_THRESHOLD", True) else (
+        "rolling_sigma" if getattr(
+            settings, "USE_ROLLING_SIGMA_THRESHOLD", True) else "atr")
+
+    def _want_param_of(hz):
+        if want_scheme == "fixed":
+            return float(getattr(settings, "HORIZON_THRESHOLDS", {}).get(hz, 0.0003))
+        if want_scheme == "rolling_sigma":
+            return float(getattr(settings, "SIGMA_K_PER_HORIZON", {}).get(
+                hz, getattr(settings, "SIGMA_K", 1.0)))
+        return None
+
+    return want_scheme, _want_param_of
 
 
 def read_label_state(model_dir, horizons, want_scheme, want_param_of=None, tol=1e-9):
