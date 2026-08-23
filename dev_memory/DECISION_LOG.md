@@ -27234,3 +27234,36 @@ touch <워크트리>/__wt_probe && rm  → 삭제 실패 (워크트리도 동일
 phases.md B-1/B-2 자체 반영 · analysis_db 교훈 · 주간 대조 종료 · 세션 차수 충돌
 방지 · push/pull 의무 없음). **폐기 시점 스냅샷이며 이후 갱신하지 않는다** —
 `dev` 후속 결정의 정본은 본 DECISION_LOG다.
+
+### [구현 — 같은 세션 후속] F-8(B) + F-9 집행 (사용자 승인: "남은 결정사항 1, 2 구현해")
+
+**File**: `scripts/generate_validation_campaign_report.py` ·
+`scripts/const_out_horizon_watch.py`(docstring) · `config/settings.py`(주석 2곳) ·
+`tests/test_487_campaign_channel_hygiene.py`(신설)
+**결정·구현**:
+- **F-8(B)** — [50]/[54] 채널을 **생산부 존재 감지형**으로 가드했다:
+  `_has_module("scripts.direction_bias_watch")`(importlib spec) /
+  `_has_const_out_column()`(`PRAGMA table_info(scaler_daily)`). 없으면
+  `NOT_AVAILABLE_ON_THIS_BRANCH` 스텁(사유에 원 커밋·모듈/컬럼 명시).
+  단순 하드코딩 표기가 아니라 감지형으로 한 이유: 생산부가 dev에 자체 재구현되는
+  순간 채널이 **저절로 되살아난다** — 표기를 다시 걷어내는 커밋이 필요 없고,
+  "표기를 걷는 것을 잊어 산 채널을 죽은 것으로 표시"하는 역방향 사고도 원천 차단.
+  `_fmt_verdict`에 어휘 등록(🚫) — 미등록 시 조용히 INSUFFICIENT로 위장되는 함정
+  (생성기 주석의 자체 경고)을 피했다. 상세절은 NOT_AVAILABLE일 때 457차 G5 전제
+  본문(거짓 전제가 됨) 대신 사유 3줄을 낸다.
+- **F-9** — ConstOut `[51]` → **`[54]`** 재배정(선착 우선 — 462차 저변동성이 [51]
+  유지). 요약행(`구 [51]` 병기)·상세절 헤더·settings 사전등록 블록 주석([54] 명기 +
+  [55] 블록의 예약 주석을 배정 완료로)·모듈 docstring 4곳. **채널 키 문자열 불변**
+  (`const_out_horizon_watch` — 이력 식별자, 461차 mdd_pct 교훈).
+**검증**:
+- `py_compile` py310_64 전부 + settings는 py37_32 병행 통과.
+- 불변식 3종 `tests/test_487_campaign_channel_hygiene.py` **3/3 PASS** —
+  ① 요약표 채널 번호 유일성(리터럴 행 + `_row_462` 포맷 행 수집) ② F-9 재배정
+  유지([54] 존재·[51] ConstOut 부재·저변동성 [51] 유지) ③ F-8(B) 배선 생존.
+- **실생성 검증**(py310_64, `--out-dir` 스크래치패드 — 금요일점검 폴더 오염 방지):
+  요약표 [50]/[54] 둘 다 `🚫 NOT_AVAILABLE(브랜치 생산부 없음)` · `[51]` 요약행
+  1개(저변동성) · metrics json `direction_bias_watch`/`const_out_horizon_watch`에서
+  `error`/`no_data` 필드 **소멸**, `NOT_AVAILABLE_ON_THIS_BRANCH` **명시** —
+  **O-21(08-28 금 EOD) 기대값 사전 충족 확인.** 정식 판정은 08-28 자동 생성본으로.
+⚠ 판정식·합격선·`VALIDATION_CAMPAIGN` 사전등록 값은 일절 무변경 — 바뀐 것은
+표기 층(번호·어휘)과 실행 가드뿐이다.
