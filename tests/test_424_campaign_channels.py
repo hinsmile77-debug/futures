@@ -27,8 +27,14 @@
 관측치가 아니기 때문이다(372차가 PSI 재보정에서 실측).
 
 특히 [37]은 그 규율 자체가 존재 이유다 — 0804 실측에서 포지션 누적
--1,455,546원과 일자단위 p=0.4531이 정면으로 갈렸다. 아래 테스트는 그 **정확한
-수치를 고정**한다. 판정식이 바뀌면 여기서 깨져야 한다.
+-1,455,546원과 일자단위 p=0.4531이 정면으로 갈렸다.
+
+⚠ **[MW0601 488차 정정] "실 DB 산출 수치를 그대로 고정"하지 않는다.** 종전에는
+[37] 채널 출력의 `paired_days == 7` · `sign_p == 0.4531`(0804 실측)을 박아 뒀는데,
+이 채널은 `_campaign_start()`(고정 2026-07-05)부터 **영구 누적**이라 표본이 매
+거래일 늘어난다 — 판정식이 멀쩡해도 데이터가 쌓이면 깨지는 테스트였고, 실제로
+FAIL 2건이 방치돼 있었다. **공식은 합성 입력으로**(`_paired_day_summary` 직접
+호출), **실 DB 는 내부 정합성·단조성·판정 매핑만** 검사한다.
 
 실행: python tests/test_424_campaign_channels.py   (COM/브로커 불필요)
 """
@@ -229,19 +235,69 @@ def test_evals_smoke():
         check("%s eval이 verdict를 담은 dict를 반환한다" % name, ok)
 
 
-def test_hurst_channel_matches_manual_analysis():
-    """[37]이 0804 수동 분석과 같은 수를 내는가 — 판정식 표류 감지."""
+def test_hurst_channel_formula_not_drifted():
+    """[37] 판정식 표류 감지 — **데이터 증가에 면역인 불변식만** 본다.
+
+    [MW0601 488차 재설계] 종전 이 테스트는 실 DB 산출값 `paired_days == 7` 과
+    `sign_p == 0.4531`(둘 다 2026-08-04 실측)을 그대로 고정했다. 그런데 이 채널은
+    `_campaign_start()`(고정 2026-07-05)부터 **영구 누적**이라 표본이 매 거래일
+    늘어난다 — 즉 그 두 줄은 판정식이 멀쩡해도 **데이터가 쌓이기만 하면 깨진다.**
+    2026-08-23 실측은 15일 / p=0.3018 이고, 두 체크는 그 사이 **FAIL 상태로 방치**
+    돼 있었다(같은 세션이 `test_439_phantom_mirror.py`에서 동일 유형을 발견).
+
+    "판정식이 바뀌면 여기서 깨져야 한다"는 원래 의도는 옳다. 그 의도를 데이터
+    증가와 분리해 다시 세운다:
+
+        (1) 공식 자체는 **합성 입력**으로 고정한다
+            → `test_paired_day_summary_reproduces_0804` (0804 7일 diffs, 데이터 무관)
+        (2) 여기서는 실 DB 산출물의 **내부 정합성**만 본다 (재계산 일치)
+        (3) 표본은 **줄어들 수 없다** — 0804 기준선 아래로 내려가면 페어링 규칙이
+            바뀐 것이다(캠페인 시작이 고정값이므로 단조 증가가 보장된다)
+        (4) 이 채널의 **존재 이유**를 직접 건다 — 판정은 누적이 아니라 일자단위가 낸다
+
+    ⚠ 합격선을 만들지 않는다 — `min_samples`·`min_paired_days`·`alpha`는 사전등록
+      값을 그대로 읽는다(§9-4 판정기준 사후 변경 금지).
+    """
     m = _load_report_module()
+    from config.settings import VALIDATION_CAMPAIGN
+    cr = VALIDATION_CAMPAIGN.get("hurst_meanrevert_drag", {})
+    alpha = float(cr.get("alpha", 0.05))
+    min_n = int(cr.get("min_samples", 20))
+    min_pd = int(cr.get("min_paired_days", 5))
+
     out = m.eval_hurst_meanrevert_drag()
     if out.get("no_data") or not out.get("paired_days"):
         check("[37] 표본 없음 — 대조 생략(비교 불가)", True)
         return
-    check("[37] 짝지은 거래일 7일 (0804 실측)", out.get("paired_days") == 7)
-    check("[37] 부호검정 p=0.4531 (0804 실측)",
-          abs(out.get("sign_p", 0) - 0.4531) < 1e-4)
-    check("[37] 미유의 → PASS (누적 -145만원에도 조치 금지)",
-          out.get("verdict") == "PASS")
-    check("[37] [29]와 모집단 공유 사실이 metrics에 남는다",
+
+    pd_, dp = out["paired_days"], out.get("days_positive")
+
+    # (2) 내부 정합성 — 표본 크기와 무관하게 항상 성립해야 한다
+    check("[37] sign_p 가 자기 (days_positive, paired_days) 로 재계산된다 "
+          "(k=%s, n=%s)" % (dp, pd_),
+          abs(out["sign_p"] - round(m._sign_test_p(dp, pd_), 4)) < 1e-4)
+    check("[37] significant 는 sign_p < alpha(%.2f) 와 일치" % alpha,
+          out.get("significant") is bool(out["sign_p"] < alpha))
+    check("[37] days_positive 는 0..paired_days 범위", 0 <= dp <= pd_)
+
+    # (3) 단조성 — 캠페인 시작이 고정값이라 표본은 누적만 된다
+    check("[37] 짝지은 거래일이 0804 기준선(7일) 이상 (실측 %s일)" % pd_, pd_ >= 7)
+
+    # (4) 존재 이유 — 누적이 아니라 일자단위가 판정한다
+    judged = out["verdict"] != "INSUFFICIENT"
+    if not judged:
+        check("[37] 미판정이면 표본 관문 미달이 사유다 (mr=%s/%s, 짝일=%s/%s)"
+              % (out.get("n_mean_revert"), min_n, pd_, min_pd),
+              out.get("n_mean_revert", 0) < min_n or pd_ < min_pd)
+    elif out.get("significant") and out.get("mean_diff", 0) < 0:
+        check("[37] 일자단위 유의 + 평균차 음수 → SUPPORTS_HYP",
+              out["verdict"] == "SUPPORTS_HYP")
+    else:
+        check("[37] 일자단위 미유의 → PASS (누적 %s원이어도 조치 금지)"
+              % m._fmt_krw(out.get("cum_krw", {}).get("mean_revert")),
+              out["verdict"] == "PASS")
+
+    check("[37] [29]와 모집단 공유 사실이 metrics 에 남는다",
           out.get("shares_population_with", "").startswith("[29]"))
 
 
@@ -260,7 +316,7 @@ if __name__ == "__main__":
         test_channels_registered,
         test_verdict_vocabulary,
         test_evals_smoke,
-        test_hurst_channel_matches_manual_analysis,
+        test_hurst_channel_formula_not_drifted,
     ):
         print("\n-- %s" % fn.__name__)
         fn()

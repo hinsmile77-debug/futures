@@ -229,7 +229,19 @@ def test_live_channel_structural_not_nodata():
         check("(1) 실 DB 조회 실패 — 스킵: %s" % out["error"], True)
         return
     mir = out.get("mirror") or {}
-    if mir.get("n"):
+    # [MW0601 488차 정정] 이 테스트는 "주판정은 영구 0건"을 전제로 짜여 있었다.
+    # 439차 프로즈·리포트 렌더와 **같은 잘못된 가정**이며, 그래서 MW0601에서 주판정
+    # 표본이 12건 쌓인 뒤 2건이 조용히 FAIL 상태로 방치됐다(2026-08-23 발견).
+    # 이제 주판정 n 을 **먼저** 갈라 본다 — structural_block 은 n==0 일 때만 참이다.
+    if out.get("n"):
+        check("(0) 주판정 표본이 있으면 structural_block 은 서지 않는다",
+              not out.get("structural_block"))
+        check("(0) 🔴 no_data 는 꺼져 있어야 한다", not out.get("no_data"))
+        check("(0) drop-max 3종이 산출된다 (488차)",
+              out.get("drop_max_ts") is not None
+              and out.get("delta_pt_sum_drop_max") is not None
+              and out.get("drop_max_flips_sign") is not None)
+    elif mir.get("n"):
         check("(1) 주판정 0건 + 미러 존재 → structural_block",
               out.get("structural_block") is True)
         check("(1) 🔴 no_data 는 꺼져 있어야 한다", not out.get("no_data"))

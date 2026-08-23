@@ -2972,6 +2972,20 @@ def eval_phantom_stop_edge() -> dict:
         day_means = [float(np.mean([r["delta_pt"] for r in usable
                                     if r["ts"][:10] == d])) for d in days]
         out.update(_paired_day_summary(day_means, alpha))
+        # [MW0601 488차] drop-max — 이 채널의 delta는 **구조적으로 비대칭**이다.
+        # 유령 청산은 이익을 소액 확정하고(delta 상방 = 실현 pt 근방) 반사실은 본전
+        # 보호스톱이라 하방 0 근방 · 상방 무제한이다 -> 누적 delta는 추세일 1건에
+        # 지배되도록 설계상 예정돼 있다. 2026-08-21 실측이 그 실례다(12건 합
+        # -45.70pt 중 08-18 1건이 -52.84pt, 그 1건을 빼면 +7.14pt로 **부호 역전**).
+        # 372차가 정확히 이 함정에서 무너졌으므로 판정 전에 계측으로 박아 둔다.
+        # 합격선이 아니다 — 사전등록 관문은 일자단위 부호검정 그대로다(§9-4).
+        _worst = max(usable, key=lambda r: abs(r["delta_pt"]))
+        out["drop_max_ts"] = _worst["ts"]
+        out["drop_max_delta"] = round(_worst["delta_pt"], 3)
+        out["delta_pt_sum_drop_max"] = round(
+            out["delta_pt_sum"] - _worst["delta_pt"], 3)
+        out["drop_max_flips_sign"] = (
+            (out["delta_pt_sum"] < 0) != (out["delta_pt_sum_drop_max"] < 0))
 
     if out["n"] < min_n or out["n_days"] < min_d:
         out["reason"] = ("표본 축적 중 — %d건 / %d거래일 (필요 %d건 / %d일). "
@@ -10123,10 +10137,26 @@ def build_report(days: int) -> tuple:
     L.append("423차 가드가 `qty>=2`의 TP1 손익분기 경로를 우회해 유령 청산이 났다.")
     L.append("**일부러 고치지 않고 재고 있다** — 손익 부호가 예상과 반대이기 때문이다.")
     L.append("")
-    L.append("> **[439차 정정] \"계속 난다\"는 더 이상 사실이 아니다.** 431차의 MAX_CONTRACTS")
-    L.append("> 10→3 + 게이트 체인 재구성으로 `qty>=2` 진입이 사라져 유령 청산 모집단이")
-    L.append("> 소멸했다(2026-08-05 이후 `live_suppressed=0` **0건**). 아래 근거표는")
-    L.append("> **그 시절의 기록**이며 현행 상태가 아니다 — 현행은 [35-M] 미러를 볼 것.")
+    # [MW0601 488차] 439차 정정문은 **주판정 표본이 0건인 갈래에서만** 참이다.
+    # 그런데 데이터와 무관하게 무조건 렌더돼, 주판정 n>0인 리포트에서는 바로 아래
+    # "유령 청산 N건" 실측과 같은 절 안에서 정면 모순됐다(0821 MW0601 실측 12건).
+    # 439차(MW0602)는 MAX_CONTRACTS 배포 **직후 2거래일**(08-06 0건 / 08-07 1건)을
+    # 일반화한 것이고, 그 세션 자신이 P3에서 "사라진 게 아니라 급감"으로 자체
+    # 정정했으나 그 정정은 structural_block 분기에만 들어가 있었다.
+    if pse.get("n"):
+        L.append("> 🔴 **[488차 정정] 이 갈래에서 모집단은 살아 있다 — 439차 \"소멸\"")
+        L.append("> 서술을 이 리포트에 적용하지 말 것.** 주판정 표본이 **%s건 / %s거래일** 실측된다."
+                 % (pse.get("n"), pse.get("n_days")))
+        L.append("> 439차는 `MAX_CONTRACTS` 10→3 배포 **직후 2거래일**(08-06 0건 / 08-07 1건)로")
+        L.append("> \"`qty>=2` 진입이 사라졌다\"고 일반화했으나, 그 세션 자신이 P3에서")
+        L.append("> **\"사라진 게 아니라 급감\"**으로 자체 정정했다. `qty>=2` 진입은 그 뒤로도")
+        L.append("> 계속 발생한다(431차 재시뮬의 \"2~3계약 37%\"와 정합). 아래 근거표는")
+        L.append("> **채널 등록 계기**(424차)이며 현행 판정 근거가 아니다 — 현행은 그 아래 실측이다.")
+    else:
+        L.append("> **[439차 정정] \"계속 난다\"는 더 이상 사실이 아니다.** 431차의 MAX_CONTRACTS")
+        L.append("> 10→3 + 게이트 체인 재구성으로 `qty>=2` 진입이 사라져 유령 청산 모집단이")
+        L.append("> 소멸했다(2026-08-05 이후 `live_suppressed=0` **0건**). 아래 근거표는")
+        L.append("> **그 시절의 기록**이며 현행 상태가 아니다 — 현행은 [35-M] 미러를 볼 것.")
     L.append("")
     L.append("| 근거일 | 건수 | 실현 | 반사실(정상 가드) |")
     L.append("|---|---|---|---|")
@@ -10171,18 +10201,41 @@ def build_report(days: int) -> tuple:
             L.append("- 일자단위(313차): %s/%s일 유리, 평균 %+.3fpt, **부호검정 p=%s**"
                      % (pse.get("days_positive"), pse.get("paired_days"),
                         pse.get("mean_diff", 0.0), pse.get("sign_p")))
+        if pse.get("delta_pt_sum_drop_max") is not None:
+            L.append("- **drop-max(최대기여 1건 제거)**: %+.2fpt → **%+.2fpt**%s "
+                     "— 제거 대상 `%s` (%+.2fpt)"
+                     % (pse.get("delta_pt_sum", 0.0),
+                        pse.get("delta_pt_sum_drop_max"),
+                        " 🔴 **부호 역전**"
+                        if pse.get("drop_max_flips_sign") else "",
+                        pse.get("drop_max_ts"), pse.get("drop_max_delta", 0.0)))
         if pse.get("by_path"):
             L.append("")
             L.append("| 조이기 경로 | 건수 | delta 합 |")
             L.append("|---|---|---|")
             for _k, _v in sorted((pse.get("by_path") or {}).items()):
                 L.append("| `%s` | %s | %+.2fpt |" % (_k, _v["n"], _v["delta_pt_sum"]))
+        # [MW0601 488차] 판정 전에 읽는 법을 박아 둔다 — 도달 후에 만들면 313차 위반.
+        L.append("")
+        L.append("> **판정 전에 고정한다 — 이 채널의 delta는 구조적으로 비대칭이다** (488차).")
+        L.append("> 유령 청산은 이익을 **소액 확정**하고(delta 상방 = 실현 pt 근방), 반사실은")
+        L.append("> **본전 보호스톱**이라 하방 0 근방 · 상방 무제한이다. 그래서 누적 delta는")
+        L.append("> **추세일 1건에 지배되도록 설계상 예정돼 있다** — 위 drop-max 줄이 그 크기를")
+        L.append("> 매주 실측한다.")
+        L.append("> ")
+        L.append("> ⚠ **`delta 합`을 단독 인용하지 말 것.** 사전등록된 판정 관문은 누적이")
+        L.append("> 아니라 **일자단위 부호검정**이며(위 줄), drop-max는 그 보조다. 372차가")
+        L.append("> 정확히 이 함정에서 무너졌다(이상치 2건이 만든 값 → 기존값 유지로 종료).")
     L.append("")
     _mir = pse.get("mirror") or {}
     if _mir.get("n"):
         L.append("### [35-M] 미러 서브표본 — 억제된 쪽 (439차 신설, 관찰 병기)")
         L.append("")
-        L.append("주판정이 보는 `live_suppressed=0`(유령 청산 발생)이 431차 이후 사라졌으므로,")
+        # [MW0601 488차] 이 도입부도 "431차 이후 사라졌으므로"를 무조건 단정했다(②와 동일 결함).
+        if pse.get("n"):
+            L.append("주판정이 보는 `live_suppressed=0`(유령 청산 발생)과 **겹치지 않는 서브표본**에서,")
+        else:
+            L.append("주판정이 보는 `live_suppressed=0`(유령 청산 발생)이 431차 이후 사라졌으므로,")
         L.append("**같은 Δ를 `live_suppressed=1`(가드가 억제해 버틴 건)에서 반대 방향으로** 잰다.")
         L.append("반사실(관측 전 고정): 유령 청산은 시장가이므로 판정 시점 `cur_price` 체결로 본다.")
         L.append("**부호 규약은 주판정과 같다 — (+)면 유령이 유리.**")
