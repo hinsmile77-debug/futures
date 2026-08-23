@@ -26802,3 +26802,100 @@ O-5(장전판) 마진이 **예측 47초 → 실측 12초**(08:59:48 생성 vs 09
 **교훈**: 이 프로젝트에서 "거래일"과 "기동 횟수"는 다른 단위다 — 휴장일·주말에도
 프로세스가 떠서 로그를 남긴다. 468차 G-3(청산 라벨 2축)·470차 C4'(집계 단위 명시)와
 같은 계열의 단위 혼동이며, **로그 파일이 존재한다는 사실을 거래일로 읽지 말 것.**
+
+---
+
+## 2026-08-23 (MW0602 485차 후속 — 0821 장후 산출물 커밋 + F-1·F-4·F-5·F-6·F-7·F-10 구현)
+
+> 0821 리포트(484차 장전·장중 + 485차 장후)가 "사용자 지시 후"로 남긴 Fix를
+> 사용자 지시("F-1 · F-4 · F-5 · F-6 · F-7 · F-10 구현해")로 집행했다.
+> 오늘은 **일요일(장외)** — F-1·F-4의 "장후(15:10 이후) 적용" 조건 충족.
+> 0821 장후 절의 커밋 ①(문서)이 미커밋으로 남아 있어 본 세션이 함께 커밋했다
+> (0821 리포트 장후 절 + 금요일점검 산출물 6파일).
+> 커밋 분리는 장중 계획 그대로 — F-1(학습 경로) / F-4·F-5·F-7(관측 배선) /
+> F-6(점검 도구)은 회귀 표면이 전부 다르다.
+
+### [구현] F-1 앙상블 보정기 영속화 복구 (P1 · 1-1, 1-7 동반 해소)
+
+**File**: `learning/calibration.py`(save/load) · `main.py`(daily_close 저장 호출부) ·
+`tests/test_484_calibrator_persistence.py`(신설)
+**결정**: ① `save()` 게이트를 `not _SKLEARN_OK or not self._fitted` →
+`not _SKLEARN_OK` + `self._model is None`으로 분리하고 payload에
+`fitted`/`degenerate`/`unreachable` 3키 추가. ② `load()`의 무조건 `_fitted = True`를
+`state.get("fitted", True)`로 교체(구버전 저장본은 키가 없어 True 폴백 = 종전 동작
+보존) — load의 축퇴/도달불가 재평가는 fitted를 **내리기만** 하므로 축퇴 저장본이
+fitted로 부활하는 경로가 없다(1-7 동시 해소). ③ 저장 호출부 부정 분기에 WARNING
+`[Calibration] 앙상블 보정기 저장 건너뜀 — fitted=%s degenerate=%s unreachable=%s n=%d`.
+**Why**: 모델 계수와 누적 표본은 수명이 다른 데이터인데 한 게이트에 묶여, 마감
+시각의 축퇴/도달불가 상태가 그날 표본까지 버렸다(2026-08-12~21 **7거래일 무저장**).
+부정 분기 무로그가 발견을 6거래일 지연시켰다 — ③이 이 F의 핵심이다.
+**검증**: 불변식 4종 pytest **4/4 PASS**(① fitted=False에서도 save True+파일 생성
+② 그 파일 load 시 is_fitted False ③ 구버전 payload load 시 True ④ _model None이면
+False) · py37_32/py310_64 `py_compile` 통과. 라이브 판정 **O-12/O-13(08-24 월 장후)**:
+`저장 완료 n>1183` 또는 `저장 건너뜀` 중 하나 필수 출현 + pkl mtime 당일 갱신.
+⚠ [45] `cal_guard_flap_watch` 확정 결정(전면 보류) 영역 — 축퇴 판정 임계·전환 설계
+무변경. `joblib protocol=4` 유지(191차).
+
+### [구현] F-4 DriftRetrain 무조건 상태 샘플 (P1 · 1-10)
+
+**File**: `main.py` `_drift_trigger` 산출 직후
+**결정**: 매분 **INFO** 1줄 `[DriftRetrain] state=FIRE|SKIP acc5m=… n=… mins_since_rt=…
+halted=… running=… cooldown_ok=… cond_a=… cond_b=…`. `state=SKIP`이면 어느 항이
+False였는지 그 줄만으로 읽힌다. 임계·조건식 무변경(사전등록 원칙).
+**Why**: 0821 하루 전체 `[DriftRetrain]` 0건이 "조건 미충족(정상)"인지 "판정부
+사망"인지 로그로 구분 불가였다(1-10 원인 미확정의 직접 원인). 477차 후속 G-2
+(`[MarginCap] state=`)와 같은 처방. ⚠ debug로 내리면 `LOG_LEVEL=INFO`에서 다시
+사라진다(`[CB③ 비활성]` 전례) — INFO 고정.
+**검증**: **O-24(08-24 장중)** — 줄 수 == 정규장 분수 · SKIP 사유 정합 · FIRE 조건
+성립 시 FIRE 출현(안 찍히면 `running=` 값이 원인 후보 1을 판정한다).
+로그량 +약 370줄/일(0821 TRADE 84행 대비 무해), 매분 비용 문자열 포맷 1회.
+
+### [구현] F-5 수집기 `[MarginCap]` 신·구 양식 (P2 · 1-11)
+
+**File**: `.claude/skills/mireuk-daily-check/scripts/collect_evidence.py`
+**결정**: `margin_cap` 정규식을 alternation으로 확장(구 `산출=N계약 → 증거금상한=M계약으로
+축소` / 신 `state=OK|CAP|BLOCK … 산출=N 상한=M`). §5 카운터를 「조회 N · 축소 M」
+2축으로 분리 — 신형식은 무조건 상태 샘플이라 "축소만 세는 칸"에 흘리면 전 건이
+축소로 오독된다. CAP 사건은 신·구 두 줄이 함께 찍히므로 신형식이 있으면 신형식만
+센다(중복 계수 방지). 실효 상한 분해 표·"발동한 날" 경고도 `state=CAP` 기준으로 정정
+(OK만 있는 날 오경고 방지).
+**검증**: 0821 다이제스트 재생성 — §5 `조회 27 · 축소 3` == §12 `MarginCap_state`
+27(`OK`×24 `CAP`×3) **일치**, 분해 표 `3→2계약`×3.
+⚠ §5 시계열 불연속: 08-20 이전 다이제스트의 그 칸은 구형식(축소만) 기준이다.
+⚠ 스킬 캐시 사본은 이 PC에 없음(`~/.claude` 전수 탐색 0건) — repo 원본 단일.
+
+### [구현] F-6 `phases.md` B-1·B-2 정정 (P2 · 1-15)
+
+**File**: `.claude/skills/mireuk-daily-check/references/phases.md`
+**결정**: B-1 *"T-30은 퇴역 대상"* → **"T-30 채점은 계속돼야 한다 — CB③·Contrarian의
+유일한 입력원(474차 각주). 채점이 끊긴 것이 점검거리"**. B-2 *"30분마다"* →
+**STEP 3 조건부 트리거 3종, 미발동 자체는 이상 아님**(판독 원천: F-4 상태 샘플).
+**Why**: 구판대로면 다음 장중 점검이 "T-30이 아직 돈다"와 "재학습이 30분마다 안
+돈다"를 거짓 이상점으로 만든다 — 둘 다 CLAUDE.md(474차 각주·470차 STEP 3 각주)와
+정반대였다. **MW0601 F-8의 `dev` 브랜치 반영**(같은 정정이 두 PC에서 다른 문구로
+갈리지 않게 커밋 메시지에 명시 — 함정 ③).
+
+### [구현] F-7 `monthly_cleanup.py` stdout 인코딩 고정 (P1 · 1-16)
+
+**File**: `scripts/monthly_cleanup.py` · `tests/test_485_monthly_cleanup_encoding.py`(신설)
+**결정**: 모듈 상단에 `sys.stdout/stderr.reconfigure(encoding="utf-8")` 블록 삽입 —
+캠페인 체인 공통 관용구(`analyze_mae_mfe.py` 등) 그대로 복제. 문자를 지우는
+방향(`—`→`-`)은 배제 — 원인은 문자가 아니라 인코딩이다.
+**검증**: py310_64 dry-run **rc=0 완주** + 테스트 2종 PASS(소스 불변식 +
+`PYTHONIOENCODING=cp949` 파이프 재현에서 생존). 라이브 판정 **O-20(08-28 금 EOD)**:
+`월간 로그 정리=OK` + `data/monthly_cleanup_last_run.txt`=`202608`.
+🆕 **부수 발견**: `utils/analysis_db.py`가 `dev`에 없어 `guard_intraday()` 임포트
+실패 → 장중 가드가 경고만 내고 우회된다(479차 가드의 생산부 미이식 —
+1-17과 같은 브랜치 비대칭 계열). NEXT_TODO에 P2로 등록, F-8 논의에 합류.
+
+### [문서] F-10 관측 ID `O-8` 충돌 정정 (P2 · 1-19)
+
+**결정**: 0821 장중 절이 `O-8`(정본: 진짜 손절의 손절 준수율)로 오라벨한
+WeightCollapse 밴드 관측에 **`O-22`를 부여**(밴드 20.3~20.5%±5%p 승계, NEXT_TODO 등록).
+리포트 장중 절 본문은 대원칙 B-①에 따라 고치지 않는다 — 장후 절 1-19가 정정 기록.
+**검증**: 다음 장중 점검이 WeightCollapse를 `O-22`로 인용하는지.
+
+### 미착수 — F-8(A/B) · F-9
+
+사용자 지시 범위 밖 + 결정 대기 사안(F-8 (A)/(B)/(C) 택일 권고 C · F-9 주간회의
+합의). 리포트 커밋 ④에 F-8(B)가 묶여 있었으나 이번 커밋 ④는 **F-6 단독**으로 냈다.
