@@ -15172,3 +15172,17 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
   `scripts/generate_validation_campaign_report.py` · `tests/test_486_early_window_shadow.py`(신설) ·
   0823 리포트 · dev_memory 2종.
   → `[MW0602] 486차: 캠페인 채널 [55] 신설 — 09:20~09:29 A등급게이트 소급 판정 BLOCK_JUSTIFIED (1-9)`
+
+### ↩️ 정정 (486차) — 커밋 차단 원인 오진
+
+- [x] **「즉시(사용자 소관) — `.git/index.lock` 삭제」 항목은 무효.** 지워도 다음
+  `git status` 가 곧바로 다시 만든다. 원인은 잔존 lock 이 아니라 **마운트가 `unlink`
+  를 금지**하는 것이다(생성·rename 은 가능). 세션이 rename 우회로 처리한다 —
+  `references/invariants.md` §0-B 참조. **사용자에게 lock 삭제를 요청하지 말 것.**
+- [x] **`invariants.md` §0-B 신설** — 커밋 환경 상시 조건 못박음(F-2/486차).
+- [ ] **(사용자·위생) 잔여물 정리** — 동작에는 지장 없으나 다음 세션의 오진 원인이 된다.
+  `Remove-Item .git\*.lock*, .git\__* -Force` · `Remove-Item __wt_probe_5 -Force` ·
+  `git gc --prune=now`. ⚠ `__probe_5`·`__r2_5`·`__wt_probe_5` 는 **486차 세션이 원인
+  진단하느라 만든 것**이다.
+- [ ] **(사용자 결정) `git push` 여부** — 486차 커밋 3건이 로컬에만 있다.
+  push 전에는 MW0601 이 오늘 작업을 볼 수 없다.

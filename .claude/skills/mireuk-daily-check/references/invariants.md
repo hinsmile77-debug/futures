@@ -18,6 +18,54 @@
 같은 리포를 공유하지만 작업 라인이 갈려 있다. **커밋·체리픽 전에 반드시 확인하라.**
 `config/settings.py` 가 브랜치 간 5,476줄 차이 난다 — 아래 §2 한시예외 값도 `v9-dev` 기준이다.
 
+---
+
+## 0-B. 커밋 환경 — 이 마운트는 `unlink` 를 금지한다 ⚠ [MW0602 486차 등록]
+
+**증상**: `git add`/`git commit` 이 이렇게 죽는다.
+```
+fatal: Unable to create '.../.git/index.lock': File exists.
+Another git process seems to be running in this repository…
+```
+
+**이것은 "다른 git 프로세스가 돌고 있다"가 아니다.** 안내문을 믿고 lock 을 지우면
+잠깐 되는 것처럼 보였다가 **바로 다시 생긴다.** 2026-08-23에 사용자가 실제로
+지웠는데도 `git status` 한 번에 재발했다.
+
+**진짜 원인** — 예약 점검이 도는 리눅스 샌드박스 마운트는 **파일 생성·rename 은
+되는데 삭제(`unlink`)만 안 된다.** `.git/` 만이 아니라 **작업 폴더 전체**가 그렇고,
+**방금 만든 자기 소유 파일조차** 못 지운다.
+```
+touch .git/__probe → OK      rm .git/__probe → Operation not permitted
+mv a b             → OK      (워크트리도 동일)
+```
+⇒ git 이 optional lock 을 만들고 정리(unlink)에 실패 → stale lock 잔존 →
+다음 명령이 거부. **상태를 확인하는 행위 자체가 lock 을 다시 만든다.**
+
+**해결 — rename 이 허용된다는 점을 쓴다.**
+```bash
+# ① lock 을 삭제하지 말고 옆으로 비켜준다
+for f in .git/index.lock .git/HEAD.lock .git/refs/heads/<브랜치>.lock; do
+  [ -e "$f" ] && mv "$f" "$f.stale.$$"
+done
+# ② 읽기는 optional lock 자체를 만들지 않게
+git --no-optional-locks status --porcelain
+# ③ add/commit — 성공 경로가 rename(index.lock → index) 이라 통과한다
+git --no-optional-locks add …
+git --no-optional-locks commit -F -
+```
+`warning: unable to unlink '.git/objects/../tmp_obj_…'` 는 **정상**이다 — 정리 단계만
+실패한 것이고 종료코드·무결성에 영향이 없다(`git fsck` 확인함).
+
+⚠ **사용자에게 "lock 을 지워달라"고 요청하지 마라.** 구조적으로 해결되지 않는다.
+대신 잔여물 정리(`Remove-Item .git\*.lock*, .git\__* -Force; git gc --prune=now`)만
+가끔 부탁하면 된다 — 그건 위생 문제이지 차단 원인이 아니다.
+
+> 이것은 **오늘 생긴 사고가 아니라 이 실행 환경의 상시 조건**이다. 2026-08-23 실측에서
+> `.git/` 에 이전 세션들이 남긴 잔여 lock 이 20여 개 있었고(`index.lock.s7`·`.y1`·
+> `.stale2~5`·`HEAD.lock.s2`·`.y2`·`.z2` …) 이름 규칙이 제각각이었다 — **매 세션이
+> 같은 벽에 부딪혀 각자 우회하고 있었다는 뜻**이다. 그래서 여기 못박는다.
+
 ## 1. 절대원칙 6종 (변경 불가)
 
 제안이 이 중 하나에 저촉되면 **그 제안 자체를 내지 않는다.**
