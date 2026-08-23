@@ -7434,13 +7434,19 @@ def _fmt_verdict(v: str) -> str:
         "ALERT_BIAS": "🟠 ALERT_BIAS(절편 편향)",
         #   소급 구간을 포함한 실행 — 사전등록 판정으로 승격하지 않는다.
         "BACKFILL_ADVISORY": "🔎 BACKFILL_ADVISORY(소급·참고용)",
-        # [MW0601 471차 후속7 / G-2, 51] ConstOut 빈발일의 동일 호라이즌 진입 열위.
+        # [MW0601 471차 후속7 / G-2, 54(구 51 — 487차 F-9 재배정)] ConstOut 빈발일의
+        #   동일 호라이즌 진입 열위.
         #   **"그 호라이즌을 막아라"가 아니다** — 처방 축은 라우터 선택 억제·재학습
         #   스케줄·피처셋 조사다. 위 ALERT_BIAS와 같은 이유로 별도 어휘를 쓴다
         #   (FAIL 어휘를 쓰면 316~318차 HurstGate FalseBlock을 반복한다).
         # ⚠ 이 표에 없는 verdict는 조용히 "INSUFFICIENT"로 표시된다 — 새 채널을
         #   추가할 때 여기 등록을 빠뜨리면 판정이 사라진 것처럼 보인다.
         "FLAG_DRAG": "🟠 FLAG_DRAG(호라이즌 열위)",
+        # [MW0602 487차 / F-8(B)] 생산부가 이 브랜치에 없는 채널 전용 —
+        #   INSUFFICIENT("표본이 쌓이는 중")로 읽으면 안 된다. **표본은 오지 않는다.**
+        #   0821 이상점 1-17: [50]/[54] 생산부 커밋(080c982)이 v9-dev 전용인데
+        #   소비부만 dev에 들어와 매주 INSUFFICIENT 오독이 재생산되던 것을 끊는다.
+        "NOT_AVAILABLE_ON_THIS_BRANCH": "🚫 NOT_AVAILABLE(브랜치 생산부 없음)",
     }.get(v, "⏳ INSUFFICIENT")
 
 
@@ -7546,13 +7552,51 @@ def build_report(days: int) -> tuple:
                     "reason": "%s 실행 실패" % label}
     bsp = _safe_channel("scripts.bar_stop_path_watch", "[48]")
     pgw = _safe_channel("scripts.payoff_geometry_watch", "[49]")
+    # [MW0602 487차 / F-8(B)] 채널 [50]·[54]는 **생산부가 v9-dev에만 있다**
+    # (0821 이상점 1-17: 생산부 커밋 080c982 미이식 — [50]은
+    # scripts/direction_bias_watch.py 파일 자체가 없고, [54]는
+    # scaler_daily.const_out_by_horizon 컬럼이 없어 전 구간 미측정이다).
+    # 2026-08-23 멀티PC 정책 폐기(487차)로 체리픽 경로가 닫혔으므로 INSUFFICIENT
+    # ("표본이 쌓이는 중") 오독이 나지 않게 NOT_AVAILABLE_ON_THIS_BRANCH 로 분리
+    # 표기한다. 생산부가 이 브랜치에 생기면(자체 재구현 — P3 백로그) 아래 감지가
+    # 저절로 참이 되어 채널이 되살아난다 — 이 코드를 다시 손볼 필요가 없다.
+    def _branch_unavailable(label, missing):
+        return {"verdict": "NOT_AVAILABLE_ON_THIS_BRANCH",
+                "reason": "%s 생산부가 이 브랜치에 없음 — %s. "
+                          "체리픽 안 함(487차 결정) · 자체 재구현은 P3 백로그" % (label, missing)}
+
+    def _has_module(name):
+        try:
+            import importlib.util
+            return importlib.util.find_spec(name) is not None
+        except Exception:
+            return False
+
+    def _has_const_out_column():
+        try:
+            import sqlite3
+            from config.settings import SCALER_MONITOR_DB
+            with sqlite3.connect(SCALER_MONITOR_DB) as _c:
+                _cols = [r[1] for r in _c.execute("PRAGMA table_info(scaler_daily)")]
+            return "const_out_by_horizon" in _cols
+        except Exception:
+            return False
+
     # [MW0601 457차 / G4] 방향 편향 상시 감시. predictions.db만 읽고 시뮬레이터를
     # 쓰지 않으므로 §47 게이트가 SUSPEND여도 계속 판정한다([48]/[49]와 같은 이유).
-    dbw = _safe_channel("scripts.direction_bias_watch", "[50]")
+    dbw = (_safe_channel("scripts.direction_bias_watch", "[50]")
+           if _has_module("scripts.direction_bias_watch")
+           else _branch_unavailable(
+               "[50]", "scripts/direction_bias_watch.py (080c982, v9-dev 전용)"))
     # [MW0601 471차 후속7 / G-2] ConstOut 호라이즌 건강도. scaler_monitor.db(457차 G5가
     # 이미 쌓고 있던 집계)와 trades만 읽고 시뮬레이터를 쓰지 않으므로 §47 게이트가
     # SUSPEND여도 계속 판정한다([48]/[49]/[50]과 같은 이유).
-    cow = _safe_channel("scripts.const_out_horizon_watch", "[51]")
+    # 채널 번호 [54] — 구 [51]이 462차 저변동성 채널과 충돌해 재배정(487차 F-9,
+    # 선착 우선). 채널 키 문자열(`const_out_horizon_watch`)은 불변 — 이력 식별자다.
+    cow = (_safe_channel("scripts.const_out_horizon_watch", "[54]")
+           if _has_const_out_column()
+           else _branch_unavailable(
+               "[54]", "scaler_daily.const_out_by_horizon 컬럼 (457차 G5, v9-dev 전용)"))
 
     metrics = {
         "generated_at": now_str,
@@ -7805,7 +7849,8 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(dbw.get("verdict", "")), dbw.get("reason", dbw.get("error", "—"))))
     # [MW0601 471차 후속7 / G-2] FLAG_DRAG는 "그 호라이즌을 막자"가 아니다 —
     # 판정문이 처방 축(라우터 억제·재학습 스케줄·피처셋 조사)을 함께 싣는다.
-    L.append("| [51] ConstOut 호라이즌 건강도 | %s | %s |" % (
+    # [MW0602 487차 / F-9] 구 [51] → [54] 재배정(462차 저변동성 채널이 선착).
+    L.append("| [54] ConstOut 호라이즌 건강도 (구 [51]) | %s | %s |" % (
         _fmt_verdict(cow.get("verdict", "")), cow.get("reason", cow.get("error", "—"))))
     L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
@@ -9838,40 +9883,49 @@ def build_report(days: int) -> tuple:
     L.append("> ⚠ 두 기준이 갈리면 **결과가 소수 고변동일에 집중**됐다는 신호다 — 그래서 둘 다 찍는다.")
     L.append("")
 
-    # [51] ConstOut 호라이즌 건강도 (MW0601 471차 후속7 / G-2)
-    L.append("## [51] ConstOut 호라이즌 건강도 (471차 후속7 신설 · 시뮬 무관)")
+    # [54] ConstOut 호라이즌 건강도 (MW0601 471차 후속7 / G-2 · 487차 F-9로 구 [51]에서 재배정)
+    L.append("## [54] ConstOut 호라이즌 건강도 (471차 후속7 신설 · 시뮬 무관 · 구 [51])")
     L.append("")
     L.append("- 판정: **%s** — %s" % (_fmt_verdict(cow.get("verdict", "")),
                                      cow.get("reason", cow.get("error", "—"))))
-    _co_tot = cow.get("const_out_by_horizon_totals") or {}
-    if _co_tot:
+    if cow.get("verdict") == "NOT_AVAILABLE_ON_THIS_BRANCH":
+        # [MW0602 487차 / F-8(B)] 생산부가 이 브랜치에 없으면 아래 본문(457차 G5
+        # 집계 전제)은 전부 거짓 전제가 된다 — 표를 비워 두는 대신 이유를 적는다.
         L.append("")
-        L.append("| 호라이즌 | ConstOut 사건 | 제외 분 | 발생 거래일 |")
-        L.append("|---|---|---|---|")
-        for _hz, _v in _co_tot.items():
-            L.append("| %s | %d | %d | %d |" % (
-                _hz, _v.get("events", 0), _v.get("minutes", 0), _v.get("days", 0)))
-    _co_hz = cow.get("by_horizon") or {}
-    if _co_hz:
-        def _co_cell(d):
-            return ("%d / %s원" % (d["n"], format(d["avg_pnl_krw"], ",.0f"))
-                    if d else "—")
+        L.append("> 생산부(`scaler_daily.const_out_by_horizon` 컬럼, 457차 G5)가 이 브랜치에 없다.")
+        L.append("> 2026-08-23 멀티PC 정책 폐기로 체리픽 경로가 닫혔다 — 자체 재구현(P3 백로그)")
+        L.append("> 전까지 이 표기가 정상이며, **INSUFFICIENT(표본 축적 중)로 읽으면 안 된다.**")
         L.append("")
-        L.append("| 호라이즌 | heavy n / 평균 | clean n / 평균 |")
-        L.append("|---|---|---|")
-        for _hz, _v in sorted(_co_hz.items()):
-            L.append("| %s | %s | %s |" % (
-                _hz, _co_cell(_v.get("heavy")), _co_cell(_v.get("clean"))))
-    L.append("")
-    L.append("> **일별 영속화는 457차 G5가 이미 하고 있다**(`scaler_daily.const_out_by_horizon`).")
-    L.append("> 이 채널은 그 집계를 **진입 성적과 결합**하는 부분만 담당한다.")
-    L.append("> 🔴 `const_out_by_horizon`이 NULL인 날(457차 G5 배포 이전)의 진입은 **양 버킷")
-    L.append("> 어디에도 넣지 않는다** — 미측정을 clean으로 세면 버킷이 오염된다(계측 4원칙 ②).")
-    L.append("> 이번 주 제외 포지션 **%s건**. 그래서 당분간 INSUFFICIENT가 정상이다."
-             % cow.get("n_excluded_unmeasured", "—"))
-    L.append("> ⚠ FLAG_DRAG는 **차단 처방이 아니다** — 라우터 선택 억제·재학습 스케줄·")
-    L.append("> 피처셋 조사 축이다(316~318차 HurstGate FalseBlock 교훈).")
-    L.append("")
+    else:
+        _co_tot = cow.get("const_out_by_horizon_totals") or {}
+        if _co_tot:
+            L.append("")
+            L.append("| 호라이즌 | ConstOut 사건 | 제외 분 | 발생 거래일 |")
+            L.append("|---|---|---|---|")
+            for _hz, _v in _co_tot.items():
+                L.append("| %s | %d | %d | %d |" % (
+                    _hz, _v.get("events", 0), _v.get("minutes", 0), _v.get("days", 0)))
+        _co_hz = cow.get("by_horizon") or {}
+        if _co_hz:
+            def _co_cell(d):
+                return ("%d / %s원" % (d["n"], format(d["avg_pnl_krw"], ",.0f"))
+                        if d else "—")
+            L.append("")
+            L.append("| 호라이즌 | heavy n / 평균 | clean n / 평균 |")
+            L.append("|---|---|---|")
+            for _hz, _v in sorted(_co_hz.items()):
+                L.append("| %s | %s | %s |" % (
+                    _hz, _co_cell(_v.get("heavy")), _co_cell(_v.get("clean"))))
+        L.append("")
+        L.append("> **일별 영속화는 457차 G5가 이미 하고 있다**(`scaler_daily.const_out_by_horizon`).")
+        L.append("> 이 채널은 그 집계를 **진입 성적과 결합**하는 부분만 담당한다.")
+        L.append("> 🔴 `const_out_by_horizon`이 NULL인 날(457차 G5 배포 이전)의 진입은 **양 버킷")
+        L.append("> 어디에도 넣지 않는다** — 미측정을 clean으로 세면 버킷이 오염된다(계측 4원칙 ②).")
+        L.append("> 이번 주 제외 포지션 **%s건**. 그래서 당분간 INSUFFICIENT가 정상이다."
+                 % cow.get("n_excluded_unmeasured", "—"))
+        L.append("> ⚠ FLAG_DRAG는 **차단 처방이 아니다** — 라우터 선택 억제·재학습 스케줄·")
+        L.append("> 피처셋 조사 축이다(316~318차 HurstGate FalseBlock 교훈).")
+        L.append("")
 
     # [33] 급행풀스톱 발굴 재실행 게이지 (MW0601 421차 후속10)
     # 판정 채널이 아니다 — Phase A를 언제 다시 돌릴지 사람이 기억하지 않아도 되게 하는
