@@ -10147,7 +10147,9 @@ class TradingSystem:
             self.circuit_breaker.record_win()
             self.kelly.record(win=True, pnl_pts=pnl)
         else:
-            self.circuit_breaker.record_stop_loss()
+            # [MW0601 489차 / A-1] 포지션 단위 카운트 — 같은 포지션의 계단식
+            # 손절 레그가 2카운트를 만들던 것을 막는다(계측 4원칙 ①).
+            self.circuit_breaker.record_stop_loss(result.get("entry_ts"))
             self.kelly.record(win=False, pnl_pts=pnl)
 
         log_manager.trade(
@@ -10228,7 +10230,9 @@ class TradingSystem:
             self.circuit_breaker.record_win()
             self.kelly.record(win=True, pnl_pts=pnl)
         else:
-            self.circuit_breaker.record_stop_loss()
+            # [MW0601 489차 / A-1] 포지션 단위 카운트 — 같은 포지션의 계단식
+            # 손절 레그가 2카운트를 만들던 것을 막는다(계측 4원칙 ①).
+            self.circuit_breaker.record_stop_loss(result.get("entry_ts"))
             self.kelly.record(win=False, pnl_pts=pnl)
 
         log_manager.trade(
@@ -10557,7 +10561,9 @@ class TradingSystem:
             self.circuit_breaker.record_win()
             self.kelly.record(win=True, pnl_pts=pnl)
         else:
-            self.circuit_breaker.record_stop_loss()
+            # [MW0601 489차 / A-1] 포지션 단위 카운트 — 같은 포지션의 계단식
+            # 손절 레그가 2카운트를 만들던 것을 막는다(계측 4원칙 ①).
+            self.circuit_breaker.record_stop_loss(result.get("entry_ts"))
             self.kelly.record(win=False, pnl_pts=pnl)
         # EnsembleGater 온라인 가중치 갱신 — 진입 시 저장된 gate signals 사용
         if self._last_gate_signals and self._last_gate_direction != 0:
@@ -14373,7 +14379,8 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
         self.circuit_breaker.record_win()
         self.kelly.record(win=True, pnl_pts=pnl)
     else:
-        self.circuit_breaker.record_stop_loss()
+        # [MW0601 489차 / A-1] 포지션 단위 카운트 (위 주석과 동일 취지)
+        self.circuit_breaker.record_stop_loss(result.get("entry_ts"))
         self.kelly.record(win=False, pnl_pts=pnl)
 
     log_manager.trade(

@@ -21,7 +21,7 @@ from utils.time_utils import now_kst
 
 from config.settings import (
     CB_SIGNAL_FLIP_LIMIT, CB_SIGNAL_FLIP_PAUSE,
-    CB_CONSEC_STOP_LIMIT, CB_ACCURACY_MIN_30M,
+    CB_CONSEC_STOP_LIMIT, CB_CONSEC_STOP_WINDOW_SEC, CB_ACCURACY_MIN_30M,
     CB_ATR_MULT_LIMIT, CB_API_LATENCY_LIMIT, CB_API_LATENCY_PAUSE,
     CB_HIGH_CONF_WRONG_LIMIT, CB_HIGH_CONF_THRESHOLD, CB_ACCURACY_MIN_30M_STRICT,
     CB_MID_CONF_WRONG_LIMIT, CB_MID_CONF_LO, CB_MID_CONF_HI,
@@ -56,7 +56,11 @@ class CircuitBreaker:
         self._flip_window_sec = 60
 
         # 트리거 ② 연속 손절 카운터
+        # ⚠ `_consec_stops` 는 `_stop_events` 에서 **파생**된다(직접 증가시키지 말 것).
+        #   [MW0601 489차] 종전에는 이 정수만 있었고 시간창도, 포지션 단위 중복
+        #   제거도 없었다 — settings `CB_CONSEC_STOP_WINDOW_SEC` 주석 참조.
         self._consec_stops: int = 0
+        self._stop_events: deque = deque()   # (timestamp, position_key|None)
 
         # 트리거 ③ 30분 정확도 버퍼
         self._accuracy_buf: deque = deque(maxlen=30)  # 매분 정확도
@@ -245,13 +249,57 @@ class CircuitBreaker:
             )
 
     # ── 트리거 ② 연속 손절 ────────────────────────────────────
-    def record_stop_loss(self):
-        self._consec_stops += 1
-        logger.warning(f"[CB] 연속 손절 {self._consec_stops}회")
+    def _prune_stop_events(self, now: datetime.datetime) -> None:
+        """시간창(CB_CONSEC_STOP_WINDOW_SEC) 밖 손절 사건을 버린다."""
+        cutoff = now - datetime.timedelta(seconds=CB_CONSEC_STOP_WINDOW_SEC)
+        while self._stop_events and self._stop_events[0][0] < cutoff:
+            self._stop_events.popleft()
+        self._consec_stops = len(self._stop_events)
+
+    def record_stop_loss(self, position_key: Optional[str] = None):
+        """손절 1건 기록 — **포지션 단위**, 시간창 안에서만 센다.
+
+        [MW0601 489차 / A-1 스테이지1] 절대원칙 ②의 문구(*"5분 내 손절 3연속"*)에
+        계측을 맞춘다. 두 가지가 없었다:
+
+          ① **시간창** — 종전엔 승리 레그로만 리셋돼, 하루 종일 흩어진 손절도
+             "연속"으로 쌓였다.
+          ② **포지션 단위** — 호출부가 청산 **레그** 단위 4곳이라 한 포지션의
+             계단식 손절(부분청산 → 최종청산)이 2카운트를 만들었다.
+             계측 4원칙 ①(단위 명시)의 CB② 판이다.
+
+        Args:
+            position_key: 포지션 식별자(권장: `result["entry_ts"]`). 같은 키의
+                추가 레그는 **새 사건으로 세지 않는다**. `None`이면 중복 제거를
+                할 수 없으므로 레그마다 별도 사건이 된다(구버전 호환 경로) —
+                그 경우 어떤 호출부인지 로그에 남겨 폴백을 가시화한다(원칙 ④).
+        """
+        now = now_kst()
+        self._prune_stop_events(now)
+
+        if position_key is None:
+            logger.warning(
+                "[CB] 손절 기록에 position_key 가 없다 — 레그 단위로 센다"
+                "(중복 카운트 가능, 계측 4원칙 ①·④)")
+        elif any(k == position_key for _, k in self._stop_events):
+            # 같은 포지션의 추가 청산 레그 — 사건이 아니다.
+            logger.info(
+                "[CB] 같은 포지션의 추가 손절 레그 — 카운트하지 않는다 "
+                "(key=%s, 현재 %d회)", position_key, self._consec_stops)
+            return
+
+        self._stop_events.append((now, position_key))
+        self._consec_stops = len(self._stop_events)
+        logger.warning(
+            "[CB] 연속 손절 %d회 (%d초 창, 포지션 단위)",
+            self._consec_stops, CB_CONSEC_STOP_WINDOW_SEC)
         if self._consec_stops >= CB_CONSEC_STOP_LIMIT:
-            self._trigger_halt(f"연속 손절 {self._consec_stops}회 — 당일 정지", cause="cb2")
+            self._trigger_halt(
+                "연속 손절 %d회/%d초 — 당일 정지"
+                % (self._consec_stops, CB_CONSEC_STOP_WINDOW_SEC), cause="cb2")
 
     def record_win(self):
+        self._stop_events.clear()
         self._consec_stops = 0   # 수익 시 카운터 초기화
 
     # ── 트리거 ③ 정확도 저하 (30분 호라이즌 전용) ───────────────
@@ -638,6 +686,7 @@ class CircuitBreaker:
         self._state = CB_STATE_NORMAL
         self._pause_until = None
         self._signal_history.clear()
+        self._stop_events.clear()
         self._consec_stops = 0
         self._accuracy_buf.clear()
         self._atr_buf.clear()
@@ -664,6 +713,11 @@ class CircuitBreaker:
             "state":                   self.state,
             "pause_until":             self._pause_until.strftime("%H:%M:%S") if self._pause_until else None,
             "consec_stops":            self._consec_stops,
+            # [MW0601 489차] 카운트 단위를 값과 함께 노출한다(계측 4원칙 ①) —
+            # "3회"가 레그 3개인지 포지션 3개인지 대시보드에서 구분되게.
+            "consec_stop_window_sec":  CB_CONSEC_STOP_WINDOW_SEC,
+            "consec_stop_unit":        "position",
+            "consec_stop_limit":       CB_CONSEC_STOP_LIMIT,
             "last_latency":            self._last_latency,
             # ⚠ [MW0601 482차 / F-1] 분모의 max(len,1) 때문에 **빈 버퍼가 조용히
             #   0.0** 을 돌려준다. "표본 없음"과 "적중 0%"가 같은 값이 되는 계측
@@ -693,6 +747,10 @@ class CircuitBreaker:
             "state":                  self._state,
             "pause_until":            self._pause_until.isoformat() if self._pause_until else None,
             "consec_stops":           self._consec_stops,
+            # [MW0601 489차] 정수만 저장하면 재기동 후 **시간창을 복원할 수 없다**
+            # (언제 난 손절인지 모르니 영원히 안 만료된다). 사건 목록을 함께 남긴다.
+            "stop_events":            [[t.isoformat(), k]
+                                       for t, k in self._stop_events],
             "cb3_warn_count":         self._cb3_warn_count,
             "high_conf_wrong_streak": self._high_conf_wrong_streak,
             "mid_conf_wrong_streak":  self._mid_conf_wrong_streak,
@@ -710,7 +768,27 @@ class CircuitBreaker:
             self._pause_until = datetime.datetime.fromisoformat(pu) if pu else None
         except Exception:
             self._pause_until = None
-        self._consec_stops           = int(d.get("consec_stops", 0) or 0)
+        # [MW0601 489차] 사건 목록이 있으면 그것이 정본이다 — 복원 직후 프루닝하면
+        # 재기동 사이에 창이 지난 손절은 자동으로 만료된다. 구버전 상태(목록 없음)는
+        # 정수만 복원하되 **타임스탬프를 모르므로** 창을 적용할 수 없다 —
+        # 그 사실을 로그로 남긴다(계측 4원칙 ④).
+        _ev = d.get("stop_events")
+        self._stop_events.clear()
+        if isinstance(_ev, (list, tuple)):
+            for item in _ev:
+                try:
+                    _t = datetime.datetime.fromisoformat(str(item[0]))
+                except Exception:
+                    continue
+                self._stop_events.append((_t, item[1] if len(item) > 1 else None))
+            self._prune_stop_events(now_kst())
+        else:
+            self._consec_stops = int(d.get("consec_stops", 0) or 0)
+            if self._consec_stops:
+                logger.warning(
+                    "[CB] 구버전 상태 복원 — stop_events 없음. consec_stops=%d 를 "
+                    "그대로 쓰되 시간창은 적용되지 않는다(다음 손절/승리에 재동기화)",
+                    self._consec_stops)
         self._cb3_warn_count         = int(d.get("cb3_warn_count", 0) or 0)
         self._high_conf_wrong_streak = int(d.get("high_conf_wrong_streak", 0) or 0)
         self._mid_conf_wrong_streak  = int(d.get("mid_conf_wrong_streak", 0) or 0)
