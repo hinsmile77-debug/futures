@@ -11415,6 +11415,16 @@ class TradingSystem:
         #    자동 반영 없음 — ThresholdRecal/ATRCeilingRecal과 동일하게 제안만
         #    기록, config/settings.py의 ENTRY_HORIZON_B1/B2는 사람이
         #    검토 후 수동 반영한다.
+        #
+        # 🔴 [2026-08-23 주간회의 확정] 이 경보는 **참고용이고 판정이 아니다.**
+        #    경계는 **동결**됐고(`config/settings.py:ENTRY_HORIZON_B1` 주석), 경계
+        #    적정성 판정은 사전등록 채널 `entry_band_watch`(474차 D9-B)가 한다.
+        #    이 재보정기는 손익을 보지 않고 33/67 분위수만 보므로 "1/3씩 안 나뉜다"만
+        #    말할 수 있다 — 그 전제는 손익으로 검증된 적이 없다.
+        #    ⚠ 그러므로 주간 `UPDATE`가 계속 뜨는 것은 **미조치가 아니라 결정된 상태**다.
+        #    문구를 "수동 검토 필요" → "참고용 경보(판정 아님)"로 바꾼 이유가 이것이다.
+        #    ⚠ 경보 자체는 끄지 않는다 — 374차형 고착(한 버킷 99%)의 재발 감시가
+        #    이 장치의 원래 목적이고, 그 역할은 유효하다.
         if now.weekday() == 4:   # 금요일
             try:
                 _eh_recal = self.entry_horizon_recalibrator.run_if_due(
@@ -11428,7 +11438,7 @@ class TradingSystem:
                         f"(δ{_eh_recal['b1_delta_pct']:+.0f}%/{_eh_recal['b2_delta_pct']:+.0f}%), "
                         f"버킷비중(1m/3m/5m)="
                         f"{_eh_recal['bucket_1m_pct']:.0f}%/{_eh_recal['bucket_3m_pct']:.0f}%/"
-                        f"{_eh_recal['bucket_5m_pct']:.0f}% — 수동 검토 필요",
+                        f"{_eh_recal['bucket_5m_pct']:.0f}% — 참고용 경보(판정 아님)",
                         "WARNING",
                     )
             except Exception as _ehe:
