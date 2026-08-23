@@ -53,6 +53,7 @@ stale로 판정하지 않는다(계측 4원칙 (2)).
 ⚠ py3.7(futures 런타임) · py3.10(fuoption) 양쪽에서 도는 **의존성 없는 단일 파일**로
 유지할 것. f-string·pathlib·dataclass 를 쓰지 말 것 — 복사본이 두 저장소에 있다.
 """
+
 from __future__ import print_function
 
 import argparse
@@ -74,15 +75,15 @@ def _git_process_count():
     try:
         p = subprocess.Popen(
             ["tasklist", "/FI", "IMAGENAME eq git.exe", "/NH"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         out = p.communicate(timeout=10)[0].decode("utf-8", "replace")
         return out.lower().count("git.exe")
     except Exception:
         pass
     try:  # POSIX 폴백 (코웍 리눅스 샌드박스)
-        p = subprocess.Popen(["pgrep", "-c", "git"],
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen(["pgrep", "-c", "git"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, _ = p.communicate(timeout=10)
         return int(out.decode("ascii", "replace").strip() or "0")
     except Exception:
@@ -96,9 +97,15 @@ def inspect(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
         돌리지 않게 하기 위함 — 프로세스 수는 저장소별 값이 아니라 시스템 값이다).
     """
     info = {
-        "repo": os.path.abspath(repo), "is_repo": False, "present": False,
-        "size": None, "age_sec": None, "git_procs": git_procs,
-        "stale": False, "verdict": "", "min_age_sec": min_age_sec,
+        "repo": os.path.abspath(repo),
+        "is_repo": False,
+        "present": False,
+        "size": None,
+        "age_sec": None,
+        "git_procs": git_procs,
+        "stale": False,
+        "verdict": "",
+        "min_age_sec": min_age_sec,
     }
     gitdir = os.path.join(repo, ".git")
     if not os.path.isdir(gitdir):
@@ -124,8 +131,9 @@ def inspect(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
     if info["size"] != 0:
         fails.append("크기 %s바이트(0 아님 — 인덱스 쓰기가 진행됐다)" % info["size"])
     if info["age_sec"] <= min_age_sec:
-        fails.append("나이 %.0f초 <= 임계 %d초(아직 실행 중일 수 있다)"
-                     % (info["age_sec"], min_age_sec))
+        fails.append(
+            "나이 %.0f초 <= 임계 %d초(아직 실행 중일 수 있다)" % (info["age_sec"], min_age_sec)
+        )
     if info["git_procs"] is None:
         fails.append("git 프로세스 **미측정**(0으로 간주하지 않는다)")
     elif info["git_procs"] != 0:
@@ -136,8 +144,10 @@ def inspect(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
         info["verdict"] = "판정보류 — " + " / ".join(fails)
     else:
         info["stale"] = True
-        info["verdict"] = ("스테일 확정 — 0바이트 · %.1f시간 · git 프로세스 0개 "
-                           "-> 이 저장소는 커밋 불가 상태다" % (info["age_sec"] / 3600.0))
+        info["verdict"] = (
+            "스테일 확정 — 0바이트 · %.1f시간 · git 프로세스 0개 "
+            "-> 이 저장소는 커밋 불가 상태다" % (info["age_sec"] / 3600.0)
+        )
     return info
 
 
@@ -152,7 +162,7 @@ def reclaim(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
         return False, info
     lock = os.path.join(repo, ".git", "index.lock")
     try:
-        st = os.stat(lock)          # 경합 방어: 판정 이후 바뀌지 않았는지 재확인
+        st = os.stat(lock)  # 경합 방어: 판정 이후 바뀌지 않았는지 재확인
         if st.st_size != 0:
             info["verdict"] = "회수 취소 — 판정 직후 크기가 %s바이트로 변했다" % st.st_size
             info["stale"] = False
@@ -189,19 +199,23 @@ def _fmt(info):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(
-        description="`.git/index.lock` 스테일 판정·회수 (3중 조건)")
-    ap.add_argument("--repo", action="append", default=[],
-                    help="검사할 저장소(반복 가능). 기본은 현재 작업 디렉터리")
-    ap.add_argument("--all", action="store_true",
-                    help="형제 저장소 전수 (--scan-root 아래)")
+    ap = argparse.ArgumentParser(description="`.git/index.lock` 스테일 판정·회수 (3중 조건)")
+    ap.add_argument(
+        "--repo",
+        action="append",
+        default=[],
+        help="검사할 저장소(반복 가능). 기본은 현재 작업 디렉터리",
+    )
+    ap.add_argument("--all", action="store_true", help="형제 저장소 전수 (--scan-root 아래)")
     ap.add_argument("--scan-root", default=DEFAULT_SCAN_ROOT)
-    ap.add_argument("--check", action="store_true",
-                    help="검사만 한다(기본 동작 — 명시용)")
-    ap.add_argument("--reclaim", action="store_true",
-                    help="3중 조건 충족 시에만 제거한다")
-    ap.add_argument("--min-age", type=int, default=DEFAULT_MIN_AGE_SEC,
-                    help="조건 (2) 임계 초 (기본 %d)" % DEFAULT_MIN_AGE_SEC)
+    ap.add_argument("--check", action="store_true", help="검사만 한다(기본 동작 — 명시용)")
+    ap.add_argument("--reclaim", action="store_true", help="3중 조건 충족 시에만 제거한다")
+    ap.add_argument(
+        "--min-age",
+        type=int,
+        default=DEFAULT_MIN_AGE_SEC,
+        help="조건 (2) 임계 초 (기본 %d)" % DEFAULT_MIN_AGE_SEC,
+    )
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
 
@@ -211,7 +225,7 @@ def main(argv=None):
     if not repos:
         repos = [os.getcwd()]
 
-    procs = _git_process_count()      # 시스템 값이므로 한 번만 센다
+    procs = _git_process_count()  # 시스템 값이므로 한 번만 센다
     rows, n_stale, n_hold, n_removed = [], 0, 0, 0
     for r in repos:
         if a.reclaim:
@@ -238,8 +252,10 @@ def main(argv=None):
             print("회수 %d건. 회수 직후 `git status` 로 인덱스가 갱신되는지 확인할 것." % n_removed)
         if n_hold:
             print("")
-            print("⚠ 판정보류가 있다 — **지우지 말 것**. 실행 중인 git 일 수 있다. "
-                  "몇 분 뒤 재판정하라.")
+            print(
+                "⚠ 판정보류가 있다 — **지우지 말 것**. 실행 중인 git 일 수 있다. "
+                "몇 분 뒤 재판정하라."
+            )
 
     if n_stale:
         return 2
