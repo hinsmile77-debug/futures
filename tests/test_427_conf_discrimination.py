@@ -167,8 +167,6 @@ def test_eval_current_state():
     m = _mod()
     out = m.eval_conf_discrimination_watch()
     check("판정이 dict를 반환한다", isinstance(out, dict) and "verdict" in out)
-    check("현재 판정 = REJECTS_HYP (판별력 없음 확정)",
-          out.get("verdict") == "REJECTS_HYP")
     check("두 축이 모두 보고된다",
           set(("model", "ensemble")) <= set((out.get("axes") or {}).keys()))
     mb = (out.get("axes") or {}).get("model") or {}
@@ -177,19 +175,52 @@ def test_eval_current_state():
           int(out.get("n_pred_excluded", 0)) > 0)
     check("(A) 제외 목록이 metrics에 남는다",
           "30m" in (out.get("excluded_horizons") or []))
-    check("모델축 427차 실측 재현 - 격차 +0.15%p",
-          abs(float(mb.get("gap_pp", 9)) - 0.149) < 0.02)
-    check("앙상블축 실측 재현 - 격차 -0.0008 (조인 수정 후 n=100)",
-          abs(float(eb.get("gap", 9)) + 0.0008) < 0.0005)
-    check("조인 수정으로 앙상블축이 전수(100건)를 쓴다", eb.get("n") == 100)
-    check("승 63 / 패 37 (전체 승률 63.0%와 일치)",
-          eb.get("n_win") == 63 and eb.get("n_loss") == 37)
+    # [MW0601 488차 재설계] 종전은 427차 실측값 5개(격차 +0.15%p·-0.0008·n=100·
+    # 승63/패37)와 `verdict == REJECTS_HYP`·`hit == False`를 그대로 핀했다.
+    # 캠페인 시작 고정(2026-07-05) 누적이라 표본이 늘면 판정식이 멀쩡해도 깨졌고
+    # (08-23 실측 n=166·승104/패62), 무엇보다 판별력이 **실제로 나타나는 날** —
+    # 이 채널의 존재 이유가 실현되는 바로 그 순간 — 테스트가 FAIL을 낸다.
+    # (C) 위음성 방지와 같은 취지로, 핀 대신 ② 정합·③ 단조·④ 매핑을 건다.
+    from config.settings import VALIDATION_CAMPAIGN as _VC
+    cr = _VC["conf_discrimination_watch"]
+    check("(②) 승 + 패 == 앙상블축 n (%s+%s==%s)"
+          % (eb.get("n_win"), eb.get("n_loss"), eb.get("n")),
+          int(eb.get("n_win") or 0) + int(eb.get("n_loss") or 0)
+          == int(eb.get("n") or -1))
+    check("(③) 모델축 표본이 427차 하한(14,770) 이상 (%s) - 줄면 predictions "
+          "보존정책이 캠페인 창을 침범한 것" % mb.get("n"),
+          int(mb.get("n") or 0) >= 14770)
+    check("(③) 앙상블축 표본이 427차 하한(100) 이상 (%s)" % eb.get("n"),
+          int(eb.get("n") or 0) >= 100)
+    check("(③) 승/패가 427차 하한(63/37) 이상 (%s/%s)"
+          % (eb.get("n_win"), eb.get("n_loss")),
+          int(eb.get("n_win") or 0) >= 63 and int(eb.get("n_loss") or 0) >= 37)
     check("앙상블축 Cohen d가 보고된다", "cohen_d" in eb)
     check("두 축 다 일자 층화 결과를 갖는다",
           (mb.get("stratified") or {}).get("sign_p") is not None
           and (eb.get("stratified") or {}).get("sign_p") is not None)
-    check("model_hit / ens_hit이 둘 다 False",
-          out.get("model_hit") is False and out.get("ens_hit") is False)
+    # (④) hit 성분과 verdict를 사전등록 임계로 재계산해 대조한다 — 판정식 표류 감지.
+    _model_ready = int(mb.get("n") or 0) >= int(cr["min_predictions"])
+    _ens_ready = (int(eb.get("n") or 0) >= int(cr["min_positions"])
+                  and (eb.get("stratified") or {}).get("paired_days", 0)
+                  >= int(cr["min_days"]))
+    _exp_mh = bool(_model_ready
+                   and float(mb.get("gap_pp") or 0.0) >= float(cr["model_gap_min_pp"])
+                   and (mb.get("stratified") or {}).get("significant"))
+    _exp_eh = bool(_ens_ready
+                   and float(eb.get("gap") or 0.0) >= float(cr["ens_gap_min"])
+                   and (eb.get("stratified") or {}).get("significant"))
+    check("(④) model_hit이 재계산과 일치 (%s)" % out.get("model_hit"),
+          bool(out.get("model_hit")) == _exp_mh)
+    check("(④) ens_hit이 재계산과 일치 (%s)" % out.get("ens_hit"),
+          bool(out.get("ens_hit")) == _exp_eh)
+    if not _model_ready and not _ens_ready:
+        check("(④) 두 축 다 미성숙 → INSUFFICIENT",
+              out.get("verdict") == "INSUFFICIENT")
+    else:
+        check("(④) verdict 매핑 - SUPPORTS ↔ (model_hit OR ens_hit)",
+              out.get("verdict") ==
+              ("SUPPORTS_HYP" if (_exp_mh or _exp_eh) else "REJECTS_HYP"))
 
 
 def test_entry_decision_join():
@@ -205,8 +236,13 @@ def test_entry_decision_join():
     offs = {}
     for _e, _d, o in pairs:
         offs[o] = offs.get(o, 0) + 1
-    check("427차 실측 - 오프셋 0분 81건", offs.get(0) == 81)
-    check("427차 실측 - 오프셋 -1분 19건 (분 경계를 넘은 체결)", offs.get(-1) == 19)
+    # [488차 재설계] 절대 건수 핀(0분 81 / -1분 19, 427차 실측)은 고정 시작 누적이라
+    # 표본이 늘면 깨진다(08-23 실측 81/85 — -1분이 신규 증가분을 전부 흡수했다).
+    # 단조 하한으로 교체 — 내려가면 조인 키가 바뀐 것이다.
+    check("(③) 오프셋 0분이 427차 하한(81건) 이상 (%s건)" % offs.get(0, 0),
+          offs.get(0, 0) >= 81)
+    check("(③) 오프셋 -1분이 427차 하한(19건) 이상 (%s건) - 분 경계를 넘은 체결"
+          % offs.get(-1, 0), offs.get(-1, 0) >= 19)
     check("오프셋은 0 / -1 두 종류뿐", set(offs.keys()) <= set((0, -1)))
     check("미매칭 0건 - 전수 매칭된다", len(unmatched) == 0)
     check("결정행에 direction이 실려 있다 (방향 일치 검사의 전제)",
@@ -223,8 +259,17 @@ def test_integrity_surfaced():
             check("무결성 지표 %s가 보고된다" % k, False)
             return
     check("무결성 지표 6종이 전부 보고된다", True)
-    check("조인 수정 후 매칭률 100%", abs(float(out.get("match_rate", 0)) - 1.0) < 1e-9)
-    check("미매칭 0건", out.get("n_unmatched") == 0)
+    # [488차 재설계] "매칭률 100%"는 현재 실측이지 설계 보장이 아니다 — 미래에
+    # 정당하게 100% 아래로 내려갈 수 있고(결정행 유실 등), 그때는 eval이 지표로
+    # 보고하는 것이 옳지 테스트가 죽는 것이 옳지 않다. 정의 정합만 건다.
+    _tot = int(out.get("n_positions_total") or 0)
+    _mat = int(out.get("n_matched") or 0)
+    check("(②) match_rate == n_matched / n_positions_total (%.4f)"
+          % float(out.get("match_rate") or 0),
+          _tot > 0 and abs(float(out["match_rate"])
+                           - round(_mat / float(_tot), 4)) < 1e-9)
+    check("(②) 매칭 + 미매칭이 전체를 넘지 않는다",
+          _mat + int(out.get("n_unmatched") or 0) <= _tot)
     check("오프셋 분포가 남는다 (-1분 비중이 곧 체결지연 신호)",
           "-1" in (out.get("join_offset_min") or {}))
 

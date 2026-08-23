@@ -125,9 +125,17 @@ def test_channel_40():
     check("[40] min_days >= 6", int(cr.get("min_days", 0)) >= 6)
     out = _rep().eval_direction_value_watch()
     check("[40] 판정이 나온다", "verdict" in out)
-    check("[40] 428차 실측 - REJECTS_HYP", out.get("verdict") == "REJECTS_HYP")
-    check("[40] 판정 2겹이 분리 보고된다",
-          "perm_ok" in out and "day_ok" in out)
+    # [488차 재설계] REJECTS 핀 제거 — 방향 선택이 무작위를 이기기 시작하는 날
+    # (SUPPORTS_HYP), 채널의 존재 이유가 실현되는 그 순간 테스트가 깨지면 안 된다.
+    if out.get("verdict") == "INSUFFICIENT":
+        check("[40] (④) INSUFFICIENT이면 사유가 남는다", bool(out.get("reason")))
+    else:
+        check("[40] (④) verdict 매핑 - SUPPORTS ↔ (perm_ok AND day_ok)",
+              out.get("verdict") ==
+              ("SUPPORTS_HYP" if (out.get("perm_ok") and out.get("day_ok"))
+               else "REJECTS_HYP"))
+        check("[40] 판정 2겹이 분리 보고된다",
+              "perm_ok" in out and "day_ok" in out)
     check("[40] 실제·무작위 양쪽 수치가 남는다",
           "actual_pt" in out and "random_median_pt" in out)
 
@@ -146,8 +154,15 @@ def _labels():
 def test_labeler():
     rows, s, names = _labels()
     check("라벨 행이 생성된다 (%s행)" % s.get("n_rows"), s.get("n_rows", 0) > 0)
-    check("428차 실측 - 98포지션 / 16거래일",
-          s.get("n_positions") == 98 and s.get("n_days") == 16)
+    # [MW0601 488차 재설계] 98/16 핀은 428차 스냅샷 — 고정 시작(2026-07-05) 누적이라
+    # 표본이 늘면 깨진다(08-23 실측 145/25, FAIL로 방치돼 있었다). 하한 + 정합으로 교체.
+    check("(③) 포지션이 428차 하한(98) 이상 (%s)" % s.get("n_positions"),
+          int(s.get("n_positions") or 0) >= 98)
+    check("(③) 거래일이 428차 하한(16) 이상 (%s)" % s.get("n_days"),
+          int(s.get("n_days") or 0) >= 16)
+    check("(②) rows_per_position == n_rows / n_positions",
+          abs(float(s["rows_per_position"])
+              - round(s["n_rows"] / float(s["n_positions"]), 2)) < 1e-9)
     check("주 라벨과 보조 라벨이 둘 다 있다",
           "y_hold_better_rate" in s and "y_tp1_first_rate" in s)
     check("포지션당 행수가 기록된다 (유효표본 판단 재료)",
@@ -161,26 +176,62 @@ def test_labeler():
               abs(r["upnl_atr"]) < 50 and abs(r["dist_stop_atr"]) < 50)
 
 
-def test_refuses_to_train():
-    """(B1)(B2) 표본 미달이면 거부하고, DB를 건드리지 않는다."""
+def test_train_gate_and_no_pollution():
+    """(B1)(B2) 학습 관문 — 미달이면 거부·무오염, 충족이면 실제로 학습한다.
+
+    [MW0601 488차 재설계] 종전 이름은 `test_refuses_to_train`이고 `trained is
+    False`와 `EPV == 2.25`(428차 실측)를 핀했다. EPV는 포지션 누적으로 올라가므로
+    (08-23 실측 3.73) 데이터가 쌓이기만 해도 깨졌고, 표본이 차서 학습이 열리는
+    날에는 `trained is False` 자체가 뒤집힌다 — 그날 이 테스트는 "학습 경로가
+    열렸다"는 좋은 소식을 FAIL로 알리게 돼 있었다. 갈래를 미리 갈라 두고, EPV는
+    값 핀 대신 **정의 항등식**(n_pos × rate / n_features)으로 고정한다.
+    """
     import sqlite3
     from config.settings import TRADES_DB
-    from learning.exit_classifier import train_or_defer, ensure_table
+    from learning.exit_classifier import (
+        train_or_defer, ensure_table, MIN_EVENTS_PER_VARIABLE, MIN_DAYS)
     rows, s, names = _labels()
     ensure_table(TRADES_DB)
     with sqlite3.connect(TRADES_DB) as c:
         before = c.execute("SELECT COUNT(*) FROM exit_model_shadow").fetchone()[0]
-    out = train_or_defer(rows, s, names, TRADES_DB, persist=True)
-    check("(B1) 학습을 거부한다", out.get("trained") is False)
-    rd = out.get("readiness") or {}
+
+    # 관문 판정과 지표는 persist=False 프로브로 얻는다 — 충족 갈래에서 persist=True를
+    # 쓰면 테스트가 섀도 테이블에 실제로 쓴다(그건 EOD 체인의 몫이다).
+    probe = train_or_defer(rows, s, names, None, persist=False)
+    rd = probe.get("readiness") or {}
     check("(B1) EPV가 계산된다 (%s)" % rd.get("epv"), "epv" in rd)
-    check("(B1) 428차 실측 - EPV 2.25", abs(float(rd.get("epv", 0)) - 2.251) < 0.01)
-    check("(B1) 얼마나 부족한지 알려준다 (%s건)" % rd.get("positions_short"),
-          int(rd.get("positions_short", 0)) > 0)
-    with sqlite3.connect(TRADES_DB) as c:
-        after = c.execute("SELECT COUNT(*) FROM exit_model_shadow").fetchone()[0]
-    check("(B2) 거부 시 DB를 오염시키지 않는다 (%d → %d)" % (before, after),
-          after == before)
+    check("(②) EPV 정의 항등식 - n_pos × rate / n_features",
+          abs(float(rd.get("epv", -1)) - round(
+              int(rd["n_positions"]) * float(rd["pos_rate"])
+              / float(rd["n_features"]), 3)) < 2e-3)
+    check("(②) ready == (EPV >= %.0f AND 거래일 >= %d)"
+          % (MIN_EVENTS_PER_VARIABLE, MIN_DAYS),
+          bool(rd.get("ready"))
+          == (float(rd.get("epv") or 0) >= MIN_EVENTS_PER_VARIABLE
+              and int(rd.get("n_days") or 0) >= MIN_DAYS))
+    check("(③) 포지션이 428차 하한(98) 이상 (%s)" % rd.get("n_positions"),
+          int(rd.get("n_positions") or 0) >= 98)
+
+    if not rd.get("ready"):
+        out = train_or_defer(rows, s, names, TRADES_DB, persist=True)
+        check("(B1) 미달이면 학습을 거부한다", out.get("trained") is False)
+        check("(B1) 얼마나 부족한지 알려준다 (%s건)" % rd.get("positions_short"),
+              int(rd.get("positions_short", 0)) > 0)
+        with sqlite3.connect(TRADES_DB) as c:
+            after = c.execute(
+                "SELECT COUNT(*) FROM exit_model_shadow").fetchone()[0]
+        check("(B2) 거부 시 DB를 오염시키지 않는다 (%d → %d)" % (before, after),
+              after == before)
+    else:
+        check("(B1') 표본이 찼으면 학습한다 - [41] 게이지 해제의 실체",
+              probe.get("trained") is True)
+        check("(B1') OOF 지표가 나온다 (auc=%s)" % probe.get("oof_auc"),
+              probe.get("oof_auc") is not None and "baseline_acc" in probe)
+        with sqlite3.connect(TRADES_DB) as c:
+            after = c.execute(
+                "SELECT COUNT(*) FROM exit_model_shadow").fetchone()[0]
+        check("(B2) persist=False 프로브는 DB에 쓰지 않는다 (%d → %d)"
+              % (before, after), after == before)
 
 
 def test_can_train_when_ready():
@@ -272,7 +323,7 @@ if __name__ == "__main__":
         test_run_is_reproducible,
         test_channel_40,
         test_labeler,
-        test_refuses_to_train,
+        test_train_gate_and_no_pollution,
         test_can_train_when_ready,
         test_not_wired_to_live,
         test_channel_41,

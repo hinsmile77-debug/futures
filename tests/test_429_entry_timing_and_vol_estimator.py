@@ -93,8 +93,12 @@ def test_three_arm_shape():
     check("타점 기여가 B-C로 계산된다",
           abs(r["timing_gain_pt"] - (r["arm_b_median_pt"] - r["arm_c_median_pt"]))
           < 1e-6)
-    check("A팔은 무작위와 무관하다 (실제 방향 고정)",
-          abs(r["arm_a_pt"] - (-22.0683)) < 0.01)
+    # [MW0601 488차 재설계] A팔 값 핀(-22.0683, 429차 실측)은 고정 시작 누적이라
+    # 표본과 함께 움직인다(08-23 실측 +25.09). "무작위와 무관"의 정직한 형태는
+    # **seed 불변성**이다 — test_three_arm_reproducible이 그 축을 잰다.
+    check("A팔이 유한한 pt 값이다 (%.2f)" % r["arm_a_pt"],
+          isinstance(r["arm_a_pt"], float)
+          and r["arm_a_pt"] == r["arm_a_pt"])   # NaN 방어
 
 
 def test_three_arm_is_paired():
@@ -121,6 +125,10 @@ def test_three_arm_reproducible():
     c = m.run_three_arm("2026-07-05 00:00:00", 60, 777)
     check("seed가 다르면 C팔이 달라진다 (난수가 실제로 돈다)",
           c["arm_c_median_pt"] != a["arm_c_median_pt"])
+    # [488차] A팔은 실제 진입 재생이므로 seed와 무관해야 한다 — 무작위가 A에
+    # 새는 순간 3팔 비교 전체가 무효가 된다(종전 값 핀이 지키려던 실제 불변식).
+    check("A팔은 seed와 무관하다 (%.4f == %.4f)"
+          % (a["arm_a_pt"], c["arm_a_pt"]), a["arm_a_pt"] == c["arm_a_pt"])
 
 
 def test_channel_42():
@@ -134,12 +142,23 @@ def test_channel_42():
     check("[42] 필수 키 전부 존재 (%s)" % (miss or "없음"), not miss)
     check("[42] min_days >= 6", int(cr.get("min_days", 0)) >= 6)
     out = _rep().eval_entry_timing_value_watch()
-    check("[42] 429차 실측 - REJECTS_HYP", out.get("verdict") == "REJECTS_HYP")
+    # [488차 재설계] REJECTS 핀 → ④ 매핑. 권고 문구도 갈래별로 다르므로("얹지 말라"는
+    # 비유의 갈래 전용) 무조건 검사하지 않는다 — [35] 무조건 프로즈와 같은 유형.
+    _sig = float(out.get("sign_p", 1.0)) < float(cr["alpha"])
+    if out.get("verdict") == "INSUFFICIENT":
+        check("[42] (④) INSUFFICIENT이면 사유가 남는다", bool(out.get("reason")))
+    else:
+        _exp = ("SUPPORTS_HYP"
+                if (_sig and float(out.get("timing_gain_pt", 0.0)) > 0)
+                else "REJECTS_HYP")
+        check("[42] (④) verdict 매핑 - SUPPORTS ↔ (p<α AND 기여>0), 실제 %s"
+              % out.get("verdict"), out.get("verdict") == _exp)
+        if not _sig:
+            check("[42] 비유의 갈래 권고가 '전제 위에 얹지 말라'를 말한다",
+                  "얹지" in (out.get("recommendation") or ""))
     check("[42] 짝지은 p가 보고된다 (%s)" % out.get("sign_p"), "sign_p" in out)
     check("[42] 세 팔이 전부 보고된다",
           all(k in out for k in ("arm_a_pt", "arm_b_median_pt", "arm_c_median_pt")))
-    check("[42] 권고가 '전제 위에 얹지 말라'를 말한다",
-          "얹지" in (out.get("recommendation") or ""))
 
 
 # ══════════════ [43] 변동성 추정량 ══════════════
@@ -155,11 +174,27 @@ def test_channel_43():
                         "report_qty_boundary") if k not in cr]
     check("[43] 필수 키 전부 존재 (%s)" % (miss or "없음"), not miss)
     out = _rep().eval_vol_estimator_watch()
-    check("[43] 429차 실측 - REJECTS_HYP", out.get("verdict") == "REJECTS_HYP")
-    check("[43] 공선성 0.956", abs(float(out.get("collinearity", 0)) - 0.9556) < 0.01)
-    check("[43] 부분상관 +0.021", abs(float(out.get("partial_corr", 9)) - 0.0211) < 0.01)
-    check("[43] (C) 판정이 부분상관 t로 이뤄진다 (|t|=%s < 2.0)" % out.get("partial_t"),
-          abs(float(out.get("partial_t") or 0)) < float(cr["min_partial_t"]))
+    # [488차 재설계] 실측 핀 3개(REJECTS·공선성 0.956·부분상관 +0.021)와
+    # `|t| < 2.0` 단언은 전부 현재 데이터의 스냅샷이다 — 공선성은 이미 0.821로
+    # 움직여 FAIL로 방치돼 있었고, t 단언은 잔차에 정보가 나타나는 날(SUPPORTS)
+    # 깨진다. ② 범위 · ③ 하한 · ④ 매핑으로 교체한다.
+    if out.get("verdict") == "INSUFFICIENT":
+        check("[43] (④) INSUFFICIENT이면 표본 관문 미달이 사유다",
+              int(out.get("n", 0)) < int(cr["min_samples"])
+              or int(out.get("n_days", 0)) < int(cr["min_days"]))
+    else:
+        check("[43] (④) (C) 판정 매핑 - SUPPORTS ↔ |partial_t| >= %s (t=%s)"
+              % (cr["min_partial_t"], out.get("partial_t")),
+              out.get("verdict") ==
+              ("SUPPORTS_HYP"
+               if abs(float(out.get("partial_t") or 0.0))
+               >= float(cr["min_partial_t"]) else "REJECTS_HYP"))
+        check("[43] (③) 표본이 0821 실측 하한(151건) 이상 (%s)" % out.get("n"),
+              int(out.get("n", 0)) >= 151)
+    check("[43] (②) 공선성이 상관 범위 안이다 (%s)" % out.get("collinearity"),
+          -1.0 <= float(out.get("collinearity", 9.0)) <= 1.0)
+    check("[43] (②) 부분상관이 범위 안이다 (%s)" % out.get("partial_corr"),
+          -1.0 <= float(out.get("partial_corr", 9.0)) <= 1.0)
     check("[43] ATR 자체의 예측력도 함께 보고된다 (r=%s)"
           % out.get("corr_atr_realized"), "corr_atr_realized" in out)
 
@@ -181,10 +216,18 @@ def test_qty_boundary_computed():
           out.get("norm_k") is not None)
     # 공선성이 높은데 경계 통과가 많다 = 교체는 무해가 아니라 유해
     if out.get("qty_boundary_share") is not None:
-        check("(D) 429차 실측 - 경계 통과 58.8%%",
-              abs(float(out["qty_boundary_share"]) - 0.588) < 0.02)
-        check("(D) 권고가 '유해' 논지를 담는다",
-              "유해" in (out.get("recommendation") or ""))
+        # [488차 재설계] 58.8% 핀(429차 실측)은 정규화 계수가 전체 표본으로 매번
+        # 재산출돼 과거 행의 경계 판정까지 함께 움직인다(08-23 실측 70.9%) —
+        # 단조도 아니다. 정의 정합(share == cross/n)으로 교체.
+        check("(②) share == cross / n (%.1f%% = %s/%s)"
+              % (float(out["qty_boundary_share"]) * 100,
+                 out.get("qty_boundary_cross"), out.get("n")),
+              abs(float(out["qty_boundary_share"])
+                  - round(int(out["qty_boundary_cross"])
+                          / float(out["n"]), 4)) < 1e-9)
+        if out.get("verdict") == "REJECTS_HYP":
+            check("(D) REJECTS 갈래 권고가 '유해' 논지를 담는다",
+                  "유해" in (out.get("recommendation") or ""))
 
 
 def test_constants_import_path():
@@ -207,7 +250,17 @@ def test_renders_in_report():
     check("[42] 상세섹션", "## [42] 타점(진입 시각)의 가치" in md)
     check("[43] 상세섹션", "## [43] 변동성 추정량 교체 가치" in md)
     check("3팔 표가 렌더된다", "무작위시각" in md)
-    check("공선성 경보가 렌더된다", "사실상 같은 변수" in md)
+    # [488차 재설계] 공선성 경보는 |collinearity| >= collinearity_warn일 때만
+    # 렌더된다(0821 실측 0.821 < 0.90 → 미렌더가 정상). 무조건 존재 검사는 [35]
+    # 무조건 프로즈와 같은 유형 — 조건과 묶어 검사한다.
+    from config.settings import VALIDATION_CAMPAIGN as _VC
+    _vw = metrics.get("vol_estimator_watch") or {}
+    _cw = float((_VC.get("vol_estimator_watch") or {})
+                .get("collinearity_warn", 0.90))
+    _col = abs(float(_vw.get("collinearity") or 0.0))
+    check("공선성 경보가 조건대로 렌더된다 (|col|=%.3f vs warn %.2f → %s)"
+          % (_col, _cw, "출현" if _col >= _cw else "미출현"),
+          ("사실상 같은 변수" in md) == (_col >= _cw))
 
 
 if __name__ == "__main__":

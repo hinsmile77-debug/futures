@@ -242,8 +242,34 @@ def test_eval_excludes_contaminated_rows():
     check("판정 2겹이 분리 보고된다 (미달 시엔 미노출)",
           out.get("verdict") == "INSUFFICIENT" or
           ("econ_ok" in out and "repro_ok" in out))
-    check("현재는 표본/거래일 미달로 INSUFFICIENT",
-          out.get("verdict") == "INSUFFICIENT")
+    # [MW0601 488차 재설계] 종전 핀 `verdict == "INSUFFICIENT"`(425차 시점 스냅샷)은
+    # 표본이 차서 판정이 나오는 순간 깨진다 — 실제로 [11]이 PASS를 내기 시작한 뒤
+    # FAIL 상태로 방치됐다(2026-08-23 발견). 캠페인 시작이 고정(2026-07-05)이라
+    # 표본은 누적만 되므로, 실 DB에는 ② 내부 정합 · ③ 단조 하한 · ④ 판정 매핑만
+    # 건다(test_424의 4축 표준 처방. 근거: DECISION_LOG 2026-08-23 MW0601 488차).
+    from config.settings import VALIDATION_CAMPAIGN as _VC
+    _cr = _VC["loss_tier1_qty1_shadow"]
+    _n = int(out.get("n_resolved") or 0)
+    _d = int(out.get("days") or 0)
+    if out.get("verdict") == "INSUFFICIENT":
+        check("(④) INSUFFICIENT이면 표본 관문 미달이 사유다 (n=%d/%s · 일=%d/%s)"
+              % (_n, _cr["min_samples"], _d, _cr["min_days"]),
+              _n < int(_cr["min_samples"]) or _d < int(_cr["min_days"]))
+    else:
+        check("(④) 판정이 나왔으면 표본 관문을 넘었다 (n=%d · 일=%d)" % (_n, _d),
+              _n >= int(_cr["min_samples"]) and _d >= int(_cr["min_days"]))
+        check("(④) verdict 매핑 - FAIL ↔ (econ_ok AND repro_ok), 아니면 PASS",
+              out.get("verdict") ==
+              ("FAIL" if (out.get("econ_ok") and out.get("repro_ok")) else "PASS"))
+        check("(②) repro_ok == significant (일자단위 부호검정)",
+              bool(out.get("repro_ok")) == bool(out.get("significant")))
+    if out.get("paired_days"):
+        check("(②) sign_p가 자기 (days_positive, paired_days)로 재계산된다",
+              abs(out["sign_p"] - round(m._sign_test_p(
+                  out["days_positive"], out["paired_days"]), 4)) < 1e-4)
+    check("(③) 단조 하한 - 표본이 0821 실측(28건/10일) 아래로 줄 수 없다 "
+          "(고정 시작 누적. 줄면 정제 규칙이 바뀐 것이다) (n=%d · 일=%d)" % (_n, _d),
+          _n >= 28 and _d >= 10)
 
 
 # ══════════════ position_tracker 판정 semantics ══════════════
