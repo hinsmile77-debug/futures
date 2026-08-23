@@ -235,7 +235,29 @@ def compute(since: str = "2026-06-10") -> dict:
         return res
 
     full = run(matched)
-    oos = run([x for x in matched if x["day"] >= oos_start]) if oos_start else {}
+    oos_rows = [x for x in matched if x["day"] >= oos_start] if oos_start else []
+    oos = run(oos_rows) if oos_start else {}
+
+    # ── [MW0601 489차 / B-1] 판정보조 ③ — OOS 기간 2분할 재현 ────────────────
+    # 종전 ③은 "MW0601 × MW0602 교차"였는데 2026-08-23 멀티PC 정책 폐기로
+    # **충족 불가능한 관문**이 됐다. 교차검증의 취지(우연한 표본 구성에 기댄
+    # 우위를 걸러낸다)를 단일 갈래에서 살린다 — OOS 거래일을 전·후반으로 갈라
+    # 같은 후보가 **양쪽에서** 현행을 초과하는지 본다.
+    # ⚠ 표본을 절반으로 쪼갠다 — 통과해도 "약한 증거"다(313차).
+    split = {}
+    if _CR.get("split_half_check") and oos_rows:
+        _days = sorted(set(x["day"] for x in oos_rows))
+        _mid = len(_days) // 2          # 홀수면 후반이 하루 더 갖는다(고정 규약)
+        _d1, _d2 = set(_days[:_mid]), set(_days[_mid:])
+        _h1 = [x for x in oos_rows if x["day"] in _d1]
+        _h2 = [x for x in oos_rows if x["day"] in _d2]
+        split = {
+            "n_half1": len(_h1), "n_half2": len(_h2),
+            "days_half1": sorted(_d1), "days_half2": sorted(_d2),
+            "min_per_half": int(_CR.get("split_half_min_per_half", 20)),
+            "per_variant_half1": run(_h1),
+            "per_variant_half2": run(_h2),
+        }
 
     return {
         "since": since, "n_positions": len(pos), "n_matched": len(matched),
@@ -246,6 +268,7 @@ def compute(since: str = "2026-06-10") -> dict:
         "quantile_lookback_days": lookback,
         "oos_start": oos_start,
         "per_variant": full, "per_variant_oos": oos,
+        "split_half": split,
         # 일자단위(313차) — 저hurst 진입 비중과 그날 손익의 부호 일관성
         "by_day": _by_day(matched),
     }
@@ -289,6 +312,7 @@ def summarize(out: dict) -> dict:
         "quantile_lookback_days": out.get("quantile_lookback_days"),
         "per_variant": out.get("per_variant") or {},
         "per_variant_oos": pv_oos,
+        "split_half": out.get("split_half") or {},
         "by_day": out.get("by_day") or {},
     }
 
@@ -316,6 +340,40 @@ def summarize(out: dict) -> dict:
         if (v.get("separation_pt") or 0) > (base.get("separation_pt") or 0) and \
            (v.get("separation_drop_worst") or 0) > (base.get("separation_pt") or 0):
             beats.append(k)
+    # ── [MW0601 489차] 판정보조 ③ — 2분할 양쪽에서 살아남는 후보만 표기 ──────
+    # ⚠ **verdict 를 바꾸지 않는다**(§9-4). `beats` 는 사전등록 그대로이고,
+    #   여기서 내는 것은 "그중 어느 것이 2분할까지 통과했는가"라는 보조 표기다.
+    _sp = out.get("split_half") or {}
+    if _sp and beats:
+        _need = int(_sp.get("min_per_half", 20))
+        if _sp.get("n_half1", 0) < _need or _sp.get("n_half2", 0) < _need:
+            base_payload["split_half_verdict"] = "INSUFFICIENT"
+            base_payload["split_half_reason"] = (
+                "반쪽 표본 부족 (전반 %d / 후반 %d, 각 %d 필요) — 2분할 판정 보류"
+                % (_sp.get("n_half1", 0), _sp.get("n_half2", 0), _need))
+            base_payload["split_half_survivors"] = []
+        else:
+            _surv = []
+            for _k in beats:
+                _ok = True
+                for _half in ("per_variant_half1", "per_variant_half2"):
+                    _pv = _sp.get(_half) or {}
+                    _b, _v = _pv.get(cur_key), _pv.get(_k)
+                    if not _b or not _v:
+                        _ok = False
+                        break
+                    if (_v.get("separation_pt") or 0) <= (_b.get("separation_pt") or 0):
+                        _ok = False
+                        break
+                if _ok:
+                    _surv.append(_k)
+            base_payload["split_half_verdict"] = "PASS" if _surv else "FAIL"
+            base_payload["split_half_survivors"] = _surv
+            base_payload["split_half_reason"] = (
+                ("2분할 양쪽에서 현행 초과: %s" % ", ".join(_surv)) if _surv else
+                "OOS 전체에서 현행을 초과한 후보 중 2분할 양쪽을 통과한 것이 없다 "
+                "— 우연한 표본 구성일 가능성")
+
     return done("FAIL" if beats else "PASS",
                 ("현행 초과 후보(분리도 + drop-worst 동시 우위): %s" % ", ".join(beats))
                 if beats else "어떤 후보도 현행 대비 분리도·drop-worst 동시 우위를 못 만들었다",

@@ -7209,6 +7209,18 @@ def eval_kelly_skip_grade_c() -> dict:
                          AND grade = 'C' AND COALESCE(kelly_advised_skip, 0) = 0""",
                 (_campaign_start(),),
             ).fetchone()
+            # [MW0601 489차 / 관문②③ 이식] 일자단위 짝지은 검정 원자료.
+            # 3관문(`block_gate_*`)이 2026-08-08 주간회의에 사전등록됐는데 ②의
+            # **계측이 없어** 어떤 n에서도 상정할 수 없는 상태였다. [37]과 같은
+            # 방법(같은 날 두 모집단이 **둘 다 있는 날**만 실질 표본)을 이식한다.
+            ks_day_rows = conn.execute(
+                """SELECT substr(exit_ts,1,10) AS d,
+                          COALESCE(kelly_advised_skip,0) AS skip,
+                          net_pnl_krw AS k
+                     FROM trades
+                    WHERE exit_ts >= ? AND net_pnl_krw IS NOT NULL AND grade = 'C'""",
+                (_campaign_start(),),
+            ).fetchall()
             grade_split = conn.execute(
                 """SELECT COALESCE(NULLIF(grade,''),'?') AS grade, COUNT(*) AS n,
                           SUM(net_pnl_krw) AS total_pnl,
@@ -7246,6 +7258,56 @@ def eval_kelly_skip_grade_c() -> dict:
             for row in grade_split
         },
     })
+
+    # ── [MW0601 489차] 3관문 계측 — 상정 가능 여부만 센다. **판정은 손대지 않는다** ──
+    # 2026-08-08 주간회의가 `block_gate_*` 3관문을 사전등록했으나 ②(일자단위 짝지은
+    # 부호검정)의 계측이 없어, 표본이 아무리 쌓여도 상정 조건을 확인할 수 없었다
+    # (FP-CRITICAL "죽은 섀도"·471차 F-1과 같은 계열의 미배선). 여기서 채운다.
+    #
+    # ⚠ **verdict 는 종전 그대로**(누적 순PnL 부호) — §9-4 판정기준 사후 변경 금지.
+    #   관문은 "차단 도입을 회의에 올려도 되는가"를 묻는 별개 축이다.
+    # ⚠ 단위: 이 채널의 n·손익은 `trades` **행(청산 레그)** 단위다(계측 4원칙 ①).
+    #   합격선이 그 단위로 등록돼 있어 바꾸지 않는다. 대신 포지션 단위 건수를
+    #   `n_positions`로 병기해 레그↔포지션 혼동을 막는다(417차 교훈).
+    _by_day = {}
+    for _r in (ks_day_rows or []):
+        _by_day.setdefault(_r["d"], {"skip": [], "base": []})[
+            "skip" if int(_r["skip"] or 0) == 1 else "base"].append(
+                float(_r["k"] or 0.0))
+    _paired = {d: v for d, v in _by_day.items() if v["skip"] and v["base"]}
+    # 부호 규약: (+) = KellySkip 쪽이 더 벌었다. 가설(열위)은 음수 쪽이다.
+    _diffs = [float(np.mean(v["skip"]) - np.mean(v["base"]))
+              for _, v in sorted(_paired.items())]
+    _day = _paired_day_summary(_diffs, float(cr.get("block_gate_day_sign_p", 0.05)))
+    out["day_test"] = _day
+    out["paired_days"] = _day.get("paired_days", 0)
+    out["unpaired_days"] = len(_by_day) - len(_paired)
+    out["pnl_unit"] = "leg"      # 계측 4원칙 ① — 단위를 값과 함께 남긴다
+
+    # ③ 최대기여일 제거 후 누적 부호 유지 — 대상 모집단(skip=1)의 일자별 합
+    _skip_by_day = {d: float(sum(v["skip"])) for d, v in _by_day.items() if v["skip"]}
+    if _skip_by_day:
+        _worst_d = max(_skip_by_day, key=lambda k: abs(_skip_by_day[k]))
+        _drop = round(total_pnl - _skip_by_day[_worst_d], 0)
+        out["drop_max_day"] = _worst_d
+        out["drop_max_day_pnl_krw"] = round(_skip_by_day[_worst_d], 0)
+        out["total_pnl_krw_drop_max"] = _drop
+        out["drop_max_keeps_sign"] = bool((total_pnl < 0) == (_drop < 0))
+
+    _g1 = n >= int(cr.get("block_gate_min_samples", 20))
+    _g2 = bool(_day.get("significant")) and float(_day.get("mean_diff", 0.0)) < 0
+    _g3 = (bool(out.get("drop_max_keeps_sign")) and total_pnl < 0
+           if cr.get("block_gate_drop_max_sign", True) else True)
+    out["block_gate_1_samples"] = _g1
+    out["block_gate_2_day_sign"] = _g2
+    out["block_gate_3_drop_max"] = _g3
+    out["block_gate_all"] = bool(_g1 and _g2 and _g3)
+    out["block_gate_note"] = (
+        "3관문 전부 충족 — 차단 도입을 주간회의에 **상정할 수 있다**(적용은 수동 결정)"
+        if out["block_gate_all"] else
+        "미충족 관문: %s — 상정 금지(2026-08-08 사전등록)" % ", ".join(
+            [t for t, ok in (("①표본", _g1), ("②일자단위", _g2),
+                             ("③drop-max", _g3)) if not ok]))
 
     if n < int(cr["min_samples"]):
         out["reason"] = "C등급+KellySkip 표본 부족 (%d < %d) — 판정 보류" % (n, cr["min_samples"])
@@ -8637,6 +8699,51 @@ def build_report(days: int) -> tuple:
         L.append("- **권고**: %s" % ks["recommendation"])
     if ks.get("reason"):
         L.append("- %s" % ks["reason"])
+    # ── [MW0601 489차] 3관문 (2026-08-08 사전등록) — 상정 가능 여부 ──────────
+    if "block_gate_all" in ks:
+        L.append("")
+        L.append("### 차단 도입 3관문 (2026-08-08 사전등록 · 판정과 별개 축)")
+        L.append("")
+        L.append("| 관문 | 기준 | 실측 | 충족 |")
+        L.append("|---|---|---|---|")
+        L.append("| ① 표본 | n >= %s | %s | %s |" % (
+            (VALIDATION_CAMPAIGN.get("kelly_skip") or {}).get(
+                "block_gate_min_samples", 20),
+            ks.get("n"), "✅" if ks.get("block_gate_1_samples") else "❌"))
+        _dt = ks.get("day_test") or {}
+        L.append("| ② 일자단위 짝지은 부호검정 | p < %s **그리고** 평균차 음수 | "
+                 "p=%s · 평균차 %s원 · %s/%s일 양수 | %s |" % (
+                     (VALIDATION_CAMPAIGN.get("kelly_skip") or {}).get(
+                         "block_gate_day_sign_p", 0.05),
+                     _dt.get("sign_p"),
+                     format(_dt.get("mean_diff", 0.0), ",.0f"),
+                     _dt.get("days_positive"), _dt.get("paired_days"),
+                     "✅" if ks.get("block_gate_2_day_sign") else "❌"))
+        L.append("| ③ drop-max | 최대기여일 제거 후 부호 유지 | %s 제거 시 %s원 | %s |" % (
+            ks.get("drop_max_day", "—"),
+            format(ks.get("total_pnl_krw_drop_max", 0.0), ",.0f"),
+            "✅" if ks.get("block_gate_3_drop_max") else "❌"))
+        L.append("")
+        L.append("- **%s**" % ks.get("block_gate_note", ""))
+        L.append("")
+        L.append("> **[489차] ②의 계측이 이제야 붙었다.** 3관문은 2026-08-08에")
+        L.append("> 사전등록됐으나 ②(일자단위 짝지은 부호검정)를 **재는 코드가")
+        L.append("> 없었다** — 표본이 아무리 쌓여도 상정 조건을 확인할 수 없는")
+        L.append("> 상태였다(같은 회의가 *\"이식 전에는 어떤 n에서도 상정 금지\"*라")
+        L.append("> 못박은 그 선행 작업이다). [37]과 같은 방법을 이식했다 —")
+        L.append("> 같은 날 두 모집단이 **둘 다 있는 날**만 실질 표본이다.")
+        L.append("> ")
+        L.append("> ⚠ **판정(verdict)은 무변경이다** — 누적 순PnL 부호 그대로다")
+        L.append("> (§9-4 판정기준 사후 변경 금지). 관문은 *\"회의에 올려도 되는가\"*")
+        L.append("> 라는 **별개 축**이며, FAIL이어도 관문 미충족이면 상정하지 않는다.")
+        L.append("> ")
+        L.append("> ⚠ 단위는 **청산 레그**다(계측 4원칙 ①). 합격선이 그 단위로")
+        L.append("> 등록돼 있어 바꾸지 않았다 — 포지션 단위와 혼동하지 말 것.")
+        L.append("> ")
+        L.append("> ⚠ **짝지어지지 않은 날 %s일은 검정에 들어가지 않는다** — 한쪽"
+                 % ks.get("unpaired_days", 0))
+        L.append("> 모집단만 있는 날은 그날의 레짐을 통제하지 못해 비교가 성립하지")
+        L.append("> 않는다([37]·[33]과 같은 사정).")
     L.append("")
 
     # [9] OPEN_VOLATILE 시가이격 counterfactual 상세
@@ -11026,6 +11133,58 @@ def build_report(days: int) -> tuple:
              "OOS (%s 이후) — 판정 대상" % (_g46.get("oos_start") or "미설정"))
         L.append("")
         L.append("- **판정: %s** — %s" % (_g46.get("verdict"), _g46.get("reason")))
+        # ── [MW0601 489차 / B-1] 판정보조 ③ — OOS 기간 2분할 재현 ─────────────
+        _sp = _g46.get("split_half") or {}
+        if _sp:
+            L.append("")
+            L.append("**판정보조 ③ OOS 기간 2분할 (489차 재등록 · 표시 전용)**")
+            L.append("")
+            L.append("- 전반 %s건 / %s일 (%s ~ %s) · 후반 %s건 / %s일 (%s ~ %s) · 반쪽당 %s건 필요"
+                     % (_sp.get("n_half1"), len(_sp.get("days_half1") or []),
+                        (_sp.get("days_half1") or ["—"])[0],
+                        (_sp.get("days_half1") or ["—"])[-1],
+                        _sp.get("n_half2"), len(_sp.get("days_half2") or []),
+                        (_sp.get("days_half2") or ["—"])[0],
+                        (_sp.get("days_half2") or ["—"])[-1],
+                        _sp.get("min_per_half")))
+            if _g46.get("split_half_verdict"):
+                L.append("- **③ 판정: %s** — %s" % (
+                    _g46["split_half_verdict"], _g46.get("split_half_reason", "")))
+                _sv = _g46.get("split_half_survivors") or []
+                if _sv:
+                    # 🔴 반쪽의 **차단 버킷** n을 반드시 함께 보여준다 — 분리도를
+                    #    만드는 것은 차단구간이고, 전체 n이 아니라 그 n이 판정을
+                    #    지탱하는 실제 표본이다(372차 함정의 핵심).
+                    L.append("")
+                    L.append("| 생존 후보 | 전반 차단n | 전반 분리도 | 후반 차단n | 후반 분리도 |")
+                    L.append("|---|---|---|---|---|")
+                    _h1 = _sp.get("per_variant_half1") or {}
+                    _h2 = _sp.get("per_variant_half2") or {}
+                    for _k in _sv:
+                        _a, _b = _h1.get(_k) or {}, _h2.get(_k) or {}
+                        L.append("| %s | %s | %s | %s | %s |" % (
+                            _k, _a.get("n_gated", "—"),
+                            ("%+.3f" % _a["separation_pt"]) if "separation_pt" in _a else "—",
+                            _b.get("n_gated", "—"),
+                            ("%+.3f" % _b["separation_pt"]) if "separation_pt" in _b else "—"))
+            L.append("")
+            L.append("> **[489차] 이 관문은 종전 ③(*MW0601 × MW0602 교차*)의 대체물이다.**")
+            L.append("> 2026-08-23 멀티PC 정책 폐기로 대조 상대가 사라져 **충족 불가능한**")
+            L.append("> **관문**이 됐고, 방치하면 \"표본 축적 후 재검토\"를 무기한 반복하게")
+            L.append("> 된다(0808 D2 경고). 교차검증의 취지 — *우연한 표본 구성에 기댄")
+            L.append("> 우위를 걸러낸다* — 를 단일 갈래에서 살린 형태이며, **수치를 더**")
+            L.append("> **보기 전에** 사전등록했다(313차 관측 후 기준 수립 금지).")
+            L.append("> ")
+            L.append("> ⚠ **verdict 는 이 관문을 반영하지 않는다**(§9-4 합격선 무변경).")
+            L.append("> 위 `판정:` 줄이 정본이고, ③은 그 후보를 **얼마나 믿을지**의 축이다.")
+            L.append("> ")
+            L.append("> 🔴 **③ PASS 를 \"채택해도 된다\"로 읽지 말 것.** 2분할은 표본을")
+            L.append("> 절반으로 쪼갠다 — 위 표의 **차단n** 을 보라. 그 수가 한 자릿수면")
+            L.append("> 분리도는 몇 건이 만든 값이고, 통과해도 **약한 증거**다(313차).")
+            L.append("> ")
+            L.append("> ⚠ **임계를 낮추면 노출이 는다** — 발동률이 줄어 사이징 축소가 덜")
+            L.append("> 걸린다. CLAUDE.md ⑧ 미해제 상태에서는 그 자체가 리스크이므로")
+            L.append("> 승격 시 총노출을 반드시 병기할 것.")
         # 판정보조 ② 일자단위(313차)
         _bd = _g46.get("by_day") or {}
         if _bd:
