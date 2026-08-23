@@ -41,6 +41,9 @@ BLOCK_REASON_TAGS = [
     # 보다 먼저 와야 한다(utils/db_utils.py의 305차 주석과 동일 원칙). 이 표에만 항목이
     # 빠져 있어 지금까지 통째로 "미분류"로 집계됐다 — 402차 검증에서 발견.
     ("JointGateBlock", "JointGateBlock"),
+    # [MW0602 485차] 방향 무효화 — main.py의 direction 소거 게이트 6종이 남기는
+    # 신설 문구. 이 표에 없으면 전량 "미분류"로 빠진다(402차가 잡은 실패 유형).
+    ("방향무효화(신호소거)", "방향 무효화"),
     ("거래소CB_관망", "거래소 CB 해제 후 관망"),
     ("CircuitBreaker", "Circuit Breaker"),
     ("고신뢰연속오답(HC)", "고신뢰 연속오답"),

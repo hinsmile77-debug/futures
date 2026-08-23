@@ -6704,6 +6704,14 @@ class TradingSystem:
         confidence = decision["confidence"]
         grade      = decision["grade"]
         self._last_ensemble_direction = direction  # Contrarian Mode 동방향 추적용
+        # [MW0602 485차] 방향 무효화 출처 — 아래 6개 게이트(RegimeOverride·FP-CRITICAL·
+        # RegimeChampGate·σ미수집·조건부구간·ATR저변동)가 로컬 `direction`을 0으로
+        # 지우면 사유 체인(`if direction != 0 …`)과 축 루프가 **통째로 도달 불가**가 되어
+        # entry_block_reason="" · entry_block_axes="" 로 저장되던 관측 사각을 메운다
+        # (2026-06-02~ 실측 544건, 퍼널 분류기 3곳이 전부 "차단없음"으로 오집계).
+        # 402차 `_grade_x_source` 와 같은 first-wins 관측 전용 변수 — 진입 판정 무관.
+        # 400차 교훈: 반드시 여기(조건분기 밖·모든 대입 지점보다 앞)에서 초기화한다.
+        _direction_zeroed_by = ""
         # 1분봉 차트 방향예측 바 업데이트 (닫힌 봉에 색상 기록)
         try:
             self.dashboard.minute_chart_set_direction(ts, direction)
@@ -7033,6 +7041,7 @@ class TradingSystem:
             if _ieb(_regime_params):
                 direction = 0
                 grade     = "X"
+                _direction_zeroed_by = _direction_zeroed_by or "REGIME_OVERRIDE"  # [485차]
                 decision["checklist_reason"] = "RegimeOverride"
                 log_manager.signal(
                     f"[RegimeOverride] 진입 금지 "
@@ -7051,6 +7060,7 @@ class TradingSystem:
                 if runtime_settings.FP_CRITICAL_GRADE_BLOCK_ENABLED:
                     direction = 0
                     grade     = "X"
+                    _direction_zeroed_by = _direction_zeroed_by or "FP_CRITICAL"  # [485차]
                     decision["checklist_reason"] = "FP-CRITICAL"
                     log_manager.signal(
                         f"[RegimeFingerprint] PSI={_get_fp2().get_psi():.3f} CRITICAL "
@@ -7077,6 +7087,7 @@ class TradingSystem:
                 if _reg_champ is None:
                     direction = 0
                     grade     = "X"
+                    _direction_zeroed_by = _direction_zeroed_by or "REGIME_CHAMP_NONE"  # [485차]
                     decision["checklist_reason"] = "ChampGate"
                     log_manager.signal(
                         f"[RegimeChampGate] {self.current_micro_regime} 레짐 "
@@ -7097,6 +7108,7 @@ class TradingSystem:
             if direction != 0:
                 direction = 0
                 grade     = "X"
+                _direction_zeroed_by = _direction_zeroed_by or "SIGMA_WARMUP_0920"  # [485차]
                 decision["checklist_reason"] = "σ미수집"
                 log_manager.signal(
                     f"[EntryGate] sigma_20봉 미수집({len(self._sigma_buf)}봉) "
@@ -7115,6 +7127,7 @@ class TradingSystem:
             if grade in ("B", "C"):
                 direction = 0
                 grade     = "X"
+                _direction_zeroed_by = _direction_zeroed_by or "OPEN_A_ONLY_0920_0929"  # [485차]
                 decision["checklist_reason"] = "조건부구간"
                 log_manager.signal(
                     "[EntryGate] 조건부 구간 — 앙상블 A등급만 허용 (09:30까지) "
@@ -7248,6 +7261,7 @@ class TradingSystem:
             )
             direction = 0
             grade = "X"
+            _direction_zeroed_by = _direction_zeroed_by or "ATR_LOW_TF"  # [485차]
             decision["checklist_reason"] = "ATR저변동"
         elif direction != 0:
             log_manager.signal(
@@ -8608,6 +8622,11 @@ class TradingSystem:
             "open_gap_ok":      _open_gap_ok,
             "mode_filter_ok":   mode_filter_passed,
             "qty_ok":           _qty_display > 0,
+            # [MW0602 485차] 방향 무효화 출처(관측 전용). 무효화 시 사이징이 아예
+            # 실행되지 않아 위 qty_ok=False 가 "미측정"과 "사이저 산출 0"을 한 값에
+            # 뭉갠다(계측 4원칙 ②) — 이 필드가 그 둘을 사후 분리한다. 기존 키의
+            # 의미는 불변(시계열 연속성). None = 무효화 없음.
+            "direction_zeroed_by": _direction_zeroed_by or None,
             "bar_volume_ok":    not _bar_volume_zero,
             "intraday_ok":      not _intraday_block,
             "kill_switch_ok":   not self.system_health.kill_switch_active,
@@ -8825,6 +8844,21 @@ class TradingSystem:
             # 순수 관측 필드.
             _entry_block_reason = "[정보] 포지션 보유중 — 신규진입 평가 생략"
 
+        # ── [MW0602 485차] 방향 무효화 사유 보강 ─────────────────────────────
+        # 위 체인의 바깥 조건이 `direction != 0`이라, STEP6 이후 게이트가 로컬
+        # direction 을 0으로 지운 분봉은 체인 전체가 도달 불가 → reason="" 로
+        # 저장돼 퍼널 분류기 3곳이 "차단없음"으로 오집계했다(06-02~ 실측 544건,
+        # checklist_reason 에만 출처가 남아 1등 사유 컬럼과 갈렸다).
+        # 원래 무신호(decision.direction==0)는 차단이 아니므로 계속 빈 문자열 —
+        # 336차가 고친 "진입 성공 분 오탐"과 같은 유형을 만들지 않는다.
+        if (not _entry_block_reason) and _direction_zeroed_by \
+                and self.position.status == "FLAT" \
+                and int(decision.get("direction", 0) or 0) != 0:
+            _entry_block_reason = (
+                "[차단] 방향 무효화 — %s (원신호 dir=%+d)"
+                % (_direction_zeroed_by, int(decision.get("direction", 0) or 0))
+            )
+
         # ── [MW0601 471차 F-4] 동시 성립 차단 축 전량 ────────────────────────
         # 위 elif 체인은 **우선순위 1등만** 남긴다. 그래서 같은 분봉에 두 축이
         # 동시에 성립하면 하나가 통째로 사라지고, 다른 계측(로그)이 그 사라진
@@ -8871,6 +8905,14 @@ class TradingSystem:
             ):
                 if _bc:
                     _block_axes.append(_bk)
+        # [MW0602 485차] 방향 무효화 분봉은 위 루프의 가드(`direction != 0`)에 걸려
+        # 축이 통째로 비었다 — 무효화 자체를 단독 축으로 남긴다. 루프 가드를 완화하지
+        # 않는 이유: 루프가 참조하는 변수들이 direction==0 경로에서 전부 정의된다는
+        # 보장을 새로 만들어야 해서(400차 UnboundLocalError 유형) 위험 대비 이득이 없다.
+        if _direction_zeroed_by and not _block_axes \
+                and self.position.status == "FLAT" \
+                and int(decision.get("direction", 0) or 0) != 0:
+            _block_axes.append("direction_zeroed")
         _entry_block_axes = ";".join(_block_axes)
 
         _entry_executed_this_cycle = False

@@ -2,6 +2,30 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 485차 — 방향 무효화 관측성 (MW0602, 2026-08-23) — **라이브 검증 대기**
+
+근거: `dev_memory/DECISION_LOG.md` 2026-08-23(485차).
+
+- [ ] **[485차 최우선] 다음 거래일 라이브 확인** — 09:00~09:19 분봉(σ미수집 구간)의
+      `ensemble_decisions` 행에서 ① `entry_block_reason` 이 `[차단] 방향 무효화 —
+      SIGMA_WARMUP_0920 …` 으로 채워지는지 ② `entry_block_axes` 에 `direction_zeroed`
+      가 남는지 ③ `entry_gate_json.direction_zeroed_by` 가 키를 담는지.
+      확인 SQL: `SELECT COUNT(*) FROM ensemble_decisions WHERE auto_entry=1 AND
+      entry_final_ok=0 AND (entry_block_reason IS NULL OR entry_block_reason='')
+      AND date(ts)=date('now')` → **0 근처**가 정상(현행 ~16건/일).
+- [ ] **[485차] gate_blocking_report 주간 확인** — `방향무효화(신호소거)` 버킷이
+      실제로 집계되고 "미분류" 가 늘지 않는지(분류표 3곳 중 2곳 갱신·1곳 무충돌 확인).
+- [ ] **[485차] 과거 544건은 소급하지 않는다** — checklist_reason 으로 사후 분해
+      가능(RegimeOverride 243 · σ미수집 149 · FP-CRITICAL 92 · 조건부구간 58 ·
+      ATR저변동 2). 과거 행의 "차단없음" collapse_ratio 해석 시 이 오염을 감안할 것.
+- [ ] **[485차] 359건(07-29 이전 checklist_reason 도 공백)은 별건 종결** — 402차
+      배포일에 끊긴 구코드 잔재. 마지막 발생 2026-07-29 10:51. 재조사 불요.
+- [ ] **[485차, D9-B 연계] tf≥6 표본 공백의 원인 문서화** — 분봉 14.0%가 09:20 이전
+      (대조군 2.8%)이라 상당 부분이 시간창 중첩. [46]·[D9-B] 판독 시 "밴드 문제"로
+      읽지 말 것. 경계 변경 근거 아님.
+
+---
+
 ### 완료 처리 규칙
 - 완료 시 `[DONE YYYY-MM-DD]` 태그 추가
 - DONE 태그 후 1주일 경과 시 삭제
