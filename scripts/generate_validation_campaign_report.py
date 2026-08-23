@@ -7726,6 +7726,15 @@ def _fmt_verdict(v: str) -> str:
         # ⚠ 이 표에 없는 verdict는 조용히 "INSUFFICIENT"로 표시된다 — 새 채널을
         #   추가할 때 여기 등록을 빠뜨리면 판정이 사라진 것처럼 보인다.
         "FLAG_DRAG": "🟠 FLAG_DRAG(호라이즌 열위)",
+        # [MW0602 486차 / 1-9, 55] 차단 게이트의 **정당성** 어휘.
+        #   묻는 것이 "성능이 기준을 넘었는가"가 아니라 "차단이 정당한가"라
+        #   PASS/FAIL을 쓰지 않는다(spread_extreme_watch와 같은 근거).
+        #   ⚠ BLOCK_UNJUSTIFIED 는 **"즉시 제거하라"가 아니다** — 주간회의 상정
+        #     자격일 뿐이고 집행은 §9 소관이다. 위 ALERT_BIAS·FLAG_DRAG와 같은
+        #     이유로 별도 어휘를 둔다(FAIL 어휘를 쓰면 316~318차 HurstGate
+        #     FalseBlock을 반복한다).
+        "BLOCK_JUSTIFIED": "🛡 BLOCK_JUSTIFIED(차단 정당)",
+        "BLOCK_UNJUSTIFIED": "🟠 BLOCK_UNJUSTIFIED(차단 근거 없음·상정 자격)",
     }.get(v, "⏳ INSUFFICIENT")
 
 
@@ -7841,6 +7850,11 @@ def build_report(days: int) -> tuple:
     # 이미 쌓고 있던 집계)와 trades만 읽고 시뮬레이터를 쓰지 않으므로 §47 게이트가
     # SUSPEND여도 계속 판정한다([48]/[49]/[50]과 같은 이유).
     cow = _safe_channel("scripts.const_out_horizon_watch", "[51]")
+    # [MW0602 486차 / 1-9] 09:20~09:29 "앙상블 A등급만 허용" 게이트 소급 판정.
+    # predictions.db + raw_candles 만 읽고 라이브 배선이 없다 — 노출을 늘리지 않는
+    # 순수 관찰 채널이라 §47 게이트가 SUSPEND여도 계속 판정한다([48]~[51]과 같은 이유).
+    # ⚠ 채널 번호 [54]는 F-9(=[51] 중복 해소 시 const_out 재배정)용 **예약**이다.
+    ewg = _safe_channel("scripts.early_window_gate_shadow", "[55]")
 
     metrics = {
         "generated_at": now_str,
@@ -7889,6 +7903,7 @@ def build_report(days: int) -> tuple:
         "payoff_geometry_watch": pgw,
         "direction_bias_watch": dbw,   # [MW0601 457차 / G4]
         "const_out_horizon_watch": cow,  # [MW0601 471차 후속7 / G-2]
+        "early_window_gate_shadow": ewg,  # [MW0602 486차 / 1-9] — 채널 [55]
     }
 
     L = []
@@ -8106,6 +8121,12 @@ def build_report(days: int) -> tuple:
     # 판정문이 처방 축(라우터 억제·재학습 스케줄·피처셋 조사)을 함께 싣는다.
     L.append("| [51] ConstOut 호라이즌 건강도 | %s | %s |" % (
         _fmt_verdict(cow.get("verdict", "")), cow.get("reason", cow.get("error", "—"))))
+    # [MW0602 486차 / 1-9] 09:20~09:29 게이트 소급 판정. 어휘가 PASS/FAIL이 아니라
+    # BLOCK_JUSTIFIED / BLOCK_UNJUSTIFIED 다 — 묻는 것이 "성능"이 아니라 "차단의
+    # 정당성"이기 때문(spread_extreme_watch와 같은 이유, HurstGate FalseBlock 전례).
+    L.append("| [55] 09:20~09:29 A등급게이트 counterfactual | %s | %s `[1계약·TP1상한·미실현 시뮬]` |" % (
+        _fmt_verdict(ewg.get("verdict", "")),
+        ewg.get("headline") or ewg.get("reason", ewg.get("error", "—"))))
     L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
         _g23.get("n_trades", "—"), _g23.get("n_days", "—"), _dm("tp1_geometry_shadow")))
