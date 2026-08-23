@@ -28,6 +28,7 @@ import platform
 import re
 import subprocess
 import sys
+import time
 from datetime import date as _date
 from datetime import datetime, timedelta
 
@@ -440,14 +441,84 @@ def open_text(path):
 
 
 def run_git(root, args, timeout=25):
+    """[MW0601 483차 후속2 / P1-1·P1-2] 읽기 전용 git 호출.
+
+    P1-1 `--no-optional-locks`: `git status` 는 읽기처럼 보이지만 **인덱스를 다시
+      쓴다**(stat 캐시 갱신) — 즉 `.git/index.lock` 을 잡는다. 이 옵션이면 인덱스를
+      아예 건드리지 않는다(483차 실험 검증: index mtime 무변화).
+      효과 둘 — ① 수집기가 스테일 락의 원인 후보에서 **영구 제외**된다
+      ② 장중 점검에서 인덱스 쓰기 IO 가 사라진다(CLAUDE.md 「장중 라이브 DB 분석 금지」
+      와 같은 취지).
+
+    P1-2 타임아웃 시 **자식을 죽인다**: 종전에는 `TimeoutExpired` 를 `except Exception`
+      이 삼키기만 해 git 프로세스가 **고아로 남았다**. 그게 인덱스 쓰기 명령이었다면
+      정확히 2026-08-21 사고(0바이트 `index.lock` 53시간 잔존)를 만든다.
+      ⚠ 사유를 반환 문자열에 남긴다 — 계측 4원칙 ④(폴백 가시화).
+    """
+    p = None
     try:
-        p = subprocess.Popen(["git"] + list(args), cwd=root,
+        p = subprocess.Popen(["git", "--no-optional-locks"] + list(args), cwd=root,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = p.communicate(timeout=timeout)
         dec = lambda b: b.decode("utf-8", "replace").strip()
         return dec(out) if p.returncode == 0 else "(git 실패 rc=%s) %s" % (p.returncode, dec(err)[:300])
+    except subprocess.TimeoutExpired:
+        try:
+            p.kill()
+            p.communicate(timeout=5)
+        except Exception:
+            pass
+        return "(git 타임아웃 %ss — 자식 종료함) git %s" % (timeout, " ".join(args))
     except Exception as e:
+        if p is not None and p.poll() is None:
+            try:
+                p.kill()
+            except Exception:
+                pass
         return "(git 실행 불가) %s" % e
+
+
+def git_index_lock(root):
+    """[MW0601 483차 후속2 / P0-1] `.git/index.lock` 스테일 판정.
+
+    반환: dict(present, size, age_sec, stale, git_procs, note)
+      stale=True 는 **3중 조건**을 모두 만족할 때만 — ① 0바이트 ② 나이 > 10분
+      ③ 실행 중 `git` 프로세스 0개. 하나라도 빠지면 stale 로 부르지 않는다.
+      진짜로 도는 git 을 스테일로 오판하면 남의 인덱스를 깨뜨린다.
+
+    왜 필요한가 (2026-08-21 실측): 락이 있어도 `git status` 는 **rc=0 · stderr 무출력**
+    이라 완전 무증상이다. 실패하는 것은 `git add`/`commit` 뿐이고, 그날은 커밋 시도가
+    없어 **53시간 동안 아무 계측에도 안 걸렸다.** 같은 사고가 fuoption 에도 동시 발생
+    (09:08:53, 0바이트)했고 그쪽은 2일간 커밋 봉쇄 상태였다.
+    0바이트인 이유: git 은 락을 **빈 파일로 먼저 만들고** 새 인덱스를 **맨 마지막에**
+    쓴다 → 0바이트 = 인덱스 쓰기 명령(`git add` 계열)이 중간에 죽었다는 지문이다
+    (`git status` 는 아무리 죽여도 락을 남기지 않는다 — 483차 강제종료 실험 4/4 vs 0/5).
+    """
+    d = os.path.join(root, ".git", "index.lock")
+    info = {"present": False, "size": None, "age_sec": None,
+            "stale": False, "git_procs": None, "note": ""}
+    if not os.path.exists(d):
+        return info
+    info["present"] = True
+    try:
+        st = os.stat(d)
+        info["size"] = st.st_size
+        info["age_sec"] = max(0.0, time.time() - st.st_mtime)
+    except Exception as e:
+        info["note"] = "stat 실패: %s" % e
+        return info
+    # 실행 중 git 프로세스 — 못 세면 None(미측정)이며 0 으로 위장하지 않는다(계측 4원칙 ②)
+    try:
+        out = subprocess.Popen(["tasklist", "/FI", "IMAGENAME eq git.exe", "/NH"],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                               ).communicate(timeout=10)[0].decode("utf-8", "replace")
+        info["git_procs"] = out.lower().count("git.exe")
+    except Exception:
+        info["git_procs"] = None
+    info["stale"] = bool(info["size"] == 0
+                         and info["age_sec"] > 600
+                         and info["git_procs"] == 0)
+    return info
 
 
 # [MW0601 476차] PC 식별자 오버라이드 — 인자 > 환경변수 > 호스트명.
@@ -1534,7 +1605,17 @@ def build(root, day, phase, cfg, discover_only=False):
     branch = run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
     status = run_git(root, ["status", "--porcelain"])
     dirty = [l for l in status.splitlines() if l.strip()]
-    A("- HEAD `%s` · 브랜치 `%s` · 미커밋 %d건" % (head, branch, len(dirty)))
+    # [MW0601 483차 후속2 / P0-1] 인덱스락 상태를 같은 줄에 병기한다.
+    lk = git_index_lock(root)
+    if not lk["present"]:
+        lock_txt = " · 인덱스락 없음"
+    else:
+        _age_h = (lk["age_sec"] or 0) / 3600.0
+        _proc = ("git 프로세스 %s개" % lk["git_procs"]) if lk["git_procs"] is not None                 else "git 프로세스 **미측정**"
+        lock_txt = (" · 🔴 **인덱스락 잔존** %s바이트 · %.1f시간 · %s%s"
+                    % (lk["size"], _age_h, _proc,
+                       " → **커밋 불가 상태**" if lk["stale"] else " (판정 보류 — 3중 조건 미충족)"))
+    A("- HEAD `%s` · 브랜치 `%s` · 미커밋 %d건%s" % (head, branch, len(dirty), lock_txt))
     if dirty:
         A("```")
         L.extend(dirty[:40])
@@ -1547,7 +1628,14 @@ def build(root, day, phase, cfg, discover_only=False):
     A("")
     A("**당일(%s) 커밋**" % D)
     A("```")
-    A(todays if todays.strip() else "(당일 커밋 없음)")
+    if todays.strip():
+        A(todays)
+    else:
+        # [MW0601 483차 후속2 / P0-2] "안 했다"와 "못 했다"를 가른다 — 계측 4원칙 ②.
+        # 2026-08-21~22 이틀간 인덱스락으로 커밋이 **불가능**했는데 리포트는 「커밋 0건」
+        # 만 적어 NEXT_TODO 에 「커밋 미실행(사용자 조치)」로 오귀속됐다.
+        A("(당일 커밋 없음 — ⚠ 인덱스락 잔존으로 **커밋 불가 상태였음**. 미조치가 아니다)"
+          if lk["stale"] else "(당일 커밋 없음 — 커밋 가능 상태였음)")
     A("```")
     recent = run_git(root, ["log", "--oneline", "--no-decorate", "-12"])
     A("")
@@ -1925,6 +2013,16 @@ def build(root, day, phase, cfg, discover_only=False):
     flags = []
     if not files:
         flags.append("당일 날짜 토큰 파일 0개 — 프로그램이 안 돌았거나 탐색 경로가 틀렸다")
+    # [MW0601 483차 후속2 / P0-1] 스테일 인덱스락 — 무증상 결함이라 여기서만 드러난다
+    if lk["stale"]:
+        flags.append("`.git/index.lock` **스테일 잔존** (0바이트 · %.1f시간 · git 프로세스 0개) — "
+                     "이 저장소는 **커밋 불가** 상태다. `git status` 는 rc=0 으로 조용히 통과하므로 "
+                     "다른 어떤 계측에도 안 걸린다. 3중 조건 확인 후 제거할 것" % ((lk["age_sec"] or 0) / 3600.0))
+    elif lk["present"]:
+        flags.append("`.git/index.lock` 존재 (%s바이트 · %.1f분 · git 프로세스 %s) — "
+                     "실행 중인 git 일 수 있으니 **지우지 말 것**. 몇 분 뒤에도 남아 있으면 재판정"
+                     % (lk["size"], (lk["age_sec"] or 0) / 60.0,
+                        lk["git_procs"] if lk["git_procs"] is not None else "미측정"))
     if spath and rows:
         for r in rows:
             if "불일치" in r["verdict"] or "미발견" in r["verdict"]:
