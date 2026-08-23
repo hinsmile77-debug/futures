@@ -119,11 +119,29 @@ def test_unreachable_groups_are_still_unreachable():
                 "%s(%s 그룹)가 도달 가능해졌다 — 선언 갱신 필요" % (hz, grp))
 
 
-def test_long_group_core_feature_is_not_in_the_model():
-    """장기 CORE(`opt_chain_pcr`)가 학습 슈퍼셋에 없다 — 이중 사문화의 두 번째 축.
+def test_long_group_core_feature_stays_a_plain_feature():
+    """장기 CORE(`opt_chain_pcr`)는 **일반 피처로 남는다** — CORE 게이트로 승격되지 않는다.
 
-    도달 불가(체크리스트가 안 돈다)와 별개로, 그 피처는 registry에도 없어서
-    모델이 쓸 수조차 없다. D9 판단에 두 사실이 모두 필요하다.
+    ↩️ **[2026-08-23 사용자 결정 / MW0602 488차 후속2] 이 테스트의 단언이 뒤집혔다.**
+
+    종전 단언은 `core not in active` 였다 — 473·474차가 "장기 CORE는 이중으로 사문화됐다
+    (① 체크리스트 도달 불가 ② 모델 슈퍼셋에도 없음)"고 정리한 상태를 고정한 것이다.
+    그런데 `opt_chain_pcr` 가 이후 `active_features` 에 편입되면서 ②가 깨졌고, 테스트는
+    *"CLAUDE.md §3과 D9 안건을 갱신할 것"* 이라고 스스로 지시하며 실패해 왔다.
+
+    **사용자 결정(2026-08-23)**: *"30m CORE 는 모델에 들지 않지만 `opt_chain_pcr` 가
+    `active_features` 에 편입하고 데이터 수집은 계속하자."*
+
+    → 두 축을 **분리**한다. 이제 지켜야 할 불변식은 이렇다.
+      ① **CORE 게이트로는 여전히 안 돈다** — 장기 그룹은 `select_entry_horizon()` 이
+         `1m/3m/5m/None` 만 반환하므로 도달 불가다(위 도달성 테스트가 고정).
+         `opt_chain_pcr` 미통과가 등급을 떨어뜨리는 일은 일어나지 않는다.
+      ② **일반 피처로는 산다** — 모델 슈퍼셋에 편입돼 있고 수집도 계속된다.
+         (생산: `collection/options/option_chain_worker.py:102`)
+
+    ⚠ **①과 ②는 모순이 아니다.** "CORE"는 체크리스트 게이트의 자격이고, `active_features`
+      편입은 GBM 이 그 값을 피처로 쓴다는 뜻이다. 한쪽이 죽었다고 다른 쪽을 끌 이유가 없다 —
+      끄면 IC 재검증(26주 WFA 항목)에 쓸 표본이 함께 끊긴다.
     """
     import json
     cfg = CORE_FEATURES_BY_GROUP.get("long") or {}
@@ -139,6 +157,17 @@ def test_long_group_core_feature_is_not_in_the_model():
     with open(reg_path, encoding="utf-8") as f:
         active = set(json.load(f).get("active_features") or [])
 
-    assert core not in active, (
-        "'%s'가 active_features에 편입됐다 — 30m CORE의 '모델에 들어간 적 없다'는 "
-        "서술이 더 이상 사실이 아니다. CLAUDE.md §3과 D9 안건을 갱신할 것." % core)
+    # ② 편입 유지 — 빠지면 수집·재검증 표본이 끊긴다(사용자 결정 역행).
+    assert core in active, (
+        "'%s'가 active_features 에서 빠졌다 — 2026-08-23 사용자 결정"
+        "('편입하고 데이터 수집은 계속하자')에 역행한다. 뺐다면 DECISION_LOG 에 "
+        "근거가 있어야 한다." % core)
+
+    # ① 그래도 CORE 게이트로는 도달 불가여야 한다 — 편입이 게이트 부활을 뜻하지 않는다.
+    reachable = _reachable_horizons()
+    long_hz = [hz for hz, grp in HORIZON_CORE_GROUP.items() if grp == "long"]
+    assert long_hz, "장기 그룹 호라이즌 정의가 사라졌다"
+    for hz in long_hz:
+        assert hz not in reachable, (
+            "%s(장기 그룹)가 도달 가능해졌다 — `opt_chain_pcr` 편입은 피처 사용이지 "
+            "CORE 체크리스트 부활이 아니다. 라우터를 바꿨다면 CLAUDE.md §3 갱신 필요" % hz)

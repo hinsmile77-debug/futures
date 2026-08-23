@@ -315,10 +315,21 @@ def test_insert_arity_matches_columns():
     for node in ast.walk(tree):
         if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "ens_row":
             lens.append(len(node.value.elts))
-    # [MW0602 462차] 47 → 48: `min_conf_effective` 추가. 이 상수는 컬럼이 늘 때마다
-    # 함께 갱신해야 한다 — 여기서 막고 싶은 것은 "튜플과 컬럼목록이 어긋나는 것"이고,
-    # 그 검사는 바로 위 INSERT#n 컬럼수==플레이스홀더가 이미 하고 있다.
-    check("ens_row 튜플 길이 = 48", lens and lens[0] == 48)
+    # [MW0602 488차 후속2] **하드코딩 상수를 관계식으로 바꿨다.**
+    #
+    # 종전: `lens[0] == 48`. 462차가 47→48로 손으로 고친 값인데, 그 뒤 471차 후속6
+    # (`sizing_trace`)·477차 후속(`entry_qty_final`) 등이 컬럼을 늘리는 동안 아무도
+    # 함께 고치지 않아 **실측 55 vs 기대 48** 로 썩어 있었다.
+    # 이 파일은 pytest 캡처와 충돌해 단독 실행만 되는 탓에 전체 스위트에서 보이지도
+    # 않았다 — 상수 하나가 조용히 낡는 데 최적인 조건이었다.
+    #
+    # 이 검사가 **정말 막으려는 것**은 종전 주석이 스스로 적어 놓았다:
+    # *"튜플과 컬럼목록이 어긋나는 것"*. 그러면 그것을 그대로 단언하면 된다 —
+    # 매직 넘버는 컬럼이 늘 때마다 갱신을 요구하지만, 관계식은 다시 낡지 않는다.
+    # ⚠ 두 INSERT 중 `ens_row` 를 받는 쪽은 **컬럼이 많은 쪽**이다(38 vs 55).
+    _max_cols = max((nc for nc, _nq in pairs), default=0)
+    check("ens_row 튜플 길이 == 최대 INSERT 컬럼수 (실측 %d)" % (lens[0] if lens else -1),
+          bool(lens) and _max_cols > 0 and lens[0] == _max_cols)
 
 
 def test_cal_applied_column_registered():

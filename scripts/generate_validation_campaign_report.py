@@ -28,6 +28,7 @@ docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3의 사전 등록 합�
 --out-dir로 출력 폴더를 덮어쓸 수 있으나 재현·검증용이며 주간 산출물은 기본 경로를 쓸 것.
 """
 import argparse
+import contextlib
 import datetime
 import json
 import os
@@ -145,10 +146,34 @@ def _spearman(x, y) -> float:
     return float(((rx - rx.mean()) * (ry - ry.mean())).mean() / (sx * sy))
 
 
+@contextlib.contextmanager
 def _conn(db_path):
+    """DB 연결 — **반드시 닫는다.** 호출부는 종전 그대로 `with _conn(x) as conn:`.
+
+    [MW0602 488차 후속2] 종전에는 raw `sqlite3.Connection` 을 돌려줬는데,
+    `with conn:` 은 sqlite3 에서 **트랜잭션** 컨텍스트일 뿐 `close()` 가 아니다.
+    그래서 리포트 1회 생성마다 **90곳에서 연결이 샜다**(이 파일의 `with _conn(` 수).
+
+    증상은 두 갈래로 나타났다:
+      · 운영 — 프로세스가 끝날 때까지 핸들 90개가 남는다. EOD 1회성이라 실피해는
+        작지만, WAL 경합 진단을 어렵게 만든다(0819 §12 `DB미접속` 계열의 배경 소음).
+      · 테스트 — **Windows 는 열린 파일을 지울 수 없다.** 임시 DB 를 만들어 판정을
+        돌리고 `os.unlink()` 하는 테스트 8개가 전부 `PermissionError [WinError 32]`
+        로 실패했다(`tests/test_439_p2_slippage_judgment.py`). 원인이 테스트가 아니라
+        **프로덕션 코드의 누수**라, 테스트를 고치는 것은 증상 억제였을 것이다.
+
+    ⚠ **트랜잭션 의미를 바꾸지 않는다.** 안쪽 `with conn:` 을 그대로 유지해
+    성공 시 commit / 예외 시 rollback 이 종전과 같다 — 이 파일에는 섀도 테이블
+    `UPDATE` 가 여러 곳 있어(예: `tp1_trail_shadow`) 자동 commit 이 사라지면
+    **조용히 기록이 사라진다.**
+    """
     conn = sqlite3.connect(db_path, timeout=15)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _roundtrip_cost_pt(avg_price: float) -> float:

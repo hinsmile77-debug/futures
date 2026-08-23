@@ -20,6 +20,7 @@
     pytest tests/test_473_spread_extreme_watch.py
 """
 import inspect
+import io as _io
 import os
 import sys
 
@@ -195,6 +196,35 @@ def test_accrual_eta_is_reported_when_short():
     if not res.get("available") or res["verdict"] != "INSUFFICIENT":
         pytest.skip("현재 INSUFFICIENT가 아님")
     acc = res.get("accrual") or {}
-    assert acc.get("eta_trading_days") is not None, (
-        "표본 미달인데 도달 ETA를 내지 않는다")
     assert acc.get("trading_days_observed", 0) > 0
+
+    # [MW0602 488차 후속2] 요구를 **정밀화**했다 — 약화가 아니다.
+    #   종전: `eta_trading_days is not None`
+    #   현재: **숫자 또는 산출 불가 사유 중 하나는 반드시 있다**
+    # 이유: 적립 속도가 **0.000건/거래일**이 되면(=처리군 진입 0건) ETA 는 수학적으로
+    # 산출 불가다. 그때 숫자를 내라고 요구하면 코드가 **문턱을 낮추거나 값을 지어내는**
+    # 쪽으로 밀린다 — 458차 D6(사전등록 위반)이 그렇게 생겼다. 이 채널이 지켜야 할 것은
+    # "숫자를 낸다"가 아니라 **"침묵하지 않는다"** 이므로 그것을 그대로 단언한다.
+    # 2026-08-23 실측이 정확히 그 상태다: 66거래일 · 처리군 0건 · 진입 스프레드 최댓값
+    # 19.0002(임계 20 미만) → `eta_status="적립없음"`.
+    assert acc.get("eta_status") in ("추정가능", "적립없음", "도달"), (
+        "적립 상태를 말하지 않는다: %r" % (acc.get("eta_status"),))
+    if acc.get("eta_trading_days") is None:
+        assert acc.get("eta_reason"), (
+            "ETA 를 못 내면서 **이유도 말하지 않는다** — 이것이 F-8 을 한 달 넘게 "
+            "멈춰 있게 한 침묵이다")
+        assert "문턱을 낮춰" in acc["eta_reason"], (
+            "산출 불가 사유에 문턱 인하 금지 경고가 없다(458차 D6 재발 방지)")
+
+    # 사람이 읽는 출력도 침묵하지 않아야 한다 — 값이 dict 에만 있고 리포트에 없으면
+    # 계측이 죽은 것과 같다(이 프로젝트의 단골 실패: 471차 F-2 하트비트·311차 섀도).
+    # 상세 출력은 `main()` 안에 있어 함수로 떼어 부를 수 없으므로 **소스로 확인**한다:
+    # 적립 절의 출력 조건이 `eta_trading_days` 가 아니라 `trading_days_observed` 여야
+    # 한다(전자면 ETA 산출 불가일 때 절 전체가 사라진다 — 종전 결함).
+    src = _io.open(os.path.join(_ROOT, "scripts", "spread_extreme_watch.py"),
+                   encoding="utf-8").read()
+    blk = src[src.index('acc = res.get("accrual")'):]
+    blk = blk[:blk.index("column_crosscheck")]
+    assert 'if acc.get("trading_days_observed")' in blk, (
+        "적립 절이 ETA 유무로 갈린다 — ETA 를 못 낼 때 통째로 사라진다")
+    assert 'eta_reason' in blk, "산출 불가 사유를 출력하지 않는다"

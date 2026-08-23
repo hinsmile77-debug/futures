@@ -237,7 +237,7 @@ CLAUDE.md처럼 git으로 커밋되는 문서에 적어야** 양쪽 PC 세션이
 | **단기** | 1m·3m·5m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
 | **단기** | 1m·3m·5m | OFI 불균형 | `features/technical/ofi.py` | 미통과 → 등급 하락 |
 | **중기** | 10m·15m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
-| **장기** | 30m | opt_chain_pcr | `collection/option/option_chain.py` | 미통과 → 등급 하락 |
+| **장기** | 30m | opt_chain_pcr | `collection/options/option_chain_worker.py` | 미통과 → 등급 하락 ⚠ **미발동(도달 불가)** — 아래 488차 각주 |
 
 > `macro_vix`는 2026-06-25 CORE 강등. 일봉 VIX → 분봉 상수, ~~SHAP 기여 ≈ 0~~, 임계 VIX 27.5 평상시 항상 통과 확인. 보조 피처로 GBM 피처셋에 유지.
 > `macro_risk_off`는 2026-06-25 CORE 해제. 모든 호라이즌 feature_names_hz 미포함 확인 (GBM gain=0, ~~SHAP=0~~). 체크리스트·SGD 경로에도 없음. MacroFeatureTransformer 계산은 유지.
@@ -289,6 +289,33 @@ CLAUDE.md처럼 git으로 커밋되는 문서에 적어야** 양쪽 PC 세션이
 > **≥8.0에선 1m 42.2%로 단기가 우위**), TP1·메타게이트 스코어러·라벨 설계가 모두 없다.
 > 도달성 불변식은 `tests/test_473_core_group_reachability.py`가 고정한다 — 라우터나
 > 그룹 정의가 바뀌면 그 테스트가 깨져 이 문단의 갱신을 강제한다.
+>
+> 🔴 **[2026-08-23 사용자 결정 / MW0602 488차] `opt_chain_pcr`은 이제 "이중 사문화"가
+> 아니다 — 두 축을 분리해 읽어라.**
+> 473·474차는 장기 CORE가 두 겹으로 죽었다고 정리했다: ① 체크리스트가 도달 불가 ·
+> ② 그 피처가 모델 슈퍼셋(`active_features`)에도 없어 **모델이 쓸 수조차 없다.**
+> **②는 더 이상 사실이 아니다** — `opt_chain_pcr`은 `data/db/shap_feature_registry.json`
+> 의 `active_features`(105종)에 편입돼 있다(2026-08-23 실측).
+>
+> **사용자 결정**: *"30m CORE는 모델에 들지 않지만 `opt_chain_pcr`가 `active_features`에
+> 편입하고 데이터 수집은 계속하자."* 즉 —
+>
+> | 축 | 상태 | 뜻 |
+> |---|---|---|
+> | **CORE 체크리스트 게이트** | 🚫 **여전히 도달 불가** | 위 표 「장기」 행은 발동하지 않는다. `opt_chain_pcr` 미통과가 등급을 떨어뜨리는 일은 **없다** |
+> | **일반 피처 / 수집** | ✅ **유지** | GBM이 피처로 쓰고, `collection/options/option_chain_worker.py:102`가 매 사이클 수집을 계속한다 |
+>
+> ⚠ **둘은 모순이 아니다.** "CORE"는 체크리스트 게이트의 자격이고 `active_features`
+> 편입은 GBM이 그 값을 쓴다는 뜻이다. 한쪽이 죽었다고 다른 쪽을 끄면 **IC 재검증
+> (26주 WFA 「호라이즌 방향예측 피처셋 재검증」)에 쓸 표본이 함께 끊긴다** —
+> `opt_gex_bn`이 설계 시점 IC 0.198 → 최신 0.013으로 감쇠한 것을 관측할 수 있었던 것도
+> 수집이 계속됐기 때문이다.
+> ⚠ **"편입됐으니 장기 그룹을 되살리자"로 읽지 말 것** — 라우터 경계는 그대로이며,
+> (C)안(상위 경계 신설)은 여전히 매매 정책 변경이고 전제가 약하다(바로 위 문단).
+> 불변식은 `tests/test_473_core_group_reachability.py::
+> test_long_group_core_feature_stays_a_plain_feature`가 고정한다 — **편입이 빠지거나**
+> **장기 그룹이 도달 가능해지면** 그 테스트가 깨져 이 문단의 갱신을 강제한다.
+> 근거: `dev_memory/DECISION_LOG.md` 2026-08-23(488차 후속2).
 >
 > 🔴 **30m 학습을 중단하면 안 된다 — CB③의 유일한 입력원이다.**
 > 30m은 앙상블 가중 0.0(296차 퇴역)이라 "가중 0인데 매 EOD 학습된다"가 낭비로 보이지만,

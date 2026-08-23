@@ -40,6 +40,8 @@
 import os
 import sys
 
+import pytest
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -54,8 +56,39 @@ _REAL_PATH = os.path.normpath(os.path.join(
 ))
 
 
+# [MW0602 488차 후속2] 이 파일이 지키려는 **생산부가 `dev` 브랜치에 없다.**
+#
+# 458차(MW0601)가 만든 만성도 계측(`_chronic_suffix()` + `_CHRONIC_PATH`)은
+# `features/horizon_feature_registry.py` 에 있어야 하는데, `dev` 의 그 파일은
+# 178차 이후 변경이 없고 `chronic` 문자열이 **한 번도 등장하지 않는다**(실측).
+# 즉 **소비부(이 테스트 + conftest 격리)만 넘어오고 생산부가 안 왔다** —
+# 0821 이상점 1-17([50]/[51] 채널 생산부 결손) · `utils/analysis_db.py` 와
+# **같은 브랜치 비대칭 계열**이다.
+#
+# 🔴 더 나쁜 것은 이 상태가 **초록불로 보였다**는 것이다. `conftest` 의
+#    `monkeypatch.setattr(..., raising=False)` 가 없는 속성을 **만들어 주기 때문에**
+#    아래 경로 비교 테스트는 "격리돼 있다"며 통과한다 — 지킬 대상이 없는데도.
+#    이 프로젝트가 반복해 당한 *"계측이 죽었는데 초록불"* 그 형태다.
+#
+# 그래서 **없으면 없다고 말하게** 한다. 생산부를 여기서 이식하지는 않는다 —
+# 458차 만성도 계측은 자체 의미론을 가진 하위 시스템이고, 포팅은 별건이다.
+_HAS_PRODUCER = hasattr(reg, "_chronic_suffix")
+_SKIP_WHY = (
+    "`features/horizon_feature_registry._chronic_suffix()` 가 이 브랜치에 없다 — "
+    "458차 만성도 계측의 **생산부 미이관**(소비부만 넘어온 브랜치 비대칭). "
+    "1-17·`utils/analysis_db.py` 와 같은 계열이며 NEXT_TODO 에 등록돼 있다. "
+    "⚠ 이 skip 을 '통과'로 읽지 말 것 — 지킬 대상이 없는 상태다."
+)
+
+
 def test_chronic_path_is_isolated_under_pytest():
-    """conftest autouse 격리가 살아 있는가 — 이 테스트가 이 파일의 핵심이다."""
+    """conftest autouse 격리가 살아 있는가 — 이 테스트가 이 파일의 핵심이다.
+
+    ⚠ **생산부가 없으면 이 단언은 공허하다**(conftest 가 `raising=False` 로 속성을
+      만들어 주므로 항상 통과한다). 그 경우 통과시키지 않고 명시적으로 skip 한다.
+    """
+    if not _HAS_PRODUCER:
+        pytest.skip(_SKIP_WHY)
     assert os.path.normpath(reg._CHRONIC_PATH) != _REAL_PATH, (
         "테스트 실행 중 _CHRONIC_PATH가 프로덕션 경로를 가리킨다 — "
         "conftest의 _isolate_feature_exclusion_state 격리가 죽었다. "
@@ -70,6 +103,8 @@ def test_chronic_suffix_does_not_touch_real_file():
     경로 비교(위 테스트)는 "가리키지 않는다"까지만 보장한다. 여기서는 실제로
     써 보고 프로덕션 파일이 생기지 않는지 본다 — 458차 사고의 재현 경로 그대로.
     """
+    if not _HAS_PRODUCER:
+        pytest.skip(_SKIP_WHY)
     existed_before = os.path.exists(_REAL_PATH)
     mtime_before = os.path.getmtime(_REAL_PATH) if existed_before else None
 

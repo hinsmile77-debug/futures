@@ -286,6 +286,20 @@ def _accrual(hi, spread, cfg):
     rate = n / float(all_days)          # 거래일당 처리군 진입 건수
     remain = max(0, need - n)
     eta_days = int(round(remain / rate)) if rate > 0 else None
+    # [MW0602 488차 후속2] 적립 속도가 0이면 ETA 를 **낼 수 없다**. 종전에는 그때
+    # `eta_trading_days=None` 만 넣고 요약이 **아무 말도 하지 않았다** — 표본 미달인데
+    # 언제 채워지는지 침묵하는 것이 바로 이 채널이 막으려던 상태다(F-8 이 한 달 넘게
+    # 멈춰 있던 이유). 숫자를 지어내지 않되 **상태를 반드시 말한다**.
+    #
+    # 🔴 rate == 0 은 "아직 덜 쌓였다"가 아니라 **"이 문턱에서는 표본이 오지 않는다"** 다.
+    #    CLAUDE.md 전환기준 ⑨ 의 *"기다리면 닫히는 게이트가 아니다"* 를 실측이 말하는 것.
+    #    ⚠ 그렇다고 문턱을 낮춰 판정하지 말 것(458차 D6 과 같은 사전등록 위반).
+    if remain <= 0:
+        status = "도달"
+    elif rate > 0:
+        status = "추정가능"
+    else:
+        status = "적립없음"
     return {
         "trading_days_observed": all_days,
         "hi_per_trading_day": rate,
@@ -293,6 +307,13 @@ def _accrual(hi, spread, cfg):
         "eta_trading_days": eta_days,
         "eta_months_approx": (round(eta_days / 21.0, 1)
                               if eta_days is not None else None),
+        "eta_status": status,
+        "eta_reason": (
+            None if status != "적립없음" else
+            "관측 %d거래일 동안 처리군 진입 0건 — 적립 속도 0.000건/거래일이라 "
+            "ETA 를 산출할 수 없다. 이는 '아직 덜 쌓였다'가 아니라 '이 문턱에서는 "
+            "표본이 오지 않는다'는 뜻이다(전환기준 ⑨ 처분은 주간회의 소관). "
+            "⚠ 문턱을 낮춰 판정하지 말 것" % all_days),
     }
 
 
@@ -489,14 +510,20 @@ def main():
             b["bucket"], b["n"], b["days"], "{:,.0f}".format(b["mean_krw"] or 0),
             ("%.1f%%" % (100 * b["win_rate"])) if b["win_rate"] is not None else "N/A"))
     acc = res.get("accrual") or {}
-    if acc.get("eta_trading_days") is not None:
+    # [MW0602 488차 후속2] **조건 없이 낸다.** 종전에는 ETA 가 None 이면 이 절 전체가
+    # 사라져, 표본 미달인데 적립 상황을 한 마디도 안 하는 상태가 됐다.
+    if acc.get("trading_days_observed"):
         print()
         print("표본 적립 속도")
         print("  관측 거래일 %d일 · 처리군 %.3f건/거래일 · 앞으로 %d건 더 필요"
-              % (acc["trading_days_observed"], acc["hi_per_trading_day"],
-                 acc["need_more"]))
-        print("  min_samples 도달 ETA ≈ %d 거래일 (약 %s개월)"
-              % (acc["eta_trading_days"], acc["eta_months_approx"]))
+              % (acc["trading_days_observed"], acc.get("hi_per_trading_day", 0.0),
+                 acc.get("need_more", 0)))
+        if acc.get("eta_trading_days") is not None:
+            print("  min_samples 도달 ETA ≈ %d 거래일 (약 %s개월)"
+                  % (acc["eta_trading_days"], acc["eta_months_approx"]))
+        elif acc.get("eta_reason"):
+            print("  min_samples 도달 ETA — **산출 불가**")
+            print("  %s" % acc["eta_reason"])
     cc = res.get("column_crosscheck") or {}
     if cc:
         print()
