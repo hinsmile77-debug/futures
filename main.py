@@ -2295,6 +2295,14 @@ class TradingSystem:
             "cb3_ready_minutes":       int(self._mh_cb3_ready_minutes),
             "cb3_buffer_resets":       int(_cb3av["resets_today"]),
             "cb3_samples_dropped":     int(_cb3av["samples_dropped"]),
+            # [MW0601 483차 / P1-A] ConfFloorGuard 3상태. `cb3_ready_minutes` 와
+            # **같은 자리·같은 규약**이라 다음 사람이 리셋 뒤에 읽을 여지가 없다
+            # (482차 G-3 은 `daily_close()` 가 `self._mh_cfg_*` 를 리셋 **뒤에**
+            #  직접 읽어 15:40 경보가 매일 `0분 · 0분 · 0분` 이었다).
+            # ⚠ 로그 전용 — `insert_daily()` 는 이 3키를 읽지 않는다(DB 컬럼 무증설).
+            "cfg_reachable_min":       int(self._mh_cfg_reachable_min),
+            "cfg_unreachable_min":     int(self._mh_cfg_unreachable_min),
+            "cfg_unmeasured_min":      int(self._mh_cfg_unmeasured_min),
         }
 
     def _reset_model_health_counters(self) -> None:
@@ -11644,6 +11652,10 @@ class TradingSystem:
             logger.warning("[BrokerPnl] EOD 확정치 기입 실패 (무해): %s", _f4_e)
 
         # 섹션 8: scaler_daily EOD 집계 저장
+        # [MW0601 483차 / P1-A] ⚠ 스냅샷을 try **밖에서** 먼저 잡는다. 아래 try 가
+        # 실패해도(import 오류 등) 15:40 경보는 살아 있으므로, try 안에서 만들면
+        # 경보가 참조할 값이 없어진다. `_ccf_today` 와 같은 관례.
+        _mh_snap_eod = self._model_health_snapshot(cb3_avail=_cb3_avail_eod)
         try:
             from model.scaler_monitor_db import aggregate_daily, insert_daily
             _sm_stats = aggregate_daily(today_str)
@@ -11659,7 +11671,7 @@ class TradingSystem:
                 grade_x_minutes=self._grade_x_count,
                 cb3_triggered=_cb3_fired,
                 # [MW0601 457차 / G5] 모델 건강도 — 아래 리셋보다 **먼저** 읽는다
-                health=self._model_health_snapshot(cb3_avail=_cb3_avail_eod),
+                health=_mh_snap_eod,
             )
         except Exception as _sm_e:
             logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)
@@ -11714,10 +11726,13 @@ class TradingSystem:
                 # 분리한다. 도달불가 구간에서는 **어떤 신호도** 자동진입 하한을 넘을
                 # 수 없으므로, 그 분들이 섞인 후보 수로 경보의 오탐/정탐을 판단할 수
                 # 없다. ⚠ 셋째 칸(재지 않음)을 반드시 함께 찍는다 — 계측 4원칙 ②.
+                # [MW0601 483차 / P1-A] ⚠ `self._mh_cfg_*` 를 직접 읽지 마라 —
+                # 이 지점은 `_reset_model_health_counters()` **뒤**라 항상 0/0/0 이다.
+                # 리셋 전에 잡아둔 `_mh_snap_eod` 를 읽는다(계측 4원칙 ④).
                 _cfg_txt = (" | ConfFloorGuard 도달가능 %d분 · 도달불가 %d분 · 재지않음 %d분"
-                            % (self._mh_cfg_reachable_min,
-                               self._mh_cfg_unreachable_min,
-                               self._mh_cfg_unmeasured_min))
+                            % (int(_mh_snap_eod.get("cfg_reachable_min") or 0),
+                               int(_mh_snap_eod.get("cfg_unreachable_min") or 0),
+                               int(_mh_snap_eod.get("cfg_unmeasured_min") or 0)))
                 if _gap["days"] and _mc_gap_today < _min_today:
                     log_manager.system(
                         f"[경보] mc-conf 괴리: 금일 진입후보(conf≥mc) {_mc_gap_today}분"

@@ -70,7 +70,12 @@ def test_health_snapshot_read_before_reset():
     # `health=self._model_health_snapshot()` 을 문자열로 찾아, 482차가 `cb3_avail=`
     # 인자를 추가하자 **불변식은 그대로인데 테스트만** 깨졌다. 여기서 지킬 것은
     # 호출 형태가 아니라 **순서**다.
-    i_snap = src.find("health=self._model_health_snapshot(")
+    # [MW0601 483차 / P1-A] 다시 같은 이유로 깨졌다 — 483차가 스냅샷을 지역 변수
+    # (`_mh_snap_eod`)로 받아 try **밖**으로 끌어올리자 `health=` 접두가 사라졌다.
+    # 이제 대입 형태와 무관하게 **호출 지점**만 본다. 순서 불변식은 그대로다.
+    # (같은 불변식의 AST 판 + "리셋 뒤 읽기" 일반 검출기는
+    #  `tests/test_483_daily_close_snapshot_order.py`)
+    i_snap = src.find("self._model_health_snapshot(")
     i_reset = src.find("self._reset_model_health_counters()")
     assert i_snap != -1 and i_reset != -1, "G5 배선이 사라졌다"
     assert i_snap < i_reset, (
