@@ -983,6 +983,95 @@ def eval_meta_gate_channel(days: int) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [MW0602 490차 / P1] [2] 재개 게이트 — 스코어러 AUC 기반
+# ──────────────────────────────────────────────────────────────
+def _meta_reopen_gate() -> dict:
+    """489차 D1(최종 탈락)이 소진시킨 재개 조건을 대신하는 **새 사전등록 관문**.
+
+    묻는 것: *"언제 [2] 계열 재설계에 자원을 다시 쓸 것인가."*
+    게이트가 닫혀 있는 동안은 **아무것도 안 하는 것이 결정**이다.
+
+    판정 지표는 `auc_net_directional` — 배포 모델 점수가 **순이익 라벨**(방향성 행만)을
+    얼마나 잘 줄 세우는가다. [2]의 질문("순EV를 분리하는가")을 AUC 한 값으로 옮긴 것.
+
+    ⚠ 게이트 통과는 "[2]가 통과한다"가 **아니다**. 성립하는 함의는 한 방향뿐 —
+      **AUC≈0.5면 [2]가 통과할 리 없다.** 값싼 필터를 앞에 두는 것이다.
+    ⚠ 문턱은 490차 실험 수치에서 역산하지 않았다(313차 ④). 앵커는
+      `learning/calibration.py:PredictionCalibrator.DEGENERATE_AUC_MIN`이다.
+    """
+    cfg = (VALIDATION_CAMPAIGN.get("meta_gate") or {}).get("reopen_gate") or {}
+    out = {"enabled": bool(cfg.get("enabled")), "metric": cfg.get("metric"),
+           "need_weeks": int(cfg.get("consecutive_weeks", 4) or 4),
+           "start_date": cfg.get("start_date")}
+    if not out["enabled"]:
+        out["state"] = "DISABLED"
+        return out
+
+    # 문턱 — 앵커 상수를 **런타임에 읽는다**(하드코딩 금지: 앵커가 바뀌면 함께 움직여야).
+    try:
+        from learning.calibration import PredictionCalibrator as _AC
+        out["threshold"] = float(_AC.DEGENERATE_AUC_MIN)
+        out["threshold_ok"] = True
+    except Exception as e:
+        out["threshold"] = None
+        out["threshold_ok"] = False
+        out["state"] = "UNKNOWN"
+        out["reason"] = "앵커 상수 로드 실패: %s" % e
+        return out
+
+    try:
+        from learning.meta_label_classifier import load_training_metrics
+        metrics = load_training_metrics()
+    except Exception as e:
+        out["state"] = "UNKNOWN"
+        out["reason"] = "학습 지표 사이드카 판독 실패: %s" % e
+        return out
+
+    hist = [h for h in (metrics.get("history") or [])
+            if str(h.get("trained_at", ""))[:10] >= str(out["start_date"] or "")]
+    out["n_runs"] = len(hist)
+    if not hist:
+        out["state"] = "INSUFFICIENT"
+        out["reason"] = ("판정 창(%s~) 학습 기록 없음 — 사이드카가 쌓이기 전이다"
+                         % out["start_date"])
+        return out
+
+    key = str(out["metric"])
+
+    def _worst(entry):
+        """호라이즌 중 **최솟값**으로 본다 — 하나라도 무정보면 통과로 치지 않는다."""
+        vals = [v.get(key) for v in (entry.get("horizons") or {}).values()
+                if isinstance(v.get(key), (int, float))]
+        return (min(vals) if vals else None), (max(vals) if vals else None)
+
+    latest_min, latest_max = _worst(hist[-1])
+    out["latest_min"] = latest_min
+    out["latest_max"] = latest_max
+    out["latest_trained_at"] = hist[-1].get("trained_at")
+
+    streak = 0
+    for entry in reversed(hist):
+        mn, _mx = _worst(entry)
+        if mn is not None and mn >= out["threshold"]:
+            streak += 1
+        else:
+            break
+    out["streak_weeks"] = streak
+
+    if streak >= out["need_weeks"]:
+        out["state"] = "OPEN"
+        out["reason"] = ("%s 최솟값이 %d회 연속 %.2f 이상 — [2] 재설계 자원 투입 검토 가능"
+                         % (key, streak, out["threshold"]))
+    else:
+        out["state"] = "CLOSED"
+        out["reason"] = (
+            "%s 최솟값 %s < %.2f (연속 %d/%d회) — **재설계에 자원을 쓰지 않는다**"
+            % (key, ("%.4f" % latest_min) if latest_min is not None else "N/A",
+               out["threshold"], streak, out["need_weeks"]))
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [3] 분위 회귀 채널 — 커버리지 + 불확실성 상관
 # ──────────────────────────────────────────────────────────────
 
@@ -8535,6 +8624,82 @@ def build_report(days: int) -> tuple:
         L.append("| 하위 33%% | %s | %s |" % (mg["bottom_ev_pt"], mg.get("tercile_n")))
     else:
         L.append("- %s" % mg.get("reason", mg.get("error", "데이터 없음")))
+    L.append("")
+
+    # ── [MW0602 490차 / P0-①·P1] 스코어러 학습 지표 + 재개 게이트 ───────────────
+    # 종전에는 AUC가 EOD 로그에만 찍혀 **아무도 읽지 않았다**(292·303·371·468차 계열).
+    try:
+        from learning.meta_label_classifier import load_training_metrics as _ltm
+        _tm = _ltm()
+    except Exception:
+        _tm = {}
+    _tm_latest = (_tm.get("latest") or {}).get("horizons") or {}
+    if _tm_latest:
+        L.append("### [2-A] 스코어러 학습 지표 (490차 P0 — 관찰 전용, 판정 미반영)")
+        L.append("")
+        L.append("| 호라이즌 | 혼합 AUC | **방향성 AUC** | **순이익 AUC** | 강한추종 AUC | 방향성 n | 피처 |")
+        L.append("|---|---|---|---|---|---|---|")
+        for _hz in ("1m", "3m", "5m", "10m", "15m", "30m"):
+            _r = _tm_latest.get(_hz)
+            if not _r:
+                continue
+
+            def _f(key, row=_r):
+                v = row.get(key)
+                return ("%.4f" % v) if isinstance(v, (int, float)) else "—"
+
+            L.append("| %s | %s | **%s** | **%s** | %s | %s | %s |" % (
+                _hz, _f("auc_mixed"), _f("auc_directional"), _f("auc_net_directional"),
+                _f("auc_strong_directional"), _r.get("n_oof_directional", "—"),
+                _r.get("n_features", "—")))
+        L.append("")
+        L.append("- 학습 시각: %s · 스키마 기준일: %s" % (
+            (_tm.get("latest") or {}).get("trained_at", "—"),
+            (_tm_latest.get("1m") or {}).get("schema_day", "—")))
+        L.append("")
+        L.append("> 🔴 **`혼합 AUC`를 개선 근거로 쓰지 말 것** — FLAT 예측 행(22.7~46.2%)은")
+        L.append("> 피처와 무관하게 라벨이 무조건 `skip`이라, 분류기가 \"조용한 장 = skip\"만")
+        L.append("> 배워도 값이 올라간다. **[2]가 평가하는 모집단은 방향성 행뿐**이므로")
+        L.append("> `방향성 AUC`가 이 채널과 정합하는 값이다(490차 실험 발견 ①).")
+        L.append("> ")
+        L.append("> **`순이익 AUC`** = 배포 모델 점수 vs `realized_move ≥ 왕복비용`(방향성 행).")
+        L.append("> **[2]의 질문을 AUC 한 값으로 옮긴 것**이며 아래 재개 게이트의 판정 지표다.")
+        L.append("> ")
+        L.append("> **`강한추종 AUC`**(P2 섀도 게이지) = 점수 vs `realized_move ≥ max(2×임계, 0.05)`.")
+        L.append("> **판정에 관여하지 않는다** — \"이 피처셋이 방향·수익이 아니라 **크기**를")
+        L.append("> 잡는가\"를 묻는 관찰값이고, 청산 축 재활용 가능성의 입력이다.")
+        L.append("> ⚠ 재활용하려면 **새 채널 사전등록이 필요**하다(주간회의 소관).")
+    _gate = _meta_reopen_gate()
+    if _gate.get("enabled"):
+        _icon = {"OPEN": "🟢 OPEN", "CLOSED": "🔒 CLOSED",
+                 "INSUFFICIENT": "⏳ INSUFFICIENT", "UNKNOWN": "⚠ UNKNOWN"}.get(
+                     _gate.get("state"), _gate.get("state", "—"))
+        L.append("")
+        L.append("### [2-B] 재개 게이트 (490차 P1 — 사전등록)")
+        L.append("")
+        L.append("- 상태: **%s** — %s" % (_icon, _gate.get("reason", "—")))
+        L.append("- 지표 `%s` · 문턱 **%s**(앵커 `PredictionCalibrator.DEGENERATE_AUC_MIN`) "
+                 "· 필요 연속 %s회 · 판정창 %s~" % (
+                     _gate.get("metric"),
+                     ("%.2f" % _gate["threshold"]) if _gate.get("threshold") else "—",
+                     _gate.get("need_weeks"), _gate.get("start_date")))
+        if _gate.get("latest_min") is not None:
+            L.append("- 최근 학습(%s): 호라이즌 최솟값 **%.4f** / 최댓값 %.4f · 연속 %s회" % (
+                _gate.get("latest_trained_at", "—"), _gate["latest_min"],
+                _gate.get("latest_max") or float("nan"), _gate.get("streak_weeks", 0)))
+        L.append("")
+        L.append("> **왜 이 게이트가 있나.** 489차 D1이 [2]를 최종 탈락시키며 재개 조건을")
+        L.append("> **소진**시켰다. \"소진\"은 영원한 금지가 아니라 **\"새 사전등록 없이는")
+        L.append("> 재개 불가\"**이고, 이 블록이 그 새 사전등록이다. 닫혀 있는 동안은")
+        L.append("> **아무것도 안 하는 것이 결정**이며, 매주 자동 재계산되므로 사람이")
+        L.append("> 기억할 필요가 없다(489차 D2가 CB②에 적용한 규율과 같다).")
+        L.append("> ")
+        L.append("> ⚠ **통과가 \"[2] 합격\"을 뜻하지 않는다.** AUC는 라벨 순위, [2]는 손익")
+        L.append("> 분리다. 성립하는 함의는 한 방향뿐 — **AUC≈0.5면 [2]가 통과할 리 없다.**")
+        L.append("> ⚠ 호라이즌 **최솟값**으로 본다 — 하나라도 무정보면 통과로 치지 않는다.")
+        L.append("> ⚠ 403차의 *\"0.53은 변별력이 없다\"* 를 여기 옮기지 말 것 — 그것은")
+        L.append("> **n=200**(보정기 버퍼, SE≈0.047) 기준이다. 이 채널은 방향성 n≈4천~1.4만이라")
+        L.append("> 명목 SE≈0.005 수준이다. **같은 숫자라도 표본이 다르면 의미가 다르다.**")
     L.append("")
 
     # [3] 분위 회귀 상세
