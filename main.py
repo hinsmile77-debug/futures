@@ -5789,6 +5789,28 @@ class TradingSystem:
             and _drift_cooldown_ok
         )
         _drift_trigger = _drift_trigger_a or _drift_trigger_b
+        # [MW0602 485차 F-4] 무조건 상태 샘플 — 매분 1줄. 종전에는 트리거 성립 시에만
+        # 로그가 남아 "재학습 0회"가 조건 미충족(정상)인지 판정부 사망인지 로그만으로
+        # 구분 불가였다(0821 리포트 1-10: 하루 전체 [DriftRetrain] 0건·원인 미확정).
+        # state=SKIP이면 어느 항이 False였는지 이 줄만으로 읽혀야 한다.
+        # ⚠ INFO 고정 — debug로 내리면 LOG_LEVEL=INFO 환경에서 다시 사라진다
+        #   (`[CB③ 비활성]`이 그렇게 죽었다). 임계·조건식은 손대지 않는다(사전등록).
+        log_manager.system(
+            "[DriftRetrain] state=%s acc5m=%.1f%% n=%d mins_since_rt=%.0f "
+            "halted=%s running=%s cooldown_ok=%s cond_a=%s cond_b=%s"
+            % (
+                "FIRE" if _drift_trigger else "SKIP",
+                _dr_acc5m * 100.0,
+                _dr_acc5m_n,
+                _dr_mins,
+                not _not_halted,
+                not _not_running,
+                _drift_cooldown_ok,
+                _drift_trigger_a,
+                _drift_trigger_b,
+            ),
+            "INFO",
+        )
         if _drift_trigger:
             _dt_reason = (
                 f"acc5m={_dr_acc5m:.1%}(n={_dr_acc5m_n}) < 15% → 조기 트리거 ({_dr_mins:.0f}분 경과)"

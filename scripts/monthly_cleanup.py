@@ -116,6 +116,17 @@ import glob
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# Windows 콘솔 cp949 코드페이지에서 한글 출력 시 UnicodeEncodeError 방지
+# [MW0602 485차 F-7] 이 파일만 이 블록이 빠져 있었다 — campaign_steps.py가
+# stdout=PIPE로 호출하면 cp949가 적용돼 EM DASH(—) 든 print()의 첫 줄에서 즉사,
+# 월간 정리 첫 발화가 한 파일도 정리하지 못하고 죽었다(0821 리포트 1-16).
+# 형식은 캠페인 체인의 다른 스크립트(analyze_mae_mfe.py 등)와 동일하게 복제.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 # [476차] 30 → 190. 근거는 파일 머리말 참조(소급 인용 꼬리 182일 = 26주 WFA).
 LOG_KEEP_DAYS    = 190
 SHAP_KEEP_DAYS   = 190

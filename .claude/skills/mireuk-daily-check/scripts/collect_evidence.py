@@ -143,7 +143,13 @@ DEFAULT_CONFIG = {
         # 있었다. 수집기가 이 채널을 읽지 않은 것이 오보의 원인이므로 §5의 시야에 넣는다.
         "sizer_match": r"\[SizerMatch\] sizer=(?P<sizer_qty>\d+)계약 → actual=(?P<actual_qty>\d+)계약\s*\(gap=(?P<gap>\d+)\)\s*\|\s*(?P<mults>.+?)\s*$",
         # [MW0602 470차 S3/B3] 증거금 상한 — MAX_CONTRACTS 보다 먼저 구속하는 실효 상한.
-        "margin_cap": r"\[MarginCap\]\s*(?P<dir>\w+)\s*산출=(?P<calc>\d+)계약 → 증거금상한=(?P<cap>\d+)계약으로 축소",
+        # [MW0602 485차 F-5] 신·구 양식 택일 — 477차 후속 G-2가 무조건 상태 샘플
+        # `[MarginCap] state=OK|CAP|BLOCK LONG 산출=N 상한=M`(main.py:16266)을 신설했는데
+        # 이 정규식이 구 축소 로그만 알아봐 §5(구만 계수)와 §12(신만 계수)가 같은
+        # 다이제스트 안에서 어긋났다(0821 리포트 1-11: §5 `3` vs §12 `27`).
+        # ⚠ CAP 발생 시 신·구 두 줄이 **같은 사건에 대해 함께** 찍힌다 — 소비부는
+        #   state 유무로 나눠 세야 하며 매치 수를 그대로 합산하면 CAP이 중복 계수된다.
+        "margin_cap": r"\[MarginCap\]\s*(?:state=(?P<state>OK|CAP|BLOCK)\s+)?(?P<dir>\w+)\s+산출=(?P<calc>\d+)(?:계약\s*→\s*증거금상한=(?P<cap>\d+)계약으로 축소|\s+상한=(?P<cap_new>\d+))",
         # [MW0602 470차 B2] 시간대 존 전환 — 진입 가능 시간 예산을 재구성한다.
         # 추가 계측이 필요 없다. 이 로그를 구간으로 접으면 존별 체류 분수가 그대로 나온다.
         "time_zone": r"\[TimeRouter\] 시간대 전환 → (?P<zone>[A-Z_]+)\s*[:：]\s*(?P<desc>.+?)\s*$",
@@ -1675,7 +1681,18 @@ def day_summary(digests, cfg, out, root=None, day=None):
     A("| 차단(`[차단]`) | %d |" % len(bl))
     A("| 사이저 호출(`[Sizer]`) | %d |" % len(sz))
     A("| 사이즈 축소(`[SizerMatch]`) | %d |" % len(sm))
-    A("| 증거금 상한(`[MarginCap]`) | %d |" % len(mc))
+    # [MW0602 485차 F-5] 「조회 N · 축소 M」 2축 병기 — 신형식(state=)은 조회 성공
+    # 사이클마다 무조건 찍히는 상태 샘플이라, 종전처럼 "축소만 세는 칸"에 그대로
+    # 흘리면 전 건이 축소로 오독된다. CAP 사건은 신·구 두 줄이 함께 찍히므로
+    # 축소는 state=CAP만 센다. 신형식이 하나도 없으면(08-20 이전 로그) 구형식
+    # 축소 줄만 있던 시절이라 종전 의미(조회 미상 · 축소 N)로 폴백한다.
+    _mc_state = [r for r in mc if r.get("state")]
+    _mc_old = [r for r in mc if not r.get("state")]
+    if _mc_state:
+        A("| 증거금 상한(`[MarginCap]`) | 조회 %d · 축소 %d |"
+          % (len(_mc_state), sum(1 for r in _mc_state if r.get("state") == "CAP")))
+    else:
+        A("| 증거금 상한(`[MarginCap]`) | 조회 — · 축소 %d (구형식만) |" % len(_mc_old))
     A("")
     A("> **집계 단위 — 승패·손익은 `포지션`으로 센다. `레그`가 아니다.**")
     A("> 이익 포지션은 TP1/TP2/TP3로 쪼개져 여러 레그가 되고 손실 포지션은 전량청산 한 레그가 된다 — "
@@ -1944,14 +1961,21 @@ def day_summary(digests, cfg, out, root=None, day=None):
             A("| 품질게이트 `[SizerMatch]` | %d | %s |" % (
                 len(sm), ", ".join("`%s계약`×%d" % (k, v)
                                    for k, v in sorted(gaps.items(), key=lambda kv: -kv[1]))))
+        # [MW0602 485차 F-5] 신형식(state=) 도입 후 mc에는 무조건 상태 샘플(OK 포함)이
+        # 섞인다. binding 판정은 축소 사건(state=CAP, 구형식 축소 줄)만으로 한다 —
+        # CAP 사건은 신·구 두 줄이 함께 찍히므로 신형식이 있으면 신형식만 센다.
+        _mc_state = [m_ for m_ in mc if m_.get("state")]
+        _mc_bind = ([m_ for m_ in _mc_state if m_.get("state") == "CAP"]
+                    if _mc_state else [m_ for m_ in mc if not m_.get("state")])
         if mc:
             caps = {}
-            for m_ in mc:
-                caps["%s→%s" % (m_.get("calc"), m_.get("cap"))] = \
-                    caps.get("%s→%s" % (m_.get("calc"), m_.get("cap")), 0) + 1
-            A("| 증거금 `[MarginCap]` | %d | %s |" % (
-                len(mc), ", ".join("`%s계약`×%d" % (k, v)
-                                   for k, v in sorted(caps.items(), key=lambda kv: -kv[1]))))
+            for m_ in _mc_bind:
+                _ck = "%s→%s" % (m_.get("calc"), m_.get("cap") or m_.get("cap_new"))
+                caps[_ck] = caps.get(_ck, 0) + 1
+            A("| 증거금 `[MarginCap]` | 조회 %s · 축소 %d | %s |" % (
+                ("%d" % len(_mc_state)) if _mc_state else "—", len(_mc_bind),
+                ", ".join("`%s계약`×%d" % (k, v)
+                          for k, v in sorted(caps.items(), key=lambda kv: -kv[1])) or "—"))
         A("")
         if sm:
             mult_mix = {}
@@ -1962,7 +1986,9 @@ def day_summary(digests, cfg, out, root=None, day=None):
                 "`%s`×%d" % (truncate(k, 60), v)
                 for k, v in sorted(mult_mix.items(), key=lambda kv: -kv[1])[:5]))
             A("")
-        if mc:
+        # [MW0602 485차 F-5] mc 비어있지 않음 ≠ 발동 — 신형식은 OK만 있는 날도
+        # 상태 샘플이 쌓인다. 경고는 실제 축소(_mc_bind)가 있을 때만 낸다.
+        if _mc_bind:
             A("> ⚠ **증거금 상한이 발동한 날이다.** `MAX_CONTRACTS` 보다 증거금이 먼저 구속하면 "
               "실전 전환 기준 ⑧의 `[28] sizing_inversion_watch` 는 **구조적으로 표본을 못 쌓는다** "
               "(431차 이후 74포지션 qty≥3 0건). 이것은 '표본이 천천히 쌓이는 중'이 아니라 "
