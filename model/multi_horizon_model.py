@@ -4,7 +4,10 @@
 
 - 학습: GBM (GradientBoostingClassifier)
 - 저장/로드: joblib (.pkl)
-- 30분마다 배치 재학습 (batch_retrainer가 호출)
+- 배치 재학습은 **조건부**다 (batch_retrainer가 호출) — 정기 30분 스케줄은 코드에
+  존재한 적이 없다. 트리거: ConstOut 재적합 후속 · DriftRetrain · WarmupRetrain ·
+  PreRetrain(08:55) · periodic(월 08:50 / 1일 07:00).
+  ⚠ 장중 재학습 0회도 정상이다. 근거: CLAUDE.md STEP 3 정정 주석(483차).
 - 예측 시 확률값 반환 → 앙상블에서 가중합
 """
 import os
