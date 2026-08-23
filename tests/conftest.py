@@ -17,7 +17,8 @@ CRITICAL CB 알림 30건을 프로덕션 로그(`20260803_SYSTEM.log`/`WARN.log`
 import os
 import sys
 
-import pytest
+# ⚠ `import pytest` 는 489차 D9(만성도 격리 fixture 제거)로 미사용이 되어 뺐다.
+#   fixture 를 다시 넣을 때 함께 되살릴 것.
 
 # 저장소 루트를 sys.path에 넣어 `utils.*` import를 보장한다.
 # pytest는 `__init__.py`가 없는 테스트 디렉터리를 basedir(= tests/)로 잡아
@@ -31,39 +32,27 @@ from utils.runtime_mode import enable_test_mode  # noqa: E402
 enable_test_mode()
 
 
-# ── [MW0601 473차] 만성도 상태 파일 격리 ────────────────────────────────────
+# ── [MW0602 489차 / 0823 주간회의 D9] 만성도 상태 파일 격리 — **제거됨** ────
 #
-# `features/horizon_feature_registry.py:_chronic_suffix()`는 부작용이 있다 —
-# 호출될 때마다 `data/feature_exclusion_state.json`에 **쓴다**. 458차 P2-C가
-# "이 피처가 며칠째 학습에서 빠져 있는가"를 재려고 만든 누적 상태 파일이다.
+# 473차(MW0601)가 여기에 autouse 격리를 두었다. 이유는 진짜였다: 458차 P2-C가
+# 만든 `features/horizon_feature_registry.py:_chronic_suffix()`가 호출될 때마다
+# `data/feature_exclusion_state.json`에 쓰고, `tests/test_457_daily_fixes.py`가
+# 가짜 missing 목록으로 그 함수를 불러 **진짜 30m 만성 기록(opt_chain_pcr,
+# 2026-07-15 기산)을 삭제**했다(2026-08-17 실측).
 #
-# 그런데 `tests/test_457_daily_fixes.py`가 `get_available_feature_set()`을
-# 부르면서 그 경로를 격리하지 않아 **실제 파일에 썼다.** 결과(2026-08-17 실측):
+# 🔴 **그런데 그 생산부가 이 브랜치에 없다.** `dev`의 `horizon_feature_registry.py`
+#    는 178차 이후 무변경이고 `chronic` 문자열이 한 번도 등장하지 않는다.
+#    격리 대상이 없는 격리였다. 게다가 `raising=False` 때문에 monkeypatch가
+#    **없는 속성을 만들어 주어**, 지킬 것이 없는데도 초록불이 켜졌다 —
+#    488차 후속2가 잡아낸 *"지킨다고 믿는 초록불"* 과 같은 형태다.
 #
-#   30m: 16종 기록 — 그중 11종이 97 슈퍼셋에 **이미 들어 있는** 피처
-#        (above_vwap · atr_ratio · macro_vix · opt_pcr_bearish · in_value_area …)
-#        = need_add일 수가 없는 것들. first_seen이 전부 테스트 실행일.
+# 0823 주간회의 D9는 (A) 생산부 이관 / (B) 소비부 제거 중 **(B)** 를 택했고,
+# 이 fixture 와 `tests/test_473_state_file_isolation.py` 를 **함께** 지웠다.
+# 한쪽만 지우면 다음 이관 때 같은 함정이 다시 생긴다.
 #
-# 더 나쁜 것은 `_chronic_suffix()`의 "다시 가용해진 피처는 상태에서 제거"
-# 로직(같은 파일 :76-78)이다 — 테스트가 넘긴 가짜 missing 목록에 없는 이름이
-# 통째로 지워져 **진짜 30m 만성 기록(opt_chain_pcr, 2026-07-15 기산)이 소실**됐다.
-# 즉 계측이 오염된 게 아니라 **삭제**됐다.
-#
-# 개별 테스트만 고치면 다음 사람이 같은 곳을 밟는다(458차 테스트 4개는 각자
-# 올바로 patch하고 있었으므로, 규율이 아니라 구조가 문제다). 그래서 여기서
-# 전 테스트를 일괄 격리한다. 자기 경로를 따로 patch하는 테스트는 이 뒤에
-# 적용되므로 그쪽이 이긴다(pytest monkeypatch는 역순 복원).
-#
-# ⚠ conftest는 **pytest 경로만** 덮는다(위 docstring 참조). `python tests/x.py`로
-#   직접 실행하는 테스트가 이 함수를 건드리게 되면 그 파일에서 직접 patch할 것.
-@pytest.fixture(autouse=True)
-def _isolate_feature_exclusion_state(tmp_path, monkeypatch):
-    try:
-        import features.horizon_feature_registry as _reg
-    except Exception:
-        return  # 레지스트리를 안 쓰는 환경 — 격리할 대상이 없다
-    monkeypatch.setattr(
-        _reg, "_CHRONIC_PATH",
-        str(tmp_path / "feature_exclusion_state.json"), raising=False,
-    )
-    monkeypatch.setattr(_reg, "_CHRONIC_CACHE", None, raising=False)
+# 🔴 **458차 만성도 계측을 이 브랜치로 이관하는 사람에게 —**
+#    이 격리를 **반드시 함께 되살릴 것.** 되살릴 코드는 git 이력에 있다:
+#        git show HEAD~1:tests/conftest.py
+#        git show HEAD~1:tests/test_473_state_file_isolation.py
+#    복원 조건은 `.claude/skills/mireuk-daily-check/references/invariants.md`
+#    §0-C 에도 등재돼 있다. 근거: `dev_memory/DECISION_LOG.md` 489차 D9.

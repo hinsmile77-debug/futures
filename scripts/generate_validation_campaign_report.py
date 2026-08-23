@@ -7761,6 +7761,19 @@ def _fmt_verdict(v: str) -> str:
         #     FalseBlock을 반복한다).
         "BLOCK_JUSTIFIED": "🛡 BLOCK_JUSTIFIED(차단 정당)",
         "BLOCK_UNJUSTIFIED": "🟠 BLOCK_UNJUSTIFIED(차단 근거 없음·상정 자격)",
+        # [MW0602 489차 / D2, 56] CB② 복원 **방향** 어휘.
+        #   묻는 것이 "성능이 기준을 넘었는가"가 아니라 "복원이 어느 방향인가"라
+        #   PASS/FAIL을 쓰지 않는다(위 BLOCK_* 와 같은 근거).
+        #   ⚠ RESTORE_COSTS 는 **"복원하지 말라"가 아니다** — CB②는 손익 장치가
+        #     아니라 실전 자본의 꼬리위험 장치다. 이 채널은 그 대가를 계량할 뿐이고,
+        #     복원 시점은 실전 전환 기준 ⑧에 사건으로 묶여 있다(절대원칙 §2).
+        #   ⚠ SPLIT_BY_LIMIT 는 복원값 2와 3이 **서로 반대 방향**이라는 뜻이다.
+        #     절대원칙 §2가 "2~3"이라 적어둔 범위 안에서 결론이 갈리므로,
+        #     이 판정이 뜨면 **값을 먼저 정하지 말고 그 사실을 안건으로 올릴 것.**
+        "RESTORE_FAVORS_CB2": "🛡 RESTORE_FAVORS_CB2(복원이 손실을 막는다)",
+        "RESTORE_COSTS": "🟠 RESTORE_COSTS(복원이 수익을 막는다)",
+        "SPLIT_BY_LIMIT": "🔀 SPLIT_BY_LIMIT(복원값 2·3이 반대 방향)",
+        "NO_EVIDENCE": "➖ NO_EVIDENCE(표본은 찼으나 관문 미충족)",
         # [MW0602 487차 / F-8(B)] 생산부가 이 브랜치에 없는 채널 전용 —
         #   INSUFFICIENT("표본이 쌓이는 중")로 읽으면 안 된다. **표본은 오지 않는다.**
         #   0821 이상점 1-17: [50]/[54] 생산부 커밋(080c982)이 v9-dev 전용인데
@@ -7923,6 +7936,13 @@ def build_report(days: int) -> tuple:
     # predictions.db + raw_candles 만 읽고 라이브 배선이 없다 — 노출을 늘리지 않는
     # 순수 관찰 채널이라 §47 게이트가 SUSPEND여도 계속 판정한다([48]~[54]와 같은 이유).
     ewg = _safe_channel("scripts.early_window_gate_shadow", "[55]")
+    # [MW0602 489차 / 0823 주간회의 D2] CB② 복원 반사실. trades.db만 읽고 라이브
+    # 배선이 없다 — 노출을 늘리지 않는 순수 관찰 채널이라 §47 게이트가 SUSPEND여도
+    # 계속 판정한다([48]~[55]와 같은 이유).
+    # ⚠ 이 채널은 **로그가 아니라 DB에서 현행 규칙(포지션 단위, 470차 C1)으로
+    #   재구성**한다. `[CB] 연속 손절 N회` 로그는 2026-08-14 이전이 레그 단위라
+    #   과대계상된다 — 스크립트 docstring의 대조표 참조.
+    cb2 = _safe_channel("scripts.cb2_restore_shadow", "[56]")
 
     metrics = {
         "generated_at": now_str,
@@ -7972,6 +7992,7 @@ def build_report(days: int) -> tuple:
         "direction_bias_watch": dbw,   # [MW0601 457차 / G4]
         "const_out_horizon_watch": cow,  # [MW0601 471차 후속7 / G-2]
         "early_window_gate_shadow": ewg,  # [MW0602 486차 / 1-9] — 채널 [55]
+        "cb2_restore_shadow": cb2,        # [MW0602 489차 / D2]  — 채널 [56]
     }
 
     L = []
@@ -8196,6 +8217,12 @@ def build_report(days: int) -> tuple:
     L.append("| [55] 09:20~09:29 A등급게이트 counterfactual | %s | %s `[1계약·TP1상한·미실현 시뮬]` |" % (
         _fmt_verdict(ewg.get("verdict", "")),
         ewg.get("headline") or ewg.get("reason", ewg.get("error", "—"))))
+    # [MW0602 489차 / D2] CB② 복원 반사실. 단위는 **원(₩)** 이다 — pt 배지 채널과
+    # 더하지 말 것. 어휘가 PASS/FAIL이 아닌 이유는 _fmt_verdict 주석 참조.
+    L.append("| [56] CB② 복원 반사실 | %s | %s%s |" % (
+        _fmt_verdict(cb2.get("verdict", "")),
+        cb2.get("headline") or cb2.get("reason", cb2.get("error", "—")),
+        _dm("cb2_restore_shadow")))
     L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
         _g23.get("n_trades", "—"), _g23.get("n_days", "—"), _dm("tp1_geometry_shadow")))
@@ -8372,7 +8399,10 @@ def build_report(days: int) -> tuple:
                 vew.get("collinearity", 0.0), vew.get("corr_atr_realized", 0.0),
                 vew.get("corr_qunc_realized", 0.0),
                 vew.get("qty_boundary_cross", "—")))))
-    L.append("| [44] DynMC 붕괴행 잠식 | %s | %s |" % (
+    # [MW0602 489차 / D5] 결정 마커 필수 — 이 채널은 **보류 사유가 교체**된 이력이 있다
+    # (0816 "MW0601 판정 대기" → 487차 정책 폐기로 소멸 → 0823 "손익 축 근거 없음").
+    # 마커가 없으면 다음 세션이 SUPPORTS_HYP만 보고 "미조치"로 오독한다.
+    L.append("| [44] DynMC 붕괴행 잠식 | %s | %s%s |" % (
         _fmt_channel_verdict(dcf),
         dcf.get("reason") or (
             "설계 %.1f%% vs 현행 %.1f%% (이탈 %.2f%%p) · base_mc %.4f→%.4f · "
@@ -8382,18 +8412,24 @@ def build_report(days: int) -> tuple:
                 dcf.get("gap_pp", 0.0),
                 dcf.get("base_mc_excl_collapsed", 0.0),
                 dcf.get("base_mc_current", 0.0),
-                float(dcf.get("collapsed_share", 0)) * 100))))
+                float(dcf.get("collapsed_share", 0)) * 100)),
+        _dm("dynmc_collapse_feed_watch")))
     L.append("| [45] 축퇴 가드 플래핑 (게이지) | %s | %s%s |" % (
         _fmt_verdict("OBSERVE"), cgf.get("reason", "—"),
         _dm("cal_guard_flap_watch")))
     # [MW0601 434차] [46] HurstGate 임계 위치 A/B — OOS 기준 판정(전체표본은 in-sample).
     _g46 = off.get("hurst_threshold_shadow") or {}
     if _g46:
-        L.append("| [46] Hurst 임계 위치 A/B | %s | %s (OOS %s건/%s일, 전체 %s건/%s일) |" % (
+        # [MW0602 489차 / D3] 결정 마커 필수 — 0823 주간회의가 "미적용 · 감시 승격"으로
+        # 닫았다. 마커가 없으면 매주 재출력되는 FAIL을 다음 세션이 신규 승격 안건으로
+        # 오독한다([6] Hurst 완화가 3주째 같은 권고를 찍어 0801 초안이 잘못 올렸던 것과
+        # 같은 사고 — 이 레지스트리가 존재하는 이유다).
+        L.append("| [46] Hurst 임계 위치 A/B | %s | %s (OOS %s건/%s일, 전체 %s건/%s일)%s |" % (
             _fmt_verdict(_g46.get("verdict", "")),
             _g46.get("reason", _g46.get("error", "—")),
             _g46.get("n_oos", "—"), _g46.get("n_days_oos", "—"),
-            _g46.get("n_matched", "—"), _g46.get("n_days", "—")))
+            _g46.get("n_matched", "—"), _g46.get("n_days", "—"),
+            _dm("hurst_threshold_shadow")))
 
     # [MW0602 462차] [51]~[53] — 0811 점검 P4 신설. 전부 사전등록·표본 미달 상태.
     def _row_462(num, title, d, key):
@@ -11259,6 +11295,65 @@ def build_report(days: int) -> tuple:
     L.append("> **⚠ [3-6] `hurst_gate_shadow`와 다른 질문이다** — 그건 \"차단된 신호가")
     L.append("> 벌었을까\"(모집단: 차단분), 이건 \"임계가 좋은/나쁜 신호를 가르는가\"")
     L.append("> (모집단: 실제 진입분)다. 두 verdict는 서로 무관하다(§9-4).")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [MW0602 489차 / D2] [56] CB② 복원 반사실 ────────────────────────────────
+    L.append("## [56] CB② 복원 반사실 (489차 신설 · 0823 주간회의 D2)")
+    L.append("")
+    if cb2.get("error"):
+        L.append("> ⚠ 스크립트 실행 실패: %s" % cb2["error"])
+    else:
+        L.append("- 라이브 `CB_CONSEC_STOP_LIMIT` = **%s** (%s)" % (
+            cb2.get("live_limit"),
+            "활성" if cb2.get("live_limit_active") else "**비활성** — 모의투자 한정 예외"))
+        L.append("- 판정창 **%s~** : %s포지션 / %s거래일 (그 이전은 사후탐색 씨앗 — 판정 미반영)" % (
+            cb2.get("start_date"), cb2.get("n_positions_judged"), cb2.get("n_days_judged")))
+        L.append("")
+        L.append("| 복원값 | 판정 | 정지일(유효) | 제거 포지션 | 제거 손익 | drop-worst |")
+        L.append("|---|---|---|---|---|---|")
+        for _lim, _d in sorted((cb2.get("per_limit") or {}).items()):
+            _dw = _d.get("krw_removed_drop_worst")
+            L.append("| %s | %s | %s (%s) | %s | %s | %s |" % (
+                _lim, _fmt_verdict(_d.get("verdict", "")),
+                _d.get("n_halt_days", 0), _d.get("n_effective_days", 0),
+                _d.get("n_removed", 0),
+                "{:+,.0f}원".format(_d.get("krw_removed") or 0.0),
+                ("{:+,.0f}원".format(_dw) if _dw is not None else "—")))
+        _seed = cb2.get("seed") or {}
+        if _seed:
+            L.append("")
+            L.append("**사후탐색 씨앗 (%s 이전) — 🔴 판정 미반영, 표시 전용**" % cb2.get("start_date"))
+            L.append("")
+            L.append("| 복원값 | 정지일 | 제거 포지션 | 제거 손익 |")
+            L.append("|---|---|---|---|")
+            for _lim, _s in sorted(_seed.items()):
+                L.append("| %s | %s | %s | %s |" % (
+                    _lim, _s.get("n_halt_days", 0), _s.get("n_removed", 0),
+                    "{:+,.0f}원".format(_s.get("krw_removed") or 0.0)))
+    L.append("")
+    L.append("> **왜 이 채널이 생겼나.** 절대원칙 §2의 CB②는 2026-07-05부터 `9999`")
+    L.append("> (사실상 비활성)이고 복원 재검토 기한이 2026-08-29였는데, **그 기한은")
+    L.append("> 2026-08-01에 이미 한 번 4주 연기된 것**이다. 날짜를 또 미루면")
+    L.append("> CB③-P4·FP-CRITICAL이 걸어간 길과 같아진다. 0823 주간회의(D2)는 기한을")
+    L.append("> **날짜가 아니라 사건**에 묶었다 — 복원 시점 = 실전 전환 기준 ⑧")
+    L.append("> (실전 자본 재설정) 해제와 **동일 커밋**. ⑧이 열리는 순간이 노출이")
+    L.append("> 커지는 순간이므로 선행조건이 되어 잊힐 수 없고, 이 채널이 그때 쓸")
+    L.append("> 근거를 매주 쌓는다.")
+    L.append("> ")
+    L.append("> 🔴 **집계 단위는 포지션이다 — 레그가 아니다(470차 C1).**")
+    L.append("> ⚠ **로그 `[CB] 연속 손절 N회`로 과거를 세지 말 것** — 2026-08-14 이전은")
+    L.append("> 레그 단위 시절이라 과대계상된다(실측 대조 08-14: 로그 max=3 vs 포지션 2).")
+    L.append("> 이 채널은 `trades.db`에서 **현행 규칙으로 재구성**한다.")
+    L.append("> ")
+    L.append("> ⚠ **진입 제거만 모형화한다.** 실제 HALT는 `emergency_exit`까지 부르므로")
+    L.append("> 보유분 청산 시점도 바뀐다 — 2차 효과 미재현이라 **하한 추정**이고,")
+    L.append("> 손익 예측이 아니라 **방향(부호) 판정용**이다.")
+    L.append("> ")
+    L.append("> ⚠ 단위는 **원(₩)**. `[1계약·TP1상한·미실현 시뮬]` 배지 채널과 더하지 말 것.")
+    L.append("> ⚠ **CB②는 손익 장치가 아니라 실전 자본의 꼬리위험 장치다** —")
+    L.append("> `RESTORE_COSTS`가 떠도 그것은 \"복원하지 말라\"가 아니라 **대가의 계량**이다.")
     L.append("")
     L.append("---")
     L.append("")
