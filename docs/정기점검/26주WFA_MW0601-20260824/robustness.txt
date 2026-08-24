@@ -1,0 +1,82 @@
+순수 라이브 31거래일 · 피처 86개 · 왕복비용 0.0722pt
+
+================================================================================================
+① 팻테일 — 분포 자체
+================================================================================================
+1분 수익률 n=11346 · std=2.0357pt · 초과첨도=57.0 (정규=0)
+  |수익률| p50=1.000 p99=6.300 p99.9=10.486 **max=57.100** (max/std=28.0배)
+  상위 1% 봉이 전체 |이동|의 5.8%를 차지
+  일중 |변동| 최대일 103.6pt / 중앙 22.8pt = **4.5배**
+
+① 팻테일 — L2 손익 t가 하루에 얼마나 좌우되나 (라이브 합격 9셀)
+feature                      h   방향        t    잭나이프t      합격유지      최대일비중
+toxicity_flow_stress        30   -1     2.78     2.53        유지       7.1%
+toxicity_queue_stress       15   -1     2.43     2.15        유지      10.1%
+imbalance_slope             15   +1     2.54     2.25        유지       9.6%
+ofi_norm                    10   +1     2.06     1.77    **탈락**       8.0%
+microprice_slope            30   +1     2.05     1.73    **탈락**      12.0%
+quality_investor_age_sec    10   -1     2.43     2.15        유지       8.7%
+va_bandwidth                15   +1     2.08     1.77    **탈락**      11.9%
+cvd                          5   +1     2.05     1.75    **탈락**      11.8%
+macro_nasdaq_chg             5   -1     2.06     1.74    **탈락**      26.8%
+→ 하루만 빼도 합격 유지: **4 / 9셀**
+
+================================================================================================
+② 동률(tie) — 어디서 몇 개가 조용히 사라지나
+================================================================================================
+[L1] 일별 IC 계산에서 '고유값<3'으로 통째 제외된 날 (nan 처리, 0 아님)
+feature                         유효일      제외일      최빈값질량
+ofi_norm                         31        0       1.8% (값=0)
+cvd_divergence                   28        3       5.5% (값=0)
+cvd_delta_norm                   31        0       0.6% (값=0)
+vwap_position                    31        0      21.1% (값=-2)
+toxicity_flow_stress             31        0       0.5% (값=1)
+imbalance_slope                  31        0      10.9% (값=0)
+quality_investor_age_sec         31        0       0.6% (값=0)
+opt_chain_pcr                    28        3       0.7% (값=0)
+foreign_futures_net              31        0       1.5% (값=0)
+macro_nasdaq_chg                  0       31      42.6% (값=0)
+
+[L1-hit] 게이트 적중률에서 '값==일중중앙값'이라 제외된 봉 (건수 미출력 = 계측4원칙③ 위반)
+[L2]     '값==러닝중앙값'이라 신호가 발생하지 않은 봉
+feature                      h      동률탈락봉       실제신호      탈락비율
+toxicity_flow_stress        30         31        365      7.8%
+toxicity_queue_stress       15       1056        671     61.1%
+imbalance_slope             15        140        734     16.0%
+ofi_norm                    10         33       1111      2.9%
+microprice_slope            30         47        365     11.4%
+quality_investor_age_sec    10         91       1104      7.6%
+va_bandwidth                15        160        730     18.0%
+cvd                          5       9723        301     97.0%
+macro_nasdaq_chg             5      10758         79     99.3%
+
+================================================================================================
+③ 점질량 — 최빈값 질량이 유효표본·거래·IC를 얼마나 갉아먹나 (전 피처)
+================================================================================================
+최빈값 질량 상위 15:
+feature                                질량          최빈값
+bull_exhaustion_shadow              99.3%            0
+quality_investor_fetch_count        97.4%            5
+cvd                                 90.0%            1
+cvd_monotone_ratio                  76.7%            0
+toxicity_atr_stress                 58.1%            0
+toxicity_queue_stress               48.9%            0
+macro_nasdaq_chg                    42.6%            0
+queue_refill_rate                   41.8%          0.5
+queue_depletion_speed               41.8%          0.5
+vwap_momentum                       32.4%            0
+opt_pcr_slope_norm                  31.5%            0
+opt_pcr_extreme_signed              29.3%           -1
+opt_pcr_norm                        29.3%           -1
+toxicity_spread_stress              22.8%            1
+prev_day_same_hour_ret              22.8%            0
+
+질량 구간별 피처 수 / 평균 거래수(h=5, 1계약):
+질량구간                피처수        평균거래수/일
+0~10%                59           67.8
+10~30%               16           46.8
+30~50%                6           47.5
+50~90%                2           30.2
+90~101%               3            4.7
+
+JSON: C:/Users/82108/AppData/Local/Temp/claude/c--Users-82108-PycharmProjects-futures/3da3ba26-bb1e-4099-afe8-f02e11a996bd/scratchpad/wfa/robustness.json

@@ -1,0 +1,218 @@
+================================================================================================================
+[MW0601] 피처 유형 분류 + 데이터 정제 — 순수 라이브 31거래일 (2026-06-02 ~ 2026-08-24)
+================================================================================================================
+대상 86피처 · 격자 09:00~15:30 (390분) · 하루 단위 정렬, 구멍은 NaN 유지
+
+================================================================================================================
+[1] 유형 분류 결과
+================================================================================================================
+
+D 결정론형 — 2개  (제외)
+    time_cos                           결정론형 (날짜간sd/전체sd=0.000)
+    time_sin                           결정론형 (날짜간sd/전체sd=0.000)
+
+C 상수/준상수 — 6개  (제외)
+    bull_exhaustion_shadow             상수/준상수 (동률 98.8%, 일평균 고유값 3.3)
+    macro_nasdaq_chg                   상수/준상수 (동률 99.9%, 일평균 고유값 1.2)
+    macro_sp500_chg                    상수/준상수 (동률 99.8%, 일평균 고유값 1.3)
+    macro_us10y_chg                    상수/준상수 (동률 99.9%, 일평균 고유값 1.2)
+    macro_vix                          상수/준상수 (동률 99.7%, 일평균 고유값 1.8)
+    quality_investor_fetch_count       상수/준상수 (동률 97.5%, 일평균 고유값 5.5)
+
+S 계단/저빈도갱신 — 5개  (제외)
+    opt_atm_call_oi                    계단/저빈도갱신 (변화간격 중앙값 10.0분)
+    opt_atm_pcr                        계단/저빈도갱신 (변화간격 중앙값 10.0분)
+    opt_atm_put_oi                     계단/저빈도갱신 (변화간격 중앙값 10.0분)
+    opt_chain_pcr                      계단/저빈도갱신 (변화간격 중앙값 10.0분)
+    opt_gex_bn                         계단/저빈도갱신 (변화간격 중앙값 10.0분)
+
+I 누적/비정상 — 14개  (제외)
+    atr                                누적/비정상 (추세R2=0.54)
+    avg_volume                         누적/비정상 (VR10=2.3)
+    cvd_slope                          누적/비정상 (ACF1=0.9948, VR10=2.4)
+    ema_cross                          누적/비정상 (VR10=2.5)
+    foreign_call_net                   누적/비정상 (추세R2=0.57, ACF1=0.9941)
+    foreign_futures_net                누적/비정상 (추세R2=0.61, ACF1=0.9967)
+    foreign_put_net                    누적/비정상 (추세R2=0.66, ACF1=0.9961)
+    foreign_retail_divergence          누적/비정상 (ACF1=0.9938)
+    institution_futures_net            누적/비정상 (추세R2=0.65, ACF1=0.9981, VR10=2.1)
+    opt_pcr_slope_norm                 누적/비정상 (VR10=2.9)
+    program_non_arb_net                누적/비정상 (추세R2=0.53)
+    retail_futures_net                 누적/비정상 (추세R2=0.51)
+    rv_iv_spread                       누적/비정상 (추세R2=0.61)
+    toxicity_score_ma                  누적/비정상 (ACF1=0.9913, VR10=2.8)
+
+N 정상 연속형 — 59개  <== decay 검정 적격
+    atr_expansion_rate                 정상 연속형
+    atr_ratio                          정상 연속형
+    bar_volume                         정상 연속형
+    basis_change_pt                    정상 연속형
+    basis_pt                           정상 연속형
+    bb_position                        정상 연속형
+    cancel_add_ratio                   정상 연속형
+    cancel_churn_ratio                 정상 연속형
+    cvd                                정상 연속형
+    cvd_delta_norm                     정상 연속형
+    cvd_divergence                     정상 연속형
+    cvd_monotone_ratio                 정상 연속형
+    hurst                              정상 연속형
+    imbalance_slope                    정상 연속형
+    kyle_lambda                        정상 연속형
+    macro_krw_chg                      정상 연속형
+    microprice_bias                    정상 연속형
+    microprice_depth_bias              정상 연속형
+    microprice_slope                   정상 연속형
+    mlofi_norm                         정상 연속형
+    mlofi_slope                        정상 연속형
+    ofi_imbalance                      정상 연속형
+    ofi_norm                           정상 연속형
+    ofi_reversal_speed                 정상 연속형
+    opt_pcr_extreme_signed             정상 연속형
+    opt_pcr_norm                       정상 연속형
+    poc_distance                       정상 연속형
+    prev_day_same_hour_ret             정상 연속형
+    price_extension_atr                정상 연속형
+    price_extension_atr_60m            정상 연속형
+    program_arb_net                    정상 연속형
+    quality_investor_age_sec           정상 연속형
+    quality_macro_age_sec              정상 연속형
+    queue_depletion_speed              정상 연속형
+    queue_directional_depletion        정상 연속형
+    queue_momentum                     정상 연속형
+    queue_refill_rate                  정상 연속형
+    queue_signal                       정상 연속형
+    queue_signal_ma                    정상 연속형
+    realized_vol_ann                   정상 연속형
+    ret_15m                            정상 연속형
+    ret_1m                             정상 연속형
+    ret_5m                             정상 연속형
+    round_number_distance              정상 연속형
+    spread_ticks                       정상 연속형
+    threshold_feasibility              정상 연속형
+    toxicity_atr_stress                정상 연속형
+    toxicity_cancel_stress             정상 연속형
+    toxicity_flow_stress               정상 연속형
+    toxicity_queue_stress              정상 연속형
+    toxicity_score                     정상 연속형
+    toxicity_spread_stress             정상 연속형
+    trend_efficiency                   정상 연속형
+    va_bandwidth                       정상 연속형
+    vkospi                             정상 연속형
+    volume_acceleration                정상 연속형
+    vpin                               정상 연속형
+    vwap_momentum                      정상 연속형
+    vwap_position                      정상 연속형
+
+----------------------------------------------------------------------------------------------------------------
+적격(N) 59 / 86 — 나머지 27개는 tau가 '기억'이 아닌 다른 양을 재므로 제외
+
+================================================================================================================
+[2] §14 초판에서 tau 상위였던 피처의 재분류 — 무엇이 걸러졌나
+================================================================================================================
+피처                                  §14 tau  재분류
+----------------------------------------------------------------------------------------------------------------
+time_sin                               67.4  D 결정론형
+time_cos                               52.7  D 결정론형
+foreign_futures_net                    47.8  I 누적/비정상
+institution_futures_net                47.7  I 누적/비정상
+foreign_retail_divergence              47.0  I 누적/비정상
+foreign_put_net                        46.3  I 누적/비정상
+rv_iv_spread                           45.0  I 누적/비정상
+atr                                    41.2  I 누적/비정상
+realized_vol_ann                       40.8  N 정상 연속형
+foreign_call_net                       40.5  I 누적/비정상
+retail_futures_net                     39.5  I 누적/비정상
+macro_krw_chg                          38.5  N 정상 연속형
+macro_nasdaq_chg                       35.5  C 상수/준상수
+program_non_arb_net                    32.2  I 누적/비정상
+vkospi                                 31.7  N 정상 연속형
+
+================================================================================================================
+[3] 데이터 정제 3종 — 적격(N) 59개 대상 (§13 취약점)
+================================================================================================================
+피처                                      초과첨도    최대|z|       점질량  플래그
+----------------------------------------------------------------------------------------------------------------
+cvd                                     52.0     10.7     90.1%  팻테일, 동률90%, 점질량90%  <== 제외
+cvd_monotone_ratio                       5.9      3.2     77.3%  동률94%, 점질량77%  <== 제외
+toxicity_atr_stress                     15.5      9.0     57.9%  동률55%, 점질량58%  <== 제외
+toxicity_queue_stress                   19.8     10.8     48.9%  동률39%
+queue_refill_rate                     8682.1     99.5     41.7%  팻테일
+queue_depletion_speed                 8679.1     99.5     41.7%  팻테일
+vwap_momentum                            2.8      4.1     32.4%  동률30%
+opt_pcr_extreme_signed                  -1.6      1.3     29.3%  동률74%
+opt_pcr_norm                            -1.6      1.3     29.3%  동률74%
+toxicity_spread_stress                  -1.2      1.5     22.7%  -
+prev_day_same_hour_ret                 123.4     34.1     22.2%  팻테일
+vwap_position                           -1.4      1.5     21.3%  동률36%
+toxicity_cancel_stress                  -1.4      1.4     19.1%  -
+price_extension_atr_60m                  0.0      2.3     15.2%  -
+program_arb_net                         -1.3      2.0     13.7%  -
+spread_ticks                             9.0      9.4     13.4%  -
+hurst                                    1.2      3.7     13.2%  -
+imbalance_slope                        897.9     56.0     10.9%  팻테일
+macro_krw_chg                           -0.7      2.8     10.1%  동률76%
+cvd_divergence                           6.6      3.8      5.4%  -
+bb_position                             -1.0      2.8      5.2%  -
+ofi_imbalance                           40.0     17.0      5.0%  팻테일
+vpin                                     6.9      3.9      4.1%  동률66%
+ret_15m                                  5.6      6.8      3.8%  -
+round_number_distance                   -1.2      1.7      2.5%  -
+ofi_norm                                40.2     17.0      1.8%  팻테일
+ret_5m                                   3.3      7.6      1.7%  -
+poc_distance                            29.0     12.0      1.6%  팻테일
+va_bandwidth                            19.8      9.6      1.6%  동률50%
+queue_signal                             9.5     12.2      1.5%  -
+cancel_add_ratio                       124.1     26.0      1.4%  팻테일
+volume_acceleration                     11.5      6.4      1.3%  -
+ofi_reversal_speed                    2710.3     72.3      1.2%  팻테일
+ret_1m                                   3.0      5.4      1.2%  -
+price_extension_atr                      0.1      4.8      1.1%  -
+atr_expansion_rate                      16.1     11.2      1.1%  -
+queue_directional_depletion              2.1      4.5      0.9%  -
+realized_vol_ann                        40.5     13.3      0.8%  팻테일
+trend_efficiency                        -0.3      2.9      0.8%  -
+queue_momentum                           1.3      7.9      0.7%  -
+microprice_slope                       588.6     28.3      0.7%  팻테일
+basis_change_pt                        443.6     44.5      0.7%  팻테일
+vkospi                                  -0.3      6.2      0.7%  동률42%
+cvd_delta_norm                          -1.3      1.6      0.6%  -
+toxicity_flow_stress                     2.1      3.9      0.5%  -
+mlofi_slope                             11.8     12.2      0.5%  -
+microprice_depth_bias                   12.2      9.6      0.5%  -
+kyle_lambda                              1.8      8.7      0.5%  -
+atr_ratio                             1196.2     59.0      0.4%  팻테일
+bar_volume                               8.5      8.8      0.4%  -
+microprice_bias                        492.6     45.4      0.3%  팻테일
+basis_pt                               190.5     26.5      0.3%  팻테일
+queue_signal_ma                         34.2     12.9      0.3%  팻테일
+cancel_churn_ratio                       0.8      5.0      0.2%  -
+threshold_feasibility                   26.7     11.8      0.1%  팻테일
+mlofi_norm                               0.6      5.8      0.0%  -
+toxicity_score                           1.8      6.3      0.0%  -
+quality_investor_age_sec                28.8     21.3      0.0%  팻테일
+quality_macro_age_sec                   -1.2      1.9      0.0%  -
+
+----------------------------------------------------------------------------------------------------------------
+정제 후 최종 적격 **56개** (점질량>=50% 로 3개 추가 제외)
+팻테일·동률 플래그는 **제외하지 않고 표기**한다 — tau 해석 시 함께 읽을 것.
+
+최종 적격 목록:
+   atr_expansion_rate                  atr_ratio                           bar_volume                          
+   basis_change_pt                     basis_pt                            bb_position                         
+   cancel_add_ratio                    cancel_churn_ratio                  cvd_delta_norm                      
+   cvd_divergence                      hurst                               imbalance_slope                     
+   kyle_lambda                         macro_krw_chg                       microprice_bias                     
+   microprice_depth_bias               microprice_slope                    mlofi_norm                          
+   mlofi_slope                         ofi_imbalance                       ofi_norm                            
+   ofi_reversal_speed                  opt_pcr_extreme_signed              opt_pcr_norm                        
+   poc_distance                        prev_day_same_hour_ret              price_extension_atr                 
+   price_extension_atr_60m             program_arb_net                     quality_investor_age_sec            
+   quality_macro_age_sec               queue_depletion_speed               queue_directional_depletion         
+   queue_momentum                      queue_refill_rate                   queue_signal                        
+   queue_signal_ma                     realized_vol_ann                    ret_15m                             
+   ret_1m                              ret_5m                              round_number_distance               
+   spread_ticks                        threshold_feasibility               toxicity_cancel_stress              
+   toxicity_flow_stress                toxicity_queue_stress               toxicity_score                      
+   toxicity_spread_stress              trend_efficiency                    va_bandwidth                        
+   vkospi                              volume_acceleration                 vpin                                
+   vwap_momentum                       vwap_position                       

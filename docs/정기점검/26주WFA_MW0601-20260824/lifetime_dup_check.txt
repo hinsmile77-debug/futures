@@ -1,0 +1,29 @@
+========================================================================================================
+[MW0601] 중복 피처 전수 점검 — 순수 라이브 31거래일 · 86피처
+========================================================================================================
+
+[1] **값이 완전히 동일** — 1쌍
+   opt_pcr_extreme_signed             == opt_pcr_norm                       (겹치는 관측 11304)
+
+[2] **선형 종속** (|r| >= 0.9999, 배율·부호만 차이) — 3쌍
+   foreign_futures_net              ~ foreign_retail_divergence        r=+0.999986  b≈1.7653×a  (n=11304)
+   foreign_futures_net              ~ retail_futures_net               r=-0.999924  b≈-0.7653×a  (n=11304)
+   foreign_retail_divergence        ~ retail_futures_net               r=-0.999976  b≈-0.4335×a  (n=11304)
+
+[3] 매우 높은 상관 (0.99 <= |r| < 0.9999) — 7쌍
+   foreign_futures_net              ~ institution_futures_net          r=-0.99911 (n=11304)
+   foreign_retail_divergence        ~ institution_futures_net          r=-0.99887 (n=11304)
+   institution_futures_net          ~ retail_futures_net               r=+0.99852 (n=11304)
+   foreign_call_net                 ~ foreign_futures_net              r=-0.99358 (n=11304)
+   foreign_call_net                 ~ foreign_retail_divergence        r=-0.99358 (n=11304)
+   foreign_call_net                 ~ retail_futures_net               r=+0.99353 (n=11304)
+   foreign_call_net                 ~ institution_futures_net          r=+0.99257 (n=11304)
+
+========================================================================================================
+[영향]
+  · 중복 열은 L1·L2 **검정 수를 부풀린다** -> Bonferroni 임계가 필요 이상으로 높아져
+    실제 신호를 더 많이 탈락시킨다(이번 창 임계 |t|>=6.44).
+  · 학습 X에 같은 정보가 두 번 들어가면 트리 모델의 분기 선택과 SHAP 기여가
+    두 이름으로 쪼개진다 — 중요도 해석이 왜곡된다.
+  · 판정·설정 변경은 하지 않는다(절대원칙 §6). 이 표는 기록이다.
+========================================================================================================

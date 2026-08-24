@@ -54,6 +54,22 @@ CRIT_RATE = 0.95
 WARN_RATE = 0.80
 MIN_SAMPLES = 200
 
+# ── 시간축 프로파일 (2026-08-25 신설) ────────────────────────────────
+# 위 CRIT/WARN은 **값의 분포**만 본다. 아래 셋은 **시간 구조**를 본다 — 두 축은
+# 겹치지 않는다(실측 교차표: L0 OK인데 시간축 부적격 27개 / 역방향 0개).
+#
+# ⚠ 이 임계는 `docs/Spec for feature/피처_재검증_및_호라이즌배정_원칙.md` §2와 같은
+#    값이다. 한쪽만 바꾸면 주간 리포트와 26주 재검증이 다른 판정을 낸다 — 바꿀 때는
+#    반드시 두 곳을 함께 고칠 것(임계 복사 사고 방지, 이 파일 58행 주석과 같은 취지).
+# ⚠ 여기서 산출하는 `shape`는 **참고 표기이며 판정 등급(level)에 영향을 주지 않는다.**
+#    등급 체계를 바꾸면 기존 리포트 시계열과 불연속이 생긴다(461차 mdd_pct 교훈).
+ACF_MIN_OBS = 60          # 거래일별 최소 관측 (하루 390분 중)
+SHAPE_TIE_CONST = 0.95    # 동률(delta=0) 이상이면 상수형 — 하루 종일 값이 안 변한다
+SHAPE_GAP_STEP = 5.0      # 값 변화 간격 중앙값(분) 이상이면 계단형 — 원천 갱신 주기
+SHAPE_ACF1_INTEG = 0.99   # lag-1 자기상관 이상이면 누적/비정상형
+SHAPE_DET_RATIO = 0.05    # 같은 hh:mm 날짜간 변동/전체 변동 미만이면 결정론형(시계)
+DET_MIN_DAYS = 5          # 결정론 판정 시 시각 슬롯당 최소 거래일
+
 # 이미 원인이 규명돼 별도 관리 중인 피처 — 리포트에는 남기되 사유를 병기한다.
 KNOWN = {
     "program_institution_net_krw": "원천 TR(CpSvr8111) 미제공 — 451차 폐기 집행. 과거 행 잔재",
@@ -156,16 +172,24 @@ def collect(days):
     비중을 전체 7,533행에서 재면 "게이트는 87% 켜졌는데 값은 상수"라는 가짜 모순이
     만들어져 유령으로 오검출된다. 게이트는 반드시 **그 피처가 존재하는 행에서만**
     재야 한다.
+
+    [MW0601 2026-08-25] 반환에 **행별 거래일(day_of)** 을 추가했다. 시간축 지표
+    (동률·ACF(1)·변화간격)는 일 경계를 넘어 계산하면 오버나이트 갭이 섞여 무의미해진다.
+    이 함수는 이 파일 안에서만 호출되고 `generate_featureset_health_report.py`는 자체
+    collect를 따로 갖고 있어, 반환값 확장의 영향 범위는 이 파일로 닫힌다.
     """
     con = sqlite3.connect(RAW_DB)
     cur = con.cursor()
     cur.execute("SELECT DISTINCT substr(ts,1,10) d FROM raw_features ORDER BY d DESC LIMIT ?", (days,))
     dates = sorted(r[0] for r in cur.fetchall())
     if not dates:
-        return [], 0, None, None
-    cur.execute("SELECT features FROM raw_features WHERE substr(ts,1,10) >= ?", (dates[0],))
+        return [], 0, None, None, [], []
+    cur.execute("SELECT ts, features FROM raw_features WHERE substr(ts,1,10) >= ? ORDER BY ts",
+                (dates[0],))
     rows = []
-    for (fj,) in cur.fetchall():
+    day_of = []
+    min_of = []
+    for ts, fj in cur.fetchall():
         try:
             f = json.loads(fj)
         except Exception:
@@ -177,12 +201,144 @@ def collect(days):
             if isinstance(v, (int, float)):
                 row[k] = float(v)
         rows.append(row)
+        day_of.append(ts[:10])
+        min_of.append(ts[11:16])
     con.close()
-    return rows, len(rows), dates[0], dates[-1]
+    return rows, len(rows), dates[0], dates[-1], day_of, min_of
 
 
 def series_of(rows, key):
     return [r[key] for r in rows if key in r]
+
+
+def _median(xs):
+    """순수 파이썬 중앙값 (numpy 없이 — 이 스크립트의 의존성 제약)."""
+    s = sorted(xs)
+    n = len(s)
+    if n == 0:
+        return None
+    m = n // 2
+    return float(s[m]) if n % 2 else (s[m - 1] + s[m]) / 2.0
+
+
+def _acf1(v):
+    """lag-1 자기상관 (공통 분모 표본 ACF). 표본 미달·상수면 None."""
+    n = len(v)
+    if n < ACF_MIN_OBS:
+        return None
+    mean = sum(v) / float(n)
+    a = [x - mean for x in v]
+    den = sum(x * x for x in a)
+    if den <= 0:
+        return None
+    num = sum(a[i] * a[i + 1] for i in range(n - 1))
+    return num / den
+
+
+def _change_gap(v):
+    """값이 바뀌는 시점 사이 간격(분)의 중앙값. 원천 갱신 주기를 드러낸다."""
+    pos = [i for i in range(1, len(v)) if v[i] != v[i - 1]]
+    if len(pos) < 3:
+        return None
+    return _median([pos[i] - pos[i - 1] for i in range(1, len(pos))])
+
+
+def _sd(xs):
+    n = len(xs)
+    if n < 2:
+        return None
+    m = sum(xs) / float(n)
+    return (sum((x - m) ** 2 for x in xs) / float(n)) ** 0.5
+
+
+def _determinism_series(values, mins):
+    """같은 시각(hh:mm)의 날짜간 변동 / 전체 변동.
+
+    0에 가까우면 값이 **시각의 함수**라는 뜻이다 — 피처가 아니라 시계(`time_cos` 등).
+    이 판정이 없으면 그런 계열이 ACF1이 높다는 이유로 '누적형'으로 오분류된다
+    (2026-08-25 첫 실행에서 실제로 그랬다).
+    """
+    by_slot = defaultdict(list)
+    for v, m in zip(values, mins):
+        by_slot[m].append(v)
+    allv = list(values)
+    tot = _sd(allv)
+    if not tot or tot <= 0:
+        return None
+    sds = [_sd(v) for v in by_slot.values() if len(v) >= DET_MIN_DAYS]
+    sds = [s for s in sds if s is not None]
+    if len(sds) < 30:
+        return None
+    return (sum(sds) / float(len(sds))) / tot
+
+
+def temporal_profile(rows, day_of, min_of, key):
+    """행 dict 목록용 어댑터 — 계산 본체는 `temporal_profile_series`."""
+    v, d, m = [], [], []
+    for r, dd, mm in zip(rows, day_of, min_of):
+        if key in r:
+            v.append(r[key])
+            d.append(dd)
+            m.append(mm)
+    return temporal_profile_series(v, d, m)
+
+
+def temporal_profile_series(values, days, mins):
+    """시간축 프로파일 — 거래일별로 계산한 뒤 중앙값으로 합친다.
+
+    L0가 쓰던 zero-rate·최빈값비중은 **값의 분포**만 본다. 그래서 "날마다 값은 다른데
+    하루 안에서는 상수"인 계열(일봉 매크로)을 구조적으로 못 잡는다 — 2026-08-25 실측:
+    `macro_us10y_chg`는 최빈값비중 13.3%(정상)인데 동률 99.9%(하루 종일 상수)였다.
+    같은 이유로 누적형(`foreign_futures_net` ACF1=0.9967)과 계단형(옵션체인 갱신간격
+    10분)도 전부 L0를 통과했다. 이 함수가 그 세 공백을 메운다.
+
+    ⚠ **간이 판정이다.** 결측 행을 건너뛰어 압축하므로 격자가 엄밀하지 않고, 추세 R²·
+    분산비는 계산하지 않는다(누적형 판정은 ACF(1) 하나로만 한다). 정본은 26주 재검증의
+    `docs/Spec for feature/피처_재검증_및_호라이즌배정_원칙.md` §2이며, 여기서는
+    **주간 감지**가 목적이다(그 문서 §13 참조 구현 `lifetime_taxonomy.py`).
+
+    Args:
+        values/days/mins: 같은 길이의 병렬 리스트 (값, 거래일 'YYYY-MM-DD', 시각 'HH:MM').
+
+    Returns:
+        dict(tie_rate, acf1, change_gap, det_ratio, shape) — 산출 불가 항목은 None.
+        `shape`는 참고 표기이며 **판정 등급(level)에 영향을 주지 않는다.**
+    """
+    by_day = defaultdict(list)
+    for v, d in zip(values, days):
+        by_day[d].append(v)
+
+    ties, acfs, gaps = [], [], []
+    for v in by_day.values():
+        if len(v) < ACF_MIN_OBS:
+            continue
+        diffs = [v[i] - v[i - 1] for i in range(1, len(v))]
+        if diffs:
+            ties.append(sum(1 for x in diffs if x == 0.0) / float(len(diffs)))
+        a = _acf1(v)
+        if a is not None:
+            acfs.append(a)
+        g = _change_gap(v)
+        if g is not None:
+            gaps.append(g)
+
+    tie = _median(ties) if ties else None
+    acf1 = _median(acfs) if acfs else None
+    gap = _median(gaps) if gaps else None
+    det = _determinism_series(values, mins)
+
+    # 우선순위는 재검증 §2와 같다: 결정론 > 상수 > 계단 > 누적.
+    shape = ""
+    if det is not None and det < SHAPE_DET_RATIO:
+        shape = "결정론형"
+    elif tie is not None and tie >= SHAPE_TIE_CONST:
+        shape = "상수형"
+    elif gap is not None and gap >= SHAPE_GAP_STEP:
+        shape = "계단형"
+    elif acf1 is not None and acf1 >= SHAPE_ACF1_INTEG:
+        shape = "누적형"
+    return {"tie_rate": tie, "acf1": acf1, "change_gap": gap,
+            "det_ratio": det, "shape": shape}
 
 
 def classify(v):
@@ -216,7 +372,7 @@ def main():
         print("raw_data.db 없음: %s" % RAW_DB)
         return 1
 
-    data_rows, n_rows, d_from, d_to = collect(args.days)
+    data_rows, n_rows, d_from, d_to, day_of, min_of = collect(args.days)
     if not data_rows:
         print("raw_features 데이터 없음")
         return 1
@@ -228,6 +384,8 @@ def main():
     print("피처 건강도 리포트 — %s ~ %s (%d행, %d개 피처)"
           % (d_from, d_to, n_rows, len(all_keys)))
     print("판정: DEAD=분산0 / CRITICAL=zero·최빈 95%+ / WARN=80%+ / OK=그 외")
+    print("형태: 상수형=동률>=95%% / 계단형=변화간격>=%.0f분 / 누적형=ACF1>=%.2f "
+          "(참고 표기 — 등급에 영향 없음)" % (SHAPE_GAP_STEP, SHAPE_ACF1_INTEG))
 
     report = {}
     for k in all_keys:
@@ -235,6 +393,7 @@ def main():
         if len(v) < MIN_SAMPLES:
             continue
         report[k] = classify(v)
+        report[k].update(temporal_profile(data_rows, day_of, min_of, k))
 
     # 유령 판정 — "가용하다고 보고했는데 값이 상수"인 모순 조합
     for k, r in report.items():
@@ -261,8 +420,8 @@ def main():
     print("요약: DEAD=%d  CRITICAL=%d  WARN=%d  OK=%d"
           % (counts[DEAD_LEVEL], counts[CRIT_LEVEL], counts[WARN_LEVEL], counts[OK_LEVEL]))
     print()
-    print("  %-9s %-30s %8s %8s %9s %8s  %s"
-          % ("등급", "피처", "n", "zero%", "최빈비중", "고유값", "비고"))
+    print("  %-9s %-30s %8s %8s %9s %8s %7s %7s  %s"
+          % ("등급", "피처", "n", "zero%", "최빈비중", "고유값", "동률%", "형태", "비고"))
     shown = 0
     for k, r in rows:
         if r["level"] == OK_LEVEL and not args.all:
@@ -271,11 +430,48 @@ def main():
         note = KNOWN.get(k) or ("상태플래그(상수 정상)" if is_benign_flag(k) else "")
         if r.get("phantom"):
             note = ("유령? " + note).strip()
-        print("  %-9s %-30s %8d %7.1f%% %8.1f%% %8d  %s"
+        tie = r.get("tie_rate")
+        print("  %-9s %-30s %8d %7.1f%% %8.1f%% %8d %6s %7s  %s"
               % (r["level"], k, r["n"], 100.0 * r["zero_rate"], 100.0 * r["mode_rate"],
-                 r["distinct"], note))
+                 r["distinct"],
+                 ("%.0f%%" % (100.0 * tie)) if tie is not None else "-",
+                 r.get("shape") or "-", note))
     if not shown:
         print("  (해당 없음 — 모든 피처 OK)")
+
+    # ── 시간축 형태 이상 ────────────────────────────────────────
+    # 값의 분포(zero·최빈)로는 정상인데 **시간 구조**가 특이한 피처. 위 표는 OK 등급을
+    # 숨기므로 여기서 따로 낸다 — 2026-08-25 실측에서 이 부류 27개가 전부 L0 OK였다
+    # (`opt_chain_pcr` 최빈비중 0.7%, `macro_us10y_chg` 13.3% 등).
+    # 필터는 위 "신규 이상"과 같은 원칙이다 — KNOWN(원인 규명 완료)·상태플래그
+    # (`is_*`/`quality_*`는 상수가 정상)·DEAD(이미 위 표에 나옴)는 뺀다. 이 필터가
+    # 없으면 첫 실행처럼 64개가 쏟아져 0802 계획 Phase A 확정사항 4번이 지적한
+    # "경보 피로"가 그대로 재발한다.
+    shaped = [(k, r) for k, r in rows
+              if r.get("shape")
+              and r["level"] != DEAD_LEVEL
+              and k not in KNOWN
+              and not is_benign_flag(k)]
+    print()
+    if shaped:
+        print("시간축 형태 이상 %d개 — 값 분포는 정상이나 decay·수명 지표를 매기면 "
+              "다른 양을 잰다" % len(shaped))
+        print("  %-30s %8s %7s %8s %9s  %s"
+              % ("피처", "형태", "동률%", "ACF1", "변화간격", "비고"))
+        for k, r in sorted(shaped, key=lambda kv: (kv[1]["shape"], kv[0])):
+            note = KNOWN.get(k) or ("상태플래그(상수 정상)" if is_benign_flag(k) else "")
+            if r["level"] != OK_LEVEL:
+                note = ("등급 %s / " % r["level"] + note).strip(" /")
+            print("  %-30s %8s %6s %8s %8s  %s"
+                  % (k, r["shape"],
+                     ("%.0f%%" % (100.0 * r["tie_rate"])) if r.get("tie_rate") is not None else "-",
+                     ("%.4f" % r["acf1"]) if r.get("acf1") is not None else "-",
+                     ("%.1f분" % r["change_gap"]) if r.get("change_gap") is not None else "-",
+                     note))
+        print("  → 이 목록은 **등급을 바꾸지 않는다.** 정본 분류·처분은 26주 재검증")
+        print("    (`docs/Spec for feature/피처_재검증_및_호라이즌배정_원칙.md` §2)에서 한다.")
+    else:
+        print("시간축 형태 이상 없음")
 
     unknown_bad = [k for k, r in rows
                    if r["level"] in (DEAD_LEVEL, CRIT_LEVEL)
