@@ -2530,11 +2530,21 @@ def _sizer_pressure_from_trace(since: str = None) -> dict:
     n_ge3 = n_entered = 0
     entered_qty = []
     raw_hist, final_hist, binding = {}, {}, {}
+    # [MW0602 491차 F-5] 증거금 축. `binding_gate` 도메인에 `margin` 이 늘었고,
+    # 그 값이 처음 나타난 날을 함께 남긴다 — 그 이전 행은 **미측정**이지
+    # "증거금 미구속"이 아니다(계측 4원칙 ②). 🔴 과거 행은 소급 재라벨하지 않는다.
+    n_margin_binding = 0
+    margin_since = None
     for r in rows:
         try:
             t = json.loads(r["sizing_trace"])
         except Exception:
             continue
+        if t.get("margin_state") is not None:
+            if margin_since is None:
+                margin_since = r["ts"][:10]
+            if int(t.get("margin_binding") or 0):
+                n_margin_binding += 1
         _raw = int(t.get("qty_sizer_raw") or 0)
         _fin = int(t.get("qty_auto") or 0)
         raw_hist[_raw] = raw_hist.get(_raw, 0) + 1
@@ -2560,12 +2570,24 @@ def _sizer_pressure_from_trace(since: str = None) -> dict:
         "binding_gate_hist": dict(sorted(binding.items(), key=lambda kv: -kv[1])),
         "n_entered": n_entered,
         "entered_qty_ge3": int(sum(1 for q in entered_qty if q >= 3)),
+        "n_margin_binding": n_margin_binding,
+        "n_binding_margin": int(binding.get("margin", 0)),
+        "margin_measured_since": margin_since,
     })
+    _margin_txt = (
+        "증거금 축 미측정(491차 F-5 배포 전 행)"
+        if margin_since is None else
+        "증거금 구속 %d회 · binding=margin %d회 (증거금 축 실측 %s~)"
+        % (n_margin_binding, out["n_binding_margin"], margin_since)
+    )
     out["reason"] = (
         "사이저 %d회/%d일 중 3계약+ 출력 %d회(%.1f%%) → 실제 3계약+ 체결 %d건. "
-        "최빈 binding=%s (실측 기준일 %s~)"
+        "최빈 binding=%s (실측 기준일 %s~). %s. "
+        "⚠ `margin` 출현은 **증거금이 구속한 것** — ⑧ 해제 논의의 직접 입력이며 "
+        "품질 게이트 탓이 아니다"
         % (n, out["n_days"], n_ge3, out["pct_sizer_ge3"], out["entered_qty_ge3"],
-           (list(out["binding_gate_hist"]) or ["—"])[0], out["since_effective"])
+           (list(out["binding_gate_hist"]) or ["—"])[0], out["since_effective"],
+           _margin_txt)
     )
     return out
 

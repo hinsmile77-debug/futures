@@ -20,6 +20,7 @@
 Python 3.7 32-bit 호환 (scikit-learn GradientBoostingClassifier)
 """
 import os
+import time
 import logging
 import datetime
 import pickle
@@ -2283,24 +2284,76 @@ class BatchRetrainer:
             datetime.datetime.now() - datetime.timedelta(weeks=keep_weeks)
         ).strftime("%Y-%m-%d %H:%M:%S")
 
-        deleted = 0
-        try:
-            with sqlite3.connect(RAW_DATA_DB, timeout=15) as conn:
-                for table in ("raw_features", "raw_candles", "raw_features_horizon"):
-                    try:
-                        r = conn.execute(
-                            "DELETE FROM {} WHERE ts < ?".format(table), (cutoff,)
-                        )
-                        deleted += r.rowcount
-                    except Exception:
-                        pass  # 테이블 없으면 무시
-                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        # ── [MW0602 492차 F-8] 두 로그가 「같은 호출」임을 드러낸다 ────────────────
+        # 0824 15:40:03 에 `[Retrain] DB pruning 실패: database table is locked`(WARNING)
+        # 바로 다음 줄에 `[GBM] DB pruning: 3,810행 삭제`(INFO)가 찍혔다.
+        # 🔴 **0824 리포트 1-14 의 "서로 다른 두 정리 경로" 진단은 틀렸다** — 호출부는
+        #    `main.py:daily_close()` **한 곳뿐**이고(`prune_raw_data_db` 전수 확인),
+        #    `[Retrain]` 은 이 함수 **안**, `[GBM]` 은 그 **밖**에서 찍는 같은 한 번이다.
+        # 🔴 그래서 이것은 로그 위생 문제만이 아니었다: DELETE 는 3,810행을 **셌지만**
+        #    `with` 종료 시점의 커밋(또는 wal_checkpoint)이 락으로 실패했고, 종전 코드는
+        #    그 예외를 삼킨 뒤 **이미 센 3,810 을 그대로 반환**했다. 호출부는 그 값을
+        #    "삭제 완료"로 인쇄한다 — **커밋되지 않은 수를 성공으로 보고**한 것이다
+        #    (계측 4원칙 ④: 폴백이 정상값처럼 보인다).
+        # 고친 것 둘:
+        #   ① 실패 시 반환값은 **0**이다. 커밋 안 된 행수를 성공으로 세지 않는다.
+        #   ② 실패 로그에 **cutoff·keep·테이블별 행수**를 넣고, 락이면 **1초 뒤 1회만**
+        #      다시 시도한다.
+        # ⚠ **재시도 루프를 넣지 않는다** — `daily_close()` 15:40:03 은 저장이 몰리는
+        #   구간이고, 여기서 대기가 길어지면 15:45 EOD 재학습 체인(`[WaitDC]` 최대 20분)
+        #   의 여유를 갉아먹는다.
+        # ⚠ 로그 태그 `[Retrain]`·`[GBM]` 은 **바꾸지 않는다** — 바꾸면 과거 로그와의
+        #   대조가 끊긴다(461차 `mdd_pct` 사고와 같은 유형).
+        def _prune_once(_conn):
+            _n, _detail = 0, []
+            for table in ("raw_features", "raw_candles", "raw_features_horizon"):
+                try:
+                    r = _conn.execute(
+                        "DELETE FROM {} WHERE ts < ?".format(table), (cutoff,)
+                    )
+                    _n += r.rowcount
+                    _detail.append("%s:%d" % (table, r.rowcount))
+                except sqlite3.OperationalError as _te:
+                    _msg = str(_te)
+                    if "no such table" in _msg:
+                        _detail.append("%s:없음" % table)   # 테이블 없음 = 정상
+                        continue
+                    _detail.append("%s:%s" % (table, _msg))
+                    raise
+            _conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            return _n, _detail
+
+        _tables = "raw_features,raw_candles,raw_features_horizon"
+        deleted, detail, last_err = 0, [], None
+        for _attempt in (1, 2):
+            deleted, detail = 0, []          # 재시도 시 1차 집계를 이월하지 않는다
+            try:
+                with sqlite3.connect(RAW_DATA_DB, timeout=15) as conn:
+                    deleted, detail = _prune_once(conn)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                deleted = 0                  # 🔴 커밋 실패분을 성공으로 세지 않는다
+                if _attempt == 1:
+                    logger.info(
+                        "[Retrain] DB pruning 1차 실패 — 1초 후 1회 재시도 "
+                        "(cutoff=%s keep=%d주 대상=%s): %s",
+                        cutoff[:10], keep_weeks, "/".join(detail) or _tables, e,
+                    )
+                    time.sleep(1.0)
+        if last_err is None:
             logger.info(
-                "[Retrain] DB pruning 완료: %d행 삭제 (cutoff=%s, keep=%d주)",
-                deleted, cutoff[:10], keep_weeks,
+                "[Retrain] DB pruning 완료: %d행 삭제 (cutoff=%s, keep=%d주, 테이블별=%s)",
+                deleted, cutoff[:10], keep_weeks, "/".join(detail) or "-",
             )
-        except Exception as e:
-            logger.warning("[Retrain] DB pruning 실패: %s", e)
+        else:
+            logger.warning(
+                "[Retrain] DB pruning 실패(2회, 반환=0행): %s | cutoff=%s keep=%d주 "
+                "대상=%s — 아무것도 삭제되지 않았다(커밋 미완). "
+                "다음 월요일 EOD 에 재시도된다",
+                last_err, cutoff[:10], keep_weeks, "/".join(detail) or _tables,
+            )
         return deleted
 
     def get_stats(self) -> dict:

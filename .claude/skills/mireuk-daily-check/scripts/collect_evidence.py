@@ -165,7 +165,13 @@ DEFAULT_CONFIG = {
     # config/settings.py 에서 값을 확인할 상수 — CLAUDE.md 절대원칙·한시예외 대응
     "invariants": [
         {"name": "CB_CONSEC_STOP_LIMIT", "expect": "9999",
-         "why": "모의투자 한정 예외(CB② 사실상 비활성). 실투 전환 전 2~3 복원 필수. 재검토 기한 2026-08-29"},
+         # [MW0602 491차 F-1] 489차 D2가 기한을 **날짜 → 사건**으로 바꿨는데 이 사본만
+         # 남아 죽은 날짜를 매일 인쇄했다(정본 `invariants.md`는 489차에 갱신됨).
+         # ⚠ 값(`9999`)은 손대지 않는다 — 이 fix는 기한 문구만 고친다.
+         "why": "모의투자 한정 예외(CB② 사실상 비활성). 실투 전환 전 2~3 복원 필수. "
+                "🔴 [489차 D2] 기한은 날짜가 아니라 **사건** — 복원 = 전환기준 ⑧ 해제와 "
+                "동일 커밋. 종전 '2026-08-29'는 효력 종료(재인용 금지). "
+                "그 사이 캠페인 [56] cb2_restore_shadow가 매주 반사실 재계산"},
         {"name": "CB3_P4_GRADE_BLOCK_ENABLED", "expect": "False",
          "why": "30m 퇴역으로 CB③-P4 상시 RESTRICTED 고착 → 차단만 비활성 (296·297차)"},
         {"name": "FP_CRITICAL_GRADE_BLOCK_ENABLED", "expect": "False",
@@ -422,6 +428,32 @@ DEFAULT_CONFIG = {
                        "상태(470차 실측: 목표자본 5천만 > 실잔고 2.9천만에서 5/5 축소) — "
                        "⑧ 재설계 논의의 직접 입력. BLOCK 출현 = 증거금 부족 진입 차단",
             },
+            # ── [MW0602 492차 F-7 ⑤] 학습률 조절기 2축 ─────────────────────
+            # 0824 1-13: `DRIFT_UP` 이 최근 9일 중 6일 찍혔는데 alpha 는 열흘째
+            # `0.01000`(=ALPHA_MAX) 로 붙박여 있었다. **매일 대응한 기록만 남고
+            # 아무것도 바뀌지 않은** 형태다 — §12 가 정확히 잡아야 할 것이다.
+            # 🔴 `sgd_alpha` 는 **benign 이 아니다.** 상한 고착이 정상이라는 판단이
+            #    아직 없다(있었다면 그것부터 사전등록됐어야 한다).
+            # ⚠ 임계(`ALPHA_MAX` 등)는 무변경 — 이 두 행은 관측일 뿐이다.
+            "sgd_alpha": {
+                "re": r"\[DriftAdjuster\] acc=.*?→ alpha=(?P<v>[0-9.]+)",
+                "files": ["_learning"],
+                "min_samples": 3,   # EOD 1줄/일 — 전역 20건이면 영영 판정 불가
+                "why": "SGD 학습률 실값(drift_adjuster). `0.01000` 단일값 고착 = "
+                       "ALPHA_MAX 포화 — 상향 지시가 무연산이라는 뜻(0824 1-13). "
+                       "🔴 benign 아님. 하향 경로(RECOVERY_THRESHOLD=0.58)는 최근 "
+                       "10일 acc 최댓값 0.4048 이라 **도달 불가**다",
+            },
+            "drift_action": {
+                "re": r"\[DriftAdjuster\] acc=.*?→ alpha=[0-9.]+ \((?P<v>[A-Z_]+)\)",
+                "files": ["_learning"],
+                "min_samples": 3,
+                "measured_since": "2026-08-25",   # 492차 F-7 액션 분리 배포 다음 거래일
+                "why": "학습률 조절기 판정 액션. 492차 F-7 이 `DRIFT_UP`(진짜 상향)과 "
+                       "`DRIFT_UP_SATURATED`(상한 포화·무연산)를 갈랐다 — 배포 전 행은 "
+                       "둘이 섞여 있어 **미측정**으로 뺀다(계측 4원칙 ②). "
+                       "`DRIFT_UP_SATURATED` 100% 고착 = 조절기가 손잡이를 잃은 상태",
+            },
         },
     },
     # ── [MW0602 475차 후속 / 장후 G-2] DB 원천 지표 ────────────────────────────
@@ -441,7 +473,10 @@ DEFAULT_CONFIG = {
                 "measured_since": "2026-08-14",   # 471차 후속6 sizing_trace 배포일 (G-1)
                 "why": "무엇이 실제로 사이즈를 구속했는가(471차 후속6 sizing_trace). "
                        "한 게이트 100% 고착이면 316차 HurstGate(63% 차단)와 같은 상태다. "
-                       "⚠ 2026-08-14 이후 행에만 있다 — 그 이전은 미측정이지 압력 0이 아니다",
+                       "⚠ 2026-08-14 이후 행에만 있다 — 그 이전은 미측정이지 압력 0이 아니다. "
+                       "🔴 [491차 F-5] `margin` 출현은 **증거금이 구속한 것** — ⑧ 해제 "
+                       "논의의 직접 입력이다. 그 이전 행의 품질 게이트 이름 일부는 "
+                       "오귀속이며 **소급 재라벨하지 않았다**(계측 4원칙 ②)",
             },
         },
     },
@@ -527,6 +562,23 @@ DEFAULT_CONFIG = {
                 "threshold": 0.60,
                 "known": "1-9 등록(0819) — 주간회의 2026-08-22 안건",
                 "why": "앙상블 등급 B 임계. A와 같은 뿌리(2026-05→06 conf 분포 급변에 임계만 고정)",
+            },
+            # ── [MW0602 491차 F-4] 세 번째 항목 ─────────────────────────────
+            # 🔴 임계를 바꾸자는 것이 아니다. "임계에 닿지 않는다"를 매일 자동으로
+            #    보이게 하고 처분은 주간회의로 올린다 — 앞 두 쌍과 같은 취급이다.
+            # ⚠ 이 쌍의 원천은 **DB가 아니라 로그**다(`n` 은 online_learner 의 롤링
+            #   버퍼 길이라 DB 컬럼이 없다). `log` 스펙을 쓰는 첫 쌍이다.
+            "DriftRetrain조건B(n≥15)": {
+                "log": {"files": ["_system"],
+                        "re": r"\[DriftRetrain\] state=\S+ acc5m=\S+ n=(?P<v>\d+)"},
+                "threshold": 15.0,
+                "known": "1-7 등록(0824) — 20거래일 누적 후 2026-09-26 주간회의 안건. "
+                         "🔴 그 전에 임계·표본 게이트 완화 금지(490차 P0 학습 위생과 얽힘)",
+                "why": "장중 자동 재학습(STEP 3) 조건B의 표본 게이트(main.py `_drift_trigger_b`). "
+                       "조건A는 n≥20 인데 100분 창의 5m dedup 이론 상한도 20이라 "
+                       "「창 전체가 빈틈없이 conf≥0.52 통과」를 요구한다. 조건B(15)가 "
+                       "미도달이면 두 분기 모두 사실상 도달 불가다. "
+                       "⚠ 판정 기준 무변경(사전등록 458차 D6 교훈)",
             },
             "TOX스프레드(진입≥20틱)": {
                 "db": "data/db/predictions.db",
@@ -1600,6 +1652,45 @@ def scan_db_indicators(root, cfg, day):
     return rows
 
 
+def _threshold_days_from_log(root, cfg, day, look, spec):
+    """[MW0602 491차 F-4] 로그 원천 임계쌍 — 일자별 `max(캡처 수치)`.
+
+    반환: [(YYYYMMDD, float)] 오름차순 / 정규식이 깨졌으면 None.
+    ⚠ 관측 전용. §12 의 `stuck_indicators` 와 같은 파일 집합을 본다
+      (`collect_files_by_day`) — 한쪽만 스캔 범위가 갈리지 않게 하기 위해서다.
+    """
+    try:
+        rx = re.compile(spec["re"])
+    except (re.error, KeyError, TypeError):
+        return None
+    want = [f.lower() for f in (spec.get("files") or [])]
+    max_bytes = int((cfg.get("stuck_indicators") or {}).get("max_file_mb", 8)) * 1024 * 1024
+    by_day = collect_files_by_day(root, cfg, day)
+    out = {}
+    for d in sorted(by_day)[-look:]:
+        for full in by_day[d]:
+            fn = os.path.basename(full).lower()
+            if want and not any(w in fn for w in want):
+                continue
+            try:
+                if os.stat(full).st_size > max_bytes:
+                    continue
+                with io.open(full, encoding="utf-8", errors="replace") as f:
+                    for ln in f:
+                        m = rx.search(ln)
+                        if not m:
+                            continue
+                        try:
+                            v = float(m.group("v"))
+                        except (TypeError, ValueError, IndexError):
+                            continue
+                        if d not in out or v > out[d]:
+                            out[d] = v
+            except (IOError, OSError):
+                continue
+    return sorted(out.items())
+
+
 def scan_threshold_reachability(root, cfg, day):
     """[MW0602 476차 G-4] 임계-분포 대조 — "로그는 정상인데 분기가 죽은" 형태 탐지.
 
@@ -1620,13 +1711,25 @@ def scan_threshold_reachability(root, cfg, day):
         base = {"name": name, "threshold": float(spec["threshold"]),
                 "known": spec.get("known"), "why": spec.get("why", ""),
                 "scanned_days": look}
-        raw = db_rows(root, spec["db"], spec["sql"], (since, day.isoformat()))
-        if raw is None:
-            base.update({"days": 0, "overall_max": None, "consec": None,
-                         "verdict": "DB미접속"})
-            rows.append(base)
-            continue
-        day_max = sorted((str(d), float(v)) for d, v in raw if v is not None)
+        # [MW0602 491차 F-4] 원천이 둘이다 — DB 컬럼(기존) 또는 **로그 캡처**.
+        # 로그 원천이 필요한 이유: 임계가 지키는 값이 DB에 없는 경우가 있다
+        # (`_drift_trigger_b` 의 n 은 online_learner 롤링 버퍼 길이다).
+        # 그런 쌍을 등록 못 하면 §12b 는 "DB에 있는 임계만" 보는 반쪽이 된다.
+        if spec.get("log"):
+            day_max = _threshold_days_from_log(root, cfg, day, look, spec["log"])
+            if day_max is None:
+                base.update({"days": 0, "overall_max": None, "consec": None,
+                             "verdict": "무기록"})
+                rows.append(base)
+                continue
+        else:
+            raw = db_rows(root, spec["db"], spec["sql"], (since, day.isoformat()))
+            if raw is None:
+                base.update({"days": 0, "overall_max": None, "consec": None,
+                             "verdict": "DB미접속"})
+                rows.append(base)
+                continue
+            day_max = sorted((str(d), float(v)) for d, v in raw if v is not None)
         if not day_max:
             base.update({"days": 0, "overall_max": None, "consec": None,
                          "verdict": "표본없음"})

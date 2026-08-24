@@ -4879,7 +4879,10 @@ class LearningPanel(QWidget):
             "5일 롤링 정확도 추이로 SGD 학습률(alpha)을 자동 조정합니다.\n"
             "DRIFT_UP: 정확도 하락 감지 → alpha 상향(빠른 적응) | "
             "RECOVERY_DOWN: 정확도 회복 → alpha 하향(과적합 방지)\n"
-            "SKIP_LOW_SAMPLE: 당일 표본 부족(<15건) — 극단값 반영 스킵, 기존 alpha 유지"
+            "SKIP_LOW_SAMPLE: 당일 표본 부족(<15건) — 극단값 반영 스킵, 기존 alpha 유지\n"
+            "DRIFT_UP_SATURATED: 하락은 계속인데 alpha가 이미 상한(ALPHA_MAX) — "
+            "상향이 무연산이다. 매일 '올림'으로 보이던 것이 실제로는 아무 변화가 "
+            "없었다는 뜻(492차 F-7)"
         )
         root.addWidget(self._lbl_drift)
 
@@ -5114,7 +5117,12 @@ class LearningPanel(QWidget):
         drift_alpha  = float(data.get("drift_alpha", 0.001))
         drift_action = str(data.get("drift_action", "HOLD") or "HOLD")
         drift_hist   = data.get("drift_history", []) or []
+        # [MW0602 492차 F-7 ③] 액션이 다섯으로 갈렸다 — `DRIFT_UP_SATURATED` 는
+        # "상한에 붙박여 아무것도 못 했다" 이며 `DRIFT_UP`(진짜 상향)과 **다른 사실**이다.
+        # ⚠ 여기는 정확 일치 조회라 키를 빼먹으면 원문 문자열이 그대로 노출된다
+        #   (죽지는 않지만 사람이 못 읽는다). 새 액션이 생기면 이 표에 넣을 것.
         _DRIFT_LABELS = {
+            "DRIFT_UP_SATURATED": ("하락 지속·alpha 상한 포화(무연산)", C['red']),
             "DRIFT_UP":       ("정확도 하락→alpha↑", C['orange']),
             "RECOVERY_DOWN":  ("정확도 회복→alpha↓", C['green']),
             "HOLD":           ("유지", C['text2']),

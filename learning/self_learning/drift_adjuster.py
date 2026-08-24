@@ -6,6 +6,10 @@ SGD 학습률 드리프트 조정기
 - 정확도 하락 추세 → alpha 상향 (더 빠르게 적응)
 - 정확도 안정/상향 → alpha 하향 (과적합 방지)
 
+⚠ [MW0602 492차 F-7] 액션은 넷이 아니라 **다섯**이다 —
+  `DRIFT_UP` / **`DRIFT_UP_SATURATED`**(상한 포화, 무연산) / `RECOVERY_DOWN` /
+  `HOLD` / `SKIP_LOW_SAMPLE`. 소비부(대시보드 라벨 등)를 정확 일치로 비교하지 말 것.
+
 파일:
   data/drift_adjuster_state.json — 이력·alpha 상태 저장
 """
@@ -98,9 +102,15 @@ class DriftAdjuster:
         self._last_action = action
         self._save()
 
+        # [MW0602 492차 F-7 ④] 원천·표본 병기 — 0824 의 `acc=0.0%` 가 **진짜 0%**인지
+        # **미측정 0**인지 이 줄만으로 구분되지 않았다(계측 4원칙 ②, 0824 1-13 ⚠②).
+        # n 은 호출부가 넘긴 당일 유효 표본 수, src 는 그 값을 만든 함수다.
         logger.info(
-            "[DriftAdjuster] acc=%.1f%% → alpha=%.5f (%s) | 이력=%s",
-            accuracy * 100, self._alpha, action,
+            "[DriftAdjuster] acc=%.1f%% n=%s src=online_learner.recent_accuracy "
+            "→ alpha=%.5f (%s) | 이력=%s",
+            accuracy * 100,
+            ("NA" if n_samples is None else n_samples),
+            self._alpha, action,
             [f"{a:.0%}" for a in list(self._acc_history)[-5:]],
         )
         return {
@@ -139,6 +149,21 @@ class DriftAdjuster:
             if all(a < DRIFT_THRESHOLD for a in recent_drift):
                 old = self._alpha
                 self._alpha = min(self._alpha * ALPHA_UP_FACTOR, ALPHA_MAX)
+                # ── [MW0602 492차 F-7 ①②] 상한 포화를 「올렸다」와 가른다 ───────────
+                # `ALPHA_MAX` 에 이미 붙어 있으면 min() 이 같은 값을 돌려주므로 이
+                # 분기는 **아무것도 하지 않는다.** 그런데 종전에는 그런 날도
+                # `WARNING` + "alpha 0.01000→0.01000" 을 찍어 **매일 대응하고 있는
+                # 것처럼** 보였다(0824 1-13: 최근 9일 중 6일이 그랬다).
+                # 🔴 `ALPHA_MAX`·`ALPHA_UP_FACTOR`·`DRIFT_THRESHOLD` 는 **무변경**이다.
+                #    임계를 관측값에서 역산하지 않는다(사전등록 ④). 계측만 가른다.
+                if self._alpha == old:
+                    logger.info(
+                        "[DriftAdjuster] %d일 연속 정확도 %.0f%% 미만 → "
+                        "alpha %.5f→%.5f (상한 포화 — 무연산, ALPHA_MAX=%.5f)",
+                        DRIFT_DAYS_REQUIRED, DRIFT_THRESHOLD * 100,
+                        old, self._alpha, ALPHA_MAX,
+                    )
+                    return "DRIFT_UP_SATURATED"
                 logger.warning(
                     "[DriftAdjuster] %d일 연속 정확도 %.0f%% 미만 → alpha %.5f→%.5f",
                     DRIFT_DAYS_REQUIRED, DRIFT_THRESHOLD * 100, old, self._alpha,

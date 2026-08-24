@@ -623,6 +623,13 @@ class TradingSystem:
         self.dashboard.sig_reset_feature_set_requested.connect(self._on_reset_feature_set_requested)
         self.dashboard.sig_max_qty_changed.connect(self._on_max_qty_changed)
         self._max_entry_qty = self.dashboard.get_max_qty()
+        # [MW0602 491차 F-5] 증거금 조회 결과의 그 사이클 스냅샷 — sizing_trace 전용.
+        # None = **미조회**(계측 4원칙 ②). "상한 없음"이 아니다.
+        self._margin_probe = None
+        # [MW0602 491차 F-4] SGD 학습 conf 게이트(0.52) 당일 통과율 누계 —
+        # {"date": "YYYY-MM-DD", "seen": {hz: n}, "pass": {hz: n}}.
+        # **계측 전용**이다. 임계도 조건식도 이 값을 읽지 않는다.
+        self._sgd_conf_stat = None
         # [234차] 종목변경 재시작 배지 시그널 연결
         self.dashboard.sig_code_change_restart_requested.connect(
             self._on_code_change_restart_requested
@@ -5788,13 +5795,36 @@ class TradingSystem:
         # state=SKIP이면 어느 항이 False였는지 이 줄만으로 읽혀야 한다.
         # ⚠ INFO 고정 — debug로 내리면 LOG_LEVEL=INFO 환경에서 다시 사라진다
         #   (`[CB③ 비활성]`이 그렇게 죽었다). 임계·조건식은 손대지 않는다(사전등록).
+        # ── [MW0602 491차 F-4] 도달 가능성 2필드 ────────────────────────────
+        # 🔴 임계도 조건식도 건드리지 않는다. `_min_conf_sgd=0.52`·`n>=20`·`n>=15`
+        #    전부 무변경 — 표본 게이트 완화는 학습 위생 정책 변경이고 490차 P0와
+        #    정면으로 얽힌다(주간회의 소관). 여기서는 **로그 문자열만 늘린다**.
+        # n_cap : 100분 롤링 창(online_learner.ACCURACY_WINDOW)에서 5m 봉단위 dedup
+        #         이 허용하는 표본 **이론 상한**. 조건A의 `n>=20` 이 이 상한과 같으면
+        #         그 분기는 "창 전체가 빈틈없이 conf 게이트를 통과" 라는 사실상
+        #         도달 불가 조건을 요구하는 셈이다(0824 이상점 1-7).
+        # conf_pass_rate : 당일 누계 `conf>=0.52` 통과율(5m). 그 상한을 실제로 얼마나
+        #         채울 수 있는지를 말한다. ⚠ 표본 0은 통과율 0%가 아니라 **미측정**
+        #         이므로 `NA` 로 찍는다(계측 4원칙 ②, 0824 G-5와 같은 취지).
+        _dr_n_cap = int(getattr(self.online_learner, "ACCURACY_WINDOW", 100)
+                        // max(1, int(HORIZONS.get("5m", 5))))
+        _dr_cst   = self._sgd_conf_stat or {}
+        _dr_seen  = int((_dr_cst.get("seen") or {}).get("5m", 0))
+        _dr_pass  = int((_dr_cst.get("pass") or {}).get("5m", 0))
+        _dr_cpr   = ("NA" if _dr_seen <= 0
+                     else "%.3f" % (float(_dr_pass) / float(_dr_seen)))
         log_manager.system(
-            "[DriftRetrain] state=%s acc5m=%.1f%% n=%d mins_since_rt=%.0f "
+            "[DriftRetrain] state=%s acc5m=%.1f%% n=%d n_cap=%d "
+            "conf_pass_rate=%s(%d/%d) mins_since_rt=%.0f "
             "halted=%s running=%s cooldown_ok=%s cond_a=%s cond_b=%s"
             % (
                 "FIRE" if _drift_trigger else "SKIP",
                 _dr_acc5m * 100.0,
                 _dr_acc5m_n,
+                _dr_n_cap,
+                _dr_cpr,
+                _dr_pass,
+                _dr_seen,
                 _dr_mins,
                 not _not_halted,
                 not _not_running,
@@ -8128,6 +8158,9 @@ class TradingSystem:
             exception_density_10m=_dg_exc_density,
         )
         _qty_auto = _qty_display
+        # [MW0602 491차 F-5] 이번 사이클 증거금 스냅샷 초기화 — 지난 분 값이
+        # 남아 "이번 분에도 조회했다"로 읽히면 안 된다(계측 4원칙 ②).
+        self._margin_probe = None
         if self._health_degraded_mode and _qty_auto > 0:
             _qty_auto = max(1, int(round(_qty_auto * float(_hp.get("degraded_size_mult", HEALTH_DEGRADED_SIZE_MULT)))))
 
@@ -9739,6 +9772,30 @@ class TradingSystem:
         else:
             _sz_q = {k: round(float(v), 4) for k, v in _quality_mults.items()}
             _sz_kelly = locals().get("kelly_result") or {}
+            # ── [MW0602 491차 F-5] binding_gate 를 **오답 불가**로 바꾼다 ──────────
+            # 종전: `min(_sz_q, key=…)` — 품질군 argmin 을 **무조건** 답으로 냈다.
+            # 그래서 증거금 상한이 자른 분(0824 5건, 전구간 15건)도 `meta` 같은
+            # 품질 게이트가 자른 것으로 기록됐다. 0821 R-1 이 문자열 축에서 잡았던
+            # 것과 같은 오귀속이며, 실전 전환 기준 ⑧([28])이 읽는 근거의 무결성 문제다.
+            #
+            # 판정 규칙 — `_compose_quality_qty()` 의 정의를 그대로 뒤집어 쓴다:
+            #   품질군이 **실제로** 깎았다  ⇔  qty_display < qty_safety_base
+            #   (배수가 1.0 미만이어도 반올림이 흡수하면 수량은 안 변한다 = 미구속)
+            # ⚠ 품질군이 실제로 구속한 경우의 동작은 **완전 무변경**(argmin 그대로).
+            # ⚠ 하류가 깎았는데 증거금이 아니거나 미조회면 **None**(미확정)이다 —
+            #   `max_entry_qty`·`margin_cap_qty` 원값이 같은 행에 있으니 사후에 가릴 수
+            #   있다. 모르는 것을 아는 척 이름 붙이지 않는다(계측 4원칙 ②).
+            _q_argmin = (min(_sz_q, key=lambda k: _sz_q[k]) if _sz_q else None)
+            _quality_bound = bool(_sz_q) and int(_qty_display) < int(_qty_safety_base)
+            _mp = getattr(self, "_margin_probe", None)
+            _margin_binding = (None if _mp is None
+                               else bool(_mp.get("state") in ("CAP", "BLOCK")))
+            if _quality_bound:
+                _binding_gate = _q_argmin
+            elif int(_qty_display) > int(_qty_auto):
+                _binding_gate = "margin" if _margin_binding else None
+            else:
+                _binding_gate = None
             decision["sizing_trace"] = {
                 # 수량 계보 — 사이저 원본 → 안전군 → 표시 → 자동진입 최종
                 "qty_sizer_raw":   int(_sz_raw),
@@ -9747,7 +9804,12 @@ class TradingSystem:
                 "qty_auto":        int(_qty_auto),
                 # 품질군 min() 합성(431차)의 입력 전량과 그 argmin
                 "quality_mults":   _sz_q,
-                "binding_gate":    (min(_sz_q, key=lambda k: _sz_q[k]) if _sz_q else None),
+                "binding_gate":    _binding_gate,
+                # 품질군 argmin 원값 — 종전 `binding_gate` 와 같은 정의. 시계열
+                # 연속성용으로 남긴다(461차 mdd_pct 사고 유형 방지: 같은 이름이
+                # 어느 날부터 다른 것을 세면 안 된다 → 새 축으로 분리한다).
+                "quality_argmin":  _q_argmin,
+                "quality_bound":   int(bool(_quality_bound)),
                 "quality_min":     (round(min(_sz_q.values()), 4) if _sz_q else None),
                 # 게이트 원값 — 사이징 투입값(meta_size_sizing)과 갈릴 수 있다
                 "meta_size_raw":     round(float(_meta_size), 4),
@@ -9760,6 +9822,14 @@ class TradingSystem:
                 # 상한 2종 — 어느 쪽이 물렸는지 사후에 가릴 수 있어야 한다
                 "max_contracts":   int(MAX_CONTRACTS),
                 "max_entry_qty":   int(self._max_entry_qty),
+                # [MW0602 491차 F-5] 증거금 축 — 470차가 "⑧ 해제 전에는 [28]이
+                # 켜지지 않는다"고 확정한 그 상한이다. NULL = **미조회**(그 분 사이저는
+                # 돌았지만 증거금 조회 자격이 없었거나 조회가 실패했다)이며 "상한 없음"이
+                # 아니다(계측 4원칙 ②).
+                "margin_cap_qty":  (int(_mp["margin_qty"]) if _mp else None),
+                "margin_state":    (_mp.get("state") if _mp else None),
+                "margin_binding":  (None if _margin_binding is None
+                                    else int(_margin_binding)),
                 "entry_executed":  int(bool(_entry_executed_this_cycle)),
             }
 
@@ -9791,8 +9861,21 @@ class TradingSystem:
             else:
                 _min_conf_sgd  = 0.52   # P2-D: 저신뢰 레이블 오염 차단
                 for _dv in _sgd_deferred_verified:
+                    _conf_dv = float(_dv.get("confidence", 0.0))
+                    # [MW0602 491차 F-4] conf 게이트 통과율 누계 — **계측 전용**.
+                    # 조건식·임계는 무변경이며 이 카운터를 읽지 않는다. 1-7이 물은
+                    # "조건A의 n>=20 이 도달 가능한가"의 분자·분모를 남기는 것뿐이다.
+                    _hz_dv  = str(_dv.get("horizon", "") or "")
+                    _day_dv = str(_dv.get("ts", "") or "")[:10]
+                    _cst = self._sgd_conf_stat
+                    if _cst is None or _cst.get("date") != _day_dv:
+                        _cst = {"date": _day_dv, "seen": {}, "pass": {}}
+                        self._sgd_conf_stat = _cst
+                    _cst["seen"][_hz_dv] = _cst["seen"].get(_hz_dv, 0) + 1
+                    if _conf_dv >= _min_conf_sgd:
+                        _cst["pass"][_hz_dv] = _cst["pass"].get(_hz_dv, 0) + 1
                     # P2-D: 고신뢰도 필터 — conf < 0.52 예측 결과는 학습 제외
-                    if float(_dv.get("confidence", 0.0)) < _min_conf_sgd:
+                    if _conf_dv < _min_conf_sgd:
                         continue
                     # [P3] FLAT 결과는 SGD 학습 대상에서 제외(기권) — online_learner.learn()도
                     # 동일 가드를 갖지만, 여기서 먼저 걸러야 아래 dedup 타임스탬프가
@@ -11198,6 +11281,15 @@ class TradingSystem:
                 if _pruned > 0:
                     log_manager.learning(
                         f"[GBM] DB pruning: {_pruned:,}행 삭제 (52주 초과분)"
+                    )
+                else:
+                    # [MW0602 492차 F-8] 0행을 **말하게** 한다. 종전에는 이 줄이
+                    # 조용히 없어서 "정리 대상이 없었다"와 "실패해서 0을 받았다"가
+                    # 구분되지 않았다. 두 경로 모두 바로 위 `[Retrain]` 줄이 사유를
+                    # 말한다 — 같은 호출의 안/밖이다(1-14 진단 정정).
+                    log_manager.learning(
+                        "[GBM] DB pruning: 0행 (대상 없음 또는 실패 — "
+                        "직전 [Retrain] DB pruning 줄이 사유)"
                     )
             except Exception as _pe:
                 logger.warning("[GBM] DB pruning 실패: %s", _pe)
@@ -16330,6 +16422,12 @@ def _ts_margin_capped_qty(self, direction: str, price: float, qty: int) -> int:
     # 남는다(전환기준 ⑧의 직접 입력). 기존 로그 2종은 파서 호환을 위해 무변경.
     # ⚠ 증거금 조회 자체는 늘리지 않는다 — 이미 걸러진 사이클의 결과만 기록.
     _mc_state = "BLOCK" if margin_qty <= 0 else ("CAP" if margin_qty < qty else "OK")
+    # [MW0602 491차 F-5] 상태 샘플과 **같은 값**을 구조체로도 남긴다 — sizing_trace가
+    # 읽는다. 로그 문자열 파싱으로 되돌아가지 않기 위한 것이다(471차 후속6 G-1과 같은
+    # 취지: 문자열은 게이트가 하나 늘 때마다 같은 오귀속이 재발한다).
+    # ⚠ 조회 실패·미조회 경로(위쪽 early return)는 여기 닿지 않으므로 None 으로 남는다.
+    self._margin_probe = {"state": _mc_state, "margin_qty": int(margin_qty),
+                          "req_qty": int(qty)}
     log_manager.trade(
         f"[MarginCap] state={_mc_state} {direction} 산출={qty} 상한={margin_qty}"
     )
