@@ -1,0 +1,38 @@
+순수 라이브 31일 · 피처 86개 · 왕복비용 0.0722pt
+
+=== 통제 B — 항상 LONG / 항상 SHORT (같은 비중복 규칙, 비용 차감) ===
+  h     거래/일   LONG net/일      LONG(원)         t  SHORT net/일     SHORT(원)         t
+  1    366.0     -33.9006     -1695031     -5.18     -18.9264      -946321     -2.86
+  3    121.7     -16.4736      -823681     -2.50      -1.0981       -54907     -0.17
+  5     72.8     -12.6591      -632954     -1.92       2.1551       107756      0.33
+ 10     36.1      -9.4338      -471691     -1.50       4.2191       210954      0.67
+ 15     23.9      -8.5653      -428265     -1.37       5.1199       255993      0.82
+ 30     11.8      -7.6888      -384441     -1.24       5.9847       299236      0.96
+  (gross = 순수 시장 이동. 일평균 -6.8368pt/일 @h=30 → 이 창의 방향 드리프트)
+
+=== 통제 A — 위상 무작위 노이즈 86개 (실피처 86개의 쌍둥이) ===
+표본               셀수      net>0     |t|>=2        전후반양수         **합격**
+실피처            1032        264          9          111              9
+노이즈            1032        263          6           97              6
+
+  노이즈 합격 셀 (=우연히 통과한 가짜):
+    noise_phase_mlofi_slope            h=15  -1  net/일  18.5277pt (   926387원)  t=2.92
+    noise_phase_cancel_add_ratio       h=15  +1  net/일  18.3052pt (   915258원)  t=2.50
+    noise_phase_opt_atm_pcr            h=30  -1  net/일  17.4967pt (   874833원)  t=2.39
+    noise_phase_opt_atm_pcr            h=15  -1  net/일  16.4803pt (   824015원)  t=2.73
+    noise_phase_institution_futures_net h=30  -1  net/일  13.5645pt (   678224원)  t=2.34
+    noise_phase_institution_futures_net h=15  -1  net/일  12.9629pt (   648143원)  t=2.02
+
+  노이즈 하한선: 양수 net 중 최대 |t| = 2.92 | 최대 net/일 = 18.5277pt (926387원)
+  → 실피처 합격 9셀 중 이 하한선을 넘는 것: 0셀
+    [미달] toxicity_flow_stress       h=30  -1  net  16.0658pt  t=2.78
+    [미달] toxicity_queue_stress      h=15  -1  net  13.1179pt  t=2.43
+    [미달] imbalance_slope            h=15  +1  net  12.7454pt  t=2.54
+    [미달] ofi_norm                   h=10  +1  net  11.6633pt  t=2.06
+    [미달] microprice_slope           h=30  +1  net  11.4316pt  t=2.05
+    [미달] quality_investor_age_sec   h=10  -1  net  10.4176pt  t=2.43
+    [미달] va_bandwidth               h=15  +1  net   9.3160pt  t=2.08
+    [미달] cvd                        h=5   +1  net   3.5535pt  t=2.05
+    [미달] macro_nasdaq_chg           h=5   -1  net   1.7283pt  t=2.06
+
+JSON: C:/Users/82108/AppData/Local/Temp/claude/c--Users-82108-PycharmProjects-futures/3da3ba26-bb1e-4099-afe8-f02e11a996bd/scratchpad/wfa/live_null.json

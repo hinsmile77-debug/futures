@@ -60,6 +60,7 @@ except Exception:
 from scripts.feature_health_report import (  # noqa: E402
     classify, is_benign_flag, KNOWN,
     DEAD_LEVEL, CRIT_LEVEL, WARN_LEVEL, OK_LEVEL, MIN_SAMPLES,
+    temporal_profile_series, SHAPE_GAP_STEP, SHAPE_ACF1_INTEG,
 )
 
 RAW_DB = os.path.join(ROOT, "data", "db", "raw_data.db")
@@ -156,21 +157,23 @@ def collect(days, pool_days, include_backfill=False):
         `cvd_direction` 60→32일). 실제보다 검증 준비가 된 것처럼 보인다.
     근거: dev_memory/DECISION_LOG.md 2026-08-02 MW0601 418차.
 
-    반환: (vals, day_presence, meta)
+    반환: (vals, day_presence, meta, stamps)
       vals[key]         = 건강도 창(days)의 float 값 리스트
       day_presence[key] = 후보 창(pool_days)에서 그 키가 나타난 날짜 집합
+      stamps[key]       = vals와 **병렬**인 (거래일, 'HH:MM') 목록 — 시간축 프로파일용
     """
     con = sqlite3.connect(RAW_DB, timeout=15)
     cur = con.cursor()
     wide = _trading_dates(cur, max(days, pool_days), include_backfill)
     if not wide:
         con.close()
-        return {}, {}, {"rows": 0, "dates": []}
+        return {}, {}, {"rows": 0, "dates": []}, {}
     health_dates = set(wide[-days:]) if days > 0 else set()
 
     cur.execute("SELECT ts, features FROM raw_features WHERE substr(ts,1,10) >= ?",
                 (wide[0],))
     vals = defaultdict(list)
+    stamps = defaultdict(list)
     presence = defaultdict(set)
     n_rows = 0
     n_health_rows = 0
@@ -203,6 +206,9 @@ def collect(days, pool_days, include_backfill=False):
                 v = 1.0 if v else 0.0
             if isinstance(v, (int, float)):
                 vals[k].append(float(v))
+                # [2026-08-25] 시간축 프로파일용 스탬프. 값과 **병렬**로 쌓아야
+                # 거래일·시각 대응이 유지된다(451차 "행 정렬이 깨진다"와 같은 이유).
+                stamps[k].append((d, ts[11:16]))
     con.close()
     meta = {
         "rows": n_rows, "health_rows": n_health_rows, "bad_rows": n_bad,
@@ -214,7 +220,7 @@ def collect(days, pool_days, include_backfill=False):
         "backfill_days": len(backfill_days),
         "include_backfill": bool(include_backfill),
     }
-    return dict(vals), dict(presence), meta
+    return dict(vals), dict(presence), meta, dict(stamps)
 
 
 def health_table(vals):
@@ -355,7 +361,7 @@ def build_report(days, pool_days, include_backfill=False):
             "아직 없다'는 뜻이므로, 기각 피처가 §4에 후보로 다시 뜰 수 있다.")
 
     hz_list = list(HORIZONS.keys())
-    vals, presence, meta = collect(days, pool_days, include_backfill)
+    vals, presence, meta, stamps = collect(days, pool_days, include_backfill)
     if not vals:
         warnings.append("raw_features에서 표본을 얻지 못했다 — DB 경로/데이터 확인 필요.")
     health = health_table(vals)
@@ -578,6 +584,61 @@ def build_report(days, pool_days, include_backfill=False):
         L.append("없음 — 원인 미규명 DEAD/CRITICAL 피처가 전체 %d개 중 0개."
                  % len(health))
     metrics["system_bad"] = sys_bad
+    L.append("")
+
+    # ── §2-c 시간축 형태 이상 ─────────────────────────────────
+    # 왜 따로 보나: §1~§2-b는 전부 **값의 분포**(zero·최빈)만 본다. 그래서 "날마다
+    # 값은 다른데 하루 안에서는 상수"인 계열을 구조적으로 못 잡는다. 2026-08-25
+    # 교차 실측(라이브 31일·86피처): L0 OK인데 시간축 부적격 **27개**, 역방향 **0개** —
+    # 즉 시간축 판정은 값 분포 판정의 상위집합이다. `opt_chain_pcr`(30m CORE)은
+    # 최빈비중 0.7%로 완전 정상인데 갱신 주기가 10분인 계단형이었다.
+    L.append("### 2-c. 시간축 형태 (값 분포로는 안 보이는 것)")
+    L.append("")
+    shapes = {}
+    for n, st in (stamps or {}).items():
+        v = vals.get(n) or []
+        if len(v) < MIN_SAMPLES or len(st) != len(v):
+            continue
+        prof = temporal_profile_series(v, [s[0] for s in st], [s[1] for s in st])
+        if prof.get("shape"):
+            shapes[n] = prof
+    # 필터는 §2-b와 같은 원칙 — KNOWN·상태플래그·DEAD는 뺀다(경보 피로 방지).
+    shaped = sorted(n for n, p in shapes.items()
+                    if n not in KNOWN and not is_benign_flag(n)
+                    and (health.get(n) or {}).get("level") != DEAD_LEVEL)
+    if shaped:
+        deployed_by_feature2 = defaultdict(list)
+        for hz in hz_list:
+            for n in ((deployed.get(hz) or {}).get("names") or []):
+                deployed_by_feature2[n].append(hz)
+        L.append("| 형태 | 피처 | 동률% | ACF1 | 변화간격 | 소재 |")
+        L.append("|---|---|---|---|---|---|")
+        for n in sorted(shaped, key=lambda x: (shapes[x]["shape"], x)):
+            p = shapes[n]
+            if deployed_by_feature2.get(n):
+                where = "**배포: %s**" % ", ".join(deployed_by_feature2[n])
+            elif sources.get(n):
+                where = "후보: %s" % ", ".join(sources[n])
+            else:
+                where = "계측만"
+            L.append("| %s | `%s` | %s | %s | %s | %s |"
+                     % (p["shape"], n,
+                        _fmt_pct(p.get("tie_rate")),
+                        ("%.4f" % p["acf1"]) if p.get("acf1") is not None else "—",
+                        ("%.1f분" % p["change_gap"]) if p.get("change_gap") is not None else "—",
+                        where))
+        L.append("")
+        L.append("> 이 표는 **등급을 바꾸지 않는다.** 값 분포는 정상이므로 §1·§2에서는 "
+                 "OK로 뜬다. 다만 이 피처들에 수명·decay·자기상관 지표를 매기면 "
+                 "'기억 길이'가 아니라 다른 양(갱신 주기·추세 기울기·상수성)을 재게 된다.")
+        L.append("> 판정 기준: 상수형=동률≥95%% · 계단형=변화간격≥%.0f분 · "
+                 "누적형=ACF1≥%.2f · 결정론형=시각의 함수. "
+                 "정본 분류·처분은 26주 재검증(`docs/Spec for feature/"
+                 "피처_재검증_및_호라이즌배정_원칙.md` §2)에서 한다."
+                 % (SHAPE_GAP_STEP, SHAPE_ACF1_INTEG))
+    else:
+        L.append("없음 — 시간축 형태 이상 0개.")
+    metrics["shape_flagged"] = {n: shapes[n]["shape"] for n in shaped}
     L.append("")
 
     # ── §3 L4 conf-층화 ──────────────────────────────────────

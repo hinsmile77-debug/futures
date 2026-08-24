@@ -1,0 +1,135 @@
+====================================================================================================================
+[MW0601] 피처별 tau 검정 — 최종 집계 (순수 라이브 31거래일)
+====================================================================================================================
+적격 56개 · BH-FDR 임계 p=0.00718
+발굴 기준: ① tau > 1.0분(격자 해상도) ② **단측** tau>널 ∧ FDR 유의
+           ③ raw/wins/rank 상대격차 < 50% ④ 전·후반 상대차 < 50%
+
+====================================================================================================================
+[1] **발굴 결과** — 네 기준을 모두 통과한 피처
+====================================================================================================================
+피처                                  tau(95%CI)  tau_rank      널대비t     tau대역    IC최강h
+--------------------------------------------------------------------------------------------------------------------
+macro_krw_chg                     48.2±7.7          42.0     12.67      h=30     h=15
+realized_vol_ann                  42.1±12.8         46.5      6.62      h=30     h=10
+opt_pcr_extreme_signed            39.5±10.0         35.5      7.96      h=30      h=1
+opt_pcr_norm                      39.5±10.0         35.5      7.96      h=30      h=1
+vwap_position                     37.2±8.4          36.6      8.87      h=30     h=30
+hurst                             29.5±5.3          29.9     11.10      h=30      h=3
+va_bandwidth                      29.2±6.2          32.8      9.47      h=30      h=1
+price_extension_atr_60m           27.3±5.5          26.8      9.93      h=30     h=30
+poc_distance                      20.0±3.4          18.4     11.74      h=15     h=30
+kyle_lambda                       12.2±1.4          12.8     16.37      h=10      h=5
+atr_ratio                         12.0±0.8          11.8     30.16      h=10     h=30
+ret_15m                            9.2±0.6           8.9     28.16      h=10     h=30
+threshold_feasibility              8.6±1.5           8.7     11.28      h=10     h=10
+cvd_divergence                     7.6±2.6           4.5      5.49      h=10     h=30
+bb_position                        6.9±0.5           6.9     23.70       h=5     h=30
+price_extension_atr                6.1±0.3           6.1     32.81       h=5     h=30
+queue_signal_ma                    4.8±1.2           4.3      6.89       h=5      h=1
+trend_efficiency                   3.3±0.2           2.9     28.01       h=3      h=1
+ret_5m                             3.1±0.1           3.0     41.78       h=3     h=30
+microprice_slope                   2.4±0.1           2.4     34.00       h=3     h=30
+cancel_churn_ratio                 2.4±0.9           2.3      3.85       h=3      h=5
+toxicity_cancel_stress             2.2±0.8           1.9      3.86       h=3      h=1
+volume_acceleration                1.6±0.1           1.5     30.44       h=1      h=3
+cancel_add_ratio                   1.2±0.3           1.0      4.17       h=1      h=1
+mlofi_slope                        1.1±0.0           1.1     29.93       h=1      h=3
+
+   발굴 **25개** / 적격 56개
+
+====================================================================================================================
+[2] 탈락 31개 — 사유별
+====================================================================================================================
+
+   해상도이하(tau<=1.0) — 16개
+      microprice_depth_bias            tau=0.84
+      microprice_bias                  tau=0.80
+      atr_expansion_rate               tau=0.80
+      ofi_imbalance                    tau=0.74
+      ofi_norm                         tau=0.74
+      queue_momentum                   tau=0.69
+      mlofi_norm                       tau=0.67
+      round_number_distance            tau=0.66
+      cvd_delta_norm                   tau=0.64
+      toxicity_flow_stress             tau=0.63
+      ret_1m                           tau=0.63
+      prev_day_same_hour_ret           tau=0.62
+      quality_macro_age_sec            tau=0.48
+      ofi_reversal_speed               tau=0.45
+      basis_change_pt                  tau=0.43
+      imbalance_slope                  tau=0.43
+
+   FDR미달 — 9개
+      quality_investor_age_sec         tau=5.58
+      spread_ticks                     tau=2.59
+      queue_signal                     tau=1.50
+      toxicity_queue_stress            tau=1.49
+      queue_depletion_speed            tau=1.49
+      queue_refill_rate                tau=1.49
+      basis_pt                         tau=1.45
+      toxicity_spread_stress           tau=1.21
+      queue_directional_depletion      tau=1.04
+
+   꼬리의존 — 3개
+      vkospi                           tau=47.69
+      vpin                             tau=21.07
+      toxicity_score                   tau=3.02
+
+   전후반불안정(125%) — 1개
+      bar_volume                       tau=14.07
+
+   전후반산출불가 — 1개
+      program_arb_net                  tau=37.12
+
+   전후반불안정(97%) — 1개
+      vwap_momentum                    tau=4.23
+
+====================================================================================================================
+[3] tau 대역이 IC 최강 h를 맞히는가 — 순열검정
+====================================================================================================================
+   일치 **4 / 25** (16.0%)
+   순열 귀무분포 대비 p = 0.8309 -> **우연 범위 — tau는 최적 h를 예측하지 못한다**
+
+   tau 대역 분포 : h=1:3, h=3:5, h=5:3, h=10:5, h=15:1, h=30:8
+   IC 최강h 분포 : h=1:7, h=3:3, h=5:2, h=10:2, h=15:1, h=30:10
+
+   ※ 두 분포가 겹치지 않는 것 자체가 답이다 — tau는 긴 쪽(h=30)에,
+     IC 최강은 양극단(h=1·h=30)에 몰린다.
+
+====================================================================================================================
+[4] 발굴 피처의 수명 스펙트럼 — 이것이 사용자가 요청한 '피처별 수명'이다
+====================================================================================================================
+
+   초장기 (tau >= 30분) — 5개
+      macro_krw_chg                      48.2분  동률76%
+      realized_vol_ann                   42.1분  팻테일
+      opt_pcr_extreme_signed             39.5분  동률74%
+      opt_pcr_norm                       39.5분  동률74%
+      vwap_position                      37.2분  동률36%
+
+   장기   (15 <= tau < 30) — 4개
+      hurst                              29.5분  
+      va_bandwidth                       29.2분  동률50%
+      price_extension_atr_60m            27.3분  
+      poc_distance                       20.0분  팻테일
+
+   중기   (5 <= tau < 15) — 7개
+      kyle_lambda                        12.2분  
+      atr_ratio                          12.0분  팻테일
+      ret_15m                             9.2분  
+      threshold_feasibility               8.6분  팻테일
+      cvd_divergence                      7.6분  
+      bb_position                         6.9분  
+      price_extension_atr                 6.1분  
+
+   단기   (1 < tau < 5) — 9개
+      queue_signal_ma                     4.8분  팻테일
+      trend_efficiency                    3.3분  
+      ret_5m                              3.1분  
+      microprice_slope                    2.4분  팻테일
+      cancel_churn_ratio                  2.4분  
+      toxicity_cancel_stress              2.2분  
+      volume_acceleration                 1.6분  
+      cancel_add_ratio                    1.2분  팻테일
+      mlofi_slope                         1.1분  

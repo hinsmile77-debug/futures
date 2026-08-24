@@ -27,7 +27,7 @@ import math
 import os
 import sqlite3
 import sys
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 
 import numpy as np
 
@@ -316,11 +316,86 @@ def analyze(names, X, ts_list, closes, horizon):
     return out, len(day_tag)
 
 
+# ── 참고 계측 (판정 무영향) ─────────────────────────────────────────
+# [2026-08-25 신설] 둘 다 **표시 전용**이다. Bonferroni 검정 수(n_tests)에도,
+# 통과 판정(★·종합)에도 절대 들어가지 않는다 — 사전등록 기준을 건드리지 않는다는
+# 뜻이다(§9-4). 근거: `docs/Spec for feature/피처_재검증_및_호라이즌배정_원칙.md` §3·§5.
+DUP_R_THRESHOLD = 0.99
+# 455차 기본값은 shuffle 3 + phase 2 = 5개인데, 그것은 L1'의 **소수 후보** 검정용이다.
+# L1은 80여 개를 전수로 훑으므로 5개로는 "노이즈 최고 |t|" 하한선이 과소추정된다
+# (최댓값 통계는 표본 수에 민감하다). 병기 전용이라 개수 선택이 판정을 바꾸지 않는다.
+NOISE_N_SHUFFLE = 12
+NOISE_N_PHASE = 8
+
+
+def find_dup_groups(names, X, thr=DUP_R_THRESHOLD, min_pairs=200):
+    """|r| >= thr 인 피처를 군집으로 묶는다 (표기 전용).
+
+    L1은 피처별 개별 검정이라 중복이 판정을 왜곡하지는 않는다. 막으려는 것은
+    **사람의 오독**이다 — 같은 정보가 여러 이름으로 상위에 늘어서면 신호 다양성이
+    과대 표시된다(2026-08-24 §14-7: 수급 5종이 h=1~30 상위를 독점).
+    """
+    n = len(names)
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(n):
+        a = X[:, i]
+        fa = np.isfinite(a)
+        for j in range(i + 1, n):
+            b = X[:, j]
+            m = fa & np.isfinite(b)
+            if int(m.sum()) < min_pairs:
+                continue
+            aa, bb = a[m], b[m]
+            if aa.std() <= 0 or bb.std() <= 0:
+                continue
+            r = float(np.corrcoef(aa, bb)[0, 1])
+            if np.isfinite(r) and abs(r) >= thr:
+                union(i, j)
+
+    buckets = defaultdict(list)
+    for i in range(n):
+        buckets[find(i)].append(names[i])
+    return sorted((sorted(g) for g in buckets.values() if len(g) > 1),
+                  key=lambda g: (-len(g), g[0]))
+
+
+def build_noise_matrix(names, X, seed):
+    """실피처를 템플릿으로 노이즈 대조 계열을 만든다 (별도 행렬 — bonf_t 무영향)."""
+    try:
+        from scripts.noise_benchmark import make_noise_features
+    except Exception as e:
+        print("[노이즈] 생성 불가(%s) — 하한선 병기를 건너뛴다" % e)
+        return [], None
+    cols = OrderedDict((nm, X[:, j].astype(np.float64)) for j, nm in enumerate(names))
+    nz = make_noise_features(cols, seed,
+                             n_shuffle=NOISE_N_SHUFFLE, n_phase=NOISE_N_PHASE)
+    if not nz:
+        return [], None
+    nz_names = list(nz.keys())
+    return nz_names, np.column_stack([nz[k] for k in nz_names])
+
+
 def main():
     utf8_console()          # cp949 콘솔에서 비ASCII 출력이 죽는 것 방지 (455차 패턴)
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=120)
     ap.add_argument("--top", type=int, default=20)
+    ap.add_argument("--no-noise", action="store_true",
+                    help="노이즈 하한선 병기를 끈다 (기본: 켬)")
+    ap.add_argument("--no-dup", action="store_true",
+                    help="중복 군집 표기를 끈다 (기본: 켬)")
     args = ap.parse_args()
 
     # 라이브 DB를 대량 읽는다 — 장중이면 CB⑤를 유발할 수 있어 차단한다(456차 F8).
@@ -332,8 +407,51 @@ def main():
 
     n_tests = len(names) * len(HORIZONS)
     # 양측 t 임계 ~= Bonferroni α=0.05
+    #
+    # ⚠ [2026-08-25] 아래 노이즈 하한선·중복 군집은 **이 n_tests에 절대 들어가지 않는다.**
+    #    노이즈 컬럼을 실피처와 같은 행렬에 넣으면 len(names)가 늘어 bonf_t가 올라가고,
+    #    그 순간 "참고 정보 추가"가 **판정 기준 강화**로 바뀐다(사전등록 위반).
+    #    그래서 노이즈는 별도 행렬로 따로 analyze 하고 결과만 병기한다.
     bonf_t = 3.0 + 0.55 * math.log(max(n_tests, 2))
     print("다중비교: 검정 %d회 -> Bonferroni 근사 |t| 임계 ~= %.2f" % (n_tests, bonf_t))
+
+    # ── 중복·선형종속 군집 (표기 전용) ──────────────────────────
+    # 왜: L1은 피처별 개별 검정이라 중복이 판정을 직접 왜곡하지는 않는다. 문제는
+    # **리포트를 읽는 사람**이다 — 2026-08-24 §14-7에서 수급 5종(|r|>=0.99)이 h=1~30
+    # 전 구간 상위를 차지해 "서로 다른 다섯 신호"로 읽혔으나 실은 같은 정보 하나였다.
+    # ⚠ 다중비교 임계 완화 목적이 아니다 — 축약해도 임계는 6.435→6.402로 0.033만 내려간다.
+    dup_groups = [] if args.no_dup else find_dup_groups(names, X)
+    if dup_groups:
+        print()
+        print("[중복] |r|>=%.2f 군집 %d개 — 같은 정보가 여러 이름으로 세어지고 있다"
+              % (DUP_R_THRESHOLD, len(dup_groups)))
+        for g in dup_groups:
+            print("   · %s" % " ~ ".join(g))
+        print("   (표기 전용 — 판정·임계에 반영하지 않는다. 처분은 주간회의 안건)")
+    elif not args.no_dup:
+        print()
+        print("[중복] |r|>=%.2f 군집 없음" % DUP_R_THRESHOLD)
+
+    # ── 노이즈 하한선 (병기 전용) ───────────────────────────────
+    # 455차 N3 방법론. L1'(`ic_probe_pending_features.py`)은 이미 이 하한선을 쓰는데
+    # 현역 전수인 L1에는 없어 **신규 후보만 시험받는 비대칭**이었다(2026-08-25 확인).
+    # 여기서는 하한선을 **표시만** 한다 — 통과 조건에 넣는 것은 기준 강화라 주간회의 안건.
+    noise_floor_by_h = {}
+    if not args.no_noise:
+        seed = int(dates[-1].replace("-", "")) if dates else 20260101
+        nz_names, NZ = build_noise_matrix(names, X, seed)
+        if nz_names:
+            from scripts.noise_benchmark import noise_floor
+            print()
+            print("[노이즈] 하한선용 대조 계열 %d개 생성 (seed=%d) — "
+                  "실피처와 **별도로** 검정한다(bonf_t 무영향)" % (len(nz_names), seed))
+            for h in HORIZONS:
+                nres, _nd = analyze(nz_names, NZ, ts_list, closes, h)
+                fl, fnm = noise_floor(nres, name_key="name", stat_key="ic_t")
+                noise_floor_by_h[h] = (fl, fnm)
+                print("   h=%-3d 노이즈 최고 |IC_t| = %.2f (%s)"
+                      % (h, fl, fnm or "—"))
+            print("   (병기 전용 — 통과 판정에 넣지 않는다. 조건화는 주간회의 안건)")
 
     results = {}
     for h in HORIZONS:
@@ -354,18 +472,31 @@ def main():
                       % (r["name"], r["ic"], r["ic_t"], r["hit"], r["hit_t"],
                          "O" if r["stable"] else "-", base[r["name"]]))
 
+        nf, nf_name = noise_floor_by_h.get(h, (float("nan"), None))
         print()
-        print("  [후보] |IC_t| 상위 %d — Bonferroni 통과(|t|>%.2f)는 ★" % (args.top, bonf_t))
-        print("  %-26s %8s %8s %8s %8s %7s %8s %8s" %
-              ("feature", "IC", "IC_t", "hit", "hit_t", "안정", "IC전반", "IC후반"))
+        hdr = "  [후보] |IC_t| 상위 %d — Bonferroni 통과(|t|>%.2f)는 ★" % (args.top, bonf_t)
+        if np.isfinite(nf):
+            hdr += " / 노이즈 하한(%.2f) 미만은 ▽" % nf
+        print(hdr)
+        print("  %-26s %8s %8s %8s %8s %7s %8s %8s %s" %
+              ("feature", "IC", "IC_t", "hit", "hit_t", "안정", "IC전반", "IC후반", "noise"))
         ranked = sorted([r for r in res if np.isfinite(r["ic_t"])],
                         key=lambda r: -abs(r["ic_t"]))
         for r in ranked[:args.top]:
             star = "★" if abs(r["ic_t"]) > bonf_t else " "
             mark = "*" if r["name"] in base else " "
-            print(" %s%s%-25s %8.4f %8.2f %8.4f %8.2f %7s %8.4f %8.4f"
+            # ▽ = 이 피처의 |IC_t|가 노이즈 최고치보다 낮다는 **표시**일 뿐이다.
+            # 통과/탈락 판정(★·종합)은 위 bonf_t와 stable로만 결정된다.
+            nmark = ""
+            if np.isfinite(nf):
+                nmark = "▽" if abs(r["ic_t"]) < nf else " "
+            print(" %s%s%-25s %8.4f %8.2f %8.4f %8.2f %7s %8.4f %8.4f %s"
                   % (star, mark, r["name"], r["ic"], r["ic_t"], r["hit"], r["hit_t"],
-                     "O" if r["stable"] else "-", r["ic_h1"], r["ic_h2"]))
+                     "O" if r["stable"] else "-", r["ic_h1"], r["ic_h2"], nmark))
+        if np.isfinite(nf):
+            below = [r for r in ranked if abs(r["ic_t"]) < nf]
+            print("  ▽ 노이즈 하한(%.2f, %s) 미만 %d/%d개 — 참고용 표시이며 판정과 무관"
+                  % (nf, nf_name or "—", len(below), len(ranked)))
 
     # 종합: 전 호라이즌에서 안정적으로 유의한 피처
     print()
