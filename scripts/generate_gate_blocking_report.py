@@ -12,8 +12,17 @@ TrendGate·MetaGate·BiasReset·Hurst필터·ATR상한·시가이격필터 등 6
   main.py의 우선순위 로직을 다시 구현할 필요가 없다.
 - 체크리스트 등급 X 세부 원인: checklist_reason (main.py:5087-5641 단축 코드)
 
-출력: gate_blocking_report.md, gate_blocking_metrics.json (ROOT)
+출력: gate_blocking_report.md, gate_blocking_metrics.json
+      기본 위치 = `docs/미륵이고도화3/` (`--out-dir` 로 변경 가능)
+
+[MW0602 491차 F-2] 종전 기본 출력은 **리포 루트**였다. 그래서 이 스크립트를 돌릴
+때마다 루트에 산출물 2건이 떨어져 `git status` 미커밋 목록에 섞였고, 일일 점검이
+사흘 연속 이상점 `1-6` 으로 올렸다. 소비부 전수 확인 결과 이 두 경로를 **읽는
+코드는 없다**(문서·로그 인용뿐) — 기본 출력만 옮긴다.
+⚠ `docs/정기점검/금요일점검/` 으로 보내지 말 것 — 그쪽은 「런타임 산출물 커밋 금지」의
+  **의도적 예외** 구역이고 두 PC 가 서로를 보는 통로다. 성격이 다른 파일을 섞지 않는다.
 """
+import argparse
 import json
 import sqlite3
 import sys
@@ -27,8 +36,10 @@ if str(ROOT) not in sys.path:
 
 from config.settings import PREDICTIONS_DB
 
-REPORT_PATH = ROOT / "gate_blocking_report.md"
-METRICS_PATH = ROOT / "gate_blocking_metrics.json"
+# [MW0602 491차 F-2] 기본 출력 디렉터리 — 리포 루트 밖.
+DEFAULT_OUT_DIR = ROOT / "docs" / "미륵이고도화3"
+REPORT_PATH = DEFAULT_OUT_DIR / "gate_blocking_report.md"
+METRICS_PATH = DEFAULT_OUT_DIR / "gate_blocking_metrics.json"
 
 LOOKBACK_DAYS = 30
 
@@ -237,7 +248,17 @@ def build_report(metrics: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    # [MW0602 491차 F-2] 출력 위치를 인자로 받는다 — CWD 에 떨어뜨리지 않는다.
+    ap = argparse.ArgumentParser(description="게이트 차단 로그 30일 전수 집계")
+    ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR),
+                    help="산출물 출력 디렉터리 (기본: docs/미륵이고도화3)")
+    args = ap.parse_args(argv)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = out_dir / REPORT_PATH.name
+    metrics_path = out_dir / METRICS_PATH.name
+
     since_ts = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     rows = _fetch(since_ts)
     if not rows:
@@ -252,11 +273,11 @@ def main() -> int:
         "analysis": analysis,
     }
 
-    REPORT_PATH.write_text(build_report(metrics), encoding="utf-8")
-    METRICS_PATH.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path.write_text(build_report(metrics), encoding="utf-8")
+    metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(f"saved_report={REPORT_PATH}")
-    print(f"saved_metrics={METRICS_PATH}")
+    print(f"saved_report={report_path}")
+    print(f"saved_metrics={metrics_path}")
     print(f"n={analysis['n']} gate_snapshot_rows={analysis['gate_snapshot_rows']}")
     print(f"theoretical_combined={analysis['theoretical_combined_pass_rate']} "
           f"actual_combined={analysis['actual_combined_pass_rate']} "

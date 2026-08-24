@@ -1,0 +1,22 @@
+표본: 15000 2026-06-23 10:34:00 ~ 2026-08-21 15:09:00 | 마스터피처: 105
+
+======================================================================
+호라이즌 3m — 유효표본 14289
+  [BASE(구7+cvd_direction)] n_feat=7 dir_acc=0.3450 fold=['0.315', '0.286', '0.434']  ⚠방향뒤집힘[N4]: ret_15m,ofi_norm,macro_us10y_chg
+  [BASE+CVD swap만(cvd_delta_norm)] n_feat=7 dir_acc=0.3296 fold=['0.279', '0.279', '0.431']  (Δ=-0.0154, -1.54%p)  ⚠방향뒤집힘[N4]: ofi_norm
+  [BASE+cvd_direction+poc_distance] n_feat=8 dir_acc=0.3381 fold=['0.319', '0.290', '0.405']  (Δ=+0.0085, +0.85%p)  ⚠방향뒤집힘[N4]: ret_15m,ofi_norm,macro_us10y_chg,poc_distance
+  [BASE+cvd_direction+bb_position] n_feat=8 dir_acc=0.3078 fold=['0.298', '0.251', '0.374']  (Δ=-0.0303, -3.03%p)  ⚠방향뒤집힘[N4]: microprice_bias,ret_15m,ofi_norm,macro_us10y_chg
+  [BASE+cvd_direction+ema_cross] n_feat=8 dir_acc=0.3388 fold=['0.311', '0.296', '0.409']  (Δ=+0.0310, +3.10%p)  ⚠방향뒤집힘[N4]: ofi_norm,macro_us10y_chg
+  [BASE+cvd_direction+vwap_position] n_feat=8 dir_acc=0.3472 fold=['0.280', '0.299', '0.463']  (Δ=+0.0084, +0.84%p)  ⚠방향뒤집힘[N4]: ofi_norm,macro_us10y_chg,vwap_position
+  [BASE+cvd_direction+microprice_depth_bias] n_feat=8 dir_acc=0.3209 fold=['0.288', '0.265', '0.411']  (Δ=-0.0263, -2.63%p)  ⚠방향뒤집힘[N4]: microprice_bias,ret_15m,ofi_norm,microprice_depth_bias
+  [현재 라이브(구7+cvd_delta_norm+5개 전체)] n_feat=12 dir_acc=0.3252 fold=['0.312', '0.271', '0.393']  (Δ=+0.0043, +0.43%p)  ⚠방향뒤집힘[N4]: microprice_bias,macro_us10y_chg,microprice_depth_bias
+
+======================================================================
+호라이즌 5m — 유효표본 14194
+  [BASE(현재 라이브 12개)] n_feat=12 dir_acc=0.3223 fold=['0.297', '0.320', '0.350']
+  [BASE+va_bandwidth(되돌리기)] n_feat=13 dir_acc=0.3038 fold=['0.298', '0.279', '0.335']  (Δ=-0.0185, -1.85%p)  ⚠방향뒤집힘[N4]: cvd_slope
+  [BASE+macro_vix(되돌리기)] n_feat=13 dir_acc=0.3475 fold=['0.321', '0.247', '0.475']  (Δ=+0.0437, +4.37%p)  ⚠방향뒤집힘[N4]: ret_15m,vwap_position,cvd_slope
+  [BASE+cvd_monotone_ratio(되돌리기)] n_feat=13 dir_acc=0.3223 fold=['0.297', '0.320', '0.350']  (Δ=-0.0252, -2.52%p)
+  [BASE+opt_pcr_slope_norm(되돌리기)] n_feat=13 dir_acc=0.3097 fold=['0.307', '0.332', '0.290']  (Δ=-0.0125, -1.25%p)
+  [전체 복원(구16개, 373차 이전)] n_feat=16 dir_acc=0.3456 fold=['0.329', '0.245', '0.463']  (Δ=+0.0359, +3.59%p)  ⚠방향뒤집힘[N4]: vwap_position,cvd_slope,va_bandwidth,opt_pcr_slope_norm
+
