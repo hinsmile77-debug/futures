@@ -1,0 +1,134 @@
+{
+ "1m": {
+  "h": 5,
+  "floor": 2.36175406079533,
+  "n_deployed": 8,
+  "below": [
+   "cvd_delta_norm",
+   "toxicity_score",
+   "cancel_add_ratio",
+   "spread_ticks",
+   "bb_position",
+   "poc_distance"
+  ],
+  "above": [
+   "vwap_position"
+  ],
+  "unscreened": [
+   "is_open_volatile"
+  ]
+ },
+ "3m": {
+  "h": 5,
+  "floor": 2.36175406079533,
+  "n_deployed": 12,
+  "below": [
+   "cvd_delta_norm",
+   "cvd_divergence",
+   "microprice_bias",
+   "ret_15m",
+   "ofi_norm",
+   "poc_distance",
+   "bb_position",
+   "ema_cross",
+   "microprice_depth_bias"
+  ],
+  "above": [
+   "vwap_position"
+  ],
+  "unscreened": [
+   "poc_above",
+   "macro_us10y_chg"
+  ]
+ },
+ "5m": {
+  "h": 5,
+  "floor": 2.36175406079533,
+  "n_deployed": 12,
+  "below": [
+   "bb_position",
+   "ema_cross",
+   "ret_5m",
+   "ret_15m",
+   "poc_distance",
+   "cvd_slope"
+  ],
+  "above": [
+   "vwap_position"
+  ],
+  "unscreened": [
+   "poc_above",
+   "above_vwap",
+   "is_open_volatile",
+   "is_close_volatile",
+   "in_value_area"
+  ]
+ },
+ "10m": {
+  "h": 15,
+  "floor": 2.1557033000890042,
+  "n_deployed": 11,
+  "below": [
+   "poc_distance",
+   "mlofi_slope",
+   "hurst"
+  ],
+  "above": [
+   "vwap_momentum",
+   "vwap_position",
+   "macro_krw_chg"
+  ],
+  "unscreened": [
+   "poc_above",
+   "opt_pcr_extreme",
+   "macro_sp500_chg",
+   "macro_us10y_chg",
+   "macro_vix"
+  ]
+ },
+ "15m": {
+  "h": 15,
+  "floor": 2.1557033000890042,
+  "n_deployed": 13,
+  "below": [
+   "va_bandwidth",
+   "opt_pcr_slope_norm",
+   "retail_futures_net",
+   "poc_distance",
+   "ret_15m",
+   "ret_5m",
+   "cvd_divergence"
+  ],
+  "above": [
+   "foreign_retail_divergence",
+   "bb_position",
+   "ema_cross"
+  ],
+  "unscreened": [
+   "in_value_area",
+   "is_close_volatile",
+   "poc_above"
+  ]
+ },
+ "30m": {
+  "h": 30,
+  "floor": 2.307844581845546,
+  "n_deployed": 11,
+  "below": [
+   "opt_pcr_slope_norm",
+   "toxicity_score_ma",
+   "atr_ratio",
+   "queue_signal_ma",
+   "toxicity_atr_stress",
+   "time_cos",
+   "macro_krw_chg"
+  ],
+  "above": [],
+  "unscreened": [
+   "in_value_area",
+   "opt_pcr_bearish",
+   "above_vwap",
+   "macro_vix"
+  ]
+ }
+}
