@@ -383,6 +383,78 @@ class PositionTracker:
         )
         self._save_state()
 
+    @staticmethod
+    def classify_exit_stage(reason, tp1_armed):
+        """[MW0601 490차 / F-I] 청산 사유 문자열 → 청산 **단계** 라벨.
+
+        ## 왜 필요한가 (2026-08-24 이상점 1-9 · 기등록 P2-I)
+
+        `exit_reason='하드스톱(틱)'` 한 값이 **두 가지 서로 다른 사건**을 담고 있다:
+
+          · 진짜 손절      — 진입 스톱에 그대로 맞았다
+          · TP1 후 트레일  — 이익을 지키려고 스톱을 진입가 위로 올린 뒤 잘렸다
+                             (실현 손익은 **양수**일 수 있다)
+
+        2026-08-24 실측: 최종 청산이 하드스톱·손절 계열인 포지션 10/10건 중
+        상당수가 후자였다(오염률 66.7%). 이 구분이 없으면 「손절률」·「손절폭
+        초과율」 같은 지표가 전부 오염된다 — 계측 4원칙 ①(단위 명시)의 변형이다.
+
+        ## 🔴 `exit_reason` 문자열은 바꾸지 않는다
+
+        소비처가 많다 — `[ExitCooldown]` · CB② 연속손절 카운터 · 캠페인 채널 다수.
+        문자열을 바꾸면 그 판정들이 **조용히** 재정의되고 과거 시계열과 불연속이
+        생긴다(461차 `mdd_pct` 유형). 그래서 **컬럼만 늘린다.**
+
+        Args:
+            reason:    `exit_reason` 문자열.
+            tp1_armed: TP1 보호(부분청산 또는 손익분기 이동)가 이미 발동했는가.
+                       **None 이면 판정 불가** — 그 경우 스톱 계열은 `STOP_UNKNOWN`
+                       을 돌려준다(계측 4원칙 ②: 모르면 모른다고 적는다).
+
+        Returns:
+            라벨 문자열. 미분류는 `"OTHER"` 다 — `None`(=미측정, 490차 이전 행)과
+            구분된다. "재봤는데 어디에도 안 맞았다"와 "안 재봤다"는 다른 사실이다.
+        """
+        r = str(reason or "")
+        if not r:
+            return "OTHER"
+        # ── TP 계열 (먼저 본다 — 'TP1 부분청산'에 '청산'이 들어 있다) ──
+        if "TP3" in r:
+            return "TP3"
+        if "TP2" in r:
+            return "TP2"
+        if "TP1" in r:
+            return "TP1"
+        # ── 손절 계단화 1차 ──
+        if "손절1차" in r or "조기축소" in r:
+            return "TIER1_EARLY"
+        # ── 시간 청산(절대원칙 §1 집행 경로 · 15:18 안전망) ──
+        if "15:10" in r or "15:18" in r or "시간청산" in r or "강제청산" in r:
+            return "TIME_EXIT"
+        # ── 스톱 계열 — 여기서만 tp1_armed 가 필요하다 ──
+        if "하드스톱" in r or "스톱" in r or "손절" in r:
+            if tp1_armed is None:
+                return "STOP_UNKNOWN"
+            return "TRAIL_AFTER_TP1" if tp1_armed else "INITIAL_STOP"
+        # ── 운영자·외부·복구 경로 — 시스템 청산 규칙의 표본이 아니다 ──
+        if "수동" in r or "외부체결" in r:
+            return "MANUAL"
+        if "pending_miss" in r or "stuck_exit" in r or "resync" in r:
+            return "RECOVERY"
+        return "OTHER"
+
+    def _tp1_armed(self):
+        """TP1 보호가 이미 발동했는가 — 스톱 계열 분류의 유일한 입력.
+
+        두 경로가 있고 **둘 다** `partial_1_done` 을 세운다:
+          · qty>=2 : TP1 부분청산 체결 → `apply_exit_fill()` (그 직후 main.py 가
+                     `tp1_breakeven` 으로 스톱을 진입가로 올린다)
+          · qty==1 : 물리적 분할이 불가하므로 `arm_tp1_single_contract*()` 가
+                     스톱만 올리고 같은 플래그를 세운다
+        그래서 이 플래그 하나로 두 경로가 다 덮인다.
+        """
+        return bool(self.partial_1_done)
+
     def close_position(self, exit_price: float, reason: str) -> Dict:
         """포지션 청산 후 손익 반환"""
         assert self.status != POSITION_FLAT, "포지션 없음"
@@ -439,6 +511,11 @@ class PositionTracker:
             "commission":   round(commission, 0),
             "forward_commission": round(forward_commission, 0),
             "exit_reason":  reason,
+            # [MW0601 490차 / F-I] 사유 문자열은 그대로 두고 **단계**를 병기한다.
+            # ⚠ `_reset_position()` **전에** 잡아야 한다 — 리셋 뒤에는
+            #   `partial_1_done` 이 False 라 모든 스톱이 INITIAL_STOP 으로 보인다
+            #   (483차 P1-A 와 같은 「리셋 뒤에 읽기」 함정).
+            "exit_stage":   self.classify_exit_stage(reason, self._tp1_armed()),
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,
@@ -847,6 +924,12 @@ class PositionTracker:
             "forward_pnl_pts": round(forward_pnl_pts, 4),
             "forward_pnl_krw": round(forward_pnl_krw, 0),
             "exit_reason":  reason,
+            # [MW0601 490차 / F-I] 부분청산 레그도 같은 규약으로 라벨링한다.
+            # ⚠ `_sync_partial_progress()` 가 이미 돈 **뒤**라, TP1 레그 자신은
+            #   `partial_1_done=True` 상태에서 분류된다. 그래도 TP 계열 분기가
+            #   스톱 계열보다 먼저라 라벨은 `TP1` 로 정확하다 — `tp1_armed` 는
+            #   스톱 계열에서만 쓰인다.
+            "exit_stage":   self.classify_exit_stage(reason, self._tp1_armed()),
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,

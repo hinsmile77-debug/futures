@@ -1700,6 +1700,44 @@ FORCE_FLAT_GUARD_HEARTBEAT_STALE_SEC = 180.0   # 하트비트가 이보다 낡�
 FORCE_FLAT_GUARD_POPUP = True           # 미청산 감지 시 Windows 메시지박스(트레이딩 PC 앞 사람용)
 FORCE_FLAT_GUARD_ORDER_ENABLED = False  # ⚠ 2단계(브로커 직접 청산) — 미구현. 주간회의 승인 전 금지
 
+# ── [MW0601 490차 / F-M] 프로세스 밖 동결 센티넬 (FZ-2) ──────────────────────
+# 🔴 **FZ-1을 대체하지 않는다. 2층을 하나 더 얹는 것이다.**
+#
+# 왜 필요한가 — 2026-08-24 이상점 1-14가 실증했다:
+#   FZ-1 워치독은 **같은 프로세스 안의 파이썬 스레드**다. 그날 15:40:20에 마감
+#   스레드가 Qt 위젯을 워커에서 만져 GIL을 쥔 채 반환하지 않자, 감시 스레드도
+#   바이트코드를 한 줄도 실행하지 못했다 — `crash_fault.log`의 30초 `[TS]` 하트비트가
+#   `15:40:03`에서 함께 끊긴 것이 그 증거다. **검사도 발화도 못 했다.**
+#   임계(`FREEZE_WATCHDOG_STALL_SEC`)를 조정해서 해결되는 문제가 아니다 —
+#   **감시 위치의 문제**다. FZ-1은 「메인 루프가 느려지는 동결」에는 여전히 유효하므로
+#   그대로 둔다.
+#
+# 판정 입력 3종을 **함께** 본다(단일 신호 오탐 방지):
+#   ① `data/heartbeat_{pc}_{date}.json` 의 `written_at` 나이
+#   ② `logs/crash_fault.log` 최신 `[TS]` 나이
+#   ③ `logs/{date}_SYSTEM.log` 최종 기록 나이
+# 셋 다 임계를 넘어야 동결로 본다. 하나라도 신선하면 프로세스는 살아 있다.
+# ⚠ 「없음」은 「낡음」과 다르다 — 세 신호 중 하나라도 **미측정**이면 동결로 세지
+#   않고 UNKNOWN으로 남긴다(계측 4원칙 ②). 기동 전/비거래일을 동결로 오인하지 않는다.
+#
+# 🔴 **1단계는 알림 전용이다 — 하드 종료 권한을 주지 않는다.**
+#    F-2 가드가 「알림 전용 — 주문 없음」으로 시작한 것과 같은 이유이며,
+#    "게이트·차단 신설은 섀도 계측을 거친 뒤 승격"이라는 규약을 따른다.
+#    승격(하드 종료)은 **주간회의 안건**이다 — 감시자가 새 사고를 만드는 것이
+#    여기서 가장 피해야 할 결과다(`FREEZE_SENTINEL_KILL_ENABLED` — 자리만 있고
+#    구현은 없다. F-2의 `FORCE_FLAT_GUARD_ORDER_ENABLED`와 같은 자리표시).
+#
+# 🔴 왜 `ENABLED = True`로 신설하는가: F-2와 같다 — 읽기 + 기록뿐이라 매매 경로에
+#    닿지 않는다. False로 두면 TOX-SEVERE-SPREAD처럼 "켜진 적 없는" 장치가 된다.
+FREEZE_SENTINEL_ENABLED = True
+FREEZE_SENTINEL_CHECK_SEC = 60.0        # 감시 주기(초). 별도 프로세스라 파이프라인 지연과 무관
+FREEZE_SENTINEL_STALL_SEC = 300.0       # 3신호가 이보다 낡으면 동결로 본다
+# 감시 창 — FZ-1의 `("09:00","15:45")`는 2026-08-24 동결(15:40:20 발단, 이후로도 계속)을
+# 아슬아슬하게 벗어난다(1-14 보조 사실). 마감·EOD 인계 구간까지 본다.
+FREEZE_SENTINEL_WINDOW = ("09:00", "16:30")
+FREEZE_SENTINEL_POPUP = True            # 동결 확정 시 Windows 메시지박스
+FREEZE_SENTINEL_KILL_ENABLED = False    # ⚠ 2단계(하드 종료) — 미구현. 주간회의 승인 전 금지
+
 # ── [260705 검증 캠페인] 섀도우 채널 승격 합격선 — 사전 등록 (변경 금지) ──────
 # 근거: docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3.
 # 데이터를 보기 전에 합격선을 고정한다(pre-registration). 사후 변경은 반드시

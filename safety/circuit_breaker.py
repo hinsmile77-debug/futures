@@ -210,6 +210,41 @@ class CircuitBreaker:
         return len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES
 
     @property
+    def cb3_acc30m(self):
+        """[MW0601 490차 / F-G] 현재 acc30m 값. 표본이 없으면 **None**(미측정).
+
+        ⚠ `status_dict()["accuracy_30m"]` 은 빈 버퍼에서 `0/1 = 0.0` 을 돌려주므로
+          「무정보」와 「정확도 0%」가 같은 값이 된다 — 그래서 그쪽 대신 이 프로퍼티를
+          판정 계측에 쓴다(계측 4원칙 ②·④. `recent_accuracy()` 가 빈 버퍼에 조용히
+          0.5 를 돌려주던 457차 사고와 같은 계열).
+
+        🔴 읽기 전용이다 — **HALT 경로는 손대지 않는다**(CB③ 재상정 금지 사안).
+        """
+        if not self._accuracy_buf:
+            return None
+        return sum(self._accuracy_buf) / len(self._accuracy_buf)
+
+    @property
+    def cb3_would_halt(self) -> bool:
+        """[MW0601 490차 / F-G] 지금 CB③ **발동 조건이 성립하는가**(HALT 여부가 아니다).
+
+        `cb3_ready`(판정 가능한가) 와 다른 질문이다 — 482차 G-1 은 가용 분수만 셌고
+        「가용한데 임계 미달인 분수」는 아무 데도 남지 않았다. 2026-08-24 실측:
+        그 조건이 **30분 성립**했고 그 창에서 2포지션 -128,195원이 났는데, 그 사실이
+        운영 로그 어디에도 없었다(`[DBG-CB]` DEBUG 채널 한 줄에만 있었고
+        `[CB③ 비활성]` 은 `logger.debug` × `LOG_LEVEL=INFO` 라 0건 출력).
+
+        ⚠ 이 값은 **판정에 관여하지 않는다.** CB③ 자동진입 차단은
+          `CB3_P4_GRADE_BLOCK_ENABLED=False` 한시예외로 비활성이며(절대원칙 §2),
+          이 프로퍼티는 그 예외를 되돌리자는 제안이 아니라 **되돌릴지 판단할 근거를
+          만드는 계측**이다.
+        """
+        if not self.cb3_ready:
+            return False
+        acc = self.cb3_acc30m
+        return acc is not None and acc < CB_ACCURACY_MIN_30M
+
+    @property
     def cb3_availability(self) -> dict:
         """[MW0601 482차 / G-1·G-2] 가용성 스냅샷 — EOD 집계용."""
         return {
@@ -218,6 +253,10 @@ class CircuitBreaker:
             "ready":           len(self._accuracy_buf) >= CB_ACC30M_MIN_SAMPLES,
             "resets_today":    self._cb3_resets_today,
             "samples_dropped": self._cb3_samples_dropped_today,
+            # [MW0601 490차 / F-G] 값 자체 — None 이면 표본 없음(미측정).
+            "acc30m":          self.cb3_acc30m,
+            "would_halt":      self.cb3_would_halt,
+            "threshold":       CB_ACCURACY_MIN_30M,
         }
 
     def _check_pause_expiry(self):

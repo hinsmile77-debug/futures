@@ -506,6 +506,92 @@ def git_index_lock(root):
                 "git_procs": None, "note": "git_lock_guard 호출 실패 — **미측정**: %s" % e}
 
 
+#: [MW0601 490차 / F-F ②] 이 프로세스 시작 시점의 `.git/index.lock` 존재 여부.
+#: `build()` 가 §2 에서 **지금** 상태와 비교해 「이 수집 실행이 락을 남겼는가」를 판정한다.
+#: ⚠ None = 미측정(아직 스냅샷 전). False 로 초기화하면 「없었다」로 위장한다.
+_LOCK_AT_START = None
+
+
+def snapshot_index_lock(root):
+    """[MW0601 490차 / F-F ②] 수집 시작 시점의 인덱스락 상태를 잡아둔다.
+
+    왜 필요한가: 종전 §2 는 인덱스락을 **수집 시작 시점 기준**으로만 적었다
+    (2026-08-24 08:59:37 관측). 그래서 같은 세션 후반에 생긴 락은 구조적으로
+    못 본다 — 실제로 그날 09:13 에 락이 생겼는데 §2 는 「인덱스락 없음」이라고
+    적었고, 저장소가 3시간 21분간 커밋 불가였다는 사실이 장중 재수집 때까지
+    드러나지 않았다.
+
+    ⚠ 이 함수는 `run_git` 이 한 번도 불리기 **전에** 호출돼야 한다.
+    """
+    global _LOCK_AT_START
+    try:
+        _LOCK_AT_START = os.path.exists(os.path.join(root, ".git", "index.lock"))
+    except Exception:
+        _LOCK_AT_START = None
+    return _LOCK_AT_START
+
+
+def git_change_profile(root):
+    """[MW0601 490차 / F-D · 기등록 P2-K] 「미커밋 N건」의 실질을 분해한다.
+
+    ## 왜 (2026-08-24 이상점 1-1)
+
+    §2 가 `git status --porcelain` 행 수를 그대로 「미커밋 486건」(장후 491건)으로
+    적었고, §11 이 그것을 적신호로 올렸다. 그런데 **실질 변경은 4건 · 코드(.py)
+    0건**이었다 — 나머지는 EOL(CRLF↔LF) 파생 diff 다. 리눅스 샌드박스에서 관측하면
+    `core.autocrlf` 미설정이라 워크트리 CRLF vs 인덱스 LF 차이가 전부 수정으로
+    보인다. 숫자가 틀린 게 아니라 **읽는 법**이 없었다.
+
+    ⚠ 착시율의 분모는 ` M`(추적 중 수정)으로 한정한다 — 미추적(`??`)·삭제(` D`)를
+      분모에 섞으면 「474건 중 100%」 같은 잘못된 표현이 나온다(계측 4원칙 ①).
+
+    ⚠ **분자와 분모를 같은 명령에서 뽑는다.** 초판은 분모를 `git status --porcelain`
+      의 ` M` 행 수로, 분자를 `git diff --numstat` 행 수로 잡았는데 둘의 모집단이
+      다르다 — `git diff` 는 삭제도 세고 `porcelain` 의 ` M` 분기는 안 센다. 그래서
+      이 PC 실측에서 `tracked_mod=14 < real=16` 이 나와 EOL 파생 건수가 0으로
+      뭉개졌다. 461차 `mdd_pct`(같은 이름 다른 분모)와 같은 계열의 함정이다.
+      → 이제 둘 다 `git diff --numstat` 에서 뽑고, 필터 유무로만 가른다.
+
+    Returns:
+        dict(tracked_changed, real, code, eol, untracked, deleted, autocrlf, measured)
+        `measured=False` 면 git 호출이 실패한 것 — 0 과 구분한다(계측 4원칙 ②).
+    """
+    out = {"tracked_changed": None, "real": None, "code": None, "eol": None,
+           "untracked": 0, "deleted": 0, "autocrlf": "미설정", "measured": False}
+    status = run_git(root, ["status", "--porcelain"])
+    if status.startswith("(git "):
+        return out
+    for line in status.splitlines():
+        if not line.strip():
+            continue
+        head = line[:2]
+        if head.startswith("??"):
+            out["untracked"] += 1
+        elif "D" in head:
+            out["deleted"] += 1
+
+    def _files(args):
+        raw = run_git(root, ["diff", "--numstat"] + args)
+        if raw.startswith("(git "):
+            return None
+        return [l.split("\t")[-1] for l in raw.splitlines() if l.strip()]
+
+    all_files = _files([])                                  # git 이 보는 추적 변경 전량
+    # `-w`(공백 무시) + `--ignore-cr-at-eol` 로 EOL·공백 파생 diff 를 뺀다.
+    real_files = _files(["-w", "--ignore-cr-at-eol"])
+    if all_files is None or real_files is None:
+        return out
+    out["tracked_changed"] = len(all_files)
+    out["real"] = len(real_files)
+    out["code"] = len([f for f in real_files if f.endswith(".py")])
+    out["eol"] = len(all_files) - len(real_files)
+    cfg_ac = run_git(root, ["config", "--get", "core.autocrlf"])
+    out["autocrlf"] = cfg_ac if cfg_ac and not cfg_ac.startswith("(git ") else "미설정"
+    out["measured"] = True
+    out["real_files"] = real_files
+    return out
+
+
 def set_pc_override(pc):
     """`--pc` / `MIREUK_PC_ID` 로 PC 식별자를 강제한다. None이면 자동탐지."""
     global _PC_OVERRIDE
@@ -1598,7 +1684,38 @@ def build(root, day, phase, cfg, discover_only=False):
         lock_txt = (" · 🔴 **인덱스락 잔존** %s바이트 · %.1f시간 · %s%s"
                     % (lk["size"], _age_h, _proc,
                        " → **커밋 불가 상태**" if lk["stale"] else " (판정 보류 — 3중 조건 미충족)"))
-    A("- HEAD `%s` · 브랜치 `%s` · 미커밋 %d건%s" % (head, branch, len(dirty), lock_txt))
+    # [MW0601 490차 / F-D] 원시 건수 옆에 **실질**을 병기한다 — 숫자를 고치는 게
+    # 아니라 읽는 법을 붙이는 것이다. 절단 시 잔여 개수를 명시한다(계측 4원칙 ③).
+    _chg = git_change_profile(root)
+    if not _chg["measured"]:
+        real_txt = " · 실질 변경 **미측정**(git diff 실패)"
+    else:
+        real_txt = (" · 실질 변경 %d건 · 코드(.py) %d건 · EOL 파생 %d건"
+                    " (추적변경 %d · 미추적 %d · 삭제 %d · core.autocrlf=%s)"
+                    % (_chg["real"], _chg["code"], _chg["eol"],
+                       _chg["tracked_changed"], _chg["untracked"], _chg["deleted"],
+                       _chg["autocrlf"]))
+    A("- HEAD `%s` · 브랜치 `%s` · 미커밋 %d건%s%s"
+      % (head, branch, len(dirty), real_txt, lock_txt))
+    if _chg["measured"] and _chg["real"]:
+        _rf = _chg.get("real_files") or []
+        A("  - 실질 변경 파일: %s%s"
+          % (", ".join("`%s`" % f for f in _rf[:12]),
+             (" … 외 %d개" % (len(_rf) - 12)) if len(_rf) > 12 else ""))
+    # [MW0601 490차 / F-F ②] 이 수집 실행이 락을 만들었는가 — 시작 시점과 비교한다.
+    # 종전 §2 는 **시작 시점 기준**으로만 적어, 같은 세션 후반에 생긴 락을 구조적으로
+    # 못 봤다(2026-08-24: 08:59 「없음」 → 09:13 생성 → 3시간 21분 커밋 불가).
+    if _LOCK_AT_START is None:
+        A("  - ⚠ 락 자가점검 **미측정** — 수집 시작 시점 스냅샷이 없다")
+    elif (not _LOCK_AT_START) and lk.get("present"):
+        A("  - 🔴 **이 수집 실행이 `.git/index.lock` 을 남겼다** "
+          "(시작 시점에는 없었다). `run_git()` 은 `--no-optional-locks` 를 쓰므로 "
+          "범인은 이 세션이 **임시로 실행한 다른 git 명령**이다 — "
+          "SKILL.md 「git 호출 규약」 확인 후 `scripts/git_lock_guard.py --check` 로 회수할 것")
+    elif _LOCK_AT_START and not lk.get("present"):
+        A("  - 락 자가점검: 시작 시점에 있던 락이 지금은 없다 (누군가 회수했다)")
+    else:
+        A("  - 락 자가점검: 이 수집 실행은 락을 만들지 않았다")
     if dirty:
         A("```")
         L.extend(dirty[:40])
@@ -2214,8 +2331,27 @@ def build(root, day, phase, cfg, discover_only=False):
 
     if bad_tag:
         flags.append("PC명 태그 누락 커밋 %d건 — 멀티PC 컨벤션 위반" % len(bad_tag))
+    # [MW0601 490차 / F-D] 실질 변경이 0이면 올리지 않는다 — 원시 건수만으로 올리면
+    # EOL 파생 diff 때문에 매 점검마다 같은 잡음이 적신호에 뜬다(2026-08-24 491건 착시).
+    # ⚠ 코드(.py)가 섞였으면 **실질 건수와 무관하게** 올린다. 그리고 **미측정이면
+    #   올린다** — 못 쟀다는 것은 안심할 근거가 아니다(계측 4원칙 ②).
     if dirty:
-        flags.append("미커밋 변경 %d건" % len(dirty))
+        if not _chg["measured"]:
+            flags.append("미커밋 변경 %d건 — **실질 변경 미측정**(git diff 실패). "
+                         "원시 건수만으로는 착시인지 알 수 없다" % len(dirty))
+        elif _chg["code"]:
+            flags.append("미커밋 변경 %d건 (실질 %d건 · **코드(.py) %d건**) — "
+                         "코드 변경이 커밋되지 않았다"
+                         % (len(dirty), _chg["real"], _chg["code"]))
+        elif _chg["real"]:
+            flags.append("미커밋 변경 %d건 (실질 %d건 · 코드 0건 · EOL 파생 %d건)"
+                         % (len(dirty), _chg["real"], _chg["eol"]))
+        # 실질 0건이면 적신호로 올리지 않는다(§2 에는 그대로 적혀 있다).
+    # [MW0601 490차 / F-F ②] 이 수집 실행이 락을 만들었다면 반드시 올린다.
+    if (_LOCK_AT_START is False) and lk.get("present"):
+        flags.append("🔴 **이 수집 실행이 `.git/index.lock` 을 남겼다** — 시작 시점에는 "
+                     "없었다. 점검 세션의 임시 git 호출이 원인이며, 방치하면 그날 "
+                     "dev_memory·리포트가 커밋되지 않은 채로 끝난다")
     for rel in ("dev_memory/DECISION_LOG.md", "dev_memory/NEXT_TODO.md"):
         p = os.path.join(root, rel)
         if os.path.exists(p) and ts_kst(os.stat(p).st_mtime).date() != day and phase in ("post", "all"):
@@ -2318,6 +2454,9 @@ def main(argv=None):
 
     start = args.root if args.root else os.path.dirname(os.path.abspath(__file__))
     root = find_repo_root(start)
+    # [MW0601 490차 / F-F ②] **`run_git()` 이 한 번이라도 불리기 전에** 잡는다 —
+    # 그래야 §2 의 "이 수집 실행이 락을 남겼는가" 판정이 성립한다.
+    snapshot_index_lock(root)
     day = parse_date(args.date)
     cfg = load_config(root)
     if args.max_log_mb:

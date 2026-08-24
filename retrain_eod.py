@@ -203,22 +203,61 @@ def p8_scaler_refit() -> bool:
 
 
 # ── daily_close() 완료 대기 ──────────────────────────────────────
-def _wait_for_daily_close(max_wait_min: int = 20, poll_sec: int = 30) -> bool:
+def _system_log_age_sec(day_token):
+    """오늘 SYSTEM 로그의 최종 기록 이후 경과초. 파일이 없으면 None(**미측정**).
+
+    ⚠ None 을 큰 수(=정체)로 뭉개지 않는다 — 로그가 없는 것과 로그가 멈춘 것은
+      다른 사실이고, 전자는 "라이브가 애초에 안 돌았다"를 뜻한다(계측 4원칙 ②).
+    """
+    _p = os.path.join(_ROOT, "logs", "%s_SYSTEM.log" % day_token)
+    try:
+        if not os.path.exists(_p):
+            return None
+        return max(0.0, time.time() - os.path.getmtime(_p))
+    except Exception:
+        return None
+
+
+def _wait_for_daily_close(max_wait_min: int = 20, poll_sec: int = 30,
+                          stall_log_sec: float = 180.0):
     """main.py daily_close() 완료를 확인 후 반환 — pkl 경합 방지.
 
     daily_close() 마지막에 data/daily_close_done_YYYYMMDD.txt 를 기록한다.
     launcher가 삭제하는 _exit_normally 와 달리 이 파일은 launcher가 건드리지 않아
     EOD 재학습(16:10)이 안정적으로 감지할 수 있다.
 
-    반환값: True=정상 완료 확인, False=타임아웃 후 강제 진행
+    ── [MW0601 490차 / F-N] 「느린 마감」과 「죽은 마감」을 가른다 ──────────────
+    2026-08-24 15:40:20, 마감 스레드가 Qt 위젯 접근 데드락으로 영구 정지했다
+    (이상점 1-12 / F-L). `done` 마커는 절차의 거의 마지막에 기록되므로 영영 오지
+    않았고, 이 함수는 **20분을 통째로 헛기다린 뒤**(16:00:13) 강제 진행했다.
+    그 20분은 EOD 체인의 시간예산을 그대로 잠식한다 — 381차에 같은 이유로
+    분위회귀 재학습이 스케줄러 시간제한에 걸려 죽은 전례가 있다.
+
+    그래서 두 신호를 함께 본다:
+      ① `daily_close_started_{today}.txt` — 마감 절차가 **시작은 했는가**
+         (490차 F-N 이 `main.py:_run_daily_close()` 진입부에 신설)
+      ② `logs/{today}_SYSTEM.log` 최종 기록 나이 — 라이브가 **아직 살아 있는가**
+    ①이 있는데 ②가 `stall_log_sec` 이상 정체면 「마감 프로세스 이상」으로 보고
+    **즉시** 강제 진행한다. ②가 신선하면 그냥 느린 마감이므로 종전대로 기다린다.
+
+    ⚠ 단일 신호로 판정하지 않는다 — ①만 보면 정상적으로 느린 마감을 죽은 것으로
+      오판하고, ②만 보면 마감이 시작조차 안 한 날(라이브 미기동)까지 정체로 센다.
+
+    반환값: `(ok, stalled)`
+      ok      True=정상 완료 확인 / False=완료 미확인(타임아웃 또는 정체)
+      stalled True=마감 프로세스 이상으로 조기 탈출 / False=정체 아님 /
+              **None=판정 불가(미측정)** — started 마커나 SYSTEM 로그가 없는 경우.
+              False 로 뭉개면 "재보니 정상"과 "못 쟀다"가 같은 값이 된다
+              (계측 4원칙 ②).
     """
     _today = datetime.date.today().strftime("%Y%m%d")
     _marker = os.path.join(_ROOT, "data", f"daily_close_done_{_today}.txt")
+    _started = os.path.join(_ROOT, "data", f"daily_close_started_{_today}.txt")
     _deadline = datetime.datetime.now() + datetime.timedelta(minutes=max_wait_min)
 
     log.info(
-        "[WaitDC] daily_close() 완료 대기 시작 (최대 %d분, %s까지)",
-        max_wait_min, _deadline.strftime("%H:%M:%S"),
+        "[WaitDC] daily_close() 완료 대기 시작 (최대 %d분, %s까지, 정체판정 %.0fs)",
+        max_wait_min, _deadline.strftime("%H:%M:%S"), stall_log_sec,
     )
 
     while datetime.datetime.now() < _deadline:
@@ -227,14 +266,39 @@ def _wait_for_daily_close(max_wait_min: int = 20, poll_sec: int = 30) -> bool:
                 with open(_marker, "r", encoding="utf-8") as _f:
                     _ts = _f.read().strip()
                 log.info("[WaitDC] daily_close() 완료 확인 (%s) — EOD 재학습 시작", _ts)
-                return True
+                return True, False
             except Exception as _e:
                 log.debug("[WaitDC] 마커 읽기 실패 (재시도): %s", _e)
 
+        # [490차 F-N] 정체 판정 — 두 신호가 **함께** 성립할 때만 조기 탈출한다.
+        _has_started = os.path.exists(_started)
+        _log_age = _system_log_age_sec(_today)
+        if _has_started and _log_age is not None and _log_age >= stall_log_sec:
+            log.warning(
+                "[WaitDC] 마감 프로세스 정체 감지 — started 마커 있음 · "
+                "SYSTEM.log 최종 기록 %.0fs 전(임계 %.0fs) · done 마커 없음. "
+                "20분을 기다리지 않고 즉시 진행한다 (490차 F-N)",
+                _log_age, stall_log_sec,
+            )
+            try:
+                from utils.notify import notify as _nfy
+                _nfy(
+                    "EOD재학습 — daily_close() 가 시작만 하고 멈췄다 "
+                    "(SYSTEM.log %.0fs 정체). 대기 없이 진행 — "
+                    "마감 절차 미완 가능성을 함께 확인할 것" % _log_age,
+                    "WARNING",
+                )
+            except Exception:
+                pass
+            return False, True
+
         remaining = (_deadline - datetime.datetime.now()).seconds // 60
         log.info(
-            "[WaitDC] daily_close() 대기 중 — 잔여 %d분 (%s까지)",
+            "[WaitDC] daily_close() 대기 중 — 잔여 %d분 (%s까지) | "
+            "started=%s SYSTEM.log나이=%s",
             remaining, _deadline.strftime("%H:%M:%S"),
+            "Y" if _has_started else "N",
+            "미측정" if _log_age is None else "%.0fs" % _log_age,
         )
         time.sleep(poll_sec)
 
@@ -251,7 +315,11 @@ def _wait_for_daily_close(max_wait_min: int = 20, poll_sec: int = 30) -> bool:
         )
     except Exception:
         pass
-    return False
+    # [490차 F-N] 타임아웃까지 왔는데 정체 조건이 성립하지 않았다면, "정체가
+    # 아니었다"가 아니라 **판정할 입력이 없었다**일 수 있다 — 둘을 구분해 돌려준다.
+    _fin_started = os.path.exists(_started)
+    _fin_age = _system_log_age_sec(_today)
+    return False, (False if (_fin_started and _fin_age is not None) else None)
 
 
 # ── [333차 후속] 검증 캠페인 주간 스텝 ────────────────────────────
@@ -286,9 +354,16 @@ def main():
     # 08-19에는 daily_close가 아예 실행되지 않아(라이브 프로세스 동결) 20분 타임아웃
     # 후 강제 진행했고 그대로 6/6 성공했다. 그런데 그 사실이 **로그 1줄로만** 남아
     # 다음날 마커만 보면 정상 완주와 구분되지 않았다 — 계측 4원칙 ④(폴백 가시화).
-    _dc_ok = _wait_for_daily_close(max_wait_min=20, poll_sec=30)
-    _dc_note = "daily_close_seen: %s\nwait_dc_timeout: %s\n" % (
-        "true" if _dc_ok else "false", "false" if _dc_ok else "true")
+    _dc_ok, _dc_stalled = _wait_for_daily_close(max_wait_min=20, poll_sec=30)
+    # [MW0601 490차 / F-N] 3상태를 한 값으로 뭉개지 않는다 —
+    #   true       = 마감이 시작만 하고 멈췄다(조기 탈출)
+    #   false      = 재봤고 정체가 아니었다
+    #   unmeasured = 판정할 입력이 없었다(started 마커 또는 SYSTEM 로그 부재)
+    # 이 줄이 있으면 다음날 마커만 보고 "그날 마감이 죽었는가"를 알 수 있다.
+    # ⚠ 490차 이전 마커에는 이 키가 **없다** = 미측정(계측 4원칙 ②).
+    _dc_note = "daily_close_seen: %s\nwait_dc_timeout: %s\ndaily_close_stalled: %s\n" % (
+        "true" if _dc_ok else "false", "false" if _dc_ok else "true",
+        "unmeasured" if _dc_stalled is None else ("true" if _dc_stalled else "false"))
 
     t_start = time.perf_counter()
 

@@ -219,6 +219,22 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
 
+    # [MW0601 491차] cp949 콘솔이 em dash(—) 하나에 UnicodeEncodeError 를 내고,
+    # 그 예외가 `main()` 밖으로 나가 **rc=1** 로 죽는다. 판정 자체는 이미 끝난
+    # 뒤라 결과가 정상(rc=0)이어도 호출자는 실패로 읽는다 — 하필 이 스크립트는
+    # SKILL.md 가 **매 커밋 전 프리플라이트**로 지정한 도구다. 커밋 전 확인 절차가
+    # 인코딩 때문에 통째로 막히는 형태였다(478차 후속 §8-2 · 480차 F-2 와 같은 원인).
+    # ⚠ 종료코드 의미(0 정상 / 2 스테일 / 3 판정보류)는 무변경이다.
+    try:
+        from utils.analysis_db import utf8_console
+        utf8_console()
+    except Exception:
+        for _stream in ("stdout", "stderr"):
+            try:
+                getattr(sys, _stream).reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
     repos = list(a.repo)
     if a.all:
         repos.extend(r for r in discover_repos(a.scan_root) if r not in repos)

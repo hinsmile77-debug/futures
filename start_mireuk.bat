@@ -491,6 +491,24 @@ IF EXIST "!WORKDIR!\scripts\force_flat_guard.py" (
     CALL :L "[GUARD-FLAT] force_flat_guard.py 없음 -- 15:10 이후 구간 무감시로 진행"
 )
 
+REM ============================================================
+REM  6-C. Freeze Sentinel sidecar / FZ-2 (490th session / F-M)
+REM  - FZ-1 watchdog is a python thread INSIDE main.py, so a GIL-holding
+REM    freeze starves it too: on 2026-08-24 15:40:20 the 30s [TS] heartbeat
+REM    stopped together with everything else. It could neither check nor fire.
+REM    That is a watcher-placement problem, not a threshold problem.
+REM  - This sidecar polls 3 file signals (heartbeat json / crash_fault [TS] /
+REM    SYSTEM.log) from OUTSIDE the process and alerts when all of them stall.
+REM  - Alert only: no hard kill. Promotion is a weekly-meeting decision.
+REM  - FZ-1 is NOT removed; it still covers "main loop gets slow" freezes.
+REM ============================================================
+IF EXIST "!WORKDIR!\scripts\freeze_sentinel.py" (
+    CALL :L "[SENTINEL] 동결 센티넬 FZ-2 사이드카 기동 (별도 프로세스, 알림 전용)"
+    START "MireukFreezeSentinel" /MIN "!PY32!" "!WORKDIR!\scripts\freeze_sentinel.py"
+) ELSE (
+    CALL :L "[SENTINEL] freeze_sentinel.py 없음 -- GIL 점유형 동결 무감시로 진행"
+)
+
 :RESTART_LOOP
 
 REM RESTART_LOOP 진입 시마다 WORKDIR / PY32 복원

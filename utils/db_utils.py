@@ -506,6 +506,27 @@ def _migrate_ensemble_decisions_db():
                 #   (`features/feature_builder.py:516`). 판독기가 반드시 가른다.
                 "spread_ticks": "REAL",
                 "spread_extreme_shadow": "INTEGER",
+                # ── [MW0601 490차 / F-K] MetaGate 무정보 폴백 여부 ────────────
+                # `meta_size_mult = 0.50` 이 **실측 0.50 인지 무정보 폴백인지**
+                # 로그·DB 어디서도 구분되지 않았다(계측 4원칙 ④ — 폴백 가시화).
+                # 2026-08-24 실측: `JointGateBlock` 차단 9건 중 8건이 `meta=0.50`
+                # 이었고, 그것이 폴백인지 확정하려면 같은 분 `[MetaGate]` 로그와
+                # 교차대조해야 했다(이상점 1-11).
+                #
+                # 원천은 `strategy/entry/meta_gate.py:size_multiplier_fallback`
+                # (= `action=="reduce" and not size_multiplier_raw`). `meta_size_raw`
+                # (422차) 만으로는 부족하다 — 그 컬럼은 **값**이고 이 컬럼은
+                # **그 값이 지워졌는가**다. raw 가 NULL 인 경로(FLAT early-return)와
+                # raw 가 0.0 인 경로가 있어 값만으로는 역산되지 않는다.
+                #
+                # 🔴 임계·합성 방식은 무변경이다 — 431차 확정 결정이고 캠페인 [7]
+                #   PASS 게이트가 이 경로에 걸려 있다. **컬럼만 늘린다.**
+                # ⚠ 490차 이전 행은 NULL = **미측정**이지 "폴백 아님"이 아니다
+                #   (계측 4원칙 ②). MetaGate 가 이 키를 반환하지 않는 경로(FLAT
+                #   early-return)도 NULL 이다 — 그쪽은 모집단 밖이라 NULL 이 정직하다.
+                # ⚠ 이름은 `joint_gate_shadow.meta_size_fallback` 과 맞췄다.
+                #   두 테이블을 조인해 읽을 때 같은 사실이 다른 이름이면 안 된다.
+                "meta_size_fallback": "INTEGER",
             }
             for name, dtype in additions.items():
                 if name not in cols:
@@ -1408,6 +1429,18 @@ def _migrate_trades_db():
                 "was_restart_after":  "INTEGER DEFAULT 0",
                 "had_partial_fill":   "INTEGER DEFAULT 0",
                 "entry_horizon":      "TEXT",
+                # [MW0601 490차 / F-I · 기등록 P2-I] 청산 **단계**.
+                # `exit_reason='하드스톱(틱)'` 한 값이 「진짜 손절」과 「TP1 후 트레일
+                # (이익 확정)」을 겸하고 있어 손절률·손절폭 초과율 지표가 오염됐다
+                # (2026-08-24 실측 오염률 66.7%). 🔴 `exit_reason` 문자열은 무변경 —
+                # 소비처(`[ExitCooldown]` · CB② 연속손절 카운터 · 캠페인 다수)가
+                # 많아 바꾸면 판정이 조용히 재정의된다(461차 mdd_pct 유형).
+                # 값: INITIAL_STOP / TRAIL_AFTER_TP1 / STOP_UNKNOWN / TIER1_EARLY /
+                #     TP1 / TP2 / TP3 / TIME_EXIT / MANUAL / RECOVERY / OTHER.
+                # ⚠ 490차 이전 행은 NULL = **미측정**이다(계측 4원칙 ②).
+                #   `OTHER`(재봤는데 안 맞음)와 구분할 것. 소급 백필하지 않는다 —
+                #   `partial_1_done` 은 청산 시점에만 알 수 있어 복원 불가다(420차와 동일).
+                "exit_stage":         "TEXT",
                 # [311차 후속] 진입 출처 태그 — SYSTEM_AUTO/OPERATOR_MANUAL/
                 # BROKER_SYNC_RECOVERY/OPERATOR_RESTORE/GHOST_PENDING_MISS.
                 # 기존 grade='MANUAL'이 유령 pending_miss 체결과 정상 수동매매를

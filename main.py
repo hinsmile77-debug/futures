@@ -995,6 +995,25 @@ class TradingSystem:
         # 호라이즌 교체)을 논의하려면 임계 이전에 **판정 입력이 존재했는가**를
         # 먼저 알아야 한다. 분모는 위 `_mh_pipeline_minutes` 를 그대로 쓴다.
         self._mh_cb3_ready_minutes: int = 0
+        # [MW0601 490차 / F-G] CB③ **발동 조건이 성립한** 분 수와, 그 창 안의
+        # 진입·손익. 482차 G-1 의 `_mh_cb3_ready_minutes` 는 「판정 가능했던 분」만
+        # 세고 「가용한데 임계 미달인 분」은 세지 않는다 — 2026-08-24 에 그 조건이
+        # 30분 성립했고 그 창에서 2포지션 -128,195원이 났는데 운영 로그 어디에도
+        # 남지 않았다(이상점 1-8). 08-28 CB② 복원 결정 자료의 두 번째 열이다.
+        #
+        # ⚠ 명시 초기화한다 — 런타임 상태를 getattr 폴백으로 읽지 않는다
+        #   (계측 4원칙 ④. `tests/test_457_fallback_visibility.py` 가 전수 검사).
+        # ⚠ 손익은 **포지션 단위**로 누산한다 — 레그 수를 세지 않고 레그 금액을
+        #   합산한다(계측 4원칙 ①. 417차가 레그 단위 집계로 인과 없는 상관을
+        #   만들었던 것과 같은 함정).
+        self._mh_cb3_would_halt_minutes: int = 0
+        self._mh_cb3_would_halt_entries: int = 0
+        self._mh_cb3_would_halt_pnl_krw: float = 0.0
+        # 이번 분이 「조건 성립」 분인가 — 같은 분의 진입 귀속에 쓴다.
+        self._mh_cb3_would_halt_now: bool = False
+        # 지금 들고 있는 포지션이 「조건 성립」 분에 진입한 것인가 — 청산 레그마다
+        # 읽어 손익을 누산한다. 진입 시점에만 갱신된다(`_entry_meta_action` 관례).
+        self._entry_in_cb3_would_halt: bool = False
         # [MW0601 482차] EOD 시점 당일 CB HALT 횟수 — `circuit_breaker.reset_daily()`
         # 직전에 잡아 `scaler_daily.cb3_triggered` 에 쓴다. 명시 초기화(계측 4원칙 ④):
         # getattr 폴백으로 읽으면 종전처럼 조용히 0이 박힌다.
@@ -2295,6 +2314,11 @@ class TradingSystem:
             "cb3_ready_minutes":       int(self._mh_cb3_ready_minutes),
             "cb3_buffer_resets":       int(_cb3av["resets_today"]),
             "cb3_samples_dropped":     int(_cb3av["samples_dropped"]),
+            # [MW0601 490차 / F-G] 조건 성립 축. ⚠ 로그·리포트 전용 —
+            # `insert_daily()` 는 이 3키를 읽지 않는다(DB 컬럼 무증설).
+            "cb3_would_halt_minutes":  int(self._mh_cb3_would_halt_minutes),
+            "cb3_would_halt_entries":  int(self._mh_cb3_would_halt_entries),
+            "cb3_would_halt_pnl_krw":  float(self._mh_cb3_would_halt_pnl_krw),
             # [MW0601 483차 / P1-A] ConfFloorGuard 3상태. `cb3_ready_minutes` 와
             # **같은 자리·같은 규약**이라 다음 사람이 리셋 뒤에 읽을 여지가 없다
             # (482차 G-3 은 `daily_close()` 가 `self._mh_cfg_*` 를 리셋 **뒤에**
@@ -2315,6 +2339,10 @@ class TradingSystem:
         self._mh_weight_collapse_minutes = 0
         self._mh_intraday_retrain_count = 0
         self._mh_cb3_ready_minutes = 0   # [MW0601 482차 / G-1]
+        self._mh_cb3_would_halt_minutes = 0   # [MW0601 490차 / F-G]
+        self._mh_cb3_would_halt_entries = 0
+        self._mh_cb3_would_halt_pnl_krw = 0.0
+        self._mh_cb3_would_halt_now = False
         self._mh_cfg_reachable_min = 0   # [MW0601 482차 / G-3]
         self._mh_cfg_unreachable_min = 0
         self._mh_cfg_unmeasured_min = 0
@@ -3242,9 +3270,10 @@ class TradingSystem:
                 formula_version, exit_reason, grade, regime,
                 meta_action, hurst_bucket, hour_bucket,
                 was_restart_after, had_partial_fill, entry_horizon, entry_source,
-                kelly_advised_skip, raw_grade, entry_qty, checklist_pass_count)
+                kelly_advised_skip, raw_grade, entry_qty, checklist_pass_count,
+                exit_stage)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -3288,8 +3317,21 @@ class TradingSystem:
                 # None을 그대로 넘긴다 — 0으로 채우면 "미기록"과 "0개 통과"가
                 # 구분되지 않는다(G3-A② 미측정 ≠ 0).
                 result.get("checklist_pass_count"),
+                # [MW0601 490차 / F-I] 청산 단계. `.get()` 그대로 — 키가 없는
+                # 경로(구버전 result dict)는 NULL = 미측정이며 "OTHER"로 승격하지
+                # 않는다. 승격하면 「분류기가 안 돌았다」가 「분류했는데 미분류」로
+                # 위장한다(계측 4원칙 ②).
+                result.get("exit_stage"),
             ),
         )
+        # [MW0601 490차 / F-G] CB③ 조건 성립 창에서 진입한 포지션의 손익 누산.
+        # ⚠ **레그를 세지 않고 레그 금액을 합산한다** — 한 포지션의 모든 청산 레그
+        #   합계가 그 포지션의 실현 순손익이므로 이것이 포지션 단위 집계다
+        #   (계측 4원칙 ①. 417차가 레그 **개수**로 집계해 인과 없는 상관을 만든 것과
+        #   구분할 것 — 그때 깨진 것은 카운트였지 합산이 아니었다).
+        if self._entry_in_cb3_would_halt:
+            self._mh_cb3_would_halt_pnl_krw += float(executed_metrics["net_pnl_krw"])
+
         try:
             from utils.db_utils import fetch_recent_ev
             _ev = fetch_recent_ev(20)
@@ -4731,8 +4773,54 @@ class TradingSystem:
         )
         self._on_gbm_retrain_done(_result, _is_wu)
 
+    def _dashboard_call(self, fn) -> None:
+        """[MW0601 490차 / F-L] 대시보드 갱신을 **반드시 메인 Qt 스레드에서** 실행한다.
+
+        메인 스레드에서 호출되면 즉시 실행하고, 그렇지 않으면
+        `_daily_close_ui_sig`(QueuedConnection) 로 넘긴다 — 304차 후속이 만든
+        그 통로를 그대로 재사용한다(새 기전을 만들지 않는다).
+
+        왜 필요한가 (2026-08-24 이상점 1-12, P0):
+          396차 `33e0e60` 이 `daily_close()` 백그라운드 스레드에서
+          `_poll_gbm_retrain_subprocess()` → `_on_gbm_retrain_done()` 을 호출하게
+          만들었는데, 그 안의 `self.dashboard.set_model_status(...)` 가 Qt 위젯을
+          워커 스레드에서 직접 만져 **GIL 을 쥔 채 반환하지 않는 데드락**이 됐다.
+          15:40:20 이후 매분 파이프라인·30초 스케줄러·CB·FZ-1 워치독이 전부
+          함께 멈췄고(프로세스는 살아 있어 런처도 재기동하지 않았다), 마감 절차
+          12종이 미실행으로 끝났다. 304차 후속이 고친 것과 **같은 함수·같은 유형**
+          이며 그때는 크래시, 이번엔 데드락이었다.
+
+        ⚠ 폴링(`_poll_gbm_retrain_subprocess`) 자체는 되돌리지 않는다 — 381차
+          20분 지연의 정당한 해결책이다. 고치는 것은 **그 폴링이 GUI 콜백까지
+          같은 스레드에서 실행한다는 것**뿐이다.
+        """
+        try:
+            _app = QApplication.instance()
+            _on_main = (_app is not None
+                        and QThread.currentThread() is _app.thread())
+        except Exception:
+            _on_main = False   # 판정 불가면 안전한 쪽(큐 경유)으로 보낸다
+        if _on_main:
+            fn()
+        else:
+            _daily_close_ui_sig.request.emit(fn)
+
     def _on_gbm_retrain_done(self, result: dict, is_warmup: bool) -> None:
-        """GBM 재학습 daemon thread 완료 콜백 — 메인 스레드에서 실행."""
+        """GBM 재학습 완료 콜백.
+
+        ⚠ **메인 스레드 또는 `daily_close()` 백그라운드 스레드에서 호출될 수 있다.**
+        (종전 docstring 은 "메인 스레드에서 실행" 이라고 못박고 있었으나 396차
+         `33e0e60` 이후로 그것이 참이 아니다 — 2026-08-24 P0 동결의 원인.)
+
+        ⇒ **대시보드 접근은 반드시 `self._dashboard_call(...)` 경유**로 할 것.
+          `self.dashboard.*` 를 여기서 직접 부르면 워커 스레드에서 Qt 위젯을
+          만지게 되어 데드락·access violation 이 난다.
+          `tests/test_490_no_gui_from_worker_thread.py` 가 이 불변식을 고정한다.
+
+        🔵 모델 교체 예약(193차) · CB⑤ 임계 복원 · `_gbm_retrain_done_event.set()`
+          은 GUI 가 아니므로 **현행 위치 그대로 둔다** — 옮기면 `daily_close()` 의
+          대기 해제가 큐에 밀려 다시 20분 지연이 된다.
+        """
         self._gbm_retrain_running = False
         self._gbm_retrain_started_at = None  # P1-B: 타임아웃 허위 경고 방지
         self._gbm_retrain_done_event.set()  # daily_close 대기 해제
@@ -4807,8 +4895,13 @@ class TradingSystem:
                 f"{result.get('elapsed_sec', '?')}초 데이터={result.get('data_size', '?')}행"
             )
             notify("GBM 배치 재학습 완료", "INFO")
-            self.dashboard.set_model_status(
-                f"GBM {prefix}재학습 완료", f"데이터 {result.get('data_size', '?')}행"
+            # [MW0601 490차 / F-L] 워커 스레드(daily_close)에서도 호출되므로 직접
+            # 만지지 않는다 — 여기가 2026-08-24 15:40:20 영구 동결의 발화 지점이다.
+            _ds = result.get("data_size", "?")
+            self._dashboard_call(
+                lambda: self.dashboard.set_model_status(
+                    f"GBM {prefix}재학습 완료", f"데이터 {_ds}행"
+                )
             )
             # ATR 동적 threshold 갱신 제거 (P2) — rolling σ×k 방법3이 매분 갱신
             self._reset_rollback_active = None
@@ -4844,7 +4937,8 @@ class TradingSystem:
                 )
         else:
             log_manager.learning(f"[GBM] {prefix}재학습 건너뜀: {result.get('error', '')}")
-            self.dashboard.set_model_status("대기")
+            # [MW0601 490차 / F-L] 실패 경로도 같은 통로로 — 워커 스레드 도달 가능.
+            self._dashboard_call(lambda: self.dashboard.set_model_status("대기"))
             rollback = getattr(self, "_reset_rollback_active", None)
             if rollback:
                 registry = self._load_feature_registry()
@@ -4858,10 +4952,15 @@ class TradingSystem:
                 self._reset_rollback_active = None
         # 재학습 완료(성공/실패 모두) 후 SHAP 패널 버튼 상태 갱신
         # 파이프라인이 멈춘 상태(장 마감 후 등)에서도 버튼 enabled 복원
-        try:
-            self._update_shap_dashboard()
-        except Exception:
-            pass
+        # [MW0601 490차 / F-L] `_update_shap_dashboard()` 끝에 `self.dashboard.update_shap(...)`
+        # 가 있다 — 위 `set_model_status` 와 같은 이유로 메인 스레드 경유가 필요하다.
+        # ⚠ 예외는 여기서 삼키지 않고 `_apply_dashboard_call` 이 로그로 남긴다.
+        def _shap_refresh():
+            try:
+                self._update_shap_dashboard()
+            except Exception:
+                pass
+        self._dashboard_call(_shap_refresh)
 
     # _log_threshold_monitor() — P2에서 제거 (91차)
     # rolling σ × k 방법3이 HORIZON_THRESHOLDS를 매분 갱신하므로 ATR 동적 불필요
@@ -7009,6 +7108,13 @@ class TradingSystem:
         # 세야 "몇 분 중 몇 분"이 성립한다.
         if self.circuit_breaker.cb3_ready:
             self._mh_cb3_ready_minutes += 1
+        # [MW0601 490차 / F-G] 그중 **임계 미달**이라 발동 조건까지 성립한 분.
+        # ⚠ 이 값은 판정에 관여하지 않는다 — CB③ 자동진입 차단은 한시예외로 비활성이며
+        #   (`CB3_P4_GRADE_BLOCK_ENABLED=False`, 절대원칙 §2), 여기서 그 예외를
+        #   되돌리지 않는다. 되돌릴지 판단할 **근거**를 만들 뿐이다.
+        self._mh_cb3_would_halt_now = bool(self.circuit_breaker.cb3_would_halt)
+        if self._mh_cb3_would_halt_now:
+            self._mh_cb3_would_halt_minutes += 1
         # [MW0601 482차 / G-3] ConfFloorGuard 3상태 — 같은 분모로 센다.
         _cfg_state = self.ensemble.conf_floor_state
         if _cfg_state == "reachable":
@@ -9222,6 +9328,14 @@ class TradingSystem:
                     # P2-b: 셋업 컨텍스트 저장 (trade 기록 시 태그로 사용)
                     _hurst_now = float(features.get("hurst", 0.5) or 0.5)
                     self._entry_meta_action  = str(_meta_action or "")
+                    # [MW0601 490차 / F-G] 이 진입이 「CB③ 조건 성립」 분에서 났는가.
+                    # 청산 레그마다 이 플래그를 읽어 손익을 포지션 단위로 누산한다.
+                    # ⚠ 다음 진입이 덮어쓸 때까지 유지된다 — 한 포지션의 모든 청산
+                    #   레그는 다음 진입보다 먼저 오므로 귀속이 어긋나지 않는다
+                    #   (`_entry_meta_action` 과 같은 수명 규약).
+                    self._entry_in_cb3_would_halt = bool(self._mh_cb3_would_halt_now)
+                    if self._entry_in_cb3_would_halt:
+                        self._mh_cb3_would_halt_entries += 1
                     # [401차, 372차 제안 반영] 체크리스트 등급(_final_grade)과 별개로
                     # 원시 확신도 등급(grade, EnsembleDecision.compute() 산출)을 보존
                     self._entry_raw_grade    = str(grade or "")
@@ -9341,21 +9455,38 @@ class TradingSystem:
                             f"(폴백중립, raw={_meta_size:.2f})"
                             if _meta_size_eff != _meta_size else ""
                         )
+                        # [MW0601 490차 / F-K] `meta=0.50` 이 **실측인지 무정보
+                        # 폴백인지** 로그만으로 구분되지 않았다(계측 4원칙 ④).
+                        # 2026-08-24 차단 9건 중 8건이 `meta=0.50` 이었고, 폴백임을
+                        # 확정하려면 같은 분 `[MetaGate]` 로그와 교차대조해야 했다.
+                        # ⚠ `_mn_tag` 로는 안 된다 — 그것은 **중립화가 적용됐을 때만**
+                        #   붙고, `JOINT_GATE_META_FALLBACK_NEUTRAL` 는 기본 False 라
+                        #   라이브에서는 항상 빈 문자열이다.
+                        # 🔴 표기만 늘린다 — 임계·합성 방식 무변경(431차 확정 결정,
+                        #   캠페인 [7] PASS 게이트).
+                        _fb_tag = "<fallback>" if _meta_size_fb else ""
                         log_manager.signal(
-                            f"[JointGateBlock] MetaGate({_meta_size_eff:.2f}){_mn_tag}"
+                            f"[JointGateBlock] MetaGate({_meta_size_eff:.2f}){_fb_tag}{_mn_tag}"
                             f"×ToxGate({_tox_size:.2f})"
                             f"={_joint_mult:.3f} < 0.50 → 진입 차단"
                         )
                         log_manager.trade(
                             f"[JointGateBlock 차단] {raw_dir_str} {_qty_auto}계약 {_final_grade}급 "
-                            f"(meta={_meta_size_eff:.2f}{_mn_tag} tox={_tox_size:.2f} "
+                            f"(meta={_meta_size_eff:.2f}{_fb_tag}{_mn_tag} tox={_tox_size:.2f} "
                             f"joint={_joint_mult:.3f})"
                         )
                         # [EOD리포트 진단용] 체크리스트 통과 후 2차 게이트(JointGateBlock)
                         # 차단임을 entry_block_reason에 기록 — 미기록 시 EOD 리포트에서
                         # "체결실패"로만 뭉뚱그려져 원인이 JointGateBlock인지 구분 불가.
+                        # [MW0601 490차 / F-K] EOD 리포트가 읽는 사유 문자열에도
+                        # 같은 표기를 남긴다 — 로그와 DB 가 서로 다른 사실을 말하면
+                        # 사후 대조에서 어느 쪽을 믿을지 알 수 없다.
+                        # ⚠ 접미사만 늘렸다. 기존 부분문자열 분류기 3곳
+                        #   (`_categorize_block_reason` · `generate_gate_blocking_report`
+                        #    · 캠페인 LIKE)이 보는 앞부분은 그대로다 — 461차 `mdd_pct`
+                        #   유형의 조용한 재정의를 만들지 않는다.
                         _entry_block_reason = (
-                            f"[차단] JointGateBlock — meta={_meta_size_eff:.2f} "
+                            f"[차단] JointGateBlock — meta={_meta_size_eff:.2f}{_fb_tag} "
                             f"tox={_tox_size:.2f} joint={_joint_mult:.3f} < 0.50"
                         )
                         # [327차] JointGateBlock counterfactual 섀도우 — hurst_gate_shadow와
@@ -11693,6 +11824,31 @@ class TradingSystem:
             logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)
         self._grade_x_count = 0   # 내일을 위해 리셋
         self._reset_model_health_counters()   # [457차 G5] — insert_daily 이후에만
+        # ── [MW0601 490차 / F-G] CB③ 조건 성립 축 — **무조건** 1줄 ──────────────
+        # 2026-08-24 에 이 값(조건성립 30분 · 그 창 2포지션 · -128,195원)이 운영 로그
+        # 어디에도 없어 `[DBG-CB]` DEBUG 라인을 손으로 재집계해야 했다(이상점 1-8).
+        # `[CB③ 비활성]` 은 `logger.debug` × `LOG_LEVEL=INFO` 라 종일 0건 출력이고,
+        # 482차 G-1 의 `cb3_ready_minutes` 는 「가용 분」만 세서 임계 미달 분을 못 본다.
+        #
+        # ⚠ mc-conf 경보(`_cfg_txt`)에 붙이지 않는다 — 그 문자열은 **경보가 발화할
+        #   때만** 출력되므로, 조건 성립 계측이 다른 경보의 발화 여부에 종속된다.
+        #   계측은 사건이 없을 때 「0분」이라고 말할 수 있어야 한다(계측 4원칙 ②).
+        # ⚠ `_mh_snap_eod` 를 읽는다 — 이 지점은 `_reset_model_health_counters()`
+        #   **뒤**라 `self._mh_*` 직접 읽기는 항상 0 이다(483차 P1-A).
+        # 🔴 판정에 관여하지 않는다 — CB③ 자동진입 차단은 한시예외로 비활성이며
+        #   (`CB3_P4_GRADE_BLOCK_ENABLED=False`, 절대원칙 §2) 여기서 되돌리지 않는다.
+        log_manager.system(
+            "[CB③계측] 조건성립 %d분 / 판정가능 %d분 / 파이프라인 %d분"
+            " · 그 창 진입 %d포지션 · 손익 %+,.0f원"
+            " (임계 acc30m<%.2f · HALT 차단은 한시예외로 비활성)"
+            % (int(_mh_snap_eod.get("cb3_would_halt_minutes") or 0),
+               int(_mh_snap_eod.get("cb3_ready_minutes") or 0),
+               int(_mh_snap_eod.get("pipeline_minutes") or 0),
+               int(_mh_snap_eod.get("cb3_would_halt_entries") or 0),
+               float(_mh_snap_eod.get("cb3_would_halt_pnl_krw") or 0.0),
+               float(_cb3_avail_eod.get("threshold") or 0.0)),
+            "INFO",
+        )
         _ccf_today = self._checklist_conf_fail_count   # [P3] 리포트 전달용 — 리셋 전에 캡처
         log_manager.system(
             f"[P3] 금일 Checklist 신뢰도 차단: {_ccf_today}회"
@@ -11922,6 +12078,11 @@ class TradingSystem:
         # WaitDC 마커 — retrain_eod.py가 daily_close 완료를 감지하는 전용 파일.
         # _exit_normally는 launcher가 읽은 직후 삭제하므로 EOD 재학습(16:10)이 항상 놓쳤음.
         # 이 파일은 launcher가 건드리지 않으므로 retrain_eod.py가 안정적으로 감지 가능.
+        #
+        # 🔴 [MW0601 490차 / F-N] **이 위치를 앞으로 옮기지 마라.** 이 마커의 뜻은
+        #   「마감 절차가 **끝났다**」이고 EOD 재학습이 pkl 경합 회피의 근거로 쓴다.
+        #   "일찍 알리고 싶다"는 요구는 `_run_daily_close()` 진입부의
+        #   `daily_close_started_*.txt` 가 이미 처리한다(그쪽 주석 참조).
         try:
             _dc_marker = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
@@ -12668,6 +12829,75 @@ class TradingSystem:
             },
         }
 
+    def _log_runtime_versions(self) -> None:
+        """[MW0601 490차 / F-B] 기동 시 런타임 버전을 1회 로그로 남긴다 (이상점 1-5).
+
+        ## 왜 (N-12 · 3회째 이월)
+
+        `scipy=1.5.4` 는 32비트 DLL 충돌 회피 목적이라 **버전 드리프트가 곧 크래시**로
+        나타난다(CLAUDE.md 운영환경). 그런데 라이브 런타임의 버전이 어떤 운영 로그에도
+        없어서, 점검이 매번 「확인 불가」로 이월했다 — 2026-08-24 장후에도
+        `20260824_SYSTEM.log` · `_LEARNING.log` · `_DEBUG.log` 전수 grep 0건이었다.
+        재학습 쪽(`py310_64`)은 `retrain_eod_*.log` 첫 줄이 찍고 있는데 라이브 쪽만
+        비어 있었다.
+
+        🔵 완전한 공백은 아니었다 — `logs/crash_fault.log` 의 `[START]` 줄이
+          `Python 3.7.13 32bit` 를 남긴다. 다만 그 파일은 **크래시 진단용**이라
+          정기 점검이 보는 로그 집합 밖이고, 32비트 여부 말고 scipy·sklearn·joblib
+          버전은 거기에도 없다. 그래서 SYSTEM 로그에 한 줄을 세운다.
+
+        ## 규약
+
+        - `[Capital]`(2026-08-06) · `[Capability]` 와 같은 「기동 시 1회 정합성 로그」
+          관례를 잇는다.
+        - **자동 조치는 하지 않는다.** 어긋난 사실을 WARNING 으로 알리기만 한다 —
+          437차가 제거한 계좌 대체 폴백과 같은 부류의 위험을 만들지 않는다.
+        - import 실패·속성 부재는 전부 삼켜 **기동을 막지 않는다**. 다만 값 자리에는
+          `?` 가 아니라 `미측정` 을 적는다 — 「못 읽었다」와 「그 값이다」를 같은
+          문자열로 쓰지 않는다(계측 4원칙 ②).
+        - ⚠ `py37_32` 에서 돌아야 하므로 3.8+ 문법(walrus 등)을 쓰지 않는다.
+        """
+        try:
+            import platform as _plat
+
+            def _ver(mod_name):
+                try:
+                    _m = __import__(mod_name)
+                    return str(getattr(_m, "__version__", "") or "미측정")
+                except Exception:
+                    return "미측정"
+
+            try:
+                _bits = _plat.architecture()[0]
+            except Exception:
+                _bits = "미측정"
+            _pyver = "%d.%d.%d" % (sys.version_info[0], sys.version_info[1],
+                                   sys.version_info[2])
+            _msg = ("[Runtime] Python %s %s | scipy=%s | sklearn=%s | joblib=%s | numpy=%s"
+                    % (_pyver, _bits, _ver("scipy"), _ver("sklearn"),
+                       _ver("joblib"), _ver("numpy")))
+            logger.info(_msg)
+            log_manager.system(_msg, "INFO")
+
+            # 기대값 불일치는 **알리기만** 한다. 기대값은 CLAUDE.md 운영환경 표.
+            _expect = (("Python", _pyver, "3.7"), ("아키텍처", _bits, "32bit"),
+                       ("scipy", _ver("scipy"), "1.5.4"))
+            _bad = []
+            for _name, _got, _want in _expect:
+                if _got == "미측정":
+                    _bad.append("%s=미측정" % _name)
+                elif not str(_got).startswith(_want):
+                    _bad.append("%s=%s (기대 %s)" % (_name, _got, _want))
+            if _bad:
+                _w = ("[Runtime] ⚠ 운영환경 기대값과 다르다 — %s. "
+                      "scipy 는 32비트 DLL 충돌 회피 목적이라 드리프트가 크래시로 "
+                      "나타난다(CLAUDE.md 운영환경). **자동 조치는 하지 않는다**"
+                      % ", ".join(_bad))
+                logger.warning(_w)
+                log_manager.system(_w, "WARNING")
+        except Exception as _rt_e:
+            logger.warning("[Runtime] 버전 로그 실패(무해): %s", _rt_e)
+
     def _log_capital_profile(self) -> None:
         """[2026-08-06] 기동 시 자본 프로파일 1회 로그 + 정합성 경고.
 
@@ -12883,6 +13113,7 @@ class TradingSystem:
         self.dashboard.show()
         self._log_broker_capability_summary()
         self._log_capital_profile()
+        self._log_runtime_versions()   # [MW0601 490차 / F-B] — N-12 영구 해소
         if hasattr(self.dashboard, "btn_kill"):
             self.dashboard.btn_kill.clicked.connect(
                 lambda: self.activate_kill_switch("대시보드 긴급정지")
@@ -13149,6 +13380,30 @@ class TradingSystem:
             self._daily_close_done = True  # 중복 진입 방지 — 스레드 완료 전에 플래그 선점
 
             def _run_daily_close():
+                # ── [MW0601 490차 / F-N] 「시작했다」 마커 ────────────────────
+                # `daily_close_done_*.txt` 는 마감 절차의 **거의 마지막**에 기록된다
+                # (main.py `daily_close()` 끝, WaitDC 마커). 그래서 마감이 중간에
+                # 죽으면 EOD 재학습이 20분을 통째로 헛기다린다 — 2026-08-24 실측
+                # (15:40:20 동결 → 16:00:13 강제 진행, 이상점 1-15).
+                #
+                # ⚠ `done` 마커를 앞으로 옮기면 **뜻이 뒤집힌다.** 그것은 "마감
+                #   완료"이고 EOD 는 그것을 pkl 경합 회피의 근거로 쓴다. 그래서
+                #   마커를 둘로 나눈다 — 상태를 값 하나로 뭉개지 않는다
+                #   (계측 4원칙 ②·④).
+                #     started : 여기(진입 직후)          — "절차가 시작됐다"
+                #     done    : daily_close() 끝(무변경) — "절차가 끝났다"
+                #   `started` 만 있고 `done` 이 없으면 = **중간에 죽었다**.
+                try:
+                    _sm = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "data",
+                        "daily_close_started_%s.txt" % datetime.date.today().strftime("%Y%m%d"),
+                    )
+                    with open(_sm, "w", encoding="utf-8") as _sf:
+                        _sf.write(datetime.datetime.now().isoformat() + "\n")
+                except Exception as _sm_e:
+                    logger.warning("[DailyClose] started 마커 기록 실패 (무해): %s", _sm_e)
+
                 _emit_done = False
                 try:
                     self.daily_close()

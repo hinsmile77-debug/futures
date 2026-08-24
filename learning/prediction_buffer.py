@@ -238,6 +238,12 @@ class PredictionBuffer:
             # `or`가 아니라 `.get()` 그대로 — 0.0은 유효값이므로 falsy 승격 금지
             # (그 승격이 바로 이 채널이 재는 결함이다). 키 부재는 NULL.
             (decision.get("meta_gate") or {}).get("size_multiplier_raw"),
+            # [MW0601 490차 / F-K] 그 raw 가 **지워졌는가**(무정보 폴백 발동 여부).
+            # ⚠ `.get(key, 0)` 금지 — 키가 없으면 NULL(미측정)로 둔다. MetaGate FLAT
+            #   early-return 경로는 이 키를 반환하지 않으며, 그 행은 모집단 밖이라
+            #   NULL 이 정직하다(위 `meta_size_raw` 와 같은 규약, 계측 4원칙 ②).
+            ((lambda _v: None if _v is None else int(bool(_v)))(
+                (decision.get("meta_gate") or {}).get("size_multiplier_fallback"))),
             # [MW0601 473차 / F-8] ToxicityGate `signals`의 스프레드 2값.
             # 게이트는 매분 계산해 반환하는데 소비처가 0곳이라 그대로 버려졌다.
             # ⚠ `.get(key, 0)` 금지 — 키가 없으면 NULL로 둔다. 0.0은 "스프레드 0"과
@@ -285,10 +291,10 @@ class PredictionBuffer:
                        quantile_q10_pt, quantile_q90_pt, meta_gate_horizon,
                        coherence_blocked,
                        confidence_raw, confidence_smoothed, weight_collapsed,
-                       meta_size_raw,
+                       meta_size_raw, meta_size_fallback,
                        spread_ticks, spread_extreme_shadow,
                        fp_psi, fp_level
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 
