@@ -1,0 +1,1027 @@
+# 미륵이 증거 다이제스트 — 2026-08-14 / POST
+
+- 생성 2026-08-14 16:22:56 KST · PC **MW0601** (`DeskTop-MW0601`)
+- 리포 `/sessions/compassionate-dazzling-gates/mnt/futures`
+- 점검 범위: pre, intra, post (장전=pre / 장중=intra / 장후=post)
+- 날짜 토큰: `20260814` · `2026-08-14` · `260814` · `0814`
+
+## 1. 당일 파일 인벤토리 (날짜 토큰 자동탐색)
+
+총 **20개** 파일 · 20개 그룹
+
+| 그룹(파일명 패턴) | 개수 | 경로 | 크기 | 최종기록 |
+|---|---|---|---|---|
+| `daily_close_done_{DATE}.txt` | 1 | `data/daily_close_done_20260814.txt` | 28B | 08-14 15:40 |
+| `eod_retrain_done_{DATE}.txt` | 1 | `data/eod_retrain_done_20260814.txt` | 133B | 08-14 15:48 |
+| `launcher_{DATE}_084001_20710.log` | 1 | `logs/Mireuk_batch/launcher_20260814_084001_20710.log` | 1.5MB | 08-14 15:40 |
+| `retrain_eod_{DATE}.log` | 1 | `logs/retrain_eod_20260814.log` | 33.3KB | 08-14 16:05 |
+| `retrain_intraday_{DATE}_093659.log` | 1 | `logs/retrain_intraday_20260814_093659.log` | 2.4KB | 08-14 09:37 |
+| `retrain_intraday_{DATE}_103759.log` | 1 | `logs/retrain_intraday_20260814_103759.log` | 2.4KB | 08-14 10:38 |
+| `retrain_intraday_{DATE}_112159.log` | 1 | `logs/retrain_intraday_20260814_112159.log` | 2.4KB | 08-14 11:22 |
+| `retrain_intraday_{DATE}_150100.log` | 1 | `logs/retrain_intraday_20260814_150100.log` | 2.4KB | 08-14 15:01 |
+| `strategy_report_{DATE}_154023.txt` | 1 | `data/daily_reports/strategy_report_20260814_154023.txt` | 1.9KB | 08-14 15:40 |
+| `{DATE}_DATA.log` | 1 | `logs/20260814_DATA.log` | 341.6KB | 08-14 15:34 |
+| `{DATE}_DEBUG.log` | 1 | `logs/20260814_DEBUG.log` | 221.5KB | 08-14 15:09 |
+| `{DATE}_HEALTH.log` | 1 | `logs/20260814_HEALTH.log` | 3.6KB | 08-14 15:03 |
+| `{DATE}_HOGA.log` | 1 | `logs/20260814_HOGA.log` | 48.5MB | 08-14 15:40 |
+| `{DATE}_LEARNING.log` | 1 | `logs/20260814_LEARNING.log` | 286.5KB | 08-14 15:40 |
+| `{DATE}_MICRO.log` | 1 | `logs/20260814_MICRO.log` | 975.9KB | 08-14 15:38 |
+| `{DATE}_PROBE.log` | 1 | `logs/20260814_PROBE.log` | 96.7KB | 08-14 15:34 |
+| `{DATE}_SIGNAL.log` | 1 | `logs/20260814_SIGNAL.log` | 612.6KB | 08-14 15:40 |
+| `{DATE}_SYSTEM.log` | 1 | `logs/20260814_SYSTEM.log` | 747.9KB | 08-14 15:40 |
+| `{DATE}_TRADE.log` | 1 | `logs/20260814_TRADE.log` | 3.6KB | 08-14 15:40 |
+| `{DATE}_WARN.log` | 1 | `logs/20260814_WARN.log` | 28.5KB | 08-14 15:40 |
+
+## 2. 코드·커밋 상태
+
+- HEAD `e8a56ea` · 브랜치 `v9-dev` · 미커밋 444건
+```
+M .claude/commands/dailycheck.md
+ M .claude/skills/mireuk-daily-check/RUN_ON_MW0602.md
+ M .claude/skills/mireuk-daily-check/SKILL.md
+ M .claude/skills/mireuk-daily-check/config_dailycheck_targets.json
+ M .claude/skills/mireuk-daily-check/references/evidence_map.md
+ M .claude/skills/mireuk-daily-check/references/invariants.md
+ M .claude/skills/mireuk-daily-check/references/phases.md
+ M .claude/skills/mireuk-daily-check/references/postmortem.md
+ M .claude/skills/mireuk-daily-check/references/report_template.md
+ M .claude/skills/mireuk-daily-check/scripts/collect_evidence.py
+ M .gitignore
+ M CLAUDE.md
+ M INSTALL.bat
+ M LAUNCH_API.bat
+ M ROADMAP.md
+ M SETUP_GUIDE.md
+ M backtest/param_optimizer.py
+ M backtest/walk_forward.py
+ M challenger/challenger_db.py
+ M challenger/challenger_engine.py
+ M challenger/promotion_manager.py
+ M challenger/variants/base_challenger.py
+ M challenger/variants/champion_tp1_skip_trail.py
+ M collection/broker/base.py
+ M collection/broker/cybos_broker.py
+ M collection/broker/factory.py
+ M collection/cybos/api_connector.py
+ M collection/cybos/investor_data.py
+ M collection/cybos/realtime_data.py
+ M collection/kiwoom/api_connector.py
+ M collection/kiwoom/investor_data.py
+ M collection/macro/macro_fetcher.py
+ M collection/macro/micro_regime.py
+ M collection/options/pcr_store.py
+ M collection/provenance.py
+ M config/capital.py
+ M config/constants.py
+ M config/dailycheck_targets.json
+ M config/krx_holidays.py
+ M config/secrets_example.py
+… 외 404건
+```
+
+**당일(2026-08-14) 커밋**
+```
+e8a56ea [MW0602] 459차: F1 승패 집계 단위(레그→포지션) + F2 SHS CORE 미측정 분리
+fe88f93 [MW0602] 460차: 공용 헬퍼 _spearman 동률 처리 버그 — 사본 2벌 정정 + 회귀테스트
+f75ae87 [MW0602] 458차 후속: [40-B]·[49] 채널 구현 + 기대값 지도 — 손익원천이전 3종
+ab5a103 [MW0602] 458차: 손익 원천 이전 제안서 — P7 딥다이브 (미승인, 라이브 무변경)
+68d31a6 [MW0602] 457차: 모델 메타 사이드카 + GuardFair 유효성 판정 + ConstOut 재학습 스코프
+8ef8878 [MW0602] 456차: ZeroDiag 오진 수정 + min_conf 완화하한 + JointGate 폴백 섀도
+a581231 [MW0602] 469차: 일일 점검 스킬 — 승패 사후검증 편입 + 313차 방법론 확정 + 불변식 감시 누락 수정
+```
+
+**최근 커밋 12건**
+```
+e8a56ea [MW0602] 459차: F1 승패 집계 단위(레그→포지션) + F2 SHS CORE 미측정 분리
+fe88f93 [MW0602] 460차: 공용 헬퍼 _spearman 동률 처리 버그 — 사본 2벌 정정 + 회귀테스트
+f75ae87 [MW0602] 458차 후속: [40-B]·[49] 채널 구현 + 기대값 지도 — 손익원천이전 3종
+ab5a103 [MW0602] 458차: 손익 원천 이전 제안서 — P7 딥다이브 (미승인, 라이브 무변경)
+68d31a6 [MW0602] 457차: 모델 메타 사이드카 + GuardFair 유효성 판정 + ConstOut 재학습 스코프
+8ef8878 [MW0602] 456차: ZeroDiag 오진 수정 + min_conf 완화하한 + JointGate 폴백 섀도
+a581231 [MW0602] 469차: 일일 점검 스킬 — 승패 사후검증 편입 + 313차 방법론 확정 + 불변식 감시 누락 수정
+6aeccac [MW0601] 461차 고도화: 퍼널 자기검증 + DB폴백 자동검출 + JointGateBlock 폴백비율 집계
+0424f64 [MW0601] 461차 문서: 한시예외 4번째 항목 등록 + CB③ 임계 문구 정정
+c68e7b4 [MW0601] 461차 후속: Live MDD 분모 정합(자본대비) + 거래0건 폴백 미측정 표기
+36d1687 [MW0601] 461차: 진입 퍼널 등급상향 경로 누락 수정 + 증거 다이제스트 덮어쓰기 방지
+4fae03d [MW0601] 459차: 일일 점검 스킬 MW0601 실측 정밀조정 — 태그 파싱 수정 + 거래일 요약 신설
+```
+
+PC명 태그 규약: 최근 12건 모두 `[MW####]` 접두 확인
+
+## 3. 설정 불변식 — 절대원칙·한시예외 (config/settings.py)
+
+| 상수 | 현재값 | 기대값 | 판정 | 왜 보는가 |
+|---|---|---|---|---|
+| `CB_CONSEC_STOP_LIMIT` | `9999` | `9999` | 일치 | 모의투자 한정 예외(CB② 사실상 비활성). 실투 전환 전 2~3 복원 필수. 재검토 기한 2026-08-29 |
+| `CB3_P4_GRADE_BLOCK_ENABLED` | `False` | `False` | 일치 | 30m 퇴역으로 CB③-P4 상시 RESTRICTED 고착 → 차단만 비활성 (296·297차) |
+| `FP_CRITICAL_GRADE_BLOCK_ENABLED` | `False` | `False` | 일치 | PSI 계측 결함으로 차단만 비활성. 371차 분위수 재설계 후 라이브 관찰 중 |
+| `MAX_CONTRACTS` | `3` | `3` | 일치 | 431차 10→3 인하. 실전 자본 확정 시 재산출 대상 |
+| `SIZING_TARGET_CAPITAL_ENABLED` | `True` | `True` | 일치 | 모의투자 한정. False 전환은 단독 지시로 읽지 말 것 (손실 구간 복원 위험) |
+| `SIZING_TARGET_CAPITAL_KRW` | `50_000_000` | — | 값 확인 | 현행 5천만원. 실전 전환 기준 ⑧의 남은 해제 조건 |
+| `HURST_WINDOW_N` | `90` | `90` | 일치 | 317차 재보정. 26주 WFA마다 재검증 |
+| `HURST_MAX_LAG` | `9` | `9` | 일치 | 317차 재보정. 26주 WFA마다 재검증 |
+| `VALIDATION_REPORT_KEEP_WEEKS` | `4` | `4` | 일치 | 주간 리포트 FIFO 보관 |
+| `CB_ACCURACY_MIN_30M` | `0.28` | `0.28` | 일치 | CB③ 임계. 98차(2026-06-02) FLAT 예측 제외 + 0.35→0.28. CLAUDE.md 문구 정정 완료(461차 F-3) |
+| `CB_ACC_RESTRICTED_MIN` | `0.30` | `0.30` | 일치 | WATCH→RESTRICTED 경계. 30m 구조적 성능(0.3052)과 거의 같아 CB③-P4 비활성의 직접 원인 |
+| `CB_ACCURACY_MIN_30M_STRICT` | `0.42` | `0.42` | 일치 | 과신 연속 시 강화 임계 (0.50→0.42 완화) |
+| `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED` | `False` | `False` | 일치 | 311차 후속4가 처음부터 False로 신설(섀도). CLAUDE.md 한시예외 4번째 + 실전 전환 기준 ⑨ 등재(461차 F-4). ⚠ 복원 선행조건: sp… |
+| `LIMIT_PIN_ENTRY_BLOCK_ENABLED` | `True` | `True` | 일치 | 호가 상하한 핀 진입 차단 — 켜져 있어야 정상 |
+| `HURST_SOFT_BLOCK_ENABLED` | `True` | `True` | 일치 | Hurst 소프트 차단(사이즈 0.5배). 316~318차 재보정 계열 |
+| `HEALTH_DEGRADED_BLOCK_AUTO_ENTRY` | `True` | `True` | 일치 | Degraded 상태 자동진입 차단 — 켜져 있어야 정상 |
+| `CB_PIPE_PAUSE_MS` | `5_000` | `5_000` | 일치 | CB⑤ 실질 구현. `CB_API_LATENCY_LIMIT` 은 Kiwoom 레거시로 Cybos에서 미사용 |
+| `ENTRY_HORIZON_B1` | `3.2` | `3.2` | 일치 | 1m/3m 경계 [374차 1.5→3.5, 387차 3.5→3.2] — 드리프트 항목 |
+| `ENTRY_HORIZON_B2` | `4.4` | `4.4` | 일치 | 3m/5m 경계 [374차 2.5→4.0, 387차 4.0→4.4] — 드리프트 항목 |
+| `CB_DAILY_HALT_FULL_BLOCK` | `3` | `3` | 일치 | HALT 3회 → 완전 관망 |
+| `MODEL_LABEL_STATE_UNLOCK_ENABLED` | `—` | `True` | **미발견 ⚠** | 468차 G-1. 사이즈 제한 해제를 이벤트→상태 판정으로. **라이브 미검증** — `사이즈 축소 ×0.6` 0건 확인 전까지 CLAUDE.md ⑧ 해제 금지 |
+| `PRE_RETRAIN_DONE_BY_EOD_ENABLED` | `—` | `True` | **미발견 ⚠** | 468차 F-1. EOD 완료로 `_pre_retrain_done` 해제 — G-1의 동반 스위치 |
+| `ZONE_ENTRY_BAN_ENFORCE` | `—` | `False` | **미발견 ⚠** | 462차 P1-a. 🔴 True면 라이브 진입이 즉시 준다. 위반 7건이 오히려 흑자(+596,858원)라 [53] 채널 판정 전까지 False 유지 |
+| `ZONE_ENTRY_BAN_SHADOW_ENABLED` | `—` | `True` | **미발견 ⚠** | 462차 P1-a 섀도. 집행과 무관하게 위반 계측은 항상 켜져 있어야 한다 |
+| `PIPE_LATENCY_EXCLUDE_MODEL_SWAP` | `—` | `True` | **미발견 ⚠** | 462차 P2. 모델 교체 구간을 CB⑤ 판정용 지연에서만 차감(원값은 `raw=…ms`로 존치) |
+| `VALIDATION_CAMPAIGN["mode"]` | `standing` | `standing` | 일치 | 2026-08-01 상시 운영 전환 |
+
+> 이 표는 **의도한 예외가 여전히 의도대로인지** 보는 것이다. `불일치`는 누군가 바꿨다는 뜻이고, 바꿨다면 `dev_memory/DECISION_LOG.md` 에 근거가 있어야 한다.
+
+### 차단 게이트 전수 인벤토리 — 27개 중 **7개 꺼짐**
+
+| 플래그 | 값 | 기록됨 |
+|---|---|---|
+| `CB3_P4_GRADE_BLOCK_ENABLED` | False | 기록됨 |
+| `FP_CRITICAL_GRADE_BLOCK_ENABLED` | False | 기록됨 |
+| `HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY` | False | 기록됨 |
+| `LIMIT_ENTRY_FIRST_ENABLED` | False | 기능토글 |
+| `LOSS_TIER1_QTY1_ENABLED` | False | 기능토글 |
+| `TICKUI_TRACE_ENABLED` | False | 기능토글 |
+| `TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED` | False | 기록됨 |
+| `ATR_EXPIRY_CEILING_ENABLED` | True | — |
+| `CHASE_FILTER_ENABLED` | True | — |
+| `CONF_STUCK_BOOST_ENABLED` | True | — |
+| `COUNTERTREND_CAP_ENABLED` | True | — |
+| `HEALTH_DEGRADED_BLOCK_AUTO_ENTRY` | True | — |
+| `HEALTH_DEGRADED_ENABLED` | True | — |
+| `HEALTH_LATENCY_TREND_ENABLED` | True | — |
+| `HEALTH_POLICY_HOT_RELOAD_ENABLED` | True | — |
+| `HEALTH_RETRAIN_RELAX_ENABLED` | True | — |
+| `HURST_REGIME_ATR_MULT_ENABLED` | True | — |
+| `HURST_SOFT_BLOCK_ENABLED` | True | — |
+| `LIMIT_PIN_ENTRY_BLOCK_ENABLED` | True | — |
+| `LOSS_TIER1_ENABLED` | True | — |
+| `LOSS_TIER1_QTY1_TICK_ENABLED` | True | — |
+| `LOSS_TIER1_TICK_ENABLED` | True | — |
+| `MC_CONF_GAP_ALERT_ENABLED` | True | — |
+| `SIGNAL_DECAY_EXIT_ENABLED` | True | — |
+| `SIZING_TARGET_CAPITAL_ENABLED` | True | — |
+| `TP1_TICK_ENABLED` | True | — |
+| `VOLATILITY_BURST_GUARD_ENABLED` | True | — |
+
+## 4. 마커·리포트 · 로그 다이제스트
+
+_본문 미열람(설정): `20260814_HOGA.log` 48.5MB — 존재와 크기만 증거로 본다_
+
+### 당일 마커·리포트 파일 (전문)
+
+완료 마커(`*_done_*.txt`)는 **있으면 그 단계가 끝났다는 뜻**이고, 없으면 안 끝났거나 안 돌았다는 뜻이다. 어느 쪽인지는 로그로 구분한다.
+
+**`data/daily_close_done_20260814.txt`** — 28B · 08-14 15:40:24
+```
+2026-08-14T15:40:24.014864
+```
+
+**`data/daily_reports/strategy_report_20260814_154023.txt`** — 1.9KB · 08-14 15:40:23
+```
+========================================================
+  미륵이 일일 전략 상태 리포트  2026-08-14 15:40
+========================================================
+  버전    : v1.0  (61일차)
+  판정    : UNDERPERFORM
+  Live(20일): Sh=0.71  MDD(자본대비)=3.3%
+  당일      : WR=100.0%  PF=10.16
+  롤링20일: 누적 +460387원  Sh=0.71  MDD(자본대비)=3.3%  MDD(peak대비)=199.8%
+--------------------------------------------------------
+  CUSUM   : CLEAR (0.00)
+  PSI     : 0.007 (CLEAR)
+  PSI/feat: cvd=0.151  vwap_position=0.007  ofi=0.002
+--------------------------------------------------------
+  권고    : 🔄 교체 후보 탐색
+  사유    : 기대값 하회 — param_optimizer + WFA 즉시 예약. Shadow 전략 2주 가동 후 Hot-Swap 검토.
+--------------------------------------------------------
+  최근20건 순EV: 평균 +5,198원  승률 55.0%  합계 +103,955원
+  등급별 순EV(30일): A=+12,374원(133건,승61%)  C=-25,428원(36건,승61%)
+  호라이즌별 순EV(30일): 1m=+44,452원(15건)  3m=-2,705원(92건)  5m=+5,663원(59건)  ?=-7,238원(3건)
+--------------------------------------------------------
+  CL신뢰도차단: 0회 (앙상블 통과→conf 미달 강제 X)
+--------------------------------------------------------
+  진입후보(conf≥mc): 금일 25분  5일평균 44분 ⚠ 하한 미달
+    └ 변동성(참고): 당일 레인지 23.8pt(5일평균 35.8pt)  1분평균변동 0.83pt(5일평균 0.97pt)
+--------------------------------------------------------
+  진입 퍼널(2026-08-14, 총 369분):
+    FLAT 194 → conf미달 140 → CoherenceGate 10 → 게이트차단 24 → 후보 1 → 진입 1
+    게이트별: 체크리스트항목미달=18  콜드스타트/기타(RegimeOverride)=3  마감시간(신규진입금지)=2  쿨다운=1
+    └ 정합성: OK (칸합계·진입·JointGateBlock 3종 일치)
+========================================================
+```
+
+**`data/eod_retrain_done_20260814.txt`** — 133B · 08-14 15:48:45
+```
+completed: 2026-08-14 15:48:45
+rows: 39799
+cols: 97
+horizons_replaced: 6/6
+t_load_s: 38.6
+t_retrain_s: 181.6
+t_total_s: 220.7
+```
+
+_다이제스트 대상 8/16개 (중요도순). 제외: `retrain_intraday_20260814_103759.log`, `retrain_intraday_20260814_112159.log`, `retrain_intraday_20260814_150100.log`, `20260814_MICRO.log`, `20260814_DATA.log`, `20260814_PROBE.log`, `launcher_20260814_084001_20710.log`, `20260814_DEBUG.log`_
+
+### `logs/20260814_TRADE.log` — 3.6KB · 28행 · 최종 15:40:21
+
+- 형식 평문 · 시각 인식 28행 · INFO=28
+
+<details><summary>첫 5행 / 끝 5행</summary>
+
+```
+2026-08-14 08:41:08 [INFO] TRADE: [Position] 저장 상태가 어제 데이터 — 무시
+2026-08-14 08:41:12 [INFO] TRADE: [ProfitGuard] 설정 업데이트 완료
+2026-08-14 11:48:00 [INFO] TRADE: [Sizer] 미니선물 실효잔고=50,000,000(실제잔고=50,042,406) 기본리스크=1,500,000 신뢰도배수=0.6 레짐배수=1.0 안전배수=1.00(정상) → 3계약 (최소=1)
+2026-08-14 11:48:00 [INFO] TRADE: [진입체크] SHORT→SHORT 2계약 A급(원시C) | sign✅ conf✅ vwap✅ cvd✅ ofi❌ fore✅ prev✅ time✅ risk✅ chas❌ coun✅ | conf=43.8%
+2026-08-14 11:48:00 [INFO] TRADE: [Chejan] 상태=접수 주문번호=2202 code=A0569 방향=SHORT 체결=2 미체결=0
+  …
+2026-08-14 11:48:55 [INFO] TRADE: [청산 완료] PnL=-0.03pt (-3,135원)
+2026-08-14 11:48:59 [INFO] TRADE: [Sizer] 미니선물 실효잔고=50,000,000(실제잔고=50,053,027) 기본리스크=1,500,000 신뢰도배수=0.6 레짐배수=1.0 안전배수=1.00(정상) → 3계약 (최소=1)
+2026-08-14 14:57:00 [INFO] TRADE: [Sizer] 미니선물 실효잔고=50,000,000(실제잔고=50,053,027) 기본리스크=1,500,000 신뢰도배수=0.6 레짐배수=1.0 안전배수=1.00(정상) → 3계약 (최소=1)
+2026-08-14 14:58:00 [INFO] TRADE: [Sizer] 미니선물 실효잔고=50,000,000(실제잔고=50,053,027) 기본리스크=1,500,000 신뢰도배수=0.6 레짐배수=1.0 안전배수=1.00(정상) → 3계약 (최소=1)
+2026-08-14 15:40:21 [INFO] TRADE: [ProfitGuard] 일간 리셋 완료
+```
+
+</details>
+
+**채널** — `TRADE`×28
+
+**컴포넌트 상위 15** — `Chejan`×7, `Position`×5, `Sizer`×4, `주문요청`×3, `ProfitGuard`×2, `진입체크`×1, `체결진입`×1, `체결진입보정`×1, `TickTP1`×1, `TP1 부분청산`×1, `TickStop-S0C`×1, `청산 완료`×1
+
+### `logs/20260814_WARN.log` — 28.5KB · 165행 · 최종 15:40:23
+
+- 형식 평문 · 시각 인식 158행 · WARNING=158, PLAIN=7
+
+<details><summary>첫 5행 / 끝 5행</summary>
+
+```
+2026-08-14 08:41:15 [WARNING] SYSTEM: [LiveDBG] request_futures_balance 호출 account=333044256 | caller=_balance(account_no) |  File "C:\Users\82108\PycharmProjects\futures\collection\broker\cybos_broker.py", line 79, in request_futures_balance |   return self._api.request_futures_balance(account_no)…
+2026-08-14 08:41:15 [WARNING] SYSTEM: [LiveDBG] request_futures_balance TradeInit 완료 0ms
+2026-08-14 08:41:16 [WARNING] SYSTEM: [LiveDBG] request_futures_balance 완료 총 156ms account=333044256
+2026-08-14 08:41:18 [WARNING] SYSTEM: [LiveDBG] _tick_header 간격 2625ms — 메인 스레드 블로킹 발생 | pipe_elapsed=-1 watchdog_alerted=[]
+2026-08-14 08:41:21 [WARNING] SYSTEM: [LiveDBG] _restore_panels_worker 지연 3375ms — live 중단 원인 분석용
+  …
+드리프트: CLEAR (Lv.0)
+액션  : 🔄 교체 후보 탐색
+사유  : 기대값 하회 — param_optimizer + WFA 즉시 예약. Shadow 전략 2주 가동 후 Hot-Swap 검토.
+오늘 PnL: +28730원
+════════════════════════════════════════════════════
+```
+
+</details>
+
+**WARNING — 태그 32종 (상위 12)**
+
+| tag | 건수 | 최초 | 최종 | 대표 |
+|---|---|---|---|---|
+| `LiveDBG` | 41 | 08:41:15 | 15:03:04 | request_futures_balance 호출 account=333044256 | caller=_balance(account_no) |  File "C:\Users\82108\PycharmProjects\futures\collection\broker\cybos_broker.py", line 79, in request_futures_balance |   return self._api.request_futures_balance… |
+| `ScalerRefresh` | 15 | 09:16:59 | 14:56:00 | 5분 누적 수익률 -0.783% (임계 ±0.474%) → D_PRICE_MOMENTUM 트리거 (쿨다운 20분) |
+| `Health` | 13 | 09:01:00 | 15:02:01 | level=WARNING degraded=OFF | latency=1118ms | quality=0.86 | cache_age=99s | exceptions_10m=0 |
+| `PipePerf` | 10 | 09:01:00 | 15:02:01 | total=1118ms | S0=3ms S1=12ms S2=0ms S3=0ms S4=135ms S5=611ms S6=310ms S7=19ms S8=28ms |
+| `CB⑤` | 10 | 09:01:00 | 15:02:01 | 파이프라인 1118ms 경고 (기준 1000ms) [장시작 버스트] [장시작버스트→임계9s] |
+| `CB③-P4` | 10 | 10:56:59 | 14:59:00 | acc30m 단계 전환: NORMAL → RESTRICTED (acc=13.3%) |
+| `SHAP` | 8 | 10:51:01 | 14:10:01 | 슬로우 감지 1225ms (임계 900ms) — 다음 5분 건너뜀 (호라이즌 1m는 유실 없이 밀림) |
+| `ChejanFlow` | 7 | 11:48:00 | 11:48:55 | account='333044256' | balance_side_code='' | buy_balance=0 | closable_qty=0 | code='A0569' | fill_price=0.0 | fill_qty=2 | gubun='0' | order_no='2202' | pending='ENTRY:SHORT qty=2 filled=0 order_no=? reason=진입 req_at=11:48:00.800' | positi… |
+| `ChejanMatch` | 7 | 11:48:00 | 11:48:55 | order_no='2202' | pending='ENTRY:SHORT qty=2 filled=0 order_no=2202 reason=진입 req_at=11:48:00.800' | pending_matched=True |
+| `PendingOrder` | 6 | 11:48:00 | 11:48:55 | set {'kind': 'ENTRY', 'direction': 'SHORT', 'raw_direction': 'SHORT', 'reverse_entry_enabled': False, 'qty': 2, 'price_hint': 1089.82, 'reason': '진입', 'hint_source': '', 'atr': 1.3729, 'grade': 'A', 'stage': None, 'order_no': '', 'filled_q… |
+| `ConstOut` | 4 | 09:35:59 | 15:00:00 | ['3m'] 상수 출력 확정 → 스케일러 재적합 시작 |
+| `HealthPolicy` | 4 | 09:39:00 | 15:03:00 | Degraded 선제차단: streak=1.00+1.00 ≥ 2 (latency=2262ms quality=1.00 cache=0s exc10m=0) | cause=S0(1915ms) |
+
+**채널** — `SYSTEM`×145, `HEALTH`×13
+
+**컴포넌트 상위 15** — `LiveDBG`×41, `ScalerRefresh`×15, `Health`×13, `PipePerf`×10, `CB⑤`×10, `CB③-P4`×10, `SHAP`×8, `ChejanFlow`×7, `ChejanMatch`×7, `-`×7, `PendingOrder`×6, `ConstOut`×4, `HealthPolicy`×4, `Canary`×2, `EntryFillFlow`×2
+
+### `logs/20260814_SYSTEM.log` — 747.9KB · 5555행 · 최종 15:40:39
+
+- 형식 평문 · 시각 인식 5534행 · INFO=5534, PLAIN=21
+
+<details><summary>첫 5행 / 끝 5행</summary>
+
+```
+2026-08-14 08:40:45 [INFO] SYSTEM: [FaultHandler] 로테이션 — 9.5MB >= 8MB 임계 → crash_fault.log.1 (보관 4세대)
+2026-08-14 08:40:45 [INFO] SYSTEM: [FaultHandler] 활성화 | file=logs\crash_fault.log PID=4232 | 행감지=30s all_threads=True
+2026-08-14 08:40:58 [INFO] SYSTEM: [System] DB 초기화 완료
+2026-08-14 08:40:58 [INFO] SYSTEM: [System] 미륵이 초기화
+2026-08-14 08:40:58 [INFO] SYSTEM: 미륵이 초기화
+  …
+2026-08-14 15:40:24 [INFO] SYSTEM: [Shutdown] 정상 종료 플래그 기록: C:\Users\82108\PycharmProjects\futures\data\_exit_normally (daily_close)
+2026-08-14 15:40:24 [INFO] SYSTEM: 자동 종료 예약 — 15초 후 Qt 이벤트 루프 종료
+2026-08-14 15:40:39 [INFO] SYSTEM: [System] 자동 종료 실행
+2026-08-14 15:40:39 [INFO] SYSTEM: 미륵이 자동 종료
+2026-08-14 15:40:39 [INFO] SYSTEM: [Shutdown] 정상 종료 플래그 기록: C:\Users\82108\PycharmProjects\futures\data\_exit_normally (auto_shutdown)
+```
+
+</details>
+
+**채널** — `SYSTEM`×5534
+
+**컴포넌트 상위 15** — `CybosInvestorRaw`×1574, `CybosRT-TICK`×1107, `CybosRT-ROLLOVER`×409, `BAR-CLOSE`×409, `CVD-ANCHOR`×409, `TickUI`×406, `S6Detail`×369, `PipePerf`×369, `System`×98, `MicroRegime`×78, `OptionChain`×50, `IntradayRegime`×32, `CybosSub`×21, `ConstOut`×20, `-`×18
+
+### `logs/20260814_SIGNAL.log` — 612.6KB · 5365행 · 최종 15:40:21
+
+- 형식 평문 · 시각 인식 5365행 · WARNING=2440, INFO=2925
+
+<details><summary>첫 5행 / 끝 5행</summary>
+
+```
+2026-08-14 08:40:42 [INFO] SIGNAL: [DynMC] 기동 복원: LUNCH_RECOVERY  0.570 → 0.416
+2026-08-14 08:40:42 [INFO] SIGNAL: [DynMC] 기동 복원: GAP_OPEN  0.670 → 0.441
+2026-08-14 08:40:42 [INFO] SIGNAL: [DynMC] 기동 복원: OPEN_VOLATILE  0.600 → 0.428
+2026-08-14 08:40:42 [INFO] SIGNAL: [DynMC] 기동 복원: STABLE_TREND  0.540 → 0.420
+2026-08-14 08:40:42 [INFO] SIGNAL: [DynMC] 기동 복원: CLOSE_VOLATILE  0.620 → 0.424
+  …
+2026-08-14 15:09:00 [INFO] SIGNAL: [ZeroDiag] 진입X 원인: FLAT수렴 / conf미달(0.466<mc0.970)
+2026-08-14 15:10:10 [INFO] SIGNAL: [TimeRouter] 시간대 전환 → OTHER: 기타 구간 — 진입 금지
+2026-08-14 15:40:21 [INFO] SIGNAL: [FeatureBuilder] daily reset complete
+2026-08-14 15:40:21 [INFO] SIGNAL: [ScalerMonitor] EOD 일별 집계 저장 | date=2026-08-14 age=28m extreme=757 refresh=41 grade_x=156 cb3=0
+2026-08-14 15:40:21 [INFO] SIGNAL: [ModelHealth] date=2026-08-14 앙상블유효가동률=76.7% | 파이프라인 369분 | ConstOut 5회/7분 {"3m": {"events": 5, "minutes": 7}} | WeightCollapse 79분 | 장중재학습 4회
+```
+
+</details>
+
+**WARNING — 태그 9종 (상위 9)**
+
+| tag | 건수 | 최초 | 최종 | 대표 |
+|---|---|---|---|---|
+| `ScalerFloor` | 1848 | 09:01:01 | 15:00:01 | 1m 'macro_vix' scale=0.0049 → floor=0.10 적용 (z-score 폭발 방지) |
+| `Model` | 176 | 09:00:59 | 14:02:59 | 1m 극단 z-score 1개 피처 감지 (|z|>4) — 스케일러 노후화 또는 이상 데이터 의심 |
+| `Checklist` | 168 | 09:05:59 | 15:06:59 | 신뢰도 미달 34.4% < 39.8% → 강제 X등급 |
+| `ScalerMonitor` | 131 | 09:00:59 | 14:02:59 | ts=09:00 horizon=1m age=2m max_z=+4.58(volume_acceleration) extreme=1 |
+| `WeightCollapse` | 79 | 09:07:59 | 15:07:59 | 실질 가중합 0 (1연속) — 활성기대=['3m'] 중 미배포=['3m'] → flat_score=1.0 안전망 발동 (active_horizons=['3m']) |
+| `ScalerRefresh` | 18 | 08:45:16 | 08:48:01 | 1m CORE 'above_vwap' raw_std≈0(0.0000) → identity(0,1) 강제 (FLAT 100% 방지) |
+| `PCR-Dampen` | 12 | 09:11:59 | 11:39:00 | opt_pcr_* 피처 D_FORCE 발동 → 30분간 0.3× 감쇠 적용 |
+| `ConstOut` | 5 | 09:35:59 | 15:00:00 | 3m 상수 출력 5분 감지 (range=0.0000 dir=+1) → 앙상블 제외 |
+| `ConfFloorGuard` | 3 | 09:05:59 | 11:20:59 | 자동진입 하한 도달 불가 — 보정기 출력상한 0.3488 < 필요 0.3980 (conf_floor=0.330, min_conf=0.398, span=0.0081). 이 상태에서는 어떤 신호도 자동진입 하한을 넘을 수 없다. |
+
+**채널** — `SIGNAL`×5365
+
+**컴포넌트 상위 15** — `ScalerFloor`×1914, `SIGNAL`×738, `Ensemble`×374, `FQAdj`×367, `ZeroDiag`×347, `MetaGate`×311, `Model`×206, `Checklist`×188, `ATR-Horizon`×160, `ScalerMonitor`×132, `차단`×97, `WeightCollapse`×79, `MicroRegime`×78, `ToxicityGate`×70, `ScalerRefresh`×65
+
+### `logs/20260814_LEARNING.log` — 286.5KB · 2814행 · 최종 15:40:21
+
+- 형식 평문 · 시각 인식 2804행 · WARNING=145, INFO=2659, PLAIN=10
+
+<details><summary>첫 5행 / 끝 5행</summary>
+
+```
+2026-08-14 08:40:59 [INFO] LEARNING: [RF] 로드 완료: 6호라이즌 ready=True
+2026-08-14 08:40:59 [WARNING] LEARNING: [Calibration] 축퇴 감지 — span=0.00034 auc=0.510 out_max=0.3915 (기준 auc<0.53 and span<0.020, 기저율=0.3913 n=115) → 보정 미적용, raw 통과 [기존 fitted 해제]
+2026-08-14 08:40:59 [WARNING] LEARNING: [Calibration] 축퇴 감지 — span=0.00037 auc=0.520 out_max=0.3127 (기준 auc<0.53 and span<0.020, 기저율=0.3125 n=80) → 보정 미적용, raw 통과
+2026-08-14 08:40:59 [WARNING] LEARNING: [Calibration] 하한 도달불가 — out_max=0.3281 < conf_floor=0.3300 (span=0.00315 auc=0.573 out_max=0.3281, 기저율=0.3263 n=95) → 보정 미적용, raw 통과. 축퇴 가드와 별개 사유다(auc/span은 정상 범위).
+2026-08-14 08:40:59 [INFO] LEARNING: [Calibration] 도달불가 해소 — out_max=0.3619 < conf_floor=0.3300 (n=100) → 보정 재적용
+  …
+2026-08-14 15:40:21 [INFO] LEARNING: [OnlineLearner] 일간 리셋 (모델 가중치 유지)
+2026-08-14 15:40:21 [INFO] LEARNING: [ExtremityCorrector] 재적합 완료 (n=5000)
+2026-08-14 15:40:21 [INFO] LEARNING: [ExtremityCorrector] 재적합 완료 (n=5000)
+2026-08-14 15:40:21 [INFO] LEARNING: [ExtremityCorrector] 일일 재적합: {'live': {'30m': True}, 'shadow': {'30m': True}}
+2026-08-14 15:40:21 [INFO] LEARNING: [Sigma] EOD sigma_20=0.05735% 저장 (내일 장 초반 20봉 미수집 구간 폴백용)
+```
+
+</details>
+
+**WARNING — 태그 2종 (상위 2)**
+
+| tag | 건수 | 최초 | 최종 | 대표 |
+|---|---|---|---|---|
+| `Calibration` | 144 | 08:40:59 | 13:47:59 | 축퇴 감지 — span=0.00034 auc=0.510 out_max=0.3915 (기준 auc<0.53 and span<0.020, 기저율=0.3913 n=115) → 보정 미적용, raw 통과 [기존 fitted 해제] |
+| `DriftAdjuster` | 1 | 15:40:16 | 15:40:16 | 3일 연속 정확도 50% 미만 → alpha 0.01000→0.01000 |
+
+**채널** — `LEARNING`×2804
+
+**컴포넌트 상위 15** — `LEARNING`×1206, `SGD`×369, `sigma`×356, `Calibration`×280, `Bias⚠`×209, `Bias`×135, `MetaConf`×76, `OnlineLearner`×57, `ScalerWarmup`×47, `BiasReset`×20, `SHAP`×12, `GBM-64`×8, `GBM`×8, `UPDATE`×6, `RF`×5
+
+### `logs/20260814_HEALTH.log` — 3.6KB · 27행 · 최종 15:03:00
+
+- 형식 평문 · 시각 인식 27행 · WARNING=13, INFO=14
+
+<details><summary>첫 5행 / 끝 5행</summary>
+
+```
+2026-08-14 09:01:00 [WARNING] HEALTH: [Health] level=WARNING degraded=OFF | latency=1118ms | quality=0.86 | cache_age=99s | exceptions_10m=0
+2026-08-14 09:01:59 [INFO] HEALTH: [Health] level=INFO degraded=OFF | latency=440ms | quality=0.74 | cache_age=158s | exceptions_10m=0
+2026-08-14 09:26:59 [WARNING] HEALTH: [Health] level=WARNING degraded=OFF | latency=267ms | quality=1.00 | cache_age=183s | exceptions_10m=0
+2026-08-14 09:27:59 [INFO] HEALTH: [Health] level=INFO degraded=OFF | latency=277ms | quality=1.00 | cache_age=59s | exceptions_10m=0
+2026-08-14 09:29:59 [INFO] HEALTH: [HealthTrend] 세션 지연 기준선 확정: 281ms (표본 20분)
+  …
+2026-08-14 14:31:00 [INFO] HEALTH: [Health] level=INFO degraded=OFF | latency=410ms | quality=1.00 | cache_age=59s | exceptions_10m=0
+2026-08-14 14:33:01 [WARNING] HEALTH: [Health] level=WARNING degraded=OFF | latency=390ms | quality=1.00 | cache_age=180s | exceptions_10m=0
+2026-08-14 14:33:59 [INFO] HEALTH: [Health] level=INFO degraded=OFF | latency=293ms | quality=1.00 | cache_age=55s | exceptions_10m=0
+2026-08-14 15:02:01 [WARNING] HEALTH: [Health] level=WARNING degraded=OFF | latency=2117ms | quality=1.00 | cache_age=79s | exceptions_10m=1
+2026-08-14 15:03:00 [INFO] HEALTH: [Health] level=INFO degraded=OFF | latency=366ms | quality=1.00 | cache_age=138s | exceptions_10m=1
+```
+
+</details>
+
+**WARNING — 태그 1종 (상위 1)**
+
+| tag | 건수 | 최초 | 최종 | 대표 |
+|---|---|---|---|---|
+| `Health` | 13 | 09:01:00 | 15:02:01 | level=WARNING degraded=OFF | latency=1118ms | quality=0.86 | cache_age=99s | exceptions_10m=0 |
+
+**채널** — `HEALTH`×27
+
+**컴포넌트 상위 15** — `Health`×26, `HealthTrend`×1
+
+### `logs/retrain_eod_20260814.log` — 33.3KB · 280행 · 최종 16:05:21
+
+- 형식 평문 · 시각 인식 175행 · WARNING=8, INFO=167, PLAIN=105
+
+<details><summary>첫 5행 / 끝 5행</summary>
+
+```
+2026-08-14 15:45:04,348 [INFO] EOD_RETRAIN: =======================================================
+2026-08-14 15:45:04,348 [INFO] EOD_RETRAIN: 미륵이 EOD 재학습 시작
+2026-08-14 15:45:04,348 [INFO] EOD_RETRAIN: Python : 3.10.20 64-bit
+2026-08-14 15:45:04,348 [INFO] EOD_RETRAIN: sklearn: 1.0.2
+2026-08-14 15:45:04,348 [INFO] EOD_RETRAIN: numpy  : 1.26.4
+  …
+30m    성공       0.5057    21196   0.2057
+2026-08-14 16:05:21,841 [INFO] EOD_RETRAIN: [검증 캠페인] 요약: 게이트 ablation 리포트=OK | 호라이즌 conf-층화 검정=OK | 검증 캠페인 판정 리포트=OK | 피처셋 건강 리포트=OK | CVD 앵커 대조 리포트=OK | 조기청산 반사실 [49]=OK | 방향 처분 실험 [40-B]=OK | 섀도우 TB 재학습=OK | 분위 회귀 재학습=OK | 메타라벨 분류기 재학습=OK
+2026-08-14 16:05:21,857 [INFO] EOD_RETRAIN: 판정 리포트: C:\Users\82108\PycharmProjects\futures\docs\정기점검\금요일점검\MW0601\validation_campaign_report_20260814.md
+2026-08-14 16:05:21,857 [INFO] EOD_RETRAIN: 피처셋 건강 리포트: C:\Users\82108\PycharmProjects\futures\docs\정기점검\금요일점검\MW0601\featureset_health_report_20260814.md
+2026-08-14 16:05:21,857 [INFO] EOD_RETRAIN: =======================================================
+```
+
+</details>
+
+**WARNING — 태그 2종 (상위 2)**
+
+| tag | 건수 | 최초 | 최종 | 대표 |
+|---|---|---|---|---|
+| `GuardFair` | 6 | 15:45:53 | 15:47:43 | 1m 판정 불가 — 오염 홀드아웃 1850봉 중 1509봉(82%)이 현행 학습구간 (현행 cutoff=2026-08-13 14:39:00 ≥ 홀드아웃 시작=2026-08-07 12:22:00) | 사이드카=현행 train_end_ts 없음 — 오염 여부 불명 — 판정 보류 (구모델 pkl mtime=2026-08-13 15:46) |
+| `GuardGhost` | 2 | 15:46:05 | 15:46:05 | 3m 비교 기준이 유령이다 — 배포된 pkl은 CV 미검증 intraday 모델(학습 2026-08-14 14:30:00까지)인데 acc.txt=0.4331는 다른 모델의 성적이다. 이 판정은 존재하지 않는 모델과의 비교다. |
+
+**채널** — `LEARNING`×63, `SIGNAL`×49, `EOD_RETRAIN`×36, `FEAT_REG`×6
+
+**컴포넌트 상위 15** — `-`×104, `ScalerFloor`×42, `Retrain`×20, `EOD_RETRAIN`×18, `검증 캠페인`×12, `RF`×9, `ShadowTB`×7, `FeatureReg`×6, `Retrain-Timing`×6, `GuardShadow`×6, `GuardFair`×6, `GuardClean`×6, `ModelLive`×6, `Model`×6, `QuantileReg`×6
+
+### `logs/retrain_intraday_20260814_093659.log` — 2.4KB · 20행 · 최종 09:37:21
+
+- 형식 평문 · 시각 인식 20행 · INFO=20
+
+<details><summary>첫 5행 / 끝 5행</summary>
+
+```
+2026-08-14 09:36:59,501 [INFO] RETRAIN_INTRADAY: ==================================================
+2026-08-14 09:36:59,502 [INFO] RETRAIN_INTRADAY: 미륵이 장중 재학습 시작 | Python 3.10.20 64-bit
+2026-08-14 09:36:59,502 [INFO] RETRAIN_INTRADAY: ==================================================
+2026-08-14 09:36:59,502 [INFO] RETRAIN_INTRADAY: 파라미터: force=True intraday=True horizons=['3m'] result_path=C:\Users\82108\PycharmProjects\futures\data\_gbm_result_d37417f4.json
+2026-08-14 09:37:02,925 [INFO] LEARNING: [Retrain] 배치 재학습 시작 (weeks_back=26, phase2=False, intraday=True)
+  …
+2026-08-14 09:37:21,884 [INFO] LEARNING: [Retrain] 3m 교체 (intraday — CV 없음 | fit=0.93s | old_acc=0.4331)
+2026-08-14 09:37:21,993 [INFO] LEARNING: [Retrain] 장중 경량 모드: RF 학습 스킵 (기존 RF 모델 유지)
+2026-08-14 09:37:21,993 [INFO] LEARNING: [Retrain] 완료 | 19.1초 | 성공=1/1 호라이즌
+2026-08-14 09:37:21,994 [INFO] RETRAIN_INTRADAY: 재학습 완료 | 22.5s 데이터=4800행
+2026-08-14 09:37:21,995 [INFO] RETRAIN_INTRADAY: 결과 JSON 저장: C:\Users\82108\PycharmProjects\futures\data\_gbm_result_d37417f4.json
+```
+
+</details>
+
+**채널** — `LEARNING`×13, `RETRAIN_INTRADAY`×6, `FEAT_REG`×1
+
+**컴포넌트 상위 15** — `Retrain`×11, `RETRAIN_INTRADAY`×6, `CUSUM`×1, `FeatureReg`×1, `Retrain-Timing`×1
+
+## 5. 거래일 요약 — 오늘 무엇을 했는가
+
+### 전략 상태 경보 — 그날의 판정
+
+```
+[전략 상태 경보] v1.0
+판정  : UNDERPERFORM
+드리프트: CLEAR (Lv.0)
+액션  : 🔄 교체 후보 탐색
+사유  : 기대값 하회 — param_optimizer + WFA 즉시 예약. Shadow 전략 2주 가동 후 Hot-Swap 검토.
+오늘 PnL: +28730원
+════════════════════════════════════════════════════
+```
+
+| 항목 | 건수 |
+|---|---|
+| 진입체크 통과(`[진입체크]`) | 1 |
+| 진입 등록(`[Position] 진입`) | 1 |
+| 체결(`[체결진입]`) | 1 |
+| 청산(`체결청산`) | 1 |
+| 차단(`[차단]`) | 97 |
+| 사이저 호출(`[Sizer]`) | 4 |
+
+### 청산 1건 · 승 0 (0%) · 합계 -0.03pt (-3,135원)
+
+| 시각 | 방향 | PnL(pt) | PnL(원) | 사유 |
+|---|---|---|---|---|
+| 11:48:55 | SHORT | -0.03 | -3,135 | 하드스톱(틱) |
+
+**청산 사유 분포** — `하드스톱(틱)`×1
+
+> 하드스톱·손절 계열 1/1건. **손절 준수율**(실현손실 ÷ 의도손절폭 ATR×1.5)은 417차 재분해에서 유일하게 유의했던 축이다 — 진입 로그의 `손절=` 값과 대조하라.
+
+### 진입 1건
+
+| 시각 | 방향 | 계약 | 진입가 | 호라이즌 | Hurst |
+|---|---|---|---|---|---|
+| 11:48:00 | SHORT | 2 | 1089.82 | 3m | mean-revert |
+
+계약수 분포 — 2계약×1
+
+등급 분포 — `A급(원시C)`×1
+
+**진입한 건들의 체크리스트 미통과 항목** — `ofi`×1, `chas`×1
+
+### 사이저 출력 vs 실제 진입 — 게이트 배수에 눌리고 있는가
+
+사이저 출력 계약수 — **3계약**×4
+
+실제 진입 계약수 — **2계약**×1
+
+> ⚠ 사이저는 최대 **3계약**을 냈는데 실제 진입 최대는 **2계약**이다. 게이트 배수(meta·tox 등)에 눌린 것인지 확인하라 — 실전 전환 기준 ⑧의 `sizing_inversion_watch` 채널이 이것을 본다.
+
+배수 조합 상위 — `conf=0.6 regime=1.0 safe=1.00`×4
+
+### 차단 사유 97건 · 34종
+
+| 건수 | 사유 |
+|---|---|
+| 49 | 등급X — 미통과 항목: 2_confidence |
+| 5 | 등급X — 미통과 항목: 3_vwap, 4_cvd, 7_prev_bar |
+| 4 | 등급X — 미통과 항목: 3_vwap, 4_cvd, 5_ofi, 7_prev_bar |
+| 4 | 14:50 이후 — 신규 진입 금지 구간 (345차) |
+| 3 | 자동진입 Degraded 최소신뢰도 62.0% 미달 |
+| 2 | ATR 0.99pt < 1.0pt — 변동성 부족 (휩쏘 위험) |
+| 2 | ATR 0.97pt < 1.0pt — 변동성 부족 (휩쏘 위험) |
+| 2 | 등급X — 미통과 항목: 3_vwap |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 13.9pt > ATR×5.0=10.0pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 11.7pt > ATR×5.0=10.4pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 11.7pt > ATR×5.0=10.8pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 13.8pt > ATR×5.0=11.1pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 11.9pt > ATR×5.0=11.4pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 16.3pt > ATR×5.0=12.1pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 17.9pt > ATR×5.0=12.2pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 18.2pt > ATR×5.0=12.5pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 16.0pt > ATR×5.0=12.0pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 16.0pt > ATR×5.0=12.4pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 16.0pt > ATR×5.0=12.2pt (시가=1102.78 반등위험) |
+| 1 | OPEN_VOLATILE 시가이격 과다 — 방향이탈 19.8pt > ATR×5.0=12.6pt (시가=1102.78 반등위험) |
+
+**체크리스트 미통과 항목 누적** — `2_confidence`×49, `3_vwap`×16, `4_cvd`×11, `7_prev_bar`×11, `5_ofi`×8, `11_countertrend`×2, `6_foreign`×1
+
+> 진입 0건이거나 적을 때 여기가 출발점이다. 특정 항목 하나가 압도적이면 그 게이트의 임계를 의심하라 — 316차 HurstGate 63% 차단이 그렇게 발견됐다.
+
+### Circuit Breaker 이벤트 3건
+
+- `일간 리셋 완료` ×2
+- `연속 손절 1회` ×1
+
+> CB② 는 `CB_CONSEC_STOP_LIMIT=9999` 라 **연속 손절 카운터는 올라가되 정지는 안 한다.** 카운터 로그가 보이는 것은 정상이다.
+
+### 메인 스레드 블로킹 21건 · 최대 9125ms · 5초 초과 6건
+
+상위 — 9125ms, 6328ms, 6312ms, 5625ms, 5172ms, 5046ms, 4843ms, 4797ms
+
+> ⚠ `CB_PIPE_PAUSE_MS = 5_000`(CB⑤ 실질 구현) 이상이 **6건**이다. CB⑤가 실제로 발동했는지, 아니면 계측만 되고 지나갔는지 확인하라.
+
+## 6. 항상 인용하는 패턴 (안전장치·크래시·성능·학습)
+
+### `logs/20260814_WARN.log`
+```
+--- ConstOut ×4(표본)
+09:35:59 2026-08-14 09:35:59 [WARNING] SYSTEM: [ConstOut] ['3m'] 상수 출력 확정 → 스케일러 재적합 시작
+10:36:59 2026-08-14 10:36:59 [WARNING] SYSTEM: [ConstOut] ['3m'] 상수 출력 확정 → 스케일러 재적합 시작
+11:20:59 2026-08-14 11:20:59 [WARNING] SYSTEM: [ConstOut] ['3m'] 상수 출력 확정 → 스케일러 재적합 시작
+15:00:00 2026-08-14 15:00:00 [WARNING] SYSTEM: [ConstOut] ['3m'] 상수 출력 확정 → 스케일러 재적합 시작
+--- [CB] ×1(표본)
+11:48:55 2026-08-14 11:48:55 [WARNING] SYSTEM: [CB] 연속 손절 1회
+--- [ExitCooldown] ×2(표본)
+11:48:55 2026-08-14 11:48:55 [WARNING] SYSTEM: [ExitCooldown] 하드스톱(틱) 후 3분 재진입 금지 (until 11:51:55)
+11:48:55 2026-08-14 11:48:55 [WARNING] SYSTEM: [ExitCooldown] 하드스톱(틱) 후 3분 재진입 금지 (until 11:51:55)
+--- [SHAP] 슬로우 ×8(표본)
+10:51:01 2026-08-14 10:51:01 [WARNING] SYSTEM: [SHAP] 슬로우 감지 1225ms (임계 900ms) — 다음 5분 건너뜀 (호라이즌 1m는 유실 없이 밀림)
+11:40:00 2026-08-14 11:40:00 [WARNING] SYSTEM: [SHAP] 슬로우 감지 926ms (임계 900ms) — 다음 5분 건너뜀 (호라이즌 3m는 유실 없이 밀림)
+11:51:00 2026-08-14 11:51:00 [WARNING] SYSTEM: [SHAP] 슬로우 감지 945ms (임계 900ms) — 다음 5분 건너뜀 (호라이즌 3m는 유실 없이 밀림)
+12:14:00 2026-08-14 12:14:00 [WARNING] SYSTEM: [SHAP] 슬로우 감지 939ms (임계 900ms) — 다음 5분 건너뜀 (호라이즌 3m는 유실 없이 밀림)
+--- 메인 스레드 블로킹 ×8(표본)
+08:41:18 2026-08-14 08:41:18 [WARNING] SYSTEM: [LiveDBG] _tick_header 간격 2625ms — 메인 스레드 블로킹 발생 | pipe_elapsed=-1 watchdog_alerted=[]
+09:01:07 2026-08-14 09:01:07 [WARNING] SYSTEM: [LiveDBG] _tick_header 간격 9125ms — 메인 스레드 블로킹 발생 | pipe_elapsed=0 watchdog_alerted=[]
+09:06:02 2026-08-14 09:06:02 [WARNING] SYSTEM: [LiveDBG] _tick_header 간격 4781ms — 메인 스레드 블로킹 발생 | pipe_elapsed=0 watchdog_alerted=[]
+09:38:01 2026-08-14 09:38:01 [WARNING] SYSTEM: [LiveDBG] _tick_header 간격 2766ms — 메인 스레드 블로킹 발생 | pipe_elapsed=0 watchdog_alerted=[]
+--- 전략 상태 경보 ×1(표본)
+??:??:?? [전략 상태 경보] v1.0
+--- 판정  : ×1(표본)
+??:??:?? 판정  : UNDERPERFORM
+```
+
+### `logs/20260814_SYSTEM.log`
+```
+--- ConstOut ×8(표본)
+09:35:59 2026-08-14 09:35:59 [INFO] SYSTEM: [ConstOut] heavy cooldown armed until 09:38:00 (const_output)
+09:35:59 2026-08-14 09:35:59 [INFO] SYSTEM: [ConstOut][Worker] 시작 hz=['3m']
+09:35:59 2026-08-14 09:35:59 [INFO] SYSTEM: [ConstOut][Worker] 완료 hz=['3m'] load=346ms fit=48ms total=396ms
+09:36:58 2026-08-14 09:36:58 [INFO] SYSTEM: [ConstOut] ['3m'] 재적합 완료 → acc30m 버퍼 리셋 스킵(표본 누적 중)
+--- [CB] ×2(표본)
+15:40:21 2026-08-14 15:40:21 [INFO] SYSTEM: [CB] 일간 리셋 완료
+15:40:21 2026-08-14 15:40:21 [INFO] SYSTEM: [CB] 일간 리셋 완료
+--- [Shutdown] ×2(표본)
+15:40:24 2026-08-14 15:40:24 [INFO] SYSTEM: [Shutdown] 정상 종료 플래그 기록: C:\Users\82108\PycharmProjects\futures\data\_exit_normally (daily_close)
+15:40:39 2026-08-14 15:40:39 [INFO] SYSTEM: [Shutdown] 정상 종료 플래그 기록: C:\Users\82108\PycharmProjects\futures\data\_exit_normally (auto_shutdown)
+--- 자동 종료 ×5(표본)
+15:40:24 2026-08-14 15:40:24 [INFO] SYSTEM: [Notify] ℹ️ [15:40:24] [미륵이] 🏁 미륵이 일일 마감 완료 — 자동 종료 예정
+??:??:?? 15초 후 프로그램 자동 종료
+15:40:24 2026-08-14 15:40:24 [INFO] SYSTEM: 자동 종료 예약 — 15초 후 Qt 이벤트 루프 종료
+15:40:39 2026-08-14 15:40:39 [INFO] SYSTEM: [System] 자동 종료 실행
+```
+
+### `logs/20260814_SIGNAL.log`
+```
+--- ConfFloorGuard ×5(표본)
+09:05:59 2026-08-14 09:05:59 [WARNING] SIGNAL: [ConfFloorGuard] 자동진입 하한 도달 불가 — 보정기 출력상한 0.3488 < 필요 0.3980 (conf_floor=0.330, min_conf=0.398, span=0.0081). 이 상태에서는 어떤 신호도 자동진입 하한을 넘을 수 없다.
+10:42:59 2026-08-14 10:42:59 [INFO] SIGNAL: [ConfFloorGuard] 하한 도달 가능 복구 — 출력상한 0.3892 ≥ 필요 0.3830
+11:02:59 2026-08-14 11:02:59 [WARNING] SIGNAL: [ConfFloorGuard] 자동진입 하한 도달 불가 — 보정기 출력상한 0.3799 < 필요 0.3830 (conf_floor=0.330, min_conf=0.383, span=0.0212). 이 상태에서는 어떤 신호도 자동진입 하한을 넘을 수 없다.
+11:08:00 2026-08-14 11:08:00 [INFO] SIGNAL: [ConfFloorGuard] 하한 도달 가능 복구 — 출력상한 0.3893 ≥ 필요 0.3830
+--- ConstOut ×8(표본)
+09:35:59 2026-08-14 09:35:59 [WARNING] SIGNAL: [ConstOut] 3m 상수 출력 5분 감지 (range=0.0000 dir=+1) → 앙상블 제외
+09:35:59 2026-08-14 09:35:59 [INFO] SIGNAL: [RouterHealth] 라우터가 ConstOut 활성 호라이즌 선택 — chosen=3m const_out=['3m'] (섀도 기록만, 정책 무변경)
+09:38:01 2026-08-14 09:38:01 [INFO] SIGNAL: [ConstOut] 3m 상수 출력 해소 → 앙상블 복귀
+10:36:59 2026-08-14 10:36:59 [WARNING] SIGNAL: [ConstOut] 3m 상수 출력 5분 감지 (range=0.0040 dir=+0) → 앙상블 제외
+--- WeightCollapse ×8(표본)
+09:07:59 2026-08-14 09:07:59 [INFO] SIGNAL: [Ensemble] dir=+0 conf=34.9% grade=X regime=RISK_ON [WeightCollapse]
+09:10:59 2026-08-14 09:10:59 [INFO] SIGNAL: [Ensemble] dir=+0 conf=35.3% grade=X regime=RISK_ON [WeightCollapse]
+09:13:59 2026-08-14 09:13:59 [INFO] SIGNAL: [Ensemble] dir=+0 conf=35.3% grade=X regime=RISK_ON [WeightCollapse]
+09:16:59 2026-08-14 09:16:59 [INFO] SIGNAL: [Ensemble] dir=+0 conf=36.4% grade=X regime=RISK_ON [WeightCollapse]
+--- 기동 복원 ×7(표본)
+08:40:42 2026-08-14 08:40:42 [INFO] SIGNAL: [DynMC] 기동 복원: LUNCH_RECOVERY  0.570 → 0.416
+08:40:42 2026-08-14 08:40:42 [INFO] SIGNAL: [DynMC] 기동 복원: GAP_OPEN  0.670 → 0.441
+08:40:42 2026-08-14 08:40:42 [INFO] SIGNAL: [DynMC] 기동 복원: OPEN_VOLATILE  0.600 → 0.428
+08:40:42 2026-08-14 08:40:42 [INFO] SIGNAL: [DynMC] 기동 복원: STABLE_TREND  0.540 → 0.420
+--- 안전망 ×8(표본)
+09:07:59 2026-08-14 09:07:59 [WARNING] SIGNAL: [WeightCollapse] 실질 가중합 0 (1연속) — 활성기대=['3m'] 중 미배포=['3m'] → flat_score=1.0 안전망 발동 (active_horizons=['3m'])
+09:10:59 2026-08-14 09:10:59 [WARNING] SIGNAL: [WeightCollapse] 실질 가중합 0 (1연속) — 활성기대=['3m'] 중 미배포=['3m'] → flat_score=1.0 안전망 발동 (active_horizons=['1m', '3m'])
+09:13:59 2026-08-14 09:13:59 [WARNING] SIGNAL: [WeightCollapse] 실질 가중합 0 (1연속) — 활성기대=['3m'] 중 미배포=['3m'] → flat_score=1.0 안전망 발동 (active_horizons=['1m', '3m'])
+09:16:59 2026-08-14 09:16:59 [WARNING] SIGNAL: [WeightCollapse] 실질 가중합 0 (1연속) — 활성기대=['3m', '5m'] 중 미배포=['3m', '5m'] → flat_score=1.0 안전망 발동 (active_horizons=['1m', '3m', '5m'])
+```
+
+### `logs/20260814_LEARNING.log`
+```
+--- 축퇴 ×8(표본)
+08:40:59 2026-08-14 08:40:59 [WARNING] LEARNING: [Calibration] 축퇴 감지 — span=0.00034 auc=0.510 out_max=0.3915 (기준 auc<0.53 and span<0.020, 기저율=0.3913 n=115) → 보정 미적용, raw 통과 [기존 fitted 해제]
+08:40:59 2026-08-14 08:40:59 [WARNING] LEARNING: [Calibration] 축퇴 감지 — span=0.00037 auc=0.520 out_max=0.3127 (기준 auc<0.53 and span<0.020, 기저율=0.3125 n=80) → 보정 미적용, raw 통과
+08:40:59 2026-08-14 08:40:59 [WARNING] LEARNING: [Calibration] 하한 도달불가 — out_max=0.3281 < conf_floor=0.3300 (span=0.00315 auc=0.573 out_max=0.3281, 기저율=0.3263 n=95) → 보정 미적용, raw 통과. 축퇴 가드와 별개 사유다(auc/span은 정상 범위).
+08:40:59 2026-08-14 08:40:59 [WARNING] LEARNING: [Calibration] 하한 도달불가 — out_max=0.3198 < conf_floor=0.3300 (span=0.00464 auc=0.631 out_max=0.3198, 기저율=0.3172 n=145) → 보정 미적용, raw 통과. 축퇴 가드와 별개 사유다(auc/span은 정상 범위).
+```
+
+## 7. 타임라인 앵커 · 매분 루프 커버리지
+
+### `logs/20260814_TRADE.log` _(보조 로그 — 매분 루프 대상 아님)_
+
+| 시각 | 앵커 | 창 내 | 대표 |
+|---|---|---|---|
+| 08:40 | 런처 기동 (Mireuk_batch) | 2 | 08:41:08 [INFO] 저장 상태가 어제 데이터 — 무시 |
+| 15:40 | 자가학습 일일 마감 + SHAP 피처 심사 | 1 | 15:40:21 [INFO] 일간 리셋 완료 |
+
+- 이 로그 생존구간: 08:41 ~ 15:40
+
+_이 로그는 매분 루프 로그가 아니므로 커버리지·공백 판정을 하지 않는다._
+
+### `logs/20260814_WARN.log` _(보조 로그 — 매분 루프 대상 아님)_
+
+| 시각 | 앵커 | 창 내 | 대표 |
+|---|---|---|---|
+| 08:40 | 런처 기동 (Mireuk_batch) | 6 | 08:41:15 [WARNING] request_futures_balance 호출 account=333044256 | caller=_balance(account_no) |  File "C:\Users\82108\PycharmPro… |
+| 08:55 | 매크로 수집 → 레짐 판정 + 실시간 구독 사전 시작 | 8 | 08:55:16 [WARNING] scaler 노후=0h  z경고피처=19개 (EarlyWarmup 완료 — 임계 12개)  ⚠ z경고 폭증 |
+| 09:00 | 정규장 개장 · 매분 루프 시작 | 9 | 08:55:16 [WARNING] scaler 노후=0h  z경고피처=19개 (EarlyWarmup 완료 — 임계 12개)  ⚠ z경고 폭증 |
+| 10:00 | 장중 초반 | 1 | 10:00:59 [WARNING] 5분 누적 수익률 -0.280% (임계 ±0.273%) → D_PRICE_MOMENTUM 트리거 (쿨다운 20분) |
+| 12:00 | 장중 중간점 | 3 | 11:55:04 [WARNING] _tick_header 간격 5625ms — 메인 스레드 블로킹 발생 | pipe_elapsed=0 watchdog_alerted=[] |
+| 14:00 | 장중 후반 · 장중 재학습 | 1 | 14:02:59 [WARNING] 5분 누적 수익률 -0.265% (임계 ±0.180%) → D_PRICE_MOMENTUM 트리거 (쿨다운 20분) |
+| 15:40 | 자가학습 일일 마감 + SHAP 피처 심사 | 4 | 15:40:19 [WARNING] 경보 발생: {'1m': 'UPDATE', '3m': 'UPDATE', '5m': 'UPDATE', '10m': 'UPDATE', '15m': 'UPDATE', '30m': 'UPDATE'}  d… |
+
+- 이 로그 생존구간: 08:41 ~ 15:40
+
+_이 로그는 매분 루프 로그가 아니므로 커버리지·공백 판정을 하지 않는다._
+
+### `logs/20260814_SYSTEM.log`
+
+| 시각 | 앵커 | 창 내 | 대표 |
+|---|---|---|---|
+| 08:40 | 런처 기동 (Mireuk_batch) | 89 | 08:40:45 [INFO] 로테이션 — 9.5MB >= 8MB 임계 → crash_fault.log.1 (보관 4세대) |
+| 08:55 | 매크로 수집 → 레짐 판정 + 실시간 구독 사전 시작 | 133 | 08:49:00 [INFO] code=A0569 from=08:48 to=08:49 |
+| 09:00 | 정규장 개장 · 매분 루프 시작 | 202 | 08:54:01 [INFO] code=A0569 from=08:53 to=08:54 |
+| 10:00 | 장중 초반 | 201 | 09:54:05 [INFO] #29500 code=A0569 raw_time=95406 parsed=09:54:06 price=1088.34 vol=2 bid1=1088.32 ask1=1088.38 flag=49 side=B… |
+| 12:00 | 장중 중간점 | 157 | 11:54:06 [INFO] #67500 code=A0569 raw_time=115407 parsed=11:54:07 price=1086.94 vol=1 bid1=1086.80 ask1=1086.96 flag=49 side=… |
+| 14:00 | 장중 후반 · 장중 재학습 | 168 | 13:54:00 [INFO] ensemble=1ms checklist_pre=10ms meta_gate=5ms gates=0ms imp=0ms shap=5ms corr=9ms dash_ui=0ms tail=16ms |
+| 15:10 | **오버나이트 금지 — 강제 청산** (절대원칙 1) | 136 | 15:04:01 [INFO] code=A0569 from=15:03 to=15:04 |
+| 15:18 | 안전망 청산 (STEP 8 5단계 마지막) | 117 | 15:12:14 [INFO] #108300 code=A0569 raw_time=151215 parsed=15:12:15 price=1096.74 vol=1 bid1=1096.60 ask1=1096.76 flag=49 side… |
+| 15:40 | 자가학습 일일 마감 + SHAP 피처 심사 | 38 | 15:34:00 [INFO] code=A0569 from=15:33 to=15:34 |
+| 15:47 | _EOD 재학습(py310_64) 완료 (이 로그 생존구간 밖)_ | 0 | — |
+
+- 이 로그 생존구간: 08:40 ~ 15:40
+
+**매분 루프 커버리지 09:00~15:10: 371/371분 (100.0%)**
+
+**08:55~15:12 구간 10분 이상 공백: 0건**
+
+### `logs/20260814_SIGNAL.log` _(보조 로그 — 매분 루프 대상 아님)_
+
+| 시각 | 앵커 | 창 내 | 대표 |
+|---|---|---|---|
+| 08:40 | 런처 기동 (Mireuk_batch) | 55 | 08:45:16 [WARNING] 1m CORE 'above_vwap' raw_std≈0(0.0000) → identity(0,1) 강제 (FLAT 100% 방지) |
+| 08:55 | 매크로 수집 → 레짐 판정 + 실시간 구독 사전 시작 | 165 | 09:00:59 [WARNING] 1m 극단 z-score 1개 피처 감지 (|z|>4) — 스케일러 노후화 또는 이상 데이터 의심 |
+| 09:00 | 정규장 개장 · 매분 루프 시작 | 258 | 09:00:59 [WARNING] 1m 극단 z-score 1개 피처 감지 (|z|>4) — 스케일러 노후화 또는 이상 데이터 의심 |
+| 10:00 | 장중 초반 | 257 | 09:54:59 [WARNING] 1m 극단 z-score 1개 피처 감지 (|z|>4) — 스케일러 노후화 또는 이상 데이터 의심 |
+| 12:00 | 장중 중간점 | 112 | 11:55:59 [WARNING] 신뢰도 미달 39.8% < 44.0% → 강제 X등급 |
+| 14:00 | 장중 후반 · 장중 재학습 | 141 | 13:59:01 [WARNING] 실질 가중합 0 (1연속) — 활성기대=['10m', '15m', '3m', '5m'] 중 미배포=['10m', '15m', '3m', '5m'] → flat_score=1.0 안전망 발동 (ac… |
+| 15:10 | **오버나이트 금지 — 강제 청산** (절대원칙 1) | 43 | 15:04:59 [WARNING] 실질 가중합 0 (1연속) — 활성기대=['3m'] 중 미배포=['3m'] → flat_score=1.0 안전망 발동 (active_horizons=['1m', '3m']) |
+| 15:40 | 자가학습 일일 마감 + SHAP 피처 심사 | 3 | 15:40:21 [INFO] daily reset complete |
+
+- 이 로그 생존구간: 08:40 ~ 15:40
+
+_이 로그는 매분 루프 로그가 아니므로 커버리지·공백 판정을 하지 않는다._
+
+
+## 8. dev_memory
+
+### dev_memory/DECISION_LOG.md — 1.7MB · **오늘 갱신됨**
+
+최근 헤딩 8개:
+```
+### [신규 P2] CB③-P4 상태 전이가 한 방향만 기록된다 — RESTRICTED 지속시간을 알 수 없다
+### [신규 P2] CLAUDE.md STEP 3 "GBM 배치 재학습 (30분마다)"가 v9-dev 코드에 없다
+### [신규 P2 · 확정 결론 보류] IntradayRegime 채터링 — 27분간 8회 전이, z=0 고정
+### [관측] ConstOut → 재학습 → S0 스파이크 → Degraded 선제차단 → 진입차단 (자기유발 사슬, 3회 완주)
+### [관측] 수집기 §11 적신호 2건은 계산 산물이다 — 오독 주의
+### [관측] 수집기 §5 "청산 1건 · 승 0(0%) · -3,135원"은 레그 단위 집계다
+### [확인 필요] FP-CRITICAL PSI 오늘 값 — 채널 로그에 출력 0건
+### [참고] 본 세션은 커밋하지 않았다
+```
+
+<details><summary>dev_memory/DECISION_LOG.md 꼬리 2.5KB</summary>
+
+```
+침 pre F-2(CB③ 35% 문구)와 같은 커밋**
+— 둘 다 "참조문서가 낡은 설계 원안을 싣고 있다"는 같은 뿌리다.
+
+**Why**: `phases.md` B-2가 "30분마다 도는가"를 묻는 한 매 점검이 거짓 이상점을 만든다.
+
+### [신규 P2 · 확정 결론 보류] IntradayRegime 채터링 — 27분간 8회 전이, z=0 고정
+
+10:14~10:41 `DAY_RISK_OFF ↔ CRASH` 8회. 매 전이 `z=0`, `day%`는 −1.69~−1.92% 폭 안.
+동일 패턴이 09:02~09:08(4회), 11:32~11:46(4회)에도. **당일 총 19회.**
+
+오늘 실해 없음 — 진입 1건뿐이고 그 시점 `[Sizer] 레짐배수=1.0`이었다.
+위험은 잠재적: 레짐 경계에서 진입하면 같은 시장인데 1분 차로 사이즈가 갈리고, 사후 분석의
+버킷이 무작위 오염된다.
+
+**결정**: G-5(히스테리시스 — 진입/이탈 임계 분리 + 최소 유지 3분)로 등록하되
+**즉시 적용 금지**. 레짐은 사이징 입력이므로 라이브 거동이 바뀐다 → **섀도 계측 선행 필수**
+(스킬 §7-7). **1거래일 관측이므로 313차 원칙에 따라 확정 결론 보류** — 5거래일 누적 후 판단.
+
+### [관측] ConstOut → 재학습 → S0 스파이크 → Degraded 선제차단 → 진입차단 (자기유발 사슬, 3회 완주)
+
+| ConstOut | 재학습 | PipePerf | HealthPolicy | 진입차단 |
+|---|---|---|---|---|
+| 09:35:59 | ~09:38:00 | `total=2262ms` **S0=1915ms** | 09:39:00 선제차단 | 09:39:00 |
+| 10:36:59 | ~10:39:02 | `total=2830ms` **S0=2570ms** | 10:39:59 선제차단 | 10:39:59 |
+| 11:20:59 | ~11:23:02 | `total=2829ms` **S0=2539ms** | 11:24:00 선제차단 | 11:24:00 |
+
+지연이 전부 S0 단독(S1~S8 정상) — CLAUDE.md 기술의 정례 스파이크와 일치, IO 압박 아님.
+`dev`의 `PIPE_LATENCY_EXCLUDE_MODEL_SWAP`(462차 P2)이 정확히 이걸 겨냥한 스위치인데
+**v9-dev에 없다.** → **아침 pre F-1B(체리픽 심사)의 실측 근거로 승계.** 신규 안건 아님.
+⚠ 차단 3건이 실제 기회손실이었는지는 반사실 — 장후 `ensemble_decisions` 조회로 판단(O-3).
+
+### [관측] 수집기 §11 적신호 2건은 계산 산물이다 — 오독 주의
+
+- `매분 루프 커버리지 208/371분(56.1%)` · `12:28~15:10 163분 공백` →
+  **12:27에 수집기를 돌려 미래 구간을 분모에 넣은 결과**다. 경과분 대비 공백은 **0**.
+- `메인 스레드 블로킹 5초 초과 5건 — CB⑤ 발동 여부 확인` →
+  CB⑤는 `[PipePerf] total`(최대 2,830ms)을 보고 `_tick_header` 간격은 별도 계측이다.
+  **"5초 초과인데 CB⑤ 미발동"이 정상**이다(`NEXT_TODO` G-3이 이 분리를 이미 등록).
+
+### [관측] 수집기 §5 "청산 1건 · 승 0(0%) · -3,135원"은 레그 단위 집계다
+
+TP1 레그(11:48:51, +0.67pt / +31,865원)를 누락한다. 계측 4원칙 ① — **이 -3,135원을 당일
+손익으로 인용하지 말 것.** 포지션 단위 순손익은 장후 3원 대사로 확정(O-8).
+
+### [확인 필요] FP-CRITICAL PSI 오늘 값 — 채널 로그에 출력 0건
+
+`RegimeFingerprint`/`PSI` 출력이 오늘 로그에 없다. 333차 후속5가 대시보드 반복 표시를 제거하고
+file 로그만 남기는 셰도 모니터링으로 전환했으므로 **그 구조 때문일 가능성**이 높으나,
+FP-CRITICAL 자체가 "학습분포 저장 함수가 프로덕션에서 호출된 적 없어 2개월간 PSI=0.0 고정"
+이었던 전례가 있어 무증상을 정상으로 읽지 않는다. 장후 file 로그에서 확인(O-7).
+
+### [참고] 본 세션은 커밋하지 않았다
+
+변경 파일은 아래 4개(전부 문서·산출물)뿐이다.
+
+| 파일 | 성격 |
+|---|---|
+| `docs/정기점검/매일점검/MW0601-20260814-점검리포트-intra.md` | 신규(날짜본·국면 접미사, 덮어쓰기 없음) |
+| `docs/정기점검/매일점검/evidence_MW0601-20260814_intra.md` | 신규(수집기 생성) |
+| `dev_memory/DECISION_LOG.md` | append |
+| `dev_memory/NEXT_TODO.md` | append |
+
+⚠ 수집기는 `v9-dev`에 `--pc`가 없어(아침 pre 1-4 / F-3) `platform.node()`를 대체하는 런처
+래퍼로 우회해 `MW0601` 파일명을 얻었다. F-3 적용 전까지 예약작업마다 재발한다.
+
+```
+
+</details>
+
+### dev_memory/NEXT_TODO.md — 881.4KB · **오늘 갱신됨**
+
+최근 헤딩 8개:
+```
+### 고도화
+### 문서·운영
+### 다음 관측 (판정 근거)
+## 2026-08-14 (MW0601 470차 후속 — 장중 점검) 신규 항목
+### Fix — 전부 **장후 적용** (라이브 프로세스 가동 중)
+### 고도화
+### 문서·운영
+### 다음 관측 (판정 근거)
+```
+
+미완료 체크박스 **1254건** (끝에서 30건)
+```
+- [ ] **F-1 불변식 감시표를 브랜치 인식형으로 (P1)** — `collect_evidence.py` 불변식 스펙 dict에
+- [ ] **F-1B 462·468차 스위치 5종의 `v9-dev` 체리픽 여부 심사 (P1, 별건)** —
+- [ ] **F-2 `invariants.md` CB③ 35% 문구 정정 (P1)** — 33행 → `③ 30분 **방향성** 정확도
+- [ ] **F-3 수집기 `--pc` / `MIREUK_PC_ID` 지원 (P2)** — 우선순위 `--pc > MIREUK_PC_ID >
+- [ ] **F-4 수집기 미커밋 집계에서 개행차이 분리 (P2)** — §2를
+- [ ] **G-1 브랜치 격차를 수집기 §2에 계측 (이번 주)** — 상대 브랜치 대비 ahead/behind ·
+- [ ] **G-2 프리장 CORE 상수화 조기경보 (이번 주 관측 → 다음 주 판단)** —
+- [ ] **G-3 `raw_features` 열별 `nunique==1` 자동 판정을 EOD에 추가** — 해당 열이 학습 X의
+- [ ] **브랜치 격차 관리를 금요일점검 상설 안건으로 등록** — 개별 버그로 처리하면 계속 재발한다.
+- [ ] **O-1 `above_vwap raw_std≈0` 이 Phase2(08:49) 이후까지 남는 날** — 오늘 1일차(08:49 해소).
+- [ ] **O-2 `institution_futures_net` 당일 분산 — 상수 0인가** — 장후 `raw_features` 조회.
+- [ ] **O-3 `[Calibration] 축퇴 감지` 일일 건수 추이** — 오늘 기동 시 **133건**(08:40:59~08:41:08).
+- [ ] **O-4 오늘 15:35 이후 장후 재점검** — `강제청산`·`daily_close_done`·`eod_retrain_done`.
+- [ ] **F-5 `[SizerMatch]` 축소원인 오귀속 수정 (P1)** — `main.py` `[SizerMatch]` 출력부(현행 9002~9010):
+- [ ] **F-6 안전장치 로그 이중기록 제거 (P2)** — 호출부를 `log_manager` 단일 경로로 통일.
+- [ ] **F-7 CB③-P4 상태 전이 양방향 기록 (P2)** — `RESTRICTED → NORMAL` 복귀도 같은 형식으로 로그.
+- [ ] **F-8 STEP 3 재학습 주기 문서 정정 (P2)** — `CLAUDE.md` 매분 파이프라인
+- [ ] **G-4 사이징 축소 원인을 구조체로 저장 (이번 주)** — 진입 시점 `_quality_mults` 전량 +
+- [ ] **G-5 IntradayRegime 히스테리시스 (섀도 먼저)** — 진입/이탈 임계 분리
+- [ ] **G-6 `3m ConstOut` 재발을 호라이즌 건강지표로 승격 (이번 주)** — 일별 `ConstOut(호라이즌)`
+- [ ] **실전 전환 기준 ⑧에 "[28] 채널 근거 무결성 확인"을 선행 확인사항으로 명시** — F-5 미적용 상태의
+- [ ] **실전 전환 기준 ⑥에 "RESTRICTED 지속시간 계측 배선"을 선행조건으로 추가** — ⑨의
+- [ ] **O-1 `WeightCollapse` 종가 비율** — 오늘 12:32 기준 90/206 = **43.7%**(NEXT_TODO O-6 승계).
+- [ ] **O-2 `_tick_header ≥5,000ms` 종가 건수** — 12:00 기준 **5건**(최대 9,125ms). 15건 초과면 G-3 상향.
+- [ ] **O-3 Degraded 선제차단 3건(09:39 / 10:39:59 / 11:24)의 해당 분봉 `ensemble_decisions`** —
+- [ ] **O-4 `3m ConstOut` 종가 횟수와 전일 대비** — 오늘 3회(09:35:59 / 10:36:59 / 11:20:59).
+- [ ] **O-5 `OPEN_VOLATILE 시가이격 과다` 차단 18건(09:53~10:24)의 반사실** — 같은 구간
+- [ ] **O-6 `IntradayRegime` 종가 총 전이 횟수** — 오늘 1일차 **19회**. 5거래일 누적 후 G-5 판정
+- [ ] **O-7 FP-CRITICAL PSI 오늘 값** — 채널 로그 출력 0건. 333차 후속5의 file 로그 전용 구조
+- [ ] **O-8 CASE-01 포지션 단위 손익 3원 대사** — 로그 / `ensemble_decisions` / `trades`.
+```
+
+<details><summary>dev_memory/NEXT_TODO.md 꼬리 2.5KB</summary>
+
+```
+riftRetrain 조건A/B · ConstOut ·
+  주간·월간 · WarmupRetrain)으로. `phases.md` B-2 체크항목 동반 수정.
+  `invariants.md` §3-B 표에 한 행 추가.
+  **근거**: `main.py:5809~5876`에 무조건 30분 스케줄이 없다. 오늘 재학습 3회 전부 ConstOut 트리거(간격 61·44분).
+  **아침 pre F-2와 같은 커밋** — 같은 뿌리(참조문서가 낡은 설계 원안을 싣고 있다).
+
+### 고도화
+
+- [ ] **G-4 사이징 축소 원인을 구조체로 저장 (이번 주)** — 진입 시점 `_quality_mults` 전량 +
+  `_meta_size_sizing` · `_qty_sizer_raw` · `_qty_auto`를 `ensemble_decisions`의 JSON 컬럼
+  `sizing_trace`로. [28] 채널 판정을 문자열 파싱에서 구조화 데이터로 전환.
+  **선행: F-5**(오귀속을 고치기 전에 만들면 틀린 값이 굳는다). ⚠ 스키마 변경 — **EOD 창에서만**.
+
+- [ ] **G-5 IntradayRegime 히스테리시스 (섀도 먼저)** — 진입/이탈 임계 분리
+  (예: CRASH 진입 `day ≤ −1.85%` / 이탈 `day ≥ −1.60%`) + 최소 유지 3분, 둘 다 settings 상수.
+  ⚠ **레짐은 사이징 입력 — 섀도 계측 선행 필수**(`[RegimeHyst] shadow: 현행=… 제안=…`), 즉시 적용 금지.
+  **선행: O-6 5거래일 누적**(오늘 1일차 19회).
+
+- [ ] **G-6 `3m ConstOut` 재발을 호라이즌 건강지표로 승격 (이번 주)** — 일별 `ConstOut(호라이즌)`
+  횟수를 EOD 지표화하고, N회 이상인 날의 해당 `entry_horizon` 진입을 별도 버킷으로 **태깅**(차단 아님).
+  **근거**: 오늘 `['3m']` 3회 → 재학습 3회 → S0 스파이크 → Degraded 차단 3분봉.
+  3m의 불안정이 다른 호라이즌의 진입 기회까지 소모한다. 오늘 유일한 진입도 `horizon=3m`.
+  ⚠ **EOD에서만 집계** — 장중 DB 스캔 금지(2026-08-10 전례).
+
+### 문서·운영
+
+- [ ] **실전 전환 기준 ⑧에 "[28] 채널 근거 무결성 확인"을 선행 확인사항으로 명시** — F-5 미적용 상태의
+  오염된 근거로 ⑧을 해제하면 `MAX_CONTRACTS` 재산출이 틀린다.
+- [ ] **실전 전환 기준 ⑥에 "RESTRICTED 지속시간 계측 배선"을 선행조건으로 추가** — ⑨의
+  TOX-SEVERE-SPREAD가 섀도 계측 부재로 복원 판단 불가였던 것과 같은 함정(F-7 선행).
+
+### 다음 관측 (판정 근거)
+
+- [ ] **O-1 `WeightCollapse` 종가 비율** — 오늘 12:32 기준 90/206 = **43.7%**(NEXT_TODO O-6 승계).
+  3거래일 연속 40% 초과면 앙상블 가중 산출 딥다이브
+- [ ] **O-2 `_tick_header ≥5,000ms` 종가 건수** — 12:00 기준 **5건**(최대 9,125ms). 15건 초과면 G-3 상향.
+  ⚠ CB⑤ 판정 대상 아님(CB⑤는 `PipePerf total`을 본다) — 수집기 적신호를 그렇게 읽을 것
+- [ ] **O-3 Degraded 선제차단 3건(09:39 / 10:39:59 / 11:24)의 해당 분봉 `ensemble_decisions`** —
+  실제 기회손실이었는가. **F-1B(`PIPE_LATENCY_EXCLUDE_MODEL_SWAP` 체리픽) 근거 보강용**
+- [ ] **O-4 `3m ConstOut` 종가 횟수와 전일 대비** — 오늘 3회(09:35:59 / 10:36:59 / 11:20:59).
+  3거래일 연속 3회 이상이면 3m 피처셋 딥다이브
+- [ ] **O-5 `OPEN_VOLATILE 시가이격 과다` 차단 18건(09:53~10:24)의 반사실** — 같은 구간
+  `IntradayRegime`이 DAY_RISK_OFF/CRASH(day −1.7~−1.9%)였다. 하락 추세 중 순방향 SHORT까지
+  막았을 가능성. 예측방향 vs 이후 3m/5m 실현수익 대조. ⚠ 반사실 — **확정 결론 금지**(313차)
+- [ ] **O-6 `IntradayRegime` 종가 총 전이 횟수** — 오늘 1일차 **19회**. 5거래일 누적 후 G-5 판정
+- [ ] **O-7 FP-CRITICAL PSI 오늘 값** — 채널 로그 출력 0건. 333차 후속5의 file 로그 전용 구조
+  때문인지 확인. ⚠ "2개월간 PSI=0.0 고정" 전례가 있으므로 무증상을 정상으로 읽지 말 것
+- [ ] **O-8 CASE-01 포지션 단위 손익 3원 대사** — 로그 / `ensemble_decisions` / `trades`.
+  ⚠ 수집기 §5의 "-3,135원"은 **레그 단위**로 TP1 레그(+31,865원)를 누락한다(계측 4원칙 ①)
+
+```
+
+</details>
+
+### dev_memory/CURRENT_STATE.md — 519.4KB · 마지막 갱신 2026-08-12 18:40
+
+최근 헤딩 8개:
+```
+### 3. 재시작 직후 restored/live 분리
+### 4. 중패널 `동적 피처 (SHAP)` 상태
+### 5. 오늘 확인된 startup 이슈와 현재 최종 블로커
+## 2026-05-22 (82차) — Micro Regime Warmup UI
+### 배경
+### 현재 상태
+### 구현 파일 (82차)
+### 다음 확인 사항
+```
+
+_(참고용 — 필요하면 직접 열 것)_
+
+### dev_memory/SESSION_LOG.md — 576.7KB · 마지막 갱신 2026-08-12 18:40
+
+최근 헤딩 8개:
+```
+## 2026-07-08 (304차 — 진입관리 탭 UI 정리: 원신호/실행신호 폭 축소+차단사유/레짐 이전, 상태스트립·자격현황 카드 제거, 방향인디케이터 카드 축소)
+### 구현
+### 검증
+## 2026-07-08 (304차 후속 — daily_close() 백그라운드 스레드 Qt 위젯 직접조작으로 인한 access violation 크래시 루프 수정)
+### 실측한 증상
+### 원인 규명
+### 구현
+### 검증
+```
+
+_(참고용 — 필요하면 직접 열 것)_
+
+## 9. 당일 JSON/JSONL 산출물
+
+(없음)
+
+## 10. 정기점검 리포트 현황
+
+### `docs/정기점검/매일점검` — 27개 (최근 8개)
+
+| 파일 | 크기 | 최종 |
+|---|---|---|
+| `docs/정기점검/매일점검/evidence_MW0601-20260814_pre_1622.md` | 65.8KB | 08-14 16:22 |
+| `docs/정기점검/매일점검/MW0601-20260814-점검리포트-intra.md` | 41.2KB | 08-14 12:40 |
+| `docs/정기점검/매일점검/evidence_MW0601-20260814_intra.md` | 61.2KB | 08-14 12:27 |
+| `docs/정기점검/매일점검/MW0601-20260814-점검리포트-pre.md` | 31.4KB | 08-14 09:08 |
+| `docs/정기점검/매일점검/evidence_MW0601-20260814_pre.md` | 47.8KB | 08-14 09:00 |
+| `docs/정기점검/매일점검/dailycheck_prompt.txt` | 12.2KB | 08-14 07:39 |
+| `docs/정기점검/매일점검/MW0601-20260813-점검리포트-post.md` | 40.6KB | 08-13 16:34 |
+| `docs/정기점검/매일점검/evidence_MW0601-20260813_post.md` | 62.3KB | 08-13 16:22 |
+
+### `docs/정기점검/금요일점검` — 51개 (최근 8개)
+
+| 파일 | 크기 | 최종 |
+|---|---|---|
+| `docs/정기점검/금요일점검/MW0601/cvd_anchor_report_20260814.md` | 4.9KB | 08-14 15:50 |
+| `docs/정기점검/금요일점검/MW0601/cvd_anchor_metrics_20260814.json` | 2.9KB | 08-14 15:50 |
+| `docs/정기점검/금요일점검/MW0601/featureset_health_report_20260814.md` | 26.2KB | 08-14 15:50 |
+| `docs/정기점검/금요일점검/MW0601/featureset_health_metrics_20260814.json` | 34.4KB | 08-14 15:50 |
+| `docs/정기점검/금요일점검/MW0601/validation_campaign_report_20260814.md` | 163.4KB | 08-14 15:49 |
+| `docs/정기점검/금요일점검/MW0601/validation_campaign_metrics_20260814.json` | 83.5KB | 08-14 15:49 |
+| `docs/정기점검/금요일점검/MW0602/exit_expectancy_map_20260810.md` | 1.8KB | 08-14 07:47 |
+| `docs/정기점검/금요일점검/MW0602/cvd_anchor_report_20260810.md` | 4.6KB | 08-14 07:39 |
+
+## 11. 자동 적신호 (출발점이지 결론이 아니다)
+
+1. 설정 불변식 `MODEL_LABEL_STATE_UNLOCK_ENABLED` = `None` (기대 `True`) — 468차 G-1. 사이즈 제한 해제를 이벤트→상태 판정으로. **라이브 미검증** — `사이즈 축소 ×0.6` 0건 확인 전까지 CLAUDE.md ⑧ 해제 금지
+2. 설정 불변식 `PRE_RETRAIN_DONE_BY_EOD_ENABLED` = `None` (기대 `True`) — 468차 F-1. EOD 완료로 `_pre_retrain_done` 해제 — G-1의 동반 스위치
+3. 설정 불변식 `ZONE_ENTRY_BAN_ENFORCE` = `None` (기대 `False`) — 462차 P1-a. 🔴 True면 라이브 진입이 즉시 준다. 위반 7건이 오히려 흑자(+596,858원)라 [53] 채널 판정 전까지 False 유지
+4. 설정 불변식 `ZONE_ENTRY_BAN_SHADOW_ENABLED` = `None` (기대 `True`) — 462차 P1-a 섀도. 집행과 무관하게 위반 계측은 항상 켜져 있어야 한다
+5. 설정 불변식 `PIPE_LATENCY_EXCLUDE_MODEL_SWAP` = `None` (기대 `True`) — 462차 P2. 모델 교체 구간을 CB⑤ 판정용 지연에서만 차감(원값은 `raw=…ms`로 존치)
+6. 장후인데 **강제청산(15:10) 흔적을 못 찾았다** — 절대원칙 1 확인 필요 (포지션이 없었을 수도 있다. 원본으로 구분할 것)
+7. 전략 상태 경보 **판정 = UNDERPERFORM** — 배너 전문을 §5에서 확인하라
+8. 청산 1건 중 하드스톱·손절 계열 **1건(100%)** — 손절 준수율 확인 필요
+9. 사이저 최대 3계약 → 실제 진입 최대 2계약 — 게이트 배수에 눌림 (sizing_inversion_watch 대상)
+10. 메인 스레드 블로킹 5초 초과 **6건** (최대 9125ms) — `CB_PIPE_PAUSE_MS=5_000` 기준 초과. CB⑤ 발동 여부 확인
+11. `logs/20260814_WARN.log`: **ConstOut** 4건(표본)
+12. `logs/20260814_SYSTEM.log`: **ConstOut** 8건(표본)
+13. `logs/20260814_SIGNAL.log`: **WeightCollapse** 8건(표본)
+14. `logs/20260814_SIGNAL.log`: **ConstOut** 8건(표본)
+15. `logs/20260814_LEARNING.log`: **축퇴** 8건(표본)
+16. 미커밋 변경 444건
+17. 상태 파일 `data/_exit_normally` 없음 — 정상 종료 플래그. **기동 시 소비되므로 재기동했다면 없는 것이 정상**이다. 로그의 `[Shutdown] 정상 종료 플래그 기록` 과 교차확인하라
+
+---
+
+*요약이지 원본이 아니다. 특정 패턴 전량이 필요하면 원본을 직접 열 것 — 예: `findstr /C:"강제청산" logs\*20260814*.log` (Windows) / `grep 강제청산 logs/*20260814*.log`*

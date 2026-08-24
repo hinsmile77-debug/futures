@@ -1,3 +1,13 @@
+프로그램은 진입 직전에 "이 신호를 몇 분짜리로 다룰지"를 정합니다. 
+기준은 변동성 비율 하나 
+— threshold_feasibility = ATR ÷ 1분 임계값(줄여서 tf). 그 값을 두 경계로 잘라 배정합니다:
+
+
+tf < 0.8          진입 차단
+0.8 ~ 3.2  → 1m   TP1 목표 = ATR × 0.3
+3.2 ~ 4.4  → 3m   TP1 목표 = ATR × 0.5     ← ENTRY_HORIZON_B1=3.2, B2=4.4
+tf ≥ 4.4   → 5m   TP1 목표 = ATR × 0.7
+
 
 8/18
 F1 — ensemble_decisions.spread_ticks가 실제로 채워지는가. 
