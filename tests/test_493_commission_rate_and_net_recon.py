@@ -37,19 +37,20 @@ from utils import db_utils  # noqa: E402
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# ✅ [2026-08-26 후속8] **브로커 공식 고시값으로 확정.**
-#   대신증권 「KOSPI200 선물 거래금액에 관계없이 0.0098104%」(사용자 확인).
-#   후속5의 39거래일 역산치 0.0098103% 와 5자리 일치 — 역산이 옳았음이 독립 확인됐다.
-#   (역산 근거: 약정대금 447.3억원, R²=1.000000, 최대 잔차 13.9원, 고정비 ≈0.
-#    전체 45일 중 6일은 오염일 제외. `--verify` 로 언제든 재현된다.)
-MEASURED_ONE_WAY_RATE = 0.000098104
+# 🔴 [MW0602 495차 / 2026-08-26] **이 PC 계좌 실측값이다 — MW0601(0.0098104%)과 다르다.**
+#   493차 체리픽 검증에서 `commission_rate_recon.py --verify`를 이 PC의 로그·trades.db로
+#   재실행: 33거래일 / 약정대금 339.3억원, 실효 편도 0.0019000%, R²=1.000000,
+#   최대 잔차 1.5원, 고정비 ≈0. pt_value=50,000(미니) 교차확인 완료 — 승수 착오 아님.
+#   dev 브랜치는 MW0602 단독 운영(487차)이므로 이 테스트는 MW0602 값을 고정한다.
+#   (MW0601 v9-dev 원본은 공식 고시 0.0098104%를 고정한다 — 계좌별 요율이 다르다.)
+MEASURED_ONE_WAY_RATE = 0.000019
 
 
 # ── ① 요율 세대 분리 ────────────────────────────────────────────────────────
 def test_live_rate_is_measured_not_kiwoom_legacy():
     """라이브 요율이 실측값이어야 한다. 구 키움 값으로 되돌아가면 실패한다."""
     assert settings.FUTURES_COMMISSION_RATE == pytest.approx(MEASURED_ONE_WAY_RATE, rel=1e-9), (
-        "라이브 수수료율이 공식 고시(0.0098104%)와 다르다. 되돌렸다면 브로커 net 대사가 "
+        "라이브 수수료율이 MW0602 실측(0.0019%)과 다르다. 되돌렸다면 브로커 net 대사가 "
         "매일 MISMATCH를 낸다 — scripts/commission_rate_recon.py --verify 로 확인할 것"
     )
 
@@ -191,8 +192,12 @@ def test_normalize_honors_explicit_rate_for_historical_rows():
     assert legacy["commission_rate_used"] == pytest.approx(
         settings.FUTURES_COMMISSION_RATE_LEGACY_KIWOOM)
     assert legacy["commission_krw"] < live["commission_krw"]
-    # 6.54배 관계가 수수료에도 그대로 반영돼야 한다.
-    assert live["commission_krw"] / legacy["commission_krw"] == pytest.approx(6.54, abs=0.05)
+    # 세대 간 배수가 수수료에도 그대로 반영돼야 한다.
+    # (MW0602: 0.000019/0.000015 = 1.27. MW0601 원본은 6.54였다 — 계좌별 요율 상이)
+    _expected_ratio = (settings.FUTURES_COMMISSION_RATE
+                       / settings.FUTURES_COMMISSION_RATE_LEGACY_KIWOOM)
+    assert live["commission_krw"] / legacy["commission_krw"] == pytest.approx(
+        _expected_ratio, abs=0.05)
 
 
 def test_trades_table_has_rate_column():

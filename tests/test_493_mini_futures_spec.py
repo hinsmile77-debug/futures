@@ -40,21 +40,23 @@ from config.constants import (  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: 대신증권 공식 고시 (2026-08-26 사용자 확인). "거래금액에 관계없이 0.0098104%".
-OFFICIAL_ONE_WAY_RATE = 0.000098104
+#: 🔴 [MW0602 495차] 이 PC 계좌 실측 요율 — MW0601의 고시값(0.0098104%)과 다르다.
+#: 33거래일 역산(2026-08-26, R²=1.000000, 최대 잔차 1.5원, 고정비 ≈0).
+#: 이 계좌 기준 고시/설정 화면 확인은 미완(NEXT_TODO 495차) — 확인되면 출처 갱신.
+OFFICIAL_ONE_WAY_RATE = 0.000019
 
 
-# ── ① 공식 요율 ─────────────────────────────────────────────────────────────
+# ── ① 요율 (MW0602 실측) ────────────────────────────────────────────────────
 def test_commission_rate_is_the_published_rate():
     assert S.FUTURES_COMMISSION_RATE == pytest.approx(OFFICIAL_ONE_WAY_RATE, rel=1e-12)
 
 
 def test_measured_and_published_agree():
-    """39거래일 역산치(0.0098103%)와 고시값이 일치하는가 — 독립 확인의 기록.
+    """33거래일 역산치(0.0018999%)와 채택 상수가 일치하는가 — 독립 확인의 기록.
 
     둘이 어긋나면 어느 한쪽이 낡은 것이다. 0.01% 이내면 같은 값으로 본다.
     """
-    measured = 0.000098103
+    measured = 0.000018999
     assert abs(S.FUTURES_COMMISSION_RATE / measured - 1.0) < 1e-4
 
 
@@ -236,11 +238,13 @@ def test_shadow_evaluator_fallback_prefers_mini():
 
 # ── 실제 계산이 맞는가 ──────────────────────────────────────────────────────
 def test_round_trip_cost_matches_reality():
-    """미니 1계약 @1040pt 왕복 수수료가 실측 규모(약 10,200원)인가.
+    """미니 1계약 @1040pt 왕복 수수료가 MW0602 실측 규모(약 1,980원)인가.
 
-    2026-08-25 실측: 4계약 왕복 40,782원 → 계약당 약 10,196원.
+    2026-08-25 MW0602 실측: 7레그 수수료 13,951원 / 약정대금 734백만원
+    → 1계약 편도(약정 52백만원)당 약 988원, 왕복 약 1,976원.
+    (MW0601 원본은 편도 ≈5,100원 — 계좌별 요율 상이, 파일 상단 주석 참조)
     """
     notional = 1040.0 * 50_000
     one_way = notional * S.FUTURES_COMMISSION_RATE
-    assert 5_000 < one_way < 5_200
-    assert 10_100 < one_way * 2 < 10_300
+    assert 950 < one_way < 1_030
+    assert 1_900 < one_way * 2 < 2_060

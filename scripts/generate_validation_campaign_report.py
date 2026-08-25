@@ -8140,13 +8140,21 @@ def build_report(days: int) -> tuple:
     if COST_MODEL_COMMISSION_RATE_PINNED:
         _pin_ratio = (FUTURES_COMMISSION_RATE / COST_MODEL_COMMISSION_RATE
                       if COST_MODEL_COMMISSION_RATE else float("nan"))
-        L.append("> 🔴 **비용모델 수수료율 핀(PINNED) — 비용차감 채널의 비용이 "
+        # [MW0602 495차] 서술 수치를 하드코딩하지 않고 상수에서 계산한다 —
+        # MW0601(6.54배)과 MW0602(1.27배)의 실측 요율이 달라 고정 문구는 틀린다.
+        _pin_price = 1040.0  # commission_rate_recon --impact 기준가와 동일
+        _fee_pinned = 2.0 * _pin_price * COST_MODEL_COMMISSION_RATE
+        _rt_pinned = _fee_pinned + 2.0 * 1.0 * TICK_SIZE
+        # 라이브 요율 곱셈 직접 사용 금지(핀 누수 검사) — 배수 경유로 표시값만 계산
+        _rt_live = _fee_pinned * _pin_ratio + 2.0 * 1.0 * TICK_SIZE
+        L.append("> 🔴 **비용모델 수수료율 핀(PINNED) — 비용차감 채널의 수수료가 "
                  "실제보다 %.2f배 과소하다.**" % _pin_ratio)
         L.append("> 이 리포트의 비용차감 판정([2] 호라이즌 거래성 · [%s] cost_edge 등)은 "
                  "`COST_MODEL_COMMISSION_RATE=%.7f`(구 키움 요율)로 계산된다. "
-                 "라이브 실측 요율은 `%.7f`(0.00981%%, 2026-08-25 실측 39거래일 회귀 R²=1.000)이며 "
-                 "왕복 비용은 0.071pt가 아니라 **0.244pt**다."
-                 % ("cost_edge_watch", COST_MODEL_COMMISSION_RATE, FUTURES_COMMISSION_RATE))
+                 "라이브 실측 요율은 `%.7f`이며 "
+                 "왕복 비용(1040pt·슬리피지 1틱 가정)은 %.4fpt가 아니라 **%.4fpt**다."
+                 % ("cost_edge_watch", COST_MODEL_COMMISSION_RATE, FUTURES_COMMISSION_RATE,
+                    _rt_pinned, _rt_live))
         L.append("> **일부러 핀해 둔 것이다** — 요율을 올리면 합격선을 안 건드려도 "
                  "채널 verdict가 일괄 이동해 사전등록 시계열이 끊긴다(461차 `mdd_pct` 유형). "
                  "해제는 **주간회의 승인 사항**이며, 영향 규모는 "

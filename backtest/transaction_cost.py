@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # 값을 지우지 않고 0 으로 두는 이유: 브로커가 바뀌어 정액이 생기면 여기에 넣으라는
 # 자리 표시다(계측 4원칙 — "없다"와 "안 쟀다"를 구분해 두는 것과 같은 취지).
 KRX_FEE_PER_CONTRACT   = 0          # 원/계약 — 현행 브로커는 정액 성분 없음
-BROKERAGE_RATE_DEFAULT = FUTURES_COMMISSION_RATE   # 0.0098104% 편도 (공식 고시)
+BROKERAGE_RATE_DEFAULT = FUTURES_COMMISSION_RATE   # 편도 — settings 단일 원천 (MW0602 실측 0.0019%)
 
 
 def _pt_value():
