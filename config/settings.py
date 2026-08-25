@@ -1655,6 +1655,24 @@ MAIN_THREAD_STALL_ALERT_MS = 15_000   # 이 이상이면 ERROR — FZ-1(180초) 
 # `_tick_header` 자체의 블로킹 검출 하한(종전 하드코딩 2,000ms). 이 아래는 안 찍는다.
 MAIN_THREAD_STALL_DETECT_MS = 2_000
 
+# ── [MW0601 493차 후속5 / F-P] 정지 시점 스택 스냅샷 ────────────────────────
+#
+# **무엇을 메우는가.** `[FaultHandler] 행감지=30s`(230차)는 임계가 30초라
+# 5~30초 정지에는 아무것도 안 남긴다. FZ-1 워치독은 180초다. 그래서
+# **5초~30초 구간이 무감시**였고, 2026-08-25 실측으로 그 구간에 **28건**이
+# 몰려 있다(5초 초과 7건, 최대 **21,781ms**). 482차 F-3 섀도가 2주째
+# "몇 번 멈췄다"만 세고 **"무엇이 멈추게 했는지"** 는 못 남기고 있었다 —
+# 스택이 없으면 관찰이 끝나도 원인을 고를 수 없다.
+#
+# ⚠ `dump_traceback()` 은 **GIL을 쥐고 쓴다** — 그 자체가 수십 ms를 먹는다.
+#   이미 정지가 **끝난 뒤** 호출되므로 그 정지를 늘리지는 않지만, 폭주하면
+#   새 지연원이 된다. 그래서 레이트리밋이 필수다.
+# ⚠ COM 콜백 안이 아니다(절대원칙 §4 무저촉) — `_tick_header` 는 Qt 타이머 슬롯이다.
+MAIN_STALL_TRACEBACK_ENABLED = True
+MAIN_STALL_TRACEBACK_MIN_MS = 5_000    # WARN 밴드부터 — 2초짜리 정지에는 안 찍는다
+MAIN_STALL_TRACEBACK_MIN_INTERVAL_SEC = 60.0   # 분당 1회
+MAIN_STALL_TRACEBACK_DAILY_MAX = 20            # 일일 상한(로그 폭주 방지)
+
 FREEZE_WATCHDOG_ENABLED = True
 FREEZE_WATCHDOG_CHECK_SEC = 30.0        # 감시 주기
 FREEZE_WATCHDOG_STALL_SEC = 180.0       # 이 시간 넘게 하트비트가 갱신되지 않으면 1스트라이크

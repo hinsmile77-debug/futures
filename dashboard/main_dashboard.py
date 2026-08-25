@@ -56,6 +56,11 @@ from config.settings import (
     MAIN_THREAD_STALL_WARN_MS as _MT_WARN_MS,
     MAIN_THREAD_STALL_ALERT_MS as _MT_ALERT_MS,
     MAIN_THREAD_STALL_DETECT_MS as _MT_DETECT_MS,
+    # [MW0601 493차 후속5 / F-P] 정지 시점 스택 스냅샷 (계측 — 차단 없음)
+    MAIN_STALL_TRACEBACK_ENABLED as _MST_ON,
+    MAIN_STALL_TRACEBACK_MIN_MS as _MST_MIN_MS,
+    MAIN_STALL_TRACEBACK_MIN_INTERVAL_SEC as _MST_MIN_INTERVAL,
+    MAIN_STALL_TRACEBACK_DAILY_MAX as _MST_DAILY_MAX,
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
@@ -918,6 +923,72 @@ def make_style() -> str:
         font-size: {S.f(10)}px;
     }}
 """
+
+
+# ────────────────────────────────────────────────────────────
+# [MW0601 493차 후속5 / F-P] 메인 스레드 정지 스택 스냅샷
+# ────────────────────────────────────────────────────────────
+#: 리포 루트 — 로그 경로 기준. `dashboard/` 의 부모다.
+_APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def should_dump_stall_traceback(stall_ms, now_mono, last_mono, today_count,
+                                enabled=None, min_ms=None,
+                                min_interval=None, daily_max=None):
+    """스택을 덤프할 것인가 — **순수 함수**(파일 IO 없음, 테스트가 여기를 고정한다).
+
+    Returns: (dump?, 억제사유 또는 None)
+
+    레이트리밋이 왜 필수인가: `faulthandler.dump_traceback()` 은 **GIL을 쥐고**
+    쓰므로 그 자체가 수십 ms를 먹는다. 이미 정지가 **끝난 뒤** 호출되니 그 정지를
+    늘리지는 않지만, 폭주하면 새 지연원이 된다 — 안전장치가 사고를 만드는 형태를
+    피한다(FZ-1·F-2가 「알림 전용」으로 시작한 것과 같은 원칙).
+
+    ⚠ 억제도 **사유를 돌려준다.** 조용히 건너뛰면 "정지는 28건인데 스택은 3개뿐"의
+      이유를 나중에 알 수 없다(계측 4원칙 ③ 탈락 가시화).
+    """
+    enabled = _MST_ON if enabled is None else enabled
+    min_ms = _MST_MIN_MS if min_ms is None else min_ms
+    min_interval = _MST_MIN_INTERVAL if min_interval is None else min_interval
+    daily_max = _MST_DAILY_MAX if daily_max is None else daily_max
+
+    if not enabled:
+        return False, "비활성"
+    if stall_ms < min_ms:
+        return False, None                      # 임계 미만은 억제가 아니라 대상 밖
+    if today_count >= daily_max:
+        return False, "일일 상한 %d회 도달" % daily_max
+    if last_mono is not None and (now_mono - last_mono) < min_interval:
+        return False, "레이트리밋 %.0fs 내 재발" % min_interval
+    return True, None
+
+
+def dump_stall_traceback(root_dir, day_str, stall_ms, since_pipe_s=None):
+    """모든 스레드의 스택을 `logs/mainstall_traceback_<date>.log` 에 append.
+
+    ⚠ `faulthandler` 는 **fd에 직접 ASCII 바이트를 쓴다** — 텍스트 모드 파일 객체를
+      넘기면 안 되고, 인코딩 지정도 불필요하다(230차 크래시 핸들러와 같은 규약).
+    ⚠ 실패해도 예외를 밖으로 내보내지 않는다 — 계측이 1초 타이머를 죽이면 안 된다.
+      다만 **조용히 삼키지도 않는다**(실패 여부를 bool로 돌려준다).
+    """
+    import faulthandler
+    try:
+        _dir = os.path.join(root_dir, "logs")
+        if not os.path.isdir(_dir):
+            os.makedirs(_dir)
+        path = os.path.join(_dir, "mainstall_traceback_%s.log" % day_str)
+        with open(path, "ab") as fh:
+            header = (
+                "\n===== [MainStall] %s stall_ms=%.0f since_pipe_s=%s =====\n"
+                % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), stall_ms,
+                   ("%.1f" % since_pipe_s) if since_pipe_s is not None else "NA")
+            )
+            fh.write(header.encode("ascii", "replace"))
+            fh.flush()
+            faulthandler.dump_traceback(file=fh, all_threads=True)
+            fh.flush()
+        return True
+    except Exception:
+        return False
 
 
 # ────────────────────────────────────────────────────────────
@@ -9606,6 +9677,12 @@ class MireukDashboard(QMainWindow):
         # [MW0601 482차 / F-3] 명시 초기화 — 종전에는 `getattr(self, "_tick_header_last_mono",
         # None)`으로 읽었다(계측 4원칙 ④가 금지하는 형태). None = 첫 틱(비교 대상 없음).
         self._tick_header_last_mono = None
+        # [MW0601 493차 후속5 / F-P] 스택 스냅샷 레이트리밋 상태.
+        # ⚠ 명시 초기화 — `getattr(self, "_x", 기본값)` 로 읽지 않는다
+        #   (계측 4원칙 ④, `tests/test_457_fallback_visibility.py` 전수 검사).
+        self._mst_last_mono = None     # None = 아직 한 번도 안 찍었다
+        self._mst_count = 0            # 오늘 찍은 횟수
+        self._mst_day = ""             # 상한 리셋 기준 날짜(YYYYMMDD)
         # 마지막 파이프라인 **완료** 시각(monotonic). None = 아직 한 번도 안 돎(미측정).
         # `_pipe_elapsed_s`는 초 단위 정수라 5초짜리 정지의 잔차를 재기엔 해상도가 없다.
         self._pipe_last_done_mono = None
@@ -10558,6 +10635,34 @@ class MireukDashboard(QMainWindow):
                     #   — 계측 4원칙 ②. 문자열 `NA`로 남긴다.
                     ("%.1f" % _since_pipe) if _since_pipe is not None else "NA",
                 )
+                # ── [MW0601 493차 후속5 / F-P] 정지 시점 스택을 남긴다 ──────────
+                # 482차 F-3 섀도가 2주째 "몇 번 멈췄다"만 세고 **"무엇이 멈추게
+                # 했는지"** 는 못 남기고 있었다. 스택 없이는 관찰이 끝나도 원인을
+                # 고를 수 없다(2026-08-25 실측 28건 · 최대 21,781ms).
+                # ⚠ 계측이 1초 타이머를 죽이면 안 된다 — 전 구간을 try로 감싼다.
+                try:
+                    _today = datetime.now().strftime("%Y%m%d")
+                    if _today != self._mst_day:
+                        self._mst_day = _today
+                        self._mst_count = 0          # 날짜가 바뀌면 상한 리셋
+                    _do, _skip = should_dump_stall_traceback(
+                        _gap_ms, _now_mono, self._mst_last_mono, self._mst_count)
+                    if _do:
+                        _ok = dump_stall_traceback(
+                            _APP_ROOT, _today, _gap_ms, _since_pipe)
+                        self._mst_last_mono = _now_mono
+                        self._mst_count += 1
+                        logger.warning(
+                            "[MainStallTrace] 스택 스냅샷 %s (%d/%d) "
+                            "→ logs/mainstall_traceback_%s.log",
+                            "기록" if _ok else "기록 실패",
+                            self._mst_count, _MST_DAILY_MAX, _today)
+                    elif _skip:
+                        # 억제도 사유를 남긴다 — 조용히 건너뛰면 "정지 28건인데
+                        # 스택 3개"의 이유를 나중에 알 수 없다(계측 4원칙 ③).
+                        logger.warning("[MainStallTrace] 스냅샷 생략 — %s", _skip)
+                except Exception as _mst_e:
+                    logger.warning("[MainStallTrace] 실패 (무해): %s", _mst_e)
         self._tick_header_last_mono = _now_mono
         if hasattr(self, "account_info_panel"):
             self.account_info_panel.tick_live()

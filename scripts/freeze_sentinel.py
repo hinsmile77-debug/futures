@@ -91,7 +91,7 @@ SIG_SYSLOG = "SYSTEM.log"
 
 # ── 판정 (순수 함수 — 테스트가 여기를 고정한다) ────────────────────────────
 
-def judge(ages, stall_sec=300.0):
+def judge(ages, stall_sec=300.0, exit_flag_age=None):
     """3신호의 나이(초)로 동결을 판정한다. 파일 IO 없이 값만 본다.
 
     Args:
@@ -99,16 +99,36 @@ def judge(ages, stall_sec=300.0):
               0.0(방금 갱신)과 다른 사실이므로 절대 같은 값으로 뭉개지 않는다
               (계측 4원칙 ②).
         stall_sec: 이보다 낡으면 그 신호는 「정체」.
+        exit_flag_age: [MW0601 493차 후속5 / F-Z] `data/_exit_normally` 의 **나이(초)**.
+              None = 플래그 없음 또는 읽기 실패(**미측정**).
 
     Returns:
-        dict(level, rc, headline, details[], stale[], unmeasured[])
+        dict(level, rc, headline, details[], stale[], unmeasured[], state)
 
     판정:
       ① 측정된 신호가 하나도 없다            → UNKNOWN (조용히 OK로 넘기지 않는다)
-      ② 측정된 신호가 **전부** 정체           → FROZEN
-      ③ 그 외(하나라도 신선)                  → OK
+      ② 측정된 신호가 **전부** 정체
+         · 정상 종료 플래그가 신호보다 **뒤**  → NOT_APPLICABLE (state=EXITED)
+         · 그 외                              → CRITICAL       (state=FROZEN)
+      ③ 그 외(하나라도 신선)                  → OK             (state=WATCHING)
     ⚠ ②의 분모는 **측정된 신호**다. 미측정을 정체로 세면 기동 전 시각에 오탐이 나고,
       신선으로 세면 진짜 동결을 놓친다 — 어느 쪽으로도 뭉개지 않고 분모에서 뺀다.
+
+    ── [MW0601 493차 후속5 / F-Z] 「정상 종료」와 「동결」을 가른다 ──────────────
+
+    종전에는 둘이 **같은 CRITICAL 문자열**이었다. 그래서 매일 정상 마감 뒤
+    15:45~16:30 에 **43회**의 가짜 동결 경보가 떴고 팝업까지 한 번 떴다.
+    이런 것이 쌓이면 **진짜 얼어붙은 날에도 무시하게 된다** — 2026-08-19 에
+    실제로 동결이 나 15:10 강제청산이 통째로 지나갔고, 그때 포지션이 없었던 것은
+    운이었다.
+
+    🔴 **그 08-19 형을 놓치면 안 된다.** 그날 프로세스는 **살아 있었고**
+    `_exit_normally` 는 **쓰이지 않았다**(정상 종료가 아니었으니까). 그래서
+    "플래그가 신호보다 뒤" 조건은 그 시나리오에서 성립하지 않는다 — 여전히
+    CRITICAL 이 나온다. 아래 두 가지가 그 안전 여백이다:
+      · **플래그 존재만으로 판정하지 않는다.** 어제 것이 남아 있을 수 있으므로
+        **시각을 비교**한다(플래그가 가장 오래된 정체 신호보다 뒤여야 한다).
+      · **미측정이면 종전대로 CRITICAL.** 감시자가 조용해지는 것이 오탐보다 나쁘다.
     """
     stale, fresh, unmeasured, details = [], [], [], []
     for name in (SIG_HEARTBEAT, SIG_TS, SIG_SYSLOG):
@@ -125,19 +145,40 @@ def judge(ages, stall_sec=300.0):
             details.append("%-16s %.0fs 전 — 신선" % (name, age))
 
     if not stale and not fresh:
-        return {"level": "UNKNOWN", "rc": RC_UNKNOWN,
+        return {"level": "UNKNOWN", "rc": RC_UNKNOWN, "state": "UNKNOWN",
                 "headline": "판정에 필요한 3신호가 모두 없다 — 센티넬이 돌았지만 "
                             "아무것도 보장하지 못했다",
                 "details": details, "stale": stale, "unmeasured": unmeasured}
 
     if not fresh:
-        return {"level": "CRITICAL", "rc": RC_FROZEN,
+        # [F-Z] 정상 종료였는가 — **플래그가 가장 오래된 정체 신호보다 뒤**여야 한다.
+        # `exit_flag_age`(초)가 정체 신호들의 최소 나이보다 **작다** = 플래그가 더
+        # 최근이다. 어제 남은 플래그는 나이가 훨씬 크므로 여기서 걸러진다.
+        _min_stale_age = min(ages[n] for n in stale)
+        if exit_flag_age is not None and exit_flag_age < _min_stale_age:
+            details.append(
+                "%-16s %.0fs 전 — 정상 종료 플래그(가장 오래된 정체 신호 %.0fs 보다 뒤)"
+                % ("_exit_normally", exit_flag_age, _min_stale_age))
+            return {"level": "NOT_APPLICABLE", "rc": RC_NOT_APPLICABLE,
+                    "state": "EXITED",
+                    "headline": "정상 종료 확인 — 감시 종료 (동결이 아니다)",
+                    "details": details, "stale": stale, "unmeasured": unmeasured}
+        if exit_flag_age is None:
+            # ⚠ **미측정을 정상 종료로 읽지 않는다.** 08-19 형 동결이 정확히 이 상태다
+            #   (프로세스는 살아 있고 플래그는 안 쓰였다).
+            details.append("%-16s **미측정**(플래그 없음/읽기 실패) — 동결 판정 유지"
+                           % "_exit_normally")
+        else:
+            details.append(
+                "%-16s %.0fs 전 — 정체 신호(%.0fs)보다 **오래됐다**(이전 세션 잔재)"
+                % ("_exit_normally", exit_flag_age, _min_stale_age))
+        return {"level": "CRITICAL", "rc": RC_FROZEN, "state": "FROZEN",
                 "headline": "라이브 프로세스 동결 — 측정 가능한 신호 %d종이 전부 %.0fs 이상 "
                             "정체다. 프로세스는 살아 있을 수 있으나 아무 일도 하지 않는다 "
                             "(런처 재기동도 걸리지 않는다)" % (len(stale), stall_sec),
                 "details": details, "stale": stale, "unmeasured": unmeasured}
 
-    return {"level": "OK", "rc": RC_OK,
+    return {"level": "OK", "rc": RC_OK, "state": "WATCHING",
             "headline": "정상 — 신선한 신호 %d종 (%s)" % (len(fresh), ", ".join(fresh)),
             "details": details, "stale": stale, "unmeasured": unmeasured}
 
@@ -239,6 +280,30 @@ def syslog_age(root, now, day):
             return None
         mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
         return max(0.0, (now - mtime).total_seconds())
+    except Exception:
+        return None
+
+
+def exit_flag_age(root, now):
+    """[MW0601 493차 후속5 / F-Z] `data/_exit_normally` 의 나이(초).
+
+    없거나 읽기 실패면 **None(미측정)** — 0 이나 큰 수로 위장하지 않는다.
+    미측정은 `judge()` 에서 **동결 판정 유지**로 처리된다(감시자가 조용해지는 것이
+    오탐보다 나쁘다).
+
+    ⚠ 파일 mtime 을 쓴다. 안의 ISO 시각을 파싱할 수도 있지만, 그 형식이 바뀌면
+      파싱 실패 → 미측정 → 가짜 CRITICAL 로 되돌아간다. mtime 은 런처가 파일을
+      지우기 전까지 그 세션의 종료 시각을 그대로 들고 있어 더 견고하다.
+    ⚠ **플래그의 존재만으로 판정하지 않는다** — 나이를 돌려주는 이유가 그것이다.
+      런처가 읽은 뒤 지우므로 보통은 없지만, 남아 있으면 어제 것일 수 있다.
+    """
+    path = os.path.join(root, "data", "_exit_normally")
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        return None
+    try:
+        return max(0.0, (now - datetime.datetime.fromtimestamp(mtime)).total_seconds())
     except Exception:
         return None
 
@@ -438,8 +503,17 @@ def main(argv=None):
             time.sleep(min(60.0, check))
             continue
 
-        verdict = judge(collect(root, now, now.date()), stall_sec=stall)
+        verdict = judge(collect(root, now, now.date()), stall_sec=stall,
+                        exit_flag_age=exit_flag_age(root, now))
         last_rc = verdict["rc"]
+        if verdict.get("state") == "EXITED":
+            # [MW0601 493차 후속5 / F-Z 변경 ②] 정상 종료가 확인되면 **창 종료를
+            # 기다리지 않고 빠져나온다.** 종전에는 15:45~16:30 동안 매 주기 가짜
+            # CRITICAL 을 냈다(2026-08-25 실측 43회 + 팝업 1회).
+            log_line(root, now.date(),
+                     "[FreezeSentinel] %s 정상 종료 확인 — 감시 종료"
+                     % now.strftime("%Y-%m-%d %H:%M:%S"))
+            return verdict["rc"]
         if verdict["level"] == "CRITICAL":
             # 같은 동결로 매 주기 팝업을 띄우면 사람이 화면을 못 쓴다 — 첫 확정에만
             # 팝업·마커를 내고 이후는 로그만 남긴다(경보 피로 방지).

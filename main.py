@@ -406,6 +406,49 @@ def _bar_from_raw_candle_row(row):
     return bar
 
 
+def format_premarket_scaler_trace(trace, canary_z=None):
+    """[MW0601 493차 후속5 / F-Q ①] 장전 재적합 궤적을 **한 줄로** 만든다.
+
+    순수 함수다 — 테스트가 여기를 고정한다(값을 새로 계산하지 않고, 이미 각
+    단계가 찍은 (before, after)를 모아 쓴다. 계측 위험 0).
+
+    trace: [(라벨, z_before, z_after)] — 시간순.
+    canary_z: 08:55 Canary가 잰 최종 z경고 수(없으면 생략).
+
+    무엇을 드러내는가 — **재증가폭**이다.
+    2026-08-25 실측: `18→11 · 12→6 · 10→6 · 13→4`.
+    매 단계 **시작값이 직전 단계 종료값보다 크다**(11→12, 6→10, 6→13).
+    창이 바뀌며 재측정되기 때문인데, 단계별 로그만 보면 *"줄이고 있다"* 로도
+    *"못 따라가고 있다"* 로도 읽힌다. 재증가폭을 명시하면 그 모호함이 사라진다.
+    이 값이 매일 크면 문제는 재적합 **횟수**가 아니라 **창 선택(30봉 고정)** 이다.
+    ⚠ 20거래일 미만 표본으로 창 크기를 바꾸지 않는다 — 이 줄은 관측이다.
+    """
+    if not trace:
+        return "[PremarketScalerTrace] 단계 없음 — 장전 재적합이 한 번도 기동하지 않았다"
+    parts, regrowth, prev_after = [], 0, None
+    for label, z_before, z_after in trace:
+        seg = "%s %s→%s" % (label, z_before, z_after)
+        if prev_after is not None:
+            delta = int(z_before) - int(prev_after)
+            if delta:
+                seg += "(%+d)" % delta          # 직전 종료값 대비 재증가폭
+            regrowth += max(0, delta)
+        parts.append(seg)
+        prev_after = z_after
+    tail = ""
+    if canary_z is not None:
+        # ⚠ Canary는 창(n_rows=60)이 달라 마지막 after와 다를 수 있다 —
+        #   그 차이 자체가 관측 대상이므로 뭉개지 않고 따로 적는다.
+        tail = " | canary(60봉)=%s" % canary_z
+        if prev_after is not None:
+            _cd = int(canary_z) - int(prev_after)
+            # 0이면 붙이지 않는다 — 단계 구간과 같은 규약(노이즈 억제).
+            if _cd:
+                tail += "(%+d)" % _cd
+    return ("[PremarketScalerTrace] %s%s | 단계 %d회 · 재증가 누계 %+d"
+            % (" → ".join(parts), tail, len(trace), regrowth))
+
+
 class TradingSystem:
     """미륵이 메인 트레이딩 시스템"""
 
@@ -453,6 +496,20 @@ class TradingSystem:
         self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
         self.ensemble          = EnsembleDecision()
         self._pt_value         = MINI_FUTURES_PT_VALUE  # [235차] 미니선물 전용 초기값 — connect_broker에서 get_contract_spec으로 재확정
+        # ── [MW0601 493차 후속5 / F-Q ①] 장전 스케일러 재적합 궤적 ─────────────
+        # 각 단계의 (라벨, z경고 before, z경고 after)를 쌓아 08:55 Canary 직후
+        # **한 줄로** 요약한다. 지금은 다섯 줄에 흩어져 있어
+        # *"줄었다가 다시 늘었다"* 가 눈에 띄지 않는다(계측 4원칙 ③).
+        #
+        # 2026-08-25 실측 궤적: 18→11 · 12→6 · 10→6 · 13→4.
+        # **매 단계 시작값이 직전 단계 종료값보다 크다**(11→12, 6→10, 6→13).
+        # 창이 바뀌며 재측정되기 때문인데, 지금 로그로는 *"줄이고 있다"* 로도
+        # *"못 따라가고 있다"* 로도 읽힌다. 그래서 **재증가폭**을 함께 찍는다 —
+        # 이 값이 매일 크면 문제는 재적합 횟수가 아니라 **창 선택(30봉 고정)** 이다.
+        # ⚠ 20거래일 미만 표본으로 창 크기를 바꾸지 않는다.
+        self._pm_scaler_trace = []      # [(라벨, z_before, z_after)]
+        self._pm_trace_emitted = False  # 하루 1회만 출력
+        self._pm_canary_shadow_done = False   # F-Q ② 08:59 섀도 1회 제한
         # [MW0601 493차 / F-5] 브로커 실측 당일 net(익일가예탁현금 − 예탁현금).
         # 잔고 push(FLAT일 때)가 채운다. **None이 초기값이다** — 0으로 두면
         # "아직 안 받았다"와 "브로커가 0원이라 한다"가 구분되지 않는다
@@ -4527,6 +4584,11 @@ class TradingSystem:
                         # 273차: refit 전후 모두 z경고인 피처 = 이번 refit이 억제 못한 피처
                         # (Phase4가 Phase1~3와 달리 무효했던 원인 진단용, 08:59 딥다이브)
                         _persist = sorted(set(_zf) & set(_z_feats_after))
+                        # [493차 후속5 / F-Q ①] 궤적 적재 — 출력은 08:55 Canary 뒤 1줄.
+                        self._pm_scaler_trace.append(
+                            ("%02d:%02d P%d" % (datetime.datetime.now().hour,
+                                                datetime.datetime.now().minute, _ph),
+                             _z, _z_after))
                         log_manager.system(
                             f"[PreMarket] Phase{_ph} refit 완료 n={len(_Xpm)}봉"
                             f" z경고 {_z}→{_z_after}개"
@@ -5031,6 +5093,18 @@ class TradingSystem:
                 + ("  ⚠ z경고 폭증" if _canary_z_bad else ""),
                 "WARNING" if (_canary_stale or _canary_z_bad) else "INFO",
             )
+            # ── [MW0601 493차 후속5 / F-Q ①] 장전 궤적 요약 1줄 ────────────────
+            # 무위험 계측이다 — 값을 새로 계산하지 않고 이미 찍힌 것을 모아 쓴다.
+            try:
+                if not self._pm_trace_emitted and self._pm_scaler_trace:
+                    self._pm_trace_emitted = True
+                    log_manager.system(
+                        format_premarket_scaler_trace(
+                            self._pm_scaler_trace, _canary_z_warn),
+                        "INFO",
+                    )
+            except Exception as _pmt_e:
+                logger.warning("[PremarketScalerTrace] 출력 실패 (무해): %s", _pmt_e)
             # [MW0601 457차 / C7] 알림을 재적합 **뒤로** 미룬다.
             # 2026-08-11 08:55:23 실측: "🌡 Canary 이상 감지(z경고 14개)" 알림이 나간
             # 바로 그 초에 "[Canary] 장전 재적합 완료 z경고 →3개 ✓ 임계 이하"가 찍혔다.
@@ -11905,18 +11979,36 @@ class TradingSystem:
         #   **뒤**라 `self._mh_*` 직접 읽기는 항상 0 이다(483차 P1-A).
         # 🔴 판정에 관여하지 않는다 — CB③ 자동진입 차단은 한시예외로 비활성이며
         #   (`CB3_P4_GRADE_BLOCK_ENABLED=False`, 절대원칙 §2) 여기서 되돌리지 않는다.
-        log_manager.system(
-            "[CB③계측] 조건성립 %d분 / 판정가능 %d분 / 파이프라인 %d분"
-            " · 그 창 진입 %d포지션 · 손익 %+,.0f원"
-            " (임계 acc30m<%.2f · HALT 차단은 한시예외로 비활성)"
-            % (int(_mh_snap_eod.get("cb3_would_halt_minutes") or 0),
-               int(_mh_snap_eod.get("cb3_ready_minutes") or 0),
-               int(_mh_snap_eod.get("pipeline_minutes") or 0),
-               int(_mh_snap_eod.get("cb3_would_halt_entries") or 0),
-               float(_mh_snap_eod.get("cb3_would_halt_pnl_krw") or 0.0),
-               float(_cb3_avail_eod.get("threshold") or 0.0)),
-            "INFO",
-        )
+        # 🔴 [MW0601 493차 후속5 / F-Y] `%` 서식 안에 **콤마 플래그를 두지 않는다.**
+        #
+        # 종전 `"손익 %+,.0f원"` 은 `ValueError: unsupported format character ','`
+        # 로 터졌고, 그 예외가 **`daily_close()` 전체를 끊었다** — 뒤에 있던 DB 플러시·
+        # WAL 체크포인트·일일 전략 리포트가 이틀 연속 실행되지 않았다(이상점 1-12).
+        # `,` 는 `str.format`/f-string 문법이지 `%` 연산자 문법이 아니다.
+        # → 값을 **먼저 문자열로 만들고** `%s` 로 넘긴다.
+        #
+        # ⚠ 이 블록은 **개별 try/except** 로 감싼다. 계측 한 줄이 마감 절차를
+        #   끊으면 안 된다. 다만 **예외를 삼키지 않는다** — 같은 함수의
+        #   `[BrokerPnl]`·`[ScalerMonitor]` 블록과 같은 관례로 남긴다(계측 4원칙 ④).
+        # 🚫 손익 확정(`[Daily] 마감 통계`·`[BrokerPnl]`)과 마커 기록에는 이 관례를
+        #   적용하지 않는다 — 그 둘은 조용히 실패하면 안 된다.
+        try:
+            _cb3_pnl_txt = format(
+                float(_mh_snap_eod.get("cb3_would_halt_pnl_krw") or 0.0), "+,.0f")
+            log_manager.system(
+                "[CB③계측] 조건성립 %d분 / 판정가능 %d분 / 파이프라인 %d분"
+                " · 그 창 진입 %d포지션 · 손익 %s원"
+                " (임계 acc30m<%.2f · HALT 차단은 한시예외로 비활성)"
+                % (int(_mh_snap_eod.get("cb3_would_halt_minutes") or 0),
+                   int(_mh_snap_eod.get("cb3_ready_minutes") or 0),
+                   int(_mh_snap_eod.get("pipeline_minutes") or 0),
+                   int(_mh_snap_eod.get("cb3_would_halt_entries") or 0),
+                   _cb3_pnl_txt,
+                   float(_cb3_avail_eod.get("threshold") or 0.0)),
+                "INFO",
+            )
+        except Exception as _cb3m_e:
+            logger.warning("[CB③계측] 출력 실패 (무해): %s", _cb3m_e)
         _ccf_today = self._checklist_conf_fail_count   # [P3] 리포트 전달용 — 리셋 전에 캡처
         log_manager.system(
             f"[P3] 금일 Checklist 신뢰도 차단: {_ccf_today}회"
@@ -13426,6 +13518,43 @@ class TradingSystem:
             )
             _ts_sync_position_from_broker(self)
 
+        # ── [MW0601 493차 후속5 / F-Q ②] 08:59 Canary 확인 사격 — **섀도 관측** ──
+        #
+        # 🚫 **재적합하지 않는다. 재측정만 한다.**
+        #   08:59에 스케일러를 바꾸면 개장 1분 전에 추론 공간이 이동해 첫 분 예측이
+        #   어제까지와 다른 공간에서 나온다(332차·337차 shape mismatch 계열 위험).
+        #   스킬 규약 — 게이트·차단 로직 신설은 **섀도 계측을 거친 뒤** 승격한다.
+        #
+        # 무엇을 쌓는가: 08:55 값과 개장 직전 값이 얼마나 벌어지는가.
+        # 2026-08-25 실측상 장전에 네 번 재적합하고도 개장 첫 분에 다시 어긋났는데
+        # (`[AutoMasked]` 4~5개 · conf=0.000 2분), 그 괴리가 **08:55~09:00 사이에
+        # 생기는지 09:00 이후에 생기는지**를 지금은 구분할 수 없다.
+        # 10거래일 쌓아 09:00 `[ScalerMonitor] extreme=N` 과 일치하면, 그때
+        # 08:59 재적합 승격을 주간회의 안건으로 올린다.
+        #
+        # 비용: 30봉 z 계산 수 ms. **모델·스케일러 미변경.**
+        if (
+            is_trading_day(now)
+            and datetime.time(8, 59) <= now.time() < datetime.time(9, 0)
+            and not self._pm_canary_shadow_done
+        ):
+            self._pm_canary_shadow_done = True
+            try:
+                _cs_z = self._canary_load_z_warn(n_rows=60)
+                _cs_base = (self._pm_scaler_trace[-1][2]
+                            if self._pm_scaler_trace else None)
+                log_manager.system(
+                    "[CanaryShadow] ts=08:59 z경고=%d개 (08:55 최종 %s 대비 %s)"
+                    " — 재측정만, 재적합 없음"
+                    % (_cs_z,
+                       # ⚠ 단계가 하나도 없으면 **미측정**이다 — 0으로 쓰지 않는다.
+                       ("%d개" % _cs_base) if _cs_base is not None else "미측정",
+                       ("%+d" % (_cs_z - _cs_base)) if _cs_base is not None else "비교불가"),
+                    "INFO",
+                )
+            except Exception as _cs_e:
+                logger.warning("[CanaryShadow] 재측정 실패 (무해): %s", _cs_e)
+
         # 일일 마감 (15:40~, KRX 거래일만)
         if (
             not self._daily_close_done
@@ -14207,8 +14336,9 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
                    (ts, entry_ts, direction, quantity, entry_price,
                     stop_eval, stop_current, bar_start, bar_high, bar_low,
                     cur_price, close_hit, live_suppressed, would_suppress,
-                    tighten_path, stop_updated_at, shadow_tightened_at, exited)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    tighten_path, stop_updated_at, shadow_tightened_at, exited,
+                    entry_after_bar, stop_updated_at_null)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     (self.position.entry_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -14231,6 +14361,15 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
                     (self.position.stop_shadow_tightened_at.strftime("%Y-%m-%d %H:%M:%S")
                      if self.position.stop_shadow_tightened_at else None),
                     1 if _stop_hit_ts else 0,
+                    # ── [MW0601 493차 후속5 / F-V ④] 승격 판단용 2컬럼 ─────────
+                    # ⚠ 값의 원천은 **가드가 켜진 호출**(`_intrabar_stop_hit`)이다 —
+                    #   바로 위 `_pss_raw_hit` 호출은 `bar_start` 없이 부르므로
+                    #   섀도 속성이 리셋된다. 그래서 순서상 **뒤에 온 값**을 쓰지 않고
+                    #   가드 호출이 남긴 값을 다시 계산해 넣는다.
+                    # ⚠ `entry_after_bar`는 NULL(미측정)을 유지한다 — 0이 아니다.
+                    (None if (_bar_start is None or self.position.entry_time is None)
+                     else (1 if self.position.entry_time >= _bar_start else 0)),
+                    1 if self.position.stop_updated_at is None else 0,
                 ),
             )
     except Exception as _pss_e:

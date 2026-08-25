@@ -1258,6 +1258,26 @@ def init_trades_db():
         created_at       TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
+    # ── [MW0601 493차 후속5 / F-V ④] 승격 판단용 2컬럼 ──────────────────────
+    # 🔴 **판정에 관여하지 않는다** — 순수 관측이다.
+    #
+    #  entry_after_bar     진입이 평가 봉보다 **뒤**인가.
+    #                      ①(스톱이 이 봉에서 조여졌는가)은 간접 조건이고, 근본
+    #                      질문은 이것이다. 앞으로 새 진입 경로가 생겨도 자동
+    #                      적용되므로, 표본이 쌓이면 ①을 이쪽으로 승격할지 판단한다.
+    #                      NULL = 미측정(bar_start·entry_time 부재) — 0이 아니다.
+    #  stop_updated_at_null 판정 시점에 라이브 가드가 **꺼져 있었는가**.
+    #                      2026-08-25 유령 하드스톱이 3주 무증상이었던 이유가
+    #                      이 상태의 무기록이다(계측 4원칙 ④).
+    with _lock:
+        with get_conn(TRADES_DB) as _pss_conn:
+            _pss_cols = {r[1] for r in _pss_conn.execute(
+                "PRAGMA table_info(phantom_stop_shadow)").fetchall()}
+            for _c, _t in (("entry_after_bar", "INTEGER"),
+                           ("stop_updated_at_null", "INTEGER")):
+                if _c not in _pss_cols:
+                    _pss_conn.execute(
+                        "ALTER TABLE phantom_stop_shadow ADD COLUMN %s %s" % (_c, _t))
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_pss_ts ON phantom_stop_shadow(ts)")
     execute(TRADES_DB,

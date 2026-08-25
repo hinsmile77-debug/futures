@@ -1095,6 +1095,9 @@ def assemble_positions(merged):
 
     조립 규칙:
       · `[Position] 진입` 이 포지션을 연다.
+      · 🔴 [MW0601 493차 후속5 / F-X] 그 줄이 **없어도** `[체결진입] … 보유=N계약`
+        중 **FLAT 에서 처음 채워진 체결**(qty == 보유)이 포지션을 연다.
+        그렇게 열린 포지션은 `inferred=True` 로 표시되고 요약표에 `(추정귀속)` 이 붙는다.
       · `체결부분청산` / `체결청산` 레그를 열린 포지션에 붙인다.
       · `체결청산`(전량) 이 포지션을 닫는다.
       · 포지션 pt 는 **계약 가중합** Σ(pt_i × qty_i) 이다. 레그 수량이 다르면
@@ -1106,13 +1109,36 @@ def assemble_positions(merged):
                    "net_won","net_pt","closed","exit_reason"}]
       orphans:   포지션에 귀속되지 않은 레그(진입 로그가 없는 이월 포지션 등)
     """
+    # ── [MW0601 493차 후속5 / F-X] 진입 로그 없는 포지션도 연다 ────────────────
+    #
+    # **왜 필요한가.** `[Position] 진입` 은 정상 경로에서만 찍힌다. Chejan 선행 체결
+    # (브로커 체결 통보가 진입 처리보다 먼저 도착하는 레이스)로 들어온 포지션은
+    # 그 줄이 없고 `[체결진입]` 만 남는다. 종전 조립기는 그런 포지션을 통째로
+    # **orphan** 으로 버렸다 — 2026-08-25 실측: 실제 2포지션인데 요약이 1건으로
+    # 나왔고, 하필 **결함이 난 쪽**(유령 하드스톱, -24,108원)이 빠졌다.
+    #
+    # 🔴 그 결손은 **결함이 난 날에만** 생긴다. 즉 문제가 통계에서 스스로를 지운다.
+    #
+    # 여는 조건은 `qty == 보유` — FLAT 에서 처음 채워진 체결이라는 뜻이다.
+    # 추가진입(보유 > qty)은 열지 않고 수량만 올린다. `[체결진입보정]` 은 정규식이
+    # `\[체결진입\]` 로 닫혀 있어 애초에 매칭되지 않는다.
+    # 순서값 1 — 같은 초에 `[Position] 진입`(0)이 있으면 **그쪽이 이긴다.**
     ev = []
     for rec in merged.get("entry", []):
         ev.append((_rec_seconds(rec), 0, "entry", rec))
+    for rec in merged.get("fill_entry", []):
+        try:
+            _q, _h = int(rec.get("qty") or 0), int(rec.get("held") or 0)
+        except (TypeError, ValueError):
+            continue
+        if _q > 0 and _q == _h:
+            ev.append((_rec_seconds(rec), 1, "fill_open", rec))
+        elif _q > 0 and _h > _q:
+            ev.append((_rec_seconds(rec), 1, "fill_add", rec))
     for rec in merged.get("partial_exit", []):
-        ev.append((_rec_seconds(rec), 1, "partial", rec))
+        ev.append((_rec_seconds(rec), 2, "partial", rec))
     for rec in merged.get("exit", []):
-        ev.append((_rec_seconds(rec), 2, "full", rec))
+        ev.append((_rec_seconds(rec), 3, "full", rec))
     ev.sort(key=lambda t: (t[0], t[1]))
 
     positions, orphans, cur = [], [], None
@@ -1127,7 +1153,28 @@ def assemble_positions(merged):
             cur = {"open_hhmm": rec.get("hhmm"), "dir": rec.get("dir"),
                    "entry_qty": _eq, "hz": rec.get("hz"), "grade": None,
                    "legs": [], "net_won": 0, "net_pt": 0.0,
-                   "closed": False, "exit_reason": None, "_rem": _eq}
+                   "closed": False, "exit_reason": None, "_rem": _eq,
+                   "inferred": False}
+            continue
+        if kind in ("fill_open", "fill_add"):
+            # [F-X] 체결 기반 보조 경로.
+            try:
+                _q, _h = int(rec.get("qty") or 0), int(rec.get("held") or 0)
+            except (TypeError, ValueError):
+                continue
+            if kind == "fill_open" and cur is None:
+                # 진입 로그 없이 열린 포지션 — **추정 귀속**임을 행에 남긴다
+                # (계측 4원칙 ④: 폴백이 쓰였으면 그 사실을 남긴다).
+                cur = {"open_hhmm": rec.get("hhmm"), "dir": rec.get("dir"),
+                       "entry_qty": _h, "hz": None, "grade": None,
+                       "legs": [], "net_won": 0, "net_pt": 0.0,
+                       "closed": False, "exit_reason": None, "_rem": _h,
+                       "inferred": True}
+            elif cur is not None and cur.get("inferred"):
+                # 추정 포지션의 추가 체결 — 진입 수량을 실측 보유로 끌어올린다.
+                # ⚠ `[Position] 진입` 으로 연 포지션에는 손대지 않는다(그쪽이 원천이다).
+                cur["entry_qty"] = max(int(cur.get("entry_qty") or 0), _h)
+                cur["_rem"] = max(int(cur.get("_rem") or 0), _h)
             continue
         if cur is None:
             orphans.append(rec)
@@ -1236,11 +1283,21 @@ def day_summary(digests, cfg, out):
         A("| 진입 | 방향 | 진입수량 | hz | 레그 | 포지션 pt | 포지션 net(원) | 최종 청산사유 |")
         A("|---|---|---|---|---|---|---|---|")
         for q in positions:
+            # [F-X] 폴백으로 조립된 포지션은 그 사실을 행에 남긴다(계측 4원칙 ④).
+            _open_txt = q["open_hhmm"] + (" (추정귀속)" if q.get("inferred") else "")
             A("| %s | %s | %s | %s | %d | %+.2f | %s | %s |" % (
-                q["open_hhmm"], q.get("dir"), q.get("entry_qty"), q.get("hz") or "—",
+                _open_txt, q.get("dir"), q.get("entry_qty"), q.get("hz") or "—",
                 len(q["legs"]), q["net_pt"], format(q["net_won"], "+,d"),
                 q["exit_reason"] if q["closed"] else "**미청산(보유 중)**"))
         A("")
+        _inferred = [q for q in positions if q.get("inferred")]
+        if _inferred:
+            A("> ⚠ **(추정귀속) %d건** — `[Position] 진입` 로그가 없어 `[체결진입]`(FLAT→보유)"
+              " 으로 조립한 포지션이다. **손익·수량은 체결 실측이라 정확하지만** `hz`"
+              "(진입 호라이즌)·등급은 그 줄에 없어 `—` 다. 이 경로가 나타났다는 것 자체가"
+              " **Chejan 선행 체결 레이스의 지문**이므로 이상점 후보로 볼 것"
+              "(2026-08-25 유령 하드스톱 1-9와 같은 날 같은 포지션)." % len(_inferred))
+            A("")
 
         # 레그 상세 — 은닉되던 부분청산을 눈에 보이게 (계측 4원칙 ③ 탈락 가시화)
         A("**청산 레그 %d행** (부분청산 %d · 전량청산 %d)" % (n_legs, len(pe), len(ex)))

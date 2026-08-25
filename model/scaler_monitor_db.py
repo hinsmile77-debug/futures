@@ -88,6 +88,22 @@ _HEALTH_COLS = [
     # 두 계측이 서로를 침식하는 관계를 처음 수치화한다(482차 G-2).
     ("cb3_buffer_resets",       "INTEGER"),
     ("cb3_samples_dropped",     "INTEGER"),
+    # ── [MW0601 493차 후속5 / F-AB] CB③ **조건 성립** 축 ──────────────────
+    # 위 `cb3_ready_minutes` 는 「판정 **가능**했던 분」이고, 이쪽은 「임계 미달이라
+    # HALT **조건이 실제로 성립**했던 분」이다. 둘은 다른 질문이다 —
+    # 전환기준 ⑥(CB③ 기준 호라이즌 교체)을 논의하려면 후자가 있어야
+    # "차단을 켰다면 무엇을 잃었겠는가"를 답할 수 있다.
+    #
+    # 490차 F-G 가 이 세 카운터를 만들었지만 **로그로만 나갔다.** 그 로그 줄이
+    # 2026-08-24·25 이틀 연속 서식 오류로 죽으면서(F-Y) 값이 통째로 사라졌고,
+    # 오늘 값(69분)은 이 점검이 DEBUG 로그에서 손으로 복원해야 했다.
+    # 🔴 **로그는 사람이 읽고 DB는 시계열이 읽는다** — 둘 다 있어야 한다.
+    #
+    # ⚠ DEFAULT 를 주지 않는 이유는 위 `cb3_ready_minutes` 와 같다 — 기존 행은
+    #   NULL(**미측정**)이며 0(「사건이 없었다」)과 구분된다(계측 4원칙 ②).
+    ("cb3_would_halt_minutes",  "INTEGER"),
+    ("cb3_would_halt_entries",  "INTEGER"),
+    ("cb3_would_halt_pnl_krw",  "REAL"),
 ]
 
 
@@ -214,6 +230,14 @@ def _int_or_none(v):
     return None if v is None else int(v)
 
 
+def _float_or_none(v):
+    """[MW0601 493차 후속5 / F-AB] `_int_or_none` 의 실수판 (원 단위 손익용).
+
+    0.0(「그 창에서 손익이 0이었다」)과 None(「안 쟀다」)은 다른 사실이다.
+    """
+    return None if v is None else float(v)
+
+
 def compute_ensemble_uptime(health: Optional[dict]) -> Optional[float]:
     """[MW0601 457차 / G5] 앙상블 유효 가동률 = 1 − (ConstOut 분 + 붕괴 분) / 총 분.
 
@@ -257,8 +281,10 @@ def insert_daily(
                     pipeline_minutes, const_out_events, const_out_minutes,
                     const_out_by_horizon, weight_collapse_minutes,
                     intraday_retrain_count, ensemble_uptime,
-                    cb3_ready_minutes, cb3_buffer_resets, cb3_samples_dropped)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    cb3_ready_minutes, cb3_buffer_resets, cb3_samples_dropped,
+                    cb3_would_halt_minutes, cb3_would_halt_entries,
+                    cb3_would_halt_pnl_krw)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     date_str,
                     stats.get("max_age_minutes", 0.0),
@@ -281,6 +307,12 @@ def insert_daily(
                     _int_or_none(_h.get("cb3_ready_minutes")),
                     _int_or_none(_h.get("cb3_buffer_resets")),
                     _int_or_none(_h.get("cb3_samples_dropped")),
+                    # [MW0601 493차 후속5 / F-AB] 조건 성립 축.
+                    # `health` 가 없으면 NULL(미측정) — 있으면 **0도 기록한다**
+                    # ("조건이 한 번도 성립하지 않았다"는 정보다).
+                    _int_or_none(_h.get("cb3_would_halt_minutes")),
+                    _int_or_none(_h.get("cb3_would_halt_entries")),
+                    _float_or_none(_h.get("cb3_would_halt_pnl_krw")),
                 ),
             )
             c.commit()

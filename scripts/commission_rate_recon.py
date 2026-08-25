@@ -375,7 +375,11 @@ def cmd_rewrite_trades(args):
                                 commission_rate=FUTURES_COMMISSION_RATE)
         d_comm += m["commission_krw"] - float(r["commission_krw"] or 0.0)
         d_net += m["net_pnl_krw"] - float(r["net_pnl_krw"] or 0.0)
-    print("대상 %d행 — 수수료 %+,.0f원 / net %+,.0f원 변동 예정" % (len(rows), d_comm, d_net))
+    # ⚠ `%` 연산자는 콤마 플래그를 지원하지 않는다 — `format()`으로 먼저 문자열을
+    #   만든다. 종전 `%+,.0f`는 실행 즉시 ValueError로 죽었다(F-Y와 같은 결함;
+    #   `tests/test_493_percent_format_comma.py`가 이 커밋에서 잡아냈다).
+    print("대상 {}행 — 수수료 {}원 / net {}원 변동 예정".format(
+        len(rows), format(d_comm, "+,.0f"), format(d_net, "+,.0f")))
     if not args.yes:
         print("")
         print("실제로 쓰려면 --yes 를 붙일 것. (백업 권장: data/db/trades.db 복사)")

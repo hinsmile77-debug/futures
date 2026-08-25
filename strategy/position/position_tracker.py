@@ -123,6 +123,18 @@ class PositionTracker:
         #   2거래일로 확정하는 것은 313차 원칙 위반이므로, 라이브 청산은 그대로 두고
         #   "정상 가드였다면 억제됐을 건"만 기록해 캠페인 채널로 판정한다.
         self.stop_shadow_tightened_at: Optional[datetime.datetime] = None
+        # ── [MW0601 493차 후속5 / F-V ②③] 봉중 판정 섀도 ────────────────────────
+        # ⚠ **명시 초기화한다.** `getattr(self, "_x", 기본값)` 로 읽지 않는다 —
+        #   457차가 잡은 "읽기만 있고 할당이 없어 폴백이 영구 고정" 사고의 예방
+        #   (계측 4원칙 ④, `tests/test_457_fallback_visibility.py`가 전수 검사한다).
+        # 값 의미:
+        #   _last_intrabar_guard_bypassed  가드가 꺼진 채 판정이 나갔는가(bool)
+        #   _last_intrabar_entry_after_bar 진입이 평가 봉보다 뒤인가
+        #                                  (None = 미측정 — bar_start/entry_time 부재)
+        #   _phantom_guard_warned          포지션당 1회만 경고(로그 폭주 방지)
+        self._last_intrabar_guard_bypassed: bool = False
+        self._last_intrabar_entry_after_bar: Optional[bool] = None
+        self._phantom_guard_warned: bool = False
         self.stop_shadow_tighten_path: Optional[str] = None
         self.tp1_price:    float = 0.0
         self.tp2_price:    float = 0.0
@@ -239,6 +251,11 @@ class PositionTracker:
         self.stop_updated_at = None
         self.stop_shadow_tightened_at = None   # [424차]
         self.stop_shadow_tighten_path = None   # [424차]
+        # [493차 후속5 / F-V] 봉중 판정 섀도도 포지션 경계에서 리셋한다.
+        # 경고 1회 제한도 함께 풀어 **새 포지션에서는 다시 알린다**.
+        self._last_intrabar_guard_bypassed = False
+        self._last_intrabar_entry_after_bar = None
+        self._phantom_guard_warned = False
         self.tp1_price = 0.0
         self.tp2_price = 0.0
         self.tp3_price = 0.0
@@ -574,6 +591,10 @@ class PositionTracker:
             self.reverse_entry_enabled = bool(reverse_entry_enabled or self.reverse_entry_enabled)
             self.trailing_anchor_price = price
             self._recalculate_levels(atr)
+            # [MW0601 493차 후속5 / F-V ①-a] 낙관적 오픈 보정 분기에서도 가드를 켠다.
+            # 이 분기도 바로 위에서 `_recalculate_levels(atr)`로 손절선을 다시 잡는다 —
+            # 한쪽만 고치면 같은 누락이 남는다(424차가 3/4 지점만 덮어 재발한 전례).
+            self._mark_stop_tightened("entry_fill_correction")
             self.last_update_reason = f"apply_entry_fill_correction:{direction}"
             self.last_update_ts = filled_at or now_kst()
             self._save_state()
@@ -641,6 +662,35 @@ class PositionTracker:
                 self.entry_horizon = entry_horizon
 
         self._recalculate_levels(atr)
+        # 🔴 [MW0601 493차 후속5 / F-V ①] 레이스 경로에서도 유령 하드스톱 가드를 켠다.
+        #
+        # `open_position()`이 353행에서 하는 것과 **정확히 같은 호출**이다 —
+        # 새 로직이 아니라 **누락된 한 줄의 복원**이다.
+        #
+        # 무엇을 막는가: 진입 분봉의 고저가는 **진입 이전 구간을 포함**하므로 그 봉의
+        # 봉중 손절 판정은 유령이다(423차가 명시한 설계 의도). 정상 진입은
+        # `open_position()`이 가드를 켜 그것을 막는데, Chejan 선행 체결 레이스로
+        # `apply_entry_fill()`이 FLAT에서 직접 포지션을 여는 경로에는 그 한 줄이
+        # 없었다. 2026-08-25 11:25:01 실측 — 진입 1036.00 / 손절 1033.75인데
+        # **직전 봉(11:24) 저가 1033.48**로 즉시 청산돼 1초 만에 -24,108원.
+        #
+        # ⚠ **손익이 한 방향으로 바뀐다.** 이 경로 진입은 진입 봉·직전 봉의 극단으로는
+        #   더 이상 청산되지 않는다. 다만 종가 기준 `is_stop_hit()`은 그대로 살아 있어
+        #   **진짜 손절을 놓치지는 않는다** — 다음 봉부터 정상 판정된다(손절이 최대 1분
+        #   늦어진다).
+        # ⚠ 424차의 경고 *"여기서 stop_updated_at을 찍으면 라이브 손익이 바뀐다"* 는
+        #   **TP1 손익분기 이동 지점**에 대한 것이고 **진입 지점은 그 대상이 아니다.**
+        #   423차가 진입 지점을 이미 가드 대상으로 명시했다(위 353행 주석).
+        #
+        # 🚫 **추가진입(증량) 분기에는 일부러 붙이지 않는다.**
+        #   그쪽도 `_recalculate_levels()` 로 손절선이 움직이므로 같은 논리가
+        #   성립하고, 그래서 처음에는 이 호출을 if 밖에 두어 양쪽을 덮었다.
+        #   그러나 그것은 **0825 리포트가 명세하고 위험을 저울질한 범위(FLAT 분기)를
+        #   넘는다** — 손익이 걸린 경로를 분석 없이 넓히지 않는다. 증량 포지션의
+        #   봉중 판정은 종전 동작 그대로이며, 별도 안건으로 등록했다
+        #   (`NEXT_TODO.md` U-15).
+        if _is_new_position:
+            self._mark_stop_tightened("entry_fill")
         # 신규 포지션(FLAT→진입)일 때만 partial_done 리셋
         # 분할체결·증량 시에는 이미 실행된 TP 플래그를 보존하여 재발동 방지
         if _is_new_position:
@@ -1154,6 +1204,38 @@ class PositionTracker:
             and self.stop_updated_at >= bar_start
         ):
             return False
+
+        # ── [MW0601 493차 후속5 / F-V ②③] 가드 우회 가시화 + 진입시각 섀도 ────────
+        #
+        # ③ **가드가 꺼진 채로 판정이 나가는 것을 로그로 남긴다.**
+        #    2026-08-25의 유령 하드스톱이 3주간 무증상이었던 유일한 이유가 이
+        #    로그의 부재다 — `stop_updated_at`이 None이면 위 가드는 **조용히
+        #    통과**하고, 그 사실이 어디에도 안 남았다(계측 4원칙 ④).
+        #    ⚠ F-V ①로 이제 진입 경로가 전부 이 값을 채우므로, 이 경고가 뜬다면
+        #      **아직 덮이지 않은 네 번째 진입 경로가 있다**는 뜻이다.
+        #
+        # ② `entry_time >= bar_start` 는 ①보다 **직접적인 질문**이다 —
+        #    ①은 "스톱이 이 봉 안에서 조여졌는가"라는 간접 조건이고, 근본 질문은
+        #    "포지션이 이 봉보다 나중에 열렸는가"다. 앞으로 새 진입 경로가 생겨도
+        #    자동으로 적용된다. **지금은 표시만 하고 라이브 판정은 종전대로다** —
+        #    승격은 섀도 표본을 쌓은 뒤 별도 판단(스킬 규약: 게이트 신설은 섀도 선행).
+        self._last_intrabar_guard_bypassed = False
+        self._last_intrabar_entry_after_bar = None
+        if bar_start is not None:
+            if self.stop_updated_at is None:
+                self._last_intrabar_guard_bypassed = True
+                if not self._phantom_guard_warned:
+                    self._phantom_guard_warned = True
+                    logger.warning(
+                        "[PhantomStopGuard] 비활성(stop_updated_at 미설정) — 봉중 판정 "
+                        "그대로 적용. 진입 경로가 _mark_stop_tightened를 부르지 않았다 "
+                        "(entry_time=%s bar_start=%s)",
+                        self.entry_time, bar_start,
+                    )
+            if self.entry_time is not None:
+                # 섀도 — 라이브 판정에는 관여하지 않는다.
+                self._last_intrabar_entry_after_bar = bool(self.entry_time >= bar_start)
+
         _stop = self.stop_price if stop_price is None else stop_price
         if self.status == POSITION_LONG:
             return bar_low <= _stop
@@ -1417,6 +1499,22 @@ class PositionTracker:
             "entry_qty": int(
                 self.entry_quantity or self.initial_quantity or self.quantity or 0
             ),
+            # [MW0601 493차 후속5 / F-AA] 청산 **단계**.
+            #
+            # 490차 F-I 가 `exit_stage` 를 신설하면서 조립 지점 **2곳**(535·973행)
+            # 에만 붙였고, 여기 세 번째 지점이 빠졌다. 그래서 이 경로로 나간 청산은
+            # `trades.exit_stage` 가 NULL 로 남았다 — 2026-08-25 기준 **367행 전부**
+            # 빈칸이다.
+            #
+            # 왜 필요한가: `exit_reason='하드스톱(틱)'` 한 값이 「진짜 손절」과
+            # 「TP1 후 트레일(이익 확정)」을 겸하고 있어, 손절률·손절폭 초과율 지표가
+            # 오염된다(2026-08-24 실측 오염률 66.7%). 🔴 `exit_reason` 문자열은
+            # 무변경이다 — 소비처가 많아 바꾸면 판정이 조용히 재정의된다.
+            #
+            # 🚫 과거 행은 소급 채우지 않는다. NULL 은 「미측정」이고, 사후 재구성값으로
+            #    덮으면 계측 4원칙 ②를 정면으로 어긴다(`partial_1_done` 은 청산 시점에만
+            #    알 수 있어 복원 자체가 불가능하다 — 420차와 같다).
+            "exit_stage": self.classify_exit_stage(reason, self._tp1_armed()),
         }
 
     def _reset_position(self) -> None:
@@ -1435,6 +1533,11 @@ class PositionTracker:
         self.stop_updated_at = None
         self.stop_shadow_tightened_at = None   # [424차]
         self.stop_shadow_tighten_path = None   # [424차]
+        # [493차 후속5 / F-V] 봉중 판정 섀도도 포지션 경계에서 리셋한다.
+        # 경고 1회 제한도 함께 풀어 **새 포지션에서는 다시 알린다**.
+        self._last_intrabar_guard_bypassed = False
+        self._last_intrabar_entry_after_bar = None
+        self._phantom_guard_warned = False
         self.tp1_price = 0.0
         self.tp2_price = 0.0
         self.tp3_price = 0.0
