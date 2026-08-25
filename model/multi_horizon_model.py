@@ -1202,10 +1202,41 @@ class MultiHorizonModel:
                             _new_sc.scale_[_fi] = 1.0
                             if hasattr(_new_sc, "var_") and _fi < len(_new_sc.var_):
                                 _new_sc.var_[_fi] = 1.0
+                            # ── [MW0602 494차 / F-1] 축퇴의 **원인 축**을 함께 남긴다 ──
+                            #
+                            # `raw_std≈0` 은 두 가지 중 하나인데 지금 로그는 **둘을
+                            # 구분하지 못한다**:
+                            #   (a) 그 구간에 그 피처가 실제로 거의 안 움직였다 (정상)
+                            #   (b) 계산부가 유효 입력을 못 받아 상수를 낸다 (결함)
+                            # 0825 실측에서 `ofi_norm` 이 §12 `CORE축퇴_피처` 210표본 중
+                            # 137건(65.2%)을 차지하는 만성 상태인데, 그것이 (a)인지 (b)인지
+                            # 판정할 근거가 로그에 없었다(0825 이상점 1-1).
+                            #
+                            # 판정 기준(사전등록): `frac_zero >= 0.90` 이 3거래일 연속이면
+                            # (b) 결함 쪽 / `frac_zero < 0.5` 인데 raw_std≈0 이면 (a) 쪽.
+                            # 🔴 이 임계는 관측값에서 역산하지 않았다 — 0.90 은 "거의 전부",
+                            #    0.5 는 "절반"이라는 산술 경계다(313차 ④ 준수).
+                            #
+                            # ⚠ **기존 문구 뒤에 덧붙이기만 한다.** 앞부분을 한 글자라도
+                            #   바꾸면 이 문구를 정규식으로 읽는 §12 계측이 조용히 끊긴다
+                            #   (468차 G-2가 경고한 바로 그 형태).
+                            try:
+                                _col = X_proc[:, _fi]
+                                _n_tot = int(_col.shape[0])
+                                _n_zero = int(np.sum(np.abs(_col) < 1e-12))
+                                _stat = (
+                                    " n_nonzero=%d/%d frac_zero=%.3f raw_range=%.4f"
+                                    % (_n_tot - _n_zero, _n_tot,
+                                       (float(_n_zero) / _n_tot) if _n_tot else 0.0,
+                                       float(np.max(_col) - np.min(_col)) if _n_tot else 0.0)
+                                )
+                            except Exception:
+                                # 요약 실패가 축퇴 방어 자체를 막아서는 안 된다.
+                                _stat = " n_nonzero=?/? frac_zero=? raw_range=?"
                             logger.warning(
                                 "[ScalerRefresh] %s CORE '%s' raw_std≈0(%.4f)"
-                                " → identity(0,1) 강제 (FLAT 100%% 방지)",
-                                horizon, _feat, _raw_std,
+                                " → identity(0,1) 강제 (FLAT 100%% 방지)%s",
+                                horizon, _feat, _raw_std, _stat,
                             )
                             # [MW0602 470차 B4] 호라이즌별 개별 경고만으로는
                             # "오늘 어느 CORE가 몇 개 호라이즌에서 눌렸나"를 알 수 없다.
