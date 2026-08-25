@@ -6449,7 +6449,11 @@ class PnlHistoryPanel(QWidget):
     def __init__(self):
         super().__init__()
         self._rows = []
-        self._broker_pnl: dict = {}  # date → broker settled KRW
+        # [MW0601 493차 / F-4] date → 그 날의 **순손익(net)**.
+        # 브로커 실측(익일가예탁현금 − 예탁현금) 우선, 없으면 엔진 net 폴백.
+        # ⚠ 종전에는 브로커 **gross**가 들어와 엔진 net과 섞였다 — refresh() 참조.
+        self._broker_pnl: dict = {}
+        self._broker_pnl_src: dict = {}   # date → "broker" | "engine" (폴백 가시화)
         self._build()
 
     # ── UI 구성 ────────────────────────────────────────────────
@@ -6603,10 +6607,27 @@ class PnlHistoryPanel(QWidget):
     def refresh(self, rows):
         """trades.db 행 목록으로 전체 갱신. rows: sqlite3.Row list."""
         try:
-            from utils.db_utils import fetch_broker_daily_pnl_map
-            self._broker_pnl = fetch_broker_daily_pnl_map(90)
+            # ── [MW0601 493차 / F-4] 브로커 **net** 축으로 교체 ──────────────
+            #
+            # 🔴 종전에는 `fetch_broker_daily_pnl_map()`을 썼는데 그 값은
+            # `daily_broker_pnl.pnl_krw` = **브로커 gross(수수료 차감 전)** 다.
+            # 그런데 폴백 쪽(`sum(r["pnl_krw"])`)은 trades의 **net**이다.
+            # 즉 이 탭의 누적·MDD·샤프가 **gross인 날과 net인 날을 섞어** 더하고
+            # 있었다(계측 4원칙 ① 단위 혼합). 수수료가 실제의 1/6.54로 잡혀 있던
+            # 동안에는 그 차이가 작아 보여 드러나지 않았다.
+            #
+            # `fetch_daily_net_for_verdict()`는 두 갈래 모두 **net**을 준다:
+            #   broker_net_krw(익일가예탁현금 − 예탁현금, 실측) 우선,
+            #   없으면 엔진 net + source="engine" 플래그.
+            # 실전 전환 기준 ①의 판정 원천도 이 함수다.
+            from utils.db_utils import fetch_daily_net_for_verdict
+            _nv = fetch_daily_net_for_verdict(90)
+            self._broker_pnl = {d: v["net_krw"] for d, v in _nv.items()}
+            # 폴백으로 채워진 날짜 — 표시 계층이 "실측"으로 오인하지 않도록 남긴다.
+            self._broker_pnl_src = {d: v["source"] for d, v in _nv.items()}
         except Exception:
             self._broker_pnl = {}
+            self._broker_pnl_src = {}
         self._rows = []
         for r in rows:
             try:
@@ -6678,9 +6699,13 @@ class PnlHistoryPanel(QWidget):
         return d
 
     def _effective_day_krw(self, date_str, day_rows):
-        """해당 날짜의 브로커 정산 실현손익이 있으면 그 값을, 없으면 거래 원시
-        pnl_krw 합계를 반환. 일별/주별/월별/요약 카드가 모두 이 값을 기준으로
-        삼아야 누적·MDD·샤프가 서로 어긋나지 않는다."""
+        """해당 날짜의 **순손익(net)**. 브로커 실측이 있으면 그 값을, 없으면
+        거래 원시 pnl_krw 합계(엔진 net)를 반환. 일별/주별/월별/요약 카드가
+        모두 이 값을 기준으로 삼아야 누적·MDD·샤프가 서로 어긋나지 않는다.
+
+        [493차 F-4] 두 갈래가 **같은 단위(net)** 가 된 것은 이번부터다 —
+        종전 브로커 갈래는 gross였다(refresh() 주석 참조).
+        """
         broker_krw = self._broker_pnl.get(date_str)
         if broker_krw is not None:
             return broker_krw
@@ -7326,8 +7351,19 @@ class LogPanel(QWidget):
         self._order_vals["samples"].setText(f"{samples}회")
 
     def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float,
-                           forward_unrealized_krw: float = None, forward_daily_pnl_krw: float = None):
-        """미실현 손익·일일 누적·VaR 95% 수치 갱신."""
+                           forward_unrealized_krw: float = None, forward_daily_pnl_krw: float = None,
+                           broker_net_krw: float = None):
+        """미실현 손익·일일 누적·VaR 95% 수치 갱신.
+
+        [MW0601 493차 / F-5] `broker_net_krw` — 브로커 원천 당일 순손익
+        (익일가예탁현금 − 예탁현금). 주면 "일일 누적" 타일에 **엔진 값과 나란히**
+        띄우고 잔차를 함께 보여준다.
+
+        **왜 이중표기인가.** 2026-08-25에 사용자가 HTS 매매손익 화면(−1천원)과
+        미륵이 P&L 패널(+32,765원)을 눈으로 대조해 6개월 묵은 수수료율 결함을
+        찾아냈다. 그 대조를 사람이 두 화면을 오가며 하지 않아도 되게 만든다.
+        None이면 종전과 동일하게 엔진 값만 표시한다(미측정 ≠ 0 — 계측 4원칙 ②).
+        """
         forward_unrealized_krw = unrealized_krw if forward_unrealized_krw is None else forward_unrealized_krw
         forward_daily_pnl_krw = daily_pnl_krw if forward_daily_pnl_krw is None else forward_daily_pnl_krw
         data = {
@@ -7341,6 +7377,29 @@ class LogPanel(QWidget):
             if lbl:
                 if attr == "var":
                     lbl.setText(f"{val:+,.0f}원")
+                elif attr == "daily" and broker_net_krw is not None:
+                    _bn = float(broker_net_krw)
+                    _resid = daily_pnl_krw - _bn
+                    # 대사 실패는 손익 색(녹/적)과 **구분돼야 한다**. 적색을
+                    # 재사용하면 "손실"과 "대사 실패"가 같은 신호가 되어, 손실
+                    # 나는 날에는 대사 실패가 아예 안 보인다(개발 중 실측 확인).
+                    # → 경고색(주황) + 텍스트 마커 ⚠ 를 함께 쓴다. 색맹·흑백
+                    #   캡처에서도 마커로 판별된다.
+                    _bad = abs(_resid) > max(5000.0, abs(_bn) * 0.20)
+                    lbl.setText(
+                        f"엔진 {val[0]:+,.0f}원\n"
+                        f"브로커 {_bn:+,.0f}원 (차 {_resid:+,.0f}{' ⚠' if _bad else ''})"
+                    )
+                    if _bad:
+                        col = C['orange']
+                    lbl.setToolTip(
+                        "엔진 = trades 합산 net (수수료 가정 차감)\n"
+                        "브로커 = 익일가예탁현금 − 예탁현금 (CpTd6197, 실측)\n"
+                        "\n"
+                        "⚠ 표시 = 대사 잔차 초과(손실이라는 뜻이 아니다).\n"
+                        "차이가 계속 한 방향으로 크면 수수료율 상수를 의심할 것\n"
+                        "  → python scripts/commission_rate_recon.py --verify"
+                    )
                 else:
                     lbl.setText(f"실행 {val[0]:+,.0f}원\n순방향 {val[1]:+,.0f}원")
                 lbl.setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
@@ -11323,14 +11382,19 @@ class DashboardAdapter:
         self._win.log_panel.update_order_metrics(trades, avg_lat_ms, peak_lat_ms, samples)
 
     def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float = 0.0,
-                           forward_unrealized_krw: float = None, forward_daily_pnl_krw: float = None):
-        """창4 손익 PnL 수치 패널 갱신"""
+                           forward_unrealized_krw: float = None, forward_daily_pnl_krw: float = None,
+                           broker_net_krw: float = None):
+        """창4 손익 PnL 수치 패널 갱신.
+
+        broker_net_krw: [493차 F-5] 브로커 실측 net(익일가예탁현금 − 예탁현금).
+        """
         self._win.log_panel.update_pnl_metrics(
             unrealized_krw,
             daily_pnl_krw,
             var_krw,
             forward_unrealized_krw=forward_unrealized_krw,
             forward_daily_pnl_krw=forward_daily_pnl_krw,
+            broker_net_krw=broker_net_krw,
         )
 
     def append_pnl_log(self, msg: str, val: str = ""):

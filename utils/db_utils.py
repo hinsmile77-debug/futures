@@ -10,7 +10,11 @@ from typing import List, Tuple, Any, Optional, Dict
 import json
 from config.constants import FUTURES_PT_VALUE, get_contract_spec
 from config.settings import PREDICTIONS_DB, SHAP_DB, TRADES_DB, RAW_DATA_DB, DB_DIR, DATA_DIR
-from config.settings import FUTURES_COMMISSION_RATE
+from config.settings import (
+    FUTURES_COMMISSION_RATE,
+    FUTURES_COMMISSION_RATE_LEGACY_KIWOOM,
+    FUTURES_COMMISSION_RATE_EFFECTIVE_FROM,
+)
 
 _lock = threading.Lock()
 TRADE_PNL_FORMULA_VERSION = 4  # v4: pt_value 종목코드 연동 (미니선물 50k, 일반선물 250k)
@@ -95,21 +99,32 @@ def normalize_trade_pnl(
     quantity: int,
     pnl_pts: float,
     pt_value: int = FUTURES_PT_VALUE,
+    commission_rate: float = None,
 ) -> Dict[str, float]:
     """계약 스펙(pt_value)을 반영해 거래 손익을 정규화한다.
     미니선물=50,000 / 일반선물=250,000 — 반드시 종목코드 기반 pt_value를 전달할 것.
+
+    commission_rate: None이면 라이브 요율(FUTURES_COMMISSION_RATE). 과거 행을
+      **그 행이 실제로 쓴 요율로** 재계산할 때만 명시한다(소급 재작성 도구 전용).
     """
     entry_price_f = float(entry_price or 0.0)
     quantity_i = max(int(quantity or 0), 0)
     pnl_pts_f = float(pnl_pts or 0.0)
+    rate = FUTURES_COMMISSION_RATE if commission_rate is None else float(commission_rate)
     gross_pnl_krw = pnl_pts_f * pt_value * quantity_i
-    commission_krw = entry_price_f * quantity_i * pt_value * FUTURES_COMMISSION_RATE * 2
+    commission_krw = entry_price_f * quantity_i * pt_value * rate * 2
     net_pnl_krw = gross_pnl_krw - commission_krw
     return {
         "gross_pnl_krw": round(gross_pnl_krw, 0),
         "commission_krw": round(commission_krw, 0),
         "net_pnl_krw": round(net_pnl_krw, 0),
         "formula_version": TRADE_PNL_FORMULA_VERSION,
+        # [MW0601 493차 / F-1] 어떤 요율 가정으로 계산했는지 **행에 남긴다**
+        # (계측 4원칙 ④). 이것이 있어야 나중에 요율이 또 바뀌어도 과거 행을
+        # gross에서 정확히 재계산할 수 있고, "이 net은 어느 세대인가"를 묻지
+        # 않아도 된다. 종전에는 상수 하나에 암묵 의존해 6개월간 틀린 값이
+        # 정상값처럼 흘렀다.
+        "commission_rate_used": rate,
     }
 
 
@@ -1488,10 +1503,36 @@ def _migrate_trades_db():
                 #   과거 분석은 `exit_reason` + `pnl_pts`로 그때의 규칙대로 다룰 것.
                 "exit_trigger": "TEXT",
                 "exit_outcome": "TEXT",
+                # [MW0601 493차 / F-1] 이 행의 commission_krw를 계산할 때 쓴 편도 요율.
+                #
+                # **왜 필요한가.** 2026-05-11 브로커 전환(키움→Cybos) 때
+                # FUTURES_COMMISSION_RATE가 키움 값(0.0015%)으로 남아, 실제 요율
+                # (0.00981%)의 1/6.54만 차감된 net이 6개월간 DB·패널·판정에 흘렀다.
+                # 상수 하나에 암묵 의존하면 "이 행의 net은 어느 가정인가"를 사후에
+                # 물을 수 없다 — 요율을 행에 박아 그 질문을 없앤다(계측 4원칙 ④).
+                #
+                # 백필: 2026-08-25 이전 행은 전부 구 요율로 계산됐음이 확정이므로
+                # LEGACY 값을 채운다. **추정이 아니라 기록**이다(그 요율로 실제
+                # 계산됐다). commission_krw 자체는 재작성하지 않는다 — 소급 정정은
+                # scripts/commission_rate_recon.py --rewrite-trades 로 명시 실행한다
+                # (프로그램 기동의 부수효과로 과거 손익을 바꾸지 않는다).
+                "commission_rate_used": "REAL",
             }
             for name, dtype in additions.items():
                 if name not in cols:
                     conn.execute(f"ALTER TABLE trades ADD COLUMN {name} {dtype}")
+
+            # [MW0601 493차 / F-1] 요율 세대 백필 — 값이 없는 행만.
+            if "commission_rate_used" not in cols:
+                conn.execute(
+                    "UPDATE trades SET commission_rate_used = ? "
+                    " WHERE commission_rate_used IS NULL AND date(entry_ts) < ?",
+                    (FUTURES_COMMISSION_RATE_LEGACY_KIWOOM,
+                     FUTURES_COMMISSION_RATE_EFFECTIVE_FROM))
+                conn.execute(
+                    "UPDATE trades SET commission_rate_used = ? "
+                    " WHERE commission_rate_used IS NULL",
+                    (FUTURES_COMMISSION_RATE_LEGACY_KIWOOM,))
 
             # [MW0601 417차 / ②] entry_qty 백필 — 구버전 레코드는 같은
             # (entry_ts, direction) 레그들의 quantity **단순 합**이 곧 진입 계약수다.
@@ -1522,7 +1563,7 @@ def _migrate_trades_db():
             rows = conn.execute(
                 """SELECT id, entry_price, exit_price, direction,
                           COALESCE(raw_direction, direction) AS raw_direction,
-                          quantity, pnl_pts, formula_version
+                          quantity, pnl_pts, formula_version, commission_rate_used
                    FROM trades
                    WHERE pnl_pts IS NOT NULL AND exit_price IS NOT NULL"""
             ).fetchall()
@@ -1541,17 +1582,28 @@ def _migrate_trades_db():
                 fwd_mult = 1 if raw_dir == "LONG" else -1
                 corrected_pnl_pts = (exit_p - entry_p) * exec_mult
                 corrected_fwd_pts = (exit_p - entry_p) * fwd_mult
+                # [MW0601 493차 / F-1] ⚠ **그 행이 실제로 쓴 요율로** 재계산한다.
+                # 라이브 요율을 쓰면 formula_version을 올리는 순간 과거 전 구간의
+                # 수수료가 조용히 신 요율로 덮인다 — 소급 정정을 원한다면 그것은
+                # 명시 도구(commission_rate_recon.py --rewrite-trades)의 일이지,
+                # 기동 시 마이그레이션의 부수효과여서는 안 된다.
+                _row_keys = row.keys()
+                _row_rate = (row["commission_rate_used"]
+                             if "commission_rate_used" in _row_keys else None)
+                _row_rate = float(_row_rate) if _row_rate else FUTURES_COMMISSION_RATE_LEGACY_KIWOOM
                 metrics = normalize_trade_pnl(
                     entry_price=entry_p,
                     quantity=qty,
                     pnl_pts=corrected_pnl_pts,
                     pt_value=pt_value,
+                    commission_rate=_row_rate,
                 )
                 fwd_metrics = normalize_trade_pnl(
                     entry_price=entry_p,
                     quantity=qty,
                     pnl_pts=corrected_fwd_pts,
                     pt_value=pt_value,
+                    commission_rate=_row_rate,
                 )
                 conn.execute(
                     """UPDATE trades
@@ -2593,7 +2645,29 @@ def init_daily_broker_pnl_db():
     with get_conn(TRADES_DB) as _bp_conn:
         _bp_cols = {r[1] for r in _bp_conn.execute(
             "PRAGMA table_info(daily_broker_pnl)").fetchall()}
-        for _c in ("commission_krw", "pnl_net_krw"):
+        for _c in ("commission_krw", "pnl_net_krw",
+                   # [MW0601 493차 / F-2·F-4] 브로커 net 축 ─────────────────
+                   # 종전 이 테이블은 **gross 한 축**만 브로커 원천이었고
+                   # commission/net은 둘 다 엔진 추정이었다. 그래서 477차 EOD
+                   # 대사가 gross끼리만 비교했고, 수수료 상수가 6.54배 틀린 채
+                   # 6개월을 갔다(계측 4원칙 ④).
+                   #
+                   # 아래 3컬럼은 전부 **브로커 원천**이다. 출처는 CpTd6197
+                   # 헤더이며 이미 매분 수신 중이었다 — 없던 데이터가 아니라
+                   # 아무도 안 본 데이터였다.
+                   #   deposit_cash_krw          = 예탁현금(당일 시가, idx=1)
+                   #   next_day_deposit_cash_krw = 익일가예탁현금(idx=2)
+                   #   broker_net_krw            = 익일가예탁 − 예탁 = **당일 실현 순손익**
+                   #     (2026-08-25 실측 −1,782원 = HTS 매매손익 화면 −1천원과 일치)
+                   # 실제 수수료는 pnl_krw(gross) − broker_net_krw 로 역산된다.
+                   #
+                   # 🔴 **실전 전환 기준 ①(4주 통산 수익률)의 판정 원천은 이제
+                   #    broker_net_krw다**(F-4). pnl_net_krw는 엔진 추정치이며
+                   #    가정 하나로 6일에 50만원이 움직인 전력이 있다.
+                   #    조회는 fetch_daily_net_for_verdict() 를 쓸 것 —
+                   #    폴백 시 플래그를 함께 준다(계측 4원칙 ②·④).
+                   "deposit_cash_krw", "next_day_deposit_cash_krw",
+                   "broker_net_krw"):
             if _c not in _bp_cols:
                 _bp_conn.execute(
                     "ALTER TABLE daily_broker_pnl ADD COLUMN %s REAL" % _c)
@@ -2698,6 +2772,140 @@ def update_daily_broker_pnl_net(date: str, gross_krw: float,
                        VALUES (?, ?, ?, ?, ?)""",
                     (date, float(gross_krw), _now,
                      float(commission_krw), float(net_krw)))
+
+
+# ── [MW0601 493차 / F-2·F-4] 브로커 net 축 ──────────────────────────────────
+# 재발방지 본체다. 종전 대사는 gross끼리만 비교해 **수수료 축이 무대조**였다.
+
+# net 대사 경보 임계 — 상대 20% 또는 절대 5,000원 중 큰 값.
+# 왜 상대·절대 병용인가: 거래가 적은 날은 수수료 자체가 작아 상대 기준만 쓰면
+# 몇백 원에도 경보가 뜨고, 큰 날은 절대 기준만 쓰면 수만 원 오차를 놓친다.
+# 20%는 요율이 "한 세대 통째로" 틀린 종류의 결함(이번 건은 554% 초과)을 잡되,
+# 체결가 반올림·부분체결 타이밍 수준의 잔차(실측 1.5원)는 통과시키는 폭이다.
+NET_RECON_ABS_TOL_KRW = 5000.0
+NET_RECON_REL_TOL = 0.20
+
+
+def upsert_broker_net(date: str, deposit_cash: float,
+                      next_day_deposit_cash: float) -> None:
+    """브로커 원천 net 축 저장 — CpTd6197 헤더 그대로.
+
+    broker_net_krw = 익일가예탁현금 − 예탁현금 = 당일 실현 순손익(수수료 차감 후).
+    두 값 모두 브로커가 준 값이므로 엔진 가정이 개입하지 않는다.
+
+    ⚠ 0/결측 가드: 브로커 TR이 빈 응답을 줄 때 기존 실측을 0으로 덮지 않는다
+    (upsert_daily_broker_pnl과 같은 취지). 비거래일도 스킵한다(유령 행 방지).
+    """
+    if not date or not deposit_cash or not next_day_deposit_cash:
+        return
+    if not is_krx_trading_date(date):
+        return
+    import datetime as _dt
+    _now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    net = float(next_day_deposit_cash) - float(deposit_cash)
+    with _lock:
+        with get_conn(TRADES_DB) as _c:
+            _cur = _c.execute(
+                """UPDATE daily_broker_pnl
+                      SET deposit_cash_krw = ?, next_day_deposit_cash_krw = ?,
+                          broker_net_krw = ?, updated_at = ?
+                    WHERE date = ?""",
+                (float(deposit_cash), float(next_day_deposit_cash), net, _now, date))
+            if _cur.rowcount == 0:
+                # gross 행이 아직 없다(브로커 실현손익 0인 아침 등) — net만 먼저 만든다.
+                _c.execute(
+                    """INSERT INTO daily_broker_pnl
+                           (date, pnl_krw, updated_at, deposit_cash_krw,
+                            next_day_deposit_cash_krw, broker_net_krw)
+                       VALUES (?, 0, ?, ?, ?, ?)""",
+                    (date, _now, float(deposit_cash),
+                     float(next_day_deposit_cash), net))
+
+
+def fetch_broker_net(date: str) -> Optional[dict]:
+    """그 날짜의 브로커 원천 손익 3축. 없으면 None."""
+    row = fetchone(
+        TRADES_DB,
+        """SELECT pnl_krw, broker_net_krw, deposit_cash_krw,
+                  next_day_deposit_cash_krw, commission_krw, pnl_net_krw
+             FROM daily_broker_pnl WHERE date = ?""", (date,))
+    if row is None or row["broker_net_krw"] is None:
+        return None
+    gross = float(row["pnl_krw"] or 0.0)
+    net = float(row["broker_net_krw"])
+    return {
+        "gross_krw": gross,
+        "net_krw": net,
+        # 브로커 실측 수수료 — 엔진 가정이 전혀 개입하지 않은 값이다.
+        "commission_krw": gross - net,
+        "deposit_cash_krw": row["deposit_cash_krw"],
+        "next_day_deposit_cash_krw": row["next_day_deposit_cash_krw"],
+        "engine_commission_krw": row["commission_krw"],
+        "engine_net_krw": row["pnl_net_krw"],
+    }
+
+
+def reconcile_daily_net(date: str, engine_gross: float,
+                        engine_commission: float, engine_net: float) -> dict:
+    """[F-2] net 축 3원 대사 — 엔진 추정 vs 브로커 실측.
+
+    반환 dict의 status:
+      · "NO_BROKER"  브로커 net 미수신 (판정 불가 — 0으로 읽지 말 것)
+      · "OK"         잔차가 허용 범위
+      · "MISMATCH"   초과 — 수수료율·체결누락·기타 현금흐름 중 하나
+
+    이 함수가 있었다면 이번 결함(수수료율 6.54배)은 **첫날 잡혔다** —
+    매일 같은 방향으로 일정 배수의 잔차가 보였을 것이다.
+    """
+    b = fetch_broker_net(date)
+    if b is None:
+        return {"status": "NO_BROKER", "date": date}
+    resid = engine_net - b["net_krw"]
+    tol = max(NET_RECON_ABS_TOL_KRW, abs(b["commission_krw"]) * NET_RECON_REL_TOL)
+    ratio = (b["commission_krw"] / engine_commission) if engine_commission else None
+    return {
+        "status": "OK" if abs(resid) <= tol else "MISMATCH",
+        "date": date,
+        "engine_gross": engine_gross,
+        "broker_gross": b["gross_krw"],
+        "engine_commission": engine_commission,
+        "broker_commission": b["commission_krw"],
+        "commission_ratio": ratio,
+        "engine_net": engine_net,
+        "broker_net": b["net_krw"],
+        "residual": resid,
+        "tolerance": tol,
+    }
+
+
+def fetch_daily_net_for_verdict(days: int = 90) -> Dict[str, dict]:
+    """[F-4] 실전 전환 기준 ①(4주 통산 수익률) 판정용 일별 순손익.
+
+    🔴 **브로커 net 우선.** 엔진 net은 요율 가정 위에 있고, 그 가정 하나가
+    틀려 6거래일에 50만원이 어긋난 전력이 있다(2026-08-25 F-1).
+    브로커 net이 없는 날만 엔진 net으로 폴백하며, 그 사실을 `source`로
+    함께 돌려준다 — 폴백을 실측처럼 읽지 못하게 하기 위함(계측 4원칙 ④).
+
+    반환: {date: {"net_krw": float, "source": "broker"|"engine", ...}}
+    """
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    out = {}
+    for r in fetchall(
+            TRADES_DB,
+            """SELECT date, pnl_krw, broker_net_krw, pnl_net_krw, commission_krw
+                 FROM daily_broker_pnl WHERE date >= ? ORDER BY date""", (cutoff,)):
+        if r["broker_net_krw"] is not None:
+            out[r["date"]] = {"net_krw": float(r["broker_net_krw"]),
+                              "source": "broker",
+                              "gross_krw": float(r["pnl_krw"] or 0.0),
+                              "commission_krw": float(r["pnl_krw"] or 0.0) - float(r["broker_net_krw"])}
+        elif r["pnl_net_krw"] is not None:
+            out[r["date"]] = {"net_krw": float(r["pnl_net_krw"]),
+                              "source": "engine",
+                              "gross_krw": float(r["pnl_krw"] or 0.0),
+                              "commission_krw": float(r["commission_krw"] or 0.0)}
+    return out
 
 
 def fetch_broker_daily_pnl_map(days: int = 90) -> Dict[str, float]:

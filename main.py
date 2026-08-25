@@ -58,6 +58,9 @@ from utils.db_utils import (
     is_plausible_futures_trade,
     classify_exit,
     upsert_daily_broker_pnl,
+    # [MW0601 493차 / F-2] 브로커 net 축 — 수수료 사각지대를 닫는 계측.
+    # 대사 함수 reconcile_daily_net()은 daily_close() 안에서 지연 import 한다.
+    upsert_broker_net,
     save_shap_scores,
     save_regime_at, purge_old_regime_history,
     save_program_trade_raw,
@@ -454,6 +457,11 @@ class TradingSystem:
         self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
         self.ensemble          = EnsembleDecision()
         self._pt_value         = MINI_FUTURES_PT_VALUE  # [235차] 미니선물 전용 초기값 — connect_broker에서 get_contract_spec으로 재확정
+        # [MW0601 493차 / F-5] 브로커 실측 당일 net(익일가예탁현금 − 예탁현금).
+        # 잔고 push(FLAT일 때)가 채운다. **None이 초기값이다** — 0으로 두면
+        # "아직 안 받았다"와 "브로커가 0원이라 한다"가 구분되지 않는다
+        # (계측 4원칙 ②·④ — 런타임 상태를 기본값 폴백으로 읽지 않는다는 규약).
+        self._broker_net_today = None
         self.position          = PositionTracker(pt_value=self._pt_value)
         self.checklist         = EntryChecklist()
         self.sizer             = PositionSizer(account_balance=100_000_000)  # 기본 1억
@@ -9627,6 +9635,8 @@ class TradingSystem:
             _var_krw,
             forward_unrealized_krw=_forward_unreal,
             forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+            # [MW0601 493차 / F-5] 브로커 실측 net 병기 — None이면 패널은 종전대로.
+            broker_net_krw=self._broker_net_today,
         )
 
         # 당일 진입 통계 갱신 — STEP 9 예외와 무관하게 항상 실행
@@ -10137,6 +10147,8 @@ class TradingSystem:
             0.0,
             forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * self._pt_value,
             forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+            # [MW0601 493차 / F-5] 브로커 실측 net 병기 — None이면 패널은 종전대로.
+            broker_net_krw=self._broker_net_today,
         )
         self._record_trade_result(result)
         self._refresh_pnl_history()
@@ -10222,6 +10234,8 @@ class TradingSystem:
             0.0,
             forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * self._pt_value,
             forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+            # [MW0601 493차 / F-5] 브로커 실측 net 병기 — None이면 패널은 종전대로.
+            broker_net_krw=self._broker_net_today,
         )
         self._record_trade_result(result)
         self._refresh_pnl_history()
@@ -10559,6 +10573,8 @@ class TradingSystem:
             0.0,
             forward_unrealized_krw=0.0,
             forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+            # [MW0601 493차 / F-5] 브로커 실측 net 병기 — None이면 패널은 종전대로.
+            broker_net_krw=self._broker_net_today,
         )
         self.dashboard.append_pnl_log(
             f"청산 | {result['direction']} {result['quantity']}계약 "
@@ -11562,6 +11578,10 @@ class TradingSystem:
         self._health_lat_recent.clear()
         self._health_lat_trend_alerted_at = None
         self._verified_today = 0
+        # [MW0601 493차 / F-5] 브로커 net 캐시도 날짜가 바뀌면 무효다.
+        # ⚠ 0이 아니라 None으로 되돌린다 — 다음 날 첫 잔고 push 전까지는
+        #   "아직 모른다"가 맞고, 0으로 두면 패널이 "브로커 0원"을 단언한다.
+        self._broker_net_today = None
         for _h in self._horizon_runtime_state:
             self._horizon_runtime_state[_h] = {
                 "verified_cycles":  0,
@@ -11638,7 +11658,9 @@ class TradingSystem:
         # pnl_net_krw 기준. gross − commission = net 원 단위 대사를 로그로 남긴다
         # (0818 실측: 685,000 − 23,332 = 661,668).
         try:
-            from utils.db_utils import update_daily_broker_pnl_net, fetch_broker_daily_pnl_map
+            from utils.db_utils import (update_daily_broker_pnl_net,
+                                       fetch_broker_daily_pnl_map,
+                                       reconcile_daily_net)
             _f4_gross = float(stats.get("gross_krw", 0.0) or 0.0)
             _f4_comm = float(stats.get("commission", 0.0) or 0.0)
             _f4_net = float(stats.get("pnl_krw", 0.0) or 0.0)
@@ -11655,11 +11677,57 @@ class TradingSystem:
                 log_manager.system(
                     f"[BrokerPnl] EOD 확정 — gross {_f4_gross:+,.0f} − 수수료 "
                     f"{_f4_comm:,.0f} = net {_f4_net:+,.0f}원"
-                    + (f" (broker 대사 일치)" if _f4_broker is not None else " (broker 행 없음 — 엔진 gross로 생성)"),
+                    + (f" (broker gross 대사 일치)" if _f4_broker is not None else " (broker 행 없음 — 엔진 gross로 생성)"),
                     "INFO",
                 )
         except Exception as _f4_e:
             logger.warning("[BrokerPnl] EOD 확정치 기입 실패 (무해): %s", _f4_e)
+
+        # ── [MW0601 493차 / F-2] net 축 대사 — 재발방지 본체 ────────────────
+        #
+        # 🔴 **바로 위 gross 대사만으로는 부족하다.** CpTd6197 실현손익이 gross라
+        # 위 블록은 `broker gross vs engine gross`를 본다 — 수수료는 엔진 가정이
+        # 그대로 net이 되어 **어떤 대조도 받지 않는다**. 실제로 그 사각지대에서
+        # 브로커 전환(2026-05-11) 때 남은 키움 요율(6.54배 과소)이 6개월을 갔고,
+        # "대사 일치" 문구가 오히려 신뢰를 보증했다(계측 4원칙 ④).
+        #
+        # 이 블록은 예탁현금 축을 본다:
+        #   브로커 net = 익일가예탁현금 − 예탁현금  (둘 다 브로커 원천)
+        #   잔차 = 엔진 net − 브로커 net
+        # 이 대사가 있었다면 이번 결함은 **첫날** 잡혔다 — 매일 같은 방향으로
+        # 일정 배수의 잔차가 보였을 것이다. 수수료·세금·기타 현금흐름 계열의
+        # 미래 결함도 같은 그물에 걸린다.
+        try:
+            _rec = reconcile_daily_net(today_str, _f4_gross, _f4_comm, _f4_net)
+            if _rec["status"] == "NO_BROKER":
+                # ⚠ "차이 0"이 아니라 "측정 못 함"이다 — 구분해서 남긴다(계측 4원칙 ②).
+                log_manager.system(
+                    "[NetRecon] 브로커 net 미수신 — 대사 불가(0이 아니라 미측정). "
+                    "CpTd6197 예탁현금/익일가예탁현금 수신 여부를 확인할 것",
+                    "WARNING",
+                )
+            elif _rec["status"] == "MISMATCH":
+                _ratio = _rec["commission_ratio"]
+                log_manager.system(
+                    f"[NetRecon] 🔴 net 불일치 — 엔진 {_rec['engine_net']:+,.0f}원 vs "
+                    f"브로커 {_rec['broker_net']:+,.0f}원 (잔차 {_rec['residual']:+,.0f}원, "
+                    f"허용 ±{_rec['tolerance']:,.0f}). "
+                    f"수수료: 엔진 {_rec['engine_commission']:,.0f} vs 브로커 실측 "
+                    f"{_rec['broker_commission']:,.0f}원"
+                    + (f" (배수 {_ratio:.2f})" if _ratio else "")
+                    + ". gross가 일치하는데 net만 어긋나면 원인은 **수수료율**이다 — "
+                      "scripts/commission_rate_recon.py --verify 로 재보정할 것",
+                    "ERROR",
+                )
+            else:
+                log_manager.system(
+                    f"[NetRecon] net 대사 일치 — 엔진 {_rec['engine_net']:+,.0f} vs "
+                    f"브로커 {_rec['broker_net']:+,.0f}원 (잔차 {_rec['residual']:+,.0f}원). "
+                    f"브로커 실측 수수료 {_rec['broker_commission']:,.0f}원",
+                    "INFO",
+                )
+        except Exception as _nr_e:
+            logger.warning("[NetRecon] net 대사 실패 (무해): %s", _nr_e)
 
         # 섹션 8: scaler_daily EOD 집계 저장
         try:
@@ -14246,6 +14314,8 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
         0.0,
         forward_unrealized_krw=self.position.unrealized_forward_pnl_pts(result["exit_price"]) * self._pt_value,
         forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+        # [MW0601 493차 / F-5] 브로커 실측 net 병기 — None이면 패널은 종전대로.
+        broker_net_krw=self._broker_net_today,
     )
     self._record_trade_result(result)
     self._refresh_pnl_history()
@@ -15810,6 +15880,21 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
             # 포함되면 broker_daily_pnl 테이블이 오염되어 손익 추이 탭 값이 부풀려짐.
             if self.position.status == "FLAT":
                 upsert_daily_broker_pnl(_today_str, _today_pnl)
+                # ── [MW0601 493차 / F-2] 브로커 **net** 축 적재 ─────────────
+                # 종전에는 gross(실현손익)만 저장했고 수수료·net은 엔진 추정이
+                # 그대로 확정치가 됐다. 그래서 요율 상수가 6.54배 틀렸는데도
+                # 6개월간 어떤 대조도 받지 않았다(계측 4원칙 ④).
+                #
+                # 정답지는 같은 TR 안에 이미 있었다:
+                #   summary["총매매"]      = 예탁현금(당일 시가)
+                #   summary["총평가수익률"] = 익일가예탁현금
+                #   그 차이 = 당일 실현 순손익(수수료 차감 후) = 브로커 net
+                # 없던 데이터가 아니라 아무도 안 본 데이터다.
+                _dep_cash = float(str(summary.get("총매매") or "0").replace(",", "") or "0")
+                _next_dep = float(str(summary.get("총평가수익률") or "0").replace(",", "") or "0")
+                upsert_broker_net(_today_str, _dep_cash, _next_dep)
+                # 패널 이중표기(F-5)용 캐시 — 엔진 net 옆에 브로커 net을 같이 띄운다.
+                self._broker_net_today = _next_dep - _dep_cash
                 self._refresh_pnl_history()
             upsert_daily_broker_pnl(_yesterday, _prev_pnl)
         except Exception as _bpnl_e:

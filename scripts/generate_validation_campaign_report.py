@@ -64,7 +64,9 @@ except Exception:
 from config.settings import (
     BASE_DIR,
     PREDICTIONS_DB, TRADES_DB, RAW_DATA_DB, DATA_DIR, MODEL_DIR,
-    HORIZONS, VALIDATION_CAMPAIGN, FUTURES_COMMISSION_RATE, TICK_SIZE,
+    HORIZONS, VALIDATION_CAMPAIGN, COST_MODEL_COMMISSION_RATE, TICK_SIZE,
+    # [493차 F-3] 핀 배너용 — 라이브 실측 요율과의 격차를 리포트 상단에 명시한다.
+    FUTURES_COMMISSION_RATE, COST_MODEL_COMMISSION_RATE_PINNED,
     ENTRY_STARVATION_WEEKLY_MIN, ENTRY_STARVATION_MITIGATION_LADDER,
     HURST_RANGE_THRESHOLD, REGIME_EXHAUSTION_EXT_ATR_THRESHOLD,
     VALIDATION_CAMPAIGN_DECISIONS, VALIDATION_REPORT_KEEP_WEEKS,
@@ -179,7 +181,14 @@ def _conn(db_path):
 def _roundtrip_cost_pt(avg_price: float) -> float:
     """왕복 비용(pt) = 수수료 2×price×rate + 슬리피지 2×틱 (캠페인 공통 가정)."""
     slip = float(VALIDATION_CAMPAIGN.get("slippage_ticks_per_side", 1.0))
-    return 2.0 * avg_price * FUTURES_COMMISSION_RATE + 2.0 * slip * TICK_SIZE
+    # [MW0601 493차 / F-3] 라이브 FUTURES_COMMISSION_RATE 가 아니라 **핀된**
+    # COST_MODEL_COMMISSION_RATE 를 쓴다. 라이브 요율은 2026-08-25 실측으로
+    # 0.000015 -> 0.0000981 (6.54배) 재보정됐는데, 그것을 그대로 비용모델에
+    # 넣으면 왕복 비용이 0.071pt -> 0.244pt 로 뛰어 **사전등록 채널의 측정값이
+    # 조용히 재정의**된다(합격선은 그대로인데 verdict가 뒤집힌다 —
+    # 461차 mdd_pct / 458차 D6 계열). 해제는 주간회의 승인 사항이며
+    # 영향 규모는 `scripts/commission_rate_recon.py --impact` 로 확인한다.
+    return 2.0 * avg_price * COST_MODEL_COMMISSION_RATE + 2.0 * slip * TICK_SIZE
 
 
 def _pc_id() -> str:
@@ -8121,6 +8130,31 @@ def build_report(days: int) -> tuple:
     L.append("- 📌 표시가 붙은 채널은 **주간회의에서 확정된 결정이 있다** — 하단 "
              "\"확정 결정 레지스트리\" 참조. 판정(verdict)과 결정은 별개다.")
     L.append("")
+    # ── [MW0601 493차 / F-3] 비용모델 요율 핀 경고 ─────────────────────────────
+    # 이 배너가 없으면 "비용차감 판정"을 읽는 사람이 **실제 비용으로 판정된 것으로
+    # 오해**한다. 실제 왕복 수수료는 여기 쓰는 값의 6.54배다(2026-08-25 실측).
+    # 핀 자체는 의도적이다 — 사전등록 채널의 측정값을 주간회의 승인 없이 바꾸지
+    # 않기 위함(461차 mdd_pct 유형 방지). 다만 **말없이** 핀하는 것은 이 시스템이
+    # 반복해서 당한 실패(FP-CRITICAL 죽은 게이트, TOX 죽은 섀도)와 같으므로,
+    # 핀 상태를 매주 리포트 상단에 명시한다.
+    if COST_MODEL_COMMISSION_RATE_PINNED:
+        _pin_ratio = (FUTURES_COMMISSION_RATE / COST_MODEL_COMMISSION_RATE
+                      if COST_MODEL_COMMISSION_RATE else float("nan"))
+        L.append("> 🔴 **비용모델 수수료율 핀(PINNED) — 비용차감 채널의 비용이 "
+                 "실제보다 %.2f배 과소하다.**" % _pin_ratio)
+        L.append("> 이 리포트의 비용차감 판정([2] 호라이즌 거래성 · [%s] cost_edge 등)은 "
+                 "`COST_MODEL_COMMISSION_RATE=%.7f`(구 키움 요율)로 계산된다. "
+                 "라이브 실측 요율은 `%.7f`(0.00981%%, 2026-08-25 실측 39거래일 회귀 R²=1.000)이며 "
+                 "왕복 비용은 0.071pt가 아니라 **0.244pt**다."
+                 % ("cost_edge_watch", COST_MODEL_COMMISSION_RATE, FUTURES_COMMISSION_RATE))
+        L.append("> **일부러 핀해 둔 것이다** — 요율을 올리면 합격선을 안 건드려도 "
+                 "채널 verdict가 일괄 이동해 사전등록 시계열이 끊긴다(461차 `mdd_pct` 유형). "
+                 "해제는 **주간회의 승인 사항**이며, 영향 규모는 "
+                 "`python scripts/commission_rate_recon.py --impact` 로 확인한다.")
+        L.append("> ⚠ 따라서 이 리포트의 비용차감 판정은 **낙관 방향으로 편향**돼 있다. "
+                 "PASS를 '실제 비용에서도 통과'로 읽지 말 것.")
+        L.append("")
+
     # [MW0602 430차 / P0-1] conf 스케일 불연속 경고 — 창이 경계를 걸칠 때만 뜬다.
     # 캠페인 창(start_date~)을 기준으로 판단한다: 대부분의 채널이 그 창을 쓴다.
     _csb = _conf_scale_break_lines(VALIDATION_CAMPAIGN.get("start_date", ""))
