@@ -10,7 +10,16 @@ import datetime
 import logging
 from typing import Optional
 
-from config.constants import FUTURES_TICK_SIZE, FUTURES_MULTIPLIER
+# [MW0601 493차 후속8] 정규선물 상수 → 활성 계약(미니 A0569) 단일 원천.
+#   종전 `FUTURES_MULTIPLIER`(250,000)는 미니 슬리피지를 **5배 과대**로 만들었다.
+from config.settings import active_contract_spec
+from config.constants import FUTURES_TICK_SIZE, MINI_FUTURES_PT_VALUE
+
+
+def _pt_value():
+    """계약 승수 — 종목코드가 정한다(정규선물 기본값으로 떨어지지 않는다)."""
+    spec = active_contract_spec()
+    return float(spec["pt_value"]) if (spec and spec.get("pt_value")) else float(MINI_FUTURES_PT_VALUE)
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +79,7 @@ class SlippageSimulator:
                     * size_factor
                     * latency_factor)
 
-        slip_krw = slip_pts * FUTURES_MULTIPLIER
+        slip_krw = slip_pts * _pt_value()
 
         return {
             "slip_pts": round(slip_pts, 4),

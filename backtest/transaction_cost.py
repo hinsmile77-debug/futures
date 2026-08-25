@@ -1,23 +1,40 @@
 # backtest/transaction_cost.py — KOSPI200 선물 거래 비용 정밀 계산
 """
-KOSPI200 선물 거래 비용 구성:
-  ① KRX 거래소 수수료: 계약당 약 720원 (단방향)
-  ② 증권사 위탁 수수료: 계약금액 × 0.015bp (협의 기본값)
-  ③ 거래세: 없음 (주식선물·ETF 아닌 KOSPI200 지수선물)
+🔴 [MW0601 493차 후속8 / 2026-08-26] **이 모듈은 두 군데가 틀려 있었다.**
 
-FUTURES_PT_VALUE = 250,000원/pt (KOSPI200 선물 2017~ 기준)
-예: 지수 1050pt → 계약금액 2억6250만원
-  KRX 수수료:      720원
-  증권사 수수료:   2억6250만 × 0.00015 = 39,375원
-  왕복 합계:       (720 + 39,375) × 2 ≒ 80,190원
+이 파일을 import 하는 코드는 저장소 어디에도 없다(테스트 포함) — 그래서 아무 손해도
+나지 않았지만, 잘못된 가정이 남아 있으면 다음 사람이 그대로 쓴다. 바로잡는다.
+
+① **승수** — `FUTURES_MULTIPLIER`(정규선물 250,000)를 썼다. 미륵이가 매매하는 종목은
+   **미니선물(A0569, 승수 50,000)** 이다. 그대로 쓰면 비용이 **5배 과대**가 된다.
+   ⇒ `config/constants.py:get_contract_spec()` 단일 원천으로 교체.
+
+② **수수료 모델** — 「KRX 계약당 720원 + 위탁 0.015bp」는 **키움 세대 가정**이다.
+   대신증권 공식 고시(2026-08-26 확인)는 **「거래금액에 관계없이 0.0098104%」** 이며,
+   **정액 성분이 없다.** 39거래일 회귀 실측이 그것을 독립 확인했다 —
+   레그당 고정비 **+0.08원 ≈ 0**, R²=1.000000(493차 후속5).
+   ⇒ 계약당 정액 수수료를 **0 으로** 두고 요율 단일 항으로 계산한다.
+
+계산: 비용 = 약정대금 × FUTURES_COMMISSION_RATE (편도) · 거래세 없음
+예: 미니 1계약 @1040pt → 약정대금 5,200만원 → 편도 5,101원 / 왕복 10,202원
 """
 import logging
-from config.constants import FUTURES_MULTIPLIER
+from config.settings import FUTURES_COMMISSION_RATE, active_contract_spec
+from config.constants import MINI_FUTURES_PT_VALUE
 
 logger = logging.getLogger(__name__)
 
-KRX_FEE_PER_CONTRACT   = 720        # 원/계약, 단방향
-BROKERAGE_RATE_DEFAULT = 0.00015    # 계약금액 대비 (0.015bp)
+# [493차 후속8] 고시 요율에 **정액 성분이 없다**(39거래일 회귀 실측 확인).
+# 값을 지우지 않고 0 으로 두는 이유: 브로커가 바뀌어 정액이 생기면 여기에 넣으라는
+# 자리 표시다(계측 4원칙 — "없다"와 "안 쟀다"를 구분해 두는 것과 같은 취지).
+KRX_FEE_PER_CONTRACT   = 0          # 원/계약 — 현행 브로커는 정액 성분 없음
+BROKERAGE_RATE_DEFAULT = FUTURES_COMMISSION_RATE   # 0.0098104% 편도 (공식 고시)
+
+
+def _pt_value():
+    """계약 승수 — 종목코드가 정한다. 정규선물 기본값으로 떨어지지 않는다."""
+    spec = active_contract_spec()
+    return float(spec["pt_value"]) if (spec and spec.get("pt_value")) else float(MINI_FUTURES_PT_VALUE)
 
 
 class TransactionCost:
@@ -46,7 +63,7 @@ class TransactionCost:
         Returns:
             total_krw, krx_fee, brokerage_fee, tax, contract_value
         """
-        contract_value   = price * FUTURES_MULTIPLIER * qty
+        contract_value   = price * _pt_value() * qty
         krx_total        = self.krx_fee * qty
         brokerage_total  = contract_value * self.brokerage_rate
         tax              = 0.0   # 선물 거래세 없음
@@ -79,7 +96,7 @@ class TransactionCost:
         """
         rt = self.calc_round_trip(price, qty)
         cost_per_contract = rt["total_krw"] / qty
-        return round(cost_per_contract / FUTURES_MULTIPLIER, 4)
+        return round(cost_per_contract / _pt_value(), 4)
 
     def effective_slippage_pts(
         self,

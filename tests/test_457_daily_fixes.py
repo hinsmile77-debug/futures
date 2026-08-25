@@ -217,16 +217,32 @@ def test_commission_is_leg_split_invariant():
     비례한다. 이 불변식이 깨지면(예: 레그당 고정비 도입) cost_edge_watch 채널의
     설계 전제가 바뀌므로 여기서 잡는다.
     """
+    from config.settings import FUTURES_COMMISSION_RATE
     from utils.db_utils import normalize_trade_pnl
 
-    px, pv = 966.07, 50_000
+    px, pv, n_legs = 966.07, 50_000, 2
+
+    # 🔴 [MW0601 493차 후속8] **공식 자체를 먼저 본다** — 반올림 전 원값 비교.
+    #   `commission_krw` 는 레그마다 `round()` 되므로 레그 수만큼 ±0.5원이 쌓인다.
+    #   그 누적을 "공식이 바뀌었다"로 읽으면 안 된다(2026-08-26에 요율을
+    #   0.0098104% 로 갱신하자 split=18956 / single=18955 로 정확히 1원 벌어져
+    #   종전 `< 1.0` 문턱에 걸렸다 — 결함이 아니라 경계였다).
+    raw_split = n_legs * (px * 1 * pv * FUTURES_COMMISSION_RATE * 2)
+    raw_single = px * n_legs * pv * FUTURES_COMMISSION_RATE * 2
+    assert abs(raw_split - raw_single) < 1e-6, (
+        "수수료 공식이 계약수 비례가 아니다 — cost_edge_watch 전제가 깨졌다 "
+        "(레그당 고정비가 도입됐는가?)")
+
+    # 반올림 후 값은 **레그 수 × 0.5원** 이내여야 한다. 그보다 크게 벌어지면
+    # 반올림이 아니라 계산 구조가 달라진 것이다.
     split = sum(normalize_trade_pnl(entry_price=px, quantity=1, pnl_pts=0.0,
-                                    pt_value=pv)["commission_krw"] for _ in range(2))
-    single = normalize_trade_pnl(entry_price=px, quantity=2, pnl_pts=0.0,
+                                    pt_value=pv)["commission_krw"] for _ in range(n_legs))
+    single = normalize_trade_pnl(entry_price=px, quantity=n_legs, pnl_pts=0.0,
                                  pt_value=pv)["commission_krw"]
-    assert abs(split - single) < 1.0, (
-        "레그 분할이 수수료를 바꾼다 — cost_edge_watch 전제 재검토 필요 "
-        "(split=%.0f single=%.0f)" % (split, single))
+    assert abs(split - single) <= n_legs * 0.5 + 1e-9, (
+        "레그 분할이 수수료를 반올림 한계(%.1f원)보다 크게 바꾼다 — "
+        "cost_edge_watch 전제 재검토 필요 (split=%.0f single=%.0f)"
+        % (n_legs * 0.5, split, single))
 
 
 # ── A3: 사전등록 채널이 존재하고 필수 키를 갖췄는가 ─────────────────────────

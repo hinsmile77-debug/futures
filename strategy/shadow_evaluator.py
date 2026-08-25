@@ -24,8 +24,35 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("ShadowEvaluator")
 
-# KOSPI200 선물 계약 승수 (2017년 이후)
-_FUTURES_MULTIPLIER = 250_000
+# ── [MW0601 493차 후속8] 계약 승수 — **하드코딩을 제거한다** ──────────────
+#
+# 🔴 종전에는 `250_000`(정규선물)이 박혀 있었다. 그런데 미륵이가 매매하는 종목은
+#    **미니선물(A0569, 승수 50,000)** 이다 — 이 섀도 평가기의 손익이 통째로
+#    **5배 과대**였다. 라이브 주문 경로가 아니라서 실손해는 없었지만, 섀도 전략의
+#    손익 비교·승격 판단이 그 위에 있었다.
+#
+# ⚠ 원천을 새로 만들지 않는다 — `config/constants.py:get_contract_spec()` 이
+#   종목코드로 정하는 단일 원천을 그대로 쓴다(`settings.active_contract_spec()`).
+# ⚠ 해석 실패 시 **정규선물 기본값으로 조용히 떨어지지 않는다.** 그렇게 하면
+#   지금 고치는 결함이 폴백 형태로 되살아난다 — 로그를 남기고 미니를 쓴다
+#   (이 저장소의 두 PC 모두 미니선물이다). 계측 4원칙 ④.
+def _resolve_multiplier():
+    from config.constants import MINI_FUTURES_PT_VALUE
+    try:
+        from config.settings import active_contract_spec
+        spec = active_contract_spec()
+    except Exception:
+        spec = None
+    if spec and spec.get("pt_value"):
+        return float(spec["pt_value"])
+    logger.warning(
+        "[ShadowEvaluator] 계약 승수 해석 실패 — 미니선물(%d)로 진행한다. "
+        "ui_prefs.json:symbol_code 확인 필요(정규선물이면 손익이 5배 과소가 된다)",
+        MINI_FUTURES_PT_VALUE)
+    return float(MINI_FUTURES_PT_VALUE)
+
+
+_FUTURES_MULTIPLIER = _resolve_multiplier()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
