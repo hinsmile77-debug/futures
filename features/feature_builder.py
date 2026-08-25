@@ -798,6 +798,53 @@ class FeatureBuilder:
         logger.debug("[FeatureBuilder] built %d features", len(features))
         return features
 
+    def set_intraday_close_history(self, closes) -> int:
+        """[MW0602 494차 / F-5] 장중 재기동 시 Hurst 종가 버퍼를 당일 분봉으로 복원.
+
+        **왜 필요한가.** `_close_history`는 순수 인메모리다. 프로세스가 장중에 죽고
+        다시 뜨면 이 버퍼가 **빈 상태로 시작**하고, `HURST_WARMUP_COLDSTART_MIN`(40)에
+        도달할 때까지 `hurst_ready=False`가 되어 HurstGate가 그 40분 동안 진입 후보를
+        전부 차단한다. 2026-08-25가 그 사례다 — 11:42:37 재기동 → 12:20:58·12:21:58
+        `[차단] Hurst 미계산 — 워밍업 중`으로 A등급 후보 1건 소실(0825 이상점 1-7).
+        로그 어디에도 *"재기동 때문"*이라고 적히지 않아, 두 로그를 사람이 이어 붙여야
+        보였다.
+
+        **선례가 있다.** 371차가 RegimeFingerprint 라이브 버퍼에 똑같은 처방을 했다
+        (*"재기동 시 `raw_features`에서 워밍업"*). 이번은 그 처방의 **미적용 잔여**다.
+
+        🔴 **당일 분봉만 넣는다.** 전일 종가를 섞으면 일간 갭이 variance-scaling에
+        들어가 Hurst 추정이 오염된다 — 317차가 `reset_daily()`에서 이 버퍼를 비우도록
+        고친 이유가 정확히 그것이다(316차 딥다이브: 개장 후 40분간 Hurst 비정상 저하).
+        따라서 **호출부가 당일 봉만 골라 넘겨야 하며**, 이 함수는 그것을 전제한다.
+
+        ⚠ `HURST_WARMUP_COLDSTART_MIN`·`HURST_WINDOW_N`·`HURST_MAX_LAG`는 건드리지
+        않는다 — 317차 4단계 검증(그리드서치→OOS→안정성→n_min 스윕)으로 잡은 값이고
+        26주 WFA 재검증 항목이다.
+
+        Args:
+            closes: 시각 오름차순 종가 시퀀스(당일 마감 분봉). 0 이하 값은 버린다.
+
+        Returns:
+            실제로 주입된 봉 수. 이미 버퍼가 차 있으면 **아무것도 하지 않고 0**을
+            돌려준다 — 정상 기동일의 동작을 바꾸지 않기 위해서다.
+        """
+        if self._close_history:
+            # 이미 봉이 쌓여 있다 = 재기동 직후가 아니다. 덮어쓰면 정상 경로를 바꾼다.
+            return 0
+        vals = [float(c) for c in (closes or []) if c and float(c) > 0]
+        if not vals:
+            return 0
+        # deque(maxlen=HURST_WINDOW_N)이므로 앞쪽이 자동으로 밀려난다 — 최신 N개만 남는다.
+        for c in vals:
+            self._close_history.append(c)
+        n = len(self._close_history)
+        logger.info(
+            "[FeatureBuilder] 장중 재기동 Hurst 워밍업 복원 — 당일 %d봉 주입 "
+            "(버퍼 %d/%d, hurst_ready=%s)",
+            len(vals), n, HURST_WINDOW_N, n >= HURST_WARMUP_COLDSTART_MIN,
+        )
+        return len(vals)
+
     def set_prev_day_closes(self, close_map: Dict[str, float]) -> None:
         """
         전일 종가 맵(ts→close)을 저장해 `prev_day_same_hour_ret` 계산에 사용.

@@ -11129,6 +11129,36 @@ class TradingSystem:
         except Exception as _e:
             logger.warning("[FeatureBuilder] 기동 시 전일 종가 버퍼 로드 실패: %s", _e)
 
+    def _load_intraday_close_history_at_restart(self) -> int:
+        """[MW0602 494차 / F-5] 장중 재기동 시 Hurst 종가 버퍼를 당일 분봉으로 복원.
+
+        `_load_prev_day_closes_at_startup()`(전일 종가맵)과 **목적이 다르다** —
+        그쪽은 `prev_day_same_hour_ret` 용 전일 버퍼이고, 이쪽은 Hurst 계산용 **당일**
+        버퍼다. 섞이면 일간 갭이 Hurst에 들어간다(317차가 막은 그 오염).
+
+        호출 조건: 장중 재기동일 때만. 09:00 이전 기동에는 부르지 않는다 — 그때는
+        `reset_daily()`가 빈 버퍼로 시작하는 것이 정상이다.
+
+        실패해도 기동을 막지 않는다 — 복원이 안 되면 종전 동작(40분 워밍업)으로 돌아갈 뿐이다.
+        """
+        try:
+            from config.settings import RAW_DATA_DB as _RDB
+            import sqlite3 as _sqlite3
+            _today = datetime.datetime.now().date().isoformat()
+            with _sqlite3.connect(_RDB, timeout=10) as _conn:
+                _rows = _conn.execute(
+                    "SELECT close FROM raw_candles WHERE ts >= ? AND ts < ? ORDER BY ts",
+                    (_today, _today + "Z"),
+                ).fetchall()
+            _closes = [r[0] for r in _rows if r and r[0]]
+            if not _closes:
+                logger.info("[FeatureBuilder] 재기동 Hurst 복원 — 당일 분봉 0건, 스킵")
+                return 0
+            return self.feature_builder.set_intraday_close_history(_closes)
+        except Exception as _e:
+            logger.warning("[FeatureBuilder] 재기동 Hurst 워밍업 복원 실패 (무해): %s", _e)
+            return 0
+
     # ── 일일 마감 (15:40) ─────────────────────────────────────
     def daily_close(self):
         """자가학습 일일 마감"""
@@ -12675,6 +12705,16 @@ class TradingSystem:
                 f"GapOffset={'복원됨' if _gap_restored else '미설정(첫분봉 재설정 예정)'}  "
                 f"pre_market_scaler={self._pre_market_scaler_refitted}",
                 "WARNING",
+            )
+            # [MW0602 494차 F-5] 재기동 부작용 하나를 여기서 되돌린다 — Hurst 종가
+            # 버퍼는 인메모리라 재기동하면 비고, 그 뒤 40분간(HURST_WARMUP_COLDSTART_MIN)
+            # HurstGate가 진입 후보를 전부 차단한다(0825 12:20 A등급 후보 소실).
+            # ⚠ **장중 분기 안**이다 — 09:00 이전 기동에는 부르지 않는다(전일 종가 오염 방지).
+            _hz_restored = self._load_intraday_close_history_at_restart()
+            log_manager.system(
+                f"[RESTART] Hurst 워밍업 복원 — 당일 {_hz_restored}봉 주입"
+                + ("" if _hz_restored else " (복원 없음 — 종전대로 40분 워밍업)"),
+                "WARNING" if not _hz_restored else "INFO",
             )
 
         # 1분 주기 관리 타이머 (분봉 파이프라인은 on_candle_closed 콜백으로 구동)
