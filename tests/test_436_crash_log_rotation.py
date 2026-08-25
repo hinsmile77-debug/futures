@@ -37,6 +37,22 @@ def _rot():
         end += 1
     body = "".join(lines[start:end])
 
+    # [MW0602 494차 F-10] 회전 직전에 `_persist_crash_signatures()`를 부른다.
+    # 그 이름이 네임스페이스에 없으면 `_rotate_crash_log`의 바깥 try/except가
+    # NameError를 삼키고 **0을 반환한다** — 회전이 조용히 멈춘 것처럼 보인다.
+    # 그래서 여기서도 같은 소스를 함께 로드한다(테스트가 배포 코드를 따라간다).
+    sig_start = None
+    for i, ln in enumerate(lines):
+        if ln.startswith("def _persist_crash_signatures("):
+            sig_start = i
+            break
+    assert sig_start is not None, "main.py에서 _persist_crash_signatures를 찾지 못했다"
+    sig_end = sig_start + 1
+    while sig_end < len(lines) and not lines[sig_end].startswith("def "):
+        sig_end += 1
+    consts = [ln for ln in lines if ln.startswith(("CRASH_SIG_", "_CRASH_SIG_"))]
+    body = "".join(consts) + "".join(lines[sig_start:sig_end]) + body
+
     class _Log(object):
         def info(self, *a, **k):
             pass

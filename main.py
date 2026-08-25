@@ -323,6 +323,14 @@ class _DailyCloseUiSignal(QObject):
 _daily_close_ui_sig = _DailyCloseUiSignal()  # 모듈 로드(메인 스레드)에서 생성 — thread affinity = main
 
 
+# ── [MW0602 494차 / F-4②] KOSPI200 지수 폴링 상태 샘플 임계 ──────────────────
+# `SLOW` 라벨의 경계일 뿐이며 **어떤 차단·게이트에도 쓰이지 않는다**(순수 관측).
+# 값 근거: 이 폴러는 `_run_block_request`(BLOCK_REQUEST_TIMEOUT_SEC=30) 두 번을
+# 직렬로 부른다. 1,000ms 는 "정상 응답의 상한"이 아니라 **CB⑤(`CB_PIPE_PAUSE_MS`
+# =5,000)의 1/5** 로 잡은 사전등록 경계다 — 관측값에서 역산하지 않았다(313차 ④).
+INDEX_POLL_SLOW_MS = 1000.0
+
+
 def _is_deployable(hz, bar_aggregator):
     # type: (str, object) -> bool
     """호라이즌별 배포 정책에 따라 이번 분에 predict_proba를 앙상블에 반영할지 결정.
@@ -3722,6 +3730,20 @@ class TradingSystem:
         """
         if not is_market_open(datetime.datetime.now()):
             return
+
+        # ── [MW0602 494차 / F-4②] 무조건 상태 샘플 ────────────────────────────
+        # 2026-08-25 11:42 access violation 의 스택 최상단이 대시보드 렌더링이었고,
+        # 같은 시점에 COM `BlockRequest` 가 교차 실행 중이었다(0825 이상점 1-6).
+        # 그런데 이 폴러가 **언제 들어가서 언제 나왔는지**가 어디에도 안 남아,
+        # "크래시 순간 이 경로가 진행 중이었나"를 사후에 물을 수 없었다.
+        #
+        # ⚠ **조건부 로그로 만들지 말 것**(CLAUDE.md 468차 G-2 규약: 임계 초과 시에만
+        #   찍는 줄은 100% 고착이 구조적으로 보장돼 §12 감시 대상이 될 수 없다).
+        #   그래서 BEGIN 을 **무조건** 먼저 남긴다 — BEGIN 만 있고 OK 가 없는 분이
+        #   곧 "이 경로 안에서 프로세스가 죽었다"는 직접 증거다.
+        _ip_t0 = time.time()
+        _ip_thread = threading.current_thread().name
+        logger.info("[IndexPoll] state=BEGIN thread=%s", _ip_thread)
         try:
             price = self.broker.get_index_price()
         except Exception as e:
@@ -3737,6 +3759,15 @@ class TradingSystem:
             vkospi = None
         if vkospi:
             self._last_vkospi = vkospi
+
+        _ip_ms = (time.time() - _ip_t0) * 1000.0
+        logger.info(
+            "[IndexPoll] state=%s ms=%.0f thread=%s spot=%s vkospi=%s",
+            "SLOW" if _ip_ms >= INDEX_POLL_SLOW_MS else "OK",
+            _ip_ms, _ip_thread,
+            ("%.2f" % price) if price else "—",
+            ("%.2f" % vkospi) if vkospi else "—",
+        )
 
     def _poll_option_chain(self) -> None:
         """옵션 체인 5분 폴링 — QTimer 콜백.
@@ -16812,6 +16843,159 @@ class _BrokerOrderAdapter:
         return ret if ret == 0 else None
 
 
+# ── [MW0602 494차 / F-10 + F-4①] 크래시 서명 영속화 ────────────────────────
+#
+# `crash_fault.log` 는 436차부터 **4세대 FIFO**(각 8~44MB)다. 그래서 오래된 세대가
+# 밀려 나갈 때 그 안의 `Windows fatal exception` 블록이 **함께 사라진다.**
+# 2026-08-25 장중 access violation 조사에서 실제로 그 벽에 부딪혔다 —
+# `.log.3`(2026-08-06 이전 세대)에 같은 서명이 **5건** 남아 있었고, 그것이 없었다면
+# "11거래일 중 첫 사례"라는 서술이 "전례 없음"으로 굳었을 것이다(0825 이상점 1-10).
+#
+# 파일 전체를 더 오래 보관하면 디스크가 감당하지 못한다(4세대 = 최대 ~180MB).
+# 그래서 **크래시 블록만** 뽑아 회전 없는 append 전용 파일에 남긴다.
+#
+# 🔴 **절대원칙 ④ 무관** — 파일 I/O 만 한다. `dynamicCall`·`emit` 없음.
+#    호출 지점도 COM 콜백 밖(기동 시 1회, faulthandler fd 열기 전)이다.
+#
+# ⚠ **중복 없이 누적한다.** 회전은 파일을 rename 하므로 같은 블록이 세대를 옮겨가며
+#   여러 번 스캔된다. 키를 `(파일 내 줄번호, 블록 sha1 앞 12자)` 로 잡으면 세대가
+#   바뀌어도 같은 블록은 같은 키를 갖는다(내용도 위치도 보존되므로).
+#   ⚠ 내용 해시만으로 접으면 **진짜 반복 발생을 1건으로 접어** 빈도를 잃는다 —
+#     "얼마나 자주 있는 일인가"가 이 파일을 만드는 이유이므로 그렇게 하지 않는다.
+#
+# ⚠ **F-9(494차) — 이 파일을 일일 크래시 계수의 분자로 쓰지 말 것.**
+#   분자는 `logs/crash_fault.log*` 의 `Windows fatal exception:` 행 수다.
+#   이 파일은 **과거 보존**용이며 회전으로 소실된 세대까지 포함하므로 당일 계수와
+#   단위가 다르다.
+CRASH_SIG_HEAD  = "Windows fatal exception"
+CRASH_SIG_FILE  = "crash_signatures.log"
+_CRASH_SIG_FRAMES = 3      # 최상단 몇 프레임을 남길 것인가
+_CRASH_SIG_SCAN_LINES = 40  # 블록 머리에서 몇 줄까지 훑어 프레임을 뽑을 것인가
+
+
+def _persist_crash_signatures(base_path, keep, out_path=None):
+    """크래시 블록만 추출해 회전 없는 파일에 누적한다. 실패해도 예외를 올리지 않는다.
+
+    Args:
+        base_path: `logs/crash_fault.log` (회전 대상 원본)
+        keep:      보관 세대 수 — `base_path.1` ~ `base_path.keep` 까지 함께 훑는다
+        out_path:  기본값 `logs/crash_signatures.log` (테스트에서 주입)
+
+    Returns: 이번에 새로 append 한 블록 수 (테스트용 — 운영 경로는 무시)
+    """
+    try:
+        import hashlib as _hl
+        import io as _io
+        import datetime as _dt_sig
+
+        if out_path is None:
+            out_path = os.path.join(os.path.dirname(base_path) or ".", CRASH_SIG_FILE)
+
+        # ── 이미 보존한 키 — 파일이 없으면 빈 집합(첫 실행) ──
+        seen = set()
+        if os.path.exists(out_path):
+            try:
+                with _io.open(out_path, encoding="utf-8", errors="replace") as _sf:
+                    for _ln in _sf:
+                        if _ln.startswith("[SIG] "):
+                            _k = _ln.rsplit(" key=", 1)
+                            if len(_k) == 2:
+                                seen.add(_k[1].strip())
+            except (IOError, OSError):
+                pass
+
+        # 오래된 세대부터 — 파일 내 시간순과 append 순서를 맞춘다.
+        paths = ["%s.%d" % (base_path, g) for g in range(int(keep or 0), 0, -1)]
+        paths.append(base_path)
+
+        added, out_lines = 0, []
+        _stamp = _dt_sig.datetime.now().isoformat(timespec="seconds")
+
+        def _flush(buf, start_ln, src_name, session):
+            """모아 둔 블록 1개를 서명 줄로 접는다. 새로 append 했으면 True."""
+            if not buf:
+                return False
+            exc = buf[0].split(":", 1)[-1].strip() or "unknown"
+            frames, thread = [], "—"
+            for b in buf[1:]:
+                bs = b.strip()
+                if bs.startswith("Current thread"):
+                    thread = bs.rstrip(":")
+                elif bs.startswith("File \"") and len(frames) < _CRASH_SIG_FRAMES:
+                    frames.append(bs)
+                elif bs.startswith("Thread 0x") and frames:
+                    break
+            # 키 = (파일 내 줄번호, 블록 sha1 앞 12자). 회전으로 파일명이 바뀌어도
+            # 내용과 위치는 보존되므로 같은 블록은 같은 키를 유지한다.
+            key = "%d:%s" % (
+                start_ln,
+                _hl.sha1("".join(buf).encode("utf-8", "replace")).hexdigest()[:12],
+            )
+            if key in seen:
+                return False
+            seen.add(key)
+            out_lines.append(
+                "[SIG] %s src=%s session=%s exc=%s torn=%d key=%s\n"
+                % (_stamp, src_name, session, exc,
+                   1 if buf[0].startswith("[torn] ") else 0, key))
+            out_lines.append("       %s\n" % thread)
+            for fr in frames:
+                out_lines.append("       %s\n" % fr)
+            return True
+
+        for p in paths:
+            if not os.path.exists(p):
+                continue
+            src_name = os.path.basename(p)
+            session = "—"
+            try:
+                with _io.open(p, encoding="utf-8", errors="replace") as _f:
+                    buf, need, lineno, start_ln = [], 0, 0, 0
+                    for line in _f:
+                        lineno += 1
+                        if line.startswith("[START] "):
+                            session = line.strip()[8:40]
+                        # 🔴 `startswith` 로 찾으면 안 된다 — faulthandler 의 주기 덤프와
+                        #    크래시 덤프가 **같은 fd 에 동시에 쓰여 줄이 찢어진다.**
+                        #    2026-08-25 11:42 의 그 크래시가 정확히 그 형태였다:
+                        #      `Thread 0xWindows fatal exception: access violation`
+                        #    (`logs/crash_fault.log.1:135143` 실측). 줄 앞에 다른 덤프의
+                        #    조각이 붙어 있어 행 선두 검사로는 **통째로 놓친다.**
+                        _pos = line.find(CRASH_SIG_HEAD)
+                        if _pos >= 0:
+                            # 앞 블록이 아직 열려 있으면 여기서 닫는다 — 40줄 창 안에
+                            # 두 번째 크래시가 나면 조용히 삼켜지던 자리다.
+                            if _flush(buf, start_ln, src_name, session):
+                                added += 1
+                            buf = [("[torn] " if _pos > 0 else "") + line[_pos:]]
+                            need, start_ln = _CRASH_SIG_SCAN_LINES, lineno
+                            continue
+                        if need > 0:
+                            buf.append(line)
+                            need -= 1
+                            if need == 0:
+                                if _flush(buf, start_ln, src_name, session):
+                                    added += 1
+                                buf = []
+                    # 🔴 EOF 에서도 닫는다 — 파일 끝이 창보다 가까우면(마지막 크래시가
+                    #    바로 그 형태다) 여기서 닫지 않으면 **통째로 유실된다.**
+                    if _flush(buf, start_ln, src_name, session):
+                        added += 1
+            except (IOError, OSError):
+                continue
+
+        if out_lines:
+            with _io.open(out_path, "a", encoding="utf-8") as _of:
+                _of.writelines(out_lines)
+        logger.info(
+            "[FaultHandler] 크래시 서명 보존 — 신규 %d건 (누적 키 %d, %s)",
+            added, len(seen), os.path.basename(out_path))
+        return added
+    except Exception as e:
+        logger.warning("[FaultHandler] 크래시 서명 보존 실패 (무해, 회전은 계속): %s", e)
+        return 0
+
+
 def _rotate_crash_log(path, rotate_mb=None, keep=None):
     """[MW0602 436차] crash_fault.log 크기 기반 로테이션 — 기동 시 1회.
 
@@ -16842,6 +17026,9 @@ def _rotate_crash_log(path, rotate_mb=None, keep=None):
         size = os.path.getsize(path)
         if size < rotate_mb * 1024 * 1024:
             return 0
+        # [MW0602 494차 F-10] **삭제·rename 전에** 크래시 서명을 뽑아 둔다.
+        # 아래 os.remove(oldest) 가 가장 오래된 세대를 지우므로, 그 뒤에 하면 늦다.
+        _persist_crash_signatures(path, keep)
         oldest = "%s.%d" % (path, keep)
         if os.path.exists(oldest):
             os.remove(oldest)

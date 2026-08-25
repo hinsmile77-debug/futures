@@ -145,6 +145,91 @@ def _require_cybos_runtime() -> None:
 BLOCK_REQUEST_TIMEOUT_SEC = 30
 
 
+# ── [MW0602 494차 / F-4③] BlockRequest 재진입 계측 ────────────────────────────
+#
+# 왜: 2026-08-25 11:42 `access violation` 스택이 **대시보드 렌더링 + COM 응답 대기**
+# 두 경로의 교차를 시사했다(0825 이상점 1-6). 그런데 "두 BlockRequest 가 실제로
+# 겹쳐 돌았는가"를 세는 장치가 없어 가설을 검증할 수 없었다. 인과 관측이 1건뿐인
+# 상태에서 렌더링·COM 직렬화(락)를 먼저 넣으면 **고쳤는지 알 방법이 없다** —
+# 292·303·371차가 반복 확인한 *"계측 먼저, 그다음 배선"* 이다.
+#
+# ⚠ **뜨거운 경로다.** 매 호출 INFO 를 찍으면 하루 수천 줄이 된다. 그래서
+#   ① 재진입(depth>1)은 **즉시** WARNING — 드물고, 그것이 찾는 신호다.
+#   ② 그 외에는 60초에 한 번 **무조건** 집계 1줄(`state=SAMPLE`).
+#   ②가 있으므로 이 계측은 조건부가 아니다 — 재진입이 0이어도 분모가 남는다
+#   (CLAUDE.md 468차 G-2 규약: 조건부 로그는 100% 고착이 구조적으로 보장된다).
+# ⚠ 문자열 포매팅은 지연 평가(`logger.x("%s", v)`)만 쓴다.
+# ⚠ 절대원칙 ④ 무관 — COM **수신 콜백** 안이 아니라 요청 진입부이며,
+#   여기서 `dynamicCall`·`emit` 을 하지 않는다.
+BLOCK_REQ_SAMPLE_SEC = 60.0
+
+# 🔴 **이 모듈의 `logger` 는 파일에 도달하지 않는다.**
+# `logging.getLogger(__name__)` = `collection.cybos.api_connector` 는 `utils/logger.py`
+# 가 핸들러를 붙이는 레이어(SYSTEM/SIGNAL/TRADE/…) 목록에 없고, 그 레이어들은
+# `propagate=False` 라 root 로도 새지 않는다. 2026-08-25 실측: 당일 로그 어느 파일에도
+# `[CybosOrder]`·`api_connector` 문자열이 **0건**이다.
+# ⇒ 여기서 신설하는 계측은 반드시 **레이어 로거**로 내보낸다. 그렇게 하지 않으면
+#    FP-CRITICAL(2개월 PSI=0.0)·TOX-SEVERE-SPREAD(한 달 죽은 섀도)와 같은
+#    "배선했는데 아무 데도 안 남는 계측"이 또 하나 생긴다.
+# ⚠ 기존 53개 호출부의 라우팅은 **이번 범위 밖**이다(`logger.critical` 4건 포함).
+#    별건으로 `dev_memory/NEXT_TODO.md` 494차 항목에 등록했다.
+_obs = logging.getLogger("SYSTEM")
+
+_blockreq_lock  = threading.Lock()
+_blockreq_state = {
+    "depth":        0,     # 현재 실행 중인 _run_block_request 수
+    "calls":        0,     # 샘플 창 내 총 호출 수
+    "reentrant":    0,     # 샘플 창 내 재진입(진입 시 depth>0) 호출 수
+    "max_depth":    0,     # 샘플 창 내 최대 동시 깊이
+    "max_ms":       0.0,   # 샘플 창 내 최장 소요
+    "threads":      {},    # 샘플 창 내 호출 스레드명 → 건수
+    "window_t0":    None,  # 샘플 창 시작 시각(monotonic 아님 — time.time)
+}
+
+
+def _blockreq_enter(progid):
+    """진입 기록 — (재진입 여부, 진입 시 깊이)를 돌려준다."""
+    with _blockreq_lock:
+        st = _blockreq_state
+        prev = st["depth"]
+        st["depth"] = prev + 1
+        st["calls"] += 1
+        if st["depth"] > st["max_depth"]:
+            st["max_depth"] = st["depth"]
+        name = threading.current_thread().name
+        st["threads"][name] = st["threads"].get(name, 0) + 1
+        if st["window_t0"] is None:
+            st["window_t0"] = time.time()
+        if prev > 0:
+            st["reentrant"] += 1
+            return True, st["depth"]
+        return False, st["depth"]
+
+
+def _blockreq_exit(elapsed_ms):
+    """이탈 기록 + 샘플 창 만료 시 무조건 1줄."""
+    line = None
+    with _blockreq_lock:
+        st = _blockreq_state
+        st["depth"] = max(0, st["depth"] - 1)
+        if elapsed_ms > st["max_ms"]:
+            st["max_ms"] = elapsed_ms
+        t0 = st["window_t0"]
+        if t0 is not None and (time.time() - t0) >= BLOCK_REQ_SAMPLE_SEC and st["depth"] == 0:
+            top = sorted(st["threads"].items(), key=lambda kv: -kv[1])[:3]
+            line = (
+                "[BlockReq] state=SAMPLE window=%.0fs calls=%d reentrant=%d "
+                "max_depth=%d max_ms=%.0f threads=%s"
+                % (time.time() - t0, st["calls"], st["reentrant"],
+                   st["max_depth"], st["max_ms"],
+                   ",".join("%s:%d" % (n, c) for n, c in top) or "—")
+            )
+            st.update({"calls": 0, "reentrant": 0, "max_depth": 0,
+                       "max_ms": 0.0, "threads": {}, "window_t0": None})
+    if line:
+        _obs.info("%s", line)
+
+
 def _run_block_request(progid, input_pairs, data_reader=None,
                        timeout_sec=BLOCK_REQUEST_TIMEOUT_SEC):
     """COM BlockRequest를 백그라운드 스레드에서 타임아웃과 함께 실행한다.
@@ -168,6 +253,19 @@ def _run_block_request(progid, input_pairs, data_reader=None,
         TimeoutError: timeout_sec 초 안에 완료되지 않은 경우
         RuntimeError / COM 예외: 내부 오류
     """
+    # [MW0602 494차 F-4③] 재진입 계측 — 계측 실패가 COM 호출을 막지 않도록 감싼다.
+    _br_t0 = time.time()
+    try:
+        _br_reentrant, _br_depth = _blockreq_enter(progid)
+        if _br_reentrant:
+            _obs.warning(
+                "[BlockReq] reentrant=True depth=%d thread=%s progid=%s "
+                "— 다른 BlockRequest 진행 중에 겹쳐 들어왔다",
+                _br_depth, threading.current_thread().name, progid,
+            )
+    except Exception:
+        _br_reentrant = False
+
     result = {"ret": None, "status": None, "msg": None, "data": None, "exc": None}
     done = threading.Event()
 
@@ -208,27 +306,35 @@ def _run_block_request(progid, input_pairs, data_reader=None,
     # 실증: TickUI 5분 침묵 → 폭발, 차트 응답 없음, 파이프라인 멈춤.
     # processEvents() 는 절대 이 루프에서 호출하지 않는다.
     deadline = time.time() + timeout_sec
-    while True:
-        if done.wait(timeout=0.01):
-            break
-        if time.time() >= deadline:
-            logger.critical(
-                "[BlockReq] TIMEOUT %ss progid=%s — 비상 청산이 필요할 수 있음",
-                timeout_sec, progid,
-            )
-            raise TimeoutError(
-                "Cybos BlockRequest timeout ({0}s) progid={1}".format(timeout_sec, progid)
-            )
-        if pythoncom is not None:
-            try:
-                pythoncom.PumpWaitingMessages()
-            except Exception:
-                pass
+    # [MW0602 494차 F-4③] finally 로 감싼다 — 타임아웃/예외 경로에서도 깊이를 되돌려야
+    # 한다. 되돌리지 않으면 이후 모든 호출이 `reentrant=True` 로 오탐된다.
+    try:
+        while True:
+            if done.wait(timeout=0.01):
+                break
+            if time.time() >= deadline:
+                logger.critical(
+                    "[BlockReq] TIMEOUT %ss progid=%s — 비상 청산이 필요할 수 있음",
+                    timeout_sec, progid,
+                )
+                raise TimeoutError(
+                    "Cybos BlockRequest timeout ({0}s) progid={1}".format(timeout_sec, progid)
+                )
+            if pythoncom is not None:
+                try:
+                    pythoncom.PumpWaitingMessages()
+                except Exception:
+                    pass
 
-    if result["exc"] is not None:
-        raise result["exc"]
+        if result["exc"] is not None:
+            raise result["exc"]
 
-    return result["ret"], result["status"], result["msg"], result["data"]
+        return result["ret"], result["status"], result["msg"], result["data"]
+    finally:
+        try:
+            _blockreq_exit((time.time() - _br_t0) * 1000.0)
+        except Exception:
+            pass
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
