@@ -2,6 +2,64 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 494차 — 0825 「사용자 조치」 구현 (MW0602, 2026-08-25) — **라이브 검증 대기**
+
+근거: `dev_memory/DECISION_LOG.md` 2026-08-25(494차).
+커밋 `7851c40`(F-4·F-10) · `ad68bd7`(F-5) · `547d58a`(F-1) · `23966d2`(F-8) ·
+`712627a`(F-6·F-7·F-9·F-2·G-1·G-2).
+
+> 🔴 **전부 계측이다.** 게이트·차단 신설 0건, 매매 임계 변경 0건. 따라서 검증은
+> "값이 바뀌었는가"가 아니라 **"기록이 실제로 남는가"** 다 — FP-CRITICAL(2개월
+> PSI=0.0)·TOX-SEVERE-SPREAD(한 달 죽은 섀도)가 남긴 교훈이다.
+
+- [ ] **[494차 최우선 · 2026-08-26 장전] 신설 계측 5종이 라이브에서 실제로 찍히는가**
+      ① `[IndexPoll] state=BEGIN` / `state=OK|SLOW ms=…` — 매분 2줄
+      ② `[BlockReq] state=SAMPLE window=…s calls=… reentrant=…` — 60초마다 1줄
+         (⚠ `reentrant` 값 자체가 0825 크래시 가설의 직접 입력이다)
+      ③ `[Engine] shadow state=OK|SLOW ms=…` — `20260826_SYSTEM.log` 에 존재
+         (종전 0건이었다. `grep -c "shadow state=" logs/20260826_SYSTEM.log`)
+      ④ `[ScalerRefresh] … (FLAT 100% 방지) n_nonzero=…/… frac_zero=… raw_range=…`
+      ⑤ `[FaultHandler] 크래시 서명 보존 — 신규 N건` + `logs/crash_signatures.log` 생성
+- [ ] **[494차] 다음 EOD** `[GuardFair] … gap_bars=NNNN holdout_start=… train_end=…`
+      출현 + `guard_shadow_log.fair_gap_bars` **비-NULL 6행** → 관측 `O-29`.
+      기대값: `gap_bars=1850`(홀드아웃 전체 오염). 다르면 그 자체가 발견이다.
+- [ ] **[494차] 다음 재기동일** — `[RESTART] Hurst 워밍업 복원 — 당일 N봉 주입` 이 뜨고
+      그 뒤 `[차단] Hurst 미계산` **0건**인가(F-5 라이브 검증). 회귀 확인: 정상 기동일
+      (재기동 없음)에는 이 줄이 **뜨지 않아야** 한다.
+- [ ] **[494차] 다음 장전 다이제스트 §12** 신규 지표 7종이 표에 뜨는가 —
+      `CORE축퇴_원인축` · `GuardFair_gap_bars` · `challenger_shadow` · `Calib_폴백사유` ·
+      `CORE축퇴_개장해소`(파생) · `launcher_guard`(파생) · `crash_signature`(파생).
+      ⚠ 앞 셋은 `measured_since=2026-08-26` 이라 배포 당일까지는 `표본부족` 이 정상이다.
+- [ ] **[494차] §11 말미 `ℹ️ 관측 ID 채번` 줄**이 뜨는가. **새 `O-*` 는 그 번호부터**
+      발급할 것(현재 `O-33`). 🔴 `O-16`~`O-18` 은 재부여하지 않는다(화이트리스트).
+
+#### 494차가 만든 **별건** — 이번 범위 밖으로 남긴 것
+
+- [ ] **`collection/cybos/api_connector.py` 로거 라우팅** — `getLogger(__name__)` 이
+      어떤 파일 핸들러에도 붙어 있지 않아 **53개 호출부가 전부 사라진다**
+      (`logger.critical` 4건 포함 — `[BlockReq] TIMEOUT … 비상 청산이 필요할 수 있음`).
+      0825 로그 전체에 `[CybosOrder]` 0건 실측. 494차는 **신설 계측만** SYSTEM 레이어로
+      우회시켰다. 전면 라우팅은 INFO 19건이 SYSTEM.log 로 쏟아지는 문제가 있어 별건.
+      ⚠ 같은 형태를 challenger 에서도 발견했다(F-6). **레이어 밖 로거가 또 있는지
+      전수 조사**가 실제 과제다 — `grep -rn "getLogger(__name__)" --include=*.py`.
+- [ ] **상시 실패 테스트 15건** — 494차 전수 실행 PASS 66 / FAIL 15 이고, 15건 전부
+      **변경 전 커밋 `e24a4a5` 에서도 실패**한다(체크아웃 대조 확인). 즉 기존 부채다.
+      목록: `424_campaign_channels` `425_loss_tier1_qty1` `426_profit_guard_l1`
+      `427_conf_discrimination` `428_direction_value_and_exit_model`
+      `429_entry_timing_and_vol_estimator` `439_phantom_mirror` `460_spearman_ties`
+      `473_spread_extreme_watch` `474_entry_band_watch` `479_log_retention_tiers`
+      `484_calibrator_persistence` `486_early_window_shadow` `489_weekly_decisions`
+      `490_meta_scorer_hygiene`.
+      🔴 **상시 붉은 테스트는 죽은 안전장치다** — 새 회귀가 나도 구분되지 않는다.
+      475차 사례처럼 「코드가 옳고 단언이 낡은」 것과 「진짜 회귀」를 갈라야 한다.
+- [ ] **F-3(493차) 미착수** — 리포 루트 런타임 산출물 5종(`calibration_metrics.json` ·
+      `effect_monitor_history.json` · `meta_gate_tuning_metrics.json` ·
+      `microstructure_ab_metrics.json` · `rollout_readiness_metrics.json`)을 `data/` 로.
+      ⚠ **소비부를 함께 옮겨야 한다** — 생산부만 옮기면 대시보드·주간 리포트가 조용히
+      빈 값을 낸다. 착수 전 `grep -rn "<파일명>"` 전수 확인 필수(회귀 위험 중간).
+- [ ] **G-3·G-5·G-6(493·494차) 미착수** — 콜드스타트 창 플래그 / 도달 불가 레지스트리
+      (§12d) / 재기동을 「사건」이 아니라 「상태」로. 「사용자 조치」 목록 밖이었다.
+
 ### 485차 — 방향 무효화 관측성 (MW0602, 2026-08-23) — **라이브 검증 대기**
 
 근거: `dev_memory/DECISION_LOG.md` 2026-08-23(485차).
