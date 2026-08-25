@@ -91,6 +91,15 @@ def _get_pt_value_from_prefs() -> int:
             return get_contract_spec(code)["pt_value"]
     except Exception:
         pass
+    # 🔴 [MW0601 493차 후속8] **폴백을 가시화한다.**
+    #   종전에는 조용히 정규선물 250,000 을 돌려줬다. 이 저장소의 두 PC는 **둘 다
+    #   미니선물(50,000)** 이므로 그 폴백이 실제로 쓰이면 손익이 **5배 과대**가 된다 —
+    #   그런데 아무 로그도 없어 쓰였는지조차 알 수 없었다(계측 4원칙 ④).
+    #   값 자체는 바꾸지 않는다(하위호환 · 정규선물 계좌 가능성). **드러내기만 한다.**
+    logging.getLogger("SYSTEM").warning(
+        "[PtValueFallback] ui_prefs.json 에서 symbol_code 를 못 읽어 정규선물 승수(%d)로 "
+        "폴백했다. 이 계좌가 미니선물이면 손익이 5배 과대가 된다 — 즉시 확인할 것",
+        FUTURES_PT_VALUE)
     return FUTURES_PT_VALUE
 
 
