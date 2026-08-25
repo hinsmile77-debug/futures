@@ -79,7 +79,7 @@ def _utf8_console():
 
 
 from config.settings import (  # noqa: E402
-    TRADES_DB, PREDICTIONS_DB, VALIDATION_CAMPAIGN, FUTURES_COMMISSION_RATE,
+    TRADES_DB, PREDICTIONS_DB, VALIDATION_CAMPAIGN, COST_MODEL_COMMISSION_RATE,
 )
 
 _CFG = VALIDATION_CAMPAIGN.get("cost_edge_watch", {})
@@ -197,7 +197,14 @@ def load_positions(days):
         wsum = sum(float(r[3] or 0.0) * int(r[2] or 0) for r in rs)
         entry_px = wsum / qty if qty else 0.0
         gross_pt_per_ct = sum(float(r[4] or 0.0) * int(r[2] or 0) for r in rs) / float(qty)
-        breakeven_pt = entry_px * FUTURES_COMMISSION_RATE * 2.0
+        # [MW0601 493차 / F-3] 라이브 FUTURES_COMMISSION_RATE 가 아니라 **핀된**
+        # COST_MODEL_COMMISSION_RATE 를 쓴다. 라이브 요율은 2026-08-25 실측으로
+        # 0.000015 -> 0.0000981 (6.54배) 재보정됐는데, 그것을 그대로 비용모델에
+        # 넣으면 왕복 비용이 0.071pt -> 0.244pt 로 뛰어 **사전등록 채널의 측정값이
+        # 조용히 재정의**된다(합격선은 그대로인데 verdict가 뒤집힌다 —
+        # 461차 mdd_pct / 458차 D6 계열). 해제는 주간회의 승인 사항이며
+        # 영향 규모는 `scripts/commission_rate_recon.py --impact` 로 확인한다.
+        breakeven_pt = entry_px * COST_MODEL_COMMISSION_RATE * 2.0
         out.append({
             "date": entry_ts[:10], "entry_ts": entry_ts, "direction": direction,
             "qty": qty, "n_legs": len(rs),

@@ -117,7 +117,7 @@ except Exception:
 
 from config.settings import (  # noqa: E402
     TRADES_DB, RAW_DATA_DB, VALIDATION_CAMPAIGN, ATR_TP2_MULT,
-    FUTURES_COMMISSION_RATE, TICK_SIZE,
+    COST_MODEL_COMMISSION_RATE, TICK_SIZE,
     # [432차] 라이브와 같은 상수를 쓴다 — 예전에는 여기 리터럴 사본이 있어
     # 라이브가 바뀌면 `current` 기준선이 조용히 어긋날 수 있었다.
     TP1_PROTECT_ATR_LOCK_MULT, TP1_PROTECT_PLUS_ALPHA_PTS,
@@ -148,7 +148,14 @@ def _conn(p):
 
 def _cost_pts(px: float) -> float:
     slip = float(VALIDATION_CAMPAIGN.get("slippage_ticks_per_side", 1.0))
-    return 2.0 * px * FUTURES_COMMISSION_RATE + 2.0 * slip * TICK_SIZE
+    # [MW0601 493차 / F-3] 라이브 FUTURES_COMMISSION_RATE 가 아니라 **핀된**
+    # COST_MODEL_COMMISSION_RATE 를 쓴다. 라이브 요율은 2026-08-25 실측으로
+    # 0.000015 -> 0.0000981 (6.54배) 재보정됐는데, 그것을 그대로 비용모델에
+    # 넣으면 왕복 비용이 0.071pt -> 0.244pt 로 뛰어 **사전등록 채널의 측정값이
+    # 조용히 재정의**된다(합격선은 그대로인데 verdict가 뒤집힌다 —
+    # 461차 mdd_pct / 458차 D6 계열). 해제는 주간회의 승인 사항이며
+    # 영향 규모는 `scripts/commission_rate_recon.py --impact` 로 확인한다.
+    return 2.0 * px * COST_MODEL_COMMISSION_RATE + 2.0 * slip * TICK_SIZE
 
 
 def _load_hooks(since: str):

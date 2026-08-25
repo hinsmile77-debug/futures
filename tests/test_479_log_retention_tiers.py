@@ -89,6 +89,20 @@ _RETRO_GLOB_EXEMPT = {
         "[MW0602 468차 G-4] 최근 N거래일 후행 창(기본 3) — 압축 유예 안",
 }
 
+# [MW0601 493차] **두 번째 면제 사유 — 압축본을 함께 읽는 스크립트.**
+#
+# 위 목록이 "30일 안만 보니까 괜찮다"라면, 이쪽은 "30일을 넘지만 zip도 읽으니
+# 괜찮다"다. 이 테스트가 지키려는 불변식은 *"소급 소비자가 조용히 표본을 잃지
+# 않는다"* 이고, 월 아카이브를 함께 훑으면 그 불변식은 만족된다.
+#
+# ⚠ **자기 신고를 믿지 않는다** — 아래 test가 해당 스크립트에 실제로
+#   `_<채널>.zip` glob과 `zipfile` 사용이 있는지 검사한다. 주석만 달고 등록하면
+#   그 검사에서 떨어진다(면제가 도피처가 되지 않게 하는 장치).
+_COMPRESSED_AWARE = {
+    "commission_rate_recon.py":
+        "[MW0601 493차 F-1] 26주 주기 재검증 — 원본 + YYYYMM_SYSTEM.zip 동시 소비",
+}
+
 
 def test_no_script_retro_globs_compressed_channels(mc):
     """scripts/ 안에 Tier B 채널을 **와일드카드 glob**으로 소급 소비하는 코드가
@@ -103,7 +117,7 @@ def test_no_script_retro_globs_compressed_channels(mc):
     for name in os.listdir(scripts_dir):
         if not name.endswith(".py") or name == "monthly_cleanup.py":
             continue
-        if name in _RETRO_GLOB_EXEMPT:
+        if name in _RETRO_GLOB_EXEMPT or name in _COMPRESSED_AWARE:
             continue
         path = os.path.join(scripts_dir, name)
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -114,6 +128,30 @@ def test_no_script_retro_globs_compressed_channels(mc):
         "Tier B(압축) 채널을 와일드카드로 소급 소비하는 스크립트 발견 — "
         "해당 채널을 _RAW_KEEP_CHANNELS로 옮기거나 스크립트를 압축본 대응으로 "
         "고칠 것:\n" + "\n".join(offenders))
+
+
+def test_compressed_aware_scripts_actually_read_archives(mc):
+    """[MW0601 493차] `_COMPRESSED_AWARE` 등록이 **자기 신고로 끝나지 않게** 한다.
+
+    등록만 해두고 실제로는 `.log`만 읽으면 면제가 곧 표본 손실의 은신처가 된다 —
+    이 저장소가 반복해서 당한 패턴(죽은 게이트·죽은 섀도)이 정확히 그것이다.
+    그래서 등록된 스크립트에 ① 압축 채널의 `.zip` glob과 ② `zipfile` 사용이
+    둘 다 있는지 확인한다.
+    """
+    comp = mc["_COMPRESS_CHANNELS"]
+    zip_pat = re.compile(r"\*[^\"']*_(%s)\.zip" % "|".join(sorted(comp)))
+    scripts_dir = os.path.join(ROOT, "scripts")
+    for name, reason in sorted(_COMPRESSED_AWARE.items()):
+        assert reason, "%s: 면제 근거를 비워두지 말 것" % name
+        path = os.path.join(scripts_dir, name)
+        assert os.path.exists(path), (
+            "%s: _COMPRESSED_AWARE에 있는데 파일이 없다 — 삭제됐으면 목록에서도 뺄 것" % name)
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            src = f.read()
+        assert zip_pat.search(src), (
+            "%s: 압축본을 읽는다고 등록됐으나 `*_<채널>.zip` glob이 없다" % name)
+        assert "zipfile" in src, (
+            "%s: 압축본을 읽는다고 등록됐으나 zipfile을 쓰지 않는다" % name)
 
 
 # ── 3. 압축 후보 선정 ────────────────────────────────────────────────────────
