@@ -8,6 +8,58 @@
 
 ---
 
+### 493차 후속7 — F-U 단일 인스턴스 가드 (MW0601, 2026-08-26 07:00~07:30)
+
+> 사용자가 `diag_guard_delayedexp.bat`(사용자 조치 8번)을 실행해 **H1이 확정**됐다.
+> 프로브 스크립트·리허설·테스트는 완료. **런처 배선만 되돌렸다** — 아래 U-16.
+
+**확정된 것 (사용자 실행 결과 + 이 세션 리허설)**
+
+```
+[A] 지연확장 ON   ->  p.pid = os.getpid()   SyntaxError, EXITCODE=1
+[B] 지연확장 OFF  ->  p.pid != os.getpid()  정상 실행,   EXITCODE=0
+```
+⇒ 넉 달간의 「기존 main.py 감지됨」은 **감지가 아니라 크래시**였다. `terminate()` 줄도
+같은 결함이라 **한 번도 실행된 적이 없는데** 「종료 완료」는 무조건 찍혔다.
+이 세션 리허설이 그 경로를 **라이브로 재현**했다 — 프로브 출력 줄 없이 곧장
+「감지 → 종료 완료」로 흘렀다.
+
+**완료한 것**
+
+- [x] `scripts/guard_single_instance.py` 신설 — 종료코드 3분류(0/1/**3**), WORKDIR 밖
+      보호, 판독불가 집계, strict 판정 섀도 병기, 종료 후 재확인.
+- [x] 리허설 1 — 미륵이 꺼진 상태 프로브 **exit 0** (11번 중 0번이던 경로).
+- [x] 리허설 2a — WORKDIR **밖** 더미를 죽이지 않고 PID·경로와 함께 보호 로그.
+- [x] 리허설 2b — WORKDIR **안** 더미: 대상 목록 선기록 → 종료 → `잔여=0` 검증.
+- [x] `tests/test_493_guard_single_instance.py`(14) · `test_493_bat_python_oneliner_bang.py`(8).
+
+**🔴 U-16 — 런처 배선 재적용 (되돌림 상태, 다음 세션)**
+
+- [ ] **왜 되돌렸나** — `start_mireuk.bat` 이 작업 시점에 **LF-only**(0 CRLF / 644 LF)였고,
+      cmd.exe 는 `GOTO`/`CALL` 에서 **바이트 오프셋으로 파일을 재탐색**한다. 편집으로
+      오프셋이 바뀌면 파서가 줄 중간에 착지한다 — 리허설에서 ASCII 줄이
+      `'through' is not recognized` 로 쪼개지는 것을 **실제로 관측**했다.
+      08:40 자동기동까지 80분이라 검증을 끝낼 수 없었고, 런처가 깨지면 개장 시점에
+      프로세스가 0개가 된다(431차에 5회 연속 기동 실패 전례).
+- [ ] **현재 상태** — 두 런처 모두 HEAD 내용 그대로. `start_mireuk.bat` 은
+      `git checkout` 이 **CRLF로 정규화**했다(내용 동일, git 기준 clean).
+      **CRLF 는 배치 표준이라 종전 LF-only보다 안전하다** — 이 정규화는 유지할 것.
+- [ ] **재적용 절차** — ① CRLF 확정 확인 ② 가드 블록 배선 ③ `rehearse_guard.py` 로
+      **전체 런처** 리허설(가드 블록만이 아니라) ④ 장 마감 후·다음 기동 전에만 적용.
+      ⚠ 배치 REM 주석은 **ASCII 전용**으로 — 비ASCII가 파싱을 깨는 것을 관측했다.
+- [ ] **테스트** — `test_493_bat_python_oneliner_bang.py` 의 4건이 **strict xfail** 이다.
+      배선하면 xpass 로 **실패**하니, 그때 마크를 제거하고 이 항목을 닫을 것.
+- [ ] ⚠ `start_mireuk_CREON.bat` 은 **gitignore 대상**(MW0602용)이라 이 저장소가 관리하지
+      않는다. 이 PC에서는 쓰이지 않으므로 원복만 해두었다.
+
+**부수 사고 (기록)**
+
+- [ ] 이 세션의 `git stash push/pop` 이 **옛 441차 stash 를 되살려**
+      `config/settings.py` 에 충돌(`UU`)을 냈다. `git checkout HEAD -- config/settings.py`
+      로 복구했고 493차 상수는 전부 정상, 441차 stash 도 보존됐다.
+      ⚠ **동시 세션 저장소에서 `git stash` 를 쓰지 말 것** — 선별 회수는
+      `git checkout "stash@{N}" -- <경로>` 로.
+
 ### 493차 후속6 — 사용자 조치 구현 8건 (MW0601, 2026-08-25)
 
 > F-Y·F-X·F-V·F-Z·F-AA·F-AB·F-P·F-Q 구현 완료.
