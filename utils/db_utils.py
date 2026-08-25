@@ -1326,6 +1326,14 @@ def init_trades_db():
         -- 프리미엄이라 **판정에 쓰면 안 된다**. 457차 이전 42행은 전부 NULL이며
         -- 그 구간 실측이 36행 중 35행 도전자 열위(평균 -0.1161)였다.
         fair_valid      INTEGER,
+        -- [MW0602 494차 F-8] 홀드아웃 구간 중 **현행 모델이 이미 학습한** 봉 수.
+        -- fair_valid 는 "성립했는가"만 말하고 **얼마나 어긋났는가**를 말하지 않는다.
+        -- 0825 실측: 8거래일 내내 6/6 무효였는데, 그것이 표본 문제인지 산술적 불가인지
+        -- 구분할 값이 없었다(이상점 1-11). holdout_bars=1850(≈5거래일)인데 현행은
+        -- 매일 재학습되므로 train_end < holdout_start 가 참이 될 수 없다.
+        -- 성립에 필요한 최대 홀드아웃 = fair_hold_bars - fair_gap_bars.
+        -- ⚠ 판정 무영향(진단 전용). 494차 이전 행은 전부 NULL이며 **미측정**이다.
+        fair_gap_bars   INTEGER,
         created_at      TEXT DEFAULT (datetime('now', 'localtime'))
     )
     """)
@@ -1348,7 +1356,8 @@ def init_trades_db():
             _gsl_conn.execute("ALTER TABLE guard_shadow_log ADD COLUMN pc TEXT")
         for _c, _t in (("fair_new", "REAL"), ("fair_old", "REAL"),
                        ("fair_hold_bars", "INTEGER"), ("fair_note", "TEXT"),
-                       ("fair_valid", "INTEGER")):   # [MW0602 457차]
+                       ("fair_valid", "INTEGER"),    # [MW0602 457차]
+                       ("fair_gap_bars", "INTEGER")):  # [MW0602 494차 F-8]
             if _c not in _gsl_cols:
                 _gsl_conn.execute(
                     "ALTER TABLE guard_shadow_log ADD COLUMN %s %s" % (_c, _t))
@@ -2720,6 +2729,7 @@ def save_guard_shadow(
     fair_new: Optional[float] = None, fair_old: Optional[float] = None,
     fair_hold_bars: Optional[int] = None, fair_note: Optional[str] = None,
     fair_valid: Optional[int] = None,
+    fair_gap_bars: Optional[int] = None,
 ) -> None:
     """[404차, P0-4 후속] EOD/intraday 모델가드 GuardShadow 1행 저장.
 
@@ -2748,11 +2758,13 @@ def save_guard_shadow(
         """INSERT INTO guard_shadow_log
            (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
             distortion, actual_verdict, fair_verdict, n_samples, pc,
-            fair_new, fair_old, fair_hold_bars, fair_note, fair_valid)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            fair_new, fair_old, fair_hold_bars, fair_note, fair_valid,
+            fair_gap_bars)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (ts, horizon, source, acc_txt, old_acc_live, new_cv, live_note,
          distortion, actual_verdict, fair_verdict, n_samples, pc_id(),
-         fair_new, fair_old, fair_hold_bars, fair_note, fair_valid),
+         fair_new, fair_old, fair_hold_bars, fair_note, fair_valid,
+         fair_gap_bars),
     )
 
 

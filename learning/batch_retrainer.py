@@ -913,20 +913,32 @@ class BatchRetrainer:
         _fair_new = _fair_old = None
         _fair_n, _fair_note = 0, "미실행"
         _fair_valid = None
+        _fair_gap_bars = None      # [MW0602 494차 F-8] 진단 전용 — 판정 무영향
         if not intraday and cv_acc is not None:
             _fair_new, _fair_old, _fair_n, _fair_note = self._measure_fair_holdout(
                 horizon_key, X, y, X_full, h_idx, feature_names,
                 _make_model, _make_sample_weight,
             )
+            # 유효/무효와 무관하게 뽑는다 — 유효한 날의 gap_bars=0 도 표본이다.
+            # (무효율만 보면 "얼마나 어긋났는가"의 분모가 사라진다.)
+            _fair_gap_bars = (getattr(self, "_last_fair_diag", None) or {}).get("gap_bars")
             if _fair_new is not None and _fair_old is not None:
                 # [MW0602 457차] 유효성은 _measure_fair_holdout 안에서 판정돼
                 # note 앞머리에 "ok"/"무효"로 실린다. 여기서 그 결과를 컬럼으로 뽑는다.
                 _fair_valid = 1 if str(_fair_note).startswith("ok") else 0
+                # [MW0602 494차 F-8] 무효율만 보면 "얼마나 고쳐야 하는가"를 못 센다.
+                # gap_bars = 홀드아웃 구간 중 현행이 이미 학습한 봉 수.
+                # 성립에 필요한 최대 홀드아웃 = holdout_bars - gap_bars.
+                _diag = getattr(self, "_last_fair_diag", None) or {}
                 logger.info(
                     "[GuardFair] %s 공정홀드아웃(최신 %d봉) new=%.4f vs old=%.4f "
-                    "| 격차=%+.4f | acc.txt=%.4f new(cv)=%.4f | %s — 판정 무영향(섀도)",
+                    "| 격차=%+.4f | acc.txt=%.4f new(cv)=%.4f | %s "
+                    "| gap_bars=%s holdout_start=%s train_end=%s — 판정 무영향(섀도)",
                     horizon_key, _fair_n, _fair_new, _fair_old,
                     _fair_new - _fair_old, old_acc, cv_acc, _fair_note,
+                    "?" if _fair_gap_bars is None else _fair_gap_bars,
+                    _diag.get("holdout_start_ts", "—"),
+                    _diag.get("train_end_ts", "—"),
                 )
                 if not _fair_valid:
                     # 무효 행을 성능차로 읽는 것이 457차가 막으려는 바로 그 오독이다.
@@ -1031,6 +1043,8 @@ class BatchRetrainer:
                     fair_new=_fair_new, fair_old=_fair_old,
                     fair_hold_bars=(_fair_n or None), fair_note=_fair_note,
                     fair_valid=_fair_valid,   # [MW0602 457차]
+                    # [MW0602 494차 F-8] 판정 무영향 — 진단 전용 컬럼
+                    fair_gap_bars=_fair_gap_bars,
                 )
             except Exception as _gs_e:
                 logger.debug("[GuardShadow] DB 저장 실패 (무해): %s", _gs_e)
@@ -1095,7 +1109,29 @@ class BatchRetrainer:
 
         무효여도 측정 자체는 계속한다(값은 그대로 기록) — 무효 표본을 지우면
         "얼마나 자주 무효인가"를 알 수 없게 된다. 판정에서만 걸러낸다.
+
+        ── [MW0602 494차 / F-8] 진단값 3종을 함께 남긴다 ──────────────────────
+        **왜.** 0825 실측에서 이 함수는 **6/6 전 호라이즌 무효**였고, 8거래일 내내
+        그랬다(0825 이상점 1-11). 그리고 그것은 표본 문제가 아니라 **산술적으로
+        성립 불가**다 — `holdout_bars=1850`(≈5거래일)인데 현행 모델은 매일(때로 하루
+        두 번) 재학습되므로 `train_end < holdout_start` 가 참이 될 수 없다.
+        즉 [23] 채널은 *"판정이 살아 있는 것처럼 보이는 죽은 채널"* 이다.
+
+        **그런데 값을 지금 바꾸지 않는다.** `holdout_bars`를 줄이면 `fair_valid=1`이
+        나오기 시작하지만, **그 값을 오늘 관측으로 고르면 313차 ④(관측 후 기준 수립)
+        위반**이다. `gap_bars`(현행 학습이 홀드아웃을 침범한 봉 수)를 2주 모으면
+        "얼마를 줄여야 성립하는가"가 **데이터로** 나온다 — 그것이 2026-08-28 주간회의
+        안건 ⑦의 입력이다.
+
+        ⚠ **판정 로직 무변경** — 반환 bool 은 종전과 완전히 동일하다. 진단값은
+          `self._last_fair_diag` 로만 나간다(반환 arity 를 바꾸면 호출부 회귀 위험).
+
+        `self._last_fair_diag` = {holdout_start_ts, train_end_ts, gap_bars} 또는 None.
+          gap_bars — 홀드아웃 구간 봉 중 현행이 **이미 학습한** 봉 수.
+                     `gap_bars == holdout_bars` 면 홀드아웃 전체가 오염.
+                     성립에 필요한 최대 홀드아웃 = `holdout_bars - gap_bars`.
         """
+        self._last_fair_diag = None
         meta = self._read_model_meta(horizon_key)
         if not meta:
             return False, "현행 메타 없음(457차 이전 모델) — 오염 여부 불명"
@@ -1107,6 +1143,17 @@ class BatchRetrainer:
         if not tsl or len(tsl) <= holdout_bars:
             return False, "홀드아웃 경계 ts 불명(학습 ts 목록 없음/부족)"
         _ho_start = tsl[-holdout_bars]
+        # [494차 F-8] 홀드아웃 구간 중 현행이 이미 본 봉 수. 유효/무효 양쪽에서 계산한다
+        # — 유효한 날의 gap_bars=0 도 표본이다(무효율만 보면 분모가 사라진다).
+        try:
+            _gap = sum(1 for _t in tsl[-holdout_bars:] if str(_t) <= str(_end))
+        except Exception:
+            _gap = None
+        self._last_fair_diag = {
+            "holdout_start_ts": str(_ho_start)[:19],
+            "train_end_ts":     str(_end)[:19],
+            "gap_bars":         _gap,
+        }
         if str(_end) >= str(_ho_start):
             return False, ("현행이 홀드아웃 학습함 — train_end=%s >= holdout_start=%s (source=%s)"
                            % (str(_end)[:16], str(_ho_start)[:16], _src))
@@ -1139,6 +1186,9 @@ class BatchRetrainer:
 
         Returns: (new_acc, old_acc, n_holdout, note) — 측정 불가 시 (None, None, 0, 사유)
         """
+        # [MW0602 494차 F-8] 진단값은 호라이즌마다 새로 만든다 — 리셋하지 않으면
+        # 측정 불가 경로에서 **직전 호라이즌 값이 그대로 실려** 오귀속이 된다.
+        self._last_fair_diag = None
         cfg = EOD_GUARD_FAIR_HOLDOUT or {}
         if not cfg.get("enabled", False):
             return None, None, 0, "비활성"
