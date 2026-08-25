@@ -258,7 +258,13 @@ def _run_block_request(progid, input_pairs, data_reader=None,
     try:
         _br_reentrant, _br_depth = _blockreq_enter(progid)
         if _br_reentrant:
-            _obs.warning(
+            # ⚠ **INFO 다 — WARNING 으로 올리지 말 것.**
+            # SYSTEM 레이어의 WARNING 이상은 `exceptions_10m` 로 집계돼
+            # Degraded Mode(자동진입 conf 62% 요구)를 발동시킨다. 재진입이 잦으면
+            # 이 계측 자체가 진입을 막는다 — 304·307·402차가 같은 사고를 세 번 겪었다
+            # (정상 상태 통지 WARNING 이 Degraded 오발동을 만든 그 경로).
+            # 빈도는 아래 SAMPLE 줄의 `reentrant=N` 이 무조건 실어 나른다.
+            _obs.info(
                 "[BlockReq] reentrant=True depth=%d thread=%s progid=%s "
                 "— 다른 BlockRequest 진행 중에 겹쳐 들어왔다",
                 _br_depth, threading.current_thread().name, progid,

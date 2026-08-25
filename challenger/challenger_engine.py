@@ -20,6 +20,23 @@ from challenger.variants.base_challenger import ChallengerTrade, ExitReason
 
 logger = logging.getLogger("CHALLENGER")
 
+# ── [MW0602 494차 / F-6] 이 모듈의 경고는 **파일 어디에도 남지 않았다** ─────────
+#
+# `logging.getLogger("CHALLENGER")` 는 `utils/logger.py` 가 파일 핸들러를 붙이는
+# 레이어 목록(SYSTEM/SIGNAL/TRADE/LEARNING/DEBUG/HEALTH/…)에 **없다.** 그 레이어들은
+# `propagate=False` 이고 root 에도 핸들러가 없으므로, 여기서 찍는 WARNING·ERROR 는
+# 콘솔에도 파일에도 도달하지 않는다.
+#
+# 실측(0825 이상점 1-8): `run_shadow` 가 목표 5ms 를 넘긴 횟수가 **종가 기준 369건**
+# (최댓값 412.0ms)인데 `20260825_WARN.log` 에는 **0건**이다. 게다가 그 소모는
+# `[PipePerf] total` 184~328ms **밖**에서 일어나므로 파이프라인 계측으로도 안 보인다.
+# → 매분 도는 작업 하나가 기준의 **80배**까지 느려져도 아무도 모르는 상태였다.
+#
+# 그래서 관측용 출력만 **SYSTEM 레이어**로 내보낸다(WARNING 이상은 WARN.log 합류).
+# ⚠ 나머지 CHALLENGER 로그의 라우팅은 이번 범위 밖이다 — 여기서 전부 옮기면
+#   섀도 실행의 INFO 가 SYSTEM.log 로 쏟아진다.
+_obs = logging.getLogger("SYSTEM")
+
 SHADOW_WARN_MS  = 5.0
 FORCE_EXIT_TIME = "15:10"
 
@@ -63,11 +80,26 @@ class ChallengerEngine(object):
         try:
             self._run_shadow_inner(features, candle, context)
         except Exception:
-            logger.error("[Engine] run_shadow 예외:\n%s", traceback.format_exc())
+            # [494차 F-6] 이 ERROR 도 종전에는 아무 파일에도 안 남았다.
+            _obs.error("[Engine] run_shadow 예외:\n%s", traceback.format_exc())
         finally:
             elapsed_ms = (time.time() - t0) * 1000.0
+            # ── [MW0602 494차 F-6] 무조건 상태 샘플 1줄 ────────────────────────
+            # 종전에는 `> SHADOW_WARN_MS` 일 때만 찍었다. 그것을 §12 감시 대상으로
+            # 삼으면 **100% `SLOW` 고착이 구조적으로 보장**된다(468차 G-2 규약이
+            # 금지하는 바로 그 형태 — 지표가 죽은 게 아니라 표본이 편향된 것이다).
+            # 그래서 상태 토큰을 **매 호출 무조건** 남기고, §12 는 그 토큰을 센다.
+            # 0825 실측에서 369/약370분이 초과였으므로 `SLOW` 고착이 나오는 것이
+            # 기대값이며, 그것이 곧 이 지표가 말하려는 사실이다.
+            _obs.info(
+                "[Engine] shadow state=%s ms=%.1f (목표 <%.0fms)",
+                "SLOW" if elapsed_ms > SHADOW_WARN_MS else "OK",
+                elapsed_ms, SHADOW_WARN_MS,
+            )
             if elapsed_ms > SHADOW_WARN_MS:
-                logger.warning("[Engine] run_shadow %.1fms (목표 <5ms)", elapsed_ms)
+                # 경보 자체는 유지 — WARN.log 로 합류시켜 "오늘 이상했던 것 전부"
+                # 성격을 지킨다(402차 후속7 P1-6).
+                _obs.warning("[Engine] run_shadow %.1fms (목표 <5ms)", elapsed_ms)
 
     def update_daily_metrics(self, date_str):
         # type: (str) -> None

@@ -5844,7 +5844,17 @@ HEALTH_RETRAIN_LATENCY_CRIT_MULT = 2.0
 #   · latency는 이미 _classify_health_level()의 첫 번째 조건으로 직접 반영되므로
 #     제외해도 정보 손실이 없다. 제외 후 CRITICAL은 설계의도대로
 #     "latency ≥ 5000ms(CB⑤ 실발동) 또는 진짜 예외 12건"에서만 발동한다.
+# [MW0602 494차 F-6] [Engine] 추가 — `run_shadow` 소요시간 경보는 0825 종가 기준
+# **369건/일**(약 1분당 1건)이다. 494차가 이 경고를 SYSTEM 레이어로 라우팅해
+# 비로소 파일에 남게 됐는데(종전에는 CHALLENGER 로거가 핸들러 없이 사라졌다),
+# 제외하지 않으면 exceptions_10m 에 10분당 ~10건이 그대로 더해져 임계 12를 거의
+# 상시 압박한다 → Degraded Mode 오발동 → 자동진입 conf 62% 요구로 진입 차단.
+# 304·307·402차가 겪은 그 사고와 **완전히 같은 형태**이며, 계측을 켜는 것이
+# 매매를 막는 일이 되어서는 안 된다.
+# ⚠ 이것은 경보를 숨기는 것이 아니다 — WARN.log 에는 그대로 남고 §12
+#   `challenger_shadow` 축이 매일 집계한다. 빼는 것은 **예외 밀도 집계**에서만이다.
 HEALTH_EXCEPTION_EXCLUDE_TAGS = [
+    "[Engine]",
     "[PipePerf]",
     "[CB⑤]",
     "[RegimeFingerprint]",

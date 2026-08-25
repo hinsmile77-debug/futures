@@ -16913,13 +16913,21 @@ _CRASH_SIG_FRAMES = 3      # 최상단 몇 프레임을 남길 것인가
 _CRASH_SIG_SCAN_LINES = 40  # 블록 머리에서 몇 줄까지 훑어 프레임을 뽑을 것인가
 
 
-def _persist_crash_signatures(base_path, keep, out_path=None):
+def _persist_crash_signatures(base_path, keep, out_path=None, full=None):
     """크래시 블록만 추출해 회전 없는 파일에 누적한다. 실패해도 예외를 올리지 않는다.
 
     Args:
         base_path: `logs/crash_fault.log` (회전 대상 원본)
         keep:      보관 세대 수 — `base_path.1` ~ `base_path.keep` 까지 함께 훑는다
         out_path:  기본값 `logs/crash_signatures.log` (테스트에서 주입)
+        full:      True 면 전 세대 스캔, False 면 base 만. None 이면 **산출 파일이
+                   아직 없을 때만** 전 세대(부트스트랩). 회전 경로는 True 로 부른다.
+
+    ⚠ **왜 기동마다 부르는가.** 회전은 base 가 8MB 를 넘을 때만 일어난다(실측 약
+      5거래일에 한 번). 회전 때만 추출하면 `crash_signatures.log` 가 며칠씩 비어
+      있고, 그 상태에서 §12 가 "당일 크래시 0건"을 찍으면 **거짓 안심**이 된다
+      (계측 4원칙 ② — 미측정을 0으로 읽는 바로 그 오류). 기동 시 base 만 훑으면
+      비용은 ~1MB 스캔이고 전날 크래시는 그 안에 있다.
 
     Returns: 이번에 새로 append 한 블록 수 (테스트용 — 운영 경로는 무시)
     """
@@ -16944,8 +16952,11 @@ def _persist_crash_signatures(base_path, keep, out_path=None):
             except (IOError, OSError):
                 pass
 
+        if full is None:
+            full = not os.path.exists(out_path)   # 최초 1회만 전 세대 부트스트랩
         # 오래된 세대부터 — 파일 내 시간순과 append 순서를 맞춘다.
-        paths = ["%s.%d" % (base_path, g) for g in range(int(keep or 0), 0, -1)]
+        paths = (["%s.%d" % (base_path, g) for g in range(int(keep or 0), 0, -1)]
+                 if full else [])
         paths.append(base_path)
 
         added, out_lines = 0, []
@@ -17068,7 +17079,7 @@ def _rotate_crash_log(path, rotate_mb=None, keep=None):
             return 0
         # [MW0602 494차 F-10] **삭제·rename 전에** 크래시 서명을 뽑아 둔다.
         # 아래 os.remove(oldest) 가 가장 오래된 세대를 지우므로, 그 뒤에 하면 늦다.
-        _persist_crash_signatures(path, keep)
+        _persist_crash_signatures(path, keep, full=True)
         oldest = "%s.%d" % (path, keep)
         if os.path.exists(oldest):
             os.remove(oldest)
@@ -17130,6 +17141,16 @@ def main():
 
         # [MW0602 436차] 파일을 **열기 전에** 회전시켜야 fd가 옛 파일을 잡지 않는다.
         _rotate_crash_log(_fault_path)
+
+        # [MW0602 494차 F-10] 회전이 안 일어난 날에도 전날 크래시를 보존한다.
+        # 회전은 8MB 임계(실측 ~5거래일)에서만 도는데, 그때만 추출하면 그 사이
+        # `crash_signatures.log` 가 비어 있고 §12 `crash_signature` 가 "0건"을
+        # 찍는다 — **미측정을 0으로 읽는** 계측 4원칙 ② 위반이 된다.
+        # 최초 1회는 전 세대를 훑고(부트스트랩), 이후는 base 만 본다(~1MB).
+        _persist_crash_signatures(
+            _fault_path,
+            int(getattr(runtime_settings, "CRASH_LOG_KEEP_GENERATIONS", 4) or 4),
+        )
 
         # append + no encoding → faulthandler가 fd에 직접 ASCII 쓰므로 충돌 없음
         _fault_file = open(_fault_path, "a")

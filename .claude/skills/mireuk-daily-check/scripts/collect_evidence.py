@@ -504,6 +504,53 @@ DEFAULT_CONFIG = {
                        "🔴 benign 아님. 하향 경로(RECOVERY_THRESHOLD=0.58)는 최근 "
                        "10일 acc 최댓값 0.4048 이라 **도달 불가**다",
             },
+            # ── [MW0602 494차 F-6] 도전자 섀도 실행 소요 상태 ────────────────
+            # 0825 이상점 1-8: `run_shadow` 가 목표 5ms 를 넘긴 횟수가 종가 기준
+            # **369건**(최댓값 412.0ms)인데 `20260825_WARN.log` 에는 **0건**이었다 —
+            # `logging.getLogger("CHALLENGER")` 가 어떤 파일 핸들러에도 붙어 있지
+            # 않았기 때문이다. 게다가 그 소모는 `[PipePerf] total`(184~328ms) **밖**
+            # 에서 일어나므로 파이프라인 계측으로도 안 보였다.
+            # 494차 F-6 이 SYSTEM 레이어로 라우팅하고, **매 호출 무조건** 상태 토큰을
+            # 남기게 바꿨다(종전 `>5ms` 조건부는 100% 고착이 구조적으로 보장돼
+            # 이 절 머리말이 금지하는 형태였다).
+            # 🔴 `SLOW` 고착이 나오는 것이 **기대값**이며, 그것이 이 지표가 말하려는
+            #    사실이다. benign 으로 등록하지 않는다 — 규명되면 그때 등록한다.
+            "challenger_shadow": {
+                "re": r"\[Engine\] shadow state=(?P<v>\w+)",
+                "files": ["_SYSTEM"],
+                "sample_axis": "ensemble_minute",   # STEP 9 훅 = 앙상블이 돈 분
+                "measured_since": "2026-08-26",     # 494차 F-6 배포 다음 거래일
+                "why": "도전자 섀도 실행이 목표 5ms 안에 끝나는가(494차 F-6, 매 호출 "
+                       "무조건 1줄). 0825 실측 369건 초과·최댓값 412ms. 🔴 benign 아님 — "
+                       "`SLOW` 고착은 매분 도는 작업 하나가 기준의 80배까지 느려져도 "
+                       "아무도 모르던 상태가 이제 보이는 것이다",
+            },
+            # ── [MW0602 494차 G-2] `[Calibration]` 폴백 **사유 축** ───────────
+            # 0825 3p-정정1: 폴백 사유가 최소 두 종류로 섞여 있는데 한 덩어리로 세고
+            # 있었다. 종가 전량 실측이 그것을 갈랐다 —
+            #   `축퇴 감지` 253 / `축퇴 해소` 246 / `하한 도달불가` 90 / `도달불가 해소` 89.
+            # 즉 "하루 종일 꺼져 있었다"가 아니라 **경계에서 왕복한다**(auc 가 임계
+            # 0.53 바로 위아래에서 진동). 처방이 갈린다: 전자면 "보정기를 살려라",
+            # 후자면 히스테리시스(이미 설계됨·미배포)다.
+            # ⚠ 계획은 두 지표를 병렬 신설이었으나, §12 의 문법은 **값 분포**라
+            #   하나의 사유 축으로 두면 네 값의 비율이 그대로 보인다(같은 질문에
+            #   더 적은 지표로 답한다). 합산 지표를 대체한 것이 아니다 — 애초에
+            #   `[Calibration]` §12 지표는 `앙상블보정기_스냅샷`(§12c) 뿐이었고 그것은
+            #   **다른 질문**(스냅샷이 갱신되는가)이다.
+            # 🔴 이 지표는 `conf_floor`(0.3300)·`DEGENERATE_AUC_MIN` 등 **어떤 임계도
+            #    바꾸지 않는다.** 임계 변경은 매매 정책 변경이며 주간회의 소관이고,
+            #    캠페인 [45] `cal_guard_flap_watch` 가 이미 이 질문의 사전등록 판정을
+            #    갖고 있다(2026-08-08 전면 보류 결정 — 조치 트리거만 등록).
+            "Calib_폴백사유": {
+                "re": r"\[Calibration\] (?P<v>축퇴 감지|축퇴 해소|하한 도달불가|도달불가 해소)",
+                "files": ["_LEARNING"],
+                "measured_since": "2026-08-25",   # 이 문구 4종이 함께 존재한 최초 확인일
+                "why": "확률 보정기 폴백/재적용의 **사유 축**(494차 G-2). 한 값 고착이면 "
+                       "한쪽 원인으로 굳은 것이고, 네 값이 섞여 있으면 경계 왕복이다 — "
+                       "처방이 정반대다(보정기 복구 vs 히스테리시스). 0825 실측 "
+                       "253:246:90:89. ⚠ 판정 무영향 — [45] 채널의 사전등록 트리거가 "
+                       "판정을 갖는다. 🔴 conf_floor·DEGENERATE_AUC_MIN 은 금지선(430차)",
+            },
             "drift_action": {
                 "re": r"\[DriftAdjuster\] acc=.*?→ alpha=[0-9.]+ \((?P<v>[A-Z_]+)\)",
                 "files": ["_learning"],
@@ -513,6 +560,58 @@ DEFAULT_CONFIG = {
                        "`DRIFT_UP_SATURATED`(상한 포화·무연산)를 갈랐다 — 배포 전 행은 "
                        "둘이 섞여 있어 **미측정**으로 뺀다(계측 4원칙 ②). "
                        "`DRIFT_UP_SATURATED` 100% 고착 = 조절기가 손잡이를 잃은 상태",
+            },
+        },
+    },
+    # ── [MW0602 494차 / F-2 · F-9 · G-1] 파생 지표 — **하루에 한 값** ──────────
+    # 줄 단위 스캐너로는 물을 수 없는 세 질문. 자세한 배경은 `scan_derived_indicators`
+    # docstring 참조. 판정 규칙(stuck_verdict)은 로그·DB 지표와 **같다**.
+    "derived_indicators": {
+        "lookback_days": 10,
+        "min_samples": 5,     # 하루 1표본 — 전역 20건 기준이면 영영 판정 불가
+        "min_days": 3,
+        "indicators": {
+            "CORE축퇴_개장해소": {
+                "kind": "core_degen_open",
+                "files": ["_LEARNING", "_SYSTEM", "_SIGNAL"],
+                "benign": ["해소", "무축퇴"],
+                # `CORE준비도`(470차 B4)와 같은 로그를 읽는다 — 배포일도 같다.
+                # 축 신설일로 잡으면 창이 비어 08-14~ 실측을 통째로 못 본다.
+                "measured_since": "2026-08-14",
+                "why": "장전 CORE 축퇴가 **개장하면 풀리는가**(494차 G-1). "
+                       "`해소`/`무축퇴` 고착이 정상. `미해소` 고착이면 축퇴 상태로 "
+                       "09:00 첫 예측에 들어가는 것이 상시화된 것이다. "
+                       "⚠ 이 축이 없어서 0824 리포트 1-10 의 정정(「개장 후 해소가 "
+                       "아니었다」)이 **다음 날 또 필요했다**. ⚠ 섀도 계측 — 차단 없음. "
+                       "🔴 `A_WARMUP`/`B_OPEN` 문자열이 바뀌면 조용히 죽는다 → "
+                       "26주 WFA 「고착 지표 감시목록」(468차 G-2)에 함께 등재",
+            },
+            "launcher_guard": {
+                "kind": "presence",
+                "files": ["launcher_"],
+                # 무조건 찍히는 줄 = 그날 런처가 돌았다는 증거(분모).
+                "witness_re": r"\[GUARD\] 기존 main\.py 프로세스 체크",
+                # 조건부 줄 = 전일 잔존 프로세스를 실제로 잡았다(분자).
+                "present_re": r"이미 실행 중인 main\.py 프로세스가 감지",
+                "measured_since": "2026-08-13",   # 런처 로그 전수 확인 최초일
+                "why": "런처 GUARD 발화 — 전일 `main.py` 가 EOD 후에도 살아 있었는가. "
+                       "🔴 benign 아님. 사전등록 판정(313차 ④, 달력 기준이며 관측값 "
+                       "역산이 아니다): **`발화` 5거래일 연속 → P2 등록 / 10거래일 "
+                       "연속 → P1 승격**. 5=주 단위, 10=2주 단위. "
+                       "⚠ 인과는 미규명이다 — 0825 실측에서 `auto_shutdown_done_date` "
+                       "가 EOD 후에는 채워져 있었고 전일도 15:40 정상 종료를 기록했다. "
+                       "즉 '아침에 비어 있음'이 곧 '전일 세션이 안 죽었음'은 아니다",
+            },
+            "crash_signature": {
+                "kind": "crash_signature",
+                "benign": ["0(무사고)"],
+                "measured_since": "2026-08-26",   # 494차 F-10 배포일
+                "why": "당일 크래시 서명 건수 + 최상단 프레임(494차 F-9/G-4). "
+                       "`0(무사고)` 고착이 정상이며, 값이 바뀌면 그날 즉시 보인다. "
+                       "🔴 분자는 `logs/crash_signatures.log` 의 `[SIG]` 줄이다 — "
+                       "런처의 `[AUTO-RESTART] … 일시적 크래시` 를 분자로 쓰면 "
+                       "**정상 종료까지 세어 100% 고착이 보장**된다(F-9 가 못박은 것). "
+                       "일자 귀속은 각 줄의 `session=<ISO>` 로 한다",
             },
         },
     },
@@ -1650,6 +1749,256 @@ def stuck_verdict(dist, n, hit_days, scanned_days, min_n, min_d, benign,
                 dist[0][0], n, len(hit_days))
         return "고착", "`%s` 100%% (%d건 / %d일)" % (dist[0][0], n, len(hit_days))
     return "변동", "%d개 값" % len(dist)
+
+
+# ── [MW0602 494차 / F-7] 관측 ID 채번 린트 ───────────────────────────────────
+#
+# 0825 이상점 1-9: 장전 국면이 `O-16`~`O-18` 을 새로 발급했는데 **그 번호가 이미
+# 다른 대상에 쓰이고 있었다.** 같은 라벨이 두 개의 서로 다른 관측을 가리키면
+# "판정일이 도래했는가"를 물을 때 어느 쪽인지 알 수 없다.
+#
+# 규칙: 새 `O-*` 는 `NEXT_TODO.md` 의 **현행 최댓값 다음 번호부터** 발급한다.
+# 이 린트는 그 규칙이 지켜졌는지를 매일 자동으로 되묻는다.
+#
+# ⚠ 발급된 3건은 **재부여하지 않는다** — 소급 재라벨은 계측 4원칙 ②(미측정 구간을
+#   만들지 않는다)의 취지에 어긋나고, `(493차)` 접미로 구분은 된다. 대신 린트가
+#   화이트리스트로 알고 있게 한다.
+OBS_LABEL_WHITELIST = {
+    # 번호: 사유 — 이미 발급됐고 접미로 구분되므로 재부여하지 않는다
+    "O-16": "493차 발급분과 기존 항목 공존 — 재부여 안 함(494차 F-7)",
+    "O-17": "493차 발급분과 기존 항목 공존 — 재부여 안 함(494차 F-7)",
+    "O-18": "493차 발급분과 기존 항목 공존 — 재부여 안 함(494차 F-7)",
+}
+
+# 정의성 라벨 줄: 체크박스 항목의 **머리**에 굵게 붙은 것만 센다.
+# 본문 중 언급(`O-17`(0821) 처럼 뒤에서 참조하는 것)까지 세면 전부 충돌이 된다.
+_OBS_DEF_RE = re.compile(
+    r"^\s*-\s*\[[ xX]\]\s*\**\s*`?(?P<id>O-\d+)`?\s*(?P<qual>\([^)]{0,24}\))?\s*\**\s*(?P<rest>.*)$"
+)
+
+
+def _obs_ids(text):
+    return set(int(m.group(1)) for m in re.finditer(r"\bO-(\d+)\b", text or ""))
+
+
+def scan_obs_labels(root):
+    """[MW0602 494차 F-7] `NEXT_TODO.md` 의 관측 ID 채번 상태.
+
+    반환: {"max", "next", "new": [신규 번호…], "collisions": [번호…], "path"}
+
+    🔴 **"같은 번호가 서로 다른 대상에 붙었는가"를 본문 대조로 판정하려던 초안은
+    폐기했다.** 첫 실행에서 오탐 15건이 나왔다 — `NEXT_TODO.md` 는 같은 관측을
+    매일 다른 문구로 다시 싣는 누적 로그라, "요지 토큰이 다르다"가 곧 "대상이
+    다르다"가 아니다. 접미(`(493차)`/`(0821)`) 로 가르는 안도 실측에서 무너졌다
+    (거의 모든 ID 가 접미 2개 이상을 갖는다). 늑대소년이 되느니 안 잡는 편이 낫다는
+    것이 이 절 전체의 규약이다.
+
+    **대신 정확히 잡을 수 있는 것 하나만 잡는다** — *직전 커밋에 없던 번호가
+    새로 등장했는데 그 번호가 직전 최댓값보다 작거나 같은가.* 0825 이상점 1-9 가
+    정확히 그 형태였다(현행 최댓값이 `O-23` 인데 장전이 `O-16`~`O-18` 을 발급).
+    git 대조라 추측이 없다. 커밋 사이에 실행되면 신규가 안 잡힐 뿐 **오탐은 없다.**
+    """
+    rel = os.path.join("dev_memory", "NEXT_TODO.md")
+    p = os.path.join(root, rel)
+    out = {"max": None, "next": None, "new": [], "collisions": [],
+           "path": "dev_memory/NEXT_TODO.md", "compared": False}
+    if not os.path.exists(p):
+        out["error"] = "NEXT_TODO.md 없음"
+        return out
+    try:
+        with io.open(p, encoding="utf-8", errors="replace") as f:
+            cur = f.read()
+    except (IOError, OSError) as e:
+        out["error"] = str(e)
+        return out
+
+    now_ids = _obs_ids(cur)
+    if now_ids:
+        out["max"] = max(now_ids)
+        out["next"] = out["max"] + 1
+
+    prev = run_git(root, ["show", "HEAD:dev_memory/NEXT_TODO.md"])
+    if prev and not prev.startswith("(git "):
+        prev_ids = _obs_ids(prev)
+        if prev_ids:
+            out["compared"] = True
+            prev_max = max(prev_ids)
+            out["new"] = sorted(now_ids - prev_ids)
+            out["collisions"] = [n for n in out["new"] if n <= prev_max]
+            out["prev_max"] = prev_max
+    return out
+
+
+def scan_derived_indicators(root, cfg, day):
+    """[MW0602 494차 / F-2 · F-9 · G-1] **하루에 한 값**인 파생 지표.
+
+    §12 의 기존 스캐너는 *줄마다 값 하나*를 센다. 그 문법으로는 표현할 수 없는
+    질문이 셋 있었고, 셋 다 "없다는 사실"이나 "두 시점의 대비"가 값이다:
+
+      · **G-1 `CORE축퇴_개장해소`** — 장전 축퇴가 **개장하면 풀리는가.**
+        지금 §12 `CORE준비도` 는 당일 전체 분포만 본다(0825: `1`×137 · `0`×66).
+        그런데 의미가 갈린 지점은 「장전 최종(A_WARMUP) → 개장 직후(B_OPEN)」이고,
+        그 축이 **0824는 풀렸고(0/6) 0825는 안 풀렸다(1/6)** 를 구분한다.
+        사람이 두 날짜 로그를 나란히 놓고서야 알았다 — 0824 리포트 1-10 이 정확히
+        그 암묵 전제를 뒤집은 정정이었는데 **그 정정이 다음 날 또 필요했다.**
+      · **F-2 `launcher_guard`** — 런처 GUARD 가 전일 잔존 `main.py` 를 잡았는가.
+        발화는 조건부 로그라 "안 찍힌 날"이 값이 되어야 하는데, 줄 단위 스캐너는
+        **부재를 세지 못한다.** 8거래일 연속 발화 중이며 판정 기준이 없었다(O-3).
+      · **F-9 `crash_signature`** — 당일 크래시 건수.
+        🔴 분자를 잘못 잡으면 100% 고착이 보장된다: 런처의 `[AUTO-RESTART] …
+        일시적 크래시` 줄은 **정상 종료에도 찍힌다.** 그래서 분자는 494차 F-10 이
+        만든 `logs/crash_signatures.log` 의 `[SIG]` 줄이며, 각 줄의
+        `session=<ISO>` 로 **일자에 귀속**한다. 무사고 날에도 `0(무사고)` 를 남긴다.
+
+    반환 형식은 `scan_stuck_indicators` 와 같다 — 렌더·적신호를 그대로 재사용한다.
+    """
+    conf = cfg.get("derived_indicators") or {}
+    specs = conf.get("indicators") or {}
+    if not specs:
+        return []
+    look = int(conf.get("lookback_days", 10))
+    by_day = collect_files_by_day(root, cfg, day)
+    days = sorted(by_day)[-look:]
+    if not days:
+        return []
+
+    def _lines(paths, want, max_mb=8):
+        for full in paths:
+            fn = os.path.basename(full).lower()
+            if want and not any(w in fn for w in want):
+                continue
+            try:
+                if os.stat(full).st_size > max_mb * 1024 * 1024:
+                    continue
+                with io.open(full, encoding="utf-8", errors="replace") as f:
+                    for ln in f:
+                        yield ln
+            except (IOError, OSError):
+                continue
+
+    # ── 파생 규칙 3종 — 각각 (일자 → 값 또는 None) ────────────────────────────
+    _core_rx = re.compile(r"\[CORE준비도\] trigger=(?P<t>\w+) 축퇴 (?P<n>\d+)/(?P<m>\d+)")
+
+    def _kind_core_degen_open(d, paths, spec):
+        warm, open_ = [], []
+        for ln in _lines(paths, [f.lower() for f in (spec.get("files") or [])]):
+            m = _core_rx.search(ln)
+            if not m:
+                continue
+            (warm if m.group("t") == "A_WARMUP" else
+             open_ if m.group("t") == "B_OPEN" else []).append(int(m.group("n")))
+        if not warm:
+            return None                      # 그날 워밍업 refit 자체가 없었다 — 표본 아님
+        if warm[-1] == 0:
+            return "무축퇴"                   # 장전에 이미 정상 — 물을 것이 없다
+        if not open_:
+            return "미관측(B_OPEN 없음)"
+        return "해소" if open_[0] == 0 else "미해소"
+
+    def _kind_presence(d, paths, spec):
+        want = [f.lower() for f in (spec.get("files") or [])]
+        wit = re.compile(spec["witness_re"])
+        hit = re.compile(spec["present_re"])
+        saw_witness = saw_hit = False
+        for ln in _lines(paths, want):
+            if not saw_witness and wit.search(ln):
+                saw_witness = True
+            if not saw_hit and hit.search(ln):
+                saw_hit = True
+            if saw_witness and saw_hit:
+                break
+        if not saw_witness:
+            # 원천 자체가 그날 없었다 = 미측정. `무발화` 로 세면 거짓 안심이 된다.
+            return None
+        return spec.get("present_label", "발화") if saw_hit \
+            else spec.get("absent_label", "무발화")
+
+    _sig_cache = {}
+
+    def _kind_crash_signature(d, paths, spec):
+        if not _sig_cache:
+            # 파일명에 날짜 토큰이 없으므로 경로로 직접 읽는다.
+            import glob as _glob
+            _files = _glob.glob(os.path.join(root, "logs", "crash_signatures*.log"))
+            if not _files:
+                # 🔴 산출 파일 자체가 없다 = **미측정**이지 "크래시 0건"이 아니다.
+                # 여기서 `0(무사고)` 를 돌려주면 계측이 배선되기도 전에 안심을 만든다
+                # (계측 4원칙 ② — FP-CRITICAL 이 2개월간 PSI=0.0 이었던 그 형태).
+                _sig_cache["__missing__"] = True
+            for p in _files:
+                try:
+                    with io.open(p, encoding="utf-8", errors="replace") as f:
+                        cur = None
+                        for ln in f:
+                            if ln.startswith("[SIG] "):
+                                ms = re.search(r"session=(\d{4})-(\d{2})-(\d{2})", ln)
+                                cur = (ms.group(1) + ms.group(2) + ms.group(3)) if ms else None
+                                if cur:
+                                    _sig_cache.setdefault(cur, []).append("")
+                            elif cur and ln.strip().startswith("File \"") \
+                                    and _sig_cache.get(cur) and not _sig_cache[cur][-1]:
+                                mf = re.search(r'File "([^"]+)", line (\d+)', ln)
+                                if mf:
+                                    _sig_cache[cur][-1] = "%s:%s" % (
+                                        os.path.basename(mf.group(1)), mf.group(2))
+                except (IOError, OSError):
+                    continue
+            _sig_cache.setdefault("__loaded__", [])
+        if _sig_cache.get("__missing__"):
+            return None       # 미측정 — 표본으로 세지 않는다
+        hits = _sig_cache.get(d, [])
+        if not hits:
+            return "0(무사고)"
+        top = hits[0] or "?"
+        return "%d건:%s" % (len(hits), top)
+
+    _KINDS = {
+        "core_degen_open":  _kind_core_degen_open,
+        "presence":         _kind_presence,
+        "crash_signature":  _kind_crash_signature,
+    }
+
+    rows = []
+    for name, spec in specs.items():
+        fn = _KINDS.get(spec.get("kind"))
+        if fn is None:
+            rows.append({"name": name, "why": spec.get("why", ""), "days": 0, "n": 0,
+                         "dist": [], "verdict": "무기록", "ratio": None, "expected": None,
+                         "note": "알 수 없는 kind=%r" % spec.get("kind"),
+                         "scanned_days": 0, "source": "파생"})
+            continue
+        _ms = str(spec.get("measured_since") or "").replace("-", "")
+        p_days = [d for d in days if not _ms or d >= _ms]
+        if _ms and not p_days:
+            rows.append({"name": name, "why": spec.get("why", ""), "days": 0, "n": 0,
+                         "dist": [], "verdict": "표본부족", "ratio": None, "expected": None,
+                         "note": "계측 시작 전 (measured_since %s)" % spec.get("measured_since"),
+                         "scanned_days": 0, "source": "파생",
+                         "measured_since": spec.get("measured_since")})
+            continue
+        counts, hit_days = {}, set()
+        for d in p_days:
+            try:
+                v = fn(d, by_day.get(d, []), spec)
+            except Exception as e:
+                v = "산출오류(%s)" % type(e).__name__
+            if v is None:
+                continue
+            counts[v] = counts.get(v, 0) + 1
+            hit_days.add(d)
+        dist = sorted(counts.items(), key=lambda kv: -kv[1])
+        n = sum(counts.values())
+        verdict, note = stuck_verdict(
+            dist, n, hit_days, len(p_days),
+            # 하루 1표본이므로 전역 20건 기준을 쓰면 영영 판정 불가다.
+            int(spec.get("min_samples", conf.get("min_samples", 5))),
+            int(spec.get("min_days", conf.get("min_days", 3))),
+            [str(b) for b in (spec.get("benign") or [])])
+        rows.append({"name": name, "why": spec.get("why", ""), "days": len(hit_days),
+                     "n": n, "dist": dist, "verdict": verdict, "note": note,
+                     "ratio": None, "expected": None, "scanned_days": len(p_days),
+                     "measured_since": spec.get("measured_since"), "source": "파생"})
+    return rows
 
 
 def scan_db_indicators(root, cfg, day):
@@ -3352,6 +3701,9 @@ def build(root, day, phase, cfg, discover_only=False):
     # [MW0602 475차 후속 / G-2] DB 원천 지표를 같은 표에 합류시킨다 —
     # 판정 규칙(stuck_verdict)이 같으므로 렌더·적신호가 그대로 재사용된다.
     stuck_rows += scan_db_indicators(root, cfg, day)
+    # [MW0602 494차 F-2·F-9·G-1] 파생 지표(하루 1값)도 같은 표에 합류시킨다 —
+    # 판정 규칙(stuck_verdict)이 같으므로 렌더·적신호가 그대로 재사용된다.
+    stuck_rows += scan_derived_indicators(root, cfg, day)
     # [MW0602 476차 G-4] 임계-분포 대조 — §12b 에 렌더하고, known 없는 미도달만 적신호.
     reach_rows = scan_threshold_reachability(root, cfg, day)
     # [MW0602 485차 G-1 / 488차 계획 D] 스냅샷 정체 — §12c 에 렌더.
@@ -3501,6 +3853,23 @@ def build(root, day, phase, cfg, discover_only=False):
             if pat in dg.quoted:
                 flags.append("`%s`: **%s** %d건(표본)" % (dg.rel, pat, len(dg.quoted[pat])))
 
+    # [MW0602 494차 F-7] 관측 ID 채번 린트 — 같은 번호가 서로 다른 대상에 붙었는가.
+    # 0825 1-9 가 그 사고였다(장전이 `O-16`~`O-18` 을 이미 쓰인 번호로 발급).
+    _obs = scan_obs_labels(root)
+    if _obs.get("next"):
+        # 적신호가 아니라 **안내**다 — 다음 세션이 이 줄만 보고 바르게 채번한다.
+        notes_obs = "다음 관측 ID = **`O-%d`** (현행 최댓값 `O-%s`, %s 기준)" % (
+            _obs["next"], _obs["max"], _obs["path"])
+    else:
+        notes_obs = None
+    for _n in _obs.get("collisions", []):
+        if ("O-%d" % _n) in OBS_LABEL_WHITELIST:
+            continue    # 기지(known) — 재부여하지 않기로 한 3건
+        flags.append("관측 ID **`O-%d`** 가 **이미 쓰인 번호로 새로 발급**됐다 "
+                     "(직전 커밋 최댓값 `O-%s`) — 새 ID 는 그 다음 번호부터 "
+                     "발급할 것(494차 F-7). 0825 `1-9` 가 그 사고였다"
+                     % (_n, _obs.get("prev_max")))
+
     if bad_tag:
         flags.append("PC명 태그 누락 커밋 %d건 — 멀티PC 컨벤션 위반" % len(bad_tag))
     if dirty:
@@ -3588,6 +3957,15 @@ def build(root, day, phase, cfg, discover_only=False):
             A("%d. %s" % (i, f))
     else:
         A("자동 탐지 적신호 없음. 그래도 §4~§6을 직접 읽고 판단할 것.")
+    # [MW0602 494차 F-7] 채번 안내 — 적신호가 아니라 **다음 세션을 위한 사실**이다.
+    # 0825 1-9 는 "다음 번호가 몇인지 아무도 몰라서" 일어난 사고였다.
+    if notes_obs:
+        A("")
+        A("> ℹ️ **관측 ID 채번** — %s. 새 `O-*` 는 이 번호부터 발급한다(494차 F-7)." % notes_obs)
+        if OBS_LABEL_WHITELIST:
+            A("> 기지 충돌 %d건(`%s`)은 **재부여하지 않는다** — 소급 재라벨은 미측정 "
+              "구간을 만든다(계측 4원칙 ②). `(NNN차)` 접미로 구분한다."
+              % (len(OBS_LABEL_WHITELIST), "`, `".join(sorted(OBS_LABEL_WHITELIST))))
     if suppressed:
         A("")
         A("**🗓 휴장(정상)으로 강등된 적신호 %d건** — %s(%s)이라 당일 데이터가 없는 것이 "
