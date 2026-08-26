@@ -40,7 +40,10 @@ from config.constants import (  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: 대신증권 공식 고시 (2026-08-26 사용자 확인). "거래금액에 관계없이 0.0098104%".
+#: ✅ 대신증권 **CYBOS 사이버 트레이딩** 고시 (2026-08-26 사용자 확인).
+#: 「거래금액에 관계없이 0.0098104%」 — 39거래일 역산(0.0098103%)과 일치.
+#: 🔴 요율은 **로그인 채널**이 정한다 — MW0602(CREON)는 0.0019% 로 5.16배 다르다.
+#: 채널 감지·매핑은 `tests/test_495_broker_channel_rate.py` 가 검증한다.
 OFFICIAL_ONE_WAY_RATE = 0.000098104
 
 

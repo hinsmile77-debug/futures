@@ -111,6 +111,76 @@ def get_contract_spec(code: str) -> dict:
         "label": "일반선물",
     }
 
+
+# ── 브로커 로그인 채널별 수수료 사양 ──────────────────────────────────────
+# [MW0602 495차 후속 / 2026-08-26 사용자 지시]
+#
+# **왜 채널별인가.** 대신증권은 같은 계좌라도 **로그인 매체(트레이딩 채널)별로**
+# 수수료율을 고시한다. 실제로 두 운영 PC의 실측이 갈렸다:
+#   · MW0602 = CREON 로그인 → 크레온 트레이딩 고시 **0.0019%**
+#     (33거래일 역산 0.0019000%, R²=1.000000 — 고시와 일치, 사용자 화면 확인)
+#   · MW0601 = CYBOS 로그인 → 사이버 트레이딩 고시 **0.0098104%**
+#     (39거래일 역산 0.0098103% — 고시와 일치, MW0601 사용자 화면 확인)
+# 하나의 상수를 하드코딩하면 다른 채널 PC에서 5.16배 틀린다(495차에서 실제 발생).
+# 세금 축: 선물/옵션은 증권거래세·농특세 없음(고시 「매매관련세금」 탭) —
+# 수수료 외 정액·세금 성분이 없다는 실측(고정비 ≈0)과 부합한다.
+BROKER_CHANNEL_SPECS = {
+    "CREON": {
+        "one_way_commission_rate": 0.000019,      # 0.0019% 편도
+        "effective_from": "2026-08-26",           # 이 채널 요율이 라이브 적용된 날
+        "fee_source": "대신증권 CREON 트레이딩 수수료 안내 — KOSPI200/미니 선물 0.0019% "
+                      "(2026-08-26 사용자 고시 화면 확인, 33거래일 역산 일치)",
+    },
+    "CYBOS": {
+        "one_way_commission_rate": 0.000098104,   # 0.0098104% 편도
+        "effective_from": "2026-08-25",           # MW0601 기준 전환일
+        "fee_source": "대신증권 CYBOS 「투자대상종목 및 수수료율」 — 거래금액에 관계없이 "
+                      "0.0098104% (2026-08-26 MW0601 사용자 확인, 39거래일 역산 일치)",
+    },
+}
+
+# 로그인 스타터가 사인온 기록을 남기는 로그 — 채널 감지의 1차 증거.
+# ⚠ 레지스트리(CpUtil CLSID 경로)는 쓰지 않는다: CREON·CYBOSPLUS가 둘 다 설치된
+#   PC(MW0602 실측)에서 마지막 설치본이 이기므로 로그인 채널과 무관하게 나온다.
+# ⚠ 실행 프로세스 경로도 쓰지 않는다: 관리자 권한 프로세스라 비관리자 조회가
+#   ExecutablePath를 못 읽는다(2026-08-26 실측 — CIM/wmic 모두 공란).
+# 설치 루트는 대신 인스톨러 기본값 고정 경로다(사용자 프로파일 경로 아님).
+_STARTER_LOG_CANDIDATES = (
+    ("CREON", r"C:\CREON\STARTER\ncstarter.log"),
+    ("CYBOS", r"C:\Daishin\STARTER\ncstarter.log"),
+    ("CYBOS", r"C:\Daishin\CYBOSPLUS\STARTER\ncstarter.log"),
+    ("CYBOS", r"C:\CYBOSPLUS\STARTER\ncstarter.log"),
+)
+
+
+def detect_broker_channel():
+    """로그인 채널 감지 → (channel, source). 폴백은 호출부가 결정한다.
+
+    반환 source (계측 4원칙 ④ — 어떤 근거로 정해졌는지 항상 드러낸다):
+      "env"              — 환경변수 MIREUK_BROKER_CHANNEL 명시 (테스트/비상용)
+      "starter_log:<경로>" — 가장 최근 사인온한 스타터 로그의 채널
+      "none"             — 감지 실패 (channel=None). 호출부가 폴백 + 경고 책임.
+
+    두 스타터 로그가 다 있으면 **mtime 최신** 쪽이 이긴다 — "마지막으로 어느
+    채널로 로그인했나"가 곧 이 PC의 과금 채널이다. 미로그인 상태(EOD 스크립트
+    등)에서도 지난 로그인 기록이 남아 있어 판정 가능하다.
+    """
+    import os
+    env = os.environ.get("MIREUK_BROKER_CHANNEL", "").strip().upper()
+    if env in BROKER_CHANNEL_SPECS:
+        return env, "env"
+    found = []
+    for ch, path in _STARTER_LOG_CANDIDATES:
+        try:
+            if os.path.isfile(path):
+                found.append((os.path.getmtime(path), ch, path))
+        except OSError:
+            continue
+    if found:
+        found.sort(reverse=True)
+        return found[0][1], "starter_log:%s" % found[0][2]
+    return None, "none"
+
 # ── 고정 CORE 피처명 ──────────────────────────────────────────
 CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_norm"]
 
