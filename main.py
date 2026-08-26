@@ -406,6 +406,80 @@ def _bar_from_raw_candle_row(row):
     return bar
 
 
+def log_winloss_unit_shadow(position, result, site):
+    """[MW0601 494차 후속 / F-AF] 승패 판정의 **단위**를 섀도로 계측한다.
+
+    🔴 **기록 동작을 바꾸지 않는다 — 로그 한 줄만 남긴다.**
+
+    ## 무엇을 재는가
+
+    승패는 네 지점(`_post_partial_exit` · `_post_loss_tier1_exit` · `_post_exit` ·
+    `_ts_record_nonfinal_exit`)에서 기록되는데, 전부 **그 레그의 `pnl_pts` 부호**로
+    판정한다. 그런데 사람이 "이 매매 이겼나"라고 물을 때의 단위는 **포지션**이다.
+
+    2026-08-26 실측 — TP1(+0.87pt) → 스톱(−0.03pt) 로 닫힌 포지션:
+      · 포지션 실현손익 **+21,144원**(브로커 +21천원) = **승**
+      · 그런데 Kelly 에는 **1승 1패**로 들어가고, 최종 레그가 음수라
+        `record_stop_loss()` 까지 불려 **이익 포지션이 손절로 카운트**됐다.
+      · 앙상블 게이터도 그 신호를 **오답**으로 학습했다.
+
+    `daily_stats` 는 459차 F1 이 이미 포지션 단위로 고쳤다 — 그래서 **통계는 맞고
+    학습 계층만 레그 단위로 남았고**, 통계가 맞으니 아무도 의심하지 않았다.
+
+    ## 왜 지금 바꾸지 않는가
+
+    판정 축을 바꾸면 Kelly 사이징·CB② 정지 빈도·앙상블 가중치의 **학습 궤적이
+    즉시 달라진다.** 얼마나 자주 어긋나는지 모르는 채 바꾸면 그 변화가 개선인지
+    알 수 없다 — 스킬 규약(게이트·판정 변경은 섀도 선행). 승격은 **F-AG**이며
+    표본 목표는 **10거래일 또는 부분청산 포지션 20건 중 먼저 도달하는 쪽**이다.
+
+    ## 읽는 법
+
+        [WinLossUnit] site=post_exit leg=-0.03pt(-11,928원) pos=+21,144원(레그2)
+                      stage=TRAIL_AFTER_TP1 레그판정=L 포지션판정=W 불일치=Y
+
+    `불일치=Y` 가 이 결함의 지문이다. `stage=TRAIL_AFTER_TP1` 이 함께 뜨면
+    **「진짜 손절」이 아니라 「TP1 후 이익 확정」** 이라는 뜻이며(F-AA 가 만든 분류),
+    CB② 카운트에서 빼야 할 후보다.
+    """
+    try:
+        _leg_pts = float(result.get("pnl_pts") or 0.0)
+        _leg_krw = float(result.get("pnl_krw") or 0.0)
+        _pos_krw = result.get("pos_realized_pnl_krw")
+        _legs = result.get("pos_realized_leg_count")
+        _measured = bool(result.get("pos_realized_krw_measured", False))
+        # ⚠ exit_stage 를 `or` 로 기본값 치환하지 않는다 — 490차 F-I 의 정적
+        #   불변식(`tests/test_490_exit_stage.py`)이 그 형태를 금지한다. NULL 을
+        #   조용히 다른 값으로 바꾸는 습관 자체를 막는 가드이고, 날카롭게 두는
+        #   편이 낫다. 여기 라벨은 「미측정」이라 의미상 정직하지만 형태를 피한다.
+        #   (검사가 텍스트 기반이라 이 주석에도 그 형태를 적지 않는다.)
+        _stage = result.get("exit_stage")
+        if not _stage:
+            _stage = "미측정"
+
+        _leg_verdict = "W" if _leg_pts > 0 else "L"
+        if _pos_krw is None or not _measured:
+            # ⚠ 포지션 누계를 못 얻은 경로(구경로 result·재기동 복원) —
+            #   0 을 총합처럼 써서 "불일치 없음"으로 위장하지 않는다(4원칙 ②).
+            _pos_txt, _pos_verdict, _mismatch = "미측정", "?", "?"
+        else:
+            _pos_krw = float(_pos_krw)
+            _pos_verdict = "W" if _pos_krw > 0 else "L"
+            _pos_txt = "%s원(레그%s)" % (format(_pos_krw, "+,.0f"), _legs)
+            _mismatch = "Y" if _pos_verdict != _leg_verdict else "N"
+
+        log_manager.system(
+            "[WinLossUnit] site=%s leg=%+.2fpt(%s원) pos=%s stage=%s "
+            "레그판정=%s 포지션판정=%s 불일치=%s"
+            % (site, _leg_pts, format(_leg_krw, "+,.0f"), _pos_txt, _stage,
+               _leg_verdict, _pos_verdict, _mismatch),
+            "INFO",
+        )
+    except Exception as _wl_e:
+        # 계측이 청산 후처리를 끊으면 안 된다 — 다만 조용히 삼키지도 않는다.
+        logger.warning("[WinLossUnit] 섀도 계측 실패(무해): %s", _wl_e)
+
+
 def format_premarket_scaler_trace(trace, canary_z=None):
     """[MW0601 493차 후속5 / F-Q ①] 장전 재적합 궤적을 **한 줄로** 만든다.
 
@@ -10384,6 +10458,9 @@ class TradingSystem:
 
     def _post_partial_exit(self, result: dict, stage: int) -> None:
         """부분 청산 후처리 — CB/Kelly 통계, 대시보드, DB 기록."""
+        # [F-AF] 기록 **직전** 섀도 계측 — 동작 무변경.
+        log_winloss_unit_shadow(self.position, result, "post_partial_exit")
+
         pnl = result["pnl_pts"]
         qty = result["quantity"]
 
@@ -10469,6 +10546,9 @@ class TradingSystem:
         태운다"는 설계 의도가 지켜진다(TP1의 손익분기 이동 로직을 여기서 재사용하면
         안 되는 이유는 이 함수를 별도로 둔 것 자체가 그 답).
         """
+        # [F-AF] 기록 **직전** 섀도 계측 — 동작 무변경.
+        log_winloss_unit_shadow(self.position, result, "post_loss_tier1_exit")
+
         pnl = result["pnl_pts"]
         qty = result["quantity"]
 
@@ -10803,6 +10883,9 @@ class TradingSystem:
         """청산 후 처리.
         filled_at: Cybos Chejan 콜백에서 전달된 실제 체결 시각 (None이면 now() 사용)
         """
+        # [F-AF] 기록 **직전** 섀도 계측 — 동작 무변경.
+        log_winloss_unit_shadow(self.position, result, "post_exit")
+
         pnl = result["pnl_pts"]
         was_correct = pnl > 0
         if was_correct:
@@ -10835,8 +10918,46 @@ class TradingSystem:
             _ts_apply_exit_cooldown(self, result)
         self._exit_cooldown_applied_this_fill = False
 
+        # ── [MW0601 494차 후속 / F-AE] 포지션 합계를 **병기**한다 ────────────
+        #
+        # 🔴 앞부분(`[청산 완료] PnL=…pt (…원)`)은 **절대 바꾸지 않는다.**
+        #   `.claude/skills/mireuk-daily-check/scripts/collect_evidence.py` 의
+        #   `pos_done` 정규식이 그 형태에 걸려 있고, 457차 G5가 세운 관례이기도
+        #   하다 — 앞을 바꾸면 로그 파서·점검 스크립트가 조용히 깨진다. **뒤에만** 붙인다.
+        #
+        # 왜 붙이는가: 앞의 값은 `_ts_build_agg_exit_result()` 가 만든 **마지막
+        # 주문**의 집계다. 한 주문으로 닫힌 포지션에서는 우연히 포지션 총합과
+        # 같지만, TP1 을 거치면 다른 주문이라 합쳐지지 않는다.
+        #   2026-08-26 실측 — 포지션 **+21,144원**(브로커 +21천원)인데
+        #   `[청산 완료]` 는 **-11,928원**. **부호가 반대**로 읽혔다.
+        #
+        # ⚠ 이 값은 **표시 전용**이다. 승패 판정(`was_correct`)은 위에서 이미
+        #   레그 기준으로 끝났고, 그 축을 바꾸는 것은 F-AG(주간회의)다.
+        # 🔴 **트래커 속성을 직접 읽지 않는다** — 이 시점에는 `_reset_position()` 이
+        #   이미 돌아 `_pos_realized_*` 가 0 이다(457차 C5·483차 P1-A 함정).
+        #   `close_position`/`_build_exit_result` 가 **리셋 전에** result 에 실어 준다.
+        try:
+            _fae_krw = float(result.get("pos_realized_pnl_krw") or 0.0)
+            _fae_ok = bool(result.get("pos_realized_krw_measured", False))
+            _fae_legs = int(result.get("pos_realized_leg_count") or 0)
+            if "pos_realized_pnl_krw" not in result:
+                # 구경로 result — 값이 없다. 0 을 총합처럼 쓰지 않는다(4원칙 ②).
+                _fae_ok = False
+            # ⚠ `%` 서식에 콤마 플래그를 쓰지 않는다 — F-Y가 고친 바로 그 결함이고
+            #   `tests/test_493_percent_format_comma.py` 가 정적으로 막는다.
+            #   `format()`으로 먼저 문자열을 만든다.
+            _fae_amt = format(_fae_krw, "+,.0f")
+            if not _fae_ok:
+                # 재기동으로 앞부분 레그를 못 봤다 — 총합이라 말하지 않는다(4원칙 ②).
+                _fae_txt = " | 포지션 합계 미측정(재기동 복원 — 이후 {}레그 {}원)".format(
+                    _fae_legs, _fae_amt)
+            else:
+                _fae_txt = " | 포지션 합계 {}원 (레그 {})".format(_fae_amt, _fae_legs)
+        except Exception as _fae_e:
+            _fae_txt = ""
+            logger.debug("[F-AE] 포지션 합계 병기 실패(무해): %s", _fae_e)
         log_manager.trade(
-            f"[청산 완료] PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원)"
+            f"[청산 완료] PnL={pnl:+.2f}pt ({result['pnl_krw']:+,.0f}원)" + _fae_txt
         )
 
         # PnL 패널 즉시 갱신 — 다음 분봉까지 기다리지 않음 [B27]
@@ -14863,6 +14984,9 @@ def _ts_get_reference_atr(self, pending: Optional[dict] = None) -> float:
 
 
 def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
+    # [F-AF] 기록 **직전** 섀도 계측 — 동작 무변경.
+    log_winloss_unit_shadow(self.position, result, "record_nonfinal_exit")
+
     pnl = result["pnl_pts"]
     qty = result["quantity"]
 

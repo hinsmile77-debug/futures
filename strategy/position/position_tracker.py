@@ -222,6 +222,27 @@ class PositionTracker:
         # 어느 쪽도 제거하지 않는다. 실제 승패 판정은 `_pos_realized_*` 값으로
         # 한다(둘은 항상 같은 값 — 판정용 소스는 하나로 고정해 이중 카운트 방지).
         self._pos_realized_pnl_pts: float = 0.0
+        # ── [MW0601 494차 후속 / F-AE] 포지션 단위 실현손익(원) ──────────────
+        #
+        # **왜 pts 옆에 원 단위를 따로 두는가.** `_pos_realized_pnl_pts` 는 계약당
+        # pt 가중합이라 **수수료가 빠져 있다.** 사람이 "이 포지션 얼마 벌었나"를
+        # 묻는 단위는 원이고, 그 답은 레그별 net 을 더해야 나온다.
+        #
+        # 무엇을 고치려는 것인가: `[청산 완료]` 로그가 **마지막 주문**의 손익만
+        # 찍어 왔다(`_ts_build_agg_exit_result` 의 집계 범위가 주문 하나다).
+        # 한 주문으로 닫힌 포지션에서는 우연히 맞고, TP1 을 거친 포지션에서는
+        # 틀린다 — 2026-08-26 실측: 포지션은 **+21,144원** 인데 로그는
+        # **-11,928원**(부호 반대)이었다. 브로커 패널은 +21(천원)이었다.
+        #
+        # ⚠ **판정에 쓰지 않는다 — 표시 전용이다.** 승패 판정 축 교체는 F-AG이며
+        #   주간회의 승인 사항이다(Kelly·CB②·앙상블 학습 궤적이 함께 바뀐다).
+        self._pos_realized_pnl_krw: float = 0.0
+        # 재기동 복원 시 상태 파일에 이 값이 없으면 False. 그때의 누계는 **재기동
+        # 이후 레그만**이라 포지션 총합이 아니다 — 0.0 을 총합처럼 보여주지 않기
+        # 위해 플래그로 구분한다(계측 4원칙 ②: 미측정 ≠ 0).
+        self._pos_realized_krw_measured: bool = True
+        # [F-AE] 이 포지션에서 누적한 청산 레그 수 — 병기 로그의 (레그 N).
+        self._pos_realized_leg_count: int = 0
         self._pos_realized_fwd_pnl_pts: float = 0.0
         self._pos_acc_pnl_pts: float = 0.0
         self._pos_acc_fwd_pnl_pts: float = 0.0
@@ -279,6 +300,9 @@ class PositionTracker:
         self._pos_acc_pnl_pts = 0.0       # [459차 F1]
         self._pos_acc_fwd_pnl_pts = 0.0
         self._pos_realized_pnl_pts = 0.0       # [456차 F1]
+        self._pos_realized_pnl_krw = 0.0       # [F-AE] 동반 리셋
+        self._pos_realized_krw_measured = True
+        self._pos_realized_leg_count = 0
         self._pos_realized_fwd_pnl_pts = 0.0
         self._optimistic = False
         self.last_update_reason = reason
@@ -386,6 +410,9 @@ class PositionTracker:
         self._pos_acc_pnl_pts = 0.0       # [459차 F1] 새 포지션 — 레그 누적 초기화
         self._pos_acc_fwd_pnl_pts = 0.0
         self._pos_realized_pnl_pts = 0.0       # [456차 F1]
+        self._pos_realized_pnl_krw = 0.0       # [F-AE] 동반 리셋
+        self._pos_realized_krw_measured = True
+        self._pos_realized_leg_count = 0
         self._pos_realized_fwd_pnl_pts = 0.0
         self.last_update_reason = f"open_position:{direction}"
         self.last_update_ts = now_kst()
@@ -496,6 +523,8 @@ class PositionTracker:
         # test_459_position_winloss_unit.py)를 모두 만족시킨다 — 실제 판정은
         # 한쪽(_pos_realized_*)만 쓴다(이중 카운트 방지, 둘은 항상 같은 값).
         self._pos_realized_pnl_pts += pnl_pts * self.quantity
+        self._pos_realized_pnl_krw += pnl_krw      # [F-AE] 원 단위 동반 누적
+        self._pos_realized_leg_count += 1
         self._pos_realized_fwd_pnl_pts += forward_pnl_pts * self.quantity
         self._pos_acc_pnl_pts += pnl_pts * self.quantity
         self._pos_acc_fwd_pnl_pts += forward_pnl_pts * self.quantity
@@ -533,6 +562,17 @@ class PositionTracker:
             #   `partial_1_done` 이 False 라 모든 스톱이 INITIAL_STOP 으로 보인다
             #   (483차 P1-A 와 같은 「리셋 뒤에 읽기」 함정).
             "exit_stage":   self.classify_exit_stage(reason, self._tp1_armed()),
+            # ── [MW0601 494차 후속 / F-AE] 포지션 누계를 **리셋 전에 실어 보낸다** ──
+            #
+            # 🔴 바로 아래 `_reset_position()` 이 `_pos_realized_*` 를 0 으로 되돌린다.
+            #   호출부(`_post_exit`)는 그 **뒤에** 로그를 찍으므로, 트래커 속성을
+            #   직접 읽으면 **항상 0** 이 나온다 — 457차 C5(`verified_count` 가
+            #   8거래일 연속 0)·483차 P1-A 와 **정확히 같은 「리셋 뒤에 읽기」 함정**이다.
+            #   개발 중 실제로 밟았고, 재현 테스트가 `합계 0원` 으로 잡아냈다.
+            # ⚠ 표시 전용이다 — 승패 판정은 위에서 이미 끝났다(축 교체는 F-AG).
+            "pos_realized_pnl_krw":   round(self._pos_realized_pnl_krw, 0),
+            "pos_realized_leg_count": int(self._pos_realized_leg_count),
+            "pos_realized_krw_measured": bool(self._pos_realized_krw_measured),
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,
@@ -700,6 +740,9 @@ class PositionTracker:
             self._pos_acc_pnl_pts = 0.0       # [459차 F1] FLAT→진입만 초기화 (증량 시 보존)
             self._pos_acc_fwd_pnl_pts = 0.0
             self._pos_realized_pnl_pts = 0.0       # [456차 F1]
+            self._pos_realized_pnl_krw = 0.0       # [F-AE] 동반 리셋
+            self._pos_realized_krw_measured = True
+            self._pos_realized_leg_count = 0
             self._pos_realized_fwd_pnl_pts = 0.0
         self.last_update_reason = f"apply_entry_fill:{direction}"
         self.last_update_ts = filled_at or now_kst()
@@ -772,6 +815,8 @@ class PositionTracker:
         # 그 **누적값**으로 승패를 판정한다. 부분 레그는 누적만 하고 카운트하지 않는다
         # (기존 "_daily_trades는 최종 청산에서만" 설계는 그대로 유지).
         self._pos_realized_pnl_pts += pnl_pts * quantity
+        self._pos_realized_pnl_krw += pnl_krw      # [F-AE] 원 단위 동반 누적
+        self._pos_realized_leg_count += 1
         self._pos_realized_fwd_pnl_pts += forward_pnl_pts * quantity
 
         is_final = quantity == self.quantity
@@ -877,6 +922,9 @@ class PositionTracker:
             self._pos_acc_pnl_pts = 0.0       # [459차 F1] 별개 포지션 — 레그 누적 초기화
             self._pos_acc_fwd_pnl_pts = 0.0
             self._pos_realized_pnl_pts = 0.0       # [456차 F1]
+            self._pos_realized_pnl_krw = 0.0       # [F-AE] 동반 리셋
+            self._pos_realized_krw_measured = True
+            self._pos_realized_leg_count = 0
             self._pos_realized_fwd_pnl_pts = 0.0
         self.last_update_reason = f"sync_from_broker:{direction}"
         self.last_update_ts = synced_at or now_kst()
@@ -949,6 +997,8 @@ class PositionTracker:
         # 승패 판정용 — 두 누적기 모두 갱신(각 세션 회귀 테스트 대상, 판정은
         # _pos_realized_* 하나로 고정).
         self._pos_realized_pnl_pts += pnl_pts * qty
+        self._pos_realized_pnl_krw += pnl_krw      # [F-AE] 원 단위 동반 누적
+        self._pos_realized_leg_count += 1
         self._pos_realized_fwd_pnl_pts += forward_pnl_pts * qty
         self._pos_acc_pnl_pts += pnl_pts * qty
         self._pos_acc_fwd_pnl_pts += forward_pnl_pts * qty
@@ -980,6 +1030,14 @@ class PositionTracker:
             #   스톱 계열보다 먼저라 라벨은 `TP1` 로 정확하다 — `tp1_armed` 는
             #   스톱 계열에서만 쓰인다.
             "exit_stage":   self.classify_exit_stage(reason, self._tp1_armed()),
+            # [MW0601 494차 후속 / F-AE] 부분청산 레그에도 **그 시점까지의** 누계를
+            #   싣는다. 없으면 F-AF 섀도가 `pos=미측정` 으로 찍혀 TP1 레그의
+            #   불일치 여부를 영영 못 본다 — 계측을 켜놓고 절반을 못 보는 꼴이다.
+            # ⚠ 부분 레그 시점의 누계는 **아직 진행 중인 값**이다(최종 총합 아님).
+            #   최종 판정은 마지막 레그의 값으로 한다.
+            "pos_realized_pnl_krw": round(self._pos_realized_pnl_krw, 0),
+            "pos_realized_leg_count": int(self._pos_realized_leg_count),
+            "pos_realized_krw_measured": bool(self._pos_realized_krw_measured),
             "hold_minutes": self._hold_minutes(),
             "entry_ts":     entry_ts_str,
             "grade":        self.grade,
@@ -1515,6 +1573,19 @@ class PositionTracker:
             #    덮으면 계측 4원칙 ②를 정면으로 어긴다(`partial_1_done` 은 청산 시점에만
             #    알 수 있어 복원 자체가 불가능하다 — 420차와 같다).
             "exit_stage": self.classify_exit_stage(reason, self._tp1_armed()),
+            # ── [MW0601 494차 후속 / F-AE] 포지션 누계를 **리셋 전에** 실어 보낸다 ──
+            #
+            # 🔴 최종 청산이면 호출부가 로그를 찍기 **전에** `_reset_position()` 이
+            #   `_pos_realized_*` 를 0 으로 되돌린다. 트래커 속성을 직접 읽으면
+            #   **항상 0** 이 나온다 — 457차 C5(`verified_count` 8거래일 연속 0)·
+            #   483차 P1-A 와 같은 「리셋 뒤에 읽기」 함정이며, 개발 중 실제로
+            #   밟아 재현 테스트가 `합계 0원` 으로 잡아냈다.
+            # 여기(공통 조립기)에 두면 `apply_exit_fill`·`_build_exit_result` 를
+            # 쓰는 **모든 경로**가 한 번에 덮인다(F-AA 와 같은 자리다).
+            # ⚠ 표시 전용 — 승패 판정 축 교체는 F-AG(주간회의).
+            "pos_realized_pnl_krw": round(self._pos_realized_pnl_krw, 0),
+            "pos_realized_leg_count": int(self._pos_realized_leg_count),
+            "pos_realized_krw_measured": bool(self._pos_realized_krw_measured),
         }
 
     def _reset_position(self) -> None:
@@ -1564,6 +1635,9 @@ class PositionTracker:
         # [456차 / F1] 다음 포지션이 이전 포지션의 실현손익을 물려받지 않도록 초기화.
         # 승패 판정 이후에 호출되므로(close_position·apply_exit_fill 모두) 안전하다.
         self._pos_realized_pnl_pts = 0.0
+        self._pos_realized_pnl_krw = 0.0       # [F-AE] 동반 리셋
+        self._pos_realized_krw_measured = True
+        self._pos_realized_leg_count = 0
         self._pos_realized_fwd_pnl_pts = 0.0
         self.last_update_ts = self.last_update_ts or now_kst()
         self._save_state()
@@ -1743,6 +1817,10 @@ class PositionTracker:
                 # 이 값이 0으로 돌아가 최종 레그만으로 승패를 판정하게 된다(구 버그
                 # 재발). 두 누적기 모두 영속화(각 세션 회귀 테스트 대상).
                 "pos_realized_pnl_pts": self._pos_realized_pnl_pts,
+                # [F-AE] 원 단위 누계도 영속화한다 — 없으면 장중 재기동 후
+                # 포지션 총합이 "재기동 이후 레그만"이 되는데, 그것을 총합으로
+                # 보여주면 이번에 고치는 결함이 형태만 바꿔 되살아난다.
+                "pos_realized_pnl_krw": self._pos_realized_pnl_krw,
                 "pos_realized_fwd_pnl_pts": self._pos_realized_fwd_pnl_pts,
                 "pos_acc_pnl_pts": self._pos_acc_pnl_pts,
                 "pos_acc_fwd_pnl_pts": self._pos_acc_fwd_pnl_pts,
@@ -1846,6 +1924,14 @@ class PositionTracker:
             self._pos_realized_pnl_pts = float(
                 state.get("pos_realized_pnl_pts", 0.0) or 0.0
             )
+            # [F-AE] 원 단위 누계 복원. ⚠ **키가 없으면 「미측정」이다** —
+            #   F-AE 배포 전에 저장된 상태이거나 구버전 파일이면 그 값을 0.0 으로
+            #   두되 `_measured=False` 로 표시해, 표시 계층이 "총합"이라 말하지
+            #   않게 한다(계측 4원칙 ②: 미측정 ≠ 0). 0.0 을 총합으로 보여주면
+            #   이번에 고치는 결함이 형태만 바꿔 되살아난다.
+            _prk = state.get("pos_realized_pnl_krw")
+            self._pos_realized_pnl_krw = float(_prk or 0.0)
+            self._pos_realized_krw_measured = _prk is not None
             self._pos_realized_fwd_pnl_pts = float(
                 state.get("pos_realized_fwd_pnl_pts", 0.0) or 0.0
             )
