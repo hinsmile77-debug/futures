@@ -2808,6 +2808,70 @@ NET_RECON_ABS_TOL_KRW = 5000.0
 NET_RECON_REL_TOL = 0.20
 
 
+# ── [MW0602 500차 / F-5] upsert_broker_net 무조건 상태 샘플 ────────────────────
+# 종전 이 함수는 **무음 return 이 둘**이었다. 2026-08-26 EOD 에서 당일
+# `daily_broker_pnl.broker_net_krw` 행이 한 줄도 생기지 않았는데 로그에는 아무
+# 흔적이 없어 「TR 이 빈 값을 줬나 / 비거래일로 걸렀나 / 애초에 호출이 안 됐나」를
+# 구분할 수 없었다(계측 4원칙 ④ 폴백 가시화 · 0826 이상점 1-7).
+#
+# 🔴 조건부 로그로 만들지 않는다 — CLAUDE.md 470차 `C2'` 가 `[MarginCap]` 에서
+#    이미 지적한 함정이다(축소 시에만 찍으면 100% 고착이 구조적으로 보장된다).
+#    다만 호출부(`main.py:15942`)가 잔고 폴링 경로라 분당 여러 번 들어올 수 있어
+#    전량 출력은 로그 폭증이다 → **상태·값이 바뀌면 즉시 + 최소 60초 1줄**의
+#    하트비트 혼합으로 찍는다. 즉 "안 찍히는 상태"가 존재하지 않는다.
+# ⚠ 런타임 상태를 `getattr(obj, "_x", default)` 로 읽지 않는다(계측 4원칙 ④) —
+#   모듈 전역에 **명시 초기화**하고 억제 건수까지 남긴다(계측 4원칙 ③ 탈락 가시화).
+BROKER_NET_LOG_MIN_INTERVAL_SEC = 60.0
+_broker_net_log_state = {"key": None, "ts": 0.0, "suppressed": 0}
+
+
+def _fmt_krw(v) -> str:
+    """[F-5] 금액 포맷 — `None`/미측정과 `0` 을 구분한다(계측 4원칙 ②)."""
+    if v is None:
+        return "NA"
+    try:
+        return "%.0f" % float(v)
+    except (TypeError, ValueError):
+        return "NA"
+
+
+def log_broker_net_state(state: str, date, deposit_cash, next_day_deposit_cash) -> bool:
+    """[MW0602 500차 / F-5] `[BrokerNet] state=…` 무조건 상태 샘플.
+
+    state 는 셋뿐이다:
+      · `OK`               저장 성공(UPDATE 또는 INSERT)
+      · `SKIP_BLANK_TR`    date/예탁현금/익일가예탁현금 중 하나가 비었다 — **상류 결손**
+      · `SKIP_NON_TRADING` 비거래일이라 유령 행을 만들지 않았다 — **정상 스킵**
+
+    반환은 "실제로 한 줄 찍었는가"다(테스트가 하트비트 억제를 검증한다).
+    ⚠ `SKIP_BLANK_TR` 100% 고착이면 브로커 net 축 전체가 죽은 것이며, 원인은
+      이 함수가 아니라 상류(`CpTd6197` 헤더 수신)다 — 0826 F-5 「선행 확인」.
+    """
+    import time as _time
+    key = (state, date, deposit_cash, next_day_deposit_cash)
+    now = _time.time()
+    elapsed = now - _broker_net_log_state["ts"]
+    if key == _broker_net_log_state["key"] and elapsed < BROKER_NET_LOG_MIN_INTERVAL_SEC:
+        _broker_net_log_state["suppressed"] += 1
+        return False
+    dropped = _broker_net_log_state["suppressed"]
+    _broker_net_log_state["key"] = key
+    _broker_net_log_state["ts"] = now
+    _broker_net_log_state["suppressed"] = 0
+    net = None
+    if deposit_cash is not None and next_day_deposit_cash is not None:
+        try:
+            net = float(next_day_deposit_cash) - float(deposit_cash)
+        except (TypeError, ValueError):
+            net = None
+    logging.getLogger("SYSTEM").info(
+        "[BrokerNet] state=%s date=%s dep=%s next=%s net=%s%s",
+        state, date if date else "NA",
+        _fmt_krw(deposit_cash), _fmt_krw(next_day_deposit_cash), _fmt_krw(net),
+        "" if dropped <= 0 else (" (동일 샘플 %d건 생략)" % dropped))
+    return True
+
+
 def upsert_broker_net(date: str, deposit_cash: float,
                       next_day_deposit_cash: float) -> None:
     """브로커 원천 net 축 저장 — CpTd6197 헤더 그대로.
@@ -2819,8 +2883,11 @@ def upsert_broker_net(date: str, deposit_cash: float,
     (upsert_daily_broker_pnl과 같은 취지). 비거래일도 스킵한다(유령 행 방지).
     """
     if not date or not deposit_cash or not next_day_deposit_cash:
+        # [500차 F-5] 무음 return 금지 — 결손 사실과 그때의 원값을 남긴다.
+        log_broker_net_state("SKIP_BLANK_TR", date, deposit_cash, next_day_deposit_cash)
         return
     if not is_krx_trading_date(date):
+        log_broker_net_state("SKIP_NON_TRADING", date, deposit_cash, next_day_deposit_cash)
         return
     import datetime as _dt
     _now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2842,6 +2909,8 @@ def upsert_broker_net(date: str, deposit_cash: float,
                        VALUES (?, 0, ?, ?, ?, ?)""",
                     (date, _now, float(deposit_cash),
                      float(next_day_deposit_cash), net))
+    # [500차 F-5] 성공도 상태다 — 락 밖에서 찍는다(로깅이 DB 락을 잡고 있지 않게).
+    log_broker_net_state("OK", date, deposit_cash, next_day_deposit_cash)
 
 
 def fetch_broker_net(date: str) -> Optional[dict]:

@@ -476,6 +476,15 @@ IF !ERRORLEVEL! EQU 2 (
     TIMEOUT /T 5 >NUL
     GOTO :EOF
 )
+REM ---- [MW0602 500cha / F-3] Record WHAT the GUARD is about to terminate ----
+REM Previously only 'terminate complete' was logged, so we could not tell whether
+REM the victim was yesterday's session (hypothesis a) or a mis-matched retrain
+REM subprocess (hypothesis b). One PID+start-time line separates the two.
+REM GUARD BEHAVIOUR IS UNCHANGED - if this probe fails the next line still kills.
+REM WARNING: this probe must contain NO '!' character. cmd delayed expansion
+REM eats it, so 'p.pid != os.getpid()' silently becomes 'p.pid = os.getpid()'
+REM and python dies with SyntaxError (exit 1). See tests/test_500_guard_kill_target_log.py.
+"!PY32!" -c "import psutil, os, io, datetime; me=os.getpid(); t=[p for p in psutil.process_iter(['pid','name','cmdline','create_time']) if 'python' in (p.info.get('name') or '').lower() and any('main.py' in (c or '') for c in (p.info.get('cmdline') or [])) and p.pid not in (me,)]; L=['[GUARD] kill-target PID={} started={} cmd={}'.format(p.pid, datetime.datetime.fromtimestamp(p.info.get('create_time') or 0).isoformat(sep=' ')[:19], ' '.join(p.info.get('cmdline') or [])) for p in t]; L.append('[GUARD] kill-target count={} probe=ok'.format(len(t))); b=os.environ.get('_BLOG'); f=io.open(b,'a',encoding='utf-8') if b else None; [print(s) for s in L]; [f.write(s+chr(10)) for s in L] if f is not None else None; f.close() if f is not None else None" 2>NUL
 CALL :L "[GUARD] 기존 main.py 프로세스 종료 중..."
 "!PY32!" -c "import psutil, os; [p.terminate() for p in psutil.process_iter(['pid','name','cmdline']) if 'python' in (p.info.get('name') or '').lower() and any('main.py' in (c or '') for c in (p.info.get('cmdline') or [])) and p.pid != os.getpid()]" 2>NUL
 TIMEOUT /T 3 /NOBREAK >NUL
