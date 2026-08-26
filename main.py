@@ -515,6 +515,13 @@ class TradingSystem:
         # "아직 안 받았다"와 "브로커가 0원이라 한다"가 구분되지 않는다
         # (계측 4원칙 ②·④ — 런타임 상태를 기본값 폴백으로 읽지 않는다는 규약).
         self._broker_net_today = None
+        # [MW0602 497차 / P1 체리픽] 전일 브로커 net 표시 캐시 (날짜, fetch 결과).
+        #   날짜당 1회만 DB를 본다. None = 오늘 아직 조회 안 함
+        #   (계측 4원칙 ④ — getattr 폴백으로 읽지 않는다).
+        self._prev_broker_net_cache = None
+        # [MW0602 497차 / P3 체리픽] 당일 엔진 수수료 합 캐시 (ts, date, krw).
+        #   ProfitGuard net 추정용. 60초 캐시로 매분 파이프라인의 반복 SQL을 막는다.
+        self._engine_commission_today_cache = None
         self.position          = PositionTracker(pt_value=self._pt_value)
         self.checklist         = EntryChecklist()
         self.sizer             = PositionSizer(account_balance=100_000_000)  # 기본 1억
@@ -3336,9 +3343,9 @@ class TradingSystem:
                 meta_action, hurst_bucket, hour_bucket,
                 was_restart_after, had_partial_fill, entry_horizon, entry_source,
                 kelly_advised_skip, raw_grade, entry_qty, checklist_pass_count,
-                exit_stage)
+                exit_stage, commission_rate_used)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.get("entry_ts", now_str),
                 result.get("exit_ts", now_str),
@@ -3387,6 +3394,16 @@ class TradingSystem:
                 # 않는다. 승격하면 「분류기가 안 돌았다」가 「분류했는데 미분류」로
                 # 위장한다(계측 4원칙 ②).
                 result.get("exit_stage"),
+                # 🔴 [MW0602 497차 / P2 체리픽] 이 행의 수수료를 계산한 편도 요율.
+                #
+                # **493차 후속5(이 브랜치 커밋)의 결함이다.** 컬럼과 1회성 백필은
+                # 만들었는데 **라이브 INSERT에 넣지 않아** 마이그레이션 이후 새 행이
+                # 전부 NULL로 쌓였다 — 「어떤 요율로 계산했는가」를 남기려고 만든
+                # 컬럼이 정작 새 거래에는 비어 있었다. 계측 4원칙 ④를 지키려다
+                # 그 자리에 구멍을 낸 꼴이며, MW0602가 자기 PC에서 당일 8행 NULL로
+                # 발견해 497차 P2로 고쳤다.
+                # `normalize_trade_pnl()` 이 이미 값을 돌려주므로 그대로 기록한다.
+                executed_metrics.get("commission_rate_used"),
             ),
         )
         # [MW0601 490차 / F-G] CB③ 조건 성립 창에서 진입한 포지션의 손익 누산.
@@ -8584,9 +8601,21 @@ class TradingSystem:
             _cached_realized = getattr(self, "_last_balance_realized_krw", None)
             if _cached_date == _today_key and _cached_realized is not None:
                 try:
-                    _broker_daily_pnl_now = float(_cached_realized)
+                    # 🔴 [MW0602 497차 / P3 체리픽] 축 정합 — 종전에는 CpTd6197
+                    # 실현손익(**gross**)을 그대로 썼고 엔진 폴백은 net이라
+                    # **분기에 따라 축이 갈렸다**(계측 4원칙 ①).
+                    # gross는 손실 시 net보다 덜 음수라 **손실 한도가 늦게 발동**
+                    # 한다 — 493차 수수료율 결함과 **같은 낙관 방향**이다.
+                    # ⚠ 이 브랜치(CYBOS 0.0098104%)는 MW0602(CREON 0.0019%)보다
+                    #   수수료가 **5.16배** 크므로 축 혼재의 크기도 그만큼 크다
+                    #   (2026-08-03 실측 수수료 252,624원 = 일일 손실한도의 25%).
+                    # gross − 당일 엔진 수수료 합 = net 추정.
+                    # ⚠ 보유 중에는 gross에 미실현이 섞이고 미청산 진입 레그의
+                    #   수수료는 아직 trades에 없어 약간 낙관 — 청산 시 해소된다.
+                    _comm_today = _ts_engine_commission_today(self, _today_key)
+                    _broker_daily_pnl_now = float(_cached_realized) - _comm_today
                     _daily_pnl_now = _broker_daily_pnl_now
-                    _daily_pnl_source = "broker"
+                    _daily_pnl_source = "broker_net_est"
                 except Exception as _pnl_e:
                     logger.warning("[PnL] 브로커 일일손익 float 변환 실패 — 내부 추정값 사용: %s", _pnl_e)
         # grade X 시 size_mult=0.0을 ProfitGuard에 전달하면 Tier0(min_mult=0.6)이
@@ -14966,6 +14995,33 @@ def _ts_agg_exit_fill(pending: dict, result: dict, fill_price: float, fill_qty: 
     pending["agg_exit_price_x_qty"] += fill_price * fill_qty
 
 
+def _ts_engine_commission_today(self, today_key: str) -> float:
+    """[MW0602 497차 / P3 체리픽] 당일 엔진 수수료 합(원) — ProfitGuard net 추정용.
+
+    trades.commission_krw는 레그별 왕복 수수료 실측 기록이다(495차부터 CREON
+    0.0019% 적용, 브로커 실측과 레그당 ±1원 수준 일치). 60초 캐시 — 매분
+    파이프라인에서 불려도 SQL은 분당 최대 1회다. 조회 실패는 0.0으로 폴백하되
+    로그를 남긴다(4원칙 ④ — 이 폴백은 ProfitGuard를 종전 gross 동작으로
+    되돌릴 뿐 새 위험을 만들지 않는다).
+    """
+    _now_ts = time.time()
+    _cache = self._engine_commission_today_cache
+    if _cache is not None and _cache[1] == today_key and (_now_ts - _cache[0]) < 60.0:
+        return _cache[2]
+    _comm = 0.0
+    try:
+        from utils.db_utils import fetchone, TRADES_DB
+        _row = fetchone(
+            TRADES_DB,
+            "SELECT COALESCE(SUM(commission_krw), 0.0) AS c FROM trades "
+            " WHERE date(exit_ts) = ?", (today_key,))
+        _comm = float(_row["c"] if _row is not None else 0.0)
+    except Exception as _ce:
+        logger.warning("[PnL] 당일 수수료 합 조회 실패 — 0원 폴백(gross 동작): %s", _ce)
+    self._engine_commission_today_cache = (_now_ts, today_key, _comm)
+    return _comm
+
+
 def _ts_build_agg_exit_result(last_result: dict, pending: dict) -> dict:
     """분할체결 집계값을 단일 체결 result로 합산 반환."""
     agg_qty = pending.get("agg_exit_qty", 1)
@@ -16461,6 +16517,49 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
                 self._broker_net_today = _next_dep - _dep_cash
                 self._refresh_pnl_history()
             upsert_daily_broker_pnl(_yesterday, _prev_pnl)
+            # ── [MW0602 497차 / P1 체리픽] 실시간잔고 스트립 축 정합 — 표시 전용 키 ──────────
+            # CpTd6197 today_pnl(gross)을 "금일손익"으로, prev_day_pnl(gross)을
+            # "전일손익"으로 라벨 없이 띄워 왔다. 같은 스트립의 수익율(%)은 예탁현금 차
+            # (net) 기반이라 **한 줄 안에서 축이 섞여 있었다**(계측 4원칙 ①). 2026-08-26
+            # 실측: 금일손익 446,000(gross) vs 브로커 net 429,636 — 갭 16,364원 전액이
+            # 수수료(약정 861.31M × 0.0019%)였다.
+            # 원본 summary 키는 건드리지 않는다 — ProfitGuard 캐시(_last_balance_realized_krw)
+            # ·sizer 잔고 추출이 그 키를 읽는다. 패널이 "*_표시" 키를 우선 소비한다.
+            try:
+                _gross_txt = str(summary.get("실현손익") or "").replace(",", "").strip()
+                _gross_val = float(_gross_txt) if _gross_txt else None
+                if _gross_val is not None:
+                    # _broker_net_today는 FLAT 잔고 push에서만 갱신된다(보유 중엔 예탁
+                    # 차액에 증거금·미실현이 섞여 net이 오염되므로). __init__/daily_close
+                    # 에서 None 초기화 — None은 "아직 모름"이다(계측 4원칙 ②).
+                    _bnet = self._broker_net_today
+                    if self.position.status == "FLAT" and _bnet is not None:
+                        summary["금일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
+                            _bnet, _gross_val)
+                    elif self.position.status != "FLAT":
+                        # 보유 중 gross에는 미실현이 포함될 수 있다 — 폴백 가시화(④).
+                        summary["금일손익_표시"] = "{:+,.0f} (gross·보유중)".format(_gross_val)
+                    else:
+                        summary["금일손익_표시"] = "{:+,.0f} (gross)".format(_gross_val)
+
+                # 전일손익: 헤더 prev_day_pnl은 gross — daily_broker_pnl에서 직전
+                # 거래일 net을 찾아 정렬한다(주말·휴장 자동 건너뜀). 날짜당 1회 조회.
+                _today_key = datetime.date.today().isoformat()
+                _pn_cache = self._prev_broker_net_cache
+                if _pn_cache is None or _pn_cache[0] != _today_key:
+                    from utils.db_utils import fetch_prev_broker_net
+                    _pn_cache = (_today_key, fetch_prev_broker_net(_today_key))
+                    self._prev_broker_net_cache = _pn_cache
+                _prev_txt = str(summary.get("추정자산") or "").replace(",", "").strip()
+                _prev_gross = float(_prev_txt) if _prev_txt else None
+                _pn = _pn_cache[1]
+                if _pn is not None:
+                    summary["전일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
+                        _pn["net_krw"], _pn["gross_krw"])
+                elif _prev_gross is not None:
+                    summary["전일손익_표시"] = "{:+,.0f} (gross)".format(_prev_gross)
+            except Exception as _axd_e:
+                logger.debug("[BalanceAxis] 표시 키 조립 실패(무해): %s", _axd_e)
         except Exception as _bpnl_e:
             logger.debug("[BrokerPnl] 일별 손익 저장 실패: %s", _bpnl_e)
 

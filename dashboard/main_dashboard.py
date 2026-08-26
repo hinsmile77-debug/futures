@@ -1386,9 +1386,12 @@ class AccountInfoPanel(QWidget):
         strip = QHBoxLayout()
         strip.setContentsMargins(0, 0, 0, 0)
         strip.setSpacing(S.p(8))
+        # [MW0602 497차 / P1] 라벨 축 명시 — 금일/전일손익은 main이 조립한
+        # "net (g gross)" 문자열이 오면 그대로, 없으면 원본(gross) 폴백.
+        # 수익율은 원래부터 예탁현금 차(net) 기반이라 라벨만 정합화한다.
         for key, title in [
             ("실현손익", "금일손익"),
-            ("총평가",   "수익율(%)"),
+            ("총평가",   "수익율(net%)"),
             ("추정자산", "전일손익"),
         ]:
             cell = QHBoxLayout()
@@ -1545,8 +1548,17 @@ class AccountInfoPanel(QWidget):
 
     def update_summary(self, summary: dict):
         summary = dict(summary or {})
+        # [MW0602 497차 / P1] 축 정합 표시 키 — main이 조립한 "net (g gross)" 등
+        # 완성 문자열을 우선 소비한다(숫자 포맷 재적용 금지). 키가 없으면 종전
+        # 동작(원본 키 + _format_value) 그대로 — 구버전 main과의 호환 폴백이다.
+        _display_pref = {"실현손익": "금일손익_표시", "추정자산": "전일손익_표시"}
         for key, label in self._summary_values.items():
-            label.setText(self._format_value(summary.get(key), is_percent=(key == "총평가")))
+            _pref_key = _display_pref.get(key)
+            _pref_val = str(summary.get(_pref_key) or "").strip() if _pref_key else ""
+            if _pref_val:
+                label.setText(_pref_val)
+            else:
+                label.setText(self._format_value(summary.get(key), is_percent=(key == "총평가")))
 
     def update_rows(self, rows):
         rows = list(rows or [])
