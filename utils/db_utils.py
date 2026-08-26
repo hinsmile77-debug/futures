@@ -2861,6 +2861,19 @@ def init_daily_broker_pnl_db():
             if _c not in _bp_cols:
                 _bp_conn.execute(
                     "ALTER TABLE daily_broker_pnl ADD COLUMN %s REAL" % _c)
+        # [MW0601 498차 / F-8] net 축 **출처와 시각**을 같은 행에 남긴다.
+        # 종전 net 축은 「FLAT 상태의 잔고 TR 푸시」라는 기회 의존적 사건에만
+        # 묶여 있어, 마지막 푸시가 청산 처리 도중에 오면 그날치가 통째로 비었다
+        # (2026-08-26 실측: 20거래일 중 오늘만 broker_net_krw NULL).
+        # EOD 스냅샷 폴백을 붙이면서 **폴백으로 쓴 값을 실측처럼 읽지 못하게**
+        # 두 컬럼을 함께 둔다(계측 4원칙 ②·④).
+        #   broker_net_source   = "live" | "eod_snapshot" | "stale_snapshot"
+        #   deposit_snapshot_ts = 그 예탁현금 헤더를 실제로 관측한 시각
+        for _c, _t in (("broker_net_source", "TEXT"),
+                       ("deposit_snapshot_ts", "TEXT")):
+            if _c not in _bp_cols:
+                _bp_conn.execute(
+                    "ALTER TABLE daily_broker_pnl ADD COLUMN %s %s" % (_c, _t))
 
 
 # [477차 후속2 / F-4] 거래일 판정 캐시 — 날짜당 1회만 DB를 본다
@@ -2935,16 +2948,25 @@ def upsert_daily_broker_pnl(date: str, pnl_krw: float) -> None:
 
 
 def update_daily_broker_pnl_net(date: str, gross_krw: float,
-                                commission_krw: float, net_krw: float) -> None:
+                                commission_krw: float, net_krw: float) -> bool:
     """[MW0601 477차 후속2 / 476차 F-4] EOD 확정치 기입 — daily_close() 전용.
 
     trades 합산(엔진)으로 commission/net을 기입한다. 브로커 gross 행이 없으면
     (브로커 TR 미수신·gross=0 거래일) 엔진 gross로 행을 만든다 — "0원 거래일
     기록 불가" 보완. 브로커 행이 있으면 gross는 브로커 값을 보존한다
     (두 원천의 차이 자체가 관측 대상이다).
+
+    Returns:
+        created(bool) — 이 호출이 **엔진 gross로 행을 새로 만들었는가**.
+
+    [MW0601 498차 / F-9] 반환값을 준다. 종전에는 호출자가 알 방법이 없어서
+    `daily_close()`가 이 함수로 행을 만든 **직후** 그 행을 되읽고
+    「broker gross 대사 일치」를 찍었다 — 자기가 방금 써넣은 엔진 gross를
+    "브로커 gross"로 되읽는 **자기참조 대사**였고, else 분기
+    「broker 행 없음」은 도달 불가였다(계측 4원칙 ⑤).
     """
     if not date:
-        return
+        return False
     import datetime as _dt
     _now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _lock:
@@ -2962,6 +2984,35 @@ def update_daily_broker_pnl_net(date: str, gross_krw: float,
                        VALUES (?, ?, ?, ?, ?)""",
                     (date, float(gross_krw), _now,
                      float(commission_krw), float(net_krw)))
+                return True
+    return False
+
+
+def fetch_broker_gross_origin(date: str) -> dict:
+    """[MW0601 498차 / F-9] gross 대사 **직전** 상태 — 무엇과 대사하는지 가른다.
+
+    `daily_close()`가 `update_daily_broker_pnl_net()`을 부르기 **전에** 호출해야
+    한다. 그 뒤에 부르면 방금 만든 엔진 gross 행을 브로커 원본으로 오인한다.
+
+    반환 dict:
+      · origin="broker"  브로커 TR이 실제로 채운 gross 행이 있다(pnl_krw ≠ 0).
+                         `gross_krw`·`updated_at` 동반 — 로그에 **원천과 시각**을
+                         박기 위한 값이다(계측 4원칙 ⑤).
+      · origin="net_only" 행은 있으나 gross가 0이다. net 축 선기입(`upsert_broker_net`)
+                         이 만든 행일 수 있어 **브로커 gross 실측으로 볼 수 없다**.
+                         0을 "브로커가 0원이라고 했다"로 읽지 않는다(계측 4원칙 ②).
+      · origin="none"    행 자체가 없다 — 대사 대상 없음.
+    """
+    row = fetchone(
+        TRADES_DB,
+        "SELECT pnl_krw, updated_at FROM daily_broker_pnl WHERE date = ?", (date,))
+    if row is None:
+        return {"origin": "none", "gross_krw": None, "updated_at": None}
+    gross = float(row["pnl_krw"] or 0.0)
+    if gross == 0.0:
+        return {"origin": "net_only", "gross_krw": gross,
+                "updated_at": row["updated_at"]}
+    return {"origin": "broker", "gross_krw": gross, "updated_at": row["updated_at"]}
 
 
 # ── [MW0601 493차 / F-2·F-4] 브로커 net 축 ──────────────────────────────────
@@ -2977,7 +3028,9 @@ NET_RECON_REL_TOL = 0.20
 
 
 def upsert_broker_net(date: str, deposit_cash: float,
-                      next_day_deposit_cash: float) -> None:
+                      next_day_deposit_cash: float,
+                      source: str = "live", snapshot_ts: str = None,
+                      only_if_missing: bool = False) -> bool:
     """브로커 원천 net 축 저장 — CpTd6197 헤더 그대로.
 
     broker_net_krw = 익일가예탁현금 − 예탁현금 = 당일 실현 순손익(수수료 차감 후).
@@ -2985,31 +3038,56 @@ def upsert_broker_net(date: str, deposit_cash: float,
 
     ⚠ 0/결측 가드: 브로커 TR이 빈 응답을 줄 때 기존 실측을 0으로 덮지 않는다
     (upsert_daily_broker_pnl과 같은 취지). 비거래일도 스킵한다(유령 행 방지).
+
+    Args:
+        source: 이 값을 **어떤 경로로** 얻었는가 — 같은 행에 남긴다.
+            · "live"           FLAT 상태의 잔고 TR 푸시(실측 경로)
+            · "eod_snapshot"   [498차 F-8] EOD가 15:10 이후 헤더 스냅샷으로 보정
+            · "stale_snapshot" [498차 F-8] EOD 보정인데 스냅샷이 15:10 **이전** 것이다
+        snapshot_ts: 그 예탁현금 헤더를 실제로 관측한 시각("YYYY-MM-DD HH:MM:SS").
+            None이면 지금 시각. 폴백 기입일수록 이 값이 중요하다 — 기입 시각과
+            관측 시각이 다르다는 사실 자체가 판정 재료다(계측 4원칙 ④).
+        only_if_missing: True면 **이미 net이 있는 날은 건드리지 않는다.**
+            EOD 스냅샷 보정이 실측 기입을 덮지 않게 하는 가드다(498차 F-8 회귀위험 ⓑ).
+
+    Returns:
+        wrote(bool) — 실제로 기입했는가. False면 가드에 걸렸거나 이미 값이 있다.
     """
     if not date or not deposit_cash or not next_day_deposit_cash:
-        return
+        return False
     if not is_krx_trading_date(date):
-        return
+        return False
     import datetime as _dt
     _now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _snap = snapshot_ts or _now
     net = float(next_day_deposit_cash) - float(deposit_cash)
     with _lock:
         with get_conn(TRADES_DB) as _c:
+            if only_if_missing:
+                _row = _c.execute(
+                    "SELECT broker_net_krw FROM daily_broker_pnl WHERE date = ?",
+                    (date,)).fetchone()
+                if _row is not None and _row[0] is not None:
+                    return False
             _cur = _c.execute(
                 """UPDATE daily_broker_pnl
                       SET deposit_cash_krw = ?, next_day_deposit_cash_krw = ?,
-                          broker_net_krw = ?, updated_at = ?
+                          broker_net_krw = ?, broker_net_source = ?,
+                          deposit_snapshot_ts = ?, updated_at = ?
                     WHERE date = ?""",
-                (float(deposit_cash), float(next_day_deposit_cash), net, _now, date))
+                (float(deposit_cash), float(next_day_deposit_cash), net,
+                 str(source), _snap, _now, date))
             if _cur.rowcount == 0:
                 # gross 행이 아직 없다(브로커 실현손익 0인 아침 등) — net만 먼저 만든다.
                 _c.execute(
                     """INSERT INTO daily_broker_pnl
                            (date, pnl_krw, updated_at, deposit_cash_krw,
-                            next_day_deposit_cash_krw, broker_net_krw)
-                       VALUES (?, 0, ?, ?, ?, ?)""",
+                            next_day_deposit_cash_krw, broker_net_krw,
+                            broker_net_source, deposit_snapshot_ts)
+                       VALUES (?, 0, ?, ?, ?, ?, ?, ?)""",
                     (date, _now, float(deposit_cash),
-                     float(next_day_deposit_cash), net))
+                     float(next_day_deposit_cash), net, str(source), _snap))
+    return True
 
 
 def fetch_broker_net(date: str) -> Optional[dict]:
@@ -3017,7 +3095,8 @@ def fetch_broker_net(date: str) -> Optional[dict]:
     row = fetchone(
         TRADES_DB,
         """SELECT pnl_krw, broker_net_krw, deposit_cash_krw,
-                  next_day_deposit_cash_krw, commission_krw, pnl_net_krw
+                  next_day_deposit_cash_krw, commission_krw, pnl_net_krw,
+                  broker_net_source, deposit_snapshot_ts
              FROM daily_broker_pnl WHERE date = ?""", (date,))
     if row is None or row["broker_net_krw"] is None:
         return None
@@ -3032,6 +3111,11 @@ def fetch_broker_net(date: str) -> Optional[dict]:
         "next_day_deposit_cash_krw": row["next_day_deposit_cash_krw"],
         "engine_commission_krw": row["commission_krw"],
         "engine_net_krw": row["pnl_net_krw"],
+        # [MW0601 498차 / F-8] 이 net을 어떤 경로로 얻었는가 · 헤더 관측 시각.
+        # 498차 이전 행은 둘 다 NULL이며 그것은 **미측정**이지 "live 아님"이
+        # 아니다(계측 4원칙 ②) — 소비처는 None을 그대로 표시할 것.
+        "net_source": row["broker_net_source"],
+        "deposit_snapshot_ts": row["deposit_snapshot_ts"],
     }
 
 
@@ -3065,6 +3149,10 @@ def reconcile_daily_net(date: str, engine_gross: float,
         "broker_net": b["net_krw"],
         "residual": resid,
         "tolerance": tol,
+        # [MW0601 498차 / F-8] 대사에 쓴 브로커 net의 출처·관측시각을 그대로 실어
+        # 보낸다 — 로그가 "무엇과 대사했는지" 말할 수 있어야 한다(계측 4원칙 ⑤).
+        "broker_net_source": b.get("net_source"),
+        "deposit_snapshot_ts": b.get("deposit_snapshot_ts"),
     }
 
 
@@ -3107,11 +3195,15 @@ def fetch_daily_net_for_verdict(days: int = 90) -> Dict[str, dict]:
     out = {}
     for r in fetchall(
             TRADES_DB,
-            """SELECT date, pnl_krw, broker_net_krw, pnl_net_krw, commission_krw
+            """SELECT date, pnl_krw, broker_net_krw, pnl_net_krw, commission_krw,
+                      broker_net_source
                  FROM daily_broker_pnl WHERE date >= ? ORDER BY date""", (cutoff,)):
         if r["broker_net_krw"] is not None:
             out[r["date"]] = {"net_krw": float(r["broker_net_krw"]),
                               "source": "broker",
+                              # [498차 F-8] 브로커 net 안에서도 실측(live)과 EOD
+                              # 스냅샷 보정을 구분한다. None = 498차 이전 행(미측정).
+                              "broker_net_source": r["broker_net_source"],
                               "gross_krw": float(r["pnl_krw"] or 0.0),
                               "commission_krw": float(r["pnl_krw"] or 0.0) - float(r["broker_net_krw"])}
         elif r["pnl_net_krw"] is not None:

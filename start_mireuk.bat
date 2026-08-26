@@ -431,9 +431,30 @@ IF EXIST "data\_exit_normally" (
 )
 
 REM ── 단일 인스턴스 보장 ────────────────────────────────────────────────
+REM [MW0601 498차 / F-2] 인라인 파이썬 원라이너를 걷어내고 scripts\guard_single_instance.py
+REM 로 교체한다. 새로 설계한 것은 없다 — 스크립트·유닛 테스트·리허설은 493차 후속7
+REM (커밋 35ed037)에 이미 들어 있고, 그 커밋이 되돌린 것은 **배치 배선 한 조각뿐**이다.
+REM
+REM 종전 원라이너의 결함 3가지:
+REM   1) 종료코드 혼동 — 크래시(exit 1)와 "발견"이 같은 분기로 갔다. psutil 이 없거나
+REM      권한 오류가 나면 "기존 인스턴스 있음"으로 읽혔다(계측 4원칙 ②: 미측정 ≠ 발견).
+REM   2) `2>NUL` 이 stderr 를 통째로 버려 그 크래시가 어디에도 안 남았다.
+REM   3) 지연확장 `!` 파싱 사고 — 인라인 파이썬 안의 문자열이 cmd.exe 에 노출됐다.
+REM      스크립트 파일로 옮기면 `!` 가 cmd.exe 를 통과하지 않는다.
+REM 그리고 아래 "[GUARD] 기존 프로세스 종료 완료" 는 terminate 성공 여부와 무관하게
+REM **무조건** 찍혔다. 이제 스크립트가 재확인 후 종료코드로 답한다.
+REM   종료코드: 0=없음 / 1=발견(또는 종료 후 잔여) / 3=프로브 자체 실패
 CALL :L "[GUARD] 기존 main.py 프로세스 체크..."
-"!PY32!" -c "import psutil, sys, os; procs=[p for p in psutil.process_iter(['pid','name','cmdline']) if 'python' in (p.info.get('name') or '').lower() and any('main.py' in (c or '') for c in (p.info.get('cmdline') or [])) and p.pid != os.getpid()]; print('[GUARD] 실행 중 main.py: {}'.format(len(procs))); [print('  PID={} cmd={}'.format(p.pid, ' '.join(p.info.get('cmdline') or []))) for p in procs]; sys.exit(1 if procs else 0)" 2>NUL
-IF !ERRORLEVEL! EQU 0 GOTO :guard_no_existing
+"!PY32!" "!WORKDIR!\scripts\guard_single_instance.py" --probe --workdir "!WORKDIR!"
+SET "_GUARD_RC=!ERRORLEVEL!"
+IF !_GUARD_RC! EQU 0 GOTO :guard_no_existing
+IF !_GUARD_RC! EQU 3 (
+    ECHO.
+    CALL :L "[GUARD][ERROR] 프로브 자체가 실패했다 -- 단일 인스턴스를 **보장하지 못한다**."
+    CALL :L "[GUARD][ERROR] '기존 인스턴스 없음'이 아니다. 위 traceback 을 확인할 것."
+    REM 미측정을 「없음」으로 흘려보내지 않는다. 아래 발견 경로와 같은 확인을 거치되
+    REM 문구를 구분해 남긴다 — 기동 자체를 막지는 않는다(막으면 그날 거래가 0이 된다).
+)
 
 ECHO.
 CALL :L "[WARN] 이미 실행 중인 main.py 프로세스가 감지됐습니다."
@@ -455,9 +476,17 @@ IF !ERRORLEVEL! EQU 2 (
     GOTO :EOF
 )
 CALL :L "[GUARD] 기존 main.py 프로세스 종료 중..."
-"!PY32!" -c "import psutil, os; [p.terminate() for p in psutil.process_iter(['pid','name','cmdline']) if 'python' in (p.info.get('name') or '').lower() and any('main.py' in (c or '') for c in (p.info.get('cmdline') or [])) and p.pid != os.getpid()]" 2>NUL
-TIMEOUT /T 3 /NOBREAK >NUL
-CALL :L "[GUARD] 기존 프로세스 종료 완료 -- 새 인스턴스 시작."
+REM [498차 F-2] 스크립트가 죽이기 **전에** 대상 목록을, 죽인 **뒤에** 잔여를 찍는다.
+REM WORKDIR 밖 프로세스는 종료하지 않는다(다른 리포의 main.py 보호).
+"!PY32!" "!WORKDIR!\scripts\guard_single_instance.py" --terminate --workdir "!WORKDIR!"
+SET "_GUARD_RC=!ERRORLEVEL!"
+IF !_GUARD_RC! EQU 0 (
+    REM 무조건 문자열 금지 — 실제로 잔여 0이 확인됐을 때만 "완료"라고 쓴다.
+    CALL :L "[GUARD] 기존 프로세스 종료 확인 (잔여 0) -- 새 인스턴스 시작."
+) ELSE (
+    CALL :L "[GUARD][WARN] 종료를 확인하지 못했다 (rc=!_GUARD_RC!) -- 잔여 또는 프로브 실패."
+    CALL :L "[GUARD][WARN] 이중 실행 위험이 남은 채로 진행한다. 위 출력을 확인할 것."
+)
 GOTO :guard_done
 
 :guard_no_existing

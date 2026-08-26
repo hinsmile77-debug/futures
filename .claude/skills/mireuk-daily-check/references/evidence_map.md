@@ -304,6 +304,13 @@ meta_labels          : ts, horizon, predicted, actual, confidence, up/down/flat_
 
 ### 8-3. `trades.db` — `trades` 는 **청산 레그** 단위다 ⚠
 
+> 🔴 **[498차 / F-12] 이 §8 전체는 2026-08-14 MW0602 `dev` 실측이다.**
+> **자기 브랜치에서 `PRAGMA table_info(trades)` 로 먼저 확인하라.** 함정 ③(브랜치
+> 상이)이 참조 문서 자체에 들어와 있다 — `SKILL.md` 는 *"이 표의 파일이 자기 브랜치에
+> 없을 수 있다"* 를 **파일 단위**로만 경고하고 **DB 컬럼 단위 경고는 없었다.**
+> 2026-08-26 장후 점검이 아래 `tp1_reached` 로 조회하다 `sqlite3.OperationalError:
+> no such column` 으로 막혔다(이상점 1-13).
+
 36컬럼. 사후검증에 실제로 쓰는 것:
 
 ```
@@ -311,6 +318,31 @@ entry_ts, exit_ts, direction, entry_price, exit_price, quantity, pnl_pts, pnl_kr
 net_pnl_krw, exit_reason, grade, raw_grade, entry_horizon, entry_qty, entry_source,
 hurst_bucket, hour_bucket, meta_action, kelly_advised_skip, tp1_reached(465차), had_partial_fill
 ```
+
+**⚠ `tp1_reached` 는 `dev` 전용이다 — `v9-dev` 에는 없다. 대신 `exit_stage` 를 쓴다.**
+
+| 브랜치 | 승패 판별 컬럼 | 값 |
+|---|---|---|
+| `dev` (MW0602) | `tp1_reached` (불리언) | 0 / 1 |
+| **`v9-dev` (MW0601)** | **`exit_stage`** (문자열) | `TP1` · `TP2` · **`TRAIL_AFTER_TP1`** · … |
+
+`exit_stage` 가 **정보량이 더 많다.** 2026-08-26 실측: 09:41:09 의 `하드스톱(틱)` 이
+`exit_stage='TRAIL_AFTER_TP1'` 이라 **TP1 도달 후 보호 트레일 = 이익 청산**임이
+컬럼 하나로 확정된다. 불리언으로는 "TP1 은 닿았다"까지만 알 수 있다.
+
+`v9-dev` `trades` 38컬럼 실측(2026-08-26):
+
+```
+id, entry_ts, exit_ts, direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,
+exit_reason, grade, regime, created_at, gross_pnl_krw, commission_krw, net_pnl_krw,
+formula_version, raw_direction, executed_direction, reverse_entry_enabled, forward_*,
+meta_action, hurst_bucket, hour_bucket, was_restart_after, had_partial_fill, entry_horizon,
+entry_source, kelly_advised_skip, raw_grade, entry_qty, checklist_pass_count,
+exit_stage, commission_rate_used
+```
+
+⚠ **`dev` 쪽 서술을 지우지 않는다** — 두 브랜치를 병기한다. 자기 브랜치에 없는
+컬럼을 만났으면 **없다고 리포트에 적고** 대체 컬럼을 명시하라(조용히 생략 금지).
 
 **1포지션 = 여러 행이다.** 이익 포지션은 TP1/TP2/TP3로 쪼개지고 손실 포지션은 한 행으로 끝난다.
 417차 재인용 금지 수치가 정확히 이 단위 혼동에서 나왔다(`invariants.md` §3-2).
@@ -333,9 +365,10 @@ hurst_bucket, hour_bucket, meta_action, kelly_advised_skip, tp1_reached(465차),
 > ⚠ **`하드스톱` 두 글자에 정반대 두 사건이 들어 있다.** 진짜 손절과, TP1 도달 후
 > 보호 스톱에 걸린 **이익 청산**이다. 2026-08-13 실측: `하드스톱` 2건이 **둘 다
 > `tp1_reached=1` 이고 손익 +1.41pt·+0.80pt** — 즉 승리다.
-> **`exit_reason` 만으로 승패를 세면 틀린다.** `tp1_reached`(465차) 또는 로그 태그
-> `[TP1보호]`/`[TP1미도달]`(468차)로 갈라라. `exit_reason` 문자열 자체는 사전등록 채널
-> 필터라 **바꾸지 않는다**.
+> **`exit_reason` 만으로 승패를 세면 틀린다.** `exit_stage`(있으면 **우선**) ·
+> `tp1_reached`(`dev` 전용, 465차) · 로그 태그 `[TP1보호]`/`[TP1미도달]`(468차)
+> 중 자기 브랜치에 있는 것으로 갈라라(§8-3 브랜치 표).
+> `exit_reason` 문자열 자체는 사전등록 채널 필터라 **바꾸지 않는다**.
 >
 > ⚠ **`15:10 강제청산`으로 기록된 행은 0건이다.** 절대원칙 ①이 안 지켜진 게 아니라,
 > 그 시각까지 남은 포지션이 없었다는 뜻이다. **"청산 로그 없음"과 "청산할 것이 없었음"은

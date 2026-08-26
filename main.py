@@ -589,6 +589,15 @@ class TradingSystem:
         # "아직 안 받았다"와 "브로커가 0원이라 한다"가 구분되지 않는다
         # (계측 4원칙 ②·④ — 런타임 상태를 기본값 폴백으로 읽지 않는다는 규약).
         self._broker_net_today = None
+        # [MW0601 498차 / F-8] 마지막으로 관측한 예탁현금 헤더 스냅샷.
+        #   {"date","deposit","next_deposit","ts","position_status"} 또는 None.
+        # **FLAT 가드 밖에서** 갱신한다 — net 축 저장은 FLAT일 때만 하지만,
+        # 그 조건이 하루 종일 한 번도 성립하지 않으면 그날치가 통째로 빈다
+        # (2026-08-26: 마지막 푸시 12:19:01이 최종 청산 처리 도중이라 status가
+        #  아직 FLAT이 아니었고, 그 뒤 푸시가 없어 broker_net_krw가 NULL).
+        # ⚠ None이 초기값이며 `getattr(self, "_last_deposit_header", None)`로 읽지
+        #   않는다 — __init__ 명시 초기화가 규약이다(계측 4원칙 ④).
+        self._last_deposit_header = None
         # [MW0602 497차 / P1 체리픽] 전일 브로커 net 표시 캐시 (날짜, fetch 결과).
         #   날짜당 1회만 DB를 본다. None = 오늘 아직 조회 안 함
         #   (계측 4원칙 ④ — getattr 폴백으로 읽지 않는다).
@@ -12020,29 +12029,103 @@ class TradingSystem:
         # (0818 실측: 685,000 − 23,332 = 661,668).
         try:
             from utils.db_utils import (update_daily_broker_pnl_net,
-                                       fetch_broker_daily_pnl_map,
+                                       fetch_broker_gross_origin,
                                        reconcile_daily_net)
             _f4_gross = float(stats.get("gross_krw", 0.0) or 0.0)
             _f4_comm = float(stats.get("commission", 0.0) or 0.0)
             _f4_net = float(stats.get("pnl_krw", 0.0) or 0.0)
-            update_daily_broker_pnl_net(today_str, _f4_gross, _f4_comm, _f4_net)
-            _f4_broker = fetch_broker_daily_pnl_map(3).get(today_str)
+            # ── [MW0601 498차 / F-9] 대사 대상을 **쓰기 전에** 읽는다 ────────────
+            # 종전 순서는 `update_daily_broker_pnl_net()` → 되읽기였다. 그 함수는
+            # 행이 없으면 **엔진 gross로 행을 만든다.** 그래서 되읽은 값이 절대
+            # None이 될 수 없었고, "브로커 gross 대사 일치"는 실은 **방금 자기가
+            # 써넣은 엔진 gross를 다시 읽은 것**이었다(자기참조 대사).
+            # else 분기 「broker 행 없음」은 도달 불가 코드였다 —
+            # 471차 F-1·474차와 같은 계열이다(계측 4원칙 ⑤).
+            _f4_origin = fetch_broker_gross_origin(today_str)
+            _f4_created = update_daily_broker_pnl_net(today_str, _f4_gross, _f4_comm, _f4_net)
+            _f4_broker = _f4_origin["gross_krw"] if _f4_origin["origin"] == "broker" else None
             if _f4_broker is not None and abs(_f4_broker - _f4_gross) > 1.0:
                 log_manager.system(
-                    f"[BrokerPnl] gross 불일치 — broker {_f4_broker:+,.0f}원 vs "
+                    f"[BrokerPnl] gross 불일치 — broker {_f4_broker:+,.0f}원"
+                    f"[TR수신 {_f4_origin['updated_at']}] vs "
                     f"engine {_f4_gross:+,.0f}원 (차 {_f4_broker - _f4_gross:+,.0f}원). "
                     f"체결 누락 또는 브로커 미정산 가능 — 확인 필요",
                     "WARNING",
                 )
             else:
+                # 「무엇과 무엇을 비교했는가」를 문구에 박는다 — "일치"만 찍으면
+                # 범위를 오해한다(계측 4원칙 ⑤).
+                if _f4_broker is not None:
+                    _f4_tail = (f" (broker gross[TR수신 {_f4_origin['updated_at']}] "
+                                f"vs engine gross 대사 일치)")
+                elif _f4_origin["origin"] == "net_only":
+                    _f4_tail = (" (브로커 gross 0 — net 축 선기입 행일 수 있어 "
+                                "gross 대사 보류. 0이 아니라 미측정으로 읽을 것)")
+                else:
+                    _f4_tail = (" (브로커 gross 미수신 — 엔진 gross로 행 생성, 대사 없음)"
+                                if _f4_created else
+                                " (브로커 gross 미수신 — 대사 없음)")
                 log_manager.system(
                     f"[BrokerPnl] EOD 확정 — gross {_f4_gross:+,.0f} − 수수료 "
-                    f"{_f4_comm:,.0f} = net {_f4_net:+,.0f}원"
-                    + (f" (broker gross 대사 일치)" if _f4_broker is not None else " (broker 행 없음 — 엔진 gross로 생성)"),
+                    f"{_f4_comm:,.0f} = net {_f4_net:+,.0f}원" + _f4_tail,
                     "INFO",
                 )
         except Exception as _f4_e:
             logger.warning("[BrokerPnl] EOD 확정치 기입 실패 (무해): %s", _f4_e)
+
+        # ── [MW0601 498차 / F-8] 브로커 net 축 EOD 보정 ────────────────────────
+        #
+        # net 축 저장은 「FLAT 상태의 잔고 TR 푸시」라는 **기회 의존적 사건**에
+        # 묶여 있다. 2026-08-26에 마지막 푸시(12:19:01)가 최종 청산 처리 도중이라
+        # `position.status`가 아직 FLAT이 아니었고, 그 뒤 푸시가 한 번도 더 오지
+        # 않아 그날치 `broker_net_krw`가 통째로 비었다(직전 20거래일은 전부 존재).
+        # 실전 전환 기준 ①의 **판정 원천**이 하루 사라진 것이다.
+        #
+        # 여기(15:40)는 마감 절차 안이라 FLAT이 보장된 시점이다. 마지막으로
+        # 관측한 헤더 스냅샷으로 **NULL일 때만** 채운다 — 실측 기입은 덮지 않는다.
+        # ⚠ 스냅샷이 15:10 이전 것이면 그 사이 현금흐름이 있었을 수 있으므로
+        #   `stale_snapshot`으로 표기한다. 폴백을 실측처럼 읽지 못하게 하는 것이
+        #   이 플래그의 존재 이유다(계측 4원칙 ②·④).
+        try:
+            from utils.db_utils import upsert_broker_net as _f8_upsert
+            _f8_snap = self._last_deposit_header
+            if _f8_snap is None:
+                log_manager.system(
+                    "[BrokerNetEOD] 예탁현금 헤더 스냅샷 없음 — net 축 보정 불가"
+                    "(0이 아니라 미측정). CpTd6197 잔고 푸시 수신 여부를 확인할 것",
+                    "WARNING",
+                )
+            elif _f8_snap.get("date") != today_str:
+                log_manager.system(
+                    f"[BrokerNetEOD] 스냅샷이 오늘 것이 아니다({_f8_snap.get('date')}) "
+                    f"— net 축 보정 생략",
+                    "WARNING",
+                )
+            else:
+                _f8_ts = str(_f8_snap.get("ts") or "")
+                _f8_stale = _f8_ts[11:16] < "15:10" if len(_f8_ts) >= 16 else True
+                _f8_src = "stale_snapshot" if _f8_stale else "eod_snapshot"
+                _f8_wrote = _f8_upsert(
+                    today_str, _f8_snap["deposit"], _f8_snap["next_deposit"],
+                    source=_f8_src, snapshot_ts=_f8_ts, only_if_missing=True)
+                if _f8_wrote:
+                    log_manager.system(
+                        f"[BrokerNetEOD] net 축 EOD 보정 — 브로커 net "
+                        f"{_f8_snap['next_deposit'] - _f8_snap['deposit']:+,.0f}원 "
+                        f"(예탁현금 헤더 스냅샷 {_f8_ts}, 관측 시 포지션="
+                        f"{_f8_snap.get('position_status')}, source={_f8_src}). "
+                        + ("⚠ 15:10 이전 스냅샷이라 그 뒤 현금흐름이 반영되지 않았을 "
+                           "수 있다 — 실측(live)과 같은 값으로 읽지 말 것"
+                           if _f8_stale else "15:10 이후 스냅샷"),
+                        "WARNING" if _f8_stale else "INFO",
+                    )
+                else:
+                    log_manager.system(
+                        "[BrokerNetEOD] net 축 이미 실측 기입됨 — 보정 생략(정상)",
+                        "INFO",
+                    )
+        except Exception as _f8_e:
+            logger.warning("[BrokerNetEOD] net 축 EOD 보정 실패 (무해): %s", _f8_e)
 
         # ── [MW0601 493차 / F-2] net 축 대사 — 재발방지 본체 ────────────────
         #
@@ -12081,9 +12164,13 @@ class TradingSystem:
                     "ERROR",
                 )
             else:
+                # [498차 F-9·G-6] 「무엇과 대사했는지」를 문구에 박는다 — 브로커 net이
+                # 실측(live)인지 EOD 스냅샷 보정인지에 따라 이 "일치"의 무게가 다르다.
+                _nr_src = _rec.get("broker_net_source") or "미표기(498차 이전 행)"
                 log_manager.system(
-                    f"[NetRecon] net 대사 일치 — 엔진 {_rec['engine_net']:+,.0f} vs "
-                    f"브로커 {_rec['broker_net']:+,.0f}원 (잔차 {_rec['residual']:+,.0f}원). "
+                    f"[NetRecon] net 대사 일치 — 엔진 net vs 브로커 net"
+                    f"[{_nr_src}] : {_rec['engine_net']:+,.0f} vs "
+                    f"{_rec['broker_net']:+,.0f}원 (잔차 {_rec['residual']:+,.0f}원). "
                     f"브로커 실측 수수료 {_rec['broker_commission']:,.0f}원",
                     "INFO",
                 )
@@ -16620,6 +16707,23 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
             # 또한 _yesterday는 **달력** 어제라 주말·휴장일 유령 행을 만들던 결함은
             # upsert_daily_broker_pnl 내부의 is_krx_trading_date 가드가 막는다.
             _prev_pnl  = float(str(summary.get("추정자산") or "0").replace(",", "") or "0")
+            # ── [MW0601 498차 / F-8] 예탁현금 헤더 스냅샷 — **FLAT 가드 밖** ──────
+            # 아래 FLAT 가드는 유지한다(근거는 그 자리 주석). 다만 가드가 하루
+            # 종일 한 번도 열리지 않으면 net 축이 통째로 비므로, **값 자체는 항상
+            # 붙잡아 둔다.** EOD(15:40, FLAT이 보장된 시점)가 이것으로 보정한다.
+            # 여기서 저장하지 않고 스냅샷만 남기는 이유: 보유 중 예탁차에는
+            # 증거금·미실현이 섞일 수 있어 그대로 net으로 쓰면 안 되고, 쓸지
+            # 말지는 관측 시각과 함께 EOD에서 판단해야 하기 때문이다.
+            _dep_cash = float(str(summary.get("총매매") or "0").replace(",", "") or "0")
+            _next_dep = float(str(summary.get("총평가수익률") or "0").replace(",", "") or "0")
+            if _dep_cash and _next_dep:
+                self._last_deposit_header = {
+                    "date": _today_str,
+                    "deposit": _dep_cash,
+                    "next_deposit": _next_dep,
+                    "ts": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "position_status": self.position.status,
+                }
             # FLAT 상태에서만 저장: 포지션 보유 중 CpTd6197 today_pnl에 미실현손익이
             # 포함되면 broker_daily_pnl 테이블이 오염되어 손익 추이 탭 값이 부풀려짐.
             if self.position.status == "FLAT":
@@ -16634,9 +16738,9 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
                 #   summary["총평가수익률"] = 익일가예탁현금
                 #   그 차이 = 당일 실현 순손익(수수료 차감 후) = 브로커 net
                 # 없던 데이터가 아니라 아무도 안 본 데이터다.
-                _dep_cash = float(str(summary.get("총매매") or "0").replace(",", "") or "0")
-                _next_dep = float(str(summary.get("총평가수익률") or "0").replace(",", "") or "0")
-                upsert_broker_net(_today_str, _dep_cash, _next_dep)
+                # ⚠ [498차 F-8] 파싱은 위 스냅샷 블록으로 올라갔다 — 여기서 다시
+                #   파싱하지 않는다(같은 헤더를 두 번 읽으면 값이 갈릴 수 있다).
+                upsert_broker_net(_today_str, _dep_cash, _next_dep, source="live")
                 # 패널 이중표기(F-5)용 캐시 — 엔진 net 옆에 브로커 net을 같이 띄운다.
                 self._broker_net_today = _next_dep - _dep_cash
                 self._refresh_pnl_history()
